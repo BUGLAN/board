@@ -7,7 +7,7 @@ import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { boardFlow, CLAIM_MS } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, mmss, replay } from '../lib/util';
+import { accel, actorName, agentColor, ago, autosize, cx, hhmm, isMobile, mmss, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, Ring, agent, useNow } from './bits';
@@ -201,18 +201,6 @@ function Body({ card: c, on }: { card: Detail; on: boolean }) {
         <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 /board-skills ${useData.getState().path}#${c.id}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
           <Icon name="prompt" />
           复制为提示词
-        </button>
-        <button
-          className="icon-btn"
-          type="button"
-          data-tip={`复制 board show ${c.id}`}
-          data-tip-align="end"
-          onClick={async () => {
-            const ok = await copyText(`board show ${c.id}`);
-            toast({ type: ok ? 'success' : 'info', title: ok ? '已复制' : `board show ${c.id}`, text: ok ? `board show ${c.id}` : undefined, duration: 1800 });
-          }}
-        >
-          <Icon name="copy" />
         </button>
         <button className="icon-btn" type="button" data-act="close" data-tip="关闭  esc" data-tip-align="end" onClick={closeDetail}>
           <Icon name="close" />
