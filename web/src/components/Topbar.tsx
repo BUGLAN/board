@@ -233,7 +233,7 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
                         {b.holders.length}
                       </span>
                     )}
-                    <span title={flowOf(b.statuses).claim?.name}>{b.counts[flowOf(b.statuses).claim?.key ?? 'todo'] ?? 0}</span>
+                    <span title="可领取状态里的卡片数">{flowOf(b.statuses).ready(b.counts)}</span>
                   </span>
                   <span className="pj-check">{current && <Icon name="check" />}</span>
                 </button>

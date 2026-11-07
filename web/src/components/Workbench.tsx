@@ -423,7 +423,7 @@ function InboxSide() {
   const filter = useUI(s => s.filter.trim().toLowerCase());
   const { entering } = useEntering(board, generation);
   const ids = board ? previewCols(board.cols, drag).inbox ?? [] : [];
-  const start = boardFlow(board).claim?.name ?? '待办';
+  const start = boardFlow(board).home?.name ?? '待办';
   const count = board?.cols.inbox?.length ?? 0;
   const over = drag?.over === 'inbox';
   const empty = ids.length === 0;
@@ -605,8 +605,8 @@ function ProjectsSide() {
                             {b.holders.length}
                           </span>
                         )}
-                        <span className="n" title={flowOf(b.statuses).claim?.name}>
-                          {b.counts[flowOf(b.statuses).claim?.key ?? 'todo'] ?? 0}
+                        <span className="n" title="可领取状态里的卡片数">
+                          {flowOf(b.statuses).ready(b.counts)}
                         </span>
                         <button type="button" className="pt-more" aria-label="更多" onClick={ctx('board', b.path)}>
                           <Icon name="more" />

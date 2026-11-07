@@ -9,5 +9,5 @@ export const SKILL = 'board-skills';
 /** 一张卡片：/board-skills mini/main#2 */
 export const cardPrompt = (path: string, id: number) => `/${SKILL} ${path}#${id}`;
 
-/** 一块白板（领完领取起点为止）：/board-skills mini/main */
+/** 一块白板（领完可领取状态为止）：/board-skills mini/main */
 export const boardPrompt = (path: string) => `/${SKILL} ${path}`;

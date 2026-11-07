@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
-import { BEAT_MISSES, BEAT_MS, beatAge, boardFlow, CLAIM_MS } from '../lib/schema';
+import { backTo, BEAT_MISSES, BEAT_MS, beatAge, boardFlow, CLAIM_MS } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, MOD, mmss, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
@@ -493,7 +493,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
 }
 
 function ClaimPart({ card: c, now }: { card: Card; now: number }) {
-  const start = boardFlow(useData(s => s.board)).claim?.name ?? '待办';
+  const start = boardFlow(useData(s => s.board)).home?.name ?? '待办';
   if (c.column === 'inbox') {
     return (
       <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
@@ -552,7 +552,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
         <div className="release">
           <span>
             {beat != null
-              ? `持有者每 ${BEAT_MS / 1000} 秒发一次心跳并续期；连续 ${BEAT_MISSES} 次没收到判定异常退出，卡片回到领取起点`
+              ? `持有者每 ${BEAT_MS / 1000} 秒发一次心跳并续期；连续 ${BEAT_MISSES} 次没收到判定异常退出，卡片回到领取它时所在的状态`
               : '持有者评论、编辑或再次 claim 会续期 30 分钟'}
           </span>
           <button
@@ -561,7 +561,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
             onClick={async () => {
               try {
                 await exec({ op: 'release', id: c.id });
-                toast({ type: 'success', title: `已强制释放 #${c.id}`, text: `${c.holder} 的领取已清空，卡片回到「${boardFlow(useData.getState().board).claim?.name ?? '待办'}」最上面` });
+                toast({ type: 'success', title: `已强制释放 #${c.id}`, text: `${c.holder} 的领取已清空，卡片回到「${backTo(boardFlow(useData.getState().board), c.claimedFrom)}」最上面` });
               } catch (e) {
                 toastError(e);
               }

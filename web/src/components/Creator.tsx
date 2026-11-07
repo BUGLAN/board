@@ -29,8 +29,8 @@ export function Creator() {
   const cur = useCurrent();
   const path = useData(s => s.path);
   const f = boardFlow(useData(s => s.board));
-  const startName = f.claim?.name ?? '待办';
-  const startColor = f.color(f.claim?.key ?? 'todo');
+  const startName = f.home?.name ?? '待办';
+  const startColor = f.color(f.home?.key ?? 'todo');
   const [column, setColumn] = useState<'todo' | 'inbox'>('todo');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');

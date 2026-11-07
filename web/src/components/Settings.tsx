@@ -414,7 +414,7 @@ export function SettingsPage() {
           </h2>
           <p className="set-p">每块白板的工作流可以在白板页顶部的工作流条里自定义。当前白板：</p>
           <div className="flow">
-            {[{ key: 'inbox', name: '未整理', who: '人记下想法' }, ...flow.list.map(s => ({ key: s.key, name: s.name, who: s.claim ? '领取起点' : s.lock ? '锁定 · agent 领取' : s.final ? '终点 · 人确认' : '' }))].map(
+            {[{ key: 'inbox', name: '未整理', who: '人记下想法' }, ...flow.list.map(s => ({ key: s.key, name: s.name, who: s.claim ? '可领取' : s.lock ? '锁定 · agent 领取' : s.final ? '终点 · 人确认' : '' }))].map(
               (s, i) => (
                 <span key={s.key} style={{ display: 'contents' }}>
                   {i > 0 && <i className="flow-arrow" />}
@@ -430,17 +430,18 @@ export function SettingsPage() {
           <Row label="领取时长" hint="持有者评论、编辑或再次 claim 都会重新计时">
             <span className="ro mono">30 分钟</span>
           </Row>
-          <Row label="超时" hint="到期未续期：回到领取起点最上面，记录「领取超时，自动释放」">
+          <Row label="超时" hint="到期未续期：回到领取它时所在的可领取状态最上面，记录「领取超时，自动释放」">
             <span className="ro">自动释放</span>
           </Row>
           <ul className="rules">
-            <li>只有领取起点里的卡片能被领取；领取后卡片进入它之后的第一个锁定状态；多个 agent 同时领取同一张，只有一个成功</li>
+            <li>只有可领取状态里的卡片能被领取；领取后卡片沿连线进入锁定状态；不带 ID 时按工作流顺序先领排在前面的可领取状态；多个 agent 同时领取同一张，只有一个成功</li>
+            <li>agent 只能沿工作流条上的连线移动卡片；人移动卡片不受连线限制</li>
             <li>一个 agent 在一块白板上同时只持有一张卡片</li>
-            <li>进入锁定状态只能靠领取；持有者可以把自己的卡片在锁定状态之间移动，领取保持</li>
+            <li>进入锁定状态只能靠领取；持有者可以沿连线把自己的卡片在锁定状态之间移动，领取保持</li>
             <li>被持有的卡片只有持有者能编辑和移动，其他人只能评论、加或去标签；人可以强制释放</li>
-            <li>卡片离开锁定状态时，领取一起释放；强制释放和超时释放的卡片回到领取起点最上面</li>
+            <li>卡片离开锁定状态时，领取一起释放；强制释放和超时释放的卡片回到领取它时所在的可领取状态最上面</li>
             <li>终点状态只归人管；删除只能在界面上做</li>
-            <li>「未整理」只在界面上新建，agent 不会领取；整理后再放进领取起点</li>
+            <li>「未整理」只归人管：只在界面上新建，agent 不会领取，也不能移入移出；整理后放进「{flow.home?.name ?? '待办'}」</li>
           </ul>
         </section>
 
@@ -455,8 +456,8 @@ export function SettingsPage() {
           </p>
           <div className="code-block">
             <Code plain cmd={`/board-skills ${path}#12`} note="处理一张卡片" />
-            <Code plain cmd={`/board-skills ${path}`} note={`领完这块白板的「${flow.claim?.name ?? '待办'}」`} />
-            <Code plain cmd="/board-skills README 加一个英文版" note={`一句话需求：先记到「${flow.claim?.name ?? '待办'}」再做`} />
+            <Code plain cmd={`/board-skills ${path}`} note={`领完这块白板可领取状态里的卡片（${flow.claimables.map(s => `「${s.name}」`).join('') || '待办'}）`} />
+            <Code plain cmd="/board-skills README 加一个英文版" note={`一句话需求：先记到「${flow.home?.name ?? '待办'}」再做`} />
           </div>
           <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；心跳脚本在同目录的 scripts/ 里，推荐用下面的命令链接整个目录">
             <CopySkill />
