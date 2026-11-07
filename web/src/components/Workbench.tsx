@@ -194,13 +194,22 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
   );
 }
 
-/** 标签：整块就是输入框。平时看着只是一排胶囊，点空白处光标跟在最后一个胶囊后面，输入名称回车新建。
+/** 标签：整块就是输入框。平时看着只是一排胶囊；双击胶囊以外的空白处进入编辑态，光标跟在最后一个胶囊后面，
+    输入名称回车新建；Esc 或点到区块外退出。单击空白不做任何事；单击胶囊筛选、点 × 删除、拖胶囊到卡片都不进入编辑态。
     胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts） */
 function LabelBlock({ project, labels, used }: { project: string; labels: Label[]; used: Record<number, number> }) {
   const sel = useUI(s => s.labelSel);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const edit = () => {
+    setEditing(true);
+    const el = input.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  };
   const create = async () => {
     const n = name.trim();
     if (!n || busy) return;
@@ -230,12 +239,16 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
   return (
     <div className="lb-block">
       <div
-        className="lb-field"
+        className={cx('lb-field', editing && 'editing')}
         onMouseDown={e => {
-          // 点胶囊是筛选；点其余空白处把光标放进输入框（阻止默认，避免先失焦再聚焦）
+          // 胶囊、× 照常；空白处单击什么也不做：不聚焦、不选中文字，编辑中也不让输入框失焦
           if ((e.target as HTMLElement).closest('button, input')) return;
           e.preventDefault();
-          input.current?.focus();
+        }}
+        onDoubleClick={e => {
+          // 只有双击胶囊以外的空白处才进入编辑态；刚拖完胶囊补发的点击不算
+          if ((e.target as HTMLElement).closest('button') || labelDragJustEnded()) return;
+          edit();
         }}
       >
         {labels.map(l => (
@@ -272,11 +285,14 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
           ref={input}
           className="lb-input"
           value={name}
-          placeholder={labels.length ? '' : '输入标签名，回车新建'}
+          placeholder={labels.length ? '' : editing ? '输入标签名，回车新建' : '双击新建标签'}
           maxLength={24}
           spellCheck={false}
           autoComplete="off"
           aria-label="新标签"
+          // 键盘 Tab 进来也算进入编辑态；鼠标单击不到它（不在编辑态时 pointer-events: none）
+          onFocus={() => setEditing(true)}
+          onBlur={() => setEditing(false)}
           onChange={e => setName(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) {

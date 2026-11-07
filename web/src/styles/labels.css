@@ -42,17 +42,16 @@
 .d-labels .lb { height: 24px; font-size: 12px; padding: 0 8px; }
 .cr-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
-/* 侧栏「标签」：整块就是输入框。平时无框，悬停淡底色，聚焦才显出输入框边框；点胶囊筛选，点空白处输入、回车新建 */
+/* 侧栏「标签」：整块就是输入框。平时扁平（悬停也没有底色），双击空白处进入编辑态才显出输入框边框；点胶囊筛选，回车新建 */
 .lb-block { padding: 4px 14px 10px 20px; }
 .lb-field {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  margin: 0 -6px; padding: 5px 6px; border-radius: var(--r-sm); cursor: text;
+  margin: 0 -6px; padding: 5px 6px; border-radius: var(--r-sm);
   border: 1px solid transparent;
-  transition: border-color var(--dur-1), background-color var(--dur-1);
+  transition: border-color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out);
 }
-.lb-field:hover { background: var(--surface-2); }
-/* 只有在输入新标签时才显出输入框：点胶囊（按钮获得焦点）不算 */
-.lb-field:has(.lb-input:focus) { background: var(--surface); border-color: color-mix(in srgb, var(--brand) 55%, transparent); }
+/* 编辑态（双击空白进入，见 Workbench.tsx LabelBlock）：显出输入框的底色和边框，淡入淡出 */
+.lb-field.editing { cursor: text; background: var(--surface); border-color: color-mix(in srgb, var(--brand) 55%, transparent); }
 .lb-pick { height: 24px; max-width: 100%; padding: 0 7px 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
 .lb-pick:hover { background: color-mix(in srgb, var(--lc) 22%, transparent); }
 .lb-pick:active { transform: scale(.96); }
@@ -83,7 +82,11 @@
   font-size: 12px; color: var(--text); caret-color: var(--brand);
 }
 .lb-input::placeholder { color: var(--text-4); }
-.lb-field:has(.lb-input:focus) .lb-input { min-width: 4em; }
+/* 不在编辑态时单击不到输入框：点击落在空白处，单击什么也不做 */
+.lb-field:not(.editing) .lb-input { pointer-events: none; }
+.lb-field.editing .lb-input { min-width: 4em; }
+@media (prefers-reduced-motion: reduce) { .lb-field { transition: none; } }
+:root[data-motion="reduced"] .lb-field { transition: none; }
 
 /* 详情里的「复制为提示词」 */
 .d-prompt { height: 28px; color: var(--text-2); }
