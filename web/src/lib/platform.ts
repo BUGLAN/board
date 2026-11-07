@@ -101,6 +101,23 @@ export function newWindow() {
   if (ipc) invoke('new_window').catch(() => {});
 }
 
+/* ---------------- 桌面端：一键写入 BOARD_URL、BOARD_TOKEN ---------------- */
+
+/** 网页不能改电脑上的配置，只有桌面端能 */
+export const canSetEnv = ipc;
+/** 写成长期生效的环境变量；返回写到了哪里（~/.zshrc、用户环境变量）。
+    外壳不支持（旧版桌面端）时抛出 'unsupported'，其他失败抛出原因文字 */
+export async function setBoardEnv(token: string): Promise<string> {
+  try {
+    const r = await invoke<{ target: string }>('set_board_env', { token });
+    return r.target;
+  } catch (e) {
+    const msg = String(e);
+    if (/not found|not allowed|unknown/i.test(msg)) throw 'unsupported';
+    throw msg;
+  }
+}
+
 /* ---------------- 桌面端登录：在系统默认浏览器里用 GitHub 登录 ---------------- */
 
 /** 外壳返回的「登录没有完成」 */

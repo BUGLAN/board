@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { api } from '../lib/api';
-import { getTheme, setDensity, setMotion, setTheme, type Density, type Motion, type ThemePref } from '../lib/platform';
+import { canSetEnv, getTheme, setBoardEnv, setDensity, setMotion, setTheme, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
 import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
@@ -156,9 +156,33 @@ function envCommand(kind: ShellKind, url: string, token: string): string {
 
 function EnvCommand({ token }: { token: string }) {
   const [kind, setKind] = useState<ShellKind>(defaultShell);
+  const [state, setState] = useState<{ busy?: boolean; done?: string; error?: string }>({});
   const file = kind === 'zsh' ? '~/.zshrc' : kind === 'bash' ? '~/.bashrc' : null;
+  const apply = async () => {
+    setState({ busy: true });
+    try {
+      setState({ done: await setBoardEnv(token) });
+    } catch (e) {
+      setState({ error: e === 'unsupported' ? '这个版本的桌面端还不支持，请更新桌面端，或复制下面的命令运行。' : `没能写入：${e}` });
+    }
+  };
   return (
     <div className="env-cmd">
+      {canSetEnv ? (
+        <div className="env-apply">
+          <button type="button" className="btn sm primary" disabled={state.busy || !!state.done} onClick={apply}>
+            <Icon name={state.done ? 'check' : 'terminal'} />
+            {state.done ? '已写入' : '一键写入环境变量'}
+          </button>
+          <span role="status">
+            {state.done
+              ? `已写入 ${state.done}：BOARD_URL=${location.origin}、BOARD_TOKEN。新开一个终端就能用 board 连接这个服务端。`
+              : state.error ?? '把 BOARD_URL 和这个令牌写成长期生效的环境变量；也可以复制下面的命令自己运行。'}
+          </span>
+        </div>
+      ) : (
+        <p className="env-cmd-note">网页不能直接修改你电脑上的配置，复制下面的命令在终端里运行；在 Board 桌面端可以一键写入。</p>
+      )}
       <div className="env-cmd-head">
         <span>{file ? `写进 ${file}，长期生效：` : '写成用户环境变量，长期生效：'}</span>
         <Segmented value={kind} options={SHELLS} onChange={setKind} />
