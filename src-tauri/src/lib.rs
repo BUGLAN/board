@@ -30,13 +30,14 @@ fn board_url() -> Result<Url, String> {
     raw.parse().map_err(|e| format!("BOARD_URL 不是合法的地址「{raw}」：{e}"))
 }
 
-/// 告诉页面它运行在哪种外壳里（每次加载页面前执行）
-fn shell_script() -> &'static str {
+/// 告诉页面它运行在哪种外壳里、外壳的版本（每次加载页面前执行）
+fn shell_script(app: &AppHandle) -> String {
+    let version = app.package_info().version.to_string();
     if cfg!(target_os = "windows") {
         // 没有系统标题栏：页面自己画窗口按钮，并在画好后调用 window_ready
-        "window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_TITLEBAR__ = 'custom';"
+        format!("window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_TITLEBAR__ = 'custom'; window.__BOARD_SHELL_VERSION__ = '{version}';")
     } else {
-        "window.__BOARD_SHELL__ = 'desktop';"
+        format!("window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_SHELL_VERSION__ = '{version}';")
     }
 }
 
@@ -49,7 +50,7 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
         .min_inner_size(380.0, 560.0)
         // 拖入文件交给页面处理（卡片附件）；否则 Tauri 会拦下文件拖放，页面收不到 drop 事件
         .disable_drag_drop_handler()
-        .initialization_script(shell_script());
+        .initialization_script(&shell_script(app));
     // 新窗口错开一点，免得完全叠在上一个窗口上
     if n > 0 {
         if let Some(prev) = app.webview_windows().values().next() {

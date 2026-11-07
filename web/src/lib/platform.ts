@@ -15,6 +15,8 @@ export const shell: 'web' | 'desktop' = isTauri ? 'desktop' : 'web';
 const ipc = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 /** 外壳没有系统标题栏，窗口按钮由界面画（Windows） */
 export const customTitlebar = ipc && window.__BOARD_TITLEBAR__ === 'custom';
+/** 桌面外壳的版本（外壳加载页面前注入；网页端没有） */
+export const shellVersion: string | null = (typeof window !== 'undefined' && window.__BOARD_SHELL_VERSION__) || null;
 
 export type ThemePref = 'auto' | 'light' | 'dark';
 export type Density = 'comfy' | 'compact';

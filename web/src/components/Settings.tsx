@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { api } from '../lib/api';
-import { getTheme, setDensity, setMotion, setTheme, type Density, type Motion, type ThemePref } from '../lib/platform';
+import { getTheme, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
 import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
@@ -269,6 +269,25 @@ export function SettingsPage() {
   const [theme, setT] = useState<ThemePref>(getTheme);
   const [density, setD] = useState<Density>(() => pref.get('density', 'comfy'));
   const [motion, setM] = useState<Motion>(() => pref.get('motion', 'full'));
+  const [server, setServer] = useState<{ version: string; commit: string } | null>(null);
+  const [serverFailed, setServerFailed] = useState(false);
+
+  // 底部显示服务端版本（部署后用来核对线上是不是新版）；每次进入设置页刷新
+  useEffect(() => {
+    if (tab !== 'settings') return;
+    let alive = true;
+    api
+      .info()
+      .then(i => {
+        if (!alive) return;
+        setServer(i);
+        setServerFailed(false);
+      })
+      .catch(() => alive && setServerFailed(true));
+    return () => {
+      alive = false;
+    };
+  }, [tab]);
 
   useEffect(() => {
     const el = page.current;
@@ -466,6 +485,11 @@ export function SettingsPage() {
             ))}
           </div>
         </section>
+
+        <footer className="settings-foot">
+          <span>{server ? `服务端 ${server.version} · ${server.commit}` : serverFailed ? '服务端版本暂不可用' : '服务端版本读取中…'}</span>
+          {shellVersion && <span>桌面端 {shellVersion}</span>}
+        </footer>
       </div>
     </div>
   );
