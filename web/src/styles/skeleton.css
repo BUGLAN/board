@@ -36,3 +36,14 @@
 .sk-flow .sk-pills { display: flex; align-items: center; gap: 22px; min-width: 0; overflow: hidden; }
 .sk-count { margin-left: auto; }
 .page-head .sk-crumbs, .page-head .page-actions:has(.sk) { min-width: 0; overflow: hidden; }
+
+/* ---------------- 侧栏骨架 ---------------- */
+.tree-head .sk-n { margin-left: auto; }
+.sk-labels { display: flex; flex-wrap: wrap; gap: 6px; }
+.sk-row { pointer-events: none; }
+.tree-row.sk-row { min-height: 28px; }
+.tree-row .sk-tm { margin-left: auto; }
+.recent-row.sk-row { align-items: start; }
+.sk-lines { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
+.sk-inbox { display: flex; flex-direction: column; gap: 8px; }
+.side-head .sk-side-count { margin-left: auto; }
