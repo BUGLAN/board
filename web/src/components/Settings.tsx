@@ -129,6 +129,48 @@ function CopySkill() {
   );
 }
 
+type ShellKind = 'zsh' | 'bash' | 'powershell';
+const SHELLS: [ShellKind, string][] = [
+  ['zsh', 'zsh'],
+  ['bash', 'bash'],
+  ['powershell', 'PowerShell'],
+];
+const defaultShell = (): ShellKind => {
+  const ua = navigator.userAgent;
+  if (/Windows/i.test(ua)) return 'powershell';
+  if (/Mac/i.test(navigator.platform || ua)) return 'zsh';
+  return 'bash';
+};
+
+/** 把 BOARD_URL、BOARD_TOKEN 写成长期生效的环境变量的一条命令。
+    zsh / bash：先删掉配置文件里旧的这两行再追加，重复运行不会重复；写回用 cat 而不是 mv，配置文件是软链接时不被替换
+    PowerShell：setx 写入用户环境变量，重复运行只是覆盖 */
+function envCommand(kind: ShellKind, url: string, token: string): string {
+  if (kind === 'powershell') return `setx BOARD_URL "${url}"; setx BOARD_TOKEN "${token}"`;
+  const rc = kind === 'zsh' ? '~/.zshrc' : '~/.bashrc';
+  return (
+    `f=${rc}; touch "$f"; grep -v -e '^export BOARD_URL=' -e '^export BOARD_TOKEN=' "$f" > "$f.tmp"; ` +
+    `printf '%s\\n' 'export BOARD_URL=${url}' 'export BOARD_TOKEN=${token}' >> "$f.tmp" && cat "$f.tmp" > "$f" && rm "$f.tmp"`
+  );
+}
+
+function EnvCommand({ token }: { token: string }) {
+  const [kind, setKind] = useState<ShellKind>(defaultShell);
+  const file = kind === 'zsh' ? '~/.zshrc' : kind === 'bash' ? '~/.bashrc' : null;
+  return (
+    <div className="env-cmd">
+      <div className="env-cmd-head">
+        <span>{file ? `写进 ${file}，长期生效：` : '写成用户环境变量，长期生效：'}</span>
+        <Segmented value={kind} options={SHELLS} onChange={setKind} />
+      </div>
+      <div className="code-block">
+        <Code cmd={envCommand(kind, location.origin, token)} plain={kind === 'powershell'} />
+      </div>
+      <p className="env-cmd-note">运行后新开一个终端才生效{file ? '；重复运行会替换旧的这两行，不会重复追加' : ''}。</p>
+    </div>
+  );
+}
+
 /** 访问令牌：agent 用 board 命令行连接服务端时认证。原文只在新建时显示一次 */
 function Tokens() {
   const tab = useUI(s => s.tab);
@@ -184,9 +226,7 @@ function Tokens() {
       {fresh && (
         <div className="token-fresh" role="status">
           <b>令牌「{fresh.name}」已新建。原文只显示这一次，请现在复制保存。</b>
-          <div className="code-block">
-            <Code cmd={`export BOARD_TOKEN=${fresh.token}`} />
-          </div>
+          <EnvCommand token={fresh.token} />
           <button type="button" className="btn sm" onClick={() => setFresh(null)}>
             <Icon name="check" />
             已保存
