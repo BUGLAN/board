@@ -69,16 +69,18 @@ deploy)
   echo "$commit" | grep -Eq '^[0-9a-f]{7}$' || die "提交号格式不对：${commit}"
   target="$IMAGE:$commit"
 
+  # 令牌从 stdin 读，只在这一次 login 里用，拉完立刻 logout，服务器上不留 GHCR 凭据。
+  # 必须最先读：后面的 docker compose exec 会把 stdin 读光
+  token=$(cat)
+  [ -n "$token" ] || die "没有收到 GHCR 令牌"
+
   echo "==> 检查配置"
   [ -f .env ] || die "$(pwd)/.env 不存在"
 
   echo "==> 备份数据库"
-  ./deploy/backup.sh
+  ./deploy/backup.sh </dev/null
 
   echo "==> 拉取 ${target}"
-  # 令牌从 stdin 读，只在这一次 login 里用，拉完立刻 logout，服务器上不留 GHCR 凭据
-  token=$(cat)
-  [ -n "$token" ] || die "没有收到 GHCR 令牌"
   printf '%s' "$token" | docker login ghcr.io -u "$user" --password-stdin >/dev/null
   unset token
   pulled=0
