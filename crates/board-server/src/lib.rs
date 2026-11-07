@@ -299,7 +299,7 @@ async fn info(State(s): State<AppState>) -> Json<Value> {
     Json(json!({ "name": "board", "version": VERSION, "commit": COMMIT, "db": s.0.db.display().to_string() }))
 }
 
-/// `GET /api/health`：不需要登录。带上版本和提交号，部署后用来核对线上是不是这次的版本（deploy/deploy.sh）
+/// `GET /api/health`：不需要登录。带上版本和提交号，部署后用来核对线上是不是这次的版本（GitHub Actions 部署）
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "version": VERSION, "commit": COMMIT }))
 }
