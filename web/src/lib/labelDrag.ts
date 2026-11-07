@@ -1,6 +1,7 @@
 /* ==========================================================================
    拖动标签到卡片上：给卡片加上这个标签（侧栏「标签」里的胶囊）
    - 鼠标按下移动 5px 开始；触摸长按 220ms 开始（与卡片拖动一致）；只是点击时仍是按标签筛选
+   - ghost 在指针下面：按下时指针在胶囊上的相对位置，就是指针在 ghost 上的位置（像把胶囊拿起来）
    - 经过的卡片高亮（描边 + 一圈脉冲 + 轻微放大），ghost 放大吸附；松手在卡片上就加标签，
      ghost 同时飞进卡片的标签区（≤240ms，不等请求，下一次拖动会打断它）；已经有这个标签时只提示；Esc 取消
    - 减弱动态效果时不放大、不飞行，松手直接落位
@@ -20,6 +21,11 @@ interface St {
   y0: number;
   x: number;
   y: number;
+  /** 指针在胶囊上的相对位置（0–1）；ghost 建好后换算成 ghost 上的像素偏移 ox / oy */
+  rx: number;
+  ry: number;
+  ox: number;
+  oy: number;
   started: boolean;
   timer?: number;
   raf?: number;
@@ -37,7 +43,23 @@ export const labelDragJustEnded = () => performance.now() - endedAt < 400;
 /** 标签胶囊的 onPointerDown */
 export function labelPointerDown(e: ReactPointerEvent, label: Label) {
   if (e.button !== 0 || st) return;
-  st = { label, pointerId: e.pointerId, type: e.pointerType, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, started: false, target: null };
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const rel = (v: number, a: number, len: number) => (len > 0 ? Math.min(1, Math.max(0, (v - a) / len)) : 0.5);
+  st = {
+    label,
+    pointerId: e.pointerId,
+    type: e.pointerType,
+    x0: e.clientX,
+    y0: e.clientY,
+    x: e.clientX,
+    y: e.clientY,
+    rx: rel(e.clientX, r.left, r.width),
+    ry: rel(e.clientY, r.top, r.height),
+    ox: 0,
+    oy: 0,
+    started: false,
+    target: null,
+  };
   if (e.pointerType !== 'mouse') {
     st.timer = window.setTimeout(() => {
       if (st && !st.started) start();
@@ -76,6 +98,10 @@ function start() {
   const dot = document.createElement('i');
   g.append(dot, document.createTextNode(st.label.name));
   document.body.appendChild(g);
+  // 指针落在 ghost 上与按下时在胶囊上相同的位置；放大、出现动画也以这一点为中心，ghost 不会从指针下面滑开
+  st.ox = Math.round(st.rx * g.offsetWidth);
+  st.oy = Math.round(st.ry * g.offsetHeight);
+  g.style.transformOrigin = `${st.ox}px ${st.oy}px`;
   st.ghost = g;
   document.body.classList.add('is-dragging', 'label-dragging');
   frame();
@@ -89,7 +115,9 @@ function cardAt(x: number, y: number) {
 function frame() {
   if (!st?.ghost) return;
   st.raf = undefined;
-  st.ghost.style.transform = `translate(${st.x + 12}px, ${st.y + 14}px)`;
+  // 用独立的 translate 属性跟随：它在 scale 之前合成，放大只围绕指针那一点，不会把位移一起放大
+  // （写成 transform: translate() 时 scale 会作用在位移上，ghost 被推到指针右下方，越靠右下偏得越远）
+  st.ghost.style.translate = `${st.x - st.ox}px ${st.y - st.oy}px`;
   const card = cardAt(st.x, st.y);
   if (card !== st.target) {
     st.target?.classList.remove('label-target');
@@ -115,7 +143,7 @@ function onUp(e: PointerEvent) {
   const has = id != null && !!useData.getState().board?.cards[id]?.labels.includes(label.id);
   // 落位动画：ghost 交给 fly()，cleanup 不再删它
   if (card && !has && st.ghost && !reduceMotion()) {
-    fly(st.ghost, card, st.x + 12, st.y + 14);
+    fly(st.ghost, card, st.x - st.ox, st.y - st.oy);
     st.ghost = undefined;
   }
   cleanup();
@@ -131,11 +159,13 @@ function fly(ghost: HTMLElement, card: HTMLElement, x: number, y: number) {
   const gh = ghost.offsetHeight || 26;
   const to = last ? { x: last.right + 4, y: last.top + (last.height - gh) / 2 } : { x: r.left + 13, y: r.bottom - 12 - gh };
   ghost.classList.add('landing');
+  // 落位按 ghost 左上角对齐目标位置：缩放也以左上角为中心
+  ghost.style.transformOrigin = '0 50%';
   const a = ghost.animate(
     [
-      { transform: `translate(${x}px, ${y}px)`, scale: '1.06', opacity: 1 },
-      { transform: `translate(${to.x}px, ${to.y}px)`, scale: '.82', opacity: 1, offset: 0.75 },
-      { transform: `translate(${to.x}px, ${to.y}px)`, scale: '.82', opacity: 0 },
+      { translate: `${x}px ${y}px`, scale: '1.06', opacity: 1 },
+      { translate: `${to.x}px ${to.y}px`, scale: '.82', opacity: 1, offset: 0.75 },
+      { translate: `${to.x}px ${to.y}px`, scale: '.82', opacity: 0 },
     ],
     { duration: 220, easing: 'cubic-bezier(.16, 1, .3, 1)', fill: 'forwards' },
   );
