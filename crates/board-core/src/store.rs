@@ -123,6 +123,14 @@ CREATE TABLE IF NOT EXISTS statuses (
   ly    REAL,
   PRIMARY KEY (board, key)
 );
+
+-- 工作流的连线（PRD §7）：src → dst 表示 agent 可以把卡片从 src 移到 dst
+CREATE TABLE IF NOT EXISTS transitions (
+  board INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+  src   TEXT NOT NULL,
+  dst   TEXT NOT NULL,
+  PRIMARY KEY (board, src, dst)
+);
 "#;
 
 /// 需要释放的领取：到期，或心跳中断（?1 = 现在，?2 = 允许的心跳间隔）
@@ -214,6 +222,27 @@ impl Store {
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beat {
             conn.execute_batch("ALTER TABLE cards ADD COLUMN beat_at INTEGER")?;
+        }
+        // 旧数据库的 cards 不记录领取来源
+        let has_from: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'claimed_from'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_from {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN claimed_from TEXT")?;
+        }
+        // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
+        let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !edged {
+            let boards: Vec<i64> = conn.prepare("SELECT id FROM boards")?.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+            for b in boards {
+                let keys: Vec<String> = conn
+                    .prepare("SELECT key FROM statuses WHERE board = ?1 ORDER BY sort, key")?
+                    .query_map([b], |r| r.get(0))?
+                    .collect::<std::result::Result<_, _>>()?;
+                for w in keys.windows(2) {
+                    conn.execute("INSERT OR IGNORE INTO transitions (board, src, dst) VALUES (?1, ?2, ?3)", params![b, w[0], w[1]])?;
+                }
+            }
+            conn.execute("INSERT INTO meta (key, value) VALUES ('edges', 1)", [])?;
         }
         // 旧数据库里的白板没有工作流：补上默认的四个状态
         let missing: Vec<i64> = conn
@@ -552,11 +581,22 @@ pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
                     (Some(x), Some(w), Some(y)) => Some(Tile { x, w, y }),
                     _ => None,
                 },
+                to: vec![],
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     if v.is_empty() {
         return Err(BoardError::new(ErrorCode::Internal, "白板没有工作流"));
+    }
+    let edges: Vec<(String, String)> = conn
+        .prepare_cached("SELECT src, dst FROM transitions WHERE board = ?1")?
+        .query_map([board], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    // 每个状态的连线按工作流顺序排列
+    let order: Vec<String> = v.iter().map(|s| s.key.clone()).collect();
+    let mut v = v;
+    for s in v.iter_mut() {
+        s.to = order.iter().filter(|k| edges.iter().any(|(a, b)| a == &s.key && b == *k)).cloned().collect();
     }
     Ok(Flow(v))
 }
@@ -568,13 +608,16 @@ pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
             params![board, key, name, color, i as i64, *claim as i64, *lock as i64, *fin as i64],
         )?;
     }
+    for (a, b) in DEFAULT_EDGES {
+        conn.execute("INSERT INTO transitions (board, src, dst) VALUES (?1, ?2, ?3)", params![board, a, b])?;
+    }
     Ok(())
 }
 
 fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
     let sql = format!(
         "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.expires_at, c.created_at, c.updated_at,
-                c.created_by_kind, c.created_by_name, c.beat_at,
+                c.created_by_kind, c.created_by_name, c.beat_at, c.claimed_from,
                 (SELECT COUNT(*) FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.kind = 'comment'),
                 (SELECT GROUP_CONCAT(cl.label) FROM card_labels cl JOIN labels l ON l.id = cl.label
                    WHERE cl.board = c.board AND cl.card = c.id)
@@ -584,7 +627,7 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(params![board, only], |r| {
         let col: String = r.get(3)?;
-        let labels: Option<String> = r.get(13)?;
+        let labels: Option<String> = r.get(14)?;
         let mut labels: Vec<i64> = labels
             .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
             .unwrap_or_default();
@@ -598,10 +641,11 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
             claimed_at: r.get(5)?,
             expires_at: r.get(6)?,
             beat_at: r.get(11)?,
+            claimed_from: r.get(12)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
             created_by: row_actor(r.get(9)?, r.get(10)?),
-            comments: r.get(12)?,
+            comments: r.get(13)?,
             labels,
         })
     })?;

@@ -1,6 +1,6 @@
 //! 卡片规则引擎（PRD §8）。所有规则只在同一块白板内生效。
 //!
-//! 规则按状态的角色判断，而不是按固定的列名：领取起点、锁定、终点（PRD §7）。
+//! 规则按状态的角色和连线判断，而不是按固定的列名：可领取、锁定、终点（PRD §7）。agent 只能沿连线移动卡片。
 //! 每条命令在写事务里执行：先释放这块白板上到期的领取（规则 7），再执行命令。
 //! 违反规则返回 BoardError，事务整体回滚。
 
@@ -19,7 +19,7 @@ pub enum Cmd {
         title: String,
         #[serde(default)]
         body: Option<String>,
-        /// 只有界面会传 "inbox"；默认领取起点
+        /// 只有界面会传 "inbox"；默认首个可领取状态
         #[serde(default)]
         column: Option<String>,
         #[serde(default)]
@@ -102,7 +102,7 @@ impl<'a> W<'a> {
                 if title.is_empty() {
                     return Err(BoardError::code(ErrorCode::EmptyTitle));
                 }
-                let start = flow.claim();
+                let start = flow.home();
                 let col = match column.as_deref().map(|c| flow.resolve(c)) {
                     None => start.key.clone(),
                     Some(Some(k)) if k == start.key || k == INBOX => k,
@@ -209,6 +209,23 @@ impl<'a> W<'a> {
                     };
                     return Err(BoardError::new(ErrorCode::ForbiddenColumn, msg));
                 }
+                if actor.is_agent() && from != to {
+                    // 规则 11：「未整理」只归人管
+                    if from == INBOX || to == INBOX {
+                        return Err(BoardError::new(
+                            ErrorCode::ForbiddenColumn,
+                            format!("只有人能把卡片移入或移出「{INBOX_NAME}」"),
+                        ));
+                    }
+                    // 规则 12：agent 只能沿连线移动
+                    if !flow.has_edge(&from, &to) {
+                        return Err(BoardError::new(
+                            ErrorCode::ForbiddenColumn,
+                            format!("「{}」没有连到「{}」，不能这样移动。「{}」能去：{}", flow.name(&from), flow.name(&to), flow.name(&from), flow.outs(&from)),
+                        )
+                        .with_detail(json!({ "from": from, "to": flow.get(&from).map(|s| s.to.clone()).unwrap_or_default() })));
+                    }
+                }
                 let at = match (index, top) {
                     (Some(i), _) => At::Index(i),
                     (None, true) => At::Top,
@@ -249,7 +266,6 @@ impl<'a> W<'a> {
                 if !actor.is_agent() {
                     return Err(BoardError::usage("只有 agent 能通过 CLI 领取卡片"));
                 }
-                let start = flow.claim();
                 let mine = self.holding(b, &actor.name)?;
                 let already = |m: i64| {
                     BoardError::new(
@@ -258,18 +274,27 @@ impl<'a> W<'a> {
                     )
                     .with_detail(json!({ "holding": m }))
                 };
-                let target = match id {
+                let (target, from) = match id {
                     None => {
                         if let Some(m) = mine {
                             return Err(already(m));
                         }
-                        match self.col_ids(b, &start.key)?.first() {
-                            Some(first) => *first,
+                        // 规则 1：按工作流顺序，第一个有卡片、并且连到锁定状态的可领取状态
+                        let mut found = None;
+                        for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
+                            if let Some(first) = self.col_ids(b, &s.key)?.first() {
+                                found = Some((*first, s.key.clone()));
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(f) => f,
                             None => {
+                                let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
                                 return Err(BoardError::new(
                                     ErrorCode::EmptyTodo,
-                                    format!("「{}」里没有可领取的卡片", start.name),
-                                ))
+                                    format!("可领取的状态{}里没有能领取的卡片", names.join("")),
+                                ));
                             }
                         }
                     }
@@ -281,28 +306,38 @@ impl<'a> W<'a> {
                             self.track(b, id, actor, "renew", &format!("重新领取，到期时间续至 {}", hhmm(exp)))?;
                             return self.read().card(board, id);
                         }
-                        if r.col != start.key {
+                        if !flow.is_claim(&r.col) {
+                            let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
                             return Err(BoardError::new(
                                 ErrorCode::NotInTodo,
-                                format!("#{id} 在「{}」，不在领取起点「{}」", flow.name(&r.col), start.name),
+                                format!("#{id} 在「{}」，不在可领取的状态{}", flow.name(&r.col), names.join("")),
                             ));
                         }
                         if let Some(m) = mine {
                             return Err(already(m));
                         }
-                        id
+                        (id, r.col)
                     }
                 };
-                let Some(dest) = flow.claim_target() else {
-                    return Err(BoardError::new(ErrorCode::ForbiddenColumn, "工作流里没有锁定状态，无法领取"));
+                let Some(dest) = flow.claim_target(&from) else {
+                    return Err(BoardError::new(
+                        ErrorCode::ForbiddenColumn,
+                        format!("「{}」没有连到任何锁定状态，不能从这里领取", flow.name(&from)),
+                    ));
                 };
-                self.place(b, target, Some(&start.key), &dest.key, At::Bottom)?;
+                self.place(b, target, Some(&from), &dest.key, At::Bottom)?;
                 let exp = self.now + CLAIM_MS;
                 self.tx.execute(
-                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = ?3 WHERE board = ?4 AND id = ?5",
-                    params![actor.name, self.now, exp, b, target],
+                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = ?3, claimed_from = ?4 WHERE board = ?5 AND id = ?6",
+                    params![actor.name, self.now, exp, from, b, target],
                 )?;
-                self.track(b, target, actor, "claim", &format!("领取了卡片，进入「{}」，到期 {}", dest.name, hhmm(exp)))?;
+                self.track(
+                    b,
+                    target,
+                    actor,
+                    "claim",
+                    &format!("领取了卡片，从「{}」进入「{}」，到期 {}", flow.name(&from), dest.name, hhmm(exp)),
+                )?;
                 target
             }
 
@@ -399,7 +434,7 @@ impl<'a> W<'a> {
                 let Some(who) = r.holder.clone() else {
                     return Err(BoardError::usage(format!("#{id} 没有被领取")));
                 };
-                let start = flow.claim();
+                let start = flow.back_to(self.claimed_from(b, id)?.as_deref()).clone();
                 self.place(b, id, Some(&r.col), &start.key, At::Top)?;
                 self.clear_claim(b, id)?;
                 self.track(b, id, actor, "release", &format!("强制释放了 {who} 的领取，卡片回到「{}」最上面", start.name))?;
@@ -420,7 +455,7 @@ impl<'a> W<'a> {
         self.read().card(board, id)
     }
 
-    /// 规则 7：释放这块白板上到期的领取，以及心跳中断（连续 5 次没收到）的领取，卡片回到领取起点最上面
+    /// 规则 7：释放这块白板上到期的领取，以及心跳中断（连续 5 次没收到）的领取，卡片回到领取它时所在的可领取状态最上面
     pub(crate) fn sweep_board(&mut self, b: i64) -> Result<usize> {
         let gap = BEAT_MS * BEAT_MISSES;
         // 最早到期的最后插入 → 位于最上面
@@ -435,9 +470,9 @@ impl<'a> W<'a> {
         if expired.is_empty() {
             return Ok(0);
         }
-        let start = crate::store::flow_of(self.tx, b)?;
-        let start = start.claim();
+        let flow = crate::store::flow_of(self.tx, b)?;
         for (id, who, col, lost) in &expired {
+            let start = flow.back_to(self.claimed_from(b, *id)?.as_deref());
             self.place(b, *id, Some(col), &start.key, At::Top)?;
             self.clear_claim(b, *id)?;
             let who = who.clone().unwrap_or_default();
@@ -445,7 +480,13 @@ impl<'a> W<'a> {
                 let text = format!("连续 {BEAT_MISSES} 次没有收到 {who} 的心跳，判定异常退出，卡片回到「{}」最上面", start.name);
                 self.track(b, *id, &Actor::system(), "lost", &text)?;
             } else {
-                self.track(b, *id, &Actor::system(), "timeout", &format!("领取超时，自动释放（原持有者 {who}）"))?;
+                self.track(
+                    b,
+                    *id,
+                    &Actor::system(),
+                    "timeout",
+                    &format!("领取超时，自动释放（原持有者 {who}），卡片回到「{}」最上面", start.name),
+                )?;
             }
         }
         Ok(expired.len())
@@ -504,6 +545,11 @@ impl<'a> W<'a> {
         Ok((old.unwrap_or(0), idx))
     }
 
+    /// 领取它时所在的可领取状态
+    fn claimed_from(&self, b: i64, id: i64) -> Result<Option<String>> {
+        Ok(self.tx.query_row("SELECT claimed_from FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?)
+    }
+
     fn holding(&self, b: i64, name: &str) -> Result<Option<i64>> {
         Ok(self
             .tx
@@ -525,7 +571,7 @@ impl<'a> W<'a> {
 
     pub(crate) fn clear_claim(&mut self, b: i64, id: i64) -> Result<()> {
         self.tx.execute(
-            "UPDATE cards SET holder = NULL, claimed_at = NULL, expires_at = NULL, beat_at = NULL WHERE board = ?1 AND id = ?2",
+            "UPDATE cards SET holder = NULL, claimed_at = NULL, expires_at = NULL, beat_at = NULL, claimed_from = NULL WHERE board = ?1 AND id = ?2",
             params![b, id],
         )?;
         self.changed = true;

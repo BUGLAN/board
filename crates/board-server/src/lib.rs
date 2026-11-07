@@ -171,6 +171,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/layout", put(layout))
         .route("/flow/{project}/{board}", post(create_status).put(reorder_statuses))
         .route("/flow/{project}/{board}/layout", put(flow_layout))
+        .route("/flow/{project}/{board}/edges", put(flow_edges))
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/stream", get(stream))
         .route("/me", get(auth::me))
@@ -668,6 +669,28 @@ async fn flow_layout(
     let b: FlowLayoutBody = parse(v)?;
     let path = format!("{project}/{board}");
     write(&s, &h, move |w| w.set_flow_layout(&path, &b.tiles)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct EdgesBody {
+    /// 要加上的连线 [起点, 终点]
+    #[serde(default)]
+    add: Vec<(String, String)>,
+    /// 要去掉的连线
+    #[serde(default)]
+    remove: Vec<(String, String)>,
+}
+
+async fn flow_edges(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Path((project, board)): Path<(String, String)>,
+    Json(v): Json<Value>,
+) -> ApiResult<Value> {
+    let b: EdgesBody = parse(v)?;
+    let path = format!("{project}/{board}");
+    write(&s, &h, move |w| w.update_edges(&path, &b.add, &b.remove)).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

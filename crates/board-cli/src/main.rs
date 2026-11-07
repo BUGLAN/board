@@ -179,17 +179,17 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 Output::Json(Value::Array(
                     flow.0
                         .iter()
-                        .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "cards": count(&st.key) }))
+                        .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "to": st.to, "cards": count(&st.key) }))
                         .collect(),
                 ))
             } else {
                 let kw = flow.0.iter().map(|st| width(&st.key)).max().unwrap_or(0).max(5) + 2;
                 let nw = flow.0.iter().map(|st| width(&st.name)).max().unwrap_or(0) + 2;
                 let mut s = String::new();
-                for (i, st) in flow.0.iter().enumerate() {
+                let rule_of = |st: &Status| {
                     let mut rules = vec![];
                     if st.claim {
-                        rules.push("领取起点");
+                        rules.push("可领取");
                     }
                     if st.lock {
                         rules.push("锁定");
@@ -197,13 +197,29 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     if st.fin {
                         rules.push("终点");
                     }
+                    rules.join(" · ")
+                };
+                let rw = flow.0.iter().map(|st| width(&rule_of(st))).max().unwrap_or(0) + 2;
+                for (i, st) in flow.0.iter().enumerate() {
+                    let mut rules = vec![];
+                    if st.claim {
+                        rules.push("可领取");
+                    }
+                    if st.lock {
+                        rules.push("锁定");
+                    }
+                    if st.fin {
+                        rules.push("终点");
+                    }
+                    let to: Vec<&str> = st.to.iter().map(|k| flow.name(k)).collect();
                     s += &format!(
-                        "{} {}{}{}{}\n",
+                        "{} {}{}{}{}{}\n",
                         p.dim(&format!("{}.", i + 1)),
                         fmt.col(&st.key, &pad(&st.key, kw)),
                         pad(&st.name, nw),
                         p.dim(&pad(&format!("{} 张", count(&st.key)), 8)),
-                        p.yellow(&rules.join(" · "))
+                        p.yellow(&pad(&rules.join(" · "), rw)),
+                        if to.is_empty() { p.dim("→ （没有连线）") } else { format!("→ {}", to.join("、")) }
                     );
                 }
                 s += &format!("{} {}{}{}\n", p.dim("·"), p.magenta(&pad(INBOX, kw)), pad(INBOX_NAME, nw), p.dim(&format!("{} 张  不属于工作流", count(INBOX))));
@@ -255,7 +271,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     p.green("✓"),
                     p.cyan(&format!("#{}", d.card.id)),
                     d.card.title,
-                    p.dim(&format!("  → {}最{}", flow.claim().name, if top { "上面" } else { "下面" }))
+                    p.dim(&format!("  → {}最{}", flow.home().name, if top { "上面" } else { "下面" }))
                 ))
             }
         }
@@ -469,7 +485,7 @@ fn mmss(ms: i64) -> String {
 }
 
 impl Fmt<'_> {
-    /// 按状态的规则上色：领取起点白、锁定黄、终点绿、未整理紫、其他蓝
+    /// 按状态的规则上色：可领取白、锁定黄、终点绿、未整理紫、其他蓝
     fn col(&self, key: &str, s: &str) -> String {
         let code = if key == INBOX {
             "35"
@@ -477,7 +493,7 @@ impl Fmt<'_> {
             "33"
         } else if self.flow.is_final(key) {
             "32"
-        } else if self.flow.claim().key == key {
+        } else if self.flow.is_claim(key) {
             "37"
         } else {
             "34"
@@ -616,13 +632,13 @@ impl Fmt<'_> {
 fn help(p: &Paint) -> String {
     let rows: [(&str, &str, &str); 15] = [
         ("boards", "", "列出所有白板"),
-        ("flow", "", "列出白板的工作流：状态的顺序、标识、名称和规则"),
+        ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\"] [--top]", "在领取起点新建卡片"),
+        ("new", "\"<标题>\" [--body \"<描述>\"] [--top]", "在首个可领取状态新建卡片"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
-        ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）"),
-        ("claim", "[<ID>]", "领取；不带 ID 时领取领取起点最上面的卡片"),
+        ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
+        ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
         ("beat", "<ID> [--final]", "心跳：表明还在做（续期领取）；--final 正常结束。一般由 skill 里的脚本每 10 秒调用"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）"),
@@ -641,7 +657,7 @@ fn help(p: &Paint) -> String {
     }
     out.extend([
         String::new(),
-        format!("  {}默认是 todo  doing  review  done；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
+        format!("  {}默认是 todo  doing  review  done  rework  check；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
         format!("  {}--as <名字>，或 export BOARD_AS=<名字>", p.dim("身份：")),
         format!("  {}--board <项目>/<白板>，或 export BOARD=<项目>/<白板>", p.dim("白板：")),
         format!("  {}export BOARD_URL=<服务端地址> BOARD_TOKEN=<访问令牌>；不设置时直接读写本地数据库", p.dim("连接：")),

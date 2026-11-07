@@ -176,7 +176,7 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, now - 300 * M, &h, new("命令参考：补全 `board move` 的 --top 说明", ""))?;
         run(w, &b, now - 280 * M, &h, new("快速开始：五分钟接入一个 agent", "**验收标准**\n- [ ] 从安装到第一次 `board claim` 不超过 5 步\n- [ ] 附一个 shell 循环示例"))?;
         run(w, &b, now - 260 * M, &a("alpha"), claim(1))?;
-        run(w, &b, now - 230 * M, &a("alpha"), mv(1, "review"))?;
+        run(w, &b, now - 236 * M, &a("alpha"), mv(1, "review"))?; // 领取 30 分钟内交审
         run(w, &b, now - 200 * M, &a("issue-watcher"), new("错误码页面缺少 `EMPTY_TODO` 的说明", "gh#77"))?;
         run(w, &b, now - 200 * M, &h, mv(1, "done"))?;
         run(w, &b, now - 150 * M, &h, new("示例仓库截图过期，需要重截", ""))?;

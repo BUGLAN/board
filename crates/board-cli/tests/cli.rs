@@ -21,7 +21,14 @@ impl Run {
 
 fn board(db: &Path, env: &[(&str, &str)], args: &[&str]) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
-    cmd.args(args).env("BOARD_DB", db).env_remove("BOARD").env_remove("BOARD_AS").env("NO_COLOR", "1");
+    // 只用临时数据库：去掉开发者环境里连接线上服务端的变量，免得测试写到真实白板上
+    cmd.args(args)
+        .env("BOARD_DB", db)
+        .env_remove("BOARD")
+        .env_remove("BOARD_AS")
+        .env_remove("BOARD_URL")
+        .env_remove("BOARD_TOKEN")
+        .env("NO_COLOR", "1");
     for (k, v) in env {
         cmd.env(k, v);
     }

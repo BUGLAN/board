@@ -40,7 +40,7 @@ pub struct Status {
     pub key: String,
     pub name: String,
     pub color: String,
-    /// 领取起点：board claim 从这里领取；新建、超时释放、强制释放都回到这里（每块白板恰好一个）
+    /// 可领取：board claim 从这里领取（至少一个）。排在最前面的一个是「首个可领取状态」，新建卡片放在这里
     pub claim: bool,
     /// 锁定：只能由 agent 领取进入；被持有期间只有持有者能编辑和移动
     pub lock: bool,
@@ -49,14 +49,30 @@ pub struct Status {
     pub fin: bool,
     /// 状态块的位置；没有时界面用默认布局
     pub layout: Option<Tile>,
+    /// 连线：从这里出发可以去往的状态（按工作流顺序）。agent 只能沿连线移动卡片（PRD §8 规则 12）
+    #[serde(default)]
+    pub to: Vec<String>,
 }
 
-/// 新建白板时的默认工作流：(标识, 名称, 颜色, 领取起点, 锁定, 终点)
-pub const DEFAULT_FLOW: [(&str, &str, &str, bool, bool, bool); 4] = [
+/// 新建白板时的默认工作流：(标识, 名称, 颜色, 可领取, 锁定, 终点)
+pub const DEFAULT_FLOW: [(&str, &str, &str, bool, bool, bool); 6] = [
     ("todo", "待办", "todo", true, false, false),
     ("doing", "进行中", "doing", false, true, false),
     ("review", "待审核", "review", false, false, false),
     ("done", "已完成", "done", false, false, true),
+    ("rework", "返工", "#A855F7", true, false, false),
+    ("check", "需人工校验", "#F59E0B", false, false, false),
+];
+
+/// 默认工作流的连线
+pub const DEFAULT_EDGES: [(&str, &str); 7] = [
+    ("todo", "doing"),
+    ("doing", "review"),
+    ("doing", "check"),
+    ("review", "done"),
+    ("review", "rework"),
+    ("rework", "doing"),
+    ("check", "todo"),
 ];
 
 /// 一块白板的工作流（按顺序）
@@ -68,9 +84,22 @@ impl Flow {
     pub fn get(&self, key: &str) -> Option<&Status> {
         self.0.iter().find(|s| s.key == key)
     }
-    /// 领取起点（数据保证恰好一个；万一没有，退回第一个状态）
-    pub fn claim(&self) -> &Status {
+    /// 首个可领取状态：新建卡片、整理、删除状态时卡片都放进这里（数据保证至少一个可领取状态；万一没有，退回第一个状态）
+    pub fn home(&self) -> &Status {
         self.0.iter().find(|s| s.claim).unwrap_or(&self.0[0])
+    }
+    /// 是否可领取
+    pub fn is_claim(&self, key: &str) -> bool {
+        self.get(key).is_some_and(|s| s.claim)
+    }
+    /// 有没有连线 a → b
+    pub fn has_edge(&self, a: &str, b: &str) -> bool {
+        self.get(a).is_some_and(|s| s.to.iter().any(|t| t == b))
+    }
+    /// a 能去的状态名称，用「、」连接（错误信息里用）
+    pub fn outs(&self, a: &str) -> String {
+        let v: Vec<String> = self.get(a).map(|s| s.to.iter().map(|t| format!("「{}」", self.name(t))).collect()).unwrap_or_default();
+        if v.is_empty() { "（没有连线）".into() } else { v.join("") }
     }
     pub fn is_lock(&self, key: &str) -> bool {
         self.get(key).is_some_and(|s| s.lock)
@@ -85,10 +114,13 @@ impl Flow {
         }
         self.get(key).map(|s| s.name.as_str()).unwrap_or(key)
     }
-    /// 领取后卡片进入的锁定状态：领取起点之后的第一个锁定状态，之后没有时取第一个（PRD §8 规则 1）
-    pub fn claim_target(&self) -> Option<&Status> {
-        let start = self.0.iter().position(|s| s.claim).unwrap_or(0);
-        self.0[start + 1..].iter().find(|s| s.lock).or_else(|| self.0.iter().find(|s| s.lock))
+    /// 从可领取状态 from 领取后进入的锁定状态：from 连向的锁定状态里按顺序排在最前面的（PRD §8 规则 1）
+    pub fn claim_target(&self, from: &str) -> Option<&Status> {
+        self.0.iter().find(|s| s.lock && self.has_edge(from, &s.key))
+    }
+    /// 释放后卡片回到哪里：领取它时所在的可领取状态；那个状态已删除或不再可领取时，回首个可领取状态（PRD §8 规则 7）
+    pub fn back_to(&self, from: Option<&str>) -> &Status {
+        from.and_then(|k| self.get(k)).filter(|s| s.claim).unwrap_or_else(|| self.home())
     }
     /// 用标识或名称（不区分大小写）找状态；`inbox` / 「未整理」返回 INBOX
     pub fn resolve(&self, raw: &str) -> Option<String> {
@@ -298,6 +330,9 @@ pub struct Card {
     pub expires_at: Option<i64>,
     /// 最近一次心跳；持有者没在发心跳（或已经发了 final）时为空
     pub beat_at: Option<i64>,
+    /// 领取它时所在的可领取状态；释放后回到这里（PRD §8 规则 7）
+    #[serde(default)]
+    pub claimed_from: Option<String>,
     /// 标签 ID（属于白板所在的项目）
     pub labels: Vec<i64>,
     pub created_at: i64,
