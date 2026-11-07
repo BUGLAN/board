@@ -404,3 +404,75 @@ fn logout_closes_that_sessions_stream() {
     let r = send("GET", &format!("{}/api/stream", s.url), &[("cookie", &a)], None);
     assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"));
 }
+
+/// 桌面端登录：在浏览器里走 GitHub 登录，返回浏览器最后被送到的地址（本机回环地址）
+fn desktop_login(s: &Server, as_user: &str, port: u16, nonce: &str) -> Res {
+    let r = send("GET", &format!("{}/auth/github?desktop={port}&nonce={nonce}", s.url), &[], None);
+    assert_eq!(r.status, 303);
+    assert!(r.location().contains("/login/oauth/authorize?"));
+    let cookie = r.cookie("board_oauth").expect("state cookie");
+    let state = cookie.split('.').next().unwrap().to_string();
+    assert!(r.location().contains(&format!("state={state}&")), "授权页拿到的 state 不含端口和随机串");
+    send(
+        "GET",
+        &format!("{}/auth/github/callback?code={as_user}&state={state}", s.url),
+        &[("cookie", &format!("board_oauth={cookie}"))],
+        None,
+    )
+}
+
+#[test]
+fn desktop_login_hands_session_to_the_app() {
+    let s = github("buglan");
+    let nonce = "00112233445566778899aabbccddeeff";
+    let r = desktop_login(&s, "buglan", 51234, nonce);
+    assert_eq!(r.status, 303);
+    // 浏览器只被送到本机回环地址，并且浏览器这边不登录
+    let loc = r.location();
+    let prefix = format!("http://127.0.0.1:51234/callback?state={nonce}&code=");
+    assert!(loc.starts_with(&prefix), "{loc}");
+    assert!(r.cookie("board_session").is_none());
+    assert_eq!(r.cookie("board_oauth").as_deref(), Some(""));
+    let code = loc[prefix.len()..].to_string();
+
+    // 桌面端窗口用登录码换会话
+    let r = send("GET", &format!("{}/auth/desktop?code={code}", s.url), &[], None);
+    assert_eq!(r.status, 303);
+    assert_eq!(r.location(), "/");
+    let sid = r.cookie("board_session").expect("会话 Cookie");
+    let cookie = format!("board_session={sid}");
+    let r = send("GET", &format!("{}/api/me", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body["login"], "buglan");
+
+    // 登录码只能用一次
+    let r = send("GET", &format!("{}/auth/desktop?code={code}", s.url), &[], None);
+    assert_eq!(r.location(), "/?login_error=state");
+    assert!(r.cookie("board_session").is_none());
+    // 伪造的、空的登录码
+    assert_eq!(send("GET", &format!("{}/auth/desktop?code=nope", s.url), &[], None).location(), "/?login_error=state");
+    assert_eq!(send("GET", &format!("{}/auth/desktop", s.url), &[], None).location(), "/?login_error=state");
+}
+
+#[test]
+fn desktop_login_errors_go_back_to_the_app() {
+    let s = github("buglan");
+    let nonce = "ffeeddccbbaa99887766554433221100";
+    // 不是允许的账号：原因交回桌面端，由桌面端窗口显示
+    let r = desktop_login(&s, "someone-else", 40000, nonce);
+    assert_eq!(r.location(), format!("http://127.0.0.1:40000/callback?state={nonce}&error=denied&login=someone-else"));
+    assert!(r.cookie("board_session").is_none());
+    // 在 GitHub 上取消
+    let cookie = format!("board_oauth=abc.40000.{nonce}");
+    let r = send("GET", &format!("{}/auth/github/callback?error=access_denied", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.location(), format!("http://127.0.0.1:40000/callback?state={nonce}&error=cancelled"));
+    // state 对不上
+    let r = send("GET", &format!("{}/auth/github/callback?code=buglan&state=zzz", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.location(), format!("http://127.0.0.1:40000/callback?state={nonce}&error=state"));
+    // 参数不合法：不发起登录
+    for q in ["desktop=0&nonce=00112233445566778899aabbccddeeff", "desktop=80&nonce=short", "desktop=80", "desktop=x&nonce=00112233445566778899aabbccddeeff"] {
+        let r = send("GET", &format!("{}/auth/github?{q}", s.url), &[], None);
+        assert_eq!(r.status, 400, "{q}");
+        assert!(r.cookie("board_oauth").is_none(), "{q}");
+    }
+}

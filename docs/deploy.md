@@ -13,7 +13,7 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
 
 - 网页端：浏览器打开 `https://board.buglan.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board` 命令行设置 `BOARD_URL` 和 `BOARD_TOKEN`（访问令牌）。
-- 桌面端：窗口直接打开 `https://board.buglan.com`，登录方式与网页端相同。
+- 桌面端：窗口直接打开 `https://board.buglan.com`，用 GitHub 登录时在系统默认浏览器里完成（服务端 `/auth/github?desktop=…` → 本机回环地址 → `/auth/desktop`）。桌面端依赖服务端的这两个地址，升级时先部署服务端，再发桌面端新版本。
 
 ## 1. 建 GitHub OAuth App
 

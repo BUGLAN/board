@@ -14,3 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+serde.workspace = true
+# GitHub 登录：在系统默认浏览器里打开登录页
+open = "5"
+getrandom = "0.3"

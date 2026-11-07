@@ -1,14 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "界面窗口（线上的 Board 页面）：顶栏拖动窗口、双击最大化",
+  "description": "界面窗口（线上的 Board 页面）：顶栏拖动窗口、双击最大化；Windows 上的窗口按钮；在默认浏览器里登录；新建窗口",
   "windows": [
     "*"
   ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "core:window:allow-toggle-maximize"
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "allow-desktop-login",
+    "allow-new-window",
+    "allow-window-ready"
   ],
   "remote": {
     "urls": [

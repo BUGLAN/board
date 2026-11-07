@@ -6,7 +6,7 @@ import {
   copyBoardEnv, copyBoardPrompt, deleteBoard, deleteProject, editBoard, editProject, newBoard, newProject, openBoard, openCard, setProjectColor,
 } from '../lib/actions';
 import { api } from '../lib/api';
-import { cycleTheme, getTheme } from '../lib/platform';
+import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
 import { boardFlow, INBOX, LABEL_COLORS, PROJECT_COLORS } from '../lib/schema';
 import type { Card } from '../lib/types';
 import { cx, MOD, replay } from '../lib/util';
@@ -121,6 +121,9 @@ export function Palette() {
       { id: 'tab-inbox', group: '切换到', title: '未整理', hint: `${MOD}3`, icon: 'inbox', run: () => setTab('inbox') },
       { id: 'tab-settings', group: '切换到', title: '设置', hint: `${MOD}4`, icon: 'sun', run: () => setTab('settings') },
       { id: 'side', group: '切换到', title: '收起 / 展开侧栏', hint: `${MOD}B`, icon: 'monitor', run: () => setSide(!useUI.getState().side) },
+      ...(canNewWindow
+        ? [{ id: 'new-window', group: '切换到', title: '新建窗口', hint: `${MOD}⇧N`, icon: 'monitor' as IconName, run: () => newWindow() }]
+        : []),
       {
         id: 'theme', group: '外观', title: `切换主题（当前：${theme}）`, icon: 'sun',
         run: () => {

@@ -1,6 +1,8 @@
 //! 登录与访问令牌：只在服务端入口这一层，规则引擎不知道它的存在（PRD §3）。
 //!
 //! - 人：用 GitHub 登录，得到会话 Cookie（`board_session`）。只有 `BOARD_GITHUB_USER` 指定的账号能登录。
+//!   桌面端在系统默认浏览器里登录（用上浏览器里已有的 GitHub 登录状态），登录结果经本机回环地址交回桌面端，
+//!   见 [`login`]、[`desktop`]。
 //! - agent：`Authorization: Bearer bd_…` 访问令牌，只能调用 `board` 命令行用到的接口。
 //! - 本机模式（`--local`）：只接受本机地址访问，不需要登录；带令牌的请求仍按 agent 处理。
 //!
@@ -26,6 +28,8 @@ const STATE_COOKIE: &str = "board_oauth";
 /// 会话有效期 30 天；使用中每过一天续期一次
 const SESSION_MS: i64 = 30 * 24 * 3600 * 1000;
 const RENEW_MS: i64 = 24 * 3600 * 1000;
+/// 桌面端登录：一次性登录码的有效期
+const HANDOFF_MS: i64 = 2 * 60 * 1000;
 /// 令牌「最近使用时间」最多每分钟更新一次
 const TOUCH_MS: i64 = 60 * 1000;
 pub const TOKEN_PREFIX: &str = "bd_";
@@ -87,6 +91,14 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   name       TEXT NOT NULL DEFAULT '',
   avatar     TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+-- 桌面端登录：浏览器里登录成功后发给桌面端的一次性登录码（只存哈希），桌面端用它换会话
+CREATE TABLE IF NOT EXISTS auth_handoffs (
+  hash       TEXT PRIMARY KEY,
+  login      TEXT NOT NULL,
+  name       TEXT NOT NULL DEFAULT '',
+  avatar     TEXT NOT NULL DEFAULT '',
   expires_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -197,6 +209,40 @@ fn create_session(conn: &Connection, u: &GhUser, now: i64) -> Result<String> {
         ],
     )?;
     Ok(raw)
+}
+
+/// 桌面端登录：为已通过校验的 GitHub 用户发一个一次性登录码
+fn create_handoff(conn: &Connection, u: &GhUser, now: i64) -> Result<String> {
+    conn.execute("DELETE FROM auth_handoffs WHERE expires_at <= ?1", [now])?;
+    let raw = random_hex(32);
+    conn.execute(
+        "INSERT INTO auth_handoffs (hash, login, name, avatar, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            hash(&raw),
+            u.login,
+            u.name.clone().unwrap_or_default(),
+            u.avatar_url.clone().unwrap_or_default(),
+            now + HANDOFF_MS
+        ],
+    )?;
+    Ok(raw)
+}
+
+/// 用一次性登录码换会话：码用过即删；过期、不存在或账号已不允许登录时返回 None
+fn redeem_handoff(conn: &Connection, raw: &str, allowed: &str, now: i64) -> Result<Option<String>> {
+    let h = hash(raw);
+    let row: Option<(String, String, String, i64)> = conn
+        .query_row("SELECT login, name, avatar, expires_at FROM auth_handoffs WHERE hash = ?1", [&h], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .optional()?;
+    conn.execute("DELETE FROM auth_handoffs WHERE hash = ?1", [&h])?;
+    let Some((login, name, avatar, expires)) = row else { return Ok(None) };
+    if expires <= now || !login.eq_ignore_ascii_case(allowed) {
+        return Ok(None);
+    }
+    let u = GhUser { login, name: Some(name), avatar_url: Some(avatar) };
+    create_session(conn, &u, now).map(Some)
 }
 
 #[derive(Debug, Clone)]
@@ -352,9 +398,69 @@ fn redirect(to: &str) -> Response {
     (StatusCode::SEE_OTHER, [(header::LOCATION, to.to_string())]).into_response()
 }
 
+/// 桌面端登录：桌面端在本机回环地址上监听的端口，和它用来核对回调的随机串
+#[derive(Debug, Clone, PartialEq)]
+struct Desktop {
+    port: u16,
+    nonce: String,
+}
+
+impl Desktop {
+    fn parse(port: &str, nonce: &str) -> Option<Self> {
+        let port: u16 = port.parse().ok().filter(|p| *p != 0)?;
+        let ok = (16..=64).contains(&nonce.len()) && nonce.bytes().all(|b| b.is_ascii_hexdigit());
+        ok.then(|| Desktop { port, nonce: nonce.to_string() })
+    }
+    /// 登录结果交回桌面端：只会跳到本机回环地址
+    fn redirect(&self, query: &[(&str, &str)]) -> Response {
+        let mut q = vec![("state", self.nonce.as_str())];
+        q.extend_from_slice(query);
+        let q = serde_urlencoded::to_string(q).unwrap_or_default();
+        redirect(&format!("http://127.0.0.1:{}/callback?{q}", self.port))
+    }
+}
+
+/// state Cookie：网页端是 `<state>`；桌面端是 `<state>.<端口>.<随机串>`
+fn state_cookie_value(state: &str, desktop: Option<&Desktop>) -> String {
+    match desktop {
+        Some(d) => format!("{state}.{}.{}", d.port, d.nonce),
+        None => state.to_string(),
+    }
+}
+
+fn parse_state_cookie(v: &str) -> (&str, Option<Desktop>) {
+    let mut it = v.splitn(3, '.');
+    let state = it.next().unwrap_or_default();
+    let desktop = match (it.next(), it.next()) {
+        (Some(port), Some(nonce)) => Desktop::parse(port, nonce),
+        _ => None,
+    };
+    (state, desktop)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LoginQuery {
+    #[serde(default)]
+    desktop: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
 /// `GET /auth/github`：跳到 GitHub 授权页
-pub(crate) async fn login(State(s): State<AppState>) -> Response {
+///
+/// 桌面端带上 `?desktop=<端口>&nonce=<随机串>`，在系统默认浏览器里打开这个地址：登录成功后浏览器跳到
+/// `http://127.0.0.1:<端口>/callback?state=<随机串>&code=<一次性登录码>`（失败时是 `&error=<原因>`），
+/// 桌面端收到后在自己的窗口里打开 `/auth/desktop?code=…` 换取会话。登录码只会送到本机回环地址，
+/// 别人诱导你打开带 desktop 参数的链接也拿不到它。
+pub(crate) async fn login(State(s): State<AppState>, Query(q): Query<LoginQuery>) -> Response {
     let Auth::GitHub(gh) = s.auth() else { return redirect("/") };
+    let desktop = match (q.desktop.as_deref(), q.nonce.as_deref()) {
+        (None, _) => None,
+        (Some(port), nonce) => match Desktop::parse(port, nonce.unwrap_or_default()) {
+            Some(d) => Some(d),
+            None => return (StatusCode::BAD_REQUEST, "桌面端登录参数不正确").into_response(),
+        },
+    };
     let state = random_hex(16);
     let q = serde_urlencoded::to_string([
         ("client_id", gh.client_id.as_str()),
@@ -364,7 +470,8 @@ pub(crate) async fn login(State(s): State<AppState>) -> Response {
     ])
     .unwrap_or_default();
     let mut res = redirect(&format!("{}/login/oauth/authorize?{q}", gh.oauth_url.trim_end_matches('/')));
-    res.headers_mut().append(header::SET_COOKIE, set_cookie(STATE_COOKIE, &state, 600, "/auth", gh.secure()));
+    let v = state_cookie_value(&state, desktop.as_ref());
+    res.headers_mut().append(header::SET_COOKIE, set_cookie(STATE_COOKIE, &v, 600, "/auth", gh.secure()));
     res
 }
 
@@ -382,23 +489,41 @@ pub(crate) struct CallbackQuery {
 pub(crate) async fn callback(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
     let Auth::GitHub(gh) = s.auth().clone() else { return redirect("/") };
     let secure = gh.secure();
-    let fail = |reason: &str, login: Option<&str>| {
-        let mut to = format!("/?login_error={reason}");
-        if let Some(l) = login {
-            // GitHub 账号名只含字母、数字和 -
-            let l: String = l.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-            to += &format!("&login={l}");
+    let (expected, desktop) = match cookie(&headers, STATE_COOKIE) {
+        Some(v) => {
+            let (st, d) = parse_state_cookie(v);
+            (Some(st.to_string()), d)
         }
-        let mut res = redirect(&to);
-        res.headers_mut().append(header::SET_COOKIE, set_cookie(STATE_COOKIE, "", 0, "/auth", secure));
+        None => (None, None),
+    };
+    let clear_state = set_cookie(STATE_COOKIE, "", 0, "/auth", secure);
+    let fail = |reason: &str, login: Option<&str>| {
+        // GitHub 账号名只含字母、数字和 -
+        let login: Option<String> = login.map(|l| l.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect());
+        let mut res = match &desktop {
+            Some(d) => {
+                let mut q = vec![("error", reason)];
+                if let Some(l) = &login {
+                    q.push(("login", l.as_str()));
+                }
+                d.redirect(&q)
+            }
+            None => {
+                let mut to = format!("/?login_error={reason}");
+                if let Some(l) = &login {
+                    to += &format!("&login={l}");
+                }
+                redirect(&to)
+            }
+        };
+        res.headers_mut().append(header::SET_COOKIE, clear_state.clone());
         res
     };
     if q.error.is_some() {
         return fail("cancelled", None);
     }
-    let expected = cookie(&headers, STATE_COOKIE);
     let (Some(code), Some(state)) = (q.code, q.state) else { return fail("state", None) };
-    if expected != Some(state.as_str()) {
+    if expected.as_deref() != Some(state.as_str()) {
         return fail("state", None);
     }
     let gh2 = gh.clone();
@@ -418,15 +543,49 @@ pub(crate) async fn callback(State(s): State<AppState>, headers: HeaderMap, Quer
     }
     let now = board_core::now_ms();
     let u = user.clone();
+    // 桌面端：浏览器这边不登录，只把一次性登录码交给桌面端
+    if let Some(d) = &desktop {
+        let code = match s.db(move |st| create_handoff(st.conn(), &u, now)).await {
+            Ok(c) => c,
+            Err(e) => return ApiError(e).into_response(),
+        };
+        tracing::info!(login = %user.login, "GitHub 登录成功（桌面端）");
+        let mut res = d.redirect(&[("code", code.as_str())]);
+        res.headers_mut().append(header::SET_COOKIE, clear_state);
+        return res;
+    }
     let sid = match s.db(move |st| create_session(st.conn(), &u, now)).await {
         Ok(sid) => sid,
         Err(e) => return ApiError(e).into_response(),
     };
     tracing::info!(login = %user.login, "GitHub 登录成功");
     let mut res = redirect("/");
-    res.headers_mut().append(header::SET_COOKIE, set_cookie(STATE_COOKIE, "", 0, "/auth", secure));
+    res.headers_mut().append(header::SET_COOKIE, clear_state);
     res.headers_mut().append(header::SET_COOKIE, session_cookie(&sid, secure));
     res
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DesktopQuery {
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// `GET /auth/desktop?code=…`：桌面端用一次性登录码换会话 Cookie，然后打开白板
+pub(crate) async fn desktop(State(s): State<AppState>, Query(q): Query<DesktopQuery>) -> Response {
+    let Auth::GitHub(gh) = s.auth().clone() else { return redirect("/") };
+    let Some(code) = q.code.filter(|c| !c.is_empty()) else { return redirect("/?login_error=state") };
+    let now = board_core::now_ms();
+    let allowed = gh.user.clone();
+    match s.db(move |st| redeem_handoff(st.conn(), &code, &allowed, now)).await {
+        Ok(Some(sid)) => {
+            let mut res = redirect("/");
+            res.headers_mut().append(header::SET_COOKIE, session_cookie(&sid, gh.secure()));
+            res
+        }
+        Ok(None) => redirect("/?login_error=state"),
+        Err(e) => ApiError(e).into_response(),
+    }
 }
 
 fn github_user(gh: &GitHub, code: &str) -> std::result::Result<GhUser, String> {
@@ -535,6 +694,19 @@ mod tests {
         assert!(h("[::1]:7420"));
         assert!(!h("evil.example.com"));
         assert!(!h("127.0.0.1.evil.com:7420"));
+    }
+
+    #[test]
+    fn state_cookie_roundtrip() {
+        assert_eq!(parse_state_cookie("abc"), ("abc", None));
+        let d = Desktop::parse("51234", "0123456789abcdef").unwrap();
+        let v = state_cookie_value("abc", Some(&d));
+        assert_eq!(parse_state_cookie(&v), ("abc", Some(d)));
+        // 端口、随机串不合法：当作网页端
+        assert_eq!(parse_state_cookie("abc.0.0123456789abcdef").1, None);
+        assert_eq!(parse_state_cookie("abc.80.short").1, None);
+        assert_eq!(parse_state_cookie("abc.80.0123456789abcdeg").1, None);
+        assert!(Desktop::parse("70000", "0123456789abcdef").is_none());
     }
 
     #[test]

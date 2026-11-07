@@ -11,6 +11,7 @@ import { Login } from './components/Login';
 import { ConfirmDialog, CtxMenu, FormModal, LabelManager, LabelPicker, Palette, Toasts } from './components/Overlays';
 import { SettingsPage } from './components/Settings';
 import { Topbar } from './components/Topbar';
+import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
@@ -65,6 +66,7 @@ export function App() {
   return (
     <>
       <Atmosphere />
+      <TitleStrip />
       {state === 'out' ? (
         <Login />
       ) : (

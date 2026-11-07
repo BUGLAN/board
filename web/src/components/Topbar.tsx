@@ -1,6 +1,6 @@
 /* ==========================================================================
    顶栏：品牌、项目 / 白板切换器、搜索（命令面板入口）、正在工作的 agent
-   桌面端：顶栏同时是窗口标题栏，可以拖动窗口
+   桌面端：顶栏同时是窗口标题栏，可以拖动窗口；Windows 上右侧是窗口按钮
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newBoard, openBoard, openCard } from '../lib/actions';
@@ -11,6 +11,7 @@ import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
 import { Avatar, ProjectAvatar, Ring, agent, useNow } from './bits';
 import { Icon } from './Icon';
+import { WindowControls } from './WindowControls';
 
 export function Topbar() {
   const onDown = (e: React.MouseEvent) => {
@@ -45,6 +46,7 @@ export function Topbar() {
       <div className="topbar-right">
         <Presence />
       </div>
+      <WindowControls />
     </header>
   );
 }

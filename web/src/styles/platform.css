@@ -14,6 +14,25 @@ html[data-shell="desktop"] .topbar { cursor: default; }
 html[data-shell="desktop"] body { user-select: none; -webkit-user-select: none; }
 html[data-shell="desktop"] input, html[data-shell="desktop"] textarea, html[data-shell="desktop"] .md { user-select: text; -webkit-user-select: text; }
 
+/* 没有顶栏的页面（登录、连接中）：顶部一条拖动区域 */
+.title-strip { position: fixed; z-index: 30; inset: 0 0 auto 0; height: 48px; display: flex; justify-content: flex-end; }
+
+/* Windows：没有系统标题栏，顶栏右侧是窗口按钮（对齐 Windows 11 标题栏按钮） */
+html[data-titlebar="custom"] .topbar { padding-right: 0; }
+.win-controls { display: flex; align-self: stretch; flex: none; margin-left: -6px; }
+.win-btn {
+  width: 46px; height: 100%; display: grid; place-items: center;
+  color: var(--text-2); border-radius: 0;
+  transition: background-color 90ms linear, color 90ms linear;
+}
+.win-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1px; vector-effect: non-scaling-stroke; overflow: visible; }
+.win-btn svg * { vector-effect: non-scaling-stroke; }
+.win-btn:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.win-btn:active { background: color-mix(in srgb, var(--text) 12%, transparent); }
+.win-btn.close:hover { color: #fff; background: #C42B1C; }
+.win-btn.close:active { color: #fff; background: #B22A1B; }
+.win-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
 /* ---------------- 列切换条（仅手机） ---------------- */
 .col-tabs { display: none; }
 
@@ -70,6 +89,8 @@ html[data-shell="desktop"] input, html[data-shell="desktop"] textarea, html[data
   [data-tip-pos="right"]::after { display: none; }
 
   .topbar { gap: 10px; padding: 0 12px 0 14px; padding-top: env(safe-area-inset-top); }
+  html[data-titlebar="custom"] .topbar { padding-right: 0; }
+  .win-btn { width: 40px; }
   .brand-sub { display: none; }
   .search-trigger { height: 34px; padding: 0 9px; }
   .search-keys { display: none; }

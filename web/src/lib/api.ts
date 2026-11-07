@@ -9,6 +9,8 @@ import type { Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCod
 declare global {
   interface Window {
     __BOARD_SHELL__?: string;
+    /** 'custom'：外壳没有系统标题栏，窗口按钮由界面画（Windows） */
+    __BOARD_TITLEBAR__?: string;
   }
 }
 

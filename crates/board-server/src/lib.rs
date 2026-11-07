@@ -179,7 +179,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
     let mut app = Router::new()
         .nest("/api", api)
         .route("/auth/github", get(auth::login))
-        .route("/auth/github/callback", get(auth::callback));
+        .route("/auth/github/callback", get(auth::callback))
+        .route("/auth/desktop", get(auth::desktop));
     if cfg.serve_web {
         app = app.fallback(get(static_file));
     }

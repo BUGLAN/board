@@ -1,23 +1,31 @@
 /* ==========================================================================
    登录页：只有一个「用 GitHub 登录」按钮
    GitHub 回调失败时，服务端带着 ?login_error=<原因>&login=<账号> 回到这里
+   桌面端：在系统默认浏览器里登录（用上浏览器里已有的 GitHub 登录状态），
+   外壳拿到一次性登录码后，这个窗口打开 /auth/desktop?code=… 换取会话
    ========================================================================== */
-import { useEffect, useState } from 'react';
-import { startWindowDrag } from '../lib/platform';
+import { useEffect, useRef, useState } from 'react';
+import { canDesktopLogin, desktopLogin, type DesktopLoginError } from '../lib/platform';
 
-const REASONS: Record<string, (login: string | null) => string> = {
+const REASONS: Record<string, (login: string | null, message: string | null) => string> = {
   denied: login => `GitHub 账号${login ? ` ${login} ` : ''}没有访问这个 Board 的权限。`,
   state: () => '登录已过期，请重新登录。',
   github: () => '没能从 GitHub 取得账号信息，请稍后再试。',
   cancelled: () => '已取消 GitHub 授权。',
+  timeout: () => '等了很久没有等到浏览器里的登录结果，请重新登录。',
+  browser: m => `没能打开浏览器${m ? `：${m}` : '。'}`,
 };
+
+function reasonText(reason: string, login: string | null, message: string | null = null) {
+  return (REASONS[reason] ?? (() => `登录失败，请重试。${message ? `（${message}）` : ''}`))(login, message);
+}
 
 function readError() {
   const q = new URLSearchParams(location.search);
   const reason = q.get('login_error');
   if (!reason) return null;
   history.replaceState(null, '', location.pathname);
-  return (REASONS[reason] ?? (() => '登录失败，请重试。'))(q.get('login'));
+  return reasonText(reason, q.get('login'));
 }
 
 export function GitHubMark() {
@@ -29,14 +37,38 @@ export function GitHubMark() {
 }
 
 export function Login() {
-  const [error] = useState(readError);
+  const [error, setError] = useState(readError);
+  const [waiting, setWaiting] = useState(false);
+  const attempt = useRef(0);
   useEffect(() => {
     document.title = '登录 · Board';
   }, []);
+
+  /** 桌面端：在默认浏览器里登录。旧版外壳不支持时，照常在窗口里打开 /auth/github */
+  const login = async (e?: React.MouseEvent) => {
+    if (!canDesktopLogin) return;
+    e?.preventDefault();
+    const my = ++attempt.current;
+    setError(null);
+    setWaiting(true);
+    try {
+      const code = await desktopLogin();
+      location.replace(`/auth/desktop?code=${encodeURIComponent(code)}`);
+    } catch (x) {
+      if (x === 'unsupported') {
+        location.href = '/auth/github';
+        return;
+      }
+      const err = x as DesktopLoginError;
+      // 被新的一次登录取代：这个窗口里又点了一次就继续等，别的窗口发起的就停下
+      if (err.reason === 'superseded' && my !== attempt.current) return;
+      setWaiting(false);
+      if (err.reason !== 'superseded') setError(reasonText(err.reason, err.login ?? null, err.message ?? null));
+    }
+  };
+
   return (
     <div className="login">
-      {/* 桌面端：没有顶栏时，按住页面顶部拖动窗口 */}
-      <div className="login-drag" onMouseDown={() => startWindowDrag()} />
       <div className="login-card">
         <div className="logo" aria-hidden="true">
           <i style={{ ['--h' as string]: '100%' }} />
@@ -51,10 +83,25 @@ export function Login() {
             {error}
           </div>
         )}
-        <a className="btn primary login-btn" href="/auth/github">
-          <GitHubMark />
-          用 GitHub 登录
-        </a>
+        {waiting ? (
+          <>
+            <div className="btn primary login-btn waiting" role="status">
+              <span className="login-spin" aria-hidden="true" />
+              在浏览器中完成登录…
+            </div>
+            <p className="login-hint">
+              已在默认浏览器中打开 GitHub 授权页，完成后会自动回到这里。
+              <button type="button" className="login-retry" onClick={() => login()}>
+                重新打开
+              </button>
+            </p>
+          </>
+        ) : (
+          <a className="btn primary login-btn" href="/auth/github" onClick={login}>
+            <GitHubMark />
+            用 GitHub 登录
+          </a>
+        )}
       </div>
     </div>
   );
