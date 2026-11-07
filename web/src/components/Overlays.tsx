@@ -9,7 +9,7 @@ import { api } from '../lib/api';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
 import { boardFlow, INBOX, LABEL_COLORS, PROJECT_COLORS } from '../lib/schema';
 import type { Card } from '../lib/types';
-import { cx, MOD, replay } from '../lib/util';
+import { accel, cx, replay } from '../lib/util';
 import { allBoards, boardMeta, refresh, useData } from '../store/data';
 import {
   closeCtx, closeForm, closeImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
@@ -116,13 +116,13 @@ export function Palette() {
       { id: 'capture', group: '操作', title: '记一条未整理', hint: 'I', icon: 'inbox', run: () => openCreator('inbox') },
       { id: 'board-prompt', group: '操作', title: '复制给 agent：处理这块白板的待办', sub: `/board-skills ${path}`, icon: 'prompt', run: () => copyBoardPrompt() },
       { id: 'labels', group: '操作', title: '管理标签', icon: 'tag', run: () => manageLabels(path.split('/')[0]) },
-      { id: 'tab-board', group: '切换到', title: '白板', hint: `${MOD}1`, icon: 'board', run: () => setTab('board') },
-      { id: 'tab-projects', group: '切换到', title: '项目总览（画布）', hint: `${MOD}2`, icon: 'folder', run: () => setTab('projects') },
-      { id: 'tab-inbox', group: '切换到', title: '未整理', hint: `${MOD}3`, icon: 'inbox', run: () => setTab('inbox') },
-      { id: 'tab-settings', group: '切换到', title: '设置', hint: `${MOD}4`, icon: 'sun', run: () => setTab('settings') },
-      { id: 'side', group: '切换到', title: '收起 / 展开侧栏', hint: `${MOD}B`, icon: 'monitor', run: () => setSide(!useUI.getState().side) },
+      { id: 'tab-board', group: '切换到', title: '白板', hint: accel('1'), icon: 'board', run: () => setTab('board') },
+      { id: 'tab-projects', group: '切换到', title: '项目总览（画布）', hint: accel('2'), icon: 'folder', run: () => setTab('projects') },
+      { id: 'tab-inbox', group: '切换到', title: '未整理', hint: accel('3'), icon: 'inbox', run: () => setTab('inbox') },
+      { id: 'tab-settings', group: '切换到', title: '设置', hint: accel('4'), icon: 'sun', run: () => setTab('settings') },
+      { id: 'side', group: '切换到', title: '收起 / 展开侧栏', hint: accel('B'), icon: 'monitor', run: () => setSide(!useUI.getState().side) },
       ...(canNewWindow
-        ? [{ id: 'new-window', group: '切换到', title: '新建窗口', hint: `${MOD}⇧N`, icon: 'monitor' as IconName, run: () => newWindow() }]
+        ? [{ id: 'new-window', group: '切换到', title: '新建窗口', hint: accel('N', true), icon: 'monitor' as IconName, run: () => newWindow() }]
         : []),
       {
         id: 'theme', group: '外观', title: `切换主题（当前：${theme}）`, icon: 'sun',

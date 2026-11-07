@@ -8,7 +8,7 @@ import { api } from '../lib/api';
 import { getTheme, isWindows, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
-import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
+import { accel, ago, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
 import { useData } from '../store/data';
@@ -467,10 +467,10 @@ export function SettingsPage() {
           <div className="keys">
             {(
               [
-                [`${MOD} K  /`, '搜索 / 命令面板'],
+                [`${accel('K')}  /`, '搜索 / 命令面板'],
                 ['P', '打开项目 / 白板切换器'],
-                [`${MOD} 1~4`, '切换到白板 / 项目 / 未整理 / 设置'],
-                [`${MOD} B`, '收起 / 展开侧栏'],
+                [accel('1~4'), '切换到白板 / 项目 / 未整理 / 设置'],
+                [accel('B'), '收起 / 展开侧栏'],
                 ['N', '新建卡片'],
                 ['I', '记一条未整理'],
                 ['Esc', '关闭弹窗、面板'],

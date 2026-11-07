@@ -8,7 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { openCard } from '../lib/actions';
 import { stillUploading, useAttach } from '../lib/attach';
 import { boardFlow } from '../lib/schema';
-import { autosize, cx, MOD, pref, replay } from '../lib/util';
+import { accel, autosize, cx, pref, replay } from '../lib/util';
 import { closeDetail, exec, useCurrent, useData } from '../store/data';
 import { closeCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
 import { LabelChip, Markdown } from './bits';
@@ -270,8 +270,7 @@ export function Creator() {
               </div>
             )}
             <div className="cr-keys">
-              <kbd>↵</kbd> 创建 · <kbd>⇧↵</kbd> 写描述 · <kbd>{MOD}</kbd>
-              <kbd>↵</kbd> 在任意位置创建
+              <kbd>↵</kbd> 创建 · <kbd>⇧↵</kbd> 写描述 · <kbd>{accel('↵')}</kbd> 在任意位置创建
             </div>
             <div className="d-label cr-label">
               描述 <span className="opt">选填 · Markdown</span>
@@ -464,8 +463,7 @@ export function Creator() {
                 </button>
                 <button className="btn brand cr-submit" type="submit" disabled={busy}>
                   <span>{column === 'inbox' ? '记到未整理' : `创建到${startName}`}</span>
-                  <kbd>{MOD}</kbd>
-                  <kbd>↵</kbd>
+                  <kbd>{accel('↵')}</kbd>
                 </button>
               </div>
             </div>

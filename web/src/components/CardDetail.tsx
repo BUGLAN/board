@@ -7,7 +7,7 @@ import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { boardFlow, CLAIM_MS } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, MOD, mmss, replay } from '../lib/util';
+import { accel, actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, mmss, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, Ring, agent, useNow } from './bits';
@@ -462,7 +462,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
               }}
             />
             <div className="row">
-              <span className="hint">Markdown · 可粘贴截图 · {MOD}↵ 保存 · esc 取消</span>
+              <span className="hint">Markdown · 可粘贴截图 · {accel('↵')} 保存 · esc 取消</span>
               <button className="btn sm ghost" type="button" title="附件（≤ 10 MB）" onClick={attach.pick}>
                 <Icon name="clip" />
                 {attach.busy ? '上传中…' : '附件'}
@@ -632,7 +632,7 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
-            placeholder={`写评论…  ${MOD}↵ 发送`}
+            placeholder={`写评论…  ${accel('↵')} 发送`}
             aria-label="评论"
             value={text}
             onChange={e => {
