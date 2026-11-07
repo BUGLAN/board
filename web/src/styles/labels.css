@@ -10,6 +10,20 @@
   background: color-mix(in srgb, var(--lc) 13%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc) 26%, transparent);
 }
+/* 正在写入的标签（拖上来、服务端还没确认）：半透明 + 呼吸 + 一道扫光；确认后去掉 .pending，透明度过渡回来，位置不动 */
+.lb { transition: opacity var(--dur-2) var(--ease-out); }
+.lb.pending { position: relative; overflow: hidden; opacity: .6; animation: lb-breathe 1.2s var(--ease-in-out) infinite; }
+.lb.pending::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%); pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--lc) 45%, transparent), transparent);
+  animation: lb-sweep 1s var(--ease-in-out) infinite;
+}
+@keyframes lb-breathe { 50% { opacity: .38; } }
+@keyframes lb-sweep { to { transform: translateX(100%); } }
+/* 减弱动态效果：只用透明度表示「正在写入」 */
+@media (prefers-reduced-motion: reduce) { .lb.pending { animation: none; } .lb.pending::after { display: none; } }
+:root[data-motion="reduced"] .lb.pending { animation: none; }
+:root[data-motion="reduced"] .lb.pending::after { display: none; }
 .lb i { width: 6px; height: 6px; border-radius: 50%; background: var(--lc); flex: none; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
 .lb-x { margin: 0 -3px 0 1px; width: 14px; height: 14px; border-radius: var(--r-xs); display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }

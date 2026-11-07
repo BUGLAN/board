@@ -7,7 +7,7 @@
    - 不用浏览器原生拖放：桌面端（Tauri）在 Windows 上会拦下原生拖放，触屏上也不可用
    ========================================================================== */
 import type { PointerEvent as ReactPointerEvent } from 'react';
-import { exec, useData } from '../store/data';
+import { addLabel, useData } from '../store/data';
 import { flash, toast, toastError } from '../store/ui';
 import type { Label } from './types';
 import { reduceMotion } from './util';
@@ -152,6 +152,7 @@ function fly(ghost: HTMLElement, card: HTMLElement, x: number, y: number) {
   setTimeout(() => card.classList.remove('label-landed'), 420);
 }
 
+/** 加标签：卡片上当帧出现 pending 态的标签（store/data.ts addLabel），确认后转正；失败时撤回并提示 */
 async function add(id: number, label: Label) {
   const c = useData.getState().board?.cards[id];
   if (c?.labels.includes(label.id)) {
@@ -159,8 +160,7 @@ async function add(id: number, label: Label) {
     return;
   }
   try {
-    await exec({ op: 'label', id, add: [label.id] });
-    flash(id, label.color, `加上了「${label.name}」`);
+    if (await addLabel(id, label.id)) flash(id, label.color, `加上了「${label.name}」`);
   } catch (e) {
     toastError(e);
   }
