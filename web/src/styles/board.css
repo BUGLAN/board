@@ -10,6 +10,10 @@
 
 /* ---------------- 磁吸布局 ---------------- */
 .magnet { position: relative; min-height: 100%; }
+/* 白板页：工作流条在滚动区域里、状态块上面，随内容滚走；状态块区域占满剩下的高度（不因工作流条多出滚动） */
+.page-board .board { display: flex; flex-direction: column; }
+.page-board .board > .wf-bar { margin: 0 0 10px; }
+.page-board .board > .magnet { flex: 1 0 auto; min-height: 0; }
 .tile {
   position: absolute; left: 0; top: 0; will-change: transform;
   transition: transform .32s var(--ease-out), width .32s var(--ease-out);

@@ -132,7 +132,6 @@ export function BoardView() {
           </button>
         </div>
       </div>
-      {cur && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
       <ColTabs board={board} f={f} boardRef={boardRef} />
       <div
         className={cx('board flow-scroll scroll', drag && 'dragging')}
@@ -141,6 +140,8 @@ export function BoardView() {
         aria-busy={!board || undefined}
         key={generation}
       >
+        {/* 工作流条放在滚动区域里：随白板内容一起滚走，不常驻顶部、不压在卡片上 */}
+        {cur && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
         {!board && f.list.length > 0 && (
           <Magnet path={path} statuses={f.list} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={counts[s.key] ?? 0} />} />
         )}
@@ -259,15 +260,15 @@ export function BoardSkeleton() {
           <Skeleton w={112} h={34} r={10} />
         </div>
       </div>
-      <div className="wf-bar sk-flow" aria-hidden="true">
-        <span className="wf-label">工作流</span>
-        <div className="sk-pills">
-          {[64, 72, 72, 68].map((w, i) => (
-            <Skeleton key={i} w={w} h={26} r={8} />
-          ))}
-        </div>
-      </div>
       <div className="board flow-scroll scroll">
+        <div className="wf-bar sk-flow" aria-hidden="true">
+          <span className="wf-label">工作流</span>
+          <div className="sk-pills">
+            {[64, 72, 72, 68].map((w, i) => (
+              <Skeleton key={i} w={w} h={26} r={8} />
+            ))}
+          </div>
+        </div>
         <Magnet path="" statuses={DEFAULT_FLOW} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={DEFAULT_COUNTS[s.key]} fake />} />
       </div>
     </div>

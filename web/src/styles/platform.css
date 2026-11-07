@@ -129,6 +129,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .magnet.stacked .tile { position: static; transform: none; width: auto; }
   .col-head { cursor: default; }
   .wf-bar { margin: 0 12px 8px; overflow-x: auto; }
+  .page-board .board > .wf-bar { margin: 0 0 8px; }
   .wf-line { flex-wrap: nowrap; }
   .wf-label { display: none; }
 
