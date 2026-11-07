@@ -17,8 +17,12 @@ const ipc = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const customTitlebar = ipc && window.__BOARD_TITLEBAR__ === 'custom';
 /** 桌面外壳的版本（外壳加载页面前注入；网页端没有） */
 export const shellVersion: string | null = (typeof window !== 'undefined' && window.__BOARD_SHELL_VERSION__) || null;
+/** macOS / iOS（界面上的 ⌘、桌面端的路径都按它区分） */
+export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 /** Windows：连接说明除了 bash 的 export，还要给 PowerShell 的 $env: 写法 */
 export const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+/** 桌面端自带的 board 命令行路径（外壳注入；网页端、旧版桌面端没有） */
+export const boardCli: string | null = (typeof window !== 'undefined' && window.__BOARD_CLI__) || null;
 
 export type ThemePref = 'auto' | 'light' | 'dark';
 export type Density = 'comfy' | 'compact';
@@ -27,7 +31,7 @@ export type Motion = 'full' | 'reduced';
 export function applyPrefs() {
   const root = document.documentElement;
   root.dataset.shell = shell;
-  root.dataset.os = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? 'mac' : 'other';
+  root.dataset.os = isMac ? 'mac' : 'other';
   if (customTitlebar) {
     root.dataset.titlebar = 'custom';
     // 告诉外壳这个页面会画窗口按钮（否则外壳过几秒恢复系统标题栏）

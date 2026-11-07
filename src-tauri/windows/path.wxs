@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- 桌面端安装目录里的 board.exe：把安装目录加进当前用户的 PATH，卸载时移除 -->
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="BoardCliPathComponent" Guid="4F1B2C3D-5E6F-4A7B-8C9D-0E1F2A3B4C5D">
+        <Environment Id="BoardCliPathEnv" Name="PATH" Value="[INSTALLDIR]" Part="last" Action="set" System="no" Permanent="no" />
+        <RegistryKey Root="HKCU" Key="Software\Board\BoardCli">
+          <RegistryValue Name="PathAdded" Type="integer" Value="1" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

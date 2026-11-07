@@ -13,6 +13,8 @@ declare global {
     __BOARD_TITLEBAR__?: string;
     /** 桌面外壳的版本（外壳在加载页面前注入） */
     __BOARD_SHELL_VERSION__?: string;
+    /** 桌面端自带的 board 命令行路径（外壳注入；没有时为空） */
+    __BOARD_CLI__?: string;
   }
 }
 

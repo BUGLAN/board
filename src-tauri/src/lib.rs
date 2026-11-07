@@ -35,14 +35,26 @@ fn board_url() -> Result<Url, String> {
     raw.parse().map_err(|e| format!("BOARD_URL 不是合法的地址「{raw}」：{e}"))
 }
 
-/// 告诉页面它运行在哪种外壳里、外壳的版本（每次加载页面前执行）
+/// 桌面端自带的 board 命令行：externalBin 把它放在可执行文件旁边
+/// （Windows 安装目录里的 board.exe；macOS 是 Board.app/Contents/MacOS/board）
+fn cli_path() -> Option<std::path::PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let name = if cfg!(target_os = "windows") { "board.exe" } else { "board" };
+    let p = dir.join(name);
+    p.is_file().then_some(p)
+}
+
+/// 告诉页面它运行在哪种外壳里、外壳的版本、自带的 board 命令行在哪（每次加载页面前执行）
 fn shell_script(app: &AppHandle) -> String {
     let version = app.package_info().version.to_string();
+    let cli = cli_path()
+        .map(|p| serde_json::to_string(&p.display().to_string()).unwrap_or_else(|_| "null".into()))
+        .unwrap_or_else(|| "null".into());
     if cfg!(target_os = "windows") {
         // 没有系统标题栏：页面自己画窗口按钮，并在画好后调用 window_ready
-        format!("window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_TITLEBAR__ = 'custom'; window.__BOARD_SHELL_VERSION__ = '{version}';")
+        format!("window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_TITLEBAR__ = 'custom'; window.__BOARD_SHELL_VERSION__ = '{version}'; window.__BOARD_CLI__ = {cli};")
     } else {
-        format!("window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_SHELL_VERSION__ = '{version}';")
+        format!("window.__BOARD_SHELL__ = 'desktop'; window.__BOARD_SHELL_VERSION__ = '{version}'; window.__BOARD_CLI__ = {cli};")
     }
 }
 
