@@ -81,9 +81,13 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-info[data-tip]:hover::after { transform: none; }
 
 .col-body { position: relative; padding: 2px 10px 10px; }
-/* 块变宽后卡片排成多列 */
-.col-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); align-items: start; gap: 8px; min-height: 40px; }
-.col.is-final .col-list { grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 4px; }
+/* 块变宽后卡片排成多列，瀑布流上下挨紧（lib/masonry.ts：行高 1px，卡片按高度 + 间距跨行） */
+.col-list {
+  --gap: 8px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); grid-auto-rows: 1px;
+  align-items: start; column-gap: var(--gap); row-gap: 0; min-height: 40px;
+}
+.col.is-final .col-list { --gap: 4px; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
 
 .col-empty {
   display: none; align-items: center; gap: 8px; margin: 0 0 2px; padding: 9px 11px; border-radius: var(--r-md);

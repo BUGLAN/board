@@ -6,6 +6,7 @@
    - 手机：状态块上下排列，顶部有状态切换条
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMasonry } from '../lib/masonry';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
 import { boardFlow, INBOX, statusColor, STATUS_COLORS, type FlowQ } from '../lib/schema';
@@ -178,6 +179,8 @@ function emptyText(s: Status, f: FlowQ) {
 function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer }: ColumnProps) {
   const count = board.cols[col.key]?.length ?? 0;
   const badge = useRef<HTMLSpanElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  useMasonry(list);
   const prev = useRef<number | null>(null);
   useEffect(() => {
     if (prev.current != null && prev.current !== count) {
@@ -227,7 +230,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         </span>
       </header>
       <div className="col-body">
-        <div className="col-list" data-list={col.key}>
+        <div className="col-list" data-list={col.key} ref={list}>
           {ids.map((id, idx) => {
             const c = board.cards[id];
             if (!c) return null;

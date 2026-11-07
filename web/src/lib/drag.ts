@@ -247,17 +247,7 @@ function locate() {
   const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
   const items = list ? [...list.children].filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}`) : [];
-  // 块变宽后卡片排成多列：按行优先找插入位置（先比行，再比同一行里的左右）
-  const multi = !!list && getComputedStyle(list).gridTemplateColumns.split(' ').length > 1;
-  let index = items.length;
-  for (let i = 0; i < items.length; i++) {
-    const r = items[i].getBoundingClientRect();
-    const before = multi ? s.y < r.top || (s.y <= r.bottom && s.x < r.left + r.width / 2) : s.y < r.top + r.height / 2;
-    if (before) {
-      index = i;
-      break;
-    }
-  }
+  const index = insertIndex(items, s.x, s.y);
   const same = key === s.fromCol && index === s.fromIndex;
   const state = useData.getState();
   const card = state.board?.cards[s.id];
@@ -294,6 +284,30 @@ function locate() {
       s.ghost.appendChild(hint);
     }
   }
+}
+
+/** 插入位置。卡片是瀑布流（lib/masonry.ts）：先找指针所在的那一竖列（没有正对的就取最近的一列），
+    插到这一列里第一张「中线在指针下方」的卡片前面；指针在这一列所有卡片下方时，插到这一列最后一张之后 */
+function insertIndex(items: Element[], x: number, y: number): number {
+  if (!items.length) return 0;
+  const rects = items.map(el => el.getBoundingClientRect());
+  let best = Infinity;
+  let track = 0;
+  rects.forEach(r => {
+    const d = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+    if (d < best - 0.5) {
+      best = d;
+      track = r.left;
+    }
+  });
+  let last = -1;
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    if (Math.abs(r.left - track) > 1) continue;
+    if (y < r.top + r.height / 2) return i;
+    last = i;
+  }
+  return last + 1;
 }
 
 /** 靠近边缘时自动滚动（列内纵向 / 白板横向） */

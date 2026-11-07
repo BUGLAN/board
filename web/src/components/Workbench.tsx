@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { newBoard, newProject, openBoard, openCard, triage } from '../lib/actions';
 import { api } from '../lib/api';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
+import { useMasonry } from '../lib/masonry';
 import type { Label } from '../lib/types';
 import { boardFlow, flowOf } from '../lib/schema';
 import { cx, mmss, ago, agentColor, pref, replay } from '../lib/util';
@@ -441,6 +442,8 @@ function InboxSide() {
   const count = board?.cols.inbox?.length ?? 0;
   const over = drag?.over === 'inbox';
   const empty = ids.length === 0;
+  const inboxList = useRef<HTMLDivElement>(null);
+  useMasonry(inboxList);
   return (
     <section
       className={cx(
@@ -468,7 +471,7 @@ function InboxSide() {
         <kbd>I</kbd>
       </button>
       <div className="side-scroll scroll inbox-scroll">
-        <div className="col-list inbox-list" data-list="inbox">
+        <div className="col-list inbox-list" data-list="inbox" ref={inboxList}>
           {board &&
             ids.map(id => {
               const c = board.cards[id];
