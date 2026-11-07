@@ -13,7 +13,7 @@ import { boardFlow, INBOX, statusColor, type FlowQ } from '../lib/schema';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
-import { openCreator, setFilter, setTab, toastError, useUI, type DragUI } from '../store/ui';
+import { closeCtx, openCreator, openCtx, setFilter, setTab, toastError, useUI, type DragUI } from '../store/ui';
 import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
@@ -106,6 +106,20 @@ export function BoardView() {
           </span>
         )}
         <div className="page-actions">
+          <button
+            className="btn prompts-btn"
+            type="button"
+            aria-haspopup="menu"
+            aria-label="复制给 agent 的提示词"
+            onClick={e => {
+              const open = useUI.getState().ctx;
+              if (open?.kind === 'prompts') return closeCtx();
+              openCtx({ kind: 'prompts', id: path, x: 0, y: 0, anchor: e.currentTarget.getBoundingClientRect() });
+            }}
+          >
+            <Icon name="prompt" />
+            提示词
+          </button>
           <button className="btn brand new-card-btn" type="button" onClick={() => openCreator('todo')}>
             <Icon name="plus" sw={2} />
             新建卡片<kbd>N</kbd>

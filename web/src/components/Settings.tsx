@@ -13,6 +13,7 @@ import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
 import { useData } from '../store/data';
 import { confirm, toast, toastError, useUI } from '../store/ui';
+import { quickPrompts } from '../lib/prompt';
 import { Icon, type IconName } from './Icon';
 
 const SECTIONS: { id: string; title: string; icon: IconName }[] = [
@@ -477,6 +478,12 @@ export function SettingsPage() {
             <Code plain cmd={`/board-skills ${path}#12`} note="处理一张卡片" />
             <Code plain cmd={`/board-skills ${path}`} note={`领完这块白板可领取状态里的卡片（${flow.claimables.map(s => `「${s.name}」`).join('') || '待办'}）`} />
             <Code plain cmd="/board-skills README 加一个英文版" note={`一句话需求：先记到「${flow.home?.name ?? '待办'}」再做`} />
+          </div>
+          <p className="set-p">快捷提示词：白板页头点「提示词」一键复制。</p>
+          <div className="code-block">
+            {quickPrompts(path, flow.home?.name ?? '待办', 'claude').map(q => (
+              <Code key={q.kind} plain cmd={q.text} note={q.title} />
+            ))}
           </div>
           <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；心跳脚本在同目录的 scripts/ 里，推荐用下面的命令链接整个目录">
             <CopySkill />

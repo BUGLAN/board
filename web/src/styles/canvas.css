@@ -220,3 +220,20 @@
   .pj-sep, .pj-board { display: none; }
   .pj-menu { width: auto; }
 }
+
+/* ---------------- 白板页头「提示词」菜单 ---------------- */
+.ctx.ctx-prompts { width: min(380px, calc(100vw - 16px)); }
+.ctx .qp-item { display: flex; flex-direction: column; align-items: stretch; gap: 3px; height: auto; padding: 7px 9px; }
+.ctx button.qp-item[data-do] { height: auto; align-items: stretch; gap: 3px; }
+.qp-title { font-size: 13px; font-weight: 550; color: var(--text); }
+.ctx .qp-text { display: block; font-family: var(--f-mono); font-size: 11px; line-height: 1.45; color: var(--text-3); white-space: normal; word-break: break-all; }
+.qp-labels { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 9px; }
+.qp-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.qp-chips button { border-radius: var(--r-xs); transition: transform var(--dur-1) var(--spring-soft); }
+.qp-chips button:hover { transform: translateY(-1px); }
+.qp-chips button:active { transform: scale(.95); }
+.qp-chips button:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.qp-empty { font-size: 12px; color: var(--text-3); }
+.ctx .qp-chips button[data-do] { display: inline-flex; width: auto; height: auto; padding: 0; gap: 0; }
+.ctx .qp-chips button[data-do]:hover, .ctx .qp-chips button[data-do]:focus-visible { background: none; }
+.ctx-title > svg { width: 15px; height: 15px; flex: none; color: var(--text-3); }
