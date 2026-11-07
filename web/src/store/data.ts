@@ -126,6 +126,7 @@ async function load() {
   const prev = st.board;
   if (prev && prev.path === board.path) flip.capture();
   else flip.reset();
+  snapshots.set(board.path, board);
   set({
     ws,
     board,
@@ -135,11 +136,14 @@ async function load() {
   });
 }
 
+/** 打开过的白板的最近一份快照：切回来时先显示它，不闪骨架，refresh 拿到新的再替换 */
+const snapshots = new Map<string, BoardSnapshot>();
+
 function switchTo(path: string) {
   save(path);
   flip.reset();
   clearLabelSel(); // 标签属于项目，换白板时清掉选中
-  set(s => ({ path, board: null, detailId: null, detail: null, generation: s.generation + 1 }));
+  set(s => ({ path, board: snapshots.get(path) ?? null, detailId: null, detail: null, generation: s.generation + 1 }));
 }
 
 /** 打开另一块白板 */

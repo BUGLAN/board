@@ -3,7 +3,7 @@
    顶栏 ─ 活动栏 │ 侧栏 │ 主内容区（白板 / 项目画布 / 设置）
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { BoardView } from './components/BoardView';
+import { BoardSkeleton, BoardView } from './components/BoardView';
 import { CanvasPage } from './components/Canvas';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
@@ -199,7 +199,8 @@ function BoardApp() {
         <ActivityBar />
         <SidePanel />
         <main className="main" id="main">
-          {!ws && <Loading error={error} />}
+          {/* 工作区还没到：白板页用骨架占位；出错时显示错误（数据层会自动重试） */}
+          {!ws && (page === 'board' && !error ? <BoardSkeleton /> : <Loading error={error} />)}
           {ws && (
             <>
               <Page show={page === 'board'}>
