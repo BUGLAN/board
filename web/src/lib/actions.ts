@@ -94,7 +94,6 @@ const boardTaken = (pk: string, k: string) => !!data().ws?.projects.find(p => p.
 
 export function newProject({ pos }: { pos?: Pos } = {}) {
   closeSwitcher();
-  const n = data().ws?.projects.length ?? 0;
   const fields: FormField[] = [
     { name: 'name', label: '项目名称', placeholder: '例如：官网改版', required: true },
     {
@@ -103,7 +102,7 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
       validate: k => keyError(k) || (projectTaken(k) ? `项目标识「${k}」已被占用` : null),
     },
     { name: 'desc', label: '描述', hint: '选填', placeholder: '一句话说明这个项目' },
-    { name: 'color', label: '颜色', type: 'color', value: PROJECT_COLORS[n % PROJECT_COLORS.length] },
+    { name: 'color', label: '颜色', type: 'color', value: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)] },
     { name: 'boardName', label: '第一块白板', value: '主白板', required: true },
     { name: 'boardKey', label: '白板标识', type: 'key', from: 'boardName', value: 'main', required: true, auto: v => slug(v) || 'main', validate: keyError },
   ];
@@ -199,9 +198,11 @@ export function editBoard(path: string) {
       { name: 'name', label: '白板名称', value: m.board.name, required: true },
       { name: 'key', label: '白板标识', hint: 'agent 用它定位，创建后不能修改', type: 'key', value: m.board.key, readonly: true },
       { name: 'desc', label: '描述', hint: '选填', value: m.board.desc },
+      { name: 'color', label: '颜色', hint: `白板用所属项目的颜色，改这里会一起改项目「${m.project.name}」`, type: 'color', value: m.project.color },
     ],
     onSubmit: async v => {
       await api.updateBoard(path, { name: v.name, desc: v.desc });
+      if (v.color && v.color.toUpperCase() !== m.project.color.toUpperCase()) await api.updateProject(m.project.key, { color: v.color });
       await refresh();
       toast({ type: 'success', title: '已保存', duration: 1400 });
     },

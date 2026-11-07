@@ -1,6 +1,7 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { inlineCode, markdown } from '../lib/markdown';
+import { PROJECT_COLORS } from '../lib/schema';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial } from '../lib/util';
 import { serverNow } from '../store/data';
@@ -88,6 +89,46 @@ export function LabelChips({ ids, labels, max = 3 }: { ids: number[]; labels: La
         </span>
       )}
     </>
+  );
+}
+
+/** 项目颜色：一排色板，最后一个是取色器（可选任意颜色，选中后显示为当前颜色）。
+    取色器在确定时（change）才回调，拖动过程中不回调 */
+export function ColorRow({ value, onPick, className, label = '颜色' }: { value: string; onPick: (c: string) => void; className?: string; label?: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const pick = useRef(onPick);
+  pick.current = onPick;
+  const v = value.toUpperCase();
+  const custom = !PROJECT_COLORS.includes(v);
+  useEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    const done = () => pick.current(el.value.toUpperCase());
+    el.addEventListener('change', done);
+    return () => el.removeEventListener('change', done);
+  }, []);
+  return (
+    <div className={cx('swatches', className)} role="radiogroup" aria-label={label}>
+      {PROJECT_COLORS.map(c => (
+        <button
+          key={c}
+          type="button"
+          role="radio"
+          aria-checked={c === v}
+          className={cx('swatch', c === v && 'on')}
+          style={{ ['--sw' as string]: c }}
+          aria-label={`${label} ${c}`}
+          onClick={() => onPick(c)}
+        />
+      ))}
+      <label
+        className={cx('swatch swatch-pick', custom && 'on')}
+        style={custom ? { ['--sw' as string]: v } : undefined}
+        title={custom ? `自定义颜色 ${v}` : '自定义颜色'}
+      >
+        <input ref={input} type="color" value={/^#[0-9A-F]{6}$/.test(v) ? v.toLowerCase() : '#888888'} onChange={() => {}} aria-label={`${label}：自定义`} />
+      </label>
+    </div>
   );
 }
 

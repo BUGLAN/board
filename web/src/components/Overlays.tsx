@@ -7,7 +7,7 @@ import {
 } from '../lib/actions';
 import { api } from '../lib/api';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
-import { boardFlow, INBOX, LABEL_COLORS, PROJECT_COLORS } from '../lib/schema';
+import { boardFlow, INBOX, LABEL_COLORS } from '../lib/schema';
 import type { Card } from '../lib/types';
 import { cx, MOD, replay } from '../lib/util';
 import { allBoards, boardMeta, refresh, useData } from '../store/data';
@@ -15,7 +15,7 @@ import {
   closeCtx, closeForm, closeImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
   setSide, setTab, settleConfirm, toast, toastError, updatePicker, useUI, type FormCfg, type Toast,
 } from '../store/ui';
-import { LabelChip, ProjectAvatar } from './bits';
+import { ColorRow, LabelChip, ProjectAvatar } from './bits';
 import { Icon, type IconName } from './Icon';
 
 /** 打开时先挂载再加 .on（入场过渡）；关闭时先去掉 .on 再卸载 */
@@ -411,18 +411,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
                   {f.label}
                   {hint}
                 </span>
-                <div className="swatches">
-                  {PROJECT_COLORS.map(c => (
-                    <button
-                      key={c}
-                      type="button"
-                      className={cx('swatch', c === v[f.name] && 'on')}
-                      style={{ ['--sw' as string]: c }}
-                      aria-label={c}
-                      onClick={() => update(f.name, c)}
-                    />
-                  ))}
-                </div>
+                <ColorRow value={v[f.name] ?? ''} onPick={c => update(f.name, c)} label={f.label} />
               </div>
             );
           if (f.type === 'select')
@@ -541,18 +530,7 @@ export function CtxMenu() {
           <Icon name="tag" />
           管理标签
         </button>
-        <div className="ctx-swatches">
-          {PROJECT_COLORS.map(c => (
-            <button
-              key={c}
-              type="button"
-              className={cx('swatch', c === p.color && 'on')}
-              style={{ ['--sw' as string]: c }}
-              aria-label={`颜色 ${c}`}
-              onClick={() => setProjectColor(p.key, c)}
-            />
-          ))}
-        </div>
+        <ColorRow className="ctx-swatches" value={p.color} onPick={c => setProjectColor(p.key, c)} />
         <div className="ctx-sep" />
         <button type="button" data-do="delete-project" className="danger" onClick={go(() => deleteProject(p.key))}>
           <Icon name="trash" />

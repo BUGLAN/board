@@ -287,6 +287,11 @@
 .swatch { width: 24px; height: 24px; border-radius: 8px; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2); transition: transform var(--dur-3) var(--spring), box-shadow var(--dur-2); }
 .swatch:hover { transform: scale(1.12); }
 .swatch.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--sw); transform: scale(1.05); }
+/* 最后一个：取色器。没选自定义颜色时显示色环，选了以后显示为那个颜色 */
+.swatch-pick { position: relative; cursor: pointer; background: conic-gradient(from 180deg, #FF5C5C, #FFB020, #E8E04D, #3DDC97, #2DD4BF, #4DB5FF, #B98CFF, #FF5C8A, #FF5C5C); }
+.swatch-pick.on { background: var(--sw); }
+.swatch-pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
+.swatch-pick:focus-within { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 /* 新建弹窗：目标项目 */
 .cr-project { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; color: var(--text-2); background: var(--surface-3); }

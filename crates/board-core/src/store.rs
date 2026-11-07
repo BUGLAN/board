@@ -693,6 +693,17 @@ impl<'a> W<'a> {
         }
     }
 
+    /// 项目颜色：色板里的颜色，或取色器选的任意 #RRGGBB（统一成大写）
+    fn check_project_color(color: Option<&str>, fallback: usize) -> Result<String> {
+        match color.map(str::trim) {
+            Some(c) if c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit()) => Ok(c.to_ascii_uppercase()),
+            Some(c) if !PROJECT_COLORS.iter().any(|p| p.eq_ignore_ascii_case(c)) => {
+                Err(BoardError::usage(format!("颜色要用色板里的颜色或 #RRGGBB：{c}")))
+            }
+            c => Self::check_color(c, &PROJECT_COLORS, fallback),
+        }
+    }
+
     /* ---------------- 项目 ---------------- */
 
     pub fn create_project(
@@ -719,7 +730,7 @@ impl<'a> W<'a> {
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        let color = Self::check_color(color, &PROJECT_COLORS, n as usize)?;
+        let color = Self::check_project_color(color, n as usize)?;
         let pos = pos.unwrap_or(Pos { x: 0.0, y: max_y.map(|y| y + LAYOUT_PROJECT_GAP).unwrap_or(0.0) });
         self.tx.execute(
             "INSERT INTO projects (key, name, description, color, pos_x, pos_y, sort, created_at)
@@ -742,7 +753,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE projects SET description = ?1 WHERE key = ?2", params![d.trim(), key])?;
         }
         if let Some(c) = color {
-            let c = Self::check_color(Some(c), &PROJECT_COLORS, 0)?;
+            let c = Self::check_project_color(Some(c), 0)?;
             self.tx.execute("UPDATE projects SET color = ?1 WHERE key = ?2", params![c, key])?;
         }
         self.changed = true;

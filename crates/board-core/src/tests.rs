@@ -668,3 +668,20 @@ fn in_memory_store_has_no_attachments() {
     let b = s.read(|r| r.resolve(B)).unwrap();
     assert!(s.attach(T0, &b, None, &human(), "a.png", PNG).is_err());
 }
+
+#[test]
+fn project_color_palette_or_any_hex() {
+    let mut s = store();
+    let nb = || NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None };
+    s.write(T0, Origin::ui(None), |w| w.create_project("甲", "a", "", Some("#4db5ff"), None, nb())).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_project("乙", "b", "", Some("#12ab9f"), None, nb())).unwrap();
+    let r = s.write(T0, Origin::ui(None), |w| w.create_project("丙", "c", "", Some("teal"), None, nb()));
+    assert_eq!(r.expect_err("不是颜色").code, ErrorCode::Usage);
+    let r = s.write(T0, Origin::ui(None), |w| w.create_project("丙", "c", "", Some("#12ab9"), None, nb()));
+    assert_eq!(r.expect_err("位数不对").code, ErrorCode::Usage);
+    s.write(T0, Origin::ui(None), |w| w.update_project("a", None, None, Some("#00ff7f"))).unwrap();
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    let color = |k: &str| ws.projects.iter().find(|p| p.key == k).unwrap().color.clone();
+    assert_eq!(color("a"), "#00FF7F");
+    assert_eq!(color("b"), "#12AB9F");
+}
