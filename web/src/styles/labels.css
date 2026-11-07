@@ -10,6 +10,20 @@
   background: color-mix(in srgb, var(--lc) 13%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc) 26%, transparent);
 }
+/* 正在写入的标签（拖上来、服务端还没确认）：半透明 + 呼吸 + 一道扫光；确认后去掉 .pending，透明度过渡回来，位置不动 */
+.lb { transition: opacity var(--dur-2) var(--ease-out); }
+.lb.pending { position: relative; overflow: hidden; opacity: .6; animation: lb-breathe 1.2s var(--ease-in-out) infinite; }
+.lb.pending::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%); pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--lc) 45%, transparent), transparent);
+  animation: lb-sweep 1s var(--ease-in-out) infinite;
+}
+@keyframes lb-breathe { 50% { opacity: .38; } }
+@keyframes lb-sweep { to { transform: translateX(100%); } }
+/* 减弱动态效果：只用透明度表示「正在写入」 */
+@media (prefers-reduced-motion: reduce) { .lb.pending { animation: none; } .lb.pending::after { display: none; } }
+:root[data-motion="reduced"] .lb.pending { animation: none; }
+:root[data-motion="reduced"] .lb.pending::after { display: none; }
 .lb i { width: 6px; height: 6px; border-radius: 50%; background: var(--lc); flex: none; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
 .lb-x { margin: 0 -3px 0 1px; width: 14px; height: 14px; border-radius: var(--r-xs); display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
@@ -95,7 +109,7 @@
 .lbp-row.create svg { width: 14px; height: 14px; }
 .lbp-check { width: 16px; height: 16px; border-radius: var(--r-xs); display: grid; place-items: center; color: transparent; box-shadow: inset 0 0 0 1.5px var(--line-3); flex: none; transition: background-color var(--dur-1); }
 .lbp-check svg { width: 11px; height: 11px; }
-.lbp-check.on { background: var(--brand); color: #fff; box-shadow: none; }
+.lbp-check.on { background: var(--brand); color: var(--brand-fg); box-shadow: none; }
 .lbp-empty { padding: 16px; text-align: center; font-size: 12px; color: var(--text-3); }
 .lbp-foot { padding: 4px; border-top: 1px solid var(--line); flex: none; }
 .lbp-foot button { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 8px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-2); }
@@ -156,10 +170,30 @@
 }
 @keyframes label-ghost-in { from { scale: .5; opacity: 0; } }
 .label-ghost i { width: 7px; height: 7px; border-radius: 50%; background: var(--lc); flex: none; }
-.label-ghost.over { color: #fff; background: var(--lc); }
+.label-ghost.over { color: #fff; background: var(--lc); scale: 1.06; }
+/* 进入 / 离开可投放的卡片：放大有一点弹性，像被吸住 */
+.label-ghost:not(.landing) { transition: background-color var(--dur-1), color var(--dur-1), scale var(--dur-2) var(--spring), opacity var(--dur-1); }
 .label-ghost.over i { background: #fff; }
 /* 卡片已经有这个标签：松手只会提示 */
 .label-ghost.has { opacity: .6; }
 .card.label-target {
   box-shadow: inset 0 0 0 1.5px var(--lc), 0 0 0 4px color-mix(in srgb, var(--lc) 18%, transparent), var(--shadow-2) !important;
+  /* scale 单独动：transform 留给 FLIP 和悬停 */
+  scale: 1.012; transition: scale var(--dur-2) var(--spring);
+  outline: 2px solid transparent;
+  animation: label-target-ring 1.1s var(--ease-out) infinite;
 }
+/* 目标卡片外面一圈向外扩散的脉冲 */
+@keyframes label-target-ring {
+  0% { outline-offset: 0; outline-color: color-mix(in srgb, var(--lc) 50%, transparent); }
+  70%, 100% { outline-offset: 8px; outline-color: transparent; }
+}
+/* 标签落进卡片：卡片轻轻一顿 */
+.card.label-landed { animation: label-landed var(--dur-3) var(--spring); }
+@keyframes label-landed { 0% { scale: 1.012; } 35% { scale: .985; } 100% { scale: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .card.label-target, .card.label-landed { scale: none; animation: none; }
+  .label-ghost, .label-ghost.over { animation: none; scale: none; }
+}
+:root[data-motion="reduced"] .card.label-target, :root[data-motion="reduced"] .card.label-landed { scale: none; animation: none; }
+:root[data-motion="reduced"] .label-ghost, :root[data-motion="reduced"] .label-ghost.over { animation: none; scale: none; }

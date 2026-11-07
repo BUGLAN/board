@@ -9,14 +9,16 @@
 //! - 设置页新建令牌后，可以一键把 BOARD_URL、BOARD_TOKEN 写成长期生效的环境变量，见 [`env`]
 //! - 新建窗口（⌘⇧N / Ctrl+Shift+N）：每个窗口可以打开不同的白板。macOS 在「文件」菜单里；Windows 没有菜单栏，
 //!   由界面响应快捷键，命令面板里也有
+//! - 窗口先打开本地启动页，连得上服务端再跳到线上页面；窗口底色跟随网页端的主题，慢网、断网都不白屏，见 [`splash`]
 
 mod env;
 mod login;
+mod splash;
 mod window_state;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Theme, Url, WebviewWindow, WebviewWindowBuilder};
 
 const DEFAULT_URL: &str = "https://board.buglan.com";
 
@@ -45,10 +47,19 @@ fn shell_script(app: &AppHandle) -> String {
 }
 
 fn open_window(app: &AppHandle) -> tauri::Result<()> {
-    let url = app.state::<Board>().0.clone();
     let n = WINDOWS.fetch_add(1, Ordering::SeqCst);
-    let mut builder = WebviewWindowBuilder::new(app, format!("board-{n}"), WebviewUrl::External(url))
+    let theme = splash::load_theme(app);
+    // 跟随系统时先按已有窗口的深浅色猜，建好窗口后再按系统设置校正（还没开始绘制）
+    let guess = match theme {
+        splash::Theme::Dark => true,
+        splash::Theme::Light => false,
+        splash::Theme::Auto => app.webview_windows().values().next().and_then(|w| w.theme().ok()) == Some(Theme::Dark),
+    };
+    // 先打开本地启动页，连得上服务端再由启动页跳到线上页面
+    let mut builder = WebviewWindowBuilder::new(app, format!("board-{n}"), splash::url())
         .title("Board")
+        // 窗口、webview 的底色：启动页画出来之前、跳转途中露出来的都是主题底色，不是白色
+        .background_color(splash::background(guess))
         .inner_size(1360.0, 860.0)
         .min_inner_size(380.0, 560.0)
         // 拖入文件交给页面处理（卡片附件）；否则 Tauri 会拦下文件拖放，页面收不到 drop 事件
@@ -78,6 +89,12 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(target_os = "windows")]
     let builder = custom_titlebar::apply(builder);
     let window = builder.build()?;
+    if theme == splash::Theme::Auto {
+        let dark = window.theme().ok() == Some(Theme::Dark);
+        if dark != guess {
+            let _ = window.set_background_color(Some(splash::background(dark)));
+        }
+    }
     window_state::remember_on_close(&window);
     // 下次启动恢复上次关闭时的窗口大小、位置和最大化状态（以最后关闭的窗口为准）
     if n == 0 {
@@ -161,6 +178,13 @@ async fn set_board_env(app: AppHandle, token: String) -> Result<env::Written, St
         .map_err(|e| e.to_string())?
 }
 
+/// 网页端应用主题时告诉外壳（auto / light / dark）：下次启动页和窗口底色按它来
+#[tauri::command]
+fn remember_theme(app: AppHandle, theme: String) -> Result<(), String> {
+    let t = splash::Theme::parse(&theme).ok_or_else(|| format!("未知的主题「{theme}」"))?;
+    splash::save_theme(&app, t)
+}
+
 /// 页面已经画好窗口按钮（只在 Windows 上有意义）
 #[tauri::command]
 fn window_ready(window: WebviewWindow) {
@@ -182,7 +206,12 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     let builder = builder.manage(custom_titlebar::Ready::default());
     builder
-        .invoke_handler(tauri::generate_handler![desktop_login, new_window, window_ready, set_board_env])
+        // 启动页：任何路径都返回内联 HTML（见 splash）
+        .register_uri_scheme_protocol(splash::SCHEME, |ctx, _req| {
+            let app = ctx.app_handle();
+            splash::respond(app, &app.state::<Board>().0)
+        })
+        .invoke_handler(tauri::generate_handler![desktop_login, new_window, window_ready, set_board_env, remember_theme])
         .setup(|app| {
             let handle = app.handle();
             // Windows 不设菜单栏：顶栏就是标题栏，编辑快捷键由 webview 自己处理

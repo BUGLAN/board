@@ -19,6 +19,7 @@ import { CardView } from './Card';
 import { BoardIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
 import { SettingsNav } from './Settings';
 import { canvasHighlight } from './Canvas';
+import { Skeleton, SkeletonCard } from './Skeleton';
 
 const TABS: { tab: Tab; label: string; tip: string; icon: ReactNode }[] = [
   { tab: 'board', label: '白板', tip: '白板', icon: <BoardIcon24 /> },
@@ -175,7 +176,8 @@ const OP: Record<string, string> = {
   beat: '心跳', lost: '心跳中断，释放了',
 };
 
-function Section({ id, title, n, closed, onToggle, children }: { id: string; title: string; n?: number; closed: boolean; onToggle: (id: string) => void; children: ReactNode }) {
+/** n 为 'loading'：数量还不知道，计数位置放骨架，标题不跳 */
+function Section({ id, title, n, closed, onToggle, children }: { id: string; title: string; n?: number | 'loading'; closed: boolean; onToggle: (id: string) => void; children: ReactNode }) {
   return (
     <section className={cx('tree-sec', closed && 'closed')} data-sec={id}>
       <button className="tree-head" type="button" onClick={() => onToggle(id)}>
@@ -183,7 +185,7 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
           <path d="m6 8 4 4 4-4" />
         </svg>
         {title}
-        {n != null && <span className="n">{n}</span>}
+        {n === 'loading' ? <Skeleton className="n sk-n" w={14} h={10} /> : n != null && <span className="n">{n}</span>}
       </button>
       <div className="tree-body">
         <div>{children}</div>
@@ -293,6 +295,44 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
   );
 }
 
+/* ---------------- 侧栏骨架：快照还没到时（首次打开、切换白板） ---------------- */
+
+/** 标签胶囊行：数量已知（工作区里有）时按数量，宽度错开 */
+function SkeletonLabels({ n }: { n: number }) {
+  return (
+    <div className="lb-block sk-labels" aria-hidden="true">
+      {Array.from({ length: Math.min(n, 12) }, (_, i) => (
+        <Skeleton key={i} w={[52, 44, 60, 48, 66, 40][i % 6]} h={22} r={6} />
+      ))}
+    </div>
+  );
+}
+
+/** 持有者行（头像 + 一行）/ 动态行（头像 + 两行） */
+function SkeletonRows({ n, kind }: { n: number; kind: 'working' | 'recent' }) {
+  return (
+    <div aria-hidden="true">
+      {Array.from({ length: n }, (_, i) =>
+        kind === 'working' ? (
+          <div key={i} className="tree-row card-row sk-row" style={{ paddingLeft: 20 }}>
+            <Skeleton w={16} h={16} r={8} />
+            <Skeleton w={['68%', '54%', '62%'][i % 3]} h={10} />
+            <Skeleton className="sk-tm" w={34} h={10} />
+          </div>
+        ) : (
+          <div key={i} className="recent-row sk-row">
+            <Skeleton w={18} h={18} r={9} />
+            <div className="sk-lines">
+              <Skeleton w={['72%', '58%', '66%'][i % 3]} h={10} />
+              <Skeleton w={52} h={8} />
+            </div>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
 function BoardSide() {
   const board = useData(s => s.board);
   const detailId = useData(s => s.detailId);
@@ -349,13 +389,17 @@ function BoardSide() {
       </header>
       <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent" />
       <div className="side-scroll scroll">
-        <Section id="labels" title="标签" n={labels.length} closed={closed.has('labels')} onToggle={toggle}>
-          {cur && (
+        <Section id="labels" title="标签" n={cur ? labels.length : 'loading'} closed={closed.has('labels')} onToggle={toggle}>
+          {cur && (board || !labels.length) ? (
             <LabelBlock project={cur.project.key} labels={labels} used={used} />
+          ) : (
+            <SkeletonLabels n={cur ? labels.length : 5} />
           )}
         </Section>
-        <Section id="working" title="正在工作" n={holders.length} closed={closed.has('working')} onToggle={toggle}>
-          {holders.length ? (
+        <Section id="working" title="正在工作" n={board ? holders.length : cur ? cur.board.holders.length : 'loading'} closed={closed.has('working')} onToggle={toggle}>
+          {!board && (cur?.board.holders.length ?? 1) > 0 ? (
+            <SkeletonRows n={cur?.board.holders.length ?? 1} kind="working" />
+          ) : holders.length ? (
             holders.map(c => {
               const t = timing(c, now);
               return (
@@ -387,7 +431,9 @@ function BoardSide() {
           )}
         </Section>
         <Section id="recent" title="最近动态" closed={closed.has('recent')} onToggle={toggle}>
-          {logs.length ? (
+          {!board ? (
+            <SkeletonRows n={3} kind="recent" />
+          ) : logs.length ? (
             logs.map(ev => (
               <div key={ev.id} className={cx('recent-row', lastSeen.current > 0 && ev.id > lastSeen.current && 'new')}>
                 <Avatar actor={ev.actor} />
@@ -427,9 +473,11 @@ function InboxSide() {
   const { entering } = useEntering(board, generation);
   const ids = board ? previewCols(board.cols, drag).inbox ?? [] : [];
   const start = boardFlow(board).home?.name ?? '待办';
-  const count = board?.cols.inbox?.length ?? 0;
+  // 快照还没到：数量用工作区里的计数，列表放骨架卡片；不显示「全部整理完了」
+  const loading = !board;
+  const count = board ? board.cols.inbox?.length ?? 0 : cur?.board.counts.inbox ?? null;
   const over = drag?.over === 'inbox';
-  const empty = ids.length === 0;
+  const empty = !loading && ids.length === 0;
   const inboxList = useRef<HTMLDivElement>(null);
   useMasonry(inboxList);
   return (
@@ -446,7 +494,7 @@ function InboxSide() {
     >
       <header className="side-head">
         <span className="side-title">未整理</span>
-        <span className="side-count mono">{count}</span>
+        {count == null ? <Skeleton className="sk-side-count" w={22} h={20} r={999} /> : <span className="side-count mono">{count}</span>}
       </header>
       <button className="new-entry inbox-entry" type="button" onClick={() => openCreator('inbox')}>
         <span className="ne-plus">
@@ -459,6 +507,13 @@ function InboxSide() {
         <kbd>I</kbd>
       </button>
       <div className="side-scroll scroll inbox-scroll">
+        {loading && count !== 0 && (
+          <div className="sk-inbox" aria-busy="true">
+            {Array.from({ length: Math.min(count ?? 2, 3) }, (_, i) => (
+              <SkeletonCard key={i} seed={i + 1} />
+            ))}
+          </div>
+        )}
         <div className="col-list inbox-list" data-list="inbox" ref={inboxList}>
           {board &&
             ids.map(id => {
@@ -500,6 +555,28 @@ function InboxSide() {
 }
 
 /* ---------------- 项目 Tab：项目 → 白板的树 ---------------- */
+
+/** 工作区还没到：两个项目、每个两三块白板的骨架 */
+function SkeletonTree() {
+  return (
+    <div aria-hidden="true" aria-busy="true">
+      {[3, 2].map((boards, p) => (
+        <div key={p}>
+          <div className="tree-row sk-row">
+            <Skeleton w={22} h={22} r={6} />
+            <Skeleton w={p ? 72 : 96} h={11} />
+          </div>
+          {Array.from({ length: boards }, (_, i) => (
+            <div key={i} className="tree-row sk-row" style={{ paddingLeft: 44 }}>
+              <Skeleton w={16} h={16} r={5} />
+              <Skeleton w={['58%', '44%', '50%'][i]} h={10} />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function ProjectsSide() {
   const ws = useData(s => s.ws);
@@ -546,14 +623,16 @@ function ProjectsSide() {
     <section className="side-view" data-view="projects">
       <header className="side-head">
         <span className="side-title">项目</span>
-        <span className="side-sub">{projects.length} 个项目</span>
+        {ws ? <span className="side-sub">{projects.length} 个项目</span> : <Skeleton w={52} h={10} />}
         <button className="icon-btn sm" type="button" data-tip="新建项目" data-tip-align="end" onClick={() => newProject()}>
           <Icon name="plus" sw={1.9} />
         </button>
       </header>
       <SideFilter value={q} onChange={setQ} placeholder="筛选项目和白板" />
       <div className="side-scroll scroll" role="tree" onPointerLeave={() => canvasHighlight(null)}>
-        {rows.length ? (
+        {!ws ? (
+          <SkeletonTree />
+        ) : rows.length ? (
           rows.map(({ p, bs }) => {
             const isClosed = closed.has(p.key) && !query;
             const working = new Set(p.boards.flatMap(b => b.holders)).size;

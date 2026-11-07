@@ -4,6 +4,7 @@ import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label } from '../lib/types';
 import { agentColor, ago, clock, cx, durWords, replay } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
+import { useData } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 
@@ -51,6 +52,8 @@ export const CardView = memo(function CardView({
   const now = useNow(held ? 1000 : 30000);
   const ref = useRef<HTMLElement>(null);
   const sel = useUI(s => s.labelSel);
+  // 正在写入的标签（拖上来还没确认）
+  const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
   const active = filterActive(filter, sel);
   const hit = active ? cardHit(c, filter, sel, labels) : true;
   const t = timing(c, now);
@@ -103,7 +106,7 @@ export const CardView = memo(function CardView({
           {snippet(c.body) && <div className="card-snippet">{snippet(c.body)}</div>}
           {c.labels.length > 0 && (
             <div className="card-labels">
-              <LabelChips ids={c.labels} labels={labels} />
+              <LabelChips ids={c.labels} labels={labels} pending={pending} />
             </div>
           )}
           <button
@@ -147,7 +150,7 @@ export const CardView = memo(function CardView({
           </div>
           {c.labels.length > 0 && (
             <div className="card-labels">
-              <LabelChips ids={c.labels} labels={labels} />
+              <LabelChips ids={c.labels} labels={labels} pending={pending} />
             </div>
           )}
           {doing ? (

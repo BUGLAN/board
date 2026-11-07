@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { CH, edgeId, layoutFlow, midOf, pathD, type Pt } from '../lib/flowGraph';
 import { statusColor, STATUS_COLORS, type FlowQ } from '../lib/schema';
-import type { BoardSnapshot, Status } from '../lib/types';
+import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { refresh } from '../store/data';
 import { toastError } from '../store/ui';
@@ -38,7 +38,8 @@ interface Lift {
   dy: number;
 }
 
-export function FlowBar({ board, path, f }: { board: BoardSnapshot; path: string; f: FlowQ }) {
+/** counts：每个状态的卡片数（快照还没到时用工作区里的计数） */
+export function FlowBar({ counts, path, f }: { counts: Record<string, number>; path: string; f: FlowQ }) {
   const [menu, setMenu] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
@@ -237,7 +238,7 @@ export function FlowBar({ board, path, f }: { board: BoardSnapshot; path: string
 
           {f.list.map(s => {
             const b = g.boxes[s.key];
-            const n = board.cols[s.key]?.length ?? 0;
+            const n = counts[s.key] ?? 0;
             const warn = s.claim && !f.claimTarget(s.key);
             const lifted = lift?.key === s.key;
             const target = conn?.target === s.key;

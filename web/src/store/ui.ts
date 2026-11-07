@@ -60,7 +60,8 @@ export interface PickerReq {
 }
 
 export interface CtxReq {
-  kind: 'project' | 'board';
+  /** prompts：白板页头的「提示词」菜单，id 是白板路径 */
+  kind: 'project' | 'board' | 'prompts';
   id: string;
   x: number;
   y: number;

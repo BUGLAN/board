@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS card_runs (
   started_at INTEGER NOT NULL,
   ended_at   INTEGER,
   how        TEXT,
+  -- 这一次收到的心跳次数（含 final）
+  beats      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (board, card, n),
   FOREIGN KEY (board, card) REFERENCES cards(board, id) ON DELETE CASCADE
 );
@@ -241,6 +243,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'claimed_from'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_from {
             conn.execute_batch("ALTER TABLE cards ADD COLUMN claimed_from TEXT")?;
+        }
+        // 旧数据库的 card_runs 不记心跳次数
+        let has_beats: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('card_runs') WHERE name = 'beats'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_beats {
+            conn.execute_batch("ALTER TABLE card_runs ADD COLUMN beats INTEGER NOT NULL DEFAULT 0")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -637,7 +645,8 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
                 (SELECT r.started_at FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NULL),
                 (SELECT COALESCE(SUM(r.ended_at - r.started_at), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NOT NULL),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
-                (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost')
+                (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost'),
+                (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id)
          FROM cards c WHERE c.board = ?1 {} ORDER BY {COL_ORDER}, c.pos",
         if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
     );
@@ -662,6 +671,7 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
             work_ms: r.get(15)?,
             runs: r.get(16)?,
             runs_lost: r.get(17)?,
+            beats: r.get(18)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
             created_by: row_actor(r.get(9)?, r.get(10)?),

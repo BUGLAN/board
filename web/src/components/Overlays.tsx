@@ -3,10 +3,12 @@
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  copyBoardEnv, copyBoardPrompt, deleteBoard, deleteProject, editBoard, editProject, newBoard, newProject, openBoard, openCard, setProjectColor,
+  copyBoardEnv, copyBoardPrompt, copyQuickPrompt, deleteBoard, deleteProject, editBoard, editProject, newBoard, newProject, openBoard, openCard,
+  setProjectColor,
 } from '../lib/actions';
 import { api } from '../lib/api';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
+import { quickPrompts } from '../lib/prompt';
 import { boardFlow, INBOX, LABEL_COLORS } from '../lib/schema';
 import type { Card } from '../lib/types';
 import { accel, cx, replay } from '../lib/util';
@@ -115,6 +117,14 @@ export function Palette() {
       { id: 'new', group: '操作', title: '新建卡片', hint: 'N', icon: 'plus', run: () => openCreator('todo') },
       { id: 'capture', group: '操作', title: '记一条未整理', hint: 'I', icon: 'inbox', run: () => openCreator('inbox') },
       { id: 'board-prompt', group: '操作', title: '复制给 agent：处理这块白板的待办', sub: `/board-skills ${path}`, icon: 'prompt', run: () => copyBoardPrompt() },
+      ...quickPrompts(path, f.home?.name ?? '待办').map(q => ({
+        id: `quick-${q.kind}`, group: '提示词', title: `复制提示词：${q.title}`, sub: q.text, icon: 'prompt' as IconName, run: () => copyQuickPrompt(q),
+      })),
+      // 每个标签一条：只在搜索时出现，免得空面板被刷屏
+      ...(query ? ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? [] : []).map(l => {
+        const q = quickPrompts(path, f.home?.name ?? '待办', l.name)[3];
+        return { id: `quick-label-${l.id}`, group: '提示词', title: `复制提示词：${q.title}`, sub: q.text, icon: 'prompt' as IconName, run: () => copyQuickPrompt(q) };
+      }),
       { id: 'labels', group: '操作', title: '管理标签', icon: 'tag', run: () => manageLabels(path.split('/')[0]) },
       { id: 'tab-board', group: '切换到', title: '白板', hint: accel('1'), icon: 'board', run: () => setTab('board') },
       { id: 'tab-projects', group: '切换到', title: '项目总览（画布）', hint: accel('2'), icon: 'folder', run: () => setTab('projects') },
@@ -494,7 +504,7 @@ export function CtxMenu() {
 
   useEffect(() => {
     if (!req) return;
-    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx') && closeCtx();
+    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn') && closeCtx();
     document.addEventListener('pointerdown', down);
     window.addEventListener('resize', closeCtx);
     return () => {
@@ -538,6 +548,8 @@ export function CtxMenu() {
         </button>
       </>
     );
+  } else if (req.kind === 'prompts') {
+    body = <PromptsMenu path={req.id} go={go} />;
   } else {
     const m = boardMeta(ws, req.id);
     if (!m) return null;
@@ -576,7 +588,7 @@ export function CtxMenu() {
   }
   return (
     <div
-      className={cx('ctx', pos && 'on')}
+      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', pos && 'on')}
       ref={ref}
       role="menu"
       style={pos ?? { left: -9999, top: -9999 }}
@@ -600,6 +612,48 @@ export function CtxMenu() {
     >
       {body}
     </div>
+  );
+}
+
+/* ============================ 提示词菜单 ============================ */
+/* 白板页头「提示词」：四条快捷提示词，点一下复制；最后一条先选标签 */
+
+function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () => void }) {
+  const ws = useData(s => s.ws);
+  const board = useData(s => s.board);
+  const home = boardFlow(board).home?.name ?? '待办';
+  const labels = ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? [];
+  const [split, upload, all] = quickPrompts(path, home);
+  return (
+    <>
+      <div className="ctx-title">
+        <Icon name="prompt" />
+        <b>复制给 agent 的提示词</b>
+      </div>
+      {[split, upload, all].map(q => (
+        <button key={q.kind} type="button" data-do={`quick-${q.kind}`} className="qp-item" onClick={go(() => copyQuickPrompt(q))}>
+          <span className="qp-title">{q.title}</span>
+          <code className="qp-text">{q.text}</code>
+        </button>
+      ))}
+      <div className="qp-item qp-labels">
+        <span className="qp-title">做{home}里带指定标签的任务</span>
+        {labels.length ? (
+          <div className="qp-chips">
+            {labels.map(l => {
+              const q = quickPrompts(path, home, l.name)[3];
+              return (
+                <button key={l.id} type="button" data-do={`quick-label-${l.id}`} data-tip={q.text} onClick={go(() => copyQuickPrompt(q))}>
+                  <LabelChip label={l} />
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <span className="qp-empty">项目里还没有标签</span>
+        )}
+      </div>
+    </>
   );
 }
 

@@ -52,9 +52,9 @@ export function Ring({ r, p, className }: { r: number; p: number; className?: st
   );
 }
 
-export function LabelChip({ label, onRemove }: { label: Pick<Label, 'id' | 'name' | 'color'>; onRemove?: () => void }) {
+export function LabelChip({ label, onRemove, pending }: { label: Pick<Label, 'id' | 'name' | 'color'>; onRemove?: () => void; pending?: boolean }) {
   return (
-    <span className="lb" style={{ ['--lc' as string]: label.color }} data-label={label.id}>
+    <span className={pending ? 'lb pending' : 'lb'} aria-busy={pending || undefined} title={pending ? '正在加上…' : undefined} style={{ ['--lc' as string]: label.color }} data-label={label.id}>
       <i />
       {label.name}
       {onRemove && (
@@ -74,14 +74,15 @@ export function LabelChip({ label, onRemove }: { label: Pick<Label, 'id' | 'name
   );
 }
 
-/** 卡片上的标签：最多显示 max 个，其余折叠成 +n */
-export function LabelChips({ ids, labels, max = 3 }: { ids: number[]; labels: Label[]; max?: number }) {
-  const ls = ids.map(id => labels.find(l => l.id === id)).filter(Boolean) as Label[];
+/** 卡片上的标签：按项目里标签的顺序排（加上新标签、服务端确认时位置都不跳），最多显示 max 个，其余折叠成 +n。
+    pending：正在写入的标签，画成半透明 + 扫光 */
+export function LabelChips({ ids, labels, max = 3, pending }: { ids: number[]; labels: Label[]; max?: number; pending?: number[] }) {
+  const ls = labels.filter(l => ids.includes(l.id));
   if (!ls.length) return null;
   return (
     <>
       {ls.slice(0, max).map(l => (
-        <LabelChip key={l.id} label={l} />
+        <LabelChip key={l.id} label={l} pending={pending?.includes(l.id)} />
       ))}
       {ls.length > max && (
         <span className="lb more" title={ls.slice(max).map(l => l.name).join('、')}>

@@ -2,7 +2,7 @@
    跨组件的界面动作：打开白板、整理、复制为提示词、项目与白板的新建 / 编辑 / 删除
    ========================================================================== */
 import { api } from './api';
-import { boardPrompt, cardPrompt } from './prompt';
+import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
@@ -58,12 +58,12 @@ export async function triage(id: number) {
 /* ------------------------------ 复制为提示词 ------------------------------ */
 /* 只复制一行 skill 调用（/board-skills mini/main#2），agent 自己用 board CLI 读取卡片 */
 
-async function copyPrompt(text: string) {
+async function copyPrompt(text: string, hint = '发给装了 board-skills 的 agent 即可') {
   const ok = await copyText(text);
   toast({
     type: ok ? 'success' : 'info',
     title: ok ? `已复制：${text}` : text,
-    text: ok ? '发给装了 board-skills 的 agent 即可' : '没能写入剪贴板，请手动复制上面这一行',
+    text: ok ? hint : '没能写入剪贴板，请手动复制上面这一行',
     duration: ok ? 3200 : 8000,
   });
 }
@@ -73,6 +73,9 @@ export const copyBoardPrompt = (path = data().path) => copyPrompt(boardPrompt(pa
 
 /** 一张卡片 */
 export const copyCardPrompt = (c: Pick<CardDetail, 'id'>, path = data().path) => copyPrompt(cardPrompt(path, c.id));
+
+/** 快捷提示词：拆解任务、上传任务、做待办全部、做待办中带指定标签的任务 */
+export const copyQuickPrompt = (q: QuickPrompt) => copyPrompt(q.text, q.hint);
 
 /* ------------------------------ 项目与白板 ------------------------------ */
 

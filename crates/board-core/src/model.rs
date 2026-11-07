@@ -334,6 +334,9 @@ pub struct Card {
     pub runs: i64,
     /// 其中几次是异常退出
     pub runs_lost: i64,
+    /// 收到的心跳总次数（各次之和，含 final）
+    #[serde(default)]
+    pub beats: i64,
     /// 领取它时所在的可领取状态；释放后回到这里（PRD §8 规则 7）
     #[serde(default)]
     pub claimed_from: Option<String>,

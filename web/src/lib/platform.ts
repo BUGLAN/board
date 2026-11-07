@@ -50,6 +50,8 @@ export function setTheme(p: ThemePref) {
   if (p === 'auto') delete root.dataset.theme;
   else root.dataset.theme = p;
   pref.set('theme', p);
+  // 桌面端：告诉外壳，下次的启动页和窗口底色按这个主题来（旧版外壳没有这个命令，忽略）
+  if (ipc) invoke('remember_theme', { theme: p }).catch(() => {});
 }
 export const getTheme = () => pref.get<ThemePref>('theme', 'auto');
 export function cycleTheme(): ThemePref {

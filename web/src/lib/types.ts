@@ -94,6 +94,8 @@ export interface Card {
   runs: number;
   /** 其中几次是异常退出 */
   runsLost: number;
+  /** 收到的心跳总次数（各次之和，含 final）；旧服务端没有这个字段 */
+  beats?: number;
   /** 领取它时所在的可领取状态；释放后回到这里 */
   claimedFrom: string | null;
   labels: number[];

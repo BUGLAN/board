@@ -1,0 +1,197 @@
+# 自动部署（docs/ci-deploy.md、docs/deploy.md「自动部署」）：
+#   push main → build：构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
+#             → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上提交号；失败切回上一个镜像
+# 手动运行时填 7 位提交号：跳过 build，直接部署 GHCR 上已有的镜像（回滚用）
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    # 改动全部在这些路径里时不触发
+    paths-ignore:
+      - "docs/**"
+      - "prototype/**"
+      - "lianzi/**"
+      - "README.md"
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "要部署的 7 位提交号（回滚用，跳过构建）；留空则构建并部署 main 最新提交"
+        required: false
+        default: ""
+
+# 同一时间只有一次部署：后来的排队，不取消正在进行的
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/buglan/board-server
+
+jobs:
+  build:
+    # 只部署 main（手动运行也只认 main）；手动运行且填了提交号：跳过构建
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.commit == '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: commit
+        run: echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装依赖（postinstall 会装 web/ 的依赖）
+        run: npm ci
+
+      - name: 构建界面
+        run: npm run build:web
+
+      - name: 测试
+        run: cargo test --locked
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: 交叉编译 board-server
+        run: ./deploy/build-linux.sh
+        env:
+          BOARD_COMMIT: ${{ steps.commit.outputs.commit }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: prebuilt
+          push: true
+          # 不生成 provenance / SBOM：每次推送在 GHCR 上只占一个版本，保留 5 个版本就是 5 次部署
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.commit.outputs.commit }}
+            ${{ env.IMAGE }}:latest
+
+      - name: GHCR 只保留最新 5 个版本
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: board-server
+          package-type: container
+          min-versions-to-keep: 5
+
+  deploy:
+    needs: build
+    # build 成功；或者手动回滚（build 被跳过）
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (needs.build.result == 'success' ||
+       (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' && github.event.inputs.commit != ''))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      HOST: ${{ vars.DEPLOY_HOST }}
+      DIR: ${{ vars.DEPLOY_DIR }}
+      URL: ${{ vars.DEPLOY_URL }}
+    steps:
+      # 只用到 docker-compose.yml 和 deploy/ 下的脚本（回滚时也用 main 当前的版本）
+      - uses: actions/checkout@v4
+
+      - name: 要部署的提交号
+        id: commit
+        env:
+          INPUT: ${{ github.event.inputs.commit }}
+          BUILT: ${{ needs.build.outputs.commit }}
+        run: |
+          c=${INPUT:-$BUILT}
+          echo "$c" | grep -Eq '^[0-9a-f]{7}$' || { echo "::error::提交号格式不对：${c}（要 7 位小写十六进制）"; exit 1; }
+          echo "commit=$c" >> "$GITHUB_OUTPUT"
+          echo "部署 $IMAGE:$c → $HOST:$DIR（$URL）"
+
+      - name: 配置 SSH
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [ -n "$HOST" ] && [ -n "$DIR" ] && [ -n "$URL" ] || { echo "::error::没有设置 DEPLOY_HOST / DEPLOY_DIR / DEPLOY_URL"; exit 1; }
+          [ -n "$KEY" ] && [ -n "$KNOWN" ] || { echo "::error::没有设置 DEPLOY_SSH_KEY / DEPLOY_KNOWN_HOSTS"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+          # 严格校验主机密钥：服务器的主机密钥必须在 DEPLOY_KNOWN_HOSTS 里
+          cat > ~/.ssh/config <<'EOF'
+          Host *
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            BatchMode yes
+            ConnectTimeout 15
+          EOF
+
+      - name: 拷贝 compose 和脚本到服务器
+        run: |
+          ssh "$HOST" "mkdir -p '$DIR/deploy'"
+          scp -q docker-compose.yml "$HOST:$DIR/docker-compose.yml"
+          scp -q deploy/backup.sh deploy/remote-deploy.sh "$HOST:$DIR/deploy/"
+          ssh "$HOST" "chmod +x '$DIR/deploy/backup.sh' '$DIR/deploy/remote-deploy.sh'"
+
+      - name: 备份、拉镜像、重启、等健康检查
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+          ACTOR: ${{ github.actor }}
+        # 令牌走 stdin，不出现在命令行和日志里
+        run: printf '%s' "$TOKEN" | ssh "$HOST" "cd '$DIR' && ./deploy/remote-deploy.sh deploy '$COMMIT' '$ACTOR'"
+
+      - name: 核对线上提交号
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: |
+          got=
+          for i in $(seq 1 12); do
+            got=$(curl -fsS --max-time 15 "${URL%/}/api/health?t=$(date +%s)" 2>/dev/null | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p' || true)
+            if [ "$got" = "$COMMIT" ]; then echo "✓ 线上 $URL 是 $COMMIT"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::线上 $URL 的提交号是「${got:-取不到}」，应为 $COMMIT，切回部署前的镜像"
+          ssh "$HOST" "cd '$DIR' && ./deploy/remote-deploy.sh rollback"
+          exit 1
+
+      - name: 清理旧镜像
+        run: ssh "$HOST" "cd '$DIR' && ./deploy/remote-deploy.sh cleanup"
+
+      - name: 删除部署密钥
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

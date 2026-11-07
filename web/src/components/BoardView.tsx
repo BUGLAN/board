@@ -9,14 +9,15 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useMasonry } from '../lib/masonry';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
-import { boardFlow, INBOX, statusColor, type FlowQ } from '../lib/schema';
+import { flowOf, INBOX, statusColor, type FlowQ } from '../lib/schema';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
-import { openCreator, setFilter, setTab, toastError, useUI, type DragUI } from '../store/ui';
+import { closeCtx, openCreator, openCtx, setFilter, setTab, toastError, useUI, type DragUI } from '../store/ui';
 import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
+import { Skeleton, SkeletonCard } from './Skeleton';
 
 /** 拖拽预览：被拖的卡片放到预览位置 */
 export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
@@ -57,7 +58,12 @@ export function BoardView() {
   const labels = cur?.project.labels ?? [];
   const { entering, fresh } = useEntering(board, generation);
   const cols = useMemo(() => (board ? previewCols(board.cols, drag) : null), [board, drag]);
-  const f = boardFlow(board);
+  // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
+  const f = flowOf(board?.statuses ?? cur?.board.statuses);
+  const counts = useMemo(
+    () => (board ? Object.fromEntries(Object.entries(board.cols).map(([k, v]) => [k, v.length])) : cur?.board.counts ?? {}),
+    [board, cur?.board.counts],
+  );
   const path = cur?.board.path ?? '';
   // 「下一张」：去掉正在拖的卡片再算
   const nextId = f.nextCard(cols && drag ? Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) : cols);
@@ -106,15 +112,38 @@ export function BoardView() {
           </span>
         )}
         <div className="page-actions">
+          <button
+            className="btn prompts-btn"
+            type="button"
+            aria-haspopup="menu"
+            aria-label="复制给 agent 的提示词"
+            onClick={e => {
+              const open = useUI.getState().ctx;
+              if (open?.kind === 'prompts') return closeCtx();
+              openCtx({ kind: 'prompts', id: path, x: 0, y: 0, anchor: e.currentTarget.getBoundingClientRect() });
+            }}
+          >
+            <Icon name="prompt" />
+            提示词
+          </button>
           <button className="btn brand new-card-btn" type="button" onClick={() => openCreator('todo')}>
             <Icon name="plus" sw={2} />
             新建卡片<kbd>N</kbd>
           </button>
         </div>
       </div>
-      {board && <FlowBar key={`f${generation}`} board={board} path={path} f={f} />}
+      {cur && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
       <ColTabs board={board} f={f} boardRef={boardRef} />
-      <div className={cx('board flow-scroll scroll', drag && 'dragging')} ref={boardRef} aria-label="白板" key={generation}>
+      <div
+        className={cx('board flow-scroll scroll', drag && 'dragging')}
+        ref={boardRef}
+        aria-label="白板"
+        aria-busy={!board || undefined}
+        key={generation}
+      >
+        {!board && f.list.length > 0 && (
+          <Magnet path={path} statuses={f.list} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={counts[s.key] ?? 0} />} />
+        )}
         {board && (
           <Magnet
             path={path}
@@ -143,6 +172,103 @@ export function BoardView() {
             }}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ 骨架 ------------------------------ */
+
+/** 状态块骨架：头部和真实状态块一样（名称、颜色、规则、数量），卡片位置按数量放最多 3 张骨架卡片。
+    fake：首屏还不知道真实数量，数量也用骨架 */
+function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: number; f: FlowQ; count: number; fake?: boolean }) {
+  const n = Math.min(count, col.final ? 4 : 3);
+  return (
+    <section
+      className={cx('col sk-col', count === 0 && 'is-empty', col.final && 'is-final')}
+      style={{ ['--c' as string]: statusColor(col.color), ['--i' as string]: index + 1 }}
+      aria-label={col.name}
+    >
+      <header className="col-head">
+        <span className="col-i">{index + 1}</span>
+        <span className="col-dot" />
+        <h2 className="col-name">{col.name}</h2>
+        {col.claim && (
+          <span className="col-tag claim">
+            <Icon name="claim" />
+            <span className="t">agent 从这里领</span>
+          </span>
+        )}
+        {col.lock && (
+          <span className="col-tag">
+            <Icon name="lock" />
+            <span className="t">仅领取进入</span>
+          </span>
+        )}
+        {fake ? (
+          <Skeleton className="sk-count" w={26} h={22} r={11} />
+        ) : (
+          <span className="col-count">
+            <span>{count}</span>
+          </span>
+        )}
+      </header>
+      <div className="col-body">
+        <div className="col-list">
+          {Array.from({ length: n }, (_, i) =>
+            col.final ? (
+              <div key={i} className="sk-done" aria-hidden="true">
+                <Skeleton w={14} h={14} r={4} />
+                <Skeleton w={['70%', '54%', '62%', '48%'][i]} h={10} />
+              </div>
+            ) : (
+              <SkeletonCard key={i} seed={index + i} />
+            ),
+          )}
+        </div>
+        <div className="col-empty">
+          <Icon name={col.claim ? 'inbox' : col.lock ? 'claim' : col.final ? 'sparkle' : 'move'} />
+          <div>{emptyText(col, f)}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** 默认工作流（还没有工作区时的首屏骨架用） */
+const DEFAULT_FLOW: Status[] = [
+  { key: 'todo', name: '待办', color: 'todo', claim: true, lock: false, final: false, layout: null, to: ['doing'] },
+  { key: 'doing', name: '进行中', color: 'doing', claim: false, lock: true, final: false, layout: null, to: ['review'] },
+  { key: 'review', name: '待审核', color: 'review', claim: false, lock: false, final: false, layout: null, to: ['done'] },
+  { key: 'done', name: '已完成', color: 'done', claim: false, lock: false, final: true, layout: null, to: [] },
+];
+const DEFAULT_COUNTS: Record<string, number> = { todo: 3, doing: 1, review: 2, done: 4 };
+
+/** 首屏骨架：工作区还没到时代替整个白板页（页头、工作流条、4 个默认状态块） */
+export function BoardSkeleton() {
+  const f = flowOf(DEFAULT_FLOW);
+  return (
+    <div className="page page-board" data-page="board" aria-busy="true" aria-label="正在打开白板">
+      <div className="page-head">
+        <div className="sk-crumbs">
+          <Skeleton w={64} h={12} />
+          <Skeleton w={88} h={16} />
+        </div>
+        <div className="page-actions">
+          <Skeleton w={78} h={34} r={10} />
+          <Skeleton w={112} h={34} r={10} />
+        </div>
+      </div>
+      <div className="wf-bar sk-flow" aria-hidden="true">
+        <span className="wf-label">工作流</span>
+        <div className="sk-pills">
+          {[64, 72, 72, 68].map((w, i) => (
+            <Skeleton key={i} w={w} h={26} r={8} />
+          ))}
+        </div>
+      </div>
+      <div className="board flow-scroll scroll">
+        <Magnet path="" statuses={DEFAULT_FLOW} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={DEFAULT_COUNTS[s.key]} fake />} />
       </div>
     </div>
   );

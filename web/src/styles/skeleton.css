@@ -1,0 +1,69 @@
+/* ==========================================================================
+   骨架屏（components/Skeleton.tsx）：--surface-3 底色 + 一道扫光
+   减弱动态效果（系统设置或「设置 → 动效」）时只留底色
+   ========================================================================== */
+.sk {
+  display: block; flex: none; position: relative; overflow: hidden; max-width: 100%;
+  background: var(--surface-3); border-radius: var(--r-xs);
+}
+.sk::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 7%, transparent), transparent);
+  animation: sk-sweep calc(var(--dur-4) * 2) var(--ease-in-out) infinite;
+}
+@keyframes sk-sweep { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .sk::after { display: none; } }
+:root[data-motion="reduced"] .sk::after { display: none; }
+
+.sk-text { display: flex; flex-direction: column; width: 100%; }
+
+/* 卡片骨架：和一行标题 + 一行标签的卡片同高 */
+.card.sk-card { cursor: default; pointer-events: none; box-shadow: inset 0 0 0 1px var(--line); }
+.card.sk-card::after { display: none; }
+.sk-card .card-row { min-height: 18px; }
+.sk-card-title { height: 20.25px; display: flex; align-items: center; }
+.sk-card .card-labels .sk { height: 20px; }
+
+/* 状态块骨架：头部是真的（名称、颜色、数量），卡片位置是骨架 */
+.col.sk-col .col-head { cursor: default; }
+.sk-col .col-list { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-height: 0; }
+.col.sk-col.is-final .col-list { gap: 4px; }
+.sk-done { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+
+/* 首屏还没有工作区时：页头、工作流条的占位 */
+.sk-crumbs { display: flex; align-items: center; gap: 10px; }
+.wf-bar.sk-flow { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.sk-flow .sk-pills { display: flex; align-items: center; gap: 22px; min-width: 0; overflow: hidden; }
+.sk-count { margin-left: auto; }
+.page-head .sk-crumbs, .page-head .page-actions:has(.sk) { min-width: 0; overflow: hidden; }
+
+/* ---------------- 侧栏骨架 ---------------- */
+.tree-head .sk-n { margin-left: auto; }
+.sk-labels { display: flex; flex-wrap: wrap; gap: 6px; }
+.sk-row { pointer-events: none; }
+.tree-row.sk-row { min-height: 28px; }
+.tree-row .sk-tm { margin-left: auto; }
+.recent-row.sk-row { align-items: start; }
+.sk-lines { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
+.sk-inbox { display: flex; flex-direction: column; gap: 8px; }
+.side-head .sk-side-count { margin-left: auto; }
+
+/* ---------------- 卡片详情：动态、附件骨架 ---------------- */
+.sk-timeline .tl-item.sk-tl { align-items: start; }
+.sk-tl .sk-line { display: flex; align-items: center; min-height: 24px; }
+.sk-bubble {
+  display: flex; flex-direction: column; gap: 9px; padding: 11px 13px 13px; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line);
+}
+.d-side-head .sk.count { display: inline-block; vertical-align: middle; margin-left: 4px; }
+.sk-attach { display: flex; flex-direction: column; gap: 10px; }
+.sk-attach-row { display: flex; gap: 8px; }
+/* 骨架换成真实动态：淡入，≤240ms */
+.timeline.sk-swap { animation: sk-swap var(--dur-2) var(--ease-out) both; }
+@keyframes sk-swap { from { opacity: 0; } }
+/* 没有动态 / 没取回来 */
+.d-activity-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 160px;
+  font-size: 12.5px; color: var(--text-3); text-align: center;
+}
+.d-activity-empty b { font-size: 13px; color: var(--text); font-weight: 600; }

@@ -375,6 +375,7 @@ impl<'a> W<'a> {
                 let r = self.row(b, id)?;
                 if done {
                     if is_holder(&r) {
+                        self.count_beat(b, id)?;
                         if let Some((n, ms)) = self.close_run(b, id, self.now, "final")? {
                             self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
                             self.track(b, id, actor, "beat", &format!("结束了心跳，正常退出，第 {n} 次耗时 {}", dur_words(ms)))?;
@@ -414,6 +415,7 @@ impl<'a> W<'a> {
                         &format!("开始第 {n} 次（第一次心跳；每 {} 秒一次，连续 {BEAT_MISSES} 次没收到判定异常退出）", BEAT_MS / 1000),
                     )?;
                 }
+                self.count_beat(b, id)?;
                 return self.read().card(board, id);
             }
 
@@ -555,6 +557,12 @@ impl<'a> W<'a> {
     }
 
     /// 结束进行中的这一次，返回（第几次，耗时）；没有进行中的一次时返回 None
+    /// 进行中的这一次收到一次心跳
+    fn count_beat(&mut self, b: i64, id: i64) -> Result<()> {
+        self.tx.execute("UPDATE card_runs SET beats = beats + 1 WHERE board = ?1 AND card = ?2 AND ended_at IS NULL", params![b, id])?;
+        Ok(())
+    }
+
     pub(crate) fn close_run(&mut self, b: i64, id: i64, end: i64, how: &str) -> Result<Option<(i64, i64)>> {
         let open: Option<(i64, i64)> = self
             .tx

@@ -182,7 +182,7 @@
 }
 .card-act svg { width: 12px; height: 12px; }
 .card.inbox:hover .card-act, .card.inbox:focus-visible .card-act { opacity: 1; transform: none; pointer-events: auto; }
-.card-act:hover { background: var(--brand); }
+.card-act:hover { background: var(--brand); color: var(--brand-fg); }
 @media (hover: none) { .card-act { opacity: 1; transform: none; pointer-events: auto; position: static; margin-top: 8px; } }
 
 /* ---------------- 主内容区 ---------------- */

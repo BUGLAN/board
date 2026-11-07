@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remember-theme"
+description = "Enables the remember_theme command without any pre-configured scope."
+commands.allow = ["remember_theme"]
+
+[[permission]]
+identifier = "deny-remember-theme"
+description = "Denies the remember_theme command without any pre-configured scope."
+commands.deny = ["remember_theme"]
