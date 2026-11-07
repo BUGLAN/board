@@ -1,6 +1,7 @@
 //! Board 服务：界面和远程模式的 CLI 都通过它读写白板。
 //!
-//! - 身份（`auth`）：所有 `/api/*` 都要登录（GitHub 会话 Cookie）或带访问令牌，只有 `/api/health` 例外；
+//! - 身份（`auth`）：所有 `/api/*` 都要登录（GitHub 会话 Cookie）或带访问令牌，只有 `/api/health` 例外
+//!   （它返回版本和提交号，部署后用来核对线上版本）；
 //!   本机模式（`--local`）只接受本机访问，不需要登录
 //! - `GET /api/workspace`、`/api/board`、`/api/card`：快照
 //! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`
@@ -172,7 +173,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/tokens", get(auth::tokens).post(auth::new_token))
         .route("/tokens/{id}", delete(auth::revoke))
-        .route("/health", get(|| async { Json(json!({ "ok": true })) }))
+        .route("/health", get(health))
         .fallback(|| async { ApiError(BoardError::usage("未知的接口")) })
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth::guard));
 
@@ -276,8 +277,17 @@ fn spawn_background(state: AppState) {
 
 /* ------------------------------ 读 ------------------------------ */
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// 编译时的提交号，见 build.rs
+pub const COMMIT: &str = env!("BOARD_COMMIT");
+
 async fn info(State(s): State<AppState>) -> Json<Value> {
-    Json(json!({ "name": "board", "version": env!("CARGO_PKG_VERSION"), "db": s.0.db.display().to_string() }))
+    Json(json!({ "name": "board", "version": VERSION, "commit": COMMIT, "db": s.0.db.display().to_string() }))
+}
+
+/// `GET /api/health`：不需要登录。带上版本和提交号，部署后用来核对线上是不是这次的版本（deploy/deploy.sh）
+async fn health() -> Json<Value> {
+    Json(json!({ "ok": true, "version": VERSION, "commit": COMMIT }))
 }
 
 async fn workspace(State(s): State<AppState>) -> ApiResult<Workspace> {

@@ -226,9 +226,13 @@ fn unauthenticated_requests_are_rejected() {
     // 错误的令牌
     let r = send("GET", &format!("{}/api/workspace", s.url), &[("authorization", "Bearer bd_nope")], None);
     assert_eq!((r.status, r.code()), (401, "INVALID_TOKEN"));
-    // 健康检查不需要登录
+    // 健康检查不需要登录，带版本和提交号（部署后用来核对线上版本）
     let r = send("GET", &format!("{}/api/health", s.url), &[], None);
     assert_eq!(r.status, 200);
+    assert_eq!(r.body["ok"], true);
+    assert_eq!(r.body["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(r.body["commit"], board_server::COMMIT);
+    assert!(!board_server::COMMIT.is_empty());
 }
 
 #[test]

@@ -167,13 +167,20 @@ docker compose start board
 
 ## 7. 升级
 
-先在服务器上跑一次 `deploy/backup.sh`。然后在本机重新编译并同步（第 2 节的 `./deploy/build-linux.sh` 和 `rsync`），再在服务器上：
+在本机仓库里，提交好要上线的改动后：
 
 ```bash
-docker compose up -d --build
+./deploy/deploy.sh
 ```
 
-数据库结构在启动时自动补齐。
+它依次执行：检查服务器 `.env` 是 `BOARD_BUILD=prebuilt` → 服务器上跑 `deploy/backup.sh` → 本机 `deploy/build-linux.sh`（把提交号编进可执行文件）→ 按第 2 节的排除规则 rsync → 服务器上 `docker compose up -d --build` → 等容器健康检查通过 → 核对线上 `/api/health` 返回的提交号等于本机 `HEAD`。任何一步失败都停下并报错。
+
+- `./deploy/deploy.sh --dry-run`：只检查本机、列出要执行的步骤，不编译、不连服务器
+- `./deploy/deploy.sh --check`：只核对线上是不是本机 `HEAD`
+- 工作区有未提交的改动时拒绝部署；确实要部署时加 `ALLOW_DIRTY=1`，线上提交号带 `-dirty`
+- 服务器和地址可以用环境变量覆盖：`BOARD_DEPLOY_HOST`（默认 `root@45.202.241.98`）、`BOARD_DEPLOY_DIR`（默认 `/root/repo/board`）、`BOARD_DEPLOY_URL`（默认 `https://board.buglan.com`）
+
+桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
 ## 8. 日志
 
