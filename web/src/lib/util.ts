@@ -3,6 +3,11 @@ import type { Actor } from './types';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 export const MOD = isMac ? '⌘' : 'Ctrl';
+
+/** 快捷键显示：macOS 用 ⌘1、⌘⇧N；Windows / Linux 用 Ctrl+1、Ctrl+Shift+N */
+export function accel(key: string, shift = false): string {
+  return isMac ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
+}
 export const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
 export const reduceMotion = () =>
   document.documentElement.dataset.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;

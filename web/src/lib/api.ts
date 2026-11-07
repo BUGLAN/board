@@ -4,13 +4,15 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Me, Pos, TokenInfo, Workspace } from './types';
+import type { Attachment, Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Me, Pos, ServerInfo, TokenInfo, Workspace } from './types';
 
 declare global {
   interface Window {
     __BOARD_SHELL__?: string;
     /** 'custom'：外壳没有系统标题栏，窗口按钮由界面画（Windows） */
     __BOARD_TITLEBAR__?: string;
+    /** 桌面外壳的版本（外壳在加载页面前注入） */
+    __BOARD_SHELL_VERSION__?: string;
   }
 }
 
@@ -91,6 +93,8 @@ const q = encodeURIComponent;
 
 export const api = {
   me: () => req<Me>('GET', '/api/me'),
+  /** 服务端版本和编译时的提交号 */
+  info: () => req<ServerInfo>('GET', '/api/info'),
   logout: () => req('POST', '/api/auth/logout'),
   tokens: () => req<TokenInfo[]>('GET', '/api/tokens'),
   createToken: (name: string) => req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', { name }),

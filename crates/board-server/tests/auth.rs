@@ -236,6 +236,19 @@ fn unauthenticated_requests_are_rejected() {
 }
 
 #[test]
+fn info_reports_version_and_commit() {
+    // 设置页底部显示服务端版本：登录后 GET /api/info 返回编译时的版本和提交号
+    let s = github("buglan");
+    let cookie = session(&s);
+    let r = send("GET", &format!("{}/api/info", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body["name"], "board");
+    assert_eq!(r.body["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(r.body["commit"], board_server::COMMIT);
+    assert!(!board_server::COMMIT.is_empty());
+}
+
+#[test]
 fn github_login_session_and_logout() {
     let s = github("BugLan");
     let cookie = session(&s);

@@ -5,10 +5,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { api } from '../lib/api';
-import { canSetEnv, getTheme, setBoardEnv, setDensity, setMotion, setTheme, type Density, type Motion, type ThemePref } from '../lib/platform';
+import { canSetEnv, getTheme, isWindows, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
-import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
+import { accel, ago, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
 import { useData } from '../store/data';
@@ -88,10 +88,10 @@ const Row = ({ label, hint, children }: { label: string; hint?: string; children
   </div>
 );
 
-function Code({ cmd, note, plain }: { cmd: string; note?: string; plain?: boolean }) {
+function Code({ cmd, note, plain, ps }: { cmd: string; note?: string; plain?: boolean; ps?: boolean }) {
   const [done, setDone] = useState(false);
   return (
-    <div className={cx('code-line', plain && 'plain')}>
+    <div className={cx('code-line', plain && 'plain', ps && 'ps')}>
       <code>{cmd}</code>
       {note && <span>{note}</span>}
       <button
@@ -333,6 +333,25 @@ export function SettingsPage() {
   const [theme, setT] = useState<ThemePref>(getTheme);
   const [density, setD] = useState<Density>(() => pref.get('density', 'comfy'));
   const [motion, setM] = useState<Motion>(() => pref.get('motion', 'full'));
+  const [server, setServer] = useState<{ version: string; commit: string } | null>(null);
+  const [serverFailed, setServerFailed] = useState(false);
+
+  // 底部显示服务端版本（部署后用来核对线上是不是新版）；每次进入设置页刷新
+  useEffect(() => {
+    if (tab !== 'settings') return;
+    let alive = true;
+    api
+      .info()
+      .then(i => {
+        if (!alive) return;
+        setServer(i);
+        setServerFailed(false);
+      })
+      .catch(() => alive && setServerFailed(true));
+    return () => {
+      alive = false;
+    };
+  }, [tab]);
 
   useEffect(() => {
     const el = page.current;
@@ -473,8 +492,14 @@ export function SettingsPage() {
             agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 只是 agent 的名字。不用的令牌随时吊销。
           </p>
           <div className="code-block">
-            <Code cmd={`export BOARD_URL=${location.origin}`} note="服务端地址" />
+            <Code cmd={`export BOARD_URL=${location.origin}`} note={isWindows ? '服务端地址（bash）' : '服务端地址'} />
             <Code cmd="export BOARD_TOKEN=<访问令牌>" note="在下面新建" />
+            {isWindows && (
+              <>
+                <Code ps cmd={`$env:BOARD_URL="${location.origin}"`} note="服务端地址（PowerShell）" />
+                <Code ps cmd='$env:BOARD_TOKEN="<访问令牌>"' note="在下面新建（PowerShell）" />
+              </>
+            )}
           </div>
           <Tokens />
           <details className="errcodes">
@@ -506,10 +531,10 @@ export function SettingsPage() {
           <div className="keys">
             {(
               [
-                [`${MOD} K  /`, '搜索 / 命令面板'],
+                [`${accel('K')}  /`, '搜索 / 命令面板'],
                 ['P', '打开项目 / 白板切换器'],
-                [`${MOD} 1~4`, '切换到白板 / 项目 / 未整理 / 设置'],
-                [`${MOD} B`, '收起 / 展开侧栏'],
+                [accel('1~4'), '切换到白板 / 项目 / 未整理 / 设置'],
+                [accel('B'), '收起 / 展开侧栏'],
                 ['N', '新建卡片'],
                 ['I', '记一条未整理'],
                 ['Esc', '关闭弹窗、面板'],
@@ -530,6 +555,11 @@ export function SettingsPage() {
             ))}
           </div>
         </section>
+
+        <footer className="settings-foot">
+          <span>{server ? `服务端 ${server.version} · ${server.commit}` : serverFailed ? '服务端版本暂不可用' : '服务端版本读取中…'}</span>
+          {shellVersion && <span>桌面端 {shellVersion}</span>}
+        </footer>
       </div>
     </div>
   );

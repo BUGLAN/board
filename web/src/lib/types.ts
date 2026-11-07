@@ -182,6 +182,13 @@ export interface TokenInfo {
   lastUsedAt: number | null;
 }
 
+/** 服务端版本信息（GET /api/info）：部署后用来核对线上是不是新版 */
+export interface ServerInfo {
+  name: string;
+  version: string;
+  commit: string;
+}
+
 export type Cmd =
   | { op: 'new'; title: string; body?: string; column?: 'inbox'; top?: boolean; labels?: number[] }
   | { op: 'edit'; id: number; title?: string; body?: string }

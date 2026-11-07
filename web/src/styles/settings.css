@@ -8,6 +8,12 @@
 .settings-hero h1 { font-family: var(--f-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
 .settings-hero p { margin-top: 4px; color: var(--text-3); font-size: 13.5px; }
 
+/* 底部：服务端 / 桌面端版本，部署后用来确认线上是不是新版 */
+.settings-foot {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px; padding: 12px 4px 0;
+  border-top: 1px solid var(--line); font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3);
+}
+
 .set-card {
   position: relative; padding: 18px 20px 8px; border-radius: var(--r-lg); margin-bottom: 16px;
   background: color-mix(in srgb, var(--surface) 80%, transparent);
@@ -61,6 +67,7 @@
 .code-line { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; font-family: var(--f-mono); font-size: 12.5px; color: var(--term-text); }
 .code-line + .code-line { border-top: 1px solid rgba(255, 255, 255, .05); }
 .code-line code::before { content: "$ "; color: var(--term-dim); }
+.code-line.ps code::before { content: "PS> "; }
 .code-line span { margin-left: auto; font-family: var(--f-sans); font-size: 11.5px; color: var(--term-dim); white-space: nowrap; }
 .code-line .copy { width: 26px; height: 26px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--term-dim); transition: background-color var(--dur-2), color var(--dur-2); }
 .code-line .copy:hover { background: rgba(255, 255, 255, .08); color: #fff; }

@@ -7,7 +7,7 @@ import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, MOD, replay } from '../lib/util';
+import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
@@ -203,18 +203,6 @@ function Body({ card: c, on }: { card: Detail; on: boolean }) {
         <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 /board-skills ${useData.getState().path}#${c.id}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
           <Icon name="prompt" />
           复制为提示词
-        </button>
-        <button
-          className="icon-btn"
-          type="button"
-          data-tip={`复制 board show ${c.id}`}
-          data-tip-align="end"
-          onClick={async () => {
-            const ok = await copyText(`board show ${c.id}`);
-            toast({ type: ok ? 'success' : 'info', title: ok ? '已复制' : `board show ${c.id}`, text: ok ? `board show ${c.id}` : undefined, duration: 1800 });
-          }}
-        >
-          <Icon name="copy" />
         </button>
         <button className="icon-btn" type="button" data-act="close" data-tip="关闭  esc" data-tip-align="end" onClick={closeDetail}>
           <Icon name="close" />
@@ -464,7 +452,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
               }}
             />
             <div className="row">
-              <span className="hint">Markdown · 可粘贴截图 · {MOD}↵ 保存 · esc 取消</span>
+              <span className="hint">Markdown · 可粘贴截图 · {accel('↵')} 保存 · esc 取消</span>
               <button className="btn sm ghost" type="button" title="附件（≤ 10 MB）" onClick={attach.pick}>
                 <Icon name="clip" />
                 {attach.busy ? '上传中…' : '附件'}
@@ -679,7 +667,7 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
-            placeholder={`写评论…  ${MOD}↵ 发送`}
+            placeholder={`写评论…  ${accel('↵')} 发送`}
             aria-label="评论"
             value={text}
             onChange={e => {
