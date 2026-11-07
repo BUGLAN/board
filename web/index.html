@@ -5,7 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0C0D0F" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#F2F0EB" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="light dark">
 <title>Board</title>
+<!-- 首帧就按主题上底色：主题偏好存在 localStorage，样式和脚本包还没加载时页面也不是白的（桌面端从启动页跳过来、慢网都不闪白）。
+     与 lib/platform.ts 的 setTheme、styles/tokens.css 的 --bg 一致 -->
+<script>
+try { var t = JSON.parse(localStorage.getItem('board.theme') || '"auto"'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<style>
+html { background: var(--bg, #F2F0EB); color-scheme: light; }
+@media (prefers-color-scheme: dark) { html:not([data-theme="light"]) { background: var(--bg, #0C0D0F); color-scheme: dark; } }
+html[data-theme="dark"] { background: var(--bg, #0C0D0F); color-scheme: dark; }
+</style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Crect x='6' y='8' width='4' height='16' rx='2' fill='%238F9AB4'/%3E%3Crect x='12' y='8' width='4' height='11' rx='2' fill='%23FF9A3C'/%3E%3Crect x='18' y='8' width='4' height='7' rx='2' fill='%234DB5FF'/%3E%3Crect x='24' y='8' width='4' height='13' rx='2' fill='%233DDC97'/%3E%3C/svg%3E">
 </head>
 <body>
