@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "scripts": {
-    "postinstall": "npm --prefix web install",
+    "postinstall": "cd web && npm install",
     "dev:web": "npm --prefix web run dev",
     "build:web": "npm --prefix web run build",
     "server": "cargo run -p board-server --",
