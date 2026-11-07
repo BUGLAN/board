@@ -89,8 +89,10 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 }
 .col.is-final .col-list { --gap: 4px; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
 
+/* 空状态至少一张卡片高（标题一行 + 标签一行的普通卡片），图标和文字垂直居中 */
 .col-empty {
   display: none; align-items: center; gap: 8px; margin: 0 0 2px; padding: 9px 11px; border-radius: var(--r-md);
+  min-height: var(--card-h, 92px); box-sizing: border-box;
   border: 1px dashed var(--line-2); color: var(--text-3); font-size: 12px; line-height: 1.45;
 }
 .col-empty svg { width: 16px; height: 16px; flex: none; color: var(--text-4); }
