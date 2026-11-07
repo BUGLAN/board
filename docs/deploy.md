@@ -1,6 +1,6 @@
 # 部署 Board 服务端
 
-线上地址 `https://board.buglan.com`，服务器 `45.202.241.98`，目录 `/root/repo/board`。结构：
+线上地址 `https://board.buglan.com`。服务器和目录不写进仓库：本机用环境变量 `BOARD_DEPLOY_HOST`（用户@服务器）、`BOARD_DEPLOY_DIR`（服务器上的仓库目录），GitHub 上是 Variables `DEPLOY_HOST`、`DEPLOY_DIR`。结构：
 
 ```
 浏览器 / 桌面端 ─┐
@@ -38,13 +38,13 @@ GitHub → Settings → Developer settings → OAuth Apps → New OAuth App：
 把仓库同步到服务器（不带 `target`、`node_modules`、`.git` 等）：
 
 ```bash
-rsync -az --exclude .git/ --exclude /target/ --exclude node_modules/ --exclude /web/dist/ --exclude /.dev/ --exclude /src-tauri/gen/ --exclude /data/ --exclude /.env ./ root@45.202.241.98:repo/board/
+rsync -az --exclude .git/ --exclude /target/ --exclude node_modules/ --exclude /web/dist/ --exclude /.dev/ --exclude /src-tauri/gen/ --exclude /data/ --exclude /.env ./ "$BOARD_DEPLOY_HOST:$BOARD_DEPLOY_DIR/"
 ```
 
 之后在服务器上：
 
 ```bash
-cd /root/repo/board
+cd <部署目录>
 ```
 
 ```bash
@@ -146,7 +146,7 @@ docker compose exec board board-server token revoke 3
 [`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做在线备份（SQLite `VACUUM INTO`，服务运行时也能得到一致的快照），存到 `data/backups/`，保留 14 天。卡片附件在 `data/files/`（按内容命名、写入后不变），备份时把还没有的文件补到 `data/backups/files/`，所有备份共用这一份。宿主机 crontab：
 
 ```cron
-0 4 * * * /root/repo/board/deploy/backup.sh >> /var/log/board-backup.log 2>&1
+0 4 * * * <部署目录>/deploy/backup.sh >> /var/log/board-backup.log 2>&1
 ```
 
 `data/backups/` 还在同一台服务器上，建议再定期拷到别处。数据库很小，但服务器磁盘只剩约 2 GB，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
@@ -186,7 +186,7 @@ docker compose start board
 - `./deploy/deploy.sh --dry-run`：只检查本机、列出要执行的步骤，不编译、不连服务器
 - `./deploy/deploy.sh --check`：只核对线上是不是本机 `HEAD`
 - 工作区有未提交的改动时拒绝部署；确实要部署时加 `ALLOW_DIRTY=1`，线上提交号带 `-dirty`
-- 服务器和地址可以用环境变量覆盖：`BOARD_DEPLOY_HOST`（默认 `root@45.202.241.98`）、`BOARD_DEPLOY_DIR`（默认 `/root/repo/board`）、`BOARD_DEPLOY_URL`（默认 `https://board.buglan.com`）
+- 服务器和目录必须用环境变量给出：`BOARD_DEPLOY_HOST`（用户@服务器）、`BOARD_DEPLOY_DIR`（服务器上的仓库目录），没有设置时脚本直接退出；对外地址 `BOARD_DEPLOY_URL` 默认 `https://board.buglan.com`
 - 重建容器前把服务器 `.env` 的 `BOARD_IMAGE` 改成 `board-server:latest`（本机构建的镜像），`.env` 始终对应正在运行的镜像；之后再推送 `main`，自动部署照常进行
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
@@ -212,12 +212,12 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
 
 ### 一次性配置
 
-1. 生成部署专用的 SSH 密钥（只给 Actions 用），公钥加到服务器 `root` 的 `authorized_keys`：
+1. 生成部署专用的 SSH 密钥（只给 Actions 用），公钥加到服务器上部署用户的 `authorized_keys`：
 
    ```bash
    ssh-keygen -t ed25519 -N '' -C board-deploy -f board-deploy
-   ssh-copy-id -i board-deploy.pub root@45.202.241.98
-   ssh-keyscan -t ed25519 45.202.241.98      # 输出填到 DEPLOY_KNOWN_HOSTS
+   ssh-copy-id -i board-deploy.pub "$BOARD_DEPLOY_HOST"
+   ssh-keyscan -t ed25519 "${BOARD_DEPLOY_HOST#*@}"      # 输出填到 DEPLOY_KNOWN_HOSTS
    ```
 
 2. GitHub 仓库 Settings → Secrets and variables → Actions：
@@ -226,8 +226,8 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
    |---|---|---|
    | Secret | `DEPLOY_SSH_KEY` | 上面的私钥 `board-deploy` 的内容 |
    | Secret | `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan` 的输出（SSH 严格校验主机密钥） |
-   | Variable | `DEPLOY_HOST` | `root@45.202.241.98` |
-   | Variable | `DEPLOY_DIR` | `/root/repo/board` |
+   | Variable | `DEPLOY_HOST` | `用户@服务器`（同本机的 `BOARD_DEPLOY_HOST`） |
+   | Variable | `DEPLOY_DIR` | 服务器上的仓库目录（同 `BOARD_DEPLOY_DIR`） |
    | Variable | `DEPLOY_URL` | `https://board.buglan.com` |
 
 3. 服务器 `.env` 里不用加 `BOARD_IMAGE`：第一次自动部署时会加上。

@@ -9,15 +9,15 @@
 #   ./deploy/deploy.sh --check     只核对线上的提交号是不是本机 HEAD
 #
 # 环境变量：
-#   BOARD_DEPLOY_HOST   SSH 目标，默认 root@45.202.241.98
-#   BOARD_DEPLOY_DIR    服务器上的仓库目录，默认 /root/repo/board
+#   BOARD_DEPLOY_HOST   SSH 目标（用户@服务器），必填，不写进仓库
+#   BOARD_DEPLOY_DIR    服务器上的仓库目录，必填
 #   BOARD_DEPLOY_URL    核对用的对外地址，默认 https://board.buglan.com
 #   ALLOW_DIRTY=1       工作区有未提交的改动时也部署（线上提交号带 -dirty）
 set -eu
 cd "$(dirname "$0")/.."
 
-HOST=${BOARD_DEPLOY_HOST:-root@45.202.241.98}
-DIR=${BOARD_DEPLOY_DIR:-/root/repo/board}
+HOST=${BOARD_DEPLOY_HOST:-}
+DIR=${BOARD_DEPLOY_DIR:-}
 URL=${BOARD_DEPLOY_URL:-https://board.buglan.com}
 URL=${URL%/}
 
@@ -29,6 +29,11 @@ case "${1:-}" in
   -h | --help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "不认识的参数：${1}（--dry-run、--check、--help）" >&2; exit 2 ;;
 esac
+
+if [ -z "$HOST" ] || [ -z "$DIR" ]; then
+  echo "先设置 BOARD_DEPLOY_HOST（用户@服务器）和 BOARD_DEPLOY_DIR（服务器上的仓库目录）" >&2
+  exit 2
+fi
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }

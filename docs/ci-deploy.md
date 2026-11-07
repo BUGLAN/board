@@ -73,8 +73,8 @@ push main ─▶ build 任务（GitHub 托管的 ubuntu-latest）
 | 部署专用 SSH 密钥 | 新生成一对 ed25519 密钥，只用于 Actions；公钥加到服务器 `root` 的 `authorized_keys` |
 | Secret `DEPLOY_SSH_KEY` | 上面的私钥 |
 | Secret `DEPLOY_KNOWN_HOSTS` | 服务器的 `ssh-keyscan` 输出；SSH 严格校验主机密钥，不用 `StrictHostKeyChecking=no` |
-| Variable `DEPLOY_HOST` | `root@45.202.241.98` |
-| Variable `DEPLOY_DIR` | `/root/repo/board` |
+| Variable `DEPLOY_HOST` | `用户@服务器`（不写进仓库） |
+| Variable `DEPLOY_DIR` | 服务器上的仓库目录 |
 | Variable `DEPLOY_URL` | `https://board.buglan.com` |
 
 Secret 和 Variable 在仓库 Settings → Secrets and variables → Actions 里设置。
@@ -89,7 +89,7 @@ Secret 和 Variable 在仓库 Settings → Secrets and variables → Actions 里
 - [ ] 健康检查失败时（例如部署一个启动即退出的镜像）：自动切回上一个镜像，线上 `commit` 恢复为部署前的值，任务显示失败
 - [ ] 连续推送两次：第二次排队等第一次结束，不并行部署
 - [ ] GHCR 上 `board-server` 不超过 5 个版本；服务器上 `ghcr.io/buglan/board-server` 的镜像不超过 2 个
-- [ ] 服务器 `/root/.docker/config.json` 里没有 `ghcr.io` 的凭据
+- [ ] 服务器 `~/.docker/config.json` 里没有 `ghcr.io` 的凭据
 - [ ] Actions 日志里搜不到私钥、令牌、`.env` 内容
 - [ ] 自动部署之后再跑一次 `./deploy/deploy.sh`：部署成功，`.env` 的 `BOARD_IMAGE` 变为 `board-server:latest`；之后再推送 `main`，自动部署仍然成功
 - [ ] `docs/deploy.md` 按第 5 节更新
