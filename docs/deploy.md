@@ -143,13 +143,13 @@ docker compose exec board board-server token revoke 3
 
 ## 6. 备份与恢复
 
-[`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做在线备份（SQLite `VACUUM INTO`，服务运行时也能得到一致的快照），存到 `data/backups/`，保留 14 天。宿主机 crontab：
+[`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做在线备份（SQLite `VACUUM INTO`，服务运行时也能得到一致的快照），存到 `data/backups/`，保留 14 天。卡片附件在 `data/files/`（按内容命名、写入后不变），备份时把还没有的文件补到 `data/backups/files/`，所有备份共用这一份。宿主机 crontab：
 
 ```cron
 0 4 * * * /root/repo/board/deploy/backup.sh >> /var/log/board-backup.log 2>&1
 ```
 
-`data/backups/` 还在同一台服务器上，建议再定期拷到别处。数据库很小，但服务器磁盘只剩约 2 GB，留意 `df -h`。
+`data/backups/` 还在同一台服务器上，建议再定期拷到别处。数据库很小，但服务器磁盘只剩约 2 GB，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
 
 恢复：
 
@@ -159,6 +159,12 @@ docker compose stop board
 
 ```bash
 sudo cp data/backups/board-20261107-040000.db data/board.db && sudo rm -f data/board.db-wal data/board.db-shm && sudo chown 10001:10001 data/board.db
+```
+
+附件：把备份里的文件补回 `data/files/`（已有的不覆盖）：
+
+```bash
+sudo mkdir -p data/files && sudo cp -n data/backups/files/* data/files/ && sudo chown -R 10001:10001 data/files
 ```
 
 ```bash

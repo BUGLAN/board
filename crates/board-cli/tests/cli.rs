@@ -137,3 +137,51 @@ fn ac23_24_labels() {
     let r = board(&db, ALPHA, &["label", "1", "-bug", "--json"]);
     assert!(r.json()["labels"].as_array().unwrap().is_empty());
 }
+
+/// 附件：上传成一条评论、show 列出、files 下载到本地（本地数据库模式）
+#[test]
+fn attach_and_download_files_locally() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let png = dir.path().join("截图.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    let log = dir.path().join("run.log");
+    std::fs::write(&log, "ok\n").unwrap();
+    board(&db, ALPHA, &["new", "带附件"]);
+
+    let r = board(&db, ALPHA, &["attach", "1", png.to_str().unwrap(), log.to_str().unwrap(), "--comment", "复现截图和日志", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    assert_eq!(v["attachments"][0]["name"], "截图.png");
+    assert_eq!(v["attachments"][0]["image"], true);
+    let comment = v["card"]["activity"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(comment.starts_with("复现截图和日志\n\n![截图.png](/api/files/1)"), "{comment}");
+    assert!(comment.ends_with("[run.log](/api/files/2)"), "{comment}");
+
+    // show 列出附件，提示怎么下载
+    let r = board(&db, ALPHA, &["show", "1"]);
+    assert!(r.out.contains("附件  board files 1 下载到本地查看"), "{}", r.out);
+    assert!(r.out.contains("截图.png"));
+    assert_eq!(board(&db, ALPHA, &["show", "1", "--json"]).json()["attachments"][1]["name"], "run.log");
+
+    // files 下载到指定目录
+    let out = dir.path().join("dl");
+    let r = board(&db, ALPHA, &["files", "1", "--out", out.to_str().unwrap(), "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let saved = r.json();
+    assert_eq!(saved.as_array().unwrap().len(), 2);
+    assert_eq!(std::fs::read(out.join("2-run.log")).unwrap(), b"ok\n");
+    assert!(out.join("1-截图.png").exists());
+
+    // 错误：不支持的类型、文件不存在、卡片不存在、没有附件
+    let svg = dir.path().join("x.svg");
+    std::fs::write(&svg, "<svg/>").unwrap();
+    let r = board(&db, ALPHA, &["attach", "1", svg.to_str().unwrap(), "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+    let r = board(&db, ALPHA, &["attach", "1", "nope.png", "--json"]);
+    assert_eq!(r.error_code(), "USAGE");
+    let r = board(&db, ALPHA, &["attach", "9", png.to_str().unwrap(), "--json"]);
+    assert_eq!(r.error_code(), "NOT_FOUND");
+    board(&db, ALPHA, &["new", "没附件"]);
+    assert!(board(&db, ALPHA, &["files", "2"]).out.contains("#2 没有附件"));
+}

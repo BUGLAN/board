@@ -5,6 +5,7 @@
 //!   本机模式（`--local`）只接受本机访问，不需要登录
 //! - `GET /api/workspace`、`/api/board`、`/api/card`：快照
 //! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`
+//! - `POST /api/files`、`GET /api/files/{id}`：卡片附件（上传、读取）
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
 //! - 项目 / 白板 / 标签 / 画布位置的增删改
@@ -18,7 +19,7 @@ pub mod auth;
 
 use auth::{Auth, Caller};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, Request, StatusCode, Uri},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -157,6 +158,9 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/board", get(board))
         .route("/card", get(card))
         .route("/cmd", post(cmd))
+        // 附件：上限之外留一点余量，略超的文件由 board-core 给出清楚的提示
+        .route("/files", post(upload).layer(DefaultBodyLimit::max(files::MAX_BYTES + 1024 * 1024)))
+        .route("/files/{id}", get(file))
         .route("/projects", post(create_project))
         .route("/projects/{key}", patch(update_project).delete(delete_project))
         .route("/boards", post(create_board))
@@ -226,15 +230,24 @@ pub fn serve_in_thread(state: AppState, cfg: Config, listener: std::net::TcpList
 }
 
 fn spawn_background(state: AppState) {
-    // 规则 7：每秒释放一次到期的领取
+    // 规则 7：每秒释放一次到期的领取；每 10 分钟清理一次附件（没归到卡片的、不再被引用的文件）
     let s = state.clone();
     tokio::spawn(async move {
+        let mut tick: u64 = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             match s.db(|st| st.sweep(now_ms())).await {
                 Ok(n) if n > 0 => s.0.poke.notify_one(),
                 Ok(_) => {}
                 Err(e) => tracing::warn!("超时扫描失败：{e}"),
+            }
+            tick += 1;
+            if tick % 600 == 0 {
+                match s.db(|st| st.gc_files(now_ms())).await {
+                    Ok((r, f)) if r + f > 0 => tracing::info!("清理附件：{r} 条记录，{f} 个文件"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("清理附件失败：{e}"),
+                }
             }
         }
     });
@@ -362,6 +375,83 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
         .await?;
     s.0.poke.notify_one();
     Ok(Json(out))
+}
+
+/* ------------------------------ 附件 ------------------------------ */
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    board: String,
+    /// 不传：先不归到卡片（界面新建卡片时）
+    #[serde(default)]
+    card: Option<i64>,
+    name: String,
+    /// 带令牌时 agent 的名字
+    #[serde(default, rename = "as")]
+    agent: Option<String>,
+}
+
+/// `POST /api/files?board=<白板>&card=<ID>&name=<文件名>`：请求体就是文件内容
+async fn upload(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> ApiResult<Attachment> {
+    let actor = match caller {
+        Caller::Human { .. } => Actor::human(),
+        Caller::Agent { token } => {
+            let name: String = q.agent.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect();
+            if name.is_empty() {
+                return Err(BoardError::code(ErrorCode::NoIdentity).into());
+            }
+            tracing::Span::current().record("who", format!("{name}（令牌#{token}）"));
+            Actor::agent(name)
+        }
+    };
+    let out = s
+        .db(move |st| {
+            let b = st.read(|r| r.resolve(&q.board))?;
+            st.attach(now_ms(), &b, q.card, &actor, &q.name, &body)
+        })
+        .await?;
+    Ok(Json(out))
+}
+
+/// RFC 5987：Content-Disposition 里的 UTF-8 文件名
+fn pct(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// `GET /api/files/{id}`：图片直接显示，其他文件下载。内容不会变，可以长期缓存；
+/// nosniff + sandbox，任何附件都不会被当成网页执行
+async fn file(State(s): State<AppState>, Path(id): Path<i64>) -> std::result::Result<Response, ApiError> {
+    let not_found = || ApiError(BoardError::new(ErrorCode::NotFound, format!("附件 {id} 不存在")));
+    let (a, _, path) = s.db(move |st| st.attachment(id)).await?.ok_or_else(not_found)?;
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(path))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .ok_or_else(not_found)?;
+    let disposition = format!("{}; filename*=UTF-8''{}", if a.image { "inline" } else { "attachment" }, pct(&a.name));
+    Ok((
+        [
+            (header::CONTENT_TYPE, a.mime),
+            (header::CONTENT_DISPOSITION, disposition),
+            (header::CACHE_CONTROL, "private, max-age=31536000, immutable".into()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox".into()),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /* ------------------------------ 项目 / 白板 / 标签 ------------------------------ */

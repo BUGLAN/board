@@ -15,9 +15,10 @@ use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 7] = ["--as", "--board", "--column", "--search", "--label", "--body", "--title"];
+const VALUE_FLAGS: [&str; 9] = ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out"];
 const BOOL_FLAGS: [&str; 4] = ["--json", "--top", "--help", "-h"];
-const COMMANDS: [&str; 12] = ["help", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "label", "labels"];
+const COMMANDS: [&str; 14] =
+    ["help", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "label", "labels", "attach", "files"];
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -345,6 +346,72 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 ))
             }
         }
+        "attach" => {
+            let id = a.id(sub)?;
+            let paths = &a.pos[2..];
+            if paths.is_empty() {
+                return Err(BoardError::usage("用法：board attach <ID> <文件>… [--comment \"<说明>\"]"));
+            }
+            let mut done: Vec<Attachment> = vec![];
+            for f in paths {
+                let bytes = std::fs::read(f).map_err(|e| BoardError::usage(format!("读不到文件 {f}：{e}")))?;
+                let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+                done.push(be.attach(&path, id, &actor, &name, &bytes)?);
+            }
+            // 附件放进一条评论里，界面的动态里就能看到（图片直接显示）
+            let mut text = a.value("--comment").map(|s| s.trim().to_string()).unwrap_or_default();
+            for f in &done {
+                text += &format!("{}{}", if text.is_empty() { "" } else { "\n\n" }, f.markdown);
+            }
+            let d = be.exec(&path, &actor, Cmd::Comment { id, text })?;
+            if json {
+                Output::Json(json!({ "attachments": done.iter().map(attachment_json).collect::<Vec<_>>(), "card": fmt.full(&d) }))
+            } else {
+                let mut s = format!("{} 已上传 {} 个附件到 {}{}\n", p.green("✓"), done.len(), p.cyan(&format!("#{id}")), fmt.renewed(&d, &name));
+                for f in &done {
+                    s += &format!("  {}  {}  {}\n", p.dim(&format!("{}", f.id)), f.name, p.dim(&human_size(f.size)));
+                }
+                Output::Text(s)
+            }
+        }
+        "files" => {
+            let id = a.id(sub)?;
+            let d = be.card(&path, id)?;
+            let dir = match a.value("--out") {
+                Some(o) => std::path::PathBuf::from(o),
+                None => std::env::temp_dir().join("board-files").join(format!("{}-{id}", path.replace('/', "-"))),
+            };
+            let mut saved = vec![];
+            if !d.attachments.is_empty() {
+                std::fs::create_dir_all(&dir).map_err(|e| BoardError::usage(format!("无法创建目录 {}：{e}", dir.display())))?;
+            }
+            for f in &d.attachments {
+                let bytes = be.download(&path, f)?;
+                let to = dir.join(format!("{}-{}", f.id, f.name));
+                std::fs::write(&to, bytes).map_err(|e| BoardError::usage(format!("写入 {} 失败：{e}", to.display())))?;
+                saved.push((f, to));
+            }
+            if json {
+                Output::Json(Value::Array(
+                    saved
+                        .iter()
+                        .map(|(f, to)| {
+                            let mut v = attachment_json(f);
+                            v["path"] = json!(to.display().to_string());
+                            v
+                        })
+                        .collect(),
+                ))
+            } else if saved.is_empty() {
+                Output::Text(format!("{}\n", p.dim(&format!("#{id} 没有附件"))))
+            } else {
+                let mut s = format!("{} 已下载 {} 个附件到 {}\n", p.green("✓"), saved.len(), dir.display());
+                for (f, to) in &saved {
+                    s += &format!("  {}  {}\n", to.display(), p.dim(&human_size(f.size)));
+                }
+                Output::Text(s)
+            }
+        }
         "labels" => {
             if json {
                 Output::Json(Value::Array(
@@ -432,6 +499,7 @@ impl Fmt<'_> {
             "claimed_at": iso(c.claimed_at),
             "expires_at": iso(c.expires_at),
             "labels": self.labels(c),
+            "attachments": d.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
             "created_at": iso(Some(c.created_at)),
             "updated_at": iso(Some(c.updated_at)),
             "activity": d.activity.iter().map(|a| json!({
@@ -510,6 +578,12 @@ impl Fmt<'_> {
                 s += &format!("  {l}\n");
             }
         }
+        if !d.attachments.is_empty() {
+            s += &format!("{}{}\n", p.dim("附件"), p.dim(&format!("  board files {} 下载到本地查看", c.id)));
+            for f in &d.attachments {
+                s += &format!("  {}  {}  {}\n", p.dim(&format!("{}", f.id)), f.name, p.dim(&human_size(f.size)));
+            }
+        }
         s += &format!("{}\n", p.dim("动态"));
         let aw = d.activity.iter().map(|a| width(a.actor.display())).max().unwrap_or(0).max(6) + 2;
         for a in &d.activity {
@@ -527,7 +601,7 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 12] = [
+    let rows: [(&str, &str, &str); 14] = [
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称和规则"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
@@ -539,6 +613,8 @@ fn help(p: &Paint) -> String {
         ("comment", "<ID> \"<内容>\"", "追加评论"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）"),
         ("labels", "", "列出项目的标签，以及每个标签被多少张卡片使用"),
+        ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
+        ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
         ("help", "", "显示这段说明"),
     ];
     let aw = rows.iter().map(|r| width(r.1)).max().unwrap_or(0) + 2;
@@ -563,6 +639,27 @@ fn help(p: &Paint) -> String {
 }
 
 /* ------------------------------ 文本工具 ------------------------------ */
+
+fn attachment_json(f: &Attachment) -> Value {
+    json!({
+        "id": f.id,
+        "name": f.name,
+        "mime": f.mime,
+        "size": f.size,
+        "image": f.image,
+        "url": f.url,
+        "created_at": iso(Some(f.created_at)),
+        "created_by": f.created_by.display(),
+    })
+}
+
+fn human_size(n: i64) -> String {
+    match n {
+        n if n < 1024 => format!("{n} B"),
+        n if n < 1024 * 1024 => format!("{:.0} KB", n as f64 / 1024.0),
+        n => format!("{:.1} MB", n as f64 / 1048576.0),
+    }
+}
 
 fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)

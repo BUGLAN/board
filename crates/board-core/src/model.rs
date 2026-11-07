@@ -316,6 +316,9 @@ pub struct CardDetail {
     #[serde(flatten)]
     pub card: Card,
     pub activity: Vec<Activity>,
+    /// 附件（PRD §5）
+    #[serde(default)]
+    pub attachments: Vec<crate::files::Attachment>,
 }
 
 /// 全局事件流里的一条（界面的「最近动态」与跨窗口高亮用）

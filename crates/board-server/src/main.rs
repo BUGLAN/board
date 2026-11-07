@@ -20,7 +20,7 @@ const USAGE: &str = "用法：
   board-server token new <名字>       新建 agent 访问令牌（原文只显示这一次）
   board-server token ls               列出访问令牌
   board-server token revoke <ID>      吊销访问令牌
-  board-server backup <目标文件>      把数据库在线备份到一个新文件
+  board-server backup <目标文件>      把数据库在线备份到一个新文件；附件补到它旁边的 files/
   board-server healthcheck            检查本机服务是否正常（容器健康检查用）
 
 参数：
@@ -252,6 +252,12 @@ fn backup(o: &Opts) {
     conn.execute("VACUUM INTO ?1", [dest.to_string_lossy()])
         .unwrap_or_else(|e| fail(&format!("备份失败：{e}")));
     println!("已备份到 {}", dest.display());
+    // 附件：备份旁边的 files/ 里补上还没有的文件（文件按内容命名、不会改动，所有备份共用一份）
+    let (src, dst) = (board_core::files::dir_for(&o.db), board_core::files::dir_for(&dest));
+    match board_core::files::copy_new(&src, &dst) {
+        Ok(n) => println!("附件：新复制 {n} 个文件到 {}", dst.display()),
+        Err(e) => fail(&format!("备份附件失败：{e}")),
+    }
 }
 
 fn healthcheck(o: &Opts) {

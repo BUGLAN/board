@@ -4,6 +4,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod files;
 pub mod flow;
 pub mod model;
 pub mod seed;
@@ -11,6 +12,7 @@ pub mod store;
 
 pub use engine::Cmd;
 pub use error::{BoardError, ErrorCode, Result};
+pub use files::Attachment;
 pub use flow::StatusPatch;
 pub use model::*;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};

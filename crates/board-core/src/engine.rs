@@ -116,8 +116,10 @@ impl<'a> W<'a> {
                 self.tx.execute(
                     "INSERT INTO cards (board, id, title, body, col, pos, created_at, updated_at, created_by_kind, created_by_name)
                      VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, ?7, ?8)",
-                    params![b, id, title, body.unwrap_or_default().trim(), col, self.now, actor.kind.as_str(), actor.name],
+                    params![b, id, title, body.as_deref().unwrap_or_default().trim(), col, self.now, actor.kind.as_str(), actor.name],
                 )?;
+                // 新建弹窗里先上传的附件归到这张卡片
+                self.bind_attachments(b, id, body.as_deref().unwrap_or_default())?;
                 self.place(b, id, None, &col, if top { At::Top } else { At::Bottom })?;
                 for l in dedup(&labels) {
                     self.tx.execute("INSERT INTO card_labels (board, card, label) VALUES (?1, ?2, ?3)", params![b, id, l])?;
@@ -155,6 +157,7 @@ impl<'a> W<'a> {
                     let body = body.trim().to_string();
                     if body != r.body {
                         self.tx.execute("UPDATE cards SET body = ?1 WHERE board = ?2 AND id = ?3", params![body, b, id])?;
+                        self.bind_attachments(b, id, &body)?;
                         changes.push("修改了描述".into());
                     }
                 }
@@ -307,6 +310,7 @@ impl<'a> W<'a> {
                 if is_holder(&r) {
                     self.renew(b, id)?; // 规则 6
                 }
+                self.bind_attachments(b, id, &text)?;
                 self.track(b, id, actor, "comment", &text)?;
                 id
             }

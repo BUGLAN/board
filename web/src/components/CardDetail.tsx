@@ -4,11 +4,12 @@
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
+import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { boardFlow, CLAIM_MS } from '../lib/schema';
-import type { Activity, Card, CardDetail as Detail } from '../lib/types';
+import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, MOD, mmss, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
-import { confirm, openPicker, toast, toastError, useUI } from '../store/ui';
+import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, Ring, agent, useNow } from './bits';
 import { Icon, type IconName } from './Icon';
 
@@ -256,6 +257,7 @@ function Body({ card: c, on }: { card: Detail; on: boolean }) {
           <section className="d-section" data-part="desc" style={{ ['--i' as string]: 2 }}>
             <DescEditor card={c} locked={locked} />
           </section>
+          {!!c.attachments?.length && <Attachments list={c.attachments} />}
           <div className="d-danger">
             <span>删除后无法恢复</span>
             <button
@@ -357,10 +359,44 @@ function DescTabs({ mode, setMode, modes }: { mode: string; setMode: (m: string)
 }
 export { DescTabs };
 
+/** 卡片的全部附件：图片缩略图点开放大，文件点击下载 */
+function Attachments({ list }: { list: Attachment[] }) {
+  return (
+    <section className="d-section" data-part="files" style={{ ['--i' as string]: 3 }}>
+      <div className="d-label">
+        附件 <span className="count">{list.length}</span>
+      </div>
+      <ul className="att-list">
+        {list.map(a => (
+          <li key={a.id}>
+            {a.image ? (
+              <button className="att-thumb" type="button" aria-label={`查看 ${a.name}`} onClick={() => openImage(a.url, a.name)}>
+                <img src={a.url} alt="" loading="lazy" />
+              </button>
+            ) : (
+              <span className="att-thumb file">
+                <Icon name="file" />
+              </span>
+            )}
+            <a className="att-name" href={a.url} download={a.name} title={`下载 ${a.name}`}>
+              {a.name}
+            </a>
+            <span className="att-meta">
+              {fileSize(a.size)} · {actorName(a.createdBy)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [v, setV] = useState(c.body);
   const ta = useRef<HTMLTextAreaElement>(null);
+  const path = useData(s => s.path);
+  const attach = useAttach({ board: path, card: c.id, setValue: setV, textarea: ta });
   useEffect(() => {
     if (locked && mode === 'edit') setMode('view');
   }, [locked, mode]);
@@ -377,6 +413,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
     });
   };
   const save = async () => {
+    if (stillUploading(attach.busy)) return;
     try {
       await exec({ op: 'edit', id: c.id, body: v });
       setMode('view');
@@ -401,9 +438,10 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
       </div>
       <div className="desc-holder">
         {mode === 'edit' ? (
-          <div className="desc-edit">
+          <div className={cx('desc-edit', attach.over && 'drop-on')}>
             <textarea
               ref={ta}
+              {...attach.handlers}
               className="textarea scroll"
               spellCheck={false}
               placeholder="支持 Markdown：验收标准、相关链接…"
@@ -424,7 +462,12 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
               }}
             />
             <div className="row">
-              <span className="hint">Markdown · {MOD}↵ 保存 · esc 取消</span>
+              <span className="hint">Markdown · 可粘贴截图 · {MOD}↵ 保存 · esc 取消</span>
+              <button className="btn sm ghost" type="button" title="附件（≤ 10 MB）" onClick={attach.pick}>
+                <Icon name="clip" />
+                {attach.busy ? '上传中…' : '附件'}
+              </button>
+              {attach.fileInput}
               <button className="btn sm ghost" type="button" onClick={() => setMode('view')}>
                 取消
               </button>
@@ -528,6 +571,8 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
   const ta = useRef<HTMLTextAreaElement>(null);
   const send = useRef<HTMLButtonElement>(null);
   const n = c.activity.length;
+  const path = useData(s => s.path);
+  const attach = useAttach({ board: path, card: c.id, setValue: setText, textarea: ta });
   const firstNew = shown.current;
 
   // 默认显示到最新一条；新动态到来时如果停在底部就跟随
@@ -540,6 +585,7 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
   }, [n]);
 
   const submit = async () => {
+    if (stillUploading(attach.busy)) return;
     const t = text.trim();
     if (!t) {
       ta.current?.focus();
@@ -573,9 +619,14 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
         </div>
       </div>
       <div className="d-comment">
-        <div className={cx('comment-box', text.trim() && 'has-text')}>
+        <div className={cx('comment-box', text.trim() && 'has-text', attach.over && 'drop-on')}>
+          <button className="comment-attach" type="button" aria-label="添加附件" title="附件：也可以直接粘贴截图（≤ 10 MB）" onClick={attach.pick}>
+            <Icon name="clip" />
+          </button>
+          {attach.fileInput}
           <textarea
             ref={ta}
+            {...attach.handlers}
             rows={1}
             // 评论里常有代码：关掉拼写检查，macOS 也就不会把 ' " 自动换成弯引号
             spellCheck={false}

@@ -12,7 +12,7 @@ import type { Card } from '../lib/types';
 import { cx, MOD, replay } from '../lib/util';
 import { allBoards, boardMeta, refresh, useData } from '../store/data';
 import {
-  closeCtx, closeForm, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
+  closeCtx, closeForm, closeImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
   setSide, setTab, settleConfirm, toast, toastError, updatePicker, useUI, type FormCfg, type Toast,
 } from '../store/ui';
 import { LabelChip, ProjectAvatar } from './bits';
@@ -1002,3 +1002,36 @@ function ToastItem({ t }: { t: Toast }) {
   );
 }
 
+
+/* ---------------- 放大查看图片（附件） ---------------- */
+
+export function Lightbox() {
+  const img = useUI(s => s.image);
+  useEffect(() => {
+    if (!img) return;
+    // 捕获阶段处理 Esc：只关图片，不关卡片详情
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeImage();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [img]);
+  if (!img) return null;
+  return (
+    <div className="lightbox" role="dialog" aria-label={img.alt || '图片'} onClick={closeImage}>
+      <img src={img.src} alt={img.alt} />
+      <div className="lb-bar" onClick={e => e.stopPropagation()}>
+        <span>{img.alt}</span>
+        <a className="btn sm" href={img.src} download={img.alt || true}>
+          下载
+        </a>
+        <button className="btn sm" type="button" onClick={closeImage}>
+          关闭
+        </button>
+      </div>
+    </div>
+  );
+}

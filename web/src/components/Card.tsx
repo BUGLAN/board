@@ -172,7 +172,8 @@ function snippet(body: string) {
   return (
     body
       .split('\n')
-      .map(l => l.replace(/^[-*#>\s]+|\[[ xX]\]\s*/g, '').trim())
+      // 图片、链接只留文字（附件显示为文件名）
+      .map(l => l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^[-*#>\s]+|\[[ xX]\]\s*/g, '').trim())
       .find(Boolean) || ''
   );
 }

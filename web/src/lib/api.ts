@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Me, Pos, TokenInfo, Workspace } from './types';
+import type { Attachment, Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Me, Pos, TokenInfo, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -51,6 +51,10 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   } catch {
     throw new ApiError('NETWORK', '连不上 Board 服务，请确认 board-server 正在运行');
   }
+  return parse<T>(res);
+}
+
+async function parse<T>(res: Response): Promise<T> {
   let data: unknown = null;
   try {
     data = await res.json();
@@ -60,9 +64,27 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   if (!res.ok) {
     const e = (data as { error?: { code: ErrorCode; message: string; detail?: Record<string, unknown> } } | null)?.error;
     if (res.status === 401) unauthorized?.();
+    if (res.status === 413) throw new ApiError('USAGE', '文件太大，附件不能超过 10 MB');
     throw new ApiError(e?.code ?? 'INTERNAL', e?.message ?? `请求失败（${res.status}）`, e?.detail);
   }
   return data as T;
+}
+
+/** 上传附件：请求体就是文件内容。card 为 null：新建弹窗里先上传，新建卡片时按描述里的引用归到卡片 */
+async function upload(board: string, card: number | null, file: File): Promise<Attachment> {
+  const qs = `board=${encodeURIComponent(board)}&name=${encodeURIComponent(file.name)}${card ? `&card=${card}` : ''}`;
+  let res: Response;
+  try {
+    res = await fetch(`/api/files?${qs}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': file.type || 'application/octet-stream', 'x-board-client': CLIENT_ID },
+      body: file,
+    });
+  } catch {
+    throw new ApiError('NETWORK', '连不上 Board 服务，附件没有上传');
+  }
+  return parse<Attachment>(res);
 }
 
 const q = encodeURIComponent;
@@ -78,6 +100,7 @@ export const api = {
   board: (path: string) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}`),
   card: (path: string, id: number) => req<CardDetail>('GET', `/api/card?path=${q(path)}&id=${id}`),
   cmd: (board: string, cmd: Cmd) => req<CardDetail>('POST', '/api/cmd', { board, ...cmd }),
+  upload,
 
   createProject: (p: {
     name: string;

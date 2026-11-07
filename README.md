@@ -109,6 +109,8 @@ board claim --json
 
 不设置 `BOARD_URL` 时直接读写本机的 `~/.board/board.db`，首次运行时建立默认项目 `default`（白板 `main`）。项目、白板、标签在界面上新建。
 
+卡片附件（截图、日志等，单个不超过 10 MB）：`board files <ID>` 下载到本地查看，`board attach <ID> <文件> --comment "<说明>"` 上传。
+
 ```bash
 board help
 ```

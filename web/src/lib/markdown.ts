@@ -36,7 +36,17 @@ function decorate(html: string): string {
     const ul = li.parentElement;
     if (ul) ul.classList.add('tasks');
   });
+  // 附件：图片延迟加载，点击放大（bits.tsx 的 Markdown）；文件链接直接下载（不开新窗口，桌面端新窗口没有登录状态）
+  root.querySelectorAll('img').forEach(img => {
+    img.setAttribute('loading', 'lazy');
+    img.setAttribute('decoding', 'async');
+  });
   root.querySelectorAll('a').forEach(a => {
+    if ((a.getAttribute('href') || '').startsWith('/api/files/')) {
+      a.setAttribute('download', a.textContent || '');
+      a.classList.add('file-link');
+      return;
+    }
     a.setAttribute('target', '_blank');
     a.setAttribute('rel', 'noopener noreferrer');
   });

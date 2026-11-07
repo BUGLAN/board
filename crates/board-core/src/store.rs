@@ -158,6 +158,8 @@ pub(crate) fn split_path(raw: &str) -> (&str, Option<&str>) {
 
 pub struct Store {
     conn: Connection,
+    /// 附件目录（数据库旁边的 files/）；内存数据库没有
+    files: Option<PathBuf>,
 }
 
 /// 新建项目时的第一块白板
@@ -192,16 +194,17 @@ impl Store {
         conn.busy_timeout(Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        Store::setup(conn)
+        Store::setup(conn, Some(crate::files::dir_for(path)))
     }
 
     pub fn open_in_memory() -> Result<Store> {
-        Store::setup(Connection::open_in_memory()?)
+        Store::setup(Connection::open_in_memory()?, None)
     }
 
-    fn setup(conn: Connection) -> Result<Store> {
+    fn setup(conn: Connection, files: Option<PathBuf>) -> Result<Store> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::files::SCHEMA)?;
         // 旧数据库里的白板没有工作流：补上默认的四个状态
         let missing: Vec<i64> = conn
             .prepare("SELECT id FROM boards b WHERE NOT EXISTS (SELECT 1 FROM statuses s WHERE s.board = b.id)")?
@@ -210,7 +213,7 @@ impl Store {
         for b in missing {
             insert_default_flow(&conn, b)?;
         }
-        Ok(Store { conn })
+        Ok(Store { conn, files })
     }
 
     /// 工作区为空时建立默认项目（整个工作区至少保留一块白板）
@@ -285,12 +288,17 @@ impl Store {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// 附件目录；内存数据库没有
+    pub fn files_dir(&self) -> Option<&Path> {
+        self.files.as_deref()
+    }
 }
 
 /* ============================== 读 ============================== */
 
 pub struct R<'a> {
-    conn: &'a Connection,
+    pub(crate) conn: &'a Connection,
 }
 
 fn row_actor(kind: String, name: String) -> Actor {
@@ -435,7 +443,8 @@ impl<'a> R<'a> {
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(CardDetail { card, activity })
+        let attachments = crate::files::attachments_of(self.conn, board.id, id)?;
+        Ok(CardDetail { card, activity, attachments })
     }
 
     /// id 之后的全局事件（服务端推给界面）

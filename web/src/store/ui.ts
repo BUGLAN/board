@@ -103,6 +103,8 @@ interface UIState {
   drag: DragUI | null;
   reveal: { id: number; key: number } | null;
   reject: { col: ColumnKey; key: number } | null;
+  /** 放大查看的图片（附件） */
+  image: { src: string; alt: string } | null;
 }
 
 const TABS: Tab[] = ['board', 'projects', 'inbox', 'settings'];
@@ -134,6 +136,7 @@ export const useUI = create<UIState>(() => ({
   drag: null,
   reveal: null,
   reject: null,
+  image: null,
 }));
 
 const set = useUI.setState;
@@ -173,6 +176,8 @@ export const openCreator = (column: 'todo' | 'inbox' = get().tab === 'inbox' ? '
   set(s => ({ creator: { open: true, column, seq: s.creator.seq + 1 } }));
 export const closeCreator = () => set(s => ({ creator: { ...s.creator, open: false } }));
 
+export const openImage = (src: string, alt = '') => set({ image: { src, alt } });
+export const closeImage = () => set({ image: null });
 export const openPalette = (prefill = '') => set({ palette: { open: true, prefill } });
 export const closePalette = () => set(s => ({ palette: { ...s.palette, open: false } }));
 
@@ -205,7 +210,7 @@ export const closeCtx = () => set({ ctx: null });
 /** 有弹窗或浮层打开时，全局快捷键不生效 */
 export function overlayOpen() {
   const s = get();
-  return !!(s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open);
+  return !!(s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image);
 }
 
 /* ------------------------------ Toast ------------------------------ */

@@ -480,3 +480,96 @@ fn desktop_login_errors_go_back_to_the_app() {
         assert!(r.cookie("board_oauth").is_none(), "{q}");
     }
 }
+
+/// 上传附件：请求体是文件内容
+fn upload(url: &str, headers: &[(&str, &str)], bytes: &[u8]) -> Res {
+    let mut r = agent().post(url);
+    for (k, v) in headers {
+        r = r.header(*k, *v);
+    }
+    let mut res = r.send(bytes).unwrap_or_else(|e| panic!("POST {url}: {e}"));
+    let status = res.status().as_u16();
+    let headers = res.headers().iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string())).collect();
+    let text = res.body_mut().read_to_string().unwrap_or_default();
+    Res { status, headers, body: serde_json::from_str(&text).unwrap_or(Value::Null) }
+}
+
+/// 读取附件，返回状态、响应头和内容
+fn download(url: &str, headers: &[(&str, &str)]) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let mut r = agent().get(url);
+    for (k, v) in headers {
+        r = r.header(*k, *v);
+    }
+    let mut res = r.call().unwrap();
+    let status = res.status().as_u16();
+    let h = res.headers().iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string())).collect();
+    (status, h, res.body_mut().read_to_vec().unwrap_or_default())
+}
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+#[test]
+fn attachments_need_login_and_work_for_agents() {
+    let s = github("buglan");
+    let cookie = session(&s);
+    let tok = new_token(&s.db, "ci");
+    let bearer = format!("Bearer {tok}");
+    let card = send("POST", &format!("{}/api/cmd", s.url), &[("cookie", &cookie), UI], Some(json!({ "board": "default", "op": "new", "title": "截图" })));
+    let id = card.body["id"].as_i64().unwrap();
+
+    // 未登录不能上传、不能读
+    let r = upload(&format!("{}/api/files?board=default&name=a.png", s.url), &[], PNG);
+    assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"));
+
+    // 人在新建弹窗里先上传（不带卡片），新建时描述引用到就归到卡片
+    let r = upload(&format!("{}/api/files?board=default&name=%E6%88%AA%E5%9B%BE.png", s.url), &[("cookie", &cookie), UI], PNG);
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert_eq!(r.body["name"], "截图.png");
+    assert_eq!(r.body["image"], true);
+    assert!(r.body["cardId"].is_null());
+    let url = r.body["url"].as_str().unwrap().to_string();
+    let md = r.body["markdown"].as_str().unwrap().to_string();
+    let c = send(
+        "POST",
+        &format!("{}/api/cmd", s.url),
+        &[("cookie", &cookie), UI],
+        Some(json!({ "board": "default", "op": "new", "title": "带图", "body": format!("如图 {md}") })),
+    );
+    assert_eq!(c.body["attachments"][0]["url"], url.as_str());
+
+    // 读取：要登录；图片直接显示，nosniff + sandbox
+    let (st, _, _) = download(&format!("{}{url}", s.url), &[]);
+    assert_eq!(st, 401);
+    let (st, h, body) = download(&format!("{}{url}", s.url), &[("cookie", &cookie)]);
+    assert_eq!((st, body.as_slice()), (200, PNG));
+    let get = |k: &str| h.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone()).unwrap_or_default();
+    assert_eq!(get("content-type"), "image/png");
+    assert!(get("content-disposition").starts_with("inline; filename*=UTF-8''%E6%88%AA%E5%9B%BE.png"));
+    assert_eq!(get("x-content-type-options"), "nosniff");
+    assert!(get("content-security-policy").contains("sandbox"));
+
+    // agent 用令牌上传到卡片（要带名字）、读取；卡片详情里列出附件
+    let r = upload(&format!("{}/api/files?board=default&card={id}&name=run.log", s.url), &[("authorization", &bearer)], b"ok\n");
+    assert_eq!((r.status, r.code()), (400, "NO_IDENTITY"));
+    let r = upload(&format!("{}/api/files?board=default&card={id}&name=run.log&as=alpha", s.url), &[("authorization", &bearer)], b"ok\n");
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert_eq!(r.body["createdBy"], json!({ "kind": "agent", "name": "alpha" }));
+    let log = r.body["url"].as_str().unwrap().to_string();
+    let (st, h, body) = download(&format!("{}{log}", s.url), &[("authorization", &bearer)]);
+    assert_eq!((st, body.as_slice()), (200, b"ok\n".as_slice()));
+    assert!(h.iter().any(|(k, v)| k == "content-disposition" && v.starts_with("attachment;")), "其他文件是下载");
+    let d = send("GET", &format!("{}/api/card?path=default&id={id}", s.url), &[("authorization", &bearer)], None);
+    assert_eq!(d.body["attachments"][0]["name"], "run.log");
+
+    // 类型、大小、卡片不存在
+    let r = upload(&format!("{}/api/files?board=default&name=x.svg", s.url), &[("cookie", &cookie), UI], b"<svg/>");
+    assert_eq!(r.code(), "USAGE");
+    let big = vec![b'a'; 10 * 1024 * 1024 + 1];
+    let r = upload(&format!("{}/api/files?board=default&name=big.txt", s.url), &[("cookie", &cookie), UI], &big);
+    assert_eq!(r.code(), "USAGE", "{:?}", r.body);
+    assert!(r.body["error"]["message"].as_str().unwrap().contains("10 MB"));
+    let r = upload(&format!("{}/api/files?board=default&card=999&name=a.png", s.url), &[("cookie", &cookie), UI], PNG);
+    assert_eq!(r.code(), "NOT_FOUND");
+    let (st, _, _) = download(&format!("{}/api/files/999", s.url), &[("cookie", &cookie)]);
+    assert_eq!(st, 404);
+}

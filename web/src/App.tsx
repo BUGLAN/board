@@ -8,7 +8,7 @@ import { CanvasPage } from './components/Canvas';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { Login } from './components/Login';
-import { ConfirmDialog, CtxMenu, FormModal, LabelManager, LabelPicker, Palette, Toasts } from './components/Overlays';
+import { ConfirmDialog, CtxMenu, FormModal, LabelManager, LabelPicker, Lightbox, Palette, Toasts } from './components/Overlays';
 import { SettingsPage } from './components/Settings';
 import { Topbar } from './components/Topbar';
 import { TitleStrip } from './components/WindowControls';
@@ -222,6 +222,7 @@ function BoardApp() {
       <ConfirmDialog />
       <CtxMenu />
       <LabelPicker />
+      <Lightbox />
       <Toasts />
     </>
   );

@@ -6,6 +6,7 @@
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { openCard } from '../lib/actions';
+import { stillUploading, useAttach } from '../lib/attach';
 import { boardFlow } from '../lib/schema';
 import { autosize, cx, MOD, pref, replay } from '../lib/util';
 import { closeDetail, exec, useCurrent, useData } from '../store/data';
@@ -45,6 +46,8 @@ export function Creator() {
   const root = useRef<HTMLElement>(null);
   const state = useRef({ title, body, column, labels });
   state.current = { title, body, column, labels };
+  // 附件：还没有卡片，先上传，新建时按描述里的引用归到卡片
+  const attach = useAttach({ board: path, card: null, setValue: setBody, textarea: bodyRef });
 
   // 打开：恢复草稿
   useEffect(() => {
@@ -88,7 +91,7 @@ export function Creator() {
   }, []);
 
   const submit = async () => {
-    if (busy) return;
+    if (busy || stillUploading(attach.busy)) return;
     if (!title.trim()) {
       setError('标题是必填的');
       replay(titleRef.current, 'invalid');
@@ -290,6 +293,19 @@ export function Creator() {
                 >
                   插入验收标准
                 </button>
+                <button
+                  className="btn sm ghost"
+                  type="button"
+                  title="附件：也可以直接粘贴截图、拖入文件（≤ 10 MB）"
+                  onClick={() => {
+                    setMode('edit');
+                    attach.pick();
+                  }}
+                >
+                  <Icon name="clip" />
+                  {attach.busy ? '上传中…' : '附件'}
+                </button>
+                {attach.fileInput}
                 <DescTabs
                   mode={mode}
                   setMode={m => {
@@ -303,9 +319,10 @@ export function Creator() {
                 />
               </div>
             </div>
-            <div className="cr-desc">
+            <div className={cx('cr-desc', attach.over && 'drop-on')}>
               <textarea
                 ref={bodyRef}
+                {...attach.handlers}
                 className="textarea scroll"
                 spellCheck={false}
                 hidden={mode !== 'edit'}

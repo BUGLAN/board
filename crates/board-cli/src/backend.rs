@@ -104,6 +104,34 @@ impl Backend {
         }
     }
 
+    /// 上传附件到卡片
+    pub fn attach(&mut self, path: &str, id: i64, actor: &Actor, name: &str, bytes: &[u8]) -> Result<Attachment> {
+        match self {
+            Backend::Local(s) => {
+                let b = s.read(|r| r.resolve(path))?;
+                s.attach(now_ms(), &b, Some(id), actor, name, bytes)
+            }
+            Backend::Remote(r) => {
+                let id = id.to_string();
+                r.upload(&[("board", path), ("card", &id), ("name", name), ("as", &actor.name)], bytes)
+            }
+        }
+    }
+
+    /// 读取附件内容
+    pub fn download(&mut self, path: &str, a: &Attachment) -> Result<Vec<u8>> {
+        match self {
+            Backend::Local(s) => {
+                let b = s.read(|r| r.resolve(path))?;
+                match s.attachment(a.id)? {
+                    Some((_, board, file)) if board == b.id => Ok(std::fs::read(file)?),
+                    _ => Err(BoardError::new(ErrorCode::NotFound, format!("附件 {} 不存在", a.id))),
+                }
+            }
+            Backend::Remote(r) => r.bytes(&a.url),
+        }
+    }
+
     pub fn exec(&mut self, path: &str, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
         match self {
             Backend::Local(s) => s.write(now_ms(), Origin::cli(), |w| {
@@ -178,17 +206,45 @@ impl Remote {
         self.handle(req.send_json(body))
     }
 
+    /// 上传附件：请求体是文件内容
+    fn upload(&self, query: &[(&str, &str)], bytes: &[u8]) -> Result<Attachment> {
+        let mut req = self.agent.post(format!("{}/api/files", self.url)).header("authorization", format!("Bearer {}", self.token));
+        for (k, v) in query {
+            req = req.query(*k, *v);
+        }
+        self.handle(req.send(bytes))
+    }
+
+    /// 读取附件内容（地址是服务端给的 /api/files/<id>）
+    fn bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let res = self.agent.get(format!("{}{path}", self.url)).header("authorization", format!("Bearer {}", self.token)).call();
+        let mut res = res.map_err(|e| BoardError::new(ErrorCode::Unreachable, format!("连不上 {}：{e}", self.url)))?;
+        if !res.status().is_success() {
+            return self.fail(res);
+        }
+        res.body_mut()
+            .with_config()
+            .limit(files::MAX_BYTES as u64 + 1024)
+            .read_to_vec()
+            .map_err(|e| BoardError::new(ErrorCode::Unreachable, format!("下载 {path} 失败：{e}")))
+    }
+
     fn handle<T: DeserializeOwned>(&self, res: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<T> {
         let mut res = res.map_err(|e| BoardError::new(ErrorCode::Unreachable, format!("连不上 {}：{e}", self.url)))?;
-        let status = res.status();
+        if !res.status().is_success() {
+            return self.fail(res);
+        }
         let text = res
             .body_mut()
             .read_to_string()
             .map_err(|e| BoardError::new(ErrorCode::Unreachable, format!("读取 {} 的响应失败：{e}", self.url)))?;
-        if status.is_success() {
-            return serde_json::from_str(&text)
-                .map_err(|e| BoardError::new(ErrorCode::Internal, format!("服务端返回的数据无法解析：{e}")));
-        }
+        serde_json::from_str(&text).map_err(|e| BoardError::new(ErrorCode::Internal, format!("服务端返回的数据无法解析：{e}")))
+    }
+
+    /// 服务端拒绝时还原错误码
+    fn fail<T>(&self, mut res: ureq::http::Response<ureq::Body>) -> Result<T> {
+        let status = res.status();
+        let text = res.body_mut().read_to_string().unwrap_or_default();
         // 服务端的拒绝：{"error": {"code", "message", "detail"}}
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         let e = &v["error"];

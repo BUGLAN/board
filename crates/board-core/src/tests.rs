@@ -503,3 +503,83 @@ fn final_status_is_human_only_and_layout_saved() {
     let second = s.read(|r| r.resolve("default/second").and_then(|b| r.flow(&b))).unwrap();
     assert_eq!(second.0.len(), 4);
 }
+
+/* ---------------- 附件（PRD §5） ---------------- */
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+#[test]
+fn attachments_upload_bind_delete_and_gc() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let files = dir.path().join("files");
+
+    // 类型、大小、文件头
+    let e = s.attach(T0, &b, None, &human(), "x.svg", b"<svg/>").unwrap_err();
+    assert!(e.message.contains("不支持"), "{}", e.message);
+    let e = s.attach(T0, &b, None, &human(), "x.png", b"<html>").unwrap_err();
+    assert!(e.message.contains("对不上"), "{}", e.message);
+    let big = vec![b'a'; files::MAX_BYTES + 1];
+    let e = s.attach(T0, &b, None, &human(), "big.txt", &big).unwrap_err();
+    assert!(e.message.contains("不能超过 10 MB"), "{}", e.message);
+    assert_eq!(s.attach(T0, &b, Some(99), &human(), "a.png", PNG).unwrap_err().code, ErrorCode::NotFound);
+
+    // 新建弹窗：先上传（没有卡片），新建时描述里引用到就归到这张卡片
+    let a = s.attach(T0, &b, None, &human(), "C:\\截图.png", PNG).unwrap();
+    assert_eq!((a.card_id, a.name.as_str(), a.image), (None, "截图.png", true));
+    assert_eq!(a.markdown, format!("![截图.png](/api/files/{})", a.id));
+    let body = format!("看图：{}", a.markdown);
+    let c = exec(&mut s, B, &human(), T0, Cmd::New { title: "有图".into(), body: Some(body), column: None, top: false, labels: vec![] })
+        .unwrap();
+    assert_eq!(c.attachments.len(), 1);
+    assert_eq!(c.attachments[0].card_id, Some(c.card.id));
+
+    // agent 直接传到卡片上；同样的内容只存一份文件
+    let log = s.attach(T0, &b, Some(c.card.id), &alpha(), "run.log", b"ok\n").unwrap();
+    s.attach(T0, &b, Some(c.card.id), &alpha(), "again.png", PNG).unwrap();
+    assert_eq!(std::fs::read_dir(&files).unwrap().count(), 2);
+    let c = card(&s, B, c.card.id);
+    assert_eq!(c.attachments.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["截图.png", "run.log", "again.png"]);
+    assert_eq!(c.attachments[1].created_by, alpha());
+    let (got, board, path) = s.attachment(log.id).unwrap().unwrap();
+    assert_eq!((got.name.as_str(), board), ("run.log", b.id));
+    assert_eq!(std::fs::read(path).unwrap(), b"ok\n");
+
+    // 评论里引用到的未归属附件也归到卡片；别的白板、已归属的不受影响
+    let c2 = exec(&mut s, B, &human(), T0, new("第二张")).unwrap().card.id;
+    let pending = s.attach(T0, &b, None, &human(), "p.pdf", b"%PDF-1.7").unwrap();
+    let text = format!("附上 {} 和 {}", pending.markdown, log.markdown);
+    exec(&mut s, B, &human(), T0, Cmd::Comment { id: c2, text }).unwrap();
+    assert_eq!(card(&s, B, c2).attachments.iter().map(|a| a.id).collect::<Vec<_>>(), [pending.id]);
+    assert_eq!(s.attachment(log.id).unwrap().unwrap().0.card_id, Some(c.card.id));
+
+    // 24 小时没归属的记录被清理；删除卡片后记录随之删除，不再被引用的文件被清理
+    let orphan = s.attach(T0, &b, None, &human(), "o.txt", b"orphan").unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: c.card.id }).unwrap();
+    assert!(s.attachment(log.id).unwrap().is_none());
+    let (rows, _) = s.gc_files(T0 + 25 * 3600 * 1000).unwrap();
+    assert_eq!(rows, 1);
+    assert!(s.attachment(orphan.id).unwrap().is_none());
+    // 文件要超过 1 小时没被引用才删：把它们的修改时间调早
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    for e in std::fs::read_dir(&files).unwrap() {
+        std::fs::File::options().write(true).open(e.unwrap().path()).unwrap().set_modified(old).unwrap();
+    }
+    let (_, removed) = s.gc_files(T0 + 25 * 3600 * 1000).unwrap();
+    assert_eq!(removed, 3, "截图/again 共用的 PNG、run.log、o.txt；p.pdf 还在用");
+    assert!(s.attachment(pending.id).unwrap().unwrap().2.exists());
+
+    // 备份：只复制还没有的文件
+    let backup = dir.path().join("backups/files");
+    assert_eq!(files::copy_new(&files, &backup).unwrap(), 1);
+    assert_eq!(files::copy_new(&files, &backup).unwrap(), 0);
+}
+
+#[test]
+fn in_memory_store_has_no_attachments() {
+    let mut s = store();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    assert!(s.attach(T0, &b, None, &human(), "a.png", PNG).is_err());
+}

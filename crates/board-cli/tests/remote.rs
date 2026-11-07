@@ -238,3 +238,29 @@ fn remote_output_matches_local() {
     assert_eq!(s.run("alpha", &["ls"]).out, local(&["ls"]).out);
     assert_eq!(s.run("alpha", &["flow"]).out, local(&["flow"]).out);
 }
+
+/// 远程模式的附件：经服务端上传、读取，和本地模式的输出一致
+#[test]
+fn remote_attachments() {
+    let s = start();
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("shot.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    s.run("alpha", &["new", "带图"]);
+    let r = s.run("alpha", &["attach", "1", png.to_str().unwrap(), "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    assert_eq!(v["attachments"][0]["created_by"], "alpha");
+    assert_eq!(v["card"]["attachments"][0]["url"], "/api/files/1");
+    let out = dir.path().join("dl");
+    let r = s.run("beta", &["files", "1", "--out", out.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("已下载 1 个附件"), "{}", r.out);
+    assert_eq!(std::fs::read(out.join("1-shot.png")).unwrap(), std::fs::read(&png).unwrap());
+    // 服务端的拒绝原样还原
+    let txt = dir.path().join("x.exe");
+    std::fs::write(&txt, "MZ").unwrap();
+    let r = s.run("alpha", &["attach", "1", txt.to_str().unwrap(), "--json"]);
+    assert_eq!(r.error_code(), "USAGE");
+    assert!(!s.local.exists(), "远程模式不应创建本地数据库");
+}

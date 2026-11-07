@@ -47,6 +47,8 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
         .title("Board")
         .inner_size(1360.0, 860.0)
         .min_inner_size(380.0, 560.0)
+        // 拖入文件交给页面处理（卡片附件）；否则 Tauri 会拦下文件拖放，页面收不到 drop 事件
+        .disable_drag_drop_handler()
         .initialization_script(shell_script());
     // 新窗口错开一点，免得完全叠在上一个窗口上
     if n > 0 {

@@ -33,6 +33,13 @@ const P: Record<string, ReactNode> = {
   chevDown: <path d="m5.5 8 4.5 4.5L14.5 8" />,
   chevRight: <path d="m8 5 5 5-5 5" />,
   close: <path d="m5.5 5.5 9 9M14.5 5.5l-9 9" />,
+  clip: <path d="m15.2 9.6-5.4 5.4a3.4 3.4 0 0 1-4.8-4.8l5.9-5.9a2.3 2.3 0 0 1 3.2 3.2l-5.8 5.8a1.1 1.1 0 0 1-1.6-1.6l5.3-5.3" />,
+  file: (
+    <>
+      <path d="M11.5 3.5H6a1.5 1.5 0 0 0-1.5 1.5v10A1.5 1.5 0 0 0 6 16.5h8a1.5 1.5 0 0 0 1.5-1.5V7.5Z" />
+      <path d="M11.5 3.5v4h4" />
+    </>
+  ),
   lock: (
     <>
       <rect x="4.5" y="8.5" width="11" height="8" rx="2.2" />

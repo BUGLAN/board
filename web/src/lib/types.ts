@@ -99,8 +99,25 @@ export interface Activity {
   text: string;
 }
 
+/** 卡片附件（PRD §5）：图片在描述、评论里直接显示，其他文件是下载链接 */
+export interface Attachment {
+  id: number;
+  /** 新建弹窗里先上传、还没归到卡片时为 null */
+  cardId: number | null;
+  name: string;
+  mime: string;
+  size: number;
+  image: boolean;
+  url: string;
+  /** 插入描述或评论用的 Markdown */
+  markdown: string;
+  createdAt: number;
+  createdBy: Actor;
+}
+
 export interface CardDetail extends Card {
   activity: Activity[];
+  attachments?: Attachment[];
 }
 
 export interface BoardEvent {

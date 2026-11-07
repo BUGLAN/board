@@ -360,10 +360,10 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
 
     match &caller {
         Caller::Agent { token } => {
-            // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令
+            // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令，读取和上传附件
             let m = req.method().clone();
-            let cli = (m == Method::GET && matches!(path.as_str(), "/workspace" | "/board" | "/card"))
-                || (m == Method::POST && path == "/cmd");
+            let cli = (m == Method::GET && (matches!(path.as_str(), "/workspace" | "/board" | "/card") || path.starts_with("/files/")))
+                || (m == Method::POST && matches!(path.as_str(), "/cmd" | "/files"));
             if !cli {
                 return ApiError(BoardError::new(
                     ErrorCode::NotLoggedIn,
@@ -371,8 +371,8 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                 ))
                 .into_response();
             }
-            // /cmd 由处理函数记录 agent 名字
-            if path != "/cmd" {
+            // /cmd、上传附件由处理函数记录 agent 名字
+            if path != "/cmd" && path != "/files" {
                 tracing::Span::current().record("who", format!("令牌#{token}"));
             }
         }

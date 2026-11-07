@@ -4,6 +4,7 @@ import { inlineCode, markdown } from '../lib/markdown';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial } from '../lib/util';
 import { serverNow } from '../store/data';
+import { openImage } from '../store/ui';
 
 /** 当前时间（与服务端对齐），每 interval 毫秒刷新 */
 export function useNow(interval = 1000) {
@@ -100,7 +101,20 @@ export function ProjectAvatar({ name, color, className }: { name: string; color:
 
 export function Markdown({ src, className }: { src: string; className?: string }) {
   const html = useMemo(() => markdown(src), [src]);
-  return <div className={cx('md', className)} dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div
+      className={cx('md', className)}
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={e => {
+        // 图片（附件）点击放大
+        const t = e.target as HTMLElement;
+        if (t.tagName !== 'IMG') return;
+        e.preventDefault();
+        e.stopPropagation();
+        openImage(t.getAttribute('src') || '', t.getAttribute('alt') || '');
+      }}
+    />
+  );
 }
 
 /** 标题里的 `code` */
