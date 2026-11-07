@@ -297,7 +297,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 ### 10.9 复制为提示词
 
-- agent 通过 skill 接入：`board-skills` 写明身份与白板的设置方法、处理卡片的步骤（领取 → 按描述和验收标准干活、用评论记进度 → 交审；做不下去时评论原因并放回领取起点）、整理「未整理」条目的方法、§8 的规则和 §12 的错误码。skill 随项目提供（`skills/board-skills/SKILL.md`）。
+- agent 通过 skill 接入：`board-skills` 写明身份与白板的设置方法、处理卡片的步骤（领取 → 按描述和验收标准干活、用评论记进度 → 交审；做不下去时评论原因并放回领取起点）、整理「未整理」条目的方法、§8 的规则和 §12 的错误码。skill 随项目提供（`.agents/skills/board-skills/SKILL.md`，各家 agent 能自动识别；Claude Code 通过 `.claude/skills/board-skills` 链接识别）。
 - 复制为提示词只复制一行 skill 调用，卡片的标题、描述、动态由 agent 用 CLI 自己读取：
   - 卡片：`/board-skills <项目>/<白板>#<ID>`。卡片详情的「复制为提示词」按钮和 `C` 键复制这一行。
   - 白板：`/board-skills <项目>/<白板>`，agent 循环领取领取起点最上面的卡片，直到 `EMPTY_TODO`。项目树和画布上白板的菜单里有这一项。

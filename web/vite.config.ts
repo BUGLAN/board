@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    // 设置页内嵌了仓库根目录下的 skills/board-skills/SKILL.md
+    // 设置页内嵌了仓库根目录下的 .agents/skills/board-skills/SKILL.md
     fs: { allow: ['..'] },
     // /auth：GitHub 登录与回调
     proxy: { '/api': { target: api, changeOrigin: true }, '/auth': { target: api, changeOrigin: true } },

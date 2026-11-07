@@ -9,7 +9,7 @@ import { getTheme, setDensity, setMotion, setTheme, type Density, type Motion, t
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
 import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
-import skill from '../../../skills/board-skills/SKILL.md?raw';
+import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
 import { useData } from '../store/data';
 import { confirm, toast, toastError, useUI } from '../store/ui';
@@ -398,7 +398,7 @@ export function SettingsPage() {
             <CopySkill />
           </Row>
           <div className="code-block">
-            <Code cmd={'ln -s "$PWD/skills/board-skills" ~/.agents/skills/board-skills'} note="在 Board 仓库里执行：链接到 skills 目录" />
+            <Code cmd={'ln -s "$PWD/.agents/skills/board-skills" ~/.agents/skills/board-skills'} note="在 Board 仓库里执行：链接到 skills 目录" />
             <Code cmd="cargo install --path crates/board-cli" note="安装 board 命令行" />
           </div>
           <h3 className="set-sub">

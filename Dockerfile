@@ -12,7 +12,7 @@ COPY web/package.json web/package-lock.json web/
 RUN npm --prefix web ci
 COPY web web
 # 设置页内嵌了 SKILL.md
-COPY skills skills
+COPY .agents/skills .agents/skills
 RUN npm --prefix web run build
 
 # ---- 服务端 ----
