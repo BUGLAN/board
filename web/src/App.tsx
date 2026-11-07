@@ -21,6 +21,7 @@ import { boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './s
 import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, toast, useUI, type Tab,
 } from './store/ui';
+import { PrototypeSwitcher } from './prototype/timing'; // 原型（PROTOTYPE）
 
 const OP_LABEL: Record<string, string> = {
   create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论',
@@ -224,6 +225,7 @@ function BoardApp() {
       <LabelPicker />
       <Lightbox />
       <Toasts />
+      <PrototypeSwitcher />
     </>
   );
 }

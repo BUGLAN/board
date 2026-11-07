@@ -8,6 +8,7 @@ import { newBoard, newProject, openBoard, openCard, triage } from '../lib/action
 import { api } from '../lib/api';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { useMasonry } from '../lib/masonry';
+import { useVariant, WorkingTime } from '../prototype/timing'; // 原型（PROTOTYPE）
 import type { Label } from '../lib/types';
 import { boardFlow, flowOf } from '../lib/schema';
 import { cx, mmss, ago, agentColor, pref, replay } from '../lib/util';
@@ -294,6 +295,7 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
 }
 
 function BoardSide() {
+  const pv = useVariant(); // 原型（PROTOTYPE）
   const board = useData(s => s.board);
   const detailId = useData(s => s.detailId);
   const cur = useCurrent();
@@ -373,7 +375,7 @@ function BoardSide() {
                     </span>{' '}
                     · #{c.id} <Title text={c.title} />
                   </span>
-                  <span className={cx('tm', left < 5 * 60e3 && 'urgent')}>{mmss(left)}</span>
+                  {pv ? <WorkingTime v={pv} card={c} now={now} /> : <span className={cx('tm', left < 5 * 60e3 && 'urgent')}>{mmss(left)}</span>}
                 </button>
               );
             })

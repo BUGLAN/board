@@ -12,6 +12,7 @@ import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../stor
 import { Avatar, ProjectAvatar, Ring, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { WindowControls } from './WindowControls';
+import { PresenceItem, useVariant } from '../prototype/timing'; // 原型（PROTOTYPE）
 
 export function Topbar() {
   const onDown = (e: React.MouseEvent) => {
@@ -57,6 +58,17 @@ function Presence() {
   const board = useData(s => s.board);
   const now = useNow(1000);
   const holders = board ? boardFlow(board).list.flatMap(s => (board.cols[s.key] ?? []).map(id => board.cards[id])).filter(c => c?.holder) : [];
+  const pv = useVariant(); // 原型（PROTOTYPE）
+  if (pv)
+    return (
+      <div className="presence" aria-label="正在工作的 agent">
+        {holders.map(c => (
+          <span key={c.holder} onClick={() => openCard(c.id)}>
+            <PresenceItem v={pv} card={c} now={now} />
+          </span>
+        ))}
+      </div>
+    );
   return (
     <div className="presence" aria-label="正在工作的 agent">
       {holders.map((c, i) => {

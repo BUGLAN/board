@@ -6,6 +6,7 @@ import { agentColor, ago, cx, mmss, replay } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { Avatar, LabelChips, Ring, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
+import { CardFoot, HeadBadge, useVariant } from '../prototype/timing'; // 原型（PROTOTYPE）
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {
@@ -55,6 +56,7 @@ export const CardView = memo(function CardView({
   const hit = active ? cardHit(c, filter, sel, labels) : true;
   const left = c.expiresAt != null ? c.expiresAt - now : 0;
   const beat = beatAge(c, now);
+  const pv = useVariant(); // 原型（PROTOTYPE）
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
 
@@ -80,7 +82,7 @@ export const CardView = memo(function CardView({
         open && 'is-open',
         active && !hit && 'filtered-out',
         active && hit && 'matched',
-        doing && left < 5 * 60e3 && 'urgent',
+        doing && !pv && left < 5 * 60e3 && 'urgent',
         entering && 'entering',
         placeholder && 'is-placeholder',
       )}
@@ -134,6 +136,7 @@ export const CardView = memo(function CardView({
             <span className="card-id">#{c.id}</span>
             {next && <span className="card-next">下一张</span>}
             <span className="card-flags">
+              {pv === 'C' && !final && <HeadBadge card={c} now={now} />}
               {gh && <span className="card-tag">{gh}</span>}
               {c.comments > 0 && (
                 <span className="f" title={`${c.comments} 条评论`}>
@@ -151,7 +154,9 @@ export const CardView = memo(function CardView({
               <LabelChips ids={c.labels} labels={labels} />
             </div>
           )}
-          {doing && (
+          {pv ? (
+            <CardFoot v={pv} card={c} now={now} />
+          ) : doing && (
             <div className="card-claim">
               <Avatar actor={agent(c.holder!)} />
               <span className="claim-name">{c.holder}</span>

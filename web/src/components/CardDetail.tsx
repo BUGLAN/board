@@ -6,12 +6,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { BEAT_MISSES, BEAT_MS, beatAge, boardFlow, CLAIM_MS } from '../lib/schema';
-import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
+import type { Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, MOD, mmss, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, Ring, agent, useNow } from './bits';
 import { Icon, type IconName } from './Icon';
+import { DetailTiming, LiveBlock, SessionLine, useVariant, withSessions, type ProtoActivity } from '../prototype/timing'; // 原型（PROTOTYPE）
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
@@ -494,6 +495,38 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
 
 function ClaimPart({ card: c, now }: { card: Card; now: number }) {
   const start = boardFlow(useData(s => s.board)).claim?.name ?? '待办';
+  const pv = useVariant(); // 原型（PROTOTYPE）
+  if (pv && c.column !== 'inbox') {
+    const release = (
+      <button
+        className="btn sm danger"
+        type="button"
+        onClick={async () => {
+          try {
+            await exec({ op: 'release', id: c.id });
+          } catch (e) {
+            toastError(e);
+          }
+        }}
+      >
+        <Icon name="unlock" />
+        强制释放
+      </button>
+    );
+    return (
+      <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
+        {c.holder && (
+          <div className="lock-note" style={{ marginBottom: 10 }}>
+            <Icon name="lock" />
+            <div>
+              「进行中」的卡片只有持有者 <b className="mono">{c.holder}</b> 能编辑和移动。你仍可以评论、加或去标签，或强制释放让它回到待办。
+            </div>
+          </div>
+        )}
+        <DetailTiming v={pv} card={c} now={now} release={release} />
+      </section>
+    );
+  }
   if (c.column === 'inbox') {
     return (
       <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
@@ -582,6 +615,8 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
   const [text, setText] = useState('');
   const ta = useRef<HTMLTextAreaElement>(null);
   const send = useRef<HTMLButtonElement>(null);
+  const pv = useVariant(); // 原型（PROTOTYPE）
+  const items: ProtoActivity[] = pv ? withSessions(c, c.activity, now) : c.activity;
   const n = c.activity.length;
   const path = useData(s => s.path);
   const attach = useAttach({ board: path, card: c.id, setValue: setText, textarea: ta });
@@ -625,9 +660,10 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
       </div>
       <div className="d-activity scroll" ref={scroller}>
         <div className="timeline">
-          {c.activity.map((a, idx) => (
-            <ActivityItem key={a.id} a={a} now={now} fresh={firstNew != null && idx >= firstNew} />
+          {items.map((a, idx) => (
+            <ActivityItem key={a.id} a={a} now={now} fresh={firstNew != null && idx >= firstNew} pv={pv} />
           ))}
+          {pv && <LiveBlock v={pv} card={c} now={now} />}
         </div>
       </div>
       <div className="d-comment">
@@ -671,7 +707,7 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
   );
 }
 
-function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: boolean }) {
+function ActivityItem({ a, now, fresh, pv }: { a: ProtoActivity; now: number; fresh: boolean; pv: ReturnType<typeof useVariant> }) {
   const name =
     a.actor.kind === 'agent' ? (
       <b className="agent-name" style={{ color: agentColor(a.actor.name) }}>
@@ -685,6 +721,7 @@ function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: bool
       {ago(a.at, now)}
     </span>
   );
+  if (pv && a.session) return SessionLine({ v: pv, a, now, name, time }); // 原型（PROTOTYPE）
   if (a.kind === 'comment') {
     return (
       <div className={cx('tl-item', a.actor.kind === 'human' && 'mine', fresh && 'new')}>
