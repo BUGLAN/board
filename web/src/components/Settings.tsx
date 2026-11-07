@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { api } from '../lib/api';
-import { canSetEnv, getTheme, isWindows, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
+import { boardCli, canSetEnv, getTheme, isMac, isWindows, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { cardPrompt } from '../lib/prompt';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
@@ -484,7 +484,25 @@ export function SettingsPage() {
           </Row>
           <div className="code-block">
             <Code cmd={'ln -s "$PWD/.agents/skills/board-skills" ~/.agents/skills/board-skills'} note="在 Board 仓库里执行：链接到 skills 目录" />
-            <Code cmd="cargo install --path crates/board-cli" note="安装 board 命令行" />
+          </div>
+          <h3 className="set-sub">
+            <Icon name="terminal" />
+            安装 board 命令行
+          </h3>
+          <p className="set-p">
+            {isWindows
+              ? '装了 Windows 桌面端就不需要 Rust：安装包自带的 board.exe 会在安装时写进 PATH，新开一个终端就能用。'
+              : isMac
+                ? '装了 macOS 桌面端就不需要 Rust：安装包里自带 board，执行下面这条命令把它链接到 PATH。'
+                : '从源码安装需要 Rust；桌面端的安装包里已经带了 board。'}
+          </p>
+          <div className="code-block">
+            {isWindows ? (
+              <Code plain cmd="board help" note="新开终端后验证；还没装桌面端就用下面的源码安装" />
+            ) : isMac ? (
+              <Code cmd={`sudo ln -sf "${boardCli ?? '/Applications/Board.app/Contents/MacOS/board'}" /usr/local/bin/board`} note="桌面端自带的 board 链接到 PATH" />
+            ) : null}
+            <Code cmd="cargo install --path crates/board-cli" note="从源码安装（需要 Rust）" />
           </div>
           <h3 className="set-sub">
             <Icon name="key" />

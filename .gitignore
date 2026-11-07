@@ -4,6 +4,7 @@ node_modules/
 /.dev
 .DS_Store
 /src-tauri/gen
+/src-tauri/binaries
 /data
 .env
 /deploy/bin

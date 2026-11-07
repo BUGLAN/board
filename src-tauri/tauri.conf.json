@@ -6,8 +6,8 @@
   "build": {
     "devUrl": "http://localhost:1420",
     "frontendDist": "../web/dist",
-    "beforeDevCommand": "npm run dev:web",
-    "beforeBuildCommand": "npm run build:web"
+    "beforeDevCommand": "node scripts/build-sidecar.mjs --debug && npm run dev:web",
+    "beforeBuildCommand": "npm run build:web && node scripts/build-sidecar.mjs"
   },
   "app": {
     "windows": [],
@@ -20,6 +20,16 @@
     "targets": "all",
     "category": "Productivity",
     "shortDescription": "看板式白板：人在界面上操作，agent 通过 CLI 操作同一块白板（连接 board.buglan.com）",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "externalBin": ["binaries/board"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/installer-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["./windows/path.wxs"],
+        "componentRefs": ["BoardCliPathComponent"]
+      }
+    }
   }
 }

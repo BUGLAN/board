@@ -85,13 +85,15 @@ cargo run --release -p board-server -- --local
 npm run desktop:build
 ```
 
-安装包在 `target/release/bundle/`，打开的是 `https://board.buglan.com`。开发时连本机：
+安装包在 `target/release/bundle/`，打开的是 `https://board.buglan.com`。安装包里带了 `board` 命令行：Windows 安装时写进 PATH；macOS 在「设置 → Agent 接入」里执行一条 `ln -sf` 命令链接到 PATH。两种系统都不需要再装 Rust。开发时连本机：
 
 ```bash
 BOARD_URL=http://localhost:1420 npm run desktop:dev
 ```
 
 ## CLI
+
+装了桌面端就不需要 Rust（见上）。从源码安装：
 
 ```bash
 cargo install --path crates/board-cli
