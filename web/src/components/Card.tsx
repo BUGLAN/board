@@ -37,9 +37,9 @@ interface Props {
   color?: string;
   /** 所在状态是终点：只占一行，标题划掉 */
   final?: boolean;
-  /** 领取起点的第一张 */
+  /** 不带 ID 执行 board claim 时会被领走的那张 */
   next?: boolean;
-  /** 「整理到…」按钮上的领取起点名称 */
+  /** 「整理到…」按钮上的首个可领取状态名称 */
   claimName?: string;
   onTriage?: (id: number) => void;
 }

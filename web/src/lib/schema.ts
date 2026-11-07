@@ -12,11 +12,26 @@ export const statusColor = (c: string) => (c.startsWith('#') ? c : `var(--c-${c}
 export function flowOf(statuses: Status[] | undefined | null) {
   const list = statuses ?? [];
   const get = (k: string) => list.find(s => s.key === k);
-  const claim = list.find(s => s.claim) ?? list[0];
+  /** 首个可领取状态：新建卡片、整理、删除状态时卡片放进这里 */
+  const home = list.find(s => s.claim) ?? list[0];
+  const hasEdge = (a: string, b: string) => !!get(a)?.to?.includes(b);
+  /** 从可领取状态领取后进入的锁定状态：它连向的锁定状态里排在最前面的 */
+  const claimTarget = (from: string) => list.find(s => s.lock && hasEdge(from, s.key));
   return {
     list,
     get,
-    claim,
+    home,
+    hasEdge,
+    claimTarget,
+    /** 可领取状态（按工作流顺序） */
+    claimables: list.filter(s => s.claim),
+    /** 可领取状态里的卡片总数 */
+    ready: (counts: Record<string, number> | undefined) => list.filter(s => s.claim).reduce((n, s) => n + (counts?.[s.key] ?? 0), 0),
+    /** 不带 ID 执行 board claim 时会被领走的卡片（PRD §8 规则 1） */
+    nextCard: (cols: Record<string, number[]> | null | undefined) => {
+      for (const s of list) if (s.claim && claimTarget(s.key) && cols?.[s.key]?.length) return cols[s.key][0];
+      return undefined;
+    },
     name: (k: string) => (k === INBOX ? INBOX_NAME : get(k)?.name ?? k),
     color: (k: string) => (k === INBOX ? 'var(--c-inbox)' : statusColor(get(k)?.color ?? 'todo')),
     isLock: (k: string) => !!get(k)?.lock,
@@ -24,6 +39,8 @@ export function flowOf(statuses: Status[] | undefined | null) {
   };
 }
 export type FlowQ = ReturnType<typeof flowOf>;
+/** 释放后卡片回到哪里：领取它时所在的可领取状态，否则首个可领取状态（PRD §8 规则 7） */
+export const backTo = (f: FlowQ, from: string | null | undefined) => (from && f.get(from)?.claim ? f.name(from) : f.home?.name ?? '待办');
 export const boardFlow = (b: BoardSnapshot | null) => flowOf(b?.statuses);
 
 /** 心跳间隔；从领取或最近一次心跳算起，连续 BEAT_MISSES 次没收到就释放（与 board-core 一致） */
@@ -59,11 +76,11 @@ export const ERRORS: [ErrorCode, string][] = [
   ['BOARD_NOT_FOUND', '指定的项目或白板不存在；或项目下有多块白板却只写了项目标识'],
   ['NOT_FOUND', '卡片不存在'],
   ['EMPTY_TITLE', '新建或编辑时标题为空'],
-  ['EMPTY_TODO', '不带 ID 领取时领取起点为空'],
-  ['NOT_IN_TODO', '带 ID 领取的卡片不在领取起点，且不是自己持有的卡片'],
+  ['EMPTY_TODO', '不带 ID 领取时，连到锁定状态的可领取状态里都没有卡片'],
+  ['NOT_IN_TODO', '带 ID 领取的卡片不在可领取状态，且不是自己持有的卡片'],
   ['ALREADY_HOLDING', '该 agent 在这块白板上已经持有另一张卡片'],
   ['NOT_HOLDER', '编辑或移动被持有卡片的不是持有者'],
-  ['FORBIDDEN_COLUMN', '把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态；工作流里没有锁定状态时领取'],
+  ['FORBIDDEN_COLUMN', '把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态或「未整理」；agent 不沿连线移动卡片；从没有连到锁定状态的可领取状态领取'],
   ['USAGE', '命令格式或参数不正确：未知的命令、未知的状态、项目里不存在的标签、缺少必需的参数、评论内容为空'],
   ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 设置了 BOARD_URL 却没有 BOARD_TOKEN；用访问令牌做只有人能在界面上做的操作'],
   ['INVALID_TOKEN', '访问令牌不存在或已吊销'],

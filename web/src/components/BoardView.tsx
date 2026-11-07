@@ -9,12 +9,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useMasonry } from '../lib/masonry';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
-import { boardFlow, INBOX, statusColor, STATUS_COLORS, type FlowQ } from '../lib/schema';
+import { boardFlow, INBOX, statusColor, type FlowQ } from '../lib/schema';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
 import { openCreator, setFilter, setTab, toastError, useUI, type DragUI } from '../store/ui';
 import { cardHit, CardView } from './Card';
+import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 
 /** 拖拽预览：被拖的卡片放到预览位置 */
@@ -41,11 +42,6 @@ export function useEntering(board: BoardSnapshot | null, generation: number) {
   return { entering, fresh: !!board && s.fresh };
 }
 
-const run = (p: Promise<unknown>) =>
-  p.then(() => refresh()).catch(e => {
-    toastError(e);
-    refresh();
-  });
 
 export function BoardView() {
   const board = useData(s => s.board);
@@ -63,6 +59,8 @@ export function BoardView() {
   const cols = useMemo(() => (board ? previewCols(board.cols, drag) : null), [board, drag]);
   const f = boardFlow(board);
   const path = cur?.board.path ?? '';
+  // 「下一张」：去掉正在拖的卡片再算
+  const nextId = f.nextCard(cols && drag ? Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) : cols);
 
   useLayoutEffect(() => {
     flip.play();
@@ -139,6 +137,7 @@ export function BoardView() {
                   fresh={fresh}
                   onHead={h.onMove}
                   resizer={h.resizer}
+                  next={nextId}
                 />
               );
             }}
@@ -166,19 +165,20 @@ interface ColumnProps {
   fresh: boolean;
   onHead: (e: React.PointerEvent) => void;
   resizer: ReactNode;
+  /** 不带 ID 执行 board claim 时会被领走的卡片 */
+  next: number | undefined;
 }
 
 function emptyText(s: Status, f: FlowQ) {
-  if (s.claim) return `${s.name}是空的。新建一张卡片，或等 agent 用 board new 创建`;
-  const start = f.list.indexOf(f.claim);
-  const target = f.list.slice(start + 1).find(x => x.lock) ?? f.list.find(x => x.lock);
-  if (s.lock && target?.key === s.key) return 'agent 执行 board claim 后出现在这里';
+  if (s.claim && s.key === f.home?.key) return `${s.name}是空的。新建一张卡片，或等 agent 用 board new 创建`;
+  if (s.claim) return `${s.name}是空的。agent 也会从这里领取`;
+  if (s.lock && f.claimables.some(c => f.claimTarget(c.key)?.key === s.key)) return 'agent 执行 board claim 后出现在这里';
   if (s.lock) return '持有者把卡片移过来后出现在这里';
   if (s.final) return '把确认完成的卡片拖到这里';
   return '把卡片拖到这里';
 }
 
-function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer }: ColumnProps) {
+function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next }: ColumnProps) {
   const count = board.cols[col.key]?.length ?? 0;
   const badge = useRef<HTMLSpanElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -195,7 +195,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
   const color = statusColor(col.color);
   const over = drag?.over === col.key;
   const same = drag && drag.col === drag.fromCol && col.key === drag.fromCol;
-  const firstFree = col.claim ? ids.find(id => id !== drag?.id) : undefined;
+  const firstFree = next;
   return (
     <section
       className={cx(
@@ -216,7 +216,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
         {col.claim && (
-          <span className="col-tag claim" title="领取起点：agent 从这里领取">
+          <span className="col-tag claim" title="可领取：agent 从这里领取">
             <Icon name="claim" />
             <span className="t">agent 从这里领</span>
           </span>
@@ -506,259 +506,6 @@ function Magnet({
           </div>
         );
       })}
-    </div>
-  );
-}
-
-/* ------------------------------ 工作流条 ------------------------------ */
-
-function FlowBar({ board, path, f }: { board: BoardSnapshot; path: string; f: FlowQ }) {
-  const [menu, setMenu] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [lift, setLift] = useState<string | null>(null);
-  const [order, setOrder] = useState<string[] | null>(null);
-  const els = useRef<Record<string, HTMLElement | null>>({});
-  const dragged = useRef(false);
-  const list = order ? order.map(k => f.get(k)).filter((s): s is Status => !!s) : f.list;
-  const hasLayout = f.list.some(s => s.layout);
-
-  const startDrag = (k: string) => (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    const x0 = e.clientX;
-    dragged.current = false;
-    let cur = list.map(s => s.key);
-    const mv = (ev: PointerEvent) => {
-      if (!dragged.current) {
-        if (Math.abs(ev.clientX - x0) < 4) return;
-        dragged.current = true;
-        setLift(k);
-        setMenu(null);
-      }
-      const others = cur.filter(x => x !== k);
-      let idx = 0;
-      for (const o of others) {
-        const n = els.current[o]?.getBoundingClientRect();
-        if (n && n.left + n.width / 2 < ev.clientX) idx++;
-      }
-      const next = [...others.slice(0, idx), k, ...others.slice(idx)];
-      if (next.join() !== cur.join()) {
-        cur = next;
-        setOrder(next);
-      }
-    };
-    const up = () => {
-      setLift(null);
-      removeEventListener('pointermove', mv);
-      removeEventListener('pointerup', up);
-      if (dragged.current && cur.join() !== f.list.map(s => s.key).join()) {
-        api
-          .reorderStatuses(path, cur)
-          .then(() => refresh())
-          .catch(toastError)
-          .finally(() => setOrder(null));
-      } else setOrder(null);
-    };
-    addEventListener('pointermove', mv);
-    addEventListener('pointerup', up);
-  };
-
-  return (
-    <div className="wf-bar">
-      <span className="wf-label">工作流</span>
-      <div className="wf-line">
-        {list.map((s, i) => (
-          <span key={s.key} className="wf-seg">
-            {i > 0 && <span className="wf-arrow" aria-hidden="true" />}
-            <span className="wf-node-wrap">
-              <button
-                type="button"
-                ref={el => {
-                  els.current[s.key] = el;
-                }}
-                className={cx('wf-node', lift === s.key && 'lift', menu === s.key && 'open')}
-                style={{ ['--c' as string]: statusColor(s.color) }}
-                onPointerDown={startDrag(s.key)}
-                onClick={() => {
-                  if (dragged.current) return;
-                  setMenu(m => (m === s.key ? null : s.key));
-                }}
-                title="点击设置 · 拖动调整顺序"
-              >
-                <i className="wf-dot" />
-                <span className="wf-name">{s.name}</span>
-                <b>{board.cols[s.key]?.length ?? 0}</b>
-                {s.claim && (
-                  <span className="wf-glyph" title="领取起点：agent 从这里领取">
-                    <Icon name="claim" />
-                  </span>
-                )}
-                {s.lock && (
-                  <span className="wf-glyph" title="锁定：只能由 agent 领取进入">
-                    <Icon name="lock" />
-                  </span>
-                )}
-                {s.final && (
-                  <span className="wf-glyph" title="终点：进来算完成，只有人能移入移出">
-                    <Icon name="check" />
-                  </span>
-                )}
-              </button>
-              {menu === s.key && <StatusMenu s={s} f={f} path={path} count={board.cols[s.key]?.length ?? 0} onClose={() => setMenu(null)} />}
-            </span>
-          </span>
-        ))}
-        <span className="wf-seg">
-          <span className="wf-arrow dashed" aria-hidden="true" />
-          {adding ? (
-            <span className="wf-node add editing">
-              <input
-                autoFocus
-                className="wf-input"
-                placeholder="状态名，回车添加"
-                maxLength={12}
-                onBlur={() => setAdding(false)}
-                onKeyDown={e => {
-                  const t = e.target as HTMLInputElement;
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                    const v = t.value.trim();
-                    if (!v) return;
-                    api
-                      .createStatus(path, v)
-                      .then(() => {
-                        t.value = '';
-                        return refresh();
-                      })
-                      .catch(err => {
-                        toastError(err);
-                        replay(t.parentElement, 'invalid');
-                      });
-                  }
-                  if (e.key === 'Escape') {
-                    e.stopPropagation();
-                    setAdding(false);
-                  }
-                }}
-              />
-            </span>
-          ) : (
-            <button type="button" className="wf-node add" onClick={() => setAdding(true)}>
-              + 添加状态
-            </button>
-          )}
-        </span>
-      </div>
-      {hasLayout && (
-        <button type="button" className="wf-reset" title="这块白板的状态块回到默认布局" onClick={() => run(api.flowLayout(path, {}))}>
-          复原布局
-        </button>
-      )}
-    </div>
-  );
-}
-
-function StatusMenu({ s, f, path, count, onClose }: { s: Status; f: FlowQ; path: string; count: number; onClose: () => void }) {
-  const [confirming, setConfirming] = useState(false);
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const down = (e: PointerEvent) => {
-      if (!(e.target as HTMLElement).closest('.wf-menu, .wf-node')) close.current();
-    };
-    const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        close.current();
-      }
-    };
-    addEventListener('pointerdown', down);
-    addEventListener('keydown', key, true);
-    return () => {
-      removeEventListener('pointerdown', down);
-      removeEventListener('keydown', key, true);
-    };
-  }, []);
-
-  const patch = (p: Parameters<typeof api.updateStatus>[2]) => run(api.updateStatus(path, s.key, p));
-  const rename = (v: string) => {
-    const n = v.trim();
-    if (n && n !== s.name) patch({ name: n });
-  };
-  const sw = (on: boolean, label: string, hint: string, set: () => void, locked?: string) => (
-    <button type="button" className={cx('wf-sw', on && 'on')} onClick={locked ? undefined : set} aria-pressed={on} aria-disabled={!!locked}>
-      <span className="wf-sw-track">
-        <i />
-      </span>
-      <span className="wf-sw-text">
-        <b>{label}</b>
-        <span>{locked || hint}</span>
-      </span>
-    </button>
-  );
-
-  return (
-    <div className="wf-menu" style={{ ['--c' as string]: statusColor(s.color) }} onPointerDown={e => e.stopPropagation()}>
-      <input
-        className="wf-menu-name"
-        defaultValue={s.name}
-        maxLength={12}
-        autoFocus
-        onFocus={e => e.target.select()}
-        onBlur={e => rename(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-            rename((e.target as HTMLInputElement).value);
-            onClose();
-          }
-        }}
-        aria-label="状态名"
-      />
-      <div className="wf-key">
-        标识 <code>{s.key}</code>
-        <span>CLI 里写标识或名称都可以</span>
-      </div>
-      <div className="wf-swatches">
-        {STATUS_COLORS.map(c => (
-          <button
-            key={c}
-            type="button"
-            className={cx(c === s.color && 'on')}
-            style={{ ['--sc' as string]: statusColor(c) }}
-            onClick={() => c !== s.color && patch({ color: c })}
-            aria-label="颜色"
-          />
-        ))}
-      </div>
-      <div className="wf-rules">
-        {sw(
-          s.claim,
-          '领取起点',
-          'board claim 从这里领；新建、超时释放、强制释放都回到这里',
-          () => patch({ claim: true }),
-          s.claim ? '只能有一个：打开另一个状态的这个开关即可换过去' : undefined,
-        )}
-        {sw(s.lock, '锁定', '只能由 agent 领取进入；被持有期间只有持有者能移动', () => patch({ lock: !s.lock }))}
-        {sw(s.final, '终点', '进来算完成：卡片只占一行；只有人能移入移出', () => patch({ final: !s.final }))}
-      </div>
-      <div className="wf-menu-foot">
-        {s.claim ? (
-          <span className="wf-note">领取起点不能删除</span>
-        ) : confirming ? (
-          <button
-            type="button"
-            className="wf-del sure"
-            onClick={() => {
-              onClose();
-              run(api.deleteStatus(path, s.key));
-            }}
-          >
-            确认删除{count ? `，${count} 张卡片移到「${f.claim?.name}」` : ''}
-          </button>
-        ) : (
-          <button type="button" className="wf-del" onClick={() => setConfirming(true)}>
-            删除状态
-          </button>
-        )}
-      </div>
     </div>
   );
 }

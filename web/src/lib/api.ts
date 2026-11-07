@@ -139,6 +139,9 @@ export const api = {
   deleteStatus: (board: string, key: string) => req('DELETE', `/api/flow/${board}/${q(key)}`),
   /** 空对象 = 复原默认布局 */
   flowLayout: (board: string, tiles: Record<string, Tile>) => req('PUT', `/api/flow/${board}/layout`, { tiles }),
+  /** 连线：一次加上、去掉若干条，[起点, 终点] */
+  updateEdges: (board: string, add: [string, string][], remove: [string, string][] = []) =>
+    req('PUT', `/api/flow/${board}/edges`, { add, remove }),
 };
 
 export type LiveStatus = 'connecting' | 'live' | 'offline';

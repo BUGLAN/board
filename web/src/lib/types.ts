@@ -16,13 +16,15 @@ export interface Status {
   name: string;
   /** 主题色名（todo / doing / review / done）或 #RRGGBB */
   color: string;
-  /** 领取起点：board claim 从这里领；新建、超时释放、强制释放都回到这里 */
+  /** 可领取：board claim 从这里领（可以有多个，至少一个）。排在最前面的是首个可领取状态，新建卡片放在这里 */
   claim: boolean;
   /** 锁定：只能由 agent 领取进入；被持有期间只有持有者能动 */
   lock: boolean;
   /** 终点：只有人能移入移出 */
   final: boolean;
   layout: Tile | null;
+  /** 连线：从这里出发可以去往的状态（按工作流顺序）。agent 只能沿连线移动卡片，人不受限制 */
+  to: string[];
 }
 
 export type ActorKind = 'human' | 'agent' | 'system';
@@ -92,6 +94,8 @@ export interface Card {
   runs: number;
   /** 其中几次是异常退出 */
   runsLost: number;
+  /** 领取它时所在的可领取状态；释放后回到这里 */
+  claimedFrom: string | null;
   labels: number[];
   createdAt: number;
   updatedAt: number;

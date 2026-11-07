@@ -1,4 +1,4 @@
-//! 工作流的修改（PRD §7）：新增、改名、改色、切换规则、调整顺序、删除状态，以及状态块布局。
+//! 工作流的修改（PRD §7）：新增、改名、改色、切换规则、调整顺序、连线、删除状态，以及状态块布局。
 //! 只在界面上做；所有改动都让 rev 加一，已打开的窗口随之刷新。
 
 use crate::error::{BoardError, Result};
@@ -16,7 +16,7 @@ pub struct StatusPatch {
     pub name: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
-    /// 只能设为 true：把这个状态设为领取起点，原来的领取起点自动取消
+    /// 可领取：可以有多个，至少保留一个
     #[serde(default)]
     pub claim: Option<bool>,
     #[serde(default)]
@@ -76,7 +76,7 @@ impl<'a> W<'a> {
             params![b.id, key, name, color, sort],
         )?;
         self.changed = true;
-        Ok(Status { key, name, color, claim: false, lock: false, fin: false, layout: None })
+        Ok(Status { key, name, color, claim: false, lock: false, fin: false, layout: None, to: vec![] })
     }
 
     pub fn update_status(&mut self, path: &str, key: &str, p: StatusPatch) -> Result<()> {
@@ -91,14 +91,11 @@ impl<'a> W<'a> {
             let c = Self::status_color(c)?;
             self.tx.execute("UPDATE statuses SET color = ?1 WHERE board = ?2 AND key = ?3", params![c, b.id, key])?;
         }
-        match p.claim {
-            Some(true) => {
-                self.tx.execute("UPDATE statuses SET claim = (key = ?2) WHERE board = ?1", params![b.id, key])?;
+        if let Some(claim) = p.claim {
+            if !claim && s.claim && flow.0.iter().filter(|x| x.claim).count() == 1 {
+                return Err(BoardError::usage("至少要有一个可领取的状态：先把另一个状态设为可领取"));
             }
-            Some(false) if s.claim => {
-                return Err(BoardError::usage("每块白板必须有一个领取起点：把另一个状态设为领取起点即可"));
-            }
-            _ => {}
+            self.tx.execute("UPDATE statuses SET claim = ?1 WHERE board = ?2 AND key = ?3", params![claim as i64, b.id, key])?;
         }
         if let Some(lock) = p.lock {
             self.tx.execute("UPDATE statuses SET lock = ?1 WHERE board = ?2 AND key = ?3", params![lock as i64, b.id, key])?;
@@ -140,15 +137,35 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 删除状态：里面的卡片移到领取起点最下面，被持有的同时释放。领取起点不能删除
+    /// 连线：一次加上、去掉若干条（拖箭头改连 = 去掉一条、加上一条）
+    pub fn update_edges(&mut self, path: &str, add: &[(String, String)], remove: &[(String, String)]) -> Result<()> {
+        let b = self.resolve_exact(path)?;
+        let flow = flow_of(self.tx, b.id)?;
+        for (a, d) in remove {
+            self.tx.execute("DELETE FROM transitions WHERE board = ?1 AND src = ?2 AND dst = ?3", params![b.id, a, d])?;
+        }
+        for (a, d) in add {
+            Self::flow_status(&flow, a)?;
+            Self::flow_status(&flow, d)?;
+            if a == d {
+                return Err(BoardError::usage("不能连到自己"));
+            }
+            self.tx.execute("INSERT OR IGNORE INTO transitions (board, src, dst) VALUES (?1, ?2, ?3)", params![b.id, a, d])?;
+        }
+        self.changed = true;
+        Ok(())
+    }
+
+    /// 删除状态：里面的卡片移到首个可领取状态最下面，被持有的同时释放；相关连线一起删除。最后一个可领取状态不能删除
     pub fn delete_status(&mut self, path: &str, key: &str) -> Result<()> {
         let b = self.resolve_exact(path)?;
         let flow = flow_of(self.tx, b.id)?;
         let s = Self::flow_status(&flow, key)?.clone();
-        if s.claim {
-            return Err(BoardError::usage("领取起点不能删除：先把另一个状态设为领取起点"));
+        if s.claim && flow.0.iter().filter(|x| x.claim).count() == 1 {
+            return Err(BoardError::usage("最后一个可领取的状态不能删除：先把另一个状态设为可领取"));
         }
-        let start = flow.claim().clone();
+        let rest = Flow(flow.0.iter().filter(|x| x.key != key).cloned().collect());
+        let start = rest.home().clone();
         for id in self.col_ids(b.id, key)? {
             let held = self.tx.query_row("SELECT holder IS NOT NULL FROM cards WHERE board = ?1 AND id = ?2", params![b.id, id], |r| {
                 r.get::<_, bool>(0)
@@ -161,6 +178,8 @@ impl<'a> W<'a> {
             self.track(b.id, id, &Actor::human(), "move", &text)?;
         }
         self.tx.execute("DELETE FROM statuses WHERE board = ?1 AND key = ?2", params![b.id, key])?;
+        self.tx.execute("DELETE FROM transitions WHERE board = ?1 AND (src = ?2 OR dst = ?2)", params![b.id, key])?;
+        self.tx.execute("UPDATE cards SET claimed_from = NULL WHERE board = ?1 AND claimed_from = ?2", params![b.id, key])?;
         self.changed = true;
         Ok(())
     }

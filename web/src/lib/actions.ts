@@ -43,9 +43,9 @@ export function openCard(id: number) {
 
 export { closeDetail };
 
-/** 未整理 → 领取起点最下面 */
+/** 未整理 → 首个可领取状态最下面 */
 export async function triage(id: number) {
-  const start = boardFlow(useData.getState().board).claim;
+  const start = boardFlow(useData.getState().board).home;
   try {
     await exec({ op: 'move', id, column: start?.key ?? 'todo' });
     if (isMobile()) toast({ type: 'success', title: `#${id} 已整理到「${start?.name ?? '待办'}」`, duration: 1800 });
@@ -68,7 +68,7 @@ async function copyPrompt(text: string) {
   });
 }
 
-/** 一块白板：agent 循环领取领取起点，直到为空 */
+/** 一块白板：agent 循环领取可领取状态里的卡片，直到为空 */
 export const copyBoardPrompt = (path = data().path) => copyPrompt(boardPrompt(path));
 
 /** 一张卡片 */
