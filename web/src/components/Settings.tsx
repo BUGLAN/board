@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Reac
 import { create } from 'zustand';
 import { api } from '../lib/api';
 import { canSetEnv, getTheme, isWindows, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
+import { cardPrompt } from '../lib/prompt';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
 import { accel, ago, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
@@ -474,7 +475,7 @@ export function SettingsPage() {
             <code>board</code> 命令行读取卡片。卡片详情里点「复制为提示词」（或按 <kbd>C</kbd>）得到的就是这一句。
           </p>
           <div className="code-block">
-            <Code plain cmd={`/board-skills ${path}#12`} note="处理一张卡片" />
+            <Code plain cmd={cardPrompt(path, 12)} note="处理一张卡片" />
             <Code plain cmd={`/board-skills ${path}`} note={`领完这块白板可领取状态里的卡片（${flow.claimables.map(s => `「${s.name}」`).join('') || '待办'}）`} />
             <Code plain cmd="/board-skills README 加一个英文版" note={`一句话需求：先记到「${flow.home?.name ?? '待办'}」再做`} />
           </div>

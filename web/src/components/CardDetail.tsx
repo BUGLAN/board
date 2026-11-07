@@ -5,6 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
+import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
@@ -200,7 +201,7 @@ function Body({ card: c, on }: { card: Detail; on: boolean }) {
           </button>
         </span>
         <span className="spacer" />
-        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 /board-skills ${useData.getState().path}#${c.id}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
+        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${cardPrompt(useData.getState().path, c.id)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
           <Icon name="prompt" />
           复制为提示词
         </button>

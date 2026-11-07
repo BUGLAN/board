@@ -30,10 +30,10 @@ web                   界面（React + Vite + TypeScript），网页端与桌面
 agent 通过 skill 接入：[`.agents/skills/board-skills/SKILL.md`](.agents/skills/board-skills/SKILL.md) 写明了怎么领取、干活、记进度、交审，以及规则和错误码。在这个仓库里，支持 `.agents/skills` 的 agent 会自动识别它，Claude Code 通过 `.claude/skills/board-skills` 链接识别。装好之后只需要发一句：
 
 ```text
-/board-skills mini/main#2
+/board-skills 开始执行 mini项目之中的main白板中的#2任务
 ```
 
-卡片详情里「复制为提示词」（或按 `C`）复制的就是这一行；`/board-skills mini/main` 让 agent 领完整块白板的「待办」。
+卡片详情里「复制为提示词」（或按 `C`）复制的就是这一句：项目、白板、卡片编号都在话里；`/board-skills mini/main` 让 agent 领完整块白板的「待办」。
 
 安装（以 `~/.agents/skills` 为例；Claude Code 用 `~/.claude/skills`）：
 
