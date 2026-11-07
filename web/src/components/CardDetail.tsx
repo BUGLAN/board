@@ -12,6 +12,7 @@ import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/dat
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
+import { Skeleton, SkeletonText } from './Skeleton';
 import { Icon, type IconName } from './Icon';
 
 const ACT_ICON: Record<string, IconName> = {
@@ -22,8 +23,11 @@ const ACT_ICON: Record<string, IconName> = {
 export function CardDetail() {
   const id = useData(s => s.detailId);
   const detail = useData(s => s.detail);
+  const detailError = useData(s => s.detailError);
   const board = useData(s => s.board);
   const summary = id != null ? board?.cards[id] : undefined;
+  // 详情（动态、附件）还在路上：标题、标签、ID、描述先用摘要显示，动态和附件放骨架
+  const loading = id != null && !(detail && detail.id === id) && !detailError;
   // 详情还没取回来时先用白板上的摘要
   const live: Detail | null = detail && detail.id === id ? detail : summary ? { ...summary, activity: [] } : null;
   const last = useRef<Detail | null>(null);
@@ -86,13 +90,13 @@ export function CardDetail() {
         <div className="drawer-grab">
           <i />
         </div>
-        {card && <Body key={card.id} card={card} on={on} />}
+        {card && <Body key={card.id} card={card} on={on} loading={loading} error={detailError} />}
       </aside>
     </>
   );
 }
 
-function Body({ card: c, on }: { card: Detail; on: boolean }) {
+function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; loading: boolean; error: string | null }) {
   const cur = useCurrent();
   const board = useData(s => s.board);
   const now = useNow(1000);
@@ -248,6 +252,8 @@ function Body({ card: c, on }: { card: Detail; on: boolean }) {
             <DescEditor card={c} locked={locked} />
           </section>
           {!!c.attachments?.length && <Attachments list={c.attachments} />}
+          {/* 描述里引用了附件：附件列表多半不空，先占位 */}
+          {loading && c.body.includes('/api/files/') && <AttachmentsSkeleton />}
           <div className="d-danger">
             <span>删除后无法恢复</span>
             <button
@@ -270,7 +276,7 @@ function Body({ card: c, on }: { card: Detail; on: boolean }) {
             </button>
           </div>
         </div>
-        <ActivityPart card={c} now={now} />
+        <ActivityPart card={c} now={now} loading={loading} error={error} />
       </div>
     </div>
   );
@@ -599,7 +605,46 @@ function RunStats({ t }: { t: ReturnType<typeof timing> }) {
   );
 }
 
-function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
+/** 动态骨架：系统事件行和一条评论气泡交替，条数按评论数估计 */
+function ActivitySkeleton({ comments }: { comments: number }) {
+  const rows = Math.min(6, 2 + comments);
+  return (
+    <div className="timeline sk-timeline" aria-busy="true" aria-label="正在加载动态">
+      {Array.from({ length: rows }, (_, i) => {
+        const bubble = comments > 0 && i % 2 === 1;
+        return (
+          <div key={i} className="tl-item sk-tl" aria-hidden="true">
+            <Skeleton w={24} h={24} r={12} />
+            {bubble ? (
+              <div className="sk-bubble">
+                <Skeleton w={88} h={10} />
+                <SkeletonText lines={3} h={9} gap={7} last="48%" />
+              </div>
+            ) : (
+              <div className="sk-line">
+                <Skeleton w={['72%', '58%', '64%'][i % 3]} h={10} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AttachmentsSkeleton() {
+  return (
+    <section className="d-section sk-attach" aria-busy="true" aria-label="正在加载附件">
+      <Skeleton w={36} h={11} />
+      <div className="sk-attach-row">
+        <Skeleton w={96} h={72} r={10} />
+        <Skeleton w={96} h={72} r={10} />
+      </div>
+    </section>
+  );
+}
+
+function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: number; loading: boolean; error: string | null }) {
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<number | null>(null);
   const [text, setText] = useState('');
@@ -609,6 +654,9 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
   const path = useData(s => s.path);
   const attach = useAttach({ board: path, card: c.id, setValue: setText, textarea: ta });
   const firstNew = shown.current;
+  // 这次打开时是不是从骨架开始的
+  const wasLoading = useRef(loading);
+  if (loading) wasLoading.current = true;
 
   // 默认显示到最新一条；新动态到来时如果停在底部就跟随
   useLayoutEffect(() => {
@@ -643,15 +691,30 @@ function ActivityPart({ card: c, now }: { card: Detail; now: number }) {
   return (
     <div className="d-side" data-part="activity">
       <div className="d-label d-side-head">
-        动态 <span className="count">{n}</span>
+        动态 {loading ? <Skeleton className="count" w={14} h={10} /> : <span className="count">{n}</span>}
         <span className="act">只能追加</span>
       </div>
       <div className="d-activity scroll" ref={scroller}>
-        <div className="timeline">
-          {c.activity.map((a, idx) => (
-            <ActivityItem key={a.id} a={a} now={now} fresh={firstNew != null && idx >= firstNew} />
-          ))}
-        </div>
+        {loading ? (
+          <ActivitySkeleton comments={c.comments} />
+        ) : error && !n ? (
+          <div className="d-activity-empty" role="alert">
+            <b>动态没有加载出来</b>
+            <span>{error}</span>
+            <button className="btn sm" type="button" onClick={() => openDetail(c.id)}>
+              重试
+            </button>
+          </div>
+        ) : !n ? (
+          <div className="d-activity-empty">还没有动态</div>
+        ) : (
+          // 从骨架换成内容时淡入（已缓存的直接显示，不播放）
+          <div className={cx('timeline', wasLoading.current && 'sk-swap')}>
+            {c.activity.map((a, idx) => (
+              <ActivityItem key={a.id} a={a} now={now} fresh={firstNew != null && idx >= firstNew} />
+            ))}
+          </div>
+        )}
       </div>
       <div className="d-comment">
         <div className={cx('comment-box', text.trim() && 'has-text', attach.over && 'drop-on')}>

@@ -47,3 +47,23 @@
 .sk-lines { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
 .sk-inbox { display: flex; flex-direction: column; gap: 8px; }
 .side-head .sk-side-count { margin-left: auto; }
+
+/* ---------------- 卡片详情：动态、附件骨架 ---------------- */
+.sk-timeline .tl-item.sk-tl { align-items: start; }
+.sk-tl .sk-line { display: flex; align-items: center; min-height: 24px; }
+.sk-bubble {
+  display: flex; flex-direction: column; gap: 9px; padding: 11px 13px 13px; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line);
+}
+.d-side-head .sk.count { display: inline-block; vertical-align: middle; margin-left: 4px; }
+.sk-attach { display: flex; flex-direction: column; gap: 10px; }
+.sk-attach-row { display: flex; gap: 8px; }
+/* 骨架换成真实动态：淡入，≤240ms */
+.timeline.sk-swap { animation: sk-swap var(--dur-2) var(--ease-out) both; }
+@keyframes sk-swap { from { opacity: 0; } }
+/* 没有动态 / 没取回来 */
+.d-activity-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 160px;
+  font-size: 12.5px; color: var(--text-3); text-align: center;
+}
+.d-activity-empty b { font-size: 13px; color: var(--text); font-weight: 600; }

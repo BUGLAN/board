@@ -6,7 +6,7 @@
 import { create } from 'zustand';
 import { api, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
 import * as flip from '../lib/flip';
-import { clearLabelSel } from './ui';
+import { clearLabelSel, toast } from './ui';
 import type { BoardEvent, BoardInfo, BoardSnapshot, CardDetail, Cmd, ColumnKey, ProjectInfo, Workspace } from '../lib/types';
 
 interface DataState {
@@ -22,6 +22,8 @@ interface DataState {
   /** 切换白板时 +1：卡片整体重建，不做位置补间 */
   generation: number;
   error: string | null;
+  /** 详情没取回来的原因（取回或换一张卡片时清空）；有值时详情里不再显示骨架 */
+  detailError: string | null;
   /** 正在写入的标签（乐观更新）：「白板路径#卡片」→ 标签 ID。已经并进 board 里卡片的 labels，界面据此画成 pending 态 */
   pending: Record<string, number[]>;
 }
@@ -55,6 +57,7 @@ export const useData = create<DataState>(() => ({
   generation: 0,
   error: null,
   pending: {},
+  detailError: null,
 }));
 
 const set = useData.setState;
@@ -130,12 +133,13 @@ async function load() {
   if (prev && prev.path === board.path) flip.capture();
   else flip.reset();
   snapshots.set(board.path, board);
+  if (detail) details.set(`${path}#${detail.id}`, detail);
   set({
     ws,
     board: withPending(board, get().pending),
     rev: Math.max(ws.rev, board.rev),
     offset: ws.now - Date.now(),
-    detail: st.detailId === detailId ? detail : st.detail,
+    detail: st.detailId === detailId && detail ? detail : st.detail,
   });
 }
 
@@ -215,13 +219,26 @@ export function setPath(path: string) {
 
 /* ------------------------------ 卡片详情 ------------------------------ */
 
+/** 打开过的卡片详情：再次打开先显示它（不闪骨架），取回新的再替换 */
+const details = new Map<string, CardDetail>();
+
 export async function openDetail(id: number) {
-  set({ detailId: id, detail: get().detail?.id === id ? get().detail : null });
+  const path = get().path;
+  const k = `${path}#${id}`;
+  set({ detailId: id, detail: get().detail?.id === id ? get().detail : details.get(k) ?? null, detailError: null });
   try {
-    const d = await api.card(get().path, id);
-    if (get().detailId === id) set({ detail: d });
-  } catch {
-    if (get().detailId === id) set({ detailId: null, detail: null });
+    const d = await api.card(path, id);
+    details.set(k, d);
+    if (get().detailId === id && get().path === path) set({ detail: d });
+  } catch (e) {
+    if (get().detailId !== id || get().path !== path) return;
+    // 卡片已经不在了（例如在另一个窗口删除）：关掉；否则留着摘要，告诉人详情没取回来
+    if (!get().board?.cards[id]) set({ detailId: null, detail: null });
+    else {
+      const msg = (e as Error).message || '网络错误';
+      set({ detailError: msg });
+      toast({ type: 'error', title: `#${id} 的详情没有加载出来`, text: msg });
+    }
   }
 }
 export function closeDetail() {
@@ -233,7 +250,8 @@ export function closeDetail() {
 /** 对当前白板执行卡片命令；失败抛 ApiError */
 export async function exec(cmd: Cmd): Promise<CardDetail> {
   const r = await api.cmd(get().path, cmd);
-  if (get().detailId === r.id && cmd.op !== 'delete') set({ detail: r });
+  if (cmd.op !== 'delete') details.set(`${get().path}#${r.id}`, r);
+  if (get().detailId === r.id && cmd.op !== 'delete') set({ detail: r, detailError: null });
   await refresh();
   return r;
 }
