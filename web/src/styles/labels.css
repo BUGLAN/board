@@ -123,3 +123,26 @@
 }
 
 .tree-row > svg { width: 14px; height: 14px; flex: none; }
+
+/* ---------------- 拖动标签到卡片上（lib/labelDrag.ts） ---------------- */
+.lb-pick { cursor: grab; -webkit-touch-callout: none; touch-action: manipulation; }
+.label-ghost {
+  --lc: #888;
+  position: fixed; left: 0; top: 0; z-index: 400; pointer-events: none; will-change: transform;
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; border-radius: 8px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; color: color-mix(in srgb, var(--lc) 75%, var(--text));
+  background: color-mix(in srgb, var(--lc) 16%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc) 45%, transparent), var(--shadow-drag);
+  /* 只动 scale：transform 用来跟随指针 */
+  animation: label-ghost-in var(--dur-2) var(--spring);
+  transition: background-color var(--dur-1), color var(--dur-1);
+}
+@keyframes label-ghost-in { from { scale: .5; opacity: 0; } }
+.label-ghost i { width: 7px; height: 7px; border-radius: 50%; background: var(--lc); flex: none; }
+.label-ghost.over { color: #fff; background: var(--lc); }
+.label-ghost.over i { background: #fff; }
+/* 卡片已经有这个标签：松手只会提示 */
+.label-ghost.has { opacity: .6; }
+.card.label-target {
+  box-shadow: inset 0 0 0 1.5px var(--lc), 0 0 0 4px color-mix(in srgb, var(--lc) 18%, transparent), var(--shadow-2) !important;
+}

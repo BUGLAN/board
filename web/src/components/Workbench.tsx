@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { newBoard, newProject, openBoard, openCard, triage } from '../lib/actions';
 import { api } from '../lib/api';
+import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import type { Label } from '../lib/types';
 import { boardFlow, flowOf } from '../lib/schema';
 import { cx, mmss, ago, agentColor, pref, replay } from '../lib/util';
@@ -189,7 +190,8 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
   );
 }
 
-/** 标签：整块就是输入框。平时看着只是一排胶囊，点空白处光标跟在最后一个胶囊后面，输入名称回车新建 */
+/** 标签：整块就是输入框。平时看着只是一排胶囊，点空白处光标跟在最后一个胶囊后面，输入名称回车新建。
+    胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts） */
 function LabelBlock({
   project, labels, used, active, onPick,
 }: {
@@ -234,8 +236,11 @@ function LabelBlock({
             type="button"
             className={cx('lb lb-pick', active === l.name.toLowerCase() && 'on')}
             style={{ ['--lc' as string]: l.color }}
-            title={active === l.name.toLowerCase() ? '取消筛选' : `只看「${l.name}」`}
-            onClick={() => onPick(l.name)}
+            title={`${active === l.name.toLowerCase() ? '取消筛选' : `只看「${l.name}」`} · 拖到卡片上加这个标签`}
+            onPointerDown={e => labelPointerDown(e, l)}
+            onClick={() => {
+              if (!labelDragJustEnded()) onPick(l.name);
+            }}
           >
             <i />
             {l.name}
