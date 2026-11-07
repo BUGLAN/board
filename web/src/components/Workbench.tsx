@@ -475,13 +475,6 @@ function InboxSide() {
           </span>
         </div>
       </div>
-      <div className="side-hint">
-        <Icon name="move" />
-        <span>
-          <span className="only-wide">拖到右侧白板的状态块里，或点条目上的「整理到{start}」。</span>
-          <span className="only-narrow">点条目上的「整理到{start}」放上白板。</span>agent 不会领取这里的条目。
-        </span>
-      </div>
       <Veto drag={over ? drag : null} />
     </section>
   );
