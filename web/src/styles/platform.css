@@ -20,6 +20,7 @@ html[data-shell="desktop"] input, html[data-shell="desktop"] textarea, html[data
 /* Windows：没有系统标题栏，顶栏右侧是窗口按钮（对齐 Windows 11 标题栏按钮） */
 html[data-titlebar="custom"] .topbar { padding-right: 0; }
 .win-controls { display: flex; align-self: stretch; flex: none; margin-left: -6px; }
+.topbar-right .win-controls { margin-left: 6px; }
 .win-btn {
   width: 46px; height: 100%; display: grid; place-items: center;
   color: var(--text-2); border-radius: 0;
@@ -44,6 +45,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
 @media (max-width: 960px) {
   .search-label { display: none; }
   .search-trigger { flex: none; width: auto; margin: 0 0 0 auto; padding: 0 8px; }
+  .topbar-right { flex: none; }
 }
 
 /* ---------------- 手机 ---------------- */

@@ -22,19 +22,21 @@ export function Topbar() {
   };
   return (
     <header className="topbar enter-down" onMouseDown={onDown}>
-      <div className="brand">
+      <div className="topbar-left">
+        <div className="brand">
         <div className="logo" aria-hidden="true">
-          <i style={{ ['--h' as string]: '100%' }} />
-          <i style={{ ['--h' as string]: '70%' }} />
-          <i style={{ ['--h' as string]: '46%' }} />
-          <i style={{ ['--h' as string]: '82%' }} />
+            <i style={{ ['--h' as string]: '100%' }} />
+            <i style={{ ['--h' as string]: '70%' }} />
+            <i style={{ ['--h' as string]: '46%' }} />
+            <i style={{ ['--h' as string]: '82%' }} />
+          </div>
+          <span className="brand-name">Board</span>
         </div>
-        <span className="brand-name">Board</span>
+        <span className="brand-slash" aria-hidden="true">
+          /
+        </span>
+        <ProjectSwitch />
       </div>
-      <span className="brand-slash" aria-hidden="true">
-        /
-      </span>
-      <ProjectSwitch />
       <button className="search-trigger" type="button" onClick={() => openPalette()}>
         <Icon name="search" />
         <span className="search-label">搜索卡片、跳转或执行命令</span>
@@ -45,8 +47,8 @@ export function Topbar() {
       </button>
       <div className="topbar-right">
         <Presence />
+        <WindowControls />
       </div>
-      <WindowControls />
     </header>
   );
 }
@@ -57,13 +59,13 @@ function Presence() {
   const holders = board ? boardFlow(board).list.flatMap(s => (board.cols[s.key] ?? []).map(id => board.cards[id])).filter(c => c?.holder) : [];
   return (
     <div className="presence" aria-label="正在工作的 agent">
-      {holders.map(c => {
+      {holders.map((c, i) => {
         const left = (c.expiresAt ?? 0) - now;
         return (
           <span
             key={c.holder}
             className={cx('p-item', left < 5 * 60e3 && 'urgent')}
-            style={{ ['--c' as string]: agentColor(c.holder!) }}
+            style={{ ['--c' as string]: agentColor(c.holder!), ['--k' as string]: holders.length - 1 - i }}
             data-tip={`${c.holder} 正在做 #${c.id} · 剩余 ${mmss(left)}`}
             data-tip-align="end"
             onClick={() => openCard(c.id)}

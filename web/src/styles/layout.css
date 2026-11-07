@@ -60,7 +60,9 @@
 .search-label { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search-keys { display: flex; gap: 3px; }
 
-.topbar-right { display: flex; align-items: center; gap: 6px; }
+/* 左右两侧等分剩余宽度，搜索框始终居中，不随右侧头像数量、窗口按钮变化而移动 */
+.topbar-left { flex: 1 1 0; display: flex; align-items: center; gap: inherit; min-width: 0; }
+.topbar-right { flex: 1 1 0; align-self: stretch; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .divider { width: 1px; height: 20px; background: var(--line-2); margin: 0 6px; }
 
 /* 在线 agent 头像组 */
@@ -69,9 +71,10 @@
 .presence .p-item {
   position: relative; margin-left: -6px; cursor: pointer;
   animation: pop-in var(--dur-3) var(--spring) both;
-  transition: transform var(--dur-2) var(--spring), margin var(--dur-2) var(--ease-out);
+  transition: transform var(--dur-2) var(--spring), translate var(--dur-2) var(--ease-out);
 }
-.presence:hover .p-item { margin-left: 2px; }
+/* 悬停时向左展开：只用 translate，不改占位宽度（--k 是离右端的序号，最右一个不动） */
+.presence:hover .p-item { translate: calc(var(--k, 0) * -8px) 0; }
 .presence .p-item:hover { transform: translateY(-2px) scale(1.08); z-index: 2; }
 .presence .avatar { width: 26px; height: 26px; font-size: 12.5px; }
 .presence .ring { position: absolute; left: -4px; top: -4px; width: calc(100% + 8px); height: calc(100% + 8px); pointer-events: none; transform: rotate(-90deg); }
