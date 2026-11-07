@@ -473,7 +473,8 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
             </div>
           </div>
         ) : c.body ? (
-          <div className={cx('desc-view', locked && 'locked')} onDoubleClick={edit}>
+          // 不响应双击：人常在这里选中文字阅读，双击进入编辑容易误触（进入编辑只用「编辑」按钮）
+          <div className={cx('desc-view', locked && 'locked')}>
             <Markdown src={c.body} />
           </div>
         ) : (

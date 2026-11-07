@@ -136,9 +136,11 @@
 .desc-view {
   min-height: 48px; padding: 12px 14px; border-radius: var(--r-md);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line);
-  cursor: text; transition: box-shadow var(--dur-2);
+  transition: box-shadow var(--dur-2);
 }
-.desc-view:hover { box-shadow: inset 0 0 0 1px var(--line-2); }
+/* 只有空描述（点一下添加）是可点的；有内容时只是阅读、选中文字 */
+.desc-view.empty { cursor: text; }
+.desc-view.empty:hover { box-shadow: inset 0 0 0 1px var(--line-2); }
 .desc-view.empty { color: var(--text-3); font-size: 13px; display: flex; align-items: center; gap: 8px; }
 .desc-view.empty svg { width: 15px; height: 15px; flex: none; }
 .desc-view.locked { cursor: default; }
