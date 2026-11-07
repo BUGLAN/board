@@ -45,6 +45,22 @@
 .lb-pick.on { color: #fff; background: var(--lc); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--lc) 70%, transparent); }
 .lb-pick.on i { background: #fff; }
 .lb-pick.on em { opacity: .85; }
+/* 删除：悬停胶囊时盖在右端的计数上，不占位、不改变排列 */
+.lb-item { position: relative; display: inline-flex; max-width: 100%; }
+.lb-del {
+  --lc: #888;
+  position: absolute; right: 3px; top: 50%; width: 18px; height: 18px; margin-top: -9px; border-radius: 5px;
+  display: grid; place-items: center; font-size: 14px; line-height: 1;
+  color: color-mix(in srgb, var(--lc) 80%, var(--text));
+  background: color-mix(in srgb, var(--lc) 22%, var(--surface));
+  opacity: 0; pointer-events: none; transform: scale(.7);
+  transition: opacity var(--dur-1), transform var(--dur-1) var(--ease-out), background-color var(--dur-1);
+}
+.lb-del.on { color: #fff; background: var(--lc); }
+.lb-item:hover .lb-del, .lb-del:focus-visible { opacity: 1; pointer-events: auto; transform: none; }
+.lb-item:hover .lb-pick em { opacity: 0; }
+.lb-del:hover { background: color-mix(in srgb, var(--danger) 22%, var(--surface)); color: var(--danger); }
+@media (hover: none) { .lb-del { display: none; } }
 /* 失焦时只占一丝宽度，不让空输入框单独挤出一行；聚焦时至少 4em，最后一行放不下就换行 */
 .lb-input {
   flex: 1 1 4px; min-width: 4px; height: 24px; padding: 0 4px;

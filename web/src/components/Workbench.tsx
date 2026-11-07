@@ -11,7 +11,7 @@ import type { Label } from '../lib/types';
 import { boardFlow, flowOf } from '../lib/schema';
 import { cx, mmss, ago, agentColor, pref, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
-import { openCreator, openCtx, setFilter, setSide, setTab, toastError, useUI, type Tab } from '../store/ui';
+import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, useUI, type Tab } from '../store/ui';
 import { Avatar, ProjectAvatar, Title, agent, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
 import { CardView } from './Card';
@@ -219,6 +219,17 @@ function LabelBlock({
       setBusy(false);
     }
   };
+  const remove = async (l: Label) => {
+    const text = l.uses ? `${l.uses} 张卡片在用这个标签，删除后会从这些卡片上一起去掉。` : '还没有卡片在用这个标签。';
+    if (!(await confirm({ title: `删除标签「${l.name}」？`, text, ok: '删除标签', icon: 'tag' }))) return;
+    try {
+      await api.deleteLabel(project, l.id);
+      if (active === l.name.toLowerCase()) onPick(l.name);
+      await refresh();
+    } catch (e) {
+      toastError(e);
+    }
+  };
   return (
     <div className="lb-block">
       <div
@@ -231,21 +242,33 @@ function LabelBlock({
         }}
       >
         {labels.map(l => (
-          <button
-            key={l.id}
-            type="button"
-            className={cx('lb lb-pick', active === l.name.toLowerCase() && 'on')}
-            style={{ ['--lc' as string]: l.color }}
-            title={`${active === l.name.toLowerCase() ? '取消筛选' : `只看「${l.name}」`} · 拖到卡片上加这个标签`}
-            onPointerDown={e => labelPointerDown(e, l)}
-            onClick={() => {
-              if (!labelDragJustEnded()) onPick(l.name);
-            }}
-          >
-            <i />
-            {l.name}
-            <em>{used[l.id] || 0}</em>
-          </button>
+          <span key={l.id} className="lb-item">
+            <button
+              type="button"
+              className={cx('lb lb-pick', active === l.name.toLowerCase() && 'on')}
+              style={{ ['--lc' as string]: l.color }}
+              title={`${active === l.name.toLowerCase() ? '取消筛选' : `只看「${l.name}」`} · 拖到卡片上加这个标签`}
+              onPointerDown={e => labelPointerDown(e, l)}
+              onClick={() => {
+                if (!labelDragJustEnded()) onPick(l.name);
+              }}
+            >
+              <i />
+              {l.name}
+              <em>{used[l.id] || 0}</em>
+            </button>
+            {/* 悬停时盖在计数上，不占位，胶囊排列不变 */}
+            <button
+              type="button"
+              className={cx('lb-del', active === l.name.toLowerCase() && 'on')}
+              style={{ ['--lc' as string]: l.color }}
+              aria-label={`删除标签「${l.name}」`}
+              title="删除标签"
+              onClick={() => remove(l)}
+            >
+              ×
+            </button>
+          </span>
         ))}
         <input
           ref={input}
