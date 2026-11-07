@@ -79,7 +79,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: var(--r-sm); }
 .btn.primary { --btn-bg: var(--invert); --btn-fg: var(--invert-text); --btn-line: transparent; }
 .btn.primary:hover { --btn-bg: color-mix(in srgb, var(--invert) 86%, var(--brand)); }
-.btn.brand { --btn-bg: var(--brand); --btn-fg: #fff; --btn-line: transparent; box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--brand) 70%, transparent); }
+.btn.brand { --btn-bg: var(--brand); --btn-fg: var(--brand-fg); --btn-line: transparent; box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--brand) 70%, transparent); }
 .btn.brand:hover { --btn-bg: color-mix(in srgb, var(--brand) 88%, #fff); }
 .btn.danger { --btn-fg: var(--danger); }
 .btn.danger:hover { --btn-bg: var(--danger-soft); --btn-line: color-mix(in srgb, var(--danger) 40%, transparent); }

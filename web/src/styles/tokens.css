@@ -33,6 +33,8 @@
   --brand: #F2541B;
   --brand-2: #FF8A4C;
   --brand-soft: rgba(242, 84, 27, .11);
+  /* 品牌色上的文字颜色；当前项目的颜色较浅时界面改成深色（App.tsx） */
+  --brand-fg: #fff;
   --danger: #E0263B;
   --danger-soft: rgba(224, 38, 59, .1);
   --ok: #109A62;

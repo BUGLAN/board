@@ -187,8 +187,11 @@ function BoardApp() {
   useEffect(() => {
     if (!cur) return;
     document.title = `${cur.board.name} · ${cur.project.name} · Board`;
-    document.documentElement.style.setProperty('--project', cur.project.color);
-  }, [cur?.board.name, cur?.project.name, cur?.project.color]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cur?.board.name, cur?.project.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 主题色跟随当前项目的颜色：按钮、选中态、焦点环、开关等所有用 --brand 的地方
+  const projectColor = cur?.project.color;
+  useEffect(() => applyAccent(projectColor), [projectColor]);
 
   const page = PAGE[tab];
   return (
@@ -228,6 +231,31 @@ function BoardApp() {
       <Toasts />
     </>
   );
+}
+
+/** 把项目颜色设为界面的主题色（--brand 系列）；没有项目时恢复默认的橙色 */
+function applyAccent(color: string | undefined) {
+  const s = document.documentElement.style;
+  const names = ['--project', '--brand', '--brand-2', '--brand-soft', '--brand-fg'];
+  const hex = color && /^#[0-9a-f]{6}$/i.test(color) ? color : null;
+  if (!hex) {
+    names.forEach(n => s.removeProperty(n));
+    return;
+  }
+  s.setProperty('--project', hex);
+  s.setProperty('--brand', hex);
+  s.setProperty('--brand-2', `color-mix(in srgb, ${hex} 72%, #fff)`);
+  s.setProperty('--brand-soft', `color-mix(in srgb, ${hex} 14%, transparent)`);
+  s.setProperty('--brand-fg', luminance(hex) > 0.5 ? '#18181A' : '#fff');
+}
+
+/** 相对亮度（WCAG） */
+function luminance(hex: string) {
+  const [r, g, b] = [1, 3, 5].map(i => {
+    const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 /** 主内容区的一页：切换时淡入 */
