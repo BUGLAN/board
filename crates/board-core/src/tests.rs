@@ -232,12 +232,15 @@ fn heartbeat_final_is_normal_exit() {
     assert_eq!(c.card.holder.as_deref(), Some("alpha"), "final 不释放领取");
     assert_eq!((c.card.run_started_at, c.card.work_ms, c.card.runs_lost), (None, 3 * MIN + 4 * SEC, 0));
     assert!(c.activity.iter().any(|a| a.action == "beat" && a.text.contains("正常退出，第 1 次耗时 3 分 4 秒")));
+    // 心跳次数：T0+1s 起每 10 秒一次到 3 分（19 次）+ final
+    assert_eq!(c.card.beats, 20);
     // final 之后 50 秒内要交审或放回
     assert_eq!(s.sweep(end + 49 * SEC).unwrap(), 0);
     exec(&mut s, B, &alpha(), end + 10 * SEC, mv(1, "review")).unwrap();
     let c = exec(&mut s, B, &alpha(), end + 11 * SEC, beat(1, true)).unwrap();
     assert_eq!(c.card.column, "review", "已交审后再发 final：什么也不做");
     assert_eq!(c.card.runs, 1);
+    assert_eq!(c.card.beats, 20, "不是持有者时的 final 不计数");
 }
 
 #[test]

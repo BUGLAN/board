@@ -547,6 +547,7 @@ impl Fmt<'_> {
                 "total_ms": c.work_ms + c.run_started_at.map(|t| (self.now - t).max(0)).unwrap_or(0),
                 "runs": c.runs,
                 "lost": c.runs_lost,
+                "beats": c.beats,
             },
             "labels": self.labels(c),
             "attachments": d.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
@@ -625,7 +626,7 @@ impl Fmt<'_> {
         if c.runs > 0 {
             let total = c.work_ms + c.run_started_at.map(|t| (self.now - t).max(0)).unwrap_or(0);
             let lost = if c.runs_lost > 0 { format!("，其中 {} 次异常退出", c.runs_lost) } else { String::new() };
-            s += &format!("{}{}{}\n", row("累计"), clock(total), p.dim(&format!("  共 {} 次{lost}", c.runs)));
+            s += &format!("{}{}{}\n", row("累计"), clock(total), p.dim(&format!("  共 {} 次{lost}，心跳 {} 次", c.runs, c.beats)));
         }
         if c.body.is_empty() {
             s += &format!("{}{}\n", row("描述"), p.dim("（空）"));

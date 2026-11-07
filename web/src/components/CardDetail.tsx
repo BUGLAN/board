@@ -585,7 +585,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
   );
 }
 
-/** 累计 / 领取次数 / 异常退出 */
+/** 累计 / 领取次数 / 心跳次数 / 异常退出 */
 function RunStats({ t }: { t: ReturnType<typeof timing> }) {
   return (
     <div className="run-stats">
@@ -596,6 +596,10 @@ function RunStats({ t }: { t: ReturnType<typeof timing> }) {
       <div>
         <span>领取次数</span>
         <b>{t.runs}</b>
+      </div>
+      <div title="各次领取收到的心跳之和（含 final）">
+        <span>心跳次数</span>
+        <b>{t.beats}</b>
       </div>
       <div>
         <span>异常退出</span>

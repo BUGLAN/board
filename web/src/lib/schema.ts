@@ -59,6 +59,7 @@ export function timing(c: Card, now: number) {
     total: c.workMs + (cur ?? 0),
     runs: c.runs,
     lost: c.runsLost,
+    beats: c.beats ?? 0,
     /** 心跳状态：live 正常 · late 晚了（已 1 次以上没收到）· wait 领取了还没开始心跳 · ended 发了 final 还没交审 · null 没被持有 */
     beat: !c.holder ? null : cur == null ? (c.runs > 0 && c.beatAt != null ? 'ended' : 'wait') : missed >= 1 ? 'late' : 'live',
     missed,
