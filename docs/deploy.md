@@ -9,7 +9,7 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
 ```
 
 - HTTPS 证书在 Cloudflare 那边；服务器不开 80/443（443 被 sing-box 占用）。
-- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以 board-server 在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
+- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：默认由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；手动部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
 
 - 网页端：浏览器打开 `https://board.buglan.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board` 命令行设置 `BOARD_URL` 和 `BOARD_TOKEN`（访问令牌）。
@@ -173,7 +173,9 @@ docker compose start board
 
 ## 7. 升级
 
-在本机仓库里，提交好要上线的改动后：
+默认走自动部署：推送到 `main` 即自动测试、构建、部署（见下文「自动部署」）。
+
+`./deploy/deploy.sh` 保留为手动方式（例如 GitHub Actions 不可用时）。在本机仓库里，提交好要上线的改动后：
 
 ```bash
 ./deploy/deploy.sh
@@ -185,8 +187,60 @@ docker compose start board
 - `./deploy/deploy.sh --check`：只核对线上是不是本机 `HEAD`
 - 工作区有未提交的改动时拒绝部署；确实要部署时加 `ALLOW_DIRTY=1`，线上提交号带 `-dirty`
 - 服务器和地址可以用环境变量覆盖：`BOARD_DEPLOY_HOST`（默认 `root@45.202.241.98`）、`BOARD_DEPLOY_DIR`（默认 `/root/repo/board`）、`BOARD_DEPLOY_URL`（默认 `https://board.buglan.com`）
+- 重建容器前把服务器 `.env` 的 `BOARD_IMAGE` 改成 `board-server:latest`（本机构建的镜像），`.env` 始终对应正在运行的镜像；之后再推送 `main`，自动部署照常进行
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
+
+## 自动部署
+
+`.github/workflows/deploy.yml`。推送到 `main` 后：
+
+```
+build（GitHub 托管的 ubuntu-latest）：npm ci → 构建界面 → cargo test → deploy/build-linux.sh 交叉编译 → prebuilt 镜像
+                                     → 推到 GHCR：ghcr.io/buglan/board-server:<7 位提交号> 和 :latest
+deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
+                                     → docker compose up -d --no-build → 等健康检查 → 核对线上 /api/health 的提交号
+```
+
+- 改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不触发；其他分支、PR 不触发
+- 同一时间只有一次部署，后来的排队
+- `cargo test` 失败时不推镜像、不部署
+- 重启、健康检查（最多 2 分钟）或核对提交号失败：`.env` 的 `BOARD_IMAGE` 改回部署前的镜像并重启，打印最近 50 行日志，任务失败
+- 服务器不编译：只拉镜像、运行；服务器上 `docker-compose.yml` 和 `deploy/backup.sh`、`deploy/remote-deploy.sh` 由工作流拷过去
+- 拉镜像用本次任务的 `GITHUB_TOKEN`（经 stdin 传给 `docker login`），拉完立刻 `docker logout`，服务器上不留 GHCR 凭据
+- 清理：GHCR 上只保留最新 5 个版本；服务器上只留当前和上一个 `ghcr.io/buglan/board-server` 镜像
+
+### 一次性配置
+
+1. 生成部署专用的 SSH 密钥（只给 Actions 用），公钥加到服务器 `root` 的 `authorized_keys`：
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C board-deploy -f board-deploy
+   ssh-copy-id -i board-deploy.pub root@45.202.241.98
+   ssh-keyscan -t ed25519 45.202.241.98      # 输出填到 DEPLOY_KNOWN_HOSTS
+   ```
+
+2. GitHub 仓库 Settings → Secrets and variables → Actions：
+
+   | 类型 | 名称 | 值 |
+   |---|---|---|
+   | Secret | `DEPLOY_SSH_KEY` | 上面的私钥 `board-deploy` 的内容 |
+   | Secret | `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan` 的输出（SSH 严格校验主机密钥） |
+   | Variable | `DEPLOY_HOST` | `root@45.202.241.98` |
+   | Variable | `DEPLOY_DIR` | `/root/repo/board` |
+   | Variable | `DEPLOY_URL` | `https://board.buglan.com` |
+
+3. 服务器 `.env` 里不用加 `BOARD_IMAGE`：第一次自动部署时会加上。
+
+### 看部署结果
+
+- GitHub 仓库 Actions → deploy：每一步的输出；失败时 deploy 任务最后打印了容器最近 50 行日志
+- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `commit`，或本机 `./deploy/deploy.sh --check`
+- 服务器上正在运行的镜像：`.env` 的 `BOARD_IMAGE`
+
+### 回滚
+
+Actions → deploy → Run workflow，`commit` 填要回到的 7 位提交号：跳过构建，直接部署 GHCR 上已有的 `board-server:<提交号>` 镜像。GHCR 只保留最新 5 个版本，更早的提交号会报「GHCR 上没有镜像」，线上不变。`commit` 留空则构建并部署 `main` 最新提交。
 
 ## 8. 日志
 

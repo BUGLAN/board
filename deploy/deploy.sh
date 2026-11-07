@@ -111,6 +111,9 @@ else
 fi
 
 step "重建并重启容器"
+# 自动部署会把 .env 的 BOARD_IMAGE 改成 GHCR 镜像；手动部署用本机构建的镜像，先改回 board-server:latest，
+# 让 .env 始终对应正在运行的镜像（也免得 --build 把本机构建的镜像打成 GHCR 的标签）
+remote "cd $DIR && ./deploy/remote-deploy.sh set-image board-server:latest"
 remote "cd $DIR && docker compose up -d --build"
 
 step "等待健康检查"
