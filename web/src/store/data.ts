@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import { api, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
 import * as flip from '../lib/flip';
+import { clearLabelSel } from './ui';
 import type { BoardEvent, BoardInfo, BoardSnapshot, CardDetail, Cmd, ColumnKey, ProjectInfo, Workspace } from '../lib/types';
 
 interface DataState {
@@ -137,6 +138,7 @@ async function load() {
 function switchTo(path: string) {
   save(path);
   flip.reset();
+  clearLabelSel(); // 标签属于项目，换白板时清掉选中
   set(s => ({ path, board: null, detailId: null, detail: null, generation: s.generation + 1 }));
 }
 

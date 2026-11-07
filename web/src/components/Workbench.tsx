@@ -12,7 +12,7 @@ import type { Label } from '../lib/types';
 import { boardFlow, flowOf } from '../lib/schema';
 import { cx, mmss, ago, agentColor, pref, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
-import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, useUI, type Tab } from '../store/ui';
+import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, ProjectAvatar, Title, agent, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
 import { CardView } from './Card';
@@ -194,15 +194,8 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
 
 /** 标签：整块就是输入框。平时看着只是一排胶囊，点空白处光标跟在最后一个胶囊后面，输入名称回车新建。
     胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts） */
-function LabelBlock({
-  project, labels, used, active, onPick,
-}: {
-  project: string;
-  labels: Label[];
-  used: Record<number, number>;
-  active: string | undefined;
-  onPick: (name: string) => void;
-}) {
+function LabelBlock({ project, labels, used }: { project: string; labels: Label[]; used: Record<number, number> }) {
+  const sel = useUI(s => s.labelSel);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -226,7 +219,7 @@ function LabelBlock({
     if (!(await confirm({ title: `删除标签「${l.name}」？`, text, ok: '删除标签', icon: 'tag' }))) return;
     try {
       await api.deleteLabel(project, l.id);
-      if (active === l.name.toLowerCase()) onPick(l.name);
+      if (useUI.getState().labelSel.includes(l.id)) toggleLabelSel(l.id);
       await refresh();
     } catch (e) {
       toastError(e);
@@ -247,12 +240,13 @@ function LabelBlock({
           <span key={l.id} className="lb-item">
             <button
               type="button"
-              className={cx('lb lb-pick', active === l.name.toLowerCase() && 'on')}
+              className={cx('lb lb-pick', sel.includes(l.id) && 'on')}
               style={{ ['--lc' as string]: l.color }}
-              title={`${active === l.name.toLowerCase() ? '取消筛选' : `只看「${l.name}」`} · 拖到卡片上加这个标签`}
+              aria-pressed={sel.includes(l.id)}
+              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签`}
               onPointerDown={e => labelPointerDown(e, l)}
               onClick={() => {
-                if (!labelDragJustEnded()) onPick(l.name);
+                if (!labelDragJustEnded()) toggleLabelSel(l.id);
               }}
             >
               <i />
@@ -262,7 +256,7 @@ function LabelBlock({
             {/* 悬停时盖在计数上，不占位，胶囊排列不变 */}
             <button
               type="button"
-              className={cx('lb-del', active === l.name.toLowerCase() && 'on')}
+              className={cx('lb-del', sel.includes(l.id) && 'on')}
               style={{ ['--lc' as string]: l.color }}
               aria-label={`删除标签「${l.name}」`}
               title="删除标签"
@@ -330,7 +324,6 @@ function BoardSide() {
     if (board) for (const c of Object.values(board.cards)) for (const l of c.labels) m[l] = (m[l] || 0) + 1;
     return m;
   }, [board]);
-  const active = (filter.trim().toLowerCase().match(/^(?:label|标签)[:：](.+)$/) || [])[1];
   const holders = board ? boardFlow(board).list.flatMap(s => (board.cols[s.key] ?? []).map(id => board.cards[id])).filter(c => c?.holder) : [];
 
   return (
@@ -354,20 +347,11 @@ function BoardSide() {
           <Icon name="collapse" />
         </button>
       </header>
-      <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent、label:标签" />
+      <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent" />
       <div className="side-scroll scroll">
         <Section id="labels" title="标签" n={labels.length} closed={closed.has('labels')} onToggle={toggle}>
           {cur && (
-            <LabelBlock
-              project={cur.project.key}
-              labels={labels}
-              used={used}
-              active={active}
-              onPick={name => {
-                const q = `label:${name}`;
-                setFilter(filter.trim().toLowerCase() === q.toLowerCase() ? '' : q);
-              }}
-            />
+            <LabelBlock project={cur.project.key} labels={labels} used={used} />
           )}
         </Section>
         <Section id="working" title="正在工作" n={holders.length} closed={closed.has('working')} onToggle={toggle}>

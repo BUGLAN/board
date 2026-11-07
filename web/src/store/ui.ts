@@ -90,6 +90,8 @@ interface UIState {
   tab: Tab;
   side: boolean;
   filter: string;
+  /** 侧栏选中的标签（ID）：卡片带其中任一个就算命中；与 filter 同时生效 */
+  labelSel: number[];
   creator: { open: boolean; column: 'todo' | 'inbox'; seq: number };
   palette: { open: boolean; prefill: string };
   switcher: boolean;
@@ -123,6 +125,7 @@ export const useUI = create<UIState>(() => ({
   tab: initialTab(),
   side: sideOf(initialTab()),
   filter: '',
+  labelSel: [],
   creator: { open: false, column: 'todo', seq: 0 },
   palette: { open: false, prefill: '' },
   switcher: false,
@@ -169,6 +172,9 @@ export function setSide(open: boolean) {
 const notifyResize = () => setTimeout(() => window.dispatchEvent(new Event('resize')), 440);
 
 export const setFilter = (filter: string) => set({ filter });
+export const toggleLabelSel = (id: number) =>
+  set(s => ({ labelSel: s.labelSel.includes(id) ? s.labelSel.filter(x => x !== id) : [...s.labelSel, id] }));
+export const clearLabelSel = () => set(s => (s.labelSel.length ? { labelSel: [] } : s));
 
 /* ------------------------------ 弹窗 ------------------------------ */
 

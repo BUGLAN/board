@@ -14,7 +14,7 @@ import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
 import { openCreator, setFilter, setTab, toastError, useUI, type DragUI } from '../store/ui';
-import { CardView, matches } from './Card';
+import { cardHit, CardView } from './Card';
 import { Icon } from './Icon';
 
 /** 拖拽预览：被拖的卡片放到预览位置 */
@@ -85,7 +85,9 @@ export function BoardView() {
     return () => clearTimeout(t);
   }, [reject]);
 
-  const n = filter && board ? Object.values(board.cards).filter(c => c.column !== INBOX && matches(c, filter, labels)).length : 0;
+  const labelSel = useUI(s => s.labelSel);
+  // 页头只提示筛选框里的文字；侧栏选中的标签在胶囊上已经高亮，不再重复提示
+  const n = filter && board ? Object.values(board.cards).filter(c => c.column !== INBOX && cardHit(c, filter, labelSel, labels)).length : 0;
 
   return (
     <div className="page page-board" data-page="board">

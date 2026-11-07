@@ -3,11 +3,11 @@ import { memo, useLayoutEffect, useRef } from 'react';
 import { beatAge, CLAIM_MS } from '../lib/schema';
 import type { Card as CardT, Label } from '../lib/types';
 import { agentColor, ago, cx, mmss, replay } from '../lib/util';
-import type { Flash } from '../store/ui';
+import { useUI, type Flash } from '../store/ui';
 import { Avatar, LabelChips, Ring, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 
-/** 筛选：空格分隔的词都要命中；label:名称 只看标签 */
+/** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {
   if (!q) return true;
   const names = c.labels.map(id => (labels.find(l => l.id === id)?.name || '').toLowerCase());
@@ -16,6 +16,12 @@ export function matches(c: CardT, q: string, labels: Label[]) {
     const m = w.match(/^(?:label|标签)[:：](.+)$/);
     return m ? names.includes(m[1]) : hay.includes(w);
   });
+}
+
+/** 筛选框 + 侧栏选中的标签（带其中任一个） */
+export const filterActive = (q: string, sel: number[]) => !!q || sel.length > 0;
+export function cardHit(c: CardT, q: string, sel: number[], labels: Label[]) {
+  return matches(c, q, labels) && (sel.length === 0 || c.labels.some(l => sel.includes(l)));
 }
 
 interface Props {
@@ -44,7 +50,9 @@ export const CardView = memo(function CardView({
   const held = !!c.holder;
   const now = useNow(held ? 1000 : 30000);
   const ref = useRef<HTMLElement>(null);
-  const hit = filter ? matches(c, filter, labels) : true;
+  const sel = useUI(s => s.labelSel);
+  const active = filterActive(filter, sel);
+  const hit = active ? cardHit(c, filter, sel, labels) : true;
   const left = c.expiresAt != null ? c.expiresAt - now : 0;
   const beat = beatAge(c, now);
   const doing = held;
@@ -70,8 +78,8 @@ export const CardView = memo(function CardView({
         final && !doing && 'done',
         next && 'next',
         open && 'is-open',
-        filter && !hit && 'filtered-out',
-        filter && hit && 'matched',
+        active && !hit && 'filtered-out',
+        active && hit && 'matched',
         doing && left < 5 * 60e3 && 'urgent',
         entering && 'entering',
         placeholder && 'is-placeholder',
