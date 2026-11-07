@@ -27,7 +27,7 @@ case "${1:-}" in
   --dry-run) mode=dry ;;
   --check) mode=check ;;
   -h | --help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) echo "不认识的参数：$1（--dry-run、--check、--help）" >&2; exit 2 ;;
+  *) echo "不认识的参数：${1}（--dry-run、--check、--help）" >&2; exit 2 ;;
 esac
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -58,12 +58,18 @@ verify() {
     [ $i -ge "$2" ] && break
     sleep 5
   done
-  die "线上 $URL 的提交号是「${got:-取不到}」，本机是「$want」"
+  die "线上 $URL 的提交号是「${got:-取不到}」，本机是「${want}」"
 }
 
 head=$(git rev-parse --short=7 HEAD)
 
 if [ "$mode" = check ]; then
+  got=$(live_commit || true)
+  # ALLOW_DIRTY=1 部署出去的是 HEAD 加上当时未提交的改动
+  if [ "$got" = "${head}-dirty" ]; then
+    echo "✓ 线上 $URL 是 ${got}（本机 HEAD，部署时带着未提交的改动）"
+    exit 0
+  fi
   verify "$head" 1
   exit 0
 fi
@@ -78,7 +84,7 @@ $dirty"
   commit="$head-dirty"
 fi
 
-echo "部署 $commit → $HOST:$DIR（$URL）"
+echo "部署 $commit → $HOST:${DIR}（${URL}）"
 [ "$mode" = dry ] && echo "（演练：不编译、不连服务器，只列出步骤）"
 
 step "检查服务器配置"
@@ -88,7 +94,7 @@ remote "grep -q '^BOARD_BUILD=prebuilt' $DIR/.env" || die "服务器 $DIR/.env �
 step "备份数据库"
 remote "cd $DIR && ./deploy/backup.sh"
 
-step "本机交叉编译（提交号 $commit）"
+step "本机交叉编译（提交号 ${commit}）"
 if [ "$mode" = dry ]; then
   echo "    BOARD_COMMIT=$commit ./deploy/build-linux.sh"
 else
