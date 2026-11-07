@@ -17,6 +17,8 @@ const ipc = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const customTitlebar = ipc && window.__BOARD_TITLEBAR__ === 'custom';
 /** 桌面外壳的版本（外壳加载页面前注入；网页端没有） */
 export const shellVersion: string | null = (typeof window !== 'undefined' && window.__BOARD_SHELL_VERSION__) || null;
+/** Windows：连接说明除了 bash 的 export，还要给 PowerShell 的 $env: 写法 */
+export const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
 export type ThemePref = 'auto' | 'light' | 'dark';
 export type Density = 'comfy' | 'compact';

@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { api } from '../lib/api';
-import { getTheme, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
+import { getTheme, isWindows, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
 import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
@@ -88,10 +88,10 @@ const Row = ({ label, hint, children }: { label: string; hint?: string; children
   </div>
 );
 
-function Code({ cmd, note, plain }: { cmd: string; note?: string; plain?: boolean }) {
+function Code({ cmd, note, plain, ps }: { cmd: string; note?: string; plain?: boolean; ps?: boolean }) {
   const [done, setDone] = useState(false);
   return (
-    <div className={cx('code-line', plain && 'plain')}>
+    <div className={cx('code-line', plain && 'plain', ps && 'ps')}>
       <code>{cmd}</code>
       {note && <span>{note}</span>}
       <button
@@ -428,8 +428,14 @@ export function SettingsPage() {
             agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 只是 agent 的名字。不用的令牌随时吊销。
           </p>
           <div className="code-block">
-            <Code cmd={`export BOARD_URL=${location.origin}`} note="服务端地址" />
+            <Code cmd={`export BOARD_URL=${location.origin}`} note={isWindows ? '服务端地址（bash）' : '服务端地址'} />
             <Code cmd="export BOARD_TOKEN=<访问令牌>" note="在下面新建" />
+            {isWindows && (
+              <>
+                <Code ps cmd={`$env:BOARD_URL="${location.origin}"`} note="服务端地址（PowerShell）" />
+                <Code ps cmd='$env:BOARD_TOKEN="<访问令牌>"' note="在下面新建（PowerShell）" />
+              </>
+            )}
           </div>
           <Tokens />
           <details className="errcodes">
