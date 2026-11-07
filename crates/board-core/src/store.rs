@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS cards (
   claimed_at      INTEGER,
   expires_at      INTEGER, -- 不再使用（原来的 30 分钟领取时长）
   beat_at         INTEGER,
+  final_at        INTEGER, -- 这次领取已经 final（正常结束心跳）的时间；之后的普通心跳被拒绝，重新领取时清空
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
   created_by_kind TEXT NOT NULL,
@@ -249,6 +250,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('card_runs') WHERE name = 'beats'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beats {
             conn.execute_batch("ALTER TABLE card_runs ADD COLUMN beats INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // 旧数据库的 cards 不记 final
+        let has_final: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'final_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_final {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN final_at INTEGER")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;

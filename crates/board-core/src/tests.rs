@@ -244,6 +244,42 @@ fn heartbeat_final_is_normal_exit() {
 }
 
 #[test]
+fn heartbeat_after_final_does_not_start_new_run() {
+    // #48：final 之后、交审之前，还在途的一次普通心跳到了服务端（脚本 stop 时后台循环的 board beat 晚到）
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    beat_span(&mut s, &alpha(), 1, T0 + SEC, T0 + 2 * MIN);
+    let end = T0 + 2 * MIN + 5 * SEC;
+    exec(&mut s, B, &alpha(), end, beat(1, true)).unwrap();
+    let stray = exec(&mut s, B, &alpha(), end + SEC, beat(1, false));
+    assert_eq!(code(stray), ErrorCode::Usage, "这次已经 final：普通心跳被拒绝");
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.runs, c.card.run_started_at, c.card.work_ms), (1, None, 2 * MIN + 4 * SEC), "不新开第 2 次");
+    assert!(!c.activity.iter().any(|a| a.text.contains("开始第 2 次")), "没有幽灵记录");
+    // T0+1s 起每 10 秒一次到 2 分（13 次）+ final
+    assert_eq!(c.card.beats, 14, "幽灵心跳不计数");
+    // 不延长 50 秒释放窗口：从 final 算起
+    assert_eq!(s.sweep(end + 50 * SEC).unwrap(), 1);
+    // 交审时也不会出现「第 2 次 · 0 秒」
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + SEC, beat(1, false)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 9 * SEC, beat(1, true)).unwrap();
+    let _ = exec(&mut s, B, &alpha(), T0 + 10 * SEC, beat(1, false));
+    let c = exec(&mut s, B, &alpha(), T0 + 11 * SEC, mv(1, "review")).unwrap();
+    assert!(c.activity.iter().any(|a| a.action == "move" && a.text.ends_with("领取已释放")), "{:?}", c.activity.last().map(|a| &a.text));
+    assert_eq!(c.card.runs, 1);
+    // 重新领取后，下一次心跳正常开始第 2 次
+    exec(&mut s, B, &human(), T0 + MIN, mv(1, "rework")).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 2 * MIN, claim(None)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 2 * MIN + SEC, beat(1, false)).unwrap();
+    assert_eq!((c.card.runs, c.card.run_started_at), (2, Some(T0 + 2 * MIN + SEC)));
+    assert!(c.activity.iter().any(|a| a.text.contains("开始第 2 次")));
+}
+
+#[test]
 fn heartbeat_final_then_idle_is_released() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();

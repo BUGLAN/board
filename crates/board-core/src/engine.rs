@@ -315,7 +315,7 @@ impl<'a> W<'a> {
                 };
                 self.place(b, target, Some(&from), &dest.key, At::Bottom)?;
                 self.tx.execute(
-                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = NULL, beat_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
+                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
                     params![actor.name, self.now, from, b, target],
                 )?;
                 self.track(b, target, actor, "claim", &format!("领取了卡片，从「{}」进入「{}」", flow.name(&from), dest.name))?;
@@ -367,7 +367,8 @@ impl<'a> W<'a> {
             /* ---------------- 心跳（仅 agent） ----------------
                持有者每 10 秒发一次。没有进行中的一次时，这一次心跳就是开始（记一条动态）；
                final：这一次结束（记耗时），之后 50 秒内要交审或放回，否则释放。
-               卡片已经不归自己（例如已交审）时 final 什么也不做 */
+               final 之后、交审之前再来的普通心跳（例如脚本停止时还在途的那一次）被拒绝：不新开一次、不延长释放窗口；
+               要接着做得重新领取。卡片已经不归自己（例如已交审）时 final 什么也不做 */
             Cmd::Beat { id, done } => {
                 if !actor.is_agent() {
                     return Err(BoardError::usage("心跳只能由 agent 通过 CLI 发送"));
@@ -377,7 +378,7 @@ impl<'a> W<'a> {
                     if is_holder(&r) {
                         self.count_beat(b, id)?;
                         if let Some((n, ms)) = self.close_run(b, id, self.now, "final")? {
-                            self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+                            self.tx.execute("UPDATE cards SET beat_at = ?1, final_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
                             self.track(b, id, actor, "beat", &format!("结束了心跳，正常退出，第 {n} 次耗时 {}", dur_words(ms)))?;
                         }
                     }
@@ -389,6 +390,13 @@ impl<'a> W<'a> {
                         None => format!("#{id} 没有被领取：先 board claim {id}"),
                     };
                     return Err(BoardError::new(ErrorCode::NotHolder, msg));
+                }
+                let finished: Option<i64> =
+                    self.tx.query_row("SELECT final_at FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
+                if finished.is_some() {
+                    return Err(BoardError::usage(format!(
+                        "#{id} 这次的心跳已经结束（final）：先交审或交给人处理；要接着做，等领取释放后重新 board claim {id}"
+                    )));
                 }
                 self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
                 self.changed = true;
@@ -586,7 +594,7 @@ impl<'a> W<'a> {
     pub(crate) fn clear_claim(&mut self, b: i64, id: i64, how: &str) -> Result<Option<(i64, i64)>> {
         let run = self.close_run(b, id, self.now, how)?;
         self.tx.execute(
-            "UPDATE cards SET holder = NULL, claimed_at = NULL, expires_at = NULL, beat_at = NULL, claimed_from = NULL WHERE board = ?1 AND id = ?2",
+            "UPDATE cards SET holder = NULL, claimed_at = NULL, expires_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL WHERE board = ?1 AND id = ?2",
             params![b, id],
         )?;
         self.changed = true;

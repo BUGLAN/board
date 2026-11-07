@@ -5,6 +5,8 @@
 #
 # start：先同步发一次心跳（失败直接报错退出），再在后台每 10 秒执行一次 board beat <ID>
 # stop ：停掉后台循环，发送 final（正常退出）
+#        先放一个停止标记，等后台循环真正退出（正在执行的那次 board beat 会先发完），再发 final，
+#        保证 final 是最后一条心跳。不能直接 Stop-Process：它只结束循环进程，已经启动的 board.exe 还会把心跳发出去
 # 后台循环在 agent 进程不在了、或 board beat 被拒绝时自己停下，不发 final；连不上服务端时继续重试。
 # agent 进程：往上找第一个不是 shell 的祖先进程，可以用 BOARD_HEARTBEAT_PID 指定。
 
@@ -15,7 +17,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Interval = 10
+$Interval = if ($env:BOARD_HEARTBEAT_INTERVAL) { [int]$env:BOARD_HEARTBEAT_INTERVAL } else { 10 } # 只给测试用；正常使用不要改
 $Id = $Id.TrimStart('#')
 
 function PidFile {
@@ -45,14 +47,27 @@ function BeatOnce {
     try { return ($out | ConvertFrom-Json).error.code } catch { return $out.Trim() }
 }
 
+# 停止标记：后台循环每 200ms 看一次，看到就退出；正在执行的 board beat 先让它执行完
+function StopFile { "$(PidFile).stop" }
+
+# 停掉后台循环并等它退出。CLI 请求最长 30 秒，最多等 35 秒，超时连同它启动的 board 一起强制结束
 function StopLoop {
     $f = PidFile
-    if (-not (Test-Path $f)) { return }
+    $stop = StopFile
+    if (-not (Test-Path $f)) { Remove-Item $stop -Force -ErrorAction SilentlyContinue; return }
     $loop = [int](Get-Content $f)
     # 只停自己的后台循环（进程号可能已经被别的进程复用）
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$loop"
-    if ($proc -and $proc.CommandLine -like '*heartbeat.ps1*_loop*') { Stop-Process -Id $loop -Force -ErrorAction SilentlyContinue }
-    Remove-Item $f -Force -ErrorAction SilentlyContinue
+    if ($proc -and $proc.CommandLine -like '*heartbeat.ps1*_loop*') {
+        Set-Content -Path $stop -Value $loop
+        try {
+            Wait-Process -Id $loop -Timeout 35 -ErrorAction Stop
+        } catch {
+            Get-CimInstance Win32_Process -Filter "ParentProcessId=$loop" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Stop-Process -Id $loop -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Remove-Item $f, $stop -Force -ErrorAction SilentlyContinue
 }
 
 switch ($Cmd) {
@@ -76,9 +91,16 @@ switch ($Cmd) {
     }
     '_loop' {
         $f = PidFile
+        $stop = StopFile
         try {
-            while ($true) {
-                Start-Sleep -Seconds $Interval
+            :beat while ($true) {
+                # 分小段睡，随时响应 stop
+                $until = (Get-Date).AddSeconds($Interval)
+                while ((Get-Date) -lt $until) {
+                    if (Test-Path $stop) { break beat }
+                    Start-Sleep -Milliseconds 200
+                }
+                if (Test-Path $stop) { break }
                 # agent 不在了：不发 final，交给服务端判定异常退出
                 if ($Watch -and -not (Get-Process -Id ([int]$Watch) -ErrorAction SilentlyContinue)) { break }
                 $r = BeatOnce

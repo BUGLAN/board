@@ -4,6 +4,9 @@
 #   sh heartbeat.sh start <ID>   先同步发一次心跳（失败直接报错退出），再在后台循环
 #   sh heartbeat.sh stop  <ID>   停掉后台循环，发送 final（正常退出）
 #
+# stop：先通知后台循环停下，等它真正退出（正在执行的那次 board beat 会先发完），再发 final，
+# 保证 final 是最后一条心跳；否则晚到的普通心跳会在 final 之后到达服务端。
+#
 # 后台循环在这些情况下自己停下，不发 final：
 #   - agent 进程不在了（崩溃、被关掉）→ 服务端连续 5 次收不到心跳，判定异常退出，卡片回到领取起点
 #   - board beat 被拒绝（卡片已经不归你、令牌失效等）；连不上服务端（UNREACHABLE）时继续重试
@@ -12,7 +15,7 @@
 # 可以用 BOARD_HEARTBEAT_PID 指定。需要 BOARD、BOARD_AS（以及 BOARD_URL、BOARD_TOKEN）已经设置。
 
 set -u
-INTERVAL=10
+INTERVAL=${BOARD_HEARTBEAT_INTERVAL:-10} # 只给测试用；正常使用不要改
 
 die() { echo "heartbeat: $*" >&2; exit 1; }
 
@@ -51,15 +54,28 @@ beat_once() {
     return 1
 }
 
+# 停掉后台循环并等它退出：TERM 只会打断两次心跳之间的等待；正在执行的 board beat 由 shell 等它执行完，
+# 之后循环直接退出、不再发下一次。CLI 请求最长 30 秒，最多等 35 秒，超时强制结束
 stop_loop() {
     f=$(pidfile "$1")
     [ -f "$f" ] || return 0
     pid=$(cat "$f")
+    rm -f "$f"
     # 只停自己的后台循环（进程号可能已经被别的进程复用）
     case "$(ps -o command= -p "$pid" 2>/dev/null)" in
-        *heartbeat.sh*_loop*) kill "$pid" 2>/dev/null ;;
+        *heartbeat.sh*_loop*) ;;
+        *) return 0 ;;
     esac
-    rm -f "$f"
+    kill -TERM "$pid" 2>/dev/null || return 0
+    waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge 350 ]; then
+            kill -KILL "$pid" 2>/dev/null
+            break
+        fi
+        sleep 0.1 2>/dev/null || sleep 1
+        waited=$((waited + 1))
+    done
 }
 
 cmd=${1:-}
@@ -90,6 +106,7 @@ case "$cmd" in
         me=$$
         nap=
         # 不管怎么退出，都删掉自己的 pid 文件（被 stop 停掉时 stop 已经删了）
+        # 收到 TERM 时：在等待中就立即退出；正在发心跳时 shell 先等这次 board beat 结束再执行 trap，然后退出
         bye() {
             f=$(pidfile "$id")
             [ "$(cat "$f" 2>/dev/null)" = "$me" ] && rm -f "$f"
