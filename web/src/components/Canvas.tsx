@@ -230,7 +230,7 @@ export function CanvasPage() {
       return;
     }
     const t = e.target as HTMLElement;
-    if (t.closest('button, .cv-head, .cv-zoom, .cv-hint')) return;
+    if (t.closest('button, .cv-head, .cv-zoom')) return;
     const node = t.closest<HTMLElement>('.cv-node');
     const l = local(e);
     if (node) {
@@ -422,9 +422,6 @@ export function CanvasPage() {
               新建项目
             </button>
           </div>
-        </div>
-        <div className="cv-hint">
-          拖动空白处平移 · <kbd className="mod">{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'}</kbd> + 滚轮缩放 · 拖动节点调整位置 · 双击空白处新建项目
         </div>
         <div className="cv-zoom" role="toolbar" aria-label="缩放">
           <button type="button" aria-label="缩小" onClick={() => zoom('out')}>

@@ -127,8 +127,6 @@
 .cv-head > * { pointer-events: auto; }
 .cv-head .crumbs b { font-family: var(--f-display); font-size: 15px; font-weight: 700; color: var(--text); }
 .cv-stat { font-size: 12px; color: var(--text-3); }
-.cv-hint { position: absolute; left: 16px; bottom: 14px; z-index: 3; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-3); padding: 6px 10px; border-radius: var(--r-sm); background: var(--glass); backdrop-filter: blur(10px); box-shadow: inset 0 0 0 1px var(--line); }
-.cv-hint kbd { height: 16px; min-width: 16px; font-size: 9.5px; }
 .cv-zoom {
   position: absolute; right: 16px; bottom: 14px; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--r-md);
   background: var(--glass-strong); backdrop-filter: blur(14px); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2);
@@ -214,7 +212,6 @@
 .dialog.pj-modal select.input { height: 36px; padding: 0 10px; appearance: auto; }
 
 @media (max-width: 760px) {
-  .cv-hint { display: none; }
   .cv-head { padding: 0 14px; }
   .cv-head .page-actions .btn:first-child { display: none; }
   .pj-sep, .pj-board { display: none; }
