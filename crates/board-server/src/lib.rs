@@ -1,23 +1,30 @@
-//! Board 服务：界面通过它读写白板。
+//! Board 服务：界面和远程模式的 CLI 都通过它读写白板。
 //!
+//! - 身份（`auth`）：所有 `/api/*` 都要登录（GitHub 会话 Cookie）或带访问令牌，只有 `/api/health` 例外；
+//!   本机模式（`--local`）只接受本机访问，不需要登录
 //! - `GET /api/workspace`、`/api/board`、`/api/card`：快照
-//! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）
+//! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`
+//! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
+//! - `/auth/github`、`/auth/github/callback`：GitHub 登录
 //! - 项目 / 白板 / 标签 / 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/{状态}`（修改、删除）
 //! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, events}`
 //!
-//! CLI 直接写数据库，服务端每 250ms 检查一次 rev，发现变化就推送给已打开的界面（PRD §11）。
+//! 本地模式的 CLI 直接写数据库，服务端每 250ms 检查一次 rev，发现变化就推送给已打开的界面（PRD §11）。
 //! 服务端每秒扫描一次到期的领取（规则 7），没有命令执行时界面上也能看到超时释放。
 
+pub mod auth;
+
+use auth::{Auth, Caller};
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
+    http::{header, HeaderMap, Request, StatusCode, Uri},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
         IntoResponse, Response,
     },
     routing::{delete, get, patch, post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use board_core::*;
 use serde::Deserialize;
@@ -29,8 +36,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{broadcast, Notify};
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tokio::sync::{broadcast, watch, Notify};
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -42,15 +49,15 @@ pub struct Config {
     pub db: PathBuf,
     /// 空数据库时写入示例工作区
     pub demo: bool,
-    /// 是否托管界面（网页端需要；桌面端由 Tauri 自己加载界面）
+    /// 是否托管界面
     pub serve_web: bool,
-    /// 允许跨域访问的来源（桌面端的 webview）
-    pub cors_origins: Vec<String>,
+    /// 登录方式：GitHub，或本机模式（不需要登录）
+    pub auth: Auth,
 }
 
 impl Config {
-    pub fn new(db: PathBuf) -> Self {
-        Config { db, demo: false, serve_web: true, cors_origins: vec![] }
+    pub fn new(db: PathBuf, auth: Auth) -> Self {
+        Config { db, demo: false, serve_web: true, auth }
     }
 }
 
@@ -59,6 +66,9 @@ struct Inner {
     tx: broadcast::Sender<Arc<str>>,
     poke: Notify,
     db: PathBuf,
+    auth: Auth,
+    /// 有会话被删除（退出登录）时加一：实时推送据此检查自己的会话还在不在
+    sessions: watch::Sender<u64>,
 }
 
 #[derive(Clone)]
@@ -72,12 +82,28 @@ impl AppState {
             board_core::seed::seed_demo(&mut store, now)?;
         }
         store.ensure_default(now)?;
+        auth::setup(store.conn())?;
         let (tx, _) = broadcast::channel(256);
-        Ok(AppState(Arc::new(Inner { store: Mutex::new(store), tx, poke: Notify::new(), db: cfg.db.clone() })))
+        Ok(AppState(Arc::new(Inner {
+            store: Mutex::new(store),
+            tx,
+            poke: Notify::new(),
+            db: cfg.db.clone(),
+            auth: cfg.auth.clone(),
+            sessions: watch::channel(0).0,
+        })))
+    }
+
+    pub fn auth(&self) -> &Auth {
+        &self.0.auth
+    }
+
+    pub(crate) fn sessions_changed(&self) {
+        self.0.sessions.send_modify(|v| *v += 1);
     }
 
     /// 在阻塞线程里使用数据库
-    async fn db<T: Send + 'static>(&self, f: impl FnOnce(&mut Store) -> Result<T> + Send + 'static) -> Result<T> {
+    pub(crate) async fn db<T: Send + 'static>(&self, f: impl FnOnce(&mut Store) -> Result<T> + Send + 'static) -> Result<T> {
         let inner = self.0.clone();
         tokio::task::spawn_blocking(move || {
             let mut s = inner.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -90,7 +116,7 @@ impl AppState {
 
 /* ------------------------------ 错误 ------------------------------ */
 
-struct ApiError(BoardError);
+pub(crate) struct ApiError(pub(crate) BoardError);
 
 impl From<BoardError> for ApiError {
     fn from(e: BoardError) -> Self {
@@ -103,6 +129,7 @@ impl IntoResponse for ApiError {
         let status = match self.0.code {
             ErrorCode::Usage | ErrorCode::EmptyTitle | ErrorCode::NoBoard | ErrorCode::NoIdentity => StatusCode::BAD_REQUEST,
             ErrorCode::NotFound | ErrorCode::BoardNotFound => StatusCode::NOT_FOUND,
+            ErrorCode::NotLoggedIn | ErrorCode::InvalidToken => StatusCode::UNAUTHORIZED,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::CONFLICT,
         };
@@ -112,7 +139,7 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = std::result::Result<Json<T>, ApiError>;
 
-fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
+pub(crate) fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
     serde_json::from_value(v).map_err(|e| BoardError::usage(format!("请求格式不正确：{e}")))
 }
 
@@ -141,22 +168,31 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/flow/{project}/{board}/layout", put(flow_layout))
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/stream", get(stream))
-        .fallback(|| async { ApiError(BoardError::usage("未知的接口")) });
+        .route("/me", get(auth::me))
+        .route("/auth/logout", post(auth::logout))
+        .route("/tokens", get(auth::tokens).post(auth::new_token))
+        .route("/tokens/{id}", delete(auth::revoke))
+        .route("/health", get(|| async { Json(json!({ "ok": true })) }))
+        .fallback(|| async { ApiError(BoardError::usage("未知的接口")) })
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::guard));
 
-    let mut app = Router::new().nest("/api", api);
+    let mut app = Router::new()
+        .nest("/api", api)
+        .route("/auth/github", get(auth::login))
+        .route("/auth/github/callback", get(auth::callback));
     if cfg.serve_web {
         app = app.fallback(get(static_file));
     }
-    if !cfg.cors_origins.is_empty() {
-        let origins: Vec<HeaderValue> = cfg.cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
-        app = app.layer(
-            CorsLayer::new()
-                .allow_origin(AllowOrigin::list(origins))
-                .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT, Method::DELETE])
-                .allow_headers([header::CONTENT_TYPE, "x-board-client".parse().unwrap()]),
-        );
-    }
-    app.with_state(state)
+    // 请求日志：方法、路径（不含查询参数）、状态、耗时、是谁。不记录令牌和 Cookie
+    app.layer(
+        TraceLayer::new_for_http()
+            .make_span_with(|req: &Request<_>| {
+                tracing::info_span!("http", method = %req.method(), path = %req.uri().path(), who = tracing::field::Empty)
+            })
+            .on_request(())
+            .on_response(DefaultOnResponse::new().level(tracing::Level::INFO).latency_unit(tower_http::LatencyUnit::Millis)),
+    )
+    .with_state(state)
 }
 
 /// 启动后台任务（超时扫描、变更推送）并开始服务。不会返回，除非监听失败
@@ -170,6 +206,21 @@ pub async fn serve(state: AppState, cfg: Config, listener: std::net::TcpListener
 
 pub fn bind(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(addr)
+}
+
+/// 在后台线程里运行服务（测试用）。返回后即可连接
+pub fn serve_in_thread(state: AppState, cfg: Config, listener: std::net::TcpListener) {
+    std::thread::Builder::new()
+        .name("board-server".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio");
+            rt.block_on(async move {
+                if let Err(e) = serve(state, cfg, listener).await {
+                    eprintln!("Board 服务异常退出：{e}");
+                }
+            });
+        })
+        .expect("线程");
 }
 
 fn spawn_background(state: AppState) {
@@ -269,18 +320,32 @@ async fn card(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResu
 #[derive(Deserialize)]
 struct CmdBody {
     board: String,
+    /// agent 的名字（`--as` / `BOARD_AS`），只有带令牌的请求使用
+    #[serde(default, rename = "as")]
+    agent: Option<String>,
     #[serde(flatten)]
     cmd: Cmd,
 }
 
-async fn cmd(State(s): State<AppState>, headers: HeaderMap, Json(v): Json<Value>) -> ApiResult<CardDetail> {
+async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, headers: HeaderMap, Json(v): Json<Value>) -> ApiResult<CardDetail> {
     let body: CmdBody = parse(v)?;
-    let client = client_of(&headers);
+    // 界面上是人；带令牌的是 agent，名字由 CLI 给出（PRD §3）
+    let (actor, origin) = match caller {
+        Caller::Human { .. } => (Actor::human(), Origin::ui(client_of(&headers))),
+        Caller::Agent { token } => {
+            let name: String = body.agent.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect();
+            if name.is_empty() {
+                return Err(BoardError::code(ErrorCode::NoIdentity).into());
+            }
+            tracing::Span::current().record("who", format!("{name}（令牌#{token}）"));
+            (Actor::agent(name), Origin::cli())
+        }
+    };
     let out = s
         .db(move |st| {
-            st.write(now_ms(), Origin::ui(client), |w| {
+            st.write(now_ms(), origin, |w| {
                 let b = w.resolve(&body.board)?;
-                w.exec(&b, &Actor::human(), body.cmd)
+                w.exec(&b, &actor, body.cmd)
             })
         })
         .await?;
@@ -507,22 +572,46 @@ async fn flow_layout(
 
 /* ------------------------------ 实时推送 ------------------------------ */
 
-async fn stream(State(s): State<AppState>) -> Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>> {
+async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>) -> impl IntoResponse {
     let rx = s.0.tx.subscribe();
     let rev = s.db(|st| st.rev()).await.unwrap_or(0);
     let first = SseEvent::default().data(json!({ "rev": rev, "events": [] }).to_string());
-    let rest = futures_util::stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Ok(msg) => Some((Ok(SseEvent::default().data(&*msg)), rx)),
-            // 落后太多：让界面整体刷新一次
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                Some((Ok(SseEvent::default().data(json!({ "rev": -1, "events": [] }).to_string())), rx))
+    let session = match caller {
+        Caller::Human { session, .. } => session,
+        Caller::Agent { .. } => None,
+    };
+    let watch = s.0.sessions.subscribe();
+    let rest = futures_util::stream::unfold((rx, watch, s, session), |(mut rx, mut watch, s, session)| async move {
+        loop {
+            tokio::select! {
+                r = rx.recv() => {
+                    let ev = match r {
+                        Ok(msg) => SseEvent::default().data(&*msg),
+                        // 落后太多：让界面整体刷新一次
+                        Err(broadcast::error::RecvError::Lagged(_)) => SseEvent::default().data(json!({ "rev": -1, "events": [] }).to_string()),
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    };
+                    return Some((Ok::<_, Infallible>(ev), (rx, watch, s, session)));
+                }
+                // 有人退出登录：自己的会话没了就断开（界面重连时会得到 401，回到登录页）
+                changed = watch.changed(), if session.is_some() => {
+                    if changed.is_err() {
+                        return None;
+                    }
+                    let h = session.clone().unwrap_or_default();
+                    if !s.db(move |st| auth::session_alive(st.conn(), &h, now_ms())).await.unwrap_or(false) {
+                        return None;
+                    }
+                }
             }
-            Err(broadcast::error::RecvError::Closed) => None,
         }
     });
     let stream = futures_util::StreamExt::chain(futures_util::stream::once(async move { Ok(first) }), rest);
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    // X-Accel-Buffering：让 nginx 等反向代理不要缓冲推送
+    (
+        [("x-accel-buffering", "no")],
+        Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))),
+    )
 }
 
 /* ------------------------------ 界面 ------------------------------ */

@@ -30,7 +30,7 @@ pub struct Tile {
 }
 
 /// 工作流里的一个状态（PRD §7）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
     pub key: String,
     pub name: String,
@@ -55,7 +55,7 @@ pub const DEFAULT_FLOW: [(&str, &str, &str, bool, bool, bool); 4] = [
 ];
 
 /// 一块白板的工作流（按顺序）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Flow(pub Vec<Status>);
 
@@ -234,7 +234,7 @@ impl BoardRef {
 /// 各状态的卡片数（键是状态标识，含 `inbox`）
 pub type Counts = BTreeMap<String, i64>;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Label {
     pub id: i64,
     pub name: String,
@@ -243,7 +243,7 @@ pub struct Label {
     pub uses: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardInfo {
     pub key: String,
@@ -260,7 +260,7 @@ pub struct BoardInfo {
     pub holders: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectInfo {
     pub key: String,
@@ -273,14 +273,14 @@ pub struct ProjectInfo {
     pub boards: Vec<BoardInfo>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub rev: i64,
     pub now: i64,
     pub projects: Vec<ProjectInfo>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Card {
     pub id: i64,
@@ -300,7 +300,7 @@ pub struct Card {
     pub comments: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Activity {
     pub id: i64,
     pub at: i64,
@@ -311,7 +311,7 @@ pub struct Activity {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CardDetail {
     #[serde(flatten)]
     pub card: Card,
@@ -319,7 +319,7 @@ pub struct CardDetail {
 }
 
 /// 全局事件流里的一条（界面的「最近动态」与跨窗口高亮用）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
     pub id: i64,
@@ -339,7 +339,7 @@ pub struct Event {
 pub type Cols = BTreeMap<String, Vec<i64>>;
 
 /// 一块白板的完整状态（不含每张卡片的动态，详情另取）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardSnapshot {
     pub rev: i64,

@@ -22,7 +22,7 @@ export interface ConfirmReq {
   title: string;
   text: string;
   ok?: string;
-  icon?: 'trash' | 'tag' | 'reset';
+  icon?: 'trash' | 'tag' | 'reset' | 'logout' | 'key';
   resolve: (v: boolean) => void;
 }
 
@@ -227,6 +227,7 @@ const ERROR_TITLES: Record<string, string> = {
   BOARD_NOT_FOUND: '白板不存在',
   USAGE: '操作无效',
   NETWORK: '连接失败',
+  NOT_LOGGED_IN: '需要重新登录',
 };
 export function toastError(err: unknown) {
   const e = err as ApiError;

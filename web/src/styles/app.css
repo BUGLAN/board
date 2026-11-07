@@ -33,3 +33,42 @@
 /* 设置 · Agent 接入：skill 调用不是 shell 命令，不显示 $ */
 .code-line.plain code::before { content: none; }
 .set-card .set-p kbd { font-size: 11px; }
+
+/* 登录页（也用来显示「正在连接」） */
+.login { position: relative; z-index: 1; min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
+.login > .boot { flex: none; }
+.login-drag { position: fixed; inset: 0 0 auto 0; height: 48px; }
+.login-card {
+  width: min(380px, 100%); display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
+  padding: 36px 28px 28px; border-radius: 22px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow-3);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  animation: enter-up var(--dur-4) var(--ease-out) both;
+}
+.login-card .logo { width: 48px; height: 48px; padding: 11px 10px; border-radius: 14px; }
+.login-card h1 { font-family: var(--f-display); font-weight: 800; font-size: 26px; letter-spacing: -.02em; }
+.login-card p { font-size: 13.5px; line-height: 1.6; color: var(--text-2); text-wrap: pretty; }
+.login-err { width: 100%; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; text-align: left; color: var(--danger); background: var(--danger-soft); }
+.login-btn { width: 100%; height: 40px; margin-top: 4px; font-size: 14px; text-decoration: none; }
+.login-btn svg { width: 17px; height: 17px; }
+
+/* 设置 · 账号与访问令牌 */
+.acct-avatar { width: 34px; height: 34px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--line-2); }
+.set-sub { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; font-size: 13.5px; font-weight: 600; }
+.set-sub svg { width: 15px; height: 15px; color: var(--text-3); }
+.token-list { list-style: none; margin: 0 0 10px; padding: 0; border-radius: 12px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
+.token-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+.token-list li + li { border-top: 1px solid var(--line); }
+.token-list li > svg { width: 16px; height: 16px; flex: none; color: var(--text-3); }
+.token-main { flex: 1; min-width: 0; }
+.token-main b { display: block; font-size: 13px; font-weight: 500; }
+.token-main span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-3); }
+.token-main code { font-family: var(--f-mono); font-size: 11.5px; }
+.token-list li.token-empty { justify-content: center; font-size: 12.5px; color: var(--text-3); }
+.token-new { display: flex; gap: 8px; margin-bottom: 14px; }
+.token-new .input { flex: 1; min-width: 0; height: 32px; }
+.token-fresh { margin-bottom: 10px; padding: 12px; border-radius: 12px; background: var(--brand-soft); }
+.token-fresh b { display: block; margin-bottom: 8px; font-size: 12.5px; font-weight: 500; }
+.token-fresh .code-block { margin-bottom: 8px; }
+.token-fresh .code-line code { min-width: 0; overflow-wrap: anywhere; }

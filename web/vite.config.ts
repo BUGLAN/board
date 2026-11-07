@@ -12,7 +12,8 @@ export default defineConfig({
     strictPort: true,
     // 设置页内嵌了仓库根目录下的 skills/board-skills/SKILL.md
     fs: { allow: ['..'] },
-    proxy: { '/api': { target: api, changeOrigin: true } },
+    // /auth：GitHub 登录与回调
+    proxy: { '/api': { target: api, changeOrigin: true }, '/auth': { target: api, changeOrigin: true } },
   },
   build: {
     target: 'es2022',

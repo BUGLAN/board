@@ -1,6 +1,6 @@
 [package]
 name = "board-desktop"
-description = "Board 桌面端：内嵌 Board 服务，与网页端使用同一套界面"
+description = "Board 桌面端：打开线上的 Board，与网页端使用同一套界面和登录"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,8 +13,4 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-board-core.workspace = true
-board-server.workspace = true
 tauri = { version = "2", features = [] }
-tokio.workspace = true
-serde_json.workspace = true

@@ -7,6 +7,7 @@ import { BoardView } from './components/BoardView';
 import { CanvasPage } from './components/Canvas';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
+import { Login } from './components/Login';
 import { ConfirmDialog, CtxMenu, FormModal, LabelManager, LabelPicker, Palette, Toasts } from './components/Overlays';
 import { SettingsPage } from './components/Settings';
 import { Topbar } from './components/Topbar';
@@ -14,6 +15,7 @@ import { ActivityBar, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
+import { checkAuth, useAuth } from './store/auth';
 import { boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './store/data';
 import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, toast, useUI, type Tab,
@@ -52,7 +54,41 @@ function useSideSlide(side: boolean) {
   }, [side]);
 }
 
+/** 先确认登录：没登录显示登录页，登录后（或本机模式）才打开白板 */
 export function App() {
+  const state = useAuth(s => s.state);
+  const error = useAuth(s => s.error);
+  useEffect(() => {
+    checkAuth();
+  }, []);
+  if (state === 'in') return <BoardApp />;
+  return (
+    <>
+      <Atmosphere />
+      {state === 'out' ? (
+        <Login />
+      ) : (
+        <div className="login">
+          <Loading error={state === 'error' ? error : null} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function Atmosphere() {
+  return (
+    <div className="atmosphere" aria-hidden="true">
+      <div className="dots" />
+      <div className="glow g1" />
+      <div className="glow g2" />
+      <div className="glow g3" />
+      <div className="grain" />
+    </div>
+  );
+}
+
+function BoardApp() {
   const tab = useUI(s => s.tab);
   const side = useUI(s => s.side);
   const cur = useCurrent();
@@ -154,13 +190,7 @@ export function App() {
   const page = PAGE[tab];
   return (
     <>
-      <div className="atmosphere" aria-hidden="true">
-        <div className="dots" />
-        <div className="glow g1" />
-        <div className="glow g2" />
-        <div className="glow g3" />
-        <div className="grain" />
-      </div>
+      <Atmosphere />
       <div className="app" data-tab={tab} data-side={side ? 'open' : 'closed'}>
         <Topbar />
         <ActivityBar />

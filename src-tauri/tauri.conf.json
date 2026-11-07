@@ -19,7 +19,7 @@
     "active": true,
     "targets": "all",
     "category": "Productivity",
-    "shortDescription": "看板式白板：人在界面上操作，agent 通过 CLI 操作同一块白板",
+    "shortDescription": "看板式白板：人在界面上操作，agent 通过 CLI 操作同一块白板（连接 board.buglan.com）",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
   }
 }

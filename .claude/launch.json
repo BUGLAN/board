@@ -19,6 +19,7 @@
         "-p",
         "board-server",
         "--",
+        "--local",
         "--port",
         "7420",
         "--demo",
@@ -47,6 +48,7 @@
         "-p",
         "board-server",
         "--",
+        "--local",
         "--port",
         "7431"
       ],
@@ -61,6 +63,7 @@
         "-p",
         "board-server",
         "--",
+        "--local",
         "--port",
         "7432",
         "--demo",
@@ -68,6 +71,40 @@
         ".dev/flow.db"
       ],
       "port": 7432
+    },
+    {
+      "name": "github-mock",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-I",
+        "scripts/github-mock.py",
+        "7499"
+      ],
+      "port": 7499
+    },
+    {
+      "name": "board-server-auth",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "BOARD_PUBLIC_URL=http://127.0.0.1:7433",
+        "BOARD_GITHUB_CLIENT_ID=dev-client",
+        "BOARD_GITHUB_CLIENT_SECRET=dev-secret",
+        "BOARD_GITHUB_USER=buglan",
+        "BOARD_GITHUB_OAUTH_URL=http://127.0.0.1:7499",
+        "BOARD_GITHUB_API_URL=http://127.0.0.1:7499",
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "board-server",
+        "--",
+        "--port",
+        "7433",
+        "--demo",
+        "--db",
+        ".dev/auth.db"
+      ],
+      "port": 7433
     }
   ]
 }

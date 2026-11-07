@@ -146,6 +146,19 @@ const P: Record<string, ReactNode> = {
     </>
   ),
   fit: <path d="M3.5 7.5v-4h4M16.5 7.5v-4h-4M3.5 12.5v4h4M16.5 12.5v4h-4" />,
+  user: (
+    <>
+      <circle cx="10" cy="7" r="3.2" />
+      <path d="M4 16.5c.9-2.8 3.2-4.3 6-4.3s5.1 1.5 6 4.3" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="13" cy="7" r="3.5" />
+      <path d="M10.5 9.5 3.5 16.5M6 14l2 2M8 12l1.5 1.5" />
+    </>
+  ),
+  logout: <path d="M8 4.5H5.5a1.5 1.5 0 0 0-1.5 1.5v8a1.5 1.5 0 0 0 1.5 1.5H8M12 6.5 15.5 10 12 13.5M15.5 10H8" />,
 };
 
 export type IconName = keyof typeof P;

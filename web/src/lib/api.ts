@@ -1,19 +1,22 @@
 /* ==========================================================================
    与 board-server 通信
-   - 网页端：同源（/api/...）
-   - 桌面端：Tauri 注入 window.__BOARD_API__（内嵌服务的地址）
+   - 同源（/api/...）：网页端和桌面端都直接打开服务端的地址，登录用同一个会话 Cookie
+   - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Pos, Workspace } from './types';
+import type { Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Me, Pos, TokenInfo, Workspace } from './types';
 
 declare global {
   interface Window {
-    __BOARD_API__?: string;
     __BOARD_SHELL__?: string;
   }
 }
 
-export const API_BASE = (window.__BOARD_API__ ?? '').replace(/\/$/, '');
+let unauthorized: (() => void) | null = null;
+/** 请求返回 401（没登录、会话过期）时调用 */
+export function onUnauthorized(fn: () => void) {
+  unauthorized = fn;
+}
 
 /** 每个窗口一个标识：服务端把它记在事件里，窗口据此忽略自己触发的高亮 */
 export const CLIENT_ID: string = (() => {
@@ -37,8 +40,9 @@ export class ApiError extends Error {
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(API_BASE + path, {
+    res = await fetch(path, {
       method,
+      credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-board-client': CLIENT_ID },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -53,6 +57,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   }
   if (!res.ok) {
     const e = (data as { error?: { code: ErrorCode; message: string; detail?: Record<string, unknown> } } | null)?.error;
+    if (res.status === 401) unauthorized?.();
     throw new ApiError(e?.code ?? 'INTERNAL', e?.message ?? `请求失败（${res.status}）`, e?.detail);
   }
   return data as T;
@@ -61,6 +66,12 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 const q = encodeURIComponent;
 
 export const api = {
+  me: () => req<Me>('GET', '/api/me'),
+  logout: () => req('POST', '/api/auth/logout'),
+  tokens: () => req<TokenInfo[]>('GET', '/api/tokens'),
+  createToken: (name: string) => req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', { name }),
+  revokeToken: (id: number) => req('DELETE', `/api/tokens/${id}`),
+
   workspace: () => req<Workspace>('GET', '/api/workspace'),
   board: (path: string) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}`),
   card: (path: string, id: number) => req<CardDetail>('GET', `/api/card?path=${q(path)}&id=${id}`),
@@ -112,7 +123,7 @@ export function connect(onMessage: (m: { rev: number; events: BoardEvent[] }) =>
   const open = () => {
     if (closed) return;
     onStatus('connecting');
-    es = new EventSource(API_BASE + '/api/stream');
+    es = new EventSource('/api/stream');
     es.onopen = () => {
       retry = 0;
       onStatus('live');

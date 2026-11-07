@@ -1,0 +1,406 @@
+//! 鉴权（PRD §3、§12、§13）：未登录被拒、GitHub 登录（模拟的 GitHub）、访问令牌的权限、本机模式。
+//!
+//! 每个测试起一个真实的 board-server（后台线程、随机端口），用 HTTP 访问。
+
+use axum::{routing::get, routing::post, Json, Router};
+use board_server::auth::{self, Auth, GitHub};
+use board_server::{bind, serve_in_thread, AppState, Config};
+use serde_json::{json, Value};
+use std::net::SocketAddr;
+use std::path::Path;
+
+struct Res {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Value,
+}
+
+impl Res {
+    fn code(&self) -> &str {
+        self.body["error"]["code"].as_str().unwrap_or_default()
+    }
+    fn header(&self, k: &str) -> Vec<&str> {
+        self.headers.iter().filter(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str()).collect()
+    }
+    fn location(&self) -> String {
+        self.header("location").first().copied().unwrap_or_default().to_string()
+    }
+    /// Set-Cookie 里某个 Cookie 的值（空字符串表示被清除）
+    fn cookie(&self, name: &str) -> Option<String> {
+        self.header("set-cookie")
+            .into_iter()
+            .find_map(|c| c.split(';').next()?.trim().strip_prefix(&format!("{name}=")).map(str::to_string))
+    }
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build().into()
+}
+
+fn send(method: &str, url: &str, headers: &[(&str, &str)], body: Option<Value>) -> Res {
+    let a = agent();
+    let mut res = match (method, body) {
+        ("GET", _) => {
+            let mut r = a.get(url);
+            for (k, v) in headers {
+                r = r.header(*k, *v);
+            }
+            r.call()
+        }
+        ("DELETE", _) => {
+            let mut r = a.delete(url);
+            for (k, v) in headers {
+                r = r.header(*k, *v);
+            }
+            r.call()
+        }
+        (m, body) => {
+            let mut r = match m {
+                "POST" => a.post(url),
+                "PATCH" => a.patch(url),
+                "PUT" => a.put(url),
+                _ => unreachable!(),
+            };
+            for (k, v) in headers {
+                r = r.header(*k, *v);
+            }
+            r.send_json(body.unwrap_or(json!({})))
+        }
+    }
+    .unwrap_or_else(|e| panic!("{method} {url}: {e}"));
+    let status = res.status().as_u16();
+    let headers = res
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
+        .collect();
+    let text = res.body_mut().read_to_string().unwrap_or_default();
+    let body = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Res { status, headers, body }
+}
+
+/// 在后台线程里跑一个 axum 服务，返回地址
+fn serve_router(app: Router) -> SocketAddr {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    l.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let l = tokio::net::TcpListener::from_std(l).unwrap();
+            axum::serve(l, app).await.unwrap();
+        });
+    });
+    addr
+}
+
+/// 模拟的 GitHub：任何授权码都换成访问令牌，用户名由授权码决定（code = 用户名）
+fn mock_github() -> String {
+    let app = Router::new()
+        .route(
+            "/login/oauth/access_token",
+            post(|body: String| async move {
+                let form: Vec<(String, String)> = serde_urlencoded::from_str(&body).unwrap_or_default();
+                let code = form.iter().find(|(k, _)| k == "code").map(|(_, v)| v.clone()).unwrap_or_default();
+                if code == "bad" {
+                    return Json(json!({ "error": "bad_verification_code" }));
+                }
+                Json(json!({ "access_token": format!("gho_{code}"), "token_type": "bearer" }))
+            }),
+        )
+        .route(
+            "/user",
+            get(|h: axum::http::HeaderMap| async move {
+                let tok = h.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or_default();
+                let login = tok.trim_start_matches("Bearer gho_").to_string();
+                Json(json!({ "login": login, "name": format!("{login} 本人"), "avatar_url": "https://example.com/a.png" }))
+            }),
+        );
+    format!("http://{}", serve_router(app))
+}
+
+struct Server {
+    url: String,
+    db: std::path::PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+fn start(auth: Auth) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let cfg = Config { db: db.clone(), demo: false, serve_web: false, auth };
+    let state = AppState::open(&cfg).unwrap();
+    let l = bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    serve_in_thread(state, cfg, l);
+    Server { url, db, _dir: dir }
+}
+
+fn github(user: &str) -> Server {
+    let gh = mock_github();
+    start(Auth::GitHub(GitHub {
+        client_id: "cid".into(),
+        client_secret: "secret".into(),
+        user: user.into(),
+        public_url: "http://board.test".into(),
+        oauth_url: gh.clone(),
+        api_url: gh,
+    }))
+}
+
+fn new_token(db: &Path, name: &str) -> String {
+    let store = board_core::Store::open(db).unwrap();
+    auth::create_token(store.conn(), name, board_core::now_ms()).unwrap().1
+}
+
+/// 走一遍 GitHub 登录，返回会话 Cookie
+fn login(s: &Server, as_user: &str) -> Res {
+    let r = send("GET", &format!("{}/auth/github", s.url), &[], None);
+    assert_eq!(r.status, 303);
+    let loc = r.location();
+    assert!(loc.contains("/login/oauth/authorize?"), "{loc}");
+    assert!(loc.contains("client_id=cid"));
+    assert!(loc.contains("redirect_uri=http%3A%2F%2Fboard.test%2Fauth%2Fgithub%2Fcallback"), "{loc}");
+    let state = r.cookie("board_oauth").expect("state cookie");
+    assert!(loc.contains(&format!("state={state}")));
+    send(
+        "GET",
+        &format!("{}/auth/github/callback?code={as_user}&state={state}", s.url),
+        &[("cookie", &format!("board_oauth={state}"))],
+        None,
+    )
+}
+
+fn session(s: &Server) -> String {
+    let r = login(s, "buglan");
+    assert_eq!(r.status, 303);
+    assert_eq!(r.location(), "/");
+    let sid = r.cookie("board_session").expect("会话 Cookie");
+    let raw = r.header("set-cookie").into_iter().find(|c| c.starts_with("board_session=")).unwrap().to_string();
+    assert!(raw.contains("HttpOnly") && raw.contains("SameSite=Lax"), "{raw}");
+    format!("board_session={sid}")
+}
+
+const UI: (&str, &str) = ("x-board-client", "test-window");
+
+#[test]
+fn unauthenticated_requests_are_rejected() {
+    let s = github("buglan");
+    let routes: &[(&str, &str)] = &[
+        ("GET", "/api/info"),
+        ("GET", "/api/workspace"),
+        ("GET", "/api/board?path=default"),
+        ("GET", "/api/card?path=default&id=1"),
+        ("POST", "/api/cmd"),
+        ("POST", "/api/projects"),
+        ("PATCH", "/api/projects/default"),
+        ("DELETE", "/api/projects/default"),
+        ("POST", "/api/boards"),
+        ("PATCH", "/api/boards/default/main"),
+        ("DELETE", "/api/boards/default/main"),
+        ("POST", "/api/labels"),
+        ("PATCH", "/api/labels/1"),
+        ("DELETE", "/api/labels/default/1"),
+        ("PUT", "/api/layout"),
+        ("POST", "/api/flow/default/main"),
+        ("PUT", "/api/flow/default/main"),
+        ("PUT", "/api/flow/default/main/layout"),
+        ("PATCH", "/api/flow/default/main/todo"),
+        ("DELETE", "/api/flow/default/main/todo"),
+        ("GET", "/api/stream"),
+        ("GET", "/api/me"),
+        ("POST", "/api/auth/logout"),
+        ("GET", "/api/tokens"),
+        ("POST", "/api/tokens"),
+        ("DELETE", "/api/tokens/1"),
+        ("GET", "/api/nope"),
+    ];
+    for (m, p) in routes {
+        let r = send(m, &format!("{}{p}", s.url), &[UI], None);
+        assert_eq!(r.status, 401, "{m} {p}");
+        assert_eq!(r.code(), "NOT_LOGGED_IN", "{m} {p}");
+    }
+    // 伪造的会话
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", "board_session=forged")], None);
+    assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"));
+    // 错误的令牌
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("authorization", "Bearer bd_nope")], None);
+    assert_eq!((r.status, r.code()), (401, "INVALID_TOKEN"));
+    // 健康检查不需要登录
+    let r = send("GET", &format!("{}/api/health", s.url), &[], None);
+    assert_eq!(r.status, 200);
+}
+
+#[test]
+fn github_login_session_and_logout() {
+    let s = github("BugLan");
+    let cookie = session(&s);
+    let r = send("GET", &format!("{}/api/me", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body["login"], "buglan");
+    assert_eq!(r.body["mode"], "github");
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.status, 200);
+    // 界面上新建卡片：身份是人
+    let r = send(
+        "POST",
+        &format!("{}/api/cmd", s.url),
+        &[("cookie", &cookie), UI],
+        Some(json!({ "board": "default", "op": "new", "title": "人建的" })),
+    );
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert_eq!(r.body["createdBy"]["kind"], "human");
+    // 写请求必须带 x-board-client（防跨站请求）
+    let r = send("POST", &format!("{}/api/cmd", s.url), &[("cookie", &cookie)], Some(json!({ "board": "default", "op": "new", "title": "x" })));
+    assert_eq!((r.status, r.code()), (400, "USAGE"));
+    // 退出后会话失效
+    let r = send("POST", &format!("{}/api/auth/logout", s.url), &[("cookie", &cookie), UI], None);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cookie("board_session").as_deref(), Some(""));
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", &cookie)], None);
+    assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"));
+}
+
+#[test]
+fn github_login_rejections() {
+    let s = github("buglan");
+    // 不是允许的账号
+    let r = login(&s, "someone-else");
+    assert_eq!(r.status, 303);
+    assert_eq!(r.location(), "/?login_error=denied&login=someone-else");
+    assert!(r.cookie("board_session").is_none());
+    // state 对不上
+    let r = send(
+        "GET",
+        &format!("{}/auth/github/callback?code=buglan&state=aaa", s.url),
+        &[("cookie", "board_oauth=bbb")],
+        None,
+    );
+    assert_eq!(r.location(), "/?login_error=state");
+    assert!(r.cookie("board_session").is_none());
+    // 没有 state Cookie
+    let r = send("GET", &format!("{}/auth/github/callback?code=buglan&state=aaa", s.url), &[], None);
+    assert_eq!(r.location(), "/?login_error=state");
+    // GitHub 拒绝授权码
+    let st = send("GET", &format!("{}/auth/github", s.url), &[], None).cookie("board_oauth").unwrap();
+    let r = send(
+        "GET",
+        &format!("{}/auth/github/callback?code=bad&state={st}", s.url),
+        &[("cookie", &format!("board_oauth={st}"))],
+        None,
+    );
+    assert_eq!(r.location(), "/?login_error=github");
+    // 用户在 GitHub 上取消
+    let r = send("GET", &format!("{}/auth/github/callback?error=access_denied", s.url), &[], None);
+    assert_eq!(r.location(), "/?login_error=cancelled");
+}
+
+#[test]
+fn tokens_are_for_cli_only() {
+    let s = github("buglan");
+    let cookie = session(&s);
+    // 在界面上新建令牌：原文只返回这一次
+    let r = send("POST", &format!("{}/api/tokens", s.url), &[("cookie", &cookie), UI], Some(json!({ "name": "macbook" })));
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    let tok = r.body["token"].as_str().unwrap().to_string();
+    assert!(tok.starts_with("bd_"));
+    let id = r.body["info"]["id"].as_i64().unwrap();
+    let list = send("GET", &format!("{}/api/tokens", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(list.body[0]["name"], "macbook");
+    assert!(!list.body.to_string().contains(&tok), "列表里不能出现令牌原文");
+
+    let bearer = format!("Bearer {tok}");
+    let a = [("authorization", bearer.as_str())];
+    // CLI 用到的接口
+    assert_eq!(send("GET", &format!("{}/api/workspace", s.url), &a, None).status, 200);
+    assert_eq!(send("GET", &format!("{}/api/board?path=default", s.url), &a, None).status, 200);
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": "alpha", "op": "new", "title": "agent 建的" })));
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert_eq!(r.body["createdBy"], json!({ "kind": "agent", "name": "alpha" }));
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": "alpha", "op": "claim" })));
+    assert_eq!(r.body["holder"], "alpha");
+    // 没有名字
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "op": "claim" })));
+    assert_eq!((r.status, r.code()), (400, "NO_IDENTITY"));
+    // 规则仍由规则引擎判定：agent 不能删除、不能强制释放
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": "alpha", "op": "delete", "id": 1 })));
+    assert_eq!(r.code(), "USAGE");
+    // 只有人能做的操作、实时推送、令牌管理：令牌不能用
+    for (m, p, body) in [
+        ("POST", "/api/projects", Some(json!({ "name": "x", "key": "x", "board": { "name": "m", "key": "main" } }))),
+        ("DELETE", "/api/boards/default/main", None),
+        ("POST", "/api/flow/default/main", Some(json!({ "name": "新状态" }))),
+        ("GET", "/api/stream", None),
+        ("GET", "/api/tokens", None),
+        ("POST", "/api/tokens", Some(json!({ "name": "y" }))),
+        ("GET", "/api/me", None),
+    ] {
+        let r = send(m, &format!("{}{p}", s.url), &a, body);
+        assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"), "{m} {p}");
+    }
+    // 吊销后：INVALID_TOKEN
+    let r = send("DELETE", &format!("{}/api/tokens/{id}", s.url), &[("cookie", &cookie), UI], None);
+    assert_eq!(r.status, 200);
+    let r = send("GET", &format!("{}/api/workspace", s.url), &a, None);
+    assert_eq!((r.status, r.code()), (401, "INVALID_TOKEN"));
+}
+
+#[test]
+fn server_side_token_command_works() {
+    let s = github("buglan");
+    let tok = new_token(&s.db, "ci");
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("authorization", &format!("Bearer {tok}"))], None);
+    assert_eq!(r.status, 200);
+}
+
+#[test]
+fn local_mode_needs_no_login_but_only_local_hosts() {
+    let s = start(Auth::Local);
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[], None);
+    assert_eq!(r.status, 200);
+    assert_eq!(send("GET", &format!("{}/api/me", s.url), &[], None).body["mode"], "local");
+    // 其他网页借 DNS 重绑定访问：Host 不是本机
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("host", "evil.example.com")], None);
+    assert_eq!(r.status, 400);
+    // 本机模式也认令牌：带令牌就是 agent
+    let tok = new_token(&s.db, "local");
+    let r = send(
+        "POST",
+        &format!("{}/api/cmd", s.url),
+        &[("authorization", &format!("Bearer {tok}"))],
+        Some(json!({ "board": "default", "as": "beta", "op": "new", "title": "x" })),
+    );
+    assert_eq!(r.body["createdBy"]["kind"], "agent");
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("authorization", "Bearer bd_nope")], None);
+    assert_eq!(r.code(), "INVALID_TOKEN");
+}
+
+/// 打开实时推送，返回一个通道：推送连接断开时收到消息
+fn open_stream(url: &str, cookie: &str) -> std::sync::mpsc::Receiver<()> {
+    let res = agent().get(format!("{url}/api/stream")).header("cookie", cookie).call().unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut r = res.into_body().into_reader();
+        let _ = std::io::copy(&mut r, &mut std::io::sink());
+        let _ = tx.send(());
+    });
+    rx
+}
+
+#[test]
+fn logout_closes_that_sessions_stream() {
+    let s = github("buglan");
+    let a = session(&s);
+    let b = session(&s);
+    let sa = open_stream(&s.url, &a);
+    let sb = open_stream(&s.url, &b);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let r = send("POST", &format!("{}/api/auth/logout", s.url), &[("cookie", &a), UI], None);
+    assert_eq!(r.status, 200);
+    sa.recv_timeout(std::time::Duration::from_secs(3)).expect("退出的会话：推送应当断开");
+    assert!(sb.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "另一个会话的推送不受影响");
+    // 重新连接被拒绝
+    let r = send("GET", &format!("{}/api/stream", s.url), &[("cookie", &a)], None);
+    assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"));
+}

@@ -2,20 +2,24 @@
    设置 Tab（PRD §10.6）：外观 / 白板规则 / Agent 接入 / 快捷键
    侧栏是目录，点击跳到对应部分；滚动时目录跟随
    ========================================================================== */
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
+import { api } from '../lib/api';
 import { getTheme, setDensity, setMotion, setTheme, type Density, type Motion, type ThemePref } from '../lib/platform';
 import { boardFlow, ERRORS } from '../lib/schema';
-import { copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
+import type { TokenInfo } from '../lib/types';
+import { ago, copyText, cx, MOD, pref, reduceMotion, replay } from '../lib/util';
 import skill from '../../../skills/board-skills/SKILL.md?raw';
+import { logout, useAuth } from '../store/auth';
 import { useData } from '../store/data';
-import { toast, useUI } from '../store/ui';
+import { confirm, toast, toastError, useUI } from '../store/ui';
 import { Icon, type IconName } from './Icon';
 
 const SECTIONS: { id: string; title: string; icon: IconName }[] = [
   { id: 'appearance', title: '外观', icon: 'sun' },
   { id: 'board', title: '白板规则', icon: 'lock' },
   { id: 'agents', title: 'Agent 接入', icon: 'terminal' },
+  { id: 'account', title: '账号', icon: 'user' },
   { id: 'shortcuts', title: '快捷键', icon: 'keyboard' },
 ];
 
@@ -125,6 +129,138 @@ function CopySkill() {
   );
 }
 
+/** 访问令牌：agent 用 board 命令行连接服务端时认证。原文只在新建时显示一次 */
+function Tokens() {
+  const tab = useUI(s => s.tab);
+  const [list, setList] = useState<TokenInfo[] | null>(null);
+  const [name, setName] = useState('');
+  const [fresh, setFresh] = useState<{ token: string; name: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () =>
+    api
+      .tokens()
+      .then(setList)
+      .catch(() => {});
+  useEffect(() => {
+    if (tab === 'settings') load();
+  }, [tab]);
+
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    const n = name.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    try {
+      const r = await api.createToken(n);
+      setFresh({ token: r.token, name: r.info.name });
+      setName('');
+      await load();
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (t: TokenInfo) => {
+    const ok = await confirm({
+      title: `吊销令牌「${t.name}」？`,
+      text: '使用这个令牌的 agent 之后会得到 INVALID_TOKEN，需要换成新的令牌。',
+      ok: '吊销',
+      icon: 'key',
+    });
+    if (!ok) return;
+    try {
+      await api.revokeToken(t.id);
+      await load();
+    } catch (err) {
+      toastError(err);
+    }
+  };
+
+  const now = Date.now();
+  return (
+    <div className="tokens">
+      {fresh && (
+        <div className="token-fresh" role="status">
+          <b>令牌「{fresh.name}」已新建。原文只显示这一次，请现在复制保存。</b>
+          <div className="code-block">
+            <Code cmd={`export BOARD_TOKEN=${fresh.token}`} />
+          </div>
+          <button type="button" className="btn sm" onClick={() => setFresh(null)}>
+            <Icon name="check" />
+            已保存
+          </button>
+        </div>
+      )}
+      <ul className="token-list">
+        {list?.length === 0 && <li className="token-empty">还没有访问令牌</li>}
+        {list?.map(t => (
+          <li key={t.id}>
+            <Icon name="key" />
+            <div className="token-main">
+              <b>{t.name}</b>
+              <span>
+                <code>{t.hint}</code> · 创建于 {ago(t.createdAt, now)} · {t.lastUsedAt ? `最近使用 ${ago(t.lastUsedAt, now)}` : '还没用过'}
+              </span>
+            </div>
+            <button type="button" className="btn sm danger" onClick={() => revoke(t)}>
+              吊销
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form className="token-new" onSubmit={create}>
+        <input
+          className="input"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="令牌用途，例如 macbook、ci"
+          maxLength={40}
+          aria-label="令牌用途"
+        />
+        <button type="submit" className="btn sm primary" disabled={!name.trim() || busy}>
+          <Icon name="plus" />
+          新建令牌
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Account() {
+  const me = useAuth(s => s.me);
+  if (me?.mode !== 'github') {
+    return (
+      <Row label="本机模式" hint="服务端以 --local 运行：只接受本机访问，不需要登录">
+        <span className="ro">不需要登录</span>
+      </Row>
+    );
+  }
+  return (
+    <div className="set-row">
+      {me.avatar && <img className="acct-avatar" src={me.avatar} alt="" />}
+      <div className="set-label">
+        <b>{me.name || me.login}</b>
+        <span>GitHub · {me.login}</span>
+      </div>
+      <div className="set-control">
+        <button
+          type="button"
+          className="btn sm"
+          onClick={async () => {
+            const ok = await confirm({ title: '退出登录？', text: '退出后需要重新用 GitHub 登录。agent 的访问令牌不受影响。', ok: '退出登录', icon: 'logout' });
+            if (ok) logout();
+          }}
+        >
+          <Icon name="logout" />
+          退出登录
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const path = useData(s => s.path);
   const flow = boardFlow(useData(s => s.board));
@@ -157,7 +293,7 @@ export function SettingsPage() {
       <div className="settings">
         <header className="settings-hero">
           <h1>设置</h1>
-          <p>界面的显示方式，以及 agent 如何通过命令行接入。</p>
+          <p>界面的显示方式、agent 如何通过命令行接入，以及账号。</p>
         </header>
 
         <section className="set-card" id="set-appearance" style={{ ['--i' as string]: 1 }}>
@@ -265,6 +401,18 @@ export function SettingsPage() {
             <Code cmd={'ln -s "$PWD/skills/board-skills" ~/.agents/skills/board-skills'} note="在 Board 仓库里执行：链接到 skills 目录" />
             <Code cmd="cargo install --path crates/board-cli" note="安装 board 命令行" />
           </div>
+          <h3 className="set-sub">
+            <Icon name="key" />
+            访问令牌
+          </h3>
+          <p className="set-p">
+            agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 只是 agent 的名字。不用的令牌随时吊销。
+          </p>
+          <div className="code-block">
+            <Code cmd={`export BOARD_URL=${location.origin}`} note="服务端地址" />
+            <Code cmd="export BOARD_TOKEN=<访问令牌>" note="在下面新建" />
+          </div>
+          <Tokens />
           <details className="errcodes">
             <summary>错误码</summary>
             <div className="err-grid">
@@ -276,6 +424,14 @@ export function SettingsPage() {
               ))}
             </div>
           </details>
+        </section>
+
+        <section className="set-card" id="set-account" style={{ ['--i' as string]: 3 }}>
+          <h2>
+            <Icon name="user" />
+            账号
+          </h2>
+          <Account />
         </section>
 
         <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: 3 }}>

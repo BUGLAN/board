@@ -138,8 +138,23 @@ export type ErrorCode =
   | 'NOT_HOLDER'
   | 'FORBIDDEN_COLUMN'
   | 'USAGE'
+  | 'NOT_LOGGED_IN'
+  | 'INVALID_TOKEN'
+  | 'UNREACHABLE'
   | 'INTERNAL'
   | 'NETWORK';
+
+/** 当前登录的人：线上是 GitHub 账号；本机模式不需要登录 */
+export type Me = { mode: 'github'; login: string; name: string; avatar: string } | { mode: 'local' };
+
+/** agent 访问令牌（原文只在新建时返回一次） */
+export interface TokenInfo {
+  id: number;
+  name: string;
+  hint: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+}
 
 export type Cmd =
   | { op: 'new'; title: string; body?: string; column?: 'inbox'; top?: boolean; labels?: number[] }

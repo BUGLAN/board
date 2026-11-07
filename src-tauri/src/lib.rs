@@ -1,70 +1,38 @@
-//! Board 桌面端。
+//! Board 桌面端：窗口直接打开线上的 Board（默认 https://board.buglan.com），
+//! 与网页端同源，登录用同一个 GitHub 会话。
 //!
-//! 启动时在本机随机端口上运行与网页端相同的 Board 服务（board-server），
-//! 窗口加载同一套界面，通过注入的 `window.__BOARD_API__` 访问这个服务。
-//! 数据库与 `board` 命令行共用：默认 `~/.board/board.db`，`BOARD_DB` 可指定。
-//!
+//! - 地址可以用环境变量 `BOARD_URL` 覆盖（开发时指向 http://localhost:1420 或本机服务端）
+//! - GitHub 登录在窗口里完成；会话 Cookie 保存在 webview 里，所有窗口共用
 //! - 顶栏即标题栏（macOS 交通灯叠在顶栏左侧），按住顶栏空白处拖动窗口
 //! - 「文件 → 新建窗口」（⌘⇧N / Ctrl+Shift+N）：每个窗口可以打开不同的白板
 
-use board_core::Store;
-use board_server::{bind, serve, AppState, Config};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
+
+const DEFAULT_URL: &str = "https://board.buglan.com";
 
 static WINDOWS: AtomicUsize = AtomicUsize::new(0);
 
-struct Api(String);
+struct Board(Url);
 
-fn start_server() -> Result<String, String> {
-    let cfg = Config {
-        db: Store::default_path(),
-        demo: std::env::var_os("BOARD_DEMO").is_some(),
-        serve_web: false,
-        cors_origins: [
-            "tauri://localhost",
-            "http://tauri.localhost",
-            "https://tauri.localhost",
-            "http://localhost:1420",
-            "http://127.0.0.1:1420",
-        ]
-        .map(String::from)
-        .to_vec(),
-    };
-    let state = AppState::open(&cfg).map_err(|e| format!("打开数据库 {} 失败：{e}", cfg.db.display()))?;
-    let listener = bind(([127, 0, 0, 1], 0).into()).map_err(|e| format!("无法启动本地服务：{e}"))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    std::thread::Builder::new()
-        .name("board-server".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("tokio runtime");
-            rt.block_on(async move {
-                if let Err(e) = serve(state, cfg, listener).await {
-                    eprintln!("Board 服务异常退出：{e}");
-                }
-            });
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(format!("http://127.0.0.1:{port}"))
+fn board_url() -> Result<Url, String> {
+    let raw = std::env::var("BOARD_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_URL.to_string());
+    raw.parse().map_err(|e| format!("BOARD_URL 不是合法的地址「{raw}」：{e}"))
 }
 
 fn open_window(app: &AppHandle) -> tauri::Result<()> {
-    let api = app.state::<Api>().0.clone();
+    let url = app.state::<Board>().0.clone();
     let n = WINDOWS.fetch_add(1, Ordering::SeqCst);
-    let script = format!(
-        "window.__BOARD_API__ = {}; window.__BOARD_SHELL__ = 'desktop';",
-        serde_json::to_string(&api).unwrap_or_default()
-    );
-    let mut builder = WebviewWindowBuilder::new(app, format!("board-{n}"), WebviewUrl::App("index.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app, format!("board-{n}"), WebviewUrl::External(url))
         .title("Board")
         .inner_size(1360.0, 860.0)
         .min_inner_size(380.0, 560.0)
-        .initialization_script(&script);
+        .initialization_script("window.__BOARD_SHELL__ = 'desktop';");
     // 新窗口错开一点，免得完全叠在上一个窗口上
     if n > 0 {
         if let Some(prev) = app.webview_windows().values().next() {
@@ -85,15 +53,15 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn run() {
-    let api = match start_server() {
-        Ok(a) => a,
+    let url = match board_url() {
+        Ok(u) => u,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
         }
     };
     tauri::Builder::default()
-        .manage(Api(api))
+        .manage(Board(url))
         .setup(|app| {
             let handle = app.handle();
             let new_window = MenuItem::with_id(handle, "new-window", "新建窗口", true, Some("CmdOrCtrl+Shift+N"))?;

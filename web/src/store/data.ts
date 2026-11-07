@@ -205,7 +205,8 @@ export function boot() {
     },
     status => {
       set({ status });
-      if (status === 'live') refresh();
+      // 断开时也取一次：会话过期会得到 401，界面切到登录页
+      if (status === 'live' || status === 'offline') refresh();
     },
   );
 }

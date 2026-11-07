@@ -2,8 +2,12 @@
 //!
 //! 身份：`--as <名字>` 或环境变量 `BOARD_AS`；白板：`--board <项目>/<白板>` 或环境变量 `BOARD`。
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
-//! 数据库与界面共用：默认 `~/.board/board.db`，可用 `BOARD_DB` 指定。
+//! 数据：设置了 `BOARD_URL` 时通过服务端读写（`BOARD_TOKEN` 认证）；否则直接读写本地数据库
+//! （默认 `~/.board/board.db`，可用 `BOARD_DB` 指定）。见 backend.rs。
 
+mod backend;
+
+use backend::{env, Backend, BoardData};
 use board_core::*;
 use chrono::TimeZone;
 use serde_json::{json, Value};
@@ -94,10 +98,6 @@ impl Args {
     }
 }
 
-fn env(k: &str) -> Option<String> {
-    std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-}
-
 /* ------------------------------ 执行 ------------------------------ */
 
 fn run(tokens: &[String], p: &Paint) -> Result<Output> {
@@ -121,13 +121,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     };
     let actor = Actor::agent(name.clone());
 
-    let now = now_ms();
-    let mut store = Store::open(&Store::default_path())?;
-    store.ensure_default(now)?;
-    store.sweep(now)?;
+    let mut be = Backend::open()?;
 
     if sub == "boards" {
-        let ws = store.read(|r| r.workspace(now))?;
+        let ws = be.workspace()?;
         let boards: Vec<(&ProjectInfo, &BoardInfo)> =
             ws.projects.iter().flat_map(|pr| pr.boards.iter().map(move |b| (pr, b))).collect();
         if json {
@@ -155,10 +152,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
         return Err(BoardError::code(ErrorCode::NoBoard));
     };
-    let board = store.read(|r| r.resolve(&raw))?;
-    let path = board.path();
-    let flow = store.read(|r| r.flow(&board))?;
-    let labels = store.read(|r| r.labels(&board.project))?;
+    let BoardData { path, flow, cards: all, labels, now } = be.board(&raw)?;
     let label_name = |id: i64| labels.iter().find(|l| l.id == id).map(|l| l.name.clone()).unwrap_or_default();
     let find_label = |name: &str| -> Result<i64> {
         let q = name.trim().to_lowercase();
@@ -173,17 +167,12 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             ))
         })
     };
-    let mut exec = |cmd: Cmd| -> Result<CardDetail> {
-        store.write(now, Origin::cli(), |w| {
-            let b = w.resolve(&path)?;
-            w.exec(&b, &actor, cmd)
-        })
-    };
+    let mut exec = |cmd: Cmd| -> Result<CardDetail> { be.exec(&path, &actor, cmd) };
     let fmt = Fmt { p, label_name: &label_name, path: &path, now, flow: &flow };
 
     let out = match sub {
         "flow" => {
-            let cards = store.read(|r| r.cards(&board))?;
+            let cards = &all;
             let count = |k: &str| cards.iter().filter(|c| c.column == k).count();
             if json {
                 Output::Json(Value::Array(
@@ -230,8 +219,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             };
             let label = a.value("--label").map(find_label).transpose()?;
             let q = a.value("--search").map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
-            let cards: Vec<Card> = store
-                .read(|r| r.cards(&board))?
+            let cards: Vec<Card> = all
                 .into_iter()
                 .filter(|c| column.as_ref().is_none_or(|col| &c.column == col))
                 .filter(|c| label.is_none_or(|l| c.labels.contains(&l)))
@@ -245,7 +233,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         }
         "show" => {
             let id = a.id(sub)?;
-            let d = store.read(|r| r.card(&board, id))?;
+            let d = be.card(&path, id)?;
             if json { Output::Json(fmt.full(&d)) } else { Output::Text(fmt.show(&d)) }
         }
         "new" => {
@@ -566,8 +554,9 @@ fn help(p: &Paint) -> String {
         format!("  {}默认是 todo  doing  review  done；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
         format!("  {}--as <名字>，或 export BOARD_AS=<名字>", p.dim("身份：")),
         format!("  {}--board <项目>/<白板>，或 export BOARD=<项目>/<白板>", p.dim("白板：")),
+        format!("  {}export BOARD_URL=<服务端地址> BOARD_TOKEN=<访问令牌>；不设置时直接读写本地数据库", p.dim("连接：")),
         format!("  {}所有命令都支持 --json；被拒绝时退出码为 1，并给出错误码", p.dim("输出：")),
-        format!("  {}{}（BOARD_DB 可指定）", p.dim("数据："), Store::default_path().display()),
+        format!("  {}{}", p.dim("数据："), Backend::describe()),
         String::new(),
     ]);
     out.join("\n")

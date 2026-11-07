@@ -17,12 +17,18 @@ pub enum ErrorCode {
     NotHolder,
     ForbiddenColumn,
     Usage,
+    /// 连接服务端时没有登录：没有会话也没有令牌，或令牌不能用于这个操作
+    NotLoggedIn,
+    /// 访问令牌不存在或已吊销
+    InvalidToken,
+    /// CLI 连不上 BOARD_URL 指定的服务端
+    Unreachable,
     /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
     Internal,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 11] = [
+    pub const ALL: [ErrorCode; 14] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -34,6 +40,9 @@ impl ErrorCode {
         ErrorCode::NotHolder,
         ErrorCode::ForbiddenColumn,
         ErrorCode::Usage,
+        ErrorCode::NotLoggedIn,
+        ErrorCode::InvalidToken,
+        ErrorCode::Unreachable,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -49,8 +58,16 @@ impl ErrorCode {
             ErrorCode::NotHolder => "NOT_HOLDER",
             ErrorCode::ForbiddenColumn => "FORBIDDEN_COLUMN",
             ErrorCode::Usage => "USAGE",
+            ErrorCode::NotLoggedIn => "NOT_LOGGED_IN",
+            ErrorCode::InvalidToken => "INVALID_TOKEN",
+            ErrorCode::Unreachable => "UNREACHABLE",
             ErrorCode::Internal => "INTERNAL",
         }
+    }
+
+    /// 从错误码文本还原（CLI 远程模式读取服务端返回的错误）
+    pub fn parse(s: &str) -> Option<ErrorCode> {
+        ErrorCode::ALL.into_iter().chain([ErrorCode::Internal]).find(|c| c.as_str() == s)
     }
 
     /// 默认原因
@@ -67,6 +84,9 @@ impl ErrorCode {
             ErrorCode::NotHolder => "被持有的卡片只有持有者能编辑和移动",
             ErrorCode::ForbiddenColumn => "不允许移入这个状态",
             ErrorCode::Usage => "命令格式或参数不正确",
+            ErrorCode::NotLoggedIn => "未登录：网页端请先用 GitHub 登录；CLI 连接服务端时设置 BOARD_TOKEN",
+            ErrorCode::InvalidToken => "访问令牌无效或已吊销：在界面「设置 → Agent 接入」里新建令牌",
+            ErrorCode::Unreachable => "连不上 Board 服务端（BOARD_URL）",
             ErrorCode::Internal => "内部错误",
         }
     }

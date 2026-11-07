@@ -1,11 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "界面窗口：顶栏拖动窗口、双击最大化",
-  "windows": ["*"],
+  "description": "界面窗口（线上的 Board 页面）：顶栏拖动窗口、双击最大化",
+  "windows": [
+    "*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize"
-  ]
+  ],
+  "remote": {
+    "urls": [
+      "https://board.buglan.com/*",
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*"
+    ]
+  }
 }
