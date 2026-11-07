@@ -612,10 +612,6 @@ function ProjectsSide() {
           </div>
         )}
       </div>
-      <div className="side-hint">
-        <Icon name="move" />
-        <span>点白板打开。右侧画布里可以拖动节点、缩放，双击空白处新建项目。</span>
-      </div>
     </section>
   );
 }
