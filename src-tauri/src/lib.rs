@@ -6,9 +6,11 @@
 //!   交回窗口，见 [`login`]。会话 Cookie 保存在 webview 里，所有窗口共用
 //! - 顶栏即标题栏，按住顶栏空白处拖动窗口：
 //!   macOS 交通灯叠在顶栏左侧；Windows 去掉系统标题栏和菜单栏，最小化 / 最大化 / 关闭由界面画在顶栏右侧
+//! - 设置页新建令牌后，可以一键把 BOARD_URL、BOARD_TOKEN 写成长期生效的环境变量，见 [`env`]
 //! - 新建窗口（⌘⇧N / Ctrl+Shift+N）：每个窗口可以打开不同的白板。macOS 在「文件」菜单里；Windows 没有菜单栏，
 //!   由界面响应快捷键，命令面板里也有
 
+mod env;
 mod login;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -135,6 +137,15 @@ async fn new_window(app: AppHandle) -> Result<(), String> {
     open_window(&app).map_err(|e| e.to_string())
 }
 
+/// 设置页新建令牌后「一键写入环境变量」：BOARD_URL 用外壳打开的地址，令牌由页面传入（见 [`env`]）
+#[tauri::command]
+async fn set_board_env(app: AppHandle, token: String) -> Result<env::Written, String> {
+    let url = env::origin_of(&app.state::<Board>().0)?;
+    tauri::async_runtime::spawn_blocking(move || env::write(&url, token.trim()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// 页面已经画好窗口按钮（只在 Windows 上有意义）
 #[tauri::command]
 fn window_ready(window: WebviewWindow) {
@@ -156,7 +167,7 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     let builder = builder.manage(custom_titlebar::Ready::default());
     builder
-        .invoke_handler(tauri::generate_handler![desktop_login, new_window, window_ready])
+        .invoke_handler(tauri::generate_handler![desktop_login, new_window, window_ready, set_board_env])
         .setup(|app| {
             let handle = app.handle();
             // Windows 不设菜单栏：顶栏就是标题栏，编辑快捷键由 webview 自己处理
