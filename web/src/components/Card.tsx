@@ -152,20 +152,15 @@ export const CardView = memo(function CardView({
             </div>
           )}
           {doing && (
-            <>
-              <div className="card-claim">
-                <Avatar actor={agent(c.holder!)} />
-                <span className="claim-name">{c.holder}</span>
-                {beat != null && <span className="beat" data-tip={`心跳正常 · ${beat} 秒前`} aria-label="心跳正常" />}
-                <span className="claim-timer" title="剩余领取时间">
-                  <Ring r={5} p={left / CLAIM_MS} />
-                  <span className="t">{mmss(left)}</span>
-                </span>
-              </div>
-              <div className="card-bar">
-                <i style={{ ['--p' as string]: Math.max(0, Math.min(1, left / CLAIM_MS)).toFixed(4) }} />
-              </div>
-            </>
+            <div className="card-claim">
+              <Avatar actor={agent(c.holder!)} />
+              <span className="claim-name">{c.holder}</span>
+              {beat != null && <span className="beat" data-tip={`心跳正常 · ${beat} 秒前`} aria-label="心跳正常" />}
+              <span className="claim-timer" title="剩余领取时间">
+                <Ring r={5} p={left / CLAIM_MS} />
+                <span className="t">{mmss(left)}</span>
+              </span>
+            </div>
           )}
         </>
       )}
