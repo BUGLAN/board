@@ -110,14 +110,20 @@
 }
 .claim-who b { display: block; font-family: var(--f-mono); font-size: 14px; font-weight: 500; }
 .claim-who span { font-size: 12px; color: var(--text-3); }
-.big-ring { position: relative; width: 64px; height: 64px; }
-.big-ring svg { width: 64px; height: 64px; transform: rotate(-90deg); }
-.big-ring circle { fill: none; stroke-width: 4; }
-.big-ring .track { stroke: var(--line-2); }
-.big-ring .bar { stroke: var(--ac); stroke-linecap: round; transition: stroke-dashoffset .4s linear, stroke var(--dur-3); }
-.big-ring .t { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--f-mono); font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.claim-card.urgent .big-ring .bar { stroke: var(--danger); }
-.claim-card.urgent .big-ring .t { color: var(--danger); }
+.claim-card.late { --ac: var(--warn); }
+.claim-card.idle { --ac: var(--text-3); }
+.claim-ic { width: 40px; height: 40px; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); }
+.claim-ic svg { width: 18px; height: 18px; }
+.claim-big { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-family: var(--f-mono); font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.claim-big > span:first-child { font-family: var(--f-sans); font-size: 11px; font-weight: 400; color: var(--text-3); }
+.run-stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.run-stats div { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--surface-2) 80%, transparent); box-shadow: inset 0 0 0 1px var(--line); }
+.run-stats span { font-size: 11px; color: var(--text-3); }
+.run-stats b { font-family: var(--f-mono); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.run-stats b.bad { color: var(--danger); }
+/* 动态里的耗时标签 */
+.run-chip { margin-left: 6px; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-family: var(--f-mono); font-size: 10.5px; color: var(--text-2); background: var(--surface-3); white-space: nowrap; vertical-align: 1px; }
+.run-chip.bad { color: var(--danger); background: var(--danger-soft); }
 .claim-card .release { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding-top: 12px; margin-top: 2px; border-top: 1px dashed var(--line-2); font-size: 12px; color: var(--text-3); }
 .claim-card .release .btn { margin-left: auto; }
 

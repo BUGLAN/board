@@ -82,9 +82,16 @@ export interface Card {
   column: ColumnKey;
   holder: string | null;
   claimedAt: number | null;
-  expiresAt: number | null;
-  /** 最近一次心跳；持有者没在发心跳时为空 */
+  /** 最近一次心跳（发了 final 之后是 final 的时间）；还没开始心跳时为空 */
   beatAt: number | null;
+  /** 这一次的开始时间（第一次心跳）；没有进行中的一次时为空 */
+  runStartedAt: number | null;
+  /** 已经结束的各次耗时之和（毫秒），不含进行中的这一次 */
+  workMs: number;
+  /** 做过几次（含进行中的这一次） */
+  runs: number;
+  /** 其中几次是异常退出 */
+  runsLost: number;
   labels: number[];
   createdAt: number;
   updatedAt: number;

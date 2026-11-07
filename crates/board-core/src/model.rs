@@ -3,12 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// 领取时长：30 分钟（PRD §8 规则 1）
-pub const CLAIM_MS: i64 = 30 * 60 * 1000;
-
-/// 心跳间隔：agent 用 skill 里的脚本每 10 秒发送一次 `board beat`
+/// 心跳间隔：agent 领取后用 skill 里的脚本每 10 秒发送一次 `board beat`（PRD §8 规则 1）
 pub const BEAT_MS: i64 = 10 * 1000;
-/// 连续这么多次没收到心跳，判定 agent 异常退出
+/// 连续这么多次没收到心跳（从领取或最近一次心跳算起），领取释放（PRD §8 规则 7）
 pub const BEAT_MISSES: i64 = 5;
 
 /// 项目颜色色板
@@ -295,9 +292,16 @@ pub struct Card {
     pub column: String,
     pub holder: Option<String>,
     pub claimed_at: Option<i64>,
-    pub expires_at: Option<i64>,
-    /// 最近一次心跳；持有者没在发心跳（或已经发了 final）时为空
+    /// 最近一次心跳（发了 final 之后是 final 的时间）；还没开始心跳时为空
     pub beat_at: Option<i64>,
+    /// 这一次的开始时间（第一次心跳）；没有进行中的一次时为空
+    pub run_started_at: Option<i64>,
+    /// 已经结束的各次耗时之和（毫秒），不含进行中的这一次
+    pub work_ms: i64,
+    /// 做过几次（含进行中的这一次）
+    pub runs: i64,
+    /// 其中几次是异常退出
+    pub runs_lost: i64,
     /// 标签 ID（属于白板所在的项目）
     pub labels: Vec<i64>,
     pub created_at: i64,

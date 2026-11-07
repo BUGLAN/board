@@ -5,11 +5,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newBoard, openBoard, openCard } from '../lib/actions';
 import { startWindowDrag, toggleMaximize } from '../lib/platform';
-import { CLAIM_MS, boardFlow, flowOf } from '../lib/schema';
-import { agentColor, cx, MOD, mmss, reduceMotion } from '../lib/util';
+import { boardFlow, flowOf, timing } from '../lib/schema';
+import { agentColor, clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
-import { Avatar, ProjectAvatar, Ring, agent, useNow } from './bits';
+import { Avatar, ProjectAvatar, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { WindowControls } from './WindowControls';
 
@@ -60,18 +60,20 @@ function Presence() {
   return (
     <div className="presence" aria-label="正在工作的 agent">
       {holders.map((c, i) => {
-        const left = (c.expiresAt ?? 0) - now;
+        const t = timing(c, now);
         return (
+          // 悬停时展开：头像右边滑出这一次的耗时
           <span
             key={c.holder}
-            className={cx('p-item', left < 5 * 60e3 && 'urgent')}
+            className={cx('pres-item', t.beat)}
             style={{ ['--c' as string]: agentColor(c.holder!), ['--k' as string]: holders.length - 1 - i }}
-            data-tip={`${c.holder} 正在做 #${c.id} · 剩余 ${mmss(left)}`}
+            data-tip={`${c.holder} 正在做 #${c.id}${t.runs > 1 ? ` · 累计 ${clock(t.total)}（${t.runs} 次）` : ''}`}
             data-tip-align="end"
             onClick={() => openCard(c.id)}
           >
             <Avatar actor={agent(c.holder!)} />
-            <Ring r={15} p={left / CLAIM_MS} className="ring" />
+            <i className="pres-pulse" />
+            <span className="pres-time">{t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
           </span>
         );
       })}

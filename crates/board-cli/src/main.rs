@@ -299,12 +299,16 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             if json {
                 Output::Json(fmt.full(&d))
             } else {
-                let exp = d.card.expires_at.map(hhmm).unwrap_or_default();
                 Output::Text(format!(
-                    "{} {}  {}\n\n{}",
+                    "{} {}  {}\n{}\n\n{}",
                     p.green("✓"),
                     p.bold("已领取"),
-                    p.dim(&format!("进入「{}」，到期 {exp}（30 分钟）", flow.name(&d.card.column))),
+                    p.dim(&format!("进入「{}」", flow.name(&d.card.column))),
+                    p.yellow(&format!(
+                        "马上开始心跳（skill 里的 scripts/heartbeat.sh start {}）：{} 秒内没收到心跳，领取会被释放",
+                        d.card.id,
+                        BEAT_MS * BEAT_MISSES / 1000
+                    )),
                     fmt.show(&d)
                 ))
             }
@@ -326,7 +330,13 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             if json {
                 Output::Json(fmt.full(&d))
             } else if done {
-                Output::Text(format!("{} {} 心跳已结束\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id))))
+                let total = d.card.work_ms;
+                Output::Text(format!(
+                    "{} {} 心跳已结束{}\n",
+                    p.green("✓"),
+                    p.cyan(&format!("#{}", d.card.id)),
+                    if d.card.runs > 0 { p.dim(&format!("  累计 {}（{} 次）", clock(total), d.card.runs)) } else { String::new() }
+                ))
             } else {
                 Output::Text(format!("{} {} 心跳{}\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id)), fmt.renewed(&d, &name)))
             }
@@ -463,9 +473,15 @@ fn iso(ms: Option<i64>) -> Value {
     }
 }
 
-fn mmss(ms: i64) -> String {
-    let ms = ms.max(0);
-    format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60)
+/// 耗时：12:34 / 1:02:03
+fn clock(ms: i64) -> String {
+    let t = ms.max(0) / 1000;
+    let (h, m, s) = (t / 3600, t % 3600 / 60, t % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 impl Fmt<'_> {
@@ -509,8 +525,13 @@ impl Fmt<'_> {
             "body": c.body,
             "holder": c.holder,
             "claimed_at": iso(c.claimed_at),
-            "expires_at": iso(c.expires_at),
             "beat_at": iso(c.beat_at),
+            "run_started_at": iso(c.run_started_at),
+            "work": {
+                "total_ms": c.work_ms + c.run_started_at.map(|t| (self.now - t).max(0)).unwrap_or(0),
+                "runs": c.runs,
+                "lost": c.runs_lost,
+            },
             "labels": self.labels(c),
             "attachments": d.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
             "created_at": iso(Some(c.created_at)),
@@ -526,9 +547,10 @@ impl Fmt<'_> {
         })
     }
 
+    /// 自己持有的卡片：追加「本次 12:34」
     fn renewed(&self, d: &CardDetail, me: &str) -> String {
-        match (&d.card.holder, d.card.expires_at) {
-            (Some(h), Some(exp)) if h == me => self.p.dim(&format!("  领取续期至 {}", hhmm(exp))),
+        match (&d.card.holder, d.card.run_started_at) {
+            (Some(h), Some(t)) if h == me => self.p.dim(&format!("  本次 {}", clock(self.now - t))),
             _ => String::new(),
         }
     }
@@ -577,11 +599,17 @@ impl Fmt<'_> {
         if !c.labels.is_empty() {
             s += &format!("{}{}\n", row("标签"), p.magenta(&self.tags(c)));
         }
-        if let (Some(h), Some(exp)) = (&c.holder, c.expires_at) {
+        if let Some(h) = &c.holder {
             s += &format!("{}{}\n", row("持有者"), p.yellow(h));
-            let left = exp - self.now;
-            let rest = format!("  剩余 {}", mmss(left));
-            s += &format!("{}{}{}\n", row("到期"), hhmm(exp), if left < 5 * 60_000 { p.red(&rest) } else { p.dim(&rest) });
+            match c.run_started_at {
+                Some(t) => s += &format!("{}{}{}\n", row("本次"), clock(self.now - t), p.dim(&format!("  第 {} 次，第一次心跳 {}", c.runs, hhmm(t)))),
+                None => s += &format!("{}{}\n", row("心跳"), p.red("还没开始：领取后 50 秒内没收到心跳会被释放")),
+            }
+        }
+        if c.runs > 0 {
+            let total = c.work_ms + c.run_started_at.map(|t| (self.now - t).max(0)).unwrap_or(0);
+            let lost = if c.runs_lost > 0 { format!("，其中 {} 次异常退出", c.runs_lost) } else { String::new() };
+            s += &format!("{}{}{}\n", row("累计"), clock(total), p.dim(&format!("  共 {} 次{lost}", c.runs)));
         }
         if c.body.is_empty() {
             s += &format!("{}{}\n", row("描述"), p.dim("（空）"));
@@ -624,7 +652,7 @@ fn help(p: &Paint) -> String {
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）"),
         ("claim", "[<ID>]", "领取；不带 ID 时领取领取起点最上面的卡片"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
-        ("beat", "<ID> [--final]", "心跳：表明还在做（续期领取）；--final 正常结束。一般由 skill 里的脚本每 10 秒调用"),
+        ("beat", "<ID> [--final]", "心跳：领取后每 10 秒一次，50 秒没收到就释放；--final 正常结束并记下本次耗时。由 skill 里的脚本调用"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）"),
         ("labels", "", "列出项目的标签，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),

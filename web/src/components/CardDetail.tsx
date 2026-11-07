@@ -5,17 +5,18 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
-import { BEAT_MISSES, BEAT_MS, beatAge, boardFlow, CLAIM_MS } from '../lib/schema';
+import { BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, MOD, mmss, replay } from '../lib/util';
+import { actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, MOD, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
-import { Avatar, LabelChip, Markdown, Ring, agent, useNow } from './bits';
+import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
+import { RunPill } from './Card';
 import { Icon, type IconName } from './Icon';
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
-  beat: 'renew', lost: 'alert',
+  beat: 'timer', lost: 'alert',
 };
 
 export function CardDetail() {
@@ -520,9 +521,29 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
       </section>
     );
   }
-  if (!c.holder) return null;
-  const left = (c.expiresAt ?? 0) - now;
-  const beat = beatAge(c, now);
+  const t = timing(c, now);
+  if (!c.holder) {
+    // 做过、现在没人在做：只显示耗时
+    if (!t.runs) return null;
+    return (
+      <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
+        <div className="claim-card idle">
+          <span className="claim-ic">
+            <Icon name="timer" />
+          </span>
+          <div className="claim-who">
+            <b>耗时</b>
+            <span>{t.runs} 次领取的耗时之和</span>
+          </div>
+          <div className="claim-big">
+            <span>累计</span>
+            {clock(t.total)}
+          </div>
+          <RunStats t={t} />
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
       <div className="lock-note" style={{ marginBottom: 10 }}>
@@ -531,29 +552,23 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
           「进行中」的卡片只有持有者 <b className="mono">{c.holder}</b> 能编辑和移动。你仍可以评论、加或去标签，或强制释放让它回到待办。
         </div>
       </div>
-      <div className={cx('claim-card', left < 5 * 60e3 && 'urgent')} style={{ ['--ac' as string]: agentColor(c.holder) }}>
+      <div className={cx('claim-card', t.beat === 'late' && 'late')} style={{ ['--ac' as string]: agentColor(c.holder) }}>
         <Avatar actor={agent(c.holder)} className="lg" />
         <div className="claim-who">
           <b>{c.holder}</b>
           <span>
-            领取于 {hhmm(c.claimedAt || c.updatedAt)} · 到期 <span className="exp">{c.expiresAt ? hhmm(c.expiresAt) : '--:--'}</span>
-            {beat != null && (
-              <>
-                {' · '}
-                <span className="beat" aria-hidden="true" /> 心跳 {beat} 秒前
-              </>
-            )}
+            领取于 {hhmm(c.claimedAt || c.updatedAt)}
+            {c.runStartedAt != null && <> · 第一次心跳 {hhmm(c.runStartedAt)}</>}
           </span>
         </div>
-        <div className="big-ring">
-          <Ring r={27} p={left / CLAIM_MS} />
-          <span className="t">{mmss(left)}</span>
+        <div className="claim-big">
+          <span>{t.runs > 0 ? `第 ${t.runs} 次` : '本次'}</span>
+          <RunPill card={c} now={now} big />
         </div>
+        <RunStats t={t} />
         <div className="release">
           <span>
-            {beat != null
-              ? `持有者每 ${BEAT_MS / 1000} 秒发一次心跳并续期；连续 ${BEAT_MISSES} 次没收到判定异常退出，卡片回到领取起点`
-              : '持有者评论、编辑或再次 claim 会续期 30 分钟'}
+            持有者每 {BEAT_MS / 1000} 秒发一次心跳；连续 {BEAT_MISSES} 次没收到判定异常退出，卡片回到领取起点
           </span>
           <button
             className="btn sm danger"
@@ -573,6 +588,26 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/** 累计 / 领取次数 / 异常退出 */
+function RunStats({ t }: { t: ReturnType<typeof timing> }) {
+  return (
+    <div className="run-stats">
+      <div>
+        <span>累计</span>
+        <b>{clock(t.total)}</b>
+      </div>
+      <div>
+        <span>领取次数</span>
+        <b>{t.runs}</b>
+      </div>
+      <div>
+        <span>异常退出</span>
+        <b className={cx(t.lost > 0 && 'bad')}>{t.lost}</b>
+      </div>
+    </div>
   );
 }
 
@@ -706,13 +741,21 @@ function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: bool
       </div>
     );
   }
+  // 「…，第 N 次耗时 X」从文字里拿出来，做成末尾的耗时标签
+  const run = a.text.match(/^(.*?)[，,]\s*第 (\d+) 次耗时(约)? ?([^，]+)(.*)$/);
   return (
     <div className={cx('tl-item', fresh && 'new')}>
       <div className={`tl-icon k-${a.action}`}>
         <Icon name={ACT_ICON[a.action] || 'info'} />
       </div>
       <div className="tl-sys">
-        {name} {a.text} {time}
+        {name} {run ? run[1] + run[5] : a.text} {time}
+        {run && (
+          <span className={cx('run-chip', a.action === 'lost' && 'bad')}>
+            第 {run[2]} 次 · {run[3] ?? ''}
+            {run[4]}
+          </span>
+        )}
       </div>
     </div>
   );

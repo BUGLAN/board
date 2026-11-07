@@ -33,11 +33,17 @@ export const hhmm = (t: number) => {
   const d = new Date(t);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
-export const mmss = (ms: number) => {
-  ms = Math.max(0, ms);
-  const m = Math.floor(ms / 60000);
-  const s = Math.floor(ms / 1000) % 60;
-  return `${pad2(m)}:${pad2(s)}`;
+/** 计时：12:34 / 1:02:03 */
+export const clock = (ms: number) => {
+  const t = Math.floor(Math.max(0, ms) / 1000);
+  const h = Math.floor(t / 3600);
+  return h ? `${h}:${pad2(Math.floor((t % 3600) / 60))}:${pad2(t % 60)}` : `${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`;
+};
+/** 文字：23 分 10 秒 / 1 小时 5 分 / 8 秒（与 board-core 的 dur_words 一致） */
+export const durWords = (ms: number) => {
+  const t = Math.floor(Math.max(0, ms) / 1000);
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  return h ? `${h} 小时 ${m} 分` : m ? `${m} 分 ${s} 秒` : `${s} 秒`;
 };
 export function ago(t: number, now: number) {
   const d = Math.max(0, now - t);

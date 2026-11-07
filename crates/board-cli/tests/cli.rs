@@ -85,7 +85,12 @@ fn ac1_claim_json_returns_full_card() {
     assert_eq!(c["id"], 1);
     assert_eq!(c["column"], "doing");
     assert_eq!(c["holder"], "alpha");
-    assert!(c["expires_at"].is_string());
+    assert!(c["claimed_at"].is_string());
+    assert!(c["run_started_at"].is_null(), "第一次心跳才开始计时");
+    // 心跳：开始第 1 次
+    let r = board(&db, ALPHA, &["beat", "1", "--json"]);
+    assert!(r.json()["run_started_at"].is_string());
+    assert_eq!(r.json()["work"]["runs"], 1);
     assert!(c["activity"].as_array().unwrap().len() >= 2);
     // --search 在描述里查找
     let r = board(&db, ALPHA, &["ls", "--search", "GH#140", "--json"]);

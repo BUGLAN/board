@@ -9,8 +9,8 @@ import { api } from '../lib/api';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { useMasonry } from '../lib/masonry';
 import type { Label } from '../lib/types';
-import { boardFlow, flowOf } from '../lib/schema';
-import { cx, mmss, ago, agentColor, pref, replay } from '../lib/util';
+import { boardFlow, flowOf, timing } from '../lib/schema';
+import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, ProjectAvatar, Title, agent, useNow } from './bits';
@@ -172,7 +172,7 @@ function SideFilter({ value, onChange, placeholder }: { value: string; onChange:
 const OP: Record<string, string> = {
   create: '新建了', edit: '编辑了', move: '移动了', reorder: '调整了顺序', claim: '领取了', renew: '续期了',
   comment: '评论了', timeout: '超时释放了', release: '强制释放了', delete: '删除了', label: '改了标签',
-  beat: '更新了心跳状态', lost: '心跳中断，释放了',
+  beat: '心跳', lost: '心跳中断，释放了',
 };
 
 function Section({ id, title, n, closed, onToggle, children }: { id: string; title: string; n?: number; closed: boolean; onToggle: (id: string) => void; children: ReactNode }) {
@@ -357,7 +357,7 @@ function BoardSide() {
         <Section id="working" title="正在工作" n={holders.length} closed={closed.has('working')} onToggle={toggle}>
           {holders.length ? (
             holders.map(c => {
-              const left = (c.expiresAt ?? 0) - now;
+              const t = timing(c, now);
               return (
                 <button
                   key={c.id}
@@ -373,7 +373,10 @@ function BoardSide() {
                     </span>{' '}
                     · #{c.id} <Title text={c.title} />
                   </span>
-                  <span className={cx('tm', left < 5 * 60e3 && 'urgent')}>{mmss(left)}</span>
+                  <span className={cx('tm run-tm', t.beat)} title="这一次的耗时">
+                    <i className="beat" />
+                    {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
+                  </span>
                 </button>
               );
             })

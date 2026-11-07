@@ -24,7 +24,7 @@ import {
 
 const OP_LABEL: Record<string, string> = {
   create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论',
-  timeout: '超时释放', release: '强制释放', label: '标签', delete: '删除',
+  timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除',
 };
 
 const PAGE: Record<Tab, 'board' | 'canvas' | 'settings'> = { board: 'board', inbox: 'board', projects: 'canvas', settings: 'settings' };
@@ -101,7 +101,7 @@ function BoardApp() {
   useSideSlide(side);
   useEffect(() => installCardInteractions(), []);
 
-  // 通过 CLI、其他窗口或超时释放的修改：卡片短暂高亮，并标出是谁做的
+  // 通过 CLI、其他窗口或心跳中断释放的修改：卡片短暂高亮，并标出是谁做的
   useEffect(
     () =>
       onEvents(events => {
@@ -111,19 +111,20 @@ function BoardApp() {
             const color = ev.actor.kind === 'agent' ? agentColor(ev.actor.name) : ev.actor.kind === 'system' ? 'var(--danger)' : 'var(--brand)';
             const who = ev.actor.kind === 'agent' ? `${agentGlyph(ev.actor.name)} ${ev.actor.name}` : ev.actor.kind === 'system' ? '⏱ 系统' : '另一个窗口';
             if (ev.op !== 'delete') flash(ev.cardId, color, `${who}${ev.via === 'cli' ? ' · CLI' : ''} · ${OP_LABEL[ev.op] || ev.op}`);
-            if (ev.op === 'timeout')
+            // 心跳中断（异常退出）或没开始心跳：服务端写好的原因直接给人看
+            if (ev.op === 'timeout' || ev.op === 'lost')
               toast({
                 type: 'info',
-                title: `#${ev.cardId} 领取超时，已自动释放`,
-                text: `${ev.text.replace(/^.*（原持有者 (.+)）$/, '$1')} 没有在 30 分钟内续期，卡片回到「待办」最上面。`,
+                title: ev.op === 'lost' ? `#${ev.cardId} 心跳中断，判定异常退出` : `#${ev.cardId} 领取已释放`,
+                text: ev.text,
               });
-          } else if (ev.op === 'timeout') {
+          } else if (ev.op === 'timeout' || ev.op === 'lost') {
             const m = boardMeta(ws, ev.board);
             if (m)
               toast({
                 type: 'info',
-                title: `「${m.project.name} / ${m.board.name}」#${ev.cardId} 领取超时`,
-                text: '卡片已回到那块白板「待办」最上面。',
+                title: `「${m.project.name} / ${m.board.name}」#${ev.cardId} ${ev.op === 'lost' ? '心跳中断' : '领取已释放'}`,
+                text: ev.text,
                 action: { label: '打开', fn: () => openBoard(ev.board) },
               });
           }

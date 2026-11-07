@@ -6,7 +6,7 @@
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::*;
-use crate::store::{hhmm, W};
+use crate::store::W;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
@@ -167,9 +167,6 @@ impl<'a> W<'a> {
                         changes.push("修改了描述".into());
                     }
                 }
-                if is_holder(&r) {
-                    self.renew(b, id)?; // 规则 6
-                }
                 for text in changes {
                     self.track(b, id, actor, "edit", &text)?;
                 }
@@ -218,11 +215,7 @@ impl<'a> W<'a> {
                 if from != to {
                     // 规则 8：离开锁定状态即释放
                     let released = r.holder.is_some() && !flow.is_lock(&to);
-                    if released {
-                        self.clear_claim(b, id)?;
-                    } else if is_holder(&r) {
-                        self.renew(b, id)?;
-                    }
+                    let run = if released { self.clear_claim(b, id, "move")? } else { None };
                     let text = if from == INBOX {
                         format!("整理好了，从「{INBOX_NAME}」移到「{}」", flow.name(&to))
                     } else {
@@ -230,14 +223,11 @@ impl<'a> W<'a> {
                             "从「{}」移到「{}」{}",
                             flow.name(&from),
                             flow.name(&to),
-                            if released { "，领取已释放" } else { "" }
+                            if released { format!("，领取已释放{}", took(run)) } else { String::new() }
                         )
                     };
                     self.track(b, id, actor, "move", &text)?;
                 } else if old != new {
-                    if is_holder(&r) {
-                        self.renew(b, id)?;
-                    }
                     let text = format!("调整了在「{}」中的顺序（第 {} → {} 位）", flow.name(&to), old + 1, new + 1);
                     self.track(b, id, actor, "reorder", &text)?;
                 }
@@ -275,10 +265,8 @@ impl<'a> W<'a> {
                     }
                     Some(id) => {
                         let r = self.row(b, id)?;
-                        // 再次领取自己持有的卡片 = 续期（规则 6）
+                        // 再次领取自己持有的卡片：已经是你的，什么也不做
                         if is_holder(&r) {
-                            let exp = self.renew(b, id)?;
-                            self.track(b, id, actor, "renew", &format!("重新领取，到期时间续至 {}", hhmm(exp)))?;
                             return self.read().card(board, id);
                         }
                         if r.col != start.key {
@@ -297,24 +285,20 @@ impl<'a> W<'a> {
                     return Err(BoardError::new(ErrorCode::ForbiddenColumn, "工作流里没有锁定状态，无法领取"));
                 };
                 self.place(b, target, Some(&start.key), &dest.key, At::Bottom)?;
-                let exp = self.now + CLAIM_MS;
                 self.tx.execute(
-                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = ?3 WHERE board = ?4 AND id = ?5",
-                    params![actor.name, self.now, exp, b, target],
+                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = NULL, beat_at = NULL WHERE board = ?3 AND id = ?4",
+                    params![actor.name, self.now, b, target],
                 )?;
-                self.track(b, target, actor, "claim", &format!("领取了卡片，进入「{}」，到期 {}", dest.name, hhmm(exp)))?;
+                self.track(b, target, actor, "claim", &format!("领取了卡片，进入「{}」", dest.name))?;
                 target
             }
 
             /* ---------------- 评论 ---------------- */
             Cmd::Comment { id, text } => {
-                let r = self.row(b, id)?;
+                self.row(b, id)?; // 卡片要存在
                 let text = text.trim().to_string();
                 if text.is_empty() {
                     return Err(BoardError::usage("评论内容不能为空"));
-                }
-                if is_holder(&r) {
-                    self.renew(b, id)?; // 规则 6
                 }
                 self.bind_attachments(b, id, &text)?;
                 self.track(b, id, actor, "comment", &text)?;
@@ -352,20 +336,20 @@ impl<'a> W<'a> {
             }
 
             /* ---------------- 心跳（仅 agent） ----------------
-               第一次心跳记一条动态，之后只更新 beat_at 并续期，不记动态。
-               final：持有者正常结束心跳；卡片已经不归自己（例如已交审）时什么也不做 */
+               持有者每 10 秒发一次。没有进行中的一次时，这一次心跳就是开始（记一条动态）；
+               final：这一次结束（记耗时），之后 50 秒内要交审或放回，否则释放。
+               卡片已经不归自己（例如已交审）时 final 什么也不做 */
             Cmd::Beat { id, done } => {
                 if !actor.is_agent() {
                     return Err(BoardError::usage("心跳只能由 agent 通过 CLI 发送"));
                 }
                 let r = self.row(b, id)?;
-                let beating: Option<i64> =
-                    self.tx.query_row("SELECT beat_at FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
                 if done {
-                    if is_holder(&r) && beating.is_some() {
-                        self.tx.execute("UPDATE cards SET beat_at = NULL WHERE board = ?1 AND id = ?2", params![b, id])?;
-                        self.changed = true;
-                        self.track(b, id, actor, "beat", "结束了心跳，正常退出")?;
+                    if is_holder(&r) {
+                        if let Some((n, ms)) = self.close_run(b, id, self.now, "final")? {
+                            self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+                            self.track(b, id, actor, "beat", &format!("结束了心跳，正常退出，第 {n} 次耗时 {}", dur_words(ms)))?;
+                        }
                     }
                     return self.read().card(board, id);
                 }
@@ -377,14 +361,28 @@ impl<'a> W<'a> {
                     return Err(BoardError::new(ErrorCode::NotHolder, msg));
                 }
                 self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
-                self.renew(b, id)?;
-                if beating.is_none() {
+                self.changed = true;
+                let open: bool = self.tx.query_row(
+                    "SELECT COUNT(*) > 0 FROM card_runs WHERE board = ?1 AND card = ?2 AND ended_at IS NULL",
+                    params![b, id],
+                    |r| r.get(0),
+                )?;
+                if !open {
+                    let n: i64 = self.tx.query_row(
+                        "SELECT COUNT(*) + 1 FROM card_runs WHERE board = ?1 AND card = ?2",
+                        params![b, id],
+                        |r| r.get(0),
+                    )?;
+                    self.tx.execute(
+                        "INSERT INTO card_runs (board, card, n, agent, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![b, id, n, actor.name, self.now],
+                    )?;
                     self.track(
                         b,
                         id,
                         actor,
                         "beat",
-                        &format!("开始发送心跳（每 {} 秒一次，连续 {BEAT_MISSES} 次没收到判定异常退出）", BEAT_MS / 1000),
+                        &format!("开始第 {n} 次（第一次心跳；每 {} 秒一次，连续 {BEAT_MISSES} 次没收到判定异常退出）", BEAT_MS / 1000),
                     )?;
                 }
                 return self.read().card(board, id);
@@ -401,8 +399,8 @@ impl<'a> W<'a> {
                 };
                 let start = flow.claim();
                 self.place(b, id, Some(&r.col), &start.key, At::Top)?;
-                self.clear_claim(b, id)?;
-                self.track(b, id, actor, "release", &format!("强制释放了 {who} 的领取，卡片回到「{}」最上面", start.name))?;
+                let run = self.clear_claim(b, id, "release")?;
+                self.track(b, id, actor, "release", &format!("强制释放了 {who} 的领取，卡片回到「{}」最上面{}", start.name, took(run)))?;
                 id
             }
 
@@ -420,35 +418,42 @@ impl<'a> W<'a> {
         self.read().card(board, id)
     }
 
-    /// 规则 7：释放这块白板上到期的领取，以及心跳中断（连续 5 次没收到）的领取，卡片回到领取起点最上面
+    /// 规则 7：从领取或最近一次心跳算起，连续 5 次（50 秒）没收到心跳，领取释放，卡片回到领取起点最上面
     pub(crate) fn sweep_board(&mut self, b: i64) -> Result<usize> {
         let gap = BEAT_MS * BEAT_MISSES;
-        // 最早到期的最后插入 → 位于最上面
-        let expired: Vec<(i64, Option<String>, String, bool)> = self.collect(
-            "SELECT id, holder, col, beat_at IS NOT NULL AND beat_at + ?3 <= ?2 FROM cards
-             WHERE board = ?1 AND holder IS NOT NULL
-               AND ((expires_at IS NOT NULL AND expires_at <= ?2) OR (beat_at IS NOT NULL AND beat_at + ?3 <= ?2))
-             ORDER BY MIN(COALESCE(expires_at, beat_at + ?3), COALESCE(beat_at + ?3, expires_at)) DESC, id DESC",
+        // 最早断掉的最后插入 → 位于最上面
+        let due: Vec<(i64, String, String, Option<i64>)> = self.collect(
+            "SELECT id, holder, col, beat_at FROM cards
+             WHERE board = ?1 AND holder IS NOT NULL AND COALESCE(beat_at, claimed_at, 0) + ?3 <= ?2
+             ORDER BY COALESCE(beat_at, claimed_at, 0) DESC, id DESC",
             params![b, self.now, gap],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
-        if expired.is_empty() {
+        if due.is_empty() {
             return Ok(0);
         }
         let start = crate::store::flow_of(self.tx, b)?;
         let start = start.claim();
-        for (id, who, col, lost) in &expired {
+        for (id, who, col, beat) in &due {
             self.place(b, *id, Some(col), &start.key, At::Top)?;
-            self.clear_claim(b, *id)?;
-            let who = who.clone().unwrap_or_default();
-            if *lost {
-                let text = format!("连续 {BEAT_MISSES} 次没有收到 {who} 的心跳，判定异常退出，卡片回到「{}」最上面", start.name);
-                self.track(b, *id, &Actor::system(), "lost", &text)?;
-            } else {
-                self.track(b, *id, &Actor::system(), "timeout", &format!("领取超时，自动释放（原持有者 {who}）"))?;
-            }
+            // 进行中的这一次以最后一次心跳为结束
+            let run = match beat {
+                Some(t) => self.close_run(b, *id, *t, "lost")?,
+                None => None,
+            };
+            self.clear_claim(b, *id, "lost")?;
+            let back = format!("卡片回到「{}」最上面", start.name);
+            let (action, text) = match (run, beat) {
+                (Some((n, ms)), _) => (
+                    "lost",
+                    format!("连续 {BEAT_MISSES} 次没有收到 {who} 的心跳，判定异常退出，第 {n} 次耗时约 {}，{back}", dur_words(ms)),
+                ),
+                (None, Some(_)) => ("timeout", format!("{who} 结束心跳后 {} 秒内没有交审或放回，{back}", gap / 1000)),
+                (None, None) => ("timeout", format!("{who} 领取后 {} 秒内没有开始心跳，{back}", gap / 1000)),
+            };
+            self.track(b, *id, &Actor::system(), action, &text)?;
         }
-        Ok(expired.len())
+        Ok(due.len())
     }
 
     /* ---------------- 辅助 ---------------- */
@@ -515,21 +520,35 @@ impl<'a> W<'a> {
             .optional()?)
     }
 
-    /// 领取到期时间重新算为 30 分钟后
-    fn renew(&mut self, b: i64, id: i64) -> Result<i64> {
-        let exp = self.now + CLAIM_MS;
-        self.tx.execute("UPDATE cards SET expires_at = ?1 WHERE board = ?2 AND id = ?3", params![exp, b, id])?;
+    /// 结束进行中的这一次，返回（第几次，耗时）；没有进行中的一次时返回 None
+    pub(crate) fn close_run(&mut self, b: i64, id: i64, end: i64, how: &str) -> Result<Option<(i64, i64)>> {
+        let open: Option<(i64, i64)> = self
+            .tx
+            .query_row(
+                "SELECT n, started_at FROM card_runs WHERE board = ?1 AND card = ?2 AND ended_at IS NULL",
+                params![b, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((n, started)) = open else { return Ok(None) };
+        let end = end.max(started);
+        self.tx.execute(
+            "UPDATE card_runs SET ended_at = ?1, how = ?2 WHERE board = ?3 AND card = ?4 AND n = ?5",
+            params![end, how, b, id, n],
+        )?;
         self.changed = true;
-        Ok(exp)
+        Ok(Some((n, end - started)))
     }
 
-    pub(crate) fn clear_claim(&mut self, b: i64, id: i64) -> Result<()> {
+    /// 释放领取；进行中的这一次在现在结束。返回结束的那一次（第几次，耗时）
+    pub(crate) fn clear_claim(&mut self, b: i64, id: i64, how: &str) -> Result<Option<(i64, i64)>> {
+        let run = self.close_run(b, id, self.now, how)?;
         self.tx.execute(
             "UPDATE cards SET holder = NULL, claimed_at = NULL, expires_at = NULL, beat_at = NULL WHERE board = ?1 AND id = ?2",
             params![b, id],
         )?;
         self.changed = true;
-        Ok(())
+        Ok(run)
     }
 
     /// 标签必须属于白板所在的项目
@@ -585,4 +604,22 @@ fn dedup(v: &[i64]) -> Vec<i64> {
         }
     }
     out
+}
+
+/// 动态里的「，第 N 次耗时 X」
+fn took(run: Option<(i64, i64)>) -> String {
+    run.map(|(n, ms)| format!("，第 {n} 次耗时 {}", dur_words(ms))).unwrap_or_default()
+}
+
+/// 23 分 10 秒 / 1 小时 5 分 / 8 秒
+pub fn dur_words(ms: i64) -> String {
+    let t = ms.max(0) / 1000; // 与界面的计时一致：不足一秒的部分舍去
+    let (h, m, s) = (t / 3600, t % 3600 / 60, t % 60);
+    if h > 0 {
+        format!("{h} 小时 {m} 分")
+    } else if m > 0 {
+        format!("{m} 分 {s} 秒")
+    } else {
+        format!("{s} 秒")
+    }
 }

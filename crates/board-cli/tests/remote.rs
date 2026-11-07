@@ -113,7 +113,9 @@ fn remote_rules_and_exit_codes() {
     // 验收 1：领取最上面的卡片，进入「进行中」
     let c = s.run("alpha", &["claim", "--json"]).json();
     assert_eq!((c["id"].as_i64(), c["column"].as_str(), c["holder"].as_str()), (Some(1), Some("doing"), Some("alpha")));
-    assert!(c["expires_at"].is_string());
+    assert!(c["claimed_at"].is_string());
+    let c = s.run("alpha", &["beat", "1", "--json"]).json();
+    assert_eq!(c["work"]["runs"], 1);
     // 验收 3
     assert_eq!(s.run("alpha", &["claim", "--json"]).error_code(), "ALREADY_HOLDING");
     // 验收 4

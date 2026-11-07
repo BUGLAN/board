@@ -1,4 +1,4 @@
-import type { BoardSnapshot, ErrorCode, Status } from './types';
+import type { BoardSnapshot, Card, ErrorCode, Status } from './types';
 
 export const INBOX = 'inbox';
 export const INBOX_NAME = '未整理';
@@ -26,14 +26,28 @@ export function flowOf(statuses: Status[] | undefined | null) {
 export type FlowQ = ReturnType<typeof flowOf>;
 export const boardFlow = (b: BoardSnapshot | null) => flowOf(b?.statuses);
 
-/** 领取时长：30 分钟 */
-export const CLAIM_MS = 30 * 60 * 1000;
-/** 心跳间隔；连续 BEAT_MISSES 次没收到判定异常退出（与 board-core 一致） */
+/** 心跳间隔；从领取或最近一次心跳算起，连续 BEAT_MISSES 次没收到就释放（与 board-core 一致） */
 export const BEAT_MS = 10 * 1000;
 export const BEAT_MISSES = 5;
-/** 持有者正在发心跳时，距上次心跳的秒数；没在发心跳返回 null */
-export const beatAge = (c: { holder: string | null; beatAt: number | null }, now: number) =>
-  c.holder && c.beatAt != null && now - c.beatAt < BEAT_MS * BEAT_MISSES ? Math.max(0, Math.round((now - c.beatAt) / 1000)) : null;
+
+/** 卡片的耗时（PRD §8 规则 6）。now 用 useNow 的服务端对齐时间 */
+export function timing(c: Card, now: number) {
+  const cur = c.runStartedAt != null ? Math.max(0, now - c.runStartedAt) : null;
+  const ref = c.beatAt ?? c.claimedAt;
+  // 已经几次没收到心跳（只在进行中的这一次里有意义）
+  const missed = c.holder && cur != null && ref != null ? Math.min(BEAT_MISSES, Math.floor(Math.max(0, now - ref) / BEAT_MS)) : 0;
+  return {
+    /** 这一次的耗时；没有进行中的一次时为 null */
+    cur,
+    total: c.workMs + (cur ?? 0),
+    runs: c.runs,
+    lost: c.runsLost,
+    /** 心跳状态：live 正常 · late 晚了（已 1 次以上没收到）· wait 领取了还没开始心跳 · ended 发了 final 还没交审 · null 没被持有 */
+    beat: !c.holder ? null : cur == null ? (c.runs > 0 && c.beatAt != null ? 'ended' : 'wait') : missed >= 1 ? 'late' : 'live',
+    missed,
+    ageSec: ref != null ? Math.max(0, Math.round((now - ref) / 1000)) : null,
+  } as const;
+}
 
 export const PROJECT_COLORS = ['#FF6A33', '#4DB5FF', '#3DDC97', '#B98CFF', '#FFB020', '#FF5C8A', '#2DD4BF', '#94A3B8'];
 export const LABEL_COLORS = ['#F43F5E', '#F97316', '#EAB308', '#22C55E', '#14B8A6', '#3B82F6', '#8B5CF6', '#EC4899', '#64748B'];

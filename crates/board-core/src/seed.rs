@@ -105,6 +105,18 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
             w.at(t).exec(b, who, cmd)?;
             Ok(())
         };
+        // 领取后在 [from, to] 之间每 10 秒一次心跳；done 时最后发 final
+        let beats = |w: &mut W, b: &BoardRef, who: &Actor, id: i64, from: i64, to: i64, done: bool| -> Result<()> {
+            let mut t = from + 2_000;
+            while t <= to {
+                run(w, b, t, who, Cmd::Beat { id, done: false })?;
+                t += BEAT_MS;
+            }
+            if done {
+                run(w, b, to, who, Cmd::Beat { id, done: true })?;
+            }
+            Ok(())
+        };
 
         // ---------------- oss/main：开源项目自动维护场景 ----------------
         let b = w.resolve("oss/main")?;
@@ -121,15 +133,21 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, t0 + 70 * M, &issue, new("README 里的安装命令在 zsh 下报错", "gh#161\n\n`curl ... | sh -s -- --to ~/.local/bin` 在 zsh 中 `~` 未展开。"))?;
         // #1：已完成
         run(w, &b, t0 + 80 * M, &a("alpha"), claim(1))?;
+        beats(w, &b, &a("alpha"), 1, t0 + 80 * M, t0 + 98 * M - 2_000, true)?;
         run(w, &b, t0 + 96 * M, &a("alpha"), comment(1, "已实现：搜索范围扩展到描述，补了 4 个测试。"))?;
         run(w, &b, t0 + 98 * M, &a("alpha"), mv(1, "review"))?;
         run(w, &b, t0 + 150 * M, &h, comment(1, "看过了，没问题 👍"))?;
         run(w, &b, t0 + 151 * M, &h, mv(1, "done"))?;
         // #4、#8：待审核
         run(w, &b, t0 + 160 * M, &a("beta"), claim(4))?;
+        beats(w, &b, &a("beta"), 4, t0 + 160 * M, t0 + 176 * M - 2_000, true)?;
         run(w, &b, t0 + 175 * M, &a("beta"), comment(4, "确认 `v1.rs` 无引用，已删除 412 行；cargo test 全绿。"))?;
         run(w, &b, t0 + 176 * M, &a("beta"), mv(4, "review"))?;
+        // #8：gamma 第一次做到一半进程没了（异常退出），之后重新领取
+        run(w, &b, t0 + 184 * M, &a("gamma"), claim(8))?;
+        beats(w, &b, &a("gamma"), 8, t0 + 184 * M, t0 + 191 * M, false)?;
         run(w, &b, t0 + 200 * M, &a("gamma"), claim(8))?;
+        beats(w, &b, &a("gamma"), 8, t0 + 200 * M, t0 + 215 * M - 2_000, true)?;
         run(w, &b, t0 + 214 * M, &a("gamma"), comment(8, "改为使用 `$HOME`，并在 CI 里加了 zsh / bash 两个 shell 的冒烟测试。"))?;
         run(w, &b, t0 + 215 * M, &a("gamma"), mv(8, "review"))?;
         // 人调整优先级：#3 提到最上面
@@ -139,10 +157,12 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, now - 34 * M, &h, inbox("「待审核」里加一个打回的快捷操作", "现在打回要拖回待办，再写一条评论说明原因，有点绕。"))?;
         run(w, &b, now - 20 * M, &h, inbox("CI 缓存总是失效，查一下 key 的计算方式", ""))?;
         run(w, &b, now - 6 * M, &h, inbox("整理 11 月社区反馈，挑出值得做的", "论坛 + Discord 两个来源。"))?;
-        // #2：beta 正在做（剩约 4 分钟）；#3：alpha 正在做（剩约 19 分钟）
+        // #2：beta 正在做（约 26 分钟）；#3：alpha 正在做（约 15 分钟）。示例服务端没有真的 agent 发心跳，启动 50 秒后它们会被释放
         run(w, &b, now - 26 * M, &a("beta"), claim(2))?;
+        beats(w, &b, &a("beta"), 2, now - 26 * M, now, false)?;
         run(w, &b, now - 26 * M + 30_000, &a("beta"), comment(2, "已定位到 `snapshot::normalize`，准备统一替换分隔符。"))?;
         run(w, &b, now - 15 * M, &a("alpha"), claim(3))?;
+        beats(w, &b, &a("alpha"), 3, now - 15 * M, now, false)?;
         run(w, &b, now - 11 * M, &a("alpha"), comment(3, "复现了：`reqwest` 的错误被 `unwrap()` 了。正在改成返回 `Result`。"))?;
         for (id, names) in [
             (1, &["社区"][..]),
@@ -164,8 +184,10 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, now - 700 * M, &h, new("发布公告草稿", ""))?;
         run(w, &b, now - 600 * M, &h, new("跑一遍完整的验收标准（PRD §13）", "**验收标准**\n- [ ] 26 条全部通过"))?;
         run(w, &b, now - 500 * M, &a("delta"), claim(1))?;
+        beats(w, &b, &a("delta"), 1, now - 500 * M, now - 480 * M - 2_000, true)?;
         run(w, &b, now - 480 * M, &a("delta"), mv(1, "review"))?;
         run(w, &b, now - 9 * M, &a("epsilon"), claim(2))?;
+        beats(w, &b, &a("epsilon"), 2, now - 9 * M, now, false)?;
         run(w, &b, now - 3 * M, &a("epsilon"), comment(2, "macOS 公证已提交，等待 Apple 返回。"))?;
         for (id, names) in [(1, &["发布"][..]), (2, &["发布", "Windows"]), (3, &["发布", "文档"]), (4, &["发布"])] {
             w.set_labels_raw(b.id, id, &ids(&oss_l, names))?;
@@ -176,15 +198,18 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, now - 300 * M, &h, new("命令参考：补全 `board move` 的 --top 说明", ""))?;
         run(w, &b, now - 280 * M, &h, new("快速开始：五分钟接入一个 agent", "**验收标准**\n- [ ] 从安装到第一次 `board claim` 不超过 5 步\n- [ ] 附一个 shell 循环示例"))?;
         run(w, &b, now - 260 * M, &a("alpha"), claim(1))?;
+        beats(w, &b, &a("alpha"), 1, now - 260 * M, now - 230 * M - 2_000, true)?;
         run(w, &b, now - 230 * M, &a("alpha"), mv(1, "review"))?;
         run(w, &b, now - 200 * M, &a("issue-watcher"), new("错误码页面缺少 `EMPTY_TODO` 的说明", "gh#77"))?;
         run(w, &b, now - 200 * M, &h, mv(1, "done"))?;
         run(w, &b, now - 150 * M, &h, new("示例仓库截图过期，需要重截", ""))?;
         run(w, &b, now - 120 * M, &h, new("中文文档术语统一（领取 / 认领）", ""))?;
         run(w, &b, now - 90 * M, &a("delta"), claim(3))?;
+        beats(w, &b, &a("delta"), 3, now - 90 * M, now - 70 * M - 2_000, true)?;
         run(w, &b, now - 70 * M, &a("delta"), mv(3, "review"))?;
         run(w, &b, now - 40 * M, &h, inbox("要不要做一个交互式的命令演示？", ""))?;
         run(w, &b, now - 12 * M, &a("gamma"), claim(2))?;
+        beats(w, &b, &a("gamma"), 2, now - 12 * M, now, false)?;
         run(w, &b, now - 6 * M, &a("gamma"), comment(2, "初稿写好了，正在补 shell 循环示例。"))?;
         for (id, names) in [(1, &["写作"][..]), (2, &["写作"]), (4, &["截图"]), (5, &["写作"])] {
             w.set_labels_raw(b.id, id, &ids(&docs_l, names))?;
@@ -205,6 +230,7 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, now - 500 * M, &h, new("定价页：开源版 / 团队版对比表", ""))?;
         run(w, &b, now - 400 * M, &h, new("OG 图与 favicon", ""))?;
         run(w, &b, now - 380 * M, &a("beta"), claim(3))?;
+        beats(w, &b, &a("beta"), 3, now - 380 * M, now - 360 * M - 2_000, true)?;
         run(w, &b, now - 360 * M, &a("beta"), mv(3, "review"))?;
         run(w, &b, now - 300 * M, &h, mv(3, "done"))?;
         run(w, &b, now - 100 * M, &h, inbox("客户案例页先放三个", ""))?;

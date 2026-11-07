@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS cards (
   pos             INTEGER NOT NULL,
   holder          TEXT,
   claimed_at      INTEGER,
-  expires_at      INTEGER,
+  expires_at      INTEGER, -- 不再使用（原来的 30 分钟领取时长）
   beat_at         INTEGER,
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
@@ -69,6 +69,20 @@ CREATE TABLE IF NOT EXISTS cards (
   PRIMARY KEY (board, id)
 );
 CREATE INDEX IF NOT EXISTS cards_col ON cards (board, col, pos);
+
+-- 每一次领取的耗时：第一次心跳开始，final / 交审 / 释放 / 异常退出（最后一次心跳）结束
+-- how：final 正常结束 | move 持有者移出锁定状态 | release 人强制释放 | lost 心跳中断
+CREATE TABLE IF NOT EXISTS card_runs (
+  board      INTEGER NOT NULL,
+  card       INTEGER NOT NULL,
+  n          INTEGER NOT NULL,
+  agent      TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at   INTEGER,
+  how        TEXT,
+  PRIMARY KEY (board, card, n),
+  FOREIGN KEY (board, card) REFERENCES cards(board, id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS card_labels (
   board INTEGER NOT NULL,
@@ -125,9 +139,8 @@ CREATE TABLE IF NOT EXISTS statuses (
 );
 "#;
 
-/// 需要释放的领取：到期，或心跳中断（?1 = 现在，?2 = 允许的心跳间隔）
-pub(crate) const DUE: &str =
-    "holder IS NOT NULL AND ((expires_at IS NOT NULL AND expires_at <= ?1) OR (beat_at IS NOT NULL AND beat_at + ?2 <= ?1))";
+/// 需要释放的领取：从领取或最近一次心跳算起，连续 5 次没收到心跳（?1 = 现在，?2 = 允许的间隔）
+pub(crate) const DUE: &str = "holder IS NOT NULL AND COALESCE(beat_at, claimed_at, 0) + ?2 <= ?1";
 
 /// 每块白板保留的事件条数（卡片自己的动态不受影响）
 const EVENTS_KEEP: i64 = 500;
@@ -270,7 +283,7 @@ impl Store {
         Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))?)
     }
 
-    /// 规则 7：扫描所有白板，释放到期的领取和心跳中断的领取。返回释放的张数
+    /// 规则 7：扫描所有白板，释放心跳中断的领取。返回释放的张数
     pub fn sweep(&mut self, now: i64) -> Result<usize> {
         // 先用只读查询判断，避免没有到期卡片时也抢写锁
         let due: i64 = self.conn.query_row(&format!("SELECT COUNT(*) FROM cards WHERE {DUE}"), params![now, BEAT_MS * BEAT_MISSES], |r| r.get(0))?;
@@ -573,18 +586,22 @@ pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
 
 fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
     let sql = format!(
-        "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.expires_at, c.created_at, c.updated_at,
-                c.created_by_kind, c.created_by_name, c.beat_at,
+        "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.beat_at, c.created_at, c.updated_at,
+                c.created_by_kind, c.created_by_name,
                 (SELECT COUNT(*) FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.kind = 'comment'),
                 (SELECT GROUP_CONCAT(cl.label) FROM card_labels cl JOIN labels l ON l.id = cl.label
-                   WHERE cl.board = c.board AND cl.card = c.id)
+                   WHERE cl.board = c.board AND cl.card = c.id),
+                (SELECT r.started_at FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NULL),
+                (SELECT COALESCE(SUM(r.ended_at - r.started_at), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NOT NULL),
+                (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
+                (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost')
          FROM cards c WHERE c.board = ?1 {} ORDER BY {COL_ORDER}, c.pos",
         if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
     );
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(params![board, only], |r| {
         let col: String = r.get(3)?;
-        let labels: Option<String> = r.get(13)?;
+        let labels: Option<String> = r.get(12)?;
         let mut labels: Vec<i64> = labels
             .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
             .unwrap_or_default();
@@ -596,12 +613,15 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
             column: col,
             holder: r.get(4)?,
             claimed_at: r.get(5)?,
-            expires_at: r.get(6)?,
-            beat_at: r.get(11)?,
+            beat_at: r.get(6)?,
+            run_started_at: r.get(13)?,
+            work_ms: r.get(14)?,
+            runs: r.get(15)?,
+            runs_lost: r.get(16)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
             created_by: row_actor(r.get(9)?, r.get(10)?),
-            comments: r.get(12)?,
+            comments: r.get(11)?,
             labels,
         })
     })?;

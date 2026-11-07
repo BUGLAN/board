@@ -110,7 +110,7 @@ impl<'a> W<'a> {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?;
                 for (id, who) in held {
-                    self.clear_claim(b.id, id)?;
+                    self.clear_claim(b.id, id, "release")?;
                     self.track(b.id, id, &Actor::human(), "release", &format!("「{}」取消了锁定，{who} 的领取已释放", s.name))?;
                 }
             }
@@ -155,7 +155,7 @@ impl<'a> W<'a> {
             })?;
             self.place(b.id, id, Some(key), &start.key, At::Bottom)?;
             if held {
-                self.clear_claim(b.id, id)?;
+                self.clear_claim(b.id, id, "release")?;
             }
             let text = format!("状态「{}」被删除，卡片移到「{}」{}", s.name, start.name, if held { "，领取已释放" } else { "" });
             self.track(b.id, id, &Actor::human(), "move", &text)?;

@@ -199,19 +199,26 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 }
 @keyframes beat-ping { from { transform: scale(1); opacity: .6; } to { transform: scale(2.6); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .beat::before { animation: none; } }
-.claim-timer {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 5px; border-radius: 999px;
-  font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2);
-  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
-  font-variant-numeric: tabular-nums;
+/* 计时胶囊（PRD §8 规则 6）：进行中显示这一次的耗时，做过的卡片显示累计 */
+.run-pill {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px;
+  font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap;
 }
-.claim-timer svg { width: 14px; height: 14px; transform: rotate(-90deg); }
-.claim-timer circle { fill: none; stroke-width: 2.6; }
-.claim-timer .track { stroke: var(--line-2); }
-.claim-timer .bar { stroke: var(--ac, var(--c-doing)); stroke-linecap: round; transition: stroke-dashoffset .4s linear, stroke var(--dur-3); }
-.card.urgent .claim-timer { color: var(--danger); background: var(--danger-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); animation: urgent 1.2s var(--ease-in-out) infinite; }
-.card.urgent .claim-timer .bar { stroke: var(--danger); }
-@keyframes urgent { 50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent), 0 0 0 4px var(--danger-soft); } }
+.run-pill svg { width: 13px; height: 13px; }
+.run-pill.live { color: var(--text); background: color-mix(in srgb, var(--ac, var(--c-doing)) 10%, var(--surface-2)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac, var(--c-doing)) 45%, transparent); }
+.run-pill.big { height: auto; padding: 0; background: none; box-shadow: none; font-size: 26px; font-weight: 600; gap: 10px; }
+/* 心跳晚了（已 1 次以上没收到）/ 还没开始 / 已发 final */
+.run-pill.late { color: var(--warn); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 50%, transparent); }
+.run-pill.late .beat, .run-pill.wait .beat { background: var(--warn); }
+.run-pill.wait, .run-pill.ended { color: var(--text-3); font-family: var(--f-sans); font-size: 11px; }
+.run-pill.ended .beat { background: var(--text-4); }
+.run-pill.ended .beat::before { animation: none; }
+.run-pill.big.wait, .run-pill.big.ended { font-size: 15px; }
+.claim-sub { width: 100%; text-align: right; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.card-claim { flex-wrap: wrap; row-gap: 4px; }
+.card-claim.worked .run-pill { margin-left: 0; }
+.card-claim.worked .claim-sub { width: auto; margin-left: auto; }
 
 /* 终点：一行，标题划掉 */
 .card.done { padding: 7px 10px; background: color-mix(in srgb, var(--surface) 70%, transparent); box-shadow: inset 0 0 0 1px var(--line); }

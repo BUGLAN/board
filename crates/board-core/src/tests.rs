@@ -66,7 +66,8 @@ fn ac1_claim_takes_top_of_todo() {
     assert_eq!(c.id, 1);
     assert_eq!(c.column, "doing");
     assert_eq!(c.holder.as_deref(), Some("alpha"));
-    assert_eq!(c.expires_at, Some(T0 + CLAIM_MS));
+    assert_eq!(c.claimed_at, Some(T0));
+    assert_eq!((c.runs, c.run_started_at), (0, None), "第一次心跳才开始计时");
 }
 
 #[test]
@@ -117,62 +118,70 @@ fn ac4_only_holder_edits_others_comment() {
 }
 
 #[test]
-fn ac5_comment_renews() {
+fn ac5_comment_does_not_keep_claim() {
+    // 评论、编辑不再续期：只看心跳
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
-    let c = exec(&mut s, B, &alpha(), T0 + 20 * MIN, Cmd::Comment { id: 1, text: "进展".into() }).unwrap();
-    assert_eq!(c.card.expires_at, Some(T0 + 50 * MIN));
-    // 编辑、再次 claim 也续期
-    let c = exec(&mut s, B, &alpha(), T0 + 25 * MIN, Cmd::Edit { id: 1, title: None, body: Some("b".into()) }).unwrap();
-    assert_eq!(c.card.expires_at, Some(T0 + 55 * MIN));
-    let c = exec(&mut s, B, &alpha(), T0 + 26 * MIN, claim(Some(1))).unwrap();
-    assert_eq!(c.card.expires_at, Some(T0 + 56 * MIN));
-    // 别人评论不续期
-    let c = exec(&mut s, B, &beta(), T0 + 27 * MIN, Cmd::Comment { id: 1, text: "?".into() }).unwrap();
-    assert_eq!(c.card.expires_at, Some(T0 + 56 * MIN));
+    exec(&mut s, B, &alpha(), T0 + 40 * SEC, Cmd::Comment { id: 1, text: "进展".into() }).unwrap();
+    assert_eq!(s.sweep(T0 + 50 * SEC).unwrap(), 1);
 }
 
 #[test]
-fn ac6_timeout_release() {
+fn ac6_no_heartbeat_after_claim() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
     exec(&mut s, B, &human(), T0, new("二")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(Some(1))).unwrap();
-    // 服务端定时扫描
-    assert_eq!(s.sweep(T0 + 29 * MIN).unwrap(), 0);
-    assert_eq!(s.sweep(T0 + 30 * MIN).unwrap(), 1);
-    let snap = snapshot(&s, B, T0 + 30 * MIN);
+    // 服务端定时扫描：领取后 50 秒内没有第一次心跳
+    assert_eq!(s.sweep(T0 + 49 * SEC).unwrap(), 0);
+    assert_eq!(s.sweep(T0 + 50 * SEC).unwrap(), 1);
+    let snap = snapshot(&s, B, T0 + 50 * SEC);
     assert_eq!(snap.cols["todo"], vec![1, 2], "回到「待办」最上面");
     let c = card(&s, B, 1);
     assert_eq!(c.card.holder, None);
-    assert!(c.activity.iter().any(|a| a.text.contains("领取超时，自动释放")));
-    exec(&mut s, B, &beta(), T0 + 31 * MIN, claim(Some(1))).unwrap();
-    assert_eq!(code(exec(&mut s, B, &alpha(), T0 + 32 * MIN, mv(1, "review"))), ErrorCode::NotHolder);
+    assert_eq!(c.card.runs, 0);
+    assert!(c.activity.iter().any(|a| a.text.contains("领取后 50 秒内没有开始心跳")));
+    exec(&mut s, B, &beta(), T0 + 60 * SEC, claim(Some(1))).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0 + 61 * SEC, mv(1, "review"))), ErrorCode::NotHolder);
 }
 
 fn beat(id: i64, done: bool) -> Cmd {
     Cmd::Beat { id, done }
 }
+/// who 在 [from, to] 之间每 10 秒给 id 发一次心跳（最后一次正好在 to）
+fn beat_span(s: &mut Store, who: &Actor, id: i64, from: i64, to: i64) {
+    let mut t = from;
+    loop {
+        exec(s, B, who, t, beat(id, false)).unwrap();
+        if t >= to {
+            break;
+        }
+        t = (t + BEAT_MS).min(to);
+    }
+}
 const SEC: i64 = 1000;
 
 #[test]
-fn heartbeat_keeps_claim_and_logs_once() {
+fn heartbeat_keeps_claim_and_starts_run_once() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
-    let mut t = T0;
+    let first = T0 + 2 * SEC;
+    let mut t = first;
+    exec(&mut s, B, &alpha(), t, beat(1, false)).unwrap();
     for _ in 0..200 {
         t += BEAT_MS;
         let c = exec(&mut s, B, &alpha(), t, beat(1, false)).unwrap().card;
         assert_eq!(c.beat_at, Some(t));
-        assert_eq!(c.expires_at, Some(t + CLAIM_MS), "心跳续期领取");
         assert_eq!(s.sweep(t + 49 * SEC).unwrap(), 0);
     }
-    // 200 次心跳 ≈ 33 分钟，超过 30 分钟领取时长也没有被释放
+    // 200 次心跳 ≈ 33 分钟，没有被释放；这一次从第一次心跳算起
     let c = card(&s, B, 1);
     assert_eq!(c.card.holder.as_deref(), Some("alpha"));
-    assert_eq!(c.activity.iter().filter(|a| a.action == "beat").count(), 1, "只记第一次心跳");
+    assert_eq!((c.card.runs, c.card.run_started_at, c.card.work_ms), (1, Some(first), 0));
+    assert_eq!(c.activity.iter().filter(|a| a.action == "beat").count(), 1, "只记开始那一次");
+    assert!(c.activity.iter().any(|a| a.text.contains("开始第 1 次")));
 }
 
 #[test]
@@ -181,8 +190,13 @@ fn heartbeat_lost_after_five_misses() {
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
     exec(&mut s, B, &human(), T0, new("二")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(Some(2))).unwrap();
-    exec(&mut s, B, &alpha(), T0 + BEAT_MS, beat(2, false)).unwrap();
-    let last = T0 + BEAT_MS;
+    exec(&mut s, B, &alpha(), T0 + SEC, beat(2, false)).unwrap();
+    let last = T0 + 10 * MIN + SEC;
+    let mut t = T0 + SEC;
+    while t < last {
+        t += BEAT_MS;
+        exec(&mut s, B, &alpha(), t.min(last), beat(2, false)).unwrap();
+    }
     assert_eq!(s.sweep(last + BEAT_MS * BEAT_MISSES - 1).unwrap(), 0, "第 5 次还没到");
     assert_eq!(s.sweep(last + BEAT_MS * BEAT_MISSES).unwrap(), 1, "连续 5 次没收到");
     let snap = snapshot(&s, B, last + 50 * SEC);
@@ -190,8 +204,9 @@ fn heartbeat_lost_after_five_misses() {
     let c = card(&s, B, 2);
     assert_eq!(c.card.holder, None);
     assert_eq!(c.card.beat_at, None);
-    assert!(c.activity.iter().any(|a| a.action == "lost" && a.text.contains("alpha") && a.text.contains("异常退出")));
-    // 之后再发心跳：已经不是持有者
+    // 这一次以最后一次心跳为结束：10 分钟
+    assert_eq!((c.card.runs, c.card.runs_lost, c.card.work_ms, c.card.run_started_at), (1, 1, 10 * MIN, None));
+    assert!(c.activity.iter().any(|a| a.action == "lost" && a.text.contains("alpha") && a.text.contains("异常退出") && a.text.contains("第 1 次耗时约 10 分 0 秒")));
     assert_eq!(code(exec(&mut s, B, &alpha(), last + 60 * SEC, beat(2, false))), ErrorCode::NotHolder);
 }
 
@@ -211,18 +226,54 @@ fn heartbeat_final_is_normal_exit() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
-    exec(&mut s, B, &alpha(), T0 + BEAT_MS, beat(1, false)).unwrap();
-    let c = exec(&mut s, B, &alpha(), T0 + 2 * BEAT_MS, beat(1, true)).unwrap();
-    assert_eq!(c.card.beat_at, None);
-    assert_eq!(c.card.holder.as_deref(), Some("alpha"), "final 不释放领取，按原来的 30 分钟规则");
-    assert!(c.activity.iter().any(|a| a.action == "beat" && a.text.contains("正常退出")));
-    assert_eq!(s.sweep(T0 + 10 * MIN).unwrap(), 0, "final 之后不再按心跳判定");
-    // 已交审后再发 final：什么也不做，不报错
-    exec(&mut s, B, &alpha(), T0 + 3 * BEAT_MS, beat(1, false)).unwrap();
-    exec(&mut s, B, &alpha(), T0 + 4 * BEAT_MS, mv(1, "review")).unwrap();
-    let c = exec(&mut s, B, &alpha(), T0 + 5 * BEAT_MS, beat(1, true)).unwrap();
-    assert_eq!(c.card.beat_at, None, "离开锁定状态时心跳一起清掉");
-    assert_eq!(c.card.column, "review");
+    beat_span(&mut s, &alpha(), 1, T0 + SEC, T0 + 3 * MIN);
+    let end = T0 + 3 * MIN + 5 * SEC;
+    let c = exec(&mut s, B, &alpha(), end, beat(1, true)).unwrap();
+    assert_eq!(c.card.holder.as_deref(), Some("alpha"), "final 不释放领取");
+    assert_eq!((c.card.run_started_at, c.card.work_ms, c.card.runs_lost), (None, 3 * MIN + 4 * SEC, 0));
+    assert!(c.activity.iter().any(|a| a.action == "beat" && a.text.contains("正常退出，第 1 次耗时 3 分 4 秒")));
+    // final 之后 50 秒内要交审或放回
+    assert_eq!(s.sweep(end + 49 * SEC).unwrap(), 0);
+    exec(&mut s, B, &alpha(), end + 10 * SEC, mv(1, "review")).unwrap();
+    let c = exec(&mut s, B, &alpha(), end + 11 * SEC, beat(1, true)).unwrap();
+    assert_eq!(c.card.column, "review", "已交审后再发 final：什么也不做");
+    assert_eq!(c.card.runs, 1);
+}
+
+#[test]
+fn heartbeat_final_then_idle_is_released() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + SEC, beat(1, false)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 9 * SEC, beat(1, true)).unwrap();
+    assert_eq!(s.sweep(T0 + 59 * SEC).unwrap(), 1);
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.holder, c.card.runs_lost), (None, 0), "已经正常结束，不算异常退出");
+    assert!(c.activity.iter().any(|a| a.text.contains("结束心跳后 50 秒内没有交审或放回")));
+}
+
+#[test]
+fn runs_accumulate_across_claims() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    // 第 1 次：alpha 做了 2 分钟，交审时结束（没先发 final）
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    beat_span(&mut s, &alpha(), 1, T0 + SEC, T0 + 2 * MIN);
+    let c = exec(&mut s, B, &alpha(), T0 + 2 * MIN + SEC, mv(1, "review")).unwrap();
+    assert!(c.activity.iter().any(|a| a.action == "move" && a.text.contains("领取已释放，第 1 次耗时 2 分 0 秒")));
+    // 打回，第 2 次：beta 做了 30 秒后被人强制释放
+    exec(&mut s, B, &human(), T0 + 3 * MIN, mv(1, "todo")).unwrap();
+    exec(&mut s, B, &beta(), T0 + 4 * MIN, claim(None)).unwrap();
+    exec(&mut s, B, &beta(), T0 + 4 * MIN, beat(1, false)).unwrap();
+    exec(&mut s, B, &beta(), T0 + 4 * MIN + 20 * SEC, beat(1, false)).unwrap();
+    let c = exec(&mut s, B, &human(), T0 + 4 * MIN + 30 * SEC, Cmd::Release { id: 1 }).unwrap();
+    assert!(c.activity.iter().any(|a| a.action == "release" && a.text.contains("第 2 次耗时 30 秒")));
+    // 第 3 次：alpha 进行中
+    exec(&mut s, B, &alpha(), T0 + 5 * MIN, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 5 * MIN + 2 * SEC, beat(1, false)).unwrap();
+    let c = card(&s, B, 1).card;
+    assert_eq!((c.runs, c.runs_lost, c.work_ms, c.run_started_at), (3, 0, 2 * MIN + 30 * SEC, Some(T0 + 5 * MIN + 2 * SEC)));
 }
 
 #[test]
@@ -255,7 +306,7 @@ fn ac7_done_belongs_to_humans() {
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "done"))), ErrorCode::ForbiddenColumn);
     let c = exec(&mut s, B, &alpha(), T0, mv(1, "review")).unwrap();
     assert_eq!(c.card.holder, None);
-    assert_eq!(c.card.expires_at, None);
+    assert_eq!(c.card.beat_at, None);
     let c = exec(&mut s, B, &human(), T0, mv(1, "done")).unwrap();
     assert_eq!(c.card.column, "done");
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "todo"))), ErrorCode::ForbiddenColumn);
@@ -409,9 +460,9 @@ fn ac22_25_labels() {
     );
     exec(&mut s, B, &human(), T0, new("a")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
-    let c = exec(&mut s, B, &beta(), T0 + 5 * MIN, Cmd::Label { id: 1, add: vec![bug.id], remove: vec![] }).unwrap();
+    let c = exec(&mut s, B, &beta(), T0 + 5 * SEC, Cmd::Label { id: 1, add: vec![bug.id], remove: vec![] }).unwrap();
     assert_eq!(c.card.labels, vec![bug.id]);
-    assert_eq!(c.card.expires_at, Some(T0 + CLAIM_MS), "加标签不续期");
+    assert_eq!(c.card.holder.as_deref(), Some("alpha"), "别人持有的卡片也能加标签");
     assert!(c.activity.iter().any(|a| a.action == "label" && a.text.contains("bug")));
     // 不存在的标签
     assert_eq!(code(exec(&mut s, B, &beta(), T0, Cmd::Label { id: 1, add: vec![999], remove: vec![] })), ErrorCode::Usage);
@@ -535,10 +586,11 @@ fn multiple_locked_statuses() {
         exec(&mut s, B, &human(), T0, new(x)).unwrap();
     }
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
-    // 持有者在锁定状态之间移动：领取保持并续期
-    let c = exec(&mut s, B, &alpha(), T0 + 10 * MIN, mv(1, "测试中")).unwrap();
+    // 持有者在锁定状态之间移动：领取保持，这一次继续计时
+    exec(&mut s, B, &alpha(), T0 + SEC, beat(1, false)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 10 * SEC, mv(1, "测试中")).unwrap();
     assert_eq!(c.card.holder.as_deref(), Some("alpha"));
-    assert_eq!(c.card.expires_at, Some(T0 + 10 * MIN + CLAIM_MS));
+    assert_eq!((c.card.runs, c.card.run_started_at), (1, Some(T0 + SEC)));
     // 别人不能把卡片直接移进锁定状态
     assert_eq!(code(exec(&mut s, B, &human(), T0, mv(2, "测试中"))), ErrorCode::ForbiddenColumn);
     assert_eq!(code(exec(&mut s, B, &beta(), T0, mv(1, "review"))), ErrorCode::NotHolder);

@@ -403,11 +403,11 @@ export function SettingsPage() {
               ),
             )}
           </div>
-          <Row label="领取时长" hint="持有者评论、编辑或再次 claim 都会重新计时">
-            <span className="ro mono">30 分钟</span>
+          <Row label="心跳" hint="领取后由 skill 里的脚本发送；第一次心跳开始计时，final 结束，每一次的耗时记进动态">
+            <span className="ro mono">每 10 秒</span>
           </Row>
-          <Row label="超时" hint="到期未续期：回到领取起点最上面，记录「领取超时，自动释放」">
-            <span className="ro">自动释放</span>
+          <Row label="心跳中断" hint="从领取或最近一次心跳算起连续 5 次没收到：回到领取起点最上面，进行中的这一次记为异常退出">
+            <span className="ro">50 秒后释放</span>
           </Row>
           <ul className="rules">
             <li>只有领取起点里的卡片能被领取；领取后卡片进入它之后的第一个锁定状态；多个 agent 同时领取同一张，只有一个成功</li>

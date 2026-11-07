@@ -134,7 +134,11 @@
 .tree-row .tt code { font-family: var(--f-mono); font-size: .9em; }
 .tree-row .avatar { width: 16px; height: 16px; font-size: 9px; box-shadow: none; }
 .tree-row .tm { font-family: var(--f-mono); font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.tree-row .tm.urgent { color: var(--danger); }
+.tree-row .run-tm { display: inline-flex; align-items: center; gap: 6px; }
+.tree-row .run-tm.late { color: var(--warn); }
+.tree-row .run-tm.late .beat, .tree-row .run-tm.wait .beat { background: var(--warn); }
+.tree-row .run-tm.ended .beat { background: var(--text-4); }
+.tree-row .run-tm.ended .beat::before, .tree-row .run-tm.wait .beat::before { animation: none; }
 .tree-row.dimmed { opacity: .35; }
 .tree-children { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-3) var(--ease-out); }
 .tree-children > div { overflow: hidden; min-height: 0; }

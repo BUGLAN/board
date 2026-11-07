@@ -1,10 +1,10 @@
 /* 卡片：白板状态块与侧栏「未整理」共用 */
 import { memo, useLayoutEffect, useRef } from 'react';
-import { beatAge, CLAIM_MS } from '../lib/schema';
+import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label } from '../lib/types';
-import { agentColor, ago, cx, mmss, replay } from '../lib/util';
+import { agentColor, ago, clock, cx, durWords, replay } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
-import { Avatar, LabelChips, Ring, Title, agent, useNow } from './bits';
+import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
@@ -53,8 +53,7 @@ export const CardView = memo(function CardView({
   const sel = useUI(s => s.labelSel);
   const active = filterActive(filter, sel);
   const hit = active ? cardHit(c, filter, sel, labels) : true;
-  const left = c.expiresAt != null ? c.expiresAt - now : 0;
-  const beat = beatAge(c, now);
+  const t = timing(c, now);
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
 
@@ -80,7 +79,7 @@ export const CardView = memo(function CardView({
         open && 'is-open',
         active && !hit && 'filtered-out',
         active && hit && 'matched',
-        doing && left < 5 * 60e3 && 'urgent',
+        t.beat === 'late' && 'late',
         entering && 'entering',
         placeholder && 'is-placeholder',
       )}
@@ -151,16 +150,27 @@ export const CardView = memo(function CardView({
               <LabelChips ids={c.labels} labels={labels} />
             </div>
           )}
-          {doing && (
+          {doing ? (
             <div className="card-claim">
               <Avatar actor={agent(c.holder!)} />
               <span className="claim-name">{c.holder}</span>
-              {beat != null && <span className="beat" data-tip={`心跳正常 · ${beat} 秒前`} aria-label="心跳正常" />}
-              <span className="claim-timer" title="剩余领取时间">
-                <Ring r={5} p={left / CLAIM_MS} />
-                <span className="t">{mmss(left)}</span>
-              </span>
+              <RunPill card={c} now={now} />
+              {t.runs > 1 && (
+                <span className="claim-sub">
+                  累计 {clock(t.total)} · 第 {t.runs} 次
+                </span>
+              )}
             </div>
+          ) : (
+            t.runs > 0 && (
+              <div className="card-claim worked">
+                <span className="run-pill" title={`做过 ${t.runs} 次${t.lost ? `，其中 ${t.lost} 次异常退出` : ''}`}>
+                  <Icon name="timer" />
+                  累计 {durWords(t.total)}
+                </span>
+                <span className="claim-sub">{t.runs} 次</span>
+              </div>
+            )
           )}
         </>
       )}
@@ -180,5 +190,24 @@ function snippet(body: string) {
       // 图片、链接只留文字（附件显示为文件名）
       .map(l => l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^[-*#>\s]+|\[[ xX]\]\s*/g, '').trim())
       .find(Boolean) || ''
+  );
+}
+
+/** 进行中的计时胶囊：跳动的心跳点 + 这一次的耗时。卡片、详情共用 */
+export function RunPill({ card: c, now, big }: { card: CardT; now: number; big?: boolean }) {
+  const t = timing(c, now);
+  const tip =
+    t.beat === 'live'
+      ? `这一次的耗时（从第一次心跳算起）· 心跳正常，${t.ageSec} 秒前`
+      : t.beat === 'late'
+        ? `已 ${t.missed} 次没收到心跳，连续 ${BEAT_MISSES} 次就释放`
+        : t.beat === 'wait'
+          ? `领取了，还没收到第一次心跳；${BEAT_MS * BEAT_MISSES / 1000} 秒内没收到就释放`
+          : '已发 final，等待交审';
+  return (
+    <span className={cx('run-pill live', t.beat, big && 'big')} data-tip={tip} data-tip-align="end">
+      <i className="beat" />
+      {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
+    </span>
   );
 }
