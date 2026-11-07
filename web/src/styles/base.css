@@ -50,7 +50,7 @@ a { color: inherit; }
 /* ---- 滚动条 ---- */
 .scroll { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 .scroll::-webkit-scrollbar { width: 10px; height: 10px; }
-.scroll::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+.scroll::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
 .scroll::-webkit-scrollbar-thumb:hover { background-color: var(--line-3); }
 
 /* ---- 焦点 ---- */
@@ -76,7 +76,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .btn[disabled] { opacity: .45; pointer-events: none; }
 .btn svg { width: 15px; height: 15px; margin-left: -2px; }
 .btn.sm svg { width: 14px; height: 14px; }
-.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 8px; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: var(--r-sm); }
 .btn.primary { --btn-bg: var(--invert); --btn-fg: var(--invert-text); --btn-line: transparent; }
 .btn.primary:hover { --btn-bg: color-mix(in srgb, var(--invert) 86%, var(--brand)); }
 .btn.brand { --btn-bg: var(--brand); --btn-fg: #fff; --btn-line: transparent; box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--brand) 70%, transparent); }
@@ -97,7 +97,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .icon-btn:active { transform: scale(.9); }
 .icon-btn.on { color: var(--brand); background: var(--brand-soft); }
 .icon-btn svg { width: 18px; height: 18px; }
-.icon-btn.sm { width: 26px; height: 26px; border-radius: 7px; }
+.icon-btn.sm { width: 26px; height: 26px; border-radius: var(--r-sm); }
 .icon-btn.sm svg { width: 15px; height: 15px; }
 .btn kbd { margin-left: 2px; margin-right: -4px; }
 
@@ -106,7 +106,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 [data-tip]::after {
   content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 8px); z-index: 50;
   transform: translate(-50%, -4px) scale(.96); opacity: 0; pointer-events: none;
-  padding: 5px 8px; border-radius: 7px; background: var(--invert); color: var(--invert-text);
+  padding: 5px 8px; border-radius: var(--r-xs); background: var(--invert); color: var(--invert-text);
   font-size: 11.5px; font-weight: 500; white-space: nowrap; letter-spacing: .01em;
   transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
 }
@@ -138,7 +138,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 /* ---- kbd / chip / code ---- */
 kbd, .kbd {
   display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px;
-  border-radius: 5px; font-family: var(--f-mono); font-size: 10.5px; font-weight: 500; color: var(--text-3);
+  border-radius: var(--r-xs); font-family: var(--f-mono); font-size: 10.5px; font-weight: 500; color: var(--text-3);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), 0 1px 0 var(--line-2);
 }
 .chip {
@@ -147,7 +147,7 @@ kbd, .kbd {
 }
 .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .code-chip {
-  display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 5px;
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: var(--r-xs);
   font-family: var(--f-mono); font-size: 11px; font-weight: 500; letter-spacing: .02em;
   color: var(--danger); background: var(--danger-soft);
 }
