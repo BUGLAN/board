@@ -156,10 +156,30 @@
 }
 @keyframes label-ghost-in { from { scale: .5; opacity: 0; } }
 .label-ghost i { width: 7px; height: 7px; border-radius: 50%; background: var(--lc); flex: none; }
-.label-ghost.over { color: #fff; background: var(--lc); }
+.label-ghost.over { color: #fff; background: var(--lc); scale: 1.06; }
+/* 进入 / 离开可投放的卡片：放大有一点弹性，像被吸住 */
+.label-ghost:not(.landing) { transition: background-color var(--dur-1), color var(--dur-1), scale var(--dur-2) var(--spring), opacity var(--dur-1); }
 .label-ghost.over i { background: #fff; }
 /* 卡片已经有这个标签：松手只会提示 */
 .label-ghost.has { opacity: .6; }
 .card.label-target {
   box-shadow: inset 0 0 0 1.5px var(--lc), 0 0 0 4px color-mix(in srgb, var(--lc) 18%, transparent), var(--shadow-2) !important;
+  /* scale 单独动：transform 留给 FLIP 和悬停 */
+  scale: 1.012; transition: scale var(--dur-2) var(--spring);
+  outline: 2px solid transparent;
+  animation: label-target-ring 1.1s var(--ease-out) infinite;
 }
+/* 目标卡片外面一圈向外扩散的脉冲 */
+@keyframes label-target-ring {
+  0% { outline-offset: 0; outline-color: color-mix(in srgb, var(--lc) 50%, transparent); }
+  70%, 100% { outline-offset: 8px; outline-color: transparent; }
+}
+/* 标签落进卡片：卡片轻轻一顿 */
+.card.label-landed { animation: label-landed var(--dur-3) var(--spring); }
+@keyframes label-landed { 0% { scale: 1.012; } 35% { scale: .985; } 100% { scale: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .card.label-target, .card.label-landed { scale: none; animation: none; }
+  .label-ghost, .label-ghost.over { animation: none; scale: none; }
+}
+:root[data-motion="reduced"] .card.label-target, :root[data-motion="reduced"] .card.label-landed { scale: none; animation: none; }
+:root[data-motion="reduced"] .label-ghost, :root[data-motion="reduced"] .label-ghost.over { animation: none; scale: none; }
