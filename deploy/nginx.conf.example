@@ -1,0 +1,38 @@
+# board.buglan.com 的反向代理（nginx 示例）。证书路径换成服务器上的实际位置。
+# board-server 在 127.0.0.1:7420（docker-compose.yml），HTTPS 在这里终结。
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name board.buglan.com;
+
+    ssl_certificate     /etc/ssl/board.buglan.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/board.buglan.com/privkey.pem;
+
+    client_max_body_size 2m;
+
+    location / {
+        proxy_pass http://127.0.0.1:7420;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 实时推送（SSE）：不缓冲、长连接。服务端每 15 秒发一次心跳
+    location = /api/stream {
+        proxy_pass http://127.0.0.1:7420;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+}
+
+server {
+    listen 80;
+    server_name board.buglan.com;
+    return 301 https://$host$request_uri;
+}

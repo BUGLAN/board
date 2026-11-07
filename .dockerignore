@@ -1,0 +1,12 @@
+.git
+.dev
+.env
+data
+target
+node_modules
+web/node_modules
+web/dist
+src-tauri/gen
+prototype
+lianzi
+**/.DS_Store

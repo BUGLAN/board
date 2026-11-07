@@ -1,0 +1,27 @@
+# Board 服务端。HTTPS 由前面的 Cloudflare Tunnel（或自建反向代理，示例见 deploy/nginx.conf.example）负责，
+# 这里只在本机 127.0.0.1:7420 提供 HTTP。部署步骤见 docs/deploy.md。
+services:
+  board:
+    build:
+      context: .
+      # source：在镜像里编译；prebuilt：用 deploy/bin/board-server（deploy/build-linux.sh 生成）
+      target: ${BOARD_BUILD:-source}
+    image: board-server:latest
+    container_name: board
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      BOARD_DB: /data/board.db
+      BOARD_HOST: 0.0.0.0
+      BOARD_PORT: "7420"
+    ports:
+      - "127.0.0.1:7420:7420"
+    volumes:
+      # 数据库与备份；目录要属于容器里的用户：sudo chown -R 10001:10001 data
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
