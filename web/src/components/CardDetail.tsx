@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
-import { boardFlow, CLAIM_MS } from '../lib/schema';
+import { BEAT_MISSES, BEAT_MS, beatAge, boardFlow, CLAIM_MS } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { actorName, agentColor, ago, autosize, copyText, cx, hhmm, isMobile, MOD, mmss, replay } from '../lib/util';
 import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
@@ -15,6 +15,7 @@ import { Icon, type IconName } from './Icon';
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
+  beat: 'renew', lost: 'alert',
 };
 
 export function CardDetail() {
@@ -521,6 +522,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
   }
   if (!c.holder) return null;
   const left = (c.expiresAt ?? 0) - now;
+  const beat = beatAge(c, now);
   return (
     <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
       <div className="lock-note" style={{ marginBottom: 10 }}>
@@ -535,6 +537,12 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
           <b>{c.holder}</b>
           <span>
             领取于 {hhmm(c.claimedAt || c.updatedAt)} · 到期 <span className="exp">{c.expiresAt ? hhmm(c.expiresAt) : '--:--'}</span>
+            {beat != null && (
+              <>
+                {' · '}
+                <span className="beat" aria-hidden="true" /> 心跳 {beat} 秒前
+              </>
+            )}
           </span>
         </div>
         <div className="big-ring">
@@ -542,7 +550,11 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
           <span className="t">{mmss(left)}</span>
         </div>
         <div className="release">
-          <span>持有者评论、编辑或再次 claim 会续期 30 分钟</span>
+          <span>
+            {beat != null
+              ? `持有者每 ${BEAT_MS / 1000} 秒发一次心跳并续期；连续 ${BEAT_MISSES} 次没收到判定异常退出，卡片回到领取起点`
+              : '持有者评论、编辑或再次 claim 会续期 30 分钟'}
+          </span>
           <button
             className="btn sm danger"
             type="button"

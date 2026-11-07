@@ -83,6 +83,8 @@ export interface Card {
   holder: string | null;
   claimedAt: number | null;
   expiresAt: number | null;
+  /** 最近一次心跳；持有者没在发心跳时为空 */
+  beatAt: number | null;
   labels: number[];
   createdAt: number;
   updatedAt: number;

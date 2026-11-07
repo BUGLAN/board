@@ -61,13 +61,21 @@ export BOARD_TOKEN=<访问令牌>                # 用户在界面「设置 → 
      - 「未整理」（inbox）：按下文「整理未整理的条目」处理
      - 在其他状态，或别人持有：不要动，告诉用户它现在的状态
    - `ALREADY_HOLDING`：你在这块白板上还拿着另一张卡片，先把那张做完或放回
-2. **干活**：按描述和验收标准改代码、跑测试。耗时较长时用 `board comment <ID> "<进展>"` 记进度——你评论、编辑、再次 claim 都会把领取续期 30 分钟；30 分钟没有动静，卡片会被自动释放回领取起点。
-3. **交审**：评论写清楚改了什么、怎么验证的（测试命令和结果、提交号），再 `board move <ID> review`。界面改动可以附上截图：`board attach <ID> <截图> --comment "<说明>"`。
-4. **做不下去**：先 `board comment <ID> "<原因，或需要人确认的问题>"`，再 `board move <ID> todo`（放回领取起点）。
+2. **开始心跳**：领取成功后马上在后台开始心跳，表明你在工作：
+
+   ```sh
+   sh <skill 目录>/scripts/heartbeat.sh start <ID>                      # macOS / Linux
+   powershell -NoProfile -ExecutionPolicy Bypass -File <skill 目录>\scripts\heartbeat.ps1 start <ID>   # Windows
+   ```
+
+   脚本先同步发一次 `board beat <ID>`（失败直接报错，按错误码处理），再在后台每 10 秒发一次，立即返回。心跳会一直续期领取，干多久都不会超时；你的进程不在了（崩溃、被关掉），脚本跟着停下，服务端**连续 5 次（50 秒）收不到心跳就判定你异常退出**，卡片回到领取起点最上面。找不到脚本时告诉用户（skill 需要连同 `scripts/` 目录一起安装）。
+3. **干活**：按描述和验收标准改代码、跑测试。耗时较长时用 `board comment <ID> "<进展>"` 记进度。没有心跳时，你评论、编辑、再次 claim 都会把领取续期 30 分钟；30 分钟没有动静，卡片会被自动释放回领取起点。
+4. **交审**：评论写清楚改了什么、怎么验证的（测试命令和结果、提交号），**结束心跳**（`heartbeat.sh stop <ID>`，发送 final，正常退出），再 `board move <ID> review`。界面改动可以附上截图：`board attach <ID> <截图> --comment "<说明>"`。
+5. **做不下去**：先 `board comment <ID> "<原因，或需要人确认的问题>"`，结束心跳（`heartbeat.sh stop <ID>`），再 `board move <ID> todo`（放回领取起点）。
 
 ## 处理一块白板
 
-循环：`board claim --json`（不带 ID，领领取起点最上面的）→ 按上面 2–4 处理 → 再 claim，直到返回 `EMPTY_TODO`。最后汇报处理了哪些卡片、各自的结果。
+循环：`board claim --json`（不带 ID，领领取起点最上面的）→ 按上面 2–5 处理 → 再 claim，直到返回 `EMPTY_TODO`。最后汇报处理了哪些卡片、各自的结果。
 
 ## 整理未整理的条目
 
@@ -94,6 +102,7 @@ board flow                                # 工作流：状态的顺序、标识
 board show <ID> --json                    # 全部字段和动态
 board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"
+board beat <ID> [--final]                 # 心跳 / 正常结束；一般由 scripts/heartbeat.sh 调用，不用手动发
 board move <ID> <状态标识或名称> [--top]
 board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些
 board labels

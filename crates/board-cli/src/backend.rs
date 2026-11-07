@@ -159,6 +159,7 @@ fn cmd_json(cmd: &Cmd) -> Value {
         Cmd::Claim { id } => json!({ "op": "claim", "id": id }),
         Cmd::Comment { id, text } => json!({ "op": "comment", "id": id, "text": text }),
         Cmd::Label { id, add, remove } => json!({ "op": "label", "id": id, "add": add, "remove": remove }),
+        Cmd::Beat { id, done } => json!({ "op": "beat", "id": id, "final": done }),
         Cmd::Release { id } => json!({ "op": "release", "id": id }),
         Cmd::Delete { id } => json!({ "op": "delete", "id": id }),
     }

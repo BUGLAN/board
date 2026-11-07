@@ -16,9 +16,9 @@ use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
 const VALUE_FLAGS: [&str; 9] = ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out"];
-const BOOL_FLAGS: [&str; 4] = ["--json", "--top", "--help", "-h"];
-const COMMANDS: [&str; 14] =
-    ["help", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "label", "labels", "attach", "files"];
+const BOOL_FLAGS: [&str; 5] = ["--json", "--top", "--help", "-h", "--final"];
+const COMMANDS: [&str; 15] =
+    ["help", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat", "label", "labels", "attach", "files"];
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -319,6 +319,18 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 Output::Text(format!("{} 已评论 {}{}\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id)), fmt.renewed(&d, &name)))
             }
         }
+        "beat" => {
+            let id = a.id(sub)?;
+            let done = a.flag("--final");
+            let d = exec(Cmd::Beat { id, done })?;
+            if json {
+                Output::Json(fmt.full(&d))
+            } else if done {
+                Output::Text(format!("{} {} 心跳已结束\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id))))
+            } else {
+                Output::Text(format!("{} {} 心跳{}\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id)), fmt.renewed(&d, &name)))
+            }
+        }
         "label" => {
             let id = a.id(sub)?;
             let ops = &a.pos[2..];
@@ -498,6 +510,7 @@ impl Fmt<'_> {
             "holder": c.holder,
             "claimed_at": iso(c.claimed_at),
             "expires_at": iso(c.expires_at),
+            "beat_at": iso(c.beat_at),
             "labels": self.labels(c),
             "attachments": d.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
             "created_at": iso(Some(c.created_at)),
@@ -601,7 +614,7 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 14] = [
+    let rows: [(&str, &str, &str); 15] = [
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称和规则"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
@@ -611,6 +624,7 @@ fn help(p: &Paint) -> String {
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）"),
         ("claim", "[<ID>]", "领取；不带 ID 时领取领取起点最上面的卡片"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
+        ("beat", "<ID> [--final]", "心跳：表明还在做（续期领取）；--final 正常结束。一般由 skill 里的脚本每 10 秒调用"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）"),
         ("labels", "", "列出项目的标签，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),

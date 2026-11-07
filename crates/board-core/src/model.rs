@@ -6,6 +6,11 @@ use std::collections::BTreeMap;
 /// 领取时长：30 分钟（PRD §8 规则 1）
 pub const CLAIM_MS: i64 = 30 * 60 * 1000;
 
+/// 心跳间隔：agent 用 skill 里的脚本每 10 秒发送一次 `board beat`
+pub const BEAT_MS: i64 = 10 * 1000;
+/// 连续这么多次没收到心跳，判定 agent 异常退出
+pub const BEAT_MISSES: i64 = 5;
+
 /// 项目颜色色板
 pub const PROJECT_COLORS: [&str; 8] =
     ["#FF6A33", "#4DB5FF", "#3DDC97", "#B98CFF", "#FFB020", "#FF5C8A", "#2DD4BF", "#94A3B8"];
@@ -291,6 +296,8 @@ pub struct Card {
     pub holder: Option<String>,
     pub claimed_at: Option<i64>,
     pub expires_at: Option<i64>,
+    /// 最近一次心跳；持有者没在发心跳（或已经发了 final）时为空
+    pub beat_at: Option<i64>,
     /// 标签 ID（属于白板所在的项目）
     pub labels: Vec<i64>,
     pub created_at: i64,

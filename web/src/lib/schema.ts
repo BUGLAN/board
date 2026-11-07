@@ -28,6 +28,12 @@ export const boardFlow = (b: BoardSnapshot | null) => flowOf(b?.statuses);
 
 /** 领取时长：30 分钟 */
 export const CLAIM_MS = 30 * 60 * 1000;
+/** 心跳间隔；连续 BEAT_MISSES 次没收到判定异常退出（与 board-core 一致） */
+export const BEAT_MS = 10 * 1000;
+export const BEAT_MISSES = 5;
+/** 持有者正在发心跳时，距上次心跳的秒数；没在发心跳返回 null */
+export const beatAge = (c: { holder: string | null; beatAt: number | null }, now: number) =>
+  c.holder && c.beatAt != null && now - c.beatAt < BEAT_MS * BEAT_MISSES ? Math.max(0, Math.round((now - c.beatAt) / 1000)) : null;
 
 export const PROJECT_COLORS = ['#FF6A33', '#4DB5FF', '#3DDC97', '#B98CFF', '#FFB020', '#FF5C8A', '#2DD4BF', '#94A3B8'];
 export const LABEL_COLORS = ['#F43F5E', '#F97316', '#EAB308', '#22C55E', '#14B8A6', '#3B82F6', '#8B5CF6', '#EC4899', '#64748B'];

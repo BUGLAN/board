@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS cards (
   holder          TEXT,
   claimed_at      INTEGER,
   expires_at      INTEGER,
+  beat_at         INTEGER,
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
   created_by_kind TEXT NOT NULL,
@@ -123,6 +124,10 @@ CREATE TABLE IF NOT EXISTS statuses (
   PRIMARY KEY (board, key)
 );
 "#;
+
+/// 需要释放的领取：到期，或心跳中断（?1 = 现在，?2 = 允许的心跳间隔）
+pub(crate) const DUE: &str =
+    "holder IS NOT NULL AND ((expires_at IS NOT NULL AND expires_at <= ?1) OR (beat_at IS NOT NULL AND beat_at + ?2 <= ?1))";
 
 /// 每块白板保留的事件条数（卡片自己的动态不受影响）
 const EVENTS_KEEP: i64 = 500;
@@ -205,6 +210,11 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::files::SCHEMA)?;
+        // 旧数据库的 cards 没有心跳列
+        let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_beat {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN beat_at INTEGER")?;
+        }
         // 旧数据库里的白板没有工作流：补上默认的四个状态
         let missing: Vec<i64> = conn
             .prepare("SELECT id FROM boards b WHERE NOT EXISTS (SELECT 1 FROM statuses s WHERE s.board = b.id)")?
@@ -260,21 +270,17 @@ impl Store {
         Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))?)
     }
 
-    /// 规则 7：扫描所有白板，释放到期的领取。返回释放的张数
+    /// 规则 7：扫描所有白板，释放到期的领取和心跳中断的领取。返回释放的张数
     pub fn sweep(&mut self, now: i64) -> Result<usize> {
         // 先用只读查询判断，避免没有到期卡片时也抢写锁
-        let due: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE holder IS NOT NULL AND expires_at IS NOT NULL AND expires_at <= ?1",
-            [now],
-            |r| r.get(0),
-        )?;
+        let due: i64 = self.conn.query_row(&format!("SELECT COUNT(*) FROM cards WHERE {DUE}"), params![now, BEAT_MS * BEAT_MISSES], |r| r.get(0))?;
         if due == 0 {
             return Ok(0);
         }
         self.write(now, Origin::system(), |w| {
             let boards: Vec<i64> = w.collect(
-                "SELECT DISTINCT board FROM cards WHERE holder IS NOT NULL AND expires_at IS NOT NULL AND expires_at <= ?1",
-                params![now],
+                &format!("SELECT DISTINCT board FROM cards WHERE {DUE}"),
+                params![now, BEAT_MS * BEAT_MISSES],
                 |r| r.get(0),
             )?;
             let mut n = 0;
@@ -568,7 +574,7 @@ pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
 fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
     let sql = format!(
         "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.expires_at, c.created_at, c.updated_at,
-                c.created_by_kind, c.created_by_name,
+                c.created_by_kind, c.created_by_name, c.beat_at,
                 (SELECT COUNT(*) FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.kind = 'comment'),
                 (SELECT GROUP_CONCAT(cl.label) FROM card_labels cl JOIN labels l ON l.id = cl.label
                    WHERE cl.board = c.board AND cl.card = c.id)
@@ -578,7 +584,7 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(params![board, only], |r| {
         let col: String = r.get(3)?;
-        let labels: Option<String> = r.get(12)?;
+        let labels: Option<String> = r.get(13)?;
         let mut labels: Vec<i64> = labels
             .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
             .unwrap_or_default();
@@ -591,10 +597,11 @@ fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card
             holder: r.get(4)?,
             claimed_at: r.get(5)?,
             expires_at: r.get(6)?,
+            beat_at: r.get(11)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
             created_by: row_actor(r.get(9)?, r.get(10)?),
-            comments: r.get(11)?,
+            comments: r.get(12)?,
             labels,
         })
     })?;

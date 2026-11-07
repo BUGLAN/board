@@ -434,7 +434,7 @@ export function SettingsPage() {
             <Code plain cmd={`/board-skills ${path}`} note={`领完这块白板的「${flow.claim?.name ?? '待办'}」`} />
             <Code plain cmd="/board-skills README 加一个英文版" note={`一句话需求：先记到「${flow.claim?.name ?? '待办'}」再做`} />
           </div>
-          <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）">
+          <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；心跳脚本在同目录的 scripts/ 里，推荐用下面的命令链接整个目录">
             <CopySkill />
           </Row>
           <div className="code-block">

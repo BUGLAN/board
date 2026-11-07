@@ -1,6 +1,6 @@
 /* 卡片：白板状态块与侧栏「未整理」共用 */
 import { memo, useLayoutEffect, useRef } from 'react';
-import { CLAIM_MS } from '../lib/schema';
+import { beatAge, CLAIM_MS } from '../lib/schema';
 import type { Card as CardT, Label } from '../lib/types';
 import { agentColor, ago, cx, mmss, replay } from '../lib/util';
 import type { Flash } from '../store/ui';
@@ -46,6 +46,7 @@ export const CardView = memo(function CardView({
   const ref = useRef<HTMLElement>(null);
   const hit = filter ? matches(c, filter, labels) : true;
   const left = c.expiresAt != null ? c.expiresAt - now : 0;
+  const beat = beatAge(c, now);
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
 
@@ -147,6 +148,7 @@ export const CardView = memo(function CardView({
               <div className="card-claim">
                 <Avatar actor={agent(c.holder!)} />
                 <span className="claim-name">{c.holder}</span>
+                {beat != null && <span className="beat" data-tip={`心跳正常 · ${beat} 秒前`} aria-label="心跳正常" />}
                 <span className="claim-timer" title="剩余领取时间">
                   <Ring r={5} p={left / CLAIM_MS} />
                   <span className="t">{mmss(left)}</span>

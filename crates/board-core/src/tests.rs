@@ -151,6 +151,91 @@ fn ac6_timeout_release() {
     assert_eq!(code(exec(&mut s, B, &alpha(), T0 + 32 * MIN, mv(1, "review"))), ErrorCode::NotHolder);
 }
 
+fn beat(id: i64, done: bool) -> Cmd {
+    Cmd::Beat { id, done }
+}
+const SEC: i64 = 1000;
+
+#[test]
+fn heartbeat_keeps_claim_and_logs_once() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let mut t = T0;
+    for _ in 0..200 {
+        t += BEAT_MS;
+        let c = exec(&mut s, B, &alpha(), t, beat(1, false)).unwrap().card;
+        assert_eq!(c.beat_at, Some(t));
+        assert_eq!(c.expires_at, Some(t + CLAIM_MS), "心跳续期领取");
+        assert_eq!(s.sweep(t + 49 * SEC).unwrap(), 0);
+    }
+    // 200 次心跳 ≈ 33 分钟，超过 30 分钟领取时长也没有被释放
+    let c = card(&s, B, 1);
+    assert_eq!(c.card.holder.as_deref(), Some("alpha"));
+    assert_eq!(c.activity.iter().filter(|a| a.action == "beat").count(), 1, "只记第一次心跳");
+}
+
+#[test]
+fn heartbeat_lost_after_five_misses() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, new("二")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(Some(2))).unwrap();
+    exec(&mut s, B, &alpha(), T0 + BEAT_MS, beat(2, false)).unwrap();
+    let last = T0 + BEAT_MS;
+    assert_eq!(s.sweep(last + BEAT_MS * BEAT_MISSES - 1).unwrap(), 0, "第 5 次还没到");
+    assert_eq!(s.sweep(last + BEAT_MS * BEAT_MISSES).unwrap(), 1, "连续 5 次没收到");
+    let snap = snapshot(&s, B, last + 50 * SEC);
+    assert_eq!(snap.cols["todo"], vec![2, 1], "回到「待办」最上面");
+    let c = card(&s, B, 2);
+    assert_eq!(c.card.holder, None);
+    assert_eq!(c.card.beat_at, None);
+    assert!(c.activity.iter().any(|a| a.action == "lost" && a.text.contains("alpha") && a.text.contains("异常退出")));
+    // 之后再发心跳：已经不是持有者
+    assert_eq!(code(exec(&mut s, B, &alpha(), last + 60 * SEC, beat(2, false))), ErrorCode::NotHolder);
+}
+
+#[test]
+fn heartbeat_lost_without_server_sweep() {
+    // 本机模式没有服务端扫描：下一条命令执行前同样判定
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0, beat(1, false)).unwrap();
+    let c = exec(&mut s, B, &beta(), T0 + 50 * SEC, claim(None)).unwrap();
+    assert_eq!(c.card.holder.as_deref(), Some("beta"));
+}
+
+#[test]
+fn heartbeat_final_is_normal_exit() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + BEAT_MS, beat(1, false)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 2 * BEAT_MS, beat(1, true)).unwrap();
+    assert_eq!(c.card.beat_at, None);
+    assert_eq!(c.card.holder.as_deref(), Some("alpha"), "final 不释放领取，按原来的 30 分钟规则");
+    assert!(c.activity.iter().any(|a| a.action == "beat" && a.text.contains("正常退出")));
+    assert_eq!(s.sweep(T0 + 10 * MIN).unwrap(), 0, "final 之后不再按心跳判定");
+    // 已交审后再发 final：什么也不做，不报错
+    exec(&mut s, B, &alpha(), T0 + 3 * BEAT_MS, beat(1, false)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 4 * BEAT_MS, mv(1, "review")).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 5 * BEAT_MS, beat(1, true)).unwrap();
+    assert_eq!(c.card.beat_at, None, "离开锁定状态时心跳一起清掉");
+    assert_eq!(c.card.column, "review");
+}
+
+#[test]
+fn heartbeat_rules() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, beat(1, false))), ErrorCode::NotHolder, "没领取不能发心跳");
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, beat(1, false))), ErrorCode::NotHolder, "别人的卡片");
+    assert_eq!(code(exec(&mut s, B, &human(), T0, beat(1, false))), ErrorCode::Usage, "人不发心跳");
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, beat(9, false))), ErrorCode::NotFound);
+}
+
 #[test]
 fn ac6_timeout_without_server_sweep() {
     // 没有服务端时，任何一条命令执行前也会先释放到期的领取
