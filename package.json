@@ -1,0 +1,17 @@
+{
+  "name": "board",
+  "private": true,
+  "version": "0.3.0",
+  "scripts": {
+    "postinstall": "npm --prefix web install",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build",
+    "server": "cargo run -p board-server --",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "test": "cargo test && npm --prefix web run typecheck"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

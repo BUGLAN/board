@@ -1,0 +1,21 @@
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+import '@fontsource-variable/bricolage-grotesque';
+import './styles/tokens.css';
+import './styles/base.css';
+import './styles/layout.css';
+import './styles/workbench.css';
+import './styles/canvas.css';
+import './styles/labels.css';
+import './styles/board.css';
+import './styles/settings.css';
+import './styles/overlays.css';
+import './styles/platform.css';
+import './styles/app.css';
+
+import { createRoot } from 'react-dom/client';
+import { App } from './App';
+import { applyPrefs } from './lib/platform';
+
+applyPrefs();
+createRoot(document.getElementById('root')!).render(<App />);

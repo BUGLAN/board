@@ -1,0 +1,73 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "prototype",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "prototype/serve.py",
+        "5179"
+      ],
+      "port": 5179
+    },
+    {
+      "name": "board-server",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "-q",
+        "-p",
+        "board-server",
+        "--",
+        "--port",
+        "7420",
+        "--demo",
+        "--db",
+        ".dev/board.db"
+      ],
+      "port": 7420
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "web",
+        "run",
+        "dev"
+      ],
+      "port": 1420
+    },
+    {
+      "name": "board-server-home",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "-q",
+        "-p",
+        "board-server",
+        "--",
+        "--port",
+        "7431"
+      ],
+      "port": 7431
+    },
+    {
+      "name": "board-server-flow",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "-q",
+        "-p",
+        "board-server",
+        "--",
+        "--port",
+        "7432",
+        "--demo",
+        "--db",
+        ".dev/flow.db"
+      ],
+      "port": 7432
+    }
+  ]
+}

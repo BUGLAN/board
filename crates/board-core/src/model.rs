@@ -1,0 +1,354 @@
+//! 数据模型：工作流、身份、快照（界面与 CLI 共用）。
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// 领取时长：30 分钟（PRD §8 规则 1）
+pub const CLAIM_MS: i64 = 30 * 60 * 1000;
+
+/// 项目颜色色板
+pub const PROJECT_COLORS: [&str; 8] =
+    ["#FF6A33", "#4DB5FF", "#3DDC97", "#B98CFF", "#FFB020", "#FF5C8A", "#2DD4BF", "#94A3B8"];
+/// 标签颜色色板
+pub const LABEL_COLORS: [&str; 9] =
+    ["#F43F5E", "#F97316", "#EAB308", "#22C55E", "#14B8A6", "#3B82F6", "#8B5CF6", "#EC4899", "#64748B"];
+
+/// 状态颜色色板：前 4 个是主题色（随浅色 / 深色主题变化），其余是固定颜色
+pub const STATUS_COLORS: [&str; 10] =
+    ["todo", "doing", "review", "done", "#A855F7", "#EC4899", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16"];
+
+/// 「未整理」：每块白板固定都有，不属于工作流
+pub const INBOX: &str = "inbox";
+pub const INBOX_NAME: &str = "未整理";
+
+/// 状态块在白板上的位置：12 栏网格里的起始栏 x、宽度 w，以及决定上下先后的 y
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Tile {
+    pub x: i64,
+    pub w: i64,
+    pub y: f64,
+}
+
+/// 工作流里的一个状态（PRD §7）
+#[derive(Debug, Clone, Serialize)]
+pub struct Status {
+    pub key: String,
+    pub name: String,
+    pub color: String,
+    /// 领取起点：board claim 从这里领取；新建、超时释放、强制释放都回到这里（每块白板恰好一个）
+    pub claim: bool,
+    /// 锁定：只能由 agent 领取进入；被持有期间只有持有者能编辑和移动
+    pub lock: bool,
+    /// 终点：只有人能把卡片移入或移出
+    #[serde(rename = "final")]
+    pub fin: bool,
+    /// 状态块的位置；没有时界面用默认布局
+    pub layout: Option<Tile>,
+}
+
+/// 新建白板时的默认工作流：(标识, 名称, 颜色, 领取起点, 锁定, 终点)
+pub const DEFAULT_FLOW: [(&str, &str, &str, bool, bool, bool); 4] = [
+    ("todo", "待办", "todo", true, false, false),
+    ("doing", "进行中", "doing", false, true, false),
+    ("review", "待审核", "review", false, false, false),
+    ("done", "已完成", "done", false, false, true),
+];
+
+/// 一块白板的工作流（按顺序）
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct Flow(pub Vec<Status>);
+
+impl Flow {
+    pub fn get(&self, key: &str) -> Option<&Status> {
+        self.0.iter().find(|s| s.key == key)
+    }
+    /// 领取起点（数据保证恰好一个；万一没有，退回第一个状态）
+    pub fn claim(&self) -> &Status {
+        self.0.iter().find(|s| s.claim).unwrap_or(&self.0[0])
+    }
+    pub fn is_lock(&self, key: &str) -> bool {
+        self.get(key).is_some_and(|s| s.lock)
+    }
+    pub fn is_final(&self, key: &str) -> bool {
+        self.get(key).is_some_and(|s| s.fin)
+    }
+    /// 状态的中文名；「未整理」也在这里
+    pub fn name<'a>(&'a self, key: &'a str) -> &'a str {
+        if key == INBOX {
+            return INBOX_NAME;
+        }
+        self.get(key).map(|s| s.name.as_str()).unwrap_or(key)
+    }
+    /// 领取后卡片进入的锁定状态：领取起点之后的第一个锁定状态，之后没有时取第一个（PRD §8 规则 1）
+    pub fn claim_target(&self) -> Option<&Status> {
+        let start = self.0.iter().position(|s| s.claim).unwrap_or(0);
+        self.0[start + 1..].iter().find(|s| s.lock).or_else(|| self.0.iter().find(|s| s.lock))
+    }
+    /// 用标识或名称（不区分大小写）找状态；`inbox` / 「未整理」返回 INBOX
+    pub fn resolve(&self, raw: &str) -> Option<String> {
+        let q = raw.trim();
+        let lower = q.to_lowercase();
+        if lower == INBOX || q == INBOX_NAME {
+            return Some(INBOX.to_string());
+        }
+        self.0
+            .iter()
+            .find(|s| s.key == q)
+            .or_else(|| self.0.iter().find(|s| s.name.to_lowercase() == lower))
+            .map(|s| s.key.clone())
+    }
+    /// 可选值说明（错误信息里用）
+    pub fn choices(&self) -> String {
+        let mut v: Vec<String> = self.0.iter().map(|s| format!("{}（{}）", s.name, s.key)).collect();
+        v.push(format!("{INBOX_NAME}（{INBOX}）"));
+        v.join("、")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActorKind {
+    Human,
+    Agent,
+    System,
+}
+
+impl ActorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActorKind::Human => "human",
+            ActorKind::Agent => "agent",
+            ActorKind::System => "system",
+        }
+    }
+    pub fn parse(s: &str) -> ActorKind {
+        match s {
+            "agent" => ActorKind::Agent,
+            "system" => ActorKind::System,
+            _ => ActorKind::Human,
+        }
+    }
+}
+
+/// 谁在操作：界面上是人，CLI 是 agent，超时释放是系统
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Actor {
+    pub kind: ActorKind,
+    pub name: String,
+}
+
+impl Actor {
+    pub fn human() -> Self {
+        Actor { kind: ActorKind::Human, name: String::new() }
+    }
+    pub fn agent(name: impl Into<String>) -> Self {
+        Actor { kind: ActorKind::Agent, name: name.into() }
+    }
+    pub fn system() -> Self {
+        Actor { kind: ActorKind::System, name: String::new() }
+    }
+    pub fn is_agent(&self) -> bool {
+        self.kind == ActorKind::Agent
+    }
+    pub fn is_human(&self) -> bool {
+        self.kind == ActorKind::Human
+    }
+    /// 在文本（动态、CLI 输出）里怎么称呼
+    pub fn display(&self) -> &str {
+        match self.kind {
+            ActorKind::Human => "人",
+            ActorKind::System => "系统",
+            ActorKind::Agent => &self.name,
+        }
+    }
+}
+
+/// 变更来自哪里：界面 / CLI / 系统（超时扫描）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    Ui,
+    Cli,
+    System,
+}
+
+impl Via {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Via::Ui => "ui",
+            Via::Cli => "cli",
+            Via::System => "system",
+        }
+    }
+    pub fn parse(s: &str) -> Via {
+        match s {
+            "cli" => Via::Cli,
+            "system" => Via::System,
+            _ => Via::Ui,
+        }
+    }
+}
+
+/// 一次写操作的来源。client 是界面窗口的标识，用于让窗口忽略自己触发的高亮
+#[derive(Debug, Clone)]
+pub struct Origin {
+    pub via: Via,
+    pub client: Option<String>,
+}
+
+impl Origin {
+    pub fn ui(client: Option<String>) -> Self {
+        Origin { via: Via::Ui, client }
+    }
+    pub fn cli() -> Self {
+        Origin { via: Via::Cli, client: None }
+    }
+    pub fn system() -> Self {
+        Origin { via: Via::System, client: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Pos {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// 已定位的白板
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardRef {
+    pub id: i64,
+    pub project: String,
+    pub key: String,
+}
+
+impl BoardRef {
+    pub fn path(&self) -> String {
+        format!("{}/{}", self.project, self.key)
+    }
+}
+
+/* ------------------------------- 快照 ------------------------------- */
+
+/// 各状态的卡片数（键是状态标识，含 `inbox`）
+pub type Counts = BTreeMap<String, i64>;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Label {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    /// 项目内使用这个标签的卡片数
+    pub uses: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardInfo {
+    pub key: String,
+    pub path: String,
+    pub name: String,
+    pub desc: String,
+    pub pos: Pos,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub counts: Counts,
+    /// 工作流（不含布局）
+    pub statuses: Vec<Status>,
+    /// 正在这块白板上工作的 agent（按工作流和状态内顺序）
+    pub holders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInfo {
+    pub key: String,
+    pub name: String,
+    pub desc: String,
+    pub color: String,
+    pub pos: Pos,
+    pub created_at: i64,
+    pub labels: Vec<Label>,
+    pub boards: Vec<BoardInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Workspace {
+    pub rev: i64,
+    pub now: i64,
+    pub projects: Vec<ProjectInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Card {
+    pub id: i64,
+    pub title: String,
+    pub body: String,
+    /// 状态标识；「未整理」是 `inbox`
+    pub column: String,
+    pub holder: Option<String>,
+    pub claimed_at: Option<i64>,
+    pub expires_at: Option<i64>,
+    /// 标签 ID（属于白板所在的项目）
+    pub labels: Vec<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub created_by: Actor,
+    /// 评论数
+    pub comments: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Activity {
+    pub id: i64,
+    pub at: i64,
+    pub actor: Actor,
+    /// comment | system
+    pub kind: String,
+    pub action: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CardDetail {
+    #[serde(flatten)]
+    pub card: Card,
+    pub activity: Vec<Activity>,
+}
+
+/// 全局事件流里的一条（界面的「最近动态」与跨窗口高亮用）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Event {
+    pub id: i64,
+    pub board: String,
+    pub card_id: i64,
+    pub title: String,
+    pub at: i64,
+    pub actor: Actor,
+    pub op: String,
+    pub text: String,
+    pub via: Via,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
+/// 每个状态里的卡片 ID（按顺序；键是状态标识，含 `inbox`）
+pub type Cols = BTreeMap<String, Vec<i64>>;
+
+/// 一块白板的完整状态（不含每张卡片的动态，详情另取）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardSnapshot {
+    pub rev: i64,
+    pub now: i64,
+    pub path: String,
+    /// 工作流（按顺序，含布局）
+    pub statuses: Vec<Status>,
+    pub cols: Cols,
+    pub cards: BTreeMap<i64, Card>,
+    /// 最近的事件（新的在后）
+    pub log: Vec<Event>,
+}

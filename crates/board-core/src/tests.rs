@@ -1,0 +1,505 @@
+//! 规则层面的验收标准（PRD §13）。CLI 层面的（退出码、--json、环境变量）在 board-cli 的测试里。
+
+use crate::*;
+
+const T0: i64 = 1_700_000_000_000;
+const MIN: i64 = 60 * 1000;
+
+fn store() -> Store {
+    let mut s = Store::open_in_memory().unwrap();
+    s.ensure_default(T0).unwrap();
+    s
+}
+
+fn exec(s: &mut Store, path: &str, who: &Actor, at: i64, cmd: Cmd) -> Result<CardDetail> {
+    let origin = if who.is_human() { Origin::ui(None) } else { Origin::cli() };
+    s.write(at, origin, |w| {
+        let b = w.resolve(path)?;
+        w.exec(&b, who, cmd)
+    })
+}
+
+fn new(title: &str) -> Cmd {
+    Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![] }
+}
+fn claim(id: Option<i64>) -> Cmd {
+    Cmd::Claim { id }
+}
+fn mv(id: i64, col: &str) -> Cmd {
+    Cmd::Move { id, column: col.into(), top: false, index: None }
+}
+fn alpha() -> Actor {
+    Actor::agent("alpha")
+}
+fn beta() -> Actor {
+    Actor::agent("beta")
+}
+fn human() -> Actor {
+    Actor::human()
+}
+fn code(r: Result<CardDetail>) -> ErrorCode {
+    r.expect_err("应当被拒绝").code
+}
+fn snapshot(s: &Store, path: &str, now: i64) -> BoardSnapshot {
+    s.read(|r| {
+        let b = r.resolve(path)?;
+        r.board_snapshot(&b, now)
+    })
+    .unwrap()
+}
+fn card(s: &Store, path: &str, id: i64) -> CardDetail {
+    s.read(|r| {
+        let b = r.resolve(path)?;
+        r.card(&b, id)
+    })
+    .unwrap()
+}
+
+const B: &str = "default/main";
+
+#[test]
+fn ac1_claim_takes_top_of_todo() {
+    let mut s = store();
+    exec(&mut s, B, &alpha(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, new("二")).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0, claim(None)).unwrap().card;
+    assert_eq!(c.id, 1);
+    assert_eq!(c.column, "doing");
+    assert_eq!(c.holder.as_deref(), Some("alpha"));
+    assert_eq!(c.expires_at, Some(T0 + CLAIM_MS));
+}
+
+#[test]
+fn ac2_concurrent_claim_only_one_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        exec(&mut s, B, &human(), T0, new("x")).unwrap();
+    }
+    let handles: Vec<_> = ["alpha", "beta", "gamma", "delta"]
+        .into_iter()
+        .map(|name| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let mut s = Store::open(&path).unwrap();
+                exec(&mut s, B, &Actor::agent(name), T0, claim(Some(1))).map(|_| ()).map_err(|e| e.code)
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    assert!(results.iter().filter_map(|r| r.err()).all(|c| c == ErrorCode::NotInTodo), "{results:?}");
+}
+
+#[test]
+fn ac3_one_card_per_agent() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, new("二")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(None))), ErrorCode::AlreadyHolding);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(2)))), ErrorCode::AlreadyHolding);
+}
+
+#[test]
+fn ac4_only_holder_edits_others_comment() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let r = exec(&mut s, B, &beta(), T0, Cmd::Edit { id: 1, title: Some("x".into()), body: None });
+    assert_eq!(code(r), ErrorCode::NotHolder);
+    exec(&mut s, B, &beta(), T0, Cmd::Comment { id: 1, text: "…".into() }).unwrap();
+    // 人也只能评论
+    let r = exec(&mut s, B, &human(), T0, Cmd::Edit { id: 1, title: Some("x".into()), body: None });
+    assert_eq!(code(r), ErrorCode::NotHolder);
+}
+
+#[test]
+fn ac5_comment_renews() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 20 * MIN, Cmd::Comment { id: 1, text: "进展".into() }).unwrap();
+    assert_eq!(c.card.expires_at, Some(T0 + 50 * MIN));
+    // 编辑、再次 claim 也续期
+    let c = exec(&mut s, B, &alpha(), T0 + 25 * MIN, Cmd::Edit { id: 1, title: None, body: Some("b".into()) }).unwrap();
+    assert_eq!(c.card.expires_at, Some(T0 + 55 * MIN));
+    let c = exec(&mut s, B, &alpha(), T0 + 26 * MIN, claim(Some(1))).unwrap();
+    assert_eq!(c.card.expires_at, Some(T0 + 56 * MIN));
+    // 别人评论不续期
+    let c = exec(&mut s, B, &beta(), T0 + 27 * MIN, Cmd::Comment { id: 1, text: "?".into() }).unwrap();
+    assert_eq!(c.card.expires_at, Some(T0 + 56 * MIN));
+}
+
+#[test]
+fn ac6_timeout_release() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, new("二")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(Some(1))).unwrap();
+    // 服务端定时扫描
+    assert_eq!(s.sweep(T0 + 29 * MIN).unwrap(), 0);
+    assert_eq!(s.sweep(T0 + 30 * MIN).unwrap(), 1);
+    let snap = snapshot(&s, B, T0 + 30 * MIN);
+    assert_eq!(snap.cols["todo"], vec![1, 2], "回到「待办」最上面");
+    let c = card(&s, B, 1);
+    assert_eq!(c.card.holder, None);
+    assert!(c.activity.iter().any(|a| a.text.contains("领取超时，自动释放")));
+    exec(&mut s, B, &beta(), T0 + 31 * MIN, claim(Some(1))).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0 + 32 * MIN, mv(1, "review"))), ErrorCode::NotHolder);
+}
+
+#[test]
+fn ac6_timeout_without_server_sweep() {
+    // 没有服务端时，任何一条命令执行前也会先释放到期的领取
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let c = exec(&mut s, B, &beta(), T0 + 31 * MIN, claim(None)).unwrap();
+    assert_eq!(c.card.id, 1);
+    assert_eq!(c.card.holder.as_deref(), Some("beta"));
+}
+
+#[test]
+fn ac7_done_belongs_to_humans() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "done"))), ErrorCode::ForbiddenColumn);
+    let c = exec(&mut s, B, &alpha(), T0, mv(1, "review")).unwrap();
+    assert_eq!(c.card.holder, None);
+    assert_eq!(c.card.expires_at, None);
+    let c = exec(&mut s, B, &human(), T0, mv(1, "done")).unwrap();
+    assert_eq!(c.card.column, "done");
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "todo"))), ErrorCode::ForbiddenColumn);
+}
+
+#[test]
+fn ac8_doing_only_by_claim() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, new("二")).unwrap();
+    assert_eq!(code(exec(&mut s, B, &human(), T0, mv(1, "doing"))), ErrorCode::ForbiddenColumn);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(2, "doing"))), ErrorCode::ForbiddenColumn);
+    let snap = snapshot(&s, B, T0);
+    assert_eq!(snap.cols["todo"], vec![1, 2]);
+}
+
+#[test]
+fn ac9_force_release() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, new("二")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(Some(2))).unwrap();
+    let c = exec(&mut s, B, &human(), T0, Cmd::Release { id: 2 }).unwrap();
+    assert_eq!(c.card.holder, None);
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![2, 1]);
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    // 人不能把「进行中」的卡片拖走
+    assert_eq!(code(exec(&mut s, B, &human(), T0, mv(2, "review"))), ErrorCode::NotHolder);
+}
+
+#[test]
+fn ac10_rev_increments() {
+    let mut s = store();
+    let r0 = s.rev().unwrap();
+    exec(&mut s, B, &alpha(), T0, new("x")).unwrap();
+    assert!(s.rev().unwrap() > r0);
+    // 被拒绝的命令不改变 rev
+    let r1 = s.rev().unwrap();
+    let _ = exec(&mut s, B, &alpha(), T0, mv(1, "doing"));
+    assert_eq!(s.rev().unwrap(), r1);
+}
+
+fn oss(s: &mut Store) {
+    s.write(T0, Origin::ui(None), |w| {
+        w.create_project(
+            "开源",
+            "oss",
+            "",
+            None,
+            None,
+            NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None },
+        )?;
+        w.create_board("oss", "发布", "release", "", None)?;
+        w.create_project(
+            "官网",
+            "site",
+            "",
+            None,
+            None,
+            NewBoard { name: "上线".into(), key: "launch".into(), desc: String::new(), pos: None },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn ac13_board_paths() {
+    let mut s = store();
+    oss(&mut s);
+    let e = s.read(|r| r.resolve("oss")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotFound);
+    assert!(e.message.contains("main") && e.message.contains("release"), "{}", e.message);
+    assert_eq!(s.read(|r| r.resolve("oss/nope")).unwrap_err().code, ErrorCode::BoardNotFound);
+    assert_eq!(s.read(|r| r.resolve("site")).unwrap(), s.read(|r| r.resolve("site/launch")).unwrap());
+    assert_eq!(s.read(|r| r.resolve("")).unwrap_err().code, ErrorCode::NoBoard);
+}
+
+#[test]
+fn ac14_ids_per_board() {
+    let mut s = store();
+    oss(&mut s);
+    exec(&mut s, "oss/main", &alpha(), T0, new("a")).unwrap();
+    exec(&mut s, "oss/main", &alpha(), T0, new("b")).unwrap();
+    assert_eq!(exec(&mut s, "oss/release", &alpha(), T0, new("x")).unwrap().card.id, 1);
+}
+
+#[test]
+fn ac15_holding_is_per_board() {
+    let mut s = store();
+    oss(&mut s);
+    exec(&mut s, "oss/main", &human(), T0, new("a")).unwrap();
+    exec(&mut s, "oss/release", &human(), T0, new("b")).unwrap();
+    exec(&mut s, "oss/main", &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, "oss/release", &alpha(), T0, claim(None)).unwrap();
+}
+
+#[test]
+fn ac17_deleted_board() {
+    let mut s = store();
+    oss(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.delete_board("oss/release")).unwrap();
+    assert_eq!(s.read(|r| r.resolve("oss/release")).unwrap_err().code, ErrorCode::BoardNotFound);
+    // 只剩一块白板时只写项目标识也可以
+    assert!(s.read(|r| r.resolve("oss")).is_ok());
+}
+
+#[test]
+fn keep_at_least_one_board() {
+    let mut s = store();
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.delete_board(B)).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.delete_project("default")).unwrap_err().code, ErrorCode::Usage);
+    oss(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.delete_project("oss")).unwrap();
+    assert!(s.read(|r| r.resolve("oss/main")).is_err());
+}
+
+#[test]
+fn ac19_21_inbox() {
+    let mut s = store();
+    for _ in 0..4 {
+        exec(&mut s, B, &human(), T0, new("x")).unwrap();
+    }
+    for id in 1..=4 {
+        exec(&mut s, B, &human(), T0, Cmd::Delete { id }).unwrap();
+    }
+    let c = exec(&mut s, B, &human(), T0, Cmd::New { title: "想法".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }).unwrap();
+    assert_eq!(c.card.id, 5);
+    assert_eq!(c.card.column, "inbox");
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(None))), ErrorCode::EmptyTodo);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(5)))), ErrorCode::NotInTodo);
+    // 拖到「进行中」被拒绝
+    assert_eq!(code(exec(&mut s, B, &human(), T0, mv(5, "doing"))), ErrorCode::ForbiddenColumn);
+    // agent 不能在「未整理」里新建
+    let r = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "x".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] });
+    assert_eq!(code(r), ErrorCode::Usage);
+    // 整理到待办 → 最下面
+    exec(&mut s, B, &human(), T0, new("y")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(5, "todo")).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![6, 5]);
+}
+
+#[test]
+fn ac22_25_labels() {
+    let mut s = store();
+    let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None)).unwrap();
+    assert_eq!(
+        s.write(T0, Origin::ui(None), |w| w.create_label("default", "BUG", None)).unwrap_err().code,
+        ErrorCode::Usage,
+        "名称不区分大小写"
+    );
+    exec(&mut s, B, &human(), T0, new("a")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let c = exec(&mut s, B, &beta(), T0 + 5 * MIN, Cmd::Label { id: 1, add: vec![bug.id], remove: vec![] }).unwrap();
+    assert_eq!(c.card.labels, vec![bug.id]);
+    assert_eq!(c.card.expires_at, Some(T0 + CLAIM_MS), "加标签不续期");
+    assert!(c.activity.iter().any(|a| a.action == "label" && a.text.contains("bug")));
+    // 不存在的标签
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, Cmd::Label { id: 1, add: vec![999], remove: vec![] })), ErrorCode::Usage);
+    // 删除标签 → 从卡片上移除
+    s.write(T0, Origin::ui(None), |w| w.delete_label("default", bug.id)).unwrap();
+    assert!(card(&s, B, 1).card.labels.is_empty());
+}
+
+#[test]
+fn drag_index_and_reorder() {
+    let mut s = store();
+    for t in ["a", "b", "c"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0) }).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![3, 1, 2]);
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "review".into(), top: false, index: Some(0) }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 1, column: "review".into(), top: true, index: None }).unwrap();
+    let snap = snapshot(&s, B, T0);
+    assert_eq!(snap.cols["todo"], vec![2]);
+    assert_eq!(snap.cols["review"], vec![1, 3]);
+    exec(&mut s, B, &alpha(), T0, Cmd::New { title: "top".into(), body: None, column: None, top: true, labels: vec![] }).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![4, 2]);
+}
+
+#[test]
+fn empty_title_and_comment() {
+    let mut s = store();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, new("  "))), ErrorCode::EmptyTitle);
+    exec(&mut s, B, &alpha(), T0, new("a")).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Edit { id: 1, title: Some("".into()), body: None })), ErrorCode::EmptyTitle);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Comment { id: 1, text: " ".into() })), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Comment { id: 9, text: "x".into() })), ErrorCode::NotFound);
+}
+
+#[test]
+fn demo_seed() {
+    let mut s = store();
+    assert!(seed::seed_demo(&mut s, T0).unwrap());
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    assert_eq!(ws.projects.len(), 3);
+    assert_eq!(ws.projects.iter().map(|p| p.boards.len()).sum::<usize>(), 5);
+    let main = &ws.projects[0].boards[0];
+    assert_eq!(main.path, "oss/main");
+    assert_eq!(main.counts["inbox"], 4);
+    assert_eq!(main.counts["doing"], 2);
+    assert!(!seed::seed_demo(&mut s, T0).unwrap(), "已有数据时不再写入");
+}
+
+/* ------------------------------ 工作流（PRD §7、§13 26–29） ------------------------------ */
+
+fn ui<T>(s: &mut Store, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {
+    s.write(T0, Origin::ui(None), f)
+}
+fn flow(s: &Store) -> Flow {
+    s.read(|r| {
+        let b = r.resolve(B)?;
+        r.flow(&b)
+    })
+    .unwrap()
+}
+fn keys(s: &Store) -> Vec<String> {
+    flow(s).0.into_iter().map(|x| x.key).collect()
+}
+
+#[test]
+fn default_flow_and_custom_status() {
+    let mut s = store();
+    assert_eq!(keys(&s), ["todo", "doing", "review", "done"]);
+    let st = ui(&mut s, |w| w.create_status(B, "设计中", None)).unwrap();
+    assert_eq!(st.key, "s1");
+    // 重名（不区分大小写）、保留名称
+    assert_eq!(ui(&mut s, |w| w.create_status(B, "设计中", None)).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(ui(&mut s, |w| w.create_status(B, "未整理", None)).unwrap_err().code, ErrorCode::Usage);
+    ui(&mut s, |w| w.reorder_statuses(B, &["todo".into(), "s1".into(), "doing".into(), "review".into(), "done".into()])).unwrap();
+    assert_eq!(keys(&s), ["todo", "s1", "doing", "review", "done"]);
+    for t in ["a", "b", "c"] {
+        exec(&mut s, B, &alpha(), T0, new(t)).unwrap();
+    }
+    // 标识和名称都能用
+    exec(&mut s, B, &alpha(), T0, mv(2, "设计中")).unwrap();
+    exec(&mut s, B, &alpha(), T0, mv(3, "s1")).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["s1"], vec![2, 3]);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "不存在"))), ErrorCode::Usage);
+}
+
+#[test]
+fn claim_source_and_target_follow_flow() {
+    let mut s = store();
+    for t in ["a", "b"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, mv(2, "review")).unwrap();
+    // 把「待审核」设为领取起点：只能有一个
+    ui(&mut s, |w| w.update_status(B, "review", StatusPatch { claim: Some(true), ..Default::default() })).unwrap();
+    let f = flow(&s);
+    assert!(f.get("review").unwrap().claim && !f.get("todo").unwrap().claim);
+    assert_eq!(
+        ui(&mut s, |w| w.update_status(B, "review", StatusPatch { claim: Some(false), ..Default::default() })).unwrap_err().code,
+        ErrorCode::Usage
+    );
+    // 「待审核」之后没有锁定状态 → 进入第一个锁定状态「进行中」
+    let c = exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    assert_eq!((c.card.id, c.card.column.as_str()), (2, "doing"));
+    // 带 ID 领取不在领取起点的卡片
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, claim(Some(1)))), ErrorCode::NotInTodo);
+    // 超时释放回到新的领取起点
+    s.sweep(T0 + 31 * MIN).unwrap();
+    assert_eq!(snapshot(&s, B, T0 + 31 * MIN).cols["review"], vec![2]);
+    // 新建默认放进领取起点
+    let c = exec(&mut s, B, &alpha(), T0 + 31 * MIN, new("c")).unwrap();
+    assert_eq!(c.card.column, "review");
+}
+
+#[test]
+fn multiple_locked_statuses() {
+    let mut s = store();
+    let t = ui(&mut s, |w| w.create_status(B, "测试中", None)).unwrap();
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { lock: Some(true), ..Default::default() })).unwrap();
+    for x in ["a", "b"] {
+        exec(&mut s, B, &human(), T0, new(x)).unwrap();
+    }
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    // 持有者在锁定状态之间移动：领取保持并续期
+    let c = exec(&mut s, B, &alpha(), T0 + 10 * MIN, mv(1, "测试中")).unwrap();
+    assert_eq!(c.card.holder.as_deref(), Some("alpha"));
+    assert_eq!(c.card.expires_at, Some(T0 + 10 * MIN + CLAIM_MS));
+    // 别人不能把卡片直接移进锁定状态
+    assert_eq!(code(exec(&mut s, B, &human(), T0, mv(2, "测试中"))), ErrorCode::ForbiddenColumn);
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, mv(1, "review"))), ErrorCode::NotHolder);
+    // 离开锁定状态即释放
+    let c = exec(&mut s, B, &alpha(), T0, mv(1, "review")).unwrap();
+    assert!(c.card.holder.is_none());
+}
+
+#[test]
+fn unlock_and_delete_status_release_cards() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("a")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    // 关闭「进行中」的锁定：卡片留在原处，领取释放
+    ui(&mut s, |w| w.update_status(B, "doing", StatusPatch { lock: Some(false), ..Default::default() })).unwrap();
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.column.as_str(), c.card.holder.is_none()), ("doing", true));
+    // 领取起点不能删除；删除其他状态时卡片移到领取起点最下面
+    assert_eq!(ui(&mut s, |w| w.delete_status(B, "todo")).unwrap_err().code, ErrorCode::Usage);
+    exec(&mut s, B, &human(), T0, new("b")).unwrap();
+    ui(&mut s, |w| w.delete_status(B, "doing")).unwrap();
+    assert_eq!(keys(&s), ["todo", "review", "done"]);
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![2, 1]);
+    // 没有锁定状态时不能领取
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(None))), ErrorCode::ForbiddenColumn);
+}
+
+#[test]
+fn final_status_is_human_only_and_layout_saved() {
+    let mut s = store();
+    let t = ui(&mut s, |w| w.create_status(B, "已发布", Some("#EC4899"))).unwrap();
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { fin: Some(true), ..Default::default() })).unwrap();
+    exec(&mut s, B, &human(), T0, new("a")).unwrap();
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "已发布"))), ErrorCode::ForbiddenColumn);
+    exec(&mut s, B, &human(), T0, mv(1, "已发布")).unwrap();
+    // 布局
+    let mut tiles = std::collections::BTreeMap::new();
+    tiles.insert("todo".to_string(), Tile { x: 0, w: 6, y: 0.0 });
+    ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap();
+    assert_eq!(flow(&s).get("todo").unwrap().layout, Some(Tile { x: 0, w: 6, y: 0.0 }));
+    tiles.insert("todo".to_string(), Tile { x: 8, w: 6, y: 0.0 });
+    assert_eq!(ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap_err().code, ErrorCode::Usage);
+    ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
+    assert!(flow(&s).0.iter().all(|x| x.layout.is_none()));
+    // 新建白板自带默认工作流
+    ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
+    let second = s.read(|r| r.resolve("default/second").and_then(|b| r.flow(&b))).unwrap();
+    assert_eq!(second.0.len(), 4);
+}

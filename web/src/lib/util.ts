@@ -1,0 +1,107 @@
+/* 时间、agent 身份色、平台判断 */
+import type { Actor } from './types';
+
+export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+export const MOD = isMac ? '⌘' : 'Ctrl';
+export const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
+export const reduceMotion = () =>
+  document.documentElement.dataset.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------- agent 身份色 ---------- */
+const AGENT_COLORS = ['#FF7A45', '#4DB5FF', '#3DDC97', '#FFB020', '#FF5C8A', '#9B87FF', '#2DD4BF', '#E879F9', '#84CC16'];
+const GREEK: Record<string, string> = {
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ', eta: 'η', theta: 'θ', kappa: 'κ', lambda: 'λ', sigma: 'σ', omega: 'ω',
+};
+const FIXED: Record<string, number> = { alpha: 0, beta: 1, gamma: 2, delta: 3 };
+
+export function agentColor(name: string) {
+  const key = String(name || '').toLowerCase();
+  if (key in FIXED) return AGENT_COLORS[FIXED[key]];
+  let h = 0;
+  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return AGENT_COLORS[h % AGENT_COLORS.length];
+}
+export const agentGlyph = (name: string) =>
+  GREEK[String(name).toLowerCase()] || [...String(name || '?').trim()][0]?.toUpperCase() || '?';
+
+/** 界面上怎么称呼：人 = 你 */
+export const actorName = (a: Actor) => (a.kind === 'human' ? '你' : a.kind === 'system' ? '系统' : a.name);
+
+/* ---------- 时间 ---------- */
+const pad2 = (n: number) => String(n).padStart(2, '0');
+export const hhmm = (t: number) => {
+  const d = new Date(t);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+export const mmss = (ms: number) => {
+  ms = Math.max(0, ms);
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor(ms / 1000) % 60;
+  return `${pad2(m)}:${pad2(s)}`;
+};
+export function ago(t: number, now: number) {
+  const d = Math.max(0, now - t);
+  if (d < 45e3) return '刚刚';
+  if (d < 3600e3) return `${Math.round(d / 60e3)} 分钟前`;
+  if (d < 86400e3) return `${Math.round(d / 3600e3)} 小时前`;
+  const x = new Date(t);
+  return `${x.getMonth() + 1}月${x.getDate()}日 ${hhmm(t)}`;
+}
+
+export const initial = (name: string) => [...String(name || '?').trim()][0]?.toUpperCase() || '?';
+
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function autosize(ta: HTMLTextAreaElement | null) {
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+
+/** 让 CSS 动画重新播放 */
+export function replay(el: Element | null | undefined, cls: string) {
+  if (!el) return;
+  el.classList.remove(cls);
+  void (el as HTMLElement).offsetWidth;
+  el.classList.add(cls);
+}
+
+export const cx = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(' ');
+
+/* ---------- 本地偏好 ---------- */
+export const pref = {
+  get<T>(k: string, d: T): T {
+    try {
+      const v = localStorage.getItem('board.' + k);
+      return v == null ? d : (JSON.parse(v) as T);
+    } catch {
+      return d;
+    }
+  },
+  set(k: string, v: unknown) {
+    try {
+      if (v == null) localStorage.removeItem('board.' + k);
+      else localStorage.setItem('board.' + k, JSON.stringify(v));
+    } catch {
+      /* 隐私模式等 */
+    }
+  },
+};

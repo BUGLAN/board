@@ -1,0 +1,20 @@
+[package]
+name = "board-desktop"
+description = "Board 桌面端：内嵌 Board 服务，与网页端使用同一套界面"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "board_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+board-core.workspace = true
+board-server.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+serde_json.workspace = true

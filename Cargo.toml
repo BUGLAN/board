@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/board-core", "crates/board-cli", "crates/board-server", "src-tauri"]
+# `cargo build` / `cargo test` 默认不编译桌面端（依赖较重）；桌面端用 `npm run desktop:dev|build`
+default-members = ["crates/board-core", "crates/board-cli", "crates/board-server"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+board-core = { path = "crates/board-core" }
+board-server = { path = "crates/board-server" }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

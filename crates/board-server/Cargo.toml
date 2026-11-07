@@ -1,0 +1,22 @@
+[package]
+name = "board-server"
+description = "Board 网页端服务：HTTP API + 实时推送（SSE），并托管界面。桌面端内嵌同一个服务"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "board-server"
+path = "src/main.rs"
+
+[dependencies]
+board-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures-util = "0.3"
+rust-embed = { version = "8", features = ["mime-guess"] }

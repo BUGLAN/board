@@ -1,0 +1,125 @@
+//! 错误码（PRD §12）。CLI 被拒绝时输出错误码和原因，退出码为 1。
+
+use serde::Serialize;
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    NoIdentity,
+    NoBoard,
+    BoardNotFound,
+    NotFound,
+    EmptyTitle,
+    EmptyTodo,
+    NotInTodo,
+    AlreadyHolding,
+    NotHolder,
+    ForbiddenColumn,
+    Usage,
+    /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
+    Internal,
+}
+
+impl ErrorCode {
+    pub const ALL: [ErrorCode; 11] = [
+        ErrorCode::NoIdentity,
+        ErrorCode::NoBoard,
+        ErrorCode::BoardNotFound,
+        ErrorCode::NotFound,
+        ErrorCode::EmptyTitle,
+        ErrorCode::EmptyTodo,
+        ErrorCode::NotInTodo,
+        ErrorCode::AlreadyHolding,
+        ErrorCode::NotHolder,
+        ErrorCode::ForbiddenColumn,
+        ErrorCode::Usage,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorCode::NoIdentity => "NO_IDENTITY",
+            ErrorCode::NoBoard => "NO_BOARD",
+            ErrorCode::BoardNotFound => "BOARD_NOT_FOUND",
+            ErrorCode::NotFound => "NOT_FOUND",
+            ErrorCode::EmptyTitle => "EMPTY_TITLE",
+            ErrorCode::EmptyTodo => "EMPTY_TODO",
+            ErrorCode::NotInTodo => "NOT_IN_TODO",
+            ErrorCode::AlreadyHolding => "ALREADY_HOLDING",
+            ErrorCode::NotHolder => "NOT_HOLDER",
+            ErrorCode::ForbiddenColumn => "FORBIDDEN_COLUMN",
+            ErrorCode::Usage => "USAGE",
+            ErrorCode::Internal => "INTERNAL",
+        }
+    }
+
+    /// 默认原因
+    pub fn message(self) -> &'static str {
+        match self {
+            ErrorCode::NoIdentity => "没有提供 agent 名字：使用 --as <名字> 或设置环境变量 BOARD_AS",
+            ErrorCode::NoBoard => "没有指定白板：使用 --board <项目>/<白板> 或设置环境变量 BOARD",
+            ErrorCode::BoardNotFound => "白板不存在，用 board boards 查看可用的白板",
+            ErrorCode::NotFound => "卡片不存在",
+            ErrorCode::EmptyTitle => "标题不能为空",
+            ErrorCode::EmptyTodo => "领取起点里没有可领取的卡片",
+            ErrorCode::NotInTodo => "这张卡片不在领取起点，也不是你持有的卡片",
+            ErrorCode::AlreadyHolding => "你已经持有另一张卡片，一个 agent 在一块白板上同时只能持有一张",
+            ErrorCode::NotHolder => "被持有的卡片只有持有者能编辑和移动",
+            ErrorCode::ForbiddenColumn => "不允许移入这个状态",
+            ErrorCode::Usage => "命令格式或参数不正确",
+            ErrorCode::Internal => "内部错误",
+        }
+    }
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BoardError {
+    pub code: ErrorCode,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
+}
+
+impl BoardError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        BoardError { code, message: message.into(), detail: None }
+    }
+    pub fn code(code: ErrorCode) -> Self {
+        BoardError::new(code, code.message())
+    }
+    pub fn usage(message: impl Into<String>) -> Self {
+        BoardError::new(ErrorCode::Usage, message)
+    }
+    pub fn with_detail(mut self, detail: serde_json::Value) -> Self {
+        self.detail = Some(detail);
+        self
+    }
+}
+
+impl fmt::Display for BoardError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for BoardError {}
+
+impl From<rusqlite::Error> for BoardError {
+    fn from(e: rusqlite::Error) -> Self {
+        BoardError::new(ErrorCode::Internal, format!("数据库错误：{e}"))
+    }
+}
+
+impl From<std::io::Error> for BoardError {
+    fn from(e: std::io::Error) -> Self {
+        BoardError::new(ErrorCode::Internal, format!("文件错误：{e}"))
+    }
+}
+
+pub type Result<T> = std::result::Result<T, BoardError>;

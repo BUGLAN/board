@@ -1,0 +1,83 @@
+/* ==========================================================================
+   Board · Layout：应用骨架、顶栏
+   ========================================================================== */
+
+.app {
+  position: relative; z-index: 1;
+  height: 100vh; height: 100dvh;
+  display: grid;
+  /* 顶栏 ─ 活动栏 │ 侧栏 │ 主内容 */
+  grid-template-columns: var(--ab-w) auto minmax(0, 1fr);
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+}
+/* 显式指定位置：隐藏的区域不会打乱网格 */
+.app > .topbar { grid-row: 1; grid-column: 1 / -1; }
+.app > .activitybar { grid-row: 2; grid-column: 1; }
+.app > .sidepanel { grid-row: 2; grid-column: 2; }
+.app > .main { grid-row: 2; grid-column: 3; }
+
+/* ---------------- 顶栏 ---------------- */
+.topbar {
+  position: relative; z-index: 20;
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 18px 0 20px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(to bottom, var(--glass), color-mix(in srgb, var(--glass) 60%, transparent));
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+}
+
+.brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.logo {
+  display: flex; align-items: flex-start; gap: 2.5px; width: 30px; height: 30px; padding: 7px 6px;
+  border-radius: 9px; background: var(--invert);
+  box-shadow: 0 6px 16px -6px rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(255, 255, 255, .06);
+}
+.logo i {
+  flex: 1; height: var(--h); border-radius: 2px; transform-origin: top;
+  animation: logo-bar 3.6s var(--ease-in-out) infinite;
+}
+.logo i:nth-child(1) { background: var(--c-todo); }
+.logo i:nth-child(2) { background: var(--c-doing); animation-delay: -.9s; }
+.logo i:nth-child(3) { background: var(--c-review); animation-delay: -1.8s; }
+.logo i:nth-child(4) { background: var(--c-done); animation-delay: -2.7s; }
+@keyframes logo-bar { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(.62); } }
+.brand-text { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
+.brand-name { font-family: var(--f-display); font-weight: 800; font-size: 17px; letter-spacing: -.02em; }
+.brand-sub { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); white-space: nowrap; }
+
+.search-trigger {
+  flex: 1; max-width: 440px; margin: 0 auto; height: 36px;
+  display: flex; align-items: center; gap: 9px; padding: 0 8px 0 12px;
+  border-radius: 11px; color: var(--text-3); font-size: 13px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
+  transition: box-shadow var(--dur-2) var(--ease-out), background-color var(--dur-2), transform var(--dur-2) var(--ease-out);
+}
+.search-trigger svg { width: 16px; height: 16px; }
+.search-trigger:hover { color: var(--text-2); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2); }
+.search-trigger:active { transform: scale(.985); }
+.search-label { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-keys { display: flex; gap: 3px; }
+
+.topbar-right { display: flex; align-items: center; gap: 6px; }
+.divider { width: 1px; height: 20px; background: var(--line-2); margin: 0 6px; }
+
+/* 在线 agent 头像组 */
+.presence { display: flex; align-items: center; padding-left: 6px; }
+.presence:empty { display: none; }
+.presence .p-item {
+  position: relative; margin-left: -6px; cursor: pointer;
+  animation: pop-in var(--dur-3) var(--spring) both;
+  transition: transform var(--dur-2) var(--spring), margin var(--dur-2) var(--ease-out);
+}
+.presence:hover .p-item { margin-left: 2px; }
+.presence .p-item:hover { transform: translateY(-2px) scale(1.08); z-index: 2; }
+.presence .avatar { width: 26px; height: 26px; font-size: 12.5px; }
+.presence .ring { position: absolute; left: -4px; top: -4px; width: calc(100% + 8px); height: calc(100% + 8px); pointer-events: none; transform: rotate(-90deg); }
+.presence .ring circle { fill: none; stroke-width: 2; }
+.presence .ring .track { stroke: var(--line); }
+.presence .ring .bar { stroke: var(--c); stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.presence .p-item.urgent .ring .bar { stroke: var(--danger); }
+@keyframes pop-in { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+
