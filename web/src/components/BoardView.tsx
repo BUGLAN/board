@@ -18,6 +18,7 @@ import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { Skeleton, SkeletonCard } from './Skeleton';
+import { FormPicker, useForm, useProtoBoard } from '../prototype/cardForms'; // 原型（PROTOTYPE）
 
 /** 拖拽预览：被拖的卡片放到预览位置 */
 export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
@@ -45,7 +46,7 @@ export function useEntering(board: BoardSnapshot | null, generation: number) {
 
 
 export function BoardView() {
-  const board = useData(s => s.board);
+  const rawBoard = useData(s => s.board);
   const generation = useData(s => s.generation);
   const detailId = useData(s => s.detailId);
   const cur = useCurrent();
@@ -56,6 +57,7 @@ export function BoardView() {
   const reject = useUI(s => s.reject);
   const boardRef = useRef<HTMLDivElement>(null);
   const labels = cur?.project.labels ?? [];
+  const board = useProtoBoard(rawBoard, labels); // 原型（PROTOTYPE）：补假卡片
   const { entering, fresh } = useEntering(board, generation);
   const cols = useMemo(() => (board ? previewCols(board.cols, drag) : null), [board, drag]);
   // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
@@ -310,6 +312,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
   const badge = useRef<HTMLSpanElement>(null);
   const list = useRef<HTMLDivElement>(null);
   useMasonry(list);
+  const form = useForm(col); // 原型（PROTOTYPE）
   const prev = useRef<number | null>(null);
   useEffect(() => {
     if (prev.current != null && prev.current !== count) {
@@ -354,12 +357,13 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
             <span className="t">仅领取进入</span>
           </span>
         )}
+        <FormPicker col={col} />
         <span className="col-count" aria-label="卡片数量" ref={badge}>
           <span>{count}</span>
         </span>
       </header>
       <div className="col-body">
-        <div className="col-list" data-list={col.key} ref={list}>
+        <div className={cx('col-list', form && `form-${form}`)} data-list={col.key} ref={list}>
           {ids.map((id, idx) => {
             const c = board.cards[id];
             if (!c) return null;
@@ -377,6 +381,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
                 color={color}
                 final={col.final}
                 next={firstFree === id}
+                form={form}
               />
             );
           })}

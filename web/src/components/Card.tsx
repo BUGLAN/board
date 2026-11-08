@@ -7,6 +7,7 @@ import { useUI, type Flash } from '../store/ui';
 import { useData } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
+import { LineBody, TileBody, type Form } from '../prototype/cardForms'; // 原型（PROTOTYPE）
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {
@@ -43,10 +44,12 @@ interface Props {
   /** 「整理到…」按钮上的首个可领取状态名称 */
   claimName?: string;
   onTriage?: (id: number) => void;
+  /** 原型（PROTOTYPE）：这一块的卡片形态 */
+  form?: Form;
 }
 
 export const CardView = memo(function CardView({
-  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, next, claimName = '待办', onTriage,
+  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, next, claimName = '待办', onTriage, form,
 }: Props) {
   const held = !!c.holder;
   const now = useNow(held ? 1000 : 30000);
@@ -59,6 +62,7 @@ export const CardView = memo(function CardView({
   const t = timing(c, now);
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
+  const shape: Form = form ?? (final && !doing ? 'line' : 'card'); // 原型（PROTOTYPE）
 
   useLayoutEffect(() => {
     if (flash) replay(ref.current, 'flash');
@@ -77,7 +81,8 @@ export const CardView = memo(function CardView({
         'card',
         c.column === 'inbox' && 'inbox',
         doing && 'doing',
-        final && !doing && 'done',
+        final && !doing && shape !== 'card' && 'done',
+        form && `form-${shape}`,
         next && 'next',
         open && 'is-open',
         active && !hit && 'filtered-out',
@@ -122,7 +127,11 @@ export const CardView = memo(function CardView({
             <Icon name="move" />
           </button>
         </>
-      ) : final && !doing ? (
+      ) : shape === 'tile' ? (
+        <TileBody card={c} labels={labels} now={now} final={final} />
+      ) : shape === 'line' && !(final && !doing) ? (
+        <LineBody card={c} now={now} />
+      ) : shape === 'line' ? (
         <div className="card-line">
           <span className="done-check">
             <Icon name="check" />

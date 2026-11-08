@@ -17,6 +17,7 @@ import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
 import { checkAuth, useAuth } from './store/auth';
+import { PrototypeSwitcher } from './prototype/cardForms'; // 原型（PROTOTYPE）
 import { boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './store/data';
 import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, toast, useUI, type Tab,
@@ -229,6 +230,7 @@ function BoardApp() {
       <LabelPicker />
       <Lightbox />
       <Toasts />
+      <PrototypeSwitcher />
     </>
   );
 }

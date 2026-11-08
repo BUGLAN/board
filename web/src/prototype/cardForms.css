@@ -1,0 +1,88 @@
+/* 原型（PROTOTYPE，用完即弃，不进 main）：状态块里卡片的三种形态，见 cardForms.tsx */
+
+/* ---------------- 列表网格：按形态改列宽和间距 ---------------- */
+.col .col-list.form-card { --gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); }
+.col .col-list.form-line { --gap: 4px; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
+.col .col-list.form-tile { --gap: 6px; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); }
+
+/* ---------------- 单行（非终点） ---------------- */
+.card.form-line { padding: 7px 10px; }
+.card.form-line:hover { transform: none; }
+.pt-line-dot { width: 7px; height: 7px; flex: none; border-radius: var(--r-hair); background: var(--c); opacity: .8; }
+.pt-line-title { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.pt-line-holder { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.pt-line-holder .avatar { width: 18px; height: 18px; font-size: 9.5px; }
+.pt-line-holder.late .beat { background: var(--warn); }
+.pt-line-holder.wait .beat, .pt-line-holder.ended .beat { background: var(--text-4); }
+.card.form-line.doing::before { display: none; }
+.card.form-line.doing { box-shadow: inset 2px 0 0 var(--ac), inset 0 0 0 1px var(--line), var(--shadow-1); }
+
+/* ---------------- 磁贴：只显示编号，横向排、自动换行 ---------------- */
+.card.form-tile {
+  height: 30px; padding: 0; display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.card.form-tile.done { padding: 0; background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.card.form-tile:hover { transform: translateY(-1px); z-index: 6; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, var(--line-2)), var(--shadow-1); }
+.tile:has(.card.form-tile:hover) { z-index: 15; }
+.tile-id { font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2); letter-spacing: .01em; font-variant-numeric: tabular-nums; }
+.tile-id::before { content: "#"; opacity: .45; margin-right: 1px; }
+.card.form-tile.done .tile-id { color: var(--c); }
+.card.form-tile.filtered-out { transform: scale(.94); }
+
+/* 被领取：右上角的持有者色点（心跳），心跳晚了变成警告色并加外框 */
+.tile-dot { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--ac); }
+.tile-dot::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: beat-ping 2s var(--ease-out) infinite; }
+.tile-dot.late { background: var(--warn); }
+.tile-dot.wait, .tile-dot.ended { background: var(--text-4); }
+.tile-dot.wait::before, .tile-dot.ended::before { animation: none; }
+.card.form-tile.late { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warn) 60%, transparent); }
+.card.form-tile.doing::before { inset: -1px; border-radius: calc(var(--r-sm) + 1px); }
+/* 「下一张」：品牌色外框，编号用品牌色 */
+.card.form-tile.next { box-shadow: inset 0 0 0 1.5px var(--brand), var(--shadow-1); }
+.card.form-tile.next .tile-id { color: var(--brand); }
+@media (prefers-reduced-motion: reduce) { .tile-dot::before { animation: none; } }
+
+/* 悬停卡：编号、持有者、完整标题、标签 */
+.tile-pop {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 20; width: max-content; max-width: 260px;
+  display: flex; flex-direction: column; gap: 5px; padding: 9px 11px; border-radius: var(--r-md);
+  background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
+  text-align: left; pointer-events: none;
+  opacity: 0; transform: translate(-50%, 4px) scale(.97); transform-origin: 50% 100%;
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+.card.form-tile:hover .tile-pop { opacity: 1; transform: translate(-50%, 0); transition-delay: .12s; }
+.card.is-placeholder .tile-pop, body.tile-moving .tile-pop { display: none; }
+.tile-pop-head { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
+.tile-pop-head b { color: var(--c); font-weight: 600; }
+.tile-pop-done { font-family: var(--f-sans); font-size: 10.5px; color: var(--text-3); }
+.tile-pop-holder { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-2); }
+.tile-pop-holder.late { color: var(--warn); }
+.tile-pop-holder .avatar { width: 16px; height: 16px; font-size: 9px; }
+.tile-pop-title { font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--text); white-space: normal; word-break: break-word; }
+
+/* ---------------- 原型控件：黄色虚线，一眼看出不是设计的一部分 ---------------- */
+.pt-forms {
+  display: inline-flex; gap: 1px; padding: 1px; flex: none; margin-left: 4px;
+  border-radius: var(--r-sm); outline: 1.5px dashed #FFEA00; outline-offset: 1px;
+}
+.pt-forms button { display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-4); }
+.pt-forms button:hover { color: var(--text-2); background: var(--surface-3); }
+.pt-forms button.on { color: #111; background: #FFEA00; }
+.pt-forms svg { width: 13px; height: 13px; }
+.col-head .pt-forms + .col-count { margin-left: 6px; }
+.col-head:has(.pt-forms) .col-count { margin-left: 6px; }
+.col-head .pt-forms { margin-left: auto; }
+
+.pt-switcher {
+  position: fixed; z-index: 9999; left: 50%; bottom: 18px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 999px;
+  background: #FFEA00; color: #111; font: 600 12.5px/1 var(--f-sans);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45), 0 0 0 2px #111;
+}
+.pt-switcher span { padding: 0 10px; white-space: nowrap; }
+.pt-switcher .pt-meter { font: 500 11.5px/1 var(--f-mono); padding: 5px 10px; border-radius: 999px; background: rgba(0, 0, 0, .08); }
+.pt-switcher button { width: 28px; height: 28px; border-radius: 50%; font-size: 18px; color: #111; background: rgba(0, 0, 0, .08); }
+.pt-switcher button:hover { background: rgba(0, 0, 0, .18); }
