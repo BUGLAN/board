@@ -162,7 +162,7 @@ fn doctor_reports_missing_board_on_path() {
     assert!(r.out.contains("PATH 里找不到 board") && r.out.contains("下一步："), "{}", r.out);
 }
 
-/// 没设 BOARD_URL：直接读写本机数据库这个前提要被点出来
+/// 没设 BOARD_URL：board 连不上白板，要指出去哪里配置
 #[test]
 fn doctor_reports_missing_board_url() {
     let env = vec![("BOARD_AS", "alpha".to_string()), ("BOARD", "default".to_string())];

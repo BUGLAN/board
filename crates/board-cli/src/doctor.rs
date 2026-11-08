@@ -350,8 +350,8 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
         None => checks.push(Check::fail(
             "board_url",
             "BOARD_URL",
-            "没有设置：board 会直接读写本机数据库，而不是服务端",
-            "export BOARD_URL=<服务端地址>；只在本机用可以忽略这一项",
+            "没有设置：board 连不上白板，所有命令都会失败",
+            "在界面「设置 → Agent 接入」新建访问令牌，再 export BOARD_URL=<服务端地址> BOARD_TOKEN=<令牌>",
         )),
     }
 

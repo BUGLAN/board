@@ -1,15 +1,16 @@
-//! 数据从哪来：本地数据库，或 Board 服务端（PRD §9）。
+//! 数据从哪来：Board 服务端（PRD §9）。
 //!
-//! - 没有设置 `BOARD_URL`：直接读写本地 SQLite（默认 `~/.board/board.db`，`BOARD_DB` 可指定）。
-//! - 设置了 `BOARD_URL`：通过 HTTP API 访问服务端，用 `BOARD_TOKEN` 认证。规则在服务端执行，
-//!   被拒绝时服务端返回同样的错误码，这里原样还原。
-//!
-//! 两种模式共用同一套命令和输出。
+//! 必须设置 `BOARD_URL`（服务端地址）和 `BOARD_TOKEN`（界面「设置 → Agent 接入」新建的访问令牌），
+//! CLI 通过 HTTP API 读写白板。规则在服务端执行，被拒绝时服务端返回同样的错误码，这里原样还原。
+//! 没有配置时直接报错，不会去读写本机的数据库文件。
 
 use board_core::*;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::time::Duration;
+
+/// 没有配置服务端时的提示：在哪里拿令牌、要设置哪两个变量
+const SETUP_HINT: &str = "在界面「设置 → Agent 接入」新建访问令牌，再 export BOARD_URL=<服务端地址> BOARD_TOKEN=<令牌>";
 
 /// 一块白板上命令需要的数据
 pub struct BoardData {
@@ -22,10 +23,7 @@ pub struct BoardData {
     pub now: i64,
 }
 
-pub enum Backend {
-    Local(Store),
-    Remote(Remote),
-}
+pub struct Backend(Remote);
 
 pub fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
@@ -34,14 +32,8 @@ pub fn env(k: &str) -> Option<String> {
 impl Backend {
     pub fn open() -> Result<Backend> {
         match env("BOARD_URL") {
-            Some(url) => Ok(Backend::Remote(Remote::new(&url)?)),
-            None => {
-                let now = now_ms();
-                let mut store = Store::open(&Store::default_path())?;
-                store.ensure_default(now)?;
-                store.sweep(now)?;
-                Ok(Backend::Local(store))
-            }
+            Some(url) => Ok(Backend(Remote::new(&url)?)),
+            None => Err(BoardError::new(ErrorCode::NotLoggedIn, format!("没有设置 BOARD_URL：{SETUP_HINT}"))),
         }
     }
 
@@ -49,102 +41,55 @@ impl Backend {
     pub fn describe() -> String {
         match env("BOARD_URL") {
             Some(url) => format!("服务端 {url}（BOARD_URL，令牌 BOARD_TOKEN）"),
-            None => format!("{}（BOARD_DB 可指定；设置 BOARD_URL 和 BOARD_TOKEN 改为连接服务端）", Store::default_path().display()),
+            None => format!("还没有配置：{SETUP_HINT}"),
         }
     }
 
     pub fn workspace(&mut self) -> Result<Workspace> {
-        match self {
-            Backend::Local(s) => s.read(|r| r.workspace(now_ms())),
-            Backend::Remote(r) => r.get("/api/workspace", &[]),
-        }
+        self.0.get("/api/workspace", &[])
     }
 
     pub fn board(&mut self, raw: &str) -> Result<BoardData> {
-        match self {
-            Backend::Local(s) => s.read(|r| {
-                let b = r.resolve(raw)?;
-                Ok(BoardData {
-                    path: b.path(),
-                    flow: r.flow(&b)?,
-                    cards: r.cards(&b)?,
-                    labels: r.labels(&b.project)?,
-                    now: now_ms(),
-                })
-            }),
-            Backend::Remote(r) => {
-                let mut snap: BoardSnapshot = r.get("/api/board", &[("path", raw)])?;
-                // 与本地 ls 相同的顺序：未整理，再按工作流顺序，状态内按位置
-                let mut order: Vec<String> = vec![INBOX.to_string()];
-                order.extend(snap.statuses.iter().map(|s| s.key.clone()));
-                order.extend(snap.cols.keys().filter(|k| !order.contains(k)).cloned().collect::<Vec<_>>());
-                let mut cards = vec![];
-                for col in &order {
-                    for id in snap.cols.get(col).into_iter().flatten() {
-                        if let Some(c) = snap.cards.remove(id) {
-                            cards.push(c);
-                        }
-                    }
+        let r = &self.0;
+        let mut snap: BoardSnapshot = r.get("/api/board", &[("path", raw)])?;
+        // ls 的顺序：未整理，再按工作流顺序，状态内按位置
+        let mut order: Vec<String> = vec![INBOX.to_string()];
+        order.extend(snap.statuses.iter().map(|s| s.key.clone()));
+        order.extend(snap.cols.keys().filter(|k| !order.contains(k)).cloned().collect::<Vec<_>>());
+        let mut cards = vec![];
+        for col in &order {
+            for id in snap.cols.get(col).into_iter().flatten() {
+                if let Some(c) = snap.cards.remove(id) {
+                    cards.push(c);
                 }
-                let project = snap.path.split('/').next().unwrap_or_default().to_string();
-                let ws: Workspace = r.get("/api/workspace", &[])?;
-                let labels = ws.projects.into_iter().find(|p| p.key == project).map(|p| p.labels).unwrap_or_default();
-                Ok(BoardData { path: snap.path, flow: Flow(snap.statuses), cards, labels, now: snap.now })
             }
         }
+        let project = snap.path.split('/').next().unwrap_or_default().to_string();
+        let ws: Workspace = r.get("/api/workspace", &[])?;
+        let labels = ws.projects.into_iter().find(|p| p.key == project).map(|p| p.labels).unwrap_or_default();
+        Ok(BoardData { path: snap.path, flow: Flow(snap.statuses), cards, labels, now: snap.now })
     }
 
     pub fn card(&mut self, path: &str, id: i64) -> Result<CardDetail> {
-        match self {
-            Backend::Local(s) => s.read(|r| {
-                let b = r.resolve(path)?;
-                r.card(&b, id)
-            }),
-            Backend::Remote(r) => r.get("/api/card", &[("path", path), ("id", &id.to_string())]),
-        }
+        self.0.get("/api/card", &[("path", path), ("id", &id.to_string())])
     }
 
     /// 上传附件到卡片
     pub fn attach(&mut self, path: &str, id: i64, actor: &Actor, name: &str, bytes: &[u8]) -> Result<Attachment> {
-        match self {
-            Backend::Local(s) => {
-                let b = s.read(|r| r.resolve(path))?;
-                s.attach(now_ms(), &b, Some(id), actor, name, bytes)
-            }
-            Backend::Remote(r) => {
-                let id = id.to_string();
-                r.upload(&[("board", path), ("card", &id), ("name", name), ("as", &actor.name)], bytes)
-            }
-        }
+        let id = id.to_string();
+        self.0.upload(&[("board", path), ("card", &id), ("name", name), ("as", &actor.name)], bytes)
     }
 
     /// 读取附件内容
-    pub fn download(&mut self, path: &str, a: &Attachment) -> Result<Vec<u8>> {
-        match self {
-            Backend::Local(s) => {
-                let b = s.read(|r| r.resolve(path))?;
-                match s.attachment(a.id)? {
-                    Some((_, board, file)) if board == b.id => Ok(std::fs::read(file)?),
-                    _ => Err(BoardError::new(ErrorCode::NotFound, format!("附件 {} 不存在", a.id))),
-                }
-            }
-            Backend::Remote(r) => r.bytes(&a.url),
-        }
+    pub fn download(&mut self, a: &Attachment) -> Result<Vec<u8>> {
+        self.0.bytes(&a.url)
     }
 
     pub fn exec(&mut self, path: &str, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
-        match self {
-            Backend::Local(s) => s.write(now_ms(), Origin::cli(), |w| {
-                let b = w.resolve(path)?;
-                w.exec(&b, actor, cmd)
-            }),
-            Backend::Remote(r) => {
-                let mut body = cmd_json(&cmd);
-                body["board"] = json!(path);
-                body["as"] = json!(actor.name);
-                r.post("/api/cmd", body)
-            }
-        }
+        let mut body = cmd_json(&cmd);
+        body["board"] = json!(path);
+        body["as"] = json!(actor.name);
+        self.0.post("/api/cmd", body)
     }
 }
 
@@ -165,7 +110,7 @@ fn cmd_json(cmd: &Cmd) -> Value {
     }
 }
 
-/* ------------------------------ 远程 ------------------------------ */
+/* ------------------------------ 服务端 ------------------------------ */
 
 pub struct Remote {
     url: String,

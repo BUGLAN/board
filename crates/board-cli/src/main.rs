@@ -2,8 +2,8 @@
 //!
 //! 身份：`--as <名字>` 或环境变量 `BOARD_AS`；白板：`--board <项目>/<白板>` 或环境变量 `BOARD`。
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
-//! 数据：设置了 `BOARD_URL` 时通过服务端读写（`BOARD_TOKEN` 认证）；否则直接读写本地数据库
-//! （默认 `~/.board/board.db`，可用 `BOARD_DB` 指定）。见 backend.rs。
+//! 数据：通过服务端读写，必须设置 `BOARD_URL` 和 `BOARD_TOKEN`（界面「设置 → Agent 接入」新建令牌），
+//! 没有配置时直接报错。见 backend.rs。
 
 mod backend;
 mod doctor;
@@ -140,7 +140,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         Some(s) => s,
     };
 
-    // 自检只检查环境本身：不需要身份和白板，也不打开数据库
+    // 自检只检查环境本身：不需要身份和白板
     if sub == "doctor" {
         return Ok(doctor::run(json, p));
     }
@@ -454,7 +454,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 std::fs::create_dir_all(&dir).map_err(|e| BoardError::usage(format!("无法创建目录 {}：{e}", dir.display())))?;
             }
             for f in &d.attachments {
-                let bytes = be.download(&path, f)?;
+                let bytes = be.download(f)?;
                 let to = dir.join(format!("{}-{}", f.id, f.name));
                 std::fs::write(&to, bytes).map_err(|e| BoardError::usage(format!("写入 {} 失败：{e}", to.display())))?;
                 saved.push((f, to));
@@ -720,7 +720,7 @@ fn help(p: &Paint) -> String {
         format!("  {}默认是 todo  doing  review  done  rework  check；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
         format!("  {}--as <名字>，或 export BOARD_AS=<名字>", p.dim("身份：")),
         format!("  {}--board <项目>/<白板>，或 export BOARD=<项目>/<白板>", p.dim("白板：")),
-        format!("  {}export BOARD_URL=<服务端地址> BOARD_TOKEN=<访问令牌>；不设置时直接读写本地数据库", p.dim("连接：")),
+        format!("  {}export BOARD_URL=<服务端地址> BOARD_TOKEN=<访问令牌>（必填，令牌在界面「设置 → Agent 接入」新建）", p.dim("连接：")),
         format!("  {}所有命令都支持 --json；被拒绝时退出码为 1，并给出错误码", p.dim("输出：")),
         format!("  {}{}", p.dim("数据："), Backend::describe()),
         String::new(),
