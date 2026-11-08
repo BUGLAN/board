@@ -8,7 +8,7 @@
 //! - `POST /api/files`、`GET /api/files/{id}`：卡片附件（上传、读取）
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
-//! - 项目 / 白板 / 标签 / 画布位置的增删改
+//! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`）/ 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/{状态}`（修改、删除）
 //! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, events}`
 //!
@@ -167,6 +167,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/boards", post(create_board))
         .route("/boards/{project}/{board}", patch(update_board).delete(delete_board))
         .route("/labels", post(create_label))
+        .route("/labels/order", put(reorder_labels))
         .route("/labels/{id}", patch(update_label))
         .route("/labels/{project}/{id}", delete(delete_label))
         .route("/layout", put(layout))
@@ -613,6 +614,22 @@ async fn update_label(State(s): State<AppState>, h: HeaderMap, Path(id): Path<i6
 
 async fn delete_label(State(s): State<AppState>, h: HeaderMap, Path((project, id)): Path<(String, i64)>) -> ApiResult<Value> {
     write(&s, &h, move |w| w.delete_label(&project, id)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct LabelOrderBody {
+    project: String,
+    /// 拖拽后的标签 id 顺序；没出现在里面的标签按原顺序补在后面
+    ids: Vec<i64>,
+}
+
+/// `PUT /api/labels/order`：保存拖拽排序后的标签顺序。
+///
+/// ids 里的标签必须都属于这个项目、不能重复；任何一个不合法都整体拒绝、顺序不变。
+async fn reorder_labels(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Value> {
+    let b: LabelOrderBody = parse(v)?;
+    write(&s, &h, move |w| w.reorder_labels(&b.project, &b.ids)).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

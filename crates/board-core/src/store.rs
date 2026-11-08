@@ -1022,6 +1022,38 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 按给定顺序重排标签（界面上拖拽排序）；`ids` 里的标签必须都属于这个项目。
+    ///
+    /// 没出现在 `ids` 里的标签按原来的顺序补在后面（新建的标签因此总在最后），`sort` 依次写成 0,1,2…
+    /// 任何一个 id 不合法都整体失败、不改动任何数据（写操作在同一个事务里）。
+    pub fn reorder_labels(&mut self, project: &str, ids: &[i64]) -> Result<()> {
+        self.project_exists(project)?;
+        let mut rest: Vec<i64> = self.collect("SELECT id FROM labels WHERE project = ?1 ORDER BY sort, id", [project], |r| r.get(0))?;
+        for (i, id) in ids.iter().enumerate() {
+            if ids[..i].contains(id) {
+                return Err(BoardError::usage(format!("标签 id {id} 在顺序里出现了两次")));
+            }
+            match rest.iter().position(|x| x == id) {
+                Some(p) => {
+                    rest.remove(p);
+                }
+                None => {
+                    let other: Option<String> =
+                        self.tx.query_row("SELECT project FROM labels WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+                    return Err(match other {
+                        Some(p) => BoardError::usage(format!("标签 id {id} 属于项目「{p}」，不能排到「{project}」里")),
+                        None => BoardError::usage(format!("标签 id {id} 不存在")),
+                    });
+                }
+            }
+        }
+        for (i, id) in ids.iter().chain(rest.iter()).enumerate() {
+            self.tx.execute("UPDATE labels SET sort = ?1 WHERE id = ?2", params![i as i64, id])?;
+        }
+        self.changed = true;
+        Ok(())
+    }
+
     /// 删除标签：它会从项目内所有卡片上移除（外键级联）
     pub fn delete_label(&mut self, project: &str, id: i64) -> Result<()> {
         self.label_exists(project, id)?;

@@ -962,3 +962,72 @@ fn events_page_before_out_of_range() {
     assert!(s.read(|r| r.events_page(&b, Some(oldest), 3)).unwrap().is_empty());
     assert!(s.read(|r| r.events_page(&b, Some(0), 3)).unwrap().is_empty());
 }
+
+/* ------------------------------ 标签顺序（#58） ------------------------------ */
+
+fn label_names(s: &Store, project: &str) -> Vec<String> {
+    s.read(|r| r.labels(project)).unwrap().into_iter().map(|l| l.name).collect()
+}
+
+#[test]
+fn labels_reorder_and_new_labels_go_last() {
+    let mut s = store();
+    let a = ui(&mut s, |w| w.create_label("default", "甲", None)).unwrap();
+    let b = ui(&mut s, |w| w.create_label("default", "乙", None)).unwrap();
+    let c = ui(&mut s, |w| w.create_label("default", "丙", None)).unwrap();
+    assert_eq!(label_names(&s, "default"), ["甲", "乙", "丙"]);
+
+    // 只给出部分顺序：没提到的按原顺序补在后面
+    ui(&mut s, |w| w.reorder_labels("default", &[c.id, a.id])).unwrap();
+    assert_eq!(label_names(&s, "default"), ["丙", "甲", "乙"]);
+
+    // 新建标签排在最后，不会插到中间
+    let d = ui(&mut s, |w| w.create_label("default", "丁", None)).unwrap();
+    assert_eq!(label_names(&s, "default"), ["丙", "甲", "乙", "丁"]);
+
+    // 全部重排：顺序以传入的 ids 为准
+    ui(&mut s, |w| w.reorder_labels("default", &[b.id, c.id, a.id, d.id])).unwrap();
+    assert_eq!(label_names(&s, "default"), ["乙", "丙", "甲", "丁"]);
+    // board labels --json 读的就是这个顺序（labels_of 按 sort 排）
+    let labels = s.read(|r| r.labels("default")).unwrap();
+    assert_eq!(labels.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["乙", "丙", "甲", "丁"]);
+}
+
+#[test]
+fn labels_reorder_rejects_illegal_ids_without_changing_order() {
+    let mut s = store();
+    let a = ui(&mut s, |w| w.create_label("default", "甲", None)).unwrap();
+    let b = ui(&mut s, |w| w.create_label("default", "乙", None)).unwrap();
+    // 另一个项目里的标签
+    let other = ui(&mut s, |w| {
+        w.create_project(
+            "乙项目",
+            "b",
+            "",
+            None,
+            None,
+            NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None },
+        )?;
+        w.create_label("b", "别处", None)
+    })
+    .unwrap();
+    assert_eq!(label_names(&s, "default"), ["甲", "乙"]);
+
+    // 混入别的项目的标签
+    let e = ui(&mut s, |w| w.reorder_labels("default", &[b.id, other.id])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("属于项目"), "{}", e.message);
+    // id 不存在
+    let e = ui(&mut s, |w| w.reorder_labels("default", &[a.id, 9999])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("9999"), "{}", e.message);
+    // 重复的 id
+    let e = ui(&mut s, |w| w.reorder_labels("default", &[a.id, a.id])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("两次"), "{}", e.message);
+    // 项目不存在
+    assert_eq!(ui(&mut s, |w| w.reorder_labels("nope", &[])).unwrap_err().code, ErrorCode::BoardNotFound);
+
+    // 出错时顺序一点没变
+    assert_eq!(label_names(&s, "default"), ["甲", "乙"]);
+}
