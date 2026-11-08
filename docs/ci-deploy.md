@@ -1,6 +1,6 @@
 # 需求：GitHub Actions 自动部署
 
-> 触发方式已改：推 `main` 只跑测试，推 `v*` tag 才构建、部署，tag 和 `Cargo.toml` 的 `workspace.package.version` 不一致时不部署。以 [deploy.md](deploy.md)「升级」「自动部署」为准；本文的「push main」按「推 tag」读。
+> 触发方式已改：推 `main` 只跑测试，推 `v*` tag 才构建、部署（tag 由 `npm run release` 打），tag 和 `Cargo.toml` 的 `workspace.package.version` 不一致或 `CHANGELOG.md` 里没有这一版时不部署，部署成功后建 GitHub Release。以 [deploy.md](deploy.md)「升级」「自动部署」为准；本文的「push main」按「推 tag」读。
 
 推送到 `main` 后，GitHub Actions 自动测试、构建镜像、推到 GHCR，再通过 SSH 让服务器拉取新镜像并重启，最后核对线上提交号。这是唯一的部署方式，原来的手动部署脚本 `deploy/deploy.sh` 已删除。
 

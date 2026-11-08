@@ -1,7 +1,9 @@
 # 测试与部署（docs/deploy.md「自动部署」）：
 #   push main   → test：npm ci → cargo test → 界面类型检查；不部署
-#   push tag v*  → build：核对 tag 和 Cargo.toml 的 workspace 版本号 → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
+#   push tag v*  → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
 #                → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上版本号和提交号；失败切回上一个镜像
+#                → release：用 CHANGELOG.md 里这一版的段落建 GitHub Release
+# tag 由 npm run release 打（scripts/release.mjs：改版本号、生成 changelog、提交、打 tag）
 # 手动运行（在 main 上）填 7 位提交号：跳过 build，直接部署 GHCR 上已有的镜像（回滚用）
 name: deploy
 
@@ -73,13 +75,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 核对 tag 和 Cargo.toml 的版本号
+      - name: 核对 tag、Cargo.toml 的版本号和 CHANGELOG.md
         id: version
         run: |
           tag=${GITHUB_REF_NAME#v}
           ver=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
           if [ "$tag" != "$ver" ]; then
-            echo "::error::tag $GITHUB_REF_NAME 和 Cargo.toml 的 workspace.package.version（${ver:-取不到}）不一致，不部署。先把版本号改成 $tag 并提交，再在那个提交上打 tag"
+            echo "::error::tag $GITHUB_REF_NAME 和 Cargo.toml 的 workspace.package.version（${ver:-取不到}）不一致，不部署。用 npm run release -- $tag 发版"
+            exit 1
+          fi
+          if ! grep -Eq "^## v$ver( |\$)" CHANGELOG.md 2>/dev/null; then
+            echo "::error::CHANGELOG.md 里没有 v$ver 一节，不部署。用 npm run release -- $ver 发版（会从提交生成 changelog）"
             exit 1
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
@@ -245,3 +251,22 @@ jobs:
       - name: 删除部署密钥
         if: always()
         run: rm -f ~/.ssh/deploy_key
+
+  # 部署成功后，用 CHANGELOG.md 里这一版的段落建 GitHub Release
+  release:
+    needs: [build, deploy]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          awk -v h="## v$VERSION" 'index($0, h" ") == 1 || $0 == h { f = 1; next } f && /^## / { exit } f' CHANGELOG.md | sed '/./,$!d' > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG.md 里取不到 v$VERSION 一节"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md

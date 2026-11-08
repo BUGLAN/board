@@ -24,4 +24,18 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 
 ## 发版
 
-由人决定，agent 不打 tag。推 `main` 只跑测试；推 `vX.Y.Z` tag 才构建镜像、部署线上服务端，打 tag 前先把 `Cargo.toml` 里 `workspace.package.version` 改成 `X.Y.Z` 并提交（见 `docs/deploy.md`「自动部署」）。
+发版由人决定：人没让你发版时，不改版本号、不打 tag。版本号 `x.y.z`，tag 是 `vx.y.z`，第一个是 `v0.1.0`：
+
+| 位 | 什么时候升 |
+|---|---|
+| x | 只由人决定，你不升 |
+| y | 重构或大升级。要升 y 时先停下来通知人，列出是哪些提交，由人决定升 y 还是 z |
+| z | 修复和比较小的新功能 |
+
+人让你发版、没给版本号时：
+
+1. `npm run release -- <上一版的 z 加 1> --dry-run` 看这一版有哪些提交（不改任何文件）。
+2. 里面有重构或大升级（`refactor` 提交、标了「不兼容」的提交，或者你判断算大升级的）：停下来，列出这些提交，问人升 y 还是 z。没有就升 z。
+3. `npm run release -- <版本号> --push`：改版本号（Cargo.toml、Cargo.lock、package.json、tauri.conf.json）、从上一个 tag 之后的每个提交生成 `CHANGELOG.md` 里这一版的一节，提交「chore: 发版 vX.Y.Z」、打 tag，再推 `main` 和 tag。
+
+推 `main` 只跑测试；推 tag 才构建镜像、部署线上服务端，部署成功后用 `CHANGELOG.md` 里这一版的一节建 GitHub Release（见 `docs/deploy.md`「升级」「自动部署」）。tag 推出去后不改、不删、不挪，发错了就再发一个版本。

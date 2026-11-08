@@ -179,24 +179,24 @@ docker compose start board
 
 ## 7. 升级
 
-发版由人决定：推 `vX.Y.Z` tag 才构建、部署线上服务端（见下文「自动部署」）；推 `main` 只跑测试，不部署。
+发版由人决定：推 `vX.Y.Z` tag 才构建、部署线上服务端（见下文「自动部署」）；推 `main` 只跑测试，不部署。版本号规则见 [AGENTS.md](../AGENTS.md)「发版」：x 只由人决定；y 是重构或大升级；z 是修复和比较小的新功能。第一个 tag 是 `v0.1.0`。
 
-1. 把 `Cargo.toml` 里 `workspace.package.version` 改成要发的版本号，更新 `Cargo.lock` 里本仓库 crate 的版本号，提交并推到 `main`：
+在 `origin/main` 的最新提交上（工作区干净）：
 
-   ```bash
-   cargo update --workspace          # Cargo.lock 跟着改，否则 cargo test --locked 不过
-   git commit -am "chore: 版本号 0.4.0"
-   git push origin HEAD:main
-   ```
+```bash
+npm run release -- 0.1.1 --dry-run   # 先看这一版有哪些提交，不改任何文件
+npm run release -- 0.1.1 --push      # 发版并推送
+```
 
-2. 在这个提交上打 tag 并推送：
+`scripts/release.mjs` 依次：
 
-   ```bash
-   git tag v0.4.0
-   git push origin v0.4.0
-   ```
+1. 核对版本号格式、工作区干净、`HEAD` 就是 `origin/main`、tag 还不存在、比上一个 tag 大
+2. 改版本号：`Cargo.toml` 的 `workspace.package.version` 和 `Cargo.lock`、`package.json` 和 `web/package.json`（连同 `package-lock.json`）、`src-tauri/tauri.conf.json`
+3. 从上一个 tag 之后的每个提交生成这一版的 changelog，按提交类型分组（新功能、修复、性能、重构、文档、其他），写到 `CHANGELOG.md` 最上面
+4. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`
+5. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令
 
-tag 去掉 `v` 后和 `workspace.package.version` 不一致时不部署。tag 只管服务端部署，桌面端和 CLI 的发版不在这里。
+tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。tag 只管服务端部署，桌面端和 CLI 的发版不在这里。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
@@ -213,19 +213,20 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致时不部署。tag �
 | 触发 | 做什么 |
 |---|---|
 | 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）。不构建镜像、不部署。改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不跑 |
-| 推 `v*` tag | build → deploy，见下图 |
+| 推 `v*` tag | build → deploy → release，见下图 |
 | 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 
 ```
-build（GitHub 托管的 ubuntu-latest）：核对 tag 和 Cargo.toml 的版本号 → npm ci → 构建界面 → cargo test
+build（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的版本号和 CHANGELOG.md → npm ci → 构建界面 → cargo test
                                      → deploy/build-linux.sh 交叉编译 → prebuilt 镜像
                                      → 推到 GHCR：ghcr.io/buglan/board-server:<7 位提交号> 和 :latest
 deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
                                      → docker compose up -d --no-build → 等健康检查
                                      → 核对线上 /api/health：version 是 tag 的版本号，commit 是 tag 指向的提交
+release：用 CHANGELOG.md 里这一版的一节建 GitHub Release（部署成功后）
 ```
 
-- tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致：build 第一步失败，不推镜像、不部署
+- tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：build 第一步失败，不推镜像、不部署
 - PR、其他分支不触发
 - 同一时间只有一次部署，后来的排队
 - `cargo test` 失败时不推镜像、不部署
