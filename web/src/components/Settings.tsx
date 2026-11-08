@@ -156,6 +156,31 @@ function envCommand(kind: ShellKind, url: string, token: string): string {
   );
 }
 
+/** 桌面端外壳注入的 board 命令行完整路径 → 它所在的目录 */
+const cliDir = () => (boardCli ? boardCli.replace(/[\\/][^\\/]*$/, '') : null);
+
+/** PATH 里加上 board 所在目录：只写用户级配置、重复执行不会重复追加，命令里不出现任何令牌 */
+function pathCommand(kind: 'powershell' | 'sh', rc: string): string {
+  const dir = cliDir();
+  if (kind === 'powershell') {
+    const find = dir
+      ? `$d = '${dir.replace(/'/g, "''")}'`
+      : `$d = Split-Path (Get-Command board -ErrorAction SilentlyContinue).Source; if (-not $d) { throw '先找到 board.exe：在桌面端打开这个页面会直接给出完整路径' }`;
+    return (
+      find +
+      `; $p = [Environment]::GetEnvironmentVariable('Path','User'); $parts = @($p -split ';' | Where-Object { $_ }); ` +
+      `if ($parts -notcontains $d) { [Environment]::SetEnvironmentVariable('Path', (($parts + $d) -join ';'), 'User'); "已把 $d 写进用户 PATH" } ` +
+      `else { "$d 已经在用户 PATH 里" }; $env:Path = "$d;$env:Path"`
+    );
+  }
+  const body =
+    `f=${rc}; touch "$f"; if grep -qxF "export PATH=\\"$d:\\$PATH\\"" "$f" 2>/dev/null; then echo "已经在 $f 里，不重复追加（新开终端生效）"; ` +
+    `else printf 'export PATH="%s:$PATH"\\n' "$d" >> "$f"; echo "已写入 $f（新开终端或 source $f 后生效）"; fi`;
+  return dir
+    ? `d="${dir}"; ${body}`
+    : `d=$(dirname "$(command -v board)" 2>/dev/null); if [ -z "$d" ]; then echo '先找到 board：在桌面端打开本页会直接给出完整路径'; else ${body}; fi`;
+}
+
 function EnvCommand({ token }: { token: string }) {
   const [kind, setKind] = useState<ShellKind>(defaultShell);
   const [state, setState] = useState<{ busy?: boolean; done?: string; error?: string }>({});
@@ -498,18 +523,28 @@ export function SettingsPage() {
           </h3>
           <p className="set-p">
             {isWindows
-              ? '装了 Windows 桌面端就不需要 Rust：安装包自带的 board.exe 会在安装时写进 PATH，新开一个终端就能用。'
+              ? '装了 Windows 桌面端就不需要 Rust：安装包自带的 board.exe 会写进用户 PATH。如果新开的终端还是 command not found，把下面这条命令粘进 PowerShell 执行一次。'
               : isMac
-                ? '装了 macOS 桌面端就不需要 Rust：安装包里自带 board，执行下面这条命令把它链接到 PATH。'
-                : '从源码安装需要 Rust；桌面端的安装包里已经带了 board。'}
+                ? '装了 macOS 桌面端就不需要 Rust：安装包自带 board。下面这条命令把它的目录写进 shell 配置，新开终端就能用。'
+                : '从源码安装需要 Rust；桌面端的安装包里已经带了 board。下面这条命令把它所在目录写进 shell 配置。'}{' '}
+            命令只写用户级配置，重复执行不会把同一个目录追加两次，也不动系统级 PATH。
           </p>
           <div className="code-block">
             {isWindows ? (
-              <Code plain cmd="board help" note="新开终端后验证；还没装桌面端就用下面的源码安装" />
-            ) : isMac ? (
-              <Code cmd={`sudo ln -sf "${boardCli ?? '/Applications/Board.app/Contents/MacOS/board'}" /usr/local/bin/board`} note="桌面端自带的 board 链接到 PATH" />
-            ) : null}
-            <Code cmd="cargo install --path crates/board-cli" note="从源码安装（需要 Rust）" />
+              <Code ps cmd={pathCommand('powershell', '')} note="写进用户 Path；重复运行不会重复追加" />
+            ) : (
+              <Code cmd={pathCommand('sh', isMac ? '~/.zshrc' : '~/.bashrc')} note={`写进 ${isMac ? '~/.zshrc' : '~/.bashrc'}；重复运行不会重复追加`} />
+            )}
+            <Code plain cmd="board help" note="新开一个终端后验证：能打印帮助就说明 PATH 生效了" />
+            <Code cmd="cargo install --path crates/board-cli" note="还没装桌面端：从源码安装（需要 Rust）" />
+          </div>
+          <p className="set-p">
+            配好之后先跑一次 <code>board doctor</code>：board 在哪、PATH 里能不能找到、服务端能不能连、令牌是否有效、BOARD / BOARD_AS 有没有设置，一次说清，有问题还会给出下一步。
+            把下面这条粘给 agent，它自己就能先自查。
+          </p>
+          <div className="code-block">
+            <Code plain cmd="board doctor" note="环境自检；全部通过时退出码 0" />
+            <Code plain cmd="board doctor --json" note="结构化结果，方便 agent 解析" />
           </div>
           <h3 className="set-sub">
             <Icon name="key" />
