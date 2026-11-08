@@ -482,8 +482,8 @@ export function SettingsPage() {
           </div>
           <p className="set-p">快捷提示词：白板页头点「提示词」一键复制。</p>
           <div className="code-block">
-            {quickPrompts(path, flow.home?.name ?? '待办', 'claude').map(q => (
-              <Code key={q.kind} plain cmd={q.text} note={q.title} />
+            {quickPrompts(path, flow.claimables.map(s => s.name), 'claude').map(q => (
+              <Code key={q.id} plain cmd={q.text} note={q.title} />
             ))}
           </div>
           <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；心跳脚本在同目录的 scripts/ 里，推荐用下面的命令链接整个目录">

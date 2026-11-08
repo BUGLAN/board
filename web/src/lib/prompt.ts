@@ -22,12 +22,16 @@ export type QuickKind = 'split' | 'upload' | 'all' | 'label';
 
 export interface QuickPrompt {
   kind: QuickKind;
+  /** 同一次生成里唯一的 id（菜单按键、键盘项都用它做 key） */
+  id: string;
   /** 菜单里的名称 */
   title: string;
   /** 复制的内容 */
   text: string;
   /** 复制后的提示：需要接着写什么 */
   hint: string;
+  /** 这条针对的可领取状态（all 才有） */
+  status?: string;
 }
 
 /** 「default项目之中的main白板」：用标识，agent 直接拼出 BOARD=default/main */
@@ -36,33 +40,43 @@ const where = (path: string) => {
   return `${project}项目之中的${board}白板`;
 };
 
-/** home：领取起点的名称（默认「待办」） */
-export function quickPrompts(path: string, home: string, label?: string): QuickPrompt[] {
+/**
+ * claimables：可领取状态的名称，按工作流顺序。第一个就是新卡片的去向，也是「拆解 / 上传」的领取起点；
+ * 每个可领取状态各生成一条「做<状态名>里的全部任务」，状态改名或增删时菜单跟着变。
+ */
+export function quickPrompts(path: string, claimables: string[], label?: string): QuickPrompt[] {
   const w = where(path);
+  const names = claimables.length ? claimables : ['待办'];
+  const home = names[0];
   const list: QuickPrompt[] = [
     {
       kind: 'split',
+      id: 'split',
       title: '拆解任务',
       text: `/${SKILL} 把下面的需求拆解成可以独立完成的任务，记到${w}的${home}里：`,
       hint: '粘贴后在冒号后面写上需求',
     },
     {
       kind: 'upload',
+      id: 'upload',
       title: '上传任务',
       text: `/${SKILL} 把我们刚才讨论出的任务上传到${w}的${home}里，每个任务一张卡片`,
       hint: '发给刚讨论完任务的 agent',
     },
-    {
-      kind: 'all',
-      title: `做${home}里的全部任务`,
-      text: `/${SKILL} 开始做${w}中${home}里的所有任务`,
+    ...names.map((name, i) => ({
+      kind: 'all' as const,
+      id: `all-${i}`,
+      status: name,
+      title: `做「${name}」里的全部任务`,
+      text: `/${SKILL} 开始做${w}中${name}里的所有任务`,
       hint: '发给装了 board-skills 的 agent 即可',
-    },
+    })),
   ];
   if (label)
     list.push({
       kind: 'label',
-      title: `做${home}里带「${label}」的任务`,
+      id: 'label',
+      title: `做「${home}」里带「${label}」的任务`,
       text: `/${SKILL} 开始做${w}中${home}里所有标签带${label}的任务`,
       hint: '发给装了 board-skills 的 agent 即可',
     });

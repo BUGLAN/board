@@ -218,12 +218,19 @@
 }
 
 /* ---------------- 白板页头「提示词」菜单 ---------------- */
-.ctx.ctx-prompts { width: min(380px, calc(100vw - 16px)); }
-.ctx .qp-item { display: flex; flex-direction: column; align-items: stretch; gap: 3px; height: auto; padding: 7px 9px; }
-.ctx button.qp-item[data-do] { height: auto; align-items: stretch; gap: 3px; }
-.qp-title { font-size: 13px; font-weight: 550; color: var(--text); }
-.ctx .qp-text { display: block; font-family: var(--f-mono); font-size: 11px; line-height: 1.45; color: var(--text-3); white-space: normal; word-break: break-all; }
+.ctx.ctx-prompts { width: min(400px, calc(100vw - 16px)); }
+/* 默认单行：标题 + 截断的句子摘要；点「展开完整句子」才铺开全文，不再一次堆四段长句 */
+.ctx .qp-item { display: flex; flex-direction: row; align-items: baseline; gap: 8px; height: auto; padding: 6px 9px; }
+.ctx button.qp-item[data-do] { height: auto; align-items: baseline; gap: 8px; padding: 6px 9px; }
+.qp-title { flex: none; font-size: 13px; font-weight: 550; color: var(--text); white-space: nowrap; }
+.ctx .qp-text { display: block; flex: 1; min-width: 0; font-family: var(--f-mono); font-size: 11px; line-height: 1.6; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctx .qp-list.expanded .qp-item { flex-direction: column; align-items: stretch; gap: 3px; padding: 8px 9px; }
+.ctx .qp-list.expanded button.qp-item[data-do] { flex-direction: column; align-items: stretch; gap: 3px; }
+.ctx .qp-list.expanded .qp-text { white-space: normal; word-break: break-all; }
+.ctx button.qp-toggle[data-do] { justify-content: flex-start; height: 26px; margin-top: 2px; padding: 0 9px; font-size: 11.5px; color: var(--text-3); }
+.ctx button.qp-toggle[data-do]:hover, .ctx button.qp-toggle[data-do]:focus-visible { color: var(--text); }
 .qp-labels { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 9px; }
+.ctx .qp-item.qp-labels { flex-direction: column; align-items: stretch; gap: 3px; }
 .qp-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
 .qp-chips button { border-radius: var(--r-xs); transition: transform var(--dur-1) var(--spring-soft); }
 .qp-chips button:hover { transform: translateY(-1px); }
