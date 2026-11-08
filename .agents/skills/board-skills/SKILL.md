@@ -83,6 +83,7 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 
 每个会话开始时做一次（处理卡片、白板、一句话需求之前）：
 
+0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），下文写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。
 1. **生成名字**：`<运行环境>/<模型>`，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`codex/gpt-5`。
    - 运行环境用 claude、codex、dsh 这类名称；模型名转成小写，空格换成 `-`。
    - 两段都只能用小写字母、数字、`.`、`-`，以字母或数字开头；只有一个 `/`，总长不超过 48 个字符。
@@ -91,11 +92,10 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 3. **启动心跳**（整个会话只执行这一次）：
 
    ```sh
-   BOARD_AS=<名字> sh <skill 目录>/scripts/heartbeat.sh start                     # macOS / Linux
-   $env:BOARD_AS='<名字>'; powershell -NoProfile -ExecutionPolicy Bypass -File <skill 目录>\scripts\heartbeat.ps1 start   # Windows
+   board heartbeat start --as <名字>
    ```
 
-   脚本先同步发一次 `board beat`（失败直接报错，按错误码处理），再在后台每 10 秒发一次，立即返回。这一路心跳同时维持你的名字在线和你持有的所有卡片，领卡后不再单独为卡片启动心跳。你的进程不在了（崩溃、被关掉），脚本跟着停下：服务端连续 5 次（50 秒）收不到心跳，名字离线，你持有的卡片回到领取它时所在的可领取状态最上面。找不到脚本时告诉用户（skill 需要连同 `scripts/` 目录一起安装）。
+   先同步发一次心跳（失败直接报错，按错误码处理），再在后台每 10 秒发一次，立即返回。这一路心跳同时维持你的名字在线和你持有的所有卡片，领卡后不再单独为卡片启动心跳。后台心跳跟随你的进程（Claude Code、Codex 等）：你的进程不在了（崩溃、被关掉），它跟着停下，不发 final；服务端连续 5 次（50 秒）收不到心跳，名字离线，你持有的卡片回到领取它时所在的可领取状态最上面。
 4. **之后每条命令都带名字和白板**：`--as <名字> --board <项目>/<白板>`，或前缀 `BOARD_AS=<名字> BOARD=<项目>/<白板>`，例如：
 
    ```sh
@@ -141,15 +141,14 @@ worktree 不在这里创建：会话里第一次处理要改代码的卡片时�
 | 交审状态 | 锁定状态连出去的、等人审核的状态，按名称判断（例如名字里带「审核」）。卡片到这里时，代码已经在集成分支上，等人复盘 | `review` 待审核 | 按「没有合适的连线」处理 |
 | 需要人处理的状态 | 锁定状态连出去的、等人处理的状态，按名称判断（例如名字里带「人工」）。**不要把卡片放回可领取状态**，那样人看不到它出了问题 | `check` 需人工校验 | 按「没有合适的连线」处理 |
 
-**没有合适的连线**：评论说明情况，`heartbeat.sh final <ID>` 结束这张卡片的计时，然后停下来告诉用户（final 50 秒后，卡片自动回到领取它时所在的状态）。
+**没有合适的连线**：评论说明情况，`board heartbeat final <ID>` 结束这张卡片的计时，然后停下来告诉用户（final 50 秒后，卡片自动回到领取它时所在的状态）。
 
 - 代码仓库是当前工作目录所在的仓库；卡片描述指定了别的位置时以描述为准。
-- `board` 不在 PATH 里时，告诉用户安装（在 Board 仓库执行 `cargo install --path crates/board-cli`），不要自己装。
 - 得到 `NOT_LOGGED_IN`、`INVALID_TOKEN`、`UNREACHABLE` 时停下来告诉用户（见文末错误码），不要反复重试。
 
 ## 处理一张卡片
 
-`board claim <ID>` → 开工 → 干活 → 推送 → 交审（评论、`heartbeat.sh final <ID>`、50 秒内移到交审状态）。不改代码的卡片（调研、整理之类）跳过开工和推送。
+`board claim <ID>` → 开工 → 干活 → 推送 → 交审（评论、`board heartbeat final <ID>`、50 秒内移到交审状态）。不改代码的卡片（调研、整理之类）跳过开工和推送。
 
 **先领卡，再干活**：拿到卡片引用（带 ID 的卡片，或从 `board ls` 里挑中的那张）后，第一条和这张卡片有关的命令必须是 `board claim <ID>`。领取成功之前：
 
@@ -178,13 +177,12 @@ worktree 不在这里创建：会话里第一次处理要改代码的卡片时�
    然后**结束这张卡片的计时**，再马上沿连线移到交审状态：
 
    ```sh
-   BOARD_AS=<名字> BOARD=<项目>/<白板> sh <skill 目录>/scripts/heartbeat.sh final <ID>
+   board heartbeat final <ID>
    board move <ID> <交审状态>        # 默认工作流是 review
    ```
 
-   Windows：`$env:BOARD_AS='<名字>'; $env:BOARD='<项目>/<白板>'; powershell -NoProfile -ExecutionPolicy Bypass -File <skill 目录>\scripts\heartbeat.ps1 final <ID>`。
    final 之后后台心跳不再刷新这张卡片，**50 秒内没有移走，领取会被释放**；final 之后再发 `board beat <ID>` 会被拒绝。界面改动可以附上截图：`board attach <ID> <截图> --comment "<说明>"`。worktree 留着做下一张卡。
-6. **做不下去**（需要人确认，或者冲突解决不了、检查不过又修不好）：改了代码的先按「代码 → 做不下去」把没完成的改动推到 wip 分支。`board comment <ID> "<原因，或需要人确认的问题>"`（推了 wip 分支的，评论里再写一行 `未完成的改动：wip/<白板标识>/<ID>`），`heartbeat.sh final <ID>`，再马上沿连线移到需要人处理的状态（默认是 `board move <ID> check`）。不要放回可领取状态。
+6. **做不下去**（需要人确认，或者冲突解决不了、检查不过又修不好）：改了代码的先按「代码 → 做不下去」把没完成的改动推到 wip 分支。`board comment <ID> "<原因，或需要人确认的问题>"`（推了 wip 分支的，评论里再写一行 `未完成的改动：wip/<白板标识>/<ID>`），`board heartbeat final <ID>`，再马上沿连线移到需要人处理的状态（默认是 `board move <ID> check`）。不要放回可领取状态。
 
 ## 代码
 
@@ -225,7 +223,7 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
   - 名字还在线（`board doctor --as <名字> --json` 的 `checks` 里 `key` 为 `board_as` 的一项 `status` 是 `ok`）：不碰。
   - 不在线（会话中断），并且没有未提交的改动（`git -C <目录> status --porcelain` 没有输出）、也没有没推到远端的提交（`git fetch origin` 后 `git -C <目录> branch -r --contains HEAD` 有输出，集成分支或 wip 分支都算）：`git worktree unlock <目录>`，再 `git worktree remove <目录>`。
   - 有没推的改动：保留，告诉用户。
-- **删除**：会话结束、`heartbeat.sh stop` 之后，在主仓库目录 `git worktree unlock <目录>`、`git worktree remove <目录>` 删掉自己的 worktree。
+- **删除**：会话结束、`board heartbeat stop` 之后，在主仓库目录 `git worktree unlock <目录>`、`git worktree remove <目录>` 删掉自己的 worktree。
 
 ### 开工
 
@@ -276,13 +274,12 @@ wip 分支由接着做的 agent 在推进集成分支后删除，或者由人处
 所有卡片都处理完（都已交审或交给人）后，停掉后台心跳，名字立刻离线：
 
 ```sh
-BOARD_AS=<名字> sh <skill 目录>/scripts/heartbeat.sh stop
-$env:BOARD_AS='<名字>'; powershell -NoProfile -ExecutionPolicy Bypass -File <skill 目录>\scripts\heartbeat.ps1 stop   # Windows
+board heartbeat stop --as <名字>
 ```
 
 然后在主仓库目录删掉本会话的 worktree（见「会话的 worktree → 删除」）。
 
-会话中途得到 `NAME_OFFLINE`：你的名字已经离线（心跳中断超过 50 秒，或心跳脚本停了），你持有的卡片可能已经被释放。重新 `board check --as <名字>`（被占用就加后缀），再 `heartbeat.sh start`，然后 `board show <ID> --json` 看卡片现在的状态再决定。
+会话中途得到 `NAME_OFFLINE`：你的名字已经离线（心跳中断超过 50 秒，或后台心跳停了），你持有的卡片可能已经被释放。重新 `board check --as <名字>`（被占用就加后缀），再 `board heartbeat start`，然后 `board show <ID> --json` 看卡片现在的状态再决定。
 
 ## 整理未整理的条目
 
@@ -315,8 +312,9 @@ board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"
 board check --as <名字>                   # 会话开始时占用名字
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线
-board beat [--final]                      # agent 级心跳 / 名字立刻离线；由 scripts/heartbeat.sh start / stop 调用
-board beat <ID> --final                   # 结束这张卡片的计时；由 scripts/heartbeat.sh final <ID> 调用
+board heartbeat start                     # 会话开始：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
+board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
+board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错
 board move <ID> <状态标识或名称> [--top]
 board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些
 board labels

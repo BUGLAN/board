@@ -486,7 +486,7 @@ export function SettingsPage() {
               <Code key={q.id} plain cmd={q.text} note={q.title} />
             ))}
           </div>
-          <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；心跳脚本在同目录的 scripts/ 里，推荐用下面的命令链接整个目录">
+          <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；skill 自带的 board 在同目录的 scripts/、bin/ 里，推荐解压发版附件 board-skills.zip，或用下面的命令链接整个目录">
             <CopySkill />
           </Row>
           <div className="code-block">

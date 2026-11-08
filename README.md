@@ -81,7 +81,13 @@ Board 不包含 agent 本身。接入分三步：装好 `board` 命令行、装�
 
 **1. 安装命令行**
 
-桌面端安装包自带 `board`：Windows 安装时写进 PATH；macOS 在「设置 → Agent 接入」里执行一条链接命令。从源码安装：
+skill 自带 `board`：发版附件里的 `board-skills.zip` 解压后，`bin/` 里有 macOS（arm64、x64）、Linux（x64、arm64）、Windows（x64）的二进制，agent 通过 skill 里的 `scripts/board`（Windows：`scripts\board.cmd`）按平台调用，不用另装。在仓库里自己编：
+
+```bash
+node scripts/build-skill-bin.mjs --host   # 只编本机平台；不带 --host 时本机能交叉编译的平台都编
+```
+
+人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装时写进 PATH；macOS 在「设置 → Agent 接入」里执行一条链接命令），或者从源码安装：
 
 ```bash
 cargo install --path crates/board-cli
@@ -89,7 +95,7 @@ cargo install --path crates/board-cli
 
 **2. 安装 skill**
 
-本仓库的 skill 在 [`.agents/skills/board-skills/`](.agents/skills/board-skills/)；支持 `.agents/skills` 的 agent 会自动识别，Claude Code 通过 `.claude/skills/board-skills` 链接识别。不在仓库里时，在「设置 → Agent 接入」里复制 SKILL.md，保存到 agent 的 skills 目录。
+本仓库的 skill 在 [`.agents/skills/board-skills/`](.agents/skills/board-skills/)；支持 `.agents/skills` 的 agent 会自动识别，Claude Code 通过 `.claude/skills/board-skills` 链接识别。不在仓库里时，把发版附件里的 `board-skills.zip` 解压到 agent 的 skills 目录（`~/.agents/skills/`，Claude Code 是 `~/.claude/skills/`），整个目录连同 `scripts/`、`bin/` 一起放进去。
 
 **3. 连接白板**
 
@@ -113,7 +119,7 @@ agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以�
 /board-skills 开始执行 oss项目之中的main白板中的#2任务
 ```
 
-卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：check 名字并启动后台心跳 → 先领取（领到之前不读卡片、不看代码、不发进展，免得调研期间卡片被别人领走、耗时少算）→ 读卡片描述和动态，在本会话的 worktree 里按描述和验收标准干活 → 评论进度 → rebase 到集成分支、跑完仓库规定的检查，压成一个提交直接推上去 → 评论提交号和检查结果，结束这张卡片的计时（final）并移到待审核；做不下去时把未完成的改动推到 `wip/<白板>/<ID>` 分支，移到需人工校验；会话结束时停掉心跳，名字离线，删掉 worktree。集成分支和推送前检查写在代码仓库的 AGENTS.md / CLAUDE.md 里（没写集成分支就用远端的默认分支）；拆解需求时，同类别的小改动（界面、文案、图片）合成一张卡，不按前后端、不按步骤拆。
+卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：check 名字并启动后台心跳（`board heartbeat start`）→ 先领取（领到之前不读卡片、不看代码、不发进展，免得调研期间卡片被别人领走、耗时少算）→ 读卡片描述和动态，在本会话的 worktree 里按描述和验收标准干活 → 评论进度 → rebase 到集成分支、跑完仓库规定的检查，压成一个提交直接推上去 → 评论提交号和检查结果，结束这张卡片的计时（final）并移到待审核；做不下去时把未完成的改动推到 `wip/<白板>/<ID>` 分支，移到需人工校验；会话结束时停掉心跳，名字离线，删掉 worktree。集成分支和推送前检查写在代码仓库的 AGENTS.md / CLAUDE.md 里（没写集成分支就用远端的默认分支）；拆解需求时，同类别的小改动（界面、文案、图片）合成一张卡，不按前后端、不按步骤拆。
 
 ## CLI 速查
 
@@ -128,8 +134,9 @@ board show 2                  # 查看卡片详情
 board claim                   # 领取下一张；board claim 2 领取指定卡片
 board comment 2 "进展……"      # 记录进度
 board move 2 review           # 沿连线移动卡片
-board beat                    # agent 级心跳，每 10 秒一次（由 skill 里的脚本调用）
-board beat 2 --final          # 结束这张卡片的计时（由 heartbeat.sh final 2 调用）
+board heartbeat start         # 会话开始：启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回
+board heartbeat final 2       # 结束这张卡片这一次的计时
+board heartbeat stop          # 会话结束：停掉后台心跳，名字立刻离线
 board new "标题" --body "描述" # 新建卡片
 board attach 2 shot.png --comment "截图"  # 上传附件
 ```

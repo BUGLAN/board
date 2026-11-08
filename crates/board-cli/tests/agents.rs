@@ -24,7 +24,7 @@ fn check_name_format_and_strict_mode() {
     // check 之后可以；文本输出提示启动心跳
     let r = board(&s.home, &s.env(), &["check", "--as", ME]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert!(r.out.contains("已在线") && r.out.contains("heartbeat.sh start"), "{}", r.out);
+    assert!(r.out.contains("已在线") && r.out.contains("board heartbeat start"), "{}", r.out);
     assert_eq!(s.run_unchecked(ME, &["new", "x", "--json"]).code, 0);
     // 在线时再 check：NAME_TAKEN
     let r = board(&s.home, &s.env(), &["check", "--as", ME, "--json"]);

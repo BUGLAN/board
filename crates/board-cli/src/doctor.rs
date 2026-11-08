@@ -510,7 +510,7 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
                         "board_as",
                         "名字",
                         format!("{n} 不在线：没有 check，或心跳中断超过 {} 秒", board_core::NAME_GAP_MS / 1000),
-                        format!("board check --as {n}，再 BOARD_AS={n} sh <skill 目录>/scripts/heartbeat.sh start"),
+                        format!("board check --as {n}，再 board heartbeat start --as {n}"),
                     )),
                     Err(e) => checks.push(Check::fail("board_as", "名字", format!("{n}：查不到在线列表：{}", e.describe()), e.next_step())),
                 },

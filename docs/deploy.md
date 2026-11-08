@@ -131,7 +131,7 @@ board check --as claude/opus-5.5
 board ls --as claude/opus-5.5 --board default
 ```
 
-agent 的名字格式是 `<运行环境>/<模型>`（需要时加后缀），会话开始时 `board check` 占用；之后由 skill 里的 `heartbeat.sh` 每 10 秒发一次 `board beat` 维持在线。
+agent 的名字格式是 `<运行环境>/<模型>`（需要时加后缀），会话开始时 `board check` 占用；之后 `board heartbeat start` 在后台每 10 秒发一次 `board beat` 维持在线，会话结束时 `board heartbeat stop`。
 
 也可以在服务器上直接管理令牌：
 
@@ -204,7 +204,7 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 - 新服务端要求带令牌的卡片命令、上传附件里的名字先 `board check` 并保持心跳（严格模式）。旧名字（例如 `claude`）不符合新格式，新服务端上线后会报 `NAME_OFFLINE`。
 - 每台跑 agent 的电脑重装 CLI：`cargo install --path crates/board-cli`（或装新版桌面端），再 `board login --url <服务端地址> --token <令牌>`，删掉 shell 配置文件里旧的 `export BOARD_URL`、`export BOARD_TOKEN`（`board doctor` 会提示）。
-- 更新 skill（`.agents/skills/board-skills/`，含 `scripts/heartbeat.sh`、`heartbeat.ps1`）。
+- 更新 skill（`.agents/skills/board-skills/`，含 `scripts/`；发版附件 `board-skills.zip` 还带 `bin/` 里各平台的 `board`）。
 
 ## 自动部署
 
@@ -212,8 +212,8 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）。不构建镜像、不部署。改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不跑 |
-| 推 `v*` tag | build → deploy → release，见下图 |
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）；同时在 Windows 上跑 `board heartbeat` 的测试（`cargo test -p board-cli --test heartbeat`）。不构建镜像、不部署。改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不跑 |
+| 推 `v*` tag | build → deploy；skill（和它们同时跑）→ release，见下图 |
 | 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 
 ```
@@ -223,7 +223,9 @@ build（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的版本号
 deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
                                      → docker compose up -d --no-build → 等健康检查
                                      → 核对线上 /api/health：version 是 tag 的版本号，commit 是 tag 指向的提交
-release：用 CHANGELOG.md 里这一版的一节建 GitHub Release（部署成功后）
+skill（GitHub 托管的 macos-latest）：node scripts/build-skill-bin.mjs --zip，编 macOS（arm64、x64）、Linux（x64、arm64，musl）、
+                                     Windows（x64）的 board，放进 skill 的 bin/，打包成 board-skills.zip
+release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip（部署成功、skill 打包成功后）
 ```
 
 - tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：build 第一步失败，不推镜像、不部署

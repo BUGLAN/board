@@ -1,8 +1,10 @@
 # 测试与部署（docs/deploy.md「自动部署」）：
 #   push main   → test：npm ci → cargo test → 界面类型检查；不部署
-#   push tag v*  → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
+#               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final）
+#   push tag v*  → skill：在 macOS 上编各平台的 board，放进 skill 的 bin/，打包 board-skills.zip（和 build、deploy 同时跑）
+#                → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
 #                → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上版本号和提交号；失败切回上一个镜像
-#                → release：用 CHANGELOG.md 里这一版的段落建 GitHub Release
+#                → release：用 CHANGELOG.md 里这一版的段落建 GitHub Release，附上 board-skills.zip
 # tag 由 npm run release 打（scripts/release.mjs：改版本号、生成 changelog、提交、打 tag）
 # 手动运行（在 main 上）填 7 位提交号：跳过 build，直接部署 GHCR 上已有的镜像（回滚用）
 name: deploy
@@ -61,6 +63,58 @@ jobs:
 
       - name: 界面类型检查
         run: npm --prefix web run typecheck
+
+  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs），Linux 上的已经在 test 里跑过
+  heartbeat-windows:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: board heartbeat 测试
+        run: cargo test --locked -p board-cli --test heartbeat --test agents
+
+  # 推 v* tag：编各平台的 board 放进 skill 目录，打包成 board-skills.zip，release 时附上
+  skill:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: 编各平台的 board，打包 skill
+        run: node scripts/build-skill-bin.mjs --zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: board-skills
+          path: target/board-skills.zip
+          if-no-files-found: error
 
   # 推 v* tag：构建并推镜像
   build:
@@ -252,15 +306,19 @@ jobs:
         if: always()
         run: rm -f ~/.ssh/deploy_key
 
-  # 部署成功后，用 CHANGELOG.md 里这一版的段落建 GitHub Release
+  # 部署成功、skill 打包成功后，用 CHANGELOG.md 里这一版的段落建 GitHub Release，附上 board-skills.zip
   release:
-    needs: [build, deploy]
+    needs: [build, deploy, skill]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: board-skills
 
       - name: 建 GitHub Release
         env:
@@ -269,4 +327,4 @@ jobs:
         run: |
           awk -v h="## v$VERSION" 'index($0, h" ") == 1 || $0 == h { f = 1; next } f && /^## / { exit } f' CHANGELOG.md | sed '/./,$!d' > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG.md 里取不到 v$VERSION 一节"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip

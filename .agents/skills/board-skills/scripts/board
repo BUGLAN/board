@@ -1,0 +1,42 @@
+#!/bin/sh
+# skill 自带的 board：用 skill 目录里本平台的二进制（bin/<平台>/board），没有时用 PATH 里的 board。
+#   <skill 目录>/scripts/board <命令> …      和 board <命令> … 完全一样
+# 平台：darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64（Git Bash 等）。
+# bin/ 由 node scripts/build-skill-bin.mjs 生成，发版附件 board-skills.zip 里已经带好。
+set -u
+here=$(cd "$(dirname "$0")" && pwd)
+case "$(uname -s)" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    MINGW* | MSYS* | CYGWIN*) os=windows ;;
+    *) os= ;;
+esac
+case "$(uname -m)" in
+    x86_64 | amd64) arch=x64 ;;
+    arm64 | aarch64) arch=arm64 ;;
+    *) arch= ;;
+esac
+exe=
+if [ "$os" = windows ]; then exe=.exe; arch=x64; fi
+bin="$here/../bin/$os-$arch/board$exe"
+if [ -n "$os" ] && [ -n "$arch" ] && [ -f "$bin" ]; then
+    [ -x "$bin" ] || chmod +x "$bin" 2>/dev/null
+    # 用访达解压的压缩包带隔离属性，macOS 会拒绝执行：这是 skill 自己的二进制，去掉它
+    if [ "$os" = darwin ] && xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
+        xattr -d com.apple.quarantine "$bin" 2>/dev/null
+    fi
+    exec "$bin" "$@"
+fi
+# PATH 里的 board（跳过本脚本自己：scripts/ 在 PATH 里时不要自己调自己）
+old_ifs=$IFS
+IFS=:
+for d in $PATH; do
+    [ -n "$d" ] && [ -f "$d/board" ] && [ -x "$d/board" ] || continue
+    [ "$(cd "$d" 2>/dev/null && pwd)" = "$here" ] && continue
+    IFS=$old_ifs
+    exec "$d/board" "$@"
+done
+IFS=$old_ifs
+echo "board: skill 目录里没有本平台（${os:-?}-${arch:-?}）的二进制，PATH 里也没有 board。" >&2
+echo "  用发版附件里的 board-skills.zip 重新安装 skill，或在 Board 仓库执行 node scripts/build-skill-bin.mjs --host" >&2
+exit 127

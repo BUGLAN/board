@@ -9,6 +9,7 @@
 mod backend;
 mod config;
 mod doctor;
+mod heartbeat;
 
 use backend::{env, Backend, BoardData, Remote};
 use board_core::*;
@@ -21,9 +22,9 @@ use unicode_width::UnicodeWidthStr;
 const VALUE_FLAGS: [&str; 11] =
     ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token"];
 const BOOL_FLAGS: [&str; 5] = ["--json", "--top", "--help", "-h", "--final"];
-const COMMANDS: [&str; 19] = [
-    "help", "doctor", "login", "logout", "check", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat", "label",
-    "labels", "attach", "files",
+const COMMANDS: [&str; 20] = [
+    "help", "doctor", "login", "logout", "check", "heartbeat", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat",
+    "label", "labels", "attach", "files",
 ];
 
 fn main() {
@@ -179,12 +180,15 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 p.green("✓"),
                 p.bold(&name),
                 p.yellow(&format!(
-                    "马上启动心跳：BOARD_AS={name} sh <skill 目录>/scripts/heartbeat.sh start（每 {} 秒 board beat 一次；{} 秒没收到就离线）",
+                    "马上启动心跳：board heartbeat start --as {name}（后台每 {} 秒发一次心跳；{} 秒没收到就离线）",
                     BEAT_MS / 1000,
                     NAME_GAP_MS / 1000
                 ))
             ))
         });
+    }
+    if sub == "heartbeat" {
+        return heartbeat_cmd(&a, &name, json, p);
     }
     if sub == "beat" && a.pos.len() == 1 {
         let done = a.flag("--final");
@@ -414,7 +418,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     p.bold("已领取"),
                     p.dim(&format!("进入「{}」", flow.name(&d.card.column))),
                     p.yellow(&format!(
-                        "会话开始时启动的心跳（heartbeat.sh start）会维持这张卡片；做完后 heartbeat.sh final {}，再在 {} 秒内沿连线移走",
+                        "会话开始时启动的心跳（board heartbeat start）会维持这张卡片；做完后 board heartbeat final {}，再在 {} 秒内沿连线移走",
                         d.card.id,
                         BEAT_MS * BEAT_MISSES / 1000
                     )),
@@ -852,12 +856,13 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 19] = [
+    let rows: [(&str, &str, &str); 20] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
         ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
-        ("beat", "[<ID>] [--final]", "不带 ID：agent 级心跳，每 10 秒一次，维持名字在线和持有的卡片；--final 名字立刻离线。带 ID：这张卡片的心跳；--final 结束这一次计时。由 skill 里的脚本调用"),
+        ("heartbeat", "start | stop | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；final <ID>：结束这张卡片这一次的计时"),
+        ("beat", "[<ID>] [--final]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
@@ -899,6 +904,78 @@ fn help(p: &Paint) -> String {
         String::new(),
     ]);
     out.join("\n")
+}
+
+/* ------------------------------ 心跳 ------------------------------ */
+
+/// `board heartbeat start | stop | final <ID>`（见 heartbeat.rs）
+fn heartbeat_cmd(a: &Args, name: &str, json: bool, p: &Paint) -> Result<Output> {
+    const USAGE: &str = "用法：board heartbeat start | stop | final <ID>";
+    match a.pos.get(1).map(|s| s.as_str()) {
+        Some("start") => {
+            let s = heartbeat::start(name)?;
+            Ok(if json {
+                Output::Json(json!({
+                    "name": name,
+                    "loop_pid": s.loop_pid,
+                    "agent_pid": s.agent.map(|x| x.pid),
+                    "interval_ms": s.interval.as_millis() as u64,
+                }))
+            } else {
+                Output::Text(format!(
+                    "{} {} 心跳已开始：每 {} 秒一次（后台进程 {}{}）\n",
+                    p.green("✓"),
+                    p.bold(name),
+                    s.interval.as_secs_f64(),
+                    s.loop_pid,
+                    match s.agent {
+                        Some(x) => format!("，跟随 agent 进程 {}", x.pid),
+                        None => "，没找到 agent 进程，会一直跑到 stop".to_string(),
+                    }
+                ))
+            })
+        }
+        Some("stop") => {
+            let info = heartbeat::stop(name)?;
+            Ok(match (json, info) {
+                (true, Some(info)) => Output::Json(agent_json(&info)),
+                (true, None) => Output::Json(json!({ "name": name, "already_offline": true })),
+                (false, Some(info)) => {
+                    let cards: Vec<String> = info.cards.iter().map(|h| format!("{}#{}", h.board, h.card.id)).collect();
+                    Output::Text(format!(
+                        "{} {} 心跳已停止，已离线{}\n",
+                        p.green("✓"),
+                        p.bold(name),
+                        if cards.is_empty() {
+                            String::new()
+                        } else {
+                            p.dim(&format!("  持有的 {} 收不到心跳，{} 秒内释放", cards.join("、"), NAME_GAP_MS / 1000))
+                        }
+                    ))
+                }
+                (false, None) => Output::Text(format!("{} {} 心跳已停止（名字之前已经离线）\n", p.green("✓"), p.bold(name))),
+            })
+        }
+        // 等同 board beat <ID> --final
+        Some("final") => {
+            let id = a.pos.get(2).ok_or_else(|| BoardError::usage("用法：board heartbeat final <ID>"))?;
+            let mut t = vec!["beat".to_string(), id.clone(), "--final".to_string()];
+            for (k, v) in &a.values {
+                t.push(k.clone());
+                t.push(v.clone());
+            }
+            if json {
+                t.push("--json".into());
+            }
+            run(&t, p)
+        }
+        // 后台循环：只由 start 启动，不在 help 里列出
+        Some("_loop") => {
+            heartbeat::run_loop(name, a.pos.get(2).and_then(|s| heartbeat::Proc::parse(s)));
+            Ok(Output::Text(String::new()))
+        }
+        _ => Err(BoardError::usage(USAGE)),
+    }
 }
 
 /* ------------------------------ 文本工具 ------------------------------ */
