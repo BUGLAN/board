@@ -220,6 +220,15 @@
 /* ---------------- 白板页头「提示词」菜单 ---------------- */
 /* 状态块排序菜单 */
 .ctx.ctx-sort { width: 256px; }
+/* 卡片详情「移动到」 */
+.ctx.ctx-move { width: 240px; }
+.ctx-move .mv-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ctx-move .mv-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ctx-move .mv-count { font-size: 11px; color: var(--text-3); }
+.ctx-move .mv-note { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.ctx-move .mv-note svg { width: 12px; height: 12px; }
+.ctx-move .mv-item.vetoed .mv-name, .ctx-move .mv-item.vetoed .mv-dot { opacity: .45; }
+.ctx-move .mv-item.vetoed { cursor: not-allowed; }
 .ctx .sort-hint { margin: 0; padding: 0 9px 6px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
 .ctx-sort .sort-row { display: flex; align-items: center; gap: 6px; }
 .ctx-sort .sort-row > button[data-do] { flex: 1; width: auto; min-width: 0; }

@@ -7,6 +7,7 @@ import {
   setProjectColor,
 } from '../lib/actions';
 import { api } from '../lib/api';
+import { moveTo, vetoFor } from '../lib/drag';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
 import { quickPrompts } from '../lib/prompt';
 import { SORTS, sortKey, type SortSpec } from '../lib/sort';
@@ -510,7 +511,7 @@ export function CtxMenu() {
 
   useEffect(() => {
     if (!req) return;
-    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn') && closeCtx();
+    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn, .d-move') && closeCtx();
     document.addEventListener('pointerdown', down);
     window.addEventListener('resize', closeCtx);
     return () => {
@@ -558,6 +559,8 @@ export function CtxMenu() {
     body = <PromptsMenu path={req.id} go={go} />;
   } else if (req.kind === 'sort') {
     body = <SortMenu col={req.id} go={go} />;
+  } else if (req.kind === 'move') {
+    body = <MoveMenu id={Number(req.id)} go={go} />;
   } else {
     const m = boardMeta(ws, req.id);
     if (!m) return null;
@@ -596,7 +599,7 @@ export function CtxMenu() {
   }
   return (
     <div
-      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'sort' && 'ctx-sort', pos && 'on')}
+      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'sort' && 'ctx-sort', req.kind === 'move' && 'ctx-move', pos && 'on')}
       ref={ref}
       role="menu"
       style={pos ?? { left: -9999, top: -9999 }}
@@ -620,6 +623,53 @@ export function CtxMenu() {
     >
       {body}
     </div>
+  );
+}
+
+/* ============================ 卡片详情「移动到」 ============================ */
+/* 列出当前状态以外的工作流状态；不允许的（被 agent 持有、锁定状态）标出原因，点了给出与拖拽相同的提示（lib/drag.ts moveTo） */
+
+function MoveMenu({ id, go }: { id: number; go: (fn: () => void) => () => void }) {
+  const board = useData(s => s.board);
+  const card = board?.cards[id];
+  if (!board || !card) return null;
+  const f = boardFlow(board);
+  const targets = f.list.filter(s => s.key !== card.column);
+  return (
+    <>
+      <div className="ctx-title">
+        <Icon name="move" />
+        <b>把 #{card.id} 移动到</b>
+      </div>
+      {card.holder && <p className="sort-hint">{card.holder} 正持有这张卡片，只有持有者能移动</p>}
+      {targets.map(s => {
+        const veto = vetoFor(card, s.key, f);
+        return (
+          <button
+            key={s.key}
+            type="button"
+            data-do={`move-${s.key}`}
+            className={cx('mv-item', veto && 'vetoed')}
+            aria-disabled={!!veto}
+            title={veto?.message}
+            onClick={go(() => moveTo(card.id, s.key))}
+          >
+            <i className="mv-dot" style={{ background: f.color(s.key) }} />
+            <span className="mv-name">{s.name}</span>
+            {veto ? (
+              <span className="mv-note">
+                <Icon name="lock" />
+                {/* 被持有时标题下已经说过一次，行里只留锁 */}
+                {veto.code !== 'NOT_HOLDER' && veto.title}
+              </span>
+            ) : (
+              <span className="mv-count mono">{board.cols[s.key]?.length ?? 0}</span>
+            )}
+          </button>
+        );
+      })}
+      {!targets.length && <p className="sort-hint">工作流里没有别的状态</p>}
+    </>
   );
 }
 

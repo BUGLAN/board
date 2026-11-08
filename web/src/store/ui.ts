@@ -61,8 +61,9 @@ export interface PickerReq {
 }
 
 export interface CtxReq {
-  /** prompts：白板页头的「提示词」菜单，id 是白板路径；sort：状态块的排序菜单，id 是状态标识 */
-  kind: 'project' | 'board' | 'prompts' | 'sort';
+  /** prompts：白板页头的「提示词」菜单，id 是白板路径；sort：状态块的排序菜单，id 是状态标识；
+      move：卡片详情底部的「移动到」，id 是卡片编号 */
+  kind: 'project' | 'board' | 'prompts' | 'sort' | 'move';
   id: string;
   x: number;
   y: number;

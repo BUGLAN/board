@@ -45,7 +45,7 @@
 /* 拖过分隔条后（--modal-side 写在 .d-grid 上）：右栏 260–680px，左栏至少留 320px */
 .d-grid[style*="--modal-side"] { grid-template-columns: minmax(0, 1fr) clamp(260px, var(--modal-side), max(260px, min(680px, calc(100% - 320px)))); }
 .d-main { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 0 18px; display: flex; flex-direction: column; }
-.d-main .d-danger { margin-top: auto; }
+.d-main .d-actions { margin-top: auto; }
 .d-side {
   position: relative; min-height: 0; display: flex; flex-direction: column;
   border-left: 1px solid var(--line);
@@ -270,8 +270,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .comment-box.has-text .comment-send { background: var(--brand); color: var(--brand-fg); transform: rotate(-12deg); }
 .comment-box.has-text .comment-send:hover { transform: rotate(0) scale(1.06); }
 
-.d-danger { display: flex; align-items: center; gap: 10px; padding: 14px 22px 0; margin: 22px 22px 0; padding-left: 0; padding-right: 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-3); }
-.d-danger .btn { margin-left: auto; }
+.d-actions { display: flex; align-items: center; gap: 10px; padding: 14px 0 0; margin: 22px 22px 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-3); }
+.d-actions-hint { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.d-actions .d-move { margin-left: auto; flex: none; }
 
 /* ---------------- 命令面板 ---------------- */
 .palette-wrap {

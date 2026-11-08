@@ -144,7 +144,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .d-nav { display: none; }
   .d-grid { display: block; }
   .d-main { overflow: visible; padding-top: 4px; }
-  .d-main .d-danger { margin: 22px 18px 0; }
+  .d-main .d-actions { margin: 22px 18px 0; }
   .d-side { border-left: 0; background: transparent; margin-top: 10px; }
   .d-split { display: none; }
   .d-activity { overflow: visible; }
@@ -160,7 +160,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .drawer.dragging { transition: none; }
   .drawer-grab { display: grid; place-items: center; height: 22px; flex: none; cursor: grab; touch-action: none; }
   .drawer-grab i { width: 38px; height: 5px; border-radius: 999px; background: var(--line-3); }
-  .d-section, .d-danger { padding-left: 18px; padding-right: 18px; }
+  .d-section, .d-actions { padding-left: 18px; padding-right: 18px; }
   .d-title { font-size: 21px; }
 
   /* 设置 */

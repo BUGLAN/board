@@ -12,7 +12,7 @@ import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
 import { boardMeta, exec, moveLocally, refresh, serverNow, useData } from '../store/data';
-import { rejectColumn, setDrag, setSort, toastError, useUI, type DragUI } from '../store/ui';
+import { rejectColumn, setDrag, setSort, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
   code: string;
@@ -38,6 +38,29 @@ export function vetoFor(c: Card, to: ColumnKey, f: FlowQ): Veto | null {
     };
   }
   return null;
+}
+
+/** 卡片详情「移动到」：相当于把卡片拖到目标状态的末尾。规则与拖拽一致（vetoFor），不允许时给出同样的提示、不发请求；
+    先在本地落位，服务端拒绝时提示并刷新 */
+export async function moveTo(id: number, to: ColumnKey) {
+  const board = useData.getState().board;
+  const card = board?.cards[id];
+  if (!board || !card || card.column === to) return;
+  const f = boardFlow(board);
+  const veto = vetoFor(card, to, f);
+  if (veto) {
+    toastError({ code: veto.code, message: veto.message });
+    return;
+  }
+  // 末尾：目标块优先级顺序的最后（排序中的块也一样，与从别的块拖到最后一张之后相同）
+  moveLocally(id, to, (board.cols[to] ?? []).filter(x => x !== id).length);
+  try {
+    await exec({ op: 'move', id, column: to });
+    toast({ type: 'success', title: `#${id} 已移到「${f.name(to)}」`, duration: 1800 });
+  } catch (e) {
+    toastError(e);
+    refresh();
+  }
 }
 
 /** 白板上状态块里的卡片列表，按工作流顺序 */

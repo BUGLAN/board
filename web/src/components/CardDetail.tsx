@@ -10,7 +10,7 @@ import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
 import { closeDetail, exec, isSettled, openDetail, sendComment, useCurrent, useData, useOnline, useSending } from '../store/data';
-import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
+import { closeCtx, confirm, openCtx, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
@@ -255,8 +255,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           {!!c.attachments?.length && <Attachments list={c.attachments} />}
           {/* 描述里引用了附件：附件列表多半不空，先占位 */}
           {loading && c.body.includes('/api/files/') && <AttachmentsSkeleton />}
-          <div className="d-danger">
-            <span>删除后无法恢复</span>
+          {/* 底部操作栏：左边删除（危险操作和它的提示放一起），右边「移动到」（拖拽的快捷方式） */}
+          <div className="d-actions">
             <button
               className="btn sm danger"
               type="button"
@@ -274,6 +274,20 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             >
               <Icon name="trash" />
               删除卡片
+            </button>
+            <span className="d-actions-hint">删除后无法恢复</span>
+            <button
+              className="btn sm d-move"
+              type="button"
+              aria-haspopup="menu"
+              onClick={e => {
+                const open = useUI.getState().ctx;
+                if (open?.kind === 'move' && open.id === String(c.id)) return closeCtx();
+                openCtx({ kind: 'move', id: String(c.id), x: 0, y: 0, anchor: e.currentTarget.getBoundingClientRect() });
+              }}
+            >
+              <Icon name="move" />
+              移动到
             </button>
           </div>
         </div>
