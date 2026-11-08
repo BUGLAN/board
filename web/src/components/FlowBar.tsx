@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { CH, edgeId, layoutFlow, midOf, pathD, type Pt } from '../lib/flowGraph';
-import { statusColor, STATUS_COLORS, type FlowQ } from '../lib/schema';
+import { statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/schema';
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { refresh } from '../store/data';
@@ -475,6 +475,25 @@ function StatusMenu({
           />
         ))}
       </div>
+      <div className="wf-view">
+        <span className="wf-view-label">卡片形态</span>
+        <div className="wf-view-opts" role="radiogroup" aria-label="卡片形态">
+          {VIEWS.map(([v, name, hint]) => (
+            <button
+              key={v}
+              type="button"
+              role="radio"
+              aria-checked={viewOf(s) === v}
+              className={cx(viewOf(s) === v && 'on')}
+              title={hint}
+              onClick={() => viewOf(s) !== v && patch({ view: v })}
+            >
+              <Icon name={v === 'card' ? 'viewCard' : v === 'line' ? 'viewLine' : 'viewTile'} />
+              {name}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="wf-rules">
         {sw(
           s.claim,
@@ -484,7 +503,7 @@ function StatusMenu({
           lastClaim ? '至少要有一个可领取的状态：先把另一个状态设为可领取' : undefined,
         )}
         {sw(s.lock, '锁定', '只能由 agent 领取进入；被持有期间只有持有者能移动', () => patch({ lock: !s.lock }))}
-        {sw(s.final, '终点', '进来算完成：卡片只占一行；只有人能移入移出', () => patch({ final: !s.final }))}
+        {sw(s.final, '终点', '进来算完成：只有人能移入移出', () => patch({ final: !s.final }))}
       </div>
       <div className="wf-menu-foot">
         {lastClaim ? (

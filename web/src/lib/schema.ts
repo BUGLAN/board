@@ -1,4 +1,4 @@
-import type { BoardSnapshot, Card, ErrorCode, Status } from './types';
+import type { BoardSnapshot, Card, ErrorCode, Status, StatusView } from './types';
 
 export const INBOX = 'inbox';
 export const INBOX_NAME = '未整理';
@@ -7,6 +7,14 @@ export const INBOX_NAME = '未整理';
 export const STATUS_COLORS = ['todo', 'doing', 'review', 'done', '#A855F7', '#EC4899', '#14B8A6', '#F59E0B', '#EF4444', '#84CC16'];
 /** 状态颜色 → CSS 颜色 */
 export const statusColor = (c: string) => (c.startsWith('#') ? c : `var(--c-${c})`);
+
+/** 状态块里卡片的形态；没设置过时终点用磁贴，其他用卡片 */
+export const viewOf = (s: Status): StatusView => s.view ?? (s.final ? 'tile' : 'card');
+export const VIEWS: [StatusView, string, string][] = [
+  ['card', '卡片', '编号、标题、标签、持有者和计时'],
+  ['line', '单行', '编号和标题占一行'],
+  ['tile', '磁贴', '只显示编号，横向排列；悬停看标题'],
+];
 
 /** 工作流的查询（白板快照或工作区里的 statuses 都可以） */
 export function flowOf(statuses: Status[] | undefined | null) {

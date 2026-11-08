@@ -31,6 +31,43 @@ pub struct Tile {
     pub y: f64,
 }
 
+/// 状态块里卡片的形态（PRD §7）：只影响界面显示
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CardView {
+    /// 卡片：编号、标题、标签、持有者和计时
+    #[default]
+    Card,
+    /// 单行：编号和标题占一行
+    Line,
+    /// 磁贴：只显示编号，横向排列、自动换行
+    Tile,
+}
+
+impl CardView {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CardView::Card => "card",
+            CardView::Line => "line",
+            CardView::Tile => "tile",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<CardView> {
+        match s {
+            "card" => Some(CardView::Card),
+            "line" => Some(CardView::Line),
+            "tile" => Some(CardView::Tile),
+            _ => None,
+        }
+    }
+
+    /// 没有设置过时：终点用磁贴，其他用卡片
+    pub fn default_for(fin: bool) -> CardView {
+        if fin { CardView::Tile } else { CardView::Card }
+    }
+}
+
 /// 工作流里的一个状态（PRD §7）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
@@ -44,6 +81,9 @@ pub struct Status {
     /// 终点：只有人能把卡片移入或移出
     #[serde(rename = "final")]
     pub fin: bool,
+    /// 卡片形态；没有设置过时按 CardView::default_for 取
+    #[serde(default)]
+    pub view: CardView,
     /// 状态块的位置；没有时界面用默认布局
     pub layout: Option<Tile>,
     /// 连线：从这里出发可以去往的状态（按工作流顺序）。agent 只能沿连线移动卡片（PRD §8 规则 12）

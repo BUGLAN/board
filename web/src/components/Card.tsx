@@ -1,7 +1,7 @@
 /* 卡片：白板状态块与侧栏「未整理」共用 */
 import { memo, useLayoutEffect, useRef } from 'react';
 import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
-import type { Card as CardT, Label } from '../lib/types';
+import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, ago, clock, cx, durWords, replay } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { useData } from '../store/data';
@@ -36,8 +36,10 @@ interface Props {
   delay?: number;
   /** 所在状态的颜色（CSS 颜色） */
   color?: string;
-  /** 所在状态是终点：只占一行，标题划掉 */
+  /** 所在状态是终点：单行时标题划掉，磁贴的编号用状态色 */
   final?: boolean;
+  /** 所在状态的卡片形态；不给时终点单行、其他卡片（侧栏「未整理」不用） */
+  view?: StatusView;
   /** 不带 ID 执行 board claim 时会被领走的那张 */
   next?: boolean;
   /** 「整理到…」按钮上的首个可领取状态名称 */
@@ -46,7 +48,7 @@ interface Props {
 }
 
 export const CardView = memo(function CardView({
-  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, next, claimName = '待办', onTriage,
+  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next, claimName = '待办', onTriage,
 }: Props) {
   const held = !!c.holder;
   const now = useNow(held ? 1000 : 30000);
@@ -59,6 +61,7 @@ export const CardView = memo(function CardView({
   const t = timing(c, now);
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
+  const shape: StatusView = view ?? (final && !doing ? 'line' : 'card');
 
   useLayoutEffect(() => {
     if (flash) replay(ref.current, 'flash');
@@ -77,7 +80,9 @@ export const CardView = memo(function CardView({
         'card',
         c.column === 'inbox' && 'inbox',
         doing && 'doing',
-        final && !doing && 'done',
+        final && !doing && shape !== 'card' && 'done',
+        shape === 'line' && 'v-line',
+        shape === 'tile' && 'v-tile',
         next && 'next',
         open && 'is-open',
         active && !hit && 'filtered-out',
@@ -122,13 +127,52 @@ export const CardView = memo(function CardView({
             <Icon name="move" />
           </button>
         </>
-      ) : final && !doing ? (
-        <div className="card-line">
-          <span className="done-check">
-            <Icon name="check" />
+      ) : shape === 'tile' ? (
+        <>
+          <span className="ct-id">{c.id}</span>
+          {doing && <i className={cx('ct-beat', t.beat)} />}
+          <span className="ct-pop" role="tooltip">
+            <span className="ct-pop-head">
+              <b>#{c.id}</b>
+              {doing && (
+                <>
+                  <span className="ct-pop-holder">
+                    <Avatar actor={agent(c.holder!)} />
+                    {c.holder}
+                  </span>
+                  <RunPill card={c} now={now} />
+                </>
+              )}
+            </span>
+            <span className="ct-pop-title">
+              <Title text={c.title} />
+            </span>
+            {c.labels.length > 0 && (
+              <span className="ct-pop-labels">
+                <LabelChips ids={c.labels} labels={labels} pending={pending} />
+              </span>
+            )}
           </span>
+        </>
+      ) : shape === 'line' ? (
+        <div className="card-line">
+          {final && !doing ? (
+            <span className="done-check">
+              <Icon name="check" />
+            </span>
+          ) : (
+            <span className="line-dot" />
+          )}
           <span className="card-id">#{c.id}</span>
-          <span className="card-line-title">{c.title}</span>
+          <span className="card-line-title">
+            <Title text={c.title} />
+          </span>
+          {doing && (
+            <span className={cx('line-holder', t.beat)} title={c.holder!}>
+              <Avatar actor={agent(c.holder!)} />
+              <i className="beat" />
+            </span>
+          )}
         </div>
       ) : (
         <>

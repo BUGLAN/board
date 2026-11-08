@@ -141,7 +141,7 @@ export const api = {
   /* 工作流（board 是「项目/白板」路径） */
   createStatus: (board: string, name: string, color?: string) => req<Status>('POST', `/api/flow/${board}`, { name, color }),
   reorderStatuses: (board: string, keys: string[]) => req('PUT', `/api/flow/${board}`, { keys }),
-  updateStatus: (board: string, key: string, patch: Partial<Pick<Status, 'name' | 'color' | 'claim' | 'lock' | 'final'>>) =>
+  updateStatus: (board: string, key: string, patch: Partial<Pick<Status, 'name' | 'color' | 'claim' | 'lock' | 'final' | 'view'>>) =>
     req('PATCH', `/api/flow/${board}/${q(key)}`, patch),
   deleteStatus: (board: string, key: string) => req('DELETE', `/api/flow/${board}/${q(key)}`),
   /** 空对象 = 复原默认布局 */

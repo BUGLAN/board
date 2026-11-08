@@ -105,6 +105,7 @@
 :root[data-density="compact"] .card-title { font-size: 13px; line-height: 1.42; }
 :root[data-density="compact"] .card-row { margin-bottom: 2px; }
 :root[data-density="compact"] .col-list { --gap: 6px; }
+:root[data-density="compact"] .card.v-tile { padding: 0; }
 :root[data-density="compact"] .col-empty { --card-h: 80px; }
 :root[data-density="compact"] .card-claim { margin-top: 7px; padding-top: 6px; }
 

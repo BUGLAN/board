@@ -125,7 +125,8 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_board ON events (board, id);
 
--- 每块白板的工作流（PRD §7）。lx / lw / ly 是状态块的布局，空表示用默认布局
+-- 每块白板的工作流（PRD §7）。lx / lw / ly 是状态块的布局，空表示用默认布局；
+-- view 是卡片形态 card | line | tile，空表示按规则取（终点用磁贴，其他用卡片）
 CREATE TABLE IF NOT EXISTS statuses (
   board INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
   key   TEXT NOT NULL,
@@ -135,6 +136,7 @@ CREATE TABLE IF NOT EXISTS statuses (
   claim INTEGER NOT NULL DEFAULT 0,
   lock  INTEGER NOT NULL DEFAULT 0,
   final INTEGER NOT NULL DEFAULT 0,
+  view  TEXT,
   lx    INTEGER,
   lw    INTEGER,
   ly    REAL,
@@ -256,6 +258,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'final_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_final {
             conn.execute_batch("ALTER TABLE cards ADD COLUMN final_at INTEGER")?;
+        }
+        // 旧数据库的状态没有卡片形态
+        let has_view: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'view'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_view {
+            conn.execute_batch("ALTER TABLE statuses ADD COLUMN view TEXT")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -609,18 +617,21 @@ const COL_ORDER: &str = "CASE WHEN c.col = 'inbox' THEN -1 ELSE \
 
 pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
     let mut st = conn.prepare_cached(
-        "SELECT key, name, color, claim, lock, final, lx, lw, ly FROM statuses WHERE board = ?1 ORDER BY sort, key",
+        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view FROM statuses WHERE board = ?1 ORDER BY sort, key",
     )?;
     let v = st
         .query_map([board], |r| {
             let (lx, lw, ly): (Option<i64>, Option<i64>, Option<f64>) = (r.get(6)?, r.get(7)?, r.get(8)?);
+            let fin = r.get::<_, i64>(5)? != 0;
+            let view: Option<String> = r.get(9)?;
             Ok(Status {
                 key: r.get(0)?,
                 name: r.get(1)?,
                 color: r.get(2)?,
                 claim: r.get::<_, i64>(3)? != 0,
                 lock: r.get::<_, i64>(4)? != 0,
-                fin: r.get::<_, i64>(5)? != 0,
+                fin,
+                view: view.as_deref().and_then(CardView::parse).unwrap_or(CardView::default_for(fin)),
                 layout: match (lx, lw, ly) {
                     (Some(x), Some(w), Some(y)) => Some(Tile { x, w, y }),
                     _ => None,

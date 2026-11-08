@@ -9,7 +9,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useMasonry } from '../lib/masonry';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
-import { flowOf, INBOX, statusColor, type FlowQ } from '../lib/schema';
+import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
 import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
@@ -187,10 +187,11 @@ export function BoardView() {
 
 /* ------------------------------ 骨架 ------------------------------ */
 
-/** 状态块骨架：头部和真实状态块一样（名称、颜色、规则、数量），卡片位置按数量放最多 3 张骨架卡片。
+/** 状态块骨架：头部和真实状态块一样（名称、颜色、规则、数量），卡片位置按形态和数量放骨架（卡片最多 3 张、单行 4 行、磁贴 12 个）。
     fake：首屏还不知道真实数量，数量也用骨架 */
 function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: number; f: FlowQ; count: number; fake?: boolean }) {
-  const n = Math.min(count, col.final ? 4 : 3);
+  const view = viewOf(col);
+  const n = Math.min(count, view === 'tile' ? 12 : view === 'line' ? 4 : 3);
   return (
     <section
       className={cx('col sk-col', count === 0 && 'is-empty', col.final && 'is-final')}
@@ -222,9 +223,11 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
         )}
       </header>
       <div className="col-body">
-        <div className="col-list">
+        <div className={cx('col-list', `view-${view}`)} style={{ ['--tile-ch' as string]: 2 }}>
           {Array.from({ length: n }, (_, i) =>
-            col.final ? (
+            view === 'tile' ? (
+              <Skeleton key={i} className="sk-tile" h={24} r={6} />
+            ) : view === 'line' ? (
               <div key={i} className="sk-done" aria-hidden="true">
                 <Skeleton w={14} h={14} r={4} />
                 <Skeleton w={['70%', '54%', '62%', '48%'][i]} h={10} />
@@ -333,6 +336,9 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
   const over = drag?.over === col.key;
   const same = drag && drag.col === drag.fromCol && col.key === drag.fromCol;
   const firstFree = next;
+  const view = viewOf(col);
+  // 磁贴按这一块里编号最多几位定宽，同一块里的磁贴一样宽
+  const listStyle = view === 'tile' ? { ['--tile-ch' as string]: String(Math.max(1, ...ids)).length } : undefined;
   return (
     <section
       className={cx(
@@ -370,7 +376,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         </span>
       </header>
       <div className="col-body">
-        <div className="col-list" data-list={col.key} ref={list}>
+        <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
           {ids.map((id, idx) => {
             const c = board.cards[id];
             if (!c) return null;
@@ -387,6 +393,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
                 delay={fresh ? 180 + index * 70 + idx * 45 : undefined}
                 color={color}
                 final={col.final}
+                view={view}
                 next={firstFree === id}
               />
             );

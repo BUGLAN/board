@@ -783,6 +783,50 @@ fn unlock_and_delete_status_release_cards() {
 }
 
 #[test]
+fn card_view_defaults_by_final_and_can_be_set() {
+    let mut s = store();
+    let view = |s: &Store, k: &str| flow(s).get(k).unwrap().view;
+    // 没设置过：终点用磁贴，其他用卡片
+    assert_eq!(view(&s, "done"), CardView::Tile);
+    assert_eq!(view(&s, "todo"), CardView::Card);
+    // 设置后按设置的来
+    ui(&mut s, |w| w.update_status(B, "done", StatusPatch { view: Some(CardView::Line), ..Default::default() })).unwrap();
+    assert_eq!(view(&s, "done"), CardView::Line);
+    // 没设置过的状态改成终点后跟着变成磁贴；设置过的不变
+    let t = ui(&mut s, |w| w.create_status(B, "已发布", None)).unwrap();
+    assert_eq!(t.view, CardView::Card);
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { fin: Some(true), ..Default::default() })).unwrap();
+    assert_eq!(view(&s, &t.key), CardView::Tile);
+    ui(&mut s, |w| w.update_status(B, "review", StatusPatch { view: Some(CardView::Card), ..Default::default() })).unwrap();
+    ui(&mut s, |w| w.update_status(B, "review", StatusPatch { fin: Some(true), ..Default::default() })).unwrap();
+    assert_eq!(view(&s, "review"), CardView::Card);
+    // 界面传来的 JSON
+    let p: StatusPatch = serde_json::from_value(serde_json::json!({ "view": "tile" })).unwrap();
+    assert_eq!(p.view, Some(CardView::Tile));
+    assert!(serde_json::from_value::<StatusPatch>(serde_json::json!({ "view": "grid" })).is_err());
+    assert_eq!(serde_json::to_value(flow(&s).get("todo").unwrap()).unwrap()["view"], "card");
+}
+
+#[test]
+fn old_database_gets_card_view_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("ALTER TABLE statuses DROP COLUMN view").unwrap();
+    }
+    let mut s = Store::open(&path).unwrap();
+    assert_eq!(flow(&s).get("done").unwrap().view, CardView::Tile);
+    assert_eq!(flow(&s).get("doing").unwrap().view, CardView::Card);
+    ui(&mut s, |w| w.update_status(B, "doing", StatusPatch { view: Some(CardView::Tile), ..Default::default() })).unwrap();
+    assert_eq!(flow(&s).get("doing").unwrap().view, CardView::Tile);
+}
+
+#[test]
 fn old_database_gets_chain_edges() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.db");

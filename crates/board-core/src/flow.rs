@@ -1,4 +1,4 @@
-//! 工作流的修改（PRD §7）：新增、改名、改色、切换规则、调整顺序、连线、删除状态，以及状态块布局。
+//! 工作流的修改（PRD §7）：新增、改名、改色、切换规则、卡片形态、调整顺序、连线、删除状态，以及状态块布局。
 //! 只在界面上做；所有改动都让 rev 加一，已打开的窗口随之刷新。
 
 use crate::error::{BoardError, Result};
@@ -23,6 +23,9 @@ pub struct StatusPatch {
     pub lock: Option<bool>,
     #[serde(default, rename = "final")]
     pub fin: Option<bool>,
+    /// 卡片形态：只影响界面显示
+    #[serde(default)]
+    pub view: Option<CardView>,
 }
 
 const NAME_MAX: usize = 12;
@@ -76,7 +79,7 @@ impl<'a> W<'a> {
             params![b.id, key, name, color, sort],
         )?;
         self.changed = true;
-        Ok(Status { key, name, color, claim: false, lock: false, fin: false, layout: None, to: vec![] })
+        Ok(Status { key, name, color, claim: false, lock: false, fin: false, view: CardView::default_for(false), layout: None, to: vec![] })
     }
 
     pub fn update_status(&mut self, path: &str, key: &str, p: StatusPatch) -> Result<()> {
@@ -114,6 +117,9 @@ impl<'a> W<'a> {
         }
         if let Some(f) = p.fin {
             self.tx.execute("UPDATE statuses SET final = ?1 WHERE board = ?2 AND key = ?3", params![f as i64, b.id, key])?;
+        }
+        if let Some(v) = p.view {
+            self.tx.execute("UPDATE statuses SET view = ?1 WHERE board = ?2 AND key = ?3", params![v.as_str(), b.id, key])?;
         }
         self.changed = true;
         Ok(())

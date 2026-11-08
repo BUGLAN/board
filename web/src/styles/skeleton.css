@@ -27,7 +27,13 @@
 /* 状态块骨架：头部是真的（名称、颜色、数量），卡片位置是骨架 */
 .col.sk-col .col-head { cursor: default; }
 .sk-col .col-list { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-height: 0; }
-.col.sk-col.is-final .col-list { gap: 4px; }
+.sk-col .col-list.view-line { gap: 4px; }
+.sk-col .col-list.view-tile { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+.sk-tile { width: calc((var(--tile-ch, 2) + 1) * 1ch + 12px); }
+@media (max-width: 760px) {
+  .sk-col .col-list.view-tile { gap: 6px; }
+  .sk-tile { width: calc((var(--tile-ch, 2) + 1) * 1ch + 20px); height: 36px !important; }
+}
 .sk-done { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
 
 /* 首屏还没有工作区时：页头、工作流条的占位 */

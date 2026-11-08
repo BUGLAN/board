@@ -11,6 +11,9 @@ export interface Tile {
 }
 
 /** 工作流里的一个状态（PRD §7） */
+/** 状态块里卡片的形态：卡片 / 单行 / 磁贴（只显示编号，横向排列、自动换行） */
+export type StatusView = 'card' | 'line' | 'tile';
+
 export interface Status {
   key: string;
   name: string;
@@ -22,6 +25,8 @@ export interface Status {
   lock: boolean;
   /** 终点：只有人能移入移出 */
   final: boolean;
+  /** 卡片形态；服务端没设置过时按规则给出（终点用磁贴，其他用卡片） */
+  view?: StatusView;
   layout: Tile | null;
   /** 连线：从这里出发可以去往的状态（按工作流顺序）。agent 只能沿连线移动卡片，人不受限制 */
   to: string[];

@@ -114,7 +114,12 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); grid-auto-rows: 1px;
   align-items: start; column-gap: var(--gap); row-gap: 0; min-height: 40px;
 }
-.col.is-final .col-list { --gap: 4px; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
+.col-list.view-line { column-gap: 4px; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
+/* 磁贴：列表用等宽字体，1ch 是一个数字的宽度；按这一块里编号最多几位（--tile-ch）加上 # 定宽，不拉伸 */
+.col-list.view-tile {
+  column-gap: 4px; grid-template-columns: repeat(auto-fill, calc((var(--tile-ch, 2) + 1) * 1ch + 12px)); justify-content: start;
+  font-family: var(--f-mono); font-size: 11px;
+}
 
 /* 空状态至少一张卡片高（标题一行 + 标签一行的普通卡片），图标和文字垂直居中 */
 .col-empty {
@@ -249,13 +254,67 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .card-claim.worked .run-pill { margin-left: 0; }
 .card-claim.worked .claim-sub { width: auto; margin-left: auto; }
 
-/* 终点：一行，标题划掉 */
-.card.done { padding: 7px 10px; background: color-mix(in srgb, var(--surface) 70%, transparent); box-shadow: inset 0 0 0 1px var(--line); }
-.card.done:hover { transform: none; }
+/* 单行：编号和标题占一行；终点里打勾、标题划掉，其他状态前面是状态色点，被领取的右边是持有者和心跳 */
+.card.v-line { padding: 7px 10px; }
+.card.v-line:hover { transform: none; }
+.card.done { background: color-mix(in srgb, var(--surface) 70%, transparent); box-shadow: inset 0 0 0 1px var(--line); }
 .card-line { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; }
 .card.done .card-id { color: var(--c); }
 .card .done-check { width: 14px; height: 14px; flex: none; color: var(--c); }
-.card-line-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--line-3); }
+.line-dot { width: 7px; height: 7px; flex: none; border-radius: var(--r-hair); background: var(--c); opacity: .8; }
+.card-line-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.card.done .card-line-title { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--line-3); }
+.line-holder { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.line-holder .avatar { width: 18px; height: 18px; font-size: 9.5px; }
+.line-holder.late .beat, .line-holder.wait .beat { background: var(--warn); }
+.line-holder.ended .beat { background: var(--text-4); }
+.line-holder.ended .beat::before { animation: none; }
+.card.v-line.doing::before { display: none; }
+.card.v-line.doing { box-shadow: inset 2px 0 0 var(--ac), inset 0 0 0 1px var(--line), var(--shadow-1); }
+
+/* 磁贴：只显示编号，24px 高。被领取的右上角是持有者颜色的心跳点，心跳晚了加警告色外框；悬停弹出标题 */
+.card.v-tile { height: 24px; padding: 0; display: grid; place-items: center; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--line); }
+.card.v-tile:hover { transform: translateY(-1px); z-index: 6; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, var(--line-2)), var(--shadow-1); }
+.tile:has(.card.v-tile:hover) { z-index: 15; }
+.ct-id { font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.ct-id::before { content: "#"; opacity: .45; }
+.card.done .ct-id { color: var(--c); }
+.card.v-tile.filtered-out { transform: scale(.94); }
+.card.v-tile.doing::before { border-radius: calc(var(--r-xs) + 1px); }
+.card.v-tile.late { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warn) 60%, transparent); }
+.card.v-tile.next { box-shadow: inset 0 0 0 1.5px var(--brand), var(--shadow-1); }
+.card.v-tile.next .ct-id { color: var(--brand); }
+.ct-beat { position: absolute; top: 2px; right: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--ac); }
+.ct-beat::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: beat-ping 2s var(--ease-out) infinite; }
+.ct-beat.late, .ct-beat.wait { background: var(--warn); }
+.ct-beat.ended { background: var(--text-4); }
+.ct-beat.wait::before, .ct-beat.ended::before { animation: none; }
+@media (prefers-reduced-motion: reduce) { .ct-beat::before { animation: none; } }
+.ct-pop {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 20; width: max-content; max-width: 280px;
+  display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: var(--r-md);
+  font-family: var(--f-sans); text-align: left; pointer-events: none;
+  background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
+  opacity: 0; transform: translate(-50%, 4px) scale(.97); transform-origin: 50% 100%;
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+.card.v-tile:hover .ct-pop { opacity: 1; transform: translate(-50%, 0); transition-delay: .12s; }
+.card.is-placeholder .ct-pop, body.tile-moving .ct-pop, .board.dragging .ct-pop { display: none; }
+.ct-pop-head { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
+.ct-pop-head b { color: var(--c); font-weight: 600; }
+.ct-pop-head .run-pill { margin-left: 0; }
+.ct-pop-holder { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-2); }
+.ct-pop-holder .avatar { width: 16px; height: 16px; font-size: 9px; }
+.ct-pop-title { font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--text); white-space: normal; word-break: break-word; }
+.ct-pop-labels .card-labels, .ct-pop-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+/* 没有悬停的设备（手机、平板）不弹标题，点开看详情 */
+@media (hover: none) { .ct-pop { display: none; } }
+/* 手机：磁贴放大，方便手指点 */
+@media (max-width: 760px) {
+  .col-list.view-tile { column-gap: 6px; font-size: 13px; grid-template-columns: repeat(auto-fill, minmax(calc((var(--tile-ch, 2) + 1) * 1ch + 20px), 1fr)); }
+  .card.v-tile { height: 36px; border-radius: var(--r-sm); }
+  .ct-beat { top: 4px; right: 4px; width: 6px; height: 6px; }
+}
 /* 「下一张」：不带 ID 领取时会被领走的卡片 */
 .card-next { padding: 1px 6px; border-radius: var(--r-xs); font-size: 10px; font-weight: 600; color: var(--brand-fg); background: var(--brand); }
 .card.next { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 60%, transparent), var(--shadow-1); }
@@ -438,6 +497,17 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .wf-swatches button { width: 20px; height: 20px; border-radius: var(--r-xs); background: var(--sc); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); transition: transform var(--dur-1); }
 .wf-swatches button:hover { transform: scale(1.15); }
 .wf-swatches button.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--sc); }
+.wf-view { display: flex; align-items: center; gap: 10px; margin: 0 2px 10px; }
+.wf-view-label { flex: none; font-size: 11.5px; color: var(--text-3); }
+.wf-view-opts { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.wf-view-opts button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 26px; border-radius: var(--r-xs);
+  font-size: 12px; color: var(--text-3); transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
+}
+.wf-view-opts button svg { width: 14px; height: 14px; }
+.wf-view-opts button:hover { color: var(--text); }
+.wf-view-opts button.on { color: var(--text); background: var(--surface); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-2); }
+.wf-view-opts button.on svg { color: var(--c); }
 .wf-rules { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; border-top: 1px solid var(--line); }
 .wf-sw { display: flex; align-items: flex-start; gap: 10px; padding: 7px 6px; border-radius: var(--r-sm); text-align: left; }
 .wf-sw:hover { background: var(--surface-2); }
