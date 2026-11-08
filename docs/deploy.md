@@ -1,6 +1,6 @@
 # 部署 Board 服务端
 
-线上地址 `https://board.buglan.com`。服务器和目录不写进仓库：本机用环境变量 `BOARD_DEPLOY_HOST`（用户@服务器）、`BOARD_DEPLOY_DIR`（服务器上的仓库目录），GitHub 上是 Variables `DEPLOY_HOST`、`DEPLOY_DIR`。结构：
+线上地址 `https://board.buglan.com`。服务器地址和目录不写进仓库，只存在 GitHub 的 Secret `DEPLOY_HOST` 和 Variable `DEPLOY_DIR` 里。结构：
 
 ```
 浏览器 / 桌面端 ─┐
@@ -9,7 +9,7 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
 ```
 
 - HTTPS 证书在 Cloudflare 那边；服务器不开 80/443（443 被 sing-box 占用）。
-- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：默认由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；手动部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
+- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：默认由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
 
 - 网页端：浏览器打开 `https://board.buglan.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board` 命令行设置 `BOARD_URL` 和 `BOARD_TOKEN`（访问令牌）。
@@ -38,7 +38,7 @@ GitHub → Settings → Developer settings → OAuth Apps → New OAuth App：
 把仓库同步到服务器（不带 `target`、`node_modules`、`.git` 等）：
 
 ```bash
-rsync -az --exclude .git/ --exclude /target/ --exclude node_modules/ --exclude /web/dist/ --exclude /.dev/ --exclude /src-tauri/gen/ --exclude /data/ --exclude /.env ./ "$BOARD_DEPLOY_HOST:$BOARD_DEPLOY_DIR/"
+rsync -az --exclude .git/ --exclude /target/ --exclude node_modules/ --exclude /web/dist/ --exclude /.dev/ --exclude /src-tauri/gen/ --exclude /data/ --exclude /.env ./ <用户>@<服务器>:<部署目录>/
 ```
 
 之后在服务器上：
@@ -173,21 +173,7 @@ docker compose start board
 
 ## 7. 升级
 
-默认走自动部署：推送到 `main` 即自动测试、构建、部署（见下文「自动部署」）。
-
-`./deploy/deploy.sh` 保留为手动方式（例如 GitHub Actions 不可用时）。在本机仓库里，提交好要上线的改动后：
-
-```bash
-./deploy/deploy.sh
-```
-
-它依次执行：检查服务器 `.env` 是 `BOARD_BUILD=prebuilt` → 服务器上跑 `deploy/backup.sh` → 本机 `deploy/build-linux.sh`（把提交号编进可执行文件）→ 按第 2 节的排除规则 rsync → 服务器上 `docker compose up -d --build` → 等容器健康检查通过 → 核对线上 `/api/health` 返回的提交号等于本机 `HEAD`。任何一步失败都停下并报错。
-
-- `./deploy/deploy.sh --dry-run`：只检查本机、列出要执行的步骤，不编译、不连服务器
-- `./deploy/deploy.sh --check`：只核对线上是不是本机 `HEAD`
-- 工作区有未提交的改动时拒绝部署；确实要部署时加 `ALLOW_DIRTY=1`，线上提交号带 `-dirty`
-- 服务器和目录必须用环境变量给出：`BOARD_DEPLOY_HOST`（用户@服务器）、`BOARD_DEPLOY_DIR`（服务器上的仓库目录），没有设置时脚本直接退出；对外地址 `BOARD_DEPLOY_URL` 默认 `https://board.buglan.com`
-- 重建容器前把服务器 `.env` 的 `BOARD_IMAGE` 改成 `board-server:latest`（本机构建的镜像），`.env` 始终对应正在运行的镜像；之后再推送 `main`，自动部署照常进行
+推送到 `main` 即自动测试、构建、部署（见下文「自动部署」）。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
@@ -216,8 +202,8 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
 
    ```bash
    ssh-keygen -t ed25519 -N '' -C board-deploy -f board-deploy
-   ssh-copy-id -i board-deploy.pub "$BOARD_DEPLOY_HOST"
-   ssh-keyscan -t ed25519 "${BOARD_DEPLOY_HOST#*@}"      # 输出填到 DEPLOY_KNOWN_HOSTS
+   ssh-copy-id -i board-deploy.pub <用户>@<服务器>
+   ssh-keyscan -t ed25519 <服务器>      # 输出填到 DEPLOY_KNOWN_HOSTS
    ```
 
 2. GitHub 仓库 Settings → Secrets and variables → Actions：
@@ -226,8 +212,8 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
    |---|---|---|
    | Secret | `DEPLOY_SSH_KEY` | 上面的私钥 `board-deploy` 的内容 |
    | Secret | `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan` 的输出（SSH 严格校验主机密钥） |
-   | Variable | `DEPLOY_HOST` | `用户@服务器`（同本机的 `BOARD_DEPLOY_HOST`） |
-   | Variable | `DEPLOY_DIR` | 服务器上的仓库目录（同 `BOARD_DEPLOY_DIR`） |
+   | Secret | `DEPLOY_HOST` | `用户@服务器`（存成 Secret，Actions 日志里显示为 `***`） |
+   | Variable | `DEPLOY_DIR` | 服务器上的仓库目录 |
    | Variable | `DEPLOY_URL` | `https://board.buglan.com` |
 
 3. 服务器 `.env` 里不用加 `BOARD_IMAGE`：第一次自动部署时会加上。
@@ -235,7 +221,7 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
 ### 看部署结果
 
 - GitHub 仓库 Actions → deploy：每一步的输出；失败时 deploy 任务最后打印了容器最近 50 行日志
-- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `commit`，或本机 `./deploy/deploy.sh --check`
+- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `commit`
 - 服务器上正在运行的镜像：`.env` 的 `BOARD_IMAGE`
 
 ### 回滚

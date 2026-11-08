@@ -1,6 +1,6 @@
 # 需求：GitHub Actions 自动部署
 
-推送到 `main` 后，GitHub Actions 自动测试、构建镜像、推到 GHCR，再通过 SSH 让服务器拉取新镜像并重启，最后核对线上提交号。现有的 `./deploy/deploy.sh` 保留，作为手动部署方式。
+推送到 `main` 后，GitHub Actions 自动测试、构建镜像、推到 GHCR，再通过 SSH 让服务器拉取新镜像并重启，最后核对线上提交号。这是唯一的部署方式，原来的手动部署脚本 `deploy/deploy.sh` 已删除。
 
 服务器、Cloudflare Tunnel、数据目录、备份脚本都不变（见 [deploy.md](deploy.md)）。服务器只有 1 核 / 2 GB，**不在服务器上编译**，服务器只拉镜像、运行。
 
@@ -34,7 +34,7 @@ push main ─▶ build 任务（GitHub 托管的 ubuntu-latest）
   1. `npm ci`（根目录，postinstall 会装 `web/` 的依赖）
   2. `npm run build:web`
   3. `cargo test --locked`（只测 default-members，不编译桌面端）
-  4. 交叉编译：`BOARD_COMMIT=<7 位提交号> ./deploy/build-linux.sh`，产出 `deploy/bin/board-server`（与本机部署同一个脚本，zig + cargo-zigbuild，`x86_64-unknown-linux-musl`）
+  4. 交叉编译：`BOARD_COMMIT=<7 位提交号> ./deploy/build-linux.sh`，产出 `deploy/bin/board-server`（zig + cargo-zigbuild，`x86_64-unknown-linux-musl`）
   5. `docker build --target prebuilt`，推送两个标签：`ghcr.io/buglan/board-server:<7 位提交号>`、`ghcr.io/buglan/board-server:latest`
 - Rust 依赖用 `Swatinem/rust-cache` 缓存，npm 用 `actions/setup-node` 的缓存。
 - 推送 GHCR 用 `GITHUB_TOKEN`，不用个人令牌。
@@ -62,18 +62,17 @@ push main ─▶ build 任务（GitHub 托管的 ubuntu-latest）
 |---|---|
 | `.github/workflows/deploy.yml` | 新增，实现第 2–4 节 |
 | `docker-compose.yml` | `image: ${BOARD_IMAGE:-board-server:latest}` |
-| `deploy/deploy.sh` | 重建容器前把服务器 `.env` 的 `BOARD_IMAGE` 改成 `board-server:latest`（没有这一行就加上），保证 `.env` 始终对应正在运行的镜像 |
-| `.env.example` | 加 `BOARD_IMAGE`，注明由自动部署和 `deploy.sh` 维护，不用手改 |
-| `docs/deploy.md` | 新增「自动部署」一节：一次性配置（第 6 节）、怎么看部署结果、怎么回滚；第 7 节「升级」改为说明默认走自动部署，`deploy.sh` 是手动方式 |
+| `.env.example` | 加 `BOARD_IMAGE`，注明由自动部署维护，不用手改 |
+| `docs/deploy.md` | 新增「自动部署」一节：一次性配置（第 6 节）、怎么看部署结果、怎么回滚；第 7 节「升级」改为说明走自动部署 |
 
 ## 6. 一次性配置
 
 | 项 | 值 |
 |---|---|
-| 部署专用 SSH 密钥 | 新生成一对 ed25519 密钥，只用于 Actions；公钥加到服务器 `root` 的 `authorized_keys` |
+| 部署专用 SSH 密钥 | 新生成一对 ed25519 密钥，只用于 Actions；公钥加到服务器上部署用户的 `authorized_keys` |
 | Secret `DEPLOY_SSH_KEY` | 上面的私钥 |
 | Secret `DEPLOY_KNOWN_HOSTS` | 服务器的 `ssh-keyscan` 输出；SSH 严格校验主机密钥，不用 `StrictHostKeyChecking=no` |
-| Variable `DEPLOY_HOST` | `用户@服务器`（不写进仓库） |
+| Secret `DEPLOY_HOST` | `用户@服务器`（不写进仓库；存成 Secret，日志里显示为 `***`） |
 | Variable `DEPLOY_DIR` | 服务器上的仓库目录 |
 | Variable `DEPLOY_URL` | `https://board.buglan.com` |
 
@@ -91,5 +90,4 @@ Secret 和 Variable 在仓库 Settings → Secrets and variables → Actions 里
 - [ ] GHCR 上 `board-server` 不超过 5 个版本；服务器上 `ghcr.io/buglan/board-server` 的镜像不超过 2 个
 - [ ] 服务器 `~/.docker/config.json` 里没有 `ghcr.io` 的凭据
 - [ ] Actions 日志里搜不到私钥、令牌、`.env` 内容
-- [ ] 自动部署之后再跑一次 `./deploy/deploy.sh`：部署成功，`.env` 的 `BOARD_IMAGE` 变为 `board-server:latest`；之后再推送 `main`，自动部署仍然成功
 - [ ] `docs/deploy.md` 按第 5 节更新

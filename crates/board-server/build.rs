@@ -1,6 +1,6 @@
 // 界面构建产物（web/dist）变化时重新编译，让网页端带上最新的界面
 // 提交号写进可执行文件（BOARD_COMMIT），`/api/health` 返回它，部署后据此核对线上版本：
-// 设置了环境变量 BOARD_COMMIT 时用它（deploy/deploy.sh 会设置，未提交的改动带 -dirty），
+// 设置了环境变量 BOARD_COMMIT 时用它（GitHub Actions 部署时设置），
 // 否则取 git 当前提交，取不到时是 unknown
 use std::process::Command;
 

@@ -120,7 +120,7 @@ jobs:
       contents: read
       packages: read
     env:
-      HOST: ${{ vars.DEPLOY_HOST }}
+      HOST: ${{ secrets.DEPLOY_HOST }}
       DIR: ${{ vars.DEPLOY_DIR }}
       URL: ${{ vars.DEPLOY_URL }}
     steps:
