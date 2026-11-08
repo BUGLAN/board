@@ -4,6 +4,7 @@ import { inlineCode, markdown } from '../lib/markdown';
 import { PROJECT_COLORS } from '../lib/schema';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial } from '../lib/util';
+import { useAuth } from '../store/auth';
 import { serverNow } from '../store/data';
 import { openImage } from '../store/ui';
 
@@ -17,11 +18,25 @@ export function useNow(interval = 1000) {
   return now;
 }
 
+/** 界面上怎么称呼「你」：线上用 GitHub 昵称（没有昵称时用登录名）；本机模式没有名字 */
+export function useMeName(): string | null {
+  const me = useAuth(s => s.me);
+  if (me?.mode !== 'github') return null;
+  return (me.name || '').trim() || me.login;
+}
+
+/** 头像：登录后「人」用 GitHub 头像；取不到地址或加载失败时退回到灰圈首字母（本机模式仍是「你」），不出现破图 */
 export function Avatar({ actor, className }: { actor: Actor; className?: string }) {
+  const me = useAuth(s => s.me);
+  // 加载失败的头像地址：换了账号（地址变了）会自动重试
+  const [badSrc, setBadSrc] = useState<string | null>(null);
+  const who = actor.kind === 'human' && me?.mode === 'github' ? me : null;
+  const name = who ? (who.name || '').trim() || who.login : '';
+  const src = who?.avatar && who.avatar !== badSrc ? who.avatar : '';
   if (actor.kind === 'human')
     return (
-      <span className={cx('avatar human', className)} title="你（界面）">
-        你
+      <span className={cx('avatar human', src && 'photo', className)} title={name ? `${name}（你）` : '你（界面）'}>
+        {src ? <img src={src} alt="" draggable={false} onError={() => setBadSrc(src)} /> : name ? initial(name) : '你'}
       </span>
     );
   if (actor.kind === 'system')

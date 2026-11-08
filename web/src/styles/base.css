@@ -164,6 +164,9 @@ kbd, .kbd {
 }
 .avatar.lg { width: 38px; height: 38px; font-size: 18px; }
 .avatar.human { --c: var(--text-2); }
+/* 登录后的「人」是 GitHub 头像：图片填满圆形、按原比例裁切，不撑破各处的小尺寸头像 */
+.avatar.photo { overflow: hidden; }
+.avatar.photo img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .avatar .live {
   position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%;
   background: var(--ok); box-shadow: 0 0 0 2px var(--surface);

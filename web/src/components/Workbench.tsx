@@ -13,7 +13,7 @@ import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
-import { Avatar, ProjectAvatar, Title, agent, useNow } from './bits';
+import { Avatar, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
 import { CardView } from './Card';
 import { BoardIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
@@ -355,6 +355,7 @@ function BoardSide() {
   const cur = useCurrent();
   const filter = useUI(s => s.filter);
   const now = useNow(1000);
+  const meName = useMeName();
   const [closed, setClosed] = useState<Set<string>>(() => new Set(pref.get<string[]>('treeClosed', [])));
   const toggle = (id: string) =>
     setClosed(prev => {
@@ -455,7 +456,7 @@ function BoardSide() {
                 <Avatar actor={ev.actor} />
                 <div>
                   <b style={ev.actor.kind === 'agent' ? { color: agentColor(ev.actor.name) } : undefined}>
-                    {ev.actor.kind === 'human' ? '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
+                    {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
                   </b>{' '}
                   {OP[ev.op] || ev.op} <span className="mono">#{ev.cardId}</span>
                   <span className="when">
