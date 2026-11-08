@@ -200,3 +200,18 @@
 }
 :root[data-motion="reduced"] .card.label-target, :root[data-motion="reduced"] .card.label-landed { scale: none; animation: none; }
 :root[data-motion="reduced"] .label-ghost, :root[data-motion="reduced"] .label-ghost.over { animation: none; scale: none; }
+
+/* ---------------- 在标签区里拖动调整顺序（lib/labelDrag.ts） ---------------- */
+/* 被拿起的胶囊留在原位变淡，插入位置是两个胶囊之间的一道竖线（gap 6px 的正中） */
+.lb-item { transition: opacity var(--dur-1); }
+.lb-item.lb-lifted { opacity: .32; }
+.lb-item.ins-before::before, .lb-item.ins-after::after {
+  content: ""; position: absolute; top: 1px; bottom: 1px; width: 2px; border-radius: 1px; pointer-events: none;
+  background: var(--brand); box-shadow: 0 0 0 2px var(--brand-soft);
+  animation: lb-ins-in var(--dur-2) var(--spring);
+}
+.lb-item.ins-before::before { left: -4px; }
+.lb-item.ins-after::after { right: -4px; }
+@keyframes lb-ins-in { from { transform: scaleY(.3); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .lb-item.ins-before::before, .lb-item.ins-after::after { animation: none; } }
+:root[data-motion="reduced"] .lb-item.ins-before::before, :root[data-motion="reduced"] .lb-item.ins-after::after { animation: none; }

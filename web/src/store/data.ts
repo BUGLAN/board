@@ -111,7 +111,7 @@ export function refresh(): Promise<void> {
 }
 
 async function load() {
-  const ws = await api.workspace();
+  const ws = withOrder(await api.workspace());
   const paths = allBoards(ws).map(b => b.path);
   let path = get().path;
   if (!paths.includes(path)) {
@@ -196,6 +196,61 @@ export async function addLabel(id: number, labelId: number): Promise<boolean> {
       if (!b || !cur) return { pending };
       return { pending, board: { ...b, cards: { ...b.cards, [id]: { ...cur, labels: cur.labels.filter(l => l !== labelId) } } } };
     });
+    throw e;
+  }
+}
+
+/* ------------------------------ 标签顺序：乐观更新 ------------------------------ */
+
+/** 正在保存的标签顺序：项目 → 标签 ID。保存期间 refresh 拿到的工作区也按它排，免得被旧顺序冲回去 */
+const orderPending = new Map<string, number[]>();
+
+/** 按给定顺序排项目的标签；没出现在 ids 里的（例如刚新建的）按原顺序排在后面，与服务端规则一致 */
+function sortLabels<T extends { id: number }>(labels: T[], ids: number[]): T[] {
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  return labels
+    .map((l, i) => ({ l, k: rank.get(l.id) ?? ids.length + i }))
+    .sort((a, b) => a.k - b.k)
+    .map(x => x.l);
+}
+
+function withOrder(ws: Workspace): Workspace {
+  if (!orderPending.size) return ws;
+  return {
+    ...ws,
+    projects: ws.projects.map(p => {
+      const ids = orderPending.get(p.key);
+      return ids ? { ...p, labels: sortLabels(p.labels, ids) } : p;
+    }),
+  };
+}
+
+const labelsOf = (project: string) => get().ws?.projects.find(p => p.key === project)?.labels ?? [];
+
+/** 调整项目里标签的顺序：当帧生效（侧栏和卡片上的标签一起变），失败时回到原来的顺序并抛出错误 */
+export async function reorderLabels(project: string, ids: number[]) {
+  const before = labelsOf(project).map(l => l.id);
+  const apply = (order: number[] | null) => {
+    if (order) orderPending.set(project, order);
+    else orderPending.delete(project);
+    const ws = get().ws;
+    if (!ws) return;
+    set({
+      ws: {
+        ...ws,
+        projects: ws.projects.map(p => (p.key === project ? { ...p, labels: sortLabels(p.labels, order ?? before) } : p)),
+      },
+    });
+  };
+  apply(ids);
+  try {
+    await api.reorderLabels(project, ids);
+    await refresh();
+    if (orderPending.get(project) === ids) orderPending.delete(project);
+  } catch (e) {
+    // 只在没有更新的拖动覆盖它时回滚
+    if (orderPending.get(project) === ids) apply(null);
+    void refresh();
     throw e;
   }
 }

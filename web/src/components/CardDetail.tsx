@@ -226,16 +226,16 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               </span>
             </div>
             <div className="d-labels">
-              {c.labels
-                .map(id => labels.find(l => l.id === id))
-                .filter(Boolean)
+              {/* 按项目里标签的顺序排，与侧栏、卡片上一致 */}
+              {labels
+                .filter(l => c.labels.includes(l.id))
                 .map(l => (
                   <LabelChip
-                    key={l!.id}
-                    label={l!}
+                    key={l.id}
+                    label={l}
                     onRemove={async () => {
                       try {
-                        await exec({ op: 'label', id: c.id, remove: [l!.id] });
+                        await exec({ op: 'label', id: c.id, remove: [l.id] });
                       } catch (e) {
                         toastError(e);
                       }

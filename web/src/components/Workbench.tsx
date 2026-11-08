@@ -252,14 +252,14 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
         }}
       >
         {labels.map(l => (
-          <span key={l.id} className="lb-item">
+          <span key={l.id} className="lb-item" data-label={l.id}>
             <button
               type="button"
               className={cx('lb lb-pick', sel.includes(l.id) && 'on')}
               style={{ ['--lc' as string]: l.color }}
               aria-pressed={sel.includes(l.id)}
-              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签`}
-              onPointerDown={e => labelPointerDown(e, l)}
+              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签，在这里拖动调整顺序`}
+              onPointerDown={e => labelPointerDown(e, l, project)}
               onClick={() => {
                 if (!labelDragJustEnded()) toggleLabelSel(l.id);
               }}

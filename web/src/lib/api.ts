@@ -132,6 +132,8 @@ export const api = {
     req<Label>('POST', '/api/labels', { project, name, color }),
   updateLabel: (project: string, id: number, patch: { name?: string; color?: string }) =>
     req('PATCH', `/api/labels/${id}`, { project, ...patch }),
+  /** 标签顺序：ids 依次排在前面，没列出的按原顺序排在后面 */
+  reorderLabels: (project: string, ids: number[]) => req('PUT', '/api/labels/order', { project, ids }),
   deleteLabel: (project: string, id: number) => req('DELETE', `/api/labels/${q(project)}/${id}`),
 
   layout: (kind: 'project' | 'board', id: string, pos: Pos) => req('PUT', '/api/layout', { kind, id, x: pos.x, y: pos.y }),
