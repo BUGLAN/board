@@ -59,6 +59,33 @@ const sub = (f: () => void) => {
 export const useVariant = () => useSyncExternalStore(sub, () => current);
 const useVer = () => useSyncExternalStore(sub, () => ver);
 
+/* 磁贴密度（?tile=1|2|3）：1 宽松（30px 高、拉伸填满）· 2 紧凑（24px 高、按编号位数定宽）· 3 极紧（20px 高、无边框、不带 #） */
+type Density = 1 | 2 | 3;
+const DENSITY: { key: Density; name: string }[] = [
+  { key: 1, name: '宽松' },
+  { key: 2, name: '紧凑' },
+  { key: 3, name: '极紧' },
+];
+let density: Density = (() => {
+  const d = Number(new URLSearchParams(location.search).get('tile'));
+  return d === 1 || d === 3 ? d : 2;
+})();
+function setDensity(d: Density) {
+  const q = new URLSearchParams(location.search);
+  q.set('tile', String(d));
+  history.replaceState(null, '', `${location.pathname}?${q}`);
+  density = d;
+  emit();
+}
+const useDensity = () => useSyncExternalStore(sub, () => density);
+
+/** 磁贴列表的属性：密度 + 这一块里编号最多几位（紧凑档按位数定宽，同一块里的磁贴一样宽） */
+export function useTileList(form: Form | undefined, ids: number[]) {
+  const d = useDensity();
+  if (form !== 'tile') return {};
+  return { 'data-td': d, style: { ['--tile-ch' as string]: String(Math.max(1, ...ids)).length } };
+}
+
 /** 这一块用什么形态；没开原型时返回 undefined（走原来的逻辑） */
 export function useForm(s: Status): Form | undefined {
   const v = useVariant();
@@ -241,7 +268,8 @@ export function PrototypeSwitcher() {
   useVer();
   const i = Math.max(0, VARIANTS.findIndex(x => x.key === v));
   const go = (d: number) => setVariant(VARIANTS[(i + d + VARIANTS.length) % VARIANTS.length].key);
-  const [m, setM] = useState<{ total: number; blank: number; done: number } | null>(null);
+  const d = useDensity();
+  const [m, setM] = useState<{ total: number; blank: number; done: number; row: number } | null>(null);
 
   useEffect(() => {
     if (!v) return;
@@ -267,7 +295,9 @@ export function PrototypeSwitcher() {
         return y + t.offsetHeight;
       });
       const fin = mag.querySelector<HTMLElement>('.col.is-final');
+      const kids = [...(fin?.querySelector('.col-list')?.children ?? [])] as HTMLElement[];
       setM({
+        row: kids.filter(k => k.offsetTop === kids[0]?.offsetTop).length,
         total: Math.round(Math.max(0, ...bottoms)),
         blank: Math.round(Math.max(0, ...bottoms) - Math.min(...bottoms)),
         done: fin?.offsetHeight ?? 0,
@@ -288,9 +318,17 @@ export function PrototypeSwitcher() {
         原型 · <b>{v}</b> {VARIANTS[i].name}
         {Object.keys(overrides).length > 0 && ' · 已单独改'}
       </span>
+      <span className="pt-density" role="radiogroup" aria-label="磁贴密度">
+        磁贴
+        {DENSITY.map(x => (
+          <button key={x.key} type="button" role="radio" aria-checked={d === x.key} className={cx(d === x.key && 'on')} onClick={() => setDensity(x.key)}>
+            {x.name}
+          </button>
+        ))}
+      </span>
       {m && (
         <span className="pt-meter">
-          总高 <b>{m.total}</b> · 终点块 <b>{m.done}</b> · 底部高差 <b>{m.blank}</b> px
+          终点块 <b>{m.done}</b>px · 每行 <b>{m.row}</b> 个 · 总高 <b>{m.total}</b> · 底部高差 <b>{m.blank}</b>
         </span>
       )}
       <button type="button" onClick={() => go(1)} aria-label="下一个变体">

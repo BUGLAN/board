@@ -61,7 +61,27 @@
 .tile-pop-holder { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-2); }
 .tile-pop-holder.late { color: var(--warn); }
 .tile-pop-holder .avatar { width: 16px; height: 16px; font-size: 9px; }
+.tile-pop { font-family: var(--f-sans); }
 .tile-pop-title { font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--text); white-space: normal; word-break: break-word; }
+
+/* ---------------- 磁贴密度 ---------------- */
+/* 列表用等宽字体，1ch = 一个数字的宽度，紧凑档按「编号位数 + #」定宽 */
+.col .col-list.form-tile { font-family: var(--f-mono); font-size: 11px; }
+/* 2 紧凑：24px 高（点击目标的下限），不拉伸，间距 4px */
+.col .col-list.form-tile[data-td="2"] { --gap: 4px; grid-template-columns: repeat(auto-fill, calc((var(--tile-ch) + 1) * 1ch + 12px)); justify-content: start; }
+.col-list[data-td="2"] .card.form-tile { height: 24px; border-radius: var(--r-xs); }
+.col-list[data-td="2"] .tile-id { font-size: 11px; }
+.col-list[data-td="2"] .tile-dot { top: 2px; right: 2px; width: 5px; height: 5px; }
+/* 3 极紧：20px 高，没有边框和底色，不带 #，间距 2px —— 看看压到底是什么样 */
+.col .col-list.form-tile[data-td="3"] { --gap: 2px; grid-template-columns: repeat(auto-fill, calc(var(--tile-ch) * 1ch + 8px)); justify-content: start; }
+.col-list[data-td="3"] .card.form-tile { height: 20px; border-radius: var(--r-xs); background: transparent; box-shadow: none; }
+.col-list[data-td="3"] .card.form-tile:hover { background: var(--surface-3); box-shadow: none; transform: none; }
+.col-list[data-td="3"] .tile-id { font-size: 11px; }
+.col-list[data-td="3"] .tile-id::before { content: none; }
+.col-list[data-td="3"] .tile-dot { top: 1px; right: 0; width: 4px; height: 4px; }
+.col-list[data-td="3"] .card.form-tile.late { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warn) 60%, transparent); }
+.col-list[data-td="3"] .card.form-tile.next { box-shadow: inset 0 0 0 1.5px var(--brand); }
+.col-list[data-td="3"] .card.form-tile.matched { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }
 
 /* ---------------- 原型控件：黄色虚线，一眼看出不是设计的一部分 ---------------- */
 .pt-forms {
@@ -86,3 +106,6 @@
 .pt-switcher .pt-meter { font: 500 11.5px/1 var(--f-mono); padding: 5px 10px; border-radius: 999px; background: rgba(0, 0, 0, .08); }
 .pt-switcher button { width: 28px; height: 28px; border-radius: 50%; font-size: 18px; color: #111; background: rgba(0, 0, 0, .08); }
 .pt-switcher button:hover { background: rgba(0, 0, 0, .18); }
+.pt-switcher .pt-density { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 8px; }
+.pt-switcher .pt-density button { width: auto; height: 24px; padding: 0 8px; border-radius: 999px; font: 600 11.5px/1 var(--f-sans); background: none; }
+.pt-switcher .pt-density button.on { color: #FFEA00; background: #111; }

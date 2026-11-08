@@ -18,7 +18,7 @@ import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { Skeleton, SkeletonCard } from './Skeleton';
-import { FormPicker, useForm, useProtoBoard } from '../prototype/cardForms'; // 原型（PROTOTYPE）
+import { FormPicker, useForm, useProtoBoard, useTileList } from '../prototype/cardForms'; // 原型（PROTOTYPE）
 
 /** 拖拽预览：被拖的卡片放到预览位置 */
 export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
@@ -313,6 +313,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
   const list = useRef<HTMLDivElement>(null);
   useMasonry(list);
   const form = useForm(col); // 原型（PROTOTYPE）
+  const tileList = useTileList(form, ids); // 原型（PROTOTYPE）
   const prev = useRef<number | null>(null);
   useEffect(() => {
     if (prev.current != null && prev.current !== count) {
@@ -363,7 +364,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         </span>
       </header>
       <div className="col-body">
-        <div className={cx('col-list', form && `form-${form}`)} data-list={col.key} ref={list}>
+        <div className={cx('col-list', form && `form-${form}`)} data-list={col.key} ref={list} {...tileList}>
           {ids.map((id, idx) => {
             const c = board.cards[id];
             if (!c) return null;
