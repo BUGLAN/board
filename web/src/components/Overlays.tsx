@@ -9,13 +9,14 @@ import {
 import { api } from '../lib/api';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
 import { quickPrompts } from '../lib/prompt';
+import { SORTS, sortKey, type SortSpec } from '../lib/sort';
 import { boardFlow, INBOX, LABEL_COLORS } from '../lib/schema';
 import type { Card } from '../lib/types';
 import { accel, cx, replay } from '../lib/util';
 import { allBoards, boardMeta, refresh, useData } from '../store/data';
 import {
   closeCtx, closeForm, closeImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
-  setSide, setTab, settleConfirm, toast, toastError, updatePicker, useUI, type FormCfg, type Toast,
+  setSide, setSort, setTab, settleConfirm, toast, toastError, updatePicker, useUI, type FormCfg, type Toast,
 } from '../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar } from './bits';
 import { Icon, type IconName } from './Icon';
@@ -504,7 +505,7 @@ export function CtxMenu() {
 
   useEffect(() => {
     if (!req) return;
-    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn') && closeCtx();
+    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn') && closeCtx();
     document.addEventListener('pointerdown', down);
     window.addEventListener('resize', closeCtx);
     return () => {
@@ -550,6 +551,8 @@ export function CtxMenu() {
     );
   } else if (req.kind === 'prompts') {
     body = <PromptsMenu path={req.id} go={go} />;
+  } else if (req.kind === 'sort') {
+    body = <SortMenu col={req.id} go={go} />;
   } else {
     const m = boardMeta(ws, req.id);
     if (!m) return null;
@@ -588,7 +591,7 @@ export function CtxMenu() {
   }
   return (
     <div
-      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', pos && 'on')}
+      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'sort' && 'ctx-sort', pos && 'on')}
       ref={ref}
       role="menu"
       style={pos ?? { left: -9999, top: -9999 }}
@@ -612,6 +615,58 @@ export function CtxMenu() {
     >
       {body}
     </div>
+  );
+}
+
+/* ============================ 状态块排序菜单 ============================ */
+/* 一次性排序：只改这块的显示顺序，不写服务端、不改优先级（lib/sort.ts） */
+
+function SortMenu({ col, go }: { col: string; go: (fn: () => void) => () => void }) {
+  const path = useData(s => s.path);
+  const board = useData(s => s.board);
+  const key = sortKey(path, col);
+  const cur = useUI(s => s.sorts[key]);
+  const pick = (spec: SortSpec | null) => go(() => setSort(key, spec));
+  return (
+    <>
+      <div className="ctx-title">
+        <Icon name="sort" />
+        <b>排序「{boardFlow(board).name(col)}」</b>
+      </div>
+      <p className="sort-hint">只改这块的显示顺序，优先级和 agent 的领取顺序不变</p>
+      <button type="button" data-do="sort-none" className={cx(!cur && 'on')} onClick={pick(null)}>
+        <span className="sort-name">优先级</span>
+        {!cur && <Icon name="check" />}
+      </button>
+      {SORTS.map(o => {
+        const on = cur?.by === o.by;
+        return (
+          <div key={o.by} className={cx('sort-row', on && 'on')}>
+            <button type="button" data-do={`sort-${o.by}`} onClick={pick({ by: o.by, desc: on ? cur.desc : o.desc })}>
+              <span className="sort-name">{o.name}</span>
+              {!o.dir && <span className="sort-note">按项目标签顺序分组</span>}
+              {on && !o.dir && <Icon name="check" />}
+            </button>
+            {o.dir && (
+              <span className="sort-dir" role="group" aria-label={`${o.name}的方向`}>
+                {[false, true].map(desc => (
+                  <button
+                    key={String(desc)}
+                    type="button"
+                    data-do={`sort-${o.by}-${desc ? 'desc' : 'asc'}`}
+                    className={cx(on && cur.desc === desc && 'on')}
+                    aria-pressed={on && cur.desc === desc}
+                    onClick={pick({ by: o.by, desc })}
+                  >
+                    {desc ? '降序' : '升序'}
+                  </button>
+                ))}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }
 

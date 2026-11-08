@@ -100,7 +100,7 @@ fn cmd_json(cmd: &Cmd) -> Value {
             json!({ "op": "new", "title": title, "body": body, "column": column, "top": top, "labels": labels })
         }
         Cmd::Edit { id, title, body } => json!({ "op": "edit", "id": id, "title": title, "body": body }),
-        Cmd::Move { id, column, top, index } => json!({ "op": "move", "id": id, "column": column, "top": top, "index": index }),
+        Cmd::Move { id, column, top, index, .. } => json!({ "op": "move", "id": id, "column": column, "top": top, "index": index }),
         Cmd::Claim { id } => json!({ "op": "claim", "id": id }),
         Cmd::Comment { id, text } => json!({ "op": "comment", "id": id, "text": text }),
         Cmd::Label { id, add, remove } => json!({ "op": "label", "id": id, "add": add, "remove": remove }),

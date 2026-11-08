@@ -325,7 +325,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             let id = a.id(sub)?;
             let col = a.pos.get(2).ok_or_else(|| BoardError::usage("board move 需要 <状态>"))?;
             let top = a.flag("--top");
-            let d = exec(Cmd::Move { id, column: col.clone(), top, index: None })?;
+            let d = exec(Cmd::Move { id, column: col.clone(), top, index: None, order: None })?;
             if json {
                 Output::Json(fmt.full(&d))
             } else {

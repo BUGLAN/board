@@ -311,13 +311,17 @@ export async function exec(cmd: Cmd): Promise<CardDetail> {
   return r;
 }
 
-/** 拖拽松手：先在本地落位，再等服务端确认 */
-export function moveLocally(id: number, to: ColumnKey, index: number) {
+/** 拖拽松手：先在本地落位，再等服务端确认。order：排序状态下拖动时整块的新顺序（与服务端规则一致：没列出的补在后面） */
+export function moveLocally(id: number, to: ColumnKey, index: number, order?: number[]) {
   const b = get().board;
   if (!b) return;
   const cols = Object.fromEntries(Object.entries(b.cols).map(([k, v]) => [k, v.filter(x => x !== id)])) as BoardSnapshot['cols'];
   cols[to] = cols[to] ?? [];
   cols[to].splice(Math.min(index, cols[to].length), 0, id);
+  if (order) {
+    const cur = cols[to];
+    cols[to] = [...new Set([...order.filter(x => cur.includes(x)), ...cur])];
+  }
   const card = { ...b.cards[id], column: to };
   set({ board: { ...b, cols, cards: { ...b.cards, [id]: card } } });
 }

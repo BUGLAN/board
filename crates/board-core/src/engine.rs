@@ -43,6 +43,10 @@ pub enum Cmd {
         /// 界面拖拽松手的位置（目标状态里，不计被拖的卡片本身）
         #[serde(default)]
         index: Option<usize>,
+        /// 界面在排序状态下拖动：目标状态整块的顺序（人看到的顺序，含被拖的卡片），一起保存为优先级。
+        /// 不在目标状态里的 id 忽略；目标状态里没列出的卡片按原顺序补在后面
+        #[serde(default)]
+        order: Option<Vec<i64>>,
     },
     Claim {
         #[serde(default)]
@@ -174,7 +178,7 @@ impl<'a> W<'a> {
             }
 
             /* ---------------- 移动 / 排序 ---------------- */
-            Cmd::Move { id, column, top, index } => {
+            Cmd::Move { id, column, top, index, order } => {
                 let r = self.row(b, id)?;
                 let to = flow
                     .resolve(&column)
@@ -228,7 +232,22 @@ impl<'a> W<'a> {
                     (None, true) => At::Top,
                     (None, false) => At::Bottom,
                 };
-                let (old, new) = self.place(b, id, Some(&from), &to, at)?;
+                let (old, mut new) = self.place(b, id, Some(&from), &to, at)?;
+                let mut whole = false;
+                if let Some(order) = &order {
+                    let cur = self.col_ids(b, &to)?;
+                    let mut ids: Vec<i64> = Vec::with_capacity(cur.len());
+                    for x in order.iter().chain(cur.iter()) {
+                        if cur.contains(x) && !ids.contains(x) {
+                            ids.push(*x);
+                        }
+                    }
+                    if ids != cur {
+                        self.write_col(b, &to, &ids)?;
+                        whole = true;
+                    }
+                    new = ids.iter().position(|x| *x == id).unwrap_or(new);
+                }
                 if from != to {
                     // 规则 8：离开锁定状态即释放
                     let released = r.holder.is_some() && !flow.is_lock(&to);
@@ -244,6 +263,9 @@ impl<'a> W<'a> {
                         )
                     };
                     self.track(b, id, actor, "move", &text)?;
+                } else if whole {
+                    let text = format!("调整了在「{}」中的顺序（第 {} → {} 位），并按排序后看到的顺序保存了整块的优先级", flow.name(&to), old + 1, new + 1);
+                    self.track(b, id, actor, "reorder", &text)?;
                 } else if old != new {
                     let text = format!("调整了在「{}」中的顺序（第 {} → {} 位）", flow.name(&to), old + 1, new + 1);
                     self.track(b, id, actor, "reorder", &text)?;

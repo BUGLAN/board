@@ -26,7 +26,7 @@ fn claim(id: Option<i64>) -> Cmd {
     Cmd::Claim { id }
 }
 fn mv(id: i64, col: &str) -> Cmd {
-    Cmd::Move { id, column: col.into(), top: false, index: None }
+    Cmd::Move { id, column: col.into(), top: false, index: None, order: None }
 }
 fn alpha() -> Actor {
     Actor::agent("alpha")
@@ -516,15 +516,35 @@ fn drag_index_and_reorder() {
     for t in ["a", "b", "c"] {
         exec(&mut s, B, &human(), T0, new(t)).unwrap();
     }
-    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0) }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0), order: None }).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![3, 1, 2]);
-    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "review".into(), top: false, index: Some(0) }).unwrap();
-    exec(&mut s, B, &human(), T0, Cmd::Move { id: 1, column: "review".into(), top: true, index: None }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "review".into(), top: false, index: Some(0), order: None }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 1, column: "review".into(), top: true, index: None, order: None }).unwrap();
     let snap = snapshot(&s, B, T0);
     assert_eq!(snap.cols["todo"], vec![2]);
     assert_eq!(snap.cols["review"], vec![1, 3]);
     exec(&mut s, B, &alpha(), T0, Cmd::New { title: "top".into(), body: None, column: None, top: true, labels: vec![] }).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![4, 2]);
+}
+
+#[test]
+fn drag_with_order_saves_whole_column() {
+    let mut s = store();
+    for t in ["a", "b", "c", "d"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, mv(4, "review")).unwrap();
+    // 界面按编号降序显示 [3, 2, 1]，把 #1 拖到最前：整块按看到的顺序保存
+    let mv_order = |id: i64, index: usize, order: Vec<i64>| Cmd::Move { id, column: "todo".into(), top: false, index: Some(index), order: Some(order) };
+    exec(&mut s, B, &human(), T0, mv_order(1, 0, vec![1, 3, 2])).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![1, 3, 2]);
+    let d = card(&s, B, 1);
+    assert!(d.activity.iter().any(|a| a.action == "reorder" && a.text.contains("整块的优先级")));
+    // 不在这个状态的 id 忽略，没列出的卡片按原顺序补在后面；别的状态不受影响
+    exec(&mut s, B, &human(), T0, mv_order(2, 0, vec![2, 4, 99])).unwrap();
+    let snap = snapshot(&s, B, T0);
+    assert_eq!(snap.cols["todo"], vec![2, 1, 3]);
+    assert_eq!(snap.cols["review"], vec![4]);
 }
 
 #[test]
@@ -664,7 +684,7 @@ fn agent_moves_follow_edges() {
     // 人不受连线限制
     exec(&mut s, B, &human(), T0, mv(1, "review")).unwrap();
     // 同一状态内调整顺序不受连线影响
-    exec(&mut s, B, &alpha(), T0, Cmd::Move { id: 3, column: "todo".into(), top: true, index: None }).unwrap();
+    exec(&mut s, B, &alpha(), T0, Cmd::Move { id: 3, column: "todo".into(), top: true, index: None, order: None }).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![3, 2]);
     // §13 34：「未整理」只归人管
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(2, "inbox"))), ErrorCode::ForbiddenColumn);

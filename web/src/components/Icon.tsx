@@ -94,6 +94,7 @@ const P: Record<string, ReactNode> = {
     </>
   ),
   edit: <path d="M12.8 4.2a1.8 1.8 0 0 1 2.6 2.6L7.5 14.7 4 15.7l1-3.5Z" />,
+  sort: <path d="M3.5 5.5h8M3.5 10h6M3.5 14.5h4M14.5 4.5v11M12 13l2.5 2.5L17 13" />,
   reorder: <path d="M7 4.5v11M4.5 7 7 4.5 9.5 7M13 15.5v-11M10.5 13l2.5 2.5 2.5-2.5" />,
   renew: (
     <>

@@ -3,6 +3,7 @@
    ========================================================================== */
 import { create } from 'zustand';
 import type { ApiError } from '../lib/api';
+import type { SortSpec } from '../lib/sort';
 import type { ColumnKey } from '../lib/types';
 import { pref } from '../lib/util';
 
@@ -60,8 +61,8 @@ export interface PickerReq {
 }
 
 export interface CtxReq {
-  /** prompts：白板页头的「提示词」菜单，id 是白板路径 */
-  kind: 'project' | 'board' | 'prompts';
+  /** prompts：白板页头的「提示词」菜单，id 是白板路径；sort：状态块的排序菜单，id 是状态标识 */
+  kind: 'project' | 'board' | 'prompts' | 'sort';
   id: string;
   x: number;
   y: number;
@@ -108,6 +109,8 @@ interface UIState {
   reject: { col: ColumnKey; key: number } | null;
   /** 放大查看的图片（附件） */
   image: { src: string; alt: string } | null;
+  /** 状态块的一次性排序（lib/sort.ts）：sortKey(白板路径, 状态) → 排序依据。不记住，刷新后回到优先级顺序 */
+  sorts: Record<string, SortSpec>;
 }
 
 const TABS: Tab[] = ['board', 'projects', 'inbox', 'settings'];
@@ -141,6 +144,7 @@ export const useUI = create<UIState>(() => ({
   reveal: null,
   reject: null,
   image: null,
+  sorts: {},
 }));
 
 const set = useUI.setState;
@@ -212,6 +216,15 @@ export const closePicker = () => set({ picker: null });
 
 export const openCtx = (req: CtxReq) => set({ ctx: req });
 export const closeCtx = () => set({ ctx: null });
+
+/** 设置 / 取消（null）一块的排序 */
+export const setSort = (key: string, spec: SortSpec | null) =>
+  set(s => {
+    const sorts = { ...s.sorts };
+    if (spec) sorts[key] = spec;
+    else delete sorts[key];
+    return { sorts };
+  });
 
 
 /** 有弹窗或浮层打开时，全局快捷键不生效 */

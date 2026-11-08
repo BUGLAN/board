@@ -76,6 +76,29 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-count span { display: block; }
 .col-count.bump span { animation: count-roll var(--dur-3) var(--spring); }
 .col-count.bump { animation: count-pop var(--dur-3) var(--spring); color: var(--c); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 50%, transparent); }
+/* 排序入口（lib/sort.ts）：平时是一个图标；排序中显示按什么排、方向，旁边可以取消 */
+.col-sort { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; flex: none; }
+/* 窄的块里排序中：让出规则标记的位置，名称至少留三个字 */
+.col-head:has(.col-sort.on) .col-name { min-width: 3.2em; }
+@container (max-width: 300px) { .col-head:has(.col-sort.on) .col-tag { display: none; } }
+.col-sort ~ .col-count { margin-left: 0; }
+.col-sort-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 22px; min-width: 22px; padding: 0 4px;
+  border-radius: 999px; font-size: 11px; color: var(--text-4); cursor: pointer;
+  transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
+}
+.col-sort-btn svg { width: 14px; height: 14px; flex: none; }
+.col-sort-btn:hover, .col-sort-btn[aria-expanded="true"] { color: var(--text-2); background: var(--surface-3); }
+.col-sort-btn .t { white-space: nowrap; font-weight: 500; }
+.col-sort-btn i { font-style: normal; margin-left: 2px; }
+.col-sort.on .col-sort-btn {
+  padding: 0 8px 0 6px; color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent);
+}
+.col-sort.on .col-sort-btn:hover { background: color-mix(in srgb, var(--c) 18%, transparent); }
+.col-sort-x { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--text-4); cursor: pointer; }
+.col-sort-x svg { width: 11px; height: 11px; }
+.col-sort-x:hover { color: var(--text); background: var(--surface-3); }
 @keyframes count-roll { from { transform: translateY(var(--roll, 100%)); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes count-pop { 40% { transform: scale(1.18); } }
 .col-info { color: var(--text-4); display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); transition: color var(--dur-2), background-color var(--dur-2); }

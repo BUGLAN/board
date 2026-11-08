@@ -198,7 +198,7 @@ export interface ServerInfo {
 export type Cmd =
   | { op: 'new'; title: string; body?: string; column?: 'inbox'; top?: boolean; labels?: number[] }
   | { op: 'edit'; id: number; title?: string; body?: string }
-  | { op: 'move'; id: number; column: ColumnKey; index?: number; top?: boolean }
+  | { op: 'move'; id: number; column: ColumnKey; index?: number; top?: boolean; order?: number[] }
   | { op: 'comment'; id: number; text: string }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }

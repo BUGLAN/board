@@ -8,10 +8,11 @@ import { flushSync } from 'react-dom';
 import { openCard } from './actions';
 import * as flip from './flip';
 import { boardFlow, INBOX, type FlowQ } from './schema';
+import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
-import { exec, moveLocally, refresh, useData } from '../store/data';
-import { rejectColumn, setDrag, toastError, useUI, type DragUI } from '../store/ui';
+import { boardMeta, exec, moveLocally, refresh, serverNow, useData } from '../store/data';
+import { rejectColumn, setDrag, setSort, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
   code: string;
@@ -407,6 +408,7 @@ function finish(cancelled: boolean) {
   const same = !target || (target.col === s.fromCol && target.index === s.fromIndex);
   const commit = !cancelled && valid && !same && target;
   let failed = false;
+  let plan: Drop = { index: target?.index ?? 0 };
 
   if (!commit) {
     flushSync(() => setDrag({ ...useUI.getState().drag!, col: s.fromCol, index: s.fromIndex, valid: true, veto: null, over: null }));
@@ -415,7 +417,8 @@ function finish(cancelled: boolean) {
       rejectColumn(target.col);
     }
   } else {
-    exec({ op: 'move', id: s.id, column: target.col, index: target.index }).catch(err => {
+    plan = planDrop(s.id, s.fromCol, target);
+    exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order }).catch(err => {
       failed = true;
       toastError(err);
       refresh();
@@ -438,7 +441,10 @@ function finish(cancelled: boolean) {
   );
   const id = s.id;
   anim.onfinish = () => {
-    if (commit && !failed) moveLocally(id, target.col, target.index);
+    if (commit && !failed) {
+      if (plan.clear) setSort(plan.clear, null);
+      moveLocally(id, target.col, plan.index, plan.order);
+    }
     setDrag(null);
     ghost.remove();
     if (commit && !failed) {
@@ -449,6 +455,36 @@ function finish(cancelled: boolean) {
   };
   justDroppedAt = performance.now();
   cleanup(true);
+}
+
+interface Drop {
+  /** 优先级顺序里的位置（不计被拖的卡片本身） */
+  index: number;
+  /** 整块的新顺序，一起保存为优先级 */
+  order?: number[];
+  /** 落位后结束这块的排序状态 */
+  clear?: string;
+}
+
+/** 松手位置换算成要保存的优先级。占位的 index 是「看到的顺序」里的位置：
+    - 目标块没在排序：看到的就是优先级顺序，原样保存
+    - 在排序中的块里拖动：按拖动后看到的顺序整块保存为优先级，这块的排序状态结束
+    - 从别的块拖进排序中的块：放到看到的下一张卡片前面（优先级顺序里），这块继续排序，别的块不动 */
+function planDrop(id: number, from: ColumnKey, target: { col: ColumnKey; index: number }): Drop {
+  const { board, path, ws } = useData.getState();
+  const key = sortKey(path, target.col);
+  const spec = useUI.getState().sorts[key];
+  if (!board || !spec) return { index: target.index };
+  const labels = boardMeta(ws, path)?.project.labels ?? [];
+  const prio = (board.cols[target.col] ?? []).filter(x => x !== id);
+  const shown = sortIds(prio, board.cards, spec, labels, serverNow());
+  if (target.col === from) {
+    const order = [...shown];
+    order.splice(Math.min(target.index, order.length), 0, id);
+    return { index: target.index, order, clear: key };
+  }
+  const next = shown[target.index];
+  return { index: next == null ? prio.length : prio.indexOf(next) };
 }
 
 function cleanup(keepDrag = false) {

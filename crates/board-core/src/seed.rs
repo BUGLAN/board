@@ -20,7 +20,7 @@ fn claim(id: i64) -> Cmd {
     Cmd::Claim { id: Some(id) }
 }
 fn mv(id: i64, col: &str) -> Cmd {
-    Cmd::Move { id, column: col.into(), top: false, index: None }
+    Cmd::Move { id, column: col.into(), top: false, index: None, order: None }
 }
 fn comment(id: i64, text: &str) -> Cmd {
     Cmd::Comment { id, text: text.into() }
@@ -151,7 +151,7 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         run(w, &b, t0 + 214 * M, &a("gamma"), comment(8, "改为使用 `$HOME`，并在 CI 里加了 zsh / bash 两个 shell 的冒烟测试。"))?;
         run(w, &b, t0 + 215 * M, &a("gamma"), mv(8, "review"))?;
         // 人调整优先级：#3 提到最上面
-        run(w, &b, t0 + 230 * M, &h, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0) })?;
+        run(w, &b, t0 + 230 * M, &h, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0), order: None })?;
         // 未整理：人随手记下的计划和想法
         run(w, &b, now - 50 * M, &h, inbox("调研：一个仓库是否需要多块白板", "- 按子项目拆？\n- 还是用标签区分？\n\n先看看社区里其他项目怎么做。"))?;
         run(w, &b, now - 34 * M, &h, inbox("「待审核」里加一个打回的快捷操作", "现在打回要拖回待办，再写一条评论说明原因，有点绕。"))?;
