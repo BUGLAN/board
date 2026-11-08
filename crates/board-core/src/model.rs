@@ -445,6 +445,9 @@ pub struct Activity {
     pub kind: String,
     pub action: String,
     pub text: String,
+    /// 评论被作者修改过时，最后一次修改的时间
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

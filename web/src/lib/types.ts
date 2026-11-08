@@ -133,6 +133,8 @@ export interface Activity {
   kind: 'comment' | 'system';
   action: string;
   text: string;
+  /** 评论被作者修改过时，最后一次修改的时间 */
+  edited_at?: number;
 }
 
 /** 卡片附件（PRD §5）：图片在描述、评论里直接显示，其他文件是下载链接 */
@@ -196,6 +198,7 @@ export type ErrorCode =
   | 'UNREACHABLE'
   | 'NAME_TAKEN'
   | 'NAME_OFFLINE'
+  | 'NOT_AUTHOR'
   | 'INTERNAL'
   | 'NETWORK';
 
@@ -223,6 +226,7 @@ export type Cmd =
   | { op: 'edit'; id: number; title?: string; body?: string }
   | { op: 'move'; id: number; column: ColumnKey; index?: number; top?: boolean; order?: number[] }
   | { op: 'comment'; id: number; text: string }
+  | { op: 'edit_comment'; id: number; activity: number; text: string }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }
   | { op: 'delete'; id: number };

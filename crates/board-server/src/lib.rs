@@ -140,6 +140,7 @@ impl IntoResponse for ApiError {
             ErrorCode::Usage | ErrorCode::EmptyTitle | ErrorCode::NoBoard | ErrorCode::NoIdentity => StatusCode::BAD_REQUEST,
             ErrorCode::NotFound | ErrorCode::BoardNotFound => StatusCode::NOT_FOUND,
             ErrorCode::NotLoggedIn | ErrorCode::InvalidToken => StatusCode::UNAUTHORIZED,
+            ErrorCode::NotAuthor => StatusCode::FORBIDDEN,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::CONFLICT,
         };

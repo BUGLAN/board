@@ -93,6 +93,7 @@ export const ERRORS: [ErrorCode, string][] = [
   ['UNREACHABLE', 'CLI 连不上服务端'],
   ['NAME_TAKEN', 'board check 的名字正被在线 agent 使用：加一个和本会话相关的后缀再 check'],
   ['NAME_OFFLINE', '名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>'],
+  ['NOT_AUTHOR', '修改不是自己发的评论：只有人能在界面上修改自己发的评论'],
 ];
 
 /** 标识：小写字母、数字和 -，以字母或数字开头，最长 32 个字符 */

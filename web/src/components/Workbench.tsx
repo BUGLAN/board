@@ -172,7 +172,7 @@ function SideFilter({ value, onChange, placeholder }: { value: string; onChange:
 
 const OP: Record<string, string> = {
   create: '新建了', edit: '编辑了', move: '移动了', reorder: '调整了顺序', claim: '领取了', renew: '续期了',
-  comment: '评论了', timeout: '超时释放了', release: '强制释放了', delete: '删除了', label: '改了标签',
+  comment: '评论了', edit_comment: '改了评论', timeout: '超时释放了', release: '强制释放了', delete: '删除了', label: '改了标签',
   beat: '心跳', lost: '心跳中断，释放了',
 };
 

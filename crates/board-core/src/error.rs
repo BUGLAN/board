@@ -27,12 +27,14 @@ pub enum ErrorCode {
     NameTaken,
     /// agent 名字不在线：没有 check，或心跳中断超过 50 秒（PRD §3）
     NameOffline,
+    /// 修改不是自己发的评论（只有人能改自己发的评论）
+    NotAuthor,
     /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
     Internal,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 16] = [
+    pub const ALL: [ErrorCode; 17] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -49,6 +51,7 @@ impl ErrorCode {
         ErrorCode::Unreachable,
         ErrorCode::NameTaken,
         ErrorCode::NameOffline,
+        ErrorCode::NotAuthor,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -69,6 +72,7 @@ impl ErrorCode {
             ErrorCode::Unreachable => "UNREACHABLE",
             ErrorCode::NameTaken => "NAME_TAKEN",
             ErrorCode::NameOffline => "NAME_OFFLINE",
+            ErrorCode::NotAuthor => "NOT_AUTHOR",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -97,6 +101,7 @@ impl ErrorCode {
             ErrorCode::Unreachable => "连不上 Board 服务端",
             ErrorCode::NameTaken => "名字正被在线 agent 使用：加一个和本会话相关的后缀（例如任务名或分支名）再 check",
             ErrorCode::NameOffline => "名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>",
+            ErrorCode::NotAuthor => "只能修改自己发的评论",
             ErrorCode::Internal => "内部错误",
         }
     }

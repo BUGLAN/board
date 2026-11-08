@@ -558,6 +558,36 @@ fn empty_title_and_comment() {
 }
 
 #[test]
+fn edit_own_comment() {
+    let mut s = store();
+    exec(&mut s, B, &alpha(), T0, new("a")).unwrap();
+    let d = exec(&mut s, B, &human(), T0, Cmd::Comment { id: 1, text: "打错字了".into() }).unwrap();
+    let mine = d.activity.last().unwrap().id;
+    let d = exec(&mut s, B, &alpha(), T0, Cmd::Comment { id: 1, text: "agent 的评论".into() }).unwrap();
+    let theirs = d.activity.last().unwrap().id;
+    let sys = d.activity[0].id;
+    let n = d.activity.len();
+    let edit = |activity: i64, text: &str| Cmd::EditComment { id: 1, activity, text: text.into() };
+
+    // 人改自己的评论：原位更新、记下修改时间，不新增动态
+    let d = exec(&mut s, B, &human(), T0 + MIN, edit(mine, "  改好了  ")).unwrap();
+    assert_eq!(d.activity.len(), n);
+    let a = d.activity.iter().find(|a| a.id == mine).unwrap();
+    assert_eq!((a.text.as_str(), a.edited_at), ("改好了", Some(T0 + MIN)));
+    assert_eq!(card(&s, B, 1).activity.iter().find(|a| a.id == mine).unwrap().text, "改好了");
+    assert_eq!(snapshot(&s, B, T0 + MIN).cards[&1].comments, 2);
+
+    // 别人的评论、agent 改人的评论：NOT_AUTHOR；系统动态、空内容：USAGE；不存在：NOT_FOUND
+    assert_eq!(code(exec(&mut s, B, &human(), T0, edit(theirs, "x"))), ErrorCode::NotAuthor);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, edit(mine, "x"))), ErrorCode::NotAuthor);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, edit(theirs, "x"))), ErrorCode::NotAuthor);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, edit(sys, "x"))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, edit(mine, "  "))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, edit(9999, "x"))), ErrorCode::NotFound);
+    assert_eq!(card(&s, B, 1).activity.iter().find(|a| a.id == theirs).unwrap().edited_at, None);
+}
+
+#[test]
 fn demo_seed() {
     let mut s = store();
     assert!(seed::seed_demo(&mut s, T0).unwrap());

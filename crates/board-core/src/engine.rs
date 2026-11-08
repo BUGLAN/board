@@ -56,6 +56,14 @@ pub enum Cmd {
         id: i64,
         text: String,
     },
+    /// 人修改自己发的评论（界面）：原位更新内容，记下修改时间，不新增动态
+    #[serde(rename = "edit_comment")]
+    EditComment {
+        id: i64,
+        /// 评论在动态里的 ID
+        activity: i64,
+        text: String,
+    },
     Label {
         id: i64,
         #[serde(default)]
@@ -353,6 +361,39 @@ impl<'a> W<'a> {
                 }
                 self.bind_attachments(b, id, &text)?;
                 self.track(b, id, actor, "comment", &text)?;
+                id
+            }
+
+            /* ---------------- 修改评论 ----------------
+               只有人能改，只能改人发的评论（PRD §8）；agent 和系统的动态不能改 */
+            Cmd::EditComment { id, activity, text } => {
+                self.row(b, id)?;
+                let found: Option<(String, String, String)> = self
+                    .tx
+                    .query_row(
+                        "SELECT kind, actor_kind, actor_name FROM activity WHERE id = ?1 AND board = ?2 AND card = ?3",
+                        params![activity, b, id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                let Some((kind, by_kind, by_name)) = found else {
+                    return Err(BoardError::new(ErrorCode::NotFound, format!("#{id} 没有这条评论")));
+                };
+                if kind != "comment" {
+                    return Err(BoardError::usage("只能修改评论，系统动态不能修改"));
+                }
+                if !actor.is_human() || by_kind != ActorKind::Human.as_str() || by_name != actor.name {
+                    return Err(BoardError::code(ErrorCode::NotAuthor));
+                }
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return Err(BoardError::usage("评论内容不能为空"));
+                }
+                self.bind_attachments(b, id, &text)?;
+                self.tx.execute("UPDATE activity SET text = ?1, edited_at = ?2 WHERE id = ?3", params![text, self.now, activity])?;
+                self.tx.execute("UPDATE cards SET updated_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+                let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
+                self.event(b, id, &title, actor, "edit_comment", &text)?;
                 id
             }
 

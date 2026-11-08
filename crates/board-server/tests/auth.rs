@@ -353,6 +353,22 @@ fn tokens_are_for_cli_only() {
     // 规则仍由规则引擎判定：agent 不能删除、不能强制释放
     let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": NAME, "op": "delete", "id": 1 })));
     assert_eq!(r.code(), "USAGE");
+    // 评论只能由作者（人）修改：直接调接口改别人的评论，得到 403 NOT_AUTHOR
+    let cmd = |body: serde_json::Value, h: &[(&str, &str)]| send("POST", &format!("{}/api/cmd", s.url), h, Some(body));
+    let ui = [("cookie", cookie.as_str()), UI];
+    let r = cmd(json!({ "board": "default", "op": "comment", "id": 1, "text": "人写的" }), &ui);
+    let mine = r.body["activity"].as_array().unwrap().last().unwrap()["id"].as_i64().unwrap();
+    let r = cmd(json!({ "board": "default", "as": NAME, "op": "comment", "id": 1, "text": "agent 写的" }), &a);
+    let theirs = r.body["activity"].as_array().unwrap().last().unwrap()["id"].as_i64().unwrap();
+    let r = cmd(json!({ "board": "default", "as": NAME, "op": "edit_comment", "id": 1, "activity": mine, "text": "x" }), &a);
+    assert_eq!((r.status, r.code()), (403, "NOT_AUTHOR"));
+    let r = cmd(json!({ "board": "default", "op": "edit_comment", "id": 1, "activity": theirs, "text": "x" }), &ui);
+    assert_eq!((r.status, r.code()), (403, "NOT_AUTHOR"));
+    let r = cmd(json!({ "board": "default", "op": "edit_comment", "id": 1, "activity": mine, "text": "人改过的" }), &ui);
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    let c = r.body["activity"].as_array().unwrap().iter().find(|x| x["id"] == mine).unwrap().clone();
+    assert_eq!(c["text"], "人改过的");
+    assert!(c["edited_at"].is_i64(), "{c:?}");
     // 只有人能做的操作、实时推送、令牌管理：令牌不能用
     for (m, p, body) in [
         ("POST", "/api/projects", Some(json!({ "name": "x", "key": "x", "board": { "name": "m", "key": "main" } }))),

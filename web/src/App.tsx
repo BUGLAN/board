@@ -23,7 +23,7 @@ import {
 } from './store/ui';
 
 const OP_LABEL: Record<string, string> = {
-  create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论',
+  create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论', edit_comment: '改评论',
   timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除',
 };
 

@@ -730,7 +730,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
           // 从骨架换成内容时淡入（已缓存的直接显示，不播放）
           <div className={cx('timeline', wasLoading.current && 'sk-swap')}>
             {c.activity.map((a, idx) => (
-              <ActivityItem key={a.id} a={a} now={now} fresh={firstNew != null && idx >= firstNew} />
+              <ActivityItem key={a.id} a={a} card={c.id} now={now} fresh={firstNew != null && idx >= firstNew} />
             ))}
             {sending.map(s => (
               <div key={`sending-${s.key}`} className="tl-item mine new sending" aria-busy="true">
@@ -790,15 +790,82 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   );
 }
 
+/** 原地编辑自己发的评论：预填原 Markdown，⌘↵ 保存、Esc 取消；空内容不能保存 */
+function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone: () => void }) {
+  const [draft, setDraft] = useState(a.text);
+  const [saving, setSaving] = useState(false);
+  const ta = useRef<HTMLTextAreaElement>(null);
+  const empty = !draft.trim();
+  useLayoutEffect(() => autosize(ta.current), [draft]);
+  useEffect(() => {
+    const el = ta.current;
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+  const save = async () => {
+    if (saving) return;
+    if (empty) {
+      toast({ type: 'error', title: '评论内容不能为空', text: '不想要这条评论的话，按 Esc 取消修改' });
+      ta.current?.focus();
+      return;
+    }
+    if (draft.trim() === a.text.trim()) return onDone();
+    setSaving(true);
+    try {
+      await exec({ op: 'edit_comment', id: card, activity: a.id, text: draft });
+      onDone();
+    } catch (e) {
+      setSaving(false);
+      toastError(e);
+    }
+  };
+  return (
+    <div className={cx('tl-editor', empty && 'empty')}>
+      <textarea
+        ref={ta}
+        value={draft}
+        rows={1}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        aria-label="修改评论"
+        disabled={saving}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            save();
+          }
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            onDone();
+          }
+        }}
+      />
+      <div className="tl-editor-bar">
+        <span className={cx('tl-editor-hint', empty && 'bad')}>{empty ? '评论内容不能为空' : `${accel('↵')} 保存 · Esc 取消`}</span>
+        <button className="btn sm ghost" type="button" onClick={onDone} disabled={saving}>
+          取消
+        </button>
+        <button className="btn sm primary" type="button" onClick={save} disabled={saving || empty}>
+          {saving ? '保存中…' : '保存'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 本窗口发出的评论：发送中气泡的作者 */
 const ME: Activity['actor'] = { kind: 'human', name: '' };
 /** 评论框一行的高度（line-height 13.5 × 1.5 + 上下内边距 6 × 2），超过就算多行 */
 const ONE_LINE = 34;
 
-function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: boolean }) {
+function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now: number; fresh: boolean }) {
   // 自己发的评论从「发送中」转正：不再播入场动画，只把透明度补回来
   const settled = isSettled(a.id);
   if (settled) fresh = false;
+  const [editing, setEditing] = useState(false);
   const name =
     a.actor.kind === 'agent' ? (
       <b className="agent-name" style={{ color: agentColor(a.actor.name) }}>
@@ -827,8 +894,18 @@ function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: bool
               </span>
             )}
             {time}
+            {a.edited_at != null && (
+              <span className="tl-edited" title={`修改于 ${new Date(a.edited_at).toLocaleString()}`}>
+                已编辑
+              </span>
+            )}
+            {a.actor.kind === 'human' && !editing && (
+              <button className="tl-edit" type="button" aria-label="编辑这条评论" title="编辑" onClick={() => setEditing(true)}>
+                <Icon name="edit" />
+              </button>
+            )}
           </div>
-          <Markdown src={a.text} />
+          {editing ? <CommentEditor a={a} card={card} onDone={() => setEditing(false)} /> : <Markdown src={a.text} />}
         </div>
       </div>
     );

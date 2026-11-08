@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS activity (
   kind       TEXT NOT NULL,
   action     TEXT NOT NULL,
   text       TEXT NOT NULL,
+  edited_at  INTEGER,
   FOREIGN KEY (board, card) REFERENCES cards(board, id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS activity_card ON activity (board, card, id);
@@ -259,6 +260,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'final_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_final {
             conn.execute_batch("ALTER TABLE cards ADD COLUMN final_at INTEGER")?;
+        }
+        // 旧数据库的动态不记评论的修改时间
+        let has_edited: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('activity') WHERE name = 'edited_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_edited {
+            conn.execute_batch("ALTER TABLE activity ADD COLUMN edited_at INTEGER")?;
         }
         // 旧数据库的状态没有卡片形态
         let has_view: bool =
@@ -505,7 +512,7 @@ impl<'a> R<'a> {
             .pop()
             .ok_or_else(|| not_found(id))?;
         let mut st = self.conn.prepare(
-            "SELECT id, at, actor_kind, actor_name, kind, action, text FROM activity
+            "SELECT id, at, actor_kind, actor_name, kind, action, text, edited_at FROM activity
              WHERE board = ?1 AND card = ?2 ORDER BY id",
         )?;
         let activity = st
@@ -517,6 +524,7 @@ impl<'a> R<'a> {
                     kind: r.get(4)?,
                     action: r.get(5)?,
                     text: r.get(6)?,
+                    edited_at: r.get(7)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
