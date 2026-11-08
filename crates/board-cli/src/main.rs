@@ -6,6 +6,7 @@
 //! （默认 `~/.board/board.db`，可用 `BOARD_DB` 指定）。见 backend.rs。
 
 mod backend;
+mod doctor;
 
 use backend::{env, Backend, BoardData};
 use board_core::*;
@@ -17,16 +18,20 @@ use unicode_width::UnicodeWidthStr;
 
 const VALUE_FLAGS: [&str; 9] = ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out"];
 const BOOL_FLAGS: [&str; 5] = ["--json", "--top", "--help", "-h", "--final"];
-const COMMANDS: [&str; 15] =
-    ["help", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat", "label", "labels", "attach", "files"];
+const COMMANDS: [&str; 16] =
+    ["help", "doctor", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat", "label", "labels", "attach", "files"];
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
     let p = Paint { on: !json && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
     match run(&args, &p) {
-        Ok(Output::Text(s)) => print!("{s}"),
-        Ok(Output::Json(v)) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+        Ok(out) => {
+            let code = emit(out);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Err(e) => {
             if json {
                 let mut err = json!({ "code": e.code, "message": e.message });
@@ -46,6 +51,26 @@ fn main() {
 enum Output {
     Text(String),
     Json(Value),
+    /// 照常打印，但退出码不是 0（`board doctor` 有检查没通过）
+    Exit(i32, Box<Output>),
+}
+
+/// 打印结果并返回退出码
+fn emit(out: Output) -> i32 {
+    match out {
+        Output::Text(s) => {
+            print!("{s}");
+            0
+        }
+        Output::Json(v) => {
+            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            0
+        }
+        Output::Exit(code, body) => {
+            let _ = emit(*body);
+            code
+        }
+    }
 }
 
 /* ------------------------------ 参数 ------------------------------ */
@@ -114,6 +139,11 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         }
         Some(s) => s,
     };
+
+    // 自检只检查环境本身：不需要身份和白板，也不打开数据库
+    if sub == "doctor" {
+        return Ok(doctor::run(json, p));
+    }
 
     // 身份（PRD §3）
     let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"));
@@ -659,7 +689,8 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 15] = [
+    let rows: [(&str, &str, &str); 16] = [
+        ("doctor", "", "环境自检：board 路径、PATH、BOARD_URL/BOARD_TOKEN、BOARD_AS/BOARD、服务端版本；有问题退出码非 0"),
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
