@@ -11,7 +11,7 @@ import { useMasonry } from '../lib/masonry';
 import type { BoardEvent, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
-import { refresh, useCurrent, useData } from '../store/data';
+import { refresh, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
@@ -434,6 +434,7 @@ function BoardSide() {
   const cur = useCurrent();
   const filter = useUI(s => s.filter);
   const now = useNow(1000);
+  const online = useOnline();
   const meName = useMeName();
   const [closed, setClosed] = useState<Set<string>>(() => new Set(pref.get<string[]>('treeClosed', [])));
   const toggle = (id: string) =>
@@ -505,7 +506,7 @@ function BoardSide() {
             <SkeletonRows n={cur?.board.holders.length ?? 1} kind="working" />
           ) : holders.length ? (
             holders.map(c => {
-              const t = timing(c, now);
+              const t = timing(c, now, online);
               return (
                 <button
                   key={c.id}

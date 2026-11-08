@@ -3,13 +3,14 @@
 //! 检查项（每项都有稳定的 key、布尔状态和「下一步怎么做」）：
 //! - \`board_path\`：正在运行的 board 的绝对路径（方便加进 PATH）
 //! - \`path\`：PATH 里能不能找到 board，找到的是不是同一个文件
-//! - \`board_url\`：BOARD_URL 是否设置、格式对不对
+//! - \`board_url\`：服务端地址有没有配置、格式对不对、来自哪里（环境变量 BOARD_URL 还是 ~/.board/config.toml）
 //! - \`server\`：服务端能不能连上，版本号是多少（\`GET /api/health\`）
-//! - \`board_token\`：BOARD_TOKEN 是否设置且有效（打一次需要鉴权的请求 \`GET /api/workspace\`）
-//! - \`board_as\`：BOARD_AS 是否设置
-//! - \`board\`：BOARD 是否设置
+//! - \`board_token\`：访问令牌有没有配置、来自哪里、是否有效（打一次需要鉴权的请求 \`GET /api/workspace\`）
+//! - \`board_as\`：名字（\`--as\` 或 BOARD_AS）的格式，以及是否在线（\`GET /api/agents\`）；没提供时跳过
+//! - \`board\`：白板（\`--board\` 或 BOARD）；没提供时跳过
 //!
-//! 全部通过退出 0，有没通过的退出 1。令牌原文永远不打印、不进 JSON。
+//! 环境变量和配置文件都有值时状态为 warn：环境变量覆盖了配置文件。
+//! 没有 fail 时退出 0，有 fail 时退出 1。令牌原文永远不打印、不进 JSON。
 
 use serde_json::{json, Value};
 use std::ffi::{OsStr, OsString};
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
-use crate::backend::env;
+use crate::config::{self, env, Source};
 use crate::{Output, Paint};
 
 /// 命令名；PATH 检查找的就是它
@@ -59,20 +60,26 @@ pub struct Check {
     pub status: Status,
     pub detail: String,
     pub next: Option<String>,
+    /// 服务端地址、令牌：值来自哪里
+    pub source: Option<Source>,
 }
 
 impl Check {
     fn ok(key: &'static str, title: &'static str, detail: impl Into<String>) -> Check {
-        Check { key, title, status: Status::Ok, detail: detail.into(), next: None }
+        Check { key, title, status: Status::Ok, detail: detail.into(), next: None, source: None }
     }
     fn warn(key: &'static str, title: &'static str, detail: impl Into<String>, next: impl Into<String>) -> Check {
-        Check { key, title, status: Status::Warn, detail: detail.into(), next: Some(next.into()) }
+        Check { key, title, status: Status::Warn, detail: detail.into(), next: Some(next.into()), source: None }
     }
     fn fail(key: &'static str, title: &'static str, detail: impl Into<String>, next: impl Into<String>) -> Check {
-        Check { key, title, status: Status::Fail, detail: detail.into(), next: Some(next.into()) }
+        Check { key, title, status: Status::Fail, detail: detail.into(), next: Some(next.into()), source: None }
     }
     fn skip(key: &'static str, title: &'static str, detail: impl Into<String>) -> Check {
-        Check { key, title, status: Status::Skip, detail: detail.into(), next: None }
+        Check { key, title, status: Status::Skip, detail: detail.into(), next: None, source: None }
+    }
+    fn from(mut self, src: Option<Source>) -> Check {
+        self.source = src;
+        self
     }
 }
 
@@ -85,23 +92,61 @@ pub struct Input {
     pub exe: PathBuf,
     /// PATH 环境变量的原样
     pub path_var: Option<OsString>,
-    pub board_url: Option<String>,
-    pub token: Option<String>,
+    /// 环境变量 BOARD_URL / BOARD_TOKEN
+    pub url_env: Option<String>,
+    pub token_env: Option<String>,
+    /// ~/.board/config.toml 里的 url / token
+    pub url_file: Option<String>,
+    pub token_file: Option<String>,
+    /// 配置文件读不了时的原因
+    pub file_error: Option<String>,
+    /// --as 或 BOARD_AS
     pub board_as: Option<String>,
+    /// --board 或 BOARD
     pub board: Option<String>,
 }
 
 impl Input {
-    pub fn from_env() -> Input {
+    pub fn from_env(as_flag: Option<&str>, board_flag: Option<&str>) -> Input {
+        let flag = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        let (mut url_file, mut token_file, mut file_error) = (None, None, None);
+        match config::File::load() {
+            Ok(f) => {
+                match f.get(config::URL) {
+                    Ok(v) => url_file = v,
+                    Err(e) => file_error = Some(e.message),
+                }
+                match f.get(config::TOKEN) {
+                    Ok(v) => token_file = v,
+                    Err(e) => file_error = Some(e.message),
+                }
+            }
+            Err(e) => file_error = Some(e.message),
+        }
         Input {
             exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from(EXE_NAME)),
             path_var: std::env::var_os("PATH"),
-            board_url: env("BOARD_URL"),
-            token: env("BOARD_TOKEN"),
-            board_as: env("BOARD_AS"),
-            board: env("BOARD"),
+            url_env: env("BOARD_URL"),
+            token_env: env("BOARD_TOKEN"),
+            url_file,
+            token_file,
+            file_error,
+            board_as: flag(as_flag).or_else(|| env("BOARD_AS")),
+            board: flag(board_flag).or_else(|| env("BOARD")),
         }
     }
+
+    /// 实际使用的服务端地址：环境变量优先
+    fn url(&self) -> Option<(&str, Source)> {
+        pick(&self.url_env, &self.url_file)
+    }
+    fn token(&self) -> Option<(&str, Source)> {
+        pick(&self.token_env, &self.token_file)
+    }
+}
+
+fn pick<'a>(env: &'a Option<String>, file: &'a Option<String>) -> Option<(&'a str, Source)> {
+    env.as_deref().map(|v| (v, Source::Env)).or_else(|| file.as_deref().map(|v| (v, Source::File)))
 }
 
 /* ------------------------------ 服务端探测 ------------------------------ */
@@ -138,9 +183,9 @@ impl ProbeError {
     }
     fn next_step(&self) -> &'static str {
         match self {
-            ProbeError::Unreachable(_) => "确认 BOARD_URL 的地址和端口、服务端是否在运行、网络或代理是否正常",
-            ProbeError::InvalidToken => "令牌写错或已被吊销：在界面「设置 → Agent 接入」新建一个，再 export BOARD_TOKEN=<令牌>",
-            _ => "确认服务端是这次部署的版本；可以先在浏览器打开 BOARD_URL/api/health 看看",
+            ProbeError::Unreachable(_) => "确认服务端地址和端口、服务端是否在运行、网络或代理是否正常",
+            ProbeError::InvalidToken => "令牌写错或已被吊销：在界面「设置 → Agent 接入」新建一个，再 board login --token <令牌>",
+            _ => "确认服务端是这次部署的版本；可以先在浏览器打开 <服务端地址>/api/health 看看",
         }
     }
 }
@@ -151,6 +196,8 @@ pub trait Probe {
     fn health(&self, url: &str) -> Result<Health, ProbeError>;
     /// \`GET /api/workspace\`：需要令牌，用来验证令牌是否有效
     fn authorized(&self, url: &str, token: &str) -> Result<(), ProbeError>;
+    /// \`GET /api/agents\`：在线的 agent 名字
+    fn online(&self, url: &str, token: &str) -> Result<Vec<String>, ProbeError>;
 }
 
 /// 真的 HTTP 探测（doctor 要快，超时 10 秒）
@@ -197,18 +244,31 @@ impl Probe for HttpProbe {
     }
 
     fn authorized(&self, url: &str, token: &str) -> Result<(), ProbeError> {
+        self.authed(url, "/api/workspace", token).map(|_| ())
+    }
+
+    fn online(&self, url: &str, token: &str) -> Result<Vec<String>, ProbeError> {
+        let v = self.authed(url, "/api/agents", token)?;
+        let list = v.as_array().ok_or_else(|| ProbeError::BadResponse("在线列表不是数组".into()))?;
+        Ok(list.iter().filter_map(|a| a["name"].as_str().map(str::to_string)).collect())
+    }
+}
+
+impl HttpProbe {
+    /// 带令牌的 GET，返回 JSON
+    fn authed(&self, url: &str, path: &str, token: &str) -> Result<Value, ProbeError> {
         let res = self
             .agent
-            .get(format!("{}/api/workspace", base(url)))
+            .get(format!("{}{path}", base(url)))
             .header("authorization", format!("Bearer {token}"))
             .call()
             .map_err(|e| ProbeError::Unreachable(e.to_string()))?;
         let mut res = res;
         let status = res.status();
-        if status.is_success() {
-            return Ok(());
-        }
         let text = res.body_mut().read_to_string().unwrap_or_default();
+        if status.is_success() {
+            return serde_json::from_str(&text).map_err(|e| ProbeError::BadResponse(e.to_string()));
+        }
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         match v["error"]["code"].as_str().unwrap_or_default() {
             "INVALID_TOKEN" => Err(ProbeError::InvalidToken),
@@ -256,6 +316,7 @@ impl Report {
                     "status": c.status.key(),
                     "detail": c.detail,
                     "next": c.next,
+                    "source": c.source.map(Source::key),
                 })
             })
             .collect();
@@ -336,23 +397,46 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
         }
     }
 
-    // 3. BOARD_URL：设了没有、格式对不对
-    let url = input.board_url.as_deref();
-    let usable_url = url.filter(|u| is_http_url(u));
+    let login = "board login --url <服务端地址>（令牌在界面「设置 → Agent 接入」新建）";
+    let file = config::shown();
+
+    // 3. 服务端地址：有没有、格式对不对、来自哪里；环境变量和配置文件都有时 warn
+    let url = input.url();
+    let usable_url = url.map(|u| u.0).filter(|u| is_http_url(u));
     match url {
-        Some(u) if is_http_url(u) => checks.push(Check::ok("board_url", "BOARD_URL", u)),
-        Some(u) => checks.push(Check::fail(
-            "board_url",
-            "BOARD_URL",
-            format!("需要以 http:// 或 https:// 开头，现在是：{u}"),
-            "把它改成服务端地址，例如 export BOARD_URL=https://board.example.com",
-        )),
         None => checks.push(Check::fail(
             "board_url",
-            "BOARD_URL",
-            "没有设置：board 连不上白板，所有命令都会失败",
-            "在界面「设置 → Agent 接入」新建访问令牌，再 export BOARD_URL=<服务端地址> BOARD_TOKEN=<令牌>",
+            "服务端地址",
+            match &input.file_error {
+                Some(e) => format!("环境变量 BOARD_URL 没有设置，配置文件读不了：{e}"),
+                None => format!("没有配置：环境变量 BOARD_URL 和 {file} 里都没有，所有命令都会失败"),
+            },
+            login,
         )),
+        Some((u, src)) if !is_http_url(u) => checks.push(
+            Check::fail(
+                "board_url",
+                "服务端地址",
+                format!("需要以 http:// 或 https:// 开头，现在是：{u}（来自{}）", config::origin(src, "BOARD_URL")),
+                match src {
+                    Source::Env => "改正环境变量 BOARD_URL，或者删掉它，改用 board login --url <服务端地址>".to_string(),
+                    Source::File => login.to_string(),
+                },
+            )
+            .from(Some(src)),
+        ),
+        Some((u, Source::Env)) if input.url_file.is_some() => checks.push(
+            Check::warn(
+                "board_url",
+                "服务端地址",
+                format!("{u}（来自环境变量 BOARD_URL，它覆盖了 {file} 里的 {}）", input.url_file.as_deref().unwrap_or_default()),
+                "从 shell 配置文件（例如 ~/.zshrc、~/.bashrc）里删掉 export BOARD_URL，只用 board login 写的配置文件",
+            )
+            .from(Some(Source::Env)),
+        ),
+        Some((u, src)) => {
+            checks.push(Check::ok("board_url", "服务端地址", format!("{u}（来自{}）", config::origin(src, "BOARD_URL"))).from(Some(src)))
+        }
     }
 
     // 4. 服务端：连不连得上、版本是多少
@@ -368,56 +452,85 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
                     "server",
                     "服务端版本",
                     format!("连不上 {u}：{}", e.describe()),
-                    format!("确认 BOARD_URL 的地址和端口、服务端是否在运行、网络或代理是否正常；浏览器打开 {u}/api/health 也能验证"),
+                    format!("确认服务端地址和端口、服务端是否在运行、网络或代理是否正常；浏览器打开 {u}/api/health 也能验证"),
                 ));
             }
         }
     } else {
-        checks.push(Check::skip("server", "服务端版本", "没有可用的 BOARD_URL，跳过"));
+        checks.push(Check::skip("server", "服务端版本", "没有可用的服务端地址，跳过"));
     }
 
-    // 5. BOARD_TOKEN：设了没有、能不能通过一次需要鉴权的请求
-    match (usable_url, input.token.as_deref()) {
-        (None, _) => checks.push(Check::skip("board_token", "BOARD_TOKEN", "没有可用的 BOARD_URL，跳过令牌检查")),
-        (Some(_), None) => checks.push(Check::fail(
+    // 5. 访问令牌：有没有、来自哪里、能不能通过一次需要鉴权的请求；环境变量和配置文件都有时 warn
+    let token = input.token();
+    let both = input.token_env.is_some() && input.token_file.is_some();
+    let mut token_ok = false;
+    match (usable_url, token) {
+        (None, _) => checks.push(Check::skip("board_token", "访问令牌", "没有可用的服务端地址，跳过令牌检查")),
+        (Some(u), None) => checks.push(Check::fail(
             "board_token",
-            "BOARD_TOKEN",
-            "设置了 BOARD_URL 但没有 BOARD_TOKEN",
-            "在界面「设置 → Agent 接入」新建访问令牌，再 export BOARD_TOKEN=<令牌>（命令不会回显令牌）",
+            "访问令牌",
+            format!("没有配置：环境变量 BOARD_TOKEN 和 {file} 里都没有"),
+            format!("board login --url {u}（令牌在界面「设置 → Agent 接入」新建；命令不会回显令牌）"),
         )),
-        (Some(u), Some(t)) if health.is_some() => match probe.authorized(u, t) {
-            Ok(()) => checks.push(Check::ok("board_token", "BOARD_TOKEN", "令牌有效（用 /api/workspace 验证；不显示令牌原文）")),
-            Err(e) => checks.push(Check::fail("board_token", "BOARD_TOKEN", format!("令牌没通过校验：{}", e.describe()), e.next_step())),
-        },
-        (Some(_), Some(_)) => checks.push(Check::skip("board_token", "BOARD_TOKEN", "服务端连不上，没法校验令牌")),
+        (Some(u), Some((t, src))) if health.is_some() => {
+            let from = config::origin(src, "BOARD_TOKEN");
+            match probe.authorized(u, t) {
+                Ok(()) if both => checks.push(
+                    Check::warn(
+                        "board_token",
+                        "访问令牌",
+                        format!("令牌有效（来自环境变量 BOARD_TOKEN，它覆盖了 {file} 里的令牌；不显示令牌原文）"),
+                        "从 shell 配置文件（例如 ~/.zshrc、~/.bashrc）里删掉 export BOARD_TOKEN，只用 board login 写的配置文件",
+                    )
+                    .from(Some(src)),
+                ),
+                Ok(()) => checks.push(
+                    Check::ok("board_token", "访问令牌", format!("令牌有效（来自{from}，用 /api/workspace 验证；不显示令牌原文）")).from(Some(src)),
+                ),
+                Err(e) => checks.push(
+                    Check::fail("board_token", "访问令牌", format!("令牌（来自{from}）没通过校验：{}", e.describe()), e.next_step()).from(Some(src)),
+                ),
+            }
+            token_ok = checks.last().is_some_and(|c| c.status.passed());
+        }
+        (Some(_), Some((_, src))) => {
+            checks.push(Check::skip("board_token", "访问令牌", "服务端连不上，没法校验令牌").from(Some(src)))
+        }
     }
 
-    // 6. 身份与白板
+    // 6. 名字：没提供时跳过；提供了就检查格式和是否在线
     match &input.board_as {
-        Some(v) => checks.push(Check::ok("board_as", "BOARD_AS", v.clone())),
-        None => checks.push(Check::fail(
-            "board_as",
-            "BOARD_AS",
-            "没有设置：命令不知道你是谁",
-            "export BOARD_AS=<你的名字>，例如 export BOARD_AS=deepseek-cli",
-        )),
+        None => checks.push(Check::skip("board_as", "名字", "没有提供（--as 或 BOARD_AS），跳过")),
+        Some(n) => match board_core::check_agent_name(n) {
+            Err(e) => checks.push(Check::fail("board_as", "名字", e, "按格式取名，例如 claude/opus-5.5，再 board check --as <名字>")),
+            Ok(()) => match (usable_url, token) {
+                (Some(u), Some((t, _))) if token_ok => match probe.online(u, t) {
+                    Ok(list) if list.iter().any(|x| x == n) => checks.push(Check::ok("board_as", "名字", format!("{n}（在线）"))),
+                    Ok(_) => checks.push(Check::fail(
+                        "board_as",
+                        "名字",
+                        format!("{n} 不在线：没有 check，或心跳中断超过 {} 秒", board_core::NAME_GAP_MS / 1000),
+                        format!("board check --as {n}，再 BOARD_AS={n} sh <skill 目录>/scripts/heartbeat.sh start"),
+                    )),
+                    Err(e) => checks.push(Check::fail("board_as", "名字", format!("{n}：查不到在线列表：{}", e.describe()), e.next_step())),
+                },
+                _ => checks.push(Check::skip("board_as", "名字", format!("{n} 格式正确；服务端或令牌没通过，没法检查是否在线"))),
+            },
+        },
     }
+
+    // 7. 白板：没提供时跳过
     match &input.board {
-        Some(v) => checks.push(Check::ok("board", "BOARD", v.clone())),
-        None => checks.push(Check::fail(
-            "board",
-            "BOARD",
-            "没有设置：命令不知道读写哪块白板",
-            "export BOARD=<项目>/<白板>，用 board boards 查看可选的白板",
-        )),
+        Some(v) => checks.push(Check::ok("board", "白板", v.clone())),
+        None => checks.push(Check::skip("board", "白板", "没有提供（--board 或 BOARD），跳过")),
     }
 
     Report { cli_version: env!("CARGO_PKG_VERSION").to_string(), checks, server: health }
 }
 
 /// 入口：跑一遍检查，返回要打印的东西和退出码
-pub fn run(json: bool, p: &Paint) -> Output {
-    let report = diagnose(&Input::from_env(), &HttpProbe::new());
+pub fn run(json: bool, p: &Paint, as_flag: Option<&str>, board_flag: Option<&str>) -> Output {
+    let report = diagnose(&Input::from_env(as_flag, board_flag), &HttpProbe::new());
     let body = if json { Output::Json(report.to_json()) } else { Output::Text(report.to_text(p)) };
     match report.exit_code() {
         0 => body,
@@ -500,6 +613,8 @@ fn pad(s: &str, w: usize) -> String {
 mod tests {
     use super::*;
 
+    const NAME: &str = "test/alpha";
+
     #[derive(Clone)]
     enum Answer {
         Ok,
@@ -509,11 +624,12 @@ mod tests {
     struct FakeProbe {
         health: Answer,
         auth: Answer,
+        online: Vec<String>,
     }
 
     impl FakeProbe {
         fn ok() -> FakeProbe {
-            FakeProbe { health: Answer::Ok, auth: Answer::Ok }
+            FakeProbe { health: Answer::Ok, auth: Answer::Ok, online: vec![NAME.into()] }
         }
     }
 
@@ -530,20 +646,25 @@ mod tests {
                 Answer::Fail(e) => Err(e.clone()),
             }
         }
+        fn online(&self, _url: &str, _token: &str) -> Result<Vec<String>, ProbeError> {
+            Ok(self.online.clone())
+        }
     }
 
     fn exe_name() -> String {
         format!("{EXE_NAME}{}", std::env::consts::EXE_SUFFIX)
     }
 
+    /// 地址和令牌都来自配置文件
     fn input_in(dir: &Path) -> Input {
         Input {
             exe: dir.join(exe_name()),
             path_var: Some(dir.as_os_str().to_os_string()),
-            board_url: Some("http://127.0.0.1:1".into()),
-            token: Some("bd_secret_token".into()),
-            board_as: Some("tester".into()),
+            url_file: Some("http://127.0.0.1:1".into()),
+            token_file: Some("bd_secret_token".into()),
+            board_as: Some(NAME.into()),
             board: Some("default/main".into()),
+            ..Input::default()
         }
     }
 
@@ -562,11 +683,56 @@ mod tests {
         for key in keys {
             assert_eq!(check(&report, key).status, Status::Ok, "{key}");
         }
+        assert!(check(&report, "board_url").detail.contains("~/.board/config.toml"));
+        assert_eq!(check(&report, "board_token").source, Some(Source::File));
         let v = report.to_json();
         assert_eq!(v["ok"], true);
         assert_eq!(v["summary"]["failed"], 0);
         assert!(!serde_json::to_string(&v).unwrap().contains("bd_secret_token"), "不能打印令牌原文");
         assert!(!report.to_text(&Paint { on: false }).contains("bd_secret_token"));
+    }
+
+    #[test]
+    fn env_overrides_file_is_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(minidir(dir.path()), b"x").unwrap();
+        let mut input = input_in(dir.path());
+        input.url_env = Some("http://127.0.0.1:2".into());
+        input.token_env = Some("bd_env_token".into());
+        let report = diagnose(&input, &FakeProbe::ok());
+        assert!(report.ok(), "warn 不算失败");
+        for key in ["board_url", "board_token"] {
+            let c = check(&report, key);
+            assert_eq!((c.status, c.source), (Status::Warn, Some(Source::Env)), "{key}");
+            assert!(c.detail.contains("覆盖"), "{}", c.detail);
+            assert!(c.next.as_deref().unwrap_or_default().contains("export"), "{c:?}");
+        }
+        assert!(check(&report, "board_url").detail.starts_with("http://127.0.0.1:2"));
+        let text = serde_json::to_string(&report.to_json()).unwrap();
+        assert!(text.contains("\"source\":\"env\"") && !text.contains("bd_env_token") && !text.contains("bd_secret_token"));
+    }
+
+    #[test]
+    fn name_and_board_skipped_when_missing_and_name_checked_when_given() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(minidir(dir.path()), b"x").unwrap();
+        let mut input = input_in(dir.path());
+        input.board_as = None;
+        input.board = None;
+        let report = diagnose(&input, &FakeProbe::ok());
+        assert_eq!(check(&report, "board_as").status, Status::Skip);
+        assert_eq!(check(&report, "board").status, Status::Skip);
+        assert!(report.ok(), "没提供不判失败");
+        // 格式不对
+        input.board_as = Some("claude".into());
+        let report = diagnose(&input, &FakeProbe::ok());
+        assert_eq!(check(&report, "board_as").status, Status::Fail);
+        // 不在线
+        input.board_as = Some("test/beta".into());
+        let report = diagnose(&input, &FakeProbe::ok());
+        let c = check(&report, "board_as");
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.next.as_deref().unwrap_or_default().contains("board check --as test/beta"), "{c:?}");
     }
 
     #[test]
@@ -587,27 +753,28 @@ mod tests {
     }
 
     #[test]
-    fn missing_board_url_fails_and_skips_dependent_checks() {
+    fn missing_url_fails_and_skips_dependent_checks() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(minidir(dir.path()), b"x").unwrap();
         let mut input = input_in(dir.path());
-        input.board_url = None;
-        input.token = None;
+        input.url_file = None;
+        input.token_file = None;
         let report = diagnose(&input, &FakeProbe::ok());
         assert_eq!(report.exit_code(), 1);
         let c = check(&report, "board_url");
         assert_eq!(c.status, Status::Fail);
-        assert!(c.detail.contains("没有设置"), "{}", c.detail);
-        assert!(c.next.as_deref().unwrap_or_default().contains("BOARD_URL"));
+        assert!(c.detail.contains("没有配置"), "{}", c.detail);
+        assert!(c.next.as_deref().unwrap_or_default().contains("board login --url <服务端地址>"));
         assert_eq!(check(&report, "server").status, Status::Skip);
         assert_eq!(check(&report, "board_token").status, Status::Skip);
+        assert_eq!(check(&report, "board_as").status, Status::Skip);
     }
 
     #[test]
     fn invalid_token_fails() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(minidir(dir.path()), b"x").unwrap();
-        let probe = FakeProbe { health: Answer::Ok, auth: Answer::Fail(ProbeError::InvalidToken) };
+        let probe = FakeProbe { auth: Answer::Fail(ProbeError::InvalidToken), ..FakeProbe::ok() };
         let report = diagnose(&input_in(dir.path()), &probe);
         assert_eq!(report.exit_code(), 1);
         let c = check(&report, "board_token");
@@ -621,7 +788,7 @@ mod tests {
     fn unreachable_server_fails() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(minidir(dir.path()), b"x").unwrap();
-        let probe = FakeProbe { health: Answer::Fail(ProbeError::Unreachable("Connection refused".into())), auth: Answer::Ok };
+        let probe = FakeProbe { health: Answer::Fail(ProbeError::Unreachable("Connection refused".into())), ..FakeProbe::ok() };
         let report = diagnose(&input_in(dir.path()), &probe);
         assert_eq!(report.exit_code(), 1);
         let c = check(&report, "server");

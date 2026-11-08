@@ -331,16 +331,27 @@ fn tokens_are_for_cli_only() {
     // CLI 用到的接口
     assert_eq!(send("GET", &format!("{}/api/workspace", s.url), &a, None).status, 200);
     assert_eq!(send("GET", &format!("{}/api/board?path=default", s.url), &a, None).status, 200);
-    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": "alpha", "op": "new", "title": "agent 建的" })));
+    // 严格模式：名字没有 check 过，卡片命令被拒绝；check 之后可以
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": NAME, "op": "new", "title": "agent 建的" })));
+    assert_eq!((r.status, r.code()), (409, "NAME_OFFLINE"));
+    assert!(r.body["error"]["message"].as_str().unwrap().contains(&format!("board check --as {NAME}")), "{:?}", r.body);
+    let r = send("POST", &format!("{}/api/agents/check", s.url), &a, Some(json!({ "name": NAME })));
     assert_eq!(r.status, 200, "{:?}", r.body);
-    assert_eq!(r.body["createdBy"], json!({ "kind": "agent", "name": "alpha" }));
-    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": "alpha", "op": "claim" })));
-    assert_eq!(r.body["holder"], "alpha");
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": NAME, "op": "new", "title": "agent 建的" })));
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert_eq!(r.body["createdBy"], json!({ "kind": "agent", "name": NAME }));
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": NAME, "op": "claim" })));
+    assert_eq!(r.body["holder"], NAME);
     // 没有名字
     let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "op": "claim" })));
     assert_eq!((r.status, r.code()), (400, "NO_IDENTITY"));
+    // agent 接口：心跳、在线列表
+    let r = send("POST", &format!("{}/api/agents/beat", s.url), &a, Some(json!({ "name": NAME })));
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    let r = send("GET", &format!("{}/api/agents", s.url), &a, None);
+    assert_eq!(r.body[0]["name"], NAME);
     // 规则仍由规则引擎判定：agent 不能删除、不能强制释放
-    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": "alpha", "op": "delete", "id": 1 })));
+    let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": NAME, "op": "delete", "id": 1 })));
     assert_eq!(r.code(), "USAGE");
     // 只有人能做的操作、实时推送、令牌管理：令牌不能用
     for (m, p, body) in [
@@ -381,11 +392,14 @@ fn local_mode_needs_no_login_but_only_local_hosts() {
     assert_eq!(r.status, 400);
     // 本机模式也认令牌：带令牌就是 agent
     let tok = new_token(&s.db, "local");
+    let bearer = format!("Bearer {tok}");
+    let r = send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &bearer)], Some(json!({ "name": "codex/gpt-5" })));
+    assert_eq!(r.status, 200, "{:?}", r.body);
     let r = send(
         "POST",
         &format!("{}/api/cmd", s.url),
-        &[("authorization", &format!("Bearer {tok}"))],
-        Some(json!({ "board": "default", "as": "beta", "op": "new", "title": "x" })),
+        &[("authorization", &bearer)],
+        Some(json!({ "board": "default", "as": "codex/gpt-5", "op": "new", "title": "x" })),
     );
     assert_eq!(r.body["createdBy"]["kind"], "agent");
     let r = send("GET", &format!("{}/api/workspace", s.url), &[("authorization", "Bearer bd_nope")], None);
@@ -519,6 +533,8 @@ fn download(url: &str, headers: &[(&str, &str)]) -> (u16, Vec<(String, String)>,
     (status, h, res.body_mut().read_to_vec().unwrap_or_default())
 }
 
+const NAME: &str = "claude/opus-5.5";
+
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
 #[test]
@@ -564,9 +580,13 @@ fn attachments_need_login_and_work_for_agents() {
     // agent 用令牌上传到卡片（要带名字）、读取；卡片详情里列出附件
     let r = upload(&format!("{}/api/files?board=default&card={id}&name=run.log", s.url), &[("authorization", &bearer)], b"ok\n");
     assert_eq!((r.status, r.code()), (400, "NO_IDENTITY"));
-    let r = upload(&format!("{}/api/files?board=default&card={id}&name=run.log&as=alpha", s.url), &[("authorization", &bearer)], b"ok\n");
+    let up = format!("{}/api/files?board=default&card={id}&name=run.log&as=claude%2Fopus-5.5", s.url);
+    let r = upload(&up, &[("authorization", &bearer)], b"ok\n");
+    assert_eq!((r.status, r.code()), (409, "NAME_OFFLINE"), "名字要先 check");
+    send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &bearer)], Some(json!({ "name": NAME })));
+    let r = upload(&up, &[("authorization", &bearer)], b"ok\n");
     assert_eq!(r.status, 200, "{:?}", r.body);
-    assert_eq!(r.body["createdBy"], json!({ "kind": "agent", "name": "alpha" }));
+    assert_eq!(r.body["createdBy"], json!({ "kind": "agent", "name": NAME }));
     let log = r.body["url"].as_str().unwrap().to_string();
     let (st, h, body) = download(&format!("{}{log}", s.url), &[("authorization", &bearer)]);
     assert_eq!((st, body.as_slice()), (200, b"ok\n".as_slice()));
@@ -585,4 +605,74 @@ fn attachments_need_login_and_work_for_agents() {
     assert_eq!(r.code(), "NOT_FOUND");
     let (st, _, _) = download(&format!("{}/api/files/999", s.url), &[("cookie", &cookie)]);
     assert_eq!(st, 404);
+}
+
+/// agent 名字（PRD §3）：check 查重与占用是原子的；工作区快照带在线 agent 和它持有的卡片；
+/// 只更新心跳时间的心跳不改 rev（不推送），上线、下线改 rev
+#[test]
+fn agent_names_check_beat_and_online_list() {
+    let s = github("buglan");
+    let tok = new_token(&s.db, "ci");
+    let bearer = format!("Bearer {tok}");
+    let a = [("authorization", bearer.as_str())];
+    let url = s.url.clone();
+    let post = move |p: &str, body: Value| send("POST", &format!("{url}{p}"), &[("authorization", &format!("Bearer {tok}"))], Some(body));
+
+    // 格式不对：USAGE，并给出格式说明
+    for bad in ["claude", "Claude/opus", "a/b/c"] {
+        let r = post("/api/agents/check", json!({ "name": bad }));
+        assert_eq!((r.status, r.code()), (400, "USAGE"), "{bad}");
+        assert!(r.body["error"]["message"].as_str().unwrap().contains("<运行环境>/<模型>"));
+    }
+    let r = post("/api/agents/check", json!({ "name": "" }));
+    assert_eq!(r.code(), "NO_IDENTITY");
+
+    // 同时 check 同一个名字：只有一个成功
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let post = post.clone();
+            std::thread::spawn(move || post("/api/agents/check", json!({ "name": NAME })))
+        })
+        .collect();
+    let res: Vec<Res> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(res.iter().filter(|r| r.status == 200).count(), 1);
+    for r in res.iter().filter(|r| r.status != 200) {
+        assert_eq!((r.status, r.code()), (409, "NAME_TAKEN"));
+        assert_eq!(r.body["error"]["detail"]["name"], NAME);
+    }
+
+    // 工作区快照：在线 agent，以及它持有的卡片（白板和 ID）
+    let ws = send("GET", &format!("{}/api/workspace", s.url), &a, None);
+    assert_eq!(ws.body["agents"], json!([{ "name": NAME, "checkedAt": ws.body["agents"][0]["checkedAt"], "beatAt": ws.body["agents"][0]["beatAt"], "cards": [] }]));
+    post("/api/cmd", json!({ "board": "default", "as": NAME, "op": "new", "title": "一" }));
+    post("/api/cmd", json!({ "board": "default", "as": NAME, "op": "claim" }));
+    let r = post("/api/agents/beat", json!({ "name": NAME }));
+    assert_eq!(r.body["cards"][0]["board"], "default/main");
+    assert_eq!(r.body["cards"][0]["id"], 1);
+    assert_eq!(r.body["cards"][0]["runs"], 1, "第一次心跳开始第 1 次");
+    let ws = send("GET", &format!("{}/api/workspace", s.url), &a, None);
+    assert_eq!(ws.body["agents"][0]["cards"][0]["board"], "default/main");
+    assert_eq!(ws.body["agents"][0]["cards"][0]["holder"], NAME);
+
+    // 只更新心跳时间：rev 不变
+    let rev = |s: &Server| send("GET", &format!("{}/api/workspace", s.url), &a, None).body["rev"].as_i64().unwrap();
+    let r0 = rev(&s);
+    for _ in 0..3 {
+        assert_eq!(post("/api/agents/beat", json!({ "name": NAME })).status, 200);
+    }
+    assert_eq!(rev(&s), r0, "只更新心跳时间的心跳不推送");
+
+    // final：立刻离线，rev 变化；之后的心跳和卡片命令都是 NAME_OFFLINE
+    let r = post("/api/agents/beat", json!({ "name": NAME, "final": true }));
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert!(rev(&s) > r0, "下线要推送");
+    assert_eq!(send("GET", &format!("{}/api/agents", s.url), &a, None).body, json!([]));
+    let r = post("/api/agents/beat", json!({ "name": NAME }));
+    assert_eq!((r.status, r.code()), (409, "NAME_OFFLINE"));
+    let r = post("/api/cmd", json!({ "board": "default", "as": NAME, "op": "comment", "id": 1, "text": "x" }));
+    assert_eq!(r.code(), "NAME_OFFLINE");
+    // 读接口不检查名字
+    assert_eq!(send("GET", &format!("{}/api/card?path=default&id=1", s.url), &a, None).status, 200);
+    // 离线后可以重新 check
+    assert_eq!(post("/api/agents/check", json!({ "name": NAME })).status, 200);
 }

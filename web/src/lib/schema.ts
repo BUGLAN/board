@@ -51,16 +51,15 @@ export type FlowQ = ReturnType<typeof flowOf>;
 export const backTo = (f: FlowQ, from: string | null | undefined) => (from && f.get(from)?.claim ? f.name(from) : f.home?.name ?? '待办');
 export const boardFlow = (b: BoardSnapshot | null) => flowOf(b?.statuses);
 
-/** 心跳间隔；从领取或最近一次心跳算起，连续 BEAT_MISSES 次没收到就释放（与 board-core 一致） */
+/** 心跳间隔；连续 BEAT_MISSES 次没收到：名字离线，卡片（从领取或最近一次心跳算起）释放（与 board-core 一致） */
 export const BEAT_MS = 10 * 1000;
 export const BEAT_MISSES = 5;
 
-/** 卡片的耗时（PRD §8 规则 6）。now 用 useNow 的服务端对齐时间 */
-export function timing(c: Card, now: number) {
+/** 卡片的耗时（PRD §8 规则 6）。now 用 useNow 的服务端对齐时间；online 是在线的 agent 名字（useOnline），
+    还没取到时为 null。只更新心跳时间的心跳不推送给界面，界面上的 beatAt 不是最新的：心跳正不正常看持有者在不在线 */
+export function timing(c: Card, now: number, online?: ReadonlySet<string> | null) {
   const cur = c.runStartedAt != null ? Math.max(0, now - c.runStartedAt) : null;
-  const ref = c.beatAt ?? c.claimedAt;
-  // 已经几次没收到心跳（只在进行中的这一次里有意义）
-  const missed = c.holder && cur != null && ref != null ? Math.min(BEAT_MISSES, Math.floor(Math.max(0, now - ref) / BEAT_MS)) : 0;
+  const alive = !c.holder || !online || online.has(c.holder);
   return {
     /** 这一次的耗时；没有进行中的一次时为 null */
     cur,
@@ -68,10 +67,8 @@ export function timing(c: Card, now: number) {
     runs: c.runs,
     lost: c.runsLost,
     beats: c.beats ?? 0,
-    /** 心跳状态：live 正常 · late 晚了（已 1 次以上没收到）· wait 领取了还没开始心跳 · ended 发了 final 还没交审 · null 没被持有 */
-    beat: !c.holder ? null : cur == null ? (c.runs > 0 && c.beatAt != null ? 'ended' : 'wait') : missed >= 1 ? 'late' : 'live',
-    missed,
-    ageSec: ref != null ? Math.max(0, Math.round((now - ref) / 1000)) : null,
+    /** 心跳状态：live 正常 · late 持有者已离线（心跳中断，马上释放）· wait 领取了还没开始心跳 · ended 发了 final 还没移走 · null 没被持有 */
+    beat: !c.holder ? null : cur == null ? (c.runs > 0 && c.beatAt != null ? 'ended' : 'wait') : alive ? 'live' : 'late',
   } as const;
 }
 
@@ -80,7 +77,7 @@ export const LABEL_COLORS = ['#F43F5E', '#F97316', '#EAB308', '#22C55E', '#14B8A
 
 /** 错误码与默认原因（设置页 · Agent 接入） */
 export const ERRORS: [ErrorCode, string][] = [
-  ['NO_IDENTITY', 'CLI 没有提供 agent 名字：使用 --as <名字> 或设置环境变量 BOARD_AS'],
+  ['NO_IDENTITY', 'CLI 没有提供 agent 名字：先 board check --as <名字>，之后每条命令都带 --as <名字>'],
   ['NO_BOARD', 'CLI 没有指定白板：使用 --board <项目>/<白板> 或设置环境变量 BOARD'],
   ['BOARD_NOT_FOUND', '指定的项目或白板不存在；或项目下有多块白板却只写了项目标识'],
   ['NOT_FOUND', '卡片不存在'],
@@ -91,9 +88,11 @@ export const ERRORS: [ErrorCode, string][] = [
   ['NOT_HOLDER', '编辑或移动被持有卡片的不是持有者'],
   ['FORBIDDEN_COLUMN', '把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态或「未整理」；agent 不沿连线移动卡片；从没有连到锁定状态的可领取状态领取'],
   ['USAGE', '命令格式或参数不正确：未知的命令、未知的状态、项目里不存在的标签、缺少必需的参数、评论内容为空'],
-  ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 没有设置 BOARD_URL 或 BOARD_TOKEN；用访问令牌做只有人能在界面上做的操作'],
+  ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 还没有 board login（环境变量和 ~/.board/config.toml 里都没有服务端地址或令牌）；用访问令牌做只有人能在界面上做的操作'],
   ['INVALID_TOKEN', '访问令牌不存在或已吊销'],
-  ['UNREACHABLE', 'CLI 连不上 BOARD_URL 指定的服务端'],
+  ['UNREACHABLE', 'CLI 连不上服务端'],
+  ['NAME_TAKEN', 'board check 的名字正被在线 agent 使用：加一个和本会话相关的后缀再 check'],
+  ['NAME_OFFLINE', '名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>'],
 ];
 
 /** 标识：小写字母、数字和 -，以字母或数字开头，最长 32 个字符 */

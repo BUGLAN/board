@@ -80,7 +80,23 @@ export interface Workspace {
   rev: number;
   now: number;
   projects: ProjectInfo[];
+  /** 在线的 agent（所有白板，按名字排序）；旧服务端没有这个字段 */
+  agents?: AgentInfo[];
 }
+
+/** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */
+export interface AgentInfo {
+  name: string;
+  /** 首次 check 的时间 */
+  checkedAt: number;
+  /** 最近一次心跳（只在上线、下线、卡片状态变化时推送，界面上的值不一定是最新的） */
+  beatAt: number;
+  /** 它持有的卡片（每块白板最多一张；可能没有） */
+  cards: HeldCard[];
+}
+
+/** agent 持有的一张卡片：白板路径加上卡片本身 */
+export type HeldCard = Card & { board: string };
 
 export interface Card {
   id: number;
@@ -178,6 +194,8 @@ export type ErrorCode =
   | 'NOT_LOGGED_IN'
   | 'INVALID_TOKEN'
   | 'UNREACHABLE'
+  | 'NAME_TAKEN'
+  | 'NAME_OFFLINE'
   | 'INTERNAL'
   | 'NETWORK';
 

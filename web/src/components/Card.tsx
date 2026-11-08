@@ -4,7 +4,7 @@ import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, ago, clock, cx, durWords, replay } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
-import { useData } from '../store/data';
+import { useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 
@@ -58,7 +58,8 @@ export const CardView = memo(function CardView({
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
   const active = filterActive(filter, sel);
   const hit = active ? cardHit(c, filter, sel, labels) : true;
-  const t = timing(c, now);
+  const online = useOnline();
+  const t = timing(c, now, online);
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
   const shape: StatusView = view ?? (final && !doing ? 'line' : 'card');
@@ -242,15 +243,16 @@ function snippet(body: string) {
 
 /** 进行中的计时胶囊：跳动的心跳点 + 这一次的耗时。卡片、详情共用 */
 export function RunPill({ card: c, now, big }: { card: CardT; now: number; big?: boolean }) {
-  const t = timing(c, now);
+  const online = useOnline();
+  const t = timing(c, now, online);
   const tip =
     t.beat === 'live'
-      ? `这一次的耗时（从第一次心跳算起）· 心跳正常，${t.ageSec} 秒前`
+      ? `这一次的耗时（从第一次心跳算起）· ${c.holder} 在线，心跳正常`
       : t.beat === 'late'
-        ? `已 ${t.missed} 次没收到心跳，连续 ${BEAT_MISSES} 次就释放`
+        ? `${c.holder} 已离线：连续 ${BEAT_MISSES} 次没收到心跳，马上释放`
         : t.beat === 'wait'
           ? `领取了，还没收到第一次心跳；${BEAT_MS * BEAT_MISSES / 1000} 秒内没收到就释放`
-          : '已发 final，等待交审';
+          : `已发 final，${BEAT_MS * BEAT_MISSES / 1000} 秒内没移走就释放`;
   return (
     <span className={cx('run-pill live', t.beat, big && 'big')} data-tip={tip} data-tip-align="end">
       <i className="beat" />

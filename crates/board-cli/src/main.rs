@@ -1,14 +1,16 @@
 //! `board` —— agent 用的命令行（PRD §9）。
 //!
-//! 身份：`--as <名字>` 或环境变量 `BOARD_AS`；白板：`--board <项目>/<白板>` 或环境变量 `BOARD`。
+//! 身份：先 `board check --as <名字>`，之后每条命令都带 `--as <名字>`（或环境变量 `BOARD_AS`）；
+//! 白板：`--board <项目>/<白板>` 或环境变量 `BOARD`。
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
-//! 数据：通过服务端读写，必须设置 `BOARD_URL` 和 `BOARD_TOKEN`（界面「设置 → Agent 接入」新建令牌），
-//! 没有配置时直接报错。见 backend.rs。
+//! 数据：通过服务端读写。服务端地址和访问令牌由 `board login` 写进 `~/.board/config.toml`，
+//! 环境变量 `BOARD_URL`、`BOARD_TOKEN` 优先；没有配置时直接报错。见 backend.rs、config.rs。
 
 mod backend;
+mod config;
 mod doctor;
 
-use backend::{env, Backend, BoardData};
+use backend::{env, Backend, BoardData, Remote};
 use board_core::*;
 use chrono::TimeZone;
 use serde_json::{json, Value};
@@ -16,10 +18,13 @@ use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 9] = ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out"];
+const VALUE_FLAGS: [&str; 11] =
+    ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token"];
 const BOOL_FLAGS: [&str; 5] = ["--json", "--top", "--help", "-h", "--final"];
-const COMMANDS: [&str; 16] =
-    ["help", "doctor", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat", "label", "labels", "attach", "files"];
+const COMMANDS: [&str; 19] = [
+    "help", "doctor", "login", "logout", "check", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat", "label",
+    "labels", "attach", "files",
+];
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -140,10 +145,20 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         Some(s) => s,
     };
 
-    // 自检只检查环境本身：不需要身份和白板
+    // 自检只检查环境本身：名字和白板没提供时跳过
     if sub == "doctor" {
-        return Ok(doctor::run(json, p));
+        return Ok(doctor::run(json, p, a.value("--as"), a.value("--board")));
     }
+    // 登录、退出：只读写配置文件，不需要名字和白板
+    if sub == "login" {
+        return login(&a, json, p);
+    }
+    if sub == "logout" {
+        return logout(json, p);
+    }
+
+    // 连接（PRD §9）：环境变量优先，其次 ~/.board/config.toml；都没有时 NOT_LOGGED_IN
+    let mut be = Backend::open()?;
 
     // 身份（PRD §3）
     let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"));
@@ -152,7 +167,55 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     };
     let actor = Actor::agent(name.clone());
 
-    let mut be = Backend::open()?;
+    // 名字（PRD §3）：check 占用名字；不带 ID 的 beat 是 agent 级心跳。都不需要白板
+    if sub == "check" {
+        check_agent_name(&name).map_err(BoardError::usage)?;
+        let info = be.check(&name)?;
+        return Ok(if json {
+            Output::Json(agent_json(&info))
+        } else {
+            Output::Text(format!(
+                "{} {} 已在线\n{}\n",
+                p.green("✓"),
+                p.bold(&name),
+                p.yellow(&format!(
+                    "马上启动心跳：BOARD_AS={name} sh <skill 目录>/scripts/heartbeat.sh start（每 {} 秒 board beat 一次；{} 秒没收到就离线）",
+                    BEAT_MS / 1000,
+                    NAME_GAP_MS / 1000
+                ))
+            ))
+        });
+    }
+    if sub == "beat" && a.pos.len() == 1 {
+        let done = a.flag("--final");
+        let info = be.agent_beat(&name, done)?;
+        if json {
+            return Ok(Output::Json(agent_json(&info)));
+        }
+        let cards: Vec<String> = info.cards.iter().map(|h| format!("{}#{}", h.board, h.card.id)).collect();
+        return Ok(Output::Text(if done {
+            format!(
+                "{} {} 已离线{}\n",
+                p.green("✓"),
+                p.bold(&name),
+                if cards.is_empty() {
+                    String::new()
+                } else {
+                    p.dim(&format!("  持有的 {} 收不到心跳，{} 秒内释放", cards.join("、"), NAME_GAP_MS / 1000))
+                }
+            )
+        } else {
+            let mut s = format!("{} {} 心跳\n", p.green("✓"), p.bold(&name));
+            for h in &info.cards {
+                let run = match h.card.run_started_at {
+                    Some(t) => format!("本次 {}", clock(info.beat_at - t)),
+                    None => "已 final：50 秒内沿连线移走".to_string(),
+                };
+                s += &format!("  {} {}  {}\n", p.cyan(&format!("{}#{}", h.board, h.card.id)), h.card.title, p.dim(&run));
+            }
+            s
+        }));
+    }
 
     if sub == "boards" {
         let ws = be.workspace()?;
@@ -351,7 +414,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     p.bold("已领取"),
                     p.dim(&format!("进入「{}」", flow.name(&d.card.column))),
                     p.yellow(&format!(
-                        "马上开始心跳（skill 里的 scripts/heartbeat.sh start {}）：{} 秒内没收到心跳，领取会被释放",
+                        "会话开始时启动的心跳（heartbeat.sh start）会维持这张卡片；做完后 heartbeat.sh final {}，再在 {} 秒内沿连线移走",
                         d.card.id,
                         BEAT_MS * BEAT_MISSES / 1000
                     )),
@@ -500,6 +563,106 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         _ => unreachable!(),
     };
     Ok(out)
+}
+
+/* ------------------------------ 登录 ------------------------------ */
+
+/// 设置了环境变量时提醒：它们会覆盖配置文件
+fn env_overrides(keys: &[&'static str]) -> Vec<&'static str> {
+    keys.iter().copied().filter(|k| env(k).is_some()).collect()
+}
+
+fn override_hint(p: &Paint, vars: &[&str]) -> String {
+    if vars.is_empty() {
+        return String::new();
+    }
+    let exports: Vec<String> = vars.iter().map(|v| format!("export {v}")).collect();
+    format!(
+        "{} 环境变量 {} 会覆盖配置文件：从 shell 配置文件（例如 ~/.zshrc、~/.bashrc）里删掉对应的 {}\n",
+        p.yellow("!"),
+        vars.join("、"),
+        exports.join("、")
+    )
+}
+
+/// `board login [--url <地址>] [--token <令牌>]`：用 `GET /api/workspace` 校验令牌，通过后写进配置文件
+fn login(a: &Args, json: bool, p: &Paint) -> Result<Output> {
+    let mut file = config::File::load()?;
+    let url = match a.value("--url").map(str::trim).filter(|s| !s.is_empty()) {
+        Some(u) => u.trim_end_matches('/').to_string(),
+        None => file.get(config::URL)?.ok_or_else(|| {
+            BoardError::usage(format!("{} 里还没有服务端地址：board login --url <服务端地址> --token <令牌>", config::shown()))
+        })?,
+    };
+    if !backend::is_http(&url) {
+        return Err(BoardError::usage(format!("服务端地址需要以 https:// 或 http:// 开头：{url}")));
+    }
+    let token = match a.value("--token") {
+        Some(t) => t.trim().to_string(),
+        None => {
+            if std::io::stdin().is_terminal() {
+                eprint!("粘贴访问令牌（在界面「设置 → Agent 接入」新建）后回车：");
+            }
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).map_err(|e| BoardError::usage(format!("读不到令牌：{e}")))?;
+            line.trim().to_string()
+        }
+    };
+    if token.is_empty() {
+        return Err(BoardError::usage("没有令牌：board login --token <令牌>，或从标准输入给出一行令牌"));
+    }
+    // 校验：令牌错误、连不上时按服务端的错误码报错，不写文件
+    Remote::new(&url, &token)?.get::<Workspace>("/api/workspace", &[])?;
+    file.set(config::URL, &url);
+    file.set(config::TOKEN, &token);
+    file.save()?;
+    let vars = env_overrides(&["BOARD_URL", "BOARD_TOKEN"]);
+    if json {
+        return Ok(Output::Json(json!({ "ok": true, "url": url, "config": config::shown(), "env_overrides": vars })));
+    }
+    Ok(Output::Text(format!(
+        "{} 已登录 {}：服务端地址和令牌写进了 {}（不显示令牌原文）\n{}",
+        p.green("✓"),
+        p.cyan(&url),
+        config::shown(),
+        override_hint(p, &vars)
+    )))
+}
+
+/// `board logout`：从配置文件删掉令牌，保留服务端地址
+fn logout(json: bool, p: &Paint) -> Result<Output> {
+    let mut file = config::File::load()?;
+    let removed = file.remove(config::TOKEN);
+    if removed {
+        file.save()?;
+    }
+    let vars = env_overrides(&["BOARD_TOKEN"]);
+    if json {
+        return Ok(Output::Json(json!({ "ok": true, "removed": removed, "config": config::shown(), "env_overrides": vars })));
+    }
+    let head = if removed {
+        format!("{} 已退出：从 {} 删掉了令牌，保留服务端地址\n", p.green("✓"), config::shown())
+    } else {
+        format!("{} {} 里没有令牌\n", p.dim("·"), config::shown())
+    };
+    Ok(Output::Text(head + &override_hint(p, &vars)))
+}
+
+/// `board check` / 不带 ID 的 `board beat` 的 JSON
+fn agent_json(a: &AgentInfo) -> Value {
+    json!({
+        "name": a.name,
+        "checked_at": iso(Some(a.checked_at)),
+        "beat_at": iso(Some(a.beat_at)),
+        "cards": a.cards.iter().map(|h| json!({
+            "board": h.board,
+            "id": h.card.id,
+            "title": h.card.title,
+            "column": h.card.column,
+            "run_started_at": iso(h.card.run_started_at),
+            "beats": h.card.beats,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /* ------------------------------ 输出 ------------------------------ */
@@ -689,8 +852,12 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 16] = [
-        ("doctor", "", "环境自检：board 路径、PATH、BOARD_URL/BOARD_TOKEN、BOARD_AS/BOARD、服务端版本；有问题退出码非 0"),
+    let rows: [(&str, &str, &str); 19] = [
+        ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
+        ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
+        ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
+        ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
+        ("beat", "[<ID>] [--final]", "不带 ID：agent 级心跳，每 10 秒一次，维持名字在线和持有的卡片；--final 名字立刻离线。带 ID：这张卡片的心跳；--final 结束这一次计时。由 skill 里的脚本调用"),
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
@@ -700,7 +867,6 @@ fn help(p: &Paint) -> String {
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
-        ("beat", "<ID> [--final]", "心跳：领取后每 10 秒一次，50 秒没收到就释放；--final 正常结束并记下本次耗时。由 skill 里的脚本调用"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）"),
         ("labels", "", "列出项目的标签，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
@@ -718,9 +884,16 @@ fn help(p: &Paint) -> String {
     out.extend([
         String::new(),
         format!("  {}默认是 todo  doing  review  done  rework  check；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
-        format!("  {}--as <名字>，或 export BOARD_AS=<名字>", p.dim("身份：")),
-        format!("  {}--board <项目>/<白板>，或 export BOARD=<项目>/<白板>", p.dim("白板：")),
-        format!("  {}export BOARD_URL=<服务端地址> BOARD_TOKEN=<访问令牌>（必填，令牌在界面「设置 → Agent 接入」新建）", p.dim("连接：")),
+        format!(
+            "  {}先 board check --as <名字>（例如 claude/opus-5.5），之后每条命令都带 --as <名字>，或前缀 BOARD_AS=<名字>",
+            p.dim("身份：")
+        ),
+        format!("  {}--board <项目>/<白板>，或前缀 BOARD=<项目>/<白板>", p.dim("白板：")),
+        format!(
+            "  {}board login --url <服务端地址> --token <令牌>，写进 {}（令牌在界面「设置 → Agent 接入」新建）；环境变量 BOARD_URL/BOARD_TOKEN 优先",
+            p.dim("连接："),
+            config::shown()
+        ),
         format!("  {}所有命令都支持 --json；被拒绝时退出码为 1，并给出错误码", p.dim("输出：")),
         format!("  {}{}", p.dim("数据："), Backend::describe()),
         String::new(),

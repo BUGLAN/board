@@ -2,6 +2,7 @@
 //!
 //! 网页端（board-server）、桌面端（Tauri）与 CLI（board）都通过这个 crate 读写同一个数据库。
 
+pub mod agents;
 pub mod engine;
 pub mod error;
 pub mod files;
@@ -10,6 +11,7 @@ pub mod model;
 pub mod seed;
 pub mod store;
 
+pub use agents::NAME_GAP_MS;
 pub use engine::Cmd;
 pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;

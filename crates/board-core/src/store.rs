@@ -236,6 +236,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::files::SCHEMA)?;
+        conn.execute_batch(crate::agents::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beat {
@@ -335,23 +336,28 @@ impl Store {
         Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))?)
     }
 
-    /// 规则 7：扫描所有白板，释放心跳中断的领取。返回释放的张数
+    /// 规则 7：扫描所有白板，释放心跳中断的领取；心跳中断超过 50 秒的名字标为离线（PRD §3）。
+    /// 返回释放的张数加上离线的名字个数
     pub fn sweep(&mut self, now: i64) -> Result<usize> {
-        // 先用只读查询判断，避免没有到期卡片时也抢写锁
-        let due: i64 = self.conn.query_row(&format!("SELECT COUNT(*) FROM cards WHERE {DUE}"), params![now, BEAT_MS * BEAT_MISSES], |r| r.get(0))?;
+        let gap = BEAT_MS * BEAT_MISSES;
+        // 先用只读查询判断，避免没有到期的卡片和名字时也抢写锁
+        let due: i64 = self.conn.query_row(
+            &format!(
+                "SELECT (SELECT COUNT(*) FROM cards WHERE {DUE}) + (SELECT COUNT(*) FROM agents WHERE off_at IS NULL AND beat_at + ?2 <= ?1)"
+            ),
+            params![now, gap],
+            |r| r.get(0),
+        )?;
         if due == 0 {
             return Ok(0);
         }
         self.write(now, Origin::system(), |w| {
-            let boards: Vec<i64> = w.collect(
-                &format!("SELECT DISTINCT board FROM cards WHERE {DUE}"),
-                params![now, BEAT_MS * BEAT_MISSES],
-                |r| r.get(0),
-            )?;
+            let boards: Vec<i64> = w.collect(&format!("SELECT DISTINCT board FROM cards WHERE {DUE}"), params![now, gap], |r| r.get(0))?;
             let mut n = 0;
             for b in boards {
                 n += w.sweep_board(b)?;
             }
+            n += w.sweep_agents()?;
             Ok(n)
         })
     }
@@ -456,7 +462,7 @@ impl<'a> R<'a> {
                 p.boards.push(b);
             }
         }
-        Ok(Workspace { rev: self.rev()?, now, projects })
+        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)? })
     }
 
     pub fn labels(&self, project: &str) -> Result<Vec<Label>> {
@@ -669,7 +675,7 @@ pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
     Ok(())
 }
 
-fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
+pub(crate) fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
     let sql = format!(
         "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.beat_at, c.created_at, c.updated_at,
                 c.created_by_kind, c.created_by_name, c.claimed_from,

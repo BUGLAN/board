@@ -1095,3 +1095,134 @@ fn labels_reorder_rejects_illegal_ids_without_changing_order() {
     // 出错时顺序一点没变
     assert_eq!(label_names(&s, "default"), ["甲", "乙"]);
 }
+
+/* ------------------------------ agent 名字与 agent 级心跳（PRD §3） ------------------------------ */
+
+const NAME: &str = "claude/opus-5.5";
+
+fn check(s: &mut Store, name: &str, at: i64) -> Result<AgentInfo> {
+    s.write(at, Origin::cli(), |w| w.agent_check(name, Some(1)))
+}
+fn agent_beat(s: &mut Store, name: &str, at: i64, done: bool) -> Result<AgentInfo> {
+    s.write(at, Origin::cli(), |w| w.agent_beat(name, done))
+}
+fn online(s: &Store, at: i64) -> Vec<String> {
+    s.read(|r| r.agents(at)).unwrap().into_iter().map(|a| a.name).collect()
+}
+
+#[test]
+fn agent_name_format() {
+    let long = format!("a/{}", "b".repeat(47));
+    for bad in ["claude", "Claude/opus", "a/b/c", "claude/opus 5.5", "claude/", "/opus", "-x/y", "x/.y", "", long.as_str()] {
+        let e = s_check(bad);
+        assert_eq!(e.code, ErrorCode::Usage, "{bad}");
+        assert!(e.message.contains("<运行环境>/<模型>"), "要给出格式说明：{}", e.message);
+    }
+    let max = format!("a/{}", "b".repeat(46));
+    for good in [NAME, "dsh/deepseek-v4.1-flash", "claude/opus-5.5-login", "codex/gpt-5", max.as_str()] {
+        check(&mut store(), good, T0).unwrap_or_else(|e| panic!("{good}: {e}"));
+    }
+}
+fn s_check(name: &str) -> BoardError {
+    check(&mut store(), name, T0).expect_err("应当被拒绝")
+}
+
+#[test]
+fn agent_check_takes_name_until_offline() {
+    let mut s = store();
+    let r0 = s.rev().unwrap();
+    let a = check(&mut s, NAME, T0).unwrap();
+    assert_eq!((a.checked_at, a.beat_at, a.cards.len()), (T0, T0, 0));
+    assert!(s.rev().unwrap() > r0, "上线要推送给界面");
+    assert_eq!(online(&s, T0), [NAME]);
+    // 在线时再 check：NAME_TAKEN，detail 带名字
+    let e = check(&mut s, NAME, T0 + SEC).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken);
+    assert_eq!(e.detail.unwrap()["name"], NAME);
+    // 加后缀可以
+    check(&mut s, "claude/opus-5.5-login", T0 + SEC).unwrap();
+    // check 之后不发心跳：50 秒后离线
+    assert_eq!(check(&mut s, NAME, T0 + 49 * SEC).unwrap_err().code, ErrorCode::NameTaken);
+    assert!(s.read(|r| r.require_online(NAME, T0 + 49 * SEC)).is_ok());
+    let e = s.read(|r| r.require_online(NAME, T0 + 50 * SEC)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameOffline);
+    assert!(e.message.contains(&format!("board check --as {NAME}")), "{}", e.message);
+    assert_eq!(agent_beat(&mut s, NAME, T0 + 50 * SEC, false).unwrap_err().code, ErrorCode::NameOffline, "离线后心跳被拒绝");
+    let r1 = s.rev().unwrap();
+    assert_eq!(s.sweep(T0 + 50 * SEC).unwrap(), 1, "扫描把它标为离线");
+    assert!(s.rev().unwrap() > r1, "下线要推送给界面");
+    assert_eq!(online(&s, T0 + 50 * SEC), ["claude/opus-5.5-login"]);
+    // 离线后同一个名字可以再次 check；首次 check 时间保留
+    let a = check(&mut s, NAME, T0 + 60 * SEC).unwrap();
+    assert_eq!((a.checked_at, a.beat_at), (T0, T0 + 60 * SEC));
+    // 没 check 过的名字不在线
+    assert_eq!(s.read(|r| r.require_online("codex/gpt-5", T0)).unwrap_err().code, ErrorCode::NameOffline);
+    assert_eq!(agent_beat(&mut s, "codex/gpt-5", T0, true).unwrap_err().code, ErrorCode::NameOffline);
+}
+
+#[test]
+fn agent_beat_keeps_cards_on_all_boards() {
+    let mut s = store();
+    oss(&mut s);
+    let me = Actor::agent(NAME);
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, "oss/main", &human(), T0, new("甲")).unwrap();
+    check(&mut s, NAME, T0).unwrap();
+    exec(&mut s, B, &me, T0, claim(None)).unwrap();
+    exec(&mut s, "oss/main", &me, T0, claim(None)).unwrap();
+
+    // 第一次 agent 级心跳：两张卡片都开始第 1 次
+    let r0 = s.rev().unwrap();
+    let a = agent_beat(&mut s, NAME, T0 + 2 * SEC, false).unwrap();
+    assert_eq!(a.cards.iter().map(|c| (c.board.as_str(), c.card.id)).collect::<Vec<_>>(), [(B, 1), ("oss/main", 1)]);
+    assert!(a.cards.iter().all(|c| c.card.run_started_at == Some(T0 + 2 * SEC) && c.card.runs == 1));
+    assert!(s.rev().unwrap() > r0, "开始第 1 次记了动态，要推送");
+
+    // 之后只发 agent 级心跳：卡片不释放，心跳次数增长，rev 不变（不推送）
+    let r1 = s.rev().unwrap();
+    let mut t = T0 + 2 * SEC;
+    for _ in 0..60 {
+        t += BEAT_MS;
+        agent_beat(&mut s, NAME, t, false).unwrap();
+        assert_eq!(s.sweep(t + 49 * SEC).unwrap(), 0);
+    }
+    assert_eq!(s.rev().unwrap(), r1, "只更新心跳时间不推送");
+    for path in [B, "oss/main"] {
+        let c = card(&s, path, 1);
+        assert_eq!(c.card.holder.as_deref(), Some(NAME));
+        assert_eq!((c.card.beat_at, c.card.beats, c.card.runs), (Some(t), 61, 1));
+        assert_eq!(c.activity.iter().filter(|a| a.text.contains("开始第 1 次")).count(), 1);
+    }
+
+    // final 一张：之后 agent 级心跳不再刷新它；50 秒内没移走就释放；之后的 board beat <ID> 被拒绝
+    let tf = t + SEC;
+    exec(&mut s, B, &me, tf, beat(1, true)).unwrap();
+    let a = agent_beat(&mut s, NAME, tf + 9 * SEC, false).unwrap();
+    let main = &a.cards.iter().find(|c| c.board == B).unwrap().card;
+    assert_eq!((main.beat_at, main.beats), (Some(tf), 62), "final 之后不再被刷新");
+    assert_eq!(code(exec(&mut s, B, &me, tf + 10 * SEC, beat(1, false))), ErrorCode::Usage);
+    for k in 2..=5 {
+        agent_beat(&mut s, NAME, tf + 9 * SEC + k * BEAT_MS, false).unwrap();
+    }
+    assert_eq!(s.sweep(tf + 50 * SEC).unwrap(), 1, "final 之后 50 秒没移走：释放");
+    assert_eq!(card(&s, B, 1).card.holder, None);
+    assert_eq!(card(&s, "oss/main", 1).card.holder.as_deref(), Some(NAME), "另一张照常持有");
+
+    // 名字下线（heartbeat.sh stop → board beat --final）：立刻离线；它持有的卡片 50 秒内释放，记「心跳中断」
+    let last = tf + 9 * SEC + 5 * BEAT_MS;
+    let r2 = s.rev().unwrap();
+    agent_beat(&mut s, NAME, last + SEC, true).unwrap();
+    assert!(online(&s, last + SEC).is_empty());
+    assert!(s.rev().unwrap() > r2, "下线要推送");
+    assert_eq!(agent_beat(&mut s, NAME, last + 2 * SEC, false).unwrap_err().code, ErrorCode::NameOffline);
+    agent_beat(&mut s, NAME, last + 2 * SEC, true).unwrap();
+    assert_eq!(s.sweep(last + 49 * SEC).unwrap(), 0);
+    assert_eq!(s.sweep(last + 50 * SEC).unwrap(), 1);
+    let snap = snapshot(&s, "oss/main", last + 50 * SEC);
+    assert_eq!(snap.cols["todo"], vec![1], "回到领取起点最上面");
+    let c = card(&s, "oss/main", 1);
+    assert_eq!((c.card.holder, c.card.runs_lost), (None, 1));
+    assert!(c.activity.iter().any(|a| a.action == "lost" && a.text.contains("心跳中断")), "{:?}", c.activity.last());
+    // 本次耗时：第一次心跳到最后一次心跳
+    assert_eq!(c.card.work_ms, last - (T0 + 2 * SEC));
+}

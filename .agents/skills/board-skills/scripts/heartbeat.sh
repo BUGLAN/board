@@ -1,29 +1,38 @@
 #!/bin/sh
-# Board 心跳：领取卡片后在后台每 10 秒执行一次 `board beat <ID>`，表明 agent 还在工作。
+# Board 心跳：一个 agent 会话只有一路后台心跳，每 10 秒执行一次 `board beat`（不带 ID），
+# 同时维持名字在线和这个名字持有的卡片（每张还没 final 的卡片都等同于收到一次 `board beat <ID>`）。
 #
-#   sh heartbeat.sh start <ID>   先同步发一次心跳（失败直接报错退出），再在后台循环
-#   sh heartbeat.sh stop  <ID>   停掉后台循环，发送 final（正常退出）
+#   BOARD_AS=<名字> sh heartbeat.sh start        check 之后执行一次（整个会话只执行这一次）：
+#                                                先同步发一次 board beat，失败直接报错退出；成功后进入后台循环
+#   BOARD_AS=<名字> sh heartbeat.sh stop         会话结束：停掉后台循环，再发 board beat --final，名字立刻离线
+#   BOARD_AS=<名字> BOARD=<项目>/<白板> sh heartbeat.sh final <ID>
+#                                                卡片做完：board beat <ID> --final，结束这一次计时；之后 50 秒内要沿连线移走
 #
 # stop：先通知后台循环停下，等它真正退出（正在执行的那次 board beat 会先发完），再发 final，
 # 保证 final 是最后一条心跳；否则晚到的普通心跳会在 final 之后到达服务端。
 #
 # 后台循环在这些情况下自己停下，不发 final：
-#   - agent 进程不在了（崩溃、被关掉）→ 服务端连续 5 次收不到心跳，判定异常退出，卡片回到领取起点
-#   - board beat 被拒绝（卡片已经不归你、令牌失效等）；连不上服务端（UNREACHABLE）时继续重试
+#   - agent 进程不在了（崩溃、被关掉）→ 服务端 50 秒收不到心跳，名字离线，它持有的卡片回到领取起点
+#   - board beat 被拒绝（名字已离线 NAME_OFFLINE、令牌失效等）；连不上服务端（UNREACHABLE）时继续重试
 #
 # agent 进程：从本脚本往上找第一个不是 shell 的祖先进程（Claude Code、Codex 等）。
-# 可以用 BOARD_HEARTBEAT_PID 指定。需要 BOARD、BOARD_AS（以及 BOARD_URL、BOARD_TOKEN）已经设置。
+# 可以用 BOARD_HEARTBEAT_PID 指定。pid 文件按名字区分：同一台机器上的多个会话各跑各的。
+# 服务端地址和令牌用 board login 写的 ~/.board/config.toml（或环境变量 BOARD_URL、BOARD_TOKEN）。
 
 set -u
 INTERVAL=${BOARD_HEARTBEAT_INTERVAL:-10} # 只给测试用；正常使用不要改
 
 die() { echo "heartbeat: $*" >&2; exit 1; }
 
+need_name() {
+    [ -n "${BOARD_AS:-}" ] || die "没有名字：BOARD_AS=<名字> sh heartbeat.sh $1"
+}
+
 pidfile() {
     dir="${TMPDIR:-/tmp}"
     dir="${dir%/}/board-heartbeat"
     mkdir -p "$dir" || die "无法创建 $dir"
-    key=$(printf '%s-%s-%s' "${BOARD:-}" "$1" "${BOARD_AS:-}" | tr -c 'A-Za-z0-9._-' '_')
+    key=$(printf '%s' "${BOARD_AS:-}" | tr -c 'A-Za-z0-9._-' '_')
     echo "$dir/$key.pid"
 }
 
@@ -45,9 +54,9 @@ agent_pid() {
     done
 }
 
-# 发一次心跳；成功返回 0，被拒绝返回 1（输出错误码），连不上返回 2
+# 发一次 agent 级心跳；成功返回 0，被拒绝返回 1（输出错误码），连不上返回 2
 beat_once() {
-    out=$(board beat "$1" --json 2>&1) && return 0
+    out=$(board beat --json 2>&1) && return 0
     code=$(printf '%s' "$out" | sed -n 's/.*"code": *"\([A-Z_]*\)".*/\1/p' | head -n 1)
     [ "$code" = "UNREACHABLE" ] && return 2
     echo "${code:-$out}"
@@ -57,7 +66,7 @@ beat_once() {
 # 停掉后台循环并等它退出：TERM 只会打断两次心跳之间的等待；正在执行的 board beat 由 shell 等它执行完，
 # 之后循环直接退出、不再发下一次。CLI 请求最长 30 秒，最多等 35 秒，超时强制结束
 stop_loop() {
-    f=$(pidfile "$1")
+    f=$(pidfile)
     [ -f "$f" ] || return 0
     pid=$(cat "$f")
     rm -f "$f"
@@ -79,36 +88,42 @@ stop_loop() {
 }
 
 cmd=${1:-}
-id=${2:-}
-id=${id#\#}
 
 case "$cmd" in
     start)
-        [ -n "$id" ] || die "用法：heartbeat.sh start <ID>"
+        need_name start
         command -v board >/dev/null 2>&1 || die "找不到 board 命令"
-        stop_loop "$id"
-        if ! err=$(beat_once "$id"); then
+        stop_loop
+        if ! err=$(beat_once); then
             [ -n "$err" ] || err="UNREACHABLE"
             die "第一次心跳失败：$err"
         fi
         watch=$(agent_pid)
-        nohup sh "$0" _loop "$id" "${watch:-}" >/dev/null 2>&1 &
-        echo $! >"$(pidfile "$id")"
-        echo "✓ #$id 心跳已开始：每 ${INTERVAL} 秒一次（后台进程 $!${watch:+，跟随 agent 进程 $watch}）"
+        nohup sh "$0" _loop "${watch:-}" >/dev/null 2>&1 &
+        echo $! >"$(pidfile)"
+        echo "✓ ${BOARD_AS} 心跳已开始：每 ${INTERVAL} 秒一次 board beat（后台进程 $!${watch:+，跟随 agent 进程 $watch}）"
         ;;
     stop)
-        [ -n "$id" ] || die "用法：heartbeat.sh stop <ID>"
-        stop_loop "$id"
-        board beat "$id" --final
+        need_name stop
+        stop_loop
+        board beat --final
+        ;;
+    final)
+        need_name final
+        id=${2:-}
+        id=${id#\#}
+        [ -n "$id" ] || die "用法：heartbeat.sh final <ID>"
+        shift 2
+        board beat "$id" --final "$@"
         ;;
     _loop)
-        watch=${3:-}
+        watch=${2:-}
         me=$$
         nap=
         # 不管怎么退出，都删掉自己的 pid 文件（被 stop 停掉时 stop 已经删了）
         # 收到 TERM 时：在等待中就立即退出；正在发心跳时 shell 先等这次 board beat 结束再执行 trap，然后退出
         bye() {
-            f=$(pidfile "$id")
+            f=$(pidfile)
             [ "$(cat "$f" 2>/dev/null)" = "$me" ] && rm -f "$f"
             exit 0
         }
@@ -118,13 +133,13 @@ case "$cmd" in
             nap=$!
             wait "$nap"
             if [ -n "$watch" ] && ! kill -0 "$watch" 2>/dev/null; then
-                bye # agent 不在了：不发 final，交给服务端判定异常退出
+                bye # agent 不在了：不发 final，交给服务端判定名字离线、卡片心跳中断
             fi
-            beat_once "$id" >/dev/null
+            beat_once >/dev/null
             [ $? -eq 1 ] && bye
         done
         ;;
     *)
-        die "用法：heartbeat.sh start <ID> | stop <ID>"
+        die "用法：BOARD_AS=<名字> sh heartbeat.sh start | stop | final <ID>"
         ;;
 esac

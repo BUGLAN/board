@@ -84,6 +84,15 @@ export const useCurrent = () => {
 
 export const serverNow = () => Date.now() + get().offset;
 
+/** 在线的 agent 名字；工作区还没取到（或旧服务端没有在线列表）时为 null */
+const onlineOf = (ws: Workspace | null): Set<string> | null => (ws?.agents ? new Set(ws.agents.map(a => a.name)) : null);
+let onlineCache: [Workspace | null, Set<string> | null] = [null, null];
+export const useOnline = () =>
+  useData(s => {
+    if (onlineCache[0] !== s.ws) onlineCache = [s.ws, onlineOf(s.ws)];
+    return onlineCache[1];
+  });
+
 /* ------------------------------ 加载 ------------------------------ */
 
 let inflight: Promise<void> | null = null;

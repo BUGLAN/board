@@ -1,16 +1,19 @@
 //! 数据从哪来：Board 服务端（PRD §9）。
 //!
-//! 必须设置 `BOARD_URL`（服务端地址）和 `BOARD_TOKEN`（界面「设置 → Agent 接入」新建的访问令牌），
-//! CLI 通过 HTTP API 读写白板。规则在服务端执行，被拒绝时服务端返回同样的错误码，这里原样还原。
-//! 没有配置时直接报错，不会去读写本机的数据库文件。
+//! 服务端地址和访问令牌：环境变量 `BOARD_URL` / `BOARD_TOKEN` 优先，其次是 `board login` 写的
+//! `~/.board/config.toml`（见 config.rs）。CLI 通过 HTTP API 读写白板，规则在服务端执行，
+//! 被拒绝时服务端返回同样的错误码，这里原样还原。没有配置时直接报 `NOT_LOGGED_IN`，不会去读写本机的数据库文件。
 
+use crate::config::{self, Conn};
 use board_core::*;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// 没有配置服务端时的提示：在哪里拿令牌、要设置哪两个变量
-const SETUP_HINT: &str = "在界面「设置 → Agent 接入」新建访问令牌，再 export BOARD_URL=<服务端地址> BOARD_TOKEN=<令牌>";
+pub use crate::config::env;
+
+/// 还没登录时的提示
+const LOGIN_HINT: &str = "运行 board login --url <服务端地址> --token <令牌>（令牌在界面「设置 → Agent 接入」新建）";
 
 /// 一块白板上命令需要的数据
 pub struct BoardData {
@@ -25,24 +28,40 @@ pub struct BoardData {
 
 pub struct Backend(Remote);
 
-pub fn env(k: &str) -> Option<String> {
-    std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-}
-
 impl Backend {
     pub fn open() -> Result<Backend> {
-        match env("BOARD_URL") {
-            Some(url) => Ok(Backend(Remote::new(&url)?)),
-            None => Err(BoardError::new(ErrorCode::NotLoggedIn, format!("没有设置 BOARD_URL：{SETUP_HINT}"))),
-        }
+        let conn = Conn::resolve()?;
+        let Some((url, url_src)) = conn.url else {
+            return Err(BoardError::new(ErrorCode::NotLoggedIn, format!("还没有登录：{LOGIN_HINT}")));
+        };
+        let Some((token, _)) = conn.token else {
+            return Err(BoardError::new(
+                ErrorCode::NotLoggedIn,
+                format!("有服务端地址（{url}）但没有访问令牌：运行 board login（令牌在界面「设置 → Agent 接入」新建）"),
+            ));
+        };
+        Ok(Backend(Remote::new(&url, &token).map_err(|e| {
+            BoardError::new(e.code, format!("{}（来自{}）", e.message, config::origin(url_src, "BOARD_URL")))
+        })?))
     }
 
     /// `board help` 里「数据」一行
     pub fn describe() -> String {
-        match env("BOARD_URL") {
-            Some(url) => format!("服务端 {url}（BOARD_URL，令牌 BOARD_TOKEN）"),
-            None => format!("还没有配置：{SETUP_HINT}"),
+        match Conn::resolve() {
+            Ok(Conn { url: Some((url, src)), .. }) => format!("服务端 {url}（地址来自{}）", config::origin(src, "BOARD_URL")),
+            Ok(_) => format!("还没有登录：{LOGIN_HINT}"),
+            Err(e) => e.message,
         }
+    }
+
+    /// `board check --as <名字>`
+    pub fn check(&mut self, name: &str) -> Result<AgentInfo> {
+        self.0.post("/api/agents/check", json!({ "name": name }))
+    }
+
+    /// agent 级心跳 `board beat [--final]`
+    pub fn agent_beat(&mut self, name: &str, done: bool) -> Result<AgentInfo> {
+        self.0.post("/api/agents/beat", json!({ "name": name, "final": done }))
     }
 
     pub fn workspace(&mut self) -> Result<Workspace> {
@@ -118,18 +137,18 @@ pub struct Remote {
     agent: ureq::Agent,
 }
 
+/// 服务端地址要以 http:// 或 https:// 开头
+pub fn is_http(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
 impl Remote {
-    fn new(url: &str) -> Result<Remote> {
+    pub fn new(url: &str, token: &str) -> Result<Remote> {
         let url = url.trim_end_matches('/').to_string();
-        if !url.starts_with("https://") && !url.starts_with("http://") {
-            return Err(BoardError::usage(format!("BOARD_URL 需要以 https:// 或 http:// 开头：{url}")));
+        if !is_http(&url) {
+            return Err(BoardError::usage(format!("服务端地址需要以 https:// 或 http:// 开头：{url}")));
         }
-        let Some(token) = env("BOARD_TOKEN") else {
-            return Err(BoardError::new(
-                ErrorCode::NotLoggedIn,
-                "设置了 BOARD_URL 但没有 BOARD_TOKEN：在界面「设置 → Agent 接入」新建访问令牌，再 export BOARD_TOKEN=<令牌>",
-            ));
-        };
+        let token = token.to_string();
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
@@ -139,7 +158,7 @@ impl Remote {
         Ok(Remote { url, token, agent })
     }
 
-    fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T> {
+    pub fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T> {
         let mut req = self.agent.get(format!("{}{path}", self.url)).header("authorization", format!("Bearer {}", self.token));
         for (k, v) in query {
             req = req.query(*k, *v);

@@ -1,7 +1,9 @@
-//! \`board doctor\` 的验收：配置正确时逐项通过、退出 0；PATH、BOARD_URL、令牌、服务端
-//! 四种问题都能给出具体原因和下一步，退出码非 0；--json 每项有明确的 key 和布尔状态。
+//! \`board doctor\` 的验收：配置正确时逐项通过、退出 0；PATH、服务端地址、令牌、服务端
+//! 四种问题都能给出具体原因和下一步，退出码非 0；--json 每项有明确的 key 和布尔状态；
+//! 地址和令牌写明来自环境变量还是 ~/.board/config.toml，两处都有时 warn；名字、白板没提供时跳过。
 //!
 //! 每个用例启动一个线上配置（GitHub 登录）的 board-server，令牌直接写进它的数据库。
+//! HOME 指向临时目录，不会读开发者的 ~/.board/config.toml。
 
 use board_server::auth::{self, Auth, GitHub};
 use board_server::{bind, serve_in_thread, AppState, Config};
@@ -71,7 +73,7 @@ impl Server {
         vec![
             ("BOARD_URL", self.url.clone()),
             ("BOARD_TOKEN", self.token.clone()),
-            ("BOARD_AS", "alpha".into()),
+            ("BOARD_AS", "test/alpha".into()),
             ("BOARD", "default".into()),
         ]
     }
@@ -89,11 +91,23 @@ fn board(env: &[(&str, String)], args: &[&str]) -> Run {
     board_with_path(&exe_dir(), env, args)
 }
 
+/// 没有配置文件的 HOME（一个新的空目录）
+fn empty_home() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
 fn board_with_path(path: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
+    let home = empty_home();
+    board_in(home.path(), path, env, args)
+}
+
+fn board_in(home: &Path, path: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
     // 去掉开发者环境里的变量，免得太空或太全影响检查结果
     cmd.args(args)
         .env("PATH", path)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .env("NO_COLOR", "1")
         .env_remove("BOARD")
         .env_remove("BOARD_AS")
@@ -114,6 +128,9 @@ fn board_with_path(path: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
 fn doctor_all_green_against_live_server() {
     let s = start();
     let env = s.env();
+    // 名字要在线
+    let r = board(&env, &["check", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let r = board(&env, &["doctor", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let v = r.json();
@@ -165,20 +182,20 @@ fn doctor_reports_missing_board_on_path() {
 /// 没设 BOARD_URL：board 连不上白板，要指出去哪里配置
 #[test]
 fn doctor_reports_missing_board_url() {
-    let env = vec![("BOARD_AS", "alpha".to_string()), ("BOARD", "default".to_string())];
+    let env = vec![("BOARD_AS", "test/alpha".to_string()), ("BOARD", "default".to_string())];
     let r = board(&env, &["doctor", "--json"]);
     assert_eq!(r.code, 1, "{}{}", r.out, r.err);
     let v = r.json();
     let c = check(&v, "board_url");
     assert_eq!(c["ok"], false);
     assert_eq!(c["status"], "fail");
-    assert!(c["detail"].as_str().unwrap_or_default().contains("没有设置"), "{c}");
-    assert!(c["next"].as_str().unwrap_or_default().contains("BOARD_URL"), "{c}");
-    // 依赖 BOARD_URL 的检查明确标成跳过
+    assert!(c["detail"].as_str().unwrap_or_default().contains("没有配置"), "{c}");
+    assert!(c["next"].as_str().unwrap_or_default().contains("board login --url"), "{c}");
+    // 依赖服务端地址的检查明确标成跳过
     assert_eq!(check(&v, "server")["status"], "skip");
     assert_eq!(check(&v, "board_token")["status"], "skip");
-    // 身份和白板已经在，那两项应该通过
-    assert_eq!(check(&v, "board_as")["ok"], true);
+    // 名字格式对，但没法检查是否在线；白板已经在
+    assert_eq!(check(&v, "board_as")["status"], "skip");
     assert_eq!(check(&v, "board")["ok"], true);
 }
 
@@ -221,7 +238,7 @@ fn doctor_reports_unreachable_server() {
     let env = vec![
         ("BOARD_URL", "http://127.0.0.1:9".to_string()),
         ("BOARD_TOKEN", "bd_secret".to_string()),
-        ("BOARD_AS", "alpha".to_string()),
+        ("BOARD_AS", "test/alpha".to_string()),
         ("BOARD", "default".to_string()),
     ];
     let r = board(&env, &["doctor", "--json"]);
@@ -247,8 +264,9 @@ fn doctor_does_not_require_identity_and_is_in_help() {
     assert_eq!(r.code, 1, "{}{}", r.out, r.err);
     let v = r.json();
     assert!(v["checks"].is_array(), "doctor 不该返回 NO_IDENTITY/NO_BOARD 错误：{v}");
-    assert_eq!(check(&v, "board_as")["status"], "fail");
-    assert_eq!(check(&v, "board")["status"], "fail");
+    // 名字和白板没提供时跳过，不判失败
+    assert_eq!(check(&v, "board_as")["status"], "skip");
+    assert_eq!(check(&v, "board")["status"], "skip");
 
     let r = board(&[], &["help"]);
     assert_eq!(r.code, 0);
@@ -262,4 +280,54 @@ fn doctor_rejects_unknown_flags() {
     let r = board(&[], &["doctor", "--nope", "--json"]);
     assert_eq!(r.code, 1);
     assert_eq!(r.json()["error"]["code"], "USAGE");
+}
+
+/// 配置文件（board login 写的）：来源写明是 ~/.board/config.toml；环境变量也有时 warn；
+/// 名字通过 --as 给出时检查是否在线
+#[test]
+fn doctor_reports_config_file_source_and_env_override() {
+    let s = start();
+    let dir = empty_home();
+    let home = dir.path().to_path_buf();
+    let r = board_in(&home, &exe_dir(), &[], &["login", "--url", &s.url, "--token", &s.token, "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+
+    // 只有配置文件
+    let r = board_in(&home, &exe_dir(), &[], &["doctor", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    for key in ["board_url", "board_token"] {
+        let c = check(&v, key);
+        assert_eq!((c["status"].as_str(), c["source"].as_str()), (Some("ok"), Some("file")), "{c}");
+        assert!(c["detail"].as_str().unwrap().contains("~/.board/config.toml"), "{c}");
+    }
+    assert_eq!(check(&v, "board_as")["status"], "skip");
+    assert_eq!(check(&v, "board")["status"], "skip");
+
+    // 名字：格式不对 fail；没 check 不在线 fail；check 之后通过
+    let r = board_in(&home, &exe_dir(), &[], &["doctor", "--as", "claude", "--json"]);
+    assert_eq!(check(&r.json(), "board_as")["status"], "fail");
+    let r = board_in(&home, &exe_dir(), &[], &["doctor", "--as", "test/alpha", "--board", "default", "--json"]);
+    let c = check(&r.json(), "board_as").clone();
+    assert_eq!(c["status"], "fail");
+    assert!(c["next"].as_str().unwrap().contains("board check --as test/alpha"), "{c}");
+    assert_eq!(board_in(&home, &exe_dir(), &[], &["check", "--as", "test/alpha", "--json"]).code, 0);
+    let r = board_in(&home, &exe_dir(), &[], &["doctor", "--as", "test/alpha", "--board", "default", "--json"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(check(&r.json(), "board_as")["status"], "ok");
+    assert_eq!(check(&r.json(), "board")["status"], "ok");
+
+    // 环境变量和配置文件都有：warn，说明环境变量覆盖了配置文件
+    let env = vec![("BOARD_URL", s.url.clone()), ("BOARD_TOKEN", s.token.clone())];
+    let r = board_in(&home, &exe_dir(), &env, &["doctor", "--json"]);
+    assert_eq!(r.code, 0, "warn 不算失败：{}", r.out);
+    let v = r.json();
+    for key in ["board_url", "board_token"] {
+        let c = check(&v, key);
+        assert_eq!((c["status"].as_str(), c["source"].as_str()), (Some("warn"), Some("env")), "{c}");
+        assert!(c["detail"].as_str().unwrap().contains("覆盖"), "{c}");
+    }
+    let r = board_in(&home, &exe_dir(), &env, &["doctor"]);
+    assert!(r.out.contains("环境变量 BOARD_URL") && r.out.contains('!'), "{}", r.out);
+    assert!(!r.out.contains(&s.token), "不能打印令牌原文");
 }

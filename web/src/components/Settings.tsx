@@ -131,30 +131,8 @@ function CopySkill() {
   );
 }
 
-type ShellKind = 'zsh' | 'bash' | 'powershell';
-const SHELLS: [ShellKind, string][] = [
-  ['zsh', 'zsh'],
-  ['bash', 'bash'],
-  ['powershell', 'PowerShell'],
-];
-const defaultShell = (): ShellKind => {
-  const ua = navigator.userAgent;
-  if (/Windows/i.test(ua)) return 'powershell';
-  if (/Mac/i.test(navigator.platform || ua)) return 'zsh';
-  return 'bash';
-};
-
-/** 把 BOARD_URL、BOARD_TOKEN 写成长期生效的环境变量的一条命令。
-    zsh / bash：先删掉配置文件里旧的这两行再追加，重复运行不会重复；写回用 cat 而不是 mv，配置文件是软链接时不被替换
-    PowerShell：setx 写入用户环境变量，重复运行只是覆盖 */
-function envCommand(kind: ShellKind, url: string, token: string): string {
-  if (kind === 'powershell') return `setx BOARD_URL "${url}"; setx BOARD_TOKEN "${token}"`;
-  const rc = kind === 'zsh' ? '~/.zshrc' : '~/.bashrc';
-  return (
-    `f=${rc}; touch "$f"; grep -v -e '^export BOARD_URL=' -e '^export BOARD_TOKEN=' "$f" > "$f.tmp"; ` +
-    `printf '%s\\n' 'export BOARD_URL=${url}' 'export BOARD_TOKEN=${token}' >> "$f.tmp" && cat "$f.tmp" > "$f" && rm "$f.tmp"`
-  );
-}
+/** 新建令牌后给出的那一条命令：校验令牌后把服务端地址和令牌写进 ~/.board/config.toml（各平台相同） */
+const loginCommand = (url: string, token: string) => `board login --url ${url} --token ${token}`;
 
 /** 桌面端外壳注入的 board 命令行完整路径 → 它所在的目录 */
 const cliDir = () => (boardCli ? boardCli.replace(/[\\/][^\\/]*$/, '') : null);
@@ -181,10 +159,8 @@ function pathCommand(kind: 'powershell' | 'sh', rc: string): string {
     : `d=$(dirname "$(command -v board)" 2>/dev/null); if [ -z "$d" ]; then echo '先找到 board：在桌面端打开本页会直接给出完整路径'; else ${body}; fi`;
 }
 
-function EnvCommand({ token }: { token: string }) {
-  const [kind, setKind] = useState<ShellKind>(defaultShell);
+function LoginCommand({ token }: { token: string }) {
   const [state, setState] = useState<{ busy?: boolean; done?: string; error?: string }>({});
-  const file = kind === 'zsh' ? '~/.zshrc' : kind === 'bash' ? '~/.bashrc' : null;
   const apply = async () => {
     setState({ busy: true });
     try {
@@ -199,25 +175,24 @@ function EnvCommand({ token }: { token: string }) {
         <div className="env-apply">
           <button type="button" className="btn sm primary" disabled={state.busy || !!state.done} onClick={apply}>
             <Icon name={state.done ? 'check' : 'terminal'} />
-            {state.done ? '已写入' : '一键写入环境变量'}
+            {state.done ? '已写入' : '一键写入配置文件'}
           </button>
           <span role="status">
             {state.done
-              ? `已写入 ${state.done}：BOARD_URL=${location.origin}、BOARD_TOKEN。新开一个终端就能用 board 连接这个服务端。`
-              : state.error ?? '把 BOARD_URL 和这个令牌写成长期生效的环境变量；也可以复制下面的命令自己运行。'}
+              ? `已写入 ${state.done}：服务端地址 ${location.origin} 和这个令牌。board 命令马上就能用，不用新开终端。`
+              : state.error ?? '把服务端地址和这个令牌写进 ~/.board/config.toml；也可以复制下面的命令自己运行。'}
           </span>
         </div>
       ) : (
         <p className="env-cmd-note">网页不能直接修改你电脑上的配置，复制下面的命令在终端里运行；在 Board 桌面端可以一键写入。</p>
       )}
-      <div className="env-cmd-head">
-        <span>{file ? `写进 ${file}，长期生效：` : '写成用户环境变量，长期生效：'}</span>
-        <Segmented value={kind} options={SHELLS} onChange={setKind} />
-      </div>
       <div className="code-block">
-        <Code cmd={envCommand(kind, location.origin, token)} plain={kind === 'powershell'} />
+        <Code cmd={loginCommand(location.origin, token)} />
       </div>
-      <p className="env-cmd-note">运行后新开一个终端才生效{file ? '；重复运行会替换旧的这两行，不会重复追加' : ''}。</p>
+      <p className="env-cmd-note">
+        校验令牌后写进 <code>~/.board/config.toml</code>（Windows：<code>%USERPROFILE%\.board\config.toml</code>），所有终端马上能用。环境变量{' '}
+        <code>BOARD_URL</code>、<code>BOARD_TOKEN</code> 会覆盖配置文件；以前写进 shell 配置文件的 <code>export</code> 要删掉，<code>board doctor</code> 会指出来。
+      </p>
     </div>
   );
 }
@@ -277,7 +252,7 @@ function Tokens() {
       {fresh && (
         <div className="token-fresh" role="status">
           <b>令牌「{fresh.name}」已新建。原文只显示这一次，请现在复制保存。</b>
-          <EnvCommand token={fresh.token} />
+          <LoginCommand token={fresh.token} />
           <button type="button" className="btn sm" onClick={() => setFresh(null)}>
             <Icon name="check" />
             已保存
@@ -473,10 +448,10 @@ export function SettingsPage() {
               ),
             )}
           </div>
-          <Row label="心跳" hint="领取后由 skill 里的脚本发送；第一次心跳开始计时，final 结束，每一次的耗时记进动态">
+          <Row label="心跳" hint="agent 会话 check 之后由 skill 里的脚本发送，一路心跳同时维持名字在线和它持有的卡片；领取后的第一次心跳开始计时，final 结束，每一次的耗时记进动态">
             <span className="ro mono">每 10 秒</span>
           </Row>
-          <Row label="心跳中断" hint="从领取或最近一次心跳算起连续 5 次没收到：回到领取它时所在的可领取状态最上面，进行中的这一次记为异常退出">
+          <Row label="心跳中断" hint="连续 5 次没收到：名字离线；卡片（从领取或最近一次心跳算起）回到领取它时所在的可领取状态最上面，进行中的这一次记为异常退出">
             <span className="ro">50 秒后释放</span>
           </Row>
           <ul className="rules">
@@ -539,7 +514,7 @@ export function SettingsPage() {
             <Code cmd="cargo install --path crates/board-cli" note="还没装桌面端：从源码安装（需要 Rust）" />
           </div>
           <p className="set-p">
-            配好之后先跑一次 <code>board doctor</code>：board 在哪、PATH 里能不能找到、服务端能不能连、令牌是否有效、BOARD / BOARD_AS 有没有设置，一次说清，有问题还会给出下一步。
+            配好之后先跑一次 <code>board doctor</code>：board 在哪、PATH 里能不能找到、服务端地址和令牌来自环境变量还是配置文件、服务端能不能连、令牌是否有效、名字是否在线（带 <code>--as</code> 时），一次说清，有问题还会给出下一步。
             把下面这条粘给 agent，它自己就能先自查。
           </p>
           <div className="code-block">
@@ -551,17 +526,12 @@ export function SettingsPage() {
             访问令牌
           </h3>
           <p className="set-p">
-            agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 只是 agent 的名字。不用的令牌随时吊销。
+            agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 是 agent 的名字，会话开始时用{' '}
+            <code>board check</code> 占用，同一时间一个名字只属于一个在线会话。不用的令牌随时吊销。
           </p>
           <div className="code-block">
-            <Code cmd={`export BOARD_URL=${location.origin}`} note={isWindows ? '服务端地址（bash）' : '服务端地址'} />
-            <Code cmd="export BOARD_TOKEN=<访问令牌>" note="在下面新建" />
-            {isWindows && (
-              <>
-                <Code ps cmd={`$env:BOARD_URL="${location.origin}"`} note="服务端地址（PowerShell）" />
-                <Code ps cmd='$env:BOARD_TOKEN="<访问令牌>"' note="在下面新建（PowerShell）" />
-              </>
-            )}
+            <Code cmd={`board login --url ${location.origin} --token <访问令牌>`} note="令牌在下面新建" />
+            <Code plain cmd="board check --as claude/opus-5.5" note="会话开始时占用名字（skill 自动做）" />
           </div>
           <Tokens />
           <details className="errcodes">

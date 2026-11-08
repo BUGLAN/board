@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newBoard, openBoard, openCard } from '../lib/actions';
 import { startWindowDrag, toggleMaximize } from '../lib/platform';
-import { boardFlow, flowOf, timing } from '../lib/schema';
+import { flowOf, timing } from '../lib/schema';
 import { agentColor, clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
@@ -53,27 +53,39 @@ export function Topbar() {
   );
 }
 
+/** 在线的 agent（所有白板）：持卡的显示这一次的耗时，没持卡的是空闲。check 之后出现，离线后消失 */
 function Presence() {
-  const board = useData(s => s.board);
+  const agents = useData(s => s.ws?.agents);
+  const path = useData(s => s.path);
   const now = useNow(1000);
-  const holders = board ? boardFlow(board).list.flatMap(s => (board.cols[s.key] ?? []).map(id => board.cards[id])).filter(c => c?.holder) : [];
+  if (!agents?.length) return <div className="presence" aria-label="在线的 agent" />;
   return (
-    <div className="presence" aria-label="正在工作的 agent">
-      {holders.map((c, i) => {
-        const t = timing(c, now);
+    <div className="presence" aria-label="在线的 agent">
+      {agents.map((a, i) => {
+        // 在几块白板上各持有一张时，先看当前白板上的那张
+        const h = a.cards.find(c => c.board === path) ?? a.cards[0];
+        // 在线列表里的 agent 都在线：心跳正常
+        const t = h ? timing(h, now) : null;
+        const tip = h
+          ? `${a.name} 正在做 ${a.cards.map(c => `${c.board}#${c.id}`).join('、')}${t && t.runs > 1 ? ` · 累计 ${clock(t.total)}（${t.runs} 次）` : ''}`
+          : `${a.name} 空闲`;
         return (
           // 悬停时展开：头像右边滑出这一次的耗时
           <span
-            key={c.holder}
-            className={cx('pres-item', t.beat)}
-            style={{ ['--c' as string]: agentColor(c.holder!), ['--k' as string]: holders.length - 1 - i }}
-            data-tip={`${c.holder} 正在做 #${c.id}${t.runs > 1 ? ` · 累计 ${clock(t.total)}（${t.runs} 次）` : ''}`}
+            key={a.name}
+            className={cx('pres-item', t ? t.beat : 'idle')}
+            style={{ ['--c' as string]: agentColor(a.name), ['--k' as string]: agents.length - 1 - i }}
+            data-tip={tip}
             data-tip-align="end"
-            onClick={() => openCard(c.id)}
+            onClick={() => {
+              if (!h) return;
+              if (h.board !== path) openBoard(h.board);
+              openCard(h.id);
+            }}
           >
-            <Avatar actor={agent(c.holder!)} />
+            <Avatar actor={agent(a.name)} />
             <i className="pres-pulse" />
-            <span className="pres-time">{t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
+            <span className="pres-time">{!t ? '空闲' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
           </span>
         );
       })}

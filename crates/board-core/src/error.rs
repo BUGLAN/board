@@ -21,14 +21,18 @@ pub enum ErrorCode {
     NotLoggedIn,
     /// 访问令牌不存在或已吊销
     InvalidToken,
-    /// CLI 连不上 BOARD_URL 指定的服务端
+    /// CLI 连不上服务端
     Unreachable,
+    /// agent 名字正被在线 agent 使用（PRD §3）
+    NameTaken,
+    /// agent 名字不在线：没有 check，或心跳中断超过 50 秒（PRD §3）
+    NameOffline,
     /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
     Internal,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 14] = [
+    pub const ALL: [ErrorCode; 16] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -43,6 +47,8 @@ impl ErrorCode {
         ErrorCode::NotLoggedIn,
         ErrorCode::InvalidToken,
         ErrorCode::Unreachable,
+        ErrorCode::NameTaken,
+        ErrorCode::NameOffline,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -61,6 +67,8 @@ impl ErrorCode {
             ErrorCode::NotLoggedIn => "NOT_LOGGED_IN",
             ErrorCode::InvalidToken => "INVALID_TOKEN",
             ErrorCode::Unreachable => "UNREACHABLE",
+            ErrorCode::NameTaken => "NAME_TAKEN",
+            ErrorCode::NameOffline => "NAME_OFFLINE",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -73,7 +81,7 @@ impl ErrorCode {
     /// 默认原因
     pub fn message(self) -> &'static str {
         match self {
-            ErrorCode::NoIdentity => "没有提供 agent 名字：使用 --as <名字> 或设置环境变量 BOARD_AS",
+            ErrorCode::NoIdentity => "没有提供 agent 名字：先 board check --as <名字>，之后每条命令都带 --as <名字>",
             ErrorCode::NoBoard => "没有指定白板：使用 --board <项目>/<白板> 或设置环境变量 BOARD",
             ErrorCode::BoardNotFound => "白板不存在，用 board boards 查看可用的白板",
             ErrorCode::NotFound => "卡片不存在",
@@ -84,9 +92,11 @@ impl ErrorCode {
             ErrorCode::NotHolder => "被持有的卡片只有持有者能编辑和移动",
             ErrorCode::ForbiddenColumn => "不允许这样移动：锁定状态只能领取进入，终点和「未整理」只归人管，agent 只能沿连线移动",
             ErrorCode::Usage => "命令格式或参数不正确",
-            ErrorCode::NotLoggedIn => "未登录：网页端请先用 GitHub 登录；CLI 连接服务端时设置 BOARD_TOKEN",
+            ErrorCode::NotLoggedIn => "未登录：网页端请先用 GitHub 登录；命令行运行 board login",
             ErrorCode::InvalidToken => "访问令牌无效或已吊销：在界面「设置 → Agent 接入」里新建令牌",
-            ErrorCode::Unreachable => "连不上 Board 服务端（BOARD_URL）",
+            ErrorCode::Unreachable => "连不上 Board 服务端",
+            ErrorCode::NameTaken => "名字正被在线 agent 使用：加一个和本会话相关的后缀（例如任务名或分支名）再 check",
+            ErrorCode::NameOffline => "名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>",
             ErrorCode::Internal => "内部错误",
         }
     }

@@ -111,11 +111,11 @@ export function newWindow() {
   if (ipc) invoke('new_window').catch(() => {});
 }
 
-/* ---------------- 桌面端：一键写入 BOARD_URL、BOARD_TOKEN ---------------- */
+/* ---------------- 桌面端：一键把服务端地址和令牌写进 ~/.board/config.toml ---------------- */
 
 /** 网页不能改电脑上的配置，只有桌面端能 */
 export const canSetEnv = ipc;
-/** 写成长期生效的环境变量；返回写到了哪里（~/.zshrc、用户环境变量）。
+/** 写进 board 命令行的配置文件；返回写到了哪里（~/.board/config.toml）。外壳命令沿用 set_board_env 这个名字。
     外壳不支持（旧版桌面端）时抛出 'unsupported'，其他失败抛出原因文字 */
 export async function setBoardEnv(token: string): Promise<string> {
   try {

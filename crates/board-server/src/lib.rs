@@ -4,7 +4,9 @@
 //!   （它返回版本和提交号，部署后用来核对线上版本）；
 //!   本机模式（`--local`）只接受本机访问，不需要登录
 //! - `GET /api/workspace`、`/api/board`、`/api/card`：快照；`GET /api/events`：按游标向前翻页取动态
-//! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`
+//! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`，
+//!   名字必须在线（先 `POST /api/agents/check`，之后每 10 秒 `POST /api/agents/beat`），否则 `NAME_OFFLINE`
+//! - `POST /api/agents/check`、`/api/agents/beat`、`GET /api/agents`：agent 名字与 agent 级心跳（`agents`）
 //! - `POST /api/files`、`GET /api/files/{id}`：卡片附件（上传、读取）
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
@@ -13,8 +15,9 @@
 //! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, events}`
 //!
 //! 服务端每 250ms 检查一次数据库的 rev，发现变化就推送给已打开的界面（PRD §11）。
-//! 服务端每秒扫描一次到期的领取（规则 7），没有命令执行时界面上也能看到超时释放。
+//! 服务端每秒扫描一次到期的领取（规则 7）和心跳中断的名字（PRD §3），没有命令执行时界面上也能看到超时释放、agent 下线。
 
+pub mod agents;
 pub mod auth;
 
 use auth::{Auth, Caller};
@@ -100,6 +103,11 @@ impl AppState {
         &self.0.auth
     }
 
+    /// 有写入：马上检查 rev，把变更推给界面（不用等下一次轮询）
+    pub(crate) fn poke(&self) {
+        self.0.poke.notify_one();
+    }
+
     pub(crate) fn sessions_changed(&self) {
         self.0.sessions.send_modify(|v| *v += 1);
     }
@@ -159,6 +167,9 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/card", get(card))
         .route("/events", get(events))
         .route("/cmd", post(cmd))
+        .route("/agents", get(agents::list))
+        .route("/agents/check", post(agents::check))
+        .route("/agents/beat", post(agents::beat))
         // 附件：上限之外留一点余量，略超的文件由 board-core 给出清楚的提示
         .route("/files", post(upload).layer(DefaultBodyLimit::max(files::MAX_BYTES + 1024 * 1024)))
         .route("/files/{id}", get(file))
@@ -394,10 +405,7 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
     let (actor, origin) = match caller {
         Caller::Human { .. } => (Actor::human(), Origin::ui(client_of(&headers))),
         Caller::Agent { token } => {
-            let name: String = body.agent.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect();
-            if name.is_empty() {
-                return Err(BoardError::code(ErrorCode::NoIdentity).into());
-            }
+            let name = agent_name(body.agent.as_deref())?;
             tracing::Span::current().record("who", format!("{name}（令牌#{token}）"));
             (Actor::agent(name), Origin::cli())
         }
@@ -405,6 +413,10 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
     let out = s
         .db(move |st| {
             st.write(now_ms(), origin, |w| {
+                // 严格模式（PRD §3）：agent 的名字必须在线
+                if actor.is_agent() {
+                    w.read().require_online(&actor.name, w.now())?;
+                }
                 let b = w.resolve(&body.board)?;
                 w.exec(&b, &actor, body.cmd)
             })
@@ -412,6 +424,15 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
         .await?;
     s.0.poke.notify_one();
     Ok(Json(out))
+}
+
+/// 带令牌的请求里 agent 的名字：不能为空（是否在线在写库前检查）
+fn agent_name(raw: Option<&str>) -> std::result::Result<String, ApiError> {
+    let name = raw.map(str::trim).unwrap_or_default();
+    if name.is_empty() {
+        return Err(BoardError::code(ErrorCode::NoIdentity).into());
+    }
+    Ok(name.to_string())
 }
 
 /* ------------------------------ 附件 ------------------------------ */
@@ -438,18 +459,22 @@ async fn upload(
     let actor = match caller {
         Caller::Human { .. } => Actor::human(),
         Caller::Agent { token } => {
-            let name: String = q.agent.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect();
-            if name.is_empty() {
-                return Err(BoardError::code(ErrorCode::NoIdentity).into());
-            }
+            let name = agent_name(q.agent.as_deref())?;
             tracing::Span::current().record("who", format!("{name}（令牌#{token}）"));
             Actor::agent(name)
         }
     };
     let out = s
         .db(move |st| {
-            let b = st.read(|r| r.resolve(&q.board))?;
-            st.attach(now_ms(), &b, q.card, &actor, &q.name, &body)
+            let now = now_ms();
+            let b = st.read(|r| {
+                // 严格模式（PRD §3）：agent 的名字必须在线
+                if actor.is_agent() {
+                    r.require_online(&actor.name, now)?;
+                }
+                r.resolve(&q.board)
+            })?;
+            st.attach(now, &b, q.card, &actor, &q.name, &body)
         })
         .await?;
     Ok(Json(out))

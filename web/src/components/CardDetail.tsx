@@ -9,7 +9,7 @@ import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
-import { closeDetail, exec, openDetail, useCurrent, useData } from '../store/data';
+import { closeDetail, exec, openDetail, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -491,6 +491,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
 
 function ClaimPart({ card: c, now }: { card: Card; now: number }) {
   const start = boardFlow(useData(s => s.board)).home?.name ?? '待办';
+  const online = useOnline();
   if (c.column === 'inbox') {
     return (
       <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
@@ -517,7 +518,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
       </section>
     );
   }
-  const t = timing(c, now);
+  const t = timing(c, now, online);
   if (!c.holder) {
     // 做过、现在没人在做：只显示耗时
     if (!t.runs) return null;
@@ -564,7 +565,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
         <RunStats t={t} />
         <div className="release">
           <span>
-            持有者每 {BEAT_MS / 1000} 秒发一次心跳；连续 {BEAT_MISSES} 次没收到判定异常退出，卡片回到领取它时所在的状态
+            持有者的后台心跳每 {BEAT_MS / 1000} 秒一次；连续 {BEAT_MISSES} 次没收到，名字离线、判定异常退出，卡片回到领取它时所在的状态
           </span>
           <button
             className="btn sm danger"

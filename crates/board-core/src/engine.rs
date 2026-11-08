@@ -387,9 +387,9 @@ impl<'a> W<'a> {
             }
 
             /* ---------------- 心跳（仅 agent） ----------------
-               持有者每 10 秒发一次。没有进行中的一次时，这一次心跳就是开始（记一条动态）；
-               final：这一次结束（记耗时），之后 50 秒内要交审或放回，否则释放。
-               final 之后、交审之前再来的普通心跳（例如脚本停止时还在途的那一次）被拒绝：不新开一次、不延长释放窗口；
+               单张卡片的心跳 `board beat <ID>`：效果与 agent 级心跳（`board beat`，见 agents.rs）对这张卡片做的相同。
+               final：这一次结束（记耗时），之后 50 秒内要沿连线移走，否则释放；之后 agent 级心跳不再刷新这张卡片。
+               final 之后、移走之前再来的普通心跳（例如脚本停止时还在途的那一次）被拒绝：不新开一次、不延长释放窗口；
                要接着做得重新领取。卡片已经不归自己（例如已交审）时 final 什么也不做 */
             Cmd::Beat { id, done } => {
                 if !actor.is_agent() {
@@ -420,32 +420,7 @@ impl<'a> W<'a> {
                         "#{id} 这次的心跳已经结束（final）：先交审或交给人处理；要接着做，等领取释放后重新 board claim {id}"
                     )));
                 }
-                self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
-                self.changed = true;
-                let open: bool = self.tx.query_row(
-                    "SELECT COUNT(*) > 0 FROM card_runs WHERE board = ?1 AND card = ?2 AND ended_at IS NULL",
-                    params![b, id],
-                    |r| r.get(0),
-                )?;
-                if !open {
-                    let n: i64 = self.tx.query_row(
-                        "SELECT COUNT(*) + 1 FROM card_runs WHERE board = ?1 AND card = ?2",
-                        params![b, id],
-                        |r| r.get(0),
-                    )?;
-                    self.tx.execute(
-                        "INSERT INTO card_runs (board, card, n, agent, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![b, id, n, actor.name, self.now],
-                    )?;
-                    self.track(
-                        b,
-                        id,
-                        actor,
-                        "beat",
-                        &format!("开始第 {n} 次（第一次心跳；每 {} 秒一次，连续 {BEAT_MISSES} 次没收到判定异常退出）", BEAT_MS / 1000),
-                    )?;
-                }
-                self.count_beat(b, id)?;
+                self.beat_card(b, id, actor)?;
                 return self.read().card(board, id);
             }
 
@@ -507,7 +482,7 @@ impl<'a> W<'a> {
             let (action, text) = match (run, beat) {
                 (Some((n, ms)), _) => (
                     "lost",
-                    format!("连续 {BEAT_MISSES} 次没有收到 {who} 的心跳，判定异常退出，第 {n} 次耗时约 {}，{back}", dur_words(ms)),
+                    format!("心跳中断：连续 {BEAT_MISSES} 次没有收到 {who} 的心跳，判定异常退出，第 {n} 次耗时约 {}，{back}", dur_words(ms)),
                 ),
                 (None, Some(_)) => ("timeout", format!("{who} 结束心跳后 {} 秒内没有交审或放回，{back}", gap / 1000)),
                 (None, None) => ("timeout", format!("{who} 领取后 {} 秒内没有开始心跳，{back}", gap / 1000)),
@@ -586,13 +561,41 @@ impl<'a> W<'a> {
             .optional()?)
     }
 
-    /// 结束进行中的这一次，返回（第几次，耗时）；没有进行中的一次时返回 None
+    /// 持有者对一张还没 final 的卡片的一次心跳：更新心跳时间并计入心跳次数；没有进行中的一次时，
+    /// 这一次心跳就是开始（动态里记「开始第 n 次」）。
+    /// 只更新心跳时间不算变更（rev 不变，不推送给界面），开始新的一次才算（PRD §11）
+    pub(crate) fn beat_card(&mut self, b: i64, id: i64, actor: &Actor) -> Result<()> {
+        self.tx.execute("UPDATE cards SET beat_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+        let open: bool = self.tx.query_row(
+            "SELECT COUNT(*) > 0 FROM card_runs WHERE board = ?1 AND card = ?2 AND ended_at IS NULL",
+            params![b, id],
+            |r| r.get(0),
+        )?;
+        if !open {
+            let n: i64 =
+                self.tx.query_row("SELECT COUNT(*) + 1 FROM card_runs WHERE board = ?1 AND card = ?2", params![b, id], |r| r.get(0))?;
+            self.tx.execute(
+                "INSERT INTO card_runs (board, card, n, agent, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![b, id, n, actor.name, self.now],
+            )?;
+            self.track(
+                b,
+                id,
+                actor,
+                "beat",
+                &format!("开始第 {n} 次（第一次心跳；每 {} 秒一次，连续 {BEAT_MISSES} 次没收到判定异常退出）", BEAT_MS / 1000),
+            )?;
+        }
+        self.count_beat(b, id)
+    }
+
     /// 进行中的这一次收到一次心跳
     fn count_beat(&mut self, b: i64, id: i64) -> Result<()> {
         self.tx.execute("UPDATE card_runs SET beats = beats + 1 WHERE board = ?1 AND card = ?2 AND ended_at IS NULL", params![b, id])?;
         Ok(())
     }
 
+    /// 结束进行中的这一次，返回（第几次，耗时）；没有进行中的一次时返回 None
     pub(crate) fn close_run(&mut self, b: i64, id: i64, end: i64, how: &str) -> Result<Option<(i64, i64)>> {
         let open: Option<(i64, i64)> = self
             .tx

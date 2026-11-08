@@ -81,10 +81,12 @@
 /* 悬停时向左展开：只用 translate，不改占位宽度（--k 是离右端的序号，最右一个不动） */
 .presence:hover .pres-item { translate: calc(var(--k, 0) * -8px) 0; }
 .presence .avatar { width: 26px; height: 26px; font-size: 12.5px; position: relative; z-index: 1; box-shadow: 0 0 0 2px var(--surface); }
-/* 心跳波纹：每 2 秒向外扩一圈；晚了变黄，还没开始 / 已结束不跳 */
+/* 心跳波纹：每 2 秒向外扩一圈；持有者离线变黄，还没开始 / 已结束 / 空闲（没持卡）不跳 */
 .pres-pulse { position: absolute; left: -3px; top: 50%; width: 32px; height: 32px; margin-top: -16px; border-radius: 50%; box-shadow: 0 0 0 2px var(--c); pointer-events: none; animation: pres-ring 2s var(--ease-out) infinite; }
 .pres-item.late .pres-pulse { box-shadow: 0 0 0 2px var(--warn); }
-.pres-item.wait .pres-pulse, .pres-item.ended .pres-pulse { animation: none; opacity: .35; box-shadow: 0 0 0 2px var(--line-3); }
+.pres-item.wait .pres-pulse, .pres-item.ended .pres-pulse, .pres-item.idle .pres-pulse { animation: none; opacity: .35; box-shadow: 0 0 0 2px var(--line-3); }
+.presence .pres-item.idle { cursor: default; }
+.presence .pres-item.idle .pres-time { font-family: inherit; color: var(--text-3); }
 @keyframes pres-ring { 0% { opacity: .9; transform: scale(.88); } 70%, 100% { opacity: 0; transform: scale(1.3); } }
 @media (prefers-reduced-motion: reduce) { .pres-pulse { animation: none; opacity: .6; } }
 /* 悬停：展开成胶囊，头像右边是这一次的耗时 */

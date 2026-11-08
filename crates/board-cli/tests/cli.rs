@@ -5,7 +5,7 @@ mod common;
 
 use common::{start, Server};
 
-const ALPHA: &str = "alpha";
+const ALPHA: &str = "test/alpha";
 
 #[test]
 fn ac11_json_and_exit_codes() {
@@ -53,7 +53,7 @@ fn ac1_claim_json_returns_full_card() {
     let c = s.run(ALPHA, &["claim", "--json"]).json();
     assert_eq!(c["id"], 1);
     assert_eq!(c["column"], "doing");
-    assert_eq!(c["holder"], "alpha");
+    assert_eq!(c["holder"], "test/alpha");
     assert!(c["claimed_at"].is_string());
     assert!(c["run_started_at"].is_null(), "第一次心跳才开始计时");
     // 心跳：开始第 1 次
@@ -77,16 +77,17 @@ fn ac12_identity_and_board_required() {
     };
     let r = s.raw(&with(&[]), &["ls", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NO_IDENTITY"));
-    let r = s.raw(&with(&[("BOARD_AS", "alpha")]), &["ls", "--json"]);
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("board check --as"));
+    let r = s.raw(&with(&[("BOARD_AS", "test/alpha")]), &["ls", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NO_BOARD"));
     // --as / --board 与环境变量等价
-    let r = s.raw(&with(&[]), &["ls", "--as", "alpha", "--board", "default/main", "--json"]);
+    let r = s.raw(&with(&[]), &["ls", "--as", "test/alpha", "--board", "default/main", "--json"]);
     assert_eq!(r.code, 0, "{}", r.out);
     // boards 只需要身份
-    let r = s.raw(&with(&[("BOARD_AS", "alpha")]), &["boards", "--json"]);
+    let r = s.raw(&with(&[("BOARD_AS", "test/alpha")]), &["boards", "--json"]);
     assert_eq!(r.code, 0);
     assert_eq!(r.json()[0]["board"], "default/main");
-    let r = s.raw(&with(&[("BOARD_AS", "alpha"), ("BOARD", "nope")]), &["ls", "--json"]);
+    let r = s.raw(&with(&[("BOARD_AS", "test/alpha"), ("BOARD", "nope")]), &["ls", "--json"]);
     assert_eq!(r.error_code(), "BOARD_NOT_FOUND");
 }
 
@@ -158,22 +159,22 @@ fn attach_and_download_files() {
     assert!(s.run(ALPHA, &["files", "2"]).out.contains("#2 没有附件"));
 }
 
-/// 没有配置服务端：直接失败，提示去「设置 → Agent 接入」；不会在 HOME 下建本地数据库
+/// 没有配置服务端：直接失败，提示运行 board login；不会在 HOME 下建本地数据库
 #[test]
-fn requires_board_url_and_token() {
+fn requires_login() {
     let s: Server = start();
-    let who = [("BOARD_AS", "alpha".to_string()), ("BOARD", "default".to_string())];
+    let who = [("BOARD_AS", "test/alpha".to_string()), ("BOARD", "default".to_string())];
 
-    // 没有 BOARD_URL
-    for args in [vec!["ls", "--json"], vec!["boards", "--json"], vec!["claim", "--json"]] {
+    // 环境变量和配置文件都没有
+    for args in [vec!["ls", "--json"], vec!["boards", "--json"], vec!["claim", "--json"], vec!["check", "--json"], vec!["beat", "--json"]] {
         let r = s.raw(&who, &args);
         assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_LOGGED_IN"), "{args:?}");
         let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
-        assert!(msg.contains("BOARD_URL") && msg.contains("设置 → Agent 接入") && msg.contains("BOARD_TOKEN"), "{msg}");
+        assert!(msg.contains("board login") && msg.contains("设置 → Agent 接入"), "{msg}");
     }
     let r = s.raw(&who, &["ls"]);
     assert_eq!(r.code, 1);
-    assert!(r.err.contains("NOT_LOGGED_IN") && r.err.contains("设置 → Agent 接入"), "{}", r.err);
+    assert!(r.err.contains("NOT_LOGGED_IN") && r.err.contains("board login"), "{}", r.err);
     // 即使给了 BOARD_DB 也不再读写本地数据库
     let db = s.home.join("x.db");
     let mut env = who.to_vec();
@@ -181,18 +182,18 @@ fn requires_board_url_and_token() {
     assert_eq!(s.raw(&env, &["ls", "--json"]).error_code(), "NOT_LOGGED_IN");
     assert!(!db.exists());
 
-    // 设置了 BOARD_URL 但没有 BOARD_TOKEN
+    // 有地址但没有令牌
     let mut env = who.to_vec();
     env.push(("BOARD_URL", s.url.clone()));
     let r = s.raw(&env, &["ls", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_LOGGED_IN"));
     let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
-    assert!(msg.contains("BOARD_TOKEN") && msg.contains("设置 → Agent 接入"), "{msg}");
+    assert!(msg.contains("board login") && msg.contains("设置 → Agent 接入"), "{msg}");
 
     // help 照常可用，并说明怎么配置
     let r = s.raw(&[], &["help"]);
     assert_eq!(r.code, 0);
-    assert!(r.out.contains("设置 → Agent 接入") && !r.out.contains("本地数据库"), "{}", r.out);
+    assert!(r.out.contains("board login") && r.out.contains("设置 → Agent 接入") && !r.out.contains("本地数据库"), "{}", r.out);
 
     assert!(!s.home.join(".board").exists(), "不应该在 HOME 下创建 ~/.board");
 }

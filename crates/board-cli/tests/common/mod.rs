@@ -1,12 +1,15 @@
 //! 集成测试的公共部分：每个测试起一个线上配置（GitHub 登录）的 board-server，令牌直接写进它的数据库，
-//! CLI 通过 BOARD_URL + BOARD_TOKEN 连它。HOME 指向临时目录，测试不会碰开发者的 ~/.board。
+//! CLI 通过 BOARD_URL + BOARD_TOKEN 连它。HOME 指向临时目录，测试不会读写开发者的 ~/.board/config.toml。
+//! agent 名字要先 check（严格模式）：`Server::run` 第一次用一个名字时先替它 check。
 #![allow(dead_code)]
 
 use board_server::auth::{self, Auth, GitHub};
 use board_server::{bind, serve_in_thread, AppState, Config};
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub struct Run {
     pub code: i32,
@@ -30,6 +33,8 @@ pub struct Server {
     pub token: String,
     /// CLI 进程的 HOME
     pub home: PathBuf,
+    /// 已经 check 过的名字
+    checked: RefCell<HashSet<String>>,
     _dir: tempfile::TempDir,
 }
 
@@ -60,19 +65,35 @@ pub fn start() -> Server {
         let store = board_core::Store::open(&db).unwrap();
         auth::create_token(store.conn(), "test", board_core::now_ms()).unwrap().1
     };
-    Server { url, db, token, home, _dir: dir }
+    Server { url, db, token, home, checked: RefCell::default(), _dir: dir }
 }
 
 impl Server {
     pub fn env(&self) -> Vec<(&'static str, String)> {
         vec![("BOARD_URL", self.url.clone()), ("BOARD_TOKEN", self.token.clone())]
     }
-    /// 以 agent `who` 在白板 default 上执行
+    /// 以 agent `who` 在白板 default 上执行；第一次用这个名字时先 check
     pub fn run(&self, who: &str, args: &[&str]) -> Run {
+        if !self.checked.borrow().contains(who) {
+            let r = self.check(who);
+            assert_eq!(r.code, 0, "check {who}：{}{}", r.out, r.err);
+        }
+        self.run_unchecked(who, args)
+    }
+    /// 不替它 check
+    pub fn run_unchecked(&self, who: &str, args: &[&str]) -> Run {
         let mut env = self.env();
         env.push(("BOARD_AS", who.into()));
         env.push(("BOARD", "default".into()));
         board(&self.home, &env, args)
+    }
+    /// board check --as who
+    pub fn check(&self, who: &str) -> Run {
+        let r = board(&self.home, &self.env(), &["check", "--as", who, "--json"]);
+        if r.code == 0 {
+            self.checked.borrow_mut().insert(who.to_string());
+        }
+        r
     }
     /// 只带给定的环境变量执行（连接服务端的变量也要自己给）
     pub fn raw(&self, env: &[(&str, String)], args: &[&str]) -> Run {
@@ -87,9 +108,15 @@ impl Server {
 
 /// 去掉开发者环境里连接线上服务端的变量，免得测试写到真实白板上
 pub fn board(home: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
+    board_stdin(home, env, args, None)
+}
+
+/// 同上，并把 input 写进标准输入
+pub fn board_stdin(home: &Path, env: &[(&str, String)], args: &[&str], input: Option<&str>) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
     cmd.args(args)
         .env("HOME", home)
+        .env("USERPROFILE", home)
         .env("NO_COLOR", "1")
         .env_remove("BOARD")
         .env_remove("BOARD_AS")
@@ -99,7 +126,15 @@ pub fn board(home: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let o = cmd.output().unwrap();
+    let o = match input {
+        None => cmd.stdin(Stdio::null()).output().unwrap(),
+        Some(text) => {
+            use std::io::Write;
+            let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+            child.wait_with_output().unwrap()
+        }
+    };
     Run {
         code: o.status.code().unwrap_or(-1),
         out: String::from_utf8_lossy(&o.stdout).into(),

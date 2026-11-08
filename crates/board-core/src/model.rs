@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// 心跳间隔：agent 领取后用 skill 里的脚本每 10 秒发送一次 `board beat`（PRD §8 规则 1）
+/// 心跳间隔：agent 会话 check 之后，skill 里的脚本每 10 秒发送一次 `board beat`，同时维持名字在线和卡片的持有（PRD §3、§8 规则 7）
 pub const BEAT_MS: i64 = 10 * 1000;
-/// 连续这么多次没收到心跳（从领取或最近一次心跳算起），领取释放（PRD §8 规则 7）
+/// 连续这么多次没收到心跳：名字离线；卡片（从领取或最近一次心跳算起）释放（PRD §3、§8 规则 7）
 pub const BEAT_MISSES: i64 = 5;
 
 /// 项目颜色色板
@@ -205,6 +205,29 @@ impl ActorKind {
     }
 }
 
+/// agent 名字最长多少个字符（PRD §3）
+pub const AGENT_NAME_MAX: usize = 48;
+
+/// agent 名字的格式说明（`USAGE` 的原因里用）
+pub const AGENT_NAME_SHAPE: &str =
+    "格式是 <运行环境>/<模型>，需要时加 -<后缀>；两段都只能用小写字母、数字、. 和 -，并以字母或数字开头，只有一个 /，总长不超过 48 个字符，例如 claude/opus-5.5、dsh/deepseek-v4.1-flash、claude/opus-5.5-login";
+
+/// agent 名字的格式（PRD §3）：`<运行环境>/<模型>`，需要时加 `-<后缀>`，例如 `claude/opus-5.5`、
+/// `claude/opus-5.5-login`。不合格式时返回原因（含格式说明）
+pub fn check_agent_name(name: &str) -> Result<(), String> {
+    let ok_part = |s: &str| {
+        s.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+    };
+    if name.chars().count() > AGENT_NAME_MAX {
+        return Err(format!("名字「{name}」超过 {AGENT_NAME_MAX} 个字符：{AGENT_NAME_SHAPE}"));
+    }
+    match name.split_once('/') {
+        Some((env, model)) if ok_part(env) && ok_part(model) => Ok(()),
+        _ => Err(format!("名字「{name}」格式不对：{AGENT_NAME_SHAPE}")),
+    }
+}
+
 /// 谁在操作：界面上是人，CLI 是 agent，超时释放是系统
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
@@ -352,6 +375,30 @@ pub struct Workspace {
     pub rev: i64,
     pub now: i64,
     pub projects: Vec<ProjectInfo>,
+    /// 在线的 agent（所有白板，按名字排序）
+    #[serde(default)]
+    pub agents: Vec<AgentInfo>,
+}
+
+/// 一个在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInfo {
+    pub name: String,
+    /// 首次 check 的时间
+    pub checked_at: i64,
+    /// 最近一次心跳（check 也算一次）
+    pub beat_at: i64,
+    /// 它持有的卡片（每块白板最多一张；可能没有）
+    pub cards: Vec<HeldCard>,
+}
+
+/// agent 持有的一张卡片：白板路径加上卡片本身
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeldCard {
+    pub board: String,
+    #[serde(flatten)]
+    pub card: Card,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
