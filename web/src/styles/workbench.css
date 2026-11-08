@@ -85,6 +85,13 @@
 }
 .side-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 
+/* 白板侧栏：最近动态占满剩余高度，列表在内部滚动，避免下方留出大片空白 */
+.side-view[data-view="board"] .side-scroll { display: flex; flex-direction: column; }
+.side-view[data-view="board"] .side-scroll > .tree-sec { flex: none; }
+.side-view[data-view="board"] .side-scroll > .tree-sec:last-child:not(.closed) { flex: 1 1 0; min-height: 180px; display: flex; flex-direction: column; }
+.side-view[data-view="board"] .side-scroll > .tree-sec:last-child > .tree-body { flex: 1 1 0; min-height: 0; }
+.side-view[data-view="board"] .side-scroll > .tree-sec:last-child > .tree-body > div { min-height: 0; display: flex; flex-direction: column; }
+
 /* 筛选 */
 .side-filter {
   display: flex; align-items: center; gap: 7px; margin: 0 10px 8px; height: 32px; padding: 0 6px 0 10px; border-radius: var(--r-sm);
@@ -145,14 +152,15 @@
 .tree-row.closed + .tree-children { grid-template-rows: 0fr; }
 .tree-empty { padding: 4px 12px 8px 40px; font-size: 11.5px; color: var(--text-4); }
 
-.recent-row { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 5px 12px 5px 20px; font-size: 12px; color: var(--text-2); line-height: 1.45; }
+.recent-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding: 4px 12px 4px 20px; font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.recent-row > div:not(.sk-lines) { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; min-width: 0; }
 .recent-row .avatar { width: 18px; height: 18px; font-size: 9.5px; box-shadow: none; margin-top: 1px; }
 .recent-row b { font-weight: 500; color: var(--text); }
-.recent-row .when { display: block; font-size: 10.5px; color: var(--text-4); }
+.recent-row .when { display: inline; margin-left: auto; font-size: 10.5px; color: var(--text-4); white-space: nowrap; }
 .recent-row.new { animation: tl-in var(--dur-4) var(--spring-soft) both; }
 
-/* 最近动态：高度封顶的独立滚动区（滚到底自动加载更早的），不把整块侧栏撑长 */
-.recent-list { max-height: 264px; overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 4px; }
+/* 最近动态：占满侧栏剩余高度并在内部滚动（滚到底自动加载更早的），不把整块侧栏撑长 */
+.recent-list { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 4px; }
 /* 列表底部：加载中 / 加载失败可重试 / 没有更多了 */
 .recent-foot {
   display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
