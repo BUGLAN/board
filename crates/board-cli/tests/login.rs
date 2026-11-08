@@ -14,6 +14,15 @@ fn read(s: &Server) -> String {
     std::fs::read_to_string(config(s)).unwrap_or_default()
 }
 
+/// 配置路径文案：Windows 是 %USERPROFILE%\.board\config.toml，其他系统是 ~/.board/config.toml
+fn config_shown() -> &'static str {
+    if cfg!(windows) {
+        r"%USERPROFILE%\.board\config.toml"
+    } else {
+        "~/.board/config.toml"
+    }
+}
+
 /// 只用参数（不设任何环境变量）
 const ARGS: [&str; 4] = ["--as", "test/alpha", "--board", "default"];
 
@@ -28,7 +37,7 @@ fn login_writes_config_and_commands_work_without_env() {
     let s = start();
     let r = board(&s.home, &[], &["login", "--url", &s.url, "--token", &s.token]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert!(r.out.contains("已登录") && r.out.contains("~/.board/config.toml"), "{}", r.out);
+    assert!(r.out.contains("已登录") && r.out.contains(config_shown()), "{}", r.out);
     assert!(!r.out.contains(&s.token) && !r.err.contains(&s.token), "输出里不打印令牌原文");
     let text = read(&s);
     assert!(text.contains(&format!("url = \"{}\"", s.url)) && text.contains(&s.token), "{text}");

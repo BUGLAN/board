@@ -32,6 +32,15 @@ fn check<'a>(v: &'a Value, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("缺少检查项 {key}：{v}"))
 }
 
+/// 配置路径文案：Windows 是 %USERPROFILE%\.board\config.toml，其他系统是 ~/.board/config.toml
+fn config_shown() -> &'static str {
+    if cfg!(windows) {
+        r"%USERPROFILE%\.board\config.toml"
+    } else {
+        "~/.board/config.toml"
+    }
+}
+
 struct Server {
     url: String,
     db: PathBuf,
@@ -299,7 +308,7 @@ fn doctor_reports_config_file_source_and_env_override() {
     for key in ["board_url", "board_token"] {
         let c = check(&v, key);
         assert_eq!((c["status"].as_str(), c["source"].as_str()), (Some("ok"), Some("file")), "{c}");
-        assert!(c["detail"].as_str().unwrap().contains("~/.board/config.toml"), "{c}");
+        assert!(c["detail"].as_str().unwrap().contains(config_shown()), "{c}");
     }
     assert_eq!(check(&v, "board_as")["status"], "skip");
     assert_eq!(check(&v, "board")["status"], "skip");
