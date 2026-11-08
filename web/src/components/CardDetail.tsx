@@ -284,8 +284,26 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
 }
 let navDir = 0;
 
+/** 自适应高度的输入框：宽度变了（拖动左右分栏、窗口缩放）也重新算高度，免得多出来的行被截掉。
+    on：输入框不是一直在的（例如描述只在编辑时才有）时，传一个随之变化的值 */
+function useRefit(ref: React.RefObject<HTMLTextAreaElement | null>, on?: unknown) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let w = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === w) return;
+      w = el.clientWidth;
+      autosize(el);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, on]);
+}
+
 function TitleEditor({ card: c, locked }: { card: Card; locked: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  useRefit(ref);
   const [v, setV] = useState(c.title);
   const editing = useRef(false);
   useEffect(() => {
@@ -394,6 +412,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
   const ta = useRef<HTMLTextAreaElement>(null);
   const path = useData(s => s.path);
   const attach = useAttach({ board: path, card: c.id, setValue: setV, textarea: ta });
+  useRefit(ta, mode);
   useEffect(() => {
     if (locked && mode === 'edit') setMode('view');
   }, [locked, mode]);
@@ -669,6 +688,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
     else if (!multi && el.scrollHeight > ONE_LINE) setMulti(true);
   };
   const attach = useAttach({ board: path, card: c.id, setValue: setText, textarea: ta });
+  useRefit(ta);
   const firstNew = shown.current;
   // 这次打开时是不是从骨架开始的
   const wasLoading = useRef(loading);
@@ -709,6 +729,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
 
   return (
     <div className="d-side" data-part="activity">
+      <SideSplitter />
       <div className="d-label d-side-head">
         动态 {loading ? <Skeleton className="count" w={14} h={10} /> : <span className="count">{n}</span>}
         <span className="act">只能追加</span>
@@ -790,6 +811,94 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   );
 }
 
+/* ------------------------------ 左右栏分隔条 ------------------------------ */
+
+const SIDE_KEY = 'board.detail.side';
+const SIDE_MIN = 260;
+const SIDE_MAX = 680;
+/** 左栏至少留这么宽；和 overlays.css 里 .d-grid 的 clamp 一致 */
+const MAIN_MIN = 320;
+
+const savedSide = () => {
+  try {
+    const v = Number(localStorage.getItem(SIDE_KEY));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+};
+const saveSide = (v: number | null) => {
+  try {
+    if (v == null) localStorage.removeItem(SIDE_KEY);
+    else localStorage.setItem(SIDE_KEY, String(Math.round(v)));
+  } catch {
+    /* 忽略 */
+  }
+};
+
+/** 动态栏左边的分隔条：拖动改右栏宽度（写到 .d-grid 的 --modal-side，记在本机），双击恢复默认。
+    宽度范围由 CSS 的 clamp 兜底：窗口变窄时左栏仍至少留 MAIN_MIN */
+function SideSplitter() {
+  const ref = useRef<HTMLDivElement>(null);
+  const grid = () => ref.current?.closest<HTMLElement>('.d-grid') ?? null;
+  const drag = useRef<{ x0: number; w0: number; max: number; w: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const v = savedSide();
+    if (v != null) grid()?.style.setProperty('--modal-side', `${v}px`);
+  }, []);
+
+  const end = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    document.body.classList.remove('is-resizing');
+    ref.current?.classList.remove('active');
+    try {
+      ref.current?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* 已经释放了 */
+    }
+    saveSide(d.w);
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="d-split"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="拖动调整动态栏宽度，双击恢复默认"
+      title="拖动调整宽度，双击恢复默认"
+      onPointerDown={e => {
+        if (e.button !== 0) return;
+        const g = grid();
+        const side = ref.current?.parentElement;
+        if (!g || !side) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const w0 = side.getBoundingClientRect().width;
+        drag.current = { x0: e.clientX, w0, w: w0, max: Math.max(SIDE_MIN, Math.min(SIDE_MAX, g.clientWidth - MAIN_MIN)) };
+        ref.current?.setPointerCapture(e.pointerId);
+        ref.current?.classList.add('active');
+        document.body.classList.add('is-resizing');
+      }}
+      onPointerMove={e => {
+        const d = drag.current;
+        if (!d) return;
+        d.w = Math.round(Math.min(d.max, Math.max(SIDE_MIN, d.w0 - (e.clientX - d.x0))));
+        grid()?.style.setProperty('--modal-side', `${d.w}px`);
+      }}
+      onPointerUp={end}
+      onPointerCancel={end}
+      onDoubleClick={() => {
+        grid()?.style.removeProperty('--modal-side');
+        saveSide(null);
+      }}
+    />
+  );
+}
+
 /** 原地编辑自己发的评论：预填原 Markdown，⌘↵ 保存、Esc 取消；空内容不能保存 */
 function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone: () => void }) {
   const [draft, setDraft] = useState(a.text);
@@ -797,6 +906,7 @@ function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone:
   const ta = useRef<HTMLTextAreaElement>(null);
   const empty = !draft.trim();
   useLayoutEffect(() => autosize(ta.current), [draft]);
+  useRefit(ta);
   useEffect(() => {
     const el = ta.current;
     if (!el) return;

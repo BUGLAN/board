@@ -146,6 +146,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .d-main { overflow: visible; padding-top: 4px; }
   .d-main .d-danger { margin: 22px 18px 0; }
   .d-side { border-left: 0; background: transparent; margin-top: 10px; }
+  .d-split { display: none; }
   .d-activity { overflow: visible; }
   .d-comment { position: sticky; bottom: 0; background: var(--glass-strong); }
   .creator .d-head { padding-top: 14px; }

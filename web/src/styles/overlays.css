@@ -42,14 +42,31 @@
 
 /* 左：内容；右：动态 + 评论 */
 .d-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) var(--modal-side, 340px); }
+/* 拖过分隔条后（--modal-side 写在 .d-grid 上）：右栏 260–680px，左栏至少留 320px */
+.d-grid[style*="--modal-side"] { grid-template-columns: minmax(0, 1fr) clamp(260px, var(--modal-side), max(260px, min(680px, calc(100% - 320px)))); }
 .d-main { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 0 18px; display: flex; flex-direction: column; }
 .d-main .d-danger { margin-top: auto; }
 .d-side {
-  min-height: 0; display: flex; flex-direction: column;
+  position: relative; min-height: 0; display: flex; flex-direction: column;
   border-left: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface-2) 55%, transparent);
 }
 .d-side-head { flex: none; margin: 0; padding: 16px 18px 8px; }
+/* 左右栏分隔条：压在动态栏左边线上，悬停 / 拖动时线变成品牌色 */
+.d-split { position: absolute; z-index: 2; top: 0; bottom: 0; left: -4px; width: 9px; cursor: col-resize; touch-action: none; }
+.d-split::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 3px; border-radius: 999px;
+  background: var(--brand); opacity: 0; transition: opacity var(--dur-1) var(--ease-out);
+}
+.d-split::before {
+  content: ""; position: absolute; top: 50%; left: 2px; width: 5px; height: 32px; margin-top: -16px; border-radius: 999px;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-3); z-index: 1;
+  transition: background-color var(--dur-1), box-shadow var(--dur-1);
+}
+.d-split:hover::before, .d-split.active::before { background: var(--brand); box-shadow: none; }
+.d-split:hover::after { opacity: .45; transition-delay: 120ms; }
+.d-split.active::after { opacity: 1; transition-delay: 0s; }
+body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none !important; }
 .d-side-head .act { font-size: 11px; color: var(--text-4); font-weight: 400; letter-spacing: 0; text-transform: none; }
 .d-activity { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 8px 18px; }
 @media (max-width: 900px) { .drawer { --modal-side: 290px; } }
