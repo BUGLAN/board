@@ -57,6 +57,26 @@ fn shell_script(app: &AppHandle) -> String {
     }
 }
 
+/// Windows 任务栏按 24 DIP 绘制窗口图标。Tauri 默认窗口图标在进程 DPI 感知建立前取到 32px，
+/// 200% 缩放下会被任务栏放大到 48px 而模糊；这里按窗口实际缩放从 exe 图标资源读取精确帧。
+#[cfg(target_os = "windows")]
+fn taskbar_icon_size(scale_factor: f64) -> u32 {
+    (24.0 * scale_factor).round().clamp(16.0, 256.0) as u32
+}
+
+#[cfg(target_os = "windows")]
+fn apply_taskbar_icon(window: &WebviewWindow) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = taskbar_icon_size(scale);
+    if let Ok(icon) = tauri::image::Image::from_icon_resource(
+        tauri::utils::platform::WINDOWS_APP_ICON_RESOURCE_ID,
+        size,
+        size,
+    ) {
+        let _ = window.set_icon(icon);
+    }
+}
+
 fn open_window(app: &AppHandle) -> tauri::Result<()> {
     let n = WINDOWS.fetch_add(1, Ordering::SeqCst);
     let theme = splash::load_theme(app);
@@ -94,6 +114,8 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(target_os = "windows")]
     let builder = custom_titlebar::apply(builder);
     let window = builder.build()?;
+    #[cfg(target_os = "windows")]
+    apply_taskbar_icon(&window);
     if theme == splash::Theme::Auto {
         let dark = window.theme().ok() == Some(Theme::Dark);
         if dark != guess {
@@ -255,4 +277,18 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Board 桌面端启动失败");
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::taskbar_icon_size;
+
+    #[test]
+    fn taskbar_icon_size_follows_windows_scaling() {
+        assert_eq!(taskbar_icon_size(1.0), 24);
+        assert_eq!(taskbar_icon_size(1.25), 30);
+        assert_eq!(taskbar_icon_size(1.5), 36);
+        assert_eq!(taskbar_icon_size(1.75), 42);
+        assert_eq!(taskbar_icon_size(2.0), 48);
+    }
 }

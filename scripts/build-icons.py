@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """从 src-tauri/icons/source.svg 重新生成桌面端图标。
 
-Windows 任务栏图标来自 exe 内嵌的 icon.ico：Tauri 在 Windows 上按 SM_CXICON
-（96 DPI 为 32px，随系统缩放变大）从资源里用 LoadImageW 加载对应尺寸帧。
-把 1024 的 SVG 直接缩到 16/20/24/32/40/48 时，4 根细竖条会糊成一团，
-所以这些小尺寸按目标像素网格单独绘制；64 及以上仍然用矢量渲染。
+Windows 任务栏图标来自 exe 内嵌的 icon.ico。任务栏按 24 DIP 绘制窗口图标
+（100/125/150/175/200% 分别对应 24/30/36/42/48px），桌面端会在窗口创建后
+按当前缩放从 exe 图标资源加载对应尺寸帧。把 1024 的 SVG 直接缩小到这些尺寸时，
+4 根细竖条会糊成一团，所以小尺寸按目标像素网格单独绘制；64 及以上仍然用矢量渲染。
 
 用法（仓库根目录，先 npm ci；需要 Python 3 和 Pillow）：
 
@@ -33,6 +33,9 @@ BAR_WIDTH = 112 / 1024
 BAR_GAP = 56 / 1024
 MARGIN = 64 / 1024
 RADIUS = 200 / 1024
+
+# 16/20/24/32/40/48 是 Windows 常规图标尺寸；30/36/42 是任务栏在 125/150/175% 缩放下的尺寸。
+SMALL_SIZES = (16, 20, 24, 30, 32, 36, 40, 42, 48)
 BG_TOP = (0x26, 0x27, 0x2C)
 BG_BOTTOM = (0x0C, 0x0D, 0x0F)
 SS = 8  # 超采样倍数
@@ -118,12 +121,12 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     small_dir = WORK / "small"
     small_dir.mkdir(parents=True, exist_ok=True)
-    for size in (16, 20, 24, 32, 40, 48):
+    for size in SMALL_SIZES:
         render_small(size).save(small_dir / f"{size}x{size}.png")
 
     large = render_large()
 
-    write_ico([(size, small_dir / f"{size}x{size}.png") for size in (16, 20, 24, 32, 40, 48)]
+    write_ico([(size, small_dir / f"{size}x{size}.png") for size in SMALL_SIZES]
               + [(size, large[size]) for size in (64, 128, 256)],
               ICONS / "icon.ico")
 
@@ -131,7 +134,7 @@ def main() -> None:
     shutil.copyfile(large[128], ICONS / "128x128.png")
     shutil.copyfile(large[256], ICONS / "128x128@2x.png")
     shutil.copyfile(large[512], ICONS / "icon.png")
-    print("✓ 图标已生成：icon.ico（16/20/24/32/40/48/64/128/256）+ 32/128/256/512 PNG")
+    print("✓ 图标已生成：icon.ico（16/20/24/30/32/36/40/42/48/64/128/256）+ 32/128/256/512 PNG")
     print("  icon.icns 未改动（macOS 图标）")
 
 
