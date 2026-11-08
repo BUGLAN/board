@@ -145,3 +145,5 @@ board attach 2 shot.png --comment "截图"  # 上传附件
 ---
 
 在线实例：<https://board.buglan.com>（GitHub 登录，账号在部署时指定）· 部署自己的实例：[docs/deploy.md](docs/deploy.md)
+
+开发：集成分支是 `main`，推送前检查见 [AGENTS.md](AGENTS.md)。推 `main` 只跑测试；推 `vX.Y.Z` tag（和 `Cargo.toml` 的版本号一致）才部署线上服务端，见 [docs/deploy.md](docs/deploy.md)「升级」。

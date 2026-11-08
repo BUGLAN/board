@@ -9,7 +9,7 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
 ```
 
 - HTTPS 证书在 Cloudflare 那边；服务器不开 80/443（443 被 sing-box 占用）。
-- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：默认由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
+- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：推 tag 后由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
 
 - 网页端：浏览器打开 `https://board.buglan.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board login --url <服务端地址> --token <访问令牌>` 写进 `~/.board/config.toml`（也可以用环境变量 `BOARD_URL`、`BOARD_TOKEN`，优先于配置文件）。
@@ -179,7 +179,24 @@ docker compose start board
 
 ## 7. 升级
 
-推送到 `main` 即自动测试、构建、部署（见下文「自动部署」）。
+发版由人决定：推 `vX.Y.Z` tag 才构建、部署线上服务端（见下文「自动部署」）；推 `main` 只跑测试，不部署。
+
+1. 把 `Cargo.toml` 里 `workspace.package.version` 改成要发的版本号，更新 `Cargo.lock` 里本仓库 crate 的版本号，提交并推到 `main`：
+
+   ```bash
+   cargo update --workspace          # Cargo.lock 跟着改，否则 cargo test --locked 不过
+   git commit -am "chore: 版本号 0.4.0"
+   git push origin HEAD:main
+   ```
+
+2. 在这个提交上打 tag 并推送：
+
+   ```bash
+   git tag v0.4.0
+   git push origin v0.4.0
+   ```
+
+tag 去掉 `v` 后和 `workspace.package.version` 不一致时不部署。tag 只管服务端部署，桌面端和 CLI 的发版不在这里。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
@@ -191,19 +208,28 @@ docker compose start board
 
 ## 自动部署
 
-`.github/workflows/deploy.yml`。推送到 `main` 后：
+`.github/workflows/deploy.yml`：
+
+| 触发 | 做什么 |
+|---|---|
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）。不构建镜像、不部署。改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不跑 |
+| 推 `v*` tag | build → deploy，见下图 |
+| 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 
 ```
-build（GitHub 托管的 ubuntu-latest）：npm ci → 构建界面 → cargo test → deploy/build-linux.sh 交叉编译 → prebuilt 镜像
+build（GitHub 托管的 ubuntu-latest）：核对 tag 和 Cargo.toml 的版本号 → npm ci → 构建界面 → cargo test
+                                     → deploy/build-linux.sh 交叉编译 → prebuilt 镜像
                                      → 推到 GHCR：ghcr.io/buglan/board-server:<7 位提交号> 和 :latest
 deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
-                                     → docker compose up -d --no-build → 等健康检查 → 核对线上 /api/health 的提交号
+                                     → docker compose up -d --no-build → 等健康检查
+                                     → 核对线上 /api/health：version 是 tag 的版本号，commit 是 tag 指向的提交
 ```
 
-- 改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不触发；其他分支、PR 不触发
+- tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致：build 第一步失败，不推镜像、不部署
+- PR、其他分支不触发
 - 同一时间只有一次部署，后来的排队
 - `cargo test` 失败时不推镜像、不部署
-- 重启、健康检查（最多 2 分钟）或核对提交号失败：`.env` 的 `BOARD_IMAGE` 改回部署前的镜像并重启，打印最近 50 行日志，任务失败
+- 重启、健康检查（最多 2 分钟）或核对版本号、提交号失败：`.env` 的 `BOARD_IMAGE` 改回部署前的镜像并重启，打印最近 50 行日志，任务失败
 - 服务器不编译：只拉镜像、运行；服务器上 `docker-compose.yml` 和 `deploy/backup.sh`、`deploy/remote-deploy.sh` 由工作流拷过去
 - 拉镜像用本次任务的 `GITHUB_TOKEN`（经 stdin 传给 `docker login`），拉完立刻 `docker logout`，服务器上不留 GHCR 凭据
 - 清理：GHCR 上只保留最新 5 个版本；服务器上只留当前和上一个 `ghcr.io/buglan/board-server` 镜像
@@ -233,12 +259,12 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
 ### 看部署结果
 
 - GitHub 仓库 Actions → deploy：每一步的输出；失败时 deploy 任务最后打印了容器最近 50 行日志
-- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `commit`
+- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `version`、`commit`
 - 服务器上正在运行的镜像：`.env` 的 `BOARD_IMAGE`
 
 ### 回滚
 
-Actions → deploy → Run workflow，`commit` 填要回到的 7 位提交号：跳过构建，直接部署 GHCR 上已有的 `board-server:<提交号>` 镜像。GHCR 只保留最新 5 个版本，更早的提交号会报「GHCR 上没有镜像」，线上不变。`commit` 留空则构建并部署 `main` 最新提交。
+Actions → deploy → Run workflow（分支选 `main`），`commit` 填要回到的 7 位提交号（某个 tag 的提交号：`git rev-parse --short=7 v0.3.0`）：跳过构建，直接部署 GHCR 上已有的 `board-server:<提交号>` 镜像，部署后只核对提交号。GHCR 只保留最新 5 个版本，更早的提交号会报「GHCR 上没有镜像」，线上不变。
 
 ## 8. 日志
 

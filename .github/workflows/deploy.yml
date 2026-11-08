@@ -1,13 +1,15 @@
-# 自动部署（docs/ci-deploy.md、docs/deploy.md「自动部署」）：
-#   push main → build：构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
-#             → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上提交号；失败切回上一个镜像
-# 手动运行时填 7 位提交号：跳过 build，直接部署 GHCR 上已有的镜像（回滚用）
+# 测试与部署（docs/deploy.md「自动部署」）：
+#   push main   → test：npm ci → cargo test → 界面类型检查；不部署
+#   push tag v*  → build：核对 tag 和 Cargo.toml 的 workspace 版本号 → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
+#                → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上版本号和提交号；失败切回上一个镜像
+# 手动运行（在 main 上）填 7 位提交号：跳过 build，直接部署 GHCR 上已有的镜像（回滚用）
 name: deploy
 
 on:
   push:
     branches: [main]
-    # 改动全部在这些路径里时不触发
+    tags: ["v*"]
+    # 推 main 时改动全部在这些路径里不跑测试（推 tag 不看路径）
     paths-ignore:
       - "docs/**"
       - "prototype/**"
@@ -16,33 +18,73 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: "要部署的 7 位提交号（回滚用，跳过构建）；留空则构建并部署 main 最新提交"
-        required: false
-        default: ""
+        description: "要回滚到的 7 位提交号：跳过构建，直接部署 GHCR 上已有的镜像"
+        required: true
 
-# 同一时间只有一次部署：后来的排队，不取消正在进行的
+# 部署同一时间只有一次：后来的排队，不取消正在进行的；测试另排一队
 concurrency:
-  group: deploy
+  group: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && 'deploy' || 'test' }}
   cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/buglan/board-server
 
 jobs:
+  # 推 main：只跑推送前检查（和 AGENTS.md 一致），不构建镜像、不部署
+  test:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装依赖（postinstall 会装 web/ 的依赖）
+        run: npm ci
+
+      - name: 测试
+        run: cargo test --locked
+
+      - name: 界面类型检查
+        run: npm --prefix web run typecheck
+
+  # 推 v* tag：构建并推镜像
   build:
-    # 只部署 main（手动运行也只认 main）；手动运行且填了提交号：跳过构建
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.commit == '')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
-      commit: ${{ steps.commit.outputs.commit }}
+      commit: ${{ steps.version.outputs.commit }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - id: commit
-        run: echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+      - name: 核对 tag 和 Cargo.toml 的版本号
+        id: version
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          ver=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 和 Cargo.toml 的 workspace.package.version（${ver:-取不到}）不一致，不部署。先把版本号改成 $tag 并提交，再在那个提交上打 tag"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "构建 $GITHUB_REF_NAME：版本 $ver，提交 $(git rev-parse --short=7 HEAD)"
 
       - uses: actions/setup-node@v4
         with:
@@ -78,7 +120,7 @@ jobs:
       - name: 交叉编译 board-server
         run: ./deploy/build-linux.sh
         env:
-          BOARD_COMMIT: ${{ steps.commit.outputs.commit }}
+          BOARD_COMMIT: ${{ steps.version.outputs.commit }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -98,7 +140,7 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            ${{ env.IMAGE }}:${{ steps.commit.outputs.commit }}
+            ${{ env.IMAGE }}:${{ steps.version.outputs.commit }}
             ${{ env.IMAGE }}:latest
 
       - name: GHCR 只保留最新 5 个版本
@@ -110,11 +152,12 @@ jobs:
 
   deploy:
     needs: build
-    # build 成功；或者手动回滚（build 被跳过）
+    # 推 tag 且 build 成功；或者在 main 上手动回滚（build 被跳过）
     if: >-
-      always() && github.ref == 'refs/heads/main' &&
-      (needs.build.result == 'success' ||
-       (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' && github.event.inputs.commit != ''))
+      always() &&
+      ((needs.build.result == 'success' && startsWith(github.ref, 'refs/tags/v')) ||
+       (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/main' && github.event.inputs.commit != ''))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -124,7 +167,7 @@ jobs:
       DIR: ${{ vars.DEPLOY_DIR }}
       URL: ${{ vars.DEPLOY_URL }}
     steps:
-      # 只用到 docker-compose.yml 和 deploy/ 下的脚本（回滚时也用 main 当前的版本）
+      # 只用到 docker-compose.yml 和 deploy/ 下的脚本（推 tag 时用 tag 里的版本，回滚时用 main 当前的版本）
       - uses: actions/checkout@v4
 
       - name: 要部署的提交号
@@ -175,17 +218,24 @@ jobs:
         # 令牌走 stdin，不出现在命令行和日志里
         run: printf '%s' "$TOKEN" | ssh "$HOST" "cd '$DIR' && ./deploy/remote-deploy.sh deploy '$COMMIT' '$ACTOR'"
 
-      - name: 核对线上提交号
+      - name: 核对线上版本号和提交号
         env:
           COMMIT: ${{ steps.commit.outputs.commit }}
+          # 回滚时没有版本号，只核对提交号
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          got=
+          got=; gotv=
           for i in $(seq 1 12); do
-            got=$(curl -fsS --max-time 15 "${URL%/}/api/health?t=$(date +%s)" 2>/dev/null | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p' || true)
-            if [ "$got" = "$COMMIT" ]; then echo "✓ 线上 $URL 是 $COMMIT"; exit 0; fi
+            h=$(curl -fsS --max-time 15 "${URL%/}/api/health?t=$(date +%s)" 2>/dev/null || true)
+            got=$(printf '%s' "$h" | jq -r '.commit // empty' 2>/dev/null || true)
+            gotv=$(printf '%s' "$h" | jq -r '.version // empty' 2>/dev/null || true)
+            if [ "$got" = "$COMMIT" ] && { [ -z "$VERSION" ] || [ "$gotv" = "$VERSION" ]; }; then
+              echo "✓ 线上 $URL 是 ${gotv:-?}（$got）"
+              exit 0
+            fi
             sleep 5
           done
-          echo "::error::线上 $URL 的提交号是「${got:-取不到}」，应为 $COMMIT，切回部署前的镜像"
+          echo "::error::线上 $URL 是「${gotv:-取不到}（${got:-取不到}）」，应为 ${VERSION:-任意版本}（$COMMIT），切回部署前的镜像"
           ssh "$HOST" "cd '$DIR' && ./deploy/remote-deploy.sh rollback"
           exit 1
 
