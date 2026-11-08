@@ -9,3 +9,5 @@ node_modules/
 .env
 /deploy/bin
 *.tsbuildinfo
+prototype/
+.claude
