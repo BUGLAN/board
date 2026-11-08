@@ -195,16 +195,33 @@
 .tl-bubble .who .agent-name { font-family: var(--f-mono); font-weight: 500; }
 .tl-bubble .md { font-size: 13px; line-height: 1.6; }
 .tl-item.mine .tl-bubble { background: color-mix(in srgb, var(--brand) 7%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 20%, transparent); }
+/* 发送中的评论：半透明、呼吸，作者旁边一个转圈；转正后（.settled）把透明度补回来，不重播入场动画 */
+.tl-item.sending .tl-bubble { opacity: .62; animation: tl-breathe 1.4s var(--ease-in-out) infinite; }
+.sending-tag { display: inline-flex; align-items: center; gap: 5px; }
+.sending-tag i { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: login-spin .8s linear infinite; }
+.tl-item.settled .tl-bubble { animation: tl-settle var(--dur-3) var(--ease-out); }
+@keyframes tl-breathe { 50% { opacity: .42; } }
+@keyframes tl-settle { from { opacity: .62; } }
+@media (prefers-reduced-motion: reduce) { .tl-item.sending .tl-bubble, .sending-tag i { animation: none; } }
+:root[data-motion="reduced"] .tl-item.sending .tl-bubble, :root[data-motion="reduced"] .sending-tag i { animation: none; }
 
 /* 评论框 */
 .d-comment { flex: none; padding: 10px 14px 14px; border-top: 1px solid var(--line); }
+/* 一行时：附件 | 输入 | 发送 排成一行；超过一行（.multi）时输入占满整行，附件和发送收进下面的工具栏，
+   不再在长文本两侧各占一列。输入框到 140px 后只在自己里面滚（浮层细滚动条，不占文字宽度） */
 .comment-box {
-  display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 12px; border-radius: var(--r-md);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "attach input send";
+  align-items: end; column-gap: 8px; padding: 6px 6px 6px 12px; border-radius: var(--r-md);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2);
   transition: box-shadow var(--dur-2);
 }
+.comment-box > .comment-attach { grid-area: attach; }
+.comment-box > textarea { grid-area: input; }
+.comment-box > .comment-send { grid-area: send; }
+.comment-box.multi { grid-template-areas: "input input input" "attach . send"; row-gap: 2px; padding-top: 4px; }
+.comment-box.multi > textarea { padding: 6px 6px 2px; }
 .comment-box:focus-within { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent), 0 0 0 4px var(--brand-soft), var(--shadow-2); }
-.comment-box textarea { flex: 1; border: 0; background: transparent; resize: none; padding: 6px 0; max-height: 140px; font-size: 13.5px; line-height: 1.5; }
+.comment-box textarea { width: 100%; min-width: 0; border: 0; background: transparent; resize: none; padding: 6px 0; max-height: 140px; overflow-y: auto; overscroll-behavior: contain; font-size: 13.5px; line-height: 1.5; }
 .comment-box textarea::placeholder { color: var(--text-3); }
 .comment-send {
   width: 32px; height: 32px; border-radius: var(--r-sm); display: grid; place-items: center; flex: none;

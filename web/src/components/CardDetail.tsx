@@ -9,7 +9,7 @@ import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
-import { closeDetail, exec, openDetail, useCurrent, useData, useOnline } from '../store/data';
+import { closeDetail, exec, isSettled, openDetail, sendComment, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { confirm, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -658,7 +658,16 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   const ta = useRef<HTMLTextAreaElement>(null);
   const send = useRef<HTMLButtonElement>(null);
   const n = c.activity.length;
+  const sending = useSending(c.id);
   const path = useData(s => s.path);
+  // 输入超过一行后换成「上面输入、下面工具栏」的排法；清空前不换回去，免得宽度变化让它来回跳
+  const [multi, setMulti] = useState(false);
+  const fit = (el: HTMLTextAreaElement | null) => {
+    autosize(el);
+    if (!el) return;
+    if (!el.value) setMulti(false);
+    else if (!multi && el.scrollHeight > ONE_LINE) setMulti(true);
+  };
   const attach = useAttach({ board: path, card: c.id, setValue: setText, textarea: ta });
   const firstNew = shown.current;
   // 这次打开时是不是从骨架开始的
@@ -674,25 +683,28 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
     shown.current = n;
   }, [n]);
 
-  const submit = async () => {
+  // 乐观发送：输入框当帧清空，动态底部先出现「发送中」的气泡；失败时气泡移除、原文回到输入框
+  // 高度、单行/多行跟着内容走（打字、粘贴、附件插入的占位文字都会改 text）
+  useLayoutEffect(() => fit(ta.current), [text, multi]);
+
+  const submit = () => {
     if (stillUploading(attach.busy)) return;
     const t = text.trim();
     if (!t) {
       ta.current?.focus();
       return;
     }
-    try {
-      await exec({ op: 'comment', id: c.id, text: t });
-      setText('');
-      requestAnimationFrame(() => autosize(ta.current));
-      send.current?.animate(
-        [{ transform: 'rotate(-12deg)' }, { transform: 'translate(18px,-18px) rotate(-12deg)', opacity: 0 }, { transform: 'translate(-10px, 10px)', opacity: 0 }, { transform: 'none', opacity: 1 }],
-        { duration: 520, easing: 'cubic-bezier(.16,1,.3,1)' },
-      );
-      requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' }));
-    } catch (e) {
+    setText('');
+    send.current?.animate(
+      [{ transform: 'rotate(-12deg)' }, { transform: 'translate(18px,-18px) rotate(-12deg)', opacity: 0 }, { transform: 'translate(-10px, 10px)', opacity: 0 }, { transform: 'none', opacity: 1 }],
+      { duration: 520, easing: 'cubic-bezier(.16,1,.3,1)' },
+    );
+    requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' }));
+    sendComment(c.id, t).catch(e => {
+      // 期间又写了新内容：原文放在前面，两段都留着
+      setText(cur => (cur.trim() ? `${t}\n\n${cur}` : t));
       toastError(e);
-    }
+    });
   };
 
   return (
@@ -712,7 +724,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
               重试
             </button>
           </div>
-        ) : !n ? (
+        ) : !n && !sending.length ? (
           <div className="d-activity-empty">还没有动态</div>
         ) : (
           // 从骨架换成内容时淡入（已缓存的直接显示，不播放）
@@ -720,11 +732,28 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
             {c.activity.map((a, idx) => (
               <ActivityItem key={a.id} a={a} now={now} fresh={firstNew != null && idx >= firstNew} />
             ))}
+            {sending.map(s => (
+              <div key={`sending-${s.key}`} className="tl-item mine new sending" aria-busy="true">
+                <div>
+                  <Avatar actor={ME} />
+                </div>
+                <div className="tl-bubble">
+                  <div className="who">
+                    <b>{actorName(ME)}</b>
+                    <span className="tl-time sending-tag">
+                      <i aria-hidden="true" />
+                      发送中
+                    </span>
+                  </div>
+                  <Markdown src={s.text} />
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
       <div className="d-comment">
-        <div className={cx('comment-box', text.trim() && 'has-text', attach.over && 'drop-on')}>
+        <div className={cx('comment-box', multi && 'multi', text.trim() && 'has-text', attach.over && 'drop-on')}>
           <button className="comment-attach" type="button" aria-label="添加附件" title="附件：也可以直接粘贴截图（≤ 10 MB）" onClick={attach.pick}>
             <Icon name="clip" />
           </button>
@@ -740,10 +769,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
             placeholder={`写评论…  ${accel('↵')} 发送`}
             aria-label="评论"
             value={text}
-            onChange={e => {
-              setText(e.target.value);
-              autosize(e.target);
-            }}
+            onChange={e => setText(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
@@ -764,7 +790,15 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   );
 }
 
+/** 本窗口发出的评论：发送中气泡的作者 */
+const ME: Activity['actor'] = { kind: 'human', name: '' };
+/** 评论框一行的高度（line-height 13.5 × 1.5 + 上下内边距 6 × 2），超过就算多行 */
+const ONE_LINE = 34;
+
 function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: boolean }) {
+  // 自己发的评论从「发送中」转正：不再播入场动画，只把透明度补回来
+  const settled = isSettled(a.id);
+  if (settled) fresh = false;
   const name =
     a.actor.kind === 'agent' ? (
       <b className="agent-name" style={{ color: agentColor(a.actor.name) }}>
@@ -780,7 +814,7 @@ function ActivityItem({ a, now, fresh }: { a: Activity; now: number; fresh: bool
   );
   if (a.kind === 'comment') {
     return (
-      <div className={cx('tl-item', a.actor.kind === 'human' && 'mine', fresh && 'new')}>
+      <div className={cx('tl-item', a.actor.kind === 'human' && 'mine', fresh && 'new', settled && 'settled')}>
         <div>
           <Avatar actor={a.actor} />
         </div>

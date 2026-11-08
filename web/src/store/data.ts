@@ -26,6 +26,14 @@ interface DataState {
   detailError: string | null;
   /** 正在写入的标签（乐观更新）：「白板路径#卡片」→ 标签 ID。已经并进 board 里卡片的 labels，界面据此画成 pending 态 */
   pending: Record<string, number[]>;
+  /** 正在发送的评论（乐观更新）：「白板路径#卡片」→ 按发送顺序。动态底部画成「发送中」的气泡，服务端确认后换成正式评论 */
+  sending: Record<string, Sending[]>;
+}
+
+export interface Sending {
+  key: number;
+  text: string;
+  at: number;
 }
 
 const CURRENT = 'board.current';
@@ -57,6 +65,7 @@ export const useData = create<DataState>(() => ({
   generation: 0,
   error: null,
   pending: {},
+  sending: {},
   detailError: null,
 }));
 
@@ -310,6 +319,52 @@ export function closeDetail() {
 }
 
 /* ------------------------------ 写 ------------------------------ */
+
+/* ------------------------------ 评论：乐观更新 ------------------------------ */
+
+const NO_SENDING: Sending[] = [];
+export const useSending = (id: number) => useData(s => s.sending[pkey(s.path, id)] ?? NO_SENDING);
+
+/** 由本窗口发出、发送中气泡换成的正式评论：它们不再播放「新动态」的入场动画，免得转正时闪一下 */
+const settled = new Set<number>();
+export const isSettled = (activityId: number) => settled.has(activityId);
+
+let sendSeq = 0;
+/** 评论按发送顺序一条接一条地发，连续快速发送时服务端收到的顺序与界面一致 */
+let sendChain: Promise<unknown> = Promise.resolve();
+
+/** 发评论：当帧在动态底部画上「发送中」的气泡；服务端确认后，在同一次更新里换成正式评论；失败时移除气泡并抛出错误 */
+export function sendComment(id: number, text: string): Promise<void> {
+  const path = get().path;
+  const k = pkey(path, id);
+  const item: Sending = { key: ++sendSeq, text, at: serverNow() };
+  const drop = (p: Record<string, Sending[]>) => {
+    const ls = (p[k] ?? []).filter(x => x.key !== item.key);
+    const next = { ...p };
+    if (ls.length) next[k] = ls;
+    else delete next[k];
+    return next;
+  };
+  set(s => ({ sending: { ...s.sending, [k]: [...(s.sending[k] ?? []), item] } }));
+  const run = sendChain.then(async () => {
+    try {
+      const r = await api.cmd(path, { op: 'comment', id, text });
+      details.set(k, r);
+      const mine = [...r.activity].reverse().find(a => a.kind === 'comment' && a.actor.kind === 'human' && a.text.trim() === text.trim());
+      if (mine) settled.add(mine.id);
+      set(s => ({
+        sending: drop(s.sending),
+        ...(s.detailId === id && s.path === path ? { detail: r, detailError: null } : {}),
+      }));
+    } catch (e) {
+      set(s => ({ sending: drop(s.sending) }));
+      throw e;
+    }
+    void refresh();
+  });
+  sendChain = run.catch(() => undefined);
+  return run;
+}
 
 /** 对当前白板执行卡片命令；失败抛 ApiError */
 export async function exec(cmd: Cmd): Promise<CardDetail> {
