@@ -3,7 +3,7 @@
 //! - 身份（`auth`）：所有 `/api/*` 都要登录（GitHub 会话 Cookie）或带访问令牌，只有 `/api/health` 例外
 //!   （它返回版本和提交号，部署后用来核对线上版本）；
 //!   本机模式（`--local`）只接受本机访问，不需要登录
-//! - `GET /api/workspace`、`/api/board`、`/api/card`：快照
+//! - `GET /api/workspace`、`/api/board`、`/api/card`：快照；`GET /api/events`：按游标向前翻页取动态
 //! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`
 //! - `POST /api/files`、`GET /api/files/{id}`：卡片附件（上传、读取）
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
@@ -157,6 +157,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/workspace", get(workspace))
         .route("/board", get(board))
         .route("/card", get(card))
+        .route("/events", get(events))
         .route("/cmd", post(cmd))
         // 附件：上限之外留一点余量，略超的文件由 board-core 给出清楚的提示
         .route("/files", post(upload).layer(DefaultBodyLimit::max(files::MAX_BYTES + 1024 * 1024)))
@@ -334,6 +335,40 @@ async fn card(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResu
             st.read(|r| {
                 let b = r.resolve(&q.path)?;
                 r.card(&b, id)
+            })
+        })
+        .await?,
+    ))
+}
+
+/// 动态一页默认多少条、最多多少条（界面滚到底时按 cursor 往回翻页）
+const EVENTS_PAGE_DEFAULT: i64 = 20;
+const EVENTS_PAGE_MAX: i64 = 100;
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    path: String,
+    /// 上一页最后一条的 id；不传表示从最新一条开始。越界（比所有 id 都小）时返回空数组
+    #[serde(default)]
+    before: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+/// `GET /api/events?path=<项目>/<白板>&before=<id>&limit=<n>`：按 id 倒序分页取动态。
+///
+/// 新的在前；把这一页最后一条的 id 当 `before` 再请求就是更早的一页，两页之间不重不漏。
+/// 没有更早的了就返回 `[]`，界面据此停止加载。
+async fn events(State(s): State<AppState>, Query(q): Query<EventsQuery>) -> ApiResult<Vec<Event>> {
+    let limit = q.limit.unwrap_or(EVENTS_PAGE_DEFAULT);
+    if !(1..=EVENTS_PAGE_MAX).contains(&limit) {
+        return Err(BoardError::usage(format!("limit 必须是 1 到 {EVENTS_PAGE_MAX} 之间的整数")).into());
+    }
+    Ok(Json(
+        s.db(move |st| {
+            st.read(|r| {
+                let b = r.resolve(&q.path)?;
+                r.events_page(&b, q.before, limit)
             })
         })
         .await?,

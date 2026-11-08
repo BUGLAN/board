@@ -905,3 +905,60 @@ fn project_color_palette_or_any_hex() {
     assert_eq!(color("a"), "#00FF7F");
     assert_eq!(color("b"), "#12AB9F");
 }
+
+/* ------------------------------ 动态分页（#55） ------------------------------ */
+
+#[test]
+fn events_page_pages_backwards_without_gaps_or_duplicates() {
+    let mut s = store();
+    for i in 0..25 {
+        exec(&mut s, B, &alpha(), T0 + i, new(&format!("卡{i}"))).unwrap();
+    }
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let ids = |v: &[Event]| v.iter().map(|e| e.id).collect::<Vec<_>>();
+
+    // 不带 before：最新的一页，id 倒序
+    let all = s.read(|r| r.events_page(&b, None, 1000)).unwrap();
+    assert!(all.len() >= 25, "25 张卡片至少有 25 条动态：{}", all.len());
+    assert!(all.windows(2).all(|w| w[0].id > w[1].id), "新的在前");
+
+    // 每页 5 条往前翻，拼起来要正好等于全部：不重不漏
+    let all_ids = ids(&all);
+    let mut got: Vec<i64> = Vec::new();
+    let mut before = None;
+    loop {
+        let page = s.read(|r| r.events_page(&b, before, 5)).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        let page_ids = ids(&page);
+        assert!(page_ids.len() <= 5);
+        assert!(page_ids.windows(2).all(|w| w[0] > w[1]));
+        before = page_ids.last().copied();
+        got.extend(page_ids);
+        assert!(got.len() <= all_ids.len(), "翻页应当终止");
+    }
+    assert_eq!(got, all_ids);
+}
+
+#[test]
+fn events_page_before_out_of_range() {
+    let mut s = store();
+    exec(&mut s, B, &alpha(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 1, new("二")).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let ids = |v: &[Event]| v.iter().map(|e| e.id).collect::<Vec<_>>();
+    let all = s.read(|r| r.events_page(&b, None, 100)).unwrap();
+    let all_ids = ids(&all);
+    let newest = *all_ids.first().unwrap();
+    let oldest = *all_ids.last().unwrap();
+
+    // 比所有 id 都大：当作从最新一条开始
+    let page = s.read(|r| r.events_page(&b, Some(newest + 1000), 3)).unwrap();
+    assert_eq!(ids(&page), all_ids[..3.min(all_ids.len())].to_vec());
+
+    // 比最老的还老（或 0）：翻到底，返回空数组而不是报错
+    assert!(s.read(|r| r.events_page(&b, Some(oldest - 1), 3)).unwrap().is_empty());
+    assert!(s.read(|r| r.events_page(&b, Some(oldest), 3)).unwrap().is_empty());
+    assert!(s.read(|r| r.events_page(&b, Some(0), 3)).unwrap().is_empty());
+}

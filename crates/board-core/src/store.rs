@@ -515,6 +515,22 @@ impl<'a> R<'a> {
         events_query(self.conn, "WHERE e.id > ?1 ORDER BY e.id LIMIT ?2", params![after, limit])
     }
 
+    /// 一块白板的动态，按 id 倒序（新的在前），按游标向前翻页。
+    ///
+    /// `before` 是上一页最后一条的 id：只取 id 比它小的，因此两页之间不重不漏；
+    /// 不传表示从最新一条开始。翻到底（没有更早的了）返回空数组，不报错。
+    /// `limit` 的取值范围由调用方（HTTP 接口）校验。
+    pub fn events_page(&self, board: &BoardRef, before: Option<i64>, limit: i64) -> Result<Vec<Event>> {
+        match before {
+            Some(before) => events_query(
+                self.conn,
+                "WHERE e.board = ?1 AND e.id < ?2 ORDER BY e.id DESC LIMIT ?3",
+                params![board.id, before, limit],
+            ),
+            None => events_query(self.conn, "WHERE e.board = ?1 ORDER BY e.id DESC LIMIT ?2", params![board.id, limit]),
+        }
+    }
+
     pub fn last_event_id(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))?)
     }
