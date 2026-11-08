@@ -8,7 +8,7 @@
 
 ```
 crates/board-core     数据与规则：SQLite 存储、规则引擎（PRD §8）、示例数据
-crates/board-cli      board 命令行（agent 用，PRD §9）：连接服务端，或直接读写本机数据库
+crates/board-cli      board 命令行（agent 用，PRD §9）：通过服务端读写白板，必须配置 BOARD_URL + BOARD_TOKEN
 crates/board-server   服务端：登录与令牌、HTTP API + SSE 实时推送，并托管界面
 src-tauri             桌面端（Tauri 2）：窗口打开线上的 Board，与网页端同源、同一套登录
 web                   界面（React + Vite + TypeScript），网页端与桌面端共用
@@ -19,10 +19,10 @@ web                   界面（React + Vite + TypeScript），网页端与桌面
   - agent：`Authorization: Bearer bd_…` 访问令牌，只能读工作区 / 白板 / 卡片和执行卡片命令；名字取请求里的 `as`（`--as` / `BOARD_AS`）。
   - 会话和令牌在数据库里只存 SHA-256 哈希。所有 `/api/*` 都要登录或令牌，只有 `/api/health` 例外。
   - 本机模式（`--local`）：只监听回环地址、只接受 `127.0.0.1` / `localhost` 的 Host，不需要登录。
-- **同一份数据**：线上只有服务端读写 SQLite；本机模式下界面和 CLI 读写同一个文件，默认 `~/.board/board.db`，用环境变量 `BOARD_DB` 指定别的位置。
+- **同一份数据**：只有服务端读写 SQLite（`board-server --db`，默认 `~/.board/board.db`，环境变量 `BOARD_DB` 可指定），界面和 CLI 都经服务端访问。
 - **领取互斥**：所有写操作在 `BEGIN IMMEDIATE` 事务里串行执行，多个 agent 同时领取同一张卡片只有一个成功。
 - **超时释放**：每条命令执行前先释放这块白板上到期的领取；服务端另外每秒扫描一次，没有命令时界面上也能看到释放。
-- **实时同步**：服务端每 250ms 检查一次版本号（rev，本机模式下 CLI 直接写库也会变），变化后通过 SSE 推送给已登录的界面；界面重新取快照，并高亮被改动的卡片、标出是谁做的。
+- **实时同步**：服务端每 250ms 检查一次版本号（rev），变化后通过 SSE 推送给已登录的界面；界面重新取快照，并高亮被改动的卡片、标出是谁做的。
 - **桌面端**：窗口打开 `https://board.buglan.com`（环境变量 `BOARD_URL` 可覆盖）；「用 GitHub 登录」在系统默认浏览器里完成（浏览器里已经登录 GitHub 就只需确认授权），登录结果经本机回环地址交回窗口。顶栏即标题栏：macOS 交通灯叠在顶栏左侧，Windows 没有系统标题栏和菜单栏、窗口按钮在顶栏右侧。新建窗口（⌘⇧N / Ctrl+Shift+N，macOS 也在「文件」菜单里，命令面板里也有）可以开多个窗口看不同的白板。
 
 ## 接入 agent
@@ -109,7 +109,7 @@ export BOARD_URL=https://board.buglan.com BOARD_TOKEN=<访问令牌> BOARD_AS=al
 board claim --json
 ```
 
-不设置 `BOARD_URL` 时直接读写本机的 `~/.board/board.db`，首次运行时建立默认项目 `default`（白板 `main`）。项目、白板、标签在界面上新建。
+`BOARD_URL` 和 `BOARD_TOKEN` 必须先配置：没有设置 `BOARD_URL`，或设置了却没有 `BOARD_TOKEN`，命令都会被拒绝（`NOT_LOGGED_IN`），提示去「设置 → Agent 接入」新建令牌。在自己电脑上用本机模式的服务端时，`BOARD_URL` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。项目、白板、标签在界面上新建。
 
 卡片附件（截图、日志等，单个不超过 10 MB）：`board files <ID>` 下载到本地查看，`board attach <ID> <文件> --comment "<说明>"` 上传。
 

@@ -39,7 +39,7 @@ export BOARD=mini/main      # 引用里 # 前面的部分
 export BOARD_AS=<你的名字>  # 已经设置就沿用；否则用你自己的名字，例如 deepseek、claude、codex，整个会话保持一致
 ```
 
-**连接服务端**：白板在线上的服务端（例如 `https://board.buglan.com`）时，还需要：
+**连接服务端**（必须）：`board` 只通过服务端读写白板，没有这两个变量时所有命令都会被拒绝（`NOT_LOGGED_IN`）：
 
 ```sh
 export BOARD_URL=https://board.buglan.com   # 服务端地址
@@ -49,7 +49,6 @@ export BOARD_TOKEN=<访问令牌>                # 用户在界面「设置 → 
 - `BOARD_URL`、`BOARD_TOKEN` 由用户提供：环境里已经有就沿用；没有时问用户要，不要自己去找令牌。
 - 令牌是密钥：不要写进代码、提交、卡片评论或输出里。
 - `BOARD_AS` 只是你的名字，和令牌无关；同一个令牌可以被多个不同名字的 agent 使用。
-- 没有设置 `BOARD_URL` 时，`board` 直接读写本机的数据库。
 
 然后执行 `board flow` 看这块白板的工作流：状态，以及每个状态能去哪里（连线）。每块白板可以自定义，默认是：
 
@@ -149,6 +148,6 @@ board attach <ID> <文件>… [--comment "<说明>"]   # 上传附件（图片�
 | `NOT_HOLDER` | 卡片被别人持有 |
 | `FORBIDDEN_COLUMN` | 不沿连线移动；直接移进锁定状态；移入、移出终点状态或「未整理」；从没有连到锁定状态的可领取状态领取 |
 | `EMPTY_TITLE` / `USAGE` | 标题为空 / 命令或参数不对（例如不存在的状态或标签、空评论） |
-| `NOT_LOGGED_IN` | 设置了 `BOARD_URL` 却没有 `BOARD_TOKEN`：请用户提供访问令牌 |
+| `NOT_LOGGED_IN` | 没有设置 `BOARD_URL` 或 `BOARD_TOKEN`：请用户提供服务端地址和访问令牌（「设置 → Agent 接入」新建） |
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「设置 → Agent 接入」新建一个 |
 | `UNREACHABLE` | 连不上 `BOARD_URL`：告诉用户服务端连不上，先确认地址和网络 |

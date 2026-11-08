@@ -199,15 +199,16 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 **安装**：桌面端安装包自带 `board` 命令行。Windows 安装器把它写进用户 PATH，装完重开终端就能用；macOS 的安装包不带安装脚本，在「设置 → Agent 接入」里执行一条 `ln -sf` 命令把 `Board.app` 里自带的 `board` 链接到 `/usr/local/bin`。不装桌面端时从源码安装：`cargo install --path crates/board-cli`（需要 Rust）。
 
-**连接方式**
+**连接**
 
-| 方式 | 设置 | 读写哪里 |
-|---|---|---|
-| 服务端 | `BOARD_URL=<服务端地址>`（例如 `https://board.buglan.com`）和 `BOARD_TOKEN=<访问令牌>` | 通过服务端读写，规则在服务端执行 |
-| 本机 | 不设置 `BOARD_URL` | 直接读写本机的数据库（`~/.board/board.db`，`BOARD_DB` 可以指定别的位置） |
+CLI 只通过服务端读写白板，规则在服务端执行。必须设置：
 
-- 两种方式的命令、输出、规则和错误码相同。
-- 设置了 `BOARD_URL` 但没有 `BOARD_TOKEN` 时，命令被拒绝（`NOT_LOGGED_IN`）；令牌无效或已吊销时被拒绝（`INVALID_TOKEN`）；连不上 `BOARD_URL` 时被拒绝（`UNREACHABLE`）。
+| 环境变量 | 内容 |
+|---|---|
+| `BOARD_URL` | 服务端地址，例如 `https://board.buglan.com`；本机模式的服务端填它的本机地址，例如 `http://127.0.0.1:7420` |
+| `BOARD_TOKEN` | 访问令牌，在界面「设置 → Agent 接入」新建 |
+
+- 没有设置 `BOARD_URL`，或设置了 `BOARD_URL` 但没有 `BOARD_TOKEN` 时，命令被拒绝（`NOT_LOGGED_IN`），原因里指向「设置 → Agent 接入」；令牌无效或已吊销时被拒绝（`INVALID_TOKEN`）；连不上 `BOARD_URL` 时被拒绝（`UNREACHABLE`）。
 
 除 `board help` 外，所有命令都需要身份（§3）；除 `board help`、`board boards` 外，所有命令都需要白板（§3）。
 
@@ -376,7 +377,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 | `NOT_HOLDER` | 编辑或移动被持有卡片的不是持有者 |
 | `FORBIDDEN_COLUMN` | 把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态或「未整理」；agent 不沿连线移动卡片；从没有连到锁定状态的可领取状态领取 |
 | `USAGE` | 命令格式或参数不正确：未知的命令、未知的状态、项目里不存在的标签、缺少必需的参数、评论内容为空 |
-| `NOT_LOGGED_IN` | 没有登录：界面没有登录会话；CLI 设置了 `BOARD_URL` 却没有 `BOARD_TOKEN`；用访问令牌做只能在界面上做的操作 |
+| `NOT_LOGGED_IN` | 没有登录：界面没有登录会话；CLI 没有设置 `BOARD_URL` 或 `BOARD_TOKEN`；用访问令牌做只能在界面上做的操作 |
 | `INVALID_TOKEN` | 访问令牌不存在或已吊销 |
 | `UNREACHABLE` | CLI 连不上 `BOARD_URL` 指定的服务端 |
 
@@ -441,7 +442,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 37. 用指定的 GitHub 账号登录，进入白板。用其他 GitHub 账号登录，停留在登录页，并提示该账号没有权限。
 38. 在「设置 → 账号」退出登录后，界面回到登录页；退出前的会话再请求 API，返回 `NOT_LOGGED_IN`。
 39. 在「设置 → Agent 接入」新建令牌，原文只显示这一次。agent 设置 `BOARD_URL` 和 `BOARD_TOKEN` 后执行 `board claim`，成功，持有者是 `BOARD_AS` 的名字；已打开的界面在 2 秒内显示。
-40. 设置了 `BOARD_URL` 没有 `BOARD_TOKEN`，得到 `NOT_LOGGED_IN`；令牌写错或已吊销，得到 `INVALID_TOKEN`；`BOARD_URL` 连不上，得到 `UNREACHABLE`。退出码都是 1。
+40. 没有设置 `BOARD_URL`，或设置了 `BOARD_URL` 没有 `BOARD_TOKEN`，得到 `NOT_LOGGED_IN`；令牌写错或已吊销，得到 `INVALID_TOKEN`；`BOARD_URL` 连不上，得到 `UNREACHABLE`。退出码都是 1。
 41. 用访问令牌新建项目、删除白板、修改工作流，得到 `NOT_LOGGED_IN`。
 42. 同一份数据上，服务端方式和本机方式执行同一条命令，`--json` 输出相同。
 

@@ -1,6 +1,6 @@
 //! SQLite 存储。
 //!
-//! - 网页端、桌面端、CLI 都直接读写同一个数据库文件（默认 `~/.board/board.db`，`BOARD_DB` 可覆盖）。
+//! - 只有服务端打开数据库文件（`board-server --db`，默认 `~/.board/board.db`，`BOARD_DB` 可覆盖）；网页端、桌面端、CLI 都经服务端访问。
 //! - 所有写操作在 `BEGIN IMMEDIATE` 事务里串行执行：多个 agent 同时领取同一张卡片，只有一个成功（规则 2）。
 //! - 每次有变更的写入把 `meta.rev` 加一；服务端轮询 rev，把变更推给已打开的界面。
 

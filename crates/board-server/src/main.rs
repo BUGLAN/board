@@ -26,7 +26,7 @@ const USAGE: &str = "用法：
 参数：
   --host   监听地址，默认 $BOARD_HOST 或 127.0.0.1
   --port   端口，默认 $BOARD_PORT 或 7420
-  --db     数据库文件，默认 $BOARD_DB 或 ~/.board/board.db
+  --db     数据库文件，默认 $BOARD_DB 或 ~/.board/board.db（只有服务端读写它）
   --demo   数据库为空时写入示例项目
   --local  本机模式：只能监听 127.0.0.1 / ::1，不需要登录
 

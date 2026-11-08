@@ -244,4 +244,12 @@ docker compose logs -f board
 cargo run --release -p board-server -- --local
 ```
 
-只监听 `127.0.0.1`，不需要登录，数据在 `~/.board/board.db`。CLI 不设置 `BOARD_URL` 时直接读写同一个数据库。
+只监听 `127.0.0.1`，不需要登录，数据在 `~/.board/board.db`（`--db <路径>` 或 `BOARD_DB` 可指定）。
+
+CLI 同样连这个服务端：浏览器打开 `http://127.0.0.1:7420`，在「设置 → Agent 接入」新建访问令牌，然后
+
+```bash
+export BOARD_URL=http://127.0.0.1:7420 BOARD_TOKEN=<访问令牌>
+```
+
+没有设置 `BOARD_URL` / `BOARD_TOKEN` 时 CLI 直接报错（`NOT_LOGGED_IN`），不会去读写数据库文件。

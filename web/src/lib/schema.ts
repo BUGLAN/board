@@ -83,7 +83,7 @@ export const ERRORS: [ErrorCode, string][] = [
   ['NOT_HOLDER', '编辑或移动被持有卡片的不是持有者'],
   ['FORBIDDEN_COLUMN', '把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态或「未整理」；agent 不沿连线移动卡片；从没有连到锁定状态的可领取状态领取'],
   ['USAGE', '命令格式或参数不正确：未知的命令、未知的状态、项目里不存在的标签、缺少必需的参数、评论内容为空'],
-  ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 设置了 BOARD_URL 却没有 BOARD_TOKEN；用访问令牌做只有人能在界面上做的操作'],
+  ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 没有设置 BOARD_URL 或 BOARD_TOKEN；用访问令牌做只有人能在界面上做的操作'],
   ['INVALID_TOKEN', '访问令牌不存在或已吊销'],
   ['UNREACHABLE', 'CLI 连不上 BOARD_URL 指定的服务端'],
 ];
