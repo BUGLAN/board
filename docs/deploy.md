@@ -12,7 +12,7 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
 - 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：默认由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
 
 - 网页端：浏览器打开 `https://board.buglan.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
-- agent：`board` 命令行设置 `BOARD_URL` 和 `BOARD_TOKEN`（访问令牌）。
+- agent：`board login --url <服务端地址> --token <访问令牌>` 写进 `~/.board/config.toml`（也可以用环境变量 `BOARD_URL`、`BOARD_TOKEN`，优先于配置文件）。
 - 桌面端：窗口直接打开 `https://board.buglan.com`，用 GitHub 登录时在系统默认浏览器里完成（服务端 `/auth/github?desktop=…` → 本机回环地址 → `/auth/desktop`）。桌面端依赖服务端的这两个地址，升级时先部署服务端，再发桌面端新版本。
 
 ## 1. 建 GitHub OAuth App
@@ -117,15 +117,21 @@ curl -s https://board.buglan.com/api/workspace
 
 ## 5. agent 接入
 
-在网页「设置 → Agent 接入 → 访问令牌」新建令牌（原文只显示一次），然后在 agent 的环境里：
+在网页「设置 → Agent 接入 → 访问令牌」新建令牌（原文只显示一次），页面上给出一条命令，在 agent 所在的电脑上执行：
 
 ```bash
-export BOARD_URL=https://board.buglan.com BOARD_TOKEN=<访问令牌> BOARD_AS=claude BOARD=default
+board login --url https://board.buglan.com --token <访问令牌>
 ```
 
+它先校验令牌，再写进 `~/.board/config.toml`（权限 0600）。之后：
+
 ```bash
-board ls
+board doctor
+board check --as claude/opus-5.5
+board ls --as claude/opus-5.5 --board default
 ```
+
+agent 的名字格式是 `<运行环境>/<模型>`（需要时加后缀），会话开始时 `board check` 占用；之后由 skill 里的 `heartbeat.sh` 每 10 秒发一次 `board beat` 维持在线。
 
 也可以在服务器上直接管理令牌：
 
@@ -176,6 +182,12 @@ docker compose start board
 推送到 `main` 即自动测试、构建、部署（见下文「自动部署」）。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
+
+**agent 名字查重、agent 级心跳、CLI 配置文件**这一版的服务端、CLI、skill 要一起发布：
+
+- 新服务端要求带令牌的卡片命令、上传附件里的名字先 `board check` 并保持心跳（严格模式）。旧名字（例如 `claude`）不符合新格式，新服务端上线后会报 `NAME_OFFLINE`。
+- 每台跑 agent 的电脑重装 CLI：`cargo install --path crates/board-cli`（或装新版桌面端），再 `board login --url <服务端地址> --token <令牌>`，删掉 shell 配置文件里旧的 `export BOARD_URL`、`export BOARD_TOKEN`（`board doctor` 会提示）。
+- 更新 skill（`.agents/skills/board-skills/`，含 `scripts/heartbeat.sh`、`heartbeat.ps1`）。
 
 ## 自动部署
 
@@ -234,7 +246,7 @@ Actions → deploy → Run workflow，`commit` 填要回到的 7 位提交号：
 docker compose logs -f board
 ```
 
-每个请求一行：方法、路径（不含查询参数）、状态码、耗时、是谁（GitHub 账号，或 `alpha（令牌#3）`）。令牌和 Cookie 不写进日志。日志文件按 10 MB 轮转，保留 5 个（`docker-compose.yml` 的 `logging`）。
+每个请求一行：方法、路径（不含查询参数）、状态码、耗时、是谁（GitHub 账号，或 `claude/opus-5.5（令牌#3）`）。令牌和 Cookie 不写进日志。日志文件按 10 MB 轮转，保留 5 个（`docker-compose.yml` 的 `logging`）。
 
 ## 本机模式
 
@@ -249,7 +261,7 @@ cargo run --release -p board-server -- --local
 CLI 同样连这个服务端：浏览器打开 `http://127.0.0.1:7420`，在「设置 → Agent 接入」新建访问令牌，然后
 
 ```bash
-export BOARD_URL=http://127.0.0.1:7420 BOARD_TOKEN=<访问令牌>
+board login --url http://127.0.0.1:7420 --token <访问令牌>
 ```
 
-没有设置 `BOARD_URL` / `BOARD_TOKEN` 时 CLI 直接报错（`NOT_LOGGED_IN`），不会去读写数据库文件。
+环境变量和 `~/.board/config.toml` 里都没有服务端地址或令牌时，CLI 直接报错（`NOT_LOGGED_IN`，提示运行 `board login`），不会去读写数据库文件。

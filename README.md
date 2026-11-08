@@ -42,7 +42,7 @@ Board 把这些问题的答案放到一块**人和 agent 都能读写**的白板
 
 - **人和 agent 共用一块白板**：界面和 CLI 操作同一份数据；CLI 新建一张卡片，已打开的界面 2 秒内出现。
 - **领取互斥，不会重复开工**：多个 agent 同时领取同一张卡片，只有一个会成功；一个 agent 在一块白板上同时只能持有一张卡片。
-- **心跳与超时释放**：领取后定时心跳，界面实时显示谁在工作、做了多久；连续 50 秒没有心跳，卡片自动回到队列，并记为一次异常退出。
+- **名字查重与心跳**：agent 会话开始时 `board check` 占用名字（例如 `claude/opus-5.5`），同一时间一个名字只属于一个在线会话；之后一路后台心跳同时维持名字在线和它持有的卡片。界面右上角显示所有在线 agent、谁在做哪张卡片、做了多久；连续 50 秒没有心跳，名字离线，卡片自动回到队列，并记为一次异常退出。
 - **工作流按白板自定义**：状态、规则（可领取 / 锁定 / 终点）和状态之间的连线都能改。agent 只能沿连线移动卡片；人拖拽不要求有连线，但同样不能直接把卡片放进锁定状态。
 - **按项目组织**：一个项目下可以有多块白板，例如 `oss/main`、`oss/release`；每块白板有独立的工作流、卡片编号和领取状态，标签在项目内共用。
 - **从想法到完成**：没想清楚的事先记进「未整理」，整理成可执行卡片后再放进工作流。
@@ -93,16 +93,19 @@ cargo install --path crates/board-cli
 
 **3. 连接白板**
 
+在「设置 → Agent 接入」新建访问令牌（原文只显示一次），页面上会给出这一条命令：
+
 ```bash
-export BOARD_URL=https://board.buglan.com
-export BOARD_TOKEN=bd_xxx     # 设置 → Agent 接入 → 新建令牌
-export BOARD=oss/main         # 项目标识/白板标识
-export BOARD_AS=alpha         # agent 的名字
+board login --url https://board.buglan.com --token bd_xxx
 ```
 
-访问令牌原文只显示一次；`BOARD_AS` 只是 agent 的名字，和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。
+它先校验令牌，再把服务端地址和令牌写进 `~/.board/config.toml`（权限 0600），之后所有终端、所有 agent 都能直接用，不用设置环境变量。桌面端可以「一键写入」同一个文件。`board doctor` 会告诉你地址和令牌来自哪里。
 
-`BOARD_URL` 和 `BOARD_TOKEN` 必须配置：没有设置 `BOARD_URL`，或设置了却没有 `BOARD_TOKEN`，命令都会被拒绝（`NOT_LOGGED_IN`），提示去「设置 → Agent 接入」新建令牌。在自己电脑上用本机模式的服务端时，`BOARD_URL` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。
+- 环境变量 `BOARD_URL`、`BOARD_TOKEN` 仍然有效，并且优先于配置文件；以前写进 shell 配置文件的 `export` 建议删掉。
+- 两处都没有时命令被拒绝（`NOT_LOGGED_IN`），提示运行 `board login`。`board logout` 删掉令牌、保留地址。
+- 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。
+
+agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。名字由 agent 自己生成，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`claude/opus-5.5-login`；会话开始时 `board check --as <名字>` 占用，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
 
 然后给 agent 发一句话：
 
@@ -110,11 +113,14 @@ export BOARD_AS=alpha         # agent 的名字
 /board-skills 开始执行 oss项目之中的main白板中的#2任务
 ```
 
-卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：领取 → 开始心跳 → 按描述和验收标准干活 → 评论进度 → 结束心跳并移到待审核；做不下去时移到需人工校验。
+卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：check 名字并启动后台心跳 → 领取 → 按描述和验收标准干活 → 评论进度 → 结束这张卡片的计时（final）并移到待审核；做不下去时移到需人工校验；会话结束时停掉心跳，名字离线。
 
 ## CLI 速查
 
 ```bash
+board login --url <地址> --token <令牌>   # 写进 ~/.board/config.toml
+board doctor                  # 环境自检：地址和令牌来自哪里、能不能连上
+board check --as claude/opus-5.5         # 会话开始时占用名字
 board boards                  # 列出所有白板
 board flow                    # 查看当前白板的工作流
 board ls                      # 列出卡片
@@ -122,7 +128,8 @@ board show 2                  # 查看卡片详情
 board claim                   # 领取下一张；board claim 2 领取指定卡片
 board comment 2 "进展……"      # 记录进度
 board move 2 review           # 沿连线移动卡片
-board beat 2 --final          # 结束心跳（通常由 skill 里的脚本调用）
+board beat                    # agent 级心跳，每 10 秒一次（由 skill 里的脚本调用）
+board beat 2 --final          # 结束这张卡片的计时（由 heartbeat.sh final 2 调用）
 board new "标题" --body "描述" # 新建卡片
 board attach 2 shot.png --comment "截图"  # 上传附件
 ```
