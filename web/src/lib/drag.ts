@@ -261,15 +261,7 @@ function frame() {
 /** 找到指针下的列与插入位置，并按规则预判 */
 function locate() {
   const s = st!;
-  const cols = zones();
-  let col: HTMLElement | undefined;
-  for (const c of cols) {
-    const r = c.getBoundingClientRect();
-    if (s.x >= r.left - 4 && s.x <= r.right + 4 && s.y >= r.top - 40 && s.y <= r.bottom + 40) {
-      col = c;
-      break;
-    }
-  }
+  const col = zoneAt(zones(), s.x, s.y, s.target?.col);
   const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
   const items = list ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}`) : [];
@@ -310,6 +302,36 @@ function locate() {
       s.ghost.appendChild(hint);
     }
   }
+}
+
+/** 指针落在哪一块。块的命中范围上下放宽 40px、左右放宽 4px（指针在两块之间的空隙里也算数），但放宽的范围会盖进挨得近的隔壁块：
+    以前按顺序取第一个命中的，指针明明已经在下面那块（例如「已完成」）的顶部，却判成上面那块（例如锁定的「进行中」）；
+    指针在分界附近抖一下，就在「锁定」和「可放入」之间来回切，锁的提示一闪一闪。现在：
+    - 指针在块里面：就是这一块；
+    - 在空隙里：取离指针最近的一块；
+    - 迟滞：当前这块（cur）还在范围里、别的块只近不到 HYSTERESIS 像素时，保持当前这块，指针在分界上抖动不会来回切 */
+const HYSTERESIS = 6;
+function zoneAt(cols: HTMLElement[], x: number, y: number, cur: ColumnKey | undefined): HTMLElement | undefined {
+  let best: HTMLElement | undefined;
+  let bestD = Infinity;
+  let curEl: HTMLElement | undefined;
+  let curD = Infinity;
+  for (const c of cols) {
+    const r = c.getBoundingClientRect();
+    const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+    const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+    if (dx > 4 || dy > 40) continue;
+    const d = Math.hypot(dx, dy);
+    if (d < bestD) {
+      best = c;
+      bestD = d;
+    }
+    if (c.dataset.drop === cur) {
+      curEl = c;
+      curD = d;
+    }
+  }
+  return curEl && curD - bestD < HYSTERESIS ? curEl : best;
 }
 
 /** 插入位置。卡片是瀑布流（lib/masonry.ts），占位一挪，别的卡片换竖列、换高度。
