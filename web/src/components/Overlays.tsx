@@ -121,11 +121,16 @@ export function Palette() {
       ...quickPrompts(path, f.claimables.map(s => s.name)).map(q => ({
         id: `quick-${q.id}`, group: '提示词', title: `复制提示词：${q.title}`, sub: q.text, icon: 'prompt' as IconName, run: () => copyQuickPrompt(q),
       })),
-      // 每个标签一条：只在搜索时出现，免得空面板被刷屏
-      ...(query ? ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? [] : []).map(l => {
-        const q = quickPrompts(path, f.claimables.map(s => s.name), l.name).find(x => x.kind === 'label')!;
-        return { id: `quick-label-${l.id}`, group: '提示词', title: `复制提示词：${q.title}`, sub: q.text, icon: 'prompt' as IconName, run: () => copyQuickPrompt(q) };
-      }),
+      // 带标签的提示词：每个可领取状态 × 每个标签各一条，只在搜索时出现，免得空面板被刷屏
+      ...(query
+        ? (ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? []).flatMap(l =>
+            quickPrompts(path, f.claimables.map(s => s.name), l.name)
+              .filter(q => q.kind === 'label')
+              .map(q => ({
+                id: `quick-${q.id}-${l.id}`, group: '提示词', title: `复制提示词：${q.title}`, sub: q.text, icon: 'prompt' as IconName, run: () => copyQuickPrompt(q),
+              })),
+          )
+        : []),
       { id: 'labels', group: '操作', title: '管理标签', icon: 'tag', run: () => manageLabels(path.split('/')[0]) },
       { id: 'tab-board', group: '切换到', title: '白板', hint: accel('1'), icon: 'board', run: () => setTab('board') },
       { id: 'tab-projects', group: '切换到', title: '项目总览（画布）', hint: accel('2'), icon: 'folder', run: () => setTab('projects') },
@@ -671,7 +676,7 @@ function SortMenu({ col, go }: { col: string; go: (fn: () => void) => () => void
 }
 
 /* ============================ 提示词菜单 ============================ */
-/* 白板页头「提示词」：每个可领取状态一条，点一下复制；默认单行摘要，可展开全文；最后先选标签 */
+/* 白板页头「提示词」：每个可领取状态一条，点一下复制；默认单行摘要；带标签的提示词也按可领取状态各来一组 */
 
 function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () => void }) {
   const ws = useData(s => s.ws);
@@ -681,14 +686,13 @@ function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () =>
   const claimables = flow.claimables.length ? flow.claimables.map(s => s.name) : [flow.home?.name ?? '待办'];
   const labels = ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? [];
   const list = quickPrompts(path, claimables);
-  const [expanded, setExpanded] = useState(false);
   return (
     <>
       <div className="ctx-title">
         <Icon name="prompt" />
         <b>复制给 agent 的提示词</b>
       </div>
-      <div className={cx('qp-list', expanded && 'expanded')}>
+      <div className="qp-list">
         {list.map(q => (
           <button key={q.id} type="button" data-do={`quick-${q.id}`} className="qp-item" title={q.text} onClick={go(() => copyQuickPrompt(q))}>
             <span className="qp-title">{q.title}</span>
@@ -696,26 +700,27 @@ function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () =>
           </button>
         ))}
       </div>
-      <button type="button" className="qp-toggle" data-do="quick-expand" onClick={() => setExpanded(v => !v)}>
-        {expanded ? '收起，只看单行摘要' : '展开完整句子'}
-      </button>
-      <div className="qp-item qp-labels">
-        <span className="qp-title">做{claimables[0]}里带指定标签的任务</span>
-        {labels.length ? (
-          <div className="qp-chips">
-            {labels.map(l => {
-              const q = quickPrompts(path, claimables, l.name).find(x => x.kind === 'label')!;
-              return (
-                <button key={l.id} type="button" data-do={`quick-label-${l.id}`} data-tip={q.text} onClick={go(() => copyQuickPrompt(q))}>
-                  <LabelChip label={l} />
-                </button>
-              );
-            })}
+      {labels.length ? (
+        claimables.map(name => (
+          <div key={name} className="qp-item qp-labels">
+            <span className="qp-title">做「{name}」里带指定标签的任务</span>
+            <div className="qp-chips">
+              {labels.map(l => {
+                const q = quickPrompts(path, claimables, l.name).find(x => x.kind === 'label' && x.status === name)!;
+                return (
+                  <button key={l.id} type="button" data-do={`quick-label-${name}-${l.id}`} data-tip={q.text} onClick={go(() => copyQuickPrompt(q))}>
+                    <LabelChip label={l} />
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        ) : (
+        ))
+      ) : (
+        <div className="qp-item qp-labels">
           <span className="qp-empty">项目里还没有标签</span>
-        )}
-      </div>
+        </div>
+      )}
     </>
   );
 }

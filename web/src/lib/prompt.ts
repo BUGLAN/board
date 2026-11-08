@@ -30,8 +30,10 @@ export interface QuickPrompt {
   text: string;
   /** 复制后的提示：需要接着写什么 */
   hint: string;
-  /** 这条针对的可领取状态（all 才有） */
+  /** 这条针对的可领取状态（all / label 才有） */
   status?: string;
+  /** 这条针对的标签（label 才有） */
+  label?: string;
 }
 
 /** 「default项目之中的main白板」：用标识，agent 直接拼出 BOARD=default/main */
@@ -42,7 +44,8 @@ const where = (path: string) => {
 
 /**
  * claimables：可领取状态的名称，按工作流顺序。第一个就是新卡片的去向，也是「拆解 / 上传」的领取起点；
- * 每个可领取状态各生成一条「做<状态名>里的全部任务」，状态改名或增删时菜单跟着变。
+ * 每个可领取状态各生成一条「做<状态名>里的全部任务」；传了 label 时每个可领取状态再各生成一条
+ * 「做<状态名>里带<标签>的任务」。状态改名或增删时菜单跟着变。
  */
 export function quickPrompts(path: string, claimables: string[], label?: string): QuickPrompt[] {
   const w = where(path);
@@ -73,12 +76,16 @@ export function quickPrompts(path: string, claimables: string[], label?: string)
     })),
   ];
   if (label)
-    list.push({
-      kind: 'label',
-      id: 'label',
-      title: `做「${home}」里带「${label}」的任务`,
-      text: `/${SKILL} 开始做${w}中${home}里所有标签带${label}的任务`,
-      hint: '发给装了 board-skills 的 agent 即可',
-    });
+    names.forEach((name, i) =>
+      list.push({
+        kind: 'label',
+        id: `label-${i}`,
+        status: name,
+        label,
+        title: `做「${name}」里带「${label}」的任务`,
+        text: `/${SKILL} 开始做${w}中${name}里所有标签带${label}的任务`,
+        hint: '发给装了 board-skills 的 agent 即可',
+      }),
+    );
   return list;
 }
