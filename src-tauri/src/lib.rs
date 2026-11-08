@@ -14,7 +14,6 @@
 mod env;
 mod login;
 mod splash;
-mod window_state;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
@@ -77,12 +76,6 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
         // 拖入文件交给页面处理（卡片附件）；否则 Tauri 会拦下文件拖放，页面收不到 drop 事件
         .disable_drag_drop_handler()
         .initialization_script(&shell_script(app));
-    // 首次启动：默认大小不超过当前屏幕的工作区
-    if n == 0 {
-        if let Some((w, h)) = window_state::initial_size(app) {
-            builder = builder.inner_size(w, h);
-        }
-    }
     // 新窗口错开一点，免得完全叠在上一个窗口上
     if n > 0 {
         if let Some(prev) = app.webview_windows().values().next() {
@@ -105,13 +98,6 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
         let dark = window.theme().ok() == Some(Theme::Dark);
         if dark != guess {
             let _ = window.set_background_color(Some(splash::background(dark)));
-        }
-    }
-    window_state::remember_on_close(&window);
-    // 下次启动恢复上次关闭时的窗口大小、位置和最大化状态（以最后关闭的窗口为准）
-    if n == 0 {
-        if let Some(saved) = window_state::load(app) {
-            window_state::apply(&window, saved);
         }
     }
     Ok(())
