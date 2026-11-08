@@ -30,17 +30,22 @@
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .logo {
   display: flex; align-items: flex-start; gap: 2.5px; width: 30px; height: 30px; padding: 7px 6px;
-  border-radius: var(--r-sm); background: var(--invert);
-  box-shadow: 0 6px 16px -6px rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  border-radius: var(--r-sm);
+  /* 底色跟着主题走：浅色主题用浅色面（--surface 白），深色主题用深色面（--surface 深灰），
+     不再用 --invert 反色——那样深色主题会变成一块浅色底，四根柱子反而看不清 */
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2);
 }
 .logo i {
   flex: 1; height: var(--h); border-radius: var(--r-hair); transform-origin: top;
   animation: logo-bar 3.6s var(--ease-in-out) infinite;
 }
-.logo i:nth-child(1) { background: var(--c-todo); }
-.logo i:nth-child(2) { background: var(--c-doing); animation-delay: -.9s; }
-.logo i:nth-child(3) { background: var(--c-review); animation-delay: -1.8s; }
-.logo i:nth-child(4) { background: var(--c-done); animation-delay: -2.7s; }
+/* 柱子是列标识色：往当前主题的文字色里掺 8%——浅色主题略加深、深色主题略提亮，
+   在新的主题底色上对比度都在 3:1 以上（浅色 3.2–5.0，深色 6.8–10.2） */
+.logo i:nth-child(1) { background: color-mix(in srgb, var(--c-todo) 92%, var(--text)); }
+.logo i:nth-child(2) { background: color-mix(in srgb, var(--c-doing) 92%, var(--text)); animation-delay: -.9s; }
+.logo i:nth-child(3) { background: color-mix(in srgb, var(--c-review) 92%, var(--text)); animation-delay: -1.8s; }
+.logo i:nth-child(4) { background: color-mix(in srgb, var(--c-done) 92%, var(--text)); animation-delay: -2.7s; }
 @keyframes logo-bar { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(.62); } }
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
 .brand-name { font-family: var(--f-display); font-weight: 800; font-size: 17px; letter-spacing: -.02em; }
