@@ -30,7 +30,7 @@ const useSpy = create<{ active: string; lock: boolean }>(() => ({ active: SECTIO
 export function SettingsNav() {
   const active = useSpy(s => s.active);
   return (
-    <nav className="settings-nav scroll">
+    <nav className="settings-nav">
       {SECTIONS.map(s => (
         <a
           key={s.id}
@@ -374,7 +374,7 @@ export function SettingsPage() {
   }, [tab]);
 
   return (
-    <div className="page page-settings scroll" data-page="settings" ref={page}>
+    <div className="page page-settings" data-page="settings" ref={page}>
       <div className="settings">
         <header className="settings-hero">
           <h1>设置</h1>

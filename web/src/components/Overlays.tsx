@@ -203,7 +203,7 @@ export function Palette() {
           />
           <kbd>esc</kbd>
         </div>
-        <div className="palette-list scroll" role="listbox" ref={list}>
+        <div className="palette-list" role="listbox" ref={list}>
           {items.length === 0 && <div className="p-empty">没有匹配的结果</div>}
           {items.map((it, i) => {
             const head = it.group !== group ? <div className="p-group">{it.group}</div> : null;
@@ -823,7 +823,7 @@ export function LabelPicker() {
           }}
         />
       </div>
-      <div className="lbp-list scroll" role="listbox">
+      <div className="lbp-list" role="listbox">
         {list.map((l, i) => (
           <button
             key={l.id}
@@ -928,7 +928,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
         <p className="lbm-p">
           标签属于项目，项目下的所有白板共用。改名或改色会立即生效；删除会从所有卡片上移除。agent 用 <code>board label &lt;ID&gt; +名称</code> 打标签。
         </p>
-        <div className="lbm-list scroll" ref={list}>
+        <div className="lbm-list" ref={list}>
           {labels.length === 0 && <div className="lbp-empty">这个项目还没有标签</div>}
           {labels.map(l => (
             <div className="lbm-row" key={l.id} style={{ ['--lc' as string]: l.color }}>

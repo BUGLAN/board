@@ -322,7 +322,7 @@ export function Creator() {
               <textarea
                 ref={bodyRef}
                 {...attach.handlers}
-                className="textarea scroll"
+                className="textarea"
                 spellCheck={false}
                 hidden={mode !== 'edit'}
                 placeholder={'验收标准、相关链接、背景……\n\n例如：\n**验收标准**\n- [ ] board ls --search 能匹配描述'}
@@ -330,7 +330,7 @@ export function Creator() {
                 onChange={e => setBody(e.target.value)}
               />
               {mode === 'preview' && (
-                <div className="cr-preview scroll">{body.trim() ? <Markdown src={body} /> : <p className="cr-empty">还没有描述</p>}</div>
+                <div className="cr-preview">{body.trim() ? <Markdown src={body} /> : <p className="cr-empty">还没有描述</p>}</div>
               )}
             </div>
           </div>
@@ -417,7 +417,7 @@ export function Creator() {
                 <div className="d-label">
                   本次已创建 <span className="count">{created.length}</span>
                 </div>
-                <div className="cr-recent-list scroll">
+                <div className="cr-recent-list">
                   {created.map((c, i) => (
                     <button
                       key={c.id}

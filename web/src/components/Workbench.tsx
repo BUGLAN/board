@@ -493,7 +493,7 @@ function BoardSide() {
         </button>
       </header>
       <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent" />
-      <div className="side-scroll scroll">
+      <div className="side-scroll">
         <Section id="labels" title="标签" n={cur ? labels.length : 'loading'} closed={closed.has('labels')} onToggle={toggle}>
           {cur && (board || !labels.length) ? (
             <LabelBlock project={cur.project.key} labels={labels} used={used} />
@@ -539,7 +539,7 @@ function BoardSide() {
           {!board ? (
             <SkeletonRows n={3} kind="recent" />
           ) : (
-            <div className="recent-list scroll" ref={recentList} onScroll={onRecentScroll}>
+            <div className="recent-list" ref={recentList} onScroll={onRecentScroll}>
               {recent.events.length ? (
                 <>
                   {recent.events.map(ev => (
@@ -642,7 +642,7 @@ function InboxSide() {
         </span>
         <kbd>I</kbd>
       </button>
-      <div className="side-scroll scroll inbox-scroll">
+      <div className="side-scroll inbox-scroll">
         {loading && count !== 0 && (
           <div className="sk-inbox" aria-busy="true">
             {Array.from({ length: Math.min(count ?? 2, 3) }, (_, i) => (
@@ -765,7 +765,7 @@ function ProjectsSide() {
         </button>
       </header>
       <SideFilter value={q} onChange={setQ} placeholder="筛选项目和白板" />
-      <div className="side-scroll scroll" role="tree" onPointerLeave={() => canvasHighlight(null)}>
+      <div className="side-scroll" role="tree" onPointerLeave={() => canvasHighlight(null)}>
         {!ws ? (
           <SkeletonTree />
         ) : rows.length ? (

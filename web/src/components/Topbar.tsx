@@ -211,7 +211,7 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
         <span>项目 / 白板</span>
         <span>进行中 · 待办</span>
       </div>
-      <div className="pj-list scroll" role="listbox">
+      <div className="pj-list" role="listbox">
         {groups.length === 0 && <div className="pj-empty">没有匹配的白板</div>}
         {groups.map(({ p, bs }) => (
           <div key={p.key}>

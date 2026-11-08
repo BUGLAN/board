@@ -139,7 +139,7 @@ export function BoardView() {
       </div>
       <ColTabs board={board} f={f} boardRef={boardRef} />
       <div
-        className={cx('board flow-scroll scroll', drag && 'dragging')}
+        className={cx('board flow-scroll', drag && 'dragging')}
         ref={boardRef}
         aria-label="白板"
         aria-busy={!board || undefined}
@@ -270,7 +270,7 @@ export function BoardSkeleton() {
           <Skeleton w={112} h={34} r={10} />
         </div>
       </div>
-      <div className="board flow-scroll scroll">
+      <div className="board flow-scroll">
         <div className="wf-bar sk-flow" aria-hidden="true">
           <span className="wf-label">工作流</span>
           <div className="sk-pills">
@@ -699,7 +699,7 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
     el?.scrollIntoView({ block: 'start', behavior: reduceMotion() ? 'auto' : 'smooth' });
   };
   return (
-    <nav className="col-tabs" aria-label="状态">
+    <nav className="col-tabs" aria-label="状态" data-scrollbar="none">
       {f.list.map(s => (
         <button key={s.key} className="ct" type="button" data-col={s.key} style={{ ['--c' as string]: statusColor(s.color) }} onClick={() => go(s.key)}>
           <i />

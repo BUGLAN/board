@@ -5,7 +5,7 @@
 /* 状态块所在的区域：整体纵向滚动；滚动条留在最右边，不压在块上 */
 .board {
   position: relative; min-height: 0;
-  padding: 2px 20px 16px; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable;
+  padding: 2px 20px 16px; overflow-x: hidden; overflow-y: auto;
 }
 
 /* ---------------- 磁吸布局 ---------------- */
@@ -440,7 +440,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 /* 工作流条：有向图（主线 + 支线，直角连线） */
 .wf-graph { align-items: flex-start; padding: 8px 8px 8px 14px; }
 .wf-graph .wf-label { height: 30px; display: flex; align-items: center; position: relative; top: 4px; }
-.wf-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 4px 8px 4px 2px; scrollbar-width: thin; }
+.wf-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 4px 8px 4px 2px; }
 .wf-canvas { position: relative; }
 .wf-pos { position: absolute; transition: left var(--dur-3) var(--spring-soft), top var(--dur-3) var(--spring-soft); }
 .wf-pos .wf-node { z-index: 1; }

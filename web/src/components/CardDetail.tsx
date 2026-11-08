@@ -188,7 +188,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
 
   const creator = c.createdBy;
   return (
-    <div className="drawer-body scroll" ref={bodyRef}>
+    <div className="drawer-body" ref={bodyRef}>
       <div className="d-head">
         <span className="d-id">#{c.id}</span>
         <span className="d-col" ref={pill} data-col={c.column} style={{ ['--c' as string]: f.color(c.column) }}>
@@ -214,7 +214,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
         </button>
       </div>
       <div className="d-grid">
-        <div className="d-main scroll">
+        <div className="d-main">
           <section className="d-section" style={{ ['--i' as string]: 0 }}>
             <TitleEditor card={c} locked={locked} />
             <div className="d-meta">
@@ -439,7 +439,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
             <textarea
               ref={ta}
               {...attach.handlers}
-              className="textarea scroll"
+              className="textarea"
               spellCheck={false}
               placeholder="支持 Markdown：验收标准、相关链接…"
               value={v}
@@ -701,7 +701,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
         动态 {loading ? <Skeleton className="count" w={14} h={10} /> : <span className="count">{n}</span>}
         <span className="act">只能追加</span>
       </div>
-      <div className="d-activity scroll" ref={scroller}>
+      <div className="d-activity" ref={scroller}>
         {loading ? (
           <ActivitySkeleton comments={c.comments} />
         ) : error && !n ? (

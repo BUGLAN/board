@@ -104,9 +104,8 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .filter-pill { display: none; }
 
   .col-tabs {
-    position: relative; z-index: 10; display: flex; gap: 4px; padding: 0 12px 6px; overflow-x: auto; scrollbar-width: none; flex: none;
+    position: relative; z-index: 10; display: flex; gap: 4px; padding: 0 12px 6px; overflow-x: auto; flex: none;
   }
-  .col-tabs::-webkit-scrollbar { display: none; }
   .ct {
     --c: var(--c-todo);
     position: relative; z-index: 1; flex: 1 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
