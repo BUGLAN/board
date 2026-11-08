@@ -66,6 +66,8 @@ interface St {
   ghost?: HTMLElement;
   offX: number;
   offY: number;
+  /** 被拖卡片的高度（占位的高度） */
+  h: number;
   scrolling: boolean;
   target: { col: ColumnKey; index: number } | null;
   valid: boolean;
@@ -158,7 +160,7 @@ function onDown(e: PointerEvent) {
     fromCol: list.dataset.list as ColumnKey,
     fromIndex: [...list.children].indexOf(card),
     started: false, rot: 0, vx: 0, lastX: e.clientX, lastT: performance.now(),
-    offX: 0, offY: 0, scrolling: false, target: null, valid: true, veto: null,
+    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null,
   };
   if (e.pointerType !== 'mouse') {
     st.timer = window.setTimeout(() => {
@@ -246,8 +248,8 @@ function locate() {
   }
   const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
-  const items = list ? [...list.children].filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}`) : [];
-  const index = insertIndex(items, s.x, s.y);
+  const items = list ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}`) : [];
+  const index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
   const same = key === s.fromCol && index === s.fromIndex;
   const state = useData.getState();
   const card = state.board?.cards[s.id];
@@ -286,28 +288,67 @@ function locate() {
   }
 }
 
-/** 插入位置。卡片是瀑布流（lib/masonry.ts）：先找指针所在的那一竖列（没有正对的就取最近的一列），
-    插到这一列里第一张「中线在指针下方」的卡片前面；指针在这一列所有卡片下方时，插到这一列最后一张之后 */
-function insertIndex(items: Element[], x: number, y: number): number {
-  if (!items.length) return 0;
-  const rects = items.map(el => el.getBoundingClientRect());
-  let best = Infinity;
-  let track = 0;
-  rects.forEach(r => {
-    const d = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
-    if (d < best - 0.5) {
-      best = d;
-      track = r.left;
+/** 插入位置。卡片是瀑布流（lib/masonry.ts），占位一挪，别的卡片换竖列、换高度。
+    如果按「当前」画面里卡片的位置算，占位挪过去后画面变了、算出的位置又变，占位就会来回跳。
+    所以不看当前画面：对每个候选位置，按网格的摆放规则推算「占位放在这里时」它会落在哪，
+    取离指针最近的那个（指针在里面时距离为 0，再按离中心的距离比）。结果只由指针决定，指针不动占位就不动 */
+function insertIndex(list: HTMLElement | null, items: HTMLElement[], x: number, y: number, phHeight: number): number {
+  if (!list || !items.length) return 0;
+  const cs = getComputedStyle(list);
+  const gap = parseFloat(cs.columnGap) || 0;
+  const tracks = cs.gridTemplateColumns.split(/\s+/).map(parseFloat).filter(n => n > 0);
+  const w = tracks[0] ?? list.clientWidth;
+  const T = Math.max(1, tracks.length);
+  const lr = list.getBoundingClientRect();
+  const left0 = lr.left + list.clientLeft + (parseFloat(cs.paddingLeft) || 0);
+  const top0 = lr.top + list.clientTop + (parseFloat(cs.paddingTop) || 0);
+  const span = (h: number) => (h ? Math.max(1, Math.round(h + gap)) : 1); // 与 masonry.apply 一致
+  const spans = items.map(el => span(el.offsetHeight));
+  const ph = span(phHeight);
+
+  let best = 0;
+  let bestD = Infinity;
+  let bestC = Infinity;
+  for (let i = 0; i <= items.length; i++) {
+    const slot = placeAt([...spans.slice(0, i), ph, ...spans.slice(i)], T, i);
+    const l = left0 + slot.col * (w + gap);
+    const t = top0 + slot.row;
+    const r = l + w;
+    const b = t + Math.max(1, phHeight);
+    const d = Math.hypot(x < l ? l - x : x > r ? x - r : 0, y < t ? t - y : y > b ? y - b : 0);
+    const c = Math.hypot(x - (l + r) / 2, y - (t + b) / 2);
+    if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && c < bestC)) {
+      best = i;
+      bestD = d;
+      bestC = c;
     }
-  });
-  let last = -1;
-  for (let i = 0; i < rects.length; i++) {
-    const r = rects[i];
-    if (Math.abs(r.left - track) > 1) continue;
-    if (y < r.top + r.height / 2) return i;
-    last = i;
   }
-  return last + 1;
+  return best;
+}
+
+/** 按 CSS 网格自动摆放（grid-auto-flow: row，行高 1px，每张卡片占一竖列、span 行）推算第 k 张的位置。
+    游标只往后走，所以某竖列在第 r 行能放下，当且仅当这一列已占用的底部 ≤ r */
+export function placeAt(spans: number[], T: number, k: number): { row: number; col: number } {
+  const bottom = new Array<number>(T).fill(0);
+  let row = 0;
+  let col = 0;
+  for (let i = 0; i < spans.length; i++) {
+    let c = -1;
+    for (let j = col; j < T; j++) {
+      if (bottom[j] <= row) {
+        c = j;
+        break;
+      }
+    }
+    if (c < 0) {
+      row = Math.max(row + 1, Math.min(...bottom));
+      c = bottom.findIndex(v => v <= row);
+    }
+    bottom[c] = row + spans[i];
+    if (i === k) return { row, col: c };
+    col = c + 1;
+  }
+  return { row, col };
 }
 
 /** 靠近边缘时自动滚动（列内纵向 / 白板横向） */
