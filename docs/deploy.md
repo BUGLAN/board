@@ -193,7 +193,7 @@ npm run release -- 0.1.1 --push      # 发版并推送
 1. 核对版本号格式、工作区干净、`HEAD` 就是 `origin/main`、tag 还不存在、比上一个 tag 大
 2. 改版本号：`Cargo.toml` 的 `workspace.package.version` 和 `Cargo.lock`、`package.json` 和 `web/package.json`（连同 `package-lock.json`）、`src-tauri/tauri.conf.json`
 3. 从上一个 tag 之后的每个提交生成这一版的 changelog，按提交类型分组（新功能、修复、性能、重构、文档、其他），写到 `CHANGELOG.md` 最上面
-4. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`
+4. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
 5. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令
 
 tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。tag 只管服务端部署，桌面端和 CLI 的发版不在这里。

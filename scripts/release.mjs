@@ -6,7 +6,7 @@
    2. 改版本号：Cargo.toml（workspace.package.version）和 Cargo.lock、package.json 和 web/package.json
       （连同各自的 package-lock.json）、src-tauri/tauri.conf.json
    3. 从上一个 tag 到现在的每个提交生成这一版的 changelog，写到 CHANGELOG.md 最上面
-   4. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z
+   4. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
    5. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令
 
    --dry-run：只打印这一版的 changelog（有哪些提交），不改文件、不提交、不打 tag
@@ -168,7 +168,9 @@ git(
   'CHANGELOG.md',
 );
 git('commit', '-m', `chore: 发版 ${tag}`, '-m', `版本号改成 ${version}，CHANGELOG.md 加上 ${tag} 一节。`);
-git('tag', '-a', tag, '-m', `Board ${tag}`);
+// tag 说明：标题 + 这一版的 changelog（去掉「## vX.Y.Z · 日期」一行）。
+// --cleanup=whitespace：默认会把 # 开头的行当注释删掉，「### 新功能」这类小标题就没了
+git('tag', '-a', tag, '--cleanup=whitespace', '-m', `Board ${tag}`, '-m', notes.replace(/^## .*\n+/, '').trimEnd());
 console.log(notes);
 console.log(`已提交「chore: 发版 ${tag}」并打了 tag ${tag}（上一个 tag：${prev ?? '没有'}）。`);
 
