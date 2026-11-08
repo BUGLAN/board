@@ -151,6 +151,17 @@
 .recent-row .when { display: block; font-size: 10.5px; color: var(--text-4); }
 .recent-row.new { animation: tl-in var(--dur-4) var(--spring-soft) both; }
 
+/* 最近动态：高度封顶的独立滚动区（滚到底自动加载更早的），不把整块侧栏撑长 */
+.recent-list { max-height: 264px; overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 4px; }
+/* 列表底部：加载中 / 加载失败可重试 / 没有更多了 */
+.recent-foot {
+  display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px 10px; font-size: 11px; color: var(--text-4); text-align: center;
+}
+.recent-foot.error { color: var(--danger); }
+.recent-foot button { padding: 2px 8px; border-radius: var(--r-xs); font-size: 11.5px; font-weight: 500; color: var(--brand); background: var(--surface-3); }
+.recent-foot button:hover { color: var(--brand-fg); background: var(--brand); }
+
 /* ---------------- 未整理 ---------------- */
 .inbox-scroll { padding: 2px 10px 10px; }
 .inbox-list { --gap: 6px; min-height: 40px; }

@@ -105,6 +105,9 @@ export const api = {
   workspace: () => req<Workspace>('GET', '/api/workspace'),
   board: (path: string) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}`),
   card: (path: string, id: number) => req<CardDetail>('GET', `/api/card?path=${q(path)}&id=${id}`),
+  /** 一块白板的动态：按 id 倒序分页（新的在前）。before 是上一页最后一条的 id，不传从最新一条开始；返回空数组 = 没有更早的了 */
+  events: (path: string, before?: number | null, limit = 20) =>
+    req<BoardEvent[]>('GET', `/api/events?path=${q(path)}&limit=${limit}${before != null ? `&before=${before}` : ''}`),
   cmd: (board: string, cmd: Cmd) => req<CardDetail>('POST', '/api/cmd', { board, ...cmd }),
   upload,
 

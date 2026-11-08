@@ -3,12 +3,12 @@
    - 活动栏：白板 / 项目 / 未整理 / 设置。再次点击当前 Tab 收起或展开侧栏
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
 import { newBoard, newProject, openBoard, openCard, triage } from '../lib/actions';
 import { api } from '../lib/api';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { useMasonry } from '../lib/masonry';
-import type { Label } from '../lib/types';
+import type { BoardEvent, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
 import { refresh, useCurrent, useData } from '../store/data';
@@ -349,6 +349,85 @@ function SkeletonRows({ n, kind }: { n: number; kind: 'working' | 'recent' }) {
   );
 }
 
+/** 最近动态每页条数（服务端上限 100）：正好比一块列表高，滚到底再取下一页 */
+const RECENT_PAGE = 20;
+
+/** 把新到的动态并到顶部：按 id 去重、新的在前；已加载到哪（游标）不受影响 */
+function mergeNewer(prev: BoardEvent[], fresh: BoardEvent[]): BoardEvent[] {
+  if (!prev.length || !fresh.length) return prev;
+  const newest = prev[0].id;
+  const add = fresh.filter(e => e.id > newest);
+  if (!add.length) return prev;
+  add.sort((a, b) => b.id - a.id);
+  return [...add, ...prev];
+}
+
+/** 最近动态：首次取一页，滚到底用游标往前翻更早的。
+    实时推送和自己刚做的操作（重新取快照时带回）插到顶部，不移动游标、不改已加载的页 */
+function useRecentEvents(path: string | undefined, live: BoardEvent[] | undefined) {
+  const [events, setEvents] = useState<BoardEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // 请求状态放 ref：滚动回调不用跟着重建，连续滚动也不会并发请求
+  const st = useRef({ path: '', cursor: null as number | null, busy: false, ended: false, seq: 0 });
+  const liveRef = useRef(live);
+  liveRef.current = live;
+
+  const loadMore = useCallback(async () => {
+    const s = st.current;
+    if (!s.path || s.busy || s.ended) return;
+    s.busy = true;
+    const seq = s.seq;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await api.events(s.path, s.cursor, RECENT_PAGE);
+      if (s.seq !== seq) return; // 已经换了白板：这一页丢掉
+      if (page.length < RECENT_PAGE) {
+        s.ended = true;
+        setDone(true);
+      }
+      if (page.length) s.cursor = page[page.length - 1].id;
+      setEvents(prev => {
+        const seen = new Set(prev.map(e => e.id));
+        const older = page.filter(e => !seen.has(e.id));
+        return mergeNewer(older.length ? [...prev, ...older] : prev, liveRef.current ?? []);
+      });
+    } catch (e) {
+      if (s.seq === seq) setError((e as Error).message || '动态没有加载出来');
+    } finally {
+      if (s.seq === seq) {
+        s.busy = false;
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  // 换白板：列表和游标一起重置，重新取第一页
+  useEffect(() => {
+    const s = st.current;
+    s.seq++;
+    s.path = path ?? '';
+    s.cursor = null;
+    s.busy = false;
+    s.ended = !path;
+    setEvents([]);
+    setDone(false);
+    setError(null);
+    setLoading(false);
+    if (path) loadMore();
+  }, [path, loadMore]);
+
+  // 快照里带回来的新动态（实时推送后重新取的快照、自己刚做的操作）：插到顶部
+  useEffect(() => {
+    if (!live?.length) return;
+    setEvents(prev => mergeNewer(prev, live));
+  }, [live]);
+
+  return { events, loading, done, error, loadMore };
+}
+
 function BoardSide() {
   const board = useData(s => s.board);
   const detailId = useData(s => s.detailId);
@@ -366,14 +445,22 @@ function BoardSide() {
       return n;
     });
   const lastSeen = useRef(0);
-  const logs = board ? [...board.log].slice(-10).reverse() : [];
-  const newest = logs[0]?.id ?? 0;
+  const recent = useRecentEvents(board?.path, board?.log);
+  const newest = recent.events[0]?.id ?? 0;
+  const recentList = useRef<HTMLDivElement>(null);
   useEffect(() => {
     lastSeen.current = newest;
   }, [newest]);
   useEffect(() => {
     lastSeen.current = 0;
+    if (recentList.current) recentList.current.scrollTop = 0;
   }, [cur?.board.path]);
+  // 滚到底（离底 120px 以内）自动取更早的一页；失败后等点「重试」，不在滚动里反复请求
+  const onRecentScroll = (e: UIEvent<HTMLDivElement>) => {
+    if (recent.loading || recent.done || recent.error) return;
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) recent.loadMore();
+  };
 
   const labels = cur?.project.labels ?? [];
   const used = useMemo(() => {
@@ -450,25 +537,56 @@ function BoardSide() {
         <Section id="recent" title="最近动态" closed={closed.has('recent')} onToggle={toggle}>
           {!board ? (
             <SkeletonRows n={3} kind="recent" />
-          ) : logs.length ? (
-            logs.map(ev => (
-              <div key={ev.id} className={cx('recent-row', lastSeen.current > 0 && ev.id > lastSeen.current && 'new')}>
-                <Avatar actor={ev.actor} />
-                <div>
-                  <b style={ev.actor.kind === 'agent' ? { color: agentColor(ev.actor.name) } : undefined}>
-                    {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
-                  </b>{' '}
-                  {OP[ev.op] || ev.op} <span className="mono">#{ev.cardId}</span>
-                  <span className="when">
-                    {ago(ev.at, now)}
-                    {ev.via === 'cli' ? ' · CLI' : ''}
-                  </span>
-                </div>
-              </div>
-            ))
           ) : (
-            <div className="tree-empty" style={{ paddingLeft: 20 }}>
-              暂无
+            <div className="recent-list scroll" ref={recentList} onScroll={onRecentScroll}>
+              {recent.events.length ? (
+                <>
+                  {recent.events.map(ev => (
+                    <div key={ev.id} className={cx('recent-row', lastSeen.current > 0 && ev.id > lastSeen.current && 'new')}>
+                      <Avatar actor={ev.actor} />
+                      <div>
+                        <b style={ev.actor.kind === 'agent' ? { color: agentColor(ev.actor.name) } : undefined}>
+                          {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
+                        </b>{' '}
+                        {OP[ev.op] || ev.op} <span className="mono">#{ev.cardId}</span>
+                        <span className="when">
+                          {ago(ev.at, now)}
+                          {ev.via === 'cli' ? ' · CLI' : ''}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {(recent.loading || recent.error || recent.done) && (
+                    <div className={cx('recent-foot', recent.error && 'error')}>
+                      {recent.loading ? (
+                        '正在加载更早的动态…'
+                      ) : recent.error ? (
+                        <>
+                          <span>加载失败</span>
+                          <button type="button" onClick={recent.loadMore}>
+                            重试
+                          </button>
+                        </>
+                      ) : (
+                        '没有更多了'
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : recent.loading ? (
+                <SkeletonRows n={4} kind="recent" />
+              ) : recent.error ? (
+                <div className="recent-foot error" title={recent.error}>
+                  <span>动态没有加载出来</span>
+                  <button type="button" onClick={recent.loadMore}>
+                    重试
+                  </button>
+                </div>
+              ) : (
+                <div className="tree-empty" style={{ paddingLeft: 20 }}>
+                  暂无
+                </div>
+              )}
             </div>
           )}
         </Section>
