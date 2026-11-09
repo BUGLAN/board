@@ -23,7 +23,7 @@ export interface ConfirmReq {
   title: string;
   text: string;
   ok?: string;
-  icon?: 'trash' | 'tag' | 'reset' | 'logout' | 'key';
+  icon?: 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock';
   resolve: (v: boolean) => void;
 }
 

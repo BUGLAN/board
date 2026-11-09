@@ -645,10 +645,18 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
             type="button"
             disabled={busy}
             onClick={async () => {
+              const holder = c.holder;
+              const back = backTo(boardFlow(useData.getState().board), c.claimedFrom);
+              // 危险操作：先二次确认，防止误触
+              const yes = await confirm({
+                title: `强制释放 #${c.id}？`,
+                text: `${holder} 的领取会被清空，卡片回到「${back}」最上面。`,
+                ok: '强制释放',
+                icon: 'unlock',
+              });
+              if (!yes) return;
               // 当帧回到领取它时所在的状态最上面（服务端的规则），被拒绝时回来并提示
               const to = c.claimedFrom ?? boardFlow(useData.getState().board).home?.key ?? c.column;
-              const back = backTo(boardFlow(useData.getState().board), c.claimedFrom);
-              const holder = c.holder;
               try {
                 await exec({ op: 'release', id: c.id }, movePatch(c.id, to, 0, undefined, { holder: null, claimedAt: null, runStartedAt: null }));
                 toast({ type: 'success', title: `已强制释放 #${c.id}`, text: `${holder} 的领取已清空，卡片回到「${back}」最上面` });

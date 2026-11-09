@@ -293,7 +293,7 @@ export function ConfirmDialog() {
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && settleConfirm(false)}>
       <div className="dialog" role="alertdialog" aria-modal="true">
         <div className="dialog-icon">
-          <Icon name={r.icon === 'tag' ? 'tag' : r.icon === 'reset' ? 'renew' : r.icon === 'logout' ? 'logout' : r.icon === 'key' ? 'key' : 'trash'} />
+          <Icon name={r.icon === 'tag' ? 'tag' : r.icon === 'reset' ? 'renew' : r.icon === 'logout' ? 'logout' : r.icon === 'key' ? 'key' : r.icon === 'unlock' ? 'unlock' : 'trash'} />
         </div>
         <h3>{r.title}</h3>
         <p>{r.text}</p>

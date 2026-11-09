@@ -122,7 +122,8 @@ fn board_in(home: &Path, path: &Path, env: &[(&str, String)], args: &[&str]) -> 
         .env_remove("BOARD_AS")
         .env_remove("BOARD_URL")
         .env_remove("BOARD_TOKEN")
-        .env_remove("BOARD_DB");
+        .env_remove("BOARD_DB")
+        .env_remove("BOARD_CONFIG");
     for (k, v) in env {
         cmd.env(k, v);
     }

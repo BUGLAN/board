@@ -82,6 +82,7 @@ impl Rig {
             .env("FAKE_DIR", self.fake.parent().unwrap())
             .env_remove("BOARD")
             .env_remove("BOARD_AS")
+            .env_remove("BOARD_CONFIG")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
