@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "board-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "board-core",
  "board-server",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "board-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "board-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "getrandom 0.3.4",
  "open",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "board-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "board-core",
