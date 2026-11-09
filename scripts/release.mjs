@@ -98,10 +98,9 @@ function section() {
     const scope = m?.[2];
     const desc = m ? m[4] : subject;
     const breaking = Boolean(m?.[3]) || /^BREAKING[ -]CHANGE:/m.test(body);
-    const card = body.match(/^卡片：(\S+)\s*$/m)?.[1];
     const title = GROUPS.find(([t]) => t === type)?.[1] ?? OTHER;
-    const note = [sha, card && `卡片 ${card}`].filter(Boolean).join(' · ');
-    groups.get(title).push(`- ${breaking ? '**不兼容** ' : ''}${scope ? `**${scope}**：` : ''}${desc}（${note}）`);
+    // 提交正文最后的「卡片：…」不写进来：changelog 和 GitHub Release 给使用者看，白板他们打不开
+    groups.get(title).push(`- ${breaking ? '**不兼容** ' : ''}${scope ? `**${scope}**：` : ''}${desc}（${sha}）`);
   }
   const parts = [...groups].filter(([, lines]) => lines.length).map(([t, lines]) => `### ${t}\n\n${lines.join('\n')}`);
   if (!parts.length) fail(prev ? `${prev} 之后没有新提交` : '没有提交');
