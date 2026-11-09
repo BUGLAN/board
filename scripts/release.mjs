@@ -89,19 +89,28 @@ function section() {
   const range = prev ? `${prev}..HEAD` : 'HEAD';
   const raw = git('log', '--no-merges', '--format=%h%x1f%s%x1f%b%x1e', range);
   const groups = new Map([...GROUPS.map(([, t]) => [t, []]), [OTHER, []]]);
+  // 同一张卡片（提交正文最后的「卡片：…」）打回后会再提交，这一版里只留最新的一条。
+  // git log 从新到旧，先遇到的就是最新的；更早的提交不兼容时，留下的那条也标「不兼容」
+  const byCard = new Map();
   for (const rec of raw.split('\x1e')) {
     if (!rec.trim()) continue;
     const [sha, subject, body = ''] = rec.trim().split('\x1f');
     if (/^chore: 发版 v\d/.test(subject)) continue; // 上一次发版的提交
     const m = subject.match(/^(\w+)(?:\(([^)]+)\))?(!)?:\s*(.+)$/);
-    const type = m ? m[1] : '';
-    const scope = m?.[2];
-    const desc = m ? m[4] : subject;
     const breaking = Boolean(m?.[3]) || /^BREAKING[ -]CHANGE:/m.test(body);
-    const title = GROUPS.find(([t]) => t === type)?.[1] ?? OTHER;
-    // 提交正文最后的「卡片：…」不写进来：changelog 和 GitHub Release 给使用者看，白板他们打不开
-    groups.get(title).push(`- ${breaking ? '**不兼容** ' : ''}${scope ? `**${scope}**：` : ''}${desc}（${sha}）`);
+    const card = body.match(/^卡片：(\S+)\s*$/m)?.[1];
+    const seen = card && byCard.get(card);
+    if (seen) {
+      seen.breaking ||= breaking;
+      continue;
+    }
+    const entry = { sha, type: m ? m[1] : '', scope: m?.[2], desc: m ? m[4] : subject, breaking };
+    if (card) byCard.set(card, entry);
+    groups.get(GROUPS.find(([t]) => t === entry.type)?.[1] ?? OTHER).push(entry);
   }
+  // 卡片号本身不写进来：changelog 和 GitHub Release 给使用者看，白板他们打不开
+  const line = e => `- ${e.breaking ? '**不兼容** ' : ''}${e.scope ? `**${e.scope}**：` : ''}${e.desc}（${e.sha}）`;
+  for (const [t, entries] of groups) groups.set(t, entries.map(line));
   const parts = [...groups].filter(([, lines]) => lines.length).map(([t, lines]) => `### ${t}\n\n${lines.join('\n')}`);
   if (!parts.length) fail(prev ? `${prev} 之后没有新提交` : '没有提交');
   return `## ${tag} · ${today()}\n\n${parts.join('\n\n')}\n`;
