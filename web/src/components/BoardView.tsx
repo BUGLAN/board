@@ -45,6 +45,12 @@ export function useEntering(board: BoardSnapshot | null, generation: number) {
 }
 
 
+/** 白板只纵向滚动（overflow-x: hidden），人横向滚不回来。右侧磁贴的悬停卡片之类会让它有一点横向溢出，
+    这时浏览器拖动时的自动滚动、scrollIntoView、聚焦都可能把它横向滚开，整块内容左移、只能切换 Tab 恢复。被滚开就立刻拉回 */
+function keepLeft(e: React.UIEvent<HTMLElement>) {
+  if (e.currentTarget.scrollLeft) e.currentTarget.scrollLeft = 0;
+}
+
 export function BoardView() {
   const board = useData(s => s.board);
   const generation = useData(s => s.generation);
@@ -146,6 +152,7 @@ export function BoardView() {
       <div
         className={cx('board flow-scroll', drag && 'dragging')}
         ref={boardRef}
+        onScroll={keepLeft}
         aria-label="白板"
         aria-busy={!board || undefined}
         key={generation}

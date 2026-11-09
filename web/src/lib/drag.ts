@@ -396,7 +396,9 @@ export function placeAt(spans: number[], T: number, k: number): { row: number; c
   return { row, col };
 }
 
-/** 靠近边缘时自动滚动（列内纵向 / 白板横向） */
+/** 靠近上下边缘时自动纵向滚动。白板（.board）是磁吸布局、不横向滚动（overflow-x: hidden），这里也不横向滚：
+    以前指针靠近右边缘时会给白板加 scrollLeft，只要有一点横向溢出（例如右侧磁贴的悬停卡片），整块内容就左移，
+    而 overflow-x: hidden 人滚不回来（BoardView 的 keepLeft 兜底把它拉回 0） */
 function autoScroll() {
   const s = st!;
   s.scrolling = false;
@@ -412,17 +414,6 @@ function autoScroll() {
       s.scrolling = true;
     } else if (s.y > r.bottom - edge && body.scrollTop < body.scrollHeight - body.clientHeight) {
       body.scrollTop += speed * (1 - (r.bottom - s.y) / edge);
-      s.scrolling = true;
-    }
-  }
-  const board = document.querySelector<HTMLElement>('.board');
-  if (board && board.scrollWidth > board.clientWidth) {
-    const br = board.getBoundingClientRect();
-    if (s.x < br.left + edge) {
-      board.scrollLeft -= speed;
-      s.scrolling = true;
-    } else if (s.x > br.right - edge) {
-      board.scrollLeft += speed;
       s.scrolling = true;
     }
   }
