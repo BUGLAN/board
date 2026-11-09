@@ -778,9 +778,12 @@ mod tests {
             assert!(begun.elapsed() < Duration::from_secs(5), "进程组没结束");
             std::thread::sleep(Duration::from_millis(50));
         }
-        // 组里的另一个 sleep 也结束了
-        let alive = unsafe { libc::kill(-(child.id() as i32), 0) } == 0;
-        assert!(!alive, "进程组里还有进程");
+        // 组里的另一个 sleep 也结束了：它的父进程先退出，由系统接管、回收，要等一会儿才从进程组里消失
+        let begun = std::time::Instant::now();
+        while unsafe { libc::kill(-(child.id() as i32), 0) } == 0 {
+            assert!(begun.elapsed() < Duration::from_secs(5), "进程组里还有进程");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     #[cfg(unix)]
