@@ -35,6 +35,14 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   font-size: 12.5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); white-space: nowrap;
 }
 .hp-agent b { display: grid; place-items: center; min-width: 20px; height: 18px; padding: 0 4px; border-radius: 5px; font: 700 10px var(--f-mono); color: #fff; background: var(--ac); }
+/* agent 自己的图标（应用图标、官网 logo） */
+img.hp-logo { flex: none; display: block; width: 18px; height: 18px; border-radius: 5px; object-fit: contain; }
+img.hp-mini.hp-logo { min-width: 0; padding: 0; background: none; box-shadow: none; }
+.hp-agent img.hp-logo { margin-left: 1px; }
+.hp-agent.sm img.hp-logo { width: 16px; height: 16px; border-radius: 4px; }
+.hp-agent.missing img.hp-logo { filter: grayscale(1); }
+.hp-side-runs img.hp-mini.hp-logo { width: 14px; height: 14px; border-radius: 4px; }
+img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-agent em { font-style: normal; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .hp-agent small { font-size: 10.5px; font-weight: 600; color: var(--brand); }
 .hp-agent.def { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }

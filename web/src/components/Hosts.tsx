@@ -49,9 +49,10 @@ function Dot({ h, running }: { h: HostInfo; running: number }) {
   return <i className={cx('hp-dot', `st-${s.key}`)} style={{ ['--c' as string]: s.color }} />;
 }
 
-/** agent 标记：CC、DS、π … */
+/** agent 标记：认识的 agent 用它自己的图标，其他用两个字母 */
 export function Mark({ id, title }: { id: string; title?: string }) {
   const m = agentMark(id);
+  if (m.icon) return <img className={cx('hp-mini hp-logo', m.light && 'ring')} src={m.icon} alt={title ?? id} title={title ?? id} draggable={false} />;
   return (
     <b className="hp-mini" style={{ ['--ac' as string]: m.color }} title={title ?? id}>
       {m.short}
@@ -63,7 +64,7 @@ function AgentChip({ a, def, small }: { a: HostAgent; def?: boolean; small?: boo
   const m = agentMark(a.id);
   return (
     <span className={cx('hp-agent', !a.found && 'missing', def && 'def', small && 'sm')} style={{ ['--ac' as string]: m.color }}>
-      <b>{m.short}</b>
+      {m.icon ? <img className={cx('hp-logo', m.light && 'ring')} src={m.icon} alt="" draggable={false} /> : <b>{m.short}</b>}
       {a.name}
       {!small && <em>{a.found ? a.version || '找到了' : '没找到'}</em>}
       {def && <small>默认</small>}

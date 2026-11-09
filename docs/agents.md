@@ -129,7 +129,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 - `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）。放在哪一位就是默认顺序里的哪一位。
 - 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序。
-- `web/src/lib/hosts.ts` 的 `MARKS`：界面上的缩写和颜色（不加时取标识前两个字母）。
+- 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用，并配一个主色（并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
 - `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表、下面的批次记录。
 - 跑完 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`；需要在别的机器上试时请人发版。
 

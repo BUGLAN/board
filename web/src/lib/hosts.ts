@@ -1,18 +1,32 @@
 /* ==========================================================================
    任务下发（board host）：机器、派发的小工具（任务下发需求 §八）
    ========================================================================== */
+import claudeIcon from '../assets/agents/claude.png';
+import dshIcon from '../assets/agents/dsh.png';
+import piIcon from '../assets/agents/pi.svg';
 import type { Dispatch, DispatchResult, HostInfo, Workspace } from './types';
 import { agentColor } from './util';
 
-/** agent 标记：已知的几种有固定的缩写和颜色，其他按标识取 */
-const MARKS: Record<string, { short: string; color: string }> = {
-  claude: { short: 'CC', color: '#D97757' },
-  dsh: { short: 'DS', color: '#4D6BFE' },
-  pi: { short: 'π', color: '#8B5CF6' },
+/** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
+export interface AgentMark {
+  short: string;
+  color: string;
+  icon?: string;
+  /** 图标本身是白底：加一圈细线，浅色主题下才看得出边 */
+  light?: boolean;
+}
+
+const MARKS: Record<string, AgentMark> = {
+  // Claude 应用的图标
+  claude: { short: 'CC', color: '#D97757', icon: claudeIcon },
+  // DeepSeek Harness 应用的图标
+  dsh: { short: 'DS', color: '#4D6BFE', icon: dshIcon, light: true },
+  // pi.dev 的 logo
+  pi: { short: 'π', color: '#E5A93F', icon: piIcon },
   codex: { short: 'CX', color: '#10A37F' },
 };
 
-export function agentMark(id: string): { short: string; color: string } {
+export function agentMark(id: string): AgentMark {
   return MARKS[id] ?? { short: id.slice(0, 2).toUpperCase(), color: agentColor(id) };
 }
 
