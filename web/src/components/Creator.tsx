@@ -9,8 +9,8 @@ import { openCard } from '../lib/actions';
 import { stillUploading, useAttach } from '../lib/attach';
 import { boardFlow } from '../lib/schema';
 import { accel, autosize, cx, pref, replay } from '../lib/util';
-import { closeDetail, exec, useCurrent, useData } from '../store/data';
-import { closeCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
+import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
+import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
 import { LabelChip, Markdown } from './bits';
 import { DescTabs } from './CardDetail';
 import { BoardIcon24, Icon, InboxIcon24 } from './Icon';
@@ -39,8 +39,8 @@ export function Creator() {
   const [restored, setRestored] = useState(false);
   const [error, setError] = useState('');
   const [keep, setKeep] = useState(() => pref.get('creator.keep', false));
-  const [created, setCreated] = useState<{ id: number; title: string; column: 'todo' | 'inbox' }[]>([]);
-  const [busy, setBusy] = useState(false);
+  // 本次已创建：还没确认的 id 是负数（临时卡片），确认后换成真正的 ID
+  const [created, setCreated] = useState<{ key: number; id: number; title: string; column: 'todo' | 'inbox' }[]>([]);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const root = useRef<HTMLElement>(null);
@@ -90,35 +90,48 @@ export function Creator() {
     return () => window.removeEventListener('beforeunload', unload);
   }, []);
 
-  const submit = async () => {
-    if (busy || stillUploading(attach.busy)) return;
+  /** 乐观新建：当帧关闭（连续新建时清空）、临时卡片出现在目标状态最下面；服务端确认后换成真正的卡片。
+      失败时临时卡片消失，内容存回草稿，提示里可以一键恢复 */
+  const submit = () => {
+    if (stillUploading(attach.busy)) return;
     if (!title.trim()) {
       setError('标题是必填的');
       replay(titleRef.current, 'invalid');
       titleRef.current?.focus();
       return;
     }
-    setBusy(true);
-    try {
-      const c = await exec({ op: 'new', column: column === 'inbox' ? 'inbox' : undefined, title, body, labels });
-      pref.set(DRAFT, null);
-      setRestored(false);
-      if (keep) {
-        setCreated(list => [{ id: c.id, title: c.title, column }, ...list]);
-        setTitle('');
-        setBody('');
-        setMode('edit');
-        setError('');
-        titleRef.current?.focus();
-        root.current
-          ?.querySelector('.cr-submit')
-          ?.animate([{ transform: 'scale(.94)' }, { transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 360, easing: 'cubic-bezier(.34,1.56,.64,1)' });
-        return;
-      }
+    const draft: Draft = { title, body, column, labels };
+    const home = f.home?.key ?? 'todo';
+    const temp = draftCard({ title, body, labels, column: column === 'inbox' ? 'inbox' : home });
+    const done = exec({ op: 'new', column: column === 'inbox' ? 'inbox' : undefined, title, body, labels }, temp.patch).then(c => {
+      temp.settle(c.id);
+      return c;
+    });
+    pref.set(DRAFT, null);
+    setRestored(false);
+    const tab = useUI.getState().tab;
+    if (keep) {
+      setCreated(list => [{ key: temp.id, id: temp.id, title: title.trim(), column }, ...list]);
+      setTitle('');
+      setBody('');
+      setMode('edit');
+      setError('');
+      titleRef.current?.focus();
+      root.current
+        ?.querySelector('.cr-submit')
+        ?.animate([{ transform: 'scale(.94)' }, { transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 360, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+    } else {
       closeCreator();
-      const tab = useUI.getState().tab;
-      if (column === 'inbox') {
-        if (tab !== 'inbox')
+      if (column !== 'inbox') {
+        if (tab === 'settings' || tab === 'projects') setTab('board');
+        setTimeout(() => reveal(temp.id), 80);
+      } else if (tab === 'inbox') setTimeout(() => reveal(temp.id), 80);
+    }
+    done.then(
+      c => {
+        setCreated(list => list.map(x => (x.id === temp.id ? { ...x, id: c.id } : x)));
+        // 记到「未整理」而人不在未整理页：确认后告诉他记到了哪里
+        if (!keep && column === 'inbox' && tab !== 'inbox')
           toast({
             type: 'success',
             title: `已记到「未整理」 #${c.id}`,
@@ -131,17 +144,27 @@ export function Creator() {
               },
             },
           });
-        else setTimeout(() => reveal(c.id), 80);
-      } else {
-        if (tab === 'settings' || tab === 'projects') setTab('board');
-        setTimeout(() => reveal(c.id), 80);
-      }
-    } catch (e) {
-      if ((e as { code?: string }).code === 'EMPTY_TITLE') setError('标题是必填的');
-      else toastError(e);
-    } finally {
-      setBusy(false);
-    }
+      },
+      e => {
+        setCreated(list => list.filter(x => x.id !== temp.id));
+        // 内容存回草稿（弹窗关着、或者已经清空时），下次打开自动恢复
+        const open = useUI.getState().creator.open;
+        const free = !open || !(state.current.title.trim() || state.current.body.trim());
+        if (!free) return void toastError(e);
+        pref.set(DRAFT, draft);
+        toastError(e, {
+          text: `「${draft.title.trim()}」没有建成：${(e as Error).message}。内容已存为草稿`,
+          action: {
+            label: '恢复草稿',
+            fn: () => {
+              if (open) closeCreator();
+              setTimeout(() => openCreator(draft.column), open ? 60 : 0);
+            },
+          },
+          duration: 8000,
+        });
+      },
+    );
   };
 
   // ⌘/Ctrl ↵ 在任何位置创建；Esc 关闭（保留草稿）
@@ -420,9 +443,11 @@ export function Creator() {
                 <div className="cr-recent-list">
                   {created.map((c, i) => (
                     <button
-                      key={c.id}
+                      key={c.key}
                       type="button"
-                      className={cx('cr-recent-row', i === 0 && 'new')}
+                      className={cx('cr-recent-row', i === 0 && 'new', c.id < 0 && 'pending')}
+                      disabled={c.id < 0}
+                      title={c.id < 0 ? '正在创建…' : undefined}
                       style={{ ['--c' as string]: c.column === 'inbox' ? 'var(--c-inbox)' : startColor }}
                       onClick={() => {
                         close();
@@ -431,7 +456,7 @@ export function Creator() {
                       }}
                     >
                       <i />
-                      <span className="mono">#{c.id}</span>
+                      <span className="mono">{c.id < 0 ? '#…' : `#${c.id}`}</span>
                       <span className="tt">{c.title}</span>
                       <em>{c.column === 'inbox' ? '未整理' : startName}</em>
                     </button>
@@ -461,7 +486,7 @@ export function Creator() {
                 <button className="btn" type="button" onClick={close}>
                   取消
                 </button>
-                <button className="btn brand cr-submit" type="submit" disabled={busy}>
+                <button className="btn brand cr-submit" type="submit">
                   <span>{column === 'inbox' ? '记到未整理' : `创建到${startName}`}</span>
                   <kbd>{accel('↵')}</kbd>
                 </button>

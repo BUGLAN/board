@@ -143,3 +143,31 @@
 }
 .lb-bar span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50vw; }
 @keyframes lb-in { from { opacity: 0; } }
+
+/* ---------------- 乐观更新：还没确认的写操作（store/data.ts「乐观更新」） ----------------
+   改动当帧就画出来，服务端确认前画成「保存中」。都延迟一点才出现：网络快时看不到闪动 */
+@keyframes saving-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+.card.saving { animation: saving-breathe 1.4s var(--ease-in-out) 240ms infinite; }
+/* 还在新建的临时卡片：没有编号、不能打开和拖动 */
+.card.draft { cursor: progress; }
+.card.draft .card-id, .card.draft .ct-id { letter-spacing: .12em; }
+/* 详情头部：这张卡片有还没确认的修改 */
+.d-saving { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; font-size: 11.5px; color: var(--text-3); opacity: 0; transition: opacity var(--dur-2) var(--ease-out); }
+.d-saving.on { opacity: 1; transition-delay: 240ms; }
+.d-saving i { display: none; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: login-spin .8s linear infinite; }
+.d-saving.on i { display: block; }
+/* 连续新建里还没确认的一行 */
+.cr-recent-row.pending { opacity: .6; cursor: progress; }
+/* 进行中的按钮（拿不到结果就画不出来的操作：新建项目、派发……）：转圈 + 禁用，不会重复提交 */
+.btn.is-busy { pointer-events: none; }
+.btn.is-busy[disabled] { opacity: .7; }
+.btn.is-busy::before {
+  content: ""; flex: none; width: 11px; height: 11px; border-radius: 50%;
+  border: 1.5px solid currentColor; border-right-color: transparent; animation: login-spin .8s linear infinite;
+}
+.btn.is-busy > svg { display: none; }
+@media (prefers-reduced-motion: reduce) { .card.saving { animation: none; opacity: .7; } }
+:root[data-motion="reduced"] .card.saving { animation: none; opacity: .7; }
+/* 输入框里新建（工作流加状态、侧栏加标签、标签选择器里新建）：等服务端分配标识时只读 + 半透明 + 等待光标 */
+.wf-node.add.busy, .lb-input.busy, .lbp-row.create.busy { cursor: progress; }
+.wf-node.add.busy .wf-input, .lb-input.busy, .lbp-row.create.busy { opacity: .6; }

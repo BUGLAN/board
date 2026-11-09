@@ -130,7 +130,9 @@ function start() {
 
 /** 指针下的卡片：白板状态块和侧栏「未整理」里的卡片 */
 function cardAt(x: number, y: number) {
-  return document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-drop] .card[data-id]') ?? null;
+  const card = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-drop] .card[data-id]') ?? null;
+  // 还在新建的临时卡片（负数 ID）不能加标签
+  return card && Number(card.dataset.id) > 0 ? card : null;
 }
 
 const items = (field: HTMLElement) => [...field.querySelectorAll<HTMLElement>(':scope > .lb-item')];

@@ -16,7 +16,7 @@ import {
 import { shell } from '../lib/platform';
 import type { Dispatch, HostAgent, HostInfo } from '../lib/types';
 import { copyText, cx, durWords, hhmm } from '../lib/util';
-import { refresh, refreshHosts, useData } from '../store/data';
+import { hold, optimistic, refresh, refreshHosts, useData, type Patch } from '../store/data';
 import { confirm, openDispatch, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { useNow } from './bits';
 import { Icon } from './Icon';
@@ -120,14 +120,27 @@ async function cancel(d: Dispatch) {
     });
     if (!yes) return;
   }
+  // 当帧生效：排队的从队列里消失，在跑的标成「正在停止」（停止按钮随之隐藏，不会重复提交）；被拒绝时改回来并提示
+  const patch: Patch = {
+    ws: ws => ({
+      ...ws,
+      dispatches: running
+        ? ws.dispatches?.map(x => (x.id === d.id ? { ...x, stopBy: x.stopBy ?? '你' } : x))
+        : ws.dispatches?.filter(x => x.id !== d.id),
+    }),
+  };
   try {
-    await api.cancelDispatch(d.id);
+    await optimistic(patch, () => api.cancelDispatch(d.id));
     toast({ type: 'success', title: running ? `已通知 ${d.host} 停止 #${d.card}` : `已取消 #${d.card} 的派发` });
-    await refresh();
   } catch (e) {
     toastError(e);
   }
 }
+
+/** 改一台机器（工作区里的 hosts） */
+const patchHost = (name: string, fn: (h: HostInfo) => HostInfo): Patch => ({
+  ws: ws => ({ ...ws, hosts: ws.hosts?.map(h => (h.name === name ? fn(h) : h)) }),
+});
 
 /* ------------------------------ 侧栏 ------------------------------ */
 
@@ -388,10 +401,16 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
     };
   }, [on, h.name, rev]);
 
+  /** 机器设置：当帧生效，被拒绝时改回来并提示 */
   const patch = async (p: Parameters<typeof api.updateHost>[1]) => {
+    const { env, ...fields } = p;
+    const local = patchHost(h.name, x => ({
+      ...x,
+      ...fields,
+      agents: env ? x.agents.map(a => (a.id === env.agent ? { ...a, env: env.env } : a)) : x.agents,
+    }));
     try {
-      await api.updateHost(h.name, p);
-      await refresh();
+      await optimistic(local, () => api.updateHost(h.name, p));
     } catch (e) {
       toastError(e);
     }
@@ -505,10 +524,10 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 type="button"
                 disabled={!h.online || h.paused || h.round}
                 onClick={async () => {
+                  // 当帧变成「正在领」（按钮禁用），被拒绝时改回来并提示
                   try {
-                    await api.hostRound(h.name);
+                    await optimistic(patchHost(h.name, x => ({ ...x, round: true })), () => api.hostRound(h.name));
                     toast({ type: 'success', title: `${h.name} 开始领一轮` });
-                    await refresh();
                   } catch (e) {
                     toastError(e);
                   }
@@ -567,11 +586,14 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                   ok: '移除',
                 });
                 if (!yes) return;
+                // 当帧关闭面板、从列表里拿掉（连同它的派发），被拒绝时回来并提示
+                close();
                 try {
-                  await api.removeHost(h.name);
-                  close();
+                  await optimistic(
+                    { ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }) },
+                    () => api.removeHost(h.name),
+                  );
                   toast({ type: 'success', title: `已移除 ${h.name}` });
-                  await refresh();
                 } catch (e) {
                   toastError(e);
                 }
@@ -982,10 +1004,11 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
     if (!h || !agent) return;
     setSending(true);
     try {
+      // 派发要服务端排进队列才有记录：按钮进行中（转圈、禁用）直到返回；返回后当即在卡片和机器页上画出这条派发，不等刷新
       const d = await api.dispatch(path, card, h.name, agent);
       close();
       toast({ type: 'success', title: `#${card} 已派发到 ${d.host} · ${d.agentLabel}`, text: busy(h) ? `排队：${queueReason(h)}` : '机器有空位，马上开始' });
-      await refresh();
+      void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
     } catch (e) {
       toastError(e);
     } finally {
@@ -1070,7 +1093,7 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
           <button className="btn" type="button" onClick={close}>
             取消
           </button>
-          <button className="btn brand" type="button" disabled={!h || !agent || sending || !usable(h)} onClick={submit}>
+          <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={!h || !agent || sending || !usable(h)} aria-busy={sending || undefined} onClick={submit}>
             <Icon name="dispatch" />
             派发
           </button>

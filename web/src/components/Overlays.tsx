@@ -14,7 +14,7 @@ import { SORTS, sortKey, type SortSpec } from '../lib/sort';
 import { boardFlow, INBOX, LABEL_COLORS } from '../lib/schema';
 import type { Card } from '../lib/types';
 import { accel, cx, replay } from '../lib/util';
-import { allBoards, boardMeta, refresh, useData } from '../store/data';
+import { allBoards, boardMeta, deleteLabelPatch, editLabelPatch, optimistic, useData, type Patch } from '../store/data';
 import {
   closeCtx, closeForm, closeImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
   setSide, setSort, setTab, settleConfirm, toast, toastError, updatePicker, useUI, type FormCfg, type Toast,
@@ -480,7 +480,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
           <button className="btn" type="button" onClick={closeForm}>
             取消
           </button>
-          <button className="btn brand" type="submit" disabled={busy}>
+          <button className={cx('btn brand', busy && 'is-busy')} type="submit" disabled={busy} aria-busy={busy || undefined}>
             {cfg.submit || '保存'}
           </button>
         </div>
@@ -827,16 +827,20 @@ export function LabelPicker() {
     await req.onToggle(id, on);
     input.current?.focus();
   };
+  // 新建标签要等服务端分配 ID：这一行显示进行中，不会重复新建；建好后当即勾上
+  const [creating, setCreating] = useState(false);
   const create = async () => {
-    if (!req) return;
+    if (!req || creating) return;
+    setCreating(true);
     try {
-      const l = await api.createLabel(req.project, query);
-      await refresh();
+      const l = await optimistic(null, () => api.createLabel(req.project, query));
       setQ('');
       updatePicker([...sel, l.id]);
       await req.onToggle(l.id, true);
     } catch (e) {
       toastError(e);
+    } finally {
+      setCreating(false);
     }
     input.current?.focus();
   };
@@ -891,9 +895,9 @@ export function LabelPicker() {
           </button>
         ))}
         {canCreate && (
-          <button type="button" className={cx('lbp-row create', active === list.length && 'active')} onClick={create}>
+          <button type="button" className={cx('lbp-row create', active === list.length && 'active', creating && 'busy')} onClick={create} disabled={creating} aria-busy={creating || undefined}>
             <Icon name="plus" />
-            新建标签「{query}」
+            {creating ? `正在新建「${query}」…` : `新建标签「${query}」`}
           </button>
         )}
         {!total && <div className="lbp-empty">还没有标签，输入名称即可新建</div>}
@@ -938,13 +942,13 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
     if (!p) closeLabels();
   }, [p]);
 
-  const run = async (fn: () => Promise<unknown>) => {
+  /** 改名、改色、删除当帧生效（补丁），被拒绝时改回来并提示；新建要等服务端分配 ID，按钮显示进行中 */
+  const [creating, setCreating] = useState(false);
+  const run = async (patch: Patch | null, fn: () => Promise<unknown>) => {
     try {
-      await fn();
-      await refresh();
+      await optimistic(patch, fn);
     } catch (e) {
       toastError(e);
-      await refresh();
       return false;
     }
     return true;
@@ -1000,7 +1004,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
                 onBlur={async () => {
                   const v = names[l.id];
                   if (v == null || v === l.name) return;
-                  await run(() => api.updateLabel(pk, l.id, { name: v }));
+                  await run(editLabelPatch(pk, l.id, { name: v.trim() }), () => api.updateLabel(pk, l.id, { name: v }));
                   setNames(n => {
                     const x = { ...n };
                     delete x[l.id];
@@ -1019,7 +1023,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
                 onClick={async () => {
                   if (l.uses && !(await confirm({ title: `删除标签「${l.name}」？`, text: `${l.uses} 张卡片上的这个标签会一起移除。`, ok: '删除标签', icon: 'tag' })))
                     return;
-                  await run(() => api.deleteLabel(pk, l.id));
+                  await run(deleteLabelPatch(pk, l.id), () => api.deleteLabel(pk, l.id));
                 }}
               >
                 <Icon name="trash" />
@@ -1035,7 +1039,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
                       aria-label={c}
                       onClick={async () => {
                         setSwatch(null);
-                        await run(() => api.updateLabel(pk, l.id, { color: c }));
+                        await run(editLabelPatch(pk, l.id, { color: c }), () => api.updateLabel(pk, l.id, { color: c }));
                       }}
                     />
                   ))}
@@ -1053,7 +1057,10 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
               replay(input.current, 'invalid');
               return;
             }
-            const ok = await run(() => api.createLabel(pk, name, nc));
+            if (creating) return;
+            setCreating(true);
+            const ok = await run(null, () => api.createLabel(pk, name, nc));
+            setCreating(false);
             if (ok) {
               setName('');
               setNewColor(null);
@@ -1075,7 +1082,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
             onClick={() => setSwatch(swatch === 'new' ? null : 'new')}
           />
           <input ref={input} className="input" placeholder="新标签名称" maxLength={24} autoComplete="off" spellCheck={false} value={name} onChange={e => setName(e.target.value)} />
-          <button type="submit" className="btn sm primary">
+          <button type="submit" className={cx('btn sm primary', creating && 'is-busy')} disabled={creating} aria-busy={creating || undefined}>
             <Icon name="plus" />
             新建
           </button>

@@ -11,7 +11,7 @@ import { boardFlow, INBOX, type FlowQ } from './schema';
 import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
-import { boardMeta, exec, moveLocally, refresh, serverNow, useData } from '../store/data';
+import { boardMeta, exec, hold, isDraft, movePatch, serverNow, useData } from '../store/data';
 import { rejectColumn, setDrag, setSort, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
@@ -41,7 +41,7 @@ export function vetoFor(c: Card, to: ColumnKey, f: FlowQ): Veto | null {
 }
 
 /** 卡片详情「移动到」：相当于把卡片拖到目标状态的末尾。规则与拖拽一致（vetoFor），不允许时给出同样的提示、不发请求；
-    先在本地落位，服务端拒绝时提示并刷新 */
+    当帧在本地落位，服务端拒绝时回到原处并提示 */
 export async function moveTo(id: number, to: ColumnKey) {
   const board = useData.getState().board;
   const card = board?.cards[id];
@@ -53,13 +53,11 @@ export async function moveTo(id: number, to: ColumnKey) {
     return;
   }
   // 末尾：目标块优先级顺序的最后（排序中的块也一样，与从别的块拖到最后一张之后相同）
-  moveLocally(id, to, (board.cols[to] ?? []).filter(x => x !== id).length);
   try {
-    await exec({ op: 'move', id, column: to });
+    await exec({ op: 'move', id, column: to }, movePatch(id, to));
     toast({ type: 'success', title: `#${id} 已移到「${f.name(to)}」`, duration: 1800 });
   } catch (e) {
     toastError(e);
-    refresh();
   }
 }
 
@@ -177,6 +175,7 @@ function onDown(e: PointerEvent) {
   if (!card || e.button !== 0 || st) return;
   if (t.closest('button, a, input, textarea')) return;
   const id = Number(card.dataset.id);
+  if (isDraft(id)) return; // 还在新建的卡片不能拖
   const list = card.parentElement!;
   st = {
     id, card, pointerId: e.pointerId, type: e.pointerType,
@@ -453,6 +452,7 @@ function finish(cancelled: boolean) {
   const same = !target || (target.col === s.fromCol && target.index === s.fromIndex);
   const commit = !cancelled && valid && !same && target;
   let failed = false;
+  let done: Promise<unknown> | null = null;
   let plan: Drop = { index: target?.index ?? 0 };
 
   if (!commit) {
@@ -463,10 +463,10 @@ function finish(cancelled: boolean) {
     }
   } else {
     plan = planDrop(s.id, s.fromCol, target);
-    exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order }).catch(err => {
+    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order });
+    done.catch(err => {
       failed = true;
       toastError(err);
-      refresh();
     });
   }
 
@@ -486,9 +486,10 @@ function finish(cancelled: boolean) {
   );
   const id = s.id;
   anim.onfinish = () => {
-    if (commit && !failed) {
+    if (commit && !failed && done) {
       if (plan.clear) setSort(plan.clear, null);
-      moveLocally(id, target.col, plan.index, plan.order);
+      // 落位：叠一层补丁直到服务端确认并刷新（期间推送触发的刷新不会把它冲回原处）；被拒绝时补丁撤掉，卡片回到原处
+      hold(movePatch(id, target.col, plan.index, plan.order), done);
     }
     setDrag(null);
     ghost.remove();

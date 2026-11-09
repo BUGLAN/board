@@ -243,12 +243,14 @@ function Tokens() {
       icon: 'key',
     });
     if (!ok) return;
+    // 当帧从列表里拿掉，被拒绝时重新取列表并提示
+    setList(l => l?.filter(x => x.id !== t.id) ?? l);
     try {
       await api.revokeToken(t.id);
-      await load();
     } catch (err) {
       toastError(err);
     }
+    await load();
   };
 
   const now = Date.now();
@@ -290,7 +292,7 @@ function Tokens() {
           maxLength={40}
           aria-label="令牌用途"
         />
-        <button type="submit" className="btn sm primary" disabled={!name.trim() || busy}>
+        <button type="submit" className={cx('btn sm primary', busy && 'is-busy')} disabled={!name.trim() || busy} aria-busy={busy || undefined}>
           <Icon name="plus" />
           新建令牌
         </button>

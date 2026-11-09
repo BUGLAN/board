@@ -57,6 +57,10 @@ export const CardView = memo(function CardView({
   const sel = useUI(s => s.labelSel);
   // 正在写入的标签（拖上来还没确认）
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
+  // 有还没确认的修改（移动、改标题、新建……）：画成「保存中」；负数 ID 是还在新建的临时卡片
+  const saving = useData(s => !!s.saving[`${s.path}#${c.id}`]);
+  const draft = c.id < 0;
+  const no = draft ? '…' : c.id;
   const active = filterActive(filter, sel);
   const hit = active ? cardHit(c, filter, sel, labels) : true;
   const online = useOnline();
@@ -92,17 +96,20 @@ export const CardView = memo(function CardView({
         t.beat === 'late' && 'late',
         entering && 'entering',
         placeholder && 'is-placeholder',
+        saving && 'saving',
+        draft && 'draft',
       )}
+      aria-busy={saving || undefined}
       tabIndex={0}
       data-id={c.id}
       data-flip={`c${c.id}`}
-      aria-label={`#${c.id} ${c.title}`}
+      aria-label={draft ? `正在新建：${c.title}` : `#${c.id} ${c.title}`}
       style={style}
     >
       {c.column === 'inbox' ? (
         <>
           <div className="card-row">
-            <span className="card-id">#{c.id}</span>
+            <span className="card-id">#{no}</span>
             <span className="card-flags">
               <span className="card-age">{ago(c.createdAt, now)}</span>
             </span>
@@ -131,11 +138,11 @@ export const CardView = memo(function CardView({
         </>
       ) : shape === 'tile' ? (
         <>
-          <span className="ct-id">{c.id}</span>
+          <span className="ct-id">{no}</span>
           {doing && <i className={cx('ct-beat', t.beat)} />}
           <span className="ct-pop" role="tooltip">
             <span className="ct-pop-head">
-              <b>#{c.id}</b>
+              <b>#{no}</b>
               {doing && (
                 <>
                   <span className="ct-pop-holder">
@@ -165,7 +172,7 @@ export const CardView = memo(function CardView({
           ) : (
             <span className="line-dot" />
           )}
-          <span className="card-id">#{c.id}</span>
+          <span className="card-id">#{no}</span>
           <span className="card-line-title">
             <Title text={c.title} />
           </span>
@@ -179,7 +186,7 @@ export const CardView = memo(function CardView({
       ) : (
         <>
           <div className="card-row">
-            <span className="card-id">#{c.id}</span>
+            <span className="card-id">#{no}</span>
             {next && <span className="card-next">下一张</span>}
             <span className="card-flags">
               {gh && <span className="card-tag">{gh}</span>}

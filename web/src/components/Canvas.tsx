@@ -11,7 +11,7 @@ import { api } from '../lib/api';
 import { flowOf } from '../lib/schema';
 import type { BoardInfo, Pos, ProjectInfo } from '../lib/types';
 import { cx, pref, reduceMotion, replay } from '../lib/util';
-import { onEvents, refresh, useData } from '../store/data';
+import { onEvents, optimistic, patchProject, useData, type Patch } from '../store/data';
 import { openCtx, toastError, useUI } from '../store/ui';
 import { Avatar, agent } from './bits';
 import { Icon } from './Icon';
@@ -289,13 +289,19 @@ export function CanvasPage() {
       return;
     }
     if (!d.moved) return;
+    // 松手：新位置交给工作区补丁（拖动中的 override 立即清掉，下一次拖动不会被这次的保存冲掉）；被拒绝时回到原处并提示
+    const pos = d.pos;
+    const patch: Patch =
+      d.type === 'project'
+        ? patchProject(d.id, p => ({ ...p, pos }))
+        : patchProject(d.id.split('/')[0], p => ({ ...p, boards: p.boards.map(b => (b.path === d.id ? { ...b, pos } : b)) }));
+    const done = optimistic(patch, () => api.layout(d.type, d.id, pos));
+    setOverride(null);
     try {
-      await api.layout(d.type, d.id, d.pos);
-      await refresh();
+      await done;
     } catch (err) {
       toastError(err);
     }
-    setOverride(null);
   };
 
   useEffect(() => {

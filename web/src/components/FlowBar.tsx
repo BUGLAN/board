@@ -13,15 +13,24 @@ import { CH, edgeId, layoutFlow, midOf, pathD, type Pt } from '../lib/flowGraph'
 import { statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/schema';
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
-import { refresh } from '../store/data';
+import { optimistic } from '../store/data';
 import { toastError } from '../store/ui';
 import { Icon } from './Icon';
 
-const run = (p: Promise<unknown>) =>
-  p.then(() => refresh()).catch(e => {
-    toastError(e);
-    refresh();
+/** 改工作流：当帧生效（给白板的状态列表叠一层补丁），被拒绝时改回来并提示 */
+const run = (statuses: (list: Status[]) => Status[], req: () => Promise<unknown>) =>
+  optimistic({ board: b => ({ ...b, statuses: statuses(b.statuses) }) }, req).catch(toastError);
+
+/** 加 / 去连线后的状态列表；连线按工作流顺序排（与服务端一致） */
+const withEdges = (add: [string, string][], remove: [string, string][]) => (list: Status[]) => {
+  const rank = new Map(list.map((s, i) => [s.key, i]));
+  return list.map(s => {
+    const out = s.to.filter(t => !remove.some(([a, b]) => a === s.key && b === t));
+    for (const [a, b] of add) if (a === s.key && !out.includes(b)) out.push(b);
+    out.sort((x, y) => (rank.get(x) ?? 0) - (rank.get(y) ?? 0));
+    return out.length === s.to.length && out.every((t, i) => t === s.to[i]) ? s : { ...s, to: out };
   });
+};
 
 /** 拖出连线：from 是起点；改连时 replace 是原来那条连线 */
 interface Conn {
@@ -98,7 +107,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
   const split = (id: string) => id.split('>') as [string, string];
   const removeEdge = (id: string) => {
     setSel(null);
-    run(api.updateEdges(path, [], [split(id)]));
+    run(withEdges([], [split(id)]), () => api.updateEdges(path, [], [split(id)]));
   };
 
   /** 画布坐标 */
@@ -141,7 +150,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
       if (t && !f.hasEdge(from, t)) add.push([from, t]);
       if (!add.length && !remove.length) return;
       if (t) setSel(edgeId(from, t));
-      run(api.updateEdges(path, add, remove));
+      run(withEdges(add, remove), () => api.updateEdges(path, add, remove));
     };
     addEventListener('pointermove', mv);
     addEventListener('pointerup', up);
@@ -173,7 +182,11 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
       const others = f.list.filter(s => s.key !== k);
       const i = others.filter(s => g.boxes[s.key].x + g.boxes[s.key].w / 2 < center).length;
       const order = [...others.slice(0, i).map(s => s.key), k, ...others.slice(i).map(s => s.key)];
-      if (order.join() !== f.list.map(s => s.key).join()) run(api.reorderStatuses(path, order));
+      if (order.join() !== f.list.map(s => s.key).join())
+        run(
+          list => order.map(k => list.find(s => s.key === k)).filter((s): s is Status => !!s).concat(list.filter(s => !order.includes(s.key))),
+          () => api.reorderStatuses(path, order),
+        );
     };
     addEventListener('pointermove', mv);
     addEventListener('pointerup', up);
@@ -321,16 +334,21 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
                     const t = e.target as HTMLInputElement;
                     if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                       const v = t.value.trim();
-                      if (!v) return;
-                      api
-                        .createStatus(path, v)
+                      // 新状态的标识由服务端生成，拿到之前画不出来：输入框进入进行中（只读 + 转圈），不会重复添加
+                      if (!v || t.readOnly) return;
+                      t.readOnly = true;
+                      t.parentElement?.classList.add('busy');
+                      optimistic(null, () => api.createStatus(path, v))
                         .then(() => {
                           t.value = '';
-                          return refresh();
                         })
                         .catch(err => {
                           toastError(err);
                           replay(t.parentElement, 'invalid');
+                        })
+                        .finally(() => {
+                          t.readOnly = false;
+                          t.parentElement?.classList.remove('busy');
                         });
                     }
                     if (e.key === 'Escape') {
@@ -364,7 +382,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
         </div>
       </div>
       {hasLayout && (
-        <button type="button" className="wf-reset" title="这块白板的状态块回到默认布局" onClick={() => run(api.flowLayout(path, {}))}>
+        <button type="button" className="wf-reset" title="这块白板的状态块回到默认布局" onClick={() => run(list => list.map(s => ({ ...s, layout: null })), () => api.flowLayout(path, {}))}>
           复原布局
         </button>
       )}
@@ -422,7 +440,8 @@ function StatusMenu({
     };
   }, []);
 
-  const patch = (p: Parameters<typeof api.updateStatus>[2]) => run(api.updateStatus(path, s.key, p));
+  const patch = (p: Parameters<typeof api.updateStatus>[2]) =>
+    run(list => list.map(x => (x.key === s.key ? { ...x, ...p } : x)), () => api.updateStatus(path, s.key, p));
   const rename = (v: string) => {
     const n = v.trim();
     if (n && n !== s.name) patch({ name: n });
@@ -514,7 +533,8 @@ function StatusMenu({
             className="wf-del sure"
             onClick={() => {
               onClose();
-              run(api.deleteStatus(path, s.key));
+              // 状态和指向它的连线当帧消失；里面的卡片由服务端移走，刷新后出现在新位置
+              run(list => list.filter(x => x.key !== s.key).map(x => (x.to.includes(s.key) ? { ...x, to: x.to.filter(t => t !== s.key) } : x)), () => api.deleteStatus(path, s.key));
             }}
           >
             确认删除{count ? `，${count} 张卡片移到「${(s.key === f.home?.key ? rest : f.home)?.name}」` : ''}，相关连线一起删除

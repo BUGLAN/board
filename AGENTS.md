@@ -17,6 +17,16 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 
 新 worktree 里第一次跑之前先 `npm ci`（postinstall 会装 `web/` 的依赖）。
 
+## 界面写操作：乐观更新 + loading
+
+`web/` 里会改数据的操作都走 `web/src/store/data.ts` 的乐观更新，不要 `await api.xxx()`、`refresh()` 之后才更新界面：
+
+- 卡片命令用 `exec(cmd, patch)`，其他接口用 `optimistic(patch, () => api.xxx(…))`。补丁当帧生效；请求按发起顺序排队；成功后刷新再撤补丁，失败只撤自己这一层（不覆盖之后的操作）并抛出错误。现成的补丁：`editCard`、`movePatch`、`removeCard`、`draftCard`（新建）、`patchProject`、`editLabelPatch`、`deleteLabelPatch`。
+- 补丁是纯函数，每次刷新都会重新叠到新数据上：要能重复执行，目标不在了就原样返回。
+- 失败由调用方 `toastError(e)` 提示，人输入的内容不能丢（存回草稿，或带着草稿重新打开编辑框）。
+- 要等服务端返回才画得出来的操作（新建项目、白板、标签、状态，派发）用 `optimistic(null, …)`，按钮加 `is-busy` 并禁用，直到返回。
+- 还没确认的卡片、评论在 store 的 `saving` 里，已经画成「保存中」；新界面沿用它，不另做一套 loading。
+
 ## 提交
 
 - 第一行按 Conventional Commits，描述用中文，例如 `feat(web): …`、`fix(cli): …`、`docs: …`、`chore: …`。

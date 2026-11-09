@@ -269,9 +269,10 @@ const ERROR_TITLES: Record<string, string> = {
   BOARD_NOT_ON_HOST: '机器没有这块白板的目录',
   NOT_IN_TODO: '卡片不在可领取状态',
 };
-export function toastError(err: unknown) {
+/** 操作被拒绝的提示；extra 可以补充说明或加一个按钮（例如「恢复草稿」） */
+export function toastError(err: unknown, extra: Partial<Pick<Toast, 'text' | 'action' | 'duration'>> = {}) {
   const e = err as ApiError;
-  return toast({ type: 'error', title: ERROR_TITLES[e.code] || '操作被拒绝', code: e.code, text: e.message });
+  return toast({ type: 'error', title: ERROR_TITLES[e.code] || '操作被拒绝', code: e.code, text: e.message, ...extra });
 }
 
 /* ------------------------------ 高亮 ------------------------------ */

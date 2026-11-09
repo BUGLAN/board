@@ -11,7 +11,7 @@ import { useMasonry } from '../lib/masonry';
 import type { BoardEvent, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
-import { refresh, useCurrent, useData, useOnline } from '../store/data';
+import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
@@ -216,10 +216,10 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
   const create = async () => {
     const n = name.trim();
     if (!n || busy) return;
+    // 新标签要等服务端分配 ID：输入框进行中（只读、转圈），不会重复新建
     setBusy(true);
     try {
-      await api.createLabel(project, n);
-      await refresh();
+      await optimistic(null, () => api.createLabel(project, n));
       setName('');
     } catch (e) {
       toastError(e);
@@ -231,10 +231,10 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
   const remove = async (l: Label) => {
     const text = l.uses ? `${l.uses} 张卡片在用这个标签，删除后会从这些卡片上一起去掉。` : '还没有卡片在用这个标签。';
     if (!(await confirm({ title: `删除标签「${l.name}」？`, text, ok: '删除标签', icon: 'tag' }))) return;
+    // 当帧从侧栏和卡片上拿掉，被拒绝时回来并提示
+    if (useUI.getState().labelSel.includes(l.id)) toggleLabelSel(l.id);
     try {
-      await api.deleteLabel(project, l.id);
-      if (useUI.getState().labelSel.includes(l.id)) toggleLabelSel(l.id);
-      await refresh();
+      await optimistic(deleteLabelPatch(project, l.id), () => api.deleteLabel(project, l.id));
     } catch (e) {
       toastError(e);
     }
@@ -286,13 +286,15 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
         ))}
         <input
           ref={input}
-          className="lb-input"
+          className={cx('lb-input', busy && 'busy')}
           value={name}
           placeholder={labels.length ? '' : editing ? '输入标签名，回车新建' : '双击新建标签'}
           maxLength={24}
           spellCheck={false}
           autoComplete="off"
           aria-label="新标签"
+          readOnly={busy}
+          aria-busy={busy || undefined}
           // 键盘 Tab 进来也算进入编辑态；鼠标单击不到它（不在编辑态时 pointer-events: none）
           onFocus={() => setEditing(true)}
           onBlur={() => setEditing(false)}

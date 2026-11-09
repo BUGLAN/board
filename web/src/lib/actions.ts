@@ -6,7 +6,7 @@ import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { allBoards, boardMeta, closeDetail, exec, openDetail, refresh, setPath, useData } from '../store/data';
+import { allBoards, boardMeta, closeDetail, exec, isDraft, movePatch, openDetail, optimistic, patchProject, refresh, setPath, useData, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -33,6 +33,7 @@ export function openBoard(path: string, { stay = false } = {}) {
 
 /** 打开卡片详情（「未整理」的条目切到未整理 Tab） */
 export function openCard(id: number) {
+  if (isDraft(id)) return; // 还在新建：服务端确认后才有详情
   const c = data().board?.cards[id];
   const tab = useUI.getState().tab;
   if (c?.column === 'inbox' && tab !== 'inbox' && isMobile()) setTab('inbox');
@@ -43,11 +44,13 @@ export function openCard(id: number) {
 
 export { closeDetail };
 
-/** 未整理 → 首个可领取状态最下面 */
+/** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示） */
 export async function triage(id: number) {
+  if (isDraft(id)) return;
   const start = boardFlow(useData.getState().board).home;
+  const to = start?.key ?? 'todo';
   try {
-    await exec({ op: 'move', id, column: start?.key ?? 'todo' });
+    await exec({ op: 'move', id, column: to }, movePatch(id, to));
     if (isMobile()) toast({ type: 'success', title: `#${id} 已整理到「${start?.name ?? '待办'}」`, duration: 1800 });
     else setTimeout(() => reveal(id), 60);
   } catch (e) {
@@ -167,6 +170,8 @@ function afterCreate(path: string) {
   } else openBoard(path);
 }
 
+const saved = () => toast({ type: 'success', title: '已保存', duration: 1400 });
+
 export function editProject(pk: string) {
   const p = data().ws?.projects.find(x => x.key === pk);
   if (!p) return;
@@ -181,10 +186,10 @@ export function editProject(pk: string) {
       { name: 'desc', label: '描述', hint: '选填', value: p.desc },
       { name: 'color', label: '颜色', type: 'color', value: p.color },
     ],
+    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示
     onSubmit: async v => {
-      await api.updateProject(pk, { name: v.name, desc: v.desc, color: v.color });
-      await refresh();
-      toast({ type: 'success', title: '已保存', duration: 1400 });
+      const patch = { name: v.name.trim(), desc: v.desc.trim(), color: v.color };
+      optimistic(patchProject(pk, p => ({ ...p, ...patch })), () => api.updateProject(pk, patch)).then(saved, toastError);
     },
   });
 }
@@ -203,23 +208,39 @@ export function editBoard(path: string) {
       { name: 'desc', label: '描述', hint: '选填', value: m.board.desc },
       { name: 'color', label: '颜色', hint: `白板用所属项目的颜色，改这里会一起改项目「${m.project.name}」`, type: 'color', value: m.project.color },
     ],
+    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示
     onSubmit: async v => {
-      await api.updateBoard(path, { name: v.name, desc: v.desc });
-      if (v.color && v.color.toUpperCase() !== m.project.color.toUpperCase()) await api.updateProject(m.project.key, { color: v.color });
-      await refresh();
-      toast({ type: 'success', title: '已保存', duration: 1400 });
+      const patch = { name: v.name.trim(), desc: v.desc.trim() };
+      const recolor = !!v.color && v.color.toUpperCase() !== m.project.color.toUpperCase();
+      optimistic(
+        patchProject(m.project.key, p => ({
+          ...p,
+          color: recolor ? v.color : p.color,
+          boards: p.boards.map(b => (b.path === path ? { ...b, ...patch } : b)),
+        })),
+        async () => {
+          await api.updateBoard(path, patch);
+          if (recolor) await api.updateProject(m.project.key, { color: v.color });
+        },
+      ).then(saved, toastError);
     },
   });
 }
 
 export async function setProjectColor(pk: string, color: string) {
   try {
-    await api.updateProject(pk, { color });
-    await refresh();
+    await optimistic(patchProject(pk, p => ({ ...p, color })), () => api.updateProject(pk, { color }));
   } catch (e) {
     toastError(e);
   }
 }
+
+/** 删除白板 / 项目：确认后当帧从工作区拿掉，被拒绝时回来并提示 */
+const dropBoard = (path: string): Patch => {
+  const [pk] = path.split('/');
+  return patchProject(pk, p => ({ ...p, boards: p.boards.filter(b => b.path !== path) }));
+};
+const dropProject = (pk: string): Patch => ({ ws: ws => ({ ...ws, projects: ws.projects.filter(p => p.key !== pk) }) });
 
 export async function deleteBoard(path: string) {
   const m = boardMeta(data().ws, path);
@@ -232,8 +253,7 @@ export async function deleteBoard(path: string) {
   });
   if (!ok) return;
   try {
-    await api.deleteBoard(path);
-    await refresh();
+    await optimistic(dropBoard(path), () => api.deleteBoard(path));
     toast({ type: 'success', title: `已删除白板「${m.board.name}」` });
   } catch (e) {
     toastError(e);
@@ -251,8 +271,7 @@ export async function deleteProject(pk: string) {
   });
   if (!ok) return;
   try {
-    await api.deleteProject(pk);
-    await refresh();
+    await optimistic(dropProject(pk), () => api.deleteProject(pk));
     toast({ type: 'success', title: `已删除项目「${p.name}」` });
   } catch (e) {
     toastError(e);

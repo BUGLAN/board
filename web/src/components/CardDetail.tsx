@@ -10,13 +10,15 @@ import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
-import { closeDetail, exec, isSettled, openDetail, sendComment, useCurrent, useData, useOnline, useSending } from '../store/data';
+import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeLabel, sendComment, serverNow, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
 import { DispatchNote } from './Hosts';
 import { Icon, type IconName } from './Icon';
+
+const NO_IDS: number[] = [];
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
@@ -107,6 +109,9 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   const locked = !!c.holder;
   const f = boardFlow(board);
   const labels = cur?.project.labels ?? [];
+  // 正在加上的标签（pending 态）；这张卡片有还没确认的修改时，头部显示「保存中」
+  const pendingIds = useData(s => s.pending[`${s.path}#${c.id}`]) ?? NO_IDS;
+  const saving = useData(s => !!s.saving[`${s.path}#${c.id}`]);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
   const list = board?.cols[c.column] ?? [];
   const i = list.indexOf(c.id);
@@ -182,7 +187,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
       selected: c.labels,
       onToggle: async (id, add) => {
         try {
-          await exec({ op: 'label', id: c.id, ...(add ? { add: [id] } : { remove: [id] }) });
+          await (add ? addLabel(c.id, id) : removeLabel(c.id, id));
         } catch (e) {
           toastError(e);
         }
@@ -206,6 +211,10 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <button className="icon-btn sm" type="button" data-tip="下一张  ↓ / J" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
             <Icon name="chevDown" />
           </button>
+        </span>
+        <span className={cx('d-saving', saving && 'on')} role="status" aria-live="polite">
+          <i aria-hidden="true" />
+          {saving ? '保存中' : ''}
         </span>
         <span className="spacer" />
         <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${cardPrompt(useData.getState().path, c.id)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
@@ -236,9 +245,10 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                   <LabelChip
                     key={l.id}
                     label={l}
+                    pending={pendingIds.includes(l.id)}
                     onRemove={async () => {
                       try {
-                        await exec({ op: 'label', id: c.id, remove: [l.id] });
+                        await removeLabel(c.id, l.id);
                       } catch (e) {
                         toastError(e);
                       }
@@ -269,7 +279,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                 if (!yes) return;
                 closeDetail();
                 try {
-                  await exec({ op: 'delete', id: c.id });
+                  // 当帧从白板上拿掉，被拒绝时回来并提示
+                  await exec({ op: 'delete', id: c.id }, removeCard(c.id));
                   toast({ type: 'success', title: `已删除 #${c.id}`, text: c.title });
                 } catch (e) {
                   toastError(e);
@@ -344,13 +355,21 @@ function TitleEditor({ card: c, locked }: { card: Card; locked: boolean }) {
   }, []);
   const commit = async () => {
     editing.current = false;
-    if (locked || v.trim() === c.title) return;
+    const t = v.trim();
+    if (locked || t === c.title) return;
+    if (!t) {
+      // 空标题服务端会拒绝：不发请求，直接改回去
+      replay(ref.current, 'invalid');
+      setV(c.title);
+      return;
+    }
     try {
-      await exec({ op: 'edit', id: c.id, title: v });
+      // 当帧生效（白板上的卡片一起变），被拒绝时改回来并提示。
+      // 输入框不在这里改回：补丁撤掉后 c.title 变回去，上面的 effect 会跟着改；之后又改过一次时它停在那一次的值
+      await exec({ op: 'edit', id: c.id, title: t }, editCard(c.id, { title: t }));
     } catch (e) {
       toastError(e);
       replay(ref.current, 'invalid');
-      setV(c.title);
     }
   };
   return (
@@ -458,11 +477,15 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
   };
   const save = async () => {
     if (stillUploading(attach.busy)) return;
+    const body = v.trim();
+    // 当帧切回预览、显示新描述；被拒绝时改回来并回到编辑，草稿还在
+    setMode('view');
+    if (body === c.body) return;
     try {
-      await exec({ op: 'edit', id: c.id, body: v });
-      setMode('view');
+      await exec({ op: 'edit', id: c.id, body }, editCard(c.id, { body }));
     } catch (e) {
       toastError(e);
+      setMode(m => (m === 'view' ? 'edit' : m));
     }
   };
   return (
@@ -618,9 +641,13 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
             className="btn sm danger"
             type="button"
             onClick={async () => {
+              // 当帧回到领取它时所在的状态最上面（服务端的规则），被拒绝时回来并提示
+              const to = c.claimedFrom ?? boardFlow(useData.getState().board).home?.key ?? c.column;
+              const back = backTo(boardFlow(useData.getState().board), c.claimedFrom);
+              const holder = c.holder;
               try {
-                await exec({ op: 'release', id: c.id });
-                toast({ type: 'success', title: `已强制释放 #${c.id}`, text: `${c.holder} 的领取已清空，卡片回到「${backTo(boardFlow(useData.getState().board), c.claimedFrom)}」最上面` });
+                await exec({ op: 'release', id: c.id }, movePatch(c.id, to, 0, undefined, { holder: null, claimedAt: null, runStartedAt: null }));
+                toast({ type: 'success', title: `已强制释放 #${c.id}`, text: `${holder} 的领取已清空，卡片回到「${back}」最上面` });
               } catch (e) {
                 toastError(e);
               }
@@ -927,10 +954,10 @@ function SideSplitter() {
   );
 }
 
-/** 原地编辑自己发的评论：预填原 Markdown，⌘↵ 保存、Esc 取消；空内容不能保存 */
-function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone: () => void }) {
-  const [draft, setDraft] = useState(a.text);
-  const [saving, setSaving] = useState(false);
+/** 原地编辑自己发的评论：预填原 Markdown（上次没保存成功时是那次的草稿），⌘↵ 保存、Esc 取消；空内容不能保存。
+    保存是乐观的：编辑框当即关闭、气泡显示新内容（「保存中」）；被拒绝时改回来，并带着草稿重新打开编辑框 */
+function CommentEditor({ a, card, initial, onDone, onFail }: { a: Activity; card: number; initial: string; onDone: () => void; onFail: (draft: string) => void }) {
+  const [draft, setDraft] = useState(initial);
   const ta = useRef<HTMLTextAreaElement>(null);
   const empty = !draft.trim();
   useLayoutEffect(() => autosize(ta.current), [draft]);
@@ -941,22 +968,19 @@ function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone:
     el.focus({ preventScroll: true });
     el.setSelectionRange(el.value.length, el.value.length);
   }, []);
-  const save = async () => {
-    if (saving) return;
+  const save = () => {
     if (empty) {
       toast({ type: 'error', title: '评论内容不能为空', text: '不想要这条评论的话，按 Esc 取消修改' });
       ta.current?.focus();
       return;
     }
     if (draft.trim() === a.text.trim()) return onDone();
-    setSaving(true);
-    try {
-      await exec({ op: 'edit_comment', id: card, activity: a.id, text: draft });
-      onDone();
-    } catch (e) {
-      setSaving(false);
+    const text = draft;
+    onDone();
+    exec({ op: 'edit_comment', id: card, activity: a.id, text }, editComment(card, a.id, text.trim())).catch(e => {
       toastError(e);
-    }
+      onFail(text);
+    });
   };
   return (
     <div className={cx('tl-editor', empty && 'empty')}>
@@ -968,7 +992,6 @@ function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone:
         autoCorrect="off"
         autoCapitalize="off"
         aria-label="修改评论"
-        disabled={saving}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -983,16 +1006,22 @@ function CommentEditor({ a, card, onDone }: { a: Activity; card: number; onDone:
       />
       <div className="tl-editor-bar">
         <span className={cx('tl-editor-hint', empty && 'bad')}>{empty ? '评论内容不能为空' : `${accel('↵')} 保存 · Esc 取消`}</span>
-        <button className="btn sm ghost" type="button" onClick={onDone} disabled={saving}>
+        <button className="btn sm ghost" type="button" onClick={onDone}>
           取消
         </button>
-        <button className="btn sm primary" type="button" onClick={save} disabled={saving || empty}>
-          {saving ? '保存中…' : '保存'}
+        <button className="btn sm primary" type="button" onClick={save} disabled={empty}>
+          保存
         </button>
       </div>
     </div>
   );
 }
+
+/** 改评论：动态里的这条当帧换成新内容并标「已编辑」，画成保存中 */
+const editComment = (card: number, act: number, text: string) => ({
+  detail: (d: Detail) => (d.id === card ? { ...d, activity: d.activity.map(x => (x.id === act ? { ...x, text, edited_at: serverNow() } : x)) } : d),
+  acts: [act],
+});
 
 /** 本窗口发出的评论：发送中气泡的作者 */
 const ME: Activity['actor'] = { kind: 'human', name: '' };
@@ -1003,7 +1032,9 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
   // 自己发的评论从「发送中」转正：不再播入场动画，只把透明度补回来
   const settled = isSettled(a.id);
   if (settled) fresh = false;
-  const [editing, setEditing] = useState(false);
+  // 正在编辑时是草稿的初始内容
+  const [editing, setEditing] = useState<string | null>(null);
+  const saving = useData(s => !!s.saving[`${s.path}@${a.id}`]);
   const name =
     a.actor.kind === 'agent' ? (
       <b className="agent-name" style={{ color: agentColor(a.actor.name) }}>
@@ -1019,7 +1050,7 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
   );
   if (a.kind === 'comment') {
     return (
-      <div className={cx('tl-item', a.actor.kind === 'human' && 'mine', fresh && 'new', settled && 'settled')}>
+      <div className={cx('tl-item', a.actor.kind === 'human' && 'mine', fresh && 'new', settled && 'settled', saving && 'sending')} aria-busy={saving || undefined}>
         <div>
           <Avatar actor={a.actor} />
         </div>
@@ -1037,13 +1068,23 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
                 已编辑
               </span>
             )}
-            {a.actor.kind === 'human' && !editing && (
-              <button className="tl-edit" type="button" aria-label="编辑这条评论" title="编辑" onClick={() => setEditing(true)}>
+            {saving && (
+              <span className="tl-time sending-tag">
+                <i aria-hidden="true" />
+                保存中
+              </span>
+            )}
+            {a.actor.kind === 'human' && editing == null && !saving && (
+              <button className="tl-edit" type="button" aria-label="编辑这条评论" title="编辑" onClick={() => setEditing(a.text)}>
                 <Icon name="edit" />
               </button>
             )}
           </div>
-          {editing ? <CommentEditor a={a} card={card} onDone={() => setEditing(false)} /> : <Markdown src={a.text} />}
+          {editing != null ? (
+            <CommentEditor a={a} card={card} initial={editing} onDone={() => setEditing(null)} onFail={setEditing} />
+          ) : (
+            <Markdown src={a.text} />
+          )}
         </div>
       </div>
     );
