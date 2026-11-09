@@ -309,7 +309,9 @@ export type ErrorCode =
   | 'BOARD_NOT_ON_HOST'
   | 'DISPATCHED'
   | 'INTERNAL'
-  | 'NETWORK';
+  | 'NETWORK'
+  /** 界面自己的：上一次修改还没保存完，不能再改同一个对象（不发请求） */
+  | 'BUSY';
 
 /** 当前登录的人：线上是 GitHub 账号；本机模式不需要登录 */
 export type Me = { mode: 'github'; login: string; name: string; avatar: string } | { mode: 'local' };

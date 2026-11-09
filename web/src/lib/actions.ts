@@ -6,7 +6,7 @@ import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { allBoards, boardMeta, closeDetail, exec, isDraft, movePatch, openDetail, optimistic, patchProject, refresh, setPath, useData, type Patch } from '../store/data';
+import { allBoards, boardMeta, closeDetail, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -189,7 +189,7 @@ export function editProject(pk: string) {
     // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示
     onSubmit: async v => {
       const patch = { name: v.name.trim(), desc: v.desc.trim(), color: v.color };
-      optimistic(patchProject(pk, p => ({ ...p, ...patch })), () => api.updateProject(pk, patch)).then(saved, toastError);
+      optimistic({ ...patchProject(pk, p => ({ ...p, ...patch })), keys: [projectKey(pk)] }, () => api.updateProject(pk, patch)).then(saved, toastError);
     },
   });
 }
@@ -213,11 +213,14 @@ export function editBoard(path: string) {
       const patch = { name: v.name.trim(), desc: v.desc.trim() };
       const recolor = !!v.color && v.color.toUpperCase() !== m.project.color.toUpperCase();
       optimistic(
-        patchProject(m.project.key, p => ({
-          ...p,
-          color: recolor ? v.color : p.color,
-          boards: p.boards.map(b => (b.path === path ? { ...b, ...patch } : b)),
-        })),
+        {
+          ...patchProject(m.project.key, p => ({
+            ...p,
+            color: recolor ? v.color : p.color,
+            boards: p.boards.map(b => (b.path === path ? { ...b, ...patch } : b)),
+          })),
+          keys: [projectKey(m.project.key)],
+        },
         async () => {
           await api.updateBoard(path, patch);
           if (recolor) await api.updateProject(m.project.key, { color: v.color });
@@ -229,7 +232,7 @@ export function editBoard(path: string) {
 
 export async function setProjectColor(pk: string, color: string) {
   try {
-    await optimistic(patchProject(pk, p => ({ ...p, color })), () => api.updateProject(pk, { color }));
+    await optimistic({ ...patchProject(pk, p => ({ ...p, color })), keys: [projectKey(pk)] }, () => api.updateProject(pk, { color }));
   } catch (e) {
     toastError(e);
   }
@@ -238,9 +241,9 @@ export async function setProjectColor(pk: string, color: string) {
 /** 删除白板 / 项目：确认后当帧从工作区拿掉，被拒绝时回来并提示 */
 const dropBoard = (path: string): Patch => {
   const [pk] = path.split('/');
-  return patchProject(pk, p => ({ ...p, boards: p.boards.filter(b => b.path !== path) }));
+  return { ...patchProject(pk, p => ({ ...p, boards: p.boards.filter(b => b.path !== path) })), keys: [projectKey(pk)] };
 };
-const dropProject = (pk: string): Patch => ({ ws: ws => ({ ...ws, projects: ws.projects.filter(p => p.key !== pk) }) });
+const dropProject = (pk: string): Patch => ({ ws: ws => ({ ...ws, projects: ws.projects.filter(p => p.key !== pk) }), keys: [projectKey(pk)] });
 
 export async function deleteBoard(path: string) {
   const m = boardMeta(data().ws, path);

@@ -16,7 +16,7 @@ import {
 import { shell } from '../lib/platform';
 import type { Dispatch, HostAgent, HostInfo } from '../lib/types';
 import { copyText, cx, durWords, hhmm } from '../lib/util';
-import { hold, optimistic, refresh, refreshHosts, useData, type Patch } from '../store/data';
+import { hold, hostKey, optimistic, refresh, refreshHosts, useBusy, useData, type Patch } from '../store/data';
 import { confirm, openDispatch, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { useNow } from './bits';
 import { Icon } from './Icon';
@@ -128,6 +128,7 @@ async function cancel(d: Dispatch) {
         ? ws.dispatches?.map(x => (x.id === d.id ? { ...x, stopBy: x.stopBy ?? '你' } : x))
         : ws.dispatches?.filter(x => x.id !== d.id),
     }),
+    keys: [`dispatch:${d.id}`],
   };
   try {
     await optimistic(patch, () => api.cancelDispatch(d.id));
@@ -140,6 +141,7 @@ async function cancel(d: Dispatch) {
 /** 改一台机器（工作区里的 hosts） */
 const patchHost = (name: string, fn: (h: HostInfo) => HostInfo): Patch => ({
   ws: ws => ({ ...ws, hosts: ws.hosts?.map(h => (h.name === name ? fn(h) : h)) }),
+  keys: [hostKey(name)],
 });
 
 /* ------------------------------ 侧栏 ------------------------------ */
@@ -401,7 +403,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
     };
   }, [on, h.name, rev]);
 
-  /** 机器设置：当帧生效，被拒绝时改回来并提示 */
+  /** 机器设置：当帧生效，被拒绝时改回来并提示。保存完之前这台机器的设置都禁用（不会在没确认的值上再改一次） */
+  const busy = useBusy(hostKey(h.name));
   const patch = async (p: Parameters<typeof api.updateHost>[1]) => {
     const { env, ...fields } = p;
     const local = patchHost(h.name, x => ({
@@ -488,11 +491,11 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <span>正在跑的达到上限后，新的派发在服务端排队</span>
               </div>
               <span className="hp-stepper">
-                <button type="button" aria-label="减少" disabled={h.max <= 1} onClick={() => patch({ max: h.max - 1 })}>
+                <button type="button" aria-label="减少" disabled={busy || h.max <= 1} onClick={() => patch({ max: h.max - 1 })}>
                   −
                 </button>
                 <b>{h.max}</b>
-                <button type="button" aria-label="增加" disabled={h.max >= 8} onClick={() => patch({ max: h.max + 1 })}>
+                <button type="button" aria-label="增加" disabled={busy || h.max >= 8} onClick={() => patch({ max: h.max + 1 })}>
                   +
                 </button>
               </span>
@@ -508,12 +511,13 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 role="switch"
                 aria-checked={h.cronOn}
                 aria-label="定时领取"
+                disabled={busy}
                 onClick={() => patch({ cronOn: !h.cronOn })}
               >
                 <i />
               </button>
             </div>
-            <CronTimes h={h} patch={patch} />
+            <CronTimes h={h} patch={patch} busy={busy} />
             <div className="hp-rule">
               <div>
                 <b>现在领一轮</b>
@@ -522,7 +526,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
               <button
                 className="btn sm"
                 type="button"
-                disabled={!h.online || h.paused || h.round}
+                disabled={busy || !h.online || h.paused || h.round}
                 onClick={async () => {
                   // 当帧变成「正在领」（按钮禁用），被拒绝时改回来并提示
                   try {
@@ -542,7 +546,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           <section className="d-section" style={{ ['--i' as string]: 3 }}>
             <div className="d-label">本机 agent</div>
             {h.agents.map(a => (
-              <AgentRow key={a.id} h={h} a={a} patch={patch} />
+              <AgentRow key={a.id} h={h} a={a} patch={patch} busy={busy} />
             ))}
             {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
           </section>
@@ -579,6 +583,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             <button
               className="btn sm danger"
               type="button"
+              disabled={busy}
               onClick={async () => {
                 const yes = await confirm({
                   title: `移除 ${h.name}？`,
@@ -590,7 +595,10 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 close();
                 try {
                   await optimistic(
-                    { ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }) },
+                    {
+                      ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }),
+                      keys: [hostKey(h.name)],
+                    },
                     () => api.removeHost(h.name),
                   );
                   toast({ type: 'success', title: `已移除 ${h.name}` });
@@ -603,7 +611,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
               移除机器
             </button>
             <span className="d-actions-hint">排队的取消，在跑的停止</span>
-            <button className="btn sm d-move" type="button" onClick={() => patch({ paused: !h.paused })}>
+            <button className="btn sm d-move" type="button" disabled={busy} onClick={() => patch({ paused: !h.paused })}>
               <Icon name={h.paused ? 'play' : 'pause'} />
               {h.paused ? '恢复接单' : '暂停接单'}
             </button>
@@ -652,7 +660,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 
 /** 本机 agent 的一行：图标、名称、启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
  *  旧版 board host 不上报启动环境：不显示下拉，写版本号 */
-function AgentRow({ h, a, patch }: { h: HostInfo; a: HostAgent; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void> }) {
+function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean }) {
   const def = a.id === h.agent;
   const envs = h.envs ?? [];
   const checks = a.envs ?? [];
@@ -667,6 +675,7 @@ function AgentRow({ h, a, patch }: { h: HostInfo; a: HostAgent; patch: (p: Param
         (checks.length ? (
           <select
             className="input hp-env-select"
+            disabled={busy}
             value={a.env ?? ''}
             onChange={e => e.target.value && e.target.value !== a.env && patch({ env: { agent: a.id, env: e.target.value } })}
             aria-label={`${a.name} 的启动环境`}
@@ -685,7 +694,7 @@ function AgentRow({ h, a, patch }: { h: HostInfo; a: HostAgent; patch: (p: Param
       <button
         type="button"
         className={cx('hp-def', def && 'on')}
-        disabled={!a.found}
+        disabled={busy || !a.found}
         onClick={() => !def && patch({ agent: a.id })}
         data-tip={!a.found ? '这台机器上没找到命令' : def ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
         data-tip-align="end"
@@ -697,10 +706,10 @@ function AgentRow({ h, a, patch }: { h: HostInfo; a: HostAgent; patch: (p: Param
 }
 
 /** 定时领取的时间点：胶囊列表，可增删 */
-function CronTimes({ h, patch }: { h: HostInfo; patch: (p: { cron: string[] }) => Promise<void> }) {
+function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[] }) => Promise<void>; busy: boolean }) {
   const [t, setT] = useState('');
   const add = () => {
-    if (!/^\d{1,2}:\d{2}$/.test(t)) return;
+    if (busy || !/^\d{1,2}:\d{2}$/.test(t)) return;
     void patch({ cron: [...h.cron, t] });
     setT('');
   };
@@ -709,14 +718,14 @@ function CronTimes({ h, patch }: { h: HostInfo; patch: (p: { cron: string[] }) =
       {h.cron.map(x => (
         <span className="hp-time" key={x}>
           {x}
-          <button type="button" aria-label={`去掉 ${x}`} onClick={() => patch({ cron: h.cron.filter(y => y !== x) })}>
+          <button type="button" aria-label={`去掉 ${x}`} disabled={busy} onClick={() => patch({ cron: h.cron.filter(y => y !== x) })}>
             <Icon name="close" />
           </button>
         </span>
       ))}
       <span className="hp-time-add">
         <input type="time" value={t} onChange={e => setT(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} aria-label="新的时间点" />
-        <button className="btn sm" type="button" disabled={!t} onClick={add}>
+        <button className="btn sm" type="button" disabled={busy || !t} onClick={add}>
           <Icon name="plus" />
           加时间点
         </button>

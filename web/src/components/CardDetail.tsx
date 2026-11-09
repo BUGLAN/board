@@ -10,7 +10,7 @@ import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
-import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeLabel, sendComment, serverNow, useCurrent, useData, useOnline, useSending } from '../store/data';
+import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -109,9 +109,9 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   const locked = !!c.holder;
   const f = boardFlow(board);
   const labels = cur?.project.labels ?? [];
-  // 正在加上的标签（pending 态）；这张卡片有还没确认的修改时，头部显示「保存中」
+  // 正在加上的标签（pending 态）；这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
   const pendingIds = useData(s => s.pending[`${s.path}#${c.id}`]) ?? NO_IDS;
-  const saving = useData(s => !!s.saving[`${s.path}#${c.id}`]);
+  const saving = useCardBusy(c.id);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
   const list = board?.cols[c.column] ?? [];
   const i = list.indexOf(c.id);
@@ -228,7 +228,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
       <div className="d-grid">
         <div className="d-main">
           <section className="d-section" style={{ ['--i' as string]: 0 }}>
-            <TitleEditor card={c} locked={locked} />
+            <TitleEditor card={c} locked={locked} busy={saving} />
             <div className="d-meta">
               <span>
                 由 <b>{actorName(creator)}</b> 创建于 <b>{ago(c.createdAt, now)}</b>
@@ -246,7 +246,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                     key={l.id}
                     label={l}
                     pending={pendingIds.includes(l.id)}
-                    onRemove={async () => {
+                    onRemove={saving ? undefined : async () => {
                       try {
                         await removeLabel(c.id, l.id);
                       } catch (e) {
@@ -255,16 +255,16 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                     }}
                   />
                 ))}
-              <button type="button" className="lb-add" data-label-picker onClick={e => onLabels(e.currentTarget)}>
+              <button type="button" className="lb-add" data-label-picker disabled={saving} onClick={e => onLabels(e.currentTarget)}>
                 <Icon name="tag" />
                 {c.labels.length ? '' : '添加标签'}
               </button>
             </div>
           </section>
           <DispatchNote board={useData.getState().path} card={c.id} />
-          <ClaimPart card={c} now={now} />
+          <ClaimPart card={c} now={now} busy={saving} />
           <section className="d-section" data-part="desc" style={{ ['--i' as string]: 2 }}>
-            <DescEditor card={c} locked={locked} />
+            <DescEditor card={c} locked={locked} busy={saving} />
           </section>
           {!!c.attachments?.length && <Attachments list={c.attachments} />}
           {/* 描述里引用了附件：附件列表多半不空，先占位 */}
@@ -274,6 +274,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <button
               className="btn sm danger"
               type="button"
+              disabled={saving}
               onClick={async () => {
                 const yes = await confirm({ title: `删除 #${c.id}？`, text: `「${c.title}」及其全部动态会被永久删除，无法恢复。`, ok: '删除' });
                 if (!yes) return;
@@ -294,7 +295,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <button
               className="btn sm d-move"
               type="button"
-              disabled={!f.list.find(s => s.key === c.column)?.claim || !!dispatched}
+              disabled={saving || !f.list.find(s => s.key === c.column)?.claim || !!dispatched}
               data-tip={dispatched ? '已经派发过了：在上面取消派发或停止' : !f.list.find(s => s.key === c.column)?.claim ? '只有可领取状态里的卡片能派发' : '派给一台机器上的 agent'}
               onClick={() => openDispatch(c.id)}
             >
@@ -305,6 +306,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               className="btn sm"
               type="button"
               aria-haspopup="menu"
+              disabled={saving}
               onClick={e => {
                 const open = useUI.getState().ctx;
                 if (open?.kind === 'move' && open.id === String(c.id)) return closeCtx();
@@ -340,7 +342,8 @@ function useRefit(ref: React.RefObject<HTMLTextAreaElement | null>, on?: unknown
   }, [ref, on]);
 }
 
-function TitleEditor({ card: c, locked }: { card: Card; locked: boolean }) {
+/** busy：这张卡片在保存中，先不能改（只读），保存完再改 */
+function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useRefit(ref);
   const [v, setV] = useState(c.title);
@@ -379,7 +382,7 @@ function TitleEditor({ card: c, locked }: { card: Card; locked: boolean }) {
       rows={1}
       maxLength={200}
       spellCheck={false}
-      readOnly={locked}
+      readOnly={locked || busy}
       value={v}
       aria-label="标题"
       onFocus={() => (editing.current = true)}
@@ -453,7 +456,7 @@ function Attachments({ list }: { list: Attachment[] }) {
   );
 }
 
-function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
+function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [v, setV] = useState(c.body);
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -464,7 +467,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
     if (locked && mode === 'edit') setMode('view');
   }, [locked, mode]);
   const edit = () => {
-    if (locked) return;
+    if (locked || busy) return;
     setV(c.body);
     setMode('edit');
     requestAnimationFrame(() => {
@@ -559,7 +562,7 @@ function DescEditor({ card: c, locked }: { card: Card; locked: boolean }) {
   );
 }
 
-function ClaimPart({ card: c, now }: { card: Card; now: number }) {
+function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: boolean }) {
   const start = boardFlow(useData(s => s.board)).home?.name ?? '待办';
   const online = useOnline();
   if (c.column === 'inbox') {
@@ -640,6 +643,7 @@ function ClaimPart({ card: c, now }: { card: Card; now: number }) {
           <button
             className="btn sm danger"
             type="button"
+            disabled={busy}
             onClick={async () => {
               // 当帧回到领取它时所在的状态最上面（服务端的规则），被拒绝时回来并提示
               const to = c.claimedFrom ?? boardFlow(useData.getState().board).home?.key ?? c.column;

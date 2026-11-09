@@ -2,10 +2,10 @@
    数据：工作区、当前白板（每个窗口可以看不同的白板）、打开的卡片详情
    - 服务端推送 rev 变化 → 重新取快照；新事件交给界面做高亮与提示
    - 写操作乐观更新（见「乐观更新」一节）：当帧生效，按发起顺序一个接一个发给服务端，
-     成功后刷新再撤掉本地补丁，失败只撤掉自己那一层
+     成功后刷新再撤掉本地补丁，失败只撤掉自己那一层；保存完之前同一个对象不能再改（见 busy）
    ========================================================================== */
 import { create } from 'zustand';
-import { api, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
+import { api, ApiError, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
 import * as flip from '../lib/flip';
 import { clearLabelSel, toast } from './ui';
 import type { BoardEvent, BoardInfo, BoardSnapshot, Card, CardDetail, Cmd, ColumnKey, ProjectInfo, Workspace } from '../lib/types';
@@ -29,7 +29,8 @@ interface DataState {
   pending: Record<string, number[]>;
   /** 正在发送的评论（乐观更新）：「白板路径#卡片」→ 按发送顺序。动态底部画成「发送中」的气泡，服务端确认后换成正式评论 */
   sending: Record<string, Sending[]>;
-  /** 还没确认的写操作涉及的卡片（「白板路径#卡片」）和评论（「白板路径@动态 ID」）→ 进行中的个数，界面据此画成「保存中」 */
+  /** 还没确认的写操作涉及的卡片（「白板路径#卡片」）、评论（「白板路径@动态 ID」）和其他对象（Patch.keys，例如「host:mbp」）
+      → 进行中的个数。界面据此画成「保存中」，并禁用对它们的操作（见 busy） */
   saving: Record<string, number>;
 }
 
@@ -83,6 +84,8 @@ const get = useData.getState;
   - 成功：等 refresh 拿到包含这次修改的数据，再撤掉补丁，界面不闪
   - 失败：只撤掉自己这一层，之后发起的操作照样叠着（不会被回滚覆盖）
   补丁是纯函数，每次 render 都重新执行，要容忍目标已经不在（卡片被删、换了白板），并且可以重复执行。
+  保存完之前同一个对象（补丁的 cards / keys）不能再改：界面上禁用对它的操作，漏网的由 guard 拒绝（BUSY，不发请求）。
+  这样同一个对象上不会有两笔还没确认的修改，不会出现「前一笔失败、后一笔是在它的基础上算的」这类结果和预期不符。
 */
 export interface Patch {
   ws?: (ws: Workspace) => Workspace;
@@ -93,6 +96,8 @@ export interface Patch {
   cards?: number[];
   /** 画成「保存中」的评论（动态 ID） */
   acts?: number[];
+  /** 其他保存完之前不能再改的对象，全局唯一的字符串（hostKey、flowKey、labelKey、projectKey） */
+  keys?: string[];
 }
 interface Layer extends Patch {
   path: string;
@@ -111,12 +116,37 @@ function render(extra: Partial<DataState> = {}) {
     if (l.ws && ws) ws = l.ws(ws);
     l.cards?.forEach(id => mark(`${l.path}#${id}`));
     l.acts?.forEach(id => mark(`${l.path}@${id}`));
+    l.keys?.forEach(mark);
     if (l.path !== path) continue;
     if (l.board && board?.path === path) board = l.board(board);
     if (l.detail && detail) detail = l.detail(detail);
   }
   set({ ws, board, detail, saving, ...extra });
 }
+
+/** 对象的 busy 键：保存完之前不能再改 */
+export const cardKey = (path: string, id: number) => `${path}#${id}`;
+export const hostKey = (name: string) => `host:${name}`;
+export const flowKey = (path: string) => `flow:${path}`;
+export const labelKey = (project: string, id: number) => `label:${project}:${id}`;
+export const projectKey = (project: string) => `project:${project}`;
+
+/** 这个对象有还没确认的修改（画成「保存中」）：界面上禁用对它的操作 */
+export const busy = (key: string) => !!get().saving[key];
+export const useBusy = (key: string) => useData(s => !!s.saving[key]);
+/** 当前白板上的这张卡片在保存中 */
+export const cardBusy = (id: number) => busy(cardKey(get().path, id));
+export const useCardBusy = (id: number) => useData(s => !!s.saving[cardKey(s.path, id)]);
+
+/** 补丁涉及的对象还有没确认的修改时拒绝（不叠补丁、不发请求），由调用方提示 */
+function guard(p: Patch) {
+  const path = get().path;
+  const keys = [...(p.cards ?? []).map(id => cardKey(path, id)), ...(p.keys ?? [])];
+  if (keys.some(busy)) throw new ApiError('BUSY', '上一次修改还在保存，保存完再改');
+}
+
+/** 每发起一个写请求 +1：发出时和返回时不一样的读请求（机器列表、卡片详情）可能是写之前的旧数据，不用它覆盖 */
+let writes = 0;
 
 function push(p: Patch): Layer {
   const l: Layer = { ...p, path: get().path };
@@ -133,6 +163,7 @@ function drop(l: Layer) {
 /** 写请求按发起顺序一个接一个发：连续操作时服务端收到的顺序与界面一致（补丁当帧就叠上，不用等前面的） */
 let chain: Promise<unknown> = Promise.resolve();
 function queue<T>(req: () => Promise<T>): Promise<T> {
+  writes++;
   const run = chain.then(req);
   chain = run.catch(() => undefined);
   return run;
@@ -141,6 +172,7 @@ function queue<T>(req: () => Promise<T>): Promise<T> {
 /** 乐观执行一个写请求：补丁当帧生效；成功后 refresh，再撤掉补丁；失败撤掉补丁并抛出错误（由调用方提示）。
     patch 为 null 时只是排队执行 + 刷新（拿不到结果就没法预先画出来的操作，例如新建项目），调用方自己显示进行中 */
 export async function optimistic<T>(patch: Patch | null, req: () => Promise<T>): Promise<T> {
+  if (patch) guard(patch);
   const l = patch ? push(patch) : null;
   try {
     const r = await queue(req);
@@ -210,12 +242,17 @@ export function removeCard(id: number): Patch {
 }
 
 let tempSeq = 0;
-/** 新建卡片：先用一个负数 ID 的临时卡片画在目标状态最下面（服务端的规则），服务端返回后由 settle 记下真正的 ID：
-    刷新拿到真卡片的那一刻临时卡片不再画，两张不会同时出现 */
+/** 已经认作某张临时卡片的真卡片：一张真卡片只顶替一张临时卡片 */
+const claimed = new Set<number>();
+/** 新建卡片：先用一个负数 ID 的临时卡片画在目标状态最下面（服务端的规则），刷新拿到真卡片的那一刻临时卡片不再画，两张不会同时出现。
+    真卡片怎么认：服务端返回后由 settle 记下 ID；返回之前，推送触发的刷新可能已经带来了真卡片（弱网下常见），
+    这时按「新建时白板上还没有的、人建的、标题和状态都一样」认出来 */
 export function draftCard(p: { title: string; body: string; labels: number[]; column: ColumnKey }) {
   const id = -++tempSeq;
   let real: number | null = null;
   const now = serverNow();
+  const board = get().board;
+  const known = Math.max(0, ...Object.keys(board?.cards ?? {}).map(Number));
   const card: Card = {
     id, title: p.title.trim(), body: p.body.trim(), column: p.column, holder: null, claimedAt: null, beatAt: null, runStartedAt: null,
     workMs: 0, runs: 0, runsLost: 0, claimedFrom: null, labels: p.labels, createdAt: now, updatedAt: now,
@@ -223,12 +260,26 @@ export function draftCard(p: { title: string; body: string; labels: number[]; co
   };
   const patch: Patch = {
     board: b => {
+      if (real == null) {
+        const hit = Object.values(b.cards).find(
+          x => x.id > known && !claimed.has(x.id) && x.createdBy.kind === 'human' && x.title === card.title && x.column === p.column,
+        );
+        if (hit) {
+          real = hit.id;
+          claimed.add(hit.id);
+        }
+      }
       if (real != null && b.cards[real]) return b;
       return { ...b, cards: { ...b.cards, [id]: card }, cols: { ...b.cols, [p.column]: [...(b.cols[p.column] ?? []), id] } };
     },
     cards: [id],
   };
-  return { id, patch, settle: (realId: number) => (real = realId) };
+  const settle = (realId: number) => {
+    if (real != null && real !== realId) claimed.delete(real);
+    real = realId;
+    claimed.add(realId);
+  };
+  return { id, patch, settle };
 }
 
 /** 临时卡片（还在新建）：没有详情、不能拖、不能打开 */
@@ -240,12 +291,15 @@ export const patchProject = (key: string, fn: (p: ProjectInfo) => ProjectInfo): 
 });
 
 /** 改项目里的一个标签（名称、颜色） */
-export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string }) =>
-  patchProject(project, p => ({ ...p, labels: p.labels.map(l => (l.id === id ? { ...l, ...change } : l)) }));
+export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string }): Patch => ({
+  ...patchProject(project, p => ({ ...p, labels: p.labels.map(l => (l.id === id ? { ...l, ...change } : l)) })),
+  keys: [labelKey(project, id)],
+});
 
 /** 删除项目里的一个标签：从项目和当前白板的卡片上一起拿掉 */
 export const deleteLabelPatch = (project: string, id: number): Patch => ({
   ...patchProject(project, p => ({ ...p, labels: p.labels.filter(l => l.id !== id) })),
+  keys: [labelKey(project, id)],
   board: b => {
     if (!b.path.startsWith(`${project}/`)) return b;
     let cards = b.cards;
@@ -346,8 +400,10 @@ async function load() {
 
 /** 只刷新机器和派发（机器页打开时每 10 秒一次：机器心跳不推送，靠它更新「最近心跳」） */
 export async function refreshHosts() {
+  const w = writes;
   const r = await api.hosts();
-  if (!base.ws) return;
+  // 请求发出后又有写操作：这份可能是写之前的旧数据，用它会把刚保存的修改冲回去（例如「设为默认」又变回原来的）
+  if (!base.ws || w !== writes) return;
   base.ws = { ...base.ws, hosts: r.hosts, dispatches: r.dispatches };
   render();
 }
@@ -432,7 +488,10 @@ export async function openDetail(id: number) {
   base.detail = base.detail?.id === id ? base.detail : details.get(k) ?? null;
   render({ detailId: id, detailError: null });
   try {
+    const w = writes;
     const d = await api.card(path, id);
+    // 请求发出后又有写操作：可能是旧数据（例如刚改的标题），不用它，重新取一次（refresh 会带回打开着的详情）
+    if (w !== writes) return void refresh();
     details.set(k, d);
     if (get().detailId === id && get().path === path) {
       base.detail = d;
@@ -503,6 +562,8 @@ export function sendComment(id: number, text: string): Promise<void> {
 /** 对当前白板执行卡片命令；patch 是它在本地的效果，当帧生效（见 optimistic）。失败抛 ApiError，由调用方提示 */
 export async function exec(cmd: Cmd, patch?: Patch): Promise<CardDetail> {
   const path = get().path;
+  if ('id' in cmd) guard({ ...patch, cards: [...(patch?.cards ?? []), cmd.id] });
+  else if (patch) guard(patch);
   const l = patch ? push(patch) : null;
   try {
     const r = await queue(() => api.cmd(path, cmd));

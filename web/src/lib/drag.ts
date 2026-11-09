@@ -11,7 +11,7 @@ import { boardFlow, INBOX, type FlowQ } from './schema';
 import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
-import { boardMeta, exec, hold, isDraft, movePatch, serverNow, useData } from '../store/data';
+import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, serverNow, useData } from '../store/data';
 import { rejectColumn, setDrag, setSort, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
@@ -175,7 +175,7 @@ function onDown(e: PointerEvent) {
   if (!card || e.button !== 0 || st) return;
   if (t.closest('button, a, input, textarea')) return;
   const id = Number(card.dataset.id);
-  if (isDraft(id)) return; // 还在新建的卡片不能拖
+  if (isDraft(id) || cardBusy(id)) return; // 还在新建、保存中的卡片不能拖（保存完再动）
   const list = card.parentElement!;
   st = {
     id, card, pointerId: e.pointerId, type: e.pointerType,
@@ -454,7 +454,8 @@ function finish(cancelled: boolean) {
     }
   } else {
     plan = planDrop(s.id, s.fromCol, target);
-    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order });
+    // 松手当帧就画成「保存中」（不能再拖、再改），落位的补丁等飞回动画结束再叠（hold）
+    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order }, { cards: [s.id] });
     done.catch(err => {
       failed = true;
       toastError(err);

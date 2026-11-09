@@ -13,13 +13,13 @@ import { CH, edgeId, layoutFlow, midOf, pathD, type Pt } from '../lib/flowGraph'
 import { statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/schema';
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
-import { optimistic } from '../store/data';
+import { flowKey, optimistic, useBusy, useData } from '../store/data';
 import { toastError } from '../store/ui';
 import { Icon } from './Icon';
 
 /** 改工作流：当帧生效（给白板的状态列表叠一层补丁），被拒绝时改回来并提示 */
 const run = (statuses: (list: Status[]) => Status[], req: () => Promise<unknown>) =>
-  optimistic({ board: b => ({ ...b, statuses: statuses(b.statuses) }) }, req).catch(toastError);
+  optimistic({ board: b => ({ ...b, statuses: statuses(b.statuses) }), keys: [flowKey(useData.getState().path)] }, req).catch(toastError);
 
 /** 加 / 去连线后的状态列表；连线按工作流顺序排（与服务端一致） */
 const withEdges = (add: [string, string][], remove: [string, string][]) => (list: Status[]) => {
@@ -58,6 +58,8 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
   const [widths, setWidths] = useState<Record<string, number>>({});
   const [addW, setAddW] = useState(96);
   const canvas = useRef<HTMLDivElement>(null);
+  // 工作流的修改还没保存完：先不能再改（连线、顺序、设置），保存完再改
+  const busy = useBusy(flowKey(path));
   const chips = useRef<Record<string, HTMLElement | null>>({});
   const addEl = useRef<HTMLElement | null>(null);
   const moved = useRef(false);
@@ -201,7 +203,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
   const selGeo = sel ? g.edges.find(e => e.id === sel) : undefined;
 
   return (
-    <div className={cx('wf-bar wf-graph', conn && 'connecting')}>
+    <div className={cx('wf-bar wf-graph', conn && 'connecting', busy && 'busy')} aria-busy={busy || undefined}>
       <span className="wf-label" style={{ marginTop: g.boxes[f.list[0]?.key]?.y ?? 0 }}>
         工作流
       </span>
@@ -406,6 +408,7 @@ function StatusMenu({
   onClose: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const busy = useBusy(flowKey(path));
   const close = useRef(onClose);
   close.current = onClose;
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -462,7 +465,12 @@ function StatusMenu({
 
   if (!pos) return null;
   return createPortal(
-    <div className="wf-menu" style={{ ['--c' as string]: statusColor(s.color), position: 'fixed', left: pos.left, top: pos.top }} onPointerDown={e => e.stopPropagation()}>
+    <div
+      className={cx('wf-menu', busy && 'busy')}
+      aria-busy={busy || undefined}
+      style={{ ['--c' as string]: statusColor(s.color), position: 'fixed', left: pos.left, top: pos.top }}
+      onPointerDown={e => e.stopPropagation()}
+    >
       <input
         className="wf-menu-name"
         defaultValue={s.name}
