@@ -55,8 +55,9 @@ impl Rig {
         std::fs::write(
             conf.join("config.toml"),
             format!(
-                // 机器上真装了 dsh、pi 也不用它们：dsh 换成找不到的命令（默认 agent 就是 claude），pi 同样
-                "[agents.dsh]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
+                // 机器上真装了 dsh、pi、codex 也不用它们：都换成找不到的命令（默认 agent 就是 claude）。
+                // 不换的话启动时会真的执行它们的 --version（codex 要一两秒，机器忙时更久），同名第二个 host 来不及在时限内退出
+                "[agents.dsh]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.codex]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
                 fake.display()
             ),
         )
