@@ -1,7 +1,8 @@
 /* ==========================================================================
    机器（board host）与派发（任务下发需求 §八）
    - 活动栏「机器」Tab：侧栏列出每台机器；主区是机位总览（每台一张卡片，并发位一格一格画出来）
-   - 机器详情：和卡片详情同一种居中弹窗（左：正在跑、排队、派发规则、本机 agent、白板与目录；右：最近）
+   - 机器详情：和卡片详情同一种居中弹窗（左：正在跑、排队、派发规则、本机 agent（每个 agent 的启动环境）、启动环境、
+     白板与目录；右：最近）
    - 添加机器：同样的弹窗，写两种方法
    - 卡片详情的「派发」对话框，卡片和卡片详情上的派发状态
    ========================================================================== */
@@ -10,7 +11,7 @@ import { createPortal } from 'react-dom';
 import { openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import {
-  agentMark, cardDispatch, cronSummary, hostLoad, hostState, hostsOf, mins, osKind, queueReason, resultOf, since, SOURCE,
+  agentMark, cardDispatch, cronSummary, envName, hostLoad, hostState, hostsOf, mins, osKind, queueReason, resultOf, since, SOURCE,
 } from '../lib/hosts';
 import { shell } from '../lib/platform';
 import type { Dispatch, HostAgent, HostInfo } from '../lib/types';
@@ -60,12 +61,20 @@ export function Mark({ id, title }: { id: string; title?: string }) {
   );
 }
 
-function AgentChip({ a, def, small }: { a: HostAgent; def?: boolean; small?: boolean }) {
+/** agent 自己的图标；不认识的 agent 用两个字母 */
+function AgentIcon({ id }: { id: string }) {
+  const m = agentMark(id);
+  return m.icon ? <img className={cx('hp-logo', m.light && 'ring')} src={m.icon} alt="" draggable={false} /> : <b style={{ ['--ac' as string]: m.color }}>{m.short}</b>;
+}
+
+/** agent 胶囊：图标、名称、启动环境（「pi · Git Bash」）、版本号、「默认」 */
+function AgentChip({ a, def, small, env }: { a: HostAgent; def?: boolean; small?: boolean; env?: string | null }) {
   const m = agentMark(a.id);
   return (
     <span className={cx('hp-agent', !a.found && 'missing', def && 'def', small && 'sm')} style={{ ['--ac' as string]: m.color }}>
-      {m.icon ? <img className={cx('hp-logo', m.light && 'ring')} src={m.icon} alt="" draggable={false} /> : <b>{m.short}</b>}
+      <AgentIcon id={a.id} />
       {a.name}
+      {env && <i className="hp-agent-env">· {env}</i>}
       {!small && <em>{a.found ? a.version || '找到了' : '没找到'}</em>}
       {def && <small>默认</small>}
     </span>
@@ -291,7 +300,7 @@ export function HostsPage() {
                     {h.agents
                       .filter(a => a.found)
                       .map(a => (
-                        <AgentChip key={a.id} a={a} def={a.id === def} small />
+                        <AgentChip key={a.id} a={a} def={a.id === def} env={envName(h, a.env)} small />
                       ))}
                     {!h.agents.some(a => a.found) && <span className="hp-tile-auto">一个 agent 也没找到</span>}
                     <span className="hp-sp" />
@@ -513,24 +522,26 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 
           <section className="d-section" style={{ ['--i' as string]: 3 }}>
             <div className="d-label">本机 agent</div>
-            <div className="hp-agents">
-              {h.agents.map(a => (
-                <button
-                  key={a.id}
-                  type="button"
-                  className="hp-agent-btn"
-                  disabled={!a.found}
-                  onClick={() => a.id !== h.agent && patch({ agent: a.id })}
-                  data-tip={!a.found ? '这台机器上没找到命令' : a.id === h.agent ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
-                >
-                  <AgentChip a={a} def={a.id === h.agent} />
-                </button>
-              ))}
-              {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
-            </div>
+            {h.agents.map(a => (
+              <AgentRow key={a.id} h={h} a={a} patch={patch} />
+            ))}
+            {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
           </section>
 
-          <section className="d-section" style={{ ['--i' as string]: 4 }}>
+          {!!h.envs?.length && (
+            <section className="d-section" style={{ ['--i' as string]: 4 }}>
+              <div className="d-label">启动环境</div>
+              {h.envs.map(e => (
+                <div className="hp-dir" key={e.id}>
+                  <span className="hp-board">{e.name}</span>
+                  {e.path && <code title={e.path}>{e.path}</code>}
+                  {e.id === 'direct' && <span className="hp-env-hint">不经过 shell，直接执行命令</span>}
+                </div>
+              ))}
+            </section>
+          )}
+
+          <section className="d-section" style={{ ['--i' as string]: 5 }}>
             <div className="d-label">白板与目录</div>
             {h.dirs.length ? (
               h.dirs.map(d => (
@@ -601,6 +612,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                       </b>
                       <span>
                         <em style={{ ['--c' as string]: r.color }}>{r.label}</em>
+                        {p.envName && <> · {p.envName}</>}
                         {p.startedAt != null && p.endedAt != null && <> · 用时 {durWords(p.endedAt - p.startedAt)}</>}
                         {p.endedAt != null && <> · {since(p.endedAt, now)}</>}
                       </span>
@@ -612,6 +624,52 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** 本机 agent 的一行：图标、名称、启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
+ *  旧版 board host 不上报启动环境：不显示下拉，写版本号 */
+function AgentRow({ h, a, patch }: { h: HostInfo; a: HostAgent; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void> }) {
+  const def = a.id === h.agent;
+  const envs = h.envs ?? [];
+  const checks = a.envs ?? [];
+  const name = (id: string) => envName(h, id) ?? id;
+  return (
+    <div className={cx('hp-arow', !a.found && 'missing')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
+      <AgentIcon id={a.id} />
+      <b className="hp-arow-name">{a.name}</b>
+      {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
+      <span className="hp-sp" />
+      {envs.length > 0 &&
+        (checks.length ? (
+          <select
+            className="input hp-env-select"
+            value={a.env ?? ''}
+            onChange={e => e.target.value && e.target.value !== a.env && patch({ env: { agent: a.id, env: e.target.value } })}
+            aria-label={`${a.name} 的启动环境`}
+            data-tip="启动环境：在哪种 shell 里启动它；改了下一次派发就用新的"
+          >
+            {!a.env && <option value="">没找到</option>}
+            {checks.map(c => (
+              <option key={c.env} value={c.env} disabled={!c.found && c.env !== a.env}>
+                {name(c.env)} · {c.found ? c.version || '找到了' : '没找到'}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="hp-arow-none">本机没有它支持的启动环境</span>
+        ))}
+      <button
+        type="button"
+        className={cx('hp-def', def && 'on')}
+        disabled={!a.found}
+        onClick={() => !def && patch({ agent: a.id })}
+        data-tip={!a.found ? '这台机器上没找到命令' : def ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
+        data-tip-align="end"
+      >
+        {def ? '默认' : '设为默认'}
+      </button>
     </div>
   );
 }
@@ -659,6 +717,7 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
       </div>
       <div className="hp-run-meta">
         <span className="hp-mono">{r.name}</span>
+        {r.envName && <span>{r.envName}</span>}
         <span>{r.startedAt != null ? durWords(now - r.startedAt) : '刚开始'}</span>
         <Beat at={r.beatAt} now={now} />
         <span>{SOURCE[r.source]}</span>
@@ -852,7 +911,8 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
               </>
             ) : (
               <>
-                {d.name} · {SOURCE[d.source]}派发 · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
+                {d.name}
+                {d.envName && ` · ${d.envName}`} · {SOURCE[d.source]}派发 · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
                 {d.stopBy && ' · 正在停止'}
               </>
             )}
@@ -995,9 +1055,9 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
                       className={cx('hp-agent-btn', agent === a.id && 'on')}
                       disabled={!a.found}
                       onClick={() => setAgent(a.id)}
-                      data-tip={a.found ? undefined : '这台机器上没找到命令'}
+                      data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
                     >
-                      <AgentChip a={a} def={a.id === h.agent} />
+                      <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} />
                     </button>
                   ))}
                 </div>

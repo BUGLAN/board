@@ -5,15 +5,17 @@
 //! ```
 //!
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
-//! - 启动时找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi），逐个检查命令在不在
-//!   PATH 里（内置模板还会看几个常见的安装位置）、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。
-//!   内置模板的顺序就是默认 agent 的顺序：本机找到的第一个是默认。找到了、但看不到 `board-skills` 的 agent 启动时提醒一行。
-//!   怎么接入新的 agent 见 docs/agents.md。
+//! - 启动时找本机的启动环境（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL 的发行版 …，见 envs.rs），
+//!   再找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi、codex），在每个 agent 支持、
+//!   本机有的启动环境里各检查一次命令找不找得到（内置模板在直接启动、登录 shell 里还会看几个常见的安装位置）、取版本号
+//!   （`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。内置模板的顺序就是默认 agent 的顺序：本机找到的第一个
+//!   是默认。每个 agent 用哪个启动环境由机器设置决定（服务端写进派发记录）。找到了、但在它用的环境里看不到 `board-skills`
+//!   的 agent 启动时提醒一行。怎么接入新的 agent 见 docs/agents.md。
 //! - 每 10 秒向服务端上报一次（机器心跳），同时替正在跑的派发的名字发 agent 级心跳；订阅实时推送，
 //!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。
 //! - 有空位、没有暂停时，按创建先后开始排队中的派发：服务端生成名字 `<agent 标识>/<机器名>-<序号>`、check、领取，
-//!   host 在这块白板对应的目录里启动 agent（`{prompt}` 换成 `/board-skills 开始执行 …` 那一行，作为一个参数传入，
-//!   不经过 shell），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
+//!   host 在这块白板对应的目录里、在派发记录写的启动环境里启动 agent（`{prompt}` 换成 `/board-skills 开始执行 …`
+//!   那一行，作为一个参数传入，不拼进 shell 命令文本），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
 //!   指向这次派发自己的配置文件 `~/.board/host/run/<机器名>/<派发 ID>.toml`（地址和令牌，0600，派发结束时删除）。
 //!   有的 agent 不把名字像密钥的环境变量传给它执行的命令（dsh 去掉名字里带 KEY、PASSWORD、SECRET、TOKEN 的），
 //!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
@@ -21,7 +23,8 @@
 //! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行。
 //! - agent 退出后上报退出码和日志最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 / 已停止）。
-//! - 人停止：结束 agent 进程树（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树），再上报。
+//! - 人停止：结束 agent 进程树，包括启动环境的外壳（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树；
+//!   WSL 里在 WSL 中结束 agent 的进程组），再上报。
 //! - `Ctrl+C`（或 SIGTERM）：先按「人停止」结束本机由它启动的全部 agent，再让机器离线，然后退出。
 //!   桌面端在后台运行它时设置 `BOARD_HOST_STDIN=1`：标准输入关闭（桌面端退出）也按 Ctrl+C 处理。
 //! - 机器名的 pid 文件 `~/.board/host/<机器名>.pid`（「进程号 启动时间 标识」）：board host 异常退出后在同一台机器上重启，
@@ -29,6 +32,7 @@
 
 use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
+use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
 use crate::Paint;
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words};
@@ -36,7 +40,7 @@ use board_core::*;
 use serde_json::{json, Value};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -54,10 +58,13 @@ struct Builtin {
     /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面：pi 从 PATH 找 `bash.exe`，
     /// Git 装在非 `%ProgramFiles%` 位置时（例如 D:\Git）才能不落到 WSL 的 bash
     git_bash: bool,
+    /// Windows 上支持的启动环境，顺序就是默认选择的顺序（`wsl:*` 是每个 WSL 发行版）；
+    /// macOS、Linux 上都是登录 shell → 直接启动（[`envs::UNIX_ORDER`]）
+    win: &'static [&'static str],
 }
 
 /// 顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
-const BUILTIN: [Builtin; 3] = [
+const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "dsh",
         name: "DeepSeek Harness",
@@ -69,6 +76,7 @@ const BUILTIN: [Builtin; 3] = [
         ],
         skills: &["~/.agents/skills"],
         git_bash: false,
+        win: &["pwsh", "powershell", "cmd"],
     },
     Builtin {
         id: "claude",
@@ -77,6 +85,7 @@ const BUILTIN: [Builtin; 3] = [
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
         git_bash: false,
+        win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
     },
     Builtin {
         id: "pi",
@@ -85,6 +94,17 @@ const BUILTIN: [Builtin; 3] = [
         also: &[],
         skills: &["~/.agents/skills", "~/.pi/agent/skills"],
         git_bash: true,
+        // pi 不支持 cmd
+        win: &["git-bash", "wsl:*", "pwsh", "powershell"],
+    },
+    Builtin {
+        id: "codex",
+        name: "Codex",
+        cmd: &["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
+        also: &[],
+        skills: &["$CODEX_HOME/skills"],
+        git_bash: false,
+        win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
     },
 ];
 
@@ -124,178 +144,124 @@ struct Spec {
     id: String,
     name: String,
     cmd: Vec<String>,
-    /// 找到的命令；没找到时为空
-    exe: Option<PathBuf>,
-    version: String,
     /// 读用户级 skill 的目录（内置模板才有）
     skills: Vec<String>,
     /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面
     git_bash: bool,
+    /// 在它支持、本机有的每个启动环境里的检查结果，按默认选择的顺序
+    checks: Vec<Check>,
 }
 
 impl Spec {
-    fn report(&self) -> HostAgent {
-        HostAgent { id: self.id.clone(), name: self.name.clone(), version: self.version.clone(), found: self.exe.is_some() }
+    /// 默认的启动环境：按顺序第一个找到命令的
+    fn default_check(&self) -> Option<&Check> {
+        self.checks.iter().find(|c| c.found)
     }
-}
 
-impl Spec {
-    /// 找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`。
-    /// 用户级目录来自内置模板；项目级目录看每块白板对应的仓库目录（agent 也会读工作目录里的 skill）。
-    fn misses_skill(&self, dirs: &[(String, PathBuf)]) -> bool {
-        if self.exe.is_none() || self.skills.is_empty() {
+    fn report(&self) -> HostAgent {
+        let def = self.default_check();
+        HostAgent {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            version: def.map(|c| c.version.clone()).unwrap_or_default(),
+            found: def.is_some(),
+            envs: self.checks.iter().map(Check::report).collect(),
+            env: None,
+        }
+    }
+
+    /// 在 env 里找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`。
+    /// 用户级目录来自内置模板（WSL 里看 WSL 用户目录下的）；项目级目录看每块白板对应的仓库目录（agent 也会读工作目录里的 skill）
+    fn misses_skill(&self, env: &Env, dirs: &[(String, PathBuf)]) -> bool {
+        if self.skills.is_empty() || !self.checks.iter().any(|c| c.env == env.id && c.found) {
             return false;
         }
         let has = |d: &Path| d.join(SKILL).join("SKILL.md").is_file();
-        !self.skills.iter().any(|d| has(&expand(d)))
+        !envs::has_skill(env, &self.skills, SKILL)
             && !dirs.iter().any(|(_, p)| [".agents/skills", ".claude/skills", ".pi/skills"].iter().any(|s| has(&p.join(s))))
     }
 }
 
-/// 一个模板：(标识, 名称, 命令, 命令不在 PATH 里时再看的位置, 读 skill 的目录, Windows 上要不要先找 Git Bash)
-type Template = (String, String, Vec<String>, Vec<String>, Vec<String>, bool);
+/// 一个模板（内置的，或配置文件里的）
+struct Template {
+    id: String,
+    name: String,
+    cmd: Vec<String>,
+    /// 命令不在 PATH 里时再看的位置（只在直接启动、登录 shell 里用）
+    also: Vec<String>,
+    skills: Vec<String>,
+    git_bash: bool,
+    /// 支持的启动环境，按默认选择的顺序
+    order: Vec<String>,
+}
 
-/// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面
-fn agent_specs(conf: &[AgentConf]) -> Result<Vec<Spec>> {
+/// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
+/// 每个 agent 在它支持、本机有的启动环境里各检查一次
+fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let order = |win: &[&str]| if cfg!(windows) { strs(win) } else { strs(envs::UNIX_ORDER) };
     let mut out: Vec<Template> = BUILTIN
         .iter()
-        .map(|b| (b.id.to_string(), b.name.to_string(), strs(b.cmd), strs(b.also), strs(b.skills), b.git_bash))
+        .map(|b| Template {
+            id: b.id.to_string(),
+            name: b.name.to_string(),
+            cmd: strs(b.cmd),
+            also: strs(b.also),
+            skills: strs(b.skills),
+            git_bash: b.git_bash,
+            order: order(b.win),
+        })
         .collect();
     for a in conf {
         check_agent_id(&a.id).map_err(BoardError::usage)?;
-        let name = a.name.clone().unwrap_or_else(|| a.id.clone());
-        match out.iter_mut().find(|x| x.0 == a.id) {
+        match out.iter_mut().find(|x| x.id == a.id) {
             Some(x) => {
                 // 换了命令：内置的备用位置不再适用
-                if x.2.first() != a.cmd.first() {
-                    x.3.clear();
+                if x.cmd.first() != a.cmd.first() {
+                    x.also.clear();
                 }
-                x.2 = a.cmd.clone();
+                x.cmd = a.cmd.clone();
                 if let Some(n) = &a.name {
-                    x.1 = n.clone();
+                    x.name = n.clone();
                 }
             }
-            None => out.push((a.id.clone(), name, a.cmd.clone(), vec![], vec![], false)),
+            None => out.push(Template {
+                id: a.id.clone(),
+                name: a.name.clone().unwrap_or_else(|| a.id.clone()),
+                cmd: a.cmd.clone(),
+                also: vec![],
+                skills: vec![],
+                git_bash: false,
+                order: order(envs::CONF_WIN_ORDER),
+            }),
         }
     }
-    // 各个 agent 的 --version 一起跑：一个慢的不拖住启动
+    // 每个 agent 在每个环境里的检查一起跑：一个慢的不拖住启动
     Ok(std::thread::scope(|s| {
         let jobs: Vec<_> = out
             .into_iter()
-            .map(|(id, name, cmd, also, skills, git_bash)| {
-                s.spawn(move || {
-                    let exe = cmd.first().and_then(|c| which(c)).or_else(|| also.iter().map(|p| expand(p)).find(|p| is_exe(p)));
-                    let version = exe.as_deref().map(version_of).unwrap_or_default();
-                    Spec { id, name, cmd, exe, version, skills, git_bash }
-                })
+            .map(|t| {
+                let checks: Vec<_> = envs::supported(&t.order, envs)
+                    .into_iter()
+                    .map(|e| {
+                        let (cmd, also) = (t.cmd.first().cloned().unwrap_or_default(), t.also.clone());
+                        s.spawn(move || envs::probe(e, &cmd, &also))
+                    })
+                    .collect();
+                (t, checks)
             })
             .collect();
-        jobs.into_iter().filter_map(|j| j.join().ok()).collect()
-    }))
-}
-
-/// 在 PATH 里找命令（Windows 上按 PATHEXT 补扩展名）；写了路径的直接看文件在不在
-fn which(cmd: &str) -> Option<PathBuf> {
-    let p = expand(cmd);
-    if p.components().count() > 1 {
-        return is_exe(&p).then_some(p);
-    }
-    let exts: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
-            .split(';')
-            .filter(|e| !e.is_empty())
-            .map(|e| e.to_lowercase())
+        jobs.into_iter()
+            .map(|(t, checks)| Spec {
+                id: t.id,
+                name: t.name,
+                cmd: t.cmd,
+                skills: t.skills,
+                git_bash: t.git_bash,
+                checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
+            })
             .collect()
-    } else {
-        vec![]
-    };
-    for dir in std::env::split_paths(&std::env::var_os("PATH")?) {
-        if cfg!(windows) {
-            for e in &exts {
-                let f = dir.join(format!("{cmd}{e}"));
-                if f.is_file() {
-                    return Some(f);
-                }
-            }
-        } else {
-            let f = dir.join(cmd);
-            if is_exe(&f) {
-                return Some(f);
-            }
-        }
-    }
-    None
-}
-
-/// Windows 上从 PATH 里的 git 推出 Git Bash 的目录（`<Git>\bin`）。
-/// pi 只认 `%ProgramFiles%\Git\bin\bash.exe`，Git 装在 D 盘这类位置时会回落到 PATH 里的
-/// `bash.exe`——那常常是 `C:\Windows\System32\bash.exe`（WSL），WSL 没启用时 pi 的命令都跑不了。
-#[cfg(windows)]
-fn git_bash_dir() -> Option<PathBuf> {
-    git_bash_beside(&which("git")?)
-}
-
-/// git.exe 的上级或上上级里的 `bin\bash.exe`（`<Git>\bin\git.exe` 或 `<Git>\cmd\git.exe` 两种安装布局）
-#[cfg(windows)]
-fn git_bash_beside(git: &Path) -> Option<PathBuf> {
-    let dir = git.parent()?;
-    let mut candidates = vec![dir.to_path_buf()];
-    if let Some(root) = dir.parent() {
-        candidates.push(root.join("bin"));
-    }
-    candidates.into_iter().find(|d| d.join("bash.exe").is_file())
-}
-
-fn is_exe(p: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        p.is_file()
-    }
-}
-
-/// `<命令> --version` 的第一行（5 秒没结果算取不到，结束它）
-fn version_of(exe: &Path) -> String {
-    let mut c = Command::new(exe);
-    c.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    no_window(&mut c);
-    let Ok(mut child) = c.spawn() else { return String::new() };
-    let begun = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if begun.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(30)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return String::new();
-            }
-        }
-    }
-    let Ok(o) = child.wait_with_output() else { return String::new() };
-    let text = if o.stdout.iter().any(|b| !b.is_ascii_whitespace()) { o.stdout } else { o.stderr };
-    String::from_utf8_lossy(&text).lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().chars().take(60).collect()
-}
-
-/// `~` 开头的路径换成用户目录
-fn expand(p: &str) -> PathBuf {
-    let home = || {
-        let keys: [&str; 2] = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
-        keys.iter().find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
-    };
-    match p.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => match home() {
-            Some(h) => h.join(rest.trim_start_matches(['/', '\\'])),
-            None => PathBuf::from(p),
-        },
-        _ => PathBuf::from(p),
-    }
+    }))
 }
 
 /// board host 自己的目录：`~/.board/host`
@@ -325,48 +291,6 @@ fn write_run_config(path: &Path, url: &str, token: &str) -> std::io::Result<()> 
 }
 
 /* ------------------------------ 进程 ------------------------------ */
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-fn no_window(_c: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        _c.creation_flags(CREATE_NO_WINDOW);
-    }
-}
-
-/// agent 进程自成一组：终端里的 Ctrl+C 不直接打到它身上（由 host 按「人停止」处理），停止时整组结束
-fn own_group(c: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        c.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        c.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-    }
-}
-
-/// 结束进程树：先 SIGTERM（hard 时 SIGKILL）整个进程组；Windows 直接结束进程树
-fn signal_tree(pid: u32, hard: bool) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(pid as i32), if hard { libc::SIGKILL } else { libc::SIGTERM });
-    }
-    #[cfg(windows)]
-    {
-        let _ = hard;
-        let mut c = Command::new("taskkill");
-        c.args(["/PID", &pid.to_string(), "/T", "/F"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        no_window(&mut c);
-        let _ = c.status();
-    }
-}
 
 /// 退出码；被信号结束时按 shell 的习惯记成 128 + 信号（kill -9 → 137）
 fn exit_code(s: std::process::ExitStatus) -> Option<i64> {
@@ -424,6 +348,10 @@ fn on_signals() {
 struct Run {
     d: Dispatch,
     child: Child,
+    /// 启动环境
+    env: Env,
+    /// WSL 里 agent 的进程号写在这里（BOARD_PIDFILE），结束时删除
+    pidfile: Option<PathBuf>,
     log: PathBuf,
     /// 这次派发的配置文件（BOARD_CONFIG），结束时删除
     conf: PathBuf,
@@ -433,6 +361,32 @@ struct Run {
     term_at: Option<Instant>,
     killed: bool,
     spawned: Instant,
+}
+
+impl Run {
+    /// 结束 agent 进程树（hard：强制）。WSL：在 WSL 里结束 agent 的进程组，强制时再结束 wsl.exe 的进程树
+    fn stop(&self, hard: bool) {
+        if self.env.wsl().is_some() {
+            let pid = self.pidfile.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok());
+            match pid {
+                Some(pid) => envs::wsl_kill(&self.env, pid, hard),
+                // 还没写进程号（刚启动）：直接结束 wsl.exe
+                None => kill_tree(self.child.id(), true),
+            }
+            if hard {
+                kill_tree(self.child.id(), true);
+            }
+        } else {
+            kill_tree(self.child.id(), hard);
+        }
+    }
+
+    fn cleanup(&self) {
+        let _ = std::fs::remove_file(&self.conf);
+        if let Some(p) = &self.pidfile {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 /// 还没上报成功的结束（连不上服务端时下一轮再报）
@@ -493,6 +447,8 @@ struct Host<'a> {
     /// 第一次上报时带上：上一次异常退出的 board host 的标识
     resume: Option<String>,
     os: String,
+    /// 本机的启动环境
+    envs: Vec<Env>,
     agents: Vec<Spec>,
     dirs: Vec<(String, PathBuf)>,
     pidfile: PathBuf,
@@ -554,7 +510,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         dirs.push((board, dir));
     }
     let be = Backend::open()?;
-    let agents = agent_specs(&conf.agents)?;
+    let envs = envs::discover();
+    let agents = agent_specs(&conf.agents, &envs)?;
     let os = sysinfo::System::long_os_version()
         .ok()
         .or_else(|| sysinfo::System::name().ok())
@@ -581,6 +538,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         instance,
         resume,
         os,
+        envs,
         agents,
         dirs,
         pidfile,
@@ -624,6 +582,7 @@ impl Host<'_> {
             os: self.os.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             agents: self.agents.iter().map(Spec::report).collect(),
+            envs: self.envs.iter().map(Env::report).collect(),
             dirs: self.dirs.iter().map(|(b, p)| HostDir { board: b.clone(), path: p.display().to_string() }).collect(),
             running: self.runs.iter().map(|r| r.d.id).collect(),
             done,
@@ -650,21 +609,40 @@ impl Host<'_> {
         let p = self.p;
         let mut s = format!("{} {} 已上线：{}\n", p.green("✓"), p.bold(&self.name), p.cyan(self.rm().url()));
         s += &format!("  {}{} · board {}\n", p.dim("系统    "), self.os, env!("CARGO_PKG_VERSION"));
+        let envs: Vec<String> = self.envs.iter().map(|e| e.name.clone()).collect();
+        s += &format!("  {}{}\n", p.dim("环境    "), envs.join("、"));
         let def = self.work.as_ref().and_then(|w| w.host.agent.clone());
+        // 服务端按机器设置算出来的：用哪个启动环境、在里面找没找到
+        let used = |id: &str| self.work.as_ref().and_then(|w| w.host.agents.iter().find(|a| a.id == id).cloned());
+        let env_name = |id: &str| self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string());
         for (i, a) in self.agents.iter().enumerate() {
             let head = if i == 0 { p.dim("agent   ") } else { "        ".into() };
-            let state = match &a.exe {
-                Some(_) => format!("{}{}", if a.version.is_empty() { "找到了".to_string() } else { a.version.clone() }, if def.as_deref() == Some(&a.id) { p.yellow("（默认）") } else { String::new() }),
-                None => p.red("没找到"),
+            let u = used(&a.id).unwrap_or_else(|| a.report());
+            let env = u.env.clone().or_else(|| a.default_check().map(|c| c.env.clone()));
+            let state = if u.found {
+                let v = if u.version.is_empty() { "找到了".to_string() } else { u.version.clone() };
+                let e = env.as_deref().map(|e| p.dim(&format!(" · {}", env_name(e)))).unwrap_or_default();
+                format!("{v}{e}{}", if def.as_deref() == Some(&a.id) { p.yellow("（默认）") } else { String::new() })
+            } else if let Some(e) = env.as_deref().filter(|_| a.default_check().is_some()) {
+                p.red(&format!("在{}里没找到", env_name(e)))
+            } else {
+                p.red("没找到")
             };
             s += &format!("  {head}{} {}  {state}\n", p.cyan(&a.id), a.name);
         }
-        for a in self.agents.iter().filter(|a| a.misses_skill(&self.dirs)) {
+        for a in &self.agents {
+            let Some(env) = used(&a.id).and_then(|u| u.env).or_else(|| a.default_check().map(|c| c.env.clone())) else { continue };
+            let Some(e) = self.envs.iter().find(|x| x.id == env) else { continue };
+            if !a.misses_skill(e, &self.dirs) {
+                continue;
+            }
             let dirs: Vec<String> = a.skills.iter().map(|d| format!("{d}/{SKILL}")).collect();
+            let place = if e.wsl().is_some() { format!("{}里的 ", e.name) } else { String::new() };
             s += &format!(
-                "  {} {} 看不到 {SKILL}：派给它的卡片会做不成，先装到 {} 或仓库的 .agents/skills/{SKILL}（见 docs/agents.md）\n",
+                "  {} {} 在{}里看不到 {SKILL}：派给它的卡片会做不成，先装到 {place}{} 或仓库的 .agents/skills/{SKILL}（见 docs/agents.md）\n",
                 p.yellow("!"),
                 a.id,
+                e.name,
                 dirs.join(" 或 ")
             );
         }
@@ -798,7 +776,7 @@ impl Host<'_> {
                 continue;
             };
             let r = self.runs.remove(i);
-            let _ = std::fs::remove_file(&r.conf);
+            r.cleanup();
             let code = exit_code(status);
             self.flush_log(&r, true);
             let tail = tail_lines(&r.log, TAIL);
@@ -848,12 +826,12 @@ impl Host<'_> {
                     None => None,
                 };
                 if let Some(why) = why {
-                    signal_tree(r.child.id(), false);
+                    r.stop(false);
                     r.term_at = Some(Instant::now());
                     say.push(format!("停止 {}#{}：{why}", r.d.board, r.d.card));
                 }
             } else if !r.killed && r.term_at.is_some_and(|t| t.elapsed() >= KILL_AFTER) {
-                signal_tree(r.child.id(), true);
+                r.stop(true);
                 r.killed = true;
             }
         }
@@ -937,10 +915,11 @@ impl Host<'_> {
         match self.spawn(&d) {
             Ok(r) => {
                 self.say(format!(
-                    "{} {}  {}  {}",
+                    "{} {}  {}  {}  {}",
                     self.p.green("▶"),
                     self.p.cyan(&format!("{}#{}", d.board, d.card)),
                     self.p.yellow(d.name.as_deref().unwrap_or_default()),
+                    self.p.dim(&r.env.name),
                     d.title
                 ));
                 self.runs.push(r);
@@ -955,9 +934,18 @@ impl Host<'_> {
         }
     }
 
+    /// 在派发记录写的启动环境里启动 agent。旧版服务端不写启动环境、或写的环境本机已经没有：按本机的默认（第一个找到的）
     fn spawn(&self, d: &Dispatch) -> std::result::Result<Run, String> {
         let spec = self.agents.iter().find(|a| a.id == d.agent).ok_or_else(|| format!("本机没有 agent「{}」", d.agent))?;
-        let exe = spec.exe.clone().ok_or_else(|| format!("本机没找到 agent「{}」的命令 {}", d.agent, spec.cmd.first().cloned().unwrap_or_default()))?;
+        let cmd0 = spec.cmd.first().cloned().unwrap_or_default();
+        let check = d
+            .env
+            .as_deref()
+            .and_then(|e| spec.checks.iter().find(|c| c.env == e))
+            .or_else(|| spec.default_check())
+            .ok_or_else(|| format!("本机没找到 agent「{}」的命令 {cmd0}", d.agent))?;
+        let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
+        let prog = check.prog.clone().ok_or_else(|| format!("在{}里没找到 agent「{}」的命令 {cmd0}", env.name, d.agent))?;
         let dir = self.dirs.iter().find(|(b, _)| *b == d.board).map(|(_, p)| p.clone()).ok_or_else(|| format!("本机没有白板 {} 的目录", d.board))?;
         if !dir.is_dir() {
             return Err(format!("目录不存在：{}", dir.display()));
@@ -970,15 +958,17 @@ impl Host<'_> {
         let err = out.try_clone().map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
         write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| format!("无法写 {}：{e}", conf.display()))?;
-        let mut c = Command::new(&exe);
-        c.args(spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt)))
-            .current_dir(&dir)
-            .env("BOARD_URL", self.rm().url())
+        let args: Vec<String> = spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt)).collect();
+        let mut c = env.command(&prog, &args, Some(&dir), true);
+        c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
             .env("BOARD_AS", &name)
             .env("BOARD_HOST", &self.name)
             .env("BOARD", &d.board)
             .env("BOARD_CONFIG", &conf)
+            // shell 的启动脚本里设了 BOARD_URL / BOARD_TOKEN 也不影响：包装脚本用这两个再设一遍
+            .env("BOARD_HOST_URL", self.rm().url())
+            .env("BOARD_HOST_TOKEN", self.rm().token())
             // skill 自带的 scripts/board 看到它就用 host 自己的 board：版本和 host 一致（skill 里打包的 board 可能更旧）
             .env("BOARD_EXE", &self.exe)
             // 在 Claude Code 的会话里运行 board host 时，别让 agent 以为自己是嵌套会话
@@ -986,10 +976,17 @@ impl Host<'_> {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
+        // WSL：环境变量经 WSLENV 传进去（BOARD_CONFIG 换成 WSL 路径，不传 BOARD_EXE），agent 的进程号写进 BOARD_PIDFILE
+        let mut pidfile = None;
+        if env.wsl().is_some() {
+            let pf = self.run.join(format!("{}.pid", d.id));
+            let _ = std::fs::remove_file(&pf);
+            c.env("BOARD_PIDFILE", &pf).env("WSLENV", envs::wslenv(std::env::var("WSLENV").ok().as_deref()));
+            pidfile = Some(pf);
+        }
         // pi 在 Windows 上从 PATH 找 bash.exe；把 Git Bash 放到最前，免得落到没启用的 WSL bash
-        #[cfg(windows)]
-        if spec.git_bash {
-            if let Some(bin) = git_bash_dir() {
+        if cfg!(windows) && spec.git_bash && env.wsl().is_none() {
+            if let Some(bin) = envs::git_bash_dir() {
                 let old = std::env::var_os("PATH").unwrap_or_default();
                 let mut parts: Vec<std::ffi::OsString> = vec![bin.into_os_string()];
                 parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
@@ -998,12 +995,12 @@ impl Host<'_> {
                 }
             }
         }
-        own_group(&mut c);
+        envs::detach(&mut c);
         let child = c.spawn().map_err(|e| {
             let _ = std::fs::remove_file(&conf);
-            format!("启动 {} 失败：{e}", exe.display())
+            format!("在{}里启动 {prog} 失败：{e}", env.name)
         })?;
-        Ok(Run { d: d.clone(), child, log, conf, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
+        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
@@ -1064,7 +1061,7 @@ impl Host<'_> {
         }
         for r in self.runs.iter_mut() {
             if r.term_at.is_none() {
-                signal_tree(r.child.id(), false);
+                r.stop(false);
                 r.term_at = Some(Instant::now());
             }
         }
@@ -1074,11 +1071,14 @@ impl Host<'_> {
         }
         for r in self.runs.iter_mut() {
             if matches!(r.child.try_wait(), Ok(None)) {
-                signal_tree(r.child.id(), true);
+                r.stop(true);
                 let _ = r.child.wait();
             }
         }
         let runs = std::mem::take(&mut self.runs);
+        for r in &runs {
+            r.cleanup();
+        }
         let _ = std::fs::remove_dir_all(&self.run);
         for mut r in runs {
             let code = r.child.wait().ok().and_then(exit_code);
@@ -1118,23 +1118,28 @@ mod tests {
     #[test]
     fn builtin_order_and_overrides() {
         // 内置顺序就是默认顺序：dsh 第一
-        assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "pi"]);
+        assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex"]);
         assert!(BUILTIN.iter().find(|b| b.id == "pi").unwrap().git_bash, "pi 在 Windows 上要先找 Git Bash");
+        assert!(!BUILTIN.iter().find(|b| b.id == "pi").unwrap().win.contains(&"cmd"), "pi 不支持 cmd");
         for b in &BUILTIN {
             check_agent_id(b.id).unwrap();
             assert_eq!(b.cmd.iter().filter(|a| a.contains("{prompt}")).count(), 1, "{} 的模板里要有一个 {{prompt}}", b.id);
+            assert!(!b.win.contains(&"direct"), "内置模板在 Windows 上都经过 shell 启动");
         }
         let conf = vec![
             AgentConf { id: "claude".into(), name: None, cmd: vec!["/nope/claude".into(), "{prompt}".into()] },
-            AgentConf { id: "codex".into(), name: Some("Codex".into()), cmd: vec!["/nope/codex".into(), "{prompt}".into()] },
+            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
         ];
-        let specs = agent_specs(&conf).unwrap();
-        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex"]);
+        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
+        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex", "mycli"]);
         let claude = specs.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.name, "Claude Code");
-        assert!(claude.exe.is_none(), "换了命令就不再看内置的备用位置");
-        assert_eq!(specs[3].name, "Codex");
-        assert!(!specs[3].misses_skill(&[]), "配置文件里的 agent 不检查 skill");
+        assert!(claude.default_check().is_none(), "换了命令就不再看内置的备用位置");
+        assert_eq!(specs[4].name, "My CLI");
+        assert_eq!(specs[4].checks.len(), 1, "只有直接启动");
+        assert!(!specs[4].misses_skill(&Env::direct(), &[]), "配置文件里的 agent 不检查 skill");
+        let r = specs[4].report();
+        assert_eq!((r.found, r.envs.len(), r.env), (false, 1, None));
     }
 
     #[test]
@@ -1154,13 +1159,13 @@ mod tests {
             id: "pi".into(),
             name: "pi".into(),
             cmd: vec!["pi".into()],
-            exe: Some(PathBuf::from("pi")),
-            version: String::new(),
             skills: vec!["/board-test-no-such-skills".into()],
             git_bash: true,
+            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
         };
-        assert!(!spec.misses_skill(&[("default/main".into(), repo.clone())]), "项目里的 .agents/skills 算装好了");
-        assert!(spec.misses_skill(&[]), "没有项目目录时仍然提醒");
+        let direct = Env::direct();
+        assert!(!spec.misses_skill(&direct, &[("default/main".into(), repo.clone())]), "项目里的 .agents/skills 算装好了");
+        assert!(spec.misses_skill(&direct, &[]), "没有项目目录时仍然提醒");
     }
 
     #[cfg(windows)]
@@ -1172,8 +1177,7 @@ mod tests {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::write(root.join("cmd").join("git.exe"), "").unwrap();
         std::fs::write(root.join("bin").join("bash.exe"), "").unwrap();
-        assert_eq!(git_bash_beside(&root.join("cmd").join("git.exe")), Some(root.join("bin")));
-        assert_eq!(git_bash_beside(&root.join("bin").join("git.exe")), Some(root.join("bin")));
-        assert!(git_bash_beside(&root.join("cmd").join("git.exe")).unwrap().join("bash.exe").is_file());
+        assert_eq!(envs::git_bash_beside(&root.join("cmd").join("git.exe")), Some(root.join("bin")));
+        assert_eq!(envs::git_bash_beside(&root.join("bin").join("git.exe")), Some(root.join("bin")));
     }
 }

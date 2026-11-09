@@ -10,6 +10,7 @@
 mod backend;
 mod config;
 mod doctor;
+mod envs;
 mod heartbeat;
 mod host;
 

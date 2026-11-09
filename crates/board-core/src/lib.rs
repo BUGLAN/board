@@ -17,7 +17,7 @@ pub use engine::Cmd;
 pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;
 pub use flow::StatusPatch;
-pub use hosts::{Dispatch, HostAgent, HostDir, HostInfo, HostPatch, HostReport, HostWork};
+pub use hosts::{AgentRun, Dispatch, EnvCheck, EnvPatch, HostAgent, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork};
 pub use model::*;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
 

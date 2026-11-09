@@ -14,7 +14,7 @@ fn store() -> Store {
 }
 
 fn claude(found: bool) -> HostAgent {
-    HostAgent { id: "claude".into(), name: "Claude Code".into(), version: if found { "2.4.1".into() } else { String::new() }, found }
+    HostAgent { id: "claude".into(), name: "Claude Code".into(), version: if found { "2.4.1".into() } else { String::new() }, found, ..Default::default() }
 }
 
 fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
@@ -24,7 +24,8 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         resume: None,
         os: "macOS 15.4".into(),
         version: "0.1.1".into(),
-        agents: vec![claude(true), HostAgent { id: "pi".into(), name: "pi".into(), version: String::new(), found: false }],
+        agents: vec![claude(true), HostAgent { id: "pi".into(), name: "pi".into(), version: String::new(), found: false, ..Default::default() }],
+        envs: vec![],
         dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into() }],
         running,
         done: false,
@@ -375,4 +376,157 @@ fn flow_roles() {
     assert!(flow.is_human("check"));
     assert!(!flow.is_review("todo") && !flow.is_human("rework"));
     assert_eq!(flow.human_after("doing").map(|s| s.key.as_str()), Some("check"));
+}
+
+/* ---------------- 启动环境（启动环境与桌面端需求 §二） ---------------- */
+
+fn env(id: &str, name: &str) -> HostEnv {
+    HostEnv { id: id.into(), name: name.into(), path: String::new() }
+}
+
+fn check(env: &str, found: bool, version: &str) -> EnvCheck {
+    EnvCheck { env: env.into(), found, version: version.into() }
+}
+
+/// 一台 Windows 机器：cmd、PowerShell 7、Git Bash、WSL（Ubuntu）。pi 不支持 cmd；WSL 里没装 pi
+fn win_report(instance: &str) -> HostReport {
+    let mut r = report("mbp", instance, vec![]);
+    r.envs = vec![env("cmd", "cmd"), env("pwsh", "PowerShell 7"), env("git-bash", "Git Bash"), env("wsl:Ubuntu", "WSL（Ubuntu）")];
+    r.agents = vec![
+        HostAgent {
+            id: "pi".into(),
+            name: "pi".into(),
+            version: "1.5.0".into(),
+            found: true,
+            envs: vec![check("git-bash", true, "1.5.0"), check("wsl:Ubuntu", false, ""), check("pwsh", true, "1.5.0")],
+            env: None,
+        },
+        HostAgent {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            version: "2.4.1".into(),
+            found: true,
+            envs: vec![check("pwsh", false, ""), check("git-bash", false, ""), check("wsl:Ubuntu", true, "2.5.0"), check("cmd", false, "")],
+            env: None,
+        },
+    ];
+    r
+}
+
+fn set_env(s: &mut Store, agent: &str, env: &str) -> Result<HostInfo> {
+    s.write(T0, Origin::ui(None), |w| {
+        w.host_update("mbp", &HostPatch { env: Some(EnvPatch { agent: agent.into(), env: env.into() }), ..Default::default() })
+    })
+}
+
+#[test]
+fn env_defaults_to_first_found_in_supported_order() {
+    let mut s = store();
+    let h = beat(&mut s, T0, &win_report("i1")).unwrap().host;
+    assert_eq!(h.envs.len(), 4);
+    let pi = h.agents.iter().find(|a| a.id == "pi").unwrap();
+    assert_eq!((pi.env.as_deref(), pi.found, pi.version.as_str()), (Some("git-bash"), true, "1.5.0"));
+    let claude = h.agents.iter().find(|a| a.id == "claude").unwrap();
+    assert_eq!((claude.env.as_deref(), claude.found, claude.version.as_str()), (Some("wsl:Ubuntu"), true, "2.5.0"), "按顺序跳过没找到的");
+    // 派发记录写启动环境，动态里写明
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap();
+    assert_eq!(d.env, None, "排队时还没定");
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!((d.env.as_deref(), d.env_name.as_deref()), (Some("git-bash"), Some("Git Bash")));
+    let acts: Vec<String> = card(&s, a).activity.into_iter().map(|x| x.text).collect();
+    assert!(acts.iter().any(|t| t.starts_with("派发开始：mbp 上的 pi（Git Bash）以 pi/mbp-1 领取")), "{acts:?}");
+}
+
+#[test]
+fn env_setting_is_validated_and_used_at_start() {
+    let mut s = store();
+    beat(&mut s, T0, &win_report("i1")).unwrap();
+    // 不支持、本机没有、没找到：USAGE
+    assert_eq!(set_env(&mut s, "pi", "cmd").unwrap_err().code, ErrorCode::Usage, "pi 不支持 cmd");
+    assert_eq!(set_env(&mut s, "pi", "powershell").unwrap_err().code, ErrorCode::Usage, "本机没有 Windows PowerShell");
+    let e = set_env(&mut s, "pi", "wsl:Ubuntu").unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("WSL（Ubuntu）") && e.message.contains("没找到"), "{}", e.message);
+    assert_eq!(set_env(&mut s, "nope", "pwsh").unwrap_err().code, ErrorCode::Usage);
+    // 改成 PowerShell 7：下一次派发就用它
+    let h = set_env(&mut s, "pi", "pwsh").unwrap();
+    assert_eq!(h.agents.iter().find(|a| a.id == "pi").unwrap().env.as_deref(), Some("pwsh"));
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap();
+    assert_eq!(begin(&mut s, T0 + S, d.id).unwrap().env.as_deref(), Some("pwsh"));
+    // 设置的环境本机已经没有了（卸载了 PowerShell 7）：按默认规则选
+    let mut r = win_report("i1");
+    r.envs.retain(|e| e.id != "pwsh");
+    for a in r.agents.iter_mut() {
+        a.envs.retain(|c| c.env != "pwsh");
+    }
+    let h = beat(&mut s, T0 + 2 * S, &r).unwrap().host;
+    assert_eq!(h.agents.iter().find(|a| a.id == "pi").unwrap().env.as_deref(), Some("git-bash"));
+}
+
+#[test]
+fn agent_not_found_in_set_env_is_not_on_host() {
+    let mut s = store();
+    beat(&mut s, T0, &win_report("i1")).unwrap();
+    set_env(&mut s, "claude", "wsl:Ubuntu").unwrap();
+    // 之后 WSL 里的 claude 卸载了：设置的环境里找不到，就算这台机器没找到 claude（不换到别的环境）
+    let mut r = win_report("i1");
+    r.agents[1].envs = vec![check("pwsh", true, "2.4.0"), check("wsl:Ubuntu", false, "")];
+    let h = beat(&mut s, T0 + S, &r).unwrap().host;
+    let claude = h.agents.iter().find(|a| a.id == "claude").unwrap();
+    assert_eq!((claude.env.as_deref(), claude.found), (Some("wsl:Ubuntu"), false));
+    let a = new_card(&mut s, T0, "A");
+    let e = dispatch(&mut s, T0 + S, a, "mbp", Some("claude")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::AgentNotOnHost);
+    assert!(e.message.contains("WSL（Ubuntu）"), "{}", e.message);
+    // 默认 agent 也跟着变：pi
+    assert_eq!(h.agent.as_deref(), Some("pi"));
+}
+
+#[test]
+fn old_host_without_envs_starts_direct() {
+    let mut s = store();
+    let h = beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap().host;
+    assert!(h.envs.is_empty());
+    assert!(h.agents.iter().all(|a| a.env.is_none()), "旧版 board host：界面上不显示启动环境");
+    assert_eq!(set_env(&mut s, "claude", "direct").unwrap_err().code, ErrorCode::Usage);
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!((d.env, d.env_name), (None, None));
+}
+
+#[test]
+fn old_database_gets_env_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("old.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, token INTEGER, instance TEXT NOT NULL,
+               os TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '[]', dirs TEXT NOT NULL DEFAULT '[]',
+               max INTEGER NOT NULL DEFAULT 1, paused INTEGER NOT NULL DEFAULT 0, agent TEXT, cron_on INTEGER NOT NULL DEFAULT 0,
+               cron TEXT NOT NULL DEFAULT '[]', round_at INTEGER, rr INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
+               first_at INTEGER NOT NULL, beat_at INTEGER NOT NULL, off_at INTEGER);
+             INSERT INTO hosts (name, instance, first_at, beat_at) VALUES ('mbp', 'i0', 1, 1);",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&db).unwrap();
+    let h = s.read(|r| r.host("mbp", 2)).unwrap();
+    assert!(h.envs.is_empty());
+}
+
+#[test]
+fn new_host_reads_work_from_old_server() {
+    // 旧版服务端的任务里没有启动环境：新版 board host 照样能读
+    let v = serde_json::json!({
+        "host": { "id": 1, "name": "mbp", "os": "macOS", "version": "0.1.3", "agents": [{ "id": "claude", "name": "Claude Code", "version": "2.4.1", "found": true }],
+                  "dirs": [], "max": 1, "paused": false, "agent": "claude", "cronOn": false, "cron": [], "round": false, "online": true,
+                  "firstAt": 1, "beatAt": 1, "offAt": null },
+        "running": [], "queued": [], "now": 1
+    });
+    let w: HostWork = serde_json::from_value(v).unwrap();
+    assert!(w.host.envs.is_empty() && w.host.agents[0].envs.is_empty());
 }

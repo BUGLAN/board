@@ -96,9 +96,31 @@ export interface HostAgent {
   id: string;
   /** 名称：Claude Code … */
   name: string;
-  /** `<命令> --version` 的第一行 */
+  /** `<命令> --version` 的第一行（在实际用的启动环境里） */
   version: string;
+  /** 在实际用的启动环境里找到了命令 */
   found: boolean;
+  /** 它支持、本机有的启动环境，按默认选择的顺序，各自的检查结果；旧版 board host 没有 */
+  envs?: EnvCheck[];
+  /** 实际用的启动环境（机器设置里选的，没选时按顺序第一个找到的）；旧版 board host 没有 */
+  env?: string | null;
+}
+
+/** 一个 agent 在一个启动环境里的检查结果 */
+export interface EnvCheck {
+  env: string;
+  found: boolean;
+  version: string;
+}
+
+/** 启动环境：board host 在哪种 shell 里启动 agent（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL …） */
+export interface HostEnv {
+  /** direct、login、cmd、powershell、pwsh、git-bash、wsl:<发行版> */
+  id: string;
+  /** 直接启动、登录 shell、Git Bash、WSL（Ubuntu）… */
+  name: string;
+  /** 程序路径；WSL 是发行版名；直接启动为空 */
+  path: string;
 }
 
 export interface HostDir {
@@ -115,6 +137,8 @@ export interface HostInfo {
   /** board 版本 */
   version: string;
   agents: HostAgent[];
+  /** 启动环境（按发现的顺序）；旧版 board host 不上报，为空 */
+  envs?: HostEnv[];
   dirs: HostDir[];
   /** 同时跑几个（1–8） */
   max: number;
@@ -146,6 +170,9 @@ export interface Dispatch {
   agentLabel: string;
   /** 开始时生成的 agent 名字 <agent 标识>/<机器名>-<序号> */
   name: string | null;
+  /** 开始时用的启动环境标识与名称（Git Bash、WSL（Ubuntu）…）；旧版 board host、还没开始时为空 */
+  env?: string | null;
+  envName?: string | null;
   source: 'manual' | 'cron';
   by: Actor;
   state: 'queued' | 'running' | 'done';

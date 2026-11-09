@@ -3,8 +3,13 @@
 //! - **机器**：每台干活的机器上常驻一个 `board host`。它每 10 秒上报一次（[`W::host_beat`]）：机器名、系统、
 //!   board 版本、本机 agent、白板与目录，以及本机正在跑的派发；连续 5 次没收到算离线。机器名正被另一个在线的
 //!   board host 使用时 `HOST_NAME_TAKEN`；同一台机器上 board host 异常退出后重启，带上上一次的标识（resume）可以接回名字。
-//! - **机器设置**（同时跑几个、暂停接单、默认 agent、定时领取）存在服务端，界面上修改，host 通过推送实时拿到。
-//!   机器第一次连上时按默认值建立；被移除后再连上来，按新机器处理。
+//! - **机器设置**（同时跑几个、暂停接单、默认 agent、定时领取、每个 agent 的启动环境）存在服务端，界面上修改，
+//!   host 通过推送实时拿到。机器第一次连上时按默认值建立；被移除后再连上来，按新机器处理。
+//! - **启动环境**（启动环境与桌面端需求 §二）：在哪种 shell 里启动 agent 的命令（直接启动、登录 shell、cmd、
+//!   PowerShell、Git Bash、WSL 的发行版 …）。board host 启动时发现本机有哪些，并在每个 agent 支持的环境里各检查
+//!   一次命令找不找得到；每个 agent 用哪个由机器设置决定，没设置（或设置的环境本机已经没有）时取支持顺序里第一个
+//!   找得到的（[`HostRow::pick`]）。派发开始时把用的环境写进派发记录，host 按它启动。旧版 board host 不上报启动环境，
+//!   按直接启动。
 //! - **派发**：一次「在某台机器上用某种 agent 做某张卡」。手动派发（界面「派发」或 `board dispatch`）和定时领取
 //!   都会产生派发记录：排队（queued）→ 在跑（running）→ 结束（done，带结果）。
 //! - **开始**（[`W::dispatch_begin`]、定时领取 [`W::dispatch_pull`]）在一个写事务里完成：生成 agent 名字
@@ -35,7 +40,9 @@ CREATE TABLE IF NOT EXISTS hosts (
   instance TEXT NOT NULL,             -- 正在运行的 board host 进程的标识（每次启动随机生成）
   os       TEXT NOT NULL DEFAULT '',
   version  TEXT NOT NULL DEFAULT '',  -- board 版本
-  agents   TEXT NOT NULL DEFAULT '[]',-- 本机 agent（JSON，按默认顺序）
+  agents   TEXT NOT NULL DEFAULT '[]',-- 本机 agent（JSON，按默认顺序；每个带它在各启动环境里的检查结果）
+  envs     TEXT NOT NULL DEFAULT '[]',-- 启动环境（JSON，按发现的顺序）；旧版 board host 不上报，为空
+  run      TEXT NOT NULL DEFAULT '{}',-- 每个 agent 的运行设置（JSON：{"<agent>": {"env": "<启动环境>"}}）
   dirs     TEXT NOT NULL DEFAULT '[]',-- 白板与目录（JSON，按 --dir 的顺序）
   max      INTEGER NOT NULL DEFAULT 1,-- 同时跑几个
   paused   INTEGER NOT NULL DEFAULT 0,-- 暂停接单
@@ -61,6 +68,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
   agent       TEXT NOT NULL,          -- agent 标识：claude …
   agent_label TEXT NOT NULL,          -- agent 名称：Claude Code …
   name        TEXT,                   -- 开始时生成的 agent 名字
+  env         TEXT,                   -- 开始时用的启动环境标识；旧版 board host 为空（直接启动）
+  env_name    TEXT,                   -- 启动环境的名称：Git Bash、WSL（Ubuntu）…
   source      TEXT NOT NULL,          -- manual 手动 | cron 定时
   by_kind     TEXT NOT NULL,
   by_name     TEXT NOT NULL,
@@ -76,6 +85,25 @@ CREATE TABLE IF NOT EXISTS dispatches (
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
 CREATE INDEX IF NOT EXISTS dispatches_host ON dispatches (host_id, state, id);
 "#;
+
+/// 旧数据库补上启动环境的几列
+pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
+        conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get::<_, i64>(0))
+            .map(|n| n > 0)
+    };
+    for (table, col, def) in [
+        ("hosts", "envs", "TEXT NOT NULL DEFAULT '[]'"),
+        ("hosts", "run", "TEXT NOT NULL DEFAULT '{}'"),
+        ("dispatches", "env", "TEXT"),
+        ("dispatches", "env_name", "TEXT"),
+    ] {
+        if !has(table, col)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
+        }
+    }
+    Ok(())
+}
 
 /// 机器名最长多少个字符
 pub const HOST_NAME_MAX: usize = 24;
@@ -140,8 +168,11 @@ pub fn parse_hhmm(raw: &str) -> Option<String> {
 
 /* ------------------------------ 数据 ------------------------------ */
 
-/// 本机 agent：board host 启动时按配置文件和内置模板逐个检查（任务下发需求 §三）
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 本机 agent：board host 启动时按配置文件和内置模板逐个检查（任务下发需求 §三）。
+///
+/// board host 上报的 `found`、`version` 是它在默认启动环境里的结果；服务端发出去的（[`HostInfo::agents`]）
+/// 换成按机器设置实际用的启动环境（`env`）里的结果。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostAgent {
     /// 标识：claude、dsh、pi …
     pub id: String,
@@ -150,8 +181,46 @@ pub struct HostAgent {
     /// `<命令> --version` 的第一行；没找到时为空
     #[serde(default)]
     pub version: String,
-    /// 命令在 PATH 里找到了
+    /// 命令找到了
     pub found: bool,
+    /// 这个 agent 支持、本机有的启动环境，按默认选择的顺序，各自的检查结果；旧版 board host 不上报
+    #[serde(default)]
+    pub envs: Vec<EnvCheck>,
+    /// 实际用的启动环境（服务端按机器设置算出来；board host 上报时为空，旧版 board host 也为空）
+    #[serde(default)]
+    pub env: Option<String>,
+}
+
+/// 一个 agent 在一个启动环境里的检查结果
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvCheck {
+    /// 启动环境标识
+    pub env: String,
+    /// 在这个环境里找到了命令（`command -v` / `where`）
+    pub found: bool,
+    /// 在这个环境里 `<命令> --version` 的第一行
+    #[serde(default)]
+    pub version: String,
+}
+
+/// 启动环境：board host 在哪种 shell 里启动 agent 的命令（启动环境与桌面端需求 §二）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostEnv {
+    /// `direct`、`login`、`cmd`、`powershell`、`pwsh`、`git-bash`、`wsl:<发行版>`
+    pub id: String,
+    /// 名称：直接启动、登录 shell、Git Bash、WSL（Ubuntu）…
+    pub name: String,
+    /// 程序路径（WSL 写发行版名，直接启动为空）
+    #[serde(default)]
+    pub path: String,
+}
+
+/// 机器设置里一个 agent 的运行设置
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRun {
+    /// 启动环境；没有时按默认规则选
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
 }
 
 /// 白板与目录：派到这台机器的卡片，agent 在对应目录里启动
@@ -170,7 +239,11 @@ pub struct HostInfo {
     pub name: String,
     pub os: String,
     pub version: String,
+    /// 本机 agent（`found`、`version`、`env` 按实际用的启动环境）
     pub agents: Vec<HostAgent>,
+    /// 启动环境（按发现的顺序）；旧版 board host 不上报，为空（旧版服务端没有这一项）
+    #[serde(default)]
+    pub envs: Vec<HostEnv>,
     pub dirs: Vec<HostDir>,
     /// 同时跑几个（1–8）
     pub max: i64,
@@ -204,6 +277,9 @@ pub struct HostReport {
     pub version: String,
     #[serde(default)]
     pub agents: Vec<HostAgent>,
+    /// 启动环境（旧版 board host 不上报）
+    #[serde(default)]
+    pub envs: Vec<HostEnv>,
     #[serde(default)]
     pub dirs: Vec<HostDir>,
     /// 本机正在跑（有进程）的派发
@@ -237,6 +313,16 @@ pub struct HostPatch {
     pub cron_on: Option<bool>,
     #[serde(default)]
     pub cron: Option<Vec<String>>,
+    /// 一个 agent 的启动环境
+    #[serde(default)]
+    pub env: Option<EnvPatch>,
+}
+
+/// 改一个 agent 的启动环境
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EnvPatch {
+    pub agent: String,
+    pub env: String,
 }
 
 /// 一次派发
@@ -255,6 +341,9 @@ pub struct Dispatch {
     pub agent_label: String,
     /// 开始时生成的 agent 名字
     pub name: Option<String>,
+    /// 开始时用的启动环境标识与名称；旧版 board host（直接启动）、还没开始时为空
+    pub env: Option<String>,
+    pub env_name: Option<String>,
     /// manual 手动 | cron 定时
     pub source: String,
     /// 发起人
@@ -310,6 +399,8 @@ struct HostRow {
     os: String,
     version: String,
     agents: Vec<HostAgent>,
+    envs: Vec<HostEnv>,
+    run: std::collections::BTreeMap<String, AgentRun>,
     dirs: Vec<HostDir>,
     max: i64,
     paused: bool,
@@ -322,16 +413,19 @@ struct HostRow {
     beat_at: i64,
     off_at: Option<i64>,
     agents_raw: String,
+    envs_raw: String,
     dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
     let dirs_raw: String = r.get(6)?;
     let cron: String = r.get(11)?;
+    let envs_raw: String = r.get(17)?;
+    let run: String = r.get(18)?;
     Ok(HostRow {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -339,6 +433,8 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         os: r.get(3)?,
         version: r.get(4)?,
         agents: serde_json::from_str(&agents_raw).unwrap_or_default(),
+        envs: serde_json::from_str(&envs_raw).unwrap_or_default(),
+        run: serde_json::from_str(&run).unwrap_or_default(),
         dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
         max: r.get(7)?,
         paused: r.get::<_, i64>(8)? != 0,
@@ -351,6 +447,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         beat_at: r.get(15)?,
         off_at: r.get(16)?,
         agents_raw,
+        envs_raw,
         dirs_raw,
     })
 }
@@ -359,10 +456,41 @@ impl HostRow {
     fn online(&self, now: i64) -> bool {
         self.off_at.is_none() && self.beat_at + HOST_GAP_MS > now
     }
+    /// 一个 agent 实际用的启动环境（启动环境与桌面端需求 §2.4）：设置过、本机还有（在它支持的环境里）就用它，
+    /// 找没找到都按它算；否则按支持的顺序取第一个找到命令的。都找不到时为空。
+    /// 旧版 board host 不上报启动环境：返回 None，找没找到按它上报的
+    fn pick<'h>(&self, a: &'h HostAgent) -> Option<&'h EnvCheck> {
+        if self.envs.is_empty() {
+            return None;
+        }
+        let set = self.run.get(&a.id).and_then(|r| r.env.as_deref());
+        set.and_then(|e| a.envs.iter().find(|c| c.env == e)).or_else(|| a.envs.iter().find(|c| c.found))
+    }
+    /// 本机 agent，`found`、`version`、`env` 换成实际用的启动环境里的结果
+    fn resolved(&self) -> Vec<HostAgent> {
+        self.agents
+            .iter()
+            .map(|a| {
+                let mut out = a.clone();
+                if !self.envs.is_empty() {
+                    let c = self.pick(a);
+                    out.found = c.is_some_and(|c| c.found);
+                    out.version = c.map(|c| c.version.clone()).unwrap_or_default();
+                    out.env = c.map(|c| c.env.clone());
+                }
+                out
+            })
+            .collect()
+    }
+    /// 启动环境的名称
+    fn env_name(&self, id: &str) -> String {
+        self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string())
+    }
     /// 默认 agent：设置过且找到了就是它，否则第一个找到的
-    fn default_agent(&self) -> Option<&HostAgent> {
-        let found = |id: &str| self.agents.iter().find(|a| a.id == id && a.found);
-        self.agent.as_deref().and_then(found).or_else(|| self.agents.iter().find(|a| a.found))
+    fn default_agent(&self) -> Option<HostAgent> {
+        let all = self.resolved();
+        let found = |id: &str| all.iter().find(|a| a.id == id && a.found).cloned();
+        self.agent.as_deref().and_then(found).or_else(|| all.iter().find(|a| a.found).cloned())
     }
     fn info(&self, now: i64) -> HostInfo {
         HostInfo {
@@ -370,7 +498,8 @@ impl HostRow {
             name: self.name.clone(),
             os: self.os.clone(),
             version: self.version.clone(),
-            agents: self.agents.clone(),
+            agents: self.resolved(),
+            envs: self.envs.clone(),
             dirs: self.dirs.clone(),
             max: self.max,
             paused: self.paused,
@@ -388,7 +517,7 @@ impl HostRow {
 
 const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, COALESCE(c.title, d.title), d.host_id, d.host, d.agent,
        d.agent_label, d.name, d.source, d.by_kind, d.by_name, d.state, d.result, d.created_at, d.started_at, d.ended_at,
-       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END
+       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -402,6 +531,8 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         agent: r.get(6)?,
         agent_label: r.get(7)?,
         name: r.get(8)?,
+        env: r.get(20)?,
+        env_name: r.get(21)?,
         source: r.get(9)?,
         by: Actor { kind: ActorKind::parse(&r.get::<_, String>(10)?), name: r.get(11)? },
         state: r.get(12)?,
@@ -494,6 +625,7 @@ struct DRow {
     agent: String,
     agent_label: String,
     name: Option<String>,
+    env_name: Option<String>,
     source: String,
     state: String,
     stop_by: Option<String>,
@@ -508,7 +640,7 @@ impl<'a> W<'a> {
     fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
-                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at FROM dispatches WHERE id = ?1",
+                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name FROM dispatches WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(DRow {
@@ -524,6 +656,7 @@ impl<'a> W<'a> {
                         state: r.get(9)?,
                         stop_by: r.get(10)?,
                         started_at: r.get(11)?,
+                        env_name: r.get(12)?,
                     })
                 },
             )
@@ -597,9 +730,12 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 动态里的「mbp · Claude Code · claude/mbp-1，手动」
+    /// 动态里的「mbp · Claude Code · claude/mbp-1，手动」；有启动环境时「mbp · pi · Git Bash · pi/mbp-1，手动」
     fn dispatch_words(d: &DRow) -> String {
         let mut s = format!("{} · {}", d.host, d.agent_label);
+        if let Some(e) = &d.env_name {
+            s += &format!(" · {e}");
+        }
         if let Some(n) = &d.name {
             s += &format!(" · {n}");
         }
@@ -623,6 +759,11 @@ impl<'a> W<'a> {
         for a in &rep.agents {
             check_agent_id(&a.id).map_err(BoardError::usage)?;
         }
+        for e in &rep.envs {
+            if e.id.trim().is_empty() || e.id.len() > 64 {
+                return Err(BoardError::usage(format!("启动环境标识不对：{}", e.id)));
+            }
+        }
         for d in &rep.dirs {
             if !d.board.contains('/') {
                 return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{}", d.board)));
@@ -631,14 +772,15 @@ impl<'a> W<'a> {
         let now = self.now;
         let agents = serde_json::to_string(&rep.agents).unwrap_or_else(|_| "[]".into());
         let dirs = serde_json::to_string(&rep.dirs).unwrap_or_else(|_| "[]".into());
+        let envs = serde_json::to_string(&rep.envs).unwrap_or_else(|_| "[]".into());
         match self.host_row(&rep.name)? {
             None => {
                 if rep.done {
                     return Err(no_such_host(&rep.name));
                 }
                 self.tx.execute(
-                    "INSERT INTO hosts (name, token, instance, os, version, agents, dirs, first_at, beat_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-                    params![rep.name, token, rep.instance, rep.os, rep.version, agents, dirs, now],
+                    "INSERT INTO hosts (name, token, instance, os, version, agents, dirs, envs, first_at, beat_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, ?8, ?8)",
+                    params![rep.name, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs],
                 )?;
                 self.touch_hosts();
             }
@@ -663,10 +805,11 @@ impl<'a> W<'a> {
                     || h.os != rep.os
                     || h.version != rep.version
                     || h.agents_raw != agents
+                    || h.envs_raw != envs
                     || h.dirs_raw != dirs;
                 self.tx.execute(
-                    "UPDATE hosts SET token = ?2, instance = ?3, os = ?4, version = ?5, agents = ?6, dirs = ?7, beat_at = ?8, off_at = NULL WHERE id = ?1",
-                    params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now],
+                    "UPDATE hosts SET token = ?2, instance = ?3, os = ?4, version = ?5, agents = ?6, dirs = ?7, beat_at = ?8, off_at = NULL, envs = ?9 WHERE id = ?1",
+                    params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs],
                 )?;
                 // 换了一个 board host 进程（重启接回）：上一个进程的那一轮领取不再继续
                 if h.instance != rep.instance && h.round_at.is_some() {
@@ -711,7 +854,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;
         }
         if let Some(agent) = &p.agent {
-            if !h.agents.iter().any(|a| &a.id == agent && a.found) {
+            if !h.resolved().iter().any(|a| &a.id == agent && a.found) {
                 return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{name}」上没有找到 agent「{agent}」")));
             }
             self.tx.execute("UPDATE hosts SET agent = ?2 WHERE id = ?1", params![h.id, agent])?;
@@ -729,6 +872,12 @@ impl<'a> W<'a> {
             }
             v.sort();
             self.tx.execute("UPDATE hosts SET cron = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&v).unwrap_or_default()])?;
+        }
+        if let Some(e) = &p.env {
+            let check = h.env_check(&e.agent, &e.env)?;
+            let mut run = h.run.clone();
+            run.entry(e.agent.clone()).or_default().env = Some(check.env);
+            self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
         }
         self.touch_hosts();
         self.read().host(name, self.now)
@@ -794,15 +943,18 @@ impl<'a> W<'a> {
             .with_detail(json!({ "dispatch": d.id })));
         }
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
+        let all = h.resolved();
         let a = match agent.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(id) => h.agents.iter().find(|a| a.id == id && a.found).ok_or_else(|| {
-                let missing = h.agents.iter().any(|a| a.id == id);
+            Some(id) => all.iter().find(|a| a.id == id && a.found).cloned().ok_or_else(|| {
+                let missing = all.iter().find(|a| a.id == id);
                 BoardError::new(
                     ErrorCode::AgentNotOnHost,
-                    if missing {
-                        format!("机器「{host}」上没找到 agent「{id}」的命令")
-                    } else {
-                        format!("机器「{host}」上没有 agent「{id}」，可选：{}", found_list(&h))
+                    match missing {
+                        Some(a) => match &a.env {
+                            Some(e) => format!("机器「{host}」上在{}里没找到 agent「{id}」的命令", h.env_name(e)),
+                            None => format!("机器「{host}」上没找到 agent「{id}」的命令"),
+                        },
+                        None => format!("机器「{host}」上没有 agent「{id}」，可选：{}", found_list(&h)),
                     },
                 )
             })?,
@@ -949,8 +1101,14 @@ impl<'a> W<'a> {
             }
         };
         self.tx.execute("UPDATE hosts SET seq = ?2 WHERE id = ?1", params![h.id, seq])?;
-        self.tx.execute("UPDATE dispatches SET name = ?2 WHERE id = ?1", params![d.id, name])?;
-        let d = DRow { name: Some(name.clone()), ..d };
+        // 用哪个启动环境：按开始这一刻的机器设置
+        let env = h.agents.iter().find(|a| a.id == d.agent).and_then(|a| h.pick(a)).map(|c| c.env.clone());
+        let env_name = env.as_deref().map(|e| h.env_name(e));
+        self.tx.execute(
+            "UPDATE dispatches SET name = ?2, env = ?3, env_name = ?4 WHERE id = ?1",
+            params![d.id, name, env, env_name],
+        )?;
+        let d = DRow { name: Some(name.clone()), env_name: env_name.clone(), ..d };
         self.agent_check(&name, token)?;
         let board = self.board_of(d.board)?;
         let actor = Actor::agent(name.clone());
@@ -961,7 +1119,12 @@ impl<'a> W<'a> {
             Ok(_) => {
                 self.tx.execute("UPDATE dispatches SET state = 'running', started_at = ?2 WHERE id = ?1", params![d.id, self.now])?;
                 self.touch_hosts();
-                let text = format!("派发开始：{} 上的 {} 以 {name} 领取（{}）", h.name, d.agent_label, source_words(&d.source));
+                // 「mbp 上的 pi（Git Bash）以 pi/mbp-1 领取」；旧版 board host 没有启动环境：「mbp 上的 pi 以 …」
+                let who = match &env_name {
+                    Some(e) => format!("{}（{e}）", d.agent_label),
+                    None => format!("{} ", d.agent_label),
+                };
+                let text = format!("派发开始：{} 上的 {who}以 {name} 领取（{}）", h.name, source_words(&d.source));
                 self.track(d.board, d.card, &actor, "dispatch", &text)?;
             }
             Err(e) if e.code == ErrorCode::Internal => return Err(e),
@@ -981,7 +1144,7 @@ impl<'a> W<'a> {
         if h.round_at.is_none() || h.paused || self.running_on(&h)? >= h.max {
             return Ok(None);
         }
-        let Some(a) = h.default_agent().cloned() else {
+        let Some(a) = h.default_agent() else {
             return self.end_round(&h);
         };
         let n = h.dirs.len();
@@ -1139,6 +1302,34 @@ fn soft<T>(r: Result<T>) -> Result<()> {
 }
 
 fn found_list(h: &HostRow) -> String {
-    let v: Vec<&str> = h.agents.iter().filter(|a| a.found).map(|a| a.id.as_str()).collect();
+    let v: Vec<String> = h.resolved().into_iter().filter(|a| a.found).map(|a| a.id).collect();
     if v.is_empty() { "（一个也没找到）".into() } else { v.join("、") }
+}
+
+impl HostRow {
+    /// 改 agent 的启动环境前校验（启动环境与桌面端需求 §五）：这台 board host 上报了启动环境、有这个 agent、
+    /// 本机有这个环境、agent 支持它、在里面找得到命令。不满足时 USAGE，写明原因
+    fn env_check(&self, agent: &str, env: &str) -> Result<EnvCheck> {
+        let name = &self.name;
+        if self.envs.is_empty() {
+            return Err(BoardError::usage(format!("机器「{name}」上的 board host 是旧版，不上报启动环境：升级后再设置")));
+        }
+        let a = self
+            .agents
+            .iter()
+            .find(|a| a.id == agent)
+            .ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{agent}」")))?;
+        if !self.envs.iter().any(|e| e.id == env) {
+            return Err(BoardError::usage(format!("机器「{name}」上没有启动环境「{env}」")));
+        }
+        let c = a
+            .envs
+            .iter()
+            .find(|c| c.env == env)
+            .ok_or_else(|| BoardError::usage(format!("{} 不支持在{}里启动", a.name, self.env_name(env))))?;
+        if !c.found {
+            return Err(BoardError::usage(format!("机器「{name}」上在{}里没找到 {} 的命令", self.env_name(env), a.name)));
+        }
+        Ok(c.clone())
+    }
 }

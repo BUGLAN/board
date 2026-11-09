@@ -49,6 +49,24 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-agent.missing { opacity: .5; }
 .hp-agent.missing b { background: var(--text-4); }
 .hp-agent.sm { height: 22px; font-size: 11.5px; }
+.hp-agent-env { font-style: normal; color: var(--text-3); }
+/* 机器详情「本机 agent」：每个 agent 一行 */
+.hp-arow { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
+.d-label + .hp-arow { border-top: 0; }
+.hp-arow > img.hp-logo { width: 20px; height: 20px; }
+.hp-arow > b:not(.hp-arow-name) { display: grid; place-items: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px; font: 700 10px var(--f-mono); color: #fff; background: var(--ac); }
+.hp-arow-name { font-weight: 500; white-space: nowrap; }
+.hp-arow-ver { font-style: normal; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hp-arow.missing > img.hp-logo { filter: grayscale(1); opacity: .6; }
+.hp-arow.missing > b:not(.hp-arow-name) { background: var(--text-4); }
+.hp-arow.missing .hp-arow-name { color: var(--text-3); }
+.hp-arow-none { font-size: 12px; color: var(--text-4); }
+select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height: 30px; padding: 0 8px; appearance: auto; font-size: 12.5px; text-overflow: ellipsis; }
+.hp-def { flex: none; min-width: 66px; height: 26px; padding: 0 9px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.hp-def:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+.hp-def.on { color: var(--brand); font-weight: 600; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }
+.hp-def:disabled { opacity: .45; cursor: not-allowed; }
+.hp-env-hint { font-size: 12px; color: var(--text-4); }
 .hp-beat { display: inline-flex; align-items: center; gap: 5px; }
 .hp-beat i { width: 6px; height: 6px; border-radius: 50%; background: var(--c-done); animation: hp-pulse 1.6s var(--ease-out) infinite; }
 .hp-beat.off { color: var(--text-4); }

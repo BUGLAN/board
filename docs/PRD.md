@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v0.9 |
+| 版本 | v0.10 |
 | 日期 | 2026-11-09 |
 
 ## 1. 产品定义
@@ -285,17 +285,36 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 ### 9.1 任务下发（board host）
 
-**机器**：运行 `board host` 的进程代表一台机器。有名字、在线状态、并发上限、本机 agent、白板与目录。
+**机器**：运行 `board host` 的进程代表一台机器。有名字、在线状态、并发上限、启动环境、本机 agent、白板与目录。
 
 - 机器名：小写字母、数字、`.`、`-`，以字母或数字开头，最长 24 个字符；不填时取本机主机名转成小写、非法字符换成 `-`。同名机器正在线时启动失败（`HOST_NAME_TAKEN`）。同一台机器上 `board host` 异常退出后重启，接回原来的名字。
 - 白板与目录：`--dir` 把一块白板对应到本机的一个仓库目录，agent 在这个目录里启动。没有对应目录的白板，这台机器不接它的卡片。目录不存在时启动失败（`USAGE`，写明是哪个目录）。
-- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，逐个检查命令在不在 `PATH` 里（内置模板还看下表的常见安装位置）、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。找到了、但在它读 skill 的目录（用户级目录，或每块白板目录里的 `.agents/skills`、`.claude/skills`、`.pi/skills`）里没有 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板。`{prompt}` 换成提示词，作为一个参数传入，不经过 shell。接入其他 agent 的方法见 `docs/agents.md`。
+- 启动环境：在哪种 shell 里启动 agent 的命令。启动时找出本机有哪些，上报标识、名称、程序路径（WSL 写发行版名）：
 
-  | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 |
+  | 标识 | 名称 | 系统 | 怎么发现 | 怎么启动 agent |
   |---|---|---|---|---|
-  | `dsh` | DeepSeek Harness | `dsh --profile headless --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` |
-  | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` |
-  | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills`（Windows 上启动时把 PATH 里 git 旁边的 Git Bash 放到 pi 的 PATH 前面） |
+  | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令模板，不经过 shell |
+  | `login` | 登录 shell | macOS、Linux | `$SHELL`，没有时 passwd 里的登录 shell，再没有 `/bin/sh` | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
+  | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号 |
+  | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"`，参数里的 `'` 写成 `''` |
+  | `pwsh` | PowerShell 7 | Windows | `PATH` 里的 `pwsh.exe`，或 `%ProgramFiles%\PowerShell\7\pwsh.exe` | 同上，换成 `pwsh.exe` |
+  | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 git 旁边的 | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
+  | `wsl:<发行版>` | WSL（<发行版>） | Windows | `wsl.exe -l -q` 列出的每个发行版各算一个 | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
+
+  - 提示词作为独立参数传入，不拼进 shell 命令文本（cmd 除外：加双引号拼进命令行）。启动环境的退出码就是 agent 的退出码。
+  - 登录 shell 和 WSL 用交互式（`-i`），这样写在 `~/.zshrc`、`~/.bashrc` 里的 `PATH` 也生效；agent 进程脱离终端（`setsid`）。shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：启动 agent 前用 `board host` 的值再设一遍。
+  - WSL：目录用 `--cd` 传 Windows 目录，由 `wsl.exe` 换成 `/mnt/…`；环境变量经 `WSLENV` 传入，`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（WSL 里用 `board-skills` 自带的 Linux 版 `board`）。
+- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，在每个 agent 支持、本机有的每个启动环境里检查一次：执行 `command -v <命令>`（cmd、PowerShell 用 `where.exe`；WSL 里 `/mnt/` 下的 Windows 程序不算）看找不找得到，找到了再执行 `<命令> --version` 取第一行作为版本号；上报每个 agent 在每个环境里「找到 + 版本号」或「没找到」。内置模板「`PATH` 里没有时再看」的位置只在 `direct`、`login` 里用。找到了、但在它用的启动环境里（用户级 skill 目录，WSL 里看 WSL 用户目录下的；或每块白板目录里的 `.agents/skills`、`.claude/skills`、`.pi/skills`）看不到 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板（支持的启动环境不变）。`{prompt}` 换成提示词。接入其他 agent 的方法见 `docs/agents.md`。
+
+  | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） |
+  |---|---|---|---|---|---|
+  | `dsh` | DeepSeek Harness | `dsh --profile headless --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
+  | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
+  | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`；不在 WSL 里时把 `PATH` 里 git 旁边的 Git Bash 放到 pi 的 `PATH` 前面） |
+  | `codex` | Codex | `codex exec --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
+  | 配置文件里新加的 | | | | | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct` |
+
+  macOS、Linux 上所有 agent 都是 `login` → `direct`。`wsl:*` 按 `wsl.exe -l -q` 的顺序展开。
 - 参数也可以写在 `~/.board/config.toml` 的 `[host]`（`name`、`dirs = { "<项目>/<白板>" = "<路径>" }`）和 `[agents.<标识>]`（`cmd = [...]`）里，命令行参数优先。
 - 启动后上报机器名、操作系统、board 版本、本机 agent、白板与目录，每 10 秒一次机器心跳，连续 5 次没收到算离线。`board host` 用令牌订阅实时推送，收到派发、设置变化、停止请求后立即处理。
 - `Ctrl+C` 退出：先按「人停止」结束本机由它启动的全部 agent，再让机器离线。
@@ -306,7 +325,8 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 |---|---|---|
 | 同时跑几个 | 1 | 1–8。正在跑的派发达到上限后，新的派发在服务端排队 |
 | 暂停接单 | 关 | 打开后不启动新的派发（手动派发照样排队），已经在跑的不受影响 |
-| 默认 agent | 本机 agent 里第一个找到的，顺序是 dsh、claude、pi，然后是配置文件里新加的 | 定时领取用它；手动派发时预先选中它 |
+| 默认 agent | 本机 agent 里第一个找到的，顺序是 dsh、claude、pi、codex，然后是配置文件里新加的 | 定时领取用它；手动派发时预先选中它 |
+| 每个 agent 的启动环境 | 按上表「支持的启动环境」的顺序，取本机有、并且这个 agent 在里面找得到的第一个 | 只能选这个 agent 支持、本机有、在里面找得到命令的环境，否则拒绝（`USAGE`，写明原因）。改了下一次派发就用新的，已经在跑的不受影响。设置的环境本机已经没有（例如卸载了 Git Bash）时按默认值的规则选。agent 在设置的环境里找不到命令，就算这台机器「没找到」这个 agent。旧版 `board host` 不上报启动环境：不显示这一项，按 `direct` 启动 |
 | 定时领取 | 关，没有时间点 | 每天的若干个时间点（`HH:MM`，机器本地时区），开关 |
 
 **派发**：一次「在某台机器上用某种 agent 做某张卡」，来源是手动或定时。状态：排队 → 在跑 → 结束；结束的结果是已交审、做不下去、异常退出、已停止、已取消、机器掉线、没领到之一。派发、取消、开始、结束都在卡片动态里追加一条，写明机器、agent、来源和结果。派发记录一直保留。
@@ -318,7 +338,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 | 卡片不在可领取状态 | `NOT_IN_TODO` |
 | 卡片已经有排队或正在跑的派发 | `ALREADY_DISPATCHED` |
 | 机器不存在（含已移除） | `NO_SUCH_HOST` |
-| 机器上没有这种 agent，或标为没找到 | `AGENT_NOT_ON_HOST` |
+| 机器上没有这种 agent，或在它设置的启动环境里没找到 | `AGENT_NOT_ON_HOST` |
 | 机器没有这块白板的目录 | `BOARD_NOT_ON_HOST` |
 
 派给离线、已满、暂停接单的机器时排队。卡片有排队中的派发时，别的 agent `board claim <ID>` 报 `DISPATCHED`，不带 ID 的 `board claim` 跳过它；人可以照常拖动它，拖出可领取状态时这次派发自动取消。
@@ -329,7 +349,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 1. 生成 agent 名字（§3.2），check 这个名字，再以它领取卡片。领取失败（卡片已被领走、已不在可领取状态）时这次派发结束，结果「没领到」，不启动 agent。
 2. 领到后，`board host` 以这个名字发心跳（每 10 秒），直到派发结束。
-3. 在这块白板对应的目录里启动 agent：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
+3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 pi（Git Bash）以 pi/mbp-3 领取（手动）」）：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
 4. agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行；服务端每个派发保留最后 500 行。
 
 **结束**（「交审状态」「需要人处理的状态」按 `board-skills` 认角色的规则识别：规则、连线、状态名称里的关键词）：
@@ -339,7 +359,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 | agent 退出，卡片已不被这个名字持有，在交审状态 | 不动 | 已交审 |
 | agent 退出，卡片已不被这个名字持有，在其他状态 | 不动 | 做不下去 |
 | agent 退出（任何退出码），卡片仍由这个名字持有 | 发 final，沿连线移到需要人处理的状态（默认工作流是「需人工校验」），评论「agent 异常退出（退出码 N）」和日志最后 20 行 | 异常退出 |
-| 人停止（界面上点「停止」或 `board dispatch <ID> --cancel`）：结束 agent 进程树（先 SIGTERM，10 秒后 SIGKILL；Windows 结束进程树） | 同上一行，评论写「<人> 停止了这次派发」 | 已停止 |
+| 人停止（界面上点「停止」或 `board dispatch <ID> --cancel`）：结束包括启动环境外壳在内的整个进程树（先 SIGTERM，10 秒后 SIGKILL；Windows 结束进程树；WSL 里在 WSL 中结束 agent 的进程组） | 同上一行，评论写「<人> 停止了这次派发」 | 已停止 |
 | 人取消排队中的派发 | 不动 | 已取消 |
 | 机器掉线超过 50 秒 | 按心跳超时规则释放（§8 规则 7） | 机器掉线 |
 | `board host` 在 50 秒内重启，派发还在跑、本机没有对应进程 | 同「卡片仍由这个名字持有」 | 异常退出 |
@@ -492,10 +512,10 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   - 头部：系统图标、名字、系统和最近心跳（离线时写多久前在线）、状态胶囊（满载 / 在跑 / 空闲 / 暂停接单 / 离线）；
   - 并发位：上限是几就画几格。占用的格子显示 agent 标记、`#ID`、标题、已用分钟、最近心跳、来源（手动 / 定时）；空格子写「空位」，暂停时写「暂停」，离线时画斜纹写「离线」；
   - 有排队时列出排队的卡片；
-  - 底部：本机 agent（默认的标「默认」）、定时领取的摘要（例如「每天 23:00、03:00」或「只接手动」）。
-- 机器详情：与卡片详情同一种居中弹窗。顶栏：系统图标、状态胶囊、上一台 / 下一台（`↑↓` / `K J`）、关闭（`esc`）。左栏从上到下：名字和系统、board 版本、最近心跳；正在跑 `x/上限`（每个派发一行：agent 标记、`#ID`、标题、agent 名字、已用时间、最近心跳、来源，「日志」展开最后 500 行，「停止」）；排队（「等空位」或「等机器上线」、来源、排了多久，「取消派发」）；派发规则（同时跑几个 − / ＋、定时领取的开关和时间点列表、「现在领一轮」）；本机 agent（每种一个胶囊，带版本号，默认的标「默认」，点一下设为默认，没找到的置灰）；白板与目录；底部操作栏左边「移除机器」、右边「暂停接单 / 恢复接单」。右栏「最近」：这台机器最近 50 个结束的派发（agent、`#ID`、标题、结果、用时、结束时间），顶部写今天交审几个、异常退出几个。
+  - 底部：本机 agent，胶囊带上启动环境（例如「pi · Git Bash」，默认的标「默认」）、定时领取的摘要（例如「每天 23:00、03:00」或「只接手动」）。
+- 机器详情：与卡片详情同一种居中弹窗。顶栏：系统图标、状态胶囊、上一台 / 下一台（`↑↓` / `K J`）、关闭（`esc`）。左栏从上到下：名字和系统、board 版本、最近心跳；正在跑 `x/上限`（每个派发一行：agent 标记、`#ID`、标题、agent 名字、启动环境、已用时间、最近心跳、来源，「日志」展开最后 500 行，「停止」）；排队（「等空位」或「等机器上线」、来源、排了多久，「取消派发」）；派发规则（同时跑几个 − / ＋、定时领取的开关和时间点列表、「现在领一轮」）；本机 agent（每个 agent 一行：图标、名称、启动环境下拉——列出这个 agent 支持、本机有的环境，每项带版本号，找不到的置灰写「没找到」——、「默认」标记，点一下设为默认；旧版 `board host` 不显示下拉，写版本号）；启动环境（发现的启动环境，每行名称和程序路径，WSL 写发行版；旧版 `board host` 不显示）；白板与目录；底部操作栏左边「移除机器」、右边「暂停接单 / 恢复接单」。右栏「最近」：这台机器最近 50 个结束的派发（agent、`#ID`、标题、结果、启动环境、用时、结束时间），顶部写今天交审几个、异常退出几个。
 - 添加机器：同样的居中弹窗，写两种方法：装了桌面端的电脑在「设置 → 本机」打开「让这台电脑接任务」；只有命令行的机器先 `board login`，再 `board host --name … --dir …`。
-- 派发对话框（卡片详情的「派发」）：列出所有机器，每台显示在线 / 离线、`在跑/上限`、是否暂停接单；离线、已满、暂停的机器可以选，写明「会排队」；没有这块白板目录的机器不能选，写明「没有这块白板的目录」。选机器后列出它的本机 agent，没找到的不能选，默认选中这台机器的默认 agent。点「派发」后关闭对话框，卡片上出现派发状态。
+- 派发对话框（卡片详情的「派发」）：列出所有机器，每台显示在线 / 离线、`在跑/上限`、是否暂停接单；离线、已满、暂停的机器可以选，写明「会排队」；没有这块白板目录的机器不能选，写明「没有这块白板的目录」。选机器后列出它的本机 agent（胶囊带上启动环境，例如「pi · Git Bash」），没找到的不能选，默认选中这台机器的默认 agent。点「派发」后关闭对话框，卡片上出现派发状态。
 - 白板上的卡片：有排队中的派发时写「排队 → <机器> · <agent>（原因）」；在跑时显示持有者和耗时（与领取相同）。
 
 ## 11. 实时同步
@@ -640,6 +660,15 @@ agent 名字与心跳：
 70. `board dispatch 6 --host mbp --agent pi`（pi 没找到）报 `AGENT_NOT_ON_HOST`；`board dispatch 6 --host nope` 报 `NO_SUCH_HOST`；对没有目录的白板派发报 `BOARD_NOT_ON_HOST`。
 71. 移除 mbp：排队的派发取消、正在跑的停止；mbp 的 `board host` 重新连上后作为新机器出现，设置是默认值。
 72. 桌面端打开「让这台电脑接任务」后关闭窗口，机器仍在线；退出桌面端后机器离线。
+
+启动环境（§9.1）：
+
+73. Windows 机器装了 Git for Windows、PowerShell 7 和 WSL 发行版 Ubuntu：`board host` 启动后，机器详情「启动环境」列出 cmd、Windows PowerShell、PowerShell 7、Git Bash、WSL（Ubuntu）、直接启动。
+74. 同一台机器上，pi 的启动环境下拉里没有 cmd，默认是 Git Bash；派一张卡给 pi，派发记录写「Git Bash」，结果「已交审」。
+75. 把 pi 的启动环境改成 WSL（Ubuntu）（WSL 里装了 pi 和 `board-skills`），不重启 `board host`，派一张卡：agent 在 WSL 里、仓库对应的 `/mnt/…` 目录里启动，结果「已交审」；再派一张，点「停止」：10 秒内 WSL 里的 agent 进程结束，卡片移到「需人工校验」。
+76. WSL 里没装 pi 时，pi 的启动环境下拉里 WSL（Ubuntu）置灰并写「没找到」；把设置改成它被拒绝（`USAGE`）。
+77. macOS 上默认启动环境是登录 shell：只在 `~/.zshrc` 里加进 `PATH` 的 agent 命令，`board host` 能找到并启动。
+78. 机位卡片和派发对话框里的 agent 胶囊显示「pi · Git Bash」这样的启动环境。
 
 ## 14. 使用场景（不属于产品功能）
 

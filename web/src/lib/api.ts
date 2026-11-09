@@ -156,7 +156,10 @@ export const api = {
   /** 机器和排队、正在跑的派发（工作区里也有；机器页每 10 秒取一次，刷新心跳时间） */
   hosts: () => req<{ hosts: HostInfo[]; dispatches: Dispatch[] }>('GET', '/api/hosts'),
   /** 修改机器设置：同时跑几个、暂停接单、默认 agent、定时领取 */
-  updateHost: (name: string, patch: { max?: number; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[] }) =>
+  updateHost: (
+    name: string,
+    patch: { max?: number; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[]; env?: { agent: string; env: string } },
+  ) =>
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
   removeHost: (name: string) => req('DELETE', `/api/hosts/${q(name)}`),
   /** 现在领一轮（效果与定时到点相同） */

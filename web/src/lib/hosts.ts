@@ -58,6 +58,12 @@ export function hostState(h: HostInfo, running: number): { key: HostState; label
 export type OsKind = 'mac' | 'win' | 'linux';
 export const osKind = (os: string): OsKind => (/mac|darwin|os x/i.test(os) ? 'mac' : /windows/i.test(os) ? 'win' : 'linux');
 
+/** 启动环境的名称：机器上报的列表里找，找不到时用标识 */
+export function envName(h: HostInfo | undefined, id: string | null | undefined): string | null {
+  if (!id) return null;
+  return h?.envs?.find(e => e.id === id)?.name ?? id;
+}
+
 /** 排队的原因 */
 export function queueReason(h: HostInfo | undefined): string {
   if (!h) return '机器已移除';
