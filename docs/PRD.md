@@ -289,13 +289,13 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 - 机器名：小写字母、数字、`.`、`-`，以字母或数字开头，最长 24 个字符；不填时取本机主机名转成小写、非法字符换成 `-`。同名机器正在线时启动失败（`HOST_NAME_TAKEN`）。同一台机器上 `board host` 异常退出后重启，接回原来的名字。
 - 白板与目录：`--dir` 把一块白板对应到本机的一个仓库目录，agent 在这个目录里启动。没有对应目录的白板，这台机器不接它的卡片。目录不存在时启动失败（`USAGE`，写明是哪个目录）。
-- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，逐个检查命令在不在 `PATH` 里（内置模板还看下表的常见安装位置）、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。找到了、但在它读 skill 的目录里没有 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板。`{prompt}` 换成提示词，作为一个参数传入，不经过 shell。接入其他 agent 的方法见 `docs/agents.md`。
+- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，逐个检查命令在不在 `PATH` 里（内置模板还看下表的常见安装位置）、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。找到了、但在它读 skill 的目录（用户级目录，或每块白板目录里的 `.agents/skills`、`.claude/skills`、`.pi/skills`）里没有 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板。`{prompt}` 换成提示词，作为一个参数传入，不经过 shell。接入其他 agent 的方法见 `docs/agents.md`。
 
   | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 |
   |---|---|---|---|---|
   | `dsh` | DeepSeek Harness | `dsh --profile headless --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` |
   | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` |
-  | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` |
+  | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills`（Windows 上启动时把 PATH 里 git 旁边的 Git Bash 放到 pi 的 PATH 前面） |
 - 参数也可以写在 `~/.board/config.toml` 的 `[host]`（`name`、`dirs = { "<项目>/<白板>" = "<路径>" }`）和 `[agents.<标识>]`（`cmd = [...]`）里，命令行参数优先。
 - 启动后上报机器名、操作系统、board 版本、本机 agent、白板与目录，每 10 秒一次机器心跳，连续 5 次没收到算离线。`board host` 用令牌订阅实时推送，收到派发、设置变化、停止请求后立即处理。
 - `Ctrl+C` 退出：先按「人停止」结束本机由它启动的全部 agent，再让机器离线。

@@ -53,11 +53,11 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 - **dsh**：`headless` 档案做完一个任务就退出，最终回答写标准输出，推理过程和诊断写标准错误（日志里都能看到）。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
 - **Claude Code**：`-p` 只在结束时打印结果，跑的过程中日志是空的。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报「Not logged in」，从自己的终端或桌面端运行就好。
-- **pi**：pi 本身不做权限审批。`/board-skills …` 和 `/skill:board-skills …` 两种写法都会加载 skill。
+- **pi**：pi 本身不做权限审批。`/board-skills …` 和 `/skill:board-skills …` 两种写法都会加载 skill。Windows 上 pi 用 Git Bash 执行命令：`board host` 会从 `PATH` 里的 `git` 找到 Git 安装目录，把它旁边的 `bin` 放到 pi 的 `PATH` 前面，所以 Git 不在 `C:\Program Files\Git` 也能用；找不到 Git Bash 时在 `~/.pi/agent/settings.json` 里设置 `shellPath`。
 
 ## 装 `board-skills`
 
-agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
+agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，dsh、Claude Code、pi 也会读工作目录（仓库根目录）里的 `.agents/skills`，所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
 
 ```sh
 mkdir -p ~/.agents/skills ~/.claude/skills
@@ -146,6 +146,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 |---|---|
 | 派发结果「异常退出（退出码 0）」，日志里 agent 说不认识 `/board-skills` | 没装 `board-skills`，或链接指向的目录不存在 |
 | 日志第一行就是登录错误（例如「Not logged in」） | 这台机器上的 agent 还没登录 |
+| pi 的日志说 bash 工具完全不可用，错误里有 `HCS_E_SERVICE_NOT_AVAILABLE` | Windows 上 pi 落到了 WSL 的 `bash.exe`：装 Git for Windows，或在 `~/.pi/agent/settings.json` 里设置 `shellPath`；`board host` 会把 PATH 里 git 旁边的 Git Bash 放到 pi 前面 |
 | 「机器」里这个 agent 显示「没找到」 | 命令不在 `board host` 的 `PATH` 里：从桌面端运行时用的是登录 shell 的 `PATH`；在配置文件里写绝对路径也行 |
 | 一直在跑、日志不动 | agent 在等审批或输入：模板里少了跳过审批的参数，或者它的非交互模式不是这个 |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |

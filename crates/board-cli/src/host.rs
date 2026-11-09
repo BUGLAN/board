@@ -51,6 +51,9 @@ struct Builtin {
     also: &'static [&'static str],
     /// 这个 agent 读用户级 skill 的目录：启动时看 `board-skills` 装没装
     skills: &'static [&'static str],
+    /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面：pi 从 PATH 找 `bash.exe`，
+    /// Git 装在非 `%ProgramFiles%` 位置时（例如 D:\Git）才能不落到 WSL 的 bash
+    git_bash: bool,
 }
 
 /// 顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
@@ -65,6 +68,7 @@ const BUILTIN: [Builtin; 3] = [
             "~/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
         ],
         skills: &["~/.agents/skills"],
+        git_bash: false,
     },
     Builtin {
         id: "claude",
@@ -72,8 +76,16 @@ const BUILTIN: [Builtin; 3] = [
         cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
+        git_bash: false,
     },
-    Builtin { id: "pi", name: "pi", cmd: &["pi", "-p", "{prompt}"], also: &[], skills: &["~/.agents/skills", "~/.pi/agent/skills"] },
+    Builtin {
+        id: "pi",
+        name: "pi",
+        cmd: &["pi", "-p", "{prompt}"],
+        also: &[],
+        skills: &["~/.agents/skills", "~/.pi/agent/skills"],
+        git_bash: true,
+    },
 ];
 
 /// agent 用的 skill
@@ -117,6 +129,8 @@ struct Spec {
     version: String,
     /// 读用户级 skill 的目录（内置模板才有）
     skills: Vec<String>,
+    /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面
+    git_bash: bool,
 }
 
 impl Spec {
@@ -126,20 +140,28 @@ impl Spec {
 }
 
 impl Spec {
-    /// 找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`（只看内置模板的用户级目录）
-    fn misses_skill(&self) -> bool {
-        self.exe.is_some() && !self.skills.is_empty() && !self.skills.iter().any(|d| expand(d).join(SKILL).join("SKILL.md").is_file())
+    /// 找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`。
+    /// 用户级目录来自内置模板；项目级目录看每块白板对应的仓库目录（agent 也会读工作目录里的 skill）。
+    fn misses_skill(&self, dirs: &[(String, PathBuf)]) -> bool {
+        if self.exe.is_none() || self.skills.is_empty() {
+            return false;
+        }
+        let has = |d: &Path| d.join(SKILL).join("SKILL.md").is_file();
+        !self.skills.iter().any(|d| has(&expand(d)))
+            && !dirs.iter().any(|(_, p)| [".agents/skills", ".claude/skills", ".pi/skills"].iter().any(|s| has(&p.join(s))))
     }
 }
 
-/// 一个模板：(标识, 名称, 命令, 命令不在 PATH 里时再看的位置, 读 skill 的目录)
-type Template = (String, String, Vec<String>, Vec<String>, Vec<String>);
+/// 一个模板：(标识, 名称, 命令, 命令不在 PATH 里时再看的位置, 读 skill 的目录, Windows 上要不要先找 Git Bash)
+type Template = (String, String, Vec<String>, Vec<String>, Vec<String>, bool);
 
 /// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面
 fn agent_specs(conf: &[AgentConf]) -> Result<Vec<Spec>> {
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let mut out: Vec<Template> =
-        BUILTIN.iter().map(|b| (b.id.to_string(), b.name.to_string(), strs(b.cmd), strs(b.also), strs(b.skills))).collect();
+    let mut out: Vec<Template> = BUILTIN
+        .iter()
+        .map(|b| (b.id.to_string(), b.name.to_string(), strs(b.cmd), strs(b.also), strs(b.skills), b.git_bash))
+        .collect();
     for a in conf {
         check_agent_id(&a.id).map_err(BoardError::usage)?;
         let name = a.name.clone().unwrap_or_else(|| a.id.clone());
@@ -154,18 +176,18 @@ fn agent_specs(conf: &[AgentConf]) -> Result<Vec<Spec>> {
                     x.1 = n.clone();
                 }
             }
-            None => out.push((a.id.clone(), name, a.cmd.clone(), vec![], vec![])),
+            None => out.push((a.id.clone(), name, a.cmd.clone(), vec![], vec![], false)),
         }
     }
     // 各个 agent 的 --version 一起跑：一个慢的不拖住启动
     Ok(std::thread::scope(|s| {
         let jobs: Vec<_> = out
             .into_iter()
-            .map(|(id, name, cmd, also, skills)| {
+            .map(|(id, name, cmd, also, skills, git_bash)| {
                 s.spawn(move || {
                     let exe = cmd.first().and_then(|c| which(c)).or_else(|| also.iter().map(|p| expand(p)).find(|p| is_exe(p)));
                     let version = exe.as_deref().map(version_of).unwrap_or_default();
-                    Spec { id, name, cmd, exe, version, skills }
+                    Spec { id, name, cmd, exe, version, skills, git_bash }
                 })
             })
             .collect();
@@ -205,6 +227,25 @@ fn which(cmd: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Windows 上从 PATH 里的 git 推出 Git Bash 的目录（`<Git>\bin`）。
+/// pi 只认 `%ProgramFiles%\Git\bin\bash.exe`，Git 装在 D 盘这类位置时会回落到 PATH 里的
+/// `bash.exe`——那常常是 `C:\Windows\System32\bash.exe`（WSL），WSL 没启用时 pi 的命令都跑不了。
+#[cfg(windows)]
+fn git_bash_dir() -> Option<PathBuf> {
+    git_bash_beside(&which("git")?)
+}
+
+/// git.exe 的上级或上上级里的 `bin\bash.exe`（`<Git>\bin\git.exe` 或 `<Git>\cmd\git.exe` 两种安装布局）
+#[cfg(windows)]
+fn git_bash_beside(git: &Path) -> Option<PathBuf> {
+    let dir = git.parent()?;
+    let mut candidates = vec![dir.to_path_buf()];
+    if let Some(root) = dir.parent() {
+        candidates.push(root.join("bin"));
+    }
+    candidates.into_iter().find(|d| d.join("bash.exe").is_file())
 }
 
 fn is_exe(p: &Path) -> bool {
@@ -618,9 +659,14 @@ impl Host<'_> {
             };
             s += &format!("  {head}{} {}  {state}\n", p.cyan(&a.id), a.name);
         }
-        for a in self.agents.iter().filter(|a| a.misses_skill()) {
+        for a in self.agents.iter().filter(|a| a.misses_skill(&self.dirs)) {
             let dirs: Vec<String> = a.skills.iter().map(|d| format!("{d}/{SKILL}")).collect();
-            s += &format!("  {} {} 看不到 {SKILL}：派给它的卡片会做不成，先装到 {}（见 docs/agents.md）\n", p.yellow("!"), a.id, dirs.join(" 或 "));
+            s += &format!(
+                "  {} {} 看不到 {SKILL}：派给它的卡片会做不成，先装到 {} 或仓库的 .agents/skills/{SKILL}（见 docs/agents.md）\n",
+                p.yellow("!"),
+                a.id,
+                dirs.join(" 或 ")
+            );
         }
         if self.dirs.is_empty() {
             s += &format!("  {}{}\n", p.dim("白板    "), p.yellow("（没有）：用 --dir <项目>/<白板>=<路径> 加上，否则接不到卡片"));
@@ -940,6 +986,18 @@ impl Host<'_> {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
+        // pi 在 Windows 上从 PATH 找 bash.exe；把 Git Bash 放到最前，免得落到没启用的 WSL bash
+        #[cfg(windows)]
+        if spec.git_bash {
+            if let Some(bin) = git_bash_dir() {
+                let old = std::env::var_os("PATH").unwrap_or_default();
+                let mut parts: Vec<std::ffi::OsString> = vec![bin.into_os_string()];
+                parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
+                if let Ok(path) = std::env::join_paths(parts) {
+                    c.env("PATH", path);
+                }
+            }
+        }
         own_group(&mut c);
         let child = c.spawn().map_err(|e| {
             let _ = std::fs::remove_file(&conf);
@@ -1061,6 +1119,7 @@ mod tests {
     fn builtin_order_and_overrides() {
         // 内置顺序就是默认顺序：dsh 第一
         assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "pi"]);
+        assert!(BUILTIN.iter().find(|b| b.id == "pi").unwrap().git_bash, "pi 在 Windows 上要先找 Git Bash");
         for b in &BUILTIN {
             check_agent_id(b.id).unwrap();
             assert_eq!(b.cmd.iter().filter(|a| a.contains("{prompt}")).count(), 1, "{} 的模板里要有一个 {{prompt}}", b.id);
@@ -1075,7 +1134,7 @@ mod tests {
         assert_eq!(claude.name, "Claude Code");
         assert!(claude.exe.is_none(), "换了命令就不再看内置的备用位置");
         assert_eq!(specs[3].name, "Codex");
-        assert!(!specs[3].misses_skill(), "配置文件里的 agent 不检查 skill");
+        assert!(!specs[3].misses_skill(&[]), "配置文件里的 agent 不检查 skill");
     }
 
     #[test]
@@ -1083,5 +1142,38 @@ mod tests {
         let home = expand("~");
         assert!(home.is_absolute() || home == PathBuf::from("~"));
         assert_eq!(expand("/abs/x"), PathBuf::from("/abs/x"));
+    }
+
+    #[test]
+    fn skill_check_sees_project_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".agents").join("skills").join(SKILL)).unwrap();
+        std::fs::write(repo.join(".agents").join("skills").join(SKILL).join("SKILL.md"), "x").unwrap();
+        let spec = Spec {
+            id: "pi".into(),
+            name: "pi".into(),
+            cmd: vec!["pi".into()],
+            exe: Some(PathBuf::from("pi")),
+            version: String::new(),
+            skills: vec!["/board-test-no-such-skills".into()],
+            git_bash: true,
+        };
+        assert!(!spec.misses_skill(&[("default/main".into(), repo.clone())]), "项目里的 .agents/skills 算装好了");
+        assert!(spec.misses_skill(&[]), "没有项目目录时仍然提醒");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_git_bash_beside_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("cmd")).unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("cmd").join("git.exe"), "").unwrap();
+        std::fs::write(root.join("bin").join("bash.exe"), "").unwrap();
+        assert_eq!(git_bash_beside(&root.join("cmd").join("git.exe")), Some(root.join("bin")));
+        assert_eq!(git_bash_beside(&root.join("bin").join("git.exe")), Some(root.join("bin")));
+        assert!(git_bash_beside(&root.join("cmd").join("git.exe")).unwrap().join("bash.exe").is_file());
     }
 }
