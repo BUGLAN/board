@@ -18,7 +18,7 @@ export const boardPrompt = (path: string) => `/${SKILL} ${path}`;
 /* ---------------- 快捷提示词：一句完整的话，带项目和白板 ----------------
    SKILL.md 的「快捷提示词」一节按这几种写法识别，改句式时两边一起改 */
 
-export type QuickKind = 'split' | 'upload' | 'all' | 'label';
+export type QuickKind = 'split' | 'upload' | 'split-inbox' | 'upload-inbox' | 'all' | 'label';
 
 export interface QuickPrompt {
   kind: QuickKind;
@@ -64,6 +64,20 @@ export function quickPrompts(path: string, claimables: string[], label?: string)
       id: 'upload',
       title: '上传任务',
       text: `/${SKILL} 把我们刚才讨论出的任务上传到${w}的${home}里，每个任务一张卡片`,
+      hint: '发给刚讨论完任务的 agent',
+    },
+    {
+      kind: 'split-inbox',
+      id: 'split-inbox',
+      title: '拆解任务到未整理',
+      text: `/${SKILL} 把下面的需求拆解成可以独立完成的任务，记到${w}的未整理里：`,
+      hint: '粘贴后在冒号后面写上需求',
+    },
+    {
+      kind: 'upload-inbox',
+      id: 'upload-inbox',
+      title: '上传任务到未整理',
+      text: `/${SKILL} 把我们刚才讨论出的任务上传到${w}的未整理里，每个任务一张卡片`,
       hint: '发给刚讨论完任务的 agent',
     },
     ...names.map((name, i) => ({

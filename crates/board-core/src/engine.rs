@@ -19,7 +19,7 @@ pub enum Cmd {
         title: String,
         #[serde(default)]
         body: Option<String>,
-        /// 只有界面会传 "inbox"；默认首个可领取状态
+        /// 界面、CLI 都可以传 "inbox"；默认首个可领取状态
         #[serde(default)]
         column: Option<String>,
         #[serde(default)]
@@ -125,9 +125,6 @@ impl<'a> W<'a> {
                         )))
                     }
                 };
-                if col == INBOX && !actor.is_human() {
-                    return Err(BoardError::usage("「未整理」只在界面上新建"));
-                }
                 self.check_labels(board, &labels)?;
                 self.tx.execute("UPDATE boards SET seq = seq + 1 WHERE id = ?1", [b])?;
                 let id: i64 = self.tx.query_row("SELECT seq FROM boards WHERE id = ?1", [b], |r| r.get(0))?;

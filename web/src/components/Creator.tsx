@@ -425,14 +425,9 @@ export function Creator() {
             <div className="cr-sec">
               <div className="d-label">等价的 CLI</div>
               <div className="cr-cli mono">
-                {column === 'inbox' ? (
-                  <span className="dim">「未整理」只在界面上新建，整理后再放进{startName}</span>
-                ) : (
-                  <>
-                    <span className="cmd">board</span> new {q(title.trim() || '<标题>')}
-                    {short ? ` --body ${q(short)}` : ''} <span className="dim">--board</span> {path}
-                  </>
-                )}
+                <span className="cmd">board</span> new {q(title.trim() || '<标题>')}
+                {short ? ` --body ${q(short)}` : ''}
+                {column === 'inbox' ? ' --inbox' : ''} <span className="dim">--board</span> {path}
               </div>
             </div>
             {created.length > 0 && (

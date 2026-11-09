@@ -479,13 +479,17 @@ fn ac19_21_inbox() {
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(5)))), ErrorCode::NotInTodo);
     // 拖到「进行中」被拒绝
     assert_eq!(code(exec(&mut s, B, &human(), T0, mv(5, "doing"))), ErrorCode::ForbiddenColumn);
-    // agent 不能在「未整理」里新建
-    let r = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "x".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] });
-    assert_eq!(code(r), ErrorCode::Usage);
     // 整理到待办 → 最下面
     exec(&mut s, B, &human(), T0, new("y")).unwrap();
     exec(&mut s, B, &human(), T0, mv(5, "todo")).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![6, 5]);
+    // agent/CLI 也可以在「未整理」里新建，放在最下面，持有者为空
+    let a = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "agent 记的".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }).unwrap();
+    assert_eq!(a.card.column, "inbox");
+    assert_eq!(a.card.holder, None);
+    let b = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "agent 又记的".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }).unwrap();
+    assert_eq!(b.card.column, "inbox");
+    assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![7, 8]);
 }
 
 #[test]

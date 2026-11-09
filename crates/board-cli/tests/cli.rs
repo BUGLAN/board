@@ -68,6 +68,28 @@ fn ac1_claim_json_returns_full_card() {
 }
 
 #[test]
+fn new_inbox_creates_unfiled_entry() {
+    let s = start();
+    let r = s.run(ALPHA, &["new", "想法", "--body", "待细化", "--inbox", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!(c["column"], "inbox");
+    assert!(c["holder"].is_null());
+    let r = s.run(ALPHA, &["ls", "--column", "inbox", "--json"]);
+    let ids: Vec<i64> = r.json().as_array().unwrap().iter().map(|c| c["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, vec![1]);
+    // 未整理仍不能领取
+    let r = s.run(ALPHA, &["claim", "1", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_IN_TODO"));
+    // 不带 --inbox 时行为不变：进入首个可领取状态最上面
+    let r = s.run(ALPHA, &["new", "任务", "--top", "--json"]);
+    assert_eq!(r.json()["column"], "todo");
+    // 已有卡片仍不能移入未整理
+    let r = s.run(ALPHA, &["move", "2", "inbox", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "FORBIDDEN_COLUMN"));
+}
+
+#[test]
 fn ac12_identity_and_board_required() {
     let s = start();
     let with = |extra: &[(&'static str, &str)]| {

@@ -26,7 +26,7 @@ const VALUE_FLAGS: [&str; 15] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent",
 ];
-const BOOL_FLAGS: [&str; 6] = ["--json", "--top", "--help", "-h", "--final", "--cancel"];
+const BOOL_FLAGS: [&str; 7] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel"];
 const COMMANDS: [&str; 22] = [
     "help", "doctor", "login", "logout", "check", "heartbeat", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat",
     "label", "labels", "attach", "files", "host", "dispatch",
@@ -374,11 +374,12 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         }
         "new" => {
             let title = a.pos[1..].join(" ");
-            let top = a.flag("--top");
+            let inbox = a.flag("--inbox");
+            let top = a.flag("--top") && !inbox;
             let d = exec(Cmd::New {
                 title,
                 body: a.value("--body").map(|s| s.to_string()),
-                column: None,
+                column: inbox.then(|| INBOX.to_string()),
                 top,
                 labels: vec![],
             })?;
@@ -390,7 +391,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     p.green("✓"),
                     p.cyan(&format!("#{}", d.card.id)),
                     d.card.title,
-                    p.dim(&format!("  → {}最{}", flow.home().name, if top { "上面" } else { "下面" }))
+                    p.dim(&format!("  → {}最{}", if inbox { INBOX_NAME } else { flow.home().name.as_str() }, if top { "上面" } else { "下面" }))
                 ))
             }
         }
@@ -929,7 +930,7 @@ fn help(p: &Paint) -> String {
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\"] [--top]", "在首个可领取状态新建卡片"),
+        ("new", "\"<标题>\" [--body \"<描述>\"] [--top] [--inbox]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),

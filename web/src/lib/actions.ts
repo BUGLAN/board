@@ -77,7 +77,7 @@ export const copyBoardPrompt = (path = data().path) => copyPrompt(boardPrompt(pa
 /** 一张卡片 */
 export const copyCardPrompt = (c: Pick<CardDetail, 'id'>, path = data().path) => copyPrompt(cardPrompt(path, c.id));
 
-/** 快捷提示词：拆解任务、上传任务、做待办全部、做待办中带指定标签的任务 */
+/** 快捷提示词：拆解 / 上传任务（可到待办或未整理）、做待办全部、做待办中带指定标签的任务 */
 export const copyQuickPrompt = (q: QuickPrompt) => copyPrompt(q.text, q.hint);
 
 /* ------------------------------ 项目与白板 ------------------------------ */

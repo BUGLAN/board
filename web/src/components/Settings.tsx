@@ -635,7 +635,7 @@ export function SettingsPage() {
           </h2>
           <p className="set-p">每块白板的工作流可以在白板页顶部的工作流条里自定义。当前白板：</p>
           <div className="flow">
-            {[{ key: 'inbox', name: '未整理', who: '人记下想法' }, ...flow.list.map(s => ({ key: s.key, name: s.name, who: s.claim ? '可领取' : s.lock ? '锁定 · agent 领取' : s.final ? '终点 · 人确认' : '' }))].map(
+            {[{ key: 'inbox', name: '未整理', who: '界面 / agent 新建' }, ...flow.list.map(s => ({ key: s.key, name: s.name, who: s.claim ? '可领取' : s.lock ? '锁定 · agent 领取' : s.final ? '终点 · 人确认' : '' }))].map(
               (s, i) => (
                 <span key={s.key} style={{ display: 'contents' }}>
                   {i > 0 && <i className="flow-arrow" />}
@@ -662,7 +662,7 @@ export function SettingsPage() {
             <li>被持有的卡片只有持有者能编辑和移动，其他人只能评论、加或去标签；人可以强制释放</li>
             <li>卡片离开锁定状态时，领取一起释放；强制释放和超时释放的卡片回到领取它时所在的可领取状态最上面</li>
             <li>终点状态只归人管；删除只能在界面上做</li>
-            <li>「未整理」只归人管：只在界面上新建，agent 不会领取，也不能移入移出；整理后放进「{flow.home?.name ?? '待办'}」</li>
+            <li>「未整理」可以由界面或 agent/CLI 新建，但只有人能整理进/出工作流：agent 不会领取，也不能把已有卡片移入或移出；整理后放进「{flow.home?.name ?? '待办'}」</li>
           </ul>
         </section>
 
