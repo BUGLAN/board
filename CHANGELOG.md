@@ -2,6 +2,16 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.4 · 2026-11-09
+
+### 新功能
+
+- board host 按启动环境启动 agent，内置 codex（be40028）
+
+### 修复
+
+- **cli**：board host 在 Windows 上让 pi 找到 Git Bash（8f9c033）
+
 ## v0.1.3 · 2026-11-09
 
 ### 新功能
