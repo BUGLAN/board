@@ -6,6 +6,10 @@ Windows 任务栏图标来自 exe 内嵌的 icon.ico。任务栏按 24 DIP 绘�
 按当前缩放从 exe 图标资源加载对应尺寸帧。把 1024 的 SVG 直接缩小到这些尺寸时，
 4 根细竖条会糊成一团，所以小尺寸按目标像素网格单独绘制；64 及以上仍然用矢量渲染。
 
+macOS 的 icon.icns 另外生成：source.svg 的圆角矩形占 1024 画布的 896×896，
+而 macOS 图标模板里圆角矩形只占 824×824（四周留 100），直接用会在 Dock、
+App 切换器里比别的应用大一圈。所以 macOS 用一份按模板缩小、加了投影的 SVG。
+
 用法（仓库根目录，先 npm ci；需要 Python 3 和 Pillow）：
 
     python scripts/build-icons.py
@@ -13,6 +17,7 @@ Windows 任务栏图标来自 exe 内嵌的 icon.ico。任务栏按 24 DIP 绘�
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import struct
 import subprocess
@@ -39,6 +44,14 @@ SMALL_SIZES = (16, 20, 24, 30, 32, 36, 40, 42, 48)
 BG_TOP = (0x26, 0x27, 0x2C)
 BG_BOTTOM = (0x0C, 0x0D, 0x0F)
 SS = 8  # 超采样倍数
+
+# macOS 图标模板（1024 画布）：圆角矩形 824×824、四周留 100，下方一层投影
+# （向下 10、模糊 10、黑色 30%）。source.svg 的圆角矩形是 896，按比例缩到 824。
+MAC_CONTENT = 824
+MAC_SCALE = MAC_CONTENT / (1024 - 2 * 64)
+# tauri icon 生成的 icns 里应有的帧：16/32 的旧格式位图加遮罩，以及 32 到 1024 的 PNG 帧。
+# tauri 写帧的顺序每次不同，按这个顺序重排后再写，重复生成的文件逐字节一致。
+MAC_ICNS_TYPES = ("is32", "s8mk", "il32", "l8mk", "ic11", "ic12", "ic07", "ic13", "ic08", "ic14", "ic09", "ic10")
 
 
 def render_small(size: int) -> Image.Image:
@@ -80,17 +93,79 @@ def render_small(size: int) -> Image.Image:
     return canvas.resize((size, size), Image.Resampling.BOX)
 
 
-def render_large() -> dict[int, Path]:
-    """用 Tauri CLI 从 source.svg 生成 64 及以上的 PNG（resvg 矢量渲染）。"""
-    out = WORK / "large"
+def tauri_icon(svg: Path, out: Path, *args: str) -> None:
+    """调用 Tauri CLI 的 `tauri icon`（resvg 矢量渲染），输出到一个清空过的目录。"""
     if out.exists():
         shutil.rmtree(out)
     npx = shutil.which("npx")
     if not npx:
         sys.exit("找不到 npx：先在仓库根目录运行 npm ci")
-    cmd = [npx, "--no-install", "tauri", "icon", str(ICONS / "source.svg"), "-o", str(out), "-p", "64,128,256,512"]
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    subprocess.run([npx, "--no-install", "tauri", "icon", str(svg), "-o", str(out), *args], cwd=ROOT, check=True)
+
+
+def render_large() -> dict[int, Path]:
+    """从 source.svg 生成 64 及以上的 PNG。"""
+    out = WORK / "large"
+    tauri_icon(ICONS / "source.svg", out, "-p", "64,128,256,512")
     return {size: out / f"{size}x{size}.png" for size in (64, 128, 256, 512)}
+
+
+def macos_svg() -> str:
+    """把 source.svg 的内容按 macOS 模板缩到 824×824 居中，下面垫一层投影。
+
+    投影是单独一个模糊的圆角矩形；图标本身不套滤镜，否则 resvg 按 8 位 linearRGB
+    计算滤镜，深色渐变会出现明显色带。
+    """
+    src = (ICONS / "source.svg").read_text(encoding="utf-8")
+    m = re.fullmatch(r"\s*(<svg\b[^>]*>)(.*)</svg>\s*", src, re.S)
+    if not m:
+        sys.exit("source.svg 不是单个 <svg> 根元素")
+    head, body = m.groups()
+    offset = 512 * (1 - MAC_SCALE)
+    inset = (1024 - MAC_CONTENT) / 2
+    radius = RADIUS * 1024 * MAC_SCALE
+    return (
+        f"{head}\n"
+        "  <defs>\n"
+        '    <filter id="mac-shadow" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">\n'
+        '      <feGaussianBlur stdDeviation="5"/>\n'
+        "    </filter>\n"
+        "  </defs>\n"
+        f'  <rect x="{inset:g}" y="{inset + 10:g}" width="{MAC_CONTENT}" height="{MAC_CONTENT}" rx="{radius:.2f}"'
+        ' fill="#000" fill-opacity=".3" filter="url(#mac-shadow)"/>\n'
+        f'  <g transform="matrix({MAC_SCALE:.6f} 0 0 {MAC_SCALE:.6f} {offset:.4f} {offset:.4f})">'
+        f"{body}"
+        "  </g>\n"
+        "</svg>\n"
+    )
+
+
+def read_icns(path: Path) -> dict[str, bytes]:
+    """读出 icns 的每一帧：{类型: 整个条目（含 8 字节头）}。"""
+    data = path.read_bytes()
+    if data[:4] != b"icns" or struct.unpack(">I", data[4:8])[0] != len(data):
+        sys.exit(f"{path} 不是有效的 icns 文件")
+    entries: dict[str, bytes] = {}
+    pos = 8
+    while pos < len(data):
+        length = struct.unpack(">I", data[pos + 4:pos + 8])[0]
+        entries[data[pos:pos + 4].decode("ascii")] = data[pos:pos + length]
+        pos += length
+    return entries
+
+
+def render_macos() -> None:
+    """生成 macOS 的 icon.icns（16 到 1024 全部尺寸帧）。"""
+    svg = WORK / "macos.svg"
+    svg.write_text(macos_svg(), encoding="utf-8")
+    out = WORK / "macos"
+    tauri_icon(svg, out)
+    entries = read_icns(out / "icon.icns")
+    missing = [kind for kind in MAC_ICNS_TYPES if kind not in entries]
+    if missing:
+        sys.exit(f"tauri icon 生成的 icon.icns 缺少帧：{', '.join(missing)}")
+    body = b"".join(entries[kind] for kind in MAC_ICNS_TYPES)
+    (ICONS / "icon.icns").write_bytes(b"icns" + struct.pack(">I", 8 + len(body)) + body)
 
 
 def write_ico(frames: list[tuple[int, Path]], dest: Path) -> None:
@@ -134,8 +209,10 @@ def main() -> None:
     shutil.copyfile(large[128], ICONS / "128x128.png")
     shutil.copyfile(large[256], ICONS / "128x128@2x.png")
     shutil.copyfile(large[512], ICONS / "icon.png")
+
+    render_macos()
     print("✓ 图标已生成：icon.ico（16/20/24/30/32/36/40/42/48/64/128/256）+ 32/128/256/512 PNG")
-    print("  icon.icns 未改动（macOS 图标）")
+    print("  icon.icns（macOS，16 到 1024，圆角矩形 824×824 + 投影）")
 
 
 if __name__ == "__main__":

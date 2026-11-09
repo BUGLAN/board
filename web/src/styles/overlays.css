@@ -177,8 +177,17 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .md li.task.checked i { background: var(--c-done); box-shadow: none; }
 .md li.task.checked i::after { content: ""; width: 7px; height: 4px; border: 1.6px solid #fff; border-top: 0; border-right: 0; transform: rotate(-45deg) translate(1px, -1px); }
 .md li.task.checked { color: var(--text-3); text-decoration: line-through; }
-.md pre { padding: 10px 12px; border-radius: var(--r-sm); background: var(--term-bg); color: var(--term-text); overflow-x: auto; font-size: 12px; }
+.md pre { max-width: 100%; padding: 10px 12px; border-radius: var(--r-sm); background: var(--term-bg); color: var(--term-text); overflow-x: auto; font-size: 12px; }
 .md pre code { background: none; box-shadow: none; padding: 0; color: inherit; }
+/* 表格：先在可用宽度里换行，放不下时在自己的框里横向滚动（浮层细滚动条），不撑宽外层。
+   单元格里的长单词不按任意字符断开，否则窄栏里每列会被挤成一两个字宽 */
+.md table {
+  display: block; width: max-content; max-width: 100%; overflow-x: auto;
+  border-collapse: collapse; font-size: .94em; line-height: 1.5;
+  word-break: normal; overflow-wrap: break-word;
+}
+.md th, .md td { min-width: 4em; padding: 5px 10px; text-align: left; vertical-align: top; box-shadow: inset 0 0 0 .5px var(--line-2); }
+.md th { font-weight: 600; background: var(--surface-2); }
 .md a { color: var(--brand); text-decoration: none; background-image: linear-gradient(currentColor, currentColor); background-size: 0 1px; background-position: 0 100%; background-repeat: no-repeat; transition: background-size var(--dur-3) var(--ease-out); }
 .md a:hover { background-size: 100% 1px; }
 .md .gh { font-family: var(--f-mono); font-size: .88em; padding: .1em .45em; border-radius: var(--r-xs); color: var(--c-review); background: color-mix(in srgb, var(--c-review) 12%, transparent); }
@@ -187,7 +196,8 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 /* 动态 */
 .timeline { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .timeline::before { content: ""; position: absolute; left: 11px; top: 10px; bottom: 10px; width: 1.5px; background: linear-gradient(var(--line-2), var(--line)); }
-.tl-item { position: relative; display: grid; grid-template-columns: 24px 1fr; gap: 10px; padding: 6px 0; }
+/* 内容列用 minmax(0, 1fr)：评论里不换行的代码块、宽表格只在自己的框里横向滚动，不把气泡撑出动态栏 */
+.tl-item { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 6px 0; }
 .tl-item.new { animation: tl-in var(--dur-4) var(--spring-soft) both; }
 @keyframes tl-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
 .tl-icon {
@@ -204,7 +214,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .tl-sys .agent-name { font-family: var(--f-mono); font-size: 12px; }
 .tl-time { color: var(--text-3); font-size: 11.5px; white-space: nowrap; margin-left: 4px; }
 .tl-bubble {
-  padding: 9px 12px 10px; border-radius: var(--r-xs) var(--r-md) var(--r-md) var(--r-md);
+  min-width: 0; padding: 9px 12px 10px; border-radius: var(--r-xs) var(--r-md) var(--r-md) var(--r-md);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
 }
 .tl-bubble .who { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; font-size: 12px; }
