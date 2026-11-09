@@ -206,6 +206,7 @@ fn host_runs_dispatches_end_to_end() {
     assert!(activity(&c1).iter().any(|t| t.contains("以 claude/mbp-1 领取")), "{:?}", activity(&c1));
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
     assert!(local.contains("prompt: /board-skills 开始执行 default项目之中的main白板中的#1任务"), "{local}");
+    assert!(local.contains("BOARD_AS=claude/mbp-1，BOARD_HOST=mbp"), "派发提示词里带上 board host 身份：{local}");
     assert!(local.contains("as: claude/mbp-1 host: mbp board: default/main"), "{local}");
     assert!(rig.dispatch_log(d1).iter().any(|l| l == "交审了"));
     assert!(local.contains("config: ok"), "BOARD_CONFIG 指向这次派发的配置文件：{local}");

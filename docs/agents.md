@@ -61,7 +61,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 | 顺序 | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
 |---|---|---|---|---|---|---|---|
-| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --permission-mode danger-full-access {prompt}` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
+| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --permission-mode danger-full-access {prompt}` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
 | 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
 | 3 | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`（也读 `~/.pi/agent/skills`） | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`） | `pi` 里配好 provider 和默认模型 |
 | 4 | `codex` | Codex | `codex exec --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
@@ -70,7 +70,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 各自的说明：
 
-- **dsh**：`headless` 档案做完一个任务就退出，最终回答写标准输出，推理过程和诊断写标准错误（日志里都能看到）。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
+- **dsh**：`headless` 档案做完一个任务就退出，最终回答写标准输出，推理过程和诊断写标准错误（日志里都能看到）。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。dsh 的 headless profile 默认还挂着 goal 工具和 goal-round-driver：模型一旦 `create_goal`，任务结束后会自动续一轮，进程退出时把被终止的续轮当成最后一轮（aborted/disposed），退出码变成 1。`board host` 每次 dsh 派发会写一份禁用 `goal-round-driver`、`tool-goal`、`command-goal` 的 profile 补丁，通过 `--patch {patch}` 传入（见 `crates/board-cli/src/dsh-headless.patch.yml`）。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
 - **Claude Code**：`-p` 只在结束时打印结果，跑的过程中日志是空的。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报「Not logged in」，从自己的终端或桌面端运行就好。
 - **pi**：pi 本身不做权限审批。`/board-skills …` 和 `/skill:board-skills …` 两种写法都会加载 skill。Windows 上 pi 用 Git Bash 执行命令，默认的启动环境就是 Git Bash；在 PowerShell 里启动时，`board host` 会从 `PATH` 里的 `git` 找到 Git 安装目录，把它旁边的 `bin` 放到 pi 的 `PATH` 前面，所以 Git 不在 `C:\Program Files\Git` 也能用；找不到 Git Bash 时在 `~/.pi/agent/settings.json` 里设置 `shellPath`。pi 不支持 cmd。
 - **Codex**：`codex exec` 做完一个任务就退出；`--dangerously-bypass-approvals-and-sandbox` 不审批、不开沙箱（`board-skills` 要 `git push`、访问服务端）。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。

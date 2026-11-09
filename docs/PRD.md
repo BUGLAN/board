@@ -304,11 +304,11 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   - 提示词作为独立参数传入，不拼进 shell 命令文本（cmd 除外：加双引号拼进命令行）。启动环境的退出码就是 agent 的退出码。
   - 登录 shell 和 WSL 用交互式（`-i`），这样写在 `~/.zshrc`、`~/.bashrc` 里的 `PATH` 也生效；agent 进程脱离终端（`setsid`）。shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：启动 agent 前用 `board host` 的值再设一遍。
   - WSL：目录用 `--cd` 传 Windows 目录，由 `wsl.exe` 换成 `/mnt/…`；环境变量经 `WSLENV` 传入，`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（WSL 里用 `board-skills` 自带的 Linux 版 `board`）。
-- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，在每个 agent 支持、本机有的每个启动环境里检查一次：执行 `command -v <命令>`（cmd、PowerShell 用 `where.exe`；WSL 里 `/mnt/` 下的 Windows 程序不算）看找不找得到，找到了再执行 `<命令> --version` 取第一行作为版本号；上报每个 agent 在每个环境里「找到 + 版本号」或「没找到」。内置模板「`PATH` 里没有时再看」的位置只在 `direct`、`login` 里用。找到了、但在它用的启动环境里（用户级 skill 目录，WSL 里看 WSL 用户目录下的；或每块白板目录里的 `.agents/skills`、`.claude/skills`、`.pi/skills`）看不到 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板（支持的启动环境不变）。`{prompt}` 换成提示词。接入其他 agent 的方法见 `docs/agents.md`。
+- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，在每个 agent 支持、本机有的每个启动环境里检查一次：执行 `command -v <命令>`（cmd、PowerShell 用 `where.exe`；WSL 里 `/mnt/` 下的 Windows 程序不算）看找不找得到，找到了再执行 `<命令> --version` 取第一行作为版本号；上报每个 agent 在每个环境里「找到 + 版本号」或「没找到」。内置模板「`PATH` 里没有时再看」的位置只在 `direct`、`login` 里用。找到了、但在它用的启动环境里（用户级 skill 目录，WSL 里看 WSL 用户目录下的；或每块白板目录里的 `.agents/skills`、`.claude/skills`、`.pi/skills`）看不到 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板（支持的启动环境不变）。`{prompt}` 换成提示词；`{patch}` 换成 board host 为这次派发写的 profile 补丁路径（目前只有 dsh 模板用）。接入其他 agent 的方法见 `docs/agents.md`。
 
   | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） |
   |---|---|---|---|---|---|
-  | `dsh` | DeepSeek Harness | `dsh --profile headless --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
+  | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
   | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
   | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`；不在 WSL 里时把 `PATH` 里 git 旁边的 Git Bash 放到 pi 的 `PATH` 前面） |
   | `codex` | Codex | `codex exec --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
@@ -349,7 +349,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 1. 生成 agent 名字（§3.2），check 这个名字，再以它领取卡片。领取失败（卡片已被领走、已不在可领取状态）时这次派发结束，结果「没领到」，不启动 agent。
 2. 领到后，`board host` 以这个名字发心跳（每 10 秒），直到派发结束。
-3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 pi（Git Bash）以 pi/mbp-3 领取（手动）」）：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
+3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 pi（Git Bash）以 pi/mbp-3 领取（手动）」）：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`，后面再带一句 board host 身份提示（`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`，卡片已由它领取，不要 check、claim、心跳，不要创建 goal）；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
 4. agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行；服务端每个派发保留最后 500 行。
 
 **结束**（「交审状态」「需要人处理的状态」按 `board-skills` 认角色的规则识别：规则、连线、状态名称里的关键词）：

@@ -1,0 +1,12 @@
+# board host 的 dsh 一次性派发补丁。
+#
+# dsh 的 headless profile 仍然挂着 goal 工具和 goal-round-driver：模型一旦调用
+# create_goal，任务结束后 goal-round-driver 会自动注入下一轮；headless 在进程退出时
+# 把这一轮终止成 aborted/disposed，汇总最后一轮时就以退出码 1 结束，哪怕任务已经完成。
+# board host 的派发永远是一次性任务，不需要 goal，所以这里关掉这三个 goal 行。
+- id: goal-round-driver
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: command-goal
+  disabled: true

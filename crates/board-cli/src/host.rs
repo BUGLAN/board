@@ -15,7 +15,7 @@
 //!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。
 //! - 有空位、没有暂停时，按创建先后开始排队中的派发：服务端生成名字 `<agent 标识>/<机器名>-<序号>`、check、领取，
 //!   host 在这块白板对应的目录里、在派发记录写的启动环境里启动 agent（`{prompt}` 换成 `/board-skills 开始执行 …`
-//!   那一行，作为一个参数传入，不拼进 shell 命令文本），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
+//!   那一行，`{patch}` 换成这次派发的 profile 补丁路径；都作为一个参数传入，不拼进 shell 命令文本），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
 //!   指向这次派发自己的配置文件 `~/.board/host/run/<机器名>/<派发 ID>.toml`（地址和令牌，0600，派发结束时删除）。
 //!   有的 agent 不把名字像密钥的环境变量传给它执行的命令（dsh 去掉名字里带 KEY、PASSWORD、SECRET、TOKEN 的），
 //!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
@@ -49,7 +49,8 @@ use std::time::{Duration, Instant};
 struct Builtin {
     id: &'static str,
     name: &'static str,
-    /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词，作为一个参数传入
+    /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
+    /// 这次派发的 profile 补丁路径，都作为一个参数传入
     cmd: &'static [&'static str],
     /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）
     also: &'static [&'static str],
@@ -68,7 +69,7 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "dsh",
         name: "DeepSeek Harness",
-        cmd: &["dsh", "--profile", "headless", "--permission-mode", "danger-full-access", "{prompt}"],
+        cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--permission-mode", "danger-full-access", "{prompt}"],
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
             "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
@@ -107,6 +108,11 @@ const BUILTIN: [Builtin; 4] = [
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
     },
 ];
+
+/// dsh 一次性派发时写给它的 profile 补丁：headless profile 默认仍挂着 goal 工具和
+/// goal-round-driver，任务完成后会自动续轮，进程退出时把被终止的续轮当成最后一轮
+/// （aborted/disposed），退出码变成 1。派发是一次性任务，关掉 goal 工具和续轮。
+const DSH_HEADLESS_PATCH: &str = include_str!("dsh-headless.patch.yml");
 
 /// agent 用的 skill
 const SKILL: &str = "board-skills";
@@ -269,6 +275,14 @@ fn host_dir() -> Result<PathBuf> {
     let d = config::board_dir()?.join("host");
     std::fs::create_dir_all(d.join("logs")).map_err(|e| BoardError::usage(format!("无法创建 {}：{e}", d.display())))?;
     Ok(d)
+}
+
+/// 写 dsh 一次性派发的 profile 补丁（内容固定，每次派发覆盖写）
+fn write_dsh_patch(path: &Path) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(path, DSH_HEADLESS_PATCH)
 }
 
 /// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）
@@ -952,13 +966,23 @@ impl Host<'_> {
         }
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
-        let prompt = format!("/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务", d.card);
+        let prompt = format!(
+            "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal）",
+            d.card, self.name
+        );
+        // dsh 的一次性派发要带一份禁用 goal 的 profile 补丁，见 DSH_HEADLESS_PATCH
+        let patch = self.run.join("dsh-headless.patch.yml");
+        let uses_patch = spec.cmd.iter().any(|a| a.contains("{patch}"));
+        if uses_patch {
+            write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
+        }
         let log = self.logs.join(format!("{}.log", d.id));
         let out = std::fs::File::create(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let err = out.try_clone().map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
         write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| format!("无法写 {}：{e}", conf.display()))?;
-        let args: Vec<String> = spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt)).collect();
+        let patch_arg = patch.display().to_string();
+        let args: Vec<String> = spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt).replace("{patch}", &patch_arg)).collect();
         let mut c = env.command(&prog, &args, Some(&dir), true);
         c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
@@ -1126,6 +1150,12 @@ mod tests {
             assert_eq!(b.cmd.iter().filter(|a| a.contains("{prompt}")).count(), 1, "{} 的模板里要有一个 {{prompt}}", b.id);
             assert!(!b.win.contains(&"direct"), "内置模板在 Windows 上都经过 shell 启动");
         }
+        // dsh 的一次性派发要带禁用 goal 的 profile 补丁；其他 agent 不带
+        let dsh = BUILTIN.iter().find(|b| b.id == "dsh").unwrap();
+        assert_eq!(dsh.cmd.iter().filter(|a| a.contains("{patch}")).count(), 1, "dsh 的模板里要有一个 {{patch}}");
+        assert!(DSH_HEADLESS_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
+        assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
+        assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
         let conf = vec![
             AgentConf { id: "claude".into(), name: None, cmd: vec!["/nope/claude".into(), "{prompt}".into()] },
             AgentConf { id: "mycli".into(), name: Some("My CLI".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
