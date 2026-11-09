@@ -2,6 +2,13 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.3 · 2026-11-09
+
+### 新功能
+
+- **web**：机器页的 agent 标记换成各自的图标（53af45b）
+- **cli**：board host 内置 dsh、pi，dsh 设为默认 agent；新增接入 agent 指南（d58e6a4）
+
 ## v0.1.2 · 2026-11-09
 
 ### 新功能
