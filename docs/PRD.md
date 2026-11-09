@@ -237,6 +237,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 | `[agents.<标识>]` | `board host` 的 agent 命令模板 `cmd`（§9.1） |
 
 - 配置文件所在目录权限 0700，文件权限 0600。以后固定的配置也写在这个文件里；agent 名字（`BOARD_AS`）和白板（`BOARD`）不写进这个文件。
+- 环境变量 `BOARD_CONFIG` 指定另一个配置文件代替 `~/.board/config.toml`（`board host` 启动 agent 时用它传连接，§9.1）。
 - 读取顺序：环境变量 `BOARD_URL` / `BOARD_TOKEN` 优先，配置文件其次。两处都没有时报 `NOT_LOGGED_IN`，提示运行 `board login`。
 - 令牌无效或已吊销时被拒绝（`INVALID_TOKEN`）；连不上服务端时被拒绝（`UNREACHABLE`）。
 
@@ -288,7 +289,13 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 - 机器名：小写字母、数字、`.`、`-`，以字母或数字开头，最长 24 个字符；不填时取本机主机名转成小写、非法字符换成 `-`。同名机器正在线时启动失败（`HOST_NAME_TAKEN`）。同一台机器上 `board host` 异常退出后重启，接回原来的名字。
 - 白板与目录：`--dir` 把一块白板对应到本机的一个仓库目录，agent 在这个目录里启动。没有对应目录的白板，这台机器不接它的卡片。目录不存在时启动失败（`USAGE`，写明是哪个目录）。
-- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，逐个检查命令在不在 `PATH` 里、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。内置模板只有 `claude`（Claude Code）：`claude -p {prompt} --dangerously-skip-permissions`。配置文件里同标识的模板覆盖内置模板。`{prompt}` 换成提示词，作为一个参数传入，不经过 shell。
+- 本机 agent：启动时按配置文件里的 `[agents.*]` 加上内置模板，逐个检查命令在不在 `PATH` 里（内置模板还看下表的常见安装位置）、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。找到了、但在它读 skill 的目录里没有 `board-skills` 时，启动时提醒一行。配置文件里同标识的模板覆盖内置模板。`{prompt}` 换成提示词，作为一个参数传入，不经过 shell。接入其他 agent 的方法见 `docs/agents.md`。
+
+  | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 |
+  |---|---|---|---|---|
+  | `dsh` | DeepSeek Harness | `dsh --profile headless --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` |
+  | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` |
+  | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` |
 - 参数也可以写在 `~/.board/config.toml` 的 `[host]`（`name`、`dirs = { "<项目>/<白板>" = "<路径>" }`）和 `[agents.<标识>]`（`cmd = [...]`）里，命令行参数优先。
 - 启动后上报机器名、操作系统、board 版本、本机 agent、白板与目录，每 10 秒一次机器心跳，连续 5 次没收到算离线。`board host` 用令牌订阅实时推送，收到派发、设置变化、停止请求后立即处理。
 - `Ctrl+C` 退出：先按「人停止」结束本机由它启动的全部 agent，再让机器离线。
@@ -299,7 +306,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 |---|---|---|
 | 同时跑几个 | 1 | 1–8。正在跑的派发达到上限后，新的派发在服务端排队 |
 | 暂停接单 | 关 | 打开后不启动新的派发（手动派发照样排队），已经在跑的不受影响 |
-| 默认 agent | 本机 agent 里第一个找到的 | 定时领取用它；手动派发时预先选中它 |
+| 默认 agent | 本机 agent 里第一个找到的，顺序是 dsh、claude、pi，然后是配置文件里新加的 | 定时领取用它；手动派发时预先选中它 |
 | 定时领取 | 关，没有时间点 | 每天的若干个时间点（`HH:MM`，机器本地时区），开关 |
 
 **派发**：一次「在某台机器上用某种 agent 做某张卡」，来源是手动或定时。状态：排队 → 在跑 → 结束；结束的结果是已交审、做不下去、异常退出、已停止、已取消、机器掉线、没领到之一。派发、取消、开始、结束都在卡片动态里追加一条，写明机器、agent、来源和结果。派发记录一直保留。
@@ -322,7 +329,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 1. 生成 agent 名字（§3.2），check 这个名字，再以它领取卡片。领取失败（卡片已被领走、已不在可领取状态）时这次派发结束，结果「没领到」，不启动 agent。
 2. 领到后，`board host` 以这个名字发心跳（每 10 秒），直到派发结束。
-3. 在这块白板对应的目录里启动 agent：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
+3. 在这块白板对应的目录里启动 agent：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
 4. agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行；服务端每个派发保留最后 500 行。
 
 **结束**（「交审状态」「需要人处理的状态」按 `board-skills` 认角色的规则识别：规则、连线、状态名称里的关键词）：

@@ -4,6 +4,10 @@
 # 平台：darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64（Git Bash 等）。
 # bin/ 由 node scripts/build-skill-bin.mjs 生成，发版附件 board-skills.zip 里已经带好。
 set -u
+# board host 启动的会话：用 host 自己的 board（BOARD_EXE），版本和 host 一致
+if [ -n "${BOARD_EXE:-}" ] && [ -f "$BOARD_EXE" ] && [ -x "$BOARD_EXE" ]; then
+    exec "$BOARD_EXE" "$@"
+fi
 here=$(cd "$(dirname "$0")" && pwd)
 case "$(uname -s)" in
     Darwin) os=darwin ;;

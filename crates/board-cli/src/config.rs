@@ -4,6 +4,8 @@
 //! - `[host]`（机器名、白板与目录）和 `[agents.<标识>]`（agent 命令模板），给 `board host` 用；
 //!   桌面端「设置 → 本机」也写这两节。agent 名字（`BOARD_AS`）和白板（`BOARD`）不写进这个文件。
 //! - 读取顺序：环境变量 `BOARD_URL` / `BOARD_TOKEN` 优先，配置文件其次（两项分别看）。
+//! - 环境变量 `BOARD_CONFIG` 指定另一个配置文件代替 `~/.board/config.toml`：board host 启动 agent 时用它传连接——
+//!   有的 agent（例如 dsh）不把名字像密钥的环境变量（带 TOKEN、KEY 等）传给它执行的命令，`BOARD_TOKEN` 到不了 `board`。
 //! - 目录权限 0700，文件权限 0600；改写时保留其他配置项和注释。
 
 use board_core::{BoardError, Result};
@@ -34,11 +36,14 @@ impl Source {
 }
 
 /// 配置文件的位置（给人看的写法）
-pub fn shown() -> &'static str {
+pub fn shown() -> String {
+    if let Some(p) = env("BOARD_CONFIG") {
+        return p;
+    }
     if cfg!(windows) {
-        r"%USERPROFILE%\.board\config.toml"
+        r"%USERPROFILE%\.board\config.toml".into()
     } else {
-        "~/.board/config.toml"
+        "~/.board/config.toml".into()
     }
 }
 
@@ -48,10 +53,17 @@ fn home() -> Option<PathBuf> {
     keys.iter().find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
 }
 
+/// `~/.board`：配置文件、board host 的日志都放在这里
+pub fn board_dir() -> Result<PathBuf> {
+    home().map(|h| h.join(".board")).ok_or_else(|| BoardError::usage("找不到用户目录（HOME / USERPROFILE），没法读写配置文件"))
+}
+
+/// 配置文件：`BOARD_CONFIG`，否则 `~/.board/config.toml`
 pub fn path() -> Result<PathBuf> {
-    home()
-        .map(|h| h.join(".board").join("config.toml"))
-        .ok_or_else(|| BoardError::usage("找不到用户目录（HOME / USERPROFILE），没法读写配置文件"))
+    if let Some(p) = env("BOARD_CONFIG") {
+        return Ok(PathBuf::from(p));
+    }
+    Ok(board_dir()?.join("config.toml"))
 }
 
 /// 读进来的配置文件；文件不存在时是空的

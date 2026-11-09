@@ -683,7 +683,7 @@ mod tests {
         for key in keys {
             assert_eq!(check(&report, key).status, Status::Ok, "{key}");
         }
-        assert!(check(&report, "board_url").detail.contains(config::shown()));
+        assert!(check(&report, "board_url").detail.contains(&config::shown()));
         assert_eq!(check(&report, "board_token").source, Some(Source::File));
         let v = report.to_json();
         assert_eq!(v["ok"], true);

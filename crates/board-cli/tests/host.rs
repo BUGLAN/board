@@ -14,10 +14,13 @@ const FAKE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "9.9.9 (fake)"; exit 0; fi
 echo "prompt: $1"
 echo "as: $BOARD_AS host: $BOARD_HOST board: $BOARD"
+[ -f "$BOARD_CONFIG" ] && echo "config: ok"
+[ -x "$BOARD_EXE" ] && echo "exe: ok"
 id=$(echo "$1" | sed 's/.*#\([0-9]*\)任务.*/\1/')
 case "$(cat "$FAKE_DIR/mode")" in
   review)
-    "$BOARD_BIN" beat "$id" --final >/dev/null && "$BOARD_BIN" move "$id" review >/dev/null
+    # 像 dsh 那样拿不到名字像密钥的环境变量：令牌只能从 BOARD_CONFIG 指向的文件里读
+    env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
     echo "交审了"
     exit 0 ;;
   crash)
@@ -52,7 +55,8 @@ impl Rig {
         std::fs::write(
             conf.join("config.toml"),
             format!(
-                "[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
+                // 机器上真装了 dsh、pi 也不用它们：dsh 换成找不到的命令（默认 agent 就是 claude），pi 同样
+                "[agents.dsh]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
                 fake.display()
             ),
         )
@@ -176,6 +180,7 @@ fn host_runs_dispatches_end_to_end() {
     let agents = h["agents"].as_array().unwrap();
     assert!(agents.iter().any(|a| a["id"] == "claude" && a["found"] == true && a["version"] == "9.9.9 (fake)"), "{agents:?}");
     assert!(agents.iter().any(|a| a["id"] == "pi" && a["found"] == false), "PATH 里没有的 agent 显示为没找到");
+    assert_eq!(h["agent"], "claude", "dsh 没找到时，默认 agent 是下一个找到的");
 
     // 同名的第二个 host：HOST_NAME_TAKEN
     let mut second = rig.host("mbp");
@@ -202,6 +207,10 @@ fn host_runs_dispatches_end_to_end() {
     assert!(local.contains("prompt: /board-skills 开始执行 default项目之中的main白板中的#1任务"), "{local}");
     assert!(local.contains("as: claude/mbp-1 host: mbp board: default/main"), "{local}");
     assert!(rig.dispatch_log(d1).iter().any(|l| l == "交审了"));
+    assert!(local.contains("config: ok"), "BOARD_CONFIG 指向这次派发的配置文件：{local}");
+    assert!(local.contains("exe: ok"), "BOARD_EXE 是 board 自己的路径：{local}");
+    let run = rig.s.home.join(".board").join("host").join("run").join("mbp");
+    assert!(!run.join(format!("{d1}.toml")).exists(), "派发结束后删掉它的配置文件");
 
     // 崩溃：移到需人工校验，评论里有退出码和日志最后几行
     rig.mode("crash");

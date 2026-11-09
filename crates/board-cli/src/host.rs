@@ -5,13 +5,19 @@
 //! ```
 //!
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
-//! - 启动时找本机 agent：配置文件里的 `[agents.*]` 加上内置模板，逐个检查命令在不在 PATH 里、取版本号
-//!   （`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。
+//! - 启动时找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi），逐个检查命令在不在
+//!   PATH 里（内置模板还会看几个常见的安装位置）、取版本号（`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。
+//!   内置模板的顺序就是默认 agent 的顺序：本机找到的第一个是默认。找到了、但看不到 `board-skills` 的 agent 启动时提醒一行。
+//!   怎么接入新的 agent 见 docs/agents.md。
 //! - 每 10 秒向服务端上报一次（机器心跳），同时替正在跑的派发的名字发 agent 级心跳；订阅实时推送，
 //!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。
 //! - 有空位、没有暂停时，按创建先后开始排队中的派发：服务端生成名字 `<agent 标识>/<机器名>-<序号>`、check、领取，
 //!   host 在这块白板对应的目录里启动 agent（`{prompt}` 换成 `/board-skills 开始执行 …` 那一行，作为一个参数传入，
-//!   不经过 shell），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`。
+//!   不经过 shell），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
+//!   指向这次派发自己的配置文件 `~/.board/host/run/<机器名>/<派发 ID>.toml`（地址和令牌，0600，派发结束时删除）。
+//!   有的 agent 不把名字像密钥的环境变量传给它执行的命令（dsh 去掉名字里带 KEY、PASSWORD、SECRET、TOKEN 的），
+//!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
+//!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行。
 //! - agent 退出后上报退出码和日志最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 / 已停止）。
@@ -35,9 +41,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// 内置 agent 模板：(标识, 名称, 命令模板)。配置文件里同标识的模板覆盖它
-const BUILTIN: [(&str, &str, &[&str]); 1] =
-    [("claude", "Claude Code", &["claude", "-p", "{prompt}", "--dangerously-skip-permissions"])];
+/// 内置的 agent 模板（接入方法见 docs/agents.md）。配置文件里同标识的 `[agents.<标识>]` 覆盖它
+struct Builtin {
+    id: &'static str,
+    name: &'static str,
+    /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词，作为一个参数传入
+    cmd: &'static [&'static str],
+    /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）
+    also: &'static [&'static str],
+    /// 这个 agent 读用户级 skill 的目录：启动时看 `board-skills` 装没装
+    skills: &'static [&'static str],
+}
+
+/// 顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
+const BUILTIN: [Builtin; 3] = [
+    Builtin {
+        id: "dsh",
+        name: "DeepSeek Harness",
+        cmd: &["dsh", "--profile", "headless", "--permission-mode", "danger-full-access", "{prompt}"],
+        // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
+        also: &[
+            "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
+            "~/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
+        ],
+        skills: &["~/.agents/skills"],
+    },
+    Builtin {
+        id: "claude",
+        name: "Claude Code",
+        cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+        also: &["~/.local/bin/claude", "~/.claude/local/claude"],
+        skills: &["~/.claude/skills"],
+    },
+    Builtin { id: "pi", name: "pi", cmd: &["pi", "-p", "{prompt}"], also: &[], skills: &["~/.agents/skills", "~/.pi/agent/skills"] },
+];
+
+/// agent 用的 skill
+const SKILL: &str = "board-skills";
 
 /// 主循环每一轮的间隔
 const TICK: Duration = Duration::from_millis(200);
@@ -75,6 +115,8 @@ struct Spec {
     /// 找到的命令；没找到时为空
     exe: Option<PathBuf>,
     version: String,
+    /// 读用户级 skill 的目录（内置模板才有）
+    skills: Vec<String>,
 }
 
 impl Spec {
@@ -83,32 +125,47 @@ impl Spec {
     }
 }
 
+impl Spec {
+    /// 找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`（只看内置模板的用户级目录）
+    fn misses_skill(&self) -> bool {
+        self.exe.is_some() && !self.skills.is_empty() && !self.skills.iter().any(|d| expand(d).join(SKILL).join("SKILL.md").is_file())
+    }
+}
+
+/// 一个模板：(标识, 名称, 命令, 命令不在 PATH 里时再看的位置, 读 skill 的目录)
+type Template = (String, String, Vec<String>, Vec<String>, Vec<String>);
+
 /// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面
 fn agent_specs(conf: &[AgentConf]) -> Result<Vec<Spec>> {
-    let mut out: Vec<(String, String, Vec<String>)> =
-        BUILTIN.iter().map(|(id, name, cmd)| (id.to_string(), name.to_string(), cmd.iter().map(|s| s.to_string()).collect())).collect();
+    let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut out: Vec<Template> =
+        BUILTIN.iter().map(|b| (b.id.to_string(), b.name.to_string(), strs(b.cmd), strs(b.also), strs(b.skills))).collect();
     for a in conf {
         check_agent_id(&a.id).map_err(BoardError::usage)?;
         let name = a.name.clone().unwrap_or_else(|| a.id.clone());
         match out.iter_mut().find(|x| x.0 == a.id) {
             Some(x) => {
+                // 换了命令：内置的备用位置不再适用
+                if x.2.first() != a.cmd.first() {
+                    x.3.clear();
+                }
                 x.2 = a.cmd.clone();
                 if let Some(n) = &a.name {
                     x.1 = n.clone();
                 }
             }
-            None => out.push((a.id.clone(), name, a.cmd.clone())),
+            None => out.push((a.id.clone(), name, a.cmd.clone(), vec![], vec![])),
         }
     }
     // 各个 agent 的 --version 一起跑：一个慢的不拖住启动
     Ok(std::thread::scope(|s| {
         let jobs: Vec<_> = out
             .into_iter()
-            .map(|(id, name, cmd)| {
+            .map(|(id, name, cmd, also, skills)| {
                 s.spawn(move || {
-                    let exe = cmd.first().and_then(|c| which(c));
+                    let exe = cmd.first().and_then(|c| which(c)).or_else(|| also.iter().map(|p| expand(p)).find(|p| is_exe(p)));
                     let version = exe.as_deref().map(version_of).unwrap_or_default();
-                    Spec { id, name, cmd, exe, version }
+                    Spec { id, name, cmd, exe, version, skills }
                 })
             })
             .collect();
@@ -202,9 +259,28 @@ fn expand(p: &str) -> PathBuf {
 
 /// board host 自己的目录：`~/.board/host`
 fn host_dir() -> Result<PathBuf> {
-    let d = config::path()?.parent().map(|p| p.join("host")).ok_or_else(|| BoardError::usage("找不到 ~/.board"))?;
+    let d = config::board_dir()?.join("host");
     std::fs::create_dir_all(d.join("logs")).map_err(|e| BoardError::usage(format!("无法创建 {}：{e}", d.display())))?;
     Ok(d)
+}
+
+/// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）
+fn write_run_config(path: &Path, url: &str, token: &str) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut doc = toml_edit::DocumentMut::new();
+    doc["url"] = toml_edit::value(url);
+    doc["token"] = toml_edit::value(token);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    use std::io::Write;
+    o.open(path)?.write_all(doc.to_string().as_bytes())
 }
 
 /* ------------------------------ 进程 ------------------------------ */
@@ -308,6 +384,8 @@ struct Run {
     d: Dispatch,
     child: Child,
     log: PathBuf,
+    /// 这次派发的配置文件（BOARD_CONFIG），结束时删除
+    conf: PathBuf,
     /// 日志已经上传到的位置（字节）
     sent: u64,
     /// SIGTERM 的时间
@@ -378,6 +456,10 @@ struct Host<'a> {
     dirs: Vec<(String, PathBuf)>,
     pidfile: PathBuf,
     logs: PathBuf,
+    /// board 自己的路径（BOARD_EXE）
+    exe: PathBuf,
+    /// 每次派发的配置文件放在这里：`~/.board/host/run/<机器名>`
+    run: PathBuf,
     runs: Vec<Run>,
     ended: Vec<Ended>,
     work: Option<HostWork>,
@@ -447,7 +529,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         (!alive).then_some(inst)
     });
     let instance = format!("{:x}{:x}", now_ms(), std::process::id() as u64 * 2654435761 % 0xffff_ffff);
+    let run = hd.join("run").join(&name);
+    let exe = std::env::current_exe().map_err(|e| BoardError::usage(format!("找不到 board 自己的路径：{e}")))?;
     let mut h = Host {
+        run,
+        exe,
         p,
         be,
         name,
@@ -466,6 +552,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         last_err: String::new(),
     };
     on_signals();
+    // 上一次留下的派发配置文件（异常退出时没来得及删）
+    let _ = std::fs::remove_dir_all(&h.run);
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出
     let w = h.beat(false)?;
     h.set_work(w);
@@ -529,6 +617,10 @@ impl Host<'_> {
                 None => p.red("没找到"),
             };
             s += &format!("  {head}{} {}  {state}\n", p.cyan(&a.id), a.name);
+        }
+        for a in self.agents.iter().filter(|a| a.misses_skill()) {
+            let dirs: Vec<String> = a.skills.iter().map(|d| format!("{d}/{SKILL}")).collect();
+            s += &format!("  {} {} 看不到 {SKILL}：派给它的卡片会做不成，先装到 {}（见 docs/agents.md）\n", p.yellow("!"), a.id, dirs.join(" 或 "));
         }
         if self.dirs.is_empty() {
             s += &format!("  {}{}\n", p.dim("白板    "), p.yellow("（没有）：用 --dir <项目>/<白板>=<路径> 加上，否则接不到卡片"));
@@ -660,6 +752,7 @@ impl Host<'_> {
                 continue;
             };
             let r = self.runs.remove(i);
+            let _ = std::fs::remove_file(&r.conf);
             let code = exit_code(status);
             self.flush_log(&r, true);
             let tail = tail_lines(&r.log, TAIL);
@@ -829,6 +922,8 @@ impl Host<'_> {
         let log = self.logs.join(format!("{}.log", d.id));
         let out = std::fs::File::create(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let err = out.try_clone().map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
+        let conf = self.run.join(format!("{}.toml", d.id));
+        write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| format!("无法写 {}：{e}", conf.display()))?;
         let mut c = Command::new(&exe);
         c.args(spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt)))
             .current_dir(&dir)
@@ -837,14 +932,20 @@ impl Host<'_> {
             .env("BOARD_AS", &name)
             .env("BOARD_HOST", &self.name)
             .env("BOARD", &d.board)
+            .env("BOARD_CONFIG", &conf)
+            // skill 自带的 scripts/board 看到它就用 host 自己的 board：版本和 host 一致（skill 里打包的 board 可能更旧）
+            .env("BOARD_EXE", &self.exe)
             // 在 Claude Code 的会话里运行 board host 时，别让 agent 以为自己是嵌套会话
             .env_remove("CLAUDECODE")
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
         own_group(&mut c);
-        let child = c.spawn().map_err(|e| format!("启动 {} 失败：{e}", exe.display()))?;
-        Ok(Run { d: d.clone(), child, log, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
+        let child = c.spawn().map_err(|e| {
+            let _ = std::fs::remove_file(&conf);
+            format!("启动 {} 失败：{e}", exe.display())
+        })?;
+        Ok(Run { d: d.clone(), child, log, conf, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
@@ -920,6 +1021,7 @@ impl Host<'_> {
             }
         }
         let runs = std::mem::take(&mut self.runs);
+        let _ = std::fs::remove_dir_all(&self.run);
         for mut r in runs {
             let code = r.child.wait().ok().and_then(exit_code);
             self.flush_log(&r, true);
@@ -953,6 +1055,27 @@ mod tests {
         assert_eq!(lines, vec!["thr"]);
         assert_eq!(at2, 11);
         assert_eq!(tail_lines(&f, 2), vec!["two", "thr"]);
+    }
+
+    #[test]
+    fn builtin_order_and_overrides() {
+        // 内置顺序就是默认顺序：dsh 第一
+        assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "pi"]);
+        for b in &BUILTIN {
+            check_agent_id(b.id).unwrap();
+            assert_eq!(b.cmd.iter().filter(|a| a.contains("{prompt}")).count(), 1, "{} 的模板里要有一个 {{prompt}}", b.id);
+        }
+        let conf = vec![
+            AgentConf { id: "claude".into(), name: None, cmd: vec!["/nope/claude".into(), "{prompt}".into()] },
+            AgentConf { id: "codex".into(), name: Some("Codex".into()), cmd: vec!["/nope/codex".into(), "{prompt}".into()] },
+        ];
+        let specs = agent_specs(&conf).unwrap();
+        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex"]);
+        let claude = specs.iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!(claude.name, "Claude Code");
+        assert!(claude.exe.is_none(), "换了命令就不再看内置的备用位置");
+        assert_eq!(specs[3].name, "Codex");
+        assert!(!specs[3].misses_skill(), "配置文件里的 agent 不检查 skill");
     }
 
     #[test]
