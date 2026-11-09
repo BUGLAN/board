@@ -369,18 +369,35 @@ fn tokens_are_for_cli_only() {
     let c = r.body["activity"].as_array().unwrap().iter().find(|x| x["id"] == mine).unwrap().clone();
     assert_eq!(c["text"], "人改过的");
     assert!(c["edited_at"].is_i64(), "{c:?}");
-    // 只有人能做的操作、实时推送、令牌管理：令牌不能用
+    // 只有人能做的操作、机器列表与设置、令牌管理：令牌不能用
     for (m, p, body) in [
         ("POST", "/api/projects", Some(json!({ "name": "x", "key": "x", "board": { "name": "m", "key": "main" } }))),
         ("DELETE", "/api/boards/default/main", None),
         ("POST", "/api/flow/default/main", Some(json!({ "name": "新状态" }))),
-        ("GET", "/api/stream", None),
+        ("GET", "/api/hosts", None),
+        ("PATCH", "/api/hosts/mbp", Some(json!({ "max": 2 }))),
+        ("DELETE", "/api/hosts/mbp", None),
+        ("GET", "/api/hosts/mbp/recent", None),
         ("GET", "/api/tokens", None),
         ("POST", "/api/tokens", Some(json!({ "name": "y" }))),
         ("GET", "/api/me", None),
     ] {
         let r = send(m, &format!("{}{p}", s.url), &a, body);
         assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"), "{m} {p}");
+    }
+    // 实时推送：board host 用令牌订阅，第一条就带上机器和派发的版本（hosts）
+    {
+        use std::io::BufRead;
+        let res = agent().get(format!("{}/api/stream", s.url)).header("authorization", &bearer).call().unwrap();
+        assert_eq!(res.status().as_u16(), 200);
+        let mut first = String::new();
+        let mut r = std::io::BufReader::new(res.into_body().into_reader());
+        while !first.starts_with("data:") {
+            first.clear();
+            r.read_line(&mut first).unwrap();
+        }
+        let v: Value = serde_json::from_str(first.trim_start_matches("data:").trim()).unwrap();
+        assert!(v["hosts"].is_i64(), "{first}");
     }
     // 吊销后：INVALID_TOKEN
     let r = send("DELETE", &format!("{}/api/tokens/{id}", s.url), &[("cookie", &cookie), UI], None);

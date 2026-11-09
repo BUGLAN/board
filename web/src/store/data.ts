@@ -161,6 +161,13 @@ async function load() {
   });
 }
 
+/** 只刷新机器和派发（机器页打开时每 10 秒一次：机器心跳不推送，靠它更新「最近心跳」） */
+export async function refreshHosts() {
+  const r = await api.hosts();
+  const ws = get().ws;
+  if (ws) set({ ws: { ...ws, hosts: r.hosts, dispatches: r.dispatches } });
+}
+
 /* ------------------------------ 标签：乐观更新 ------------------------------ */
 
 const pkey = (path: string, id: number) => `${path}#${id}`;

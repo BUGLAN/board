@@ -23,7 +23,7 @@ import { ColorRow, LabelChip, ProjectAvatar } from './bits';
 import { Icon, type IconName } from './Icon';
 
 /** 打开时先挂载再加 .on（入场过渡）；关闭时先去掉 .on 再卸载 */
-function usePresence(open: boolean, ms = 240) {
+export function usePresence(open: boolean, ms = 240) {
   const [mounted, setMounted] = useState(open);
   const [on, setOn] = useState(false);
   useEffect(() => {
@@ -137,6 +137,7 @@ export function Palette() {
       { id: 'tab-projects', group: '切换到', title: '项目总览（画布）', hint: accel('2'), icon: 'folder', run: () => setTab('projects') },
       { id: 'tab-inbox', group: '切换到', title: '未整理', hint: accel('3'), icon: 'inbox', run: () => setTab('inbox') },
       { id: 'tab-settings', group: '切换到', title: '设置', hint: accel('4'), icon: 'sun', run: () => setTab('settings') },
+      { id: 'tab-hosts', group: '切换到', title: '机器（board host）', hint: accel('5'), icon: 'host', run: () => setTab('hosts') },
       { id: 'side', group: '切换到', title: '收起 / 展开侧栏', hint: accel('B'), icon: 'monitor', run: () => setSide(!useUI.getState().side) },
       ...(canNewWindow
         ? [{ id: 'new-window', group: '切换到', title: '新建窗口', hint: accel('N', true), icon: 'monitor' as IconName, run: () => newWindow() }]

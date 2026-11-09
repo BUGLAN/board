@@ -10,8 +10,11 @@
 //! - 新建窗口（⌘⇧N / Ctrl+Shift+N）：每个窗口可以打开不同的白板。macOS 在「文件」菜单里；Windows 没有菜单栏，
 //!   由界面响应快捷键，命令面板里也有
 //! - 窗口先打开本地启动页，连得上服务端再跳到线上页面；窗口底色跟随网页端的主题，慢网、断网都不白屏，见 [`splash`]
+//! - 「设置 → 本机」打开「让这台电脑接任务」后，在后台用自带的 board 命令行运行 `board host`，关掉窗口也继续运行
+//!   （macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口），退出桌面端时结束，见 [`host`]
 
 mod env;
+mod host;
 mod login;
 mod splash;
 
@@ -74,6 +77,20 @@ fn apply_taskbar_icon(window: &WebviewWindow) {
         size,
     ) {
         let _ = window.set_icon(icon);
+    }
+}
+
+/// 显示已有的窗口；没有窗口（都关掉了，程序还在后台接任务）时新开一个
+pub(crate) fn show_window(app: &AppHandle) {
+    match app.webview_windows().values().next() {
+        Some(w) => {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        None => {
+            let _ = open_window(app);
+        }
     }
 }
 
@@ -223,7 +240,7 @@ pub fn run() {
             std::process::exit(1);
         }
     };
-    let builder = tauri::Builder::default().manage(Board(url));
+    let builder = tauri::Builder::default().manage(Board(url)).manage(host::HostProc::default());
     #[cfg(target_os = "windows")]
     let builder = builder.manage(custom_titlebar::Ready::default());
     builder
@@ -232,7 +249,16 @@ pub fn run() {
             let app = ctx.app_handle();
             splash::respond(app, &app.state::<Board>().0)
         })
-        .invoke_handler(tauri::generate_handler![desktop_login, new_window, window_ready, set_board_env, remember_theme])
+        .invoke_handler(tauri::generate_handler![
+            desktop_login,
+            new_window,
+            window_ready,
+            set_board_env,
+            remember_theme,
+            host::host_status,
+            host::host_save,
+            host::host_enable
+        ])
         .setup(|app| {
             let handle = app.handle();
             // Windows 不设菜单栏：顶栏就是标题栏，编辑快捷键由 webview 自己处理
@@ -273,10 +299,26 @@ pub fn run() {
                 });
             }
             open_window(handle)?;
+            // 上次打开了「让这台电脑接任务」：接着在后台运行 board host
+            if host::enabled(handle) {
+                if let Err(e) = host::ensure_started(handle) {
+                    eprintln!("{e}");
+                }
+                host::tray(handle, true);
+            }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Board 桌面端启动失败");
+        .build(tauri::generate_context!())
+        .expect("Board 桌面端启动失败")
+        .run(|app, e| match e {
+            // 最后一个窗口关掉：在接任务时不退出，留在后台（Dock / 托盘图标重新打开窗口）
+            tauri::RunEvent::ExitRequested { code: None, api, .. } if host::enabled(app) => api.prevent_exit(),
+            // 退出桌面端：关闭 board host 的标准输入，它自己结束 agent、让机器离线后退出
+            tauri::RunEvent::Exit => host::stop(app, std::time::Duration::from_secs(2)),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { has_visible_windows: false, .. } => show_window(app),
+            _ => {}
+        });
 }
 
 #[cfg(all(test, target_os = "windows"))]

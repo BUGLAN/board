@@ -1,6 +1,6 @@
 /* ==========================================================================
    左侧操作台：活动栏 + 侧栏（PRD §10.1）
-   - 活动栏：白板 / 项目 / 未整理 / 设置。再次点击当前 Tab 收起或展开侧栏
+   - 活动栏：白板 / 项目 / 未整理 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
@@ -16,7 +16,8 @@ import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, 
 import { Avatar, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
 import { CardView } from './Card';
-import { BoardIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
+import { HostsSide } from './Hosts';
+import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
 import { SettingsNav } from './Settings';
 import { canvasHighlight } from './Canvas';
 import { Skeleton, SkeletonCard } from './Skeleton';
@@ -25,6 +26,7 @@ const TABS: { tab: Tab; label: string; tip: string; icon: ReactNode }[] = [
   { tab: 'board', label: '白板', tip: '白板', icon: <BoardIcon24 /> },
   { tab: 'projects', label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
   { tab: 'inbox', label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },
+  { tab: 'hosts', label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
 ];
 
 export function ActivityBar() {
@@ -113,6 +115,7 @@ export function SidePanel() {
         <ProjectsSide />
         <BoardSide />
         <InboxSide />
+        <HostsSide />
         <section className="side-view" data-view="settings">
           <header className="side-head">
             <span className="side-title">设置</span>
@@ -173,7 +176,7 @@ function SideFilter({ value, onChange, placeholder }: { value: string; onChange:
 const OP: Record<string, string> = {
   create: '新建了', edit: '编辑了', move: '移动了', reorder: '调整了顺序', claim: '领取了', renew: '续期了',
   comment: '评论了', edit_comment: '改了评论', timeout: '超时释放了', release: '强制释放了', delete: '删除了', label: '改了标签',
-  beat: '心跳', lost: '心跳中断，释放了',
+  beat: '心跳', lost: '心跳中断，释放了', dispatch: '派发',
 };
 
 /** n 为 'loading'：数量还不知道，计数位置放骨架，标题不跳 */

@@ -36,8 +36,13 @@ export function flowOf(statuses: Status[] | undefined | null) {
     /** 可领取状态里的卡片总数 */
     ready: (counts: Record<string, number> | undefined) => list.filter(s => s.claim).reduce((n, s) => n + (counts?.[s.key] ?? 0), 0),
     /** 不带 ID 执行 board claim 时会被领走的卡片（PRD §8 规则 1） */
-    nextCard: (cols: Record<string, number[]> | null | undefined) => {
-      for (const s of list) if (s.claim && claimTarget(s.key) && cols?.[s.key]?.length) return cols[s.key][0];
+    /** 不带 ID 的 board claim 会领走的那张：有排队派发的卡片跳过（skip） */
+    nextCard: (cols: Record<string, number[]> | null | undefined, skip?: (id: number) => boolean) => {
+      for (const s of list) {
+        if (!s.claim || !claimTarget(s.key)) continue;
+        const id = cols?.[s.key]?.find(x => !skip?.(x));
+        if (id != null) return id;
+      }
       return undefined;
     },
     name: (k: string) => (k === INBOX ? INBOX_NAME : get(k)?.name ?? k),
@@ -94,6 +99,12 @@ export const ERRORS: [ErrorCode, string][] = [
   ['NAME_TAKEN', 'board check 的名字正被在线 agent 使用：加一个和本会话相关的后缀再 check'],
   ['NAME_OFFLINE', '名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>'],
   ['NOT_AUTHOR', '修改不是自己发的评论：只有人能在界面上修改自己发的评论'],
+  ['HOST_NAME_TAKEN', 'board host 的机器名正被另一个在线的 board host 使用'],
+  ['ALREADY_DISPATCHED', '卡片已经有排队或正在跑的派发'],
+  ['NO_SUCH_HOST', '机器不存在（含已移除的机器）'],
+  ['AGENT_NOT_ON_HOST', '机器上没有这种 agent，或标为没找到'],
+  ['BOARD_NOT_ON_HOST', '机器没有这块白板的目录'],
+  ['DISPATCHED', '卡片有排队中的派发：别的 agent 不能领取它'],
 ];
 
 /** 标识：小写字母、数字和 -，以字母或数字开头，最长 32 个字符 */

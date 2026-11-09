@@ -82,6 +82,82 @@ export interface Workspace {
   projects: ProjectInfo[];
   /** 在线的 agent（所有白板，按名字排序）；旧服务端没有这个字段 */
   agents?: AgentInfo[];
+  /** 机器（board host，按名字排序）；旧服务端没有这个字段 */
+  hosts?: HostInfo[];
+  /** 排队和正在跑的派发（按创建先后）；旧服务端没有这个字段 */
+  dispatches?: Dispatch[];
+}
+
+/* ---------------- 任务下发（board host） ---------------- */
+
+/** 本机 agent：board host 启动时按配置文件和内置模板找到的（没找到的也上报） */
+export interface HostAgent {
+  /** 标识：claude、dsh、pi … */
+  id: string;
+  /** 名称：Claude Code … */
+  name: string;
+  /** `<命令> --version` 的第一行 */
+  version: string;
+  found: boolean;
+}
+
+export interface HostDir {
+  /** 项目/白板 */
+  board: string;
+  path: string;
+}
+
+/** 一台机器（运行 board host 的进程） */
+export interface HostInfo {
+  id: number;
+  name: string;
+  os: string;
+  /** board 版本 */
+  version: string;
+  agents: HostAgent[];
+  dirs: HostDir[];
+  /** 同时跑几个（1–8） */
+  max: number;
+  paused: boolean;
+  /** 默认 agent（设置过且找到了就是它，否则第一个找到的） */
+  agent: string | null;
+  cronOn: boolean;
+  /** 定时领取的时间点 HH:MM（机器本地时区） */
+  cron: string[];
+  /** 正在进行一轮领取 */
+  round: boolean;
+  online: boolean;
+  firstAt: number;
+  beatAt: number;
+  offAt: number | null;
+}
+
+export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'canceled' | 'lost' | 'unclaimed';
+
+/** 一次派发：在某台机器上用某种 agent 做某张卡 */
+export interface Dispatch {
+  id: number;
+  board: string;
+  card: number;
+  title: string;
+  hostId: number;
+  host: string;
+  agent: string;
+  agentLabel: string;
+  /** 开始时生成的 agent 名字 <agent 标识>/<机器名>-<序号> */
+  name: string | null;
+  source: 'manual' | 'cron';
+  by: Actor;
+  state: 'queued' | 'running' | 'done';
+  result: DispatchResult | null;
+  createdAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  exitCode: number | null;
+  /** 有人请求停止（还在跑时）：谁 */
+  stopBy: string | null;
+  /** 持有者最近一次心跳 */
+  beatAt: number | null;
 }
 
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */
@@ -199,6 +275,12 @@ export type ErrorCode =
   | 'NAME_TAKEN'
   | 'NAME_OFFLINE'
   | 'NOT_AUTHOR'
+  | 'HOST_NAME_TAKEN'
+  | 'ALREADY_DISPATCHED'
+  | 'NO_SUCH_HOST'
+  | 'AGENT_NOT_ON_HOST'
+  | 'BOARD_NOT_ON_HOST'
+  | 'DISPATCHED'
   | 'INTERNAL'
   | 'NETWORK';
 

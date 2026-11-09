@@ -7,7 +7,7 @@ import type { SortSpec } from '../lib/sort';
 import type { ColumnKey } from '../lib/types';
 import { pref } from '../lib/util';
 
-export type Tab = 'board' | 'projects' | 'inbox' | 'settings';
+export type Tab = 'board' | 'projects' | 'inbox' | 'hosts' | 'settings';
 
 export interface Toast {
   id: number;
@@ -112,9 +112,13 @@ interface UIState {
   image: { src: string; alt: string } | null;
   /** 状态块的一次性排序（lib/sort.ts）：sortKey(白板路径, 状态) → 排序依据。不记住，刷新后回到优先级顺序 */
   sorts: Record<string, SortSpec>;
+  /** 打开的机器详情：机器名；'new' 是「添加机器」 */
+  host: string | null;
+  /** 卡片详情里的「派发」对话框：卡片编号 */
+  dispatchOf: number | null;
 }
 
-const TABS: Tab[] = ['board', 'projects', 'inbox', 'settings'];
+const TABS: Tab[] = ['board', 'projects', 'inbox', 'hosts', 'settings'];
 const initialTab = (): Tab => {
   const q = new URLSearchParams(location.search).get('tab') as Tab | null;
   if (q && TABS.includes(q)) return q;
@@ -146,6 +150,8 @@ export const useUI = create<UIState>(() => ({
   reject: null,
   image: null,
   sorts: {},
+  host: null,
+  dispatchOf: null,
 }));
 
 const set = useUI.setState;
@@ -215,6 +221,9 @@ export const openPicker = (req: PickerReq) => set({ picker: req });
 export const updatePicker = (selected: number[]) => set(s => (s.picker ? { picker: { ...s.picker, selected } } : {}));
 export const closePicker = () => set({ picker: null });
 
+export const openHost = (name: string | null) => set({ host: name });
+export const openDispatch = (card: number | null) => set({ dispatchOf: card });
+
 export const openCtx = (req: CtxReq) => set({ ctx: req });
 export const closeCtx = () => set({ ctx: null });
 
@@ -231,7 +240,7 @@ export const setSort = (key: string, spec: SortSpec | null) =>
 /** 有弹窗或浮层打开时，全局快捷键不生效 */
 export function overlayOpen() {
   const s = get();
-  return !!(s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image);
+  return !!(s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.host || s.dispatchOf != null);
 }
 
 /* ------------------------------ Toast ------------------------------ */
@@ -254,6 +263,11 @@ const ERROR_TITLES: Record<string, string> = {
   USAGE: '操作无效',
   NETWORK: '连接失败',
   NOT_LOGGED_IN: '需要重新登录',
+  ALREADY_DISPATCHED: '已经派发过了',
+  NO_SUCH_HOST: '机器不存在',
+  AGENT_NOT_ON_HOST: '机器上没有这种 agent',
+  BOARD_NOT_ON_HOST: '机器没有这块白板的目录',
+  NOT_IN_TODO: '卡片不在可领取状态',
 };
 export function toastError(err: unknown) {
   const e = err as ApiError;

@@ -31,7 +31,7 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 
 - 每做完一张都重新 `board ls`：人可能调了顺序，别的 agent 可能领走了卡片。
 - `board ls` 只用来挑下一张，挑中后马上 `board claim <ID>`，领到之后才读卡片、干活（见「处理一张卡片 → 先领卡，再干活」）。
-- `board claim <ID>` 返回 `NOT_IN_TODO`、`NOT_HOLDER`（被别人抢先领走）时跳过这张，接着列下一张。
+- `board claim <ID>` 返回 `NOT_IN_TODO`、`NOT_HOLDER`（被别人抢先领走）、`DISPATCHED`（已经派给一台机器）时跳过这张，接着列下一张。
 
 `开始执行 X项目之中的Y白板中的#Z任务` 是卡片详情「复制为提示词」复制出的完整写法：X 是项目标识、Y 是白板标识、Z 是卡片编号，对应的引用是 `X/Y#Z`。
 
@@ -79,9 +79,23 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 2. 每张卡一次 `board new "<标题>" --body "<背景、范围，以及 - [ ] 验收标准>"`，按先后顺序新建，卡片进入首个可领取状态。只 `board new`，不修改已有的卡片（不 edit、move、label 已有的卡片）。
 3. 最后汇报新建的卡片（ID 和标题）。
 
+## 由 board host 启动的会话
+
+Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以生成的名字（`<agent 标识>/<机器名>-<序号>`，例如 `claude/mbp-3`）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；心跳由 board host 替你发。
+
+**怎么认**：环境变量里有 `BOARD_HOST`（机器名），并且 `board show <ID> --json` 的 `holder` 是 `BOARD_AS`。这时：
+
+- **不 check 名字、不 claim、不启动也不停止心跳**：跳过下文「会话开始」第 1–3 步、「处理一张卡片」第 1 步里的 `board claim`（改用 `board show <ID> --json` 读卡片，同样先读动态、下载附件）、「会话结束」里的 `board heartbeat stop`。
+- 名字和白板已经在环境变量 `BOARD_AS`、`BOARD` 里，命令不用再带 `--as`、`--board`。
+- 其余步骤不变：worktree、干活、提交推送、交审（`board heartbeat final <ID>` 后马上沿连线移到交审状态），或者做不下去（评论、`board heartbeat final <ID>`、移到需要人处理的状态）。
+- 会话里没有人和你对话：要停下来问用户的情况（需要人确认、`NOT_LOGGED_IN` 之类），按「做不下去」处理，把问题写进评论，不要等回答。
+- 处理完这一张就结束：不要再领别的卡片。你退出后，卡片仍由你持有时 board host 会把它移到需要人处理的状态，记为异常退出。
+
+`BOARD_HOST` 有、但卡片不归 `BOARD_AS` 持有（被人强制释放、已经移走）时，不要动这张卡片，评论说明后直接结束。
+
 ## 会话开始
 
-每个会话开始时做一次（处理卡片、白板、一句话需求之前）：
+每个会话开始时做一次（处理卡片、白板、一句话需求之前）。由 board host 启动的会话只做第 0、4 步（见上一节）：
 
 0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），下文写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。
 1. **生成名字**：`<运行环境>/<模型>`，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`codex/gpt-5`。
@@ -271,7 +285,7 @@ wip 分支由接着做的 agent 在推进集成分支后删除，或者由人处
 
 ## 会话结束
 
-所有卡片都处理完（都已交审或交给人）后，停掉后台心跳，名字立刻离线：
+所有卡片都处理完（都已交审或交给人）后，停掉后台心跳，名字立刻离线（由 board host 启动的会话跳过这一步，心跳由 board host 停）：
 
 ```sh
 board heartbeat stop --as <名字>
@@ -341,3 +355,4 @@ board attach <ID> <文件>… [--comment "<说明>"]   # 上传附件（图片�
 | `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「设置 → Agent 接入」新建） |
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「设置 → Agent 接入」新建一个，再 `board login --token <令牌>` |
 | `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里） |
+| `DISPATCHED` | 卡片已经派发给一台机器、正在排队：跳过这张，不要领 |

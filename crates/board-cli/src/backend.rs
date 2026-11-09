@@ -104,6 +104,21 @@ impl Backend {
         self.0.bytes(&a.url)
     }
 
+    /// 连接服务端用的地址和令牌（board host 启动 agent 时放进环境变量）
+    pub fn remote(&self) -> &Remote {
+        &self.0
+    }
+
+    /// `board dispatch <ID> --host <机器名> [--agent <标识>]`
+    pub fn dispatch(&mut self, path: &str, card: i64, host: &str, agent: Option<&str>, who: Option<&str>) -> Result<Dispatch> {
+        self.0.post("/api/dispatches", json!({ "board": path, "card": card, "host": host, "agent": agent, "as": who }))
+    }
+
+    /// `board dispatch <ID> --cancel`：取消排队中的派发，或停止正在跑的派发
+    pub fn cancel_dispatch(&mut self, path: &str, card: i64, who: Option<&str>) -> Result<Dispatch> {
+        self.0.post("/api/dispatches/cancel", json!({ "board": path, "card": card, "as": who }))
+    }
+
     pub fn exec(&mut self, path: &str, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
         let mut body = cmd_json(&cmd);
         body["board"] = json!(path);
@@ -132,11 +147,15 @@ fn cmd_json(cmd: &Cmd) -> Value {
 
 /* ------------------------------ 服务端 ------------------------------ */
 
+#[derive(Clone)]
 pub struct Remote {
     url: String,
     token: String,
     agent: ureq::Agent,
 }
+
+/// 实时推送的一行读不到数据最多等多久：服务端每 15 秒发一次保活，超过这个时间算断开
+const STREAM_READ: Duration = Duration::from_secs(45);
 
 /// 服务端地址要以 http:// 或 https:// 开头
 pub fn is_http(url: &str) -> bool {
@@ -167,7 +186,41 @@ impl Remote {
         self.handle(req.call())
     }
 
-    fn post<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T> {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// 订阅实时推送 `GET /api/stream`：每收到一条 `data:` 调用一次 on_data。连接断开（或 45 秒没有任何数据）时返回
+    pub fn stream(&self, mut on_data: impl FnMut(&str)) -> Result<()> {
+        use std::io::BufRead;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_recv_response(Some(Duration::from_secs(30)))
+            .timeout_per_read(Some(STREAM_READ))
+            .http_status_as_error(false)
+            .user_agent(concat!("board-cli/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        let res = agent.get(format!("{}/api/stream", self.url)).header("authorization", format!("Bearer {}", self.token)).call();
+        let res = res.map_err(|e| BoardError::new(ErrorCode::Unreachable, format!("连不上 {}：{e}", self.url)))?;
+        if !res.status().is_success() {
+            return self.fail(res);
+        }
+        let reader = std::io::BufReader::new(res.into_body().into_reader());
+        for line in reader.lines() {
+            let line = line.map_err(|e| BoardError::new(ErrorCode::Unreachable, format!("实时推送断开：{e}")))?;
+            if let Some(data) = line.strip_prefix("data:") {
+                on_data(data.trim());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn post<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T> {
         let req = self.agent.post(format!("{}{path}", self.url)).header("authorization", format!("Bearer {}", self.token));
         self.handle(req.send_json(body))
     }

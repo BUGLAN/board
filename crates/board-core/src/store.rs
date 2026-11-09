@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('rev', 0), ('schema', 1);
+INSERT OR IGNORE INTO meta (key, value) VALUES ('rev', 0), ('schema', 1), ('hosts', 0);
 
 CREATE TABLE IF NOT EXISTS projects (
   key         TEXT PRIMARY KEY,
@@ -238,6 +238,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::files::SCHEMA)?;
         conn.execute_batch(crate::agents::SCHEMA)?;
+        conn.execute_batch(crate::hosts::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beat {
@@ -321,11 +322,15 @@ impl Store {
     /// 执行一组写操作：同一时刻只有一个写事务；出错则整体回滚
     pub fn write<T>(&mut self, now: i64, origin: Origin, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut w = W { tx: &tx, now, origin, changed: false };
+        let mut w = W { tx: &tx, now, origin, changed: false, hosts_changed: false, dispatch_ok: false };
         let out = f(&mut w)?;
-        let changed = w.changed;
+        let (changed, hosts) = (w.changed || w.hosts_changed, w.hosts_changed);
         if changed {
             tx.execute("UPDATE meta SET value = value + 1 WHERE key = 'rev'", [])?;
+        }
+        // 机器和派发有变化：board host 据此重新取自己的任务（任务下发需求 §十）
+        if hosts {
+            tx.execute("UPDATE meta SET value = value + 1 WHERE key = 'hosts'", [])?;
         }
         tx.commit()?;
         Ok(out)
@@ -343,14 +348,21 @@ impl Store {
         Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))?)
     }
 
-    /// 规则 7：扫描所有白板，释放心跳中断的领取；心跳中断超过 50 秒的名字标为离线（PRD §3）。
-    /// 返回释放的张数加上离线的名字个数
+    /// 机器和派发的版本：有变化时加一（实时推送里带上，board host 据此重新取自己的任务）
+    pub fn hosts_rev(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE((SELECT value FROM meta WHERE key = 'hosts'), 0)", [], |r| r.get(0))?)
+    }
+
+    /// 规则 7：扫描所有白板，释放心跳中断的领取；心跳中断超过 50 秒的名字标为离线（PRD §3）；
+    /// 心跳中断超过 50 秒的机器标为离线，名字已经离线的在跑派发结束（机器掉线，见 hosts.rs）。
+    /// 返回释放的张数加上离线的名字、机器个数和结束的派发个数
     pub fn sweep(&mut self, now: i64) -> Result<usize> {
         let gap = BEAT_MS * BEAT_MISSES;
         // 先用只读查询判断，避免没有到期的卡片和名字时也抢写锁
         let due: i64 = self.conn.query_row(
             &format!(
-                "SELECT (SELECT COUNT(*) FROM cards WHERE {DUE}) + (SELECT COUNT(*) FROM agents WHERE off_at IS NULL AND beat_at + ?2 <= ?1)"
+                "SELECT (SELECT COUNT(*) FROM cards WHERE {DUE}) + (SELECT COUNT(*) FROM agents WHERE off_at IS NULL AND beat_at + ?2 <= ?1) + {}",
+                crate::hosts::DUE_COUNT
             ),
             params![now, gap],
             |r| r.get(0),
@@ -365,6 +377,7 @@ impl Store {
                 n += w.sweep_board(b)?;
             }
             n += w.sweep_agents()?;
+            n += w.sweep_hosts()?;
             Ok(n)
         })
     }
@@ -469,7 +482,7 @@ impl<'a> R<'a> {
                 p.boards.push(b);
             }
         }
-        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)? })
+        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)?, hosts: self.hosts(now)?, dispatches: self.active_dispatches()? })
     }
 
     pub fn labels(&self, project: &str) -> Result<Vec<Label>> {
@@ -761,6 +774,10 @@ pub struct W<'a> {
     pub(crate) now: i64,
     pub(crate) origin: Origin,
     pub(crate) changed: bool,
+    /// 机器或派发有变化（另外把 meta.hosts 加一）
+    pub(crate) hosts_changed: bool,
+    /// 正在为派发领取：卡片的排队派发不挡住这次领取（见 hosts.rs）
+    pub(crate) dispatch_ok: bool,
 }
 
 /// 新节点在画布上的默认位置：项目在左列，白板在项目右侧依次往下排

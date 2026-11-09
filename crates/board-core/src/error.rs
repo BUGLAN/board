@@ -29,12 +29,24 @@ pub enum ErrorCode {
     NameOffline,
     /// 修改不是自己发的评论（只有人能改自己发的评论）
     NotAuthor,
+    /// 机器名正被在线的 board host 使用（任务下发）
+    HostNameTaken,
+    /// 卡片已经有排队或正在跑的派发
+    AlreadyDispatched,
+    /// 机器不存在（含已移除）
+    NoSuchHost,
+    /// 机器上没有这种 agent，或标为没找到
+    AgentNotOnHost,
+    /// 机器没有这块白板的目录
+    BoardNotOnHost,
+    /// 卡片有排队中的派发：别的 agent 不能领取
+    Dispatched,
     /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
     Internal,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 17] = [
+    pub const ALL: [ErrorCode; 23] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -52,6 +64,12 @@ impl ErrorCode {
         ErrorCode::NameTaken,
         ErrorCode::NameOffline,
         ErrorCode::NotAuthor,
+        ErrorCode::HostNameTaken,
+        ErrorCode::AlreadyDispatched,
+        ErrorCode::NoSuchHost,
+        ErrorCode::AgentNotOnHost,
+        ErrorCode::BoardNotOnHost,
+        ErrorCode::Dispatched,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -73,6 +91,12 @@ impl ErrorCode {
             ErrorCode::NameTaken => "NAME_TAKEN",
             ErrorCode::NameOffline => "NAME_OFFLINE",
             ErrorCode::NotAuthor => "NOT_AUTHOR",
+            ErrorCode::HostNameTaken => "HOST_NAME_TAKEN",
+            ErrorCode::AlreadyDispatched => "ALREADY_DISPATCHED",
+            ErrorCode::NoSuchHost => "NO_SUCH_HOST",
+            ErrorCode::AgentNotOnHost => "AGENT_NOT_ON_HOST",
+            ErrorCode::BoardNotOnHost => "BOARD_NOT_ON_HOST",
+            ErrorCode::Dispatched => "DISPATCHED",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -102,6 +126,12 @@ impl ErrorCode {
             ErrorCode::NameTaken => "名字正被在线 agent 使用：加一个和本会话相关的后缀（例如任务名或分支名）再 check",
             ErrorCode::NameOffline => "名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>",
             ErrorCode::NotAuthor => "只能修改自己发的评论",
+            ErrorCode::HostNameTaken => "机器名正被在线的 board host 使用：换一个 --name，或先停掉那台机器上的 board host",
+            ErrorCode::AlreadyDispatched => "卡片已经有排队或正在跑的派发：先取消或停止它",
+            ErrorCode::NoSuchHost => "机器不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器",
+            ErrorCode::AgentNotOnHost => "这台机器上没有这种 agent，或没找到它的命令",
+            ErrorCode::BoardNotOnHost => "这台机器没有这块白板的目录：board host 启动时用 --dir <项目>/<白板>=<路径> 加上",
+            ErrorCode::Dispatched => "卡片已经派发给一台机器、正在排队：等它开始，或先取消派发",
             ErrorCode::Internal => "内部错误",
         }
     }

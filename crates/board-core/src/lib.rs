@@ -7,6 +7,7 @@ pub mod engine;
 pub mod error;
 pub mod files;
 pub mod flow;
+pub mod hosts;
 pub mod model;
 pub mod seed;
 pub mod store;
@@ -16,8 +17,11 @@ pub use engine::Cmd;
 pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;
 pub use flow::StatusPatch;
+pub use hosts::{Dispatch, HostAgent, HostDir, HostInfo, HostPatch, HostReport, HostWork};
 pub use model::*;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_hosts;

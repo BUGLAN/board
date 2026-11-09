@@ -71,7 +71,12 @@ export function BoardView() {
   const path = cur?.board.path ?? '';
   // 「下一张」按优先级顺序（不受排序影响），去掉正在拖的卡片再算
   const prio = board?.cols ?? null;
-  const nextId = f.nextCard(prio && drag ? Object.fromEntries(Object.entries(prio).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) : prio);
+  // 有排队派发的卡片不会被不带 ID 的 board claim 领走
+  const queued = useData(s => s.ws?.dispatches);
+  const nextId = f.nextCard(
+    prio && drag ? Object.fromEntries(Object.entries(prio).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) : prio,
+    id => !!queued?.some(d => d.state === 'queued' && d.board === path && d.card === id),
+  );
 
   useLayoutEffect(() => {
     flip.play();

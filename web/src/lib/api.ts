@@ -4,7 +4,9 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, ErrorCode, Label, Me, Pos, ServerInfo, TokenInfo, Workspace } from './types';
+import type {
+  Attachment, Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, ServerInfo, TokenInfo, Workspace,
+} from './types';
 
 declare global {
   interface Window {
@@ -149,6 +151,23 @@ export const api = {
   /** 连线：一次加上、去掉若干条，[起点, 终点] */
   updateEdges: (board: string, add: [string, string][], remove: [string, string][] = []) =>
     req('PUT', `/api/flow/${board}/edges`, { add, remove }),
+
+  /* 任务下发（board host） */
+  /** 机器和排队、正在跑的派发（工作区里也有；机器页每 10 秒取一次，刷新心跳时间） */
+  hosts: () => req<{ hosts: HostInfo[]; dispatches: Dispatch[] }>('GET', '/api/hosts'),
+  /** 修改机器设置：同时跑几个、暂停接单、默认 agent、定时领取 */
+  updateHost: (name: string, patch: { max?: number; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[] }) =>
+    req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
+  removeHost: (name: string) => req('DELETE', `/api/hosts/${q(name)}`),
+  /** 现在领一轮（效果与定时到点相同） */
+  hostRound: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/round`, {}),
+  /** 这台机器最近 50 个结束的派发 */
+  hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`),
+  dispatch: (board: string, card: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent }),
+  /** 取消排队中的派发，或停止正在跑的派发 */
+  cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
+  /** 派发日志的最后 500 行 */
+  dispatchLog: (id: number) => req<{ lines: string[] }>('GET', `/api/dispatches/${id}/log`),
 };
 
 export type LiveStatus = 'connecting' | 'live' | 'offline';

@@ -5,11 +5,13 @@
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
 //! 数据：通过服务端读写。服务端地址和访问令牌由 `board login` 写进 `~/.board/config.toml`，
 //! 环境变量 `BOARD_URL`、`BOARD_TOKEN` 优先；没有配置时直接报错。见 backend.rs、config.rs。
+//! 任务下发：`board host` 在这台机器上常驻接派发（host.rs），`board dispatch` 把卡片派给一台机器。
 
 mod backend;
 mod config;
 mod doctor;
 mod heartbeat;
+mod host;
 
 use backend::{env, Backend, BoardData, Remote};
 use board_core::*;
@@ -19,12 +21,14 @@ use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 11] =
-    ["--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token"];
-const BOOL_FLAGS: [&str; 5] = ["--json", "--top", "--help", "-h", "--final"];
-const COMMANDS: [&str; 20] = [
+const VALUE_FLAGS: [&str; 15] = [
+    "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
+    "--host", "--agent",
+];
+const BOOL_FLAGS: [&str; 6] = ["--json", "--top", "--help", "-h", "--final", "--cancel"];
+const COMMANDS: [&str; 22] = [
     "help", "doctor", "login", "logout", "check", "heartbeat", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat",
-    "label", "labels", "attach", "files",
+    "label", "labels", "attach", "files", "host", "dispatch",
 ];
 
 fn main() {
@@ -83,13 +87,15 @@ fn emit(out: Output) -> i32 {
 
 struct Args {
     values: HashMap<String, String>,
+    /// 可以写多次的参数（--dir）：按出现的顺序
+    many: Vec<(String, String)>,
     bools: HashSet<String>,
     pos: Vec<String>,
 }
 
 impl Args {
     fn parse(tokens: &[String]) -> Result<Args> {
-        let mut a = Args { values: HashMap::new(), bools: HashSet::new(), pos: vec![] };
+        let mut a = Args { values: HashMap::new(), many: vec![], bools: HashSet::new(), pos: vec![] };
         let mut i = 0;
         while i < tokens.len() {
             let t = &tokens[i];
@@ -99,9 +105,11 @@ impl Args {
                     return Err(BoardError::usage(format!("未知参数 {k}")));
                 }
                 a.values.insert(k.to_string(), v.to_string());
+                a.many.push((k.to_string(), v.to_string()));
             } else if VALUE_FLAGS.contains(&t.as_str()) {
                 let v = tokens.get(i + 1).ok_or_else(|| BoardError::usage(format!("{t} 需要一个值")))?;
                 a.values.insert(t.clone(), v.clone());
+                a.many.push((t.clone(), v.clone()));
                 i += 1;
             } else if BOOL_FLAGS.contains(&t.as_str()) {
                 a.bools.insert(t.clone());
@@ -119,6 +127,10 @@ impl Args {
     }
     fn flag(&self, k: &str) -> bool {
         self.bools.contains(k)
+    }
+    /// 写了多次的参数的全部值
+    fn all(&self, k: &str) -> Vec<String> {
+        self.many.iter().filter(|(x, _)| x == k).map(|(_, v)| v.clone()).collect()
     }
     fn id(&self, sub: &str) -> Result<i64> {
         let raw = self.pos.get(1).ok_or_else(|| BoardError::usage(format!("board {sub} 需要 <ID>")))?;
@@ -156,6 +168,15 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     }
     if sub == "logout" {
         return logout(json, p);
+    }
+
+    // 任务下发：board host 在前台一直运行；board dispatch 不需要名字（带了就记为发起人）
+    if sub == "host" {
+        host::run(host::Opts { name: a.value("--name").map(str::to_string), dirs: a.all("--dir") }, p)?;
+        return Ok(Output::Text(String::new()));
+    }
+    if sub == "dispatch" {
+        return dispatch(&a, json, p);
     }
 
     // 连接（PRD §9）：环境变量优先，其次 ~/.board/config.toml；都没有时 NOT_LOGGED_IN
@@ -569,6 +590,46 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     Ok(out)
 }
 
+/* ------------------------------ 派发 ------------------------------ */
+
+/// `board dispatch <ID> --host <机器名> [--agent <标识>]`、`board dispatch <ID> --cancel`（任务下发需求 §五）
+fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
+    let id = a.id("dispatch")?;
+    let raw = a.value("--board").map(|s| s.to_string()).or_else(|| env("BOARD"));
+    let Some(path) = raw.filter(|s| !s.trim().is_empty()) else {
+        return Err(BoardError::code(ErrorCode::NoBoard));
+    };
+    let who = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"));
+    let mut be = Backend::open()?;
+    if a.flag("--cancel") {
+        let d = be.cancel_dispatch(&path, id, who.as_deref())?;
+        if json {
+            return Ok(Output::Json(serde_json::to_value(&d).unwrap_or_default()));
+        }
+        let what = if d.state == "done" {
+            format!("派发已取消（{} · {}）", d.host, d.agent_label)
+        } else {
+            format!("已通知 {} 停止这次派发：结束 agent 进程后卡片移到需要人处理的状态", d.host)
+        };
+        return Ok(Output::Text(format!("{} {}  {what}\n", p.green("✓"), p.cyan(&format!("#{id}")))));
+    }
+    let host = a.value("--host").map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| {
+        BoardError::usage("用法：board dispatch <ID> --host <机器名> [--agent <标识>]，或 board dispatch <ID> --cancel")
+    })?;
+    let d = be.dispatch(&path, id, host, a.value("--agent"), who.as_deref())?;
+    if json {
+        return Ok(Output::Json(serde_json::to_value(&d).unwrap_or_default()));
+    }
+    Ok(Output::Text(format!(
+        "{} {} 已派发到 {} · {}  {}\n",
+        p.green("✓"),
+        p.cyan(&format!("#{}", d.card)),
+        p.bold(&d.host),
+        d.agent_label,
+        p.dim("排队，机器有空位时开始")
+    )))
+}
+
 /* ------------------------------ 登录 ------------------------------ */
 
 /// 设置了环境变量时提醒：它们会覆盖配置文件
@@ -856,7 +917,7 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 20] = [
+    let rows: [(&str, &str, &str); 22] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
@@ -876,6 +937,8 @@ fn help(p: &Paint) -> String {
         ("labels", "", "列出项目的标签，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
+        ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),
+        ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
     ];
     let aw = rows.iter().map(|r| width(r.1)).max().unwrap_or(0) + 2;
@@ -1024,7 +1087,7 @@ fn truncate(s: &str, w: usize) -> String {
     out + "…"
 }
 
-struct Paint {
+pub(crate) struct Paint {
     on: bool,
 }
 
@@ -1032,28 +1095,28 @@ impl Paint {
     fn wrap(&self, code: &str, s: &str) -> String {
         if self.on && !s.is_empty() { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
     }
-    fn dim(&self, s: &str) -> String {
+    pub(crate) fn dim(&self, s: &str) -> String {
         self.wrap("2", s)
     }
-    fn bold(&self, s: &str) -> String {
+    pub(crate) fn bold(&self, s: &str) -> String {
         self.wrap("1", s)
     }
-    fn red(&self, s: &str) -> String {
+    pub(crate) fn red(&self, s: &str) -> String {
         self.wrap("31", s)
     }
-    fn red_bold(&self, s: &str) -> String {
+    pub(crate) fn red_bold(&self, s: &str) -> String {
         self.wrap("1;31", s)
     }
-    fn green(&self, s: &str) -> String {
+    pub(crate) fn green(&self, s: &str) -> String {
         self.wrap("32", s)
     }
-    fn yellow(&self, s: &str) -> String {
+    pub(crate) fn yellow(&self, s: &str) -> String {
         self.wrap("33", s)
     }
     fn magenta(&self, s: &str) -> String {
         self.wrap("35", s)
     }
-    fn cyan(&self, s: &str) -> String {
+    pub(crate) fn cyan(&self, s: &str) -> String {
         self.wrap("36", s)
     }
 }

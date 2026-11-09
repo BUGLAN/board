@@ -70,6 +70,7 @@
 .app[data-tab="projects"] .side-view[data-view="projects"],
 .app[data-tab="board"] .side-view[data-view="board"],
 .app[data-tab="inbox"] .side-view[data-view="inbox"],
+.app[data-tab="hosts"] .side-view[data-view="hosts"],
 .app[data-tab="settings"] .side-view[data-view="settings"] { display: flex; animation: side-in var(--dur-3) var(--ease-out); }
 @keyframes side-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
 

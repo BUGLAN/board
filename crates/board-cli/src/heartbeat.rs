@@ -64,10 +64,10 @@ impl Proc {
     }
 }
 
-struct Procs(System);
+pub(crate) struct Procs(System);
 
 impl Procs {
-    fn new() -> Option<Procs> {
+    pub(crate) fn new() -> Option<Procs> {
         System::new().ok().map(Procs)
     }
     fn refresh(&mut self, pids: Option<&[Pid]>) {
@@ -78,7 +78,7 @@ impl Procs {
         self.0.refresh_processes_specifics(which, true, ProcessRefreshKind::nothing());
     }
     /// 进程还在（进程号对得上，启动时间也对得上；僵尸进程算不在）
-    fn alive(&mut self, p: Proc) -> bool {
+    pub(crate) fn alive(&mut self, p: Proc) -> bool {
         let pid = Pid::from_u32(p.pid);
         self.refresh(Some(&[pid]));
         match self.0.process(pid) {
@@ -88,13 +88,13 @@ impl Procs {
             None => false,
         }
     }
-    fn get(&mut self, pid: u32) -> Option<Proc> {
+    pub(crate) fn get(&mut self, pid: u32) -> Option<Proc> {
         let id = Pid::from_u32(pid);
         self.refresh(Some(&[id]));
         self.0.process(id).map(|x| Proc { pid, start: x.start_time() })
     }
     /// 是 board 自己的进程（旧版 heartbeat.sh / heartbeat.ps1 的循环、或复用了进程号的别的进程都不是）
-    fn is_board(&mut self, p: Proc) -> bool {
+    pub(crate) fn is_board(&mut self, p: Proc) -> bool {
         let pid = Pid::from_u32(p.pid);
         self.refresh(Some(&[pid]));
         self.0.process(pid).is_some_and(|x| base_name(&x.name().to_string_lossy()) == "board")

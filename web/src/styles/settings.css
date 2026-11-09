@@ -115,3 +115,20 @@
 :root[data-motion="reduced"] .logo i,
 :root[data-motion="reduced"] .card.doing::before,
 :root[data-motion="reduced"] .ie-art i { animation: none !important; }
+
+/* 本机：让这台电脑接任务（桌面端） */
+.lh-warn { color: var(--warn); }
+.lh-name { width: 220px; height: 32px; font-family: var(--f-mono); font-size: 12.5px; }
+.lh-dirs-row { padding-bottom: 6px; }
+.lh-dirs { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+.lh-dir { display: flex; align-items: center; gap: 8px; }
+.lh-dir select.input { flex: none; width: 200px; height: 32px; padding: 0 8px; appearance: auto; font-family: var(--f-mono); font-size: 12.5px; }
+.lh-dir input.input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; font-family: var(--f-mono); font-size: 12.5px; }
+.lh-dir > svg { width: 14px; height: 14px; flex: none; color: var(--text-4); }
+.lh-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.lh-sp { flex: 1; }
+.lh-log pre { margin-top: 8px; max-height: 240px; }
+@media (max-width: 760px) {
+  .lh-dir { flex-wrap: wrap; }
+  .lh-dir select.input { width: 100%; }
+}

@@ -182,6 +182,20 @@ const P: Record<string, ReactNode> = {
     </>
   ),
   logout: <path d="M8 4.5H5.5a1.5 1.5 0 0 0-1.5 1.5v8a1.5 1.5 0 0 0 1.5 1.5H8M12 6.5 15.5 10 12 13.5M15.5 10H8" />,
+  /* 机器（board host）：两层服务器 */
+  host: (
+    <>
+      <rect x="3" y="3.5" width="14" height="5.5" rx="1.6" />
+      <rect x="3" y="11" width="14" height="5.5" rx="1.6" />
+      <path d="M6 6.25h.01M6 13.75h.01M9 6.25h5M9 13.75h5" />
+    </>
+  ),
+  /* 派发：把卡片交给机器 */
+  dispatch: <path d="M3.5 10h9M9.5 6l4 4-4 4M16.5 4.5v11" />,
+  stop: <rect x="5.5" y="5.5" width="9" height="9" rx="1.6" />,
+  pause: <path d="M7.5 5.5v9M12.5 5.5v9" />,
+  play: <path d="M6.5 4.8v10.4L15 10Z" />,
+  log: <path d="M4 5h12M4 8.5h12M4 12h8M4 15.5h5" />,
 };
 
 export type IconName = keyof typeof P;
@@ -228,5 +242,13 @@ export const SettingsIcon24 = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="3" />
     <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.4h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z" />
+  </svg>
+);
+/** 机器（board host）：两层服务器 */
+export const HostsIcon24 = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+    <rect x="3.5" y="4" width="17" height="6.5" rx="2" />
+    <rect x="3.5" y="13.5" width="17" height="6.5" rx="2" />
+    <path d="M7 7.25h.01M7 16.75h.01M11 7.25h6M11 16.75h6" />
   </svg>
 );

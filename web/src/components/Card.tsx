@@ -7,6 +7,7 @@ import { useUI, type Flash } from '../store/ui';
 import { useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
+import { CardDispatchLine } from './Hosts';
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {
@@ -198,6 +199,7 @@ export const CardView = memo(function CardView({
               <LabelChips ids={c.labels} labels={labels} pending={pending} />
             </div>
           )}
+          {!doing && <CardDispatchLine card={c.id} />}
           {doing ? (
             <div className="card-claim">
               <Avatar actor={agent(c.holder!)} />

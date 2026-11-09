@@ -1,7 +1,8 @@
 //! 命令行的配置文件 `~/.board/config.toml`（Windows：`%USERPROFILE%\.board\config.toml`，PRD §9）。
 //!
-//! - 现在放两项：`url`（服务端地址）和 `token`（访问令牌），由 `board login` 写入、`board logout` 删掉令牌。
-//!   以后固定的配置也写在这里；agent 名字（`BOARD_AS`）和白板（`BOARD`）不写进这个文件。
+//! - `url`（服务端地址）和 `token`（访问令牌），由 `board login` 写入、`board logout` 删掉令牌。
+//! - `[host]`（机器名、白板与目录）和 `[agents.<标识>]`（agent 命令模板），给 `board host` 用；
+//!   桌面端「设置 → 本机」也写这两节。agent 名字（`BOARD_AS`）和白板（`BOARD`）不写进这个文件。
 //! - 读取顺序：环境变量 `BOARD_URL` / `BOARD_TOKEN` 优先，配置文件其次（两项分别看）。
 //! - 目录权限 0700，文件权限 0600；改写时保留其他配置项和注释。
 
@@ -119,6 +120,69 @@ impl File {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
         }
         std::fs::rename(&tmp, &self.path).map_err(fail)
+    }
+}
+
+/// `[host]` 与 `[agents.*]`：
+///
+/// ```toml
+/// [host]
+/// name = "macbook"
+/// dirs = { "default/main" = "~/repo/board", "mini/main" = "~/repo/mini" }
+///
+/// [agents.claude]
+/// cmd = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"]
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct HostConf {
+    pub name: Option<String>,
+    /// 白板与目录，按文件里的顺序
+    pub dirs: Vec<(String, String)>,
+    pub agents: Vec<AgentConf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConf {
+    pub id: String,
+    /// 名称（界面上显示）；不写时用标识
+    pub name: Option<String>,
+    pub cmd: Vec<String>,
+}
+
+impl File {
+    pub fn host(&self) -> Result<HostConf> {
+        let bad = |what: &str| BoardError::usage(format!("{} 里的 {what} 格式不对", self.path.display()));
+        let mut c = HostConf::default();
+        if let Some(h) = self.doc.get("host") {
+            let t = h.as_table_like().ok_or_else(|| bad("[host]"))?;
+            if let Some(n) = t.get("name") {
+                c.name = Some(n.as_str().ok_or_else(|| bad("host.name"))?.trim().to_string()).filter(|s| !s.is_empty());
+            }
+            if let Some(d) = t.get("dirs") {
+                let d = d.as_table_like().ok_or_else(|| bad("host.dirs"))?;
+                for (k, v) in d.iter() {
+                    c.dirs.push((k.to_string(), v.as_str().ok_or_else(|| bad("host.dirs"))?.to_string()));
+                }
+            }
+        }
+        if let Some(a) = self.doc.get("agents") {
+            let t = a.as_table_like().ok_or_else(|| bad("[agents]"))?;
+            for (id, v) in t.iter() {
+                let at = v.as_table_like().ok_or_else(|| bad(&format!("[agents.{id}]")))?;
+                let cmd = at
+                    .get("cmd")
+                    .and_then(|x| x.as_array())
+                    .ok_or_else(|| bad(&format!("agents.{id}.cmd（要写成字符串数组）")))?
+                    .iter()
+                    .map(|x| x.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| bad(&format!("agents.{id}.cmd（要写成字符串数组）")))?;
+                let name = at.get("name").and_then(|x| x.as_str()).map(str::to_string);
+                c.agents.push(AgentConf { id: id.to_string(), name, cmd });
+            }
+        }
+        Ok(c)
     }
 }
 

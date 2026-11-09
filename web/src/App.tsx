@@ -7,6 +7,7 @@ import { BoardSkeleton, BoardView } from './components/BoardView';
 import { CanvasPage } from './components/Canvas';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
+import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
 import { Login } from './components/Login';
 import { ConfirmDialog, CtxMenu, FormModal, LabelManager, LabelPicker, Lightbox, Palette, Toasts } from './components/Overlays';
 import { SettingsPage } from './components/Settings';
@@ -24,10 +25,12 @@ import {
 
 const OP_LABEL: Record<string, string> = {
   create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论', edit_comment: '改评论',
-  timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除',
+  timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发',
 };
 
-const PAGE: Record<Tab, 'board' | 'canvas' | 'settings'> = { board: 'board', inbox: 'board', projects: 'canvas', settings: 'settings' };
+const PAGE: Record<Tab, 'board' | 'canvas' | 'hosts' | 'settings'> = {
+  board: 'board', inbox: 'board', projects: 'canvas', hosts: 'hosts', settings: 'settings',
+};
 
 /** 侧栏收起 / 展开时主内容跟着平移（只动 transform，不逐帧改宽度）：
     收起：主内容先占满宽度，从右边滑回来；展开：主内容先保持原来的宽度，从左边滑过去，结束后再收窄 */
@@ -151,9 +154,9 @@ function BoardApp() {
         setSide(!useUI.getState().side);
         return;
       }
-      if (mod && ['1', '2', '3', '4'].includes(e.key)) {
+      if (mod && ['1', '2', '3', '4', '5'].includes(e.key)) {
         e.preventDefault();
-        setTab((['board', 'projects', 'inbox', 'settings'] as Tab[])[Number(e.key) - 1]);
+        setTab((['board', 'projects', 'inbox', 'settings', 'hosts'] as Tab[])[Number(e.key) - 1]);
         return;
       }
       if (e.key === 'Escape') {
@@ -212,6 +215,9 @@ function BoardApp() {
               <Page show={page === 'canvas'}>
                 <CanvasPage />
               </Page>
+              <Page show={page === 'hosts'}>
+                <HostsPage />
+              </Page>
               <Page show={page === 'settings'}>
                 <SettingsPage />
               </Page>
@@ -220,6 +226,8 @@ function BoardApp() {
         </main>
       </div>
       <CardDetail />
+      <HostModal />
+      <DispatchDialog />
       <Creator />
       <Palette />
       <FormModal />

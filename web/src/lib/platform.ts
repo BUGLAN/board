@@ -148,3 +148,55 @@ export async function desktopLogin(): Promise<string> {
     throw 'unsupported';
   }
 }
+
+/* ---------------- 桌面端：让这台电脑接任务（后台运行 board host） ---------------- */
+
+/** 只有桌面端能在本机运行 board host */
+export const canHost = ipc;
+
+export interface LocalHost {
+  /** 「让这台电脑接任务」打开了 */
+  enabled: boolean;
+  /** board host 正在运行 */
+  running: boolean;
+  /** 停了的话：退出码 */
+  exit: number | null;
+  /** ~/.board/config.toml 里的机器名（空表示用本机主机名） */
+  name: string;
+  /** 不填时用的机器名 */
+  defaultName: string;
+  dirs: { board: string; path: string }[];
+  /** board host 最近的输出 */
+  log: string[];
+  /** 配置文件里有服务端地址和令牌 */
+  loggedIn: boolean;
+  /** 桌面端自带的 board 命令行找到了 */
+  cli: boolean;
+}
+
+/** 本机 board host 的现状；外壳不支持（旧版桌面端）时返回 null */
+export async function localHost(): Promise<LocalHost | null> {
+  try {
+    return await invoke<LocalHost>('host_status');
+  } catch {
+    return null;
+  }
+}
+
+/** 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）；失败时抛出原因文字 */
+export async function saveLocalHost(name: string, dirs: { board: string; path: string }[]): Promise<void> {
+  try {
+    await invoke('host_save', { name, dirs });
+  } catch (e) {
+    throw String(e);
+  }
+}
+
+/** 打开 / 关掉「让这台电脑接任务」；失败时抛出原因文字 */
+export async function enableLocalHost(on: boolean): Promise<void> {
+  try {
+    await invoke('host_enable', { on });
+  } catch (e) {
+    throw String(e);
+  }
+}

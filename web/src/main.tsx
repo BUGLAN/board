@@ -12,6 +12,7 @@ import './styles/settings.css';
 import './styles/overlays.css';
 import './styles/platform.css';
 import './styles/app.css';
+import './styles/hosts.css';
 import './styles/skeleton.css';
 
 import { createRoot } from 'react-dom/client';

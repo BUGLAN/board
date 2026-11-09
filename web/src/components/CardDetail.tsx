@@ -5,20 +5,22 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
+import { cardDispatch } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
 import { closeDetail, exec, isSettled, openDetail, sendComment, useCurrent, useData, useOnline, useSending } from '../store/data';
-import { closeCtx, confirm, openCtx, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
+import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
+import { DispatchNote } from './Hosts';
 import { Icon, type IconName } from './Icon';
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
-  beat: 'timer', lost: 'alert',
+  beat: 'timer', lost: 'alert', dispatch: 'dispatch',
 };
 
 export function CardDetail() {
@@ -105,6 +107,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   const locked = !!c.holder;
   const f = boardFlow(board);
   const labels = cur?.project.labels ?? [];
+  const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
   const list = board?.cols[c.column] ?? [];
   const i = list.indexOf(c.id);
 
@@ -134,7 +137,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
       const t = e.target as HTMLElement;
       if (t.closest?.('input, textarea, [contenteditable]')) return;
       const ui = useUI.getState();
-      if (ui.confirm || ui.palette.open || ui.creator.open || ui.picker || ui.form || ui.labelsOf || ui.switcher) return;
+      if (ui.confirm || ui.palette.open || ui.creator.open || ui.picker || ui.form || ui.labelsOf || ui.switcher || ui.dispatchOf != null) return;
       const k = e.key.toLowerCase();
       if (k === 'c') {
         e.preventDefault();
@@ -248,6 +251,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               </button>
             </div>
           </section>
+          <DispatchNote board={useData.getState().path} card={c.id} />
           <ClaimPart card={c} now={now} />
           <section className="d-section" data-part="desc" style={{ ['--i' as string]: 2 }}>
             <DescEditor card={c} locked={locked} />
@@ -278,6 +282,16 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <span className="d-actions-hint">删除后无法恢复</span>
             <button
               className="btn sm d-move"
+              type="button"
+              disabled={!f.list.find(s => s.key === c.column)?.claim || !!dispatched}
+              data-tip={dispatched ? '已经派发过了：在上面取消派发或停止' : !f.list.find(s => s.key === c.column)?.claim ? '只有可领取状态里的卡片能派发' : '派给一台机器上的 agent'}
+              onClick={() => openDispatch(c.id)}
+            >
+              <Icon name="dispatch" />
+              派发
+            </button>
+            <button
+              className="btn sm"
               type="button"
               aria-haspopup="menu"
               onClick={e => {

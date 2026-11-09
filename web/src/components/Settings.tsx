@@ -5,15 +5,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { api } from '../lib/api';
-import { boardCli, canSetEnv, getTheme, isMac, isWindows, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type Motion, type ThemePref } from '../lib/platform';
+import {
+  boardCli, canHost, canSetEnv, enableLocalHost, getTheme, isMac, isWindows, localHost, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
+  shellVersion, type Density, type LocalHost, type Motion, type ThemePref,
+} from '../lib/platform';
+import { hostsOf } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
 import { accel, ago, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
-import { useData } from '../store/data';
-import { confirm, toast, toastError, useUI } from '../store/ui';
+import { allBoards, refresh, useData } from '../store/data';
+import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
 import { Icon, type IconName } from './Icon';
 
@@ -21,6 +25,7 @@ const SECTIONS: { id: string; title: string; icon: IconName }[] = [
   { id: 'appearance', title: '外观', icon: 'sun' },
   { id: 'board', title: '白板规则', icon: 'lock' },
   { id: 'agents', title: 'Agent 接入', icon: 'terminal' },
+  ...(canHost ? [{ id: 'host', title: '本机', icon: 'host' as IconName }] : []),
   { id: 'account', title: '账号', icon: 'user' },
   { id: 'shortcuts', title: '快捷键', icon: 'keyboard' },
 ];
@@ -327,6 +332,199 @@ function Account() {
   );
 }
 
+/* ---------------- 本机：让这台电脑接任务（桌面端） ---------------- */
+
+type Dir = { board: string; path: string };
+
+function LocalHostCard() {
+  const tab = useUI(s => s.tab);
+  const ws = useData(s => s.ws);
+  const [st, setSt] = useState<LocalHost | null>(null);
+  const [old, setOld] = useState(false);
+  const [name, setName] = useState('');
+  const [dirs, setDirs] = useState<Dir[]>([]);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+
+  const load = async () => {
+    const s = await localHost();
+    if (!s) {
+      setOld(true);
+      return;
+    }
+    setSt(s);
+    if (!dirtyRef.current) {
+      setName(s.name);
+      setDirs(s.dirs);
+    }
+  };
+  // 设置页打开时每 4 秒看一次 board host 还在不在跑
+  useEffect(() => {
+    if (tab !== 'settings') return;
+    void load();
+    const t = window.setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const boards = allBoards(ws).map(b => b.path);
+  const me = st ? (st.name || st.defaultName) : '';
+  const online = hostsOf(ws).find(h => h.name === me);
+  const edit = (f: (d: Dir[]) => Dir[]) => {
+    setDirs(f);
+    setDirty(true);
+  };
+
+  const save = async () => {
+    // 正在接任务：保存后要重启 board host，本机正在跑的 agent 会被停止
+    const running = (ws?.dispatches ?? []).filter(d => d.state === 'running' && d.host === me).length;
+    if (st?.enabled && st.running && running > 0) {
+      const yes = await confirm({
+        title: '保存并重启 board host？',
+        text: `保存后 board host 会重启：这台电脑上正在跑的 ${running} 个 agent 会被停止，卡片移到需要人处理的状态。`,
+        ok: '保存并重启',
+        icon: 'reset',
+      });
+      if (!yes) return;
+    }
+    setBusy(true);
+    try {
+      await saveLocalHost(name.trim(), dirs.filter(d => d.board || d.path));
+      setDirty(false);
+      toast({ type: 'success', title: '已保存', text: st?.enabled ? '写进了 ~/.board/config.toml，board host 已重启' : '写进了 ~/.board/config.toml 的 [host]' });
+      await load();
+    } catch (e) {
+      toast({ type: 'error', title: '没有保存', text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = async () => {
+    if (!st) return;
+    setBusy(true);
+    try {
+      await enableLocalHost(!st.enabled);
+      toast({ type: 'success', title: st.enabled ? '这台电脑不再接任务' : '这台电脑开始接任务', text: st.enabled ? '已停止 board host' : '桌面端在后台运行 board host，关掉窗口也继续接' });
+      await load();
+      setTimeout(() => void refresh(), 1500);
+    } catch (e) {
+      toast({ type: 'error', title: '没有切换', text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let state = '关';
+  if (st?.enabled) state = st.running ? (online?.online ? `在线：${me}` : '正在连接服务端…') : `已停止${st.exit != null ? `（退出码 ${st.exit}）` : ''}：看下面的输出`;
+
+  return (
+    <section className="set-card" id="set-host" style={{ ['--i' as string]: 3 }}>
+      <h2>
+        <Icon name="host" />
+        本机
+      </h2>
+      <p className="set-p">
+        让这台电脑接任务：桌面端在后台用自带的 <code>board</code> 运行 <code>board host</code>，派给这台电脑的卡片在对应目录里启动本机的 agent（提示词仍是「复制为提示词」那一行）。关掉窗口也继续运行，退出桌面端时结束。
+      </p>
+      {old ? (
+        <p className="set-p">这个版本的桌面端还不支持，升级桌面端后再打开。</p>
+      ) : !st ? (
+        <p className="set-p">正在读取…</p>
+      ) : (
+        <>
+          {!st.loggedIn && <p className="set-p lh-warn">还没有服务端地址和令牌：先在上面「Agent 接入」新建令牌并写入配置文件，board host 才连得上。</p>}
+          {!st.cli && <p className="set-p lh-warn">没找到桌面端自带的 board 命令行，重新安装桌面端试试。</p>}
+          <Row label="让这台电脑接任务" hint={state}>
+            <button className={cx('toggle', st.enabled && 'on')} type="button" role="switch" aria-checked={st.enabled} disabled={busy || !st.cli} onClick={toggle}>
+              <i />
+            </button>
+          </Row>
+          <Row label="机器名" hint="小写字母、数字、. 和 -，最长 24 个字符；不填用本机主机名">
+            <input
+              className="input lh-name"
+              value={name}
+              placeholder={st.defaultName}
+              spellCheck={false}
+              onChange={e => {
+                setName(e.target.value.toLowerCase());
+                setDirty(true);
+              }}
+            />
+          </Row>
+          <div className="set-row lh-dirs-row">
+            <div className="set-label">
+              <b>白板与目录</b>
+              <span>派到这台电脑的卡片，agent 在对应目录（这块白板的代码仓库）里启动；没有目录的白板不接</span>
+            </div>
+          </div>
+          <div className="lh-dirs">
+            {dirs.map((d, i) => (
+              <div className="lh-dir" key={i}>
+                <select
+                  className="input"
+                  value={d.board}
+                  onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, board: e.target.value } : x)))}
+                  aria-label="白板"
+                >
+                  <option value="">选白板…</option>
+                  {[...new Set([...boards, ...(d.board ? [d.board] : [])])].map(b => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+                <Icon name="move" />
+                <input
+                  className="input"
+                  value={d.path}
+                  placeholder={isWindows ? 'C:\\repo\\board' : '~/repo/board'}
+                  spellCheck={false}
+                  onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
+                  aria-label="目录"
+                />
+                <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => edit(v => v.filter((_, j) => j !== i))}>
+                  <Icon name="close" />
+                </button>
+              </div>
+            ))}
+            <div className="lh-actions">
+              <button className="btn sm" type="button" onClick={() => edit(v => [...v, { board: boards.find(b => !v.some(x => x.board === b)) ?? '', path: '' }])}>
+                <Icon name="plus" />
+                加一块白板
+              </button>
+              <span className="lh-sp" />
+              {online && (
+                <button
+                  className="btn sm ghost"
+                  type="button"
+                  onClick={() => {
+                    setTab('hosts');
+                    openHost(online.name);
+                  }}
+                >
+                  <Icon name="host" />
+                  在「机器」里查看
+                </button>
+              )}
+              <button className="btn sm brand" type="button" disabled={!dirty || busy} onClick={save}>
+                保存
+              </button>
+            </div>
+          </div>
+          {st.log.length > 0 && (
+            <details className="errcodes lh-log">
+              <summary>board host 的输出</summary>
+              <pre className="hp-log">{st.log.join('\n')}</pre>
+            </details>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const path = useData(s => s.path);
   const flow = boardFlow(useData(s => s.board));
@@ -546,6 +744,8 @@ export function SettingsPage() {
             </div>
           </details>
         </section>
+
+        {canHost && <LocalHostCard />}
 
         <section className="set-card" id="set-account" style={{ ['--i' as string]: 3 }}>
           <h2>

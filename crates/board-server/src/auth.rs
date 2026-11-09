@@ -361,10 +361,19 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
     match &caller {
         Caller::Agent { token } => {
             // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令，读取和上传附件；
-            // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）
+            // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）；
+            // 任务下发：board host 的上报、取任务、开始 / 结束派发、上传和读取日志、订阅实时推送，board dispatch 派发和取消
             let m = req.method().clone();
-            let cli = (m == Method::GET && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents") || path.starts_with("/files/")))
-                || (m == Method::POST && matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat"));
+            let cli = (m == Method::GET
+                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream")
+                    || path.starts_with("/files/")
+                    || host_path(&path, &["work"])
+                    || dispatch_path(&path, "log")))
+                || (m == Method::POST
+                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/dispatches" | "/dispatches/cancel")
+                        || host_path(&path, &["beat", "begin", "pull", "round"])
+                        || dispatch_path(&path, "end")
+                        || dispatch_path(&path, "log")));
             if !cli {
                 return ApiError(BoardError::new(
                     ErrorCode::NotLoggedIn,
@@ -391,6 +400,23 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
         res.headers_mut().append(header::SET_COOKIE, session_cookie(&sid, secure));
     }
     res
+}
+
+/// `/hosts/{名字}/<后缀>`，后缀是给定的几个之一
+fn host_path(path: &str, tails: &[&str]) -> bool {
+    let mut it = path.strip_prefix("/hosts/").unwrap_or_default().split('/');
+    matches!((it.next(), it.next(), it.next()), (Some(n), Some(t), None) if !n.is_empty() && tails.contains(&t))
+}
+
+/// `/dispatches/{ID}/<后缀>`
+fn dispatch_path(path: &str, tail: &str) -> bool {
+    let mut it = path.strip_prefix("/dispatches/").unwrap_or_default().split('/');
+    matches!((it.next(), it.next(), it.next()), (Some(id), Some(t), None) if id.parse::<i64>().is_ok() && t == tail)
+}
+
+/// 令牌的名称（派发的发起人没有 agent 名字时用）
+pub(crate) fn token_name(conn: &Connection, id: i64) -> Result<Option<String>> {
+    Ok(conn.query_row("SELECT name FROM auth_tokens WHERE id = ?1", [id], |r| r.get(0)).optional()?)
 }
 
 /* ------------------------------ GitHub 登录 ------------------------------ */

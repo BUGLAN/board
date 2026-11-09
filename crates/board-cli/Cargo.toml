@@ -19,6 +19,10 @@ toml_edit = "0.25"
 unicode-width = "0.2"
 ureq = { version = "3", features = ["json"] }
 
+[target.'cfg(unix)'.dependencies]
+# board host 结束 agent 进程树（kill 进程组）、处理 Ctrl+C / SIGTERM
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true

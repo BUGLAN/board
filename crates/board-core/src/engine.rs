@@ -256,6 +256,10 @@ impl<'a> W<'a> {
                     }
                     new = ids.iter().position(|x| *x == id).unwrap_or(new);
                 }
+                // 拖出可领取状态：排队中的派发自动取消（任务下发）
+                if from != to && flow.is_claim(&from) && !flow.is_claim(&to) {
+                    self.cancel_queued_on_move(b, id, actor)?;
+                }
                 if from != to {
                     // 规则 8：离开锁定状态即释放
                     let released = r.holder.is_some() && !flow.is_lock(&to);
@@ -299,15 +303,8 @@ impl<'a> W<'a> {
                         if let Some(m) = mine {
                             return Err(already(m));
                         }
-                        // 规则 1：按工作流顺序，第一个有卡片、并且连到锁定状态的可领取状态
-                        let mut found = None;
-                        for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
-                            if let Some(first) = self.col_ids(b, &s.key)?.first() {
-                                found = Some((*first, s.key.clone()));
-                                break;
-                            }
-                        }
-                        match found {
+                        // 规则 1：按工作流顺序，第一个有卡片、并且连到锁定状态的可领取状态；有排队派发的卡片跳过
+                        match self.next_claimable(b, &flow)? {
                             Some(f) => f,
                             None => {
                                 let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
@@ -333,6 +330,16 @@ impl<'a> W<'a> {
                         }
                         if let Some(m) = mine {
                             return Err(already(m));
+                        }
+                        // 卡片有排队中的派发：只有这次派发自己能领（任务下发）
+                        if !self.dispatch_ok {
+                            if let Some((_, host)) = self.queued_dispatch(b, id)? {
+                                return Err(BoardError::new(
+                                    ErrorCode::Dispatched,
+                                    format!("#{id} 已经派发给机器 {host}，正在排队：等它开始，或请人先取消派发"),
+                                )
+                                .with_detail(json!({ "host": host })));
+                            }
                         }
                         (id, r.col)
                     }
@@ -487,6 +494,7 @@ impl<'a> W<'a> {
                     return Err(BoardError::usage("删除只能在界面上做"));
                 }
                 let detail = self.read().card(board, id)?;
+                self.on_card_delete(b, id, actor)?;
                 self.event(b, id, &detail.card.title, actor, "delete", "删除了卡片")?;
                 self.tx.execute("DELETE FROM cards WHERE board = ?1 AND id = ?2", params![b, id])?;
                 return Ok(detail);

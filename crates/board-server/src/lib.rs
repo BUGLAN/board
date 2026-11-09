@@ -12,13 +12,16 @@
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
 //! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`）/ 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/{状态}`（修改、删除）
-//! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, events}`
+//! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
+//! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, hosts, events}`；
+//!   `hosts` 是机器和派发的版本，board host 看到它变了就重新取自己的任务
 //!
 //! 服务端每 250ms 检查一次数据库的 rev，发现变化就推送给已打开的界面（PRD §11）。
 //! 服务端每秒扫描一次到期的领取（规则 7）和心跳中断的名字（PRD §3），没有命令执行时界面上也能看到超时释放、agent 下线。
 
 pub mod agents;
 pub mod auth;
+pub mod hosts;
 
 use auth::{Auth, Caller};
 use axum::{
@@ -138,7 +141,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.0.code {
             ErrorCode::Usage | ErrorCode::EmptyTitle | ErrorCode::NoBoard | ErrorCode::NoIdentity => StatusCode::BAD_REQUEST,
-            ErrorCode::NotFound | ErrorCode::BoardNotFound => StatusCode::NOT_FOUND,
+            ErrorCode::NotFound | ErrorCode::BoardNotFound | ErrorCode::NoSuchHost => StatusCode::NOT_FOUND,
             ErrorCode::NotLoggedIn | ErrorCode::InvalidToken => StatusCode::UNAUTHORIZED,
             ErrorCode::NotAuthor => StatusCode::FORBIDDEN,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -154,7 +157,7 @@ pub(crate) fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
     serde_json::from_value(v).map_err(|e| BoardError::usage(format!("请求格式不正确：{e}")))
 }
 
-fn client_of(h: &HeaderMap) -> Option<String> {
+pub(crate) fn client_of(h: &HeaderMap) -> Option<String> {
     h.get("x-board-client").and_then(|v| v.to_str().ok()).map(|s| s.chars().take(64).collect())
 }
 
@@ -187,6 +190,18 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/flow/{project}/{board}/layout", put(flow_layout))
         .route("/flow/{project}/{board}/edges", put(flow_edges))
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
+        .route("/hosts", get(hosts::list))
+        .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
+        .route("/hosts/{name}/beat", post(hosts::beat))
+        .route("/hosts/{name}/work", get(hosts::work))
+        .route("/hosts/{name}/begin", post(hosts::begin))
+        .route("/hosts/{name}/pull", post(hosts::pull))
+        .route("/hosts/{name}/round", post(hosts::round))
+        .route("/hosts/{name}/recent", get(hosts::recent))
+        .route("/dispatches", post(hosts::create))
+        .route("/dispatches/cancel", post(hosts::cancel))
+        .route("/dispatches/{id}/end", post(hosts::end))
+        .route("/dispatches/{id}/log", get(hosts::log).post(hosts::append_log))
         .route("/stream", get(stream))
         .route("/me", get(auth::me))
         .route("/auth/logout", post(auth::logout))
@@ -266,7 +281,7 @@ fn spawn_background(state: AppState) {
             }
         }
     });
-    // 变更推送：rev 变化时把新事件广播给所有界面
+    // 变更推送：rev 变化时把新事件广播给所有界面和 board host
     tokio::spawn(async move {
         let (mut rev, mut last) = state
             .db(|st| Ok((st.rev()?, st.read(|r| r.last_event_id())?)))
@@ -284,16 +299,16 @@ fn spawn_background(state: AppState) {
                         return Ok(None);
                     }
                     let events = st.read(|r| r.events_since(last, 200))?;
-                    Ok(Some((now, events)))
+                    Ok(Some((now, st.hosts_rev()?, events)))
                 })
                 .await;
             match r {
-                Ok(Some((now, events))) => {
+                Ok(Some((now, hosts, events))) => {
                     rev = now;
                     if let Some(e) = events.last() {
                         last = e.id;
                     }
-                    let msg = json!({ "rev": rev, "events": events }).to_string();
+                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events }).to_string();
                     let _ = state.0.tx.send(Arc::from(msg));
                 }
                 Ok(None) => {}
@@ -776,8 +791,8 @@ async fn flow_edges(
 
 async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>) -> impl IntoResponse {
     let rx = s.0.tx.subscribe();
-    let rev = s.db(|st| st.rev()).await.unwrap_or(0);
-    let first = SseEvent::default().data(json!({ "rev": rev, "events": [] }).to_string());
+    let (rev, hosts) = s.db(|st| Ok((st.rev()?, st.hosts_rev()?))).await.unwrap_or((0, 0));
+    let first = SseEvent::default().data(json!({ "rev": rev, "hosts": hosts, "events": [] }).to_string());
     let session = match caller {
         Caller::Human { session, .. } => session,
         Caller::Agent { .. } => None,
@@ -790,7 +805,7 @@ async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>)
                     let ev = match r {
                         Ok(msg) => SseEvent::default().data(&*msg),
                         // 落后太多：让界面整体刷新一次
-                        Err(broadcast::error::RecvError::Lagged(_)) => SseEvent::default().data(json!({ "rev": -1, "events": [] }).to_string()),
+                        Err(broadcast::error::RecvError::Lagged(_)) => SseEvent::default().data(json!({ "rev": -1, "hosts": -1, "events": [] }).to_string()),
                         Err(broadcast::error::RecvError::Closed) => return None,
                     };
                     return Some((Ok::<_, Infallible>(ev), (rx, watch, s, session)));

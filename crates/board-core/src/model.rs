@@ -178,6 +178,34 @@ impl Flow {
         v.push(format!("{INBOX_NAME}（{INBOX}）"));
         v.join("、")
     }
+    /// 交审状态：锁定状态连出去、名称里带「审核」之类关键词的状态（与 board-skills「认出角色」的规则相同）
+    pub fn is_review(&self, key: &str) -> bool {
+        self.role_of(key, &REVIEW_WORDS)
+    }
+    /// 需要人处理的状态：锁定状态连出去、名称里带「人工」之类关键词的状态
+    pub fn is_human(&self, key: &str) -> bool {
+        self.role_of(key, &HUMAN_WORDS)
+    }
+    /// 从锁定状态 from 沿连线能去的、需要人处理的状态（按工作流顺序第一个）。可领取状态和终点不算：
+    /// 放回可领取状态人看不到出了问题，终点只归人管
+    pub fn human_after(&self, from: &str) -> Option<&Status> {
+        let s = self.get(from)?;
+        s.to.iter().filter_map(|k| self.get(k)).find(|t| !t.claim && !t.fin && !t.lock && words_in(t, &HUMAN_WORDS))
+    }
+    fn role_of(&self, key: &str, words: &[&str]) -> bool {
+        let Some(s) = self.get(key) else { return false };
+        !s.claim && !s.lock && !s.fin && words_in(s, words) && self.0.iter().any(|l| l.lock && l.to.iter().any(|t| t == key))
+    }
+}
+
+/// 交审状态名称里的关键词（board-skills「认出角色」：等人审核的状态）
+const REVIEW_WORDS: [&str; 4] = ["审核", "审查", "评审", "review"];
+/// 需要人处理的状态名称里的关键词（board-skills「认出角色」：等人处理的状态）
+const HUMAN_WORDS: [&str; 7] = ["人工", "人处理", "人确认", "需人", "check", "manual", "human"];
+
+fn words_in(s: &Status, words: &[&str]) -> bool {
+    let (name, key) = (s.name.to_lowercase(), s.key.to_lowercase());
+    words.iter().any(|w| name.contains(w) || key.contains(w))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +406,12 @@ pub struct Workspace {
     /// 在线的 agent（所有白板，按名字排序）
     #[serde(default)]
     pub agents: Vec<AgentInfo>,
+    /// 机器（board host，按名字排序）
+    #[serde(default)]
+    pub hosts: Vec<crate::hosts::HostInfo>,
+    /// 排队和正在跑的派发（按创建先后）
+    #[serde(default)]
+    pub dispatches: Vec<crate::hosts::Dispatch>,
 }
 
 /// 一个在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内
