@@ -598,6 +598,21 @@ impl<'a> W<'a> {
         self.collect("SELECT id FROM cards WHERE board = ?1 AND col = ?2 ORDER BY pos, id", params![b, col], |r| r.get(0))
     }
 
+    /// 卡片在状态里的位置（从 0 数）；不在这个状态时为 None
+    fn rank(&self, b: i64, col: &str, id: i64) -> Result<Option<usize>> {
+        let n: Option<i64> = self
+            .tx
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM cards d WHERE d.board = c.board AND d.col = c.col
+                           AND (d.pos < c.pos OR (d.pos = c.pos AND d.id < c.id)))
+                 FROM cards c WHERE c.board = ?1 AND c.col = ?2 AND c.id = ?3",
+                params![b, col, id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(n.map(|n| n as usize))
+    }
+
     fn write_col(&self, b: i64, col: &str, ids: &[i64]) -> Result<()> {
         let mut st = self.tx.prepare_cached("UPDATE cards SET col = ?1, pos = ?2 WHERE board = ?3 AND id = ?4")?;
         for (i, id) in ids.iter().enumerate() {
@@ -608,6 +623,25 @@ impl<'a> W<'a> {
 
     /// 把卡片放到目标状态的指定位置，返回（原位置，新位置）
     pub(crate) fn place(&mut self, b: i64, id: i64, from: Option<&str>, to: &str, at: At) -> Result<(usize, usize)> {
+        if let At::Bottom = at {
+            // 放到最下面：只改这一张（MAX(pos) + 1），不重写整列；终点状态的卡片只增不减，重写整列的耗时随张数增长。
+            // 离开的状态留下的空位不影响顺序（按 pos 排）
+            let old = match from {
+                Some(f) => Some(self.rank(b, f, id)?),
+                None => None,
+            };
+            let (n, max): (i64, Option<i64>) = self.tx.query_row(
+                "SELECT COUNT(*), MAX(pos) FROM cards WHERE board = ?1 AND col = ?2 AND id != ?3",
+                params![b, to, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            self.tx.execute(
+                "UPDATE cards SET col = ?1, pos = ?2 WHERE board = ?3 AND id = ?4",
+                params![to, max.map_or(0, |m| m + 1), b, id],
+            )?;
+            self.changed = true;
+            return Ok((old.flatten().unwrap_or(0), n as usize));
+        }
         let mut from_list = match from {
             Some(f) => self.col_ids(b, f)?,
             None => vec![],

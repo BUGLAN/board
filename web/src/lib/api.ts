@@ -126,7 +126,8 @@ export const api = {
   revokeToken: (id: number) => req('DELETE', `/api/tokens/${id}`),
 
   workspace: () => req<Workspace>('GET', '/api/workspace'),
-  board: (path: string) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}`),
+  /** full：终点状态也带全部卡片（默认只带最近的几张，见 BoardSnapshot.omitted） */
+  board: (path: string, full = false) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}${full ? '&full=1' : ''}`),
   card: (path: string, id: number) => req<CardDetail>('GET', `/api/card?path=${q(path)}&id=${id}`),
   /** 一块白板的动态：按 id 倒序分页（新的在前）。before 是上一页最后一条的 id，不传从最新一条开始；返回空数组 = 没有更早的了 */
   events: (path: string, before?: number | null, limit = 20) =>

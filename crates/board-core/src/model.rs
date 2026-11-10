@@ -528,6 +528,13 @@ pub struct BoardSnapshot {
     pub statuses: Vec<Status>,
     pub cols: Cols,
     pub cards: BTreeMap<i64, Card>,
+    /// 终点状态默认只带最近移入的 FINAL_RECENT 张（cols、cards 里都没有更早的）：状态 → 省略的张数。
+    /// 取全量（full）或没有省略时为空；旧服务端没有这个字段
+    #[serde(default)]
+    pub omitted: BTreeMap<String, usize>,
     /// 最近的事件（新的在后）
     pub log: Vec<Event>,
 }
+
+/// 白板快照里每个终点状态默认带的张数（最近移入的，也就是最下面的几张）；更早的按需取全量
+pub const FINAL_RECENT: usize = 50;

@@ -43,7 +43,7 @@ fn code(r: Result<CardDetail>) -> ErrorCode {
 fn snapshot(s: &Store, path: &str, now: i64) -> BoardSnapshot {
     s.read(|r| {
         let b = r.resolve(path)?;
-        r.board_snapshot(&b, now)
+        r.board_snapshot(&b, now, true)
     })
     .unwrap()
 }
@@ -1344,4 +1344,62 @@ fn agent_beat_keeps_cards_on_all_boards() {
     assert!(c.activity.iter().any(|a| a.action == "lost" && a.text.contains("心跳中断")), "{:?}", c.activity.last());
     // 本次耗时：第一次心跳到最后一次心跳
     assert_eq!(c.card.work_ms, last - (T0 + 2 * SEC));
+}
+
+/// 终点状态的快照默认只带最近移入的 FINAL_RECENT 张，省略的张数单独给出；full 时是全部；别的状态不受影响
+#[test]
+fn final_snapshot_keeps_only_recent_cards() {
+    let mut s = store();
+    let n = FINAL_RECENT as i64 + 10;
+    for i in 1..=n {
+        exec(&mut s, B, &human(), T0 + i, new(&format!("完成 {i}"))).unwrap();
+        exec(&mut s, B, &human(), T0 + i, mv(i, "done")).unwrap();
+    }
+    for i in 1..=3 {
+        exec(&mut s, B, &human(), T0 + n + i, new(&format!("待办 {i}"))).unwrap();
+    }
+    let part = s
+        .read(|r| {
+            let b = r.resolve(B)?;
+            r.board_snapshot(&b, T0, false)
+        })
+        .unwrap();
+    // 最近移入的在最下面：留下 11..=n
+    assert_eq!(part.cols["done"], (11..=n).collect::<Vec<_>>());
+    assert_eq!(part.omitted.get("done"), Some(&10));
+    assert!(!part.cards.contains_key(&1) && !part.cards.contains_key(&10));
+    assert!(part.cards.contains_key(&11));
+    assert_eq!(part.cols["todo"], vec![n + 1, n + 2, n + 3]);
+    assert_eq!(part.omitted.len(), 1);
+
+    let all = snapshot(&s, B, T0);
+    assert_eq!(all.cols["done"], (1..=n).collect::<Vec<_>>());
+    assert!(all.omitted.is_empty());
+    assert_eq!(all.cards.len() as i64, n + 3);
+}
+
+/// 放到最下面只改这一张的 pos，不重写整列（终点状态越积越多，重写整列越来越慢）
+#[test]
+fn place_at_bottom_updates_only_that_card() {
+    let mut s = store();
+    for i in 1..=1001 {
+        exec(&mut s, B, &human(), T0 + i, new(&format!("卡片 {i}"))).unwrap();
+    }
+    // 前 1000 张直接放进「待审核」，pos 稀疏：被重写的话会变成 0..999
+    s.conn().execute("UPDATE cards SET col = 'review', pos = id * 10 WHERE id <= 1000", []).unwrap();
+    exec(&mut s, B, &human(), T0 + 2000, mv(1001, "review")).unwrap();
+    let pos: Vec<(i64, i64)> = {
+        let mut st = s.conn().prepare("SELECT id, pos FROM cards WHERE col = 'review' ORDER BY pos, id").unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|x| x.unwrap()).collect()
+    };
+    assert_eq!(pos.len(), 1001);
+    for (id, p) in &pos[..1000] {
+        assert_eq!(*p, id * 10, "#{id} 的 pos 被改了");
+    }
+    assert_eq!(pos[1000], (1001, 10_001));
+    assert_eq!(snapshot(&s, B, T0).cols["review"].last(), Some(&1001));
+    // 再放一张到指定位置：按 pos 顺序插入，空位不影响
+    exec(&mut s, B, &human(), T0 + 2001, new("插队")).unwrap();
+    exec(&mut s, B, &human(), T0 + 2002, Cmd::Move { id: 1002, column: "review".into(), top: false, index: Some(1), order: None }).unwrap();
+    assert_eq!(&snapshot(&s, B, T0).cols["review"][..3], &[1, 1002, 2]);
 }

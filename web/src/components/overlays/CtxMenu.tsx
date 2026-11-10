@@ -8,7 +8,7 @@ import { quickPrompts } from '../../lib/prompt';
 import { SORTS, sortKey, type SortSpec } from '../../lib/sort';
 import { boardFlow } from '../../lib/schema';
 import { cx } from '../../lib/util';
-import { allBoards, boardMeta, useData } from '../../store/data';
+import { allBoards, boardMeta, colCount, useData } from '../../store/data';
 import { closeCtx, manageLabels, setSort, useUI } from '../../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar } from '../bits';
 import { Icon } from '../Icon';
@@ -186,7 +186,7 @@ function MoveMenu({ id, go }: { id: number; go: (fn: () => void) => () => void }
                 {veto.code !== 'NOT_HOLDER' && veto.title}
               </span>
             ) : (
-              <span className="mv-count mono">{board.cols[s.key]?.length ?? 0}</span>
+              <span className="mv-count mono">{colCount(board, s.key)}</span>
             )}
           </button>
         );

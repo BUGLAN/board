@@ -13,7 +13,7 @@ import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
 import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
-import { refresh, serverNow, useCurrent, useData } from '../store/data';
+import { colCount, loadFull, omittedIn, refresh, serverNow, useCurrent, useData } from '../store/data';
 import { closeCtx, openCreator, openCtx, setFilter, setSort, setTab, toastError, useUI, type DragUI } from '../store/ui';
 import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
@@ -71,7 +71,7 @@ export function BoardView() {
   // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
   const f = flowOf(board?.statuses ?? cur?.board.statuses);
   const counts = useMemo(
-    () => (board ? Object.fromEntries(Object.entries(board.cols).map(([k, v]) => [k, v.length])) : cur?.board.counts ?? {}),
+    () => (board ? Object.fromEntries(Object.keys(board.cols).map(k => [k, colCount(board, k)])) : cur?.board.counts ?? {}),
     [board, cur?.board.counts],
   );
   const path = cur?.board.path ?? '';
@@ -106,6 +106,12 @@ export function BoardView() {
   }, [reject]);
 
   const labelSel = useUI(s => s.labelSel);
+  // 终点状态默认只带最近的几张：筛选、排序时取全量，免得找不到、排不到更早的卡片
+  const truncated = !!board && Object.values(board.omitted ?? {}).some(Boolean);
+  const sortsTruncated = !!board && Object.keys(board.omitted ?? {}).some(k => omittedIn(board, k) > 0 && sorts[sortKey(path, k)]);
+  useEffect(() => {
+    if (truncated && (filter || labelSel.length > 0 || sortsTruncated)) void loadFull();
+  }, [truncated, filter, labelSel, sortsTruncated]);
   // 页头只提示筛选框里的文字；侧栏选中的标签在胶囊上已经高亮，不再重复提示
   const n = filter && board ? Object.values(board.cards).filter(c => c.column !== INBOX && cardHit(c, filter, labelSel, labels)).length : 0;
 
@@ -331,7 +337,8 @@ function emptyText(s: Status, f: FlowQ) {
 }
 
 function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sort, sortId }: ColumnProps) {
-  const count = board.cols[col.key]?.length ?? 0;
+  const count = colCount(board, col.key);
+  const earlier = omittedIn(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
   const list = useRef<HTMLDivElement>(null);
   useMasonry(list);
@@ -388,6 +395,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         </span>
       </header>
       <div className="col-body">
+        {earlier > 0 && <EarlierButton n={earlier} />}
         <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
           {ids.map((id, idx) => {
             const c = board.cards[id];
@@ -419,6 +427,31 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
       <Veto drag={over ? drag : null} />
       {resizer}
     </section>
+  );
+}
+
+/** 终点状态只带了最近的几张：上面一行「更早的 M 张」，点开取全量（这个窗口里这块白板之后都带全量） */
+function EarlierButton({ n }: { n: number }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      className={cx('btn sm col-earlier', busy && 'is-busy')}
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await loadFull();
+        } catch (e) {
+          toastError(e);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <Icon name="chevUp" />
+      更早的 {n} 张
+    </button>
   );
 }
 
@@ -723,7 +756,7 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
         <button key={s.key} className="ct" type="button" data-col={s.key} style={{ ['--c' as string]: statusColor(s.color) }} onClick={() => go(s.key)}>
           <i />
           {s.name}
-          <span className="n">{board?.cols[s.key]?.length ?? 0}</span>
+          <span className="n">{board ? colCount(board, s.key) : 0}</span>
         </button>
       ))}
     </nav>

@@ -10,7 +10,7 @@ import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
-import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
+import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeCard, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -42,10 +42,12 @@ export function CardDetail() {
   const drawer = useRef<HTMLElement>(null);
   const [sheetY, setSheetY] = useState<number | null>(null);
 
-  // 卡片被删除（例如在另一个窗口）：关闭
+  // 卡片被删除（例如在另一个窗口）：关闭。终点状态更早的卡片本来就不在快照里（omitted），以取回的详情为准；
+  // 它被删掉时由刷新取详情得到 NOT_FOUND 关闭（store/data.ts load）
+  const outside = !!detail && detail.id === id && omittedIn(board, detail.column) > 0;
   useEffect(() => {
-    if (id != null && board && !board.cards[id]) closeDetail();
-  }, [id, board]);
+    if (id != null && board && !board.cards[id] && !loading && !outside) closeDetail();
+  }, [id, board, loading, outside]);
 
   useEffect(() => {
     if (!on) setSheetY(null);
@@ -115,6 +117,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
   const list = board?.cols[c.column] ?? [];
   const i = list.indexOf(c.id);
+  const skipped = omittedIn(board, c.column);
 
   // 打开时把焦点放到关闭按钮，避免误触快捷键输入
   useEffect(() => {
@@ -124,7 +127,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   }, [on]);
 
   const step = (d: number) => {
-    const next = list[i + d];
+    const next = i < 0 ? undefined : list[i + d];
     if (next == null) {
       bodyRef.current?.querySelector('.d-nav')?.animate([{ transform: 'none' }, { transform: `translateY(${d * 3}px)` }, { transform: 'none' }], { duration: 220 });
       return;
@@ -207,7 +210,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <button className="icon-btn sm" type="button" data-tip="上一张  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
             <Icon name="chevUp" />
           </button>
-          <span className="d-pos mono">{list.length ? `${i + 1} / ${list.length}` : ''}</span>
+          {/* 位置按整个状态算（含快照里省略的更早卡片）；更早的卡片本身不在列表里，不显示位置 */}
+          <span className="d-pos mono">{i >= 0 ? `${i + 1 + skipped} / ${list.length + skipped}` : ''}</span>
           <button className="icon-btn sm" type="button" data-tip="下一张  ↓ / J" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
             <Icon name="chevDown" />
           </button>

@@ -84,7 +84,7 @@ impl Backend {
 
     pub fn board(&mut self, raw: &str) -> Result<BoardData> {
         let r = &self.0;
-        let mut snap: BoardSnapshot = r.get("/api/board", &[("path", raw)])?;
+        let mut snap: BoardSnapshot = r.get("/api/board", &[("path", raw), ("full", "1")])?;
         // ls 的顺序：未整理，再按工作流顺序，状态内按位置
         let mut order: Vec<String> = vec![INBOX.to_string()];
         order.extend(snap.statuses.iter().map(|s| s.key.clone()));

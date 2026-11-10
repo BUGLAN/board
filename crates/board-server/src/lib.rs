@@ -390,6 +390,9 @@ struct BoardQuery {
     path: String,
     #[serde(default)]
     id: Option<i64>,
+    /// GET /api/board?full=1：终点状态也带全部卡片（默认只带最近的 FINAL_RECENT 张）
+    #[serde(default)]
+    full: Option<String>,
 }
 
 async fn board(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResult<BoardSnapshot> {
@@ -397,7 +400,8 @@ async fn board(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiRes
         s.db(move |st| {
             st.read(|r| {
                 let b = r.resolve(&q.path)?;
-                r.board_snapshot(&b, now_ms())
+                let full = matches!(q.full.as_deref(), Some("1" | "true"));
+                r.board_snapshot(&b, now_ms(), full)
             })
         })
         .await?,

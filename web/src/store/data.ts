@@ -457,6 +457,24 @@ function pump(): Promise<void> {
   return inflight;
 }
 
+/* ------------------------------ 终点状态的更早卡片 ------------------------------ */
+
+/** 这个窗口里取过全量的白板：之后的刷新都带上 full（展开过的不再收起） */
+const fullPaths = new Set<string>();
+
+/** 快照里这个状态被省略的（更早的）张数 */
+export const omittedIn = (b: BoardSnapshot | null | undefined, col: string) => b?.omitted?.[col] ?? 0;
+/** 这个状态的卡片总数（含快照里省略的） */
+export const colCount = (b: BoardSnapshot, col: string) => (b.cols[col]?.length ?? 0) + omittedIn(b, col);
+
+/** 取当前白板的全量快照（终点状态更早的卡片）：点「更早的 M 张」、筛选、搜索、排序时。已经是全量时什么也不做 */
+export function loadFull(): Promise<void> {
+  const { path, board } = get();
+  if (fullPaths.has(path) || (board?.path === path && !Object.values(board.omitted ?? {}).some(Boolean))) return Promise.resolve();
+  fullPaths.add(path);
+  return refresh();
+}
+
 async function load() {
   const ws = await api.workspace();
   const paths = allBoards(ws).map(b => b.path);
@@ -468,8 +486,9 @@ async function load() {
   }
   const detailId = get().detailId;
   const [fetched, rawDetail] = await Promise.all([
-    api.board(path),
-    detailId != null ? api.card(path, detailId).catch(() => null) : Promise.resolve(null),
+    api.board(path, fullPaths.has(path)),
+    // 卡片不在了（NOT_FOUND）记为 gone：详情要关掉。不在快照里的卡片（终点状态更早的）不能靠快照判断
+    detailId != null ? api.card(path, detailId).catch(e => (e instanceof ApiError && e.code === 'NOT_FOUND' ? ('gone' as const) : null)) : Promise.resolve(null),
   ]);
   const st = get();
   if (st.path !== path) {
@@ -480,15 +499,17 @@ async function load() {
   if (prev && prev.path === fetched.path) flip.capture();
   else flip.reset();
   const board = share(base.board?.path === fetched.path ? base.board : snapshots.get(fetched.path), fetched);
-  const detail = rawDetail && share(base.detail?.id === rawDetail.id ? base.detail : details.get(`${path}#${rawDetail.id}`), rawDetail);
+  const gone = rawDetail === 'gone' && detailId != null && st.detailId === detailId && !fetched.cards[detailId];
+  const detail = rawDetail && rawDetail !== 'gone' && share(base.detail?.id === rawDetail.id ? base.detail : details.get(`${path}#${rawDetail.id}`), rawDetail);
   snapshots.set(board.path, board);
   if (detail) details.set(`${path}#${detail.id}`, detail);
   base.ws = share(base.ws, ws);
   base.board = board;
   if (st.detailId === detailId && detail) base.detail = detail;
+  if (gone) base.detail = null;
   boardRev = Math.max(ws.rev, board.rev);
   wsRev = ws.rev;
-  render({ rev: boardRev, offset: ws.now - Date.now() });
+  render({ rev: boardRev, offset: ws.now - Date.now(), ...(gone ? { detailId: null } : {}) });
 }
 
 /** 只取工作区：推送里的变化都属于别的白板时用（顶栏、切换器要用它的卡片数），不重取当前白板 */
@@ -605,9 +626,12 @@ export async function openDetail(id: number) {
     }
   } catch (e) {
     if (get().detailId !== id || get().path !== path) return;
-    // 卡片已经不在了（例如在另一个窗口删除）：关掉；否则留着摘要，告诉人详情没取回来
-    if (!get().board?.cards[id]) closeDetail();
-    else {
+    // 卡片已经不在了（例如在另一个窗口删除）、或者快照里没有它（终点状态更早的卡片）没有摘要可显示：关掉；否则留着摘要，告诉人详情没取回来
+    const gone = e instanceof ApiError && e.code === 'NOT_FOUND';
+    if (gone || !get().board?.cards[id]) {
+      closeDetail();
+      if (!gone) toast({ type: 'error', title: `#${id} 的详情没有加载出来`, text: (e as Error).message || '网络错误' });
+    } else {
       const msg = (e as Error).message || '网络错误';
       set({ detailError: msg });
       toast({ type: 'error', title: `#${id} 的详情没有加载出来`, text: msg });

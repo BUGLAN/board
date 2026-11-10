@@ -283,6 +283,8 @@ export interface BoardSnapshot {
   statuses: Status[];
   cols: Record<string, number[]>;
   cards: Record<string, Card>;
+  /** 终点状态默认只带最近移入的几张：状态 → 省略的（更早的）张数。取全量时、旧服务端没有 */
+  omitted?: Record<string, number>;
   log: BoardEvent[];
 }
 

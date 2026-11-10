@@ -520,15 +520,33 @@ impl<'a> R<'a> {
         flow_of(self.conn, board.id)
     }
 
-    pub fn board_snapshot(&self, board: &BoardRef, now: i64) -> Result<BoardSnapshot> {
+    /// 白板快照。full 为 false 时每个终点状态只带最下面（最近移入）的 FINAL_RECENT 张，省略的张数记在 omitted 里；
+    /// 终点状态的卡片只增不减，全带的话快照越来越大（每次推送都要重取）
+    pub fn board_snapshot(&self, board: &BoardRef, now: i64, full: bool) -> Result<BoardSnapshot> {
         let flow = flow_of(self.conn, board.id)?;
         let mut cols = Cols::new();
         cols.insert(INBOX.to_string(), vec![]);
         for s in &flow.0 {
             cols.insert(s.key.clone(), vec![]);
         }
+        let mut omitted = BTreeMap::new();
+        let mut skip: Vec<i64> = vec![];
+        if !full {
+            let mut st = self.conn.prepare_cached(
+                "SELECT id FROM cards WHERE board = ?1 AND col = ?2 ORDER BY pos DESC, id DESC LIMIT -1 OFFSET ?3",
+            )?;
+            for s in flow.0.iter().filter(|s| s.fin) {
+                let ids = st
+                    .query_map(params![board.id, s.key, FINAL_RECENT as i64], |r| r.get::<_, i64>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                if !ids.is_empty() {
+                    omitted.insert(s.key.clone(), ids.len());
+                    skip.extend(ids);
+                }
+            }
+        }
         let mut cards = BTreeMap::new();
-        for c in cards_of(self.conn, board.id, None)? {
+        for c in cards_query(self.conn, board.id, None, &skip)? {
             cols.entry(c.column.clone()).or_default().push(c.id);
             cards.insert(c.id, c);
         }
@@ -538,7 +556,7 @@ impl<'a> R<'a> {
             params![board.id],
         )?;
         log.reverse();
-        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, log })
+        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log })
     }
 
     /// 按列和列内顺序列出卡片
@@ -725,6 +743,16 @@ pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
 }
 
 pub(crate) fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
+    cards_query(conn, board, only, &[])
+}
+
+/// 同 cards_of，skip 里的卡片不取（在 SQL 里排除，免得为它们算子查询）
+fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -> Result<Vec<Card>> {
+    let skip = if skip.is_empty() {
+        String::new()
+    } else {
+        format!("AND c.id NOT IN ({})", skip.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))
+    };
     let sql = format!(
         "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.beat_at, c.created_at, c.updated_at,
                 c.created_by_kind, c.created_by_name, c.claimed_from,
@@ -736,7 +764,7 @@ pub(crate) fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Resu
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost'),
                 (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id)
-         FROM cards c WHERE c.board = ?1 {} ORDER BY {COL_ORDER}, c.pos",
+         FROM cards c WHERE c.board = ?1 {} {skip} ORDER BY {COL_ORDER}, c.pos, c.id",
         if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
     );
     let mut st = conn.prepare(&sql)?;

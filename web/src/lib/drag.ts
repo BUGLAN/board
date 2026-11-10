@@ -11,7 +11,7 @@ import { boardFlow, INBOX, type FlowQ } from './schema';
 import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
-import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, serverNow, useData } from '../store/data';
+import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, omittedIn, serverNow, useData } from '../store/data';
 import { rejectColumn, setDrag, setSort, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
@@ -455,7 +455,9 @@ function finish(cancelled: boolean) {
   } else {
     plan = planDrop(s.id, s.fromCol, target);
     // 松手当帧就画成「保存中」（不能再拖、再改），落位的补丁等飞回动画结束再叠（hold）
-    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order }, { cards: [s.id] });
+    // 终点状态的快照省略了更早的卡片（在最上面）：服务端的位置要加上省略的张数
+    const skipped = omittedIn(useData.getState().board, target.col);
+    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index + skipped, order: plan.order }, { cards: [s.id] });
     done.catch(err => {
       failed = true;
       toastError(err);
@@ -516,7 +518,8 @@ function planDrop(id: number, from: ColumnKey, target: { col: ColumnKey; index: 
   const labels = boardMeta(ws, path)?.project.labels ?? [];
   const prio = (board.cols[target.col] ?? []).filter(x => x !== id);
   const shown = sortIds(prio, board.cards, spec, labels, serverNow());
-  if (target.col === from) {
+  // 快照省略了更早的卡片（排序时会取全量，这里是还没取回来）：不能整块保存顺序（没列出的会被补到最后），按下一张卡片定位
+  if (target.col === from && !omittedIn(board, target.col)) {
     const order = [...shown];
     order.splice(Math.min(target.index, order.length), 0, id);
     return { index: target.index, order, clear: key };

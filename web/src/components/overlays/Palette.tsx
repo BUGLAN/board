@@ -6,7 +6,7 @@ import { quickPrompts } from '../../lib/prompt';
 import { boardFlow, INBOX } from '../../lib/schema';
 import type { Card } from '../../lib/types';
 import { accel, cx } from '../../lib/util';
-import { allBoards, useData } from '../../store/data';
+import { allBoards, loadFull, useData } from '../../store/data';
 import { closePalette, manageLabels, openCreator, setSide, setTab, toast, useUI } from '../../store/ui';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
@@ -60,6 +60,12 @@ export function Palette() {
     const t = setTimeout(() => input.current?.focus(), 30);
     return () => clearTimeout(t);
   }, [open, prefill]);
+
+  // 搜卡片时取全量：终点状态默认只带最近的几张，更早的也要能搜到
+  const searching = open && !!q.trim();
+  useEffect(() => {
+    if (searching) void loadFull();
+  }, [searching]);
 
   const close = () => {
     closePalette();
