@@ -18,7 +18,7 @@ export interface AgentMark {
 }
 
 const MARKS: Record<string, AgentMark> = {
-  // Claude 应用的图标
+  // Claude Code 的像素标志 Clawd（取自 Claude Code VS Code 扩展的 resources/clawd.svg，裁掉透明边后画成 64×64），不是 Claude 桌面应用的图标
   claude: { short: 'CC', color: '#D97757', icon: claudeIcon },
   // DeepSeek Harness 应用的图标
   dsh: { short: 'DS', color: '#4D6BFE', icon: dshIcon, light: true },
