@@ -133,7 +133,7 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
   display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 2px 0 9px; border-radius: 999px;
   font: 600 12px var(--f-mono); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2);
 }
-.hp-time button { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--text-3); }
+.hp-time button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: var(--text-3); }
 .hp-time button:hover { color: var(--danger-text); background: var(--danger-soft); }
 .hp-time button svg { width: 11px; height: 11px; }
 .hp-time-add { display: inline-flex; align-items: center; gap: 6px; }
@@ -297,3 +297,40 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
   .hp-meter { flex-basis: 100%; }
   .hp-b-head h1 { font-size: 24px; }
 }
+
+/* ---------------- 机器详情：次要区块收起 / 展开 ---------------- */
+.hp-fold-btn { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 0; text-align: left; cursor: pointer; }
+.hp-fold-btn svg { width: 13px; height: 13px; flex: none; color: var(--text-3); transition: transform var(--dur-2) var(--ease-out); }
+.hp-fold-btn[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.hp-fold-btn:hover { color: var(--text-2); }
+.hp-fold-btn .count { margin-left: 2px; }
+.hp-fold-body { animation: hp-in var(--dur-3) var(--ease-out); }
+.d-side-head .hp-fold-btn { width: auto; flex: 1; }
+.d-side-head { display: flex; align-items: center; gap: 8px; }
+.d-side.folded { flex: none; }
+
+/* 启动环境：名称列同宽，路径左端对齐（长路径中间省略，悬停看全） */
+.hp-env .hp-board { width: 8.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hp-env .hp-path, .hp-env .hp-env-hint { margin-left: 0; }
+
+/* ---------------- 乐观更新的反馈 ---------------- */
+/* 保存成功：这一行淡淡闪一下；失败：值回到原处、这一行回弹并闪警告色 */
+.hp-saved { animation: hp-saved var(--dur-4) var(--ease-out); }
+.hp-rollback { animation: hp-rollback calc(var(--dur-4) + 120ms) var(--ease-out); }
+@keyframes hp-saved { 0% { background: color-mix(in srgb, var(--brand) 9%, transparent); } 100% { background: transparent; } }
+@keyframes hp-rollback {
+  0% { transform: translateX(0); background: var(--danger-soft); }
+  20% { transform: translateX(-5px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-2px); }
+  100% { transform: none; background: transparent; }
+}
+/* 数字变化、新出现的时间点和规则：轻轻滑入 */
+.hp-num { display: inline-block; animation: count-roll var(--dur-3) var(--spring); }
+.hp-time, .hp-crule { animation: hp-in var(--dur-3) var(--spring-soft); }
+.hp-def, .hp-env-select, .hp-crule-agent { transition: color var(--dur-2), background-color var(--dur-2), box-shadow var(--dur-2); }
+@keyframes hp-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+:root[data-motion="reduced"] :is(.hp-saved, .hp-rollback, .hp-num, .hp-time, .hp-crule, .hp-fold-body) { animation: none; }
+:root[data-motion="reduced"] .hp-fold-btn svg { transition: none; }
+/* 底部操作栏（移除机器、暂停接单）贴在左栏底部：内容再长也不用滚到底才看得到 */
+.hp-modal .d-main > .d-actions { position: sticky; bottom: -18px; z-index: 2; margin-bottom: -18px; padding-bottom: 14px; background: var(--glass-strong); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }

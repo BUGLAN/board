@@ -1,5 +1,5 @@
 /* 机器 Tab：侧栏机器列表、主区机位总览 */
-import { agentMark, cronSummary, envName, hostLoad, hostsOf, mins, since, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, cronSummary, envName, hostLoad, hostsOf, mins, since, skillMiss, SOURCE, usedAgents } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';
@@ -179,14 +179,12 @@ export function HostsPage() {
                     </div>
                   )}
                   <div className="hp-tile-foot">
-                    {h.agents
-                      .filter(a => a.found)
-                      .map(a => (
-                        <AgentChip key={a.id} a={a} def={a.id === def} env={envName(h, a.env)} skill={skillMiss(h, a)} small />
-                      ))}
-                    {!h.agents.some(a => a.found) && <span className="hp-tile-auto">一个 agent 也没找到</span>}
+                    {/* 只显示设置里会用到的 agent（默认、领取规则、兜底），不把检测到的全部铺出来 */}
+                    {usedAgents(h).map(a => (
+                      <AgentChip key={a.id} a={a} def={a.id === def} env={envName(h, a.env)} skill={skillMiss(h, a)} small />
+                    ))}
                     <span className="hp-sp" />
-                    <span className="hp-tile-auto">{cronSummary(h)}</span>
+                    {cronSummary(h) && <span className="hp-tile-auto">{cronSummary(h)}</span>}
                   </div>
                 </button>
               );

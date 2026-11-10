@@ -5,7 +5,7 @@ import { api } from '../../lib/api';
 import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, skillMiss, SOURCE } from '../../lib/hosts';
 import { shell } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostInfo } from '../../lib/types';
-import { copyText, cx, durWords } from '../../lib/util';
+import { copyText, cx, durWords, pref, replay } from '../../lib/util';
 import { hostKey, optimistic, useBusy, useData } from '../../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../../store/ui';
 import { Title, useNow } from '../bits';
@@ -70,6 +70,11 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
   const rev = ws?.rev;
 
+  const [recentOpen, setRecentOpen] = useState(() => pref.get('hostFold.recent', true));
+  const toggleRecent = () => {
+    pref.set('hostFold.recent', !recentOpen);
+    setRecentOpen(!recentOpen);
+  };
   // 最近：打开时和每次有变化时重新取
   useEffect(() => {
     if (!on) return;
@@ -92,9 +97,15 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
       ...fields,
       agents: env ? x.agents.map(a => (a.id === env.agent ? { ...a, env: env.env } : a)) : x.agents,
     }));
+    // 改的是哪一行：保存成功后闪一下，失败时值回到原处并回弹，不静默跳变
+    const row = (document.activeElement as HTMLElement | null)?.closest('.hp-rule, .hp-arow, .hp-crules, .hp-cron, .d-actions');
     try {
       await optimistic(local, () => api.updateHost(h.name, p));
+      row?.classList.remove('hp-rollback');
+      replay(row, 'hp-saved');
     } catch (e) {
+      row?.classList.remove('hp-saved');
+      replay(row, 'hp-rollback');
       toastError(e);
     }
   };
@@ -174,7 +185,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <button type="button" aria-label="减少" disabled={busy || h.max <= 1} onClick={() => patch({ max: h.max - 1 })}>
                   −
                 </button>
-                <b>{h.max}</b>
+                <b key={h.max} className="hp-num">
+                  {h.max}
+                </b>
                 <button type="button" aria-label="增加" disabled={busy || h.max >= 8} onClick={() => patch({ max: h.max + 1 })}>
                   +
                 </button>
@@ -190,7 +203,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                   <button type="button" aria-label="减少" disabled={busy || h.perSession <= 1} onClick={() => patch({ perSession: h.perSession! - 1 })}>
                     −
                   </button>
-                  <b>{h.perSession}</b>
+                  <b key={h.perSession} className="hp-num">
+                    {h.perSession}
+                  </b>
                   <button type="button" aria-label="增加" disabled={busy || h.perSession >= 8} onClick={() => patch({ perSession: h.perSession! + 1 })}>
                     +
                   </button>
@@ -250,20 +265,20 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </section>
 
           {!!h.envs?.length && (
-            <section className="d-section" style={{ ['--i' as string]: 4 }}>
-              <div className="d-label">启动环境</div>
+            <Fold id="envs" title="启动环境" n={h.envs.length} i={4}>
               {h.envs.map(e => (
-                <div className="hp-dir" key={e.id}>
-                  <span className="hp-board">{e.name}</span>
-                  {e.path && <code title={e.path}>{e.path}</code>}
+                <div className="hp-dir hp-env" key={e.id}>
+                  <span className="hp-board" title={e.name}>
+                    {e.name}
+                  </span>
+                  {e.path && <MidPath path={e.path} />}
                   {e.id === 'direct' && <span className="hp-env-hint">不经过 shell，直接执行命令</span>}
                 </div>
               ))}
-            </section>
+            </Fold>
           )}
 
-          <section className="d-section" style={{ ['--i' as string]: 5 }}>
-            <div className="d-label">白板与目录</div>
+          <Fold id="dirs" title="白板与目录" n={h.dirs.length} i={5}>
             {h.dirs.length ? (
               h.dirs.map(d => (
                 <div className="hp-dir" key={d.board}>
@@ -275,7 +290,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             ) : (
               <p className="hp-note">没有白板：board host 启动时用 --dir 项目/白板=路径 加上，否则接不到卡片</p>
             )}
-          </section>
+          </Fold>
 
           <div className="d-actions">
             <button
@@ -316,14 +331,17 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </div>
         </div>
 
-        <div className="d-side">
+        <div className={cx('d-side', !recentOpen && 'folded')}>
           <div className="d-label d-side-head">
-            最近 <span className="count">{recent?.length ?? ''}</span>
+            <button type="button" className="hp-fold-btn" aria-expanded={recentOpen} onClick={toggleRecent}>
+              <Icon name="chevDown" />
+              最近 <span className="count">{recent?.length ?? ''}</span>
+            </button>
             <span className="act">
               今天交审 {today.review} · 异常退出 {today.crashed}
             </span>
           </div>
-          <div className="d-activity">
+          <div className="d-activity" hidden={!recentOpen}>
             {recent === null ? (
               <p className="hp-note hp-pad">正在加载…</p>
             ) : recent.length === 0 ? (
@@ -543,6 +561,28 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
         </p>
       )}
     </div>
+  );
+}
+
+/** 次要区块：标题行点一下收起 / 展开，状态记在本机（默认收起），重开弹窗保持 */
+function Fold({ id, title, n, i, children }: { id: string; title: string; n: number; i: number; children: React.ReactNode }) {
+  const [open, setOpen] = useState(() => pref.get(`hostFold.${id}`, false));
+  return (
+    <section className={cx('d-section hp-fold', !open && 'folded')} style={{ ['--i' as string]: i }}>
+      <button
+        type="button"
+        className="d-label hp-fold-btn"
+        aria-expanded={open}
+        onClick={() => {
+          pref.set(`hostFold.${id}`, !open);
+          setOpen(!open);
+        }}
+      >
+        <Icon name="chevDown" />
+        {title} <span className="count">{n}</span>
+      </button>
+      {open && <div className="hp-fold-body">{children}</div>}
+    </section>
   );
 }
 
