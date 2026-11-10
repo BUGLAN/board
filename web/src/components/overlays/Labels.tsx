@@ -18,7 +18,8 @@ export function LabelPicker() {
   const [active, setActive] = useState(0);
   const [pos, setPos] = useState({ left: 0, top: 0 });
   const [on, setOn] = useState(false);
-  const labels = ws?.projects.find(p => p.key === req?.project)?.labels ?? [];
+  const fixed = !!req?.labels;
+  const labels = req?.labels ?? ws?.projects.find(p => p.key === req?.project)?.labels ?? [];
 
   useLayoutEffect(() => {
     if (!req) {
@@ -46,7 +47,7 @@ export function LabelPicker() {
   const query = q.trim();
   const list = labels.filter(l => !query || l.name.toLowerCase().includes(query.toLowerCase()));
   const exact = labels.some(l => l.name.toLowerCase() === query.toLowerCase());
-  const canCreate = !!query && !exact;
+  const canCreate = !fixed && !!query && !exact;
   const total = list.length + (canCreate ? 1 : 0);
   const sel = new Set(req?.selected ?? []);
 
@@ -83,7 +84,7 @@ export function LabelPicker() {
         <input
           ref={input}
           value={q}
-          placeholder="搜索或新建标签…"
+          placeholder={fixed ? '搜索标签…' : '搜索或新建标签…'}
           spellCheck={false}
           autoComplete="off"
           onChange={e => {
@@ -131,14 +132,16 @@ export function LabelPicker() {
             {creating ? `正在新建「${query}」…` : `新建标签「${query}」`}
           </button>
         )}
-        {!total && <div className="lbp-empty">还没有标签，输入名称即可新建</div>}
+        {!total && <div className="lbp-empty">{fixed ? (query ? '没有这个标签' : '还没有标签') : '还没有标签，输入名称即可新建'}</div>}
       </div>
+      {!fixed && (
       <div className="lbp-foot">
         <button type="button" onClick={() => req && manageLabels(req.project)}>
           <Icon name="edit" />
           管理标签
         </button>
       </div>
+      )}
     </div>
   );
 }

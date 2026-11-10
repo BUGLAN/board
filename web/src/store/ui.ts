@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { ApiError } from '../lib/api';
 import type { SortSpec } from '../lib/sort';
-import type { ColumnKey } from '../lib/types';
+import type { ColumnKey, Label } from '../lib/types';
 import { pref } from '../lib/util';
 
 /** 一张可以放大查看的图片 */
@@ -63,6 +63,8 @@ export interface PickerReq {
   project: string;
   selected: number[];
   onToggle: (id: number, on: boolean) => void | Promise<void>;
+  /** 给了就只在这些标签里选（不取 project 的标签），也不能新建、管理：例如机器的领取规则，标签来自几个项目、按名称对应 */
+  labels?: Label[];
 }
 
 export interface CtxReq {

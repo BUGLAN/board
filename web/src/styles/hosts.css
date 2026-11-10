@@ -128,18 +128,11 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
   display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 30px; min-width: 140px; max-width: 100%; padding: 2px 6px;
   border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
 }
-.hp-lset:focus-within { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent), 0 0 0 3px var(--brand-soft); }
-.hp-lset-chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 2px 0 7px; border-radius: var(--r-xs); font-size: 12px; background: var(--surface-3); }
-.hp-lset-chip.off { color: var(--text-3); text-decoration: line-through; }
-.hp-lset-chip button { display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-3); }
-.hp-lset-chip button:hover { color: var(--text); background: var(--line); }
-.hp-lset-chip svg { width: 10px; height: 10px; }
-.hp-lset-input { flex: 1; min-width: 56px; height: 24px; border: 0; background: transparent; font-size: 12.5px; color: var(--text); }
-.hp-lset-input:focus { outline: none; }
-/* 标签建议：和右键菜单一个样式（.ctx），画在 body 上；最多显示 7 项，多了在里面滚 */
-.hp-lset-pop { min-width: 160px; max-height: 236px; overflow-y: auto; overscroll-behavior: contain; }
-.hp-lset-pop button[data-do] { height: 30px; font-size: 12.5px; }
-.hp-lset-pop button[data-do].hi { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.hp-lset-chip { display: inline-flex; min-width: 0; }
+/* 项目里已经没有的标签：灰掉、划掉 */
+.hp-lset-chip.off .lb { opacity: .6; }
+.hp-lset-chip.off .lb-name { text-decoration: line-through; }
+.hp-lset .lb-add { height: 22px; }
 .hp-crule.off .hp-crule-label { color: var(--text-3); text-decoration: line-through; }
 .hp-crule-warn { flex-basis: 100%; font-style: normal; font-size: 12px; color: var(--warn-text); }
 .hp-crule.fallback .hp-crule-label { color: var(--text-2); }
