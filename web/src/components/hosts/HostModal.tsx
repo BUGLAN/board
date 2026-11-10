@@ -1,5 +1,5 @@
 /* 机器详情：居中弹窗（正在跑、排队、派发规则、本机 agent、启动环境、白板与目录、最近）；添加机器 */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, skillMiss, SOURCE } from '../../lib/hosts';
@@ -438,17 +438,39 @@ const OPS: [ClaimRule['op'], string][] = [
   ['equal', '标签正好是'],
 ];
 
-/** 一条规则里的标签：胶囊（可去掉）加一个输入框（回车加上，提示这台机器有目录的项目里的标签） */
-function LabelSet({ value, onChange, names, missing, disabled, id }: { value: string[]; onChange: (v: string[]) => void; names: string[]; missing?: string[]; disabled?: boolean; id: string }) {
+/** 一条规则里的标签：胶囊（可去掉）加一个输入框（回车加上）。聚焦时在下面弹出这台机器有目录的项目里的标签，
+    按输入过滤，↑↓ 选、回车或点击加上。不用原生 datalist：它由浏览器画，不跟主题（深色下是白底黑字） */
+function LabelSet({ value, onChange, names, missing, disabled }: { value: string[]; onChange: (v: string[]) => void; names: string[]; missing?: string[]; disabled?: boolean }) {
   const [t, setT] = useState('');
-  const add = () => {
-    const l = t.trim();
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const box = useRef<HTMLSpanElement>(null);
+  const q = t.trim().toLowerCase();
+  const opts = names.filter(n => !value.some(x => x.toLowerCase() === n.toLowerCase()) && n.toLowerCase().includes(q));
+  const show = open && !disabled && opts.length > 0;
+  const add = (l = t.trim()) => {
     if (!l) return;
     if (!value.some(x => x.toLowerCase() === l.toLowerCase())) onChange([...value, l]);
     setT('');
+    setHi(0);
   };
+  // 弹层画在 body 上（弹窗里的滚动区会裁掉它），按输入框的位置摆；外面一滚动就收起（输入框可能滚出了可见区），再打字重新弹出
+  useLayoutEffect(() => {
+    if (!show) return;
+    const place = () => box.current && setRect(box.current.getBoundingClientRect());
+    const scroll = (e: Event) => !(e.target instanceof Element && e.target.closest('.hp-lset-pop')) && setOpen(false);
+    place();
+    window.addEventListener('scroll', scroll, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', scroll, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [show, value.length]);
+  const below = rect ? innerHeight - rect.bottom > 220 || rect.top < 220 : true;
   return (
-    <span className="hp-lset">
+    <span className="hp-lset" ref={box}>
       {value.map(l => (
         <span key={l} className={cx('hp-lset-chip', missing?.includes(l) && 'off')} title={missing?.includes(l) ? '项目里没有这个标签' : undefined}>
           {l}
@@ -459,29 +481,66 @@ function LabelSet({ value, onChange, names, missing, disabled, id }: { value: st
       ))}
       <input
         className="hp-lset-input"
-        list={id}
         placeholder={value.length ? '再加' : '标签名'}
         value={t}
         maxLength={24}
         disabled={disabled}
+        role="combobox"
+        aria-expanded={show}
+        aria-autocomplete="list"
         aria-label="加一个标签（回车）"
-        onChange={e => setT(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter' || e.key === ',') {
-            e.preventDefault();
-            add();
-          }
-          if (e.key === 'Backspace' && !t && value.length) onChange(value.slice(0, -1));
+        onFocus={() => setOpen(true)}
+        onChange={e => {
+          setT(e.target.value);
+          setHi(0);
+          setOpen(true);
         }}
-        onBlur={add}
+        onKeyDown={e => {
+          if (show && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            e.preventDefault();
+            setHi(i => (i + (e.key === 'ArrowDown' ? 1 : opts.length - 1)) % opts.length);
+          } else if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            add(show && opts[hi] && (q || e.key === 'Enter') ? opts[hi] : undefined);
+          } else if (e.key === 'Escape' && show) {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+          } else if (e.key === 'Backspace' && !t && value.length) onChange(value.slice(0, -1));
+        }}
+        onBlur={() => {
+          setOpen(false);
+          add();
+        }}
       />
-      <datalist id={id}>
-        {names
-          .filter(n => !value.some(x => x.toLowerCase() === n.toLowerCase()))
-          .map(n => (
-            <option key={n} value={n} />
-          ))}
-      </datalist>
+      {show &&
+        rect &&
+        createPortal(
+          <div
+            className="ctx on hp-lset-pop"
+            role="listbox"
+            style={{ left: rect.left, width: Math.max(rect.width, 160), ...(below ? { top: rect.bottom + 4 } : { bottom: innerHeight - rect.top + 4 }) }}
+            // 点选项时不让输入框失焦（失焦会把打了一半的文字当标签加上）
+            onPointerDown={e => e.preventDefault()}
+          >
+            {opts.map((n, i) => (
+              <button
+                key={n}
+                type="button"
+                data-do=""
+                role="option"
+                aria-selected={i === hi}
+                className={cx(i === hi && 'hi')}
+                onPointerEnter={() => setHi(i)}
+                onClick={() => add(n)}
+              >
+                <Icon name="tag" />
+                {n}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }
@@ -531,7 +590,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
               </option>
             ))}
           </select>
-          <LabelSet id={`rl-${h.id}-${i}`} value={r.labels} names={names} missing={r.missing} disabled={busy} onChange={v => v.length && edit(i, { labels: v })} />
+          <LabelSet value={r.labels} names={names} missing={r.missing} disabled={busy} onChange={v => v.length && edit(i, { labels: v })} />
           <Icon name="chevRight" />
           <select className="input hp-crule-agent" value={r.agent} disabled={busy} aria-label="由哪个 agent 做" onChange={e => edit(i, { agent: e.target.value })}>
             {!has(r.agent) && <option value={r.agent}>{agentName(r.agent)}（找不到）</option>}
@@ -563,7 +622,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
             </option>
           ))}
         </select>
-        <LabelSet id={`rl-${h.id}-new`} value={labels} names={names} onChange={setLabels} />
+        <LabelSet value={labels} names={names} onChange={setLabels} />
         <Icon name="chevRight" />
         <select className="input hp-crule-agent" value={pick} aria-label="新规则的 agent" onChange={e => setAgent(e.target.value)}>
           {found.map(a => (
