@@ -9,9 +9,8 @@
 <title>Board</title>
 <!-- 首帧就按主题上底色：主题偏好存在 localStorage，样式和脚本包还没加载时页面也不是白的（桌面端从启动页跳过来、慢网都不闪白）。
      与 lib/platform.ts 的 setTheme、styles/tokens.css 的 --bg 一致 -->
-<script>
-try { var t = JSON.parse(localStorage.getItem('board.theme') || '"auto"'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
-</script>
+<!-- 不写内联脚本：页面的 CSP（board-server 的 CSP）只允许同源的脚本文件 -->
+<script src="/theme.js"></script>
 <style>
 html { background: var(--bg, #F2F0EB); color-scheme: light; }
 @media (prefers-color-scheme: dark) { html:not([data-theme="light"]) { background: var(--bg, #0C0D0F); color-scheme: dark; } }

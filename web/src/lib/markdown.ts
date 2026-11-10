@@ -1,8 +1,28 @@
-/* Markdown：marked 解析 + DOMPurify 清理（描述和评论可能来自任何 agent，必须清理） */
+/* Markdown：marked 解析 + DOMPurify 清理（描述和评论可能来自任何 agent，agent 又会读外部内容，必须清理）
+   只留排版需要的：不能改写、遮盖界面（style、id、class），不能拼出表单，不能向外站发请求（外站图片、媒体） */
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
 marked.setOptions({ gfm: true, breaks: true });
+
+/** 单独的实例：钩子不影响别处的 DOMPurify */
+const purify = DOMPurify(window);
+// class 只留代码块高亮的 language-*（借用应用的类名能盖出假弹窗）
+purify.addHook('uponSanitizeAttribute', (_node, data) => {
+  if (data.attrName !== 'class') return;
+  const keep = data.attrValue.split(/\s+/).filter(c => /^language-[\w+#.-]+$/.test(c));
+  if (keep.length) data.attrValue = keep.join(' ');
+  else data.keepAttr = false;
+});
+const SANITIZE = {
+  USE_PROFILES: { html: true }, // 不要 SVG、MathML
+  ADD_ATTR: ['target', 'rel'],
+  FORBID_TAGS: ['style', 'link', 'meta', 'base', 'form', 'button', 'textarea', 'select', 'option', 'optgroup', 'fieldset', 'iframe', 'frame', 'object', 'embed', 'video', 'audio', 'source', 'track', 'picture'],
+  FORBID_ATTR: ['style', 'id', 'name', 'action', 'formaction', 'srcset', 'ping', 'background', 'poster'],
+};
+
+/** 只有附件（同源的 /api/files/）显示成图片；外站图片会把「谁在什么时候看了这张卡」告诉外站，改成链接 */
+const isAttachment = (src: string) => src.startsWith('/api/files/');
 
 const cache = new Map<string, string>();
 
@@ -11,7 +31,7 @@ export function markdown(src: string): string {
   const hit = cache.get(key);
   if (hit != null) return hit;
   const raw = marked.parse(key, { async: false }) as string;
-  const clean = DOMPurify.sanitize(raw, { ADD_ATTR: ['target', 'rel'] });
+  const clean = purify.sanitize(raw, SANITIZE) as string;
   const out = decorate(clean);
   if (cache.size > 400) cache.clear();
   cache.set(key, out);
@@ -23,6 +43,22 @@ function decorate(html: string): string {
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
   const root = tpl.content;
+  // input 只留任务列表的复选框（marked 生成的 type=checkbox disabled）
+  root.querySelectorAll('input').forEach(i => {
+    if (!(i.getAttribute('type') === 'checkbox' && i.hasAttribute('disabled'))) i.remove();
+  });
+  // 外站图片换成链接（template 里的图片不会加载）
+  root.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src') || '';
+    if (isAttachment(src)) return;
+    const label = img.getAttribute('alt') || src || '图片';
+    if (/^https?:\/\//i.test(src)) {
+      const a = document.createElement('a');
+      a.href = src;
+      a.textContent = `图片：${label}`;
+      img.replaceWith(a);
+    } else img.replaceWith(document.createTextNode(label));
+  });
   root.querySelectorAll('li').forEach(li => {
     const box = li.querySelector(':scope > input[type="checkbox"], :scope > p > input[type="checkbox"]');
     if (!box) return;

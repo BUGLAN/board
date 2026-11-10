@@ -878,9 +878,52 @@ async fn static_file(uri: Uri) -> Response {
         },
     };
     let cache = if name.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
-    (
-        [(header::CONTENT_TYPE, file.metadata.mimetype().to_string()), (header::CACHE_CONTROL, cache.to_string())],
-        file.data,
-    )
-        .into_response()
+    let mime = file.metadata.mimetype().to_string();
+    let mut res = ([(header::CONTENT_TYPE, mime.clone()), (header::CACHE_CONTROL, cache.to_string())], file.data).into_response();
+    if mime.starts_with("text/html") {
+        res.headers_mut().insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static(CSP));
+    }
+    res
+}
+
+/// 界面页面的内容安全策略（CSP）。卡片描述、评论来自 agent，Markdown 清理（web/src/lib/markdown.ts）之外的第二道屏障：
+/// 就算漏进了脚本也执行不了，也不能把数据发到外站。
+/// - script-src 只有同源文件：index.html 里不放内联脚本（首帧主题在 web/public/theme.js）
+/// - style-src 允许内联：React 的 style 属性、index.html 首帧底色
+/// - img-src：附件、data:/blob:（粘贴截图的预览）、GitHub 头像
+/// - connect-src：同源接口和推送；ipc: / http://ipc.localhost 是桌面端（Tauri）调用本机命令的通道
+pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: blob: https://avatars.githubusercontent.com; font-src 'self' data:; \
+    connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+#[cfg(test)]
+mod tests {
+    use super::CSP;
+
+    /// 页面的 CSP：脚本只能来自同源文件，不能 eval、不能内联；图片和请求不能发到外站（GitHub 头像、桌面端 IPC 除外）
+    #[test]
+    fn csp_directives() {
+        let d: Vec<(&str, Vec<&str>)> = CSP
+            .split(';')
+            .map(|x| {
+                let mut it = x.split_whitespace();
+                (it.next().unwrap_or_default(), it.collect())
+            })
+            .collect();
+        let get = |k: &str| d.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()).unwrap_or_else(|| panic!("缺少 {k}"));
+        assert_eq!(get("default-src"), ["'self'"]);
+        assert_eq!(get("script-src"), ["'self'"]);
+        assert_eq!(get("img-src"), ["'self'", "data:", "blob:", "https://avatars.githubusercontent.com"]);
+        assert_eq!(get("connect-src"), ["'self'", "ipc:", "http://ipc.localhost"]);
+        assert_eq!(get("object-src"), ["'none'"]);
+        assert_eq!(get("base-uri"), ["'none'"]);
+        assert_eq!(get("frame-ancestors"), ["'none'"]);
+        assert!(!CSP.contains("unsafe-eval"));
+        // index.html 不能有内联脚本（script-src 不允许），首帧主题在 public/theme.js
+        let html = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/index.html")).unwrap();
+        for tag in html.split("<script").skip(1) {
+            let head = &tag[..tag.find('>').unwrap()];
+            assert!(head.contains("src="), "index.html 里有内联脚本：<script{head}>");
+        }
+    }
 }
