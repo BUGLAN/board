@@ -155,7 +155,19 @@ docker compose exec board board-server token revoke 3
 0 4 * * * <部署目录>/deploy/backup.sh >> /var/log/board-backup.log 2>&1
 ```
 
-`data/backups/` 还在同一台服务器上，建议再定期拷到别处。数据库很小，但服务器磁盘只剩约 2 GB，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
+### 异地同步（可选）
+
+默认只备份到这台服务器的 `data/backups/`，磁盘坏了还是会全部丢失。在 `.env` 里配置 `BOARD_BACKUP_REMOTE` 后，`backup.sh` 每次备份完会把新备份和 `backups/files/` 同步过去：
+
+| 值 | 同步方式 | 需要 |
+|---|---|---|
+| `user@host:/path/board-backup` | rsync over SSH | 宿主机装 rsync，配好 SSH 免密 |
+| `/mnt/backup/board` | `cp -R` 到本地目录 | 目录已挂载（移动硬盘、NFS 等） |
+| `rclone:gdrive:board-backup` | `rclone copy` | 宿主机装 rclone 并配好 remote |
+
+不配置时和以前一样，只写 `data/backups/`。脚本任何一步失败都会返回非零，并在最后一行打印「失败」；crontab 把输出重定向到 `/var/log/board-backup.log` 后，可以据此做告警。
+
+`data/backups/` 还在同一台服务器上，数据库很小，但服务器磁盘只剩约 2 GB，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
 
 恢复：
 
@@ -176,6 +188,23 @@ sudo mkdir -p data/files && sudo cp -n data/backups/files/* data/files/ && sudo 
 ```bash
 docker compose start board
 ```
+
+### 恢复演练
+
+建议每次大版本发版前在本机走一遍，确认备份真的能恢复：
+
+1. 取最新一份备份和附件：`ls -lt data/backups | head`，把 `board-YYYYMMDD-HHMMSS.db` 和 `data/backups/files/` 拷到本机一个临时目录。
+2. 在本机用这份备份启动一个临时服务（附件目录要和数据库文件放在同一层，服务端按数据库旁边的 `files/` 找附件）：
+
+   ```bash
+   mkdir -p /tmp/board-restore
+   cp data/backups/board-YYYYMMDD-HHMMSS.db /tmp/board-restore/board.db
+   cp -R data/backups/files /tmp/board-restore/files
+   cargo run --release -p board-server -- --local --db /tmp/board-restore/board.db --port 7421
+   ```
+
+3. 浏览器打开 `http://127.0.0.1:7421`，核对：卡片、项目数量与线上一致，随机打开一张带附件的卡片能看到附件。
+4. 核对完 `Ctrl-C` 停掉临时服务，删除临时目录。
 
 ## 7. 升级
 
