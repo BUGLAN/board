@@ -25,7 +25,7 @@ interface DataState {
   error: string | null;
   /** 详情没取回来的原因（取回或换一张卡片时清空）；有值时详情里不再显示骨架 */
   detailError: string | null;
-  /** 正在写入的标签（乐观更新）：「白板路径#卡片」→ 标签 ID。已经并进 board 里卡片的 labels，界面据此画成 pending 态 */
+  /** 正在写入的标签（乐观更新）：「白板路径#卡片」→ 标签 ID。正在加上的已经并进 board 里卡片的 labels，正在去掉的还留在里面；界面都画成 pending 态 */
   pending: Record<string, number[]>;
   /** 正在发送的评论（乐观更新）：「白板路径#卡片」→ 按发送顺序。动态底部画成「发送中」的气泡，服务端确认后换成正式评论 */
   sending: Record<string, Sending[]>;
@@ -546,25 +546,43 @@ export async function addLabel(id: number, labelId: number): Promise<boolean> {
   const c = board?.cards[id];
   if (!board || !c || c.labels.includes(labelId)) return false;
   const k = pkey(path, id);
-  set(s => ({ pending: { ...s.pending, [k]: [...(s.pending[k] ?? []), labelId] } }));
+  setPending(k, labelId, true);
   try {
     await exec({ op: 'label', id, add: [labelId] }, editCard(id, x => (x.labels.includes(labelId) ? {} : { labels: [...x.labels, labelId] }), false));
     return true;
   } finally {
     // 成功时刷新后的快照里已经有这个标签：去掉 pending 只是换掉样式，位置不动；失败时补丁已经撤掉，标签跟着消失
-    set(s => {
-      const ls = (s.pending[k] ?? []).filter(l => l !== labelId);
-      const pending = { ...s.pending };
-      if (ls.length) pending[k] = ls;
-      else delete pending[k];
-      return { pending };
-    });
+    setPending(k, labelId, false);
   }
 }
 
-/** 从卡片上去掉标签：当帧消失，失败时回来并抛出错误 */
-export const removeLabel = (id: number, labelId: number) =>
-  exec({ op: 'label', id, remove: [labelId] }, editCard(id, x => ({ labels: x.labels.filter(l => l !== labelId) })));
+/** 从卡片上去掉标签：当帧把这个标签画成和「正在加上」一样的 pending 态（× 还在、不能点），服务端确认、刷新后消失；
+    失败时恢复原样并抛出错误。不把整张卡片画成「保存中」，其他标签照常显示、照常能操作。
+    这个标签正在加上或去掉时（pending）不发请求，返回 false */
+export async function removeLabel(id: number, labelId: number): Promise<boolean> {
+  const { board, path, pending } = get();
+  const c = board?.cards[id];
+  const k = pkey(path, id);
+  if (!board || !c || !c.labels.includes(labelId) || pending[k]?.includes(labelId)) return false;
+  setPending(k, labelId, true);
+  try {
+    await exec({ op: 'label', id, remove: [labelId] });
+    return true;
+  } finally {
+    setPending(k, labelId, false);
+  }
+}
+
+function setPending(k: string, labelId: number, on: boolean) {
+  set(s => {
+    const ls = (s.pending[k] ?? []).filter(l => l !== labelId);
+    if (on) ls.push(labelId);
+    const pending = { ...s.pending };
+    if (ls.length) pending[k] = ls;
+    else delete pending[k];
+    return { pending };
+  });
+}
 
 /* ------------------------------ 标签顺序：乐观更新 ------------------------------ */
 

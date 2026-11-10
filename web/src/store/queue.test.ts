@@ -237,6 +237,52 @@ describe('写队列', () => {
   });
 });
 
+describe('标签', () => {
+  const labels = (id: number) => D.useData.getState().board!.cards[id].labels;
+  const pending = (id: number) => D.useData.getState().pending[`p/a#${id}`] ?? [];
+
+  it('加标签：当帧出现并画成 pending，确认后只去掉 pending，不先消失再出现', async () => {
+    const a = D.addLabel(1, 7);
+    expect(labels(1)).toEqual([7]);
+    expect(pending(1)).toEqual([7]);
+    await settle();
+    serverEdit('p/a', 1, { labels: [7] });
+    server.calls[0].ok();
+    await a;
+    expect(labels(1)).toEqual([7]);
+    expect(pending(1)).toEqual([]);
+  });
+
+  it('去掉标签：保存期间标签还在、画成 pending，卡片不画成「保存中」；确认后消失', async () => {
+    serverEdit('p/a', 1, { labels: [7, 8] });
+    await D.refresh();
+    const r = D.removeLabel(1, 7);
+    expect(labels(1)).toEqual([7, 8]);
+    expect(pending(1)).toEqual([7]);
+    expect(D.cardBusy(1)).toBe(false);
+    // 正在去掉时再点：不发第二个请求
+    expect(await D.removeLabel(1, 7)).toBe(false);
+    await settle();
+    expect(server.calls.length).toBe(1);
+    serverEdit('p/a', 1, { labels: [8] });
+    server.calls[0].ok();
+    expect(await r).toBe(true);
+    expect(labels(1)).toEqual([8]);
+    expect(pending(1)).toEqual([]);
+  });
+
+  it('去掉标签失败：标签留着、去掉 pending，并抛出错误', async () => {
+    serverEdit('p/a', 1, { labels: [7] });
+    await D.refresh();
+    const r = D.removeLabel(1, 7);
+    await settle();
+    server.calls[0].fail();
+    await expect(r).rejects.toMatchObject({ code: 'INTERNAL' });
+    expect(labels(1)).toEqual([7]);
+    expect(pending(1)).toEqual([]);
+  });
+});
+
 describe('推送与刷新', () => {
   beforeEach(async () => {
     D.boot();

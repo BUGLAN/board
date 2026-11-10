@@ -251,7 +251,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                     key={l.id}
                     label={l}
                     pending={pendingIds.includes(l.id)}
-                    onRemove={saving ? undefined : async () => {
+                    removeDisabled={saving}
+                    onRemove={async () => {
                       try {
                         await removeLabel(c.id, l.id);
                       } catch (e) {

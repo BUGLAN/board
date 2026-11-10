@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { inlineCode, markdown } from '../lib/markdown';
 import { PROJECT_COLORS } from '../lib/schema';
 import type { Actor, Label } from '../lib/types';
-import { agentColor, agentGlyph, cx, initial } from '../lib/util';
+import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
 import { serverNow } from '../store/data';
 import { openImage } from '../store/ui';
@@ -102,14 +102,26 @@ const labelTip = (label: Pick<Label, 'humanOnly' | 'priority'>) =>
 export function LabelChip({
   label,
   onRemove,
+  removeDisabled,
   pending,
 }: {
   label: Pick<Label, 'id' | 'name' | 'color' | 'humanOnly' | 'priority'>;
   onRemove?: () => void;
+  /** × 还显示，但不能点（例如卡片正在保存） */
+  removeDisabled?: boolean;
+  /** 正在加上或去掉：半透明 + 呼吸 + 扫光；× 不能点 */
   pending?: boolean;
 }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const was = useRef(pending);
+  // pending 结束（服务端确认）：从半透明平滑过渡到正常，不是一下跳亮（动画撤掉时 transition 不会接着当前透明度走）
+  useLayoutEffect(() => {
+    if (was.current && !pending && !reduceMotion()) ref.current?.animate([{ opacity: 0.55 }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
+    was.current = pending;
+  }, [pending]);
   return (
     <span
+      ref={ref}
       className={pending ? 'lb pending' : 'lb'}
       aria-busy={pending || undefined}
       title={pending ? '正在加上…' : labelTip(label)}
@@ -124,6 +136,7 @@ export function LabelChip({
           type="button"
           className="lb-x"
           aria-label={`移除标签 ${label.name}`}
+          disabled={pending || removeDisabled}
           onClick={e => {
             e.stopPropagation();
             onRemove();
