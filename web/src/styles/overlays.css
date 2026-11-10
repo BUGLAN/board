@@ -218,12 +218,15 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .tl-item.mine .tl-bubble { background: color-mix(in srgb, var(--brand) 7%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 20%, transparent); }
 /* 评论的「已编辑」和编辑按钮：编辑按钮悬停气泡时出现（触屏一直显示） */
 .tl-edited { color: var(--text-3); font-size: 11px; cursor: default; }
+.tl-actions { margin-left: auto; display: flex; align-items: center; gap: 2px; }
 .tl-edit {
-  margin-left: auto; width: 22px; height: 22px; border-radius: var(--r-xs); display: grid; place-items: center; color: var(--text-3);
+  width: 22px; height: 22px; border-radius: var(--r-xs); display: grid; place-items: center; color: var(--text-3);
   opacity: 0; transition: opacity var(--dur-1), background-color var(--dur-1), color var(--dur-1);
 }
+.tl-actions .tl-edit { margin-left: 0; }
 .tl-edit svg { width: 13px; height: 13px; }
 .tl-edit:hover { background: var(--surface-3); color: var(--text); }
+.tl-edit.tl-del:hover { background: var(--danger-soft); color: var(--danger); }
 .tl-bubble:hover .tl-edit, .tl-edit:focus-visible { opacity: 1; }
 @media (hover: none) { .tl-edit { opacity: .7; } }
 .tl-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }

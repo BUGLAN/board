@@ -64,6 +64,13 @@ pub enum Cmd {
         activity: i64,
         text: String,
     },
+    /// 人删除自己发的评论（界面）：从动态里移除，不新增动态
+    #[serde(rename = "delete_comment")]
+    DeleteComment {
+        id: i64,
+        /// 评论在动态里的 ID
+        activity: i64,
+    },
     Label {
         id: i64,
         #[serde(default)]
@@ -399,6 +406,34 @@ impl<'a> W<'a> {
                 self.tx.execute("UPDATE cards SET updated_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
                 let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
                 self.event(b, id, &title, actor, "edit_comment", &text)?;
+                id
+            }
+
+            /* ---------------- 删除评论 ----------------
+               只有人能删，只能删人发的评论（PRD §8）；agent 和系统的动态不能删 */
+            Cmd::DeleteComment { id, activity } => {
+                self.row(b, id)?;
+                let found: Option<(String, String, String)> = self
+                    .tx
+                    .query_row(
+                        "SELECT kind, actor_kind, actor_name FROM activity WHERE id = ?1 AND board = ?2 AND card = ?3",
+                        params![activity, b, id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                let Some((kind, by_kind, by_name)) = found else {
+                    return Err(BoardError::new(ErrorCode::NotFound, format!("#{id} 没有这条评论")));
+                };
+                if kind != "comment" {
+                    return Err(BoardError::usage("只能删除评论，系统动态不能删除"));
+                }
+                if !actor.is_human() || by_kind != ActorKind::Human.as_str() || by_name != actor.name {
+                    return Err(BoardError::code(ErrorCode::NotAuthor));
+                }
+                self.tx.execute("DELETE FROM activity WHERE id = ?1", params![activity])?;
+                self.tx.execute("UPDATE cards SET updated_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+                let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
+                self.event(b, id, &title, actor, "delete_comment", "删除了评论")?;
                 id
             }
 

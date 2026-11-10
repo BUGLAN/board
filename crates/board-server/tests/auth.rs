@@ -369,6 +369,14 @@ fn tokens_are_for_cli_only() {
     let c = r.body["activity"].as_array().unwrap().iter().find(|x| x["id"] == mine).unwrap().clone();
     assert_eq!(c["text"], "人改过的");
     assert!(c["edited_at"].is_i64(), "{c:?}");
+    // 删除评论同样只能由作者（人）删：agent 删、人删 agent 的评论都是 403 NOT_AUTHOR；人删自己的评论成功
+    let r = cmd(json!({ "board": "default", "as": NAME, "op": "delete_comment", "id": 1, "activity": mine }), &a);
+    assert_eq!((r.status, r.code()), (403, "NOT_AUTHOR"));
+    let r = cmd(json!({ "board": "default", "op": "delete_comment", "id": 1, "activity": theirs }), &ui);
+    assert_eq!((r.status, r.code()), (403, "NOT_AUTHOR"));
+    let r = cmd(json!({ "board": "default", "op": "delete_comment", "id": 1, "activity": mine }), &ui);
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert!(!r.body["activity"].as_array().unwrap().iter().any(|x| x["id"] == mine));
     // 只有人能做的操作、机器列表与设置、令牌管理：令牌不能用
     for (m, p, body) in [
         ("POST", "/api/projects", Some(json!({ "name": "x", "key": "x", "board": { "name": "m", "key": "main" } }))),

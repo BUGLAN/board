@@ -650,6 +650,33 @@ fn edit_own_comment() {
 }
 
 #[test]
+fn delete_own_comment() {
+    let mut s = store();
+    exec(&mut s, B, &alpha(), T0, new("a")).unwrap();
+    let d = exec(&mut s, B, &human(), T0, Cmd::Comment { id: 1, text: "粘贴错了".into() }).unwrap();
+    let mine = d.activity.last().unwrap().id;
+    let d = exec(&mut s, B, &alpha(), T0, Cmd::Comment { id: 1, text: "agent 的评论".into() }).unwrap();
+    let theirs = d.activity.last().unwrap().id;
+    let sys = d.activity[0].id;
+    assert_eq!(snapshot(&s, B, T0).cards[&1].comments, 2);
+    let del = |activity: i64| Cmd::DeleteComment { id: 1, activity };
+
+    // 人删自己的评论：从动态里移除，评论数减一，别人的动态不受影响
+    let d = exec(&mut s, B, &human(), T0 + MIN, del(mine)).unwrap();
+    assert!(!d.activity.iter().any(|a| a.id == mine));
+    assert!(d.activity.iter().any(|a| a.id == theirs));
+    assert!(!card(&s, B, 1).activity.iter().any(|a| a.id == mine));
+    assert_eq!(snapshot(&s, B, T0 + MIN).cards[&1].comments, 1);
+    assert!(snapshot(&s, B, T0 + MIN).log.iter().any(|e| e.op == "delete_comment"));
+
+    // agent 删自己的评论、人删 agent 的评论：NOT_AUTHOR；系统动态：USAGE；不存在：NOT_FOUND
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, del(theirs))), ErrorCode::NotAuthor);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, del(theirs))), ErrorCode::NotAuthor);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, del(sys))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, del(9999))), ErrorCode::NotFound);
+}
+
+#[test]
 fn demo_seed() {
     let mut s = store();
     assert!(seed::seed_demo(&mut s, T0).unwrap());
