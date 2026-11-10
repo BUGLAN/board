@@ -541,4 +541,3 @@ function cleanup(keepDrag = false) {
   st = null;
 }
 
-export const COLUMN_TITLE = (col: ColumnKey) => `不能放进「${boardFlow(useData.getState().board).name(col)}」`;

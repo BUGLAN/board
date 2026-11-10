@@ -7,7 +7,7 @@ import { lazy, Suspense, useState } from 'react';
 import { useUI } from '../store/ui';
 import { PageLoading } from './Skeleton';
 
-export { CardDispatchLine, DispatchDialog, DispatchNote } from './hosts/Dispatch';
+export { DispatchDialog } from './hosts/Dispatch';
 
 const Page = lazy(() => import('./hosts/HostsPage').then(m => ({ default: m.HostsPage })));
 const Side = lazy(() => import('./hosts/HostsPage').then(m => ({ default: m.HostsSide })));

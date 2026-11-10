@@ -27,9 +27,31 @@ const VALUE_FLAGS: [&str; 15] = [
     "--host", "--agent",
 ];
 const BOOL_FLAGS: [&str; 7] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel"];
-const COMMANDS: [&str; 22] = [
-    "help", "doctor", "login", "logout", "check", "heartbeat", "boards", "flow", "ls", "show", "new", "edit", "move", "claim", "comment", "beat",
-    "label", "labels", "attach", "files", "host", "dispatch",
+/// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
+/// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
+const COMMANDS: [(&str, &str, &str); 22] = [
+        ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
+        ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
+        ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
+        ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
+        ("heartbeat", "start | stop | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；final <ID>：结束这张卡片这一次的计时"),
+        ("beat", "[<ID>] [--final]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
+        ("boards", "", "列出所有白板"),
+        ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
+        ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
+        ("show", "<ID>", "显示卡片的全部字段和动态"),
+        ("new", "\"<标题>\" [--body \"<描述>\"] [--top] [--inbox]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面"),
+        ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
+        ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
+        ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
+        ("comment", "<ID> \"<内容>\"", "追加评论"),
+        ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
+        ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打），以及每个标签被多少张卡片使用"),
+        ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
+        ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
+        ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),
+        ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
+        ("help", "", "显示这段说明"),
 ];
 
 fn main() {
@@ -156,7 +178,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         None => return Ok(Output::Text(help(p))),
         Some(_) if a.flag("--help") || a.flag("-h") => return Ok(Output::Text(help(p))),
         Some("help") => return Ok(Output::Text(help(p))),
-        Some(s) if !COMMANDS.contains(&s) => {
+        Some(s) if !COMMANDS.iter().any(|c| c.0 == s) => {
             return Err(BoardError::usage(format!("未知命令「{s}」，运行 board help 查看用法")));
         }
         Some(s) => s,
@@ -605,7 +627,8 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 )
             }
         }
-        _ => unreachable!(),
+        // 命令表里有、上面却没处理：返回错误而不是 panic（测试 every_command_is_dispatched 防止发生）
+        other => return Err(BoardError::usage(format!("命令「{other}」还没有实现"))),
     };
     Ok(out)
 }
@@ -939,36 +962,12 @@ impl Fmt<'_> {
 }
 
 fn help(p: &Paint) -> String {
-    let rows: [(&str, &str, &str); 22] = [
-        ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
-        ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
-        ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
-        ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
-        ("heartbeat", "start | stop | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；final <ID>：结束这张卡片这一次的计时"),
-        ("beat", "[<ID>] [--final]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
-        ("boards", "", "列出所有白板"),
-        ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
-        ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
-        ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\"] [--top] [--inbox]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面"),
-        ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
-        ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
-        ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
-        ("comment", "<ID> \"<内容>\"", "追加评论"),
-        ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
-        ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打），以及每个标签被多少张卡片使用"),
-        ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
-        ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
-        ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),
-        ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
-        ("help", "", "显示这段说明"),
-    ];
-    let aw = rows.iter().map(|r| width(r.1)).max().unwrap_or(0) + 2;
+    let aw = COMMANDS.iter().map(|r| width(r.1)).max().unwrap_or(0) + 2;
     let mut out = vec![
         format!("{} {}", p.bold("board"), p.dim("— 看板式白板的命令行。人在界面上操作，agent 通过它读写同一块白板。")),
         String::new(),
     ];
-    for (cmd, args, desc) in rows {
+    for (cmd, args, desc) in COMMANDS {
         out.push(format!("  board {} {}{}", p.cyan(&pad(cmd, 8)), p.dim(&pad(args, aw)), desc));
     }
     out.extend([
@@ -1140,5 +1139,33 @@ impl Paint {
     }
     pub(crate) fn cyan(&self, s: &str) -> String {
         self.wrap("36", s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 命令表里的每个命令在 run() 里都有处理（help 在前面单独处理）
+    #[test]
+    fn every_command_is_dispatched() {
+        let src = include_str!("main.rs");
+        let body = &src[src.find("fn run(").unwrap()..src.find("fn help(").unwrap()];
+        for (cmd, _, _) in COMMANDS {
+            let handled = [format!("Some(\"{cmd}\")"), format!("sub == \"{cmd}\""), format!("\"{cmd}\" =>")].iter().any(|k| body.contains(k.as_str()));
+            assert!(handled, "命令 {cmd} 在命令表里，但 run() 里没有处理");
+        }
+        let mut names: Vec<_> = COMMANDS.iter().map(|c| c.0).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), COMMANDS.len(), "命令表里有重复");
+    }
+
+    #[test]
+    fn help_lists_every_command() {
+        let h = help(&Paint { on: false });
+        for (cmd, _, _) in COMMANDS {
+            assert!(h.contains(&format!("board {cmd}")), "help 里没有 {cmd}");
+        }
     }
 }

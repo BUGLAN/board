@@ -88,7 +88,7 @@ skill 自带 `board`：发版附件里的 `board-skills.zip` 解压后，`bin/` 
 node scripts/build-skill-bin.mjs --host   # 只编本机平台；不带 --host 时本机能交叉编译的平台都编
 ```
 
-人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装时写进 PATH；macOS 在「设置 → Agent 接入」里执行一条链接命令），或者从源码安装：
+人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装时写进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH），或者从源码安装：
 
 ```bash
 cargo install --path crates/board-cli

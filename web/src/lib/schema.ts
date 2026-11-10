@@ -35,8 +35,7 @@ export function flowOf(statuses: Status[] | undefined | null) {
     claimables: list.filter(s => s.claim),
     /** 可领取状态里的卡片总数 */
     ready: (counts: Record<string, number> | undefined) => list.filter(s => s.claim).reduce((n, s) => n + (counts?.[s.key] ?? 0), 0),
-    /** 不带 ID 执行 board claim 时会被领走的卡片（PRD §8 规则 1） */
-    /** 不带 ID 的 board claim 会领走的那张：有排队派发的卡片跳过（skip） */
+    /** 不带 ID 执行 board claim 时会被领走的那张（PRD §8 规则 1）：有排队派发的卡片跳过（skip） */
     nextCard: (cols: Record<string, number[]> | null | undefined, skip?: (id: number) => boolean) => {
       for (const s of list) {
         if (!s.claim || !claimTarget(s.key)) continue;

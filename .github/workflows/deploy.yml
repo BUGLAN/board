@@ -16,8 +16,6 @@ on:
     # 推 main 时改动全部在这些路径里不跑测试（推 tag 不看路径）
     paths-ignore:
       - "docs/**"
-      - "prototype/**"
-      - "lianzi/**"
       - "README.md"
   workflow_dispatch:
     inputs:

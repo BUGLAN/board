@@ -66,21 +66,6 @@ export function play() {
   }
 }
 
-/** 拖拽时同列卡片让位 */
-export function shift(els: HTMLElement[], before: Map<HTMLElement, DOMRect>) {
-  if (reduceMotion()) return;
-  for (const n of els) {
-    const r = before.get(n);
-    if (!r) continue;
-    const a = n.getBoundingClientRect();
-    const dx = r.left - a.left;
-    const dy = r.top - a.top;
-    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-      n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.22,1.1,.36,1)' });
-    }
-  }
-}
-
 function exitGhost(node: HTMLElement, r: DOMRect) {
   const g = node;
   Object.assign(g.style, {

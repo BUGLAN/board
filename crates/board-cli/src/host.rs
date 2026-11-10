@@ -62,6 +62,8 @@ struct Builtin {
     also: &'static [&'static str],
     /// 这个 agent 读用户级 skill 的目录：启动时看 `board-skills` 装没装
     skills: &'static [&'static str],
+    /// 这个 agent 在工作目录（仓库根目录）里读 skill 的相对目录：放在这里也算装好
+    project: &'static [&'static str],
     /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面：pi 从 PATH 找 `bash.exe`，
     /// Git 装在非 `%ProgramFiles%` 位置时（例如 D:\Git）才能不落到 WSL 的 bash
     git_bash: bool,
@@ -82,6 +84,7 @@ const BUILTIN: [Builtin; 4] = [
             "~/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
         ],
         skills: &["~/.agents/skills"],
+        project: &[".agents/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "cmd"],
     },
@@ -91,6 +94,8 @@ const BUILTIN: [Builtin; 4] = [
         cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
+        // Claude Code 不读 .agents/skills
+        project: &[".claude/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
     },
@@ -100,6 +105,7 @@ const BUILTIN: [Builtin; 4] = [
         cmd: &["pi", "-p", "{prompt}"],
         also: &[],
         skills: &["~/.agents/skills", "~/.pi/agent/skills"],
+        project: &[".agents/skills", ".pi/skills"],
         git_bash: true,
         // pi 不支持 cmd
         win: &["git-bash", "wsl:*", "pwsh", "powershell"],
@@ -110,6 +116,7 @@ const BUILTIN: [Builtin; 4] = [
         cmd: &["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
         also: &[],
         skills: &["$CODEX_HOME/skills"],
+        project: &[".agents/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
     },
@@ -160,6 +167,8 @@ struct Spec {
     cmd: Vec<String>,
     /// 读用户级 skill 的目录（内置模板才有）
     skills: Vec<String>,
+    /// 在仓库目录里读 skill 的相对目录（内置模板才有）
+    project: Vec<String>,
     /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面
     git_bash: bool,
     /// 在它支持、本机有的每个启动环境里的检查结果，按默认选择的顺序
@@ -195,20 +204,21 @@ impl Spec {
             .map(|e| {
                 let user: Vec<String> = self.skills.iter().map(|d| format!("{d}/{SKILL}")).collect();
                 let place = if e.wsl().is_some() { format!("{}里的 ", e.name) } else { String::new() };
-                (e.id.clone(), format!("{place}{} 或仓库的 .agents/skills/{SKILL}", user.join(" 或 ")))
+                let repo: Vec<String> = self.project.iter().map(|d| format!("仓库的 {d}/{SKILL}")).collect();
+                (e.id.clone(), format!("{place}{}", [user, repo].concat().join(" 或 ")))
             })
             .collect();
     }
 
     /// 在 env 里找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`。
-    /// 用户级目录来自内置模板（WSL 里看 WSL 用户目录下的）；项目级目录看每块白板对应的仓库目录（agent 也会读工作目录里的 skill）
+    /// 用户级目录来自内置模板（WSL 里看 WSL 用户目录下的）；项目级目录看每块白板对应的仓库目录里这个 agent 会读的那几个
+    /// （例如 Claude Code 只读 .claude/skills，不读 .agents/skills）
     fn misses_skill(&self, env: &Env, dirs: &[(String, PathBuf)]) -> bool {
         if self.skills.is_empty() || !self.checks.iter().any(|c| c.env == env.id && c.found) {
             return false;
         }
         let has = |d: &Path| d.join(SKILL).join("SKILL.md").is_file();
-        !envs::has_skill(env, &self.skills, SKILL)
-            && !dirs.iter().any(|(_, p)| [".agents/skills", ".claude/skills", ".pi/skills"].iter().any(|s| has(&p.join(s))))
+        !envs::has_skill(env, &self.skills, SKILL) && !dirs.iter().any(|(_, p)| self.project.iter().any(|s| has(&p.join(s))))
     }
 }
 
@@ -220,6 +230,7 @@ struct Template {
     /// 命令不在 PATH 里时再看的位置（只在直接启动、登录 shell 里用）
     also: Vec<String>,
     skills: Vec<String>,
+    project: Vec<String>,
     git_bash: bool,
     /// 支持的启动环境，按默认选择的顺序
     order: Vec<String>,
@@ -238,6 +249,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             cmd: strs(b.cmd),
             also: strs(b.also),
             skills: strs(b.skills),
+            project: strs(b.project),
             git_bash: b.git_bash,
             order: order(b.win),
         })
@@ -261,6 +273,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 cmd: a.cmd.clone(),
                 also: vec![],
                 skills: vec![],
+                project: vec![],
                 git_bash: false,
                 order: order(envs::CONF_WIN_ORDER),
             }),
@@ -287,6 +300,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 name: t.name,
                 cmd: t.cmd,
                 skills: t.skills,
+                project: t.project,
                 git_bash: t.git_bash,
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
                 no_skill: BTreeMap::new(),
@@ -489,6 +503,22 @@ fn permanent_end_error(code: ErrorCode) -> bool {
 /// 定时领取：这一分钟到点、机器没暂停、也没有正在进行的一轮
 fn cron_due(m: &str, cron_on: bool, cron: &[String], paused: bool, round: bool) -> bool {
     cron_on && !paused && !round && cron.iter().any(|t| t == m)
+}
+
+/// 定时领取的一个 tick：同一分钟只处理一次。不用领取时记下这一分钟；要领取时调 `start`，
+/// 成功才记下（失败了留到同一分钟的下一个 tick 重试）。返回这一 tick 是否调了 `start`
+fn cron_tick(m: &str, last: &mut String, due: bool, start: impl FnOnce() -> bool) -> bool {
+    if m == last {
+        return false;
+    }
+    if !due {
+        *last = m.to_string();
+        return false;
+    }
+    if start() {
+        *last = m.to_string();
+    }
+    true
 }
 
 /* ------------------------------ host ------------------------------ */
@@ -1122,28 +1152,22 @@ impl Host<'_> {
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
     fn cron(&mut self, last: &mut String) {
         let m = chrono::Local::now().format("%H:%M").to_string();
-        if m == *last {
-            return;
-        }
         let Some(w) = &self.work else { return };
-        if !cron_due(&m, w.host.cron_on, &w.host.cron, w.host.paused, w.host.round) {
-            // 这一分钟不用领取：记为已处理，免得每个 tick 都判断
-            *last = m.clone();
-            return;
-        }
-        match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/round", self.name), json!({})) {
+        let due = cron_due(&m, w.host.cron_on, &w.host.cron, w.host.paused, w.host.round);
+        cron_tick(&m, last, due, || match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/round", self.name), json!({})) {
             Ok(_) => {
-                // 只有真的开始了这一轮才记下这一分钟；失败了留到下一轮（同一分钟内）重试
-                *last = m.clone();
                 self.say(format!("{} {m} 到点，开始一轮领取", self.p.green("⏰")));
                 self.hold = false;
                 if let Some(w) = self.work.as_mut() {
                     w.host.round = true;
                 }
+                true
             }
-            // 不更新 last：主循环下一轮还在这一分钟，会再发一次
-            Err(e) => self.say(format!("{} {m} 到点，没能开始领取：{}", self.p.yellow("!"), e.message)),
-        }
+            Err(e) => {
+                self.say(format!("{} {m} 到点，没能开始领取：{}", self.p.yellow("!"), e.message));
+                false
+            }
+        });
     }
 
     fn upload_logs(&mut self) {
@@ -1291,6 +1315,7 @@ mod tests {
             name: "pi".into(),
             cmd: vec!["pi".into()],
             skills: vec!["/board-test-no-such-skills".into()],
+            project: vec![".agents/skills".into(), ".pi/skills".into()],
             git_bash: true,
             checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
             no_skill: BTreeMap::new(),
@@ -1310,6 +1335,13 @@ mod tests {
         spec.check_skills(std::slice::from_ref(&direct), &dirs);
         let r = spec.report();
         assert_eq!((r.no_skill, r.envs[0].no_skill.clone()), (None, None), "装了的不标");
+
+        // Claude Code 不读 .agents/skills：仓库里只有 .agents/skills 时仍然提醒，提醒里写 .claude/skills
+        let mut claude = Spec { id: "claude".into(), project: vec![".claude/skills".into()], ..spec };
+        assert!(claude.misses_skill(&direct, &dirs), "Claude Code 看不到仓库的 .agents/skills");
+        claude.check_skills(std::slice::from_ref(&direct), &dirs);
+        let to = claude.report().no_skill.unwrap();
+        assert!(to.contains("仓库的 .claude/skills/board-skills") && !to.contains(".agents/skills"), "{to}");
     }
 
     #[test]
@@ -1323,17 +1355,31 @@ mod tests {
     #[test]
     fn cron_failed_minute_is_retried() {
         let cron = vec!["03:00".to_string()];
-        // 到点：第一次会发 /round
+        // 不是定时点、暂停、正在进行一轮、没开定时都不发
         assert!(cron_due("03:00", true, &cron, false, false));
-        // 请求失败时 cron() 不更新 last（只有 Ok 分支写），所以同一分钟下一轮还会再试
-        let last = String::new();
-        assert!(last.is_empty());
-        assert!(cron_due("03:00", true, &cron, false, false));
-        // 成功后才记下这一分钟；不是定时点、暂停、正在进行一轮都不发
         assert!(!cron_due("03:00", true, &cron, true, false));
         assert!(!cron_due("03:00", true, &cron, false, true));
         assert!(!cron_due("03:01", true, &cron, false, false));
         assert!(!cron_due("03:00", false, &cron, false, false));
+
+        let mut last = String::new();
+        let mut calls = 0;
+        // 到点、请求失败：不记下这一分钟，同一分钟的下一个 tick 再试
+        assert!(cron_tick("03:00", &mut last, true, || {
+            calls += 1;
+            false
+        }));
+        assert_eq!(last, "");
+        assert!(cron_tick("03:00", &mut last, true, || {
+            calls += 1;
+            true
+        }));
+        assert_eq!((last.as_str(), calls), ("03:00", 2), "第二次成功才记下");
+        // 成功之后同一分钟不再发
+        assert!(!cron_tick("03:00", &mut last, true, || panic!("同一分钟不该再发")));
+        // 不用领取的分钟记下来，不调 start
+        assert!(!cron_tick("03:01", &mut last, false, || panic!("不到点不该发")));
+        assert_eq!(last, "03:01");
     }
 
     #[cfg(windows)]

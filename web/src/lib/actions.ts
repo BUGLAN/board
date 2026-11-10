@@ -6,7 +6,7 @@ import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { allBoards, boardMeta, closeDetail, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
+import { boardMeta, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -41,8 +41,6 @@ export function openCard(id: number) {
   openDetail(id);
   setTimeout(() => reveal(id), 60);
 }
-
-export { closeDetail };
 
 /** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示） */
 export async function triage(id: number) {
@@ -286,4 +284,3 @@ export async function copyBoardEnv(path: string) {
   toast({ type: 'success', title: '已复制', text: `export BOARD=${path}`, duration: 1800 });
 }
 
-export const boardsCount = () => allBoards(data().ws).length;

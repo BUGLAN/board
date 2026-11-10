@@ -17,5 +17,3 @@ export function usePresence(open: boolean, ms = 240) {
   }, [open, ms]);
   return { mounted, on };
 }
-
-/* ============================ 命令面板 ============================ */

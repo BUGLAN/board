@@ -226,7 +226,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 所有命令都支持 `--json`，输出 JSON。成功时退出码为 0；被拒绝时退出码为 1，并给出错误码（见 §12）和原因。
 
-**安装**：桌面端安装包自带 `board` 命令行。Windows 安装器把它写进用户 PATH，装完重开终端就能用；macOS 的安装包不带安装脚本，在「设置 → Agent 接入」里执行一条 `ln -sf` 命令把 `Board.app` 里自带的 `board` 链接到 `/usr/local/bin`。不装桌面端时从源码安装：`cargo install --path crates/board-cli`（需要 Rust）。agent 用 skill 自带的 `board`：发版附件 `board-skills.zip` 的 `bin/` 里有各平台的二进制，skill 里的 `scripts/board`（Windows：`scripts\board.cmd`）按平台选用，没有时用 PATH 里的 `board`。
+**安装**：桌面端安装包自带 `board` 命令行。Windows 安装器把它写进用户 PATH，装完重开终端就能用；macOS 的安装包不带安装脚本，在「设置 → Agent 接入」里执行一条命令，把 `Board.app` 里自带的 `board` 所在目录写进 shell 的 PATH（写进 `~/.zshrc`，重复执行不会重复追加）。不装桌面端时从源码安装：`cargo install --path crates/board-cli`（需要 Rust）。agent 用 skill 自带的 `board`：发版附件 `board-skills.zip` 的 `bin/` 里有各平台的二进制，skill 里的 `scripts/board`（Windows：`scripts\board.cmd`）按平台选用，没有时用 PATH 里的 `board`。
 
 **连接**
 
@@ -454,7 +454,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   - 账号：当前登录的 GitHub 账号（头像、名字、账号名）与「退出登录」；本机模式下显示不需要登录
   - 外观：主题、卡片密度（舒适 / 紧凑）、动效（完整 / 减弱）
   - 白板规则：当前白板的工作流有向图（和白板页的工作流条同一张图：状态、连线、卡片数、可领取/锁定/终点标记都一样；只读，不能连线、拖动、打开状态设置，窄屏时在框里横向滚动），三个规则开关的说明，以及 §8 的规则摘要
-  - Agent 接入：`board-skills` 的用法（§10.9）与安装（可复制 SKILL.md）、`board` 命令行的安装（按系统给出说明：Windows 随桌面端装好、macOS 给链接命令、其他情况从源码装）、连接服务端（`board login`，§9）、错误码；快捷提示词里「做某状态里带某标签的任务」每个可领取状态一行，在行里选标签（当前项目的标签）后复制
+  - Agent 接入：`board-skills` 的用法（§10.9）与安装（可复制 SKILL.md）、`board` 命令行的安装（按系统给出说明：Windows 随桌面端装好、macOS 给一条把 `board` 目录写进 shell PATH 的命令、其他情况从源码装）、连接服务端（`board login`，§9）、错误码；快捷提示词里「做某状态里带某标签的任务」每个可领取状态一行，在行里选标签（当前项目的标签）后复制
   - 访问令牌：单独一节，在侧栏目录里；新建、列表、吊销（§3.1）
   - 新建令牌后只给一条命令：`board login --url <当前服务端地址> --token <令牌>`，不分 shell。桌面端另有「一键写入」：把服务端地址和令牌写进 `~/.board/config.toml`（效果同 `board login`），不改 shell 配置文件和系统环境变量
   - 本机（只在桌面端）：开关「让这台电脑接任务」，打开后桌面端在后台用自带的 `board` 运行 `board host`，关掉窗口也继续运行（macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口），退出桌面端时结束；下次打开桌面端自动运行。同一处可以编辑机器名和白板与目录（写进 `~/.board/config.toml` 的 `[host]`），显示 `board host` 在不在跑和最近的输出。打开「让这台电脑接任务」、修改白板目录时，桌面端先弹系统确认框，列出机器名和每个白板的目录，确认后才生效，取消则配置不变（关掉接任务不用确认）；保存设置要重启 `board host` 时，等旧的退出后才启动新的。桌面端只给线上地址（或 `BOARD_URL` 指定的那个地址）的页面开放本机命令；同一台电脑上只运行一个桌面端，再次打开只把已有窗口带到前面

@@ -9,8 +9,6 @@ import { Lightbox } from './overlays/Lightbox';
 import { Palette } from './overlays/Palette';
 import { Toasts } from './overlays/Toasts';
 
-export { usePresence } from './overlays/presence';
-
 export function Overlays() {
   return (
     <>

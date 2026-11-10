@@ -363,5 +363,3 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
     </div>
   );
 }
-
-/* ============================ Toast ============================ */

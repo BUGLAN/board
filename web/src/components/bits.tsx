@@ -27,8 +27,6 @@ function tick(interval: number, fn: () => void) {
     }
   };
 }
-/** 现在有几个定时器、几个订阅（调试、测试用） */
-export const tickerStats = () => ({ timers: tickers.size, subs: [...tickers.values()].reduce((n, t) => n + t.subs.size, 0) });
 
 /** 服务端对齐的当前时间，每 interval 毫秒更新一次；interval 为 null 时不更新（用不到时间的组件不起定时器） */
 export function useNow(interval: number | null = 1000) {
@@ -80,19 +78,6 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
 }
 
 export const agent = (name: string): Actor => ({ kind: 'agent', name });
-
-/** 环形进度：p ∈ [0, 1] */
-export function Ring({ r, p, className }: { r: number; p: number; className?: string }) {
-  const c = 2 * Math.PI * r;
-  const size = (r + 3) * 2;
-  const off = c * (1 - Math.max(0, Math.min(1, p)));
-  return (
-    <svg viewBox={`0 0 ${size} ${size}`} className={className}>
-      <circle className="track" cx={size / 2} cy={size / 2} r={r} />
-      <circle className="bar" cx={size / 2} cy={size / 2} r={r} strokeDasharray={c.toFixed(2)} strokeDashoffset={off.toFixed(2)} />
-    </svg>
-  );
-}
 
 /** 仅人可打的标签在名称前带一把小锁 */
 export const LabelLock = ({ label }: { label: Pick<Label, 'humanOnly'> }) =>
@@ -267,10 +252,6 @@ export function Title({ text }: { text: string }) {
       {inlineCode(text).map((p, i) => (typeof p === 'string' ? <span key={i}>{p}</span> : <code key={i}>{p.code}</code>))}
     </>
   );
-}
-
-export function Kbd({ children }: { children: string }) {
-  return <kbd>{children}</kbd>;
 }
 
 /** 描述的「预览 / 编辑」切换（卡片详情、新建卡片共用） */

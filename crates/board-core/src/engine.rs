@@ -357,7 +357,7 @@ impl<'a> W<'a> {
                 };
                 self.place(b, target, Some(&from), &dest.key, At::Bottom)?;
                 self.tx.execute(
-                    "UPDATE cards SET holder = ?1, claimed_at = ?2, expires_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
+                    "UPDATE cards SET holder = ?1, claimed_at = ?2, beat_at = NULL, final_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
                     params![actor.name, self.now, from, b, target],
                 )?;
                 self.track(b, target, actor, "claim", &format!("领取了卡片，从「{}」进入「{}」", flow.name(&from), dest.name))?;
@@ -742,7 +742,7 @@ impl<'a> W<'a> {
     pub(crate) fn clear_claim(&mut self, b: i64, id: i64, how: &str) -> Result<Option<(i64, i64)>> {
         let run = self.close_run(b, id, self.now, how)?;
         self.tx.execute(
-            "UPDATE cards SET holder = NULL, claimed_at = NULL, expires_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL WHERE board = ?1 AND id = ?2",
+            "UPDATE cards SET holder = NULL, claimed_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL WHERE board = ?1 AND id = ?2",
             params![b, id],
         )?;
         self.changed = true;

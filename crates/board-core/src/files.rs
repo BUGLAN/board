@@ -9,7 +9,7 @@
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::{Actor, ActorKind, BoardRef};
-use crate::store::{Store, R, W};
+use crate::store::{Store, W};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -290,13 +290,6 @@ impl Store {
             }
         }
         Ok((rows, files))
-    }
-}
-
-impl R<'_> {
-    /// 卡片的附件，按上传顺序
-    pub fn attachments(&self, board: i64, card: i64) -> Result<Vec<Attachment>> {
-        attachments_of(self.conn, board, card)
     }
 }
 

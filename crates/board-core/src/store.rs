@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS cards (
   pos             INTEGER NOT NULL,
   holder          TEXT,
   claimed_at      INTEGER,
-  expires_at      INTEGER, -- 不再使用（原来的 30 分钟领取时长）
+  expires_at      INTEGER, -- 不再读写（原来的 30 分钟领取时长）；保留这一列，免得给旧库做删列迁移
   beat_at         INTEGER,
   final_at        INTEGER, -- 这次领取已经 final（正常结束心跳）的时间；之后的普通心跳被拒绝，重新领取时清空
   created_at      INTEGER NOT NULL,
@@ -557,11 +557,6 @@ impl<'a> R<'a> {
         )?;
         log.reverse();
         Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log })
-    }
-
-    /// 按列和列内顺序列出卡片
-    pub fn cards(&self, board: &BoardRef) -> Result<Vec<Card>> {
-        cards_of(self.conn, board.id, None)
     }
 
     pub fn card(&self, board: &BoardRef, id: i64) -> Result<CardDetail> {

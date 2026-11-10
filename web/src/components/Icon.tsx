@@ -162,7 +162,6 @@ const P: Record<string, ReactNode> = {
   ),
   filter: <path d="M3.5 5h13M6 10h8M8.5 15h3" />,
   collapse: <path d="m6 8 4-3.5L14 8M6 15.5 10 12l4 3.5" />,
-  swap: <path d="m6.5 8 3.5-3.5L13.5 8M6.5 12l3.5 3.5 3.5-3.5" />,
   target: (
     <>
       <circle cx="10" cy="10" r="3" />

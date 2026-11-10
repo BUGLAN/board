@@ -13,8 +13,6 @@ use crate::{valid_key, BoardError, Result};
 use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
-pub use toml_edit;
-
 /// 配置文件里的项
 pub const URL: &str = "url";
 pub const TOKEN: &str = "token";
@@ -93,10 +91,6 @@ impl Config {
             .parse::<DocumentMut>()
             .map_err(|e| BoardError::usage(format!("{} 不是合法的 TOML：{}", path.display(), e.to_string().trim())))?;
         Ok(Config { path: path.to_path_buf(), doc })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// 一项字符串配置；没有或为空时是 None

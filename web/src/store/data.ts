@@ -539,8 +539,6 @@ export async function refreshHosts() {
 
 const pkey = (path: string, id: number) => `${path}#${id}`;
 
-export const pendingLabels = (path: string, id: number) => get().pending[pkey(path, id)];
-
 /** 给卡片加标签：松手当帧就画上（pending 态），服务端确认后转正；失败时撤回并抛出错误。
     卡片已经有这个标签时（包括正在加）返回 false，不发请求 */
 export async function addLabel(id: number, labelId: number): Promise<boolean> {

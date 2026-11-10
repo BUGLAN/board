@@ -10,5 +10,5 @@ src-tauri/gen
 .agents/skills/board-skills/bin
 src-tauri/binaries
 prototype
-lianzi
+.tmp
 **/.DS_Store

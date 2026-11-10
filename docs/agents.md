@@ -77,7 +77,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 ## 装 `board-skills`
 
-agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，dsh、Claude Code、pi 也会读工作目录（仓库根目录）里的 `.agents/skills`，所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
+agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，agent 也会读工作目录（仓库根目录）里的 skill：dsh、pi 读 `.agents/skills`（pi 还读 `.pi/skills`），Claude Code 只读 `.claude/skills`、不读 `.agents/skills`。所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍；给 Claude Code 用时再在仓库里建一个 `.claude/skills/board-skills` 链接指向它。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
 
 ```sh
 mkdir -p ~/.agents/skills ~/.claude/skills
@@ -85,7 +85,7 @@ ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.agents/skills/board-skil
 ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skills   # Claude Code
 ```
 
-`board host` 启动时在每个 agent 用的启动环境里检查它的 skill 目录（WSL 里看 WSL 用户目录下的，例如 `/home/<用户>/.agents/skills`），看不到 `board-skills` 会提醒一行。在 WSL 里跑的 agent 要在 WSL 里另装一份（或放在仓库的 `.agents/skills` 里）。链接指向的目录不存在（例如仓库挪过位置）和没装一样，`ls ~/.agents/skills/board-skills/SKILL.md` 能看到文件才算装好。
+`board host` 启动时在每个 agent 用的启动环境里检查它的 skill 目录（WSL 里看 WSL 用户目录下的，例如 `/home/<用户>/.agents/skills`），看不到 `board-skills` 会提醒一行。在 WSL 里跑的 agent 要在 WSL 里另装一份（或放在仓库里它会读的目录）。链接指向的目录不存在（例如仓库挪过位置）和没装一样，`ls ~/.agents/skills/board-skills/SKILL.md` 能看到文件才算装好。
 
 ## 按批次接入新的 agent
 
