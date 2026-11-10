@@ -1427,6 +1427,35 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 机器改名（桌面端「设置 → 本机」保存机器名时调用）：机器记录原地改名，id 不变，
+    /// 所有设置（同时跑几个、默认 agent、领取规则、定时领取、暂停 …）和历史派发记录都保留，
+    /// 派发记录里的机器名也跟着改（在跑的派发按机器名找）。
+    /// - 新名字的规则和 [`check_host_name`] 相同；正被另一台**在线**机器使用时 `HOST_NAME_TAKEN`；
+    ///   被一台**离线**机器占用时 `USAGE`（先在「机器」里移除它再改）
+    /// - 旧名字在服务端没有记录（这台机器还没连上来过）时 `NO_SUCH_HOST`：没有要改的
+    pub fn host_rename(&mut self, from: &str, to: &str) -> Result<HostInfo> {
+        let to = to.trim();
+        check_host_name(to).map_err(BoardError::usage)?;
+        let h = self.host_row(from)?.ok_or_else(|| no_such_host(from))?;
+        if h.name != to {
+            if let Some(other) = self.host_row(to)? {
+                return Err(if other.online(self.now) {
+                    BoardError::new(
+                        ErrorCode::HostNameTaken,
+                        format!("机器名「{to}」正被在线的 board host 使用：先停掉那台机器上的 board host，或换一个名字"),
+                    )
+                    .with_detail(json!({ "host": to }))
+                } else {
+                    BoardError::usage(format!("机器名「{to}」已经有一台离线的机器：在「机器」里移除它之后再改"))
+                });
+            }
+            self.tx.execute("UPDATE hosts SET name = ?2 WHERE id = ?1", params![h.id, to])?;
+            self.tx.execute("UPDATE dispatches SET host = ?2 WHERE host_id = ?1", params![h.id, to])?;
+            self.touch_hosts();
+        }
+        self.read().host(to, self.now)
+    }
+
     /* ---------------- 派发 ---------------- */
 
     /// 手动派发（任务下发需求 §五）：校验通过后进入排队。agent 为空时用这台机器的默认 agent

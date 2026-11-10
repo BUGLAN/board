@@ -143,6 +143,11 @@ impl Backend {
         self.0.post("/api/dispatches/cancel", json!({ "board": path, "card": card, "as": who }))
     }
 
+    /// `board host rename <新机器名>`：把这台机器的记录改名（设置和历史派发记录保留）
+    pub fn host_rename(&mut self, from: &str, to: &str) -> Result<HostInfo> {
+        self.0.post(&format!("/api/hosts/{}/rename", from), json!({ "name": to }))
+    }
+
     pub fn exec(&mut self, path: &str, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
         let mut body = cmd_json(&cmd);
         body["board"] = json!(path);

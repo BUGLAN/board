@@ -1268,3 +1268,56 @@ fn old_single_label_rules_are_migrated() {
     beat(&mut s, T0, &report_cd("i1")).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into())]);
 }
+
+/// 机器改名（桌面端「设置 → 本机」保存机器名）：原地改名，设置和历史派发记录保留，不新增第二台机器
+#[test]
+fn rename_host_keeps_settings_and_dispatches() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let id = host(&s, T0).id;
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(3), ..Default::default() })).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!(d.name.as_deref(), Some("claude/mbp-1"));
+    // 不改名：原样返回
+    let h = s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("mbp", "mbp")).unwrap();
+    assert_eq!((h.name.as_str(), h.id, h.max, h.online), ("mbp", id, 3, true));
+    // 机器不存在、名字不对
+    assert_eq!(s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("nope", "win")).unwrap_err().code, ErrorCode::NoSuchHost);
+    assert_eq!(s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("mbp", "Win!")).unwrap_err().code, ErrorCode::Usage);
+    // 真实流程：board host 停下来（final 上报，机器离线）→ 改名 → 用新名字上报
+    let mut fin = report("mbp", "i1", vec![]);
+    fin.done = true;
+    end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
+    beat(&mut s, T0 + 3 * S, &fin).unwrap();
+    let h = s.write(T0 + 4 * S, Origin::cli(), |w| w.host_rename("mbp", "win")).unwrap();
+    assert_eq!((h.name.as_str(), h.id, h.max, h.online), ("win", id, 3, false));
+    // 派发记录跟着新名字；旧名字不再有机器
+    assert_eq!(get(&s, d.id).host, "win");
+    assert_eq!(s.read(|r| r.host("mbp", T0 + 4 * S)).unwrap_err().code, ErrorCode::NoSuchHost);
+    // 新名字上报：同一台机器接着用（id、设置不变）
+    let w = beat(&mut s, T0 + 5 * S, &report("win", "i2", vec![])).unwrap();
+    assert_eq!((w.host.id, w.host.max, w.host.online), (id, 3, true));
+    // 历史派发记录保留在新名字下
+    let recent = s.read(|r| r.host_recent(id, 10)).unwrap();
+    let d = recent.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(d.host, "win");
+}
+
+/// 改成被占用的新名字：在线的 HOST_NAME_TAKEN，离线的先去「机器」里移除
+#[test]
+fn rename_host_rejects_taken_names() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("desk", "j1", vec![])).unwrap();
+    let e = s.write(T0 + S, Origin::cli(), |w| w.host_rename("mbp", "desk")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::HostNameTaken);
+    // 两台都下线之后仍然不能改：先在「机器」里移除那台离线的
+    s.sweep(T0 + 60 * S).unwrap();
+    assert_eq!(s.write(T0 + 61 * S, Origin::cli(), |w| w.host_rename("mbp", "desk")).unwrap_err().code, ErrorCode::Usage);
+    s.write(T0 + 61 * S, Origin::ui(None), |w| w.host_remove("desk", &Actor::human(), "buglan")).unwrap();
+    let h = s.write(T0 + 61 * S, Origin::cli(), |w| w.host_rename("mbp", "desk")).unwrap();
+    assert_eq!(h.name, "desk");
+    assert_eq!(s.read(|r| r.host("mbp", T0 + 61 * S)).unwrap_err().code, ErrorCode::NoSuchHost);
+}

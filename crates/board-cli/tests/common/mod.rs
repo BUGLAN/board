@@ -134,6 +134,7 @@ pub fn board_stdin(home: &Path, env: &[(&str, String)], args: &[&str], input: Op
         .env("NO_COLOR", "1")
         .env_remove("BOARD")
         .env_remove("BOARD_AS")
+        .env_remove("BOARD_HOST")
         .env_remove("BOARD_URL")
         .env_remove("BOARD_TOKEN")
         .env_remove("BOARD_DB")

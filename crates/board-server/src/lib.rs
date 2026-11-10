@@ -237,6 +237,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/hosts", get(hosts::list))
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
+        .route("/hosts/{name}/rename", post(hosts::rename))
         .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
         .route("/hosts/{name}/work", get(hosts::work))
         .route("/hosts/{name}/begin", post(hosts::begin))

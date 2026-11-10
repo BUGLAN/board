@@ -355,3 +355,49 @@ fn requires_login() {
 
     assert!(!s.home.join(".board").exists(), "不应该在 HOME 下创建 ~/.board");
 }
+
+/// board host rename（桌面端「设置 → 本机」保存机器名时调用）：服务端把机器记录原地改名，
+/// 设置和历史派发记录保留；机器没记录时 NO_SUCH_HOST，新名字被在线机器占用时 HOST_NAME_TAKEN，名字没变时不动
+#[test]
+fn host_rename_renames_the_machine_record() {
+    let s: Server = start();
+    let now = board_core::now_ms();
+    let mut st = board_core::Store::open(&s.db).unwrap();
+    let mut rep = board_core::HostReport {
+        name: "mbp".into(),
+        instance: "i1".into(),
+        resume: None,
+        os: "test".into(),
+        version: "0.0.0".into(),
+        agents: vec![],
+        envs: vec![],
+        dirs: vec![board_core::HostDir { board: "default/main".into(), path: "/tmp/board".into() }],
+        running: vec![],
+        done: false,
+    };
+    st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
+    // 机器名写在配置文件 [host] 里（和桌面端保存的一样）
+    let cfg = s.home.join(".board");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.toml"), format!("url = \"{}\"\ntoken = \"{}\"\n\n[host]\nname = \"mbp\"\n", s.url, s.token)).unwrap();
+    let r = s.raw(&s.env(), &["host", "rename", "win", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["name"], "win");
+    let id = st.read(|x| Ok(x.host("win", now).unwrap().id)).unwrap();
+    assert!(st.read(|x| x.host("mbp", now)).is_err(), "旧名字不再有机器");
+    // 配置里还是旧名字、服务端上已经没有它：NO_SUCH_HOST（桌面端当作没有要改的）
+    let r = s.raw(&s.env(), &["host", "rename", "desk", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "NO_SUCH_HOST"), "{}{}", r.out, r.err);
+    // 新名字被另一台在线机器占用：HOST_NAME_TAKEN
+    rep.name = "desk".into();
+    rep.instance = "j1".into();
+    st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
+    std::fs::write(cfg.join("config.toml"), format!("url = \"{}\"\ntoken = \"{}\"\n\n[host]\nname = \"win\"\n", s.url, s.token)).unwrap();
+    let r = s.raw(&s.env(), &["host", "rename", "desk", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "HOST_NAME_TAKEN"), "{}{}", r.out, r.err);
+    assert!(st.read(|x| x.host("win", now)).is_ok(), "机器记录没有被改动");
+    // 名字没变：不动服务端
+    let r = s.raw(&s.env(), &["host", "rename", "win", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["unchanged"], true);
+}

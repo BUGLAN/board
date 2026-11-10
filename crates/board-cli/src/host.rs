@@ -39,7 +39,7 @@ use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
-use crate::Paint;
+use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words};
 use board_core::*;
 use serde_json::{json, Value};
@@ -671,6 +671,39 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     }
     h.shutdown(out.is_ok());
     out
+}
+
+/// `board host rename <新机器名>`：让服务端把这台机器的记录原地改名（桌面端「设置 → 本机」保存机器名时调用）。
+/// 旧名字取配置文件 `[host].name`，没写时用本机主机名——和 `board host` 启动时的算法一致，
+/// 保证改的就是服务端记录的这台机器。设置和历史派发记录都保留
+pub fn rename(to: &str, json: bool, p: &Paint) -> Result<Output> {
+    let to = to.trim();
+    check_host_name(to).map_err(BoardError::usage)?;
+    let conf = config::File::load()?.host()?;
+    let from = match conf.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) => n.to_string(),
+        None => host_name_from(&sysinfo::System::host_name().unwrap_or_default()),
+    };
+    check_host_name(&from).map_err(BoardError::usage)?;
+    if from == to {
+        return Ok(if json {
+            Output::Json(json!({ "ok": true, "name": to, "unchanged": true }))
+        } else {
+            Output::Text(format!("{} 机器名没有变：{}\n", p.dim("·"), p.bold(to)))
+        });
+    }
+    let mut be = Backend::open()?;
+    let h = be.host_rename(&from, to)?;
+    if json {
+        return Ok(Output::Json(serde_json::to_value(&h).unwrap_or_default()));
+    }
+    Ok(Output::Text(format!(
+        "{} 机器已改名：{} → {}  {}\n",
+        p.green("✓"),
+        p.bold(&from),
+        p.bold(to),
+        p.dim("设置和历史派发记录都保留")
+    )))
 }
 
 impl Host<'_> {

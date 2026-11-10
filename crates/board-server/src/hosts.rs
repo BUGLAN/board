@@ -6,6 +6,7 @@
 //! - `POST /api/hosts/{名字}/begin {instance, id}`：开始一次排队中的派发（领取卡片）
 //! - `POST /api/hosts/{名字}/pull {instance}`：定时领取的下一张；这一轮结束时返回 null
 //! - `POST /api/hosts/{名字}/round`：开始一轮领取（定时到点；界面上的「现在领一轮」也是它）
+//! - `POST /api/hosts/{名字}/rename {name}`：机器改名（桌面端「设置 → 本机」保存机器名时调用）
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
 //!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`、`GET /api/hosts/{名字}/recent`、`GET /api/dispatches/{ID}/log`。
@@ -198,6 +199,28 @@ pub(crate) async fn remove(State(s): State<AppState>, Extension(caller): Extensi
     s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_remove(&name, &actor, &by))).await?;
     s.poke();
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RenameBody {
+    /// 新机器名
+    name: String,
+}
+
+/// 机器改名（桌面端「设置 → 本机」保存机器名时调用）：机器记录原地改名，设置和历史派发记录保留。
+/// 新名字被在线的机器占用时 HOST_NAME_TAKEN，被离线的机器占用时 USAGE
+pub(crate) async fn rename(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<HostInfo> {
+    let b: RenameBody = parse(v)?;
+    let origin = origin_of(&caller, &h);
+    let out = s.db(move |st| st.write(now_ms(), origin, |w| w.host_rename(&name, &b.name))).await?;
+    s.poke();
+    Ok(Json(out))
 }
 
 /// 这台机器最近 50 个结束的派发

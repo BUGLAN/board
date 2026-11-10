@@ -50,7 +50,7 @@ const COMMANDS: [(&str, &str, &str); 23] = [
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\" | --comment-file <文件>]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
-        ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),
+        ("host", "[run] [--name <机器名>] [--dir <项目>/<白板>=<路径>]… | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，派来的卡片在对应目录里启动本机 agent，Ctrl+C 退出（机器名、白板与目录也可写在 ~/.board/config.toml 的 [host]）；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
@@ -202,8 +202,17 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         return logout(json, p);
     }
 
-    // 任务下发：board host 在前台一直运行；board dispatch 不需要名字（带了就记为发起人）
+    // 任务下发：board host 在前台一直运行；board host rename 不需要名字（带了也只当参数）；board dispatch 不需要名字（带了就记为发起人）
     if sub == "host" {
+        if a.pos.get(1).map(String::as_str) == Some("rename") {
+            let to = a
+                .pos
+                .get(2)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| BoardError::usage("用法：board host rename <新机器名>"))?;
+            return host::rename(to, json, p);
+        }
         host::run(host::Opts { name: a.value("--name").map(str::to_string), dirs: a.all("--dir") }, p)?;
         return Ok(Output::Text(String::new()));
     }
@@ -1325,6 +1334,16 @@ mod tests {
         match run(&["--version".to_string(), "--json".to_string()], &p) {
             Ok(Output::Json(j)) => assert_eq!(j["version"], v),
             _ => panic!("--version --json 应该输出 JSON"),
+        }
+    }
+
+    /// `board host rename` 缺新名字时报用法错（不会真的去常驻或改名）
+    #[test]
+    fn host_rename_requires_a_name() {
+        let p = Paint { on: false };
+        match run(&["host".into(), "rename".into()], &p) {
+            Err(e) => assert!(e.message.contains("用法"), "{}", e.message),
+            Ok(_) => panic!("缺新名字时应当报用法错"),
         }
     }
 }

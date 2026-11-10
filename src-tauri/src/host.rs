@@ -362,19 +362,73 @@ pub async fn host_status(app: AppHandle) -> Status {
     })
 }
 
+/// 生效的机器名：配置里没写（空）时用本机主机名——和 board host 启动时的算法一致
+fn effective_name(configured: &str) -> String {
+    let n = configured.trim();
+    if n.is_empty() {
+        host_name_from(&hostname())
+    } else {
+        n.to_string()
+    }
+}
+
+/// 调自带的 board host rename，让服务端把这台机器的记录原地改名（设置和历史派发记录保留）。
+/// 失败时 Err((错误码, 原因))：错误码和原因取自 board 的输出（「✗ 错误码  原因」）
+fn rename_host(new_name: &str) -> Result<(), (String, String)> {
+    let Some(cli) = crate::cli_path() else {
+        return Err((String::new(), "没找到桌面端自带的 board 命令行：机器名没法在服务端上改，重新安装桌面端试试".into()));
+    };
+    let mut c = Command::new(cli);
+    c.args(["host", "rename", new_name]).env_remove("BOARD_URL").env("NO_COLOR", "1").stdin(Stdio::null());
+    // 桌面端开发时 BOARD_URL 指向本机页面（:1420），不是服务端：board 用配置文件里的地址
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = c.output().map_err(|e| (String::new(), format!("运行 board host rename 失败：{e}")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    let line = err.lines().next().unwrap_or_default().trim();
+    let line = line.strip_prefix('✗').map(str::trim).unwrap_or(line);
+    let (code, msg) = line.split_once("  ").map(|(a, b)| (a.trim(), b.trim())).unwrap_or((line, line));
+    Err((code.to_string(), if msg.is_empty() { code.to_string() } else { msg.to_string() }))
+}
+
 /// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）；正在运行时重启 board host。
+/// 机器名变了：先停 board host（它还在用旧名字上报，不停的话改名之后又会把旧机器建回来），
+/// 再让服务端把机器记录原地改名（设置和历史派发记录保留），然后写配置、重启；
+/// 改名失败（新名字已被别的机器占用等）时不写配置，board host 用旧名字接着跑。
 /// 目录有变化时先弹系统确认框（接任务打开着时，改了目录就是让 agent 去新目录干活）
 #[tauri::command]
 pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        check_conf(name.trim(), &dirs)?;
-        let (_, old, _) = read_conf();
+        let name = name.trim();
+        check_conf(name, &dirs)?;
+        let (old_name, old_dirs, logged_in) = read_conf();
         let key = |ds: &[Dir]| ds.iter().map(|d| (d.board.trim().to_string(), d.path.trim().to_string())).collect::<Vec<_>>();
-        if key(&old) != key(&dirs) && !confirm_host(&app, "修改这台电脑接任务的白板目录？", &name, &dirs) {
+        if key(&old_dirs) != key(&dirs) && !confirm_host(&app, "修改这台电脑接任务的白板目录？", name, &dirs) {
             return Err(CANCELLED.into());
         }
-        save_conf(&name, &dirs)?;
+        let new = effective_name(name);
+        if logged_in && effective_name(&old_name) != new {
+            stop(&app, STOP_WAIT)?;
+            if let Err((code, msg)) = rename_host(&new) {
+                // 服务端还没有这台机器的记录（从没运行过 board host）：没有要改的，直接按新名字建
+                if code != "NO_SUCH_HOST" {
+                    if enabled(&app) {
+                        let _ = ensure_started(&app);
+                    }
+                    return Err(msg);
+                }
+            }
+        }
+        save_conf(name, &dirs)?;
         if enabled(&app) {
+            // 改名的路径里已经停过：这里再停一次是空操作
             stop(&app, STOP_WAIT)?;
             ensure_started(&app)?;
         }
@@ -466,6 +520,14 @@ mod tests {
         let twice = vec![ok[0].clone(), ok[0].clone()];
         assert!(check_conf("", &twice).unwrap_err().contains("两次"));
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// 生效的机器名：配置里没写时用本机主机名（和 board host 启动时一致），写了就去掉空白
+    #[test]
+    fn effective_names_match_board_host() {
+        assert_eq!(effective_name(""), host_name_from(&hostname()));
+        assert_eq!(effective_name("  win  "), "win");
+        assert_eq!(effective_name("macbook"), "macbook");
     }
 
     fn tempfile_dir(name: &str) -> PathBuf {
