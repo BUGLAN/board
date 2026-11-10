@@ -445,5 +445,10 @@ jobs:
         run: |
           awk -v h="## v$VERSION" 'index($0, h" ") == 1 || $0 == h { f = 1; next } f && /^## / { exit } f' CHANGELOG.md | sed '/./,$!d' > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG.md 里取不到 v$VERSION 一节"; exit 1; }
-          ls desktop/*.dmg desktop/*.exe desktop/*.msi >/dev/null || { echo "::error::缺少桌面端安装包，不建 Release"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip desktop/*
+          # 上传时按 glob 的公共目录保留子目录：macOS 的 .dmg 在最外层，Windows 的 .exe / .msi 在 nsis/、msi/ 下面
+          files=()
+          while IFS= read -r f; do files+=("$f"); done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) | sort)
+          for ext in dmg exe msi; do
+            printf '%s\n' "${files[@]}" | grep -q "\.$ext$" || { echo "::error::缺少桌面端安装包（.$ext），不建 Release"; exit 1; }
+          done
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip "${files[@]}"
