@@ -7,6 +7,8 @@ node_modules
 web/node_modules
 web/dist
 src-tauri/gen
+.agents/skills/board-skills/bin
+src-tauri/binaries
 prototype
 lianzi
 **/.DS_Store
