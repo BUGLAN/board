@@ -289,7 +289,7 @@ fn capacity_and_pause_keep_dispatches_queued() {
             w.host_update("mbp", &HostPatch { cron_on: Some(true), cron: Some(vec!["3:00".into(), "23:00".into(), "03:00".into()]), ..Default::default() })
         })
         .unwrap();
-    assert_eq!(h.cron, vec!["03:00", "23:00"]);
+    assert_eq!(h.cron, vec!["0 3 * * *", "0 23 * * *"], "旧的 HH:MM 换成等价的 cron 表达式，重复的只留一条");
 }
 
 #[test]
@@ -1140,4 +1140,38 @@ fn next_follows_rules() {
     assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, x);
     submit(&mut s, T0 + 4 * S, &name, x);
     assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone, "只剩给 dsh 的卡片");
+}
+
+/* ---------------- 定时领取：cron 表达式 ---------------- */
+
+#[test]
+fn cron_setting_is_validated_and_normalized() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let set = |s: &mut Store, list: &[&str]| set_host(s, HostPatch { cron: Some(list.iter().map(|x| x.to_string()).collect()), ..Default::default() });
+    let e = set(&mut s, &["61 * * * *"]).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("第 1 段（分）"), "{}", e.message);
+    let e = set(&mut s, &["* * *"]).unwrap_err();
+    assert!(e.message.contains("5 段"), "{}", e.message);
+    // 合法的原样保存；旧的 HH:MM 换成等价的表达式；重复的只留一条
+    let h = set(&mut s, &["*/5 * * * *", "0  9 * * 1-5", "03:00", "0 3 * * *"]).unwrap();
+    assert_eq!(h.cron, vec!["*/5 * * * *", "0 9 * * 1-5", "0 3 * * *"]);
+}
+
+/// 升级：旧库里的 HH:MM 时间点迁移成 cron 表达式，不丢配置
+#[test]
+fn old_hhmm_cron_is_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch(r#"UPDATE hosts SET cron = '["03:00","23:30"]', cron_on = 1"#).unwrap();
+    let s = Store::open(&path).unwrap();
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    assert!(h.cron_on);
+    assert_eq!(h.cron, vec!["0 3 * * *", "30 23 * * *"]);
 }

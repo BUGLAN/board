@@ -510,8 +510,15 @@ fn successor(d: &Dispatch, running: &[Dispatch]) -> Option<Dispatch> {
     running.iter().filter(|x| x.session == d.session && x.id > d.id).max_by_key(|x| x.id).cloned()
 }
 
-fn cron_due(m: &str, cron_on: bool, cron: &[String], paused: bool, round: bool) -> bool {
-    cron_on && !paused && !round && cron.iter().any(|t| t == m)
+/// 这一分钟（本地时间）有哪条定时表达式到点。旧版服务端发来的 HH:MM 按「每天这个时间」算；解析不了的跳过
+fn cron_due(at: &chrono::DateTime<chrono::Local>, cron_on: bool, cron: &[String], paused: bool, round: bool) -> bool {
+    use chrono::{Datelike, Timelike};
+    if !cron_on || paused || round {
+        return false;
+    }
+    cron.iter().filter_map(|t| board_core::cron::normalize(t).ok()).filter_map(|t| board_core::cron::Cron::parse(&t).ok()).any(|c| {
+        c.matches(at.minute(), at.hour(), at.day(), at.month(), at.weekday().num_days_from_sunday())
+    })
 }
 
 /// 定时领取的一个 tick：同一分钟只处理一次。不用领取时记下这一分钟；要领取时调 `start`，
@@ -1180,9 +1187,11 @@ impl Host<'_> {
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
     fn cron(&mut self, last: &mut String) {
-        let m = chrono::Local::now().format("%H:%M").to_string();
+        // 同一分钟只处理一次：多条表达式同时到点也只开始一轮
+        let now = chrono::Local::now();
+        let m = now.format("%Y-%m-%d %H:%M").to_string();
         let Some(w) = &self.work else { return };
-        let due = cron_due(&m, w.host.cron_on, &w.host.cron, w.host.paused, w.host.round);
+        let due = cron_due(&now, w.host.cron_on, &w.host.cron, w.host.paused, w.host.round);
         cron_tick(&m, last, due, || match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/round", self.name), json!({})) {
             Ok(_) => {
                 self.say(format!("{} {m} 到点，开始一轮领取", self.p.green("⏰")));
@@ -1416,13 +1425,26 @@ mod tests {
 
     #[test]
     fn cron_failed_minute_is_retried() {
-        let cron = vec!["03:00".to_string()];
+        use chrono::TimeZone;
+        let at = |d: u32, h: u32, m: u32| chrono::Local.with_ymd_and_hms(2026, 11, d, h, m, 0).unwrap();
+        // 2026-11-09 是周一
+        let cron = vec!["0 3 * * *".to_string()];
         // 不是定时点、暂停、正在进行一轮、没开定时都不发
-        assert!(cron_due("03:00", true, &cron, false, false));
-        assert!(!cron_due("03:00", true, &cron, true, false));
-        assert!(!cron_due("03:00", true, &cron, false, true));
-        assert!(!cron_due("03:01", true, &cron, false, false));
-        assert!(!cron_due("03:00", false, &cron, false, false));
+        assert!(cron_due(&at(9, 3, 0), true, &cron, false, false));
+        assert!(!cron_due(&at(9, 3, 0), true, &cron, true, false));
+        assert!(!cron_due(&at(9, 3, 0), true, &cron, false, true));
+        assert!(!cron_due(&at(9, 3, 1), true, &cron, false, false));
+        assert!(!cron_due(&at(9, 3, 0), false, &cron, false, false));
+        // 每 5 分钟、工作日 9 点；旧版服务端发来的 HH:MM 照样按每天这个时间
+        let every5 = vec!["*/5 * * * *".to_string()];
+        assert!(cron_due(&at(9, 14, 35), true, &every5, false, false));
+        assert!(!cron_due(&at(9, 14, 36), true, &every5, false, false));
+        let workday = vec!["0 9 * * 1-5".to_string()];
+        assert!(cron_due(&at(9, 9, 0), true, &workday, false, false), "周一");
+        assert!(!cron_due(&at(14, 9, 0), true, &workday, false, false), "周六");
+        assert!(cron_due(&at(9, 3, 0), true, &["03:00".to_string()], false, false));
+        // 两条同一分钟都到点：cron_tick 按分钟只处理一次（下面）
+        assert!(cron_due(&at(9, 9, 0), true, &[workday[0].clone(), "0 9 * * *".into()], false, false));
 
         let mut last = String::new();
         let mut calls = 0;

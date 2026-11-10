@@ -5,6 +5,7 @@
 pub mod agents;
 #[cfg(feature = "config")]
 pub mod config;
+pub mod cron;
 pub mod engine;
 pub mod error;
 pub mod files;

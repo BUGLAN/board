@@ -6,6 +6,7 @@ import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, sk
 import { shell } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostInfo } from '../../lib/types';
 import { copyText, cx, durWords, pref, replay } from '../../lib/util';
+import { cronError, describeCron, normalizeCron } from '../../lib/cron';
 import { hostKey, optimistic, useBusy, useData } from '../../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../../store/ui';
 import { Title, useNow } from '../bits';
@@ -215,7 +216,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             <div className="hp-rule">
               <div>
                 <b>定时领取</b>
-                <span>每天到这些时间点（机器本地时区），在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有可领取的卡片</span>
+                <span>到了这些 cron 表达式的时间（机器本地时区），在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有可领取的卡片</span>
               </div>
               <button
                 className={cx('toggle', h.cronOn && 'on')}
@@ -600,41 +601,53 @@ function MidPath({ path }: { path: string }) {
 }
 
 /** 定时领取的时间点：胶囊列表，可增删 */
+/** 定时领取的 cron 表达式：胶囊列表（写说明，悬停看表达式），可增删；输入时就地校验，写明哪一段不对 */
 function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[] }) => Promise<void>; busy: boolean }) {
   const [t, setT] = useState('');
+  const err = t.trim() ? cronError(t) : null;
   const add = () => {
-    if (busy || !/^\d{1,2}:\d{2}$/.test(t)) return;
-    void patch({ cron: [...h.cron, t] });
+    if (busy || !t.trim() || err) return;
+    const x = normalizeCron(t);
+    if (!h.cron.map(normalizeCron).includes(x)) void patch({ cron: [...h.cron, x] });
     setT('');
   };
   return (
     <div className={cx('hp-cron', !h.cronOn && 'off')}>
       {h.cron.map(x => (
-        <span className="hp-time" key={x}>
-          {x}
+        <span className="hp-time" key={x} title={normalizeCron(x)}>
+          {describeCron(x)}
+          {describeCron(x) !== normalizeCron(x) && <code>{normalizeCron(x)}</code>}
           <button type="button" aria-label={`去掉 ${x}`} disabled={busy} onClick={() => patch({ cron: h.cron.filter(y => y !== x) })}>
             <Icon name="close" />
           </button>
         </span>
       ))}
       <span className="hp-time-add">
-        {/* 不用原生 time 输入框：各浏览器样式不一（----:--），和其他输入框对不齐 */}
         <input
-          className="input"
+          className={cx('input hp-cron-input', err && 'bad')}
           type="text"
-          inputMode="numeric"
-          placeholder="23:00"
-          maxLength={5}
+          spellCheck={false}
+          placeholder="例如 0 9 * * 1-5"
+          maxLength={80}
           value={t}
-          onChange={e => setT(e.target.value.replace(/[^\d:]/g, ''))}
+          onChange={e => setT(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && add()}
-          aria-label="新的时间点（HH:MM）"
+          aria-label="新的 cron 表达式（分 时 日 月 周）"
+          aria-invalid={!!err || undefined}
+          aria-describedby={err ? `cron-err-${h.id}` : undefined}
         />
-        <button className="btn sm" type="button" disabled={busy || !t} onClick={add}>
+        <button className="btn sm" type="button" disabled={busy || !t.trim() || !!err} onClick={add}>
           <Icon name="plus" />
-          加时间点
+          加一条
         </button>
       </span>
+      {err ? (
+        <span className="hp-cron-err" id={`cron-err-${h.id}`} role="alert">
+          {err}
+        </span>
+      ) : (
+        <span className="hp-cron-hint">5 段：分 时 日 月 周（机器本地时区），例如 0 9 * * 1-5 是工作日 9 点，*/30 * * * * 是每 30 分钟</span>
+      )}
     </div>
   );
 }

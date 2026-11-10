@@ -110,6 +110,18 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
     }
+    // 定时领取原来是 HH:MM 时间点：换成等价的 cron 表达式（「M H * * *」），不丢已有配置
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, cron FROM hosts")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, raw) in rows {
+        let list: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        if list.iter().any(|t| parse_hhmm(t).is_some()) {
+            let new: Vec<String> = list.iter().map(|t| crate::cron::normalize(t).unwrap_or_else(|_| t.clone())).collect();
+            conn.execute("UPDATE hosts SET cron = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).unwrap_or_default()])?;
+        }
+    }
     Ok(())
 }
 
@@ -295,7 +307,7 @@ pub struct HostInfo {
     pub paused: bool,
     /// 默认 agent：设置过且找到了就是它，否则是本机 agent 里第一个找到的；都没找到时为空
     pub agent: Option<String>,
-    /// 定时领取开关和时间点（HH:MM，机器本地时区）
+    /// 定时领取开关和 cron 表达式（5 段「分 时 日 月 周」，机器本地时区）
     pub cron_on: bool,
     pub cron: Vec<String>,
     /// 正在进行一轮领取（定时到点或「现在领一轮」）
@@ -1220,14 +1232,14 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE hosts SET cron_on = ?2 WHERE id = ?1", params![h.id, on as i64])?;
         }
         if let Some(times) = &p.cron {
+            // 每条是一个 cron 表达式（旧的 HH:MM 换成等价的「M H * * *」）；不对的拒绝，写明哪一段不对
             let mut v: Vec<String> = vec![];
             for t in times {
-                let t = parse_hhmm(t).ok_or_else(|| BoardError::usage(format!("时间点要写成 HH:MM：{t}")))?;
+                let t = crate::cron::normalize(t).map_err(BoardError::usage)?;
                 if !v.contains(&t) {
                     v.push(t);
                 }
             }
-            v.sort();
             self.tx.execute("UPDATE hosts SET cron = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&v).unwrap_or_default()])?;
         }
         if let Some(e) = &p.env {

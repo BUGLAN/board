@@ -4,6 +4,7 @@
 import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
+import { describeCron } from './cron';
 import type { Dispatch, DispatchResult, HostAgent, HostInfo, Workspace } from './types';
 import { agentColor } from './util';
 
@@ -73,8 +74,8 @@ export function queueReason(h: HostInfo | undefined): string {
 }
 
 /** 定时领取的摘要：「每天 23:00、03:00」或「只接手动」 */
-/** 定时领取的摘要（「每天 23:00、03:00」）；没开或没设时间点时为空，不显示占位 */
-export const cronSummary = (h: HostInfo) => (h.cronOn && h.cron.length ? `每天 ${h.cron.join('、')}` : '');
+/** 定时领取的摘要（「每天 23:00、工作日 09:00」，和机器详情里的胶囊一致）；没开或没设时为空，不显示占位 */
+export const cronSummary = (h: HostInfo) => (h.cronOn && h.cron.length ? h.cron.map(describeCron).join('、') : '');
 
 /** 机器设置里实际会用到的 agent：默认 agent、领取规则和兜底里的 agent（去重、按这个顺序）；不是检测到的全部 */
 export const usedAgents = (h: HostInfo) => {

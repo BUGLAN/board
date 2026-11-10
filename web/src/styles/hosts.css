@@ -138,6 +138,12 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
 .hp-time button svg { width: 11px; height: 11px; }
 .hp-time-add { display: inline-flex; align-items: center; gap: 6px; }
 .hp-time-add .input { width: 72px; height: 28px; padding: 0 8px; font: 12px var(--f-mono); }
+.hp-time-add .hp-cron-input { width: 150px; }
+.hp-cron-input.bad { box-shadow: inset 0 0 0 1px var(--danger), 0 0 0 3px var(--danger-soft); }
+.hp-time code { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
+.hp-cron-err, .hp-cron-hint { flex-basis: 100%; font-size: 12px; line-height: 1.5; }
+.hp-cron-err { color: var(--danger-text); }
+.hp-cron-hint { color: var(--text-3); }
 .hp-agents { display: flex; flex-wrap: wrap; gap: 8px; }
 .hp-agent-btn { border-radius: var(--r-sm); }
 .hp-agent-btn:hover:not(:disabled) .hp-agent { box-shadow: inset 0 0 0 1px var(--line-3), var(--shadow-1); }
