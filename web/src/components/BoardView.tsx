@@ -517,7 +517,7 @@ function SortButton({ col, sort, sortId }: { col: Status; sort: SortSpec | undef
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={sort ? `「${col.name}」按${sortName(sort)}${dir === '↓' ? '降序' : dir ? '升序' : ''}显示，点开更改` : `排序「${col.name}」的卡片（只改显示顺序）`}
-        data-tip={sort ? '只改显示顺序；在这块里拖动会按看到的顺序保存为优先级' : '排序（只改显示顺序）'}
+        data-tip={sort ? '只改显示顺序；在这块里拖动不改顺序，卡片落回排序位置' : '排序（只改显示顺序）'}
         onClick={e => {
           const open = useUI.getState().ctx;
           if (open?.kind === 'sort' && open.id === col.key) return closeCtx();

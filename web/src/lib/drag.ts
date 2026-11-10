@@ -12,7 +12,7 @@ import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
 import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, omittedIn, serverNow, useData } from '../store/data';
-import { rejectColumn, setDrag, setSort, toast, toastError, useUI, type DragUI } from '../store/ui';
+import { rejectColumn, setDrag, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
   code: string;
@@ -449,12 +449,26 @@ function finish(cancelled: boolean) {
   locate();
   const { target, valid, veto } = s;
   const same = !target || (target.col === s.fromCol && target.index === s.fromIndex);
-  const commit = !cancelled && valid && !same && target;
+  // 排序中的块里拖回同块：显示顺序由排序依据决定，这次拖动不改顺序（优先级不动、排序不结束）。
+  // 占位留在落点，幽灵落位后清掉预览，这块按排序依据重排，卡片由 FLIP 从落点补间回排序位置
+  const settle =
+    !!target && !cancelled && valid && !same &&
+    target.col === s.fromCol && !!useUI.getState().sorts[sortKey(useData.getState().path, s.fromCol)];
+  const commit = !!target && !cancelled && valid && !same && !settle;
   let failed = false;
   let done: Promise<unknown> | null = null;
-  let plan: Drop = { index: target?.index ?? 0 };
+  let plan = 0;
 
-  if (!commit) {
+  if (commit && target) {
+    plan = planDrop(s.id, target);
+    // 松手当帧就画成「保存中」（不能再拖、再改），落位的补丁等飞回动画结束再叠（hold）
+    // 终点状态的快照省略了更早的卡片（可能夹在看到的卡片中间）：整列里的位置算不出来，按看到的相邻卡片定位
+    done = exec({ op: 'move', id: s.id, column: target.col, index: plan, ...anchorOf(s.id, target.col, plan) }, { cards: [s.id] });
+    done.catch(err => {
+      failed = true;
+      toastError(err);
+    });
+  } else if (!settle) {
     flushSync(() => setDrag({ ...useUI.getState().drag!, col: s.fromCol, index: s.fromIndex, valid: true, veto: null, over: null }));
     if (!cancelled && veto && target) {
       toastError({ code: veto.code, message: veto.message });
@@ -462,16 +476,9 @@ function finish(cancelled: boolean) {
     } else if (!cancelled && s.orderLocked) {
       toast({ type: 'info', title: '这块白板没有开「保存顺序」', text: '同一状态里不能拖动排序；在工作流条末尾的「白板设置」里打开' });
     }
-  } else {
-    plan = planDrop(s.id, s.fromCol, target);
-    // 松手当帧就画成「保存中」（不能再拖、再改），落位的补丁等飞回动画结束再叠（hold）
-    // 终点状态的快照省略了更早的卡片（可能夹在看到的卡片中间）：整列里的位置算不出来，按看到的相邻卡片定位
-    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order, ...anchorOf(s.id, target.col, plan) }, { cards: [s.id] });
-    done.catch(err => {
-      failed = true;
-      toastError(err);
-    });
   }
+  // settle：不发请求、不落补丁——占位留在落点，幽灵落位后清掉预览（下面 onfinish 里 setDrag(null)），
+  // 卡片从落点补间回排序位置，同块其他卡片同步让位后再让回去，顺序不变
 
   // 幽灵飞回占位处。占位是按目标块的卡片形态画的（卡片 / 单行 / 磁贴，列宽也可能不同）：
   // 幽灵一路变成占位的尺寸、圆角、阴影，形态不同时幽灵里的内容先淡出、落位后真卡片的内容再淡入，松手到落位连成一段，不跳变
@@ -513,11 +520,12 @@ function finish(cancelled: boolean) {
     // 先记下占位（幽灵刚落在这里）和其他卡片的位置：落位后卡片的最终位置可能不是落点
     // （排序中的块按排序依据重排、去掉占位后别的卡片补位），由 FLIP 从落点平滑移过去，不瞬移
     flip.capture();
-    if (commit && !failed && done) {
-      if (plan.clear) setSort(plan.clear, null);
+    if (commit && !failed && done && target) {
       // 落位：叠一层补丁直到服务端确认并刷新（期间推送触发的刷新不会把它冲回原处）；被拒绝时补丁撤掉，卡片回到原处
-      hold(movePatch(id, target.col, plan.index, plan.order), done);
+      hold(movePatch(id, target.col, plan), done);
     }
+    // 排序中的块里拖回同块（settle）也走这里：清掉预览后这块按排序依据重排，
+    // BoardView 渲染后 play() 把卡片和让位的卡片从落点补间回排序位置，顺序不变
     setDrag(null);
     ghost.remove();
     if (commit && !failed && motion) {
@@ -535,45 +543,30 @@ function finish(cancelled: boolean) {
 }
 
 /** 目标状态的快照省略了卡片时，落点换成锚点：放到看到的下一张前面，落在末尾时放到看到的最后一张后面 */
-function anchorOf(id: number, col: ColumnKey, plan: Drop): { before?: number; after?: number } {
+function anchorOf(id: number, col: ColumnKey, index: number): { before?: number; after?: number } {
   const board = useData.getState().board;
-  if (!board || !omittedIn(board, col) || plan.order) return {};
+  if (!board || !omittedIn(board, col)) return {};
   const prio = (board.cols[col] ?? []).filter(x => x !== id);
-  const next = prio[plan.index];
+  const next = prio[index];
   if (next != null) return { before: next };
-  const last = prio[plan.index - 1];
+  const last = prio[index - 1];
   return last != null ? { after: last } : {};
 }
 
-interface Drop {
-  /** 优先级顺序里的位置（不计被拖的卡片本身） */
-  index: number;
-  /** 整块的新顺序，一起保存为优先级 */
-  order?: number[];
-  /** 落位后结束这块的排序状态 */
-  clear?: string;
-}
-
-/** 松手位置换算成要保存的优先级。占位的 index 是「看到的顺序」里的位置：
+/** 松手位置换算成要保存的优先级位置（按去掉这张卡片之后的列表算）。占位的 index 是「看到的顺序」里的位置：
     - 目标块没在排序：看到的就是优先级顺序，原样保存
-    - 在排序中的块里拖动：按拖动后看到的顺序整块保存为优先级，这块的排序状态结束
-    - 从别的块拖进排序中的块：放到看到的下一张卡片前面（优先级顺序里），这块继续排序，别的块不动 */
-function planDrop(id: number, from: ColumnKey, target: { col: ColumnKey; index: number }): Drop {
+    - 从别的块拖进排序中的块：放到看到的下一张卡片前面（优先级顺序里），这块继续排序，别的块不动
+    （排序中的块里拖回同块不走这里：顺序不改，只播放从落点补间回排序位置的动画，见 finish 里的 settle） */
+function planDrop(id: number, target: { col: ColumnKey; index: number }): number {
   const { board, path, ws } = useData.getState();
-  const key = sortKey(path, target.col);
-  const spec = useUI.getState().sorts[key];
-  if (!board || !spec) return { index: target.index };
+  const spec = useUI.getState().sorts[sortKey(path, target.col)];
+  if (!board || !spec) return target.index;
   const labels = boardMeta(ws, path)?.project.labels ?? [];
   const prio = (board.cols[target.col] ?? []).filter(x => x !== id);
   const shown = sortIds(prio, board.cards, spec, labels, serverNow());
-  // 快照省略了更早的卡片（排序时会取全量，这里是还没取回来）：不能整块保存顺序（没列出的会被补到最后），按下一张卡片定位
-  if (target.col === from && !omittedIn(board, target.col)) {
-    const order = [...shown];
-    order.splice(Math.min(target.index, order.length), 0, id);
-    return { index: target.index, order, clear: key };
-  }
+  // 快照省略了更早的卡片（排序时会取全量，这里是还没取回来）：按看到的下一张卡片定位（优先级顺序里）
   const next = shown[target.index];
-  return { index: next == null ? prio.length : prio.indexOf(next) };
+  return next == null ? prio.length : prio.indexOf(next);
 }
 
 function cleanup(keepDrag = false) {
