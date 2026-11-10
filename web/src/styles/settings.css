@@ -68,6 +68,8 @@
 .code-line .copy:hover { background: rgba(255, 255, 255, .08); color: #fff; }
 .code-line .copy.done { color: #3DDC97; }
 .code-line .copy svg { width: 14px; height: 14px; }
+.code-line.has-pick code { flex: 1; }
+.code-pick { flex: none; height: 26px; max-width: 140px; padding: 0 6px; border: 0; border-radius: var(--r-xs); font: 12px var(--f-sans); color: var(--term-text); background: rgba(255, 255, 255, .08); color-scheme: dark; }
 .errcodes { margin-bottom: 12px; font-size: 12.5px; }
 .errcodes summary { cursor: pointer; color: var(--text-2); padding: 4px 0; }
 .err-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; padding: 8px 0 4px; }

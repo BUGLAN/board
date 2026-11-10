@@ -14,7 +14,7 @@ import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, serverNow, useCurrent, useData } from '../store/data';
-import { closeCtx, openCreator, openCtx, setFilter, setSort, setTab, toastError, useUI, type DragUI } from '../store/ui';
+import { closeCtx, openCreator, openCtx, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
 import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
@@ -65,6 +65,9 @@ export function BoardView() {
   const labels = cur?.project.labels ?? [];
   const { entering, fresh } = useEntering(board, generation);
   const sorts = useUI(s => s.sorts);
+  // 手机：上面已有状态切换条，工作流图默认收起成一行入口
+  const mobile = useMobile();
+  const [flowOpen, setFlowOpen] = useState(false);
   // 排序中的块按排序依据显示（只改显示顺序）；拖拽预览的位置是「看到的顺序」里的位置
   const shown = useMemo(() => (board ? shownCols(board, sorts, labels, serverNow()) : null), [board, sorts, labels]);
   const cols = useMemo(() => (shown ? previewCols(shown, drag) : null), [shown, drag]);
@@ -118,11 +121,8 @@ export function BoardView() {
   return (
     <div className="page page-board" data-page="board">
       <div className="page-head">
+        {/* 项目只在顶栏出现一次，页头只写白板名 */}
         <nav className="crumbs" aria-label="位置">
-          <button type="button" className="crumb-link" onClick={() => setTab('projects')}>
-            {cur?.project.name}
-          </button>
-          <Icon name="chevRight" />
           <b>{cur?.board.name}</b>
         </nav>
         {filter && (
@@ -164,7 +164,14 @@ export function BoardView() {
         key={generation}
       >
         {/* 工作流条放在滚动区域里：随白板内容一起滚走，不常驻顶部、不压在卡片上 */}
-        {cur && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
+        {cur && mobile && (
+          <button type="button" className="wf-toggle" aria-expanded={flowOpen} onClick={() => setFlowOpen(!flowOpen)}>
+            <Icon name="board" />
+            工作流 · {f.list.length} 个状态
+            <Icon name={flowOpen ? 'chevUp' : 'chevDown'} />
+          </button>
+        )}
+        {cur && (!mobile || flowOpen) && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
         {!board && f.list.length > 0 && (
           <Magnet path={path} statuses={f.list} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={counts[s.key] ?? 0} />} />
         )}

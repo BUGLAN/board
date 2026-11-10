@@ -15,7 +15,7 @@ import type { TokenInfo } from '../lib/types';
 import { accel, ago, copyText, cx, pref } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
-import { allBoards, colCount, refresh, useData } from '../store/data';
+import { allBoards, colCount, refresh, useCurrent, useData } from '../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
 import { FlowBar } from './FlowBar';
@@ -58,23 +58,51 @@ const Row = ({ label, hint, children }: { label: string; hint?: string; children
 );
 
 function Code({ cmd, note, plain, ps }: { cmd: string; note?: string; plain?: boolean; ps?: boolean }) {
-  const [done, setDone] = useState(false);
   return (
     <div className={cx('code-line', plain && 'plain', ps && 'ps')}>
       <code>{cmd}</code>
       {note && <span>{note}</span>}
-      <button
-        type="button"
-        className={cx('copy', done && 'done')}
-        aria-label="复制"
-        onClick={async () => {
-          await copyText(cmd);
-          setDone(true);
-          setTimeout(() => setDone(false), 1400);
-        }}
-      >
-        <Icon name={done ? 'check' : 'copy'} />
-      </button>
+      <CopyBtn text={cmd} />
+    </div>
+  );
+}
+
+function CopyBtn({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className={cx('copy', done && 'done')}
+      aria-label="复制"
+      onClick={async () => {
+        await copyText(text);
+        setDone(true);
+        setTimeout(() => setDone(false), 1400);
+      }}
+    >
+      <Icon name={done ? 'check' : 'copy'} />
+    </button>
+  );
+}
+
+/** 「做某状态里带某标签的任务」：一行，行里选标签（当前项目的标签）后复制 */
+function LabelPrompt({ path, status, names }: { path: string; status: string; names: string[] }) {
+  const labels = useCurrent()?.project.labels ?? [];
+  const [pick, setPick] = useState<string | null>(null);
+  const label = pick ?? labels.find(l => l.name === 'claude')?.name ?? labels[0]?.name ?? 'claude';
+  const q = quickPrompts(path, names, label).find(x => x.kind === 'label' && x.status === status);
+  if (!q) return null;
+  return (
+    <div className="code-line plain has-pick">
+      <code>{q.text}</code>
+      <select className="code-pick" value={label} onChange={e => setPick(e.target.value)} aria-label={`「${status}」里按哪个标签`}>
+        {(labels.length ? labels.map(l => l.name) : [label]).map(n => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+      <CopyBtn text={q.text} />
     </div>
   );
 }
@@ -387,7 +415,7 @@ function LocalHostCard() {
   if (st?.enabled) state = st.running ? (online?.online ? `在线：${me}` : '正在连接服务端…') : `已停止${st.exit != null ? `（退出码 ${st.exit}）` : ''}：看下面的输出`;
 
   return (
-    <section className="set-card" id="set-host" style={{ ['--i' as string]: 5 }}>
+    <section className="set-card" id="set-host" style={{ ['--i' as string]: 6 }}>
       <h2>
         <Icon name="host" />
         本机
@@ -648,8 +676,12 @@ export function SettingsPage() {
           </div>
           <p className="set-p">快捷提示词：白板页头点「提示词」一键复制。</p>
           <div className="code-block">
-            {quickPrompts(path, flow.claimables.map(s => s.name), 'claude').map(q => (
+            {quickPrompts(path, flow.claimables.map(s => s.name)).map(q => (
               <Code key={q.id} plain cmd={q.text} note={q.title} />
+            ))}
+            {/* 带标签的：每个可领取状态一行，在行里选标签后复制 */}
+            {flow.claimables.map(s => (
+              <LabelPrompt key={s.key} path={path} status={s.name} names={flow.claimables.map(x => x.name)} />
             ))}
           </div>
           <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；skill 自带的 board 在同目录的 scripts/、bin/ 里，推荐解压发版附件 board-skills.zip，或用下面的命令链接整个目录">
@@ -687,19 +719,6 @@ export function SettingsPage() {
             <Code plain cmd="board doctor" note="环境自检；全部通过时退出码 0" />
             <Code plain cmd="board doctor --json" note="结构化结果，方便 agent 解析" />
           </div>
-          <h3 className="set-sub">
-            <Icon name="key" />
-            访问令牌
-          </h3>
-          <p className="set-p">
-            agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 是 agent 的名字，会话开始时用{' '}
-            <code>board check</code> 占用，同一时间一个名字只属于一个在线会话。不用的令牌随时吊销。
-          </p>
-          <div className="code-block">
-            <Code cmd={`board login --url ${location.origin} --token <访问令牌>`} note="令牌在下面新建" />
-            <Code plain cmd="board check --as claude/opus-5.5" note="会话开始时占用名字（skill 自动做）" />
-          </div>
-          <Tokens />
           <details className="errcodes">
             <summary>错误码</summary>
             <div className="err-grid">
@@ -713,9 +732,26 @@ export function SettingsPage() {
           </details>
         </section>
 
+        {/* 访问令牌单独一节：放在 Agent 接入里时在一千多像素以下，侧栏目录跳不到 */}
+        <section className="set-card" id="set-tokens" style={{ ['--i' as string]: 5 }}>
+          <h2>
+            <Icon name="key" />
+            访问令牌
+          </h2>
+          <p className="set-p">
+            agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 是 agent 的名字，会话开始时用{' '}
+            <code>board check</code> 占用，同一时间一个名字只属于一个在线会话。不用的令牌随时吊销。
+          </p>
+          <div className="code-block">
+            <Code cmd={`board login --url ${location.origin} --token <访问令牌>`} note="令牌在下面新建" />
+            <Code plain cmd="board check --as claude/opus-5.5" note="会话开始时占用名字（skill 自动做）" />
+          </div>
+          <Tokens />
+        </section>
+
         {canHost && <LocalHostCard />}
 
-        <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: canHost ? 6 : 5 }}>
+        <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: canHost ? 7 : 6 }}>
           <h2>
             <Icon name="keyboard" />
             快捷键

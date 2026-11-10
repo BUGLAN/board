@@ -81,11 +81,13 @@ export function Beat({ at, now }: { at: number | null; now: number }) {
 
 export const lastSeen = (h: HostInfo, now: number) => (h.online ? `心跳 ${since(h.beatAt, now)}` : `${since(h.offAt ?? h.beatAt, now)}在线`);
 
-/** 机器页打开（或机器详情打开）时每 10 秒刷新一次机器和派发：机器心跳不推送，靠它更新「最近心跳」 */
+/** 机器页打开（或机器详情打开）时立即刷新一次机器和派发，之后每 10 秒一次：机器心跳不推送，靠它更新「最近心跳」 */
 export function usePollHosts(on: boolean) {
   useEffect(() => {
     if (!on) return;
-    const t = window.setInterval(() => void refreshHosts().catch(() => {}), 10000);
+    const load = () => void refreshHosts().catch(() => {});
+    load();
+    const t = window.setInterval(load, 10000);
     return () => clearInterval(t);
   }, [on]);
 }

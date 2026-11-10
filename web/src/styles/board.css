@@ -62,6 +62,11 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-tag.claim { color: color-mix(in oklab, var(--brand), var(--ink)); }
 .col { container-type: inline-size; }
 @container (max-width: 300px) { .col-tag .t { display: none; } }
+/* 窄的块（1200px 宽、每块 3 栏）：序号和没在排序的排序按钮让位给名称，悬停或聚焦时才出现 */
+@container (max-width: 260px) {
+  .col-head .col-i, .col-head .col-sort:not(.on) { display: none; }
+  .col:is(:hover, :focus-within) .col-head .col-sort:not(.on) { display: inline-flex; }
+}
 .col-dot { width: 8px; height: 8px; border-radius: var(--r-hair); background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 18%, transparent); }
 .col:has(.card.doing) .col-dot { border-radius: 50%; animation: breathe 2.4s var(--ease-in-out) infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 0%, transparent); } }

@@ -11,7 +11,7 @@ import { boardFlow } from '../lib/schema';
 import { accel, autosize, cx, pref, replay } from '../lib/util';
 import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
 import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
-import { DescTabs, LabelChip, Markdown } from './bits';
+import { DescTabs, LabelChip, Markdown, Title } from './bits';
 import { BoardIcon24, Icon, InboxIcon24 } from './Icon';
 
 interface Draft {
@@ -451,7 +451,9 @@ export function Creator() {
                     >
                       <i />
                       <span className="mono">{c.id < 0 ? '#…' : `#${c.id}`}</span>
-                      <span className="tt">{c.title}</span>
+                      <span className="tt">
+                        <Title text={c.title} />
+                      </span>
                       <em>{c.column === 'inbox' ? '未整理' : startName}</em>
                     </button>
                   ))}

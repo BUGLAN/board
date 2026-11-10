@@ -21,11 +21,8 @@
 /* 画布节点拖动时不要被入场动画干扰 */
 .cv-node.dragging { animation: none !important; }
 
-/* 手机：页头只留白板名 */
-@media (max-width: 760px) {
-  .crumbs .crumb-link, .crumbs > svg { display: none; }
-  .crumbs b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-}
+/* 页头的白板名太长时省略 */
+.crumbs b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* 新建弹窗「等价的 CLI」：保留连续空格，和真正执行的命令一致 */
 .cr-cli { white-space: pre-wrap; }

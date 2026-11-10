@@ -8,7 +8,7 @@ import type { Dispatch, HostAgent, HostInfo } from '../../lib/types';
 import { copyText, cx, durWords } from '../../lib/util';
 import { hostKey, optimistic, useBusy, useData } from '../../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../../store/ui';
-import { useNow } from '../bits';
+import { Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
@@ -251,7 +251,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className="hp-dir" key={d.board}>
                   <span className="hp-board">{d.board}</span>
                   <Icon name="move" />
-                  <code title={d.path}>{d.path}</code>
+                  <MidPath path={d.path} />
                 </div>
               ))
             ) : (
@@ -318,7 +318,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                     <Mark id={p.agent} title={p.agentLabel} />
                     <div>
                       <b>
-                        <span className="hp-cid">#{p.card}</span> {p.title}
+                        <span className="hp-cid">#{p.card}</span> <Title text={p.title} />
                       </b>
                       <span>
                         <em style={{ ['--c' as string]: r.color }}>{r.label}</em>
@@ -357,7 +357,7 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
           (checks.length ? (
             <select
               className="input hp-env-select"
-              disabled={busy}
+              disabled={busy || !checks.some(c => c.found)}
               value={a.env ?? ''}
               onChange={e => e.target.value && e.target.value !== a.env && patch({ env: { agent: a.id, env: e.target.value } })}
               aria-label={`${a.name} 的启动环境`}
@@ -395,6 +395,19 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
   );
 }
 
+/** 长路径中间省略：开头和最后一级目录始终可见，悬停看全路径 */
+function MidPath({ path }: { path: string }) {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const head = cut > 0 ? path.slice(0, cut + 1) : '';
+  const tail = cut > 0 ? path.slice(cut + 1) : path;
+  return (
+    <code className="hp-path" title={path}>
+      <span className="hp-path-head">{head}</span>
+      <span className="hp-path-tail">{tail}</span>
+    </code>
+  );
+}
+
 /** 定时领取的时间点：胶囊列表，可增删 */
 function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[] }) => Promise<void>; busy: boolean }) {
   const [t, setT] = useState('');
@@ -414,7 +427,18 @@ function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[
         </span>
       ))}
       <span className="hp-time-add">
-        <input type="time" value={t} onChange={e => setT(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} aria-label="新的时间点" />
+        {/* 不用原生 time 输入框：各浏览器样式不一（----:--），和其他输入框对不齐 */}
+        <input
+          className="input"
+          type="text"
+          inputMode="numeric"
+          placeholder="23:00"
+          maxLength={5}
+          value={t}
+          onChange={e => setT(e.target.value.replace(/[^\d:]/g, ''))}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          aria-label="新的时间点（HH:MM）"
+        />
         <button className="btn sm" type="button" disabled={busy || !t} onClick={add}>
           <Icon name="plus" />
           加时间点
@@ -433,7 +457,9 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         <button type="button" className="hp-cid link" onClick={() => goCard(r)}>
           #{r.card}
         </button>
-        <span className="hp-run-title">{r.title}</span>
+        <span className="hp-run-title">
+          <Title text={r.title} />
+        </span>
         <span className="hp-run-board">{r.board}</span>
       </div>
       <div className="hp-run-meta">
@@ -468,7 +494,9 @@ function QueueRow({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
         <button type="button" className="hp-cid link" onClick={() => goCard(r)}>
           #{r.card}
         </button>
-        <span className="hp-run-title">{r.title}</span>
+        <span className="hp-run-title">
+          <Title text={r.title} />
+        </span>
         <span className="hp-run-board">{r.board}</span>
       </div>
       <div className="hp-run-meta">

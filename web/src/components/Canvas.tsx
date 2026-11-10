@@ -19,6 +19,8 @@ import { Icon } from './Icon';
 
 const K_MIN = 0.25;
 const K_MAX = 2;
+/** 适应画布、默认视图的最小缩放：再小节点上的字就看不清 */
+const FIT_MIN = 0.75;
 interface View {
   x: number;
   y: number;
@@ -105,8 +107,11 @@ export function CanvasPage() {
     const top = 60;
     const w = c.clientWidth - pad * 2;
     const h = c.clientHeight - pad * 2 - top;
-    const k = clampK(Math.min(w / (x2 - x1), h / (y2 - y1), 1.1));
-    animateTo({ k, x: pad + (w - (x2 - x1) * k) / 2 - x1 * k, y: pad + top + (h - (y2 - y1) * k) / 2 - y1 * k });
+    // 不低于 75%：再小节点上的字就看不清了；放不下时从左上角开始，拖动查看其余部分
+    const k = clampK(Math.max(FIT_MIN, Math.min(w / (x2 - x1), h / (y2 - y1), 1.1)));
+    const cw = (x2 - x1) * k;
+    const ch = (y2 - y1) * k;
+    animateTo({ k, x: pad + Math.max(0, (w - cw) / 2) - x1 * k, y: pad + top + Math.max(0, (h - ch) / 2) - y1 * k });
   };
   const focusNode = (sel: string, k = Math.max(view.current.k, 0.9)) => {
     const n = canvas.current?.querySelector<HTMLElement>(sel);

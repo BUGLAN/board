@@ -19,6 +19,8 @@ interface PItem {
   hint?: string;
   icon?: IconName;
   card?: Card;
+  /** 卡片所在状态的颜色（和工作流条一致） */
+  color?: string;
   q?: string;
   run: () => void;
 }
@@ -86,7 +88,7 @@ export function Palette() {
     }
     for (const c of cards)
       out.push({
-        id: `card-${c.id}`, group: query ? '卡片' : '最近更新', title: c.title, card: c, q: query.replace(/^#/, ''),
+        id: `card-${c.id}`, group: query ? '卡片' : '最近更新', title: c.title, card: c, color: f.color(c.column), q: query.replace(/^#/, ''),
         sub: c.holder ? `${f.name(c.column)} · ${c.holder}` : f.name(c.column),
         run: () => openCard(c.id),
       });
@@ -198,8 +200,8 @@ export function Palette() {
                   onPointerMove={() => i !== act && setActive(i)}
                 >
                   {it.card ? (
-                    <span className="p-ic col" style={{ ['--c' as string]: `var(--c-${it.card.column})` }}>
-                      {it.card.column.slice(0, 2).toUpperCase()}
+                    <span className="p-ic col" style={{ ['--c' as string]: it.color }} aria-hidden="true">
+                      <i />
                     </span>
                   ) : (
                     <span className="p-ic">

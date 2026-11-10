@@ -4,7 +4,7 @@ import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';
 import { openHost, useUI } from '../../store/ui';
-import { useNow } from '../bits';
+import { Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentChip, Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 
@@ -21,9 +21,12 @@ export function HostsSide() {
         <span className="side-sub">
           {online}/{hosts.length}
         </span>
-        <button aria-label="添加机器" className="icon-btn sm" type="button" data-tip="添加机器" data-tip-align="end" onClick={() => openHost('new')}>
-          <Icon name="plus" />
-        </button>
+        {/* 没有机器时只留主区空状态里的一个「添加机器」 */}
+        {hosts.length > 0 && (
+          <button aria-label="添加机器" className="icon-btn sm" type="button" data-tip="添加机器" data-tip-align="end" onClick={() => openHost('new')}>
+            <Icon name="plus" />
+          </button>
+        )}
       </header>
       <div className="side-scroll hp-side">
         {hosts.map(h => {
@@ -64,7 +67,9 @@ function Slots({ h, running, now }: { h: HostInfo; running: Dispatch[]; now: num
               <span className="hp-sp" />
               <span className="hp-slot-t">{mins(r.startedAt, now)} 分</span>
             </div>
-            <div className="hp-slot-title">{r.title}</div>
+            <div className="hp-slot-title">
+              <Title text={r.title} />
+            </div>
             <div className="hp-slot-foot">
               <Beat at={r.beatAt} now={now} />
               <span>{SOURCE[r.source]}</span>
@@ -128,12 +133,14 @@ export function HostsPage() {
             <h1>机器</h1>
             <p>每台机器上常驻一个 board host；每一格是一个并发位。点机器看详情、改规则。</p>
           </div>
-          <button className="btn sm" type="button" onClick={() => openHost('new')}>
-            <Icon name="plus" />
-            添加机器
-          </button>
+          {hosts.length > 0 && (
+            <button className="btn sm" type="button" onClick={() => openHost('new')}>
+              <Icon name="plus" />
+              添加机器
+            </button>
+          )}
         </div>
-        <Summary />
+        {hosts.length > 0 && <Summary />}
         {hosts.length === 0 ? (
           <div className="hp-empty-page">
             <Icon name="host" />
@@ -166,7 +173,7 @@ export function HostsPage() {
                       排队
                       {queued.map(r => (
                         <span key={r.id}>
-                          <Mark id={r.agent} />#{r.card} {r.title}
+                          <Mark id={r.agent} />#{r.card} <Title text={r.title} />
                         </span>
                       ))}
                     </div>

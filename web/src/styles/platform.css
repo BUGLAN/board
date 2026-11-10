@@ -36,6 +36,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
 
 /* ---------------- 列切换条（仅手机） ---------------- */
 .col-tabs { display: none; }
+.wf-toggle { display: none; }
 
 /* ---------------- 平板 ---------------- */
 @media (max-width: 1180px) {
@@ -102,6 +103,8 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .crumbs > span, .crumbs > svg { display: none; }
   .page-actions .btn kbd { display: none; }
   .filter-pill { display: none; }
+  /* 卡片详情底部「删除后无法恢复」：手机上放不下，删除时已有确认框 */
+  .d-actions-hint { display: none; }
 
   .col-tabs {
     position: relative; z-index: 10; display: flex; gap: 4px; padding: 0 12px 6px; overflow-x: auto; flex: none;
@@ -128,6 +131,12 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .magnet.stacked .tile { position: static; transform: none; width: auto; }
   .col-head { cursor: default; }
   .wf-bar { margin: 0 12px 8px; overflow-x: auto; }
+  .wf-toggle {
+    flex: none; display: flex; align-items: center; gap: 6px; width: calc(100% - 24px); height: 36px; margin: 0 12px 8px; padding: 0 12px;
+    border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-2); background: var(--glass); box-shadow: inset 0 0 0 1px var(--line);
+  }
+  .wf-toggle svg { width: 14px; height: 14px; color: var(--text-3); }
+  .wf-toggle svg:last-child { margin-left: auto; }
   .page-board .board > .wf-bar { margin: 0 0 8px; }
   .wf-line { flex-wrap: nowrap; }
   .wf-label { display: none; }

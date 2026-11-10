@@ -9,6 +9,7 @@ export const SECTIONS: { id: string; title: string; icon: IconName }[] = [
   { id: 'appearance', title: '外观', icon: 'sun' },
   { id: 'board', title: '白板规则', icon: 'lock' },
   { id: 'agents', title: 'Agent 接入', icon: 'terminal' },
+  { id: 'tokens', title: '访问令牌', icon: 'key' },
   ...(canHost ? [{ id: 'host', title: '本机', icon: 'host' as IconName }] : []),
   { id: 'shortcuts', title: '快捷键', icon: 'keyboard' },
 ];

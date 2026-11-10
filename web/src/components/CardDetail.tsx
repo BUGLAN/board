@@ -627,24 +627,11 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
   }
   const t = timing(c, now, online);
   if (!c.holder) {
-    // 做过、现在没人在做：只显示耗时
+    // 做过、现在没人在做：耗时收成一行；没做过的不显示
     if (!t.runs) return null;
     return (
       <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
-        <div className="claim-card idle">
-          <span className="claim-ic">
-            <Icon name="timer" />
-          </span>
-          <div className="claim-who">
-            <b>耗时</b>
-            <span>{t.runs} 次领取的耗时之和</span>
-          </div>
-          <div className="claim-big">
-            <span>累计</span>
-            {clock(t.total)}
-          </div>
-          <RunStats t={t} />
-        </div>
+        <RunStats t={t} idle />
       </section>
     );
   }
@@ -708,26 +695,23 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
   );
 }
 
-/** 累计 / 领取次数 / 心跳次数 / 异常退出 */
-function RunStats({ t }: { t: ReturnType<typeof timing> }) {
+/** 耗时一行：累计 · 领取次数 · 心跳次数 · 异常退出（idle：没人在做时单独显示，前面带计时图标） */
+function RunStats({ t, idle }: { t: ReturnType<typeof timing>; idle?: boolean }) {
   return (
-    <div className="run-stats">
-      <div>
-        <span>累计</span>
-        <b>{clock(t.total)}</b>
-      </div>
-      <div>
-        <span>领取次数</span>
-        <b>{t.runs}</b>
-      </div>
-      <div title="各次领取收到的心跳之和（含 final）">
-        <span>心跳次数</span>
-        <b>{t.beats}</b>
-      </div>
-      <div>
-        <span>异常退出</span>
-        <b className={cx(t.lost > 0 && 'bad')}>{t.lost}</b>
-      </div>
+    <div className={cx('run-stats', idle && 'idle')}>
+      {idle && <Icon name="timer" />}
+      <span>
+        累计 <b>{clock(t.total)}</b>
+      </span>
+      <span>
+        领取 <b>{t.runs}</b> 次
+      </span>
+      <span title="各次领取收到的心跳之和（含 final）">
+        心跳 <b>{t.beats}</b> 次
+      </span>
+      <span>
+        异常退出 <b className={cx(t.lost > 0 && 'bad')}>{t.lost}</b>
+      </span>
     </div>
   );
 }
