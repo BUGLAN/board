@@ -123,16 +123,13 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
 .hp-crule .input { width: auto; height: 30px; padding: 0 8px; font-size: 12.5px; }
 .hp-crule-input { width: 120px !important; }
 .hp-crule-op { flex: none; }
-/* 规则里的标签：胶囊 + 输入框，看起来像一个输入框 */
-.hp-lset {
-  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 30px; min-width: 140px; max-width: 100%; padding: 2px 6px;
-  border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
-}
+/* 规则里的标签：和卡片详情的标签一行一样（胶囊 + 标签按钮），不画成输入框 */
+.hp-lset { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 30px; max-width: 100%; }
+.hp-lset .lb { height: 24px; font-size: 12px; padding: 0 8px; }
 .hp-lset-chip { display: inline-flex; min-width: 0; }
 /* 项目里已经没有的标签：灰掉、划掉 */
 .hp-lset-chip.off .lb { opacity: .6; }
 .hp-lset-chip.off .lb-name { text-decoration: line-through; }
-.hp-lset .lb-add { height: 22px; }
 .hp-crule.off .hp-crule-label { color: var(--text-3); text-decoration: line-through; }
 .hp-crule-warn { flex-basis: 100%; font-style: normal; font-size: 12px; color: var(--warn-text); }
 .hp-crule.fallback .hp-crule-label { color: var(--text-2); }

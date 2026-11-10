@@ -8,7 +8,7 @@ import type { ClaimRule, Dispatch, HostAgent, HostInfo, Label } from '../../lib/
 import { copyText, cx, durWords, pref, replay } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { hostKey, optimistic, useBusy, useData } from '../../store/data';
-import { confirm, openHost, openPicker, setTab, toast, toastError, useUI } from '../../store/ui';
+import { confirm, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
 import { LabelChip, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
@@ -438,28 +438,49 @@ const OPS: [ClaimRule['op'], string][] = [
   ['equal', '标签正好是'],
 ];
 
-/** 一条规则里的标签：和白板上一样的标签胶囊（项目里的颜色，可去掉）加「添加标签」按钮，点开白板上同一个标签选择器，
-    只列这台机器有目录的项目里的标签（按名称对应），关掉选择器时保存；一个都不勾时不改。项目里已经没有的标签灰色划掉 */
-function LabelSet({ value, onChange, labels, missing, disabled }: { value: string[]; onChange: (v: string[]) => void; labels: Label[]; missing?: string[]; disabled?: boolean }) {
-  const byName = (n: string) => labels.find(l => l.name.toLowerCase() === n.toLowerCase());
-  const ids = (names: string[]) => names.map(byName).filter((l): l is Label => !!l).map(l => l.id);
+/** 一条规则里的标签：和卡片详情的标签一行一样——标签胶囊（项目里的颜色，× 去掉）加标签按钮，点开同一个标签选择器，
+    勾一个就应用一个。机器只对应一个项目时就是那个项目的选择器（能新建、管理标签）；对应几个项目时只列这几个项目里的标签
+    （同名的按第一个），不能新建。项目里已经没有的标签灰色划掉、原样保留 */
+function LabelSet({ value, onChange, labels, project, missing, disabled }: {
+  value: string[];
+  onChange: (v: string[]) => void | Promise<unknown>;
+  labels: Label[];
+  /** 机器只对应一个项目时是它的标识：选择器用这个项目的标签（id 是真的），可以新建、管理 */
+  project?: string;
+  missing?: string[];
+  disabled?: boolean;
+}) {
+  const pool = () => (project ? (useData.getState().ws?.projects.find(p => p.key === project)?.labels ?? labels) : labels);
+  const byName = (n: string, ls = labels) => ls.find(l => l.name.toLowerCase() === n.toLowerCase());
+  const ids = (names: string[]) => names.map(n => byName(n)).filter((l): l is Label => !!l).map(l => l.id);
   const open = (anchor: HTMLElement) => {
     // 不在列表里的（项目里已经没有的）标签选择器里没有，原样留在规则里
     const kept = value.filter(n => !byName(n));
-    const rect = anchor.getBoundingClientRect();
-    const first = ids(value);
-    let last = first;
-    // 勾选时只改选择器里的勾（当帧可见），关掉选择器时一次保存：机器设置保存完之前不能再改（BUSY），连点几下逐个保存会被拒
-    const stop = useUI.subscribe(st => {
-      if (st.picker?.rect === rect) {
-        last = st.picker.selected;
-        return;
-      }
-      stop();
-      const next = [...labels.filter(l => last.includes(l.id)).map(l => l.name), ...kept];
-      if (next.length && (last.length !== first.length || last.some(id => !first.includes(id)))) onChange(next);
+    let applied = value;
+    let latest = ids(value);
+    // 勾一个应用一个。机器设置保存完之前不能再改（BUSY）：连点时排队，轮到时按选择器最新的勾选保存，中间几次合并成一次
+    let chain: Promise<unknown> = Promise.resolve();
+    openPicker({
+      rect: anchor.getBoundingClientRect(),
+      project: project ?? '',
+      labels: project ? undefined : labels,
+      selected: latest,
+      onToggle: () => {
+        latest = useUI.getState().picker?.selected ?? latest;
+        chain = chain.then(async () => {
+          const ls = pool();
+          const next = [...ls.filter(l => latest.includes(l.id)).map(l => l.name), ...kept];
+          if (!next.length) {
+            // 规则至少要有一个标签：一个都不勾时不改，勾回原样
+            updatePicker(applied.map(n => byName(n, ls)).filter((l): l is Label => !!l).map(l => l.id));
+            return;
+          }
+          if (next.length === applied.length && next.every(n => applied.includes(n))) return;
+          applied = next;
+          await onChange(next);
+        });
+      },
     });
-    openPicker({ rect, project: '', labels, selected: first, onToggle: () => {} });
   };
   return (
     <span className="hp-lset">
@@ -496,6 +517,9 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
       .filter(l => !seen.has(l.name.toLowerCase()) && !!seen.add(l.name.toLowerCase()))
       .map((l, i) => ({ ...l, id: i + 1 }));
   }, [ws, h.dirs]);
+  // 只对应一个项目时，用这个项目的标签和选择器（和卡片详情一样，能新建、管理标签）
+  const keys = [...new Set(h.dirs.map(d => d.board.split('/')[0]))];
+  const one = keys.length === 1 ? ws?.projects.find(p => p.key === keys[0]) : undefined;
   const [op, setOp] = useState<ClaimRule['op']>('in');
   const [picked, setPicked] = useState<string[]>([]);
   const [agent, setAgent] = useState('');
@@ -530,7 +554,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
               </option>
             ))}
           </select>
-          <LabelSet value={r.labels} labels={labels} missing={r.missing} disabled={busy} onChange={v => v.length && edit(i, { labels: v })} />
+          <LabelSet value={r.labels} labels={one?.labels ?? labels} project={one?.key} missing={r.missing} disabled={busy} onChange={v => (v.length ? edit(i, { labels: v }) : undefined)} />
           <Icon name="chevRight" />
           <select className="input hp-crule-agent" value={r.agent} disabled={busy} aria-label="由哪个 agent 做" onChange={e => edit(i, { agent: e.target.value })}>
             {!has(r.agent) && <option value={r.agent}>{agentName(r.agent)}（找不到）</option>}
@@ -562,7 +586,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
             </option>
           ))}
         </select>
-        <LabelSet value={picked} labels={labels} onChange={setPicked} />
+        <LabelSet value={picked} labels={one?.labels ?? labels} project={one?.key} onChange={setPicked} />
         <Icon name="chevRight" />
         <select className="input hp-crule-agent" value={pick} aria-label="新规则的 agent" onChange={e => setAgent(e.target.value)}>
           {found.map(a => (
