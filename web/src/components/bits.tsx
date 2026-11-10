@@ -205,15 +205,51 @@ export function ProjectAvatar({ name, color, className }: { name: string; color:
   );
 }
 
-export function Markdown({ src, className }: { src: string; className?: string }) {
+/**
+ * onTask：任务项可以点击勾选（参数是第几个任务项，见 lib/markdown.ts 的 toggleTask）；
+ * taskLock：暂时不能勾选的原因（卡片被持有、正在保存），任务项不可点，悬停显示原因
+ */
+export function Markdown({ src, className, onTask, taskLock }: { src: string; className?: string; onTask?: (n: number) => void; taskLock?: string | null }) {
   const html = useMemo(() => markdown(src), [src]);
+  const ref = useRef<HTMLDivElement>(null);
+  const live = !!onTask;
+  // 勾选框：可以操作时是 checkbox（键盘可达），不能时写明原因
+  useLayoutEffect(() => {
+    if (!live) return;
+    ref.current?.querySelectorAll<HTMLElement>('li.task').forEach(li => {
+      const box = li.querySelector<HTMLElement>(':scope > i');
+      if (!box) return;
+      box.setAttribute('role', 'checkbox');
+      box.setAttribute('aria-checked', String(li.classList.contains('checked')));
+      box.setAttribute('aria-label', li.textContent?.trim() || '任务项');
+      box.tabIndex = taskLock ? -1 : 0;
+      if (taskLock) box.setAttribute('aria-disabled', 'true');
+      else box.removeAttribute('aria-disabled');
+      li.title = taskLock ?? '';
+    });
+  }, [html, live, taskLock]);
+  const hit = (t: HTMLElement) => {
+    if (!onTask || taskLock) return false;
+    const li = t.closest<HTMLElement>('li.task');
+    if (!li?.dataset.task || !ref.current?.contains(li)) return false;
+    // 点在链接、代码、图片上，或正在选中文字时不勾选
+    if (t.closest('a, code, img') || (t.tagName !== 'I' && String(window.getSelection() ?? ''))) return false;
+    onTask(Number(li.dataset.task));
+    return true;
+  };
   return (
     <div
-      className={cx('md', className)}
+      ref={ref}
+      className={cx('md', className, live && 'md-tasks', live && taskLock && 'tasks-locked')}
       dangerouslySetInnerHTML={{ __html: html }}
-      onClick={e => {
-        // 图片（附件）点击放大；同一段里的其他图片可以左右切换
+      onKeyDown={e => {
         const t = e.target as HTMLElement;
+        if ((e.key === ' ' || e.key === 'Enter') && t.getAttribute('role') === 'checkbox' && hit(t)) e.preventDefault();
+      }}
+      onClick={e => {
+        const t = e.target as HTMLElement;
+        if (hit(t)) return;
+        // 图片（附件）点击放大；同一段里的其他图片可以左右切换
         if (t.tagName !== 'IMG') return;
         e.preventDefault();
         e.stopPropagation();

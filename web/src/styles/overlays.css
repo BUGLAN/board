@@ -163,10 +163,17 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .md ul, .md ol { padding-left: 1.3em; }
 .md li + li { margin-top: .2em; }
 .md li.task { list-style: none; margin-left: -1.3em; display: flex; gap: 8px; align-items: baseline; }
-.md li.task i { flex: none; width: 14px; height: 14px; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1.5px var(--line-3); transform: translateY(2px); display: grid; place-items: center; }
+.md li.task i { flex: none; width: 15px; height: 15px; border-radius: var(--r-hair); box-shadow: inset 0 0 0 1.5px var(--line-3); transform: translateY(2px); display: grid; place-items: center; }
 .md li.task.checked i { background: var(--c-done); box-shadow: none; }
-.md li.task.checked i::after { content: ""; width: 7px; height: 4px; border: 1.6px solid #fff; border-top: 0; border-right: 0; transform: rotate(-45deg) translate(1px, -1px); }
+.md li.task.checked i::after { content: ""; width: 7px; height: 4px; border: 1.6px solid var(--surface); border-top: 0; border-right: 0; transform: rotate(-45deg) translate(1px, -1px); }
 .md li.task.checked { color: var(--text-3); text-decoration: line-through; }
+/* 卡片详情的描述预览：任务项可以点击勾选（bits.tsx 的 Markdown onTask） */
+.md.md-tasks li.task { cursor: pointer; }
+.md.md-tasks li.task i { transition: box-shadow var(--dur-1), background-color var(--dur-1); }
+.md.md-tasks li.task:not(.checked):hover i { box-shadow: inset 0 0 0 1.5px var(--brand); }
+.md.md-tasks li.task i:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.md.md-tasks.tasks-locked li.task { cursor: not-allowed; }
+.md.md-tasks.tasks-locked li.task:not(.checked):hover i { box-shadow: inset 0 0 0 1.5px var(--line-3); }
 .md pre { max-width: 100%; padding: 10px 12px; border-radius: var(--r-sm); background: var(--term-bg); color: var(--term-text); overflow-x: auto; font-size: 12px; }
 .md pre code { background: none; box-shadow: none; padding: 0; color: inherit; font-size: 1em; }
 /* 表格：先在可用宽度里换行，放不下时在自己的框里横向滚动（浮层细滚动条），不撑宽外层。
