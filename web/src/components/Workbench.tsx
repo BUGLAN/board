@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
 import { newBoard, newProject, openBoard, openCard, triage } from '../lib/actions';
 import { api } from '../lib/api';
+import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { useMasonry } from '../lib/masonry';
 import type { BoardEvent, Card, Label } from '../lib/types';
@@ -18,8 +19,7 @@ import { previewCols, useEntering, Veto } from './BoardView';
 import { CardView } from './Card';
 import { HostsSide } from './Hosts';
 import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
-import { SettingsNav } from './Settings';
-import { canvasHighlight } from './Canvas';
+import { SettingsNav } from './SettingsNav';
 import { Skeleton, SkeletonCard } from './Skeleton';
 
 const TABS: { tab: Tab; label: string; tip: string; icon: ReactNode }[] = [

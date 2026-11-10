@@ -8,6 +8,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newBoard, newProject, openBoard } from '../lib/actions';
 import { api } from '../lib/api';
+import { registerCanvasHighlight } from '../lib/canvasHighlight';
 import { flowOf } from '../lib/schema';
 import type { BoardInfo, Pos, ProjectInfo } from '../lib/types';
 import { cx, pref, reduceMotion, replay } from '../lib/util';
@@ -23,10 +24,6 @@ interface View {
   y: number;
   k: number;
 }
-
-let setHighlightExternal: ((id: string | null) => void) | null = null;
-/** 侧栏项目树悬停时，画布上对应的节点和连线高亮 */
-export const canvasHighlight = (id: string | null) => setHighlightExternal?.(id);
 
 export function CanvasPage() {
   const ws = useData(s => s.ws);
@@ -45,12 +42,7 @@ export function CanvasPage() {
   const pk = path.split('/')[0];
   const projects = ws?.projects ?? [];
 
-  useEffect(() => {
-    setHighlightExternal = setHl;
-    return () => {
-      setHighlightExternal = null;
-    };
-  }, []);
+  useEffect(() => registerCanvasHighlight(setHl), []);
 
   /* ---------------- 视图变换 ---------------- */
   const apply = () => {

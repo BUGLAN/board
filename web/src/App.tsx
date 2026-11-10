@@ -2,15 +2,14 @@
    Board 界面：网页端与桌面端共用
    顶栏 ─ 活动栏 │ 侧栏 │ 主内容区（白板 / 项目画布 / 设置）
    ========================================================================== */
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { BoardSkeleton, BoardView } from './components/BoardView';
-import { CanvasPage } from './components/Canvas';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
 import { Login } from './components/Login';
-import { ConfirmDialog, CtxMenu, FormModal, LabelManager, LabelPicker, Lightbox, Palette, Toasts } from './components/Overlays';
-import { SettingsPage } from './components/Settings';
+import { Overlays } from './components/Overlays';
+import { PageLoading } from './components/Skeleton';
 import { Topbar } from './components/Topbar';
 import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, SidePanel } from './components/Workbench';
@@ -22,6 +21,20 @@ import { boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './s
 import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, toast, useUI, type Tab,
 } from './store/ui';
+
+/* 项目画布、设置页按需加载（机器页在 components/Hosts）：第一次切过去才下载，入口包小一些；
+   只在当前 Tab 挂载，不随数据刷新在后台渲染。启动后空闲时预取，切过去不用等 */
+const loadCanvas = () => import('./components/Canvas');
+const loadSettings = () => import('./components/Settings');
+const CanvasPage = lazy(() => loadCanvas().then(m => ({ default: m.CanvasPage })));
+const SettingsPage = lazy(() => loadSettings().then(m => ({ default: m.SettingsPage })));
+const prefetch = () => {
+  void loadCanvas();
+  void loadSettings();
+  void import('./components/hosts/HostsPage');
+};
+
+const Lazy = ({ name, children }: { name: string; children: ReactNode }) => <Suspense fallback={<PageLoading name={name} />}>{children}</Suspense>;
 
 const OP_LABEL: Record<string, string> = {
   create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论', edit_comment: '改评论',
@@ -101,6 +114,11 @@ function BoardApp() {
   const ws = useData(s => s.ws);
 
   useEffect(() => boot(), []);
+  // 空闲时预取按需加载的页面
+  useEffect(() => {
+    const t = setTimeout(() => (window.requestIdleCallback ?? ((f: () => void) => f()))(prefetch), 2500);
+    return () => clearTimeout(t);
+  }, []);
   useSideSlide(side);
   useEffect(() => installCardInteractions(), []);
 
@@ -213,13 +231,19 @@ function BoardApp() {
                 <BoardView />
               </Page>
               <Page show={page === 'canvas'}>
-                <CanvasPage />
+                {page === 'canvas' && (
+                  <Lazy name="canvas">
+                    <CanvasPage />
+                  </Lazy>
+                )}
               </Page>
-              <Page show={page === 'hosts'}>
-                <HostsPage />
-              </Page>
+              <Page show={page === 'hosts'}>{page === 'hosts' && <HostsPage />}</Page>
               <Page show={page === 'settings'}>
-                <SettingsPage />
+                {page === 'settings' && (
+                  <Lazy name="settings">
+                    <SettingsPage />
+                  </Lazy>
+                )}
               </Page>
             </>
           )}
@@ -229,14 +253,7 @@ function BoardApp() {
       <HostModal />
       <DispatchDialog />
       <Creator />
-      <Palette />
-      <FormModal />
-      <LabelManager />
-      <ConfirmDialog />
-      <CtxMenu />
-      <LabelPicker />
-      <Lightbox />
-      <Toasts />
+      <Overlays />
     </>
   );
 }

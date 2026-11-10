@@ -1,0 +1,245 @@
+/* 确认框、表单弹窗（新建 / 编辑项目和白板） */
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { ProjectInfo } from '../../lib/types';
+import { cx, replay } from '../../lib/util';
+import { useData } from '../../store/data';
+import { closeForm, settleConfirm, useUI, type FormCfg } from '../../store/ui';
+import { ColorRow, ProjectAvatar } from '../bits';
+import { Icon } from '../Icon';
+import { usePresence } from './presence';
+
+/** 工作区还没取到时的项目列表：模块级常量，选择器每次返回同一个数组（新数组会让 useData 认为变了、反复重渲染） */
+const NO_PROJECTS: ProjectInfo[] = [];
+
+export function ConfirmDialog() {
+  const req = useUI(s => s.confirm);
+  const { mounted, on } = usePresence(!!req, 220);
+  const last = useRef(req);
+  if (req) last.current = req;
+  const r = last.current;
+  const cancel = useRef<HTMLButtonElement>(null);
+  const ok = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!req) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const t = setTimeout(() => cancel.current?.focus(), 40);
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        settleConfirm(false);
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        (document.activeElement === ok.current ? cancel.current : ok.current)?.focus();
+      }
+    };
+    document.addEventListener('keydown', key, true);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('keydown', key, true);
+      prev?.focus?.({ preventScroll: true });
+    };
+  }, [req]);
+  if (!mounted || !r) return null;
+  return (
+    <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && settleConfirm(false)}>
+      <div className="dialog" role="alertdialog" aria-modal="true">
+        <div className="dialog-icon">
+          <Icon name={r.icon === 'tag' ? 'tag' : r.icon === 'reset' ? 'renew' : r.icon === 'logout' ? 'logout' : r.icon === 'key' ? 'key' : r.icon === 'unlock' ? 'unlock' : 'trash'} />
+        </div>
+        <h3>{r.title}</h3>
+        <p>{r.text}</p>
+        <div className="dialog-actions">
+          <button className="btn" type="button" ref={cancel} onClick={() => settleConfirm(false)}>
+            取消
+          </button>
+          <button className="btn danger-solid" type="button" ref={ok} onClick={() => settleConfirm(true)}>
+            {r.ok || '确定'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ 表单弹窗：项目 / 白板 ============================ */
+
+export function FormModal() {
+  const cfg = useUI(s => s.form);
+  const { mounted, on } = usePresence(!!cfg, 220);
+  const last = useRef(cfg);
+  if (cfg) last.current = cfg;
+  if (!mounted || !last.current) return null;
+  return <FormBody key={last.current.title + (cfg ? '1' : '0')} cfg={last.current} on={on && !!cfg} />;
+}
+
+function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
+  const [v, setV] = useState<Record<string, string>>(() => Object.fromEntries(cfg.fields.map(f => [f.name, f.value ?? ''])));
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const form = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => form.current?.querySelector<HTMLElement>('input:not([readonly]), select')?.focus(), 40);
+    return () => clearTimeout(t);
+  }, []);
+
+  const update = (name: string, value: string) => {
+    setV(prev => {
+      const next = { ...prev, [name]: value };
+      // 标识自动跟随名称，直到用户手动改过
+      for (const f of cfg.fields)
+        if (f.type === 'key' && f.from && !f.readonly && !touched[f.name] && f.name !== name)
+          next[f.name] = next[f.from]?.trim() ? (f.auto?.(next[f.from], next) ?? '') : '';
+      return next;
+    });
+    setErr('');
+  };
+  const live = cfg.fields.map(f => (f.validate && v[f.name] ? f.validate(v[f.name], v) : null)).find(Boolean) || '';
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const first = cfg.fields.find(f => f.required && !String(v[f.name] ?? '').trim());
+    if (first) {
+      const el = form.current?.elements.namedItem(first.name) as HTMLElement | null;
+      replay(el, 'invalid');
+      el?.focus();
+      return;
+    }
+    if (live) return setErr(live);
+    setBusy(true);
+    try {
+      await cfg.onSubmit(v);
+      closeForm();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const color = v.color;
+  const pv = cfg.previewData ?? {};
+  const projects = useData(s => s.ws?.projects ?? NO_PROJECTS);
+  let preview: ReactNode = null;
+  if (cfg.preview === 'project' || cfg.preview === 'edit-project') {
+    preview = (
+      <>
+        <ProjectAvatar name={v.name || '新'} color={color} />
+        <div>
+          <b>{v.name || '新项目'}</b>
+          <span className="mono">
+            {cfg.preview === 'project' ? `export BOARD=${v.key || '…'}/${v.boardKey || 'main'}` : `${pv.key} · ${pv.boards} 块白板`}
+          </span>
+        </div>
+      </>
+    );
+  } else if (cfg.preview === 'board' || cfg.preview === 'edit-board') {
+    const p = projects.find(x => x.key === (v.project || pv.path?.split('/')[0]));
+    preview = (
+      <>
+        <span className="pj-bic lg" style={{ ['--pc' as string]: p?.color ?? pv.color }}>
+          <Icon name="board" />
+        </span>
+        <div>
+          <b>
+            {p?.name ?? pv.projectName} / {v.name || '新白板'}
+          </b>
+          <span className="mono">{cfg.preview === 'board' ? `export BOARD=${v.project}/${v.key || '…'}` : `BOARD=${pv.path}`}</span>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && closeForm()}>
+      <form
+        className="dialog pj-modal"
+        ref={form}
+        role="dialog"
+        aria-modal="true"
+        noValidate
+        onSubmit={submit}
+        onKeyDown={e => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closeForm();
+          }
+        }}
+      >
+        <h3>{cfg.title}</h3>
+        {cfg.subtitle && <p>{cfg.subtitle}</p>}
+        {preview && <div className="pj-preview">{preview}</div>}
+        {cfg.fields.map(f => {
+          const hint = f.hint ? <em>{f.hint}</em> : null;
+          if (f.type === 'color')
+            return (
+              <div className="field" key={f.name}>
+                <span>
+                  {f.label}
+                  {hint}
+                </span>
+                <ColorRow value={v[f.name] ?? ''} onPick={c => update(f.name, c)} label={f.label} />
+              </div>
+            );
+          if (f.type === 'select')
+            return (
+              <label className="field" key={f.name}>
+                <span>
+                  {f.label}
+                  {hint}
+                </span>
+                <select className="input" name={f.name} value={v[f.name]} onChange={e => update(f.name, e.target.value)}>
+                  {f.options?.map(o => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            );
+          return (
+            <label className="field" key={f.name}>
+              <span>
+                {f.label}
+                {hint}
+              </span>
+              <input
+                className={cx('input', f.type === 'key' && 'mono')}
+                name={f.name}
+                value={v[f.name] ?? ''}
+                placeholder={f.placeholder}
+                maxLength={f.type === 'key' ? 32 : 60}
+                autoComplete="off"
+                spellCheck={false}
+                readOnly={f.readonly}
+                onChange={e => {
+                  let val = e.target.value;
+                  if (f.type === 'key') {
+                    val = val.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                    setTouched(t => ({ ...t, [f.name]: true }));
+                  }
+                  update(f.name, val);
+                }}
+              />
+            </label>
+          );
+        })}
+        {(err || live) && <div className="field-err">{err || live}</div>}
+        <div className="dialog-actions">
+          <button className="btn" type="button" onClick={closeForm}>
+            取消
+          </button>
+          <button className={cx('btn brand', busy && 'is-busy')} type="submit" disabled={busy} aria-busy={busy || undefined}>
+            {cfg.submit || '保存'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/* ============================ ⋯ 菜单：项目 / 白板 ============================ */

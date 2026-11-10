@@ -44,3 +44,16 @@ export function SkeletonCard({ seed = 0 }: { seed?: number }) {
     </div>
   );
 }
+
+/** 按需加载的页面还在下载：和页面同样的容器，放几条骨架，不闪白 */
+export function PageLoading({ name }: { name: string }) {
+  return (
+    <div className={`page page-${name}`} data-page={name} aria-busy="true">
+      <div className="page-loading">
+        <Skeleton w="34%" h={22} />
+        <Skeleton w="62%" />
+        <Skeleton w="48%" />
+      </div>
+    </div>
+  );
+}

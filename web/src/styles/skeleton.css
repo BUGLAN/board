@@ -73,3 +73,6 @@
   font-size: 12.5px; color: var(--text-3); text-align: center;
 }
 .d-activity-empty b { font-size: 13px; color: var(--text); font-weight: 600; }
+
+/* 按需加载的页面还在下载（Skeleton.tsx 的 PageLoading） */
+.page-loading { display: flex; flex-direction: column; gap: 14px; width: min(720px, 100%); margin: 0 auto; padding: 48px 24px; }

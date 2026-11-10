@@ -11,8 +11,7 @@ import { boardFlow } from '../lib/schema';
 import { accel, autosize, cx, pref, replay } from '../lib/util';
 import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
 import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
-import { LabelChip, Markdown } from './bits';
-import { DescTabs } from './CardDetail';
+import { DescTabs, LabelChip, Markdown } from './bits';
 import { BoardIcon24, Icon, InboxIcon24 } from './Icon';
 
 interface Draft {

@@ -7,7 +7,7 @@ import { useUI, type Flash } from '../store/ui';
 import { useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
-import { CardDispatchLine } from './Hosts';
+import { CardDispatchLine } from './hosts/Dispatch';
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {

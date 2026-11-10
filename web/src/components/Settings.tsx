@@ -3,7 +3,6 @@
    侧栏是目录，点击跳到对应部分；滚动时目录跟随
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { create } from 'zustand';
 import { api } from '../lib/api';
 import {
   boardCli, canHost, canSetEnv, enableLocalHost, getTheme, isMac, isWindows, localHost, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
@@ -13,52 +12,14 @@ import { hostsOf } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
-import { accel, ago, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
+import { accel, ago, copyText, cx, pref } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
 import { allBoards, refresh, useData } from '../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
-import { Icon, type IconName } from './Icon';
-
-const SECTIONS: { id: string; title: string; icon: IconName }[] = [
-  { id: 'appearance', title: '外观', icon: 'sun' },
-  { id: 'board', title: '白板规则', icon: 'lock' },
-  { id: 'agents', title: 'Agent 接入', icon: 'terminal' },
-  ...(canHost ? [{ id: 'host', title: '本机', icon: 'host' as IconName }] : []),
-  { id: 'account', title: '账号', icon: 'user' },
-  { id: 'shortcuts', title: '快捷键', icon: 'keyboard' },
-];
-
-const useSpy = create<{ active: string; lock: boolean }>(() => ({ active: SECTIONS[0].id, lock: false }));
-
-export function SettingsNav() {
-  const active = useSpy(s => s.active);
-  return (
-    <nav className="settings-nav">
-      {SECTIONS.map(s => (
-        <a
-          key={s.id}
-          href={`#set-${s.id}`}
-          className={cx('sn-item', active === s.id && 'on')}
-          onClick={e => {
-            e.preventDefault();
-            const page = document.querySelector<HTMLElement>('.page-settings');
-            const target = document.getElementById(`set-${s.id}`);
-            if (!page || !target) return;
-            useSpy.setState({ active: s.id, lock: true });
-            setTimeout(() => useSpy.setState({ lock: false }), 900);
-            page.scrollTo({ top: target.offsetTop - 20, behavior: reduceMotion() ? 'auto' : 'smooth' });
-            replay(target, 'flash');
-          }}
-        >
-          <Icon name={s.icon} />
-          <span>{s.title}</span>
-        </a>
-      ))}
-    </nav>
-  );
-}
+import { Icon } from './Icon';
+import { SECTIONS, useSpy } from './SettingsNav';
 
 function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
   const ref = useRef<HTMLDivElement>(null);

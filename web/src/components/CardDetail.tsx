@@ -12,10 +12,10 @@ import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/ty
 import { accel, actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
 import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
-import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
+import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
-import { DispatchNote } from './Hosts';
+import { DispatchNote } from './hosts/Dispatch';
 import { Icon, type IconName } from './Icon';
 
 const NO_IDS: number[] = [];
@@ -448,26 +448,6 @@ function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; b
     />
   );
 }
-
-function DescTabs({ mode, setMode, modes }: { mode: string; setMode: (m: string) => void; modes: [string, string][] }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [thumb, setThumb] = useState({ w: 0, x: 0 });
-  useLayoutEffect(() => {
-    const on = ref.current?.querySelector<HTMLElement>('button.on');
-    if (on) setThumb({ w: on.offsetWidth, x: on.offsetLeft - 2 });
-  }, [mode]);
-  return (
-    <div className="act desc-tabs" ref={ref}>
-      <span className="thumb" style={{ width: thumb.w, transform: `translateX(${thumb.x}px)` }} />
-      {modes.map(([k, label]) => (
-        <button key={k} type="button" className={cx(mode === k && 'on')} onClick={() => setMode(k)}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-export { DescTabs };
 
 /** 卡片的全部附件：图片缩略图点开放大，文件点击下载 */
 function Attachments({ list }: { list: Attachment[] }) {

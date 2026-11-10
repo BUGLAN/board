@@ -1,5 +1,5 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { inlineCode, markdown } from '../lib/markdown';
 import { PROJECT_COLORS } from '../lib/schema';
 import type { Actor, Label } from '../lib/types';
@@ -235,4 +235,24 @@ export function Title({ text }: { text: string }) {
 
 export function Kbd({ children }: { children: string }) {
   return <kbd>{children}</kbd>;
+}
+
+/** 描述的「预览 / 编辑」切换（卡片详情、新建卡片共用） */
+export function DescTabs({ mode, setMode, modes }: { mode: string; setMode: (m: string) => void; modes: [string, string][] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [thumb, setThumb] = useState({ w: 0, x: 0 });
+  useLayoutEffect(() => {
+    const on = ref.current?.querySelector<HTMLElement>('button.on');
+    if (on) setThumb({ w: on.offsetWidth, x: on.offsetLeft - 2 });
+  }, [mode]);
+  return (
+    <div className="act desc-tabs" ref={ref}>
+      <span className="thumb" style={{ width: thumb.w, transform: `translateX(${thumb.x}px)` }} />
+      {modes.map(([k, label]) => (
+        <button key={k} type="button" className={cx(mode === k && 'on')} onClick={() => setMode(k)}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
 }
