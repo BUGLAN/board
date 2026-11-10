@@ -212,7 +212,7 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）；同时在 Windows 上跑 `board heartbeat` 的测试（`cargo test -p board-cli --test heartbeat`）。不构建镜像、不部署。改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不跑 |
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试（`cargo test -p board-cli --test heartbeat`）。不构建镜像、不部署。改动全部在 `docs/`、`prototype/`、`lianzi/`、`README.md` 里时不跑 |
 | 推 `v*` tag | build → deploy；skill（和它们同时跑）→ release，见下图 |
 | 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 

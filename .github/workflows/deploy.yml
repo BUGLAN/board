@@ -1,5 +1,5 @@
 # 测试与部署（docs/deploy.md「自动部署」）：
-#   push main   → test：npm ci → cargo test → 界面类型检查；不部署
+#   push main   → test：npm ci → cargo test → 界面类型检查 → 界面单元测试；不部署
 #               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final）
 #   push tag v*  → skill：在 macOS 上编各平台的 board，放进 skill 的 bin/，打包 board-skills.zip（和 build、deploy 同时跑）
 #                → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
@@ -63,6 +63,9 @@ jobs:
 
       - name: 界面类型检查
         run: npm --prefix web run typecheck
+
+      - name: 界面单元测试
+        run: npm --prefix web test
 
   # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs），Linux 上的已经在 test 里跑过
   heartbeat-windows:

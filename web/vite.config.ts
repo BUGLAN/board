@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -20,5 +21,11 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     chunkSizeWarningLimit: 1200,
+  },
+  // 单元测试（npm test 会跑）：src 下的 *.test.ts；DOM 用 jsdom（happy-dom 下 DOMPurify 清理不干净，Markdown 测试会误判）。不访问网络（见 test/setup.ts）
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.{ts,tsx}'],
+    setupFiles: ['test/setup.ts'],
   },
 });

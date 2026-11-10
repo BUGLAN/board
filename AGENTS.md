@@ -12,7 +12,7 @@
 
 ```sh
 unset BOARD_URL BOARD_TOKEN   # 去掉指向线上白板的环境变量，免得测试写到线上
-npm test                      # 即 cargo test && npm --prefix web run typecheck
+npm test                      # 即 cargo test && npm --prefix web run typecheck && npm --prefix web test（界面单元测试，vitest）
 ```
 
 新 worktree 里第一次跑之前先 `npm ci`（postinstall 会装 `web/` 的依赖）。
@@ -28,6 +28,7 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 - 还没确认的卡片、评论在 store 的 `saving` 里，已经画成「保存中」；新界面沿用它，不另做一套 loading。
 - 保存完之前同一个对象不能再改：补丁的 `cards` / `keys`（`hostKey`、`flowKey`、`labelKey`、`projectKey`）记进 `saving`，界面用 `useCardBusy` / `useBusy` 禁用对它的操作，漏掉的由 store 拒绝（`BUSY`，不发请求）。新对象的补丁要带 `keys`。
 - 不走写队列的读（轮询、单独取详情）发出后又有写操作，就丢掉结果（store 里的 `writes` 计数），免得旧数据冲掉刚保存的修改。
+- 这些约定有单元测试守着：补丁在 `web/src/store/patches.test.ts`，写队列在 `web/src/store/queue.test.ts`。新加补丁时照着补用例（重复执行结果相同、目标不在了原样返回）。
 
 ## 提交
 
