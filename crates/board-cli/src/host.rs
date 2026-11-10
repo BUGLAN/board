@@ -286,22 +286,11 @@ fn write_dsh_patch(path: &Path) -> std::io::Result<()> {
 }
 
 /// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）
-fn write_run_config(path: &Path, url: &str, token: &str) -> std::io::Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let mut doc = toml_edit::DocumentMut::new();
-    doc["url"] = toml_edit::value(url);
-    doc["token"] = toml_edit::value(token);
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
-    use std::io::Write;
-    o.open(path)?.write_all(doc.to_string().as_bytes())
+fn write_run_config(path: &Path, url: &str, token: &str) -> Result<()> {
+    board_core::config::write_new(path, |c| {
+        c.set(config::URL, url);
+        c.set(config::TOKEN, token);
+    })
 }
 
 /* ------------------------------ 进程 ------------------------------ */
@@ -508,7 +497,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     };
     let mut dirs: Vec<(String, PathBuf)> = vec![];
     for (board, path) in raw {
-        if !board.contains('/') || board.split('/').any(|x| !valid_key(x)) || board.matches('/').count() != 1 {
+        if !board_core::config::valid_board(&board) {
             return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
         }
         if dirs.iter().any(|(b, _)| *b == board) {
@@ -980,7 +969,7 @@ impl Host<'_> {
         let out = std::fs::File::create(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let err = out.try_clone().map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
-        write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| format!("无法写 {}：{e}", conf.display()))?;
+        write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| e.message)?;
         let patch_arg = patch.display().to_string();
         let args: Vec<String> = spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt).replace("{patch}", &patch_arg)).collect();
         let mut c = env.command(&prog, &args, Some(&dir), true);

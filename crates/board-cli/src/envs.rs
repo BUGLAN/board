@@ -645,21 +645,11 @@ pub fn is_exe(p: &Path) -> bool {
 
 /// `~` 开头的路径换成用户目录；`$CODEX_HOME` 开头的换成这个环境变量（没设时 `~/.codex`）
 pub fn expand(p: &str) -> PathBuf {
-    let home = || {
-        let keys: [&str; 2] = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
-        keys.iter().find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
-    };
     if let Some(rest) = p.strip_prefix("$CODEX_HOME") {
         let base = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| expand("~/.codex"));
         return base.join(rest.trim_start_matches(['/', '\\']));
     }
-    match p.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => match home() {
-            Some(h) => h.join(rest.trim_start_matches(['/', '\\'])),
-            None => PathBuf::from(p),
-        },
-        _ => PathBuf::from(p),
-    }
+    board_core::config::expand(p)
 }
 
 #[cfg(test)]

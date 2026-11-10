@@ -9,6 +9,8 @@
 //! - board host 的输出写到 `~/.board/host/desktop.log`；页面上能看到它在不在跑和最近的输出。
 //! - macOS 从 Finder 打开的程序拿不到 shell 里的 PATH：先用登录 shell 取一次 PATH，board host 才找得到 claude 这些命令。
 
+use board_core::config;
+use board_core::hosts::{check_host_name, host_name_from};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -58,122 +60,58 @@ pub struct Status {
 
 /* ------------------------------ 配置文件 ------------------------------ */
 
-fn home() -> Option<PathBuf> {
-    let keys: [&str; 2] = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
-    keys.iter().find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
-}
-
-fn config_path() -> Result<PathBuf, String> {
-    home().map(|h| h.join(".board").join("config.toml")).ok_or_else(|| "找不到用户目录".to_string())
-}
-
 fn log_path() -> Option<PathBuf> {
-    home().map(|h| h.join(".board").join("host").join("desktop.log"))
-}
-
-fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.to_string()),
-    };
-    text.parse().map_err(|e| format!("~/.board/config.toml 不是合法的 TOML：{e}"))
+    config::board_dir().ok().map(|d| d.join("host").join("desktop.log"))
 }
 
 /// 读 `[host]`：机器名、白板与目录（按文件里的顺序）；以及有没有服务端地址和令牌
 fn read_conf() -> (String, Vec<Dir>, bool) {
-    let Ok(path) = config_path() else { return (String::new(), vec![], false) };
-    let Ok(doc) = load_doc(&path) else { return (String::new(), vec![], false) };
-    let has = |k: &str| doc.get(k).and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty());
-    let logged_in = (has("url") || std::env::var("BOARD_URL").is_ok_and(|v| !v.trim().is_empty())) && has("token");
-    let host = doc.get("host").and_then(|h| h.as_table_like());
-    let name = host.and_then(|h| h.get("name")).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let dirs = host
-        .and_then(|h| h.get("dirs"))
-        .and_then(|d| d.as_table_like())
-        .map(|t| t.iter().filter_map(|(k, v)| v.as_str().map(|p| Dir { board: k.to_string(), path: p.to_string() })).collect())
-        .unwrap_or_default();
-    (name, dirs, logged_in)
+    let Ok(c) = config::Config::load() else { return (String::new(), vec![], false) };
+    let has = |k: &str| c.get(k).ok().flatten().is_some();
+    let logged_in = (has(config::URL) || std::env::var("BOARD_URL").is_ok_and(|v| !v.trim().is_empty())) && has(config::TOKEN);
+    let Ok(h) = c.host() else { return (String::new(), vec![], logged_in) };
+    let dirs = h.dirs.into_iter().map(|(board, path)| Dir { board, path }).collect();
+    (h.name.unwrap_or_default(), dirs, logged_in)
 }
 
-/// 机器名：小写字母、数字、. 和 -，以字母或数字开头，最长 24 个字符（与 board 命令行相同）
-fn valid_name(n: &str) -> bool {
-    !n.is_empty()
-        && n.len() <= 24
-        && n.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
-}
-
-fn valid_board(b: &str) -> bool {
-    let key = |k: &str| {
-        !k.is_empty()
-            && k.len() <= 32
-            && k.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-            && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    };
-    matches!(b.split_once('/'), Some((p, k)) if key(p) && key(k))
-}
-
-fn expand(p: &str) -> PathBuf {
-    match (p.strip_prefix('~'), home()) {
-        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => h.join(rest.trim_start_matches(['/', '\\'])),
-        _ => PathBuf::from(p),
-    }
-}
-
-/// 写 `[host]`，保留文件里的其他配置项和注释；机器名为空时去掉 name（用本机主机名）
-pub fn write_conf(path: &Path, name: &str, dirs: &[Dir]) -> Result<(), String> {
-    let name = name.trim();
-    if !name.is_empty() && !valid_name(name) {
-        return Err(format!("机器名「{name}」不对：只能用小写字母、数字、. 和 -，以字母或数字开头，最长 24 个字符"));
+/// 校验机器名、白板与目录（规则与 board 命令行相同，都在 board_core）
+fn check_conf(name: &str, dirs: &[Dir]) -> Result<(), String> {
+    if !name.is_empty() {
+        check_host_name(name)?;
     }
     let mut seen: Vec<&str> = vec![];
     for d in dirs {
-        if !valid_board(d.board.trim()) {
+        let b = d.board.trim();
+        if !config::valid_board(b) {
             return Err(format!("白板要写成 <项目>/<白板>：{}", d.board));
         }
-        if seen.contains(&d.board.trim()) {
-            return Err(format!("白板 {} 写了两次", d.board.trim()));
+        if seen.contains(&b) {
+            return Err(format!("白板 {b} 写了两次"));
         }
-        seen.push(d.board.trim());
+        seen.push(b);
         if d.path.trim().is_empty() {
-            return Err(format!("{} 还没有选目录", d.board.trim()));
+            return Err(format!("{b} 还没有选目录"));
         }
-        if !expand(d.path.trim()).is_dir() {
-            return Err(format!("目录不存在：{}（{}）", d.path.trim(), d.board.trim()));
+        if !config::expand(d.path.trim()).is_dir() {
+            return Err(format!("目录不存在：{}（{b}）", d.path.trim()));
         }
     }
-    let mut doc = load_doc(path)?;
-    if doc.get("host").and_then(|h| h.as_table_like()).is_none() {
-        doc["host"] = toml_edit::table();
-    }
-    let host = doc["host"].as_table_like_mut().ok_or("[host] 格式不对")?;
-    if name.is_empty() {
-        host.remove("name");
-    } else {
-        host.insert("name", toml_edit::value(name));
-    }
-    let mut t = toml_edit::InlineTable::new();
-    for d in dirs {
-        t.insert(d.board.trim(), d.path.trim().into());
-    }
-    host.insert("dirs", toml_edit::value(t));
-    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let tmp = dir.join(".config.toml.tmp");
-    {
-        use std::io::Write;
-        let mut o = std::fs::OpenOptions::new();
-        o.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.mode(0o600);
-        }
-        let mut f = o.open(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(doc.to_string().as_bytes()).map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    Ok(())
+}
+
+/// 写 `[host]`，保留文件里的其他配置项和注释；机器名为空时去掉 name（用本机主机名）
+pub fn write_conf(path: &Path, own_dir: bool, name: &str, dirs: &[Dir]) -> Result<(), String> {
+    let name = name.trim();
+    check_conf(name, dirs)?;
+    let dirs: Vec<(String, String)> = dirs.iter().map(|d| (d.board.trim().to_string(), d.path.trim().to_string())).collect();
+    config::update_at(path, own_dir, |c| c.set_host(Some(name).filter(|n| !n.is_empty()), &dirs).map(|_| ((), true))).map_err(|e| e.message)
+}
+
+/// 写 `[host]` 到 board 命令行用的配置文件（`BOARD_CONFIG`，否则 `~/.board/config.toml`）
+fn save_conf(name: &str, dirs: &[Dir]) -> Result<(), String> {
+    let path = config::path().map_err(|e| e.message)?;
+    let own = config::board_dir().is_ok_and(|d| path.parent() == Some(d.as_path()));
+    write_conf(&path, own, name, dirs)
 }
 
 /* ------------------------------ 开关 ------------------------------ */
@@ -213,7 +151,7 @@ fn shell_path() -> Option<String> {
             .and_then(|o| String::from_utf8_lossy(&o.stdout).rsplit("__BOARD_PATH__").next().map(|s| s.trim().to_string()))
             .filter(|s| !s.is_empty());
         let mut parts: Vec<String> = from_shell.or_else(|| std::env::var("PATH").ok()).unwrap_or_default().split(':').map(str::to_string).collect();
-        if let Some(h) = home() {
+        if let Some(h) = config::home() {
             for extra in [".local/bin", ".npm-global/bin", ".bun/bin", ".cargo/bin"] {
                 parts.push(h.join(extra).display().to_string());
             }
@@ -324,25 +262,12 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Status {
         running,
         exit,
         name,
-        default_name: default_name(&host),
+        default_name: host_name_from(&host),
         dirs,
         log: log_tail(40),
         logged_in,
         cli: crate::cli_path().is_some(),
     }
-}
-
-/// 不填机器名时 board host 用的名字：主机名转成小写，非法字符换成 -（与 board 命令行相同）
-fn default_name(raw: &str) -> String {
-    let s: String = raw
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-' { c } else { '-' })
-        .collect();
-    let s: String = s.trim_start_matches(|c: char| !c.is_ascii_alphanumeric()).chars().take(24).collect();
-    let s = s.trim_end_matches(['-', '.']).to_string();
-    if s.is_empty() { "host".into() } else { s }
 }
 
 /* ------------------------------ 托盘 ------------------------------ */
@@ -395,7 +320,7 @@ pub async fn host_status(app: AppHandle) -> Status {
 #[tauri::command]
 pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        write_conf(&config_path()?, &name, &dirs)?;
+        save_conf(&name, &dirs)?;
         if enabled(&app) {
             stop(&app, std::time::Duration::from_secs(15));
             ensure_started(&app)?;
@@ -429,35 +354,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names() {
-        assert!(valid_name("macbook"));
-        assert!(valid_name("lans-mbp.local"));
-        assert!(!valid_name("MacBook"));
-        assert!(!valid_name("-x"));
-        assert_eq!(default_name("Lans-MacBook-Pro.local"), "lans-macbook-pro.local");
-        assert!(valid_board("default/main"));
-        assert!(!valid_board("default"));
+    fn checks() {
+        let d = tempfile_dir("checks");
+        let ok = vec![Dir { board: "default/main".into(), path: d.display().to_string() }];
+        assert!(check_conf("macbook", &ok).is_ok());
+        assert!(check_conf("", &ok).is_ok());
+        assert!(check_conf("MacBook", &ok).unwrap_err().contains("机器名"));
+        let bad = vec![Dir { board: "default".into(), path: d.display().to_string() }];
+        assert!(check_conf("", &bad).unwrap_err().contains("<项目>/<白板>"));
+        let twice = vec![ok[0].clone(), ok[0].clone()];
+        assert!(check_conf("", &twice).unwrap_err().contains("两次"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    fn tempfile_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("board-host-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 
     #[test]
     fn writes_host_section_and_keeps_other_items() {
-        let d = std::env::temp_dir().join(format!("board-host-test-{}", std::process::id()));
+        let d = tempfile_dir("write");
         let repo = d.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let f = d.join(".board").join("config.toml");
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, "url = \"https://board.buglan.com\"\ntoken = \"bd_x\"\n").unwrap();
         let dirs = vec![Dir { board: "default/main".into(), path: repo.display().to_string() }];
-        write_conf(&f, "macbook", &dirs).unwrap();
+        write_conf(&f, true, "macbook", &dirs).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
         assert!(text.starts_with("url = \"https://board.buglan.com\"\ntoken = \"bd_x\"\n"), "{text}");
         assert!(text.contains("[host]\nname = \"macbook\"\ndirs = { \"default/main\" = "), "{text}");
         // 机器名清空：去掉 name
-        write_conf(&f, "", &dirs).unwrap();
+        write_conf(&f, true, "", &dirs).unwrap();
         assert!(!std::fs::read_to_string(&f).unwrap().contains("name ="));
         // 目录不存在
         let bad = vec![Dir { board: "default/main".into(), path: d.join("nope").display().to_string() }];
-        assert!(write_conf(&f, "macbook", &bad).unwrap_err().contains("目录不存在"));
+        assert!(write_conf(&f, true, "macbook", &bad).unwrap_err().contains("目录不存在"));
         std::fs::remove_dir_all(&d).ok();
     }
 }

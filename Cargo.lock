@@ -215,7 +215,6 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
- "toml_edit 0.25.19+spec-1.1.0",
  "unicode-width",
  "ureq",
 ]
@@ -230,19 +229,20 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "toml_edit 0.25.19+spec-1.1.0",
 ]
 
 [[package]]
 name = "board-desktop"
 version = "0.1.6"
 dependencies = [
+ "board-core",
  "getrandom 0.3.4",
  "open",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
- "toml_edit 0.25.19+spec-1.1.0",
 ]
 
 [[package]]

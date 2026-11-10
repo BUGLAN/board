@@ -669,7 +669,7 @@ fn override_hint(p: &Paint, vars: &[&str]) -> String {
 
 /// `board login [--url <地址>] [--token <令牌>]`：用 `GET /api/workspace` 校验令牌，通过后写进配置文件
 fn login(a: &Args, json: bool, p: &Paint) -> Result<Output> {
-    let mut file = config::File::load()?;
+    let file = config::File::load()?;
     let url = match a.value("--url").map(str::trim).filter(|s| !s.is_empty()) {
         Some(u) => u.trim_end_matches('/').to_string(),
         None => file.get(config::URL)?.ok_or_else(|| {
@@ -695,9 +695,12 @@ fn login(a: &Args, json: bool, p: &Paint) -> Result<Output> {
     }
     // 校验：令牌错误、连不上时按服务端的错误码报错，不写文件
     Remote::new(&url, &token)?.get::<Workspace>("/api/workspace", &[])?;
-    file.set(config::URL, &url);
-    file.set(config::TOKEN, &token);
-    file.save()?;
+    // 写的时候重新读一遍（校验期间别处可能改了配置文件，例如桌面端保存了本机设置）
+    config::update(|f| {
+        f.set(config::URL, &url);
+        f.set(config::TOKEN, &token);
+        Ok(((), true))
+    })?;
     let vars = env_overrides(&["BOARD_URL", "BOARD_TOKEN"]);
     if json {
         return Ok(Output::Json(json!({ "ok": true, "url": url, "config": config::shown(), "env_overrides": vars })));
@@ -713,11 +716,10 @@ fn login(a: &Args, json: bool, p: &Paint) -> Result<Output> {
 
 /// `board logout`：从配置文件删掉令牌，保留服务端地址
 fn logout(json: bool, p: &Paint) -> Result<Output> {
-    let mut file = config::File::load()?;
-    let removed = file.remove(config::TOKEN);
-    if removed {
-        file.save()?;
-    }
+    let removed = config::update(|f| {
+        let removed = f.remove(config::TOKEN);
+        Ok((removed, removed))
+    })?;
     let vars = env_overrides(&["BOARD_TOKEN"]);
     if json {
         return Ok(Output::Json(json!({ "ok": true, "removed": removed, "config": config::shown(), "env_overrides": vars })));

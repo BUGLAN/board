@@ -15,9 +15,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # tray-icon：「让这台电脑接任务」时关掉窗口留在后台，从托盘图标重新打开或退出
 tauri = { version = "2", features = ["tray-icon"] }
+# 配置文件 ~/.board/config.toml 的读写和机器名、白板路径校验，与 board 命令行共用一份
+board-core = { workspace = true, features = ["config"] }
 serde.workspace = true
 serde_json.workspace = true
 # GitHub 登录：在系统默认浏览器里打开登录页
 open = "5"
 getrandom = "0.3"
-toml_edit = "0.25"
