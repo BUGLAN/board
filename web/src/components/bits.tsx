@@ -70,7 +70,6 @@ export function Ring({ r, p, className }: { r: number; p: number; className?: st
 export function LabelChip({ label, onRemove, pending }: { label: Pick<Label, 'id' | 'name' | 'color'>; onRemove?: () => void; pending?: boolean }) {
   return (
     <span className={pending ? 'lb pending' : 'lb'} aria-busy={pending || undefined} title={pending ? '正在加上…' : undefined} style={{ ['--lc' as string]: label.color }} data-label={label.id}>
-      <i />
       {label.name}
       {onRemove && (
         <button

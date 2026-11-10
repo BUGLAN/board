@@ -5,7 +5,7 @@
 /* 标签胶囊 */
 .lb {
   --lc: #888;
-  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 6px; border-radius: var(--r-xs);
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: var(--r-xs);
   font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; color: color-mix(in srgb, var(--lc) 80%, var(--text));
   background: color-mix(in srgb, var(--lc) 13%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc) 26%, transparent);
@@ -24,7 +24,6 @@
 @media (prefers-reduced-motion: reduce) { .lb.pending { animation: none; } .lb.pending::after { display: none; } }
 :root[data-motion="reduced"] .lb.pending { animation: none; }
 :root[data-motion="reduced"] .lb.pending::after { display: none; }
-.lb i { width: 6px; height: 6px; border-radius: 50%; background: var(--lc); flex: none; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
 .lb-x { margin: 0 -3px 0 1px; width: 14px; height: 14px; border-radius: var(--r-xs); display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
 .lb-x:hover { opacity: 1; background: color-mix(in srgb, var(--lc) 25%, transparent); }
@@ -52,12 +51,11 @@
 }
 /* 编辑态（双击空白进入，见 Workbench.tsx LabelBlock）：显出输入框的底色和边框，淡入淡出 */
 .lb-field.editing { cursor: text; background: var(--surface); border-color: color-mix(in srgb, var(--brand) 55%, transparent); }
-.lb-pick { height: 24px; max-width: 100%; padding: 0 7px 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
+.lb-pick { height: 24px; max-width: 100%; padding: 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
 .lb-pick:hover { background: color-mix(in srgb, var(--lc) 22%, transparent); }
 .lb-pick:active { transform: scale(.96); }
 .lb-pick em { font-style: normal; font-family: var(--f-mono); font-size: 10.5px; opacity: .6; margin-left: 2px; }
 .lb-pick.on { color: #fff; background: var(--lc); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--lc) 70%, transparent); }
-.lb-pick.on i { background: #fff; }
 .lb-pick.on em { opacity: .85; }
 /* 删除：悬停胶囊时盖在右端的计数上，不占位、不改变排列 */
 .lb-item { position: relative; display: inline-flex; max-width: 100%; }

@@ -267,7 +267,6 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
                 if (!labelDragJustEnded()) toggleLabelSel(l.id);
               }}
             >
-              <i />
               {l.name}
               <em>{used[l.id] || 0}</em>
             </button>
