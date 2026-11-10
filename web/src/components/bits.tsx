@@ -87,12 +87,24 @@ export const LabelLock = ({ label }: { label: Pick<Label, 'humanOnly'> }) =>
     </span>
   ) : null;
 
+/** 优先标签在名称前带一个闪电：带这个标签的卡片先被领取 */
+export const LabelPriority = ({ label }: { label: Pick<Label, 'priority'> }) =>
+  label.priority ? (
+    <span className="lb-prio" aria-label="优先">
+      <Icon name="bolt" sw={2} />
+    </span>
+  ) : null;
+
+/** 标签胶囊的悬停提示：优先、仅人可打 */
+const labelTip = (label: Pick<Label, 'humanOnly' | 'priority'>) =>
+  [label.priority && '优先：带这个标签的卡片先被领取', label.humanOnly && '仅人可打：agent 不能加、去这个标签'].filter(Boolean).join('\n') || undefined;
+
 export function LabelChip({
   label,
   onRemove,
   pending,
 }: {
-  label: Pick<Label, 'id' | 'name' | 'color' | 'humanOnly'>;
+  label: Pick<Label, 'id' | 'name' | 'color' | 'humanOnly' | 'priority'>;
   onRemove?: () => void;
   pending?: boolean;
 }) {
@@ -100,10 +112,11 @@ export function LabelChip({
     <span
       className={pending ? 'lb pending' : 'lb'}
       aria-busy={pending || undefined}
-      title={pending ? '正在加上…' : label.humanOnly ? '仅人可打：agent 不能加、去这个标签' : undefined}
+      title={pending ? '正在加上…' : labelTip(label)}
       style={{ ['--lc' as string]: label.color }}
       data-label={label.id}
     >
+      <LabelPriority label={label} />
       <LabelLock label={label} />
       {label.name}
       {onRemove && (

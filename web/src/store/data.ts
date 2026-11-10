@@ -305,8 +305,8 @@ export const patchProject = (key: string, fn: (p: ProjectInfo) => ProjectInfo): 
   ws: ws => ({ ...ws, projects: ws.projects.map(p => (p.key === key ? fn(p) : p)) }),
 });
 
-/** 改项目里的一个标签（名称、颜色、类型） */
-export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string; humanOnly?: boolean }): Patch => ({
+/** 改项目里的一个标签（名称、颜色、类型、是否优先） */
+export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string; humanOnly?: boolean; priority?: boolean }): Patch => ({
   ...patchProject(project, p => ({ ...p, labels: p.labels.map(l => (l.id === id ? { ...l, ...change } : l)) })),
   keys: [labelKey(project, id)],
 });

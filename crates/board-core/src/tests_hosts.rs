@@ -229,6 +229,40 @@ fn queued_dispatch_occupies_the_card() {
     assert_eq!(get(&s, d.id).result.as_deref(), Some("canceled"));
 }
 
+/// 优先标签（PRD §8 规则 1）：有排队派发的优先卡片照样被跳过；定时领取一轮里优先卡片先被派发；手动派发不受影响
+#[test]
+fn priority_labels_in_queue_and_cron() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let p = s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, false)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let b = new_card(&mut s, T0, "B");
+    let c = new_card(&mut s, T0, "C");
+    // A 在最上面、不带优先标签
+    for id in [b, c] {
+        exec(&mut s, T0, &Actor::human(), Cmd::Label { id, add: vec![p.id], remove: vec![] }).unwrap();
+    }
+    // B 有排队中的派发：不带 ID 的领取跳过它，领下一张优先的 C
+    let d = dispatch(&mut s, T0, b, "mbp", None).unwrap();
+    assert_eq!(d.card, b, "手动派发照常派指定的卡片");
+    s.write(T0, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
+    assert_eq!(exec(&mut s, T0 + S, &Actor::agent("alpha/x"), Cmd::Claim { id: None }).unwrap().card.id, c);
+
+    // 定时领取：A 在最上面、B 带优先标签，先派 B
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let p = s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, false)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
+    new_card(&mut s, T0, "A");
+    let b2 = new_card(&mut s, T0, "B");
+    exec(&mut s, T0, &Actor::human(), Cmd::Label { id: b2, add: vec![p.id], remove: vec![] }).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().unwrap();
+    assert_eq!(d1.card, b2, "带优先标签的先派发");
+    let _ = a;
+}
+
 #[test]
 fn capacity_and_pause_keep_dispatches_queued() {
     let mut s = store();

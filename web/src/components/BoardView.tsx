@@ -82,9 +82,11 @@ export function BoardView() {
   const prio = board?.cols ?? null;
   // 有排队派发的卡片不会被不带 ID 的 board claim 领走
   const queued = useData(s => s.ws?.dispatches);
+  const urgentLabels = (cur?.project.labels ?? []).filter(l => l.priority).map(l => l.id);
   const nextId = f.nextCard(
     prio && drag ? Object.fromEntries(Object.entries(prio).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) : prio,
     id => !!queued?.some(d => d.state === 'queued' && d.board === path && d.card === id),
+    id => urgentLabels.length > 0 && !!board?.cards[id]?.labels.some(l => urgentLabels.includes(l)),
   );
 
   useLayoutEffect(() => {

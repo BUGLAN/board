@@ -35,14 +35,19 @@ export function flowOf(statuses: Status[] | undefined | null) {
     claimables: list.filter(s => s.claim),
     /** 可领取状态里的卡片总数 */
     ready: (counts: Record<string, number> | undefined) => list.filter(s => s.claim).reduce((n, s) => n + (counts?.[s.key] ?? 0), 0),
-    /** 不带 ID 执行 board claim 时会被领走的那张（PRD §8 规则 1）：有排队派发的卡片跳过（skip） */
-    nextCard: (cols: Record<string, number[]> | null | undefined, skip?: (id: number) => boolean) => {
+    /** 不带 ID 执行 board claim 时会被领走的那张（PRD §8 规则 1）：有排队派发的卡片跳过（skip）；
+     *  带优先标签的（urgent）先领，都不带时取最前面那张（与 board-core 的 next_claimable 一致） */
+    nextCard: (cols: Record<string, number[]> | null | undefined, skip?: (id: number) => boolean, urgent?: (id: number) => boolean) => {
+      let first: number | undefined;
       for (const s of list) {
         if (!s.claim || !claimTarget(s.key)) continue;
-        const id = cols?.[s.key]?.find(x => !skip?.(x));
-        if (id != null) return id;
+        for (const id of cols?.[s.key] ?? []) {
+          if (skip?.(id)) continue;
+          if (urgent?.(id)) return id;
+          first ??= id;
+        }
       }
-      return undefined;
+      return first;
     },
     name: (k: string) => (k === INBOX ? INBOX_NAME : get(k)?.name ?? k),
     color: (k: string) => (k === INBOX ? 'var(--c-inbox)' : statusColor(get(k)?.color ?? 'todo')),

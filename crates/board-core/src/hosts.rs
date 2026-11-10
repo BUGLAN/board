@@ -707,17 +707,27 @@ impl<'a> W<'a> {
             .optional()?)
     }
 
-    /// 按规则 1 找下一张可领取的卡片：按工作流顺序，第一个连到锁定状态的可领取状态里、最上面一张没有排队派发的卡片。
+    /// 按规则 1 找下一张可领取的卡片：在连到锁定状态的可领取状态里（按工作流顺序，状态内从上到下），
+    /// 没有排队派发的卡片中，带优先标签的先领；都不带时取最前面那张。
     /// `skip` 是调用方额外要跳过的卡片（定时领取传这一轮已经派发过的卡片）。
     pub(crate) fn next_claimable(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Option<(i64, String)>> {
         let mut taken: Vec<i64> = self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state = 'queued'", [b], |r| r.get(0))?;
         taken.extend_from_slice(skip);
+        let urgent: Vec<i64> = self.collect(
+            "SELECT DISTINCT cl.card FROM card_labels cl JOIN labels l ON l.id = cl.label WHERE cl.board = ?1 AND l.priority = 1",
+            [b],
+            |r| r.get(0),
+        )?;
+        let mut first = None;
         for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
-            if let Some(id) = self.col_ids(b, &s.key)?.into_iter().find(|id| !taken.contains(id)) {
-                return Ok(Some((id, s.key.clone())));
+            for id in self.col_ids(b, &s.key)?.into_iter().filter(|id| !taken.contains(id)) {
+                if urgent.contains(&id) {
+                    return Ok(Some((id, s.key.clone())));
+                }
+                first.get_or_insert((id, s.key.clone()));
             }
         }
-        Ok(None)
+        Ok(first)
     }
 
     /// 写一条派发的结束，并让它的名字离线（名字只给这次派发用）

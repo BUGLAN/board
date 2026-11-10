@@ -546,10 +546,73 @@ fn human_only_labels() {
     assert!(!card(&s, B, 1).card.labels.contains(&mine.id));
 
     // 改类型：改成 agent 可打后 agent 就能打
-    ui(&mut s, |w| w.update_label("default", mine.id, None, None, Some(false))).unwrap();
+    ui(&mut s, |w| w.update_label("default", mine.id, None, None, Some(false), None)).unwrap();
     let ls = s.read(|r| r.labels("default")).unwrap();
     assert!(!ls.iter().find(|l| l.id == mine.id).unwrap().human_only);
     exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] }).unwrap();
+}
+
+/// 优先标签（PRD §8 规则 1）：不带 ID 领取时带优先标签的卡片先被领取；两组内部仍按工作流顺序、状态内从上到下
+#[test]
+fn priority_labels_claim_first() {
+    let mut s = store();
+    let p = ui(&mut s, |w| w.create_label("default", "急", None, false)).unwrap();
+    assert!(!p.priority, "新建的标签默认不是优先");
+    ui(&mut s, |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
+    assert!(s.read(|r| r.labels("default")).unwrap()[0].priority, "刷新后保持");
+    let gamma = Actor::agent("gamma");
+    for t in ["A", "B", "C"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Label { id: 3, add: vec![p.id], remove: vec![] }).unwrap();
+    // 待办 A、B、C，只有 C 带优先标签：先领 C，再领 A
+    assert_eq!(exec(&mut s, B, &alpha(), T0, claim(None)).unwrap().card.id, 3);
+    assert_eq!(exec(&mut s, B, &beta(), T0, claim(None)).unwrap().card.id, 1);
+    // 带 ID 领取不受影响
+    assert_eq!(exec(&mut s, B, &gamma, T0, claim(Some(2))).unwrap().card.id, 2);
+
+    // 「待办」里没有优先的、「返工」里有：领「返工」那张；同一个状态里两张优先的：先领上面那张
+    let mut s = store();
+    let p = ui(&mut s, |w| w.create_label("default", "急", None, false)).unwrap();
+    ui(&mut s, |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
+    for t in ["A", "B", "C", "D"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, mv(3, "rework")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(4, "rework")).unwrap();
+    for id in [3, 4] {
+        exec(&mut s, B, &human(), T0, Cmd::Label { id, add: vec![p.id], remove: vec![] }).unwrap();
+    }
+    assert_eq!(exec(&mut s, B, &alpha(), T0, claim(None)).unwrap().card.id, 3);
+    assert_eq!(exec(&mut s, B, &beta(), T0, claim(None)).unwrap().card.id, 4);
+    // 优先的领完了：回到原来的顺序
+    assert_eq!(exec(&mut s, B, &gamma, T0, claim(None)).unwrap().card.id, 1);
+
+    // 取消优先、或从卡片上去掉优先标签：顺序恢复
+    let mut s = store();
+    let p = ui(&mut s, |w| w.create_label("default", "急", None, false)).unwrap();
+    ui(&mut s, |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
+    for t in ["A", "B"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Label { id: 2, add: vec![p.id], remove: vec![] }).unwrap();
+    ui(&mut s, |w| w.update_label("default", p.id, None, None, None, Some(false))).unwrap();
+    assert_eq!(exec(&mut s, B, &alpha(), T0, claim(None)).unwrap().card.id, 1);
+}
+
+/// 旧数据库的标签没有「优先」列：迁移后都不是优先
+#[test]
+fn old_labels_are_not_priority() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        ui(&mut s, |w| w.create_label("default", "旧", None, false)).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE labels DROP COLUMN priority").unwrap();
+    let s = Store::open(&path).unwrap();
+    assert!(!s.read(|r| r.labels("default")).unwrap()[0].priority);
 }
 
 /// 旧数据库的标签没有类型列：迁移后都是 agent 可打

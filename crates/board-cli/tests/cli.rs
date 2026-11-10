@@ -153,6 +153,30 @@ fn human_only_labels() {
     assert_eq!(r.code, 0, "{}", r.out);
 }
 
+/// 优先标签：labels、ls、show 的 --json 里能看出是否优先；不带 ID 领取先领带优先标签的卡片
+#[test]
+fn priority_labels() {
+    let s = start();
+    for t in ["a", "b"] {
+        s.run(ALPHA, &["new", t]);
+    }
+    s.create_label("急");
+    s.create_label("bug");
+    let r = s.run(ALPHA, &["labels", "--json"]);
+    assert_eq!((r.json()[0]["priority"].clone(), r.json()[1]["priority"].clone()), (false.into(), false.into()), "默认不是优先");
+    s.set_priority("急");
+    s.run(ALPHA, &["label", "2", "+急", "+bug"]);
+    let r = s.run(ALPHA, &["labels", "--json"]);
+    assert_eq!(r.json()[0]["priority"], true);
+    assert!(s.run(ALPHA, &["labels"]).out.contains("优先"));
+    let r = s.run(ALPHA, &["ls", "--json"]);
+    let b = r.json().as_array().unwrap().iter().find(|c| c["id"] == 2).unwrap().clone();
+    assert_eq!(b["priority_labels"], serde_json::json!(["急"]));
+    assert_eq!(s.run(ALPHA, &["show", "1", "--json"]).json()["priority_labels"], serde_json::json!([]));
+    // 不带 ID 领取：b 带优先标签，先领 b
+    assert_eq!(s.run(ALPHA, &["claim", "--json"]).json()["id"], 2);
+}
+
 /// 附件：上传成一条评论、show 列出、files 下载到本地
 #[test]
 fn attach_and_download_files() {

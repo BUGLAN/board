@@ -161,6 +161,22 @@ function KindToggle({ human, onChange }: { human: boolean; onChange: (human: boo
   );
 }
 
+/** 「优先」开关：带这个标签的卡片先被领取 */
+function PriorityToggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      className={cx('lbm-kind lbm-prio', on && 'on')}
+      aria-pressed={on}
+      title={on ? '优先：带这个标签的卡片先被领取；点一下取消' : '点一下设为优先：带这个标签的卡片先被领取'}
+      onClick={() => onChange(!on)}
+    >
+      <Icon name="bolt" />
+      优先
+    </button>
+  );
+}
+
 export function LabelManager() {
   const pk = useUI(s => s.labelsOf);
   const { mounted, on } = usePresence(!!pk, 220);
@@ -230,7 +246,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
         </div>
         <p className="lbm-p">
           标签属于项目，项目下的所有白板共用。改名或改色会立即生效；删除会从所有卡片上移除。agent 用 <code>board label &lt;ID&gt; +名称</code> 打标签；
-          <b>仅人可打</b>的标签带小锁，只有人能在界面上加、去，agent 打会被拒绝。
+          <b>仅人可打</b>的标签带小锁，只有人能在界面上加、去，agent 打会被拒绝。<b>优先</b>的标签带闪电：不带 ID 领取（和定时领取）时，带它的卡片先被领取，卡片在状态里的位置不变。
         </p>
         <div className="lbm-list" ref={list}>
           {labels.length === 0 && <div className="lbp-empty">这个项目还没有标签</div>}
@@ -267,6 +283,10 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
               <KindToggle
                 human={!!l.humanOnly}
                 onChange={h => run(editLabelPatch(pk, l.id, { humanOnly: h }), () => api.updateLabel(pk, l.id, { humanOnly: h }))}
+              />
+              <PriorityToggle
+                on={!!l.priority}
+                onChange={v => run(editLabelPatch(pk, l.id, { priority: v }), () => api.updateLabel(pk, l.id, { priority: v }))}
               />
               <span className="lbm-count">{l.uses} 张卡片</span>
               <button

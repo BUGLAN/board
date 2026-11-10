@@ -27,6 +27,9 @@
 /* 仅人可打：名称前一把小锁 */
 .lb-lock { display: inline-grid; place-items: center; margin-right: -1px; opacity: .8; }
 .lb-lock svg { width: 10px; height: 10px; }
+/* 优先标签的闪电：用标签色加深（浅色主题）写，深色、浅色主题都看得清 */
+.lb-prio { display: inline-grid; place-items: center; margin-right: -1px; }
+.lb-prio svg { width: 11px; height: 11px; fill: currentColor; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
 .lb-x { margin: -5px -8px -5px -4px; width: 24px; height: 24px; border-radius: 999px; display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
 .lb-x:hover { opacity: 1; background: color-mix(in srgb, var(--lc) 25%, transparent); }
@@ -131,7 +134,7 @@
 /* 各行共用列表的列（subgrid）：预览胶囊、类型开关、卡片数逐行对齐，不随标签名长短、开关文字长短错开 */
 .lbm-list {
   max-height: 46vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px;
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; align-content: start; column-gap: 10px; row-gap: 4px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto; align-content: start; column-gap: 10px; row-gap: 4px;
 }
 .lbm-list > .lbp-empty { grid-column: 1 / -1; }
 .lbm-row { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 6px 6px 6px 8px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
@@ -150,6 +153,7 @@
   transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
 }
 .lbm-kind svg { width: 12px; height: 12px; flex: none; }
+.lbm-prio.on svg { fill: currentColor; }
 .lbm-kind:hover { color: var(--text); background: var(--surface-3); }
 .lbm-kind.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3); }
 .lbm-row .lbm-kind { justify-self: stretch; }
@@ -170,7 +174,7 @@
 @media (max-width: 760px) {
   .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
   .d-prompt svg { margin: 0; }
-  .lbm-list { grid-template-columns: auto minmax(0, 1fr) auto auto auto; }
+  .lbm-list { grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; }
   .lbm-preview { display: none; }
 }
 

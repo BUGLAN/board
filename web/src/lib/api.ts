@@ -154,7 +154,7 @@ export const api = {
 
   createLabel: (project: string, name: string, color?: string, humanOnly?: boolean) =>
     req<Label>('POST', '/api/labels', { project, name, color, humanOnly }),
-  updateLabel: (project: string, id: number, patch: { name?: string; color?: string; humanOnly?: boolean }) =>
+  updateLabel: (project: string, id: number, patch: { name?: string; color?: string; humanOnly?: boolean; priority?: boolean }) =>
     req('PATCH', `/api/labels/${id}`, { project, ...patch }),
   /** 标签顺序：ids 依次排在前面，没列出的按原顺序排在后面 */
   reorderLabels: (project: string, ids: number[]) => req('PUT', '/api/labels/order', { project, ids }),

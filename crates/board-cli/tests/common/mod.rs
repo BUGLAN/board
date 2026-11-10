@@ -112,6 +112,12 @@ impl Server {
             .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", name, None, human_only).map(|_| ()))
             .unwrap();
     }
+    /// 把标签设为优先（界面上「管理标签」里的开关）
+    pub fn set_priority(&self, name: &str) {
+        let mut store = board_core::Store::open(&self.db).unwrap();
+        let id = store.read(|r| r.labels("default")).unwrap().into_iter().find(|l| l.name == name).unwrap().id;
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.update_label("default", id, None, None, None, Some(true))).unwrap();
+    }
 }
 
 /// 去掉开发者环境里连接线上服务端的变量，免得测试写到真实白板上

@@ -46,7 +46,7 @@ const COMMANDS: [(&str, &str, &str); 22] = [
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
-        ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打），以及每个标签被多少张卡片使用"),
+        ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
         ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),
@@ -313,7 +313,8 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         })
     };
     let mut exec = |cmd: Cmd| -> Result<CardDetail> { be.exec(&path, &actor, cmd) };
-    let fmt = Fmt { p, label_name: &label_name, path: &path, now, flow: &flow };
+    let label_priority = |id: i64| labels.iter().any(|l| l.id == id && l.priority);
+    let fmt = Fmt { p, label_name: &label_name, label_priority: &label_priority, path: &path, now, flow: &flow };
 
     let out = match sub {
         "flow" => {
@@ -604,7 +605,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 Output::Json(Value::Array(
                     labels
                         .iter()
-                        .map(|l| json!({ "name": l.name, "color": l.color, "cards": l.uses, "human_only": l.human_only }))
+                        .map(|l| json!({ "name": l.name, "color": l.color, "cards": l.uses, "human_only": l.human_only, "priority": l.priority }))
                         .collect(),
                 ))
             } else if labels.is_empty() {
@@ -616,11 +617,13 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                         .iter()
                         .map(|l| {
                             let kind = if l.human_only { "仅人可打" } else { "agent 可打" };
+                            let prio = if l.priority { p.yellow("优先") } else { String::new() };
                             format!(
-                                "{}{}{}\n",
+                                "{}{}{}{}\n",
                                 p.magenta(&pad(&format!("#{}", l.name), w)),
                                 pad(kind, 12),
-                                p.dim(&format!("{} 张卡片", l.uses))
+                                p.dim(&pad(&format!("{} 张卡片", l.uses), 12)),
+                                prio
                             )
                         })
                         .collect(),
@@ -780,6 +783,7 @@ fn agent_json(a: &AgentInfo) -> Value {
 struct Fmt<'a> {
     p: &'a Paint,
     label_name: &'a dyn Fn(i64) -> String,
+    label_priority: &'a dyn Fn(i64) -> bool,
     path: &'a str,
     now: i64,
     flow: &'a Flow,
@@ -824,6 +828,11 @@ impl Fmt<'_> {
         c.labels.iter().map(|l| (self.label_name)(*l)).filter(|n| !n.is_empty()).collect()
     }
 
+    /// 卡片上的优先标签（不带 ID 领取时这张先被领取）
+    fn priority_labels(&self, c: &Card) -> Vec<String> {
+        c.labels.iter().filter(|l| (self.label_priority)(**l)).map(|l| (self.label_name)(*l)).filter(|n| !n.is_empty()).collect()
+    }
+
     fn card(&self, c: &Card) -> Value {
         json!({
             "id": c.id,
@@ -831,6 +840,7 @@ impl Fmt<'_> {
             "title": c.title,
             "holder": c.holder,
             "labels": self.labels(c),
+            "priority_labels": self.priority_labels(c),
         })
     }
 
@@ -853,6 +863,7 @@ impl Fmt<'_> {
                 "beats": c.beats,
             },
             "labels": self.labels(c),
+            "priority_labels": self.priority_labels(c),
             "attachments": d.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
             "created_at": iso(Some(c.created_at)),
             "updated_at": iso(Some(c.updated_at)),

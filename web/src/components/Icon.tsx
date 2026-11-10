@@ -87,6 +87,7 @@ const P: Record<string, ReactNode> = {
       <rect x="3.5" y="10.5" width="13" height="6" rx="2" />
     </>
   ),
+  bolt: <path d="M11 2.5 4.5 11H10l-1 6.5L15.5 9H10l1-6.5Z" />,
   sparkle: <path d="M10 3v3.5M10 13.5V17M3 10h3.5M13.5 10H17M5.2 5.2l2.2 2.2M12.6 12.6l2.2 2.2M5.2 14.8l2.2-2.2M12.6 7.4l2.2-2.2" />,
   timer: (
     <>

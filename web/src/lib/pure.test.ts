@@ -5,6 +5,7 @@ import type { DragUI } from '../store/ui';
 import { FLOW, status } from '../../test/fixtures';
 import { placeAt } from './drag';
 import { CH, edgeId, layoutFlow, mainPath } from './flowGraph';
+import { flowOf } from './schema';
 
 describe('placeAt（CSS 网格自动摆放）', () => {
   it('一样高的卡片按行从左到右排', () => {
@@ -137,5 +138,19 @@ describe('withDefaults（没保存过布局的状态块）', () => {
     const p1 = pack(k3, t, { todo: 100, doing: 400 });
     const p2 = pack(k3, t, { todo: 400, doing: 100 });
     expect(p1.review.x).toBe(p2.review.x);
+  });
+});
+
+describe('nextCard（不带 ID 领取会领走的那张，PRD §8 规则 1）', () => {
+  const f = flowOf(FLOW);
+  const cols = { todo: [1, 2, 3], rework: [4, 5] };
+  it('没有优先标签时按工作流顺序取最上面一张', () => {
+    expect(f.nextCard(cols)).toBe(1);
+    expect(f.nextCard(cols, id => id === 1)).toBe(2);
+  });
+  it('带优先标签的先领；同一状态里两张时先领上面那张；待办没有时去返工找', () => {
+    expect(f.nextCard(cols, undefined, id => id === 3)).toBe(3);
+    expect(f.nextCard(cols, undefined, id => id === 5 || id === 4)).toBe(4);
+    expect(f.nextCard(cols, id => id === 4, id => id === 5 || id === 4)).toBe(5); // 排队中的跳过
   });
 });

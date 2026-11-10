@@ -50,7 +50,9 @@ CREATE TABLE IF NOT EXISTS labels (
   color   TEXT NOT NULL,
   sort    INTEGER NOT NULL DEFAULT 0,
   -- 1 = 仅人可打：只有人能在界面上给卡片加、去这个标签；0 = agent 可打（人和 agent 都能打）
-  human_only INTEGER NOT NULL DEFAULT 0
+  human_only INTEGER NOT NULL DEFAULT 0,
+  -- 1 = 优先：不带 ID 领取（和定时领取）时，带这个标签的卡片先被领取（PRD §8 规则 1）
+  priority   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS cards (
@@ -282,6 +284,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('labels') WHERE name = 'human_only'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_human_only {
             conn.execute_batch("ALTER TABLE labels ADD COLUMN human_only INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // 旧数据库的标签都不是优先
+        let has_priority: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('labels') WHERE name = 'priority'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_priority {
+            conn.execute_batch("ALTER TABLE labels ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -668,12 +676,12 @@ fn resolve(conn: &Connection, raw: &str) -> Result<BoardRef> {
 
 fn labels_of(conn: &Connection, project: &str) -> Result<Vec<Label>> {
     let mut st = conn.prepare(
-        "SELECT l.id, l.name, l.color, (SELECT COUNT(*) FROM card_labels cl WHERE cl.label = l.id), l.human_only
+        "SELECT l.id, l.name, l.color, (SELECT COUNT(*) FROM card_labels cl WHERE cl.label = l.id), l.human_only, l.priority
          FROM labels l WHERE l.project = ?1 ORDER BY l.sort, l.id",
     )?;
     let out = st
         .query_map([project], |r| {
-            Ok(Label { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, uses: r.get(3)?, human_only: r.get(4)? })
+            Ok(Label { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, uses: r.get(3)?, human_only: r.get(4)?, priority: r.get(5)? })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(out)
@@ -1089,7 +1097,7 @@ impl<'a> W<'a> {
             params![project, name, color, max_sort.unwrap_or(-1) + 1, human_only],
         )?;
         self.changed = true;
-        Ok(Label { id: self.tx.last_insert_rowid(), name, color, uses: 0, human_only })
+        Ok(Label { id: self.tx.last_insert_rowid(), name, color, uses: 0, human_only, priority: false })
     }
 
     pub fn update_label(
@@ -1099,6 +1107,7 @@ impl<'a> W<'a> {
         name: Option<&str>,
         color: Option<&str>,
         human_only: Option<bool>,
+        priority: Option<bool>,
     ) -> Result<()> {
         self.label_exists(project, id)?;
         if let Some(n) = name {
@@ -1120,6 +1129,9 @@ impl<'a> W<'a> {
         }
         if let Some(h) = human_only {
             self.tx.execute("UPDATE labels SET human_only = ?1 WHERE id = ?2", params![h, id])?;
+        }
+        if let Some(v) = priority {
+            self.tx.execute("UPDATE labels SET priority = ?1 WHERE id = ?2", params![v, id])?;
         }
         self.changed = true;
         Ok(())
