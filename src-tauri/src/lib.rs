@@ -283,7 +283,8 @@ pub fn run() {
             remember_theme,
             host::host_status,
             host::host_save,
-            host::host_enable
+            host::host_enable,
+            host::pick_folder
         ])
         .setup(|app| {
             let handle = app.handle();

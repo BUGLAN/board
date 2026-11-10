@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import {
-  boardCli, canHost, canSetEnv, enableLocalHost, getTheme, isMac, isWindows, localHost, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
+  boardCli, canHost, canSetEnv, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
   shellVersion, type Density, type LocalHost, type Motion, type ThemePref,
 } from '../lib/platform';
 import { hostsOf } from '../lib/hosts';
@@ -337,6 +337,10 @@ function LocalHostCard() {
   const [dirs, setDirs] = useState<Dir[]>([]);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** 外壳不支持选择文件夹（旧版桌面端）：点过一次后不再显示按钮 */
+  const [noPick, setNoPick] = useState(false);
+  /** 正在弹文件夹选择框的那一行 */
+  const [picking, setPicking] = useState<number | null>(null);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
@@ -366,6 +370,22 @@ function LocalHostCard() {
   const edit = (f: (d: Dir[]) => Dir[]) => {
     setDirs(f);
     setDirty(true);
+  };
+
+  // 弹系统的文件夹选择框，选中后填进这一行；取消保持原值
+  const pick = async (i: number) => {
+    setPicking(i);
+    try {
+      const p = await pickFolder(dirs[i]?.path ?? '');
+      if (p) edit(v => v.map((x, j) => (j === i ? { ...x, path: p } : x)));
+    } catch (e) {
+      if (e === 'unsupported') {
+        setNoPick(true);
+        toast({ type: 'info', title: '这个版本的桌面端不支持选择文件夹', text: '升级桌面端后再用；现在可以直接在输入框里填目录' });
+      } else toast({ type: 'error', title: '没有打开文件夹选择框', text: String(e) });
+    } finally {
+      setPicking(null);
+    }
   };
 
   const save = async () => {
@@ -479,6 +499,18 @@ function LocalHostCard() {
                   onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
                   aria-label="目录"
                 />
+                {!noPick && (
+                  <button
+                    className={cx('icon-btn sm', picking === i && 'is-busy')}
+                    type="button"
+                    aria-label="选择文件夹"
+                    title="选择文件夹"
+                    disabled={picking !== null}
+                    onClick={() => void pick(i)}
+                  >
+                    <Icon name="folder" />
+                  </button>
+                )}
                 <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => edit(v => v.filter((_, j) => j !== i))}>
                   <Icon name="close" />
                 </button>

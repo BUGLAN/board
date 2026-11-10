@@ -409,6 +409,26 @@ pub async fn host_enable(app: AppHandle, on: bool) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// 「白板与目录」选择文件夹：弹系统的文件夹选择框，从这一行现在的目录开始（存在时，`~` 按家目录展开）。
+/// 返回选中的目录；取消时返回 None。只取路径、不写配置：保存仍走 host_save（目录有变化时弹确认框）
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle, start: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dlg = app.dialog().file().set_title("选择这块白板的代码仓库");
+        let start = config::expand(start.trim());
+        if start.is_dir() {
+            dlg = dlg.set_directory(start);
+        }
+        match dlg.blocking_pick_folder() {
+            None => Ok(None),
+            Some(p) => p.into_path().map(|p| Some(p.to_string_lossy().into_owned())).map_err(|e| e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -200,3 +200,15 @@ export async function enableLocalHost(on: boolean): Promise<void> {
     throw String(e);
   }
 }
+
+/** 弹系统的文件夹选择框（「白板与目录」），从 start 开始；返回选中的目录，取消时返回 null。
+    外壳不支持（旧版桌面端）时抛出 'unsupported'，其他失败抛出原因文字 */
+export async function pickFolder(start: string): Promise<string | null> {
+  try {
+    return (await invoke<string | null>('pick_folder', { start })) ?? null;
+  } catch (e) {
+    const msg = String(e);
+    if (/not found|not allowed|unknown/i.test(msg)) throw 'unsupported';
+    throw msg;
+  }
+}
