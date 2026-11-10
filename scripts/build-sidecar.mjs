@@ -6,6 +6,8 @@
    Tauri 只认带目标三元组的文件名（board-<triple>.exe），这里负责编译和改名。
 
    npm run desktop:build 之前自动跑；桌面端开发（desktop:dev）跑 --debug。
+   macOS 通用包（tauri build --target universal-apple-darwin，发版工作流用）：分别编 arm64 和 x64，
+   再用 lipo 合成 board-universal-apple-darwin；两个单架构的文件也留着（Tauri 编各架构时的构建脚本要找它们）。
    ========================================================================== */
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync } from 'node:fs';
@@ -14,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const debug = process.argv.includes('--debug');
-const exe = process.platform === 'win32' ? '.exe' : '';
 
 /** rustc 自带的目标三元组（x86_64-pc-windows-msvc、aarch64-apple-darwin 等） */
 function hostTriple() {
@@ -72,16 +73,30 @@ throw "仍有进程占用 target\\debug\\board.exe：" + (($left | ForEach-Objec
 
 stopStaleDevProcesses();
 
-const args = ['build', '-p', 'board-cli'];
-if (!debug) args.push('--release');
-if (triple !== host) args.push('--target', triple);
-execFileSync('cargo', args, { cwd: root, stdio: 'inherit' });
-
-// 本机编译时产物在 target/<profile>，交叉编译时在 target/<triple>/<profile>
 const profile = debug ? 'debug' : 'release';
-const out = join(root, 'target', triple === host ? '' : triple, profile, 'board' + exe);
 const destDir = join(root, 'src-tauri', 'binaries');
-const dest = join(destDir, `board-${triple}${exe}`);
 mkdirSync(destDir, { recursive: true });
-copyFileSync(out, dest);
+
+/** 编一个平台的 board，放成 board-<triple>，返回放到的路径 */
+function build(t) {
+  const args = ['build', '-p', 'board-cli'];
+  if (!debug) args.push('--release');
+  if (t !== host) args.push('--target', t);
+  execFileSync('cargo', args, { cwd: root, stdio: 'inherit' });
+  // 本机编译时产物在 target/<profile>，交叉编译时在 target/<triple>/<profile>
+  const ext = t.includes('windows') ? '.exe' : '';
+  const out = join(root, 'target', t === host ? '' : t, profile, 'board' + ext);
+  const dest = join(destDir, `board-${t}${ext}`);
+  copyFileSync(out, dest);
+  return dest;
+}
+
+let dest;
+if (triple === 'universal-apple-darwin') {
+  const parts = ['aarch64-apple-darwin', 'x86_64-apple-darwin'].map(build);
+  dest = join(destDir, `board-${triple}`);
+  execFileSync('lipo', ['-create', '-output', dest, ...parts], { stdio: 'inherit' });
+} else {
+  dest = build(triple);
+}
 console.log(`✓ board 命令行已就绪：${dest}`);

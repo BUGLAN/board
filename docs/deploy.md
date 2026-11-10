@@ -225,7 +225,7 @@ npm run release -- 0.1.1 --push      # 发版并推送
 4. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
 5. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令
 
-tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。tag 只管服务端部署，桌面端和 CLI 的发版不在这里。
+tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，部署成功后一起附到 GitHub Release（见「自动部署」「桌面端安装包」）。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
@@ -242,7 +242,7 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 | 触发 | 做什么 |
 |---|---|
 | 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试（`cargo test -p board-cli --test heartbeat`）。不构建镜像、不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
-| 推 `v*` tag | build → deploy；skill（和它们同时跑）→ release，见下图 |
+| 推 `v*` tag | build → deploy；skill、desktop（和它们同时跑）→ release，见下图 |
 | 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 
 ```
@@ -254,10 +254,15 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
                                      → 核对线上 /api/health：version 是 tag 的版本号，commit 是 tag 指向的提交
 skill（GitHub 托管的 macos-latest）：node scripts/build-skill-bin.mjs --zip，编 macOS（arm64、x64）、Linux（x64、arm64，musl）、
                                      Windows（x64）的 board，放进 skill 的 bin/，打包成 board-skills.zip
-release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip（部署成功、skill 打包成功后）
+desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑）：核对 tag 和 tauri.conf.json 的版本号
+                                     → npm ci → 编安装包自带的 board → tauri build → 核对安装包里的 board --version
+                                     macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe 和 .msi
+release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip 和桌面端安装包
+         （部署成功、skill 打包成功、两个平台的安装包都构建成功后）
 ```
 
 - tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：build 第一步失败，不推镜像、不部署
+- 桌面端安装包任一平台构建失败：不建 Release（不留缺附件的 Release），服务端照常构建、部署；修好后再发一个版本
 - PR、其他分支不触发
 - 同一时间只有一次部署，后来的排队
 - `cargo test` 失败时不推镜像、不部署
@@ -265,6 +270,21 @@ release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 boar
 - 服务器不编译：只拉镜像、运行；服务器上 `docker-compose.yml` 和 `deploy/backup.sh`、`deploy/remote-deploy.sh` 由工作流拷过去
 - 拉镜像用本次任务的 `GITHUB_TOKEN`（经 stdin 传给 `docker login`），拉完立刻 `docker logout`，服务器上不留 GHCR 凭据
 - 清理：GHCR 上只保留最新 5 个版本；服务器上只留当前和上一个 `ghcr.io/buglan/board-server` 镜像
+
+### 桌面端安装包
+
+GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workflows/deploy.yml` 的 desktop 任务）：
+
+| 文件 | 平台 |
+|---|---|
+| `Board_<版本>_universal.dmg` | macOS（Apple Silicon 和 Intel 通用） |
+| `Board_<版本>_x64-setup.exe` | Windows x64，NSIS 安装包（推荐） |
+| `Board_<版本>_x64_en-US.msi` | Windows x64，MSI 安装包 |
+| `board-skills.zip` | skill，`bin/` 里带各平台的 `board` |
+
+- 安装包里有界面和自带的 `board` 命令行（Windows 安装时写进 PATH；macOS 在 `Board.app/Contents/MacOS/board`），装好后 `board --version` 打印版本号。
+- 没有签名和公证：macOS 只做了 ad-hoc 签名，第一次打开会被拦下，到「系统设置 → 隐私与安全性」里点「仍要打开」（或 `xattr -dr com.apple.quarantine /Applications/Board.app`）；Windows 上 SmartScreen 提示时点「更多信息 → 仍要运行」。
+- 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）。
 
 ### 一次性配置
 

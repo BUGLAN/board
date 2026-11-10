@@ -26,7 +26,7 @@ const VALUE_FLAGS: [&str; 15] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent",
 ];
-const BOOL_FLAGS: [&str; 7] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel"];
+const BOOL_FLAGS: [&str; 9] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
 const COMMANDS: [(&str, &str, &str); 23] = [
@@ -174,6 +174,11 @@ impl Args {
 fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     let a = Args::parse(tokens)?;
     let json = a.flag("--json");
+    // 版本号（发版附件里的安装包、skill 自带的 board 都能这样核对）
+    if a.flag("--version") || a.flag("-V") {
+        let v = env!("CARGO_PKG_VERSION");
+        return Ok(if json { Output::Json(json!({ "version": v })) } else { Output::Text(format!("board {v}")) });
+    }
     let sub = a.pos.first().map(|s| s.as_str());
     let sub = match sub {
         None => return Ok(Output::Text(help(p))),
@@ -1033,6 +1038,7 @@ fn help(p: &Paint) -> String {
             config::shown()
         ),
         format!("  {}所有命令都支持 --json；被拒绝时退出码为 1，并给出错误码", p.dim("输出：")),
+        format!("  {}board --version", p.dim("版本：")),
         format!("  {}{}", p.dim("数据："), Backend::describe()),
         String::new(),
     ]);
@@ -1215,6 +1221,22 @@ mod tests {
         let h = help(&Paint { on: false });
         for (cmd, _, _) in COMMANDS {
             assert!(h.contains(&format!("board {cmd}")), "help 里没有 {cmd}");
+        }
+    }
+
+    #[test]
+    fn version_flag_prints_cargo_version() {
+        let p = Paint { on: false };
+        let v = env!("CARGO_PKG_VERSION");
+        for flag in ["--version", "-V"] {
+            match run(&[flag.to_string()], &p) {
+                Ok(Output::Text(t)) => assert_eq!(t, format!("board {v}")),
+                _ => panic!("{flag} 应该打印版本号"),
+            }
+        }
+        match run(&["--version".to_string(), "--json".to_string()], &p) {
+            Ok(Output::Json(j)) => assert_eq!(j["version"], v),
+            _ => panic!("--version --json 应该输出 JSON"),
         }
     }
 }
