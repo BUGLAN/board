@@ -962,3 +962,182 @@ fn two_sessions_never_take_the_same_card() {
     uniq.dedup();
     assert_eq!(uniq.len(), seen.len(), "{seen:?}");
 }
+
+/* ---------------- 领取规则：按标签筛卡片、按标签选 agent ---------------- */
+
+/// 一台找到了 claude、dsh 的机器
+fn report_cd(instance: &str) -> HostReport {
+    let mut r = report("mbp", instance, vec![]);
+    r.agents = vec![claude(true), HostAgent { id: "dsh".into(), name: "DeepSeek Harness".into(), version: "1.0".into(), found: true, ..Default::default() }];
+    r
+}
+
+fn rule(label: &str, agent: &str) -> ClaimRule {
+    ClaimRule { label: label.into(), agent: agent.into(), active: false }
+}
+
+fn rules(s: &mut Store, list: &[(&str, &str)], fallback: Option<&str>) -> Result<HostInfo> {
+    set_host(
+        s,
+        HostPatch {
+            rules: Some(list.iter().map(|(l, a)| rule(l, a)).collect()),
+            fallback: Some(fallback.unwrap_or("").into()),
+            ..Default::default()
+        },
+    )
+}
+
+/// 一轮领取能派发的全部（同时跑 8 个，派发完为止）：（卡片，agent）
+fn round_all(s: &mut Store, at: i64) -> Vec<(i64, String)> {
+    set_host(s, HostPatch { max: Some(8), ..Default::default() }).unwrap();
+    s.write(at, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let mut out = vec![];
+    while let Some(d) = pull(s, at) {
+        out.push((d.card, d.agent.clone()));
+    }
+    out
+}
+
+#[test]
+fn rules_pick_cards_and_agents() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    let lc = label(&mut s, "claude");
+    let ld = label(&mut s, "deepseek");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    let d = new_card(&mut s, T0, "D");
+    tag(&mut s, d, ld);
+    let none = new_card(&mut s, T0, "无标签");
+    // 规则 claude → claude：只派带 claude 的那张，另外两张留在待办，这一轮结束
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".to_string())]);
+    assert!(!host(&s, T0 + S).round, "没有匹配的卡片：这一轮结束");
+    assert_eq!(card(&s, d).card.column, "todo");
+    assert_eq!(card(&s, none).card.column, "todo");
+}
+
+#[test]
+fn rules_route_labels_to_agents_and_fallback() {
+    // 规则 claude → claude、deepseek → dsh：分别由对应的 agent 做
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    let lc = label(&mut s, "Claude");
+    let ld = label(&mut s, "deepseek");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    let d = new_card(&mut s, T0, "D");
+    tag(&mut s, d, ld);
+    let none = new_card(&mut s, T0, "无标签");
+    // 标签名大小写不同也能匹配
+    rules(&mut s, &[("CLAUDE", "claude"), ("deepseek", "dsh")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into()), (d, "dsh".into())]);
+
+    // 规则 claude → claude，兜底 dsh：不带标签的、带 deepseek 的由 dsh 做；先后仍按领取顺序
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    let lc = label(&mut s, "claude");
+    let ld = label(&mut s, "deepseek");
+    let n1 = new_card(&mut s, T0, "无标签");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    let d = new_card(&mut s, T0, "D");
+    tag(&mut s, d, ld);
+    rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(n1, "dsh".into()), (c, "claude".into()), (d, "dsh".into())]);
+    let _ = none;
+}
+
+#[test]
+fn rules_first_match_wins_and_missing_labels_are_fine() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    let lc = label(&mut s, "claude");
+    let ld = label(&mut s, "deepseek");
+    let both = new_card(&mut s, T0, "两个都带");
+    tag(&mut s, both, ld);
+    tag(&mut s, both, lc);
+    // 一张卡片同时带两条规则的标签：用排在前面的那条
+    rules(&mut s, &[("claude", "claude"), ("deepseek", "dsh")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(both, "claude".into())]);
+    // 项目里没有同名标签：不报错，只是匹配不到
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    new_card(&mut s, T0, "A");
+    rules(&mut s, &[("没有这个标签", "claude")], None).unwrap();
+    assert!(round_all(&mut s, T0 + S).is_empty());
+}
+
+#[test]
+fn rules_count_unmatched_cards() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    let lc = label(&mut s, "claude");
+    let a = new_card(&mut s, T0, "A");
+    new_card(&mut s, T0, "B");
+    assert_eq!(host(&s, T0).unmatched, 0, "没有规则时不显示");
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    assert_eq!(host(&s, T0).unmatched, 2);
+    tag(&mut s, a, lc);
+    assert_eq!(host(&s, T0).unmatched, 1);
+    let ws = s.read(|r| r.hosts(T0)).unwrap();
+    assert_eq!(ws[0].unmatched, 1, "工作区里的机器也带上");
+    rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
+    assert_eq!(host(&s, T0).unmatched, 0, "设了兜底后不再显示");
+}
+
+#[test]
+fn rules_agent_must_exist_and_missing_agent_disables_rule() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    // 这台机器上没有 pi：拒绝
+    assert_eq!(rules(&mut s, &[("claude", "pi")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(rules(&mut s, &[], Some("pi")).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(rules(&mut s, &[("a", "claude"), ("A", "dsh")], None).unwrap_err().code, ErrorCode::Usage, "同一个标签写两次");
+    let ld = label(&mut s, "deepseek");
+    let d = new_card(&mut s, T0, "D");
+    tag(&mut s, d, ld);
+    let info = rules(&mut s, &[("deepseek", "dsh")], Some("claude")).unwrap();
+    assert!(info.rules[0].active && info.fallback_active);
+    // dsh 之后找不到了：这条规则不生效，界面上标出来；带 deepseek 的卡片也不归兜底
+    beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
+    let h = host(&s, T0 + S);
+    assert!(!h.rules[0].active);
+    assert!(round_all(&mut s, T0 + 2 * S).is_empty());
+    // 原样保存（agent 找不到了）照样可以，不会把规则弄丢
+    assert!(rules(&mut s, &[("deepseek", "dsh")], Some("claude")).is_ok());
+    // 手动派发不受规则影响
+    assert_eq!(dispatch(&mut s, T0 + 3 * S, d, "mbp", Some("claude")).unwrap().agent, "claude");
+}
+
+/// 会话里 board next 只领按规则属于这个会话的 agent 的卡片；规则用到的标签不算共同标签
+#[test]
+fn next_follows_rules() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    let lc = label(&mut s, "claude");
+    let ld = label(&mut s, "deepseek");
+    let ui = label(&mut s, "UI");
+    let first = new_card(&mut s, T0, "第一张");
+    tag(&mut s, first, lc);
+    tag(&mut s, first, ui);
+    let other = new_card(&mut s, T0, "给 dsh");
+    tag(&mut s, other, ld);
+    let x = new_card(&mut s, T0, "X");
+    tag(&mut s, x, lc);
+    let y = new_card(&mut s, T0, "Y");
+    tag(&mut s, y, lc);
+    tag(&mut s, y, ui);
+    rules(&mut s, &[("claude", "claude"), ("deepseek", "dsh")], None).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + S).unwrap();
+    assert_eq!((d.card, d.agent.as_str()), (first, "claude"));
+    let name = d.name.unwrap();
+    submit(&mut s, T0 + 2 * S, &name, first);
+    // X 只带 claude（规则标签不算共同标签），Y 带 claude、UI：领 Y；给 dsh 的那张不会领到
+    assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap().card.id, y);
+    submit(&mut s, T0 + 3 * S, &name, y);
+    assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, x);
+    submit(&mut s, T0 + 4 * S, &name, x);
+    assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone, "只剩给 dsh 的卡片");
+}

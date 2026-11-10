@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   dirs     TEXT NOT NULL DEFAULT '[]',-- 白板与目录（JSON，按 --dir 的顺序）
   max      INTEGER NOT NULL DEFAULT 1,-- 同时跑几个
   per_session INTEGER NOT NULL DEFAULT 4,-- 定时领取启动的会话一个最多做几张（board next）
+  rules    TEXT NOT NULL DEFAULT '[]',-- 定时领取的领取规则（JSON，有顺序：[{"label": "claude", "agent": "claude"}]）
+  fallback TEXT,                      -- 兜底：不带任何规则标签的卡片由这个 agent 做；空表示不领这些卡片
   paused   INTEGER NOT NULL DEFAULT 0,-- 暂停接单
   agent    TEXT,                      -- 默认 agent；空表示本机 agent 里第一个找到的
   cron_on  INTEGER NOT NULL DEFAULT 0,-- 定时领取开关
@@ -100,6 +102,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "env", "TEXT"),
         ("dispatches", "env_name", "TEXT"),
         ("hosts", "per_session", "INTEGER NOT NULL DEFAULT 4"),
+        ("hosts", "rules", "TEXT NOT NULL DEFAULT '[]'"),
+        ("hosts", "fallback", "TEXT"),
         ("dispatches", "session", "INTEGER"),
     ] {
         if !has(table, col)? {
@@ -115,6 +119,8 @@ pub const HOST_NAME_MAX: usize = 24;
 pub const HOST_MAX_LIMIT: i64 = 8;
 /// 一个会话最多做几张的上限（1–8，默认 4）
 pub const PER_SESSION_LIMIT: i64 = 8;
+/// 领取规则最多几条
+pub const RULES_LIMIT: usize = 20;
 /// 每个派发保留的日志行数
 pub const LOG_KEEP: usize = 500;
 /// 机器多久没上报算离线：与 agent 相同，连续 5 次（50 秒）
@@ -244,6 +250,16 @@ pub struct HostDir {
     pub path: String,
 }
 
+/// 定时领取的一条领取规则：带这个标签（按名称，不区分大小写）的卡片由这个 agent 做
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimRule {
+    pub label: String,
+    pub agent: String,
+    /// 服务端发出去时才有：agent 在这台机器上找得到，规则生效
+    #[serde(default)]
+    pub active: bool,
+}
+
 /// 一台机器（界面「机器」页）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -263,6 +279,18 @@ pub struct HostInfo {
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
     #[serde(default = "default_per_session")]
     pub per_session: i64,
+    /// 定时领取的领取规则（有顺序）；没有规则时领所有可领取的卡片、用默认 agent
+    #[serde(default)]
+    pub rules: Vec<ClaimRule>,
+    /// 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片
+    #[serde(default)]
+    pub fallback: Option<String>,
+    /// 兜底的 agent 在这台机器上找得到
+    #[serde(default)]
+    pub fallback_active: bool,
+    /// 有规则、没设兜底时：这台机器有目录的白板上，可领取、没有匹配任何规则的卡片数
+    #[serde(default)]
+    pub unmatched: i64,
     /// 暂停接单
     pub paused: bool,
     /// 默认 agent：设置过且找到了就是它，否则是本机 agent 里第一个找到的；都没找到时为空
@@ -327,6 +355,12 @@ pub struct HostPatch {
     pub max: Option<i64>,
     #[serde(default)]
     pub per_session: Option<i64>,
+    /// 领取规则（整个列表替换）
+    #[serde(default)]
+    pub rules: Option<Vec<ClaimRule>>,
+    /// 兜底的 agent；空字符串表示取消兜底
+    #[serde(default)]
+    pub fallback: Option<String>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -429,6 +463,8 @@ struct HostRow {
     dirs: Vec<HostDir>,
     max: i64,
     per_session: i64,
+    rules: Vec<ClaimRule>,
+    fallback: Option<String>,
     paused: bool,
     agent: Option<String>,
     cron_on: bool,
@@ -444,7 +480,7 @@ struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -464,6 +500,8 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
         max: r.get(7)?,
         per_session: r.get(19)?,
+        rules: serde_json::from_str(&r.get::<_, String>(20)?).unwrap_or_default(),
+        fallback: r.get(21)?,
         paused: r.get::<_, i64>(8)? != 0,
         agent: r.get(9)?,
         cron_on: r.get::<_, i64>(10)? != 0,
@@ -514,6 +552,23 @@ impl HostRow {
     fn env_name(&self, id: &str) -> String {
         self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string())
     }
+    /// 这台机器上找得到这个 agent
+    fn has_agent(&self, id: &str) -> bool {
+        self.resolved().iter().any(|a| a.id == id && a.found)
+    }
+    /// 解析后的领取规则；没有规则、也没设兜底时为 None（领所有卡片、用默认 agent）
+    fn claim_rules(&self) -> Option<Rules> {
+        if self.rules.is_empty() && self.fallback.is_none() {
+            return None;
+        }
+        Some(Rules {
+            list: self.rules.iter().map(|r| (r.label.trim().to_lowercase(), r.agent.clone(), self.has_agent(&r.agent))).collect(),
+            fallback: self.fallback.clone().map(|a| {
+                let ok = self.has_agent(&a);
+                (a, ok)
+            }),
+        })
+    }
     /// 默认 agent：设置过且找到了就是它，否则第一个找到的
     fn default_agent(&self) -> Option<HostAgent> {
         let all = self.resolved();
@@ -531,6 +586,10 @@ impl HostRow {
             dirs: self.dirs.clone(),
             max: self.max,
             per_session: self.per_session,
+            rules: self.rules.iter().map(|x| ClaimRule { active: self.has_agent(&x.agent), ..x.clone() }).collect(),
+            fallback: self.fallback.clone(),
+            fallback_active: self.fallback.as_deref().is_some_and(|a| self.has_agent(a)),
+            unmatched: 0,
             paused: self.paused,
             agent: self.default_agent().map(|a| a.id.clone()),
             cron_on: self.cron_on,
@@ -576,6 +635,39 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
     })
 }
 
+/// 解析后的领取规则（任务下发：定时领取按标签筛卡片、按标签选 agent）
+struct Rules {
+    /// （标签名小写，agent，agent 在这台机器上找得到）
+    list: Vec<(String, String, bool)>,
+    /// 兜底的 agent，找得到
+    fallback: Option<(String, bool)>,
+}
+
+impl Rules {
+    /// 一张卡片（标签名小写）交给哪个 agent：第一条匹配上、生效的规则；不带任何一条规则（含不生效的）的标签时用兜底；
+    /// 都没有时不领它
+    fn agent_for(&self, labels: &[String]) -> Option<&str> {
+        if let Some((_, a, _)) = self.list.iter().find(|(l, _, ok)| *ok && labels.contains(l)) {
+            return Some(a);
+        }
+        if self.list.iter().any(|(l, _, _)| labels.contains(l)) {
+            return None;
+        }
+        self.fallback.as_ref().filter(|(_, ok)| *ok).map(|(a, _)| a.as_str())
+    }
+    /// 规则里用到的标签（小写）
+    fn labels(&self) -> Vec<String> {
+        self.list.iter().map(|(l, _, _)| l.clone()).collect()
+    }
+}
+
+/// 卡片的标签名（小写）
+fn card_label_names(conn: &rusqlite::Connection, b: i64, card: i64) -> Result<Vec<String>> {
+    let mut st = conn.prepare("SELECT lower(l.name) FROM card_labels cl JOIN labels l ON l.id = cl.label WHERE cl.board = ?1 AND cl.card = ?2")?;
+    let out = st.query_map(params![b, card], |r| r.get(0))?.collect::<std::result::Result<Vec<String>, _>>()?;
+    Ok(out)
+}
+
 fn no_such_host(name: &str) -> BoardError {
     BoardError::new(ErrorCode::NoSuchHost, format!("机器「{name}」不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器"))
         .with_detail(json!({ "host": name }))
@@ -590,11 +682,34 @@ impl<'a> R<'a> {
     pub fn hosts(&self, now: i64) -> Result<Vec<HostInfo>> {
         let mut st = self.conn.prepare(&format!("SELECT {HOST_COLS} FROM hosts ORDER BY name"))?;
         let rows = st.query_map([], host_row)?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows.iter().map(|h| h.info(now)).collect())
+        rows.iter().map(|h| self.host_info(h, now)).collect()
     }
 
     pub fn host(&self, name: &str, now: i64) -> Result<HostInfo> {
-        self.host_row(name)?.map(|h| h.info(now)).ok_or_else(|| no_such_host(name))
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        self.host_info(&h, now)
+    }
+
+    /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
+    fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
+        let mut info = h.info(now);
+        if let Some(rules) = h.claim_rules().filter(|r| r.fallback.is_none()) {
+            let all = rules.labels();
+            for dir in &h.dirs {
+                let Ok(board) = self.resolve(&dir.board) else { continue };
+                let flow = flow_of(self.conn, board.id)?;
+                for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
+                    let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND col = ?2")?;
+                    let ids = st.query_map(params![board.id, s.key], |r| r.get::<_, i64>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+                    for id in ids {
+                        if !card_label_names(self.conn, board.id, id)?.iter().any(|l| all.contains(l)) {
+                            info.unmatched += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(info)
     }
 
     fn dispatches(&self, tail: &str, p: impl rusqlite::Params) -> Result<Vec<Dispatch>> {
@@ -637,7 +752,7 @@ impl<'a> R<'a> {
         Ok(HostWork {
             running: self.dispatches("WHERE d.host = ?1 AND d.state = 'running' ORDER BY d.id", [name])?,
             queued: self.dispatches("WHERE d.host_id = ?1 AND d.state = 'queued' ORDER BY d.id", [h.id])?,
-            host: h.info(now),
+            host: self.host_info(&h, now)?,
             now,
         })
     }
@@ -820,20 +935,31 @@ impl<'a> W<'a> {
             |r| r.get(0),
         )?;
         let flow = flow_of(self.tx, d.board)?;
-        let list = self.claimable_order(d.board, &flow, &skip)?;
+        let mut list = self.claimable_order(d.board, &flow, &skip)?;
+        // 有领取规则：只留按规则交给这个会话的 agent 的卡片；规则里的标签只表示谁来做，不算「共同标签」
+        let rules = h.claim_rules();
+        if let Some(r) = &rules {
+            let mut keep = vec![];
+            for c in list {
+                if r.agent_for(&card_label_names(self.tx, d.board, c.0)?) == Some(d.agent.as_str()) {
+                    keep.push(c);
+                }
+            }
+            list = keep;
+        }
+        let rule_labels = rules.as_ref().map(Rules::labels).unwrap_or_default();
         if list.is_empty() {
-            return done(format!("白板 {} 上没有可领取的卡片", board.path()));
+            return done(format!("白板 {} 上没有这个会话能领的卡片", board.path()));
         }
         let urgent = self.priority_cards(d.board)?;
         let card = match list.iter().find(|(id, _)| urgent.contains(id)) {
             Some((id, _)) => *id,
             None => {
-                let mine: Vec<i64> =
-                    self.collect("SELECT label FROM card_labels WHERE board = ?1 AND card = ?2", params![d.board, first_card], |r| r.get(0))?;
+                let mine: Vec<String> =
+                    card_label_names(self.tx, d.board, first_card)?.into_iter().filter(|l| !rule_labels.contains(l)).collect();
                 let mut best = (0usize, list[0].0);
                 for (id, _) in &list {
-                    let theirs: Vec<i64> =
-                        self.collect("SELECT label FROM card_labels WHERE board = ?1 AND card = ?2", params![d.board, id], |r| r.get(0))?;
+                    let theirs = card_label_names(self.tx, d.board, *id)?;
                     let common = theirs.iter().filter(|l| mine.contains(l)).count();
                     if common > best.0 {
                         best = (common, *id);
@@ -1039,6 +1165,43 @@ impl<'a> W<'a> {
                 return Err(BoardError::usage(format!("一个会话最多做几张要在 1 到 {PER_SESSION_LIMIT} 之间")));
             }
             self.tx.execute("UPDATE hosts SET per_session = ?2 WHERE id = ?1", params![h.id, n])?;
+        }
+        if let Some(rules) = &p.rules {
+            if rules.len() > RULES_LIMIT {
+                return Err(BoardError::usage(format!("领取规则最多 {RULES_LIMIT} 条")));
+            }
+            let mut seen: Vec<String> = vec![];
+            let mut out: Vec<ClaimRule> = vec![];
+            for r in rules {
+                let label = r.label.trim().to_string();
+                if label.is_empty() {
+                    return Err(BoardError::usage("领取规则的标签不能为空"));
+                }
+                if seen.contains(&label.to_lowercase()) {
+                    return Err(BoardError::usage(format!("标签「{label}」在领取规则里写了两次")));
+                }
+                // 新加或改了 agent 的规则：agent 要在这台机器上找得到。原样保留的规则（agent 之后找不到了）不拦
+                let kept = h.rules.iter().any(|x| x.label.trim().eq_ignore_ascii_case(&label) && x.agent == r.agent);
+                if !kept && !h.has_agent(&r.agent) {
+                    return Err(BoardError::usage(format!("机器「{name}」上没有找到 agent「{}」，可选：{}", r.agent, found_list(&h))));
+                }
+                seen.push(label.to_lowercase());
+                out.push(ClaimRule { label, agent: r.agent.clone(), active: false });
+            }
+            let raw = serde_json::to_string(&out.iter().map(|r| json!({ "label": r.label, "agent": r.agent })).collect::<Vec<_>>())
+                .unwrap_or_else(|_| "[]".into());
+            self.tx.execute("UPDATE hosts SET rules = ?2 WHERE id = ?1", params![h.id, raw])?;
+        }
+        if let Some(f) = &p.fallback {
+            let f = f.trim();
+            if f.is_empty() {
+                self.tx.execute("UPDATE hosts SET fallback = NULL WHERE id = ?1", [h.id])?;
+            } else {
+                if h.fallback.as_deref() != Some(f) && !h.has_agent(f) {
+                    return Err(BoardError::usage(format!("机器「{name}」上没有找到 agent「{f}」，可选：{}", found_list(&h))));
+                }
+                self.tx.execute("UPDATE hosts SET fallback = ?2 WHERE id = ?1", params![h.id, f])?;
+            }
         }
         if let Some(paused) = p.paused {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;
@@ -1354,9 +1517,31 @@ impl<'a> W<'a> {
                 params![board.id, h.id, round_at],
                 |r| r.get(0),
             )?;
-            let Some((card, _)) = self.next_claimable(board.id, &flow, &skip)? else { continue };
+            // 有领取规则：按规则 1 的先后（带优先标签的在前），取第一张有 agent 接的卡片；没有规则：规则 1、默认 agent
+            let (card, agent) = match h.claim_rules() {
+                None => match self.next_claimable(board.id, &flow, &skip)? {
+                    Some((card, _)) => (card, a.clone()),
+                    None => continue,
+                },
+                Some(rules) => {
+                    let list = self.claimable_order(board.id, &flow, &skip)?;
+                    let urgent = self.priority_cards(board.id)?;
+                    let ordered = list.iter().filter(|(id, _)| urgent.contains(id)).chain(list.iter().filter(|(id, _)| !urgent.contains(id)));
+                    let mut hit = None;
+                    for (id, _) in ordered {
+                        if let Some(agent) = rules.agent_for(&card_label_names(self.tx, board.id, *id)?) {
+                            hit = h.resolved().into_iter().find(|x| x.id == agent).map(|x| (*id, x));
+                            break;
+                        }
+                    }
+                    match hit {
+                        Some(x) => x,
+                        None => continue,
+                    }
+                }
+            };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
-            let d = self.insert_dispatch(board.id, card, &h, &a.id, &a.name, "cron", &Actor::system())?;
+            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system())?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
                 return Ok(Some(d));

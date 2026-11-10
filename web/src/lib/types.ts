@@ -152,6 +152,13 @@ export interface HostInfo {
   max: number;
   /** 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
+  /** 定时领取的领取规则（有顺序）：带这个标签的卡片由这个 agent 做；没有规则时领所有卡片、用默认 agent */
+  rules?: ClaimRule[];
+  /** 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片 */
+  fallback?: string | null;
+  fallbackActive?: boolean;
+  /** 有规则、没设兜底时：可领取、没有匹配任何规则的卡片数 */
+  unmatched?: number;
   paused: boolean;
   /** 默认 agent（设置过且找到了就是它，否则第一个找到的） */
   agent: string | null;
@@ -169,6 +176,14 @@ export interface HostInfo {
 export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'canceled' | 'lost' | 'unclaimed';
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */
+/** 一条领取规则 */
+export interface ClaimRule {
+  label: string;
+  agent: string;
+  /** agent 在这台机器上找得到（服务端算）；找不到时这条规则不生效 */
+  active?: boolean;
+}
+
 export interface Dispatch {
   id: number;
   board: string;

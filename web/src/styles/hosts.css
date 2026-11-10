@@ -112,6 +112,21 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
 .hp-rule > div > b { display: block; font-size: 13.5px; font-weight: 500; }
 .hp-rule > div > span { display: block; font-size: 12px; color: var(--text-3); line-height: 1.5; }
 .hp-rule .toggle { flex: none; }
+/* 领取规则（标签 → agent） */
+.hp-crules { padding: 11px 0; border-top: 1px solid var(--line); }
+.hp-rule-text b { display: block; font-size: 13.5px; font-weight: 500; }
+.hp-rule-text span { display: block; font-size: 12px; color: var(--text-3); line-height: 1.5; margin-bottom: 8px; }
+.hp-crule { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0; }
+.hp-crule > svg { width: 13px; height: 13px; color: var(--text-3); flex: none; }
+.hp-crule-label { display: inline-flex; align-items: center; gap: 4px; min-width: 72px; font-size: 13px; font-weight: 500; }
+.hp-crule-label svg { width: 12px; height: 12px; color: var(--text-3); }
+.hp-crule .input { width: auto; height: 30px; padding: 0 8px; font-size: 12.5px; }
+.hp-crule-input { width: 120px !important; }
+.hp-crule.off .hp-crule-label { color: var(--text-3); text-decoration: line-through; }
+.hp-crule-warn { flex-basis: 100%; font-style: normal; font-size: 12px; color: var(--warn-text); }
+.hp-crule.fallback .hp-crule-label { color: var(--text-2); }
+.hp-unmatched { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--warn-text); }
+.hp-unmatched svg { width: 14px; height: 14px; flex: none; }
 .hp-cron { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 0 12px; }
 .hp-cron.off .hp-time { opacity: .5; }
 .hp-time {

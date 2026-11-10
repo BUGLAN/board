@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, skillMiss, SOURCE } from '../../lib/hosts';
 import { shell } from '../../lib/platform';
-import type { Dispatch, HostAgent, HostInfo } from '../../lib/types';
+import type { ClaimRule, Dispatch, HostAgent, HostInfo } from '../../lib/types';
 import { copyText, cx, durWords } from '../../lib/util';
 import { hostKey, optimistic, useBusy, useData } from '../../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../../store/ui';
@@ -238,6 +238,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 {h.round ? '正在领' : '领一轮'}
               </button>
             </div>
+            {h.rules != null && <ClaimRules h={h} patch={patch} busy={busy} />}
           </section>
 
           <section className="d-section" style={{ ['--i' as string]: 3 }}>
@@ -409,6 +410,139 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
         </p>
       )}
     </>
+  );
+}
+
+/** 领取规则：标签 → agent，有顺序（第一条匹配的生效），最后可选兜底。只影响定时领取，手动派发、board claim 不受影响 */
+function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean }) {
+  const ws = useData(s => s.ws);
+  const rules = h.rules ?? [];
+  const found = h.agents.filter(a => a.found);
+  const agentName = (id: string) => h.agents.find(a => a.id === id)?.name ?? id;
+  // 这台机器有目录的项目里的标签，给输入框做提示（规则按名称匹配，别的名字也可以写）
+  const names = useMemo(
+    () => [...new Set((ws?.projects ?? []).filter(p => h.dirs.some(d => d.board.startsWith(`${p.key}/`))).flatMap(p => p.labels.map(l => l.name)))],
+    [ws, h.dirs],
+  );
+  const [label, setLabel] = useState('');
+  const [agent, setAgent] = useState('');
+  const pick = agent || found[0]?.id || '';
+  const has = (a: string) => found.some(x => x.id === a);
+  const save = (next: ClaimRule[]) => patch({ rules: next.map(r => ({ label: r.label, agent: r.agent, active: has(r.agent) })) });
+  const move = (i: number, d: number) => {
+    const next = [...rules];
+    const [r] = next.splice(i, 1);
+    next.splice(i + d, 0, r);
+    void save(next);
+  };
+  const add = () => {
+    const l = label.trim();
+    if (!l || !pick || busy) return;
+    if (rules.some(r => r.label.toLowerCase() === l.toLowerCase())) {
+      toast({ type: 'error', title: `标签「${l}」已经有规则了` });
+      return;
+    }
+    void save([...rules, { label: l, agent: pick }]);
+    setLabel('');
+  };
+  const fallback = h.fallback || '';
+  return (
+    <div className="hp-crules">
+      <div className="hp-rule-text">
+        <b>领取规则</b>
+        <span>定时领取只领带这些标签的卡片，交给对应的 agent；从上到下，第一条匹配的生效。没有规则时领所有可领取的卡片、用默认 agent。手动派发不受影响</span>
+      </div>
+      {rules.map((r, i) => (
+        <div className={cx('hp-crule', !r.active && 'off')} key={r.label}>
+          <span className="hp-crule-label" title="标签（按名称匹配，不区分大小写）">
+            <Icon name="tag" />
+            {r.label}
+          </span>
+          <Icon name="chevRight" />
+          <select
+            className="input hp-crule-agent"
+            value={r.agent}
+            disabled={busy}
+            aria-label={`带「${r.label}」的卡片由哪个 agent 做`}
+            onChange={e => save(rules.map((x, j) => (j === i ? { ...x, agent: e.target.value } : x)))}
+          >
+            {!has(r.agent) && <option value={r.agent}>{agentName(r.agent)}（找不到）</option>}
+            {found.map(a => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          <span className="hp-sp" />
+          <button type="button" className="icon-btn sm" aria-label="上移" disabled={busy || i === 0} onClick={() => move(i, -1)}>
+            <Icon name="chevUp" />
+          </button>
+          <button type="button" className="icon-btn sm" aria-label="下移" disabled={busy || i === rules.length - 1} onClick={() => move(i, 1)}>
+            <Icon name="chevDown" />
+          </button>
+          <button type="button" className="icon-btn sm" aria-label={`删除「${r.label}」这条规则`} disabled={busy} onClick={() => save(rules.filter((_, j) => j !== i))}>
+            <Icon name="trash" />
+          </button>
+          {!r.active && <em className="hp-crule-warn">这台机器上找不到 {agentName(r.agent)}，这条规则不生效</em>}
+        </div>
+      ))}
+      <div className="hp-crule add">
+        <input
+          className="input hp-crule-input"
+          list={`labels-${h.id}`}
+          placeholder="标签名"
+          value={label}
+          maxLength={24}
+          aria-label="新规则的标签"
+          onChange={e => setLabel(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && add()}
+        />
+        <datalist id={`labels-${h.id}`}>
+          {names.map(n => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
+        <Icon name="chevRight" />
+        <select className="input hp-crule-agent" value={pick} aria-label="新规则的 agent" onChange={e => setAgent(e.target.value)}>
+          {found.map(a => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <button className="btn sm" type="button" disabled={busy || !label.trim() || !pick} onClick={add}>
+          <Icon name="plus" />
+          加规则
+        </button>
+      </div>
+      {(rules.length > 0 || fallback) && (
+        <div className={cx('hp-crule fallback', fallback && h.fallbackActive === false && 'off')}>
+          <span className="hp-crule-label">其余卡片</span>
+          <Icon name="chevRight" />
+          <select
+            className="input hp-crule-agent"
+            value={fallback}
+            disabled={busy}
+            aria-label="不带任何规则标签的卡片由哪个 agent 做"
+            onChange={e => patch({ fallback: e.target.value })}
+          >
+            <option value="">不领</option>
+            {fallback && !has(fallback) && <option value={fallback}>{agentName(fallback)}（找不到）</option>}
+            {found.map(a => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          {fallback && h.fallbackActive === false && <em className="hp-crule-warn">这台机器上找不到 {agentName(fallback)}，兜底不生效</em>}
+        </div>
+      )}
+      {!!h.unmatched && !fallback && (
+        <p className="hp-unmatched">
+          <Icon name="info" />有 {h.unmatched} 张可领取的卡片没有匹配任何规则
+        </p>
+      )}
+    </div>
   );
 }
 

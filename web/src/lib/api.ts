@@ -4,9 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type {
-  Attachment, Status, Tile, BoardEvent, BoardSnapshot, CardDetail, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, ServerInfo, TokenInfo, Workspace,
-} from './types';
+import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, ServerInfo, Status, Tile, TokenInfo, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -180,7 +178,7 @@ export const api = {
   /** 修改机器设置：同时跑几个、暂停接单、默认 agent、定时领取 */
   updateHost: (
     name: string,
-    patch: { max?: number; perSession?: number; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[]; env?: { agent: string; env: string } },
+    patch: { max?: number; perSession?: number; rules?: ClaimRule[]; fallback?: string; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[]; env?: { agent: string; env: string } },
   ) =>
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
   removeHost: (name: string) => req('DELETE', `/api/hosts/${q(name)}`),
