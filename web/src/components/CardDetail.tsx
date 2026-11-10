@@ -274,7 +274,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           {!!c.attachments?.length && <Attachments list={c.attachments} />}
           {/* 描述里引用了附件：附件列表多半不空，先占位 */}
           {loading && c.body.includes('/api/files/') && <AttachmentsSkeleton />}
-          {/* 底部操作栏：左边删除（危险操作和它的提示放一起），右边「移动到」（拖拽的快捷方式） */}
+          {/* 底部操作栏：左边删除（不可恢复写在二次确认框里），右边「移动到」（拖拽的快捷方式） */}
           <div className="d-actions">
             <button
               className="btn sm danger"
@@ -296,7 +296,6 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               <Icon name="trash" />
               删除卡片
             </button>
-            <span className="d-actions-hint">删除后无法恢复</span>
             <button
               className="btn sm d-move"
               type="button"

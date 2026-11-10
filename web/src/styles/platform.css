@@ -111,7 +111,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   /* 白板抽屉：桌面侧栏的白板部分 */
   .drawer.board-sheet { height: 80dvh; display: flex; flex-direction: column; }
   .drawer.board-sheet > .side-view { display: flex; flex: 1; min-height: 0; animation: none; }
-  /* 卡片详情底部「删除后无法恢复」：手机上放不下，删除时已有确认框 */
+  /* 底部操作栏的说明文字（机器详情「排队的取消，在跑的停止」）：手机上放不下 */
   .d-actions-hint { display: none; }
 
   .col-tabs {

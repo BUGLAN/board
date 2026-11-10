@@ -66,7 +66,7 @@ function Offline() {
   );
 }
 
-/** 在线的 agent（所有白板）：持卡的显示这一次的耗时，没持卡的是空闲。check 之后出现，离线后消失 */
+/** 在线的 agent（所有白板）：持卡的显示这一次的耗时，没持卡的只写「在线」。check 之后出现，离线后消失 */
 function Presence() {
   const agents = useData(s => s.ws?.agents);
   const path = useData(s => s.path);
@@ -81,7 +81,7 @@ function Presence() {
         const t = h ? timing(h, now) : null;
         const tip = h
           ? `${a.name} 正在做 ${a.cards.map(c => `${c.board}#${c.id}`).join('、')}${t && t.runs > 1 ? ` · 累计 ${clock(t.total)}（${t.runs} 次）` : ''}`
-          : `${a.name} 空闲`;
+          : `${a.name} 在线`;
         return (
           // 悬停时展开：头像右边滑出这一次的耗时
           <span
@@ -98,7 +98,7 @@ function Presence() {
           >
             <Avatar actor={agent(a.name)} />
             <i className="pres-pulse" />
-            <span className="pres-time">{!t ? '空闲' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
+            <span className="pres-time">{!t ? '在线' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
           </span>
         );
       })}
