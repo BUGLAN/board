@@ -399,7 +399,7 @@ pub struct Check {
 
 impl Check {
     pub fn report(&self) -> EnvCheck {
-        EnvCheck { env: self.env.clone(), found: self.found, version: self.version.clone() }
+        EnvCheck { env: self.env.clone(), found: self.found, version: self.version.clone(), no_skill: None }
     }
 }
 

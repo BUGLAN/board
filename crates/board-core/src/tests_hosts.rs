@@ -534,7 +534,7 @@ fn env(id: &str, name: &str) -> HostEnv {
 }
 
 fn check(env: &str, found: bool, version: &str) -> EnvCheck {
-    EnvCheck { env: env.into(), found, version: version.into() }
+    EnvCheck { env: env.into(), found, version: version.into(), no_skill: None }
 }
 
 /// 一台 Windows 机器：cmd、PowerShell 7、Git Bash、WSL（Ubuntu）。pi 不支持 cmd；WSL 里没装 pi
@@ -549,6 +549,7 @@ fn win_report(instance: &str) -> HostReport {
             found: true,
             envs: vec![check("git-bash", true, "1.5.0"), check("wsl:Ubuntu", false, ""), check("pwsh", true, "1.5.0")],
             env: None,
+            no_skill: None,
         },
         HostAgent {
             id: "claude".into(),
@@ -557,6 +558,7 @@ fn win_report(instance: &str) -> HostReport {
             found: true,
             envs: vec![check("pwsh", false, ""), check("git-bash", false, ""), check("wsl:Ubuntu", true, "2.5.0"), check("cmd", false, "")],
             env: None,
+            no_skill: None,
         },
     ];
     r
@@ -585,6 +587,27 @@ fn env_defaults_to_first_found_in_supported_order() {
     assert_eq!((d.env.as_deref(), d.env_name.as_deref()), (Some("git-bash"), Some("Git Bash")));
     let acts: Vec<String> = card(&s, a).activity.into_iter().map(|x| x.text).collect();
     assert!(acts.iter().any(|t| t.starts_with("派发开始：mbp 上的 pi（Git Bash）以 pi/mbp-1 领取")), "{acts:?}");
+}
+
+#[test]
+fn missing_skill_follows_the_env_in_use() {
+    let mut s = store();
+    // Git Bash 里看不到 board-skills，PowerShell 7 里看得到
+    let mut r = win_report("i1");
+    let pi = r.agents.iter_mut().find(|a| a.id == "pi").unwrap();
+    pi.no_skill = Some("~/.agents/skills/board-skills".into());
+    pi.envs[0].no_skill = Some("~/.agents/skills/board-skills".into());
+    let h = beat(&mut s, T0, &r).unwrap().host;
+    let get = |h: &HostInfo, id: &str| h.agents.iter().find(|a| a.id == id).unwrap().no_skill.clone();
+    assert_eq!(get(&h, "pi").as_deref(), Some("~/.agents/skills/board-skills"), "默认用 Git Bash：提醒");
+    assert_eq!(get(&h, "claude"), None, "装了的不标");
+    let h = set_env(&mut s, "pi", "pwsh").unwrap();
+    assert_eq!(get(&h, "pi"), None, "换到看得到的启动环境：不提醒");
+    // 旧版 board host 不上报这一项（也不上报启动环境）：不提醒
+    let json = r#"{"name":"old","instance":"o1","agents":[{"id":"claude","name":"Claude Code","version":"2.4.1","found":true}]}"#;
+    let old: HostReport = serde_json::from_str(json).unwrap();
+    let h = beat(&mut s, T0, &old).unwrap().host;
+    assert_eq!(get(&h, "claude"), None);
 }
 
 #[test]

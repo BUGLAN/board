@@ -189,6 +189,10 @@ pub struct HostAgent {
     /// 实际用的启动环境（服务端按机器设置算出来；board host 上报时为空，旧版 board host 也为空）
     #[serde(default)]
     pub env: Option<String>,
+    /// 在实际用的启动环境里找到了命令、却看不到 `board-skills` 时，写该装到哪里（board host 上报时是默认启动环境里的）。
+    /// 看得到、没找到命令、配置文件里的 agent（不检查）、旧版 board host 都为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_skill: Option<String>,
 }
 
 /// 一个 agent 在一个启动环境里的检查结果
@@ -201,6 +205,9 @@ pub struct EnvCheck {
     /// 在这个环境里 `<命令> --version` 的第一行
     #[serde(default)]
     pub version: String,
+    /// 找到了命令、却看不到 `board-skills` 时，写该装到哪里；其余情况（含旧版 board host）为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_skill: Option<String>,
 }
 
 /// 启动环境：board host 在哪种 shell 里启动 agent 的命令（启动环境与桌面端需求 §二）
@@ -477,6 +484,7 @@ impl HostRow {
                     out.found = c.is_some_and(|c| c.found);
                     out.version = c.map(|c| c.version.clone()).unwrap_or_default();
                     out.env = c.map(|c| c.env.clone());
+                    out.no_skill = c.filter(|c| c.found).and_then(|c| c.no_skill.clone());
                 }
                 out
             })

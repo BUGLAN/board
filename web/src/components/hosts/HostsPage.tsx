@@ -1,5 +1,5 @@
 /* 机器 Tab：侧栏机器列表、主区机位总览 */
-import { agentMark, cronSummary, envName, hostLoad, hostsOf, mins, since, SOURCE } from '../../lib/hosts';
+import { agentMark, cronSummary, envName, hostLoad, hostsOf, mins, since, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';
@@ -175,7 +175,7 @@ export function HostsPage() {
                     {h.agents
                       .filter(a => a.found)
                       .map(a => (
-                        <AgentChip key={a.id} a={a} def={a.id === def} env={envName(h, a.env)} small />
+                        <AgentChip key={a.id} a={a} def={a.id === def} env={envName(h, a.env)} skill={skillMiss(h, a)} small />
                       ))}
                     {!h.agents.some(a => a.found) && <span className="hp-tile-auto">一个 agent 也没找到</span>}
                     <span className="hp-sp" />

@@ -43,6 +43,7 @@ use crate::Paint;
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words};
 use board_core::*;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -163,6 +164,8 @@ struct Spec {
     git_bash: bool,
     /// 在它支持、本机有的每个启动环境里的检查结果，按默认选择的顺序
     checks: Vec<Check>,
+    /// 找到了命令、却看不到 `board-skills` 的启动环境 → 该装到哪里（启动时由 [`Spec::check_skills`] 检查一次）
+    no_skill: BTreeMap<String, String>,
 }
 
 impl Spec {
@@ -178,9 +181,23 @@ impl Spec {
             name: self.name.clone(),
             version: def.map(|c| c.version.clone()).unwrap_or_default(),
             found: def.is_some(),
-            envs: self.checks.iter().map(Check::report).collect(),
+            envs: self.checks.iter().map(|c| EnvCheck { no_skill: self.no_skill.get(&c.env).cloned(), ..c.report() }).collect(),
             env: None,
+            no_skill: def.and_then(|c| self.no_skill.get(&c.env).cloned()),
         }
+    }
+
+    /// 在每个找到了命令的启动环境里看一次 `board-skills`，看不到的记下该装到哪里（终端和界面上的提醒用同一句）
+    fn check_skills(&mut self, envs: &[Env], dirs: &[(String, PathBuf)]) {
+        self.no_skill = envs
+            .iter()
+            .filter(|e| self.misses_skill(e, dirs))
+            .map(|e| {
+                let user: Vec<String> = self.skills.iter().map(|d| format!("{d}/{SKILL}")).collect();
+                let place = if e.wsl().is_some() { format!("{}里的 ", e.name) } else { String::new() };
+                (e.id.clone(), format!("{place}{} 或仓库的 .agents/skills/{SKILL}", user.join(" 或 ")))
+            })
+            .collect();
     }
 
     /// 在 env 里找到了、但它读 skill 的目录里都没有 `board-skills/SKILL.md`。
@@ -272,6 +289,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 skills: t.skills,
                 git_bash: t.git_bash,
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
+                no_skill: BTreeMap::new(),
             })
             .collect()
     }))
@@ -547,7 +565,10 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     }
     let be = Backend::open_host()?;
     let envs = envs::discover();
-    let agents = agent_specs(&conf.agents, &envs)?;
+    let mut agents = agent_specs(&conf.agents, &envs)?;
+    for a in &mut agents {
+        a.check_skills(&envs, &dirs);
+    }
     let os = sysinfo::System::long_os_version()
         .ok()
         .or_else(|| sysinfo::System::name().ok())
@@ -719,18 +740,8 @@ impl Host<'_> {
         for a in &self.agents {
             let Some(env) = used(&a.id).and_then(|u| u.env).or_else(|| a.default_check().map(|c| c.env.clone())) else { continue };
             let Some(e) = self.envs.iter().find(|x| x.id == env) else { continue };
-            if !a.misses_skill(e, &self.dirs) {
-                continue;
-            }
-            let dirs: Vec<String> = a.skills.iter().map(|d| format!("{d}/{SKILL}")).collect();
-            let place = if e.wsl().is_some() { format!("{}里的 ", e.name) } else { String::new() };
-            s += &format!(
-                "  {} {} 在{}里看不到 {SKILL}：派给它的卡片会做不成，先装到 {place}{} 或仓库的 .agents/skills/{SKILL}（见 docs/agents.md）\n",
-                p.yellow("!"),
-                a.id,
-                e.name,
-                dirs.join(" 或 ")
-            );
+            let Some(to) = a.no_skill.get(&e.id) else { continue };
+            s += &format!("  {} {} 在{}里看不到 {SKILL}：派给它的卡片会做不成，先装到 {to}（见 docs/agents.md）\n", p.yellow("!"), a.id, e.name);
         }
         if self.dirs.is_empty() {
             s += &format!("  {}{}\n", p.dim("白板    "), p.yellow("（没有）：用 --dir <项目>/<白板>=<路径> 加上，否则接不到卡片"));
@@ -1259,7 +1270,7 @@ mod tests {
         assert_eq!(specs[4].checks.len(), 1, "只有直接启动");
         assert!(!specs[4].misses_skill(&Env::direct(), &[]), "配置文件里的 agent 不检查 skill");
         let r = specs[4].report();
-        assert_eq!((r.found, r.envs.len(), r.env), (false, 1, None));
+        assert_eq!((r.found, r.envs.len(), r.env, r.no_skill), (false, 1, None, None));
     }
 
     #[test]
@@ -1282,10 +1293,23 @@ mod tests {
             skills: vec!["/board-test-no-such-skills".into()],
             git_bash: true,
             checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
+            no_skill: BTreeMap::new(),
         };
         let direct = Env::direct();
-        assert!(!spec.misses_skill(&direct, &[("default/main".into(), repo.clone())]), "项目里的 .agents/skills 算装好了");
+        let dirs = [("default/main".into(), repo.clone())];
+        assert!(!spec.misses_skill(&direct, &dirs), "项目里的 .agents/skills 算装好了");
         assert!(spec.misses_skill(&direct, &[]), "没有项目目录时仍然提醒");
+
+        // 上报给服务端：看不到的标出该装到哪里，看得到的不标
+        let mut spec = spec;
+        spec.check_skills(std::slice::from_ref(&direct), &[]);
+        let r = spec.report();
+        let to = r.no_skill.clone().expect("看不到 board-skills 要上报");
+        assert!(to.contains("/board-test-no-such-skills/board-skills") && to.contains(".agents/skills/board-skills"), "{to}");
+        assert_eq!(r.envs[0].no_skill.as_deref(), Some(to.as_str()), "每个启动环境各自上报");
+        spec.check_skills(std::slice::from_ref(&direct), &dirs);
+        let r = spec.report();
+        assert_eq!((r.no_skill, r.envs[0].no_skill.clone()), (None, None), "装了的不标");
     }
 
     #[test]

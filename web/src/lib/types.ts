@@ -106,6 +106,8 @@ export interface HostAgent {
   envs?: EnvCheck[];
   /** 实际用的启动环境（机器设置里选的，没选时按顺序第一个找到的）；旧版 board host 没有 */
   env?: string | null;
+  /** 在实际用的启动环境里找到了命令、却看不到 board-skills：该装到哪里。看得到、旧版 board host 没有 */
+  no_skill?: string | null;
 }
 
 /** 一个 agent 在一个启动环境里的检查结果 */
@@ -113,6 +115,8 @@ export interface EnvCheck {
   env: string;
   found: boolean;
   version: string;
+  /** 找到了命令、却看不到 board-skills：该装到哪里 */
+  no_skill?: string | null;
 }
 
 /** 启动环境：board host 在哪种 shell 里启动 agent（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL …） */

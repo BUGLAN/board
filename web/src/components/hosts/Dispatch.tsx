@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, cardDispatch, envName, hostLoad, hostsOf, queueReason, SOURCE } from '../../lib/hosts';
+import { agentMark, cardDispatch, envName, hostLoad, hostsOf, queueReason, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, optimistic, refresh, useData, type Patch } from '../../store/data';
@@ -134,6 +134,9 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
   const [host, setHost] = useState<string | null>(first?.name ?? null);
   const h = hosts.find(x => x.name === host) ?? null;
   const [agent, setAgent] = useState<string | null>(h?.agent ?? null);
+  const chosen = h?.agents.find(x => x.id === agent);
+  // 看不到 board-skills 的 agent 照样能派，只提醒
+  const miss = h && chosen ? skillMiss(h, chosen) : null;
   const [sending, setSending] = useState(false);
   const close = () => openDispatch(null);
 
@@ -234,10 +237,15 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
                       onClick={() => setAgent(a.id)}
                       data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
                     >
-                      <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} />
+                      <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} />
                     </button>
                   ))}
                 </div>
+                {miss && (
+                  <p className="dp-note" role="status">
+                    {miss}
+                  </p>
+                )}
                 {busy(h) && <p className="dp-note">{h.name} {!h.online ? '离线' : h.paused ? '暂停接单' : '没有空位'}：派发会排队，{queueReason(h)}后开始。</p>}
               </>
             )}

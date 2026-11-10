@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, SOURCE } from '../../lib/hosts';
+import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, skillMiss, SOURCE } from '../../lib/hosts';
 import { shell } from '../../lib/platform';
 import type { Dispatch, HostAgent, HostInfo } from '../../lib/types';
 import { copyText, cx, durWords } from '../../lib/util';
@@ -345,43 +345,53 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
   const envs = h.envs ?? [];
   const checks = a.envs ?? [];
   const name = (id: string) => envName(h, id) ?? id;
+  const miss = skillMiss(h, a);
   return (
-    <div className={cx('hp-arow', !a.found && 'missing')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
-      <AgentIcon id={a.id} />
-      <b className="hp-arow-name">{a.name}</b>
-      {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
-      <span className="hp-sp" />
-      {envs.length > 0 &&
-        (checks.length ? (
-          <select
-            className="input hp-env-select"
-            disabled={busy}
-            value={a.env ?? ''}
-            onChange={e => e.target.value && e.target.value !== a.env && patch({ env: { agent: a.id, env: e.target.value } })}
-            aria-label={`${a.name} 的启动环境`}
-            data-tip="启动环境：在哪种 shell 里启动它；改了下一次派发就用新的"
-          >
-            {!a.env && <option value="">没找到</option>}
-            {checks.map(c => (
-              <option key={c.env} value={c.env} disabled={!c.found && c.env !== a.env}>
-                {name(c.env)} · {c.found ? c.version || '找到了' : '没找到'}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="hp-arow-none">本机没有它支持的启动环境</span>
-        ))}
-      <button
-        type="button"
-        className={cx('hp-def', def && 'on')}
-        disabled={busy || !a.found}
-        onClick={() => !def && patch({ agent: a.id })}
-        data-tip={!a.found ? '这台机器上没找到命令' : def ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
-        data-tip-align="end"
-      >
-        {def ? '默认' : '设为默认'}
-      </button>
-    </div>
+    <>
+      <div className={cx('hp-arow', !a.found && 'missing')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
+        <AgentIcon id={a.id} />
+        <b className="hp-arow-name">{a.name}</b>
+        {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
+        <span className="hp-sp" />
+        {envs.length > 0 &&
+          (checks.length ? (
+            <select
+              className="input hp-env-select"
+              disabled={busy}
+              value={a.env ?? ''}
+              onChange={e => e.target.value && e.target.value !== a.env && patch({ env: { agent: a.id, env: e.target.value } })}
+              aria-label={`${a.name} 的启动环境`}
+              data-tip="启动环境：在哪种 shell 里启动它；改了下一次派发就用新的"
+            >
+              {!a.env && <option value="">没找到</option>}
+              {checks.map(c => (
+                <option key={c.env} value={c.env} disabled={!c.found && c.env !== a.env}>
+                  {name(c.env)} · {c.found ? c.version || '找到了' : '没找到'}
+                  {c.found && c.no_skill ? ' · 看不到 board-skills' : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="hp-arow-none">本机没有它支持的启动环境</span>
+          ))}
+        <button
+          type="button"
+          className={cx('hp-def', def && 'on')}
+          disabled={busy || !a.found}
+          onClick={() => !def && patch({ agent: a.id })}
+          data-tip={!a.found ? '这台机器上没找到命令' : def ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
+          data-tip-align="end"
+        >
+          {def ? '默认' : '设为默认'}
+        </button>
+      </div>
+      {miss && (
+        <p className="hp-arow-warn" role="status">
+          <Icon name="alert" />
+          {miss}
+        </p>
+      )}
+    </>
   );
 }
 

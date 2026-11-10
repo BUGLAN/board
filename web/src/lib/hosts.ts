@@ -4,7 +4,7 @@
 import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
-import type { Dispatch, DispatchResult, HostInfo, Workspace } from './types';
+import type { Dispatch, DispatchResult, HostAgent, HostInfo, Workspace } from './types';
 import { agentColor } from './util';
 
 /** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
@@ -104,3 +104,10 @@ export function since(t: number, now: number) {
 
 /** 已用分钟 */
 export const mins = (t: number | null, now: number) => (t == null ? 0 : Math.max(0, Math.floor((now - t) / 60000)));
+
+/** agent 在实际用的启动环境里看不到 board-skills 时的提醒（和 board host 终端里那行一致）；看得到、没找到命令、旧版 board host 返回 null */
+export function skillMiss(h: HostInfo, a: HostAgent): string | null {
+  if (!a.found || !a.no_skill) return null;
+  const env = envName(h, a.env);
+  return `${a.name}${env ? ` 在${env}里` : ''}看不到 board-skills：派给它的卡片会做不成，先装到 ${a.no_skill}（见 docs/agents.md）`;
+}
