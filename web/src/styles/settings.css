@@ -151,7 +151,3 @@
   .page-settings .set-p code { overflow-wrap: anywhere; }
 }
 
-/* 触屏设备（iOS Safari）：输入框字号小于 16px 时聚焦会自动放大页面；窄屏一并处理，桌面宽屏不变 */
-@media (pointer: coarse), (max-width: 480px) {
-  .page-settings :is(input, select, textarea).input { font-size: 16px; }
-}
