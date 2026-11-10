@@ -31,7 +31,8 @@
 .lb-prio { display: inline-grid; place-items: center; margin-right: -1px; }
 .lb-prio svg { width: 11px; height: 11px; fill: currentColor; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
-.lb-x { margin: -5px -8px -5px -4px; width: 24px; height: 24px; border-radius: 999px; display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
+/* × 的悬浮底色是圆角矩形（圆角同胶囊 var(--r-xs)），随胶囊高度撑满（20px / 24px 都对齐），不再溢出胶囊轮廓 */
+.lb-x { align-self: stretch; margin: 0 -8px 0 -4px; width: 24px; border-radius: var(--r-xs); display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
 .lb-x:hover:not(:disabled) { opacity: 1; background: color-mix(in srgb, var(--lc) 25%, transparent); }
 /* 正在保存：× 还在原处（标签宽度不变），只是不能点 */
 .lb-x:disabled { opacity: .3; cursor: default; }
@@ -72,7 +73,7 @@
 .lb-item { position: relative; display: inline-flex; max-width: 100%; }
 .lb-del {
   --lc: #888;
-  position: absolute; right: 0; top: 50%; width: 24px; height: 24px; margin-top: -12px; border-radius: 999px;
+  position: absolute; right: 0; top: 50%; width: 24px; height: 24px; margin-top: -12px; border-radius: var(--r-xs);
   display: grid; place-items: center; font-size: 14px; line-height: 1;
   color: color-mix(in srgb, var(--lc) 80%, var(--text));
   background: color-mix(in srgb, var(--lc) 22%, var(--surface));
