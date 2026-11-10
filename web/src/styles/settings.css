@@ -50,16 +50,10 @@
 .toggle.on { background: var(--brand); }
 .toggle.on i { transform: translateX(16px); }
 
-/* 流程图 */
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 0 14px; }
-.flow-node {
-  display: inline-flex; flex-direction: column; gap: 1px; padding: 7px 11px 6px; border-radius: var(--r-sm);
-  font-size: 12.5px; font-weight: 600; background: color-mix(in srgb, var(--c) 10%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent);
-}
-.flow-node i { display: none; }
-.flow-node em { font-style: normal; font-size: 10.5px; font-weight: 400; color: var(--text-3); }
-.flow-arrow { width: 16px; height: 1.5px; background: var(--line-3); position: relative; }
-.flow-arrow::after { content: ""; position: absolute; right: -1px; top: -3px; border: 4px solid transparent; border-left-color: var(--line-3); border-right: 0; }
+/* 白板规则：只读的工作流有向图（FlowBar readOnly）。窄屏时图在自己的框里横向滚动，不撑宽设置页 */
+.page-settings .wf-ro { margin: 8px 0 14px; padding: 8px 6px 8px 10px; z-index: auto; backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* 滚动区的宽度不算进内容宽度（width: 0 + flex: 1 撑满）：否则设置页（flex 子项，最小宽度按内容算）会被图撑宽 */
+.page-settings .wf-ro .wf-scroll { width: 0; }
 .rules { margin: 4px 0 12px; padding-left: 18px; font-size: 12.5px; color: var(--text-2); line-height: 1.9; }
 
 /* 代码 */

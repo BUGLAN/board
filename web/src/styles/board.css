@@ -478,6 +478,8 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .wf-node.tgt { box-shadow: inset 0 0 0 1.5px var(--brand), 0 0 0 4px var(--brand-soft); }
 .wf-node.tgt-exists { box-shadow: inset 0 0 0 1.5px var(--text-4); }
 .wf-glyph.claim { color: var(--brand); opacity: 1; }
+/* 只读（设置页）：不能拖、不能点 */
+.wf-ro .wf-node { cursor: default; }
 .wf-glyph.warn { color: var(--warn); opacity: 1; }
 .connecting, .connecting * { cursor: crosshair !important; }
 .wf-edge-del {

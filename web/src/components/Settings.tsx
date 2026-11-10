@@ -2,7 +2,7 @@
    设置 Tab（PRD §10.6）：账号 / 外观 / 白板规则 / Agent 接入 / 快捷键
    侧栏是目录，点击跳到对应部分；滚动时目录跟随
    ========================================================================== */
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import {
   boardCli, canHost, canSetEnv, enableLocalHost, getTheme, isMac, isWindows, localHost, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
@@ -15,9 +15,10 @@ import type { TokenInfo } from '../lib/types';
 import { accel, ago, copyText, cx, pref } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
-import { allBoards, refresh, useData } from '../store/data';
+import { allBoards, colCount, refresh, useData } from '../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
+import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { SECTIONS, useSpy } from './SettingsNav';
 
@@ -496,7 +497,10 @@ const cancelled = (e: unknown) => String(e).startsWith('已取消');
 
 export function SettingsPage() {
   const path = useData(s => s.path);
-  const flow = boardFlow(useData(s => s.board));
+  const board = useData(s => s.board);
+  const flow = boardFlow(board);
+  // 和白板页工作流条一样的卡片数（终点状态含快照里省略的）
+  const counts = useMemo(() => (board ? Object.fromEntries(Object.keys(board.cols).map(k => [k, colCount(board, k)])) : {}), [board]);
   const tab = useUI(s => s.tab);
   const page = useRef<HTMLDivElement>(null);
   const [theme, setT] = useState<ThemePref>(getTheme);
@@ -608,21 +612,8 @@ export function SettingsPage() {
             <Icon name="lock" />
             白板规则
           </h2>
-          <p className="set-p">每块白板的工作流可以在白板页顶部的工作流条里自定义。当前白板：</p>
-          <div className="flow">
-            {[{ key: 'inbox', name: '未整理', who: '界面 / agent 新建' }, ...flow.list.map(s => ({ key: s.key, name: s.name, who: s.claim ? '可领取' : s.lock ? '锁定 · agent 领取' : s.final ? '终点 · 人确认' : '' }))].map(
-              (s, i) => (
-                <span key={s.key} style={{ display: 'contents' }}>
-                  {i > 0 && <i className="flow-arrow" />}
-                  <span className="flow-node" style={{ ['--c' as string]: flow.color(s.key) }}>
-                    <i />
-                    {s.name}
-                    {s.who && <em>{s.who}</em>}
-                  </span>
-                </span>
-              ),
-            )}
-          </div>
+          <p className="set-p">每块白板的工作流可以在白板页顶部的工作流条里自定义。当前白板（只读，和工作流条是同一张图）：</p>
+          {flow.list.length > 0 && <FlowBar counts={counts} path={path} f={flow} readOnly />}
           <Row label="心跳" hint="agent 会话 check 之后由 skill 里的脚本发送，一路心跳同时维持名字在线和它持有的卡片；领取后的第一次心跳开始计时，final 结束，每一次的耗时记进动态">
             <span className="ro mono">每 10 秒</span>
           </Row>

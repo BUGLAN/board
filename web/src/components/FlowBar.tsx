@@ -5,6 +5,7 @@
      点连线选中后按 Delete 或点 × 也能删除
    - 拖动状态调整顺序；点状态打开设置（名称、颜色、规则、删除）
    - 连线只约束 agent：agent 只能沿连线移动卡片，人不受限制
+   - readOnly（设置页「白板规则」）：同样的图，只看不改：没有连线把手、状态菜单、拖动、添加状态、复原布局
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -47,8 +48,8 @@ interface Lift {
   dy: number;
 }
 
-/** counts：每个状态的卡片数（快照还没到时用工作区里的计数） */
-export function FlowBar({ counts, path, f }: { counts: Record<string, number>; path: string; f: FlowQ }) {
+/** counts：每个状态的卡片数（快照还没到时用工作区里的计数）；readOnly：只读展示 */
+export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<string, number>; path: string; f: FlowQ; readOnly?: boolean }) {
   const [menu, setMenu] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
@@ -65,7 +66,8 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
   const moved = useRef(false);
   const hasLayout = f.list.some(s => s.layout);
 
-  const g = useMemo(() => layoutFlow(f.list, widths, addW), [f.list, widths, addW]);
+  // 只读时没有「+ 添加状态」，不给它留位置
+  const g = useMemo(() => layoutFlow(f.list, widths, readOnly ? 0 : addW), [f.list, widths, addW, readOnly]);
 
   // 量出每个状态胶囊的宽度，再排版。白板页被隐藏（切到别的 Tab）时量出来都是 0：不记，切回来不会先挤成一团再展开
   useLayoutEffect(() => {
@@ -204,10 +206,12 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
   const selGeo = sel ? g.edges.find(e => e.id === sel) : undefined;
 
   return (
-    <div className={cx('wf-bar wf-graph', conn && 'connecting', busy && 'busy')} aria-busy={busy || undefined}>
-      <span className="wf-label" style={{ marginTop: g.boxes[f.list[0]?.key]?.y ?? 0 }}>
-        工作流
-      </span>
+    <div className={cx('wf-bar wf-graph', readOnly && 'wf-ro', conn && 'connecting', busy && 'busy')} aria-busy={busy || undefined}>
+      {!readOnly && (
+        <span className="wf-label" style={{ marginTop: g.boxes[f.list[0]?.key]?.y ?? 0 }}>
+          工作流
+        </span>
+      )}
       <div className="wf-scroll">
         <div className="wf-canvas" ref={canvas} style={{ width: g.width + 16, height: g.height }}>
           <svg className="wf-edges" width={g.width + 16} height={g.height} aria-hidden="true">
@@ -218,7 +222,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
                 </marker>
               ))}
             </defs>
-            {g.add.from && (
+            {g.add.from && !readOnly && (
               <path className="wf-edge add" d={pathD([g.add.from, [g.add.x - 4, g.add.from[1]]])} markerEnd="url(#wf-ah-n)" />
             )}
             {g.edges.map(e => {
@@ -232,20 +236,24 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
                     d={pathD(e.pts)}
                     markerEnd={`url(#wf-ah-${on ? 's' : r ? 'h' : 'n'})`}
                   />
-                  <path
-                    className="wf-hit"
-                    d={pathD(e.pts)}
-                    onPointerDown={ev => ev.stopPropagation()}
-                    onClick={() => {
-                      setMenu(null);
-                      setSel(s => (s === e.id ? null : e.id));
-                    }}
-                  >
-                    <title>
-                      {f.name(e.a)} → {f.name(e.b)}（点击选中，按住箭头可以改连）
-                    </title>
-                  </path>
-                  <circle className="wf-grip" cx={e.pts[e.pts.length - 1][0]} cy={e.pts[e.pts.length - 1][1]} r="7" onPointerDown={startConnect(e.a, e.id, e.pts[0])} />
+                  {!readOnly && (
+                    <>
+                      <path
+                        className="wf-hit"
+                        d={pathD(e.pts)}
+                        onPointerDown={ev => ev.stopPropagation()}
+                        onClick={() => {
+                          setMenu(null);
+                          setSel(s => (s === e.id ? null : e.id));
+                        }}
+                      >
+                        <title>
+                          {f.name(e.a)} → {f.name(e.b)}（点击选中，按住箭头可以改连）
+                        </title>
+                      </path>
+                      <circle className="wf-grip" cx={e.pts[e.pts.length - 1][0]} cy={e.pts[e.pts.length - 1][1]} r="7" onPointerDown={startConnect(e.a, e.id, e.pts[0])} />
+                    </>
+                  )}
                 </g>
               );
             })}
@@ -259,6 +267,49 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
             const lifted = lift?.key === s.key;
             const target = conn?.target === s.key;
             const exists = target && conn && f.hasEdge(conn.from, s.key) && edgeId(conn.from, s.key) !== conn.replace;
+            const inner = (
+              <>
+                <i className="wf-dot" />
+                <span className="wf-name">{s.name}</span>
+                <b>{n}</b>
+                {s.claim && (
+                  <span className="wf-glyph claim" title="可领取：agent 从这里领取">
+                    <Icon name="claim" />
+                  </span>
+                )}
+                {s.lock && (
+                  <span className="wf-glyph" title="锁定：只能由 agent 领取进入">
+                    <Icon name="lock" />
+                  </span>
+                )}
+                {s.final && (
+                  <span className="wf-glyph" title="终点：进来算完成，只有人能移入移出">
+                    <Icon name="check" />
+                  </span>
+                )}
+                {warn && (
+                  <span className="wf-glyph warn" title="没有连到锁定状态：agent 不能从这里领取">
+                    <Icon name="alert" />
+                  </span>
+                )}
+              </>
+            );
+            if (readOnly)
+              return (
+                <div key={s.key} className="wf-pos" style={{ left: b?.x ?? 0, top: b?.y ?? 0 }}>
+                  <span
+                    ref={el => {
+                      chips.current[s.key] = el;
+                    }}
+                    className="wf-node"
+                    style={{ ['--c' as string]: statusColor(s.color) }}
+                    onPointerEnter={() => setHover(s.key)}
+                    onPointerLeave={() => setHover(h => (h === s.key ? null : h))}
+                  >
+                    {inner}
+                  </span>
+                </div>
+              );
             return (
               <div
                 key={s.key}
@@ -287,29 +338,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
                   }}
                   title="点击设置 · 拖动调整顺序 · 从右边缘的圆点拖出连线"
                 >
-                  <i className="wf-dot" />
-                  <span className="wf-name">{s.name}</span>
-                  <b>{n}</b>
-                  {s.claim && (
-                    <span className="wf-glyph claim" title="可领取：agent 从这里领取">
-                      <Icon name="claim" />
-                    </span>
-                  )}
-                  {s.lock && (
-                    <span className="wf-glyph" title="锁定：只能由 agent 领取进入">
-                      <Icon name="lock" />
-                    </span>
-                  )}
-                  {s.final && (
-                    <span className="wf-glyph" title="终点：进来算完成，只有人能移入移出">
-                      <Icon name="check" />
-                    </span>
-                  )}
-                  {warn && (
-                    <span className="wf-glyph warn" title="没有连到锁定状态：agent 不能从这里领取">
-                      <Icon name="alert" />
-                    </span>
-                  )}
+                  {inner}
                   <span
                     className="wf-handle"
                     title="拖到另一个状态上，连一条线"
@@ -324,49 +353,51 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
             );
           })}
 
-          <div className="wf-pos" style={{ left: g.add.x, top: g.add.y }}>
-            {adding ? (
-              <span className="wf-node add editing" ref={el => { addEl.current = el; }}>
-                <input
-                  autoFocus
-                  className="wf-input"
-                  placeholder="状态名，回车添加"
-                  maxLength={12}
-                  onBlur={() => setAdding(false)}
-                  onKeyDown={e => {
-                    const t = e.target as HTMLInputElement;
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                      const v = t.value.trim();
-                      // 新状态的标识由服务端生成，拿到之前画不出来：输入框进入进行中（只读 + 转圈），不会重复添加
-                      if (!v || t.readOnly) return;
-                      t.readOnly = true;
-                      t.parentElement?.classList.add('busy');
-                      optimistic(null, () => api.createStatus(path, v))
-                        .then(() => {
-                          t.value = '';
-                        })
-                        .catch(err => {
-                          toastError(err);
-                          replay(t.parentElement, 'invalid');
-                        })
-                        .finally(() => {
-                          t.readOnly = false;
-                          t.parentElement?.classList.remove('busy');
-                        });
-                    }
-                    if (e.key === 'Escape') {
-                      e.stopPropagation();
-                      setAdding(false);
-                    }
-                  }}
-                />
-              </span>
-            ) : (
-              <button type="button" className="wf-node add" ref={el => { addEl.current = el; }} onClick={() => setAdding(true)}>
-                + 添加状态
-              </button>
-            )}
-          </div>
+          {!readOnly && (
+            <div className="wf-pos" style={{ left: g.add.x, top: g.add.y }}>
+              {adding ? (
+                <span className="wf-node add editing" ref={el => { addEl.current = el; }}>
+                  <input
+                    autoFocus
+                    className="wf-input"
+                    placeholder="状态名，回车添加"
+                    maxLength={12}
+                    onBlur={() => setAdding(false)}
+                    onKeyDown={e => {
+                      const t = e.target as HTMLInputElement;
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        const v = t.value.trim();
+                        // 新状态的标识由服务端生成，拿到之前画不出来：输入框进入进行中（只读 + 转圈），不会重复添加
+                        if (!v || t.readOnly) return;
+                        t.readOnly = true;
+                        t.parentElement?.classList.add('busy');
+                        optimistic(null, () => api.createStatus(path, v))
+                          .then(() => {
+                            t.value = '';
+                          })
+                          .catch(err => {
+                            toastError(err);
+                            replay(t.parentElement, 'invalid');
+                          })
+                          .finally(() => {
+                            t.readOnly = false;
+                            t.parentElement?.classList.remove('busy');
+                          });
+                      }
+                      if (e.key === 'Escape') {
+                        e.stopPropagation();
+                        setAdding(false);
+                      }
+                    }}
+                  />
+                </span>
+              ) : (
+                <button type="button" className="wf-node add" ref={el => { addEl.current = el; }} onClick={() => setAdding(true)}>
+                  + 添加状态
+                </button>
+              )}
+            </div>
+          )}
 
           {selGeo && (
             <>
@@ -384,7 +415,7 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
           )}
         </div>
       </div>
-      {hasLayout && (
+      {hasLayout && !readOnly && (
         <button type="button" className="wf-reset" title="这块白板的状态块回到默认布局" onClick={() => run(list => list.map(s => ({ ...s, layout: null })), () => api.flowLayout(path, {}))}>
           复原布局
         </button>
