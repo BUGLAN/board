@@ -275,6 +275,64 @@ fn host_offline_releases_card_and_marks_lost() {
 }
 
 #[test]
+fn restart_grace_keeps_claims_names_and_running_dispatch() {
+    // #95：服务端停了 10 分钟后重启，停机的时间不计入心跳超时
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
+    let back = T0 + 10 * 60 * S;
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        // 名字 check、领取、心跳
+        s.write(T0, Origin::cli(), |w| w.agent_check("claude/alpha", Some(1))).unwrap();
+        let a = new_card(&mut s, T0, "A");
+        exec(&mut s, T0, &Actor::agent("claude/alpha"), Cmd::Claim { id: Some(a) }).unwrap();
+        exec(&mut s, T0 + S, &Actor::agent("claude/alpha"), Cmd::Beat { id: a, done: false }).unwrap();
+        // 另一张卡由机器上的派发在跑
+        let b = new_card(&mut s, T0, "B");
+        let d = dispatch(&mut s, T0, b, "mbp", None).unwrap();
+        let d = begin(&mut s, T0 + S, d.id).unwrap();
+        assert_eq!(d.state, "running");
+        beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    }
+    // 停机 10 分钟后以新的时间打开服务：启动时顺延心跳
+    let mut s = Store::open(&path).unwrap();
+    s.resume_after_downtime(back).unwrap();
+    assert!(s.read(|r| r.agents(back)).unwrap().iter().any(|a| a.name == "claude/alpha"), "名字仍在线");
+    assert!(host(&s, back).online, "机器仍在线");
+    assert_eq!(card(&s, 1).card.holder.as_deref(), Some("claude/alpha"), "卡片仍由原名字持有");
+    assert_eq!(card(&s, 2).card.holder.as_deref(), Some("claude/mbp-1"));
+    assert_eq!(get(&s, 1).state, "running", "在跑的派发仍然是 running");
+    // 规则 7 不变：顺延之后再过 50 秒没有心跳，照常释放、离线
+    assert_eq!(s.sweep(back + 49 * S).unwrap(), 0);
+    assert!(s.sweep(back + 50 * S).unwrap() >= 1);
+    assert_eq!(card(&s, 1).card.holder, None);
+    assert_eq!(card(&s, 2).card.holder, None);
+    assert!(s.read(|r| r.agents(back + 50 * S)).unwrap().is_empty(), "名字都离线");
+    assert!(!host(&s, back + 50 * S).online);
+    let d = get(&s, 1);
+    assert_eq!((d.state.as_str(), d.result.as_deref()), ("done", Some("lost")));
+}
+
+#[test]
+fn restart_grace_does_not_cover_already_offline_rows() {
+    // 停机前已经下线的名字、机器不复活；没有心跳的领取按领取时间算
+    let mut s = store();
+    s.write(T0, Origin::cli(), |w| w.agent_check("claude/alpha", Some(1))).unwrap();
+    s.write(T0, Origin::cli(), |w| w.agent_beat("claude/alpha", true)).unwrap();
+    s.write(T0, Origin::cli(), |w| w.host_beat(&report("mbp", "i1", vec![]), Some(1))).unwrap();
+    s.write(T0 + S, Origin::cli(), |w| {
+        let rep = HostReport { done: true, ..report("mbp", "i1", vec![]) };
+        w.host_beat(&rep, Some(1))
+    })
+    .unwrap();
+    s.resume_after_downtime(T0 + 10 * 60 * S).unwrap();
+    assert!(!s.read(|r| r.agents(T0 + 10 * 60 * S)).unwrap().iter().any(|a| a.name == "claude/alpha"));
+    assert!(!host(&s, T0 + 10 * 60 * S).online);
+}
+
+#[test]
 fn restarted_host_without_process_reports_crash() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();

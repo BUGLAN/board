@@ -93,6 +93,8 @@ impl AppState {
             board_core::seed::seed_demo(&mut store, now)?;
         }
         store.ensure_default(now)?;
+        // 服务端重启：停机时间不计入心跳超时，否则第一次扫描就会把所有领取释放（#95）
+        store.resume_after_downtime(now)?;
         auth::setup(store.conn())?;
         let (tx, _) = broadcast::channel(256);
         Ok(AppState(Arc::new(Inner {

@@ -362,6 +362,23 @@ impl Store {
         Ok(self.conn.query_row("SELECT COALESCE((SELECT value FROM meta WHERE key = 'hosts'), 0)", [], |r| r.get(0))?)
     }
 
+    /// 服务端进程启动时调用：把停机前还活着的名字、机器和领取的心跳时间顺延到现在，
+    /// 停机的那段时间不计入 50 秒心跳超时（重启后不会把全部领取一次性释放）。
+    /// 只由服务进程启动时调用；`Store::open` 和 `token` / `backup` 等子命令都不调用，不会改动心跳时间。
+    pub fn resume_after_downtime(&mut self, now: i64) -> Result<usize> {
+        self.write(now, Origin::system(), |w| {
+            let mut n = w.tx.execute("UPDATE agents SET beat_at = ?1 WHERE off_at IS NULL", [w.now])?;
+            n += w.tx.execute("UPDATE hosts SET beat_at = ?1 WHERE off_at IS NULL", [w.now])?;
+            // 还没发过第一次心跳的领取：从领取时间重新算；已经发过心跳的：从最近一次心跳重新算
+            n += w.tx.execute(
+                "UPDATE cards SET claimed_at = ?1 WHERE holder IS NOT NULL AND beat_at IS NULL",
+                [w.now],
+            )?;
+            n += w.tx.execute("UPDATE cards SET beat_at = ?1 WHERE holder IS NOT NULL AND beat_at IS NOT NULL", [w.now])?;
+            Ok(n)
+        })
+    }
+
     /// 规则 7：扫描所有白板，释放心跳中断的领取；心跳中断超过 50 秒的名字标为离线（PRD §3）；
     /// 心跳中断超过 50 秒的机器标为离线，名字已经离线的在跑派发结束（机器掉线，见 hosts.rs）。
     /// 返回释放的张数加上离线的名字、机器个数和结束的派发个数
