@@ -26,7 +26,7 @@ fn claim(id: Option<i64>) -> Cmd {
     Cmd::Claim { id }
 }
 fn mv(id: i64, col: &str) -> Cmd {
-    Cmd::Move { id, column: col.into(), top: false, index: None, order: None }
+    Cmd::Move { id, column: col.into(), top: false, index: None, order: None, before: None, after: None }
 }
 fn alpha() -> Actor {
     Actor::agent("alpha")
@@ -670,10 +670,10 @@ fn drag_index_and_reorder() {
     for t in ["a", "b", "c"] {
         exec(&mut s, B, &human(), T0, new(t)).unwrap();
     }
-    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0), order: None }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "todo".into(), top: false, index: Some(0), order: None, before: None, after: None }).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![3, 1, 2]);
-    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "review".into(), top: false, index: Some(0), order: None }).unwrap();
-    exec(&mut s, B, &human(), T0, Cmd::Move { id: 1, column: "review".into(), top: true, index: None, order: None }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 3, column: "review".into(), top: false, index: Some(0), order: None, before: None, after: None }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Move { id: 1, column: "review".into(), top: true, index: None, order: None, before: None, after: None }).unwrap();
     let snap = snapshot(&s, B, T0);
     assert_eq!(snap.cols["todo"], vec![2]);
     assert_eq!(snap.cols["review"], vec![1, 3]);
@@ -689,7 +689,7 @@ fn drag_with_order_saves_whole_column() {
     }
     exec(&mut s, B, &human(), T0, mv(4, "review")).unwrap();
     // 界面按编号降序显示 [3, 2, 1]，把 #1 拖到最前：整块按看到的顺序保存
-    let mv_order = |id: i64, index: usize, order: Vec<i64>| Cmd::Move { id, column: "todo".into(), top: false, index: Some(index), order: Some(order) };
+    let mv_order = |id: i64, index: usize, order: Vec<i64>| Cmd::Move { id, column: "todo".into(), top: false, index: Some(index), order: Some(order), before: None, after: None };
     exec(&mut s, B, &human(), T0, mv_order(1, 0, vec![1, 3, 2])).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![1, 3, 2]);
     let d = card(&s, B, 1);
@@ -895,7 +895,7 @@ fn agent_moves_follow_edges() {
     // 人不受连线限制
     exec(&mut s, B, &human(), T0, mv(1, "review")).unwrap();
     // 同一状态内调整顺序不受连线影响
-    exec(&mut s, B, &alpha(), T0, Cmd::Move { id: 3, column: "todo".into(), top: true, index: None, order: None }).unwrap();
+    exec(&mut s, B, &alpha(), T0, Cmd::Move { id: 3, column: "todo".into(), top: true, index: None, order: None, before: None, after: None }).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![3, 2]);
     // §13 34：「未整理」只归人管
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(2, "inbox"))), ErrorCode::ForbiddenColumn);
@@ -1498,7 +1498,7 @@ fn final_snapshot_keeps_only_recent_cards() {
             r.board_snapshot(&b, T0, false)
         })
         .unwrap();
-    // 最近移入的在最下面：留下 11..=n
+    // 最近移入的在最下面：留下 11..=n（按最后一次移入挑，不看 pos）
     assert_eq!(part.cols["done"], (11..=n).collect::<Vec<_>>());
     assert_eq!(part.omitted.get("done"), Some(&10));
     assert!(!part.cards.contains_key(&1) && !part.cards.contains_key(&10));
@@ -1510,6 +1510,45 @@ fn final_snapshot_keeps_only_recent_cards() {
     assert_eq!(all.cols["done"], (1..=n).collect::<Vec<_>>());
     assert!(all.omitted.is_empty());
     assert_eq!(all.cards.len() as i64, n + 3);
+}
+
+/// 「最近」按最后一次移入算，不按 pos：人把新完成的放在最上面时，留下的是最上面这些（不是最下面的老卡片）；
+/// 留下的卡片按 pos 排，省略的可以夹在中间。拖进这种状态时按看到的相邻卡片（before / after）定位
+#[test]
+fn final_snapshot_keeps_recently_moved_wherever_they_are() {
+    let mut s = store();
+    let n = FINAL_RECENT as i64 + 10;
+    for i in 1..=n {
+        exec(&mut s, B, &human(), T0 + i, new(&format!("完成 {i}"))).unwrap();
+        exec(&mut s, B, &human(), T0 + i, Cmd::Move { id: i, column: "done".into(), top: true, index: None, order: None, before: None, after: None }).unwrap();
+    }
+    // 老卡片 #1 后来又被移出、再移回来，放在最下面：它也算最近的
+    exec(&mut s, B, &human(), T0 + n + 1, mv(1, "review")).unwrap();
+    exec(&mut s, B, &human(), T0 + n + 2, mv(1, "done")).unwrap();
+    let snap = |s: &Store| s.read(|r| { let b = r.resolve(B)?; r.board_snapshot(&b, T0, false) }).unwrap();
+    let part = snap(&s);
+    let mut want: Vec<i64> = (12..=n).rev().collect();
+    want.push(1);
+    assert_eq!(part.cols["done"], want);
+    assert_eq!(part.omitted.get("done"), Some(&10));
+    assert!(!part.cards.contains_key(&2) && !part.cards.contains_key(&11));
+
+    // 看到的 #12 和 #1 之间夹着省略的 #11..#2：放到 #1 前面 = 整列里 #2 后面
+    exec(&mut s, B, &human(), T0 + n + 3, new("新卡片")).unwrap();
+    let id = n + 1;
+    exec(&mut s, B, &human(), T0 + n + 4, Cmd::Move { id, column: "done".into(), top: false, index: Some(0), order: None, before: Some(1), after: None }).unwrap();
+    let all = snapshot(&s, B, T0);
+    let col = &all.cols["done"];
+    assert_eq!(col[col.len() - 2..], [id, 1]);
+    // 放到 #12 后面
+    exec(&mut s, B, &human(), T0 + n + 5, Cmd::Move { id, column: "done".into(), top: false, index: Some(0), order: None, before: None, after: Some(12) }).unwrap();
+    let all = snapshot(&s, B, T0);
+    let col = &all.cols["done"];
+    let at = col.iter().position(|x| *x == 12).unwrap();
+    assert_eq!(col[at + 1], id);
+    // 锚点不在目标状态里：按 index
+    exec(&mut s, B, &human(), T0 + n + 6, Cmd::Move { id, column: "done".into(), top: false, index: Some(0), order: None, before: Some(9999), after: None }).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["done"][0], id);
 }
 
 /// 放到最下面只改这一张的 pos，不重写整列（终点状态越积越多，重写整列越来越慢）
@@ -1534,6 +1573,6 @@ fn place_at_bottom_updates_only_that_card() {
     assert_eq!(snapshot(&s, B, T0).cols["review"].last(), Some(&1001));
     // 再放一张到指定位置：按 pos 顺序插入，空位不影响
     exec(&mut s, B, &human(), T0 + 2001, new("插队")).unwrap();
-    exec(&mut s, B, &human(), T0 + 2002, Cmd::Move { id: 1002, column: "review".into(), top: false, index: Some(1), order: None }).unwrap();
+    exec(&mut s, B, &human(), T0 + 2002, Cmd::Move { id: 1002, column: "review".into(), top: false, index: Some(1), order: None, before: None, after: None }).unwrap();
     assert_eq!(&snapshot(&s, B, T0).cols["review"][..3], &[1, 1002, 2]);
 }

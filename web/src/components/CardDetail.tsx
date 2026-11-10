@@ -211,8 +211,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <button aria-label="上一张" className="icon-btn sm" type="button" data-tip="上一张  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
             <Icon name="chevUp" />
           </button>
-          {/* 位置按整个状态算（含快照里省略的更早卡片）；更早的卡片本身不在列表里，不显示位置 */}
-          <span className="d-pos mono">{i >= 0 ? `${i + 1 + skipped} / ${list.length + skipped}` : ''}</span>
+          {/* 快照省略了更早的卡片（可能夹在中间）时整个状态里的位置算不出来，只显示总数 */}
+          <span className="d-pos mono">{i < 0 ? '' : skipped ? `共 ${list.length + skipped}` : `${i + 1} / ${list.length}`}</span>
           <button aria-label="下一张" className="icon-btn sm" type="button" data-tip="下一张  ↓ / J" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
             <Icon name="chevDown" />
           </button>

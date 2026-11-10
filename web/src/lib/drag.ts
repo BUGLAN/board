@@ -265,7 +265,10 @@ function locate() {
   const col = zoneAt(zones(), s.x, s.y, s.target?.col);
   const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
-  const items = list ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}`) : [];
+  // 「更早的 M 张」那一格（data-earlier）不是卡片，不算落点
+  const items = list
+    ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}` && !n.hasAttribute('data-earlier'))
+    : [];
   const state = useData.getState();
   let index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
   // 白板设置关了「保存顺序」：同一块里不能换位置，占位一直留在原处（换到别的块不受影响）
@@ -462,9 +465,8 @@ function finish(cancelled: boolean) {
   } else {
     plan = planDrop(s.id, s.fromCol, target);
     // 松手当帧就画成「保存中」（不能再拖、再改），落位的补丁等飞回动画结束再叠（hold）
-    // 终点状态的快照省略了更早的卡片（在最上面）：服务端的位置要加上省略的张数
-    const skipped = omittedIn(useData.getState().board, target.col);
-    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index + skipped, order: plan.order }, { cards: [s.id] });
+    // 终点状态的快照省略了更早的卡片（可能夹在看到的卡片中间）：整列里的位置算不出来，按看到的相邻卡片定位
+    done = exec({ op: 'move', id: s.id, column: target.col, index: plan.index, order: plan.order, ...anchorOf(s.id, target.col, plan) }, { cards: [s.id] });
     done.catch(err => {
       failed = true;
       toastError(err);
@@ -527,6 +529,17 @@ function finish(cancelled: boolean) {
   };
   justDroppedAt = performance.now();
   cleanup(true);
+}
+
+/** 目标状态的快照省略了卡片时，落点换成锚点：放到看到的下一张前面，落在末尾时放到看到的最后一张后面 */
+function anchorOf(id: number, col: ColumnKey, plan: Drop): { before?: number; after?: number } {
+  const board = useData.getState().board;
+  if (!board || !omittedIn(board, col) || plan.order) return {};
+  const prio = (board.cols[col] ?? []).filter(x => x !== id);
+  const next = prio[plan.index];
+  if (next != null) return { before: next };
+  const last = prio[plan.index - 1];
+  return last != null ? { after: last } : {};
 }
 
 interface Drop {

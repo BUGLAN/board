@@ -11,7 +11,7 @@ import { api } from '../lib/api';
 import * as flip from '../lib/flip';
 import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
 import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
-import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
+import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, serverNow, useCurrent, useData } from '../store/data';
 import { clearLabelSel, closeCtx, openCreator, openCtx, setBoardSheet, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
@@ -425,7 +425,6 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         </span>
       </header>
       <div className="col-body">
-        {earlier > 0 && <EarlierButton n={earlier} />}
         <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
           {ids.map((id, idx) => {
             const c = board.cards[id];
@@ -448,6 +447,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
               />
             );
           })}
+          {earlier > 0 && <EarlierButton n={earlier} view={view} />}
         </div>
         <div className="col-empty">
           <Icon name={col.claim ? 'inbox' : col.lock ? 'claim' : col.final ? 'sparkle' : 'move'} />
@@ -460,14 +460,28 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
   );
 }
 
-/** 终点状态只带了最近的几张：上面一行「更早的 M 张」，点开取全量（这个窗口里这块白板之后都带全量） */
-function EarlierButton({ n }: { n: number }) {
+/** 终点状态只带了最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态一样大（磁贴里写成 +M）；
+    点开取全量（这个窗口里这块白板之后都带全量）。拖拽算落点时不算它（data-earlier） */
+function EarlierButton({ n, view }: { n: number; view: StatusView }) {
   const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLButtonElement>(null);
+  // 卡片、单行的高度随内容和密度变：和前面一张一样高（在父组件的瀑布流排版之前量）；磁贴是定高
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const prev = el.previousElementSibling as HTMLElement | null;
+    const h = view !== 'tile' && prev ? getComputedStyle(prev).height : '';
+    if (el.style.height !== h) el.style.height = h;
+  });
   return (
     <button
+      ref={ref}
       type="button"
-      className={cx('btn sm col-earlier', busy && 'is-busy')}
+      data-earlier=""
+      className={cx('col-earlier', `v-${view}`, busy && 'is-busy')}
       disabled={busy}
+      aria-label={`显示更早的 ${n} 张`}
+      data-tip={view === 'tile' ? `更早的 ${n} 张` : undefined}
       onClick={async () => {
         setBusy(true);
         try {
@@ -479,8 +493,14 @@ function EarlierButton({ n }: { n: number }) {
         }
       }}
     >
-      <Icon name="chevUp" />
-      更早的 {n} 张
+      {view === 'tile' ? (
+        `+${n}`
+      ) : (
+        <>
+          <Icon name="more" />
+          更早的 {n} 张
+        </>
+      )}
     </button>
   );
 }

@@ -115,7 +115,7 @@ fn dispatch_validation_follows_the_table() {
     let a = new_card(&mut s, T0, "A");
     let b = new_card(&mut s, T0, "B");
     // 不在可领取状态
-    exec(&mut s, T0, &Actor::human(), Cmd::Move { id: b, column: "review".into(), top: false, index: None, order: None }).unwrap();
+    exec(&mut s, T0, &Actor::human(), Cmd::Move { id: b, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     assert_eq!(dispatch(&mut s, T0, b, "mbp", None).unwrap_err().code, ErrorCode::NotInTodo);
     // 机器不存在
     assert_eq!(dispatch(&mut s, T0, a, "nope", None).unwrap_err().code, ErrorCode::NoSuchHost);
@@ -163,7 +163,7 @@ fn begin_claims_with_generated_name_and_end_reports_result() {
     // agent 按 skill 交审后退出
     let me = Actor::agent("claude/mbp-1");
     exec(&mut s, T0 + 20 * S, &me, Cmd::Beat { id: a, done: true }).unwrap();
-    exec(&mut s, T0 + 21 * S, &me, Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None }).unwrap();
+    exec(&mut s, T0 + 21 * S, &me, Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     let d = end(&mut s, T0 + 22 * S, d.id, Some(0), &[]);
     assert_eq!((d.state.as_str(), d.result.as_deref()), ("done", Some("review")));
     let acts: Vec<String> = card(&s, a).activity.iter().filter(|x| x.action == "dispatch").map(|x| x.text.clone()).collect();
@@ -225,7 +225,7 @@ fn queued_dispatch_occupies_the_card() {
     // 不带 ID 的领取跳过它
     assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: None }).unwrap().card.id, b);
     // 人把它拖出可领取状态：派发自动取消
-    exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None }).unwrap();
+    exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     assert_eq!(get(&s, d.id).result.as_deref(), Some("canceled"));
 }
 
@@ -743,7 +743,7 @@ fn new_host_reads_work_from_old_server() {
 fn submit(s: &mut Store, at: i64, name: &str, id: i64) {
     let a = Actor::agent(name.to_string());
     exec(s, at, &a, Cmd::Beat { id, done: true }).unwrap();
-    exec(s, at, &a, Cmd::Move { id, column: "review".into(), top: false, index: None, order: None }).unwrap();
+    exec(s, at, &a, Cmd::Move { id, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
 }
 
 fn next(s: &mut Store, at: i64, name: &str) -> Result<CardDetail> {

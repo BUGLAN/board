@@ -1766,7 +1766,7 @@ impl<'a> W<'a> {
                 let still_held = still.as_deref() == Some(name.as_str());
                 if still_held {
                     if let Some(to) = &human {
-                        soft(self.exec(&board, &actor, Cmd::Move { id: d.card, column: to.clone(), top: false, index: None, order: None }))?;
+                        soft(self.exec(&board, &actor, Cmd::Move { id: d.card, column: to.clone(), top: false, index: None, order: None, before: None, after: None }))?;
                     }
                 }
                 let mut text = match (&stop_by, how) {

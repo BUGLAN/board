@@ -47,6 +47,12 @@ pub enum Cmd {
         /// 不在目标状态里的 id 忽略；目标状态里没列出的卡片按原顺序补在后面
         #[serde(default)]
         order: Option<Vec<i64>>,
+        /// 界面拖进快照省略了卡片的终点状态：放到这张卡片前面（按看到的下一张定位，优先于 index）。不在目标状态里时忽略
+        #[serde(default)]
+        before: Option<i64>,
+        /// 同上，看到的最后一张后面（落在可见列表末尾时）
+        #[serde(default)]
+        after: Option<i64>,
     },
     Claim {
         #[serde(default)]
@@ -191,7 +197,7 @@ impl<'a> W<'a> {
             }
 
             /* ---------------- 移动 / 排序 ---------------- */
-            Cmd::Move { id, column, top, index, order } => {
+            Cmd::Move { id, column, top, index, order, before, after } => {
                 let r = self.row(b, id)?;
                 let to = flow
                     .resolve(&column)
@@ -240,7 +246,16 @@ impl<'a> W<'a> {
                         .with_detail(json!({ "from": from, "to": flow.get(&from).map(|s| s.to.clone()).unwrap_or_default() })));
                     }
                 }
-                let at = match (index, top) {
+                // 锚点：终点状态的快照省略了更早的卡片（不一定在一头），界面算不出整列里的位置，按看到的相邻卡片定位
+                let anchor = match (before, after) {
+                    (Some(x), _) | (None, Some(x)) if x != id => {
+                        let mut ids = self.col_ids(b, &to)?;
+                        ids.retain(|c| *c != id);
+                        ids.iter().position(|c| *c == x).map(|p| if before.is_some() { p } else { p + 1 })
+                    }
+                    _ => None,
+                };
+                let at = match (anchor.or(index), top) {
                     (Some(i), _) => At::Index(i),
                     (None, true) => At::Top,
                     (None, false) => At::Bottom,

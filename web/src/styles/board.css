@@ -127,14 +127,20 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   font-family: var(--f-mono); font-size: 11px;
 }
 
-/* 终点状态只带了最近的几张：列表上面一行「更早的 M 张」，点开取全量 */
-.btn.col-earlier {
-  --btn-bg: transparent; --btn-fg: var(--text-3); --btn-line: var(--line-2);
-  display: flex; width: 100%; gap: 6px; height: 28px; margin: 0 0 8px; border-radius: var(--r-md);
-  font-size: 12px; font-weight: 400; box-shadow: inset 0 0 0 1px var(--btn-line);
+/* 终点状态只带了最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态（卡片 / 单行 / 磁贴）一样大，点开取全量 */
+.col-earlier {
+  display: flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; min-width: 0;
+  border: 1px dashed var(--line-2); border-radius: var(--r-md); background: transparent;
+  color: var(--text-3); font: inherit; font-size: 12px; cursor: pointer;
+  transition: background-color var(--dur-2), color var(--dur-2), border-color var(--dur-2);
 }
-.btn.col-earlier:hover { --btn-bg: var(--surface-3); --btn-fg: var(--text); }
-.btn.col-earlier svg { width: 13px; height: 13px; }
+.col-earlier:hover { background: var(--surface-3); color: var(--text); border-color: var(--line-3); }
+.col-earlier:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.col-earlier.is-busy { cursor: progress; opacity: .6; }
+.col-earlier svg { width: 14px; height: 14px; flex: none; }
+.col-earlier.v-card { padding: 11px 13px 12px; }
+.col-earlier.v-line { padding: 7px 10px; font-size: 12.5px; }
+.col-earlier.v-tile { height: 24px; padding: 0; border-radius: var(--r-xs); font: inherit; font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* 空状态至少一张卡片高（标题一行 + 标签一行的普通卡片），图标和文字垂直居中 */
 .col-empty {
@@ -339,7 +345,7 @@ body.tile-moving .ct-pop, body.is-dragging .ct-pop { display: none; }
 /* 手机：磁贴放大，方便手指点 */
 @media (max-width: 760px) {
   .col-list.view-tile { column-gap: 6px; font-size: 13px; grid-template-columns: repeat(auto-fill, minmax(calc((var(--tile-ch, 2) + 1) * 1ch + 20px), 1fr)); }
-  .card.v-tile { height: 36px; border-radius: var(--r-sm); }
+  .card.v-tile, .col-earlier.v-tile { height: 36px; border-radius: var(--r-sm); }
   .ct-beat { top: 4px; right: 4px; width: 6px; height: 6px; }
 }
 /* 「下一张」：不带 ID 领取时会被领走的卡片 */

@@ -543,8 +543,9 @@ impl<'a> R<'a> {
         flow_of(self.conn, board.id)
     }
 
-    /// 白板快照。full 为 false 时每个终点状态只带最下面（最近移入）的 FINAL_RECENT 张，省略的张数记在 omitted 里；
-    /// 终点状态的卡片只增不减，全带的话快照越来越大（每次推送都要重取）
+    /// 白板快照。full 为 false 时每个终点状态只带最近移入的 FINAL_RECENT 张（按最后一次移入 / 新建的动态，不按 pos：
+    /// 人可能把新完成的放在最上面，也可能放在最下面），省略的张数记在 omitted 里。留下的卡片在 cols 里仍按 pos 排，
+    /// 省略的卡片可能夹在它们中间。终点状态的卡片只增不减，全带的话快照越来越大（每次推送都要重取）
     pub fn board_snapshot(&self, board: &BoardRef, now: i64, full: bool) -> Result<BoardSnapshot> {
         let flow = flow_of(self.conn, board.id)?;
         let mut cols = Cols::new();
@@ -556,7 +557,10 @@ impl<'a> R<'a> {
         let mut skip: Vec<i64> = vec![];
         if !full {
             let mut st = self.conn.prepare_cached(
-                "SELECT id FROM cards WHERE board = ?1 AND col = ?2 ORDER BY pos DESC, id DESC LIMIT -1 OFFSET ?3",
+                "SELECT c.id FROM cards c WHERE c.board = ?1 AND c.col = ?2
+                 ORDER BY (SELECT MAX(a.id) FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.action IN ('move', 'create')) DESC,
+                          c.id DESC
+                 LIMIT -1 OFFSET ?3",
             )?;
             for s in flow.0.iter().filter(|s| s.fin) {
                 let ids = st
