@@ -191,10 +191,12 @@ export async function optimistic<T>(patch: Patch | null, req: () => Promise<T>):
 /** 叠上补丁，直到 done 结束再撤掉（done 成功时应已刷新过）。用于先发请求、稍后才确定本地效果的操作（拖拽松手的飞回动画结束后才落位） */
 export function hold<T>(patch: Patch, done: Promise<T>): Promise<T> {
   const l = push(patch);
-  done.then(
-    () => drop(l),
-    () => drop(l),
-  );
+  // 撤补丁时卡片可能换位置（服务端的顺序和补丁不同、被拒绝回到原处）：先记下位置，由 FLIP 补间，不瞬移
+  const off = () => {
+    if (layers.includes(l)) flip.capture();
+    drop(l);
+  };
+  done.then(off, off);
   return done;
 }
 

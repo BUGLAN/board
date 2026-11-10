@@ -13,6 +13,9 @@ interface Snap {
 
 const SPRING = 'cubic-bezier(.22, 1.18, .36, 1)';
 let first: Map<string, Snap> | null = null;
+/** 记录的时间：记下后一直没有重画（例如撤掉的补丁没改变画面），过一会儿就作废，不拿旧位置去补间之后无关的变化 */
+let firstAt = 0;
+const STALE = 1000;
 
 export function capture() {
   if (reduceMotion()) {
@@ -24,6 +27,7 @@ export function capture() {
     m.set(el.dataset.flip!, { rect: el.getBoundingClientRect(), el, col: el.parentElement?.dataset.list });
   });
   first = m;
+  firstAt = performance.now();
 }
 
 /** 放弃已记录的位置（例如切换白板时整体重建） */
@@ -34,7 +38,7 @@ export function reset() {
 export function play() {
   const f = first;
   first = null;
-  if (!f) return;
+  if (!f || performance.now() - firstAt > STALE) return;
   const now = new Map<string, HTMLElement>();
   document.querySelectorAll<HTMLElement>('[data-flip]').forEach(el => now.set(el.dataset.flip!, el));
   for (const [id, snap] of f) {

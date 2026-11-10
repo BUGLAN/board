@@ -510,6 +510,9 @@ function finish(cancelled: boolean) {
   });
   const id = s.id;
   anim.onfinish = () => {
+    // 先记下占位（幽灵刚落在这里）和其他卡片的位置：落位后卡片的最终位置可能不是落点
+    // （排序中的块按排序依据重排、去掉占位后别的卡片补位），由 FLIP 从落点平滑移过去，不瞬移
+    flip.capture();
     if (commit && !failed && done) {
       if (plan.clear) setSort(plan.clear, null);
       // 落位：叠一层补丁直到服务端确认并刷新（期间推送触发的刷新不会把它冲回原处）；被拒绝时补丁撤掉，卡片回到原处
@@ -521,9 +524,9 @@ function finish(cancelled: boolean) {
       requestAnimationFrame(() => {
         const el = cardEl(id);
         if (!el) return;
-        // 形态变了：真卡片的内容接着幽灵淡出的内容淡入；没变：轻轻弹一下
+        // 形态变了：真卡片的内容接着幽灵淡出的内容淡入；没变、也没有在移向最终位置：轻轻弹一下
         if (reshape) for (const n of el.children) (n as HTMLElement).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
-        else if (!morph) el.animate([{ transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+        else if (!morph && !el.getAnimations().length) el.animate([{ transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.34,1.56,.64,1)' });
       });
     }
   };
