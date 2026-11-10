@@ -171,18 +171,7 @@ export function LabelChips({ ids, labels, max = Infinity, pending }: { ids: numb
 /** 项目颜色：一排色板，最后一个是取色器（可选任意颜色，选中后显示为当前颜色）。
     取色器在确定时（change）才回调，拖动过程中不回调 */
 export function ColorRow({ value, onPick, className, label = '颜色' }: { value: string; onPick: (c: string) => void; className?: string; label?: string }) {
-  const input = useRef<HTMLInputElement>(null);
-  const pick = useRef(onPick);
-  pick.current = onPick;
   const v = value.toUpperCase();
-  const custom = !PROJECT_COLORS.includes(v);
-  useEffect(() => {
-    const el = input.current;
-    if (!el) return;
-    const done = () => pick.current(el.value.toUpperCase());
-    el.addEventListener('change', done);
-    return () => el.removeEventListener('change', done);
-  }, []);
   return (
     <div className={cx('swatches', className)} role="radiogroup" aria-label={label}>
       {PROJECT_COLORS.map(c => (
@@ -197,14 +186,33 @@ export function ColorRow({ value, onPick, className, label = '颜色' }: { value
           onClick={() => onPick(c)}
         />
       ))}
-      <label
-        className={cx('swatch swatch-pick', custom && 'on')}
-        style={custom ? { ['--sw' as string]: v } : undefined}
-        title={custom ? `自定义颜色 ${v}` : '自定义颜色'}
-      >
-        <input ref={input} type="color" value={/^#[0-9A-F]{6}$/.test(v) ? v.toLowerCase() : '#888888'} onChange={() => {}} aria-label={`${label}：自定义`} />
-      </label>
+      <ColorPick value={v} custom={!PROJECT_COLORS.includes(v)} onPick={onPick} label={label} />
     </div>
+  );
+}
+
+/** 色板最后的取色器：打开系统取色器选任意颜色（#RRGGBB，大写）。custom：当前颜色不在色板里，取色器显示成这个颜色并标为选中。
+    确定时（change）才回调，拖动过程中不回调 */
+export function ColorPick({ value, custom, onPick, label = '颜色' }: { value: string; custom: boolean; onPick: (c: string) => void; label?: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const pick = useRef(onPick);
+  pick.current = onPick;
+  const v = value.toUpperCase();
+  useEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    const done = () => pick.current(el.value.toUpperCase());
+    el.addEventListener('change', done);
+    return () => el.removeEventListener('change', done);
+  }, []);
+  return (
+    <label
+      className={cx('swatch swatch-pick', custom && 'on')}
+      style={custom ? { ['--sw' as string]: v } : undefined}
+      title={custom ? `自定义颜色 ${v}` : '自定义颜色'}
+    >
+      <input ref={input} type="color" value={/^#[0-9A-F]{6}$/.test(v) ? v.toLowerCase() : '#888888'} onChange={() => {}} aria-label={`${label}：自定义`} />
+    </label>
   );
 }
 

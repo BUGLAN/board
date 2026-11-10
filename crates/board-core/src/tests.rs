@@ -1223,6 +1223,21 @@ fn project_color_palette_or_any_hex() {
     assert_eq!(color("b"), "#12AB9F");
 }
 
+/// 标签颜色和项目一样：色板里的，或取色器选的任意 #RRGGBB（卡片 default/main#150）
+#[test]
+fn label_color_palette_or_any_hex() {
+    let mut s = store();
+    let a = ui(&mut s, |w| w.create_label("default", "甲", Some("#12ab9f"), false)).unwrap();
+    assert_eq!(a.color, "#12AB9F");
+    let b = ui(&mut s, |w| w.create_label("default", "乙", Some("#3b82f6"), false)).unwrap();
+    assert_eq!(b.color, "#3B82F6", "色板里的颜色照常");
+    assert_eq!(ui(&mut s, |w| w.create_label("default", "丙", Some("teal"), false)).expect_err("不是颜色").code, ErrorCode::Usage);
+    assert_eq!(ui(&mut s, |w| w.create_label("default", "丙", Some("#12ab9"), false)).expect_err("位数不对").code, ErrorCode::Usage);
+    ui(&mut s, |w| w.update_label("default", a.id, None, Some("#00ff7f"), None, None)).unwrap();
+    let ls = s.read(|r| r.labels("default")).unwrap();
+    assert_eq!(ls.iter().find(|l| l.id == a.id).unwrap().color, "#00FF7F");
+}
+
 /* ------------------------------ 动态分页（#55） ------------------------------ */
 
 #[test]

@@ -920,15 +920,17 @@ impl<'a> W<'a> {
         }
     }
 
-    /// 项目颜色：色板里的颜色，或取色器选的任意 #RRGGBB（统一成大写）
-    fn check_project_color(color: Option<&str>, fallback: usize) -> Result<String> {
+    /// 项目、标签的颜色：色板里的颜色，或取色器选的任意 #RRGGBB（统一成大写）；不给时按 fallback 取色板里的
+    fn check_any_color(color: Option<&str>, palette: &[&str], fallback: usize) -> Result<String> {
         match color.map(str::trim) {
             Some(c) if c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit()) => Ok(c.to_ascii_uppercase()),
-            Some(c) if !PROJECT_COLORS.iter().any(|p| p.eq_ignore_ascii_case(c)) => {
-                Err(BoardError::usage(format!("颜色要用色板里的颜色或 #RRGGBB：{c}")))
-            }
-            c => Self::check_color(c, &PROJECT_COLORS, fallback),
+            Some(c) if !palette.iter().any(|p| p.eq_ignore_ascii_case(c)) => Err(BoardError::usage(format!("颜色要用色板里的颜色或 #RRGGBB：{c}"))),
+            c => Self::check_color(c, palette, fallback),
         }
+    }
+
+    fn check_project_color(color: Option<&str>, fallback: usize) -> Result<String> {
+        Self::check_any_color(color, &PROJECT_COLORS, fallback)
     }
 
     /* ---------------- 项目 ---------------- */
@@ -1120,7 +1122,7 @@ impl<'a> W<'a> {
             [project],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let color = Self::check_color(color, &LABEL_COLORS, n as usize)?;
+        let color = Self::check_any_color(color, &LABEL_COLORS, n as usize)?;
         self.tx.execute(
             "INSERT INTO labels (project, name, color, sort, human_only) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![project, name, color, max_sort.unwrap_or(-1) + 1, human_only],
@@ -1153,7 +1155,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE labels SET name = ?1 WHERE id = ?2", params![n, id])?;
         }
         if let Some(c) = color {
-            let c = Self::check_color(Some(c), &LABEL_COLORS, 0)?;
+            let c = Self::check_any_color(Some(c), &LABEL_COLORS, 0)?;
             self.tx.execute("UPDATE labels SET color = ?1 WHERE id = ?2", params![c, id])?;
         }
         if let Some(h) = human_only {

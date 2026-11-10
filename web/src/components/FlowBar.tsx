@@ -15,7 +15,7 @@ import { statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/sc
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { flowKey, optimistic, useBusy, useData } from '../store/data';
-import { toastError } from '../store/ui';
+import { manageLabels, toastError } from '../store/ui';
 import { BoardSettings } from './BoardSettings';
 import { Icon } from './Icon';
 
@@ -420,6 +420,20 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
       {!readOnly && (
         <button
           type="button"
+          className="wf-settings wf-labels"
+          title="这个项目的标签：新建、改名、改色、删除（项目下的白板共用）"
+          onClick={() => {
+            setSettings(false);
+            manageLabels(path.split('/')[0]);
+          }}
+        >
+          <Icon name="tag" />
+          <span className="t">标签设置</span>
+        </button>
+      )}
+      {!readOnly && (
+        <button
+          type="button"
           ref={settingsEl}
           className={cx('wf-settings', settings && 'on')}
           aria-expanded={settings}
@@ -427,7 +441,7 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
           onClick={() => setSettings(!settings)}
         >
           <Icon name="settings" />
-          白板设置
+          <span className="t">白板设置</span>
         </button>
       )}
       {settings && <BoardSettings path={path} anchor={settingsEl.current} onClose={() => setSettings(false)} />}

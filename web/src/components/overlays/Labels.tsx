@@ -5,7 +5,7 @@ import { LABEL_COLORS } from '../../lib/schema';
 import { cx, replay } from '../../lib/util';
 import { deleteLabelPatch, editLabelPatch, optimistic, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
-import { LabelChip } from '../bits';
+import { ColorPick, LabelChip } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from './presence';
 
@@ -319,6 +319,17 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
                       }}
                     />
                   ))}
+                  {/* 最后是取色器：任意颜色 */}
+                  <ColorPick
+                    value={l.color}
+                    custom={!LABEL_COLORS.includes(l.color.toUpperCase())}
+                    label={`「${l.name}」的颜色`}
+                    onPick={async c => {
+                      setSwatch(null);
+                      if (c === l.color.toUpperCase()) return;
+                      await run(editLabelPatch(pk, l.id, { color: c }), () => api.updateLabel(pk, l.id, { color: c }));
+                    }}
+                  />
                 </div>
               )}
             </div>
@@ -379,6 +390,15 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
                   }}
                 />
               ))}
+              <ColorPick
+                value={nc}
+                custom={!LABEL_COLORS.includes(nc.toUpperCase())}
+                label="新标签的颜色"
+                onPick={c => {
+                  setNewColor(c);
+                  setSwatch(null);
+                }}
+              />
             </div>
           )}
         </form>

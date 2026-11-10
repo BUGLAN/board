@@ -477,6 +477,13 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .wf-settings { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-3); }
 .wf-settings svg { width: 14px; height: 14px; }
 .wf-settings:hover, .wf-settings.on { color: var(--text); background: var(--surface-3); }
+/* 「标签设置」在「白板设置」左边：两个按钮挨着排在末尾。工作流条窄的时候只留图标（名字在悬停提示里），不挤工作流图 */
+.wf-labels + .wf-settings { margin-left: 2px; }
+.wf-graph { container-type: inline-size; }
+@container (max-width: 900px) {
+  .wf-settings { width: 30px; padding: 0; justify-content: center; }
+  .wf-settings .t { display: none; }
+}
 /* 白板设置：和状态设置同一种浮层（.wf-menu，同宽、同圆角、同内边距）；标题和状态名一样高，按钮是一组等宽的分段，开关区和「可领取」那几行一样 */
 .bs-title { display: flex; align-items: center; height: 32px; padding: 0 10px; font-family: var(--f-display); font-size: 15px; font-weight: 700; color: var(--text); }
 .bs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 8px 2px 8px; }
