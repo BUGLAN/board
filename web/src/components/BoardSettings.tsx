@@ -31,7 +31,8 @@ export function BoardSettings({ path, anchor, onClose }: { path: string; anchor:
   useLayoutEffect(() => {
     const place = () => {
       const r = anchor?.getBoundingClientRect();
-      if (r) setPos({ left: Math.max(8, Math.min(r.right - 300, innerWidth - 308)), top: r.bottom + 8 });
+      // 和状态设置同宽（.wf-menu 286px），右边和按钮对齐，不贴窗口边
+      if (r) setPos({ left: Math.max(8, Math.min(r.right - 286, innerWidth - 294)), top: r.bottom + 8 });
     };
     place();
     addEventListener('resize', place);
@@ -96,19 +97,20 @@ export function BoardSettings({ path, anchor, onClose }: { path: string; anchor:
           <b>状态块布局</b>
           <span>{saved ? (savedNow ? '现在就是保存的布局' : '保存过一份布局') : '还没有保存过布局'}</span>
         </div>
-        <div className="bs-acts">
-          <button type="button" className="btn sm" onClick={save} disabled={savedNow} title="把现在状态块的位置和宽度存成这块白板的布局">
+        {/* 三个按钮同宽同高，和状态设置的「卡片形态」一样排成一组 */}
+        <div className="wf-view-opts bs-acts">
+          <button type="button" onClick={save} disabled={savedNow} title="把现在状态块的位置和宽度存成这块白板的布局">
             保存布局
           </button>
-          <button type="button" className="btn sm" onClick={apply} disabled={!saved || savedNow} title="换回保存的布局；之后新增的状态按默认规则补位">
+          <button type="button" onClick={apply} disabled={!saved || savedNow} title="换回保存的布局；之后新增的状态按默认规则补位">
             应用布局
           </button>
-          <button type="button" className="btn sm ghost" onClick={reset} disabled={!hasCurrent} title="回到默认布局；保存的布局保留，可以再应用">
+          <button type="button" onClick={reset} disabled={!hasCurrent} title="回到默认布局；保存的布局保留，可以再应用">
             复原布局
           </button>
         </div>
       </section>
-      <section className="bs-sec">
+      <section className="bs-sec wf-rules">
         <button type="button" className={cx('wf-sw', keepOrder && 'on')} role="switch" aria-checked={keepOrder} onClick={order}>
           <span className="wf-sw-track">
             <i />

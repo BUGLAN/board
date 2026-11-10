@@ -279,8 +279,15 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .run-pill.big.wait, .run-pill.big.ended { font-size: 15px; }
 .claim-sub { width: 100%; text-align: right; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .card-claim { flex-wrap: wrap; row-gap: 4px; }
-.card-claim.worked .run-pill { margin-left: 0; }
-.card-claim.worked .claim-sub { width: auto; margin-left: auto; }
+/* 做过的卡片：累计耗时、领取次数、完成于同一行，不换行；放不下时右边的次要文字先缩、省略 */
+.card-claim.worked { flex-wrap: nowrap; }
+.card-claim.worked .run-pill { margin-left: 0; flex: 0 1 auto; min-width: 0; }
+.card-claim.worked .run-pill svg { flex: none; }
+.card-claim.worked .rp-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.card-claim.worked .claim-sub { width: auto; margin-left: auto; flex: 0 100 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-sans); }
+@container (max-width: 300px) { .card-claim.worked .rp-k { display: none; } }
+/* 很窄的块：只留耗时（完整的累计、次数、完成时间在悬停提示里） */
+@container (max-width: 180px) { .card-claim.worked :is(.claim-sub, .run-pill > svg) { display: none; } }
 
 /* 单行：编号和标题占一行；终点里打勾、标题划掉，其他状态前面是状态色点，被领取的右边是持有者和心跳 */
 .card.v-line { padding: 7px 10px; }
@@ -470,15 +477,15 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .wf-settings { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-3); }
 .wf-settings svg { width: 14px; height: 14px; }
 .wf-settings:hover, .wf-settings.on { color: var(--text); background: var(--surface-3); }
-/* 白板设置：和状态设置同一种浮层 */
-.bs-menu { width: 300px; }
-.bs-title { margin: 2px 4px 8px; font-size: 13px; font-weight: 600; color: var(--text); }
-.bs-sec + .bs-sec { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
-.bs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 4px 8px; }
-.bs-head b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+/* 白板设置：和状态设置同一种浮层（.wf-menu，同宽、同圆角、同内边距）；标题和状态名一样高，按钮是一组等宽的分段，开关区和「可领取」那几行一样 */
+.bs-title { display: flex; align-items: center; height: 32px; padding: 0 10px; font-family: var(--f-display); font-size: 15px; font-weight: 700; color: var(--text); }
+.bs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 8px 2px 8px; }
+.bs-head b { font-size: 11.5px; font-weight: 500; color: var(--text-3); }
 .bs-head span { font-size: 11px; color: var(--text-3); }
-.bs-acts { display: flex; gap: 6px; margin: 0 4px 4px; }
-.bs-acts .btn { flex: 1; justify-content: center; }
+.bs-acts { margin: 0 2px 10px; }
+.bs-acts button:not(:disabled) { color: var(--text-2); }
+.bs-acts button:disabled { opacity: .45; cursor: default; }
+.bs-acts button:disabled:hover { color: var(--text-3); }
 
 /* 工作流条：有向图（主线 + 支线，直角连线） */
 .wf-graph { align-items: flex-start; padding: 8px 8px 8px 14px; }
@@ -528,7 +535,8 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
   animation: wf-pop var(--dur-2) var(--spring-soft); transform-origin: 20px 0; cursor: default;
 }
 @keyframes wf-pop { from { opacity: 0; transform: translateY(-4px) scale(.97); } }
-.wf-menu::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; border-radius: var(--r-md) var(--r-md) 0 0; background: var(--c); }
+/* 顶部色条：用整块的上边框画，两端跟着浮层的圆角弯下去 */
+.wf-menu::before { content: ""; position: absolute; inset: 0; border-radius: inherit; border-top: 3px solid var(--c); pointer-events: none; }
 .wf-menu-name {
   width: 100%; height: 32px; padding: 0 10px; border-radius: var(--r-sm); border: 0; outline: none;
   font-family: var(--f-display); font-size: 15px; font-weight: 700; color: var(--text);

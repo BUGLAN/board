@@ -202,12 +202,23 @@ export const CardView = memo(function CardView({
           ) : (
             t.runs > 0 && (
               <div className="card-claim worked">
-                <span className="run-pill" title={`做过 ${t.runs} 次${t.lost ? `，其中 ${t.lost} 次异常退出` : ''}`}>
+                {/* 累计耗时、领取次数、完成于排在同一行；窄的块里先省掉「累计」「完成于」两个词，还放不下时次要的文字省略 */}
+                <span className="run-pill" title={`累计 ${durWords(t.total)}，做过 ${t.runs} 次${t.lost ? `，其中 ${t.lost} 次异常退出` : ''}`}>
                   <Icon name="timer" />
-                  累计 {durWords(t.total)}
+                  <span className="rp-text">
+                    <span className="rp-k">累计 </span>
+                    {durWords(t.total)}
+                  </span>
                 </span>
-                <span className="claim-sub" title={c.finishedAt ? `完成于 ${dateTime(c.finishedAt)}` : undefined}>
-                  {t.runs} 次{c.finishedAt ? ` · 完成于 ${since(c.finishedAt, now)}` : ''}
+                <span className="claim-sub" title={c.finishedAt ? `${t.runs} 次 · 完成于 ${dateTime(c.finishedAt)}` : `${t.runs} 次`}>
+                  {t.runs} 次
+                  {c.finishedAt && (
+                    <>
+                      {' · '}
+                      <span className="rp-k">完成于 </span>
+                      {since(c.finishedAt, now)}
+                    </>
+                  )}
                 </span>
               </div>
             )
