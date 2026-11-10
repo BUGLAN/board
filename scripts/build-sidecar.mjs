@@ -28,6 +28,50 @@ const host = hostTriple();
 // Tauri 用 --target 交叉编译时会通过这个环境变量告诉构建脚本目标平台
 const triple = process.env.TAURI_ENV_TARGET_TRIPLE || host;
 
+/**
+ * Windows 上先结束上次开发遗留的桌面端和 board host。
+ *
+ * Tauri dev 会把 sidecar 复制到 target/debug/board.exe，cargo build 也要写这个文件；
+ * 桌面端「让这台电脑接任务」打开的 board host 正是从这里启动的，它不退出，
+ * cargo 就会报 `failed to remove file ... board.exe`（os error 5，拒绝访问）。
+ * 只按本仓库 target/debug 下的完整路径匹配，不会碰安装版或别的 checkout。
+ */
+function stopStaleDevProcesses() {
+  if (process.platform !== 'win32' || !debug) return;
+  const targets = [join(root, 'target', 'debug', 'board-desktop.exe'), join(root, 'target', 'debug', 'board.exe')];
+  const script = `
+$targets = @($env:BOARD_DEV_TARGETS.Split(';'))
+$procs = @(Get-Process -Name board-desktop,board -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($targets -contains $_.Path) })
+if ($procs.Count -eq 0) { return }
+$procs | ForEach-Object { Write-Output ("{0}|{1}" -f $_.Id, $_.ProcessName) }
+$procs | Stop-Process -Force -ErrorAction SilentlyContinue
+$deadline = (Get-Date).AddSeconds(5)
+while ((Get-Date) -lt $deadline) {
+  $left = @(Get-Process -Name board-desktop,board -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($targets -contains $_.Path) })
+  if ($left.Count -eq 0) { return }
+  Start-Sleep -Milliseconds 100
+}
+throw "仍有进程占用 target\\debug\\board.exe：" + (($left | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join '、')
+`;
+  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8',
+    env: { ...process.env, BOARD_DEV_TARGETS: targets.join(';') },
+    windowsHide: true,
+  }).trim();
+  if (out) {
+    const names = out
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [pid, name] = line.split('|');
+        return `${name}.exe (PID ${pid})`;
+      });
+    console.log(`… 已结束上次开发遗留的进程：${names.join('、')}`);
+  }
+}
+
+stopStaleDevProcesses();
+
 const args = ['build', '-p', 'board-cli'];
 if (!debug) args.push('--release');
 if (triple !== host) args.push('--target', triple);

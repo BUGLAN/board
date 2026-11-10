@@ -29,7 +29,7 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
   BOARD_URL=http://127.0.0.1:7420 BOARD_TOKEN=<令牌> board ls --as <名字> --board default/main
   ```
 
-- 桌面端：`npm run desktop:dev`（会先编译 sidecar 和界面）。
+- 桌面端：`npm run desktop:dev`（会先编译 sidecar 和界面；Windows 上会先结束上次开发遗留的 `board-desktop.exe` 和 `board host`，它们会锁住 `target/debug/board.exe`）。
 - 测 GitHub 登录：先 `python scripts/github-mock.py 8000` 启动模拟 GitHub，再用不带 `--local` 的服务端指向它：
 
   ```sh

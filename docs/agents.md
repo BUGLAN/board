@@ -169,4 +169,5 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 一直在跑、日志不动 | agent 在等审批或输入：模板里少了跳过审批的参数，或者它的非交互模式不是这个 |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |
 | 桌面端「本机」打开后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |
+| Windows 上 `npm run desktop:dev` 报 `failed to remove file ... target\debug\board.exe`（os error 5：拒绝访问） | 上次开发启动的 `board-desktop.exe` / `board host` 还在从 `target\debug\board.exe` 运行，锁住了文件。新版 `scripts/build-sidecar.mjs` 会在 dev 构建前自动结束本仓库这两个进程；如果还失败，先从托盘退出 Board，再运行 `npm run desktop:dev` |
 | 卡片动态里 agent 又 check 了一个新名字、领取失败 | 用的 `board-skills` 是旧版（没有「由 board host 启动的会话」一节），更新 skill |
