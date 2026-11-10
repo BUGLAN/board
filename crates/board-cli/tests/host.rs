@@ -213,7 +213,8 @@ fn host_runs_dispatches_end_to_end() {
     let r = rig.board(&["dispatch", "5", "--host", "nope", "--json"]);
     assert_eq!(r.error_code(), "NO_SUCH_HOST");
 
-    // 交审：持有者是 claude/mbp-1，日志写到 ~/.board/host/logs/，上传到服务端
+    // 交审：持有者是 claude-mbp/opus-5.5（<agent 标识>-<机器名>/<模型名>，模型名来自内置模板的默认值），
+    // 日志写到 ~/.board/host/logs/，上传到服务端
     rig.mode("review");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
@@ -221,11 +222,11 @@ fn host_runs_dispatches_end_to_end() {
     wait_until("#1 交审", Duration::from_secs(15), || ended(&rig.show(1), "已交审"));
     let c1 = rig.show(1);
     assert_eq!(c1["column"], "review");
-    assert!(activity(&c1).iter().any(|t| t.contains("以 claude/mbp-1 领取")), "{:?}", activity(&c1));
+    assert!(activity(&c1).iter().any(|t| t.contains("以 claude-mbp/opus-5.5 领取")), "{:?}", activity(&c1));
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
     assert!(local.contains("prompt: /board-skills 开始执行 default项目之中的main白板中的#1任务"), "{local}");
-    assert!(local.contains("BOARD_AS=claude/mbp-1，BOARD_HOST=mbp"), "派发提示词里带上 board host 身份：{local}");
-    assert!(local.contains("as: claude/mbp-1 host: mbp board: default/main"), "{local}");
+    assert!(local.contains("BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "派发提示词里带上 board host 身份：{local}");
+    assert!(local.contains("as: claude-mbp/opus-5.5 host: mbp board: default/main"), "{local}");
     assert!(rig.dispatch_log(d1).iter().any(|l| l == "交审了"));
     assert!(local.contains("config: ok"), "BOARD_CONFIG 指向这次派发的配置文件：{local}");
     assert!(local.contains("exe: ok"), "BOARD_EXE 是 board 自己的路径：{local}");
@@ -243,7 +244,7 @@ fn host_runs_dispatches_end_to_end() {
     // 同时跑 1 个：#3 在跑时派发 #4 排队，别的 agent 领 #4 报 DISPATCHED
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp"]).code, 0);
-    wait_until("#3 开始", Duration::from_secs(10), || rig.show(3)["holder"] == "claude/mbp-3");
+    wait_until("#3 开始", Duration::from_secs(10), || rig.show(3)["holder"] == "claude-mbp/opus-5.5");
     assert_eq!(rig.board(&["dispatch", "4", "--host", "mbp"]).code, 0);
     assert_eq!(rig.board(&["claim", "4", "--json"]).error_code(), "DISPATCHED");
     std::thread::sleep(Duration::from_secs(1));
@@ -254,7 +255,8 @@ fn host_runs_dispatches_end_to_end() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     wait_until("#3 已停止", Duration::from_secs(15), || ended(&rig.show(3), "已停止"));
     assert_eq!(rig.show(3)["column"], "check");
-    wait_until("#4 开始", Duration::from_secs(10), || rig.show(4)["holder"] == "claude/mbp-4");
+    // 上一个会话离线后名字复用
+    wait_until("#4 开始", Duration::from_secs(10), || rig.show(4)["holder"] == "claude-mbp/opus-5.5");
 
     // Ctrl+C（SIGTERM）：先停掉 #4，再离线
     let (code, out) = stop(host);
@@ -354,7 +356,7 @@ impl Rig {
     fn dispatch_running(&self, id: i64) -> i64 {
         let r = self.board(&["dispatch", &id.to_string(), "--host", "mbp", "--json"]);
         assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-        wait_until(&format!("#{id} 开始"), Duration::from_secs(15), || self.show(id)["holder"] == format!("claude/mbp-{id}"));
+        wait_until(&format!("#{id} 开始"), Duration::from_secs(15), || self.show(id)["holder"] == "claude-mbp/opus-5.5");
         r.json()["id"].as_i64().unwrap()
     }
 }

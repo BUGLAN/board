@@ -110,6 +110,8 @@ export interface HostAgent {
   env?: string | null;
   /** 在实际用的启动环境里找到了命令、却看不到 board-skills：该装到哪里。看得到、旧版 board host 没有 */
   no_skill?: string | null;
+  /** 这个 agent 在这台机器上实际配的模型名：派发的 agent 名字（<agent 标识>-<机器名>/<模型名>）的第二段；旧版 board host 没有 */
+  model?: string;
 }
 
 /** 一个 agent 在一个启动环境里的检查结果 */
@@ -197,7 +199,7 @@ export interface Dispatch {
   host: string;
   agent: string;
   agentLabel: string;
-  /** 开始时生成的 agent 名字 <agent 标识>/<机器名>-<序号> */
+  /** 开始时生成的 agent 名字 <agent 标识>-<机器名>/<模型名>（并发派发时第一段带 -<序号>） */
   name: string | null;
   /** 开始时用的启动环境标识与名称（Git Bash、WSL（Ubuntu）…）；旧版 board host、还没开始时为空 */
   env?: string | null;

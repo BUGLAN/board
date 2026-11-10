@@ -125,6 +125,7 @@ impl Config {
 ///
 /// [agents.claude]
 /// cmd = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"]
+/// model = "opus-5.5"
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct HostConf {
@@ -139,6 +140,9 @@ pub struct AgentConf {
     pub id: String,
     /// 名称（界面上显示）；不写时用标识
     pub name: Option<String>,
+    /// 模型名：派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段；不写时用内置模板的默认值，
+    /// 内置模板也没有时用 agent 标识
+    pub model: Option<String>,
     pub cmd: Vec<String>,
 }
 
@@ -172,7 +176,8 @@ impl Config {
                     .filter(|v| !v.is_empty())
                     .ok_or_else(|| bad(&format!("agents.{id}.cmd（要写成字符串数组）")))?;
                 let name = at.get("name").and_then(|x| x.as_str()).map(str::to_string);
-                c.agents.push(AgentConf { id: id.to_string(), name, cmd });
+                let model = at.get("model").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                c.agents.push(AgentConf { id: id.to_string(), name, model, cmd });
             }
         }
         Ok(c)

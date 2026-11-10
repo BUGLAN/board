@@ -90,7 +90,7 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 
 ## 由 board host 启动的会话
 
-Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以生成的名字（`<agent 标识>/<机器名>-<序号>`，例如 `claude/mbp-3`）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；心跳由 board host 替你发。
+Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以生成的名字（`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；心跳由 board host 替你发。
 
 **怎么认**：环境变量里有 `BOARD_HOST`（机器名），并且 `board show <ID> --json` 的 `holder` 是 `BOARD_AS`。这时：
 

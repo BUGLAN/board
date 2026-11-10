@@ -13,8 +13,8 @@
 //! - **派发**：一次「在某台机器上用某种 agent 做某张卡」。手动派发（界面「派发」或 `board dispatch`）和定时领取
 //!   都会产生派发记录：排队（queued）→ 在跑（running）→ 结束（done，带结果）。
 //! - **开始**（[`W::dispatch_begin`]、定时领取 [`W::dispatch_pull`]）在一个写事务里完成：生成 agent 名字
-//!   `<agent 标识>/<机器名>-<序号>`、check 这个名字、以它领取卡片。领不到时这次派发结束，结果「没领到」。
-//!   之后 host 每次上报时替这些名字发 agent 级心跳，直到派发结束。
+//!   `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`，见 [`dispatch_agent_name`]）、check 这个名字、
+//!   以它领取卡片。领不到时这次派发结束，结果「没领到」。之后 host 每次上报时替这些名字发 agent 级心跳，直到派发结束。
 //! - **结束**（[`W::dispatch_end`]）：agent 退出后，卡片仍由这个名字持有就发 final、沿连线移到需要人处理的状态并评论
 //!   （异常退出 / 已停止）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
 //! - **占用**：卡片有排队中的派发时，别的 agent `board claim <ID>` 报 `DISPATCHED`，不带 ID 的 `board claim` 跳过它；
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   cron     TEXT NOT NULL DEFAULT '[]',-- 定时领取的时间点（JSON，HH:MM，机器本地时区）
   round_at INTEGER,                   -- 正在进行的一轮领取从什么时候开始；没有时为空
   rr       INTEGER NOT NULL DEFAULT 0,-- 定时领取轮到第几块白板
-  seq      INTEGER NOT NULL DEFAULT 0,-- agent 名字的序号
+  seq      INTEGER NOT NULL DEFAULT 0,-- （不再使用：派发名字不再用序号计数，保留列免得旧库迁移）
   first_at INTEGER NOT NULL,
   beat_at  INTEGER NOT NULL,
   off_at   INTEGER                    -- 离线的时间；在线时为空
@@ -182,7 +182,37 @@ pub fn host_name_from(raw: &str) -> String {
     if s.is_empty() { "host".into() } else { s }
 }
 
-/// agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<标识>/<机器名>-<序号>` 不超过 48 个字符）
+/// 一次派发的 agent 名字：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`；
+/// 同一台机器同一 agent、模型有多个并发派发时第一段加 `-<序号>`，例如 `dsh-win-2/deepseek-v4.1-flash`（seq 0 表示不带）。
+/// 模型名来自 board host 上报的 agent 数据（配置文件 `[agents.<标识>] model`，内置模板有默认值）；没有时用 agent 标识。
+/// 转成名字能用的样子（小写、空白和非法字符换成 `-`、去掉开头结尾的 `-`），放不下时截断，保证总长不超过 48 个字符，
+/// 能通过 `board check` 的名字格式校验（[`crate::check_agent_name`]）
+pub fn dispatch_agent_name(agent: &str, host: &str, model: &str, seq: u32) -> String {
+    let mut first = format!("{agent}-{host}");
+    if seq > 0 {
+        first = format!("{first}-{seq}");
+    }
+    let room = AGENT_NAME_MAX.saturating_sub(first.chars().count() + 1).max(1);
+    let mut seg = name_segment(model, room);
+    if seg.is_empty() {
+        seg = name_segment(agent, room);
+    }
+    format!("{first}/{seg}")
+}
+
+/// 名字的一段（机器名、模型名）：小写，空白和非法字符换成 `-`，去掉开头结尾的 `-`，最长 max 个字符
+fn name_segment(raw: &str, max: usize) -> String {
+    let s: String = raw
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-' { c } else { '-' })
+        .collect();
+    let s = s.trim_matches(['-', '.']);
+    s.chars().take(max).collect::<String>().trim_matches(['-', '.']).to_string()
+}
+
+/// agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<标识>-<机器名>/<模型名>` 不超过 48 个字符）
 pub fn check_agent_id(id: &str) -> std::result::Result<(), String> {
     let ok = !id.is_empty()
         && id.len() <= 16
@@ -229,6 +259,11 @@ pub struct HostAgent {
     /// 看得到、没找到命令、配置文件里的 agent（不检查）、旧版 board host 都为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_skill: Option<String>,
+    /// 这个 agent 在这台机器上实际配的模型名：派发名字的第二段（`<agent 标识>-<机器名>/<模型名>`）。
+    /// 来源是 board host 的配置文件 `[agents.<标识>] model`，内置模板有默认值；没配置、旧版 board host 为空，
+    /// 生成名字时用 agent 标识代替
+    #[serde(default)]
+    pub model: String,
 }
 
 /// 一个 agent 在一个启动环境里的检查结果
@@ -1169,7 +1204,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 动态里的「mbp · Claude Code · claude/mbp-1，手动」；有启动环境时「mbp · pi · Git Bash · pi/mbp-1，手动」
+    /// 动态里的「mbp · Claude Code · claude-mbp/opus-5.5，手动」；有启动环境时「mbp · pi · Git Bash · pi-mbp/pi，手动」
     fn dispatch_words(d: &DRow) -> String {
         let mut s = format!("{} · {}", d.host, d.agent_label);
         if let Some(e) = &d.env_name {
@@ -1623,11 +1658,15 @@ impl<'a> W<'a> {
 
     /// 生成名字、check、以它领取卡片。领不到时这次派发结束，结果「没领到」
     fn start(&mut self, h: &HostRow, d: DRow, token: Option<i64>) -> Result<Dispatch> {
-        let mut seq: i64 = self.tx.query_row("SELECT seq FROM hosts WHERE id = ?1", [h.id], |r| r.get(0))?;
+        // 名字：<agent 标识>-<机器名>/<模型名>（dsh-win/deepseek-v4.1-flash）。模型名来自 board host 上报的
+        // agent 数据（配置文件 [agents.<标识>] model，内置模板有默认值），没有时用 agent 标识。
+        // 不带序号的名字空闲就直接用；同一台机器同一 agent、模型有多个并发派发时加 -2、-3 …，只有在线的名字算占用，
+        // 上一个会话离线后名字可以复用
+        let model = h.agents.iter().find(|a| a.id == d.agent).map(|a| a.model.as_str()).unwrap_or_default();
         let gap = crate::agents::NAME_GAP_MS;
+        let mut seq = 0u32;
         let name = loop {
-            seq += 1;
-            let n = format!("{}/{}-{}", d.agent, h.name, seq);
+            let n = dispatch_agent_name(&d.agent, &h.name, model, seq);
             let taken: bool = self.tx.query_row(
                 "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1 AND off_at IS NULL AND beat_at + ?3 > ?2",
                 params![n, self.now, gap],
@@ -1636,8 +1675,9 @@ impl<'a> W<'a> {
             if !taken {
                 break n;
             }
+            // 不带序号的被占用：依次试 -2、-3 …
+            seq = if seq == 0 { 2 } else { seq + 1 };
         };
-        self.tx.execute("UPDATE hosts SET seq = ?2 WHERE id = ?1", params![h.id, seq])?;
         // 用哪个启动环境：按开始这一刻的机器设置
         let env = h.agents.iter().find(|a| a.id == d.agent).and_then(|a| h.pick(a)).map(|c| c.env.clone());
         let env_name = env.as_deref().map(|e| h.env_name(e));
@@ -1656,7 +1696,7 @@ impl<'a> W<'a> {
             Ok(_) => {
                 self.tx.execute("UPDATE dispatches SET state = 'running', started_at = ?2, session = ?1 WHERE id = ?1", params![d.id, self.now])?;
                 self.touch_hosts();
-                // 「mbp 上的 pi（Git Bash）以 pi/mbp-1 领取」；旧版 board host 没有启动环境：「mbp 上的 pi 以 …」
+                // 「mbp 上的 Claude Code（Git Bash）以 claude-mbp/opus-5.5 领取」；旧版 board host 没有启动环境：「mbp 上的 Claude Code 以 …」
                 let who = match &env_name {
                     Some(e) => format!("{}（{e}）", d.agent_label),
                     None => format!("{} ", d.agent_label),

@@ -79,7 +79,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 **名字由 agent 自己生成**：运行环境用 claude、codex 这类名称；模型名转成小写，空格换成 `-`；本机已有同名会话时，加一个和本会话相关的后缀，例如任务名或分支名。
 
-**board host 生成的名字**：`<agent 标识>/<机器名>-<序号>`，例如 `claude/mbp-3`，序号在这台机器上递增。`board host` 以这个名字 check、领取卡片、发心跳，再启动 agent（§9.1）。
+**board host 生成的名字**：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`。模型名来自这台机器上这个 agent 实际配的模型（`~/.board/config.toml` 的 `[agents.<标识>] model`，内置模板有默认值，见 §9.1；没有时用 agent 标识）。不带序号的这个名字空闲时直接用；同一台机器同一 agent、模型有多个并发派发时第一段加 `-<序号>`（例如 `dsh-win-2/deepseek-v4.1-flash`），只有在线的名字算占用，上一个会话离线后名字可以复用。`board host` 以这个名字 check、领取卡片、发心跳，再启动 agent（§9.1）。
 
 **check**：`board check --as <名字>`。
 
@@ -363,7 +363,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 1. 生成 agent 名字（§3.2），check 这个名字，再以它领取卡片。领取失败（卡片已被领走、已不在可领取状态）时这次派发结束，结果「没领到」，不启动 agent。
 2. 领到后，`board host` 以这个名字发心跳（每 10 秒），直到派发结束。
-3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 pi（Git Bash）以 pi/mbp-3 领取（手动）」）：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`，后面再带一句 board host 身份提示（`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`，卡片已由它领取，不要 check、claim、心跳，不要创建 goal；交审或交给人之后执行 `board next --json`，领到卡片就接着做，返回 `SESSION_DONE` 就结束）；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
+3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 Claude Code（Git Bash）以 claude-mbp/opus-5.5 领取（手动）」）：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`，后面再带一句 board host 身份提示（`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`，卡片已由它领取，不要 check、claim、心跳，不要创建 goal；交审或交给人之后执行 `board next --json`，领到卡片就接着做，返回 `SESSION_DONE` 就结束）；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
 4. agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行；服务端每个派发保留最后 500 行。会话里换到下一张后，进程的输出记到当时正在做的那张卡的派发上。
 
 **会话接着做**（`board next`）：同一个 agent 进程做的几张卡算一个会话，每张卡各有一条派发记录。agent 交审或交给人之后执行 `board next`，服务端在一个写事务里：结算上一张的派发 → 挑下一张 → 以同一个名字领取 → 记一条新的派发（同一台机器、同一个 agent、同一个启动环境，来源定时；卡片动态写「派发开始：…以 <名字> 接着做（定时，这个会话的第 N 张）」）。会话占一个空位直到进程退出，取下一张不看「同时跑几个」。
@@ -683,7 +683,7 @@ agent 名字与心跳：
 任务下发（§9.1）：
 
 60. `board host --name mbp --dir oss/main=<目录>` 启动后，界面「机器」页出现 mbp：在线、同时跑 1、本机 agent 里 Claude Code 带版本号；PATH 里没有的 agent 显示为没找到。再用同名启动第二个 `board host`，报 `HOST_NAME_TAKEN`。
-61. 在 #3（待办）的详情里点「派发」→ mbp → Claude Code，2 秒内 mbp 领取 #3，持有者是 `claude/mbp-1`；`~/.board/host/logs/` 下出现这次派发的日志，界面上「日志」能看到内容。
+61. 在 #3（待办）的详情里点「派发」→ mbp → Claude Code，2 秒内 mbp 领取 #3，持有者是 `claude-mbp/opus-5.5`；`~/.board/host/logs/` 下出现这次派发的日志，界面上「日志」能看到内容。
 62. agent 按 skill 做完并移到「待审核」后退出：派发结果「已交审」，mbp 的并发位空出，卡片动态里有派发开始和结束两条记录。
 63. mbp 同时跑 1 个时再派发 #4：#4 显示「排队 → mbp · Claude Code（等空位）」，别的 agent `board claim 4` 报 `DISPATCHED`；#3 结束后 #4 自动开始。
 64. mbp 离线时派发 #5：显示「等机器上线」；mbp 上线后 #5 开始。

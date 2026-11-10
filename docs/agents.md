@@ -4,7 +4,7 @@
 
 ## board host 怎么启动 agent
 
-派发开始时，`board host` 已经以 `<agent 标识>/<机器名>-<序号>`（例如 `dsh/mbp-3`）领到了卡片，然后：
+派发开始时，`board host` 已经以 `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`）领到了卡片，然后：
 
 1. 在这块白板对应的目录（`--dir <项目>/<白板>=<路径>`）里、在这个 agent 的**启动环境**里执行它的**命令模板**。模板里的 `{prompt}` 换成一行提示词，作为**一个参数**传入，不拼进 shell 命令文本：
 
@@ -53,18 +53,18 @@
 | 8 | `<命令> --version` 第一行是版本号 | 界面上只显示「找到了」（不影响使用） |
 | 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，非交互命令在里面能做完一张卡。Windows 上不支持的环境（例如 pi 不支持 cmd）不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
 
-agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<标识>/<机器名>-<序号>` 不超过 48 个字符）。
+agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<标识>-<机器名>/<模型名>` 不超过 48 个字符）。
 
 ## 已经接入的（内置模板）
 
-内置模板写在 `crates/board-cli/src/host.rs` 的 `BUILTIN` 里。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（定时领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。
+内置模板写在 `crates/board-cli/src/host.rs` 的 `BUILTIN` 里。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（定时领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `pi-mbp/pi`），配置文件里的 `model` 可以覆盖。
 
-| 顺序 | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
-|---|---|---|---|---|---|---|---|
-| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --permission-mode danger-full-access {prompt}` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
-| 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
-| 3 | `pi` | pi | `pi -p {prompt}` | — | `~/.agents/skills`（也读 `~/.pi/agent/skills`） | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`） | `pi` 里配好 provider 和默认模型 |
-| 4 | `codex` | Codex | `codex exec --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
+| 顺序 | 标识 | 名称 | 命令模板 | 默认模型 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --permission-mode danger-full-access {prompt}` | `deepseek-v4.1-flash` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
+| 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions` | `opus-5.5` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
+| 3 | `pi` | pi | `pi -p {prompt}` | — | — | `~/.agents/skills`（也读 `~/.pi/agent/skills`） | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`） | `pi` 里配好 provider 和默认模型 |
+| 4 | `codex` | Codex | `codex exec --dangerously-bypass-approvals-and-sandbox {prompt}` | — | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
@@ -122,9 +122,12 @@ ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skil
 [agents.<标识>]
 name = "<名称>"
 cmd = ["<命令>", "<非交互参数>", "<跳过审批参数>", "{prompt}"]
+model = "<它实际用的模型名>"
 ```
 
-重启 `board host`，启动输出和界面「机器」里应该出现它，带版本号；机器详情「本机 agent」的启动环境下拉里能看到它在每个启动环境里找没找到。同标识的 `[agents.*]` 也用来临时改内置模板（例如换参数、换路径）。
+`model` 写进派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`，PRD §3.2）；不写时用内置模板的默认值（上表），内置模板也没有时用 agent 标识。转成小写、空白换成 `-`。
+
+重启 `board host`，启动输出和界面「机器」里应该出现它，带版本号；机器详情「本机 agent」的启动环境下拉里能看到它在每个启动环境里找没找到。同标识的 `[agents.*]` 也用来临时改内置模板（例如换参数、换路径、换模型）。
 
 ### 4. 端到端验证：用本机服务端，不碰线上
 

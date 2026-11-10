@@ -13,7 +13,7 @@
 //!   的 agent 启动时提醒一行。怎么接入新的 agent 见 docs/agents.md。
 //! - 每 10 秒向服务端上报一次（机器心跳），同时替正在跑的派发的名字发 agent 级心跳；订阅实时推送，
 //!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。
-//! - 有空位、没有暂停时，按创建先后开始排队中的派发：服务端生成名字 `<agent 标识>/<机器名>-<序号>`、check、领取，
+//! - 有空位、没有暂停时，按创建先后开始排队中的派发：服务端生成名字 `<agent 标识>-<机器名>/<模型名>`、check、领取，
 //!   host 在这块白板对应的目录里、在派发记录写的启动环境里启动 agent（`{prompt}` 换成 `/board-skills 开始执行 …`
 //!   那一行，`{patch}` 换成这次派发的 profile 补丁路径；都作为一个参数传入，不拼进 shell 命令文本），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
 //!   指向这次派发自己的配置文件 `~/.board/host/run/<机器名>/<派发 ID>.toml`（地址和令牌，0600，派发结束时删除）。
@@ -58,6 +58,9 @@ struct Builtin {
     /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
     /// 这次派发的 profile 补丁路径，都作为一个参数传入
     cmd: &'static [&'static str],
+    /// 模型名：派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段。配置文件里的 `model` 覆盖它；
+    /// 空表示这个 agent 没有默认的模型（pi、codex 里配），生成名字时服务端用 agent 标识代替
+    model: &'static str,
     /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）
     also: &'static [&'static str],
     /// 这个 agent 读用户级 skill 的目录：启动时看 `board-skills` 装没装
@@ -78,6 +81,7 @@ const BUILTIN: [Builtin; 4] = [
         id: "dsh",
         name: "DeepSeek Harness",
         cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--permission-mode", "danger-full-access", "{prompt}"],
+        model: "deepseek-v4.1-flash",
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
             "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
@@ -92,6 +96,7 @@ const BUILTIN: [Builtin; 4] = [
         id: "claude",
         name: "Claude Code",
         cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+        model: "opus-5.5",
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
         // Claude Code 不读 .agents/skills
@@ -103,6 +108,7 @@ const BUILTIN: [Builtin; 4] = [
         id: "pi",
         name: "pi",
         cmd: &["pi", "-p", "{prompt}"],
+        model: "",
         also: &[],
         skills: &["~/.agents/skills", "~/.pi/agent/skills"],
         project: &[".agents/skills", ".pi/skills"],
@@ -114,6 +120,7 @@ const BUILTIN: [Builtin; 4] = [
         id: "codex",
         name: "Codex",
         cmd: &["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
+        model: "",
         also: &[],
         skills: &["$CODEX_HOME/skills"],
         project: &[".agents/skills"],
@@ -164,6 +171,8 @@ pub struct Opts {
 struct Spec {
     id: String,
     name: String,
+    /// 模型名：派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段；上报给服务端
+    model: String,
     cmd: Vec<String>,
     /// 读用户级 skill 的目录（内置模板才有）
     skills: Vec<String>,
@@ -193,6 +202,7 @@ impl Spec {
             envs: self.checks.iter().map(|c| EnvCheck { no_skill: self.no_skill.get(&c.env).cloned(), ..c.report() }).collect(),
             env: None,
             no_skill: def.and_then(|c| self.no_skill.get(&c.env).cloned()),
+            model: self.model.clone(),
         }
     }
 
@@ -226,6 +236,8 @@ impl Spec {
 struct Template {
     id: String,
     name: String,
+    /// 模型名（派发名字的第二段）；配置文件里的 `model` 覆盖内置模板的
+    model: String,
     cmd: Vec<String>,
     /// 命令不在 PATH 里时再看的位置（只在直接启动、登录 shell 里用）
     also: Vec<String>,
@@ -246,6 +258,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
         .map(|b| Template {
             id: b.id.to_string(),
             name: b.name.to_string(),
+            model: b.model.to_string(),
             cmd: strs(b.cmd),
             also: strs(b.also),
             skills: strs(b.skills),
@@ -266,10 +279,14 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 if let Some(n) = &a.name {
                     x.name = n.clone();
                 }
+                if let Some(m) = &a.model {
+                    x.model = m.clone();
+                }
             }
             None => out.push(Template {
                 id: a.id.clone(),
                 name: a.name.clone().unwrap_or_else(|| a.id.clone()),
+                model: a.model.clone().unwrap_or_default(),
                 cmd: a.cmd.clone(),
                 also: vec![],
                 skills: vec![],
@@ -298,6 +315,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             .map(|(t, checks)| Spec {
                 id: t.id,
                 name: t.name,
+                model: t.model,
                 cmd: t.cmd,
                 skills: t.skills,
                 project: t.project,
@@ -1346,26 +1364,38 @@ mod tests {
         assert!(DSH_HEADLESS_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
         assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
         assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
+        // 派发名字的第二段（模型名）：dsh、claude 有默认值（dsh-win/deepseek-v4.1-flash、claude-mbp/opus-5.5 这类），
+        // pi、codex 没有默认的模型（各自配好 provider 才有）
+        assert_eq!(dsh.model, "deepseek-v4.1-flash");
+        assert_eq!(BUILTIN.iter().find(|b| b.id == "claude").unwrap().model, "opus-5.5");
+        assert!(BUILTIN.iter().find(|b| b.id == "pi").unwrap().model.is_empty());
+        assert!(BUILTIN.iter().find(|b| b.id == "codex").unwrap().model.is_empty());
         // 内置 agent 全部换成找不到的命令：本机真装了 dsh、pi、codex 也不去执行它们的 --version
         // （本机执行 codex 会被 macOS 拦下、反复弹「包含恶意软件」的提示）
-        let nope = |id: &str| AgentConf { id: id.into(), name: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
+        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
         let conf = vec![
             nope("dsh"),
             nope("claude"),
             nope("pi"),
             nope("codex"),
-            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
+            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
         ];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex", "mycli"]);
         let claude = specs.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.name, "Claude Code");
+        assert_eq!(claude.model, "opus-5.5", "配置文件没写 model：保留内置模板的默认值");
         assert!(claude.default_check().is_none(), "换了命令就不再看内置的备用位置");
         assert_eq!(specs[4].name, "My CLI");
+        assert_eq!(specs[4].model, "gpt-5");
         assert_eq!(specs[4].checks.len(), 1, "只有直接启动");
         assert!(!specs[4].misses_skill(&Env::direct(), &[]), "配置文件里的 agent 不检查 skill");
         let r = specs[4].report();
-        assert_eq!((r.found, r.envs.len(), r.env, r.no_skill), (false, 1, None, None));
+        assert_eq!((r.found, r.envs.len(), r.env, r.no_skill, r.model.as_str()), (false, 1, None, None, "gpt-5"));
+        // 配置文件里的 model 覆盖内置模板的
+        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()] }];
+        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
+        assert_eq!(specs[0].model, "deepseek-reasoner");
     }
 
     #[test]
@@ -1384,6 +1414,7 @@ mod tests {
         let spec = Spec {
             id: "pi".into(),
             name: "pi".into(),
+            model: String::new(),
             cmd: vec!["pi".into()],
             skills: vec!["/board-test-no-such-skills".into()],
             project: vec![".agents/skills".into(), ".pi/skills".into()],
@@ -1435,7 +1466,7 @@ mod tests {
             host: "mbp".into(),
             agent: "claude".into(),
             agent_label: "Claude Code".into(),
-            name: Some("claude/mbp-1".into()),
+            name: Some("claude-mbp/opus-5.5".into()),
             env: None,
             env_name: None,
             source: "cron".into(),
