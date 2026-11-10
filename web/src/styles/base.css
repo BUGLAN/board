@@ -49,7 +49,7 @@ a { color: inherit; }
 
 /* ---- 滚动条 ----
    原生滚动条全部隐藏，由 lib/scrollbars.ts 画浮层：滚动时一根 2px 发丝线，
-   鼠标移到区域边缘时展开成 8px 滑块。不要滚动条的区域加 data-scrollbar="none" */
+   滚动条显示着时鼠标移到区域边缘才展开成 8px 滑块（隐藏时靠近不出现）。不要滚动条的区域加 data-scrollbar="none" */
 * { scrollbar-width: none; }
 *::-webkit-scrollbar { display: none; width: 0; height: 0; }
 

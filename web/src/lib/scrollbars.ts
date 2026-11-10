@@ -1,6 +1,7 @@
 // 全局浮层滚动条：原生滚动条全部隐藏（base.css），这里给所有滚动区域画浮层的细条。
 // - 滚动时：在滚动的那一侧出现 2px 发丝线，停止滚动 HIDE_DELAY 毫秒后淡出
-// - 鼠标移到滚动区域边缘 EDGE 像素内：发丝线展开成 8px 滑块，可以拖，点轨道空白处翻一页
+// - 滚动条正显示着（滚动中，或正在悬停 / 拖动）时，鼠标移到滚动区域边缘 EDGE 像素内：发丝线展开成 8px 滑块，
+//   可以拖，点轨道空白处翻一页。滚动条隐藏时鼠标靠近边缘不出现、不响应
 // 不用给组件包任何东西：在 document 上监听 scroll（捕获）和 pointermove，按需给滚动元素建一条。
 // 不想要滚动条的区域加 data-scrollbar="none"。
 
@@ -53,6 +54,12 @@ function canScroll(el: Element, axis: Axis): boolean {
 
 function optedOut(el: Element): boolean {
   return !!el.closest('[data-scrollbar="none"]') || !!layer?.contains(el);
+}
+
+/** 这一侧的滚动条正显示着：滚动中、悬停展开着或正在拖 */
+function shown(el: Element, axis: Axis): boolean {
+  const r = bars.get(el)?.[axis];
+  return !!r && (r.scrolling || r.near || r.drag);
 }
 
 function makeRail(axis: Axis, root: HTMLDivElement, bar: () => Bar): Rail {
@@ -263,8 +270,11 @@ function onScroll(e: Event) {
   if (sx && !bar.x.drag) poke(bar, 'x');
 }
 
-// 鼠标靠近哪个滚动区域的边缘：从指针下的元素往外找，每个方向取最里层的
+// 鼠标靠近哪个滚动区域的边缘：从指针下的元素往外找，每个方向取最里层的。
+// 只认正显示着滚动条的那一侧：隐藏的滚动条不因为鼠标靠近而出现
 let pending: PointerEvent | null = null;
+/** 最里层靠近的区域滚动条没显示：就当没靠近任何区域（不再往外层找） */
+const NONE = {} as Element;
 function onPointerMove(e: PointerEvent) {
   if (e.pointerType !== 'mouse') return;
   const first = !pending;
@@ -294,16 +304,16 @@ function hoverFrame() {
       const innerTop = r.top + el.clientTop;
       if (!ny && yOver) {
         const right = inner + el.clientWidth;
-        if (right - e.clientX <= EDGE && e.clientX <= right && canScroll(el, 'y')) ny = el;
+        if (right - e.clientX <= EDGE && e.clientX <= right && canScroll(el, 'y')) ny = shown(el, 'y') ? el : NONE;
       }
       if (!nx && xOver) {
         const bottom = innerTop + el.clientHeight;
-        if (bottom - e.clientY <= EDGE && e.clientY <= bottom && canScroll(el, 'x')) nx = el;
+        if (bottom - e.clientY <= EDGE && e.clientY <= bottom && canScroll(el, 'x')) nx = shown(el, 'x') ? el : NONE;
       }
     }
   }
-  setNear(ny, 'y');
-  setNear(nx, 'x');
+  setNear(ny === NONE ? null : ny, 'y');
+  setNear(nx === NONE ? null : nx, 'x');
 }
 
 function setNear(el: Element | null, axis: Axis) {
