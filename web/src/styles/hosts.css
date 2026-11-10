@@ -368,7 +368,20 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
 .hp-crule:not(.fallback) > .hp-lset { min-width: 0; }
 .hp-crule .hp-crule-op, .hp-crule .hp-crule-agent { max-width: 118px; }
 .hp-crule-warn { grid-column: 1 / -1; }
+/* 窄屏：第一行条件和上移 / 下移 / 删除，第二行标签，第三行 → agent（新规则：→ agent 和「加规则」） */
 @media (max-width: 760px) {
-  .hp-crule:not(.fallback), .hp-crule.add { grid-template-columns: minmax(0, 1fr) auto auto auto; }
-  .hp-crule:not(.fallback) > .hp-lset { grid-column: 1 / -1; grid-row: 2; }
+  .hp-crule:not(.fallback) {
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto; row-gap: 6px;
+    grid-template-areas: "op op up down del" "lset lset lset lset lset" "arrow agent agent agent agent";
+  }
+  .hp-crule.add { grid-template-columns: auto minmax(0, 1fr) auto; row-gap: 6px; grid-template-areas: "op op op" "lset lset lset" "arrow agent btn"; margin-top: 4px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .hp-crule:not(.fallback) > .hp-crule-op { grid-area: op; justify-self: start; }
+  .hp-crule:not(.fallback) > .hp-lset { grid-area: lset; }
+  .hp-crule:not(.fallback) > svg { grid-area: arrow; }
+  .hp-crule:not(.fallback) > .hp-crule-agent { grid-area: agent; justify-self: start; }
+  .hp-crule:not(.fallback) > button:nth-of-type(1) { grid-area: up; }
+  .hp-crule:not(.fallback) > button:nth-of-type(2) { grid-area: down; }
+  .hp-crule:not(.fallback) > button:nth-of-type(3) { grid-area: del; }
+  .hp-crule.add:not(.fallback) > button { grid-area: btn; }
+  .hp-crule .hp-crule-op, .hp-crule .hp-crule-agent { max-width: 100%; }
 }
