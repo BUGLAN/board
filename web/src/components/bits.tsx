@@ -118,7 +118,7 @@ export function LabelChip({
     >
       <LabelPriority label={label} />
       <LabelLock label={label} />
-      {label.name}
+      <span className="lb-name">{label.name}</span>
       {onRemove && (
         <button
           type="button"
@@ -136,9 +136,9 @@ export function LabelChip({
   );
 }
 
-/** 卡片上的标签：按项目里标签的顺序排（加上新标签、服务端确认时位置都不跳），最多显示 max 个，其余折叠成 +n。
+/** 卡片上的标签：按项目里标签的顺序排（加上新标签、服务端确认时位置都不跳），默认全部显示（给了 max 时多出的折叠成 +n）。
     pending：正在写入的标签，画成半透明 + 扫光 */
-export function LabelChips({ ids, labels, max = 3, pending }: { ids: number[]; labels: Label[]; max?: number; pending?: number[] }) {
+export function LabelChips({ ids, labels, max = Infinity, pending }: { ids: number[]; labels: Label[]; max?: number; pending?: number[] }) {
   const ls = labels.filter(l => ids.includes(l.id));
   if (!ls.length) return null;
   return (

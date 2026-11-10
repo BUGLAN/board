@@ -191,7 +191,7 @@ export const CardView = memo(function CardView({
           {doing ? (
             <div className="card-claim">
               <Avatar actor={agent(c.holder!)} />
-              <span className="claim-name">{c.holder}</span>
+              <MidName className="claim-name" name={c.holder!} />
               <RunPill card={c} now={now} />
               {t.runs > 1 && (
                 <span className="claim-sub">
@@ -368,7 +368,7 @@ export function TilePeek() {
           <>
             <span className="ct-pop-holder">
               <Avatar actor={agent(card.holder!)} />
-              {card.holder}
+              <MidName name={card.holder!} />
             </span>
             <RunPill card={card} now={now} />
           </>
@@ -382,6 +382,87 @@ export function TilePeek() {
           <LabelChips ids={card.labels} labels={labels} pending={pending} />
         </span>
       )}
+    </div>,
+    document.body,
+  );
+}
+
+/** 名字单行显示，放不下时省略中间：开头可以缩，结尾几个字符（多半是区分会话的后缀）一直留着；悬停看全名 */
+export function MidName({ name, className, tail = 8 }: { name: string; className?: string; tail?: number }) {
+  const cut = name.length > tail + 4 ? name.length - tail : name.length;
+  return (
+    <span className={cx('mid-name', className)} title={name}>
+      <span className="mid-head">{name.slice(0, cut)}</span>
+      {cut < name.length && (
+        <span className="mid-tail">
+          <span>{name.slice(cut)}</span>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* ---------------- 卡片上的悬停提示 ---------------- */
+
+/** 卡片里带 data-tip 的提示（计时胶囊等）不用 ::after 画：那样会被相邻卡片、状态块盖住，被列表的滚动区域裁掉。
+    改成挂在 body 上的一个浮层，放在所有卡片、状态块和工作流条之上；下面放不下就放上面，左右夹在窗口里 */
+export function CardTips() {
+  const [tip, setTip] = useState<{ el: HTMLElement; text: string } | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!window.matchMedia('(hover: hover)').matches) return;
+    let showT = 0;
+    const tipOf = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.<HTMLElement>('.card [data-tip]') ?? null;
+    const hide = () => {
+      clearTimeout(showT);
+      setTip(null);
+    };
+    const over = (e: PointerEvent) => {
+      const el = tipOf(e.target);
+      if (!el || e.buttons || document.body.classList.contains('is-dragging')) return;
+      clearTimeout(showT);
+      // 和原来的 ::after 一样停 350ms 再出现，指针扫过不闪
+      showT = window.setTimeout(() => el.isConnected && el.dataset.tip && setTip({ el, text: el.dataset.tip }), 350);
+    };
+    const out = (e: PointerEvent) => {
+      const el = tipOf(e.target);
+      if (el && !el.contains(e.relatedTarget as Node | null)) hide();
+    };
+    document.addEventListener('pointerover', over);
+    document.addEventListener('pointerout', out);
+    document.addEventListener('pointerdown', hide, true);
+    document.addEventListener('scroll', hide, true);
+    window.addEventListener('blur', hide);
+    return () => {
+      clearTimeout(showT);
+      document.removeEventListener('pointerover', over);
+      document.removeEventListener('pointerout', out);
+      document.removeEventListener('pointerdown', hide, true);
+      document.removeEventListener('scroll', hide, true);
+      window.removeEventListener('blur', hide);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!tip || !el) return;
+    const r = tip.el.getBoundingClientRect();
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const gap = 8;
+    const end = tip.el.dataset.tipAlign === 'end';
+    const x = Math.round(Math.max(gap, Math.min(window.innerWidth - w - gap, end ? r.right - w : r.left + r.width / 2 - w / 2)));
+    const below = r.bottom + gap + h <= window.innerHeight - gap;
+    const y = Math.round(below ? r.bottom + gap : r.top - gap - h);
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.dataset.side = below ? 'bottom' : 'top';
+  }, [tip]);
+
+  if (!tip || !tip.el.isConnected) return null;
+  return createPortal(
+    <div ref={box} className="float-tip" role="tooltip">
+      {tip.text}
     </div>,
     document.body,
   );

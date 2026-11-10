@@ -42,6 +42,9 @@
 .lb-add:hover { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3); }
 
 .card-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+/* 卡片上显示全部标签：换行排列；名字太长时在卡片宽度内省略，不撑破卡片 */
+.card-labels .lb, .ct-pop-labels .lb { max-width: 100%; min-width: 0; }
+.lb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .card.inbox .card-labels { margin-top: 6px; }
 .d-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
 .d-labels .lb { height: 24px; font-size: 12px; padding: 0 8px; }

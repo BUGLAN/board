@@ -237,6 +237,13 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 }
 .card-claim .avatar { width: 20px; height: 20px; font-size: 11px; }
 .claim-name { font-size: 12px; font-weight: 500; color: var(--text-2); font-family: var(--f-mono); }
+/* 持有者名字占满头像和计时胶囊之间的空间（flex-basis 0：再长也不会把胶囊挤到下一行），放不下时省略中间 */
+.card-claim .claim-name { flex: 1 1 0; }
+.mid-name { display: inline-flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+/* 开头先缩（至少留 3 个字符宽，含省略号）；还放不下时结尾从左边开始裁，最后几个字符一直看得到 */
+.mid-head { flex: 0 100 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; }
+.mid-tail { flex: 0 1 auto; min-width: 0; overflow: hidden; display: flex; justify-content: flex-end; }
+.mid-tail > span { flex: none; }
 /* 心跳：持有者正在每 10 秒报到 */
 .beat {
   position: relative; display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%;
@@ -322,7 +329,8 @@ body.tile-moving .ct-pop, body.is-dragging .ct-pop { display: none; }
 .ct-pop-head { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
 .ct-pop-head b { color: color-mix(in oklab, var(--c), var(--ink)); font-weight: 600; }
 .ct-pop-head .run-pill { margin-left: 0; }
-.ct-pop-holder { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-2); }
+.ct-pop-holder { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin-left: auto; color: var(--text-2); }
+.ct-pop-holder .avatar { flex: none; }
 .ct-pop-holder .avatar { width: 16px; height: 16px; font-size: 11px; }
 .ct-pop-title { font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--text); white-space: normal; word-break: break-word; }
 .ct-pop-labels .card-labels, .ct-pop-labels { display: flex; flex-wrap: wrap; gap: 4px; }
