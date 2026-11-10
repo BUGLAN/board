@@ -153,6 +153,36 @@ fn human_only_labels() {
     assert_eq!(r.code, 0, "{}", r.out);
 }
 
+/// board new --label：可以写多次、不区分大小写、重复只算一次；不存在、仅人可打的拒绝且不建卡；能和 --inbox、--top 一起用
+#[test]
+fn new_with_labels() {
+    let s = start();
+    s.create_label("功能");
+    s.create_label("UI");
+    s.create_label_as("人定", true);
+    let r = s.run(ALPHA, &["new", "x", "--label", "功能", "--label", "ui", "--label", "UI", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["labels"], serde_json::json!(["功能", "UI"]));
+    let r = s.run(ALPHA, &["new", "y", "--label", "功能"]);
+    assert!(r.out.contains("#功能"), "文字输出带上标签：{}", r.out);
+    let count = || s.run(ALPHA, &["ls", "--json"]).json().as_array().unwrap().len();
+    let before = count();
+    let r = s.run(ALPHA, &["new", "z", "--label", "不存在的标签", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("功能"), "原因里列出可用的标签");
+    let r = s.run(ALPHA, &["new", "z", "--label", "人定", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+    assert_eq!(count(), before, "没有多出卡片");
+    // 和 --inbox、--top 一起用
+    let r = s.run(ALPHA, &["new", "收件", "--inbox", "--label", "UI", "--json"]);
+    assert_eq!((r.json()["column"].as_str(), r.json()["labels"].clone()), (Some("inbox"), serde_json::json!(["UI"])));
+    let r = s.run(ALPHA, &["new", "置顶", "--top", "--label", "UI", "--json"]);
+    assert_eq!(r.json()["labels"], serde_json::json!(["UI"]));
+    // 不带 --label 时和原来一样
+    assert_eq!(s.run(ALPHA, &["new", "无标签", "--json"]).json()["labels"], serde_json::json!([]));
+    assert!(s.run(ALPHA, &["help"]).out.contains("--label <标签>"));
+}
+
 /// board next 只在 board host 启动的会话里能用：环境里没有 BOARD_HOST 时 USAGE；有但名字没有在跑的派发时也是 USAGE
 #[test]
 fn next_only_in_host_sessions() {

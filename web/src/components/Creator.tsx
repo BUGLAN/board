@@ -426,7 +426,13 @@ export function Creator() {
               <div className="cr-cli mono">
                 <span className="cmd">board</span> new {q(title.trim() || '<标题>')}
                 {short ? ` --body ${q(short)}` : ''}
-                {column === 'inbox' ? ' --inbox' : ''} <span className="dim">--board</span> {path}
+                {column === 'inbox' ? ' --inbox' : ''}
+                {labels
+                  .map(id => projectLabels.find(l => l.id === id)?.name)
+                  .filter(Boolean)
+                  .map(n => ` --label ${q(n!)}`)
+                  .join('')}{' '}
+                <span className="dim">--board</span> {path}
               </div>
             </div>
             {created.length > 0 && (

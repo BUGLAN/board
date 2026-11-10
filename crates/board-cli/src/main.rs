@@ -40,7 +40,7 @@ const COMMANDS: [(&str, &str, &str); 23] = [
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\"] [--top] [--inbox]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面"),
+        ("new", "\"<标题>\" [--body \"<描述>\"] [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
@@ -412,21 +412,34 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             let title = a.pos[1..].join(" ");
             let inbox = a.flag("--inbox");
             let top = a.flag("--top") && !inbox;
+            // --label 可以写多次，按名称匹配（不区分大小写），同一个只算一次；不存在、仅人可打的都在新建前拒绝
+            let mut with: Vec<i64> = vec![];
+            for n in a.all("--label") {
+                let id = find_label(&n)?;
+                if !with.contains(&id) {
+                    with.push(id);
+                }
+            }
+            if let Some(l) = labels.iter().find(|l| l.human_only && with.contains(&l.id)) {
+                return Err(BoardError::usage(format!("标签「{}」只有人能打（仅人可打），agent 建卡时不能带上", l.name)));
+            }
             let d = exec(Cmd::New {
                 title,
                 body: a.value("--body").map(|s| s.to_string()),
                 column: inbox.then(|| INBOX.to_string()),
                 top,
-                labels: vec![],
+                labels: with,
             })?;
             if json {
                 Output::Json(fmt.full(&d))
             } else {
+                let ls: Vec<String> = d.card.labels.iter().map(|l| p.magenta(&format!("#{}", label_name(*l)))).collect();
                 Output::Text(format!(
-                    "{} 已新建 {}  {}{}\n",
+                    "{} 已新建 {}  {}{}{}\n",
                     p.green("✓"),
                     p.cyan(&format!("#{}", d.card.id)),
                     d.card.title,
+                    if ls.is_empty() { String::new() } else { format!("  {}", ls.join(" ")) },
                     p.dim(&format!("  → {}最{}", if inbox { INBOX_NAME } else { flow.home().name.as_str() }, if top { "上面" } else { "下面" }))
                 ))
             }
