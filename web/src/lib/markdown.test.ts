@@ -1,6 +1,6 @@
 /* Markdown 清理：描述和评论可能来自任何 agent，渲染前必须去掉脚本、事件属性、javascript: 链接 */
 import { describe, expect, it } from 'vitest';
-import { inlineCode, markdown, taskLines, toggleTask } from './markdown';
+import { inlineCode, markdown } from './markdown';
 
 const dom = (html: string) => {
   const d = document.createElement('div');
@@ -108,51 +108,5 @@ describe('markdown 装饰', () => {
   it('inlineCode：拆出 `代码`', () => {
     expect(inlineCode('改 `a.ts` 和 `b`')).toEqual(['改 ', { code: 'a.ts' }, ' 和 ', { code: 'b' }]);
     expect(inlineCode('没有代码')).toEqual(['没有代码']);
-  });
-});
-
-describe('任务项勾选（toggleTask）', () => {
-  const src = [
-    '## 验收标准',
-    '- [ ] 第一条',
-    '- [x] 第二条',
-    '',
-    '```md',
-    '- [ ] 代码块里的不算',
-    '```',
-    '',
-    '1. [ ] 有序列表',
-    '   - [ ] 嵌套的',
-    '- [ ] 第一条',
-    '* [X] 大写 X',
-  ].join('\n');
-
-  it('第 N 个任务项对应源文本里的哪一行，和渲染出的任务项一一对应', () => {
-    expect(taskLines(src)).toEqual([1, 2, 8, 9, 10, 11]);
-    const lis = dom(markdown(src)).querySelectorAll('li.task');
-    expect(lis.length).toBe(6);
-    expect([...lis].map(li => li.getAttribute('data-task'))).toEqual(['0', '1', '2', '3', '4', '5']);
-    expect(lis[3].textContent).toContain('嵌套的');
-  });
-
-  it('只改点的那一行；文字相同的任务项改的是点的那一条', () => {
-    const out = toggleTask(src, 4)!;
-    const a = src.split('\n');
-    const b = out.split('\n');
-    expect(b[10]).toBe('- [x] 第一条');
-    expect(b[1]).toBe('- [ ] 第一条');
-    expect(b.filter((l, i) => l !== a[i]).length).toBe(1);
-  });
-
-  it('勾上和取消来回切换，大写 X 也能取消', () => {
-    expect(toggleTask(src, 1)!.split('\n')[2]).toBe('- [ ] 第二条');
-    expect(toggleTask(src, 5)!.split('\n')[11]).toBe('* [ ] 大写 X');
-    expect(toggleTask(toggleTask(src, 0)!, 0)).toBe(src);
-  });
-
-  it('代码块里的不动；超出范围返回 null', () => {
-    expect(toggleTask(src, 2)!.split('\n')[5]).toBe('- [ ] 代码块里的不算');
-    expect(toggleTask(src, 6)).toBeNull();
-    expect(toggleTask('没有任务项', 0)).toBeNull();
   });
 });

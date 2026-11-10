@@ -6,7 +6,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { cardDispatch } from '../lib/hosts';
-import { toggleTask } from '../lib/markdown';
 import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
@@ -526,18 +525,6 @@ function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; bu
       setMode(m => (m === 'view' ? 'edit' : m));
     }
   };
-  // 预览里点任务项直接勾选：只改源文本里那一行，走乐观更新；失败时撤回并提示
-  const toggle = async (n: number) => {
-    if (locked || busy) return;
-    const body = toggleTask(c.body, n);
-    if (body == null) return;
-    try {
-      await exec({ op: 'edit', id: c.id, body }, editCard(c.id, { body }));
-    } catch (e) {
-      toastError(e);
-    }
-  };
-  const taskLock = locked ? `卡片由 ${c.holder ?? '别人'} 持有，只有持有者能勾选` : busy ? '正在保存，稍等再勾选' : null;
   return (
     <>
       <div className="d-label">
@@ -596,7 +583,7 @@ function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; bu
         ) : c.body ? (
           // 不响应双击：人常在这里选中文字阅读，双击进入编辑容易误触（进入编辑只用「编辑」按钮）
           <div className={cx('desc-view', locked && 'locked')}>
-            <Markdown src={c.body} onTask={toggle} taskLock={taskLock} />
+            <Markdown src={c.body} />
           </div>
         ) : (
           <div className={cx('desc-view empty', locked && 'locked')} onClick={edit}>

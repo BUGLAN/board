@@ -59,15 +59,12 @@ function decorate(html: string): string {
       img.replaceWith(a);
     } else img.replaceWith(document.createTextNode(label));
   });
-  let task = 0;
   root.querySelectorAll('li').forEach(li => {
     const box = li.querySelector(':scope > input[type="checkbox"], :scope > p > input[type="checkbox"]');
     if (!box) return;
     const checked = (box as HTMLInputElement).checked || box.hasAttribute('checked');
     box.remove();
     li.classList.add('task');
-    // 第几个任务项（按源文本顺序），点击勾选时用 toggleTask 找回源文本里的那一行
-    li.dataset.task = String(task++);
     if (checked) li.classList.add('checked');
     const span = document.createElement('span');
     while (li.firstChild) span.appendChild(li.firstChild);
@@ -127,34 +124,4 @@ export function inlineCode(text: string): (string | { code: string })[] {
   });
   if (last < text.length) out.push(text.slice(last));
   return out;
-}
-
-/* ---------- 任务项（- [ ] / - [x]）---------- */
-
-const TASK = /^(\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])(?=\s|$)/;
-const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
-
-/** 源文本里每个任务项所在的行号（按顺序，和渲染出的 li.task 一一对应）；围栏代码块里的不算 */
-export function taskLines(src: string): number[] {
-  const out: number[] = [];
-  let fence: string | null = null;
-  src.split('\n').forEach((line, i) => {
-    const f = line.match(FENCE);
-    if (f) {
-      if (!fence) fence = f[1][0].repeat(f[1].length);
-      else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = null;
-      return;
-    }
-    if (!fence && TASK.test(line)) out.push(i);
-  });
-  return out;
-}
-
-/** 切换第 n 个任务项的勾选：只改那一行的 [ ] / [x]，其余原样；找不到时返回 null */
-export function toggleTask(src: string, n: number): string | null {
-  const at = taskLines(src)[n];
-  if (at == null) return null;
-  const lines = src.split('\n');
-  lines[at] = lines[at].replace(TASK, (_m, a: string, mark: string, b: string) => `${a}${mark === ' ' ? 'x' : ' '}${b}`);
-  return lines.join('\n');
 }
