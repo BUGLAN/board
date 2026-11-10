@@ -74,6 +74,32 @@ fn magic_ok(mime: &str, b: &[u8]) -> bool {
     }
 }
 
+/// 附件能不能收：文件名、类型、内容和扩展名对得上、不是空的、不超过 [`MAX_BYTES`]。
+/// 返回 (整理过的文件名, MIME, 是不是图片)。服务端收附件时检查；CLI 建卡带附件时先在本地检查一遍，有一个不行就不上传、不建卡
+pub fn check(name: &str, bytes: &[u8]) -> Result<(String, &'static str, bool)> {
+    let name = clean_name(name);
+    if name.is_empty() {
+        return Err(BoardError::usage("附件需要文件名"));
+    }
+    let Some((mime, image)) = kind_of(&name) else {
+        return Err(BoardError::usage(format!("不支持这种文件：{name}。支持 {ALLOWED}")));
+    };
+    if bytes.is_empty() {
+        return Err(BoardError::usage(format!("{name} 是空文件")));
+    }
+    if bytes.len() > MAX_BYTES {
+        return Err(BoardError::usage(format!(
+            "{name} 有 {:.1} MB，附件不能超过 {} MB",
+            bytes.len() as f64 / 1048576.0,
+            MAX_BYTES / 1048576
+        )));
+    }
+    if !magic_ok(mime, bytes) {
+        return Err(BoardError::usage(format!("{name} 的内容和扩展名对不上")));
+    }
+    Ok((name, mime, image))
+}
+
 /// 文件名只保留最后一段，去掉控制字符，最长 120 个字符
 pub fn clean_name(raw: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or_default();
@@ -195,26 +221,7 @@ impl Store {
 
     /// 上传附件。`card` 为空时先不归到卡片（界面新建卡片时）
     pub fn attach(&mut self, now: i64, board: &BoardRef, card: Option<i64>, by: &Actor, name: &str, bytes: &[u8]) -> Result<Attachment> {
-        let name = clean_name(name);
-        if name.is_empty() {
-            return Err(BoardError::usage("附件需要文件名"));
-        }
-        let Some((mime, _)) = kind_of(&name) else {
-            return Err(BoardError::usage(format!("不支持这种文件：{name}。支持 {ALLOWED}")));
-        };
-        if bytes.is_empty() {
-            return Err(BoardError::usage(format!("{name} 是空文件")));
-        }
-        if bytes.len() > MAX_BYTES {
-            return Err(BoardError::usage(format!(
-                "{name} 有 {:.1} MB，附件不能超过 {} MB",
-                bytes.len() as f64 / 1048576.0,
-                MAX_BYTES / 1048576
-            )));
-        }
-        if !magic_ok(mime, bytes) {
-            return Err(BoardError::usage(format!("{name} 的内容和扩展名对不上")));
-        }
+        let (name, mime, _) = check(name, bytes)?;
         if let Some(id) = card {
             let n: i64 = self.conn().query_row(
                 "SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2",

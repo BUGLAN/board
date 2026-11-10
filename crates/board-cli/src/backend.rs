@@ -118,6 +118,11 @@ impl Backend {
         self.0.upload(&[("board", path), ("card", &id), ("name", name), ("as", &actor.name)], bytes)
     }
 
+    /// 上传附件，先不归到卡片：新建卡片时描述里引用到它，服务端就归到这张卡片（24 小时没被引用的会被清理）
+    pub fn upload_unbound(&mut self, path: &str, actor: &Actor, name: &str, bytes: &[u8]) -> Result<Attachment> {
+        self.0.upload(&[("board", path), ("name", name), ("as", &actor.name)], bytes)
+    }
+
     /// 读取附件内容
     pub fn download(&mut self, a: &Attachment) -> Result<Vec<u8>> {
         self.0.bytes(&a.url)

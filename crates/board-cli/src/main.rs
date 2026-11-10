@@ -22,9 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 17] = [
+const VALUE_FLAGS: [&str; 19] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file",
+    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file",
 ];
 const BOOL_FLAGS: [&str; 9] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
@@ -40,7 +40,7 @@ const COMMANDS: [(&str, &str, &str); 23] = [
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）"),
+        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--image <图片>]… [--file <文件>]… [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）；--image、--file 可以写多次，按顺序附在描述后面（图片直接显示，文件是下载链接）"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\" | --body-file <文件>]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
@@ -428,9 +428,22 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             if let Some(l) = labels.iter().find(|l| l.human_only && with.contains(&l.id)) {
                 return Err(BoardError::usage(format!("标签「{}」只有人能打（仅人可打），agent 建卡时不能带上", l.name)));
             }
-            let d = exec(Cmd::New {
+            let mut body = text_arg(&a, "--body", "--body-file")?;
+            // --image / --file：先在本地全部检查一遍（不存在、类型不支持、超过 10 MB 都在上传前拒绝，不建卡），
+            // 再逐个上传成还没归属的附件，按参数顺序把它们的 Markdown 接在描述后面；建卡时服务端按引用把附件归到这张卡片
+            let files = new_files(&a, title.trim().is_empty())?;
+            if !files.is_empty() {
+                let mut refs = vec![];
+                for (name, bytes) in &files {
+                    refs.push(be.upload_unbound(&path, &actor, name, bytes)?.markdown);
+                }
+                let text = body.take().unwrap_or_default();
+                let text = text.trim_end();
+                body = Some(format!("{text}{}{}", if text.is_empty() { "" } else { "\n\n" }, refs.join("\n\n")));
+            }
+            let d = be.exec(&path, &actor, Cmd::New {
                 title,
-                body: text_arg(&a, "--body", "--body-file")?,
+                body,
                 column: inbox.then(|| INBOX.to_string()),
                 top,
                 labels: with,
@@ -1014,6 +1027,27 @@ impl Fmt<'_> {
         }
         s
     }
+}
+
+/* ------------------------------ board new 带附件 ------------------------------ */
+
+/// `board new` 的 `--image` / `--file`（按命令行里的顺序）：读出来并按服务端的规则检查，返回 (文件名, 内容)。
+/// 有一个不行就报错，什么也不上传；`--image` 只收图片。标题为空时不读文件（服务端会拒绝建卡，不留没用的附件）
+fn new_files(a: &Args, no_title: bool) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut out = vec![];
+    for (flag, f) in a.many.iter().filter(|(k, _)| k == "--image" || k == "--file") {
+        if no_title {
+            return Err(BoardError::new(ErrorCode::EmptyTitle, "标题不能为空"));
+        }
+        let bytes = std::fs::read(f).map_err(|e| BoardError::usage(format!("{flag}：读不到文件 {f}：{e}")))?;
+        let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+        let (name, _, image) = board_core::files::check(&name, &bytes).map_err(|e| BoardError::usage(format!("{flag} {f}：{}", e.message)))?;
+        if flag == "--image" && !image {
+            return Err(BoardError::usage(format!("--image {f}：不是图片（PNG、JPEG、GIF、WebP）；其他文件用 --file")));
+        }
+        out.push((name, bytes));
+    }
+    Ok(out)
 }
 
 /* ------------------------------ 从文件读多行文字 ------------------------------ */

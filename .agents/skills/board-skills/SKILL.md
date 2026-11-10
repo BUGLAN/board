@@ -341,6 +341,7 @@ board comment <ID> "<整理说明；信息不够时列出需要人确认的问�
 board flow                                # 工作流：状态的顺序、标识、名称、规则
 board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]…  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签
                                           # 多行描述用 --body-file <文件>（Windows 上必须，见「会话开始」第 5 步）；edit 同样
+                                          # --image <图片>、--file <文件> 可以写多次：附件随卡片一起建，按顺序接在描述后面（图片直接显示）
 board show <ID> --json                    # 全部字段和动态
 board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>

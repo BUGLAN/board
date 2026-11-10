@@ -264,6 +264,59 @@ fn attach_and_download_files() {
     assert!(s.run(ALPHA, &["files", "2"]).out.contains("#2 没有附件"));
 }
 
+/// board new 带图片、文件（卡片 default/main#148）：按参数顺序接在描述后面，建卡时归到这张卡片；有一个不行就什么都不做
+#[test]
+fn new_with_images_and_files() {
+    let s = start();
+    s.create_label("功能");
+    let dir = tempfile::tempdir().unwrap();
+    let put = |name: &str, bytes: &[u8]| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let p1 = put("1.png", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+    let p2 = put("2.jpg", b"\xFF\xD8\xFF\xE0jfif");
+    let log = put("run.log", b"ok\n");
+
+    // 图片、文件混着写，顺序保持；--label、--json 照常
+    let r = s.run(ALPHA, &["new", "带图", "--body", "描述", "--image", &p1, "--file", &log, "--image", &p2, "--label", "功能", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!(c["body"], "描述\n\n![1.png](/api/files/1)\n\n[run.log](/api/files/2)\n\n![2.jpg](/api/files/3)");
+    let names: Vec<&str> = c["attachments"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["1.png", "run.log", "2.jpg"]);
+    assert_eq!(c["labels"], serde_json::json!(["功能"]));
+    // 只有图片、没有描述；--inbox 照常
+    let c = s.run(ALPHA, &["new", "只有图", "--image", &p1, "--inbox", "--json"]).json();
+    assert_eq!(c["body"], "![1.png](/api/files/4)");
+    assert_eq!(c["column"], "inbox");
+    assert_eq!(c["attachments"].as_array().unwrap().len(), 1);
+
+    // 错误都在上传前报出来：不建卡，也不上传任何附件
+    let big = put("big.png", &[b"\x89PNG\r\n\x1a\n".as_slice(), &vec![0u8; 10 * 1024 * 1024]].concat());
+    let svg = put("x.svg", b"<svg/>");
+    let fake = put("fake.png", b"<html>");
+    for (args, code) in [
+        (vec!["new", "x", "--image", &p1, "--file", "/no/such.log"], "USAGE"),
+        (vec!["new", "x", "--image", &p1, "--file", &svg], "USAGE"),
+        (vec!["new", "x", "--image", &log], "USAGE"),
+        (vec!["new", "x", "--image", &fake], "USAGE"),
+        (vec!["new", "x", "--file", &big], "USAGE"),
+        (vec!["new", "", "--image", &p1], "EMPTY_TITLE"),
+    ] {
+        let mut args = args;
+        args.push("--json");
+        let r = s.run(ALPHA, &args);
+        assert_eq!((r.code, r.error_code().as_str()), (1, code), "{args:?}: {}{}", r.out, r.err);
+    }
+    let all = s.run(ALPHA, &["ls", "--json"]).json();
+    assert!(all.as_array().unwrap().iter().all(|c| c["title"] != "x"), "失败的都没有建卡：{all}");
+    let store = board_core::Store::open(&s.db).unwrap();
+    let n: i64 = store.conn().query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 4, "失败的都没有上传附件");
+}
+
 /// 没有配置服务端：直接失败，提示运行 board login；不会在 HOME 下建本地数据库
 #[test]
 fn requires_login() {
