@@ -7,6 +7,11 @@ import type { SortSpec } from '../lib/sort';
 import type { ColumnKey } from '../lib/types';
 import { pref } from '../lib/util';
 
+/** 一张可以放大查看的图片 */
+export interface ImageRef {
+  src: string;
+  alt: string;
+}
 export type Tab = 'board' | 'projects' | 'inbox' | 'hosts' | 'settings';
 
 export interface Toast {
@@ -108,8 +113,8 @@ interface UIState {
   drag: DragUI | null;
   reveal: { id: number; key: number } | null;
   reject: { col: ColumnKey; key: number } | null;
-  /** 放大查看的图片（附件） */
-  image: { src: string; alt: string } | null;
+  /** 放大查看的图片（附件）：同一张卡片 / 同一条动态里的全部图片，index 是正在看的那张 */
+  image: { list: ImageRef[]; index: number } | null;
   /** 状态块的一次性排序（lib/sort.ts）：sortKey(白板路径, 状态) → 排序依据。不记住，刷新后回到优先级顺序 */
   sorts: Record<string, SortSpec>;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
@@ -194,7 +199,19 @@ export const openCreator = (column: 'todo' | 'inbox' = get().tab === 'inbox' ? '
   set(s => ({ creator: { open: true, column, seq: s.creator.seq + 1 } }));
 export const closeCreator = () => set(s => ({ creator: { ...s.creator, open: false } }));
 
-export const openImage = (src: string, alt = '') => set({ image: { src, alt } });
+/** 放大查看图片。list 是可以左右切换的同组图片（附件列表、同一段 Markdown 里的图片），不给就只看这一张 */
+export const openImage = (src: string, alt = '', list?: ImageRef[]) => {
+  const all = list?.length ? list : [{ src, alt }];
+  const i = all.findIndex(x => x.src === src);
+  set({ image: i < 0 ? { list: [{ src, alt }], index: 0 } : { list: all, index: i } });
+};
+/** 上一张 / 下一张：到第一张、最后一张时停住（按钮禁用），不循环 */
+export const stepImage = (d: -1 | 1) =>
+  set(s => {
+    if (!s.image) return {};
+    const index = s.image.index + d;
+    return index < 0 || index >= s.image.list.length ? {} : { image: { ...s.image, index } };
+  });
 export const closeImage = () => set({ image: null });
 export const openPalette = (prefill = '') => set({ palette: { open: true, prefill } });
 export const closePalette = () => set(s => ({ palette: { ...s.palette, open: false } }));

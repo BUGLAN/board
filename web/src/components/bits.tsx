@@ -186,12 +186,13 @@ export function Markdown({ src, className }: { src: string; className?: string }
       className={cx('md', className)}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={e => {
-        // 图片（附件）点击放大
+        // 图片（附件）点击放大；同一段里的其他图片可以左右切换
         const t = e.target as HTMLElement;
         if (t.tagName !== 'IMG') return;
         e.preventDefault();
         e.stopPropagation();
-        openImage(t.getAttribute('src') || '', t.getAttribute('alt') || '');
+        const list = [...e.currentTarget.querySelectorAll('img')].map(i => ({ src: i.getAttribute('src') || '', alt: i.getAttribute('alt') || '' }));
+        openImage(t.getAttribute('src') || '', t.getAttribute('alt') || '', list);
       }}
     />
   );

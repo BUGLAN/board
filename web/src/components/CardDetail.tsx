@@ -426,6 +426,8 @@ export { DescTabs };
 
 /** 卡片的全部附件：图片缩略图点开放大，文件点击下载 */
 function Attachments({ list }: { list: Attachment[] }) {
+  // 图片附件可以在放大查看时左右切换
+  const images = list.filter(a => a.image).map(a => ({ src: a.url, alt: a.name }));
   return (
     <section className="d-section" data-part="files" style={{ ['--i' as string]: 3 }}>
       <div className="d-label">
@@ -435,7 +437,7 @@ function Attachments({ list }: { list: Attachment[] }) {
         {list.map(a => (
           <li key={a.id}>
             {a.image ? (
-              <button className="att-thumb" type="button" aria-label={`查看 ${a.name}`} onClick={() => openImage(a.url, a.name)}>
+              <button className="att-thumb" type="button" aria-label={`查看 ${a.name}`} onClick={() => openImage(a.url, a.name, images)}>
                 <img src={a.url} alt="" loading="lazy" />
               </button>
             ) : (

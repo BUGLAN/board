@@ -16,7 +16,7 @@ import type { Card } from '../lib/types';
 import { accel, cx, replay } from '../lib/util';
 import { allBoards, boardMeta, deleteLabelPatch, editLabelPatch, optimistic, useData, type Patch } from '../store/data';
 import {
-  closeCtx, closeForm, closeImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
+  closeCtx, closeForm, closeImage, stepImage, closeLabels, closePalette, closePicker, confirm, dismissToast, manageLabels, openCreator,
   setSide, setSort, setTab, settleConfirm, toast, toastError, updatePicker, useUI, type FormCfg, type Toast,
 } from '../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar } from './bits';
@@ -1188,25 +1188,43 @@ function ToastItem({ t }: { t: Toast }) {
 /* ---------------- 放大查看图片（附件） ---------------- */
 
 export function Lightbox() {
-  const img = useUI(s => s.image);
+  const cur = useUI(s => s.image);
+  const open = !!cur;
   useEffect(() => {
-    if (!img) return;
-    // 捕获阶段处理 Esc：只关图片，不关卡片详情
+    if (!open) return;
+    // 捕获阶段处理：Esc 只关图片，不关卡片详情；← → 切换图片，不交给详情里的快捷键
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      const d = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+      if (e.key !== 'Escape' && !d) return;
       e.preventDefault();
       e.stopPropagation();
-      closeImage();
+      if (d) stepImage(d);
+      else closeImage();
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [img]);
-  if (!img) return null;
+  }, [open]);
+  if (!cur) return null;
+  const img = cur.list[cur.index];
+  const n = cur.list.length;
   return (
     <div className="lightbox" role="dialog" aria-label={img.alt || '图片'} onClick={closeImage}>
-      <img src={img.src} alt={img.alt} />
+      <img key={img.src} src={img.src} alt={img.alt} />
       <div className="lb-bar" onClick={e => e.stopPropagation()}>
-        <span>{img.alt}</span>
+        {n > 1 && (
+          <div className="lb-nav">
+            <button className="icon-btn sm" type="button" aria-label="上一张" title="上一张（←）" disabled={cur.index === 0} onClick={() => stepImage(-1)}>
+              <Icon name="chevLeft" />
+            </button>
+            <span className="lb-pos" aria-live="polite">
+              {cur.index + 1} / {n}
+            </span>
+            <button className="icon-btn sm" type="button" aria-label="下一张" title="下一张（→）" disabled={cur.index === n - 1} onClick={() => stepImage(1)}>
+              <Icon name="chevRight" />
+            </button>
+          </div>
+        )}
+        <span className="lb-name">{img.alt}</span>
         <a className="btn sm" href={img.src} download={img.alt || true}>
           下载
         </a>
