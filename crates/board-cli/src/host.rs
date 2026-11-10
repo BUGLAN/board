@@ -1156,8 +1156,14 @@ mod tests {
         assert!(DSH_HEADLESS_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
         assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
         assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
+        // 内置 agent 全部换成找不到的命令：本机真装了 dsh、pi、codex 也不去执行它们的 --version
+        // （本机执行 codex 会被 macOS 拦下、反复弹「包含恶意软件」的提示）
+        let nope = |id: &str| AgentConf { id: id.into(), name: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
         let conf = vec![
-            AgentConf { id: "claude".into(), name: None, cmd: vec!["/nope/claude".into(), "{prompt}".into()] },
+            nope("dsh"),
+            nope("claude"),
+            nope("pi"),
+            nope("codex"),
             AgentConf { id: "mycli".into(), name: Some("My CLI".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
         ];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
