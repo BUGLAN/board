@@ -22,3 +22,7 @@ serde_json.workspace = true
 # GitHub 登录：在系统默认浏览器里打开登录页
 open = "5"
 getrandom = "0.3"
+# 「让这台电脑接任务」、改白板目录前弹系统确认框（只在 Rust 一侧用，页面调不到）
+tauri-plugin-dialog = "2"
+# Windows / Linux：关窗口后程序留在托盘，再点图标只把已有窗口带到前面，不起第二个进程
+tauri-plugin-single-instance = "2"

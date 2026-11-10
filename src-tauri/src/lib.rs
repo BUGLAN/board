@@ -232,6 +232,27 @@ fn window_ready(window: WebviewWindow) {
     let _ = window;
 }
 
+/// capabilities/default.json 只放行线上地址和启动页。BOARD_URL 指向别处（开发时的 localhost:1420、自建的服务端）时，
+/// 只给这一个来源放行同样的命令，不放行整个 localhost：窗口导航到本机别的端口上的页面时调不了本机命令
+fn allow_configured_url(app: &AppHandle) -> tauri::Result<()> {
+    let url = &app.state::<Board>().0;
+    let origin = url.origin().ascii_serialization();
+    if origin == DEFAULT_URL {
+        return Ok(());
+    }
+    let mut cap = tauri::ipc::CapabilityBuilder::new("configured-url").remote(format!("{origin}/*")).window("*");
+    for p in default_permissions() {
+        cap = cap.permission(p);
+    }
+    app.add_capability(cap)
+}
+
+/// default.json 里的权限（和它保持一份）
+fn default_permissions() -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).expect("default.json");
+    v["permissions"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
 pub fn run() {
     let url = match board_url() {
         Ok(u) => u,
@@ -240,7 +261,12 @@ pub fn run() {
             std::process::exit(1);
         }
     };
-    let builder = tauri::Builder::default().manage(Board(url)).manage(host::HostProc::default());
+    let builder = tauri::Builder::default()
+        // 必须第一个注册：第二次启动时把参数交给已经在跑的这个，自己退出
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
+        .plugin(tauri_plugin_dialog::init())
+        .manage(Board(url))
+        .manage(host::HostProc::default());
     #[cfg(target_os = "windows")]
     let builder = builder.manage(custom_titlebar::Ready::default());
     builder
@@ -261,6 +287,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle();
+            allow_configured_url(handle)?;
             // Windows 不设菜单栏：顶栏就是标题栏，编辑快捷键由 webview 自己处理
             if !cfg!(target_os = "windows") {
                 let new_window = MenuItem::with_id(handle, "new-window", "新建窗口", true, Some("CmdOrCtrl+Shift+N"))?;
@@ -314,7 +341,9 @@ pub fn run() {
             // 最后一个窗口关掉：在接任务时不退出，留在后台（Dock / 托盘图标重新打开窗口）
             tauri::RunEvent::ExitRequested { code: None, api, .. } if host::enabled(app) => api.prevent_exit(),
             // 退出桌面端：关闭 board host 的标准输入，它自己结束 agent、让机器离线后退出
-            tauri::RunEvent::Exit => host::stop(app, std::time::Duration::from_secs(2)),
+            tauri::RunEvent::Exit => {
+                let _ = host::stop(app, std::time::Duration::from_secs(2));
+            }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { has_visible_windows: false, .. } => show_window(app),
             _ => {}
@@ -332,5 +361,21 @@ mod tests {
         assert_eq!(taskbar_icon_size(1.5), 36);
         assert_eq!(taskbar_icon_size(1.75), 42);
         assert_eq!(taskbar_icon_size(2.0), 48);
+    }
+}
+
+#[cfg(test)]
+mod acl_tests {
+    use super::*;
+
+    /// 发布版只放行线上地址和启动页，不放行 localhost / 127.0.0.1 的任意端口；BOARD_URL 改了地址时按同一份权限另外放行
+    #[test]
+    fn remote_urls_and_permissions() {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let urls: Vec<&str> = v["remote"]["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap()).collect();
+        assert_eq!(urls, ["https://board.buglan.com/*", "http://boardsplash.localhost/*"]);
+        let perms = default_permissions();
+        assert!(perms.iter().any(|p| p == "allow-host-enable"), "{perms:?}");
+        assert!(perms.iter().any(|p| p == "core:default"), "{perms:?}");
     }
 }

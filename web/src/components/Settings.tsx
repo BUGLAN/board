@@ -358,7 +358,9 @@ function LocalHostCard() {
       toast({ type: 'success', title: '已保存', text: st?.enabled ? '写进了 ~/.board/config.toml，board host 已重启' : '写进了 ~/.board/config.toml 的 [host]' });
       await load();
     } catch (e) {
-      toast({ type: 'error', title: '没有保存', text: String(e) });
+      // 在系统确认框里点了取消：不算出错
+      if (cancelled(e)) toast({ type: 'info', title: '没有保存', text: String(e) });
+      else toast({ type: 'error', title: '没有保存', text: String(e) });
     } finally {
       setBusy(false);
     }
@@ -373,7 +375,8 @@ function LocalHostCard() {
       await load();
       setTimeout(() => void refresh(), 1500);
     } catch (e) {
-      toast({ type: 'error', title: '没有切换', text: String(e) });
+      if (cancelled(e)) toast({ type: 'info', title: '没有切换', text: String(e) });
+      else toast({ type: 'error', title: '没有切换', text: String(e) });
     } finally {
       setBusy(false);
     }
@@ -487,6 +490,9 @@ function LocalHostCard() {
     </section>
   );
 }
+
+/** 外壳的系统确认框被取消（src-tauri/src/host.rs 的 CANCELLED） */
+const cancelled = (e: unknown) => String(e).startsWith('已取消');
 
 export function SettingsPage() {
   const path = useData(s => s.path);

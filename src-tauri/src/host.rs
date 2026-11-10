@@ -198,12 +198,16 @@ fn start_proc(cli: &Path) -> Result<Running, String> {
 }
 
 /// 停止：关闭标准输入，board host 自己结束 agent、让机器离线后退出（最多等 wait）
-fn stop_proc(mut r: Running, wait: std::time::Duration) {
+/// 关闭标准输入（board host 按 Ctrl+C 收尾：结束 agent、让机器离线），等它真的退出。到时间还没退出时把它交回来
+fn stop_proc(mut r: Running, wait: std::time::Duration) -> Result<(), Running> {
     drop(r.stdin.take());
     let begun = std::time::Instant::now();
-    while begun.elapsed() < wait {
-        if matches!(r.child.try_wait(), Ok(Some(_))) {
-            return;
+    loop {
+        if !matches!(r.child.try_wait(), Ok(None)) {
+            return Ok(());
+        }
+        if begun.elapsed() >= wait {
+            return Err(r);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -223,11 +227,57 @@ pub fn ensure_started<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-/// 停掉后台的 board host（退出桌面端、关掉开关、改了设置要重启时）
-pub fn stop<R: Runtime>(app: &AppHandle<R>, wait: std::time::Duration) {
-    let r = app.state::<HostProc>().0.lock().ok().and_then(|mut g| g.take());
-    if let Some(r) = r {
-        stop_proc(r, wait);
+/// board host 收尾最长要等 agent 退出（10 秒）再上报几次：给足时间
+pub const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// 停掉后台的 board host（退出桌面端、关掉开关、改了设置要重启时），等它真的退出。
+/// 到时间还没退出：留在状态里（界面照实显示在跑），返回错误，调用方不要启动新的（新旧两个会重名）
+pub fn stop<R: Runtime>(app: &AppHandle<R>, wait: std::time::Duration) -> Result<(), String> {
+    let state = app.state::<HostProc>();
+    let r = state.0.lock().ok().and_then(|mut g| g.take());
+    let Some(r) = r else { return Ok(()) };
+    match stop_proc(r, wait) {
+        Ok(()) => Ok(()),
+        Err(r) => {
+            if let Ok(mut g) = state.0.lock() {
+                *g = Some(r);
+            }
+            Err(format!("board host {} 秒内没有退出，没有重启；稍后再试，或退出桌面端", wait.as_secs()))
+        }
+    }
+}
+
+/// 让这台电脑接任务之前，由外壳弹系统确认框，写明机器名和每个目录（页面被注入脚本也绕不过去）。返回人是否确认
+fn confirm_host<R: Runtime>(app: &AppHandle<R>, title: &str, name: &str, dirs: &[Dir]) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
+    let shown = if name.trim().is_empty() { format!("{}（本机主机名）", host_name_from(&hostname())) } else { name.trim().to_string() };
+    let list = if dirs.is_empty() {
+        "（还没有白板目录）".to_string()
+    } else {
+        dirs.iter().map(|d| format!("· {} → {}", d.board.trim(), d.path.trim())).collect::<Vec<_>>().join("\n")
+    };
+    let msg = format!(
+        "机器名：{shown}\n\n白板与目录：\n{list}\n\n派发到这台电脑的卡片，agent 会在对应目录里以免审批模式运行。只在信任这些白板时确认。"
+    );
+    // 默认按钮（回车）是「取消」：误按回车不会让这台电脑开始接任务，要点「确认」才算
+    let res = app
+        .dialog()
+        .message(msg)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("取消".into(), "确认".into()))
+        .blocking_show_with_result();
+    matches!(res, MessageDialogResult::Custom(ref s) if s == "确认")
+}
+
+/// 人在确认框里点了取消
+pub const CANCELLED: &str = "已取消，没有改动";
+
+fn hostname() -> String {
+    if cfg!(windows) {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    } else {
+        std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
     }
 }
 
@@ -252,11 +302,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Status {
         },
         Err(_) => (false, None),
     };
-    let host = if cfg!(windows) {
-        std::env::var("COMPUTERNAME").unwrap_or_default()
-    } else {
-        std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-    };
+    let host = hostname();
     Status {
         enabled: enabled(app),
         running,
@@ -316,13 +362,20 @@ pub async fn host_status(app: AppHandle) -> Status {
     })
 }
 
-/// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）；正在运行时重启 board host
+/// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）；正在运行时重启 board host。
+/// 目录有变化时先弹系统确认框（接任务打开着时，改了目录就是让 agent 去新目录干活）
 #[tauri::command]
 pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        check_conf(name.trim(), &dirs)?;
+        let (_, old, _) = read_conf();
+        let key = |ds: &[Dir]| ds.iter().map(|d| (d.board.trim().to_string(), d.path.trim().to_string())).collect::<Vec<_>>();
+        if key(&old) != key(&dirs) && !confirm_host(&app, "修改这台电脑接任务的白板目录？", &name, &dirs) {
+            return Err(CANCELLED.into());
+        }
         save_conf(&name, &dirs)?;
         if enabled(&app) {
-            stop(&app, std::time::Duration::from_secs(15));
+            stop(&app, STOP_WAIT)?;
             ensure_started(&app)?;
         }
         Ok(())
@@ -331,15 +384,22 @@ pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(
     .map_err(|e| e.to_string())?
 }
 
-/// 打开 / 关掉「让这台电脑接任务」
+/// 打开 / 关掉「让这台电脑接任务」。打开要在系统确认框里确认
 #[tauri::command]
 pub async fn host_enable(app: AppHandle, on: bool) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 打开前由外壳确认（关掉不用确认）
+        if on {
+            let (name, dirs, _) = read_conf();
+            if !confirm_host(&app, "让这台电脑开始接任务？", &name, &dirs) {
+                return Err(CANCELLED.into());
+            }
+        }
         save_flag(&app, on)?;
         if on {
             ensure_started(&app)?;
         } else {
-            stop(&app, std::time::Duration::from_secs(15));
+            stop(&app, STOP_WAIT)?;
         }
         let a = app.clone();
         let _ = app.run_on_main_thread(move || tray(&a, on));
@@ -352,6 +412,27 @@ pub async fn host_enable(app: AppHandle, on: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 停 board host：等它真的退出；到时间还没退出就交回来（不能接着启动新的）
+    #[cfg(unix)]
+    #[test]
+    fn stop_waits_for_exit() {
+        let spawn = |script: &str| {
+            let mut child = Command::new("sh").args(["-c", script]).stdin(Stdio::piped()).spawn().unwrap();
+            let stdin = child.stdin.take();
+            Running { child, stdin }
+        };
+        // 标准输入关闭后收尾 0.3 秒再退出：等到它退出
+        let begun = std::time::Instant::now();
+        assert!(stop_proc(spawn("cat >/dev/null; sleep 0.3"), std::time::Duration::from_secs(5)).is_ok());
+        assert!(begun.elapsed() >= std::time::Duration::from_millis(300));
+        // 不理会标准输入、一直不退出：到时间交回来，进程还在
+        let r = stop_proc(spawn("sleep 30"), std::time::Duration::from_millis(300));
+        let mut r = r.err().expect("没退出时应当交回来");
+        assert!(matches!(r.child.try_wait(), Ok(None)));
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
 
     #[test]
     fn checks() {
