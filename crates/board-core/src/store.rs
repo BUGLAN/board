@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS boards (
   sort        INTEGER NOT NULL DEFAULT 0,
   seq         INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,
+  -- 白板设置里「保存布局」存下的状态块布局（JSON：状态标识 → {x, w, y}）；NULL 表示没保存过
+  saved_layout TEXT,
+  -- 1 = 保存顺序：界面上可以在同一状态块里拖动卡片调整顺序；0 = 不能（换状态不受影响）
+  keep_order  INTEGER NOT NULL DEFAULT 1,
   UNIQUE (project, key)
 );
 
@@ -290,6 +294,17 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('labels') WHERE name = 'priority'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_priority {
             conn.execute_batch("ALTER TABLE labels ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // 旧数据库的白板没有白板设置：没有已保存的布局，保存顺序开着（和原来一样能拖动排序）
+        let has_saved: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'saved_layout'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_saved {
+            conn.execute_batch("ALTER TABLE boards ADD COLUMN saved_layout TEXT")?;
+        }
+        let has_keep: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'keep_order'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_keep {
+            conn.execute_batch("ALTER TABLE boards ADD COLUMN keep_order INTEGER NOT NULL DEFAULT 1")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -564,7 +579,15 @@ impl<'a> R<'a> {
             params![board.id],
         )?;
         log.reverse();
-        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log })
+        let (saved, keep_order) = self.conn.query_row("SELECT saved_layout, keep_order FROM boards WHERE id = ?1", [board.id], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?))
+        })?;
+        // 已保存的布局里只留现在还在的状态
+        let saved_layout = saved.and_then(|j| serde_json::from_str::<BTreeMap<String, Tile>>(&j).ok()).map(|mut m| {
+            m.retain(|k, _| flow.get(k).is_some());
+            m
+        });
+        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log, saved_layout, keep_order })
     }
 
     pub fn card(&self, board: &BoardRef, id: i64) -> Result<CardDetail> {

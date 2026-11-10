@@ -1038,6 +1038,26 @@ fn old_database_gets_card_view_column() {
 }
 
 #[test]
+fn old_database_gets_board_settings_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("ALTER TABLE boards DROP COLUMN saved_layout; ALTER TABLE boards DROP COLUMN keep_order").unwrap();
+    }
+    let mut s = Store::open(&path).unwrap();
+    let snap = |s: &Store| s.read(|r| r.resolve(B).and_then(|b| r.board_snapshot(&b, T0, false))).unwrap();
+    assert!(snap(&s).keep_order, "升级前的白板保存顺序开着");
+    assert!(snap(&s).saved_layout.is_none());
+    ui(&mut s, |w| w.set_keep_order(B, false)).unwrap();
+    assert!(!snap(&s).keep_order);
+}
+
+#[test]
 fn old_database_gets_chain_edges() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.db");
@@ -1078,6 +1098,28 @@ fn final_status_is_human_only_and_layout_saved() {
     assert_eq!(ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap_err().code, ErrorCode::Usage);
     ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
     assert!(flow(&s).0.iter().all(|x| x.layout.is_none()));
+    // 白板设置：保存布局、复原、应用；复原不丢已保存的布局；删掉的状态跳过，新状态按默认补位
+    let snap = |s: &Store| s.read(|r| r.resolve(B).and_then(|b| r.board_snapshot(&b, T0, false))).unwrap();
+    assert!(snap(&s).saved_layout.is_none());
+    assert!(snap(&s).keep_order);
+    assert_eq!(ui(&mut s, |w| w.apply_saved_layout(B)).unwrap_err().code, ErrorCode::Usage);
+    let mut saved = std::collections::BTreeMap::new();
+    saved.insert("todo".to_string(), Tile { x: 3, w: 6, y: 0.0 });
+    saved.insert(t.key.clone(), Tile { x: 0, w: 3, y: 1.0 });
+    ui(&mut s, |w| w.save_flow_layout(B, &saved)).unwrap();
+    assert!(flow(&s).0.iter().all(|x| x.layout.is_none()), "保存布局不改当前布局");
+    tiles.insert("todo".to_string(), Tile { x: 0, w: 12, y: 0.0 });
+    tiles.insert("doing".to_string(), Tile { x: 0, w: 4, y: 5.0 });
+    ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap();
+    ui(&mut s, |w| w.delete_status(B, &t.key)).unwrap();
+    ui(&mut s, |w| w.apply_saved_layout(B)).unwrap();
+    assert_eq!(flow(&s).get("todo").unwrap().layout, Some(Tile { x: 3, w: 6, y: 0.0 }));
+    assert_eq!(flow(&s).get("doing").unwrap().layout, None, "没保存过位置的状态按默认规则补位");
+    assert_eq!(snap(&s).saved_layout.unwrap().len(), 1, "已删除的状态不出现在已保存的布局里");
+    ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
+    assert!(snap(&s).saved_layout.is_some(), "复原布局不丢已保存的布局");
+    ui(&mut s, |w| w.set_keep_order(B, false)).unwrap();
+    assert!(!snap(&s).keep_order);
     // 新建白板自带默认工作流
     ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
     let second = s.read(|r| r.resolve("default/second").and_then(|b| r.flow(&b))).unwrap();

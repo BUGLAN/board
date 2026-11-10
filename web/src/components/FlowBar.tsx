@@ -5,7 +5,7 @@
      点连线选中后按 Delete 或点 × 也能删除
    - 拖动状态调整顺序；点状态打开设置（名称、颜色、规则、删除）
    - 连线只约束 agent：agent 只能沿连线移动卡片，人不受限制
-   - readOnly（设置页「白板规则」）：同样的图，只看不改：没有连线把手、状态菜单、拖动、添加状态、复原布局
+   - readOnly（设置页「白板规则」）：同样的图，只看不改：没有连线把手、状态菜单、拖动、添加状态、白板设置
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -16,6 +16,7 @@ import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { flowKey, optimistic, useBusy, useData } from '../store/data';
 import { toastError } from '../store/ui';
+import { BoardSettings } from './BoardSettings';
 import { Icon } from './Icon';
 
 /** 改工作流：当帧生效（给白板的状态列表叠一层补丁），被拒绝时改回来并提示 */
@@ -64,7 +65,8 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
   const chips = useRef<Record<string, HTMLElement | null>>({});
   const addEl = useRef<HTMLElement | null>(null);
   const moved = useRef(false);
-  const hasLayout = f.list.some(s => s.layout);
+  const [settings, setSettings] = useState(false);
+  const settingsEl = useRef<HTMLButtonElement>(null);
 
   // 只读时没有「+ 添加状态」，不给它留位置
   const g = useMemo(() => layoutFlow(f.list, widths, readOnly ? 0 : addW), [f.list, widths, addW, readOnly]);
@@ -415,11 +417,20 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
           )}
         </div>
       </div>
-      {hasLayout && !readOnly && (
-        <button type="button" className="wf-reset" title="这块白板的状态块回到默认布局" onClick={() => run(list => list.map(s => ({ ...s, layout: null })), () => api.flowLayout(path, {}))}>
-          复原布局
+      {!readOnly && (
+        <button
+          type="button"
+          ref={settingsEl}
+          className={cx('wf-settings', settings && 'on')}
+          aria-expanded={settings}
+          title="这块白板自己的设置：状态块布局、保存顺序"
+          onClick={() => setSettings(!settings)}
+        >
+          <Icon name="settings" />
+          白板设置
         </button>
       )}
+      {settings && <BoardSettings path={path} anchor={settingsEl.current} onClose={() => setSettings(false)} />}
     </div>
   );
 }

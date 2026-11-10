@@ -190,7 +190,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 保存状态块布局。空表示复原为默认布局
+    /// 保存状态块布局。空表示复原为默认布局（白板设置里已保存的布局不受影响）
     pub fn set_flow_layout(&mut self, path: &str, tiles: &BTreeMap<String, Tile>) -> Result<()> {
         let b = self.resolve_exact(path)?;
         let flow = flow_of(self.tx, b.id)?;
@@ -199,16 +199,64 @@ impl<'a> W<'a> {
             self.changed = true;
             return Ok(());
         }
+        Self::check_tiles(&flow, tiles)?;
         for (k, t) in tiles {
-            Self::flow_status(&flow, k)?;
-            if t.w < 1 || t.x < 0 || t.x + t.w > 12 || !t.y.is_finite() {
-                return Err(BoardError::usage("布局超出了 12 栏网格"));
-            }
             self.tx.execute(
                 "UPDATE statuses SET lx = ?1, lw = ?2, ly = ?3 WHERE board = ?4 AND key = ?5",
                 params![t.x, t.w, t.y, b.id, k],
             )?;
         }
+        self.changed = true;
+        Ok(())
+    }
+
+    fn check_tiles(flow: &Flow, tiles: &BTreeMap<String, Tile>) -> Result<()> {
+        for (k, t) in tiles {
+            Self::flow_status(flow, k)?;
+            if t.w < 1 || t.x < 0 || t.x + t.w > 12 || !t.y.is_finite() {
+                return Err(BoardError::usage("布局超出了 12 栏网格"));
+            }
+        }
+        Ok(())
+    }
+
+    /// 白板设置「保存布局」：把一份布局（通常是界面上现在的样子）存成这块白板的已保存布局，不改当前布局
+    pub fn save_flow_layout(&mut self, path: &str, tiles: &BTreeMap<String, Tile>) -> Result<()> {
+        let b = self.resolve_exact(path)?;
+        let flow = flow_of(self.tx, b.id)?;
+        if tiles.is_empty() {
+            return Err(BoardError::usage("布局是空的"));
+        }
+        Self::check_tiles(&flow, tiles)?;
+        let json = serde_json::to_string(tiles).map_err(|e| BoardError::usage(e.to_string()))?;
+        self.tx.execute("UPDATE boards SET saved_layout = ?1 WHERE id = ?2", params![json, b.id])?;
+        self.changed = true;
+        Ok(())
+    }
+
+    /// 白板设置「应用布局」：当前布局换成已保存的布局。保存之后删掉的状态跳过，之后新增的状态按默认规则补位
+    pub fn apply_saved_layout(&mut self, path: &str) -> Result<()> {
+        let b = self.resolve_exact(path)?;
+        let flow = flow_of(self.tx, b.id)?;
+        let json: Option<String> = self.tx.query_row("SELECT saved_layout FROM boards WHERE id = ?1", [b.id], |r| r.get(0))?;
+        let saved: BTreeMap<String, Tile> = json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .ok_or_else(|| BoardError::usage("这块白板还没有保存过布局：先在白板设置里「保存布局」"))?;
+        self.tx.execute("UPDATE statuses SET lx = NULL, lw = NULL, ly = NULL WHERE board = ?1", [b.id])?;
+        for (k, t) in saved.iter().filter(|(k, _)| flow.get(k).is_some()) {
+            self.tx.execute(
+                "UPDATE statuses SET lx = ?1, lw = ?2, ly = ?3 WHERE board = ?4 AND key = ?5",
+                params![t.x, t.w.clamp(1, 12), t.y, b.id, k],
+            )?;
+        }
+        self.changed = true;
+        Ok(())
+    }
+
+    /// 白板设置「保存顺序」开关
+    pub fn set_keep_order(&mut self, path: &str, on: bool) -> Result<()> {
+        let b = self.resolve_exact(path)?;
+        self.tx.execute("UPDATE boards SET keep_order = ?1 WHERE id = ?2", params![on, b.id])?;
         self.changed = true;
         Ok(())
     }

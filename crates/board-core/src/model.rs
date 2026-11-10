@@ -540,6 +540,16 @@ pub struct BoardSnapshot {
     pub omitted: BTreeMap<String, usize>,
     /// 最近的事件（新的在后）
     pub log: Vec<Event>,
+    /// 白板设置里「保存布局」存下的布局（只含现在还在的状态）；没保存过为空。旧服务端没有这个字段
+    #[serde(default)]
+    pub saved_layout: Option<BTreeMap<String, Tile>>,
+    /// 保存顺序：界面上能不能在同一状态块里拖动卡片调整顺序。旧服务端没有这个字段（当作开着）
+    #[serde(default = "yes")]
+    pub keep_order: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// 白板快照里每个终点状态默认带的张数（最近移入的，也就是最下面的几张）；更早的按需取全量

@@ -168,6 +168,10 @@ export const api = {
   deleteStatus: (board: string, key: string) => req('DELETE', `/api/flow/${board}/${q(key)}`),
   /** 空对象 = 复原默认布局 */
   flowLayout: (board: string, tiles: Record<string, Tile>) => req('PUT', `/api/flow/${board}/layout`, { tiles }),
+  /** 白板设置：保存布局（不改当前布局）、应用已保存的布局、保存顺序开关 */
+  saveLayout: (board: string, tiles: Record<string, Tile>) => req('PUT', `/api/flow/${board}/layout/saved`, { tiles }),
+  applyLayout: (board: string) => req('POST', `/api/flow/${board}/layout/apply`),
+  keepOrder: (board: string, keepOrder: boolean) => req('PUT', `/api/flow/${board}/order`, { keepOrder }),
   /** 连线：一次加上、去掉若干条，[起点, 终点] */
   updateEdges: (board: string, add: [string, string][], remove: [string, string][] = []) =>
     req('PUT', `/api/flow/${board}/edges`, { add, remove }),

@@ -94,6 +94,8 @@ interface St {
   target: { col: ColumnKey; index: number } | null;
   valid: boolean;
   veto: Veto | null;
+  /** 白板设置关了「保存顺序」，指针想在原来的块里换位置：占位留在原处，松手时提示 */
+  orderLocked: boolean;
 }
 
 let st: St | null = null;
@@ -183,7 +185,7 @@ function onDown(e: PointerEvent) {
     fromCol: list.dataset.list as ColumnKey,
     fromIndex: [...list.children].indexOf(card),
     started: false, rot: 0, vx: 0, lastX: e.clientX, lastT: performance.now(),
-    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null,
+    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null, orderLocked: false,
   };
   if (e.pointerType !== 'mouse') {
     st.timer = window.setTimeout(() => {
@@ -264,9 +266,12 @@ function locate() {
   const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
   const items = list ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}`) : [];
-  const index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
-  const same = key === s.fromCol && index === s.fromIndex;
   const state = useData.getState();
+  let index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
+  // 白板设置关了「保存顺序」：同一块里不能换位置，占位一直留在原处（换到别的块不受影响）
+  s.orderLocked = key === s.fromCol && index !== s.fromIndex && state.board?.keepOrder === false;
+  if (s.orderLocked) index = s.fromIndex;
+  const same = key === s.fromCol && index === s.fromIndex;
   const card = state.board?.cards[s.id];
   let veto: Veto | null = null;
   if (!same && card) {
@@ -451,6 +456,8 @@ function finish(cancelled: boolean) {
     if (!cancelled && veto && target) {
       toastError({ code: veto.code, message: veto.message });
       rejectColumn(target.col);
+    } else if (!cancelled && s.orderLocked) {
+      toast({ type: 'info', title: '这块白板没有开「保存顺序」', text: '同一状态里不能拖动排序；在工作流条末尾的「白板设置」里打开' });
     }
   } else {
     plan = planDrop(s.id, s.fromCol, target);

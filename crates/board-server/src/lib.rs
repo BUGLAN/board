@@ -11,7 +11,7 @@
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
 //! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`）/ 画布位置的增删改
-//! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/{状态}`（修改、删除）
+//! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/layout/saved`、`…/layout/apply`（白板设置：保存、应用布局）、`…/order`（白板设置：保存顺序）、`…/{状态}`（修改、删除）
 //! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
 //! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, hosts, events}`；
 //!   `hosts` 是机器和派发的版本，board host 看到它变了就重新取自己的任务
@@ -230,6 +230,9 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/layout", put(layout))
         .route("/flow/{project}/{board}", post(create_status).put(reorder_statuses))
         .route("/flow/{project}/{board}/layout", put(flow_layout))
+        .route("/flow/{project}/{board}/layout/saved", put(save_flow_layout))
+        .route("/flow/{project}/{board}/layout/apply", post(apply_saved_layout))
+        .route("/flow/{project}/{board}/order", put(keep_order))
         .route("/flow/{project}/{board}/edges", put(flow_edges))
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/hosts", get(hosts::list))
@@ -821,6 +824,45 @@ async fn flow_layout(
     let b: FlowLayoutBody = parse(v)?;
     let path = format!("{project}/{board}");
     write(&s, &h, move |w| w.set_flow_layout(&path, &b.tiles)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 白板设置「保存布局」：body 和复原 / 拖动布局一样是 {tiles}
+async fn save_flow_layout(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Path((project, board)): Path<(String, String)>,
+    Json(v): Json<Value>,
+) -> ApiResult<Value> {
+    let b: FlowLayoutBody = parse(v)?;
+    let path = format!("{project}/{board}");
+    write(&s, &h, move |w| w.save_flow_layout(&path, &b.tiles)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 白板设置「应用布局」
+async fn apply_saved_layout(State(s): State<AppState>, h: HeaderMap, Path((project, board)): Path<(String, String)>) -> ApiResult<Value> {
+    let path = format!("{project}/{board}");
+    write(&s, &h, move |w| w.apply_saved_layout(&path)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct KeepOrderBody {
+    #[serde(rename = "keepOrder")]
+    keep_order: bool,
+}
+
+/// 白板设置「保存顺序」开关
+async fn keep_order(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Path((project, board)): Path<(String, String)>,
+    Json(v): Json<Value>,
+) -> ApiResult<Value> {
+    let b: KeepOrderBody = parse(v)?;
+    let path = format!("{project}/{board}");
+    write(&s, &h, move |w| w.set_keep_order(&path, b.keep_order)).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

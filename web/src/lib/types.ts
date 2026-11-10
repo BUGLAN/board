@@ -315,6 +315,10 @@ export interface BoardSnapshot {
   /** 终点状态默认只带最近移入的几张：状态 → 省略的（更早的）张数。取全量时、旧服务端没有 */
   omitted?: Record<string, number>;
   log: BoardEvent[];
+  /** 白板设置里「保存布局」存下的布局（只含现在还在的状态）；没保存过为空。旧服务端没有 */
+  savedLayout?: Record<string, Tile> | null;
+  /** 白板设置「保存顺序」：能不能在同一状态块里拖动卡片调整顺序。旧服务端没有（当作开着） */
+  keepOrder?: boolean;
 }
 
 export type ErrorCode =
