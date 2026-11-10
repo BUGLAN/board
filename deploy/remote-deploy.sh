@@ -33,7 +33,7 @@ set_image() {
   fi
 }
 
-# 等容器健康检查：healthy 通过；unhealthy、退出或 2 分钟没结果算失败
+# 等容器健康检查：healthy 通过；unhealthy、退出、崩溃循环或 2 分钟没结果算失败
 wait_healthy() {
   i=0
   while [ $i -lt 40 ]; do
@@ -43,7 +43,15 @@ wait_healthy() {
       unhealthy) break ;;
     esac
     state=$(docker inspect -f '{{.State.Status}}' board 2>/dev/null || echo missing)
-    [ "$state" = exited ] || [ "$state" = dead ] && { s=$state; break; }
+    case "$state" in
+      exited|dead|restarting) s=$state; break ;;
+    esac
+    # 崩溃循环时状态可能短暂是 running，用重启次数兜底，别等满 2 分钟
+    restarts=$(docker inspect -f '{{.RestartCount}}' board 2>/dev/null || echo 0)
+    if [ "${restarts:-0}" -gt 0 ]; then
+      s="restarting（重启 $restarts 次）"
+      break
+    fi
     i=$((i + 1))
     sleep 3
   done

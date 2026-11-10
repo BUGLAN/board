@@ -23,9 +23,17 @@ fi
 
 name="board-$(date +%Y%m%d-%H%M%S).db"
 
-docker compose exec -T board board-server backup "/data/backups/$name" || fail "备份数据库失败"
-# 文件属于容器里的用户，在容器里删
-docker compose exec -T board find /data/backups -name 'board-*.db' -mtime +14 -delete || fail "清理过期备份失败"
+# 容器在跑时照旧用 exec；容器不在跑（崩溃循环、已经停了）时用一次性容器做同样的备份，
+# 否则线上已经坏掉的时候，部署会卡在备份这一步，修复版本推不上去。
+if [ "$(docker inspect -f '{{.State.Running}}' board 2>/dev/null || echo false)" = "true" ]; then
+    docker compose exec -T board board-server backup "/data/backups/$name" || fail "备份数据库失败"
+    # 文件属于容器里的用户，在容器里删
+    docker compose exec -T board find /data/backups -name 'board-*.db' -mtime +14 -delete || fail "清理过期备份失败"
+else
+    docker compose run --rm --no-deps -T board backup "/data/backups/$name" || fail "备份数据库失败"
+    # 一次性容器没有常驻的 find，用 --entrypoint 绕过镜像入口清理旧备份
+    docker compose run --rm --no-deps -T --entrypoint find board /data/backups -name 'board-*.db' -mtime +14 -delete || fail "清理过期备份失败"
+fi
 echo "$(date '+%F %T') 已备份 data/backups/$name"
 
 sync_remote() {
