@@ -154,3 +154,14 @@ describe('nextCard（不带 ID 领取会领走的那张，PRD §8 规则 1）', 
     expect(f.nextCard(cols, id => id === 4, id => id === 5 || id === 4)).toBe(5); // 排队中的跳过
   });
 });
+
+describe('since（完成于多久前）', () => {
+  it('分钟 → 小时 → 天，随时间推移变化', async () => {
+    const { since } = await import('./util');
+    const t = 1_700_000_000_000;
+    expect(since(t, t + 10e3)).toBe('刚刚');
+    expect(since(t, t + 5 * 60e3)).toBe('5 分钟前');
+    expect(since(t, t + 3 * 3600e3)).toBe('3 小时前');
+    expect(since(t, t + 2 * 86400e3)).toBe('2 天前');
+  });
+});

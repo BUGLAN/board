@@ -10,7 +10,7 @@ import { toggleTask } from '../lib/markdown';
 import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
+import { accel, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, dateTime, hhmm, isMobile, replay, since } from '../lib/util';
 import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeCard, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
@@ -644,7 +644,7 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
     if (!t.runs) return null;
     return (
       <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
-        <RunStats t={t} idle />
+        <RunStats t={t} idle finishedAt={c.finishedAt} now={now} />
       </section>
     );
   }
@@ -709,7 +709,7 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
 }
 
 /** 耗时一行：累计 · 领取次数 · 心跳次数 · 异常退出（idle：没人在做时单独显示，前面带计时图标） */
-function RunStats({ t, idle }: { t: ReturnType<typeof timing>; idle?: boolean }) {
+function RunStats({ t, idle, finishedAt, now }: { t: ReturnType<typeof timing>; idle?: boolean; finishedAt?: number | null; now?: number }) {
   return (
     <div className={cx('run-stats', idle && 'idle')}>
       {idle && <Icon name="timer" />}
@@ -725,6 +725,11 @@ function RunStats({ t, idle }: { t: ReturnType<typeof timing>; idle?: boolean })
       <span>
         异常退出 <b className={cx(t.lost > 0 && 'bad')}>{t.lost}</b>
       </span>
+      {finishedAt && now != null && (
+        <span title={`完成于 ${dateTime(finishedAt)}`}>
+          完成于 <b>{since(finishedAt, now)}</b>
+        </span>
+      )}
     </div>
   );
 }

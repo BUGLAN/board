@@ -2,7 +2,7 @@
 import { memo, useLayoutEffect, useRef, useState } from 'react';
 import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label, StatusView } from '../lib/types';
-import { agentColor, ago, clock, cx, durWords, replay } from '../lib/util';
+import { agentColor, ago, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
@@ -52,8 +52,8 @@ export const CardView = memo(function CardView({
   card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next, claimName = '待办', onTriage,
 }: Props) {
   const held = !!c.holder;
-  // 只有被持有的卡片要每秒走表；「未整理」里显示「几分钟前」，半分钟一次；其他卡片用不到时间，不起定时器
-  const now = useNow(held ? 1000 : c.column === 'inbox' ? 30000 : null);
+  // 只有被持有的卡片要每秒走表；「未整理」里显示「几分钟前」、做过的卡片显示「完成于几分钟前」，半分钟一次；其他卡片不起定时器
+  const now = useNow(held ? 1000 : c.column === 'inbox' || c.finishedAt ? 30000 : null);
   // 磁贴的悬浮卡：悬停或键盘聚焦时才渲染（终点状态的磁贴很多，每张都带一份很浪费）
   const [pop, setPop] = useState(false);
   const ref = useRef<HTMLElement>(null);
@@ -234,7 +234,9 @@ export const CardView = memo(function CardView({
                   <Icon name="timer" />
                   累计 {durWords(t.total)}
                 </span>
-                <span className="claim-sub">{t.runs} 次</span>
+                <span className="claim-sub" title={c.finishedAt ? `完成于 ${dateTime(c.finishedAt)}` : undefined}>
+                  {t.runs} 次{c.finishedAt ? ` · 完成于 ${since(c.finishedAt, now)}` : ''}
+                </span>
               </div>
             )
           )}

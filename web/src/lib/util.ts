@@ -61,6 +61,20 @@ export function ago(t: number, now: number) {
   return `${x.getMonth() + 1}月${x.getDate()}日 ${hhmm(t)}`;
 }
 
+/** 「完成于」用的相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 */
+export function since(t: number, now: number) {
+  const d = Math.max(0, now - t);
+  if (d < 45e3) return '刚刚';
+  if (d < 3600e3) return `${Math.round(d / 60e3)} 分钟前`;
+  if (d < 86400e3) return `${Math.round(d / 3600e3)} 小时前`;
+  return `${Math.round(d / 86400e3)} 天前`;
+}
+/** 具体的日期时间：2026-11-10 14:05 */
+export function dateTime(t: number) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hhmm(t)}`;
+}
+
 export const initial = (name: string) => [...String(name || '?').trim()][0]?.toUpperCase() || '?';
 
 export async function copyText(text: string): Promise<boolean> {

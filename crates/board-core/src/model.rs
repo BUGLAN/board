@@ -464,6 +464,9 @@ pub struct Card {
     /// 收到的心跳总次数（各次之和，含 final）
     #[serde(default)]
     pub beats: i64,
+    /// 最近一次领取结束的时间（final、心跳中断、释放都算）；没有结束过的领取时为空。评论、编辑、移动不影响它
+    #[serde(default)]
+    pub finished_at: Option<i64>,
     /// 领取它时所在的可领取状态；释放后回到这里（PRD §8 规则 7）
     #[serde(default)]
     pub claimed_from: Option<String>,

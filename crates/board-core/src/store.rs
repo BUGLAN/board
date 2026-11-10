@@ -766,7 +766,8 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
                 (SELECT COALESCE(SUM(r.ended_at - r.started_at), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NOT NULL),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost'),
-                (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id)
+                (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
+                (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id)
          FROM cards c WHERE c.board = ?1 {} {skip} ORDER BY {COL_ORDER}, c.pos, c.id",
         if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
     );
@@ -792,6 +793,7 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
             runs: r.get(16)?,
             runs_lost: r.get(17)?,
             beats: r.get(18)?,
+            finished_at: r.get(19)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
             created_by: row_actor(r.get(9)?, r.get(10)?),

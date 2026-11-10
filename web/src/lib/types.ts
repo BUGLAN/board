@@ -245,6 +245,8 @@ export interface Card {
   runsLost: number;
   /** 收到的心跳总次数（各次之和，含 final）；旧服务端没有这个字段 */
   beats?: number;
+  /** 最近一次领取结束的时间（异常退出也算）；没有结束过的领取、旧服务端时为空 */
+  finishedAt?: number | null;
   /** 领取它时所在的可领取状态；释放后回到这里 */
   claimedFrom: string | null;
   labels: number[];

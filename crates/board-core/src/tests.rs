@@ -315,6 +315,35 @@ fn runs_accumulate_across_claims() {
     assert_eq!((c.runs, c.runs_lost, c.work_ms, c.run_started_at), (3, 0, 2 * MIN + 30 * SEC, Some(T0 + 5 * MIN + 2 * SEC)));
 }
 
+/// 完成时间（finished_at）：最近一次领取的结束时间，多次领取取最后一次；异常退出也有；评论、编辑、移动不改它
+#[test]
+fn finished_at_is_last_run_end() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    assert_eq!(card(&s, B, 1).card.finished_at, None, "没有领取记录时为空");
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    beat_span(&mut s, &alpha(), 1, T0 + SEC, T0 + 2 * MIN);
+    assert_eq!(card(&s, B, 1).card.finished_at, None, "进行中时为空");
+    exec(&mut s, B, &alpha(), T0 + 2 * MIN, beat(1, true)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 2 * MIN + SEC, mv(1, "review")).unwrap();
+    let first = card(&s, B, 1).card.finished_at.expect("交审后有完成时间");
+    assert!(first >= T0 + 2 * MIN - SEC && first <= T0 + 2 * MIN + SEC, "{first}");
+    // 评论、编辑描述、移动状态都不改它
+    exec(&mut s, B, &human(), T0 + 5 * MIN, Cmd::Comment { id: 1, text: "看过了".into() }).unwrap();
+    exec(&mut s, B, &human(), T0 + 6 * MIN, Cmd::Edit { id: 1, title: None, body: Some("新描述".into()) }).unwrap();
+    exec(&mut s, B, &human(), T0 + 7 * MIN, mv(1, "todo")).unwrap();
+    assert_eq!(card(&s, B, 1).card.finished_at, Some(first));
+    // 第 2 次：心跳中断（异常退出）也有结束时间，取最后一次
+    exec(&mut s, B, &beta(), T0 + 8 * MIN, claim(None)).unwrap();
+    exec(&mut s, B, &beta(), T0 + 8 * MIN + SEC, beat(1, false)).unwrap();
+    let last = T0 + 8 * MIN + SEC;
+    s.sweep(last + BEAT_MS * BEAT_MISSES).unwrap();
+    let c = card(&s, B, 1).card;
+    assert_eq!(c.runs_lost, 1);
+    let second = c.finished_at.expect("异常退出也有结束时间");
+    assert!(second > first, "多次领取取最后一次");
+}
+
 #[test]
 fn heartbeat_rules() {
     let mut s = store();
