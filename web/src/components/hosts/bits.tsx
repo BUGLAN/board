@@ -1,13 +1,31 @@
 /* 机器页共用的小部件：系统图标、状态、agent 标记、心跳；轮询机器列表；改机器设置的补丁 */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../../lib/api';
-import { agentMark, hostState, osKind, since } from '../../lib/hosts';
+import { agentMark, hostState, osKind, since, type OsKind } from '../../lib/hosts';
 import type { HostAgent, HostInfo } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
 import { hostKey, refreshHosts, type Patch } from '../../store/data';
 import { Icon } from '../Icon';
 
-const OS_GLYPH = { mac: '⌘', linux: '$_', win: '⊞' } as const;
+/** Apple 品牌图标：单色跟随文字颜色，深色、浅色主题都清晰 */
+const AppleMark = () => (
+  <svg viewBox="0 0 384 512" fill="currentColor" aria-hidden="true">
+    <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z" />
+  </svg>
+);
+
+/** Microsoft Windows 品牌图标：官方四色四窗格，深色、浅色背景都清晰 */
+const WindowsMark = () => (
+  <svg viewBox="0 0 88 88" aria-hidden="true">
+    <path fill="#F25022" d="M0 12.5 35.7 7.6v34.5H0Z" />
+    <path fill="#7FBA00" d="M40 6.9 88 0v41.9H40Z" />
+    <path fill="#00A4EF" d="M0 50.5h35.7v33.9L0 79.4Z" />
+    <path fill="#FFB900" d="M40 50.5H88V88L40 81.2Z" />
+  </svg>
+);
+
+/* 认识的大系统用品牌图标，Linux 及其他保持字符回退 */
+const OS_GLYPH: Record<OsKind, ReactNode> = { mac: <AppleMark />, linux: '$_', win: <WindowsMark /> };
 
 export function OsGlyph({ os, small }: { os: string; small?: boolean }) {
   const k = osKind(os);
