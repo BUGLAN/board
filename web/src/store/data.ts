@@ -160,12 +160,17 @@ function drop(l: Layer) {
   render();
 }
 
-/** 写请求按发起顺序一个接一个发：连续操作时服务端收到的顺序与界面一致（补丁当帧就叠上，不用等前面的） */
+/** 写请求按发起顺序一个接一个发：连续操作时服务端收到的顺序与界面一致（补丁当帧就叠上，不用等前面的）。
+    请求有超时（lib/api）：网络断了时一个挂住的请求不会让后面的一直排队 */
 let chain: Promise<unknown> = Promise.resolve();
 function queue<T>(req: () => Promise<T>): Promise<T> {
   writes++;
   const run = chain.then(req);
   chain = run.catch(() => undefined);
+  // 超时、断线：那次写可能已经生效了，补丁撤掉后按服务端的数据再画一次
+  run.catch(e => {
+    if (e instanceof ApiError && e.code === 'NETWORK') void refresh();
+  });
   return run;
 }
 
@@ -683,9 +688,19 @@ export function onEvents(fn: Listener) {
   };
 }
 
+/** 还有没确认的修改（保存中、发送中）时关窗口：浏览器弹离开确认，免得丢 */
+function beforeUnload(e: BeforeUnloadEvent) {
+  const s = get();
+  if (Object.keys(s.saving).length || Object.keys(s.sending).length) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+}
+
 export function boot() {
   refresh();
-  return connect(
+  window.addEventListener('beforeunload', beforeUnload);
+  const stop = connect(
     m => {
       const all = m.events || [];
       const events = all.filter(e => e.client !== CLIENT_ID || e.via !== 'ui');
@@ -708,4 +723,8 @@ export function boot() {
       if (status === 'live' || status === 'offline') refresh();
     },
   );
+  return () => {
+    stop();
+    window.removeEventListener('beforeunload', beforeUnload);
+  };
 }

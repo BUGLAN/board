@@ -45,6 +45,17 @@ export class ApiError extends Error {
   }
 }
 
+/** 请求超时：网络半开（切网、合盖唤醒）时请求会一直挂着，写队列后面的操作跟着一直「保存中」 */
+const TIMEOUT_MS = 15000;
+/** 上传附件（≤ 10 MB）给得长一些 */
+const UPLOAD_TIMEOUT_MS = 120000;
+
+const timeout = (ms: number) => (typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined);
+const netError = (e: unknown, what: string) =>
+  (e as Error)?.name === 'TimeoutError'
+    ? new ApiError('NETWORK', `${what}超时：网络可能断了，稍后再试`)
+    : new ApiError('NETWORK', '连不上 Board 服务，请确认 board-server 正在运行');
+
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
@@ -53,20 +64,28 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-board-client': CLIENT_ID },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: timeout(TIMEOUT_MS),
     });
-  } catch {
-    throw new ApiError('NETWORK', '连不上 Board 服务，请确认 board-server 正在运行');
+    return await parse<T>(res);
+  } catch (e) {
+    throw e instanceof ApiError ? e : netError(e, '请求');
   }
-  return parse<T>(res);
 }
 
 async function parse<T>(res: Response): Promise<T> {
+  // 空响应体算 null；有内容但不是 JSON（例如反向代理返回的网页）：成功的状态码也按错误处理，不把 null 当成数据
+  const text = await res.text();
   let data: unknown = null;
-  try {
-    data = await res.json();
-  } catch {
-    /* 非 JSON */
+  let json = !text.trim();
+  if (!json) {
+    try {
+      data = JSON.parse(text);
+      json = true;
+    } catch {
+      /* 非 JSON */
+    }
   }
+  if (res.ok && !json) throw new ApiError('INTERNAL', `服务端返回的不是 JSON（${res.status}），可能被代理或网关拦下了`);
   if (!res.ok) {
     const e = (data as { error?: { code: ErrorCode; message: string; detail?: Record<string, unknown> } } | null)?.error;
     if (res.status === 401) unauthorized?.();
@@ -86,11 +105,13 @@ async function upload(board: string, card: number | null, file: File): Promise<A
       credentials: 'same-origin',
       headers: { 'content-type': file.type || 'application/octet-stream', 'x-board-client': CLIENT_ID },
       body: file,
+      signal: timeout(UPLOAD_TIMEOUT_MS),
     });
-  } catch {
-    throw new ApiError('NETWORK', '连不上 Board 服务，附件没有上传');
+    return await parse<Attachment>(res);
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw (e as Error)?.name === 'TimeoutError' ? netError(e, '上传') : new ApiError('NETWORK', '连不上 Board 服务，附件没有上传');
   }
-  return parse<Attachment>(res);
 }
 
 const q = encodeURIComponent;

@@ -9,9 +9,9 @@ import { cardDispatch } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, actorName, agentColor, ago, autosize, clock, cx, hhmm, isMobile, replay } from '../lib/util';
+import { accel, actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
 import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
-import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, toast, toastError, useUI } from '../store/ui';
+import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
@@ -141,8 +141,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement;
       if (t.closest?.('input, textarea, [contenteditable]')) return;
-      const ui = useUI.getState();
-      if (ui.confirm || ui.palette.open || ui.creator.open || ui.picker || ui.form || ui.labelsOf || ui.switcher || ui.dispatchOf != null) return;
+      // 菜单（「移动到」、右键菜单）、弹窗打开时只作用于它们：名单和全局快捷键共用 overlayOpen
+      if (overlayOpen()) return;
       const k = e.key.toLowerCase();
       if (k === 'c') {
         e.preventDefault();
@@ -342,6 +342,35 @@ function useRefit(ref: React.RefObject<HTMLTextAreaElement | null>, on?: unknown
   }, [ref, on]);
 }
 
+/** 编辑到一半卡片被 agent 领取（锁住）时没保存的内容：「白板路径#卡片」→ 标题、描述。再次编辑时先恢复它 */
+const drafts = new Map<string, { title?: string; body?: string }>();
+const draftKey = (id: number) => `${useData.getState().path}#${id}`;
+function takeDraft(id: number, field: 'title' | 'body'): string | undefined {
+  const k = draftKey(id);
+  const d = drafts.get(k);
+  const v = d?.[field];
+  if (d && v != null) {
+    delete d[field];
+    if (d.title == null && d.body == null) drafts.delete(k);
+  }
+  return v;
+}
+/** 存草稿并提示（人输入的内容不能丢）：提示里可以复制 */
+function keepDraft(c: Card, field: 'title' | 'body', text: string) {
+  const k = draftKey(c.id);
+  drafts.set(k, { ...drafts.get(k), [field]: text });
+  toast({
+    type: 'info',
+    title: `#${c.id} 被 ${c.holder ?? 'agent'} 领取了`,
+    text: `没保存的${field === 'title' ? '标题' : '描述'}存成了草稿：释放后再编辑会恢复`,
+    duration: 12000,
+    action: {
+      label: '复制',
+      fn: () => void copyText(text).then(ok => toast({ type: ok ? 'success' : 'error', title: ok ? '已复制草稿' : '复制失败' })),
+    },
+  });
+}
+
 /** busy：这张卡片在保存中，先不能改（只读），保存完再改 */
 function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -351,6 +380,17 @@ function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; b
   useEffect(() => {
     if (!editing.current) setV(c.title);
   }, [c.title]);
+  // 改到一半被领取：改过的存成草稿，输入框回到已保存的标题
+  const latest = useRef(v);
+  latest.current = v;
+  useEffect(() => {
+    if (!locked || !editing.current) return;
+    editing.current = false;
+    const t = latest.current.trim();
+    if (t && t !== c.title) keepDraft(c, 'title', latest.current);
+    setV(c.title);
+    ref.current?.blur();
+  }, [locked]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => autosize(ref.current), [v]);
   useEffect(() => {
     const t = requestAnimationFrame(() => autosize(ref.current));
@@ -385,7 +425,12 @@ function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; b
       readOnly={locked || busy}
       value={v}
       aria-label="标题"
-      onFocus={() => (editing.current = true)}
+      onFocus={() => {
+        if (locked || busy) return;
+        editing.current = true;
+        const d = takeDraft(c.id, 'title');
+        if (d != null) setV(d);
+      }}
       onChange={e => setV(e.target.value)}
       onBlur={commit}
       onKeyDown={e => {
@@ -466,11 +511,14 @@ function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; bu
   const attach = useAttach({ board: path, card: c.id, setValue: setV, textarea: ta });
   useRefit(ta, mode);
   useEffect(() => {
-    if (locked && mode === 'edit') setMode('view');
-  }, [locked, mode]);
+    if (!locked || mode !== 'edit') return;
+    // 编辑到一半被领取：改过的存成草稿（释放后再编辑时恢复），不丢
+    if (v.trim() !== c.body.trim()) keepDraft(c, 'body', v);
+    setMode('view');
+  }, [locked, mode]); // eslint-disable-line react-hooks/exhaustive-deps
   const edit = () => {
     if (locked || busy) return;
-    setV(c.body);
+    setV(takeDraft(c.id, 'body') ?? c.body);
     setMode('edit');
     requestAnimationFrame(() => {
       const t = ta.current;

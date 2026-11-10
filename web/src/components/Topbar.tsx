@@ -46,10 +46,23 @@ export function Topbar() {
         </span>
       </button>
       <div className="topbar-right">
+        <Offline />
         <Presence />
         <WindowControls />
       </div>
     </header>
+  );
+}
+
+/** 和服务端的实时连接断了：顶栏显示离线，恢复后消失 */
+function Offline() {
+  const offline = useData(s => s.status === 'offline');
+  if (!offline) return null;
+  return (
+    <span className="live-off" role="status" data-tip="和服务端的连接断了，正在重连；这期间的修改可能保存不了" data-tip-align="end">
+      <i />
+      离线
+    </span>
   );
 }
 

@@ -12,7 +12,7 @@ import { canNewWindow, cycleTheme, getTheme, newWindow } from '../lib/platform';
 import { quickPrompts } from '../lib/prompt';
 import { SORTS, sortKey, type SortSpec } from '../lib/sort';
 import { boardFlow, INBOX, LABEL_COLORS } from '../lib/schema';
-import type { Card } from '../lib/types';
+import type { Card, ProjectInfo } from '../lib/types';
 import { accel, cx, replay } from '../lib/util';
 import { allBoards, boardMeta, deleteLabelPatch, editLabelPatch, optimistic, useData, type Patch } from '../store/data';
 import {
@@ -21,6 +21,9 @@ import {
 } from '../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar } from './bits';
 import { Icon, type IconName } from './Icon';
+
+/** 工作区还没取到时的项目列表：模块级常量，选择器每次返回同一个数组（新数组会让 useData 认为变了、反复重渲染） */
+const NO_PROJECTS: ProjectInfo[] = [];
 
 /** 打开时先挂载再加 .on（入场过渡）；关闭时先去掉 .on 再卸载 */
 export function usePresence(open: boolean, ms = 240) {
@@ -369,7 +372,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
 
   const color = v.color;
   const pv = cfg.previewData ?? {};
-  const projects = useData(s => s.ws?.projects ?? []);
+  const projects = useData(s => s.ws?.projects ?? NO_PROJECTS);
   let preview: ReactNode = null;
   if (cfg.preview === 'project' || cfg.preview === 'edit-project') {
     preview = (

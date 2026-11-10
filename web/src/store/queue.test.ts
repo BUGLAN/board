@@ -156,6 +156,18 @@ describe('写队列', () => {
     expect([title(1), title(2), title(3)]).toEqual(['A', '卡片 2', 'C']);
   });
 
+  it('写请求断线、超时：撤掉补丁，再按服务端的数据刷新一次（那次写可能已经生效）', async () => {
+    const a = rename(1, 'A');
+    await settle();
+    const n = server.n.board;
+    serverEdit('p/a', 1, { title: 'A' }); // 其实已经写进去了，只是响应没回来
+    server.calls[0].fail('NETWORK');
+    await expect(a).rejects.toMatchObject({ code: 'NETWORK' });
+    await settle();
+    expect(server.n.board).toBe(n + 1);
+    expect(title(1)).toBe('A');
+  });
+
   it('optimistic：失败撤掉补丁并抛出，之后的操作不受影响', async () => {
     const a = D.optimistic(D.patchProject('p', p => ({ ...p, name: '改名' })), () => Promise.reject(new Error('坏了')));
     expect(D.useData.getState().ws!.projects[0].name).toBe('改名');

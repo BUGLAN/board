@@ -70,6 +70,15 @@
 .topbar-right { flex: 1 1 0; align-self: stretch; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .divider { width: 1px; height: 20px; background: var(--line-2); margin: 0 6px; }
 
+/* 离线标记：实时连接断了 */
+.live-off {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; height: 24px; padding: 0 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; color: var(--warn); white-space: nowrap;
+  background: color-mix(in srgb, var(--warn) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent);
+  animation: pop-in var(--dur-3) var(--spring) both;
+}
+.live-off i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
 /* 在线 agent 头像组 */
 .presence { display: flex; align-items: center; padding-left: 6px; }
 .presence:empty { display: none; }
