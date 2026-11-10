@@ -501,6 +501,15 @@ fn permanent_end_error(code: ErrorCode) -> bool {
 }
 
 /// 定时领取：这一分钟到点、机器没暂停、也没有正在进行的一轮
+/// 会话（同一个 agent 进程）正在跑的那一张：board next 之后服务端开了新的派发，session 相同、ID 更大
+/// 旧版服务端不发 session（为 0）：不跟随
+fn successor(d: &Dispatch, running: &[Dispatch]) -> Option<Dispatch> {
+    if d.session == 0 {
+        return None;
+    }
+    running.iter().filter(|x| x.session == d.session && x.id > d.id).max_by_key(|x| x.id).cloned()
+}
+
 fn cron_due(m: &str, cron_on: bool, cron: &[String], paused: bool, round: bool) -> bool {
     cron_on && !paused && !round && cron.iter().any(|t| t == m)
 }
@@ -736,6 +745,25 @@ impl Host<'_> {
     }
 
     fn set_work(&mut self, w: HostWork) {
+        // 会话里 agent 执行了 board next：同一个进程换到这个会话正在跑的那一张，之后的日志、停止、结束都跟着它。
+        // 换之前把已经写出的日志传给上一张
+        let switches: Vec<(usize, Dispatch)> =
+            self.runs.iter().enumerate().filter_map(|(i, r)| successor(&r.d, &w.running).map(|n| (i, n))).collect();
+        for (i, n) in switches {
+            let (lines, to) = new_lines(&self.runs[i].log, self.runs[i].sent, false);
+            if !lines.is_empty() {
+                let _ = self.rm().post::<Value>(&format!("/api/dispatches/{}/log", self.runs[i].d.id), json!({ "lines": lines }));
+            }
+            self.runs[i].sent = to;
+            self.say(format!(
+                "{} {}  {}  {}",
+                self.p.green("▶"),
+                self.p.cyan(&format!("{}#{}", n.board, n.card)),
+                self.p.yellow(n.name.as_deref().unwrap_or_default()),
+                self.p.dim(&format!("同一个会话接着做 · {}", n.title))
+            ));
+            self.runs[i].d = n;
+        }
         self.work = Some(w);
         self.work_at = Instant::now();
         self.hold = false;
@@ -1084,8 +1112,9 @@ impl Host<'_> {
         }
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
+        // 定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）
         let prompt = format!(
-            "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal）",
+            "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal；交审或交给人之后执行 board next --json，领到卡片就接着做，返回 SESSION_DONE 就结束）",
             d.card, self.name
         );
         // dsh 的一次性派发要带一份禁用 goal 的 profile 补丁，见 DSH_HEADLESS_PATCH
@@ -1350,6 +1379,39 @@ mod tests {
         assert!(permanent_end_error(ErrorCode::Usage));
         assert!(!permanent_end_error(ErrorCode::Unreachable), "连不上要重试");
         assert!(!permanent_end_error(ErrorCode::Internal), "服务端 5xx 要重试");
+    }
+
+    /// board next 之后同一个进程换到会话里新的那一张；别的会话、旧版服务端（没有 session）不跟随
+    #[test]
+    fn run_follows_its_session() {
+        let d = |id: i64, session: i64| Dispatch {
+            id,
+            board: "default/main".into(),
+            card: id,
+            title: String::new(),
+            host_id: 1,
+            host: "mbp".into(),
+            agent: "claude".into(),
+            agent_label: "Claude Code".into(),
+            name: Some("claude/mbp-1".into()),
+            env: None,
+            env_name: None,
+            source: "cron".into(),
+            by: board_core::Actor::system(),
+            state: "running".into(),
+            result: None,
+            created_at: 0,
+            started_at: None,
+            ended_at: None,
+            exit_code: None,
+            stop_by: None,
+            beat_at: None,
+            session,
+        };
+        let cur = d(1, 1);
+        assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));
+        assert!(successor(&cur, &[d(1, 1), d(3, 3)]).is_none(), "别的会话不跟随");
+        assert!(successor(&d(1, 0), &[d(2, 0)]).is_none(), "旧版服务端不跟随");
     }
 
     #[test]

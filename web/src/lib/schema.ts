@@ -109,6 +109,7 @@ export const ERRORS: [ErrorCode, string][] = [
   ['AGENT_NOT_ON_HOST', '机器上没有这种 agent，或标为没找到'],
   ['BOARD_NOT_ON_HOST', '机器没有这块白板的目录'],
   ['DISPATCHED', '卡片有排队中的派发：别的 agent 不能领取它'],
+  ['SESSION_DONE', 'board next：这个会话不再接着做（做满了、手动派发、暂停接单、没有可领取的卡片）：结束会话'],
 ];
 
 /** 标识：小写字母、数字和 -，以字母或数字开头，最长 32 个字符 */

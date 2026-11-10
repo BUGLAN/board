@@ -23,6 +23,16 @@ case "$(cat "$FAKE_DIR/mode")" in
     env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
     echo "交审了"
     exit 0 ;;
+  session)
+    # 定时领取的会话：交审后 board next 接着做，直到 SESSION_DONE
+    while :; do
+      env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
+      echo "交审了 #$id"
+      out=$(env -u BOARD_TOKEN "$BOARD_BIN" next --json) || { echo "会话结束"; exit 0; }
+      id=$(echo "$out" | sed -n 's/^  "id": \([0-9]*\),*$/\1/p' | head -1)
+      # 真的 agent 做一张要几分钟；这里等一下，让 board host 先换到新的派发再写下一张的输出
+      sleep 1
+    done ;;
   crash)
     echo "working"
     echo "boom"
@@ -251,6 +261,42 @@ fn host_runs_dispatches_end_to_end() {
     assert_eq!(code, 0, "{out}");
     assert!(ended(&rig.show(4), "已停止"), "{:?}", activity(&rig.show(4)));
     assert!(rig.workspace()["hosts"][0]["online"] == false);
+}
+
+/// 定时领取的会话接着做（board next）：N = 4、6 张卡、同时跑 1 个 → 第一个进程做 4 张，第二个做 2 张；每张各一条派发
+#[test]
+fn cron_session_does_several_cards() {
+    let rig = Rig::new();
+    for i in 1..=6 {
+        assert_eq!(rig.board(&["new", &format!("卡{i}")]).code, 0);
+    }
+    rig.mode("session");
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    assert_eq!(rig.workspace()["hosts"][0]["perSession"], 4);
+    ureq::post(format!("{}/api/hosts/mbp/round", rig.s.url))
+        .header("authorization", format!("Bearer {}", rig.s.token))
+        .send_json(serde_json::json!({}))
+        .unwrap();
+    wait_until("6 张都交审", Duration::from_secs(60), || (1..=6).all(|i| rig.show(i)["column"] == "review"));
+    wait_until("派发都结束", Duration::from_secs(20), || {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        store.read(|r| r.active_dispatches()).unwrap().is_empty()
+    });
+    let store = board_core::Store::open(&rig.s.db).unwrap();
+    let mut all = store.read(|r| r.host_recent(1, 50)).unwrap();
+    all.sort_by_key(|d| d.id);
+    assert_eq!(all.len(), 6, "每张卡各一条派发");
+    assert!(all.iter().all(|d| d.result.as_deref() == Some("review")), "{all:?}");
+    let sessions: Vec<i64> = all.iter().map(|d| d.session).collect();
+    assert_eq!(sessions, vec![all[0].id, all[0].id, all[0].id, all[0].id, all[4].id, all[4].id], "4 张一个进程，剩下 2 张换新进程");
+    // 进程的输出记到当时正在做的那张卡的派发上
+    assert!(rig.dispatch_log(all[1].id).iter().any(|l| l == &format!("交审了 #{}", all[1].card)), "{:?}", rig.dispatch_log(all[1].id));
+    assert!(activity(&rig.show(all[1].card)).iter().any(|t| t.contains("接着做（定时，这个会话的第 2 张）")));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
 }
 
 #[test]

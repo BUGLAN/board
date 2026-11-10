@@ -150,6 +150,8 @@ export interface HostInfo {
   dirs: HostDir[];
   /** 同时跑几个（1–8） */
   max: number;
+  /** 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
+  perSession?: number;
   paused: boolean;
   /** 默认 agent（设置过且找到了就是它，否则第一个找到的） */
   agent: string | null;
@@ -318,6 +320,7 @@ export type ErrorCode =
   | 'AGENT_NOT_ON_HOST'
   | 'BOARD_NOT_ON_HOST'
   | 'DISPATCHED'
+  | 'SESSION_DONE'
   | 'INTERNAL'
   | 'NETWORK'
   /** 界面自己的：上一次修改还没保存完，不能再改同一个对象（不发请求） */

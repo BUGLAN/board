@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   run      TEXT NOT NULL DEFAULT '{}',-- 每个 agent 的运行设置（JSON：{"<agent>": {"env": "<启动环境>"}}）
   dirs     TEXT NOT NULL DEFAULT '[]',-- 白板与目录（JSON，按 --dir 的顺序）
   max      INTEGER NOT NULL DEFAULT 1,-- 同时跑几个
+  per_session INTEGER NOT NULL DEFAULT 4,-- 定时领取启动的会话一个最多做几张（board next）
   paused   INTEGER NOT NULL DEFAULT 0,-- 暂停接单
   agent    TEXT,                      -- 默认 agent；空表示本机 agent 里第一个找到的
   cron_on  INTEGER NOT NULL DEFAULT 0,-- 定时领取开关
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
   ended_at    INTEGER,
   exit_code   INTEGER,
   stop_by     TEXT,                   -- 有人请求停止：谁
+  session     INTEGER,                -- 同一个 agent 进程做的几张卡：第一张的派发 ID（board next 接着做的那几张都写它）；空表示就是自己
   log         TEXT NOT NULL DEFAULT '' -- 日志的最后 500 行
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
@@ -97,6 +99,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "run", "TEXT NOT NULL DEFAULT '{}'"),
         ("dispatches", "env", "TEXT"),
         ("dispatches", "env_name", "TEXT"),
+        ("hosts", "per_session", "INTEGER NOT NULL DEFAULT 4"),
+        ("dispatches", "session", "INTEGER"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -109,6 +113,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 pub const HOST_NAME_MAX: usize = 24;
 /// 同时跑几个的上限
 pub const HOST_MAX_LIMIT: i64 = 8;
+/// 一个会话最多做几张的上限（1–8，默认 4）
+pub const PER_SESSION_LIMIT: i64 = 8;
 /// 每个派发保留的日志行数
 pub const LOG_KEEP: usize = 500;
 /// 机器多久没上报算离线：与 agent 相同，连续 5 次（50 秒）
@@ -254,6 +260,9 @@ pub struct HostInfo {
     pub dirs: Vec<HostDir>,
     /// 同时跑几个（1–8）
     pub max: i64,
+    /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
+    #[serde(default = "default_per_session")]
+    pub per_session: i64,
     /// 暂停接单
     pub paused: bool,
     /// 默认 agent：设置过且找到了就是它，否则是本机 agent 里第一个找到的；都没找到时为空
@@ -267,6 +276,10 @@ pub struct HostInfo {
     pub first_at: i64,
     pub beat_at: i64,
     pub off_at: Option<i64>,
+}
+
+fn default_per_session() -> i64 {
+    4
 }
 
 /// board host 每 10 秒的上报（`POST /api/hosts/beat`）
@@ -312,6 +325,8 @@ pub struct HostWork {
 pub struct HostPatch {
     #[serde(default)]
     pub max: Option<i64>,
+    #[serde(default)]
+    pub per_session: Option<i64>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -367,6 +382,9 @@ pub struct Dispatch {
     pub stop_by: Option<String>,
     /// 持有者最近一次心跳（在跑时）
     pub beat_at: Option<i64>,
+    /// 同一个 agent 进程做的几张卡共用的会话标识：第一张的派发 ID（旧数据、还没开始时就是自己的 ID）
+    #[serde(default)]
+    pub session: i64,
 }
 
 /// 结果的中文
@@ -410,6 +428,7 @@ struct HostRow {
     run: std::collections::BTreeMap<String, AgentRun>,
     dirs: Vec<HostDir>,
     max: i64,
+    per_session: i64,
     paused: bool,
     agent: Option<String>,
     cron_on: bool,
@@ -425,7 +444,7 @@ struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -444,6 +463,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         run: serde_json::from_str(&run).unwrap_or_default(),
         dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
         max: r.get(7)?,
+        per_session: r.get(19)?,
         paused: r.get::<_, i64>(8)? != 0,
         agent: r.get(9)?,
         cron_on: r.get::<_, i64>(10)? != 0,
@@ -510,6 +530,7 @@ impl HostRow {
             envs: self.envs.clone(),
             dirs: self.dirs.clone(),
             max: self.max,
+            per_session: self.per_session,
             paused: self.paused,
             agent: self.default_agent().map(|a| a.id.clone()),
             cron_on: self.cron_on,
@@ -525,7 +546,7 @@ impl HostRow {
 
 const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, COALESCE(c.title, d.title), d.host_id, d.host, d.agent,
        d.agent_label, d.name, d.source, d.by_kind, d.by_name, d.state, d.result, d.created_at, d.started_at, d.ended_at,
-       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name
+       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id)
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -551,6 +572,7 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         exit_code: r.get(17)?,
         stop_by: r.get(18)?,
         beat_at: r.get(19)?,
+        session: r.get(22)?,
     })
 }
 
@@ -638,6 +660,9 @@ struct DRow {
     state: String,
     stop_by: Option<String>,
     started_at: Option<i64>,
+    env: Option<String>,
+    /// 会话标识：第一张的派发 ID
+    session: i64,
 }
 
 impl<'a> W<'a> {
@@ -648,7 +673,7 @@ impl<'a> W<'a> {
     fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
-                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name FROM dispatches WHERE id = ?1",
+                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id) FROM dispatches WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(DRow {
@@ -665,6 +690,8 @@ impl<'a> W<'a> {
                         stop_by: r.get(10)?,
                         started_at: r.get(11)?,
                         env_name: r.get(12)?,
+                        env: r.get(13)?,
+                        session: r.get(14)?,
                     })
                 },
             )
@@ -711,31 +738,157 @@ impl<'a> W<'a> {
     /// 没有排队派发的卡片中，带优先标签的先领；都不带时取最前面那张。
     /// `skip` 是调用方额外要跳过的卡片（定时领取传这一轮已经派发过的卡片）。
     pub(crate) fn next_claimable(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Option<(i64, String)>> {
+        let list = self.claimable_order(b, flow, skip)?;
+        let urgent = self.priority_cards(b)?;
+        Ok(list.iter().find(|(id, _)| urgent.contains(id)).or(list.first()).cloned())
+    }
+
+    /// 可领取的卡片，按规则 1 的顺序（连到锁定状态的可领取状态按工作流顺序、状态内从上到下），
+    /// 去掉有排队派发的和 `skip` 里的；第二项是所在状态
+    fn claimable_order(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Vec<(i64, String)>> {
         let mut taken: Vec<i64> = self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state = 'queued'", [b], |r| r.get(0))?;
         taken.extend_from_slice(skip);
-        let urgent: Vec<i64> = self.collect(
+        let mut out = vec![];
+        for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
+            out.extend(self.col_ids(b, &s.key)?.into_iter().filter(|id| !taken.contains(id)).map(|id| (id, s.key.clone())));
+        }
+        Ok(out)
+    }
+
+    /// 带优先标签的卡片
+    fn priority_cards(&self, b: i64) -> Result<Vec<i64>> {
+        self.collect(
             "SELECT DISTINCT cl.card FROM card_labels cl JOIN labels l ON l.id = cl.label WHERE cl.board = ?1 AND l.priority = 1",
             [b],
             |r| r.get(0),
-        )?;
-        let mut first = None;
-        for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
-            for id in self.col_ids(b, &s.key)?.into_iter().filter(|id| !taken.contains(id)) {
-                if urgent.contains(&id) {
-                    return Ok(Some((id, s.key.clone())));
-                }
-                first.get_or_insert((id, s.key.clone()));
-            }
-        }
-        Ok(first)
+        )
     }
 
-    /// 写一条派发的结束，并让它的名字离线（名字只给这次派发用）
-    fn close_dispatch(&mut self, d: &DRow, result: &str, exit_code: Option<i64>) -> Result<()> {
+    /// `board next`（只在 board host 启动的会话里用）：结算这个名字正在跑的派发，挑下一张，以同一个名字领取，
+    /// 记一条新的派发（同一台机器、agent、启动环境，来源定时，同一个会话）。都在一个写事务里。
+    ///
+    /// 怎么挑：候选是会话所在白板上可领取、没有排队派发、这一轮（或这个会话里）没派发过的卡片。
+    /// 1. 有带优先标签的，按规则 1 领到的就是它；2. 否则和会话第一张卡共同标签最多的（至少一个），并列按规则 1 的顺序；
+    /// 3. 都没有共同标签时按规则 1 的顺序取第一张。
+    pub fn dispatch_next(&mut self, name: &str) -> Result<CardDetail> {
+        let cur: Option<i64> = self
+            .tx
+            .query_row("SELECT id FROM dispatches WHERE name = ?1 AND state = 'running' ORDER BY id DESC LIMIT 1", [name], |r| r.get(0))
+            .optional()?;
+        let Some(cur) = cur else {
+            return Err(BoardError::usage(format!(
+                "board next 只能在 board host 启动的会话里用：{name} 没有正在跑的派发"
+            )));
+        };
+        let d = self.drow(cur)?;
+        let board = self.board_of(d.board)?;
+        let holder: Option<String> = self
+            .tx
+            .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
+            .optional()?
+            .flatten();
+        if holder.as_deref() == Some(name) {
+            return Err(BoardError::new(
+                ErrorCode::AlreadyHolding,
+                format!("#{} 还由你持有：先交审（board heartbeat final，再沿连线移到交审状态）或交给人处理，再 board next", d.card),
+            ));
+        }
+        let done = |why: String| Err(BoardError::new(ErrorCode::SessionDone, format!("{why}：结束这个会话")));
+        if d.source != "cron" {
+            return done("这个会话是手动派发启动的，只做指定的那一张".into());
+        }
+        if d.stop_by.is_some() {
+            return done("有人停止了这个会话".into());
+        }
+        let Some(h) = self.host_row(&d.host)? else {
+            return done(format!("机器「{}」已被移除", d.host));
+        };
+        if h.paused {
+            return done(format!("机器「{}」暂停接单", h.name));
+        }
+        let n: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE COALESCE(session, id) = ?1", [d.session], |r| r.get(0))?;
+        if n >= h.per_session {
+            return done(format!("这个会话已经做了 {n} 张（机器设置：一个会话最多做 {} 张）", h.per_session));
+        }
+        // 候选：这一轮、这个会话里这台机器派发过的卡片不再领
+        let (first_card, first_at): (i64, i64) =
+            self.tx.query_row("SELECT card, created_at FROM dispatches WHERE id = ?1", [d.session], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let since = h.round_at.map_or(first_at, |r| r.min(first_at));
+        let skip: Vec<i64> = self.collect(
+            "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3",
+            params![d.board, h.id, since],
+            |r| r.get(0),
+        )?;
+        let flow = flow_of(self.tx, d.board)?;
+        let list = self.claimable_order(d.board, &flow, &skip)?;
+        if list.is_empty() {
+            return done(format!("白板 {} 上没有可领取的卡片", board.path()));
+        }
+        let urgent = self.priority_cards(d.board)?;
+        let card = match list.iter().find(|(id, _)| urgent.contains(id)) {
+            Some((id, _)) => *id,
+            None => {
+                let mine: Vec<i64> =
+                    self.collect("SELECT label FROM card_labels WHERE board = ?1 AND card = ?2", params![d.board, first_card], |r| r.get(0))?;
+                let mut best = (0usize, list[0].0);
+                for (id, _) in &list {
+                    let theirs: Vec<i64> =
+                        self.collect("SELECT label FROM card_labels WHERE board = ?1 AND card = ?2", params![d.board, id], |r| r.get(0))?;
+                    let common = theirs.iter().filter(|l| mine.contains(l)).count();
+                    if common > best.0 {
+                        best = (common, *id);
+                    }
+                }
+                best.1
+            }
+        };
+        // 结算上一张：卡片已经不由这个名字持有，在交审状态记「已交审」，其他状态记「做不下去」
+        let col: Option<String> =
+            self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0)).optional()?;
+        let result = if col.as_deref().is_some_and(|c| flow.is_review(c)) { "review" } else { "stuck" };
+        self.close_row(&d, result, None)?;
+        let actor = Actor::agent(name.to_string());
+        let took = d.started_at.map(|t| format!("，用时 {}", crate::engine::dur_words(self.now - t))).unwrap_or_default();
+        let text = format!("派发结束：{}（{}{took}），接着做下一张", result_words(result), Self::dispatch_words(&d));
+        self.track_dispatch(d.board, d.card, &actor, "dispatch", &text)?;
+        // 以同一个名字领取下一张
+        self.dispatch_ok = true;
+        let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(card) });
+        self.dispatch_ok = false;
+        claimed?;
+        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![d.board, card], |r| r.get(0))?;
+        let by = Actor::system();
+        self.tx.execute(
+            "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, name, env, env_name, source, by_kind, by_name, state, created_at, started_at, session)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'cron', ?11, ?12, 'running', ?13, ?13, ?14)",
+            params![
+                d.board, card, title, h.id, h.name, d.agent, d.agent_label, name, d.env, d.env_name,
+                by.kind.as_str(), by.name, self.now, d.session
+            ],
+        )?;
+        let who = match &d.env_name {
+            Some(e) => format!("{}（{e}）", d.agent_label),
+            None => format!("{} ", d.agent_label),
+        };
+        let text = format!("派发开始：{} 上的 {who}以 {name} 接着做（定时，这个会话的第 {} 张）", h.name, n + 1);
+        self.track(d.board, card, &actor, "dispatch", &text)?;
+        self.touch_hosts();
+        self.read().card(&board, card)
+    }
+
+    /// 写一条派发的结束（不动名字：board next 接着做下一张时用）
+    fn close_row(&mut self, d: &DRow, result: &str, exit_code: Option<i64>) -> Result<()> {
         self.tx.execute(
             "UPDATE dispatches SET state = 'done', result = ?2, ended_at = ?3, exit_code = ?4 WHERE id = ?1",
             params![d.id, result, self.now, exit_code],
         )?;
+        self.touch_hosts();
+        Ok(())
+    }
+
+    /// 写一条派发的结束，并让它的名字离线（名字只给这个会话用）
+    fn close_dispatch(&mut self, d: &DRow, result: &str, exit_code: Option<i64>) -> Result<()> {
+        self.close_row(d, result, exit_code)?;
         if let Some(name) = &d.name {
             let online: bool = self.tx.query_row(
                 "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1 AND off_at IS NULL",
@@ -840,12 +993,23 @@ impl<'a> W<'a> {
                 }
             }
         }
-        // 在跑的派发
+        // 在跑的派发。board host 报的是它知道的派发 ID：board next 刚换到下一张、board host 还没取到新任务时，
+        // 它报的还是上一张。同一个会话（同一个进程）里的任何一张在报，就算有进程
         let running: Vec<i64> =
             self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running' ORDER BY id", [&rep.name], |r| r.get(0))?;
+        let mut alive: Vec<i64> = vec![];
+        for id in &rep.running {
+            if let Some(s) = self
+                .tx
+                .query_row("SELECT COALESCE(session, id) FROM dispatches WHERE id = ?1", [id], |r| r.get::<_, i64>(0))
+                .optional()?
+            {
+                alive.push(s);
+            }
+        }
         for id in running {
             let d = self.drow(id)?;
-            if rep.running.contains(&id) {
+            if rep.running.contains(&id) || alive.contains(&d.session) {
                 if let Some(name) = &d.name {
                     match self.agent_beat(name, false) {
                         Ok(_) => {}
@@ -869,6 +1033,12 @@ impl<'a> W<'a> {
                 return Err(BoardError::usage(format!("同时跑几个要在 1 到 {HOST_MAX_LIMIT} 之间")));
             }
             self.tx.execute("UPDATE hosts SET max = ?2 WHERE id = ?1", params![h.id, max])?;
+        }
+        if let Some(n) = p.per_session {
+            if !(1..=PER_SESSION_LIMIT).contains(&n) {
+                return Err(BoardError::usage(format!("一个会话最多做几张要在 1 到 {PER_SESSION_LIMIT} 之间")));
+            }
+            self.tx.execute("UPDATE hosts SET per_session = ?2 WHERE id = ?1", params![h.id, n])?;
         }
         if let Some(paused) = p.paused {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;
@@ -1141,7 +1311,7 @@ impl<'a> W<'a> {
         self.dispatch_ok = false;
         match claimed {
             Ok(_) => {
-                self.tx.execute("UPDATE dispatches SET state = 'running', started_at = ?2 WHERE id = ?1", params![d.id, self.now])?;
+                self.tx.execute("UPDATE dispatches SET state = 'running', started_at = ?2, session = ?1 WHERE id = ?1", params![d.id, self.now])?;
                 self.touch_hosts();
                 // 「mbp 上的 pi（Git Bash）以 pi/mbp-1 领取」；旧版 board host 没有启动环境：「mbp 上的 pi 以 …」
                 let who = match &env_name {
@@ -1205,7 +1375,22 @@ impl<'a> W<'a> {
 
     /// 派发结束（任务下发需求 §七「结束」）：board host 在 agent 进程退出后上报退出码和日志最后 20 行
     pub fn dispatch_end(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], how: EndHow) -> Result<Dispatch> {
-        let d = self.drow(id)?;
+        let mut d = self.drow(id)?;
+        // 进程退出时 board host 可能还不知道会话已经换到下一张（board next）：结算这个会话正在跑的那一张
+        if d.state == "done" {
+            let cur: Option<i64> = self
+                .tx
+                .query_row(
+                    "SELECT id FROM dispatches WHERE COALESCE(session, id) = ?1 AND state = 'running' ORDER BY id DESC LIMIT 1",
+                    [d.session],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(cur) = cur {
+                d = self.drow(cur)?;
+            }
+        }
+        let id = d.id;
         if d.state == "running" {
             let f = match how {
                 EndHow::Exit => Finish::Exit,

@@ -41,12 +41,14 @@ pub enum ErrorCode {
     BoardNotOnHost,
     /// 卡片有排队中的派发：别的 agent 不能领取
     Dispatched,
+    /// board next：这个会话不再接着做下一张（做满了、手动派发、暂停接单、没有可领取的卡片……）
+    SessionDone,
     /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
     Internal,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 23] = [
+    pub const ALL: [ErrorCode; 24] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -70,6 +72,7 @@ impl ErrorCode {
         ErrorCode::AgentNotOnHost,
         ErrorCode::BoardNotOnHost,
         ErrorCode::Dispatched,
+        ErrorCode::SessionDone,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -97,6 +100,7 @@ impl ErrorCode {
             ErrorCode::AgentNotOnHost => "AGENT_NOT_ON_HOST",
             ErrorCode::BoardNotOnHost => "BOARD_NOT_ON_HOST",
             ErrorCode::Dispatched => "DISPATCHED",
+            ErrorCode::SessionDone => "SESSION_DONE",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -132,6 +136,7 @@ impl ErrorCode {
             ErrorCode::AgentNotOnHost => "这台机器上没有这种 agent，或没找到它的命令",
             ErrorCode::BoardNotOnHost => "这台机器没有这块白板的目录：board host 启动时用 --dir <项目>/<白板>=<路径> 加上",
             ErrorCode::Dispatched => "卡片已经派发给一台机器、正在排队：等它开始，或先取消派发",
+            ErrorCode::SessionDone => "这个会话不再接着做下一张：结束会话",
             ErrorCode::Internal => "内部错误",
         }
     }

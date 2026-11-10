@@ -79,7 +79,8 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 
 1. 按「卡片颗粒度」拆：这一次要建的改动里，同类别的小改动合成一张卡，单独成卡的改动各建一张。
 2. 目标取决于句子：说「待办」时每张卡一次 `board new "<标题>" --body "<背景、范围，以及 - [ ] 验收标准>"`，按先后顺序新建，卡片进入首个可领取状态；说「未整理」时用 `board new "<标题>" --body "…" --inbox`，卡片进入「未整理」最下面。只 `board new`，不修改已有的卡片（不 edit、move、label 已有的卡片）。
-3. 最后汇报新建的卡片（ID 和标题）。
+3. 给自己这次新建的卡片打上项目里已有的、合适的标签（`board labels` 看有哪些，`board label <ID> +<标签>`；不新建标签）：定时领取的会话会优先接着做和第一张标签相近的卡，标签打对了相近的卡才凑得到一起。
+4. 最后汇报新建的卡片（ID 和标题）。
 
 ## 由 board host 启动的会话
 
@@ -92,7 +93,12 @@ Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以
 - 其余步骤不变：worktree、干活、提交推送、交审（`board heartbeat final <ID>` 后马上沿连线移到交审状态），或者做不下去（评论、`board heartbeat final <ID>`、移到需要人处理的状态）。
 - 会话里没有人和你对话：要停下来问用户的情况（需要人确认、`NOT_LOGGED_IN` 之类），按「做不下去」处理，把问题写进评论，不要等回答。
 - **不要创建 goal**：board host 的 agent 是非交互的一次性运行；goal 的自动续轮会在任务结束后继续跑，dsh 的 headless 会因此以退出码 1 结束。用 `todo_write` 记进度就够了。
-- 处理完这一张就结束：不要再领别的卡片。你退出后，卡片仍由你持有时 board host 会把它移到需要人处理的状态，记为异常退出。
+- **接着做下一张**：交审或做不下去（卡片已经不由你持有）之后执行 `board next --json`：
+  - 返回卡片：服务端已经结算上一张、以你的名字领好了下一张（多半和第一张标签相近）。按「处理一张卡片」第 2–6 步接着做：不 claim，接着用同一个 worktree（开工时照样先切到最新的集成分支）。做完再 `board next --json`。
+  - 返回 `SESSION_DONE`：这个会话不再接着做（做满了机器设置的张数、手动派发的会话、暂停接单、没有可领取的卡片）：结束。
+  - 返回 `ALREADY_HOLDING`：上一张还由你持有，先交审或交给人处理。
+  - 觉得上下文已经不够做好下一张时，可以不执行 `board next`，直接结束。
+- 不要用 `board claim` 领别的卡片。你退出后，卡片仍由你持有时 board host 会把它移到需要人处理的状态，记为异常退出。
 
 `BOARD_HOST` 有、但卡片不归 `BOARD_AS` 持有（被人强制释放、已经移走）时，不要动这张卡片，评论说明后直接结束。
 
@@ -332,6 +338,7 @@ board doctor --as <名字> --json           # 环境自检；checks 里 board_as
 board heartbeat start                     # 会话开始：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
 board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
 board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错
+board next --json                         # 只在 board host 启动的会话里：上一张交审或交给人之后领下一张；SESSION_DONE 时结束
 board move <ID> <状态标识或名称> [--top]
 board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些；「仅人可打」的标签不能加、去
 board labels
@@ -359,3 +366,4 @@ board attach <ID> <文件>… [--comment "<说明>"]   # 上传附件（图片�
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「设置 → Agent 接入」新建一个，再 `board login --token <令牌>` |
 | `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里） |
 | `DISPATCHED` | 卡片已经派发给一台机器、正在排队：跳过这张，不要领 |
+| `SESSION_DONE` | `board next`：这个会话不再接着做（做满了、手动派发、暂停接单、没有可领取的卡片）：结束会话 |

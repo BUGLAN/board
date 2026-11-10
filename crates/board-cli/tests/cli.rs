@@ -153,6 +153,16 @@ fn human_only_labels() {
     assert_eq!(r.code, 0, "{}", r.out);
 }
 
+/// board next 只在 board host 启动的会话里能用：环境里没有 BOARD_HOST 时 USAGE；有但名字没有在跑的派发时也是 USAGE
+#[test]
+fn next_only_in_host_sessions() {
+    let s = start();
+    s.run(ALPHA, &["new", "a"]);
+    let r = s.run(ALPHA, &["next", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("BOARD_HOST"));
+}
+
 /// 优先标签：labels、ls、show 的 --json 里能看出是否优先；不带 ID 领取先领带优先标签的卡片
 #[test]
 fn priority_labels() {

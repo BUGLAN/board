@@ -215,6 +215,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/agents", get(agents::list))
         .route("/agents/check", post(agents::check))
         .route("/agents/beat", post(agents::beat).layer(axum::middleware::map_response(quiet)))
+        .route("/agents/next", post(agents::next))
         // 附件：上限之外留一点余量，略超的文件由 board-core 给出清楚的提示
         .route("/files", post(upload).layer(DefaultBodyLimit::max(files::MAX_BYTES + 1024 * 1024)))
         .route("/files/{id}", get(file))

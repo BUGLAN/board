@@ -29,7 +29,7 @@ const VALUE_FLAGS: [&str; 15] = [
 const BOOL_FLAGS: [&str; 7] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 22] = [
+const COMMANDS: [(&str, &str, &str); 23] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
@@ -44,6 +44,7 @@ const COMMANDS: [(&str, &str, &str); 22] = [
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
+        ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领下一张接着做；做满了、没有可做的返回 SESSION_DONE"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
@@ -312,6 +313,15 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             ))
         })
     };
+    // board next：只在 board host 启动的会话里（环境里有 BOARD_HOST），由服务端结算上一张、领下一张
+    let next = if sub == "next" {
+        if env("BOARD_HOST").is_none() {
+            return Err(BoardError::usage("board next 只能在 board host 启动的会话里用（环境里没有 BOARD_HOST）"));
+        }
+        Some(be.next(&name)?)
+    } else {
+        None
+    };
     let mut exec = |cmd: Cmd| -> Result<CardDetail> { be.exec(&path, &actor, cmd) };
     let label_priority = |id: i64| labels.iter().any(|l| l.id == id && l.priority);
     let fmt = Fmt { p, label_name: &label_name, label_priority: &label_priority, path: &path, now, flow: &flow };
@@ -471,6 +481,21 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                         d.card.id,
                         BEAT_MS * BEAT_MISSES / 1000
                     )),
+                    fmt.show(&d)
+                ))
+            }
+        }
+        "next" => {
+            let Some(d) = next else { return Err(BoardError::usage("board next 没有结果")) };
+            if json {
+                Output::Json(fmt.full(&d))
+            } else {
+                Output::Text(format!(
+                    "{} {}  {}\n{}\n\n{}",
+                    p.green("✓"),
+                    p.bold("接着做下一张"),
+                    p.dim(&format!("已领取，进入「{}」", flow.name(&d.card.column))),
+                    p.yellow(&format!("上一张的派发已结算；这张做完后 board heartbeat final {}，沿连线移走，再 board next", d.card.id)),
                     fmt.show(&d)
                 ))
             }

@@ -736,3 +736,229 @@ fn new_host_reads_work_from_old_server() {
     let w: HostWork = serde_json::from_value(v).unwrap();
     assert!(w.host.envs.is_empty() && w.host.agents[0].envs.is_empty());
 }
+
+/* ---------------- 会话接着做（board next） ---------------- */
+
+/// agent 交审：final，再移到「待审核」
+fn submit(s: &mut Store, at: i64, name: &str, id: i64) {
+    let a = Actor::agent(name.to_string());
+    exec(s, at, &a, Cmd::Beat { id, done: true }).unwrap();
+    exec(s, at, &a, Cmd::Move { id, column: "review".into(), top: false, index: None, order: None }).unwrap();
+}
+
+fn next(s: &mut Store, at: i64, name: &str) -> Result<CardDetail> {
+    s.write(at, Origin::cli(), |w| w.dispatch_next(name))
+}
+
+fn pull(s: &mut Store, at: i64) -> Option<Dispatch> {
+    s.write(at, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", Some(1))).unwrap()
+}
+
+fn set_host(s: &mut Store, p: HostPatch) -> Result<HostInfo> {
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &p))
+}
+
+fn label(s: &mut Store, name: &str) -> i64 {
+    s.write(T0, Origin::ui(None), |w| w.create_label("default", name, None, false)).unwrap().id
+}
+
+fn tag(s: &mut Store, card: i64, l: i64) {
+    exec(s, T0, &Actor::human(), Cmd::Label { id: card, add: vec![l], remove: vec![] }).unwrap();
+}
+
+fn session_of(s: &Store, session: i64) -> Vec<Dispatch> {
+    s.read(|r| r.host_recent(1, 50)).unwrap().into_iter().chain(s.read(|r| r.active_dispatches()).unwrap()).filter(|d| d.session == session).collect()
+}
+
+#[test]
+fn per_session_setting_is_validated() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(host(&s, T0).per_session, 4, "默认 4");
+    for bad in [0, 9] {
+        assert_eq!(set_host(&mut s, HostPatch { per_session: Some(bad), ..Default::default() }).unwrap_err().code, ErrorCode::Usage);
+    }
+    assert_eq!(set_host(&mut s, HostPatch { per_session: Some(8), ..Default::default() }).unwrap().per_session, 8);
+}
+
+/// N = 4、6 张同标签的卡片、同时跑 1 个：第一个会话做 4 张后 SESSION_DONE，第二个会话做剩下 2 张；每张卡各一条派发
+#[test]
+fn session_does_up_to_n_cards_then_a_new_one_starts() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let ui = label(&mut s, "UI");
+    let cards: Vec<i64> = (0..6).map(|i| new_card(&mut s, T0, &format!("卡{i}"))).collect();
+    for c in &cards {
+        tag(&mut s, *c, ui);
+    }
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let name = d1.name.clone().unwrap();
+    assert_eq!((d1.card, d1.session), (cards[0], d1.id));
+    let mut t = T0 + 2 * S;
+    for want in &cards[1..4] {
+        let cur = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+        submit(&mut s, t, &name, cur.card);
+        let c = next(&mut s, t, &name).unwrap();
+        assert_eq!((c.card.id, c.card.holder.as_deref()), (*want, Some(name.as_str())), "同一个名字领下一张");
+        t += S;
+    }
+    // 做满 4 张
+    let cur = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+    submit(&mut s, t, &name, cur.card);
+    assert_eq!(next(&mut s, t, &name).unwrap_err().code, ErrorCode::SessionDone);
+    // board host 还拿着第一张的 ID 上报：进程照样算在跑，不会被当成异常退出
+    beat(&mut s, t, &report("mbp", "i1", vec![d1.id])).unwrap();
+    assert_eq!(get(&s, cur.id).state, "running");
+    // 进程退出：board host 报第一张的 ID，结算的是会话正在跑的那一张
+    let e = end(&mut s, t + S, d1.id, Some(0), &[]);
+    assert_eq!((e.id, e.result.as_deref()), (cur.id, Some("review")));
+    let all = session_of(&s, d1.id);
+    assert_eq!(all.len(), 4, "每张卡各一条派发");
+    assert!(all.iter().all(|d| d.result.as_deref() == Some("review") && d.source == "cron"));
+    assert_eq!(card(&s, cards[1]).activity.iter().filter(|a| a.text.starts_with("派发开始")).count(), 1);
+    // 一个会话结束、还有空位：开新会话，做剩下的 2 张
+    let d5 = pull(&mut s, t + 2 * S).unwrap();
+    assert_eq!((d5.card, d5.session), (cards[4], d5.id));
+    let name2 = d5.name.clone().unwrap();
+    assert_ne!(name2, name, "新会话换一个名字");
+    submit(&mut s, t + 3 * S, &name2, cards[4]);
+    assert_eq!(next(&mut s, t + 3 * S, &name2).unwrap().card.id, cards[5]);
+    submit(&mut s, t + 4 * S, &name2, cards[5]);
+    assert_eq!(next(&mut s, t + 4 * S, &name2).unwrap_err().code, ErrorCode::SessionDone, "没有可领取的卡片");
+}
+
+/// 怎么挑下一张：优先标签 > 和第一张共同标签最多 > 规则 1 的顺序
+#[test]
+fn next_prefers_priority_then_common_labels() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let ui = label(&mut s, "UI");
+    let api = label(&mut s, "接口");
+    let first = new_card(&mut s, T0, "第一张");
+    tag(&mut s, first, ui);
+    let x = new_card(&mut s, T0, "X");
+    let y = new_card(&mut s, T0, "Y");
+    tag(&mut s, y, ui);
+    let z = new_card(&mut s, T0, "Z");
+    tag(&mut s, z, api);
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { per_session: Some(8), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + S).unwrap();
+    let name = d.name.unwrap();
+    assert_eq!(d.card, first);
+    // X 没有共同标签、Y 带 UI：领 Y
+    submit(&mut s, T0 + 2 * S, &name, first);
+    assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap().card.id, y);
+    // 候选里都没有共同标签：按规则 1 的顺序领 X
+    submit(&mut s, T0 + 3 * S, &name, y);
+    assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, x);
+    // 出现带优先标签的卡片：领它，不管标签是否相近
+    let urgent = label(&mut s, "急");
+    s.write(T0, Origin::ui(None), |w| w.update_label("default", urgent, None, None, None, Some(true))).unwrap();
+    let w = new_card(&mut s, T0, "W");
+    tag(&mut s, w, ui);
+    tag(&mut s, z, urgent);
+    submit(&mut s, T0 + 4 * S, &name, x);
+    assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap().card.id, z);
+}
+
+/// N = 1、手动派发、不是 board host 的会话、上一张还没交审、暂停接单、有人停止
+#[test]
+fn next_refuses_when_session_should_end() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    for t in ["A", "B", "C"] {
+        new_card(&mut s, T0, t);
+    }
+    // 不是 board host 启动的会话：USAGE
+    s.write(T0, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
+    assert_eq!(next(&mut s, T0, "alpha/x").unwrap_err().code, ErrorCode::Usage);
+    // 手动派发的会话：SESSION_DONE
+    let d = dispatch(&mut s, T0, 1, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    let name = d.name.clone().unwrap();
+    // 上一张还由这个名字持有：ALREADY_HOLDING
+    assert_eq!(next(&mut s, T0 + S, &name).unwrap_err().code, ErrorCode::AlreadyHolding);
+    submit(&mut s, T0 + 2 * S, &name, 1);
+    assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
+    end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
+    // N = 1：和改动前一样，做一张就结束
+    set_host(&mut s, HostPatch { per_session: Some(1), ..Default::default() }).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + 4 * S).unwrap();
+    let name = d.name.clone().unwrap();
+    submit(&mut s, T0 + 5 * S, &name, d.card);
+    assert_eq!(next(&mut s, T0 + 5 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
+    end(&mut s, T0 + 6 * S, d.id, Some(0), &[]);
+    // 暂停接单：在跑的会话做完当前这张，board next 返回 SESSION_DONE
+    set_host(&mut s, HostPatch { per_session: Some(4), ..Default::default() }).unwrap();
+    s.write(T0 + 7 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + 7 * S).unwrap();
+    let name = d.name.clone().unwrap();
+    set_host(&mut s, HostPatch { paused: Some(true), ..Default::default() }).unwrap();
+    submit(&mut s, T0 + 8 * S, &name, d.card);
+    let e = next(&mut s, T0 + 8 * S, &name).unwrap_err();
+    assert_eq!(e.code, ErrorCode::SessionDone);
+    assert!(e.message.contains("暂停接单"), "{}", e.message);
+}
+
+/// 会话做第 2 张时异常退出、被停止：第 1 张的结果不变，第 2 张按异常退出 / 已停止处理，不再领下一张
+#[test]
+fn second_card_crash_or_stop_keeps_first_result() {
+    for stop in [false, true] {
+        let mut s = store();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        for t in ["A", "B", "C"] {
+            new_card(&mut s, T0, t);
+        }
+        s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+        let d1 = pull(&mut s, T0 + S).unwrap();
+        let name = d1.name.clone().unwrap();
+        submit(&mut s, T0 + 2 * S, &name, d1.card);
+        let c2 = next(&mut s, T0 + 2 * S, &name).unwrap().card.id;
+        let d2 = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.card == c2).unwrap();
+        assert_eq!(get(&s, d1.id).result.as_deref(), Some("review"), "取下一张时结算上一张");
+        if stop {
+            s.write(T0 + 3 * S, Origin::ui(None), |w| w.dispatch_cancel(d2.id, &Actor::human(), "buglan")).unwrap();
+            assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap_err().code, ErrorCode::AlreadyHolding);
+        }
+        let e = end(&mut s, T0 + 4 * S, d1.id, Some(1), &["boom"]);
+        assert_eq!(e.id, d2.id);
+        assert_eq!(e.result.as_deref(), Some(if stop { "stopped" } else { "crashed" }));
+        assert_eq!(get(&s, d1.id).result.as_deref(), Some("review"), "第 1 张的结果不变");
+        assert_eq!(card(&s, c2).card.column, "check");
+    }
+}
+
+/// 同时跑 2 个、N = 4：两个会话各自取下一张，不会领到同一张卡，在跑的不超过 2 个
+#[test]
+fn two_sessions_never_take_the_same_card() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    for i in 0..6 {
+        new_card(&mut s, T0, &format!("卡{i}"));
+    }
+    set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let a = pull(&mut s, T0 + S).unwrap();
+    let b = pull(&mut s, T0 + S).unwrap();
+    assert!(pull(&mut s, T0 + S).is_none(), "没有空位");
+    let (na, nb) = (a.name.unwrap(), b.name.unwrap());
+    let mut seen = vec![a.card, b.card];
+    let (mut ca, mut cb) = (a.card, b.card);
+    for k in 0..2 {
+        let t = T0 + (2 + k) * S;
+        submit(&mut s, t, &na, ca);
+        ca = next(&mut s, t, &na).unwrap().card.id;
+        submit(&mut s, t, &nb, cb);
+        cb = next(&mut s, t, &nb).unwrap().card.id;
+        seen.extend([ca, cb]);
+        let running = s.read(|r| r.active_dispatches()).unwrap().into_iter().filter(|d| d.state == "running").count();
+        assert_eq!(running, 2);
+    }
+    let mut uniq = seen.clone();
+    uniq.sort();
+    uniq.dedup();
+    assert_eq!(uniq.len(), seen.len(), "{seen:?}");
+}

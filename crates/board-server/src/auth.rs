@@ -376,7 +376,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                     || host_path(&path, &["work"])
                     || dispatch_path(&path, "log")))
                 || (m == Method::POST
-                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/dispatches" | "/dispatches/cancel")
+                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel")
                         || host_path(&path, &["beat", "begin", "pull", "round"])
                         || dispatch_path(&path, "end")
                         || dispatch_path(&path, "log")));
@@ -388,7 +388,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                 .into_response();
             }
             // 带 agent 名字的请求由处理函数记录名字
-            if !matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat") {
+            if !matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next") {
                 tracing::Span::current().record("who", format!("令牌#{token}"));
             }
         }

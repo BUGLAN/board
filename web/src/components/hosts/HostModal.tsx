@@ -180,10 +180,27 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 </button>
               </span>
             </div>
+            {h.perSession != null && (
+              <div className="hp-rule">
+                <div>
+                  <b>一个会话最多做几张</b>
+                  <span>定时领取启动的 agent 做完一张后用 board next 接着做，优先挑和第一张相近的，做满就退出、下一批换新会话；手动派发只做指定的那一张</span>
+                </div>
+                <span className="hp-stepper">
+                  <button type="button" aria-label="减少" disabled={busy || h.perSession <= 1} onClick={() => patch({ perSession: h.perSession! - 1 })}>
+                    −
+                  </button>
+                  <b>{h.perSession}</b>
+                  <button type="button" aria-label="增加" disabled={busy || h.perSession >= 8} onClick={() => patch({ perSession: h.perSession! + 1 })}>
+                    +
+                  </button>
+                </span>
+              </div>
+            )}
             <div className="hp-rule">
               <div>
                 <b>定时领取</b>
-                <span>每天到这些时间点（机器本地时区），在这台机器的白板上领卡，把空位填满，做完一张领下一张，直到没有可领取的卡片</span>
+                <span>每天到这些时间点（机器本地时区），在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有可领取的卡片</span>
               </div>
               <button
                 className={cx('toggle', h.cronOn && 'on')}

@@ -180,7 +180,7 @@ export const api = {
   /** 修改机器设置：同时跑几个、暂停接单、默认 agent、定时领取 */
   updateHost: (
     name: string,
-    patch: { max?: number; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[]; env?: { agent: string; env: string } },
+    patch: { max?: number; perSession?: number; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[]; env?: { agent: string; env: string } },
   ) =>
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
   removeHost: (name: string) => req('DELETE', `/api/hosts/${q(name)}`),

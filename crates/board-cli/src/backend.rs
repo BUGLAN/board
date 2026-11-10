@@ -73,6 +73,11 @@ impl Backend {
         self.0.post("/api/agents/check", json!({ "name": name }))
     }
 
+    /// `board next`：board host 启动的会话接着做下一张
+    pub fn next(&mut self, name: &str) -> Result<CardDetail> {
+        self.0.post("/api/agents/next", json!({ "name": name }))
+    }
+
     /// agent 级心跳 `board beat [--final]`
     pub fn agent_beat(&mut self, name: &str, done: bool) -> Result<AgentInfo> {
         self.0.post("/api/agents/beat", json!({ "name": name, "final": done }))

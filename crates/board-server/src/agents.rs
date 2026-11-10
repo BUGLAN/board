@@ -8,7 +8,7 @@
 
 use axum::extract::State;
 use axum::{Extension, Json};
-use board_core::{now_ms, AgentInfo, BoardError, ErrorCode, Origin};
+use board_core::{now_ms, AgentInfo, BoardError, CardDetail, ErrorCode, Origin};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -62,6 +62,22 @@ pub(crate) async fn beat(State(s): State<AppState>, Json(v): Json<Value>) -> Res
     let name = name_of(&b.name)?;
     tracing::Span::current().record("who", format!("{name}（心跳{}）", if b.done { " final" } else { "" }));
     let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.agent_beat(&name, b.done))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct NextBody {
+    #[serde(default)]
+    name: String,
+}
+
+/// `POST /api/agents/next {name}`：board host 启动的会话接着做下一张（board next）。返回领到的卡片，和 claim 一样
+pub(crate) async fn next(State(s): State<AppState>, Json(v): Json<Value>) -> Result<Json<CardDetail>, ApiError> {
+    let b: NextBody = crate::parse(v)?;
+    let name = name_of(&b.name)?;
+    tracing::Span::current().record("who", format!("{name}（next）"));
+    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_next(&name))).await?;
     s.poke();
     Ok(Json(out))
 }
