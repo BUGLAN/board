@@ -290,7 +290,6 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 /* 磁贴：只显示编号，24px 高。被领取的右上角是持有者颜色的心跳点，心跳晚了加警告色外框；悬停弹出标题 */
 .card.v-tile { height: 24px; padding: 0; display: grid; place-items: center; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--line); }
 .card.v-tile:hover { transform: translateY(-1px); z-index: 6; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, var(--line-2)), var(--shadow-1); }
-.tile:has(.card.v-tile:hover) { z-index: 15; }
 .ct-id { font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .ct-id::before { content: "#"; opacity: .45; }
 .card.done .ct-id { color: color-mix(in oklab, var(--c), var(--ink)); }
@@ -306,16 +305,20 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .ct-beat.wait::before, .ct-beat.ended::before { animation: none; }
 @media (prefers-reduced-motion: reduce) { .ct-beat::before { animation: none; } }
 .ct-pop {
-  position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 20; width: max-content; max-width: 280px;
+  /* 整块白板共用一个（Card.tsx TilePeek），挂在 body 上：位置由脚本写进 transform（磁贴上方、横向跟着指针） */
+  position: fixed; left: 0; top: 0; z-index: 90; width: max-content; max-width: 280px;
   display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: var(--r-md);
-  font-family: var(--f-sans); text-align: left; pointer-events: none;
+  font-family: var(--f-sans); font-size: 12px; text-align: left; pointer-events: none;
   background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
-  transform: translate(-50%, 0); transform-origin: 50% 100%;
-  /* 悬停、键盘聚焦时才渲染（Card.tsx）：出现时停一下再淡入，指针扫过磁贴时不闪 */
+  transform-origin: 50% 100%;
+  transition: transform var(--dur-2) var(--ease-out);
+  /* 出现时停一下再淡入，指针扫过磁贴时不闪；在磁贴之间换时不再重播 */
   animation: ct-pop-in var(--dur-2) var(--ease-out) .12s both;
 }
-@keyframes ct-pop-in { from { opacity: 0; transform: translate(-50%, 4px) scale(.97); } }
-.card.is-placeholder .ct-pop, body.tile-moving .ct-pop, .board.dragging .ct-pop { display: none; }
+.ct-pop[data-side="bottom"] { transform-origin: 50% 0; }
+@keyframes ct-pop-in { from { opacity: 0; scale: .97; } }
+body.tile-moving .ct-pop, body.is-dragging .ct-pop { display: none; }
+@media (prefers-reduced-motion: reduce) { .ct-pop { transition: none; animation: none; } }
 .ct-pop-head { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
 .ct-pop-head b { color: color-mix(in oklab, var(--c), var(--ink)); font-weight: 600; }
 .ct-pop-head .run-pill { margin-left: 0; }

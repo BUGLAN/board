@@ -15,7 +15,7 @@ import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, serverNow, useCurrent, useData } from '../store/data';
 import { clearLabelSel, closeCtx, openCreator, openCtx, setBoardSheet, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
-import { cardHit, CardView } from './Card';
+import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { Skeleton, SkeletonCard } from './Skeleton';
@@ -176,6 +176,7 @@ export function BoardView() {
         </div>
       </div>
       <ColTabs board={board} f={f} boardRef={boardRef} />
+      {!mobile && <TilePeek />}
       <div
         className={cx('board flow-scroll', drag && 'dragging')}
         ref={boardRef}

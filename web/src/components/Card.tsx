@@ -1,10 +1,11 @@
 /* 卡片：白板状态块与侧栏「未整理」共用 */
-import { memo, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, ago, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
-import { useData, useOnline } from '../store/data';
+import { useCurrent, useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
@@ -54,8 +55,6 @@ export const CardView = memo(function CardView({
   const held = !!c.holder;
   // 只有被持有的卡片要每秒走表；「未整理」里显示「几分钟前」、做过的卡片显示「完成于几分钟前」，半分钟一次；其他卡片不起定时器
   const now = useNow(held ? 1000 : c.column === 'inbox' || c.finishedAt ? 30000 : null);
-  // 磁贴的悬浮卡：悬停或键盘聚焦时才渲染（终点状态的磁贴很多，每张都带一份很浪费）
-  const [pop, setPop] = useState(false);
   const ref = useRef<HTMLElement>(null);
   const sel = useUI(s => s.labelSel);
   // 正在写入的标签（拖上来还没确认）
@@ -108,10 +107,6 @@ export const CardView = memo(function CardView({
       data-flip={`c${c.id}`}
       aria-label={draft ? `正在新建：${c.title}` : `#${c.id} ${c.title}`}
       style={style}
-      onPointerEnter={shape === 'tile' ? () => setPop(true) : undefined}
-      onPointerLeave={shape === 'tile' ? () => setPop(false) : undefined}
-      onFocus={shape === 'tile' ? e => e.target === e.currentTarget && e.currentTarget.matches(':focus-visible') && setPop(true) : undefined}
-      onBlur={shape === 'tile' ? e => e.target === e.currentTarget && setPop(false) : undefined}
     >
       {c.column === 'inbox' ? (
         <>
@@ -147,30 +142,7 @@ export const CardView = memo(function CardView({
         <>
           <span className="ct-id">{no}</span>
           {doing && <i className={cx('ct-beat', t.beat)} />}
-          {pop && !placeholder && (
-            <span className="ct-pop" role="tooltip">
-              <span className="ct-pop-head">
-                <b>#{no}</b>
-                {doing && (
-                  <>
-                    <span className="ct-pop-holder">
-                      <Avatar actor={agent(c.holder!)} />
-                      {c.holder}
-                    </span>
-                    <RunPill card={c} now={now} />
-                  </>
-                )}
-              </span>
-              <span className="ct-pop-title">
-                <Title text={c.title} />
-              </span>
-              {c.labels.length > 0 && (
-                <span className="ct-pop-labels">
-                  <LabelChips ids={c.labels} labels={labels} pending={pending} />
-                </span>
-              )}
-            </span>
-          )}
+          {/* 标题、标签在整块白板共用的悬浮卡里（TilePeek） */}
         </>
       ) : shape === 'line' ? (
         <div className="card-line">
@@ -278,5 +250,139 @@ export function RunPill({ card: c, now, big }: { card: CardT; now: number; big?:
       <i className="beat" />
       {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
     </span>
+  );
+}
+
+/* ---------------- 磁贴的悬浮卡 ---------------- */
+
+interface Peek {
+  id: number;
+  el: HTMLElement;
+}
+
+/** 磁贴的悬浮卡：整个白板只有一个，挂在 body 上。
+    - 悬停时出现在这张磁贴上方（上面放不下就放下面），横向跟着指针走，不挡住磁贴本身
+    - 指针在磁贴之间移动时直接换内容、平滑挪过去，不在上一张旁边停留；离开磁贴稍等一下再收起，扫过磁贴之间的缝隙不闪
+    - 键盘聚焦（:focus-visible）时也出现；拖动卡片、拖动状态块时收起；没有悬停的设备（手机、平板）不出现 */
+export function TilePeek() {
+  const [peek, setPeek] = useState<Peek | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const at = useRef<{ x: number; shown: boolean }>({ x: 0, shown: false });
+
+  useEffect(() => {
+    if (!window.matchMedia('(hover: hover)').matches) return;
+    let hideT = 0;
+    const busy = () => document.body.classList.contains('is-dragging') || document.body.classList.contains('tile-moving');
+    const tileOf = (t: EventTarget | null) => {
+      const el = (t as HTMLElement | null)?.closest?.<HTMLElement>('.card.v-tile');
+      return el && !el.classList.contains('is-placeholder') && !el.classList.contains('drag-ghost') ? el : null;
+    };
+    const show = (el: HTMLElement, x: number) => {
+      clearTimeout(hideT);
+      at.current.x = x;
+      setPeek(p => (p && p.el === el ? p : { id: Number(el.dataset.id), el }));
+      place();
+    };
+    const hide = (now = false) => {
+      clearTimeout(hideT);
+      if (now) setPeek(null);
+      else hideT = window.setTimeout(() => setPeek(null), 90);
+    };
+    const move = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
+      if (e.buttons || busy()) return hide(true);
+      const el = tileOf(e.target);
+      if (el) show(el, e.clientX);
+      else hide();
+    };
+    const focusIn = (e: FocusEvent) => {
+      const el = tileOf(e.target);
+      if (el && el === e.target && el.matches(':focus-visible')) {
+        const r = el.getBoundingClientRect();
+        show(el, r.left + r.width / 2);
+      }
+    };
+    const focusOut = (e: FocusEvent) => {
+      if (tileOf(e.target)) hide();
+    };
+    const away = () => hide(true);
+    document.addEventListener('pointermove', move, { passive: true });
+    document.addEventListener('pointerdown', away, true);
+    document.addEventListener('focusin', focusIn);
+    document.addEventListener('focusout', focusOut);
+    document.addEventListener('scroll', away, true);
+    window.addEventListener('blur', away);
+    return () => {
+      clearTimeout(hideT);
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerdown', away, true);
+      document.removeEventListener('focusin', focusIn);
+      document.removeEventListener('focusout', focusOut);
+      document.removeEventListener('scroll', away, true);
+      window.removeEventListener('blur', away);
+    };
+  }, []);
+
+  const peekRef = useRef(peek);
+  peekRef.current = peek;
+  /** 放到磁贴上方、横向以指针为中心，夹在窗口里 */
+  const place = () => {
+    const p = peekRef.current;
+    const el = box.current;
+    if (!p || !el || !p.el.isConnected) return;
+    const r = p.el.getBoundingClientRect();
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const gap = 8;
+    const x = Math.round(Math.max(gap, Math.min(window.innerWidth - w - gap, at.current.x - w / 2)));
+    const above = r.top - gap - h >= gap;
+    const y = Math.round(above ? r.top - gap - h : r.bottom + gap);
+    el.dataset.side = above ? 'top' : 'bottom';
+    // 第一次出现时直接放到位置上（淡入），之后在磁贴之间换时平滑挪过去
+    el.style.transition = at.current.shown ? '' : 'none';
+    el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    at.current.shown = true;
+  };
+
+  const card = useData(s => (peek ? s.board?.cards[peek.id] : undefined));
+  const pending = useData(s => (peek ? s.pending[`${s.path}#${peek.id}`] : undefined));
+  const labels = useCurrent()?.project.labels ?? [];
+  const now = useNow(card?.holder ? 1000 : null);
+
+  // 内容换了（换了一张磁贴、标题变长）之后量尺寸再放
+  useLayoutEffect(() => {
+    if (!peek) at.current.shown = false;
+    else place();
+  });
+
+  if (!peek || !card || !peek.el.isConnected) return null;
+  const doing = !!card.holder;
+  const style: Record<string, string> = {};
+  const c = peek.el.style.getPropertyValue('--c');
+  if (c) style['--c'] = c;
+  return createPortal(
+    <div ref={box} className={cx('ct-pop', peek.el.classList.contains('done') && 'done')} role="tooltip" style={style}>
+      <span className="ct-pop-head">
+        <b>#{card.id}</b>
+        {doing && (
+          <>
+            <span className="ct-pop-holder">
+              <Avatar actor={agent(card.holder!)} />
+              {card.holder}
+            </span>
+            <RunPill card={card} now={now} />
+          </>
+        )}
+      </span>
+      <span className="ct-pop-title">
+        <Title text={card.title} />
+      </span>
+      {card.labels.length > 0 && (
+        <span className="ct-pop-labels">
+          <LabelChips ids={card.labels} labels={labels} pending={pending} />
+        </span>
+      )}
+    </div>,
+    document.body,
   );
 }

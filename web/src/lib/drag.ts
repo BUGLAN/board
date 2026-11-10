@@ -464,20 +464,41 @@ function finish(cancelled: boolean) {
     });
   }
 
-  // 幽灵飞回占位处
+  // 幽灵飞回占位处。占位是按目标块的卡片形态画的（卡片 / 单行 / 磁贴，列宽也可能不同）：
+  // 幽灵一路变成占位的尺寸、圆角、阴影，形态不同时幽灵里的内容先淡出、落位后真卡片的内容再淡入，松手到落位连成一段，不跳变
   const ghost = s.ghost!;
-  const dest = cardEl(s.id)?.getBoundingClientRect();
-  const anim = ghost.animate(
-    [
-      { transform: ghost.style.transform, scale: '1.045' },
-      { transform: dest ? `translate(${dest.left}px, ${dest.top}px) rotate(0deg)` : ghost.style.transform, scale: '1' },
-    ],
-    {
-      duration: reduceMotion() ? 1 : commit ? 280 : 460,
-      easing: commit ? 'cubic-bezier(.2,1.2,.4,1)' : 'cubic-bezier(.34,1.3,.64,1)',
-      fill: 'forwards',
-    },
-  );
+  const ph = cardEl(s.id);
+  const dest = ph?.getBoundingClientRect();
+  const motion = !reduceMotion();
+  const w0 = ghost.offsetWidth;
+  const h0 = ghost.offsetHeight;
+  const shapeOf = (el: Element) => (el.classList.contains('v-tile') ? 'tile' : el.classList.contains('v-line') ? 'line' : 'card');
+  const reshape = !!ph && shapeOf(ph) !== shapeOf(ghost);
+  const morph = motion && !!ph && !!dest && (reshape || Math.abs(dest.width - w0) > 1 || Math.abs(dest.height - h0) > 1);
+  const duration = !motion ? 1 : morph ? 380 : commit ? 280 : 460;
+  const keyframes: Keyframe[] = [
+    { transform: ghost.style.transform, scale: '1.045' },
+    { transform: dest ? `translate(${dest.left}px, ${dest.top}px) rotate(0deg)` : ghost.style.transform, scale: '1' },
+  ];
+  if (morph && ph && dest) {
+    // 落位后的样子：目标块里别的卡片（没有就用占位）的圆角和阴影
+    const like = [...(ph.parentElement?.children ?? [])].find(n => n !== ph && n.classList.contains('card') && !n.classList.contains('is-placeholder')) ?? ph;
+    const cs = getComputedStyle(like);
+    Object.assign(keyframes[0], { width: `${w0}px`, height: `${h0}px`, borderRadius: getComputedStyle(ghost).borderRadius });
+    Object.assign(keyframes[1], { width: `${dest.width}px`, height: `${dest.height}px`, borderRadius: cs.borderRadius });
+    ghost.style.overflow = 'hidden';
+    // 幽灵的阴影写在样式表里且带 !important，动画盖不过：写成行内 !important，靠 transition 过渡
+    ghost.style.setProperty('transition', `box-shadow ${duration}ms cubic-bezier(.2,.9,.3,1)`);
+    requestAnimationFrame(() => ghost.style.setProperty('box-shadow', cs.boxShadow, 'important'));
+    if (reshape)
+      for (const n of ghost.children) (n as HTMLElement).animate([{ opacity: 1 }, { opacity: 0 }], { duration: duration * 0.45, easing: 'ease-out', fill: 'forwards' });
+  }
+  const anim = ghost.animate(keyframes, {
+    duration,
+    // 尺寸在变时不回弹（宽高回弹看起来像抖），只在原样飞回时带一点弹性
+    easing: morph ? 'cubic-bezier(.2,.9,.3,1)' : commit ? 'cubic-bezier(.2,1.2,.4,1)' : 'cubic-bezier(.34,1.3,.64,1)',
+    fill: 'forwards',
+  });
   const id = s.id;
   anim.onfinish = () => {
     if (commit && !failed && done) {
@@ -487,10 +508,14 @@ function finish(cancelled: boolean) {
     }
     setDrag(null);
     ghost.remove();
-    if (commit && !failed) {
-      requestAnimationFrame(() =>
-        cardEl(id)?.animate([{ transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.34,1.56,.64,1)' }),
-      );
+    if (commit && !failed && motion) {
+      requestAnimationFrame(() => {
+        const el = cardEl(id);
+        if (!el) return;
+        // 形态变了：真卡片的内容接着幽灵淡出的内容淡入；没变：轻轻弹一下
+        if (reshape) for (const n of el.children) (n as HTMLElement).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
+        else if (!morph) el.animate([{ transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+      });
     }
   };
   justDroppedAt = performance.now();
