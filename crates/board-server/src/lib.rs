@@ -45,7 +45,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{broadcast, watch, Notify};
-use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tower_http::trace::TraceLayer;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -156,8 +156,30 @@ impl From<BoardError> for ApiError {
     }
 }
 
+/// 成功的心跳、日志上传不刷屏：给它们的响应打个标记，请求日志降到 DEBUG
+#[derive(Clone, Copy)]
+struct Quiet;
+
+async fn quiet(mut res: Response) -> Response {
+    res.extensions_mut().insert(Quiet);
+    res
+}
+
+/// 成功的心跳、日志上传用 DEBUG，其他请求（含所有失败）用 INFO
+fn response_level(response: &Response) -> tracing::Level {
+    if response.status().is_success() && response.extensions().get::<Quiet>().is_some() {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // 500 的原因也要进日志；请求的 span 里带着方法、路径和 who
+        if self.0.code == ErrorCode::Internal {
+            tracing::error!(error = %self.0.message, code = self.0.code.as_str(), "请求失败：内部错误");
+        }
         let status = match self.0.code {
             ErrorCode::Usage | ErrorCode::EmptyTitle | ErrorCode::NoBoard | ErrorCode::NoIdentity => StatusCode::BAD_REQUEST,
             ErrorCode::NotFound | ErrorCode::BoardNotFound | ErrorCode::NoSuchHost => StatusCode::NOT_FOUND,
@@ -192,7 +214,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/cmd", post(cmd))
         .route("/agents", get(agents::list))
         .route("/agents/check", post(agents::check))
-        .route("/agents/beat", post(agents::beat))
+        .route("/agents/beat", post(agents::beat).layer(axum::middleware::map_response(quiet)))
         // 附件：上限之外留一点余量，略超的文件由 board-core 给出清楚的提示
         .route("/files", post(upload).layer(DefaultBodyLimit::max(files::MAX_BYTES + 1024 * 1024)))
         .route("/files/{id}", get(file))
@@ -211,7 +233,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/hosts", get(hosts::list))
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
-        .route("/hosts/{name}/beat", post(hosts::beat))
+        .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
         .route("/hosts/{name}/work", get(hosts::work))
         .route("/hosts/{name}/begin", post(hosts::begin))
         .route("/hosts/{name}/pull", post(hosts::pull))
@@ -220,7 +242,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/dispatches", post(hosts::create))
         .route("/dispatches/cancel", post(hosts::cancel))
         .route("/dispatches/{id}/end", post(hosts::end))
-        .route("/dispatches/{id}/log", get(hosts::log).post(hosts::append_log))
+        .route("/dispatches/{id}/log", get(hosts::log).post(hosts::append_log).layer(axum::middleware::map_response(quiet)))
         .route("/stream", get(stream))
         .route("/me", get(auth::me))
         .route("/auth/logout", post(auth::logout))
@@ -245,7 +267,14 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
                 tracing::info_span!("http", method = %req.method(), path = %req.uri().path(), who = tracing::field::Empty)
             })
             .on_request(())
-            .on_response(DefaultOnResponse::new().level(tracing::Level::INFO).latency_unit(tower_http::LatencyUnit::Millis)),
+            // 成功的心跳、日志上传是 DEBUG；其他请求（含所有失败）是 INFO
+            .on_response(|response: &Response, latency: Duration, _span: &tracing::Span| {
+                if response_level(response) == tracing::Level::DEBUG {
+                    tracing::debug!(status = response.status().as_u16(), ?latency, "finished processing request");
+                } else {
+                    tracing::info!(status = response.status().as_u16(), ?latency, "finished processing request");
+                }
+            }),
     )
     .with_state(state)
 }
@@ -900,7 +929,76 @@ pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' '
 
 #[cfg(test)]
 mod tests {
-    use super::CSP;
+    use super::{response_level, ApiError, Quiet, CSP};
+    use axum::body::Body;
+    use axum::response::IntoResponse;
+    use board_core::{BoardError, ErrorCode};
+
+    /// 测试用的日志收集器：把 tracing 的输出写进内存
+    #[derive(Clone, Default)]
+    struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    struct SinkWriter(Sink);
+
+    impl std::io::Write for SinkWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture(f: impl FnOnce()) -> String {
+        let sink = Sink::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer({
+                let sink = sink.clone();
+                move || SinkWriter(sink.clone())
+            })
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        tracing::subscriber::with_default(sub, f);
+        let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        out
+    }
+
+    #[test]
+    fn internal_errors_are_logged_with_reason_path_and_caller() {
+        let text = capture(|| {
+            let span = tracing::info_span!("http", method = "POST", path = "/api/files", who = "claude/opus-5.5");
+            let _guard = span.enter();
+            let res = ApiError(BoardError::new(ErrorCode::Internal, "文件错误：磁盘已满")).into_response();
+            assert_eq!(res.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        });
+        assert!(text.contains("ERROR"), "没有 ERROR：{text}");
+        assert!(text.contains("文件错误：磁盘已满"), "没有原因：{text}");
+        assert!(text.contains("path=\"/api/files\"") || text.contains("path=/api/files"), "没有路径：{text}");
+        assert!(
+            text.contains("who=\"claude/opus-5.5\"") || text.contains("who=claude/opus-5.5"),
+            "没有调用者：{text}"
+        );
+        // 普通错误（例如参数不对）不写 ERROR，只有响应体
+        let text = capture(|| {
+            let _ = ApiError(BoardError::usage("参数不对")).into_response();
+        });
+        assert!(!text.contains("ERROR"), "普通错误不该写 ERROR：{text}");
+    }
+
+    #[test]
+    fn quiet_success_is_debug_but_quiet_failures_stay_info() {
+        let mut ok = axum::response::Response::new(Body::empty());
+        ok.extensions_mut().insert(Quiet);
+        assert_eq!(response_level(&ok), tracing::Level::DEBUG);
+        let mut failed = axum::response::Response::new(Body::empty());
+        failed.extensions_mut().insert(Quiet);
+        *failed.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+        assert_eq!(response_level(&failed), tracing::Level::INFO, "失败的心跳仍要记 INFO");
+        let plain = axum::response::Response::new(Body::empty());
+        assert_eq!(response_level(&plain), tracing::Level::INFO, "其他请求保持 INFO");
+    }
 
     /// 页面的 CSP：脚本只能来自同源文件，不能 eval、不能内联；图片和请求不能发到外站（GitHub 头像、桌面端 IPC 除外）
     #[test]
