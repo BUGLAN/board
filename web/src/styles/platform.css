@@ -102,7 +102,15 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .page-head { height: 44px; padding: 0 16px; gap: 8px; }
   .crumbs > span, .crumbs > svg { display: none; }
   .page-actions .btn kbd { display: none; }
-  .filter-pill { display: none; }
+  /* 筛选条件：页头放不下时单独占一行 */
+  .page-board .page-head { flex-wrap: wrap; height: auto; min-height: 44px; row-gap: 4px; padding-top: 4px; padding-bottom: 4px; }
+  .page-board .filter-pill { order: 3; flex-basis: 100%; justify-content: space-between; }
+  .filter-btn { width: 38px; padding: 0; }
+  .filter-btn svg { margin: 0; }
+  .filter-btn.on { --btn-bg: var(--brand-soft); --btn-line: color-mix(in srgb, var(--brand) 40%, transparent); color: color-mix(in oklab, var(--brand), var(--ink)); }
+  /* 白板抽屉：桌面侧栏的白板部分 */
+  .drawer.board-sheet { height: 80dvh; display: flex; flex-direction: column; }
+  .drawer.board-sheet > .side-view { display: flex; flex: 1; min-height: 0; animation: none; }
   /* 卡片详情底部「删除后无法恢复」：手机上放不下，删除时已有确认框 */
   .d-actions-hint { display: none; }
 

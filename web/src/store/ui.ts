@@ -121,6 +121,8 @@ interface UIState {
   host: string | null;
   /** 卡片详情里的「派发」对话框：卡片编号 */
   dispatchOf: number | null;
+  /** 手机白板页的底部抽屉：筛选框、标签、正在工作、最近动态（桌面端在侧栏里） */
+  boardSheet: boolean;
 }
 
 const TABS: Tab[] = ['board', 'projects', 'inbox', 'hosts', 'settings'];
@@ -157,6 +159,7 @@ export const useUI = create<UIState>(() => ({
   sorts: {},
   host: null,
   dispatchOf: null,
+  boardSheet: false,
 }));
 
 const set = useUI.setState;
@@ -191,6 +194,7 @@ const notifyResize = () => setTimeout(() => window.dispatchEvent(new Event('resi
 export const setFilter = (filter: string) => set({ filter });
 export const toggleLabelSel = (id: number) =>
   set(s => ({ labelSel: s.labelSel.includes(id) ? s.labelSel.filter(x => x !== id) : [...s.labelSel, id] }));
+export const setBoardSheet = (open: boolean) => set({ boardSheet: open });
 export const clearLabelSel = () => set(s => (s.labelSel.length ? { labelSel: [] } : s));
 
 /* ------------------------------ 弹窗 ------------------------------ */

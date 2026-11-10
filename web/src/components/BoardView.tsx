@@ -14,7 +14,7 @@ import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, serverNow, useCurrent, useData } from '../store/data';
-import { closeCtx, openCreator, openCtx, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
+import { clearLabelSel, closeCtx, openCreator, openCtx, setBoardSheet, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
 import { cardHit, CardView } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
@@ -115,8 +115,10 @@ export function BoardView() {
   useEffect(() => {
     if (truncated && (filter || labelSel.length > 0 || sortsTruncated)) void loadFull();
   }, [truncated, filter, labelSel, sortsTruncated]);
-  // 页头只提示筛选框里的文字；侧栏选中的标签在胶囊上已经高亮，不再重复提示
-  const n = filter && board ? Object.values(board.cards).filter(c => c.column !== INBOX && cardHit(c, filter, labelSel, labels)).length : 0;
+  // 桌面页头只提示筛选框里的文字（侧栏选中的标签在胶囊上已经高亮）；手机上侧栏在抽屉里，选中的标签也写进页头
+  const pickedLabels = mobile ? labels.filter(l => labelSel.includes(l.id)).map(l => l.name) : [];
+  const filtering = !!filter || pickedLabels.length > 0;
+  const n = filtering && board ? Object.values(board.cards).filter(c => c.column !== INBOX && cardHit(c, filter, labelSel, labels)).length : 0;
 
   return (
     <div className="page page-board" data-page="board">
@@ -125,15 +127,32 @@ export function BoardView() {
         <nav className="crumbs" aria-label="位置">
           <b>{cur?.board.name}</b>
         </nav>
-        {filter && (
+        {filtering && (
           <span className="filter-pill">
-            筛选「{filter}」· {n} 张
-            <button type="button" aria-label="清除筛选" onClick={() => setFilter('')}>
+            {`筛选${filter ? `「${filter}」` : ''}${pickedLabels.map(l => `「${l}」`).join('')}· ${n} 张`}
+            <button
+              type="button"
+              aria-label="清除筛选"
+              onClick={() => {
+                setFilter('');
+                if (mobile) clearLabelSel();
+              }}
+            >
               ×
             </button>
           </span>
         )}
         <div className="page-actions">
+          {mobile && (
+            <button
+              className={cx('btn filter-btn', filtering && 'on')}
+              type="button"
+              aria-label="筛选、标签、正在工作、最近动态"
+              onClick={() => setBoardSheet(true)}
+            >
+              <Icon name="filter" />
+            </button>
+          )}
           <button
             className="btn prompts-btn"
             type="button"
@@ -552,7 +571,7 @@ export function withDefaults(keys: string[], saved: Record<string, Tile>) {
   return tiles;
 }
 
-function useMobile() {
+export function useMobile() {
   const [m, setM] = useState(isMobile);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 760px)');

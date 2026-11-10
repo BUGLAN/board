@@ -13,9 +13,9 @@ import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
 import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
-import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
+import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
-import { previewCols, useEntering, Veto } from './BoardView';
+import { previewCols, useEntering, useMobile, Veto } from './BoardView';
 import { CardView } from './Card';
 import { HostsSide } from './Hosts';
 import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
@@ -452,6 +452,77 @@ function Ago({ at }: { at: number }) {
   return <>{ago(at, now)}</>;
 }
 
+/** 手机白板页的底部抽屉：桌面侧栏里的白板部分（筛选框、标签、正在工作、最近动态）。下拉、点遮罩、Esc 关闭；打开卡片时让位给详情 */
+export function BoardSheet() {
+  const mobile = useMobile();
+  const open = useUI(s => s.boardSheet && s.tab === 'board') && mobile;
+  const detailId = useData(s => s.detailId);
+  const ref = useRef<HTMLElement>(null);
+  const [y, setY] = useState<number | null>(null);
+  const grab = useRef<{ y0: number; t0: number; dy: number } | null>(null);
+  const close = () => setBoardSheet(false);
+  useEffect(() => {
+    if (!open) {
+      setY(null);
+      return;
+    }
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      close();
+    };
+    document.addEventListener('keydown', key, true);
+    return () => document.removeEventListener('keydown', key, true);
+  }, [open]);
+  useEffect(() => {
+    if (detailId != null) close();
+  }, [detailId]);
+  const onDown = (e: React.PointerEvent) => {
+    const t = e.target as HTMLElement;
+    if (!t.closest('.drawer-grab, .side-head') || t.closest('button')) return;
+    grab.current = { y0: e.clientY, t0: performance.now(), dy: 0 };
+    ref.current?.setPointerCapture(e.pointerId);
+    ref.current?.classList.add('dragging');
+  };
+  const onMove = (e: React.PointerEvent) => {
+    if (!grab.current) return;
+    grab.current.dy = Math.max(0, e.clientY - grab.current.y0);
+    setY(grab.current.dy);
+  };
+  const onUp = () => {
+    const g = grab.current;
+    if (!g) return;
+    grab.current = null;
+    ref.current?.classList.remove('dragging');
+    if (g.dy > 120 || g.dy / Math.max(1, performance.now() - g.t0) > 0.6) close();
+    else setY(0);
+  };
+  if (!mobile) return null;
+  return (
+    <>
+      <div className={cx('scrim', open && 'on')} onClick={close} />
+      <aside
+        ref={ref}
+        className={cx('drawer board-sheet', open && 'on')}
+        role="dialog"
+        aria-modal="true"
+        aria-label="筛选、标签、正在工作、最近动态"
+        aria-hidden={!open}
+        style={y != null ? { ['--sheet-y' as string]: `${y}px` } : undefined}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+      >
+        <div className="drawer-grab">
+          <i />
+        </div>
+        {open && <BoardSide />}
+      </aside>
+    </>
+  );
+}
+
 function BoardSide() {
   const board = useData(s => s.board);
   const detailId = useData(s => s.detailId);
@@ -566,7 +637,10 @@ function BoardSide() {
                         <b style={ev.actor.kind === 'agent' ? { color: agentInk(ev.actor.name) } : undefined}>
                           {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
                         </b>{' '}
-                        {OP[ev.op] || ev.op} <span className="mono">#{ev.cardId}</span>
+                        {OP[ev.op] || ev.op}{' '}
+                        <button type="button" className="mono recent-id" onClick={() => openCard(ev.cardId)}>
+                          #{ev.cardId}
+                        </button>
                         <span className="when">
                           <Ago at={ev.at} />
                           {ev.via === 'cli' ? ' · CLI' : ''}

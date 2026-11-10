@@ -12,7 +12,7 @@ import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
 import { Topbar } from './components/Topbar';
 import { TitleStrip } from './components/WindowControls';
-import { ActivityBar, SidePanel } from './components/Workbench';
+import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
@@ -249,6 +249,7 @@ function BoardApp() {
           )}
         </main>
       </div>
+      <BoardSheet />
       <CardDetail />
       <HostModal />
       <DispatchDialog />
