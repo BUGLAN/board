@@ -75,7 +75,7 @@ struct Inner {
     poke: Notify,
     db: PathBuf,
     auth: Auth,
-    /// 有会话被删除（退出登录）时加一：实时推送据此检查自己的会话还在不在
+    /// 有会话被删除（退出登录）或令牌被吊销时加一：实时推送据此检查自己的登录态还在不在
     sessions: watch::Sender<u64>,
 }
 
@@ -796,13 +796,14 @@ async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>)
     let rx = s.0.tx.subscribe();
     let (rev, hosts) = s.db(|st| Ok((st.rev()?, st.hosts_rev()?))).await.unwrap_or((0, 0));
     let first = SseEvent::default().data(json!({ "rev": rev, "hosts": hosts, "events": [] }).to_string());
-    let session = match caller {
-        Caller::Human { session, .. } => session,
-        Caller::Agent { .. } => None,
+    let (session, token) = match caller {
+        Caller::Human { session, .. } => (session, None),
+        Caller::Agent { token } => (None, Some(token)),
     };
     let watch = s.0.sessions.subscribe();
-    let rest = futures_util::stream::unfold((rx, watch, s, session), |(mut rx, mut watch, s, session)| async move {
+    let rest = futures_util::stream::unfold((rx, watch, s, session, token), |(mut rx, mut watch, s, session, token)| async move {
         loop {
+            let watching = session.is_some() || token.is_some();
             tokio::select! {
                 r = rx.recv() => {
                     let ev = match r {
@@ -811,15 +812,21 @@ async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>)
                         Err(broadcast::error::RecvError::Lagged(_)) => SseEvent::default().data(json!({ "rev": -1, "hosts": -1, "events": [] }).to_string()),
                         Err(broadcast::error::RecvError::Closed) => return None,
                     };
-                    return Some((Ok::<_, Infallible>(ev), (rx, watch, s, session)));
+                    return Some((Ok::<_, Infallible>(ev), (rx, watch, s, session, token)));
                 }
-                // 有人退出登录：自己的会话没了就断开（界面重连时会得到 401，回到登录页）
-                changed = watch.changed(), if session.is_some() => {
+                // 有人退出登录或吊销令牌：自己的会话 / 令牌没了就断开（重连时会得到 401，回到登录页）
+                changed = watch.changed(), if watching => {
                     if changed.is_err() {
                         return None;
                     }
-                    let h = session.clone().unwrap_or_default();
-                    if !s.db(move |st| auth::session_alive(st.conn(), &h, now_ms())).await.unwrap_or(false) {
+                    let alive = if let Some(h) = session.clone() {
+                        s.db(move |st| auth::session_alive(st.conn(), &h, now_ms())).await.unwrap_or(false)
+                    } else if let Some(t) = token {
+                        s.db(move |st| auth::token_alive(st.conn(), t)).await.unwrap_or(false)
+                    } else {
+                        true
+                    };
+                    if !alive {
                         return None;
                     }
                 }

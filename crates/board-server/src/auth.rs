@@ -82,6 +82,12 @@ pub(crate) fn session_alive(conn: &Connection, session_hash: &str, now: i64) -> 
     Ok(n > 0)
 }
 
+/// 访问令牌是否还在（实时推送用来判断要不要断开）
+pub(crate) fn token_alive(conn: &Connection, id: i64) -> Result<bool> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM auth_tokens WHERE id = ?1", [id], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
 /* ------------------------------ 存储 ------------------------------ */
 
 const SCHEMA: &str = r#"
@@ -702,6 +708,8 @@ pub(crate) async fn new_token(State(s): State<AppState>, Json(v): Json<Value>) -
 
 pub(crate) async fn revoke(State(s): State<AppState>, Path(id): Path<i64>) -> std::result::Result<Json<Value>, ApiError> {
     s.db(move |st| revoke_token(st.conn(), id)).await?;
+    // 用这个令牌打开的实时推送随之关闭
+    s.sessions_changed();
     Ok(Json(json!({ "ok": true })))
 }
 

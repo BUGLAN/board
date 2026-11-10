@@ -452,6 +452,47 @@ fn open_stream(url: &str, cookie: &str) -> std::sync::mpsc::Receiver<()> {
     rx
 }
 
+/// 用访问令牌打开实时推送，返回一个通道：推送连接断开时收到消息
+fn open_token_stream(url: &str, token: &str) -> std::sync::mpsc::Receiver<()> {
+    let bearer = format!("Bearer {token}");
+    let res = agent().get(format!("{url}/api/stream")).header("authorization", &bearer).call().unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut r = res.into_body().into_reader();
+        let _ = std::io::copy(&mut r, &mut std::io::sink());
+        let _ = tx.send(());
+    });
+    rx
+}
+
+#[test]
+fn revoke_closes_that_tokens_stream() {
+    let s = github("buglan");
+    let cookie = session(&s);
+    let ui = [("cookie", cookie.as_str()), UI];
+    // 在界面上建两个令牌，拿到它们的原文和编号
+    let mut tokens = Vec::new();
+    for name in ["first", "second"] {
+        let r = send("POST", &format!("{}/api/tokens", s.url), &ui, Some(json!({ "name": name })));
+        assert_eq!(r.status, 200, "{:?}", r.body);
+        tokens.push((r.body["token"].as_str().unwrap().to_string(), r.body["info"]["id"].as_i64().unwrap()));
+    }
+    let (ta, ia) = &tokens[0];
+    let (tb, _) = &tokens[1];
+    let sa = open_token_stream(&s.url, ta);
+    let sb = open_token_stream(&s.url, tb);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let r = send("DELETE", &format!("{}/api/tokens/{ia}", s.url), &ui, None);
+    assert_eq!(r.status, 200);
+    sa.recv_timeout(std::time::Duration::from_secs(1)).expect("被吊销的令牌：推送应当断开");
+    assert!(sb.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "另一个令牌的推送不受影响");
+    // 重新连接被拒绝
+    let bearer = format!("Bearer {ta}");
+    let r = send("GET", &format!("{}/api/stream", s.url), &[("authorization", &bearer)], None);
+    assert_eq!((r.status, r.code()), (401, "INVALID_TOKEN"));
+}
+
 #[test]
 fn logout_closes_that_sessions_stream() {
     let s = github("buglan");
