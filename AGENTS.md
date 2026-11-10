@@ -17,6 +17,29 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 
 新 worktree 里第一次跑之前先 `npm ci`（postinstall 会装 `web/` 的依赖）。
 
+## 本地开发
+
+不部署、只在本机跑时（命令以 bash 为例；PowerShell 里用 `$env:BOARD_URL=$null`、`$env:BOARD_TOKEN=$null` 清空环境变量）：
+
+- 服务端：`unset BOARD_URL BOARD_TOKEN && cargo run -p board-server -- --local --demo --db .dev/dev.db`。本机模式只监听 `127.0.0.1:7420`；`--demo` 在空库时写入示例项目；数据库放在不进 git 的 `.dev/`，不要用 `~/.board/board.db`。
+- 界面：另开一个终端 `npm run dev:web`，开发服务器在 `127.0.0.1:1420`，`/api`、`/auth` 转发到 `BOARD_API`（默认 `http://127.0.0.1:7420`）。
+- CLI 连本地服务端：先在「设置 → Agent 接入」新建令牌，然后在同一条命令里覆盖可能指向线上的环境变量：
+
+  ```sh
+  BOARD_URL=http://127.0.0.1:7420 BOARD_TOKEN=<令牌> board ls --as <名字> --board default/main
+  ```
+
+- 桌面端：`npm run desktop:dev`（会先编译 sidecar 和界面）。
+- 测 GitHub 登录：先 `python scripts/github-mock.py 8000` 启动模拟 GitHub，再用不带 `--local` 的服务端指向它：
+
+  ```sh
+  BOARD_PUBLIC_URL=http://127.0.0.1:7420 BOARD_GITHUB_CLIENT_ID=test BOARD_GITHUB_CLIENT_SECRET=test \
+  BOARD_GITHUB_USER=buglan BOARD_GITHUB_OAUTH_URL=http://127.0.0.1:8000 BOARD_GITHUB_API_URL=http://127.0.0.1:8000 \
+  cargo run -p board-server -- --db .dev/dev.db
+  ```
+
+  打开 `http://127.0.0.1:7420`，授权页选 `buglan` 能登录，选 `someone-else` 会被拒绝。
+
 ## 界面写操作：乐观更新 + loading
 
 `web/` 里会改数据的操作都走 `web/src/store/data.ts` 的乐观更新，不要 `await api.xxx()`、`refresh()` 之后才更新界面：

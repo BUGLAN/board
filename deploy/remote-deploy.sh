@@ -7,7 +7,7 @@
 #       → 等容器健康检查（最多 2 分钟）；重启或健康检查失败时自动切回原来的镜像
 #   rollback                          切回 deploy 时记下的镜像（核对线上提交号失败时由工作流调用）
 #   cleanup                           只留当前和上一个 GHCR 镜像，再 docker image prune -f
-#   set-image <镜像>                   只改 .env 的 BOARD_IMAGE（deploy/deploy.sh 手动部署前改回 board-server:latest）
+#   set-image <镜像>                   只改 .env 的 BOARD_IMAGE（手动部署时先改回 board-server:latest，再 docker compose up -d --no-build）
 set -eu
 cd "$(dirname "$0")/.."
 

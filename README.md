@@ -96,7 +96,13 @@ cargo install --path crates/board-cli
 
 **2. 安装 skill**
 
-本仓库的 skill 在 [`.agents/skills/board-skills/`](.agents/skills/board-skills/)；支持 `.agents/skills` 的 agent 会自动识别，Claude Code 通过 `.claude/skills/board-skills` 链接识别。不在仓库里时，把发版附件里的 `board-skills.zip` 解压到 agent 的 skills 目录（`~/.agents/skills/`，Claude Code 是 `~/.claude/skills/`），整个目录连同 `scripts/`、`bin/` 一起放进去。
+本仓库的 skill 在 [`.agents/skills/board-skills/`](.agents/skills/board-skills/)；支持 `.agents/skills` 的 agent 会自动识别。Claude Code 不读 `.agents/skills`，要在仓库根目录自己建一个链接（`.claude` 不进 git）：
+
+```bash
+mkdir -p .claude/skills && ln -s ../../.agents/skills/board-skills .claude/skills/board-skills
+```
+
+不在仓库里时，把发版附件里的 `board-skills.zip` 解压到 agent 的 skills 目录（`~/.agents/skills/`，Claude Code 是 `~/.claude/skills/`），整个目录连同 `scripts/`、`bin/` 一起放进去。
 
 **3. 连接白板**
 
@@ -140,7 +146,7 @@ board heartbeat final 2       # 结束这张卡片这一次的计时
 board heartbeat stop          # 会话结束：停掉后台心跳，名字立刻离线
 board new "标题" --body "描述" # 新建卡片；--inbox 记到「未整理」最下面
 board attach 2 shot.png --comment "截图"  # 上传附件
-board host --name mbp --dir oss/main=~/repo/oss   # 在这台机器上常驻接任务（Ctrl+C 退出）；内置 dsh、Claude Code、pi，其他 agent 见 docs/agents.md
+board host --name mbp --dir oss/main=~/repo/oss   # 在这台机器上常驻接任务（Ctrl+C 退出）；内置 dsh、Claude Code、pi、Codex，其他 agent 见 docs/agents.md
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止
 ```
 
@@ -156,4 +162,4 @@ board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取
 
 在线实例：<https://board.buglan.com>（GitHub 登录，账号在部署时指定）· 部署自己的实例：[docs/deploy.md](docs/deploy.md)
 
-开发：集成分支是 `main`，推送前检查见 [AGENTS.md](AGENTS.md)。推 `main` 只跑测试；发版由人决定：`npm run release -- <版本号> --push` 改版本号、从提交生成 [CHANGELOG.md](CHANGELOG.md)、打 `vX.Y.Z` tag，推 tag 才部署线上服务端，见 [docs/deploy.md](docs/deploy.md)「升级」。
+开发：集成分支是 `main`，推送前检查见 [AGENTS.md](AGENTS.md)；本地怎么跑服务端和界面见 [AGENTS.md](AGENTS.md)「本地开发」。推 `main` 只跑测试；发版由人决定：`npm run release -- <版本号> --push` 改版本号、从提交生成 [CHANGELOG.md](CHANGELOG.md)、打 `vX.Y.Z` tag，推 tag 才部署线上服务端，见 [docs/deploy.md](docs/deploy.md)「升级」。
