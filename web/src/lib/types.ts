@@ -340,7 +340,6 @@ export type Cmd =
   | { op: 'move'; id: number; column: ColumnKey; index?: number; top?: boolean; order?: number[] }
   | { op: 'comment'; id: number; text: string }
   | { op: 'edit_comment'; id: number; activity: number; text: string }
-  | { op: 'delete_comment'; id: number; activity: number }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }
   | { op: 'delete'; id: number };

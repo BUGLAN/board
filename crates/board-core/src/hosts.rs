@@ -699,9 +699,11 @@ impl<'a> W<'a> {
             .optional()?)
     }
 
-    /// 按规则 1 找下一张可领取的卡片：按工作流顺序，第一个连到锁定状态的可领取状态里、最上面一张没有排队派发的卡片
-    pub(crate) fn next_claimable(&self, b: i64, flow: &Flow) -> Result<Option<(i64, String)>> {
-        let taken: Vec<i64> = self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state = 'queued'", [b], |r| r.get(0))?;
+    /// 按规则 1 找下一张可领取的卡片：按工作流顺序，第一个连到锁定状态的可领取状态里、最上面一张没有排队派发的卡片。
+    /// `skip` 是调用方额外要跳过的卡片（定时领取传这一轮已经派发过的卡片）。
+    pub(crate) fn next_claimable(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Option<(i64, String)>> {
+        let mut taken: Vec<i64> = self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state = 'queued'", [b], |r| r.get(0))?;
+        taken.extend_from_slice(skip);
         for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
             if let Some(id) = self.col_ids(b, &s.key)?.into_iter().find(|id| !taken.contains(id)) {
                 return Ok(Some((id, s.key.clone())));
@@ -852,6 +854,10 @@ impl<'a> W<'a> {
         }
         if let Some(paused) = p.paused {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;
+            // 暂停接单时这一轮就结束；恢复接单后不补（PRD §9.1）
+            if paused {
+                self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
+            }
         }
         if let Some(agent) = &p.agent {
             if !h.resolved().iter().any(|a| &a.id == agent && a.found) {
@@ -1016,7 +1022,7 @@ impl<'a> W<'a> {
     }
 
     /// 请求停止正在跑的派发：记下是谁，board host 收到后结束 agent 进程树再上报结束
-    fn request_stop(&mut self, id: i64, by: &Actor, who: &str) -> Result<()> {
+    pub(crate) fn request_stop(&mut self, id: i64, by: &Actor, who: &str) -> Result<()> {
         let d = self.drow(id)?;
         if d.state != "running" || d.stop_by.is_some() {
             return Ok(());
@@ -1152,7 +1158,15 @@ impl<'a> W<'a> {
             let i = (h.rr.max(0) as usize + k) % n;
             let Ok(board) = self.resolve(&h.dirs[i].board) else { continue };
             let flow = flow_of(self.tx, board.id)?;
-            let Some((card, _)) = self.next_claimable(board.id, &flow)? else { continue };
+            // 这一轮里这台机器已经派发过的卡片不再领：派发异常退出/被停止后卡片 50 秒会回到可领取状态最上面，
+            // 不跳的话同一个空位会反复领到它、白跑 agent。下一轮（round_at 更新后）可以正常再领。
+            let round_at = h.round_at.unwrap_or(0);
+            let skip: Vec<i64> = self.collect(
+                "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3",
+                params![board.id, h.id, round_at],
+                |r| r.get(0),
+            )?;
+            let Some((card, _)) = self.next_claimable(board.id, &flow, &skip)? else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
             let d = self.insert_dispatch(board.id, card, &h, &a.id, &a.name, "cron", &Actor::system())?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
@@ -1209,12 +1223,14 @@ impl<'a> W<'a> {
                     .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
                     .optional()?
                     .flatten();
-                if still.as_deref() == Some(name.as_str()) {
-                    if let Some(to) = flow.human_after(col).map(|s| s.key.clone()) {
-                        soft(self.exec(&board, &actor, Cmd::Move { id: d.card, column: to, top: false, index: None, order: None }))?;
+                let human = flow.human_after(col).map(|s| s.key.clone());
+                let still_held = still.as_deref() == Some(name.as_str());
+                if still_held {
+                    if let Some(to) = &human {
+                        soft(self.exec(&board, &actor, Cmd::Move { id: d.card, column: to.clone(), top: false, index: None, order: None }))?;
                     }
                 }
-                let text = match (&stop_by, how) {
+                let mut text = match (&stop_by, how) {
                     (_, Finish::HostExit) => format!("board host（{}）退出，停止了这次派发", d.host),
                     (Some(who), _) => format!("{who} 停止了这次派发"),
                     (None, Finish::Missing) => {
@@ -1229,6 +1245,20 @@ impl<'a> W<'a> {
                         t
                     }
                 };
+                // 工作流里没有需要人处理的状态：评论写明卡片会回到哪里，别让人以为它悄悄消失了
+                if still_held && human.is_none() {
+                    let claimed_from: Option<String> = self
+                        .tx
+                        .query_row("SELECT claimed_from FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
+                        .optional()?
+                        .flatten();
+                    let back = flow.back_to(claimed_from.as_deref()).name.clone();
+                    text += &format!(
+                        "\n\n没有需要人处理的状态：这块白板从「{}」连出去的状态里没有需要人处理的状态，卡片 50 秒后会回到「{}」最上面。",
+                        flow.name(col),
+                        back
+                    );
+                }
                 soft(self.exec(&board, &actor, Cmd::Comment { id: d.card, text }))?;
                 if stop_by.is_some() { "stopped" } else { "crashed" }
             }

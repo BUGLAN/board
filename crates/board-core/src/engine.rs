@@ -64,13 +64,6 @@ pub enum Cmd {
         activity: i64,
         text: String,
     },
-    /// 人删除自己发的评论（界面）：从动态里移除，不新增动态
-    #[serde(rename = "delete_comment")]
-    DeleteComment {
-        id: i64,
-        /// 评论在动态里的 ID
-        activity: i64,
-    },
     Label {
         id: i64,
         #[serde(default)]
@@ -309,7 +302,7 @@ impl<'a> W<'a> {
                             return Err(already(m));
                         }
                         // 规则 1：按工作流顺序，第一个有卡片、并且连到锁定状态的可领取状态；有排队派发的卡片跳过
-                        match self.next_claimable(b, &flow)? {
+                        match self.next_claimable(b, &flow, &[])? {
                             Some(f) => f,
                             None => {
                                 let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
@@ -409,34 +402,6 @@ impl<'a> W<'a> {
                 id
             }
 
-            /* ---------------- 删除评论 ----------------
-               只有人能删，只能删人发的评论（PRD §8）；agent 和系统的动态不能删 */
-            Cmd::DeleteComment { id, activity } => {
-                self.row(b, id)?;
-                let found: Option<(String, String, String)> = self
-                    .tx
-                    .query_row(
-                        "SELECT kind, actor_kind, actor_name FROM activity WHERE id = ?1 AND board = ?2 AND card = ?3",
-                        params![activity, b, id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()?;
-                let Some((kind, by_kind, by_name)) = found else {
-                    return Err(BoardError::new(ErrorCode::NotFound, format!("#{id} 没有这条评论")));
-                };
-                if kind != "comment" {
-                    return Err(BoardError::usage("只能删除评论，系统动态不能删除"));
-                }
-                if !actor.is_human() || by_kind != ActorKind::Human.as_str() || by_name != actor.name {
-                    return Err(BoardError::code(ErrorCode::NotAuthor));
-                }
-                self.tx.execute("DELETE FROM activity WHERE id = ?1", params![activity])?;
-                self.tx.execute("UPDATE cards SET updated_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
-                let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
-                self.event(b, id, &title, actor, "delete_comment", "删除了评论")?;
-                id
-            }
-
             /* ---------------- 标签 ----------------
                任何状态都可以，包括别人持有的卡片；不续期（PRD §6）。仅人可打的标签 agent 不能加、去 */
             Cmd::Label { id, add, remove } => {
@@ -517,9 +482,14 @@ impl<'a> W<'a> {
                     return Err(BoardError::usage(format!("#{id} 没有被领取")));
                 };
                 let start = flow.back_to(self.claimed_from(b, id)?.as_deref()).clone();
+                // 卡片被拿走时如果这次派发还在跑，同时请求停止：agent 没有理由继续做，也避免卡片被再领后两个 agent 做同一张
+                let running = self.read().card_dispatch(board, id)?;
                 self.place(b, id, Some(&r.col), &start.key, At::Top)?;
                 let run = self.clear_claim(b, id, "release")?;
                 self.track(b, id, actor, "release", &format!("强制释放了 {who} 的领取，卡片回到「{}」最上面{}", start.name, took(run)))?;
+                if let Some(d) = running.filter(|d| d.state == "running") {
+                    self.request_stop(d.id, actor, actor.display())?;
+                }
                 id
             }
 

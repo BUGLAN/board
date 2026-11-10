@@ -432,6 +432,92 @@ fn log_keeps_last_500_lines() {
 }
 
 #[test]
+fn crashed_dispatch_without_human_status_explains_and_skips_this_round() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.delete_status(B, "check")).unwrap();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
+    assert_eq!(d.card, a);
+    // 异常退出：工作流没有 check，卡片留在进行中，评论要说明会回到待办
+    let d = end(&mut s, T0 + 3 * S, d.id, Some(3), &["boom"]);
+    assert_eq!((d.state.as_str(), d.result.as_deref()), ("done", Some("crashed")));
+    let c = card(&s, a);
+    assert_eq!(c.card.column, "doing");
+    let comment = c.activity.iter().rev().find(|x| x.kind == "comment").expect("应该有结束评论");
+    assert!(comment.text.contains("没有需要人处理的状态"), "{}", comment.text);
+    assert!(comment.text.contains("卡片 50 秒后会回到「待办」最上面"), "{}", comment.text);
+    // 50 秒后卡片回到待办；这一轮还没结束时，不能再领到它
+    beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
+    s.sweep(T0 + 60 * S).unwrap();
+    assert_eq!(card(&s, a).card.column, "todo");
+    assert!(s.write(T0 + 61 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
+    assert!(!host(&s, T0 + 61 * S).round, "没有可领的卡，这一轮结束");
+    // 下一轮（round_at 更新后）可以重新领
+    s.write(T0 + 62 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d2 = s.write(T0 + 63 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("下一轮应该可以再领");
+    assert_eq!(d2.card, a);
+}
+
+#[test]
+fn stopped_dispatch_without_human_status_skips_this_round() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.delete_status(B, "check")).unwrap();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
+    // 人停止：工作流没有 check，评论说明会回到待办
+    s.write(T0 + 3 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "buglan")).unwrap();
+    let d = end(&mut s, T0 + 4 * S, d.id, None, &[]);
+    assert_eq!(d.result.as_deref(), Some("stopped"));
+    let c = card(&s, a);
+    let comment = c.activity.iter().rev().find(|x| x.kind == "comment").unwrap();
+    assert!(comment.text.contains("buglan 停止了这次派发"), "{}", comment.text);
+    assert!(comment.text.contains("没有需要人处理的状态"), "{}", comment.text);
+    // 本轮的卡片释放后不会被重领
+    beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
+    s.sweep(T0 + 60 * S).unwrap();
+    assert!(s.write(T0 + 61 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
+}
+
+#[test]
+fn releasing_running_dispatch_requests_stop() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!(card(&s, a).card.holder.as_deref(), Some("claude/mbp-1"));
+    s.write(T0 + 2 * S, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.exec(&b, &Actor::human(), Cmd::Release { id: a })?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(get(&s, d.id).stop_by.as_deref(), Some("人"), "强制释放要同时请求停止在跑的派发");
+    let d = end(&mut s, T0 + 3 * S, d.id, None, &[]);
+    assert_eq!(d.result.as_deref(), Some("stopped"));
+}
+
+#[test]
+fn pausing_during_round_clears_it_and_does_not_resume() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let _ = new_card(&mut s, T0, "A");
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(host(&s, T0 + S).round);
+    let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
+    assert!(!h.round, "暂停接单时这一轮结束");
+    let h = s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(false), ..Default::default() })).unwrap();
+    assert!(!h.round, "恢复接单后不自动继续");
+    assert!(s.write(T0 + 4 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
+}
+
+#[test]
 fn flow_roles() {
     let s = store();
     let flow = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
