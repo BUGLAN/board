@@ -68,7 +68,7 @@
 .cvp-text .mono { font-size: 11px; color: var(--text-3); }
 .cvp-desc { font-size: 12px; color: var(--text-2); line-height: 1.45; margin-top: 4px; }
 .cvp-stats { margin-top: 6px; font-size: 11.5px; color: var(--text-3); }
-.cvp-stats em { font-style: normal; color: var(--c-doing); }
+.cvp-stats em { font-style: normal; color: color-mix(in oklab, var(--c-doing), var(--ink)); }
 .cv-project.current { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--pc) 45%, transparent), var(--shadow-2); }
 .cv-add {
   position: absolute; right: -40px; top: 50%; width: 26px; height: 26px; margin-top: -13px; border-radius: 50%;
@@ -85,14 +85,14 @@
 .cv-board.current { box-shadow: inset 0 0 0 2px var(--pc), 0 0 0 6px color-mix(in srgb, var(--pc) 14%, transparent), var(--shadow-3); }
 .cv-board.current::after {
   content: "当前"; position: absolute; top: -10px; left: 14px; height: 19px; padding: 0 8px; border-radius: 999px;
-  display: grid; place-items: center; font-size: 10.5px; font-weight: 600; color: #fff; background: var(--pc);
+  display: grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; background: var(--pc);
 }
 .cvb-head { display: flex; align-items: center; gap: 10px; }
 .cvb-ic { width: 30px; height: 30px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--pc); background: color-mix(in srgb, var(--pc) 15%, transparent); flex: none; }
 .cvb-ic svg { width: 17px; height: 17px; }
 .cvb-title { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
 .cvb-title b { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cvb-title .mono { font-size: 10.5px; color: var(--text-3); }
+.cvb-title .mono { font-size: 11px; color: var(--text-3); }
 .cvb-desc { margin: 8px 0 0; font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
 .cvb-bar { display: flex; gap: 2px; height: 6px; margin: 12px 0 8px; border-radius: var(--r-xs); overflow: hidden; background: var(--surface-3); }
 .cvb-bar i { display: block; min-width: 4px; border-radius: var(--r-hair); }
@@ -100,17 +100,17 @@
 .cvb-counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .cvb-counts span { display: flex; align-items: baseline; gap: 4px; font-family: var(--f-mono); font-size: 13px; font-weight: 500; }
 .cvb-counts i { width: 6px; height: 6px; border-radius: var(--r-hair); background: var(--c); align-self: center; }
-.cvb-counts em { font-family: var(--f-sans); font-style: normal; font-size: 10.5px; font-weight: 400; color: var(--text-3); }
+.cvb-counts em { font-family: var(--f-sans); font-style: normal; font-size: 11px; font-weight: 400; color: var(--text-3); }
 .cvb-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line-2); min-height: 38px; }
 .cvb-agents { flex: 1; min-width: 0; display: flex; align-items: center; }
-.cvb-agents .avatar { width: 20px; height: 20px; font-size: 10px; margin-right: -4px; }
+.cvb-agents .avatar { width: 20px; height: 20px; font-size: 11px; margin-right: -4px; }
 .cvb-agents em { font-style: normal; font-size: 11px; color: var(--text-3); margin-left: 10px; white-space: nowrap; }
 .cv-board.active .cvb-agents .avatar { animation: breathe 2.4s var(--ease-in-out) infinite; }
-.cvb-inbox { display: inline-flex; align-items: center; gap: 3px; font-family: var(--f-mono); font-size: 11px; color: var(--c-inbox); }
+.cvb-inbox { display: inline-flex; align-items: center; gap: 3px; font-family: var(--f-mono); font-size: 11px; color: color-mix(in oklab, var(--c-inbox), var(--ink)); }
 .cvb-inbox svg { width: 13px; height: 13px; }
 .cvb-open {
   display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px; border-radius: var(--r-sm);
-  font-size: 12px; font-weight: 500; color: var(--pc); background: color-mix(in srgb, var(--pc) 12%, transparent);
+  font-size: 12px; font-weight: 500; color: color-mix(in oklab, var(--pc), var(--ink)); background: color-mix(in srgb, var(--pc) 12%, transparent);
   transition: background-color var(--dur-2), color var(--dur-2), transform var(--dur-1);
 }
 .cvb-open svg { width: 12px; height: 12px; transition: transform var(--dur-3) var(--spring); }
@@ -148,9 +148,9 @@
 .pt-proj.closed .pt-row.proj .chev { transform: rotate(-90deg); }
 .pt-row.proj .nm { font-weight: 600; color: var(--text); }
 .pt-row .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pt-row .key { font-size: 10.5px; color: var(--text-4); }
+.pt-row .key { font-size: 11px; color: var(--text-3); }
 .pt-row .n { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); min-width: 14px; text-align: right; }
-.pt-live { display: inline-flex; align-items: center; gap: 3px; font-family: var(--f-mono); font-size: 11px; color: var(--c-doing); }
+.pt-live { display: inline-flex; align-items: center; gap: 3px; font-family: var(--f-mono); font-size: 11px; color: color-mix(in oklab, var(--c-doing), var(--ink)); }
 .pt-live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: breathe 2.4s var(--ease-in-out) infinite; }
 .pt-more { width: 22px; height: 22px; border-radius: var(--r-xs); display: grid; place-items: center; color: var(--text-3); opacity: 0; flex: none; transition: opacity var(--dur-1), background-color var(--dur-1); }
 .pt-more svg { width: 15px; height: 15px; }
@@ -176,13 +176,13 @@
 .pj-menu { width: 380px; }
 .pj-group { display: flex; align-items: center; gap: 8px; padding: 10px 10px 4px; font-size: 12px; }
 .pj-group b { font-weight: 600; }
-.pj-group .mono { font-size: 10.5px; color: var(--text-4); }
+.pj-group .mono { font-size: 11px; color: var(--text-3); }
 .pj-row { padding-left: 18px; }
 .pj-bic { width: 28px; height: 28px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--pc); background: color-mix(in srgb, var(--pc) 14%, transparent); flex: none; }
 .pj-bic svg { width: 16px; height: 16px; }
 .pj-bic.lg { width: 44px; height: 44px; border-radius: var(--r-md); }
 .pj-bic.lg svg { width: 22px; height: 22px; }
-.crumb-link { font-size: 12.5px; color: var(--text-3); padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-xs); transition: background-color var(--dur-1), color var(--dur-1); }
+.crumb-link { display: inline-flex; align-items: center; min-height: 24px; font-size: 12.5px; color: var(--text-3); padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-xs); transition: background-color var(--dur-1), color var(--dur-1); }
 .crumb-link:hover { background: var(--surface-3); color: var(--text); }
 
 /* ---------------- ⋯ 菜单 ---------------- */
@@ -201,7 +201,7 @@
 .ctx button[data-do] svg { width: 15px; height: 15px; color: var(--text-3); }
 .ctx button[data-do]:hover, .ctx button[data-do]:focus-visible { background: color-mix(in srgb, var(--text) 7%, transparent); outline: none; }
 .ctx button[data-do] code { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
-.ctx button.danger { color: var(--danger); }
+.ctx button.danger { color: var(--danger-text); }
 .ctx button.danger svg { color: var(--danger); }
 .ctx button[disabled] { opacity: .4; pointer-events: none; }
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
@@ -233,8 +233,8 @@
 .ctx-sort .sort-row { display: flex; align-items: center; gap: 6px; }
 .ctx-sort .sort-row > button[data-do] { flex: 1; width: auto; min-width: 0; }
 .ctx-sort .sort-name { flex: 1; min-width: 0; }
-.ctx-sort .sort-note { font-size: 11px; color: var(--text-4); white-space: nowrap; }
-.ctx-sort button.on .sort-name, .ctx-sort .sort-row.on .sort-name { font-weight: 600; color: var(--brand); }
+.ctx-sort .sort-note { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.ctx-sort button.on .sort-name, .ctx-sort .sort-row.on .sort-name { font-weight: 600; color: color-mix(in oklab, var(--brand), var(--ink)); }
 .ctx-sort button[data-do] svg { color: var(--brand); }
 .ctx-sort .sort-dir { display: inline-flex; flex: none; gap: 2px; padding: 2px; margin-right: 2px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .ctx-sort .sort-dir button[data-do] { width: auto; height: 24px; padding: 0 8px; font-size: 11.5px; color: var(--text-3); border-radius: calc(var(--r-sm) - 2px); }

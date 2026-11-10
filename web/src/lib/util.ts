@@ -26,6 +26,8 @@ export function agentColor(name: string) {
   for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return AGENT_COLORS[h % AGENT_COLORS.length];
 }
+/** agent 身份色写成文字时用：浅色主题下加深到对比度 ≥ 4.5:1（--ink），深色主题原样 */
+export const agentInk = (name: string) => `color-mix(in oklab, ${agentColor(name)}, var(--ink))`;
 export const agentGlyph = (name: string) =>
   GREEK[String(name).toLowerCase()] || [...String(name || '?').trim()][0]?.toUpperCase() || '?';
 

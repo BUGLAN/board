@@ -271,7 +271,9 @@ function applyAccent(color: string | undefined) {
   s.setProperty('--brand', hex);
   s.setProperty('--brand-2', `color-mix(in srgb, ${hex} 72%, #fff)`);
   s.setProperty('--brand-soft', `color-mix(in srgb, ${hex} 14%, transparent)`);
-  s.setProperty('--brand-fg', luminance(hex) > 0.5 ? '#18181A' : '#fff');
+  // 白字和深色字里选对比度高的：橙、黄、浅色上是深色字，深蓝、深紫上是白字
+  const l = luminance(hex);
+  s.setProperty('--brand-fg', 1.05 / (l + 0.05) >= (l + 0.05) / (0.0097 + 0.05) ? '#fff' : '#18181A');
 }
 
 /** 相对亮度（WCAG） */

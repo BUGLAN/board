@@ -11,7 +11,7 @@ import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { useMasonry } from '../lib/masonry';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
-import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
+import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
 import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
@@ -501,6 +501,7 @@ function BoardSide() {
         <button
           className="icon-btn sm"
           type="button"
+          aria-label="折叠 / 展开分组"
           data-tip="折叠 / 展开分组"
           data-tip-align="end"
           onClick={() => {
@@ -537,7 +538,7 @@ function BoardSide() {
               >
                 <Avatar actor={agent(c.holder!)} />
                 <span className="tt">
-                  <span className="mono" style={{ color: agentColor(c.holder!) }}>
+                  <span className="mono" style={{ color: agentInk(c.holder!) }}>
                     {c.holder}
                   </span>{' '}
                   · #{c.id} <Title text={c.title} />
@@ -562,7 +563,7 @@ function BoardSide() {
                     <div key={ev.id} className={cx('recent-row', lastSeen.current > 0 && ev.id > lastSeen.current && 'new')}>
                       <Avatar actor={ev.actor} />
                       <div>
-                        <b style={ev.actor.kind === 'agent' ? { color: agentColor(ev.actor.name) } : undefined}>
+                        <b style={ev.actor.kind === 'agent' ? { color: agentInk(ev.actor.name) } : undefined}>
                           {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
                         </b>{' '}
                         {OP[ev.op] || ev.op} <span className="mono">#{ev.cardId}</span>
@@ -776,7 +777,7 @@ function ProjectsSide() {
       <header className="side-head">
         <span className="side-title">项目</span>
         {ws ? <span className="side-sub">{projects.length} 个项目</span> : <Skeleton w={52} h={10} />}
-        <button className="icon-btn sm" type="button" data-tip="新建项目" data-tip-align="end" onClick={() => newProject()}>
+        <button aria-label="新建项目" className="icon-btn sm" type="button" data-tip="新建项目" data-tip-align="end" onClick={() => newProject()}>
           <Icon name="plus" sw={1.9} />
         </button>
       </header>

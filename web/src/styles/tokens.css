@@ -25,7 +25,9 @@
   --line-3: rgba(26, 24, 20, .22);
   --text: #18181A;
   --text-2: #55555C;
-  --text-3: #8C8C93;
+  /* 文字：text 正文、text-2 次要、text-3 要读的辅助信息（时间、计数、路径、说明，对比度 ≥ 4.5:1）；
+     text-4 只用于装饰（分隔符、图标）和禁用态，不用于要读的文字 */
+  --text-3: #666670;
   --text-4: #B5B4B8;
   --invert: #18181A;
   --invert-text: #F5F4F0;
@@ -33,12 +35,17 @@
   --brand: #F2541B;
   --brand-2: #FF8A4C;
   --brand-soft: rgba(242, 84, 27, .11);
-  /* 品牌色上的文字颜色；当前项目的颜色较浅时界面改成深色（App.tsx） */
-  --brand-fg: #fff;
+  /* 品牌色上的文字颜色：白字和深色字里对比度高的那个（App.tsx 按项目颜色算）；默认橙色上是深色字 */
+  --brand-fg: #18181A;
+  /* 身份色、状态色写成文字时的加深：浅色主题和黑色按 oklab 混合（60% 身份色），深色主题原样 */
+  --ink: #000 40%;
   --danger: #E0263B;
   --danger-soft: rgba(224, 38, 59, .1);
   --ok: #109A62;
   --warn: #D97A06;
+  /* 警告、危险写成文字时用（浅色主题加深到对比度 ≥ 4.5:1） */
+  --warn-text: #935103;
+  --danger-text: #B41C2E;
 
   /* 列的标识色 */
   --c-inbox: #9B5DE5;
@@ -103,17 +110,20 @@
     --line-3: rgba(255, 255, 255, .2);
     --text: #EDECE8;
     --text-2: #A6A5AB;
-    --text-3: #6F6E76;
+    --text-3: #93929A;
     --text-4: #4A4A51;
     --invert: #EDECE8;
     --invert-text: #121214;
     --brand: #FF6A33;
     --brand-2: #FF9A5E;
     --brand-soft: rgba(255, 106, 51, .14);
+    --ink: #000 0%;
     --danger: #FF4D61;
     --danger-soft: rgba(255, 77, 97, .13);
     --ok: #3DDC97;
     --warn: #FFB020;
+    --warn-text: #FFB020;
+    --danger-text: #FF6B7C;
     --c-inbox: #B98CFF;
     --c-todo: #8F9AB4;
     --c-doing: #FF9A3C;
@@ -145,17 +155,20 @@
   --line-3: rgba(255, 255, 255, .2);
   --text: #EDECE8;
   --text-2: #A6A5AB;
-  --text-3: #6F6E76;
+  --text-3: #93929A;
   --text-4: #4A4A51;
   --invert: #EDECE8;
   --invert-text: #121214;
   --brand: #FF6A33;
   --brand-2: #FF9A5E;
   --brand-soft: rgba(255, 106, 51, .14);
+  --ink: #000 0%;
   --danger: #FF4D61;
   --danger-soft: rgba(255, 77, 97, .13);
   --ok: #3DDC97;
   --warn: #FFB020;
+  --warn-text: #FFB020;
+  --danger-text: #FF6B7C;
   --c-inbox: #B98CFF;
   --c-todo: #8F9AB4;
   --c-doing: #FF9A3C;

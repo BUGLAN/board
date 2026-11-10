@@ -432,10 +432,10 @@ export function CanvasPage() {
             +
           </button>
           <i />
-          <button type="button" data-tip="适应画布" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('fit')}>
+          <button aria-label="适应画布" type="button" data-tip="适应画布" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('fit')}>
             <Icon name="fit" />
           </button>
-          <button type="button" data-tip="定位到当前白板" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('current')}>
+          <button aria-label="定位到当前白板" type="button" data-tip="定位到当前白板" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('current')}>
             <Icon name="target" />
           </button>
         </div>
@@ -485,6 +485,7 @@ function ProjectGroup({
         <button
           type="button"
           className="cv-add"
+          aria-label={`在「${p.name}」里新建白板`}
           data-tip={`在「${p.name}」里新建白板`}
           data-tip-pos="right"
           onClick={() => {

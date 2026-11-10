@@ -21,7 +21,7 @@ export function HostsSide() {
         <span className="side-sub">
           {online}/{hosts.length}
         </span>
-        <button className="icon-btn sm" type="button" data-tip="添加机器" data-tip-align="end" onClick={() => openHost('new')}>
+        <button aria-label="添加机器" className="icon-btn sm" type="button" data-tip="添加机器" data-tip-align="end" onClick={() => openHost('new')}>
           <Icon name="plus" />
         </button>
       </header>

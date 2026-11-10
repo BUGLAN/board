@@ -61,7 +61,7 @@
 .d-split:hover::after { opacity: .45; transition-delay: 120ms; }
 .d-split.active::after { opacity: 1; transition-delay: 0s; }
 body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none !important; }
-.d-side-head .act { font-size: 11px; color: var(--text-4); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.d-side-head .act { font-size: 11px; color: var(--text-3); font-weight: 400; letter-spacing: 0; text-transform: none; }
 .d-activity { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 8px 18px; }
 @media (max-width: 900px) { .drawer { --modal-side: 290px; } }
 
@@ -69,7 +69,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .d-col {
   --c: var(--c-todo);
   display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px;
-  font-size: 12px; font-weight: 500; color: var(--c);
+  font-size: 12px; font-weight: 500; color: color-mix(in oklab, var(--c), var(--ink));
   background: color-mix(in srgb, var(--c) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 28%, transparent);
   transition: color var(--dur-3), background-color var(--dur-3);
 }
@@ -84,7 +84,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
   display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
   font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3);
 }
-.d-label .count { font-family: var(--f-mono); font-weight: 500; letter-spacing: 0; color: var(--text-4); }
+.d-label .count { font-family: var(--f-mono); font-weight: 500; letter-spacing: 0; color: var(--text-3); }
 .d-label .act { margin-left: auto; text-transform: none; letter-spacing: 0; }
 
 .d-title {
@@ -132,16 +132,16 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .run-stats div { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--surface-2) 80%, transparent); box-shadow: inset 0 0 0 1px var(--line); }
 .run-stats span { font-size: 11px; color: var(--text-3); }
 .run-stats b { font-family: var(--f-mono); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.run-stats b.bad { color: var(--danger); }
+.run-stats b.bad { color: var(--danger-text); }
 /* 动态里的耗时标签 */
-.run-chip { margin-left: 6px; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-family: var(--f-mono); font-size: 10.5px; color: var(--text-2); background: var(--surface-3); white-space: nowrap; vertical-align: 1px; }
-.run-chip.bad { color: var(--danger); background: var(--danger-soft); }
+.run-chip { margin-left: 6px; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-family: var(--f-mono); font-size: 11px; color: var(--text-2); background: var(--surface-3); white-space: nowrap; vertical-align: 1px; }
+.run-chip.bad { color: var(--danger-text); background: var(--danger-soft); }
 .claim-card .release { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding-top: 12px; margin-top: 2px; border-top: 1px dashed var(--line-2); font-size: 12px; color: var(--text-3); }
 .claim-card .release .btn { margin-left: auto; }
 
 /* 描述 */
 .desc-tabs { display: inline-flex; padding: 2px; border-radius: var(--r-sm); background: var(--surface-3); position: relative; }
-.desc-tabs button { position: relative; z-index: 1; height: 22px; padding: 0 9px; border-radius: var(--r-xs); font-size: 11.5px; color: var(--text-3); transition: color var(--dur-2); }
+.desc-tabs button { position: relative; z-index: 1; height: 24px; padding: 0 9px; border-radius: var(--r-xs); font-size: 11.5px; color: var(--text-3); transition: color var(--dur-2); }
 .desc-tabs button.on { color: var(--text); }
 .desc-tabs .thumb { position: absolute; top: 2px; bottom: 2px; border-radius: var(--r-xs); background: var(--surface); box-shadow: var(--shadow-1); transition: transform var(--dur-3) var(--spring), width var(--dur-3) var(--spring); }
 .desc-view {
@@ -172,7 +172,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .md li.task.checked i::after { content: ""; width: 7px; height: 4px; border: 1.6px solid #fff; border-top: 0; border-right: 0; transform: rotate(-45deg) translate(1px, -1px); }
 .md li.task.checked { color: var(--text-3); text-decoration: line-through; }
 .md pre { max-width: 100%; padding: 10px 12px; border-radius: var(--r-sm); background: var(--term-bg); color: var(--term-text); overflow-x: auto; font-size: 12px; }
-.md pre code { background: none; box-shadow: none; padding: 0; color: inherit; }
+.md pre code { background: none; box-shadow: none; padding: 0; color: inherit; font-size: 1em; }
 /* 表格：先在可用宽度里换行，放不下时在自己的框里横向滚动（浮层细滚动条），不撑宽外层。
    单元格里的长单词不按任意字符断开，否则窄栏里每列会被挤成一两个字宽 */
 .md table {
@@ -182,9 +182,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 }
 .md th, .md td { min-width: 4em; padding: 5px 10px; text-align: left; vertical-align: top; box-shadow: inset 0 0 0 .5px var(--line-2); }
 .md th { font-weight: 600; background: var(--surface-2); }
-.md a { color: var(--brand); text-decoration: none; background-image: linear-gradient(currentColor, currentColor); background-size: 0 1px; background-position: 0 100%; background-repeat: no-repeat; transition: background-size var(--dur-3) var(--ease-out); }
+.md a { color: color-mix(in oklab, var(--brand), var(--ink)); text-decoration: none; background-image: linear-gradient(currentColor, currentColor); background-size: 0 1px; background-position: 0 100%; background-repeat: no-repeat; transition: background-size var(--dur-3) var(--ease-out); }
 .md a:hover { background-size: 100% 1px; }
-.md .gh { font-family: var(--f-mono); font-size: .88em; padding: .1em .45em; border-radius: var(--r-xs); color: var(--c-review); background: color-mix(in srgb, var(--c-review) 12%, transparent); }
+.md .gh { font-family: var(--f-mono); font-size: .88em; padding: .1em .45em; border-radius: var(--r-xs); color: color-mix(in oklab, var(--c-review), var(--ink)); background: color-mix(in srgb, var(--c-review) 12%, transparent); }
 .md blockquote { padding-left: 12px; border-left: 3px solid var(--line-2); color: var(--text-2); }
 
 /* 动态 */
@@ -226,7 +226,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .tl-actions .tl-edit { margin-left: 0; }
 .tl-edit svg { width: 13px; height: 13px; }
 .tl-edit:hover { background: var(--surface-3); color: var(--text); }
-.tl-edit.tl-del:hover { background: var(--danger-soft); color: var(--danger); }
+.tl-edit.tl-del:hover { background: var(--danger-soft); color: var(--danger-text); }
 .tl-bubble:hover .tl-edit, .tl-edit:focus-visible { opacity: 1; }
 @media (hover: none) { .tl-edit { opacity: .7; } }
 .tl-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
@@ -238,7 +238,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .tl-editor.empty textarea { box-shadow: inset 0 0 0 1px var(--danger); }
 .tl-editor-bar { display: flex; align-items: center; gap: 6px; }
 .tl-editor-hint { margin-right: auto; font-size: 11.5px; color: var(--text-3); }
-.tl-editor-hint.bad { color: var(--danger); }
+.tl-editor-hint.bad { color: var(--danger-text); }
 
 /* 发送中的评论：半透明、呼吸，作者旁边一个转圈；转正后（.settled）把透明度补回来，不重播入场动画 */
 .tl-item.sending .tl-bubble { opacity: .62; animation: tl-breathe 1.4s var(--ease-in-out) infinite; }
@@ -311,7 +311,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 }
 .p-item .p-ic { width: 26px; height: 26px; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); flex: none; }
 .p-item .p-ic svg { width: 14px; height: 14px; }
-.p-item .p-ic.col { background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--c); font-family: var(--f-mono); font-size: 10px; font-weight: 600; }
+.p-item .p-ic.col { background: color-mix(in srgb, var(--c) 14%, transparent); color: color-mix(in oklab, var(--c), var(--ink)); font-family: var(--f-mono); font-size: 11px; font-weight: 600; }
 .p-item .p-main { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-item .p-main code { font-family: var(--f-mono); font-size: .88em; padding: .05em .35em; border-radius: var(--r-xs); background: var(--surface-3); }
 .p-item .p-main mark { background: color-mix(in srgb, var(--brand) 22%, transparent); color: inherit; border-radius: var(--r-hair); padding: 0 1px; }
@@ -397,12 +397,12 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .creator[data-dest="inbox"] { --accent: var(--c-inbox); }
 .cr-badge {
   display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 12px 0 9px; border-radius: 999px;
-  font-size: 13px; font-weight: 600; color: var(--accent);
+  font-size: 13px; font-weight: 600; color: color-mix(in oklab, var(--accent), var(--ink));
   background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
   transition: color var(--dur-3), background-color var(--dur-3), box-shadow var(--dur-3);
 }
 .cr-badge svg { width: 14px; height: 14px; }
-.cr-draft { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 4px 0 10px; border-radius: 999px; font-size: 11.5px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); animation: pop-in var(--dur-3) var(--spring); }
+.cr-draft { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 4px 0 10px; border-radius: 999px; font-size: 11.5px; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); animation: pop-in var(--dur-3) var(--spring); }
 .cr-draft button { height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; color: var(--text-2); background: var(--surface); }
 .cr-draft button:hover { color: var(--text); }
 
@@ -415,12 +415,12 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 }
 .cr-title:hover:not([readonly]) { background: transparent; box-shadow: none; }
 .cr-title:focus { background: transparent; box-shadow: none; border-bottom-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
-.cr-title::placeholder { color: var(--text-4); }
-.cr-error { margin-top: 4px; font-size: 12px; color: var(--danger); animation: enter-up var(--dur-3) var(--ease-out); }
-.cr-keys { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 6px 0 16px; font-size: 11px; color: var(--text-4); }
-.cr-keys kbd { height: 17px; min-width: 17px; font-size: 10px; }
+.cr-title::placeholder { color: var(--text-3); }
+.cr-error { margin-top: 4px; font-size: 12px; color: var(--danger-text); animation: enter-up var(--dur-3) var(--ease-out); }
+.cr-keys { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 6px 0 16px; font-size: 11px; color: var(--text-3); }
+.cr-keys kbd { height: 17px; min-width: 17px; font-size: 11px; }
 .cr-label { flex: none; }
-.cr-label .opt { font-size: 11px; font-weight: 400; color: var(--text-4); letter-spacing: 0; text-transform: none; }
+.cr-label .opt { font-size: 11px; font-weight: 400; color: var(--text-3); letter-spacing: 0; text-transform: none; }
 .cr-label .act { display: flex; align-items: center; gap: 6px; }
 .cr-desc { flex: 1; min-height: 160px; display: flex; }
 .cr-desc .textarea, .cr-preview {
@@ -467,7 +467,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .cr-recent-row i { width: 7px; height: 7px; border-radius: var(--r-hair); background: var(--c); flex: none; }
 .cr-recent-row .mono { font-size: 11px; color: var(--text-3); }
 .cr-recent-row .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cr-recent-row em { font-style: normal; font-size: 10.5px; color: var(--text-4); }
+.cr-recent-row em { font-style: normal; font-size: 11px; color: var(--text-3); }
 .cr-recent-row.new { animation: tl-in var(--dur-4) var(--spring-soft) both; }
 
 .cr-foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -478,5 +478,5 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .cr-actions .btn { height: 40px; }
 .creator .cr-submit { --btn-bg: var(--accent); box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--accent) 75%, transparent); transition: background-color var(--dur-3), box-shadow var(--dur-3), opacity var(--dur-2), transform var(--dur-1); }
 .creator .cr-submit:hover { --btn-bg: color-mix(in srgb, var(--accent) 88%, #fff); }
-.cr-submit kbd { background: rgba(255, 255, 255, .2); color: #fff; box-shadow: none; }
+.cr-submit kbd { background: color-mix(in srgb, var(--brand-fg) 20%, transparent); color: var(--brand-fg); box-shadow: none; }
 .creator:not(.has-title) .cr-submit { opacity: .7; }

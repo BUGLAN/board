@@ -68,7 +68,7 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
     );
   if (actor.kind === 'system')
     return (
-      <span className={cx('avatar', className)} style={{ ['--c' as string]: 'var(--text-3)' }} title="系统">
+      <span className={cx('avatar', className)} style={{ ['--c' as string]: 'var(--text-3)', ['--avatar-fg' as string]: 'var(--surface)' }} title="系统">
         ⏱
       </span>
     );

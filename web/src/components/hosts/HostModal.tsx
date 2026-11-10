@@ -113,18 +113,18 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
         <OsGlyph os={h.os} small />
         <StatePill h={h} running={running.length} />
         <span className="d-nav">
-          <button className="icon-btn sm" type="button" data-tip="上一台  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
+          <button aria-label="上一台" className="icon-btn sm" type="button" data-tip="上一台  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
             <Icon name="chevUp" />
           </button>
           <span className="d-pos mono">
             {i + 1} / {n}
           </span>
-          <button className="icon-btn sm" type="button" data-tip="下一台  ↓ / J" disabled={i >= n - 1} onClick={() => step(1)}>
+          <button aria-label="下一台" className="icon-btn sm" type="button" data-tip="下一台  ↓ / J" disabled={i >= n - 1} onClick={() => step(1)}>
             <Icon name="chevDown" />
           </button>
         </span>
         <span className="spacer" />
-        <button className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
+        <button aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
           <Icon name="close" />
         </button>
       </div>
@@ -498,7 +498,7 @@ function AddHostBody({ close }: { close: () => void }) {
       <div className="d-head">
         <span className="hp-m-head">添加机器</span>
         <span className="spacer" />
-        <button className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
+        <button aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
           <Icon name="close" />
         </button>
       </div>

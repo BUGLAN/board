@@ -28,10 +28,10 @@
 .lb-lock { display: inline-grid; place-items: center; margin-right: -1px; opacity: .8; }
 .lb-lock svg { width: 10px; height: 10px; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
-.lb-x { margin: 0 -3px 0 1px; width: 14px; height: 14px; border-radius: var(--r-xs); display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
+.lb-x { margin: -5px -8px -5px -4px; width: 24px; height: 24px; border-radius: 999px; display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
 .lb-x:hover { opacity: 1; background: color-mix(in srgb, var(--lc) 25%, transparent); }
 .lb-add {
-  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border-radius: var(--r-sm);
   font-size: 11.5px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2);
   transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
 }
@@ -57,14 +57,14 @@
 .lb-pick { height: 24px; max-width: 100%; padding: 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
 .lb-pick:hover { background: color-mix(in srgb, var(--lc) 22%, transparent); }
 .lb-pick:active { transform: scale(.96); }
-.lb-pick em { font-style: normal; font-family: var(--f-mono); font-size: 10.5px; opacity: .6; margin-left: 2px; }
+.lb-pick em { font-style: normal; font-family: var(--f-mono); font-size: 11px; opacity: .6; margin-left: 2px; }
 .lb-pick.on { color: #fff; background: var(--lc); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--lc) 70%, transparent); }
 .lb-pick.on em { opacity: .85; }
 /* 删除：悬停胶囊时盖在右端的计数上，不占位、不改变排列 */
 .lb-item { position: relative; display: inline-flex; max-width: 100%; }
 .lb-del {
   --lc: #888;
-  position: absolute; right: 3px; top: 50%; width: 18px; height: 18px; margin-top: -9px; border-radius: var(--r-xs);
+  position: absolute; right: 0; top: 50%; width: 24px; height: 24px; margin-top: -12px; border-radius: 999px;
   display: grid; place-items: center; font-size: 14px; line-height: 1;
   color: color-mix(in srgb, var(--lc) 80%, var(--text));
   background: color-mix(in srgb, var(--lc) 22%, var(--surface));
@@ -74,7 +74,7 @@
 .lb-del.on { color: #fff; background: var(--lc); }
 .lb-item:hover .lb-del, .lb-del:focus-visible { opacity: 1; pointer-events: auto; transform: none; }
 .lb-item:hover .lb-pick em { opacity: 0; }
-.lb-del:hover { background: color-mix(in srgb, var(--danger) 22%, var(--surface)); color: var(--danger); }
+.lb-del:hover { background: color-mix(in srgb, var(--danger) 22%, var(--surface)); color: var(--danger-text); }
 @media (hover: none) { .lb-del { display: none; } }
 /* 失焦时只占一丝宽度，不让空输入框单独挤出一行；聚焦时至少 4em，最后一行放不下就换行 */
 .lb-input {
@@ -82,7 +82,7 @@
   border: 0; outline: none; background: transparent;
   font-size: 12px; color: var(--text); caret-color: var(--brand);
 }
-.lb-input::placeholder { color: var(--text-4); }
+.lb-input::placeholder { color: var(--text-3); }
 /* 不在编辑态时单击不到输入框：点击落在空白处，单击什么也不做 */
 .lb-field:not(.editing) .lb-input { pointer-events: none; }
 .lb-field.editing .lb-input { min-width: 4em; }
@@ -91,7 +91,7 @@
 
 /* 详情里的「复制为提示词」 */
 .d-prompt { height: 28px; color: var(--text-2); }
-.d-prompt:hover { color: var(--brand); }
+.d-prompt:hover { color: color-mix(in oklab, var(--brand), var(--ink)); }
 
 /* ---------------- 标签选择器 ---------------- */
 .lb-picker {
@@ -109,7 +109,7 @@
 .lbp-list { overflow-y: auto; padding: 4px; }
 .lbp-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: var(--r-sm); text-align: left; font-size: 12.5px; color: var(--text-2); }
 .lbp-row.active { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.lbp-row.create { color: var(--brand); }
+.lbp-row.create { color: color-mix(in oklab, var(--brand), var(--ink)); }
 .lbp-row.create svg { width: 14px; height: 14px; }
 .lbp-check { width: 16px; height: 16px; border-radius: var(--r-xs); display: grid; place-items: center; color: transparent; box-shadow: inset 0 0 0 1.5px var(--line-3); flex: none; transition: background-color var(--dur-1); }
 .lbp-check svg { width: 11px; height: 11px; }
@@ -157,7 +157,7 @@
 .lbm-count { font-size: 11.5px; color: var(--text-3); font-family: var(--f-mono); white-space: nowrap; text-align: right; }
 .lbm-del { opacity: 0; }
 .lbm-row:hover .lbm-del { opacity: 1; }
-.lbm-del:hover { color: var(--danger); }
+.lbm-del:hover { color: var(--danger-text); }
 .lbm-swatches { position: absolute; left: 0; top: calc(100% + 2px); z-index: 5; display: flex; gap: 6px; padding: 8px; border-radius: var(--r-md); background: var(--glass-strong); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3); animation: pop-in var(--dur-2) var(--spring); }
 .lbm-swatches .swatch { width: 20px; height: 20px; border-radius: var(--r-xs); }
 .lbm-new { position: relative; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }

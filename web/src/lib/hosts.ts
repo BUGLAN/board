@@ -48,7 +48,7 @@ export type HostState = 'full' | 'busy' | 'idle' | 'paused' | 'off';
 
 /** 状态胶囊：满载 / 在跑 / 空闲 / 暂停接单 / 离线 */
 export function hostState(h: HostInfo, running: number): { key: HostState; label: string; color: string } {
-  if (!h.online) return { key: 'off', label: '离线', color: 'var(--text-4)' };
+  if (!h.online) return { key: 'off', label: '离线', color: 'var(--text-3)' };
   if (h.paused) return { key: 'paused', label: '暂停接单', color: 'var(--warn)' };
   if (running >= h.max) return { key: 'full', label: '满载', color: 'var(--c-doing)' };
   if (running > 0) return { key: 'busy', label: '在跑', color: 'var(--c-done)' };

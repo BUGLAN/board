@@ -9,7 +9,7 @@ import { cardDispatch } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
+import { accel, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
 import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeCard, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
@@ -207,12 +207,12 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <span>{f.name(c.column)}</span>
         </span>
         <span className="d-nav">
-          <button className="icon-btn sm" type="button" data-tip="上一张  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
+          <button aria-label="上一张" className="icon-btn sm" type="button" data-tip="上一张  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
             <Icon name="chevUp" />
           </button>
           {/* 位置按整个状态算（含快照里省略的更早卡片）；更早的卡片本身不在列表里，不显示位置 */}
           <span className="d-pos mono">{i >= 0 ? `${i + 1 + skipped} / ${list.length + skipped}` : ''}</span>
-          <button className="icon-btn sm" type="button" data-tip="下一张  ↓ / J" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
+          <button aria-label="下一张" className="icon-btn sm" type="button" data-tip="下一张  ↓ / J" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
             <Icon name="chevDown" />
           </button>
         </span>
@@ -225,7 +225,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <Icon name="prompt" />
           复制为提示词
         </button>
-        <button className="icon-btn" type="button" data-act="close" data-tip="关闭  esc" data-tip-align="end" onClick={closeDetail}>
+        <button aria-label="关闭" className="icon-btn" type="button" data-act="close" data-tip="关闭  esc" data-tip-align="end" onClick={closeDetail}>
           <Icon name="close" />
         </button>
       </div>
@@ -259,7 +259,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                     }}
                   />
                 ))}
-              <button type="button" className="lb-add" data-label-picker disabled={saving} onClick={e => onLabels(e.currentTarget)}>
+              <button type="button" className="lb-add" aria-label="添加标签" data-label-picker disabled={saving} onClick={e => onLabels(e.currentTarget)}>
                 <Icon name="tag" />
                 {c.labels.length ? '' : '添加标签'}
               </button>
@@ -1083,7 +1083,7 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
   const saving = useData(s => !!s.saving[`${s.path}@${a.id}`]);
   const name =
     a.actor.kind === 'agent' ? (
-      <b className="agent-name" style={{ color: agentColor(a.actor.name) }}>
+      <b className="agent-name" style={{ color: agentInk(a.actor.name) }}>
         {a.actor.name}
       </b>
     ) : (
@@ -1104,7 +1104,7 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
           <div className="who">
             {name}
             {a.actor.kind === 'agent' && (
-              <span className="chip" style={{ height: 18, fontSize: 10.5 }}>
+              <span className="chip" style={{ height: 18, fontSize: 11 }}>
                 CLI
               </span>
             )}

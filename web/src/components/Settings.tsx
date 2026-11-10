@@ -404,7 +404,7 @@ function LocalHostCard() {
           {!st.loggedIn && <p className="set-p lh-warn">还没有服务端地址和令牌：先在上面「Agent 接入」新建令牌并写入配置文件，board host 才连得上。</p>}
           {!st.cli && <p className="set-p lh-warn">没找到桌面端自带的 board 命令行，重新安装桌面端试试。</p>}
           <Row label="让这台电脑接任务" hint={state}>
-            <button className={cx('toggle', st.enabled && 'on')} type="button" role="switch" aria-checked={st.enabled} disabled={busy || !st.cli} onClick={toggle}>
+            <button className={cx('toggle', st.enabled && 'on')} type="button" role="switch" aria-checked={st.enabled} aria-label="让这台电脑接任务" disabled={busy || !st.cli} onClick={toggle}>
               <i />
             </button>
           </Row>

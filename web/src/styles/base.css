@@ -98,6 +98,11 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .btn svg { width: 15px; height: 15px; margin-left: -2px; }
 .btn.sm svg { width: 14px; height: 14px; }
 .btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: var(--r-sm); }
+/* 触屏：按钮、分段切换至少 36px 高，手指点得准 */
+@media (pointer: coarse) {
+  .btn, .btn.sm { height: auto; min-height: 36px; }
+  .segmented button, .desc-tabs button { height: 36px; }
+}
 .btn.primary { --btn-bg: var(--invert); --btn-fg: var(--invert-text); --btn-line: transparent; }
 .btn.primary:hover { --btn-bg: color-mix(in srgb, var(--invert) 86%, var(--brand)); }
 .btn.brand { --btn-bg: var(--brand); --btn-fg: var(--brand-fg); --btn-line: transparent; box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--brand) 70%, transparent); }
@@ -159,7 +164,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 /* ---- kbd / chip / code ---- */
 kbd, .kbd {
   display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px;
-  border-radius: var(--r-xs); font-family: var(--f-mono); font-size: 10.5px; font-weight: 500; color: var(--text-3);
+  border-radius: var(--r-xs); font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--text-3);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), 0 1px 0 var(--line-2);
 }
 .chip {
@@ -170,7 +175,7 @@ kbd, .kbd {
 .code-chip {
   display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: var(--r-xs);
   font-family: var(--f-mono); font-size: 11px; font-weight: 500; letter-spacing: .02em;
-  color: var(--danger); background: var(--danger-soft);
+  color: var(--danger-text); background: var(--danger-soft);
 }
 .mono { font-family: var(--f-mono); }
 
@@ -179,12 +184,13 @@ kbd, .kbd {
   --c: var(--brand);
   position: relative; display: inline-grid; place-items: center; flex: none;
   width: 22px; height: 22px; border-radius: 50%;
-  font-family: var(--f-display); font-size: 11.5px; font-weight: 700; line-height: 1; color: #fff;
+  /* 身份色都偏亮：字母用深色（对比度 ≥ 6:1）；人和系统的底色是灰色，字母用面板色 */
+  font-family: var(--f-display); font-size: 11.5px; font-weight: 700; line-height: 1; color: var(--avatar-fg, #18181A);
   background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--c) 70%, #fff), var(--c) 55%, color-mix(in srgb, var(--c) 70%, #000));
   box-shadow: 0 0 0 2px var(--surface), 0 2px 6px -1px color-mix(in srgb, var(--c) 60%, transparent);
 }
 .avatar.lg { width: 38px; height: 38px; font-size: 18px; }
-.avatar.human { --c: var(--text-2); }
+.avatar.human { --c: var(--text-2); --avatar-fg: var(--surface); }
 /* 登录后的「人」是 GitHub 头像：图片填满圆形、按原比例裁切，不撑破各处的小尺寸头像 */
 .avatar.photo { overflow: hidden; }
 .avatar.photo img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }

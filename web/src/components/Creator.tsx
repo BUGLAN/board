@@ -248,7 +248,7 @@ export function Creator() {
             </span>
           )}
           <span className="spacer" />
-          <button className="icon-btn" type="button" data-tip="关闭（保留草稿）  esc" data-tip-align="end" onClick={close}>
+          <button aria-label="关闭（保留草稿）" className="icon-btn" type="button" data-tip="关闭（保留草稿）  esc" data-tip-align="end" onClick={close}>
             <Icon name="close" />
           </button>
         </div>
@@ -465,6 +465,7 @@ export function Creator() {
                   className={cx('toggle', keep && 'on')}
                   role="switch"
                   aria-checked={keep}
+                  aria-label="连续新建"
                   onClick={() => {
                     setKeep(!keep);
                     pref.set('creator.keep', !keep);
