@@ -134,6 +134,25 @@ fn ac23_24_labels() {
     assert!(r.json()["labels"].as_array().unwrap().is_empty());
 }
 
+/// 仅人可打的标签：board labels 能区分；agent 加、去被拒绝（USAGE），原因里说明只有人能打
+#[test]
+fn human_only_labels() {
+    let s = start();
+    s.run(ALPHA, &["new", "a"]);
+    s.create_label("bug");
+    s.create_label_as("人定", true);
+    let r = s.run(ALPHA, &["labels", "--json"]);
+    assert_eq!(r.json()[0]["human_only"], false);
+    assert_eq!(r.json()[1]["human_only"], true);
+    let r = s.run(ALPHA, &["labels"]);
+    assert!(r.out.contains("仅人可打") && r.out.contains("agent 可打"), "{}", r.out);
+    let r = s.run(ALPHA, &["label", "1", "+人定", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("只有人能打"));
+    let r = s.run(ALPHA, &["label", "1", "+bug", "--json"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+}
+
 /// 附件：上传成一条评论、show 列出、files 下载到本地
 #[test]
 fn attach_and_download_files() {

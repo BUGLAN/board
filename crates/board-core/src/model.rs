@@ -366,6 +366,9 @@ pub struct Label {
     pub color: String,
     /// 项目内使用这个标签的卡片数
     pub uses: i64,
+    /// 仅人可打：只有人能在界面上给卡片加、去；agent 加、去时被拒绝（USAGE）。旧数据默认 false（agent 可打）
+    #[serde(rename = "humanOnly", default)]
+    pub human_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

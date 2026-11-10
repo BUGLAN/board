@@ -7,6 +7,7 @@ import { agentColor, agentGlyph, cx, initial } from '../lib/util';
 import { useAuth } from '../store/auth';
 import { serverNow } from '../store/data';
 import { openImage } from '../store/ui';
+import { Icon } from './Icon';
 
 /** 当前时间（与服务端对齐），每 interval 毫秒刷新 */
 export function useNow(interval = 1000) {
@@ -67,9 +68,32 @@ export function Ring({ r, p, className }: { r: number; p: number; className?: st
   );
 }
 
-export function LabelChip({ label, onRemove, pending }: { label: Pick<Label, 'id' | 'name' | 'color'>; onRemove?: () => void; pending?: boolean }) {
+/** 仅人可打的标签在名称前带一把小锁 */
+export const LabelLock = ({ label }: { label: Pick<Label, 'humanOnly'> }) =>
+  label.humanOnly ? (
+    <span className="lb-lock" aria-label="仅人可打">
+      <Icon name="lock" sw={2} />
+    </span>
+  ) : null;
+
+export function LabelChip({
+  label,
+  onRemove,
+  pending,
+}: {
+  label: Pick<Label, 'id' | 'name' | 'color' | 'humanOnly'>;
+  onRemove?: () => void;
+  pending?: boolean;
+}) {
   return (
-    <span className={pending ? 'lb pending' : 'lb'} aria-busy={pending || undefined} title={pending ? '正在加上…' : undefined} style={{ ['--lc' as string]: label.color }} data-label={label.id}>
+    <span
+      className={pending ? 'lb pending' : 'lb'}
+      aria-busy={pending || undefined}
+      title={pending ? '正在加上…' : label.humanOnly ? '仅人可打：agent 不能加、去这个标签' : undefined}
+      style={{ ['--lc' as string]: label.color }}
+      data-label={label.id}
+    >
+      <LabelLock label={label} />
       {label.name}
       {onRemove && (
         <button

@@ -495,9 +495,9 @@ fn ac19_21_inbox() {
 #[test]
 fn ac22_25_labels() {
     let mut s = store();
-    let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None)).unwrap();
+    let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None, false)).unwrap();
     assert_eq!(
-        s.write(T0, Origin::ui(None), |w| w.create_label("default", "BUG", None)).unwrap_err().code,
+        s.write(T0, Origin::ui(None), |w| w.create_label("default", "BUG", None, false)).unwrap_err().code,
         ErrorCode::Usage,
         "名称不区分大小写"
     );
@@ -512,6 +512,64 @@ fn ac22_25_labels() {
     // 删除标签 → 从卡片上移除
     s.write(T0, Origin::ui(None), |w| w.delete_label("default", bug.id)).unwrap();
     assert!(card(&s, B, 1).card.labels.is_empty());
+}
+
+/// 仅人可打的标签：agent 加、去、新建时带上都被拒绝（USAGE）；人不受限，可以改标签类型
+#[test]
+fn human_only_labels() {
+    let mut s = store();
+    let mine = ui(&mut s, |w| w.create_label("default", "人定", None, true)).unwrap();
+    assert!(mine.human_only);
+    let any = ui(&mut s, |w| w.create_label("default", "通用", None, false)).unwrap();
+    exec(&mut s, B, &human(), T0, new("a")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+
+    // agent 加：拒绝，原因里写明标签名
+    let e = exec(&mut s, B, &beta(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("人定") && e.message.contains("只有人能打"), "{}", e.message);
+    // agent 可打的标签照常
+    exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![any.id], remove: vec![] }).unwrap();
+    // agent 新建时带上：拒绝
+    let e = exec(&mut s, B, &beta(), T0, Cmd::New { title: "b".into(), body: None, column: None, top: false, labels: vec![mine.id] })
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+
+    // 人：任意状态、任意持有者的卡片都能加、去
+    let c = exec(&mut s, B, &human(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] }).unwrap();
+    assert_eq!(c.card.holder.as_deref(), Some("alpha"));
+    assert!(c.card.labels.contains(&mine.id));
+    // agent 去：同样拒绝，卡片上的标签不变
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![], remove: vec![mine.id] })), ErrorCode::Usage);
+    assert!(card(&s, B, 1).card.labels.contains(&mine.id));
+    exec(&mut s, B, &human(), T0, Cmd::Label { id: 1, add: vec![], remove: vec![mine.id] }).unwrap();
+    assert!(!card(&s, B, 1).card.labels.contains(&mine.id));
+
+    // 改类型：改成 agent 可打后 agent 就能打
+    ui(&mut s, |w| w.update_label("default", mine.id, None, None, Some(false))).unwrap();
+    let ls = s.read(|r| r.labels("default")).unwrap();
+    assert!(!ls.iter().find(|l| l.id == mine.id).unwrap().human_only);
+    exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] }).unwrap();
+}
+
+/// 旧数据库的标签没有类型列：迁移后都是 agent 可打
+#[test]
+fn old_labels_default_to_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        ui(&mut s, |w| w.create_label("default", "旧", None, true)).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("ALTER TABLE labels DROP COLUMN human_only").unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let ls = s.read(|r| r.labels("default")).unwrap();
+    assert_eq!(ls.len(), 1);
+    assert!(!ls[0].human_only);
 }
 
 #[test]
@@ -1070,9 +1128,9 @@ fn label_names(s: &Store, project: &str) -> Vec<String> {
 #[test]
 fn labels_reorder_and_new_labels_go_last() {
     let mut s = store();
-    let a = ui(&mut s, |w| w.create_label("default", "甲", None)).unwrap();
-    let b = ui(&mut s, |w| w.create_label("default", "乙", None)).unwrap();
-    let c = ui(&mut s, |w| w.create_label("default", "丙", None)).unwrap();
+    let a = ui(&mut s, |w| w.create_label("default", "甲", None, false)).unwrap();
+    let b = ui(&mut s, |w| w.create_label("default", "乙", None, false)).unwrap();
+    let c = ui(&mut s, |w| w.create_label("default", "丙", None, false)).unwrap();
     assert_eq!(label_names(&s, "default"), ["甲", "乙", "丙"]);
 
     // 只给出部分顺序：没提到的按原顺序补在后面
@@ -1080,7 +1138,7 @@ fn labels_reorder_and_new_labels_go_last() {
     assert_eq!(label_names(&s, "default"), ["丙", "甲", "乙"]);
 
     // 新建标签排在最后，不会插到中间
-    let d = ui(&mut s, |w| w.create_label("default", "丁", None)).unwrap();
+    let d = ui(&mut s, |w| w.create_label("default", "丁", None, false)).unwrap();
     assert_eq!(label_names(&s, "default"), ["丙", "甲", "乙", "丁"]);
 
     // 全部重排：顺序以传入的 ids 为准
@@ -1094,8 +1152,8 @@ fn labels_reorder_and_new_labels_go_last() {
 #[test]
 fn labels_reorder_rejects_illegal_ids_without_changing_order() {
     let mut s = store();
-    let a = ui(&mut s, |w| w.create_label("default", "甲", None)).unwrap();
-    let b = ui(&mut s, |w| w.create_label("default", "乙", None)).unwrap();
+    let a = ui(&mut s, |w| w.create_label("default", "甲", None, false)).unwrap();
+    let b = ui(&mut s, |w| w.create_label("default", "乙", None, false)).unwrap();
     // 另一个项目里的标签
     let other = ui(&mut s, |w| {
         w.create_project(
@@ -1106,7 +1164,7 @@ fn labels_reorder_rejects_illegal_ids_without_changing_order() {
             None,
             NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None },
         )?;
-        w.create_label("b", "别处", None)
+        w.create_label("b", "别处", None, false)
     })
     .unwrap();
     assert_eq!(label_names(&s, "default"), ["甲", "乙"]);

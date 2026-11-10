@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS labels (
   project TEXT NOT NULL REFERENCES projects(key) ON DELETE CASCADE,
   name    TEXT NOT NULL,
   color   TEXT NOT NULL,
-  sort    INTEGER NOT NULL DEFAULT 0
+  sort    INTEGER NOT NULL DEFAULT 0,
+  -- 1 = 仅人可打：只有人能在界面上给卡片加、去这个标签；0 = agent 可打（人和 agent 都能打）
+  human_only INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS cards (
@@ -274,6 +276,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'view'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_view {
             conn.execute_batch("ALTER TABLE statuses ADD COLUMN view TEXT")?;
+        }
+        // 旧数据库的标签没有类型：都算 agent 可打
+        let has_human_only: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('labels') WHERE name = 'human_only'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_human_only {
+            conn.execute_batch("ALTER TABLE labels ADD COLUMN human_only INTEGER NOT NULL DEFAULT 0")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -630,11 +638,13 @@ fn resolve(conn: &Connection, raw: &str) -> Result<BoardRef> {
 
 fn labels_of(conn: &Connection, project: &str) -> Result<Vec<Label>> {
     let mut st = conn.prepare(
-        "SELECT l.id, l.name, l.color, (SELECT COUNT(*) FROM card_labels cl WHERE cl.label = l.id)
+        "SELECT l.id, l.name, l.color, (SELECT COUNT(*) FROM card_labels cl WHERE cl.label = l.id), l.human_only
          FROM labels l WHERE l.project = ?1 ORDER BY l.sort, l.id",
     )?;
     let out = st
-        .query_map([project], |r| Ok(Label { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, uses: r.get(3)? }))?
+        .query_map([project], |r| {
+            Ok(Label { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, uses: r.get(3)?, human_only: r.get(4)? })
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(out)
 }
@@ -1016,7 +1026,7 @@ impl<'a> W<'a> {
         Ok(names.iter().any(|(id, n)| Some(*id) != except && n.to_lowercase() == lower))
     }
 
-    pub fn create_label(&mut self, project: &str, name: &str, color: Option<&str>) -> Result<Label> {
+    pub fn create_label(&mut self, project: &str, name: &str, color: Option<&str>, human_only: bool) -> Result<Label> {
         self.project_exists(project)?;
         let name: String = name.trim().chars().take(24).collect();
         if name.is_empty() {
@@ -1035,14 +1045,21 @@ impl<'a> W<'a> {
         )?;
         let color = Self::check_color(color, &LABEL_COLORS, n as usize)?;
         self.tx.execute(
-            "INSERT INTO labels (project, name, color, sort) VALUES (?1, ?2, ?3, ?4)",
-            params![project, name, color, max_sort.unwrap_or(-1) + 1],
+            "INSERT INTO labels (project, name, color, sort, human_only) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![project, name, color, max_sort.unwrap_or(-1) + 1, human_only],
         )?;
         self.changed = true;
-        Ok(Label { id: self.tx.last_insert_rowid(), name, color, uses: 0 })
+        Ok(Label { id: self.tx.last_insert_rowid(), name, color, uses: 0, human_only })
     }
 
-    pub fn update_label(&mut self, project: &str, id: i64, name: Option<&str>, color: Option<&str>) -> Result<()> {
+    pub fn update_label(
+        &mut self,
+        project: &str,
+        id: i64,
+        name: Option<&str>,
+        color: Option<&str>,
+        human_only: Option<bool>,
+    ) -> Result<()> {
         self.label_exists(project, id)?;
         if let Some(n) = name {
             let n: String = n.trim().chars().take(24).collect();
@@ -1060,6 +1077,9 @@ impl<'a> W<'a> {
         if let Some(c) = color {
             let c = Self::check_color(Some(c), &LABEL_COLORS, 0)?;
             self.tx.execute("UPDATE labels SET color = ?1 WHERE id = ?2", params![c, id])?;
+        }
+        if let Some(h) = human_only {
+            self.tx.execute("UPDATE labels SET human_only = ?1 WHERE id = ?2", params![h, id])?;
         }
         self.changed = true;
         Ok(())

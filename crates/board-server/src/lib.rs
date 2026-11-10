@@ -594,6 +594,9 @@ struct PatchBody {
     color: Option<String>,
     #[serde(default)]
     project: Option<String>,
+    /// 标签：仅人可打
+    #[serde(default, rename = "humanOnly")]
+    human_only: Option<bool>,
 }
 
 async fn update_project(State(s): State<AppState>, h: HeaderMap, Path(key): Path<String>, Json(v): Json<Value>) -> ApiResult<Value> {
@@ -642,14 +645,14 @@ async fn create_label(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Val
     let p: PatchBody = parse(v)?;
     let project = p.project.ok_or_else(|| BoardError::usage("缺少 project"))?;
     let name = p.name.unwrap_or_default();
-    let l = write(&s, &h, move |w| w.create_label(&project, &name, p.color.as_deref())).await?;
+    let l = write(&s, &h, move |w| w.create_label(&project, &name, p.color.as_deref(), p.human_only.unwrap_or(false))).await?;
     Ok(Json(l))
 }
 
 async fn update_label(State(s): State<AppState>, h: HeaderMap, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
     let project = p.project.ok_or_else(|| BoardError::usage("缺少 project"))?;
-    write(&s, &h, move |w| w.update_label(&project, id, p.name.as_deref(), p.color.as_deref())).await?;
+    write(&s, &h, move |w| w.update_label(&project, id, p.name.as_deref(), p.color.as_deref(), p.human_only)).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

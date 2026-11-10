@@ -491,6 +491,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     add.push(find_label(o.strip_prefix('+').unwrap_or(o))?);
                 }
             }
+            // 仅人可打的标签只有人能在界面上加、去；服务端同样会拒绝，这里先拦下，省一次请求
+            if let Some(l) = labels.iter().find(|l| l.human_only && (add.contains(&l.id) || remove.contains(&l.id))) {
+                return Err(BoardError::usage(format!("标签「{}」只有人能打（仅人可打），agent 不能加、去", l.name)));
+            }
             let d = exec(Cmd::Label { id, add, remove })?;
             if json {
                 Output::Json(fmt.full(&d))
@@ -573,7 +577,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         "labels" => {
             if json {
                 Output::Json(Value::Array(
-                    labels.iter().map(|l| json!({ "name": l.name, "color": l.color, "cards": l.uses })).collect(),
+                    labels
+                        .iter()
+                        .map(|l| json!({ "name": l.name, "color": l.color, "cards": l.uses, "human_only": l.human_only }))
+                        .collect(),
                 ))
             } else if labels.is_empty() {
                 Output::Text(format!("{}\n", p.dim("（这个项目还没有标签，在界面上新建）")))
@@ -582,7 +589,15 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 Output::Text(
                     labels
                         .iter()
-                        .map(|l| format!("{}{}\n", p.magenta(&pad(&format!("#{}", l.name), w)), p.dim(&format!("{} 张卡片", l.uses))))
+                        .map(|l| {
+                            let kind = if l.human_only { "仅人可打" } else { "agent 可打" };
+                            format!(
+                                "{}{}{}\n",
+                                p.magenta(&pad(&format!("#{}", l.name), w)),
+                                pad(kind, 12),
+                                p.dim(&format!("{} 张卡片", l.uses))
+                            )
+                        })
                         .collect(),
                 )
             }
@@ -935,8 +950,8 @@ fn help(p: &Paint) -> String {
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("comment", "<ID> \"<内容>\"", "追加评论"),
-        ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）"),
-        ("labels", "", "列出项目的标签，以及每个标签被多少张卡片使用"),
+        ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
+        ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打），以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
         ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),

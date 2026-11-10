@@ -24,6 +24,9 @@
 @media (prefers-reduced-motion: reduce) { .lb.pending { animation: none; } .lb.pending::after { display: none; } }
 :root[data-motion="reduced"] .lb.pending { animation: none; }
 :root[data-motion="reduced"] .lb.pending::after { display: none; }
+/* 仅人可打：名称前一把小锁 */
+.lb-lock { display: inline-grid; place-items: center; margin-right: -1px; opacity: .8; }
+.lb-lock svg { width: 10px; height: 10px; }
 .lb.more { --lc: var(--text-3); padding: 0 6px; }
 .lb-x { margin: 0 -3px 0 1px; width: 14px; height: 14px; border-radius: var(--r-xs); display: grid; place-items: center; font-size: 13px; line-height: 1; color: inherit; opacity: .55; transition: opacity var(--dur-1), background-color var(--dur-1); }
 .lb-x:hover { opacity: 1; background: color-mix(in srgb, var(--lc) 25%, transparent); }
@@ -126,7 +129,7 @@
 .lbm-p { margin: 6px 0 14px; font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
 .lbm-p code { font-family: var(--f-mono); font-size: .92em; padding: 0 .35em; border-radius: var(--r-xs); background: var(--surface-3); }
 .lbm-list { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin: 0 -4px; padding: 0 4px; }
-.lbm-row { position: relative; display: grid; grid-template-columns: auto 1fr auto auto auto; align-items: center; gap: 10px; padding: 6px 6px 6px 8px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
+.lbm-row { position: relative; display: grid; grid-template-columns: auto 1fr auto auto auto auto; align-items: center; gap: 10px; padding: 6px 6px 6px 8px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
 .lbm-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .lbm-row.new { animation: tl-in var(--dur-4) var(--spring-soft); }
 .lbm-color { width: 22px; height: 22px; border-radius: var(--r-xs); background: var(--lc, #888); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2), 0 2px 6px -2px var(--lc); transition: transform var(--dur-2) var(--spring); flex: none; }
@@ -134,6 +137,16 @@
 .lbm-name { min-width: 0; height: 30px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; font-size: 13.5px; box-shadow: inset 0 0 0 1px transparent; transition: box-shadow var(--dur-1), background-color var(--dur-1); }
 .lbm-name:hover { box-shadow: inset 0 0 0 1px var(--line-2); }
 .lbm-name:focus { background: var(--surface); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent), 0 0 0 3px var(--brand-soft); }
+/* 标签类型开关：agent 可打（淡）⇄ 仅人可打（带锁、实色） */
+.lbm-kind {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--r-sm); white-space: nowrap;
+  font-size: 11.5px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2);
+  transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
+}
+.lbm-kind svg { width: 12px; height: 12px; flex: none; }
+.lbm-kind:hover { color: var(--text); background: var(--surface-3); }
+.lbm-kind.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3); }
+.lbm-new .lbm-kind { height: 34px; }
 .lbm-count { font-size: 11.5px; color: var(--text-3); font-family: var(--f-mono); white-space: nowrap; }
 .lbm-del { opacity: 0; }
 .lbm-row:hover .lbm-del { opacity: 1; }
@@ -150,7 +163,7 @@
 @media (max-width: 760px) {
   .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
   .d-prompt svg { margin: 0; }
-  .lbm-row { grid-template-columns: auto 1fr auto auto; }
+  .lbm-row { grid-template-columns: auto 1fr auto auto auto; }
   .lbm-preview { display: none; }
 }
 

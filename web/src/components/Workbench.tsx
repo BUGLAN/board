@@ -13,7 +13,7 @@ import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
 import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
-import { Avatar, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
+import { Avatar, LabelLock, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, Veto } from './BoardView';
 import { CardView } from './Card';
 import { HostsSide } from './Hosts';
@@ -267,6 +267,7 @@ function LabelBlock({ project, labels, used }: { project: string; labels: Label[
                 if (!labelDragJustEnded()) toggleLabelSel(l.id);
               }}
             >
+              <LabelLock label={l} />
               {l.name}
               <em>{used[l.id] || 0}</em>
             </button>

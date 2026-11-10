@@ -50,6 +50,8 @@ export interface Label {
   name: string;
   color: string;
   uses: number;
+  /** 仅人可打：只有人能在界面上给卡片加、去；agent 加、去时被拒绝。旧服务端没有这个字段，按 agent 可打 */
+  humanOnly?: boolean;
 }
 
 export interface BoardInfo {

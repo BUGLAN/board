@@ -101,8 +101,14 @@ impl Server {
     }
     /// 直接在服务端数据库里新建标签（标签只能在界面上新建）
     pub fn create_label(&self, name: &str) {
+        self.create_label_as(name, false);
+    }
+    /// 同上，human_only 为 true 时是仅人可打的标签
+    pub fn create_label_as(&self, name: &str, human_only: bool) {
         let mut store = board_core::Store::open(&self.db).unwrap();
-        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", name, None).map(|_| ())).unwrap();
+        store
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", name, None, human_only).map(|_| ()))
+            .unwrap();
     }
 }
 

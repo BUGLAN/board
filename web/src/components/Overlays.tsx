@@ -914,6 +914,22 @@ export function LabelPicker() {
 
 /* ============================ 标签管理 ============================ */
 
+/** 标签类型开关：agent 可打 ⇄ 仅人可打 */
+function KindToggle({ human, onChange }: { human: boolean; onChange: (human: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      className={cx('lbm-kind', human && 'on')}
+      aria-pressed={human}
+      title={human ? '仅人可打：只有人能在界面上加、去；点一下改成 agent 可打' : 'agent 可打：人和 agent 都能打；点一下改成仅人可打'}
+      onClick={() => onChange(!human)}
+    >
+      <Icon name={human ? 'lock' : 'unlock'} />
+      {human ? '仅人可打' : 'agent 可打'}
+    </button>
+  );
+}
+
 export function LabelManager() {
   const pk = useUI(s => s.labelsOf);
   const { mounted, on } = usePresence(!!pk, 220);
@@ -928,6 +944,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
   const [name, setName] = useState('');
   const [swatch, setSwatch] = useState<number | 'new' | null>(null);
   const [newColor, setNewColor] = useState<string | null>(null);
+  const [newHuman, setNewHuman] = useState(false);
   const [names, setNames] = useState<Record<number, string>>({});
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -981,7 +998,8 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
           </button>
         </div>
         <p className="lbm-p">
-          标签属于项目，项目下的所有白板共用。改名或改色会立即生效；删除会从所有卡片上移除。agent 用 <code>board label &lt;ID&gt; +名称</code> 打标签。
+          标签属于项目，项目下的所有白板共用。改名或改色会立即生效；删除会从所有卡片上移除。agent 用 <code>board label &lt;ID&gt; +名称</code> 打标签；
+          <b>仅人可打</b>的标签带小锁，只有人能在界面上加、去，agent 打会被拒绝。
         </p>
         <div className="lbm-list" ref={list}>
           {labels.length === 0 && <div className="lbp-empty">这个项目还没有标签</div>}
@@ -1015,6 +1033,10 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
               <span className="lbm-preview">
                 <LabelChip label={{ ...l, name: names[l.id] ?? l.name }} />
               </span>
+              <KindToggle
+                human={!!l.humanOnly}
+                onChange={h => run(editLabelPatch(pk, l.id, { humanOnly: h }), () => api.updateLabel(pk, l.id, { humanOnly: h }))}
+              />
               <span className="lbm-count">{l.uses} 张卡片</span>
               <button
                 type="button"
@@ -1059,11 +1081,12 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
             }
             if (creating) return;
             setCreating(true);
-            const ok = await run(null, () => api.createLabel(pk, name, nc));
+            const ok = await run(null, () => api.createLabel(pk, name, nc, newHuman));
             setCreating(false);
             if (ok) {
               setName('');
               setNewColor(null);
+              setNewHuman(false);
               requestAnimationFrame(() => {
                 const el = list.current;
                 if (!el) return;
@@ -1082,6 +1105,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
             onClick={() => setSwatch(swatch === 'new' ? null : 'new')}
           />
           <input ref={input} className="input" placeholder="新标签名称" maxLength={24} autoComplete="off" spellCheck={false} value={name} onChange={e => setName(e.target.value)} />
+          <KindToggle human={newHuman} onChange={setNewHuman} />
           <button type="submit" className={cx('btn sm primary', creating && 'is-busy')} disabled={creating} aria-busy={creating || undefined}>
             <Icon name="plus" />
             新建

@@ -333,7 +333,7 @@ board heartbeat start                     # 会话开始：启动后台心跳（
 board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
 board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错
 board move <ID> <状态标识或名称> [--top]
-board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些
+board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些；「仅人可打」的标签不能加、去
 board labels
 board boards                              # 列出所有白板
 board files <ID> [--out <目录>]           # 下载卡片的附件到本地，列出路径

@@ -82,7 +82,7 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         let lb = |w: &mut W, p: &str, list: &[(&str, &str)]| -> Result<Vec<(String, i64)>> {
             let mut out = vec![];
             for (name, color) in list {
-                let l = w.create_label(p, name, Some(color))?;
+                let l = w.create_label(p, name, Some(color), false)?;
                 out.push((name.to_string(), l.id));
             }
             Ok(out)
