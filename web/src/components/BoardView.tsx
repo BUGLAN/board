@@ -518,7 +518,7 @@ const GAP = 12;
 type Pos = { x: number; w: number; top: number };
 
 /** 按期望位置从上到下依次放：每块落在它覆盖的栏里已有块的最下沿，块之间不留空隙 */
-function pack(keys: string[], tiles: Record<string, Tile>, h: Record<string, number>): Record<string, Pos> {
+export function pack(keys: string[], tiles: Record<string, Tile>, h: Record<string, number>): Record<string, Pos> {
   const order = [...keys].sort((a, b) => tiles[a].y - tiles[b].y || tiles[a].x - tiles[b].x);
   const out: Record<string, Pos> = {};
   for (const k of order) {
@@ -532,29 +532,16 @@ function pack(keys: string[], tiles: Record<string, Tile>, h: Record<string, num
   return out;
 }
 
-/** 没有保存布局的块：一个都没保存时前 4 个并排各占 3 栏；其余放在当前最矮的那一栏下面 */
-function withDefaults(keys: string[], saved: Record<string, Tile>, h: Record<string, number>) {
+/**
+ * 没有保存布局的块：位置只由它在工作流里的顺序决定，不看块的高度（卡片数一变就换栏，人记不住位置）。
+ * 第 i 个状态放在第 i mod 4 栏（每栏 3 格）；一个都没保存时前 4 个并排在最上面，其余按顺序接在下面，上下位置由 pack 贴紧。
+ */
+export function withDefaults(keys: string[], saved: Record<string, Tile>) {
   const tiles: Record<string, Tile> = {};
   const none = !keys.some(q => saved[q]);
   keys.forEach((k, i) => {
-    if (saved[k]) tiles[k] = saved[k];
-    else if (none && i < 4) tiles[k] = { x: i * 3, w: 3, y: 0 };
+    tiles[k] = saved[k] ?? { x: (i % 4) * 3, w: 3, y: none && i < 4 ? 0 : 1e6 + i };
   });
-  for (const [i, k] of keys.entries()) {
-    if (tiles[k]) continue;
-    const placed = Object.keys(tiles);
-    const base = pack(placed, tiles, h);
-    let best = 0;
-    let bestH = Infinity;
-    for (let x = 0; x <= COLS - 3; x += 3) {
-      const bottom = Math.max(0, ...placed.filter(q => base[q].x < x + 3 && x < base[q].x + base[q].w).map(q => base[q].top + (h[q] ?? 0)));
-      if (bottom < bestH) {
-        bestH = bottom;
-        best = x;
-      }
-    }
-    tiles[k] = { x: best, w: 3, y: 1e6 + i };
-  }
   return tiles;
 }
 
@@ -587,7 +574,7 @@ function Magnet({
   const keys = statuses.map(s => s.key);
   const saved = useMemo(() => Object.fromEntries(statuses.filter(s => s.layout).map(s => [s.key, s.layout!])), [statuses]);
 
-  const tiles = withDefaults(keys, live ?? saved, heights);
+  const tiles = withDefaults(keys, live ?? saved);
   const col = (width + GAP) / COLS;
   const pos = pack(keys, tiles, heights);
   const bottom = Math.max(0, ...keys.map(k => (pos[k]?.top ?? 0) + (heights[k] ?? 0)));

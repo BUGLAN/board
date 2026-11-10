@@ -1,6 +1,6 @@
 /* 不碰 DOM 的纯函数：拖拽落点（placeAt）、拖拽预览（previewCols）、工作流条排版（mainPath / layoutFlow） */
 import { describe, expect, it } from 'vitest';
-import { previewCols } from '../components/BoardView';
+import { pack, previewCols, withDefaults } from '../components/BoardView';
 import type { DragUI } from '../store/ui';
 import { FLOW, status } from '../../test/fixtures';
 import { placeAt } from './drag';
@@ -95,5 +95,47 @@ describe('工作流条排版', () => {
     const g = layoutFlow(list, {}, 40);
     expect(g.height).toBe(CH);
     expect(Object.values(g.boxes).every(b => b.row === 0)).toBe(true);
+  });
+});
+
+describe('withDefaults（没保存过布局的状态块）', () => {
+  const keys = ['todo', 'doing', 'review', 'done', 'rework', 'check'];
+  const cols = (h: Record<string, number>) => {
+    const tiles = withDefaults(keys, {});
+    const pos = pack(keys, tiles, h);
+    return Object.fromEntries(keys.map(k => [k, pos[k].x]));
+  };
+
+  it('第 i 个放第 i mod 4 栏，前 4 个并排在最上面', () => {
+    const tiles = withDefaults(keys, {});
+    expect(keys.map(k => tiles[k].x)).toEqual([0, 3, 6, 9, 0, 3]);
+    const pos = pack(keys, tiles, {});
+    expect(keys.slice(0, 4).map(k => pos[k].top)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('块的高度不同（卡片数不同），各块所在的栏不变', () => {
+    const a = cols({ todo: 300, doing: 80, review: 120, done: 400, rework: 80, check: 80 });
+    const b = cols({ todo: 300, doing: 160, review: 120, done: 400, rework: 80, check: 80 });
+    const c = cols({ todo: 80, doing: 600, review: 80, done: 80, rework: 300, check: 80 });
+    expect(b).toEqual(a);
+    expect(c).toEqual(a);
+  });
+
+  it('上下位置照旧贴紧上面的块', () => {
+    const pos = pack(keys, withDefaults(keys, {}), { todo: 300, doing: 80 });
+    expect(pos.rework.top).toBe(300 + 12);
+    expect(pos.check.top).toBe(80 + 12);
+  });
+
+  it('已保存的位置原样保留，新增的状态按顺序取栏，与高度无关', () => {
+    const saved = { todo: { x: 0, w: 6, y: 0 }, doing: { x: 6, w: 6, y: 0 } };
+    const k3 = ['todo', 'doing', 'review'];
+    const t = withDefaults(k3, saved);
+    expect(t.todo).toEqual(saved.todo);
+    expect(t.doing).toEqual(saved.doing);
+    expect(t.review.x).toBe(6);
+    const p1 = pack(k3, t, { todo: 100, doing: 400 });
+    const p2 = pack(k3, t, { todo: 400, doing: 100 });
+    expect(p1.review.x).toBe(p2.review.x);
   });
 });
