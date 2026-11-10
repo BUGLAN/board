@@ -559,11 +559,15 @@ function Magnet({
   const pos = pack(keys, tiles, heights);
   const bottom = Math.max(0, ...keys.map(k => (pos[k]?.top ?? 0) + (heights[k] ?? 0)));
 
+  // 切到别的 Tab 时白板页 display: none，量出来是 0：不记，切回来时布局还是原样，不会先挤成一团再展开（抖动）
   useLayoutEffect(() => {
     const el = ref.current!;
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    const measure = () => {
+      if (el.clientWidth) setWidth(el.clientWidth);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setWidth(el.clientWidth);
+    measure();
     return () => ro.disconnect();
   }, []);
   useLayoutEffect(() => {
@@ -571,8 +575,11 @@ function Magnet({
       setHeights(h => {
         let n = h;
         for (const e of es) {
-          const k = (e.target as HTMLElement).dataset.tile!;
-          const v = (e.target as HTMLElement).offsetHeight;
+          const el = e.target as HTMLElement;
+          const k = el.dataset.tile!;
+          const v = el.offsetHeight;
+          // 隐藏时（offsetParent 为空）量出来是 0：不记
+          if (!v && !el.offsetParent) continue;
           if (n[k] !== v) n = { ...n, [k]: v };
         }
         return n;

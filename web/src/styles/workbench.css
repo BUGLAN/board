@@ -210,6 +210,12 @@
 .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .page[hidden] { display: none; }
 .page.page-in { animation: page-in var(--dur-4) var(--ease-out); }
+/* 页面隐藏（display: none）再显示时，里面的 CSS 入场动画会从头再播一遍，叠在整页淡入上就是抖动：
+   淡入期间让它们直接到位（时长 0；改时长不会重新开始，淡入结束后也不会补播） */
+.page.page-in .col.is-empty .col-empty { animation-duration: 0s; }
+/* 减弱动态效果：不播整页淡入（1ms 的动画也要等一两帧才起播，会先闪一下透明） */
+@media (prefers-reduced-motion: reduce) { .page.page-in { animation: none; } }
+:root[data-motion="reduced"] .page.page-in { animation: none; }
 @keyframes page-in { from { opacity: 0; transform: translateY(10px); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
 
 .page-head { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 20px; flex: none; }

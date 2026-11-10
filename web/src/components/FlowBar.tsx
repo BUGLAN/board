@@ -67,8 +67,9 @@ export function FlowBar({ counts, path, f }: { counts: Record<string, number>; p
 
   const g = useMemo(() => layoutFlow(f.list, widths, addW), [f.list, widths, addW]);
 
-  // 量出每个状态胶囊的宽度，再排版
+  // 量出每个状态胶囊的宽度，再排版。白板页被隐藏（切到别的 Tab）时量出来都是 0：不记，切回来不会先挤成一团再展开
   useLayoutEffect(() => {
+    if (!canvas.current?.offsetParent) return;
     const next: Record<string, number> = {};
     let changed = false;
     for (const s of f.list) {

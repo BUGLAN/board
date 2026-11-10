@@ -8,6 +8,8 @@
 import { useLayoutEffect, type RefObject } from 'react';
 
 function apply(list: HTMLElement) {
+  // 所在页面被隐藏（切到别的 Tab，display: none）时量不到高度：保持原样，切回来不用重排、不跳
+  if (!list.offsetParent) return;
   const gap = parseFloat(getComputedStyle(list).columnGap) || 0;
   const items = [...list.children] as HTMLElement[];
   // 先全部读，再全部写，只触发一次重排

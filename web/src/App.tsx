@@ -266,11 +266,11 @@ function luminance(hex: string) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-/** 主内容区的一页：切换时淡入 */
+/** 主内容区的一页：切换时淡入。在绘制前加上动画（useLayoutEffect），免得先画出一帧完整的页面再从透明开始淡入（闪一下） */
 function Page({ show, children }: { show: boolean; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const was = useRef(show);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current?.firstElementChild as HTMLElement | null;
     if (show && !was.current && el) {
       el.classList.remove('page-in');
@@ -280,7 +280,14 @@ function Page({ show, children }: { show: boolean; children: React.ReactNode }) 
     was.current = show;
   }, [show]);
   return (
-    <div ref={ref} style={{ display: show ? 'contents' : 'none' }}>
+    <div
+      ref={ref}
+      style={{ display: show ? 'contents' : 'none' }}
+      onAnimationEnd={e => {
+        // 淡入播完就拿掉，页面里的入场动画（例如空状态）恢复正常
+        if (e.animationName === 'page-in') (e.target as HTMLElement).classList.remove('page-in');
+      }}
+    >
       {children}
     </div>
   );
