@@ -577,7 +577,8 @@ export function SettingsPage() {
       <div className="settings">
         <header className="settings-hero">
           <h1>设置</h1>
-          <p>界面的显示方式、agent 如何通过命令行接入，以及账号。</p>
+          {/* 按下面区块的顺序写 */}
+          <p>账号、界面的显示方式、白板规则、agent 如何通过命令行接入、访问令牌{canHost ? '、让这台电脑接任务' : ''}，以及快捷键。</p>
         </header>
 
         <section className="set-card" id="set-account" style={{ ['--i' as string]: 1 }}>
