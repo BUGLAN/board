@@ -245,3 +245,29 @@ fn host_runs_dispatches_end_to_end() {
     assert!(ended(&rig.show(4), "已停止"), "{:?}", activity(&rig.show(4)));
     assert!(rig.workspace()["hosts"][0]["online"] == false);
 }
+
+#[test]
+fn end_response_failure_is_retried_with_real_exit_code() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    rig.mode("crash");
+    // 第一次 /end 返回 502（服务端重启、反向代理抖动）：host 不能丢掉这次结束，
+    // 下一次上报仍然要把真实退出码和日志最后 20 行报上去，而不是「没有找到 agent 进程」。
+    rig.s.state.fail_next_end();
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let id = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 异常退出", Duration::from_secs(20), || ended(&rig.show(1), "异常退出"));
+    let c = rig.show(1);
+    assert_eq!(c["column"], "check");
+    let texts = activity(&c);
+    assert!(texts.iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "要按真实退出码结束：{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("没有找到 agent 进程")), "不能按「找不到进程」结束：{texts:?}");
+    assert!(rig.dispatch_log(id).iter().any(|l| l == "boom"), "日志最后 20 行要上报");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}

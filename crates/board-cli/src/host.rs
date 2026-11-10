@@ -440,6 +440,16 @@ fn clock() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
+/// 结束上报失败：派发不存在这类明确的 4xx 不用再试；其余错误（连不上、5xx 等）留到下一轮
+fn permanent_end_error(code: ErrorCode) -> bool {
+    matches!(code, ErrorCode::NotFound | ErrorCode::BoardNotFound | ErrorCode::NoSuchHost | ErrorCode::Usage)
+}
+
+/// 定时领取：这一分钟到点、机器没暂停、也没有正在进行的一轮
+fn cron_due(m: &str, cron_on: bool, cron: &[String], paused: bool, round: bool) -> bool {
+    cron_on && !paused && !round && cron.iter().any(|t| t == m)
+}
+
 /* ------------------------------ host ------------------------------ */
 
 struct Host<'a> {
@@ -512,7 +522,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         }
         dirs.push((board, dir));
     }
-    let be = Backend::open()?;
+    let be = Backend::open_host()?;
     let envs = envs::discover();
     let agents = agent_specs(&conf.agents, &envs)?;
     let os = sysinfo::System::long_os_version()
@@ -587,7 +597,8 @@ impl Host<'_> {
             agents: self.agents.iter().map(Spec::report).collect(),
             envs: self.envs.iter().map(Env::report).collect(),
             dirs: self.dirs.iter().map(|(b, p)| HostDir { board: b.clone(), path: p.display().to_string() }).collect(),
-            running: self.runs.iter().map(|r| r.d.id).collect(),
+            // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
+            running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
             done,
         }
     }
@@ -809,8 +820,9 @@ impl Host<'_> {
                     let res = d.result.as_deref().map(result_words).unwrap_or("还在跑");
                     self.say(format!("{} {}  结果：{}", self.p.dim("·"), self.p.cyan(&format!("{}#{}", d.board, d.card)), self.p.bold(res)));
                 }
-                Err(err) if err.code == ErrorCode::Unreachable => self.ended.push(e),
-                Err(_) => {}
+                // 派发不存在这类明确的拒绝不用再报；其余错误（连不上、5xx 等）留到下一轮重试
+                Err(err) if permanent_end_error(err.code) => {}
+                Err(_) => self.ended.push(e),
             }
         }
     }
@@ -1022,20 +1034,23 @@ impl Host<'_> {
         if m == *last {
             return;
         }
-        *last = m.clone();
         let Some(w) = &self.work else { return };
-        let h = &w.host;
-        if !h.cron_on || !h.cron.contains(&m) || h.paused || h.round {
+        if !cron_due(&m, w.host.cron_on, &w.host.cron, w.host.paused, w.host.round) {
+            // 这一分钟不用领取：记为已处理，免得每个 tick 都判断
+            *last = m.clone();
             return;
         }
         match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/round", self.name), json!({})) {
             Ok(_) => {
+                // 只有真的开始了这一轮才记下这一分钟；失败了留到下一轮（同一分钟内）重试
+                *last = m.clone();
                 self.say(format!("{} {m} 到点，开始一轮领取", self.p.green("⏰")));
                 self.hold = false;
                 if let Some(w) = self.work.as_mut() {
                     w.host.round = true;
                 }
             }
+            // 不更新 last：主循环下一轮还在这一分钟，会再发一次
             Err(e) => self.say(format!("{} {m} 到点，没能开始领取：{}", self.p.yellow("!"), e.message)),
         }
     }
@@ -1191,6 +1206,30 @@ mod tests {
         let direct = Env::direct();
         assert!(!spec.misses_skill(&direct, &[("default/main".into(), repo.clone())]), "项目里的 .agents/skills 算装好了");
         assert!(spec.misses_skill(&direct, &[]), "没有项目目录时仍然提醒");
+    }
+
+    #[test]
+    fn end_reports_retry_only_on_transient_errors() {
+        assert!(permanent_end_error(ErrorCode::NotFound), "派发不存在：不用再报");
+        assert!(permanent_end_error(ErrorCode::Usage));
+        assert!(!permanent_end_error(ErrorCode::Unreachable), "连不上要重试");
+        assert!(!permanent_end_error(ErrorCode::Internal), "服务端 5xx 要重试");
+    }
+
+    #[test]
+    fn cron_failed_minute_is_retried() {
+        let cron = vec!["03:00".to_string()];
+        // 到点：第一次会发 /round
+        assert!(cron_due("03:00", true, &cron, false, false));
+        // 请求失败时 cron() 不更新 last（只有 Ok 分支写），所以同一分钟下一轮还会再试
+        let last = String::new();
+        assert!(last.is_empty());
+        assert!(cron_due("03:00", true, &cron, false, false));
+        // 成功后才记下这一分钟；不是定时点、暂停、正在进行一轮都不发
+        assert!(!cron_due("03:00", true, &cron, true, false));
+        assert!(!cron_due("03:00", true, &cron, false, true));
+        assert!(!cron_due("03:01", true, &cron, false, false));
+        assert!(!cron_due("03:00", false, &cron, false, false));
     }
 
     #[cfg(windows)]

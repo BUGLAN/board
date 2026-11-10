@@ -31,6 +31,8 @@ pub struct Server {
     /// 服务端的数据库（测试里直接写，例如新建标签、吊销令牌）
     pub db: PathBuf,
     pub token: String,
+    /// 服务端实例（测试钩子，例如让下一次 /end 返回 502）
+    pub state: AppState,
     /// CLI 进程的 HOME
     pub home: PathBuf,
     /// 已经 check 过的名字
@@ -60,12 +62,12 @@ pub fn start() -> Server {
     let state = AppState::open(&cfg).unwrap();
     let l = bind(([127, 0, 0, 1], 0).into()).unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
-    serve_in_thread(state, cfg, l);
+    serve_in_thread(state.clone(), cfg, l);
     let token = {
         let store = board_core::Store::open(&db).unwrap();
         auth::create_token(store.conn(), "test", board_core::now_ms()).unwrap().1
     };
-    Server { url, db, token, home, checked: RefCell::default(), _dir: dir }
+    Server { url, db, token, state, home, checked: RefCell::default(), _dir: dir }
 }
 
 impl Server {

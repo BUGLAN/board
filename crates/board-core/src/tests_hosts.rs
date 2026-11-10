@@ -286,7 +286,12 @@ fn restarted_host_without_process_reports_crash() {
     r.resume = Some("i1".into());
     beat(&mut s, T0 + 20 * S, &r).unwrap();
     assert_eq!(get(&s, d.id).result.as_deref(), Some("crashed"));
-    assert_eq!(card(&s, a).card.column, "check");
+    let c = card(&s, a);
+    assert_eq!(c.card.column, "check");
+    let comment = c.activity.iter().rev().find(|x| x.kind == "comment").expect("应该有结束评论");
+    assert!(comment.text.contains("board host 上没有这次派发的 agent 进程"), "{}", comment.text);
+    assert!(comment.text.contains("board host 重启过，或开始派发时连接中断"), "{}", comment.text);
+    assert!(!comment.text.contains("重启后没有找到"), "{}", comment.text);
 }
 
 #[test]

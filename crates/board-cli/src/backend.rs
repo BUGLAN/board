@@ -15,6 +15,11 @@ pub use crate::config::env;
 /// 还没登录时的提示
 const LOGIN_HINT: &str = "运行 board login --url <服务端地址> --token <令牌>（令牌在界面「设置 → Agent 接入」新建）";
 
+/// 普通命令的请求超时：一个请求最多等 30 秒
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// board host 的请求超时：主循环上的上报、开始派发、日志上传最多等 10 秒，不能被一个慢请求卡住 30 秒
+const HOST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 一块白板上命令需要的数据
 pub struct BoardData {
     pub path: String,
@@ -30,6 +35,15 @@ pub struct Backend(Remote);
 
 impl Backend {
     pub fn open() -> Result<Backend> {
+        Self::open_with_timeout(COMMAND_TIMEOUT)
+    }
+
+    /// board host 用的连接：请求超时降到 10 秒（普通命令仍用 30 秒）
+    pub fn open_host() -> Result<Backend> {
+        Self::open_with_timeout(HOST_TIMEOUT)
+    }
+
+    fn open_with_timeout(timeout: Duration) -> Result<Backend> {
         let conn = Conn::resolve()?;
         let Some((url, url_src)) = conn.url else {
             return Err(BoardError::new(ErrorCode::NotLoggedIn, format!("还没有登录：{LOGIN_HINT}")));
@@ -40,7 +54,7 @@ impl Backend {
                 format!("有服务端地址（{url}）但没有访问令牌：运行 board login（令牌在界面「设置 → Agent 接入」新建）"),
             ));
         };
-        Ok(Backend(Remote::new(&url, &token).map_err(|e| {
+        Ok(Backend(Remote::with_timeout(&url, &token, timeout).map_err(|e| {
             BoardError::new(e.code, format!("{}（来自{}）", e.message, config::origin(url_src, "BOARD_URL")))
         })?))
     }
@@ -164,13 +178,17 @@ pub fn is_http(url: &str) -> bool {
 
 impl Remote {
     pub fn new(url: &str, token: &str) -> Result<Remote> {
+        Self::with_timeout(url, token, COMMAND_TIMEOUT)
+    }
+
+    pub fn with_timeout(url: &str, token: &str, timeout: Duration) -> Result<Remote> {
         let url = url.trim_end_matches('/').to_string();
         if !is_http(&url) {
             return Err(BoardError::usage(format!("服务端地址需要以 https:// 或 http:// 开头：{url}")));
         }
         let token = token.to_string();
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
+            .timeout_global(Some(timeout))
             .http_status_as_error(false)
             .user_agent(concat!("board-cli/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -278,5 +296,16 @@ impl Remote {
             // 不是 Board 的响应（例如反向代理返回 502）
             None => Err(BoardError::new(ErrorCode::Unreachable, format!("{} 返回 HTTP {status}", self.url))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_uses_short_timeout_commands_keep_long_one() {
+        assert_eq!(HOST_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(30));
     }
 }

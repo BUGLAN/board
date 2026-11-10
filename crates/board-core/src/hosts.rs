@@ -1217,7 +1217,9 @@ impl<'a> W<'a> {
                 let text = match (&stop_by, how) {
                     (_, Finish::HostExit) => format!("board host（{}）退出，停止了这次派发", d.host),
                     (Some(who), _) => format!("{who} 停止了这次派发"),
-                    (None, Finish::Missing) => "agent 异常退出（board host 重启后没有找到 agent 进程）".to_string(),
+                    (None, Finish::Missing) => {
+                        "agent 异常退出（board host 上没有这次派发的 agent 进程：board host 重启过，或开始派发时连接中断）".to_string()
+                    }
                     (None, _) => {
                         let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into());
                         let mut t = format!("agent 异常退出（退出码 {code}）");

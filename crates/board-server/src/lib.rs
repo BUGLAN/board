@@ -77,6 +77,9 @@ struct Inner {
     auth: Auth,
     /// 有会话被删除（退出登录）或令牌被吊销时加一：实时推送据此检查自己的登录态还在不在
     sessions: watch::Sender<u64>,
+    /// 测试用：下一次 `/api/dispatches/{id}/end` 返回 502（Cargo feature `test-hooks`）
+    #[cfg(feature = "test-hooks")]
+    fail_end: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -99,6 +102,8 @@ impl AppState {
             db: cfg.db.clone(),
             auth: cfg.auth.clone(),
             sessions: watch::channel(0).0,
+            #[cfg(feature = "test-hooks")]
+            fail_end: std::sync::atomic::AtomicBool::new(false),
         })))
     }
 
@@ -113,6 +118,18 @@ impl AppState {
 
     pub(crate) fn sessions_changed(&self) {
         self.0.sessions.send_modify(|v| *v += 1);
+    }
+
+    /// 测试用：让下一次 `POST /api/dispatches/{id}/end` 返回 502（只生效一次）
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_end(&self) {
+        self.0.fail_end.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 测试用：取走一次 502 标记
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn take_fail_end(&self) -> bool {
+        self.0.fail_end.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// 在阻塞线程里使用数据库

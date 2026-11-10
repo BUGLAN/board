@@ -13,6 +13,9 @@
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
+#[cfg(feature = "test-hooks")]
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use board_core::hosts::EndHow;
 use board_core::*;
@@ -131,7 +134,19 @@ fn exit() -> EndHow {
     EndHow::Exit
 }
 
-pub(crate) async fn end(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Dispatch> {
+pub(crate) async fn end(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> Response {
+    // 集成测试用：模拟「服务端已经收到、响应丢了」之前的失败响应
+    #[cfg(feature = "test-hooks")]
+    if s.take_fail_end() {
+        return (StatusCode::BAD_GATEWAY, "bad gateway").into_response();
+    }
+    match end_inner(s, id, v).await {
+        Ok(j) => j.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn end_inner(s: AppState, id: i64, v: Value) -> ApiResult<Dispatch> {
     let b: EndBody = parse(v)?;
     let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_end(id, b.exit_code, &b.tail, b.how))).await?;
     s.poke();
