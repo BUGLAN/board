@@ -263,7 +263,7 @@ export function Creator() {
           <div className="d-main cr-main">
             <textarea
               ref={titleRef}
-              className="d-title cr-title"
+              className="d-title"
               rows={1}
               maxLength={200}
               spellCheck={false}

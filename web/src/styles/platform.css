@@ -168,7 +168,6 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .d-comment { position: sticky; bottom: 0; background: var(--glass-strong); }
   .creator .d-head { padding-top: 14px; }
   .cr-main { padding: 6px 18px 0; }
-  .cr-title { font-size: 21px; }
   .cr-keys { display: none; }
   .cr-desc { min-height: 180px; }
   .cr-side { padding: 18px; }
