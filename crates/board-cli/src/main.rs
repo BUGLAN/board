@@ -66,15 +66,18 @@ enum Output {
     Exit(i32, Box<Output>),
 }
 
-/// 打印结果并返回退出码
+/// 打印结果并返回退出码。标准输出写不进去（管道读端已关）时不 panic：
+/// 例如 board host 运行中输出被关掉，前面没写出去的内容还在缓冲里，这里再打印会再失败一次
 fn emit(out: Output) -> i32 {
+    use std::io::Write;
     match out {
         Output::Text(s) => {
-            print!("{s}");
+            let mut o = std::io::stdout();
+            let _ = write!(o, "{s}").and_then(|_| o.flush());
             0
         }
         Output::Json(v) => {
-            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            let _ = writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&v).unwrap_or_default());
             0
         }
         Output::Exit(code, body) => {

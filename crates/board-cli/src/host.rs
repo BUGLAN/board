@@ -29,6 +29,11 @@
 //!   桌面端在后台运行它时设置 `BOARD_HOST_STDIN=1`：标准输入关闭（桌面端退出）也按 Ctrl+C 处理。
 //! - 机器名的 pid 文件 `~/.board/host/<机器名>.pid`（「进程号 启动时间 标识」）：board host 异常退出后在同一台机器上重启，
 //!   用里面的标识接回还在线的名字；这时服务端上还在跑、本机却没有进程的派发按「异常退出」处理。
+//! - 每个在跑的 agent 记在 `~/.board/host/run/<机器名>/<派发 ID>.proc`（「进程号 启动时间 启动环境 白板#卡片」）。
+//!   board host 没走完退出流程（被 kill -9、崩溃）时 agent 会留下来接着跑：同名重启、第一次上报成功之后，
+//!   先结束这些文件里还对得上的进程组，再清 run 目录。第一次上报之前不碰 run 目录：同名的 host 还在跑时，
+//!   第二个只报 HOST_NAME_TAKEN，不删前一个的派发配置。
+//! - 输出（标准输出）写不进去时（管道读端已关、终端已关）照常运行和退出，不因为打印失败中断退出流程。
 
 use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
@@ -38,7 +43,7 @@ use crate::Paint;
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words};
 use board_core::*;
 use serde_json::{json, Value};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,6 +128,8 @@ const TICK: Duration = Duration::from_millis(200);
 const LOG_EVERY: Duration = Duration::from_secs(5);
 /// 停止 agent：SIGTERM 之后等多久再 SIGKILL
 const KILL_AFTER: Duration = Duration::from_secs(10);
+/// 重启时结束上一次留下的 agent：SIGTERM 后等这么久，还在就 SIGKILL
+const ORPHAN_KILL_AFTER: Duration = Duration::from_secs(5);
 /// 异常退出时评论里带的日志行数
 const TAIL: usize = 20;
 /// 一次最多上传多少字节的新日志（多出来的只留最后这些：服务端本来也只保留最后 500 行）
@@ -358,6 +365,8 @@ struct Run {
     log: PathBuf,
     /// 这次派发的配置文件（BOARD_CONFIG），结束时删除
     conf: PathBuf,
+    /// agent 的进程号和启动时间（`<派发 ID>.proc`）：host 异常退出后重启时据此结束留下的 agent，结束时删除
+    procfile: PathBuf,
     /// 日志已经上传到的位置（字节）
     sent: u64,
     /// SIGTERM 的时间
@@ -384,8 +393,22 @@ impl Run {
         }
     }
 
+    /// 主进程已经退出：结束同一进程组里剩下的进程（agent 起的子进程）。
+    /// Windows 上不做：进程号可能已经被复用，taskkill /T 会结束别的进程树
+    fn kill_rest(&self) {
+        if let Some(env) = self.env.wsl().map(|_| &self.env) {
+            let pid = self.pidfile.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok());
+            if let Some(pid) = pid {
+                envs::wsl_kill(env, pid, true);
+            }
+        } else if cfg!(unix) {
+            kill_tree(self.child.id(), true);
+        }
+    }
+
     fn cleanup(&self) {
         let _ = std::fs::remove_file(&self.conf);
+        let _ = std::fs::remove_file(&self.procfile);
         if let Some(p) = &self.pidfile {
             let _ = std::fs::remove_file(p);
         }
@@ -564,12 +587,13 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         last_err: String::new(),
     };
     on_signals();
-    // 上一次留下的派发配置文件（异常退出时没来得及删）
-    let _ = std::fs::remove_dir_all(&h.run);
-    // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出
+    // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
     let w = h.beat(false)?;
     h.set_work(w);
     h.resume = None;
+    // 上一次（被 kill -9、崩溃）留下的 agent 和派发配置文件
+    h.kill_orphans();
+    let _ = std::fs::remove_dir_all(&h.run);
     let me = Procs::new().and_then(|mut ps| ps.get(std::process::id())).map(|x| x.start).unwrap_or(0);
     let _ = std::fs::write(&h.pidfile, format!("{} {me} {}\n", std::process::id(), h.instance));
     h.hello();
@@ -583,8 +607,56 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
 }
 
 impl Host<'_> {
+    /// 打印一行。写不进去（管道读端已关、终端已关）就算了：不能让打印失败打断启动 agent、退出流程
     fn say(&self, s: String) {
-        println!("{} {s}", self.p.dim(&clock()));
+        let _ = writeln!(std::io::stdout(), "{} {s}", self.p.dim(&clock()));
+    }
+
+    /// 上一个同名 board host 没走完退出流程（被 kill -9、崩溃）时留下的 agent：按 run 目录里的 `.proc`
+    /// 结束进程号和启动时间都对得上的进程组（先 SIGTERM，几秒后还在就 SIGKILL；WSL 在 WSL 里结束 agent 的进程组）
+    fn kill_orphans(&self) {
+        let Ok(dir) = std::fs::read_dir(&self.run) else { return };
+        let Some(mut ps) = Procs::new() else { return };
+        let mut left: Vec<Proc> = vec![];
+        for e in dir.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("proc") {
+                continue;
+            }
+            let Ok(s) = std::fs::read_to_string(&path) else { continue };
+            let mut it = s.split_whitespace();
+            let (Some(pid), Some(start)) = (it.next(), it.next()) else { continue };
+            // 不知道启动时间的不动：进程号可能已经被复用
+            let Some(proc) = Proc::parse(&format!("{pid} {start}")).filter(|p| p.start != 0) else { continue };
+            let env = it.next().unwrap_or_default();
+            let what = it.next().unwrap_or_default();
+            if !ps.alive(proc) {
+                continue;
+            }
+            match self.envs.iter().find(|x| x.id == env && x.wsl().is_some()) {
+                Some(wsl) => {
+                    let inner = std::fs::read_to_string(path.with_extension("pid")).ok().and_then(|s| s.trim().parse::<u32>().ok());
+                    if let Some(pid) = inner {
+                        envs::wsl_kill(wsl, pid, true);
+                    }
+                    kill_tree(proc.pid, true);
+                }
+                None => {
+                    kill_tree(proc.pid, false);
+                    left.push(proc);
+                }
+            }
+            self.say(format!("{} 结束上一次留下的 agent：{what}（进程 {}）", self.p.yellow("◼"), proc.pid));
+        }
+        let begun = Instant::now();
+        while left.iter().any(|p| ps.alive(*p)) && begun.elapsed() < ORPHAN_KILL_AFTER {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        for p in left {
+            if ps.alive(p) {
+                kill_tree(p.pid, true);
+            }
+        }
     }
 
     fn report(&self, done: bool) -> HostReport {
@@ -676,7 +748,7 @@ impl Host<'_> {
             }
         }
         s += &format!("  {}\n", p.dim("Ctrl+C 退出（先结束本机由它启动的 agent）"));
-        print!("{s}");
+        let _ = write!(std::io::stdout(), "{s}");
     }
 
     /// 订阅实时推送：推送里的 hosts（机器和派发的版本）有变化就通知主循环
@@ -790,6 +862,8 @@ impl Host<'_> {
                 continue;
             };
             let r = self.runs.remove(i);
+            // 主进程退出了，它起的子进程可能还在（同一进程组）：一起结束
+            r.kill_rest();
             r.cleanup();
             let code = exit_code(status);
             self.flush_log(&r, true);
@@ -929,15 +1003,17 @@ impl Host<'_> {
         }
         match self.spawn(&d) {
             Ok(r) => {
+                // 先记进 runs 再打印：之后无论发生什么，退出流程都会结束它
+                let env = r.env.name.clone();
+                self.runs.push(r);
                 self.say(format!(
                     "{} {}  {}  {}  {}",
                     self.p.green("▶"),
                     self.p.cyan(&format!("{}#{}", d.board, d.card)),
                     self.p.yellow(d.name.as_deref().unwrap_or_default()),
-                    self.p.dim(&r.env.name),
+                    self.p.dim(&env),
                     d.title
                 ));
-                self.runs.push(r);
             }
             Err(msg) => {
                 self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
@@ -1025,7 +1101,11 @@ impl Host<'_> {
             let _ = std::fs::remove_file(&conf);
             format!("在{}里启动 {prog} 失败：{e}", env.name)
         })?;
-        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
+        // 记下 agent 的进程号和启动时间：这个 host 没走完退出流程时，同名重启后据此结束它
+        let procfile = self.run.join(format!("{}.proc", d.id));
+        let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
+        let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
+        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, procfile, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮

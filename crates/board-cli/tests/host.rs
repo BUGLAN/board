@@ -27,8 +27,15 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo "working"
     echo "boom"
     exit 3 ;;
+  orphan)
+    # 留下一个忽略 SIGTERM 的子进程（同一进程组），自己先退出
+    ( trap '' TERM; exec sleep 60 ) &
+    echo $! > "$FAKE_DIR/child.pid"
+    echo "left a child"
+    exit 0 ;;
   *)
     echo "sleeping"
+    echo $$ > "$FAKE_DIR/agent.pid"
     exec sleep 60 ;;
 esac
 "#;
@@ -268,6 +275,127 @@ fn end_response_failure_is_retried_with_real_exit_code() {
     assert!(texts.iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "要按真实退出码结束：{texts:?}");
     assert!(!texts.iter().any(|t| t.contains("没有找到 agent 进程")), "不能按「找不到进程」结束：{texts:?}");
     assert!(rig.dispatch_log(id).iter().any(|l| l == "boom"), "日志最后 20 行要上报");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/* ------------------------------ 不留下失控的 agent ------------------------------ */
+
+/// 进程还在跑（僵尸算不在：容器里的 1 号进程不一定回收孤儿）
+fn running(pid: i32) -> bool {
+    let o = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    !s.is_empty() && !s.starts_with('Z')
+}
+
+impl Rig {
+    /// 假 agent 写下的进程号（`agent.pid`、`child.pid`）
+    fn pid(&self, file: &str) -> i32 {
+        let p = self.fake.parent().unwrap().join(file);
+        wait_until(&format!("{file} 写好"), Duration::from_secs(15), || {
+            std::fs::read_to_string(&p).is_ok_and(|s| s.trim().parse::<i32>().is_ok())
+        });
+        std::fs::read_to_string(&p).unwrap().trim().parse().unwrap()
+    }
+
+    fn online(&self, name: &str) {
+        wait_until(&format!("{name} 上线"), Duration::from_secs(20), || {
+            self.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == name && x["online"] == true))
+        });
+    }
+
+    /// 派发 #id 给 mbp，等 agent 开始，返回派发 ID
+    fn dispatch_running(&self, id: i64) -> i64 {
+        let r = self.board(&["dispatch", &id.to_string(), "--host", "mbp", "--json"]);
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        wait_until(&format!("#{id} 开始"), Duration::from_secs(15), || self.show(id)["holder"] == format!("claude/mbp-{id}"));
+        r.json()["id"].as_i64().unwrap()
+    }
+}
+
+/// 标准输出的读端已经关了（`board host | head -n 1`、终端已关）：打印失败不能 panic，
+/// SIGTERM 时照样结束 agent、上报「已停止」、离线
+#[test]
+fn closed_stdout_does_not_leave_agents() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let mut host = rig.host("mbp");
+    rig.online("mbp");
+    drop(host.stdout.take());
+    rig.mode("sleep");
+    rig.dispatch_running(1);
+    let agent = rig.pid("agent.pid");
+    assert!(running(agent));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("panicked"), "{out}");
+    assert!(ended(&rig.show(1), "已停止"), "{:?}", activity(&rig.show(1)));
+    assert!(!running(agent), "agent 要被结束");
+    assert!(rig.workspace()["hosts"][0]["online"] == false);
+}
+
+/// host 被 kill -9 后同名重启：上一个进程留下的 agent 在启动后被结束
+#[test]
+fn restart_after_kill9_ends_left_agents() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let mut host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("sleep");
+    rig.dispatch_running(1);
+    let agent = rig.pid("agent.pid");
+    unsafe {
+        libc_kill(host.id() as i32, 9);
+    }
+    host.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(running(agent), "kill -9 之后 agent 还在跑（没人管）");
+    let again = rig.host("mbp");
+    wait_until("留下的 agent 被结束", Duration::from_secs(20), || !running(agent));
+    let (code, out) = stop(again);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("结束上一次留下的 agent：default/main#1"), "{out}");
+}
+
+/// 有派发在跑时同名再启动一个：第二个报 HOST_NAME_TAKEN，不删第一个的派发配置文件
+#[test]
+fn second_host_keeps_first_hosts_run_files() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("sleep");
+    let d = rig.dispatch_running(1);
+    let run = rig.s.home.join(".board").join("host").join("run").join("mbp");
+    // 服务端记下持有者之后 host 才启动 agent：等它写好
+    wait_until("派发的配置和进程文件写好", Duration::from_secs(10), || {
+        run.join(format!("{d}.toml")).exists() && run.join(format!("{d}.proc")).exists()
+    });
+    let mut second = rig.host("mbp");
+    let (code, out) = wait_out(&mut second, Duration::from_secs(10));
+    assert_eq!(code, 1);
+    assert!(out.contains("HOST_NAME_TAKEN"), "{out}");
+    assert!(run.join(format!("{d}.toml")).exists(), "第二个 host 不能删掉正在跑的派发的配置文件");
+    assert!(run.join(format!("{d}.proc")).exists());
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(ended(&rig.show(1), "已停止"));
+}
+
+/// agent 主进程退出后，同一进程组里剩下的（忽略 SIGTERM 的）子进程也被结束
+#[test]
+fn agent_exit_ends_its_process_group() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("orphan");
+    assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
+    let child = rig.pid("child.pid");
+    wait_until("#1 的派发结束", Duration::from_secs(15), || {
+        activity(&rig.show(1)).iter().any(|t| t.starts_with("派发结束"))
+    });
+    wait_until("留下的子进程被结束", Duration::from_secs(10), || !running(child));
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }
