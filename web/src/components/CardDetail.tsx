@@ -10,7 +10,7 @@ import { cardPrompt } from '../lib/prompt';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, ago, autosize, clock, copyText, cx, hhmm, isMobile, replay } from '../lib/util';
-import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
+import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, openDetail, removeCard, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -1117,9 +1117,29 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
               </span>
             )}
             {a.actor.kind === 'human' && editing == null && !saving && (
-              <button className="tl-edit" type="button" aria-label="编辑这条评论" title="编辑" onClick={() => setEditing(a.text)}>
-                <Icon name="edit" />
-              </button>
+              <span className="tl-actions">
+                <button className="tl-edit" type="button" aria-label="编辑这条评论" title="编辑" onClick={() => setEditing(a.text)}>
+                  <Icon name="edit" />
+                </button>
+                <button
+                  className="tl-edit tl-del"
+                  type="button"
+                  aria-label="删除这条评论"
+                  title="删除"
+                  onClick={async () => {
+                    const yes = await confirm({ title: '删除这条评论？', text: '删除后无法恢复。', ok: '删除', icon: 'trash' });
+                    if (!yes) return;
+                    try {
+                      await exec({ op: 'delete_comment', id: card, activity: a.id }, removeComment(card, a.id));
+                      toast({ type: 'success', title: '已删除评论' });
+                    } catch (e) {
+                      toastError(e);
+                    }
+                  }}
+                >
+                  <Icon name="trash" />
+                </button>
+              </span>
             )}
           </div>
           {editing != null ? (

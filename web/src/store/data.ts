@@ -246,6 +246,16 @@ export function removeCard(id: number): Patch {
   };
 }
 
+/** 删除一条评论（人删自己发的）：动态里的这条当帧消失，卡片上的评论数减一；这条评论已经不在了原样返回 */
+export function removeComment(card: number, act: number): Patch {
+  return {
+    detail: d =>
+      d.id !== card || !d.activity.some(x => x.id === act)
+        ? d
+        : { ...d, activity: d.activity.filter(x => x.id !== act), comments: Math.max(0, d.comments - 1) },
+  };
+}
+
 let tempSeq = 0;
 /** 已经认作某张临时卡片的真卡片：一张真卡片只顶替一张临时卡片 */
 const claimed = new Set<number>();

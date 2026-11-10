@@ -90,6 +90,26 @@ describe('removeCard', () => {
   });
 });
 
+describe('removeComment', () => {
+  const act = (id: number) => ({ id, at: 0, actor: { kind: 'human' as const, name: '' }, kind: 'comment' as const, action: 'comment', text: `评论 ${id}` });
+
+  it('从详情动态里拿掉这条、评论数减一；重复执行结果不变', () => {
+    const d0 = detail(card(1, { comments: 2 }));
+    d0.activity = [act(10), act(11)];
+    const p = D.removeComment(1, 10);
+    const once = twice(p.detail!, d0);
+    expect(once.activity.map(a => a.id)).toEqual([11]);
+    expect(once.comments).toBe(1);
+  });
+
+  it('评论已经不在了、详情是别的卡片：原样返回', () => {
+    const d = detail(card(1, { comments: 1 }));
+    expect(D.removeComment(1, 10).detail!(d)).toBe(d);
+    const other = detail(card(2));
+    expect(D.removeComment(1, 10).detail!(other)).toBe(other);
+  });
+});
+
 describe('editCard', () => {
   it('白板摘要和打开着的详情一起改；默认画成保存中', () => {
     const p = D.editCard(1, { title: '新标题' });
