@@ -5,11 +5,11 @@ import { cx, reduceMotion, replay } from '../lib/util';
 import { Icon, type IconName } from './Icon';
 
 export const SECTIONS: { id: string; title: string; icon: IconName }[] = [
+  { id: 'account', title: '账号', icon: 'user' },
   { id: 'appearance', title: '外观', icon: 'sun' },
   { id: 'board', title: '白板规则', icon: 'lock' },
   { id: 'agents', title: 'Agent 接入', icon: 'terminal' },
   ...(canHost ? [{ id: 'host', title: '本机', icon: 'host' as IconName }] : []),
-  { id: 'account', title: '账号', icon: 'user' },
   { id: 'shortcuts', title: '快捷键', icon: 'keyboard' },
 ];
 

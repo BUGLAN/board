@@ -1,5 +1,5 @@
 /* ==========================================================================
-   设置 Tab（PRD §10.6）：外观 / 白板规则 / Agent 接入 / 快捷键
+   设置 Tab（PRD §10.6）：账号 / 外观 / 白板规则 / Agent 接入 / 快捷键
    侧栏是目录，点击跳到对应部分；滚动时目录跟随
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
@@ -386,7 +386,7 @@ function LocalHostCard() {
   if (st?.enabled) state = st.running ? (online?.online ? `在线：${me}` : '正在连接服务端…') : `已停止${st.exit != null ? `（退出码 ${st.exit}）` : ''}：看下面的输出`;
 
   return (
-    <section className="set-card" id="set-host" style={{ ['--i' as string]: 3 }}>
+    <section className="set-card" id="set-host" style={{ ['--i' as string]: 5 }}>
       <h2>
         <Icon name="host" />
         本机
@@ -548,7 +548,15 @@ export function SettingsPage() {
           <p>界面的显示方式、agent 如何通过命令行接入，以及账号。</p>
         </header>
 
-        <section className="set-card" id="set-appearance" style={{ ['--i' as string]: 1 }}>
+        <section className="set-card" id="set-account" style={{ ['--i' as string]: 1 }}>
+          <h2>
+            <Icon name="user" />
+            账号
+          </h2>
+          <Account />
+        </section>
+
+        <section className="set-card" id="set-appearance" style={{ ['--i' as string]: 2 }}>
           <h2>
             <Icon name="sun" />
             外观
@@ -595,7 +603,7 @@ export function SettingsPage() {
           </Row>
         </section>
 
-        <section className="set-card" id="set-board" style={{ ['--i' as string]: 1 }}>
+        <section className="set-card" id="set-board" style={{ ['--i' as string]: 3 }}>
           <h2>
             <Icon name="lock" />
             白板规则
@@ -633,7 +641,7 @@ export function SettingsPage() {
           </ul>
         </section>
 
-        <section className="set-card" id="set-agents" style={{ ['--i' as string]: 2 }}>
+        <section className="set-card" id="set-agents" style={{ ['--i' as string]: 4 }}>
           <h2>
             <Icon name="terminal" />
             Agent 接入
@@ -716,15 +724,7 @@ export function SettingsPage() {
 
         {canHost && <LocalHostCard />}
 
-        <section className="set-card" id="set-account" style={{ ['--i' as string]: 3 }}>
-          <h2>
-            <Icon name="user" />
-            账号
-          </h2>
-          <Account />
-        </section>
-
-        <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: 3 }}>
+        <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: canHost ? 6 : 5 }}>
           <h2>
             <Icon name="keyboard" />
             快捷键

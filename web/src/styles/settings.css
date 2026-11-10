@@ -132,3 +132,30 @@
   .lh-dir { flex-wrap: wrap; }
   .lh-dir select.input { width: 100%; }
 }
+
+/* 手机窄屏：标签和控件上下堆叠，分段控件、令牌、本机目录等不把页面撑出横向滚动 */
+@media (max-width: 480px) {
+  .page-settings .settings { padding: 10px 10px 60px; }
+  .page-settings .set-card { padding: 14px 14px 6px; }
+  .page-settings .set-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .page-settings .set-control { width: 100%; min-width: 0; }
+  .page-settings .segmented { display: flex; width: 100%; }
+  .page-settings .segmented button { flex: 1 1 auto; padding: 0 6px; }
+  /* 账号行保留头像、名字、按钮同一行；按钮放不下时换到下一行 */
+  .page-settings #set-account .set-row { flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .page-settings #set-account .set-control { width: auto; margin-left: auto; }
+  .page-settings .token-new { flex-wrap: wrap; }
+  .page-settings .token-new .input { flex: 1 1 160px; }
+  .page-settings .token-list li { flex-wrap: wrap; }
+  .page-settings .token-list li .btn { margin-left: auto; }
+  .page-settings .lh-dir input.input { flex: 1 1 140px; }
+  .page-settings .lh-actions { flex-wrap: wrap; }
+  .page-settings .err-grid { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .page-settings .err-grid code { overflow-wrap: anywhere; }
+  .page-settings .set-p code { overflow-wrap: anywhere; }
+}
+
+/* 触屏设备（iOS Safari）：输入框字号小于 16px 时聚焦会自动放大页面；窄屏一并处理，桌面宽屏不变 */
+@media (pointer: coarse), (max-width: 480px) {
+  .page-settings :is(input, select, textarea).input { font-size: 16px; }
+}
