@@ -9,12 +9,38 @@ import { serverNow } from '../store/data';
 import { openImage } from '../store/ui';
 import { Icon } from './Icon';
 
-/** 当前时间（与服务端对齐），每 interval 毫秒刷新 */
-export function useNow(interval = 1000) {
+/** 同一间隔的 useNow 共用一个定时器 */
+const tickers = new Map<number, { subs: Set<() => void>; timer: number }>();
+function tick(interval: number, fn: () => void) {
+  let t = tickers.get(interval);
+  if (!t) {
+    const subs = new Set<() => void>();
+    t = { subs, timer: window.setInterval(() => subs.forEach(f => f()), interval) };
+    tickers.set(interval, t);
+  }
+  t.subs.add(fn);
+  return () => {
+    t.subs.delete(fn);
+    if (!t.subs.size) {
+      clearInterval(t.timer);
+      tickers.delete(interval);
+    }
+  };
+}
+/** 现在有几个定时器、几个订阅（调试、测试用） */
+export const tickerStats = () => ({ timers: tickers.size, subs: [...tickers.values()].reduce((n, t) => n + t.subs.size, 0) });
+
+/** 服务端对齐的当前时间，每 interval 毫秒更新一次；interval 为 null 时不更新（用不到时间的组件不起定时器） */
+export function useNow(interval: number | null = 1000) {
   const [now, setNow] = useState(serverNow);
   useEffect(() => {
-    const t = window.setInterval(() => setNow(serverNow()), interval);
-    return () => clearInterval(t);
+    if (!interval) return;
+    // 从不更新变成更新（例如卡片刚被领取）：先对一次表，不等第一次跳动
+    setNow(prev => {
+      const n = serverNow();
+      return n - prev >= interval ? n : prev;
+    });
+    return tick(interval, () => setNow(serverNow()));
   }, [interval]);
   return now;
 }

@@ -8,7 +8,7 @@ import { newBoard, newProject, openBoard, openCard, triage } from '../lib/action
 import { api } from '../lib/api';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { useMasonry } from '../lib/masonry';
-import type { BoardEvent, Label } from '../lib/types';
+import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentColor, pref, replay } from '../lib/util';
 import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
@@ -433,13 +433,30 @@ function useRecentEvents(path: string | undefined, live: BoardEvent[] | undefine
   return { events, loading, done, error, loadMore };
 }
 
+/** 侧栏「正在工作」的计时：自己每秒走表，侧栏其余部分（要遍历全部卡片）不跟着每秒重渲染 */
+function RunTime({ card: c }: { card: Card }) {
+  const now = useNow(1000);
+  const online = useOnline();
+  const t = timing(c, now, online);
+  return (
+    <span className={cx('tm run-tm', t.beat)} title="这一次的耗时">
+      <i className="beat" />
+      {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
+    </span>
+  );
+}
+
+/** 「几分钟前」：半分钟更新一次 */
+function Ago({ at }: { at: number }) {
+  const now = useNow(30000);
+  return <>{ago(at, now)}</>;
+}
+
 function BoardSide() {
   const board = useData(s => s.board);
   const detailId = useData(s => s.detailId);
   const cur = useCurrent();
   const filter = useUI(s => s.filter);
-  const now = useNow(1000);
-  const online = useOnline();
   const meName = useMeName();
   const [closed, setClosed] = useState<Set<string>>(() => new Set(pref.get<string[]>('treeClosed', [])));
   const toggle = (id: string) =>
@@ -510,30 +527,24 @@ function BoardSide() {
           {!board && (cur?.board.holders.length ?? 1) > 0 ? (
             <SkeletonRows n={cur?.board.holders.length ?? 1} kind="working" />
           ) : holders.length ? (
-            holders.map(c => {
-              const t = timing(c, now, online);
-              return (
-                <button
-                  key={c.id}
-                  className={cx('tree-row card-row', detailId === c.id && 'active')}
-                  type="button"
-                  style={{ paddingLeft: 20 }}
-                  onClick={() => openCard(c.id)}
-                >
-                  <Avatar actor={agent(c.holder!)} />
-                  <span className="tt">
-                    <span className="mono" style={{ color: agentColor(c.holder!) }}>
-                      {c.holder}
-                    </span>{' '}
-                    · #{c.id} <Title text={c.title} />
-                  </span>
-                  <span className={cx('tm run-tm', t.beat)} title="这一次的耗时">
-                    <i className="beat" />
-                    {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
-                  </span>
-                </button>
-              );
-            })
+            holders.map(c => (
+              <button
+                key={c.id}
+                className={cx('tree-row card-row', detailId === c.id && 'active')}
+                type="button"
+                style={{ paddingLeft: 20 }}
+                onClick={() => openCard(c.id)}
+              >
+                <Avatar actor={agent(c.holder!)} />
+                <span className="tt">
+                  <span className="mono" style={{ color: agentColor(c.holder!) }}>
+                    {c.holder}
+                  </span>{' '}
+                  · #{c.id} <Title text={c.title} />
+                </span>
+                <RunTime card={c} />
+              </button>
+            ))
           ) : (
             <div className="tree-empty" style={{ paddingLeft: 20 }}>
               没有 agent 在工作
@@ -556,7 +567,7 @@ function BoardSide() {
                         </b>{' '}
                         {OP[ev.op] || ev.op} <span className="mono">#{ev.cardId}</span>
                         <span className="when">
-                          {ago(ev.at, now)}
+                          <Ago at={ev.at} />
                           {ev.via === 'cli' ? ' · CLI' : ''}
                         </span>
                       </div>

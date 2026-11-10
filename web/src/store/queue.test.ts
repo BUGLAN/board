@@ -2,7 +2,7 @@
    成功后刷新再撤补丁，失败只撤自己那一层；保存完之前同一个对象不能再改（BUSY）。
    服务端是下面的假 api：卡片命令挂起，由用例决定什么时候成功、失败 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BoardSnapshot, CardDetail, Cmd, Workspace } from '../lib/types';
+import type { BoardEvent, BoardSnapshot, CardDetail, Cmd, Workspace } from '../lib/types';
 import { card, detail, snapshot, workspace } from '../../test/fixtures';
 import type * as Data from './data';
 
@@ -19,6 +19,12 @@ const server = vi.hoisted(() => ({
   calls: [] as Call[],
   other: [] as { name: string; ok: () => void; fail: () => void }[],
   hosts: null as null | ((r: { hosts: []; dispatches: [] }) => void),
+  /** 推送：boot() 之后由用例调用 */
+  push: null as null | ((m: { rev: number; events: BoardEvent[] }) => void),
+  /** 各接口被调用的次数 */
+  n: { workspace: 0, board: 0 },
+  /** 设了就让 api.board 等它（让刷新停在半路） */
+  gate: null as null | Promise<void>,
 }));
 
 vi.mock('../lib/api', async orig => {
@@ -26,10 +32,21 @@ vi.mock('../lib/api', async orig => {
   const clone = <T,>(x: T): T => structuredClone(x);
   return {
     ...real,
-    connect: () => () => {},
+    connect: (onMessage: (m: { rev: number; events: BoardEvent[] }) => void) => {
+      server.push = onMessage;
+      return () => {};
+    },
     api: {
-      workspace: async () => clone(server.ws),
-      board: async (path: string) => clone(server.boards[path]),
+      workspace: async () => {
+        server.n.workspace++;
+        return clone(server.ws);
+      },
+      board: async (path: string) => {
+        server.n.board++;
+        const snap = clone(server.boards[path]);
+        if (server.gate) await server.gate;
+        return snap;
+      },
       card: async (path: string, id: number) => detail(clone(server.boards[path].cards[id])),
       hosts: () => new Promise(res => (server.hosts = res)),
       cmd: (board: string, cmd: Cmd) =>
@@ -53,11 +70,18 @@ let D: typeof Data;
 /** 等挂起的 Promise 链走完（请求排队、刷新） */
 const settle = () => new Promise(r => setTimeout(r, 0));
 const title = (id: number) => D.useData.getState().board!.cards[id].title;
-/** 服务端把卡片改成这样（模拟命令成功后的数据） */
+/** 服务端把卡片改成这样（模拟命令成功后的数据）；全局 rev 加一，返回新的 rev */
 const serverEdit = (path: string, id: number, change: object) => {
   const b = server.boards[path];
   b.cards[id] = { ...b.cards[id], ...change };
+  const rev = server.ws.rev + 1;
+  server.ws.rev = rev;
+  for (const x of Object.values(server.boards)) x.rev = rev;
+  return rev;
 };
+const event = (board: string, cardId = 1): BoardEvent => ({
+  id: Math.random(), board, cardId, title: '', at: 0, actor: { kind: 'agent', name: 'claude/x' }, op: 'edit', text: '', via: 'cli',
+});
 
 beforeEach(async () => {
   vi.resetModules(); // 队列、补丁层、刷新状态都是模块级的
@@ -69,6 +93,9 @@ beforeEach(async () => {
   server.calls = [];
   server.other = [];
   server.hosts = null;
+  server.push = null;
+  server.n = { workspace: 0, board: 0 };
+  server.gate = null;
   D = await import('./data');
   await D.refresh();
   expect(D.useData.getState().path).toBe('p/a');
@@ -195,5 +222,130 @@ describe('写队列', () => {
     server.hosts!({ hosts: [{ name: 'mbp' }] as never, dispatches: [] });
     await h2;
     expect(D.useData.getState().ws!.hosts).toEqual([{ name: 'mbp' }]);
+  });
+});
+
+describe('推送与刷新', () => {
+  beforeEach(async () => {
+    D.boot();
+    await settle();
+    server.n = { workspace: 0, board: 0 };
+  });
+
+  it('写操作返回后的刷新进行中，推送带来的新 rev 不再多加载一轮', async () => {
+    const a = rename(1, 'A');
+    await settle();
+    const rev = serverEdit('p/a', 1, { title: 'A' });
+    let open!: () => void;
+    server.gate = new Promise(r => (open = r));
+    server.calls[0].ok();
+    await settle(); // exec 发起的刷新停在取白板上
+    expect(server.n.board).toBe(1);
+    server.push!({ rev, events: [{ ...event('p/a'), via: 'ui' }] });
+    open();
+    server.gate = null;
+    await a;
+    await settle();
+    expect(server.n.board).toBe(1);
+    expect(title(1)).toBe('A');
+  });
+
+  it('推送比写操作的响应先到：只加载一轮（按动态时间认出推送里就是这次修改）', async () => {
+    const a = rename(1, 'A');
+    await settle();
+    const rev = serverEdit('p/a', 1, { title: 'A' });
+    server.push!({ rev, events: [{ ...event('p/a'), at: 500, client: 'me', via: 'ui' }] });
+    await settle();
+    expect(server.n.board).toBe(1);
+    server.calls[0].ok({ ...detail(card(1, { title: 'A' })), activity: [{ id: 9, at: 500 }] as never });
+    await a;
+    await settle();
+    expect(server.n.board).toBe(1);
+    expect(title(1)).toBe('A');
+  });
+
+  it('响应里的动态比见过的推送新（推送还没到）：照常刷新', async () => {
+    const a = rename(1, 'A');
+    await settle();
+    server.push!({ rev: server.ws.rev, events: [{ ...event('p/a'), at: 100 }] });
+    await settle();
+    serverEdit('p/a', 1, { title: 'A' });
+    server.calls[0].ok({ ...detail(card(1, { title: 'A' })), activity: [{ id: 9, at: 500 }] as never });
+    await a;
+    expect(server.n.board).toBe(1);
+    expect(title(1)).toBe('A');
+  });
+
+  it('别处的修改：推送到了就重取当前白板', async () => {
+    const rev = serverEdit('p/a', 2, { title: '别处改的' });
+    server.push!({ rev, events: [event('p/a', 2)] });
+    await settle();
+    expect(server.n.board).toBe(1);
+    expect(title(2)).toBe('别处改的');
+    // 同一个 rev 再推一次（例如重连后的第一条）：不再取
+    server.push!({ rev, events: [] });
+    await settle();
+    expect(server.n.board).toBe(1);
+  });
+
+  it('变化都属于别的白板：只取工作区，不取当前白板', async () => {
+    server.ws.rev += 1;
+    server.ws.projects[0].name = '改名了';
+    server.push!({ rev: server.ws.rev, events: [event('p/b'), event('p/b', 2)] });
+    await settle();
+    expect(server.n).toEqual({ workspace: 1, board: 0 });
+    expect(D.useData.getState().ws!.projects[0].name).toBe('改名了');
+    // 之后当前白板的变化照样重取（只取工作区不会让当前白板的 rev 往前走）
+    const rev = serverEdit('p/a', 1, { title: 'A2' });
+    server.push!({ rev, events: [event('p/a')] });
+    await settle();
+    expect(server.n.board).toBe(1);
+    expect(title(1)).toBe('A2');
+  });
+
+  it('没有事件的变化、落后太多（rev < 0）：全量刷新', async () => {
+    server.ws.rev += 1;
+    server.push!({ rev: server.ws.rev, events: [] });
+    await settle();
+    expect(server.n.board).toBe(1);
+    server.push!({ rev: -1, events: [] });
+    await settle();
+    expect(server.n.board).toBe(2);
+  });
+
+  it('刷新后没变的卡片、标签、在线名单沿用原来的对象', async () => {
+    const before = D.useData.getState();
+    const online = D.useData.getState().ws!.agents;
+    const rev = serverEdit('p/a', 2, { title: '只改了这张' });
+    server.ws.agents = [{ name: 'claude/x' }] as never;
+    server.push!({ rev, events: [event('p/a', 2)] });
+    await settle();
+    const after = D.useData.getState();
+    expect(after.board).not.toBe(before.board);
+    expect(after.board!.cards[1]).toBe(before.board!.cards[1]);
+    expect(after.board!.cards[3]).toBe(before.board!.cards[3]);
+    expect(after.board!.cards[2]).not.toBe(before.board!.cards[2]);
+    expect(after.board!.statuses).toBe(before.board!.statuses);
+    expect(after.ws!.projects[0].labels).toBe(before.ws!.projects[0].labels);
+    expect(after.ws!.agents).not.toBe(online);
+  });
+});
+
+describe('share（结构共享）', () => {
+  it('相同的部分沿用原来的对象，变了的换新', () => {
+    const a = { x: { y: [1, 2] }, z: { w: 1 }, arr: [{ id: 1 }, { id: 2 }] };
+    const b = { x: { y: [1, 2] }, z: { w: 2 }, arr: [{ id: 1 }, { id: 3 }] };
+    const r = D.share(a, b);
+    expect(r).toEqual(b);
+    expect(r.x).toBe(a.x);
+    expect(r.z).not.toBe(a.z);
+    expect(r.arr[0]).toBe(a.arr[0]);
+    expect(r.arr[1]).not.toBe(a.arr[1]);
+    expect(D.share(a, structuredClone(a))).toBe(a);
+    // 多了、少了键或元素：换新
+    expect(D.share({ a: 1 }, { a: 1, b: 2 })).toEqual({ a: 1, b: 2 });
+    expect(D.share({ a: 1, b: 2 }, { a: 1 })).toEqual({ a: 1 });
+    expect(D.share([1, 2], [1])).toEqual([1]);
+    expect(D.share(null, { a: 1 })).toEqual({ a: 1 });
   });
 });

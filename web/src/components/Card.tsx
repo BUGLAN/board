@@ -1,5 +1,5 @@
 /* 卡片：白板状态块与侧栏「未整理」共用 */
-import { memo, useLayoutEffect, useRef } from 'react';
+import { memo, useLayoutEffect, useRef, useState } from 'react';
 import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, ago, clock, cx, durWords, replay } from '../lib/util';
@@ -52,7 +52,10 @@ export const CardView = memo(function CardView({
   card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next, claimName = '待办', onTriage,
 }: Props) {
   const held = !!c.holder;
-  const now = useNow(held ? 1000 : 30000);
+  // 只有被持有的卡片要每秒走表；「未整理」里显示「几分钟前」，半分钟一次；其他卡片用不到时间，不起定时器
+  const now = useNow(held ? 1000 : c.column === 'inbox' ? 30000 : null);
+  // 磁贴的悬浮卡：悬停或键盘聚焦时才渲染（终点状态的磁贴很多，每张都带一份很浪费）
+  const [pop, setPop] = useState(false);
   const ref = useRef<HTMLElement>(null);
   const sel = useUI(s => s.labelSel);
   // 正在写入的标签（拖上来还没确认）
@@ -105,6 +108,10 @@ export const CardView = memo(function CardView({
       data-flip={`c${c.id}`}
       aria-label={draft ? `正在新建：${c.title}` : `#${c.id} ${c.title}`}
       style={style}
+      onPointerEnter={shape === 'tile' ? () => setPop(true) : undefined}
+      onPointerLeave={shape === 'tile' ? () => setPop(false) : undefined}
+      onFocus={shape === 'tile' ? e => e.target === e.currentTarget && e.currentTarget.matches(':focus-visible') && setPop(true) : undefined}
+      onBlur={shape === 'tile' ? e => e.target === e.currentTarget && setPop(false) : undefined}
     >
       {c.column === 'inbox' ? (
         <>
@@ -140,28 +147,30 @@ export const CardView = memo(function CardView({
         <>
           <span className="ct-id">{no}</span>
           {doing && <i className={cx('ct-beat', t.beat)} />}
-          <span className="ct-pop" role="tooltip">
-            <span className="ct-pop-head">
-              <b>#{no}</b>
-              {doing && (
-                <>
-                  <span className="ct-pop-holder">
-                    <Avatar actor={agent(c.holder!)} />
-                    {c.holder}
-                  </span>
-                  <RunPill card={c} now={now} />
-                </>
+          {pop && !placeholder && (
+            <span className="ct-pop" role="tooltip">
+              <span className="ct-pop-head">
+                <b>#{no}</b>
+                {doing && (
+                  <>
+                    <span className="ct-pop-holder">
+                      <Avatar actor={agent(c.holder!)} />
+                      {c.holder}
+                    </span>
+                    <RunPill card={c} now={now} />
+                  </>
+                )}
+              </span>
+              <span className="ct-pop-title">
+                <Title text={c.title} />
+              </span>
+              {c.labels.length > 0 && (
+                <span className="ct-pop-labels">
+                  <LabelChips ids={c.labels} labels={labels} pending={pending} />
+                </span>
               )}
             </span>
-            <span className="ct-pop-title">
-              <Title text={c.title} />
-            </span>
-            {c.labels.length > 0 && (
-              <span className="ct-pop-labels">
-                <LabelChips ids={c.labels} labels={labels} pending={pending} />
-              </span>
-            )}
-          </span>
+          )}
         </>
       ) : shape === 'line' ? (
         <div className="card-line">

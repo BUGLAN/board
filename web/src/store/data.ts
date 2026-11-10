@@ -333,35 +333,109 @@ export const useCurrent = () => {
 
 export const serverNow = () => Date.now() + get().offset;
 
-/** 在线的 agent 名字；工作区还没取到（或旧服务端没有在线列表）时为 null */
-const onlineOf = (ws: Workspace | null): Set<string> | null => (ws?.agents ? new Set(ws.agents.map(a => a.name)) : null);
-let onlineCache: [Workspace | null, Set<string> | null] = [null, null];
-export const useOnline = () =>
-  useData(s => {
-    if (onlineCache[0] !== s.ws) onlineCache = [s.ws, onlineOf(s.ws)];
-    return onlineCache[1];
-  });
+/** 在线的 agent 名字；工作区还没取到（或旧服务端没有在线列表）时为 null。
+    名字没变就沿用同一个 Set（agent 每次心跳都会让列表换成新的对象，卡片不用因此重渲染） */
+const online: { src: unknown; key: string | null; set: Set<string> | null } = { src: {}, key: null, set: null };
+function onlineOf(ws: Workspace | null): Set<string> | null {
+  const agents = ws?.agents;
+  if (agents === online.src) return online.set;
+  online.src = agents;
+  const key = agents ? agents.map(a => a.name).join('\n') : null;
+  if (key !== online.key) {
+    online.key = key;
+    online.set = agents ? new Set(agents.map(a => a.name)) : null;
+  }
+  return online.set;
+}
+export const useOnline = () => useData(s => onlineOf(s.ws));
 
 /* ------------------------------ 加载 ------------------------------ */
 
+/** 结构共享：next 里和 prev 相同的部分沿用 prev 的对象。每次刷新拿到的都是全新的对象，
+    不这样做的话一条和某张卡无关的推送也会让整块白板的卡片重渲染（React.memo、选择器都按引用比较） */
+export function share<T>(prev: unknown, next: T): T {
+  if (prev === next || typeof prev !== 'object' || typeof next !== 'object' || !prev || !next) return next;
+  if (Array.isArray(prev) !== Array.isArray(next)) return next;
+  if (Array.isArray(next)) {
+    const p = prev as unknown[];
+    let same = p.length === next.length;
+    const out = next.map((v, i) => {
+      const x = share(p[i], v);
+      if (x !== p[i]) same = false;
+      return x;
+    });
+    return (same ? prev : out) as T;
+  }
+  const p = prev as Record<string, unknown>;
+  const n = next as Record<string, unknown>;
+  const keys = Object.keys(n);
+  let same = keys.length === Object.keys(p).length;
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    const x = share(p[k], n[k]);
+    out[k] = x;
+    if (x !== p[k] || !(k in p)) same = false;
+  }
+  return (same ? prev : out) as T;
+}
+
 let inflight: Promise<void> | null = null;
+/** 正在进行的这一轮之后再来一轮全量：发起时不知道正在进行的那一轮带不带得上（写操作返回后、切换白板、断线重连） */
 let again = false;
+/** 推送说服务端到了这个 rev，当前白板要重取到它。推送一般在写操作的响应之后到，那时写操作发起的刷新已经能拿到它：
+    这一轮加载到的 rev 不比它旧就不再来一轮（以前每次写都完整加载两遍） */
+let wantBoard = 0;
+/** 只有别的白板变了：工作区（顶栏、切换器的卡片数）要到这个 rev，当前白板不用重取 */
+let wantWs = 0;
+/** 当前白板、工作区分别加载到的 rev（rev 是全局的） */
+let boardRev = 0;
+let wsRev = 0;
 
 export function refresh(): Promise<void> {
-  if (inflight) {
-    again = true;
-    return inflight;
+  again = true;
+  return pump();
+}
+
+/** 推送里见过的卡片变化：「白板路径#卡片」→ 最新一条事件的时间和那次推送的 rev（只留最近的一些） */
+const pushed = new Map<string, { at: number; rev: number }>();
+function notePushed(rev: number, events: BoardEvent[]) {
+  for (const e of events) {
+    const k = `${e.board}#${e.cardId}`;
+    const old = pushed.get(k);
+    pushed.delete(k);
+    pushed.set(k, { at: Math.max(e.at, old?.at ?? 0), rev: Math.max(rev, old?.rev ?? 0) });
   }
+  while (pushed.size > 200) pushed.delete(pushed.keys().next().value!);
+}
+
+/** 写操作返回后的刷新。推送常常比响应先到（服务端提交后马上推送）：那条推送已经让当前白板重取到包含这次修改的 rev，
+    只要等它；认法是服务端给这次修改记的动态和推送里的事件时间相同。认不出（没有动态、推送还没到）时全量刷新一轮 */
+function refreshAfter(path: string, r: CardDetail | null): Promise<void> {
+  const at = r?.activity?.length ? Math.max(...r.activity.map(a => a.at)) : null;
+  const seen = r && pushed.get(`${path}#${r.id}`);
+  if (at == null || !seen || seen.at < at || get().path !== path) return refresh();
+  wantBoard = Math.max(wantBoard, seen.rev);
+  return pump();
+}
+
+/** 按需要一轮接一轮地加载，同时只有一轮在进行 */
+function pump(): Promise<void> {
+  if (inflight) return inflight;
+  if (!again && boardRev >= wantBoard && wsRev >= wantWs) return Promise.resolve();
   inflight = (async () => {
-    do {
+    while (again || boardRev < wantBoard || wsRev < wantWs) {
+      const full = again || boardRev < wantBoard;
       again = false;
       try {
-        await load();
+        await (full ? load() : loadWs());
         set({ error: null });
       } catch (e) {
         set({ error: (e as Error).message });
+        // 失败了不按 rev 反复重试：等下一次推送、重连或操作
+        wantBoard = Math.min(wantBoard, boardRev);
+        wantWs = Math.min(wantWs, wsRev);
       }
-    } while (again);
+    }
   })().finally(() => {
     inflight = null;
   });
@@ -378,7 +452,7 @@ async function load() {
     switchTo(path);
   }
   const detailId = get().detailId;
-  const [board, detail] = await Promise.all([
+  const [fetched, rawDetail] = await Promise.all([
     api.board(path),
     detailId != null ? api.card(path, detailId).catch(() => null) : Promise.resolve(null),
   ]);
@@ -388,14 +462,31 @@ async function load() {
     return;
   }
   const prev = st.board;
-  if (prev && prev.path === board.path) flip.capture();
+  if (prev && prev.path === fetched.path) flip.capture();
   else flip.reset();
+  const board = share(base.board?.path === fetched.path ? base.board : snapshots.get(fetched.path), fetched);
+  const detail = rawDetail && share(base.detail?.id === rawDetail.id ? base.detail : details.get(`${path}#${rawDetail.id}`), rawDetail);
   snapshots.set(board.path, board);
   if (detail) details.set(`${path}#${detail.id}`, detail);
-  base.ws = ws;
+  base.ws = share(base.ws, ws);
   base.board = board;
   if (st.detailId === detailId && detail) base.detail = detail;
-  render({ rev: Math.max(ws.rev, board.rev), offset: ws.now - Date.now() });
+  boardRev = Math.max(ws.rev, board.rev);
+  wsRev = ws.rev;
+  render({ rev: boardRev, offset: ws.now - Date.now() });
+}
+
+/** 只取工作区：推送里的变化都属于别的白板时用（顶栏、切换器要用它的卡片数），不重取当前白板 */
+async function loadWs() {
+  const ws = await api.workspace();
+  // 当前白板不在了（例如在别处删掉）：全量刷新，换到别的白板
+  if (!allBoards(ws).some(b => b.path === get().path)) {
+    again = true;
+    return;
+  }
+  base.ws = share(base.ws, ws);
+  wsRev = ws.rev;
+  render({ offset: ws.now - Date.now() });
 }
 
 /** 只刷新机器和派发（机器页打开时每 10 秒一次：机器心跳不推送，靠它更新「最近心跳」） */
@@ -574,7 +665,7 @@ export async function exec(cmd: Cmd, patch?: Patch): Promise<CardDetail> {
         render({ detailError: null });
       }
     }
-    await refresh();
+    await refreshAfter(path, cmd.op === 'delete' ? null : r);
     return r;
   } finally {
     if (l) drop(l);
@@ -596,9 +687,19 @@ export function boot() {
   refresh();
   return connect(
     m => {
-      const fresh = m.rev !== get().rev || m.rev < 0;
-      const events = (m.events || []).filter(e => e.client !== CLIENT_ID || e.via !== 'ui');
-      const done = fresh ? refresh() : Promise.resolve();
+      const all = m.events || [];
+      const events = all.filter(e => e.client !== CLIENT_ID || e.via !== 'ui');
+      let done: Promise<void>;
+      // 落后太多（rev < 0）：全量刷新
+      if (m.rev < 0) done = refresh();
+      else {
+        // 变化都属于别的白板：只取工作区。没有事件的变化（超时释放、机器、标签……）不知道影响哪里，按当前白板算
+        notePushed(m.rev, all);
+        const here = !all.length || all.some(e => e.board === get().path);
+        if (here) wantBoard = Math.max(wantBoard, m.rev);
+        wantWs = Math.max(wantWs, m.rev);
+        done = pump();
+      }
       if (events.length) done.then(() => listeners.forEach(fn => fn(events)));
     },
     status => {
