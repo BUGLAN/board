@@ -145,6 +145,7 @@ board heartbeat start         # 会话开始：启动后台心跳（每 10 秒�
 board heartbeat final 2       # 结束这张卡片这一次的计时
 board heartbeat stop          # 会话结束：停掉后台心跳，名字立刻离线
 board new "标题" --body "描述" # 新建卡片；--inbox 记到「未整理」最下面
+board new "标题" --body-file body.md   # 多行描述写进文件（Windows 的 board.cmd 只能这样传多行）；comment 用 --comment-file
 board attach 2 shot.png --comment "截图"  # 上传附件
 board host --name mbp --dir oss/main=~/repo/oss   # 在这台机器上常驻接任务（Ctrl+C 退出）；内置 dsh、Claude Code、pi、Codex，其他 agent 见 docs/agents.md
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止

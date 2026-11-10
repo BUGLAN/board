@@ -104,7 +104,7 @@ Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以
 
 ## 会话开始
 
-每个会话开始时做一次（处理卡片、白板、一句话需求之前）。由 board host 启动的会话只做第 0、4 步（见上一节）：
+每个会话开始时做一次（处理卡片、白板、一句话需求之前）。由 board host 启动的会话只做第 0、4、5 步（见上一节）：
 
 0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），下文写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。
 1. **生成名字**：`<运行环境>/<模型>`，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`codex/gpt-5`。
@@ -127,6 +127,16 @@ Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以
    ```
 
    你的每条命令都在新的 shell 里跑，`export` 留不到下一条。下文的命令为了简洁省略了这两个参数。
+5. **多行内容写进文件再传**：卡片描述、评论（交审评论就有多行）在 Windows 上**必须**这样传：`board.cmd` 要经过 cmd.exe，参数里的换行会把整条命令截断在第一行，只剩第一行被保存。先把内容写进一个 UTF-8 文件（例如会话的临时目录里），再用：
+
+   ```sh
+   board new "<标题>" --body-file <文件> [--label <标签>]…
+   board edit <ID> --body-file <文件>
+   board comment <ID> --comment-file <文件>
+   board attach <ID> <截图> --comment-file <文件>
+   ```
+
+   文件写 `-` 时从标准输入读。其他平台直接写在 `--body "…"` 里也行；只有一行的内容照常写在参数里。
 
 worktree 不在这里创建：会话里第一次处理要改代码的卡片时才创建（见「代码」）。
 
@@ -330,9 +340,10 @@ board comment <ID> "<整理说明；信息不够时列出需要人确认的问�
 ```sh
 board flow                                # 工作流：状态的顺序、标识、名称、规则
 board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]…  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签
+                                          # 多行描述用 --body-file <文件>（Windows 上必须，见「会话开始」第 5 步）；edit 同样
 board show <ID> --json                    # 全部字段和动态
 board ls [--column todo] [--label bug] [--search <文字>]
-board comment <ID> "<内容>"
+board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>
 board check --as <名字>                   # 会话开始时占用名字
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线
 board heartbeat start                     # 会话开始：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
@@ -344,7 +355,7 @@ board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在
 board labels
 board boards                              # 列出所有白板
 board files <ID> [--out <目录>]           # 下载卡片的附件到本地，列出路径
-board attach <ID> <文件>… [--comment "<说明>"]   # 上传附件（图片、日志等，≤ 10 MB），作为一条评论
+board attach <ID> <文件>… [--comment "<说明>" | --comment-file <文件>]   # 上传附件（图片、日志等，≤ 10 MB），作为一条评论
 ```
 
 所有命令都支持 `--json`。被拒绝时退出码为 1，JSON 里是 `{"error": {"code", "message"}}`。

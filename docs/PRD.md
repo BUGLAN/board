@@ -275,21 +275,23 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 | `board flow` | 列出当前白板的工作流：顺序、标识、名称、规则、卡片数，以及每个状态可以去往的状态 |
 | `board ls [--column <状态>] [--search <文字>] [--label <标签>]` | 列出卡片：ID、状态、标题、标签、持有者，按工作流顺序和状态内顺序排列。`--search` 在标题和描述里查找；`--label` 只列出带该标签的卡片 |
 | `board show <ID>` | 显示卡片的全部字段和动态 |
-| `board new "<标题>" [--body "<描述>"] [--top] [--inbox] [--label <标签>]…` | 在首个可领取状态新建卡片；`--inbox` 记到「未整理」最下面；`--label` 可以写多次，按名称匹配（不区分大小写），同一个只算一次；项目里没有这个标签、或它是「仅人可打」时拒绝（`USAGE`，原因里列出可用的标签 / 写明只有人能打），不新建卡片 |
-| `board edit <ID> [--title "<标题>"] [--body "<描述>"]` | 修改标题或描述 |
+| `board new "<标题>" [--body "<描述>" \| --body-file <文件>] [--top] [--inbox] [--label <标签>]…` | 在首个可领取状态新建卡片；`--inbox` 记到「未整理」最下面；`--label` 可以写多次，按名称匹配（不区分大小写），同一个只算一次；项目里没有这个标签、或它是「仅人可打」时拒绝（`USAGE`，原因里列出可用的标签 / 写明只有人能打），不新建卡片 |
+| `board edit <ID> [--title "<标题>"] [--body "<描述>" \| --body-file <文件>]` | 修改标题或描述 |
 | `board move <ID> <状态> [--top]` | 把卡片移到指定状态（标识或名称）；只能沿连线移动（§8 规则 12） |
 | `board claim [<ID>]` | 领取。不带 ID 时按 §8 规则 1 选卡片。返回卡片的全部字段和动态 |
 | `board next` | 只在 `board host` 启动的会话里用（环境里有 `BOARD_HOST`，名字是这次会话生成的），否则 `USAGE`：结算上一张、领下一张接着做（§9.1「会话接着做」），返回内容和 `board claim` 一样；不再接着做时 `SESSION_DONE` |
-| `board comment <ID> "<内容>"` | 追加评论 |
+| `board comment <ID> "<内容>"`<br>`board comment <ID> --comment-file <文件>` | 追加评论 |
 | `board label <ID> +<标签> -<标签> …` | 加标签（`+` 或不带前缀）、去标签（`-`），可以一次写多个；「仅人可打」的标签不能加、去（`USAGE`，§6） |
 | `board labels` | 列出白板所属项目的标签、每个标签的类型（agent 可打 / 仅人可打）、是否优先，以及被多少张卡片使用；`--json` 里是 `human_only`、`priority` |
-| `board attach <ID> <文件>… [--comment "<说明>"]` | 上传附件，连同说明作为一条评论追加到卡片 |
+| `board attach <ID> <文件>… [--comment "<说明>" \| --comment-file <文件>]` | 上传附件，连同说明作为一条评论追加到卡片 |
 | `board files <ID> [--out <目录>]` | 把卡片的附件下载到本地（默认系统临时目录），列出文件路径 |
 | `board host [--name <机器名>] [--dir <项目>/<白板>=<路径>]…` | 在这台机器上常驻接任务（§9.1），前台运行，`Ctrl+C` 退出 |
 | `board dispatch <ID> --host <机器名> [--agent <标识>]` | 把卡片派给一台机器上的 agent；不带 `--agent` 用这台机器的默认 agent（§9.1） |
 | `board dispatch <ID> --cancel` | 取消还在排队的派发，或停止正在跑的派发（§9.1） |
 
 `board ls --json`、`board show --json` 的卡片里，`labels` 是标签名，`priority_labels` 是其中的优先标签。
+
+`--body-file`、`--comment-file` 从文件读描述、评论（`-` 读标准输入），和直接写的参数只能给一个；文件按 UTF-8 读，去掉 BOM，带 BOM 的 UTF-16 也认，换行统一成 `\n`，不是 UTF-8 时拒绝（`USAGE`）。Windows 上 skill 的入口 `board.cmd` 要经过 cmd.exe，参数里的换行会把命令截断在第一行，多行内容只能这样传。`board --version` 打印版本号。
 
 ### 9.1 任务下发（board host）
 

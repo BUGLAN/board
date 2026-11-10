@@ -22,9 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 15] = [
+const VALUE_FLAGS: [&str; 17] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent",
+    "--host", "--agent", "--body-file", "--comment-file",
 ];
 const BOOL_FLAGS: [&str; 9] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
@@ -40,15 +40,15 @@ const COMMANDS: [(&str, &str, &str); 23] = [
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\"] [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签"),
-        ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\"]", "修改标题或描述"),
+        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）"),
+        ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\" | --body-file <文件>]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领下一张接着做；做满了、没有可做的返回 SESSION_DONE"),
-        ("comment", "<ID> \"<内容>\"", "追加评论"),
+        ("comment", "<ID> \"<内容>\" | <ID> --comment-file <文件>", "追加评论；多行内容用 --comment-file（- 读标准输入）"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
-        ("attach", "<ID> <文件>… [--comment \"<说明>\"]", "上传附件（图片、日志等），连同说明作为一条评论"),
+        ("attach", "<ID> <文件>… [--comment \"<说明>\" | --comment-file <文件>]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
         ("host", "[--name <机器名>] [--dir <项目>/<白板>=<路径>]…", "在这台机器上常驻接任务：派来的卡片在对应目录里启动本机 agent；Ctrl+C 退出（也可写在 ~/.board/config.toml 的 [host]）"),
         ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
@@ -430,7 +430,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             }
             let d = exec(Cmd::New {
                 title,
-                body: a.value("--body").map(|s| s.to_string()),
+                body: text_arg(&a, "--body", "--body-file")?,
                 column: inbox.then(|| INBOX.to_string()),
                 top,
                 labels: with,
@@ -451,14 +451,11 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         }
         "edit" => {
             let id = a.id(sub)?;
-            if a.value("--title").is_none() && a.value("--body").is_none() {
-                return Err(BoardError::usage("board edit 需要 --title 或 --body"));
+            let body = text_arg(&a, "--body", "--body-file")?;
+            if a.value("--title").is_none() && body.is_none() {
+                return Err(BoardError::usage("board edit 需要 --title、--body 或 --body-file"));
             }
-            let d = exec(Cmd::Edit {
-                id,
-                title: a.value("--title").map(|s| s.to_string()),
-                body: a.value("--body").map(|s| s.to_string()),
-            })?;
+            let d = exec(Cmd::Edit { id, title: a.value("--title").map(|s| s.to_string()), body })?;
             if json {
                 Output::Json(fmt.full(&d))
             } else {
@@ -520,7 +517,11 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         }
         "comment" => {
             let id = a.id(sub)?;
-            let text = a.pos[2..].join(" ");
+            let text = match file_arg(&a, "--comment-file")? {
+                Some(_) if a.pos.len() > 2 => return Err(BoardError::usage("评论内容和 --comment-file 只能给一个")),
+                Some(t) => t,
+                None => a.pos[2..].join(" "),
+            };
             let d = exec(Cmd::Comment { id, text })?;
             if json {
                 Output::Json(fmt.full(&d))
@@ -590,7 +591,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 done.push(be.attach(&path, id, &actor, &name, &bytes)?);
             }
             // 附件放进一条评论里，界面的动态里就能看到（图片直接显示）
-            let mut text = a.value("--comment").map(|s| s.trim().to_string()).unwrap_or_default();
+            let mut text = text_arg(&a, "--comment", "--comment-file")?.map(|s| s.trim().to_string()).unwrap_or_default();
             for f in &done {
                 text += &format!("{}{}", if text.is_empty() { "" } else { "\n\n" }, f.markdown);
             }
@@ -1015,6 +1016,48 @@ impl Fmt<'_> {
     }
 }
 
+/* ------------------------------ 从文件读多行文字 ------------------------------ */
+
+/// `--body` / `--comment` 的值：直接写的，或者 `--body-file` / `--comment-file` 从文件读的（两个只能给一个）。
+/// Windows 上 skill 的入口 board.cmd 要经过 cmd.exe，参数里的换行会把整条命令截断在第一行（批处理里补不回来），
+/// 多行内容只能这样传
+fn text_arg(a: &Args, flag: &str, file_flag: &str) -> Result<Option<String>> {
+    match (a.value(flag), file_arg(a, file_flag)?) {
+        (Some(_), Some(_)) => Err(BoardError::usage(format!("{flag} 和 {file_flag} 只能给一个"))),
+        (Some(v), None) => Ok(Some(v.to_string())),
+        (None, t) => Ok(t),
+    }
+}
+
+/// `--xxx-file <文件>` 的内容；`-` 读标准输入
+fn file_arg(a: &Args, file_flag: &str) -> Result<Option<String>> {
+    let Some(f) = a.value(file_flag) else { return Ok(None) };
+    let bytes = if f == "-" {
+        let mut b = vec![];
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut b).map_err(|e| BoardError::usage(format!("读不到标准输入：{e}")))?;
+        b
+    } else {
+        std::fs::read(f).map_err(|e| BoardError::usage(format!("{file_flag}：读不到文件 {f}：{e}")))?
+    };
+    decode_text(&bytes).map(Some).map_err(|e| BoardError::usage(format!("{file_flag} {f}：{e}")))
+}
+
+/// 文件内容按 UTF-8 读：去掉 BOM；带 BOM 的 UTF-16（Windows PowerShell 5.1 的 `>`、Out-File 默认写成这样）也认；
+/// 换行统一成 \n，别的字符原样保留
+pub(crate) fn decode_text(b: &[u8]) -> std::result::Result<String, String> {
+    let utf16 = |be: bool| {
+        let units: Vec<u16> = b[2..].chunks(2).map(|c| if be { u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]) } else { u16::from_le_bytes([c[0], *c.get(1).unwrap_or(&0)]) }).collect();
+        String::from_utf16(&units).map_err(|_| "不是合法的 UTF-16".to_string())
+    };
+    let s = match b {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).map_err(|_| "不是合法的 UTF-8".to_string())?,
+        [0xFF, 0xFE, ..] => utf16(false)?,
+        [0xFE, 0xFF, ..] => utf16(true)?,
+        _ => String::from_utf8(b.to_vec()).map_err(|_| "不是 UTF-8 编码（另存为 UTF-8 再试）".to_string())?,
+    };
+    Ok(s.replace("\r\n", "\n"))
+}
+
 fn help(p: &Paint) -> String {
     let aw = COMMANDS.iter().map(|r| width(r.1)).max().unwrap_or(0) + 2;
     let mut out = vec![
@@ -1222,6 +1265,17 @@ mod tests {
         for (cmd, _, _) in COMMANDS {
             assert!(h.contains(&format!("board {cmd}")), "help 里没有 {cmd}");
         }
+    }
+
+    #[test]
+    fn decode_text_handles_bom_utf16_and_crlf() {
+        assert_eq!(decode_text("一\r\n\r\n二".as_bytes()).unwrap(), "一\n\n二");
+        assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'a', b'\n']).unwrap(), "a\n");
+        let le: Vec<u8> = [0xFF, 0xFE].into_iter().chain("中\r\nb".encode_utf16().flat_map(|u| u.to_le_bytes())).collect();
+        assert_eq!(decode_text(&le).unwrap(), "中\nb");
+        let be: Vec<u8> = [0xFE, 0xFF].into_iter().chain("中".encode_utf16().flat_map(|u| u.to_be_bytes())).collect();
+        assert_eq!(decode_text(&be).unwrap(), "中");
+        assert!(decode_text(&[0xC4, 0xE3]).is_err(), "GBK 不当成 UTF-8 乱读");
     }
 
     #[test]

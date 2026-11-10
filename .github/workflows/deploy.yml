@@ -1,6 +1,7 @@
 # 测试与部署（docs/deploy.md「自动部署」）：
 #   push main   → test：npm ci → cargo test → 界面类型检查 → 界面单元测试；不部署
-#               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final）
+#               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final），
+#                 以及多行正文经过 skill 入口 board.cmd 一字不丢（tests/multiline.rs）
 #   push tag v*  → skill：在 macOS 上编各平台的 board，放进 skill 的 bin/，打包 board-skills.zip（和 build、deploy 同时跑）
 #                → desktop：在 macOS、Windows 上构建桌面端安装包（macOS 通用 .dmg；Windows NSIS .exe 和 .msi），和 build、deploy 同时跑
 #                → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
@@ -70,7 +71,7 @@ jobs:
       - name: 界面单元测试
         run: npm --prefix web test
 
-  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs），Linux 上的已经在 test 里跑过
+  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs）、多行正文经过 board.cmd（tests/multiline.rs），Linux 上的已经在 test 里跑过
   heartbeat-windows:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
@@ -86,8 +87,8 @@ jobs:
           # 用固定的共享 key 取代按任务名的 key，让 tag 上的 build 能读到 main 上 test 保存的缓存
           shared-key: board
 
-      - name: board heartbeat 测试
-        run: cargo test --locked -p board-cli --test heartbeat --test agents
+      - name: board heartbeat、多行正文经过 board.cmd 的测试
+        run: cargo test --locked -p board-cli --test heartbeat --test agents --test multiline
 
   # 推 v* tag：编各平台的 board 放进 skill 目录，打包成 board-skills.zip，release 时附上
   skill:

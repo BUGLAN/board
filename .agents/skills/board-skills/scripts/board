@@ -38,6 +38,8 @@ for d in $PATH; do
     [ -n "$d" ] && [ -f "$d/board" ] && [ -x "$d/board" ] || continue
     [ "$(cd "$d" 2>/dev/null && pwd)" = "$here" ] && continue
     IFS=$old_ifs
+    # 不悄悄用：PATH 里的可能是旧版，不认新参数
+    echo "board: skill 目录里没有本平台（${os:-?}-${arch:-?}）的二进制，用的是 PATH 里的 $d/board；命令或参数被拒绝时，用发版附件里的 board-skills.zip 重新安装 skill" >&2
     exec "$d/board" "$@"
 done
 IFS=$old_ifs
