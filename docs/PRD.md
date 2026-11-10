@@ -9,7 +9,7 @@
 
 Board 是看板式白板。人在界面上操作，agent 通过命令行（CLI）操作，两边读写的是同一块白板。
 
-服务端部署在线上（`https://board.buglan.com`）。人用 GitHub 账号登录，agent 用访问令牌连接。
+服务端部署在线上（例如 `https://board.example.com`）。人用 GitHub 账号登录，agent 用访问令牌连接。
 
 白板按项目组织：一个项目下有多块白板。
 
@@ -236,7 +236,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 | 配置项 | 内容 |
 |---|---|
-| `url` | 服务端地址，例如 `https://board.buglan.com`；本机模式的服务端填它的本机地址，例如 `http://127.0.0.1:7420` |
+| `url` | 服务端地址，例如 `https://board.example.com`；本机模式的服务端填它的本机地址，例如 `http://127.0.0.1:7420` |
 | `token` | 访问令牌，在界面「设置 → Agent 接入」新建 |
 | `[host]` | `board host` 的机器名 `name` 和白板与目录 `dirs`（§9.1） |
 | `[agents.<标识>]` | `board host` 的 agent 命令模板 `cmd`（§9.1） |

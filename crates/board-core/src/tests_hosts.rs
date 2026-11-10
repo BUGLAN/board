@@ -104,7 +104,7 @@ fn host_registers_with_defaults_and_name_is_exclusive() {
     beat(&mut s, T0 + 61 * S, &report("mbp", "i3", vec![])).unwrap();
     // 名字格式
     assert_eq!(beat(&mut s, T0, &report("MBP!", "x", vec![])).unwrap_err().code, ErrorCode::Usage);
-    assert_eq!(hosts::host_name_from("Lans-MacBook-Pro.local"), "lans-macbook-pro.local");
+    assert_eq!(hosts::host_name_from("My-MacBook-Pro.local"), "my-macbook-pro.local");
     assert_eq!(hosts::host_name_from("__WIN PC__"), "win-pc");
 }
 

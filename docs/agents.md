@@ -152,16 +152,8 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 - `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）。放在哪一位就是默认顺序里的哪一位。
 - 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序。
 - 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用，并配一个主色（并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
-- `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表、下面的批次记录。
+- `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表。
 - 跑完 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`；需要在别的机器上试时请人发版。
-
-## 批次记录
-
-| 批次 | agent | 结果 |
-|---|---|---|
-| 1 | Claude Code（`claude`） | v0.1.2 内置 |
-| 2 | DeepSeek Harness（`dsh`，设为默认）、pi（`pi`） | 内置。2026-11-09 本机端到端：dsh 0.2.2-rc.1、pi 1.5.0 各做一张卡，都是「已交审」，提交和交审评论齐全；dsh 的「停止」正常。接入时发现 dsh 不传带 TOKEN 的环境变量，加了 `BOARD_CONFIG`、`BOARD_EXE` |
-| 3 | Codex（`codex`）；所有 agent 加上启动环境 | 内置。2026-11-09 macOS 本机：dsh 在登录 shell 里端到端「已交审」、「停止」正常；只写在 `~/.zshrc` 里的 `PATH` 找得到，启动脚本改了 `BOARD_URL` 也会被覆盖回来。Codex 只验证了登录 shell 里找得到命令，端到端还没跑（在 agent 的沙箱 shell 里 codex 起不来）。Windows 的 cmd、PowerShell、Git Bash、WSL 只做了交叉编译和单元测试，要在 Windows 机器上按第 4 步各跑一次 |
 
 ## 出了问题看哪里
 

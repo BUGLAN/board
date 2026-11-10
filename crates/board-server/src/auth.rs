@@ -48,7 +48,7 @@ pub struct GitHub {
     pub client_secret: String,
     /// 允许登录的 GitHub 账号（不区分大小写）
     pub user: String,
-    /// 对外地址，例如 https://board.buglan.com
+    /// 对外地址，例如 https://board.example.com
     pub public_url: String,
     /// GitHub 授权地址与 API 地址（默认 https://github.com、https://api.github.com；测试时指向模拟服务）
     pub oauth_url: String,

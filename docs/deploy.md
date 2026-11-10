@@ -1,6 +1,6 @@
 # 部署 Board 服务端
 
-线上地址 `https://board.buglan.com`。服务器地址和目录不写进仓库，只存在 GitHub 的 Secret `DEPLOY_HOST` 和 Variable `DEPLOY_DIR` 里。结构：
+下文用 `https://board.example.com` 举例，换成自己的域名。自动部署用到的服务器地址和目录不写进仓库，只存在 GitHub 的 Secret `DEPLOY_HOST` 和 Variable `DEPLOY_DIR` 里。结构：
 
 ```
 浏览器 / 桌面端 ─┐
@@ -8,12 +8,12 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
                 ┘                                                                              └─ ./data/board.db
 ```
 
-- HTTPS 证书在 Cloudflare 那边；服务器不开 80/443（443 被 sing-box 占用）。
-- 服务器只有 1 核、2 GB 内存、约 2 GB 空闲磁盘，所以服务器上不编译：推 tag 后由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
+- HTTPS 证书在 Cloudflare 那边，服务器不用开 80/443。
+- 小内存服务器上不编译：推 tag 后由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
 
-- 网页端：浏览器打开 `https://board.buglan.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
+- 网页端：浏览器打开 `https://board.example.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board login --url <服务端地址> --token <访问令牌>` 写进 `~/.board/config.toml`（也可以用环境变量 `BOARD_URL`、`BOARD_TOKEN`，优先于配置文件）。
-- 桌面端：窗口直接打开 `https://board.buglan.com`，用 GitHub 登录时在系统默认浏览器里完成（服务端 `/auth/github?desktop=…` → 本机回环地址 → `/auth/desktop`）。桌面端依赖服务端的这两个地址，升级时先部署服务端，再发桌面端新版本。
+- 桌面端：窗口直接打开线上地址（目前固定为 `https://board.buglan.com`，见 `src-tauri/src/lib.rs`），用 GitHub 登录时在系统默认浏览器里完成（服务端 `/auth/github?desktop=…` → 本机回环地址 → `/auth/desktop`）。桌面端依赖服务端的这两个地址，升级时先部署服务端，再发桌面端新版本。
 
 ## 1. 建 GitHub OAuth App
 
@@ -22,8 +22,8 @@ GitHub → Settings → Developer settings → OAuth Apps → New OAuth App：
 | 项 | 值 |
 |---|---|
 | Application name | Board |
-| Homepage URL | `https://board.buglan.com` |
-| Authorization callback URL | `https://board.buglan.com/auth/github/callback` |
+| Homepage URL | `https://board.example.com` |
+| Authorization callback URL | `https://board.example.com/auth/github/callback` |
 
 建好后记下 Client ID，再点 Generate a new client secret 生成 Client secret。
 
@@ -87,18 +87,18 @@ curl -s http://127.0.0.1:7420/api/health
 `/etc/cloudflared/config.yml` 的 `ingress` 里，在最后的 `http_status:404` 之前加一条：
 
 ```yaml
-  - hostname: board.buglan.com
+  - hostname: board.example.com
     service: http://127.0.0.1:7420
 ```
 
-校验，再建 DNS 记录（CNAME 指向这个 tunnel），最后重启。重启时同一个 tunnel 上的其他域名会断开几秒：
+校验，再建 DNS 记录（CNAME 指向这个 tunnel），最后重启。重启时这个 tunnel 上的所有域名会断开几秒：
 
 ```bash
 cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
 ```
 
 ```bash
-cloudflared tunnel route dns 61368f29-52ea-4bd3-9e07-76ca148df803 board.buglan.com
+cloudflared tunnel route dns <tunnel-id> board.example.com
 ```
 
 ```bash
@@ -110,17 +110,17 @@ systemctl restart cloudflared
 配好后检查：
 
 ```bash
-curl -s https://board.buglan.com/api/workspace
+curl -s https://board.example.com/api/workspace
 ```
 
-应返回 `{"error":{"code":"NOT_LOGGED_IN",…}}`。浏览器打开 `https://board.buglan.com`，用 GitHub 登录。
+应返回 `{"error":{"code":"NOT_LOGGED_IN",…}}`。浏览器打开 `https://board.example.com`，用 GitHub 登录。
 
 ## 5. agent 接入
 
 在网页「设置 → Agent 接入 → 访问令牌」新建令牌（原文只显示一次），页面上给出一条命令，在 agent 所在的电脑上执行：
 
 ```bash
-board login --url https://board.buglan.com --token <访问令牌>
+board login --url https://board.example.com --token <访问令牌>
 ```
 
 它先校验令牌，再写进 `~/.board/config.toml`（权限 0600）。之后：
@@ -167,7 +167,7 @@ docker compose exec board board-server token revoke 3
 
 不配置时和以前一样，只写 `data/backups/`。脚本任何一步失败都会返回非零，并在最后一行打印「失败」；crontab 把输出重定向到 `/var/log/board-backup.log` 后，可以据此做告警。
 
-`data/backups/` 还在同一台服务器上，数据库很小，但服务器磁盘只剩约 2 GB，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
+`data/backups/` 还在同一台服务器上，数据库很小，但服务器磁盘小的话，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
 
 恢复：
 
@@ -284,14 +284,14 @@ release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 boar
    | Secret | `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan` 的输出（SSH 严格校验主机密钥） |
    | Secret | `DEPLOY_HOST` | `用户@服务器`（存成 Secret，Actions 日志里显示为 `***`） |
    | Variable | `DEPLOY_DIR` | 服务器上的仓库目录 |
-   | Variable | `DEPLOY_URL` | `https://board.buglan.com` |
+   | Variable | `DEPLOY_URL` | `https://board.example.com` |
 
 3. 服务器 `.env` 里不用加 `BOARD_IMAGE`：第一次自动部署时会加上。
 
 ### 看部署结果
 
 - GitHub 仓库 Actions → deploy：每一步的输出；失败时 deploy 任务最后打印了容器最近 50 行日志
-- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `version`、`commit`
+- 线上版本：`curl -s https://board.example.com/api/health` 的 `version`、`commit`
 - 服务器上正在运行的镜像：`.env` 的 `BOARD_IMAGE`
 
 ### 回滚
@@ -310,7 +310,7 @@ docker compose logs -f board
 
 1. 先看最近的日志：`docker compose logs --tail 200 board`（加 `-f` 持续跟踪；按时间查用 `--since 1h`）。5xx 响应会额外有一行 `ERROR`，带具体原因（数据库错误、文件错误等），和请求的 span 一起显示方法、路径、调用者。
 2. 需要更细的日志（例如成功的心跳、日志上传）：在 `.env` 里设 `RUST_LOG=debug`，再 `docker compose up -d board`。排查完改回 `RUST_LOG=info` 重启，避免日志被心跳刷掉。
-3. 确认线上版本：`curl -s https://board.buglan.com/api/health`，核对返回的 `version` 和 `commit` 与部署记录、tag 的提交号一致。
+3. 确认线上版本：`curl -s https://board.example.com/api/health`，核对返回的 `version` 和 `commit` 与部署记录、tag 的提交号一致。
 4. 从客户端检查：`board doctor` 看服务端地址、令牌和名字；带白板再跑一次 `board doctor --as <名字> --board <项目>/<白板>`。
 5. 日志按 10 MB 轮转、保留 5 个；旧记录被挤掉时用 `--since` 缩小时间范围，或先看宿主机上的备份和监控。
 

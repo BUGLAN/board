@@ -31,7 +31,7 @@ const USAGE: &str = "用法：
   --local  本机模式：只能监听 127.0.0.1 / ::1，不需要登录
 
 环境变量（线上，用 GitHub 登录）：
-  BOARD_PUBLIC_URL            对外地址，例如 https://board.buglan.com
+  BOARD_PUBLIC_URL            对外地址，例如 https://board.example.com
   BOARD_GITHUB_CLIENT_ID      GitHub OAuth App 的 Client ID
   BOARD_GITHUB_CLIENT_SECRET  GitHub OAuth App 的 Client secret
   BOARD_GITHUB_USER           允许登录的 GitHub 账号

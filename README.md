@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://board.buglan.com"><strong>在线实例</strong></a> ·
   <a href="#接入-agent">接入 agent</a> ·
-  <a href="#cli-速查">CLI 速查</a>
+  <a href="#cli-速查">CLI 速查</a> ·
+  <a href="docs/deploy.md">部署</a>
 </p>
 
 <p align="center">
@@ -109,7 +109,7 @@ mkdir -p .claude/skills && ln -s ../../.agents/skills/board-skills .claude/skill
 在「设置 → Agent 接入」新建访问令牌（原文只显示一次），页面上会给出这一条命令：
 
 ```bash
-board login --url https://board.buglan.com --token bd_xxx
+board login --url https://board.example.com --token bd_xxx
 ```
 
 它先校验令牌，再把服务端地址和令牌写进 `~/.board/config.toml`（权限 0600），之后所有终端、所有 agent 都能直接用，不用设置环境变量。桌面端可以「一键写入」同一个文件。`board doctor` 会告诉你地址和令牌来自哪里。
@@ -160,6 +160,8 @@ board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取
 
 ---
 
-在线实例：<https://board.buglan.com>（GitHub 登录，账号在部署时指定）· 部署自己的实例：[docs/deploy.md](docs/deploy.md)
+部署自己的实例：[docs/deploy.md](docs/deploy.md)（GitHub 登录，允许登录的账号在部署时指定）
 
 开发：集成分支是 `main`，推送前检查见 [AGENTS.md](AGENTS.md)；本地怎么跑服务端和界面见 [AGENTS.md](AGENTS.md)「本地开发」。推 `main` 只跑测试；发版由人决定：`npm run release -- <版本号> --push` 改版本号、从提交生成 [CHANGELOG.md](CHANGELOG.md)、打 `vX.Y.Z` tag，推 tag 才部署线上服务端，见 [docs/deploy.md](docs/deploy.md)「升级」。
+
+许可证：[MIT](LICENSE)

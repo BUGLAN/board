@@ -1,13 +1,13 @@
-# board.buglan.com 的反向代理（nginx 示例）。证书路径换成服务器上的实际位置。
+# board.example.com 的反向代理（nginx 示例）。证书路径换成服务器上的实际位置。
 # board-server 在 127.0.0.1:7420（docker-compose.yml），HTTPS 在这里终结。
 
 server {
     listen 443 ssl;
     http2 on;
-    server_name board.buglan.com;
+    server_name board.example.com;
 
-    ssl_certificate     /etc/ssl/board.buglan.com/fullchain.pem;
-    ssl_certificate_key /etc/ssl/board.buglan.com/privkey.pem;
+    ssl_certificate     /etc/ssl/board.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/board.example.com/privkey.pem;
 
     client_max_body_size 12m;
 
@@ -33,6 +33,6 @@ server {
 
 server {
     listen 80;
-    server_name board.buglan.com;
+    server_name board.example.com;
     return 301 https://$host$request_uri;
 }
