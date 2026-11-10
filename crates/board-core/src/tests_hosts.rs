@@ -973,7 +973,11 @@ fn report_cd(instance: &str) -> HostReport {
 }
 
 fn rule(label: &str, agent: &str) -> ClaimRule {
-    ClaimRule { label: label.into(), agent: agent.into(), active: false }
+    cond("in", &[label], agent)
+}
+
+fn cond(op: &str, labels: &[&str], agent: &str) -> ClaimRule {
+    ClaimRule { op: op.into(), labels: labels.iter().map(|l| l.to_string()).collect(), agent: agent.into(), ..Default::default() }
 }
 
 fn rules(s: &mut Store, list: &[(&str, &str)], fallback: Option<&str>) -> Result<HostInfo> {
@@ -1060,12 +1064,13 @@ fn rules_first_match_wins_and_missing_labels_are_fine() {
     // 一张卡片同时带两条规则的标签：用排在前面的那条
     rules(&mut s, &[("claude", "claude"), ("deepseek", "dsh")], None).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(both, "claude".into())]);
-    // 项目里没有同名标签：不报错，只是匹配不到
+    // 这台机器有目录的项目里都没有的标签：拒绝
     let mut s = store();
     beat(&mut s, T0, &report_cd("i1")).unwrap();
     new_card(&mut s, T0, "A");
-    rules(&mut s, &[("没有这个标签", "claude")], None).unwrap();
-    assert!(round_all(&mut s, T0 + S).is_empty());
+    let e = rules(&mut s, &[("没有这个标签", "claude")], None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("没有这个标签"), "{}", e.message);
 }
 
 #[test]
@@ -1174,4 +1179,92 @@ fn old_hhmm_cron_is_migrated() {
     let h = s.read(|r| r.host("mbp", T0)).unwrap();
     assert!(h.cron_on);
     assert_eq!(h.cron, vec!["0 3 * * *", "30 23 * * *"]);
+}
+
+/* ---------------- 领取规则的条件：in / not_in / equal ---------------- */
+
+fn set_conds(s: &mut Store, list: Vec<ClaimRule>, fallback: Option<&str>) -> Result<HostInfo> {
+    set_host(s, HostPatch { rules: Some(list), fallback: Some(fallback.unwrap_or("").into()), ..Default::default() })
+}
+
+#[test]
+fn rule_conditions_in_not_in_equal() {
+    let setup = || {
+        let mut s = store();
+        beat(&mut s, T0, &report_cd("i1")).unwrap();
+        let lc = label(&mut s, "claude");
+        let ui = label(&mut s, "UI");
+        label(&mut s, "deepseek");
+        let only_c = new_card(&mut s, T0, "只带 claude");
+        tag(&mut s, only_c, lc);
+        let only_ui = new_card(&mut s, T0, "只带 UI");
+        tag(&mut s, only_ui, ui);
+        let both = new_card(&mut s, T0, "claude + UI");
+        tag(&mut s, both, lc);
+        tag(&mut s, both, ui);
+        let none = new_card(&mut s, T0, "无标签");
+        (s, only_c, only_ui, both, none)
+    };
+    // in [claude, UI] → claude：带其中任一个的都由 claude 做
+    let (mut s, c, u, b, _) = setup();
+    set_conds(&mut s, vec![cond("in", &["claude", "ui"], "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into()), (u, "claude".into()), (b, "claude".into())]);
+    // not in [claude] → dsh：不带 claude 的由 dsh 做，带 claude 的跳过
+    let (mut s, _, u, _, n) = setup();
+    set_conds(&mut s, vec![cond("not_in", &["claude"], "dsh")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(u, "dsh".into()), (n, "dsh".into())]);
+    // equal [claude, UI] → claude：只有正好带这两个的匹配
+    let (mut s, _, _, b, _) = setup();
+    set_conds(&mut s, vec![cond("equal", &["UI", "Claude"], "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(b, "claude".into())]);
+    // 多条按顺序第一条命中：in [claude] → claude 在前，not in [UI] → dsh 在后；只带 claude 的两条都命中，归 claude
+    let (mut s, c, _, b, n) = setup();
+    set_conds(&mut s, vec![cond("in", &["claude"], "claude"), cond("not_in", &["UI"], "dsh")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into()), (b, "claude".into()), (n, "dsh".into())]);
+    // 没设兜底时未匹配的按新条件算：equal [claude, UI] 只命中一张，另外 3 张没匹配；设了兜底后不显示
+    let (mut s, ..) = setup();
+    assert_eq!(set_conds(&mut s, vec![cond("equal", &["claude", "UI"], "claude")], None).unwrap().unmatched, 3);
+    assert_eq!(set_conds(&mut s, vec![cond("equal", &["claude", "UI"], "claude")], Some("dsh")).unwrap().unmatched, 0);
+}
+
+#[test]
+fn rule_conditions_are_validated() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    label(&mut s, "claude");
+    assert_eq!(set_conds(&mut s, vec![cond("like", &["claude"], "claude")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(set_conds(&mut s, vec![cond("in", &[], "claude")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(set_conds(&mut s, vec![cond("in", &["没有"], "claude")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(set_conds(&mut s, vec![cond("in", &["claude"], "pi")], None).unwrap_err().code, ErrorCode::Usage);
+    // 标签之后被删：规则原样保留，界面上标出缺的标签
+    let h = set_conds(&mut s, vec![cond("in", &["claude"], "claude")], None).unwrap();
+    assert!(h.rules[0].missing.is_empty() && h.rules[0].active);
+    let id = s.read(|r| r.labels("default")).unwrap()[0].id;
+    s.write(T0, Origin::ui(None), |w| w.delete_label("default", id)).unwrap();
+    assert_eq!(host(&s, T0).rules[0].missing, vec!["claude"]);
+    assert!(set_conds(&mut s, vec![cond("in", &["claude"], "claude")], None).is_ok(), "原样保存不拦");
+}
+
+/// 升级：旧的「单个标签 → agent」换成等价的 in [标签]
+#[test]
+fn old_single_label_rules_are_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report_cd("i1")).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch(r#"UPDATE hosts SET rules = '[{"label":"claude","agent":"claude"}]'"#).unwrap();
+    let mut s = Store::open(&path).unwrap();
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    assert_eq!((h.rules[0].op.as_str(), h.rules[0].labels.clone(), h.rules[0].agent.as_str()), ("in", vec!["claude".to_string()], "claude"));
+    // 行为不变：带 claude（还带别的标签）的卡片照样由 claude 做
+    let lc = label(&mut s, "claude");
+    let ui = label(&mut s, "UI");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    tag(&mut s, c, ui);
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into())]);
 }

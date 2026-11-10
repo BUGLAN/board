@@ -176,12 +176,16 @@ export interface HostInfo {
 export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'canceled' | 'lost' | 'unclaimed';
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */
-/** 一条领取规则 */
+/** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {
-  label: string;
+  /** in 带其中任一个 · not_in 一个都不带 · equal 标签正好是这几个 */
+  op: 'in' | 'not_in' | 'equal';
+  labels: string[];
   agent: string;
   /** agent 在这台机器上找得到（服务端算）；找不到时这条规则不生效 */
   active?: boolean;
+  /** 这台机器有目录的项目里都没有的标签（服务端算） */
+  missing?: string[];
 }
 
 export interface Dispatch {

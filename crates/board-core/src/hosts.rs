@@ -110,6 +110,18 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
     }
+    // 领取规则原来是「单个标签 → agent」：换成等价的 in [标签]
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, rules FROM hosts")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, raw) in rows {
+        let list: Vec<ClaimRule> = serde_json::from_str(&raw).unwrap_or_default();
+        if list.iter().any(|r| r.label.is_some()) {
+            let new: Vec<serde_json::Value> = list.into_iter().map(|r| r.upgraded().stored()).collect();
+            conn.execute("UPDATE hosts SET rules = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).unwrap_or_default()])?;
+        }
+    }
     // 定时领取原来是 HH:MM 时间点：换成等价的 cron 表达式（「M H * * *」），不丢已有配置
     let rows: Vec<(i64, String)> = conn
         .prepare("SELECT id, cron FROM hosts")?
@@ -262,14 +274,61 @@ pub struct HostDir {
     pub path: String,
 }
 
-/// 定时领取的一条领取规则：带这个标签（按名称，不区分大小写）的卡片由这个 agent 做
+/// 定时领取的一条领取规则：卡片的标签满足条件就由这个 agent 做。标签按名称匹配，不区分大小写
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRule {
-    pub label: String,
+    /// `in` 带其中任一个 | `not_in` 一个都不带 | `equal` 标签正好是这几个（顺序无关）
+    #[serde(default = "op_in")]
+    pub op: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// 旧数据（单个标签 → agent）：读入时换成 `in [标签]`
+    #[serde(default, skip_serializing)]
+    pub label: Option<String>,
     pub agent: String,
     /// 服务端发出去时才有：agent 在这台机器上找得到，规则生效
     #[serde(default)]
     pub active: bool,
+    /// 服务端发出去时才有：这台机器有目录的项目里都没有的标签（界面上标出来）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+}
+
+fn op_in() -> String {
+    "in".into()
+}
+
+/// 领取规则的条件
+pub const RULE_OPS: [&str; 3] = ["in", "not_in", "equal"];
+
+impl ClaimRule {
+    /// 旧数据的单个标签换成 `in [标签]`；标签去掉空白、按名称（不区分大小写）去重
+    fn upgraded(mut self) -> ClaimRule {
+        if let Some(l) = self.label.take() {
+            if self.labels.is_empty() {
+                self.labels = vec![l];
+                self.op = "in".into();
+            }
+        }
+        let mut seen: Vec<String> = vec![];
+        self.labels = self
+            .labels
+            .into_iter()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && {
+                let k = l.to_lowercase();
+                !seen.contains(&k) && {
+                    seen.push(k);
+                    true
+                }
+            })
+            .collect();
+        self
+    }
+    /// 存进数据库的样子
+    fn stored(&self) -> serde_json::Value {
+        json!({ "op": self.op, "labels": self.labels, "agent": self.agent })
+    }
 }
 
 /// 一台机器（界面「机器」页）
@@ -512,7 +571,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
         max: r.get(7)?,
         per_session: r.get(19)?,
-        rules: serde_json::from_str(&r.get::<_, String>(20)?).unwrap_or_default(),
+        rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>(20)?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
         fallback: r.get(21)?,
         paused: r.get::<_, i64>(8)? != 0,
         agent: r.get(9)?,
@@ -574,7 +633,16 @@ impl HostRow {
             return None;
         }
         Some(Rules {
-            list: self.rules.iter().map(|r| (r.label.trim().to_lowercase(), r.agent.clone(), self.has_agent(&r.agent))).collect(),
+            list: self
+                .rules
+                .iter()
+                .map(|r| Cond {
+                    op: r.op.clone(),
+                    labels: r.labels.iter().map(|l| l.trim().to_lowercase()).collect(),
+                    agent: r.agent.clone(),
+                    ok: self.has_agent(&r.agent),
+                })
+                .collect(),
             fallback: self.fallback.clone().map(|a| {
                 let ok = self.has_agent(&a);
                 (a, ok)
@@ -647,29 +715,69 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
     })
 }
 
-/// 解析后的领取规则（任务下发：定时领取按标签筛卡片、按标签选 agent）
+/// 一条解析后的领取规则
+struct Cond {
+    op: String,
+    /// 标签名小写
+    labels: Vec<String>,
+    agent: String,
+    /// agent 在这台机器上找得到
+    ok: bool,
+}
+
+impl Cond {
+    /// 卡片的标签（小写）满足条件吗
+    fn matches(&self, card: &[String]) -> bool {
+        match self.op.as_str() {
+            "not_in" => !self.labels.iter().any(|l| card.contains(l)),
+            "equal" => {
+                let mut a: Vec<&String> = card.iter().collect();
+                a.sort();
+                a.dedup();
+                let mut b: Vec<&String> = self.labels.iter().collect();
+                b.sort();
+                b.dedup();
+                a == b
+            }
+            _ => self.labels.iter().any(|l| card.contains(l)),
+        }
+    }
+}
+
+/// 解析后的领取规则（任务下发：定时领取按标签条件筛卡片、选 agent）
 struct Rules {
-    /// （标签名小写，agent，agent 在这台机器上找得到）
-    list: Vec<(String, String, bool)>,
+    list: Vec<Cond>,
     /// 兜底的 agent，找得到
     fallback: Option<(String, bool)>,
 }
 
 impl Rules {
-    /// 一张卡片（标签名小写）交给哪个 agent：第一条匹配上、生效的规则；不带任何一条规则（含不生效的）的标签时用兜底；
-    /// 都没有时不领它
+    /// 一张卡片（标签名小写）交给哪个 agent：按顺序第一条命中、生效的规则；先命中的是不生效的规则（agent 找不到）时不领它；
+    /// 一条都没命中时用兜底；都没有时不领它
     fn agent_for(&self, labels: &[String]) -> Option<&str> {
-        if let Some((_, a, _)) = self.list.iter().find(|(l, _, ok)| *ok && labels.contains(l)) {
-            return Some(a);
+        let hit = self.list.iter().find(|c| c.matches(labels))?;
+        if hit.ok {
+            return Some(&hit.agent);
         }
-        if self.list.iter().any(|(l, _, _)| labels.contains(l)) {
-            return None;
+        None
+    }
+    /// 同上，算上兜底
+    fn route(&self, labels: &[String]) -> Option<&str> {
+        if self.matches_any(labels) {
+            return self.agent_for(labels);
         }
         self.fallback.as_ref().filter(|(_, ok)| *ok).map(|(a, _)| a.as_str())
     }
+    /// 有一条规则命中（不管生效没有）
+    fn matches_any(&self, labels: &[String]) -> bool {
+        self.list.iter().any(|c| c.matches(labels))
+    }
     /// 规则里用到的标签（小写）
     fn labels(&self) -> Vec<String> {
-        self.list.iter().map(|(l, _, _)| l.clone()).collect()
+        let mut out: Vec<String> = self.list.iter().flat_map(|c| c.labels.clone()).collect();
+        out.sort();
+        out.dedup();
+        out
     }
 }
 
@@ -705,8 +813,12 @@ impl<'a> R<'a> {
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
     fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
         let mut info = h.info(now);
+        // 规则里这台机器有目录的项目里都没有的标签：界面上标出来
+        let known = self.host_labels(h)?;
+        for r in info.rules.iter_mut() {
+            r.missing = r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect();
+        }
         if let Some(rules) = h.claim_rules().filter(|r| r.fallback.is_none()) {
-            let all = rules.labels();
             for dir in &h.dirs {
                 let Ok(board) = self.resolve(&dir.board) else { continue };
                 let flow = flow_of(self.conn, board.id)?;
@@ -714,7 +826,7 @@ impl<'a> R<'a> {
                     let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND col = ?2")?;
                     let ids = st.query_map(params![board.id, s.key], |r| r.get::<_, i64>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
                     for id in ids {
-                        if !card_label_names(self.conn, board.id, id)?.iter().any(|l| all.contains(l)) {
+                        if !rules.matches_any(&card_label_names(self.conn, board.id, id)?) {
                             info.unmatched += 1;
                         }
                     }
@@ -722,6 +834,22 @@ impl<'a> R<'a> {
             }
         }
         Ok(info)
+    }
+
+    /// 这台机器有目录的白板所在项目里的标签名（小写）
+    fn host_labels(&self, h: &HostRow) -> Result<Vec<String>> {
+        let mut out: Vec<String> = vec![];
+        for dir in &h.dirs {
+            let Some(project) = dir.board.split('/').next() else { continue };
+            let mut st = self.conn.prepare("SELECT lower(name) FROM labels WHERE project = ?1")?;
+            for n in st.query_map([project], |r| r.get::<_, String>(0))? {
+                let n = n?;
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn dispatches(&self, tail: &str, p: impl rusqlite::Params) -> Result<Vec<Dispatch>> {
@@ -953,7 +1081,7 @@ impl<'a> W<'a> {
         if let Some(r) = &rules {
             let mut keep = vec![];
             for c in list {
-                if r.agent_for(&card_label_names(self.tx, d.board, c.0)?) == Some(d.agent.as_str()) {
+                if r.route(&card_label_names(self.tx, d.board, c.0)?) == Some(d.agent.as_str()) {
                     keep.push(c);
                 }
             }
@@ -1182,26 +1310,37 @@ impl<'a> W<'a> {
             if rules.len() > RULES_LIMIT {
                 return Err(BoardError::usage(format!("领取规则最多 {RULES_LIMIT} 条")));
             }
-            let mut seen: Vec<String> = vec![];
+            let known = self.read().host_labels(&h)?;
             let mut out: Vec<ClaimRule> = vec![];
             for r in rules {
-                let label = r.label.trim().to_string();
-                if label.is_empty() {
-                    return Err(BoardError::usage("领取规则的标签不能为空"));
+                let r = r.clone().upgraded();
+                if !RULE_OPS.contains(&r.op.as_str()) {
+                    return Err(BoardError::usage(format!("领取规则的条件「{}」不对：只能是 in、not_in、equal", r.op)));
                 }
-                if seen.contains(&label.to_lowercase()) {
-                    return Err(BoardError::usage(format!("标签「{label}」在领取规则里写了两次")));
+                if r.labels.is_empty() {
+                    return Err(BoardError::usage("领取规则至少要选一个标签"));
                 }
-                // 新加或改了 agent 的规则：agent 要在这台机器上找得到。原样保留的规则（agent 之后找不到了）不拦
-                let kept = h.rules.iter().any(|x| x.label.trim().eq_ignore_ascii_case(&label) && x.agent == r.agent);
-                if !kept && !h.has_agent(&r.agent) {
-                    return Err(BoardError::usage(format!("机器「{name}」上没有找到 agent「{}」，可选：{}", r.agent, found_list(&h))));
+                // 新加或改过的规则：标签要在这台机器有目录的项目里有，agent 要在这台机器上找得到。
+                // 原样保留的规则（标签被删了、agent 之后找不到了）不拦，界面上标出来
+                let same = |x: &ClaimRule| {
+                    let low = |v: &[String]| {
+                        let mut v: Vec<String> = v.iter().map(|l| l.to_lowercase()).collect();
+                        v.sort();
+                        v
+                    };
+                    x.op == r.op && x.agent == r.agent && low(&x.labels) == low(&r.labels)
+                };
+                if !h.rules.iter().any(same) {
+                    if let Some(l) = r.labels.iter().find(|l| !known.contains(&l.to_lowercase())) {
+                        return Err(BoardError::usage(format!("这台机器有目录的项目里没有标签「{l}」")));
+                    }
+                    if !h.has_agent(&r.agent) {
+                        return Err(BoardError::usage(format!("机器「{name}」上没有找到 agent「{}」，可选：{}", r.agent, found_list(&h))));
+                    }
                 }
-                seen.push(label.to_lowercase());
-                out.push(ClaimRule { label, agent: r.agent.clone(), active: false });
+                out.push(r);
             }
-            let raw = serde_json::to_string(&out.iter().map(|r| json!({ "label": r.label, "agent": r.agent })).collect::<Vec<_>>())
-                .unwrap_or_else(|_| "[]".into());
+            let raw = serde_json::to_string(&out.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
             self.tx.execute("UPDATE hosts SET rules = ?2 WHERE id = ?1", params![h.id, raw])?;
         }
         if let Some(f) = &p.fallback {
@@ -1541,7 +1680,7 @@ impl<'a> W<'a> {
                     let ordered = list.iter().filter(|(id, _)| urgent.contains(id)).chain(list.iter().filter(|(id, _)| !urgent.contains(id)));
                     let mut hit = None;
                     for (id, _) in ordered {
-                        if let Some(agent) = rules.agent_for(&card_label_names(self.tx, board.id, *id)?) {
+                        if let Some(agent) = rules.route(&card_label_names(self.tx, board.id, *id)?) {
                             hit = h.resolved().into_iter().find(|x| x.id == agent).map(|x| (*id, x));
                             break;
                         }

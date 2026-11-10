@@ -432,22 +432,78 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
   );
 }
 
-/** 领取规则：标签 → agent，有顺序（第一条匹配的生效），最后可选兜底。只影响定时领取，手动派发、board claim 不受影响 */
+const OPS: [ClaimRule['op'], string][] = [
+  ['in', '带其中任一个'],
+  ['not_in', '一个都不带'],
+  ['equal', '标签正好是'],
+];
+
+/** 一条规则里的标签：胶囊（可去掉）加一个输入框（回车加上，提示这台机器有目录的项目里的标签） */
+function LabelSet({ value, onChange, names, missing, disabled, id }: { value: string[]; onChange: (v: string[]) => void; names: string[]; missing?: string[]; disabled?: boolean; id: string }) {
+  const [t, setT] = useState('');
+  const add = () => {
+    const l = t.trim();
+    if (!l) return;
+    if (!value.some(x => x.toLowerCase() === l.toLowerCase())) onChange([...value, l]);
+    setT('');
+  };
+  return (
+    <span className="hp-lset">
+      {value.map(l => (
+        <span key={l} className={cx('hp-lset-chip', missing?.includes(l) && 'off')} title={missing?.includes(l) ? '项目里没有这个标签' : undefined}>
+          {l}
+          <button type="button" aria-label={`去掉标签 ${l}`} disabled={disabled} onClick={() => onChange(value.filter(x => x !== l))}>
+            <Icon name="close" />
+          </button>
+        </span>
+      ))}
+      <input
+        className="hp-lset-input"
+        list={id}
+        placeholder={value.length ? '再加' : '标签名'}
+        value={t}
+        maxLength={24}
+        disabled={disabled}
+        aria-label="加一个标签（回车）"
+        onChange={e => setT(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            add();
+          }
+          if (e.key === 'Backspace' && !t && value.length) onChange(value.slice(0, -1));
+        }}
+        onBlur={add}
+      />
+      <datalist id={id}>
+        {names
+          .filter(n => !value.some(x => x.toLowerCase() === n.toLowerCase()))
+          .map(n => (
+            <option key={n} value={n} />
+          ))}
+      </datalist>
+    </span>
+  );
+}
+
+/** 领取规则：条件（带其中任一个 / 一个都不带 / 标签正好是）→ agent，有顺序（第一条命中的生效），最后可选兜底。
+ *  只影响定时领取和会话里的 board next，手动派发、board claim 不受影响 */
 function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean }) {
   const ws = useData(s => s.ws);
   const rules = h.rules ?? [];
   const found = h.agents.filter(a => a.found);
   const agentName = (id: string) => h.agents.find(a => a.id === id)?.name ?? id;
-  // 这台机器有目录的项目里的标签，给输入框做提示（规则按名称匹配，别的名字也可以写）
   const names = useMemo(
     () => [...new Set((ws?.projects ?? []).filter(p => h.dirs.some(d => d.board.startsWith(`${p.key}/`))).flatMap(p => p.labels.map(l => l.name)))],
     [ws, h.dirs],
   );
-  const [label, setLabel] = useState('');
+  const [op, setOp] = useState<ClaimRule['op']>('in');
+  const [labels, setLabels] = useState<string[]>([]);
   const [agent, setAgent] = useState('');
   const pick = agent || found[0]?.id || '';
   const has = (a: string) => found.some(x => x.id === a);
-  const save = (next: ClaimRule[]) => patch({ rules: next.map(r => ({ label: r.label, agent: r.agent, active: has(r.agent) })) });
+  const save = (next: ClaimRule[]) => patch({ rules: next.map(r => ({ op: r.op, labels: r.labels, agent: r.agent, active: has(r.agent), missing: r.missing })) });
+  const edit = (i: number, change: Partial<ClaimRule>) => save(rules.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
   const move = (i: number, d: number) => {
     const next = [...rules];
     const [r] = next.splice(i, 1);
@@ -455,36 +511,29 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
     void save(next);
   };
   const add = () => {
-    const l = label.trim();
-    if (!l || !pick || busy) return;
-    if (rules.some(r => r.label.toLowerCase() === l.toLowerCase())) {
-      toast({ type: 'error', title: `标签「${l}」已经有规则了` });
-      return;
-    }
-    void save([...rules, { label: l, agent: pick }]);
-    setLabel('');
+    if (!labels.length || !pick || busy) return;
+    void save([...rules, { op, labels, agent: pick }]);
+    setLabels([]);
   };
   const fallback = h.fallback || '';
   return (
     <div className="hp-crules">
       <div className="hp-rule-text">
         <b>领取规则</b>
-        <span>定时领取只领带这些标签的卡片，交给对应的 agent；从上到下，第一条匹配的生效。没有规则时领所有可领取的卡片、用默认 agent。手动派发不受影响</span>
+        <span>定时领取只领满足条件的卡片，交给对应的 agent；从上到下，第一条命中的生效。没有规则时领所有可领取的卡片、用默认 agent。手动派发不受影响</span>
       </div>
       {rules.map((r, i) => (
-        <div className={cx('hp-crule', !r.active && 'off')} key={r.label}>
-          <span className="hp-crule-label" title="标签（按名称匹配，不区分大小写）">
-            <Icon name="tag" />
-            {r.label}
-          </span>
+        <div className={cx('hp-crule', !r.active && 'off')} key={`${i}-${r.op}-${r.labels.join(',')}`}>
+          <select className="input hp-crule-op" value={r.op} disabled={busy} aria-label="条件" onChange={e => edit(i, { op: e.target.value as ClaimRule['op'] })}>
+            {OPS.map(([k, t]) => (
+              <option key={k} value={k}>
+                {t}
+              </option>
+            ))}
+          </select>
+          <LabelSet id={`rl-${h.id}-${i}`} value={r.labels} names={names} missing={r.missing} disabled={busy} onChange={v => v.length && edit(i, { labels: v })} />
           <Icon name="chevRight" />
-          <select
-            className="input hp-crule-agent"
-            value={r.agent}
-            disabled={busy}
-            aria-label={`带「${r.label}」的卡片由哪个 agent 做`}
-            onChange={e => save(rules.map((x, j) => (j === i ? { ...x, agent: e.target.value } : x)))}
-          >
+          <select className="input hp-crule-agent" value={r.agent} disabled={busy} aria-label="由哪个 agent 做" onChange={e => edit(i, { agent: e.target.value })}>
             {!has(r.agent) && <option value={r.agent}>{agentName(r.agent)}（找不到）</option>}
             {found.map(a => (
               <option key={a.id} value={a.id}>
@@ -499,28 +548,22 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
           <button type="button" className="icon-btn sm" aria-label="下移" disabled={busy || i === rules.length - 1} onClick={() => move(i, 1)}>
             <Icon name="chevDown" />
           </button>
-          <button type="button" className="icon-btn sm" aria-label={`删除「${r.label}」这条规则`} disabled={busy} onClick={() => save(rules.filter((_, j) => j !== i))}>
+          <button type="button" className="icon-btn sm" aria-label="删除这条规则" disabled={busy} onClick={() => save(rules.filter((_, j) => j !== i))}>
             <Icon name="trash" />
           </button>
           {!r.active && <em className="hp-crule-warn">这台机器上找不到 {agentName(r.agent)}，这条规则不生效</em>}
+          {!!r.missing?.length && <em className="hp-crule-warn">项目里没有标签 {r.missing.map(l => `「${l}」`).join('')}</em>}
         </div>
       ))}
       <div className="hp-crule add">
-        <input
-          className="input hp-crule-input"
-          list={`labels-${h.id}`}
-          placeholder="标签名"
-          value={label}
-          maxLength={24}
-          aria-label="新规则的标签"
-          onChange={e => setLabel(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && add()}
-        />
-        <datalist id={`labels-${h.id}`}>
-          {names.map(n => (
-            <option key={n} value={n} />
+        <select className="input hp-crule-op" value={op} aria-label="新规则的条件" onChange={e => setOp(e.target.value as ClaimRule['op'])}>
+          {OPS.map(([k, t]) => (
+            <option key={k} value={k}>
+              {t}
+            </option>
           ))}
-        </datalist>
+        </select>
+        <LabelSet id={`rl-${h.id}-new`} value={labels} names={names} onChange={setLabels} />
         <Icon name="chevRight" />
         <select className="input hp-crule-agent" value={pick} aria-label="新规则的 agent" onChange={e => setAgent(e.target.value)}>
           {found.map(a => (
@@ -529,7 +572,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
             </option>
           ))}
         </select>
-        <button className="btn sm" type="button" disabled={busy || !label.trim() || !pick} onClick={add}>
+        <button className="btn sm" type="button" disabled={busy || !labels.length || !pick} onClick={add}>
           <Icon name="plus" />
           加规则
         </button>
@@ -542,7 +585,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
             className="input hp-crule-agent"
             value={fallback}
             disabled={busy}
-            aria-label="不带任何规则标签的卡片由哪个 agent 做"
+            aria-label="一条规则都没命中的卡片由哪个 agent 做"
             onChange={e => patch({ fallback: e.target.value })}
           >
             <option value="">不领</option>

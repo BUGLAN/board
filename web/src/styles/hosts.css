@@ -122,6 +122,20 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
 .hp-crule-label svg { width: 12px; height: 12px; color: var(--text-3); }
 .hp-crule .input { width: auto; height: 30px; padding: 0 8px; font-size: 12.5px; }
 .hp-crule-input { width: 120px !important; }
+.hp-crule-op { flex: none; }
+/* 规则里的标签：胶囊 + 输入框，看起来像一个输入框 */
+.hp-lset {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 30px; min-width: 140px; max-width: 100%; padding: 2px 6px;
+  border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
+}
+.hp-lset:focus-within { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent), 0 0 0 3px var(--brand-soft); }
+.hp-lset-chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 2px 0 7px; border-radius: var(--r-xs); font-size: 12px; background: var(--surface-3); }
+.hp-lset-chip.off { color: var(--text-3); text-decoration: line-through; }
+.hp-lset-chip button { display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-3); }
+.hp-lset-chip button:hover { color: var(--text); background: var(--line); }
+.hp-lset-chip svg { width: 10px; height: 10px; }
+.hp-lset-input { flex: 1; min-width: 56px; height: 24px; border: 0; background: transparent; font-size: 12.5px; color: var(--text); }
+.hp-lset-input:focus { outline: none; }
 .hp-crule.off .hp-crule-label { color: var(--text-3); text-decoration: line-through; }
 .hp-crule-warn { flex-basis: 100%; font-style: normal; font-size: 12px; color: var(--warn-text); }
 .hp-crule.fallback .hp-crule-label { color: var(--text-2); }
@@ -340,3 +354,14 @@ select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height
 :root[data-motion="reduced"] .hp-fold-btn svg { transition: none; }
 /* 底部操作栏（移除机器、暂停接单）贴在左栏底部：内容再长也不用滚到底才看得到 */
 .hp-modal .d-main > .d-actions { position: sticky; bottom: -18px; z-index: 2; margin-bottom: -18px; padding-bottom: 14px; background: var(--glass-strong); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+/* 规则一行：条件 | 标签 | → | agent | 上移 下移 删除（标签列伸缩，按钮不换行）；提示占整行 */
+.hp-crule:not(.fallback) { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto repeat(3, auto); column-gap: 4px; }
+.hp-crule.add { grid-template-columns: auto minmax(0, 1fr) auto auto auto; }
+.hp-crule:not(.fallback) > .hp-sp { display: none; }
+.hp-crule:not(.fallback) > .hp-lset { min-width: 0; }
+.hp-crule .hp-crule-op, .hp-crule .hp-crule-agent { max-width: 118px; }
+.hp-crule-warn { grid-column: 1 / -1; }
+@media (max-width: 760px) {
+  .hp-crule:not(.fallback), .hp-crule.add { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .hp-crule:not(.fallback) > .hp-lset { grid-column: 1 / -1; grid-row: 2; }
+}
