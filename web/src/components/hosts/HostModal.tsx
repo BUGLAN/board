@@ -6,7 +6,7 @@ import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, sk
 import { shell } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostInfo } from '../../lib/types';
 import { copyText, cx, durWords, pref, replay } from '../../lib/util';
-import { cronError, describeCron, normalizeCron } from '../../lib/cron';
+import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { hostKey, optimistic, useBusy, useData } from '../../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../../store/ui';
 import { Title, useNow } from '../bits';
@@ -216,7 +216,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             <div className="hp-rule">
               <div>
                 <b>定时领取</b>
-                <span>到了这些 cron 表达式的时间（机器本地时区），在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有可领取的卡片</span>
+                <span>到了这些时间（机器本地时区），在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有可领取的卡片</span>
               </div>
               <button
                 className={cx('toggle', h.cronOn && 'on')}
@@ -702,54 +702,127 @@ function MidPath({ path }: { path: string }) {
   );
 }
 
-/** 定时领取的时间点：胶囊列表，可增删 */
-/** 定时领取的 cron 表达式：胶囊列表（写说明，悬停看表达式），可增删；输入时就地校验，写明哪一段不对 */
+const KINDS: [Schedule['kind'], string][] = [
+  ['daily', '每天'],
+  ['weekdays', '工作日'],
+  ['weekly', '每周'],
+  ['monthly', '每月'],
+  ['minutes', '每隔几分钟'],
+  ['hours', '每隔几小时'],
+];
+const WEEKDAYS: [number, string][] = [[1, '一'], [2, '二'], [3, '三'], [4, '四'], [5, '五'], [6, '六'], [0, '日']];
+const EVERY = { minutes: [5, 10, 15, 20, 30], hours: [1, 2, 3, 4, 6, 8, 12] };
+const two = (n: number) => String(n).padStart(2, '0');
+
+/** 定时领取：胶囊列表（写说明，悬停看 cron 表达式），可去掉；加的时候选「每天 / 工作日 / 每周几 / 每月几号」和时间，
+    或「每隔几分钟 / 几小时」，由 buildCron 生成表达式，不让人手写（手写容易错）。旧的手写表达式说不出来时原样显示 */
 function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[] }) => Promise<void>; busy: boolean }) {
-  const [t, setT] = useState('');
-  const err = t.trim() ? cronError(t) : null;
+  const [kind, setKind] = useState<Schedule['kind']>('daily');
+  const [hour, setHour] = useState(9);
+  const [min, setMin] = useState(0);
+  const [days, setDays] = useState<number[]>([1]);
+  const [day, setDay] = useState(1);
+  const [every, setEvery] = useState({ minutes: 15, hours: 1 });
+  const spec: Schedule =
+    kind === 'minutes' || kind === 'hours'
+      ? { kind, every: every[kind] }
+      : kind === 'weekly'
+        ? { kind, days, h: hour, m: min }
+        : kind === 'monthly'
+          ? { kind, day, h: hour, m: min }
+          : { kind, h: hour, m: min };
+  const cron = buildCron(spec);
+  const dup = !!cron && h.cron.map(normalizeCron).includes(cron);
   const add = () => {
-    if (busy || !t.trim() || err) return;
-    const x = normalizeCron(t);
-    if (!h.cron.map(normalizeCron).includes(x)) void patch({ cron: [...h.cron, x] });
-    setT('');
+    if (busy || !cron || dup) return;
+    void patch({ cron: [...h.cron, cron] });
   };
+  const timed = kind !== 'minutes' && kind !== 'hours';
   return (
     <div className={cx('hp-cron', !h.cronOn && 'off')}>
       {h.cron.map(x => (
         <span className="hp-time" key={x} title={normalizeCron(x)}>
-          {describeCron(x)}
-          {describeCron(x) !== normalizeCron(x) && <code>{normalizeCron(x)}</code>}
-          <button type="button" aria-label={`去掉 ${x}`} disabled={busy} onClick={() => patch({ cron: h.cron.filter(y => y !== x) })}>
+          {/* 说不出来的（旧的手写表达式）原样用等宽字显示 */}
+          {describeCron(x) === normalizeCron(x) ? <code>{normalizeCron(x)}</code> : describeCron(x)}
+          <button type="button" aria-label={`去掉 ${describeCron(x)}`} disabled={busy} onClick={() => patch({ cron: h.cron.filter(y => y !== x) })}>
             <Icon name="close" />
           </button>
         </span>
       ))}
-      <span className="hp-time-add">
-        <input
-          className={cx('input hp-cron-input', err && 'bad')}
-          type="text"
-          spellCheck={false}
-          placeholder="例如 0 9 * * 1-5"
-          maxLength={80}
-          value={t}
-          onChange={e => setT(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && add()}
-          aria-label="新的 cron 表达式（分 时 日 月 周）"
-          aria-invalid={!!err || undefined}
-          aria-describedby={err ? `cron-err-${h.id}` : undefined}
-        />
-        <button className="btn sm" type="button" disabled={busy || !t.trim() || !!err} onClick={add}>
+      <span className="hp-sched" role="group" aria-label="加一个定时">
+        <select className="input" value={kind} aria-label="多久一次" onChange={e => setKind(e.target.value as Schedule['kind'])}>
+          {KINDS.map(([k, n]) => (
+            <option key={k} value={k}>
+              {n}
+            </option>
+          ))}
+        </select>
+        {kind === 'weekly' && (
+          <span className="hp-wdays">
+            {WEEKDAYS.map(([d, n]) => {
+              const on = days.includes(d);
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  className={cx('hp-wday', on && 'on')}
+                  aria-pressed={on}
+                  aria-label={`周${n}`}
+                  onClick={() => setDays(on ? days.filter(x => x !== d) : [...days, d])}
+                >
+                  {n}
+                </button>
+              );
+            })}
+          </span>
+        )}
+        {kind === 'monthly' && (
+          <select className="input" value={day} aria-label="几号" onChange={e => setDay(+e.target.value)} data-tip="没有这一天的月份（例如 2 月 30 号）不领">
+            {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+              <option key={d} value={d}>
+                {d} 号
+              </option>
+            ))}
+          </select>
+        )}
+        {timed ? (
+          <span className="hp-hm">
+            <select className="input" value={hour} aria-label="时" onChange={e => setHour(+e.target.value)}>
+              {Array.from({ length: 24 }, (_, i) => (
+                <option key={i} value={i}>
+                  {two(i)}
+                </option>
+              ))}
+            </select>
+            :
+            <select className="input" value={min} aria-label="分" onChange={e => setMin(+e.target.value)}>
+              {Array.from({ length: 12 }, (_, i) => i * 5).map(m => (
+                <option key={m} value={m}>
+                  {two(m)}
+                </option>
+              ))}
+            </select>
+          </span>
+        ) : (
+          <select
+            className="input"
+            value={every[kind]}
+            aria-label={kind === 'minutes' ? '每隔几分钟' : '每隔几小时'}
+            onChange={e => setEvery({ ...every, [kind]: +e.target.value })}
+          >
+            {EVERY[kind].map(n => (
+              <option key={n} value={n}>
+                {n} {kind === 'minutes' ? '分钟' : '小时'}
+              </option>
+            ))}
+          </select>
+        )}
+        <button className="btn sm" type="button" disabled={busy || !cron || dup} onClick={add} data-tip={dup ? '已经有这一条了' : !cron ? '至少选一天' : undefined}>
           <Icon name="plus" />
           加一条
         </button>
       </span>
-      {err ? (
-        <span className="hp-cron-err" id={`cron-err-${h.id}`} role="alert">
-          {err}
-        </span>
-      ) : (
-        <span className="hp-cron-hint">5 段：分 时 日 月 周（机器本地时区），例如 0 9 * * 1-5 是工作日 9 点，*/30 * * * * 是每 30 分钟</span>
-      )}
+      <span className="hp-cron-hint">按这台机器的本地时间；同一分钟有几条到点只领一轮</span>
     </div>
   );
 }
