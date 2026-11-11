@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
 import { describeCron } from './cron';
 import type { Dispatch, DispatchResult, HostAgent, HostInfo, Workspace } from './types';
-import { agentColor, hhmm } from './util';
+import { agentColor } from './util';
 
 /** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
 export interface AgentMark {
@@ -108,70 +108,6 @@ export function since(t: number, now: number) {
   if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
   if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
   return `${Math.round(s / 86400)} 天前`;
-}
-
-/* ------------------------------ 派发的运行状态（PRD §10.12） ------------------------------ */
-
-/** 判断口径：最近 30 秒内有新输出或 CPU ≥ 5% 是「工作中」；启动超过 2 分钟、最近 2 分钟没有输出、CPU < 1% 是「可能空转」；其余是「等待输出」 */
-export const RUN_RULES = { workQuietMs: 30_000, workCpu: 5, graceMs: 120_000, idleQuietMs: 120_000, idleCpu: 1 } as const;
-
-export type RunKey = 'working' | 'waiting' | 'idle';
-
-export const RUN_LABEL: Record<RunKey, string> = { working: '工作中', waiting: '等待输出', idle: '可能空转' };
-
-/** 结束前不打印过程的 agent：日志一直为空是正常的（docs/agents.md「各自的说明」） */
-const QUIET: Record<string, string> = { claude: 'Claude Code 结束前不打印过程' };
-
-const BEAT_TIP = '心跳是 board host 替 agent 名字发的，agent 卡住、空转时照发，只说明机器和名字还连着，不代表在干活。';
-const RUN_TIP =
-  '判断口径：最近 30 秒内有新输出，或 CPU ≥ 5% → 工作中；启动超过 2 分钟、最近 2 分钟没有输出、CPU < 1% → 可能空转；其余 → 等待输出。' +
-  'CPU 是 board host 每 10 秒量一次的 agent 进程树占用（单核满载 100%）。' +
-  BEAT_TIP;
-const NO_CPU_TIP = 'board host 没有上报 CPU（旧版 board host，或 agent 跑在 WSL 里）：只能看最近输出，判断不了在不在干活。' + BEAT_TIP;
-
-/** 运行状态：状态词、依据、注明、判断口径 */
-export interface RunInfo {
-  /** 状态词；量不到 CPU（旧版 board host、WSL）时为 null，只写依据 */
-  key: RunKey | null;
-  label: string | null;
-  /** 依据：「最近输出 12 秒前 · CPU 3%」「已运行 15 分钟 · 没有任何输出 · CPU 0%」 */
-  basis: string;
-  /** 结束前不打印过程的 agent 没在干活时注明：「Claude Code 结束前不打印过程」 */
-  note: string | null;
-  /** 判断口径（悬停提示） */
-  tip: string;
-}
-
-/** 心跳的悬停提示：心跳不等于干活 */
-export const beatTip = (at: number) => `最近一次心跳 ${hhmm(at)}。${BEAT_TIP}`;
-
-/** 已运行多久：12 秒、15 分钟、2 小时 5 分钟 */
-export function runFor(ms: number) {
-  const s = Math.floor(Math.max(0, ms) / 1000);
-  if (s < 60) return `${s} 秒`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m} 分钟`;
-  return m % 60 ? `${Math.floor(m / 60)} 小时 ${m % 60} 分钟` : `${Math.floor(m / 60)} 小时`;
-}
-
-/** 一次在跑的派发的运行状态。排队、已结束、正在停止（沿用「正在停止」）、旧版服务端（没有 outputAt 这一项）返回 null */
-export function runInfo(d: Dispatch, now: number): RunInfo | null {
-  if (d.state !== 'running' || d.stopBy || d.outputAt === undefined) return null;
-  const ran = d.startedAt != null ? Math.max(0, now - d.startedAt) : 0;
-  const quiet = d.outputAt != null ? Math.max(0, now - d.outputAt) : null;
-  const cpu = d.cpu ?? null;
-  const parts = [d.outputAt != null ? `最近输出 ${since(d.outputAt, now)}` : `已运行 ${runFor(ran)} · 没有任何输出`];
-  if (cpu == null) return { key: null, label: null, basis: parts[0], note: null, tip: NO_CPU_TIP };
-  parts.push(`CPU ${cpu}%`);
-  const r = RUN_RULES;
-  const key: RunKey =
-    (quiet != null && quiet <= r.workQuietMs) || cpu >= r.workCpu
-      ? 'working'
-      : ran >= r.graceMs && (quiet == null || quiet >= r.idleQuietMs) && cpu < r.idleCpu
-        ? 'idle'
-        : 'waiting';
-  const note = key !== 'working' ? (QUIET[d.agent] ?? null) : null;
-  return { key, label: RUN_LABEL[key], basis: parts.join(' · '), note, tip: RUN_TIP };
 }
 
 /** 已用分钟 */

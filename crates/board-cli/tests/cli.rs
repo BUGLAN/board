@@ -373,7 +373,6 @@ fn host_rename_renames_the_machine_record() {
         envs: vec![],
         dirs: vec![board_core::HostDir { board: "default/main".into(), path: "/tmp/board".into() }],
         running: vec![],
-        run_states: vec![],
         done: false,
     };
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();

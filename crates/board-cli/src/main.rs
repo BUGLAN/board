@@ -13,7 +13,7 @@ mod doctor;
 mod envs;
 mod heartbeat;
 mod host;
-mod probe;
+mod logfmt;
 
 use backend::{env, Backend, BoardData, Remote};
 use board_core::*;

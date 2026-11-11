@@ -10,7 +10,7 @@ import { confirm, openDispatch, openHost, toast, toastError, useUI } from '../..
 import { useNow } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from '../overlays/presence';
-import { AgentChip, Dot, LogView, Mark, RunStatus, usePollHosts } from './bits';
+import { AgentChip, Dot, LogView, Mark } from './bits';
 
 /** 打开卡片：切到它的白板，打开详情 */
 export function goCard(d: Dispatch) {
@@ -70,8 +70,6 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
   const now = useNow(1000);
   const [log, setLog] = useState(false);
-  // 运行状态（最近输出、CPU）随机器心跳更新、不推送：在跑时和机器页一样每 10 秒取一次
-  usePollHosts(d?.state === 'running');
   if (!d) return null;
   const queued = d.state === 'queued';
   return (
@@ -95,7 +93,6 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
               </>
             )}
           </span>
-          {!queued && <RunStatus d={d} now={now} />}
         </div>
         {!queued && (
           <button className="btn sm ghost" type="button" onClick={() => setLog(!log)}>
@@ -110,7 +107,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           </button>
         )}
       </div>
-      {log && !queued && <LogView id={d.id} live d={d} />}
+      {log && !queued && <LogView id={d.id} live />}
     </section>
   );
 }

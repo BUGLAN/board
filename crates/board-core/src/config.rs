@@ -173,7 +173,7 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 /// dirs = { "default/main" = "~/repo/board", "mini/main" = "~/repo/mini" }
 ///
 /// [agents.claude]
-/// cmd = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"]
+/// cmd = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
 /// model = "opus-5.5"
 /// ```
 #[derive(Debug, Clone, Default)]

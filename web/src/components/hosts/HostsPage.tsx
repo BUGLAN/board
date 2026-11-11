@@ -1,5 +1,5 @@
 /* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务） */
-import { agentMark, beatTip, cronSummary, envName, hostLoad, hostState, hostsOf, queueReason, since, skillMiss, SOURCE, usedAgents } from '../../lib/hosts';
+import { agentMark, cronSummary, envName, hostLoad, hostState, hostsOf, queueReason, since, skillMiss, SOURCE, usedAgents } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';
@@ -7,7 +7,7 @@ import { openHost, useUI } from '../../store/ui';
 import { Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { goCard } from './Dispatch';
-import { AgentChip, Beat, Dot, Mark, OsGlyph, RunStatus, StatePill, lastSeen, usePollHosts } from './bits';
+import { AgentChip, Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 
 export function HostsSide() {
   const ws = useData(s => s.ws);
@@ -132,7 +132,7 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
   );
 }
 
-/** 一条车道：在跑的任务（agent 色的轨、标题、运行状态、已用时间、心跳），点开是那张卡片 */
+/** 一条车道：在跑的任务（agent 色的轨、标题、已用时间、心跳），点开是那张卡片 */
 function RunLane({ r, now }: { r: Dispatch; now: number }) {
   return (
     <button type="button" className="hp-lane on" style={{ ['--ac' as string]: agentMark(r.agent).color }} onClick={() => goCard(r)} title={`打开 ${r.board}#${r.card}`}>
@@ -142,11 +142,10 @@ function RunLane({ r, now }: { r: Dispatch; now: number }) {
         <Title text={r.title} />
       </span>
       {r.stopBy && <span className="hp-stopping">正在停止</span>}
-      <RunStatus d={r} now={now} short />
       <span className="hp-lane-board">{r.board}</span>
       <span className="hp-lane-src">{SOURCE[r.source]}</span>
       <span className="hp-lane-t">{r.startedAt != null ? span(now - r.startedAt) : '刚开始'}</span>
-      <Beat at={r.beatAt} now={now} tip={beatTip} />
+      <Beat at={r.beatAt} now={now} />
     </button>
   );
 }

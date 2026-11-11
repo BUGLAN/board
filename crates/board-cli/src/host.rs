@@ -25,9 +25,10 @@
 //!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
-//! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行。
-//! - 每次上报带上在跑的派发的运行状态（`runStates`）：日志最后一次增长是多久之前、agent 进程树最近一段时间的 CPU 占用
-//!   （见 probe.rs）。界面据此写「工作中 / 等待输出 / 可能空转」，不把机器心跳当成 agent 在干活。agent 进程退出后不再上报。
+//! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行（最多最后 500 行）。
+//!   Claude Code、pi 的 `-p` 只在结束时打印结果，运行中日志是空的：内置模板改用它们的事件流（Claude Code
+//!   `--output-format stream-json --verbose`、pi `--mode json`），本机日志文件里存原样的事件，上传和异常退出评论里的
+//!   「日志最后 20 行」用转写后的一行一行（见 logfmt.rs）。
 //! - agent 退出后上报退出码和日志最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 / 已停止）。
 //! - 人停止：结束 agent 进程树，包括启动环境的外壳（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树；
 //!   WSL 里在 WSL 中结束 agent 的进程组），再上报。
@@ -45,9 +46,9 @@ use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
-use crate::probe::{CpuMeter, CpuSample};
+use crate::logfmt::{self, Stream};
 use crate::{Output, Paint};
-use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words};
+use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, LOG_KEEP};
 use board_core::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -102,7 +103,8 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "claude",
         name: "Claude Code",
-        cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+        // -p 默认只在结束时打印结果：用事件流，运行中每一步都写进日志（logfmt.rs 转写）
+        cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
         model: "opus-5.5",
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
@@ -114,7 +116,8 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "pi",
         name: "pi",
-        cmd: &["pi", "-p", "{prompt}"],
+        // -p 只在结束时打印最终回答：--mode json 同样跑完就退出，运行中写 JSONL 事件（logfmt.rs 转写）
+        cmd: &["pi", "--mode", "json", "{prompt}"],
         model: "",
         also: &[],
         skills: &["~/.agents/skills", "~/.pi/agent/skills"],
@@ -154,8 +157,9 @@ const KILL_AFTER: Duration = Duration::from_secs(10);
 const ORPHAN_KILL_AFTER: Duration = Duration::from_secs(5);
 /// 异常退出时评论里带的日志行数
 const TAIL: usize = 20;
-/// 一次最多上传多少字节的新日志（多出来的只留最后这些：服务端本来也只保留最后 500 行）
-const LOG_CHUNK: u64 = 256 * 1024;
+/// 一次最多读多少字节的新日志（多出来的只留最后这些）。Claude Code、pi 的事件流一行可能很长（工具结果整段在里面），
+/// 转写后只剩一两行，所以读得多一些
+const LOG_CHUNK: u64 = 4 * 1024 * 1024;
 
 /// 收到 Ctrl+C / SIGTERM，或者（桌面端）标准输入关闭
 static QUIT: AtomicBool = AtomicBool::new(false);
@@ -439,15 +443,12 @@ struct Run {
     procfile: PathBuf,
     /// 日志已经上传到的位置（字节）
     sent: u64,
+    /// 日志按哪种事件流转写后上传（Claude Code、pi）；其他 agent 原样上传
+    fmt: Option<Stream>,
     /// SIGTERM 的时间
     term_at: Option<Instant>,
     killed: bool,
     spawned: Instant,
-    /// 日志文件的大小，和它最后一次变大的时间（还没有输出时为空）
-    out_len: u64,
-    out_at: Option<Instant>,
-    /// 进程树上一次的 CPU 采样
-    cpu: CpuSample,
 }
 
 impl Run {
@@ -479,21 +480,6 @@ impl Run {
         } else if cfg!(unix) {
             kill_tree(self.child.id(), true);
         }
-    }
-
-    /// 看一眼日志文件有没有变大：变大了记下时间（每一轮主循环一次）
-    fn watch_output(&mut self, now: Instant) {
-        let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
-        if len > self.out_len {
-            self.out_len = len;
-            self.out_at = Some(now);
-        }
-    }
-
-    /// 这次派发的运行状态。WSL 里的 agent 量不到 CPU
-    fn state(&mut self, meter: &CpuMeter, now: Instant) -> RunState {
-        let cpu = if self.env.wsl().is_some() { None } else { meter.sample(self.child.id(), self.spawned, &mut self.cpu) };
-        RunState { id: self.d.id, output_ago: self.out_at.map(|t| now.duration_since(t).as_millis() as i64), cpu }
     }
 
     fn cleanup(&self) {
@@ -542,11 +528,17 @@ fn new_lines(path: &Path, from: u64, last: bool) -> (Vec<String>, u64) {
     (lines, start + end as u64)
 }
 
-/// 日志最后 n 行
-fn tail_lines(path: &Path, n: usize) -> Vec<String> {
+/// 日志最后 n 行（转写之后的）
+fn tail_lines(path: &Path, n: usize, fmt: Option<Stream>) -> Vec<String> {
     let (lines, _) = new_lines(path, 0, true);
-    let lines: Vec<String> = lines.into_iter().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<String> = logfmt::render(fmt, lines).into_iter().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].to_vec()
+}
+
+/// 要上传的行：转写，只留最后 500 行（服务端本来也只保留这么多）
+fn upload_lines(lines: Vec<String>, fmt: Option<Stream>) -> Vec<String> {
+    let lines = logfmt::render(fmt, lines);
+    lines[lines.len().saturating_sub(LOG_KEEP)..].to_vec()
 }
 
 fn clock() -> String {
@@ -629,8 +621,6 @@ struct Host<'a> {
     follow_dirs: bool,
     /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
     conf_seen: (Option<String>, Vec<(String, String)>),
-    /// 在跑的 agent 的 CPU 占用（每次上报前刷新）
-    meter: CpuMeter,
 }
 
 /// `board host`：一直运行，直到 Ctrl+C
@@ -706,7 +696,6 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         follow_name,
         follow_dirs,
         conf_seen: (conf.name.clone(), conf.dirs.clone()),
-        meter: CpuMeter::default(),
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -841,7 +830,7 @@ impl Host<'_> {
         }
     }
 
-    fn report(&self, done: bool, run_states: Vec<RunState>) -> HostReport {
+    fn report(&self, done: bool) -> HostReport {
         HostReport {
             name: self.name.clone(),
             instance: self.instance.clone(),
@@ -853,35 +842,16 @@ impl Host<'_> {
             dirs: self.dirs.iter().map(|(b, p)| HostDir { board: b.clone(), path: p.display().to_string() }).collect(),
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
             running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
-            run_states,
             done,
         }
-    }
-
-    /// 在跑的派发的运行状态（只有进程还在的：已经退出、结束还没报上去的不算）
-    fn run_states(&mut self) -> Vec<RunState> {
-        if self.runs.is_empty() {
-            return vec![];
-        }
-        let now = Instant::now();
-        self.meter.refresh();
-        let meter = &self.meter;
-        self.runs
-            .iter_mut()
-            .map(|r| {
-                r.watch_output(now);
-                r.state(meter, now)
-            })
-            .collect()
     }
 
     fn rm(&self) -> &Remote {
         self.be.remote()
     }
 
-    fn beat(&mut self, done: bool) -> Result<HostWork> {
-        let states = if done { vec![] } else { self.run_states() };
-        let rep = serde_json::to_value(self.report(done, states)).unwrap_or(Value::Null);
+    fn beat(&self, done: bool) -> Result<HostWork> {
+        let rep = serde_json::to_value(self.report(done)).unwrap_or(Value::Null);
         self.rm().post(&format!("/api/hosts/{}/beat", self.name), rep)
     }
 
@@ -892,6 +862,7 @@ impl Host<'_> {
             self.runs.iter().enumerate().filter_map(|(i, r)| successor(&r.d, &w.running).map(|n| (i, n))).collect();
         for (i, n) in switches {
             let (lines, to) = new_lines(&self.runs[i].log, self.runs[i].sent, false);
+            let lines = upload_lines(lines, self.runs[i].fmt);
             if !lines.is_empty() {
                 let _ = self.rm().post::<Value>(&format!("/api/dispatches/{}/log", self.runs[i].d.id), json!({ "lines": lines }));
             }
@@ -1004,9 +975,6 @@ impl Host<'_> {
                 }
             }
             let now = Instant::now();
-            for r in self.runs.iter_mut() {
-                r.watch_output(now);
-            }
             // 桌面端保存了配置：换了名字、目录就马上上报，界面「机器」里立刻看到
             if RELOAD.swap(false, Ordering::SeqCst) && self.reload() {
                 next_beat = now;
@@ -1186,7 +1154,7 @@ impl Host<'_> {
             r.cleanup();
             let code = exit_code(status);
             self.flush_log(&r, true);
-            let tail = tail_lines(&r.log, TAIL);
+            let tail = tail_lines(&r.log, TAIL, r.fmt);
             self.ended.push(Ended { id: r.d.id, code, tail, how: "exit" });
             self.say(format!(
                 "{} {}  {}  {}",
@@ -1425,22 +1393,8 @@ impl Host<'_> {
         let procfile = self.run.join(format!("{}.proc", d.id));
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
-        Ok(Run {
-            d: d.clone(),
-            child,
-            env,
-            pidfile,
-            log,
-            conf,
-            procfile,
-            sent: 0,
-            term_at: None,
-            killed: false,
-            spawned: Instant::now(),
-            out_len: 0,
-            out_at: None,
-            cpu: CpuSample::default(),
-        })
+        let fmt = logfmt::stream_of(&spec.id);
+        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, procfile, sent: 0, fmt, term_at: None, killed: false, spawned: Instant::now() })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
@@ -1470,6 +1424,7 @@ impl Host<'_> {
         let mut sent: Vec<(usize, u64)> = vec![];
         for (i, r) in self.runs.iter().enumerate() {
             let (lines, to) = new_lines(&r.log, r.sent, false);
+            let lines = upload_lines(lines, r.fmt);
             if lines.is_empty() {
                 if to != r.sent {
                     sent.push((i, to));
@@ -1488,6 +1443,7 @@ impl Host<'_> {
     /// 上传一次派发剩下的日志（结束时）
     fn flush_log(&self, r: &Run, last: bool) {
         let (lines, _) = new_lines(&r.log, r.sent, last);
+        let lines = upload_lines(lines, r.fmt);
         if !lines.is_empty() {
             let _ = self.rm().post::<Value>(&format!("/api/dispatches/{}/log", r.d.id), json!({ "lines": lines }));
         }
@@ -1522,7 +1478,7 @@ impl Host<'_> {
         for mut r in runs {
             let code = r.child.wait().ok().and_then(exit_code);
             self.flush_log(&r, true);
-            self.ended.push(Ended { id: r.d.id, code, tail: tail_lines(&r.log, TAIL), how: "host_exit" });
+            self.ended.push(Ended { id: r.d.id, code, tail: tail_lines(&r.log, TAIL, r.fmt), how: "host_exit" });
         }
         self.report_ended();
         if graceful {
@@ -1551,7 +1507,48 @@ mod tests {
         let (lines, at2) = new_lines(&f, at, true);
         assert_eq!(lines, vec!["thr"]);
         assert_eq!(at2, 11);
-        assert_eq!(tail_lines(&f, 2), vec!["two", "thr"]);
+        assert_eq!(tail_lines(&f, 2, None), vec!["two", "thr"]);
+    }
+
+    /// 卡片 #211：Claude Code、pi 的 -p 只在结束时打印结果，运行中日志是空的。内置模板改用事件流，
+    /// 上传和异常退出评论里的「日志最后 20 行」是转写后的一行一行；本机日志文件里还是原样的事件
+    #[test]
+    fn quiet_agents_stream_progress_into_the_log() {
+        let cmd = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap().cmd.join(" ");
+        assert!(cmd("claude").contains("-p {prompt}") && cmd("claude").ends_with("--output-format stream-json --verbose"), "{}", cmd("claude"));
+        assert_eq!(cmd("pi"), "pi --mode json {prompt}", "pi 的 -p 只写最终回答，--mode json 才有过程");
+        // dsh 的推理写标准错误、Codex exec 运行中本来就写过程：不改、不转写
+        assert!(!cmd("dsh").contains("json") && !cmd("codex").contains("--json"));
+        assert_eq!((logfmt::stream_of("claude"), logfmt::stream_of("pi"), logfmt::stream_of("dsh")), (Some(Stream::Claude), Some(Stream::Pi), None));
+
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("7.log");
+        let ev = |v: serde_json::Value| v.to_string() + "\n";
+        let mut raw = String::from("[claude-code:unrecognized_model] {\"model\":\"x\"}\n");
+        raw += &ev(json!({ "type": "system", "subtype": "init", "model": "opus", "cwd": "/repo", "claude_code_version": "2.1.311" }));
+        raw += &ev(json!({ "type": "stream_event", "event": {}, "parent_tool_use_id": null }));
+        raw += &ev(json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "git status" } }] }, "parent_tool_use_id": null }));
+        // 工具结果整段在一行里（这里 1 MB）：转写后只剩一行
+        let big = "x".repeat(1024 * 1024);
+        raw += &ev(json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": format!("On branch main\n{big}") }] }, "parent_tool_use_id": null }));
+        std::fs::write(&f, &raw).unwrap();
+        let (lines, at) = new_lines(&f, 0, false);
+        assert_eq!(at, raw.len() as u64, "一行很长也整行读到");
+        let up = upload_lines(lines, Some(Stream::Claude));
+        assert_eq!(
+            up,
+            vec![
+                "[claude-code:unrecognized_model] {\"model\":\"x\"}",
+                "● 开始 · Claude Code 2.1.311 · opus · /repo",
+                "▸ Bash  git status",
+                "  ↳ On branch main  （共 2 行）",
+            ]
+        );
+        assert_eq!(tail_lines(&f, 2, Some(Stream::Claude)), vec!["▸ Bash  git status", "  ↳ On branch main  （共 2 行）"]);
+        // 不转写的 agent 原样上传，最多最后 500 行
+        let many: Vec<String> = (0..800).map(|i| format!("line {i}")).collect();
+        let up = upload_lines(many, None);
+        assert_eq!((up.len(), up[0].as_str()), (LOG_KEEP, "line 300"));
     }
 
     #[test]
@@ -1687,8 +1684,6 @@ mod tests {
             stop_by: None,
             beat_at: None,
             session,
-            output_at: None,
-            cpu: None,
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));
