@@ -8,7 +8,8 @@
          "platforms": {
            "darwin-aarch64-app":   { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_universal.app.tar.gz" },
            "darwin-x86_64-app":    { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_universal.app.tar.gz" },
-           "windows-x86_64-nsis":  { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_x64-setup.exe" }
+           "windows-x86_64-nsis":  { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_x64-setup.exe" },
+           "windows-x86_64":       { "signature": "<同上，指向同一个 NSIS 更新包>", "url": ".../Board_0.1.13_x64-setup.exe" }
          }
        }
 
@@ -121,6 +122,11 @@ export function buildManifest({ version, notes, pubDate, files, readSig = readSi
     if (platforms[f.target]) throw new Error(`清单里 ${f.target} 出现了两次`);
     platforms[f.target] = { signature: readSig(`${f.file}.sig`), url: f.url };
   }
+  // Windows 的更新器按 `windows-x86_64-{安装类型}`、`windows-x86_64` 的顺序找平台键：
+  // 开发版或免安装版拿不到安装类型时只会找后一个，清单里没有就报 "None of the fallback platforms..."。
+  // 两个键指向同一个 NSIS 更新包和签名，不算两个安装包。
+  const nsis = platforms['windows-x86_64-nsis'];
+  if (nsis && !platforms['windows-x86_64']) platforms['windows-x86_64'] = { ...nsis };
   return { version, notes, pub_date: pubDate, platforms };
 }
 
@@ -221,6 +227,11 @@ function dryRun() {
     if (!validateManifest(make(), { expectVersion: version }).problems.length) problems.push(`写坏的清单（第 ${i + 1} 个）没有被拦下`);
   }
   if (JSON.parse(JSON.stringify(m)).platforms['darwin-x86_64-app'].signature !== sig) problems.push('签名经过 JSON 序列化后变了');
+  // Windows 免安装/开发版走 windows-x86_64 回退键：必须和 nsis 键指向同一个包和签名
+  const win = m.platforms['windows-x86_64'];
+  const nsis = m.platforms['windows-x86_64-nsis'];
+  if (!win) problems.push('缺少 windows-x86_64 回退键');
+  else if (!nsis || win.url !== nsis.url || win.signature !== nsis.signature) problems.push('windows-x86_64 回退键和 windows-x86_64-nsis 的包或签名不一致');
   console.log(`✓ latest.json 结构（v${version}；${notesNote}）\n${summary}\n✓ 写坏的清单都被拦下`);
   if (problems.length) throw new Error(`dry-run 失败：\n${problems.map(p => `  - ${p}`).join('\n')}`);
   console.log('✓ dry-run 通过');

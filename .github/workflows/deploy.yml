@@ -554,7 +554,8 @@ jobs:
           merge-multiple: true
 
       # 两个平台各写了一份清单（各自的项目）：合并成一份 latest.json，三个平台的更新包都得在
-      # （macOS 两个架构、Windows x64），缺任何一个不建 Release——桌面端只认这一份清单
+      # （macOS 两个架构、Windows x64），缺任何一个不建 Release——桌面端只认这一份清单；
+      # windows-x86_64 是 Windows 免安装/开发版的回退键，和 windows-x86_64-nsis 指向同一个包，不能丢
       - name: 合并更新清单 latest.json
         run: |
           node -e '
@@ -568,7 +569,7 @@ jobs:
               out.version = m.version; out.notes = m.notes; out.pub_date = m.pub_date;
               Object.assign(out.platforms, m.platforms);
             }
-            const need = ["darwin-aarch64-app", "darwin-x86_64-app", "windows-x86_64-nsis"];
+            const need = ["darwin-aarch64-app", "darwin-x86_64-app", "windows-x86_64-nsis", "windows-x86_64"];
             const missing = need.filter(k => !out.platforms[k]);
             if (missing.length) { console.error("::error::更新清单缺少平台：" + missing.join("、")); process.exit(1); }
             const names = new Set();
