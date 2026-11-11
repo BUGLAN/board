@@ -32,8 +32,8 @@
    经过 shell 启动时，shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：包装脚本在 `exec` 之前用 `board host` 的值（`BOARD_HOST_URL`、`BOARD_HOST_TOKEN`）再设一遍。WSL 里的变量经 `WSLENV` 传进去：`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（Windows 的 `board.exe` 在 WSL 里用不了，用 skill 自带的 Linux 版 `board`）。
 
    为什么还要 `BOARD_CONFIG`：有的 agent 不把名字像密钥的环境变量传给它执行的命令。dsh 会去掉名字里带 `KEY`、`PASSWORD`、`SECRET`、`TOKEN` 的变量，`BOARD_TOKEN` 到不了 `board`，`board` 就会拿 `~/.board/config.toml` 里别的令牌去连，得到 `INVALID_TOKEN`。`board` 读 `BOARD_CONFIG` 指向的文件代替 `~/.board/config.toml`，这个变量名不像密钥，能传过去。
-3. 标准输入是空的，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传，界面「日志」里看。
-4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。
+3. 标准输入是空的，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传，界面「日志」里看。`board host` 还随每 10 秒的机器心跳上报日志最后一次变大是多久之前、agent 进程树的 CPU 占用，界面据此写「工作中 / 等待输出 / 可能空转」（口径见下文「出了问题看哪里」）。
+4. 名字的心跳由 `board host` 发：agent 在干活、卡住还是空转都照发，「最近心跳」只说明机器和名字还连着。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。
 5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码和日志最后 20 行。
 6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
 
@@ -71,7 +71,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 各自的说明：
 
 - **dsh**：`headless` 档案做完一个任务就退出，最终回答写标准输出，推理过程和诊断写标准错误（日志里都能看到）。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。dsh 的 headless profile 默认还挂着 goal 工具和 goal-round-driver：模型一旦 `create_goal`，任务结束后会自动续一轮，进程退出时把被终止的续轮当成最后一轮（aborted/disposed），退出码变成 1。`board host` 每次 dsh 派发会写一份禁用 `goal-round-driver`、`tool-goal`、`command-goal` 的 profile 补丁，通过 `--patch {patch}` 传入（见 `crates/board-cli/src/dsh-headless.patch.yml`）。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
-- **Claude Code**：`-p` 只在结束时打印结果，跑的过程中日志是空的。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报「Not logged in」，从自己的终端或桌面端运行就好。
+- **Claude Code**：`-p` 只在结束时打印结果，跑的过程中日志是空的，这是正常的：界面上它没在干活时写「等待输出」并注明「Claude Code 结束前不打印过程」，在干活时 CPU 占用会让它显示「工作中」。启动时可能先打一行 `[claude-code:unrecognized_model] {…}`（模型名不在它认识的列表里），不影响运行。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报「Not logged in」，从自己的终端或桌面端运行就好。
 - **pi**：pi 本身不做权限审批。`/board-skills …` 和 `/skill:board-skills …` 两种写法都会加载 skill。Windows 上 pi 用 Git Bash 执行命令，默认的启动环境就是 Git Bash；在 PowerShell 里启动时，`board host` 会从 `PATH` 里的 `git` 找到 Git 安装目录，把它旁边的 `bin` 放到 pi 的 `PATH` 前面，所以 Git 不在 `C:\Program Files\Git` 也能用；找不到 Git Bash 时在 `~/.pi/agent/settings.json` 里设置 `shellPath`。pi 不支持 cmd。
 - **Codex**：`codex exec` 做完一个任务就退出；`--dangerously-bypass-approvals-and-sandbox` 不审批、不开沙箱（`board-skills` 要 `git push`、访问服务端）。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
 
@@ -162,6 +162,16 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 ## 出了问题看哪里
 
+先看机器详情「正在跑」每一行（卡片详情的派发说明里也有）下面的运行状态，判断 agent 现在在不在干活，不要看「最近心跳」：心跳是 `board host` 替 agent 发的，agent 卡住、空转时照发。
+
+| 状态词 | 口径 | 怎么看 |
+|---|---|---|
+| 工作中 | 最近 30 秒内有新输出，或 agent 进程树 CPU ≥ 5% | 在干活。日志为空但 CPU 高：多半是 Claude Code 这类结束前不打印过程的 agent，或者在跑编译、测试 |
+| 等待输出 | 不算工作中、也不算可能空转：启动不到 2 分钟、没有输出、CPU 低；或者 CPU 在 1%–5%、最近 30 秒到 2 分钟内有过输出 | 刚启动，或在等模型回复。Claude Code 运行中不打印过程，属于正常 |
+| 可能空转 | 启动超过 2 分钟、最近 2 分钟没有输出、CPU < 1% | 多半在等审批或输入，或者卡住了：看下表「一直在跑、日志不动」；确认卡住就「停止」 |
+
+CPU 是 `board host` 每 10 秒量一次的 agent 进程树占用（单核满载 100%，各进程累加）。WSL 里的 agent 量不到 CPU，旧版 `board host` 不上报：这时只写「最近输出 …」，不下结论。
+
 | 现象 | 多半是 |
 |---|---|
 | 派发结果「异常退出（退出码 0）」，日志里 agent 说不认识 `/board-skills` | 没装 `board-skills`，或链接指向的目录不存在 |
@@ -171,7 +181,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | WSL 里显示「没找到」，可 WSL 的终端里能运行 | 装在 `/mnt/` 下的是 Windows 程序，不算；在 WSL 里另装一份 Linux 版 |
 | 在 WSL 里派发，日志里 `board` 报找不到命令或连不上 | WSL 里没装 `board-skills`（它自带 Linux 版 `board`），或者 WSL 里的 skill 太旧 |
 | 日志开头有 `bash: cannot set terminal process group`、`no job control` | 交互式 shell 没有终端时的提示，不影响 |
-| 一直在跑、日志不动 | agent 在等审批或输入：模板里少了跳过审批的参数，或者它的非交互模式不是这个 |
+| 一直在跑、日志不动，状态是「可能空转」 | agent 在等审批或输入：模板里少了跳过审批的参数，或者它的非交互模式不是这个。状态是「工作中」（CPU 高）时它在干活，只是不打印 |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |
 | 桌面端「本机」打开后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |
 | Windows 上 `npm run desktop:dev` 报 `failed to remove file ... target\debug\board.exe`（os error 5：拒绝访问） | 上次开发启动的 `board-desktop.exe` / `board host` 还在从 `target\debug\board.exe` 运行，锁住了文件。新版 `scripts/build-sidecar.mjs` 会在 dev 构建前自动结束本仓库这两个进程；如果还失败，先从托盘退出 Board，再运行 `npm run desktop:dev` |

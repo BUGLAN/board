@@ -32,6 +32,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         envs: vec![],
         dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into() }],
         running,
+        run_states: vec![],
         done: false,
     }
 }
@@ -558,6 +559,69 @@ fn log_keeps_last_500_lines() {
     assert_eq!(log.len(), 500);
     assert_eq!(log[0], "line 100");
     assert_eq!(s.rev().unwrap(), rev, "上传日志不算变更");
+}
+
+/// 运行状态（卡片 #211）：board host 随机器心跳上报日志多久没变大、进程树的 CPU 占用；服务端记成「最近输出」的时间点和 CPU。
+/// 旧版 board host 不上报时为空；上传日志也会更新「最近输出」；最近输出只往后挪；不算变更
+#[test]
+fn run_states_record_output_and_cpu() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!((d.output_at, d.cpu), (None, None), "刚开始：还没有输出，也没有上报");
+    // 旧版 board host：只报 running，不报 runStates
+    beat(&mut s, T0 + 10 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    assert_eq!((get(&s, d.id).output_at, get(&s, d.id).cpu), (None, None));
+    // 新版：还没有任何输出、只 sleep
+    let rev = s.rev().unwrap();
+    let st = |output_ago: Option<i64>, cpu: Option<i64>| RunState { id: d.id, output_ago, cpu };
+    let rep = |states: Vec<RunState>| HostReport { run_states: states, ..report("mbp", "i1", vec![d.id]) };
+    beat(&mut s, T0 + 20 * S, &rep(vec![st(None, Some(0))])).unwrap();
+    assert_eq!((get(&s, d.id).output_at, get(&s, d.id).cpu), (None, Some(0)));
+    // 有输出：按服务端的时间换算成时间点（报的是「多久之前」，不受机器时钟影响）
+    beat(&mut s, T0 + 30 * S, &rep(vec![st(Some(4 * S), Some(37))])).unwrap();
+    assert_eq!((get(&s, d.id).output_at, get(&s, d.id).cpu), (Some(T0 + 26 * S), Some(37)));
+    // 上传日志：最近输出记成现在
+    s.write(T0 + 33 * S, Origin::cli(), |w| w.dispatch_log_append(d.id, &["hello".to_string()])).unwrap();
+    assert_eq!(get(&s, d.id).output_at, Some(T0 + 33 * S));
+    // 之后上报的更早的时间不会把它挪回去；量不到 CPU（WSL）时清空
+    beat(&mut s, T0 + 40 * S, &rep(vec![st(Some(14 * S), None)])).unwrap();
+    assert_eq!((get(&s, d.id).output_at, get(&s, d.id).cpu), (Some(T0 + 33 * S), None));
+    assert_eq!(s.rev().unwrap(), rev, "运行状态不算变更：界面每 10 秒自己取");
+    // 机器详情（在跑的派发）和卡片详情（工作区）看到的是同一份
+    let ws = s.read(|r| r.workspace(T0 + 41 * S)).unwrap();
+    let w = ws.dispatches.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!((w.output_at, w.cpu), (Some(T0 + 33 * S), None));
+    let work = s.read(|r| r.host_work("mbp", T0 + 41 * S)).unwrap();
+    assert_eq!(work.running[0].output_at, Some(T0 + 33 * S));
+    // JSON 里叫 outputAt、cpu
+    let j = serde_json::to_value(get(&s, d.id)).unwrap();
+    assert_eq!((j["outputAt"].as_i64(), j["cpu"].is_null()), (Some(T0 + 33 * S), true));
+    // 别的派发的状态不会写到这一张上
+    beat(&mut s, T0 + 50 * S, &rep(vec![RunState { id: 999, output_ago: Some(0), cpu: Some(99) }])).unwrap();
+    assert_eq!(get(&s, d.id).output_at, Some(T0 + 33 * S));
+}
+
+/// board next 之后 board host 报的还是会话里上一张的 ID：运行状态记到会话正在跑的那一张上
+#[test]
+fn run_state_follows_the_session() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card_tagged(&mut s, "A");
+    let b = new_card_tagged(&mut s, "B");
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let name = d1.name.clone().unwrap();
+    submit(&mut s, T0 + 2 * S, &name, a);
+    next(&mut s, T0 + 2 * S, &name).unwrap();
+    let d2 = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.card == b).unwrap();
+    let rep = HostReport { run_states: vec![RunState { id: d1.id, output_ago: Some(0), cpu: Some(12) }], ..report("mbp", "i1", vec![d1.id]) };
+    beat(&mut s, T0 + 10 * S, &rep).unwrap();
+    assert_eq!((get(&s, d2.id).output_at, get(&s, d2.id).cpu), (Some(T0 + 10 * S), Some(12)));
+    assert_eq!(get(&s, d1.id).cpu, None, "已经结束的上一张不动");
 }
 
 #[test]

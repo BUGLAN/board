@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
   exit_code   INTEGER,
   stop_by     TEXT,                   -- 有人请求停止：谁
   session     INTEGER,                -- 同一个 agent 进程做的几张卡：第一张的派发 ID（board next 接着做的那几张都写它）；空表示就是自己
+  output_at   INTEGER,                -- 最近一次日志新增的时间（board host 上报，或上传日志时）；还没有输出时为空
+  cpu         INTEGER,                -- 最近一次上报的 agent 进程树 CPU 占用（整数百分比，单核 100%，进程树累加）；旧版 board host 不上报，为空
   log         TEXT NOT NULL DEFAULT '' -- 日志的最后 500 行
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
@@ -105,6 +107,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "rules", "TEXT NOT NULL DEFAULT '[]'"),
         ("hosts", "fallback", "TEXT"),
         ("dispatches", "session", "INTEGER"),
+        ("dispatches", "output_at", "INTEGER"),
+        ("dispatches", "cpu", "INTEGER"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -448,9 +452,29 @@ pub struct HostReport {
     /// 本机正在跑（有进程）的派发
     #[serde(default)]
     pub running: Vec<i64>,
+    /// 本机正在跑的派发的运行状态（agent 进程还在的那些；旧版 board host 不上报）
+    #[serde(default, rename = "runStates", skip_serializing_if = "Vec::is_empty")]
+    pub run_states: Vec<RunState>,
     /// board host 退出：机器马上离线
     #[serde(default, rename = "final")]
     pub done: bool,
+}
+
+/// 一次在跑的派发的运行状态（board host 随每 10 秒的机器心跳上报）：判断 agent 在干活还是在空转的依据。
+/// 机器心跳是 board host 替 agent 名字发的，agent 卡住、空转时照发，只能说明机器和名字还连着
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunState {
+    /// 派发 ID。board next 之后 board host 报的可能还是会话里上一张的：服务端按会话找到正在跑的那一张
+    pub id: i64,
+    /// agent 的日志（标准输出和标准错误）最后一次增长是多久之前（毫秒）；还没有任何输出时为空。
+    /// 报「多久之前」而不是时间点：机器和服务端的时钟可能对不上
+    #[serde(default)]
+    pub output_ago: Option<i64>,
+    /// agent 进程树从上一次上报到现在的 CPU 占用：整数百分比，单核满载算 100%，进程树里各进程累加。
+    /// 量不到时为空（WSL 里的 agent 不在 Windows 的进程表里）
+    #[serde(default)]
+    pub cpu: Option<i64>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -534,6 +558,13 @@ pub struct Dispatch {
     /// 同一个 agent 进程做的几张卡共用的会话标识：第一张的派发 ID（旧数据、还没开始时就是自己的 ID）
     #[serde(default)]
     pub session: i64,
+    /// agent 最近一次输出（日志新增）的时间：board host 上报，旧版 board host 按上传日志的时间；还没有输出时为空
+    #[serde(default)]
+    pub output_at: Option<i64>,
+    /// 最近一次上报的 agent 进程树 CPU 占用（整数百分比，单核满载 100%，进程树累加）；
+    /// 旧版 board host 不上报、WSL 里量不到时为空
+    #[serde(default)]
+    pub cpu: Option<i64>,
 }
 
 /// 结果的中文
@@ -733,7 +764,8 @@ impl HostRow {
 
 const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, COALESCE(c.title, d.title), d.host_id, d.host, d.agent,
        d.agent_label, d.name, d.source, d.by_kind, d.by_name, d.state, d.result, d.created_at, d.started_at, d.ended_at,
-       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id)
+       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
+       d.output_at, d.cpu
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -760,6 +792,8 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         stop_by: r.get(18)?,
         beat_at: r.get(19)?,
         session: r.get(22)?,
+        output_at: r.get(23)?,
+        cpu: r.get(24)?,
     })
 }
 
@@ -1334,19 +1368,28 @@ impl<'a> W<'a> {
         // 它报的还是上一张。同一个会话（同一个进程）里的任何一张在报，就算有进程
         let running: Vec<i64> =
             self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running' ORDER BY id", [&name], |r| r.get(0))?;
+        let session_of = |id: i64| -> Result<Option<i64>> {
+            Ok(self.tx.query_row("SELECT COALESCE(session, id) FROM dispatches WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).optional()?)
+        };
         let mut alive: Vec<i64> = vec![];
         for id in &rep.running {
-            if let Some(s) = self
-                .tx
-                .query_row("SELECT COALESCE(session, id) FROM dispatches WHERE id = ?1", [id], |r| r.get::<_, i64>(0))
-                .optional()?
-            {
+            if let Some(s) = session_of(*id)? {
                 alive.push(s);
+            }
+        }
+        // 运行状态同样按会话对上正在跑的那一张
+        let mut states: Vec<(i64, &RunState)> = vec![];
+        for st in &rep.run_states {
+            if let Some(s) = session_of(st.id)? {
+                states.push((s, st));
             }
         }
         for id in running {
             let d = self.drow(id)?;
             if rep.running.contains(&id) || alive.contains(&d.session) {
+                if let Some((_, st)) = states.iter().find(|(s, _)| *s == d.session) {
+                    self.save_run_state(id, st)?;
+                }
                 if let Some(name) = &d.name {
                     match self.agent_beat(name, false) {
                         Ok(_) => {}
@@ -1360,6 +1403,18 @@ impl<'a> W<'a> {
             }
         }
         self.read().host_work(&name, now)
+    }
+
+    /// 记下一次派发的运行状态（不算变更、不推送：界面打开机器页、卡片详情的派发说明时每 10 秒自己取）。
+    /// 最近输出只往后挪：上传日志时也会更新它
+    fn save_run_state(&mut self, id: i64, st: &RunState) -> Result<()> {
+        let cpu = st.cpu.map(|c| c.clamp(0, 100_000));
+        self.tx.execute("UPDATE dispatches SET cpu = ?2 WHERE id = ?1", params![id, cpu])?;
+        if let Some(ago) = st.output_ago {
+            let at = self.now - ago.max(0);
+            self.tx.execute("UPDATE dispatches SET output_at = MAX(COALESCE(output_at, ?2), ?2) WHERE id = ?1", params![id, at])?;
+        }
+        Ok(())
     }
 
     /// 界面上修改机器设置（任务下发需求 §四）
@@ -1921,7 +1976,8 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 追加日志，只保留最后 500 行（不算变更，不推送；界面打开日志时自己去取）
+    /// 追加日志，只保留最后 500 行（不算变更，不推送；界面打开日志时自己去取）。
+    /// 同时把「最近输出」记成现在：旧版 board host 不上报运行状态，靠它也能看到 agent 最近什么时候有输出
     pub fn dispatch_log_append(&mut self, id: i64, lines: &[String]) -> Result<()> {
         if lines.is_empty() {
             return Ok(());
@@ -1931,7 +1987,10 @@ impl<'a> W<'a> {
         let mut all: Vec<&str> = if log.is_empty() { vec![] } else { log.split('\n').collect() };
         all.extend(lines.iter().map(|l| l.trim_end_matches(['\r', '\n'])));
         let keep = all.len().saturating_sub(LOG_KEEP);
-        self.tx.execute("UPDATE dispatches SET log = ?2 WHERE id = ?1", params![id, all[keep..].join("\n")])?;
+        self.tx.execute(
+            "UPDATE dispatches SET log = ?2, output_at = MAX(COALESCE(output_at, ?3), ?3) WHERE id = ?1",
+            params![id, all[keep..].join("\n"), self.now],
+        )?;
         Ok(())
     }
 

@@ -228,8 +228,12 @@ export interface Dispatch {
   exitCode: number | null;
   /** 有人请求停止（还在跑时）：谁 */
   stopBy: string | null;
-  /** 持有者最近一次心跳 */
+  /** 持有者最近一次心跳：board host 替 agent 名字发的，agent 卡住、空转时照发，只说明机器和名字还连着 */
   beatAt: number | null;
+  /** agent 最近一次输出（日志新增）的时间；还没有输出时为 null；旧版服务端没有这一项 */
+  outputAt?: number | null;
+  /** 最近一次上报的 agent 进程树 CPU 占用（整数百分比，单核满载 100%，进程树累加）；旧版 board host、WSL 里量不到时为 null；旧版服务端没有 */
+  cpu?: number | null;
 }
 
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */

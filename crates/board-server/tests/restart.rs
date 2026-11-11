@@ -20,6 +20,7 @@ fn report(running: Vec<i64>) -> HostReport {
         envs: vec![],
         dirs: vec![HostDir { board: B.into(), path: "E:\\repo\\board".into() }],
         running,
+        run_states: vec![],
         done: false,
     }
 }

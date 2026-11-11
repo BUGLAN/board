@@ -1,10 +1,11 @@
-/* 机器页共用的小部件：系统图标、状态、agent 标记、心跳；轮询机器列表；改机器设置的补丁 */
+/* 机器页共用的小部件：系统图标、状态、agent 标记、心跳、派发的运行状态；轮询机器列表；改机器设置的补丁 */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../../lib/api';
-import { agentMark, hostState, osKind, since, type OsKind } from '../../lib/hosts';
-import type { HostAgent, HostInfo } from '../../lib/types';
+import { agentMark, hostState, osKind, runFor, runInfo, since, type OsKind } from '../../lib/hosts';
+import type { Dispatch, HostAgent, HostInfo } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
 import { hostKey, refreshHosts, type Patch } from '../../store/data';
+import { useNow } from '../bits';
 import { Icon } from '../Icon';
 
 /** Apple 品牌图标：单色跟随文字颜色，深色、浅色主题都清晰 */
@@ -87,10 +88,11 @@ export function AgentChip({ a, def, small, env, skill }: { a: HostAgent; def?: b
   );
 }
 
-export function Beat({ at, now }: { at: number | null; now: number }) {
+/** 心跳。tip：派发的心跳写明「心跳不等于干活」 */
+export function Beat({ at, now, tip }: { at: number | null; now: number; tip?: (at: number) => string }) {
   if (at == null) return <span className="hp-beat off">还没有心跳</span>;
   return (
-    <span className="hp-beat" title={`最近一次心跳 ${hhmm(at)}`}>
+    <span className="hp-beat" title={tip ? tip(at) : `最近一次心跳 ${hhmm(at)}`}>
       <i />
       {since(at, now)}
     </span>
@@ -116,8 +118,34 @@ export const patchHost = (name: string, fn: (h: HostInfo) => HostInfo): Patch =>
   keys: [hostKey(name)],
 });
 
-/** 派发日志：最后 500 行；在跑时每 3 秒取一次 */
-export function LogView({ id, live }: { id: number; live?: boolean }) {
+/** 派发的运行状态：状态词（工作中 / 等待输出 / 可能空转）和依据，悬停看判断口径。
+    short：只画状态词（机器页的车道），依据放进悬停提示。排队、已结束、正在停止、旧版服务端不画 */
+export function RunStatus({ d, now, short }: { d: Dispatch; now: number; short?: boolean }) {
+  const s = runInfo(d, now);
+  if (!s || (short && !s.key)) return null;
+  const tip = short ? `${s.basis}${s.note ? `（${s.note}）` : ''}。${s.tip}` : s.tip;
+  return (
+    <div className={cx('hp-rs', s.key && `rs-${s.key}`, short && 'short')} data-tip={tip} aria-label={short ? `${s.label}：${s.basis}` : undefined}>
+      {s.label && <b>{s.label}</b>}
+      {!short && <i>{s.basis}</i>}
+      {!short && s.note && <em>{s.note}</em>}
+    </div>
+  );
+}
+
+/** 日志为空时的一句话：agent 启动多久了、还没有输出，带上运行状态。旧版服务端（没有 outputAt）、已经有过输出时用原来的文案 */
+function emptyLog(d: Dispatch | undefined, now: number) {
+  const old = '还没有输出（host 每 5 秒上传一次新增的行）';
+  if (!d || d.state !== 'running' || d.outputAt !== null || d.startedAt == null) return old;
+  const head = `agent 已启动 ${runFor(now - d.startedAt)}，还没有输出`;
+  const s = runInfo(d, now);
+  if (!s?.key) return `${head}（host 每 5 秒上传一次新增的行）`;
+  return `${head}\n${s.label} · CPU ${d.cpu}%${s.note ? ` · ${s.note}` : ''}`;
+}
+
+/** 派发日志：最后 500 行；在跑时每 3 秒取一次。d：日志为空时按运行状态说明 */
+export function LogView({ id, live, d }: { id: number; live?: boolean; d?: Dispatch }) {
+  const now = useNow(d ? 1000 : null);
   const [lines, setLines] = useState<string[] | null>(null);
   const ref = useRef<HTMLPreElement>(null);
   const stick = useRef(true);
@@ -148,7 +176,7 @@ export function LogView({ id, live }: { id: number; live?: boolean }) {
         stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
       }}
     >
-      {lines === null ? '正在加载…' : lines.length ? lines.join('\n') : '还没有输出（host 每 5 秒上传一次新增的行）'}
+      {lines === null ? '正在加载…' : lines.length ? lines.join('\n') : emptyLog(d, now)}
       {live && lines !== null && (
         <>
           {'\n'}

@@ -26,6 +26,8 @@
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行。
+//! - 每次上报带上在跑的派发的运行状态（`runStates`）：日志最后一次增长是多久之前、agent 进程树最近一段时间的 CPU 占用
+//!   （见 probe.rs）。界面据此写「工作中 / 等待输出 / 可能空转」，不把机器心跳当成 agent 在干活。agent 进程退出后不再上报。
 //! - agent 退出后上报退出码和日志最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 / 已停止）。
 //! - 人停止：结束 agent 进程树，包括启动环境的外壳（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树；
 //!   WSL 里在 WSL 中结束 agent 的进程组），再上报。
@@ -43,6 +45,7 @@ use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
+use crate::probe::{CpuMeter, CpuSample};
 use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words};
 use board_core::*;
@@ -440,6 +443,11 @@ struct Run {
     term_at: Option<Instant>,
     killed: bool,
     spawned: Instant,
+    /// 日志文件的大小，和它最后一次变大的时间（还没有输出时为空）
+    out_len: u64,
+    out_at: Option<Instant>,
+    /// 进程树上一次的 CPU 采样
+    cpu: CpuSample,
 }
 
 impl Run {
@@ -471,6 +479,21 @@ impl Run {
         } else if cfg!(unix) {
             kill_tree(self.child.id(), true);
         }
+    }
+
+    /// 看一眼日志文件有没有变大：变大了记下时间（每一轮主循环一次）
+    fn watch_output(&mut self, now: Instant) {
+        let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
+        if len > self.out_len {
+            self.out_len = len;
+            self.out_at = Some(now);
+        }
+    }
+
+    /// 这次派发的运行状态。WSL 里的 agent 量不到 CPU
+    fn state(&mut self, meter: &CpuMeter, now: Instant) -> RunState {
+        let cpu = if self.env.wsl().is_some() { None } else { meter.sample(self.child.id(), self.spawned, &mut self.cpu) };
+        RunState { id: self.d.id, output_ago: self.out_at.map(|t| now.duration_since(t).as_millis() as i64), cpu }
     }
 
     fn cleanup(&self) {
@@ -606,6 +629,8 @@ struct Host<'a> {
     follow_dirs: bool,
     /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
     conf_seen: (Option<String>, Vec<(String, String)>),
+    /// 在跑的 agent 的 CPU 占用（每次上报前刷新）
+    meter: CpuMeter,
 }
 
 /// `board host`：一直运行，直到 Ctrl+C
@@ -681,6 +706,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         follow_name,
         follow_dirs,
         conf_seen: (conf.name.clone(), conf.dirs.clone()),
+        meter: CpuMeter::default(),
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -815,7 +841,7 @@ impl Host<'_> {
         }
     }
 
-    fn report(&self, done: bool) -> HostReport {
+    fn report(&self, done: bool, run_states: Vec<RunState>) -> HostReport {
         HostReport {
             name: self.name.clone(),
             instance: self.instance.clone(),
@@ -827,16 +853,35 @@ impl Host<'_> {
             dirs: self.dirs.iter().map(|(b, p)| HostDir { board: b.clone(), path: p.display().to_string() }).collect(),
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
             running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
+            run_states,
             done,
         }
+    }
+
+    /// 在跑的派发的运行状态（只有进程还在的：已经退出、结束还没报上去的不算）
+    fn run_states(&mut self) -> Vec<RunState> {
+        if self.runs.is_empty() {
+            return vec![];
+        }
+        let now = Instant::now();
+        self.meter.refresh();
+        let meter = &self.meter;
+        self.runs
+            .iter_mut()
+            .map(|r| {
+                r.watch_output(now);
+                r.state(meter, now)
+            })
+            .collect()
     }
 
     fn rm(&self) -> &Remote {
         self.be.remote()
     }
 
-    fn beat(&self, done: bool) -> Result<HostWork> {
-        let rep = serde_json::to_value(self.report(done)).unwrap_or(Value::Null);
+    fn beat(&mut self, done: bool) -> Result<HostWork> {
+        let states = if done { vec![] } else { self.run_states() };
+        let rep = serde_json::to_value(self.report(done, states)).unwrap_or(Value::Null);
         self.rm().post(&format!("/api/hosts/{}/beat", self.name), rep)
     }
 
@@ -959,6 +1004,9 @@ impl Host<'_> {
                 }
             }
             let now = Instant::now();
+            for r in self.runs.iter_mut() {
+                r.watch_output(now);
+            }
             // 桌面端保存了配置：换了名字、目录就马上上报，界面「机器」里立刻看到
             if RELOAD.swap(false, Ordering::SeqCst) && self.reload() {
                 next_beat = now;
@@ -1377,7 +1425,22 @@ impl Host<'_> {
         let procfile = self.run.join(format!("{}.proc", d.id));
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
-        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, procfile, sent: 0, term_at: None, killed: false, spawned: Instant::now() })
+        Ok(Run {
+            d: d.clone(),
+            child,
+            env,
+            pidfile,
+            log,
+            conf,
+            procfile,
+            sent: 0,
+            term_at: None,
+            killed: false,
+            spawned: Instant::now(),
+            out_len: 0,
+            out_at: None,
+            cpu: CpuSample::default(),
+        })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
@@ -1624,6 +1687,8 @@ mod tests {
             stop_by: None,
             beat_at: None,
             session,
+            output_at: None,
+            cpu: None,
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));

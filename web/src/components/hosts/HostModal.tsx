@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, beatTip, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostInfo, Label } from '../../lib/types';
 import { copyText, cx, durWords, pref } from '../../lib/util';
@@ -12,7 +12,7 @@ import { confirm, openHost, openPicker, setTab, toast, toastError, updatePicker,
 import { LabelChip, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
-import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
+import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, RunStatus, StatePill, usePollHosts } from './bits';
 
 export function HostModal() {
   const sel = useUI(s => s.host);
@@ -996,7 +996,7 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         <span className="hp-mono">{r.name}</span>
         {r.envName && <span>{r.envName}</span>}
         <span>{r.startedAt != null ? durWords(now - r.startedAt) : '刚开始'}</span>
-        <Beat at={r.beatAt} now={now} />
+        <Beat at={r.beatAt} now={now} tip={beatTip} />
         <span>{SOURCE[r.source]}</span>
         {r.stopBy && <span className="hp-stopping">正在停止</span>}
         <span className="hp-sp" />
@@ -1011,7 +1011,8 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
           </button>
         )}
       </div>
-      {open && <LogView id={r.id} live />}
+      <RunStatus d={r} now={now} />
+      {open && <LogView id={r.id} live d={r} />}
     </div>
   );
 }
