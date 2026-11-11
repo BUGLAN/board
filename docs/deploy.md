@@ -262,7 +262,7 @@ skill（GitHub 托管的 macos-latest）：node scripts/build-skill-bin.mjs --zi
                                      Windows（x64）的 board，放进 skill 的 bin/，打包成 board-skills.zip
 desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑）：核对 tag 和 tauri.conf.json 的版本号
                                      → npm ci → 编安装包自带的 board → tauri build → 核对安装包里的 board --version
-                                     macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe 和 .msi
+                                     macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe、.msi 和免安装便携 .zip
 release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip 和桌面端安装包
          （部署成功、skill 打包成功、两个平台的安装包都构建成功后）
 ```
@@ -286,11 +286,13 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 | `Board_<版本>_universal.dmg` | macOS（Apple Silicon 和 Intel 通用） |
 | `Board_<版本>_x64-setup.exe` | Windows x64，NSIS 安装包（推荐） |
 | `Board_<版本>_x64_en-US.msi` | Windows x64，MSI 安装包 |
+| `Board_<版本>_x64_portable.zip` | Windows x64，便携版（免安装，解压即用） |
 | `board-skills.zip` | skill，`bin/` 里带各平台的 `board` |
 
 - 安装包里有界面和自带的 `board` 命令行（Windows 安装时写进 PATH；macOS 在 `Board.app/Contents/MacOS/board`），装好后 `board --version` 打印版本号。
+- 便携版 `Board_<版本>_x64_portable.zip` 是免安装的绿色版：解压到任意目录，直接运行里面的 `board-desktop.exe`；内容就是安装版装进安装目录的那几样（桌面端、`board` 命令行等）。不带 WebView2 引导（安装版在安装时检测、自动下载 WebView2），系统没有 WebView2 运行时（老版本 Windows、精简系统）时先装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)，或改用安装版；要在终端里用自带的 `board` 命令行，把解压出来的目录加进 `PATH` 环境变量。
 - 没有签名和公证：macOS 只做了 ad-hoc 签名，第一次打开会被拦下，到「系统设置 → 隐私与安全性」里点「仍要打开」（或 `xattr -dr com.apple.quarantine /Applications/Board.app`）；Windows 上 SmartScreen 提示时点「更多信息 → 仍要运行」。
-- 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）。
+- 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）；Windows 便携版照 deploy.yml 的「打包 Windows 便携版」一步：把 `target/<triple>/release/` 里的 `board-desktop.exe`、`board.exe`（和有才有的 `WebView2Loader.dll`、`resources/`）压成 zip。
 
 ### 一次性配置
 

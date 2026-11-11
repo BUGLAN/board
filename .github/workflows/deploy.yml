@@ -3,7 +3,7 @@
 #               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final），
 #                 以及多行正文经过 skill 入口 board.cmd 一字不丢（tests/multiline.rs）
 #   push tag v*  → skill：在 macOS 上编各平台的 board，放进 skill 的 bin/，打包 board-skills.zip（和 build、deploy 同时跑）
-#                → desktop：在 macOS、Windows 上构建桌面端安装包（macOS 通用 .dmg；Windows NSIS .exe 和 .msi），和 build、deploy 同时跑
+#                → desktop：在 macOS、Windows 上构建桌面端安装包（macOS 通用 .dmg；Windows NSIS .exe、.msi 和免安装便携 .zip），和 build、deploy 同时跑
 #                → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
 #                → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上版本号和提交号；失败切回上一个镜像
 #                → release：用 CHANGELOG.md 里这一版的段落建 GitHub Release，附上 board-skills.zip 和桌面端安装包
@@ -130,6 +130,7 @@ jobs:
           if-no-files-found: error
 
   # 推 v* tag：从 tag 对应的提交构建桌面端安装包（界面 + 自带的 board 命令行），release 时附上。
+  # Windows 另打免安装的便携版 .zip（绿色版：解压即用，不带 WebView2 引导，docs/deploy.md「桌面端安装包」）
   # 不签名、不公证：macOS 用 ad-hoc 签名（Apple Silicon 上才能运行），第一次打开要在「隐私与安全性」里放行（docs/deploy.md「桌面端安装包」）
   desktop:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -148,6 +149,7 @@ jobs:
             rust-targets: x86_64-pc-windows-msvc
             bundles: nsis,msi
             files: |
+              target/x86_64-pc-windows-msvc/release/bundle/*.zip
               target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
               target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
     runs-on: ${{ matrix.os }}
@@ -217,6 +219,44 @@ jobs:
           [ "$RUNNER_OS" = macOS ] && hdiutil detach "$mnt"
           echo "$got"
           [ "$got" = "$want" ] || { echo "::error::安装包里的 board 版本是「$got」，应为 $want"; exit 1; }
+
+      # Windows 另打免安装的便携版（绿色版）：安装包要跑安装器，便携版把运行需要的文件直接压成 zip，
+      # 解压到任意目录就能运行 board-desktop.exe；内容就是安装版装进安装目录的那几样
+      - name: 打包 Windows 便携版（免安装 zip）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rel = 'target/x86_64-pc-windows-msvc/release'
+          $stage = "$rel/bundle/portable/Board"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          # 安装版放进安装目录的文件：桌面端、自带的 board 命令行，加上有才有的 WebView2Loader.dll、resources
+          foreach ($f in 'board-desktop.exe', 'board.exe') { Copy-Item "$rel/$f" $stage }
+          foreach ($f in 'WebView2Loader.dll', 'resources') {
+            if (Test-Path "$rel/$f") { Copy-Item "$rel/$f" $stage -Recurse }
+          }
+          $readme = @'
+          Board 便携版（免安装）
+
+          解压到任意目录后直接运行 board-desktop.exe，无需安装。
+
+          - 依赖系统自带的 WebView2 运行时（Windows 10 1803+ / Windows 11 一般已自带）；没有时先装
+            Microsoft Edge WebView2 Runtime，或改用会自动下载 WebView2 的安装版（NSIS .exe）。
+          - 要在终端里用自带的 board 命令行：把本目录加入 PATH 环境变量（安装版会自动写 PATH）。
+          '@
+          Set-Content -LiteralPath "$stage/使用说明.txt" -Value $readme -Encoding utf8
+          $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          $zip = "$rel/bundle/Board_${ver}_x64_portable.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          # 核对：zip 条目齐全，解压出来的 board --version 是 tag 的版本号
+          $check = Join-Path $env:RUNNER_TEMP 'portable-check'
+          if (Test-Path $check) { Remove-Item $check -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath $check
+          (Get-ChildItem $check).Name
+          $got = & "$check/board.exe" --version
+          $want = "board $ver"
+          if ($got -ne $want) { throw "便携版里的 board 版本是「$got」，应为 $want" }
+          Write-Host "✓ 便携版：$zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -445,10 +485,10 @@ jobs:
         run: |
           awk -v h="## v$VERSION" 'index($0, h" ") == 1 || $0 == h { f = 1; next } f && /^## / { exit } f' CHANGELOG.md | sed '/./,$!d' > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG.md 里取不到 v$VERSION 一节"; exit 1; }
-          # 上传时按 glob 的公共目录保留子目录：macOS 的 .dmg 在最外层，Windows 的 .exe / .msi 在 nsis/、msi/ 下面
+          # 上传时按 glob 的公共目录保留子目录：macOS 的 .dmg、Windows 的便携版 .zip 在最外层，Windows 的 .exe / .msi 在 nsis/、msi/ 下面
           files=()
-          while IFS= read -r f; do files+=("$f"); done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) | sort)
-          for ext in dmg exe msi; do
+          while IFS= read -r f; do files+=("$f"); done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' \) | sort)
+          for ext in dmg exe msi zip; do
             printf '%s\n' "${files[@]}" | grep -q "\.$ext$" || { echo "::error::缺少桌面端安装包（.$ext），不建 Release"; exit 1; }
           done
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip "${files[@]}"

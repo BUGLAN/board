@@ -50,7 +50,7 @@ Board 把这些问题的答案放到一块**人和 agent 都能读写**的白板
 - **一句话把活派给 agent**：卡片详情里点「复制为提示词」，得到的就是一句带项目、白板和卡片编号的话；agent 通过 `board-skills` 自己读取卡片、领取、干活、交审。
 - **派给机器，或让机器按时领卡**：每台干活的机器上常驻一个 `board host`（桌面端「设置 → 本机」一个开关就行）。在卡片详情里点「派发」选机器和 agent，或者给机器设好每天的时间点，到点它自己把空位填满、做完一张领下一张；agent 崩溃或被停止时，卡片移到「需人工校验」。「机器」页看每台机器的并发位、排队和日志。
 - **不绑定某一家 agent**：只要它能执行命令行，就能接 Board。
-- **多端可用**：网页端、macOS / Windows 桌面端（安装包在 GitHub Release 的附件里），手机浏览器也能用；支持深色 / 浅色主题。
+- **多端可用**：网页端、macOS / Windows 桌面端（安装包和 Windows 免安装便携版在 GitHub Release 的附件里），手机浏览器也能用；支持深色 / 浅色主题。
 - **CLI 对机器友好**：所有命令支持 `--json`，失败时给出稳定的错误码和退出码。
 
 ## 一起工作的方式
@@ -88,7 +88,7 @@ skill 自带 `board`：发版附件里的 `board-skills.zip` 解压后，`bin/` 
 node scripts/build-skill-bin.mjs --host   # 只编本机平台；不带 --host 时本机能交叉编译的平台都编
 ```
 
-人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装时写进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH），或者从源码安装：
+人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH），或者从源码安装：
 
 ```bash
 cargo install --path crates/board-cli
