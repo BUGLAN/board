@@ -142,7 +142,6 @@
 .up-state.ok { color: var(--text-2); }
 .up-state.ok svg { color: var(--ok); }
 .up-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-4); }
-.up-state.checking svg { animation: up-spin 1s linear infinite; }
 .up-ver { font-family: var(--f-mono); font-size: 12.5px; }
 .up-card { margin: 4px 0 12px; padding: 14px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
 .up-card.is-new { background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 28%, transparent); }

@@ -1,6 +1,9 @@
 /* 桌面端更新：版本比较、检查结果、下载进度、自动检查开关（外壳命令本身由 src-tauri 的单元测试守着） */
 import { describe, expect, it } from 'vitest';
 import {
+  AUTO_CHECK_INTERVAL,
+  AUTO_CHECK_START_DELAY,
+  autoCheckDelay,
   autoCheckUpdate,
   checkSummary,
   downloadPercent,
@@ -9,6 +12,8 @@ import {
   finishCheck,
   formatBytes,
   isNewer,
+  lastAutoCheck,
+  markAutoCheck,
   newerVersion,
   progressText,
   setAutoCheckUpdate,
@@ -113,5 +118,14 @@ describe('启动后自动检查', () => {
     expect(autoCheckUpdate()).toBe(false);
     setAutoCheckUpdate(true);
     expect(autoCheckUpdate()).toBe(true);
+  });
+  it('打开时查一次，之后每 30 分钟；上次检查时间持久化，刷新不重复查', () => {
+    const now = Date.now();
+    expect(AUTO_CHECK_INTERVAL).toBe(30 * 60 * 1000);
+    expect(autoCheckDelay(0, now)).toBe(AUTO_CHECK_START_DELAY);
+    expect(autoCheckDelay(now - 10 * 60 * 1000, now)).toBe(20 * 60 * 1000);
+    expect(autoCheckDelay(now - 40 * 60 * 1000, now)).toBe(AUTO_CHECK_START_DELAY);
+    markAutoCheck(now);
+    expect(lastAutoCheck()).toBe(now);
   });
 });

@@ -41,6 +41,23 @@ export function setAutoCheckUpdate(on: boolean) {
   pref.set(AUTO, on);
 }
 
+/** 自动检查的间隔：30 分钟 */
+export const AUTO_CHECK_INTERVAL = 30 * 60 * 1000;
+/** 打开后等这么久再查：先让页面和登录就绪，不和首屏抢网络 */
+export const AUTO_CHECK_START_DELAY = 1500;
+const LAST_AUTO = 'update.lastAutoCheck';
+
+/** 上次自动检查的时间（毫秒时间戳）；从没查过时是 0 */
+export const lastAutoCheck = () => pref.get<number>(LAST_AUTO, 0);
+/** 记下这次自动检查的时间：页面刷新、重复挂载都按它节流 */
+export function markAutoCheck(at = Date.now()) {
+  pref.set(LAST_AUTO, at);
+}
+/** 距离下一次自动检查还要等多久：没查过时用启动延迟，查过就等到满 30 分钟（刷新页面不会重复查） */
+export function autoCheckDelay(last: number, now: number): number {
+  return Math.max(AUTO_CHECK_START_DELAY, last > 0 ? last + AUTO_CHECK_INTERVAL - now : 0);
+}
+
 /* ---------------- 版本 ---------------- */
 
 /** 按点分成数字：`1.2.3` → `[1,2,3]`；`v` 前缀、预发布 / 构建后缀（`-beta.1`、`+sha`）不看；有不是数字的段时返回 null */

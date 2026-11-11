@@ -1,17 +1,15 @@
 /* ==========================================================================
    启动后自动检查更新（lib/update.ts 是逻辑，components/update-card.tsx 是界面，这里把它们接起来）
-   - 每个窗口启动后延迟几秒自动检查一次；设置里关掉后不再检查
+   - 桌面端打开时检查一次，之后每 30 分钟一次；设置里关掉后不再检查
+   - 上次检查时间持久化：页面刷新、切换设置页、重复挂载不会多查一次
    - 检查结果放在这里（store）：设置页的更新卡片打开时直接显示，不用再查一遍
    - 有新版本：应用内的确认框（store/ui 的 confirm），「以后再说」就是这次先不装；不弹系统框、不阻塞操作
    - 连不上、清单不对、旧版桌面端：只发一条 toast，不打扰；可以到设置页手动重试
    ========================================================================== */
 import { create } from 'zustand';
 import { checkUpdate } from './platform';
-import { autoCheckUpdate, failCheck, finishCheck, type CheckState } from './update';
+import { autoCheckDelay, autoCheckUpdate, failCheck, finishCheck, lastAutoCheck, markAutoCheck, type CheckState } from './update';
 import { confirm, setTab, toast } from '../store/ui';
-
-/** 启动后等这么久再检查：先让页面和登录就绪，不和首屏抢网络 */
-const DELAY = 5000;
 
 interface UpdateStore {
   check: CheckState;
@@ -43,12 +41,38 @@ export const useUpdate = create<UpdateStore>(set => ({
 
 /** 检查过一次（不管在哪个窗口）就不再自动查 */
 let started = false;
+let timer: number | null = null;
 
 export function autoUpdateCheck() {
   if (started) return;
   started = true;
   if (!autoCheckUpdate()) return;
-  setTimeout(() => void checkQuietly(), DELAY);
+  scheduleNext();
+}
+
+/** 设置里重新打开「启动后自动检查」：如果之前已经启动过，重新排下一次 */
+export function resumeAutoUpdateCheck() {
+  if (!autoCheckUpdate()) return;
+  started = true;
+  scheduleNext();
+}
+
+/** 设置里关掉后不再自动检查（手动检查不受影响） */
+export function pauseAutoUpdateCheck() {
+  if (timer != null) window.clearTimeout(timer);
+  timer = null;
+}
+
+/** 打开时先查一次（上次查过就等满 30 分钟），之后每 30 分钟一次；关掉开关后下一次不再排 */
+function scheduleNext() {
+  if (timer != null) window.clearTimeout(timer);
+  timer = window.setTimeout(async () => {
+    timer = null;
+    if (!autoCheckUpdate()) return;
+    await checkQuietly();
+    markAutoCheck();
+    scheduleNext();
+  }, autoCheckDelay(lastAutoCheck(), Date.now()));
 }
 
 async function checkQuietly() {

@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { installUpdate, restartApp, shellVersion } from '../lib/platform';
 import { autoCheckUpdate, downloadPercent, progressText, setAutoCheckUpdate, type InstallState, type UpdateProgress } from '../lib/update';
-import { useUpdate } from '../lib/update-runner';
+import { pauseAutoUpdateCheck, resumeAutoUpdateCheck, useUpdate } from '../lib/update-runner';
 import { confirm, toast } from '../store/ui';
 import { Markdown } from './bits';
 import { Icon } from './Icon';
@@ -59,12 +59,8 @@ export function UpdateCard() {
   const version = shellVersion ?? '未知';
   let status: ReactNode;
   if (check.kind === 'checking') {
-    status = (
-      <span className="up-state checking">
-        <Icon name="renew" />
-        正在检查…
-      </span>
-    );
+    // 转圈只在右侧「检查更新」按钮上（.btn.is-busy），这里不再放第二个 spinner
+    status = <span className="up-state">正在检查…</span>;
   } else if (check.kind === 'available') {
     status = (
       <span className="up-state">
@@ -191,7 +187,7 @@ export function UpdateCard() {
       <div className="set-row">
         <div className="set-label">
           <b>启动后自动检查</b>
-          <span>打开 Board 后隔几秒检查一次；发现新版本时用应用内的确认框问，不打断正在做的事</span>
+          <span>打开 Board 时检查一次，之后每 30 分钟检查一次；发现新版本时用应用内的确认框问，不打断正在做的事</span>
         </div>
         <div className="set-control">
           <Toggle
@@ -200,6 +196,8 @@ export function UpdateCard() {
             onChange={v => {
               setAuto(v);
               setAutoCheckUpdate(v);
+              if (v) resumeAutoUpdateCheck();
+              else pauseAutoUpdateCheck();
               toast({ type: 'info', title: v ? '启动后会自动检查更新' : '启动后不再自动检查更新', duration: 1800 });
             }}
           />
