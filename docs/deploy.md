@@ -289,12 +289,13 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 | `Board_<版本>_x64_en-US.msi` | Windows x64，MSI 安装包 |
 | `Board_<版本>_x64_portable.zip` | Windows x64，便携版（免安装，解压即用） |
 | `board-skills.zip` | skill，`bin/` 里带各平台的 `board` |
+| `Board_<版本>_universal.app.tar.gz`、`latest.json` | 桌面端「检查更新」用的更新包和清单（见下文「桌面端检查更新」），不用手动下载 |
 
 - 安装包里有界面和自带的 `board` 命令行（Windows 安装时写进 PATH；macOS 在 `Board.app/Contents/MacOS/board`），装好后 `board --version` 打印版本号。
 - 便携版 `Board_<版本>_x64_portable.zip` 是免安装的绿色版：解压到任意目录，直接运行里面的 `board-desktop.exe`；内容就是安装版装进安装目录的那几样（桌面端、`board` 命令行等）。不带 WebView2 引导（安装版在安装时检测、自动下载 WebView2），系统没有 WebView2 运行时（老版本 Windows、精简系统）时先装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)，或改用安装版；要在终端里用自带的 `board` 命令行，把解压出来的目录加进 `PATH` 环境变量。
 - 没有签名和公证：macOS 只做了 ad-hoc 签名，第一次打开会被拦下，到「系统设置 → 隐私与安全性」里点「仍要打开」（或 `xattr -dr com.apple.quarantine /Applications/Board.app`）；Windows 上 SmartScreen 提示时点「更多信息 → 仍要运行」。
 - 桌面端的「设置 → 桌面端更新」读 `latest.json`，装新版本（见下文「桌面端检查更新」）。
-- 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）；Windows 便携版照 deploy.yml 的「打包 Windows 便携版」一步：把 `target/<triple>/release/` 里的 `board-desktop.exe`、`board.exe`（和有才有的 `WebView2Loader.dll`、`resources/`）压成 zip。
+- 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles app,dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）；Windows 便携版照 deploy.yml 的「打包 Windows 便携版」一步：把 `target/<triple>/release/` 里的 `board-desktop.exe`、`board.exe`（和有才有的 `WebView2Loader.dll`、`resources/`）压成 zip。
 
 ### 桌面端检查更新
 
@@ -304,7 +305,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 |---|---|
 | 客户端读取的清单 | `https://github.com/buglan/board/releases/latest/download/latest.json`（`src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints`），总是指向最新一个 Release |
 | 清单内容 | 版本号、那一版 CHANGELOG、每个平台的更新包地址和签名（`scripts/updater-manifest.mjs` 生成，release 时作为附件上传） |
-| 更新包 | macOS：`.app.tar.gz`（通用包，两个架构各一份）；Windows：NSIS 安装包 `.exe`。`tauri build` 打了 `createUpdaterArtifacts`，签名放在同名的 `.sig` |
+| 更新包 | macOS：`Board_<版本>_universal.app.tar.gz`（通用包，清单里两个架构指向同一个附件）；Windows：NSIS 安装包 `.exe`（就是安装包本身）。`tauri build` 打了 `createUpdaterArtifacts`，签名放在同名的 `.sig`，内容写进 `latest.json` |
 | 公钥 | `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`，可以进仓库；客户端只信任它 |
 | 私钥 | 只在 GitHub secret 里，**仓库里没有**；丢了只能换一对新密钥并发一版（旧版本客户端只认旧公钥，收不到更新） |
 
@@ -325,7 +326,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 3. `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey` 换成 `board-updater.key.pub` 的内容。
 
-没有配私钥时，`tauri build` 不打签名，「收齐更新包和签名」一步失败、不建 Release（服务端照常部署）：不会发出一份装不上的更新。
+没有配私钥时，desktop 任务在编译之前的「核对更新签名私钥」一步就失败、不建 Release（服务端照常部署）：不会发出一份装不上的更新。私钥配错（例如只贴了一部分、密码不对）时 `tauri build` 报「failed to decode secret key」，同样不建 Release。
 
 发版流程不用另外操作：`npm run release -- x.y.z --push` 之后，desktop 任务带着签名打包、收齐更新包、按 tag 生成清单；release 任务把两个平台的清单合并成 `latest.json`（要求 macOS 两个架构和 Windows 都在），和安装包一起附在 Release 上。版本号在 tag、`tauri.conf.json`、`CHANGELOG.md` 和 `latest.json` 里一致（前两处不一致时构建就失败；清单的版本号和说明直接取 tag 和 CHANGELOG）。
 
@@ -345,13 +346,13 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
    TAURI_SIGNING_PRIVATE_KEY="$(cat /tmp/dev-updater.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npm run desktop:build
    ```
 
-   签名产物在 `target/release/bundle/update/` 下：Windows 是 NSIS 安装包 `.exe` 和 `.sig`，macOS 是 `Board.app.tar.gz` 和 `.sig`。
+   签名产物在安装包旁边：Windows 是 `target/release/bundle/nsis/` 下的 NSIS 安装包 `.exe` 和 `.sig`，macOS 是 `target/release/bundle/macos/Board.app.tar.gz` 和 `.sig`（要打 `app`：只打 `dmg` 时不出更新包）。
 
 2. 把它们按平台键收进一个目录（Windows：`windows-x86_64-nsis`；macOS：`darwin-aarch64-app` 或 `darwin-x86_64-app`），再用脚本生成清单（`--partial`：只有本机这一个平台）：
 
    ```bash
    mkdir -p /tmp/updater/windows-x86_64-nsis
-   cp target/release/bundle/update/*.exe* /tmp/updater/windows-x86_64-nsis/
+   cp target/release/bundle/nsis/*-setup.exe* /tmp/updater/windows-x86_64-nsis/
    BOARD_VERSION=0.1.13 node scripts/updater-manifest.mjs --dir /tmp/updater --version 0.1.13 \
      --base http://127.0.0.1:8000/windows-x86_64-nsis --out /tmp/updater/latest.json --partial
    cd /tmp/updater && python -m http.server 8000

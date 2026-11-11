@@ -6,14 +6,14 @@
          "notes": "<CHANGELOG.md 里这一版的段落>",
          "pub_date": "2026-11-11T06:00:00Z",
          "platforms": {
-           "darwin-aarch64-app":   { "signature": "<minisign>", "url": ".../Board.app.tar.gz" },
-           "darwin-x86_64-app":    { "signature": "<minisign>", "url": ".../Board.app.tar.gz" },
-           "windows-x86_64-nsis":  { "signature": "<minisign>", "url": ".../Board_0.1.13_x64-setup.exe" }
+           "darwin-aarch64-app":   { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_universal.app.tar.gz" },
+           "darwin-x86_64-app":    { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_universal.app.tar.gz" },
+           "windows-x86_64-nsis":  { "signature": "<.sig 的内容>", "url": ".../Board_0.1.13_x64-setup.exe" }
          }
        }
 
    发版工作流（.github/workflows/deploy.yml 的 desktop 任务）在打好安装包后调用：tauri build（bundle.createUpdaterArtifacts）
-   把每个平台的上传包和签名放在 target/<target>/release/bundle/update/<os>/<文件> 和 <文件>.sig；
+   把每个平台的更新包和签名放在安装包旁边（target/<target>/release/bundle/macos/Board.app.tar.gz、bundle/nsis/<安装包>.exe）和 <文件>.sig；
    CI 把它们收进 updater/<平台键>/<文件>，这里读签名、写清单。release 时 latest.json 作为 GitHub Release 的附件上传，
    客户端从 https://github.com/<仓库>/releases/latest/download/latest.json 取（tauri.conf.json 的 plugins.updater.endpoints）。
 
@@ -97,11 +97,21 @@ export function collect(dir, base) {
   return files;
 }
 
-/** 签名是 minisign 的文本（第一行 `untrusted comment:`），原样放进清单（去掉可能的 BOM 和首尾空白） */
+/**
+ * 签名：tauri build 写的 `.sig` 是 minisign 签名文本（第一行 `untrusted comment:`）再做一次 base64，
+ * 清单里原样放这串 base64（客户端先解 base64 再验 minisign）。去掉可能的 BOM 和首尾空白
+ */
 export function readSignature(path) {
   const text = readFileSync(path, 'utf8').replace(/^\uFEFF/, '').trim();
-  if (!text.startsWith('untrusted comment:')) throw new Error(`${path} 不像 minisign 签名`);
+  if (!isSignature(text)) throw new Error(`${path} 不像 tauri 的签名（base64 编码的 minisign 签名）`);
   return text;
+}
+
+/** 是不是 base64 编码的 minisign 签名：只有 base64 字符，解开后第一行是 `untrusted comment:` */
+export function isSignature(text) {
+  const s = String(text ?? '');
+  if (!s || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return false;
+  return Buffer.from(s, 'base64').toString('utf8').startsWith('untrusted comment:');
 }
 
 /** 拼清单：files 是 collect 的结果（或者测试里给的假条目）；签名读的是更新包旁边的 `<文件>.sig` */
@@ -139,7 +149,7 @@ export function validateManifest(m, { expectVersion, required = REQUIRED_TARGETS
   if (!keys.length) problems.push('platforms 是空的');
   for (const [k, p] of Object.entries(platforms)) {
     if (!TARGET_KEY.test(k)) problems.push(`platforms 的键「${k}」不像 Tauri 的 target`);
-    if (!String(p?.signature ?? '').startsWith('untrusted comment:')) problems.push(`${k} 没有签名`);
+    if (!isSignature(p?.signature)) problems.push(`${k} 没有签名，或者签名不是 .sig 的内容（base64 编码的 minisign 签名）`);
     let url;
     try {
       url = new URL(p?.url ?? '');
@@ -182,9 +192,10 @@ function main() {
  */
 function dryRun() {
   const version = manifestVersion(process.env.BOARD_VERSION ?? execFileSync('node', ['-p', "require('./src-tauri/tauri.conf.json').version"], { cwd: root, encoding: 'utf8' }));
-  const sig = 'untrusted comment: signature from minisign secret key\nRWfake1\nfake2\n';
+  // 和 tauri build 写的 .sig 一样：minisign 签名文本再做一次 base64
+  const sig = Buffer.from('untrusted comment: signature from tauri secret key\nRWfake1\ntrusted comment: fake\nfake2\n').toString('base64');
   const base = `https://github.com/buglan/board/releases/download/v${version}`;
-  const files = REQUIRED_TARGETS.map(t => ({ target: t, file: 'fake', url: `${base}/${t.endsWith('-app') ? 'Board.app.tar.gz' : `Board_${version}_x64-setup.exe`}` }));
+  const files = REQUIRED_TARGETS.map(t => ({ target: t, file: 'fake', url: `${base}/${t.endsWith('-app') ? `Board_${version}_universal.app.tar.gz` : `Board_${version}_x64-setup.exe`}` }));
   // 顺手核对 CHANGELOG 里有没有这一版（BOARD_VERSION=<下一个版本号> 时核对下一个版本；没发版时不检查）
   let notes = `## v${version}\n- 示例`;
   let notesNote = 'CHANGELOG 还没发版，用示例说明';
@@ -203,6 +214,8 @@ function dryRun() {
     () => ({ ...m, platforms: { ...m.platforms, 'windows-x86_64-nsis': { signature: '', url: m.platforms['windows-x86_64-nsis'].url } } }),
     () => ({ ...m, platforms: { ...m.platforms, 'darwin-aarch64-app': { signature: sig, url: 'file:///etc/passwd' } } }),
     () => ({ ...m, platforms: { 'windows-x86_64-nsis': m.platforms['windows-x86_64-nsis'] } }),
+    // 没解 base64 的 minisign 文本（客户端不认）
+    () => ({ ...m, platforms: { ...m.platforms, 'darwin-x86_64-app': { signature: Buffer.from(sig, 'base64').toString('utf8'), url: m.platforms['darwin-x86_64-app'].url } } }),
   ];
   for (const [i, make] of bad.entries()) {
     if (!validateManifest(make(), { expectVersion: version }).problems.length) problems.push(`写坏的清单（第 ${i + 1} 个）没有被拦下`);

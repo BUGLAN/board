@@ -147,7 +147,8 @@ jobs:
           - os: macos-latest
             target: universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundles: dmg
+            # app：更新包（Board.app.tar.gz）从 .app 打出来，只打 dmg 时 Tauri 不出更新包
+            bundles: app,dmg
             files: target/universal-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -169,7 +170,19 @@ jobs:
           tag=${GITHUB_REF_NAME#v}
           ver=$(node -p "require('./src-tauri/tauri.conf.json').version")
           if [ "$tag" != "$ver" ]; then
-            echo "::error::tag $GITHUB_REF_NAME 和 src-tauri/tauri.conf.json 的版本号（$ver）不一致。用 npm run release -- $tag 发版"
+            echo "::error::tag $GITHUB_REF_NAME 和 src-tauri/tauri.conf.json 的版本号（${ver}）不一致。用 npm run release -- $tag 发版"
+            exit 1
+          fi
+
+      # 更新包要用私钥签名：仓库没配 secret 时 GitHub 给的是空字符串，tauri build 打完包才报
+      # 「failed to decode secret key」。在编译之前就拦下，省掉十几分钟的构建，并说清楚要配什么
+      - name: 核对更新签名私钥
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::仓库没有配 secret TAURI_SIGNING_PRIVATE_KEY（更新包的签名私钥），桌面端不打包、不建 Release。配置方法见 docs/deploy.md「桌面端检查更新」的一次性配置"
             exit 1
           fi
 
@@ -198,8 +211,8 @@ jobs:
         env:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
 
-      # beforeBuildCommand 构建界面。bundle.createUpdaterArtifacts：每个平台的更新包（macOS 的 .app.tar.gz、
-      # Windows 的 NSIS .exe）和它的 .sig 放在 release/bundle/update/ 下，下面按架构收进 updater/<平台键>/
+      # beforeBuildCommand 构建界面。bundle.createUpdaterArtifacts：每个平台的更新包和它的 .sig 放在安装包旁边
+      # （macOS：bundle/macos/Board.app.tar.gz；Windows：bundle/nsis/<安装包>.exe），下面按平台键收进 updater/<平台键>/
       - name: 构建安装包
         run: npx tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
         env:
@@ -214,31 +227,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rel="target/${{ matrix.target }}/release"
-          upd="$rel/bundle/update"
-          ls -R "$upd" 2>/dev/null || { echo "::error::没有 $upd：bundle.createUpdaterArtifacts 没开，或者构建时没有签名私钥（TAURI_SIGNING_PRIVATE_KEY）"; exit 1; }
-          # 通用包是两个架构各一份：每个架构都在自己的 target 目录里打了一次包，所以 target/aarch64-apple-darwin 和
-          # target/x86_64-apple-darwin 下各有一个 update/（文件名不带三元组）；只落在一个目录里的情况也认
-          files=$(find "$upd" target/*apple-darwin/release/bundle/update -type f -name "*.app.tar.gz" 2>/dev/null | sort -u)
-          [ -n "$files" ] || { echo "::error::没有 .app.tar.gz 更新包"; exit 1; }
+          rel="target/${{ matrix.target }}/release/bundle"
+          ver=${GITHUB_REF_NAME#v}
+          # 更新包和签名都得在：没有签名的更新包客户端不装，宁可这次不建 Release
+          need() { [ -n "${1}" ] && [ -f "${1}" ] && [ -f "${1}.sig" ] || { echo "::error::${2}：${1:-没有找到}"; ls -R "${rel}" || true; exit 1; }; }
           if [ "$RUNNER_OS" = macOS ]; then
-            for arch in aarch64 x86_64; do
-              key="darwin-$arch-app"
-              f=$(printf '%s\n' "$files" | grep -- "/$arch-apple-darwin/" | head -1 || true)
-              if [ -z "$f" ] && [ "$(printf '%s\n' "$files" | wc -l)" = 1 ]; then
-                # 只打了一次通用包：同一个文件给两个架构（都是通用包，装到哪个架构都行）
-                f=$(printf '%s\n' "$files" | head -1)
-              fi
-              [ -n "$f" ] || { echo "::error::$arch 没有对应的 .app.tar.gz 更新包：$files"; exit 1; }
-              mkdir -p "updater/$key"
-              cp "$f" "$f.sig" "updater/$key/"
+            f=$(find "${rel}/macos" -maxdepth 1 -type f -name "*.app.tar.gz" 2>/dev/null | head -1)
+            need "${f}" "没有 macOS 更新包（.app.tar.gz 和 .sig）：bundles 里要有 app，构建时要有签名私钥"
+            # 通用包两个架构都能装，同一份给 darwin-aarch64 和 darwin-x86_64；改成带版本号的名字，Release 附件里认得出
+            name="Board_${ver}_universal.app.tar.gz"
+            for key in darwin-aarch64-app darwin-x86_64-app; do
+              mkdir -p "updater/${key}"
+              cp "${f}" "updater/${key}/${name}"
+              cp "${f}.sig" "updater/${key}/${name}.sig"
             done
           else
+            f=$(find "${rel}/nsis" -maxdepth 1 -type f -name "*-setup.exe" 2>/dev/null | head -1)
+            need "${f}" "没有 Windows 更新包（NSIS 安装包和 .sig）：构建时要有签名私钥"
             mkdir -p updater/windows-x86_64-nsis
-            f=$(find "$upd" -type f -name "*setup.exe" | head -1)
-            [ -n "$f" ] || f=$(find "$rel/nsis" -type f -name "*.exe" ! -name "*.sig" | head -1)
-            if [ -z "$f" ] || [ ! -f "$f.sig" ]; then echo "::error::NSIS 安装包没有签名：${f:-没有找到安装包}"; exit 1; fi
-            cp "$f" "$f.sig" updater/windows-x86_64-nsis/
+            cp "${f}" "${f}.sig" updater/windows-x86_64-nsis/
           fi
           find updater -type f
 
@@ -264,7 +271,7 @@ jobs:
             console.log(JSON.stringify(m, null, 2));
           '
 
-      # macOS 挂载 .dmg 核对里面的 Board.app（只打 dmg 时 Tauri 打完包会删掉 bundle/macos 下的 .app）；
+      # macOS 挂载 .dmg 核对里面的 Board.app（用户装的是 dmg 里的这一份）；
       # Windows 核对打进安装包的 board.exe
       - name: 核对安装包里的 board 能运行
         shell: bash
@@ -282,7 +289,7 @@ jobs:
           got=$("$bin" --version)
           [ "$RUNNER_OS" = macOS ] && hdiutil detach "$mnt"
           echo "$got"
-          [ "$got" = "$want" ] || { echo "::error::安装包里的 board 版本是「$got」，应为 $want"; exit 1; }
+          [ "$got" = "$want" ] || { echo "::error::安装包里的 board 版本是「${got}」，应为 $want"; exit 1; }
 
       # Windows 另打免安装的便携版（绿色版）：安装包要跑安装器，便携版把运行需要的文件直接压成 zip，
       # 解压到任意目录就能运行 board-desktop.exe；内容就是安装版装进安装目录的那几样
@@ -319,7 +326,7 @@ jobs:
           (Get-ChildItem $check).Name
           $got = & "$check/board.exe" --version
           $want = "board $ver"
-          if ($got -ne $want) { throw "便携版里的 board 版本是「$got」，应为 $want" }
+          if ($got -ne $want) { throw "便携版里的 board 版本是「${got}」，应为 $want" }
           Write-Host "✓ 便携版：$zip"
 
       # 更新包（updater/ 原样保留子目录，macOS、Windows 两边各出各的平台键）、各自的清单 latest-<系统>.json（release 时合并）
@@ -360,7 +367,7 @@ jobs:
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
-          echo "构建 $GITHUB_REF_NAME：版本 $ver，提交 $(git rev-parse --short=7 HEAD)"
+          echo "构建 ${GITHUB_REF_NAME}：版本 ${ver}，提交 $(git rev-parse --short=7 HEAD)"
 
       - uses: actions/setup-node@v4
         with:
@@ -458,7 +465,7 @@ jobs:
           c=${INPUT:-$BUILT}
           echo "$c" | grep -Eq '^[0-9a-f]{7}$' || { echo "::error::提交号格式不对：${c}（要 7 位小写十六进制）"; exit 1; }
           echo "commit=$c" >> "$GITHUB_OUTPUT"
-          echo "部署 $IMAGE:$c → $HOST:$DIR（$URL）"
+          echo "部署 $IMAGE:$c → $HOST:${DIR}（${URL}）"
 
       - name: 配置 SSH
         env:
@@ -509,12 +516,12 @@ jobs:
             got=$(printf '%s' "$h" | jq -r '.commit // empty' 2>/dev/null || true)
             gotv=$(printf '%s' "$h" | jq -r '.version // empty' 2>/dev/null || true)
             if [ "$got" = "$COMMIT" ] && { [ -z "$VERSION" ] || [ "$gotv" = "$VERSION" ]; }; then
-              echo "✓ 线上 $URL 是 ${gotv:-?}（$got）"
+              echo "✓ 线上 $URL 是 ${gotv:-?}（${got}）"
               exit 0
             fi
             sleep 5
           done
-          echo "::error::线上 $URL 是「${gotv:-取不到}（${got:-取不到}）」，应为 ${VERSION:-任意版本}（$COMMIT），切回部署前的镜像"
+          echo "::error::线上 $URL 是「${gotv:-取不到}（${got:-取不到}）」，应为 ${VERSION:-任意版本}（${COMMIT}），切回部署前的镜像"
           ssh "$HOST" "cd '$DIR' && ./deploy/remote-deploy.sh rollback"
           exit 1
 
@@ -584,9 +591,21 @@ jobs:
           [ -s notes.md ] || { echo "::error::CHANGELOG.md 里取不到 v$VERSION 一节"; exit 1; }
           # 上传时按 glob 的公共目录保留子目录：macOS 的 .dmg、Windows 的便携版 .zip 在最外层，Windows 的 .exe / .msi 在 nsis/、msi/ 下面；
           # 更新包（updater/）和最新清单 latest.json 也一起附上——桌面端的「检查更新」读 releases/latest/download/latest.json
+          # 同名的只附一次：macOS 通用更新包给两个架构各收了一份，Windows 的更新包就是 nsis/ 下的安装包；
+          # 同名但内容不同说明收错了，不建 Release（gh 也不允许同名附件）
           files=()
-          while IFS= read -r f; do files+=("$f"); done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' -o -name '*.app.tar.gz' \) | sort)
+          while IFS= read -r f; do
+            dup=""
+            for g in ${files[@]+"${files[@]}"}; do
+              [ "$(basename "$g")" = "$(basename "$f")" ] && { dup=$g; break; }
+            done
+            if [ -n "$dup" ]; then
+              cmp -s "$dup" "$f" || { echo "::error::两个同名的附件内容不同：${dup} / ${f}"; exit 1; }
+              continue
+            fi
+            files+=("$f")
+          done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' -o -name '*.app.tar.gz' \) | sort)
           for ext in dmg exe msi zip app.tar.gz; do
-            printf '%s\n' "${files[@]}" | grep -q "\.$ext$" || { echo "::error::缺少桌面端安装包（.$ext，更新包），不建 Release"; exit 1; }
+            printf '%s\n' "${files[@]}" | grep -q "\.$ext$" || { echo "::error::缺少桌面端安装包（.${ext}，更新包），不建 Release"; exit 1; }
           done
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip latest.json "${files[@]}"
