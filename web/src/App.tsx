@@ -23,7 +23,7 @@ import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
 import { checkAuth, useAuth } from './store/auth';
 import { boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './store/data';
 import {
-  closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, toast, useUI, type Tab,
+  closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, TAB_ORDER, toast, useUI, type Tab,
 } from './store/ui';
 
 /* 项目画布、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
@@ -179,7 +179,7 @@ function BoardApp() {
       }
       if (mod && ['1', '2', '3', '4', '5', '6'].includes(e.key)) {
         e.preventDefault();
-        setTab((['board', 'projects', 'inbox', 'settings', 'hosts', 'stats'] as Tab[])[Number(e.key) - 1]);
+        setTab(TAB_ORDER[Number(e.key) - 1]);
         return;
       }
       if (e.key === 'Escape') {

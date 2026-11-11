@@ -146,12 +146,13 @@ interface UIState {
   boardSheet: boolean;
 }
 
-const TABS: Tab[] = ['board', 'projects', 'inbox', 'stats', 'hosts', 'settings'];
+/** 活动栏从上到下的顺序，也是数字快捷键 ⌘/Ctrl 1~6 的顺序（设置固定在活动栏底部） */
+export const TAB_ORDER: Tab[] = ['board', 'inbox', 'stats', 'projects', 'hosts', 'settings'];
 const initialTab = (): Tab => {
   const q = new URLSearchParams(location.search).get('tab') as Tab | null;
-  if (q && TABS.includes(q)) return q;
+  if (q && TAB_ORDER.includes(q)) return q;
   const p = pref.get<Tab>('tab', 'board');
-  return TABS.includes(p) ? p : 'board';
+  return TAB_ORDER.includes(p) ? p : 'board';
 };
 
 /** 侧栏展开 / 收起按 Tab 各记一份：切到别的 Tab 再切回来，恢复上次的选择 */

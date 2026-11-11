@@ -1,6 +1,6 @@
 /* ==========================================================================
    左侧操作台：活动栏 + 侧栏（PRD §10.1）
-   - 活动栏：白板 / 项目 / 未整理 / 大盘 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
+   - 活动栏：白板 / 未整理 / 大盘 / 项目 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
@@ -12,7 +12,7 @@ import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
 import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
-import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
+import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
@@ -22,13 +22,15 @@ import { SettingsNav } from './SettingsNav';
 import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
 
-const TABS: { tab: Tab; label: string; tip: string; icon: ReactNode }[] = [
-  { tab: 'board', label: '白板', tip: '白板', icon: <BoardIcon24 /> },
-  { tab: 'projects', label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
-  { tab: 'inbox', label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },
-  { tab: 'stats', label: '大盘', tip: '大盘 · 白板和项目的统计', icon: <StatsIcon24 /> },
-  { tab: 'hosts', label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
-];
+/** 每个标签的名称、提示和图标；顺序由 store/ui 的 TAB_ORDER 决定（和数字快捷键一致），设置固定在底部 */
+const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
+  board: { label: '白板', tip: '白板', icon: <BoardIcon24 /> },
+  inbox: { label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },
+  stats: { label: '大盘', tip: '大盘 · 白板和项目的统计', icon: <StatsIcon24 /> },
+  projects: { label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
+  hosts: { label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
+  settings: { label: '设置', tip: '设置', icon: <SettingsIcon24 /> },
+};
 
 export function ActivityBar() {
   const tab = useUI(s => s.tab);
@@ -44,28 +46,31 @@ export function ActivityBar() {
     document.fonts?.ready.then(place);
     return () => window.removeEventListener('resize', place);
   }, [tab]);
-  const item = (t: (typeof TABS)[number] | { tab: Tab; label: string; tip: string; icon: ReactNode }) => (
-    <button
-      key={t.tab}
-      className={cx('ab-item', tab === t.tab && 'on')}
-      type="button"
-      data-tab={t.tab}
-      data-tip={t.tip}
-      data-tip-pos="right"
-      aria-label={t.label}
-      aria-current={tab === t.tab ? 'page' : undefined}
-      onClick={() => setTab(t.tab, { toggle: true })}
-    >
-      {t.icon}
-      <span className="ab-label">{t.label}</span>
-    </button>
-  );
+  const item = (t: Tab) => {
+    const m = TAB_META[t];
+    return (
+      <button
+        key={t}
+        className={cx('ab-item', tab === t && 'on')}
+        type="button"
+        data-tab={t}
+        data-tip={m.tip}
+        data-tip-pos="right"
+        aria-label={m.label}
+        aria-current={tab === t ? 'page' : undefined}
+        onClick={() => setTab(t, { toggle: true })}
+      >
+        {m.icon}
+        <span className="ab-label">{m.label}</span>
+      </button>
+    );
+  };
   return (
     <nav className="activitybar" aria-label="操作台" ref={ref}>
       <i className="ab-indicator" aria-hidden="true" style={{ ['--ab-y' as string]: `${y}px` }} />
-      {TABS.map(item)}
+      {TAB_ORDER.filter(t => t !== 'settings').map(item)}
       <span className="ab-spacer" />
-      {item({ tab: 'settings', label: '设置', tip: '设置', icon: <SettingsIcon24 /> })}
+      {item('settings')}
     </nav>
   );
 }

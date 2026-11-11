@@ -7,9 +7,19 @@ import { boardFlow, INBOX } from '../../lib/schema';
 import type { Card } from '../../lib/types';
 import { accel, cx } from '../../lib/util';
 import { allBoards, loadFull, useData } from '../../store/data';
-import { closePalette, manageLabels, openCreator, setSide, setTab, toast, useUI } from '../../store/ui';
+import { closePalette, manageLabels, openCreator, setSide, setTab, TAB_ORDER, toast, useUI, type Tab } from '../../store/ui';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
+
+/** 命令面板「切换到」里的名称和图标：顺序用 TAB_ORDER（和活动栏、数字快捷键一致） */
+const TAB_ITEM: Record<Tab, { title: string; icon: IconName }> = {
+  board: { title: '白板', icon: 'board' },
+  inbox: { title: '未整理', icon: 'inbox' },
+  stats: { title: '大盘', icon: 'chart' },
+  projects: { title: '项目总览（画布）', icon: 'folder' },
+  hosts: { title: '机器（board host）', icon: 'host' },
+  settings: { title: '设置', icon: 'sun' },
+};
 
 interface PItem {
   id: string;
@@ -111,12 +121,10 @@ export function Palette() {
           )
         : []),
       { id: 'labels', group: '操作', title: '管理标签', icon: 'tag', run: () => manageLabels(path.split('/')[0]) },
-      { id: 'tab-board', group: '切换到', title: '白板', hint: accel('1'), icon: 'board', run: () => setTab('board') },
-      { id: 'tab-projects', group: '切换到', title: '项目总览（画布）', hint: accel('2'), icon: 'folder', run: () => setTab('projects') },
-      { id: 'tab-inbox', group: '切换到', title: '未整理', hint: accel('3'), icon: 'inbox', run: () => setTab('inbox') },
-      { id: 'tab-settings', group: '切换到', title: '设置', hint: accel('4'), icon: 'sun', run: () => setTab('settings') },
-      { id: 'tab-hosts', group: '切换到', title: '机器（board host）', hint: accel('5'), icon: 'host', run: () => setTab('hosts') },
-      { id: 'tab-stats', group: '切换到', title: '大盘', hint: accel('6'), icon: 'chart', run: () => setTab('stats') },
+      // 顺序和数字快捷键一致：活动栏从上到下（TAB_ORDER），设置在最下面
+      ...TAB_ORDER.map((t, i) => ({
+        id: `tab-${t}`, group: '切换到', title: TAB_ITEM[t].title, hint: accel(String(i + 1)), icon: TAB_ITEM[t].icon, run: () => setTab(t),
+      })),
       { id: 'side', group: '切换到', title: '收起 / 展开侧栏', hint: accel('B'), icon: 'monitor', run: () => setSide(!useUI.getState().side) },
       ...(canNewWindow
         ? [{ id: 'new-window', group: '切换到', title: '新建窗口', hint: accel('N', true), icon: 'monitor' as IconName, run: () => newWindow() }]
