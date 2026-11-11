@@ -25,16 +25,22 @@ export function CtxMenu() {
     const w = m.offsetWidth;
     const h = m.offsetHeight;
     const r = req.anchor ?? ({ left: req.x, right: req.x, top: req.y, bottom: req.y } as DOMRect);
+    const select = req.kind === 'select';
     setPos({
-      left: Math.max(8, Math.min(req.anchor ? r.right - w : r.left, innerWidth - w - 8)),
+      left: Math.max(8, Math.min(req.anchor && !select ? r.right - w : r.left, innerWidth - w - 8)),
       top: r.bottom + h + 8 > innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6,
     });
-    requestAnimationFrame(() => m.querySelector<HTMLElement>('button[data-do]:not([disabled])')?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      // 选择框：焦点落在当前选中的那一项上，并滚到看得见
+      const cur = select ? m.querySelector<HTMLElement>('button[data-do].on:not([disabled])') : null;
+      cur?.scrollIntoView({ block: 'nearest' });
+      (cur ?? m.querySelector<HTMLElement>('button[data-do]:not([disabled])'))?.focus({ preventScroll: true });
+    });
   }, [req]);
 
   useEffect(() => {
     if (!req) return;
-    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn, .d-move') && closeCtx();
+    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn, .d-move, .sel') && closeCtx();
     document.addEventListener('pointerdown', down);
     window.addEventListener('resize', closeCtx);
     return () => {
@@ -84,6 +90,13 @@ export function CtxMenu() {
     body = <SortMenu col={req.id} go={go} />;
   } else if (req.kind === 'move') {
     body = <MoveMenu id={Number(req.id)} go={go} />;
+  } else if (req.kind === 'select') {
+    body = (req.items ?? []).map(o => (
+      <button key={o.value} type="button" role="option" aria-selected={o.value === req.value} data-do={`pick-${o.value}`} className={cx(o.value === req.value && 'on')} disabled={o.disabled} onClick={go(() => req.pick?.(o.value))}>
+        <span className="sel-name">{o.label}</span>
+        {o.value === req.value && <Icon name="check" />}
+      </button>
+    ));
   } else {
     const m = boardMeta(ws, req.id);
     if (!m) return null;
@@ -122,13 +135,27 @@ export function CtxMenu() {
   }
   return (
     <div
-      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'sort' && 'ctx-sort', req.kind === 'move' && 'ctx-move', pos && 'on')}
+      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'sort' && 'ctx-sort', req.kind === 'move' && 'ctx-move', req.kind === 'select' && 'ctx-select', pos && 'on')}
       ref={ref}
-      role="menu"
-      style={pos ?? { left: -9999, top: -9999 }}
+      role={req.kind === 'select' ? 'listbox' : 'menu'}
+      style={{ ...(pos ?? { left: -9999, top: -9999 }), ...(req.kind === 'select' && req.anchor ? { minWidth: req.anchor.width } : null) }}
       onKeyDown={e => {
         const bs = [...(ref.current?.querySelectorAll<HTMLElement>('[data-do]:not([disabled])') ?? [])];
         const i = bs.indexOf(document.activeElement as HTMLElement);
+        if (req.kind === 'select') {
+          // 选择框：Home / End 到头尾；按字符跳到以它开头的那一项（和系统下拉一样）
+          if (e.key === 'Home' || e.key === 'End') {
+            e.preventDefault();
+            bs[e.key === 'Home' ? 0 : bs.length - 1]?.focus();
+          } else if (e.key === 'Tab') {
+            e.preventDefault();
+            closeCtx();
+          } else if (e.key.length === 1 && e.key !== ' ' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            const k = e.key.toLowerCase();
+            const hit = [...bs.slice(i + 1), ...bs.slice(0, i + 1)].find(b => b.textContent?.trim().toLowerCase().startsWith(k));
+            hit?.focus();
+          }
+        }
         if (e.key === 'ArrowDown') {
           e.preventDefault();
           bs[(i + 1) % bs.length]?.focus();

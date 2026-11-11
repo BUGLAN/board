@@ -79,13 +79,17 @@ export type ConfirmIcon = 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock
 
 export interface CtxReq {
   /** prompts：白板页头的「提示词」菜单，id 是白板路径；sort：状态块的排序菜单，id 是状态标识；
-      move：卡片详情底部的「移动到」，id 是卡片编号 */
-  kind: 'project' | 'board' | 'prompts' | 'sort' | 'move';
+      move：卡片详情底部的「移动到」，id 是卡片编号；select：选择框的选项 */
+  kind: 'project' | 'board' | 'prompts' | 'sort' | 'move' | 'select';
   id: string;
   x: number;
   y: number;
-  /** 从按钮弹出时右对齐 */
+  /** 从按钮弹出时右对齐（select 左对齐，至少和选择框一样宽） */
   anchor?: DOMRect;
+  /** select：选择框（components/bits Select）点开的选项列表，id 是那个选择框的标识 */
+  items?: { value: string; label: string; disabled?: boolean }[];
+  value?: string;
+  pick?: (value: string) => void;
 }
 
 export interface Flash {

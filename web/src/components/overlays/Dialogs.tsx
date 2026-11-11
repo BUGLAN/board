@@ -4,7 +4,7 @@ import type { ProjectInfo } from '../../lib/types';
 import { cx, replay } from '../../lib/util';
 import { useData } from '../../store/data';
 import { closeForm, settleConfirm, useUI, type ConfirmReq, type FormCfg } from '../../store/ui';
-import { ColorRow, Markdown, ProjectAvatar } from '../bits';
+import { ColorRow, Markdown, ProjectAvatar, Select } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
 
@@ -223,13 +223,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
                   {f.label}
                   {hint}
                 </span>
-                <select className="input" name={f.name} value={v[f.name]} onChange={e => update(f.name, e.target.value)}>
-                  {f.options?.map(o => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
+                <Select name={f.name} value={v[f.name]} options={f.options ?? []} onChange={val => update(f.name, val)} />
               </label>
             );
           return (

@@ -19,6 +19,7 @@ import { logout, useAuth } from '../store/auth';
 import { allBoards, colCount, refresh, useCurrent, useData } from '../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
+import { Select } from './bits';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { SECTIONS, useSpy } from './SettingsNav';
@@ -97,13 +98,13 @@ function LabelPrompt({ path, status, names }: { path: string; status: string; na
   return (
     <div className="code-line plain has-pick">
       <code>{q.text}</code>
-      <select className="code-pick" value={label} onChange={e => setPick(e.target.value)} aria-label={`「${status}」里按哪个标签`}>
-        {(labels.length ? labels.map(l => l.name) : [label]).map(n => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
-      </select>
+      <Select
+        className="code-pick"
+        value={label}
+        options={(labels.length ? labels.map(l => l.name) : [label]).map(n => ({ value: n, label: n }))}
+        onChange={setPick}
+        aria-label={`「${status}」里按哪个标签`}
+      />
       <CopyBtn text={q.text} />
     </div>
   );
@@ -496,19 +497,12 @@ function LocalHostCard() {
           <div className="lh-dirs">
             {dirs.map((d, i) => (
               <div className="lh-dir" key={i}>
-                <select
-                  className="input"
+                <Select
                   value={d.board}
-                  onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, board: e.target.value } : x)))}
+                  options={[{ value: '', label: '选白板…' }, ...[...new Set([...boards, ...(d.board ? [d.board] : [])])].map(b => ({ value: b, label: b }))]}
+                  onChange={val => edit(v => v.map((x, j) => (j === i ? { ...x, board: val } : x)))}
                   aria-label="白板"
-                >
-                  <option value="">选白板…</option>
-                  {[...new Set([...boards, ...(d.board ? [d.board] : [])])].map(b => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
-                </select>
+                />
                 <Icon name="move" />
                 <input
                   className="input"

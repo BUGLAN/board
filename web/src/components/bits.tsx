@@ -1,12 +1,12 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { inlineCode, markdown } from '../lib/markdown';
 import { PROJECT_COLORS } from '../lib/schema';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
 import { serverNow } from '../store/data';
-import { openImage } from '../store/ui';
+import { closeCtx, openCtx, openImage, useUI } from '../store/ui';
 import { Icon } from './Icon';
 
 /** 同一间隔的 useNow 共用一个定时器 */
@@ -293,5 +293,78 @@ export function DescTabs({ mode, setMode, modes }: { mode: string; setMode: (m: 
         </button>
       ))}
     </div>
+  );
+}
+
+/* ---------------- 选择框 ---------------- */
+
+export interface SelectOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+}
+
+/** 选择框：代替系统的 <select>。系统下拉的箭头和弹出的列表由各平台自己画（macOS、Windows、Linux 都不一样）；
+    这里按钮是 .input 的样子加项目自己的箭头图标，点开的列表是项目的弹出菜单（overlays/CtxMenu 的 select，和「移动到」「排序」同一套）。
+    键盘：回车 / 空格 / 上下键打开；列表里上下键、Home / End、按字符跳转，回车选中，Esc 关闭 */
+export function Select({
+  value, options, onChange, className, disabled, placeholder, ...rest
+}: {
+  value: string;
+  options: SelectOption[];
+  onChange: (value: string) => void;
+  className?: string;
+  disabled?: boolean;
+  /** 当前值不在选项里时显示 */
+  placeholder?: string;
+  /** 没有可见的标签文字时必须给（外面包着 <label> 时可以不给） */
+  'aria-label'?: string;
+  'data-tip'?: string;
+  name?: string;
+}) {
+  const id = useId();
+  const ref = useRef<HTMLButtonElement>(null);
+  const open = useUI(s => s.ctx?.kind === 'select' && s.ctx.id === id);
+  // 选择框不在了（弹窗关闭、这一行被删）：列表跟着关
+  useEffect(
+    () => () => {
+      const c = useUI.getState().ctx;
+      if (c?.kind === 'select' && c.id === id) closeCtx();
+    },
+    [id],
+  );
+  const show = () => {
+    const el = ref.current;
+    if (!el) return;
+    openCtx({
+      kind: 'select', id, x: 0, y: 0, anchor: el.getBoundingClientRect(), items: options, value,
+      pick: v => {
+        if (v !== value) onChange(v);
+        el.focus({ preventScroll: true });
+      },
+    });
+  };
+  return (
+    <button
+      {...rest}
+      ref={ref}
+      type="button"
+      className={cx('input sel', open && 'open', className)}
+      role="combobox"
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      disabled={disabled}
+      onClick={() => (open ? closeCtx() : show())}
+      onKeyDown={e => {
+        if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          e.preventDefault();
+          e.stopPropagation();
+          show();
+        }
+      }}
+    >
+      <span className="sel-v">{options.find(o => o.value === value)?.label ?? placeholder ?? ''}</span>
+      <Icon name="chevDown" />
+    </button>
   );
 }

@@ -206,7 +206,7 @@
 .ctx-swatches { display: flex; gap: 6px; padding: 6px 9px 8px; }
 .ctx-swatches .swatch { width: 18px; height: 18px; border-radius: var(--r-xs); }
 
-.dialog.pj-modal select.input { height: 36px; padding: 0 10px; appearance: auto; }
+.dialog.pj-modal .input.sel { width: 100%; height: 36px; padding: 0 10px; }
 
 @media (max-width: 760px) {
   .cv-head { padding: 0 14px; }
@@ -219,6 +219,12 @@
 /* 状态块排序菜单 */
 .ctx.ctx-sort { width: 256px; }
 /* 卡片详情「移动到」 */
+/* 选择框的选项：至少和选择框一样宽（脚本写 min-width），选项多了在自己里面滚；层级在表单弹窗（.dialog-wrap 320）之上 */
+.ctx.ctx-select { z-index: 330; min-width: 0; max-height: min(308px, calc(100vh - 32px)); overflow-y: auto; overscroll-behavior: contain; }
+.ctx-select button[data-do] { height: 30px; gap: 12px; font-size: 12.5px; white-space: nowrap; }
+.ctx-select .sel-name { flex: 1; min-width: 0; }
+.ctx-select button.on { font-weight: 600; color: color-mix(in oklab, var(--brand), var(--ink)); }
+.ctx-select button.on svg { width: 14px; height: 14px; color: currentColor; }
 .ctx.ctx-move { width: 240px; }
 .ctx-move .mv-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .ctx-move .mv-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
