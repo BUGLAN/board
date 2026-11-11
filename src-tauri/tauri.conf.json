@@ -22,6 +22,7 @@
     "shortDescription": "看板式白板：人在界面上操作，agent 通过 CLI 操作同一块白板（连接 board.buglan.com）",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "externalBin": ["binaries/board"],
+    "createUpdaterArtifacts": true,
     "windows": {
       "nsis": {
         "installerHooks": "./windows/installer-hooks.nsh"
@@ -29,6 +30,18 @@
       "wix": {
         "fragmentPaths": ["./windows/path.wxs"],
         "componentRefs": ["BoardCliPathComponent"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/buglan/board/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwODc4OTdCNDExQTUxQkIKUldTN1VScEJlNG1ISUc5TnNoWFhMYlVuL0NPbTRxa3pDeTU0Zm1aR2thVXRWb3lCVjN3NGU2NHkK",
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

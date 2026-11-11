@@ -352,6 +352,10 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .dialog-text p + p { margin-top: 10px; }
 /* 警告类的确认：黄色图标，一眼看出是在说风险 */
 .dialog.warn .dialog-icon { color: var(--warn-text); background: color-mix(in srgb, var(--warn-text) 14%, transparent); }
+/* 正文是 Markdown（「发现新版本」的更新说明）：左对齐，和 .dialog-text 一样限高、在框里滚动 */
+.dialog-md { margin-top: 6px; max-height: min(46vh, 340px); overflow-y: auto; overflow-wrap: anywhere; scrollbar-width: thin; text-align: left; }
+/* 「发现新版本」不是危险动作：图标是品牌色 */
+.dialog-icon.info { color: var(--brand); background: var(--brand-soft); }
 .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 20px; }
 .dialog-actions .btn { height: 38px; }
 

@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import {
-  boardCli, canHost, canSetEnv, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
+  boardCli, canHost, canSetEnv, canUpdate, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
   shellVersion, type Density, type LocalHost, type Motion, type ThemePref,
 } from '../lib/platform';
 import { hostsOf } from '../lib/hosts';
@@ -22,6 +22,7 @@ import { quickPrompts } from '../lib/prompt';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { SECTIONS, useSpy } from './SettingsNav';
+import { UpdateCard } from './update-card';
 
 function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -631,7 +632,7 @@ export function SettingsPage() {
         <header className="settings-hero">
           <h1>设置</h1>
           {/* 按下面区块的顺序写 */}
-          <p>账号、界面的显示方式、白板规则、agent 如何通过命令行接入、访问令牌{canHost ? '、让这台电脑接任务' : ''}，以及快捷键。</p>
+          <p>账号、界面的显示方式、白板规则、agent 如何通过命令行接入、访问令牌{canHost ? '、让这台电脑接任务' : ''}{canUpdate ? '、桌面端更新' : ''}，以及快捷键。</p>
         </header>
 
         <section className="set-card" id="set-account" style={{ ['--i' as string]: 1 }}>
@@ -805,7 +806,21 @@ export function SettingsPage() {
 
         {canHost && <LocalHostCard />}
 
-        <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: canHost ? 7 : 6 }}>
+        {/* 桌面端更新：单写在一张卡里，和「本机」分开（本机里是 board host 的设置） */}
+        <section className="set-card" id="set-update" style={{ ['--i' as string]: canUpdate ? 7 : 6 }}>
+          <h2>
+            <Icon name="renew" />
+            桌面端更新
+          </h2>
+          <p className="set-p">
+            {canUpdate
+              ? '发版后会发布新的桌面端：检查 GitHub Release 上最新的版本，下载的安装包先校验签名再安装。装好后重启就是新版本，正在做的事不会丢（卡片和白板都在服务端）。'
+              : '在网页上打开时的版本由服务器决定，不用更新；装了桌面端之后，可以在这里检查并安装新版本。'}
+          </p>
+          {canUpdate ? <UpdateCard /> : <Row label="桌面端" hint={shellVersion ? `当前 ${shellVersion}` : '没有检测到桌面端外壳'}><span className="ro">{shellVersion ?? '—'}</span></Row>}
+        </section>
+
+        <section className="set-card" id="set-shortcuts" style={{ ['--i' as string]: canUpdate ? 8 : canHost ? 7 : 6 }}>
           <h2>
             <Icon name="keyboard" />
             快捷键

@@ -26,3 +26,6 @@ getrandom = "0.3"
 tauri-plugin-dialog = "2"
 # Windows / Linux：关窗口后程序留在托盘，再点图标只把已有窗口带到前面，不起第二个进程
 tauri-plugin-single-instance = "2"
+# 检查更新：从发版附件里的 latest.json 找新版本，下载的安装包用公钥验签（见 update.rs）。
+# 不用它自己的页面命令，只在 Rust 一侧用，命令由 update.rs 自己定义（带进度事件和版本校验）
+tauri-plugin-updater = "2"

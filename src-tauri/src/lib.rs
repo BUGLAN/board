@@ -12,11 +12,13 @@
 //! - 窗口先打开本地启动页，连得上服务端再跳到线上页面；窗口底色跟随网页端的主题，慢网、断网都不白屏，见 [`splash`]
 //! - 「设置 → 本机」打开「让这台电脑接任务」后，在后台用自带的 board 命令行运行 `board host`，关掉窗口也继续运行
 //!   （macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口），退出桌面端时结束，见 [`host`]
+//! - 检查更新：设置页手动检查、启动后自动检查一次，确认后下载、验签、安装，见 [`update`]
 
 mod env;
 mod host;
 mod login;
 mod splash;
+mod update;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
@@ -265,8 +267,10 @@ pub fn run() {
         // 必须第一个注册：第二次启动时把参数交给已经在跑的这个，自己退出
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Board(url))
-        .manage(host::HostProc::default());
+        .manage(host::HostProc::default())
+        .manage(update::Pending::default());
     #[cfg(target_os = "windows")]
     let builder = builder.manage(custom_titlebar::Ready::default());
     builder
@@ -284,7 +288,10 @@ pub fn run() {
             host::host_status,
             host::host_save,
             host::host_enable,
-            host::pick_folder
+            host::pick_folder,
+            update::update_check,
+            update::update_install,
+            update::update_restart
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -378,5 +385,9 @@ mod acl_tests {
         let perms = default_permissions();
         assert!(perms.iter().any(|p| p == "allow-host-enable"), "{perms:?}");
         assert!(perms.iter().any(|p| p == "core:default"), "{perms:?}");
+        // 检查更新：三个命令都要放行，否则线上页面里「检查更新」调不通
+        for p in ["allow-update-check", "allow-update-install", "allow-update-restart"] {
+            assert!(perms.iter().any(|x| x == p), "缺 {p}：{perms:?}");
+        }
     }
 }

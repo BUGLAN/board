@@ -4,7 +4,7 @@ import type { ProjectInfo } from '../../lib/types';
 import { cx, replay } from '../../lib/util';
 import { useData } from '../../store/data';
 import { closeForm, settleConfirm, useUI, type ConfirmReq, type FormCfg } from '../../store/ui';
-import { ColorRow, ProjectAvatar } from '../bits';
+import { ColorRow, Markdown, ProjectAvatar } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
 
@@ -21,6 +21,7 @@ const ICONS: Record<NonNullable<ConfirmReq['icon']>, IconName> = {
   unlock: 'unlock',
   alert: 'alert',
   host: 'host',
+  update: 'renew',
 };
 
 export function ConfirmDialog() {
@@ -55,22 +56,36 @@ export function ConfirmDialog() {
   }, [req]);
   if (!mounted || !r) return null;
   const lines = r.text.split('\n');
+  // 「发现新版本」不是危险动作：图标用品牌色、主按钮用品牌色
+  const info = r.icon === 'update';
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && settleConfirm(false)}>
-      <div className={cx('dialog', r.tone === 'warn' && 'warn', (lines.length > 1 || r.text.length > 240) && 'wide')} role="alertdialog" aria-modal="true" aria-label={r.title}>
-        <div className="dialog-icon">
+      <div
+        className={cx('dialog', r.tone === 'warn' && 'warn', (r.markdown || lines.length > 1 || r.text.length > 240) && 'wide')}
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={r.title}
+      >
+        <div className={cx('dialog-icon', info && 'info')}>
           <Icon name={ICONS[r.icon ?? 'trash'] ?? 'trash'} />
         </div>
         <h3>{r.title}</h3>
-        {/* 按行拆成段落（目录列表一行一条）；整块限高、在框里滚动，长列表不撑破弹窗 */}
-        <div className="dialog-text">
-          {lines.map((line, i) => (line.trim() ? <p key={i}>{line}</p> : null))}
-        </div>
+        {r.markdown ? (
+          // 正文是 Markdown（更新说明来自 CHANGELOG）：限高、在框里滚动
+          <div className="dialog-md md">
+            <Markdown src={r.text} />
+          </div>
+        ) : (
+          /* 按行拆成段落（目录列表一行一条）；整块限高、在框里滚动，长列表不撑破弹窗 */
+          <div className="dialog-text">
+            {lines.map((line, i) => (line.trim() ? <p key={i}>{line}</p> : null))}
+          </div>
+        )}
         <div className="dialog-actions">
           <button className="btn" type="button" ref={cancel} onClick={() => settleConfirm(false)}>
-            取消
+            {r.cancel || '取消'}
           </button>
-          <button className="btn danger-solid" type="button" ref={ok} onClick={() => settleConfirm(true)}>
+          <button className={cx('btn', info ? 'brand' : 'danger-solid')} type="button" ref={ok} onClick={() => settleConfirm(true)}>
             {r.ok || '确定'}
           </button>
         </div>

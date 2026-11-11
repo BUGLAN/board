@@ -20,9 +20,12 @@ import { App } from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { applyPrefs } from './lib/platform';
 import { installScrollbars } from './lib/scrollbars';
+import { autoUpdateCheck } from './lib/update-runner';
 
 applyPrefs();
 installScrollbars();
+// 桌面端：启动几秒后自动检查一次更新（设置里可以关；网页端什么都不做）
+autoUpdateCheck();
 createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>
     <App />

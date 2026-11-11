@@ -6,7 +6,9 @@
    - 桌面端在系统默认浏览器里用 GitHub 登录（desktopLogin）
    ========================================================================== */
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import type { UpdateCheck as CheckUpdate, UpdateInstalled, UpdateProgress } from './update';
 import { pref } from './util';
 
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || window.__BOARD_SHELL__ === 'desktop');
@@ -212,4 +214,43 @@ export async function pickFolder(start: string): Promise<string | null> {
     if (/not found|not allowed|unknown/i.test(msg)) throw 'unsupported';
     throw msg;
   }
+}
+
+/* ---------------- 桌面端：检查更新（逻辑见 lib/update.ts） ---------------- */
+
+/** 只有桌面端能检查更新 */
+export const canUpdate = ipc;
+
+/** 检查更新；有新版本时外壳记着它（安装时按版本号取）。外壳不支持（旧版桌面端）时抛出 'unsupported'，其他失败抛出原因文字 */
+export async function checkUpdate(): Promise<CheckUpdate> {
+  try {
+    return await invoke<CheckUpdate>('update_check');
+  } catch (e) {
+    if (typeof e === 'string' && e.length < 2000) throw e;
+    throw 'unsupported';
+  }
+}
+
+/** 下载并安装检查到的版本，进展经 onProgress 回调（外壳按 1% 报一次）。
+    卸载和退出由外壳 / 安装器处理：Windows 上外壳会退出、装完自动拉起新版本；其余平台装好后调用 restartApp。
+    失败抛出原因文字，当前版本不受影响，可以重新检查后再试 */
+export async function installUpdate(version: string, onProgress?: (p: UpdateProgress) => void): Promise<UpdateInstalled> {
+  let stop: (() => void) | null = null;
+  if (onProgress) {
+    const un = await listen<UpdateProgress>('update://progress', e => onProgress(e.payload));
+    stop = un;
+  }
+  try {
+    return await invoke<UpdateInstalled>('update_install', { version });
+  } catch (e) {
+    if (typeof e === 'string' && e.length < 2000) throw e;
+    throw 'unsupported';
+  } finally {
+    stop?.();
+  }
+}
+
+/** 安装完重启桌面端（macOS / Linux；Windows 由安装器拉起，用不到） */
+export function restartApp() {
+  if (ipc) invoke('update_restart').catch(() => {});
 }

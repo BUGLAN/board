@@ -124,6 +124,52 @@
 .lh-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 .lh-sp { flex: 1; }
 .lh-log pre { margin-top: 8px; max-height: 240px; }
+
+/* 开关（启动后自动检查更新） */
+.switch { position: relative; width: 36px; height: 21px; flex: none; padding: 0; border: 0; border-radius: 999px; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); cursor: pointer; transition: background var(--dur-1) var(--ease-out); }
+.switch i { position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow-1); transition: transform var(--dur-1) var(--ease-out); }
+.switch.on { background: var(--brand); box-shadow: none; }
+.switch.on i { transform: translateX(15px); }
+
+/* 本机：桌面端更新（当前版本、检查更新、下载进度、重启提示） */
+.up-state-wrap { display: flex; align-items: center; gap: 12px; flex: none; }
+/* 这一行里左边是固定的两行字：结果和按钮靠右，不被挤窄（错误原因放到下面一行） */
+.up-row .set-label { flex: 0 1 auto; }
+.up-row .up-state { white-space: nowrap; }
+.up-err-line { margin: 0 0 12px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--danger-soft); word-break: break-word; }
+.up-state { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.up-state svg { width: 15px; height: 15px; flex: none; }
+.up-state.ok { color: var(--text-2); }
+.up-state.ok svg { color: var(--ok); }
+.up-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-4); }
+.up-state.checking svg { animation: up-spin 1s linear infinite; }
+.up-ver { font-family: var(--f-mono); font-size: 12.5px; }
+.up-card { margin: 4px 0 12px; padding: 14px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
+.up-card.is-new { background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 28%, transparent); }
+.up-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+.up-head > svg { width: 16px; height: 16px; flex: none; color: var(--brand); }
+.up-head .up-title { flex: 1; min-width: 0; }
+.up-head .btn { flex: none; }
+/* 一行的副标题（发布时间）：.set-label span 是块级，这里压回行内 */
+.up-head .up-title .up-sub { display: inline; margin: 0; font-weight: 400; color: var(--text-3); font-size: 12px; }
+.up-notes { margin-top: 10px; max-height: 220px; overflow: auto; font-size: 12.5px; color: var(--text-2); line-height: 1.65; white-space: pre-wrap; }
+/* 更新说明是 Markdown（和卡片描述同一套样式）：卡片里的字号收一号，标题不再分两行 */
+.up-notes.md { white-space: normal; }
+.up-notes.md > :first-child { margin-top: 0; }
+.up-foot { margin-top: 10px; font-size: 12px; color: var(--text-3); }
+/* 表头的一行：标题占满左边，按钮靠右（说明里的 .md span 规则更具体，这里要直接指到子元素） */
+.up-card .up-head > .up-title { display: block !important; margin: 0; flex: 1; min-width: 0; }
+.up-card .up-head > .up-title .up-sub { display: inline; margin: 0; font-weight: 400; color: var(--text-3); font-size: 12px; }
+.up-card .up-head > .btn { margin-left: auto; }
+.up-bar { height: 6px; margin-top: 12px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.up-bar i { display: block; height: 100%; border-radius: inherit; background: var(--brand); transition: width 200ms var(--ease-out); }
+.up-bar.indet i { width: 35% !important; animation: up-slide 1.2s var(--ease-in-out) infinite; }
+.up-meter { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
+.up-meter b { font-weight: 500; color: var(--text-2); }
+.up-err { margin-top: 10px; color: var(--danger); font-size: 12.5px; line-height: 1.6; }
+.up-err svg { width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
+@keyframes up-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@keyframes up-spin { to { transform: rotate(360deg); } }
 @media (max-width: 760px) {
   .lh-dir { flex-wrap: wrap; }
   .lh-dir select.input { width: 100%; }

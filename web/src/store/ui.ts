@@ -28,8 +28,12 @@ export interface ConfirmReq {
   title: string;
   /** 说明文字：换行按段落显示（多行用 \n 分隔），长的内容（目录列表之类）不撑破弹窗、在框里滚动 */
   text: string;
+  /** 正文按 Markdown 显示（「发现新版本」的更新说明来自 CHANGELOG）；默认按纯文本，换行照原样显示 */
+  markdown?: boolean;
   ok?: string;
-  icon?: 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock' | 'alert' | 'host';
+  /** 取消按钮的文字，默认「取消」 */
+  cancel?: string;
+  icon?: ConfirmIcon;
   /** warn：要人确认时把风险说清楚（黄色图标，而不是默认的红色危险图标） */
   tone?: 'danger' | 'warn';
   resolve: (v: boolean) => void;
@@ -69,6 +73,9 @@ export interface PickerReq {
   /** 给了就只在这些标签里选（不取 project 的标签），也不能新建、管理：例如机器的领取规则，标签来自几个项目、按名称对应 */
   labels?: Label[];
 }
+
+/** 确认框的图标：默认的危险动作图标（trash 等）；update 是「发现新版本」，主按钮用品牌色、不是危险动作 */
+export type ConfirmIcon = 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock' | 'alert' | 'host' | 'update';
 
 export interface CtxReq {
   /** prompts：白板页头的「提示词」菜单，id 是白板路径；sort：状态块的排序菜单，id 是状态标识；

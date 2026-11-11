@@ -261,10 +261,11 @@ deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 �
 skill（GitHub 托管的 macos-latest）：node scripts/build-skill-bin.mjs --zip，编 macOS（arm64、x64）、Linux（x64、arm64，musl）、
                                      Windows（x64）的 board，放进 skill 的 bin/，打包成 board-skills.zip
 desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑）：核对 tag 和 tauri.conf.json 的版本号
-                                     → npm ci → 编安装包自带的 board → tauri build → 核对安装包里的 board --version
+                                     → npm ci → 编安装包自带的 board → tauri build（带更新签名）→ 核对安装包里的 board --version
                                      macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe、.msi 和免安装便携 .zip
-release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip 和桌面端安装包
-         （部署成功、skill 打包成功、两个平台的安装包都构建成功后）
+                                     → 收齐更新包和签名（updater/<平台键>/）→ 生成这个平台的更新清单
+release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip、桌面端安装包、更新包和 latest.json
+         （部署成功、skill 打包成功、两个平台的安装包和更新清单都构建成功后）
 ```
 
 - tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：build 第一步失败，不推镜像、不部署
@@ -292,7 +293,75 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 - 安装包里有界面和自带的 `board` 命令行（Windows 安装时写进 PATH；macOS 在 `Board.app/Contents/MacOS/board`），装好后 `board --version` 打印版本号。
 - 便携版 `Board_<版本>_x64_portable.zip` 是免安装的绿色版：解压到任意目录，直接运行里面的 `board-desktop.exe`；内容就是安装版装进安装目录的那几样（桌面端、`board` 命令行等）。不带 WebView2 引导（安装版在安装时检测、自动下载 WebView2），系统没有 WebView2 运行时（老版本 Windows、精简系统）时先装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)，或改用安装版；要在终端里用自带的 `board` 命令行，把解压出来的目录加进 `PATH` 环境变量。
 - 没有签名和公证：macOS 只做了 ad-hoc 签名，第一次打开会被拦下，到「系统设置 → 隐私与安全性」里点「仍要打开」（或 `xattr -dr com.apple.quarantine /Applications/Board.app`）；Windows 上 SmartScreen 提示时点「更多信息 → 仍要运行」。
+- 桌面端的「设置 → 桌面端更新」读 `latest.json`，装新版本（见下文「桌面端检查更新」）。
 - 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）；Windows 便携版照 deploy.yml 的「打包 Windows 便携版」一步：把 `target/<triple>/release/` 里的 `board-desktop.exe`、`board.exe`（和有才有的 `WebView2Loader.dll`、`resources/`）压成 zip。
+
+### 桌面端检查更新
+
+设置 → 桌面端更新：显示当前版本、「检查更新」；启动后隔几秒自动检查一次（默认开，可以关）。发现新版本时用应用内的确认框问，确认后下载、校验签名、安装，装完提示重启（Windows 上安装器接管：关闭 Board、装完自己拉起新版）。代码在 `src-tauri/src/update.rs`（外壳命令）、`web/src/lib/update.ts`（版本比较、状态）、`web/src/components/update-card.tsx`（设置页）。
+
+| 东西 | 在哪 |
+|---|---|
+| 客户端读取的清单 | `https://github.com/buglan/board/releases/latest/download/latest.json`（`src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints`），总是指向最新一个 Release |
+| 清单内容 | 版本号、那一版 CHANGELOG、每个平台的更新包地址和签名（`scripts/updater-manifest.mjs` 生成，release 时作为附件上传） |
+| 更新包 | macOS：`.app.tar.gz`（通用包，两个架构各一份）；Windows：NSIS 安装包 `.exe`。`tauri build` 打了 `createUpdaterArtifacts`，签名放在同名的 `.sig` |
+| 公钥 | `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`，可以进仓库；客户端只信任它 |
+| 私钥 | 只在 GitHub secret 里，**仓库里没有**；丢了只能换一对新密钥并发一版（旧版本客户端只认旧公钥，收不到更新） |
+
+一次性配置（发布带更新功能的版本之前）：
+
+1. 生成密钥对（私钥不要提交、不要贴到任何地方）：
+
+   ```sh
+   npx @tauri-apps/cli signer generate -w board-updater.key      # 会问密码，可以不设
+   ```
+
+2. GitHub 仓库 Settings → Secrets and variables → Actions → Secrets：
+
+   | 名称 | 值 |
+   |---|---|
+   | `TAURI_SIGNING_PRIVATE_KEY` | `board-updater.key` 文件的内容 |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成时设的密码；没设就留空 |
+
+3. `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey` 换成 `board-updater.key.pub` 的内容。
+
+没有配私钥时，`tauri build` 不打签名，「收齐更新包和签名」一步失败、不建 Release（服务端照常部署）：不会发出一份装不上的更新。
+
+发版流程不用另外操作：`npm run release -- x.y.z --push` 之后，desktop 任务带着签名打包、收齐更新包、按 tag 生成清单；release 任务把两个平台的清单合并成 `latest.json`（要求 macOS 两个架构和 Windows 都在），和安装包一起附在 Release 上。版本号在 tag、`tauri.conf.json`、`CHANGELOG.md` 和 `latest.json` 里一致（前两处不一致时构建就失败；清单的版本号和说明直接取 tag 和 CHANGELOG）。
+
+校验：
+
+- `node scripts/updater-manifest.mjs --dry-run`：不发版时验证清单结构（版本号、签名、https 地址、平台键、缺平台要被拦下）。推 `main` 的测试任务也会跑。
+- 发版后打开 GitHub Release，确认 `latest.json` 在附件里；`curl -sL https://github.com/buglan/board/releases/latest/download/latest.json` 能看到三个平台。
+- 装上一版桌面端，等自动检查，或在设置页点「检查更新」：应提示有新版本，下载安装后重启，设置页的「当前版本」变成新版本。检查失败不影响当前版本，可以重试。
+
+本机验证（不用真发版）：用一个本地更新服务代替 GitHub Release，两个版本都用一次性的 dev 密钥打包。
+
+1. 生成 dev 密钥（一次性，不设密码），换一个和现在不同的版本号（例如 `tauri.conf.json` 临时改成 `0.1.13`），带签名打包：
+
+   ```bash
+   npx @tauri-apps/cli signer generate -w /tmp/dev-updater.key -p ''        # 没设密码
+   # src-tauri/tauri.conf.json 的 plugins.updater.pubkey 临时换成 /tmp/dev-updater.key.pub 的内容
+   TAURI_SIGNING_PRIVATE_KEY="$(cat /tmp/dev-updater.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npm run desktop:build
+   ```
+
+   签名产物在 `target/release/bundle/update/` 下：Windows 是 NSIS 安装包 `.exe` 和 `.sig`，macOS 是 `Board.app.tar.gz` 和 `.sig`。
+
+2. 把它们按平台键收进一个目录（Windows：`windows-x86_64-nsis`；macOS：`darwin-aarch64-app` 或 `darwin-x86_64-app`），再用脚本生成清单（`--partial`：只有本机这一个平台）：
+
+   ```bash
+   mkdir -p /tmp/updater/windows-x86_64-nsis
+   cp target/release/bundle/update/*.exe* /tmp/updater/windows-x86_64-nsis/
+   BOARD_VERSION=0.1.13 node scripts/updater-manifest.mjs --dir /tmp/updater --version 0.1.13 \
+     --base http://127.0.0.1:8000/windows-x86_64-nsis --out /tmp/updater/latest.json --partial
+   cd /tmp/updater && python -m http.server 8000
+   ```
+
+3. 把 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints` **临时**改成 `["http://127.0.0.1:8000/latest.json"]`（调试构建允许 http），回到上一版（例如 `0.1.12`）用同一个 dev 密钥再打一次包运行，在设置 → 桌面端更新点「检查更新」：应提示 0.1.13，下载、校验签名、安装后提示重启，重启后「当前版本」是 0.1.13。
+
+4. 验证完把版本号、`pubkey`、`endpoints` 都改回去：`npm test` 会核对 `endpoints` 是线上地址，`npm run release` 会核对版本号和 tag。
+
+检查失败、签名不对、清单写坏（`node scripts/updater-manifest.mjs --dry-run` 会拦下）时都不会动当前版本，可以重试。
 
 ### 一次性配置
 

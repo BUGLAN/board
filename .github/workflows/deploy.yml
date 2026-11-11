@@ -3,11 +3,12 @@
 #               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final），
 #                 以及多行正文经过 skill 入口 board.cmd 一字不丢（tests/multiline.rs）
 #   push tag v*  → skill：在 macOS 上编各平台的 board，放进 skill 的 bin/，打包 board-skills.zip（和 build、deploy 同时跑）
-#                → desktop：在 macOS、Windows 上构建桌面端安装包（macOS 通用 .dmg；Windows NSIS .exe、.msi 和免安装便携 .zip），和 build、deploy 同时跑
+#                → desktop：在 macOS、Windows 上构建桌面端安装包（macOS 通用 .dmg；Windows NSIS .exe、.msi 和免安装便携 .zip），
+#                  带更新签名（TAURI_SIGNING_PRIVATE_KEY）构建，拼出更新清单 latest.json（桌面端的「检查更新」读它），和 build、deploy 同时跑
 #                → build：核对 tag、Cargo.toml 的 workspace 版本号和 CHANGELOG.md → 构建界面、cargo test、交叉编译 board-server、prebuilt 镜像推到 GHCR
 #                → deploy：SSH 到服务器备份、拉镜像、改 .env 的 BOARD_IMAGE、重启，核对线上版本号和提交号；失败切回上一个镜像
-#                → release：用 CHANGELOG.md 里这一版的段落建 GitHub Release，附上 board-skills.zip 和桌面端安装包
-#                  （任一平台的安装包没构建出来就不建 Release，不留残缺的附件；服务端照常部署）
+#                → release：用 CHANGELOG.md 里这一版的段落建 GitHub Release，附上 board-skills.zip、桌面端安装包、更新包和 latest.json
+#                  （任一平台的安装包没构建出来、或更新清单缺平台，就不建 Release，不留残缺的附件；服务端照常部署）
 # tag 由 npm run release 打（scripts/release.mjs：改版本号、生成 changelog、提交、打 tag）
 # 手动运行（在 main 上）填 7 位提交号：跳过 build，直接部署 GHCR 上已有的镜像（回滚用）
 name: deploy
@@ -70,6 +71,10 @@ jobs:
 
       - name: 界面单元测试
         run: npm --prefix web test
+
+      # 发版时才生成真正的 latest.json；这里用假签名拼一份，核对结构、平台键、地址，以及写坏的清单会被拦下
+      - name: 更新清单脚本（dry-run）
+        run: node scripts/updater-manifest.mjs --dry-run
 
   # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs）、多行正文经过 board.cmd（tests/multiline.rs），Linux 上的已经在 test 里跑过
   heartbeat-windows:
@@ -193,12 +198,71 @@ jobs:
         env:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
 
-      # beforeBuildCommand 构建界面
+      # beforeBuildCommand 构建界面。bundle.createUpdaterArtifacts：每个平台的更新包（macOS 的 .app.tar.gz、
+      # Windows 的 NSIS .exe）和它的 .sig 放在 release/bundle/update/ 下，下面按架构收进 updater/<平台键>/
       - name: 构建安装包
         run: npx tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
         env:
           # macOS：ad-hoc 签名；Windows 上不用
           APPLE_SIGNING_IDENTITY: "-"
+          # 更新包的签名私钥：只在仓库 secret 里，不进仓库；客户端只认 tauri.conf.json 里的公钥
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # 把更新包和签名按平台键收齐，给下面的清单用：updater/<darwin|windows>-<arch>[-<bundle>]/<文件> 和 .sig
+      - name: 收齐更新包和签名
+        shell: bash
+        run: |
+          set -euo pipefail
+          rel="target/${{ matrix.target }}/release"
+          upd="$rel/bundle/update"
+          ls -R "$upd" 2>/dev/null || { echo "::error::没有 $upd：bundle.createUpdaterArtifacts 没开，或者构建时没有签名私钥（TAURI_SIGNING_PRIVATE_KEY）"; exit 1; }
+          # 通用包是两个架构各一份：每个架构都在自己的 target 目录里打了一次包，所以 target/aarch64-apple-darwin 和
+          # target/x86_64-apple-darwin 下各有一个 update/（文件名不带三元组）；只落在一个目录里的情况也认
+          files=$(find "$upd" target/*apple-darwin/release/bundle/update -type f -name "*.app.tar.gz" 2>/dev/null | sort -u)
+          [ -n "$files" ] || { echo "::error::没有 .app.tar.gz 更新包"; exit 1; }
+          if [ "$RUNNER_OS" = macOS ]; then
+            for arch in aarch64 x86_64; do
+              key="darwin-$arch-app"
+              f=$(printf '%s\n' "$files" | grep -- "/$arch-apple-darwin/" | head -1 || true)
+              if [ -z "$f" ] && [ "$(printf '%s\n' "$files" | wc -l)" = 1 ]; then
+                # 只打了一次通用包：同一个文件给两个架构（都是通用包，装到哪个架构都行）
+                f=$(printf '%s\n' "$files" | head -1)
+              fi
+              [ -n "$f" ] || { echo "::error::$arch 没有对应的 .app.tar.gz 更新包：$files"; exit 1; }
+              mkdir -p "updater/$key"
+              cp "$f" "$f.sig" "updater/$key/"
+            done
+          else
+            mkdir -p updater/windows-x86_64-nsis
+            f=$(find "$upd" -type f -name "*setup.exe" | head -1)
+            [ -n "$f" ] || f=$(find "$rel/nsis" -type f -name "*.exe" ! -name "*.sig" | head -1)
+            if [ -z "$f" ] || [ ! -f "$f.sig" ]; then echo "::error::NSIS 安装包没有签名：${f:-没有找到安装包}"; exit 1; fi
+            cp "$f" "$f.sig" updater/windows-x86_64-nsis/
+          fi
+          find updater -type f
+
+      # 更新清单：版本号和 tag 一致，说明是 CHANGELOG.md 里这一版的一段，地址指向这个 Release 的附件
+      - name: 生成更新清单 latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver=${GITHUB_REF_NAME#v}
+          base="https://github.com/${{ github.repository }}/releases/download/$GITHUB_REF_NAME"
+          # 两个平台的清单各写一份（内容不一样：各自只含自己的平台），release 时合并成一份 latest.json
+          node scripts/updater-manifest.mjs --dir updater --version "$ver" --base "$base" --out "latest-$RUNNER_OS.json" --partial
+          # 清单里每个平台都指向这个 Release 的附件，附件的文件名得和上传的一致
+          node -e '
+            const m = JSON.parse(require("fs").readFileSync("latest-" + process.env.RUNNER_OS + ".json", "utf8"));
+            const fs = require("fs");
+            const names = new Set();
+            for (const d of fs.readdirSync("updater")) for (const n of fs.readdirSync("updater/" + d)) names.add(n);
+            for (const [k, p] of Object.entries(m.platforms)) {
+              const n = decodeURIComponent(new URL(p.url).pathname.split("/").pop());
+              if (!names.has(n)) { console.error(`::error::${k} 的 ${n} 不在上传的更新包里`); process.exit(1); }
+            }
+            console.log(JSON.stringify(m, null, 2));
+          '
 
       # macOS 挂载 .dmg 核对里面的 Board.app（只打 dmg 时 Tauri 打完包会删掉 bundle/macos 下的 .app）；
       # Windows 核对打进安装包的 board.exe
@@ -258,10 +322,14 @@ jobs:
           if ($got -ne $want) { throw "便携版里的 board 版本是「$got」，应为 $want" }
           Write-Host "✓ 便携版：$zip"
 
+      # 更新包（updater/ 原样保留子目录，macOS、Windows 两边各出各的平台键）、各自的清单 latest-<系统>.json（release 时合并）
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ runner.os }}
-          path: ${{ matrix.files }}
+          path: |
+            ${{ matrix.files }}
+            updater/**
+            latest-*.json
           if-no-files-found: error
 
   # 推 v* tag：构建并推镜像
@@ -457,8 +525,8 @@ jobs:
         if: always()
         run: rm -f ~/.ssh/deploy_key
 
-  # 部署成功、skill 打包成功、两个平台的桌面端安装包都构建成功后，用 CHANGELOG.md 里这一版的段落建 GitHub Release，
-  # 附上 board-skills.zip 和桌面端安装包
+  # 部署成功、skill 打包成功、两个平台的桌面端安装包和更新清单都构建成功后，用 CHANGELOG.md 里这一版的段落建 GitHub Release，
+  # 附上 board-skills.zip、桌面端安装包、更新包和 latest.json（桌面端的「检查更新」读它）
   release:
     needs: [build, deploy, skill, desktop]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -478,6 +546,35 @@ jobs:
           path: desktop
           merge-multiple: true
 
+      # 两个平台各写了一份清单（各自的项目）：合并成一份 latest.json，三个平台的更新包都得在
+      # （macOS 两个架构、Windows x64），缺任何一个不建 Release——桌面端只认这一份清单
+      - name: 合并更新清单 latest.json
+        run: |
+          node -e '
+            const fs = require("fs");
+            const files = fs.readdirSync("desktop").filter(n => /^latest-.*\.json$/.test(n));
+            if (files.length < 2) { console.error("::error::没有两个平台的更新清单（latest-*.json）：" + files.join("、")); process.exit(1); }
+            const out = { platforms: {} };
+            for (const n of files) {
+              const m = JSON.parse(fs.readFileSync("desktop/" + n, "utf8"));
+              if (out.version && m.version !== out.version) { console.error("::error::两个平台的清单版本号不一样：" + out.version + " / " + m.version); process.exit(1); }
+              out.version = m.version; out.notes = m.notes; out.pub_date = m.pub_date;
+              Object.assign(out.platforms, m.platforms);
+            }
+            const need = ["darwin-aarch64-app", "darwin-x86_64-app", "windows-x86_64-nsis"];
+            const missing = need.filter(k => !out.platforms[k]);
+            if (missing.length) { console.error("::error::更新清单缺少平台：" + missing.join("、")); process.exit(1); }
+            const names = new Set();
+            const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) e.isDirectory() ? walk(d + "/" + e.name) : names.add(e.name); };
+            walk("desktop");
+            for (const [k, p] of Object.entries(out.platforms)) {
+              const n = decodeURIComponent(new URL(p.url).pathname.split("/").pop());
+              if (!names.has(n)) { console.error(`::error::${k} 的 ${n} 不在这个 Release 的附件里`); process.exit(1); }
+            }
+            fs.writeFileSync("latest.json", JSON.stringify(out, null, 2) + "\n");
+            console.log(JSON.stringify(out, null, 2));
+          '
+
       - name: 建 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -485,10 +582,11 @@ jobs:
         run: |
           awk -v h="## v$VERSION" 'index($0, h" ") == 1 || $0 == h { f = 1; next } f && /^## / { exit } f' CHANGELOG.md | sed '/./,$!d' > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG.md 里取不到 v$VERSION 一节"; exit 1; }
-          # 上传时按 glob 的公共目录保留子目录：macOS 的 .dmg、Windows 的便携版 .zip 在最外层，Windows 的 .exe / .msi 在 nsis/、msi/ 下面
+          # 上传时按 glob 的公共目录保留子目录：macOS 的 .dmg、Windows 的便携版 .zip 在最外层，Windows 的 .exe / .msi 在 nsis/、msi/ 下面；
+          # 更新包（updater/）和最新清单 latest.json 也一起附上——桌面端的「检查更新」读 releases/latest/download/latest.json
           files=()
-          while IFS= read -r f; do files+=("$f"); done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' \) | sort)
-          for ext in dmg exe msi zip; do
-            printf '%s\n' "${files[@]}" | grep -q "\.$ext$" || { echo "::error::缺少桌面端安装包（.$ext），不建 Release"; exit 1; }
+          while IFS= read -r f; do files+=("$f"); done < <(find desktop -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' -o -name '*.app.tar.gz' \) | sort)
+          for ext in dmg exe msi zip app.tar.gz; do
+            printf '%s\n' "${files[@]}" | grep -q "\.$ext$" || { echo "::error::缺少桌面端安装包（.$ext，更新包），不建 Release"; exit 1; }
           done
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip "${files[@]}"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Board $GITHUB_REF_NAME" --notes-file notes.md board-skills.zip latest.json "${files[@]}"
