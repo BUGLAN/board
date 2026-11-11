@@ -15,8 +15,8 @@
 //! - **开始**（[`W::dispatch_begin`]、定时领取 [`W::dispatch_pull`]）在一个写事务里完成：生成 agent 名字
 //!   `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`，见 [`dispatch_agent_name`]）、check 这个名字、
 //!   以它领取卡片。领不到时这次派发结束，结果「没领到」。之后 host 每次上报时替这些名字发 agent 级心跳，直到派发结束。
-//! - **结束**（[`W::dispatch_end`]）：agent 退出后，卡片仍由这个名字持有就发 final、沿连线移到需要人处理的状态并评论
-//!   （异常退出 / 已停止）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
+//! - **结束**（[`W::dispatch_end`]）：agent 退出后，卡片仍由这个名字持有就发 final、沿连线移到「错误」节点（没有时去需要人处理的状态）
+//!   并评论（异常退出 / 已停止）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
 //! - **占用**：卡片有排队中的派发时，别的 agent `board claim <ID>` 报 `DISPATCHED`，不带 ID 的 `board claim` 跳过它；
 //!   人把它拖出可领取状态时这次派发自动取消。
 //! - **掉线**：机器掉线超过 50 秒，名字跟着离线，卡片按现有的心跳超时规则释放，在跑的派发结束（机器掉线），见 [`W::sweep_hosts`]。
@@ -1822,7 +1822,7 @@ impl<'a> W<'a> {
         let board = self.board_of(d.board)?;
         let flow = flow_of(self.tx, d.board)?;
         let result = match &row {
-            // 卡片仍由这个名字持有：发 final，沿连线移到需要人处理的状态，评论原因。
+            // 卡片仍由这个名字持有：发 final，沿连线移到「错误」节点（没有时去需要人处理的状态），评论原因。
             // 这几步尽力而为：规则拒绝（例如刚好被超时释放）不影响记下派发的结果
             Some((col, Some(holder))) if *holder == name => {
                 soft(self.exec(&board, &actor, Cmd::Beat { id: d.card, done: true }))?;
@@ -1831,11 +1831,14 @@ impl<'a> W<'a> {
                     .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
                     .optional()?
                     .flatten();
-                let human = flow.human_after(col).map(|s| s.key.clone());
+                let error = flow.error_after(col);
+                let human = flow.human_after(col);
+                // 错误节点优先于需要人处理的状态：卡片离开可领取状态，配了定时领取也不会被下一轮重领
+                let target = error.as_ref().or(human.as_ref());
                 let still_held = still.as_deref() == Some(name.as_str());
                 if still_held {
-                    if let Some(to) = &human {
-                        soft(self.exec(&board, &actor, Cmd::Move { id: d.card, column: to.clone(), top: false, index: None, order: None, before: None, after: None }))?;
+                    if let Some(to) = target {
+                        soft(self.exec(&board, &actor, Cmd::Move { id: d.card, column: to.key.clone(), top: false, index: None, order: None, before: None, after: None }))?;
                     }
                 }
                 let mut text = match (&stop_by, how) {
@@ -1853,19 +1856,26 @@ impl<'a> W<'a> {
                         t
                     }
                 };
-                // 工作流里没有需要人处理的状态：评论写明卡片会回到哪里，别让人以为它悄悄消失了
-                if still_held && human.is_none() {
+                // 工作流里从当前状态连不出去能接住异常退出的状态：评论写明卡片会回到哪里，别让人以为它悄悄消失了
+                if still_held && target.is_none() {
                     let claimed_from: Option<String> = self
                         .tx
                         .query_row("SELECT claimed_from FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
                         .optional()?
                         .flatten();
                     let back = flow.back_to(claimed_from.as_deref()).name.clone();
-                    text += &format!(
-                        "\n\n没有需要人处理的状态：这块白板从「{}」连出去的状态里没有需要人处理的状态，卡片 50 秒后会回到「{}」最上面。",
-                        flow.name(col),
-                        back
-                    );
+                    // 状态存在、只是从当前状态连不出去：单独说明，免得人以为白板没配
+                    // 一个错误节点 = 有锁定状态连过去，所以白板上有错误节点、而这里没找到，就是从当前状态到不了
+                    let unreachable = |what: &str, ok: Option<&Status>, exists: bool| {
+                        if ok.is_none() && exists {
+                            format!("这块白板有{what}状态，但从「{}」连不出去；", flow.name(col))
+                        } else {
+                            String::new()
+                        }
+                    };
+                    let no_error = unreachable("错误", error, flow.0.iter().any(|s| flow.is_error(&s.key)));
+                    let no_human = unreachable("需要人处理", human, flow.0.iter().any(|s| flow.is_human(&s.key)));
+                    text += &format!("\n\n没有能接住异常退出的状态：{no_error}{no_human}卡片 50 秒后会回到「{}」最上面。", back);
                 }
                 soft(self.exec(&board, &actor, Cmd::Comment { id: d.card, text }))?;
                 if stop_by.is_some() { "stopped" } else { "crashed" }

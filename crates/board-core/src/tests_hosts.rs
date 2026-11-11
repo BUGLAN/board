@@ -556,7 +556,7 @@ fn crashed_dispatch_without_human_status_explains_and_skips_this_round() {
     let c = card(&s, a);
     assert_eq!(c.card.column, "doing");
     let comment = c.activity.iter().rev().find(|x| x.kind == "comment").expect("应该有结束评论");
-    assert!(comment.text.contains("没有需要人处理的状态"), "{}", comment.text);
+    assert!(comment.text.contains("没有能接住异常退出的状态"), "{}", comment.text);
     assert!(comment.text.contains("卡片 50 秒后会回到「待办」最上面"), "{}", comment.text);
     // 50 秒后卡片回到待办；这一轮还没结束时，不能再领到它
     beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
@@ -586,7 +586,7 @@ fn stopped_dispatch_without_human_status_skips_this_round() {
     let c = card(&s, a);
     let comment = c.activity.iter().rev().find(|x| x.kind == "comment").unwrap();
     assert!(comment.text.contains("buglan 停止了这次派发"), "{}", comment.text);
-    assert!(comment.text.contains("没有需要人处理的状态"), "{}", comment.text);
+    assert!(comment.text.contains("没有能接住异常退出的状态"), "{}", comment.text);
     // 本轮的卡片释放后不会被重领
     beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
     s.sweep(T0 + 60 * S).unwrap();
@@ -634,6 +634,121 @@ fn flow_roles() {
     assert!(flow.is_human("check"));
     assert!(!flow.is_review("todo") && !flow.is_human("rework"));
     assert_eq!(flow.human_after("doing").map(|s| s.key.as_str()), Some("check"));
+    // 默认工作流没有「错误」节点
+    assert!(!flow.is_error("check") && !flow.is_error("doing"));
+    assert!(flow.error_after("doing").is_none());
+}
+
+/// 在 B 上新建「错误」状态（标识 s2），从 doing 连过去
+fn add_error_status(s: &mut Store) -> String {
+    let st = s.write(T0, Origin::ui(None), |w| w.create_status(B, "错误", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[(String::from("doing"), st.key.clone())], &[])).unwrap();
+    st.key
+}
+
+#[test]
+fn error_status_is_its_own_role() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    let flow = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    assert!(flow.is_error(&key), "名称「错误」要认成错误节点");
+    assert_eq!(flow.error_after("doing").map(|s| s.key.as_str()), Some(key.as_str()));
+    // 单独一类，不混进交审、需要人处理
+    assert!(!flow.is_review(&key) && !flow.is_human(&key));
+    assert_eq!(flow.human_after("doing").map(|s| s.key.as_str()), Some("check"), "错误节点不算需要人处理的状态");
+    // 可领取、终点状态不算，即使名字里有「错误」
+    s.write(T0, Origin::ui(None), |w| w.update_status(B, "rework", StatusPatch { name: Some("错误返工".into()), ..Default::default() })).unwrap();
+    let flow = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    assert!(!flow.error_after("todo").is_some_and(|s| s.key == "rework"), "从可领取状态连出去的可领取状态不算错误节点");
+}
+
+#[test]
+fn crashed_dispatch_moves_card_to_error_status() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
+    assert_eq!(d.card, a);
+    let id = d.id;
+    // agent 异常退出：卡片沿连线移到「错误」，不留在进行中
+    let d = end(&mut s, T0 + 3 * S, id, Some(1), &["boom"]);
+    assert_eq!((d.state.as_str(), d.result.as_deref()), ("done", Some("crashed")));
+    assert_eq!(card(&s, a).card.column, key, "异常退出的卡片移到错误节点");
+    // 50 秒后不会释放回待办，下一轮也领不到它
+    beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
+    s.sweep(T0 + 60 * S).unwrap();
+    assert_eq!(card(&s, a).card.column, key, "错误节点里的卡片不会被心跳超时释放");
+    s.write(T0 + 61 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(s.write(T0 + 62 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "定时领取不会再领错误节点里的卡片");
+}
+
+#[test]
+fn error_status_wins_over_human_status() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "buglan")).unwrap();
+    // 人停止：同样去错误节点（doing 同时连着 check 和 错误）
+    end(&mut s, T0 + 3 * S, d.id, None, &[]);
+    assert_eq!(card(&s, a).card.column, key);
+}
+
+#[test]
+fn crashed_dispatch_goes_to_human_status_when_no_error_status() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, d.id).unwrap();
+    // 没有错误节点：行为保持原样，去需要人处理的状态
+    end(&mut s, T0 + 2 * S, d.id, Some(2), &[]);
+    assert_eq!(card(&s, a).card.column, "check");
+}
+
+#[test]
+fn crashed_dispatch_explains_unreachable_error_status() {
+    let mut s = store();
+    // 错误节点存在，但从「进行中」连不出去：另一个锁定状态「测试中」能连过去，doing 不能
+    s.write(T0, Origin::ui(None), |w| w.delete_status(B, "check")).unwrap();
+    let lock = s.write(T0, Origin::ui(None), |w| w.create_status(B, "测试中", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_status(B, &lock.key, StatusPatch { lock: Some(true), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[("review".into(), lock.key.clone())], &[])).unwrap();
+    let st = s.write(T0, Origin::ui(None), |w| w.create_status(B, "错误", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[(lock.key.clone(), st.key.clone())], &[])).unwrap();
+    let probe = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    assert!(probe.has_edge(&lock.key, &st.key) && probe.is_error(&st.key), "错误节点要能认出来");
+    assert!(!probe.has_edge("doing", &st.key), "doing 到不了错误节点");
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, d.id).unwrap();
+    end(&mut s, T0 + 2 * S, d.id, Some(1), &[]);
+    let c = card(&s, a);
+    assert_eq!(c.card.column, "doing", "没有连线时不硬移");
+    let comment = c.activity.iter().rev().find(|x| x.kind == "comment").expect("应该有结束评论");
+    assert!(comment.text.contains("这块白板有错误状态，但从「进行中」连不出去"), "{}", comment.text);
+    assert!(comment.text.contains("卡片 50 秒后会回到「待办」最上面"), "{}", comment.text);
+}
+
+#[test]
+fn review_path_unchanged_with_error_status() {
+    let mut s = store();
+    add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, d.id).unwrap();
+    // agent 正常交审后退出：卡片已经不在它手里，在交审状态，不动
+    exec(&mut s, T0 + 2 * S, &Actor::agent("claude-mbp/opus-5.5"), Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    let d = end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
+    assert_eq!(d.result.as_deref(), Some("review"));
+    assert_eq!(card(&s, a).card.column, "review");
 }
 
 /* ---------------- 启动环境（启动环境与桌面端需求 §二） ---------------- */
