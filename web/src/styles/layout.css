@@ -46,6 +46,17 @@
 .logo i:nth-child(2) { background: color-mix(in srgb, var(--c-doing) 92%, var(--text)); animation-delay: -.9s; }
 .logo i:nth-child(3) { background: color-mix(in srgb, var(--c-review) 92%, var(--text)); animation-delay: -1.8s; }
 .logo i:nth-child(4) { background: color-mix(in srgb, var(--c-done) 92%, var(--text)); animation-delay: -2.7s; }
+/* 系统身份的头像（bits.tsx 的 Avatar）：同一组柱子放进圆形底，柱子比顶栏那块细一些 */
+.avatar.brand-mark { background: var(--surface); box-shadow: 0 0 0 2px var(--surface), 0 2px 6px -1px color-mix(in srgb, var(--text) 18%, transparent); }
+.avatar.brand-mark .brand-bars {
+  display: flex; align-items: center; justify-content: center; gap: 1px;
+  width: 62%; height: 58%;
+}
+.avatar.brand-mark .brand-bars i { flex: 1; height: var(--h); border-radius: var(--r-hair); }
+.avatar.brand-mark .brand-bars i:nth-child(1) { background: color-mix(in srgb, var(--c-todo) 92%, var(--text)); }
+.avatar.brand-mark .brand-bars i:nth-child(2) { background: color-mix(in srgb, var(--c-doing) 92%, var(--text)); }
+.avatar.brand-mark .brand-bars i:nth-child(3) { background: color-mix(in srgb, var(--c-review) 92%, var(--text)); }
+.avatar.brand-mark .brand-bars i:nth-child(4) { background: color-mix(in srgb, var(--c-done) 92%, var(--text)); }
 @keyframes logo-bar { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(.62); } }
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
 .brand-name { font-family: var(--f-display); font-weight: 800; font-size: 17px; letter-spacing: -.02em; }

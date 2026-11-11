@@ -50,6 +50,24 @@ export function useMeName(): string | null {
   return (me.name || '').trim() || me.login;
 }
 
+/** 系统身份在界面上的称呼：动态、浮层、toast 里都显示成 board 本身（服务端 Actor::display() 用同一个词） */
+export const SYSTEM_NAME = 'board';
+
+/** 四根柱子的高度比例：顶栏、启动页、登录页和系统身份的头像都用它，换个尺寸还是同一组柱子 */
+const BRAND_BARS = ['100%', '70%', '46%', '82%'];
+
+/** Board 的品牌图标：四根柱子一块牌子。`.logo` 是带底色的那块（顶栏、启动页、登录页）；
+    `.avatar.brand-mark` 沿用头像的圆形底，只放里面的柱子 */
+export function BrandMark({ className }: { className?: string }) {
+  return (
+    <span className={cx(className)} aria-hidden="true">
+      {BRAND_BARS.map(h => (
+        <i key={h} style={{ ['--h' as string]: h }} />
+      ))}
+    </span>
+  );
+}
+
 /** 头像：登录后「人」用 GitHub 头像；取不到地址或加载失败时退回到灰圈首字母（本机模式仍是「你」），不出现破图 */
 export function Avatar({ actor, className }: { actor: Actor; className?: string }) {
   const me = useAuth(s => s.me);
@@ -64,10 +82,11 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
         {src ? <img src={src} alt="" draggable={false} onError={() => setBadSrc(src)} /> : name ? initial(name) : '你'}
       </span>
     );
+  // 系统身份就是 board 本身：头像换成品牌图标，底色用面板色，深色、浅色主题下柱子都看得清
   if (actor.kind === 'system')
     return (
-      <span className={cx('avatar', className)} style={{ ['--c' as string]: 'var(--text-3)', ['--avatar-fg' as string]: 'var(--surface)' }} title="系统">
-        ⏱
+      <span className={cx('avatar brand-mark', className)} title={SYSTEM_NAME}>
+        <BrandMark className="brand-bars" />
       </span>
     );
   return (

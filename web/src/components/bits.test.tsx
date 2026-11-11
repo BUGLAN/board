@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ColorPick } from './bits';
+import { Avatar, BrandMark, ColorPick, SYSTEM_NAME } from './bits';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -33,6 +33,24 @@ function pickInDialog(el: HTMLInputElement, ...colors: string[]) {
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
+
+describe('系统身份的头像', () => {
+  it('系统 = board：头像里是品牌图标（四根柱子），不再有时钟 emoji，悬停提示是 board', () => {
+    act(() => root.render(<Avatar actor={{ kind: 'system', name: '' }} />));
+    const el = host.querySelector('.avatar') as HTMLElement;
+    expect(el.title).toBe('board');
+    expect(SYSTEM_NAME).toBe('board');
+    expect(el.textContent).not.toContain('⏱');
+    expect(el.textContent).not.toContain('系统');
+    expect(el.querySelectorAll('.brand-bars i')).toHaveLength(4);
+  });
+
+  it('品牌图标的大小图标用同一组柱子、高度比例不变', () => {
+    act(() => root.render(<BrandMark className="logo" />));
+    const bars = [...host.querySelectorAll('i')] as HTMLElement[];
+    expect(bars.map(b => b.style.getPropertyValue('--h'))).toEqual(['100%', '70%', '46%', '82%']);
+  });
+});
 
 describe('ColorPick', () => {
   it('取色器里拖动后确定，回调拿到选中的颜色（拖动时的 input 不会把值还原成旧颜色）', () => {

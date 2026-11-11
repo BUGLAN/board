@@ -6,6 +6,7 @@
    ========================================================================== */
 import { useEffect, useRef, useState } from 'react';
 import { canDesktopLogin, desktopLogin, type DesktopLoginError } from '../lib/platform';
+import { BrandMark } from './bits';
 
 const REASONS: Record<string, (login: string | null, message: string | null) => string> = {
   denied: login => `GitHub 账号${login ? ` ${login} ` : ''}没有访问这个 Board 的权限。`,
@@ -70,12 +71,7 @@ export function Login() {
   return (
     <div className="login">
       <div className="login-card">
-        <div className="logo" aria-hidden="true">
-          <i style={{ ['--h' as string]: '100%' }} />
-          <i style={{ ['--h' as string]: '70%' }} />
-          <i style={{ ['--h' as string]: '46%' }} />
-          <i style={{ ['--h' as string]: '82%' }} />
-        </div>
+        <BrandMark className="logo" />
         <h1>Board</h1>
         <p>登录后打开你的白板。agent 通过命令行接入，用的是设置里新建的访问令牌。</p>
         {error && (

@@ -6,6 +6,18 @@ import { FLOW, status } from '../../test/fixtures';
 import { placeAt } from './drag';
 import { CH, edgeId, layoutFlow, mainPath } from './flowGraph';
 import { flowOf } from './schema';
+import { actorName } from './util';
+
+describe('actorName（界面上怎么称呼）', () => {
+  it('人 = 你，agent = 名字', () => {
+    expect(actorName({ kind: 'human', name: '' })).toBe('你');
+    expect(actorName({ kind: 'agent', name: 'dsh/win-20' })).toBe('dsh/win-20');
+  });
+
+  it('系统 = board，不再是「系统」（和后端 Actor::display() 一致）', () => {
+    expect(actorName({ kind: 'system', name: '' })).toBe('board');
+  });
+});
 
 describe('placeAt（CSS 网格自动摆放）', () => {
   it('一样高的卡片按行从左到右排', () => {

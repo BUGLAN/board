@@ -11,6 +11,7 @@ import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
 import { Topbar } from './components/Topbar';
+import { BrandMark, SYSTEM_NAME } from './components/bits';
 import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
@@ -130,7 +131,7 @@ function BoardApp() {
         for (const ev of events) {
           if (ev.board === path) {
             const color = ev.actor.kind === 'agent' ? agentColor(ev.actor.name) : ev.actor.kind === 'system' ? 'var(--danger)' : 'var(--brand)';
-            const who = ev.actor.kind === 'agent' ? `${agentGlyph(ev.actor.name)} ${ev.actor.name}` : ev.actor.kind === 'system' ? '⏱ 系统' : '另一个窗口';
+            const who = ev.actor.kind === 'agent' ? `${agentGlyph(ev.actor.name)} ${ev.actor.name}` : ev.actor.kind === 'system' ? SYSTEM_NAME : '另一个窗口';
             if (ev.op !== 'delete') flash(ev.cardId, color, `${who}${ev.via === 'cli' ? ' · CLI' : ''} · ${OP_LABEL[ev.op] || ev.op}`);
             // 心跳中断（异常退出）或没开始心跳：服务端写好的原因直接给人看
             if (ev.op === 'timeout' || ev.op === 'lost')
@@ -316,12 +317,7 @@ function Page({ show, children }: { show: boolean; children: React.ReactNode }) 
 function Loading({ error }: { error: string | null }) {
   return (
     <div className="boot">
-      <div className="logo" aria-hidden="true">
-        <i style={{ ['--h' as string]: '100%' }} />
-        <i style={{ ['--h' as string]: '70%' }} />
-        <i style={{ ['--h' as string]: '46%' }} />
-        <i style={{ ['--h' as string]: '82%' }} />
-      </div>
+      <BrandMark className="logo" />
       {error ? (
         <>
           <b>连不上 Board 服务</b>

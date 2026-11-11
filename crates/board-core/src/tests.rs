@@ -367,6 +367,22 @@ fn ac6_timeout_without_server_sweep() {
 }
 
 #[test]
+fn system_identity_is_board() {
+    // 系统身份（超时释放、心跳中断这类）在文本里叫 board，不再是「系统」；API 的 actor_kind 仍是 "system"
+    let mut s = store();
+    assert_eq!(Actor::system().display(), "board");
+    assert_eq!(Actor::human().display(), "人");
+    assert_eq!(Actor::agent("alpha").display(), "alpha");
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let c = exec(&mut s, B, &beta(), T0 + 31 * MIN, claim(None)).unwrap();
+    let t = c.activity.iter().find(|a| a.action == "timeout").expect("超时释放的动态");
+    assert_eq!(t.actor.kind, ActorKind::System);
+    assert_eq!(t.actor.display(), "board");
+    assert!(t.text.contains("卡片回到「待办」最上面"), "{}", t.text);
+}
+
+#[test]
 fn ac7_done_belongs_to_humans() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();

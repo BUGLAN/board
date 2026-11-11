@@ -31,8 +31,8 @@ export const agentInk = (name: string) => `color-mix(in oklab, ${agentColor(name
 export const agentGlyph = (name: string) =>
   GREEK[String(name).toLowerCase()] || [...String(name || '?').trim()][0]?.toUpperCase() || '?';
 
-/** 界面上怎么称呼：人 = 你 */
-export const actorName = (a: Actor) => (a.kind === 'human' ? '你' : a.kind === 'system' ? '系统' : a.name);
+/** 界面上怎么称呼：人 = 你，系统 = board（和服务端 Actor::display() 一致） */
+export const actorName = (a: Actor) => (a.kind === 'human' ? '你' : a.kind === 'system' ? 'board' : a.name);
 
 /* ---------- 时间 ---------- */
 const pad2 = (n: number) => String(n).padStart(2, '0');

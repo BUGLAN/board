@@ -14,7 +14,7 @@ import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
 import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
-import { Avatar, LabelLock, LabelPriority, ProjectAvatar, Title, agent, useMeName, useNow } from './bits';
+import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, useMobile, Veto } from './BoardView';
 import { CardView } from './Card';
 import { HostsSide } from './Hosts';
@@ -636,7 +636,7 @@ function BoardSide() {
                       <Avatar actor={ev.actor} />
                       <div>
                         <b style={ev.actor.kind === 'agent' ? { color: agentInk(ev.actor.name) } : undefined}>
-                          {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? '系统' : ev.actor.name}
+                          {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? SYSTEM_NAME : ev.actor.name}
                         </b>{' '}
                         {OP[ev.op] || ev.op}{' '}
                         <button type="button" className="mono recent-id" onClick={() => openCard(ev.cardId)}>

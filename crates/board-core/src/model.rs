@@ -275,7 +275,7 @@ pub fn check_agent_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// 谁在操作：界面上是人，CLI 是 agent，超时释放是系统
+/// 谁在操作：界面上是人，CLI 是 agent，超时释放、心跳中断、定时派发是系统（文本里显示成 board）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
     pub kind: ActorKind,
@@ -298,11 +298,11 @@ impl Actor {
     pub fn is_human(&self) -> bool {
         self.kind == ActorKind::Human
     }
-    /// 在文本（动态、CLI 输出）里怎么称呼
+    /// 在文本（动态、CLI 输出）里怎么称呼。系统身份就是 board 本身，界面上用同一个词（web 的 SYSTEM_NAME）
     pub fn display(&self) -> &str {
         match self.kind {
             ActorKind::Human => "人",
-            ActorKind::System => "系统",
+            ActorKind::System => "board",
             ActorKind::Agent => &self.name,
         }
     }

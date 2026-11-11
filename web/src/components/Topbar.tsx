@@ -9,7 +9,7 @@ import { flowOf, timing } from '../lib/schema';
 import { agentColor, clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
-import { Avatar, ProjectAvatar, agent, useNow } from './bits';
+import { Avatar, BrandMark, ProjectAvatar, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { WindowControls } from './WindowControls';
 
@@ -24,12 +24,7 @@ export function Topbar() {
     <header className="topbar enter-down" onMouseDown={onDown}>
       <div className="topbar-left">
         <div className="brand">
-        <div className="logo" aria-hidden="true">
-            <i style={{ ['--h' as string]: '100%' }} />
-            <i style={{ ['--h' as string]: '70%' }} />
-            <i style={{ ['--h' as string]: '46%' }} />
-            <i style={{ ['--h' as string]: '82%' }} />
-          </div>
+          <BrandMark className="logo" />
           <span className="brand-name">Board</span>
         </div>
         <span className="brand-slash" aria-hidden="true">
