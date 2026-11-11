@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BRANCH = 'main';
+// Windows 上 npm 是 npm.cmd，execFileSync 不认 PATHEXT，直接写 'npm' 会 ENOENT
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
 const push = args.includes('--push');
@@ -180,9 +182,11 @@ run('cargo', ['update', '--workspace']);
 run('cargo', ['metadata', '--locked', '--no-deps', '--format-version', '1']);
 // package.json 和 package-lock.json（只改版本号，不提交、不打 tag）
 for (const dir of ['.', 'web']) {
-  execFileSync('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], {
+  execFileSync(NPM, ['version', version, '--no-git-tag-version', '--allow-same-version'], {
     cwd: join(root, dir),
     stdio: ['ignore', 'ignore', 'inherit'],
+    // Node 22 起 Windows 上直接 spawn .cmd 会 EINVAL，必须经过 shell
+    shell: process.platform === 'win32',
   });
 }
 edit('src-tauri/tauri.conf.json', s => s.replace(/^(\s*"version":\s*")[^"]*(")/m, `$1${version}$2`));
