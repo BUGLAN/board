@@ -368,6 +368,7 @@ name = "board-core"
 version = "0.1.17"
 dependencies = [
  "chrono",
+ "jiff",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2053,6 +2054,7 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",

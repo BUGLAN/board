@@ -9,6 +9,7 @@ import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
 import { InboxPage } from './components/Inbox';
+import { StatsPage } from './components/StatsTab';
 import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
@@ -25,7 +26,7 @@ import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, toast, useUI, type Tab,
 } from './store/ui';
 
-/* 项目画布、设置页按需加载（机器页在 components/Hosts）：第一次切过去才下载，入口包小一些；
+/* 项目画布、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
    只在当前 Tab 挂载，不随数据刷新在后台渲染。启动后空闲时预取，切过去不用等 */
 const loadCanvas = () => import('./components/Canvas');
 const loadSettings = () => import('./components/Settings');
@@ -35,6 +36,7 @@ const prefetch = () => {
   void loadCanvas();
   void loadSettings();
   void import('./components/hosts/HostsPage');
+  void import('./components/stats/Stats');
 };
 
 const Lazy = ({ name, children }: { name: string; children: ReactNode }) => <Suspense fallback={<PageLoading name={name} />}>{children}</Suspense>;
@@ -44,8 +46,8 @@ const OP_LABEL: Record<string, string> = {
   timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发', merge: '合并',
 };
 
-const PAGE: Record<Tab, 'board' | 'canvas' | 'hosts' | 'inbox' | 'settings'> = {
-  board: 'board', inbox: 'inbox', projects: 'canvas', hosts: 'hosts', settings: 'settings',
+const PAGE: Record<Tab, 'board' | 'canvas' | 'stats' | 'hosts' | 'inbox' | 'settings'> = {
+  board: 'board', inbox: 'inbox', projects: 'canvas', stats: 'stats', hosts: 'hosts', settings: 'settings',
 };
 
 /** 侧栏收起 / 展开时主内容跟着平移（只动 transform，不逐帧改宽度）：
@@ -175,9 +177,9 @@ function BoardApp() {
         setSide(!useUI.getState().side);
         return;
       }
-      if (mod && ['1', '2', '3', '4', '5'].includes(e.key)) {
+      if (mod && ['1', '2', '3', '4', '5', '6'].includes(e.key)) {
         e.preventDefault();
-        setTab((['board', 'projects', 'inbox', 'settings', 'hosts'] as Tab[])[Number(e.key) - 1]);
+        setTab((['board', 'projects', 'inbox', 'settings', 'hosts', 'stats'] as Tab[])[Number(e.key) - 1]);
         return;
       }
       if (e.key === 'Escape') {
@@ -240,6 +242,7 @@ function BoardApp() {
                   </Lazy>
                 )}
               </Page>
+              <Page show={page === 'stats'}>{page === 'stats' && <StatsPage />}</Page>
               <Page show={page === 'hosts'}>{page === 'hosts' && <HostsPage />}</Page>
               <Page show={page === 'inbox'}>{page === 'inbox' && <InboxPage />}</Page>
               <Page show={page === 'settings'}>

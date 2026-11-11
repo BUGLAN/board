@@ -401,6 +401,9 @@ pub struct BoardInfo {
     pub path: String,
     pub name: String,
     pub desc: String,
+    /// 白板说明（Markdown，可以为空）
+    #[serde(default)]
+    pub readme: String,
     pub pos: Pos,
     pub created_at: i64,
     pub updated_at: i64,

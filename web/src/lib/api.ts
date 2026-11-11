@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, ServerInfo, Status, Tile, TokenInfo, Workspace } from './types';
+import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, ServerInfo, Stats, StatsScope, Status, Tile, TokenInfo, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -147,7 +147,13 @@ export const api = {
 
   createBoard: (b: { project: string; name: string; key: string; desc?: string; pos?: Pos }) =>
     req<{ path: string }>('POST', '/api/boards', b),
-  updateBoard: (path: string, patch: { name?: string; desc?: string }) => req('PATCH', `/api/boards/${path}`, patch),
+  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string }) => req('PATCH', `/api/boards/${path}`, patch),
+  /** 大盘：一个范围在 [from, to) 里的全部统计，按 tz 分桶 */
+  stats: (q: { scope: StatsScope; path?: string; from: number; to: number; tz: string }) => {
+    const p = new URLSearchParams({ scope: q.scope, from: String(q.from), to: String(q.to), tz: q.tz });
+    if (q.path) p.set('path', q.path);
+    return req<Stats>('GET', `/api/stats?${p}`);
+  },
   deleteBoard: (path: string) => req('DELETE', `/api/boards/${path}`),
 
   createLabel: (project: string, name: string, color?: string, humanOnly?: boolean) =>

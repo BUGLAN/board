@@ -199,6 +199,7 @@ impl<'a> W<'a> {
                 self.clear_claim(b.id, id, "release")?;
             }
             let text = format!("状态「{}」被删除，卡片移到「{}」{}", s.name, start.name, if held { "，领取已释放" } else { "" });
+            self.log_move(b.id, id, "move", key, &start.key, &Actor::human(), &flow)?;
             self.track(b.id, id, &Actor::human(), "move", &text)?;
         }
         self.tx.execute("DELETE FROM statuses WHERE board = ?1 AND key = ?2", params![b.id, key])?;

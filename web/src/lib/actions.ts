@@ -208,7 +208,8 @@ export function editProject(pk: string) {
   });
 }
 
-export function editBoard(path: string) {
+/** 编辑白板。focus: 'readme' 时打开后定位到「说明」（大盘总览里的「编辑」）；draft 是上次没保存成功的内容 */
+export function editBoard(path: string, { focus, draft }: { focus?: string; draft?: Record<string, string> } = {}) {
   const m = boardMeta(data().ws, path);
   if (!m) return;
   openForm({
@@ -216,15 +217,20 @@ export function editBoard(path: string) {
     submit: '保存',
     preview: 'edit-board',
     previewData: { path, projectName: m.project.name, color: m.project.color },
+    focus,
     fields: [
-      { name: 'name', label: '白板名称', value: m.board.name, required: true },
+      { name: 'name', label: '白板名称', value: draft?.name ?? m.board.name, required: true },
       { name: 'key', label: '白板标识', hint: 'agent 用它定位，创建后不能修改', type: 'key', value: m.board.key, readonly: true },
-      { name: 'desc', label: '描述', hint: '选填', value: m.board.desc },
-      { name: 'color', label: '颜色', hint: `白板用所属项目的颜色，改这里会一起改项目「${m.project.name}」`, type: 'color', value: m.project.color },
+      { name: 'desc', label: '描述', hint: '选填，一句话', value: draft?.desc ?? m.board.desc },
+      {
+        name: 'readme', label: '说明', hint: '选填，Markdown，可以粘贴图片；打开大盘的人第一眼看到', type: 'markdown', board: path,
+        placeholder: '这块白板是做什么的、有哪些约定', value: draft?.readme ?? m.board.readme ?? '',
+      },
+      { name: 'color', label: '颜色', hint: `白板用所属项目的颜色，改这里会一起改项目「${m.project.name}」`, type: 'color', value: draft?.color ?? m.project.color },
     ],
-    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示
+    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示，提示里可以带着刚才写的内容重新打开
     onSubmit: async v => {
-      const patch = { name: v.name.trim(), desc: v.desc.trim() };
+      const patch = { name: v.name.trim(), desc: v.desc.trim(), readme: v.readme.trimEnd() };
       const recolor = !!v.color && v.color.toUpperCase() !== m.project.color.toUpperCase();
       optimistic(
         {
@@ -239,7 +245,7 @@ export function editBoard(path: string) {
           await api.updateBoard(path, patch);
           if (recolor) await api.updateProject(m.project.key, { color: v.color });
         },
-      ).then(saved, toastError);
+      ).then(saved, e => toastError(e, { action: { label: '重新编辑', fn: () => editBoard(path, { focus, draft: v }) } }));
     },
   });
 }

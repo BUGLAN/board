@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 
 const P: Record<string, ReactNode> = {
   plus: <path d="M10 4.5v11M4.5 10h11" />,
+  chart: <path d="M3.5 16.5h13M5.5 13.5v-3M10 13.5v-7M14.5 13.5v-5" />,
   folder: <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h3.2l1.6 1.8h6.2A1.5 1.5 0 0 1 17 8.3v6.2a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5Z" />,
   more: (
     <>
@@ -262,6 +263,16 @@ export const SettingsIcon24 = () => (
   </svg>
 );
 /** 机器（board host）：两层服务器 */
+/** 大盘：三根柱子 */
+export const StatsIcon24 = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+    <path d="M4 20h16" />
+    <rect x="5.5" y="11" width="3" height="6" rx="1" />
+    <rect x="10.5" y="6" width="3" height="11" rx="1" />
+    <rect x="15.5" y="9" width="3" height="8" rx="1" />
+  </svg>
+);
+
 export const HostsIcon24 = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
     <rect x="3.5" y="4" width="17" height="6.5" rx="2" />

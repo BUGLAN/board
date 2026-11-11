@@ -12,7 +12,9 @@ pub mod files;
 pub mod flow;
 pub mod hosts;
 pub mod model;
+pub mod moves;
 pub mod seed;
+pub mod stats;
 pub mod store;
 
 pub use agents::NAME_GAP_MS;
@@ -28,3 +30,5 @@ pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
 mod tests;
 #[cfg(test)]
 mod tests_hosts;
+#[cfg(test)]
+mod tests_stats;

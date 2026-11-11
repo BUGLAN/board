@@ -1,6 +1,6 @@
 /* ==========================================================================
    左侧操作台：活动栏 + 侧栏（PRD §10.1）
-   - 活动栏：白板 / 项目 / 未整理 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
+   - 活动栏：白板 / 项目 / 未整理 / 大盘 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
@@ -17,14 +17,16 @@ import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, ag
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
 import { InboxSideParts } from './Inbox';
-import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
+import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24, StatsIcon24 } from './Icon';
 import { SettingsNav } from './SettingsNav';
+import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
 
 const TABS: { tab: Tab; label: string; tip: string; icon: ReactNode }[] = [
   { tab: 'board', label: '白板', tip: '白板', icon: <BoardIcon24 /> },
   { tab: 'projects', label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
   { tab: 'inbox', label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },
+  { tab: 'stats', label: '大盘', tip: '大盘 · 白板和项目的统计', icon: <StatsIcon24 /> },
   { tab: 'hosts', label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
 ];
 
@@ -114,6 +116,7 @@ export function SidePanel() {
         <ProjectsSide />
         <BoardSide />
         <InboxSide />
+        <StatsSide />
         <HostsSide />
         <section className="side-view" data-view="settings">
           <header className="side-head">

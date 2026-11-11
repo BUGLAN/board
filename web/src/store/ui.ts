@@ -12,7 +12,7 @@ export interface ImageRef {
   src: string;
   alt: string;
 }
-export type Tab = 'board' | 'projects' | 'inbox' | 'hosts' | 'settings';
+export type Tab = 'board' | 'projects' | 'inbox' | 'stats' | 'hosts' | 'settings';
 
 export interface Toast {
   id: number;
@@ -43,7 +43,10 @@ export interface FormField {
   name: string;
   label: string;
   hint?: string;
-  type?: 'text' | 'key' | 'color' | 'select';
+  /** markdown：多行编辑框，能粘贴、拖入图片和文件（上传到 board 这块白板） */
+  type?: 'text' | 'key' | 'color' | 'select' | 'markdown';
+  /** markdown 字段的附件传到哪块白板 */
+  board?: string;
   value?: string;
   placeholder?: string;
   required?: boolean;
@@ -62,6 +65,8 @@ export interface FormCfg {
   fields: FormField[];
   preview?: 'project' | 'board' | 'edit-project' | 'edit-board';
   previewData?: Record<string, string>;
+  /** 打开时定位到这个字段（默认第一个可编辑的） */
+  focus?: string;
   onSubmit: (v: Record<string, string>) => Promise<void>;
 }
 
@@ -142,7 +147,7 @@ interface UIState {
   boardSheet: boolean;
 }
 
-const TABS: Tab[] = ['board', 'projects', 'inbox', 'hosts', 'settings'];
+const TABS: Tab[] = ['board', 'projects', 'inbox', 'stats', 'hosts', 'settings'];
 const initialTab = (): Tab => {
   const q = new URLSearchParams(location.search).get('tab') as Tab | null;
   if (q && TABS.includes(q)) return q;

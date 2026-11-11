@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS boards (
   saved_layout TEXT,
   -- 1 = 保存顺序：界面上可以在同一状态块里拖动卡片调整顺序；0 = 不能（换状态不受影响）
   keep_order  INTEGER NOT NULL DEFAULT 1,
+  -- 白板说明（Markdown，可以为空）：大盘总览里显示
+  readme      TEXT NOT NULL DEFAULT '',
   UNIQUE (project, key)
 );
 
@@ -249,6 +251,7 @@ impl Store {
         conn.execute_batch(crate::agents::SCHEMA)?;
         conn.execute_batch(crate::hosts::SCHEMA)?;
         crate::hosts::migrate(&conn)?;
+        conn.execute_batch(crate::moves::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beat {
@@ -313,6 +316,12 @@ impl Store {
         if !has_keep {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN keep_order INTEGER NOT NULL DEFAULT 1")?;
         }
+        // 旧数据库的白板没有说明
+        let has_readme: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'readme'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_readme {
+            conn.execute_batch("ALTER TABLE boards ADD COLUMN readme TEXT NOT NULL DEFAULT ''")?;
+        }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
         if !edged {
@@ -336,6 +345,8 @@ impl Store {
         for b in missing {
             insert_default_flow(&conn, b)?;
         }
+        // 旧数据库没有流转记录：从动态回填（只跑一次）
+        crate::moves::backfill(&conn)?;
         Ok(Store { conn, files })
     }
 
@@ -495,7 +506,7 @@ impl<'a> R<'a> {
             p.labels = labels_of(conn, &p.key)?;
             let mut st = conn.prepare(
                 "SELECT b.id, b.key, b.name, b.description, b.pos_x, b.pos_y, b.created_at,
-                        COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at)
+                        COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme
                  FROM boards b WHERE b.project = ?1 ORDER BY b.sort, b.created_at, b.key",
             )?;
             let rows = st.query_map([&p.key], |r| {
@@ -506,6 +517,7 @@ impl<'a> R<'a> {
                         path: String::new(),
                         name: r.get(2)?,
                         desc: r.get(3)?,
+                        readme: r.get(8)?,
                         pos: Pos { x: r.get(4)?, y: r.get(5)? },
                         created_at: r.get(6)?,
                         updated_at: r.get(7)?,
@@ -1055,8 +1067,11 @@ impl<'a> W<'a> {
         Ok(format!("{project}/{key}"))
     }
 
-    pub fn update_board(&mut self, path: &str, name: Option<&str>, desc: Option<&str>) -> Result<()> {
+    pub fn update_board(&mut self, path: &str, name: Option<&str>, desc: Option<&str>, readme: Option<&str>) -> Result<()> {
         let b = self.resolve_exact(path)?;
+        if let Some(t) = readme {
+            self.tx.execute("UPDATE boards SET readme = ?1 WHERE id = ?2", params![t.trim_end(), b.id])?;
+        }
         if let Some(n) = name {
             let n = Self::need_name(n, "白板")?;
             self.tx.execute("UPDATE boards SET name = ?1 WHERE id = ?2", params![n, b.id])?;

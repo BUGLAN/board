@@ -116,6 +116,7 @@ export function Palette() {
       { id: 'tab-inbox', group: '切换到', title: '未整理', hint: accel('3'), icon: 'inbox', run: () => setTab('inbox') },
       { id: 'tab-settings', group: '切换到', title: '设置', hint: accel('4'), icon: 'sun', run: () => setTab('settings') },
       { id: 'tab-hosts', group: '切换到', title: '机器（board host）', hint: accel('5'), icon: 'host', run: () => setTab('hosts') },
+      { id: 'tab-stats', group: '切换到', title: '大盘', hint: accel('6'), icon: 'chart', run: () => setTab('stats') },
       { id: 'side', group: '切换到', title: '收起 / 展开侧栏', hint: accel('B'), icon: 'monitor', run: () => setSide(!useUI.getState().side) },
       ...(canNewWindow
         ? [{ id: 'new-window', group: '切换到', title: '新建窗口', hint: accel('N', true), icon: 'monitor' as IconName, run: () => newWindow() }]

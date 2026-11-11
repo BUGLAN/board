@@ -309,6 +309,7 @@ impl<'a> W<'a> {
                             if released { format!("，领取已释放{}", took(run)) } else { String::new() }
                         )
                     };
+                    self.log_move(b, id, "move", &from, &to, actor, &flow)?;
                     self.track(b, id, actor, "move", &text)?;
                 } else if whole {
                     let text = format!("调整了在「{}」中的顺序（第 {} → {} 位），并按排序后看到的顺序保存了整块的优先级", flow.name(&to), old + 1, new + 1);
@@ -390,6 +391,7 @@ impl<'a> W<'a> {
                     "UPDATE cards SET holder = ?1, claimed_at = ?2, beat_at = NULL, final_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
                     params![actor.name, self.now, from, b, target],
                 )?;
+                self.log_move(b, target, "claim", &from, &dest.key, actor, &flow)?;
                 self.track(b, target, actor, "claim", &format!("领取了卡片，从「{}」进入「{}」", flow.name(&from), dest.name))?;
                 target
             }
@@ -551,6 +553,7 @@ impl<'a> W<'a> {
                 let running = self.read().card_dispatch(board, id)?;
                 self.place(b, id, Some(&r.col), &start.key, At::Top)?;
                 let run = self.clear_claim(b, id, "release")?;
+                self.log_move(b, id, "release", &r.col, &start.key, actor, &flow)?;
                 self.track(b, id, actor, "release", &format!("强制释放了 {who} 的领取，卡片回到「{}」最上面{}", start.name, took(run)))?;
                 if let Some(d) = running.filter(|d| d.state == "running") {
                     self.request_stop(d.id, actor, actor.display())?;
@@ -683,6 +686,7 @@ impl<'a> W<'a> {
                 (None, Some(_)) => ("timeout", format!("{who} 结束心跳后 {} 秒内没有交审或放回，{back}", gap / 1000)),
                 (None, None) => ("timeout", format!("{who} 领取后 {} 秒内没有开始心跳，{back}", gap / 1000)),
             };
+            self.log_move(b, *id, action, col, &start.key, &Actor::system(), &flow)?;
             self.track(b, *id, &Actor::system(), action, &text)?;
         }
         Ok(due.len())

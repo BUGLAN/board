@@ -4,7 +4,7 @@
 //!   `attachments` 表记录所属白板、卡片、文件名、类型、大小、上传者
 //! - 单个文件不超过 [`MAX_BYTES`]；只接受 [`kind_of`] 里的类型，图片会核对文件头
 //! - 界面新建卡片时先上传、后建卡片：这时附件还没有卡片（`card` 为空），新建、编辑描述、评论时
-//!   文字里引用到的 `/api/files/<id>` 归到这张卡片；24 小时后仍没有卡片的附件被清理
+//!   文字里引用到的 `/api/files/<id>` 归到这张卡片；24 小时后仍没有卡片、也没被白板说明引用的附件被清理
 //! - 删除卡片（或白板、项目）时附件记录一起删除，不再被引用的文件由 [`Store::gc_files`] 清理
 
 use crate::error::{BoardError, ErrorCode, Result};
@@ -269,11 +269,32 @@ impl Store {
         Ok(Some((a, board, self.files()?.join(sha))))
     }
 
-    /// 清理：24 小时还没归到卡片的附件记录；目录里不再被任何记录引用的文件。返回 (记录数, 文件数)
+    /// 清理：24 小时还没归到卡片、也没被白板说明引用的附件记录；目录里不再被任何记录引用的文件。返回 (记录数, 文件数)
     pub fn gc_files(&mut self, now: i64) -> Result<(usize, usize)> {
-        let rows = self
-            .conn()
-            .execute("DELETE FROM attachments WHERE card IS NULL AND created_at < ?1", [now - UNBOUND_KEEP_MS])?;
+        // 白板说明里贴的图片不属于卡片（card 为空），被说明引用着就留着
+        let mut keep: Vec<i64> = vec![];
+        {
+            let mut st = self.conn().prepare("SELECT id, readme FROM boards WHERE readme LIKE '%/api/files/%'")?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (board, text) = row?;
+                for id in referenced_ids(&text) {
+                    let mine: i64 = self.conn().query_row(
+                        "SELECT COUNT(*) FROM attachments WHERE id = ?1 AND board = ?2",
+                        params![id, board],
+                        |r| r.get(0),
+                    )?;
+                    if mine > 0 {
+                        keep.push(id);
+                    }
+                }
+            }
+        }
+        let keep = keep.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+        let rows = self.conn().execute(
+            &format!("DELETE FROM attachments WHERE card IS NULL AND created_at < ?1 AND id NOT IN ({keep})"),
+            [now - UNBOUND_KEEP_MS],
+        )?;
         let Some(dir) = self.files_dir().map(Path::to_path_buf) else { return Ok((rows, 0)) };
         if !dir.is_dir() {
             return Ok((rows, 0));

@@ -1,9 +1,10 @@
 /* 确认框、表单弹窗（新建 / 编辑项目和白板） */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { stillUploading, useAttach } from '../../lib/attach';
 import type { ProjectInfo } from '../../lib/types';
-import { cx, replay } from '../../lib/util';
+import { autosize, cx, replay } from '../../lib/util';
 import { useData } from '../../store/data';
-import { closeForm, settleConfirm, useUI, type ConfirmReq, type FormCfg } from '../../store/ui';
+import { closeForm, settleConfirm, useUI, type ConfirmReq, type FormCfg, type FormField } from '../../store/ui';
 import { ColorRow, Markdown, ProjectAvatar, Select } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
@@ -110,12 +111,20 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(0);
   const form = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    const t = setTimeout(() => form.current?.querySelector<HTMLElement>('input:not([readonly]), select')?.focus(), 40);
+    const t = setTimeout(() => {
+      if (cfg.focus) {
+        const el = form.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${cfg.focus}"]`);
+        el?.focus();
+        el?.setSelectionRange(el.value.length, el.value.length);
+        el?.scrollIntoView({ block: 'nearest' });
+      } else form.current?.querySelector<HTMLElement>('input:not([readonly]), select')?.focus();
+    }, 40);
     return () => clearTimeout(t);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const update = (name: string, value: string) => {
     setV(prev => {
@@ -140,6 +149,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
       return;
     }
     if (live) return setErr(live);
+    if (stillUploading(uploading)) return;
     setBusy(true);
     try {
       await cfg.onSubmit(v);
@@ -187,7 +197,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && closeForm()}>
       <form
-        className="dialog pj-modal"
+        className={cx('dialog pj-modal', cfg.fields.some(f => f.type === 'markdown') && 'wide')}
         ref={form}
         role="dialog"
         aria-modal="true"
@@ -215,6 +225,19 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
                 </span>
                 <ColorRow value={v[f.name] ?? ''} onPick={c => update(f.name, c)} label={f.label} />
               </div>
+            );
+          if (f.type === 'markdown')
+            return (
+              <MdField
+                key={f.name}
+                f={f}
+                value={v[f.name] ?? ''}
+                setValue={up => {
+                  setV(prev => ({ ...prev, [f.name]: typeof up === 'function' ? up(prev[f.name] ?? '') : up }));
+                  setErr('');
+                }}
+                onBusy={setUploading}
+              />
             );
           if (f.type === 'select')
             return (
@@ -263,6 +286,47 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/** 多行 Markdown 字段：能粘贴截图、拖入文件（上传到 f.board 这块白板，还不属于任何卡片） */
+function MdField({ f, value, setValue, onBusy }: { f: FormField; value: string; setValue: Dispatch<SetStateAction<string>>; onBusy: (n: number) => void }) {
+  const ta = useRef<HTMLTextAreaElement>(null);
+  const attach = useAttach({ board: f.board, card: null, setValue, textarea: ta });
+  useLayoutEffect(() => autosize(ta.current), [value]);
+  useEffect(() => onBusy(attach.busy), [attach.busy]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="field">
+      <span>
+        {f.label}
+        {f.hint && <em>{f.hint}</em>}
+      </span>
+      <textarea
+        ref={ta}
+        className={cx('input md-input', attach.over && 'drop')}
+        name={f.name}
+        value={value}
+        placeholder={f.placeholder}
+        rows={4}
+        spellCheck={false}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          // 回车换行，不提交表单；⌘/Ctrl + 回车保存
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            e.currentTarget.form?.requestSubmit();
+          }
+        }}
+        {...attach.handlers}
+      />
+      <span className="md-foot">
+        <span>{attach.busy ? `正在上传 ${attach.busy} 个附件…` : '支持 Markdown；可以粘贴截图、拖入文件'}</span>
+        <button type="button" className="btn sm ghost" onClick={attach.pick}>
+          添加附件
+        </button>
+      </span>
+      {attach.fileInput}
     </div>
   );
 }

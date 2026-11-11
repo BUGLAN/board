@@ -70,6 +70,7 @@
 .app[data-tab="projects"] .side-view[data-view="projects"],
 .app[data-tab="board"] .side-view[data-view="board"],
 .app[data-tab="inbox"] .side-view[data-view="inbox"],
+.app[data-tab="stats"] .side-view[data-view="stats"],
 .app[data-tab="hosts"] .side-view[data-view="hosts"],
 .app[data-tab="settings"] .side-view[data-view="settings"] { display: flex; animation: side-in var(--dur-3) var(--ease-out); }
 @keyframes side-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
@@ -282,6 +283,10 @@
 .pj-foot svg { width: 15px; height: 15px; }
 
 .dialog.pj-modal { width: min(440px, 100%); text-align: left; }
+.dialog.pj-modal.wide { width: min(620px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.pj-modal textarea.md-input { display: block; width: 100%; height: auto; min-height: 104px; max-height: 42vh; padding: 9px 11px; resize: none; overflow-y: auto; font: 13px/1.6 var(--f-mono); }
+.pj-modal textarea.md-input.drop { box-shadow: inset 0 0 0 2px var(--brand); }
+.pj-modal .md-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; font-size: 11.5px; color: var(--text-4); }
 .pj-modal h3 { text-align: left; }
 .pj-modal > p { margin-top: 2px; }
 .pj-preview { display: flex; align-items: center; gap: 12px; margin: 16px 0 14px; padding: 12px; border-radius: var(--r-md); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }

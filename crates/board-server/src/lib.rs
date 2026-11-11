@@ -211,6 +211,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/board", get(board))
         .route("/card", get(card))
         .route("/events", get(events))
+        .route("/stats", get(stats))
         .route("/cmd", post(cmd))
         .route("/agents", get(agents::list))
         .route("/agents/check", post(agents::check))
@@ -460,6 +461,27 @@ async fn events(State(s): State<AppState>, Query(q): Query<EventsQuery>) -> ApiR
     ))
 }
 
+#[derive(Deserialize)]
+struct StatsQueryRaw {
+    scope: String,
+    #[serde(default)]
+    path: Option<String>,
+    from: i64,
+    to: i64,
+    tz: String,
+}
+
+/// `GET /api/stats?scope=board|project|all&path=<项目/白板 或 项目>&from=<ms>&to=<ms>&tz=<IANA 时区>`：大盘的全部数据
+async fn stats(State(s): State<AppState>, Query(q): Query<StatsQueryRaw>) -> ApiResult<board_core::stats::Stats> {
+    use board_core::stats::{Scope, StatsQuery};
+    let scope = Scope::parse(&q.scope).ok_or_else(|| BoardError::usage("scope 只能是 board、project 或 all"))?;
+    if scope != Scope::All && q.path.as_deref().is_none_or(|p| p.trim().is_empty()) {
+        return Err(BoardError::usage("缺少 path").into());
+    }
+    let q = StatsQuery { scope, path: q.path, from: q.from, to: q.to, tz: q.tz };
+    Ok(Json(s.db(move |st| st.read(|r| r.stats(&q, now_ms()))).await?))
+}
+
 /* ------------------------------ 卡片命令 ------------------------------ */
 
 #[derive(Deserialize)]
@@ -649,6 +671,9 @@ struct PatchBody {
     desc: Option<String>,
     #[serde(default)]
     color: Option<String>,
+    /// 白板说明（Markdown）
+    #[serde(default)]
+    readme: Option<String>,
     #[serde(default)]
     project: Option<String>,
     /// 标签：仅人可打
@@ -691,7 +716,7 @@ async fn update_board(
 ) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
     let path = format!("{project}/{board}");
-    write(&s, &h, move |w| w.update_board(&path, p.name.as_deref(), p.desc.as_deref())).await?;
+    write(&s, &h, move |w| w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -63,6 +63,8 @@ export interface BoardInfo {
   path: string;
   name: string;
   desc: string;
+  /** 白板说明（Markdown，可以为空），大盘总览里显示 */
+  readme?: string;
   pos: Pos;
   createdAt: number;
   updatedAt: number;
@@ -386,3 +388,118 @@ export type Cmd =
   | { op: 'delete'; id: number }
   /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
   | { op: 'merge'; id: number; from: number[]; title?: string; body?: string };
+
+/* ------------------------------ 大盘（GET /api/stats） ------------------------------ */
+
+export type StatsScope = 'board' | 'project' | 'all';
+
+/** 一段时间的总量；时长都是毫秒，比例 0..1，没有样本时为 null */
+export interface StatsPeriod {
+  created: number;
+  claims: number;
+  done: number;
+  rework: number;
+  comments: number;
+  beats: number;
+  spent: number;
+  leadP50: number | null;
+  leadP85: number | null;
+  waitP50: number | null;
+  workP50: number | null;
+  leadHist: number[];
+  firstPass: number | null;
+  idle: number;
+}
+
+export interface StatsBucket {
+  t: number;
+  created: number;
+  claims: number;
+  done: number;
+  rework: number;
+  comments: number;
+  beats: number;
+  spent: number;
+}
+
+/** review 交审 | rework 被打回 | lost 异常退出 | gaveup 做不下去 | released 领取被释放 | running 进行中 */
+export type RunResult = 'review' | 'rework' | 'lost' | 'gaveup' | 'released' | 'running';
+
+export interface StatsRun {
+  agent: string;
+  name: string;
+  board: string;
+  card: number;
+  title: string;
+  start: number;
+  end: number | null;
+  result: RunResult;
+}
+
+export interface StatsSeg {
+  key: string | null;
+  name: string;
+  color: string | null;
+  from: number;
+  to: number;
+}
+
+export interface StatsLife {
+  board: string;
+  card: number;
+  title: string;
+  created: number;
+  done: number;
+  reworks: number;
+  segs: StatsSeg[];
+}
+
+export interface StatsBrief {
+  key: string;
+  review: number;
+  todo: number;
+  busy: boolean;
+  done: number;
+  series: number[];
+  leadP50: number | null;
+  firstPass: number | null;
+  rework: number;
+}
+
+export interface StatsWaiting {
+  n: number;
+  oldest: number | null;
+}
+
+export interface Stats {
+  scope: StatsScope;
+  path: string | null;
+  from: number;
+  to: number;
+  now: number;
+  tz: string;
+  bucket: 'hour' | 'day';
+  boardsInScope: string[];
+  activity: number;
+  cur: StatsPeriod;
+  prev: StatsPeriod;
+  series: StatsBucket[];
+  idle: { board: string; from: number; to: number }[];
+  agents: { agent: string; claims: number; spent: number; firstPass: number | null; lost: number; gaveup: number }[];
+  dwell: { key: string; name: string; color: string; median: number; mean: number; n: number }[];
+  hourHeat: number[][];
+  dayHeat: { t: number; v: number; future: boolean }[];
+  runs: StatsRun[];
+  lives: StatsLife[];
+  present: {
+    statuses: { key: string; name: string; color: string; n: number }[];
+    review: StatsWaiting;
+    todo: StatsWaiting;
+    doing: { n: number; holders: string[] };
+    stuck: { board: string; card: number; title: string; key: string; name: string; color: string; since: number; holder: string | null; note: string | null }[];
+  };
+  life: { since: number; days: number; cards: number; finals: number; reworks: number; agents: number; spent: number; perDay: number } | null;
+  boards: StatsBrief[];
+  projects: StatsBrief[];
+  all: StatsBrief;
+}
