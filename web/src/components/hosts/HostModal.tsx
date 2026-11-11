@@ -1,15 +1,15 @@
 /* 机器详情：居中弹窗（正在跑、排队、派发规则、本机 agent、启动环境、白板与目录、最近）；添加机器 */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostInfo, Label } from '../../lib/types';
-import { copyText, cx, durWords, pref, replay } from '../../lib/util';
+import { copyText, cx, durWords, pref } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
-import { hostKey, optimistic, useBusy, useData } from '../../store/data';
+import { hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
-import { LabelChip, Title, useNow } from '../bits';
+import { LabelChip, Select, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
@@ -40,8 +40,10 @@ export function HostModal() {
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, [contenteditable]')) return;
       const ui = useUI.getState();
-      if (ui.confirm || ui.palette.open) return;
+      if (ui.confirm || ui.palette.open || ui.ctx) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // 焦点在选择框上：上下键是打开它的选项，不是换机器
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (e.target as HTMLElement).closest?.('.sel')) return;
       if (e.key === 'Escape') close();
       else if (id !== 'new' && (e.key === 'ArrowUp' || e.key === 'k')) step(-1);
       else if (id !== 'new' && (e.key === 'ArrowDown' || e.key === 'j')) step(1);
@@ -61,6 +63,106 @@ export function HostModal() {
       </aside>
     </>,
     document.body,
+  );
+}
+
+type HostPatch = Parameters<typeof api.updateHost>[1];
+type SyncState = 'saving' | 'saved' | 'failed';
+type Save = (p: HostPatch) => void;
+
+/** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则和兜底算同一项，启动环境按 agent 分 */
+const fieldOf = (p: HostPatch) => (p.env ? `env:${p.env.agent}` : 'rules' in p || 'fallback' in p ? 'rules' : Object.keys(p)[0] ?? 'host');
+/** 步进器连点：停手这么久才发请求，只发最后的值 */
+const STEPPED = new Set(['max', 'perSession']);
+const STEP_MS = 450;
+/** 「已保存」「没保存上」的标记停留多久 */
+const SAVED_MS = 1600;
+const FAILED_MS = 1900;
+
+/** 机器设置的保存：每一项各存各的（store 的 saveSetting）。改动当帧生效，不禁用任何控件，没确认时也能接着改；
+    sync 是每一项的保存状态，画在那个控件旁边：保存中（转圈，晚一点才出现）→ 已保存（打勾后淡出）；
+    被拒绝时值回到原处、那一行回弹，并提示 */
+function useSaver(name: string) {
+  const [sync, setSync] = useState<Record<string, SyncState | undefined>>({});
+  const last = useRef(new Map<string, Promise<unknown>>());
+  const timers = useRef(new Map<string, number>());
+  useEffect(() => () => timers.current.forEach(t => clearTimeout(t)), []);
+  const mark = (f: string, st?: SyncState) => setSync(x => (x[f] === st ? x : { ...x, [f]: st }));
+  const save: Save = p => {
+    const f = fieldOf(p);
+    const { env, ...fields } = p;
+    const done = saveSetting(
+      `${hostKey(name)}:${f}`,
+      {
+        ws: ws => ({
+          ...ws,
+          hosts: ws.hosts?.map(x =>
+            x.name === name ? { ...x, ...fields, agents: env ? x.agents.map(a => (a.id === env.agent ? { ...a, env: env.env } : a)) : x.agents } : x,
+          ),
+        }),
+      },
+      () => api.updateHost(name, p),
+      STEPPED.has(f) ? STEP_MS : 0,
+    );
+    clearTimeout(timers.current.get(f));
+    mark(f, 'saving');
+    // 连点合并成的同一批：结果只处理一次
+    if (last.current.get(f) === done) return;
+    last.current.set(f, done);
+    const end = (st: SyncState, ms: number) => {
+      // 这一项后面又改过：等后面那次的结果
+      if (last.current.get(f) !== done) return;
+      mark(f, st);
+      timers.current.set(f, window.setTimeout(() => mark(f), ms));
+    };
+    done.then(
+      () => end('saved', SAVED_MS),
+      e => {
+        toastError(e);
+        end('failed', FAILED_MS);
+      },
+    );
+  };
+  return { save, sync };
+}
+
+const SYNC_TEXT: Record<SyncState, string> = { saving: '正在保存', saved: '已保存', failed: '没保存上' };
+
+/** 一个设置项的保存状态：默认贴在控件左边（不占位，状态变化时布局不动）；inline 时跟在文字后面 */
+function Sync({ s, inline }: { s?: SyncState; inline?: boolean }) {
+  return (
+    <span className={cx('hp-sync', inline && 'in')} data-s={s ?? ''} role="status">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle className="ring" cx="8" cy="8" r="6" />
+        <path className="tick" d="M4.8 8.3l2.2 2.2 4.3-4.8" />
+        <path className="bang" d="M8 4.6v4.1M8 11.2v.3" />
+      </svg>
+      {s && <span className="sr-only">{SYNC_TEXT[s]}</span>}
+    </span>
+  );
+}
+
+/** 步进器：数字当帧变，往上加从下面滚进来、往下减从上面滚进来 */
+function Stepper({ value, min = 1, max = 8, label, onChange }: { value: number; min?: number; max?: number; label: string; onChange: (v: number) => void }) {
+  const prev = useRef(value);
+  const up = value >= prev.current;
+  useEffect(() => {
+    prev.current = value;
+  }, [value]);
+  return (
+    <span className="hp-stepper" role="group" aria-label={label}>
+      <button type="button" aria-label="减少" disabled={value <= min} onClick={() => onChange(value - 1)}>
+        −
+      </button>
+      <b aria-live="polite">
+        <span key={value} className="hp-num" style={{ ['--roll' as string]: up ? '80%' : '-80%' }}>
+          {value}
+        </span>
+      </b>
+      <button type="button" aria-label="增加" disabled={value >= max} onClick={() => onChange(value + 1)}>
+        +
+      </button>
+    </span>
   );
 }
 
@@ -93,24 +195,46 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
     };
   }, [on, h.name, rev]);
 
-  /** 机器设置：当帧生效，被拒绝时改回来并提示。保存完之前这台机器的设置都禁用（不会在没确认的值上再改一次） */
-  const busy = useBusy(hostKey(h.name));
-  const patch = async (p: Parameters<typeof api.updateHost>[1]) => {
-    const { env, ...fields } = p;
-    const local = patchHost(h.name, x => ({
-      ...x,
-      ...fields,
-      agents: env ? x.agents.map(a => (a.id === env.agent ? { ...a, env: env.env } : a)) : x.agents,
-    }));
-    // 改的是哪一行：保存成功后闪一下，失败时值回到原处并回弹，不静默跳变
-    const row = (document.activeElement as HTMLElement | null)?.closest('.hp-rule, .hp-arow, .hp-crules, .hp-cron, .d-actions');
+  const { save, sync } = useSaver(h.name);
+  const failed = (...fs: string[]) => fs.some(f => sync[f] === 'failed') && 'hp-rollback';
+  const canRound = h.online && !h.paused && !h.round && hasRules;
+  const roundTip = h.round
+    ? '正在领一轮：有空位就领下一张，所有白板都没有符合规则的卡片时结束'
+    : !hasRules
+      ? '先添加一条领取规则'
+      : !h.online
+        ? '机器离线，不能领'
+        : h.paused
+          ? '暂停接单时不能领'
+          : '现在按领取规则领一轮，效果与定时到点相同';
+  const round = async () => {
+    // 当帧变成「正在领」，被拒绝时改回来并提示
     try {
-      await optimistic(local, () => api.updateHost(h.name, p));
-      row?.classList.remove('hp-rollback');
-      replay(row, 'hp-saved');
+      await optimistic(patchHost(h.name, x => ({ ...x, round: true })), () => api.hostRound(h.name));
+      toast({ type: 'success', title: `${h.name} 开始领一轮` });
     } catch (e) {
-      row?.classList.remove('hp-saved');
-      replay(row, 'hp-rollback');
+      toastError(e);
+    }
+  };
+  const remove = async () => {
+    const yes = await confirm({
+      title: `移除 ${h.name}？`,
+      text: '取消它所有排队中的派发，停止正在跑的派发，删除机器设置；派发记录保留。那台机器的 board host 再连上来时按新机器处理。',
+      ok: '移除',
+    });
+    if (!yes) return;
+    // 当帧关闭面板、从列表里拿掉（连同它的派发），被拒绝时回来并提示
+    close();
+    try {
+      await optimistic(
+        {
+          ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }),
+          keys: [hostKey(h.name)],
+        },
+        () => api.removeHost(h.name),
+      );
+      toast({ type: 'success', title: `已移除 ${h.name}` });
+    } catch (e) {
       toastError(e);
     }
   };
@@ -146,12 +270,37 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
       </div>
       <div className="d-grid">
         <div className="d-main">
-          <section className="d-section" style={{ ['--i' as string]: 0 }}>
-            <h2 className="hp-m-title">{h.name}</h2>
-            <div className="hp-m-meta">
-              <span>{h.os || '未知系统'}</span>
-              <span>board {h.version || '?'}</span>
-              <span>{lastSeen(h, now)}</span>
+          {/* 顶部：机器名和最常用的两个操作（领一轮、暂停接单） */}
+          <section className="d-section hp-hero" style={{ ['--i' as string]: 0 }}>
+            <div className="hp-hero-id">
+              <h2 className="hp-m-title">{h.name}</h2>
+              <div className="hp-m-meta">
+                <span>{h.os || '未知系统'}</span>
+                <span>board {h.version || '?'}</span>
+                <span>{lastSeen(h, now)}</span>
+              </div>
+            </div>
+            <div className="hp-hero-acts">
+              <span data-tip={roundTip}>
+                <button className={cx('btn sm', h.round && 'is-busy')} type="button" disabled={!canRound} onClick={round}>
+                  <Icon name="play" />
+                  {h.round ? '正在领一轮' : '领一轮'}
+                </button>
+              </span>
+              <span className="hp-ctl">
+                <Sync s={sync.paused} />
+                <button
+                  className={cx('btn sm hp-pause', h.paused && 'on', failed('paused'))}
+                  type="button"
+                  aria-pressed={h.paused}
+                  data-tip={h.paused ? '恢复后接着做排队的派发' : '暂停后不启动新的派发，在跑的不受影响'}
+                  data-tip-align="end"
+                  onClick={() => save({ paused: !h.paused })}
+                >
+                  <Icon name={h.paused ? 'play' : 'pause'} />
+                  {h.paused ? '恢复接单' : '暂停接单'}
+                </button>
+              </span>
             </div>
           </section>
 
@@ -180,99 +329,56 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </section>
 
           <section className="d-section" style={{ ['--i' as string]: 2 }}>
-            <div className="d-label">派发规则</div>
-            <div className="hp-rule">
-              <div>
-                <b>同时跑几个</b>
-                <span>正在跑的达到上限后，新的派发在服务端排队</span>
-              </div>
-              <span className="hp-stepper">
-                <button type="button" aria-label="减少" disabled={busy || h.max <= 1} onClick={() => patch({ max: h.max - 1 })}>
-                  −
-                </button>
-                <b key={h.max} className="hp-num">
-                  {h.max}
-                </b>
-                <button type="button" aria-label="增加" disabled={busy || h.max >= 8} onClick={() => patch({ max: h.max + 1 })}>
-                  +
-                </button>
-              </span>
-            </div>
-            {h.perSession != null && (
-              <div className="hp-rule">
-                <div>
-                  <b>一个会话最多做几张</b>
-                  <span>定时领取启动的 agent 做完一张后用 board next 接着做，优先挑和第一张相近的，做满就退出、下一批换新会话；手动派发只做指定的那一张</span>
+            <div className="d-label">接单</div>
+            <div className="hp-knobs">
+              <div className={cx('hp-knob', failed('max'))}>
+                <div className="hp-knob-text">
+                  <b>同时跑几个</b>
+                  <span>跑满之后，新的派发在服务端排队</span>
                 </div>
-                <span className="hp-stepper">
-                  <button type="button" aria-label="减少" disabled={busy || h.perSession <= 1} onClick={() => patch({ perSession: h.perSession! - 1 })}>
-                    −
-                  </button>
-                  <b key={h.perSession} className="hp-num">
-                    {h.perSession}
-                  </b>
-                  <button type="button" aria-label="增加" disabled={busy || h.perSession >= 8} onClick={() => patch({ perSession: h.perSession! + 1 })}>
-                    +
+                <span className="hp-ctl">
+                  <Sync s={sync.max} />
+                  <Stepper value={h.max} label="同时跑几个" onChange={v => save({ max: v })} />
+                </span>
+              </div>
+              {h.perSession != null && (
+                <div className={cx('hp-knob', failed('perSession'))}>
+                  <div className="hp-knob-text">
+                    <b>一个会话最多做几张</b>
+                    <span data-tip="定时领取启动的 agent 做完一张后用 board next 接着做，优先挑和第一张相近的，做满就退出、下一批换新会话；手动派发只做指定的那一张">
+                      定时领取的会话做满就换新会话
+                    </span>
+                  </div>
+                  <span className="hp-ctl">
+                    <Sync s={sync.perSession} />
+                    <Stepper value={h.perSession} label="一个会话最多做几张" onChange={v => save({ perSession: v })} />
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className={cx('hp-block', failed('cronOn', 'cron'))}>
+              <div className="hp-block-head">
+                <div className="hp-knob-text">
+                  <b>定时领取</b>
+                  <span>到了下面这些时间，按领取规则领卡、把空位填满，直到没有符合规则的卡片</span>
+                </div>
+                <span className="hp-ctl">
+                  <Sync s={sync.cronOn} />
+                  <button className={cx('toggle', h.cronOn && 'on')} type="button" role="switch" aria-checked={h.cronOn} aria-label="定时领取" onClick={() => save({ cronOn: !h.cronOn })}>
+                    <i />
                   </button>
                 </span>
               </div>
-            )}
-            <div className="hp-rule">
-              <div>
-                <b>定时领取</b>
-                <span>到了这些时间（机器本地时区），按下面的领取规则在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有符合规则的卡片；没有领取规则时不会自动领取</span>
-              </div>
-              <button
-                className={cx('toggle', h.cronOn && 'on')}
-                type="button"
-                role="switch"
-                aria-checked={h.cronOn}
-                aria-label="定时领取"
-                disabled={busy}
-                onClick={() => patch({ cronOn: !h.cronOn })}
-              >
-                <i />
-              </button>
+              <CronTimes h={h} save={save} sync={sync.cron} />
             </div>
-            <CronTimes h={h} patch={patch} busy={busy} />
-            <div className="hp-rule">
-              <div>
-                <b>现在领一轮</b>
-                <span>
-                  {h.round
-                    ? '正在领一轮：有空位就领下一张，所有白板都没有符合规则的卡片时结束'
-                    : hasRules
-                      ? '效果与到点相同；机器离线或暂停接单时不能领'
-                      : '先添加一条领取规则；配好之后，效果与到点相同'}
-                </span>
-              </div>
-              <button
-                className="btn sm"
-                type="button"
-                disabled={busy || !h.online || h.paused || h.round || !hasRules}
-                title={hasRules ? undefined : '先添加一条领取规则'}
-                onClick={async () => {
-                  // 当帧变成「正在领」（按钮禁用），被拒绝时改回来并提示
-                  try {
-                    await optimistic(patchHost(h.name, x => ({ ...x, round: true })), () => api.hostRound(h.name));
-                    toast({ type: 'success', title: `${h.name} 开始领一轮` });
-                  } catch (e) {
-                    toastError(e);
-                  }
-                }}
-              >
-                <Icon name="play" />
-                {h.round ? '正在领' : '领一轮'}
-              </button>
-            </div>
-            {h.rules != null && <ClaimRules h={h} patch={patch} busy={busy} />}
+            {h.rules != null && <ClaimRules h={h} save={save} sync={sync.rules} />}
           </section>
 
           <section className="d-section" style={{ ['--i' as string]: 3 }}>
             <div className="d-label">本机 agent</div>
             <SkillBanner h={h} fixed={fixed} setFixed={setFixed} />
             {h.agents.map(a => (
-              <AgentRow key={a.id} h={h} a={a} patch={patch} busy={busy} fixed={fixed?.includes(a.id)} />
+              <AgentRow key={a.id} h={h} a={a} save={save} sync={sync[`env:${a.id}`] ?? (a.id === h.agent ? sync.agent : undefined)} fixed={fixed?.includes(a.id)} />
             ))}
             {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
           </section>
@@ -305,43 +411,18 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             )}
           </Fold>
 
-          <div className="d-actions">
-            <button
-              className="btn sm danger"
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                const yes = await confirm({
-                  title: `移除 ${h.name}？`,
-                  text: '取消它所有排队中的派发，停止正在跑的派发，删除机器设置；派发记录保留。那台机器的 board host 再连上来时按新机器处理。',
-                  ok: '移除',
-                });
-                if (!yes) return;
-                // 当帧关闭面板、从列表里拿掉（连同它的派发），被拒绝时回来并提示
-                close();
-                try {
-                  await optimistic(
-                    {
-                      ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }),
-                      keys: [hostKey(h.name)],
-                    },
-                    () => api.removeHost(h.name),
-                  );
-                  toast({ type: 'success', title: `已移除 ${h.name}` });
-                } catch (e) {
-                  toastError(e);
-                }
-              }}
-            >
-              <Icon name="trash" />
-              移除机器
-            </button>
-            <span className="d-actions-hint">排队的取消，在跑的停止</span>
-            <button className="btn sm d-move" type="button" disabled={busy} onClick={() => patch({ paused: !h.paused })}>
-              <Icon name={h.paused ? 'play' : 'pause'} />
-              {h.paused ? '恢复接单' : '暂停接单'}
-            </button>
-          </div>
+          <section className="d-section hp-danger" style={{ ['--i' as string]: 6 }}>
+            <div>
+              <div className="hp-knob-text">
+                <b>移除这台机器</b>
+                <span>排队的取消，在跑的停止，机器设置删除；派发记录保留</span>
+              </div>
+              <button className="btn sm danger" type="button" onClick={remove}>
+                <Icon name="trash" />
+                移除机器
+              </button>
+            </div>
+          </section>
         </div>
 
         <div className={cx('d-side', !recentOpen && 'folded')}>
@@ -390,7 +471,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 /** 本机 agent 的一行：图标、名称（看不到 board-skills 时后面一个「缺 skill」小胶囊，悬停写装到哪里；刚一键装好的变绿「skill 已装」）、
  *  启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
  *  旧版 board host 不上报启动环境：不显示下拉，写版本号 */
-function AgentRow({ h, a, patch, busy, fixed }: { h: HostInfo; a: HostAgent; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean; fixed?: boolean }) {
+function AgentRow({ h, a, save, sync, fixed }: { h: HostInfo; a: HostAgent; save: Save; sync?: SyncState; fixed?: boolean }) {
   const def = a.id === h.agent;
   const envs = h.envs ?? [];
   const checks = a.envs ?? [];
@@ -398,7 +479,7 @@ function AgentRow({ h, a, patch, busy, fixed }: { h: HostInfo; a: HostAgent; pat
   const miss = skillMiss(h, a);
   return (
     <>
-      <div className={cx('hp-arow', !a.found && 'missing')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
+      <div className={cx('hp-arow', !a.found && 'missing', sync === 'failed' && 'hp-rollback')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
         <AgentIcon id={a.id} />
         <b className="hp-arow-name">{a.name}</b>
         {fixed ? (
@@ -416,36 +497,34 @@ function AgentRow({ h, a, patch, busy, fixed }: { h: HostInfo; a: HostAgent; pat
         )}
         {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
         <span className="hp-sp" />
+        <span className="hp-ctl">
+          <Sync s={sync} />
         {envs.length > 0 &&
           (checks.length ? (
-            <select
-              className="input hp-env-select"
-              disabled={busy || !checks.some(c => c.found)}
+            <Select
+              className="hp-env-select"
+              disabled={!checks.some(c => c.found)}
               value={a.env ?? ''}
-              onChange={e => e.target.value && e.target.value !== a.env && patch({ env: { agent: a.id, env: e.target.value } })}
+              placeholder="没找到"
+              options={checks.map(c => ({ value: c.env, label: `${name(c.env)} · ${c.found ? c.version || '找到了' : '没找到'}`, disabled: !c.found && c.env !== a.env }))}
+              onChange={v => save({ env: { agent: a.id, env: v } })}
               aria-label={`${a.name} 的启动环境`}
               data-tip="启动环境：在哪种 shell 里启动它；改了下一次派发就用新的"
-            >
-              {!a.env && <option value="">没找到</option>}
-              {checks.map(c => (
-                <option key={c.env} value={c.env} disabled={!c.found && c.env !== a.env}>
-                  {name(c.env)} · {c.found ? c.version || '找到了' : '没找到'}
-                </option>
-              ))}
-            </select>
+            />
           ) : (
             <span className="hp-arow-none">本机没有它支持的启动环境</span>
           ))}
         <button
           type="button"
           className={cx('hp-def', def && 'on')}
-          disabled={busy || !a.found}
-          onClick={() => !def && patch({ agent: a.id })}
+          disabled={!a.found}
+          onClick={() => !def && save({ agent: a.id })}
           data-tip={!a.found ? '这台机器上没找到命令' : def ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
           data-tip-align="end"
         >
           {def ? '默认' : '设为默认'}
         </button>
+        </span>
       </div>
     </>
   );
@@ -540,6 +619,7 @@ const OPS: [ClaimRule['op'], string][] = [
   ['not_in', '一个都不带'],
   ['equal', '标签正好是'],
 ];
+const OP_OPTIONS = OPS.map(([value, label]) => ({ value, label }));
 
 /** 一条规则里的标签：和卡片详情的标签一行一样——标签胶囊（项目里的颜色，× 去掉）加标签按钮，点开同一个标签选择器，
     勾一个就应用一个。机器只对应一个项目时就是那个项目的选择器（能新建、管理标签）；对应几个项目时只列这几个项目里的标签
@@ -606,7 +686,7 @@ function LabelSet({ value, onChange, labels, project, missing, disabled }: {
 
 /** 领取规则：条件（带其中任一个 / 一个都不带 / 标签正好是）→ agent，有顺序（第一条命中的生效），最后可选兜底。
  *  只影响定时领取和会话里的 board next，手动派发、board claim 不受影响 */
-function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean }) {
+function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
   const ws = useData(s => s.ws);
   const rules = h.rules ?? [];
   const found = h.agents.filter(a => a.found);
@@ -628,7 +708,8 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
   const [agent, setAgent] = useState('');
   const pick = agent || found[0]?.id || '';
   const has = (a: string) => found.some(x => x.id === a);
-  const save = (next: ClaimRule[]) => patch({ rules: next.map(r => ({ op: r.op, labels: r.labels, agent: r.agent, active: has(r.agent), missing: r.missing })) });
+  const agentOptions = found.map(a => ({ value: a.id, label: a.name }));
+  const save = (next: ClaimRule[]) => put({ rules: next.map(r => ({ op: r.op, labels: r.labels, agent: r.agent, active: has(r.agent), missing: r.missing })) });
   const edit = (i: number, change: Partial<ClaimRule>) => save(rules.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
   const move = (i: number, d: number) => {
     const next = [...rules];
@@ -637,44 +718,40 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
     void save(next);
   };
   const add = () => {
-    if (!picked.length || !pick || busy) return;
+    if (!picked.length || !pick) return;
     void save([...rules, { op, labels: picked, agent: pick }]);
     setPicked([]);
   };
   const fallback = h.fallback || '';
   return (
-    <div className="hp-crules">
+    <div className={cx('hp-block hp-crules', sync === 'failed' && 'hp-rollback')}>
       <div className="hp-rule-text">
-        <b>领取规则</b>
+        <b>
+          领取规则
+          <Sync s={sync} inline />
+        </b>
         <span>定时领取只领满足条件的卡片，交给对应的 agent；从上到下，第一条命中的生效。没有领取规则时不会自动领取，手动派发不受影响</span>
       </div>
       {rules.map((r, i) => (
         <div className={cx('hp-crule', !r.active && 'off')} key={`${i}-${r.op}-${r.labels.join(',')}`}>
-          <select className="input hp-crule-op" value={r.op} disabled={busy} aria-label="条件" onChange={e => edit(i, { op: e.target.value as ClaimRule['op'] })}>
-            {OPS.map(([k, t]) => (
-              <option key={k} value={k}>
-                {t}
-              </option>
-            ))}
-          </select>
-          <LabelSet value={r.labels} labels={one?.labels ?? labels} project={one?.key} missing={r.missing} disabled={busy} onChange={v => (v.length ? edit(i, { labels: v }) : undefined)} />
+          <Select className="hp-crule-op" value={r.op} options={OP_OPTIONS} aria-label="条件" onChange={v => edit(i, { op: v as ClaimRule['op'] })} />
+          <LabelSet value={r.labels} labels={one?.labels ?? labels} project={one?.key} missing={r.missing} onChange={v => (v.length ? edit(i, { labels: v }) : undefined)} />
           <Icon name="chevRight" />
-          <select className="input hp-crule-agent" value={r.agent} disabled={busy} aria-label="由哪个 agent 做" onChange={e => edit(i, { agent: e.target.value })}>
-            {!has(r.agent) && <option value={r.agent}>{agentName(r.agent)}（找不到）</option>}
-            {found.map(a => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+          <Select
+            className="hp-crule-agent"
+            value={r.agent}
+            options={[...(has(r.agent) ? [] : [{ value: r.agent, label: `${agentName(r.agent)}（找不到）` }]), ...agentOptions]}
+            aria-label="由哪个 agent 做"
+            onChange={v => edit(i, { agent: v })}
+          />
           <span className="hp-sp" />
-          <button type="button" className="icon-btn sm" aria-label="上移" disabled={busy || i === 0} onClick={() => move(i, -1)}>
+          <button type="button" className="icon-btn sm" aria-label="上移" disabled={i === 0} onClick={() => move(i, -1)}>
             <Icon name="chevUp" />
           </button>
-          <button type="button" className="icon-btn sm" aria-label="下移" disabled={busy || i === rules.length - 1} onClick={() => move(i, 1)}>
+          <button type="button" className="icon-btn sm" aria-label="下移" disabled={i === rules.length - 1} onClick={() => move(i, 1)}>
             <Icon name="chevDown" />
           </button>
-          <button type="button" className="icon-btn sm" aria-label="删除这条规则" disabled={busy} onClick={() => save(rules.filter((_, j) => j !== i))}>
+          <button type="button" className="icon-btn sm" aria-label="删除这条规则" onClick={() => save(rules.filter((_, j) => j !== i))}>
             <Icon name="trash" />
           </button>
           {!r.active && <em className="hp-crule-warn">这台机器上找不到 {agentName(r.agent)}，这条规则不生效</em>}
@@ -682,23 +759,11 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
         </div>
       ))}
       <div className="hp-crule add">
-        <select className="input hp-crule-op" value={op} aria-label="新规则的条件" onChange={e => setOp(e.target.value as ClaimRule['op'])}>
-          {OPS.map(([k, t]) => (
-            <option key={k} value={k}>
-              {t}
-            </option>
-          ))}
-        </select>
+        <Select className="hp-crule-op" value={op} options={OP_OPTIONS} aria-label="新规则的条件" onChange={v => setOp(v as ClaimRule['op'])} />
         <LabelSet value={picked} labels={one?.labels ?? labels} project={one?.key} onChange={setPicked} />
         <Icon name="chevRight" />
-        <select className="input hp-crule-agent" value={pick} aria-label="新规则的 agent" onChange={e => setAgent(e.target.value)}>
-          {found.map(a => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
-        <button className="btn sm" type="button" disabled={busy || !picked.length || !pick} onClick={add}>
+        <Select className="hp-crule-agent" value={pick} options={agentOptions} aria-label="新规则的 agent" onChange={setAgent} />
+        <button className="btn sm" type="button" disabled={!picked.length || !pick} onClick={add}>
           <Icon name="plus" />
           加规则
         </button>
@@ -707,21 +772,13 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
         <div className={cx('hp-crule fallback', fallback && h.fallbackActive === false && 'off')}>
           <span className="hp-crule-label">其余卡片</span>
           <Icon name="chevRight" />
-          <select
-            className="input hp-crule-agent"
+          <Select
+            className="hp-crule-agent"
             value={fallback}
-            disabled={busy}
+            options={[{ value: '', label: '不领' }, ...(fallback && !has(fallback) ? [{ value: fallback, label: `${agentName(fallback)}（找不到）` }] : []), ...agentOptions]}
             aria-label="一条规则都没命中的卡片由哪个 agent 做"
-            onChange={e => patch({ fallback: e.target.value })}
-          >
-            <option value="">不领</option>
-            {fallback && !has(fallback) && <option value={fallback}>{agentName(fallback)}（找不到）</option>}
-            {found.map(a => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+            onChange={v => put({ fallback: v })}
+          />
           {fallback && h.fallbackActive === false && <em className="hp-crule-warn">这台机器上找不到 {agentName(fallback)}，兜底不生效</em>}
         </div>
       )}
@@ -785,10 +842,16 @@ const KINDS: [Schedule['kind'], string][] = [
 const WEEKDAYS: [number, string][] = [[1, '一'], [2, '二'], [3, '三'], [4, '四'], [5, '五'], [6, '六'], [0, '日']];
 const EVERY = { minutes: [5, 10, 15, 20, 30], hours: [1, 2, 3, 4, 6, 8, 12] };
 const two = (n: number) => String(n).padStart(2, '0');
+const KIND_OPTIONS = KINDS.map(([value, label]) => ({ value, label }));
+const DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 号` }));
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => ({ value: String(i), label: two(i) }));
+const MIN_OPTIONS = Array.from({ length: 12 }, (_, i) => ({ value: String(i * 5), label: two(i * 5) }));
 
 /** 定时领取：胶囊列表（写说明，悬停看 cron 表达式），可去掉；加的时候选「每天 / 工作日 / 每周几 / 每月几号」和时间，
     或「每隔几分钟 / 几小时」，由 buildCron 生成表达式，不让人手写（手写容易错）。旧的手写表达式说不出来时原样显示 */
-function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[] }) => Promise<void>; busy: boolean }) {
+function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
+  // 加时间的那一排选择器平时收着，点「加时间」才展开；一个时间点都没有时直接展开
+  const [adding, setAdding] = useState(h.cron.length === 0);
   const [kind, setKind] = useState<Schedule['kind']>('daily');
   const [hour, setHour] = useState(9);
   const [min, setMin] = useState(0);
@@ -806,29 +869,33 @@ function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[
   const cron = buildCron(spec);
   const dup = !!cron && h.cron.map(normalizeCron).includes(cron);
   const add = () => {
-    if (busy || !cron || dup) return;
-    void patch({ cron: [...h.cron, cron] });
+    if (!cron || dup) return;
+    save({ cron: [...h.cron, cron] });
   };
   const timed = kind !== 'minutes' && kind !== 'hours';
   return (
     <div className={cx('hp-cron', !h.cronOn && 'off')}>
+      <div className="hp-times">
       {h.cron.map(x => (
         <span className="hp-time" key={x} title={normalizeCron(x)}>
           {/* 说不出来的（旧的手写表达式）原样用等宽字显示 */}
           {describeCron(x) === normalizeCron(x) ? <code>{normalizeCron(x)}</code> : describeCron(x)}
-          <button type="button" aria-label={`去掉 ${describeCron(x)}`} disabled={busy} onClick={() => patch({ cron: h.cron.filter(y => y !== x) })}>
+          <button type="button" aria-label={`去掉 ${describeCron(x)}`} onClick={() => save({ cron: h.cron.filter(y => y !== x) })}>
             <Icon name="close" />
           </button>
         </span>
       ))}
+        {!adding && (
+          <button type="button" className="hp-time-add" onClick={() => setAdding(true)}>
+            <Icon name="plus" />
+            加时间
+          </button>
+        )}
+        <Sync s={sync} inline />
+      </div>
+      {adding && (
       <span className="hp-sched" role="group" aria-label="加一个定时">
-        <select className="input" value={kind} aria-label="多久一次" onChange={e => setKind(e.target.value as Schedule['kind'])}>
-          {KINDS.map(([k, n]) => (
-            <option key={k} value={k}>
-              {n}
-            </option>
-          ))}
-        </select>
+        <Select value={kind} options={KIND_OPTIONS} aria-label="多久一次" onChange={v => setKind(v as Schedule['kind'])} />
         {kind === 'weekly' && (
           <span className="hp-wdays">
             {WEEKDAYS.map(([d, n]) => {
@@ -849,51 +916,35 @@ function CronTimes({ h, patch, busy }: { h: HostInfo; patch: (p: { cron: string[
           </span>
         )}
         {kind === 'monthly' && (
-          <select className="input" value={day} aria-label="几号" onChange={e => setDay(+e.target.value)} data-tip="没有这一天的月份（例如 2 月 30 号）不领">
-            {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
-              <option key={d} value={d}>
-                {d} 号
-              </option>
-            ))}
-          </select>
+          <Select value={String(day)} options={DAY_OPTIONS} aria-label="几号" onChange={v => setDay(+v)} data-tip="没有这一天的月份（例如 2 月 30 号）不领" />
         )}
         {timed ? (
           <span className="hp-hm">
-            <select className="input" value={hour} aria-label="时" onChange={e => setHour(+e.target.value)}>
-              {Array.from({ length: 24 }, (_, i) => (
-                <option key={i} value={i}>
-                  {two(i)}
-                </option>
-              ))}
-            </select>
+            <Select value={String(hour)} options={HOUR_OPTIONS} aria-label="时" onChange={v => setHour(+v)} />
             :
-            <select className="input" value={min} aria-label="分" onChange={e => setMin(+e.target.value)}>
-              {Array.from({ length: 12 }, (_, i) => i * 5).map(m => (
-                <option key={m} value={m}>
-                  {two(m)}
-                </option>
-              ))}
-            </select>
+            <Select value={String(min)} options={MIN_OPTIONS} aria-label="分" onChange={v => setMin(+v)} />
           </span>
         ) : (
-          <select
-            className="input"
-            value={every[kind]}
+          <Select
+            value={String(every[kind])}
+            options={EVERY[kind].map(n => ({ value: String(n), label: `${n} ${kind === 'minutes' ? '分钟' : '小时'}` }))}
             aria-label={kind === 'minutes' ? '每隔几分钟' : '每隔几小时'}
-            onChange={e => setEvery({ ...every, [kind]: +e.target.value })}
-          >
-            {EVERY[kind].map(n => (
-              <option key={n} value={n}>
-                {n} {kind === 'minutes' ? '分钟' : '小时'}
-              </option>
-            ))}
-          </select>
+            onChange={v => setEvery({ ...every, [kind]: +v })}
+          />
         )}
-        <button className="btn sm" type="button" disabled={busy || !cron || dup} onClick={add} data-tip={dup ? '已经有这一条了' : !cron ? '至少选一天' : undefined}>
-          <Icon name="plus" />
-          加一条
-        </button>
+        <span data-tip={dup ? '已经有这一条了' : !cron ? '至少选一天' : undefined}>
+          <button className="btn sm" type="button" disabled={!cron || dup} onClick={add}>
+            <Icon name="plus" />
+            加上
+          </button>
+        </span>
+        {h.cron.length > 0 && (
+          <button className="hp-link" type="button" onClick={() => setAdding(false)}>
+            收起
+          </button>
+        )}
       </span>
+      )}
       <span className="hp-cron-hint">按这台机器的本地时间；同一分钟有几条到点只领一轮</span>
     </div>
   );

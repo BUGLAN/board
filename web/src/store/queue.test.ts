@@ -237,6 +237,113 @@ describe('写队列', () => {
   });
 });
 
+describe('设置项（saveSetting）：不上锁的乐观保存', () => {
+  const name = () => D.useData.getState().ws!.projects[0].name;
+  const key = () => D.useData.getState().ws!.projects[0].key;
+  const setName = (n: string) => D.patchProject(key(), p => ({ ...p, name: n }));
+  /** 一个挂起的请求：成功时把服务端的项目名改成 n */
+  const pending = (n: string) => {
+    const call = { sent: false, ok: () => {}, fail: () => {} };
+    const req = () =>
+      new Promise<void>((res, rej) => {
+        call.sent = true;
+        call.ok = () => {
+          server.ws.projects[0].name = n;
+          server.ws.rev++;
+          for (const x of Object.values(server.boards)) x.rev = server.ws.rev;
+          res();
+        };
+        call.fail = () => rej(new Error('失败了'));
+      });
+    return { call, req };
+  };
+
+  it('前一笔还没确认也能接着改：不 BUSY，补丁当帧生效，同一个 key 的请求一个接一个发', async () => {
+    const a = pending('A');
+    const b = pending('B');
+    const pa = D.saveSetting('k', setName('A'), a.req);
+    const pb = D.saveSetting('k', setName('B'), b.req);
+    expect(name()).toBe('B');
+    expect(D.useData.getState().saving).toEqual({ k: 2 });
+    await settle();
+    expect([a.call.sent, b.call.sent]).toEqual([true, false]);
+    a.call.ok();
+    await pa;
+    await settle();
+    expect(b.call.sent).toBe(true);
+    b.call.ok();
+    await pb;
+    await settle();
+    expect(name()).toBe('B');
+    expect(D.useData.getState().saving).toEqual({});
+  });
+
+  it('不同 key 的请求同时发，互相不等', async () => {
+    const a = pending('A');
+    const b = pending('B');
+    void D.saveSetting('k1', setName('A'), a.req);
+    void D.saveSetting('k2', {}, b.req);
+    await settle();
+    expect([a.call.sent, b.call.sent]).toEqual([true, true]);
+    a.call.ok();
+    b.call.ok();
+    await settle();
+  });
+
+  it('delay 内连着改：合并成一个请求，发最后一次的值，拿到的是同一个 Promise', async () => {
+    vi.useFakeTimers();
+    try {
+      const a = pending('A');
+      const b = pending('B');
+      const pa = D.saveSetting('k', setName('A'), a.req, 400);
+      await vi.advanceTimersByTimeAsync(200);
+      const pb = D.saveSetting('k', setName('B'), b.req, 400);
+      expect(pb).toBe(pa);
+      expect(name()).toBe('B');
+      await vi.advanceTimersByTimeAsync(399);
+      expect([a.call.sent, b.call.sent]).toEqual([false, false]);
+      await vi.advanceTimersByTimeAsync(2);
+      expect([a.call.sent, b.call.sent]).toEqual([false, true]);
+      b.call.ok();
+      await pb;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(name()).toBe('B');
+      expect(D.useData.getState().saving).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('请求一返回 Promise 就结束；补丁留到刷新完成再撤，值不闪回旧的', async () => {
+    const a = pending('A');
+    const pa = D.saveSetting('k', setName('A'), a.req);
+    await settle();
+    let open!: () => void;
+    server.gate = new Promise<void>(r => (open = r));
+    a.call.ok();
+    await pa;
+    expect(name()).toBe('A');
+    expect(D.useData.getState().saving).toEqual({ k: 1 });
+    open();
+    server.gate = null;
+    await settle();
+    await settle();
+    expect(name()).toBe('A');
+    expect(D.useData.getState().saving).toEqual({});
+  });
+
+  it('失败：这一批的补丁一起撤掉，值回到之前，Promise 抛出错误', async () => {
+    const before = name();
+    const a = pending('A');
+    const pa = D.saveSetting('k', setName('A'), a.req);
+    await settle();
+    a.call.fail();
+    await expect(pa).rejects.toThrow('失败了');
+    expect(name()).toBe(before);
+    expect(D.useData.getState().saving).toEqual({});
+  });
+});
+
 describe('新建', () => {
   it('服务端返回后、刷新之前就认下真卡片：临时卡片和真卡片不会同时出现，真卡片沿用临时卡片的身份', async () => {
     const temp = D.draftCard({ title: '新卡片', body: '', labels: [], column: 'todo' });

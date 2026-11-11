@@ -200,6 +200,78 @@ export function hold<T>(patch: Patch, done: Promise<T>): Promise<T> {
   return done;
 }
 
+/* 设置项：不上锁的乐观保存。
+   设置项的补丁写的是字段的最终值（同时跑几个 = 3），不依赖前一笔的结果：前一笔还没确认也可以接着改，
+   不走 guard、不禁用别的控件（服务端慢的时候，整块设置不会跟着一起变灰）。
+   - 补丁当帧叠上，并带着 key 记进 saving（关窗口时有离开确认）
+   - 同一个 key 在 delay 毫秒内连着改（步进器连点）：合并成一个请求，发最后一次的值
+   - 请求不进全局的写队列：同一个 key 的一个接一个发（服务端最后收到的是最后一次的值），不同 key 的同时发，
+     互相不用等（各改各的字段，谁先到都一样）
+   - 请求一返回 Promise 就结束（界面上的「保存中」到此为止）；补丁留到随后的刷新完成再撤，值不会闪回旧的
+   - 失败：这一批的补丁一起撤掉（值回到这一批之前），Promise 抛出错误，由调用方提示
+   同一批的调用拿到的是同一个 Promise：调用方按它去重，不要每次调用都提示一遍 */
+interface SettingBatch {
+  layers: Layer[];
+  req: () => Promise<unknown>;
+  timer: number;
+  promise: Promise<unknown>;
+  resolve: (r: unknown) => void;
+  reject: (e: unknown) => void;
+}
+const settings = new Map<string, SettingBatch>();
+/** 每个 key 自己的请求链 */
+const settingChains = new Map<string, Promise<unknown>>();
+function queueSetting(key: string, req: () => Promise<unknown>): Promise<unknown> {
+  writes++;
+  const run = (settingChains.get(key) ?? Promise.resolve()).then(req);
+  const tail = run.catch(() => undefined);
+  settingChains.set(key, tail);
+  void tail.then(() => {
+    if (settingChains.get(key) === tail) settingChains.delete(key);
+  });
+  // 超时、断线：那次写可能已经生效了，补丁撤掉后按服务端的数据再画一次
+  run.catch(e => {
+    if (e instanceof ApiError && e.code === 'NETWORK') void refresh();
+  });
+  return run;
+}
+export function saveSetting<T>(key: string, patch: Patch, req: () => Promise<T>, delay = 0): Promise<T> {
+  const l = push({ ...patch, keys: [...(patch.keys ?? []), key] });
+  let b = settings.get(key);
+  if (b) {
+    clearTimeout(b.timer);
+    b.layers.push(l);
+    b.req = req;
+  } else {
+    let resolve!: (r: unknown) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<unknown>((ok, no) => {
+      resolve = ok;
+      reject = no;
+    });
+    b = { layers: [l], req, timer: 0, promise, resolve, reject };
+    settings.set(key, b);
+  }
+  const batch = b;
+  const send = () => {
+    settings.delete(key);
+    const off = () => batch.layers.forEach(drop);
+    queueSetting(key, () => batch.req()).then(
+      r => {
+        batch.resolve(r);
+        void refresh().then(off, off);
+      },
+      e => {
+        off();
+        batch.reject(e);
+      },
+    );
+  };
+  if (delay > 0) batch.timer = window.setTimeout(send, delay);
+  else send();
+  return batch.promise as Promise<T>;
+}
+
 const withCard = (b: BoardSnapshot, id: number, fn: (c: Card) => Card): BoardSnapshot => {
   const c = b.cards[id];
   return c ? { ...b, cards: { ...b.cards, [id]: fn(c) } } : b;
