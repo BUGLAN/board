@@ -154,7 +154,7 @@ export interface HostInfo {
   max: number;
   /** 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
-  /** 定时领取的领取规则（有顺序）：带这个标签的卡片由这个 agent 做；没有规则时领所有卡片、用默认 agent */
+  /** 定时领取的领取规则（有顺序）：带这个标签的卡片由这个 agent 做；没有一条规则时定时领取不领卡 */
   rules?: ClaimRule[];
   /** 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片 */
   fallback?: string | null;

@@ -68,6 +68,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const ws = useData(s => s.ws);
   const now = useNow(1000);
   const { running, queued } = hostLoad(ws, h);
+  // 没有一条领取规则时定时领取不会领卡，「现在领一轮」也不能开始
+  const hasRules = (h.rules?.length ?? 0) > 0;
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
   const rev = ws?.rev;
 
@@ -216,7 +218,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             <div className="hp-rule">
               <div>
                 <b>定时领取</b>
-                <span>到了这些时间（机器本地时区），在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有可领取的卡片</span>
+                <span>到了这些时间（机器本地时区），按下面的领取规则在这台机器的白板上领卡，把空位填满，一个会话做完再开下一个，直到没有符合规则的卡片；没有领取规则时不会自动领取</span>
               </div>
               <button
                 className={cx('toggle', h.cronOn && 'on')}
@@ -234,12 +236,19 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             <div className="hp-rule">
               <div>
                 <b>现在领一轮</b>
-                <span>{h.round ? '正在领一轮：有空位就领下一张，所有白板都没有可领取的卡片时结束' : '效果与到点相同；机器离线或暂停接单时不能领'}</span>
+                <span>
+                  {h.round
+                    ? '正在领一轮：有空位就领下一张，所有白板都没有符合规则的卡片时结束'
+                    : hasRules
+                      ? '效果与到点相同；机器离线或暂停接单时不能领'
+                      : '先添加一条领取规则；配好之后，效果与到点相同'}
+                </span>
               </div>
               <button
                 className="btn sm"
                 type="button"
-                disabled={busy || !h.online || h.paused || h.round}
+                disabled={busy || !h.online || h.paused || h.round || !hasRules}
+                title={hasRules ? undefined : '先添加一条领取规则'}
                 onClick={async () => {
                   // 当帧变成「正在领」（按钮禁用），被拒绝时改回来并提示
                   try {
@@ -543,7 +552,7 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
     <div className="hp-crules">
       <div className="hp-rule-text">
         <b>领取规则</b>
-        <span>定时领取只领满足条件的卡片，交给对应的 agent；从上到下，第一条命中的生效。没有规则时领所有可领取的卡片、用默认 agent。手动派发不受影响</span>
+        <span>定时领取只领满足条件的卡片，交给对应的 agent；从上到下，第一条命中的生效。没有领取规则时不会自动领取，手动派发不受影响</span>
       </div>
       {rules.map((r, i) => (
         <div className={cx('hp-crule', !r.active && 'off')} key={`${i}-${r.op}-${r.labels.join(',')}`}>
@@ -621,6 +630,11 @@ function ClaimRules({ h, patch, busy }: { h: HostInfo; patch: (p: Parameters<typ
           </select>
           {fallback && h.fallbackActive === false && <em className="hp-crule-warn">这台机器上找不到 {agentName(fallback)}，兜底不生效</em>}
         </div>
+      )}
+      {rules.length === 0 && (
+        <p className="hp-unmatched">
+          <Icon name="info" />还没有领取规则：定时领取不会自动领卡，「现在领一轮」也不能开始
+        </p>
       )}
       {!!h.unmatched && !fallback && (
         <p className="hp-unmatched">

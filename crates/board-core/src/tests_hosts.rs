@@ -52,6 +52,15 @@ fn new_card(s: &mut Store, at: i64, title: &str) -> i64 {
     exec(s, at, &Actor::human(), Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![] }).unwrap().card.id
 }
 
+/// 建一张带上 `deepseek` 标签的卡片：给机器加了 `deepseek → claude` 规则后照样领得到
+fn new_card_tagged(s: &mut Store, title: &str) -> i64 {
+    let id = new_card(s, T0, title);
+    let l = s.read(|r| r.labels("default")).unwrap_or_default().into_iter().find(|l| l.name.eq_ignore_ascii_case("deepseek"));
+    let l = l.unwrap_or_else(|| s.write(T0, Origin::ui(None), |w| w.create_label("default", "deepseek", None, false)).unwrap());
+    exec(s, T0, &Actor::human(), Cmd::Label { id, add: vec![l.id], remove: vec![] }).unwrap();
+    id
+}
+
 fn dispatch(s: &mut Store, at: i64, card: i64, host: &str, agent: Option<&str>) -> Result<Dispatch> {
     s.write(at, Origin::ui(None), |w| {
         let b = w.resolve(B)?;
@@ -327,11 +336,14 @@ fn priority_labels_in_queue_and_cron() {
     // 定时领取：A 在最上面、B 带优先标签，先派 B
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let p = s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, false)).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
+    lead_round(&mut s);
+    let l = s.read(|r| r.labels("default")).unwrap().into_iter().find(|l| l.name == "deepseek").unwrap().id;
     new_card(&mut s, T0, "A");
     let b2 = new_card(&mut s, T0, "B");
+    exec(&mut s, T0, &Actor::human(), Cmd::Label { id: b2, add: vec![l], remove: vec![] }).unwrap();
+    let p = s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, false)).unwrap();
     exec(&mut s, T0, &Actor::human(), Cmd::Label { id: b2, add: vec![p.id], remove: vec![] }).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().unwrap();
     assert_eq!(d1.card, b2, "带优先标签的先派发");
@@ -478,7 +490,9 @@ fn cron_round_fills_slots_rotates_boards_and_ends() {
         .unwrap()
         .card
         .id;
-    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(2), ..Default::default() })).unwrap();
+    // 规则「全部」→ claude：两块白板的卡片都不带它，靠「其余卡片 →」兜底给 claude，都能领
+    s.write(T0, Origin::ui(None), |w| w.create_label("default", "全部", None, false)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), max: Some(2), ..Default::default() })).unwrap();
     let pull = |s: &mut Store, at: i64| s.write(at, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap();
     // 没有开始一轮时不领
     assert!(pull(&mut s, T0 + S).is_none());
@@ -545,7 +559,8 @@ fn crashed_dispatch_without_human_status_explains_and_skips_this_round() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| w.delete_status(B, "check")).unwrap();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let a = new_card(&mut s, T0, "A");
+    lead_round(&mut s);
+    let a = new_card_tagged(&mut s, "A");
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
@@ -575,7 +590,8 @@ fn stopped_dispatch_without_human_status_skips_this_round() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| w.delete_status(B, "check")).unwrap();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let a = new_card(&mut s, T0, "A");
+    lead_round(&mut s);
+    let a = new_card_tagged(&mut s, "A");
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
@@ -617,6 +633,7 @@ fn pausing_during_round_clears_it_and_does_not_resume() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let _ = new_card(&mut s, T0, "A");
+    lead_round(&mut s);
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(host(&s, T0 + S).round);
     let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
@@ -667,7 +684,8 @@ fn crashed_dispatch_moves_card_to_error_status() {
     let mut s = store();
     let key = add_error_status(&mut s);
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let a = new_card(&mut s, T0, "A");
+    lead_round(&mut s);
+    let a = new_card_tagged(&mut s, "A");
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
@@ -958,6 +976,15 @@ fn tag(s: &mut Store, card: i64, l: i64) {
     exec(s, T0, &Actor::human(), Cmd::Label { id: card, add: vec![l], remove: vec![] }).unwrap();
 }
 
+/// 给机器加一条领取规则 `deepseek → claude`，用例里的卡片都带 `deepseek` 标签（建卡用 [`new_card_tagged`]）。
+/// 没有规则时定时领取不领卡、也不能开始一轮，要测定时领取的用例都得先调它
+fn lead_round(s: &mut Store) {
+    if s.read(|r| r.labels("default")).unwrap_or_default().iter().all(|l| !l.name.eq_ignore_ascii_case("deepseek")) {
+        s.write(T0, Origin::ui(None), |w| w.create_label("default", "deepseek", None, false)).unwrap();
+    }
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["deepseek"], "claude")]), fallback: Some(String::new()), ..Default::default() })).unwrap();
+}
+
 fn session_of(s: &Store, session: i64) -> Vec<Dispatch> {
     s.read(|r| r.host_recent(1, 50)).unwrap().into_iter().chain(s.read(|r| r.active_dispatches()).unwrap()).filter(|d| d.session == session).collect()
 }
@@ -979,10 +1006,11 @@ fn session_does_up_to_n_cards_then_a_new_one_starts() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let ui = label(&mut s, "UI");
-    let cards: Vec<i64> = (0..6).map(|i| new_card(&mut s, T0, &format!("卡{i}"))).collect();
+    let cards: Vec<i64> = (0..6).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
     for c in &cards {
         tag(&mut s, *c, ui);
     }
+    lead_round(&mut s);
     s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     let name = d1.name.clone().unwrap();
@@ -1027,14 +1055,15 @@ fn next_prefers_priority_then_common_labels() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let ui = label(&mut s, "UI");
     let api = label(&mut s, "接口");
-    let first = new_card(&mut s, T0, "第一张");
+    let first = new_card_tagged(&mut s, "第一张");
     tag(&mut s, first, ui);
-    let x = new_card(&mut s, T0, "X");
-    let y = new_card(&mut s, T0, "Y");
+    let x = new_card_tagged(&mut s, "X");
+    let y = new_card_tagged(&mut s, "Y");
     tag(&mut s, y, ui);
-    let z = new_card(&mut s, T0, "Z");
+    let z = new_card_tagged(&mut s, "Z");
     tag(&mut s, z, api);
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { per_session: Some(8), ..Default::default() })).unwrap();
+    lead_round(&mut s);
     s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + S).unwrap();
     let name = d.name.unwrap();
@@ -1060,8 +1089,9 @@ fn next_prefers_priority_then_common_labels() {
 fn next_refuses_when_session_should_end() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
     for t in ["A", "B", "C"] {
-        new_card(&mut s, T0, t);
+        new_card_tagged(&mut s, t);
     }
     // 不是 board host 启动的会话：USAGE
     s.write(T0, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
@@ -1084,7 +1114,6 @@ fn next_refuses_when_session_should_end() {
     assert_eq!(next(&mut s, T0 + 5 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
     end(&mut s, T0 + 6 * S, d.id, Some(0), &[]);
     // 暂停接单：在跑的会话做完当前这张，board next 返回 SESSION_DONE
-    set_host(&mut s, HostPatch { per_session: Some(4), ..Default::default() }).unwrap();
     s.write(T0 + 7 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + 7 * S).unwrap();
     let name = d.name.clone().unwrap();
@@ -1093,6 +1122,14 @@ fn next_refuses_when_session_should_end() {
     let e = next(&mut s, T0 + 8 * S, &name).unwrap_err();
     assert_eq!(e.code, ErrorCode::SessionDone);
     assert!(e.message.contains("暂停接单"), "{}", e.message);
+    // 规则被删光：在跑的会话做完当前这张，board next 返回 SESSION_DONE，也不再自动领卡
+    s.write(T0 + 9 * S, Origin::cli(), |w| {
+        w.tx.execute("UPDATE hosts SET rules = '[]' WHERE name = 'mbp'", [])?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(rules(&mut s, &[], None).unwrap().rules.is_empty());
+    assert!(pull(&mut s, T0 + 9 * S).is_none(), "没有领取规则：不领");
 }
 
 /// 会话做第 2 张时异常退出、被停止：第 1 张的结果不变，第 2 张按异常退出 / 已停止处理，不再领下一张
@@ -1101,8 +1138,9 @@ fn second_card_crash_or_stop_keeps_first_result() {
     for stop in [false, true] {
         let mut s = store();
         beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        lead_round(&mut s);
         for t in ["A", "B", "C"] {
-            new_card(&mut s, T0, t);
+            new_card_tagged(&mut s, t);
         }
         s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
         let d1 = pull(&mut s, T0 + S).unwrap();
@@ -1129,9 +1167,10 @@ fn two_sessions_never_take_the_same_card() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     for i in 0..6 {
-        new_card(&mut s, T0, &format!("卡{i}"));
+        new_card_tagged(&mut s, &format!("卡{i}"));
     }
     set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
+    lead_round(&mut s);
     s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let a = pull(&mut s, T0 + S).unwrap();
     let b = pull(&mut s, T0 + S).unwrap();
@@ -1242,6 +1281,44 @@ fn rules_route_labels_to_agents_and_fallback() {
     rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(n1, "dsh".into()), (c, "claude".into()), (d, "dsh".into())]);
     let _ = none;
+}
+
+/// 没有一条领取规则时不自动领取：「现在领一轮」被拒绝，定时到点也不领卡；兜底单独设了也不算规则。
+/// 手动派发、`board claim` 不受影响；加一条规则后照常领取
+#[test]
+fn no_rules_never_auto_claims() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    new_card(&mut s, T0, "A");
+    // 「现在领一轮」：没有规则时拒绝，不开这一轮
+    let e = s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("领取规则"), "{}", e.message);
+    assert!(!host(&s, T0 + S).round);
+    // 只设了兜底也一样
+    set_host(&mut s, HostPatch { fallback: Some("dsh".into()), cron_on: Some(true), ..Default::default() }).unwrap();
+    assert_eq!(s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap_err().code, ErrorCode::Usage);
+    assert!(host(&s, T0 + S).rules.is_empty());
+    // 定时到点：board host 收到拒绝，不开始这一轮
+    assert!(!host(&s, T0 + S).round);
+    // 就算有一轮在进行（规则删光之前开的），领卡时也不领，这一轮结束
+    set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
+    s.write(T0 + S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap();
+    assert_eq!(card(&s, 1).card.column, "todo");
+    assert!(s.read(|r| r.active_dispatches()).unwrap().is_empty(), "没有生成派发");
+    // 手动派发不受影响（用默认 agent）
+    assert_eq!(dispatch(&mut s, T0 + 2 * S, 1, "mbp", None).unwrap().agent, "claude");
+    // 别人的 `board claim` 也不受影响
+    s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
+    let b = new_card(&mut s, T0, "B");
+    assert_eq!(exec(&mut s, T0 + 3 * S, &Actor::agent("alpha/x"), Cmd::Claim { id: Some(b) }).unwrap().card.id, b);
+    // 加一条规则后「现在领一轮」可以开始，只领规则命中的卡片
+    let l = label(&mut s, "dsh");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, l);
+    rules(&mut s, &[("dsh", "dsh")], None).unwrap();
+    s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert_eq!(pull(&mut s, T0 + 4 * S).unwrap().card, c);
 }
 
 #[test]

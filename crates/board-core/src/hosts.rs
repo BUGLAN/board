@@ -385,7 +385,7 @@ pub struct HostInfo {
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
     #[serde(default = "default_per_session")]
     pub per_session: i64,
-    /// 定时领取的领取规则（有顺序）；没有规则时领所有可领取的卡片、用默认 agent
+    /// 定时领取的领取规则（有顺序）；没有规则时定时领取不领卡、也不能开始一轮
     #[serde(default)]
     pub rules: Vec<ClaimRule>,
     /// 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片
@@ -662,9 +662,9 @@ impl HostRow {
     fn has_agent(&self, id: &str) -> bool {
         self.resolved().iter().any(|a| a.id == id && a.found)
     }
-    /// 解析后的领取规则；没有规则、也没设兜底时为 None（领所有卡片、用默认 agent）
+    /// 解析后的领取规则；一条规则也没有时为 None：定时领取不领卡（兜底只处理规则没命中的卡片，不算规则）
     fn claim_rules(&self) -> Option<Rules> {
-        if self.rules.is_empty() && self.fallback.is_none() {
+        if self.rules.is_empty() {
             return None;
         }
         Some(Rules {
@@ -683,6 +683,10 @@ impl HostRow {
                 (a, ok)
             }),
         })
+    }
+    /// 有没有至少一条领取规则（兜底不算）。没有时定时领取不领卡，「现在领一轮」也不能开始
+    fn has_rules(&self) -> bool {
+        !self.rules.is_empty()
     }
     /// 默认 agent：设置过且找到了就是它，否则第一个找到的
     fn default_agent(&self) -> Option<HostAgent> {
@@ -1110,19 +1114,20 @@ impl<'a> W<'a> {
             |r| r.get(0),
         )?;
         let flow = flow_of(self.tx, d.board)?;
-        let mut list = self.claimable_order(d.board, &flow, &skip)?;
-        // 有领取规则：只留按规则交给这个会话的 agent 的卡片；规则里的标签只表示谁来做，不算「共同标签」
-        let rules = h.claim_rules();
-        if let Some(r) = &rules {
-            let mut keep = vec![];
-            for c in list {
-                if r.route(&card_label_names(self.tx, d.board, c.0)?) == Some(d.agent.as_str()) {
-                    keep.push(c);
-                }
+        let list = self.claimable_order(d.board, &flow, &skip)?;
+        // 只留按规则交给这个会话的 agent 的卡片；规则里的标签只表示谁来做，不算「共同标签」。
+        // 一条规则也没有了（例如被删光）时不接着领：这个会话做完当前这张就结束
+        let Some(rules) = h.claim_rules() else {
+            return done(format!("机器「{}」已经没有领取规则", h.name));
+        };
+        let mut keep = vec![];
+        for c in list {
+            if rules.route(&card_label_names(self.tx, d.board, c.0)?) == Some(d.agent.as_str()) {
+                keep.push(c);
             }
-            list = keep;
         }
-        let rule_labels = rules.as_ref().map(Rules::labels).unwrap_or_default();
+        let list = keep;
+        let rule_labels = rules.labels();
         if list.is_empty() {
             return done(format!("白板 {} 上没有这个会话能领的卡片", board.path()));
         }
@@ -1426,8 +1431,8 @@ impl<'a> W<'a> {
         self.read().host(name, self.now)
     }
 
-    /// 开始一轮领取：定时到点（board host 发起）或界面上「现在领一轮」。机器离线或暂停接单时不开始；
-    /// 一轮还没结束时什么也不做（不重复开始）
+    /// 开始一轮领取：定时到点（board host 发起）或界面上「现在领一轮」。机器离线、暂停接单、或者一条领取规则也没有时
+    /// 不开始；一轮还没结束时什么也不做（不重复开始）
     pub fn host_round(&mut self, name: &str) -> Result<HostInfo> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         if !h.online(self.now) {
@@ -1435,6 +1440,9 @@ impl<'a> W<'a> {
         }
         if h.paused {
             return Err(BoardError::usage(format!("机器「{name}」暂停接单，不能领取")));
+        }
+        if !h.has_rules() {
+            return Err(BoardError::usage(format!("机器「{name}」还没有领取规则：先在「领取规则」里添加一条，才会自动领取卡片")));
         }
         if h.round_at.is_none() {
             self.tx.execute("UPDATE hosts SET round_at = ?2 WHERE id = ?1", params![h.id, self.now])?;
@@ -1715,13 +1723,14 @@ impl<'a> W<'a> {
     }
 
     /// 定时领取（任务下发需求 §六）：正在一轮领取、没有暂停、有空位时，在这台机器有目录的白板上按 --dir 的顺序轮流，
-    /// 按 `board claim`（不带 ID）的规则领下一张，用默认 agent 开始。所有白板都没有可领取的卡片时这一轮结束，返回 None
+    /// 按领取规则挑下一张卡片和它的 agent。一条领取规则也没有时不领卡（这一轮直接结束，返回 None）。
+    /// 规则没命中的卡片、也没有可领取的卡片时这一轮结束，返回 None
     pub fn dispatch_pull(&mut self, host: &str, instance: &str, token: Option<i64>) -> Result<Option<Dispatch>> {
         let h = self.host_of(host, instance)?;
         if h.round_at.is_none() || h.paused || self.running_on(&h)? >= h.max {
             return Ok(None);
         }
-        let Some(a) = h.default_agent() else {
+        let Some(rules) = h.claim_rules() else {
             return self.end_round(&h);
         };
         let n = h.dirs.len();
@@ -1737,29 +1746,17 @@ impl<'a> W<'a> {
                 params![board.id, h.id, round_at],
                 |r| r.get(0),
             )?;
-            // 有领取规则：按规则 1 的先后（带优先标签的在前），取第一张有 agent 接的卡片；没有规则：规则 1、默认 agent
-            let (card, agent) = match h.claim_rules() {
-                None => match self.next_claimable(board.id, &flow, &skip)? {
-                    Some((card, _)) => (card, a.clone()),
-                    None => continue,
-                },
-                Some(rules) => {
-                    let list = self.claimable_order(board.id, &flow, &skip)?;
-                    let urgent = self.priority_cards(board.id)?;
-                    let ordered = list.iter().filter(|(id, _)| urgent.contains(id)).chain(list.iter().filter(|(id, _)| !urgent.contains(id)));
-                    let mut hit = None;
-                    for (id, _) in ordered {
-                        if let Some(agent) = rules.route(&card_label_names(self.tx, board.id, *id)?) {
-                            hit = h.resolved().into_iter().find(|x| x.id == agent).map(|x| (*id, x));
-                            break;
-                        }
-                    }
-                    match hit {
-                        Some(x) => x,
-                        None => continue,
-                    }
+            // 规则会给它派一个这台机器上找得到的 agent 的卡片，按规则 1 的先后（带优先标签的在前）取第一张
+            let found = h.resolved();
+            let mut hit: Option<(i64, HostAgent)> = None;
+            for (id, _) in self.claimable_order(board.id, &flow, &skip)? {
+                let Some(want) = rules.route(&card_label_names(self.tx, board.id, id)?) else { continue };
+                if let Some(a) = found.iter().find(|x| x.id == want) {
+                    hit = Some((id, a.clone()));
+                    break;
                 }
-            };
+            }
+            let Some((card, agent)) = hit else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
             let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system())?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
