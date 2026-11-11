@@ -1063,14 +1063,63 @@ fn old_database_gets_board_settings_columns() {
     }
     {
         let c = rusqlite::Connection::open(&path).unwrap();
-        c.execute_batch("ALTER TABLE boards DROP COLUMN saved_layout; ALTER TABLE boards DROP COLUMN keep_order").unwrap();
+        c.execute_batch("ALTER TABLE boards DROP COLUMN saved_layout; ALTER TABLE boards DROP COLUMN keep_order; ALTER TABLE boards DROP COLUMN keep_sorted")
+            .unwrap();
     }
     let mut s = Store::open(&path).unwrap();
     let snap = |s: &Store| s.read(|r| r.resolve(B).and_then(|b| r.board_snapshot(&b, T0, false))).unwrap();
-    assert!(snap(&s).keep_order, "升级前的白板保存顺序开着");
+    assert!(!snap(&s).keep_sorted, "升级前的白板（保存顺序开着）保留顺序关着：拖到哪就在哪，和原来一样");
     assert!(snap(&s).saved_layout.is_none());
-    ui(&mut s, |w| w.set_keep_order(B, false)).unwrap();
-    assert!(!snap(&s).keep_order);
+    ui(&mut s, |w| w.set_keep_sorted(B, true)).unwrap();
+    assert!(snap(&s).keep_sorted);
+}
+
+#[test]
+fn old_database_keep_order_off_becomes_keep_sorted_and_moved_at_backfilled() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
+        exec(&mut s, B, &human(), T0, new("a")).unwrap();
+        exec(&mut s, B, &human(), T0, new("b")).unwrap();
+        exec(&mut s, B, &human(), T0 + 5 * MIN, mv(1, "待审核")).unwrap();
+    }
+    // 模拟升级前的数据库：没有保留顺序、排序依据、移入时间；主白板关着「保存顺序」
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "ALTER TABLE boards DROP COLUMN keep_sorted; ALTER TABLE statuses DROP COLUMN order_by; ALTER TABLE statuses DROP COLUMN order_desc;
+             ALTER TABLE cards DROP COLUMN moved_at; UPDATE boards SET keep_order = 0 WHERE key = 'main';",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let main = snapshot(&s, B, T0);
+    assert!(main.keep_sorted, "关着保存顺序（同一块里不能拖动排序）的白板打开保留顺序");
+    assert!(!snapshot(&s, "default/second", T0).keep_sorted);
+    assert!(main.statuses.iter().all(|x| x.order == Order::default()), "旧状态都按移入时间");
+    assert_eq!(main.cards[&1].moved_at, T0 + 5 * MIN, "按最后一次换状态的动态补");
+    assert_eq!(main.cards[&2].moved_at, T0);
+}
+
+#[test]
+fn moved_at_changes_only_when_status_changes() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("a")).unwrap();
+    exec(&mut s, B, &human(), T0, new("b")).unwrap();
+    let at = |s: &Store, id: i64| snapshot(s, B, T0).cards[&id].moved_at;
+    assert_eq!(at(&s, 1), T0, "新建算移入");
+    exec(&mut s, B, &human(), T0 + MIN, mv(1, "待审核")).unwrap();
+    assert_eq!(at(&s, 1), T0 + MIN);
+    // 同一状态里调整顺序不算移入
+    exec(&mut s, B, &human(), T0 + 2 * MIN, Cmd::Move { id: 2, column: "todo".into(), top: true, index: None, order: None, before: None, after: None })
+        .unwrap();
+    assert_eq!(at(&s, 2), T0);
+    // 领取进入锁定状态、释放回来都算
+    exec(&mut s, B, &alpha(), T0 + 3 * MIN, claim(Some(2))).unwrap();
+    assert_eq!(at(&s, 2), T0 + 3 * MIN);
 }
 
 #[test]
@@ -1117,7 +1166,7 @@ fn final_status_is_human_only_and_layout_saved() {
     // 白板设置：保存布局、复原、应用；复原不丢已保存的布局；删掉的状态跳过，新状态按默认补位
     let snap = |s: &Store| s.read(|r| r.resolve(B).and_then(|b| r.board_snapshot(&b, T0, false))).unwrap();
     assert!(snap(&s).saved_layout.is_none());
-    assert!(snap(&s).keep_order);
+    assert!(!snap(&s).keep_sorted, "新白板保留顺序关着");
     assert_eq!(ui(&mut s, |w| w.apply_saved_layout(B)).unwrap_err().code, ErrorCode::Usage);
     let mut saved = std::collections::BTreeMap::new();
     saved.insert("todo".to_string(), Tile { x: 3, w: 6, y: 0.0 });
@@ -1134,8 +1183,16 @@ fn final_status_is_human_only_and_layout_saved() {
     assert_eq!(snap(&s).saved_layout.unwrap().len(), 1, "已删除的状态不出现在已保存的布局里");
     ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
     assert!(snap(&s).saved_layout.is_some(), "复原布局不丢已保存的布局");
-    ui(&mut s, |w| w.set_keep_order(B, false)).unwrap();
-    assert!(!snap(&s).keep_order);
+    ui(&mut s, |w| w.set_keep_sorted(B, true)).unwrap();
+    assert!(snap(&s).keep_sorted);
+    // 排序依据：每个状态各自保存；按标签排不分方向
+    assert_eq!(flow(&s).get("done").unwrap().order, Order { by: OrderBy::Moved, desc: false }, "默认按移入时间，新移入的在最后");
+    let order = |by, desc| StatusPatch { order: Some(Order { by, desc }), ..Default::default() };
+    ui(&mut s, |w| w.update_status(B, "done", order(OrderBy::Id, true))).unwrap();
+    ui(&mut s, |w| w.update_status(B, "todo", order(OrderBy::Labels, true))).unwrap();
+    assert_eq!(flow(&s).get("done").unwrap().order, Order { by: OrderBy::Id, desc: true });
+    assert_eq!(flow(&s).get("todo").unwrap().order, Order { by: OrderBy::Labels, desc: false });
+    assert_eq!(flow(&s).get("review").unwrap().order, Order::default(), "别的状态不变");
     // 新建白板自带默认工作流
     ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
     let second = s.read(|r| r.resolve("default/second").and_then(|b| r.flow(&b))).unwrap();

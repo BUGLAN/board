@@ -1,15 +1,14 @@
-/* 右键 / ⋯ 下拉菜单：卡片、状态、项目、白板菜单，以及「移动到」「排序」「提示词」子菜单 */
+/* 右键 / ⋯ 下拉菜单：卡片、状态、项目、白板菜单，以及「移动到」「提示词」子菜单、选择框的选项 */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   copyBoardEnv, copyBoardPrompt, copyQuickPrompt, deleteBoard, deleteProject, editBoard, editProject, newBoard, openBoard, setProjectColor,
 } from '../../lib/actions';
 import { moveTo, vetoFor } from '../../lib/drag';
 import { quickPrompts } from '../../lib/prompt';
-import { SORTS, sortKey, type SortSpec } from '../../lib/sort';
 import { boardFlow, INBOX, INBOX_NAME } from '../../lib/schema';
 import { cx } from '../../lib/util';
 import { allBoards, boardMeta, colCount, useData } from '../../store/data';
-import { closeCtx, manageLabels, setSort, useUI } from '../../store/ui';
+import { closeCtx, manageLabels, useUI } from '../../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar } from '../bits';
 import { Icon } from '../Icon';
 
@@ -86,8 +85,6 @@ export function CtxMenu() {
     );
   } else if (req.kind === 'prompts') {
     body = <PromptsMenu path={req.id} go={go} />;
-  } else if (req.kind === 'sort') {
-    body = <SortMenu col={req.id} go={go} />;
   } else if (req.kind === 'move') {
     body = <MoveMenu id={Number(req.id)} go={go} />;
   } else if (req.kind === 'select') {
@@ -135,7 +132,7 @@ export function CtxMenu() {
   }
   return (
     <div
-      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'sort' && 'ctx-sort', req.kind === 'move' && 'ctx-move', req.kind === 'select' && 'ctx-select', pos && 'on')}
+      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'move' && 'ctx-move', req.kind === 'select' && 'ctx-select', pos && 'on')}
       ref={ref}
       role={req.kind === 'select' ? 'listbox' : 'menu'}
       style={{ ...(pos ?? { left: -9999, top: -9999 }), ...(req.kind === 'select' && req.anchor ? { minWidth: req.anchor.width } : null) }}
@@ -243,58 +240,6 @@ function MoveMenu({ id, go }: { id: number; go: (fn: () => void) => () => void }
           </button>
         </>
       )}
-    </>
-  );
-}
-
-/* ============================ 状态块排序菜单 ============================ */
-/* 一次性排序：只改这块的显示顺序，不写服务端、不改优先级（lib/sort.ts） */
-
-function SortMenu({ col, go }: { col: string; go: (fn: () => void) => () => void }) {
-  const path = useData(s => s.path);
-  const board = useData(s => s.board);
-  const key = sortKey(path, col);
-  const cur = useUI(s => s.sorts[key]);
-  const pick = (spec: SortSpec | null) => go(() => setSort(key, spec));
-  return (
-    <>
-      <div className="ctx-title">
-        <Icon name="sort" />
-        <b>排序「{boardFlow(board).name(col)}」</b>
-      </div>
-      <p className="sort-hint">只改这块的显示顺序，优先级和 agent 的领取顺序不变</p>
-      <button type="button" data-do="sort-none" className={cx(!cur && 'on')} onClick={pick(null)}>
-        <span className="sort-name">优先级</span>
-        {!cur && <Icon name="check" />}
-      </button>
-      {SORTS.map(o => {
-        const on = cur?.by === o.by;
-        return (
-          <div key={o.by} className={cx('sort-row', on && 'on')}>
-            <button type="button" data-do={`sort-${o.by}`} onClick={pick({ by: o.by, desc: on ? cur.desc : o.desc })}>
-              <span className="sort-name">{o.name}</span>
-              {!o.dir && <span className="sort-note">按项目标签顺序分组</span>}
-              {on && !o.dir && <Icon name="check" />}
-            </button>
-            {o.dir && (
-              <span className="sort-dir" role="group" aria-label={`${o.name}的方向`}>
-                {[false, true].map(desc => (
-                  <button
-                    key={String(desc)}
-                    type="button"
-                    data-do={`sort-${o.by}-${desc ? 'desc' : 'asc'}`}
-                    className={cx(on && cur.desc === desc && 'on')}
-                    aria-pressed={on && cur.desc === desc}
-                    onClick={pick({ by: o.by, desc })}
-                  >
-                    {desc ? '降序' : '升序'}
-                  </button>
-                ))}
-              </span>
-            )}
-          </div>
-        );
-      })}
     </>
   );
 }

@@ -6,7 +6,7 @@ import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
 import { serverNow } from '../store/data';
-import { closeCtx, openCtx, openImage, useUI } from '../store/ui';
+import { closeCtx, openCtx, openImage, toastError, useUI } from '../store/ui';
 import { Icon } from './Icon';
 
 /** 同一间隔的 useNow 共用一个定时器 */
@@ -366,5 +366,58 @@ export function Select({
       <span className="sel-v">{options.find(o => o.value === value)?.label ?? placeholder ?? ''}</span>
       <Icon name="chevDown" />
     </button>
+  );
+}
+
+/* ------------------------------ 设置项的保存状态 ------------------------------ */
+
+export type SyncState = 'saving' | 'saved' | 'failed';
+/** 「已保存」「没保存上」的标记停留多久 */
+const SAVED_MS = 1600;
+const FAILED_MS = 1900;
+
+/** 设置项各存各的（store 的 saveSetting）时，每一项的保存状态：track(这一项, 保存的 Promise)。
+    保存中（转圈，晚一点才出现）→ 已保存（打勾后淡出）；失败时提示并画「没保存上」。
+    连点合并成的同一批（同一个 Promise）只处理一次；这一项后面又改过时，只认最后那次的结果 */
+export function useSync() {
+  const [sync, setSync] = useState<Record<string, SyncState | undefined>>({});
+  const last = useRef(new Map<string, Promise<unknown>>());
+  const timers = useRef(new Map<string, number>());
+  useEffect(() => () => timers.current.forEach(t => clearTimeout(t)), []);
+  const mark = (f: string, st?: SyncState) => setSync(x => (x[f] === st ? x : { ...x, [f]: st }));
+  const track = (f: string, done: Promise<unknown>) => {
+    clearTimeout(timers.current.get(f));
+    mark(f, 'saving');
+    if (last.current.get(f) === done) return;
+    last.current.set(f, done);
+    const end = (st: SyncState, ms: number) => {
+      if (last.current.get(f) !== done) return;
+      mark(f, st);
+      timers.current.set(f, window.setTimeout(() => mark(f), ms));
+    };
+    done.then(
+      () => end('saved', SAVED_MS),
+      e => {
+        toastError(e);
+        end('failed', FAILED_MS);
+      },
+    );
+  };
+  return { sync, track };
+}
+
+const SYNC_TEXT: Record<SyncState, string> = { saving: '正在保存', saved: '已保存', failed: '没保存上' };
+
+/** 一个设置项的保存状态（.hp-sync）：默认贴在控件左边（不占位，状态变化时布局不动）；inline 时跟在文字后面 */
+export function Sync({ s, inline }: { s?: SyncState; inline?: boolean }) {
+  return (
+    <span className={cx('hp-sync', inline && 'in')} data-s={s ?? ''} role="status">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle className="ring" cx="8" cy="8" r="6" />
+        <path className="tick" d="M4.8 8.3l2.2 2.2 4.3-4.8" />
+        <path className="bang" d="M8 4.6v4.1M8 11.2v.3" />
+      </svg>
+      {s && <span className="sr-only">{SYNC_TEXT[s]}</span>}
+    </span>
   );
 }

@@ -233,7 +233,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/flow/{project}/{board}/layout", put(flow_layout))
         .route("/flow/{project}/{board}/layout/saved", put(save_flow_layout))
         .route("/flow/{project}/{board}/layout/apply", post(apply_saved_layout))
-        .route("/flow/{project}/{board}/order", put(keep_order))
+        .route("/flow/{project}/{board}/order", put(keep_sorted))
         .route("/flow/{project}/{board}/edges", put(flow_edges))
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/hosts", get(hosts::list))
@@ -874,21 +874,21 @@ async fn apply_saved_layout(State(s): State<AppState>, h: HeaderMap, Path((proje
 }
 
 #[derive(Deserialize)]
-struct KeepOrderBody {
-    #[serde(rename = "keepOrder")]
-    keep_order: bool,
+struct KeepSortedBody {
+    #[serde(rename = "keepSorted")]
+    keep_sorted: bool,
 }
 
-/// 白板设置「保存顺序」开关
-async fn keep_order(
+/// 白板设置「保留顺序」开关
+async fn keep_sorted(
     State(s): State<AppState>,
     h: HeaderMap,
     Path((project, board)): Path<(String, String)>,
     Json(v): Json<Value>,
 ) -> ApiResult<Value> {
-    let b: KeepOrderBody = parse(v)?;
+    let b: KeepSortedBody = parse(v)?;
     let path = format!("{project}/{board}");
-    write(&s, &h, move |w| w.set_keep_order(&path, b.keep_order)).await?;
+    write(&s, &h, move |w| w.set_keep_sorted(&path, b.keep_sorted)).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

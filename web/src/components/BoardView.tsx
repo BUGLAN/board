@@ -10,11 +10,12 @@ import { useMasonry } from '../lib/masonry';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
 import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
-import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
+import { orderDir, orderName, orderOf, orderOption, shownCols } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurrent, useData } from '../store/data';
-import { clearLabelSel, closeCtx, openCreator, openCtx, setBoardSheet, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
+import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
+import { BoardSettings } from './BoardSettings';
 import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
@@ -65,12 +66,11 @@ export function BoardView() {
   const boardRef = useRef<HTMLDivElement>(null);
   const labels = cur?.project.labels ?? [];
   const { entering, fresh } = useEntering(board, generation);
-  const sorts = useUI(s => s.sorts);
   // 手机：上面已有状态切换条，工作流图默认收起成一行入口
   const mobile = useMobile();
   const [flowOpen, setFlowOpen] = useState(false);
-  // 排序中的块按排序依据显示（只改显示顺序）；拖拽预览的位置是「看到的顺序」里的位置
-  const shown = useMemo(() => (board ? shownCols(board, sorts, labels, serverNow()) : null), [board, sorts, labels]);
+  // 保留顺序开着时每块按自己的排序依据显示（只改显示顺序）；拖拽预览的位置是「看到的顺序」里的位置
+  const shown = useMemo(() => (board ? shownCols(board, labels, serverNow()) : null), [board, labels]);
   const cols = useMemo(() => (shown ? previewCols(shown, drag) : null), [shown, drag]);
   // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
   const f = flowOf(board?.statuses ?? cur?.board.statuses);
@@ -120,9 +120,11 @@ export function BoardView() {
   }, [reject]);
 
   const labelSel = useUI(s => s.labelSel);
-  // 终点状态默认只带最近的几张：筛选、排序时取全量，免得找不到、排不到更早的卡片
+  // 终点状态默认只带最近移入的几张：筛选时、保留顺序开着且这块不按移入时间排时取全量，免得找不到、排不到更早的卡片
+  //（按移入时间排时，最近移入的几张本来就在一头，不用取）
   const truncated = !!board && Object.values(board.omitted ?? {}).some(Boolean);
-  const sortsTruncated = !!board && Object.keys(board.omitted ?? {}).some(k => omittedIn(board, k) > 0 && sorts[sortKey(path, k)]);
+  const sortsTruncated =
+    !!board?.keepSorted && Object.keys(board.omitted ?? {}).some(k => omittedIn(board, k) > 0 && orderOf(board.statuses.find(s => s.key === k)).by !== 'moved');
   useEffect(() => {
     if (truncated && (filter || labelSel.length > 0 || sortsTruncated)) void loadFull();
   }, [truncated, filter, labelSel, sortsTruncated]);
@@ -203,6 +205,7 @@ export function BoardView() {
           </button>
         )}
         {cur && (!mobile || flowOpen) && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
+        {cur && <BoardSettings path={path} />}
         {!board && f.list.length > 0 && (
           <Magnet path={path} statuses={f.list} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={counts[s.key] ?? 0} />} />
         )}
@@ -229,8 +232,8 @@ export function BoardView() {
                   onHead={h.onMove}
                   resizer={h.resizer}
                   next={nextId}
-                  sort={sorts[sortKey(path, s.key)]}
-                  sortId={sortKey(path, s.key)}
+                  sorted={!!board.keepSorted}
+                  path={path}
                 />
               );
             }}
@@ -360,9 +363,9 @@ interface ColumnProps {
   resizer: ReactNode;
   /** 不带 ID 执行 board claim 时会被领走的卡片 */
   next: number | undefined;
-  /** 这块的一次性排序（没有时按优先级） */
-  sort: SortSpec | undefined;
-  sortId: string;
+  /** 白板设置开着「保留顺序」：标题上显示这块的排序依据 */
+  sorted: boolean;
+  path: string;
 }
 
 function emptyText(s: Status, f: FlowQ) {
@@ -374,7 +377,7 @@ function emptyText(s: Status, f: FlowQ) {
   return '把卡片拖到这里';
 }
 
-function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sort, sortId }: ColumnProps) {
+function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, path }: ColumnProps) {
   const count = colCount(board, col.key);
   const earlier = omittedIn(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
@@ -427,7 +430,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
             <span className="t">仅领取进入</span>
           </span>
         )}
-        <SortButton col={col} sort={sort} sortId={sortId} />
+        {sorted && <OrderChip col={col} path={path} />}
         <span className="col-count" aria-label="卡片数量" ref={badge}>
           <span>{count}</span>
         </span>
@@ -513,39 +516,23 @@ function EarlierButton({ n, view }: { n: number; view: StatusView }) {
   );
 }
 
-/** 标题栏的排序入口：没排序时是一个图标；排序中显示按什么排、方向，旁边可以取消 */
-function SortButton({ col, sort, sortId }: { col: Status; sort: SortSpec | undefined; sortId: string }) {
-  const dir = sort && sort.by !== 'labels' ? (sort.desc ? '↓' : '↑') : '';
-  const open = useUI(s => s.ctx?.kind === 'sort' && s.ctx.id === col.key);
+/** 保留顺序开着时标题上的排序标记：写这块按什么排、方向；点开白板设置，定位到这一块的排序依据 */
+function OrderChip({ col, path }: { col: Status; path: string }) {
+  const o = orderOf(col);
+  const x = orderOption(o);
   return (
-    <span className={cx('col-sort', sort && 'on')}>
-      <button
-        type="button"
-        className="col-sort-btn"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={sort ? `「${col.name}」按${sortName(sort)}${dir === '↓' ? '降序' : dir ? '升序' : ''}显示，点开更改` : `排序「${col.name}」的卡片（只改显示顺序）`}
-        data-tip={sort ? '只改显示顺序；在这块里拖动不改顺序，卡片落回排序位置' : '排序（只改显示顺序）'}
-        onClick={e => {
-          const open = useUI.getState().ctx;
-          if (open?.kind === 'sort' && open.id === col.key) return closeCtx();
-          openCtx({ kind: 'sort', id: col.key, x: 0, y: 0, anchor: e.currentTarget.getBoundingClientRect() });
-        }}
-      >
-        <Icon name="sort" />
-        {sort && (
-          <span className="t">
-            {sortName(sort)}
-            {dir && <i>{dir}</i>}
-          </span>
-        )}
-      </button>
-      {sort && (
-        <button type="button" className="col-sort-x" aria-label="取消排序，回到优先级顺序" data-tip="回到优先级顺序" onClick={() => setSort(sortId, null)}>
-          <Icon name="close" sw={2} />
-        </button>
-      )}
-    </span>
+    <button
+      type="button"
+      className="col-order"
+      aria-label={`「${col.name}」按${orderName(o)}排，${orderDir(o)}。点开白板设置更改`}
+      data-tip={`保留顺序：按${orderName(o)}，${orderDir(o)}`}
+      onClick={() => openBoardSettings(path, col.key)}
+    >
+      <Icon name="sort" />
+      <span className="t">{x.name}</span>
+      <span className="ts">{x.short}</span>
+      {x.dirs && <i aria-hidden="true">{o.desc ? '↓' : '↑'}</i>}
+    </button>
   );
 }
 

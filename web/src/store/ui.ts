@@ -3,7 +3,6 @@
    ========================================================================== */
 import { create } from 'zustand';
 import type { ApiError } from '../lib/api';
-import type { SortSpec } from '../lib/sort';
 import type { ColumnKey, Label } from '../lib/types';
 import { pref } from '../lib/util';
 
@@ -83,9 +82,9 @@ export interface PickerReq {
 export type ConfirmIcon = 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock' | 'alert' | 'host' | 'update';
 
 export interface CtxReq {
-  /** prompts：白板页头的「提示词」菜单，id 是白板路径；sort：状态块的排序菜单，id 是状态标识；
+  /** prompts：白板页头的「提示词」菜单，id 是白板路径；
       move：卡片详情底部的「移动到」，id 是卡片编号；select：选择框的选项 */
-  kind: 'project' | 'board' | 'prompts' | 'sort' | 'move' | 'select';
+  kind: 'project' | 'board' | 'prompts' | 'move' | 'select';
   id: string;
   x: number;
   y: number;
@@ -137,8 +136,8 @@ interface UIState {
   reject: { col: ColumnKey; key: number } | null;
   /** 放大查看的图片（附件）：同一张卡片 / 同一条动态里的全部图片，index 是正在看的那张 */
   image: { list: ImageRef[]; index: number } | null;
-  /** 状态块的一次性排序（lib/sort.ts）：sortKey(白板路径, 状态) → 排序依据。不记住，刷新后回到优先级顺序 */
-  sorts: Record<string, SortSpec>;
+  /** 打开的白板设置（居中弹窗）：白板路径；focus 是要定位到的状态（点状态块标题上的排序标记打开时） */
+  boardSettings: { path: string; focus?: string } | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
   /** 卡片详情里的「派发」对话框：卡片编号 */
@@ -178,7 +177,7 @@ export const useUI = create<UIState>(() => ({
   reveal: null,
   reject: null,
   image: null,
-  sorts: {},
+  boardSettings: null,
   host: null,
   dispatchOf: null,
   boardSheet: false,
@@ -270,20 +269,17 @@ export const openDispatch = (card: number | null) => set({ dispatchOf: card });
 export const openCtx = (req: CtxReq) => set({ ctx: req });
 export const closeCtx = () => set({ ctx: null });
 
-/** 设置 / 取消（null）一块的排序 */
-export const setSort = (key: string, spec: SortSpec | null) =>
-  set(s => {
-    const sorts = { ...s.sorts };
-    if (spec) sorts[key] = spec;
-    else delete sorts[key];
-    return { sorts };
-  });
+/** 打开 / 关掉（null）白板设置；focus：定位到这个状态的排序依据 */
+export const openBoardSettings = (path: string | null, focus?: string) => set({ boardSettings: path ? { path, focus } : null });
 
 
 /** 有弹窗或浮层打开时，全局快捷键不生效 */
 export function overlayOpen() {
   const s = get();
-  return !!(s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.host || s.dispatchOf != null);
+  return !!(
+    s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.host ||
+    s.dispatchOf != null || s.boardSettings
+  );
 }
 
 /* ------------------------------ Toast ------------------------------ */

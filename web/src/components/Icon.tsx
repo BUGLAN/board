@@ -206,6 +206,8 @@ const P: Record<string, ReactNode> = {
   stop: <rect x="5.5" y="5.5" width="9" height="9" rx="1.6" />,
   pause: <path d="M7.5 5.5v9M12.5 5.5v9" />,
   play: <path d="M6.5 4.8v10.4L15 10Z" />,
+  /** 重放：逆时针的圆弧箭头 */
+  replay: <path d="M4.5 10a5.5 5.5 0 1 0 1.7-4L4.5 7.6M4.5 4v3.6h3.6" />,
   log: <path d="M4 5h12M4 8.5h12M4 12h8M4 15.5h5" />,
   /** 齿轮：和活动栏「设置」同一个图形，缩到 20 的画布 */
   settings: (

@@ -68,6 +68,55 @@ impl CardView {
     }
 }
 
+/// 白板设置「保留顺序」开着时，状态块里卡片的排序依据（PRD §10.3）：只影响界面显示，不改优先级和领取顺序
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrderBy {
+    /// 移入这个状态的时间
+    #[default]
+    Moved,
+    /// 编号
+    Id,
+    /// 最近更新
+    Updated,
+    /// 标签（按项目里的标签顺序，没有标签的排最后）；不分方向
+    Labels,
+    /// 累计耗时
+    Work,
+}
+
+impl OrderBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OrderBy::Moved => "moved",
+            OrderBy::Id => "id",
+            OrderBy::Updated => "updated",
+            OrderBy::Labels => "labels",
+            OrderBy::Work => "work",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<OrderBy> {
+        match s {
+            "moved" => Some(OrderBy::Moved),
+            "id" => Some(OrderBy::Id),
+            "updated" => Some(OrderBy::Updated),
+            "labels" => Some(OrderBy::Labels),
+            "work" => Some(OrderBy::Work),
+            _ => None,
+        }
+    }
+}
+
+/// 一个状态的排序依据：按什么排、是否倒序。默认按移入时间，新移入的在最后
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Order {
+    pub by: OrderBy,
+    /// 倒序（按标签时不用）
+    #[serde(default)]
+    pub desc: bool,
+}
+
 /// 工作流里的一个状态（PRD §7）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
@@ -88,6 +137,9 @@ pub struct Status {
     /// 卡片形态；没有设置过时按 CardView::default_for 取
     #[serde(default)]
     pub view: CardView,
+    /// 白板设置「保留顺序」开着时这块按什么排；旧服务端没有这个字段（按移入时间）
+    #[serde(default)]
+    pub order: Order,
     /// 状态块的位置；没有时界面用默认布局
     pub layout: Option<Tile>,
     /// 连线：从这里出发可以去往的状态（按工作流顺序）。agent 只能沿连线移动卡片（PRD §8 规则 12）
@@ -497,6 +549,9 @@ pub struct Card {
     pub labels: Vec<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 移入现在这个状态的时间（新建、移动、领取、释放都算；同一状态里调整顺序不算）。旧服务端没有这个字段
+    #[serde(default)]
+    pub moved_at: i64,
     pub created_by: Actor,
     /// 评论数
     pub comments: i64,
@@ -566,13 +621,10 @@ pub struct BoardSnapshot {
     /// 白板设置里「保存布局」存下的布局（只含现在还在的状态）；没保存过为空。旧服务端没有这个字段
     #[serde(default)]
     pub saved_layout: Option<BTreeMap<String, Tile>>,
-    /// 保存顺序：界面上能不能在同一状态块里拖动卡片调整顺序。旧服务端没有这个字段（当作开着）
-    #[serde(default = "yes")]
-    pub keep_order: bool,
-}
-
-fn yes() -> bool {
-    true
+    /// 保留顺序：开着时界面上每个状态块按自己的排序依据（Status.order）显示，拖动只换状态、不改顺序；
+    /// 关着时拖到哪就在哪，顺序按拖动的结果保存。旧服务端没有这个字段（当作关着）
+    #[serde(default)]
+    pub keep_sorted: bool,
 }
 
 /// 白板快照里每个终点状态默认带的张数（最近移入的，也就是最下面的几张）；更早的按需取全量

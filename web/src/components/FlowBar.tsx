@@ -15,8 +15,7 @@ import { patchStatus, statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } fr
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { flowKey, optimistic, useBusy, useData } from '../store/data';
-import { manageLabels, toastError } from '../store/ui';
-import { BoardSettings } from './BoardSettings';
+import { manageLabels, openBoardSettings, toastError, useUI } from '../store/ui';
 import { Icon } from './Icon';
 
 /** 改工作流：当帧生效（给白板的状态列表叠一层补丁），被拒绝时改回来并提示 */
@@ -65,8 +64,7 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
   const chips = useRef<Record<string, HTMLElement | null>>({});
   const addEl = useRef<HTMLElement | null>(null);
   const moved = useRef(false);
-  const [settings, setSettings] = useState(false);
-  const settingsEl = useRef<HTMLButtonElement>(null);
+  const settings = useUI(s => s.boardSettings?.path === path);
 
   // 只读时没有「+ 添加状态」，不给它留位置
   const g = useMemo(() => layoutFlow(f.list, widths, readOnly ? 0 : addW), [f.list, widths, addW, readOnly]);
@@ -427,10 +425,7 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
           type="button"
           className="wf-settings wf-labels"
           title="这个项目的标签：新建、改名、改色、删除（项目下的白板共用）"
-          onClick={() => {
-            setSettings(false);
-            manageLabels(path.split('/')[0]);
-          }}
+          onClick={() => manageLabels(path.split('/')[0])}
         >
           <Icon name="tag" />
           <span className="t">标签设置</span>
@@ -439,17 +434,15 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
       {!readOnly && (
         <button
           type="button"
-          ref={settingsEl}
           className={cx('wf-settings', settings && 'on')}
-          aria-expanded={settings}
-          title="这块白板自己的设置：状态块布局、保存顺序"
-          onClick={() => setSettings(!settings)}
+          aria-haspopup="dialog"
+          title="这块白板自己的设置：卡片顺序、状态块布局"
+          onClick={() => openBoardSettings(path)}
         >
           <Icon name="settings" />
           <span className="t">白板设置</span>
         </button>
       )}
-      {settings && <BoardSettings path={path} anchor={settingsEl.current} onClose={() => setSettings(false)} />}
     </div>
   );
 }

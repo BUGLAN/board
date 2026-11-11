@@ -9,7 +9,7 @@ import { copyText, cx, durWords, pref } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
-import { LabelChip, Select, Title, useNow } from '../bits';
+import { LabelChip, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
@@ -67,7 +67,6 @@ export function HostModal() {
 }
 
 type HostPatch = Parameters<typeof api.updateHost>[1];
-type SyncState = 'saving' | 'saved' | 'failed';
 type Save = (p: HostPatch) => void;
 
 /** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则和兜底算同一项，启动环境按 agent 分 */
@@ -75,19 +74,11 @@ const fieldOf = (p: HostPatch) => (p.env ? `env:${p.env.agent}` : 'rules' in p |
 /** 步进器连点：停手这么久才发请求，只发最后的值 */
 const STEPPED = new Set(['max', 'perSession']);
 const STEP_MS = 450;
-/** 「已保存」「没保存上」的标记停留多久 */
-const SAVED_MS = 1600;
-const FAILED_MS = 1900;
-
 /** 机器设置的保存：每一项各存各的（store 的 saveSetting）。改动当帧生效，不禁用任何控件，没确认时也能接着改；
     sync 是每一项的保存状态，画在那个控件旁边：保存中（转圈，晚一点才出现）→ 已保存（打勾后淡出）；
     被拒绝时值回到原处、那一行回弹，并提示 */
 function useSaver(name: string) {
-  const [sync, setSync] = useState<Record<string, SyncState | undefined>>({});
-  const last = useRef(new Map<string, Promise<unknown>>());
-  const timers = useRef(new Map<string, number>());
-  useEffect(() => () => timers.current.forEach(t => clearTimeout(t)), []);
-  const mark = (f: string, st?: SyncState) => setSync(x => (x[f] === st ? x : { ...x, [f]: st }));
+  const { sync, track } = useSync();
   const save: Save = p => {
     const f = fieldOf(p);
     const { env, ...fields } = p;
@@ -104,42 +95,9 @@ function useSaver(name: string) {
       () => api.updateHost(name, p),
       STEPPED.has(f) ? STEP_MS : 0,
     );
-    clearTimeout(timers.current.get(f));
-    mark(f, 'saving');
-    // 连点合并成的同一批：结果只处理一次
-    if (last.current.get(f) === done) return;
-    last.current.set(f, done);
-    const end = (st: SyncState, ms: number) => {
-      // 这一项后面又改过：等后面那次的结果
-      if (last.current.get(f) !== done) return;
-      mark(f, st);
-      timers.current.set(f, window.setTimeout(() => mark(f), ms));
-    };
-    done.then(
-      () => end('saved', SAVED_MS),
-      e => {
-        toastError(e);
-        end('failed', FAILED_MS);
-      },
-    );
+    track(f, done);
   };
   return { save, sync };
-}
-
-const SYNC_TEXT: Record<SyncState, string> = { saving: '正在保存', saved: '已保存', failed: '没保存上' };
-
-/** 一个设置项的保存状态：默认贴在控件左边（不占位，状态变化时布局不动）；inline 时跟在文字后面 */
-function Sync({ s, inline }: { s?: SyncState; inline?: boolean }) {
-  return (
-    <span className={cx('hp-sync', inline && 'in')} data-s={s ?? ''} role="status">
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle className="ring" cx="8" cy="8" r="6" />
-        <path className="tick" d="M4.8 8.3l2.2 2.2 4.3-4.8" />
-        <path className="bang" d="M8 4.6v4.1M8 11.2v.3" />
-      </svg>
-      {s && <span className="sr-only">{SYNC_TEXT[s]}</span>}
-    </span>
-  );
 }
 
 /** 步进器：数字当帧变，往上加从下面滚进来、往下减从上面滚进来 */

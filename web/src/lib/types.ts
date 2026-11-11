@@ -14,6 +14,14 @@ export interface Tile {
 /** 状态块里卡片的形态：卡片 / 单行 / 磁贴（只显示编号，横向排列、自动换行） */
 export type StatusView = 'card' | 'line' | 'tile';
 
+/** 「保留顺序」的排序依据：移入时间 / 编号 / 最近更新 / 标签（项目里的标签顺序，不分方向）/ 累计耗时 */
+export type OrderBy = 'moved' | 'id' | 'updated' | 'labels' | 'work';
+export interface Order {
+  by: OrderBy;
+  /** 倒序；按标签时不用 */
+  desc: boolean;
+}
+
 export interface Status {
   key: string;
   name: string;
@@ -29,6 +37,8 @@ export interface Status {
   error?: boolean;
   /** 卡片形态；服务端没设置过时按规则给出（终点用磁贴，其他用卡片） */
   view?: StatusView;
+  /** 白板设置「保留顺序」开着时这块按什么排（lib/sort.ts）；旧服务端没有（按移入时间，新移入的在最后） */
+  order?: Order;
   layout: Tile | null;
   /** 连线：从这里出发可以去往的状态（按工作流顺序）。agent 只能沿连线移动卡片，人不受限制 */
   to: string[];
@@ -262,6 +272,8 @@ export interface Card {
   labels: number[];
   createdAt: number;
   updatedAt: number;
+  /** 移入现在这个状态的时间（新建、移动、领取、释放都算；同一状态里调整顺序不算）。旧服务端没有 */
+  movedAt?: number;
   createdBy: Actor;
   comments: number;
 }
@@ -323,8 +335,9 @@ export interface BoardSnapshot {
   log: BoardEvent[];
   /** 白板设置里「保存布局」存下的布局（只含现在还在的状态）；没保存过为空。旧服务端没有 */
   savedLayout?: Record<string, Tile> | null;
-  /** 白板设置「保存顺序」：能不能在同一状态块里拖动卡片调整顺序。旧服务端没有（当作开着） */
-  keepOrder?: boolean;
+  /** 白板设置「保留顺序」：开着时每个状态块按自己的排序依据（Status.order）显示，拖动只换状态、不改顺序；
+      关着时拖到哪就在哪。旧服务端没有（当作关着） */
+  keepSorted?: boolean;
 }
 
 export type ErrorCode =

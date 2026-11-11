@@ -42,8 +42,10 @@ CREATE TABLE IF NOT EXISTS boards (
   created_at  INTEGER NOT NULL,
   -- 白板设置里「保存布局」存下的状态块布局（JSON：状态标识 → {x, w, y}）；NULL 表示没保存过
   saved_layout TEXT,
-  -- 1 = 保存顺序：界面上可以在同一状态块里拖动卡片调整顺序；0 = 不能（换状态不受影响）
+  -- 不再读写（原来的「保存顺序」开关，已换成 keep_sorted）；保留这一列，免得给旧库做删列迁移
   keep_order  INTEGER NOT NULL DEFAULT 1,
+  -- 1 = 保留顺序：界面上每个状态块按自己的排序依据（statuses.order_by）显示，拖动只换状态、不改顺序；0 = 拖到哪就在哪
+  keep_sorted INTEGER NOT NULL DEFAULT 0,
   -- 白板说明（Markdown，可以为空）：大盘总览里显示
   readme      TEXT NOT NULL DEFAULT '',
   UNIQUE (project, key)
@@ -75,6 +77,7 @@ CREATE TABLE IF NOT EXISTS cards (
   final_at        INTEGER, -- 这次领取已经 final（正常结束心跳）的时间；之后的普通心跳被拒绝，重新领取时清空
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
+  moved_at        INTEGER, -- 移入现在这个状态的时间（W::place 换状态时写）；旧卡片迁移时按动态补
   created_by_kind TEXT NOT NULL,
   created_by_name TEXT NOT NULL,
   PRIMARY KEY (board, id)
@@ -149,6 +152,9 @@ CREATE TABLE IF NOT EXISTS statuses (
   final INTEGER NOT NULL DEFAULT 0,
   error INTEGER NOT NULL DEFAULT 0,
   view  TEXT,
+  -- 保留顺序开着时的排序依据 moved | id | updated | labels | work，空表示按移入时间；order_desc = 1 倒序
+  order_by   TEXT,
+  order_desc INTEGER NOT NULL DEFAULT 0,
   lx    INTEGER,
   lw    INTEGER,
   ly    REAL,
@@ -315,6 +321,33 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'keep_order'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_keep {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN keep_order INTEGER NOT NULL DEFAULT 1")?;
+        }
+        // 「保存顺序」换成「保留顺序」：原来关着保存顺序（同一块里不能拖动排序）的白板打开保留顺序（顺序不让拖动改），其余关着（拖到哪就在哪，和原来一样）
+        let has_sorted: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'keep_sorted'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_sorted {
+            conn.execute_batch(
+                "ALTER TABLE boards ADD COLUMN keep_sorted INTEGER NOT NULL DEFAULT 0;
+                 UPDATE boards SET keep_sorted = 1 WHERE keep_order = 0;",
+            )?;
+        }
+        // 旧数据库的状态没有排序依据：都按移入时间
+        let has_order: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'order_by'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_order {
+            conn.execute_batch("ALTER TABLE statuses ADD COLUMN order_by TEXT; ALTER TABLE statuses ADD COLUMN order_desc INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        // 旧数据库的卡片不记移入时间：按最后一次换状态的动态补，没有就用新建时间
+        let has_moved: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'moved_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_moved {
+            conn.execute_batch(
+                "ALTER TABLE cards ADD COLUMN moved_at INTEGER;
+                 UPDATE cards SET moved_at = COALESCE(
+                   (SELECT MAX(a.at) FROM activity a WHERE a.board = cards.board AND a.card = cards.id
+                      AND a.action IN ('create', 'move', 'claim', 'release', 'lost', 'timeout')),
+                   created_at);",
+            )?;
         }
         // 旧数据库的白板没有说明
         let has_readme: bool =
@@ -602,7 +635,7 @@ impl<'a> R<'a> {
             params![board.id],
         )?;
         log.reverse();
-        let (saved, keep_order) = self.conn.query_row("SELECT saved_layout, keep_order FROM boards WHERE id = ?1", [board.id], |r| {
+        let (saved, keep_sorted) = self.conn.query_row("SELECT saved_layout, keep_sorted FROM boards WHERE id = ?1", [board.id], |r| {
             Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?))
         })?;
         // 已保存的布局里只留现在还在的状态
@@ -610,7 +643,7 @@ impl<'a> R<'a> {
             m.retain(|k, _| flow.get(k).is_some());
             m
         });
-        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log, saved_layout, keep_order })
+        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log, saved_layout, keep_sorted })
     }
 
     pub fn card(&self, board: &BoardRef, id: i64) -> Result<CardDetail> {
@@ -739,13 +772,14 @@ const COL_ORDER: &str = "CASE WHEN c.col = 'inbox' THEN -1 ELSE \
 
 pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
     let mut st = conn.prepare_cached(
-        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view, error FROM statuses WHERE board = ?1 ORDER BY sort, key",
+        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view, error, order_by, order_desc FROM statuses WHERE board = ?1 ORDER BY sort, key",
     )?;
     let v = st
         .query_map([board], |r| {
             let (lx, lw, ly): (Option<i64>, Option<i64>, Option<f64>) = (r.get(6)?, r.get(7)?, r.get(8)?);
             let fin = r.get::<_, i64>(5)? != 0;
             let view: Option<String> = r.get(9)?;
+            let order_by: Option<String> = r.get(11)?;
             Ok(Status {
                 key: r.get(0)?,
                 name: r.get(1)?,
@@ -755,6 +789,7 @@ pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
                 fin,
                 err: r.get::<_, i64>(10)? != 0,
                 view: view.as_deref().and_then(CardView::parse).unwrap_or(CardView::default_for(fin)),
+                order: Order { by: order_by.as_deref().and_then(OrderBy::parse).unwrap_or_default(), desc: r.get::<_, i64>(12)? != 0 },
                 layout: match (lx, lw, ly) {
                     (Some(x), Some(w), Some(y)) => Some(Tile { x, w, y }),
                     _ => None,
@@ -814,7 +849,8 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost'),
                 (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
-                (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id)
+                (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
+                COALESCE(c.moved_at, c.created_at)
          FROM cards c WHERE c.board = ?1 {} {skip} ORDER BY {COL_ORDER}, c.pos, c.id",
         if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
     );
@@ -843,6 +879,7 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
             finished_at: r.get(19)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
+            moved_at: r.get(20)?,
             created_by: row_actor(r.get(9)?, r.get(10)?),
             comments: r.get(12)?,
             labels,

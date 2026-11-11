@@ -8,10 +8,9 @@ import { flushSync } from 'react-dom';
 import { openCard } from './actions';
 import * as flip from './flip';
 import { boardFlow, INBOX, type FlowQ } from './schema';
-import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
-import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, omittedIn, renderKey, serverNow, useData } from '../store/data';
+import { cardBusy, exec, hold, isDraft, movePatch, omittedIn, renderKey, useData } from '../store/data';
 import { rejectColumn, setDrag, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
@@ -52,7 +51,7 @@ export async function moveTo(id: number, to: ColumnKey) {
     toastError({ code: veto.code, message: veto.message });
     return;
   }
-  // 末尾：目标块优先级顺序的最后（排序中的块也一样，与从别的块拖到最后一张之后相同）
+  // 末尾：目标块优先级顺序的最后（与拖到别的块相同；保留顺序开着时显示的位置按那一块的排序依据）
   try {
     await exec({ op: 'move', id, column: to }, movePatch(id, to));
     toast({ type: 'success', title: `#${id} 已移到「${f.name(to)}」`, duration: 1800 });
@@ -94,8 +93,6 @@ interface St {
   target: { col: ColumnKey; index: number } | null;
   valid: boolean;
   veto: Veto | null;
-  /** 白板设置关了「保存顺序」，指针想在原来的块里换位置：占位留在原处，松手时提示 */
-  orderLocked: boolean;
 }
 
 let st: St | null = null;
@@ -185,7 +182,7 @@ function onDown(e: PointerEvent) {
     fromCol: list.dataset.list as ColumnKey,
     fromIndex: [...list.children].indexOf(card),
     started: false, rot: 0, vx: 0, lastX: e.clientX, lastT: performance.now(),
-    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null, orderLocked: false,
+    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null,
   };
   if (e.pointerType !== 'mouse') {
     st.timer = window.setTimeout(() => {
@@ -270,10 +267,7 @@ function locate() {
     ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${renderKey(s.id)}` && !n.hasAttribute('data-earlier'))
     : [];
   const state = useData.getState();
-  let index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
-  // 白板设置关了「保存顺序」：同一块里不能换位置，占位一直留在原处（换到别的块不受影响）
-  s.orderLocked = key === s.fromCol && index !== s.fromIndex && state.board?.keepOrder === false;
-  if (s.orderLocked) index = s.fromIndex;
+  const index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
   const same = key === s.fromCol && index === s.fromIndex;
   const card = state.board?.cards[s.id];
   let veto: Veto | null = null;
@@ -449,21 +443,23 @@ function finish(cancelled: boolean) {
   locate();
   const { target, valid, veto } = s;
   const same = !target || (target.col === s.fromCol && target.index === s.fromIndex);
-  // 排序中的块里拖回同块：显示顺序由排序依据决定，这次拖动不改顺序（优先级不动、排序不结束）。
-  // 占位留在落点，幽灵落位后清掉预览，这块按排序依据重排，卡片由 FLIP 从落点补间回排序位置
-  const settle =
-    !!target && !cancelled && valid && !same &&
-    target.col === s.fromCol && !!useUI.getState().sorts[sortKey(useData.getState().path, s.fromCol)];
+  // 白板设置开着「保留顺序」：每块的顺序由它的排序依据决定，拖动只换状态、不改顺序（PRD §10.3）
+  // - 在同一块里拖（settle）：不发请求、优先级不动。占位留在落点，幽灵落位后清掉预览，这块按排序依据重排，
+  //   卡片由 FLIP 从落点补间回排序位置
+  // - 拖到别的块：放到那一块优先级的最后（和新移入的一样，不按落点），卡片落到看到的位置后补间到按排序依据的位置
+  const keep = !!useData.getState().board?.keepSorted;
+  const settle = !!target && !cancelled && valid && !same && keep && target.col === s.fromCol;
   const commit = !!target && !cancelled && valid && !same && !settle;
   let failed = false;
   let done: Promise<unknown> | null = null;
   let plan = 0;
 
   if (commit && target) {
-    plan = planDrop(s.id, target);
+    plan = planDrop(s.id, target, keep);
     // 松手当帧就画成「保存中」（不能再拖、再改），落位的补丁等飞回动画结束再叠（hold）
     // 终点状态的快照省略了更早的卡片（可能夹在看到的卡片中间）：整列里的位置算不出来，按看到的相邻卡片定位
-    done = exec({ op: 'move', id: s.id, column: target.col, index: plan, ...anchorOf(s.id, target.col, plan) }, { cards: [s.id] });
+    const at = keep ? {} : { index: plan, ...anchorOf(s.id, target.col, plan) };
+    done = exec({ op: 'move', id: s.id, column: target.col, ...at }, { cards: [s.id] });
     done.catch(err => {
       failed = true;
       toastError(err);
@@ -473,8 +469,6 @@ function finish(cancelled: boolean) {
     if (!cancelled && veto && target) {
       toastError({ code: veto.code, message: veto.message });
       rejectColumn(target.col);
-    } else if (!cancelled && s.orderLocked) {
-      toast({ type: 'info', title: '这块白板没有开「保存顺序」', text: '同一状态里不能拖动排序；在工作流条末尾的「白板设置」里打开' });
     }
   }
   // settle：不发请求、不落补丁——占位留在落点，幽灵落位后清掉预览（下面 onfinish 里 setDrag(null)），
@@ -518,13 +512,13 @@ function finish(cancelled: boolean) {
   const id = s.id;
   anim.onfinish = () => {
     // 先记下占位（幽灵刚落在这里）和其他卡片的位置：落位后卡片的最终位置可能不是落点
-    // （排序中的块按排序依据重排、去掉占位后别的卡片补位），由 FLIP 从落点平滑移过去，不瞬移
+    // （保留顺序开着时按排序依据重排、去掉占位后别的卡片补位），由 FLIP 从落点平滑移过去，不瞬移
     flip.capture();
     if (commit && !failed && done && target) {
       // 落位：叠一层补丁直到服务端确认并刷新（期间推送触发的刷新不会把它冲回原处）；被拒绝时补丁撤掉，卡片回到原处
       hold(movePatch(id, target.col, plan), done);
     }
-    // 排序中的块里拖回同块（settle）也走这里：清掉预览后这块按排序依据重排，
+    // 保留顺序开着时在同一块里拖（settle）也走这里：清掉预览后这块按排序依据重排，
     // BoardView 渲染后 play() 把卡片和让位的卡片从落点补间回排序位置，顺序不变
     setDrag(null);
     ghost.remove();
@@ -553,20 +547,14 @@ function anchorOf(id: number, col: ColumnKey, index: number): { before?: number;
   return last != null ? { after: last } : {};
 }
 
-/** 松手位置换算成要保存的优先级位置（按去掉这张卡片之后的列表算）。占位的 index 是「看到的顺序」里的位置：
-    - 目标块没在排序：看到的就是优先级顺序，原样保存
-    - 从别的块拖进排序中的块：放到看到的下一张卡片前面（优先级顺序里），这块继续排序，别的块不动
-    （排序中的块里拖回同块不走这里：顺序不改，只播放从落点补间回排序位置的动画，见 finish 里的 settle） */
-function planDrop(id: number, target: { col: ColumnKey; index: number }): number {
-  const { board, path, ws } = useData.getState();
-  const spec = useUI.getState().sorts[sortKey(path, target.col)];
-  if (!board || !spec) return target.index;
-  const labels = boardMeta(ws, path)?.project.labels ?? [];
-  const prio = (board.cols[target.col] ?? []).filter(x => x !== id);
-  const shown = sortIds(prio, board.cards, spec, labels, serverNow());
-  // 快照省略了更早的卡片（排序时会取全量，这里是还没取回来）：按看到的下一张卡片定位（优先级顺序里）
-  const next = shown[target.index];
-  return next == null ? prio.length : prio.indexOf(next);
+/** 松手位置换算成要保存的优先级位置（按去掉这张卡片之后的列表算）：
+    - 保留顺序关着：看到的就是优先级顺序，原样保存（拖到哪就在哪）
+    - 保留顺序开着：拖到别的块，放到那一块优先级的最后（服务端不带 index 时也是放最后），不按落点
+    （开着时在同一块里拖不走这里：顺序不改，只播放从落点补间回排序位置的动画，见 finish 里的 settle） */
+function planDrop(id: number, target: { col: ColumnKey; index: number }, keep: boolean): number {
+  if (!keep) return target.index;
+  const board = useData.getState().board;
+  return (board?.cols[target.col] ?? []).filter(x => x !== id).length;
 }
 
 function cleanup(keepDrag = false) {

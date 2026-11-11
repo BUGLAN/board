@@ -288,8 +288,11 @@ export function editCard(id: number, change: Partial<Card> | ((c: Card) => Parti
 }
 
 /** 把卡片放到 to 的第 index 位（按去掉它之后的列表算；省略时放最后）。order：排序状态下拖动时整块的新顺序（与服务端规则一致：没列出的补在后面）。
-    extra：一起改的其他字段（例如释放时清空持有者） */
+    extra：一起改的其他字段（例如释放时清空持有者）。
+    换了状态时移入时间记成发起的时刻（「保留顺序」按移入时间排时，确认之前就排到新移入的位置）；时刻在建补丁时取定，重复执行结果不变 */
 export function movePatch(id: number, to: ColumnKey, index?: number, order?: number[], extra: Partial<Card> = {}): Patch {
+  const at = serverNow();
+  const moved = <T extends Card>(c: T): T => ({ ...c, ...extra, movedAt: c.column === to ? c.movedAt : at, column: to });
   return {
     board: b => {
       const c = b.cards[id];
@@ -299,9 +302,9 @@ export function movePatch(id: number, to: ColumnKey, index?: number, order?: num
       const list = cols[to] ?? [];
       list.splice(Math.min(index ?? list.length, list.length), 0, id);
       cols[to] = order ? [...new Set([...order.filter(x => list.includes(x)), ...list])] : list;
-      return { ...b, cols, cards: { ...b.cards, [id]: { ...c, ...extra, column: to } } };
+      return { ...b, cols, cards: { ...b.cards, [id]: moved(c) } };
     },
-    detail: d => (d.id === id ? { ...d, ...extra, column: to } : d),
+    detail: d => (d.id === id ? moved(d) : d),
     cards: [id],
   };
 }

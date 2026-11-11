@@ -74,6 +74,20 @@ describe('movePatch', () => {
     const b = board();
     expect(D.movePatch(9, 'doing', 0).board!(b)).toBe(b);
   });
+
+  it('换状态时移入时间记成发起的时刻（建补丁时取定，之后重复执行不变）；同一状态里调整顺序不改', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5_000);
+    const p = D.movePatch(2, 'doing', 0);
+    now.mockReturnValue(9_000);
+    const b = twice(p.board!, board());
+    expect(b.cards[2].movedAt).toBe(5_000);
+    // 服务端确认后（卡片已经在目标状态）以服务端的为准
+    const confirmed = snapshot('p/a', { todo: [1, 3], doing: [2, 4] }, [{ id: 2, movedAt: 7_000 }]);
+    expect(p.board!(confirmed).cards[2].movedAt).toBe(7_000);
+    const same = twice(D.movePatch(3, 'todo', 0).board!, snapshot('p/a', { todo: [1, 2, 3] }, [{ id: 3, movedAt: 100 }]));
+    expect(same.cards[3].movedAt).toBe(100);
+    now.mockRestore();
+  });
 });
 
 describe('removeCard', () => {

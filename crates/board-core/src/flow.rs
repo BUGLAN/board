@@ -29,6 +29,9 @@ pub struct StatusPatch {
     /// 卡片形态：只影响界面显示
     #[serde(default)]
     pub view: Option<CardView>,
+    /// 保留顺序开着时的排序依据：只影响界面显示
+    #[serde(default)]
+    pub order: Option<Order>,
 }
 
 const NAME_MAX: usize = 12;
@@ -82,7 +85,19 @@ impl<'a> W<'a> {
             params![b.id, key, name, color, sort],
         )?;
         self.changed = true;
-        Ok(Status { key, name, color, claim: false, lock: false, fin: false, err: false, view: CardView::default_for(false), layout: None, to: vec![] })
+        Ok(Status {
+            key,
+            name,
+            color,
+            claim: false,
+            lock: false,
+            fin: false,
+            err: false,
+            view: CardView::default_for(false),
+            order: Order::default(),
+            layout: None,
+            to: vec![],
+        })
     }
 
     pub fn update_status(&mut self, path: &str, key: &str, mut p: StatusPatch) -> Result<()> {
@@ -138,6 +153,14 @@ impl<'a> W<'a> {
         }
         if let Some(v) = p.view {
             self.tx.execute("UPDATE statuses SET view = ?1 WHERE board = ?2 AND key = ?3", params![v.as_str(), b.id, key])?;
+        }
+        if let Some(o) = p.order {
+            // 按标签排不分方向
+            let desc = o.desc && o.by != OrderBy::Labels;
+            self.tx.execute(
+                "UPDATE statuses SET order_by = ?1, order_desc = ?2 WHERE board = ?3 AND key = ?4",
+                params![o.by.as_str(), desc as i64, b.id, key],
+            )?;
         }
         self.changed = true;
         Ok(())
@@ -272,10 +295,10 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 白板设置「保存顺序」开关
-    pub fn set_keep_order(&mut self, path: &str, on: bool) -> Result<()> {
+    /// 白板设置「保留顺序」开关：开着时界面按每个状态的排序依据显示，拖动只换状态、不改顺序
+    pub fn set_keep_sorted(&mut self, path: &str, on: bool) -> Result<()> {
         let b = self.resolve_exact(path)?;
-        self.tx.execute("UPDATE boards SET keep_order = ?1 WHERE id = ?2", params![on, b.id])?;
+        self.tx.execute("UPDATE boards SET keep_sorted = ?1 WHERE id = ?2", params![on, b.id])?;
         self.changed = true;
         Ok(())
     }

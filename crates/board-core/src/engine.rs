@@ -734,6 +734,10 @@ impl<'a> W<'a> {
 
     /// 把卡片放到目标状态的指定位置，返回（原位置，新位置）
     pub(crate) fn place(&mut self, b: i64, id: i64, from: Option<&str>, to: &str, at: At) -> Result<(usize, usize)> {
+        // 换了状态（含新建）：记下移入时间，界面「保留顺序」按移入时间排时用；同一状态里调整顺序不算
+        if from != Some(to) {
+            self.tx.execute("UPDATE cards SET moved_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+        }
         if let At::Bottom = at {
             // 放到最下面：只改这一张（MAX(pos) + 1），不重写整列；终点状态的卡片只增不减，重写整列的耗时随张数增长。
             // 离开的状态留下的空位不影响顺序（按 pos 排）
