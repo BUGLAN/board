@@ -27,8 +27,6 @@
 .sp-range { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .sp-seg { display: inline-flex; gap: 2px; }
 .sp-seg button.on { background: var(--surface); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-2); border-radius: var(--r-xs); }
-.sp-dates { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-3); }
-.sp-dates input { height: 28px; padding: 0 8px; border-radius: var(--r-sm); font: 12.5px var(--f-mono); color: var(--text); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); border: 0; }
 .sp-range-note { display: flex; gap: 10px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .sp-range-note em { font-style: normal; color: var(--text-3); }
 
@@ -211,6 +209,8 @@
 @media (max-width: 760px) {
   .sp-page { padding: 18px 16px 90px; }
   .sp-range { align-items: flex-start; }
+  .sp-pop { width: min(268px, calc(100vw - 16px)); }
+  .sp-pop-field { grid-template-columns: 1fr; gap: 3px; }
   .sp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -383,6 +383,25 @@
 /* ---------- 白板说明为空、取数中、表格窄屏横向滚动 ---------- */
 .sp-ov-blank { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px 16px; border-radius: var(--r-md); background: var(--surface-3); }
 .sp-ov-blank p { font-size: 13px; color: var(--text-3); }
+/* 自定义日期：悬浮面板（浮在内容上方，不占布局） */
+.sp-pop {
+  position: fixed; z-index: 60; width: 268px; max-width: calc(100vw - 16px); box-sizing: border-box;
+  padding: 12px; border-radius: var(--r-md); display: flex; flex-direction: column; gap: 8px;
+  background: var(--glass-strong); backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
+  animation: sp-pop-in var(--dur-2) var(--spring-soft);
+}
+@keyframes sp-pop-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.sp-pop-field { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); }
+.sp-pop-field input {
+  width: 100%; min-width: 0; height: 30px; padding: 0 8px; border: 0; border-radius: var(--r-sm);
+  font: 12.5px var(--f-mono); color: var(--text); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2);
+}
+.sp-pop-field input:focus-visible { outline: none; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }
+.sp-pop-note { display: flex; flex-wrap: wrap; gap: 2px 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.sp-pop-note em { font-style: normal; color: var(--text-3); }
+@media (prefers-reduced-motion: reduce) { .sp-pop { animation: none; } }
+
 .sp-loading { font-style: normal; color: var(--text-3); }
 .sp-loading::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; vertical-align: -1px; animation: sp-spin .8s linear infinite; }
 @keyframes sp-spin { to { transform: rotate(360deg); } }

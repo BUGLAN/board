@@ -6,7 +6,7 @@
    - 数据一次取完（GET /api/stats，按浏览器的时区分桶）；切换范围和时间时保留旧数据直到新数据回来；
      有推送（工作区 rev 变了）就重新取
    ========================================================================== */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { editBoard, openBoard } from '../../lib/actions';
 import { api } from '../../lib/api';
@@ -173,31 +173,131 @@ function Card({ title, extra, children, className, id }: { title: string; extra?
 
 const Note = ({ children }: { children: ReactNode }) => <span className="sp-card-note">{children}</span>;
 
-function RangeBar({ loading }: { loading: boolean }) {
+/* 自定义日期的浮层：锚在「自定义」按钮下方（放不下时改到上方），右边和按钮对齐、不超出视口。
+   日期输入不占页面布局，开着浮层时下面的卡片不会位移 */
+const POP_W = 268;
+
+export function RangeBar({ loading }: { loading: boolean }) {
   const { kind, cFrom, cTo, set } = useSP();
   const { from, to } = useRange();
   const today = ymd(Date.now());
+  const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  // 浮层开着时跟着按钮走：窗口尺寸、页面滚动都重新摆一次
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const r = btn.current?.getBoundingClientRect();
+      if (!r) return;
+      const w = pop.current?.offsetWidth || POP_W;
+      const h = pop.current?.offsetHeight || 108;
+      const left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8));
+      const below = r.bottom + 8;
+      const top = below + h <= innerHeight - 8 ? below : Math.max(8, r.top - h - 8);
+      setPos({ left, top });
+    };
+    place();
+    addEventListener('resize', place);
+    addEventListener('scroll', place, true);
+    return () => {
+      removeEventListener('resize', place);
+      removeEventListener('scroll', place, true);
+    };
+  }, [open]);
+
+  // 点浮层外面、按 Esc 收起；收起后焦点回到「自定义」
+  useEffect(() => {
+    if (!open) return;
+    const close = (focus: boolean) => {
+      setOpen(false);
+      if (focus) btn.current?.focus();
+    };
+    const down = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest('.sp-pop, .sp-seg')) close(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      close(true);
+    };
+    addEventListener('pointerdown', down);
+    addEventListener('keydown', key, true);
+    return () => {
+      removeEventListener('pointerdown', down);
+      removeEventListener('keydown', key, true);
+    };
+  }, [open]);
+
+  // 预设关掉浮层；「自定义」再点一次收起（范围内的日期保留）
+  const pick = (k: Kind) => {
+    if (k === 'custom') {
+      set({ kind: 'custom' });
+      setOpen(o => !o);
+      return;
+    }
+    set({ kind: k });
+    setOpen(false);
+  };
+
   return (
     <div className="sp-range">
       <div className="segmented sp-seg" role="tablist" aria-label="时间范围">
-        {KINDS.map(k => (
-          <button key={k.key} type="button" role="tab" aria-selected={kind === k.key} className={cx(kind === k.key && 'on')} onClick={() => set({ kind: k.key })}>
-            {k.label}
-          </button>
-        ))}
+        {KINDS.map(k =>
+          k.key === 'custom' ? (
+            <button
+              key={k.key}
+              ref={btn}
+              type="button"
+              role="tab"
+              aria-selected={kind === k.key}
+              aria-haspopup="dialog"
+              aria-expanded={open}
+              className={cx(kind === k.key && 'on')}
+              onClick={() => pick(k.key)}
+            >
+              {k.label}
+            </button>
+          ) : (
+            <button key={k.key} type="button" role="tab" aria-selected={kind === k.key} className={cx(kind === k.key && 'on')} onClick={() => pick(k.key)}>
+              {k.label}
+            </button>
+          ),
+        )}
       </div>
-      {kind === 'custom' && (
-        <span className="sp-dates">
-          <input type="date" aria-label="开始日期" value={cFrom} max={cTo} onChange={e => e.target.value && set({ cFrom: e.target.value })} />
-          <span>至</span>
-          <input type="date" aria-label="结束日期" value={cTo} min={cFrom} max={today} onChange={e => e.target.value && set({ cTo: e.target.value })} />
-        </span>
-      )}
       <span className="sp-range-note">
         {loading && <i className="sp-loading">正在更新</i>}
         {span(from, to)}
         <em>对比 {span(from - (to - from), from)}</em>
       </span>
+      {open && (
+        <div
+          ref={pop}
+          className="sp-pop"
+          role="dialog"
+          aria-label="自定义时间范围"
+          style={{ left: pos?.left ?? 0, top: pos?.top ?? 0, visibility: pos ? 'visible' : 'hidden' }}
+        >
+          <label className="sp-pop-field">
+            <span>开始</span>
+            <input type="date" aria-label="开始日期" value={cFrom} max={cTo} onChange={e => e.target.value && set({ cFrom: e.target.value })} />
+          </label>
+          <label className="sp-pop-field">
+            <span>结束</span>
+            <input type="date" aria-label="结束日期" value={cTo} min={cFrom} max={today} onChange={e => e.target.value && set({ cTo: e.target.value })} />
+          </label>
+          <p className="sp-pop-note">
+            {span(from, to)}
+            <em>对比 {span(from - (to - from), from)}</em>
+          </p>
+        </div>
+      )}
     </div>
   );
 }
