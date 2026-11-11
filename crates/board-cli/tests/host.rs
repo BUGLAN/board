@@ -91,6 +91,15 @@ impl Rig {
     }
 
     fn host_with(&self, args: &[&str]) -> Child {
+        self.spawn_host(args, false)
+    }
+
+    /// 像桌面端那样运行：`BOARD_HOST_STDIN=1`，标准输入接管道（写一行 reload 通知重新读配置，关掉就退出）
+    fn host_desktop(&self) -> Child {
+        self.spawn_host(&["host"], true)
+    }
+
+    fn spawn_host(&self, args: &[&str], desktop: bool) -> Child {
         let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
         c.args(args)
             .env("HOME", &self.s.home)
@@ -104,9 +113,12 @@ impl Rig {
             .env_remove("BOARD")
             .env_remove("BOARD_AS")
             .env_remove("BOARD_CONFIG")
-            .stdin(Stdio::null())
+            .stdin(if desktop { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if desktop {
+            c.env("BOARD_HOST_STDIN", "1");
+        }
         c.spawn().unwrap()
     }
 
@@ -458,8 +470,9 @@ fn agent_exit_ends_its_process_group() {
     assert_eq!(code, 0, "{out}");
 }
 
-/// 桌面端「设置 → 本机」保存（改配置文件的 [host]）：board host 不重启，换上新的机器名、白板与目录。
-/// 在跑的 agent 不被停止，接着由同一台机器（改名后的记录）续心跳；机器列表里始终只有一台
+/// 桌面端「设置 → 本机」保存（改配置文件的 [host]，再往 board host 的标准输入写一行 reload）：board host 不重启，
+/// 换上新的机器名、白板与目录。不通知就不重新读配置。在跑的 agent 不被停止，接着由同一台机器（改名后的记录）续心跳；
+/// 机器列表里始终只有一台
 #[test]
 fn host_follows_config_without_restart() {
     let rig = Rig::new();
@@ -470,8 +483,14 @@ fn host_follows_config_without_restart() {
     let base = std::fs::read_to_string(&cfg).unwrap();
     let host_conf = |name: &str, dir: &Path| format!("{base}\n[host]\nname = \"{name}\"\n\n[host.dirs]\n\"default/main\" = \"{}\"\n", dir.display());
     std::fs::write(&cfg, host_conf("mbp", &rig.repo)).unwrap();
-    // 不带 --name、--dir：都跟着配置文件
-    let host = rig.host_with(&["host"]);
+    // 像桌面端那样运行，不带 --name、--dir：都跟着配置文件
+    let mut host = rig.host_desktop();
+    let mut stdin = host.stdin.take().unwrap();
+    let mut reload = || {
+        use std::io::Write;
+        stdin.write_all(b"reload\n").unwrap();
+        stdin.flush().unwrap();
+    };
     wait_until("mbp 上线", Duration::from_secs(20), || {
         rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
     });
@@ -492,6 +511,10 @@ fn host_follows_config_without_restart() {
     let r = rig.s.raw(&env, &["host", "rename", "win", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     std::fs::write(&cfg, host_conf("win", &other)).unwrap();
+    // 没有通知：不去读配置，目录还是原来的
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], rig.repo.display().to_string());
+    reload();
     wait_until("board host 换上新目录", Duration::from_secs(10), || {
         let ws = rig.workspace();
         let hs = ws["hosts"].as_array().unwrap();
@@ -522,6 +545,7 @@ fn host_follows_config_without_restart() {
 
     // 配置不对（目录不存在）：打印一行，接着用原来的
     std::fs::write(&cfg, host_conf("win", &rig.repo.with_file_name("nope"))).unwrap();
+    reload();
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], other.display().to_string());
 

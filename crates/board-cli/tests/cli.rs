@@ -383,7 +383,7 @@ fn host_rename_renames_the_machine_record() {
     let r = s.raw(&s.env(), &["host", "rename", "win", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert_eq!(r.json()["name"], "win");
-    let id = st.read(|x| Ok(x.host("win", now).unwrap().id)).unwrap();
+    assert!(st.read(|x| x.host("win", now)).is_ok(), "新名字有机器");
     assert!(st.read(|x| x.host("mbp", now)).is_err(), "旧名字不再有机器");
     // 配置里还是旧名字、服务端上已经没有它：NO_SUCH_HOST（桌面端当作没有要改的）
     let r = s.raw(&s.env(), &["host", "rename", "desk", "--json"]);

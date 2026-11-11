@@ -5,8 +5,8 @@
 //! ```
 //!
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
-//!   运行中每秒看一次 `[host]`：机器名、白板与目录变了（桌面端「设置 → 本机」保存）就直接换上，不用重启，
-//!   正在跑的 agent 不受影响（命令行给了 `--name` / `--dir` 的那一项不跟着配置文件变）。机器名变了先让服务端把
+//!   桌面端「设置 → 本机」保存后在标准输入里写一行 `reload` 通知它：重新读 `[host]`，机器名、白板与目录变了就直接换上，
+//!   不用重启，正在跑的 agent 不受影响（命令行给了 `--name` / `--dir` 的那一项不跟着配置文件变）。机器名变了先让服务端把
 //!   机器记录原地改名（桌面端已经改过的不再改），改名失败就接着用原来的名字。
 //! - 启动时找本机的启动环境（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL 的发行版 …，见 envs.rs），
 //!   再找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi、codex），在每个 agent 支持、
@@ -29,7 +29,7 @@
 //! - 人停止：结束 agent 进程树，包括启动环境的外壳（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树；
 //!   WSL 里在 WSL 中结束 agent 的进程组），再上报。
 //! - `Ctrl+C`（或 SIGTERM）：先按「人停止」结束本机由它启动的全部 agent，再让机器离线，然后退出。
-//!   桌面端在后台运行它时设置 `BOARD_HOST_STDIN=1`：标准输入关闭（桌面端退出）也按 Ctrl+C 处理。
+//!   桌面端在后台运行它时设置 `BOARD_HOST_STDIN=1`：标准输入关闭（桌面端退出）也按 Ctrl+C 处理；读到一行 `reload` 时重新读配置。
 //! - 机器名的 pid 文件 `~/.board/host/<机器名>.pid`（「进程号 启动时间 标识」）：board host 异常退出后在同一台机器上重启，
 //!   用里面的标识接回还在线的名字；这时服务端上还在跑、本机却没有进程的派发按「异常退出」处理。
 //! - 每个在跑的 agent 记在 `~/.board/host/run/<机器名>/<派发 ID>.proc`（「进程号 启动时间 启动环境 白板#卡片」）。
@@ -142,8 +142,6 @@ const SKILL: &str = "board-skills";
 
 /// 主循环每一轮的间隔
 const TICK: Duration = Duration::from_millis(200);
-/// 多久看一次配置文件的 `[host]`（机器名、白板与目录）
-const CONF_EVERY: Duration = Duration::from_secs(1);
 /// 多久上传一次新增的日志
 const LOG_EVERY: Duration = Duration::from_secs(5);
 /// 停止 agent：SIGTERM 之后等多久再 SIGKILL
@@ -157,6 +155,8 @@ const LOG_CHUNK: u64 = 256 * 1024;
 
 /// 收到 Ctrl+C / SIGTERM，或者（桌面端）标准输入关闭
 static QUIT: AtomicBool = AtomicBool::new(false);
+/// （桌面端）标准输入里来了一行 `reload`：配置文件的 `[host]` 改了，重新读
+static RELOAD: AtomicBool = AtomicBool::new(false);
 
 /// 上报间隔：`BOARD_HOST_INTERVAL`（秒，只给测试用），默认 10 秒
 fn interval() -> Duration {
@@ -397,12 +397,23 @@ fn on_signals() {
             SetConsoleCtrlHandler(Some(handle), 1);
         }
     }
-    // 桌面端在后台运行时：标准输入关闭（桌面端退出、崩溃）就退出
+    // 桌面端在后台运行时：一行 `reload` 是「设置 → 本机」保存了配置；标准输入关闭（桌面端退出、崩溃）就退出
     if std::env::var("BOARD_HOST_STDIN").is_ok_and(|v| v.trim() == "1") {
         std::thread::spawn(|| {
-            let mut buf = [0u8; 256];
-            let mut stdin = std::io::stdin();
-            while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
+            use std::io::BufRead;
+            let mut line = String::new();
+            let mut stdin = std::io::stdin().lock();
+            loop {
+                line.clear();
+                match stdin.read_line(&mut line) {
+                    Ok(n) if n > 0 => {
+                        if line.trim() == "reload" {
+                            RELOAD.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    _ => break,
+                }
+            }
             QUIT.store(true, Ordering::SeqCst);
         });
     }
@@ -936,7 +947,6 @@ impl Host<'_> {
         let mut fetch = false;
         let mut last_min = String::new();
         let mut seen: Option<i64> = None;
-        let mut next_conf = Instant::now() + CONF_EVERY;
         loop {
             if QUIT.load(Ordering::SeqCst) {
                 return Ok(());
@@ -948,12 +958,9 @@ impl Host<'_> {
                 }
             }
             let now = Instant::now();
-            if now >= next_conf {
-                next_conf = now + CONF_EVERY;
-                // 换了名字、目录：马上上报，界面「机器」里立刻看到
-                if self.reload() {
-                    next_beat = now;
-                }
+            // 桌面端保存了配置：换了名字、目录就马上上报，界面「机器」里立刻看到
+            if RELOAD.swap(false, Ordering::SeqCst) && self.reload() {
+                next_beat = now;
             }
             if now >= next_beat {
                 next_beat = now + every;
@@ -989,7 +996,7 @@ impl Host<'_> {
         }
     }
 
-    /// 配置文件的 `[host]` 变了（桌面端「设置 → 本机」保存）：不重启，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
+    /// 桌面端「设置 → 本机」保存后通知（标准输入一行 `reload`）：重新读配置文件的 `[host]`，不重启，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
     /// 返回有没有换。配置不对（名字不合规、目录不存在）、服务端不让改名时打印一行，接着用原来的
     fn reload(&mut self) -> bool {
         if !self.follow_name && !self.follow_dirs {

@@ -5,7 +5,7 @@
 //! - 开关打开时关掉窗口也继续运行：最后一个窗口关闭时不退出程序；macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口。
 //!   退出桌面端（菜单「退出」、托盘「退出」）时关闭 board host 的标准输入，它自己收尾后退出。
 //! - 机器名、白板与目录写进 `~/.board/config.toml` 的 `[host]`（board host 读它）。保存时不重启 board host：
-//!   它每秒看一次配置，自己换上新的机器名、白板与目录，正在跑的 agent 不受影响。
+//!   往它的标准输入写一行 `reload` 通知它重新读配置，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
 //! - 开关记在应用配置目录的 `host.json`，下次打开桌面端自动运行。
 //! - board host 的输出写到 `~/.board/host/desktop.log`；页面上能看到它在不在跑和最近的输出。
 //! - macOS 从 Finder 打开的程序拿不到 shell 里的 PATH：先用登录 shell 取一次 PATH，board host 才找得到 claude 这些命令。
@@ -214,6 +214,18 @@ fn stop_proc(mut r: Running, wait: std::time::Duration) -> Result<(), Running> {
     }
 }
 
+/// 保存了配置：在跑的 board host 收到一行 `reload` 后重新读 `[host]`（不重启）。返回有没有通知到（没在跑、写不进去时 false）
+fn notify_reload<R: Runtime>(app: &AppHandle<R>) -> bool {
+    use std::io::Write;
+    let state = app.state::<HostProc>();
+    let Ok(mut g) = state.0.lock() else { return false };
+    let Some(r) = g.as_mut() else { return false };
+    if !matches!(r.child.try_wait(), Ok(None)) {
+        return false;
+    }
+    r.stdin.as_mut().is_some_and(|i| i.write_all(b"reload\n").and_then(|_| i.flush()).is_ok())
+}
+
 /// 打开时启动（已经在跑就不动）
 pub fn ensure_started<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let cli = crate::cli_path().ok_or("没找到桌面端自带的 board 命令行")?;
@@ -373,8 +385,8 @@ fn rename_host(new_name: &str) -> Result<(), (String, String)> {
     Err((code.to_string(), if msg.is_empty() { code.to_string() } else { msg.to_string() }))
 }
 
-/// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）。不重启 board host：在跑的 board host
-/// 每秒看一次配置，自己换上新的机器名、白板与目录，正在跑的 agent 不受影响。
+/// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）。不重启 board host：写完配置通知在跑的
+/// board host（标准输入一行 `reload`），它重新读配置，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
 /// 机器名变了：先让服务端把机器记录原地改名（设置和历史派发记录保留），成功了再写配置；
 /// 改名失败（新名字已被别的机器占用等）时不写配置，返回原因，board host 用旧名字接着跑。
 /// 在 board host 读到新配置之前，它用旧名字的上报由服务端按进程标识认回改名后的记录，不会新建一台机器。
@@ -395,8 +407,8 @@ pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(
             }
         }
         save_conf(name, &dirs)?;
-        if enabled(&app) {
-            // 在跑就不动（它自己读新配置）；之前出错退出了才启动
+        // 在跑：通知它重新读配置；没在跑（之前出错退出了）才启动，启动时就读新配置
+        if enabled(&app) && !notify_reload(&app) {
             ensure_started(&app)?;
         }
         Ok(())
