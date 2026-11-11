@@ -143,8 +143,10 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 [data-tip-align="end"]::after { left: auto; right: 0; transform: translate(0, -4px) scale(.96); }
 [data-tip-align="end"]:hover::after { transform: none; }
 
-/* 卡片里的提示改由 CardTips 挂在 body 上画（在所有卡片、状态块之上，不被滚动区域裁切） */
+/* 卡片、弹窗（卡片详情、新建……）里的提示改由 FloatTips 挂在 body 上画（在所有卡片、弹窗之上，不被滚动区域、操作栏挡住）。
+   FloatTips 只在能悬停的设备上启用；卡片上的触屏也不画，弹窗里的触屏照旧用 ::after */
 .card [data-tip]::after { display: none; }
+@media (hover: hover) { .drawer [data-tip]::after { display: none; } }
 .float-tip {
   position: fixed; z-index: 450; max-width: 320px; pointer-events: none;
   padding: 5px 8px; border-radius: var(--r-xs); background: var(--invert); color: var(--invert-text);

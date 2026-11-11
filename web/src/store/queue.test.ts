@@ -237,6 +237,28 @@ describe('写队列', () => {
   });
 });
 
+describe('新建', () => {
+  it('服务端返回后、刷新之前就认下真卡片：临时卡片和真卡片不会同时出现，真卡片沿用临时卡片的身份', async () => {
+    const temp = D.draftCard({ title: '新卡片', body: '', labels: [], column: 'todo' });
+    const done = D.exec({ op: 'new', title: '新卡片', body: '', labels: [] }, temp.patch, c => temp.settle(c.id));
+    expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3, temp.id]);
+    // 服务端存下的标题和提交的不一样（例如去掉了多余空白）：按标题猜不出来，只能靠返回的 ID
+    const b = server.boards['p/a'];
+    b.cards[5] = card(5, { title: '新 卡片' });
+    b.cols.todo = [1, 2, 3, 5];
+    server.ws.rev = b.rev = 2;
+    const seen: number[][] = [];
+    const off = D.useData.subscribe(s => seen.push(s.board!.cols.todo));
+    await settle();
+    server.calls[0].ok(detail(b.cards[5]));
+    await done;
+    off();
+    expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3, 5]);
+    for (const ids of seen) expect(ids.includes(5) && ids.includes(temp.id)).toBe(false);
+    expect(D.renderKey(5)).toBe(temp.id);
+  });
+});
+
 describe('标签', () => {
   const labels = (id: number) => D.useData.getState().board!.cards[id].labels;
   const pending = (id: number) => D.useData.getState().pending[`p/a#${id}`] ?? [];

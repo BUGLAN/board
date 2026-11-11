@@ -5,7 +5,7 @@ import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, ago, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
-import { useCurrent, useData, useOnline } from '../store/data';
+import { renderKey, useCurrent, useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
@@ -69,6 +69,9 @@ export const CardView = memo(function CardView({
   const t = timing(c, now, online);
   const doing = held;
   const gh = (c.body.match(/gh#\d+/) || [])[0];
+  // 入场动画放完才去掉 entering：白板在动画中途重画（推送刷新、新建的卡片换成真卡片）时 entering 已经变回 false，
+  // 立刻去掉会把动画掐断；一直留着又会在「保存中」结束、animation 换回来时再弹一次
+  const [enter, setEnter] = useState(entering);
   const shape: StatusView = view ?? (final && !doing ? 'line' : 'card');
 
   useLayoutEffect(() => {
@@ -96,7 +99,7 @@ export const CardView = memo(function CardView({
         active && !hit && 'filtered-out',
         active && hit && 'matched',
         t.beat === 'late' && 'late',
-        entering && 'entering',
+        enter && 'entering',
         placeholder && 'is-placeholder',
         saving && 'saving',
         draft && 'draft',
@@ -104,9 +107,10 @@ export const CardView = memo(function CardView({
       aria-busy={saving || undefined}
       tabIndex={0}
       data-id={c.id}
-      data-flip={`c${c.id}`}
+      data-flip={`c${renderKey(c.id)}`}
       aria-label={draft ? `正在新建：${c.title}` : `#${c.id} ${c.title}`}
       style={style}
+      onAnimationEnd={enter ? e => e.target === e.currentTarget && e.animationName === 'card-in' && setEnter(false) : undefined}
     >
       {c.column === 'inbox' ? (
         <>
@@ -413,17 +417,19 @@ export function MidName({ name, className, tail = 8 }: { name: string; className
   );
 }
 
-/* ---------------- 卡片上的悬停提示 ---------------- */
+/* ---------------- 卡片、弹窗里的悬停提示 ---------------- */
 
-/** 卡片里带 data-tip 的提示（计时胶囊等）不用 ::after 画：那样会被相邻卡片、状态块盖住，被列表的滚动区域裁掉。
-    改成挂在 body 上的一个浮层，放在所有卡片、状态块和工作流条之上；下面放不下就放上面，左右夹在窗口里 */
-export function CardTips() {
+/** 卡片和弹窗（卡片详情、新建等 .drawer）里带 data-tip 的提示不用 ::after 画：那样会被相邻卡片、状态块、
+    弹窗底部的操作栏盖住，被列表、详情的滚动区域裁掉。改成挂在 body 上的一个浮层，放在所有卡片、弹窗之上；
+    默认放下面，下面放不下就放上面（data-tip-pos="top" 时反过来），左右夹在窗口里。只在能悬停的设备上启用（App 里挂一份） */
+const FLOAT_TIP = '.card [data-tip], .drawer [data-tip]';
+export function FloatTips() {
   const [tip, setTip] = useState<{ el: HTMLElement; text: string } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!window.matchMedia('(hover: hover)').matches) return;
     let showT = 0;
-    const tipOf = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.<HTMLElement>('.card [data-tip]') ?? null;
+    const tipOf = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.<HTMLElement>(FLOAT_TIP) ?? null;
     const hide = () => {
       clearTimeout(showT);
       setTip(null);
@@ -461,9 +467,19 @@ export function CardTips() {
     const w = el.offsetWidth;
     const h = el.offsetHeight;
     const gap = 8;
+    const clampX = (x: number) => Math.round(Math.max(gap, Math.min(window.innerWidth - w - gap, x)));
+    const clampY = (y: number) => Math.round(Math.max(gap, Math.min(window.innerHeight - h - gap, y)));
+    if (tip.el.dataset.tipPos === 'right') {
+      el.style.left = `${clampX(r.right + 10)}px`;
+      el.style.top = `${clampY(r.top + r.height / 2 - h / 2)}px`;
+      el.dataset.side = 'right';
+      return;
+    }
     const end = tip.el.dataset.tipAlign === 'end';
-    const x = Math.round(Math.max(gap, Math.min(window.innerWidth - w - gap, end ? r.right - w : r.left + r.width / 2 - w / 2)));
-    const below = r.bottom + gap + h <= window.innerHeight - gap;
+    const x = clampX(end ? r.right - w : r.left + r.width / 2 - w / 2);
+    const fitsBelow = r.bottom + gap + h <= window.innerHeight - gap;
+    const fitsAbove = r.top - gap - h >= gap;
+    const below = tip.el.dataset.tipPos === 'top' ? !fitsAbove && fitsBelow : fitsBelow || !fitsAbove;
     const y = Math.round(below ? r.bottom + gap : r.top - gap - h);
     el.style.left = `${x}px`;
     el.style.top = `${y}px`;

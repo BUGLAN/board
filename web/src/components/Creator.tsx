@@ -102,10 +102,7 @@ export function Creator() {
     const draft: Draft = { title, body, column, labels };
     const home = f.home?.key ?? 'todo';
     const temp = draftCard({ title, body, labels, column: column === 'inbox' ? 'inbox' : home });
-    const done = exec({ op: 'new', column: column === 'inbox' ? 'inbox' : undefined, title, body, labels }, temp.patch).then(c => {
-      temp.settle(c.id);
-      return c;
-    });
+    const done = exec({ op: 'new', column: column === 'inbox' ? 'inbox' : undefined, title, body, labels }, temp.patch, c => temp.settle(c.id));
     pref.set(DRAFT, null);
     setRestored(false);
     const tab = useUI.getState().tab;

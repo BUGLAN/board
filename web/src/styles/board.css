@@ -202,8 +202,8 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   background: radial-gradient(220px circle at var(--mx) var(--my), color-mix(in srgb, var(--c) 13%, transparent), transparent 60%);
   transition: opacity var(--dur-2);
 }
+/* 悬停不再上移：卡片一移动，指针停在下边缘时就会反复移出、移入，卡片上下抖动。悬停反馈靠描边、阴影和高光 */
 .card:hover {
-  transform: translateY(-2px);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 40%, var(--line-2)), var(--shadow-2);
 }
 .card:hover::after { opacity: 1; }
@@ -309,7 +309,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 
 /* 磁贴：只显示编号，24px 高。被领取的右上角是持有者颜色的心跳点，心跳晚了加警告色外框；悬停弹出标题 */
 .card.v-tile { height: 24px; padding: 0; display: grid; place-items: center; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--line); }
-.card.v-tile:hover { transform: translateY(-1px); z-index: 6; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, var(--line-2)), var(--shadow-1); }
+.card.v-tile:hover { z-index: 6; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, var(--line-2)), var(--shadow-1); }
 .ct-id { font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .ct-id::before { content: "#"; opacity: .45; }
 .card.done .ct-id { color: color-mix(in oklab, var(--c), var(--ink)); }

@@ -12,7 +12,7 @@ import { useMasonry } from '../lib/masonry';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
-import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
+import { deleteLabelPatch, optimistic, renderKey, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
 import { previewCols, useEntering, useMobile, Veto } from './BoardView';
@@ -749,7 +749,7 @@ function InboxSide() {
               if (!c) return null;
               return (
                 <CardView
-                  key={id}
+                  key={renderKey(id)}
                   card={drag?.id === id ? { ...c, column: 'inbox' } : c}
                   labels={cur?.project.labels ?? []}
                   filter={filter}

@@ -261,6 +261,11 @@ export function removeComment(card: number, act: number): Patch {
 let tempSeq = 0;
 /** 已经认作某张临时卡片的真卡片：一张真卡片只顶替一张临时卡片 */
 const claimed = new Set<number>();
+/** 真卡片 ID → 它顶替的临时卡片 ID */
+const replaced = new Map<number, number>();
+/** 卡片在界面上的身份（React key、FLIP、入场动画）：顶替了临时卡片的真卡片沿用临时卡片的，
+    换成真卡片时是同一个元素原地更新（编号从「…」变成真实 ID），不卸载重建、不重播入场动画 */
+export const renderKey = (id: number) => replaced.get(id) ?? id;
 /** 新建卡片：先用一个负数 ID 的临时卡片画在目标状态最下面（服务端的规则），刷新拿到真卡片的那一刻临时卡片不再画，两张不会同时出现。
     真卡片怎么认：服务端返回后由 settle 记下 ID；返回之前，推送触发的刷新可能已经带来了真卡片（弱网下常见），
     这时按「新建时白板上还没有的、人建的、标题和状态都一样」认出来 */
@@ -284,6 +289,7 @@ export function draftCard(p: { title: string; body: string; labels: number[]; co
         if (hit) {
           real = hit.id;
           claimed.add(hit.id);
+          replaced.set(hit.id, id);
         }
       }
       if (real != null && b.cards[real]) return b;
@@ -292,9 +298,13 @@ export function draftCard(p: { title: string; body: string; labels: number[]; co
     cards: [id],
   };
   const settle = (realId: number) => {
-    if (real != null && real !== realId) claimed.delete(real);
+    if (real != null && real !== realId) {
+      claimed.delete(real);
+      if (replaced.get(real) === id) replaced.delete(real);
+    }
     real = realId;
     claimed.add(realId);
+    replaced.set(realId, id);
   };
   return { id, patch, settle };
 }
@@ -708,13 +718,15 @@ export function sendComment(id: number, text: string): Promise<void> {
 }
 
 /** 对当前白板执行卡片命令；patch 是它在本地的效果，当帧生效（见 optimistic）。失败抛 ApiError，由调用方提示 */
-export async function exec(cmd: Cmd, patch?: Patch): Promise<CardDetail> {
+/** settle：服务端一返回就调用（在刷新之前），例如新建时让临时卡片认下真卡片的 ID，刷新带来真卡片的那一帧就顶替上去 */
+export async function exec(cmd: Cmd, patch?: Patch, settle?: (r: CardDetail) => void): Promise<CardDetail> {
   const path = get().path;
   if ('id' in cmd) guard({ ...patch, cards: [...(patch?.cards ?? []), cmd.id] });
   else if (patch) guard(patch);
   const l = patch ? push(patch) : null;
   try {
     const r = await queue(() => api.cmd(path, cmd));
+    settle?.(r);
     if (cmd.op !== 'delete') {
       details.set(pkey(path, r.id), r);
       if (get().detailId === r.id && get().path === path) {

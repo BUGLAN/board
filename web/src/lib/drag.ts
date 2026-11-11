@@ -11,7 +11,7 @@ import { boardFlow, INBOX, type FlowQ } from './schema';
 import { sortIds, sortKey } from './sort';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
-import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, omittedIn, serverNow, useData } from '../store/data';
+import { boardMeta, cardBusy, exec, hold, isDraft, movePatch, omittedIn, renderKey, serverNow, useData } from '../store/data';
 import { rejectColumn, setDrag, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
@@ -102,7 +102,7 @@ let st: St | null = null;
 let justDroppedAt = 0;
 export const justDropped = () => performance.now() - justDroppedAt < 150;
 
-const cardEl = (id: number) => document.querySelector<HTMLElement>(`[data-flip="c${id}"]`);
+const cardEl = (id: number) => document.querySelector<HTMLElement>(`[data-flip="c${renderKey(id)}"]`);
 const listEl = (col: string) => document.querySelector<HTMLElement>(`[data-list="${col}"]`);
 const zones = () =>
   [...document.querySelectorAll<HTMLElement>('[data-drop]')].filter(z => z.offsetParent !== null && z.getBoundingClientRect().width > 40);
@@ -267,7 +267,7 @@ function locate() {
   const list = listEl(key);
   // 「更早的 M 张」那一格（data-earlier）不是卡片，不算落点
   const items = list
-    ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${s.id}` && !n.hasAttribute('data-earlier'))
+    ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${renderKey(s.id)}` && !n.hasAttribute('data-earlier'))
     : [];
   const state = useData.getState();
   let index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);

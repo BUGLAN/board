@@ -4,6 +4,7 @@
    ========================================================================== */
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { BoardSkeleton, BoardView } from './components/BoardView';
+import { FloatTips } from './components/Card';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
@@ -256,6 +257,7 @@ function BoardApp() {
       <DispatchDialog />
       <Creator />
       <Overlays />
+      <FloatTips />
     </>
   );
 }

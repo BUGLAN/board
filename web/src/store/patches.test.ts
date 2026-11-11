@@ -233,6 +233,23 @@ describe('draftCard（新建）', () => {
     const only6 = snapshot('p/a', { todo: [1, 2, 3, 6] }, [{ id: 6, title: '新卡片' }]);
     expect(a.patch.board!(only6)).toBe(only6);
   });
+
+  it('renderKey：顶替临时卡片的真卡片沿用临时卡片的身份（同一个元素，不重播入场动画）；猜错的让出来', () => {
+    start();
+    const a = draft();
+    const b = draft();
+    expect(D.renderKey(5)).toBe(5);
+    expect(D.renderKey(a.id)).toBe(a.id);
+    const two = snapshot('p/a', { todo: [1, 2, 3, 5, 6] }, [{ id: 5, title: '新卡片' }, { id: 6, title: '新卡片' }]);
+    a.patch.board!(two); // a 猜成 5
+    expect(D.renderKey(5)).toBe(a.id);
+    a.settle(6);
+    expect(D.renderKey(6)).toBe(a.id);
+    expect(D.renderKey(5)).toBe(5);
+    b.patch.board!(two); // 5 让给 b
+    expect(D.renderKey(5)).toBe(b.id);
+    expect(D.renderKey(1)).toBe(1);
+  });
 });
 
 describe('选择器', () => {

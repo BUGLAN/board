@@ -13,9 +13,9 @@ import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
 import { shownCols, sortKey, sortName, type SortSpec } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
-import { colCount, loadFull, omittedIn, refresh, serverNow, useCurrent, useData } from '../store/data';
+import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurrent, useData } from '../store/data';
 import { clearLabelSel, closeCtx, openCreator, openCtx, setBoardSheet, setFilter, setSort, toastError, useUI, type DragUI } from '../store/ui';
-import { CardTips, cardHit, CardView, TilePeek } from './Card';
+import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { Skeleton, SkeletonCard } from './Skeleton';
@@ -35,10 +35,11 @@ export function useEntering(board: BoardSnapshot | null, generation: number) {
   if (seen.current.gen !== generation) seen.current = { gen: generation, ids: new Set(), fresh: true };
   const s = seen.current;
   const entering = new Set<number>();
-  if (board && !s.fresh) for (const id of Object.keys(board.cards).map(Number)) if (!s.ids.has(id)) entering.add(id);
+  // 按 renderKey 记：顶替临时卡片的真卡片算已经出现过，不再弹入一次
+  if (board && !s.fresh) for (const id of Object.keys(board.cards).map(Number)) if (!s.ids.has(renderKey(id))) entering.add(id);
   useEffect(() => {
     if (!board) return;
-    for (const id of Object.keys(board.cards).map(Number)) s.ids.add(id);
+    for (const id of Object.keys(board.cards).map(Number)) s.ids.add(renderKey(id));
     s.fresh = false;
   });
   return { entering, fresh: !!board && s.fresh };
@@ -96,7 +97,7 @@ export function BoardView() {
   // 定位到卡片
   useEffect(() => {
     if (!reveal) return;
-    const n = document.querySelector<HTMLElement>(`[data-flip="c${reveal.id}"]`);
+    const n = document.querySelector<HTMLElement>(`[data-flip="c${renderKey(reveal.id)}"]`);
     if (!n) return;
     n.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' });
     replay(n, 'pulse');
@@ -177,7 +178,6 @@ export function BoardView() {
       </div>
       <ColTabs board={board} f={f} boardRef={boardRef} />
       {!mobile && <TilePeek />}
-      {!mobile && <CardTips />}
       <div
         className={cx('board flow-scroll', drag && 'dragging')}
         ref={boardRef}
@@ -431,7 +431,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
             if (!c) return null;
             return (
               <CardView
-                key={id}
+                key={renderKey(id)}
                 card={drag?.id === id ? { ...c, column: col.key } : c}
                 labels={labels}
                 filter={filter}
