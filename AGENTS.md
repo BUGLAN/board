@@ -68,6 +68,14 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 | y | 重构或大升级。要升 y 时先停下来通知人，列出是哪些提交，由人决定升 y 还是 z |
 | z | 修复和比较小的新功能 |
 
+发版前先在最新的 `origin/main` 上（工作区干净、`HEAD` 就是 `origin/main`，`scripts/release.mjs` 第一步也会核对）：
+
+```sh
+git switch main && git pull --ff-only   # 本地和远端有分叉时改用：git fetch origin && git rebase origin/main
+```
+
+确认无误后再执行 `npm run release`。
+
 人让你发版、没给版本号时：
 
 1. `npm run release -- <上一版的 z 加 1> --dry-run` 看这一版有哪些提交（不改任何文件）。

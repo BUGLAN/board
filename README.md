@@ -164,6 +164,6 @@ board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取
 
 部署自己的实例：[docs/deploy.md](docs/deploy.md)（GitHub 登录，允许登录的账号在部署时指定）
 
-开发：集成分支是 `main`，推送前检查见 [AGENTS.md](AGENTS.md)；本地怎么跑服务端和界面见 [AGENTS.md](AGENTS.md)「本地开发」。推 `main` 只跑测试；发版由人决定：`npm run release -- <版本号> --push` 改版本号、从提交生成 [CHANGELOG.md](CHANGELOG.md)、打 `vX.Y.Z` tag，推 tag 才部署线上服务端，见 [docs/deploy.md](docs/deploy.md)「升级」。
+开发：集成分支是 `main`，推送前检查见 [AGENTS.md](AGENTS.md)；本地怎么跑服务端和界面见 [AGENTS.md](AGENTS.md)「本地开发」。推 `main` 只跑测试；发版由人决定：发版前先在最新的 `origin/main` 上（`git switch main && git pull --ff-only`），再 `npm run release -- <版本号> --push` 改版本号、从提交生成 [CHANGELOG.md](CHANGELOG.md)、打 `vX.Y.Z` tag，推 tag 才部署线上服务端，见 [docs/deploy.md](docs/deploy.md)「升级」。
 
 许可证：[MIT](LICENSE)

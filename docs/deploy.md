@@ -210,7 +210,13 @@ docker compose start board
 
 发版由人决定：推 `vX.Y.Z` tag 才构建、部署线上服务端（见下文「自动部署」）；推 `main` 只跑测试，不部署。版本号规则见 [AGENTS.md](../AGENTS.md)「发版」：x 只由人决定；y 是重构或大升级；z 是修复和比较小的新功能。第一个 tag 是 `v0.1.0`。
 
-在 `origin/main` 的最新提交上（工作区干净）：
+发版前先在最新的 `origin/main` 上（工作区干净、`HEAD` 就是 `origin/main`）：
+
+```bash
+git switch main && git pull --ff-only   # 本地和远端有分叉时改用：git fetch origin && git rebase origin/main
+```
+
+确认无误后再执行：
 
 ```bash
 npm run release -- 0.1.1 --dry-run   # 先看这一版有哪些提交，不改任何文件
