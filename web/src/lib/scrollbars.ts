@@ -22,6 +22,8 @@ interface Bar {
   el: Element;
   root: HTMLDivElement;
   clips: Element[];
+  /** 滚动元素和它的各级祖先的计算样式（活的对象）：每帧读透明度、可见性，见 visible() */
+  styles: CSSStyleDeclaration[];
   y: Rail;
   x: Rail;
   offAt: number;
@@ -127,6 +129,25 @@ function clipAncestors(el: Element): Element[] {
   return out;
 }
 
+function chainStyles(el: Element): CSSStyleDeclaration[] {
+  const out: CSSStyleDeclaration[] = [];
+  for (let p: Element | null = el; p && p !== document.documentElement; p = p.parentElement) out.push(getComputedStyle(p));
+  return out;
+}
+
+/** 滚动区域现在有多「看得见」（0–1）：各级祖先的透明度相乘；visibility: hidden、display: none 算 0。
+    滚动条画在 body 上单独的一层里，不会跟着所在的弹窗一起淡出：弹窗关闭（透明度过渡到 0，随后 visibility: hidden）时，
+    正显示着的滚动条（刚滚过，或鼠标正停在边上）会留在原地，在白板上露出一根竖条。所以每帧按这个值跟着淡出，到 0 就撤掉 */
+function visible(bar: Bar): number {
+  let v = 1;
+  for (const cs of bar.styles) {
+    if (cs.display === 'none') return 0;
+    v *= Number(cs.opacity);
+  }
+  // visibility 会继承，看滚动元素自己的就够了
+  return bar.styles[0]?.visibility === 'hidden' ? 0 : v;
+}
+
 function ensure(el: Element): Bar {
   let bar = bars.get(el);
   if (bar) return bar;
@@ -144,6 +165,7 @@ function ensure(el: Element): Bar {
     el,
     root,
     clips: el === scroller() ? [] : clipAncestors(el),
+    styles: el === scroller() ? [] : chainStyles(el),
     y: makeRail('y', root, get),
     x: makeRail('x', root, get),
     offAt: 0,
@@ -183,6 +205,14 @@ function frame(now: number) {
         continue;
       }
     } else bar.offAt = 0;
+
+    // 所在的弹窗、面板正在淡出或已经隐藏：跟着淡出，看不见了就撤掉（连同「正显示着」的状态）
+    const vis = visible(bar);
+    if (!(vis > 0.01)) {
+      drop(bar);
+      continue;
+    }
+    root.style.opacity = vis < 1 ? String(vis) : '';
 
     // 元素内容区（去掉边框）在视口里的位置
     const isDoc = el === scroller();
