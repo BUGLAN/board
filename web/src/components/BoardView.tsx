@@ -100,7 +100,15 @@ export function BoardView() {
     const n = document.querySelector<HTMLElement>(`[data-flip="c${renderKey(reveal.id)}"]`);
     if (!n) return;
     n.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' });
+    if (!reveal.pulse) return;
+    // 放完就去掉：一直留着的话，卡片别的动画（入场、保存中）结束时 .card.pulse 会重新生效，光环再放一次
     replay(n, 'pulse');
+    const done = (e: AnimationEvent) => {
+      if (e.target !== n || e.animationName !== 'card-pulse') return;
+      n.classList.remove('pulse');
+      n.removeEventListener('animationend', done);
+    };
+    n.addEventListener('animationend', done);
   }, [reveal]);
 
   useEffect(() => {

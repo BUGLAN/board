@@ -71,7 +71,8 @@ export const CardView = memo(function CardView({
   const gh = (c.body.match(/gh#\d+/) || [])[0];
   // 入场动画放完才去掉 entering：白板在动画中途重画（推送刷新、新建的卡片换成真卡片）时 entering 已经变回 false，
   // 立刻去掉会把动画掐断；一直留着又会在「保存中」结束、animation 换回来时再弹一次
-  const [enter, setEnter] = useState(entering);
+  // 本窗口新建的临时卡片用轻的入场（card-add：只淡入，不缩放、不模糊、不回弹），别处来的新卡片照旧 card-in
+  const [enter, setEnter] = useState<'' | 'in' | 'add'>(entering ? (draft ? 'add' : 'in') : '');
   const shape: StatusView = view ?? (final && !doing ? 'line' : 'card');
 
   useLayoutEffect(() => {
@@ -99,7 +100,8 @@ export const CardView = memo(function CardView({
         active && !hit && 'filtered-out',
         active && hit && 'matched',
         t.beat === 'late' && 'late',
-        enter && 'entering',
+        enter === 'in' && 'entering',
+        enter === 'add' && 'adding',
         placeholder && 'is-placeholder',
         saving && 'saving',
         draft && 'draft',
@@ -110,7 +112,9 @@ export const CardView = memo(function CardView({
       data-flip={`c${renderKey(c.id)}`}
       aria-label={draft ? `正在新建：${c.title}` : `#${c.id} ${c.title}`}
       style={style}
-      onAnimationEnd={enter ? e => e.target === e.currentTarget && e.animationName === 'card-in' && setEnter(false) : undefined}
+      onAnimationEnd={
+        enter ? e => e.target === e.currentTarget && (e.animationName === 'card-in' || e.animationName === 'card-add') && setEnter('') : undefined
+      }
     >
       {c.column === 'inbox' ? (
         <>

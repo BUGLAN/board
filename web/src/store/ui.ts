@@ -123,7 +123,8 @@ interface UIState {
   toasts: Toast[];
   flashes: Record<number, Flash>;
   drag: DragUI | null;
-  reveal: { id: number; key: number } | null;
+  /** 定位到卡片；pulse 为 false 时只滚过去，不放光环（刚在本窗口新建的卡片） */
+  reveal: { id: number; key: number; pulse: boolean } | null;
   reject: { col: ColumnKey; key: number } | null;
   /** 放大查看的图片（附件）：同一张卡片 / 同一条动态里的全部图片，index 是正在看的那张 */
   image: { list: ImageRef[]; index: number } | null;
@@ -326,7 +327,7 @@ export function flash(cardId: number, color: string, label: string) {
 }
 
 let revealSeq = 0;
-export const reveal = (id: number) => set({ reveal: { id, key: ++revealSeq } });
+export const reveal = (id: number, pulse = true) => set({ reveal: { id, key: ++revealSeq, pulse } });
 export const rejectColumn = (col: ColumnKey) => set({ reject: { col, key: ++revealSeq } });
 
 export const setDrag = (drag: DragUI | null) => set({ drag });

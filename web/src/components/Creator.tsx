@@ -120,8 +120,8 @@ export function Creator() {
       closeCreator();
       if (column !== 'inbox') {
         if (tab === 'settings' || tab === 'projects') setTab('board');
-        setTimeout(() => reveal(temp.id), 80);
-      } else if (tab === 'inbox') setTimeout(() => reveal(temp.id), 80);
+        setTimeout(() => reveal(temp.id, false), 80);
+      } else if (tab === 'inbox') setTimeout(() => reveal(temp.id, false), 80);
     }
     done.then(
       c => {

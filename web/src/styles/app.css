@@ -151,8 +151,11 @@
    改动当帧就画出来，服务端确认前画成「保存中」。都延迟一点才出现：网络快时看不到闪动 */
 @keyframes saving-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 .card.saving { animation: saving-breathe 1.4s var(--ease-in-out) 240ms infinite; }
-/* 新建的临时卡片：先弹入一次，弹完再呼吸（单写 .card.saving 会盖掉入场动画）。换成真卡片时是同一个元素，不再弹入 */
-.card.saving.entering { animation: card-in var(--dur-4) var(--spring-soft) both, saving-breathe 1.4s var(--ease-in-out) calc(var(--dur-4) + 240ms) infinite; }
+/* 本窗口新建的临时卡片：只淡入一次（不缩放、不模糊、不回弹），淡入完接着用通用的「保存中」呼吸（单写 .card.saving 会盖掉入场动画）。
+   换成真卡片时是同一个元素，不再入场；新建后定位到它时不放光环（Creator 里 reveal(id, false)） */
+.card.adding { animation: card-add var(--dur-2) var(--ease-out) both; }
+.card.saving.adding { animation: card-add var(--dur-2) var(--ease-out) both, saving-breathe 1.4s var(--ease-in-out) calc(var(--dur-2) + 240ms) infinite; }
+@keyframes card-add { from { opacity: 0; transform: translateY(4px); } }
 /* 保存中的对象先不能再改（store/data.ts busy）：卡片不能拖，工作流条和状态设置不响应指针，等待光标 */
 .card.saving, .card.draft { cursor: progress; }
 .wf-bar.busy, .wf-menu.busy { cursor: progress; }
