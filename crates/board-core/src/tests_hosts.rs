@@ -1590,3 +1590,41 @@ fn rename_host_rejects_taken_names() {
     assert_eq!(h.name, "desk");
     assert_eq!(s.read(|r| r.host("mbp", T0 + 61 * S)).unwrap_err().code, ErrorCode::NoSuchHost);
 }
+
+/// 改名不重启 board host：服务端先改名，board host 读到新配置之前还用旧名字上报、开始派发，
+/// 按进程标识认回改名后的那台机器，不新建第二台；在跑的派发照常续心跳。读到新配置后用新名字上报，接着是同一台
+#[test]
+fn rename_while_host_keeps_running() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let id = host(&s, T0).id;
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(2), ..Default::default() })).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let b = new_card(&mut s, T0, "B");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    let h = s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("mbp", "win")).unwrap();
+    assert_eq!((h.id, h.online), (id, true));
+    // 旧名字、同一个进程：认回 win，在跑的派发照常续心跳
+    let w = beat(&mut s, T0 + 3 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    assert_eq!((w.host.id, w.host.name.as_str()), (id, "win"));
+    assert_eq!(w.running.iter().map(|x| x.id).collect::<Vec<_>>(), vec![d.id]);
+    assert_eq!(get(&s, d.id).state, "running");
+    // 改名之后派给 win 的卡片，旧名字的 board host 也能开始
+    let d2 = dispatch(&mut s, T0 + 3 * S, b, "win", None).unwrap();
+    let d2 = begin(&mut s, T0 + 4 * S, d2.id).unwrap();
+    assert_eq!(d2.host, "win");
+    // 只有一台机器
+    let all = s.read(|r| r.hosts(T0 + 4 * S)).unwrap();
+    assert_eq!(all.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), vec!["win"]);
+    // 读到新配置：新名字、同一个进程接着上报
+    let w = beat(&mut s, T0 + 5 * S, &report("win", "i1", vec![d.id, d2.id])).unwrap();
+    assert_eq!((w.host.id, w.running.len()), (id, 2));
+    assert_eq!(s.read(|r| r.hosts(T0 + 5 * S)).unwrap().len(), 1);
+    // 别的进程用旧名字上报：和改过名的机器无关，按新机器建立
+    let w = beat(&mut s, T0 + 6 * S, &report("mbp", "j1", vec![])).unwrap();
+    assert_ne!(w.host.id, id);
+    // 不认识的进程标识、也没有这个名字：开始派发报 NO_SUCH_HOST
+    let e = s.write(T0 + 6 * S, Origin::cli(), |w| w.dispatch_pull("desk", "zz", Some(1))).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NoSuchHost);
+}

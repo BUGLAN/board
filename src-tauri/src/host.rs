@@ -4,7 +4,8 @@
 //!   标准输入关闭就按 Ctrl+C 处理——先结束它启动的 agent，再让机器离线）。
 //! - 开关打开时关掉窗口也继续运行：最后一个窗口关闭时不退出程序；macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口。
 //!   退出桌面端（菜单「退出」、托盘「退出」）时关闭 board host 的标准输入，它自己收尾后退出。
-//! - 机器名、白板与目录写进 `~/.board/config.toml` 的 `[host]`（board host 读它）；保存时如果正在运行就重启它。
+//! - 机器名、白板与目录写进 `~/.board/config.toml` 的 `[host]`（board host 读它）。保存时不重启 board host：
+//!   它每秒看一次配置，自己换上新的机器名、白板与目录，正在跑的 agent 不受影响。
 //! - 开关记在应用配置目录的 `host.json`，下次打开桌面端自动运行。
 //! - board host 的输出写到 `~/.board/host/desktop.log`；页面上能看到它在不在跑和最近的输出。
 //! - macOS 从 Finder 打开的程序拿不到 shell 里的 PATH：先用登录 shell 取一次 PATH，board host 才找得到 claude 这些命令。
@@ -230,7 +231,7 @@ pub fn ensure_started<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 /// board host 收尾最长要等 agent 退出（10 秒）再上报几次：给足时间
 pub const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(40);
 
-/// 停掉后台的 board host（退出桌面端、关掉开关、改了设置要重启时），等它真的退出。
+/// 停掉后台的 board host（退出桌面端、关掉开关），等它真的退出。
 /// 到时间还没退出：留在状态里（界面照实显示在跑），返回错误，调用方不要启动新的（新旧两个会重名）
 pub fn stop<R: Runtime>(app: &AppHandle<R>, wait: std::time::Duration) -> Result<(), String> {
     let state = app.state::<HostProc>();
@@ -242,7 +243,7 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>, wait: std::time::Duration) -> Result
             if let Ok(mut g) = state.0.lock() {
                 *g = Some(r);
             }
-            Err(format!("board host {} 秒内没有退出，没有重启；稍后再试，或退出桌面端", wait.as_secs()))
+            Err(format!("board host {} 秒内没有退出；稍后再试，或退出桌面端", wait.as_secs()))
         }
     }
 }
@@ -372,10 +373,11 @@ fn rename_host(new_name: &str) -> Result<(), (String, String)> {
     Err((code.to_string(), if msg.is_empty() { code.to_string() } else { msg.to_string() }))
 }
 
-/// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）；正在运行时重启 board host。
-/// 机器名变了：先停 board host（它还在用旧名字上报，不停的话改名之后又会把旧机器建回来），
-/// 再让服务端把机器记录原地改名（设置和历史派发记录保留），然后写配置、重启；
-/// 改名失败（新名字已被别的机器占用等）时不写配置，board host 用旧名字接着跑。
+/// 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）。不重启 board host：在跑的 board host
+/// 每秒看一次配置，自己换上新的机器名、白板与目录，正在跑的 agent 不受影响。
+/// 机器名变了：先让服务端把机器记录原地改名（设置和历史派发记录保留），成功了再写配置；
+/// 改名失败（新名字已被别的机器占用等）时不写配置，返回原因，board host 用旧名字接着跑。
+/// 在 board host 读到新配置之前，它用旧名字的上报由服务端按进程标识认回改名后的记录，不会新建一台机器。
 /// 确认（机器名、白板与目录、免审批运行的风险）由页面用应用内的确认框做完再调用这里
 #[tauri::command]
 pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(), String> {
@@ -385,21 +387,16 @@ pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(
         let (old_name, _old_dirs, logged_in) = read_conf();
         let new = effective_name(name);
         if logged_in && effective_name(&old_name) != new {
-            stop(&app, STOP_WAIT)?;
             if let Err((code, msg)) = rename_host(&new) {
                 // 服务端还没有这台机器的记录（从没运行过 board host）：没有要改的，直接按新名字建
                 if code != "NO_SUCH_HOST" {
-                    if enabled(&app) {
-                        let _ = ensure_started(&app);
-                    }
                     return Err(msg);
                 }
             }
         }
         save_conf(name, &dirs)?;
         if enabled(&app) {
-            // 改名的路径里已经停过：这里再停一次是空操作
-            stop(&app, STOP_WAIT)?;
+            // 在跑就不动（它自己读新配置）；之前出错退出了才启动
             ensure_started(&app)?;
         }
         Ok(())

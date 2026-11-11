@@ -964,6 +964,20 @@ impl<'a> W<'a> {
         self.read().host_row(name)
     }
 
+    /// board host 按名字找自己的机器记录。名字找不到时，再按这个进程的标识找：机器刚被改名
+    /// （桌面端「设置 → 本机」保存机器名，先在服务端改名、再写配置文件），正在跑的 board host
+    /// 读到新配置之前还在用旧名字上报、取任务，认回改名后的那条记录，不新建第二台机器。
+    /// 标识每次启动随机生成，只有这个进程自己知道，别的机器借不到
+    fn host_of_proc(&self, name: &str, instance: &str) -> Result<Option<HostRow>> {
+        if let Some(h) = self.host_row(name)? {
+            return Ok(Some(h));
+        }
+        if instance.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(self.tx.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE instance = ?1"), [instance], host_row).optional()?)
+    }
+
     fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
@@ -1252,7 +1266,10 @@ impl<'a> W<'a> {
         let agents = serde_json::to_string(&rep.agents).unwrap_or_else(|_| "[]".into());
         let dirs = serde_json::to_string(&rep.dirs).unwrap_or_else(|_| "[]".into());
         let envs = serde_json::to_string(&rep.envs).unwrap_or_else(|_| "[]".into());
-        match self.host_row(&rep.name)? {
+        // 改名后还用旧名字上报：认回改名后的记录（见 host_of_proc），下面都用记录里的名字
+        let found = self.host_of_proc(&rep.name, &rep.instance)?;
+        let name = found.as_ref().map_or_else(|| rep.name.clone(), |h| h.name.clone());
+        match found {
             None => {
                 if rep.done {
                     return Err(no_such_host(&rep.name));
@@ -1277,7 +1294,7 @@ impl<'a> W<'a> {
                         self.tx.execute("UPDATE hosts SET off_at = ?2, round_at = NULL WHERE id = ?1", params![h.id, now])?;
                         self.touch_hosts();
                     }
-                    return self.read().host_work(&rep.name, now);
+                    return self.read().host_work(&name, now);
                 }
                 let differs = !online
                     || h.instance != rep.instance
@@ -1302,7 +1319,7 @@ impl<'a> W<'a> {
         // 在跑的派发。board host 报的是它知道的派发 ID：board next 刚换到下一张、board host 还没取到新任务时，
         // 它报的还是上一张。同一个会话（同一个进程）里的任何一张在报，就算有进程
         let running: Vec<i64> =
-            self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running' ORDER BY id", [&rep.name], |r| r.get(0))?;
+            self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running' ORDER BY id", [&name], |r| r.get(0))?;
         let mut alive: Vec<i64> = vec![];
         for id in &rep.running {
             if let Some(s) = self
@@ -1328,7 +1345,7 @@ impl<'a> W<'a> {
                 self.finish(&d, None, &[], Finish::Missing)?;
             }
         }
-        self.read().host_work(&rep.name, now)
+        self.read().host_work(&name, now)
     }
 
     /// 界面上修改机器设置（任务下发需求 §四）
@@ -1637,7 +1654,7 @@ impl<'a> W<'a> {
 
     /// 校验 board host：机器存在，并且是这个进程在上报
     fn host_of(&self, name: &str, instance: &str) -> Result<HostRow> {
-        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let h = self.host_of_proc(name, instance)?.ok_or_else(|| no_such_host(name))?;
         if h.instance != instance {
             return Err(BoardError::new(ErrorCode::HostNameTaken, format!("机器名「{name}」已经由另一个 board host 使用")));
         }

@@ -379,7 +379,7 @@ function LocalHostCard() {
     a.length === b.length && a.every((d, i) => d.board.trim() === b[i].board.trim() && d.path.trim() === b[i].path.trim());
 
   // 打开开关 / 改了白板与目录要保存：先用应用内的确认框说清机器名、目录和免审批运行的风险，
-  // 人确认之后再调外壳（确认过就不再弹系统确认框）。取消时什么都不做：不保存、不重启 board host
+  // 人确认之后再调外壳（确认过就不再弹系统确认框）。取消时什么都不做：不保存
   const ask = async (title: string, ok: string, ds: Dir[]) =>
     confirm({
       title,
@@ -406,25 +406,19 @@ function LocalHostCard() {
   };
 
   const save = async () => {
-    // 正在接任务时改了白板与目录：先确认（agent 会去新目录干活），取消就不保存、不重启
+    // 正在接任务时改了白板与目录：先确认（agent 会去新目录干活），取消就不保存。
+    // 保存不重启 board host：它自己读到新配置，正在跑的 agent 不受影响
     const next = filled();
     if (st?.enabled && !sameDirs(st.dirs, next) && !(await ask('修改这台电脑接任务的白板目录？', '保存', next))) return;
-    // 正在接任务：保存后要重启 board host，本机正在跑的 agent 会被停止
-    const running = (ws?.dispatches ?? []).filter(d => d.state === 'running' && d.host === me).length;
-    if (st?.enabled && st.running && running > 0) {
-      const yes = await confirm({
-        title: '保存并重启 board host？',
-        text: `保存后 board host 会重启：这台电脑上正在跑的 ${running} 个 agent 会被停止，卡片移到需要人处理的状态。`,
-        ok: '保存并重启',
-        icon: 'reset',
-      });
-      if (!yes) return;
-    }
     setBusy(true);
     try {
       await saveLocalHost(name.trim(), filled());
       setDirty(false);
-      toast({ type: 'success', title: '已保存', text: st?.enabled ? '写进了 ~/.board/config.toml，board host 已重启' : '写进了 ~/.board/config.toml 的 [host]' });
+      toast({
+        type: 'success',
+        title: '已保存',
+        text: st?.enabled ? '写进了 ~/.board/config.toml，board host 不用重启就换上新设置，正在跑的 agent 不受影响' : '写进了 ~/.board/config.toml 的 [host]',
+      });
       await load();
     } catch (e) {
       toast({ type: 'error', title: '没有保存', text: String(e) });

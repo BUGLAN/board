@@ -5,6 +5,9 @@
 //! ```
 //!
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
+//!   运行中每秒看一次 `[host]`：机器名、白板与目录变了（桌面端「设置 → 本机」保存）就直接换上，不用重启，
+//!   正在跑的 agent 不受影响（命令行给了 `--name` / `--dir` 的那一项不跟着配置文件变）。机器名变了先让服务端把
+//!   机器记录原地改名（桌面端已经改过的不再改），改名失败就接着用原来的名字。
 //! - 启动时找本机的启动环境（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL 的发行版 …，见 envs.rs），
 //!   再找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi、codex），在每个 agent 支持、
 //!   本机有的启动环境里各检查一次命令找不找得到（内置模板在直接启动、登录 shell 里还会看几个常见的安装位置）、取版本号
@@ -139,6 +142,8 @@ const SKILL: &str = "board-skills";
 
 /// 主循环每一轮的间隔
 const TICK: Duration = Duration::from_millis(200);
+/// 多久看一次配置文件的 `[host]`（机器名、白板与目录）
+const CONF_EVERY: Duration = Duration::from_secs(1);
 /// 多久上传一次新增的日志
 const LOG_EVERY: Duration = Duration::from_secs(5);
 /// 停止 agent：SIGTERM 之后等多久再 SIGKILL
@@ -584,16 +589,23 @@ struct Host<'a> {
     hold: bool,
     /// 上一次打印的连接错误（同样的错误不重复打印）
     last_err: String,
+    /// 机器名、白板与目录跟着配置文件变（命令行没给 `--name` / `--dir`）
+    follow_name: bool,
+    follow_dirs: bool,
+    /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
+    conf_seen: (Option<String>, Vec<(String, String)>),
 }
 
 /// `board host`：一直运行，直到 Ctrl+C
 pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let file = config::File::load()?;
     let conf = file.host()?;
+    let follow_name = opts.name.as_deref().is_none_or(|s| s.trim().is_empty());
+    let follow_dirs = opts.dirs.is_empty();
     // 机器名
-    let name = match opts.name.as_deref().map(str::trim).filter(|s| !s.is_empty()).or(conf.name.as_deref()) {
+    let name = match opts.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(n) => n.to_string(),
-        None => host_name_from(&sysinfo::System::host_name().unwrap_or_default()),
+        None => conf_name(conf.name.as_deref()),
     };
     check_host_name(&name).map_err(BoardError::usage)?;
     // 白板与目录：命令行给了就只用命令行的
@@ -610,23 +622,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
             })
             .collect::<Result<_>>()?
     };
-    let mut dirs: Vec<(String, PathBuf)> = vec![];
-    for (board, path) in raw {
-        if !board_core::config::valid_board(&board) {
-            return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
-        }
-        if dirs.iter().any(|(b, _)| *b == board) {
-            return Err(BoardError::usage(format!("白板 {board} 写了两次")));
-        }
-        let mut dir = expand(&path);
-        if dir.is_relative() {
-            dir = std::env::current_dir().map(|c| c.join(&dir)).unwrap_or(dir);
-        }
-        if !dir.is_dir() {
-            return Err(BoardError::usage(format!("目录不存在：{}（{board}）", dir.display())));
-        }
-        dirs.push((board, dir));
-    }
+    let dirs = parse_dirs(raw)?;
     let be = Backend::open_host()?;
     let envs = envs::discover();
     let mut agents = agent_specs(&conf.agents, &envs)?;
@@ -670,6 +666,9 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         work_at: Instant::now(),
         hold: false,
         last_err: String::new(),
+        follow_name,
+        follow_dirs,
+        conf_seen: (conf.name.clone(), conf.dirs.clone()),
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -691,6 +690,36 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     out
 }
 
+/// 配置文件里的机器名；没写时用本机主机名（转成合法的机器名）
+fn conf_name(name: Option<&str>) -> String {
+    match name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) => n.to_string(),
+        None => host_name_from(&sysinfo::System::host_name().unwrap_or_default()),
+    }
+}
+
+/// 校验白板与目录：白板写成 <项目>/<白板>、不重复，目录存在（相对路径按当前目录）
+fn parse_dirs(raw: Vec<(String, String)>) -> Result<Vec<(String, PathBuf)>> {
+    let mut dirs: Vec<(String, PathBuf)> = vec![];
+    for (board, path) in raw {
+        if !board_core::config::valid_board(&board) {
+            return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
+        }
+        if dirs.iter().any(|(b, _)| *b == board) {
+            return Err(BoardError::usage(format!("白板 {board} 写了两次")));
+        }
+        let mut dir = expand(&path);
+        if dir.is_relative() {
+            dir = std::env::current_dir().map(|c| c.join(&dir)).unwrap_or(dir);
+        }
+        if !dir.is_dir() {
+            return Err(BoardError::usage(format!("目录不存在：{}（{board}）", dir.display())));
+        }
+        dirs.push((board, dir));
+    }
+    Ok(dirs)
+}
+
 /// `board host rename <新机器名>`：让服务端把这台机器的记录原地改名（桌面端「设置 → 本机」保存机器名时调用）。
 /// 旧名字取配置文件 `[host].name`，没写时用本机主机名——和 `board host` 启动时的算法一致，
 /// 保证改的就是服务端记录的这台机器。设置和历史派发记录都保留
@@ -698,10 +727,7 @@ pub fn rename(to: &str, json: bool, p: &Paint) -> Result<Output> {
     let to = to.trim();
     check_host_name(to).map_err(BoardError::usage)?;
     let conf = config::File::load()?.host()?;
-    let from = match conf.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(n) => n.to_string(),
-        None => host_name_from(&sysinfo::System::host_name().unwrap_or_default()),
-    };
+    let from = conf_name(conf.name.as_deref());
     check_host_name(&from).map_err(BoardError::usage)?;
     if from == to {
         return Ok(if json {
@@ -910,6 +936,7 @@ impl Host<'_> {
         let mut fetch = false;
         let mut last_min = String::new();
         let mut seen: Option<i64> = None;
+        let mut next_conf = Instant::now() + CONF_EVERY;
         loop {
             if QUIT.load(Ordering::SeqCst) {
                 return Ok(());
@@ -921,6 +948,13 @@ impl Host<'_> {
                 }
             }
             let now = Instant::now();
+            if now >= next_conf {
+                next_conf = now + CONF_EVERY;
+                // 换了名字、目录：马上上报，界面「机器」里立刻看到
+                if self.reload() {
+                    next_beat = now;
+                }
+            }
             if now >= next_beat {
                 next_beat = now + every;
                 fetch = false;
@@ -953,6 +987,81 @@ impl Host<'_> {
             }
             std::thread::sleep(TICK);
         }
+    }
+
+    /// 配置文件的 `[host]` 变了（桌面端「设置 → 本机」保存）：不重启，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
+    /// 返回有没有换。配置不对（名字不合规、目录不存在）、服务端不让改名时打印一行，接着用原来的
+    fn reload(&mut self) -> bool {
+        if !self.follow_name && !self.follow_dirs {
+            return false;
+        }
+        let Ok(conf) = config::File::load().and_then(|f| f.host()) else { return false };
+        let raw = (conf.name.clone(), conf.dirs.clone());
+        if raw == self.conf_seen {
+            return false;
+        }
+        self.conf_seen = raw;
+        let mut changed = false;
+        if self.follow_name {
+            let to = conf_name(conf.name.as_deref());
+            if to != self.name {
+                match self.rename_to(&to) {
+                    Ok(()) => changed = true,
+                    Err(e) => self.say(format!(
+                        "{} 机器名没有改成 {to}：{}  {}（接着用 {}）",
+                        self.p.yellow("!"),
+                        e.code.as_str(),
+                        e.message,
+                        self.name
+                    )),
+                }
+            }
+        }
+        if self.follow_dirs {
+            match parse_dirs(conf.dirs) {
+                Ok(dirs) if dirs != self.dirs => {
+                    for a in &mut self.agents {
+                        a.check_skills(&self.envs, &dirs);
+                    }
+                    let list: Vec<String> = dirs.iter().map(|(b, d)| format!("{b} → {}", d.display())).collect();
+                    let list = if list.is_empty() { "（没有）".to_string() } else { list.join("，") };
+                    self.say(format!("{} 白板与目录已更新：{list}", self.p.green("✓")));
+                    self.dirs = dirs;
+                    changed = true;
+                }
+                Ok(_) => {}
+                Err(e) => self.say(format!("{} 白板与目录没有更新：{}（接着用原来的）", self.p.yellow("!"), e.message)),
+            }
+        }
+        changed
+    }
+
+    /// 换机器名：服务端把机器记录原地改名（设置、历史派发记录保留），再换 pid 文件。
+    /// 桌面端保存时已经先改过名（旧名字在服务端没有记录了，NO_SUCH_HOST）就直接换。
+    /// 正在跑的 agent 的派发配置留在旧名字的 run 目录里，等它们都结束、board host 下次启动再换到新名字的目录
+    fn rename_to(&mut self, to: &str) -> Result<()> {
+        check_host_name(to).map_err(BoardError::usage)?;
+        let from = self.name.clone();
+        match self.be.host_rename(&from, to) {
+            Ok(_) => {}
+            Err(e) if e.code == ErrorCode::NoSuchHost => {}
+            Err(e) => return Err(e),
+        }
+        let pidfile = self.pidfile.with_file_name(format!("{to}.pid"));
+        if let Ok(s) = std::fs::read_to_string(&self.pidfile) {
+            if s.contains(&self.instance) {
+                let _ = std::fs::write(&pidfile, s);
+                let _ = std::fs::remove_file(&self.pidfile);
+            }
+        }
+        self.pidfile = pidfile;
+        if self.runs.is_empty() {
+            let _ = std::fs::remove_dir_all(&self.run);
+            self.run = self.run.with_file_name(to);
+        }
+        self.name = to.to_string();
+        self.say(format!("{} 机器名已改为 {}（原来是 {from}）", self.p.green("✓"), self.p.bold(to)));
+        Ok(())
     }
 
     /// 请求失败：名字被别的 board host 占用时退出；机器被移除时马上重新上报（按新机器建立）；其他（连不上等）打印一次后继续重试

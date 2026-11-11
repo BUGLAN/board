@@ -87,8 +87,12 @@ impl Rig {
     }
 
     fn host(&self, name: &str) -> Child {
+        self.host_with(&["host", "--name", name, "--dir", &format!("default/main={}", self.repo.display())])
+    }
+
+    fn host_with(&self, args: &[&str]) -> Child {
         let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
-        c.args(["host", "--name", name, "--dir", &format!("default/main={}", self.repo.display())])
+        c.args(args)
             .env("HOME", &self.s.home)
             .env("USERPROFILE", &self.s.home)
             .env("NO_COLOR", "1")
@@ -278,6 +282,12 @@ fn cron_session_does_several_cards() {
         rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
     });
     assert_eq!(rig.workspace()["hosts"][0]["perSession"], 4);
+    // 没有领取规则时不自动领取：加一条命中全部卡片的规则（不带「跳过」→ claude）
+    let rule = board_core::ClaimRule { op: "not_in".into(), labels: vec!["跳过".into()], agent: "claude".into(), ..Default::default() };
+    let patch = board_core::HostPatch { rules: Some(vec![rule]), ..Default::default() };
+    let mut store = board_core::Store::open(&rig.s.db).unwrap();
+    store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", "跳过", None, false)).unwrap();
+    store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &patch)).unwrap();
     ureq::post(format!("{}/api/hosts/mbp/round", rig.s.url))
         .header("authorization", format!("Bearer {}", rig.s.token))
         .send_json(serde_json::json!({}))
@@ -446,4 +456,77 @@ fn agent_exit_ends_its_process_group() {
     wait_until("留下的子进程被结束", Duration::from_secs(10), || !running(child));
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
+}
+
+/// 桌面端「设置 → 本机」保存（改配置文件的 [host]）：board host 不重启，换上新的机器名、白板与目录。
+/// 在跑的 agent 不被停止，接着由同一台机器（改名后的记录）续心跳；机器列表里始终只有一台
+#[test]
+fn host_follows_config_without_restart() {
+    let rig = Rig::new();
+    for t in ["一", "二"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    let cfg = rig.s.home.join(".board").join("config.toml");
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    let host_conf = |name: &str, dir: &Path| format!("{base}\n[host]\nname = \"{name}\"\n\n[host.dirs]\n\"default/main\" = \"{}\"\n", dir.display());
+    std::fs::write(&cfg, host_conf("mbp", &rig.repo)).unwrap();
+    // 不带 --name、--dir：都跟着配置文件
+    let host = rig.host_with(&["host"]);
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    let id = rig.workspace()["hosts"][0]["id"].clone();
+    // 一个 agent 在跑
+    rig.mode("sleep");
+    assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
+    wait_until("#1 开始", Duration::from_secs(10), || rig.show(1)["holder"] == "claude-mbp/opus-5.5");
+    let pidfile = rig.fake.parent().unwrap().join("agent.pid");
+    wait_until("agent 写出进程号", Duration::from_secs(10), || std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty()));
+    let pid = std::fs::read_to_string(&pidfile).unwrap();
+
+    // 桌面端保存：先在服务端改名（board host rename），再写配置文件；目录也换一个
+    let other = rig.repo.with_file_name("repo2");
+    std::fs::create_dir(&other).unwrap();
+    let mut env = rig.s.env();
+    env.retain(|(k, _)| *k != "BOARD_AS" && *k != "BOARD");
+    let r = rig.s.raw(&env, &["host", "rename", "win", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    std::fs::write(&cfg, host_conf("win", &other)).unwrap();
+    wait_until("board host 换上新目录", Duration::from_secs(10), || {
+        let ws = rig.workspace();
+        let hs = ws["hosts"].as_array().unwrap();
+        hs.len() == 1 && hs[0]["name"] == "win" && hs[0]["dirs"][0]["path"] == other.display().to_string()
+    });
+    // 再过几次上报：还是一台机器（同一条记录），agent 没被停止，卡片仍由它持有
+    std::thread::sleep(Duration::from_secs(2));
+    let ws = rig.workspace();
+    let hs = ws["hosts"].as_array().unwrap();
+    assert_eq!(hs.len(), 1, "{hs:?}");
+    assert_eq!((hs[0]["id"].clone(), hs[0]["online"].clone()), (id, Value::Bool(true)));
+    assert_eq!(rig.show(1)["holder"], "claude-mbp/opus-5.5");
+    assert!(Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success(), "在跑的 agent 没有被停止");
+    let home = rig.s.home.join(".board").join("host");
+    assert!(home.join("win.pid").exists() && !home.join("mbp.pid").exists(), "pid 文件换成新名字");
+
+    // 新派发用新名字、新目录
+    let r = rig.board(&["dispatch", "1", "--cancel"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("#1 已停止", Duration::from_secs(15), || ended(&rig.show(1), "已停止"));
+    rig.mode("review");
+    let r = rig.board(&["dispatch", "2", "--host", "win", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d2 = r.json()["id"].as_i64().unwrap();
+    wait_until("#2 交审", Duration::from_secs(15), || ended(&rig.show(2), "已交审"));
+    let local = std::fs::read_to_string(log_file(&rig.s.home, d2)).unwrap();
+    assert!(local.contains("as: claude-win/opus-5.5 host: win"), "{local}");
+
+    // 配置不对（目录不存在）：打印一行，接着用原来的
+    std::fs::write(&cfg, host_conf("win", &rig.repo.with_file_name("nope"))).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], other.display().to_string());
+
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("机器名已改为 win"), "{out}");
+    assert!(out.contains("白板与目录没有更新"), "{out}");
 }
