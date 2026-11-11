@@ -229,6 +229,10 @@ impl<'a> W<'a> {
                     };
                     return Err(BoardError::new(ErrorCode::ForbiddenColumn, msg));
                 }
+                // 错误节点：agent 可以沿连线移入，只有人能移出（agent 移出去就又会被领走、重试）
+                if actor.is_agent() && from != to && flow.is_error(&from) {
+                    return Err(BoardError::new(ErrorCode::ForbiddenColumn, format!("只有人能把卡片移出错误节点「{}」", flow.name(&from))));
+                }
                 if actor.is_agent() && from != to {
                     // 规则 11：「未整理」只归人管
                     if from == INBOX || to == INBOX {

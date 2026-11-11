@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { CH, edgeId, layoutFlow, midOf, pathD, type Pt } from '../lib/flowGraph';
-import { statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/schema';
+import { patchStatus, statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/schema';
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { flowKey, optimistic, useBusy, useData } from '../store/data';
@@ -289,6 +289,11 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
                     <Icon name="check" />
                   </span>
                 )}
+                {s.error && (
+                  <span className="wf-glyph error" title="错误节点：agent 异常退出、做不下去时移到这里，只有人能移出">
+                    <Icon name="alert" />
+                  </span>
+                )}
                 {warn && (
                   <span className="wf-glyph warn" title="没有连到锁定状态：agent 不能从这里领取">
                     <Icon name="alert" />
@@ -501,7 +506,7 @@ function StatusMenu({
   }, []);
 
   const patch = (p: Parameters<typeof api.updateStatus>[2]) =>
-    run(list => list.map(x => (x.key === s.key ? { ...x, ...p } : x)), () => api.updateStatus(path, s.key, p));
+    run(list => list.map(x => (x.key === s.key ? patchStatus(x, p) : x)), () => api.updateStatus(path, s.key, p));
   const rename = (v: string) => {
     const n = v.trim();
     if (n && n !== s.name) patch({ name: n });
@@ -588,6 +593,13 @@ function StatusMenu({
         )}
         {sw(s.lock, '锁定', '只能由 agent 领取进入；被持有期间只有持有者能移动', () => patch({ lock: !s.lock }))}
         {sw(s.final, '终点', '进来算完成：只有人能移入移出', () => patch({ final: !s.final }))}
+        {sw(
+          !!s.error,
+          '错误节点',
+          'agent 异常退出、做不下去时沿连线移到这里，不会再被领走；只有人能移出。打开时关掉上面三项',
+          () => patch({ error: !s.error }),
+          lastClaim ? '最后一个可领取的状态不能设为错误节点' : undefined,
+        )}
       </div>
       <div className="wf-menu-foot">
         {lastClaim ? (

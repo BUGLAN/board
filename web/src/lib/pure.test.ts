@@ -5,7 +5,7 @@ import type { DragUI } from '../store/ui';
 import { FLOW, status } from '../../test/fixtures';
 import { placeAt } from './drag';
 import { CH, edgeId, layoutFlow, mainPath } from './flowGraph';
-import { flowOf } from './schema';
+import { flowOf, patchStatus } from './schema';
 import { actorName } from './util';
 
 describe('actorName（界面上怎么称呼）', () => {
@@ -175,5 +175,25 @@ describe('since（完成于多久前）', () => {
     expect(since(t, t + 5 * 60e3)).toBe('5 分钟前');
     expect(since(t, t + 3 * 3600e3)).toBe('3 小时前');
     expect(since(t, t + 2 * 86400e3)).toBe('2 天前');
+  });
+});
+
+describe('patchStatus（状态设置先画到界面上）', () => {
+  it('打开错误节点时关掉可领取、锁定、终点', () => {
+    const s = patchStatus(status('rework', { claim: true }), { error: true });
+    expect(s).toMatchObject({ error: true, claim: false, lock: false, final: false });
+    expect(patchStatus(status('done', { final: true }), { error: true })).toMatchObject({ error: true, final: false });
+  });
+  it('打开可领取、锁定、终点之一时关掉错误节点', () => {
+    for (const p of [{ claim: true }, { lock: true }, { final: true }]) {
+      expect(patchStatus(status('s2', { error: true }), p)).toMatchObject({ ...p, error: false });
+    }
+  });
+  it('其他修改不动规则，重复执行结果相同', () => {
+    const s = status('s2', { error: true });
+    const once = patchStatus(s, { name: '搁置' });
+    expect(once).toMatchObject({ name: '搁置', error: true });
+    expect(patchStatus(once, { name: '搁置' })).toEqual(once);
+    expect(flowOf([once]).isError('s2')).toBe(true);
   });
 });

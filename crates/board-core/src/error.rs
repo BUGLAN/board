@@ -122,7 +122,7 @@ impl ErrorCode {
             ErrorCode::NotInTodo => "这张卡片不在可领取的状态，也不是你持有的卡片",
             ErrorCode::AlreadyHolding => "你已经持有另一张卡片，一个 agent 在一块白板上同时只能持有一张",
             ErrorCode::NotHolder => "被持有的卡片只有持有者能编辑和移动",
-            ErrorCode::ForbiddenColumn => "不允许这样移动：锁定状态只能领取进入，终点和「未整理」只归人管，agent 只能沿连线移动",
+            ErrorCode::ForbiddenColumn => "不允许这样移动：锁定状态只能领取进入，终点和「未整理」只归人管，错误节点只有人能移出，agent 只能沿连线移动",
             ErrorCode::Usage => "命令格式或参数不正确",
             ErrorCode::NotLoggedIn => "未登录：网页端请先用 GitHub 登录；命令行运行 board login",
             ErrorCode::InvalidToken => "访问令牌无效或已吊销：在界面「设置 → Agent 接入」里新建令牌",

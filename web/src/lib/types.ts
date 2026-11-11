@@ -25,6 +25,8 @@ export interface Status {
   lock: boolean;
   /** 终点：只有人能移入移出 */
   final: boolean;
+  /** 错误节点：agent 异常退出、做不下去时沿连线移到这里，只有人能移出；和可领取、锁定、终点互斥（旧服务端没有） */
+  error?: boolean;
   /** 卡片形态；服务端没设置过时按规则给出（终点用磁贴，其他用卡片） */
   view?: StatusView;
   layout: Tile | null;

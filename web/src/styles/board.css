@@ -528,6 +528,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 /* 只读（设置页）：不能拖、不能点 */
 .wf-ro .wf-node { cursor: default; }
 .wf-glyph.warn { color: var(--warn); opacity: 1; }
+.wf-glyph.error { color: var(--danger-text); opacity: 1; }
 .connecting, .connecting * { cursor: crosshair !important; }
 .wf-edge-del {
   position: absolute; z-index: 4; transform: translate(-50%, -50%); width: 18px; height: 18px; padding: 0; display: grid; place-items: center;

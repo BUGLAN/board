@@ -81,6 +81,10 @@ pub struct Status {
     /// 终点：只有人能把卡片移入或移出
     #[serde(rename = "final")]
     pub fin: bool,
+    /// 错误节点：agent 异常退出、做不下去时沿连线移到这里；只有人能移出。不和可领取、锁定、终点同时打开
+    /// （不可领取，配了定时领取也不会被下一轮重新领走）
+    #[serde(default, rename = "error")]
+    pub err: bool,
     /// 卡片形态；没有设置过时按 CardView::default_for 取
     #[serde(default)]
     pub view: CardView,
@@ -186,11 +190,10 @@ impl Flow {
     pub fn is_human(&self, key: &str) -> bool {
         self.role_of(key, &HUMAN_WORDS)
     }
-    /// 「错误」节点：锁定状态连出去、名称里带「错误」之类关键词的状态。和「需要人处理」分开认：
+    /// 错误节点：状态设置里打开了「错误节点」的状态（看属性，不看名称）。和「需要人处理」分开认：
     /// 错误节点表示 agent 异常退出、做不下去，不是等人校验
     pub fn is_error(&self, key: &str) -> bool {
-        let targets = |t: &Status| !t.claim && !t.fin && !t.lock && words_in(t, &ERROR_WORDS);
-        self.get(key).is_some_and(targets) && self.0.iter().any(|l| l.lock && l.to.iter().any(|t| t == key))
+        self.get(key).is_some_and(|s| s.err)
     }
     /// 从锁定状态 from 沿连线能去的、需要人处理的状态（按工作流顺序第一个）。可领取状态和终点不算：
     /// 放回可领取状态人看不到出了问题，终点只归人管。「错误」节点另算（[`Self::error_after`]），不算在这里
@@ -201,16 +204,17 @@ impl Flow {
     /// 它不在可领取状态里，配了定时领取也不会被下一轮重新领走。
     /// 没有错误节点时由调用方退回 [`Self::human_after`]
     pub fn error_after(&self, from: &str) -> Option<&Status> {
-        self.after(from, &ERROR_WORDS)
+        let s = self.get(from)?;
+        s.to.iter().filter_map(|k| self.get(k)).find(|t| t.err)
     }
-    /// 从锁定状态 from 连出去、名称里带 words 的状态里按工作流顺序排在最前面的一个
+    /// 从锁定状态 from 连出去、名称里带 words 的状态里按工作流顺序排在最前面的一个（错误节点不算）
     fn after(&self, from: &str, words: &[&str]) -> Option<&Status> {
         let s = self.get(from)?;
-        s.to.iter().filter_map(|k| self.get(k)).find(|t| !t.claim && !t.fin && !t.lock && words_in(t, words))
+        s.to.iter().filter_map(|k| self.get(k)).find(|t| !t.claim && !t.fin && !t.lock && !t.err && words_in(t, words))
     }
     fn role_of(&self, key: &str, words: &[&str]) -> bool {
         let Some(s) = self.get(key) else { return false };
-        !s.claim && !s.lock && !s.fin && words_in(s, words) && self.0.iter().any(|l| l.lock && l.to.iter().any(|t| t == key))
+        !s.claim && !s.lock && !s.fin && !s.err && words_in(s, words) && self.0.iter().any(|l| l.lock && l.to.iter().any(|t| t == key))
     }
 }
 
@@ -218,9 +222,6 @@ impl Flow {
 const REVIEW_WORDS: [&str; 4] = ["审核", "审查", "评审", "review"];
 /// 需要人处理的状态名称里的关键词（board-skills「认出角色」：等人处理的状态）
 const HUMAN_WORDS: [&str; 7] = ["人工", "人处理", "人确认", "需人", "check", "manual", "human"];
-/// 「错误」节点名称里的关键词（board-skills「认出角色」：agent 异常退出、做不下去时移入的状态）。
-/// 用整词，不认 `err`、`bug` 这类短词：机器的标识是 `s2`、名称是「错误」，两者都要认
-const ERROR_WORDS: [&str; 6] = ["错误", "出错", "失败", "error", "fail", "failed"];
 
 fn words_in(s: &Status, words: &[&str]) -> bool {
     let (name, key) = (s.name.to_lowercase(), s.key.to_lowercase());

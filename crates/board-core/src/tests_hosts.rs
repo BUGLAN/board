@@ -662,10 +662,16 @@ fn flow_roles() {
     assert!(flow.error_after("doing").is_none());
 }
 
-/// 在 B 上新建「错误」状态（标识 s2），从 doing 连过去
+/// 把状态设成错误节点（状态设置里的「错误节点」开关）
+fn set_error(s: &mut Store, key: &str, on: bool) {
+    s.write(T0, Origin::ui(None), |w| w.update_status(B, key, StatusPatch { err: Some(on), ..Default::default() })).unwrap();
+}
+
+/// 在 B 上新建一个状态并打开「错误节点」，从 doing 连过去。名字故意不带「错误」：错误节点看属性，不看名称
 fn add_error_status(s: &mut Store) -> String {
-    let st = s.write(T0, Origin::ui(None), |w| w.create_status(B, "错误", None)).unwrap();
+    let st = s.write(T0, Origin::ui(None), |w| w.create_status(B, "搁置", None)).unwrap();
     s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[(String::from("doing"), st.key.clone())], &[])).unwrap();
+    set_error(s, &st.key, true);
     st.key
 }
 
@@ -674,15 +680,69 @@ fn error_status_is_its_own_role() {
     let mut s = store();
     let key = add_error_status(&mut s);
     let flow = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
-    assert!(flow.is_error(&key), "名称「错误」要认成错误节点");
+    assert!(flow.is_error(&key), "打开了「错误节点」的状态是错误节点");
     assert_eq!(flow.error_after("doing").map(|s| s.key.as_str()), Some(key.as_str()));
     // 单独一类，不混进交审、需要人处理
     assert!(!flow.is_review(&key) && !flow.is_human(&key));
     assert_eq!(flow.human_after("doing").map(|s| s.key.as_str()), Some("check"), "错误节点不算需要人处理的状态");
-    // 可领取、终点状态不算，即使名字里有「错误」
-    s.write(T0, Origin::ui(None), |w| w.update_status(B, "rework", StatusPatch { name: Some("错误返工".into()), ..Default::default() })).unwrap();
+    // 不靠名称：叫「错误」但没打开开关的状态不是错误节点；打开了开关、名字里带「人工」的也不算需要人处理
+    let named = s.write(T0, Origin::ui(None), |w| w.create_status(B, "错误", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[(String::from("doing"), named.key.clone())], &[])).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.update_status(B, &key, StatusPatch { name: Some("人工处理".into()), ..Default::default() })).unwrap();
     let flow = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
-    assert!(!flow.error_after("todo").is_some_and(|s| s.key == "rework"), "从可领取状态连出去的可领取状态不算错误节点");
+    assert!(!flow.is_error(&named.key), "只看名称不算错误节点");
+    assert_eq!(flow.error_after("doing").map(|s| s.key.as_str()), Some(key.as_str()));
+    assert!(!flow.is_human(&key), "错误节点不当成需要人处理的状态");
+    // 关掉开关就不是了
+    set_error(&mut s, &key, false);
+    let flow = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    assert!(!flow.is_error(&key) && flow.error_after("doing").is_none());
+}
+
+/// 「错误节点」和可领取、锁定、终点互斥：打开一边关掉另一边；最后一个可领取状态不能改成错误节点
+#[test]
+fn error_flag_excludes_other_rules() {
+    let mut s = store();
+    let flow = |s: &Store| s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    // 打开错误节点：终点、锁定、可领取被关掉
+    set_error(&mut s, "done", true);
+    let st = flow(&s).get("done").cloned().unwrap();
+    assert!(st.err && !st.fin);
+    set_error(&mut s, "rework", true);
+    let st = flow(&s).get("rework").cloned().unwrap();
+    assert!(st.err && !st.claim, "可领取被关掉，下一轮定时领取不会从这里领");
+    // 打开可领取：错误节点被关掉
+    s.write(T0, Origin::ui(None), |w| w.update_status(B, "rework", StatusPatch { claim: Some(true), ..Default::default() })).unwrap();
+    let st = flow(&s).get("rework").cloned().unwrap();
+    assert!(st.claim && !st.err);
+    // 同时打开两边：拒绝
+    let both = s.write(T0, Origin::ui(None), |w| {
+        w.update_status(B, "review", StatusPatch { err: Some(true), lock: Some(true), ..Default::default() })
+    });
+    assert!(both.is_err());
+    // 最后一个可领取状态：不能改成错误节点（关掉可领取那一步被拦下）
+    s.write(T0, Origin::ui(None), |w| w.update_status(B, "rework", StatusPatch { claim: Some(false), ..Default::default() })).unwrap();
+    let last = s.write(T0, Origin::ui(None), |w| w.update_status(B, "todo", StatusPatch { err: Some(true), ..Default::default() }));
+    assert!(last.is_err(), "最后一个可领取状态不能变成错误节点");
+    assert!(!flow(&s).is_error("todo"));
+}
+
+/// agent 沿连线移入错误节点；只有人能移出
+#[test]
+fn only_humans_move_cards_out_of_error_status() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[(key.clone(), String::from("todo"))], &[])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let who = Actor::agent("claude/opus-5.5");
+    s.write(T0, Origin::cli(), |w| w.agent_check("claude/opus-5.5", None)).unwrap();
+    exec(&mut s, T0, &who, Cmd::Claim { id: Some(a) }).unwrap();
+    exec(&mut s, T0 + S, &who, Cmd::Move { id: a, column: key.clone(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    assert_eq!(card(&s, a).card.column, key, "agent 沿连线移入错误节点");
+    let out = exec(&mut s, T0 + 2 * S, &who, Cmd::Move { id: a, column: "todo".into(), top: false, index: None, order: None, before: None, after: None });
+    assert!(out.is_err(), "有连线也不行：只有人能移出错误节点");
+    exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Move { id: a, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    assert_eq!(card(&s, a).card.column, "todo");
 }
 
 #[test]
@@ -745,6 +805,7 @@ fn crashed_dispatch_explains_unreachable_error_status() {
     s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[("review".into(), lock.key.clone())], &[])).unwrap();
     let st = s.write(T0, Origin::ui(None), |w| w.create_status(B, "错误", None)).unwrap();
     s.write(T0, Origin::ui(None), |w| w.update_edges(B, &[(lock.key.clone(), st.key.clone())], &[])).unwrap();
+    set_error(&mut s, &st.key, true);
     let probe = s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
     assert!(probe.has_edge(&lock.key, &st.key) && probe.is_error(&st.key), "错误节点要能认出来");
     assert!(!probe.has_edge("doing", &st.key), "doing 到不了错误节点");

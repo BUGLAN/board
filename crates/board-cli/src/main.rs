@@ -348,7 +348,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 Output::Json(Value::Array(
                     flow.0
                         .iter()
-                        .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "to": st.to, "cards": count(&st.key) }))
+                        .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "error": st.err, "to": st.to, "cards": count(&st.key) }))
                         .collect(),
                 ))
             } else {
@@ -366,6 +366,9 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     if st.fin {
                         rules.push("终点");
                     }
+                    if st.err {
+                        rules.push("错误节点");
+                    }
                     rules.join(" · ")
                 };
                 let rw = flow.0.iter().map(|st| width(&rule_of(st))).max().unwrap_or(0) + 2;
@@ -379,6 +382,9 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     }
                     if st.fin {
                         rules.push("终点");
+                    }
+                    if st.err {
+                        rules.push("错误节点");
                     }
                     let to: Vec<&str> = st.to.iter().map(|k| flow.name(k)).collect();
                     s += &format!(
@@ -874,10 +880,12 @@ fn clock(ms: i64) -> String {
 }
 
 impl Fmt<'_> {
-    /// 按状态的规则上色：可领取白、锁定黄、终点绿、未整理紫、其他蓝
+    /// 按状态的规则上色：可领取白、锁定黄、终点绿、错误节点红、未整理紫、其他蓝
     fn col(&self, key: &str, s: &str) -> String {
         let code = if key == INBOX {
             "35"
+        } else if self.flow.is_error(key) {
+            "31"
         } else if self.flow.is_lock(key) {
             "33"
         } else if self.flow.is_final(key) {

@@ -53,7 +53,16 @@ export function flowOf(statuses: Status[] | undefined | null) {
     color: (k: string) => (k === INBOX ? 'var(--c-inbox)' : statusColor(get(k)?.color ?? 'todo')),
     isLock: (k: string) => !!get(k)?.lock,
     isFinal: (k: string) => !!get(k)?.final,
+    isError: (k: string) => !!get(k)?.error,
   };
+}
+
+/** 状态设置的修改先画到界面上：和服务端一样，错误节点与可领取、锁定、终点互斥，打开一边关掉另一边 */
+export function patchStatus(s: Status, p: Partial<Status>): Status {
+  const next = { ...s, ...p };
+  if (p.error) return { ...next, claim: false, lock: false, final: false };
+  if (p.claim || p.lock || p.final) return { ...next, error: false };
+  return next;
 }
 export type FlowQ = ReturnType<typeof flowOf>;
 /** 释放后卡片回到哪里：领取它时所在的可领取状态，否则首个可领取状态（PRD §8 规则 7） */
@@ -95,7 +104,7 @@ export const ERRORS: [ErrorCode, string][] = [
   ['NOT_IN_TODO', '带 ID 领取的卡片不在可领取状态，且不是自己持有的卡片'],
   ['ALREADY_HOLDING', '该 agent 在这块白板上已经持有另一张卡片'],
   ['NOT_HOLDER', '编辑或移动被持有卡片的不是持有者'],
-  ['FORBIDDEN_COLUMN', '把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态或「未整理」；agent 不沿连线移动卡片；从没有连到锁定状态的可领取状态领取'],
+  ['FORBIDDEN_COLUMN', '把卡片直接移进锁定状态；agent 把卡片移入、移出终点状态或「未整理」；agent 把卡片移出错误节点；agent 不沿连线移动卡片；从没有连到锁定状态的可领取状态领取'],
   ['USAGE', '命令格式或参数不正确：未知的命令、未知的状态、项目里不存在的标签、缺少必需的参数、评论内容为空'],
   ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 还没有 board login（环境变量和 ~/.board/config.toml 里都没有服务端地址或令牌）；用访问令牌做只有人能在界面上做的操作'],
   ['INVALID_TOKEN', '访问令牌不存在或已吊销'],

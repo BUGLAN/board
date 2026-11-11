@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS statuses (
   claim INTEGER NOT NULL DEFAULT 0,
   lock  INTEGER NOT NULL DEFAULT 0,
   final INTEGER NOT NULL DEFAULT 0,
+  error INTEGER NOT NULL DEFAULT 0,
   view  TEXT,
   lx    INTEGER,
   lw    INTEGER,
@@ -282,6 +283,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'view'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_view {
             conn.execute_batch("ALTER TABLE statuses ADD COLUMN view TEXT")?;
+        }
+        // 旧数据库的状态没有「错误节点」属性：都不是（不按名称猜，人在状态设置里打开）
+        let has_error: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'error'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_error {
+            conn.execute_batch("ALTER TABLE statuses ADD COLUMN error INTEGER NOT NULL DEFAULT 0")?;
         }
         // 旧数据库的标签没有类型：都算 agent 可打
         let has_human_only: bool =
@@ -720,7 +727,7 @@ const COL_ORDER: &str = "CASE WHEN c.col = 'inbox' THEN -1 ELSE \
 
 pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
     let mut st = conn.prepare_cached(
-        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view FROM statuses WHERE board = ?1 ORDER BY sort, key",
+        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view, error FROM statuses WHERE board = ?1 ORDER BY sort, key",
     )?;
     let v = st
         .query_map([board], |r| {
@@ -734,6 +741,7 @@ pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
                 claim: r.get::<_, i64>(3)? != 0,
                 lock: r.get::<_, i64>(4)? != 0,
                 fin,
+                err: r.get::<_, i64>(10)? != 0,
                 view: view.as_deref().and_then(CardView::parse).unwrap_or(CardView::default_for(fin)),
                 layout: match (lx, lw, ly) {
                     (Some(x), Some(w), Some(y)) => Some(Tile { x, w, y }),

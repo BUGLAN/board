@@ -23,6 +23,9 @@ pub struct StatusPatch {
     pub lock: Option<bool>,
     #[serde(default, rename = "final")]
     pub fin: Option<bool>,
+    /// 错误节点：打开时同时关掉可领取、锁定、终点；打开这三个之一时同时关掉错误节点
+    #[serde(default, rename = "error")]
+    pub err: Option<bool>,
     /// 卡片形态：只影响界面显示
     #[serde(default)]
     pub view: Option<CardView>,
@@ -79,13 +82,25 @@ impl<'a> W<'a> {
             params![b.id, key, name, color, sort],
         )?;
         self.changed = true;
-        Ok(Status { key, name, color, claim: false, lock: false, fin: false, view: CardView::default_for(false), layout: None, to: vec![] })
+        Ok(Status { key, name, color, claim: false, lock: false, fin: false, err: false, view: CardView::default_for(false), layout: None, to: vec![] })
     }
 
-    pub fn update_status(&mut self, path: &str, key: &str, p: StatusPatch) -> Result<()> {
+    pub fn update_status(&mut self, path: &str, key: &str, mut p: StatusPatch) -> Result<()> {
         let b = self.resolve_exact(path)?;
         let flow = flow_of(self.tx, b.id)?;
         let s = Self::flow_status(&flow, key)?.clone();
+        // 错误节点和可领取、锁定、终点互斥：打开一边时关掉另一边（关掉的那边照常检查，例如最后一个可领取状态）
+        let other_on = [p.claim, p.lock, p.fin].contains(&Some(true));
+        if p.err == Some(true) {
+            if other_on {
+                return Err(BoardError::usage("错误节点不能同时是可领取、锁定或终点状态"));
+            }
+            p.claim = p.claim.or(s.claim.then_some(false));
+            p.lock = p.lock.or(s.lock.then_some(false));
+            p.fin = p.fin.or(s.fin.then_some(false));
+        } else if other_on && s.err && p.err.is_none() {
+            p.err = Some(false);
+        }
         if let Some(n) = &p.name {
             let n = self.status_name(&flow, n, Some(key))?;
             self.tx.execute("UPDATE statuses SET name = ?1 WHERE board = ?2 AND key = ?3", params![n, b.id, key])?;
@@ -117,6 +132,9 @@ impl<'a> W<'a> {
         }
         if let Some(f) = p.fin {
             self.tx.execute("UPDATE statuses SET final = ?1 WHERE board = ?2 AND key = ?3", params![f as i64, b.id, key])?;
+        }
+        if let Some(e) = p.err {
+            self.tx.execute("UPDATE statuses SET error = ?1 WHERE board = ?2 AND key = ?3", params![e as i64, b.id, key])?;
         }
         if let Some(v) = p.view {
             self.tx.execute("UPDATE statuses SET view = ?1 WHERE board = ?2 AND key = ?3", params![v.as_str(), b.id, key])?;
