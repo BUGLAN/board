@@ -534,4 +534,29 @@ mod tests {
         assert!(write_conf(&f, true, "macbook", &bad).unwrap_err().contains("目录不存在"));
         std::fs::remove_dir_all(&d).ok();
     }
+
+    // 设置 → 本机保存机器名：现有配置不是合法 TOML 时，先备份原文件，再写一份合法的 [host]
+    #[test]
+    fn saving_host_recovers_bad_toml() {
+        let d = tempfile_dir("write-bad");
+        let repo = d.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let dir = d.join(".board");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("config.toml");
+        let bad = "# 旧配置\n[agents.claude]\ncmd = [\"bash\", \"-c\", \"echo agent \\; exec sleep 300\", \"-\"]\n";
+        std::fs::write(&f, bad).unwrap();
+        let dirs = vec![Dir { board: "default/main".into(), path: repo.display().to_string() }];
+        write_conf(&f, true, "macbook", &dirs).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("[host]\nname = \"macbook\""), "{text}");
+        let backups: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("config.toml.bad-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read_to_string(dir.join(&backups[0])).unwrap(), bad);
+        std::fs::remove_dir_all(&d).ok();
+    }
 }

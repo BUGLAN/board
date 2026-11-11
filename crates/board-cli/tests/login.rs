@@ -113,6 +113,33 @@ fn env_overrides_config_file() {
 }
 
 #[test]
+fn login_recovers_invalid_toml_config() {
+    let s = start();
+    let dir = s.home.join(".board");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = "# 旧配置\n[agents.claude]\ncmd = [\"bash\", \"-c\", \"echo agent \\; exec sleep 300\", \"-\"]\n";
+    std::fs::write(config(&s), bad).unwrap();
+
+    // 配置坏了也要能登录：带 --url 时不先读文件，校验通过后备份原文件再写新配置
+    let r = board(&s.home, &[], &["login", "--url", &s.url, "--token", &s.token, "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!r.out.contains(&s.token));
+    let text = read(&s);
+    assert!(text.contains(&format!("url = \"{}\"", s.url)) && text.contains(&format!("token = \"{}\"", s.token)), "{text}");
+    let backups: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("config.toml.bad-"))
+        .collect();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    assert_eq!(std::fs::read_to_string(dir.join(&backups[0])).unwrap(), bad);
+
+    // 写完之后配置文件能正常读：ls 不报 TOML parse error
+    let r = board(&s.home, &[], &with_args(&["ls", "--json"]));
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+}
+
+#[test]
 fn logout_removes_token_and_keeps_url() {
     let s = start();
     assert_eq!(board(&s.home, &[], &["login", "--url", &s.url, "--token", &s.token]).code, 0);

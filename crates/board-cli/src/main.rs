@@ -770,10 +770,12 @@ fn override_hint(p: &Paint, vars: &[&str]) -> String {
 
 /// `board login [--url <地址>] [--token <令牌>]`：用 `GET /api/workspace` 校验令牌，通过后写进配置文件
 fn login(a: &Args, json: bool, p: &Paint) -> Result<Output> {
-    let file = config::File::load()?;
-    let url = match a.value("--url").map(str::trim).filter(|s| !s.is_empty()) {
+    // --url 给了就不用先读配置文件：现有配置坏了也要能登录（写入时 config::update 会先备份坏文件）
+    let url_arg = a.value("--url").map(str::trim).filter(|s| !s.is_empty());
+    let file = if url_arg.is_none() { Some(config::File::load()?) } else { None };
+    let url = match url_arg {
         Some(u) => u.trim_end_matches('/').to_string(),
-        None => file.get(config::URL)?.ok_or_else(|| {
+        None => file.as_ref().unwrap().get(config::URL)?.ok_or_else(|| {
             BoardError::usage(format!("{} 里还没有服务端地址：board login --url <服务端地址> --token <令牌>", config::shown()))
         })?,
     };

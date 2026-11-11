@@ -5,6 +5,7 @@
 //! - 环境变量 `BOARD_CONFIG` 指定另一个配置文件代替 `~/.board/config.toml`（board host 启动 agent 时用它传连接）。
 //! - 写只有一个入口 [`update`]：加锁 → 读 → 改 → 写临时文件 → 改名。CLI 和桌面端同时写（例如保存本机设置的同时 `board login`）
 //!   不会互相覆盖；写到一半不会留下残缺的配置；保留文件里的其他配置项和注释。
+//! - 现有文件不是合法 TOML 时：写入前先备份成 `config.toml.bad-<时间戳>`，再用空配置继续写（只读入口仍然报错，不偷偷改文件）。
 //! - 权限：文件 0600；`~/.board` 目录 0700。`BOARD_CONFIG` 指到别的目录时不改那个目录的权限。
 //!
 //! 需要 `config` feature（服务端不带 toml_edit）。
@@ -73,6 +74,8 @@ pub fn valid_board(b: &str) -> bool {
 pub struct Config {
     path: PathBuf,
     pub doc: DocumentMut,
+    /// 原文件解析失败、已经备份后按空配置继续（写回时会生成合法的新文件）
+    recovered: bool,
 }
 
 impl Config {
@@ -82,15 +85,29 @@ impl Config {
     }
 
     pub fn load_from(path: &Path) -> Result<Config> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(BoardError::usage(format!("读不了 {}：{e}", path.display()))),
-        };
-        let doc = text
-            .parse::<DocumentMut>()
-            .map_err(|e| BoardError::usage(format!("{} 不是合法的 TOML：{}", path.display(), e.to_string().trim())))?;
-        Ok(Config { path: path.to_path_buf(), doc })
+        let text = read_text(path)?;
+        Ok(Config { path: path.to_path_buf(), doc: parse_doc(path, &text)?, recovered: false })
+    }
+
+    /// 读配置文件给写入用：现有文件不是合法 TOML 时，先把原文备份成
+    /// `config.toml.bad-<时间戳>`，再按空配置继续写（CLI login、桌面端一键写入、保存机器名都走这里）。
+    /// 只读的命令仍然用 [`Config::load`]，不会偷偷改文件。
+    pub fn load_for_update(path: &Path) -> Result<Config> {
+        let text = read_text(path)?;
+        match text.parse::<DocumentMut>() {
+            Ok(doc) => Ok(Config { path: path.to_path_buf(), doc, recovered: false }),
+            Err(e) => {
+                backup_bad(path).map_err(|be| {
+                    BoardError::usage(format!(
+                        "{} 不是合法的 TOML：{}；备份原文件失败：{}",
+                        path.display(),
+                        e.to_string().trim(),
+                        be
+                    ))
+                })?;
+                Ok(Config { path: path.to_path_buf(), doc: DocumentMut::new(), recovered: true })
+            }
+        }
     }
 
     /// 一项字符串配置；没有或为空时是 None
@@ -112,6 +129,38 @@ impl Config {
     pub fn remove(&mut self, key: &str) -> bool {
         self.doc.remove(key).is_some()
     }
+}
+
+/// 读文件内容；不存在时当作空配置
+fn read_text(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(BoardError::usage(format!("读不了 {}：{e}", path.display()))),
+    }
+}
+
+fn parse_doc(path: &Path, text: &str) -> Result<DocumentMut> {
+    text.parse::<DocumentMut>()
+        .map_err(|e| BoardError::usage(format!("{} 不是合法的 TOML：{}", path.display(), e.to_string().trim())))
+}
+
+/// 把解析不了的配置备份成同目录的 `<文件名>.bad-<时间戳>`（同一秒重复时加序号），返回备份路径
+fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "config.toml".into());
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let mut backup = dir.join(format!("{file}.bad-{stamp}"));
+    let mut seq = 2;
+    while backup.exists() {
+        backup = dir.join(format!("{file}.bad-{stamp}-{seq}"));
+        seq += 1;
+    }
+    std::fs::copy(path, &backup)?;
+    Ok(backup)
 }
 
 /* ------------------------------ [host] 与 [agents.*] ------------------------------ */
@@ -241,9 +290,10 @@ pub fn update_at<T>(path: &Path, own_dir: bool, f: impl FnOnce(&mut Config) -> R
     // 锁：同一个配置文件旁边的 .<文件名>.lock（进程、线程之间都互斥；进程退出时系统自动释放）
     let lock = open_private(&dir.join(format!(".{file_name}.lock")), false).map_err(fail)?;
     lock.lock().map_err(fail)?;
-    let mut conf = Config::load_from(path)?;
+    let mut conf = Config::load_for_update(path)?;
     let (r, changed) = f(&mut conf)?;
-    if changed {
+    // 原文件坏掉、已备份时，即使这次逻辑上没有改动也写一份合法的新文件
+    if changed || conf.recovered {
         write_atomic(path, &dir, &file_name, conf.doc.to_string().as_bytes()).map_err(fail)?;
     }
     drop(lock);
@@ -259,7 +309,7 @@ pub fn write_new(path: &Path, f: impl FnOnce(&mut Config)) -> Result<()> {
         _ => PathBuf::from("."),
     };
     std::fs::create_dir_all(&dir).map_err(fail)?;
-    let mut c = Config { path: path.to_path_buf(), doc: DocumentMut::new() };
+    let mut c = Config { path: path.to_path_buf(), doc: DocumentMut::new(), recovered: false };
     f(&mut c);
     let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "config.toml".into());
     write_atomic(path, &dir, &file_name, c.doc.to_string().as_bytes()).map_err(fail)
@@ -444,5 +494,63 @@ mod tests {
             assert_eq!(expand("~/repo"), h.join("repo"));
             assert_eq!(expand("~"), h);
         }
+    }
+
+    // 现场配置里的 `\;` 不是 TOML 合法转义：写入入口要先把原文件备份，再用空配置继续写
+    #[test]
+    fn invalid_config_is_backed_up_before_write() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join(".board");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("config.toml");
+        let bad = "# 旧配置\n[agents.claude]\ncmd = [\"bash\", \"-c\", \"echo agent \\; exec sleep 300\", \"-\"]\n";
+        std::fs::write(&f, bad).unwrap();
+        assert!(Config::load_from(&f).is_err(), "只读入口仍然把非法配置当错误");
+
+        update_at(&f, true, |c| {
+            c.set(URL, "https://a");
+            Ok(((), true))
+        })
+        .unwrap();
+        assert!(read(&f).contains("url = \"https://a\""), "{}", read(&f));
+        assert_eq!(Config::load_from(&f).unwrap().get(URL).unwrap().as_deref(), Some("https://a"));
+        let backups: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("config.toml.bad-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read_to_string(dir.join(&backups[0])).unwrap(), bad);
+    }
+
+    // Windows 路径带反斜杠：写进 [host].dirs 再读回来仍是原值
+    #[test]
+    fn host_dirs_with_windows_paths_roundtrip() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        let dirs = vec![("default/main".to_string(), r"C:\Users\buglan\repo".to_string())];
+        update_at(&f, false, |c| c.set_host(Some("win"), &dirs).map(|_| ((), true))).unwrap();
+        let text = read(&f);
+        assert!(Config::load_from(&f).is_ok(), "写出的配置必须是合法 TOML：{text}");
+        let h = Config::load_from(&f).unwrap().host().unwrap();
+        assert_eq!(h.name.as_deref(), Some("win"));
+        assert_eq!(h.dirs, dirs);
+    }
+
+    // 反斜杠、引号、换行交给 toml_edit 序列化：写进去再读回来必须一模一样
+    #[test]
+    fn strings_with_backslashes_quotes_and_newlines_roundtrip() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        let value = r#"echo agent \; exec sleep 300
+"C:\Users\buglan\""#;
+        update_at(&f, false, |c| {
+            c.set("cmdline", value);
+            Ok(((), true))
+        })
+        .unwrap();
+        let text = read(&f);
+        assert!(Config::load_from(&f).is_ok(), "写出的配置必须是合法 TOML：{text}");
+        assert_eq!(Config::load_from(&f).unwrap().get("cmdline").unwrap().as_deref(), Some(value));
     }
 }
