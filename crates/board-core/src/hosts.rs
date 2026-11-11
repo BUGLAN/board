@@ -311,7 +311,8 @@ pub struct HostDir {
 /// 定时领取的一条领取规则：卡片的标签满足条件就由这个 agent 做。标签按名称匹配，不区分大小写
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRule {
-    /// `in` 带其中任一个 | `not_in` 一个都不带 | `equal` 标签正好是这几个（顺序无关）
+    /// `in` 带其中任一个 | `all` 全都带（多出的标签不管） | `not_in` 一个都不带 | `equal` 标签正好是这几个（顺序无关）
+    /// | `only` 标签都在这几个里面、没有别的（至少带一个） | `none` 没有标签（不带标签列表）
     #[serde(default = "op_in")]
     pub op: String,
     #[serde(default)]
@@ -333,7 +334,12 @@ fn op_in() -> String {
 }
 
 /// 领取规则的条件
-pub const RULE_OPS: [&str; 3] = ["in", "not_in", "equal"];
+pub const RULE_OPS: [&str; 6] = ["in", "all", "not_in", "equal", "only", "none"];
+
+/// 不带标签列表的条件：「没有标签」只看卡片有没有标签
+fn op_needs_labels(op: &str) -> bool {
+    op != "none"
+}
 
 impl ClaimRule {
     /// 旧数据的单个标签换成 `in [标签]`；标签去掉空白、按名称（不区分大小写）去重
@@ -357,6 +363,10 @@ impl ClaimRule {
                 }
             })
             .collect();
+        // 「没有标签」不看标签列表：存着也只会让界面上多出没用的标签
+        if !op_needs_labels(&self.op) {
+            self.labels.clear();
+        }
         self
     }
     /// 存进数据库的样子
@@ -767,6 +777,8 @@ impl Cond {
     /// 卡片的标签（小写）满足条件吗
     fn matches(&self, card: &[String]) -> bool {
         match self.op.as_str() {
+            // 空规则不匹配任何卡片（保存时会被拦住，这里兜住手写的数据）
+            "all" => !self.labels.is_empty() && self.labels.iter().all(|l| card.contains(l)),
             "not_in" => !self.labels.iter().any(|l| card.contains(l)),
             "equal" => {
                 let mut a: Vec<&String> = card.iter().collect();
@@ -777,6 +789,9 @@ impl Cond {
                 b.dedup();
                 a == b
             }
+            // 标签都在这几个里面、没有别的，至少要有一个（空规则不匹配任何卡片）
+            "only" => !self.labels.is_empty() && !card.is_empty() && card.iter().all(|l| self.labels.contains(l)),
+            "none" => card.is_empty(),
             _ => self.labels.iter().any(|l| card.contains(l)),
         }
     }
@@ -1371,9 +1386,9 @@ impl<'a> W<'a> {
             for r in rules {
                 let r = r.clone().upgraded();
                 if !RULE_OPS.contains(&r.op.as_str()) {
-                    return Err(BoardError::usage(format!("领取规则的条件「{}」不对：只能是 in、not_in、equal", r.op)));
+                    return Err(BoardError::usage(format!("领取规则的条件「{}」不对：只能是 {}", r.op, RULE_OPS.join("、"))));
                 }
-                if r.labels.is_empty() {
+                if op_needs_labels(&r.op) && r.labels.is_empty() {
                     return Err(BoardError::usage("领取规则至少要选一个标签"));
                 }
                 // 新加或改过的规则：标签要在这台机器有目录的项目里有，agent 要在这台机器上找得到。

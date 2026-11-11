@@ -194,8 +194,8 @@ export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'cance
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {
-  /** in 带其中任一个 · not_in 一个都不带 · equal 标签正好是这几个 */
-  op: 'in' | 'not_in' | 'equal';
+  /** in 带其中任一个 · all 全都带 · not_in 一个都不带 · equal 标签正好是这几个 · only 只在这几个里 · none 没有标签 */
+  op: 'in' | 'all' | 'not_in' | 'equal' | 'only' | 'none';
   labels: string[];
   agent: string;
   /** agent 在这台机器上找得到（服务端算）；找不到时这条规则不生效 */

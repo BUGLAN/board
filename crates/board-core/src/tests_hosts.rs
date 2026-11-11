@@ -1517,7 +1517,7 @@ fn old_hhmm_cron_is_migrated() {
     assert_eq!(h.cron, vec!["0 3 * * *", "30 23 * * *"]);
 }
 
-/* ---------------- 领取规则的条件：in / not_in / equal ---------------- */
+/* ---------------- 领取规则的条件：in / all / not_in / equal / only / none ---------------- */
 
 fn set_conds(s: &mut Store, list: Vec<ClaimRule>, fallback: Option<&str>) -> Result<HostInfo> {
     set_host(s, HostPatch { rules: Some(list), fallback: Some(fallback.unwrap_or("").into()), ..Default::default() })
@@ -1564,12 +1564,69 @@ fn rule_conditions_in_not_in_equal() {
 }
 
 #[test]
+fn rule_conditions_all_only_none() {
+    // 卡片：A、B、A+B、A+B+C、无标签
+    let setup = || {
+        let mut s = store();
+        beat(&mut s, T0, &report_cd("i1")).unwrap();
+        let la = label(&mut s, "A");
+        let lb = label(&mut s, "B");
+        let lc = label(&mut s, "C");
+        let a = new_card(&mut s, T0, "A");
+        tag(&mut s, a, la);
+        let b = new_card(&mut s, T0, "B");
+        tag(&mut s, b, lb);
+        let ab = new_card(&mut s, T0, "A + B");
+        tag(&mut s, ab, la);
+        tag(&mut s, ab, lb);
+        let abc = new_card(&mut s, T0, "A + B + C");
+        tag(&mut s, abc, la);
+        tag(&mut s, abc, lb);
+        tag(&mut s, abc, lc);
+        let none = new_card(&mut s, T0, "无标签");
+        (s, a, b, ab, abc, none)
+    };
+    // all [A, B] → claude：两个都带的匹配（多出的 C 不管）；只带一个的、没标签的不匹配
+    let (mut s, _, _, ab, abc, _) = setup();
+    set_conds(&mut s, vec![cond("all", &["A", "B"], "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(ab, "claude".into()), (abc, "claude".into())]);
+    // all [A, B] 没设兜底：3 张不匹配
+    let (mut s, ..) = setup();
+    assert_eq!(set_conds(&mut s, vec![cond("all", &["A", "B"], "claude")], None).unwrap().unmatched, 3);
+    // only [A, B] → claude：都在 A、B 里且至少带一个的匹配（A、B、A+B）；带 C 的、没标签的不匹配
+    let (mut s, a, b, ab, _, _) = setup();
+    set_conds(&mut s, vec![cond("only", &["A", "B"], "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(a, "claude".into()), (b, "claude".into()), (ab, "claude".into())]);
+    // only [A, B, C] → claude：四张带标签的都是它的子集
+    let (mut s, a, b, ab, abc, _) = setup();
+    set_conds(&mut s, vec![cond("only", &["A", "B", "C"], "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(a, "claude".into()), (b, "claude".into()), (ab, "claude".into()), (abc, "claude".into())]);
+    // none → dsh：一个标签都没有的卡片
+    let (mut s, _, _, _, _, n) = setup();
+    set_conds(&mut s, vec![cond("none", &[], "dsh")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(n, "dsh".into())]);
+    // 「没有标签」不看标签列表：带着标签保存也按没有标签算，存进去时清掉
+    let (mut s, _, _, _, _, n) = setup();
+    let h = set_conds(&mut s, vec![cond("none", &["A"], "dsh")], None).unwrap();
+    assert!(h.rules[0].labels.is_empty());
+    assert_eq!(round_all(&mut s, T0 + S), vec![(n, "dsh".into())]);
+    // 多条规则按顺序第一条命中：only [A] → claude 在前，没有标签 → dsh 在后
+    let (mut s, a, _, _, _, n) = setup();
+    set_conds(&mut s, vec![cond("only", &["A"], "claude"), cond("none", &[], "dsh")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(a, "claude".into()), (n, "dsh".into())]);
+}
+
+#[test]
 fn rule_conditions_are_validated() {
     let mut s = store();
     beat(&mut s, T0, &report_cd("i1")).unwrap();
     label(&mut s, "claude");
     assert_eq!(set_conds(&mut s, vec![cond("like", &["claude"], "claude")], None).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(set_conds(&mut s, vec![cond("in", &[], "claude")], None).unwrap_err().code, ErrorCode::Usage);
+    // 只有「没有标签」不带标签列表，其他条件都要至少一个标签；「没有标签」不选标签也能存
+    assert_eq!(set_conds(&mut s, vec![cond("all", &[], "claude")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(set_conds(&mut s, vec![cond("only", &[], "claude")], None).unwrap_err().code, ErrorCode::Usage);
+    assert!(set_conds(&mut s, vec![cond("none", &[], "claude")], None).is_ok());
     assert_eq!(set_conds(&mut s, vec![cond("in", &["没有"], "claude")], None).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(set_conds(&mut s, vec![cond("in", &["claude"], "pi")], None).unwrap_err().code, ErrorCode::Usage);
     // 标签之后被删：规则原样保留，界面上标出缺的标签

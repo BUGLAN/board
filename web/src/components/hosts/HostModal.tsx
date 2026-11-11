@@ -574,10 +574,15 @@ function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | nu
 
 const OPS: [ClaimRule['op'], string][] = [
   ['in', '带其中任一个'],
+  ['all', '全都带'],
   ['not_in', '一个都不带'],
   ['equal', '标签正好是'],
+  ['only', '只在这几个里'],
+  ['none', '没有标签'],
 ];
 const OP_OPTIONS = OPS.map(([value, label]) => ({ value, label }));
+/** 「没有标签」不带标签列表：这一行不选标签，只看卡片有没有标签 */
+const NEEDS_LABELS = (op: ClaimRule['op']) => op !== 'none';
 
 /** 一条规则里的标签：和卡片详情的标签一行一样——标签胶囊（项目里的颜色，× 去掉）加标签按钮，点开同一个标签选择器，
     勾一个就应用一个。机器只对应一个项目时就是那个项目的选择器（能新建、管理标签）；对应几个项目时只列这几个项目里的标签
@@ -642,8 +647,8 @@ function LabelSet({ value, onChange, labels, project, missing, disabled }: {
   );
 }
 
-/** 领取规则：条件（带其中任一个 / 一个都不带 / 标签正好是）→ agent，有顺序（第一条命中的生效），最后可选兜底。
- *  只影响定时领取和会话里的 board next，手动派发、board claim 不受影响 */
+/** 领取规则：条件（带其中任一个 / 全都带 / 一个都不带 / 标签正好是 / 只在这几个里 / 没有标签）→ agent，
+ *  有顺序（第一条命中的生效），最后可选兜底。只影响定时领取和会话里的 board next，手动派发、board claim 不受影响 */
 function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
   const ws = useData(s => s.ws);
   const rules = h.rules ?? [];
@@ -663,21 +668,50 @@ function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: Sy
   const one = keys.length === 1 ? ws?.projects.find(p => p.key === keys[0]) : undefined;
   const [op, setOp] = useState<ClaimRule['op']>('in');
   const [picked, setPicked] = useState<string[]>([]);
+  // 从「没有标签」换成要标签的条件：服务端不允许没有标签的规则，先只改界面，选了标签再一起保存
+  const [draft, setDraft] = useState<{ i: number; op: ClaimRule['op'] } | null>(null);
   const [agent, setAgent] = useState('');
   const pick = agent || found[0]?.id || '';
   const has = (a: string) => found.some(x => x.id === a);
   const agentOptions = found.map(a => ({ value: a.id, label: a.name }));
-  const save = (next: ClaimRule[]) => put({ rules: next.map(r => ({ op: r.op, labels: r.labels, agent: r.agent, active: has(r.agent), missing: r.missing })) });
-  const edit = (i: number, change: Partial<ClaimRule>) => save(rules.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
+  // 标签选择器是勾一个存一个：连着勾时回调可能来自上一帧，改的要是最新一份规则，不能把中间存下的改动覆盖回去
+  const latest = useRef(rules);
+  latest.current = rules;
+  const save = (next: ClaimRule[]) => {
+    latest.current = next;
+    put({
+      rules: next.map(r => ({
+        op: r.op,
+        labels: NEEDS_LABELS(r.op) ? r.labels : [],
+        agent: r.agent,
+        active: has(r.agent),
+        missing: NEEDS_LABELS(r.op) ? r.missing : [],
+      })),
+    });
+  };
+  const edit = (i: number, change: Partial<ClaimRule>) => {
+    // 改这一行的任何一项都从「还没选好标签」的状态里出来，下拉和存下的规则保持一致
+    setDraft(null);
+    save(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
+  };
+  const changeOp = (i: number, next: ClaimRule['op']) => {
+    if (NEEDS_LABELS(next) && !rules[i]?.labels.length) {
+      setDraft({ i, op: next });
+      return;
+    }
+    setDraft(null);
+    edit(i, { op: next });
+  };
   const move = (i: number, d: number) => {
     const next = [...rules];
     const [r] = next.splice(i, 1);
     next.splice(i + d, 0, r);
+    setDraft(null);
     void save(next);
   };
   const add = () => {
-    if (!picked.length || !pick) return;
-    void save([...rules, { op, labels: picked, agent: pick }]);
+    if ((NEEDS_LABELS(op) && !picked.length) || !pick) return;
+    void save([...rules, { op, labels: NEEDS_LABELS(op) ? picked : [], agent: pick }]);
     setPicked([]);
   };
   const fallback = h.fallback || '';
@@ -692,8 +726,31 @@ function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: Sy
       </div>
       {rules.map((r, i) => (
         <div className={cx('hp-crule', !r.active && 'off')} key={`${i}-${r.op}-${r.labels.join(',')}`}>
-          <Select className="hp-crule-op" value={r.op} options={OP_OPTIONS} aria-label="条件" onChange={v => edit(i, { op: v as ClaimRule['op'] })} />
-          <LabelSet value={r.labels} labels={one?.labels ?? labels} project={one?.key} missing={r.missing} onChange={v => (v.length ? edit(i, { labels: v }) : undefined)} />
+          <Select
+            className="hp-crule-op"
+            value={draft?.i === i ? draft.op : r.op}
+            options={OP_OPTIONS}
+            aria-label="条件"
+            onChange={v => changeOp(i, v as ClaimRule['op'])}
+          />
+          {NEEDS_LABELS(draft?.i === i ? draft.op : r.op) ? (
+            <LabelSet
+              value={r.labels}
+              labels={one?.labels ?? labels}
+              project={one?.key}
+              missing={r.missing}
+              onChange={v => {
+                if (!v.length) return;
+                if (draft?.i !== i) return void edit(i, { labels: v });
+                // 选好标签：新条件和标签一起保存
+                const next = draft.op;
+                setDraft(null);
+                edit(i, { op: next, labels: v });
+              }}
+            />
+          ) : (
+            <span className="hp-lset hp-lset-none">卡片没有任何标签</span>
+          )}
           <Icon name="chevRight" />
           <Select
             className="hp-crule-agent"
@@ -709,19 +766,32 @@ function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: Sy
           <button type="button" className="icon-btn sm" aria-label="下移" disabled={i === rules.length - 1} onClick={() => move(i, 1)}>
             <Icon name="chevDown" />
           </button>
-          <button type="button" className="icon-btn sm" aria-label="删除这条规则" onClick={() => save(rules.filter((_, j) => j !== i))}>
+          <button
+            type="button"
+            className="icon-btn sm"
+            aria-label="删除这条规则"
+            onClick={() => {
+              setDraft(null);
+              void save(rules.filter((_, j) => j !== i));
+            }}
+          >
             <Icon name="trash" />
           </button>
+          {draft?.i === i && <em className="hp-crule-warn">选好标签后才保存这个条件</em>}
           {!r.active && <em className="hp-crule-warn">这台机器上找不到 {agentName(r.agent)}，这条规则不生效</em>}
           {!!r.missing?.length && <em className="hp-crule-warn">项目里没有标签 {r.missing.map(l => `「${l}」`).join('')}</em>}
         </div>
       ))}
       <div className="hp-crule add">
         <Select className="hp-crule-op" value={op} options={OP_OPTIONS} aria-label="新规则的条件" onChange={v => setOp(v as ClaimRule['op'])} />
-        <LabelSet value={picked} labels={one?.labels ?? labels} project={one?.key} onChange={setPicked} />
+        {NEEDS_LABELS(op) ? (
+          <LabelSet value={picked} labels={one?.labels ?? labels} project={one?.key} onChange={setPicked} />
+        ) : (
+          <span className="hp-lset hp-lset-none">卡片没有任何标签</span>
+        )}
         <Icon name="chevRight" />
         <Select className="hp-crule-agent" value={pick} options={agentOptions} aria-label="新规则的 agent" onChange={setAgent} />
-        <button className="btn sm" type="button" disabled={!picked.length || !pick} onClick={add}>
+        <button className="btn sm" type="button" disabled={(NEEDS_LABELS(op) && !picked.length) || !pick} onClick={add}>
           <Icon name="plus" />
           加规则
         </button>
