@@ -192,12 +192,14 @@ export function ColorRow({ value, onPick, className, label = '颜色' }: { value
 }
 
 /** 色板最后的取色器：打开系统取色器选任意颜色（#RRGGBB，大写）。custom：当前颜色不在色板里，取色器显示成这个颜色并标为选中。
-    确定时（change）才回调，拖动过程中不回调 */
+    确定时（change）才回调，拖动过程中不回调。
+    input 不受控：受控的话，拖动时每个 input 事件 React 都会把值还原成 value，确定时读到的还是旧颜色。value 变了由 effect 写回去 */
 export function ColorPick({ value, custom, onPick, label = '颜色' }: { value: string; custom: boolean; onPick: (c: string) => void; label?: string }) {
   const input = useRef<HTMLInputElement>(null);
   const pick = useRef(onPick);
   pick.current = onPick;
   const v = value.toUpperCase();
+  const hex = /^#[0-9A-F]{6}$/.test(v) ? v.toLowerCase() : '#888888';
   useEffect(() => {
     const el = input.current;
     if (!el) return;
@@ -205,13 +207,16 @@ export function ColorPick({ value, custom, onPick, label = '颜色' }: { value: 
     el.addEventListener('change', done);
     return () => el.removeEventListener('change', done);
   }, []);
+  useEffect(() => {
+    if (input.current) input.current.value = hex;
+  }, [hex]);
   return (
     <label
       className={cx('swatch swatch-pick', custom && 'on')}
       style={custom ? { ['--sw' as string]: v } : undefined}
       title={custom ? `自定义颜色 ${v}` : '自定义颜色'}
     >
-      <input ref={input} type="color" value={/^#[0-9A-F]{6}$/.test(v) ? v.toLowerCase() : '#888888'} onChange={() => {}} aria-label={`${label}：自定义`} />
+      <input ref={input} type="color" defaultValue={hex} aria-label={`${label}：自定义`} />
     </label>
   );
 }
