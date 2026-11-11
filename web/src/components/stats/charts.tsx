@@ -1,5 +1,5 @@
 /* 大盘用的几个图（纯 SVG / CSS，不引图表库）。时间按浏览器的时区显示：接口按同一个时区分桶 */
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { cx } from '../../lib/util';
 
 /* ---------- 悬停提示 ---------- */
@@ -261,19 +261,18 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 export function CalHeat({
   days,
-  from,
-  to,
   onPick,
   big,
   maxWeeks = 26,
+  cell,
 }: {
   days: { t: number; v: number; future: boolean }[];
-  from: number;
-  to: number;
   onPick?: (t: number) => void;
   big?: boolean;
   /** 宽度放得下几周：放不下时从最早的一周开始少显示 */
   maxWeeks?: number;
+  /** 格子边长（px）：放在宽处时放大到和别处一致，默认用 CSS 里的 14px */
+  cell?: number;
 }) {
   const tip = useTip();
   const all: (typeof days)[] = [];
@@ -281,7 +280,7 @@ export function CalHeat({
   const weeks = all.slice(Math.max(0, all.length - maxWeeks));
   const max = Math.max(1, ...weeks.flat().map(d => d.v));
   return (
-    <div className={cx('sp-cal', big && 'big')}>
+    <div className={cx('sp-cal', big && 'big')} style={cell ? ({ ['--c' as string]: `${cell}px` } as CSSProperties) : undefined}>
       <div className="sp-cal-y">
         {ROWS.map((r, i) => (
           <span key={r}>{i % 2 === 0 ? r : ''}</span>
@@ -295,11 +294,10 @@ export function CalHeat({
             <div className="sp-cal-col" key={w[0].t}>
               <span className="sp-cal-m">{newMonth ? `${first.getMonth() + 1}月` : ''}</span>
               {w.map(d => {
-                const inRange = d.t + 86400_000 > from && d.t < to;
                 return (
                   <i
                     key={d.t}
-                    className={cx('sp-cell', d.future ? 'future' : `l${level(d.v, max)}`, inRange && 'in', onPick && !d.future && 'pick')}
+                    className={cx('sp-cell', d.future ? 'future' : `l${level(d.v, max)}`, onPick && !d.future && 'pick')}
                     onClick={() => !d.future && onPick?.(d.t)}
                     onPointerMove={e =>
                       !d.future &&

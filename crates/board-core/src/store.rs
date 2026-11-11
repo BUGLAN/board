@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS boards (
   keep_order  INTEGER NOT NULL DEFAULT 1,
   -- 1 = 保留顺序：界面上每个状态块按自己的排序依据（statuses.order_by）显示，拖动只换状态、不改顺序；0 = 拖到哪就在哪
   keep_sorted INTEGER NOT NULL DEFAULT 0,
-  -- 白板说明（Markdown，可以为空）：大盘总览里显示
+  -- 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改
   readme      TEXT NOT NULL DEFAULT '',
   UNIQUE (project, key)
 );

@@ -208,7 +208,7 @@ export function editProject(pk: string) {
   });
 }
 
-/** 编辑白板。focus: 'readme' 时打开后定位到「说明」（大盘总览里的「编辑」）；draft 是上次没保存成功的内容 */
+/** 编辑白板。focus: 'readme' 时打开后定位到「说明」；draft 是上次没保存成功的内容 */
 export function editBoard(path: string, { focus, draft }: { focus?: string; draft?: Record<string, string> } = {}) {
   const m = boardMeta(data().ws, path);
   if (!m) return;

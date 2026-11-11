@@ -8,13 +8,13 @@
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
-import { editBoard, openBoard } from '../../lib/actions';
+import { openBoard } from '../../lib/actions';
 import { api } from '../../lib/api';
 import { statusColor } from '../../lib/schema';
 import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsScope } from '../../lib/types';
 import { agentColor, cx } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
-import { Markdown, ProjectAvatar } from '../bits';
+import { ProjectAvatar } from '../bits';
 import { StatsIcon24 } from '../Icon';
 import { CalHeat, HeatLegend, HourHeat, PairBars, Spark, TrendBars, fmtDay, useWidth } from './charts';
 import { HINT, LEAD_BINS, METRICS, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, type Metric } from './format';
@@ -351,19 +351,17 @@ function Overview({ s }: { s: Stats }) {
   return <BoardOverview s={s} />;
 }
 
-function BoardOverview({ s }: { s: Stats }) {
+export function BoardOverview({ s }: { s: Stats }) {
   const cur = useCurrent();
-  const [open, setOpen] = useState(true);
   if (!cur) return null;
   const { project: p, board: b } = cur;
-  const life = s.scope === 'board' && s.path === b.path ? s.life : null;
-  const flow = s.scope === 'board' && s.path === b.path ? s.present.statuses : [];
+  const mine = s.scope === 'board' && s.path === b.path;
+  const life = mine ? s.life : null;
+  const flow = mine ? s.present.statuses : [];
   const total = flow.reduce((n, x) => n + x.n, 0);
   const labels = [...p.labels].sort((a, c) => c.uses - a.uses).slice(0, 8);
   const siblings = p.boards.filter(x => x.path !== b.path);
   const days = Math.max(1, Math.round((s.now - b.createdAt) / DAY));
-  const readme = (b.readme ?? '').trim();
-  const edit = () => editBoard(b.path, { focus: 'readme' });
   return (
     <section className="sp-card sp-ov" id="sp-overview">
       <header className="sp-ov-head">
@@ -386,124 +384,100 @@ function BoardOverview({ s }: { s: Stats }) {
         </div>
       </header>
 
-      <div className="sp-ov-grid">
-        <div className="sp-ov-readme">
-          <div className="sp-ov-sub">
-            <span>白板说明</span>
-            <span className="sp-sp" />
-            {readme && (
-              <button className="tl-more" type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-                {open ? '收起' : '展开'}
-              </button>
-            )}
-            <button className="tl-more" type="button" onClick={edit}>
-              编辑
-            </button>
-          </div>
-          {!readme ? (
-            <div className="sp-ov-blank">
-              <p>写这块白板是做什么的、有哪些约定，打开大盘的人第一眼就能看到。</p>
-              <button className="btn sm" type="button" onClick={edit}>
-                编辑
-              </button>
-            </div>
-          ) : open ? (
-            <Markdown src={readme} className="sp-ov-md" />
-          ) : (
-            <p className="sp-ov-fold">已收起</p>
-          )}
+      {/* 上下布局：上面是日历热力图，下面是「创建以来」这些数（原「白板说明」的位置就放热力图） */}
+      <div className="sp-ov-cal">
+        <CalCard s={s} />
+      </div>
+
+      <div className="sp-ov-facts">
+        <div className="sp-ov-sub">
+          <span>创建以来</span>
+          <span className="sp-ov-since">{days} 天</span>
         </div>
-
-        <div className="sp-ov-facts">
-          <div className="sp-ov-sub">
-            <span>创建以来</span>
-            <span className="sp-ov-since">{days} 天</span>
-          </div>
-          {life && (
-            <div className="sp-ov-life">
-              <div>
-                <b>{num(life.cards)}</b>
-                <span>张卡片</span>
-              </div>
-              <div>
-                <b>{num(life.finals)}</b>
-                <span>已完成</span>
-              </div>
-              <div>
-                <b>{num(life.reworks)}</b>
-                <span>次返工</span>
-              </div>
-              <div>
-                <b>{num(life.agents)}</b>
-                <span>个 agent 参与</span>
-              </div>
-              <div>
-                <b>{num(Math.round(life.spent / H))}</b>
-                <span>小时 agent 工时</span>
-              </div>
-              <div>
-                <b>{life.perDay.toFixed(1)}</b>
-                <span>张 / 天 平均完成</span>
-              </div>
+        {life && (
+          <div className="sp-ov-life">
+            <div>
+              <b>{num(life.cards)}</b>
+              <span>张卡片</span>
             </div>
-          )}
+            <div>
+              <b>{num(life.finals)}</b>
+              <span>已完成</span>
+            </div>
+            <div>
+              <b>{num(life.reworks)}</b>
+              <span>次返工</span>
+            </div>
+            <div>
+              <b>{num(life.agents)}</b>
+              <span>个 agent 参与</span>
+            </div>
+            <div>
+              <b>{num(Math.round(life.spent / H))}</b>
+              <span>小时 agent 工时</span>
+            </div>
+            <div>
+              <b>{life.perDay.toFixed(1)}</b>
+              <span>张 / 天 平均完成</span>
+            </div>
+          </div>
+        )}
 
-          <div className="sp-ov-sub">
-            <span>现在卡片在哪</span>
-            <span className="sp-ov-since">共 {total} 张</span>
-          </div>
-          <div className="sp-ov-dist" role="img" aria-label="各状态卡片数">
-            {flow
-              .filter(x => x.n > 0)
-              .map(x => (
-                <i key={x.key} style={{ flexGrow: x.n, background: statusColor(x.color) }} title={`${x.name} ${x.n} 张`} />
-              ))}
-          </div>
-          <div className="sp-ov-flow">
-            {flow.map((x, i) => (
-              <span key={x.key} className={cx(!x.n && 'zero')}>
-                {i > 0 && <em>→</em>}
-                <i style={{ background: statusColor(x.color) }} />
-                {x.name}
-                <b>{x.n}</b>
-              </span>
+        <div className="sp-ov-sub">
+          <span>现在卡片在哪</span>
+          <span className="sp-ov-since">共 {total} 张</span>
+        </div>
+        <div className="sp-ov-dist" role="img" aria-label="各状态卡片数">
+          {flow
+            .filter(x => x.n > 0)
+            .map(x => (
+              <i key={x.key} style={{ flexGrow: x.n, background: statusColor(x.color) }} title={`${x.name} ${x.n} 张`} />
             ))}
-          </div>
-
-          {labels.length > 0 && (
-            <>
-              <div className="sp-ov-sub">
-                <span>标签</span>
-                <span className="sp-ov-since">项目共用</span>
-              </div>
-              <div className="sp-ov-labels">
-                {labels.map(l => (
-                  <span key={l.id} className="sp-ov-label" style={{ ['--lc' as string]: l.color }}>
-                    {l.name}
-                    <b>{l.uses}</b>
-                  </span>
-                ))}
-              </div>
-            </>
-          )}
-
-          {siblings.length > 0 && (
-            <>
-              <div className="sp-ov-sub">
-                <span>同项目的其他白板</span>
-              </div>
-              <div className="sp-ov-sibs">
-                {siblings.map(x => (
-                  <button key={x.path} type="button" onClick={() => openBoard(x.path, { stay: true })}>
-                    <b>{x.name}</b>
-                    <span>{x.desc || x.path}</span>
-                    <em>{Object.values(x.counts ?? {}).reduce((n, v) => n + v, 0)} 张</em>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
         </div>
+        <div className="sp-ov-flow">
+          {flow.map((x, i) => (
+            <span key={x.key} className={cx(!x.n && 'zero')}>
+              {i > 0 && <em>→</em>}
+              <i style={{ background: statusColor(x.color) }} />
+              {x.name}
+              <b>{x.n}</b>
+            </span>
+          ))}
+        </div>
+
+        {labels.length > 0 && (
+          <>
+            <div className="sp-ov-sub">
+              <span>标签</span>
+              <span className="sp-ov-since">项目共用</span>
+            </div>
+            <div className="sp-ov-labels">
+              {labels.map(l => (
+                <span key={l.id} className="sp-ov-label" style={{ ['--lc' as string]: l.color }}>
+                  {l.name}
+                  <b>{l.uses}</b>
+                </span>
+              ))}
+            </div>
+          </>
+        )}
+
+        {siblings.length > 0 && (
+          <>
+            <div className="sp-ov-sub">
+              <span>同项目的其他白板</span>
+            </div>
+            <div className="sp-ov-sibs">
+              {siblings.map(x => (
+                <button key={x.path} type="button" onClick={() => openBoard(x.path, { stay: true })}>
+                  <b>{x.name}</b>
+                  <span>{x.desc || x.path}</span>
+                  <em>{Object.values(x.counts ?? {}).reduce((n, v) => n + v, 0)} 张</em>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </section>
   );
@@ -875,13 +849,16 @@ function Trend({ s }: { s: Stats }) {
   );
 }
 
+/* 日历热力图放在白板概览里（占满一行的宽处）：格子跟着放大，不留一大块空白，和下方「创建以来」各块的尺寸协调 */
 function CalCard({ s }: { s: Stats }) {
   const [ref, W] = useWidth<HTMLDivElement>();
+  // 先按最小 14px 的格子算出放得下几周（最多 26 周，接口只给这么多），再把格子放大到占满行宽（最多 30px）
   const weeks = Math.max(8, Math.min(26, Math.floor((W - 44) / 17)));
+  const cell = Math.max(14, Math.min(30, Math.floor((W - 44 - (weeks - 1) * 3) / weeks)));
   return (
-    <Card title="日历热力图" id="sp-cal" className="sp-cal-card" extra={<Note>最近 {weeks} 周 · 每天的动态条数 · 框出的是当前时间范围</Note>}>
+    <Card title="日历热力图" id="sp-cal" className="sp-cal-card" extra={<Note>最近 {weeks} 周 · 每天的动态条数</Note>}>
       <div ref={ref} />
-      <CalHeat days={s.dayHeat} from={s.from} to={s.to} maxWeeks={weeks} />
+      <CalHeat days={s.dayHeat} maxWeeks={weeks} cell={cell} />
       <div className="sp-card-foot">
         <HeatLegend />
       </div>
@@ -1013,10 +990,8 @@ function Report({ s }: { s: Stats }) {
           <Card title="agent 时间轴" id="sp-agent-tl" extra={<Note>每次领取一段 · 同一个 agent 同时跑几个就叠几行 · 悬停看是哪张卡</Note>}>
             <AgentTimeline runs={s.runs} from={s.from} to={s.to} now={s.now} idle={s.idle} showBoard={many} />
           </Card>
-          <div className="sp-two heat">
-            <CalCard s={s} />
-            <HourCard s={s} />
-          </div>
+          {/* 日历热力图在上面白板概览里，这里只留时段热力图 */}
+          <HourCard s={s} />
           <Card title="卡片时间线" id="sp-cards-tl" extra={<Note>这段时间完成的 {s.lives.length} 张卡，最近完成的在上面 · 每段是在一个状态里待了多久</Note>}>
             <CardTimeline lives={s.lives} showBoard={many} doneColor={doneColor} />
           </Card>

@@ -73,7 +73,7 @@ export interface BoardInfo {
   path: string;
   name: string;
   desc: string;
-  /** 白板说明（Markdown，可以为空），大盘总览里显示 */
+  /** 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改 */
   readme?: string;
   pos: Pos;
   createdAt: number;

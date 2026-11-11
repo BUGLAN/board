@@ -40,7 +40,6 @@
 .sp-card-note { margin-left: auto; font-size: 12px; color: var(--text-3); }
 .sp-card-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
 .sp-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
-.sp-two.heat { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
 
 /* ---------- 指标 ---------- */
 .sp-kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; scroll-margin-top: 16px; }
@@ -97,11 +96,11 @@
 .sp-legend .sp-cell:first-of-type { margin-left: 4px; }
 .sp-legend .sp-cell:last-of-type { margin-right: 4px; }
 
-/* 时段热力图 */
+/* 时段热力图（单独一张卡片、占满一行：格子按容器宽度放大，不留大片空白） */
 .sp-hh { position: relative; }
-.sp-hh-grid { display: grid; grid-template-columns: 30px repeat(24, minmax(0, 22px)); gap: 3px; align-items: center; }
+.sp-hh-grid { display: grid; grid-template-columns: 30px repeat(24, minmax(0, 30px)); gap: 3px; align-items: center; }
 .sp-hh-grid .sp-cell { aspect-ratio: 1; }
-.sp-hh.big .sp-hh-grid { gap: 4px; grid-template-columns: 34px repeat(24, minmax(0, 26px)); }
+.sp-hh.big .sp-hh-grid { gap: 4px; grid-template-columns: 34px repeat(24, minmax(0, 34px)); }
 .sp-hh-x { font: 10px var(--f-mono); color: var(--text-3); text-align: left; }
 .sp-hh-y { font-size: 11px; color: var(--text-3); }
 
@@ -117,10 +116,8 @@
 .sp-cal-col { display: grid; grid-template-rows: 16px repeat(7, var(--c)); gap: 3px; }
 .sp-cal-col .sp-cell { width: var(--c); height: var(--c); }
 .sp-cal-m { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
-.sp-cal .sp-cell.in { box-shadow: 0 0 0 1.5px var(--text); }
 .sp-cal .sp-cell.pick { cursor: pointer; }
 .sp-cal .sp-cell.pick:hover { box-shadow: 0 0 0 1.5px var(--text-2); }
-.sp-cal .sp-cell.in.pick:hover { box-shadow: 0 0 0 2px var(--text); }
 .sp-cal.big .sp-cal-weeks, .sp-cal.big .sp-cal-col, .sp-cal.big .sp-cal-y { gap: 4px; }
 
 /* ---------- 表 ---------- */
@@ -204,7 +201,7 @@
 
 @media (max-width: 1100px) {
   .sp-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 12px; }
-  .sp-two, .sp-two.heat { grid-template-columns: minmax(0, 1fr); }
+  .sp-two { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 760px) {
   .sp-page { padding: 18px 16px 90px; }
@@ -302,16 +299,13 @@
 .sp-ov-title p i { color: var(--text-4); }
 .sp-ov-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .sp-ov-meta .mono { font-family: var(--f-mono); font-weight: 500; color: var(--text-2); padding: 1px 8px; border-radius: var(--r-xs); background: var(--surface-3); }
-.sp-ov-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 24px; }
+/* 白板概览是上下布局：日历热力图在上（原来「白板说明」的位置），「创建以来」那些数在下 */
+.sp-ov-cal { margin-bottom: 18px; }
+.sp-ov-cal .sp-card { padding: 0; background: none; box-shadow: none; }
 .sp-ov-sub { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 11.5px; font-weight: 600; letter-spacing: .06em; color: var(--text-3); }
 .sp-ov-sub + * { margin-bottom: 16px; }
 .sp-sp { flex: 1; }
 .sp-ov-since { font-weight: 400; letter-spacing: 0; color: var(--text-4); }
-.sp-ov-md { font-size: 13.5px; line-height: 1.7; color: var(--text-2); }
-.sp-ov-md h3 { margin: 14px 0 4px; font-size: 13.5px; color: var(--text); }
-.sp-ov-md ul { padding-left: 18px; }
-.sp-ov-readme { padding-right: 24px; border-right: 1px solid var(--line); }
-.sp-ov-fold { font-size: 13px; color: var(--text-3); }
 .sp-ov-life { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .sp-ov-life > div { padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-3); }
 .sp-ov-life b { display: block; font-family: var(--f-display); font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; }
@@ -333,10 +327,6 @@
 .sp-ov-sibs b { font-size: 13px; font-weight: 600; }
 .sp-ov-sibs span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-3); }
 .sp-ov-sibs em { font-style: normal; font-size: 11.5px; color: var(--text-3); }
-@media (max-width: 1100px) {
-  .sp-ov-grid { grid-template-columns: minmax(0, 1fr); }
-  .sp-ov-readme { padding-right: 0; border-right: 0; }
-}
 
 /* ---------- 侧栏：范围导航 ---------- */
 .sp-head-k { display: block; margin-bottom: 2px; font-size: 11.5px; font-weight: 600; letter-spacing: .08em; color: var(--text-3); }
@@ -380,9 +370,7 @@
 .sp-cmp-done b { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sp-tag { margin-right: 8px; padding: 1px 6px; border-radius: var(--r-xs); font: 500 11px var(--f-mono); color: var(--text-2); background: var(--surface-3); }
 
-/* ---------- 白板说明为空、取数中、表格窄屏横向滚动 ---------- */
-.sp-ov-blank { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px 16px; border-radius: var(--r-md); background: var(--surface-3); }
-.sp-ov-blank p { font-size: 13px; color: var(--text-3); }
+/* ---------- 取数中、表格窄屏横向滚动 ---------- */
 /* 自定义日期：悬浮面板（浮在内容上方，不占布局） */
 .sp-pop {
   position: fixed; z-index: 60; width: 268px; max-width: calc(100vw - 16px); box-sizing: border-box;
@@ -416,8 +404,8 @@
 @media (max-width: 760px) {
   .sp-ov-head { flex-wrap: wrap; }
   .sp-ov-meta { flex-basis: 100%; align-items: flex-start; white-space: normal; }
-  .sp-ov-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .sp-ov-readme { padding-right: 0; border-right: 0; }
+  .sp-ov-cal { margin-bottom: 12px; }
+  .sp-ov-cal .sp-card > header { flex-wrap: wrap; }
   .sp-now-grid { grid-template-columns: minmax(0, 1fr); }
   .sp-stuck-row { grid-template-columns: 76px minmax(0, 1fr) auto; gap: 8px; }
   .sp-lead-top { grid-template-columns: auto auto; gap: 12px 24px; }
