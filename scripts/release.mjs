@@ -2,14 +2,17 @@
    发版：npm run release -- <x.y.z> [--dry-run] [--push]
    版本号规则见 AGENTS.md「发版」：x 只由人决定；y 是重构或大升级，要先问人；z 是修复和比较小的新功能。
 
-   1. 核对：版本号格式；工作区干净；HEAD 就是 origin/main；tag 还不存在；比上一个 tag 大
-   2. 改版本号：Cargo.toml（workspace.package.version）和 Cargo.lock、package.json 和 web/package.json
-      （连同各自的 package-lock.json）、src-tauri/tauri.conf.json
+   1. 拉到最新：git fetch；工作区要干净；本地只是落后于 origin/main（别的电脑先推了）时自动快进过去，
+      本地有没推到远端的提交时中止（先按 AGENTS.md 推到 main）。只在 main 分支或分离 HEAD 上发版
+   2. 核对：版本号格式；tag 还不存在；比上一个 tag 大
    3. 从上一个 tag 到现在的每个提交生成这一版的 changelog，写到 CHANGELOG.md 最上面
-   4. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
-   5. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令
+   4. 改版本号：Cargo.toml（workspace.package.version）和 Cargo.lock、package.json 和 web/package.json
+      （连同各自的 package-lock.json）、src-tauri/tauri.conf.json
+   5. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
+   6. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令。
+      推 main 被拒（发版途中别人推了 main）：撤掉这次的发版提交和 tag，重新拉到最新再发一次；第二次还被拒才停下
 
-   --dry-run：只打印这一版的 changelog（有哪些提交），不改文件、不提交、不打 tag
+   --dry-run：只打印这一版的 changelog（按 origin/main 列，和真正发出去的一致），不改文件、不提交、不打 tag、不动工作区
    ========================================================================== */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -21,6 +24,8 @@ const BRANCH = 'main';
 const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
 const push = args.includes('--push');
+/** 推 main 被拒后自动重发的那一次（脚本自己加的参数） */
+const retried = args.includes('--retried');
 const version = args.find(a => !a.startsWith('--'));
 
 function run(cmd, argv) {
@@ -42,17 +47,46 @@ function fail(msg) {
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) fail('用法：npm run release -- <x.y.z> [--dry-run] [--push]');
 const tag = `v${version}`;
 
-/* ---------- 1. 核对 ---------- */
+/* ---------- 1. 拉到最新 ---------- */
 
-// 先拿到远端的 tag；--dry-run 连不上远端时用本地的
+// 先拿到远端的提交和 tag；--dry-run 连不上远端时用本地的
 try {
   git('fetch', 'origin', '--tags');
 } catch (e) {
   if (!dry) fail(`git fetch 失败：${String(e.stderr || e.message).trim()}`);
 }
 
-// 上一个 tag：HEAD 往前最近的 vX.Y.Z；没有就是第一次发版，changelog 从第一个提交算起
-const prev = tryGit('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', 'HEAD');
+const REMOTE = `origin/${BRANCH}`;
+const hasRemote = Boolean(tryGit('rev-parse', '-q', '--verify', `refs/remotes/${REMOTE}`));
+if (!dry) {
+  if (!hasRemote) fail(`没有 ${REMOTE}：先 git remote add origin <仓库地址>`);
+  if (git('status', '--porcelain')) fail('工作区有没提交的改动');
+  const head = git('rev-parse', 'HEAD');
+  const remote = git('rev-parse', REMOTE);
+  if (head !== remote) {
+    // 本地有远端没有的提交：发出去的会和集成分支不一样，先按正常流程推上去
+    const ahead = git('log', '--oneline', `${REMOTE}..HEAD`);
+    if (ahead)
+      fail(
+        `本地有没推到 ${BRANCH} 的提交，先按 AGENTS.md rebase 到 ${REMOTE}、跑完检查推上去，再发版：\n${ahead}`,
+      );
+    // 只是落后（别的电脑先推了）：快进到 origin/main
+    const branch = tryGit('symbolic-ref', '-q', '--short', 'HEAD');
+    if (branch && branch !== BRANCH) fail(`当前在分支 ${branch} 上：切到 ${BRANCH}（或分离 HEAD）再发版`);
+    const n = git('rev-list', '--count', `HEAD..${REMOTE}`);
+    if (branch) git('merge', '--ff-only', '-q', REMOTE);
+    else git('checkout', '-q', '--detach', REMOTE);
+    console.log(`本地落后 ${REMOTE} ${n} 个提交，已经快进到最新（${git('rev-parse', '--short', 'HEAD')}）。`);
+  }
+}
+
+/* ---------- 2. 核对 ---------- */
+
+// 要发的提交：发版时 HEAD 已经是 origin/main；--dry-run 不动工作区，直接看 origin/main
+const TIP = dry && hasRemote ? REMOTE : 'HEAD';
+
+// 上一个 tag：TIP 往前最近的 vX.Y.Z；没有就是第一次发版，changelog 从第一个提交算起
+const prev = tryGit('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', TIP);
 const parse = v => v.replace(/^v/, '').split('.').map(Number);
 if (prev) {
   const [a, b] = [parse(prev), parse(tag)];
@@ -61,9 +95,6 @@ if (prev) {
 }
 
 if (!dry) {
-  if (git('status', '--porcelain')) fail('工作区有没提交的改动');
-  if (git('rev-parse', 'HEAD') !== git('rev-parse', `origin/${BRANCH}`))
-    fail(`HEAD 不是 origin/${BRANCH}：先把要发的提交推到 ${BRANCH}，再在 origin/${BRANCH} 上发版`);
   if (tryGit('rev-parse', '-q', '--verify', `refs/tags/${tag}`) || git('ls-remote', '--tags', 'origin', `refs/tags/${tag}`))
     fail(`tag ${tag} 已经存在`);
 }
@@ -86,7 +117,7 @@ function today() {
 }
 
 function section() {
-  const range = prev ? `${prev}..HEAD` : 'HEAD';
+  const range = prev ? `${prev}..${TIP}` : TIP;
   const raw = git('log', '--no-merges', '--format=%h%x1f%s%x1f%b%x1e', range);
   const groups = new Map([...GROUPS.map(([, t]) => [t, []]), [OTHER, []]]);
   // 同一张卡片（提交正文最后的「卡片：…」）打回后会再提交，这一版里只留最新的一条。
@@ -118,12 +149,14 @@ function section() {
 
 const notes = section();
 if (dry) {
+  const behind = TIP !== 'HEAD' ? Number(git('rev-list', '--count', `HEAD..${TIP}`)) : 0;
+  if (behind) console.log(`本地落后 ${TIP} ${behind} 个提交：下面按 ${TIP} 列，真正发版时会先快进过去。\n`);
   console.log(`上一个 tag：${prev ?? '（没有，第一次发版）'}\n`);
   console.log(notes);
   process.exit(0);
 }
 
-/* ---------- 2. 改版本号 ---------- */
+/* ---------- 4. 改版本号 ---------- */
 
 function edit(file, fn) {
   const path = join(root, file);
@@ -154,7 +187,7 @@ for (const dir of ['.', 'web']) {
 }
 edit('src-tauri/tauri.conf.json', s => s.replace(/^(\s*"version":\s*")[^"]*(")/m, `$1${version}$2`));
 
-/* ---------- 3. 写 CHANGELOG.md ---------- */
+/* ---------- 4. 写 CHANGELOG.md（第 3 步生成的这一节） ---------- */
 
 const HEADER = '# 更新日志\n\n版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。\n';
 const file = join(root, 'CHANGELOG.md');
@@ -162,7 +195,7 @@ const old = existsSync(file) ? readFileSync(file, 'utf8') : HEADER;
 const at = old.indexOf('\n## ');
 writeFileSync(file, at < 0 ? `${old.trimEnd()}\n\n${notes}` : `${old.slice(0, at + 1)}${notes}\n${old.slice(at + 1)}`);
 
-/* ---------- 4. 提交、打 tag ---------- */
+/* ---------- 5. 提交、打 tag ---------- */
 
 git(
   'add',
@@ -182,18 +215,43 @@ git('tag', '-a', tag, '--cleanup=whitespace', '-m', `Board ${tag}`, '-m', notes.
 console.log(notes);
 console.log(`已提交「chore: 发版 ${tag}」并打了 tag ${tag}（上一个 tag：${prev ?? '没有'}）。`);
 
-/* ---------- 5. 推送 ---------- */
+/* ---------- 6. 推送 ---------- */
 
 const cmds = [`git push origin HEAD:${BRANCH}`, `git push origin ${tag}`];
 if (!push) {
   console.log(`\n确认无误后推送（推 tag 会部署线上服务端）：\n  ${cmds.join('\n  ')}`);
   process.exit(0);
 }
+const base = git('rev-parse', 'HEAD~1');
 try {
   git('push', 'origin', `HEAD:${BRANCH}`);
 } catch (e) {
-  console.error(String(e.stderr || e.message).trim());
-  fail(`${BRANCH} 推送被拒（别人先推了）。撤销这次发版后重来：git tag -d ${tag} && git reset --hard HEAD~1`);
+  const why = String(e.stderr || e.message).trim();
+  // 撤掉这次的发版提交和 tag（发版前工作区是干净的，HEAD~1 就是当时的 origin/main）
+  git('tag', '-d', tag);
+  git('reset', '-q', '--hard', base);
+  let moved = false;
+  try {
+    git('fetch', 'origin');
+    moved = git('rev-parse', REMOTE) !== base;
+  } catch {
+    // 连不上远端：按推送失败处理
+  }
+  if (!moved) fail(`推送 ${BRANCH} 失败，已撤掉这次的发版提交和 tag：\n${why}`);
+  if (retried) fail(`${BRANCH} 又被别人先推了，已撤掉这次的发版提交和 tag。稍后重新执行：npm run release -- ${version} --push`);
+  // 发版途中别人推了 main：重新拉到最新，再发一次
+  console.log(`\n${BRANCH} 推送被拒：发版途中别人推了新提交。已撤掉这次的发版提交和 tag，拉到最新后重新发版。\n`);
+  try {
+    execFileSync(process.execPath, [fileURLToPath(import.meta.url), ...args, '--retried'], { cwd: root, stdio: 'inherit' });
+    process.exit(0);
+  } catch (err) {
+    process.exit(err.status ?? 1);
+  }
 }
-git('push', 'origin', tag);
+try {
+  git('push', 'origin', tag);
+} catch (e) {
+  console.error(String(e.stderr || e.message).trim());
+  fail(`${BRANCH} 已推送，但 tag ${tag} 没推上去（没推 tag 就不会部署）。重试：git push origin ${tag}`);
+}
 console.log(`已推送 ${BRANCH} 和 ${tag}，部署见 GitHub Actions → deploy。`);

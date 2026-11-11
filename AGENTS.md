@@ -69,17 +69,11 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 | y | 重构或大升级。要升 y 时先停下来通知人，列出是哪些提交，由人决定升 y 还是 z |
 | z | 修复和比较小的新功能 |
 
-发版前先在最新的 `origin/main` 上（工作区干净、`HEAD` 就是 `origin/main`，`scripts/release.mjs` 第一步也会核对）：
-
-```sh
-git switch main && git pull --ff-only   # 本地和远端有分叉时改用：git fetch origin && git rebase origin/main
-```
-
-确认无误后再执行 `npm run release`。
+在 `main` 分支或分离 HEAD 上、工作区干净时执行 `npm run release`，不用先手动拉：脚本先 `git fetch`，本地只是落后于 `origin/main`（别的电脑先推了）时自动快进到最新再发；本地有没推到 `main` 的提交时中止，先按「集成分支」推上去。推 `main` 被拒（发版途中别人推了）时，脚本撤掉这次的发版提交和 tag、拉到最新后自动再发一次，第二次还被拒才停下，稍后重新执行即可。
 
 人让你发版、没给版本号时：
 
-1. `npm run release -- <上一版的 z 加 1> --dry-run` 看这一版有哪些提交（不改任何文件）。
+1. `npm run release -- <上一版的 z 加 1> --dry-run` 看这一版有哪些提交（按 `origin/main` 列，不改任何文件、不动工作区）。
 2. 里面有重构或大升级（`refactor` 提交、标了「不兼容」的提交，或者你判断算大升级的）：停下来，列出这些提交，问人升 y 还是 z。没有就升 z。
 3. `npm run release -- <版本号> --push`：改版本号（Cargo.toml、Cargo.lock、package.json、package-lock.json、web/package.json、web/package-lock.json、tauri.conf.json）、从上一个 tag 之后的每个提交生成 `CHANGELOG.md` 里这一版的一节，提交「chore: 发版 vX.Y.Z」、打 tag，再推 `main` 和 tag。
 

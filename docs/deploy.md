@@ -210,26 +210,21 @@ docker compose start board
 
 发版由人决定：推 `vX.Y.Z` tag 才构建、部署线上服务端（见下文「自动部署」）；推 `main` 只跑测试，不部署。版本号规则见 [AGENTS.md](../AGENTS.md)「发版」：x 只由人决定；y 是重构或大升级；z 是修复和比较小的新功能。第一个 tag 是 `v0.1.0`。
 
-发版前先在最新的 `origin/main` 上（工作区干净、`HEAD` 就是 `origin/main`）：
+在 `main` 分支或分离 HEAD 上、工作区干净时执行（不用先手动 `git pull`）：
 
 ```bash
-git switch main && git pull --ff-only   # 本地和远端有分叉时改用：git fetch origin && git rebase origin/main
-```
-
-确认无误后再执行：
-
-```bash
-npm run release -- 0.1.1 --dry-run   # 先看这一版有哪些提交，不改任何文件
+npm run release -- 0.1.1 --dry-run   # 先看这一版有哪些提交（按 origin/main 列），不改任何文件
 npm run release -- 0.1.1 --push      # 发版并推送
 ```
 
 `scripts/release.mjs` 依次：
 
-1. 核对版本号格式、工作区干净、`HEAD` 就是 `origin/main`、tag 还不存在、比上一个 tag 大
-2. 改版本号：`Cargo.toml` 的 `workspace.package.version` 和 `Cargo.lock`、`package.json` 和 `web/package.json`（连同 `package-lock.json`）、`src-tauri/tauri.conf.json`
+1. 拉到最新：`git fetch`；工作区要干净；本地只是落后于 `origin/main`（别的电脑先推了）时自动快进过去；本地有没推到 `main` 的提交、或在别的分支上时中止
+2. 核对版本号格式、tag 还不存在、比上一个 tag 大
 3. 从上一个 tag 之后的每个提交生成这一版的 changelog，按提交类型分组（新功能、修复、性能、重构、文档、其他），写到 `CHANGELOG.md` 最上面
-4. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
-5. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令
+4. 改版本号：`Cargo.toml` 的 `workspace.package.version` 和 `Cargo.lock`、`package.json` 和 `web/package.json`（连同 `package-lock.json`）、`src-tauri/tauri.conf.json`
+5. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
+6. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因
 
 tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，部署成功后一起附到 GitHub Release（见「自动部署」「桌面端安装包」）。
 
