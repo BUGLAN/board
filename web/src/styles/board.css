@@ -26,13 +26,8 @@
   background: color-mix(in srgb, var(--brand) 7%, transparent); border: 1.5px dashed color-mix(in srgb, var(--brand) 55%, transparent);
   transition: transform .2s var(--ease-out), width .2s, height .2s;
 }
+/* 右边缘只留拖拽热区（改宽度），不画竖条提示 */
 .tile-resize { position: absolute; top: 10px; bottom: 10px; right: 0; width: 10px; cursor: ew-resize; z-index: 4; }
-.tile-resize::after {
-  content: ""; position: absolute; right: 3px; top: 50%; width: 3px; height: 28px; margin-top: -14px; border-radius: var(--r-hair);
-  background: var(--line-3); opacity: 0; transition: opacity var(--dur-1), height var(--dur-2), margin var(--dur-2), background-color var(--dur-1);
-}
-.col:hover .tile-resize::after { opacity: 1; }
-.tile-resize:hover::after, .tile.sizing .tile-resize::after { background: var(--c); height: 60%; margin-top: 0; top: 20%; opacity: 1; }
 body.tile-moving, body.tile-moving * { cursor: grabbing !important; user-select: none !important; }
 body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select: none !important; }
 
