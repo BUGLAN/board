@@ -320,6 +320,27 @@ export function removeCard(id: number): Patch {
   };
 }
 
+/** 合并「未整理」里的条目：留下 keep（标题、描述换成合并后的，标签取并集），from 里的从白板上拿掉。
+    keep 已经不在：原样返回（来源也不动）；已经拿掉的来源跳过，重复执行结果不变 */
+export function mergePatch(keep: number, from: number[], change: { title: string; body: string }): Patch {
+  const others = from.filter(id => id !== keep);
+  return {
+    board: b => {
+      const k = b.cards[keep];
+      if (!k) return b;
+      const gone = others.filter(id => b.cards[id]);
+      const labels = [...new Set([...k.labels, ...gone.flatMap(id => b.cards[id].labels)])];
+      const cards: BoardSnapshot['cards'] = { ...b.cards, [keep]: { ...k, ...change, labels } };
+      gone.forEach(id => delete cards[id]);
+      const cols: BoardSnapshot['cols'] = {};
+      for (const [c, v] of Object.entries(b.cols)) cols[c] = gone.length ? v.filter(x => !gone.includes(x)) : v;
+      return { ...b, cols, cards };
+    },
+    detail: d => (d.id === keep ? { ...d, ...change } : d),
+    cards: [keep, ...others],
+  };
+}
+
 /** 删除一条评论（人删自己发的）：动态里的这条当帧消失，卡片上的评论数减一；这条评论已经不在了原样返回 */
 export function removeComment(card: number, act: number): Patch {
   return {

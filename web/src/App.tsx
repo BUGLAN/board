@@ -8,6 +8,7 @@ import { FloatTips } from './components/Card';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
+import { InboxPage } from './components/Inbox';
 import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
@@ -40,11 +41,11 @@ const Lazy = ({ name, children }: { name: string; children: ReactNode }) => <Sus
 
 const OP_LABEL: Record<string, string> = {
   create: '新建', edit: '编辑', move: '移动', reorder: '排序', claim: '领取', renew: '续期', comment: '评论', edit_comment: '改评论',
-  timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发',
+  timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发', merge: '合并',
 };
 
-const PAGE: Record<Tab, 'board' | 'canvas' | 'hosts' | 'settings'> = {
-  board: 'board', inbox: 'board', projects: 'canvas', hosts: 'hosts', settings: 'settings',
+const PAGE: Record<Tab, 'board' | 'canvas' | 'hosts' | 'inbox' | 'settings'> = {
+  board: 'board', inbox: 'inbox', projects: 'canvas', hosts: 'hosts', settings: 'settings',
 };
 
 /** 侧栏收起 / 展开时主内容跟着平移（只动 transform，不逐帧改宽度）：
@@ -240,6 +241,7 @@ function BoardApp() {
                 )}
               </Page>
               <Page show={page === 'hosts'}>{page === 'hosts' && <HostsPage />}</Page>
+              <Page show={page === 'inbox'}>{page === 'inbox' && <InboxPage />}</Page>
               <Page show={page === 'settings'}>
                 {page === 'settings' && (
                   <Lazy name="settings">

@@ -90,6 +90,35 @@ describe('removeCard', () => {
   });
 });
 
+describe('mergePatch', () => {
+  const inbox = () => snapshot('p/a', { inbox: [5, 6, 7], todo: [1] }, [{ id: 5, labels: [1] }, { id: 6, labels: [2, 1] }, { id: 7, labels: [3] }]);
+  const change = { title: '合并后', body: '合并后的描述' };
+
+  it('留下 keep，换标题描述、标签取并集；来源从卡片和状态里拿掉；重复执行结果不变', () => {
+    const b = twice(D.mergePatch(5, [6, 7], change).board!, inbox());
+    expect(b.cols).toEqual({ inbox: [5], todo: [1] });
+    expect(b.cards[5]).toMatchObject({ title: '合并后', body: '合并后的描述', labels: [1, 2, 3] });
+    expect(b.cards[6]).toBeUndefined();
+    eachOnce(b);
+  });
+
+  it('留下的那条已经不在：原样返回，来源也不动', () => {
+    const b = inbox();
+    expect(D.mergePatch(9, [6], change).board!(b)).toBe(b);
+  });
+
+  it('有的来源已经不在：只拿掉还在的；详情只改留下的那张；保存中画在所有涉及的卡片上', () => {
+    const p = D.mergePatch(5, [6, 9, 5], change);
+    const b = twice(p.board!, inbox());
+    expect(b.cols.inbox).toEqual([5, 7]);
+    expect(p.cards).toEqual([5, 6, 9]);
+    const d = detail(card(5));
+    expect(twice(p.detail!, d)).toMatchObject(change);
+    const other = detail(card(7));
+    expect(p.detail!(other)).toBe(other);
+  });
+});
+
 describe('removeComment', () => {
   const act = (id: number) => ({ id, at: 0, actor: { kind: 'human' as const, name: '' }, kind: 'comment' as const, action: 'comment', text: `评论 ${id}` });
 

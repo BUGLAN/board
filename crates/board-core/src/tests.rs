@@ -1607,3 +1607,64 @@ fn place_at_bottom_updates_only_that_card() {
     exec(&mut s, B, &human(), T0 + 2002, Cmd::Move { id: 1002, column: "review".into(), top: false, index: Some(1), order: None, before: None, after: None }).unwrap();
     assert_eq!(&snapshot(&s, B, T0).cols["review"][..3], &[1, 1002, 2]);
 }
+
+/// 「未整理」页的合并：只留目标条目，描述接上来源、标签取并集，附件和评论跟过来，来源删除；只有人能合并、只能合并「未整理」里的
+#[test]
+fn inbox_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None, false)).unwrap().id;
+    let doc = s.write(T0, Origin::ui(None), |w| w.create_label("default", "文档", None, false)).unwrap().id;
+    let inbox = |title: &str, body: &str, labels: Vec<i64>| Cmd::New {
+        title: title.into(),
+        body: Some(body.into()),
+        column: Some("inbox".into()),
+        top: false,
+        labels,
+    };
+    let merge = |id: i64, from: Vec<i64>| Cmd::Merge { id, from, title: None, body: None };
+
+    exec(&mut s, B, &human(), T0, inbox("掉线后自动重派", "想法 A", vec![bug])).unwrap();
+    exec(&mut s, B, &alpha(), T0, inbox("掉线的卡片别丢进人工校验", "想法 B", vec![doc])).unwrap();
+    exec(&mut s, B, &human(), T0, inbox("另一条", "", vec![bug])).unwrap();
+    exec(&mut s, B, &human(), T0, new("待办里的")).unwrap();
+    let png = s.attach(T0, &b, Some(2), &alpha(), "shot.png", PNG).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Comment { id: 2, text: "补充一句".into() }).unwrap();
+
+    // 只有人能合并；至少一条别的；都要在「未整理」里；标题不能为空
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, merge(1, vec![2]))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, merge(1, vec![]))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, merge(1, vec![1]))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, merge(1, vec![4]))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, merge(1, vec![99]))), ErrorCode::NotFound);
+    let blank = Cmd::Merge { id: 1, from: vec![2], title: Some("  ".into()), body: None };
+    assert_eq!(code(exec(&mut s, B, &human(), T0, blank)), ErrorCode::EmptyTitle);
+    assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![1, 2, 3], "被拒绝时什么都不变");
+
+    // 不给描述：目标原文在前，每条来源一节
+    let d = exec(&mut s, B, &human(), T0 + MIN, merge(1, vec![2, 3, 2])).unwrap();
+    assert_eq!(d.card.title, "掉线后自动重派");
+    assert_eq!(
+        d.card.body,
+        "想法 A\n\n## 掉线的卡片别丢进人工校验\n\n想法 B\n\n> 合并自 #2 · alpha\n\n## 另一条\n\n> 合并自 #3"
+    );
+    let mut labels = d.card.labels.clone();
+    labels.sort();
+    assert_eq!(labels, vec![bug, doc]);
+    assert_eq!(d.attachments.iter().map(|a| a.id).collect::<Vec<_>>(), [png.id], "来源的附件归到留下的条目");
+    assert!(d.activity.iter().any(|a| a.kind == "comment" && a.text == "补充一句"), "来源的评论跟过来");
+    let m = d.activity.iter().find(|a| a.action == "merge").expect("留下合并的动态");
+    assert_eq!(m.text, "合并了 #2「掉线的卡片别丢进人工校验」、#3「另一条」");
+    assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![1]);
+    assert_eq!(s.read(|r| r.card(&b, 2)).unwrap_err().code, ErrorCode::NotFound);
+
+    // 给了标题和描述：按给的写
+    exec(&mut s, B, &human(), T0, inbox("五", "", vec![])).unwrap();
+    exec(&mut s, B, &human(), T0, inbox("六", "", vec![])).unwrap();
+    let d = exec(&mut s, B, &human(), T0, Cmd::Merge { id: 6, from: vec![5], title: Some(" 新标题 ".into()), body: Some("新描述\n".into()) }).unwrap();
+    assert_eq!((d.card.title.as_str(), d.card.body.as_str()), ("新标题", "新描述"));
+    assert!(d.activity.iter().any(|a| a.action == "merge" && a.text == "合并了 #5「五」，标题改为「新标题」"));
+    assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![1, 6]);
+}

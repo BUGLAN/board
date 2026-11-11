@@ -4,23 +4,22 @@
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
-import { newBoard, newProject, openBoard, openCard, triage } from '../lib/actions';
+import { newBoard, newProject, openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
-import { useMasonry } from '../lib/masonry';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
-import { deleteLabelPatch, optimistic, renderKey, useCurrent, useData, useOnline } from '../store/data';
+import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
-import { previewCols, useEntering, useMobile, Veto } from './BoardView';
-import { CardView } from './Card';
+import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
+import { InboxSideParts } from './Inbox';
 import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24 } from './Icon';
 import { SettingsNav } from './SettingsNav';
-import { Skeleton, SkeletonCard } from './Skeleton';
+import { Skeleton } from './Skeleton';
 
 const TABS: { tab: Tab; label: string; tip: string; icon: ReactNode }[] = [
   { tab: 'board', label: '白板', tip: '白板', icon: <BoardIcon24 /> },
@@ -175,7 +174,7 @@ function SideFilter({ value, onChange, placeholder }: { value: string; onChange:
 
 const OP: Record<string, string> = {
   create: '新建了', edit: '编辑了', move: '移动了', reorder: '调整了顺序', claim: '领取了', renew: '续期了',
-  comment: '评论了', edit_comment: '改了评论', delete_comment: '删除了评论', timeout: '超时释放了', release: '强制释放了', delete: '删除了', label: '改了标签',
+  comment: '评论了', edit_comment: '改了评论', delete_comment: '删除了评论', timeout: '超时释放了', release: '强制释放了', delete: '删除了', label: '改了标签', merge: '合并了',
   beat: '心跳', lost: '心跳中断，释放了', dispatch: '派发',
 };
 
@@ -688,38 +687,17 @@ function BoardSide() {
   );
 }
 
-/* ---------------- 未整理 Tab ---------------- */
+/* ---------------- 未整理 Tab ----------------
+   主区是「未整理」页（components/Inbox）；侧栏放「记一条未整理」、筛选、来源和时间段 */
 
 function InboxSide() {
   const board = useData(s => s.board);
-  const generation = useData(s => s.generation);
-  const detailId = useData(s => s.detailId);
   const cur = useCurrent();
-  const drag = useUI(s => s.drag);
-  const flashes = useUI(s => s.flashes);
-  const filter = useUI(s => s.filter.trim().toLowerCase());
-  const { entering } = useEntering(board, generation);
-  const ids = board ? previewCols(board.cols, drag).inbox ?? [] : [];
-  const start = boardFlow(board).home?.name ?? '待办';
-  // 快照还没到：数量用工作区里的计数，列表放骨架卡片；不显示「全部整理完了」
-  const loading = !board;
+  const filter = useUI(s => s.filter);
+  // 快照还没到：数量用工作区里的计数
   const count = board ? board.cols.inbox?.length ?? 0 : cur?.board.counts.inbox ?? null;
-  const over = drag?.over === 'inbox';
-  const empty = !loading && ids.length === 0;
-  const inboxList = useRef<HTMLDivElement>(null);
-  useMasonry(inboxList);
   return (
-    <section
-      className={cx(
-        'side-view inbox-zone',
-        empty && 'is-empty',
-        drag && over && drag.valid && !(drag.fromCol === 'inbox' && drag.col === 'inbox') && 'drop-ok',
-        drag && over && !drag.valid && 'drop-bad',
-      )}
-      data-view="inbox"
-      data-drop="inbox"
-      aria-label="未整理"
-    >
+    <section className="side-view" data-view="inbox" aria-label="未整理">
       <header className="side-head">
         <span className="side-title">未整理</span>
         {count == null ? <Skeleton className="sk-side-count" w={22} h={20} r={999} /> : <span className="side-count mono">{count}</span>}
@@ -734,50 +712,10 @@ function InboxSide() {
         </span>
         <kbd>I</kbd>
       </button>
-      <div className="side-scroll inbox-scroll">
-        {loading && count !== 0 && (
-          <div className="sk-inbox" aria-busy="true">
-            {Array.from({ length: Math.min(count ?? 2, 3) }, (_, i) => (
-              <SkeletonCard key={i} seed={i + 1} />
-            ))}
-          </div>
-        )}
-        <div className="col-list inbox-list" data-list="inbox" ref={inboxList}>
-          {board &&
-            ids.map(id => {
-              const c = board.cards[id];
-              if (!c) return null;
-              return (
-                <CardView
-                  key={renderKey(id)}
-                  card={drag?.id === id ? { ...c, column: 'inbox' } : c}
-                  labels={cur?.project.labels ?? []}
-                  filter={filter}
-                  open={detailId === id}
-                  placeholder={drag?.id === id}
-                  flash={flashes[id]}
-                  entering={entering.has(id)}
-                  claimName={start}
-                  onTriage={triage}
-                />
-              );
-            })}
-        </div>
-        <div className="inbox-empty">
-          <div className="ie-art" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-          </div>
-          <b>全部整理完了</b>
-          <span>
-            想到什么先记在这里，
-            <br />
-            整理清楚后再放进「{start}」。
-          </span>
-        </div>
+      <div className="side-scroll ib-side">
+        <SideFilter value={filter} onChange={setFilter} placeholder="筛选标题、描述、#编号" />
+        <InboxSideParts />
       </div>
-      <Veto drag={over ? drag : null} />
     </section>
   );
 }

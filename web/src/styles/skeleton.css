@@ -51,7 +51,6 @@
 .tree-row .sk-tm { margin-left: auto; }
 .recent-row.sk-row { align-items: start; }
 .sk-lines { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
-.sk-inbox { display: flex; flex-direction: column; gap: 8px; }
 .side-head .sk-side-count { margin-left: auto; }
 
 /* ---------------- 卡片详情：动态、附件骨架 ---------------- */

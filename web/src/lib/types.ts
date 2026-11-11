@@ -383,4 +383,6 @@ export type Cmd =
   | { op: 'delete_comment'; id: number; activity: number }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }
-  | { op: 'delete'; id: number };
+  | { op: 'delete'; id: number }
+  /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
+  | { op: 'merge'; id: number; from: number[]; title?: string; body?: string };

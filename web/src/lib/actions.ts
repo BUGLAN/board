@@ -3,7 +3,7 @@
    ========================================================================== */
 import { api } from './api';
 import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
-import { boardFlow, KEY_RE, PROJECT_COLORS, slug } from './schema';
+import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
 import { boardMeta, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
@@ -42,18 +42,34 @@ export function openCard(id: number) {
   setTimeout(() => reveal(id), 60);
 }
 
-/** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示） */
+/** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示）。
+    桌面的白板页上，落位后定位到它；在「未整理」页、手机上当帧提示一下，可以撤销（放回「未整理」最下面；
+    还没保存完就点撤销：等这次移动确认后再放回去） */
 export async function triage(id: number) {
   if (isDraft(id)) return;
   const start = boardFlow(useData.getState().board).home;
   const to = start?.key ?? 'todo';
+  const done = exec({ op: 'move', id, column: to }, movePatch(id, to));
+  const onBoard = useUI.getState().tab === 'board' && !isMobile();
+  if (!onBoard)
+    toast({
+      type: 'success',
+      title: `#${id} 已整理到「${start?.name ?? '待办'}」最下面`,
+      action: { label: '撤销', fn: () => void done.then(() => untriage([id]), () => undefined) },
+    });
   try {
-    await exec({ op: 'move', id, column: to }, movePatch(id, to));
-    if (isMobile()) toast({ type: 'success', title: `#${id} 已整理到「${start?.name ?? '待办'}」`, duration: 1800 });
-    else setTimeout(() => reveal(id), 60);
+    await done;
+    if (onBoard) setTimeout(() => reveal(id), 60);
   } catch (e) {
     toastError(e);
   }
+}
+
+/** 撤销整理：放回「未整理」最下面（只有人能移入，界面上就是人） */
+export async function untriage(ids: number[]) {
+  const results = await Promise.allSettled(ids.map(id => exec({ op: 'move', id, column: INBOX }, movePatch(id, INBOX))));
+  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
+  if (bad) toastError(bad.reason);
 }
 
 /* ------------------------------ 复制为提示词 ------------------------------ */

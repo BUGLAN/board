@@ -6,7 +6,7 @@ import {
 import { moveTo, vetoFor } from '../../lib/drag';
 import { quickPrompts } from '../../lib/prompt';
 import { SORTS, sortKey, type SortSpec } from '../../lib/sort';
-import { boardFlow } from '../../lib/schema';
+import { boardFlow, INBOX, INBOX_NAME } from '../../lib/schema';
 import { cx } from '../../lib/util';
 import { allBoards, boardMeta, colCount, useData } from '../../store/data';
 import { closeCtx, manageLabels, setSort, useUI } from '../../store/ui';
@@ -219,6 +219,30 @@ function MoveMenu({ id, go }: { id: number; go: (fn: () => void) => () => void }
         );
       })}
       {!targets.length && <p className="sort-hint">工作流里没有别的状态</p>}
+      {/* 放回「未整理」：只有人能移入（界面上就是人）；被持有时和别的状态一样不能移 */}
+      {card.column !== INBOX && (
+        <>
+          <div className="ctx-sep" />
+          <button
+            type="button"
+            data-do="move-inbox"
+            className={cx('mv-item', card.holder && 'vetoed')}
+            aria-disabled={!!card.holder}
+            title={vetoFor(card, INBOX, f)?.message}
+            onClick={go(() => moveTo(card.id, INBOX))}
+          >
+            <i className="mv-dot" style={{ background: 'var(--c-inbox)' }} />
+            <span className="mv-name">{INBOX_NAME}</span>
+            {card.holder ? (
+              <span className="mv-note">
+                <Icon name="lock" />
+              </span>
+            ) : (
+              <span className="mv-count mono">{colCount(board, INBOX)}</span>
+            )}
+          </button>
+        </>
+      )}
     </>
   );
 }

@@ -96,6 +96,17 @@ pub enum Cmd {
     Delete {
         id: i64,
     },
+    /// 合并（仅人，界面「未整理」页）：把 from 里的条目并进 id，只留下 id。都要在「未整理」里。
+    /// 标题、描述按给的写；不给描述时，目标原文在前，每条来源一节（标题 + 描述 + 合并自哪一条）接在后面。
+    /// 标签取并集，来源的附件和评论归到 id，来源条目删除
+    Merge {
+        id: i64,
+        from: Vec<i64>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -557,6 +568,83 @@ impl<'a> W<'a> {
                 self.event(b, id, &detail.card.title, actor, "delete", "删除了卡片")?;
                 self.tx.execute("DELETE FROM cards WHERE board = ?1 AND id = ?2", params![b, id])?;
                 return Ok(detail);
+            }
+
+            /* ---------------- 合并（仅人，只在「未整理」里） ---------------- */
+            Cmd::Merge { id, from, title, body } => {
+                if !actor.is_human() {
+                    return Err(BoardError::usage("合并只能在界面上做"));
+                }
+                let from: Vec<i64> = dedup(&from).into_iter().filter(|x| *x != id).collect();
+                if from.is_empty() {
+                    return Err(BoardError::usage("至少要选一条别的条目并进来"));
+                }
+                let target = self.row(b, id)?;
+                let mut srcs: Vec<(i64, Row)> = Vec::with_capacity(from.len());
+                for f in &from {
+                    srcs.push((*f, self.row(b, *f)?));
+                }
+                for (cid, r) in std::iter::once((id, &target)).chain(srcs.iter().map(|(i, r)| (*i, r))) {
+                    if r.col != INBOX {
+                        return Err(BoardError::usage(format!(
+                            "#{cid} 在「{}」：只能合并「{INBOX_NAME}」里的条目",
+                            flow.name(&r.col)
+                        )));
+                    }
+                }
+                let title = match title {
+                    Some(t) => {
+                        let t = t.trim().to_string();
+                        if t.is_empty() {
+                            return Err(BoardError::code(ErrorCode::EmptyTitle));
+                        }
+                        t
+                    }
+                    None => target.title.clone(),
+                };
+                let body = match body {
+                    Some(text) => text.trim().to_string(),
+                    None => {
+                        let mut parts: Vec<String> = vec![target.body.trim().to_string()];
+                        for (f, r) in &srcs {
+                            let who: (String, String) = self.tx.query_row(
+                                "SELECT created_by_kind, created_by_name FROM cards WHERE board = ?1 AND id = ?2",
+                                params![b, f],
+                                |x| Ok((x.get(0)?, x.get(1)?)),
+                            )?;
+                            let who = if who.0 == ActorKind::Agent.as_str() { format!(" · {}", who.1) } else { String::new() };
+                            parts.push(
+                                [format!("## {}", r.title), r.body.trim().to_string(), format!("> 合并自 #{f}{who}")]
+                                    .into_iter()
+                                    .filter(|x| !x.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n"),
+                            );
+                        }
+                        parts.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n\n")
+                    }
+                };
+                for (f, r) in &srcs {
+                    // 标签取并集；附件、评论归到留下的条目（描述里引用的图片不断）
+                    self.tx.execute(
+                        "INSERT OR IGNORE INTO card_labels (board, card, label) SELECT board, ?1, label FROM card_labels WHERE board = ?2 AND card = ?3",
+                        params![id, b, f],
+                    )?;
+                    self.tx.execute("UPDATE attachments SET card = ?1 WHERE board = ?2 AND card = ?3", params![id, b, f])?;
+                    self.tx.execute("UPDATE activity SET card = ?1 WHERE board = ?2 AND card = ?3 AND kind = 'comment'", params![id, b, f])?;
+                    self.on_card_delete(b, *f, actor)?;
+                    self.event(b, *f, &r.title, actor, "delete", &format!("合并到 #{id}"))?;
+                    self.tx.execute("DELETE FROM cards WHERE board = ?1 AND id = ?2", params![b, f])?;
+                }
+                self.tx.execute("UPDATE cards SET title = ?1, body = ?2 WHERE board = ?3 AND id = ?4", params![title, body, b, id])?;
+                self.bind_attachments(b, id, &body)?;
+                let names: Vec<String> = srcs.iter().map(|(f, r)| format!("#{f}「{}」", r.title)).collect();
+                let mut text = format!("合并了 {}", names.join("、"));
+                if title != target.title {
+                    text.push_str(&format!("，标题改为「{title}」"));
+                }
+                self.track(b, id, actor, "merge", &text)?;
+                id
             }
         };
         self.read().card(board, id)

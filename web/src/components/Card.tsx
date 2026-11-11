@@ -1,9 +1,9 @@
-/* 卡片：白板状态块与侧栏「未整理」共用 */
+/* 卡片：白板状态块里的卡片（「未整理」的条目在「未整理」页，components/Inbox） */
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BEAT_MISSES, BEAT_MS, timing } from '../lib/schema';
 import type { Card as CardT, Label, StatusView } from '../lib/types';
-import { agentColor, ago, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
+import { agentColor, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { renderKey, useCurrent, useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
@@ -40,21 +40,18 @@ interface Props {
   color?: string;
   /** 所在状态是终点：单行时标题划掉，磁贴的编号用状态色 */
   final?: boolean;
-  /** 所在状态的卡片形态；不给时终点单行、其他卡片（侧栏「未整理」不用） */
+  /** 所在状态的卡片形态；不给时终点单行、其他卡片 */
   view?: StatusView;
   /** 不带 ID 执行 board claim 时会被领走的那张 */
   next?: boolean;
-  /** 「整理到…」按钮上的首个可领取状态名称 */
-  claimName?: string;
-  onTriage?: (id: number) => void;
 }
 
 export const CardView = memo(function CardView({
-  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next, claimName = '待办', onTriage,
+  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next,
 }: Props) {
   const held = !!c.holder;
-  // 只有被持有的卡片要每秒走表；「未整理」里显示「几分钟前」、做过的卡片显示「完成于几分钟前」，半分钟一次；其他卡片不起定时器
-  const now = useNow(held ? 1000 : c.column === 'inbox' || c.finishedAt ? 30000 : null);
+  // 只有被持有的卡片要每秒走表；做过的卡片显示「完成于几分钟前」，半分钟一次；其他卡片不起定时器
+  const now = useNow(held ? 1000 : c.finishedAt ? 30000 : null);
   const ref = useRef<HTMLElement>(null);
   const sel = useUI(s => s.labelSel);
   // 正在写入的标签（拖上来还没确认）
@@ -90,7 +87,6 @@ export const CardView = memo(function CardView({
       ref={ref}
       className={cx(
         'card',
-        c.column === 'inbox' && 'inbox',
         doing && 'doing',
         final && !doing && shape !== 'card' && 'done',
         shape === 'line' && 'v-line',
@@ -116,37 +112,7 @@ export const CardView = memo(function CardView({
         enter ? e => e.target === e.currentTarget && (e.animationName === 'card-in' || e.animationName === 'card-add') && setEnter('') : undefined
       }
     >
-      {c.column === 'inbox' ? (
-        <>
-          <div className="card-row">
-            <span className="card-id">#{no}</span>
-            <span className="card-flags">
-              <span className="card-age">{ago(c.createdAt, now)}</span>
-            </span>
-          </div>
-          <div className="card-title">
-            <Title text={c.title} />
-          </div>
-          {snippet(c.body) && <div className="card-snippet">{snippet(c.body)}</div>}
-          {c.labels.length > 0 && (
-            <div className="card-labels">
-              <LabelChips ids={c.labels} labels={labels} pending={pending} />
-            </div>
-          )}
-          <button
-            className="card-act"
-            type="button"
-            title={`整理到「${claimName}」最下面`}
-            onClick={e => {
-              e.stopPropagation();
-              onTriage?.(c.id);
-            }}
-          >
-            整理到{claimName}
-            <Icon name="move" />
-          </button>
-        </>
-      ) : shape === 'tile' ? (
+      {shape === 'tile' ? (
         <>
           <span className="ct-id">{no}</span>
           {doing && <i className={cx('ct-beat', t.beat)} />}
@@ -241,16 +207,6 @@ export const CardView = memo(function CardView({
     </article>
   );
 });
-
-function snippet(body: string) {
-  return (
-    body
-      .split('\n')
-      // 图片、链接只留文字（附件显示为文件名）
-      .map(l => l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^[-*#>\s]+|\[[ xX]\]\s*/g, '').trim())
-      .find(Boolean) || ''
-  );
-}
 
 /** 进行中的计时胶囊：跳动的心跳点 + 这一次的耗时。卡片、详情共用 */
 export function RunPill({ card: c, now, big }: { card: CardT; now: number; big?: boolean }) {

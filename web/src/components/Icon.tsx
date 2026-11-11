@@ -29,6 +29,14 @@ const P: Record<string, ReactNode> = {
       <path d="M7.7 3.5v13M12.3 3.5v13" />
     </>
   ),
+  merge: (
+    <>
+      <circle cx="6" cy="4.8" r="1.6" />
+      <circle cx="6" cy="15.2" r="1.6" />
+      <circle cx="14.5" cy="10" r="1.6" />
+      <path d="M6 6.4v7.2M6 7.5c0 2.4 2 2.5 4.4 2.5h2.5" />
+    </>
+  ),
   chevUp: <path d="m5.5 12.5 4.5-4.5 4.5 4.5" />,
   chevDown: <path d="m5.5 8 4.5 4.5L14.5 8" />,
   chevRight: <path d="m8 5 5 5-5 5" />,

@@ -22,7 +22,7 @@ const NO_IDS: number[] = [];
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
-  beat: 'timer', lost: 'alert', dispatch: 'dispatch',
+  beat: 'timer', lost: 'alert', dispatch: 'dispatch', merge: 'merge',
 };
 
 export function CardDetail() {
@@ -104,15 +104,12 @@ export function CardDetail() {
 }
 
 function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; loading: boolean; error: string | null }) {
-  const cur = useCurrent();
   const board = useData(s => s.board);
   const now = useNow(1000);
   const bodyRef = useRef<HTMLDivElement>(null);
   const locked = !!c.holder;
   const f = boardFlow(board);
-  const labels = cur?.project.labels ?? [];
-  // 正在加上的标签（pending 态）；这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
-  const pendingIds = useData(s => s.pending[`${s.path}#${c.id}`]) ?? NO_IDS;
+  // 这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
   const saving = useCardBusy(c.id);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
   const list = board?.cols[c.column] ?? [];
@@ -182,21 +179,6 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     prevCol.current = c.column;
   }, [c.column]);
 
-  const onLabels = (anchor: HTMLElement) =>
-    cur &&
-    openPicker({
-      rect: anchor.getBoundingClientRect(),
-      project: cur.project.key,
-      selected: c.labels,
-      onToggle: async (id, add) => {
-        try {
-          await (add ? addLabel(c.id, id) : removeLabel(c.id, id));
-        } catch (e) {
-          toastError(e);
-        }
-      },
-    });
-
   const creator = c.createdBy;
   return (
     <div className="drawer-body" ref={bodyRef}>
@@ -241,30 +223,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                 最近更新 <b>{ago(c.updatedAt, now)}</b>
               </span>
             </div>
-            <div className="d-labels">
-              {/* 按项目里标签的顺序排，与侧栏、卡片上一致 */}
-              {labels
-                .filter(l => c.labels.includes(l.id))
-                .map(l => (
-                  <LabelChip
-                    key={l.id}
-                    label={l}
-                    pending={pendingIds.includes(l.id)}
-                    removeDisabled={saving}
-                    onRemove={async () => {
-                      try {
-                        await removeLabel(c.id, l.id);
-                      } catch (e) {
-                        toastError(e);
-                      }
-                    }}
-                  />
-                ))}
-              <button type="button" className="lb-add" aria-label="添加标签" data-label-picker disabled={saving} onClick={e => onLabels(e.currentTarget)}>
-                <Icon name="tag" />
-                {c.labels.length ? '' : '添加标签'}
-              </button>
-            </div>
+            <CardLabels card={c} saving={saving} />
           </section>
           <DispatchNote board={useData.getState().path} card={c.id} />
           <ClaimPart card={c} now={now} busy={saving} />
@@ -375,8 +334,58 @@ function keepDraft(c: Card, field: 'title' | 'body', text: string) {
   });
 }
 
-/** busy：这张卡片在保存中，先不能改（只读），保存完再改 */
-function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
+/** 卡片的标签：可以去掉，「添加标签」打开项目的标签选择器。卡片详情和「未整理」页的展开行共用。
+    saving：这张卡片在保存中，× 和「添加标签」先不能点 */
+export function CardLabels({ card: c, saving }: { card: Card; saving: boolean }) {
+  const cur = useCurrent();
+  const labels = cur?.project.labels ?? [];
+  // 正在加上的标签（pending 态）
+  const pendingIds = useData(s => s.pending[`${s.path}#${c.id}`]) ?? NO_IDS;
+  const onLabels = (anchor: HTMLElement) =>
+    cur &&
+    openPicker({
+      rect: anchor.getBoundingClientRect(),
+      project: cur.project.key,
+      selected: c.labels,
+      onToggle: async (id, add) => {
+        try {
+          await (add ? addLabel(c.id, id) : removeLabel(c.id, id));
+        } catch (e) {
+          toastError(e);
+        }
+      },
+    });
+  return (
+    <div className="d-labels">
+      {/* 按项目里标签的顺序排，与侧栏、卡片上一致 */}
+      {labels
+        .filter(l => c.labels.includes(l.id))
+        .map(l => (
+          <LabelChip
+            key={l.id}
+            label={l}
+            pending={pendingIds.includes(l.id)}
+            removeDisabled={saving}
+            onRemove={async () => {
+              try {
+                await removeLabel(c.id, l.id);
+              } catch (e) {
+                toastError(e);
+              }
+            }}
+          />
+        ))}
+      <button type="button" className="lb-add" aria-label="添加标签" data-label-picker disabled={saving} onClick={e => onLabels(e.currentTarget)}>
+        <Icon name="tag" />
+        {c.labels.length ? '' : '添加标签'}
+      </button>
+    </div>
+  );
+}
+
+/** 标题：失焦或回车时保存（当帧生效，被拒绝时改回来并提示）。卡片详情和「未整理」页的展开行共用。
+    busy：这张卡片在保存中，先不能改（只读），保存完再改 */
+export function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useRefit(ref);
   const [v, setV] = useState(c.title);
@@ -487,7 +496,8 @@ function Attachments({ list }: { list: Attachment[] }) {
   );
 }
 
-function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
+/** 描述：预览 / 编辑，编辑时可以粘贴截图、拖入文件。卡片详情和「未整理」页的展开行共用 */
+export function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [v, setV] = useState(c.body);
   const ta = useRef<HTMLTextAreaElement>(null);
