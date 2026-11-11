@@ -26,9 +26,12 @@ export interface Toast {
 
 export interface ConfirmReq {
   title: string;
+  /** 说明文字：换行按段落显示（多行用 \n 分隔），长的内容（目录列表之类）不撑破弹窗、在框里滚动 */
   text: string;
   ok?: string;
-  icon?: 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock';
+  icon?: 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock' | 'alert' | 'host';
+  /** warn：要人确认时把风险说清楚（黄色图标，而不是默认的红色危险图标） */
+  tone?: 'danger' | 'warn';
   resolve: (v: boolean) => void;
 }
 

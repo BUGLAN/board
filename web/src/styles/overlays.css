@@ -343,6 +343,15 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .dialog-wrap.on .dialog-icon { animation: veto-wiggle .6s var(--ease-out) .15s; }
 .dialog h3 { font-family: var(--f-display); font-size: 18px; letter-spacing: -.01em; }
 .dialog p { margin-top: 6px; font-size: 13px; color: var(--text-2); line-height: 1.6; }
+/* 多行说明（目录列表、风险说明）：左对齐、逐段显示；太长时在框里滚动，不把弹窗撑破 */
+.dialog.wide { width: min(460px, 100%); text-align: left; padding: 22px 22px 18px; }
+.dialog.wide .dialog-icon { margin: 0 0 12px; }
+.dialog-text { max-height: min(46vh, 340px); overflow-y: auto; overflow-wrap: anywhere; scrollbar-width: thin; }
+.dialog-text p { margin-top: 6px; font-size: 13px; color: var(--text-2); line-height: 1.6; white-space: pre-wrap; }
+.dialog-text p:first-child { margin-top: 0; }
+.dialog-text p + p { margin-top: 10px; }
+/* 警告类的确认：黄色图标，一眼看出是在说风险 */
+.dialog.warn .dialog-icon { color: var(--warn-text); background: color-mix(in srgb, var(--warn-text) 14%, transparent); }
 .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 20px; }
 .dialog-actions .btn { height: 38px; }
 

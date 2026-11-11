@@ -9,6 +9,7 @@ import {
   shellVersion, type Density, type LocalHost, type Motion, type ThemePref,
 } from '../lib/platform';
 import { hostsOf } from '../lib/hosts';
+import { hostConfirmText } from '../lib/localHost';
 import { cardPrompt } from '../lib/prompt';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
@@ -371,6 +372,21 @@ function LocalHostCard() {
     setDirs(f);
     setDirty(true);
   };
+  /** 表格里填的白板与目录（只留下填了一半的行，保存时也这样交给外壳） */
+  const filled = () => dirs.filter(d => d.board || d.path);
+  const sameDirs = (a: Dir[], b: Dir[]) =>
+    a.length === b.length && a.every((d, i) => d.board.trim() === b[i].board.trim() && d.path.trim() === b[i].path.trim());
+
+  // 打开开关 / 改了白板与目录要保存：先用应用内的确认框说清机器名、目录和免审批运行的风险，
+  // 人确认之后再调外壳（确认过就不再弹系统确认框）。取消时什么都不做：不保存、不重启 board host
+  const ask = async (title: string, ok: string, ds: Dir[]) =>
+    confirm({
+      title,
+      text: hostConfirmText(name, st?.defaultName ?? '', ds),
+      ok,
+      icon: 'alert',
+      tone: 'warn',
+    });
 
   // 弹系统的文件夹选择框，选中后填进这一行；取消保持原值
   const pick = async (i: number) => {
@@ -389,6 +405,9 @@ function LocalHostCard() {
   };
 
   const save = async () => {
+    // 正在接任务时改了白板与目录：先确认（agent 会去新目录干活），取消就不保存、不重启
+    const next = filled();
+    if (st?.enabled && !sameDirs(st.dirs, next) && !(await ask('修改这台电脑接任务的白板目录？', '保存', next))) return;
     // 正在接任务：保存后要重启 board host，本机正在跑的 agent 会被停止
     const running = (ws?.dispatches ?? []).filter(d => d.state === 'running' && d.host === me).length;
     if (st?.enabled && st.running && running > 0) {
@@ -402,14 +421,12 @@ function LocalHostCard() {
     }
     setBusy(true);
     try {
-      await saveLocalHost(name.trim(), dirs.filter(d => d.board || d.path));
+      await saveLocalHost(name.trim(), filled());
       setDirty(false);
       toast({ type: 'success', title: '已保存', text: st?.enabled ? '写进了 ~/.board/config.toml，board host 已重启' : '写进了 ~/.board/config.toml 的 [host]' });
       await load();
     } catch (e) {
-      // 在系统确认框里点了取消：不算出错
-      if (cancelled(e)) toast({ type: 'info', title: '没有保存', text: String(e) });
-      else toast({ type: 'error', title: '没有保存', text: String(e) });
+      toast({ type: 'error', title: '没有保存', text: String(e) });
     } finally {
       setBusy(false);
     }
@@ -417,15 +434,20 @@ function LocalHostCard() {
 
   const toggle = async () => {
     if (!st) return;
+    // 打开前确认：机器名、白板与目录一起写进配置，派到这台电脑的卡片会在这些目录里免审批运行
+    // 打开时表格里改过还没保存的先确认（关掉不用确认）
+    if (!st.enabled && !(await ask('让这台电脑开始接任务？', '开始接任务', filled()))) return;
     setBusy(true);
     try {
-      await enableLocalHost(!st.enabled);
+      const next = filled();
+      await enableLocalHost(!st.enabled, name.trim(), next);
+      // 打开时把表格里还没保存的机器名、白板与目录一起存了（和确认框里看到的一致），不用再点保存
+      if (!st.enabled) setDirty(false);
       toast({ type: 'success', title: st.enabled ? '这台电脑不再接任务' : '这台电脑开始接任务', text: st.enabled ? '已停止 board host' : '桌面端在后台运行 board host，关掉窗口也继续接' });
       await load();
       setTimeout(() => void refresh(), 1500);
     } catch (e) {
-      if (cancelled(e)) toast({ type: 'info', title: '没有切换', text: String(e) });
-      else toast({ type: 'error', title: '没有切换', text: String(e) });
+      toast({ type: 'error', title: '没有切换', text: String(e) });
     } finally {
       setBusy(false);
     }
@@ -433,6 +455,8 @@ function LocalHostCard() {
 
   let state = '关';
   if (st?.enabled) state = st.running ? (online?.online ? `在线：${me}` : '正在连接服务端…') : `已停止${st.exit != null ? `（退出码 ${st.exit}）` : ''}：看下面的输出`;
+  // 表格里有没保存的改动：确认框里列的是表格里的（和打开开关时一起写进配置的一致）
+  const unsaved = [name.trim() !== (st?.name ?? ''), !sameDirs(st?.dirs ?? [], filled())].some(Boolean);
 
   return (
     <section className="set-card" id="set-host" style={{ ['--i' as string]: 6 }}>
@@ -451,7 +475,7 @@ function LocalHostCard() {
         <>
           {!st.loggedIn && <p className="set-p lh-warn">还没有服务端地址和令牌：先在上面「Agent 接入」新建令牌并写入配置文件，board host 才连得上。</p>}
           {!st.cli && <p className="set-p lh-warn">没找到桌面端自带的 board 命令行，重新安装桌面端试试。</p>}
-          <Row label="让这台电脑接任务" hint={state}>
+          <Row label="让这台电脑接任务" hint={unsaved ? `${state} · 表格里有还没保存的改动，打开时会一起保存` : state}>
             <button className={cx('toggle', st.enabled && 'on')} type="button" role="switch" aria-checked={st.enabled} aria-label="让这台电脑接任务" disabled={busy || !st.cli} onClick={toggle}>
               <i />
             </button>
@@ -551,9 +575,6 @@ function LocalHostCard() {
     </section>
   );
 }
-
-/** 外壳的系统确认框被取消（src-tauri/src/host.rs 的 CANCELLED） */
-const cancelled = (e: unknown) => String(e).startsWith('已取消');
 
 export function SettingsPage() {
   const path = useData(s => s.path);

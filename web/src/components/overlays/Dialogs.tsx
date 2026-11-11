@@ -3,13 +3,25 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ProjectInfo } from '../../lib/types';
 import { cx, replay } from '../../lib/util';
 import { useData } from '../../store/data';
-import { closeForm, settleConfirm, useUI, type FormCfg } from '../../store/ui';
+import { closeForm, settleConfirm, useUI, type ConfirmReq, type FormCfg } from '../../store/ui';
 import { ColorRow, ProjectAvatar } from '../bits';
-import { Icon } from '../Icon';
+import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
 
 /** 工作区还没取到时的项目列表：模块级常量，选择器每次返回同一个数组（新数组会让 useData 认为变了、反复重渲染） */
 const NO_PROJECTS: ProjectInfo[] = [];
+
+/** 确认框的图标；不指定时按删除（危险）画 */
+const ICONS: Record<NonNullable<ConfirmReq['icon']>, IconName> = {
+  trash: 'trash',
+  tag: 'tag',
+  reset: 'renew',
+  logout: 'logout',
+  key: 'key',
+  unlock: 'unlock',
+  alert: 'alert',
+  host: 'host',
+};
 
 export function ConfirmDialog() {
   const req = useUI(s => s.confirm);
@@ -42,14 +54,18 @@ export function ConfirmDialog() {
     };
   }, [req]);
   if (!mounted || !r) return null;
+  const lines = r.text.split('\n');
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && settleConfirm(false)}>
-      <div className="dialog" role="alertdialog" aria-modal="true">
+      <div className={cx('dialog', r.tone === 'warn' && 'warn', (lines.length > 1 || r.text.length > 240) && 'wide')} role="alertdialog" aria-modal="true" aria-label={r.title}>
         <div className="dialog-icon">
-          <Icon name={r.icon === 'tag' ? 'tag' : r.icon === 'reset' ? 'renew' : r.icon === 'logout' ? 'logout' : r.icon === 'key' ? 'key' : r.icon === 'unlock' ? 'unlock' : 'trash'} />
+          <Icon name={ICONS[r.icon ?? 'trash'] ?? 'trash'} />
         </div>
         <h3>{r.title}</h3>
-        <p>{r.text}</p>
+        {/* 按行拆成段落（目录列表一行一条）；整块限高、在框里滚动，长列表不撑破弹窗 */}
+        <div className="dialog-text">
+          {lines.map((line, i) => (line.trim() ? <p key={i}>{line}</p> : null))}
+        </div>
         <div className="dialog-actions">
           <button className="btn" type="button" ref={cancel} onClick={() => settleConfirm(false)}>
             取消

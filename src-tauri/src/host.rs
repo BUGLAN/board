@@ -247,32 +247,6 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>, wait: std::time::Duration) -> Result
     }
 }
 
-/// 让这台电脑接任务之前，由外壳弹系统确认框，写明机器名和每个目录（页面被注入脚本也绕不过去）。返回人是否确认
-fn confirm_host<R: Runtime>(app: &AppHandle<R>, title: &str, name: &str, dirs: &[Dir]) -> bool {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
-    let shown = if name.trim().is_empty() { format!("{}（本机主机名）", host_name_from(&hostname())) } else { name.trim().to_string() };
-    let list = if dirs.is_empty() {
-        "（还没有白板目录）".to_string()
-    } else {
-        dirs.iter().map(|d| format!("· {} → {}", d.board.trim(), d.path.trim())).collect::<Vec<_>>().join("\n")
-    };
-    let msg = format!(
-        "机器名：{shown}\n\n白板与目录：\n{list}\n\n派发到这台电脑的卡片，agent 会在对应目录里以免审批模式运行。只在信任这些白板时确认。"
-    );
-    // 默认按钮（回车）是「取消」：误按回车不会让这台电脑开始接任务，要点「确认」才算
-    let res = app
-        .dialog()
-        .message(msg)
-        .title(title)
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("取消".into(), "确认".into()))
-        .blocking_show_with_result();
-    matches!(res, MessageDialogResult::Custom(ref s) if s == "确认")
-}
-
-/// 人在确认框里点了取消
-pub const CANCELLED: &str = "已取消，没有改动";
-
 fn hostname() -> String {
     if cfg!(windows) {
         std::env::var("COMPUTERNAME").unwrap_or_default()
@@ -402,17 +376,13 @@ fn rename_host(new_name: &str) -> Result<(), (String, String)> {
 /// 机器名变了：先停 board host（它还在用旧名字上报，不停的话改名之后又会把旧机器建回来），
 /// 再让服务端把机器记录原地改名（设置和历史派发记录保留），然后写配置、重启；
 /// 改名失败（新名字已被别的机器占用等）时不写配置，board host 用旧名字接着跑。
-/// 目录有变化时先弹系统确认框（接任务打开着时，改了目录就是让 agent 去新目录干活）
+/// 确认（机器名、白板与目录、免审批运行的风险）由页面用应用内的确认框做完再调用这里
 #[tauri::command]
 pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let name = name.trim();
         check_conf(name, &dirs)?;
-        let (old_name, old_dirs, logged_in) = read_conf();
-        let key = |ds: &[Dir]| ds.iter().map(|d| (d.board.trim().to_string(), d.path.trim().to_string())).collect::<Vec<_>>();
-        if key(&old_dirs) != key(&dirs) && !confirm_host(&app, "修改这台电脑接任务的白板目录？", name, &dirs) {
-            return Err(CANCELLED.into());
-        }
+        let (old_name, _old_dirs, logged_in) = read_conf();
         let new = effective_name(name);
         if logged_in && effective_name(&old_name) != new {
             stop(&app, STOP_WAIT)?;
@@ -438,16 +408,14 @@ pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(
     .map_err(|e| e.to_string())?
 }
 
-/// 打开 / 关掉「让这台电脑接任务」。打开要在系统确认框里确认
+/// 打开 / 关掉「让这台电脑接任务」。打开时连同页面上的机器名、白板与目录一起传来（人在应用内的
+/// 确认框里看过、确认过），先校验再写进配置，然后启动 board host；关掉不用确认
 #[tauri::command]
-pub async fn host_enable(app: AppHandle, on: bool) -> Result<(), String> {
+pub async fn host_enable(app: AppHandle, on: bool, name: String, dirs: Vec<Dir>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // 打开前由外壳确认（关掉不用确认）
         if on {
-            let (name, dirs, _) = read_conf();
-            if !confirm_host(&app, "让这台电脑开始接任务？", &name, &dirs) {
-                return Err(CANCELLED.into());
-            }
+            check_conf(name.trim(), &dirs)?;
+            save_conf(&name, &dirs)?;
         }
         save_flag(&app, on)?;
         if on {
@@ -464,7 +432,7 @@ pub async fn host_enable(app: AppHandle, on: bool) -> Result<(), String> {
 }
 
 /// 「白板与目录」选择文件夹：弹系统的文件夹选择框，从这一行现在的目录开始（存在时，`~` 按家目录展开）。
-/// 返回选中的目录；取消时返回 None。只取路径、不写配置：保存仍走 host_save（目录有变化时弹确认框）
+/// 返回选中的目录；取消时返回 None。只取路径、不写配置：保存仍走 host_save（目录变化由页面确认）
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle, start: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;

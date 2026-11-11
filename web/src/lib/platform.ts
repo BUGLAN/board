@@ -192,10 +192,11 @@ export async function saveLocalHost(name: string, dirs: { board: string; path: s
   }
 }
 
-/** 打开 / 关掉「让这台电脑接任务」；失败时抛出原因文字 */
-export async function enableLocalHost(on: boolean): Promise<void> {
+/** 打开 / 关掉「让这台电脑接任务」；打开时一起写进机器名、白板与目录（页面已经在自己的确认框里确认过）。
+    失败时抛出原因文字 */
+export async function enableLocalHost(on: boolean, name: string, dirs: { board: string; path: string }[]): Promise<void> {
   try {
-    await invoke('host_enable', { on });
+    await invoke('host_enable', { on, name, dirs });
   } catch (e) {
     throw String(e);
   }
