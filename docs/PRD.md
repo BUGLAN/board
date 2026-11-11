@@ -79,7 +79,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 **名字由 agent 自己生成**：运行环境用 claude、codex 这类名称；模型名转成小写，空格换成 `-`；本机已有同名会话时，加一个和本会话相关的后缀，例如任务名或分支名。
 
-**board host 生成的名字**：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`。模型名来自这台机器上这个 agent 实际配的模型（`~/.board/config.toml` 的 `[agents.<标识>] model`，内置模板有默认值，见 §9.1；没有时用 agent 标识）。不带序号的这个名字空闲时直接用；同一台机器同一 agent、模型有多个并发派发时第一段加 `-<序号>`（例如 `dsh-win-2/deepseek-v4.1-flash`），只有在线的名字算占用，上一个会话离线后名字可以复用。`board host` 以这个名字 check、领取卡片、发心跳，再启动 agent（§9.1）。
+**board host 生成的名字**：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`。模型名来自这台机器上这个 agent 实际配的模型（`~/.board/config.toml` 的 `[agents.<标识>] model`，内置模板有默认值，见 §9.1；没有时用 agent 标识）。不带序号的这个名字空闲时直接用；同一台机器同一 agent、模型有多个并发派发时模型名后面加 `-<序号>`（例如 `dsh-win/deepseek-v4.1-flash-2`、`dsh-win/deepseek-v4.1-flash-3`），只有在线的名字算占用，上一个会话离线后名字可以复用。`board host` 以这个名字 check、领取卡片、发心跳，再启动 agent（§9.1）。
 
 **check**：`board check --as <名字>`。
 

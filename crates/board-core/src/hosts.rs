@@ -183,21 +183,20 @@ pub fn host_name_from(raw: &str) -> String {
 }
 
 /// 一次派发的 agent 名字：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`；
-/// 同一台机器同一 agent、模型有多个并发派发时第一段加 `-<序号>`，例如 `dsh-win-2/deepseek-v4.1-flash`（seq 0 表示不带）。
+/// 同一台机器同一 agent、模型有多个并发派发时模型名后面加 `-<序号>`，例如 `dsh-win/deepseek-v4.1-flash-2`（seq 0 表示不带）。
 /// 模型名来自 board host 上报的 agent 数据（配置文件 `[agents.<标识>] model`，内置模板有默认值）；没有时用 agent 标识。
 /// 转成名字能用的样子（小写、空白和非法字符换成 `-`、去掉开头结尾的 `-`），放不下时截断，保证总长不超过 48 个字符，
 /// 能通过 `board check` 的名字格式校验（[`crate::check_agent_name`]）
 pub fn dispatch_agent_name(agent: &str, host: &str, model: &str, seq: u32) -> String {
-    let mut first = format!("{agent}-{host}");
-    if seq > 0 {
-        first = format!("{first}-{seq}");
-    }
-    let room = AGENT_NAME_MAX.saturating_sub(first.chars().count() + 1).max(1);
+    let first = format!("{agent}-{host}");
+    let suffix = if seq > 0 { format!("-{seq}") } else { String::new() };
+    // 序号不截断：模型名先让出序号的位置
+    let room = AGENT_NAME_MAX.saturating_sub(first.chars().count() + 1 + suffix.len()).max(1);
     let mut seg = name_segment(model, room);
     if seg.is_empty() {
         seg = name_segment(agent, room);
     }
-    format!("{first}/{seg}")
+    format!("{first}/{seg}{suffix}")
 }
 
 /// 名字的一段（机器名、模型名）：小写，空白和非法字符换成 `-`，去掉开头结尾的 `-`，最长 max 个字符
@@ -1685,7 +1684,8 @@ impl<'a> W<'a> {
     fn start(&mut self, h: &HostRow, d: DRow, token: Option<i64>) -> Result<Dispatch> {
         // 名字：<agent 标识>-<机器名>/<模型名>（dsh-win/deepseek-v4.1-flash）。模型名来自 board host 上报的
         // agent 数据（配置文件 [agents.<标识>] model，内置模板有默认值），没有时用 agent 标识。
-        // 不带序号的名字空闲就直接用；同一台机器同一 agent、模型有多个并发派发时加 -2、-3 …，只有在线的名字算占用，
+        // 不带序号的名字空闲就直接用；同一台机器同一 agent、模型有多个并发派发时模型名后面加 -2、-3 …
+        // （dsh-win/deepseek-v4.1-flash-2），只有在线的名字算占用，
         // 上一个会话离线后名字可以复用
         let model = h.agents.iter().find(|a| a.id == d.agent).map(|a| a.model.as_str()).unwrap_or_default();
         let gap = crate::agents::NAME_GAP_MS;

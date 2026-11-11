@@ -194,9 +194,11 @@ fn begin_claims_with_generated_name_and_end_reports_result() {
 /// 派发的 agent 名字：`<agent 标识>-<机器名>/<模型名>`（卡片 #155 的例子是 `dsh-win/deepseek-v4.1-flash`）
 #[test]
 fn dispatch_agent_name_format() {
-    // 基本格式、并发序号加在第一段
+    // 基本格式、并发序号加在模型名后面
     assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 0), "dsh-win/deepseek-v4.1-flash");
-    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 2), "dsh-win-2/deepseek-v4.1-flash");
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 2), "dsh-win/deepseek-v4.1-flash-2");
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 3), "dsh-win/deepseek-v4.1-flash-3");
+    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", 2), "pi-mbp/pi-2");
     // 模型名转成小写、空白和非法字符换成 -；没有模型时（旧版 board host、没配置）用 agent 标识
     assert_eq!(hosts::dispatch_agent_name("claude", "mbp", "Opus 5.5", 0), "claude-mbp/opus-5.5");
     assert_eq!(hosts::dispatch_agent_name("dsh", "win", "  DeepSeek V4.1 Flash ", 0), "dsh-win/deepseek-v4.1-flash");
@@ -215,8 +217,12 @@ fn dispatch_agent_name_format() {
         check_agent_name(&n).unwrap_or_else(|e| panic!("{n}：{e}"));
         assert!(n.chars().count() <= 48, "{n}");
     }
-    // 模型名被截断到放得下为止
-    assert_eq!(hosts::dispatch_agent_name("my-agent-16chars", "host-abc1234567890123456", "a-model", 9), "my-agent-16chars-host-abc1234567890123456-9/a-mo");
+    // 模型名被截断到放得下为止，序号保留在最后
+    assert_eq!(hosts::dispatch_agent_name("my-agent-16chars", "host-abc1234567890123456", "a-model", 9), "my-agent-16chars-host-abc1234567890123456/a-mo-9");
+    assert_eq!(
+        hosts::dispatch_agent_name("dsh", "win", "gpt-5.1-codex-max-preview-very-long-model-name", 8),
+        "dsh-win/gpt-5.1-codex-max-preview-very-long-mo-8"
+    );
 }
 
 /// 同一台机器同一 agent、模型有多个并发派发时名字仍唯一（加序号）；上一个会话离线后名字复用；
@@ -228,14 +234,14 @@ fn dispatch_names_unique_while_concurrent_and_reused_after() {
     set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
     let a = new_card(&mut s, T0, "A");
     let b = new_card(&mut s, T0, "B");
-    // 两个并发派发：第一个不带序号，第二个加 -2
+    // 两个并发派发：第一个不带序号，第二个在模型名后面加 -2
     let da = dispatch(&mut s, T0, a, "mbp", Some("dsh")).unwrap();
     let db = dispatch(&mut s, T0, b, "mbp", Some("dsh")).unwrap();
     let da = begin(&mut s, T0 + S, da.id).unwrap();
     assert_eq!(da.name.as_deref(), Some("dsh-mbp/deepseek-v4.1-flash"));
     check_agent_name(da.name.as_deref().unwrap()).unwrap();
     let db = begin(&mut s, T0 + S, db.id).unwrap();
-    assert_eq!(db.name.as_deref(), Some("dsh-mbp-2/deepseek-v4.1-flash"), "并发派发加序号后缀");
+    assert_eq!(db.name.as_deref(), Some("dsh-mbp/deepseek-v4.1-flash-2"), "并发派发在模型名后面加序号");
     check_agent_name(db.name.as_deref().unwrap()).unwrap();
     // 第一个结束（名字离线）之后：定时领取的会话复用不带序号的名字
     end(&mut s, T0 + 2 * S, da.id, Some(0), &[]);

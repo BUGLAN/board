@@ -199,7 +199,7 @@ export interface Dispatch {
   host: string;
   agent: string;
   agentLabel: string;
-  /** 开始时生成的 agent 名字 <agent 标识>-<机器名>/<模型名>（并发派发时第一段带 -<序号>） */
+  /** 开始时生成的 agent 名字 <agent 标识>-<机器名>/<模型名>（并发派发时模型名后面带 -<序号>） */
   name: string | null;
   /** 开始时用的启动环境标识与名称（Git Bash、WSL（Ubuntu）…）；旧版 board host、还没开始时为空 */
   env?: string | null;
