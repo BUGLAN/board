@@ -62,6 +62,7 @@ const P: Record<string, ReactNode> = {
     </>
   ),
   check: <path d="m4.5 10.5 3.5 3.5 7.5-8" />,
+  download: <path d="M10 3.5v9M6 8.5l4 4 4-4M4 16h12" />,
   checkCircle: (
     <>
       <circle cx="10" cy="10" r="6.8" />

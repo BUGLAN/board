@@ -1,13 +1,14 @@
 /* ==========================================================================
    设置 → 桌面端更新的卡片（桌面端）
-   - 显示当前版本（外壳版本）和上次检查的结果：已是最新、发现新版本、检查失败
-   - 「检查更新」手动查一次；有新版本时展开更新说明，「下载并安装」显示下载进度，装完提示重启
+   - 显示当前版本（外壳版本）；右侧「检查更新」按钮手动查一次，结果（已是最新 / 检查失败）在按钮上停 5 秒再变回来，
+     失败原因在下一行；有新版本时展开更新说明，「下载并安装」显示下载进度，装完提示重启
    - 启动后自动检查的开关（默认开）；自动检查发现新版本时也用应用内的确认框问（lib/update-runner.ts）
    单独成文件：设置页本身很大，这一块自己管检查和安装的状态
    ========================================================================== */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { installUpdate, restartApp, shellVersion } from '../lib/platform';
-import { autoCheckUpdate, downloadPercent, progressText, setAutoCheckUpdate, type InstallState, type UpdateProgress } from '../lib/update';
+import { autoCheckUpdate, downloadPercent, progressText, setAutoCheckUpdate, type CheckState, type InstallState, type UpdateProgress } from '../lib/update';
+import { cx } from '../lib/util';
 import { pauseAutoUpdateCheck, resumeAutoUpdateCheck, useUpdate } from '../lib/update-runner';
 import { confirm, toast } from '../store/ui';
 import { Markdown } from './bits';
@@ -20,6 +21,25 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
       <i />
     </button>
   );
+}
+
+/** 检查结果在按钮上停留的时间 */
+export const FLASH_MS = 5000;
+
+/** 检查刚结束（正在检查 → 已是最新 / 检查失败）时返回这个结果，FLASH_MS 后回到 null：按钮上闪一下结果再变回「检查更新」 */
+export function useFlash(kind: CheckState['kind']) {
+  const [flash, setFlash] = useState<'up-to-date' | 'failed' | null>(null);
+  const prev = useRef(kind);
+  useEffect(() => {
+    const was = prev.current;
+    prev.current = kind;
+    if (kind === 'checking') return setFlash(null);
+    if (was !== 'checking' || (kind !== 'up-to-date' && kind !== 'failed')) return;
+    setFlash(kind);
+    const t = window.setTimeout(() => setFlash(null), FLASH_MS);
+    return () => window.clearTimeout(t);
+  }, [kind]);
+  return flash;
 }
 
 export function UpdateCard() {
@@ -57,35 +77,8 @@ export function UpdateCard() {
   };
 
   const version = shellVersion ?? '未知';
-  let status: ReactNode;
-  if (check.kind === 'checking') {
-    // 转圈只在右侧「检查更新」按钮上（.btn.is-busy），这里不再放第二个 spinner
-    status = <span className="up-state">正在检查…</span>;
-  } else if (check.kind === 'available') {
-    status = (
-      <span className="up-state">
-        <i className="up-dot" style={{ background: 'var(--brand)' }} />
-        有新版本 <b className="up-ver">{check.version}</b>
-      </span>
-    );
-  } else if (check.kind === 'up-to-date') {
-    status = (
-      <span className="up-state ok">
-        <Icon name="checkCircle" />
-        已是最新版本
-      </span>
-    );
-  } else if (check.kind === 'failed') {
-    // 错误的原因在下一行（up-err-line），这里只说结果：长地址不挤占这一行的宽度
-    status = (
-      <span className="up-state">
-        <Icon name="alert" />
-        检查失败
-      </span>
-    );
-  } else {
-    status = <span className="up-state">还没有检查过</span>;
-  }
+  const flash = useFlash(check.kind);
+  const busy = check.kind === 'checking';
 
   const pct = install.kind === 'downloading' ? downloadPercent(install.progress) : null;
 
@@ -99,11 +92,16 @@ export function UpdateCard() {
             {shellVersion ? '' : '（页面没拿到外壳版本，更新由桌面端外壳处理）'}
           </span>
         </div>
-        <div className="set-control up-state-wrap">
-          {status}
-          <button type="button" className={`btn sm${check.kind === 'checking' ? ' is-busy' : ''}`} disabled={check.kind === 'checking'} onClick={checkNow}>
-            <Icon name="renew" />
-            检查更新
+        <div className="set-control">
+          <button
+            type="button"
+            className={cx('btn sm up-btn', busy && 'is-busy', flash === 'up-to-date' && 'ok', flash === 'failed' && 'fail')}
+            disabled={busy}
+            onClick={checkNow}
+            aria-live="polite"
+          >
+            <Icon name={flash === 'up-to-date' ? 'checkCircle' : flash === 'failed' ? 'alert' : 'renew'} />
+            {busy ? '正在检查…' : flash === 'up-to-date' ? '已是最新' : flash === 'failed' ? '检查失败' : '检查更新'}
           </button>
         </div>
       </div>

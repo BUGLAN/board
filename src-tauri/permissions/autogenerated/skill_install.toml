@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-skill-install"
+description = "Enables the skill_install command without any pre-configured scope."
+commands.allow = ["skill_install"]
+
+[[permission]]
+identifier = "deny-skill-install"
+description = "Denies the skill_install command without any pre-configured scope."
+commands.deny = ["skill_install"]

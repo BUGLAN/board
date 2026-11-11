@@ -204,6 +204,18 @@ export async function enableLocalHost(on: boolean, name: string, dirs: { board: 
   }
 }
 
+/** 给本机这几个 agent 一键安装 board-skills（桌面端写到它们读 skill 的目录，装好后通知 board host 重新检查）；
+    返回装到的目录。外壳不支持（旧版桌面端）时抛出 'unsupported'，其他失败抛出原因文字 */
+export async function installSkill(agents: string[]): Promise<string[]> {
+  try {
+    return await invoke<string[]>('skill_install', { agents });
+  } catch (e) {
+    const msg = String(e);
+    if (/not found|not allowed|unknown/i.test(msg)) throw 'unsupported';
+    throw msg;
+  }
+}
+
 /** 弹系统的文件夹选择框（「白板与目录」），从 start 开始；返回选中的目录，取消时返回 null。
     外壳不支持（旧版桌面端）时抛出 'unsupported'，其他失败抛出原因文字 */
 export async function pickFolder(start: string): Promise<string | null> {

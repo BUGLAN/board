@@ -214,8 +214,9 @@ fn stop_proc(mut r: Running, wait: std::time::Duration) -> Result<(), Running> {
     }
 }
 
-/// 保存了配置：在跑的 board host 收到一行 `reload` 后重新读 `[host]`（不重启）。返回有没有通知到（没在跑、写不进去时 false）
-fn notify_reload<R: Runtime>(app: &AppHandle<R>) -> bool {
+/// 保存了配置、装好了 board-skills：在跑的 board host 收到一行 `reload` 后重新读 `[host]`、重新检查 skill（不重启）。
+/// 返回有没有通知到（没在跑、写不进去时 false）
+pub(crate) fn notify_reload<R: Runtime>(app: &AppHandle<R>) -> bool {
     use std::io::Write;
     let state = app.state::<HostProc>();
     let Ok(mut g) = state.0.lock() else { return false };

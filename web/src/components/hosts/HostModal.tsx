@@ -2,8 +2,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, envName, hostLoad, hostsOf, queueReason, resultOf, since, skillMiss, SOURCE } from '../../lib/hosts';
-import { shell } from '../../lib/platform';
+import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostInfo, Label } from '../../lib/types';
 import { copyText, cx, durWords, pref, replay } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
@@ -72,6 +72,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const hasRules = (h.rules?.length ?? 0) > 0;
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
   const rev = ws?.rev;
+  /** 刚一键装好 board-skills 的 agent：它们那一行的胶囊变绿，横幅消失时清掉 */
+  const [fixed, setFixed] = useState<string[] | null>(null);
 
   const [recentOpen, setRecentOpen] = useState(() => pref.get('hostFold.recent', true));
   const toggleRecent = () => {
@@ -268,8 +270,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 
           <section className="d-section" style={{ ['--i' as string]: 3 }}>
             <div className="d-label">本机 agent</div>
+            <SkillBanner h={h} fixed={fixed} setFixed={setFixed} />
             {h.agents.map(a => (
-              <AgentRow key={a.id} h={h} a={a} patch={patch} busy={busy} />
+              <AgentRow key={a.id} h={h} a={a} patch={patch} busy={busy} fixed={fixed?.includes(a.id)} />
             ))}
             {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
           </section>
@@ -384,9 +387,10 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   );
 }
 
-/** 本机 agent 的一行：图标、名称、启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
+/** 本机 agent 的一行：图标、名称（看不到 board-skills 时后面一个「缺 skill」小胶囊，悬停写装到哪里；刚一键装好的变绿「skill 已装」）、
+ *  启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
  *  旧版 board host 不上报启动环境：不显示下拉，写版本号 */
-function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean }) {
+function AgentRow({ h, a, patch, busy, fixed }: { h: HostInfo; a: HostAgent; patch: (p: Parameters<typeof api.updateHost>[1]) => Promise<void>; busy: boolean; fixed?: boolean }) {
   const def = a.id === h.agent;
   const envs = h.envs ?? [];
   const checks = a.envs ?? [];
@@ -397,6 +401,19 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
       <div className={cx('hp-arow', !a.found && 'missing')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
         <AgentIcon id={a.id} />
         <b className="hp-arow-name">{a.name}</b>
+        {fixed ? (
+          <span className="hp-skill ok">
+            <Icon name="check" />
+            skill 已装
+          </span>
+        ) : (
+          miss && (
+            <span className="hp-skill" data-tip={miss} tabIndex={0}>
+              <Icon name="alert" />
+              缺 skill
+            </span>
+          )
+        )}
         {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
         <span className="hp-sp" />
         {envs.length > 0 &&
@@ -413,7 +430,6 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
               {checks.map(c => (
                 <option key={c.env} value={c.env} disabled={!c.found && c.env !== a.env}>
                   {name(c.env)} · {c.found ? c.version || '找到了' : '没找到'}
-                  {c.found && c.no_skill ? ' · 看不到 board-skills' : ''}
                 </option>
               ))}
             </select>
@@ -431,13 +447,91 @@ function AgentRow({ h, a, patch, busy }: { h: HostInfo; a: HostAgent; patch: (p:
           {def ? '默认' : '设为默认'}
         </button>
       </div>
-      {miss && (
-        <p className="hp-arow-warn" role="status">
-          <Icon name="alert" />
-          {miss}
-        </p>
-      )}
     </>
+  );
+}
+
+/** 刚装好的提示停留的时间 */
+const SKILL_DONE_MS = 5000;
+
+/** 「本机 agent」上方的横幅：有 agent 看不到 board-skills 时出现。
+ *  在桌面端里看的就是这台电脑：右侧「一键安装」，桌面端写进 agent 读 skill 的目录（src-tauri/src/skill.rs），装好变绿 5 秒后消失；
+ *  网页端、别的机器、WSL 里的 agent：没有按钮，写怎么手动装 */
+function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | null; setFixed: (v: string[] | null) => void }) {
+  const [local, setLocal] = useState<LocalHost | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [noSupport, setNoSupport] = useState(false);
+  const [done, setDone] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (shell !== 'desktop') return;
+    let live = true;
+    void localHost().then(s => live && setLocal(s));
+    return () => void (live = false);
+  }, [h.name]);
+  useEffect(() => {
+    if (!done) return;
+    const t = window.setTimeout(() => {
+      setDone(null);
+      setFixed(null);
+    }, SKILL_DONE_MS);
+    return () => window.clearTimeout(t);
+  }, [done, setFixed]);
+
+  const gaps = skillGaps(h);
+  if (done) {
+    return (
+      <div className="hp-skill-ban ok" role="status">
+        <Icon name="checkCircle" />
+        <p>
+          board-skills 已装好，{fixed?.length ?? 0} 个 agent 都能接卡片了
+          <small>装在 {done.join('、')}</small>
+        </p>
+      </div>
+    );
+  }
+  if (!gaps.missing.length) return null;
+  const can = shell === 'desktop' && !noSupport && isLocalHost(h, local) && gaps.auto.length > 0;
+  const ids = gaps.auto.map(a => a.id);
+
+  const install = async () => {
+    setInstalling(true);
+    try {
+      const paths = await installSkill(ids);
+      setFixed(ids);
+      setDone(paths);
+    } catch (e) {
+      if (e === 'unsupported') {
+        setNoSupport(true);
+        toast({ type: 'info', title: '这个版本的桌面端不能一键安装', text: '先更新桌面端，或按 docs/agents.md 手动安装' });
+      } else toastError(e);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <div className="hp-skill-ban" role="status">
+      <Icon name="alert" />
+      <p>
+        {gaps.missing.length} 个 agent 看不到 board-skills，派给它们的卡片会做不成
+        <small>
+          {can ? (
+            <>
+              装到 {gaps.dirs.join('、')}（这台电脑）
+              {gaps.manualPlaces.length > 0 && <>；{gaps.manualPlaces.join('、')} 要手动装（见 docs/agents.md）</>}
+            </>
+          ) : (
+            <>在那台电脑的 Board 桌面端里一键安装，或手动装到 {gaps.places.join('、')}（见 docs/agents.md）</>
+          )}
+        </small>
+      </p>
+      {can && (
+        <button type="button" className={cx('btn sm', installing && 'is-busy')} disabled={installing} onClick={() => void install()}>
+          <Icon name="download" />
+          {installing ? '正在安装…' : '一键安装'}
+        </button>
+      )}
+    </div>
   );
 }
 

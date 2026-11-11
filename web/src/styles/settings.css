@@ -132,16 +132,11 @@
 .switch.on i { transform: translateX(15px); }
 
 /* 本机：桌面端更新（当前版本、检查更新、下载进度、重启提示） */
-.up-state-wrap { display: flex; align-items: center; gap: 12px; flex: none; }
-/* 这一行里左边是固定的两行字：结果和按钮靠右，不被挤窄（错误原因放到下面一行） */
-.up-row .set-label { flex: 0 1 auto; }
-.up-row .up-state { white-space: nowrap; }
 .up-err-line { margin: 0 0 12px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--danger-soft); word-break: break-word; }
-.up-state { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
-.up-state svg { width: 15px; height: 15px; flex: none; }
-.up-state.ok { color: var(--text-2); }
-.up-state.ok svg { color: var(--ok); }
-.up-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-4); }
+/* 「检查更新」按钮靠右；检查完在按钮上显示结果（绿：已是最新，红：检查失败），5 秒后变回来。固定最小宽度，换字时不跳 */
+.up-btn { min-width: 104px; }
+.up-btn.ok { --btn-fg: var(--ok); --btn-bg: color-mix(in srgb, var(--ok) 12%, var(--surface)); --btn-line: color-mix(in srgb, var(--ok) 40%, transparent); }
+.up-btn.fail { --btn-fg: var(--danger-text); --btn-bg: var(--danger-soft); --btn-line: color-mix(in srgb, var(--danger) 40%, transparent); }
 .up-ver { font-family: var(--f-mono); font-size: 12.5px; }
 .up-card { margin: 4px 0 12px; padding: 14px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
 .up-card.is-new { background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 28%, transparent); }

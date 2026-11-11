@@ -7,7 +7,8 @@
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
 //!   桌面端「设置 → 本机」保存后在标准输入里写一行 `reload` 通知它：重新读 `[host]`，机器名、白板与目录变了就直接换上，
 //!   不用重启，正在跑的 agent 不受影响（命令行给了 `--name` / `--dir` 的那一项不跟着配置文件变）。机器名变了先让服务端把
-//!   机器记录原地改名（桌面端已经改过的不再改），改名失败就接着用原来的名字。
+//!   机器记录原地改名（桌面端已经改过的不再改），改名失败就接着用原来的名字。桌面端「一键安装 board-skills」装好后也发一行
+//!   `reload`：先重新看一遍每个 agent 的 skill，看得到了马上上报，界面上的提醒随之消失。
 //! - 启动时找本机的启动环境（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL 的发行版 …，见 envs.rs），
 //!   再找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi、codex），在每个 agent 支持、
 //!   本机有的启动环境里各检查一次命令找不找得到（内置模板在直接启动、登录 shell 里还会看几个常见的安装位置）、取版本号
@@ -155,7 +156,7 @@ const LOG_CHUNK: u64 = 256 * 1024;
 
 /// 收到 Ctrl+C / SIGTERM，或者（桌面端）标准输入关闭
 static QUIT: AtomicBool = AtomicBool::new(false);
-/// （桌面端）标准输入里来了一行 `reload`：配置文件的 `[host]` 改了，重新读
+/// （桌面端）标准输入里来了一行 `reload`：配置文件的 `[host]` 改了，或者装好了 board-skills，重新读、重新检查
 static RELOAD: AtomicBool = AtomicBool::new(false);
 
 /// 上报间隔：`BOARD_HOST_INTERVAL`（秒，只给测试用），默认 10 秒
@@ -996,9 +997,36 @@ impl Host<'_> {
         }
     }
 
-    /// 桌面端「设置 → 本机」保存后通知（标准输入一行 `reload`）：重新读配置文件的 `[host]`，不重启，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
-    /// 返回有没有换。配置不对（名字不合规、目录不存在）、服务端不让改名时打印一行，接着用原来的
+    /// 桌面端通知（标准输入一行 `reload`）：「设置 → 本机」保存了配置，或者「一键安装」装好了 board-skills。
+    /// 先重新看一遍 skill，再重新读配置。返回有没有变（变了马上上报）
     fn reload(&mut self) -> bool {
+        let skills = self.recheck_skills();
+        self.reload_conf() || skills
+    }
+
+    /// 重新在每个启动环境里看一次 `board-skills`（桌面端一键安装之后）。返回检查结果有没有变；新看得到的打印一行
+    fn recheck_skills(&mut self) -> bool {
+        let mut changed = false;
+        let mut fixed = Vec::new();
+        for a in &mut self.agents {
+            let before = a.no_skill.clone();
+            a.check_skills(&self.envs, &self.dirs);
+            if before != a.no_skill {
+                changed = true;
+                if a.no_skill.len() < before.len() {
+                    fixed.push(a.id.clone());
+                }
+            }
+        }
+        if !fixed.is_empty() {
+            self.say(format!("{} {} 看得到 {SKILL} 了", self.p.green("✓"), fixed.join("、")));
+        }
+        changed
+    }
+
+    /// 重新读配置文件的 `[host]`，不重启，换上新的机器名、白板与目录，正在跑的 agent 不受影响。
+    /// 返回有没有换。配置不对（名字不合规、目录不存在）、服务端不让改名时打印一行，接着用原来的
+    fn reload_conf(&mut self) -> bool {
         if !self.follow_name && !self.follow_dirs {
             return false;
         }

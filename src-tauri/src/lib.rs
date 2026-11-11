@@ -13,10 +13,12 @@
 //! - 「设置 → 本机」打开「让这台电脑接任务」后，在后台用自带的 board 命令行运行 `board host`，关掉窗口也继续运行
 //!   （macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口），退出桌面端时结束，见 [`host`]
 //! - 检查更新：设置页手动检查、启动后自动检查一次，确认后下载、验签、安装，见 [`update`]
+//! - 「设置 → 本机」里 agent 看不到 board-skills 时一键安装到它读 skill 的目录，见 [`skill`]
 
 mod env;
 mod host;
 mod login;
+mod skill;
 mod splash;
 mod update;
 
@@ -289,6 +291,7 @@ pub fn run() {
             host::host_save,
             host::host_enable,
             host::pick_folder,
+            skill::skill_install,
             update::update_check,
             update::update_install,
             update::update_restart

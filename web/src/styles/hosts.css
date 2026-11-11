@@ -68,8 +68,23 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-arow.missing > b:not(.hp-arow-name) { background: var(--text-4); }
 .hp-arow.missing .hp-arow-name { color: var(--text-3); }
 .hp-arow-none { font-size: 12px; color: var(--text-3); }
-.hp-arow-warn { display: flex; align-items: flex-start; gap: 6px; margin: -2px 0 6px; font-size: 12px; line-height: 1.5; color: var(--warn-text); overflow-wrap: anywhere; }
-.hp-arow-warn svg { flex: none; width: 14px; height: 14px; margin-top: 2px; }
+/* 看不到 board-skills：名称后的小胶囊（悬停写装到哪里）；刚一键装好的变绿 */
+.hp-skill { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; cursor: default;
+  color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.hp-skill svg { width: 12px; height: 12px; }
+.hp-skill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+/* 「本机 agent」上方的横幅：几个 agent 看不到 board-skills、装到哪里、一键安装 */
+.hp-skill-ban { display: flex; align-items: center; gap: 10px; margin: 2px 0 8px; padding: 10px 12px; border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--warn) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent);
+  animation: hp-ban-in var(--dur-2) var(--ease-out); }
+.hp-skill-ban > svg { flex: none; width: 16px; height: 16px; color: var(--warn); align-self: flex-start; margin-top: 1px; }
+.hp-skill-ban p { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--warn-text); }
+.hp-skill-ban small { display: block; margin-top: 1px; font-size: 11.5px; font-weight: 400; color: var(--text-3); overflow-wrap: anywhere; }
+.hp-skill-ban .btn { flex: none; }
+.hp-skill-ban.ok { background: color-mix(in srgb, var(--ok) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 32%, transparent); }
+.hp-skill-ban.ok > svg, .hp-skill-ban.ok p { color: var(--ok); }
+@keyframes hp-ban-in { from { opacity: 0; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .hp-skill-ban { animation: none; } }
 select.input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height: 30px; padding: 0 8px; appearance: auto; font-size: 12.5px; text-overflow: ellipsis; }
 .hp-def { flex: none; min-width: 66px; height: 26px; padding: 0 9px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); }
 .hp-def:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }

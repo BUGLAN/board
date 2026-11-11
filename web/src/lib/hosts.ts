@@ -119,3 +119,27 @@ export function skillMiss(h: HostInfo, a: HostAgent): string | null {
   const env = envName(h, a.env);
   return `${a.name}${env ? ` 在${env}里` : ''}看不到 board-skills：派给它的卡片会做不成，先装到 ${a.no_skill}（见 docs/agents.md）`;
 }
+
+/** 桌面端能一键安装 board-skills 的 agent → 它读用户级 skill 的目录（和 board host 内置模板、src-tauri/src/skill.rs 一致） */
+const SKILL_HOME: Record<string, string> = {
+  dsh: '~/.agents/skills',
+  pi: '~/.agents/skills',
+  claude: '~/.claude/skills',
+  codex: '$CODEX_HOME/skills',
+};
+
+/** 看不到 board-skills 的 agent 分两组：桌面端能一键装的（在本机、不在 WSL 里、是认识的 agent），和只能手动装的 */
+export function skillGaps(h: HostInfo) {
+  const missing = h.agents.filter(a => skillMiss(h, a));
+  const auto = missing.filter(a => SKILL_HOME[a.id] && !a.env?.startsWith('wsl:'));
+  const dirs = [...new Set(auto.map(a => SKILL_HOME[a.id]))];
+  const manual = missing.filter(a => !auto.includes(a));
+  return { missing, auto, manual, dirs, places: places(missing), manualPlaces: places(manual) };
+}
+
+/** 该装到哪里，每个 agent 取第一个位置（「~/.claude/skills/board-skills 或 仓库的 …」→ 前半句），去重 */
+const places = (as: HostAgent[]) => [...new Set(as.map(a => (a.no_skill ?? '').split(' 或 ')[0]).filter(Boolean))];
+
+/** 本机桌面端跑的 board host 就是这台机器：配置里的机器名（空就是默认的主机名）和机器名一致，并且正在跑 */
+export const isLocalHost = (h: HostInfo, local: { running: boolean; name: string; defaultName: string } | null) =>
+  !!local?.running && (local.name.trim() || local.defaultName) === h.name;
