@@ -39,7 +39,7 @@
   "plugins": {
     "updater": {
       "endpoints": ["https://github.com/buglan/board/releases/latest/download/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwODc4OTdCNDExQTUxQkIKUldTN1VScEJlNG1ISUc5TnNoWFhMYlVuL0NPbTRxa3pDeTU0Zm1aR2thVXRWb3lCVjN3NGU2NHkK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzNzE5RUE5MUE5MUZCNEUKUldSTys1RWFxWjV4RXhxdEFDdzdpbVZndWRsemJGZXRZL3NVM0FMQmpJb0JYZXBnd2JHWnJoOSsK",
       "windows": {
         "installMode": "passive"
       }
