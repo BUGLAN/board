@@ -141,9 +141,14 @@ const TEMPLATE: &str = r##"<!doctype html>
 <meta name="color-scheme" content="light dark">
 <title>Board</title>
 <style>
+/* 颜色与网页端 tokens.css 一致；logo 用到的 --surface / --line-2 / --shadow-2 / 圆角也跟着主题走 */
 :root {
-  --bg: #F2F0EB; --text: #18181A; --text-2: #55555C; --text-3: #8C8C93; --invert: #18181A; --brand: #F2541B;
+  --bg: #F2F0EB; --surface: #FFFFFF;
+  --line-2: rgba(26, 24, 20, .14);
+  --shadow-2: 0 1px 0 rgba(26, 24, 20, .03), 0 6px 18px -6px rgba(26, 24, 20, .16);
+  --text: #18181A; --text-2: #55555C; --text-3: #666670; --brand: #F2541B;
   --c1: #6E7891; --c2: #F07A12; --c3: #1D8FE0; --c4: #12A06A;
+  --r-hair: 2px; --r-sm: 9px; --r-md: 13px;
   --f-sans: "Geist Variable", "Geist", "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --f-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   --f-mono: "Geist Mono Variable", "Geist Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -151,13 +156,19 @@ const TEMPLATE: &str = r##"<!doctype html>
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0C0D0F; --text: #EDECE8; --text-2: #A6A5AB; --text-3: #6F6E76; --invert: #EDECE8; --brand: #FF6A33;
+    --bg: #0C0D0F; --surface: #18191C;
+    --line-2: rgba(255, 255, 255, .11);
+    --shadow-2: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 8px 22px -8px rgba(0, 0, 0, .7);
+    --text: #EDECE8; --text-2: #A6A5AB; --text-3: #93929A; --brand: #FF6A33;
     --c1: #8F9AB4; --c2: #FF9A3C; --c3: #4DB5FF; --c4: #3DDC97;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0C0D0F; --text: #EDECE8; --text-2: #A6A5AB; --text-3: #6F6E76; --invert: #EDECE8; --brand: #FF6A33;
+  --bg: #0C0D0F; --surface: #18191C;
+  --line-2: rgba(255, 255, 255, .11);
+  --shadow-2: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 8px 22px -8px rgba(0, 0, 0, .7);
+  --text: #EDECE8; --text-2: #A6A5AB; --text-3: #93929A; --brand: #FF6A33;
   --c1: #8F9AB4; --c2: #FF9A3C; --c3: #4DB5FF; --c4: #3DDC97;
   color-scheme: dark;
 }
@@ -186,16 +197,18 @@ html[data-titlebar="custom"] .win { display: flex; }
   transition: opacity 200ms ease-out;
 }
 .boot.leave { opacity: 0; }
+/* 与网页端 .logo（layout.css）一致：底色跟着主题走——浅色主题浅色面、深色主题深色面，
+   不用反色；柱子掺 8% 当前主题的文字色，深浅两种底色上四根柱子都看得清 */
 .logo {
   display: flex; align-items: flex-start; gap: 2.5px; width: 44px; height: 44px; padding: 10px 9px;
-  border-radius: 13px; background: var(--invert);
-  box-shadow: 0 6px 16px -6px rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  border-radius: var(--r-md); background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2);
 }
-.logo i { flex: 1; height: var(--h); border-radius: 2px; transform-origin: top; animation: bar 3.6s cubic-bezier(.65, 0, .35, 1) infinite; }
-.logo i:nth-child(1) { background: var(--c1); }
-.logo i:nth-child(2) { background: var(--c2); animation-delay: -.9s; }
-.logo i:nth-child(3) { background: var(--c3); animation-delay: -1.8s; }
-.logo i:nth-child(4) { background: var(--c4); animation-delay: -2.7s; }
+.logo i { flex: 1; height: var(--h); border-radius: var(--r-hair); transform-origin: top; animation: bar 3.6s cubic-bezier(.65, 0, .35, 1) infinite; }
+.logo i:nth-child(1) { background: color-mix(in srgb, var(--c1) 92%, var(--text)); }
+.logo i:nth-child(2) { background: color-mix(in srgb, var(--c2) 92%, var(--text)); animation-delay: -.9s; }
+.logo i:nth-child(3) { background: color-mix(in srgb, var(--c3) 92%, var(--text)); animation-delay: -1.8s; }
+.logo i:nth-child(4) { background: color-mix(in srgb, var(--c4) 92%, var(--text)); animation-delay: -2.7s; }
 @keyframes bar { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(.62); } }
 @media (prefers-reduced-motion: reduce) { .logo i { animation: none; } }
 .err { display: none; flex-direction: column; align-items: center; gap: 12px; }
@@ -306,6 +319,61 @@ mod tests {
         let html = page(&dev, Theme::Auto, false);
         assert!(html.contains("<html lang=\"zh-CN\">"));
         assert!(html.contains("localhost:1420 没有响应"));
+    }
+
+    /// 取 CSS 里某个选择器之后的第一条声明块
+    fn rule(html: &str, selector: &str) -> String {
+        let start = html.find(selector).unwrap_or_else(|| panic!("没有 {selector}"));
+        let end = start + html[start..].find('}').expect("样式块没有结束");
+        html[start..end].to_string()
+    }
+
+    #[test]
+    fn logo_uses_surface_not_invert() {
+        let url: Url = "https://board.buglan.com".parse().unwrap();
+        for theme in [Theme::Auto, Theme::Light, Theme::Dark] {
+            let html = page(&url, theme, true);
+            let logo = rule(&html, ".logo {");
+            assert!(logo.contains("background: var(--surface);"), "{theme:?}：logo 底色应跟随主题面");
+            assert!(!logo.contains("--invert"), "{theme:?}：logo 不再用反色");
+            assert!(logo.contains("inset 0 0 0 1px var(--line-2)"), "{theme:?}：边框用 --line-2");
+            assert!(logo.contains("var(--shadow-2)"), "{theme:?}：阴影用 --shadow-2");
+            assert!(logo.contains("border-radius: var(--r-md)"), "{theme:?}：圆角 13px");
+            assert!(logo.contains("width: 44px; height: 44px; padding: 10px 9px"), "{theme:?}：与网页端加载态同尺寸");
+            for bar in 1..=4 {
+                assert!(html.contains(&format!(".logo i:nth-child({bar}) {{ background: color-mix(in srgb, var(--c{bar}) 92%, var(--text));")), "{theme:?}：柱子 {bar} 掺文字色");
+            }
+        }
+    }
+
+    #[test]
+    fn theme_tokens_match_web() {
+        let url: Url = "https://board.buglan.com".parse().unwrap();
+        let html = page(&url, Theme::Auto, true);
+        // 网页端 tokens.css 的深色面、边框、文字色和列标识色
+        let dark = rule(&html, r#":root[data-theme="dark"] {"#);
+        for decl in [
+            "--surface: #18191C",
+            "--line-2: rgba(255, 255, 255, .11)",
+            "--bg: #0C0D0F",
+            "--text: #EDECE8",
+            "--text-3: #93929A",
+            "--c1: #8F9AB4",
+            "--c4: #3DDC97",
+        ] {
+            assert!(dark.contains(decl), "深色主题缺 {decl}");
+        }
+        // 跟随系统深色：同样的值
+        let auto_dark = rule(&html, r#":root:not([data-theme="light"]) {"#);
+        assert!(auto_dark.contains("--surface: #18191C"));
+        assert!(auto_dark.contains("--text-3: #93929A"));
+        // 浅色主题是浅色面
+        let light = rule(&html, ":root {");
+        assert!(light.contains("--surface: #FFFFFF"));
+        assert!(light.contains("--line-2: rgba(26, 24, 20, .14)"));
+        assert!(light.contains("--text-3: #666670"));
+        // 启动页不再引用网页端已经删掉的 --invert
+        assert!(!html.contains("--invert"));
     }
 
     #[test]
