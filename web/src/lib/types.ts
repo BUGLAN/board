@@ -276,7 +276,12 @@ export interface Card {
   movedAt?: number;
   createdBy: Actor;
   comments: number;
+  /** 人看过这一条的时间（PRD §10.5）：「未整理」里 agent 记下、还没被人看过的条目算「新」；旧服务端没有这个字段 */
+  seenAt?: number | null;
 }
+
+/** 「未整理」里的条目是不是「新」：agent 记下、人还没看过 */
+export const isNewEntry = (c: Card) => c.column === 'inbox' && c.createdBy.kind === 'agent' && !c.seenAt;
 
 export interface Activity {
   id: number;
@@ -400,7 +405,9 @@ export type Cmd =
   | { op: 'release'; id: number }
   | { op: 'delete'; id: number }
   /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
-  | { op: 'merge'; id: number; from: number[]; title?: string; body?: string };
+  | { op: 'merge'; id: number; from: number[]; title?: string; body?: string }
+  /** 人看过「未整理」里的条目（仅人）：不给 id 时是这块白板「未整理」里的全部（「全部标为已读」） */
+  | { op: 'seen'; id?: number };
 
 /* ------------------------------ 大盘（GET /api/stats） ------------------------------ */
 

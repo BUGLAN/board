@@ -173,6 +173,8 @@ fn cmd_json(cmd: &Cmd) -> Value {
         Cmd::Release { id } => json!({ "op": "release", "id": id }),
         Cmd::Delete { id } => json!({ "op": "delete", "id": id }),
         Cmd::Merge { id, from, title, body } => json!({ "op": "merge", "id": id, "from": from, "title": title, "body": body }),
+        // 只有界面会发（人看过的未整理条目）
+        Cmd::Seen { id } => json!({ "op": "seen", "id": id }),
     }
 }
 

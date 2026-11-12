@@ -1725,3 +1725,98 @@ fn inbox_merge() {
     assert!(d.activity.iter().any(|a| a.action == "merge" && a.text == "合并了 #5「五」，标题改为「新标题」"));
     assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![1, 6]);
 }
+
+/* ------------------------------ 未整理：新条目（PRD §10.5） ------------------------------ */
+
+fn inbox_new(title: &str) -> Cmd {
+    Cmd::New { title: title.into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }
+}
+fn seen(id: Option<i64>) -> Cmd {
+    Cmd::Seen { id }
+}
+
+/// 「新」：在「未整理」里、agent 记下、人还没看过
+fn is_new(c: &Card) -> bool {
+    c.column == INBOX && c.created_by.kind == ActorKind::Agent && c.seen_at.is_none()
+}
+
+#[test]
+fn inbox_agent_entries_are_new_until_seen() {
+    let mut s = store();
+    let a = exec(&mut s, B, &alpha(), T0, inbox_new("agent 记的")).unwrap();
+    assert!(is_new(&a.card), "agent 记下、人还没看过的算新");
+    let h = exec(&mut s, B, &human(), T0, inbox_new("人自己记的")).unwrap();
+    assert!(!is_new(&h.card), "人自己记的不算新");
+    assert!(h.card.seen_at.is_some());
+
+    // 拖进工作流、改名都不再是「新」；快照里带着看过的状态
+    let snap = snapshot(&s, B, T0);
+    assert!(is_new(&snap.cards[&a.card.id]));
+    assert!(!is_new(&snap.cards[&h.card.id]));
+    let b = exec(&mut s, B, &alpha(), T0, inbox_new("agent 又记的")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(b.card.id, "todo")).unwrap();
+    assert!(!is_new(&snapshot(&s, B, T0).cards[&b.card.id]), "整理过的看过");
+}
+
+#[test]
+fn inbox_seen_one_and_all() {
+    let mut s = store();
+    let ids: Vec<i64> = (1..=3).map(|i| exec(&mut s, B, &alpha(), T0, inbox_new(&format!("第 {i} 条"))).unwrap().card.id).collect();
+    let mine = exec(&mut s, B, &human(), T0, inbox_new("人记的")).unwrap().card.id;
+    let beyond = exec(&mut s, B, &human(), T0, new("工作流里的")).unwrap().card.id;
+
+    // 只有人能标；只能在「未整理」里标；卡片要存在
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, seen(Some(ids[0])))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, seen(Some(beyond)))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, seen(Some(99)))), ErrorCode::NotFound);
+
+    // 展开一条：只有它不再是「新」，记下时间；不新增动态
+    let d = exec(&mut s, B, &human(), T0 + MIN, seen(Some(ids[1]))).unwrap();
+    assert_eq!(d.card.seen_at, Some(T0 + MIN));
+    assert!(d.activity.iter().all(|x| x.action != "seen"), "「看过」不记动态");
+    let snap = snapshot(&s, B, T0 + MIN);
+    assert!(is_new(&snap.cards[&ids[0]]));
+    assert!(!is_new(&snap.cards[&ids[1]]));
+
+    // 已经看过的不刷新时间（两个窗口都在看时结果一样）
+    let again = exec(&mut s, B, &human(), T0 + 5 * MIN, seen(Some(ids[1]))).unwrap();
+    assert_eq!(again.card.seen_at, Some(T0 + MIN));
+
+    // 全部标为已读：「未整理」里的都算看过；人自己记的、工作流里的不动
+    exec(&mut s, B, &human(), T0 + 2 * MIN, seen(None)).unwrap();
+    let snap = snapshot(&s, B, T0 + 2 * MIN);
+    assert_eq!(snap.cards[&ids[0]].seen_at, Some(T0 + 2 * MIN));
+    assert_eq!(snap.cards[&ids[1]].seen_at, Some(T0 + MIN), "早就看过的时间不刷新");
+    for id in &ids {
+        assert!(!is_new(&snap.cards[id]), "#{id} 全部标为已读后不再新");
+    }
+    assert_eq!(snap.cards[&mine].seen_at, Some(T0), "人自己记的时间不变");
+    assert_eq!(snap.cards[&beyond].seen_at, None, "工作流里的卡片不记这个");
+}
+
+#[test]
+fn inbox_edit_merge_mark_seen() {
+    let mut s = store();
+    let a = exec(&mut s, B, &alpha(), T0, inbox_new("想法 A")).unwrap().card.id;
+    let b = exec(&mut s, B, &alpha(), T0, inbox_new("想法 B")).unwrap().card.id;
+    let c = exec(&mut s, B, &alpha(), T0, inbox_new("想法 C")).unwrap().card.id;
+
+    // agent 编辑不算人看过
+    exec(&mut s, B, &alpha(), T0, Cmd::Edit { id: a, title: Some("想法 A2".into()), body: None }).unwrap();
+    assert!(is_new(&snapshot(&s, B, T0).cards[&a]), "agent 改的不算看过");
+    // 人在界面上改过就算看过
+    exec(&mut s, B, &human(), T0 + MIN, Cmd::Edit { id: a, title: Some("想法 A3".into()), body: None }).unwrap();
+    assert!(!is_new(&snapshot(&s, B, T0 + MIN).cards[&a]));
+
+    // 看过的那条并进没看过的那条：留下的也算看过（并进来的已经没有点了）
+    exec(&mut s, B, &human(), T0 + 2 * MIN, seen(Some(b))).unwrap();
+    exec(&mut s, B, &human(), T0 + 3 * MIN, Cmd::Merge { id: c, from: vec![b], title: None, body: None }).unwrap();
+    let snap = snapshot(&s, B, T0 + 3 * MIN);
+    assert!(!is_new(&snap.cards[&c]), "并进来的条目看过，留下的这条也看过");
+
+    // 都没看过的合并：留下的也不算看过
+    let d = exec(&mut s, B, &alpha(), T0, inbox_new("D")).unwrap().card.id;
+    let e = exec(&mut s, B, &alpha(), T0, inbox_new("E")).unwrap().card.id;
+    exec(&mut s, B, &human(), T0 + 4 * MIN, Cmd::Merge { id: d, from: vec![e], title: None, body: None }).unwrap();
+    assert!(is_new(&snapshot(&s, B, T0 + 4 * MIN).cards[&d]));
+}

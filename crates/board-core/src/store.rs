@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS cards (
   moved_at        INTEGER, -- 移入现在这个状态的时间（W::place 换状态时写）；旧卡片迁移时按动态补
   created_by_kind TEXT NOT NULL,
   created_by_name TEXT NOT NULL,
+  -- 人看过「未整理」里的这一条的时间（PRD §10.5）：agent 记下、还没被人看过的条目算「新」
+  seen_at         INTEGER,
   PRIMARY KEY (board, id)
 );
 CREATE INDEX IF NOT EXISTS cards_col ON cards (board, col, pos);
@@ -354,6 +356,16 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'readme'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_readme {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN readme TEXT NOT NULL DEFAULT ''")?;
+        }
+        // 旧数据库不记「未整理」的条目有没有被人看过：已经不在「未整理」里的都算看过（那次整理就是看过），
+        // 还在「未整理」里的算没看过——和升级前一样，没有点；之后有人打开时照常标成看过
+        let has_seen: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'seen_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_seen {
+            conn.execute_batch(
+                "ALTER TABLE cards ADD COLUMN seen_at INTEGER;
+                 UPDATE cards SET seen_at = COALESCE(moved_at, created_at) WHERE col != 'inbox' OR created_by_kind = 'human';",
+            )?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -850,7 +862,8 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost'),
                 (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
-                COALESCE(c.moved_at, c.created_at)
+                COALESCE(c.moved_at, c.created_at),
+                c.seen_at
          FROM cards c WHERE c.board = ?1 {} {skip} ORDER BY {COL_ORDER}, c.pos, c.id",
         if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
     );
@@ -883,6 +896,7 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
             created_by: row_actor(r.get(9)?, r.get(10)?),
             comments: r.get(12)?,
             labels,
+            seen_at: r.get(21)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

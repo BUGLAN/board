@@ -107,6 +107,12 @@ pub enum Cmd {
         #[serde(default)]
         body: Option<String>,
     },
+    /// 人看过「未整理」里的条目（PRD §10.5）：展开一条、点「全部标为已读」。已经是看过的跳过；
+    /// 没给 id 时是这块白板「未整理」里的全部条目。这是界面上的读操作，不新增动态
+    Seen {
+        #[serde(default)]
+        id: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +178,10 @@ impl<'a> W<'a> {
                     "新建了卡片".to_string()
                 };
                 self.track(b, id, actor, "create", &text)?;
+                // 人自己记下的不算「新」（PRD §10.5）
+                if actor.is_human() {
+                    self.touch_seen(b, &[id])?;
+                }
                 id
             }
 
@@ -201,8 +211,13 @@ impl<'a> W<'a> {
                         changes.push("修改了描述".into());
                     }
                 }
+                let edited = !changes.is_empty();
                 for text in changes {
                     self.track(b, id, actor, "edit", &text)?;
+                }
+                // 人在界面上打开这一条改过：算看过（PRD §10.5）
+                if edited && actor.is_human() {
+                    self.touch_seen(b, &[id])?;
                 }
                 id
             }
@@ -294,6 +309,10 @@ impl<'a> W<'a> {
                 // 拖出可领取状态：排队中的派发自动取消（任务下发）
                 if from != to && flow.is_claim(&from) && !flow.is_claim(&to) {
                     self.cancel_queued_on_move(b, id, actor)?;
+                }
+                // 人把「未整理」的条目整理进工作流：算看过（PRD §10.5）
+                if from == INBOX && from != to && actor.is_human() {
+                    self.touch_seen(b, &[id])?;
                 }
                 if from != to {
                     // 规则 8：离开锁定状态即释放
@@ -583,9 +602,13 @@ impl<'a> W<'a> {
                     return Err(BoardError::usage("至少要选一条别的条目并进来"));
                 }
                 let target = self.row(b, id)?;
+                // 「看过」要在删掉来源、把动态挪过去之前取（PRD §10.5）
+                let target_seen = self.seen_at(b, id)?.is_some();
                 let mut srcs: Vec<(i64, Row)> = Vec::with_capacity(from.len());
+                let mut seen: Vec<bool> = Vec::with_capacity(from.len());
                 for f in &from {
                     srcs.push((*f, self.row(b, *f)?));
+                    seen.push(self.seen_at(b, *f)?.is_some());
                 }
                 for (cid, r) in std::iter::once((id, &target)).chain(srcs.iter().map(|(i, r)| (*i, r))) {
                     if r.col != INBOX {
@@ -647,7 +670,36 @@ impl<'a> W<'a> {
                     text.push_str(&format!("，标题改为「{title}」"));
                 }
                 self.track(b, id, actor, "merge", &text)?;
+                // 并进来的条目里有一条人看过：留下的这条也算看过（来源已经不在「未整理」里，点也没了）
+                if !target_seen && seen.into_iter().any(|s| s) {
+                    self.touch_seen(b, &[id])?;
+                }
                 id
+            }
+
+            /* ---------------- 看过（仅人，只在「未整理」里；PRD §10.5） ----------------
+               展开一条、点「全部标为已读」都走这里：记下人看过的时间，条目的点消失，同步到所有窗口和机器。
+               不新增动态；已经看过的不再刷新时间（重复执行、别的窗口也在看时结果不变） */
+            Cmd::Seen { id } => {
+                if !actor.is_human() {
+                    return Err(BoardError::usage("「看过」只能在界面上做"));
+                }
+                let ids: Vec<i64> = match id {
+                    Some(id) => {
+                        let r = self.row(b, id)?;
+                        if r.col != INBOX {
+                            return Err(BoardError::usage(format!("#{id} 在「{}」，不在「{INBOX_NAME}」里", flow.name(&r.col))));
+                        }
+                        vec![id]
+                    }
+                    None => self.collect("SELECT id FROM cards WHERE board = ?1 AND col = ?2 AND seen_at IS NULL", params![b, INBOX], |r| r.get(0))?,
+                };
+                self.touch_seen(b, &ids)?;
+                return match id {
+                    Some(id) => self.read().card(board, id),
+                    // 全部标为已读：不是对某一张卡片的操作，返回一块空白
+                    None => Ok(CardDetail { card: blank_card(), activity: vec![], attachments: vec![] }),
+                };
             }
         };
         self.read().card(board, id)
@@ -703,6 +755,28 @@ impl<'a> W<'a> {
             )
             .optional()?
             .ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("卡片 #{id} 不存在")))
+    }
+
+    /// 记下人看过这些条目的时间（PRD §10.5）。已经看过的不刷新；「未整理」以外的卡片不管；
+    /// 真的改了才让 rev 加一（界面收到推送后刷新，点消失）
+    fn touch_seen(&mut self, b: i64, ids: &[i64]) -> Result<()> {
+        let mut st = self.tx.prepare_cached("UPDATE cards SET seen_at = ?1 WHERE board = ?2 AND id = ?3 AND col = ?4 AND seen_at IS NULL")?;
+        let mut changed = false;
+        for id in ids {
+            changed |= st.execute(params![self.now, b, id, INBOX])? > 0;
+        }
+        if changed {
+            self.changed = true;
+        }
+        Ok(())
+    }
+
+    fn seen_at(&self, b: i64, id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .tx
+            .query_row("SELECT seen_at FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))
+            .optional()?
+            .flatten())
     }
 
     pub(crate) fn col_ids(&self, b: i64, col: &str) -> Result<Vec<i64>> {
@@ -921,6 +995,33 @@ impl<'a> W<'a> {
     pub(crate) fn at(&mut self, t: i64) -> &mut Self {
         self.now = t;
         self
+    }
+}
+
+/// 不对应任何卡片的命令（「全部标为已读」）返回的空白卡片
+fn blank_card() -> Card {
+    Card {
+        id: 0,
+        title: String::new(),
+        body: String::new(),
+        column: String::new(),
+        holder: None,
+        claimed_at: None,
+        beat_at: None,
+        run_started_at: None,
+        work_ms: 0,
+        runs: 0,
+        runs_lost: 0,
+        beats: 0,
+        finished_at: None,
+        claimed_from: None,
+        labels: vec![],
+        created_at: 0,
+        updated_at: 0,
+        moved_at: 0,
+        created_by: Actor::system(),
+        comments: 0,
+        seen_at: None,
     }
 }
 

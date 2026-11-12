@@ -54,7 +54,7 @@ vi.mock('../lib/api', async orig => {
           server.calls.push({
             board,
             cmd,
-            ok: r => res(r ?? detail(card('id' in cmd ? cmd.id : 0))),
+            ok: r => res(r ?? detail(card('id' in cmd ? cmd.id ?? 0 : 0))),
             fail: (code = 'INTERNAL') => rej(new real.ApiError(code as never, '失败了')),
           });
         }),

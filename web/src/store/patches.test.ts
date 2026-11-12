@@ -305,3 +305,51 @@ describe('选择器', () => {
   });
 });
 
+
+describe('seenPatch / 新条目', () => {
+  const agent = { kind: 'agent' as const, name: 'claude/x' };
+  /** p/a 的「未整理」：1 是 agent 记下、没看过的；2 是 agent 记下、人看过的；3 是人自己记的；4 在工作流里 */
+  const inbox = () =>
+    snapshot('p/a', { inbox: [1, 2, 3], todo: [4] }, [
+      { id: 1, createdBy: agent, seenAt: null },
+      { id: 2, createdBy: agent, seenAt: 1_000 },
+      { id: 3, createdBy: { kind: 'human', name: '' }, seenAt: 500 },
+      { id: 4, createdBy: agent, seenAt: null },
+    ]);
+
+  it('seenPatch：记下看过的时刻，只改「未整理」里没看过的；重复执行结果不变', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5_000);
+    const p = D.seenPatch([1, 2, 4]);
+    now.mockRestore();
+    const b = twice(p.board!, inbox());
+    expect(b.cards[1].seenAt).toBe(5_000);
+    expect(b.cards[2].seenAt).toBe(1_000); // 早就看过的时间不刷新
+    expect(b.cards[4].seenAt).toBeNull(); // 不在「未整理」里
+    expect(b.cards[3].seenAt).toBe(500);
+    expect(p.cards).toBeUndefined(); // 不画成「保存中」：点本来就是一闪没
+  });
+
+  it('seenPatch：详情里的这一张一起改；别的卡片、目标不在了原样返回', () => {
+    const p = D.seenPatch([1]);
+    const d = detail(card(1, { column: 'inbox', createdBy: agent, seenAt: null }));
+    expect(twice(p.detail!, d).seenAt).toBeTruthy();
+    const other = detail(card(9));
+    expect(p.detail!(other)).toBe(other);
+    const gone = snapshot('p/a', { todo: [9] });
+    expect(p.board!(gone)).toBe(gone);
+  });
+
+  it('entryIsNew / newEntryCount：只数 agent 记下、还在「未整理」、还没看过的；sent 之后记下的照常算新', () => {
+    const b = inbox();
+    expect([1, 2, 3, 4].map(id => D.entryIsNew('p/a', b.cards[id]))).toEqual([true, false, false, false]);
+    expect(D.newEntryCount('p/a', b, null)).toBe(1);
+    expect(D.newEntryCount('p/a', null, null)).toBe(0);
+    // 本窗口刚标完「全部已读」、服务端快照还没回来：标之前记下的不算新了，之后 agent 新记的照常算
+    const sent = 1_000;
+    const before = { ...card(1), createdAt: 0, column: 'inbox', createdBy: agent, seenAt: null };
+    const after = { ...card(5), createdAt: sent + 1, column: 'inbox', createdBy: agent, seenAt: null };
+    const later = { ...snapshot('p/a', {}), cols: { inbox: [1, 5] }, cards: { 1: before, 5: after } };
+    expect(D.newEntryCount('p/a', later, sent)).toBe(1);
+    expect(D.newEntryCount('p/a', later, null)).toBe(2);
+  });
+});

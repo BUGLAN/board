@@ -11,7 +11,7 @@ import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
-import { deleteLabelPatch, optimistic, useCurrent, useData, useOnline } from '../store/data';
+import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
@@ -704,11 +704,20 @@ function InboxSide() {
   const filter = useUI(s => s.filter);
   // 快照还没到：数量用工作区里的计数
   const count = board ? board.cols.inbox?.length ?? 0 : cur?.board.counts.inbox ?? null;
+  // agent 新记下、人还没看过几条（PRD §10.5）
+  const fresh = useData(s => newEntryCount(s.path, s.board, null));
   return (
     <section className="side-view" data-view="inbox" aria-label="未整理">
       <header className="side-head">
         <span className="side-title">未整理</span>
-        {count == null ? <Skeleton className="sk-side-count" w={22} h={20} r={999} /> : <span className="side-count mono">{count}</span>}
+        {count == null ? (
+          <Skeleton className="sk-side-count" w={22} h={20} r={999} />
+        ) : (
+          <span className="side-count mono">
+            {count}
+            {fresh > 0 && <span className="side-count-new" title={`${fresh} 条 agent 新记下、还没看的`}> · {fresh} 新</span>}
+          </span>
+        )}
       </header>
       <button className="new-entry inbox-entry" type="button" onClick={() => openCreator('inbox')}>
         <span className="ne-plus">

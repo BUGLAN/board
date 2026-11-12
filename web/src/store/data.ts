@@ -8,7 +8,8 @@ import { create } from 'zustand';
 import { api, ApiError, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
 import * as flip from '../lib/flip';
 import { clearLabelSel, toast } from './ui';
-import type { BoardEvent, BoardInfo, BoardSnapshot, Card, CardDetail, Cmd, ColumnKey, ProjectInfo, Workspace } from '../lib/types';
+import { INBOX } from '../lib/schema';
+import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardDetail, type Cmd, type ColumnKey, type ProjectInfo, type Workspace } from '../lib/types';
 
 interface DataState {
   ws: Workspace | null;
@@ -435,6 +436,74 @@ export const deleteLabelPatch = (project: string, id: number): Patch => ({
   },
 });
 
+/** 「未整理」里的条目标成看过（PRD §10.5）：点当帧消失，记下看过的时刻。
+    目标不在了、已经不在「未整理」里、已经看过：原样返回；时刻在建补丁时取定，重复执行结果不变 */
+export function seenPatch(ids: number[]): Patch {
+  const at = serverNow();
+  const mark = <T extends Card>(c: T): T => (c.column === INBOX && !c.seenAt ? { ...c, seenAt: at } : c);
+  return {
+    board: b => {
+      const hit = ids.filter(id => b.cards[id]);
+      if (!hit.length) return b;
+      const cards = { ...b.cards };
+      hit.forEach(id => (cards[id] = mark(cards[id])));
+      return { ...b, cards };
+    },
+    detail: d => (ids.includes(d.id) ? mark(d) : d),
+  };
+}
+
+/* ------------------------------ 「未整理」的新条目 ------------------------------ */
+
+/** 已经标过「看过」的条目（补丁生效到服务端确认之间）：点当帧消失，别的刷新叠不上补丁时也不会闪回来 */
+const seenIds = new Set<string>();
+
+/** 这条算不算「新」：agent 记下、人还没看过；本窗口刚标过的当帧就不算了 */
+export const entryIsNew = (path: string, c: Card) => isNewEntry(c) && !seenIds.has(cardKey(path, c.id));
+
+/** 「未整理」里有多少条新的。
+    sent：本窗口刚标过「全部已读」、服务端快照还没回来时的时刻（serverNow），那时已经记下的条目都不再算新，
+    标完之后记下的照常算 */
+export function newEntryCount(path: string, b: BoardSnapshot | null, sent: number | null): number {
+  if (!b) return 0;
+  return (b.cols[INBOX] ?? []).map(id => b.cards[id]).filter(c => c && entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length;
+}
+
+/** 人看过一条（展开了这一行）：服务端记下看过的时刻，同步到所有窗口。当帧把点去掉；被拒绝时（例如已经在「未整理」之外）只是回到原样，不提示 */
+export async function markSeen(id: number): Promise<void> {
+  const path = get().path;
+  const c = get().board?.cards[id];
+  if (!c || !entryIsNew(path, c)) return;
+  const k = cardKey(path, id);
+  seenIds.add(k);
+  render();
+  try {
+    await optimistic(seenPatch([id]), () => api.cmd(path, { op: 'seen', id }));
+  } catch {
+    /* 下次刷新按服务端的为准 */
+  } finally {
+    seenIds.delete(k);
+    render();
+  }
+}
+
+/** 「全部标为已读」：当帧去掉所有的点，接着记下的条目照常算新；已经看过的不再请求。返回标了几条 */
+export async function markAllSeen(): Promise<number> {
+  const path = get().path;
+  const b = get().board;
+  if (!b) return 0;
+  const ids = (b.cols[INBOX] ?? []).map(id => b.cards[id]).filter(c => c && entryIsNew(path, c)).map(c => c.id);
+  ids.forEach(id => seenIds.add(cardKey(path, id)));
+  render();
+  try {
+    if (ids.length) await optimistic(seenPatch(ids), () => api.cmd(path, { op: 'seen' }));
+    return ids.length;
+  } finally {
+    ids.forEach(id => seenIds.delete(cardKey(path, id)));
+    render();
+  }
+}
+
 /* ------------------------------ 选择器 ------------------------------ */
 
 export const allBoards = (ws: Workspace | null): (BoardInfo & { project: ProjectInfo })[] =>
@@ -817,20 +886,22 @@ export function sendComment(id: number, text: string): Promise<void> {
 /** settle：服务端一返回就调用（在刷新之前），例如新建时让临时卡片认下真卡片的 ID，刷新带来真卡片的那一帧就顶替上去 */
 export async function exec(cmd: Cmd, patch?: Patch, settle?: (r: CardDetail) => void): Promise<CardDetail> {
   const path = get().path;
-  if ('id' in cmd) guard({ ...patch, cards: [...(patch?.cards ?? []), cmd.id] });
+  if ('id' in cmd) guard({ ...patch, cards: [...(patch?.cards ?? []), cmd.id ?? 0].filter(id => id > 0) });
   else if (patch) guard(patch);
   const l = patch ? push(patch) : null;
   try {
     const r = await queue(() => api.cmd(path, cmd));
     settle?.(r);
-    if (cmd.op !== 'delete') {
+    // 全部标为已读不对应某张卡片（返回的是空白），不进详情缓存
+    const known = cmd.op !== 'delete' && r.id > 0;
+    if (known) {
       details.set(pkey(path, r.id), r);
       if (get().detailId === r.id && get().path === path) {
         base.detail = r;
         render({ detailError: null });
       }
     }
-    await refreshAfter(path, cmd.op === 'delete' ? null : r);
+    await refreshAfter(path, known ? r : null);
     return r;
   } finally {
     if (l) drop(l);

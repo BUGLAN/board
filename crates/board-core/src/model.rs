@@ -555,6 +555,10 @@ pub struct Card {
     pub created_by: Actor,
     /// 评论数
     pub comments: i64,
+    /// 人看过这一条的时间（PRD §10.5）：「未整理」里 agent 记下、还没被人看过的条目算「新」。
+    /// 人展开过、在详情里打开过、编辑过、整理过、合并过都算看过。旧服务端没有这个字段
+    #[serde(default)]
+    pub seen_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

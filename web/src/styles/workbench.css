@@ -85,6 +85,10 @@
   margin-left: auto; min-width: 22px; height: 20px; padding: 0 7px; border-radius: 999px; display: grid; place-items: center;
   font-size: 11px; color: color-mix(in oklab, var(--c-inbox), var(--ink)); background: color-mix(in srgb, var(--c-inbox) 13%, transparent);
 }
+/* 「未整理」侧栏标题旁：「12 · 3 新」——agent 新记下、人还没看过几条（PRD §10.5）。不折行 */
+.side-count-new { font-weight: 600; white-space: nowrap; }
+/* 有「· N 新」时横着排（原来的一格居中会把「· N 新」挤到下一行），胶囊跟着变宽 */
+.side-count:has(.side-count-new) { display: inline-flex; align-items: center; gap: 3px; width: auto; white-space: nowrap; }
 .side-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 
 /* 白板侧栏：最近动态占满剩余高度，列表在内部滚动，避免下方留出大片空白 */

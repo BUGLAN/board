@@ -13,7 +13,7 @@ import { openCard, triage, untriage } from '../lib/actions';
 import { boardFlow, INBOX } from '../lib/schema';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, isMac, pref, reduceMotion, replay } from '../lib/util';
-import { addLabel, cardBusy, exec, isDraft, mergePatch, movePatch, removeCard, removeLabel, renderKey, useCardBusy, useCurrent, useData } from '../store/data';
+import { addLabel, cardBusy, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeCard, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openPicker, overlayOpen, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Title, useNow } from './bits';
 import { matches } from './Card';
@@ -197,6 +197,24 @@ function openMerge(ids: number[], keep?: number) {
   setInbox({ merge: { ids: cards.map(c => c.id), keep: k, draft: null } });
 }
 
+/** 全部标为已读（PRD §10.5）：当帧去掉所有的点，之后接着记下的条目照常算新；提示里写标之前有几条 */
+async function doMarkAll(sent: (at: number | null) => void) {
+  const s = useData.getState();
+  const n = newEntryCount(s.path, s.board, null);
+  if (!n) return;
+  // 服务端快照回来之前，按这一页自己的时刻算：标之前的都不算新
+  const at = serverNow();
+  sent(at);
+  try {
+    await markAllSeen();
+    // 服务端确认后由服务端的 seen_at 说了算；这一刻留到这一页关掉
+    toast({ type: 'success', title: `${n} 条标为已读`, duration: 2000 });
+  } catch (e) {
+    sent(null);
+    toastError(e);
+  }
+}
+
 async function doMerge(req: MergeReq, value: { title: string; body: string }) {
   const others = req.ids.filter(id => id !== req.keep);
   setInbox({ merge: null, checked: [], open: null });
@@ -232,6 +250,9 @@ export function InboxPage() {
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
   const present = useMemo(() => new Set((all ?? []).map(c => renderKey(c.id))), [all]);
   useRowMotion(wrap, present, path);
+  // 「全部标为已读」时记下这一刻：服务端快照回来之前，这之前记下的条目就不再画成新的
+  const [sent, setSent] = useState<number | null>(null);
+  const newCount = useMemo(() => (all ?? []).filter(c => entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length, [all, path, sent]);
 
   // 换白板：勾选、展开、来源筛选清空
   useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null }), [path]);
@@ -293,6 +314,15 @@ export function InboxPage() {
                 未整理
                 {count != null && <span className="ib-total mono">{count}</span>}
               </h1>
+              {/* agent 新记下、人还没看过的条数；没有时不占地方 */}
+              {all && newCount > 0 && (
+                <div className="ib-newline">
+                  <span className="ib-new mono">{newCount} 条新的</span>
+                  <button type="button" className="ib-link ib-markall" onClick={() => void doMarkAll(setSent)}>
+                    全部标为已读
+                  </button>
+                </div>
+              )}
               <p>agent 和你记下的想法、需求。点一行展开修改；勾选几条一起合并、打标签，或整理进「{home}」。</p>
             </div>
             <DescTabs
@@ -485,16 +515,21 @@ const Row = memo(function Row({
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
   const ref = useRef<HTMLDivElement>(null);
   const draft = isDraft(c.id);
+  const isnew = useData(s => entryIsNew(s.path, c));
   useLayoutEffect(() => {
     if (flash) replay(ref.current, 'flash');
   }, [flash?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 展开这一行就是人看过了：点去掉，结果同步到别的窗口和设备
+  useLayoutEffect(() => {
+    if (open && !draft) void markSeen(c.id);
+  }, [open, draft, c.id]);
   const toggle = () => setInbox({ open: open ? null : c.id });
   const text = snippet(c.body);
   return (
     <div
       ref={ref}
       data-ib={renderKey(c.id)}
-      className={cx('ib-row', checked && 'checked', open && 'open', saving && 'saving', draft && 'draft')}
+      className={cx('ib-row', checked && 'checked', open && 'open', saving && 'saving', draft && 'draft', isnew && 'is-new')}
       style={flash ? { ['--flash' as string]: flash.color } : undefined}
     >
       <div
@@ -502,7 +537,7 @@ const Row = memo(function Row({
         role="button"
         tabIndex={0}
         aria-expanded={open}
-        aria-label={`#${c.id} ${c.title}`}
+        aria-label={`#${c.id} ${c.title}${isnew ? '（新的）' : ''}`}
         onClick={e => {
           if (draft) return;
           if (e.shiftKey) return onCheck(c.id, true);
@@ -518,10 +553,16 @@ const Row = memo(function Row({
         }}
       >
         {draft ? <span className="ib-check" /> : <Check on={checked} label={`勾选 #${c.id}`} onToggle={shift => onCheck(c.id, shift)} />}
-        <span className="ib-id mono">#{draft ? '…' : c.id}</span>
+        <span className="ib-idwrap">
+          {/* 新条目：编号前面一个点（展开看过就消失，PRD §10.5） */}
+          {isnew && <i className="ib-newdot" aria-label="新的" role="img" />}
+          <span className="ib-id mono">#{draft ? '…' : c.id}</span>
+        </span>
         <Avatar actor={c.createdBy} className="ib-av" />
         <span className="ib-t">
           <b>
+            {/* 手机上不显示编号那一栏：新的标记放在标题前面 */}
+            {isnew && <i className="ib-newdot ib-newdot-m" aria-hidden="true" />}
             <Title text={c.title} />
           </b>
           {text && <span>{text}</span>}
