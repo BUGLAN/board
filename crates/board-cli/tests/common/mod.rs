@@ -118,6 +118,34 @@ impl Server {
         let id = store.read(|r| r.labels("default")).unwrap().into_iter().find(|l| l.name == name).unwrap().id;
         store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.update_label("default", id, None, None, None, Some(true))).unwrap();
     }
+    /// 像界面一样 PATCH 一块白板（GitHub 会话 Cookie + `x-board-client`）：只有人能改的字段用这个改。
+    /// 会话直接写进服务端的库：测试不经过 GitHub 登录。返回 (状态码, 响应体)
+    pub fn ui_patch(&self, path: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
+        use sha2::{Digest, Sha256};
+        let sid = "test-ui-session";
+        let hash: String = Sha256::digest(sid.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let store = board_core::Store::open(&self.db).unwrap();
+        let now = board_core::now_ms();
+        store
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO auth_sessions (hash, login, name, avatar, created_at, expires_at) VALUES (?1, 'buglan', 'buglan', '', ?2, ?3)",
+                rusqlite::params![hash, now, now + 86_400_000],
+            )
+            .unwrap();
+        drop(store);
+        // 被拒绝（400、401 之类）也要拿到响应体里的错误码，不让 ureq 把它当成错误
+        let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+        let mut res = agent
+            .patch(&format!("{}/api/boards/{path}", self.url))
+            .header("cookie", format!("board_session={sid}"))
+            .header("x-board-client", "test")
+            .send_json(body)
+            .unwrap();
+        let code = res.status().as_u16();
+        let text = res.body_mut().read_to_string().unwrap();
+        (code, serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
+    }
 }
 
 /// 去掉开发者环境里连接线上服务端的变量，免得测试写到真实白板上

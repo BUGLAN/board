@@ -27,6 +27,7 @@ export function Creator() {
   const { open, column: want, seq } = useUI(s => s.creator);
   const cur = useCurrent();
   const path = useData(s => s.path);
+  const repo = useData(s => s.board?.repo);
   const f = boardFlow(useData(s => s.board));
   const startName = f.home?.name ?? '待办';
   const startColor = f.color(f.home?.key ?? 'todo');
@@ -349,7 +350,7 @@ export function Creator() {
                 onChange={e => setBody(e.target.value)}
               />
               {mode === 'preview' && (
-                <div className="cr-preview">{body.trim() ? <Markdown src={body} /> : <p className="cr-empty">还没有描述</p>}</div>
+                <div className="cr-preview">{body.trim() ? <Markdown src={body} repo={repo} /> : <p className="cr-empty">还没有描述</p>}</div>
               )}
             </div>
           </div>

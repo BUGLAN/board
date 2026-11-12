@@ -6,7 +6,7 @@ import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { boardMeta, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
+import { boardMeta, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, repoPatch, setPath, useData, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -219,6 +219,8 @@ export function editProject(pk: string) {
 export function editBoard(path: string, { focus, draft }: { focus?: string; draft?: Record<string, string> } = {}) {
   const m = boardMeta(data().ws, path);
   if (!m) return;
+  // 仓库地址的建议：别的机器上报的这块白板目录的 origin（#185 克隆也用同一个来源）
+  const origin = data().ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board === path && d.origin)?.origin ?? '';
   openForm({
     title: '编辑白板',
     submit: '保存',
@@ -233,11 +235,21 @@ export function editBoard(path: string, { focus, draft }: { focus?: string; draf
         name: 'readme', label: '说明', hint: '选填，Markdown，可以粘贴图片；打开大盘的人第一眼看到', type: 'markdown', board: path,
         placeholder: '这块白板是做什么的、有哪些约定', value: draft?.readme ?? m.board.readme ?? '',
       },
+      {
+        name: 'repo', label: '仓库地址', hint: '选填，git 远端；评论里的提交号、gh#123 会变成链接，克隆时也用它', type: 'text',
+        maxLength: 500, placeholder: origin ? `例如 ${origin}` : 'git@github.com:org/repo.git', value: draft?.repo ?? m.board.repo ?? '',
+      },
+      {
+        name: 'branch', label: '集成分支', hint: '选填；留空时按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支', type: 'text',
+        maxLength: 200, placeholder: 'main', value: draft?.branch ?? m.board.branch ?? '',
+      },
       { name: 'color', label: '颜色', hint: `白板用所属项目的颜色，改这里会一起改项目「${m.project.name}」`, type: 'color', value: draft?.color ?? m.project.color },
     ],
     // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示，提示里可以带着刚才写的内容重新打开
     onSubmit: async v => {
       const patch = { name: v.name.trim(), desc: v.desc.trim(), readme: v.readme.trimEnd() };
+      const repo = v.repo.trim();
+      const branch = v.branch.trim();
       const recolor = !!v.color && v.color.toUpperCase() !== m.project.color.toUpperCase();
       optimistic(
         {
@@ -246,10 +258,12 @@ export function editBoard(path: string, { focus, draft }: { focus?: string; draf
             color: recolor ? v.color : p.color,
             boards: p.boards.map(b => (b.path === path ? { ...b, ...patch } : b)),
           })),
+          ...repoPatch(path, { repo, branch }),
           keys: [projectKey(m.project.key)],
         },
         async () => {
           await api.updateBoard(path, patch);
+          if (repo !== (m.board.repo ?? '') || branch !== (m.board.branch ?? '')) await api.updateBoard(path, { repo, branch });
           if (recolor) await api.updateProject(m.project.key, { color: v.color });
         },
       ).then(saved, e => toastError(e, { action: { label: '重新编辑', fn: () => editBoard(path, { focus, draft: v }) } }));

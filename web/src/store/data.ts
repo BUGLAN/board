@@ -448,6 +448,21 @@ export const readyCheckPatch = (path: string, change: { cmd?: string; win?: stri
   },
 });
 
+/** 改白板的代码仓库地址和集成分支（PRD §4）：工作区、当前白板的快照一起改；白板不在了原样返回 */
+export const repoPatch = (path: string, change: { repo?: string; branch?: string }): Patch => ({
+  ws: ws => {
+    if (!ws.projects.some(p => p.boards.some(b => b.path === path))) return ws;
+    return {
+      ...ws,
+      projects: ws.projects.map(p => ({
+        ...p,
+        boards: p.boards.map(b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b)),
+      })),
+    };
+  },
+  board: b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b),
+});
+
 /** 改项目里的一个标签（名称、颜色、类型、是否优先） */
 export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string; humanOnly?: boolean; priority?: boolean }): Patch => ({
   ...patchProject(project, p => ({ ...p, labels: p.labels.map(l => (l.id === id ? { ...l, ...change } : l)) })),

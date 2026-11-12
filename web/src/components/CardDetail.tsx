@@ -503,6 +503,7 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
   const [v, setV] = useState(c.body);
   const ta = useRef<HTMLTextAreaElement>(null);
   const path = useData(s => s.path);
+  const repo = useData(s => s.board?.repo);
   const attach = useAttach({ board: path, card: c.id, setValue: setV, textarea: ta });
   useRefit(ta, mode);
   useEffect(() => {
@@ -594,7 +595,7 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
         ) : c.body ? (
           // 不响应双击：人常在这里选中文字阅读，双击进入编辑容易误触（进入编辑只用「编辑」按钮）
           <div className={cx('desc-view', locked && 'locked')}>
-            <Markdown src={c.body} />
+            <Markdown src={c.body} repo={repo} />
           </div>
         ) : (
           <div className={cx('desc-view empty', locked && 'locked')} onClick={edit}>
@@ -780,6 +781,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   const n = c.activity.length;
   const sending = useSending(c.id);
   const path = useData(s => s.path);
+  const repo = useData(s => s.board?.repo);
   // 输入超过一行后换成「上面输入、下面工具栏」的排法；清空前不换回去，免得宽度变化让它来回跳
   const [multi, setMulti] = useState(false);
   const fit = (el: HTMLTextAreaElement | null) => {
@@ -867,7 +869,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
                       发送中
                     </span>
                   </div>
-                  <Markdown src={s.text} />
+                  <Markdown src={s.text} repo={repo} />
                 </div>
               </div>
             ))}
@@ -1081,6 +1083,7 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
   // 正在编辑时是草稿的初始内容
   const [editing, setEditing] = useState<string | null>(null);
   const saving = useData(s => !!s.saving[`${s.path}@${a.id}`]);
+  const repo = useData(s => s.board?.repo);
   const name =
     a.actor.kind === 'agent' ? (
       <b className="agent-name" style={{ color: agentInk(a.actor.name) }}>
@@ -1149,7 +1152,7 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
           {editing != null ? (
             <CommentEditor a={a} card={card} initial={editing} onDone={() => setEditing(null)} onFail={setEditing} />
           ) : (
-            <Markdown src={a.text} />
+            <Markdown src={a.text} repo={repo} />
           )}
         </div>
       </div>

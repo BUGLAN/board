@@ -629,6 +629,13 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 
 /* 环境检查（components/BoardReady.tsx）：两条命令 + 能接这块白板的机器 */
 .bs-rc { display: flex; flex-direction: column; gap: 8px; }
+/* 代码仓库地址、集成分支：「用机器的 origin」按钮跟在输入框后面 */
+.bs-rp-input { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bs-rp-input .input { flex: 1; min-width: 0; }
+.bs-rp-input .btn { flex: none; white-space: nowrap; }
+.bs-note a { color: color-mix(in oklab, var(--brand), var(--ink)); text-decoration: none; }
+.bs-note a:hover { text-decoration: underline; }
+.bs-note .mono { font-family: var(--f-mono); font-size: .92em; }
 .bs-rc-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 10px; }
 .bs-rc-l { display: flex; align-items: center; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .bs-rc-row .input { height: 32px; font-size: 12.5px; }

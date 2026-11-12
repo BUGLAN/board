@@ -283,7 +283,7 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
                 name={f.name}
                 value={v[f.name] ?? ''}
                 placeholder={f.placeholder}
-                maxLength={f.type === 'key' ? 32 : 60}
+                maxLength={f.type === 'key' ? 32 : f.maxLength ?? 60}
                 autoComplete="off"
                 spellCheck={false}
                 readOnly={f.readonly}

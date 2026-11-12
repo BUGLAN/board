@@ -50,6 +50,8 @@ export interface FormField {
   board?: string;
   value?: string;
   placeholder?: string;
+  /** 输入框最多多少字；默认 60，标识（key）固定 32 */
+  maxLength?: number;
   required?: boolean;
   readonly?: boolean;
   /** 标识自动跟随这个字段，直到用户手动修改 */

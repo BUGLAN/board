@@ -463,10 +463,9 @@ mod tests {
         let exe = Path::new("/usr/local/bin/board");
         let cwd = Path::new("/home/me/work");
         let a = service_args(exe, Some("devbox"), &["a/b=repo".into(), "c/d=~/x".into(), "e/f=/srv/y".into()], cwd).unwrap();
-        assert_eq!(
-            a,
-            ["/usr/local/bin/board", "host", "--service", "--name", "devbox", "--dir", "a/b=/home/me/work/repo", "--dir", "c/d=~/x", "--dir", "e/f=/srv/y"]
-        );
+        // 相对路径按当前目录拼：分隔符跟着系统走（Windows 上是 \）
+        let abs = format!("a/b={}", cwd.join("repo").display());
+        assert_eq!(a, ["/usr/local/bin/board", "host", "--service", "--name", "devbox", "--dir", &abs, "--dir", "c/d=~/x", "--dir", "e/f=/srv/y"]);
         // 不给机器名、目录时跟着配置文件走
         assert_eq!(service_args(exe, None, &[], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service"]);
         assert!(service_args(exe, Some("Dev Box"), &[], cwd).is_err());

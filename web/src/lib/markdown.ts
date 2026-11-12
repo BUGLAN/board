@@ -1,7 +1,9 @@
 /* Markdown：marked 解析 + DOMPurify 清理（描述和评论可能来自任何 agent，agent 又会读外部内容，必须清理）
-   只留排版需要的：不能改写、遮盖界面（style、id、class），不能拼出表单，不能向外站发请求（外站图片、媒体） */
+   只留排版需要的：不能改写、遮盖界面（style、id、class），不能拼出表单，不能向外站发请求（外站图片、媒体）
+   白板设了仓库地址时（PRD §4），`提交：<sha>` 和 gh#123 变成指向仓库网页的链接（见 decorate） */
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { repoWeb, type RepoWeb } from './repo';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -26,20 +28,21 @@ const isAttachment = (src: string) => src.startsWith('/api/files/');
 
 const cache = new Map<string, string>();
 
-export function markdown(src: string): string {
-  const key = src || '';
+/** repo：这块白板的仓库地址（PRD §4）；给了、能推出网页地址时，提交号和 gh#123 变成链接 */
+export function markdown(src: string, repo?: string | null): string {
+  const key = `${src || ''}\u0000${repo || ''}`;
   const hit = cache.get(key);
   if (hit != null) return hit;
-  const raw = marked.parse(key, { async: false }) as string;
+  const raw = marked.parse(src || '', { async: false }) as string;
   const clean = purify.sanitize(raw, SANITIZE) as string;
-  const out = decorate(clean);
+  const out = decorate(clean, repoWeb(repo));
   if (cache.size > 400) cache.clear();
   cache.set(key, out);
   return out;
 }
 
-/** 任务列表换成自绘的勾选框；gh#123 高亮；链接在新窗口打开 */
-function decorate(html: string): string {
+/** 任务列表换成自绘的勾选框；gh#123 高亮（设了仓库地址时还变成链接）；链接在新窗口打开 */
+function decorate(html: string, repo: RepoWeb | null = null): string {
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
   const root = tpl.content;
@@ -86,25 +89,54 @@ function decorate(html: string): string {
     a.setAttribute('target', '_blank');
     a.setAttribute('rel', 'noopener noreferrer');
   });
+  // gh#123：总是高亮成 .gh；白板设了仓库地址时再变成这个 issue 的链接。
+  // 提交：<sha>（7–40 位十六进制，交审评论里的那一行）：设了仓库地址时 sha 变成提交页的链接，没设时不动
+  const commitRe = /提交[：:]\s*[0-9a-f]{7,40}\b/g;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const hits: Text[] = [];
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     const t = n as Text;
-    if (/gh#\d+/.test(t.data) && !t.parentElement?.closest('code, pre, a')) hits.push(t);
+    if (!(/gh#\d+/.test(t.data) || commitRe.test(t.data))) continue;
+    commitRe.lastIndex = 0;
+    if (!t.parentElement?.closest('code, pre, a')) hits.push(t);
   }
   for (const t of hits) {
     const frag = document.createDocumentFragment();
+    let src = t.data;
     let last = 0;
-    t.data.replace(/gh#\d+/g, (m, i: number) => {
-      frag.append(t.data.slice(last, i));
-      const s = document.createElement('span');
-      s.className = 'gh';
-      s.textContent = m;
-      frag.append(s);
-      last = i + m.length;
-      return m;
-    });
-    frag.append(t.data.slice(last));
+    while (last < src.length) {
+      const rest = src.slice(last);
+      const gh = /gh#(\d+)/.exec(rest);
+      const commit = repo ? /提交[：:]\s*([0-9a-f]{7,40})\b/.exec(rest) : null;
+      const hit = !commit || (gh && gh.index < commit.index) ? gh : commit;
+      if (!hit) break;
+      const at = last + hit.index;
+      frag.append(src.slice(last, at));
+      if (hit === commit) {
+        // 「提交：<sha>」：前面的「提交：」原样留着，sha 变成提交页的链接
+        const sha = commit![1];
+        frag.append(src.slice(at, at + hit[0].length - sha.length));
+        const a = document.createElement('a');
+        a.className = 'commit';
+        a.href = repo!.commit(sha);
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = sha;
+        frag.append(a);
+      } else {
+        const a = document.createElement(repo ? 'a' : 'span');
+        a.className = 'gh';
+        a.textContent = hit[0];
+        if (repo) {
+          (a as HTMLAnchorElement).href = repo.issue(Number((hit as RegExpExecArray)[1]));
+          a.setAttribute('target', '_blank');
+          a.setAttribute('rel', 'noopener noreferrer');
+        }
+        frag.append(a);
+      }
+      last = at + hit[0].length;
+    }
+    frag.append(src.slice(last));
     t.replaceWith(frag);
   }
   const div = document.createElement('div');

@@ -2324,6 +2324,74 @@ fn old_database_boards_get_no_ready_check() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/* ------------------------------ 代码仓库地址、集成分支（PRD §4） ------------------------------ */
+
+fn ui<T>(s: &mut Store, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {
+    s.write(T0, Origin::ui(None), f)
+}
+
+#[test]
+fn board_repo_and_branch_are_optional_and_validated() {
+    let mut s = store();
+    let board = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].clone();
+    // 新建的白板两项都是空的
+    assert!(board(&s).repo.is_empty() && board(&s).branch.is_empty());
+    // 去掉首尾空白；白板快照里也带着（界面用它生成链接）
+    ui(&mut s, |w| w.set_repo_branch(B, Some("  git@github.com:o/r.git "), Some(" dev "))).unwrap();
+    let b = board(&s);
+    assert_eq!((b.repo.as_str(), b.branch.as_str()), ("git@github.com:o/r.git", "dev"));
+    let snap = s.read(|r| r.resolve(B).and_then(|b| r.board_snapshot(&b, T0, false))).unwrap();
+    assert_eq!((snap.repo.as_str(), snap.branch.as_str()), ("git@github.com:o/r.git", "dev"));
+    // 一次只改一项：另一项不动
+    ui(&mut s, |w| w.set_repo_branch(B, None, Some("release/2"))).unwrap();
+    let b = board(&s);
+    assert_eq!((b.repo.as_str(), b.branch.as_str()), ("git@github.com:o/r.git", "release/2"));
+    // 空字符串是清空
+    ui(&mut s, |w| w.set_repo_branch(B, Some(""), Some(""))).unwrap();
+    assert!(board(&s).repo.is_empty() && board(&s).branch.is_empty());
+    // 写不进去的：换行、超长、分支名里的空格和 git 不认的字符
+    for (repo, branch) in [
+        (Some("a\nb"), None),
+        (Some(&"x".repeat(REPO_MAX + 1)), None),
+        (None, Some("a b")),
+        (None, Some("a~b")),
+        (None, Some("a:b")),
+        (None, Some("a?b")),
+        (None, Some("a*b")),
+        (None, Some("a[b")),
+        (None, Some("a\\b")),
+        (None, Some(&"x".repeat(BRANCH_MAX + 1))),
+        (None, Some("a\nb")),
+    ] {
+        let e = s.write(T0, Origin::ui(None), |w| w.set_repo_branch(B, repo, branch)).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage, "{repo:?} {branch:?}: {}", e.message);
+    }
+}
+
+#[test]
+fn old_database_boards_get_no_repo_or_branch() {
+    let dir = std::env::temp_dir().join(format!("board-repo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("b.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("ALTER TABLE boards DROP COLUMN repo; ALTER TABLE boards DROP COLUMN branch").unwrap();
+    }
+    let mut s = Store::open(&path).unwrap();
+    let b = s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].clone();
+    assert!(b.repo.is_empty() && b.branch.is_empty(), "升级前的白板两项都留空，按原来的规则");
+    // 升级后照样能设
+    ui(&mut s, |w| w.set_repo_branch(B, Some("git@github.com:o/r.git"), Some("dev"))).unwrap();
+    let b = s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].clone();
+    assert_eq!((b.repo.as_str(), b.branch.as_str()), ("git@github.com:o/r.git", "dev"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /* ------------------------------ 远程管理（PRD §9.1） ------------------------------ */
 
 fn ask(s: &mut Store, at: i64, kind: &str, now: bool) -> Result<HostInfo> {

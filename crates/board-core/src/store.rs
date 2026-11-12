@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS boards (
   -- 环境检查（PRD §9.1）：所有系统 / 只给 Windows 的一行命令；都为空时不检查
   ready_check     TEXT NOT NULL DEFAULT '',
   ready_check_win TEXT NOT NULL DEFAULT '',
+  -- 代码仓库地址（git 远端，例如 git@github.com:o/r.git）和集成分支（PRD §4）；都为空时按原来的规则
+  repo        TEXT NOT NULL DEFAULT '',
+  branch      TEXT NOT NULL DEFAULT '',
   UNIQUE (project, key)
 );
 
@@ -392,6 +395,15 @@ impl Store {
                  ALTER TABLE boards ADD COLUMN ready_check_win TEXT NOT NULL DEFAULT '';",
             )?;
         }
+        // 旧数据库的白板没有代码仓库地址和集成分支：都留空，按原来的规则（AGENTS.md / 远端默认分支）
+        let has_repo: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'repo'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_repo {
+            conn.execute_batch(
+                "ALTER TABLE boards ADD COLUMN repo TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE boards ADD COLUMN branch TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
         // 旧数据库不记「未整理」的条目有没有被人看过：已经不在「未整理」里的都算看过（那次整理就是看过），
         // 还在「未整理」里的算没看过——和升级前一样，没有点；之后有人打开时照常标成看过
         let has_seen: bool =
@@ -596,7 +608,7 @@ impl<'a> R<'a> {
             let mut st = conn.prepare(
                 "SELECT b.id, b.key, b.name, b.description, b.pos_x, b.pos_y, b.created_at,
                         COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme,
-                        b.ready_check, b.ready_check_win
+                        b.ready_check, b.ready_check_win, b.repo, b.branch
                  FROM boards b WHERE b.project = ?1 ORDER BY b.sort, b.created_at, b.key",
             )?;
             let rows = st.query_map([&p.key], |r| {
@@ -609,6 +621,8 @@ impl<'a> R<'a> {
                         desc: r.get(3)?,
                         readme: r.get(8)?,
                         ready_check: ReadyCheck { cmd: r.get(9)?, win: r.get(10)? },
+                        repo: r.get(11)?,
+                        branch: r.get(12)?,
                         pos: Pos { x: r.get(4)?, y: r.get(5)? },
                         created_at: r.get(6)?,
                         updated_at: r.get(7)?,
@@ -693,9 +707,10 @@ impl<'a> R<'a> {
             params![board.id],
         )?;
         log.reverse();
-        let (saved, keep_sorted) = self.conn.query_row("SELECT saved_layout, keep_sorted FROM boards WHERE id = ?1", [board.id], |r| {
-            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?))
-        })?;
+        let (saved, keep_sorted, repo, branch) =
+            self.conn.query_row("SELECT saved_layout, keep_sorted, repo, branch FROM boards WHERE id = ?1", [board.id], |r| {
+                Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            })?;
         // 已保存的布局里只留现在还在的状态
         let saved_layout = saved.and_then(|j| serde_json::from_str::<BTreeMap<String, Tile>>(&j).ok()).map(|mut m| {
             m.retain(|k, _| flow.get(k).is_some());
@@ -715,6 +730,8 @@ impl<'a> R<'a> {
             saved_layout,
             keep_sorted,
             trash,
+            repo,
+            branch,
         })
     }
 
@@ -1271,6 +1288,33 @@ impl<'a> W<'a> {
         self.changed = true;
         // 机器拿到的检查命令变了：board host 收到推送后马上重新检查
         self.hosts_changed = true;
+        Ok(())
+    }
+
+    /// 白板的代码仓库地址和集成分支（PRD §4）：都是可选的两项，None 表示这一项不改，空字符串表示清空
+    pub fn set_repo_branch(&mut self, path: &str, repo: Option<&str>, branch: Option<&str>) -> Result<()> {
+        let b = self.resolve_exact(path)?;
+        let clean = |t: &str, max: usize, what: &str| -> Result<String> {
+            let t = t.trim();
+            if t.contains('\n') || t.contains('\r') {
+                return Err(BoardError::usage(format!("{what}只能写一行")));
+            }
+            if t.chars().count() > max {
+                return Err(BoardError::usage(format!("{what}最长 {max} 个字符")));
+            }
+            Ok(t.to_string())
+        };
+        if let Some(t) = repo {
+            self.tx.execute("UPDATE boards SET repo = ?1 WHERE id = ?2", params![clean(t, REPO_MAX, "仓库地址")?, b.id])?;
+        }
+        if let Some(t) = branch {
+            let t = clean(t, BRANCH_MAX, "集成分支")?;
+            if t.chars().any(|c| c.is_whitespace() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')) {
+                return Err(BoardError::usage("集成分支只能写分支名，不能有空格和 ~ ^ : ? * [ \\ 这些字符"));
+            }
+            self.tx.execute("UPDATE boards SET branch = ?1 WHERE id = ?2", params![t, b.id])?;
+        }
+        self.changed = true;
         Ok(())
     }
 

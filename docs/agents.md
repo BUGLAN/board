@@ -209,7 +209,9 @@ board host --name e2e --dir default/main=/tmp/e2e/repo
 BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 ```
 
-通过的标准：派发结果「已交审」；`origin/main` 上多了一个提交，最后一行是 `卡片：default/main#1`；卡片动态里有 agent 的交审评论（`提交：`、`检查：` 两行）；`~/.board/host/logs/<派发 ID>.log` 里能看到它的过程。再试一次「停止」：10 秒内进程结束，卡片移到「需人工校验」。
+通过的标准：派发结果「已交审」；`origin/main` 上多了一个提交，最后一行是 `卡片：default/main#1`；卡片动态里有 agent 的交审评论（`提交：`、`集成分支：`、`检查：` 三行）；`~/.board/host/logs/<派发 ID>.log` 里能看到它的过程。再试一次「停止」：10 秒内进程结束，卡片移到「需人工校验」。
+
+集成分支：先在白板设置里把它设成 `dev` 再派一张，通过的标志是 `origin/dev` 上多了提交（`main` 不动），交审评论里写着 `集成分支：dev`；把它清空后再派一张，回到读仓库 AGENTS.md 的规则。
 
 **每个支持的启动环境各跑一次**：在机器详情「本机 agent」里把它的启动环境依次换成每个支持的环境（Windows 上的 PowerShell、Git Bash、WSL …；macOS、Linux 上的登录 shell 和直接启动），各派一张卡，结果都要「已交审」，派发记录写的是那个环境；在 WSL 里再试一次「停止」，WSL 里的 agent 进程也要在 10 秒内结束（`wsl.exe -d <发行版> -- ps -ef` 看）。
 

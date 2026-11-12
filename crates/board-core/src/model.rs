@@ -459,6 +459,13 @@ pub struct BoardInfo {
     /// 环境检查：机器要先在这块白板的目录里跑通它，才接这块白板的卡（PRD §9.1「环境检查」）。旧服务端没有这一项
     #[serde(default)]
     pub ready_check: ReadyCheck,
+    /// 代码仓库地址（git 远端，例如 `git@github.com:o/r.git`）；空表示没设。旧服务端没有这一项。
+    /// 提交号、`gh#123` 变链接和给新机器克隆都用它（PRD §4）
+    #[serde(default)]
+    pub repo: String,
+    /// 集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
+    #[serde(default)]
+    pub branch: String,
     pub pos: Pos,
     pub created_at: i64,
     pub updated_at: i64,
@@ -483,6 +490,11 @@ pub struct ReadyCheck {
 
 /// 环境检查命令最长多少个字符
 pub const READY_CHECK_MAX: usize = 500;
+
+/// 仓库地址最长多少个字符
+pub const REPO_MAX: usize = 500;
+/// 集成分支名最长多少个字符（git 的分支名实际上限远大于这个数）
+pub const BRANCH_MAX: usize = 200;
 
 impl ReadyCheck {
     /// 这台机器（按它上报的系统）要跑的命令；不检查时为 None
@@ -685,6 +697,12 @@ pub struct BoardSnapshot {
     /// 回收站里的张数（PRD §8 规则 10、§10.3 侧栏「回收站 · N」）。旧服务端没有这个字段
     #[serde(default)]
     pub trash: i64,
+    /// 这块白板的代码仓库地址（空表示没设）：评论里的提交号、`gh#123` 按它变成链接（PRD §4）。旧服务端没有这个字段
+    #[serde(default)]
+    pub repo: String,
+    /// 这块白板的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这个字段
+    #[serde(default)]
+    pub branch: String,
 }
 
 /// 白板快照里每个终点状态默认带的张数（最近移入的，也就是最下面的几张）；更早的按需取全量

@@ -916,7 +916,7 @@ function MergeSheet({ req }: { req: MergeReq }) {
                   }}
                 />
               ) : (
-                <div className="desc-view">{v.body.trim() ? <Markdown src={v.body} /> : <span className="ib-muted">没有描述</span>}</div>
+                <div className="desc-view">{v.body.trim() ? <Markdown src={v.body} repo={board?.repo} /> : <span className="ib-muted">没有描述</span>}</div>
               )}
             </section>
           </div>

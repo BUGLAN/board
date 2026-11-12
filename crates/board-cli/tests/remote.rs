@@ -123,6 +123,56 @@ fn remote_auth_errors() {
     assert_eq!(r.error_code(), "NO_IDENTITY");
 }
 
+/// 白板的仓库地址、集成分支（PRD §4）：只有人能改，`board flow` 把它们带给 agent
+#[test]
+fn remote_board_repo_and_branch() {
+    let s = start();
+    // 没设时是空的
+    let f = s.run("test/alpha", &["flow", "--json"]).json();
+    assert_eq!((f["repo"].as_str(), f["branch"].as_str()), (Some(""), Some("")), "{f}");
+    // 用令牌改被拒绝：白板设置只有人能改（PRD §4）
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+    let mut res = agent
+        .patch(&format!("{}/api/boards/default/main", s.url))
+        .header("authorization", format!("Bearer {}", s.token))
+        .send_json(serde_json::json!({ "repo": "git@github.com:o/r.git", "branch": "dev" }))
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap();
+    assert_eq!(res.status().as_u16(), 401, "{body}");
+    assert_eq!(body["error"]["code"], "NOT_LOGGED_IN", "{body}");
+    let f = s.run("test/alpha", &["flow", "--json"]).json();
+    assert_eq!(f["repo"].as_str(), Some(""), "被拒绝的修改没有写进去：{f}");
+    // 界面上改：两项都存下来
+    let (code, body) = s.ui_patch("default/main", serde_json::json!({ "repo": "  git@github.com:o/r.git ", "branch": " dev " }));
+    assert_eq!(code, 200, "{body}");
+    let f = s.run("test/alpha", &["flow", "--json"]).json();
+    assert_eq!((f["repo"].as_str(), f["branch"].as_str()), (Some("git@github.com:o/r.git"), Some("dev")), "去掉首尾空白：{f}");
+    // 文字输出里有一行
+    let r = s.run("test/alpha", &["flow"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("仓库：") && r.out.contains("git@github.com:o/r.git") && r.out.contains("集成分支：") && r.out.contains("dev"), "{}", r.out);
+    // 白板快照里也带着（界面用它把提交号、gh#123 变成链接）
+    let snap: serde_json::Value = {
+        let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+        let mut res = agent
+            .get(&format!("{}/api/board?path=default/main", s.url))
+            .header("authorization", format!("Bearer {}", s.token))
+            .call()
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    };
+    assert_eq!((snap["repo"].as_str(), snap["branch"].as_str()), (Some("git@github.com:o/r.git"), Some("dev")), "{snap}");
+    // 清空
+    let (code, _) = s.ui_patch("default/main", serde_json::json!({ "repo": "", "branch": "" }));
+    assert_eq!(code, 200);
+    let f = s.run("test/alpha", &["flow", "--json"]).json();
+    assert_eq!((f["repo"].as_str(), f["branch"].as_str()), (Some(""), Some("")));
+    // 不合法的分支名被拒绝
+    let (code, body) = s.ui_patch("default/main", serde_json::json!({ "branch": "a b" }));
+    assert_eq!(code, 400, "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("集成分支"), "{body}");
+}
+
 /// 附件经服务端上传、读取
 #[test]
 fn remote_attachments() {
