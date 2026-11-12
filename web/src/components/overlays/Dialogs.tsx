@@ -25,6 +25,28 @@ const ICONS: Record<NonNullable<ConfirmReq['icon']>, IconName> = {
   update: 'renew',
 };
 
+/** 确认框里的勾选项：勾没勾写回 box，由 confirmCheck 读出来 */
+function ConfirmCheck({ check }: { check: NonNullable<ConfirmReq['check']> }) {
+  const [on, setOn] = useState(check.box.checked);
+  return (
+    <label className={cx('dialog-check', check.why && 'off')} title={check.why}>
+      <input
+        type="checkbox"
+        checked={on}
+        disabled={!!check.why}
+        onChange={e => {
+          check.box.checked = e.target.checked;
+          setOn(e.target.checked);
+        }}
+      />
+      <span>
+        {check.label}
+        {check.why && <em>{check.why}</em>}
+      </span>
+    </label>
+  );
+}
+
 export function ConfirmDialog() {
   const req = useUI(s => s.confirm);
   const { mounted, on } = usePresence(!!req, 220);
@@ -82,6 +104,7 @@ export function ConfirmDialog() {
             {lines.map((line, i) => (line.trim() ? <p key={i}>{line}</p> : null))}
           </div>
         )}
+        {r.check && <ConfirmCheck key={r.title} check={r.check} />}
         <div className="dialog-actions">
           <button className="btn" type="button" ref={cancel} onClick={() => settleConfirm(false)}>
             {r.cancel || '取消'}

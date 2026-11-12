@@ -9,11 +9,12 @@ import { readiness, type ReadyGo } from '../../lib/ready';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
-import { confirm, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
+import { confirm, confirmCheck, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
 import { LabelChip, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
+import { ManageSection } from './Manage';
 import { ReadySection, useServerVersion } from './Ready';
 
 export function HostModal() {
@@ -193,10 +194,15 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
     }
   };
   const remove = async () => {
-    const yes = await confirm({
+    const t = h.token;
+    const { ok: yes, checked: revoke } = await confirmCheck({
       title: `移除 ${h.name}？`,
       text: '取消它所有排队中的派发，停止正在跑的派发，删除机器设置；派发记录保留。那台机器的 board host 再连上来时按新机器处理。',
       ok: '移除',
+      check: {
+        label: t ? `同时吊销它用的令牌「${t.name}」（${t.hint}）` : '同时吊销它用的令牌',
+        why: !t ? '看不到这台机器用的令牌（还没上报过，或已经吊销）' : t.shared?.length ? `机器 ${t.shared.join('、')} 也在用这个令牌，不能一起吊销` : undefined,
+      },
     });
     if (!yes) return;
     // 当帧关闭面板、从列表里拿掉（连同它的派发），被拒绝时回来并提示
@@ -207,9 +213,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }),
           keys: [hostKey(h.name)],
         },
-        () => api.removeHost(h.name),
+        () => api.removeHost(h.name, revoke),
       );
-      toast({ type: 'success', title: `已移除 ${h.name}` });
+      toast({ type: 'success', title: `已移除 ${h.name}`, text: revoke && t ? `令牌「${t.name}」已吊销` : undefined });
     } catch (e) {
       toastError(e);
     }
@@ -281,6 +287,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </section>
 
           <ReadySection checks={readiness(h, now, server)} go={go} i={1} />
+          <ManageSection h={h} server={server} i={1} />
 
           <section className="d-section" style={{ ['--i' as string]: 1 }}>
             <div className="d-label">
@@ -353,7 +360,10 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </section>
 
           <section className="d-section" id="hp-sec-agents" style={{ ['--i' as string]: 3 }}>
-            <div className="d-label">本机 agent</div>
+            <div className="d-label">
+              本机 agent
+              {h.recheckedAt && <span className="act">{new Date(h.recheckedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 重新检查过</span>}
+            </div>
             <SkillBanner h={h} fixed={fixed} setFixed={setFixed} />
             {h.agents.map(a => (
               <AgentRow key={a.id} h={h} a={a} save={save} sync={sync[`env:${a.id}`] ?? (a.id === h.agent ? sync.agent : undefined)} fixed={fixed?.includes(a.id)} />
@@ -397,7 +407,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           <div className="d-label d-side-head">
             <button type="button" className="hp-fold-btn" aria-expanded={recentOpen} onClick={toggleRecent}>
               <Icon name="chevDown" />
-              最近 <span className="count">{recent?.length ?? ''}</span>
+              最近 <span className="count">{recent ? recent.length + (h.ops?.length ?? 0) : ''}</span>
             </button>
             <span className="act">
               今天交审 {today.review} · 异常退出 {today.crashed}
@@ -406,10 +416,26 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           <div className="d-activity" hidden={!recentOpen}>
             {recent === null ? (
               <p className="hp-note hp-pad">正在加载…</p>
-            ) : recent.length === 0 ? (
+            ) : recent.length === 0 && !h.ops?.length ? (
               <p className="hp-note hp-pad">还没有结束的派发</p>
             ) : (
-              recent.map(p => {
+              // 派发和操作记录（谁、什么时间、做了什么）按时间混在一起，新的在前
+              [...recent.map(p => ({ t: p.endedAt ?? p.createdAt, p, o: null })), ...(h.ops ?? []).map(o => ({ t: o.at, p: null, o }))]
+                .sort((a, b) => b.t - a.t)
+                .map(({ p, o }) => {
+                if (o)
+                  return (
+                    <div className="hp-hist hp-op" key={`op${o.at}${o.text}`}>
+                      <Icon name="host" />
+                      <div>
+                        <b>{o.text}</b>
+                        <span>
+                          {o.by} · {since(o.at, now)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                if (!p) return null;
                 const r = resultOf(p);
                 return (
                   <button type="button" className="hp-hist" key={p.id} onClick={() => goCard(p)}>

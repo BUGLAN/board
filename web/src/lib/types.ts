@@ -238,6 +238,44 @@ export interface HostInfo {
   firstAt: number;
   beatAt: number;
   offAt: number | null;
+  /** 等 board host 处理的远程管理请求（重新检查、重启、升级）；旧版服务端没有 */
+  ask?: HostAsk | null;
+  /** 正在排空：暂停接单，等在跑的派发结束（都结束了就是「已排空」） */
+  drain?: boolean;
+  /** 最近一次「重新检查」做完的时间 */
+  recheckedAt?: number | null;
+  /** 最近的操作记录（新的在前）：谁、什么时间、做了什么 */
+  ops?: HostOp[];
+  /** 这台机器最近一次上报用的令牌；令牌已经吊销、还没上报过时为空 */
+  token?: HostToken | null;
+}
+
+/** 远程管理请求 */
+export interface HostAsk {
+  id: number;
+  kind: 'recheck' | 'restart' | 'upgrade';
+  by: string;
+  at: number;
+  /** 升级：目标版本 */
+  to?: string | null;
+  /** 升级：不等在跑的派发结束 */
+  now?: boolean;
+}
+
+export interface HostOp {
+  at: number;
+  by: string;
+  text: string;
+}
+
+export interface HostToken {
+  id: number;
+  name: string;
+  /** 令牌开头几位 */
+  hint: string;
+  lastUsedAt: number | null;
+  /** 同一个令牌还被这些在线的机器使用（这时不能随移除机器一起吊销） */
+  shared?: string[];
 }
 
 export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'canceled' | 'lost' | 'unclaimed';

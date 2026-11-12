@@ -41,6 +41,10 @@
 //!   先结束这些文件里还对得上的进程组，再清 run 目录。第一次上报之前不碰 run 目录：同名的 host 还在跑时，
 //!   第二个只报 HOST_NAME_TAKEN，不删前一个的派发配置。
 //! - 输出（标准输出）写不进去时（管道读端已关、终端已关）照常运行和退出，不因为打印失败中断退出流程。
+//! - 远程管理（PRD §9.1）：任务里带着界面上发来的请求。「重新检查」重新找启动环境、agent、skill 后马上上报；「重启」「升级」等本机
+//!   没有在跑的 agent 后先回报「开始处理」，再让机器离线、重新启动自己（macOS、Linux 原地 exec；Windows 桌面端退出码 75）。
+//!   升级时命令行运行的执行 `board update` 后用新版本重启，桌面端运行的退出码 76 交给桌面端升级；失败的原因下一次上报带给服务端。
+//! - 白板的环境检查（PRD §9.1）：按服务端发来的命令在白板目录里跑，见 [`ReadyRun`]。
 
 use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
@@ -48,7 +52,7 @@ use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
 use crate::logfmt::{self, Stream};
 use crate::{Output, Paint};
-use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
+use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
 use board_core::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -167,6 +171,28 @@ const LOG_CHUNK: u64 = 4 * 1024 * 1024;
 static QUIT: AtomicBool = AtomicBool::new(false);
 /// （桌面端）标准输入里来了一行 `reload`：配置文件的 `[host]` 改了，或者装好了 board-skills，重新读、重新检查
 static RELOAD: AtomicBool = AtomicBool::new(false);
+
+/// 桌面端运行时，board host 要桌面端重启它（Windows 上不能原地换进程）
+#[cfg_attr(unix, allow(dead_code))]
+pub const EXIT_RESTART: i32 = 75;
+/// 桌面端运行时，board host 要桌面端升级（下载、验签、安装新版本后重启；失败时用 `BOARD_HOST_ASK_ERROR` 带上原因重新启动它）
+pub const EXIT_UPGRADE: i32 = 76;
+/// `board update` 最长跑多久
+const UPDATE_LIMIT: Duration = Duration::from_secs(600);
+
+/// 远程管理请求处理完、退出主循环之后要做的事
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// 用同样的参数重新启动自己（重新读配置、重新检查）
+    Restart,
+    /// 桌面端运行：退出，交给桌面端升级
+    DesktopUpgrade,
+}
+
+/// 由桌面端在后台运行（`BOARD_HOST_STDIN=1`）
+fn under_desktop() -> bool {
+    std::env::var("BOARD_HOST_STDIN").is_ok_and(|v| v.trim() == "1")
+}
 
 /// 上报间隔：`BOARD_HOST_INTERVAL`（秒，只给测试用），默认 10 秒
 fn interval() -> Duration {
@@ -617,6 +643,14 @@ struct Host<'a> {
     readies: Vec<ReadyRun>,
     /// 下一次取到任务时把所有白板的环境检查重跑一遍（启动、重新读配置之后）
     ready_all: bool,
+    /// 已经开始处理（或做完）的远程管理请求：上报里带上它，服务端据此清掉请求
+    asked: Option<i64>,
+    /// 升级（重启）没成的原因：下一次上报带上，成功上报后清掉。桌面端升级失败后用 `BOARD_HOST_ASK_ERROR` 传进来
+    ask_error: Option<String>,
+    /// 正在跑的 `board update`（命令行运行时的升级）
+    updating: Option<(Child, Instant, PathBuf)>,
+    /// 退出主循环之后要做的事（重启、交给桌面端升级）
+    after: Option<After>,
     pidfile: PathBuf,
     logs: PathBuf,
     /// board 自己的路径（BOARD_EXE）
@@ -755,6 +789,10 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         clones: vec![],
         readies: vec![],
         ready_all: true,
+        asked: None,
+        ask_error: std::env::var("BOARD_HOST_ASK_ERROR").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        updating: None,
+        after: None,
         pidfile,
         logs: hd.join("logs"),
         runs: vec![],
@@ -774,6 +812,9 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let w = h.beat(false)?;
     h.set_work(w);
     h.resume = None;
+    if let Some(e) = h.ask_error.take() {
+        h.say(format!("{} {e}", p.yellow("!")));
+    }
     // 上一次（被 kill -9、崩溃）留下的 agent 和派发配置文件
     h.kill_orphans();
     let _ = std::fs::remove_dir_all(&h.run);
@@ -786,7 +827,38 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         h.say(format!("{} {}  {}", p.red("✗"), p.red_bold(e.code.as_str()), e.message));
     }
     h.shutdown(out.is_ok());
+    match h.after {
+        Some(After::Restart) => return restart_self(&h.exe, p),
+        Some(After::DesktopUpgrade) => std::process::exit(EXIT_UPGRADE),
+        None => {}
+    }
     out
+}
+
+/// 用同样的参数重新启动自己（远程「重启 board host」、命令行升级装好新版本之后）。
+/// macOS、Linux 原地换进程（进程号、桌面端接的标准输入都不变）；Windows 上桌面端运行时退出码 EXIT_RESTART 交给桌面端重启，
+/// 命令行运行时启动一个新的、自己退出
+fn restart_self(exe: &Path, p: &Paint) -> Result<()> {
+    let _ = writeln!(std::io::stdout(), "{} {}", p.dim(&clock()), "重新启动 board host…");
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = Command::new(exe).args(&args).env_remove("BOARD_HOST_ASK_ERROR").exec();
+        Err(BoardError::usage(format!("重新启动 board host 失败：{e}")))
+    }
+    #[cfg(not(unix))]
+    {
+        if under_desktop() {
+            std::process::exit(EXIT_RESTART);
+        }
+        Command::new(exe)
+            .args(&args)
+            .env_remove("BOARD_HOST_ASK_ERROR")
+            .spawn()
+            .map_err(|e| BoardError::usage(format!("重新启动 board host 失败：{e}")))?;
+        std::process::exit(0);
+    }
 }
 
 /// 配置文件里的机器名；没写时用本机主机名（转成合法的机器名）
@@ -1008,7 +1080,140 @@ impl Host<'_> {
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
             running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
             done,
+            asked: self.asked,
+            ask_error: self.ask_error.clone(),
         }
+    }
+
+    /// 处理界面上发来的远程管理请求（PRD §9.1「远程管理」）。返回 (要马上上报, 要退出主循环)
+    /// - 重新检查：重新查找启动环境、本机 agent、board-skills（环境检查也重跑），马上上报
+    /// - 重启、升级：等本机没有在跑的 agent（服务端已经按「人停止」通知要结束的那些），先上报「开始处理」，
+    ///   再重启自己；升级时桌面端运行的交给桌面端，命令行运行的执行 `board update`，装好后用新版本重启
+    fn handle_ask(&mut self) -> (bool, bool) {
+        let Some(ask) = self.work.as_ref().and_then(|w| w.host.ask.clone()) else { return (false, false) };
+        if self.asked == Some(ask.id) || self.updating.is_some() {
+            return (false, false);
+        }
+        match ask.kind.as_str() {
+            "recheck" => {
+                self.recheck();
+                self.asked = Some(ask.id);
+                (true, false)
+            }
+            "restart" | "upgrade" => {
+                if !self.runs.is_empty() || !self.ended.is_empty() {
+                    return (false, false);
+                }
+                // 先让服务端知道已经开始处理（清掉请求），免得重启后的新进程又处理一遍
+                self.asked = Some(ask.id);
+                match self.beat(false) {
+                    Ok(w) => self.set_work(w),
+                    Err(_) => {
+                        self.asked = None;
+                        return (false, false);
+                    }
+                }
+                self.ask_started(&ask)
+            }
+            _ => (false, false),
+        }
+    }
+
+    fn ask_started(&mut self, ask: &HostAsk) -> (bool, bool) {
+        let by = &ask.by;
+        if ask.kind == "restart" {
+            self.say(format!("{} {by} 请求重启 board host", self.p.yellow("↻")));
+            self.after = Some(After::Restart);
+            return (false, true);
+        }
+        let to = ask.to.clone().unwrap_or_default();
+        self.say(format!("{} {by} 请求升级到 {to}", self.p.yellow("↑")));
+        if under_desktop() {
+            self.after = Some(After::DesktopUpgrade);
+            return (false, true);
+        }
+        let _ = std::fs::create_dir_all(&self.logs);
+        let log = self.logs.join("update.log");
+        let started = std::fs::File::create(&log).and_then(|out| out.try_clone().map(|err| (out, err))).and_then(|(out, err)| {
+            let mut c = Command::new(&self.exe);
+            c.arg("update").stdin(Stdio::null()).stdout(out).stderr(err).env("NO_COLOR", "1");
+            envs::detach(&mut c);
+            c.spawn()
+        });
+        match started {
+            Ok(child) => {
+                self.updating = Some((child, Instant::now(), log));
+                (false, false)
+            }
+            Err(e) => {
+                self.update_failed(format!("没法运行 board update：{e}"));
+                (true, false)
+            }
+        }
+    }
+
+    /// 命令行运行时的升级（`board update`）跑完了没有：成功就用新版本重启（返回要退出主循环），失败记下原因马上上报
+    fn poll_update(&mut self) -> (bool, bool) {
+        let Some((child, begun, log)) = self.updating.as_mut() else { return (false, false) };
+        let status = child.try_wait().ok().flatten();
+        if status.is_none() && begun.elapsed() < UPDATE_LIMIT {
+            return (false, false);
+        }
+        let log = log.clone();
+        let tail = tail_lines(&log, 5, None);
+        let (child, ..) = self.updating.take().expect("上面取过");
+        let mut child = child;
+        match status {
+            Some(s) if s.success() => {
+                self.say(format!("{} 升级好了：{}", self.p.green("✓"), tail.last().cloned().unwrap_or_default()));
+                self.after = Some(After::Restart);
+                (false, true)
+            }
+            Some(_) => {
+                let text = tail.join(" ");
+                let why = if text.contains("未知命令") {
+                    "这个版本的 board 还不能自己升级（没有 board update）：到这台机器上手动升级一次".to_string()
+                } else {
+                    tail.last().cloned().unwrap_or_else(|| "board update 失败".into())
+                };
+                self.update_failed(why);
+                (true, false)
+            }
+            None => {
+                kill_tree(child.id(), true);
+                let _ = child.kill();
+                let _ = child.wait();
+                self.update_failed(format!("board update 超过 {} 分钟没跑完，已结束", UPDATE_LIMIT.as_secs() / 60));
+                (true, false)
+            }
+        }
+    }
+
+    fn update_failed(&mut self, why: String) {
+        self.say(format!("{} 升级失败：{why}", self.p.red("✗")));
+        self.ask_error = Some(format!("升级失败：{why}"));
+    }
+
+    /// 重新检查（远程请求）：重新找启动环境、本机 agent（找不找得到、版本号）、board-skills，环境检查也重跑。
+    /// 配置文件读不了、agent 配置不对时保留原来的 agent
+    fn recheck(&mut self) {
+        self.envs = envs::discover();
+        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.envs)) {
+            Ok(a) => self.agents = a,
+            Err(e) => self.say(format!("{} 重新检查 agent 没成：{}（接着用原来的）", self.p.yellow("!"), e.message)),
+        }
+        for a in &mut self.agents {
+            a.check_skills(&self.envs, &self.dirs);
+        }
+        self.ready_all = true;
+        self.plan_readies();
+        let found: Vec<String> = self.agents.iter().filter(|a| a.report().found).map(|a| a.id.clone()).collect();
+        self.say(format!(
+            "{} 重新检查完了：启动环境 {} 个，找到 agent {}",
+            self.p.green("✓"),
+            self.envs.len(),
+            if found.is_empty() { "（没有）".to_string() } else { found.join("、") }
+        ));
     }
 
     /// 每块白板：配置里写的路径、是否 --dir 固定、目录状态、git 的 origin / 分支、克隆进度
@@ -1468,6 +1673,7 @@ impl Host<'_> {
                         self.connected();
                         self.set_work(w);
                         self.last_err.clear();
+                        self.ask_error = None;
                     }
                     Err(e) => self.trouble(e, &mut next_beat)?,
                 }
@@ -1487,6 +1693,15 @@ impl Host<'_> {
             }
             if self.reap() {
                 fetch = true;
+            }
+            // 远程管理：重新检查、重启、升级
+            let (soon, quit) = self.handle_ask();
+            let (soon2, quit2) = self.poll_update();
+            if quit || quit2 {
+                return Ok(());
+            }
+            if soon || soon2 {
+                next_beat = Instant::now();
             }
             self.enforce();
             if self.fill()? {
@@ -1737,7 +1952,9 @@ impl Host<'_> {
     /// 有空位、没有暂停时：按创建先后开始排队的派发；正在一轮领取时向服务端要下一张。返回有没有变化
     fn fill(&mut self) -> Result<bool> {
         let Some(w) = self.work.clone() else { return Ok(false) };
-        if self.hold || w.host.paused {
+        // 等重启、升级时不开始新的派发
+        let restarting = w.host.ask.as_ref().is_some_and(|a| a.kind == "restart" || a.kind == "upgrade") || self.updating.is_some();
+        if self.hold || w.host.paused || restarting {
             return Ok(false);
         }
         let max = w.host.max.max(1) as usize;

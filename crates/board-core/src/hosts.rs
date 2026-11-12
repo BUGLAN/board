@@ -60,8 +60,23 @@ CREATE TABLE IF NOT EXISTS hosts (
   seq      INTEGER NOT NULL DEFAULT 0,-- （不再使用：派发名字不再用序号计数，保留列免得旧库迁移）
   first_at INTEGER NOT NULL,
   beat_at  INTEGER NOT NULL,
-  off_at   INTEGER                    -- 离线的时间；在线时为空
+  off_at   INTEGER,                   -- 离线的时间；在线时为空
+  ask      TEXT,                      -- 等 board host 处理的请求（JSON：重新检查 / 重启 / 升级，见 HostAsk）；没有时为空
+  ask_seq  INTEGER NOT NULL DEFAULT 0,-- 请求的序号（board host 处理完带着它回报）
+  drain_at INTEGER,                   -- 排空开始的时间（暂停接单，等在跑的派发结束）；不在排空时为空
+  up_pause INTEGER NOT NULL DEFAULT 0,-- 1 = 为升级暂停了接单：升级完成或失败后恢复
+  rechecked_at INTEGER                -- 最近一次「重新检查」做完的时间
 );
+
+-- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
+CREATE TABLE IF NOT EXISTS host_ops (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  host_id INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  by_name TEXT NOT NULL,
+  text    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS host_ops_host ON host_ops (host_id, id);
 
 -- 派发。记录一直保留（机器被移除后显示为「已移除的机器」）；白板删除时一起删除
 CREATE TABLE IF NOT EXISTS dispatches (
@@ -111,6 +126,11 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "dirs_at", "INTEGER"),
         ("hosts", "dirs_by", "TEXT"),
         ("dispatches", "session", "INTEGER"),
+        ("hosts", "ask", "TEXT"),
+        ("hosts", "ask_seq", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "drain_at", "INTEGER"),
+        ("hosts", "up_pause", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "rechecked_at", "INTEGER"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -623,10 +643,79 @@ pub struct HostInfo {
     pub first_at: i64,
     pub beat_at: i64,
     pub off_at: Option<i64>,
+    /// 等 board host 处理的请求（重新检查、重启、升级）；旧版服务端没有这一项
+    #[serde(default)]
+    pub ask: Option<HostAsk>,
+    /// 正在排空：暂停接单，等在跑的派发结束（都结束了就是「已排空」）
+    #[serde(default)]
+    pub drain: bool,
+    /// 最近一次「重新检查」做完的时间
+    #[serde(default)]
+    pub rechecked_at: Option<i64>,
+    /// 最近的操作记录（新的在前）
+    #[serde(default)]
+    pub ops: Vec<HostOp>,
+    /// 这台机器最近一次上报用的令牌；令牌已经吊销、还没上报过时为空
+    #[serde(default)]
+    pub token: Option<HostToken>,
 }
 
 fn default_per_session() -> i64 {
     4
+}
+
+/// 界面上对一台机器发的、等 board host 处理的请求（远程管理，PRD §9.1「远程管理」）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAsk {
+    /// 序号：board host 处理完带着它回报（`HostReport.asked`）
+    pub id: i64,
+    /// recheck 重新检查 | restart 重启 board host | upgrade 升级
+    pub kind: String,
+    /// 谁请求的
+    pub by: String,
+    pub at: i64,
+    /// 升级：目标版本（服务端的版本）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// 升级：不等在跑的派发结束（它们已经按「人停止」结束）
+    #[serde(default)]
+    pub now: bool,
+}
+
+/// 机器的一条操作记录（谁、什么时间、做了什么）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostOp {
+    pub at: i64,
+    pub by: String,
+    pub text: String,
+}
+
+/// 机器最近一次上报用的访问令牌
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostToken {
+    pub id: i64,
+    pub name: String,
+    /// 令牌开头几位
+    pub hint: String,
+    pub last_used_at: Option<i64>,
+    /// 同一个令牌还被这些在线的机器使用（这时移除机器不能顺带吊销它）
+    #[serde(default)]
+    pub shared: Vec<String>,
+}
+
+/// 远程管理的请求种类
+pub const ASK_KINDS: [&str; 5] = ["recheck", "restart", "upgrade", "drain", "cancel"];
+/// 机器详情「最近」里带几条操作记录
+pub const OPS_KEEP: i64 = 30;
+
+/// 版本号 a 比 b 旧（x.y.z 逐段按数字比；认不出的段当 0）
+pub fn version_lt(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> { v.trim().trim_start_matches('v').split(['.', '-', '+']).take(3).map(|x| x.parse().unwrap_or(0)).collect() };
+    let (mut x, mut y) = (parts(a), parts(b));
+    x.resize(3, 0);
+    y.resize(3, 0);
+    x < y
 }
 
 /// board host 每 10 秒的上报（`POST /api/hosts/beat`）
@@ -658,6 +747,12 @@ pub struct HostReport {
     /// board host 退出：机器马上离线
     #[serde(default, rename = "final")]
     pub done: bool,
+    /// 处理完（或开始处理）的请求序号（`HostAsk.id`）：服务端收到后清掉这个请求
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<i64>,
+    /// 升级（或重启）没成：原因，记进操作记录；为升级暂停的接单随之恢复
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_error: Option<String>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -819,13 +914,19 @@ struct HostRow {
     first_at: i64,
     beat_at: i64,
     off_at: Option<i64>,
+    ask: Option<HostAsk>,
+    ask_seq: i64,
+    drain_at: Option<i64>,
+    up_pause: bool,
+    rechecked_at: Option<i64>,
+    token: Option<i64>,
     agents_raw: String,
     envs_raw: String,
     dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -859,6 +960,12 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         first_at: r.get(14)?,
         beat_at: r.get(15)?,
         off_at: r.get(16)?,
+        ask: r.get::<_, Option<String>>(25)?.and_then(|j| serde_json::from_str(&j).ok()),
+        ask_seq: r.get(26)?,
+        drain_at: r.get(27)?,
+        up_pause: r.get::<_, i64>(28)? != 0,
+        rechecked_at: r.get(29)?,
+        token: r.get(30)?,
         agents_raw,
         envs_raw,
         dirs_raw,
@@ -963,7 +1070,16 @@ impl HostRow {
             first_at: self.first_at,
             beat_at: self.beat_at,
             off_at: self.off_at,
+            ask: self.ask.clone(),
+            drain: self.drain_at.is_some(),
+            rechecked_at: self.rechecked_at,
+            ops: vec![],
+            token: None,
         }
+    }
+    /// 正在等重启或升级：board host 不再开始新的派发
+    fn restarting(&self) -> bool {
+        self.ask.as_ref().is_some_and(|a| a.kind == "restart" || a.kind == "upgrade")
     }
 }
 
@@ -1106,6 +1222,8 @@ impl<'a> R<'a> {
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
     fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
         let mut info = h.info(now);
+        info.ops = self.host_ops(h.id)?;
+        info.token = self.host_token(h, now)?;
         // 每块白板的环境检查命令（按这台机器的系统选好）：board host 照着跑，界面照着判断结果算不算数
         for d in info.dirs.iter_mut() {
             d.check = match self.resolve(&d.board) {
@@ -1134,6 +1252,30 @@ impl<'a> R<'a> {
             }
         }
         Ok(info)
+    }
+
+    /// 机器最近的操作记录（新的在前）
+    fn host_ops(&self, host_id: i64) -> Result<Vec<HostOp>> {
+        let mut st = self.conn.prepare("SELECT at, by_name, text FROM host_ops WHERE host_id = ?1 ORDER BY id DESC LIMIT ?2")?;
+        let rows = st.query_map(params![host_id, OPS_KEEP], |r| Ok(HostOp { at: r.get(0)?, by: r.get(1)?, text: r.get(2)? }))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 机器用的令牌（令牌表在服务端那一层建；没有这张表、令牌已经吊销时为空）
+    fn host_token(&self, h: &HostRow, now: i64) -> Result<Option<HostToken>> {
+        let Some(id) = h.token else { return Ok(None) };
+        let has: bool = self.conn.query_row("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'auth_tokens'", [], |r| r.get(0))?;
+        if !has {
+            return Ok(None);
+        }
+        let row: Option<(String, String, Option<i64>)> = self
+            .conn
+            .query_row("SELECT name, hint, last_used_at FROM auth_tokens WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        let Some((name, hint, last_used_at)) = row else { return Ok(None) };
+        let mut st = self.conn.prepare("SELECT name FROM hosts WHERE token = ?1 AND id != ?2 AND off_at IS NULL AND beat_at + ?4 > ?3 ORDER BY name")?;
+        let shared = st.query_map(params![id, h.id, now, HOST_GAP_MS], |r| r.get(0))?.collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(Some(HostToken { id, name, hint, last_used_at, shared }))
     }
 
     /// 白板的环境检查命令
@@ -1657,6 +1799,7 @@ impl<'a> W<'a> {
                 if h.instance != rep.instance && h.round_at.is_some() {
                     self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
                 }
+                self.host_acks(&h, rep)?;
                 if differs {
                     self.touch_hosts();
                 }
@@ -1692,6 +1835,145 @@ impl<'a> W<'a> {
             }
         }
         self.read().host_work(&name, now)
+    }
+
+    /// board host 对远程管理请求的回报（在上报里）：
+    /// - `asked`：开始处理（重启、升级）或做完（重新检查）了这个请求，清掉它，记一条操作
+    /// - `ask_error`：升级（或重启）没成，记下原因；为升级暂停的接单恢复
+    /// - 为升级暂停了接单、请求已经交给它、换了一个 board host 进程上来：升级做完了（版本变了）或没生效，恢复接单
+    fn host_acks(&mut self, h: &HostRow, rep: &HostReport) -> Result<()> {
+        let sys = "board host";
+        if let (Some(id), Some(ask)) = (rep.asked, &h.ask) {
+            if ask.id == id {
+                self.tx.execute("UPDATE hosts SET ask = NULL WHERE id = ?1", [h.id])?;
+                match ask.kind.as_str() {
+                    "recheck" => {
+                        self.tx.execute("UPDATE hosts SET rechecked_at = ?2 WHERE id = ?1", params![h.id, self.now])?;
+                        self.host_op(h.id, sys, "重新检查完了：启动环境、本机 agent、board-skills 已重新上报")?;
+                    }
+                    "restart" => self.host_op(h.id, sys, "正在重启 board host")?,
+                    _ => self.host_op(h.id, sys, &format!("开始升级到 {}", ask.to.as_deref().unwrap_or("服务端的版本")))?,
+                }
+                self.touch_hosts();
+            }
+        }
+        let restore = |w: &mut Self| -> Result<()> {
+            if h.up_pause {
+                w.tx.execute("UPDATE hosts SET paused = 0, up_pause = 0 WHERE id = ?1", [h.id])?;
+            }
+            Ok(())
+        };
+        if let Some(err) = rep.ask_error.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            let text: String = err.chars().take(500).collect();
+            self.host_op(h.id, sys, &format!("{text}{}", if h.up_pause { "；已恢复接单" } else { "" }))?;
+            restore(self)?;
+            self.touch_hosts();
+        } else if h.up_pause && h.ask.is_none() && h.instance != rep.instance {
+            if rep.version != h.version {
+                self.host_op(h.id, sys, &format!("升级到 {}，重新上线；已恢复接单", rep.version))?;
+            } else {
+                self.host_op(h.id, sys, &format!("升级没有生效：重新上线后还是 {}；已恢复接单", rep.version))?;
+            }
+            restore(self)?;
+            self.touch_hosts();
+        }
+        Ok(())
+    }
+
+    /// 记一条机器的操作（最近的 OPS_KEEP 条以外的删掉）
+    fn host_op(&mut self, host_id: i64, by: &str, text: &str) -> Result<()> {
+        self.tx.execute("INSERT INTO host_ops (host_id, at, by_name, text) VALUES (?1, ?2, ?3, ?4)", params![host_id, self.now, by, text])?;
+        self.tx.execute(
+            "DELETE FROM host_ops WHERE host_id = ?1 AND id NOT IN (SELECT id FROM host_ops WHERE host_id = ?1 ORDER BY id DESC LIMIT ?2)",
+            params![host_id, OPS_KEEP],
+        )?;
+        Ok(())
+    }
+
+    /// 远程管理（PRD §9.1「远程管理」，只能在登录后的界面上做）：
+    /// - `recheck` 重新检查：board host 重新查找启动环境、本机 agent、board-skills，立即上报；在跑的派发不受影响
+    /// - `restart` 重启 board host：在跑的派发按「人停止」结束，board host 重新启动（重新读配置、重新检查）
+    /// - `upgrade` 升级到服务端的版本：先暂停接单，等在跑的派发结束（`now` 时按「人停止」结束它们）再升级；
+    ///   升级完或失败后恢复接单。只在这台机器的版本比服务端旧时可以
+    /// - `drain` 排空：暂停接单，等在跑的派发结束（界面上显示「已排空」）；恢复接单时结束排空
+    /// - `cancel` 取消还没处理的请求（为升级暂停的接单恢复）
+    ///
+    /// 重新检查、重启、升级要机器在线；同一时间只有一个请求，新的换掉旧的
+    pub fn host_ask(&mut self, name: &str, kind: &str, now_flag: bool, by: &str) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        if !ASK_KINDS.contains(&kind) {
+            return Err(BoardError::usage(format!("不认识的操作「{kind}」：只能是 {}", ASK_KINDS.join("、"))));
+        }
+        let by = if by.trim().is_empty() { "人" } else { by.trim() };
+        let running: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running' ORDER BY id", [&h.name], |r| r.get(0))?;
+        let what = match kind {
+            "recheck" => "重新检查",
+            "restart" => "重启 board host",
+            "upgrade" => "升级",
+            _ => "",
+        };
+        if !what.is_empty() && !h.online(self.now) {
+            return Err(BoardError::usage(format!("机器「{name}」离线：等它上线再{what}")));
+        }
+        let server = env!("CARGO_PKG_VERSION");
+        let mut ask = HostAsk { id: h.ask_seq + 1, kind: kind.into(), by: by.into(), at: self.now, to: None, now: false };
+        let text = match kind {
+            "recheck" => "请求重新检查".to_string(),
+            "restart" => {
+                for id in &running {
+                    self.request_stop(*id, &Actor::human(), by)?;
+                }
+                format!("请求重启 board host{}", if running.is_empty() { String::new() } else { format!("：先结束 {} 个在跑的派发", running.len()) })
+            }
+            "upgrade" => {
+                if !version_lt(&h.version, server) {
+                    return Err(BoardError::usage(format!("机器「{name}」已经是 {}，不比服务端（{server}）旧，不用升级", h.version)));
+                }
+                ask.to = Some(server.into());
+                ask.now = now_flag;
+                if !h.paused {
+                    self.tx.execute("UPDATE hosts SET paused = 1, up_pause = 1, round_at = NULL WHERE id = ?1", [h.id])?;
+                }
+                if now_flag {
+                    for id in &running {
+                        self.request_stop(*id, &Actor::human(), by)?;
+                    }
+                    format!("请求立即升级到 {server}{}", if running.is_empty() { String::new() } else { format!("：结束 {} 个在跑的派发", running.len()) })
+                } else if running.is_empty() {
+                    format!("请求升级到 {server}：暂停接单")
+                } else {
+                    format!("请求升级到 {server}：暂停接单，等 {} 个派发结束后升级", running.len())
+                }
+            }
+            "drain" => {
+                self.tx.execute("UPDATE hosts SET paused = 1, drain_at = COALESCE(drain_at, ?2), round_at = NULL WHERE id = ?1", params![h.id, self.now])?;
+                self.host_op(h.id, by, &format!("排空：暂停接单{}", if running.is_empty() { "，没有在跑的派发".to_string() } else { format!("，等 {} 个在跑的派发结束", running.len()) }))?;
+                self.touch_hosts();
+                return self.read().host(name, self.now);
+            }
+            _ => {
+                let Some(old) = &h.ask else { return self.read().host(name, self.now) };
+                self.tx.execute("UPDATE hosts SET ask = NULL WHERE id = ?1", [h.id])?;
+                if h.up_pause {
+                    self.tx.execute("UPDATE hosts SET paused = 0, up_pause = 0 WHERE id = ?1", [h.id])?;
+                }
+                let w = match old.kind.as_str() {
+                    "recheck" => "重新检查",
+                    "restart" => "重启",
+                    _ => "升级",
+                };
+                self.host_op(h.id, by, &format!("取消了{w}请求{}", if h.up_pause { "，恢复接单" } else { "" }))?;
+                self.touch_hosts();
+                return self.read().host(name, self.now);
+            }
+        };
+        self.tx.execute(
+            "UPDATE hosts SET ask = ?2, ask_seq = ?3 WHERE id = ?1",
+            params![h.id, serde_json::to_string(&ask).unwrap_or_default(), ask.id],
+        )?;
+        self.host_op(h.id, by, &text)?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
     }
 
     /// 替换这台机器的「白板与目录」，服务端成为新设置的主版本。`--dir` 固定的白板要原样保留，
@@ -1856,6 +2138,13 @@ impl<'a> W<'a> {
         }
         if let Some(paused) = p.paused {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;
+            // 恢复接单：排空结束；为升级暂停的也算人恢复了，升级完不再替人改
+            if !paused {
+                if h.drain_at.is_some() {
+                    self.host_op(h.id, by, "恢复接单，排空结束")?;
+                }
+                self.tx.execute("UPDATE hosts SET drain_at = NULL, up_pause = 0 WHERE id = ?1", [h.id])?;
+            }
             // 暂停接单时这一轮就结束；恢复接单后不补（PRD §9.1）
             if paused {
                 self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
@@ -1913,7 +2202,25 @@ impl<'a> W<'a> {
 
     /// 移除机器（任务下发需求 §九）：取消它所有排队中的派发，停止正在跑的派发，删除机器设置；派发记录保留
     pub fn host_remove(&mut self, name: &str, by: &Actor, who: &str) -> Result<()> {
+        self.host_remove_revoke(name, by, who, false).map(|_| ())
+    }
+
+    /// 同 [`Self::host_remove`]；revoke 时同时吊销它最近一次上报用的令牌（只在别的在线机器都不用这个令牌时），
+    /// 返回吊销的令牌 ID
+    pub fn host_remove_revoke(&mut self, name: &str, by: &Actor, who: &str, revoke: bool) -> Result<Option<i64>> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let mut revoked = None;
+        if revoke {
+            let t = self.read().host_token(&h, self.now)?;
+            let Some(t) = t else {
+                return Err(BoardError::usage(format!("机器「{name}」没有能吊销的令牌（还没上报过，或令牌已经吊销）")));
+            };
+            if !t.shared.is_empty() {
+                return Err(BoardError::usage(format!("令牌「{}」还在被在线的机器 {} 使用，不能一起吊销", t.name, t.shared.join("、"))));
+            }
+            self.tx.execute("DELETE FROM auth_tokens WHERE id = ?1", [t.id])?;
+            revoked = Some(t.id);
+        }
         let queued: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host_id = ?1 AND state = 'queued'", [h.id], |r| r.get(0))?;
         for id in queued {
             let d = self.drow(id)?;
@@ -1926,8 +2233,9 @@ impl<'a> W<'a> {
             self.request_stop(id, by, who)?;
         }
         self.tx.execute("DELETE FROM hosts WHERE id = ?1", [h.id])?;
+        self.tx.execute("DELETE FROM host_ops WHERE host_id = ?1", [h.id])?;
         self.touch_hosts();
-        Ok(())
+        Ok(revoked)
     }
 
     /// 机器改名（桌面端「设置 → 本机」保存机器名时调用）：机器记录原地改名，id 不变，
@@ -2137,6 +2445,9 @@ impl<'a> W<'a> {
         if h.paused {
             return Err(BoardError::usage(format!("机器「{host}」暂停接单")));
         }
+        if h.restarting() {
+            return Err(BoardError::usage(format!("机器「{host}」正在等重启或升级，不开始新的派发")));
+        }
         if self.running_on(&h)? >= h.max {
             return Err(BoardError::usage(format!("机器「{host}」没有空位（同时跑 {}）", h.max)));
         }
@@ -2208,7 +2519,7 @@ impl<'a> W<'a> {
     /// 规则没命中的卡片、也没有可领取的卡片时这一轮结束，返回 None
     pub fn dispatch_pull(&mut self, host: &str, instance: &str, token: Option<i64>) -> Result<Option<Dispatch>> {
         let h = self.host_of(host, instance)?;
-        if h.round_at.is_none() || h.paused || self.running_on(&h)? >= h.max {
+        if h.round_at.is_none() || h.paused || h.restarting() || self.running_on(&h)? >= h.max {
             return Ok(None);
         }
         let Some(rules) = h.claim_rules() else {

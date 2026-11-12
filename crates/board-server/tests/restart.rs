@@ -22,6 +22,8 @@ fn report(running: Vec<i64>) -> HostReport {
         dirs_rev: 0,
         running,
         done: false,
+        asked: None,
+        ask_error: None,
     }
 }
 

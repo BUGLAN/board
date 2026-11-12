@@ -9,10 +9,12 @@
 //! - `POST /api/hosts/{名字}/rename {name}`：机器改名（桌面端「设置 → 本机」保存机器名时调用）
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
 //!
-//! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`、`GET /api/hosts/{名字}/recent`、`GET /api/dispatches/{ID}/log`。
+//! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
+//! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、`GET /api/hosts/{名字}/recent`、
+//! `GET /api/dispatches/{ID}/log`。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发）、`POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 #[cfg(feature = "test-hooks")]
 use axum::http::StatusCode;
@@ -230,12 +232,61 @@ pub(crate) async fn clone_dir(
     Ok(Json(out))
 }
 
-pub(crate) async fn remove(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>) -> ApiResult<Value> {
+#[derive(Deserialize, Default)]
+pub(crate) struct RemoveQuery {
+    /// 1：同时吊销这台机器用的令牌
+    #[serde(default)]
+    revoke: Option<String>,
+}
+
+pub(crate) async fn remove(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Query(q): Query<RemoveQuery>,
+) -> ApiResult<Value> {
+    let revoke = q.revoke.as_deref().is_some_and(|v| v == "1" || v == "true");
+    if revoke && matches!(caller, Caller::Agent { .. }) {
+        return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn)));
+    }
     let (actor, by) = who(&s, &caller, None).await?;
     let client = client_of(&h);
-    s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_remove(&name, &actor, &by))).await?;
+    let revoked = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_remove_revoke(&name, &actor, &by, revoke))).await?;
     s.poke();
-    Ok(Json(json!({ "ok": true })))
+    if revoked.is_some() {
+        // 用这个令牌打开的实时推送随之关闭
+        s.sessions_changed();
+    }
+    Ok(Json(json!({ "ok": true, "revoked": revoked })))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AskBody {
+    /// recheck | restart | upgrade | drain | cancel
+    kind: String,
+    /// 升级：不等在跑的派发结束
+    #[serde(default)]
+    now: bool,
+}
+
+/// 远程管理一台机器（重新检查、重启、升级、排空、取消请求）。只能在登录后的界面上做，访问令牌调用时 NOT_LOGGED_IN
+pub(crate) async fn ask(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<HostInfo> {
+    let b: AskBody = parse(v)?;
+    let client = client_of(&h);
+    let by = match caller {
+        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
+        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
+    };
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_ask(&name, &b.kind, b.now, &by))).await?;
+    s.poke();
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

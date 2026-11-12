@@ -671,3 +671,30 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   .hp-ready-list li { flex-wrap: wrap; }
   .hp-ready-list .btn { margin-left: 25px; }
 }
+
+/* ==========================================================================
+   机器详情「维护」（components/hosts/Manage.tsx）：重新检查、升级、重启、排空，请求的进展，令牌
+   ========================================================================== */
+.hp-manage-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.hp-ask {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-top: 10px; padding: 9px 12px; border-radius: var(--r-md);
+  font-size: 12.5px; line-height: 1.5; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
+}
+.hp-ask > span { flex: 1; min-width: 180px; }
+.hp-ask em { font-style: normal; color: var(--text-3); }
+.hp-ask.ok { color: color-mix(in oklab, var(--ok), var(--ink)); background: color-mix(in srgb, var(--ok) 10%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 30%, transparent); }
+.hp-ask.warn { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 10%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent); }
+.hp-ask > svg { width: 15px; height: 15px; flex: none; }
+.hp-ask-spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--text-3) 40%, transparent); border-top-color: var(--brand); animation: hp-spin .9s linear infinite; }
+@keyframes hp-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .hp-ask-spin { animation: none; } }
+.hp-token { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--text-3); }
+.hp-token-k { flex: none; }
+.hp-token-v { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.hp-token-v b { font-weight: 600; color: var(--text-2); }
+.hp-token-v code { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); }
+.hp-token-v em { font-style: normal; }
+/* 「最近」里的操作记录：没有链接，不像按钮 */
+.hp-op { cursor: default; }
+.hp-op:hover { background: transparent; }
+.hp-op > svg { flex: none; width: 15px; height: 15px; margin-top: 2px; color: var(--text-3); }

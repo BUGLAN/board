@@ -348,6 +348,8 @@ pub fn run() {
                 });
             }
             open_window(handle)?;
+            // board host 按远程「重启」「升级」退出时接手（见 host::watch）
+            host::watch(handle.clone());
             // 上次打开了「让这台电脑接任务」：连上了服务端就在后台运行 board host（还没连时等连接好再启动，见 server.rs）
             if host::enabled(handle) && board_url(handle).is_some() {
                 if let Err(e) = host::ensure_started(handle) {

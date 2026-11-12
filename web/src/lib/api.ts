@@ -209,7 +209,10 @@ export const api = {
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
   /** 请那台机器的 board host 把仓库克隆到这一行的目录 */
   cloneHostDir: (name: string, board: string, url: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/dirs/clone`, { board, url }),
-  removeHost: (name: string) => req('DELETE', `/api/hosts/${q(name)}`),
+  removeHost: (name: string, revoke = false) => req('DELETE', `/api/hosts/${q(name)}${revoke ? '?revoke=1' : ''}`),
+  /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、排空、取消请求 */
+  askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel', now = false) =>
+    req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
   /** 现在领一轮（效果与定时到点相同） */
   hostRound: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/round`, {}),
   /** 这台机器最近 50 个结束的派发 */

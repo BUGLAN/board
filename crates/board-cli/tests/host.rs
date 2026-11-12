@@ -604,3 +604,40 @@ fn ready_check_runs_in_board_dir_and_gates_dispatch() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("环境检查没通过：missing ok.txt") && out.contains("环境检查通过"), "{out}");
 }
+
+/// 远程管理（PRD §9.1）：界面上请求「重新检查」，board host 重新找 agent（新配的 agent 出现）；
+/// 「重启 board host」后原地换成新进程（进程号不变）、重新上线
+#[test]
+fn remote_recheck_and_restart() {
+    let rig = Rig::new();
+    let mut host = rig.host("mbp");
+    let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
+    wait_until("mbp 上线", Duration::from_secs(20), || online(&rig));
+    let ask = |kind: &str| {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_ask("mbp", kind, false, "octocat")).unwrap()
+    };
+    let has_agent = |rig: &Rig, id: &str| rig.workspace()["hosts"][0]["agents"].as_array().unwrap().iter().any(|a| a["id"] == id && a["found"] == true);
+    assert!(!has_agent(&rig, "newbie"));
+    // 在这台机器上配一个新的 agent，再从界面请求重新检查：10 秒内出现，带版本号
+    let conf = rig.s.home.join(".board").join("config.toml");
+    let mut text = std::fs::read_to_string(&conf).unwrap();
+    text += &format!("\n[agents.newbie]\nname = \"Newbie\"\ncmd = [\"{}\", \"{{prompt}}\"]\n", rig.fake.display());
+    std::fs::write(&conf, text).unwrap();
+    ask("recheck");
+    wait_until("新 agent 出现", Duration::from_secs(10), || has_agent(&rig, "newbie"));
+    let h = rig.workspace()["hosts"][0].clone();
+    assert!(h["ask"].is_null(), "{h}");
+    assert!(h["recheckedAt"].is_i64(), "{h}");
+    // 重启：先离线（final），再以新进程上线；进程号不变（原地换进程）
+    let pid = host.id();
+    ask("restart");
+    wait_until("重启时离线", Duration::from_secs(10), || !online(&rig));
+    wait_until("重启后上线", Duration::from_secs(20), || online(&rig));
+    assert!(host.try_wait().unwrap().is_none(), "还是同一个进程 {pid}");
+    let ops: Vec<String> = rig.workspace()["hosts"][0]["ops"].as_array().unwrap().iter().map(|o| o["text"].as_str().unwrap().to_string()).collect();
+    assert!(ops.iter().any(|t| t == "正在重启 board host"), "{ops:?}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("重新检查完了") && out.contains("请求重启 board host") && out.contains("重新启动 board host"), "{out}");
+}

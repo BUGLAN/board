@@ -486,3 +486,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .creator .cr-submit:hover { --btn-bg: color-mix(in srgb, var(--accent) 88%, #fff); }
 .cr-submit kbd { background: color-mix(in srgb, var(--brand-fg) 20%, transparent); color: var(--brand-fg); box-shadow: none; }
 .creator:not(.has-title) .cr-submit { opacity: .7; }
+
+/* 确认框里的勾选项（移除机器时「同时吊销它用的令牌」） */
+.dialog-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--text); cursor: pointer; }
+.dialog-check input { margin-top: 3px; accent-color: var(--brand); }
+.dialog-check em { display: block; margin-top: 2px; font-style: normal; font-size: 11.5px; color: var(--text-3); }
+.dialog-check.off { color: var(--text-3); cursor: not-allowed; }

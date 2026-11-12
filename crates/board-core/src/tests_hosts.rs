@@ -34,6 +34,8 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         dirs_rev: 0,
         running,
         done: false,
+        asked: None,
+        ask_error: None,
     }
 }
 
@@ -2286,4 +2288,155 @@ fn old_database_boards_get_no_ready_check() {
     let ws = s.read(|r| r.workspace(T0)).unwrap();
     assert!(ws.projects[0].boards[0].ready_check.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/* ------------------------------ 远程管理（PRD §9.1） ------------------------------ */
+
+fn ask(s: &mut Store, at: i64, kind: &str, now: bool) -> Result<HostInfo> {
+    s.write(at, Origin::ui(None), |w| w.host_ask("mbp", kind, now, "octocat"))
+}
+
+fn acked(s: &mut Store, at: i64, instance: &str, id: i64) -> HostWork {
+    let mut r = report("mbp", instance, vec![]);
+    r.asked = Some(id);
+    beat(s, at, &r).unwrap()
+}
+
+#[test]
+fn recheck_is_handed_to_the_host_and_acked() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let h = ask(&mut s, T0 + S, "recheck", false).unwrap();
+    let a = h.ask.clone().unwrap();
+    assert_eq!((a.kind.as_str(), a.by.as_str()), ("recheck", "octocat"));
+    assert_eq!(h.ops[0].text, "请求重新检查");
+    assert_eq!(h.ops[0].by, "octocat");
+    // 任务里带着请求，board host 照着做
+    assert_eq!(beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![])).unwrap().host.ask.unwrap().id, a.id);
+    // 做完带着序号回报：请求清掉，记下时间和一条操作
+    let w = acked(&mut s, T0 + 3 * S, "i1", a.id);
+    assert!(w.host.ask.is_none());
+    assert_eq!(w.host.rechecked_at, Some(T0 + 3 * S));
+    assert!(w.host.ops[0].text.starts_with("重新检查完了"), "{:?}", w.host.ops);
+    // 序号对不上（旧请求）不清新的
+    let b = ask(&mut s, T0 + 4 * S, "recheck", false).unwrap().ask.unwrap();
+    assert_eq!(b.id, a.id + 1);
+    assert!(acked(&mut s, T0 + 5 * S, "i1", a.id).host.ask.is_some());
+    // 离线的机器不能请求；不认识的操作拒绝
+    s.sweep(T0 + 60 * S).unwrap();
+    assert_eq!(ask(&mut s, T0 + 60 * S, "recheck", false).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(ask(&mut s, T0 + 60 * S, "reboot", false).unwrap_err().code, ErrorCode::Usage);
+}
+
+#[test]
+fn restart_stops_running_dispatches_and_blocks_new_ones() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let b = new_card(&mut s, T0, "B");
+    let d1 = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0, d1.id).unwrap();
+    let d2 = dispatch(&mut s, T0, b, "mbp", None).unwrap();
+    let h = ask(&mut s, T0 + S, "restart", false).unwrap();
+    assert!(h.ops[0].text.contains("先结束 1 个在跑的派发"), "{:?}", h.ops);
+    assert_eq!(get(&s, d1.id).stop_by.as_deref(), Some("octocat"), "在跑的按「人停止」结束");
+    // 等重启时不开始新的派发
+    end(&mut s, T0 + 2 * S, d1.id, Some(143), &[]);
+    assert_eq!(begin(&mut s, T0 + 2 * S, d2.id).unwrap_err().code, ErrorCode::Usage);
+    // board host 开始重启（回报序号），之后照常
+    let w = acked(&mut s, T0 + 3 * S, "i1", h.ask.unwrap().id);
+    assert_eq!(w.host.ops[0].text, "正在重启 board host");
+    begin(&mut s, T0 + 3 * S, d2.id).unwrap();
+}
+
+#[test]
+fn upgrade_pauses_until_done_or_failed() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let h = ask(&mut s, T0 + S, "upgrade", false).unwrap();
+    let a = h.ask.clone().unwrap();
+    assert_eq!(a.to.as_deref(), Some(env!("CARGO_PKG_VERSION")), "升级到服务端的版本");
+    assert!(h.paused, "先暂停接单");
+    // board host 开始升级，再以新版本上线：恢复接单，记一条
+    acked(&mut s, T0 + 2 * S, "i1", a.id);
+    // 旧进程退出前发 final（机器离线），新版本的进程再上来
+    beat(&mut s, T0 + 2 * S, &HostReport { done: true, ..report("mbp", "i1", vec![]) }).unwrap();
+    let mut up = report("mbp", "i2", vec![]);
+    up.version = env!("CARGO_PKG_VERSION").into();
+    let w = beat(&mut s, T0 + 3 * S, &up).unwrap();
+    assert!(!w.host.paused);
+    assert_eq!(w.host.ops[0].text, format!("升级到 {}，重新上线；已恢复接单", env!("CARGO_PKG_VERSION")));
+    // 已经是服务端的版本：不用升级
+    assert_eq!(ask(&mut s, T0 + 4 * S, "upgrade", false).unwrap_err().code, ErrorCode::Usage);
+
+    // 失败：回报原因，恢复接单
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = ask(&mut s, T0 + S, "upgrade", true).unwrap().ask.unwrap();
+    assert!(a.now);
+    acked(&mut s, T0 + 2 * S, "i1", a.id);
+    let mut r = report("mbp", "i1", vec![]);
+    r.ask_error = Some("升级失败：下载失败".into());
+    let w = beat(&mut s, T0 + 3 * S, &r).unwrap();
+    assert!(!w.host.paused);
+    assert_eq!(w.host.ops[0].text, "升级失败：下载失败；已恢复接单");
+
+    // 本来就暂停接单的机器：升级完不替人恢复；取消请求也不恢复
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
+    ask(&mut s, T0 + S, "upgrade", false).unwrap();
+    let h = ask(&mut s, T0 + 2 * S, "cancel", false).unwrap();
+    assert!(h.ask.is_none() && h.paused);
+    assert_eq!(h.ops[0].text, "取消了升级请求");
+}
+
+#[test]
+fn drain_pauses_and_resuming_ends_it() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let h = ask(&mut s, T0 + S, "drain", false).unwrap();
+    assert!(h.paused && h.drain);
+    assert!(h.ops[0].text.starts_with("排空：暂停接单"));
+    let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update_as("mbp", &HostPatch { paused: Some(false), ..Default::default() }, "octocat")).unwrap();
+    assert!(!h.paused && !h.drain);
+    assert_eq!(h.ops[0].text, "恢复接单，排空结束");
+}
+
+#[test]
+fn host_token_is_shown_and_can_be_revoked_on_remove() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| {
+        w.tx.execute_batch(
+            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
+             INSERT INTO auth_tokens VALUES (1, 'win2 的令牌', 'h1', 'brd_ab12', 0, 123);",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let t = host(&s, T0).token.unwrap();
+    assert_eq!((t.id, t.name.as_str(), t.hint.as_str(), t.last_used_at), (1, "win2 的令牌", "brd_ab12", Some(123)));
+    // 另一台在线的机器也用这个令牌：不能一起吊销
+    beat(&mut s, T0, &report("win", "w1", vec![])).unwrap();
+    assert_eq!(host(&s, T0).token.unwrap().shared, vec!["win".to_string()]);
+    let e = s.write(T0, Origin::ui(None), |w| w.host_remove_revoke("mbp", &Actor::human(), "人", true)).unwrap_err();
+    assert!(e.message.contains("win"), "{}", e.message);
+    // 那台离线之后可以
+    s.write(T0 + 60 * S, Origin::cli(), |w| w.host_beat(&report("mbp", "i1", vec![]), Some(1))).unwrap();
+    s.sweep(T0 + 61 * S).unwrap();
+    beat(&mut s, T0 + 61 * S, &report("mbp", "i1", vec![])).unwrap();
+    let revoked = s.write(T0 + 61 * S, Origin::ui(None), |w| w.host_remove_revoke("mbp", &Actor::human(), "人", true)).unwrap();
+    assert_eq!(revoked, Some(1));
+    let left: i64 = s.read(|r| Ok(r.conn.query_row("SELECT COUNT(*) FROM auth_tokens", [], |x| x.get(0))?)).unwrap();
+    assert_eq!(left, 0);
+    assert!(s.read(|r| r.host("mbp", T0)).is_err());
+}
+
+#[test]
+fn version_order() {
+    assert!(hosts::version_lt("0.1.9", "0.1.19"));
+    assert!(hosts::version_lt("v0.1.19", "0.2.0"));
+    assert!(!hosts::version_lt("0.1.19", "0.1.19"));
+    assert!(!hosts::version_lt("1.0.0", "0.9.9"));
 }

@@ -9,6 +9,9 @@
 //! - 开关记在应用配置目录的 `host.json`，下次打开桌面端自动运行。
 //! - board host 的输出写到 `~/.board/host/desktop.log`；页面上能看到它在不在跑和最近的输出。
 //! - macOS 从 Finder 打开的程序拿不到 shell 里的 PATH：先用登录 shell 取一次 PATH，board host 才找得到 claude 这些命令。
+//! - 远程管理（PRD §9.1）：界面上请求「重启 board host」时，Windows 上 board host 不能原地换进程，退出码 75 交给这里重新启动；
+//!   请求「升级」时 board host 退出码 76，这里检查、下载、验签、安装桌面端更新（和设置里手动更新同一套 updater），装好后重启桌面端，
+//!   重启后照常接任务；失败时带上原因（`BOARD_HOST_ASK_ERROR`）重新启动 board host，它上报给服务端，服务端恢复接单（见 [`watch`]）。
 
 use board_core::config;
 use board_core::hosts::{check_host_name, host_name_from};
@@ -170,7 +173,7 @@ fn shell_path() -> Option<String> {
     }
 }
 
-fn start_proc(cli: &Path) -> Result<Running, String> {
+fn start_proc(cli: &Path, ask_error: Option<&str>) -> Result<Running, String> {
     let log = log_path().ok_or("找不到用户目录")?;
     if let Some(d) = log.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
@@ -179,6 +182,9 @@ fn start_proc(cli: &Path) -> Result<Running, String> {
     let err = out.try_clone().map_err(|e| e.to_string())?;
     let mut c = Command::new(cli);
     c.arg("host").env("BOARD_HOST_STDIN", "1").env("NO_COLOR", "1").stdin(Stdio::piped()).stdout(out).stderr(err);
+    if let Some(e) = ask_error {
+        c.env("BOARD_HOST_ASK_ERROR", e);
+    }
     // 桌面端开发时 BOARD_URL 指向本机页面（:1420），不是服务端：board host 用配置文件里的地址
     c.env_remove("BOARD_URL");
     if let Some(p) = shell_path() {
@@ -226,6 +232,11 @@ pub(crate) fn notify_reload<R: Runtime>(app: &AppHandle<R>) -> bool {
 
 /// 打开时启动（已经在跑就不动）
 pub fn ensure_started<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    start_with(app, None)
+}
+
+/// 同 [`ensure_started`]；ask_error 是上一次升级没成的原因，新启动的 board host 第一次上报时带给服务端
+fn start_with<R: Runtime>(app: &AppHandle<R>, ask_error: Option<&str>) -> Result<(), String> {
     let cli = crate::cli_path().ok_or("没找到桌面端自带的 board 命令行")?;
     let state = app.state::<HostProc>();
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
@@ -234,8 +245,62 @@ pub fn ensure_started<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             return Ok(());
         }
     }
-    *g = Some(start_proc(&cli)?);
+    *g = Some(start_proc(&cli, ask_error)?);
     Ok(())
+}
+
+/// board host 要桌面端重启它（和 board 命令行的 `host::EXIT_RESTART` 一致）
+const EXIT_RESTART: i32 = 75;
+/// board host 要桌面端升级（和 board 命令行的 `host::EXIT_UPGRADE` 一致）
+const EXIT_UPGRADE: i32 = 76;
+
+/// 后台盯着 board host（每秒看一次）：按远程「重启」退出（75）就重新启动它；按「升级」退出（76）就升级桌面端。
+/// 别的退出码不管（界面上照实显示停了、退出码多少）
+pub fn watch(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let code = {
+            let state = app.state::<HostProc>();
+            let Ok(mut g) = state.0.lock() else { continue };
+            let code = g.as_mut().and_then(|r| r.child.try_wait().ok().flatten()).and_then(|s| s.code());
+            if matches!(code, Some(EXIT_RESTART | EXIT_UPGRADE)) {
+                g.take();
+            }
+            code
+        };
+        match code {
+            Some(EXIT_RESTART) => {
+                if let Err(e) = start_with(&app, None) {
+                    eprintln!("重新启动 board host 失败：{e}");
+                }
+            }
+            Some(EXIT_UPGRADE) => tauri::async_runtime::block_on(upgrade(app.clone())),
+            _ => {}
+        }
+    });
+}
+
+/// 远程「升级」：检查、下载、验签、安装桌面端更新（只认配置里的公钥，见 update.rs），装好后重启桌面端；
+/// 失败时带上原因重新启动 board host，它上报后服务端恢复接单
+async fn upgrade(app: AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    let done: Result<(), String> = async {
+        let updater = app.updater().map_err(|e| format!("更新器没有配置好：{e}"))?;
+        let update = updater.check().await.map_err(|e| format!("检查更新失败：{e}"))?.ok_or("没有找到比现在新的桌面端版本")?;
+        let version = update.version.clone();
+        update.download_and_install(|_, _| {}, || {}).await.map_err(|e| format!("下载或安装 {version} 失败：{e}"))?;
+        Ok(())
+    }
+    .await;
+    match done {
+        // Windows 上安装器已经关掉外壳、装完会把新版拉起来；macOS / Linux 重启换成新版本。重启后 board host 照常启动
+        Ok(()) => app.restart(),
+        Err(e) => {
+            if let Err(e2) = start_with(&app, Some(&format!("升级失败：{e}"))) {
+                eprintln!("升级失败（{e}），重新启动 board host 也失败：{e2}");
+            }
+        }
+    }
 }
 
 /// board host 收尾最长要等 agent 退出（10 秒）再上报几次：给足时间

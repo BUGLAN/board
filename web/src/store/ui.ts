@@ -35,6 +35,8 @@ export interface ConfirmReq {
   icon?: ConfirmIcon;
   /** warn：要人确认时把风险说清楚（黄色图标，而不是默认的红色危险图标） */
   tone?: 'danger' | 'warn';
+  /** 确认框里的一个勾选项（移除机器时「同时吊销它用的令牌」）：勾没勾由 confirmCheck 返回；why 有值时不能勾，写明原因 */
+  check?: { label: string; why?: string; box: { checked: boolean } };
   resolve: (v: boolean) => void;
 }
 
@@ -250,6 +252,12 @@ export const closeSwitcher = () => set({ switcher: false });
 
 export function confirm(req: Omit<ConfirmReq, 'resolve'>): Promise<boolean> {
   return new Promise(resolve => set({ confirm: { ...req, resolve } }));
+}
+/** 带一个勾选项的确认框：返回点没点确认、勾没勾 */
+export async function confirmCheck(req: Omit<ConfirmReq, 'resolve' | 'check'> & { check: { label: string; why?: string } }) {
+  const box = { checked: false };
+  const ok = await confirm({ ...req, check: { ...req.check, box } });
+  return { ok, checked: ok && box.checked && !req.check.why };
 }
 export function settleConfirm(v: boolean) {
   const c = get().confirm;
