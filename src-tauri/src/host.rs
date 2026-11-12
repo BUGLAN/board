@@ -69,7 +69,7 @@ fn log_path() -> Option<PathBuf> {
 fn read_conf() -> (String, Vec<Dir>, bool) {
     let Ok(c) = config::Config::load() else { return (String::new(), vec![], false) };
     let has = |k: &str| c.get(k).ok().flatten().is_some();
-    let logged_in = (has(config::URL) || std::env::var("BOARD_URL").is_ok_and(|v| !v.trim().is_empty())) && has(config::TOKEN);
+    let logged_in = (has(config::URL) || crate::server::env_url().is_some()) && has(config::TOKEN);
     let Ok(h) = c.host() else { return (String::new(), vec![], logged_in) };
     let dirs = h.dirs.into_iter().map(|(board, path)| Dir { board, path }).collect();
     (h.name.unwrap_or_default(), dirs, logged_in)
@@ -494,7 +494,7 @@ mod tests {
         assert!(check_conf("", &bad).unwrap_err().contains("<项目>/<白板>"));
         let twice = vec![ok[0].clone(), ok[0].clone()];
         assert!(check_conf("", &twice).unwrap_err().contains("两次"));
-        std::fs::remove_dir_all(&d).ok();
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// 生效的机器名：配置里没写时用本机主机名（和 board host 启动时一致），写了就去掉空白
@@ -507,6 +507,8 @@ mod tests {
 
     fn tempfile_dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("board-host-test-{}-{name}", std::process::id()));
+        // 上一次被中断时留下的目录里可能有测试用的空目录「nope」：先清干净，再当作空目录
+        let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -518,19 +520,20 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         let f = d.join(".board").join("config.toml");
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-        std::fs::write(&f, "url = \"https://board.buglan.com\"\ntoken = \"bd_x\"\n").unwrap();
+        std::fs::write(&f, "url = \"https://site.example.com\"\ntoken = \"bd_x\"\n").unwrap();
         let dirs = vec![Dir { board: "default/main".into(), path: repo.display().to_string() }];
         write_conf(&f, true, "macbook", &dirs).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
-        assert!(text.starts_with("url = \"https://board.buglan.com\"\ntoken = \"bd_x\"\n"), "{text}");
+        assert!(text.starts_with("url = \"https://site.example.com\"\ntoken = \"bd_x\"\n"), "{text}");
         assert!(text.contains("[host]\nname = \"macbook\"\ndirs = { \"default/main\" = "), "{text}");
         // 机器名清空：去掉 name
         write_conf(&f, true, "", &dirs).unwrap();
         assert!(!std::fs::read_to_string(&f).unwrap().contains("name ="));
-        // 目录不存在
-        let bad = vec![Dir { board: "default/main".into(), path: d.join("nope").display().to_string() }];
-        assert!(write_conf(&f, true, "macbook", &bad).unwrap_err().contains("目录不存在"));
-        std::fs::remove_dir_all(&d).ok();
+        // 目录不存在也照样保存（#185：board host 上报「不存在」，界面上可以克隆），写进去的是填的路径
+        let gone = vec![Dir { board: "default/main".into(), path: d.join("nope").display().to_string() }];
+        write_conf(&f, true, "macbook", &gone).unwrap();
+        assert!(std::fs::read_to_string(&f).unwrap().contains("nope"), "{}", std::fs::read_to_string(&f).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     // 设置 → 本机保存机器名：现有配置不是合法 TOML 时，先备份原文件，再写一份合法的 [host]
@@ -555,6 +558,6 @@ mod tests {
             .collect();
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read_to_string(dir.join(&backups[0])).unwrap(), bad);
-        std::fs::remove_dir_all(&d).ok();
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

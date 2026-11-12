@@ -13,7 +13,7 @@ board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ clo
 
 - 网页端：浏览器打开 `https://board.example.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board login --url <服务端地址> --token <访问令牌>` 写进 `~/.board/config.toml`（也可以用环境变量 `BOARD_URL`、`BOARD_TOKEN`，优先于配置文件）。
-- 桌面端：窗口直接打开线上地址（目前固定为 `https://board.buglan.com`，见 `src-tauri/src/lib.rs`），用 GitHub 登录时在系统默认浏览器里完成（服务端 `/auth/github?desktop=…` → 本机回环地址 → `/auth/desktop`）。桌面端依赖服务端的这两个地址，升级时先部署服务端，再发桌面端新版本。
+- 桌面端：窗口打开 Board 服务端的页面。连哪个服务端依次取环境变量 `BOARD_URL`、配置文件 `~/.board/config.toml` 的 `url`（和 `board login` 同一项）、构建时注入的默认地址 `BOARD_DEFAULT_URL`，都没有时显示「连接服务端」页由人填写（见下文「自己部署的桌面端」）。代码里不写死地址。用 GitHub 登录时在系统默认浏览器里完成（服务端 `/auth/github?desktop=…` → 本机回环地址 → `/auth/desktop`）。桌面端依赖服务端的这两个地址，升级时先部署服务端，再发桌面端新版本。
 
 ## 1. 建 GitHub OAuth App
 
@@ -291,6 +291,33 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 - 没有签名和公证：macOS 只做了 ad-hoc 签名，第一次打开会被拦下，到「系统设置 → 隐私与安全性」里点「仍要打开」（或 `xattr -dr com.apple.quarantine /Applications/Board.app`）；Windows 上 SmartScreen 提示时点「更多信息 → 仍要运行」。
 - 桌面端的「设置 → 桌面端更新」读 `latest.json`，装新版本（见下文「桌面端检查更新」）。
 - 本机自己打包：`npm run desktop:build`（本机架构）；macOS 通用包：`npx tauri build --target universal-apple-darwin --bundles app,dmg`（要先 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`）；Windows 便携版照 deploy.yml 的「打包 Windows 便携版」一步：把 `target/<triple>/release/` 里的 `board-desktop.exe`、`board.exe`（和有才有的 `WebView2Loader.dll`、`resources/`）压成 zip。
+
+### 自己部署的桌面端
+
+桌面端（`src-tauri/`）里没有写死的服务端地址。装官方安装包的电脑第一次打开时，按下面的顺序决定连哪个服务端：
+
+| 顺序 | 在哪 | 说明 |
+|---|---|---|
+| 1 | 环境变量 `BOARD_URL` | 开发时用（`http://localhost:1420` 指向界面开发服务器，或本机服务端）；从图标启动时一般看不到 shell 里的变量 |
+| 2 | `~/.board/config.toml` 的 `url` | 和 `board login` 写的是同一项，桌面端「连接服务端」页和设置 → 账号的「切换服务端」也写这里 |
+| 3 | 构建时注入的 `BOARD_DEFAULT_URL` | 官方安装包在发版工作流里用 GitHub 仓库变量 `DEPLOY_URL` 注入；没有注入时为空 |
+| — | 都没有 | 显示「连接服务端」页：填地址 → 请求 `<地址>/api/health` 确认是 Board 服务端 → 写进配置文件 → 按它打开 |
+
+自己部署时，两种做法都行：
+
+1. **不改安装包**：装官方安装包，第一次打开在「连接服务端」页填自己的地址（例如 `https://board.example.com`）；或者先用 `board login` 写一次配置文件（社区好之后，设置 → 账号里的「切换服务端」也能换）。地址只写在本机的 `~/.board/config.toml` 里。
+2. **打包里带上自己的地址**（自己发一版桌面端时）：构建前设 `BOARD_DEFAULT_URL`，源码构建时就是环境变量，GitHub Actions 发版时在仓库 Settings → Secrets and variables → Actions → Variables 里设 `DEPLOY_URL`：
+
+   ```bash
+   BOARD_DEFAULT_URL=https://board.example.com npm run desktop:build
+   ```
+
+   构建出来的安装包第一次打开就是这个地址（配置文件里已经写了 `url`、或设了 `BOARD_URL` 时以它们为准），不会出现「连接服务端」页。
+
+- 「连接服务端」页和设置 → 账号的「切换服务端」都先校验 `/api/health`（`{"ok":true,…}`），不是 Board 服务端的地址当场报错，配置文件不写。地址写进 `url` 只是服务端地址，令牌还是 `board login` 那一项，两者互不覆盖。
+- 本机命令（在默认浏览器里登录、一键写入配置、让这台电脑接任务、检查更新等）只对当前连着的这个地址的页面开放：换了地址，桌面端关掉窗口按新地址重新打开，旧地址的页面调不到本机命令。本机在跑 `board host` 时，切换会先确认，之后按新地址重新启动它。
+- 桌面端打开的页面必须是这个服务端的页面：反向代理到别的域名时，用最终访问的地址（浏览器地址栏里的那个）填，才能拿到本机命令。
+- 用局域网地址（例如 `http://192.168.1.5:7420`）跑桌面端时，登录回调 `http://127.0.0.1:<端口>/callback` 是桌面端在本机监听的，不受影响。
 
 ### 桌面端检查更新
 

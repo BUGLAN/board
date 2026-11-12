@@ -1,6 +1,6 @@
 /* 本机接任务确认框的正文：机器名、白板与目录的逐行列表、免审批运行的风险 */
 import { describe, expect, it } from 'vitest';
-import { hostConfirmText, hostDirLines, shownHostName } from './localHost';
+import { hostConfirmText, hostDirLines, serverConfirmText, shownHostName } from './localHost';
 
 describe('shownHostName', () => {
   it('写了机器名就用它（去掉两头空白）', () => {
@@ -54,5 +54,29 @@ describe('hostConfirmText', () => {
     expect(text).toContain('（还没有白板目录');
     // 每段都只占一行标题 + 内容，没有连续的空行
     expect(text).not.toContain('\n\n\n');
+  });
+});
+
+describe('serverConfirmText', () => {
+  it('写清从哪换到哪、地址写进哪里、本机命令只对新地址开放', () => {
+    const text = serverConfirmText('https://a.example.com', 'https://b.example.com', '0.1.19', '~/.board/config.toml', false);
+    const parts = text.split('\n\n');
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toBe('从 https://a.example.com 换到 https://b.example.com（Board 0.1.19）。');
+    expect(parts[1]).toContain('~/.board/config.toml');
+    expect(parts[1]).toContain('和 board login 同一项');
+    expect(parts[1]).toContain('本机命令只对新地址的页面开放');
+    expect(parts[1]).toContain('旧地址的页面调不到');
+    // 没在接任务时不提 board host
+    expect(text).not.toContain('board host');
+  });
+
+  it('本机在跑 board host 时说明会先停掉、按新地址再启动', () => {
+    const text = serverConfirmText('http://127.0.0.1:7420', 'https://b.example.com', '', '~/.board/config.toml', true);
+    expect(text).not.toContain('（Board '); // 拿不到版本号时不写
+    expect(text.split('\n\n')).toHaveLength(3);
+    expect(text).toContain('（board host）：切换时先停掉它');
+    expect(text).toContain('按新地址重新打开后再启动');
+    expect(text).toContain('正在跑的 agent 会结束');
   });
 });

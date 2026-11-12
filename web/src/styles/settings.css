@@ -130,6 +130,21 @@
 .lh-sp { flex: 1; }
 .lh-log pre { margin-top: 8px; max-height: 240px; }
 
+/* 切换服务端（设置 → 账号，桌面端）：地址一行，展开后是输入框和校验说明 */
+.srv-row { flex-wrap: wrap; }
+.srv-row .set-label span { font-family: var(--f-mono); word-break: break-all; }
+.srv-form {
+  flex: 1 0 100%; display: flex; flex-direction: column; gap: 6px;
+  margin-top: 2px; padding: 12px; border-radius: var(--r-md); background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.srv-form > label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.srv-form > .input { height: 34px; padding: 0 10px; font-family: var(--f-mono); font-size: 12.5px; }
+.srv-form .env-cmd-note { margin: 2px 0 0; }
+.srv-form .lh-actions { justify-content: flex-end; margin-top: 4px; }
+.srv-err { padding: 7px 10px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; color: var(--danger-text); background: var(--danger-soft); }
+.srv-ok { padding: 7px 10px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; color: var(--text-2); background: var(--surface-3); }
+
 /* 开关（启动后自动检查更新） */
 .switch { position: relative; width: 36px; height: 21px; flex: none; padding: 0; border: 0; border-radius: 999px; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); cursor: pointer; transition: background var(--dur-1) var(--ease-out); }
 .switch i { position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow-1); transition: transform var(--dur-1) var(--ease-out); }

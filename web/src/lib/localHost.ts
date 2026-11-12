@@ -27,6 +27,17 @@ export function hostDirLines(dirs: HostDir[]): string[] {
   return [...lines.slice(0, MAX_LINES), `…还有 ${lines.length - MAX_LINES} 条`];
 }
 
+/** 「切换服务端」确认框的正文：从哪个地址换到哪个、写进哪里、本机命令只对新地址开放；
+    本机在跑 board host 时说明会按新地址重启它（段落之间空一行，确认框按段落显示） */
+export function serverConfirmText(from: string, to: string, version: string, target: string, hostRunning: boolean): string {
+  const parts = [
+    `从 ${from} 换到 ${to}${version ? `（Board ${version}）` : ''}。`,
+    `地址写进 ${target} 的 url（和 board login 同一项），桌面端关掉这个窗口、按新地址重新打开；之后本机命令只对新地址的页面开放，旧地址的页面调不到。`,
+  ];
+  if (hostRunning) parts.push('这台电脑正在接任务（board host）：切换时先停掉它，按新地址重新打开后再启动，正在跑的 agent 会结束。');
+  return parts.join('\n\n');
+}
+
 /** 确认框正文：机器名、白板与目录、免审批运行的风险（段落之间空一行，确认框按段落显示） */
 export function hostConfirmText(name: string, defaultName: string, dirs: HostDir[]): string {
   const lines = hostDirLines(dirs);

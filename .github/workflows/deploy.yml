@@ -216,6 +216,9 @@ jobs:
       - name: 构建安装包
         run: npx tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
         env:
+          # 官方安装包连的服务端（GitHub Variable DEPLOY_URL，例如 https://board.example.com；没配时为空：
+          # 桌面端第一次打开显示「连接服务端」页）。代码里不写死地址，见 docs/deploy.md「自己部署的桌面端」
+          BOARD_DEFAULT_URL: ${{ vars.DEPLOY_URL }}
           # macOS：ad-hoc 签名；Windows 上不用
           APPLE_SIGNING_IDENTITY: "-"
           # 更新包的签名私钥：只在仓库 secret 里，不进仓库；客户端只认 tauri.conf.json 里的公钥

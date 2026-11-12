@@ -5,11 +5,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import {
-  boardCli, canHost, canSetEnv, canUpdate, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
-  shellVersion, type Density, type LocalHost, type Motion, type ThemePref,
+  boardCli, canHost, canSetEnv, canSwitchServer, canUpdate, checkServer, connectServer, currentServer, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder,
+  saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type LocalHost, type Motion, type ServerInfo, type ThemePref,
 } from '../lib/platform';
 import { hostsOf } from '../lib/hosts';
-import { hostConfirmText } from '../lib/localHost';
+import { hostConfirmText, serverConfirmText } from '../lib/localHost';
 import { cardPrompt } from '../lib/prompt';
 import { boardFlow, ERRORS } from '../lib/schema';
 import type { TokenInfo } from '../lib/types';
@@ -298,6 +298,115 @@ function Account() {
           退出登录
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ---------------- 切换服务端（桌面端） ---------------- */
+
+/** 地址来自哪里，给人看的一句话 */
+function serverFromHint(s: ServerInfo): string {
+  switch (s.from) {
+    case 'env':
+      return '来自环境变量 BOARD_URL（会盖过配置文件：改了也只写配置文件，重新打开桌面端后生效）';
+    case 'config':
+      return `来自配置文件 ${s.target} 的 url（和 board 命令行同一项）`;
+    case 'default':
+      return '来自构建时注入的默认地址';
+    default:
+      return '是这个桌面端这次连上的地址';
+  }
+}
+
+/** 设置 → 账号 · 切换服务端：填新地址 → 先校验是 Board 服务端 → 写进配置文件 → 桌面端按新地址重新打开。
+    本机在跑 board host 时先确认（它会按新地址重启，正在跑的 agent 会结束） */
+function SwitchServer() {
+  const [cur, setCur] = useState<ServerInfo | null>(null);
+  const [host, setHost] = useState<LocalHost | null>(null);
+  const [open, setOpen] = useState(false);
+  const [raw, setRaw] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void currentServer().then(s => alive && setCur(s));
+    void localHost().then(s => alive && setHost(s));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const run = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError(null);
+    setNote(null);
+    setBusy(true);
+    try {
+      // 先只校验：不是 Board 服务端时在这里报错，什么都不写
+      const checked = await checkServer(raw);
+      const text = serverConfirmText(cur?.url || location.origin, checked.url, checked.version, checked.target, !!host?.running);
+      const ok = await confirm({ title: '切换到新的服务端？', text, ok: '切换', icon: 'host' });
+      if (!ok) return;
+      const r = await connectServer(checked.url);
+      // 正常情况：外壳已经关掉窗口、按新地址重新打开，这里不会再执行到
+      setNote(r.restart ? `地址已写进 ${checked.target}：重新打开桌面端后按 ${r.url} 连接` : `已切换到 ${r.url}`);
+      setOpen(false);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!cur) return null;
+  return (
+    <div className="set-row srv-row">
+      <div className="set-label">
+        <b>服务端</b>
+        <span>
+          {cur.url}
+          {cur.version ? ` · Board ${cur.version}` : ''}
+          {cur.local ? ' · 本机' : ''}；{serverFromHint(cur)}
+        </span>
+      </div>
+      <div className="set-control">
+        <button type="button" className="btn sm" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+          <Icon name="monitor" />
+          切换服务端
+        </button>
+      </div>
+      {open && (
+        <form className="srv-form" onSubmit={e => void run(e)}>
+          <label htmlFor="srv-url">新服务端地址</label>
+          <input
+            id="srv-url"
+            className="input"
+            value={raw}
+            placeholder={cur.url || 'https://board.example.com'}
+            spellCheck={false}
+            autoComplete="off"
+            inputMode="url"
+            onChange={e => {
+              setRaw(e.target.value);
+              setError(null);
+            }}
+          />
+          <p className="env-cmd-note">
+            先请求 <code>{'{地址}'}/api/health</code>，确认对方是 Board 服务端才写进 <code>{cur.target}</code>。本机跑的填 <code>http://127.0.0.1:7420</code>。
+          </p>
+          {error && <p className="srv-err" role="alert">{error}</p>}
+          {note && <p className="srv-ok" role="status">{note}</p>}
+          <div className="lh-actions">
+            <button type="button" className="btn sm ghost" onClick={() => setOpen(false)}>取消</button>
+            <button type="submit" className={cx('btn sm brand', busy && 'is-busy')} disabled={busy || !raw.trim()}>
+              {busy ? '正在校验…' : '切换'}
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -610,6 +719,8 @@ export function SettingsPage() {
             账号
           </h2>
           <Account />
+          {/* 桌面端：换了服务端，账号、白板都在新的服务端上 */}
+          {canSwitchServer && <SwitchServer />}
         </section>
 
         <section className="set-card" id="set-appearance" style={{ ['--i' as string]: 2 }}>

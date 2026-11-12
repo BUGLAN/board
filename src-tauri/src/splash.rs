@@ -2,8 +2,10 @@
 //!
 //! - 启动页由自定义协议 `boardsplash` 直接返回内联 HTML，不依赖网络，开发模式和生产模式一样
 //!   （macOS / Linux：`boardsplash://localhost/`；Windows：`http://boardsplash.localhost/`）
+//! - 还没连服务端（没有 `BOARD_URL`、配置文件里也没有 `url`、构建时也没注入默认地址）时，启动页就是
+//!   「连接服务端」页：填地址 → 校验 `/api/health` → 写进配置文件 → 按这个地址打开（`server_connect`，见 [`crate::server`]）
 //! - 页面上和网页端加载中的样子一致（四个色条 logo +「正在打开白板…」），跳到线上页面后由网页端的加载态接上
-//! - 先用 no-cors 请求探测服务端：通了就跳转；断网或 8 秒没响应显示「连不上 Board 服务」和重试，恢复网络时自动重试
+//! - 先用一个 GET 请求探测服务端（不读内容）：通了就跳转；断网或 8 秒没响应显示「连不上 Board 服务」和重试，恢复网络时自动重试
 //! - 最短展示 300ms，免得一闪而过；跳转时启动页内容 200ms 淡出
 //! - 主题：启动页是本地页面，读不到线上页面的 localStorage。网页端每次应用主题时调用 `remember_theme`，
 //!   外壳写到 app config 目录的 theme.txt（auto / light / dark），启动页和窗口底色按它来；
@@ -85,9 +87,14 @@ pub fn url() -> WebviewUrl {
     }
 }
 
-/// 自定义协议的响应：任何路径都返回启动页
-pub fn respond<R: Runtime>(app: &AppHandle<R>, target: &Url) -> Response<Vec<u8>> {
-    let html = page(target, load_theme(app), cfg!(target_os = "windows"));
+/// 自定义协议的响应：任何路径都返回启动页；`target` 为 None 时是「连接服务端」页
+pub fn respond<R: Runtime>(app: &AppHandle<R>, target: Option<&Url>) -> Response<Vec<u8>> {
+    let theme = load_theme(app);
+    let titlebar = cfg!(target_os = "windows");
+    let html = match target {
+        Some(t) => page(t, theme, titlebar),
+        None => connect_page(theme, titlebar, &crate::server::DEFAULT_URL),
+    };
     Response::builder()
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-store")
@@ -117,6 +124,22 @@ fn html_text(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// 「连接服务端」页：还没连过服务端时第一次打开桌面端看到的就是它。
+/// 填地址 → 校验 `/api/health` → 写进配置文件 → 按这个地址打开（关掉这个窗口，按新地址新开一个）。
+/// `default_url` 是构建时注入的默认地址，没有时为空（输入框留空，提示里写例子）
+pub fn connect_page(theme: Theme, custom_titlebar: bool, default_url: &str) -> String {
+    let theme_attr = match theme {
+        Theme::Auto => String::new(),
+        t => format!(" data-theme=\"{}\"", t.as_str()),
+    };
+    let default = crate::server::normalize(default_url).map(|u| crate::server::origin(&u)).unwrap_or_default();
+    CONNECT_TEMPLATE
+        .replace("__THEME_ATTR__", &theme_attr)
+        .replace("__TITLEBAR__", if custom_titlebar { " data-titlebar=\"custom\"" } else { "" })
+        .replace("__DEFAULT_JS__", &js_str(&default))
+}
+
+/// 字体和网页端一样用系统里的；连接页用的样式与启动页、登录页同一套颜色
 pub fn page(target: &Url, theme: Theme, custom_titlebar: bool) -> String {
     let host = target.host_str().map(|h| match target.port() {
         Some(p) => format!("{h}:{p}"),
@@ -266,8 +289,9 @@ html[data-titlebar="custom"] .win { display: flex; }
     try {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), TIMEOUT);
-      // no-cors：只关心连不连得上，不读内容
-      await fetch(target, { mode: 'no-cors', cache: 'no-store', signal: ctl.signal });
+      // 只要连得上，不读内容。不能用 no-cors：Chrome 里对 http 的 no-cors 跨源请求会被拦下，本机
+      // 服务端（http://127.0.0.1:7420）一直被当成连不上，连好服务端也进不去
+      await fetch(target, { cache: 'no-store', signal: ctl.signal });
       clearTimeout(timer);
       ok = true;
     } catch (e) {
@@ -290,6 +314,184 @@ html[data-titlebar="custom"] .win { display: flex; }
 </html>
 "##;
 
+/// 「连接服务端」页。颜色、logo、窗口按钮和启动页同一套；卡片样式与网页端登录页一致
+const CONNECT_TEMPLATE: &str = r##"<!doctype html>
+<html lang="zh-CN"__THEME_ATTR____TITLEBAR__>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>连接服务端 · Board</title>
+<style>
+:root {
+  --bg: #F2F0EB; --surface: #FFFFFF;
+  --line: rgba(26, 24, 20, .08); --line-2: rgba(26, 24, 20, .14);
+  --shadow-2: 0 1px 0 rgba(26, 24, 20, .03), 0 6px 18px -6px rgba(26, 24, 20, .16);
+  --shadow-3: 0 24px 48px -24px rgba(26, 24, 20, .28);
+  --text: #18181A; --text-2: #55555C; --text-3: #666670; --brand: #F2541B;
+  --danger: #B42318; --danger-soft: #FEE4E2;
+  --c1: #6E7891; --c2: #F07A12; --c3: #1D8FE0; --c4: #12A06A;
+  --r-hair: 2px; --r-sm: 9px; --r-md: 13px; --r-lg: 18px;
+  --f-sans: "Geist Variable", "Geist", "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --f-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --f-mono: "Geist Mono Variable", "Geist Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0C0D0F; --surface: #18191C;
+    --line: rgba(255, 255, 255, .08); --line-2: rgba(255, 255, 255, .11);
+    --shadow-2: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 8px 22px -8px rgba(0, 0, 0, .7);
+    --shadow-3: 0 24px 48px -24px rgba(0, 0, 0, .8);
+    --text: #EDECE8; --text-2: #A6A5AB; --text-3: #93929A; --brand: #FF6A33;
+    --danger: #FFB4AB; --danger-soft: rgba(180, 35, 24, .22);
+    --c1: #8F9AB4; --c2: #FF9A3C; --c3: #4DB5FF; --c4: #3DDC97;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0C0D0F; --surface: #18191C;
+  --line: rgba(255, 255, 255, .08); --line-2: rgba(255, 255, 255, .11);
+  --shadow-2: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 8px 22px -8px rgba(0, 0, 0, .7);
+  --shadow-3: 0 24px 48px -24px rgba(0, 0, 0, .8);
+  --text: #EDECE8; --text-2: #A6A5AB; --text-3: #93929A; --brand: #FF6A33;
+  --danger: #FFB4AB; --danger-soft: rgba(180, 35, 24, .22);
+  --c1: #8F9AB4; --c2: #FF9A3C; --c3: #4DB5FF; --c4: #3DDC97;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  display: flex; background: var(--bg); color: var(--text); font: 14px/1.5 var(--f-sans);
+  -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none; cursor: default; overflow: hidden;
+}
+.strip { position: fixed; z-index: 2; inset: 0 0 auto 0; height: 48px; display: flex; justify-content: flex-end; }
+.win { display: none; }
+html[data-titlebar="custom"] .win { display: flex; }
+.win button {
+  width: 46px; height: 100%; display: grid; place-items: center; border: 0; background: none; color: var(--text-2);
+  transition: background-color 90ms linear, color 90ms linear;
+}
+.win svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1px; overflow: visible; }
+.win svg * { vector-effect: non-scaling-stroke; }
+.win button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.win button.close:hover { color: #fff; background: #C42B1C; }
+/* 与启动页的 .boot 同一位置的居中布局 */
+.connect { flex: 1; display: grid; place-items: center; padding: 24px 16px; }
+.card {
+  width: min(400px, 100%); display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
+  padding: 36px 28px 28px; border-radius: var(--r-lg); background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow-3);
+}
+.logo {
+  display: flex; align-items: flex-start; gap: 2.5px; width: 48px; height: 48px; padding: 11px 10px;
+  border-radius: var(--r-md); background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2);
+}
+.logo i { flex: 1; border-radius: var(--r-hair); }
+.logo i:nth-child(1) { height: 100%; background: var(--c1); }
+.logo i:nth-child(2) { height: 70%; background: var(--c2); }
+.logo i:nth-child(3) { height: 46%; background: var(--c3); }
+.logo i:nth-child(4) { height: 82%; background: var(--c4); }
+h1 { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.02em; }
+p.sub { font-size: 13.5px; line-height: 1.6; color: var(--text-2); text-wrap: pretty; }
+form { width: 100%; display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+label { text-align: left; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+input {
+  width: 100%; height: 40px; padding: 0 12px; border: 0; border-radius: 10px; font: 13.5px var(--f-mono);
+  color: var(--text); background: color-mix(in srgb, var(--text) 5%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--line-2); user-select: text; -webkit-user-select: text;
+}
+input::placeholder { color: var(--text-3); font-family: var(--f-mono); }
+input:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--brand); }
+button.primary {
+  height: 40px; border: 0; border-radius: 10px; font: 600 14px var(--f-sans); color: #fff; background: var(--brand);
+  box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--brand) 70%, transparent); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+button.primary:active { transform: scale(.98); }
+button.primary[disabled] { opacity: .7; cursor: default; }
+button.primary[disabled]:active { transform: none; }
+.spin { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status { min-height: 18px; width: 100%; font-size: 12.5px; line-height: 1.5; text-align: left; color: var(--text-3); }
+.status.err { padding: 9px 12px; border-radius: var(--r-sm); color: var(--danger); background: var(--danger-soft); }
+.hint { width: 100%; font-size: 12px; line-height: 1.6; text-align: left; color: var(--text-3); }
+.hint code { font-family: var(--f-mono); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="strip" data-tauri-drag-region>
+  <div class="win">
+    <button type="button" data-act="minimize" aria-label="最小化" title="最小化"><svg viewBox="0 0 10 10"><path d="M0 5.5h10"/></svg></button>
+    <button type="button" data-act="toggle_maximize" aria-label="最大化" title="最大化"><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" rx="1"/></svg></button>
+    <button type="button" data-act="close" class="close" aria-label="关闭" title="关闭"><svg viewBox="0 0 10 10"><path d="m.5.5 9 9m0-9-9 9"/></svg></button>
+  </div>
+</div>
+<main class="connect">
+  <div class="card">
+    <div class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <h1>连接服务端</h1>
+    <p class="sub">填 Board 服务端的地址。桌面端会先确认对方是 Board 服务端，再把它写进 <code>~/.board/config.toml</code>，和 <code>board login</code> 用的是同一项。</p>
+    <form id="f" novalidate>
+      <label for="url">服务端地址</label>
+      <input id="url" name="url" type="text" inputmode="url" spellcheck="false" autocomplete="off"
+        placeholder="服务端地址" aria-describedby="hint">
+      <button type="submit" class="primary" id="go">连接</button>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+      <p class="hint" id="hint">自己部署的服务端填 <code>https://</code> 加域名；本机跑的填 <code>http://127.0.0.1:7420</code>。地址会自动补上 <code>http://</code>。</p>
+    </form>
+  </div>
+</main>
+<script>
+(() => {
+  const DEFAULT = __DEFAULT_JS__;
+  const ipc = window.__TAURI_INTERNALS__;
+  const label = ipc && ipc.metadata && ipc.metadata.currentWindow && ipc.metadata.currentWindow.label;
+  const form = document.getElementById('f');
+  const input = document.getElementById('url');
+  const go = document.getElementById('go');
+  const status = document.getElementById('status');
+  if (DEFAULT) input.value = DEFAULT;
+
+  // Windows：窗口按钮能用了才告诉外壳（否则外壳 3 秒后恢复系统标题栏，窗口不会关不掉）
+  if (ipc && label && document.documentElement.dataset.titlebar === 'custom') {
+    document.querySelectorAll('.win [data-act]').forEach(b =>
+      b.addEventListener('click', () => ipc.invoke('plugin:window|' + b.dataset.act, { label }).catch(() => {})));
+    ipc.invoke('window_ready').catch(() => {});
+  }
+
+  const say = (text, cls) => { status.textContent = text; status.className = 'status' + (cls ? ' ' + cls : ''); };
+  let busy = false;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (busy) return;
+    const raw = input.value.trim();
+    if (!raw) { say('先填服务端地址', 'err'); input.focus(); return; }
+    if (!ipc) { say('只能在 Board 桌面端里连接服务端', 'err'); return; }
+    busy = true;
+    go.disabled = true;
+    go.innerHTML = '<span class="spin"></span>正在连接…';
+    say('正在确认对方是 Board 服务端…');
+    try {
+      // 先只校验：不是 Board 服务端时这里就报错，什么都不写
+      await ipc.invoke('server_check', { raw });
+      say('已确认是 Board 服务端，正在写入配置文件、打开它的登录页…');
+      // 校验通过：写进配置文件，按这个地址关掉这个窗口、新开一个（这个窗口随后就没了）
+      const r = await ipc.invoke('server_connect', { raw });
+      if (r && r.restart) say('已写进配置文件：重新打开 Board 后按这个地址连接', 'err');
+    } catch (err) {
+      say(String(err && err.message ? err.message : err), 'err');
+      busy = false;
+      go.disabled = false;
+      go.textContent = '连接';
+    }
+  });
+})();
+</script>
+</body>
+</html>
+"##;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,15 +507,15 @@ mod tests {
 
     #[test]
     fn page_fills_placeholders() {
-        let url: Url = "https://board.buglan.com".parse().unwrap();
+        let url: Url = "https://site.example.com".parse().unwrap();
         let html = page(&url, Theme::Dark, true);
         for p in ["__THEME_ATTR__", "__TITLEBAR__", "__HOST__", "__HOST_JS__", "__TARGET__"] {
             assert!(!html.contains(p), "占位符 {p} 没有替换");
         }
         assert!(html.contains(r#"data-theme="dark""#));
         assert!(html.contains(r#"data-titlebar="custom""#));
-        assert!(html.contains(r#"const target = "https://board.buglan.com/";"#));
-        assert!(html.contains("board.buglan.com 没有响应"));
+        assert!(html.contains(r#"const target = "https://site.example.com/";"#));
+        assert!(html.contains("site.example.com 没有响应"));
 
         let dev: Url = "http://localhost:1420".parse().unwrap();
         let html = page(&dev, Theme::Auto, false);
@@ -328,9 +530,29 @@ mod tests {
         html[start..end].to_string()
     }
 
+    /// 还没连服务端：启动页是「连接服务端」页，能填地址、走 server_check → server_connect
+    #[test]
+    fn connect_page_fills_placeholders() {
+        let html = connect_page(Theme::Dark, true, "");
+        for p in ["__THEME_ATTR__", "__TITLEBAR__", "__DEFAULT_JS__", "board.example.com"] {
+            assert!(!html.contains(p), "{p} 不该出现");
+        }
+        assert!(html.contains(r#"data-theme="dark""#));
+        assert!(html.contains(r#"data-titlebar="custom""#));
+        assert!(html.contains("连接服务端"));
+        assert!(html.contains(r#"const DEFAULT = "";"#));
+        assert!(html.contains("server_check"));
+        assert!(html.contains("server_connect"));
+        assert!(html.contains("127.0.0.1:7420"));
+        // 构建时注入了默认地址：用作输入框的默认值（只到 origin）
+        let html = connect_page(Theme::Auto, false, "https://board.example.org/some/path");
+        assert!(html.contains(r#"const DEFAULT = "https://board.example.org";"#), "{html}");
+        assert!(html.contains("<html lang=\"zh-CN\">"));
+    }
+
     #[test]
     fn logo_uses_surface_not_invert() {
-        let url: Url = "https://board.buglan.com".parse().unwrap();
+        let url: Url = "https://site.example.com".parse().unwrap();
         for theme in [Theme::Auto, Theme::Light, Theme::Dark] {
             let html = page(&url, theme, true);
             let logo = rule(&html, ".logo {");
@@ -348,7 +570,7 @@ mod tests {
 
     #[test]
     fn theme_tokens_match_web() {
-        let url: Url = "https://board.buglan.com".parse().unwrap();
+        let url: Url = "https://site.example.com".parse().unwrap();
         let html = page(&url, Theme::Auto, true);
         // 网页端 tokens.css 的深色面、边框、文字色和列标识色
         let dark = rule(&html, r#":root[data-theme="dark"] {"#);
@@ -374,6 +596,15 @@ mod tests {
         assert!(light.contains("--text-3: #666670"));
         // 启动页不再引用网页端已经删掉的 --invert
         assert!(!html.contains("--invert"));
+    }
+
+    /// 探测服务端不能用 no-cors：Chrome 里对 http 的 no-cors 跨源请求会被拦下，本机服务端一直被当成连不上
+    #[test]
+    fn probe_does_not_use_no_cors() {
+        let url: Url = "http://127.0.0.1:7420/".parse().unwrap();
+        let html = page(&url, Theme::Auto, false);
+        assert!(!html.contains("no-cors"), "启动页的探测请求不能用 no-cors");
+        assert!(html.contains("await fetch(target, { cache: 'no-store', signal: ctl.signal });"));
     }
 
     #[test]

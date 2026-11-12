@@ -114,6 +114,8 @@ board login --url https://board.example.com --token bd_xxx
 
 它先校验令牌，再把服务端地址和令牌写进 `~/.board/config.toml`（权限 0600），之后所有终端、所有 agent 都能直接用，不用设置环境变量。桌面端可以「一键写入」同一个文件。`board doctor` 会告诉你地址和令牌来自哪里。
 
+桌面端也用这个文件里的服务端地址：第一次打开时如果还没有连接过服务端，会出现「连接服务端」页，填上地址（先校验 `/api/health` 确认是 Board 服务端）就写进同一个 `url`；之后可以在「设置 → 账号 → 切换服务端」里换。自己部署服务端、想打一个第一次打开就连上它的安装包时，构建前设 `BOARD_DEFAULT_URL`（见 [docs/deploy.md](docs/deploy.md)「自己部署的桌面端」）。
+
 - 环境变量 `BOARD_URL`、`BOARD_TOKEN` 仍然有效，并且优先于配置文件；以前写进 shell 配置文件的 `export` 建议删掉。
 - 两处都没有时命令被拒绝（`NOT_LOGGED_IN`），提示运行 `board login`。`board logout` 删掉令牌、保留地址。
 - 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。

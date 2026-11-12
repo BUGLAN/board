@@ -1317,7 +1317,8 @@ function QueueRow({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
 
 function AddHostBody({ close }: { close: () => void }) {
   const path = useData(s => s.path);
-  const origin = typeof location !== 'undefined' ? location.origin : 'https://board.buglan.com';
+  // 就是这个页面的服务端地址（网页端、桌面端都一样，不写死地址）
+  const origin = typeof location !== 'undefined' ? location.origin : '<服务端地址>';
   const login = `board login --url ${origin} --token bd_…`;
   const run = `board host --name devbox --dir ${path || 'default/main'}=~/repo/board`;
   const copy = async (t: string) => {

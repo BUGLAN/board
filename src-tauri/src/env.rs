@@ -61,8 +61,8 @@ mod tests {
 
     #[test]
     fn origin_only() {
-        let u: tauri::Url = "https://board.buglan.com/some/path?q=1".parse().unwrap();
-        assert_eq!(origin_of(&u).unwrap(), "https://board.buglan.com");
+        let u: tauri::Url = "https://site.example.com/some/path?q=1".parse().unwrap();
+        assert_eq!(origin_of(&u).unwrap(), "https://site.example.com");
         let u: tauri::Url = "http://localhost:1420/".parse().unwrap();
         assert_eq!(origin_of(&u).unwrap(), "http://localhost:1420");
     }

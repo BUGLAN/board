@@ -1,7 +1,8 @@
-//! Board 桌面端：窗口直接打开线上的 Board（默认 https://board.buglan.com），
-//! 与网页端同源，登录用同一个 GitHub 会话。
+//! Board 桌面端：窗口打开 Board 服务端的页面，与网页端同源，登录用同一个 GitHub 会话。
 //!
-//! - 地址可以用环境变量 `BOARD_URL` 覆盖（开发时指向 http://localhost:1420 或本机服务端）
+//! - 连哪个服务端见 [`server`]：环境变量 `BOARD_URL` → 配置文件 `~/.board/config.toml` 的 `url`（和 `board` 命令行同一项）
+//!   → 构建时注入的 `BOARD_DEFAULT_URL`；都没有时显示「连接服务端」页，由人填写（先校验 `/api/health` 再写进配置文件）。
+//!   设置 → 账号里的「切换服务端」换地址，换完按新地址重新打开窗口，本机命令只对新地址开放。代码里不写死地址
 //! - GitHub 登录在系统默认浏览器里完成（用上浏览器里已有的 GitHub 登录状态），登录结果经本机回环地址
 //!   交回窗口，见 [`login`]。会话 Cookie 保存在 webview 里，所有窗口共用
 //! - 顶栏即标题栏，按住顶栏空白处拖动窗口：
@@ -18,6 +19,7 @@
 mod env;
 mod host;
 mod login;
+mod server;
 mod skill;
 mod splash;
 mod update;
@@ -26,19 +28,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Manager, Theme, Url, WebviewWindow, WebviewWindowBuilder};
 
-const DEFAULT_URL: &str = "https://board.buglan.com";
-
 static WINDOWS: AtomicUsize = AtomicUsize::new(0);
 
-struct Board(Url);
-
-fn board_url() -> Result<Url, String> {
-    let raw = std::env::var("BOARD_URL")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_URL.to_string());
-    raw.parse().map_err(|e| format!("BOARD_URL 不是合法的地址「{raw}」：{e}"))
+/// 当前打开的服务端（见 [`server`]）；还没连服务端时是 None，窗口打开本地启动页（「连接服务端」页）
+fn board_url(app: &AppHandle) -> Option<Url> {
+    app.state::<server::Current>().0.lock().ok().and_then(|g| g.clone())
 }
 
 /// 桌面端自带的 board 命令行：externalBin 把它放在可执行文件旁边
@@ -190,8 +184,8 @@ mod custom_titlebar {
 
 /// 在系统默认浏览器里用 GitHub 登录，返回一次性登录码（页面拿它打开 /auth/desktop 换取会话）
 #[tauri::command]
-async fn desktop_login(window: WebviewWindow, board: tauri::State<'_, Board>) -> Result<String, login::LoginError> {
-    let url = board.0.clone();
+async fn desktop_login(window: WebviewWindow, app: AppHandle) -> Result<String, login::LoginError> {
+    let url = board_url(&app).ok_or_else(|| login::LoginError::not_connected())?;
     let res = tauri::async_runtime::spawn_blocking(move || login::run(&url))
         .await
         .unwrap_or_else(|e| Err(login::LoginError { reason: "io".into(), login: None, message: Some(e.to_string()) }));
@@ -214,7 +208,8 @@ async fn new_window(app: AppHandle) -> Result<(), String> {
 /// 命令名沿用 set_board_env，新旧页面和外壳都能互相调用
 #[tauri::command]
 async fn set_board_env(app: AppHandle, token: String) -> Result<env::Written, String> {
-    let url = env::origin_of(&app.state::<Board>().0)?;
+    let url = board_url(&app).ok_or("还没有连接服务端")?;
+    let url = env::origin_of(&url)?;
     tauri::async_runtime::spawn_blocking(move || env::write(&url, token.trim()))
         .await
         .map_err(|e| e.to_string())?
@@ -236,19 +231,31 @@ fn window_ready(window: WebviewWindow) {
     let _ = window;
 }
 
-/// capabilities/default.json 只放行线上地址和启动页。BOARD_URL 指向别处（开发时的 localhost:1420、自建的服务端）时，
-/// 只给这一个来源放行同样的命令，不放行整个 localhost：窗口导航到本机别的端口上的页面时调不了本机命令
-fn allow_configured_url(app: &AppHandle) -> tauri::Result<()> {
-    let url = &app.state::<Board>().0;
+/// capabilities/default.json 只放行构建时注入的默认地址（BOARD_DEFAULT_URL）和启动页。
+/// 当前打开的服务端是别的地址（配置文件、BOARD_URL、人填的地址，开发时的 localhost:1420）时，
+/// 只给这一个来源放行同样的命令，不放行整个 localhost：窗口导航到本机别的端口上的页面时调不了本机命令。
+/// 换了地址就是新开窗口，按新地址重新调用这里——旧地址的页面从此调不到本机命令
+pub(crate) fn allow_configured_url(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(url) = board_url(app) {
+        if let Some(cap) = configured_capability(&url) {
+            app.add_capability(cap)?;
+        }
+    }
+    Ok(())
+}
+
+/// 给一个服务端地址放行本机命令的能力（见 [`allow_configured_url`]）；是默认地址（default.json 已经放行）时是 None
+fn configured_capability(url: &Url) -> Option<tauri::ipc::CapabilityBuilder> {
     let origin = url.origin().ascii_serialization();
-    if origin == DEFAULT_URL {
-        return Ok(());
+    let default = server::normalize(server::DEFAULT_URL).ok().map(|u| u.origin().ascii_serialization());
+    if default.as_deref() == Some(origin.as_str()) {
+        return None;
     }
     let mut cap = tauri::ipc::CapabilityBuilder::new("configured-url").remote(format!("{origin}/*")).window("*");
     for p in default_permissions() {
         cap = cap.permission(p);
     }
-    app.add_capability(cap)
+    Some(cap)
 }
 
 /// default.json 里的权限（和它保持一份）
@@ -258,7 +265,8 @@ fn default_permissions() -> Vec<String> {
 }
 
 pub fn run() {
-    let url = match board_url() {
+    // 连哪个服务端：BOARD_URL → 配置文件的 url → 构建时注入的默认地址；都没有时先显示「连接服务端」页
+    let url = match server::resolve() {
         Ok(u) => u,
         Err(e) => {
             eprintln!("{e}");
@@ -270,16 +278,16 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Board(url))
+        .manage(server::Current(std::sync::Mutex::new(url)))
         .manage(host::HostProc::default())
         .manage(update::Pending::default());
     #[cfg(target_os = "windows")]
     let builder = builder.manage(custom_titlebar::Ready::default());
     builder
-        // 启动页：任何路径都返回内联 HTML（见 splash）
+        // 启动页：任何路径都返回内联 HTML（见 splash）；还没连服务端时就是「连接服务端」页
         .register_uri_scheme_protocol(splash::SCHEME, |ctx, _req| {
             let app = ctx.app_handle();
-            splash::respond(app, &app.state::<Board>().0)
+            splash::respond(app, board_url(app).as_ref())
         })
         .invoke_handler(tauri::generate_handler![
             desktop_login,
@@ -287,6 +295,9 @@ pub fn run() {
             window_ready,
             set_board_env,
             remember_theme,
+            server::server_current,
+            server::server_check,
+            server::server_connect,
             host::host_status,
             host::host_save,
             host::host_enable,
@@ -337,8 +348,8 @@ pub fn run() {
                 });
             }
             open_window(handle)?;
-            // 上次打开了「让这台电脑接任务」：接着在后台运行 board host
-            if host::enabled(handle) {
+            // 上次打开了「让这台电脑接任务」：连上了服务端就在后台运行 board host（还没连时等连接好再启动，见 server.rs）
+            if host::enabled(handle) && board_url(handle).is_some() {
                 if let Err(e) = host::ensure_started(handle) {
                     eprintln!("{e}");
                 }
@@ -379,15 +390,34 @@ mod tests {
 mod acl_tests {
     use super::*;
 
-    /// 发布版只放行线上地址和启动页，不放行 localhost / 127.0.0.1 的任意端口；BOARD_URL 改了地址时按同一份权限另外放行
+    /// 不注入默认地址的构建里，源码和配置里都搜不到写死的服务端地址（默认地址只从 BOARD_DEFAULT_URL 来）
+    #[test]
+    fn no_hardcoded_server_in_code_and_config() {
+        for (name, text) in [
+            ("lib.rs", include_str!("lib.rs")),
+            ("server.rs", include_str!("server.rs")),
+            ("env.rs", include_str!("env.rs")),
+            ("splash.rs", include_str!("splash.rs")),
+            ("capabilities/default.json", include_str!("../capabilities/default.json")),
+        ] {
+            assert!(!text.contains(&["buglan", ".com"].concat()), "{name} 里还有写死的服务端地址");
+        }
+    }
+
+    /// 发布版不放行 localhost / 127.0.0.1 的任意端口：只放行启动页，当前连的服务端按地址另外放行同一份权限。
+    /// 代码里不写死服务端地址：默认地址只在构建时注入（BOARD_DEFAULT_URL）
     #[test]
     fn remote_urls_and_permissions() {
         let v: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let urls: Vec<&str> = v["remote"]["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap()).collect();
-        assert_eq!(urls, ["https://board.buglan.com/*", "http://boardsplash.localhost/*"]);
+        assert_eq!(urls, ["http://boardsplash.localhost/*"]);
         let perms = default_permissions();
         assert!(perms.iter().any(|p| p == "allow-host-enable"), "{perms:?}");
         assert!(perms.iter().any(|p| p == "core:default"), "{perms:?}");
+        // 切换服务端：「设置 → 账号」要调这三个
+        for p in ["allow-server-current", "allow-server-check", "allow-server-connect"] {
+            assert!(perms.iter().any(|x| x == p), "缺 {p}：{perms:?}");
+        }
         // 检查更新：三个命令都要放行，否则线上页面里「检查更新」调不通
         for p in ["allow-update-check", "allow-update-install", "allow-update-restart"] {
             assert!(perms.iter().any(|x| x == p), "缺 {p}：{perms:?}");

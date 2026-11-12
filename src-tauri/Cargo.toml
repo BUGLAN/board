@@ -19,6 +19,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 board-core = { workspace = true, features = ["config"] }
 serde.workspace = true
 serde_json.workspace = true
+# 连接服务端页 / 切换服务端前校验 GET <地址>/api/health（和 board 命令行同一个 HTTP 库）
+ureq = "3"
 # GitHub 登录：在系统默认浏览器里打开登录页
 open = "5"
 getrandom = "0.3"

@@ -40,6 +40,11 @@ impl LoginError {
     fn new(reason: &str, message: impl Into<Option<String>>) -> Self {
         LoginError { reason: reason.into(), login: None, message: message.into() }
     }
+
+    /// 还没连服务端（显示「连接服务端」页时没有登录地址）
+    pub fn not_connected() -> Self {
+        LoginError::new("no_server", Some("还没有连接服务端：重开窗口，在「连接服务端」页填地址".into()))
+    }
 }
 
 impl From<std::io::Error> for LoginError {

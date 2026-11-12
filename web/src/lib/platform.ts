@@ -130,6 +130,60 @@ export async function setBoardEnv(token: string): Promise<string> {
   }
 }
 
+/* ---------------- 桌面端：切换服务端（设置 → 账号） ---------------- */
+
+/** 外壳连着的服务端 */
+export interface ServerInfo {
+  /** 当前打开的服务端地址（origin） */
+  url: string;
+  /** 服务端版本（旧服务端没有时为空） */
+  version: string;
+  /** 地址来自哪里：env（BOARD_URL）/ config（配置文件的 url）/ default / saved */
+  from: string;
+  /** 写进配置文件的目标（给人看的） */
+  target: string;
+  /** 是本机地址 */
+  local: boolean;
+}
+
+export interface ServerConnected {
+  url: string;
+  /** 外壳已经关掉窗口、按新地址重新打开：页面不用再做什么 */
+  reload: boolean;
+  /** 地址写进了配置文件，但要重新打开桌面端才生效（地址来自 BOARD_URL 时） */
+  restart: boolean;
+}
+
+/** 外壳能不能切换服务端（旧版桌面端不能）；能切的时候设置页显示「切换服务端」 */
+export const canSwitchServer = ipc;
+
+/** 当前连着的服务端；外壳不支持（旧版桌面端）时返回 null */
+export async function currentServer(): Promise<ServerInfo | null> {
+  try {
+    return await invoke<ServerInfo>('server_current');
+  } catch {
+    return null;
+  }
+}
+
+/** 校验一个地址是不是 Board 服务端（只校验，不保存）：返回它的信息；不是时抛出原因文字 */
+export async function checkServer(raw: string): Promise<ServerInfo> {
+  try {
+    return await invoke<ServerInfo>('server_check', { raw });
+  } catch (e) {
+    throw String(e);
+  }
+}
+
+/** 切到新地址：校验、写进 ~/.board/config.toml，外壳按新地址重新打开窗口。地址来自 BOARD_URL 时只写配置，提示重启 */
+export async function connectServer(raw: string): Promise<ServerConnected> {
+  try {
+    return await invoke<ServerConnected>('server_connect', { raw });
+  } catch (e) {
+    throw String(e);
+  }
+}
+
 /* ---------------- 桌面端登录：在系统默认浏览器里用 GitHub 登录 ---------------- */
 
 /** 外壳返回的「登录没有完成」 */
