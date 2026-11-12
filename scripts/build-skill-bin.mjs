@@ -79,11 +79,13 @@ console.log(`✓ 已放进 ${join('.agents', 'skills', 'board-skills', 'bin')}�
 if (skipped.length) console.log(`  跳过：${skipped.join('、')}`);
 if (!built.length) process.exit(1);
 
+// 打包（--zip 随 skill 分发）要求所有平台都编好：--zip 也带 --dist，两处打包共用这一个检查
+if (zip && skipped.length) {
+  console.error('✗ 打包要求所有平台都编好，先装好上面跳过的工具链');
+  process.exit(1);
+}
+
 if (dist) {
-  if (zip && skipped.length) {
-    console.error('✗ 打包要求所有平台都编好，先装好上面跳过的工具链');
-    process.exit(1);
-  }
   // 单独的 board 包：每个平台一个压缩包，压缩包里只有 board[.exe]；再附一份 SHA-256 校验文件
   const out = join(root, 'target', 'board-dist');
   rmSync(out, { recursive: true, force: true });
@@ -106,10 +108,6 @@ if (dist) {
 }
 
 if (zip) {
-  if (skipped.length) {
-    console.error('✗ 打包要求所有平台都编好，先装好上面跳过的工具链');
-    process.exit(1);
-  }
   const out = join(root, 'target', 'board-skills.zip');
   rmSync(out, { force: true });
   // 在 skills 目录里打包，解压后是 board-skills/ 目录；zip 会保留可执行权限

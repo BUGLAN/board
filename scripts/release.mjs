@@ -64,6 +64,9 @@ const hasRemote = Boolean(tryGit('rev-parse', '-q', '--verify', `refs/remotes/${
 if (!dry) {
   if (!hasRemote) fail(`没有 ${REMOTE}：先 git remote add origin <仓库地址>`);
   if (git('status', '--porcelain')) fail('工作区有没提交的改动');
+  // 分支检查放在比对提交之前：在别的分支上就算和 origin/main 同一个提交也不发版
+  const branch = tryGit('symbolic-ref', '-q', '--short', 'HEAD');
+  if (branch && branch !== BRANCH) fail(`当前在分支 ${branch} 上：切到 ${BRANCH}（或分离 HEAD）再发版`);
   const head = git('rev-parse', 'HEAD');
   const remote = git('rev-parse', REMOTE);
   if (head !== remote) {
@@ -74,8 +77,6 @@ if (!dry) {
         `本地有没推到 ${BRANCH} 的提交，先按 AGENTS.md rebase 到 ${REMOTE}、跑完检查推上去，再发版：\n${ahead}`,
       );
     // 只是落后（别的电脑先推了）：快进到 origin/main
-    const branch = tryGit('symbolic-ref', '-q', '--short', 'HEAD');
-    if (branch && branch !== BRANCH) fail(`当前在分支 ${branch} 上：切到 ${BRANCH}（或分离 HEAD）再发版`);
     const n = git('rev-list', '--count', `HEAD..${REMOTE}`);
     if (branch) git('merge', '--ff-only', '-q', REMOTE);
     else git('checkout', '-q', '--detach', REMOTE);

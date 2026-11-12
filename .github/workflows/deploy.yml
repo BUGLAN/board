@@ -430,7 +430,8 @@ jobs:
           tool: cargo-zigbuild
 
       - name: 交叉编译 board-server
-        run: ./deploy/build-linux.sh
+        # 「构建界面」这一步已经构建过界面，不要再构建一次
+        run: ./deploy/build-linux.sh --skip-web
         env:
           BOARD_COMMIT: ${{ steps.version.outputs.commit }}
 

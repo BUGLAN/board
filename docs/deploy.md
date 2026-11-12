@@ -35,6 +35,12 @@ GitHub → Settings → Developer settings → OAuth Apps → New OAuth App：
 ./deploy/build-linux.sh
 ```
 
+脚本先构建界面（`npm run build:web`，`board-server` 把它打包进可执行文件），再交叉编译。界面已经构建过时（例如在 CI 里，前面的步骤已经构建了界面）加 `--skip-web`，不要重复构建一次：
+
+```bash
+./deploy/build-linux.sh --skip-web
+```
+
 把仓库同步到服务器（不带 `target`、`node_modules`、`.git` 等）：
 
 ```bash
@@ -243,7 +249,7 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 ```
 build（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的版本号和 CHANGELOG.md → npm ci → 构建界面 → cargo test
-                                     → deploy/build-linux.sh 交叉编译 → prebuilt 镜像
+                                     → deploy/build-linux.sh --skip-web 交叉编译 → prebuilt 镜像
                                      → 推到 GHCR：ghcr.io/buglan/board-server:<7 位提交号> 和 :latest
 deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
                                      → docker compose up -d --no-build → 等健康检查
