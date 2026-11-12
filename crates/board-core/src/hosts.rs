@@ -482,16 +482,20 @@ pub const READY_TAIL: usize = 20;
 /// 环境检查最长跑多久，超过就结束它、算没通过
 pub const READY_LIMIT_MS: i64 = 120_000;
 
-/// 登录 shell 自己打的启动、退出提示，不是检查命令的输出：白板的环境检查在 `$SHELL -l -i -c` 里跑，
-/// 没有终端（CI、桌面端）时 bash 会打作业控制提示，退出时再打一行 `logout`。上报和判断结果之前去掉这些行，
-/// 否则失败原因会显示成 `logout`。只认这几种固定形状：`zsh:1: command not found: cargo` 这类真正的错误要留着
-/// （它就是派发被拒的原因）
+/// 登录 shell 自己打的启动、退出提示，不是命令的输出：白板的环境检查、派发的 agent 都在 `$SHELL -l -i -c` 里跑，
+/// 没有终端（CI、桌面端、`setsid`）时 bash 会打作业控制提示，退出时再打一行 `logout`，发行版的
+/// `/etc/bash.bashrc` 还会打几句 sudo 提示。上报和判断结果之前去掉这些行，否则失败原因会显示成 `logout`。
+/// 只认这几种固定形状：`zsh:1: command not found: cargo` 这类真正的错误要留着（它就是派发被拒的原因）
 pub fn shell_noise(line: &str) -> bool {
     let l = line.trim();
     l == "logout"
         || l.starts_with("bash: cannot set terminal process group")
         || l.starts_with("bash: no job control")
+        // stty 在没有终端时对 stdin 报的错（`-i` 的交互式 shell 会调它）
         || (l.starts_with("stty: ") && l.contains("Inappropriate ioctl"))
+        // Ubuntu/Debian 的 /etc/bash.bashrc：没有 ~/.sudo_as_admin_successful 时打的 sudo 提示
+        || (l.starts_with("To run a command as administrator") && l.ends_with("use \"sudo <command>\"."))
+        || l == "See \"man sudo_root\" for details."
 }
 
 /// 一台机器上一块白板能不能接卡（环境检查）

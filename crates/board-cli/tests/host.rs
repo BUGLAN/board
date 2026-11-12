@@ -1354,6 +1354,9 @@ fn structured_events_reach_the_session_while_running() {
     let v = session("");
     let part = &v["parts"][0];
     assert_eq!(part["fmt"], "claude");
+    // 登录 shell 自己打的提示（作业控制、sudo 提示）不是 agent 的输出：不进会话的过程（#232）
+    let texts: Vec<&str> = part["events"].as_array().unwrap().iter().filter_map(|e| e["text"].as_str()).collect();
+    assert!(texts.iter().all(|t| !t.contains("no job control") && !t.contains("sudo")), "{part}");
     assert!(part["events"][0]["kind"] == "text" && part["events"][0]["text"].as_str().unwrap().starts_with("prompt: "), "{part}");
     let evs = structured(&v);
     assert_eq!((evs[0]["kind"].as_str(), evs[0]["text"].as_str()), (Some("message"), Some("先领卡，再跑测试。")));

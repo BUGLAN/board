@@ -790,6 +790,9 @@ mod tests {
     fn version_skips_shell_noise() {
         let out = "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\nbash: no job control in this shell\n1.5.0\n";
         assert_eq!(first_line(out).as_deref(), Some("1.5.0"));
+        // 发行版的 bashrc 打的 sudo 提示也算噪声（#232）：版本号不能显示成它
+        let out = "To run a command as administrator (user \"root\"), use \"sudo <command>\".\nSee \"man sudo_root\" for details.\n\n9.9.9 (fake)\n";
+        assert_eq!(first_line(out).as_deref(), Some("9.9.9 (fake)"));
     }
 
     /// WSL 里停止用的脚本：结束整个进程组（这里在本机的 bash 上试）

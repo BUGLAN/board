@@ -816,16 +816,21 @@ fn new_lines(path: &Path, from: u64, last: bool) -> (Vec<String>, u64) {
     (lines, start + end as u64)
 }
 
+/// 登录 shell 自己打的启动、退出提示（见 [`board_core::hosts::shell_noise`]）：不是检查命令、也不是 agent 的输出
+fn shell_noise(line: &str) -> bool {
+    board_core::hosts::shell_noise(line)
+}
+
 /// 日志最后 n 行（转写之后的）
 fn tail_lines(path: &Path, n: usize, fmt: Option<Stream>) -> Vec<String> {
     let (lines, _) = new_lines(path, 0, true);
-    let lines: Vec<String> = logfmt::render(fmt, lines).into_iter().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<String> = logfmt::render(fmt, lines).into_iter().filter(|l| !l.trim().is_empty() && !shell_noise(l)).collect();
     lines[lines.len().saturating_sub(n)..].to_vec()
 }
 
 /// 要上传的行：转写，只留最后 500 行（服务端本来也只保留这么多）
 fn upload_lines(lines: Vec<String>, fmt: Option<Stream>) -> Vec<String> {
-    let lines = logfmt::render(fmt, lines);
+    let lines: Vec<String> = logfmt::render(fmt, lines).into_iter().filter(|l| !shell_noise(l)).collect();
     lines[lines.len().saturating_sub(LOG_KEEP)..].to_vec()
 }
 
@@ -835,13 +840,13 @@ fn upload_lines_redacted(lines: Vec<String>, fmt: Option<Stream>, secrets: &[&st
 }
 
 /// 解析日志里新增的行，得到结构化事件（只有原始输出的 agent 只挪位置）。last：最后不完整的一行也算（agent 已经退出）。
-/// 事件里的文字先脱敏，再放进待上传的队列和「最后几个事件」
+/// 事件里的文字先脱敏，再放进待上传的队列和「最后几个事件」。登录 shell 自己打的提示不是 agent 的输出，直接丢掉
 fn read_events(r: &mut Run, last: bool, secrets: &[&str]) {
     let (lines, to) = new_lines(&r.log, r.ev_read, last);
     r.ev_read = to;
     let Some(p) = r.parser.as_mut() else { return };
     let at = now_ms();
-    for line in lines {
+    for line in lines.into_iter().filter(|l| !shell_noise(l)) {
         for mut e in p.feed(&line, at) {
             redact_event(&mut e, secrets);
             remember(&mut r.ev_recent, &e);
@@ -1888,7 +1893,9 @@ impl Host<'_> {
             if status.is_none() && !late {
                 continue;
             }
-            let mut tail = tail_lines(&r.log, READY_TAIL, None);
+            // 登录 shell 自己打的启动、退出提示不算输出（#232，见 shell_noise）：tail_lines 已经去掉，
+            // 先多取几行，去掉噪声之后仍能凑满 READY_TAIL 行
+            let mut tail = tail_lines(&r.log, READY_TAIL + 5, None);
             let (ok, code) = match status {
                 Some(s) => (s.success(), exit_code(s)),
                 None => {
@@ -3366,6 +3373,42 @@ mod tests {
         std::fs::write(&f, vec![b'x'; 200]).unwrap();
         truncate_log(&f, 10, 10, 100).unwrap().unwrap();
         assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    /// 卡片 #232：环境检查在 `$SHELL -l -i -c` 里跑，CI 上没有终端，bash 往 stderr 打作业控制提示、退出时打 `logout`。
+    /// 这些不能进上报的 tail（不然界面显示「环境检查没通过：logout」）。真正的错误要留着
+    #[test]
+    fn ready_tail_skips_login_shell_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("ready-default-main.log");
+        std::fs::write(
+            &f,
+            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\nbash: no job control in this shell\nchecking\nmissing ok.txt\nlogout\n",
+        )
+        .unwrap();
+        let tail = tail_lines(&f, READY_TAIL + 5, None);
+        assert_eq!(tail, vec!["checking", "missing ok.txt"]);
+        // 只有噪声时 tail 是空的：调用方按退出码写原因，不显示 logout
+        std::fs::write(&f, "bash: no job control in this shell\nlogout\n").unwrap();
+        let tail = tail_lines(&f, READY_TAIL + 5, None);
+        assert!(tail.is_empty(), "{tail:?}");
+    }
+
+    /// 卡片 #232：Ubuntu 的 `/etc/bash.bashrc` 在登录 shell 里打 sudo 提示（本仓库 CI 的 ubuntu-latest 就有）。
+    /// 它和 bash 的作业控制提示一样不能进 tail、不能混进会话的「过程」
+    #[test]
+    fn ready_tail_skips_the_sudo_hint_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("ready-default-main.log");
+        std::fs::write(
+            &f,
+            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\nbash: no job control in this shell\nTo run a command as administrator (user \"root\"), use \"sudo <command>\".\nSee \"man sudo_root\" for details.\n\nchecking\nmissing ok.txt\n",
+        )
+        .unwrap();
+        assert_eq!(tail_lines(&f, READY_TAIL + 5, None), vec!["checking", "missing ok.txt"]);
+        // 会话的「原始输出」里也不出现（空行本来就不算内容）
+        let up: Vec<String> = upload_lines(new_lines(&f, 0, true).0, None).into_iter().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(up, vec!["checking", "missing ok.txt"]);
     }
 
     #[test]

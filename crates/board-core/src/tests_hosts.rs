@@ -2280,10 +2280,28 @@ fn ready_tail_drops_login_shell_noise_but_keeps_real_errors() {
     beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["bash: no job control in this shell", "cargo 1.91.0", "logout"])).unwrap();
     assert_eq!(host(&s, T0 + 3 * S).dirs[0].ready.as_ref().unwrap().tail, ["cargo 1.91.0"]);
     // 噪声的形状：只认固定的几行，普通输出、真正的错误不算
-    for line in ["logout", " bash: no job control in this shell ", "bash: cannot set terminal process group (-1): Inappropriate ioctl for device", "stty: standard input: Inappropriate ioctl for device"] {
+    for line in [
+        "logout",
+        " bash: no job control in this shell ",
+        "bash: cannot set terminal process group (-1): Inappropriate ioctl for device",
+        "stty: standard input: Inappropriate ioctl for device",
+        // Ubuntu/Debian 的 /etc/bash.bashrc 打的 sudo 提示（CI 的 ubuntu-latest 就有，卡片 #232 第二次失败）
+        "To run a command as administrator (user \"root\"), use \"sudo <command>\".",
+        "See \"man sudo_root\" for details.",
+    ] {
         assert!(hosts::shell_noise(line), "{line}");
     }
-    for line in ["", "zsh:1: command not found: cargo", "logout finished", "missing ok.txt", "checking", "stty -a failed"] {
+    for line in [
+        "",
+        "zsh:1: command not found: cargo",
+        "logout finished",
+        "missing ok.txt",
+        "checking",
+        "stty -a failed",
+        // 不是这两句固定形状的都不算：检查命令自己打的同类文字要留着
+        "To run a command as administrator",
+        "See \"man sudo_root\" for details",
+    ] {
         assert!(!hosts::shell_noise(line), "{line}");
     }
 }
