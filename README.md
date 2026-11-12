@@ -88,7 +88,21 @@ skill 自带 `board`：发版附件里的 `board-skills.zip` 解压后，`bin/` 
 node scripts/build-skill-bin.mjs --host   # 只编本机平台；不带 --host 时本机能交叉编译的平台都编
 ```
 
-人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH），或者从源码安装：
+人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH）。
+
+不装桌面端的机器（例如只有命令行的 Linux 服务器）用服务端提供的安装脚本，装的版本和服务端一致：
+
+```bash
+curl -fsSL https://board.example.com/install.sh | sh            # macOS、Linux：装到 ~/.local/bin
+```
+
+```powershell
+irm https://board.example.com/install.ps1 | iex                  # Windows：装到 %LOCALAPPDATA%\Board\bin
+```
+
+脚本从发版附件下载本平台的 `board` 压缩包，用 `board-sha256.txt` 校验（对不上就中止，不动已有的 `board`），目录不在 PATH 里时写进 shell 配置（只追加一次）。要让这台机器接任务，直接用界面「机器 → 添加机器」生成的那一行：它带着令牌、机器名、白板与目录，装好后接着 `board login`、`board host --install`。
+
+升级：`board update` 升级到服务端的版本，`board update --latest` 升级到最新发版（同样先校验再原地替换；桌面端自带的 `board` 跟着桌面端升级）。也可以从源码安装：
 
 ```bash
 cargo install --path crates/board-cli
@@ -135,6 +149,7 @@ agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以�
 ```bash
 board login --url <地址> --token <令牌>   # 写进 ~/.board/config.toml
 board doctor                  # 环境自检：地址和令牌来自哪里、能不能连上
+board update                  # 升级到服务端的版本（--latest：最新发版）；桌面端自带的跟着桌面端升级
 board check --as claude/opus-5.5         # 会话开始时占用名字
 board boards                  # 列出所有白板
 board flow                    # 查看当前白板的工作流

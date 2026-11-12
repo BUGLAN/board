@@ -2,15 +2,15 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
-import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
+import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { installSkill, isWindows, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, confirmCheck, openHost, openPicker, openSession, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
-import { LabelChip, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
+import { LabelChip, Segmented, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
@@ -1555,14 +1555,6 @@ function QueueRow({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
 }
 
 function AddHostBody({ close }: { close: () => void }) {
-  const path = useData(s => s.path);
-  // 就是这个页面的服务端地址（网页端、桌面端都一样，不写死地址）
-  const origin = typeof location !== 'undefined' ? location.origin : '<服务端地址>';
-  const login = `board login --url ${origin} --token bd_…`;
-  const run = `board host --name devbox --dir ${path || 'default/main'}=~/repo/board`;
-  const copy = async (t: string) => {
-    if (await copyText(t)) toast({ type: 'success', title: '已复制', text: t, duration: 1800 });
-  };
   return (
     <div className="drawer-body">
       <div className="d-head">
@@ -1598,22 +1590,143 @@ function AddHostBody({ close }: { close: () => void }) {
               </button>
             )}
           </section>
-          <section className="d-section">
-            <div className="d-label">只有命令行的机器（服务器、devbox）</div>
-            <p className="hp-note">先在「设置 → Agent 接入」新建一个访问令牌，登录一次：</p>
-            <button type="button" className="hp-cmd" onClick={() => copy(login)} data-tip="复制">
-              <code>{login}</code>
-              <Icon name="copy" />
-            </button>
-            <p className="hp-note">再在这台机器上常驻运行（--dir 可以写多个；也可以写进 ~/.board/config.toml 的 [host]）：</p>
-            <button type="button" className="hp-cmd" onClick={() => copy(run)} data-tip="复制">
-              <code>{run}</code>
-              <Icon name="copy" />
-            </button>
-            <p className="hp-note">Ctrl+C 退出：先结束它启动的 agent（卡片移到需要人处理的状态），再离线。</p>
-          </section>
+          <CliInstall />
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * 只有命令行的机器：填机器名、选白板和路径，「生成命令」时以机器名新建一个访问令牌，给出一行命令——
+ * 在新机器上执行就依次安装 board、board login、board host --install（装成服务，开机自动接任务）。
+ * 令牌原文只在这里显示这一次；生成之后再改机器名、目录，命令跟着变，令牌不变
+ */
+function CliInstall() {
+  const ws = useData(s => s.ws);
+  const path = useData(s => s.path);
+  const boards = allBoards(ws).map(b => b.path);
+  // 就是这个页面的服务端地址（网页端、桌面端都一样，不写死地址）
+  const origin = typeof location !== 'undefined' ? location.origin : '<服务端地址>';
+  const [os, setOs] = useState<'unix' | 'windows'>(isWindows ? 'windows' : 'unix');
+  const [name, setName] = useState('');
+  const [dirs, setDirs] = useState<{ board: string; path: string }[]>(() => [{ board: path || boards[0] || '', path: '' }]);
+  const [token, setToken] = useState<{ raw: string; name: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const nameErr = hostNameError(name);
+  const picked = dirs.filter(d => d.board);
+  const dirsErr = !picked.some(d => d.path.trim())
+    ? '至少给一块白板填上目录'
+    : new Set(picked.map(d => d.board)).size !== picked.length
+      ? '同一块白板写了两次'
+      : picked.some(d => !d.path.trim())
+        ? '选了白板的行都要填目录'
+        : null;
+  const err = nameErr ?? dirsErr;
+  const cmd = token && !err ? installCommand({ origin, token: token.raw, name, dirs, os }) : null;
+  const edit = (f: (v: typeof dirs) => typeof dirs) => setDirs(f);
+  const copy = async (t: string) => {
+    if (await copyText(t)) toast({ type: 'success', title: '已复制', text: '在新机器的终端里粘贴执行', duration: 1800 });
+  };
+  const generate = async () => {
+    if (err || busy) return;
+    setBusy(true);
+    try {
+      const r = await optimistic(null, () => api.createToken(name));
+      setToken({ raw: r.token, name: r.info.name });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="d-section">
+      <div className="d-label">只有命令行的机器（服务器、devbox）</div>
+      <p className="hp-note">填好机器名和要接的白板、目录，生成一行命令，在那台机器上执行：安装 board、登录、装成服务（开机自动接任务）。</p>
+      <div className="hp-add">
+        <div className="hp-add-row">
+          <span className="hp-add-k">系统</span>
+          <Segmented
+            value={os}
+            options={[
+              ['unix', 'macOS / Linux'],
+              ['windows', 'Windows'],
+            ]}
+            onChange={setOs}
+          />
+        </div>
+        <label className="hp-add-row">
+          <span className="hp-add-k">机器名</span>
+          <input
+            className="input mono"
+            value={name}
+            placeholder="devbox"
+            spellCheck={false}
+            autoComplete="off"
+            onChange={e => setName(e.target.value.toLowerCase().trim())}
+          />
+        </label>
+        <div className="hp-add-row top">
+          <span className="hp-add-k">白板与目录</span>
+          <div className="lh-dirs hp-add-dirs">
+            {dirs.map((d, i) => (
+              <div className="lh-dir" key={i}>
+                <Select
+                  value={d.board}
+                  options={[{ value: '', label: '选白板…' }, ...[...new Set([...boards, ...(d.board ? [d.board] : [])])].map(b => ({ value: b, label: b }))]}
+                  onChange={val => edit(v => v.map((x, j) => (j === i ? { ...x, board: val } : x)))}
+                  aria-label="白板"
+                />
+                <Icon name="move" />
+                <input
+                  className="input"
+                  value={d.path}
+                  placeholder={os === 'windows' ? 'C:\\repo\\board' : '~/repo/board'}
+                  spellCheck={false}
+                  onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
+                  aria-label="目录"
+                />
+                {dirs.length > 1 && (
+                  <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => edit(v => v.filter((_, j) => j !== i))}>
+                    <Icon name="close" />
+                  </button>
+                )}
+              </div>
+            ))}
+            <div className="lh-actions">
+              <button className="btn sm" type="button" onClick={() => edit(v => [...v, { board: boards.find(b => !v.some(x => x.board === b)) ?? '', path: '' }])}>
+                <Icon name="plus" />
+                加一块白板
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      {!token ? (
+        <div className="hp-add-go">
+          <button className={cx('btn sm brand', busy && 'is-busy')} type="button" disabled={!!err || busy} onClick={() => void generate()}>
+            <Icon name="key" />
+            生成命令
+          </button>
+          <span className="hp-note">{err ?? `会新建一个名为「${name}」的访问令牌，命令里带着它`}</span>
+        </div>
+      ) : (
+        <>
+          {cmd ? (
+            <button type="button" className="hp-cmd" onClick={() => copy(cmd)} data-tip="复制">
+              <code>{cmd}</code>
+              <Icon name="copy" />
+            </button>
+          ) : (
+            <p className="hp-note lh-warn">{err}</p>
+          )}
+          <p className="hp-note">
+            令牌「{token.name}」的原文只在这里显示这一次，关掉弹窗后看不到了；不再用这台机器时在「设置 → Agent 接入」吊销它。
+            {os === 'windows' ? '在 PowerShell 里执行。' : '在终端里执行（装到 ~/.local/bin）。'}执行完几分钟内，这台机器会出现在列表里并在线。
+          </p>
+        </>
+      )}
+    </section>
   );
 }

@@ -753,3 +753,22 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   .ss-cards { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 18px; overflow: visible; }
   .ss-out { overflow: visible; }
 }
+
+/* 添加机器：命令行机器的表单（机器名、白板与目录）和生成命令 */
+.hp-add { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 14px; }
+.hp-add-row { display: flex; align-items: center; gap: 12px; }
+.hp-add-row.top { align-items: flex-start; }
+.hp-add-row.top .hp-add-k { padding-top: 7px; }
+.hp-add-k { flex: none; width: 76px; font-size: 12.5px; color: var(--text-2); }
+.hp-add-row > .input { flex: 1; max-width: 280px; height: 32px; padding: 0 10px; font-size: 12.5px; }
+.hp-add-dirs { flex: 1; min-width: 0; padding-bottom: 0; }
+.hp-add-dirs .lh-dir .input.sel { width: 170px; }
+.hp-add-go { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.hp-add-go .hp-note { margin: 0; }
+@media (max-width: 560px) {
+  .hp-add-row, .hp-add-row.top { flex-direction: column; align-items: stretch; gap: 6px; }
+  .hp-add-row.top .hp-add-k { padding-top: 0; }
+  .hp-add-row > .input { max-width: none; }
+  .hp-add-dirs .lh-dir { flex-wrap: wrap; }
+  .hp-add-dirs .lh-dir .input.sel { width: 100%; }
+}

@@ -37,6 +37,16 @@
 5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码和日志最后 20 行。
 6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
 
+## 在一台新机器上装 `board`、接任务
+
+只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行命令：填机器名、选白板和路径，界面以机器名新建一个访问令牌，给出
+
+```sh
+curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --dir <项目>/<白板>=<路径> --service
+```
+
+（Windows 是一行 PowerShell）。它从发版附件下载本平台的 `board`、校验 SHA-256（对不上就中止）、装到 `~/.local/bin` 并写进 PATH，然后 `board login`、`board host --install`（装成系统服务，开机自动接任务）。装的 `board` 和服务端同一个版本；之后服务端升级了，在机器详情「管理」里点「升级到 <版本>」，或在那台机器上执行 `board update`。agent 本身（Claude Code、Codex……）和 `board-skills` 仍要在那台机器上自己装好，见下面两节。
+
 ## 一个 agent 要满足什么
 
 接入前逐条验证（「本机验证」一节有命令）：

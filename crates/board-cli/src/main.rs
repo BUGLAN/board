@@ -14,6 +14,7 @@ mod envs;
 mod heartbeat;
 mod host;
 mod logfmt;
+mod update;
 
 use backend::{env, Backend, BoardData, Remote};
 use board_core::*;
@@ -28,12 +29,13 @@ const VALUE_FLAGS: [&str; 21] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait",
 ];
-const BOOL_FLAGS: [&str; 10] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force"];
+const BOOL_FLAGS: [&str; 11] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 25] = [
+const COMMANDS: [(&str, &str, &str); 26] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
+        ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
         ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
         ("heartbeat", "start | stop [--force] | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；名字是本机另一个还在运行的 agent 进程 check 的时，start、stop 都拒绝（NAME_TAKEN），--force 清理本机残留时用；final <ID>：结束这张卡片这一次的计时"),
@@ -105,7 +107,7 @@ fn borrowed(tokens: &[String]) -> Option<String> {
     if a.flag("--help") || a.flag("-h") || a.flag("--version") || a.flag("-V") {
         return None;
     }
-    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "doctor" | "help" | "host" | "dispatch") || (sub == "beat" && a.pos.len() == 1) {
+    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch") || (sub == "beat" && a.pos.len() == 1) {
         return None;
     }
     let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))?;
@@ -287,6 +289,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     }
     if sub == "logout" {
         return logout(json, p);
+    }
+    // 升级：只读服务端地址（不需要令牌），不需要名字和白板
+    if sub == "update" {
+        return update::run(a.flag("--latest"), json, p);
     }
 
     // 任务下发：board host 在前台一直运行；board host rename 不需要名字（带了也只当参数）；board dispatch 不需要名字（带了就记为发起人）

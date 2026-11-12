@@ -13,8 +13,12 @@ export default defineConfig({
     strictPort: true,
     // 设置页内嵌了仓库根目录下的 .agents/skills/board-skills/SKILL.md
     fs: { allow: ['..'] },
-    // /auth：GitHub 登录与回调
-    proxy: { '/api': { target: api, changeOrigin: true }, '/auth': { target: api, changeOrigin: true } },
+    // /auth：GitHub 登录与回调；/install.sh、/install.ps1：命令行版 board 的安装脚本（「添加机器」给出的命令用）
+    proxy: {
+      '/api': { target: api, changeOrigin: true },
+      '/auth': { target: api, changeOrigin: true },
+      '^/install\\.(sh|ps1)$': { target: api, changeOrigin: true },
+    },
   },
   build: {
     target: 'es2022',

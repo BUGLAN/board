@@ -1255,7 +1255,7 @@ impl Host<'_> {
         let log = self.logs.join("update.log");
         let started = std::fs::File::create(&log).and_then(|out| out.try_clone().map(|err| (out, err))).and_then(|(out, err)| {
             let mut c = Command::new(&self.exe);
-            c.arg("update").stdin(Stdio::null()).stdout(out).stderr(err).env("NO_COLOR", "1");
+            c.arg("update").stdin(Stdio::null()).stdout(out).stderr(err).env("NO_COLOR", "1").env("BOARD_UPDATE_BY_HOST", "1");
             envs::detach(&mut c);
             c.spawn()
         });

@@ -213,3 +213,29 @@ const places = (as: HostAgent[]) => [...new Set(as.map(a => (a.no_skill ?? '').s
 /** 本机桌面端跑的 board host 就是这台机器：配置里的机器名（空就是默认的主机名）和机器名一致，并且正在跑 */
 export const isLocalHost = (h: HostInfo, local: { running: boolean; name: string; defaultName: string } | null) =>
   !!local?.running && (local.name.trim() || local.defaultName) === h.name;
+
+/* ------------------------------ 添加机器：一行安装命令 ------------------------------ */
+
+/** 机器名的规则（和 board-core 的 check_host_name 一样）：不对时返回原因 */
+export function hostNameError(name: string): string | null {
+  if (!name) return '填一个机器名';
+  if (name.length > 24 || !/^[a-z0-9][a-z0-9.-]*$/.test(name)) return '机器名只能用小写字母、数字、. 和 -，以字母或数字开头，最长 24 个字符';
+  return null;
+}
+
+const shQuote = (s: string) => (/^[A-Za-z0-9_./:=@%+~-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;
+
+/**
+ * 「添加机器」给命令行机器的那一行（PRD §10.12）：下载服务端的安装脚本 → 安装 board → board login → board host --install。
+ * macOS / Linux 是 curl | sh，Windows 是一行 PowerShell；值里有空格、引号时加引号
+ */
+export function installCommand(o: { origin: string; token: string; name: string; dirs: { board: string; path: string }[]; os: 'unix' | 'windows' }): string {
+  const dirs = o.dirs.filter(d => d.board && d.path.trim()).map(d => `${d.board}=${d.path.trim()}`);
+  if (o.os === 'windows') {
+    const dir = dirs.length ? ` -Dir ${dirs.map(psQuote).join(',')}` : '';
+    return `& ([scriptblock]::Create((irm ${psQuote(`${o.origin}/install.ps1`)}))) -Token ${psQuote(o.token)} -Name ${psQuote(o.name)}${dir} -Service`;
+  }
+  const dir = dirs.map(d => ` --dir ${shQuote(d)}`).join('');
+  return `curl -fsSL ${shQuote(`${o.origin}/install.sh`)} | sh -s -- --token ${shQuote(o.token)} --name ${shQuote(o.name)}${dir} --service`;
+}

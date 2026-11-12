@@ -20,6 +20,8 @@ FROM rust:1.91-bookworm AS server
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
+# 服务端把安装脚本打包进来（/install.sh、/install.ps1）
+COPY scripts/install.sh scripts/install.ps1 scripts/
 # 工作区成员；只编译 board-server，不编译桌面端
 COPY src-tauri src-tauri
 COPY --from=web /src/web/dist web/dist

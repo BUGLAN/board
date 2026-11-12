@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, checkFor, hostLoad, inSession, isLocalHost, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
+import { boardHosts, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -166,5 +166,42 @@ describe('sessionGroups（机器详情「最近」按会话合成一行）', () 
     ]);
     // 旧版服务端没有 session：按自己的 ID
     expect(sessionGroups([{ id: 7, endedAt: 1, createdAt: 0 } as unknown as Dispatch]).map(x => x.session)).toEqual([7]);
+  });
+});
+
+describe('添加机器：一行安装命令', () => {
+  const base = { origin: 'https://board.example.com', token: 'bd_abc', name: 'devbox' };
+  it('macOS / Linux：curl | sh，带令牌、机器名、白板与目录、--service', () => {
+    expect(installCommand({ ...base, os: 'unix', dirs: [{ board: 'default/main', path: '~/repo/board' }] })).toBe(
+      'curl -fsSL https://board.example.com/install.sh | sh -s -- --token bd_abc --name devbox --dir default/main=~/repo/board --service',
+    );
+  });
+  it('路径里有空格、引号时加引号；没填完的行不带', () => {
+    const c = installCommand({
+      ...base,
+      os: 'unix',
+      dirs: [
+        { board: 'a/b', path: "/srv/my repo/it's" },
+        { board: 'c/d', path: '  ' },
+        { board: '', path: '/x' },
+      ],
+    });
+    expect(c).toContain(`--dir 'a/b=/srv/my repo/it'\\''s' --service`);
+    expect(c).not.toContain('c/d');
+    expect(c).not.toContain('/x');
+  });
+  it('Windows：一行 PowerShell，多个目录用逗号分开', () => {
+    expect(
+      installCommand({ ...base, os: 'windows', dirs: [{ board: 'default/main', path: 'C:\\repo\\board' }, { board: 'x/y', path: "D:\\it's" }] }),
+    ).toBe(
+      "& ([scriptblock]::Create((irm 'https://board.example.com/install.ps1'))) -Token 'bd_abc' -Name 'devbox' -Dir 'default/main=C:\\repo\\board','x/y=D:\\it''s' -Service",
+    );
+  });
+  it('机器名的规则和服务端一致', () => {
+    expect(hostNameError('devbox-1.lan')).toBeNull();
+    expect(hostNameError('')).toBeTruthy();
+    expect(hostNameError('DevBox')).toBeTruthy();
+    expect(hostNameError('-x')).toBeTruthy();
+    expect(hostNameError('a'.repeat(25))).toBeTruthy();
   });
 });

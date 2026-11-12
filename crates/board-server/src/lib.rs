@@ -10,6 +10,7 @@
 //! - `POST /api/files`、`GET /api/files/{id}`：卡片附件（上传、读取）
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
+//! - `GET /install.sh`、`/install.ps1`：命令行版 board 的安装脚本，不需要登录（`install`）
 //! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`）/ 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/layout/saved`、`…/layout/apply`（白板设置：保存、应用布局）、`…/order`（白板设置：保存顺序）、`…/{状态}`（修改、删除）
 //! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
@@ -22,6 +23,7 @@
 pub mod agents;
 pub mod auth;
 pub mod hosts;
+pub mod install;
 
 use auth::{Auth, Caller};
 use axum::{
@@ -270,7 +272,10 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .nest("/api", api)
         .route("/auth/github", get(auth::login))
         .route("/auth/github/callback", get(auth::callback))
-        .route("/auth/desktop", get(auth::desktop));
+        .route("/auth/desktop", get(auth::desktop))
+        // 命令行版 board 的安装脚本：新机器上还没有令牌，不需要登录
+        .route("/install.sh", get(install::sh))
+        .route("/install.ps1", get(install::ps1));
     if cfg.serve_web {
         app = app.fallback(get(static_file));
     }
@@ -391,7 +396,7 @@ fn spawn_background(state: AppState) {
 
 /* ------------------------------ 读 ------------------------------ */
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 编译时的提交号，见 build.rs
 pub const COMMIT: &str = env!("BOARD_COMMIT");
 
