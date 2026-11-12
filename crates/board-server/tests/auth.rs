@@ -451,31 +451,48 @@ fn local_mode_needs_no_login_but_only_local_hosts() {
     assert_eq!(r.code(), "INVALID_TOKEN");
 }
 
-/// 打开实时推送，返回一个通道：推送连接断开时收到消息
-fn open_stream(url: &str, cookie: &str) -> std::sync::mpsc::Receiver<()> {
-    let res = agent().get(format!("{url}/api/stream")).header("cookie", cookie).call().unwrap();
-    assert_eq!(res.status().as_u16(), 200);
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut r = res.into_body().into_reader();
-        let _ = std::io::copy(&mut r, &mut std::io::sink());
-        let _ = tx.send(());
-    });
-    rx
+/// 一条打开的实时推送。`ready` 在读到服务端发的第一帧后收到消息——那一帧是在订阅注册好之后才发的，
+/// 所以测试用它等订阅建立，代替「先 sleep 200 毫秒」：慢机器上 sleep 到了订阅也可能还没注册，测试会误判。
+/// `closed` 在推送连接断开时收到消息
+struct Stream {
+    ready: std::sync::mpsc::Receiver<()>,
+    closed: std::sync::mpsc::Receiver<()>,
 }
 
-/// 用访问令牌打开实时推送，返回一个通道：推送连接断开时收到消息
-fn open_token_stream(url: &str, token: &str) -> std::sync::mpsc::Receiver<()> {
-    let bearer = format!("Bearer {token}");
-    let res = agent().get(format!("{url}/api/stream")).header("authorization", &bearer).call().unwrap();
+impl Stream {
+    /// 等到服务端发出第一帧：订阅已经注册，之后的吊销 / 退出才会断开这条推送
+    fn wait_ready(&self) {
+        self.ready.recv_timeout(std::time::Duration::from_secs(10)).expect("推送应当在 10 秒内发来第一帧（那时订阅已经建立）");
+    }
+}
+
+/// 把一条 200 的推送响应挂到后台线程：先读第一帧报就绪，然后一直读到断开
+fn open(res: ureq::http::Response<ureq::Body>) -> Stream {
     assert_eq!(res.status().as_u16(), 200);
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready) = std::sync::mpsc::channel();
+    let (closed_tx, closed) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut r = res.into_body().into_reader();
+        let mut r = std::io::BufReader::new(res.into_body().into_reader());
+        let mut first = String::new();
+        // 读到第一帧（`data: {...}`）说明订阅已经在服务端注册好；读不到（已经断开）就不报就绪
+        if std::io::BufRead::read_line(&mut r, &mut first).unwrap_or(0) > 0 {
+            let _ = ready_tx.send(());
+        }
         let _ = std::io::copy(&mut r, &mut std::io::sink());
-        let _ = tx.send(());
+        let _ = closed_tx.send(());
     });
-    rx
+    Stream { ready, closed }
+}
+
+/// 用会话 Cookie 打开实时推送
+fn open_stream(url: &str, cookie: &str) -> Stream {
+    open(agent().get(format!("{url}/api/stream")).header("cookie", cookie).call().unwrap())
+}
+
+/// 用访问令牌打开实时推送
+fn open_token_stream(url: &str, token: &str) -> Stream {
+    let bearer = format!("Bearer {token}");
+    open(agent().get(format!("{url}/api/stream")).header("authorization", &bearer).call().unwrap())
 }
 
 #[test]
@@ -494,11 +511,12 @@ fn revoke_closes_that_tokens_stream() {
     let (tb, _) = &tokens[1];
     let sa = open_token_stream(&s.url, ta);
     let sb = open_token_stream(&s.url, tb);
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    sa.wait_ready();
+    sb.wait_ready();
     let r = send("DELETE", &format!("{}/api/tokens/{ia}", s.url), &ui, None);
     assert_eq!(r.status, 200);
-    sa.recv_timeout(std::time::Duration::from_secs(1)).expect("被吊销的令牌：推送应当断开");
-    assert!(sb.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "另一个令牌的推送不受影响");
+    sa.closed.recv_timeout(std::time::Duration::from_secs(3)).expect("被吊销的令牌：推送应当断开");
+    assert!(sb.closed.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "另一个令牌的推送不受影响");
     // 重新连接被拒绝
     let bearer = format!("Bearer {ta}");
     let r = send("GET", &format!("{}/api/stream", s.url), &[("authorization", &bearer)], None);
@@ -512,11 +530,12 @@ fn logout_closes_that_sessions_stream() {
     let b = session(&s);
     let sa = open_stream(&s.url, &a);
     let sb = open_stream(&s.url, &b);
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    sa.wait_ready();
+    sb.wait_ready();
     let r = send("POST", &format!("{}/api/auth/logout", s.url), &[("cookie", &a), UI], None);
     assert_eq!(r.status, 200);
-    sa.recv_timeout(std::time::Duration::from_secs(3)).expect("退出的会话：推送应当断开");
-    assert!(sb.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "另一个会话的推送不受影响");
+    sa.closed.recv_timeout(std::time::Duration::from_secs(3)).expect("退出的会话：推送应当断开");
+    assert!(sb.closed.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "另一个会话的推送不受影响");
     // 重新连接被拒绝
     let r = send("GET", &format!("{}/api/stream", s.url), &[("cookie", &a)], None);
     assert_eq!((r.status, r.code()), (401, "NOT_LOGGED_IN"));

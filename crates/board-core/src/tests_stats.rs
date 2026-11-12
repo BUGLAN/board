@@ -1,5 +1,6 @@
 //! 大盘的验收标准（大盘需求「验收标准」，PRD §13）：流转记录的回填与写入、统计口径。
 
+use crate::hosts::EndHow;
 use crate::stats::{Scope, Stats, StatsQuery};
 use crate::*;
 
@@ -56,6 +57,85 @@ fn stats(s: &Store, scope: Scope, path: Option<&str>, from: i64, to: i64, tz: &s
 
 fn count(s: &Store, sql: &str) -> i64 {
     s.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/* ------------------------------ 机器与派发：走生产的写入路径 ------------------------------ */
+
+// 大盘的「按 agent」「领取明细」靠 `dispatches`（名字合并成 agent/机器）和 `card_runs`（每次领取的 how）两张表。
+// 这里不直接写 SQL：派发、board host 的上报、开始、结束都调到生产用的那几个入口，守卫它们改坏了：
+// 超时那次是不是真的记成了 `how = timeout`、派发启动的名字是不是真的能合并，都由这些写入路径自己决定。
+
+const HOST: &str = "mbp";
+const INSTANCE: &str = "i1";
+
+/// 一台在线的机器：有 default/main 的目录，找得到 claude（模型 opus-5.5，默认 agent）
+fn host_report(running: Vec<i64>) -> HostReport {
+    HostReport {
+        name: HOST.into(),
+        instance: INSTANCE.into(),
+        resume: None,
+        os: "macOS 15.4".into(),
+        version: "0.1.20".into(),
+        agents: vec![HostAgent {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            version: "2.4.1".into(),
+            found: true,
+            model: "opus-5.5".into(),
+            ..Default::default()
+        }],
+        envs: vec![],
+        dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }],
+        dirs_rev: 0,
+        running,
+        done: false,
+        asked: None,
+        ask_error: None,
+        selftest: false,
+        skills: None,
+        mcp: None,
+    }
+}
+
+/// board host 每 10 秒一次的上报。`running` 是本机有进程的派发：服务端替它们的名字发心跳（维持名字在线和卡片持有）
+fn beat(s: &mut Store, at: i64, running: Vec<i64>) {
+    s.write(at, Origin::cli(), |w| w.host_beat(&host_report(running), Some(1))).unwrap();
+}
+
+/// 界面上派发一张卡片给这台机器的 Claude Code
+fn dispatch(s: &mut Store, at: i64, card: i64) -> Dispatch {
+    s.write(at, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.dispatch_create(&b, card, HOST, Some("claude"), &Actor::human())
+    })
+    .unwrap()
+}
+
+/// board host 开始这次派发：以生成的名字领取卡片，返回的 `name` 就是这次领取的名字
+fn begin(s: &mut Store, at: i64, id: i64) -> Dispatch {
+    s.write(at, Origin::cli(), |w| w.dispatch_begin(HOST, INSTANCE, id, Some(1))).unwrap()
+}
+
+/// board host 上报派发结束（退出、超时）
+fn end(s: &mut Store, at: i64, id: i64, how: EndHow, why: Option<&str>) -> Dispatch {
+    s.write(at, Origin::cli(), |w| w.dispatch_end(id, Some(0), &[], how, why)).unwrap()
+}
+
+/// agent 交审：心跳 final，再沿连线移到「待审核」
+fn submit(s: &mut Store, at: i64, name: &str, id: i64) {
+    let a = Actor::agent(name);
+    exec(s, B, &a, at, Cmd::Beat { id, done: true });
+    mv(s, B, &a, at, id, "review");
+}
+
+fn column(s: &Store, id: i64) -> String {
+    s.read(|r| {
+        let b = r.resolve(B)?;
+        r.card(&b, id)
+    })
+    .unwrap()
+    .card
+    .column
 }
 
 /// 验收 1：回填后 moves 里「移动」的行数等于 activity 里 action = 'move' 的行数；改过名的状态回填后 key 为 NULL、名称保留
@@ -253,68 +333,84 @@ fn project_and_all_add_up() {
     assert!(p.life.is_some());
 }
 
-/// 验收 11、12：派发启动的 claude/mbp-1、claude/mbp-2 合并成一行 claude/mbp；心跳中断的那次是异常退出
+/// 验收 11、12：派发启动的两次领取、名字里的模型和序号不同，在大盘里合并成一行 claude/mbp；心跳中断的那次是异常退出
 #[test]
 fn dispatch_names_merge_and_lost_runs() {
     let mut s = store();
     let a = new(&mut s, B, BASE, "一");
     let b = new(&mut s, B, BASE, "二");
-    work(&mut s, B, "claude/mbp-1", a, BASE + MIN, BASE + 10 * MIN);
-    // 第二张：开始心跳后就断了
-    let x = Actor::agent("claude/mbp-2");
-    exec(&mut s, B, &x, BASE + MIN, Cmd::Claim { id: Some(b) });
-    exec(&mut s, B, &x, BASE + MIN + 30_000, Cmd::Beat { id: b, done: false });
-    s.sweep(BASE + 10 * MIN).unwrap();
-    for (name, card) in [("claude/mbp-1", a), ("claude/mbp-2", b)] {
-        s.conn()
-            .execute(
-                "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, name, source, by_kind, by_name, state, created_at)
-                 VALUES (1, ?1, 't', 1, 'mbp', 'claude', 'Claude Code', ?2, 'manual', 'human', '', 'done', 0)",
-                rusqlite::params![card, name],
-            )
-            .unwrap();
+    beat(&mut s, BASE, vec![]);
+    // 第一张：派发、领取、每 40 秒一次心跳（board host 的上报替名字发），10 分钟后交审
+    let da = dispatch(&mut s, BASE, a);
+    let da = begin(&mut s, BASE + MIN, da.id);
+    let name = da.name.clone().expect("开始之后就有名字");
+    assert_eq!(name, "claude-mbp/opus-5.5", "名字是 <agent>-<机器>/<模型>");
+    let mut t = BASE + MIN;
+    while t < BASE + 10 * MIN {
+        beat(&mut s, t, vec![da.id]);
+        t += 40_000;
     }
+    submit(&mut s, BASE + 10 * MIN, &name, a);
+    let da = end(&mut s, BASE + 10 * MIN, da.id, EndHow::Exit, None);
+    assert_eq!(da.result.as_deref(), Some("review"));
+    // 第二张：领取、一次心跳之后心跳就断了
+    let db = dispatch(&mut s, BASE + 10 * MIN, b);
+    let db = begin(&mut s, BASE + 10 * MIN, db.id);
+    assert_eq!(db.name.clone().unwrap(), name, "上一个会话结束后名字可以复用");
+    beat(&mut s, BASE + 10 * MIN + 10_000, vec![db.id]);
+    s.sweep(BASE + 20 * MIN).unwrap();
+
     let st = stats(&s, Scope::Board, Some(B), BASE, BASE + HOUR, "UTC", BASE + DAY);
-    assert_eq!(st.agents.len(), 1);
+    assert_eq!(st.agents.len(), 1, "两次派发合并成一行：{:?}", st.agents.iter().map(|a| &a.agent).collect::<Vec<_>>());
     assert_eq!(st.agents[0].agent, "claude/mbp");
     assert_eq!((st.agents[0].claims, st.agents[0].lost), (2, 1));
     let lost: Vec<&str> = st.runs.iter().filter(|r| r.card == b).map(|r| r.result).collect();
     assert_eq!(lost, vec!["lost"]);
-    assert_eq!(st.runs.iter().find(|r| r.card == a).map(|r| (r.agent.as_str(), r.name.as_str())), Some(("claude/mbp", "claude/mbp-1")));
+    let first: Vec<(&str, &str, &str)> = st.runs.iter().filter(|r| r.card == a).map(|r| (r.agent.as_str(), r.name.as_str(), r.result)).collect();
+    assert_eq!(first, vec![("claude/mbp", name.as_str(), "review")]);
 }
 
 /// #198 验收 5：board host 按机器的兜底设置结束了这次领取（card_runs.how = timeout），
-/// 大盘「按 agent」里算进异常退出，「领取明细」的结果也是异常退出
+/// 大盘「按 agent」里算进异常退出，「领取明细」的结果也是异常退出。
+///
+/// 走生产的写入路径：派发、开始、board host 上报结束都是真的入口，`how = timeout` 由服务端自己写，
+/// 测试不碰 `card_runs` / `dispatches` 两张表。
 #[test]
 fn timeout_runs_count_as_lost() {
     let mut s = store();
+    // 两张卡同时排着：一张派发后被停下来（超时），另一张之后照常派发、交审
     let a = new(&mut s, B, BASE, "一");
-    work(&mut s, B, "claude/mbp-1", a, BASE + MIN, BASE + 10 * MIN);
     let b = new(&mut s, B, BASE, "二");
-    // 领取、心跳，然后 board host 按兜底设置结束了它：这一次记成 how = timeout
-    let x = Actor::agent("claude/mbp-2");
-    exec(&mut s, B, &x, BASE + MIN, Cmd::Claim { id: Some(b) });
-    exec(&mut s, B, &x, BASE + MIN + 20_000, Cmd::Beat { id: b, done: false });
-    s.conn()
-        .execute(
-            "UPDATE card_runs SET ended_at = ?1, how = 'timeout' WHERE board = 1 AND card = ?2 AND ended_at IS NULL",
-            rusqlite::params![BASE + 20 * MIN, b],
-        )
-        .unwrap();
-    for (name, card) in [("claude/mbp-1", a), ("claude/mbp-2", b)] {
-        s.conn()
-            .execute(
-                "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, name, source, by_kind, by_name, state, created_at)
-                 VALUES (1, ?1, 't', 1, 'mbp', 'claude', 'Claude Code', ?2, 'manual', 'human', '', 'done', 0)",
-                rusqlite::params![card, name],
-            )
-            .unwrap();
-    }
+    beat(&mut s, BASE, vec![]);
+    let da = dispatch(&mut s, BASE, a);
+    let da = begin(&mut s, BASE + MIN, da.id);
+    assert_eq!(da.state.as_str(), "running");
+    beat(&mut s, BASE + MIN, vec![da.id]);
+    // board host 到时间停下它，上报的 `how` 是超时：服务端把它记成 card_runs.how = timeout
+    let why = "运行超过 30 分钟，board host 停止了它";
+    let done = s.write(BASE + 20 * MIN, Origin::cli(), |w| w.dispatch_end(da.id, Some(137), &[], EndHow::Timeout, Some(why))).unwrap();
+    assert_eq!((done.state.as_str(), done.result.as_deref()), ("done", Some("timeout")));
+    // 超时按异常退出的规则处理：卡片离开进行中，没有错误节点时去需要人处理的状态，评论写明原因
+    assert_eq!(column(&s, a), "check", "超时的卡片去需要人处理的状态");
+    let acts: Vec<String> = s.read(|r| r.card(&r.resolve(B)?, a)).unwrap().activity.into_iter().map(|x| x.text).collect();
+    assert!(acts.iter().any(|t| t.contains(why)), "评论里写明原因：{acts:?}");
+
+    // 另一张后来才派发：名字要等上一个会话结束后才能复用，这里用同一个名字做第二次领取
+    let db = dispatch(&mut s, BASE + 21 * MIN, b);
+    let db = begin(&mut s, BASE + 21 * MIN, db.id);
+    assert_eq!(db.name, da.name, "上一次结束后同一个 agent/机器的名字复用");
+    beat(&mut s, BASE + 21 * MIN, vec![db.id]);
+    // 同一刻交审：心跳和移走要在一起，隔得太久卡片已经按心跳中断释放了
+    submit(&mut s, BASE + 21 * MIN, db.name.as_deref().unwrap(), b);
+    end(&mut s, BASE + 21 * MIN, db.id, EndHow::Exit, None);
+
     let st = stats(&s, Scope::Board, Some(B), BASE, BASE + HOUR, "UTC", BASE + DAY);
     assert_eq!(st.agents.len(), 1);
     assert_eq!((st.agents[0].claims, st.agents[0].lost), (2, 1), "超时算进异常退出");
-    let lost: Vec<&str> = st.runs.iter().filter(|r| r.card == b).map(|r| r.result).collect();
+    let lost: Vec<&str> = st.runs.iter().filter(|r| r.card == a).map(|r| r.result).collect();
     assert_eq!(lost, vec!["lost"], "领取明细里也是异常退出");
+    let ok: Vec<&str> = st.runs.iter().filter(|r| r.card == b).map(|r| r.result).collect();
+    assert_eq!(ok, vec!["review"], "另一张照常记成交审");
 }
 
 /// 验收 13 的数据：待复盘最久的一张等了多久；正在卡着的卡按停的时间排
