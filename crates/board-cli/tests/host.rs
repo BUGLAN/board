@@ -13,6 +13,11 @@ use std::time::{Duration, Instant};
 const FAKE: &str = r#"#!/bin/sh
 # 假 agent：$1 是提示词；按 $FAKE_DIR/mode 决定做什么
 if [ "$1" = "--version" ]; then echo "9.9.9 (fake)"; exit 0; fi
+# 自检问的那一句：答出 skill 的名字；mode 是 nologin 时像没登录的 Claude Code 那样报错退出
+case "$1" in *不要执行任何命令*)
+  if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = "nologin" ]; then echo "Not logged in · Please run /login"; exit 1; fi
+  printf 'board-skills\n参数\n'; exit 0 ;;
+esac
 # 一行都不输出（Claude Code -p 运行中就是这样）：不该按「没输出多久算卡住」停止。放在前面，下面几行也不打
 if [ "$(cat "$FAKE_DIR/mode")" = "quiet" ]; then
   echo $$ > "$FAKE_DIR/agent.pid"
@@ -909,4 +914,67 @@ fn pause_all_and_stop_all_from_ui() {
     assert_eq!(code, 0, "{out}");
     let (code, out) = stop(b);
     assert_eq!(code, 0, "{out}");
+}
+
+/* ------------------------------ 自检（PRD §10.12「自检」） ------------------------------ */
+
+/// #191：界面上请求自检，board host 在后台用假 agent 问一句、对白板目录做 git fetch 和 push --dry-run，回报结果；
+/// 假 agent 说没登录、origin 指向不存在的地址时对应的项失败并写明原因，远端不会出现 board-selftest 分支
+#[test]
+fn selftest_checks_agent_git_and_version() {
+    let rig = Rig::new();
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    let sh = |script: &str| {
+        let out = Command::new("sh").arg("-c").arg(script).current_dir(&root).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    sh("git init -q --bare origin.git && cd repo && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && git remote add origin ../origin.git && git push -q origin HEAD:refs/heads/main");
+    rig.mode("review");
+    let host = rig.host("mbp");
+    let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
+    wait_until("mbp 上线", Duration::from_secs(20), || online(&rig));
+    let ask = |agent: Option<&str>| {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_selftest("mbp", agent, "octocat")).unwrap()
+    };
+    let done = |rig: &Rig| {
+        let h = rig.workspace()["hosts"][0].clone();
+        (h["selftest"]["ask"].is_null() && h["selftest"]["items"].as_array().is_some_and(|i| !i.is_empty())).then_some(h)
+    };
+    let item = |h: &Value, kind: &str| h["selftest"]["items"].as_array().unwrap().iter().find(|i| i["kind"] == kind).cloned().unwrap_or(Value::Null);
+    ask(None);
+    let begun = Instant::now();
+    while done(&rig).is_none() && begun.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let Some(h) = done(&rig) else {
+        let ws = rig.workspace();
+        let (_, out) = stop(host);
+        panic!("自检没做完：{}\n{out}", ws["hosts"][0]["selftest"]);
+    };
+    assert_eq!(item(&h, "agent")["key"], "claude", "{h}");
+    assert_eq!(item(&h, "agent")["ok"], true, "{h}");
+    assert_eq!(item(&h, "git")["ok"], true, "{h}");
+    assert_eq!(item(&h, "version")["ok"], true, "{h}");
+    assert!(item(&h, "agent")["at"].as_i64().unwrap() > 0);
+    let agents: Vec<&Value> = h["selftest"]["items"].as_array().unwrap().iter().filter(|i| i["kind"] == "agent").collect();
+    assert_eq!(agents.len(), 1, "找不到命令的 dsh、pi、codex 不查：{h}");
+
+    // 没登录、origin 指向不存在的地址
+    rig.mode("nologin");
+    sh("cd repo && git remote set-url origin /nope/missing.git");
+    ask(None);
+    wait_until("第二次自检做完", Duration::from_secs(30), || done(&rig).is_some_and(|h| item(&h, "agent")["ok"] == false));
+    let h = done(&rig).unwrap();
+    assert!(item(&h, "agent")["why"].as_str().unwrap().starts_with("没有登录：Not logged in"), "{h}");
+    let git = item(&h, "git");
+    assert_eq!(git["ok"], false, "{h}");
+    assert!(git["why"].as_str().unwrap().contains("远端仓库不存在"), "{git}");
+    let refs = Command::new("git").args(["-C", root.join("origin.git").to_str().unwrap(), "for-each-ref"]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&refs.stdout).contains("board-selftest"), "dry-run 不会推上去");
+    let ops: Vec<String> = h["ops"].as_array().unwrap().iter().map(|o| o["text"].as_str().unwrap().to_string()).collect();
+    assert!(ops.iter().any(|t| t.starts_with("自检通过")) && ops.iter().any(|t| t.contains("没通过")), "{ops:?}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("请求自检") && out.contains("自检做完"), "{out}");
 }

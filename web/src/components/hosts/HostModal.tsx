@@ -14,8 +14,9 @@ import { LabelChip, Segmented, Select, Sync, Title, useNow, useSync, type SyncSt
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
-import { ManageSection } from './Manage';
+import { ManageSection, versionLt } from './Manage';
 import { ReadySection, useServerVersion } from './Ready';
+import { SelfTestAgentButton, SelfTestSection } from './SelfTest';
 
 export function HostModal() {
   const sel = useUI(s => s.host);
@@ -192,6 +193,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const { save, sync } = useSaver(h.name);
   const failed = (...fs: string[]) => fs.some(f => sync[f] === 'failed') && 'hp-rollback';
   const server = useServerVersion();
+  const behind = !!server && !!h.version && versionLt(h.version, server);
   // 就绪清单里没通过的项点按钮：展开对应的那一块（收起的「白板与目录」先展开），滚过去闪一下
   const [reveal, setReveal] = useState<{ to: ReadyGo | null; n: number }>({ to: null, n: 0 });
   const go = (to: ReadyGo) => setReveal(r => ({ to, n: r.n + 1 }));
@@ -291,9 +293,17 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
               <h2 className="hp-m-title">{h.name}</h2>
               <div className="hp-m-meta">
                 <span>{h.os || '未知系统'}</span>
-                <span>board {h.version || '?'}</span>
+                <span className={cx(behind && 'hp-behind')}>
+                  board {h.version || '?'}
+                  {behind && ` · 落后于服务端 ${server}`}
+                </span>
                 <span>{lastSeen(h, now)}</span>
               </div>
+              {behind && (
+                <p className="hp-behind-tip">
+                  升级：在下面「维护」里点「升级到 {server}」，或在那台机器上执行 <code>board update</code>；桌面端运行的在桌面端「检查更新」
+                </p>
+              )}
             </div>
             <div className="hp-hero-acts">
               <span data-tip={roundTip}>
@@ -321,6 +331,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 
           <ReadySection checks={readiness(h, now, server)} go={go} i={1} />
           <ManageSection h={h} server={server} i={1} />
+          <SelfTestSection h={h} server={server} i={1} />
 
           <section className="d-section" style={{ ['--i' as string]: 1 }}>
             <div className="d-label">
@@ -886,6 +897,7 @@ function AgentRow({
           ) : (
             <span className="hp-arow-none">本机没有它支持的启动环境</span>
           ))}
+        <SelfTestAgentButton h={h} a={a} />
         <button
           type="button"
           className={cx('hp-def', def && 'on')}

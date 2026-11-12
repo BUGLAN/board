@@ -772,3 +772,40 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   .hp-add-dirs .lh-dir { flex-wrap: wrap; }
   .hp-add-dirs .lh-dir .input.sel { width: 100%; }
 }
+
+/* ==========================================================================
+   机器详情「自检」（components/hosts/SelfTest.tsx）和顶部的「落后于服务端」
+   ========================================================================== */
+.hp-behind { color: var(--warn-text); font-weight: 500; }
+.hp-behind-tip { margin: 6px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+.hp-behind-tip code { font: 11.5px var(--f-mono); color: var(--text-2); }
+.hp-st-none { margin: 0; align-self: center; }
+.hp-st-list { display: flex; flex-direction: column; margin: 10px 0 0; padding: 0; list-style: none; }
+.hp-st-list li { display: flex; align-items: flex-start; gap: 9px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.hp-st-list li:first-child { border-top: 0; }
+.hp-st-list li > svg { flex: none; width: 15px; height: 15px; margin-top: 2px; }
+.hp-st-list li.ok > svg { color: var(--ok); }
+.hp-st-list li.bad > svg { color: var(--warn); }
+.hp-st-list li > div { flex: 1; min-width: 0; }
+.hp-st-list b { font-weight: 500; color: var(--text); }
+.hp-st-why { display: block; margin-top: 2px; line-height: 1.5; color: var(--warn-text); word-break: break-word; }
+.hp-st-detail {
+  margin: 5px 0 0; padding: 6px 9px; border-radius: var(--r-sm); max-height: 96px; overflow: auto;
+  font: 11.5px/1.5 var(--f-mono); white-space: pre-wrap; word-break: break-all; color: var(--text-2); background: var(--surface-2);
+}
+.hp-st-at { flex: none; font-style: normal; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.hp-st-btn {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--r-xs);
+  font-size: 12px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); transition: color var(--dur-2), background-color var(--dur-2);
+}
+.hp-st-btn svg { width: 12px; height: 12px; }
+.hp-st-btn:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.hp-st-btn.ok svg { color: var(--ok); }
+.hp-st-btn.bad { color: var(--warn-text); }
+.hp-st-btn:disabled { opacity: .55; cursor: default; }
+.hp-st-btn.is-busy { pointer-events: none; }
+.hp-st-btn.is-busy::before {
+  content: ""; flex: none; width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid currentColor; border-right-color: transparent; animation: login-spin .8s linear infinite;
+}
+.hp-st-btn.is-busy > svg { display: none; }

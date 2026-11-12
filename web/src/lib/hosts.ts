@@ -5,7 +5,7 @@ import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
 import { describeCron } from './cron';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostDir, HostInfo, ReadyCheck, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
 import { agentColor } from './util';
 
 /** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
@@ -238,4 +238,34 @@ export function installCommand(o: { origin: string; token: string; name: string;
   }
   const dir = dirs.map(d => ` --dir ${shQuote(d)}`).join('');
   return `curl -fsSL ${shQuote(`${o.origin}/install.sh`)} | sh -s -- --token ${shQuote(o.token)} --name ${shQuote(o.name)}${dir} --service`;
+}
+
+/* ------------------------------ 自检（PRD §10.12「自检」） ------------------------------ */
+
+/** 自检请求多久没做完算作废（和服务端 SELFTEST_STALE_MS 一致）：之后可以重新自检 */
+export const SELFTEST_STALE_MS = 15 * 60 * 1000;
+
+/** 自检现在的状态：正在做（谁、什么时候请求的、只查哪个 agent）、等机器上线、过期没做完；没有请求时为 null */
+export function selftestState(h: HostInfo, now: number): { tone: 'busy' | 'warn'; text: string; agent: string | null } | null {
+  const a = h.selftest?.ask;
+  if (!a) return null;
+  const who = a.agent ? (h.agents.find(x => x.id === a.agent)?.name ?? a.agent) : null;
+  const what = who ? `自检 ${who}` : '自检';
+  if (now - a.at >= SELFTEST_STALE_MS) return { tone: 'warn', text: `${what}没做完（${since(a.at, now)}请求的）：可以重新自检`, agent: a.agent ?? null };
+  if (!h.online) return { tone: 'warn', text: `等机器上线后${what}`, agent: a.agent ?? null };
+  return { tone: 'busy', text: `正在${what}：${who ? '问它一句' : '问每个 agent 一句、检查每块白板能不能推送'}，最长 3 分钟`, agent: a.agent ?? null };
+}
+
+/** 正在做自检（没过期）：这时不能再请求 */
+export const selftestBusy = (h: HostInfo, now: number) => !!h.selftest?.ask && now - h.selftest.ask.at < SELFTEST_STALE_MS;
+
+/** 自检结果一行一行：名称（agent 名、「<白板> 的仓库」、「board 版本」），按 agent、git、版本排 */
+export function selftestRows(h: HostInfo): (SelfTestItem & { label: string })[] {
+  const order = { agent: 0, git: 1, version: 2 } as const;
+  return [...(h.selftest?.items ?? [])]
+    .sort((a, b) => order[a.kind] - order[b.kind])
+    .map(i => ({
+      ...i,
+      label: i.kind === 'agent' ? (h.agents.find(a => a.id === i.key)?.name ?? i.key) : i.kind === 'git' ? `${i.key} 的仓库` : 'board 版本',
+    }));
 }

@@ -247,6 +247,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
         .route("/hosts/{name}/rename", post(hosts::rename))
         .route("/hosts/{name}/ask", post(hosts::ask))
+        .route("/hosts/{name}/selftest", post(hosts::selftest))
+        .route("/hosts/{name}/selftested", post(hosts::selftest_done))
         .route("/hosts/{name}/dirs/clone", post(hosts::clone_dir))
         .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
         .route("/hosts/{name}/work", get(hosts::work))

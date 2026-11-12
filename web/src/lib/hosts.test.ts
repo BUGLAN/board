@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
+import { boardHosts, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -203,5 +203,35 @@ describe('添加机器：一行安装命令', () => {
     expect(hostNameError('DevBox')).toBeTruthy();
     expect(hostNameError('-x')).toBeTruthy();
     expect(hostNameError('a'.repeat(25))).toBeTruthy();
+  });
+});
+
+describe('自检', () => {
+  const now = 1_800_000_000_000;
+  const h = (x: Partial<HostInfo> = {}): HostInfo => ({ ...host([agent('claude'), agent('pi', { name: 'pi' })]), online: true, ...x }) as HostInfo;
+  it('没有请求时没有状态；正在做、等上线、过期分别写明', () => {
+    expect(selftestState(h({ selftest: { items: [] } }), now)).toBeNull();
+    const ask = { id: 3, by: 'octocat', at: now - 10_000 };
+    expect(selftestState(h({ selftest: { ask, items: [] } }), now)).toMatchObject({ tone: 'busy' });
+    expect(selftestBusy(h({ selftest: { ask, items: [] } }), now)).toBe(true);
+    expect(selftestState(h({ selftest: { ask: { ...ask, agent: 'claude' }, items: [] } }), now)?.text).toContain('自检 claude');
+    expect(selftestState(h({ online: false, selftest: { ask, items: [] } }), now)).toMatchObject({ tone: 'warn', text: '等机器上线后自检' });
+    const old = { ...ask, at: now - SELFTEST_STALE_MS };
+    expect(selftestState(h({ selftest: { ask: old, items: [] } }), now)?.text).toContain('没做完');
+    expect(selftestBusy(h({ selftest: { ask: old, items: [] } }), now)).toBe(false);
+  });
+  it('结果按 agent、仓库、版本排，名称可读', () => {
+    const rows = selftestRows(
+      h({
+        selftest: {
+          items: [
+            { kind: 'version', key: 'board', ok: false, why: 'board 0.1.1 落后于服务端 0.1.19', at: now },
+            { kind: 'git', key: 'default/main', ok: true, at: now },
+            { kind: 'agent', key: 'pi', ok: false, why: '没有登录：Not logged in', at: now },
+          ],
+        },
+      }),
+    );
+    expect(rows.map(r => r.label)).toEqual(['pi', 'default/main 的仓库', 'board 版本']);
   });
 });

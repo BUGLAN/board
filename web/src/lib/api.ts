@@ -219,6 +219,8 @@ export const api = {
   /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、排空、取消请求 */
   askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel', now = false) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
+  /** 自检：整台机器，或只查一个 agent（PRD §10.12「自检」） */
+  selfTest: (name: string, agent?: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/selftest`, agent ? { agent } : {}),
   /** 全部暂停 / 全部恢复：所有机器一起设成暂停接单（排队的派发照样排队） */
   pauseAllHosts: (paused: boolean) => req<HostInfo[]>('POST', '/api/hosts/pause-all', { paused }),
   /** 全部停止：停止所有正在跑的派发，同时全部暂停 */

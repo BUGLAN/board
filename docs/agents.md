@@ -141,6 +141,8 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 
 应该回答 `board-skills` 和 `参数`，然后退出。回答「没有这个 skill」：先按上一节装好，再问一次。
 
+这一步可以直接在界面上做：第 3 步接上之后，在「机器」里点开那台机器，「本机 agent」里这个 agent 那一行点「自检」（或者整台机器的「自检」，顺带检查每块白板的目录能不能推送）。board host 用它设置好的启动环境、模型和思考强度，在一个临时目录里问同样的这一句，界面上写结果：通过；没登录；超时；回答里没有 `board-skills`。人不用登录到那台机器上。
+
 ### 3. 用配置文件接上
 
 在 `~/.board/config.toml` 里加一节（`{prompt}` 单独作为一个元素）：
@@ -197,6 +199,8 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 - 跑完 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`；需要在别的机器上试时请人发版。
 
 ## 出了问题看哪里
+
+先在「机器」里点开那台机器点「自检」：它直接告诉你 agent 有没有登录、认不认得 `board-skills`、白板目录能不能推送、board 版本是不是落后，不用拿真卡片去试。
 
 | 现象 | 多半是 |
 |---|---|

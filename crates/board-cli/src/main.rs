@@ -14,6 +14,7 @@ mod envs;
 mod heartbeat;
 mod host;
 mod logfmt;
+mod selftest;
 mod update;
 
 use backend::{env, Backend, BoardData, Remote};

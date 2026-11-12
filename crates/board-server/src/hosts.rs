@@ -10,7 +10,8 @@
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
 //!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
-//! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、`GET /api/hosts/{名字}/recent`、
+//! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、
+//! `POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
 //! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
 //! `GET /api/sessions/{派发 ID}`（一个会话的全部派发和输出）。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发）、`POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
@@ -316,6 +317,48 @@ pub(crate) async fn ask(
         Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
     };
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_ask(&name, &b.kind, b.now, &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SelfTestBody {
+    /// 只检查这个 agent；不给是整台机器
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+/// 自检一台机器（PRD §10.12「自检」）。只能在登录后的界面上做，访问令牌调用时 NOT_LOGGED_IN
+pub(crate) async fn selftest(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<HostInfo> {
+    let b: SelfTestBody = parse(v)?;
+    let client = client_of(&h);
+    let by = match caller {
+        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
+        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
+    };
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_selftest(&name, b.agent.as_deref(), &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SelfTestDoneBody {
+    instance: String,
+    id: i64,
+    #[serde(default)]
+    items: Vec<SelfTestItem>,
+}
+
+/// board host 做完了自检，回报结果
+pub(crate) async fn selftest_done(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+    let b: SelfTestDoneBody = parse(v)?;
+    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_selftest_done(&name, &b.instance, b.id, b.items))).await?;
     s.poke();
     Ok(Json(out))
 }

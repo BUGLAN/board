@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   ask_seq  INTEGER NOT NULL DEFAULT 0,-- 请求的序号（board host 处理完带着它回报）
   drain_at INTEGER,                   -- 排空开始的时间（暂停接单，等在跑的派发结束）；不在排空时为空
   up_pause INTEGER NOT NULL DEFAULT 0,-- 1 = 为升级暂停了接单：升级完成或失败后恢复
-  rechecked_at INTEGER                -- 最近一次「重新检查」做完的时间
+  rechecked_at INTEGER,               -- 最近一次「重新检查」做完的时间
+  selftest TEXT                       -- 自检（JSON，见 SelfTest）：等 board host 做的请求和最近一次的结果；没做过时为空
 );
 
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
@@ -141,6 +142,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "effort", "TEXT"),
         ("hosts", "max_run", "INTEGER NOT NULL DEFAULT 180"),
         ("hosts", "idle_run", "INTEGER NOT NULL DEFAULT 20"),
+        ("hosts", "selftest", "TEXT"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -724,7 +726,59 @@ pub struct HostInfo {
     /// 这台机器最近一次上报用的令牌；令牌已经吊销、还没上报过时为空
     #[serde(default)]
     pub token: Option<HostToken>,
+    /// 自检：等 board host 做的请求、最近一次的结果；旧版服务端没有这一项
+    #[serde(default)]
+    pub selftest: SelfTest,
 }
+
+/// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
+/// agent 能不能干活、每块白板的目录能不能推送，服务端补上 board 版本是否落后。结果一直保留到下一次自检
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfTest {
+    /// 这台机器的 board host 会做自检（上报里带 `selftest: true`）；旧版不会，界面上置灰、要升级
+    #[serde(default)]
+    pub able: bool,
+    /// 等 board host 做（或正在做）的自检；做完清掉
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<SelfTestAsk>,
+    /// 最近的结果：agent（按本机 agent 的顺序）、git（按白板）、版本
+    #[serde(default)]
+    pub items: Vec<SelfTestItem>,
+}
+
+/// 一次自检请求
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfTestAsk {
+    /// 序号：board host 做完带着它回报
+    pub id: i64,
+    /// 只检查这个 agent（「本机 agent」那一行的按钮）；空是整台机器
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub by: String,
+    pub at: i64,
+}
+
+/// 自检的一项
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfTestItem {
+    /// agent | git | version
+    pub kind: String,
+    /// agent 标识、白板路径；版本这一项是 board
+    pub key: String,
+    pub ok: bool,
+    /// 没通过的原因
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// 补充：agent 回答的前几行、git 输出的最后几行
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// 检查的时间（服务端收到结果的时间）
+    #[serde(default)]
+    pub at: i64,
+}
+
+/// 自检请求多久没做完算作废（agent 一项最长 3 分钟，git 每块白板最长 2 分钟）：之后可以重新请求
+pub const SELFTEST_STALE_MS: i64 = 15 * 60 * 1000;
 
 fn default_per_session() -> i64 {
     4
@@ -827,6 +881,9 @@ pub struct HostReport {
     /// 升级（或重启）没成：原因，记进操作记录；为升级暂停的接单随之恢复
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_error: Option<String>,
+    /// 会做自检（PRD §10.12「自检」）；旧版 board host 不带
+    #[serde(default)]
+    pub selftest: bool,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -1051,13 +1108,14 @@ struct HostRow {
     up_pause: bool,
     rechecked_at: Option<i64>,
     token: Option<i64>,
+    selftest: SelfTest,
     agents_raw: String,
     envs_raw: String,
     dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1099,6 +1157,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         up_pause: r.get::<_, i64>(28)? != 0,
         rechecked_at: r.get(29)?,
         token: r.get(30)?,
+        selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         agents_raw,
         envs_raw,
         dirs_raw,
@@ -1222,6 +1281,7 @@ impl HostRow {
             rechecked_at: self.rechecked_at,
             ops: vec![],
             token: None,
+            selftest: self.selftest.clone(),
         }
     }
     /// 正在等重启或升级：board host 不再开始新的派发
@@ -1937,6 +1997,10 @@ impl<'a> W<'a> {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, '本机', ?9, ?8, ?8)",
                     params![rep.name, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs],
                 )?;
+                if rep.selftest {
+                    let st = SelfTest { able: true, ..Default::default() };
+                    self.tx.execute("UPDATE hosts SET selftest = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&st).unwrap_or_default()])?;
+                }
                 self.touch_hosts();
             }
             Some(h) => {
@@ -1990,6 +2054,12 @@ impl<'a> W<'a> {
                     self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
                 }
                 self.host_acks(&h, rep)?;
+                // 换成了会（或不会）自检的 board host
+                if h.selftest.able != rep.selftest {
+                    let st = SelfTest { able: rep.selftest, ..h.selftest.clone() };
+                    self.tx.execute("UPDATE hosts SET selftest = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&st).unwrap_or_default()])?;
+                    self.touch_hosts();
+                }
                 if differs {
                     self.touch_hosts();
                 }
@@ -2162,6 +2232,118 @@ impl<'a> W<'a> {
             params![h.id, serde_json::to_string(&ask).unwrap_or_default(), ask.id],
         )?;
         self.host_op(h.id, by, &text)?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
+    }
+
+    /// 自检（PRD §10.12「自检」，只能在登录后的界面上做）：记下请求，board host 取到任务时在后台做。
+    /// `agent` 给了就只检查这个 agent（「本机 agent」那一行的按钮），否则整台机器（每个找得到的 agent、每块白板的目录）。
+    /// 要机器在线；同一台机器同时只做一次（上一次超过 [`SELFTEST_STALE_MS`] 还没做完的算作废）。不占并发位，不影响在跑的派发
+    pub fn host_selftest(&mut self, name: &str, agent: Option<&str>, by: &str) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        if !h.online(self.now) {
+            return Err(BoardError::usage(format!("机器「{name}」离线：等它上线再自检")));
+        }
+        if !h.selftest.able {
+            return Err(BoardError::usage(format!(
+                "机器「{name}」的 board（{}）还不会自检：先升级到 {}",
+                if h.version.is_empty() { "旧版" } else { &h.version },
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+        if let Some(a) = &h.selftest.ask {
+            if a.at + SELFTEST_STALE_MS > self.now {
+                return Err(BoardError::usage(format!("机器「{name}」正在自检（{} 请求的）：等它做完再来", a.by)));
+            }
+        }
+        let agent = agent.map(str::trim).filter(|a| !a.is_empty());
+        let label = match agent {
+            Some(id) => {
+                let a = h.resolved().into_iter().find(|a| a.id == id).ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{id}」")))?;
+                if !a.found {
+                    return Err(BoardError::usage(format!("机器「{name}」上找不到 {} 的命令，没法自检", a.name)));
+                }
+                format!("请求自检 {}", a.name)
+            }
+            None => "请求自检".to_string(),
+        };
+        let by = if by.trim().is_empty() { "人" } else { by.trim() };
+        let mut st = h.selftest.clone();
+        st.ask = Some(SelfTestAsk { id: h.ask_seq + 1, agent: agent.map(str::to_string), by: by.into(), at: self.now });
+        self.tx.execute(
+            "UPDATE hosts SET selftest = ?2, ask_seq = ?3 WHERE id = ?1",
+            params![h.id, serde_json::to_string(&st).unwrap_or_default(), h.ask_seq + 1],
+        )?;
+        self.host_op(h.id, by, &label)?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
+    }
+
+    /// board host 做完了自检：换掉这次检查到的项（整台机器时全部换掉，只查一个 agent 时只换它那一项），
+    /// 补上 board 版本是否落后于服务端，清掉请求，记一条操作。序号对不上（被新的请求换掉、或是别的 board host 进程）时不记
+    pub fn host_selftest_done(&mut self, name: &str, instance: &str, id: i64, items: Vec<SelfTestItem>) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let Some(ask) = h.selftest.ask.clone().filter(|a| a.id == id && h.instance == instance) else {
+            return self.read().host(name, self.now);
+        };
+        let server = env!("CARGO_PKG_VERSION");
+        let mut fresh: Vec<SelfTestItem> = items
+            .into_iter()
+            .filter(|i| matches!(i.kind.as_str(), "agent" | "git"))
+            .filter(|i| ask.agent.is_none() || (i.kind == "agent" && Some(&i.key) == ask.agent.as_ref()))
+            .map(|mut i| {
+                i.at = self.now;
+                i.why = i.why.map(|w| w.chars().take(500).collect());
+                i.detail = i.detail.map(|d| d.chars().take(2000).collect());
+                i
+            })
+            .collect();
+        let behind = version_lt(&h.version, server);
+        fresh.push(SelfTestItem {
+            kind: "version".into(),
+            key: "board".into(),
+            ok: !behind,
+            why: behind.then(|| format!("board {} 落后于服务端 {server}", if h.version.is_empty() { "（没有上报版本）" } else { &h.version })),
+            detail: None,
+            at: self.now,
+        });
+        let mut st = h.selftest.clone();
+        st.ask = None;
+        if ask.agent.is_none() {
+            st.items = fresh.clone();
+        } else {
+            for f in &fresh {
+                match st.items.iter_mut().find(|i| i.kind == f.kind && i.key == f.key) {
+                    Some(old) => *old = f.clone(),
+                    None => st.items.push(f.clone()),
+                }
+            }
+            // 按本机 agent 的顺序、再 git、再版本
+            let order = |i: &SelfTestItem| -> (usize, usize) {
+                match i.kind.as_str() {
+                    "agent" => (0, h.agents.iter().position(|a| a.id == i.key).unwrap_or(usize::MAX)),
+                    "git" => (1, h.dirs.iter().position(|d| d.board == i.key).unwrap_or(usize::MAX)),
+                    _ => (2, 0),
+                }
+            };
+            st.items.sort_by_key(order);
+        }
+        self.tx.execute("UPDATE hosts SET selftest = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&st).unwrap_or_default()])?;
+        let bad: Vec<String> = fresh
+            .iter()
+            .filter(|i| !i.ok)
+            .map(|i| match i.kind.as_str() {
+                "agent" => h.agents.iter().find(|a| a.id == i.key).map(|a| a.name.clone()).unwrap_or_else(|| i.key.clone()),
+                "git" => format!("{} 的 git", i.key),
+                _ => "board 版本".into(),
+            })
+            .collect();
+        let text = if bad.is_empty() {
+            format!("自检通过（{} 项）", fresh.len())
+        } else {
+            format!("自检：{} 没通过（共 {} 项）", bad.join("、"), fresh.len())
+        };
+        self.host_op(h.id, "board host", &text)?;
         self.touch_hosts();
         self.read().host(name, self.now)
     }

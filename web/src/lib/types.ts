@@ -267,6 +267,28 @@ export interface HostInfo {
   ops?: HostOp[];
   /** 这台机器最近一次上报用的令牌；令牌已经吊销、还没上报过时为空 */
   token?: HostToken | null;
+  /** 自检：等 board host 做的请求、最近一次的结果；旧版服务端没有 */
+  selftest?: SelfTest;
+}
+
+/** 自检（PRD §10.12「自检」）：agent 能不能干活、每块白板的目录能不能推送、board 版本是否落后 */
+export interface SelfTest {
+  /** 这台机器的 board host 会做自检；旧版不会（按钮置灰、要升级） */
+  able?: boolean;
+  /** 等 board host 做（或正在做）的自检 */
+  ask?: { id: number; agent?: string | null; by: string; at: number } | null;
+  items: SelfTestItem[];
+}
+
+export interface SelfTestItem {
+  kind: 'agent' | 'git' | 'version';
+  /** agent 标识、白板路径；版本这一项是 board */
+  key: string;
+  ok: boolean;
+  why?: string | null;
+  /** agent 回答的前几行、git 输出的最后几行 */
+  detail?: string | null;
+  at: number;
 }
 
 /** 远程管理请求 */

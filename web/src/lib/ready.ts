@@ -67,7 +67,7 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
         ok,
         ...(!ok && {
           why: h.version ? `board ${h.version}，服务端是 ${server}` : 'board host 没有上报版本',
-          hint: `在机器详情「管理」里点「升级到 ${server}」，或在那台机器上执行 board update；桌面端运行的更新桌面端到最新版`,
+          hint: `在机器详情「维护」里点「升级到 ${server}」，或在那台机器上执行 board update；桌面端运行的更新桌面端到最新版`,
         }),
       });
     }

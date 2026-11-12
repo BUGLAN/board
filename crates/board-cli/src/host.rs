@@ -51,6 +51,7 @@ use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
 use crate::logfmt::{self, Stream};
+use crate::selftest;
 use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
 use board_core::*;
@@ -793,6 +794,14 @@ struct Host<'a> {
     follow_dirs: bool,
     /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
     conf_seen: (Option<String>, Vec<(String, String)>),
+    /// 正在后台做的自检（请求序号、线程）
+    selftest: Option<(i64, std::thread::JoinHandle<Vec<SelfTestItem>>)>,
+    /// 做完了、还没回报成功的自检结果（连不上服务端时下一轮再报）
+    selftest_out: Option<(i64, Vec<SelfTestItem>)>,
+    /// 已经做完并回报的自检请求：取到的任务里还是它时不再做
+    selftest_seen: Option<i64>,
+    /// 自检启动的子进程：退出时结束它们
+    selftest_pids: selftest::Pids,
 }
 
 /// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
@@ -925,6 +934,10 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         follow_name,
         follow_dirs,
         conf_seen: (conf.name.clone(), conf.dirs.clone()),
+        selftest: None,
+        selftest_out: None,
+        selftest_seen: None,
+        selftest_pids: selftest::Pids::default(),
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1201,6 +1214,7 @@ impl Host<'_> {
             done,
             asked: self.asked,
             ask_error: self.ask_error.clone(),
+            selftest: true,
         }
     }
 
@@ -1658,6 +1672,108 @@ impl Host<'_> {
         }
     }
 
+    /// 自检（PRD §10.12「自检」）：取到的任务里有新的请求就在后台线程里做；做完回报，回报失败下一轮再报
+    fn poll_selftest(&mut self) {
+        if self.selftest.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+            let (id, h) = self.selftest.take().expect("上面看过");
+            let items = h.join().unwrap_or_default();
+            self.selftest_out = Some((id, items));
+        }
+        if let Some((id, items)) = self.selftest_out.take() {
+            let body = json!({ "instance": self.instance, "id": id, "items": items });
+            match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/selftested", self.name), body) {
+                Ok(_) => {
+                    let bad: Vec<&SelfTestItem> = items.iter().filter(|i| !i.ok).collect();
+                    if bad.is_empty() {
+                        self.say(format!("{} 自检做完：{} 项都通过", self.p.green("✓"), items.len()));
+                    } else {
+                        let why: Vec<String> = bad.iter().map(|i| format!("{}：{}", i.key, i.why.as_deref().unwrap_or("没通过"))).collect();
+                        self.say(format!("{} 自检做完：{} 项没通过（{}）", self.p.yellow("!"), bad.len(), why.join("；")));
+                    }
+                    self.selftest_seen = Some(id);
+                }
+                Err(e) if e.code == ErrorCode::Unreachable => self.selftest_out = Some((id, items)),
+                Err(e) => {
+                    self.say(format!("{} 自检结果没报上去：{}", self.p.yellow("!"), e.message));
+                    self.selftest_seen = Some(id);
+                }
+            }
+        }
+        if self.selftest.is_some() || self.selftest_out.is_some() {
+            return;
+        }
+        let Some(ask) = self.work.as_ref().and_then(|w| w.host.selftest.ask.clone()) else { return };
+        if self.selftest_seen == Some(ask.id) {
+            return;
+        }
+        self.start_selftest(&ask);
+    }
+
+    /// 在后台开始一次自检：agent 按派发同样的办法拼命令（启动环境、模型、思考强度），进一个临时目录问一句；
+    /// 整台机器时再检查每块白板的目录能不能推送
+    fn start_selftest(&mut self, ask: &board_core::SelfTestAsk) {
+        let what = ask.agent.as_deref().map(|a| format!(" {a}")).unwrap_or_default();
+        self.say(format!("{} {} 请求自检{what}", self.p.cyan("◇"), ask.by));
+        let tmp = std::env::temp_dir().join(format!("board-selftest-{}", self.name));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
+        let mut agents = vec![];
+        for spec in &self.agents {
+            if ask.agent.as_deref().is_some_and(|a| a != spec.id) {
+                continue;
+            }
+            let u = used.iter().find(|a| a.id == spec.id);
+            // 整台机器时只查找得到的 agent；只查一个时找不到也写明
+            if ask.agent.is_none() && !u.is_some_and(|u| u.found) {
+                continue;
+            }
+            let log = tmp.join(format!("agent-{}.log", spec.id));
+            let cmd = self.selftest_command(spec, u, &tmp);
+            agents.push(selftest::AgentJob { id: spec.id.clone(), cmd, stream: logfmt::stream_of(&spec.id), log });
+        }
+        let gits: Vec<selftest::GitJob> = if ask.agent.is_some() {
+            vec![]
+        } else {
+            self.dirs.iter().map(|(b, d)| selftest::GitJob { board: b.clone(), dir: d.clone() }).collect()
+        };
+        let pids = self.selftest_pids.clone();
+        let h = std::thread::spawn(move || selftest::run(agents, gits, tmp, pids));
+        self.selftest = Some((ask.id, h));
+    }
+
+    /// 自检时启动一个 agent 的命令：和派发一样的启动环境、模型、思考强度，工作目录是临时目录
+    fn selftest_command(&self, spec: &Spec, used: Option<&HostAgent>, tmp: &Path) -> std::result::Result<Command, String> {
+        let cmd0 = spec.cmd.first().cloned().unwrap_or_default();
+        let check = used
+            .and_then(|u| u.env.as_deref())
+            .and_then(|e| spec.checks.iter().find(|c| c.env == e))
+            .or_else(|| spec.default_check())
+            .ok_or_else(|| format!("本机没找到 {} 的命令 {cmd0}", spec.name))?;
+        let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
+        let prog = check.prog.clone().ok_or_else(|| format!("在{}里没找到 {} 的命令 {cmd0}", env.name, spec.name))?;
+        let patch = self.run.join("dsh-headless.patch.yml");
+        if spec.cmd.iter().any(|a| a.contains("{patch}")) {
+            write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
+        }
+        let model = used.and_then(|u| u.run_model.as_deref());
+        let effort = used.and_then(|u| u.run_effort.as_deref());
+        let args = agent_args(&spec.cmd, &spec.model_args, &spec.effort_args, model, effort, selftest::PROMPT, &patch.display().to_string());
+        let mut c = env.command(&prog, &args, Some(tmp), true);
+        c.env_remove("CLAUDECODE");
+        if cfg!(windows) && spec.git_bash && env.wsl().is_none() {
+            if let Some(bin) = envs::git_bash_dir() {
+                let old = std::env::var_os("PATH").unwrap_or_default();
+                let mut parts: Vec<std::ffi::OsString> = vec![bin.into_os_string()];
+                parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
+                if let Ok(path) = std::env::join_paths(parts) {
+                    c.env("PATH", path);
+                }
+            }
+        }
+        Ok(c)
+    }
+
     fn poll_clones(&mut self) {
         for c in &mut self.clones {
             if c.state != "running" {
@@ -1813,6 +1929,8 @@ impl Host<'_> {
             if self.reap() {
                 fetch = true;
             }
+            // 自检：界面上点了就在后台做，做完回报
+            self.poll_selftest();
             // 远程管理：重新检查、重启、升级
             let (soon, quit) = self.handle_ask();
             let (soon2, quit2) = self.poll_update();
@@ -2380,6 +2498,10 @@ impl Host<'_> {
     fn shutdown(&mut self, graceful: bool) {
         for r in self.readies.iter_mut() {
             r.kill();
+        }
+        // 自检启动的 agent、git：一起结束（结果不再回报，请求过期后可以重新自检）
+        for pid in self.selftest_pids.lock().map(|p| p.clone()).unwrap_or_default() {
+            kill_tree(pid, true);
         }
         if !self.runs.is_empty() {
             self.say(format!("{} 正在退出：结束 {} 个 agent", self.p.yellow("◼"), self.runs.len()));

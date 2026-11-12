@@ -36,6 +36,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         done: false,
         asked: None,
         ask_error: None,
+        selftest: true,
     }
 }
 
@@ -2657,4 +2658,83 @@ fn pause_all_and_stop_all_touch_every_host() {
     let stop = |id: i64| get(&s, id).stop_by.clone();
     assert_eq!((stop(d1.id).as_deref(), stop(d2.id).as_deref()), (Some("buglan"), Some("buglan")));
     assert_eq!(get(&s, d3.id).state, "queued", "排队的不在停止之列");
+}
+
+/* ------------------------------ 自检（PRD §10.12「自检」） ------------------------------ */
+
+fn selftest(s: &mut Store, at: i64, agent: Option<&str>) -> Result<HostInfo> {
+    s.write(at, Origin::ui(None), |w| w.host_selftest("mbp", agent, "octocat"))
+}
+
+fn selftest_done(s: &mut Store, at: i64, instance: &str, id: i64, items: Vec<SelfTestItem>) -> HostInfo {
+    s.write(at, Origin::cli(), |w| w.host_selftest_done("mbp", instance, id, items)).unwrap()
+}
+
+fn item(kind: &str, key: &str, ok: bool, why: Option<&str>) -> SelfTestItem {
+    SelfTestItem { kind: kind.into(), key: key.into(), ok, why: why.map(str::to_string), detail: None, at: 0 }
+}
+
+#[test]
+fn selftest_request_runs_once_and_results_replace_previous() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    // 只能检查找得到的 agent
+    assert_eq!(selftest(&mut s, T0, Some("pi")).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(selftest(&mut s, T0, Some("codex")).unwrap_err().code, ErrorCode::Usage);
+    let h = selftest(&mut s, T0 + S, None).unwrap();
+    let ask = h.selftest.ask.clone().expect("记下请求");
+    assert_eq!((ask.agent.as_deref(), ask.by.as_str()), (None, "octocat"));
+    // 取任务时 board host 能看到请求
+    let w = s.read(|r| r.host_work("mbp", T0 + 2 * S)).unwrap();
+    assert_eq!(w.host.selftest.ask.as_ref().map(|a| a.id), Some(ask.id));
+    // 同一台机器同时只做一次
+    assert_eq!(selftest(&mut s, T0 + 2 * S, Some("claude")).unwrap_err().code, ErrorCode::Usage);
+    // 别的进程、序号对不上的回报不算
+    let h = selftest_done(&mut s, T0 + 3 * S, "i2", ask.id, vec![item("agent", "claude", true, None)]);
+    assert!(h.selftest.ask.is_some() && h.selftest.items.is_empty());
+    let h = selftest_done(&mut s, T0 + 3 * S, "i1", ask.id + 5, vec![item("agent", "claude", true, None)]);
+    assert!(h.selftest.ask.is_some());
+    // 做完：agent、git 两项 + 服务端补上版本（0.1.1 落后于服务端）
+    let h = selftest_done(
+        &mut s,
+        T0 + 4 * S,
+        "i1",
+        ask.id,
+        vec![item("agent", "claude", true, None), item("git", B, false, Some("没有推送权限")), item("bogus", "x", true, None)],
+    );
+    assert!(h.selftest.ask.is_none());
+    let kinds: Vec<(&str, bool)> = h.selftest.items.iter().map(|i| (i.kind.as_str(), i.ok)).collect();
+    assert_eq!(kinds, vec![("agent", true), ("git", false), ("version", false)]);
+    assert!(h.selftest.items.iter().all(|i| i.at == T0 + 4 * S), "检查时间是服务端收到的时间");
+    let v = h.selftest.items.iter().find(|i| i.kind == "version").unwrap();
+    assert!(v.why.as_deref().unwrap().contains("0.1.1") && v.why.as_deref().unwrap().contains(env!("CARGO_PKG_VERSION")));
+    assert!(h.ops.iter().any(|o| o.text.contains("没通过") && o.text.contains(B)), "{:?}", h.ops);
+    // 只查一个 agent：只换它那一项，git 的结果保留到下一次整机自检
+    let ask = selftest(&mut s, T0 + 5 * S, Some("claude")).unwrap().selftest.ask.unwrap();
+    assert_eq!(ask.agent.as_deref(), Some("claude"));
+    let h = selftest_done(&mut s, T0 + 6 * S, "i1", ask.id, vec![item("agent", "claude", false, Some("没有登录")), item("git", B, true, None)]);
+    let got: Vec<(&str, bool, i64)> = h.selftest.items.iter().map(|i| (i.kind.as_str(), i.ok, i.at)).collect();
+    assert_eq!(got, vec![("agent", false, T0 + 6 * S), ("git", false, T0 + 4 * S), ("version", false, T0 + 6 * S)]);
+}
+
+#[test]
+fn selftest_needs_online_host_and_stale_request_can_be_replaced() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let first = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    // 一直没做完（board host 卡住、重启丢了）：超过期限后可以重新请求
+    beat(&mut s, T0 + hosts::SELFTEST_STALE_MS, &report("mbp", "i1", vec![])).unwrap();
+    let again = selftest(&mut s, T0 + hosts::SELFTEST_STALE_MS + S, None).unwrap().selftest.ask.unwrap();
+    assert!(again.id > first.id);
+    // 离线的机器不能自检
+    s.sweep(T0 + hosts::SELFTEST_STALE_MS + 120 * S).unwrap();
+    assert_eq!(selftest(&mut s, T0 + hosts::SELFTEST_STALE_MS + 121 * S, None).unwrap_err().code, ErrorCode::Usage);
+    // 旧版 board host（上报里没有 selftest）：不会自检，请求被拒绝；换回新版又可以
+    let t = T0 + hosts::SELFTEST_STALE_MS + 130 * S;
+    let mut old = report("mbp", "i9", vec![]);
+    old.selftest = false;
+    assert!(!beat(&mut s, t, &old).unwrap().host.selftest.able);
+    let e = selftest(&mut s, t + S, None).unwrap_err();
+    assert!(e.message.contains("还不会自检"), "{}", e.message);
+    assert!(beat(&mut s, t + 2 * S, &report("mbp", "i9", vec![])).unwrap().host.selftest.able);
 }
