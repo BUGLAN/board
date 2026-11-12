@@ -42,6 +42,13 @@ export function openCard(id: number) {
   setTimeout(() => reveal(id), 60);
 }
 
+/** 打开另一块白板上的卡片（命令面板的跨白板搜索结果）：先切到那块白板，打开详情 */
+export async function openOtherCard(path: string, id: number) {
+  if (path !== data().path || !data().board) await openBoard(path);
+  openDetail(id);
+  setTimeout(() => reveal(id), 60);
+}
+
 /** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示）。
     桌面的白板页上，落位后定位到它；在「未整理」页、手机上当帧提示一下，可以撤销（放回「未整理」最下面；
     还没保存完就点撤销：等这次移动确认后再放回去） */

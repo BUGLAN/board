@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, ServerInfo, Stats, StatsScope, Status, Tile, TokenInfo, Workspace } from './types';
+import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, SearchHit, ServerInfo, Stats, StatsScope, Status, Tile, TokenInfo, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -131,6 +131,8 @@ export const api = {
   events: (path: string, before?: number | null, limit = 20) =>
     req<BoardEvent[]>('GET', `/api/events?path=${q(path)}&limit=${limit}${before != null ? `&before=${before}` : ''}`),
   cmd: (board: string, cmd: Cmd) => req<CardDetail>('POST', '/api/cmd', { board, ...cmd }),
+  /** 跨白板搜卡片（不需要白板）：文字、`#ID`、`项目/白板#ID`、`label:标签` */
+  search: (query: string, limit = 20) => req<SearchHit[]>('GET', `/api/search?q=${q(query)}&limit=${limit}`),
   upload,
 
   createProject: (p: {

@@ -212,6 +212,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/card", get(card))
         .route("/events", get(events))
         .route("/stats", get(stats))
+        .route("/search", get(search))
         .route("/cmd", post(cmd))
         .route("/agents", get(agents::list))
         .route("/agents/check", post(agents::check))
@@ -483,6 +484,24 @@ async fn stats(State(s): State<AppState>, Query(q): Query<StatsQueryRaw>) -> Api
 }
 
 /* ------------------------------ 卡片命令 ------------------------------ */
+
+const SEARCH_LIMIT_DEFAULT: usize = 20;
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `GET /api/search?q=<文字>&limit=<n>`：跨白板搜卡片（PRD §9）。
+///
+/// `q` 可以是普通文字（标题、描述、评论），也可以是 `#12`、`oss/main#3`、`label:bug`。
+/// 不需要白板：一次在所有白板（含「未整理」）里找，结果带上白板路径。最多 50 条。
+async fn search(State(s): State<AppState>, Query(q): Query<SearchQuery>) -> ApiResult<Vec<board_core::SearchHit>> {
+    let limit = q.limit.unwrap_or(SEARCH_LIMIT_DEFAULT);
+    Ok(Json(s.db(move |st| st.read(|r| r.search(&q.q, limit))).await?))
+}
 
 #[derive(Deserialize)]
 struct CmdBody {

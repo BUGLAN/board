@@ -112,6 +112,11 @@ impl Backend {
         self.0.get("/api/card", &[("path", path), ("id", &id.to_string())])
     }
 
+    /// `board search "<文字>" [--limit <条数>]`：跨白板搜卡片（不需要白板）
+    pub fn search(&mut self, q: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        self.0.get("/api/search", &[("q", q), ("limit", &limit.to_string())])
+    }
+
     /// 上传附件到卡片
     pub fn attach(&mut self, path: &str, id: i64, actor: &Actor, name: &str, bytes: &[u8]) -> Result<Attachment> {
         let id = id.to_string();

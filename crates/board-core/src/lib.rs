@@ -13,6 +13,7 @@ pub mod flow;
 pub mod hosts;
 pub mod model;
 pub mod moves;
+pub mod search;
 pub mod seed;
 pub mod stats;
 pub mod store;
@@ -22,6 +23,7 @@ pub use engine::Cmd;
 pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;
 pub use flow::StatusPatch;
+pub use search::{SearchHit, SEARCH_LIMIT};
 pub use hosts::{AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork};
 pub use model::*;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
@@ -32,3 +34,5 @@ mod tests;
 mod tests_hosts;
 #[cfg(test)]
 mod tests_stats;
+#[cfg(test)]
+mod tests_search;

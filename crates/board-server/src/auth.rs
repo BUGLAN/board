@@ -371,7 +371,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
             // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、上传和读取日志、订阅实时推送，board dispatch 派发和取消
             let m = req.method().clone();
             let cli = (m == Method::GET
-                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream")
+                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search")
                     || path.starts_with("/files/")
                     || host_path(&path, &["work"])
                     || dispatch_path(&path, "log")))

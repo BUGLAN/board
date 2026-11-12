@@ -23,14 +23,14 @@ use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 19] = [
+const VALUE_FLAGS: [&str; 20] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file",
+    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit",
 ];
 const BOOL_FLAGS: [&str; 9] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 23] = [
+const COMMANDS: [(&str, &str, &str); 24] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
@@ -40,6 +40,7 @@ const COMMANDS: [(&str, &str, &str); 23] = [
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
+        ("search", "\"<文字>\" [--limit <条数>]", "跨所有白板搜卡片（不用 --board）：文字搜标题、描述、评论，也认 #ID、项目/白板#ID、label:标签；输出白板路径、ID、状态、标题"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
         ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--image <图片>]… [--file <文件>]… [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）；--image、--file 可以写多次，按顺序附在描述后面（图片直接显示，文件是下载链接）"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\" | --body-file <文件>]", "修改标题或描述"),
@@ -305,6 +306,63 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             parts.extend(b.statuses.iter().map(|st| format!("{} {}", st.name, n(&st.key))));
             s += &format!("{}{}{}\n", p.cyan(&pad(&b.path, w)), pad(&format!("{} / {}", pr.name, b.name), nw), p.dim(&parts.join(" · ")));
         }
+        return Ok(Output::Text(s));
+    }
+
+    // 跨白板搜索（PRD §9）：不需要白板，一次在所有白板（含「未整理」）里找
+    if sub == "search" {
+        let q = a.pos[1..].join(" ");
+        if q.trim().is_empty() {
+            return Err(BoardError::usage("用法：board search \"<文字>\"（也认 #ID、项目/白板#ID、label:标签）"));
+        }
+        let limit = match a.value("--limit") {
+            Some(v) => v
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n >= 1)
+                .ok_or_else(|| BoardError::usage("board search 的 --limit 需要是正整数"))?,
+            None => SEARCH_LIMIT,
+        };
+        let hits = be.search(&q, limit)?;
+        if json {
+            return Ok(Output::Json(Value::Array(
+                hits.iter()
+                    .map(|h| {
+                        json!({
+                            "board": h.board,
+                            "id": h.id,
+                            "column": h.column,
+                            "status": h.status,
+                            "title": h.title,
+                            "labels": h.labels,
+                            "updated_at": iso(Some(h.updated_at)),
+                            "matched": h.matched,
+                        })
+                    })
+                    .collect(),
+            )));
+        }
+        if hits.is_empty() {
+            return Ok(Output::Text(format!("{}\n", p.dim(&format!("（没有找到和「{q}」相关的卡片）")))));
+        }
+        let bw = hits.iter().map(|h| width(&h.board)).max().unwrap_or(0) + 2;
+        let sw = hits.iter().map(|h| width(&h.status)).max().unwrap_or(0) + 2;
+        let tw = hits.iter().map(|h| width(&h.title)).max().unwrap_or(0).min(56) + 2;
+        let lw = hits.iter().map(|h| width(&h.labels.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(" "))).max().unwrap_or(0) + 2;
+        let mut s = String::new();
+        for h in &hits {
+            let tags = h.labels.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(" ");
+            s += &format!(
+                "{}{}{}{}\n",
+                p.cyan(&pad(&format!("{}#{}", h.board, h.id), bw + 6)),
+                pad(&h.status, sw),
+                pad(&truncate(&h.title, 56), tw),
+                p.magenta(&pad(&tags, lw)),
+            );
+        }
+        s += &p.dim(&format!("{} 条", hits.len()));
+        s.push('\n');
         return Ok(Output::Text(s));
     }
 

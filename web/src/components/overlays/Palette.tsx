@@ -1,11 +1,13 @@
 /* 命令面板：搜索卡片、跳转白板、执行命令 */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { copyBoardPrompt, copyQuickPrompt, newBoard, newProject, openBoard, openCard } from '../../lib/actions';
+import { api } from '../../lib/api';
+import { copyBoardPrompt, copyQuickPrompt, newBoard, newProject, openBoard, openCard, openOtherCard } from '../../lib/actions';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../../lib/platform';
 import { hostLoad, hostState, hostsOf } from '../../lib/hosts';
 import { quickPrompts } from '../../lib/prompt';
 import { boardFlow, INBOX } from '../../lib/schema';
-import type { Card } from '../../lib/types';
+import { highlightQuery, otherHits } from '../../lib/search';
+import type { Card, SearchHit } from '../../lib/types';
 import { accel, cx } from '../../lib/util';
 import { allBoards, loadFull, useData } from '../../store/data';
 import { closePalette, manageLabels, openCreator, openHost, setSide, setTab, TAB_ORDER, toast, useUI, type Tab } from '../../store/ui';
@@ -30,6 +32,8 @@ interface PItem {
   hint?: string;
   icon?: IconName;
   card?: Card;
+  /** 其他白板上的卡片（跨白板搜索结果）：显示白板路径、状态、标签，选中后切到那块白板 */
+  hit?: SearchHit;
   /** 卡片所在状态的颜色（和工作流条一致） */
   color?: string;
   q?: string;
@@ -61,6 +65,8 @@ export function Palette() {
   const path = useData(s => s.path);
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
+  /** 跨白板搜索结果（不包含当前白板）：搜索内容变化后 220 毫秒才请求，连续输入时只发最后一次 */
+  const [hits, setHits] = useState<SearchHit[]>([]);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<Element | null>(null);
@@ -79,6 +85,26 @@ export function Palette() {
   useEffect(() => {
     if (searching) void loadFull();
   }, [searching]);
+
+  // 其他白板的结果：服务端在所有白板里搜（含未整理），这里只留下不在当前白板的
+  useEffect(() => {
+    const query = q.trim();
+    if (!open || !query) {
+      setHits([]);
+      return;
+    }
+    let alive = true;
+    const t = window.setTimeout(() => {
+      api
+        .search(query, 30)
+        .then(r => alive && setHits(r))
+        .catch(() => alive && setHits([]));
+    }, 220);
+    return () => {
+      alive = false;
+      window.clearTimeout(t);
+    };
+  }, [open, q]);
 
   const close = () => {
     closePalette();
@@ -111,6 +137,16 @@ export function Palette() {
         id: `host-${h.id}`, group: '机器', title: h.name, sub: `${h.online ? '在线' : '离线'} · ${hostState(h, hostLoad(ws, h).running.length).label}`,
         icon: 'host', q: query, run: () => openHost(h.name),
       });
+    // 其他白板：单独一组，写出白板路径；选中后切到那块白板再打开这张卡
+    if (query) {
+      const ql = highlightQuery(query);
+      for (const h of otherHits(hits, path))
+        out.push({
+          id: `hit-${h.board}-${h.id}`, group: '其他白板', title: h.title, hit: h, q: ql,
+          sub: [h.board, h.status, ...h.labels.map(l => `#${l}`)].join(' · '),
+          run: () => void openOtherCard(h.board, h.id),
+        });
+    }
     const theme = { auto: '跟随系统', light: '浅色', dark: '深色' }[getTheme()];
     const acts: PItem[] = [
       { id: 'new', group: '操作', title: '新建卡片', hint: 'N', icon: 'plus', run: () => openCreator('todo') },
@@ -152,7 +188,7 @@ export function Palette() {
     acts.push({ id: 'proj-new', group: '切换白板', title: '新建项目…', icon: 'folder', run: () => newProject() });
     out.push(...acts.filter(a => !query || a.title.toLowerCase().includes(query.toLowerCase()) || a.sub?.includes(query)));
     return out;
-  }, [open, q, board, ws, path]);
+  }, [open, q, board, ws, path, hits]);
 
   const act = Math.min(active, Math.max(0, items.length - 1));
   useEffect(() => {
@@ -176,7 +212,7 @@ export function Palette() {
           <input
             ref={input}
             value={q}
-            placeholder="搜索卡片（标题、描述、#ID）或输入命令…"
+            placeholder="搜索卡片（所有白板：标题、描述、评论、#ID、label:标签）或输入命令…"
             spellCheck={false}
             onChange={e => {
               setQ(e.target.value);
@@ -223,10 +259,10 @@ export function Palette() {
                     </span>
                   ) : (
                     <span className="p-ic">
-                      <Icon name={it.icon || 'sparkle'} />
+                      <Icon name={it.hit ? 'board' : it.icon || 'sparkle'} />
                     </span>
                   )}
-                  {it.card && <span className="p-id">#{it.card.id}</span>}
+                  {(it.card || it.hit) && <span className="p-id">#{it.card?.id ?? it.hit?.id}</span>}
                   <span className="p-main">{highlight(it.title, it.q ?? '')}</span>
                   {it.sub && <span className="p-sub">{it.sub}</span>}
                   {it.hint && <kbd>{it.hint}</kbd>}

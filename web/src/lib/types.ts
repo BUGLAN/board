@@ -315,6 +315,26 @@ export interface CardDetail extends Card {
   attachments?: Attachment[];
 }
 
+/**
+ * 一条跨白板搜索结果（`GET /api/search`）：命令面板里搜卡片时，当前白板之外的结果也在这里
+ */
+export interface SearchHit {
+  /** 白板路径：项目/白板 */
+  board: string;
+  id: number;
+  title: string;
+  /** 状态标识；「未整理」是 inbox */
+  column: string;
+  /** 状态名称 */
+  status: string;
+  /** 匹配到哪里：title | body | comment | any | ref | label */
+  matched: string;
+  labels: string[];
+  updatedAt: number;
+  /** 相关度：越大越相关 */
+  score: number;
+}
+
 export interface BoardEvent {
   id: number;
   board: string;
