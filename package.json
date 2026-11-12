@@ -9,7 +9,8 @@
     "server": "cargo run -p board-server --",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "test": "cargo test && npm --prefix web run typecheck && npm --prefix web test",
+    "test:desktop": "cargo test -p board-desktop",
+    "test": "cargo test && npm run test:desktop && npm --prefix web run typecheck && npm --prefix web test",
     "release": "node scripts/release.mjs",
     "build:skill": "node scripts/build-skill-bin.mjs"
   },

@@ -242,7 +242,7 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试和多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test -p board-cli --test heartbeat --test multiline`）。不构建镜像、不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test -p board-cli --test heartbeat --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等 31 个用例）。不构建镜像、不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
 | 推 `v*` tag | build → deploy；skill、desktop（和它们同时跑）→ release，见下图 |
 | 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 
@@ -253,10 +253,13 @@ build（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的版本号
 deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
                                      → docker compose up -d --no-build → 等健康检查
                                      → 核对线上 /api/health：version 是 tag 的版本号，commit 是 tag 指向的提交
+heartbeat-windows（GitHub 托管的 windows-latest，推 main 时）：board-cli 的 heartbeat / agents / multiline 测试，
+                                     以及 cargo test -p board-desktop（桌面端的单元测试；不需要先编安装包自带的 board：
+                                     src-tauri/build.rs 在 src-tauri/binaries 里没有 sidecar 时按不带 sidecar 构建）
 skill（GitHub 托管的 macos-latest）：node scripts/build-skill-bin.mjs --zip，编 macOS（arm64、x64）、Linux（x64、arm64，musl）、
                                      Windows（x64）的 board，放进 skill 的 bin/，打包成 board-skills.zip
 desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑）：核对 tag 和 tauri.conf.json 的版本号
-                                     → npm ci → 编安装包自带的 board → tauri build（带更新签名）→ 核对安装包里的 board --version
+                                     → npm ci → 编安装包自带的 board → cargo test -p board-desktop → tauri build（带更新签名）→ 核对安装包里的 board --version
                                      macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe、.msi 和免安装便携 .zip
                                      → 收齐更新包和签名（updater/<平台键>/）→ 生成这个平台的更新清单
 release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip、桌面端安装包、更新包和 latest.json

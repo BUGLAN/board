@@ -12,8 +12,10 @@
 
 ```sh
 unset BOARD_URL BOARD_TOKEN   # 去掉指向线上白板的环境变量，免得测试写到线上
-npm test                      # 即 cargo test && npm --prefix web run typecheck && npm --prefix web test（界面单元测试，vitest）
+npm test                      # 即 cargo test && cargo test -p board-desktop && npm --prefix web run typecheck && npm --prefix web test
 ```
+
+`cargo test` 只跑 `crates/`（`Cargo.toml` 的 `default-members` 排除了 `src-tauri`：桌面端依赖重），所以桌面端（`src-tauri`）的单元测试单独用 `cargo test -p board-desktop` 跑（也可以 `npm run test:desktop`），`npm test` 里已经带上，CI 的 Windows 任务也会跑。不需要先编安装包自带的 `board`（`scripts/build-sidecar.mjs` 的产物）：`src-tauri/build.rs` 在 `src-tauri/binaries` 里没有 sidecar 时按不带 sidecar 构建。Linux 上跑它要先装桌面端的系统依赖（GTK、WebKitGTK，同 `tauri build`），只改 `crates/`、`web/` 时可以在 macOS、Windows 上跑完整检查。
 
 新 worktree 里第一次跑之前先 `npm ci`（postinstall 会装 `web/` 的依赖）。
 

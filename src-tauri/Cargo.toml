@@ -11,6 +11,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# build.rs 在缺少 sidecar（scripts/build-sidecar.mjs 的产物）时改 TAURI_CONFIG，去掉 bundle.externalBin
+serde_json.workspace = true
 
 [dependencies]
 # tray-icon：「让这台电脑接任务」时关掉窗口留在后台，从托盘图标重新打开或退出

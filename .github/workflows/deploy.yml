@@ -1,7 +1,7 @@
 # 测试与部署（docs/deploy.md「自动部署」）：
 #   push main   → test：npm ci → cargo test → 界面类型检查 → 界面单元测试；不部署
 #               → heartbeat-windows：在 Windows 上跑 board heartbeat 的测试（启动不卡死、agent 退出后停下、stop 发 final），
-#                 以及多行正文经过 skill 入口 board.cmd 一字不丢（tests/multiline.rs）
+#                 多行正文经过 skill 入口 board.cmd 一字不丢（tests/multiline.rs），以及桌面端的单元测试（cargo test -p board-desktop）
 #   push tag v*  → skill：在 macOS 上编各平台的 board，放进 skill 的 bin/，打包 board-skills.zip 和单独的 board 包（和 build、deploy 同时跑）
 #                → desktop：在 macOS、Windows 上构建桌面端安装包（macOS 通用 .dmg；Windows NSIS .exe、.msi 和免安装便携 .zip），
 #                  带更新签名（TAURI_SIGNING_PRIVATE_KEY）构建，拼出更新清单 latest.json（桌面端的「检查更新」读它），和 build、deploy 同时跑
@@ -81,7 +81,8 @@ jobs:
       - name: 安装脚本 shellcheck
         run: shellcheck -s sh scripts/install.sh
 
-  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs）、多行正文经过 board.cmd（tests/multiline.rs），Linux 上的已经在 test 里跑过
+  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs）、多行正文经过 board.cmd（tests/multiline.rs），Linux 上的已经在 test 里跑过；
+  # 桌面端（src-tauri）的单元测试也在这里跑：cargo test 默认不编桌面端，Linux 上还要装 GTK、WebKitGTK 这些系统依赖
   heartbeat-windows:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
@@ -99,6 +100,11 @@ jobs:
 
       - name: board heartbeat、多行正文经过 board.cmd 的测试
         run: cargo test --locked -p board-cli --test heartbeat --test agents --test multiline
+
+      # 桌面端的测试（src-tauri/src 下的 31 个用例：ACL、路径校验、更新、登录等）。不需要先编安装包自带的 board：
+      # src-tauri/build.rs 在 src-tauri/binaries 里没有 sidecar 时按不带 sidecar 构建
+      - name: 桌面端单元测试
+        run: cargo test --locked -p board-desktop
 
   # 推 v* tag：编各平台的 board 放进 skill 目录，打包成 board-skills.zip；同时打出单独的 board 包（每个平台一个压缩包，
   # 附 SHA-256 校验文件 board-sha256.txt），release 时都附上——安装脚本（/install.sh、/install.ps1）和 board update 下载它们
@@ -222,6 +228,10 @@ jobs:
         run: node scripts/build-sidecar.mjs
         env:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
+
+      # 桌面端的单元测试（src-tauri/src 下的 31 个用例）：macOS、Windows 各跑一次，和安装包同一个缓存、编过的依赖不用再编
+      - name: 桌面端单元测试
+        run: cargo test --locked -p board-desktop
 
       # beforeBuildCommand 构建界面。bundle.createUpdaterArtifacts：每个平台的更新包和它的 .sig 放在安装包旁边
       # （macOS：bundle/macos/Board.app.tar.gz；Windows：bundle/nsis/<安装包>.exe），下面按平台键收进 updater/<平台键>/

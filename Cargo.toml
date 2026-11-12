@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/board-core", "crates/board-cli", "crates/board-server", "src-tauri"]
-# `cargo build` / `cargo test` 默认不编译桌面端（依赖较重）；桌面端用 `npm run desktop:dev|build`
+# `cargo build` / `cargo test` 默认不编译桌面端（依赖较重）；桌面端用 `npm run desktop:dev|build`，
+# 它的单元测试单独跑：`cargo test -p board-desktop`（`npm test` 里已经带上，CI 的 Windows 任务也会跑）
 default-members = ["crates/board-core", "crates/board-cli", "crates/board-server"]
 
 [workspace.package]
