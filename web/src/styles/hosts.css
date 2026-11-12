@@ -42,7 +42,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 img.hp-logo { flex: none; display: block; width: 18px; height: 18px; border-radius: 5px; object-fit: contain; }
 img.hp-mini.hp-logo { min-width: 0; padding: 0; background: none; box-shadow: none; }
 .hp-agent img.hp-logo { margin-left: 1px; }
-.hp-agent.sm img.hp-logo { width: 16px; height: 16px; border-radius: 4px; }
 .hp-agent.missing img.hp-logo { filter: grayscale(1); }
 .hp-side-runs img.hp-mini.hp-logo { width: 14px; height: 14px; border-radius: 4px; }
 img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
@@ -51,7 +50,6 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-agent.def { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }
 .hp-agent.missing { opacity: .5; }
 .hp-agent.missing b { background: var(--text-4); }
-.hp-agent.sm { height: 22px; font-size: 11.5px; }
 .hp-agent-env { font-style: normal; color: var(--text-3); }
 /* 看不到 board-skills：胶囊右边一个警告标记，鼠标放上去写装到哪里 */
 .hp-agent.noskill { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 60%, transparent); }
@@ -265,7 +263,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 }
 .hp-rack:hover { box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2); }
 .hp-rack.off { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
-.hp-rack.off .hp-rack-name b, .hp-rack.off .hp-os, .hp-rack.off .hp-rack-agents { opacity: .55; }
+.hp-rack.off .hp-rack-name b, .hp-rack.off .hp-os, .hp-rack.off .hp-rack-notes { opacity: .55; }
 .hp-rack-id {
   display: flex; flex-direction: column; align-items: stretch; gap: 11px; min-width: 0; padding: 14px 16px 15px; text-align: left;
   border-right: 1px solid var(--line); transition: background-color var(--dur-1);
@@ -278,10 +276,9 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-rack-name span { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hp-rack-state { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .hp-rack-load { font-family: var(--f-mono); font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.hp-rack-agents { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.hp-rack-agents .hp-agent { max-width: 100%; }
-.hp-rack-notes { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
-.hp-rack-notes > span { display: flex; align-items: flex-start; gap: 5px; }
+/* 磁贴底部只有一两行说明（定时领取、没有匹配规则、看不到 board-skills），不再排 agent 胶囊 */
+.hp-rack-notes { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
+.hp-rack-notes > span { display: flex; align-items: flex-start; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
 .hp-rack-notes svg { width: 13px; height: 13px; flex: none; margin-top: 1.5px; }
 .hp-rack-notes .warn { color: var(--warn-text); }
 .hp-rack-notes .live { color: color-mix(in oklab, var(--c-done), var(--ink)); }

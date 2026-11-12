@@ -2,12 +2,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { copyBoardPrompt, copyQuickPrompt, newBoard, newProject, openBoard, openCard } from '../../lib/actions';
 import { canNewWindow, cycleTheme, getTheme, newWindow } from '../../lib/platform';
+import { hostLoad, hostState, hostsOf } from '../../lib/hosts';
 import { quickPrompts } from '../../lib/prompt';
 import { boardFlow, INBOX } from '../../lib/schema';
 import type { Card } from '../../lib/types';
 import { accel, cx } from '../../lib/util';
 import { allBoards, loadFull, useData } from '../../store/data';
-import { closePalette, manageLabels, openCreator, setSide, setTab, TAB_ORDER, toast, useUI, type Tab } from '../../store/ui';
+import { closePalette, manageLabels, openCreator, openHost, setSide, setTab, TAB_ORDER, toast, useUI, type Tab } from '../../store/ui';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from './presence';
 
@@ -101,6 +102,14 @@ export function Palette() {
         id: `card-${c.id}`, group: query ? '卡片' : '最近更新', title: c.title, card: c, color: f.color(c.column), q: query.replace(/^#/, ''),
         sub: c.holder ? `${f.name(c.column)} · ${c.holder}` : f.name(c.column),
         run: () => openCard(c.id),
+      });
+    // 直接按名字跳机器：[...] 里的机器在前，其他机器排在后面
+    const qh = query.toLowerCase();
+    const hosts = hostsOf(ws).filter(h => qh && h.name.toLowerCase().includes(qh));
+    for (const h of hosts)
+      out.push({
+        id: `host-${h.id}`, group: '机器', title: h.name, sub: `${h.online ? '在线' : '离线'} · ${hostState(h, hostLoad(ws, h).running.length).label}`,
+        icon: 'host', q: query, run: () => openHost(h.name),
       });
     const theme = { auto: '跟随系统', light: '浅色', dark: '深色' }[getTheme()];
     const acts: PItem[] = [

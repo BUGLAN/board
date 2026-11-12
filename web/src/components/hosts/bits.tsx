@@ -69,14 +69,14 @@ export function AgentIcon({ id }: { id: string }) {
 }
 
 /** agent 胶囊：图标、名称、启动环境（「pi · Git Bash」）、版本号、「默认」 */
-export function AgentChip({ a, def, small, env, skill }: { a: HostAgent; def?: boolean; small?: boolean; env?: string | null; skill?: string | null }) {
+export function AgentChip({ a, def, env, skill }: { a: HostAgent; def?: boolean; env?: string | null; skill?: string | null }) {
   const m = agentMark(a.id);
   return (
-    <span className={cx('hp-agent', !a.found && 'missing', def && 'def', small && 'sm', skill && 'noskill')} style={{ ['--ac' as string]: m.color }}>
+    <span className={cx('hp-agent', !a.found && 'missing', def && 'def', skill && 'noskill')} style={{ ['--ac' as string]: m.color }}>
       <AgentIcon id={a.id} />
       {a.name}
       {env && <i className="hp-agent-env">· {env}</i>}
-      {!small && <em>{a.found ? a.version || '找到了' : '没找到'}</em>}
+      <em>{a.found ? a.version || '找到了' : '没找到'}</em>
       {def && <small>默认</small>}
       {skill && (
         <span className="hp-agent-warn" role="img" aria-label={skill} data-tip={skill}>

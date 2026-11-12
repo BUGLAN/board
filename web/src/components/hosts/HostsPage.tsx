@@ -1,5 +1,5 @@
 /* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务） */
-import { agentMark, cronSummary, envName, hostLoad, hostState, hostsOf, queueReason, since, skillMiss, SOURCE, usedAgents } from '../../lib/hosts';
+import { agentMark, cronSummary, hostLoad, hostState, hostsOf, queueReason, since, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';
@@ -7,7 +7,7 @@ import { openHost, useUI } from '../../store/ui';
 import { Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { goCard } from './Dispatch';
-import { AgentChip, Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
+import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 
 export function HostsSide() {
   const ws = useData(s => s.ws);
@@ -168,11 +168,13 @@ function QueueLane({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
   );
 }
 
-function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null; now: number; index: number }) {
+/** 一台机器的一行（磁贴 + 车道）；单独导出给单元测试画 */
+export function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null; now: number; index: number }) {
   const { running, queued } = hostLoad(ws, h);
   const free = Math.max(0, h.max - running.length);
   const cron = cronSummary(h);
-  const agents = usedAgents(h);
+  // 磁贴上不放 agent 胶囊（默认 agent、领取规则、兜底里的 agent 在机器详情里看）；只在有 agent 看不到 board-skills 时提一行
+  const noskill = h.agents.filter(a => skillMiss(h, a)).length;
   return (
     <article
       className={cx('hp-rack enter', !h.online && 'off', h.online && h.paused && 'paused')}
@@ -198,15 +200,7 @@ function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null; now: n
             </span>
           )}
         </span>
-        {agents.length > 0 && (
-          <span className="hp-rack-agents">
-            {/* 只显示设置里会用到的 agent（默认、领取规则、兜底），不把检测到的全部铺出来 */}
-            {agents.map(a => (
-              <AgentChip key={a.id} a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} small />
-            ))}
-          </span>
-        )}
-        {(cron || h.round || (!!h.unmatched && !h.fallback)) && (
+        {(cron || h.round || (!!h.unmatched && !h.fallback) || noskill > 0) && (
           <span className="hp-rack-notes">
             {h.round && (
               <span className="live">
@@ -224,6 +218,13 @@ function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null; now: n
               <span className="warn">
                 <Icon name="info" />
                 {h.unmatched} 张卡片没有匹配规则
+              </span>
+            )}
+            {/* 原来靠胶囊外框提示的「看不到 board-skills」，改成磁贴底部一行警告；鼠标放上去写装到哪里 */}
+            {noskill > 0 && (
+              <span className="warn" title={`在用的启动环境里看不到 board-skills，点开看是哪个 agent、装到哪里（见 docs/agents.md）`}>
+                <Icon name="alert" />
+                {noskill} 个 agent 看不到 board-skills
               </span>
             )}
           </span>
