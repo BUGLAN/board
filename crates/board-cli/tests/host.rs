@@ -48,6 +48,13 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo "working"
     echo "boom"
     exit 3 ;;
+  leak)
+    # 像 agent 执行 env、报错时带出请求头那样，把令牌和其他密钥打到标准输出/标准错误
+    echo "BOARD_TOKEN=$BOARD_TOKEN"
+    echo "Authorization: Bearer $BOARD_TOKEN"
+    echo "key ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >&2
+    echo "working"
+    exit 3 ;;
   orphan)
     # 留下一个忽略 SIGTERM 的子进程（同一进程组），自己先退出
     ( trap '' TERM; exec sleep 60 ) &
@@ -408,6 +415,49 @@ fn end_response_failure_is_retried_with_real_exit_code() {
     assert!(texts.iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "要按真实退出码结束：{texts:?}");
     assert!(!texts.iter().any(|t| t.contains("没有找到 agent 进程")), "不能按「找不到进程」结束：{texts:?}");
     assert!(rig.dispatch_log(id).iter().any(|l| l == "boom"), "日志最后 20 行要上报");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 卡片 #199：agent 把令牌和密钥打到标准输出、标准错误里，上传到服务端的日志和异常退出评论里都只有
+/// `<已隐藏>`，本机日志文件里是原文
+#[test]
+fn tokens_are_redacted_before_upload_but_kept_locally() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    rig.mode("leak");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let id = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 异常退出", Duration::from_secs(20), || ended(&rig.show(1), "异常退出"));
+    let token = rig.s.token.clone();
+    let gh = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    // 服务端保存的日志：令牌原文一处不留
+    let log = rig.dispatch_log(id);
+    assert!(log.iter().any(|l| l == "BOARD_TOKEN=<已隐藏>"), "{log:?}");
+    assert!(log.iter().any(|l| l == "Authorization: Bearer <已隐藏>"), "{log:?}");
+    assert!(log.iter().any(|l| l == "key <已隐藏>"), "ghp_ 也要隐藏：{log:?}");
+    assert!(!log.iter().any(|l| l.contains(&token) || l.contains(gh)), "服务端日志里不能有令牌、密钥原文：{log:?}");
+    // 异常退出评论里的「日志最后 20 行」同样脱敏
+    let c = rig.show(1);
+    let texts = activity(&c);
+    let comment = texts.iter().find(|t| t.contains("异常退出")).unwrap_or_else(|| panic!("{texts:?}"));
+    assert!(!comment.contains(&token) && !comment.contains(gh), "评论里不能有令牌、密钥原文：{comment}");
+    assert!(comment.contains("<已隐藏>"), "{comment}");
+    // 本机日志保留原文
+    let local = std::fs::read_to_string(log_file(&rig.s.home, id)).unwrap();
+    assert!(local.contains(&format!("BOARD_TOKEN={token}")), "本机日志保留原文：{local}");
+    assert!(local.contains(gh), "{local}");
+    // 本机日志只有自己能读（0600）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(log_file(&rig.s.home, id)).unwrap().permissions().mode() & 0o777, 0o600);
+    }
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }

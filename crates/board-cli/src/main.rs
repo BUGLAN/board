@@ -14,6 +14,7 @@ mod envs;
 mod heartbeat;
 mod host;
 mod logfmt;
+mod redact;
 mod selftest;
 mod service;
 mod update;

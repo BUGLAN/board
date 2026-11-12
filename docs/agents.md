@@ -33,6 +33,10 @@
 
    为什么还要 `BOARD_CONFIG`：有的 agent 不把名字像密钥的环境变量传给它执行的命令。dsh 会去掉名字里带 `KEY`、`PASSWORD`、`SECRET`、`TOKEN` 的变量，`BOARD_TOKEN` 到不了 `board`，`board` 就会拿 `~/.board/config.toml` 里别的令牌去连，得到 `INVALID_TOKEN`。`board` 读 `BOARD_CONFIG` 指向的文件代替 `~/.board/config.toml`，这个变量名不像密钥，能传过去。
 3. 标准输入是空的，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传（最多最后 500 行），界面「日志」里看。Claude Code、pi 用事件流（JSONL）运行，本机的日志文件里是原样的事件；上传和异常退出评论里的「日志最后 20 行」是 `board host` 转写后的一行一行（`crates/board-cli/src/logfmt.rs`）：agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、出错的 `✗ …`、结束时的 `■ 结束 · 用时 · 轮数 · 费用`。不是 JSON 的行（标准错误里的提示）原样保留。
+
+   上传前脱敏（`crates/board-cli/src/redact.rs`）：agent 执行 `env`、打印配置文件、报错时带出请求头，令牌和其他密钥不能跟着上传到服务端（任何登录的人都能看到界面上的日志，异常退出时评论里还带最后 20 行）。`board host` 在向服务端发日志、写异常退出评论里的「日志最后 20 行」之前，把这些换成 `<已隐藏>`：当前令牌的原文、这次派发注入的 `BOARD_TOKEN`、`BOARD_HOST_TOKEN`，以及常见格式的密钥（`sk-…`、`ghp_…`、`github_pat_…`、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----` 块、`Authorization: Bearer …` 的凭据）。本机的日志文件保留原文。普通的十六进制提交号不会被误伤。
+
+   本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
 4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。
 5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码和日志最后 20 行。
 6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。

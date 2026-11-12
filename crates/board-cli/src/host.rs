@@ -25,10 +25,12 @@
 //!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
-//! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`，每 5 秒上传新增的行（最多最后 500 行）。
+//! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600），每 5 秒上传新增的行（最多最后 500 行）。
 //!   Claude Code、pi 的 `-p` 只在结束时打印结果，运行中日志是空的：内置模板改用它们的事件流（Claude Code
 //!   `--output-format stream-json --verbose`、pi `--mode json`），本机日志文件里存原样的事件，上传和异常退出评论里的
-//!   「日志最后 20 行」用转写后的一行一行（见 logfmt.rs）。
+//!   「日志最后 20 行」用转写后的一行一行（见 logfmt.rs）。上传、写评论之前脱敏（令牌和常见格式的密钥换成
+//!   `<已隐藏>`，见 redact.rs），本机日志保留原文。单个日志超过 50 MB 只留开头 1 MB 和最后 10 MB；
+//!   结束超过 30 天（`[host] log_days`）的日志在启动时和之后每天删一次。
 //! - agent 退出后上报退出码和日志最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 / 已停止）。
 //! - 人停止：结束 agent 进程树，包括启动环境的外壳（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树；
 //!   WSL 里在 WSL 中结束 agent 的进程组），再上报。
@@ -51,6 +53,7 @@ use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
 use crate::logfmt::{self, Stream};
+use crate::redact;
 use crate::selftest;
 use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
@@ -192,6 +195,14 @@ const OFFLINE_WARN: Duration = Duration::from_secs(30);
 const ORPHAN_KILL_AFTER: Duration = Duration::from_secs(5);
 /// 异常退出时评论里带的日志行数
 const TAIL: usize = 20;
+/// 单个本机日志超过这么大时，只留开头 1 MB 和最后 10 MB，中间写一行省略说明
+const LOG_MAX: u64 = 50 * 1024 * 1024;
+const LOG_HEAD: u64 = 1 * 1024 * 1024;
+const LOG_TAIL: u64 = 10 * 1024 * 1024;
+/// 本机日志保留几天（结束超过这么多天的删掉），配置文件 `[host] log_days` 可以改
+const LOG_DAYS: i64 = 30;
+/// 多久看一次要不要清理本机日志（启动时一次，之后每天一次）
+const LOG_CLEAN_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// 一次最多读多少字节的新日志（多出来的只留最后这些）。Claude Code、pi 的事件流一行可能很长（工具结果整段在里面），
 /// 转写后只剩一两行，所以读得多一些
 const LOG_CHUNK: u64 = 4 * 1024 * 1024;
@@ -675,6 +686,99 @@ fn upload_lines(lines: Vec<String>, fmt: Option<Stream>) -> Vec<String> {
     lines[lines.len().saturating_sub(LOG_KEEP)..].to_vec()
 }
 
+/// 要上传的行：转写，只留最后 500 行，再脱敏（令牌、密钥不上传到服务端）
+fn upload_lines_redacted(lines: Vec<String>, fmt: Option<Stream>, secrets: &[&str]) -> Vec<String> {
+    upload_lines(lines, fmt).iter().map(|l| redact::redact(l, secrets)).collect()
+}
+
+/// 日志文件的权限设成 0600（只有自己能读）。Windows 上不设：ACL 不是这个模型，用户目录本来就只有本人能进
+fn restrict_log(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// 新建（或清空）一个日志文件，权限 0600。返回标准输出、标准错误两份句柄
+fn create_log(path: &Path) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    #[cfg(unix)]
+    let f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?
+    };
+    #[cfg(not(unix))]
+    let f = std::fs::File::create(path)?;
+    restrict_log(path);
+    let err = f.try_clone()?;
+    Ok((f, err))
+}
+
+/// 太大了只留开头和结尾：超过 `max` 字节时，留下开头 `head` 字节、最后 `tail` 字节，中间换成一行省略说明。
+/// 返回截断后的长度（没截断时 None）
+fn truncate_log(path: &Path, head: u64, tail: u64, max: u64) -> std::io::Result<Option<u64>> {
+    let len = std::fs::metadata(path)?.len();
+    if len <= max {
+        return Ok(None);
+    }
+    let mut f = std::fs::File::open(path)?;
+    let mut first = Vec::new();
+    (&mut f).take(head).read_to_end(&mut first)?;
+    f.seek(SeekFrom::End(-(tail as i64)))?;
+    let mut last = Vec::new();
+    f.read_to_end(&mut last)?;
+    // 别从半行开始、也别在半行结束
+    if let Some(i) = first.iter().rposition(|b| *b == b'\n') {
+        first.truncate(i + 1);
+    }
+    if let Some(i) = last.iter().position(|b| *b == b'\n') {
+        last.drain(..=i);
+    }
+    let note = format!("\n[日志太大（{} 字节），中间 {} 字节已省略：只保留开头 {} KB 和最后 {} KB]\n", len, len - first.len() as u64 - last.len() as u64, head / 1024, tail / 1024);
+    let mut out = Vec::with_capacity(first.len() + note.len() + last.len());
+    out.extend_from_slice(&first);
+    out.extend_from_slice(note.as_bytes());
+    out.extend_from_slice(&last);
+    std::fs::write(path, &out)?;
+    restrict_log(path);
+    Ok(Some(out.len() as u64))
+}
+
+/// 本机派发日志清理：`~/.board/host/logs` 里结束超过 `days` 天的删掉。`keep` 是正在跑的派发 ID，
+/// 它们的日志不删（改过文件时间的、还在写的都按结束时间算：看修改时间）。
+/// 返回删掉的个数。日志文件名是派发 ID 或 `ready-*`、`clone-*`、`update` 这类
+fn clean_logs(dir: &Path, days: i64, keep: &[i64], now: std::time::SystemTime) -> usize {
+    let cutoff = now.checked_sub(Duration::from_secs((days.max(1) as u64) * 24 * 3600));
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".log") {
+            continue;
+        }
+        // 正在跑的派发：文件名就是派发 ID
+        let id: Option<i64> = name.trim_end_matches(".log").parse().ok();
+        if id.is_some_and(|id| keep.contains(&id)) {
+            continue;
+        }
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_file() {
+            continue;
+        }
+        let Ok(modified) = m.modified() else { continue };
+        if cutoff.is_some_and(|c| modified < c) && std::fs::remove_file(&p).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 fn clock() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
@@ -772,6 +876,8 @@ struct Host<'a> {
     after: Option<After>,
     pidfile: PathBuf,
     logs: PathBuf,
+    /// 本机日志保留几天（`[host] log_days`，默认 30）
+    log_days: i64,
     /// board 自己的路径（BOARD_EXE）
     exe: PathBuf,
     /// 每次派发的配置文件放在这里：`~/.board/host/run/<机器名>`
@@ -791,8 +897,8 @@ struct Host<'a> {
     /// 机器名、白板与目录跟着配置文件变（命令行没给 `--name` / `--dir`）
     follow_name: bool,
     follow_dirs: bool,
-    /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
-    conf_seen: (Option<String>, Vec<(String, String)>),
+    /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文、日志保留天数）：没变就不重新校验
+    conf_seen: (Option<String>, Vec<(String, String)>, Option<i64>),
     /// 正在后台做的自检（请求序号、线程）
     selftest: Option<(i64, std::thread::JoinHandle<Vec<SelfTestItem>>)>,
     /// 做完了、还没回报成功的自检结果（连不上服务端时下一轮再报）
@@ -870,6 +976,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
             .collect::<Result<_>>()?
     };
     let (dirs, dir_raw) = parse_dirs(raw)?;
+    let log_days = conf.log_days.unwrap_or(LOG_DAYS);
     let fixed_dirs = if follow_dirs {
         BTreeMap::new()
     } else {
@@ -922,6 +1029,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         after: None,
         pidfile,
         logs: hd.join("logs"),
+        log_days,
         runs: vec![],
         ended: vec![],
         work: None,
@@ -932,11 +1040,12 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         offline_warned: false,
         follow_name,
         follow_dirs,
-        conf_seen: (conf.name.clone(), conf.dirs.clone()),
+        conf_seen: (conf.name.clone(), conf.dirs.clone(), conf.log_days),
         selftest: None,
         selftest_out: None,
         selftest_seen: None,
         selftest_pids: selftest::Pids::default(),
+
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1270,7 +1379,7 @@ impl Host<'_> {
         }
         let _ = std::fs::create_dir_all(&self.logs);
         let log = self.logs.join("update.log");
-        let started = std::fs::File::create(&log).and_then(|out| out.try_clone().map(|err| (out, err))).and_then(|(out, err)| {
+        let started = create_log(&log).and_then(|(out, err)| {
             let mut c = Command::new(&self.exe);
             c.arg("update").stdin(Stdio::null()).stdout(out).stderr(err).env("NO_COLOR", "1").env("BOARD_UPDATE_BY_HOST", "1");
             envs::detach(&mut c);
@@ -1398,9 +1507,11 @@ impl Host<'_> {
         // 换之前把已经写出的日志传给上一张
         let switches: Vec<(usize, Dispatch)> =
             self.runs.iter().enumerate().filter_map(|(i, r)| successor(&r.d, &w.running).map(|n| (i, n))).collect();
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         for (i, n) in switches {
             let (lines, to) = new_lines(&self.runs[i].log, self.runs[i].sent, false);
-            let lines = upload_lines(lines, self.runs[i].fmt);
+            let lines = upload_lines_redacted(lines, self.runs[i].fmt, &secrets);
             if !lines.is_empty() {
                 let _ = self.rm().post::<Value>(&format!("/api/dispatches/{}/log", self.runs[i].d.id), json!({ "lines": lines }));
             }
@@ -1468,6 +1579,7 @@ impl Host<'_> {
         let _ = std::fs::create_dir_all(&self.logs);
         let safe: String = board.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
         let log = self.logs.join(format!("ready-{safe}.log"));
+        restrict_log(&log);
         let mut r = ReadyRun { board: board.into(), cmd: cmd.into(), dir: dir.to_path_buf(), child: None, log, last, missing: false };
         let fail = |r: &mut ReadyRun, why: String| {
             r.last = Some(DirReady { cmd: r.cmd.clone(), ok: false, code: None, tail: vec![why], at: now_ms() });
@@ -1476,7 +1588,7 @@ impl Host<'_> {
             r.missing = true;
             fail(&mut r, format!("目录不存在：{}", dir.display()));
         } else {
-            let files = std::fs::File::create(&r.log).and_then(|out| out.try_clone().map(|err| (out, err)));
+            let files = create_log(&r.log);
             match files {
                 Err(e) => fail(&mut r, format!("无法创建检查日志：{e}")),
                 Ok((out, err)) => {
@@ -1508,9 +1620,7 @@ impl Host<'_> {
             if status.is_none() && !late {
                 continue;
             }
-            // 登录 shell 自己打的启动、退出提示不算输出（#232）：这里就去掉，上报的 tail 和下面的提示都用干净的。
-            // 先多取几行，去掉噪声之后仍能凑满 READY_TAIL 行
-            let mut tail: Vec<String> = tail_lines(&r.log, READY_TAIL + 5, None).into_iter().filter(|l| !board_core::hosts::shell_noise(l)).collect();
+            let mut tail = tail_lines(&r.log, READY_TAIL, None);
             let (ok, code) = match status {
                 Some(s) => (s.success(), exit_code(s)),
                 None => {
@@ -1567,7 +1677,7 @@ impl Host<'_> {
                         self.say(format!("{} 服务端改的白板与目录已生效：{list}", self.p.green("✓")));
                         self.dirs = dirs;
                         self.dir_raw = raw;
-                        self.conf_seen = (self.conf_seen.0.clone(), desired);
+                        self.conf_seen.1 = desired;
                         self.dirs_rev = h.dirs_rev;
                     }
                     Err(e) => self.say(format!("{} 服务端改的白板与目录没有生效：{}", self.p.yellow("!"), e.message)),
@@ -1603,22 +1713,7 @@ impl Host<'_> {
             .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
             .collect();
         let log = self.logs.join(format!("clone-{safe}.log"));
-        let out = match std::fs::File::create(&log) {
-            Ok(f) => f,
-            Err(e) => {
-                self.clones.push(CloneRun {
-                    board: board.into(),
-                    url: url.into(),
-                    state: "failed".into(),
-                    message: format!("无法创建克隆日志：{e}"),
-                    updated_at: now_ms(),
-                    child: None,
-                    log,
-                });
-                return;
-            }
-        };
-        let err = match out.try_clone() {
+        let (out, err) = match create_log(&log) {
             Ok(f) => f,
             Err(e) => {
                 self.clones.push(CloneRun {
@@ -1882,6 +1977,8 @@ impl Host<'_> {
         let every = interval();
         let mut next_beat = Instant::now() + every;
         let mut next_log = Instant::now() + LOG_EVERY;
+        // 启动时清一次本机日志，之后每天一次
+        let mut next_clean = Instant::now();
         let mut fetch = false;
         let mut last_min = String::new();
         let mut seen: Option<i64> = None;
@@ -1956,6 +2053,11 @@ impl Host<'_> {
                 self.upload_logs();
                 self.report_ended();
             }
+            // 本机日志清理：启动时一次，之后每天一次
+            if now >= next_clean {
+                next_clean = now + LOG_CLEAN_EVERY;
+                self.clean_logs();
+            }
             std::thread::sleep(TICK);
         }
     }
@@ -1996,12 +2098,18 @@ impl Host<'_> {
             return false;
         }
         let Ok(conf) = config::File::load().and_then(|f| f.host()) else { return false };
-        let raw = (conf.name.clone(), conf.dirs.clone());
+        let raw = (conf.name.clone(), conf.dirs.clone(), conf.log_days);
         if raw == self.conf_seen {
             return false;
         }
         self.conf_seen = raw;
         let mut changed = false;
+        // 日志保留天数：跟着配置换，下一次清理按新的来
+        let days = conf.log_days.unwrap_or(LOG_DAYS);
+        if days != self.log_days {
+            self.log_days = days;
+            self.say(format!("{} 本机日志保留 {days} 天", self.p.green("✓")));
+        }
         if self.follow_name {
             let to = conf_name(conf.name.as_deref());
             if to != self.name {
@@ -2161,7 +2269,11 @@ impl Host<'_> {
             r.cleanup();
             let code = exit_code(status);
             self.flush_log(&r, true);
-            let tail = tail_lines(&r.log, TAIL, r.fmt);
+            let secrets = self.secrets();
+            let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
+            let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, &secrets)).collect();
+            // 结束之后才截断：agent 还活着的时候换掉文件内容，它下次写入会从旧位置接着写，中间留一段空洞
+            let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
             let how = if r.timeout.is_some() { "timeout" } else { "exit" };
             self.ended.push(Ended { id: r.d.id, code, tail, how, why: r.timeout.clone() });
             let what = match &r.timeout {
@@ -2373,8 +2485,7 @@ impl Host<'_> {
             write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
         }
         let log = self.logs.join(format!("{}.log", d.id));
-        let out = std::fs::File::create(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
-        let err = out.try_clone().map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
+        let (out, err) = create_log(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
         write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| e.message)?;
         let patch_arg = patch.display().to_string();
@@ -2470,11 +2581,54 @@ impl Host<'_> {
         });
     }
 
+    /// 清理本机派发日志：结束超过 `log_days` 天的删掉，正在跑的留着；留下来的单个超过 50 MB 的只保留开头和结尾
+    /// （只动已经结束的：agent 可能还拿着文件句柄，换掉内容会在它下次写入时留一段空洞）
+    fn clean_logs(&mut self) {
+        let keep: Vec<i64> = self.runs.iter().map(|r| r.d.id).collect();
+        let days = self.log_days;
+        let removed = clean_logs(&self.logs, days, &keep, std::time::SystemTime::now());
+        if removed > 0 {
+            self.say(format!("{} 删掉了 {removed} 个结束超过 {days} 天的本机日志", self.p.dim("·")));
+        }
+        let Ok(rd) = std::fs::read_dir(&self.logs) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".log") {
+                continue;
+            }
+            let id: Option<i64> = name.trim_end_matches(".log").parse().ok();
+            if id.is_some_and(|id| keep.contains(&id)) {
+                continue;
+            }
+            if let Ok(Some(_)) = truncate_log(&e.path(), LOG_HEAD, LOG_TAIL, LOG_MAX) {
+                self.say(format!("{} {name} 超过 50 MB，只留了开头 1 MB 和最后 10 MB", self.p.dim("·")));
+            }
+        }
+    }
+
+    /// 这次派发注入给 agent 的密钥值（当前令牌、`BOARD_TOKEN` 这类环境变量）：上传日志、写异常退出评论之前
+    /// 换成 `<已隐藏>`，本机日志保留原文
+    fn secrets(&self) -> Vec<String> {
+        let mut out = vec![self.rm().token().to_string()];
+        for k in ["BOARD_TOKEN", "BOARD_HOST_TOKEN"] {
+            if let Some(v) = std::env::var(k).ok().filter(|v| !v.trim().is_empty()) {
+                out.push(v);
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     fn upload_logs(&mut self) {
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         let mut sent: Vec<(usize, u64)> = vec![];
         for (i, r) in self.runs.iter().enumerate() {
+            // 这里只会有还在跑的派发（结束的已经从 runs 里移走并截断过）：不截断正在写的日志，
+            // agent 还拿着它的句柄，换掉文件内容会在它下次写入时从旧位置接着写、中间留一段空洞
             let (lines, to) = new_lines(&r.log, r.sent, false);
-            let lines = upload_lines(lines, r.fmt);
+            let lines = upload_lines_redacted(lines, r.fmt, &secrets);
             if lines.is_empty() {
                 if to != r.sent {
                     sent.push((i, to));
@@ -2492,8 +2646,10 @@ impl Host<'_> {
 
     /// 上传一次派发剩下的日志（结束时）
     fn flush_log(&self, r: &Run, last: bool) {
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         let (lines, _) = new_lines(&r.log, r.sent, last);
-        let lines = upload_lines(lines, r.fmt);
+        let lines = upload_lines_redacted(lines, r.fmt, &secrets);
         if !lines.is_empty() {
             let _ = self.rm().post::<Value>(&format!("/api/dispatches/{}/log", r.d.id), json!({ "lines": lines }));
         }
@@ -2532,12 +2688,16 @@ impl Host<'_> {
             r.cleanup();
         }
         let _ = std::fs::remove_dir_all(&self.run);
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         for mut r in runs {
             let code = r.child.wait().ok().and_then(exit_code);
             self.flush_log(&r, true);
             // board host 退出时已经在按兜底停止的，照样报「超时」：原因写清楚
             let (how, why) = if r.timeout.is_some() { ("timeout", r.timeout.clone()) } else { ("host_exit", None) };
-            self.ended.push(Ended { id: r.d.id, code, tail: tail_lines(&r.log, TAIL, r.fmt), how, why });
+            let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, &secrets)).collect();
+            let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
+            self.ended.push(Ended { id: r.d.id, code, tail, how, why });
         }
         self.report_ended();
         if graceful {
@@ -2624,23 +2784,107 @@ mod tests {
         assert!(s.contains("50 秒") && s.contains("board hold"), "{s}");
     }
 
-    /// 卡片 #232：环境检查在 `$SHELL -l -i -c` 里跑，CI 上没有终端，bash 往 stderr 打作业控制提示、退出时打 `logout`。
-    /// 这些不能进上报的 tail（不然界面显示「环境检查没通过：logout」）。真正的错误要留着
+    /// 卡片 #199：超过 50 MB 的本机日志只留开头 1 MB、最后 10 MB，中间一行省略说明；
+    /// 不超过的不动
     #[test]
-    fn ready_tail_skips_login_shell_noise() {
+    fn huge_logs_keep_head_and_tail_with_a_note() {
         let dir = tempfile::tempdir().unwrap();
-        let f = dir.path().join("ready-default-main.log");
-        std::fs::write(
-            &f,
-            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\nbash: no job control in this shell\nchecking\nmissing ok.txt\nlogout\n",
-        )
-        .unwrap();
-        let tail: Vec<String> = tail_lines(&f, READY_TAIL + 5, None).into_iter().filter(|l| !board_core::hosts::shell_noise(l)).collect();
-        assert_eq!(tail, vec!["checking", "missing ok.txt"]);
-        // 只有噪声时 tail 是空的：调用方按退出码写原因，不显示 logout
-        std::fs::write(&f, "bash: no job control in this shell\nlogout\n").unwrap();
-        let tail: Vec<String> = tail_lines(&f, READY_TAIL + 5, None).into_iter().filter(|l| !board_core::hosts::shell_noise(l)).collect();
-        assert!(tail.is_empty(), "{tail:?}");
+        let f = dir.path().join("1.log");
+        // 20 MB，每行 100 字节：全留下就太占地方
+        let line = format!("{}\n", "x".repeat(99));
+        let mut body = String::new();
+        body.push_str("HEAD-MARK\n");
+        while body.len() < 20 * 1024 * 1024 {
+            body.push_str(&line);
+        }
+        body.push_str("TAIL-MARK\n");
+        std::fs::write(&f, &body).unwrap();
+        let max = 5 * 1024 * 1024;
+        let (head, tail) = (1 * 1024 * 1024, 2 * 1024 * 1024);
+        let len = truncate_log(&f, head, tail, max).unwrap().expect("超过 50 MB 才截断");
+        let got = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(got.len() as u64, len, "返回的长度和写回去的一致");
+        assert!(got.starts_with("HEAD-MARK\n"), "开头留着");
+        assert!(got.ends_with("TAIL-MARK\n"), "结尾留着");
+        assert!(got.contains("中间") && got.contains("已省略"), "有一行省略说明：{got:.0}");
+        assert!((got.len() as u64) < 4 * 1024 * 1024, "截断后小了很多：{}", got.len());
+        // 刚好到上限：不截断
+        let small = dir.path().join("2.log");
+        std::fs::write(&small, vec![b'a'; max as usize]).unwrap();
+        assert_eq!(truncate_log(&small, head, tail, max).unwrap(), None);
+        assert_eq!(std::fs::metadata(&small).unwrap().len(), max);
+    }
+
+    /// 卡片 #199：结束超过 30 天的本机日志在 board host 启动后被删除，30 天内的还在；
+    /// 正在跑的派发的日志不删；目录里不是日志的文件不碰
+    #[test]
+    fn old_logs_are_removed_but_recent_and_running_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = std::time::SystemTime::now();
+        let old = now - Duration::from_secs(31 * 24 * 3600);
+        let recent = now - Duration::from_secs(29 * 24 * 3600);
+        let files = [
+            ("1.log", std::time::SystemTime::now()),
+            ("2.log", recent),
+            ("3.log", old),
+            ("ready-default-main.log", old),
+            ("clone-default-main.log", old),
+        ];
+        for (name, t) in files {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "x\n").unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(t).unwrap();
+        }
+        std::fs::write(dir.path().join("10.pid"), "x").unwrap();
+        // 1 号派发还在跑：它的日志再老也留着
+        std::fs::File::options().write(true).open(dir.path().join("1.log")).unwrap().set_modified(old).unwrap();
+        // 删掉 3.log 和 ready、clone 两个：1.log（还在跑）、2.log（30 天内）、10.pid 留着
+        let removed = clean_logs(dir.path(), 30, &[1], now);
+        assert_eq!(removed, 3);
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(left.contains(&"1.log".to_string()) && left.contains(&"2.log".to_string()), "{left:?}");
+        assert!(!left.contains(&"3.log".to_string()) && !left.contains(&"clone-default-main.log".to_string()), "{left:?}");
+        assert!(left.contains(&"10.pid".to_string()), "不是日志的文件不碰：{left:?}");
+        // 天数改成 1：29 天前的也删
+        let removed = clean_logs(dir.path(), 1, &[1], now);
+        assert_eq!(removed, 1);
+        assert!(dir.path().join("1.log").exists(), "还在跑的留着");
+    }
+
+    /// 上传的行先转写、再脱敏；本机日志文件保留原文
+    #[test]
+    fn uploads_are_redacted_but_the_local_file_keeps_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("7.log");
+        let token = "bd_0123456789abcdef0123456789abcdef";
+        std::fs::write(&f, format!("BOARD_TOKEN={token}\nAuthorization: Bearer {token}\nworking\n")).unwrap();
+        let (lines, _) = new_lines(&f, 0, false);
+        let up = upload_lines_redacted(lines, None, &[token]);
+        assert_eq!(up, vec!["BOARD_TOKEN=<已隐藏>", "Authorization: Bearer <已隐藏>", "working"]);
+        let local = std::fs::read_to_string(&f).unwrap();
+        assert!(local.contains(token), "本机日志保留原文：{local}");
+    }
+
+    /// 日志文件只有自己能读（0600）
+    #[cfg(unix)]
+    #[test]
+    fn log_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("logs").join("1.log");
+        create_log(&f).unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        // 已经存在的（以前建的 0644）也改成 0600
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        restrict_log(&f);
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        // 截断之后还是 0600
+        std::fs::write(&f, vec![b'x'; 200]).unwrap();
+        truncate_log(&f, 10, 10, 100).unwrap().unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

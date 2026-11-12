@@ -171,6 +171,7 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 /// [host]
 /// name = "macbook"
 /// dirs = { "default/main" = "~/repo/board", "mini/main" = "~/repo/mini" }
+/// log_days = 30
 ///
 /// [agents.claude]
 /// cmd = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
@@ -181,6 +182,8 @@ pub struct HostConf {
     pub name: Option<String>,
     /// 白板与目录，按文件里的顺序
     pub dirs: Vec<(String, String)>,
+    /// 本机派发日志保留几天（`~/.board/host/logs` 里结束超过这么多天的删掉）；不写时用默认值
+    pub log_days: Option<i64>,
     pub agents: Vec<AgentConf>,
 }
 
@@ -216,6 +219,13 @@ impl Config {
                 for (k, v) in d.iter() {
                     c.dirs.push((k.to_string(), v.as_str().ok_or_else(|| bad("host.dirs"))?.to_string()));
                 }
+            }
+            if let Some(n) = t.get("log_days") {
+                let n = n.as_integer().ok_or_else(|| bad("host.log_days（要写成整数）"))?;
+                if n < 1 {
+                    return Err(bad("host.log_days（至少 1 天）"));
+                }
+                c.log_days = Some(n);
             }
         }
         if let Some(a) = self.doc.get("agents") {
@@ -425,6 +435,21 @@ mod tests {
         assert_eq!(h.dirs, dirs);
         update_at(&f, false, |c| c.set_host(None, &dirs).map(|_| ((), true))).unwrap();
         assert!(!read(&f).contains("name ="));
+        // 日志保留天数：不写时用默认值（None），写了要是不小于 1 的整数；改机器名、目录时不碰它
+        let g = d.path().join("log.toml");
+        std::fs::write(&g, "[host]\nlog_days = 7\n").unwrap();
+        let h = Config::load_from(&g).unwrap().host().unwrap();
+        assert_eq!(h.log_days, Some(7));
+        update_at(&g, false, |c| c.set_host(Some("mbp"), &dirs).map(|_| ((), true))).unwrap();
+        assert!(read(&g).contains("log_days = 7"), "{}", read(&g));
+        assert_eq!(Config::load_from(&g).unwrap().host().unwrap().log_days, Some(7));
+        assert_eq!(Config::load_from(&f).unwrap().host().unwrap().log_days, None);
+        for bad in ["[host]\nlog_days = 0\n", "[host]\nlog_days = -3\n"] {
+            std::fs::write(&g, bad).unwrap();
+            assert!(Config::load_from(&g).unwrap().host().is_err(), "{bad}");
+        }
+        std::fs::write(&g, "[host]\nlog_days = \"30\"\n").unwrap();
+        assert!(Config::load_from(&g).unwrap().host().is_err(), "要写成整数");
     }
 
     #[test]
