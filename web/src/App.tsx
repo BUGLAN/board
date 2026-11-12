@@ -9,6 +9,7 @@ import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
 import { SessionModal } from './components/hosts/Session';
+import { ReviewDesk } from './components/ReviewDesk';
 import { InboxPage } from './components/Inbox';
 import { StatsPage } from './components/StatsTab';
 import { Login } from './components/Login';
@@ -273,6 +274,7 @@ function BoardApp() {
       <HostModal />
       <DispatchDialog />
       <SessionModal />
+      <ReviewDesk />
       <Creator />
       <Overlays />
       <FloatTips />

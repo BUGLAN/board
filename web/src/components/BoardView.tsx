@@ -10,11 +10,12 @@ import { useMasonry } from '../lib/masonry';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
 import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
+import { statusRoles } from '../lib/review';
 import { orderDir, orderName, orderOf, orderOption, shownCols } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurrent, useData } from '../store/data';
-import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
+import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
 import { BoardSettings } from './BoardSettings';
 import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
@@ -65,6 +66,8 @@ export function BoardView() {
   const reject = useUI(s => s.reject);
   const boardRef = useRef<HTMLDivElement>(null);
   const labels = cur?.project.labels ?? [];
+  // 交审状态的块标题上「复盘」、需要人处理的状态上「处理」（复盘台）
+  const roles = useMemo(() => statusRoles(board?.statuses), [board?.statuses]);
   const { entering, fresh } = useEntering(board, generation);
   // 手机：上面已有状态切换条，工作流图默认收起成一行入口
   const mobile = useMobile();
@@ -234,6 +237,7 @@ export function BoardView() {
                   next={nextId}
                   sorted={!!board.keepSorted}
                   path={path}
+                  role={roles.review.has(s.key) ? 'review' : roles.human.has(s.key) ? 'human' : undefined}
                 />
               );
             }}
@@ -347,6 +351,8 @@ export function BoardSkeleton() {
 /* ------------------------------ 状态块 ------------------------------ */
 
 interface ColumnProps {
+  /** 交审状态（块标题上「复盘」）、需要人处理的状态（「处理」） */
+  role?: 'review' | 'human';
   col: Status;
   index: number;
   f: FlowQ;
@@ -377,7 +383,7 @@ function emptyText(s: Status, f: FlowQ) {
   return '把卡片拖到这里';
 }
 
-function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, path }: ColumnProps) {
+function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, path, role }: ColumnProps) {
   const count = colCount(board, col.key);
   const earlier = omittedIn(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
@@ -431,6 +437,18 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
           </span>
         )}
         {sorted && <OrderChip col={col} path={path} />}
+        {role && count > 0 && (
+          <button
+            type="button"
+            className={cx('col-desk', role)}
+            onPointerDown={e => e.stopPropagation()}
+            onClick={() => openReview({ cols: [col.key], mode: role })}
+            data-tip={role === 'review' ? '复盘台：逐张看，通过或打回' : '逐张看 agent 留的问题，回复后放回'}
+          >
+            <Icon name={role === 'review' ? 'checkCircle' : 'comment'} />
+            {role === 'review' ? '复盘' : '处理'}
+          </button>
+        )}
         <span className="col-count" aria-label="卡片数量" ref={badge}>
           <span>{count}</span>
         </span>

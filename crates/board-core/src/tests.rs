@@ -1968,3 +1968,28 @@ fn trash_keeps_at_most_the_limit() {
     assert_eq!(t.len() as i64, TRASH_MAX);
     assert_eq!(t[0].card.id, 3, "最早的几张先清掉");
 }
+
+/// 复盘台的「打回」「回复并放回」（#194）：评论和移动在一个命令、一个写事务里，要么都发生，要么都不发生
+#[test]
+fn reply_comments_and_moves_in_one_write() {
+    let mut s = store();
+    let id = exec(&mut s, B, &human(), T0, new("A")).unwrap().card.id;
+    exec(&mut s, B, &alpha(), T0, claim(Some(id))).unwrap();
+    exec(&mut s, B, &alpha(), T0, Cmd::Beat { id, done: true }).unwrap();
+    exec(&mut s, B, &alpha(), T0, mv(id, "review")).unwrap();
+    let before = card(&s, B, id).activity.len();
+    // 打回：意见作为评论发出，卡片移到返工（rework）
+    let c = exec(&mut s, B, &human(), T0 + MIN, Cmd::Reply { id, text: "  按钮颜色不对，改成品牌色  ".into(), column: "返工".into() }).unwrap();
+    assert_eq!(c.card.column, "rework");
+    let d = card(&s, B, id);
+    let new_items: Vec<_> = d.activity[before..].iter().map(|a| (a.kind.clone(), a.text.clone())).collect();
+    assert_eq!(new_items[0], ("comment".to_string(), "按钮颜色不对，改成品牌色".to_string()));
+    assert!(new_items[1].0 == "system" && new_items[1].1.contains("返工"), "{new_items:?}");
+    // 没写意见：拒绝，什么也不发生
+    let n = card(&s, B, id).activity.len();
+    assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Reply { id, text: "  ".into(), column: "todo".into() })), ErrorCode::Usage);
+    // 移动被拒绝（agent 不能移出可领取状态以外的地方 / 状态不存在）：评论也不留下
+    assert!(exec(&mut s, B, &human(), T0, Cmd::Reply { id, text: "放回去".into(), column: "nope".into() }).is_err());
+    assert_eq!(card(&s, B, id).activity.len(), n, "整个写回滚：没有留下评论");
+    assert_eq!(card(&s, B, id).card.column, "rework");
+}

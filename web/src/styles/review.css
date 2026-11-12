@@ -1,0 +1,68 @@
+/* ==========================================================================
+   复盘台（PRD §10.14，卡片 #194）：居中大弹窗，手机上全屏
+   ========================================================================== */
+.rv-scrim { z-index: 112; }
+.drawer.rv-modal { z-index: 114; --modal-w: 900px; --modal-h: 760px; }
+.rv-body { display: flex; flex-direction: column; }
+.rv-head { gap: 10px; }
+.rv-title { display: inline-flex; align-items: center; gap: 8px; font-family: var(--f-display); font-size: 15px; font-weight: 700; white-space: nowrap; }
+.rv-title svg { width: 16px; height: 16px; color: var(--text-3); }
+.rv-title em { font-style: normal; font-family: var(--f-body, inherit); font-size: 12.5px; font-weight: 500; color: var(--text-3); }
+.rv-left { font-size: 12.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.rv-pos { min-width: 44px; text-align: center; font: 600 11.5px var(--f-mono); color: var(--text-3); }
+.rv-main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 22px 18px; animation: rv-in var(--dur-3) var(--ease-out); }
+@keyframes rv-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .rv-main { animation: none; } }
+.rv-card-head { display: flex; align-items: baseline; gap: 10px; }
+.rv-id { flex: none; font: 600 13px var(--f-mono); color: var(--text-3); }
+.rv-id:hover { color: var(--brand); text-decoration: underline; }
+.rv-card-title { margin: 0; font-family: var(--f-display); font-size: 18px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.rv-saving { flex: none; font-size: 11.5px; color: var(--text-3); }
+.rv-labels { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-agent { margin-top: 14px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1); }
+.rv-agent.loading { min-height: 84px; background: var(--surface-2); box-shadow: none; }
+.rv-agent-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); }
+.rv-agent-head b { color: var(--text); font-weight: 600; }
+.rv-agent-head time { margin-left: auto; }
+.rv-facts { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--brand) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent); }
+.rv-fact { display: flex; align-items: baseline; gap: 10px; min-width: 0; font-size: 13px; }
+.rv-fact > span { flex: none; width: 60px; font-weight: 600; color: var(--text-2); }
+.rv-fact.check > span { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.rv-fact-v { min-width: 0; font-size: 13px; line-height: 1.5; }
+.rv-fact-v > * { margin: 0; }
+.rv-agent-body { margin-top: 10px; font-size: 13px; }
+.rv-agent-body img { max-height: 320px; }
+.rv-none { margin: 14px 0 0; }
+.rv-sec { margin-top: 18px; }
+.rv-desc .md { font-size: 13.5px; }
+.task-body.tasks-on li.task > i { cursor: pointer; }
+.task-body.tasks-on li.task:hover > i { box-shadow: inset 0 0 0 1.5px var(--brand); }
+.rv-foot { flex: none; position: relative; display: flex; flex-direction: column; gap: 8px; padding: 12px 22px 14px; border-top: 1px solid var(--line); background: var(--glass-strong); }
+.rv-box { min-height: 0; resize: none; font-size: 13px; }
+.rv-box.need { box-shadow: inset 0 0 0 1.5px var(--danger); animation: rv-shake .3s var(--ease-out); }
+@keyframes rv-shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+@media (prefers-reduced-motion: reduce) { .rv-box.need { animation: none; } }
+.rv-need { position: absolute; right: 30px; top: 18px; font-size: 11.5px; color: var(--danger-text); }
+.rv-acts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.rv-acts .spacer { flex: 1; }
+.rv-fact-v.mono { font-family: var(--f-mono); font-size: 12.5px; }
+.rv-target { max-width: 140px; }
+.rv-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 30px; text-align: center; color: var(--text-3); }
+.rv-empty svg { width: 28px; height: 28px; color: var(--c-done); }
+.rv-empty b { font-size: 15px; color: var(--text); }
+/* 块标题上的「复盘」「处理」 */
+.col-desk { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  color: color-mix(in oklab, var(--c), var(--ink)); background: color-mix(in srgb, var(--c) 14%, transparent); transition: background-color var(--dur-1), transform var(--dur-1) var(--ease-out); }
+.col-desk:hover { background: color-mix(in srgb, var(--c) 24%, transparent); }
+.col-desk:active { transform: scale(.95); }
+.col-desk svg { width: 12px; height: 12px; }
+@media (max-width: 760px) {
+  .drawer.rv-modal { height: 100dvh; border-radius: 0; }
+  .rv-main { overflow: visible; padding: 10px 16px 14px; }
+  .rv-body { overflow-y: auto; }
+  .rv-foot { position: sticky; bottom: 0; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); }
+  .rv-title em { display: none; }
+  .rv-need { right: 24px; top: 14px; }
+}
+/* 复用卡片详情的「派发记录」一节：去掉详情里的左右留白 */
+.rv-main .d-section { margin-top: 18px; padding-left: 0; padding-right: 0; }

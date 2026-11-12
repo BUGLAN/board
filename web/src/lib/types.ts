@@ -707,6 +707,8 @@ export type Cmd =
   | { op: 'new'; title: string; body?: string; column?: 'inbox'; top?: boolean; labels?: number[] }
   | { op: 'edit'; id: number; title?: string; body?: string }
   | { op: 'move'; id: number; column: ColumnKey; index?: number; top?: boolean; order?: number[]; before?: number; after?: number }
+  /** 评论并移动（复盘台的打回、回复并放回）：服务端一个事务里先评论再移动 */
+  | { op: 'reply'; id: number; text: string; column: ColumnKey }
   | { op: 'comment'; id: number; text: string }
   | { op: 'edit_comment'; id: number; activity: number; text: string }
   | { op: 'delete_comment'; id: number; activity: number }

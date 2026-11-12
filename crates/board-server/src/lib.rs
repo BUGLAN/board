@@ -617,6 +617,7 @@ fn card_id_of(cmd: &Cmd) -> Option<i64> {
         Cmd::Edit { id, .. }
         | Cmd::Move { id, .. }
         | Cmd::Comment { id, .. }
+        | Cmd::Reply { id, .. }
         | Cmd::EditComment { id, .. }
         | Cmd::DeleteComment { id, .. }
         | Cmd::Label { id, .. }

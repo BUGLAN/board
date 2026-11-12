@@ -10,13 +10,15 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { create } from 'zustand';
 import { openBoard } from '../../lib/actions';
 import { api } from '../../lib/api';
+import { statusRoles } from '../../lib/review';
 import { statusColor } from '../../lib/schema';
 import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsScope } from '../../lib/types';
 import { agentColor, cx } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
+import { openReview } from '../../store/ui';
 import { ProjectAvatar } from '../bits';
 import { NoHostsNote } from '../BoardReady';
-import { StatsIcon24 } from '../Icon';
+import { Icon, StatsIcon24 } from '../Icon';
 import { CalHeat, HeatLegend, HourHeat, PairBars, Spark, TrendBars, fmtDay, useWidth } from './charts';
 import { HINT, LEAD_BINS, METRICS, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, type Metric } from './format';
 import { AgentTimeline, CardTimeline } from './timeline';
@@ -629,12 +631,30 @@ function NowCard({ s }: { s: Stats }) {
   const { review, todo, doing, stuck } = s.present;
   const late = (review.oldest ?? 0) >= REVIEW_ALERT;
   const many = s.scope !== 'board';
+  // 看的是这块白板时，点「待复盘」打开复盘台（交审状态都在里面）
+  const statuses = useData(st => st.board?.statuses);
+  const reviewCols = [...statusRoles(statuses).review];
+  const desk = !many && review.n > 0 && reviewCols.length > 0;
   return (
     <Card title="现在" id="sp-now" className="sp-now" extra={<Note>不随时间范围变 · 有推送就刷新</Note>}>
       <div className="sp-now-grid">
         <div className="sp-now-stats">
-          <div className={cx('sp-now-stat', late && 'alert')}>
-            <span>待复盘</span>
+          <div
+            className={cx('sp-now-stat', late && 'alert', desk && 'go')}
+            {...(desk
+              ? {
+                  role: 'button',
+                  tabIndex: 0,
+                  'data-tip': '打开复盘台：逐张看，通过或打回',
+                  onClick: () => openReview({ cols: reviewCols, mode: 'review' }),
+                  onKeyDown: (e: React.KeyboardEvent) => e.key === 'Enter' && openReview({ cols: reviewCols, mode: 'review' }),
+                }
+              : {})}
+          >
+            <span>
+              待复盘
+              {desk && <Icon name="chevRight" />}
+            </span>
             <b>
               {review.n}
               <small>张</small>

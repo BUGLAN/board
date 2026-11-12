@@ -18,6 +18,7 @@ import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
 import { DispatchHistory, DispatchNote } from './hosts/Dispatch';
+import { TaskBody } from './TaskBody';
 import { Icon, type IconName } from './Icon';
 
 const NO_IDS: number[] = [];
@@ -614,7 +615,7 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
         ) : c.body ? (
           // 不响应双击：人常在这里选中文字阅读，双击进入编辑容易误触（进入编辑只用「编辑」按钮）
           <div className={cx('desc-view', locked && 'locked')}>
-            <Markdown src={c.body} repo={repo} />
+            <TaskBody card={c} repo={repo} locked={locked || busy} />
           </div>
         ) : (
           <div className={cx('desc-view empty', locked && 'locked')} onClick={edit}>

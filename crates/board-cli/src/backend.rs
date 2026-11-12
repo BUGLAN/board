@@ -180,6 +180,7 @@ fn cmd_json(cmd: &Cmd) -> Value {
         Cmd::Move { id, column, top, index, .. } => json!({ "op": "move", "id": id, "column": column, "top": top, "index": index }),
         Cmd::Claim { id } => json!({ "op": "claim", "id": id }),
         Cmd::Comment { id, text } => json!({ "op": "comment", "id": id, "text": text }),
+        Cmd::Reply { id, text, column } => json!({ "op": "reply", "id": id, "text": text, "column": column }),
         Cmd::EditComment { id, activity, text } => json!({ "op": "edit_comment", "id": id, "activity": activity, "text": text }),
         Cmd::DeleteComment { id, activity } => json!({ "op": "delete_comment", "id": id, "activity": activity }),
         Cmd::Label { id, add, remove } => json!({ "op": "label", "id": id, "add": add, "remove": remove }),

@@ -65,6 +65,14 @@ pub enum Cmd {
         id: i64,
         text: String,
     },
+    /// 评论并移动（界面「复盘台」的「打回」「回复并放回」）：先发评论，再按 Move 的规则移到 column（最下面）。
+    /// 在同一个写事务里：移动被拒绝时评论也不留下
+    Reply {
+        id: i64,
+        text: String,
+        /// 状态标识或名称
+        column: String,
+    },
     /// 人修改自己发的评论（界面）：原位更新内容，记下修改时间，不新增动态
     #[serde(rename = "edit_comment")]
     EditComment {
@@ -196,6 +204,14 @@ impl W<'_> {
 impl<'a> W<'a> {
     /// 执行一条卡片命令，返回执行后的卡片（删除时返回删除前的卡片）
     pub fn exec(&mut self, board: &BoardRef, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
+        // 评论并移动：拆成评论、移动两步，都在调用方的这一个写事务里（任何一步出错整个写回滚）
+        if let Cmd::Reply { id, text, column } = cmd {
+            if text.trim().is_empty() {
+                return Err(BoardError::usage("要写意见（评论内容不能为空）"));
+            }
+            self.exec(board, actor, Cmd::Comment { id, text })?;
+            return self.exec(board, actor, Cmd::Move { id, column, top: false, index: None, order: None, before: None, after: None });
+        }
         self.sweep_board(board.id)?;
         let b = board.id;
         let flow = self.read().flow(board)?;
@@ -478,6 +494,9 @@ impl<'a> W<'a> {
                 self.track(b, target, actor, "claim", &format!("领取了卡片，从「{}」进入「{}」", flow.name(&from), dest.name))?;
                 target
             }
+
+            // 上面已经拆成评论和移动
+            Cmd::Reply { id, .. } => id,
 
             /* ---------------- 评论 ---------------- */
             Cmd::Comment { id, text } => {
