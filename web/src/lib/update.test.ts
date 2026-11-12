@@ -10,6 +10,7 @@ import {
   failureText,
   finishCheck,
   formatBytes,
+  installedText,
   isNewer,
   lastAutoCheck,
   markAutoCheck,
@@ -100,6 +101,14 @@ describe('下载进度', () => {
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(2048)).toBe('2.0 KB');
     expect(formatBytes(20 * 1024 * 1024)).toBe('20.0 MB');
+  });
+});
+
+describe('装完的提示', () => {
+  it('要重启（macOS / Linux）和不重启（Windows 由安装器拉起）两种说法都在', () => {
+    expect(installedText(true)).toBe('重启 Board 后就是新版本了。');
+    expect(installedText(false)).toBe('安装器会关闭 Board，装好后自动打开新版本。');
+    expect(installedText(false)).not.toBe(installedText(true));
   });
 });
 

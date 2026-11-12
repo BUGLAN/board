@@ -28,7 +28,7 @@ export interface UpdateProgress {
 /** 外壳 update_install 的返回 */
 export interface UpdateInstalled {
   version: string;
-  /** 安装后要重启才能用上新版本（macOS / Linux；Windows 由安装器拉起） */
+  /** 装完要界面重启才能用上新版本：macOS / Linux 是 true，Windows 是 false（安装器拉起新版本） */
   restart: boolean;
 }
 
@@ -114,6 +114,11 @@ export function progressText(p: UpdateProgress | null): string {
   const pct = downloadPercent(p);
   if (pct == null) return `已下载 ${size}`;
   return `${size} / ${formatBytes(p.total ?? 0)}（${pct}%）`;
+}
+
+/** 装完那一行提示：按外壳说的要不要重启分两种（Windows 装好后外壳已经退出，页面一般看不到这一行） */
+export function installedText(restart: boolean): string {
+  return restart ? '重启 Board 后就是新版本了。' : '安装器会关闭 Board，装好后自动打开新版本。';
 }
 
 /** 检查失败的提示：保持原样，加上可以重试的说法（旧版外壳不支持时原样是 'unsupported'，自动检查不看它） */

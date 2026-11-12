@@ -45,8 +45,23 @@ pub struct Progress {
 #[serde(rename_all = "camelCase")]
 pub struct Installed {
     pub version: String,
-    /// 安装后要重启才能用上新版本
+    /// 装完要界面调用 `update_restart` 重启才能用上新版本（见 `RESTART_AFTER_INSTALL`）
     pub restart: bool,
+}
+
+/// 装完要不要界面重启，按平台决定：
+///
+/// - Windows：安装器（passive）启动后会关掉外壳、装完把新版本拉起来，界面不用也不能再重启
+///   （`download_and_install` 在 Windows 上装好后直接退出进程，页面其实收不到这个返回值）
+/// - macOS / Linux：装好之后还在旧的进程里，要界面调用 `update_restart`
+#[cfg(target_os = "windows")]
+const RESTART_AFTER_INSTALL: bool = false;
+#[cfg(not(target_os = "windows"))]
+const RESTART_AFTER_INSTALL: bool = true;
+
+/// 装完的结果（`restart` 按平台决定，见 `RESTART_AFTER_INSTALL`）
+fn installed(version: String) -> Installed {
+    Installed { version, restart: RESTART_AFTER_INSTALL }
 }
 
 /// 记下检查到的更新（`None` 表示已是最新，清掉之前记的）
@@ -106,7 +121,7 @@ pub async fn update_install(app: AppHandle, version: String) -> Result<Installed
         )
         .await
         .map_err(|e| format!("下载或安装 {version} 失败：{e}"))?;
-    Ok(Installed { version, restart: true })
+    Ok(installed(version))
 }
 
 /// macOS / Linux：安装完重启桌面端，换成新版本。Windows 上安装器已经把外壳关掉并拉起新版，用不到
@@ -127,6 +142,21 @@ fn should_report(reported: u64, sent: u64, total: Option<u64>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 装完的结果：Windows 上由安装器拉起新版本，界面不用重启（restart=false）；
+    // macOS / Linux 装着还在旧进程里，要界面调用 update_restart（restart=true）。
+    // 每个平台各断言自己那条，平台判断写反了这里会挂
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_install_result_does_not_ask_the_page_to_restart() {
+        assert_eq!(installed("0.1.21".into()), Installed { version: "0.1.21".into(), restart: false });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn macos_and_linux_install_result_asks_the_page_to_restart() {
+        assert_eq!(installed("0.1.21".into()), Installed { version: "0.1.21".into(), restart: true });
+    }
 
     // 没检查过（或者已经装过一次）时没有可装的更新：消息告诉人先检查
     #[test]

@@ -7,7 +7,7 @@
    ========================================================================== */
 import { useEffect, useRef, useState } from 'react';
 import { installUpdate, restartApp, shellVersion } from '../lib/platform';
-import { autoCheckUpdate, downloadPercent, progressText, setAutoCheckUpdate, type CheckState, type InstallState, type UpdateProgress } from '../lib/update';
+import { autoCheckUpdate, downloadPercent, installedText, progressText, setAutoCheckUpdate, type CheckState, type InstallState, type UpdateProgress } from '../lib/update';
 import { cx } from '../lib/util';
 import { pauseAutoUpdateCheck, resumeAutoUpdateCheck, useUpdate } from '../lib/update-runner';
 import { confirm, toast } from '../store/ui';
@@ -59,7 +59,7 @@ export function UpdateCard() {
   const doInstall = async (version: string) => {
     const yes = await confirm({
       title: `下载并安装 ${version}？`,
-      text: '下载完会先校验签名，再安装。安装过程中会关闭 Board，装好后自动打开新版本（macOS 装好后需要重启一次）。',
+      text: '下载完会先校验签名，再安装。安装过程中会关闭 Board，装好后自动打开新版本（macOS / Linux 装好后需要重启一次）。',
       ok: '下载并安装',
       icon: 'update',
     });
@@ -154,15 +154,18 @@ export function UpdateCard() {
             {install.version} 已安装
           </div>
           <p className="set-p" style={{ margin: '8px 0 0' }}>
-            {install.restart ? '重启 Board 后就是新版本了。' : '安装器马上会关闭 Board 并打开新版本。'}
+            {installedText(install.restart)}
           </p>
-          <div className="lh-actions">
-            <button type="button" className="btn sm brand" onClick={() => restartApp()}>
-              <Icon name="renew" />
-              立即重启
-            </button>
-            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>稍后重启也可以，下次打开就是新版本</span>
-          </div>
+          {/* 只有要界面重启的平台才给按钮：Windows 由安装器关掉 Board 再打开新版本，没有可点的 */}
+          {install.restart && (
+            <div className="lh-actions">
+              <button type="button" className="btn sm brand" onClick={() => restartApp()}>
+                <Icon name="renew" />
+                立即重启
+              </button>
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>稍后重启也可以，下次打开就是新版本</span>
+            </div>
+          )}
         </div>
       )}
 
