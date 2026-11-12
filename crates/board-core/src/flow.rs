@@ -135,7 +135,7 @@ impl<'a> W<'a> {
             if s.lock && !lock {
                 // 不再锁定：里面被持有的卡片释放
                 let held: Vec<(i64, String)> = self.collect(
-                    "SELECT id, holder FROM cards WHERE board = ?1 AND col = ?2 AND holder IS NOT NULL ORDER BY pos",
+                    "SELECT id, holder FROM cards WHERE board = ?1 AND col = ?2 AND holder IS NOT NULL AND deleted_at IS NULL ORDER BY pos",
                     params![b.id, key],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?;
@@ -214,7 +214,7 @@ impl<'a> W<'a> {
         let rest = Flow(flow.0.iter().filter(|x| x.key != key).cloned().collect());
         let start = rest.home().clone();
         for id in self.col_ids(b.id, key)? {
-            let held = self.tx.query_row("SELECT holder IS NOT NULL FROM cards WHERE board = ?1 AND id = ?2", params![b.id, id], |r| {
+            let held = self.tx.query_row("SELECT holder IS NOT NULL FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b.id, id], |r| {
                 r.get::<_, bool>(0)
             })?;
             self.place(b.id, id, Some(key), &start.key, At::Bottom)?;

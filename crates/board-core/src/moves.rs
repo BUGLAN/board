@@ -70,6 +70,11 @@ pub(crate) fn parse(action: &str, text: &str) -> Option<(Option<String>, String)
         "claim" => pair("从「", "进入「"),
         // 强制释放了 X 的领取，卡片回到「B」最上面；心跳中断……卡片回到「B」最上面
         "release" | "lost" | "timeout" => Some((None, quoted_after(text, "回到「")?.to_string())),
+        // 回收站：从回收站恢复，放回「B」（恢复前后都在这个状态）
+        "restore" => {
+            let to = quoted_after(text, "放回「")?.to_string();
+            Some((Some(to.clone()), to))
+        }
         _ => None,
     }
 }

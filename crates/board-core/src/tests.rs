@@ -1250,9 +1250,11 @@ fn attachments_upload_bind_delete_and_gc() {
     assert_eq!(card(&s, B, c2).attachments.iter().map(|a| a.id).collect::<Vec<_>>(), [pending.id]);
     assert_eq!(s.attachment(log.id).unwrap().unwrap().0.card_id, Some(c.card.id));
 
-    // 24 小时没归属的记录被清理；删除卡片后记录随之删除，不再被引用的文件被清理
+    // 24 小时没归属的记录被清理；删除卡片后附件跟着进回收站，永久删除后记录随之删除，不再被引用的文件被清理
     let orphan = s.attach(T0, &b, None, &human(), "o.txt", b"orphan").unwrap();
     exec(&mut s, B, &human(), T0, Cmd::Delete { id: c.card.id }).unwrap();
+    assert!(s.attachment(log.id).unwrap().is_some(), "在回收站里，附件还在");
+    exec(&mut s, B, &human(), T0, Cmd::Purge { id: c.card.id }).unwrap();
     assert!(s.attachment(log.id).unwrap().is_none());
     let (rows, _) = s.gc_files(T0 + 25 * 3600 * 1000).unwrap();
     assert_eq!(rows, 1);
@@ -1716,6 +1718,7 @@ fn inbox_merge() {
     assert_eq!(m.text, "合并了 #2「掉线的卡片别丢进人工校验」、#3「另一条」");
     assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![1]);
     assert_eq!(s.read(|r| r.card(&b, 2)).unwrap_err().code, ErrorCode::NotFound);
+    assert!(s.read(|r| r.trash(&b)).unwrap().is_empty(), "合并掉的条目不进回收站");
 
     // 给了标题和描述：按给的写
     exec(&mut s, B, &human(), T0, inbox("五", "", vec![])).unwrap();
@@ -1819,4 +1822,149 @@ fn inbox_edit_merge_mark_seen() {
     let e = exec(&mut s, B, &alpha(), T0, inbox_new("E")).unwrap().card.id;
     exec(&mut s, B, &human(), T0 + 4 * MIN, Cmd::Merge { id: d, from: vec![e], title: None, body: None }).unwrap();
     assert!(is_new(&snapshot(&s, B, T0 + 4 * MIN).cards[&d]));
+}
+
+/* ------------------------------ 回收站（PRD §8 规则 10、§10.3） ------------------------------ */
+
+const HOUR: i64 = 60 * MIN;
+const DAY: i64 = 24 * HOUR;
+
+#[test]
+fn trash_delete_hides_restore_and_never_reuses_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    for t in ["一", "二", "三"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    let png = s.attach(T0, &b, Some(2), &human(), "shot.png", PNG).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Comment { id: 2, text: "看这里".into() }).unwrap();
+
+    // 删除 #2：白板、快照、card 里都没有了，回收站里有它（谁删的、什么时候、原来在哪个状态）
+    let d = exec(&mut s, B, &human(), T0 + MIN, Cmd::Delete { id: 2 }).unwrap();
+    assert_eq!(d.card.id, 2);
+    assert_eq!(snapshot(&s, B, T0 + MIN).cols["todo"], vec![1, 3]);
+    assert!(s.read(|r| r.card(&b, 2)).unwrap_err().code == ErrorCode::NotFound);
+    assert_eq!(s.read(|r| r.board_snapshot(&b, T0 + MIN, true)).unwrap().trash, 1);
+    let t = s.read(|r| r.trash(&b)).unwrap();
+    assert_eq!(t.len(), 1);
+    assert_eq!((t[0].card.id, t[0].card.title.as_str(), t[0].col.as_str(), t[0].deleted_at), (2, "二", "todo", T0 + MIN));
+    assert!(t[0].deleted_by.is_human());
+    let act = card_activity(&s, B, 2).unwrap_err();
+    assert_eq!(act.code, ErrorCode::NotFound, "删掉的卡片读不到动态");
+    assert!(s.read(|r| r.trash_of(&b, 2)).unwrap().is_some());
+
+    // 新建卡片不复用编号；恢复回到原来状态原来的位置，评论和附件都在
+    let c4 = exec(&mut s, B, &human(), T0 + 2 * MIN, new("四")).unwrap().card;
+    assert_eq!(c4.id, 4);
+    let r = exec(&mut s, B, &human(), T0 + 3 * MIN, Cmd::Restore { id: 2 }).unwrap();
+    assert_eq!(r.card.id, 2);
+    assert!(r.activity.iter().any(|a| a.kind == "comment" && a.text == "看这里"));
+    assert_eq!(r.attachments.iter().map(|a| a.id).collect::<Vec<_>>(), [png.id]);
+    assert!(r.activity.iter().any(|a| a.action == "restore" && a.text == "从回收站恢复，放回「待办」"));
+    let snap = snapshot(&s, B, T0 + 3 * MIN);
+    assert_eq!(snap.cols["todo"], vec![1, 2, 3, 4]);
+    assert_eq!(snap.trash, 0);
+    assert!(s.read(|r| r.trash(&b)).unwrap().is_empty());
+
+    // 只有人能删除、恢复、永久删除；不在回收站里的不能恢复、不能永久删除
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Delete { id: 1 })), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Restore { id: 2 })), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Restore { id: 2 })), ErrorCode::NotFound);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Purge { id: 2 })), ErrorCode::NotFound);
+    // 删除以后也找不到（NOT_FOUND），快照里没有
+    exec(&mut s, B, &human(), T0 + 4 * MIN, Cmd::Delete { id: 3 }).unwrap();
+    assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Comment { id: 3, text: "x".into() })), ErrorCode::NotFound);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(3)))), ErrorCode::NotFound);
+    // 服务端据此在回收站里的卡片上回 IN_TRASH（而不是 NOT_FOUND），界面据此提示「先恢复」
+    assert!(s.read(|r| r.in_trash(&b, 3)).unwrap());
+    assert!(!s.read(|r| r.in_trash(&b, 1)).unwrap());
+    let e = exec(&mut s, B, &human(), T0, Cmd::Purge { id: 3 }).unwrap();
+    assert_eq!(e.card.id, 3);
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![1, 2, 4]);
+    assert_eq!(snapshot(&s, B, T0).trash, 0);
+}
+
+fn card_activity(s: &Store, path: &str, id: i64) -> Result<CardDetail> {
+    s.read(|r| {
+        let b = r.resolve(path)?;
+        r.card(&b, id)
+    })
+}
+
+#[test]
+fn trash_delete_releases_claim_and_restore_does_not_rekeep_it() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("做一半")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + SEC, Cmd::Beat { id: 1, done: false }).unwrap();
+    let d = exec(&mut s, B, &human(), T0 + 2 * SEC, Cmd::Delete { id: 1 }).unwrap();
+    assert!(d.card.holder.is_none(), "被删时领取已经释放");
+
+    let r = exec(&mut s, B, &human(), T0 + 3 * SEC, Cmd::Restore { id: 1 }).unwrap().card;
+    assert_eq!(r.holder, None, "恢复后不再被任何人持有");
+    assert_eq!(r.column, "todo", "原来在锁定状态（进行中），回到当初领取它的待办");
+    assert!(r.beat_at.is_none() || r.beat_at.is_some());
+}
+
+#[test]
+fn trash_restore_after_status_deleted_goes_home() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("返工里的")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(1, "review")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(1, "rework")).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 1 }).unwrap();
+    run(&mut s, |w| w.delete_status(B, "rework"));
+    let r = exec(&mut s, B, &human(), T0 + MIN, Cmd::Restore { id: 1 }).unwrap();
+    assert_eq!(r.card.column, "todo");
+    assert!(r.activity.iter().any(|a| a.action == "restore" && a.text.contains("原来所在的状态已经删除")));
+}
+
+fn run(s: &mut Store, f: impl FnOnce(&mut W) -> Result<()>) {
+    s.write(T0 + 500, Origin::ui(None), |w| f(w)).unwrap();
+}
+
+#[test]
+fn trash_purges_after_30_days_with_attachments() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let files = dir.path().join("files");
+    exec(&mut s, B, &human(), T0, new("要清的")).unwrap();
+    let a = s.attach(T0, &b, Some(1), &human(), "log.txt", b"old").unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 1 }).unwrap();
+    assert_eq!(s.attachment(a.id).unwrap().unwrap().0.card_id, Some(1), "在回收站里附件还在");
+
+    // 不到 30 天：不删
+    assert_eq!(purge_trash(&mut s, T0 + 29 * DAY).unwrap(), 0);
+    assert_eq!(s.read(|r| r.trash(&b)).unwrap().len(), 1);
+    // 超过 30 天：卡片、动态、附件记录一起删，文件由附件清理去掉
+    assert_eq!(purge_trash(&mut s, T0 + 31 * DAY).unwrap(), 1);
+    assert!(s.read(|r| r.trash(&b)).unwrap().is_empty());
+    assert!(s.attachment(a.id).unwrap().is_none());
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    for e in std::fs::read_dir(&files).unwrap() {
+        std::fs::File::options().write(true).open(e.unwrap().path()).unwrap().set_modified(old).unwrap();
+    }
+    let (_, removed) = s.gc_files(T0 + 31 * DAY).unwrap();
+    assert_eq!(removed, 1, "附件文件也删掉了");
+    // 编号不复用
+    assert_eq!(exec(&mut s, B, &human(), T0 + 32 * DAY, new("新的")).unwrap().card.id, 2);
+}
+
+#[test]
+fn trash_keeps_at_most_the_limit() {
+    let mut s = store();
+    for i in 0..(TRASH_MAX + 2) {
+        exec(&mut s, B, &human(), T0 + i * SEC, new("x")).unwrap();
+    }
+    for i in 1..=(TRASH_MAX + 2) {
+        exec(&mut s, B, &human(), T0 + 10 * HOUR + i * SEC, Cmd::Delete { id: i }).unwrap();
+    }
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let t = s.read(|r| r.trash(&b)).unwrap();
+    assert_eq!(t.len() as i64, TRASH_MAX);
+    assert_eq!(t[0].card.id, 3, "最早的几张先清掉");
 }

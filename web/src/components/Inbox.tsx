@@ -11,9 +11,10 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { openCard, triage, untriage } from '../lib/actions';
 import { boardFlow, INBOX } from '../lib/schema';
+import { deleteCards } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, isMac, pref, reduceMotion, replay } from '../lib/util';
-import { addLabel, cardBusy, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeCard, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
+import { addLabel, cardBusy, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openPicker, overlayOpen, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Title, useNow } from './bits';
 import { matches } from './Card';
@@ -166,16 +167,22 @@ async function doDelete(ids: number[], cards: Card[]) {
   const one = cards.find(c => c.id === ok[0]);
   const yes = await confirm(
     ok.length === 1
-      ? { title: `删除 #${ok[0]}？`, text: `「${one?.title ?? ''}」及其全部动态会被永久删除，无法恢复。`, ok: '删除' }
-      : { title: `删除 ${ok.length} 条？`, text: `${ok.map(i => `#${i}`).join('、')} 及其全部动态会被永久删除，无法恢复。`, ok: `删除 ${ok.length} 条` },
+      ? {
+          title: `删除 #${ok[0]}？`,
+          text: `「${one?.title ?? ''}」会移进回收站（侧栏「回收站」），30 天内可以恢复；永久删除前评论和附件都还在。`,
+          ok: '删除',
+        }
+      : {
+          title: `删除 ${ok.length} 条？`,
+          text: `${ok.map(i => `#${i}`).join('、')} 会移进回收站，30 天内可以恢复；永久删除前评论和附件都还在。`,
+          ok: `删除 ${ok.length} 条`,
+        },
   );
   if (!yes) return;
   setInbox({ checked: useInbox.getState().checked.filter(c => !ok.includes(c)) });
   ok.forEach(id => exits.set(id, 'delete'));
-  const results = await Promise.allSettled(ok.map(id => exec({ op: 'delete', id }, removeCard(id))));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
-  else toast({ type: 'success', title: ok.length === 1 ? `已删除 #${ok[0]}` : `已删除 ${ok.length} 条`, duration: 2200 });
+  // 提示里可以「撤销」：放回「未整理」原来的位置
+  await deleteCards(ok, { titles: Object.fromEntries(cards.map(c => [c.id, c.title])) });
 }
 
 /** 合并后的描述（服务端不给描述时按同样的格式拼）：留下的那条原文在前，每条来源一节，节末写明合并自哪一条 */

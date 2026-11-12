@@ -390,6 +390,17 @@ export interface BoardSnapshot {
   /** 白板设置「保留顺序」：开着时每个状态块按自己的排序依据（Status.order）显示，拖动只换状态、不改顺序；
       关着时拖到哪就在哪。旧服务端没有（当作关着） */
   keepSorted?: boolean;
+  /** 回收站里的张数（侧栏「回收站 · N」）。旧服务端没有这个字段（当作 0） */
+  trash?: number;
+}
+
+/** 回收站里的一张卡片（PRD §8 规则 10）：删除前在哪个状态、排第几位、谁删的、什么时候删的 */
+export interface TrashCard extends Card {
+  deletedAt: number;
+  deletedBy: Actor;
+  /** 删除前所在的状态（工作流状态或 inbox） */
+  col: string;
+  pos: number;
 }
 
 export type ErrorCode =
@@ -418,6 +429,8 @@ export type ErrorCode =
   | 'DISPATCHED'
   | 'SESSION_DONE'
   | 'INTERNAL'
+  /** 卡片在回收站里，不能编辑、移动、评论：先恢复 */
+  | 'IN_TRASH'
   | 'NETWORK'
   /** 界面自己的：上一次修改还没保存完，不能再改同一个对象（不发请求） */
   | 'BUSY';
@@ -450,7 +463,12 @@ export type Cmd =
   | { op: 'delete_comment'; id: number; activity: number }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }
+  /** 删除卡片：移进回收站，30 天内可以恢复（规则 10） */
   | { op: 'delete'; id: number }
+  /** 从回收站恢复（仅人） */
+  | { op: 'restore'; id: number }
+  /** 从回收站永久删除（仅人） */
+  | { op: 'purge'; id: number }
   /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
   | { op: 'merge'; id: number; from: number[]; title?: string; body?: string }
   /** 人看过「未整理」里的条目（仅人）：不给 id 时是这块白板「未整理」里的全部（「全部标为已读」） */

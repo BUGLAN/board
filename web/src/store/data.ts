@@ -310,17 +310,36 @@ export function movePatch(id: number, to: ColumnKey, index?: number, order?: num
   };
 }
 
-/** 从白板上拿掉一张卡片（删除） */
+/** 从白板上拿掉一张卡片（删除：移进回收站）。回收站里的张数跟着加一；卡片的列换个新数组（FLIP 用得上） */
 export function removeCard(id: number): Patch {
   return {
     board: b => {
-      if (!b.cards[id]) return b;
+      const c = b.cards[id];
+      if (!c) return b;
       const cards = { ...b.cards };
       delete cards[id];
+      const cols: BoardSnapshot['cols'] = { ...b.cols, [c.column]: (b.cols[c.column] ?? []).filter(x => x !== id) };
+      return { ...b, cols, cards, trash: (b.trash ?? 0) + 1 };
+    },
+  };
+}
+
+/** 从回收站恢复一张卡片：当帧回到它的位置（那一列的第 pos 位，由 lib/trash.ts 决定），回收站里少一张。
+    恢复时卡片还不在快照里，column、pos、card 在把卡片放上去的那一刻写定，之后每次重新叠加用的都是这一份。
+    已经在白板上的原样返回（重复执行结果不变）。detail 是打开着的这张卡片的详情：内容留着，回到白板上 */
+export function restoreCard(plan: { id: number; column: ColumnKey; pos: number; movedAt: number; card: Card }): Patch {
+  const { id, column, pos, movedAt: at, card } = plan;
+  return {
+    board: b => {
+      if (b.cards[id]) return b;
       const cols: BoardSnapshot['cols'] = {};
       for (const [k, v] of Object.entries(b.cols)) cols[k] = v.filter(x => x !== id);
-      return { ...b, cols, cards };
+      const list = [...(cols[column] ?? [])];
+      list.splice(Math.min(Math.max(0, pos), list.length), 0, id);
+      cols[column] = list;
+      return { ...b, cols, cards: { ...b.cards, [id]: { ...card, column, movedAt: at } }, trash: Math.max(0, (b.trash ?? 0) - 1) };
     },
+    detail: d => (d.id === id ? { ...d, column } : d),
   };
 }
 
@@ -892,21 +911,22 @@ export async function exec(cmd: Cmd, patch?: Patch, settle?: (r: CardDetail) => 
   try {
     const r = await queue(() => api.cmd(path, cmd));
     settle?.(r);
-    // 全部标为已读不对应某张卡片（返回的是空白），不进详情缓存
-    const known = cmd.op !== 'delete' && r.id > 0;
-    if (known) {
+    // 删除、永久删除返回的是删除前的卡片：写进详情缓存会把已经不在的卡片又画出来
+    if (cmd.op !== 'delete' && cmd.op !== 'purge') {
       details.set(pkey(path, r.id), r);
       if (get().detailId === r.id && get().path === path) {
         base.detail = r;
         render({ detailError: null });
       }
     }
-    await refreshAfter(path, known ? r : null);
+    await refreshAfter(path, cmd.op === 'delete' || cmd.op === 'purge' ? null : r);
     return r;
   } finally {
     if (l) drop(l);
   }
 }
+
+/** 卡片的删除、恢复、永久删除在 lib/trash.ts：它们要知道回收站里的内容（卡片的原位置），还要让删除后的提示能撤销 */
 
 /* ------------------------------ 实时 ------------------------------ */
 

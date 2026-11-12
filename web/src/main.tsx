@@ -14,6 +14,7 @@ import './styles/platform.css';
 import './styles/app.css';
 import './styles/hosts.css';
 import './styles/inbox.css';
+import './styles/trash.css';
 import './styles/skeleton.css';
 
 import { createRoot } from 'react-dom/client';

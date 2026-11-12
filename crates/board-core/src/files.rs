@@ -224,7 +224,7 @@ impl Store {
         let (name, mime, _) = check(name, bytes)?;
         if let Some(id) = card {
             let n: i64 = self.conn().query_row(
-                "SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2",
+                "SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL",
                 params![board.id, id],
                 |r| r.get(0),
             )?;

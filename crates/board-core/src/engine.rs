@@ -6,7 +6,10 @@
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::*;
-use crate::store::W;
+use crate::store::{Store, R, W};
+
+/// 回收站保留多久：删除后 30 天内可以恢复（PRD §8 规则 10、§10.3）
+pub const TRASH_KEEP_MS: i64 = 30 * 24 * 3600 * 1000;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
@@ -93,7 +96,16 @@ pub enum Cmd {
     Release {
         id: i64,
     },
+    /// 删除（仅人）：移进回收站，30 天内可以恢复（规则 10）
     Delete {
+        id: i64,
+    },
+    /// 恢复（仅人）：从回收站恢复到原来状态的最下面（原来的状态已经删了就回到首个可领取状态），不保留领取
+    Restore {
+        id: i64,
+    },
+    /// 永久删除（仅人）：从回收站里删掉，附件一起删，不能恢复
+    Purge {
         id: i64,
     },
     /// 合并（仅人，界面「未整理」页）：把 from 里的条目并进 id，只留下 id。都要在「未整理」里。
@@ -127,6 +139,58 @@ struct Row {
     holder: Option<String>,
     title: String,
     body: String,
+}
+
+/// 回收站里一张卡片删除前所在的状态和在状态里的位置
+struct TrashMeta {
+    del_col: Option<String>,
+    del_pos: Option<i64>,
+}
+
+impl TrashCard {
+    /// 永久删除时返回给界面、CLI 的卡片（不含动态和附件）
+    fn into_detail(self) -> CardDetail {
+        CardDetail { card: self.card, activity: vec![], attachments: vec![] }
+    }
+}
+
+impl R<'_> {
+    /// 回收站里的一张卡片的详情（不在回收站里时为 None）
+    pub fn trash_of(&self, board: &BoardRef, id: i64) -> Result<Option<CardDetail>> {
+        Ok(self.trash(board)?.into_iter().find(|t| t.card.id == id).map(TrashCard::into_detail))
+    }
+}
+
+/// 回收站里删除超过 30 天的卡片永久删除（附件一起删）。附件记录随卡片级联删除，不再被引用的文件由 [`Store::gc_files`] 清理
+pub fn purge_trash(store: &mut Store, now: i64) -> Result<usize> {
+    if store.conn().query_row("SELECT COUNT(*) FROM cards WHERE deleted_at IS NOT NULL AND deleted_at < ?1", [now - TRASH_KEEP_MS], |r| {
+        r.get::<_, i64>(0)
+    })? == 0
+    {
+        return Ok(0);
+    }
+    store.write(now, Origin::system(), |w| w.purge_trash(now - TRASH_KEEP_MS))
+}
+
+impl W<'_> {
+    /// 回收站最多留 TRASH_MAX 张：多出来的按删除时间先清掉最早的（附件由 gc_files 清理）
+    fn trim_trash(&mut self, b: i64, keep: i64) -> Result<()> {
+        let extra: Vec<i64> = self.collect(
+            "SELECT id FROM cards WHERE board = ?1 AND deleted_at IS NOT NULL AND id != ?2
+             ORDER BY deleted_at DESC, id DESC LIMIT -1 OFFSET ?3",
+            params![b, keep, TRASH_MAX - 1],
+            |r| r.get(0),
+        )?;
+        for id in extra {
+            self.tx.execute("DELETE FROM cards WHERE board = ?1 AND id = ?2", params![b, id])?;
+        }
+        Ok(())
+    }
+
+    /// 删除时间早于 older_than 的回收站卡片永久删除（附件记录一起删，不再被引用的文件由 gc_files 清理）。返回删掉的张数
+    pub fn purge_trash(&mut self, older_than: i64) -> Result<usize> {
+        Ok(self.tx.execute("DELETE FROM cards WHERE deleted_at IS NOT NULL AND deleted_at < ?1", [older_than])?)
+    }
 }
 
 impl<'a> W<'a> {
@@ -580,14 +644,93 @@ impl<'a> W<'a> {
                 id
             }
 
-            /* ---------------- 删除（仅人，规则 10） ---------------- */
+            /* ---------------- 删除（仅人，规则 10） ----------------
+               移进回收站：卡片从白板、claim、搜索、大盘里消失（这些查询都排除 deleted_at 非空的卡片），
+               动态、评论、附件都还在，30 天内可以恢复（规则 10、§10.3 回收站） */
             Cmd::Delete { id } => {
                 if !actor.is_human() {
                     return Err(BoardError::usage("删除只能在界面上做"));
                 }
-                let detail = self.read().card(board, id)?;
+                let mut detail = self.read().card(board, id)?;
+                let holder = self.holder_of(b, id)?;
                 self.on_card_delete(b, id, actor)?;
-                self.event(b, id, &detail.card.title, actor, "delete", "删除了卡片")?;
+                // 持有的先释放：进行中的这一次在此时结束
+                if let Some(who) = holder {
+                    let run = self.clear_claim(b, id, "release")?;
+                    detail.card.holder = None;
+                    detail.card.claimed_at = None;
+                    detail.card.claimed_from = None;
+                    self.track(
+                        b,
+                        id,
+                        actor,
+                        "release",
+                        &format!("删除了卡片，{who} 的领取已释放{}", took(run)),
+                    )?;
+                }
+                self.tx.execute(
+                    "UPDATE cards SET deleted_at = ?1, deleted_by_kind = ?2, deleted_by_name = ?3, del_col = ?4, del_pos = ?5
+                     WHERE board = ?6 AND id = ?7",
+                    params![self.now, actor.kind.as_str(), actor.name, detail.card.column, self.row_pos(b, id)?, b, id],
+                )?;
+                self.event(b, id, &detail.card.title, actor, "delete", &format!("{} 删除", actor.display()))?;
+                self.trim_trash(b, id)?;
+                return Ok(detail);
+            }
+
+            /* ---------------- 恢复（仅人，规则 10） ----------------
+               回到原来状态的最下面（原来的状态已经删了就回到首个可领取状态；原来在锁定状态里的，回到当初领取它的可领取状态）；
+               原来的位置空着就放回原来的位置。恢复后不保留领取，动态里记一条 */
+            Cmd::Restore { id } => {
+                if !actor.is_human() {
+                    return Err(BoardError::usage("只有人能从回收站恢复"));
+                }
+                let Some(row) = self.trash_row(b, id)? else {
+                    return Err(BoardError::new(ErrorCode::NotFound, format!("#{id} 不在回收站里")));
+                };
+                let saved = row.del_col.clone().unwrap_or_default();
+                let (mut target, at) = match flow.get(&saved) {
+                    // 原来在锁定状态（被删时还在做）：回到当初领取它的可领取状态，放最下面，不保留领取
+                    Some(s) if s.lock => (self.claimed_from(b, id)?.unwrap_or_else(|| flow.home().key.clone()), At::Bottom),
+                    // 原来的状态已经删了：首个可领取状态最下面
+                    None => (flow.home().key.clone(), At::Bottom),
+                    // 还在原来的状态里：原来的位置上排第几就放回第几（还是原来那一列时才不会和别的卡片撞位）
+                    Some(_) => (saved.clone(), At::Index(row.del_pos.unwrap_or(0).max(0) as usize)),
+                };
+                if !flow.is_claim(&target) && flow.get(&target).is_none() {
+                    target = flow.home().key.clone();
+                }
+                self.tx.execute(
+                    "UPDATE cards SET deleted_at = NULL, deleted_by_kind = NULL, deleted_by_name = NULL, del_col = NULL, del_pos = NULL,
+                            holder = NULL, claimed_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL, moved_at = ?1
+                     WHERE board = ?2 AND id = ?3",
+                    params![self.now, b, id],
+                )?;
+                self.place(b, id, None, &target, at)?;
+                self.changed = true;
+                let text = if target == saved {
+                    format!("从回收站恢复，放回「{}」", flow.name(&target))
+                } else if flow.get(&saved).is_none() {
+                    format!("从回收站恢复，原来所在的状态已经删除，放回「{}」", flow.name(&target))
+                } else {
+                    format!("从回收站恢复，原来在「{}」，放回「{}」", flow.name(&saved), flow.name(&target))
+                };
+                self.log_move(b, id, "restore", &target, &target, actor, &flow)?;
+                self.track(b, id, actor, "restore", &text)?;
+                id
+            }
+
+            /* ---------------- 永久删除（仅人） ----------------
+               和删除前一样：排队中的派发取消，正在跑的请求停止；卡片、动态、评论、附件一并删除 */
+            Cmd::Purge { id } => {
+                if !actor.is_human() {
+                    return Err(BoardError::usage("永久删除只能在界面上做"));
+                }
+                let Some(detail) = self.read().trash_of(board, id)? else {
+                    return Err(BoardError::new(ErrorCode::NotFound, format!("#{id} 不在回收站里")));
+                };
+                self.on_card_delete(b, id, actor)?;
+                self.event(b, id, &detail.card.title, actor, "purge", "永久删除了卡片")?;
                 self.tx.execute("DELETE FROM cards WHERE board = ?1 AND id = ?2", params![b, id])?;
                 return Ok(detail);
             }
@@ -749,7 +892,7 @@ impl<'a> W<'a> {
     fn row(&self, b: i64, id: i64) -> Result<Row> {
         self.tx
             .query_row(
-                "SELECT col, holder, title, body FROM cards WHERE board = ?1 AND id = ?2",
+                "SELECT col, holder, title, body FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL",
                 params![b, id],
                 |r| Ok(Row { col: r.get(0)?, holder: r.get(1)?, title: r.get(2)?, body: r.get(3)? }),
             )
@@ -779,8 +922,34 @@ impl<'a> W<'a> {
             .flatten())
     }
 
+    /// 卡片现在的持有者（卡片自己身上的 holder 列）
+    fn holder_of(&self, b: i64, id: i64) -> Result<Option<String>> {
+        Ok(self.tx.query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?)
+    }
+
+    /// 卡片在所属状态里的位置（pos）；不在回收站里时才能取
+    fn row_pos(&self, b: i64, id: i64) -> Result<i64> {
+        Ok(self.tx.query_row("SELECT pos FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?)
+    }
+
+    /// 回收站里这张卡片删除前在哪个状态、排第几位（不在回收站里时为 None）
+    fn trash_row(&self, b: i64, id: i64) -> Result<Option<TrashMeta>> {
+        Ok(self
+            .tx
+            .query_row(
+                "SELECT del_col, del_pos FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NOT NULL",
+                params![b, id],
+                |r| Ok(TrashMeta { del_col: r.get(0)?, del_pos: r.get(1)? }),
+            )
+            .optional()?)
+    }
+
     pub(crate) fn col_ids(&self, b: i64, col: &str) -> Result<Vec<i64>> {
-        self.collect("SELECT id FROM cards WHERE board = ?1 AND col = ?2 ORDER BY pos, id", params![b, col], |r| r.get(0))
+        self.collect(
+            "SELECT id FROM cards WHERE board = ?1 AND col = ?2 AND deleted_at IS NULL ORDER BY pos, id",
+            params![b, col],
+            |r| r.get(0),
+        )
     }
 
     /// 卡片在状态里的位置（从 0 数）；不在这个状态时为 None
@@ -788,7 +957,7 @@ impl<'a> W<'a> {
         let n: Option<i64> = self
             .tx
             .query_row(
-                "SELECT (SELECT COUNT(*) FROM cards d WHERE d.board = c.board AND d.col = c.col
+                "SELECT (SELECT COUNT(*) FROM cards d WHERE d.board = c.board AND d.col = c.col AND d.deleted_at IS NULL
                            AND (d.pos < c.pos OR (d.pos = c.pos AND d.id < c.id)))
                  FROM cards c WHERE c.board = ?1 AND c.col = ?2 AND c.id = ?3",
                 params![b, col, id],

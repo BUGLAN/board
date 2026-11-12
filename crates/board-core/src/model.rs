@@ -585,6 +585,25 @@ pub struct CardDetail {
     pub attachments: Vec<crate::files::Attachment>,
 }
 
+/// 回收站里的张数上限：超出时按删除时间先清掉最早的（PRD §8 规则 10）
+pub const TRASH_MAX: i64 = 1000;
+
+/// 回收站里的一张卡片（PRD §8 规则 10）：字段与卡片相同，另外记下删除的时间、谁删的、删除前在哪个状态、排在第几位
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashCard {
+    #[serde(flatten)]
+    pub card: Card,
+    /// 删除的时间
+    pub deleted_at: i64,
+    /// 删除的人
+    pub deleted_by: Actor,
+    /// 删除前所在的状态（工作流状态或 `inbox`）
+    pub col: String,
+    /// 删除前在状态里的位置；恢复时排回原来的位置
+    pub pos: i64,
+}
+
 /// 全局事件流里的一条（界面的「最近动态」与跨窗口高亮用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -629,6 +648,9 @@ pub struct BoardSnapshot {
     /// 关着时拖到哪就在哪，顺序按拖动的结果保存。旧服务端没有这个字段（当作关着）
     #[serde(default)]
     pub keep_sorted: bool,
+    /// 回收站里的张数（PRD §8 规则 10、§10.3 侧栏「回收站 · N」）。旧服务端没有这个字段
+    #[serde(default)]
+    pub trash: i64,
 }
 
 /// 白板快照里每个终点状态默认带的张数（最近移入的，也就是最下面的几张）；更早的按需取全量

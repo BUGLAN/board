@@ -43,12 +43,14 @@ pub enum ErrorCode {
     Dispatched,
     /// board next：这个会话不再接着做下一张（做满了、手动派发、暂停接单、没有可领取的卡片……）
     SessionDone,
+    /// 卡片在回收站里：不能编辑、移动、加标签、评论，先恢复（PRD §8 规则 10）
+    InTrash,
     /// 存储层故障（磁盘、数据库损坏等），不属于规则拒绝
     Internal,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 24] = [
+    pub const ALL: [ErrorCode; 25] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -73,6 +75,7 @@ impl ErrorCode {
         ErrorCode::BoardNotOnHost,
         ErrorCode::Dispatched,
         ErrorCode::SessionDone,
+        ErrorCode::InTrash,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -101,6 +104,7 @@ impl ErrorCode {
             ErrorCode::BoardNotOnHost => "BOARD_NOT_ON_HOST",
             ErrorCode::Dispatched => "DISPATCHED",
             ErrorCode::SessionDone => "SESSION_DONE",
+            ErrorCode::InTrash => "IN_TRASH",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -137,6 +141,7 @@ impl ErrorCode {
             ErrorCode::BoardNotOnHost => "这台机器没有这块白板的目录：board host 启动时用 --dir <项目>/<白板>=<路径> 加上",
             ErrorCode::Dispatched => "卡片已经派发给一台机器、正在排队：等它开始，或先取消派发",
             ErrorCode::SessionDone => "这个会话不再接着做下一张：结束会话",
+            ErrorCode::InTrash => "卡片在回收站里：先恢复，才能编辑、移动或评论",
             ErrorCode::Internal => "内部错误",
         }
     }

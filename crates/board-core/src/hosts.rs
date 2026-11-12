@@ -1006,7 +1006,7 @@ impl<'a> R<'a> {
                 let Ok(board) = self.resolve(&dir.board) else { continue };
                 let flow = flow_of(self.conn, board.id)?;
                 for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
-                    let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND col = ?2")?;
+                    let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND col = ?2 AND deleted_at IS NULL")?;
                     let ids = st.query_map(params![board.id, s.key], |r| r.get::<_, i64>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
                     for id in ids {
                         if !rules.matches_any(&card_label_names(self.conn, board.id, id)?) {
@@ -1158,7 +1158,7 @@ impl<'a> W<'a> {
     }
 
     fn card_exists(&self, b: i64, id: i64) -> Result<bool> {
-        Ok(self.tx.query_row("SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get::<_, i64>(0))? > 0)
+        Ok(self.tx.query_row("SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, id], |r| r.get::<_, i64>(0))? > 0)
     }
 
     /// 在卡片动态里记一条派发的事；卡片已经删除时不记
@@ -1236,7 +1236,7 @@ impl<'a> W<'a> {
         let board = self.board_of(d.board)?;
         let holder: Option<String> = self
             .tx
-            .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
+            .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0))
             .optional()?
             .flatten();
         if holder.as_deref() == Some(name) {
@@ -1308,7 +1308,7 @@ impl<'a> W<'a> {
         };
         // 结算上一张：卡片已经不由这个名字持有，在交审状态记「已交审」，其他状态记「做不下去」
         let col: Option<String> =
-            self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0)).optional()?;
+            self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0)).optional()?;
         let result = if col.as_deref().is_some_and(|c| flow.is_review(c)) { "review" } else { "stuck" };
         self.close_row(&d, result, None)?;
         let actor = Actor::agent(name.to_string());
@@ -1320,7 +1320,7 @@ impl<'a> W<'a> {
         let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(card) });
         self.dispatch_ok = false;
         claimed?;
-        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![d.board, card], |r| r.get(0))?;
+        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, card], |r| r.get(0))?;
         let by = Actor::system();
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, name, env, env_name, source, by_kind, by_name, state, created_at, started_at, session)
@@ -1796,7 +1796,7 @@ impl<'a> W<'a> {
     pub fn dispatch_create(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
         let flow = flow_of(self.tx, board.id)?;
         let col: Option<String> =
-            self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2", params![board.id, card], |r| r.get(0)).optional()?;
+            self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0)).optional()?;
         let col = col.ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("卡片 #{card} 不存在")))?;
         if !flow.is_claim(&col) {
             let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
@@ -1845,7 +1845,7 @@ impl<'a> W<'a> {
     }
 
     fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor) -> Result<Dispatch> {
-        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![b, card], |r| r.get(0))?;
+        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'queued', ?11)",
@@ -2106,7 +2106,7 @@ impl<'a> W<'a> {
         };
         let row: Option<(String, Option<String>)> = self
             .tx
-            .query_row("SELECT col, holder FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT col, holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let board = self.board_of(d.board)?;
         let flow = flow_of(self.tx, d.board)?;
@@ -2117,7 +2117,7 @@ impl<'a> W<'a> {
                 soft(self.exec(&board, &actor, Cmd::Beat { id: d.card, done: true }))?;
                 let still: Option<String> = self
                     .tx
-                    .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
+                    .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0))
                     .optional()?
                     .flatten();
                 let error = flow.error_after(col);
@@ -2149,7 +2149,7 @@ impl<'a> W<'a> {
                 if still_held && target.is_none() {
                     let claimed_from: Option<String> = self
                         .tx
-                        .query_row("SELECT claimed_from FROM cards WHERE board = ?1 AND id = ?2", params![d.board, d.card], |r| r.get(0))
+                        .query_row("SELECT claimed_from FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0))
                         .optional()?
                         .flatten();
                     let back = flow.back_to(claimed_from.as_deref()).name.clone();

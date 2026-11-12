@@ -140,6 +140,8 @@ interface UIState {
   boardSettings: { path: string; focus?: string } | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
+  /** 回收站弹窗：哪块白板（路径）的回收站；null 是没打开 */
+  trash: string | null;
   /** 卡片详情里的「派发」对话框：卡片编号 */
   dispatchOf: number | null;
   /** 手机白板页的底部抽屉：筛选框、标签、正在工作、最近动态（桌面端在侧栏里） */
@@ -180,6 +182,7 @@ export const useUI = create<UIState>(() => ({
   image: null,
   boardSettings: null,
   host: null,
+  trash: null,
   dispatchOf: null,
   boardSheet: false,
 }));
@@ -265,6 +268,8 @@ export const updatePicker = (selected: number[]) => set(s => (s.picker ? { picke
 export const closePicker = () => set({ picker: null });
 
 export const openHost = (name: string | null) => set({ host: name });
+/** 打开 / 关掉（null）这块白板的回收站 */
+export const openTrash = (path: string | null) => set({ trash: path });
 export const openDispatch = (card: number | null) => set({ dispatchOf: card });
 
 export const openCtx = (req: CtxReq) => set({ ctx: req });
@@ -279,7 +284,7 @@ export function overlayOpen() {
   const s = get();
   return !!(
     s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.host ||
-    s.dispatchOf != null || s.boardSettings
+    s.dispatchOf != null || s.boardSettings || s.trash
   );
 }
 
@@ -309,6 +314,7 @@ const ERROR_TITLES: Record<string, string> = {
   AGENT_NOT_ON_HOST: '机器上没有这种 agent',
   BOARD_NOT_ON_HOST: '机器没有这块白板的目录',
   NOT_IN_TODO: '卡片不在可领取状态',
+  IN_TRASH: '卡片在回收站里',
 };
 /** 操作被拒绝的提示；extra 可以补充说明或加一个按钮（例如「恢复草稿」） */
 export function toastError(err: unknown, extra: Partial<Pick<Toast, 'text' | 'action' | 'duration'>> = {}) {

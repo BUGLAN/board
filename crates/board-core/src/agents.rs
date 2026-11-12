@@ -90,7 +90,7 @@ impl<'a> R<'a> {
             "SELECT c.board, b.project || '/' || b.key, c.id FROM cards c
              JOIN boards b ON b.id = c.board
              JOIN projects p ON p.key = b.project
-             WHERE c.holder = ?1 ORDER BY p.sort, p.created_at, b.sort, b.created_at, c.id",
+             WHERE c.holder = ?1 AND c.deleted_at IS NULL ORDER BY p.sort, p.created_at, b.sort, b.created_at, c.id",
         )?;
         let rows: Vec<(i64, String, i64)> =
             st.query_map([name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
@@ -147,13 +147,13 @@ impl<'a> W<'a> {
         }
         self.tx.execute("UPDATE agents SET beat_at = ?2 WHERE name = ?1", params![name, self.now])?;
         let boards: Vec<i64> =
-            self.collect("SELECT DISTINCT board FROM cards WHERE holder = ?1 AND final_at IS NULL", [name], |r| r.get(0))?;
+            self.collect("SELECT DISTINCT board FROM cards WHERE holder = ?1 AND final_at IS NULL AND deleted_at IS NULL", [name], |r| r.get(0))?;
         let actor = Actor::agent(name);
         for b in boards {
             // 先释放这块白板上已经到期的领取（规则 7），再给还持有的卡片发心跳
             self.sweep_board(b)?;
             let ids: Vec<i64> = self.collect(
-                "SELECT id FROM cards WHERE board = ?1 AND holder = ?2 AND final_at IS NULL",
+                "SELECT id FROM cards WHERE board = ?1 AND holder = ?2 AND final_at IS NULL AND deleted_at IS NULL",
                 params![b, name],
                 |r| r.get(0),
             )?;

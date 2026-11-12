@@ -102,6 +102,52 @@ describe('removeCard', () => {
     const b = board();
     expect(D.removeCard(9).board!(b)).toBe(b);
   });
+
+  it('回收站里多一张；重复执行只加一次（卡片已经不在时原样返回，不再计数）', () => {
+    const b = twice(D.removeCard(2).board!, board());
+    expect(b.trash).toBe(1);
+    const again = D.removeCard(2).board!(b);
+    expect(again).toBe(b);
+    expect(again.trash).toBe(1);
+  });
+});
+
+describe('restoreCard', () => {
+  /** 删掉 #2 之后的快照：回收站里有一张 */
+  const after = () => ({ ...snapshot('p/a', { todo: [1, 3], doing: [4] }), trash: 1 });
+  const plan = { id: 2, column: 'todo', pos: 1, movedAt: 0, card: card(2) };
+
+  it('放回原来那一列的第 pos 位，回收站里少一张；重复执行结果不变', () => {
+    const b = twice(D.restoreCard(plan).board!, after());
+    expect(b.cols.todo).toEqual([1, 2, 3]);
+    expect(b.cards[2]).toMatchObject({ id: 2, column: 'todo' });
+    expect(b.trash).toBe(0);
+    eachOnce(b);
+  });
+
+  it('原位置超出了现在的张数：放最后；pos 为负按最前面', () => {
+    expect(twice(D.restoreCard({ ...plan, pos: 9 }).board!, after()).cols.todo).toEqual([1, 3, 2]);
+    expect(twice(D.restoreCard({ ...plan, pos: -3 }).board!, after()).cols.todo).toEqual([2, 1, 3]);
+  });
+
+  it('原来那一列不在了：新建，卡片放在那一列', () => {
+    const b = twice(D.restoreCard({ ...plan, column: 'rework' }).board!, after());
+    expect(b.cols.rework).toEqual([2]);
+    expect(b.cards[2].column).toBe('rework');
+    eachOnce(b);
+  });
+
+  it('已经在白板上：原样返回（重复执行不变）', () => {
+    const b = board();
+    expect(D.restoreCard(plan).board!(b)).toBe(b);
+  });
+
+  it('打开着的这张卡片的详情跟着回到那一列；别的卡片不动', () => {
+    const p = D.restoreCard({ ...plan, column: 'doing' });
+    expect(twice(p.detail!, detail(card(2)))).toMatchObject({ column: 'doing' });
+    const d4 = detail(card(4));
+    expect(p.detail!(d4)).toBe(d4);
+  });
 });
 
 describe('mergePatch', () => {

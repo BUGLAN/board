@@ -82,9 +82,18 @@ CREATE TABLE IF NOT EXISTS cards (
   created_by_name TEXT NOT NULL,
   -- 人看过「未整理」里的这一条的时间（PRD §10.5）：agent 记下、还没被人看过的条目算「新」
   seen_at         INTEGER,
+  -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，30 天后由 purge_trash 永久删除
+  deleted_at      INTEGER,
+  -- 回收站里：谁删的
+  deleted_by_kind TEXT,
+  deleted_by_name TEXT,
+  -- 回收站里：删除前在哪个状态、排第几位，恢复时放回去
+  del_col         TEXT,
+  del_pos         INTEGER,
   PRIMARY KEY (board, id)
 );
 CREATE INDEX IF NOT EXISTS cards_col ON cards (board, col, pos);
+CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at);
 
 -- 每一次领取的耗时：第一次心跳开始，final / 交审 / 释放 / 异常退出（最后一次心跳）结束
 -- how：final 正常结束 | move 持有者移出锁定状态 | release 人强制释放 | lost 心跳中断
@@ -351,6 +360,19 @@ impl Store {
                    created_at);",
             )?;
         }
+        // 旧数据库的卡片没有回收站：都在正常状态里（不是已删除）
+        let has_trash: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'deleted_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_trash {
+            conn.execute_batch(
+                "ALTER TABLE cards ADD COLUMN deleted_at INTEGER;
+                 ALTER TABLE cards ADD COLUMN deleted_by_kind TEXT;
+                 ALTER TABLE cards ADD COLUMN deleted_by_name TEXT;
+                 ALTER TABLE cards ADD COLUMN del_col TEXT;
+                 ALTER TABLE cards ADD COLUMN del_pos INTEGER;
+                 CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at);",
+            )?;
+        }
         // 旧数据库的白板没有说明
         let has_readme: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'readme'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -457,10 +479,13 @@ impl Store {
             n += w.tx.execute("UPDATE hosts SET beat_at = ?1 WHERE off_at IS NULL", [w.now])?;
             // 还没发过第一次心跳的领取：从领取时间重新算；已经发过心跳的：从最近一次心跳重新算
             n += w.tx.execute(
-                "UPDATE cards SET claimed_at = ?1 WHERE holder IS NOT NULL AND beat_at IS NULL",
+                "UPDATE cards SET claimed_at = ?1 WHERE holder IS NOT NULL AND beat_at IS NULL AND deleted_at IS NULL",
                 [w.now],
             )?;
-            n += w.tx.execute("UPDATE cards SET beat_at = ?1 WHERE holder IS NOT NULL AND beat_at IS NOT NULL", [w.now])?;
+            n += w.tx.execute(
+                "UPDATE cards SET beat_at = ?1 WHERE holder IS NOT NULL AND beat_at IS NOT NULL AND deleted_at IS NULL",
+                [w.now],
+            )?;
             Ok(n)
         })
     }
@@ -473,7 +498,7 @@ impl Store {
         // 先用只读查询判断，避免没有到期的卡片和名字时也抢写锁
         let due: i64 = self.conn.query_row(
             &format!(
-                "SELECT (SELECT COUNT(*) FROM cards WHERE {DUE}) + (SELECT COUNT(*) FROM agents WHERE off_at IS NULL AND beat_at + ?2 <= ?1) + {}",
+                "SELECT (SELECT COUNT(*) FROM cards WHERE deleted_at IS NULL AND {DUE}) + (SELECT COUNT(*) FROM agents WHERE off_at IS NULL AND beat_at + ?2 <= ?1) + {}",
                 crate::hosts::DUE_COUNT
             ),
             params![now, gap],
@@ -483,7 +508,8 @@ impl Store {
             return Ok(0);
         }
         self.write(now, Origin::system(), |w| {
-            let boards: Vec<i64> = w.collect(&format!("SELECT DISTINCT board FROM cards WHERE {DUE}"), params![now, gap], |r| r.get(0))?;
+            let boards: Vec<i64> =
+                w.collect(&format!("SELECT DISTINCT board FROM cards WHERE deleted_at IS NULL AND {DUE}"), params![now, gap], |r| r.get(0))?;
             let mut n = 0;
             for b in boards {
                 n += w.sweep_board(b)?;
@@ -580,13 +606,13 @@ impl<'a> R<'a> {
                 for s in &b.statuses {
                     b.counts.insert(s.key.clone(), 0);
                 }
-                let mut cs = conn.prepare("SELECT col, COUNT(*) FROM cards WHERE board = ?1 GROUP BY col")?;
+                let mut cs = conn.prepare("SELECT col, COUNT(*) FROM cards WHERE board = ?1 AND deleted_at IS NULL GROUP BY col")?;
                 for c in cs.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                     let (col, n) = c?;
                     *b.counts.entry(col).or_default() += n;
                 }
                 let mut hs = conn.prepare(&format!(
-                    "SELECT holder FROM cards c WHERE board = ?1 AND holder IS NOT NULL ORDER BY {}, pos",
+                    "SELECT holder FROM cards c WHERE board = ?1 AND holder IS NOT NULL AND deleted_at IS NULL ORDER BY {}, pos",
                     COL_ORDER
                 ))?;
                 for h in hs.query_map([id], |r| r.get::<_, String>(0))? {
@@ -621,8 +647,8 @@ impl<'a> R<'a> {
         let mut skip: Vec<i64> = vec![];
         if !full {
             let mut st = self.conn.prepare_cached(
-                "SELECT c.id FROM cards c WHERE c.board = ?1 AND c.col = ?2
-                 ORDER BY (SELECT MAX(a.id) FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.action IN ('move', 'create')) DESC,
+                "SELECT c.id FROM cards c WHERE c.board = ?1 AND c.col = ?2 AND c.deleted_at IS NULL
+                 ORDER BY (SELECT MAX(a.id) FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.action IN ('move', 'create', 'restore')) DESC,
                           c.id DESC
                  LIMIT -1 OFFSET ?3",
             )?;
@@ -655,13 +681,55 @@ impl<'a> R<'a> {
             m.retain(|k, _| flow.get(k).is_some());
             m
         });
-        Ok(BoardSnapshot { rev: self.rev()?, now, path: board.path(), statuses: flow.0, cols, cards, omitted, log, saved_layout, keep_sorted })
+        let trash: i64 =
+            self.conn.query_row("SELECT COUNT(*) FROM cards WHERE board = ?1 AND deleted_at IS NOT NULL", [board.id], |r| r.get(0))?;
+        Ok(BoardSnapshot {
+            rev: self.rev()?,
+            now,
+            path: board.path(),
+            statuses: flow.0,
+            cols,
+            cards,
+            omitted,
+            log,
+            saved_layout,
+            keep_sorted,
+            trash,
+        })
     }
 
     pub fn card(&self, board: &BoardRef, id: i64) -> Result<CardDetail> {
         let card = cards_of(self.conn, board.id, Some(id))?
             .pop()
             .ok_or_else(|| not_found(id))?;
+        self.card_detail(board, card)
+    }
+
+    /// 回收站里的卡片（按删除时间，最近删的在最后）
+    pub fn trash(&self, board: &BoardRef) -> Result<Vec<TrashCard>> {
+        // 「删除前在哪个状态」「谁删的」都在 cards 上，和卡片的其余字段一起读出来
+        cards_from(self.conn, "AND c.board = ?1 AND c.deleted_at IS NOT NULL AND ?2 IS NULL", params![board.id, None::<i64>], &[])
+            .map(|v| {
+                v.into_iter()
+                    .map(|(card, row)| {
+                        let deleted_at = row.deleted_at.unwrap_or(card.created_at);
+                        TrashCard { card, deleted_at, deleted_by: row.deleted_by, col: row.del_col.unwrap_or_default(), pos: row.del_pos.unwrap_or(0) }
+                    })
+                    .collect()
+            })
+    }
+
+    /// 这张卡片在不在回收站里（给卡片命令用：在回收站里的卡片不能编辑、移动、加标签、评论，报 IN_TRASH）
+    pub fn in_trash(&self, board: &BoardRef, id: i64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NOT NULL",
+            params![board.id, id],
+            |r| r.get::<_, i64>(0),
+        )? > 0)
+    }
+
+    fn card_detail(&self, board: &BoardRef, card: Card) -> Result<CardDetail> {
+        let id = card.id;
         let mut st = self.conn.prepare(
             "SELECT id, at, actor_kind, actor_name, kind, action, text, edited_at FROM activity
              WHERE board = ?1 AND card = ?2 ORDER BY id",
@@ -839,12 +907,32 @@ pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
     Ok(())
 }
 
+/// 正常（不在回收站里）的卡片
 pub(crate) fn cards_of(conn: &Connection, board: i64, only: Option<i64>) -> Result<Vec<Card>> {
     cards_query(conn, board, only, &[])
 }
 
-/// 同 cards_of，skip 里的卡片不取（在 SQL 里排除，免得为它们算子查询）
+/// 同 cards_of，skip 里的卡片不取（在 SQL 里排除，免得为它们算子查询）。回收站里的卡片不取
 fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -> Result<Vec<Card>> {
+    // 只有给了 id 时才有 ?2（SQLite 里多出来的绑定参数也算错）
+    let cond = if only.is_some() {
+        "AND c.board = ?1 AND c.id = ?2 AND c.deleted_at IS NULL"
+    } else {
+        "AND c.board = ?1 AND ?2 IS NULL AND c.deleted_at IS NULL"
+    };
+    Ok(cards_from(conn, cond, params![board, only], skip)?.into_iter().map(|(c, _)| c).collect())
+}
+
+/// 卡片以及回收站的几列（删除时间、谁删的、删除前的状态和位置）；deleted_at 为 None 表示不在回收站里
+struct TrashRow {
+    deleted_at: Option<i64>,
+    deleted_by: Actor,
+    del_col: Option<String>,
+    del_pos: Option<i64>,
+}
+
+/// 按条件读出卡片（不带 skip 时排除 skip 里的）。`cond` 接在 WHERE 后面，用参数 ?1…
+fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i64]) -> Result<Vec<(Card, TrashRow)>> {
     let skip = if skip.is_empty() {
         String::new()
     } else {
@@ -863,23 +951,22 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
                 (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 COALESCE(c.moved_at, c.created_at),
-                c.seen_at
-         FROM cards c WHERE c.board = ?1 {} {skip} ORDER BY {COL_ORDER}, c.pos, c.id",
-        if only.is_some() { "AND c.id = ?2" } else { "AND ?2 IS NULL" }
+                c.seen_at,
+                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos
+         FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
-    let rows = st.query_map(params![board, only], |r| {
-        let col: String = r.get(3)?;
+    let rows = st.query_map(p, |r| {
         let labels: Option<String> = r.get(13)?;
         let mut labels: Vec<i64> = labels
             .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
             .unwrap_or_default();
         labels.sort_unstable();
-        Ok(Card {
+        let card = Card {
             id: r.get(0)?,
             title: r.get(1)?,
             body: r.get(2)?,
-            column: col,
+            column: r.get(3)?,
             holder: r.get(4)?,
             claimed_at: r.get(5)?,
             beat_at: r.get(6)?,
@@ -897,7 +984,15 @@ fn cards_query(conn: &Connection, board: i64, only: Option<i64>, skip: &[i64]) -
             comments: r.get(12)?,
             labels,
             seen_at: r.get(21)?,
-        })
+        };
+        let by_kind: Option<String> = r.get(23)?;
+        let row = TrashRow {
+            deleted_at: r.get(22)?,
+            deleted_by: row_actor(by_kind.unwrap_or_else(|| "human".into()), r.get::<_, Option<String>>(24)?.unwrap_or_default()),
+            del_col: r.get(25)?,
+            del_pos: r.get(26)?,
+        };
+        Ok((card, row))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
@@ -1301,8 +1396,11 @@ impl<'a> W<'a> {
             params![board, card, self.now, who.kind.as_str(), who.name, kind, action, text],
         )?;
         self.tx.execute("UPDATE cards SET updated_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, board, card])?;
-        let title: String =
-            self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![board, card], |r| r.get(0))?;
+        // 回收站里的卡片也记动态（删除、永久删除）；卡片已经不在了（永久删除之后）时标题为空
+        let title: String = self
+            .tx
+            .query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![board, card], |r| r.get(0))
+            .unwrap_or_default();
         self.event(board, card, &title, who, action, text)
     }
 

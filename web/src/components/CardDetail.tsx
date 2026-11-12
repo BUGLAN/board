@@ -7,10 +7,11 @@ import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { cardDispatch } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
+import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, dateTime, hhmm, isMobile, replay, since } from '../lib/util';
-import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeCard, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
+import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -240,16 +241,15 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               type="button"
               disabled={saving}
               onClick={async () => {
-                const yes = await confirm({ title: `删除 #${c.id}？`, text: `「${c.title}」及其全部动态会被永久删除，无法恢复。`, ok: '删除' });
+                const yes = await confirm({
+                  title: `删除 #${c.id}？`,
+                  text: `「${c.title}」会移进回收站（侧栏「回收站」），30 天内可以恢复；永久删除前评论和附件都还在。`,
+                  ok: '删除',
+                });
                 if (!yes) return;
                 closeDetail();
-                try {
-                  // 当帧从白板上拿掉，被拒绝时回来并提示
-                  await exec({ op: 'delete', id: c.id }, removeCard(c.id));
-                  toast({ type: 'success', title: `已删除 #${c.id}`, text: c.title });
-                } catch (e) {
-                  toastError(e);
-                }
+                // 当帧从白板上拿掉；提示里可以「撤销」（= 从回收站恢复）
+                await deleteCards([c.id], { titles: { [c.id]: c.title } });
               }}
             >
               <Icon name="trash" />

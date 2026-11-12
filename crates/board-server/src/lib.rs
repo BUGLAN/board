@@ -185,6 +185,7 @@ impl IntoResponse for ApiError {
             ErrorCode::NotFound | ErrorCode::BoardNotFound | ErrorCode::NoSuchHost => StatusCode::NOT_FOUND,
             ErrorCode::NotLoggedIn | ErrorCode::InvalidToken => StatusCode::UNAUTHORIZED,
             ErrorCode::NotAuthor => StatusCode::FORBIDDEN,
+            ErrorCode::InTrash => StatusCode::GONE,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::CONFLICT,
         };
@@ -210,6 +211,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/workspace", get(workspace))
         .route("/board", get(board))
         .route("/card", get(card))
+        .route("/trash", get(trash))
         .route("/events", get(events))
         .route("/stats", get(stats))
         .route("/search", get(search))
@@ -316,7 +318,8 @@ pub fn serve_in_thread(state: AppState, cfg: Config, listener: std::net::TcpList
 }
 
 fn spawn_background(state: AppState) {
-    // 规则 7：每秒释放一次到期的领取；每 10 分钟清理一次附件（没归到卡片的、不再被引用的文件）
+    // 规则 7：每秒释放一次到期的领取；每 10 分钟清理一次附件（没归到卡片的、不再被引用的文件），
+    // 并把回收站里删了超过 30 天的卡片永久删除（附件一起删，文件由紧接着的附件清理去掉）
     let s = state.clone();
     tokio::spawn(async move {
         let mut tick: u64 = 0;
@@ -329,6 +332,14 @@ fn spawn_background(state: AppState) {
             }
             tick += 1;
             if tick % 600 == 0 {
+                match s.db(|st| board_core::purge_trash(st, now_ms())).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("回收站清理：永久删除了 {n} 张卡片");
+                        s.0.poke.notify_one();
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("回收站清理失败：{e}"),
+                }
                 match s.db(|st| st.gc_files(now_ms())).await {
                     Ok((r, f)) if r + f > 0 => tracing::info!("清理附件：{r} 条记录，{f} 个文件"),
                     Ok(_) => {}
@@ -423,6 +434,19 @@ async fn card(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResu
             st.read(|r| {
                 let b = r.resolve(&q.path)?;
                 r.card(&b, id)
+            })
+        })
+        .await?,
+    ))
+}
+
+/// `GET /api/trash?path=<项目>/<白板>`：这块白板回收站里的卡片（按删除时间，最近删的在最后）
+async fn trash(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResult<Vec<board_core::TrashCard>> {
+    Ok(Json(
+        s.db(move |st| {
+            st.read(|r| {
+                let b = r.resolve(&q.path)?;
+                r.trash(&b)
             })
         })
         .await?,
@@ -533,12 +557,44 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
                     w.read().require_online(&actor.name, w.now())?;
                 }
                 let b = w.resolve(&body.board)?;
+                // 在回收站里的卡片：读不到（NOT_FOUND），但不是要恢复、永久删除、删除时，原因写成「在回收站里」
+                if let Some(id) = card_id_of(&body.cmd) {
+                    if !matches!(body.cmd, Cmd::Restore { .. } | Cmd::Purge { .. } | Cmd::Delete { .. })
+                        && w.read().in_trash(&b, id)?
+                    {
+                        return Err(BoardError::new(ErrorCode::InTrash, format!("#{id} 在回收站里：先恢复，才能编辑、移动或评论"))
+                            .with_detail(json!({ "card": id })));
+                    }
+                }
                 w.exec(&b, &actor, body.cmd)
             })
         })
         .await?;
     s.0.poke.notify_one();
     Ok(Json(out))
+}
+
+/// 卡片命令里的卡片 id（新建、领取不带 id 时为 None）
+fn card_id_of(cmd: &Cmd) -> Option<i64> {
+    match cmd {
+        Cmd::New { .. } | Cmd::Claim { id: None } => None,
+        Cmd::Edit { id, .. }
+        | Cmd::Move { id, .. }
+        | Cmd::Comment { id, .. }
+        | Cmd::EditComment { id, .. }
+        | Cmd::DeleteComment { id, .. }
+        | Cmd::Label { id, .. }
+        | Cmd::Beat { id, .. }
+        | Cmd::Release { id }
+        | Cmd::Delete { id }
+        | Cmd::Restore { id }
+        | Cmd::Purge { id }
+        | Cmd::Merge { id, .. }
+        | Cmd::Seen { id: Some(id) }
+        | Cmd::Claim { id: Some(id) } => Some(*id),
+        // 全部标为已读没有卡片 id
+        Cmd::Seen { id: None } => None,
+    }
 }
 
 /// 带令牌的请求里 agent 的名字：不能为空（是否在线在写库前检查）

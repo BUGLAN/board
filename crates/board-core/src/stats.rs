@@ -1108,7 +1108,7 @@ impl R<'_> {
         let mut cards: Vec<CardD> = vec![];
         let mut at: HashMap<(i64, i64), usize> = HashMap::new();
         {
-            let mut st = conn.prepare("SELECT board, id, title, col, holder, created_at FROM cards ORDER BY board, id")?;
+            let mut st = conn.prepare("SELECT board, id, title, col, holder, created_at FROM cards WHERE deleted_at IS NULL ORDER BY board, id")?;
             let rows = st.query_map([], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, i64>(5)?))
             })?;
