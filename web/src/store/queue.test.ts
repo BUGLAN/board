@@ -27,6 +27,8 @@ const server = vi.hoisted(() => ({
   trash: {} as Record<string, unknown[]>,
   /** 设了就让 api.board 等它（让刷新停在半路） */
   gate: null as null | Promise<void>,
+  /** 设了就让 api.workspace 等它 */
+  wsGate: null as null | Promise<void>,
 }));
 
 vi.mock('../lib/api', async orig => {
@@ -41,10 +43,13 @@ vi.mock('../lib/api', async orig => {
     api: {
       workspace: async () => {
         server.n.workspace++;
-        return clone(server.ws);
+        const ws = clone(server.ws);
+        if (server.wsGate) await server.wsGate;
+        return ws;
       },
       board: async (path: string) => {
         server.n.board++;
+        if (!server.boards[path]) throw new real.ApiError('BOARD_NOT_FOUND' as never, '白板不存在');
         const snap = clone(server.boards[path]);
         if (server.gate) await server.gate;
         return snap;
@@ -102,6 +107,7 @@ beforeEach(async () => {
   server.n = { workspace: 0, board: 0 };
   server.trash = {};
   server.gate = null;
+  server.wsGate = null;
   D = await import('./data');
   await D.refresh();
   expect(D.useData.getState().path).toBe('p/a');
@@ -240,6 +246,83 @@ describe('写队列', () => {
     server.hosts!({ hosts: [{ name: 'mbp' }] as never, dispatches: [] });
     await h2;
     expect(D.useData.getState().ws!.hosts).toEqual([{ name: 'mbp' }]);
+  });
+});
+
+describe('撤补丁的时机、一轮加载的往返（#174）', () => {
+  it('前一笔的补丁在它返回之后开始的第一轮加载完成时撤掉，不等后一笔的请求和刷新', async () => {
+    let open1!: () => void;
+    server.gate = new Promise(r => (open1 = r));
+    const a = rename(1, 'A');
+    const b = rename(2, 'B');
+    let aDone = false;
+    void a.then(() => (aDone = true));
+    await settle();
+    serverEdit('p/a', 1, { title: 'A' });
+    server.calls[0].ok(); // a 返回：开始一轮加载，停在取白板
+    await settle();
+    await settle();
+    expect(server.calls.length).toBe(2);
+    serverEdit('p/a', 2, { title: 'B' });
+    server.calls[1].ok(); // b 也返回了：要再来一轮
+    await settle();
+    // 第二轮也先停住：a 只等第一轮
+    let open2!: () => void;
+    server.gate = new Promise(r => (open2 = r));
+    open1();
+    await settle();
+    await settle();
+    expect(aDone).toBe(true);
+    expect(D.cardBusy(1)).toBe(false);
+    expect(title(1)).toBe('A');
+    expect(D.cardBusy(2)).toBe(true);
+    open2();
+    await b;
+    expect(D.cardBusy(2)).toBe(false);
+    expect([title(1), title(2)]).toEqual(['A', 'B']);
+  });
+
+  it('推送已经带来这次修改：由推送引起、正在进行的那一轮完成就撤补丁，不再多等一轮', async () => {
+    D.boot();
+    await settle();
+    let open!: () => void;
+    server.gate = new Promise(r => (open = r));
+    const a = rename(1, 'A');
+    await settle();
+    const rev = serverEdit('p/a', 1, { title: 'A' });
+    const r = detail(card(1, { title: 'A' }));
+    r.activity = [{ id: 9, at: 500, actor: { kind: 'human', name: '人' }, kind: 'system', action: 'edit', text: '改了标题' }];
+    // 推送比响应先到：开始一轮（停在取白板）
+    server.push!({ rev, events: [{ ...event('p/a', 1), at: 500 }] });
+    await settle();
+    const n = server.n.board;
+    server.calls[0].ok(r);
+    await settle();
+    open();
+    await a;
+    expect(server.n.board).toBe(n);
+    expect(title(1)).toBe('A');
+    expect(D.cardBusy(1)).toBe(false);
+  });
+
+  it('当前白板在上一次的工作区里：工作区和白板一起取，不等工作区返回', async () => {
+    let open!: () => void;
+    server.wsGate = new Promise(r => (open = r));
+    const n = { ws: server.n.workspace, board: server.n.board };
+    const p = D.refresh();
+    await settle();
+    expect(server.n.workspace).toBe(n.ws + 1);
+    expect(server.n.board).toBe(n.board + 1);
+    open();
+    await p;
+  });
+
+  it('一起取时当前白板刚被删掉：照样换到别的白板，不报错', async () => {
+    server.ws.projects[0].boards = server.ws.projects[0].boards.filter(b => b.key !== 'a');
+    delete server.boards['p/a'];
+    await D.refresh();
+    expect(D.useData.getState().path).toBe('p/b');
+    expect(D.useData.getState().board!.path).toBe('p/b');
   });
 });
 

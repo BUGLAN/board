@@ -184,14 +184,15 @@ function queue<T>(req: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** 乐观执行一个写请求：补丁当帧生效；成功后 refresh，再撤掉补丁；失败撤掉补丁并抛出错误（由调用方提示）。
+/** 乐观执行一个写请求：补丁当帧生效；成功后等「响应之后才开始的第一轮加载」完成（见 afterWrite），再撤掉补丁；
+    失败撤掉补丁并抛出错误（由调用方提示）。不等排在后面的写操作和它们的刷新（#174）。
     patch 为 null 时只是排队执行 + 刷新（拿不到结果就没法预先画出来的操作，例如新建项目），调用方自己显示进行中 */
 export async function optimistic<T>(patch: Patch | null, req: () => Promise<T>): Promise<T> {
   if (patch) guard(patch);
   const l = patch ? push(patch) : null;
   try {
     const r = await queue(req);
-    await refresh();
+    await afterWrite();
     return r;
   } finally {
     if (l) drop(l);
@@ -646,6 +647,44 @@ export function refresh(): Promise<void> {
   return pump();
 }
 
+/* 写操作撤补丁的时机（#174）：补丁要留到服务端数据里已经有这次修改（撤掉时界面不闪），但不能等共用的 pump() 结束——
+   后面每个写操作返回时都会再要一轮，前面的就一直被拖住。所以每个写操作等的是「它的响应返回之后才开始的第一轮加载」
+   （那一轮读到的一定包含这次修改）；推送已经说明这次修改到了哪个 rev 时，任何一轮加载到那个 rev 也算。 */
+/** 已经开始的加载轮数（pump 每开始一轮加一） */
+let roundsStarted = 0;
+/** 等加载的写操作：need 是它要等的那一轮（含）；ok 为真时提前算数 */
+let roundWaiters: { need: number; ok?: () => boolean; done: () => void }[] = [];
+
+/** 一轮加载完成后（成功、失败都算：失败时撤补丁、按现有数据画，和以前一样）放行等到的写操作 */
+function releaseWaiters(round: number) {
+  const keep: typeof roundWaiters = [];
+  for (const w of roundWaiters) {
+    if (round >= w.need || w.ok?.()) w.done();
+    else keep.push(w);
+  }
+  roundWaiters = keep;
+}
+
+/** 写操作返回后：要一轮新的全量加载，等「这之后才开始的第一轮」完成（不等更后面的轮次） */
+function afterWrite(): Promise<void> {
+  const need = roundsStarted + 1;
+  again = true;
+  const p = new Promise<void>(done => roundWaiters.push({ need, done }));
+  void pump();
+  return p;
+}
+
+/** 推送说这次修改在 rev 里：已经加载到 rev 就不用等；否则等一轮加载到 rev（正在进行的那一轮也算），
+    或者这之后才开始的一轮完成 */
+function afterRev(rev: number): Promise<void> {
+  if (boardRev >= rev) return Promise.resolve();
+  wantBoard = Math.max(wantBoard, rev);
+  const need = roundsStarted + 1;
+  const p = new Promise<void>(done => roundWaiters.push({ need, ok: () => boardRev >= rev, done }));
+  void pump();
+  return p;
+}
+
 /** 推送里见过的卡片变化：「白板路径#卡片」→ 最新一条事件的时间和那次推送的 rev（只留最近的一些） */
 const pushed = new Map<string, { at: number; rev: number }>();
 function notePushed(rev: number, events: BoardEvent[]) {
@@ -663,9 +702,8 @@ function notePushed(rev: number, events: BoardEvent[]) {
 function refreshAfter(path: string, r: CardDetail | null): Promise<void> {
   const at = r?.activity?.length ? Math.max(...r.activity.map(a => a.at)) : null;
   const seen = r && pushed.get(`${path}#${r.id}`);
-  if (at == null || !seen || seen.at < at || get().path !== path) return refresh();
-  wantBoard = Math.max(wantBoard, seen.rev);
-  return pump();
+  if (at == null || !seen || seen.at < at || get().path !== path) return afterWrite();
+  return afterRev(seen.rev);
 }
 
 /** 按需要一轮接一轮地加载，同时只有一轮在进行 */
@@ -676,8 +714,13 @@ function pump(): Promise<void> {
     while (again || boardRev < wantBoard || wsRev < wantWs) {
       const full = again || boardRev < wantBoard;
       again = false;
+      const round = ++roundsStarted;
+      // 这一轮开始前就要的 rev：这一轮读到的白板一定不比它旧（服务端的 rev 是读事务里的全局版本）。
+      // 读回来的白板 rev 万一还是更小（数据不一致），也算到了，不原地一轮接一轮
+      const target = wantBoard;
       try {
         await (full ? load() : loadWs());
+        if (full && get().board && boardRev < target) boardRev = target;
         set({ error: null });
       } catch (e) {
         set({ error: (e as Error).message });
@@ -685,9 +728,12 @@ function pump(): Promise<void> {
         wantBoard = Math.min(wantBoard, boardRev);
         wantWs = Math.min(wantWs, wsRev);
       }
+      releaseWaiters(round);
     }
   })().finally(() => {
     inflight = null;
+    // 不会再有下一轮了：还在等的（例如加载到一半换了白板、rev 没追上）都放行，补丁不会一直挂着
+    releaseWaiters(Number.MAX_SAFE_INTEGER);
   });
   return inflight;
 }
@@ -711,14 +757,22 @@ export function loadFull(): Promise<void> {
 }
 
 async function load() {
-  const ws = await api.workspace();
-  const paths = allBoards(ws).map(b => b.path);
+  // 先让出一个微任务：同步调用方（applyRoute：先 setPath 再记 pendingCard）把这一轮要用的状态设完
+  await Promise.resolve();
   let path = get().path;
-  if (!paths.includes(path)) {
-    const s = saved();
-    path = paths.includes(s) ? s : paths[0];
-    pendingCard = null; // 地址里的白板不在了：地址里的卡片也不打开
-    switchTo(path);
+  // 当前白板在上一次取到的工作区里：工作区、白板、卡片三个一起取（一轮一个往返，#174）。
+  // 不在（第一次加载、白板被删了）：先取工作区、换白板，再取白板（两个往返，和以前一样）
+  const known = !!base.ws && allBoards(base.ws).some(b => b.path === path);
+  let ws: Workspace | null = null;
+  if (!known) {
+    ws = await api.workspace();
+    const paths = allBoards(ws).map(b => b.path);
+    if (!paths.includes(path)) {
+      const s = saved();
+      path = paths.includes(s) ? s : paths[0];
+      pendingCard = null; // 地址里的白板不在了：地址里的卡片也不打开
+      switchTo(path);
+    }
   }
   // 地址栏里的卡片（刷新页面、从别处打开链接）：和这块白板一起取回来，取回来的那一帧就打开详情。
   // 不写地址栏：这时可能正按地址（后退、前进）改状态，写回去会把历史弄乱
@@ -729,11 +783,22 @@ async function load() {
     base.detail = null;
     render({ detailId });
   }
-  const [fetched, rawDetail] = await Promise.all([
-    api.board(path, fullPaths.has(path)),
+  const [wsNow, got, rawDetail] = await Promise.all([
+    ws ?? api.workspace(),
+    // 并行取时白板可能刚被删掉：先接住错误，看工作区再决定
+    api.board(path, fullPaths.has(path)).catch((e: unknown) => ({ failed: e })),
     // 卡片不在了（NOT_FOUND）记为 gone：详情要关掉。不在快照里的卡片（终点状态更早的）不能靠快照判断
     detailId != null ? api.card(path, detailId).catch(e => (e instanceof ApiError && e.code === 'NOT_FOUND' ? ('gone' as const) : null)) : Promise.resolve(null),
   ]);
+  ws = wsNow;
+  if (!allBoards(ws).some(b => b.path === path)) {
+    // 当前白板在这期间不在了：记下新的工作区，下一轮按它换白板
+    base.ws = share(base.ws, ws);
+    again = true;
+    return;
+  }
+  if ('failed' in got) throw got.failed;
+  const fetched = got;
   const st = get();
   if (st.path !== path) {
     again = true;
@@ -751,7 +816,8 @@ async function load() {
   base.board = board;
   if (st.detailId === detailId && detail) base.detail = detail;
   if (gone) base.detail = null;
-  boardRev = Math.max(ws.rev, board.rev);
+  // 三个并行取时工作区可能比白板新：当前白板按白板自己的 rev 记（落后的那部分等推送再取，不会漏）
+  boardRev = known ? board.rev : Math.max(ws.rev, board.rev);
   wsRev = ws.rev;
   render({ rev: boardRev, offset: ws.now - Date.now(), ...(gone ? { detailId: null } : {}) });
   // 地址栏和现在打开的保持一致：记着的白板不在了、换了白板之后地址跟着改（后退、前进时由 applySilently 挡住）
