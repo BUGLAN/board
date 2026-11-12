@@ -275,6 +275,27 @@ describe('readyCheckPatch（白板的环境检查）', () => {
   });
 });
 
+describe('repoPatch（白板的仓库地址、集成分支）', () => {
+  it('只改这一块白板：工作区和当前白板的快照一起改；重复执行结果相同；白板不在了原样返回', () => {
+    const p = D.repoPatch('p/a', { repo: 'git@github.com:o/r.git', branch: 'dev' });
+    const ws = twice(p.ws!, workspace());
+    expect(ws.projects[0].boards[0]).toMatchObject({ repo: 'git@github.com:o/r.git', branch: 'dev' });
+    expect(ws.projects[0].boards[1].repo).toBeUndefined();
+    const b = twice(p.board!, snapshot('p/a', { todo: [1] }));
+    expect(b.repo).toBe('git@github.com:o/r.git');
+    expect(b.branch).toBe('dev');
+    const other = snapshot('p/b', { todo: [1] });
+    expect(p.board!(other)).toBe(other);
+    const orig = workspace();
+    expect(D.repoPatch('p/nope', { repo: 'x' }).ws!(orig)).toBe(orig);
+  });
+
+  it('只改一项时另一项保持原值（没设过时补成空字符串）', () => {
+    const ws = twice(D.repoPatch('p/a', { branch: 'dev' }).ws!, workspace());
+    expect(ws.projects[0].boards[0]).toMatchObject({ repo: '', branch: 'dev' });
+  });
+});
+
 describe('draftCard（新建）', () => {
   const draft = (title = '新卡片') => D.draftCard({ title, body: '', labels: [], column: 'todo' });
   const start = () => D.useData.setState({ board: board() });

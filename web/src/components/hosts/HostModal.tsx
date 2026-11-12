@@ -552,7 +552,9 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
     }
     save({ dirs: next.map(d => ({ board: d.board, path: d.path })) });
   };
-  const originOf = (board: string) => hosts.find(x => x.name !== h.name)?.dirs.find(d => d.board === board && d.origin)?.origin ?? '';
+  // 仓库地址的建议：白板设置里设了就用它（PRD §4），没设时看别的机器上报的这块白板目录的 origin
+  const originOf = (board: string) =>
+    boardOf(ws, board)?.repo?.trim() || hosts.find(x => x.name !== h.name)?.dirs.find(d => d.board === board && d.origin)?.origin || '';
   const when = h.dirsChangedAt ? new Date(h.dirsChangedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 
   const commitPath = (d: HostDir) => {

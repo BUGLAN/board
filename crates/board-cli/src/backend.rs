@@ -24,6 +24,9 @@ const HOST_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct BoardData {
     pub path: String,
     pub flow: Flow,
+    /// 白板设置的代码仓库地址、集成分支（空表示没设；PRD §4）
+    pub repo: String,
+    pub branch: String,
     /// 按工作流和状态内顺序排列（「未整理」在最前）
     pub cards: Vec<Card>,
     /// 白板所属项目的标签
@@ -111,7 +114,7 @@ impl Backend {
         let project = snap.path.split('/').next().unwrap_or_default().to_string();
         let ws: Workspace = r.get("/api/workspace", &[])?;
         let labels = ws.projects.into_iter().find(|p| p.key == project).map(|p| p.labels).unwrap_or_default();
-        Ok(BoardData { path: snap.path, flow: Flow(snap.statuses), cards, labels, now: snap.now })
+        Ok(BoardData { path: snap.path, flow: Flow(snap.statuses), repo: snap.repo, branch: snap.branch, cards, labels, now: snap.now })
     }
 
     pub fn card(&mut self, path: &str, id: i64) -> Result<CardDetail> {

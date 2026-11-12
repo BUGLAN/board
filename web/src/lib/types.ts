@@ -77,6 +77,10 @@ export interface BoardInfo {
   readme?: string;
   /** 环境检查：机器先在这块白板的目录里跑通它，才接这块白板的卡；都为空时不检查。旧服务端没有这一项 */
   readyCheck?: ReadyCheck;
+  /** 代码仓库地址（git 远端，例如 git@github.com:o/r.git）；空表示没设。旧服务端没有这一项 */
+  repo?: string;
+  /** 集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
+  branch?: string;
   pos: Pos;
   createdAt: number;
   updatedAt: number;
@@ -477,6 +481,10 @@ export interface BoardSnapshot {
   keepSorted?: boolean;
   /** 回收站里的张数（侧栏「回收站 · N」）。旧服务端没有这个字段（当作 0） */
   trash?: number;
+  /** 这块白板的代码仓库地址（空表示没设）：评论里的提交号、gh#123 按它变成链接。旧服务端没有这个字段 */
+  repo?: string;
+  /** 这块白板的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md）。旧服务端没有这个字段 */
+  branch?: string;
 }
 
 /** 回收站里的一张卡片（PRD §8 规则 10）：删除前在哪个状态、排第几位、谁删的、什么时候删的 */

@@ -103,7 +103,45 @@ describe('markdown 装饰', () => {
   it('gh#123 高亮，代码里的不动', () => {
     const d = dom(markdown('见 gh#12，`gh#34`'));
     expect([...d.querySelectorAll('.gh')].map(s => s.textContent)).toEqual(['gh#12']);
+    // 没设仓库地址时只是高亮，不是链接；提交号也不动
+    expect(d.querySelector('.gh')!.tagName).toBe('SPAN');
+    expect(d.querySelector('a.commit')).toBeNull();
+    expect(d.textContent).toContain('提交：abc1234');
   });
+});
+
+describe('markdown 按白板的仓库地址生成链接（PRD §4）', () => {
+  const repo = 'git@github.com:o/r.git';
+  it('「提交：abc1234」的提交号变成提交页的链接，全角、半角冒号都认', () => {
+    const d = dom(markdown('提交：abc1234\n检查：npm test 通过', repo));
+    const a = d.querySelector('a.commit')!;
+    expect(a.getAttribute('href')).toBe('https://github.com/o/r/commit/abc1234');
+    expect(a.textContent).toBe('abc1234');
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(d.textContent).toContain('提交：abc1234');
+    expect(d.textContent).toContain('检查：npm test 通过');
+    const half = dom(markdown('提交: abc1234', repo)).querySelector('a.commit')!;
+    expect(half.getAttribute('href')).toBe('https://github.com/o/r/commit/abc1234');
+  });
+
+  it('gh#12 变成 issue 的链接，样式仍高亮', () => {
+    const a = dom(markdown('见 gh#12', repo)).querySelector('a.gh')!;
+    expect(a.getAttribute('href')).toBe('https://github.com/o/r/issues/12');
+    expect(a.textContent).toBe('gh#12');
+  });
+
+  it('代码块、行内代码里的不变成链接', () => {
+    const d = dom(markdown('```\n提交：abc1234\ngh#1\n```\n\n`提交：abc1234` `gh#2`', repo));
+    expect(d.querySelector('a.commit, a.gh')).toBeNull();
+  });
+
+  it('不是提交号的十六进制不动：太短、太长、后面紧跟着别的字符', () => {
+    const d = dom(markdown('提交：abc123（6 位）\n提交：abc1234def\n提交：abc1234g', repo));
+    expect([...d.querySelectorAll('a.commit')].map(a => a.textContent)).toEqual(['abc1234def']);
+    expect(d.textContent).toContain('提交：abc123（6 位）');
+    expect(d.textContent).toContain('提交：abc1234g');
+  });
+});
 
   it('inlineCode：拆出 `代码`', () => {
     expect(inlineCode('改 `a.ts` 和 `b`')).toEqual(['改 ', { code: 'a.ts' }, ' 和 ', { code: 'b' }]);

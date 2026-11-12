@@ -11,10 +11,11 @@ import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { playDemo, scenesOf, stepsOf, type DemoInput, type Scene } from '../lib/orderDemo';
 import { statusColor, viewOf } from '../lib/schema';
+import { repoWeb } from '../lib/repo';
 import { ORDERS, orderDir, orderName, orderOf, orderOption } from '../lib/sort';
 import type { BoardSnapshot, Label, Order, Status, Tile } from '../lib/types';
 import { cx, reduceMotion } from '../lib/util';
-import { colCount, flowKey, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
+import { colCount, flowKey, optimistic, repoPatch, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { openBoardSettings, toast, useUI } from '../store/ui';
 import { Select, Sync, useSync } from './bits';
 import { ReadyCheckSection } from './BoardReady';
@@ -296,7 +297,8 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
               </div>
               <p className="bs-note">复原以后保存的布局还在，可以再应用。保存之后删掉的状态应用时跳过，新加的状态按默认规则补位。</p>
             </section>
-            <ReadyCheckSection path={path} i={2} />
+            <RepoSection path={path} i={2} />
+            <ReadyCheckSection path={path} i={3} />
             <div className="bs-foot">改动立即生效，同步到所有窗口和机器。</div>
           </div>
           <aside className="d-side bs-side" aria-label="预览">
@@ -309,6 +311,113 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
         </div>
       </div>
     </>
+  );
+}
+
+/* ------------------------------ 代码仓库 ------------------------------ */
+
+/** 代码仓库地址和集成分支（PRD §4）：设置项（saveSetting），失焦或回车时保存，不锁别的控件。
+    仓库地址先看白板自己设的；没设时用别的机器上报的这块白板目录的 origin 作建议（#185 克隆也用同一个来源） */
+export function RepoSection({ path, i }: { path: string; i: number }) {
+  const meta = useCurrent();
+  const ws = useData(s => s.ws);
+  const repo = meta?.board.repo ?? '';
+  const branch = meta?.board.branch ?? '';
+  // 别的机器上报的 origin：同一块白板可能有好几台机器，取第一台有的
+  const suggested =
+    ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board === path && d.origin)?.origin ?? '';
+  const [draft, setDraft] = useState({ repo, branch });
+  const [editing, setEditing] = useState<'' | 'repo' | 'branch'>('');
+  const { sync, track } = useSync();
+  // 别的窗口改了：没在编辑的那一项跟着服务端
+  useEffect(() => {
+    setDraft(d => ({ repo: editing === 'repo' ? d.repo : repo, branch: editing === 'branch' ? d.branch : branch }));
+  }, [repo, branch, path]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 换了一块白板：草稿跟着换（正在编辑的也换，避免把上一块的地址存到这一块）
+  useEffect(() => {
+    setDraft({ repo, branch });
+    setEditing('');
+  }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const commit = (which: 'repo' | 'branch') => {
+    setEditing('');
+    const v = draft[which].trim();
+    if (v === (which === 'repo' ? repo : branch)) return;
+    setDraft(d => ({ ...d, [which]: v }));
+    track(
+      which,
+      saveSetting(
+        which === 'repo' ? `repo:${path}` : `branch:${path}`,
+        repoPatch(path, { [which]: v }),
+        () => api.updateBoard(path, which === 'repo' ? { repo: v } : { branch: v }),
+      ),
+    );
+  };
+  const field = (which: 'repo' | 'branch', label: string, hint: string, extra?: React.ReactNode) => (
+    <label className="bs-rc-row">
+      <span className="bs-rc-l">
+        {label}
+        <Sync s={sync[which]} inline />
+      </span>
+      <span className="bs-rp-input">
+        <input
+          className="input mono"
+          value={draft[which]}
+          placeholder={hint}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label={which === 'repo' ? '仓库地址' : '集成分支'}
+          onFocus={() => setEditing(which)}
+          onChange={e => setDraft(d => ({ ...d, [which]: e.target.value }))}
+          onBlur={() => commit(which)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            if (e.key === 'Escape' && editing) {
+              e.stopPropagation();
+              setDraft(d => ({ ...d, [which]: which === 'repo' ? repo : branch }));
+              setEditing('');
+              e.currentTarget.blur();
+            }
+          }}
+        />
+        {extra}
+      </span>
+    </label>
+  );
+  const web = repoWeb(repo);
+  return (
+    <section className="d-section" style={{ ['--i' as string]: i }}>
+      <div className="d-label">
+        代码仓库<span className="act">skill 按这里的集成分支推送</span>
+      </div>
+      <div className="bs-rc bs-rp">
+        {field(
+          'repo',
+          '仓库地址',
+          suggested ? `例如 ${suggested}` : 'git@github.com:org/repo.git',
+          !repo.trim() && suggested ? (
+            <button
+              type="button"
+              className="btn sm"
+              title={`用机器上报的 origin：${suggested}`}
+              onClick={() => {
+                setDraft(d => ({ ...d, repo: suggested }));
+                setEditing('');
+                track('repo', saveSetting(`repo:${path}`, repoPatch(path, { repo: suggested }), () => api.updateBoard(path, { repo: suggested })));
+              }}
+            >
+              用机器的 origin
+            </button>
+          ) : null,
+        )}
+        {field('branch', '集成分支', '留空按 AGENTS.md / CLAUDE.md，没写用远端默认分支')}
+      </div>
+      <p className="bs-note">
+        设了仓库地址后，描述和评论里的「提交：<span className="mono">abc1234</span>」和 <span className="mono">gh#12</span> 会变成链接
+        {web ? <>（<a href={web.home} target="_blank" rel="noopener noreferrer">{web.home}</a>）</> : null}
+        ；给新机器克隆仓库时也优先用它。集成分支留空时，agent 按仓库里的 AGENTS.md / CLAUDE.md，没写就用远端的默认分支。
+      </p>
+    </section>
   );
 }
 

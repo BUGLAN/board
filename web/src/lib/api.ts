@@ -151,7 +151,7 @@ export const api = {
 
   createBoard: (b: { project: string; name: string; key: string; desc?: string; pos?: Pos }) =>
     req<{ path: string }>('POST', '/api/boards', b),
-  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; readyCheck?: string; readyCheckWin?: string }) =>
+  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; readyCheck?: string; readyCheckWin?: string; repo?: string; branch?: string }) =>
     req('PATCH', `/api/boards/${path}`, patch),
   /** 大盘：一个范围在 [from, to) 里的全部统计，按 tz 分桶 */
   stats: (q: { scope: StatsScope; path?: string; from: number; to: number; tz: string }) => {

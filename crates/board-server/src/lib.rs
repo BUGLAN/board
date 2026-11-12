@@ -756,6 +756,11 @@ struct PatchBody {
     ready_check: Option<String>,
     #[serde(default, rename = "readyCheckWin")]
     ready_check_win: Option<String>,
+    /// 白板的代码仓库地址、集成分支（空字符串表示清空）
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
     #[serde(default)]
     project: Option<String>,
     /// 标签：仅人可打
@@ -802,6 +807,9 @@ async fn update_board(
         w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())?;
         if p.ready_check.is_some() || p.ready_check_win.is_some() {
             w.set_ready_check(&path, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
+        }
+        if p.repo.is_some() || p.branch.is_some() {
+            w.set_repo_branch(&path, p.repo.as_deref(), p.branch.as_deref())?;
         }
         Ok(())
     })

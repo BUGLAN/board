@@ -248,8 +248,9 @@ export function ProjectAvatar({ name, color, className }: { name: string; color:
   );
 }
 
-export function Markdown({ src, className }: { src: string; className?: string }) {
-  const html = useMemo(() => markdown(src), [src]);
+/** repo：这块白板的仓库地址（PRD §4）；给了时评论里的提交号、gh#123 变成链接 */
+export function Markdown({ src, className, repo }: { src: string; className?: string; repo?: string | null }) {
+  const html = useMemo(() => markdown(src, repo), [src, repo]);
   return (
     <div
       className={cx('md', className)}

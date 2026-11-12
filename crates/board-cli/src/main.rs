@@ -489,7 +489,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
         return Err(BoardError::code(ErrorCode::NoBoard));
     };
-    let BoardData { path, flow, cards: all, labels, now } = be.board(&raw)?;
+    let BoardData { path, flow, repo, branch, cards: all, labels, now } = be.board(&raw)?;
     let label_name = |id: i64| labels.iter().find(|l| l.id == id).map(|l| l.name.clone()).unwrap_or_default();
     let find_label = |name: &str| -> Result<i64> {
         let q = name.trim().to_lowercase();
@@ -522,12 +522,14 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             let cards = &all;
             let count = |k: &str| cards.iter().filter(|c| c.column == k).count();
             if json {
-                Output::Json(Value::Array(
-                    flow.0
+                Output::Json(json!({
+                    "repo": repo,
+                    "branch": branch,
+                    "statuses": flow.0
                         .iter()
                         .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "error": st.err, "to": st.to, "cards": count(&st.key) }))
-                        .collect(),
-                ))
+                        .collect::<Vec<_>>(),
+                }))
             } else {
                 let kw = flow.0.iter().map(|st| width(&st.key)).max().unwrap_or(0).max(5) + 2;
                 let nw = flow.0.iter().map(|st| width(&st.name)).max().unwrap_or(0) + 2;
@@ -575,6 +577,16 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     );
                 }
                 s += &format!("{} {}{}{}\n", p.dim("·"), p.magenta(&pad(INBOX, kw)), pad(INBOX_NAME, nw), p.dim(&format!("{} 张  不属于工作流", count(INBOX))));
+                let blank = p.dim("（没设）");
+                let hint = p.dim("  # 白板设置里改；集成分支留空时按仓库的 AGENTS.md，没写用远端默认分支");
+                s += &format!(
+                    "{} {}  {} {}{}\n",
+                    p.dim("仓库："),
+                    if repo.is_empty() { blank.clone() } else { repo.clone() },
+                    p.dim("集成分支："),
+                    if branch.is_empty() { blank } else { branch.clone() },
+                    hint
+                );
                 Output::Text(s)
             }
         }
