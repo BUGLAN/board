@@ -8,12 +8,13 @@
 //! - `POST /api/hosts/{名字}/round`：开始一轮领取（定时到点；界面上的「现在领一轮」也是它）
 //! - `POST /api/hosts/{名字}/rename {name}`：机器改名（桌面端「设置 → 本机」保存机器名时调用）
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
+//! - `POST /api/dispatches/{ID}/events {fmt, events}`：上传结构化事件（会话「过程」，见 board-core runlog.rs）
 //!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
 //! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、
 //! `POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
 //! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
-//! `GET /api/sessions/{派发 ID}`（一个会话的全部派发和输出）。这些用令牌调用时 NOT_LOGGED_IN。
+//! `GET /api/sessions/{派发 ID}[?since=<runs>]`（一个会话的全部派发、输出和事件；带 since 时事件只取之后新增、改过的）。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发）、`POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
 
 use axum::extract::{Path, Query, State};
@@ -142,6 +143,9 @@ pub(crate) struct EndBody {
     /// how = timeout 时给人看的原因（「运行超过 3 小时…」）
     #[serde(default)]
     why: Option<String>,
+    /// 最后 10 个事件的文字（异常退出评论里用）；旧版 board host 没有
+    #[serde(default)]
+    events: Vec<String>,
 }
 
 fn exit() -> EndHow {
@@ -163,7 +167,7 @@ pub(crate) async fn end(State(s): State<AppState>, Path(id): Path<i64>, Json(v):
 async fn end_inner(s: AppState, id: i64, v: Value) -> ApiResult<Dispatch> {
     let b: EndBody = parse(v)?;
     let out = s
-        .db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_end(id, b.exit_code, &b.tail, b.how, b.why.as_deref())))
+        .db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_end_with(id, b.exit_code, &b.tail, &b.events, b.how, b.why.as_deref())))
         .await?;
     s.poke();
     Ok(Json(out))
@@ -178,6 +182,30 @@ pub(crate) struct LogBody {
 pub(crate) async fn append_log(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
     let b: LogBody = parse(v)?;
     s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_log_append(id, &b.lines))).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct EventsBody {
+    /// agent 的输出格式（claude、codex、pi、dsh）；空字符串 = 只有原始输出
+    #[serde(default)]
+    fmt: Option<String>,
+    #[serde(default)]
+    events: Vec<RunEvent>,
+}
+
+/// 一次最多收多少条（host 每 2 秒传一次，正常远到不了）
+const EVENTS_BATCH: usize = 2000;
+
+pub(crate) async fn append_events(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
+    let mut b: EventsBody = parse(v)?;
+    if b.events.len() > EVENTS_BATCH {
+        b.events.drain(..b.events.len() - EVENTS_BATCH);
+    }
+    let n = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_events_append(id, b.fmt.as_deref(), &b.events))).await?;
+    if n > 0 {
+        s.poke();
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -208,9 +236,16 @@ pub(crate) async fn card_dispatches(State(s): State<AppState>, Query(q): Query<C
     ))
 }
 
-/// 一个会话的全部派发和各自的输出（「会话」弹窗）；id 是会话里任一次派发
-pub(crate) async fn session(State(s): State<AppState>, Path(id): Path<i64>) -> ApiResult<SessionView> {
-    Ok(Json(s.db(move |st| st.read(|r| r.session(id))).await?))
+#[derive(Deserialize)]
+pub(crate) struct SessionQuery {
+    /// 上次取到的事件版本（`runs`）：只取之后新增、改过的事件
+    #[serde(default)]
+    since: i64,
+}
+
+/// 一个会话的全部派发和各自的输出、事件（「会话」弹窗）；id 是会话里任一次派发
+pub(crate) async fn session(State(s): State<AppState>, Path(id): Path<i64>, Query(q): Query<SessionQuery>) -> ApiResult<SessionView> {
+    Ok(Json(s.db(move |st| st.read(|r| r.session_since(id, q.since.max(0)))).await?))
 }
 
 pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<Value> {

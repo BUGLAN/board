@@ -6,7 +6,7 @@
 {"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}
 {"type":"message_update","usage":{},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"用户"}}
 {"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"先读"}}
-{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"用户要我执行 #178\n先读卡片"},{"type":"text","text":"先读卡片。"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"board show 178 --json"}}],"api":"x","provider":"x","model":"x","usage":{},"stopReason":"toolUse","timestamp":2}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"用户要我执行 #178\n先读卡片"},{"type":"text","text":"先读卡片。"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"board show 178 --json"}}],"api":"x","provider":"x","model":"x","usage":{"input":100,"output":20,"cacheRead":50,"cacheWrite":0,"totalTokens":170,"cost":{"input":0.01,"output":0.0023,"cacheRead":0,"cacheWrite":0,"total":0.0123}},"stopReason":"toolUse","timestamp":2}}
 {"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"board show 178 --json"}}
 {"type":"tool_execution_update","toolCallId":"c1","toolName":"bash","args":{"command":"board show 178 --json"},"partialResult":{"content":[{"type":"text","text":"{"}],"details":{}}}
 {"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":{"content":[{"type":"text","text":"{\"id\":178}"}],"details":{}},"isError":false,"durationMs":1234}

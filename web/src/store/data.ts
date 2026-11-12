@@ -1016,6 +1016,16 @@ export function onEvents(fn: Listener) {
   };
 }
 
+/** 有新的结构化事件的派发（推送里的 ran）：打开着的会话据此马上增量取（#184） */
+type RunListener = (dispatches: number[]) => void;
+const runListeners = new Set<RunListener>();
+export function onRuns(fn: RunListener) {
+  runListeners.add(fn);
+  return () => {
+    runListeners.delete(fn);
+  };
+}
+
 /** 还有没确认的修改（保存中、发送中）时关窗口：浏览器弹离开确认，免得丢 */
 function beforeUnload(e: BeforeUnloadEvent) {
   const s = get();
@@ -1044,6 +1054,7 @@ export function boot() {
         done = pump();
       }
       if (events.length) done.then(() => listeners.forEach(fn => fn(events)));
+      if (m.ran?.length) runListeners.forEach(fn => fn(m.ran!));
     },
     status => {
       set({ status });

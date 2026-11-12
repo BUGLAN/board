@@ -450,11 +450,49 @@ export interface AgentInfo {
 /** agent 持有的一张卡片：白板路径加上卡片本身 */
 export type HeldCard = Card & { board: string };
 
+/** agent 运行过程的一条结构化事件（会话「过程」，board-core runlog.rs） */
+export interface RunEvent {
+  id: number;
+  /** 毫秒 */
+  at?: number;
+  kind: 'message' | 'tool' | 'error' | 'result' | 'text';
+  /** message：agent 说的话（Markdown）；error：出错信息；result：结束时的结果文字；text：解析不了的一行 */
+  text?: string;
+  /** tool：工具名、参数摘要、结果摘要、成功或失败（还没有结果时没有）、退出码、用时 */
+  tool?: string;
+  args?: string;
+  out?: string;
+  ok?: boolean;
+  code?: number;
+  ms?: number;
+  /** result：轮数、输入 / 输出 tokens、费用（美元），agent 输出里有才有 */
+  turns?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  cost?: number;
+  /** 子 agent 里的事件 */
+  sub?: boolean;
+  /** 超过 4 KB 截断过 */
+  cut?: boolean;
+}
+
 /** 一个会话（同一个 agent 进程用 board next 接着做的几张卡）：会话标识是第一张的派发 ID */
 export interface SessionView {
   session: number;
-  /** 这个会话的派发，按先后；每张带它的输出（最后 500 行） */
-  parts: (Dispatch & { log: string[] })[];
+  /** 这个会话的派发，按先后；每张带它的输出（最后 500 行）和结构化事件 */
+  parts: (Dispatch & {
+    log: string[];
+    /** agent 的输出格式：claude、codex、pi、dsh；'' = 只有原始输出；没有 = board host 没报（旧版，或还没开始） */
+    fmt?: string | null;
+    /** 事件（按先后）；带 since 取时只有之后新增、改过的 */
+    events: RunEvent[];
+    /** 留着的事件里最早的 id（0 = 一条都没有） */
+    eventsFrom: number;
+    /** 删掉了几条（超过 2000 条、结束 30 天后） */
+    eventsDropped: number;
+  })[];
+  /** 事件的版本：下次带上 since 只取之后的 */
+  runs?: number;
 }
 
 export interface Card {

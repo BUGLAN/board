@@ -265,6 +265,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/dispatches/cancel", post(hosts::cancel))
         .route("/dispatches/{id}/end", post(hosts::end))
         .route("/dispatches/{id}/log", get(hosts::log).post(hosts::append_log).layer(axum::middleware::map_response(quiet)))
+        .route("/dispatches/{id}/events", post(hosts::append_events).layer(axum::middleware::map_response(quiet)))
         .route("/stream", get(stream))
         .route("/me", get(auth::me))
         .route("/auth/logout", post(auth::logout))
@@ -360,6 +361,12 @@ fn spawn_background(state: AppState) {
                     Ok(_) => {}
                     Err(e) => tracing::warn!("回收站清理失败：{e}"),
                 }
+                // 结束超过 30 天的派发只留结果事件和最后 50 条
+                match s.db(|st| st.write(now_ms(), Origin::system(), |w| w.prune_run_events())).await {
+                    Ok(n) if n > 0 => tracing::info!("清理派发事件：删了 {n} 条"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("清理派发事件失败：{e}"),
+                }
                 match s.db(|st| st.gc_files(now_ms())).await {
                     Ok((r, f)) if r + f > 0 => tracing::info!("清理附件：{r} 条记录，{f} 个文件"),
                     Ok(_) => {}
@@ -368,12 +375,14 @@ fn spawn_background(state: AppState) {
             }
         }
     });
-    // 变更推送：rev 变化时把新事件广播给所有界面和 board host
+    // 变更推送：rev 变化时把新事件广播给所有界面和 board host。
+    // agent 的结构化事件（会话「过程」）不算变更：只有 runs 变了时推 { rev（不变）, runs, ran: [有新事件的派发] }，
+    // 界面不重新取工作区，打开着这些派发的会话增量取
     tokio::spawn(async move {
-        let (mut rev, mut last) = state
-            .db(|st| Ok((st.rev()?, st.read(|r| r.last_event_id())?)))
+        let (mut rev, mut last, mut runs) = state
+            .db(|st| Ok((st.rev()?, st.read(|r| r.last_event_id())?, st.read(|r| r.runs_rev())?)))
             .await
-            .unwrap_or((0, 0));
+            .unwrap_or((0, 0, 0));
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(250)) => {}
@@ -382,20 +391,23 @@ fn spawn_background(state: AppState) {
             let r = state
                 .db(move |st| {
                     let now = st.rev()?;
-                    if now == rev {
+                    let now_runs = st.read(|r| r.runs_rev())?;
+                    if now == rev && now_runs == runs {
                         return Ok(None);
                     }
-                    let events = st.read(|r| r.events_since(last, 200))?;
-                    Ok(Some((now, st.hosts_rev()?, events)))
+                    let events = if now == rev { vec![] } else { st.read(|r| r.events_since(last, 200))? };
+                    let ran = if now_runs == runs { vec![] } else { st.read(|r| r.dispatches_with_events_since(runs))? };
+                    Ok(Some((now, st.hosts_rev()?, events, now_runs, ran)))
                 })
                 .await;
             match r {
-                Ok(Some((now, hosts, events))) => {
+                Ok(Some((now, hosts, events, now_runs, ran))) => {
                     rev = now;
+                    runs = now_runs;
                     if let Some(e) = events.last() {
                         last = e.id;
                     }
-                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events }).to_string();
+                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events, "runs": runs, "ran": ran }).to_string();
                     let _ = state.0.tx.send(Arc::from(msg));
                 }
                 Ok(None) => {}

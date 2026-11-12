@@ -246,13 +246,22 @@ export const api = {
   cardDispatches: (board: string, card: number) =>
     req<Dispatch[]>('GET', `/api/dispatches?board=${encodeURIComponent(board)}&card=${card}`),
   /** 一个会话的全部派发和各自的输出：id 是会话里任一次派发 */
-  session: (id: number) => req<SessionView>('GET', `/api/sessions/${id}`),
+  /** since：上次取到的 runs，只取之后新增、改过的事件 */
+  session: (id: number, since = 0) => req<SessionView>('GET', `/api/sessions/${id}${since > 0 ? `?since=${since}` : ''}`),
 };
 
 export type LiveStatus = 'connecting' | 'live' | 'offline';
 
 /** 订阅变更。返回取消订阅函数 */
-export function connect(onMessage: (m: { rev: number; events: BoardEvent[] }) => void, onStatus: (s: LiveStatus) => void) {
+/** 推送：rev 变了是工作区的变更；runs 变了是有新的结构化事件，ran 是有新事件的派发（会话「过程」据此马上取） */
+export interface PushMessage {
+  rev: number;
+  events: BoardEvent[];
+  runs?: number;
+  ran?: number[];
+}
+
+export function connect(onMessage: (m: PushMessage) => void, onStatus: (s: LiveStatus) => void) {
   let es: EventSource | null = null;
   let closed = false;
   let retry = 0;

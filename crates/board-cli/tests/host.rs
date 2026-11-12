@@ -77,6 +77,16 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo $! > "$FAKE_DIR/child.pid"
     echo "left a child"
     exit 0 ;;
+  stream)
+    # 像 Claude Code 的 stream-json 那样一行一个事件：先说一句话、调一个工具，等测试写 go 文件再出结果、异常退出
+    echo '{"type":"system","subtype":"init","cwd":"/repo","model":"m","claude_code_version":"9.9.9"}'
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"先领卡，再跑测试。"}]},"parent_tool_use_id":null}'
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]},"parent_tool_use_id":null}'
+    touch "$FAKE_DIR/streamed"
+    i=0; while [ ! -f "$FAKE_DIR/go" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"test failed","is_error":true}]},"parent_tool_use_id":null}'
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":5000,"num_turns":2,"total_cost_usd":0.5,"usage":{"input_tokens":100,"output_tokens":10},"errors":["测试没过"]}'
+    exit 4 ;;
   chatty)
     # 输出一行就再也不输出：到「没输出多久算卡住」的时间该被停止
     echo "working"
@@ -207,6 +217,29 @@ impl Rig {
     fn dispatch_log(&self, id: i64) -> Vec<String> {
         let store = board_core::Store::open(&self.s.db).unwrap();
         store.read(|r| r.dispatch_log(id)).unwrap()
+    }
+
+    /// 像界面一样 GET（会话 Cookie）：会话页这类只给界面的接口
+    fn ui_get(&self, path: &str) -> Value {
+        let sid = self.ui_session();
+        let mut res = ureq::get(&format!("{}{path}", self.s.url)).header("cookie", format!("board_session={sid}")).call().unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    }
+
+    /// 界面的登录会话：直接写进服务端的库，返回 Cookie 里的值
+    fn ui_session(&self) -> &'static str {
+        let sid = "test-ui-session";
+        let hash: String = Sha256::digest(sid.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let store = board_core::Store::open(&self.s.db).unwrap();
+        let now = board_core::now_ms();
+        store
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO auth_sessions (hash, login, name, avatar, created_at, expires_at) VALUES (?1, 'buglan', 'buglan', '', ?2, ?3)",
+                rusqlite::params![hash, now, now + 86_400_000],
+            )
+            .unwrap();
+        sid
     }
 
     /// 像界面一样 POST（GitHub 会话 Cookie + `x-board-client`），只给界面上才有的接口（全部暂停、全部停止）用。
@@ -1264,4 +1297,123 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     for e in std::fs::read_dir(home.join(".board").join("host").join("logs")).unwrap().flatten() {
         assert!(!std::fs::read_to_string(e.path()).unwrap_or_default().contains(secret), "{}", e.path().display());
     }
+}
+
+
+/* ------------------------------ 结构化事件（会话「过程」，#184） ------------------------------ */
+
+/// #184 验收：内置模板用结构化输出时，正在跑的派发 5 秒内在会话里看得到第一条消息和工具调用，不用等它结束；
+/// 有新事件时推送带上派发 ID；工具结果后到时合进同一条；结束后有用量；异常退出的评论里写最后几个事件、原始输出折叠在后面；
+/// 「原始输出」照旧是转写后的一行一行
+#[test]
+fn structured_events_reach_the_session_while_running() {
+    let rig = Rig::new();
+    // Claude Code 带上事件流参数（假 agent 只看第一个参数）：board host 按 Claude Code 的格式解析
+    let conf = rig.s.home.join(".board").join("config.toml");
+    let text = std::fs::read_to_string(&conf).unwrap();
+    let fake = rig.fake.display().to_string();
+    let text = text.replace(
+        &format!("cmd = [\"{fake}\", \"{{prompt}}\"]"),
+        &format!("cmd = [\"{fake}\", \"{{prompt}}\", \"--output-format\", \"stream-json\", \"--verbose\"]"),
+    );
+    assert!(text.contains("stream-json"), "{text}");
+    std::fs::write(&conf, text).unwrap();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("stream");
+
+    // 像界面一样订阅推送
+    let sid = rig.ui_session();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let url = format!("{}/api/stream", rig.s.url);
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let Ok(res) = ureq::get(&url).header("cookie", format!("board_session={sid}")).call() else { return };
+        for line in std::io::BufReader::new(res.into_body().into_reader()).lines() {
+            let Ok(line) = line else { return };
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d = r.json()["id"].as_i64().unwrap();
+    let streamed = rig.fake.parent().unwrap().join("streamed");
+    wait_until("agent 写出前两个事件", Duration::from_secs(15), || streamed.exists());
+    let begun = Instant::now();
+    let session = |q: &str| rig.ui_get(&format!("/api/sessions/{d}{q}"));
+    // 假 agent 先打的几行（提示词、环境变量）不是 JSON：记成 text，原样保留
+    let structured = |v: &Value| -> Vec<Value> {
+        v["parts"][0]["events"].as_array().map(|e| e.iter().filter(|x| x["kind"] != "text").cloned().collect()).unwrap_or_default()
+    };
+    wait_until("会话里有了消息和工具调用", Duration::from_secs(5), || structured(&session("")).len() >= 2);
+    assert!(begun.elapsed() < Duration::from_secs(5));
+    let v = session("");
+    let part = &v["parts"][0];
+    assert_eq!(part["fmt"], "claude");
+    assert!(part["events"][0]["kind"] == "text" && part["events"][0]["text"].as_str().unwrap().starts_with("prompt: "), "{part}");
+    let evs = structured(&v);
+    assert_eq!((evs[0]["kind"].as_str(), evs[0]["text"].as_str()), (Some("message"), Some("先领卡，再跑测试。")));
+    assert_eq!((evs[1]["kind"].as_str(), evs[1]["tool"].as_str(), evs[1]["args"].as_str()), (Some("tool"), Some("Bash"), Some("cargo test")));
+    assert!(evs[1]["ok"].is_null(), "还没有结果：{evs:?}");
+    assert!(evs[1].get("call").is_none(), "调用标识不给界面");
+    let runs = v["runs"].as_i64().unwrap();
+    // 推送：带上有新事件的派发
+    let pushed = format!("\"ran\":[{d}]");
+    let mut seen = false;
+    let until = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < until {
+        if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+            if line.contains(&pushed) {
+                seen = true;
+                break;
+            }
+        }
+    }
+    assert!(seen, "推送里有 {pushed}");
+
+    // 出结果、异常退出
+    std::fs::write(rig.fake.parent().unwrap().join("go"), "").unwrap();
+    wait_until("#1 异常退出", Duration::from_secs(15), || ended(&rig.show(1), "异常退出"));
+    let inc = session(&format!("?since={runs}"));
+    let evs = inc["parts"][0]["events"].as_array().unwrap().clone();
+    assert_eq!(evs.iter().map(|e| e["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["tool", "result"], "增量：改过的工具调用和新的结果：{evs:?}");
+    assert_eq!((evs[0]["ok"].as_bool(), evs[0]["out"].as_str()), (Some(false), Some("test failed")));
+    assert_eq!((evs[1]["ok"].as_bool(), evs[1]["cost"].as_f64(), evs[1]["tokensIn"].as_i64(), evs[1]["tokensOut"].as_i64()), (Some(false), Some(0.5), Some(100), Some(10)));
+    assert_eq!(structured(&session("")).len(), 3, "工具结果合进同一条");
+    // 评论：最后几个事件，原始输出折叠
+    let c = activity(&rig.show(1));
+    let comment = c.iter().find(|t| t.contains("agent 异常退出（退出码 4）")).unwrap_or_else(|| panic!("{c:?}"));
+    assert!(comment.contains("个事件：") && comment.contains("▸ Bash  cargo test  ✗ test failed"), "{comment}");
+    assert!(comment.contains("agent：先领卡，再跑测试。") && comment.contains("■ 结束 · 出错：测试没过"), "{comment}");
+    assert!(comment.contains("<details><summary>原始输出最后"), "{comment}");
+    // 原始输出照旧是转写后的一行一行
+    let log = rig.dispatch_log(d);
+    assert!(log.iter().any(|l| l == "▸ Bash  cargo test"), "{log:?}");
+    assert!(log.iter().any(|l| l == "  ✗ test failed"), "{log:?}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 只有原始输出的 agent（配置文件里换掉了命令）：格式报成空字符串，没有事件，评论照旧写「日志最后 N 行」
+#[test]
+fn raw_only_agents_report_an_empty_format() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("crash");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    let d = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 异常退出", Duration::from_secs(15), || ended(&rig.show(1), "异常退出"));
+    wait_until("格式报上来", Duration::from_secs(5), || rig.ui_get(&format!("/api/sessions/{d}"))["parts"][0]["fmt"] == "");
+    let v = rig.ui_get(&format!("/api/sessions/{d}"));
+    assert!(v["parts"][0]["events"].as_array().unwrap().is_empty());
+    let c = activity(&rig.show(1));
+    assert!(c.iter().any(|t| t.contains("日志最后") && t.contains("boom") && !t.contains("<details>")), "{c:?}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
 }

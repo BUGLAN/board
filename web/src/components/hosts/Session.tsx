@@ -3,19 +3,23 @@
    - 沿用卡片详情的居中弹窗（.scrim / .drawer / .d-*）；手机上从底部弹出，按住顶部下拉关闭
    - 头部：机器、agent、agent 名字、启动环境、来源、开始时间、用时、状态（在跑 / 已结束和结果），在跑时「停止」
    - 左栏：这个会话做过的卡片（按先后，#ID、标题、结果、用时）；点一行跳到它那一段输出，点 #ID 打开卡片
-   - 主区：整个会话的输出，按卡片分段。在跑时每 2 秒取一次（有推送变化时马上取）；滚在底部时跟着新内容，
-     往上翻时位置不动
+   - 主区：整个会话，按卡片分段。默认「过程」：agent 说的话（Markdown）、每个工具调用一行（点开看结果摘要；连续的读文件、
+     搜索折叠成一行）、出错、每张卡末尾的结束（用时、tokens、费用）；可以切到「原始输出」（board host 转写后的日志）。
+     事件第一次全取，之后带 since 增量取：推送里有这个会话的派发（ran）时马上取，在跑时另外每 5 秒取一次（原始输出每 5 秒
+     上传）。滚在底部时跟着新内容，往上翻时位置不动
+   - 头部：各张卡结束事件里的用量加起来（agent 输出里有才显示）
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { hostsOf, resultOf, SOURCE } from '../../lib/hosts';
-import type { Dispatch, SessionView } from '../../lib/types';
+import { groupEvents, groupWords, mergeSession, resultText, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
+import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
 import { cx, durWords, hhmm, isMobile } from '../../lib/util';
-import { useData } from '../../store/data';
+import { onRuns, useData } from '../../store/data';
 import { openHost, openSession, useUI } from '../../store/ui';
-import { useNow } from '../bits';
-import { Icon } from '../Icon';
+import { Markdown, Segmented, useNow } from '../bits';
+import { Icon, type IconName } from '../Icon';
 import { usePresence } from '../overlays/presence';
 import { Mark } from './bits';
 import { cancel, goCard } from './Dispatch';
@@ -114,28 +118,56 @@ function SessionShell({ req, on }: { req: { id: number; card?: number }; on: boo
 function SessionBody({ id, card, on, close }: { id: number; card?: number; on: boolean; close: () => void }) {
   const [view, setView] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'events' | 'raw'>('events');
   const rev = useData(s => s.ws?.rev);
   const ws = useData(s => s.ws);
   const now = useNow(1000);
   const running = !!view?.parts.some(p => p.state === 'running');
-  // 取一次；有推送变化时马上再取，在跑时每 2 秒取一次
+  // 事件的版本（上次取到的 runs）：之后带 since 只取新增、改过的
+  const runs = useRef(0);
+  const viewRef = useRef<SessionView | null>(null);
+  viewRef.current = view;
+  // 取一次；工作区有推送变化时、推送里有这个会话的新事件时马上再取，在跑时另外每 5 秒取一次。同一时刻只有一个请求
   useEffect(() => {
     if (!on) return;
     let alive = true;
-    const load = () =>
-      api
-        .session(id)
-        .then(v => {
-          if (!alive) return;
-          setView(v);
-          setError(null);
-        })
-        .catch(e => alive && setError(e instanceof Error ? e.message : String(e)));
+    let busy = false;
+    let again = false;
+    const load = async () => {
+      if (busy) {
+        again = true;
+        return;
+      }
+      busy = true;
+      try {
+        do {
+          again = false;
+          const since = viewRef.current ? runs.current : 0;
+          try {
+            const v = await api.session(id, since);
+            if (!alive) return;
+            const next = mergeSession(viewRef.current, v, since > 0);
+            viewRef.current = next;
+            runs.current = v.runs ?? 0;
+            setView(next);
+            setError(null);
+          } catch (e) {
+            if (alive) setError(e instanceof Error ? e.message : String(e));
+          }
+        } while (again && alive);
+      } finally {
+        busy = false;
+      }
+    };
     void load();
-    const t = running ? window.setInterval(load, 2000) : 0;
+    const t = running ? window.setInterval(load, 5000) : 0;
+    const off = onRuns(ids => {
+      if (viewRef.current?.parts.some(p => ids.includes(p.id))) void load();
+    });
     return () => {
       alive = false;
       clearInterval(t);
+      off();
     };
   }, [id, on, rev, running]);
 
@@ -143,7 +175,7 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
   const main = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const placed = useRef(false);
-  const total = view?.parts.reduce((n, p) => n + p.log.length, 0) ?? 0;
+  const total = view?.parts.reduce((n, p) => n + p.log.length + (p.events?.length ?? 0) * 7 + (p.events?.filter(e => e.ok != null).length ?? 0), 0) ?? 0;
   useLayoutEffect(() => {
     const el = main.current;
     if (!el || !view) return;
@@ -160,7 +192,7 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
       return;
     }
     if (stick.current) el.scrollTop = el.scrollHeight;
-  }, [view, total, card]);
+  }, [view, total, card, mode]);
   const jump = (p: Part) => {
     const el = main.current;
     const seg = el?.querySelector<HTMLElement>(`[data-part="${p.id}"]`);
@@ -176,6 +208,7 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
   const ended = running ? null : (lastDone?.endedAt ?? null);
   const removed = first && !hostsOf(ws).some(h => h.id === first.hostId);
   const state = running ? { label: '在跑', color: 'var(--c-doing)' } : lastDone ? resultOf(lastDone) : { label: '还没开始', color: 'var(--text-3)' };
+  const usage = totals(parts);
   return (
     <div className="drawer-body">
       <div className="d-head ss-head">
@@ -220,9 +253,20 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           <span>{SOURCE[first.source]}</span>
           {started != null && <span>开始于 {hhmm(started)}</span>}
           {started != null && <span>用时 {durWords((ended ?? now) - started)}</span>}
+          {usage && <span className="ss-usage">{usageWords(usage)}</span>}
           <span className="ss-state" style={{ ['--c' as string]: state.color }}>
             {state.label}
             {cur?.stopBy && ' · 正在停止'}
+          </span>
+          <span className="ss-modes">
+            <Segmented
+              value={mode}
+              options={[
+                ['events', '过程'],
+                ['raw', '原始输出'],
+              ]}
+              onChange={setMode}
+            />
           </span>
         </div>
       )}
@@ -274,25 +318,187 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
                 #{p.card} {p.title}
                 <em style={{ ['--c' as string]: partState(p).color }}>{partState(p).label}</em>
               </h4>
-              <pre className="hp-log ss-log">
-                {p.log.length
-                  ? p.log.join('\n')
-                  : p.state === 'queued'
-                    ? '排着：等这个会话做完前面的卡再开始'
-                    : p.state === 'running'
-                      ? '还没有输出（host 每 5 秒上传一次新增的行）'
-                      : '没有输出'}
-                {p.state === 'running' && (
-                  <>
-                    {'\n'}
-                    <span className="hp-caret">▍</span>
-                  </>
-                )}
-              </pre>
+              {mode === 'events' ? (
+                <Process p={p} showRaw={() => setMode('raw')} />
+              ) : (
+                <pre className="hp-log ss-log">
+                  {p.log.length
+                    ? p.log.join('\n')
+                    : p.state === 'queued'
+                      ? '排着：等这个会话做完前面的卡再开始'
+                      : p.state === 'running'
+                        ? '还没有输出（host 每 5 秒上传一次新增的行）'
+                        : '没有输出'}
+                  {p.state === 'running' && (
+                    <>
+                      {'\n'}
+                      <span className="hp-caret">▍</span>
+                    </>
+                  )}
+                </pre>
+              )}
             </section>
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------ 过程（结构化事件） ------------------------------ */
+
+const TOOL_ICON: Record<ToolKind, IconName> = {
+  read: 'file',
+  search: 'search',
+  edit: 'edit',
+  shell: 'terminal',
+  web: 'download',
+  task: 'sparkle',
+  todo: 'check',
+  other: 'bolt',
+};
+
+/** 一张卡这一次的过程：没有事件时写明为什么（还没开始、只有原始输出、旧版 board host） */
+function Process({ p, showRaw }: { p: Part; showRaw: () => void }) {
+  const events = p.events ?? [];
+  const running = p.state === 'running';
+  if (!events.length) {
+    const raw = (why: string) => (
+      <p className="hp-note ss-why">
+        {why}
+        <button type="button" className="hp-link" onClick={showRaw}>
+          看原始输出
+        </button>
+      </p>
+    );
+    if (p.state === 'queued') return <p className="hp-note ss-why">排着：等这个会话做完前面的卡再开始</p>;
+    if (p.fmt === '') return raw(`${p.agentLabel || p.agent} 没有结构化输出（配置文件里的命令没带事件流参数，或者是配置文件里加的 agent），只能看原始输出。`);
+    if (running) return <p className="hp-note ss-why">还没有事件（board host 每 2 秒上传一次）</p>;
+    if (p.fmt == null) return raw('这次派发没有记录过程（board host 版本较旧，或者没开始）。');
+    return raw('没有事件。');
+  }
+  const rows = groupEvents(events);
+  return (
+    <div className="ev-list">
+      {p.eventsDropped > 0 && (
+        <p className="hp-note ss-why">
+          前面 {p.eventsDropped} 条事件已经删掉：每次派发只留最新的 2000 条，结束 30 天后只留结果和最后 50 条。
+        </p>
+      )}
+      {rows.map(r => (
+        <EventRow key={rowKey(r)} r={r} events={events} running={running} />
+      ))}
+      {running && <span className="hp-caret ev-caret">▍</span>}
+    </div>
+  );
+}
+
+function rowKey(r: Row): string {
+  return r.type === 'group' || r.type === 'text' ? `${r.type}-${r.events[0].id}` : `${r.type}-${r.e.id}`;
+}
+
+function EventRow({ r, events, running }: { r: Row; events: RunEvent[]; running: boolean }) {
+  const sub = r.type === 'group' || r.type === 'text' ? r.events[0].sub : r.e.sub;
+  const body = (() => {
+    switch (r.type) {
+      case 'message':
+        return (
+          <div className="ev-msg">
+            <Markdown src={r.e.text || ''} />
+            {r.e.cut && <span className="ev-cut">（超过 4 KB，已截断）</span>}
+          </div>
+        );
+      case 'tool':
+        return <ToolRow e={r.e} running={running} />;
+      case 'group':
+        return <GroupRow events={r.events} running={running} />;
+      case 'error':
+        return (
+          <div className="ev-err">
+            <Icon name="alert" />
+            <span>{r.e.text}</span>
+          </div>
+        );
+      case 'text':
+        return <pre className="ev-text">{r.events.map(e => e.text || '').join('\n')}</pre>;
+      case 'result':
+        return <ResultRow e={r.e} text={resultText(r.e, events)} />;
+    }
+  })();
+  return sub ? <div className="ev-sub">{body}</div> : body;
+}
+
+/** 一次工具调用：图标、工具名、参数摘要、成功或失败；有结果时点开看结果摘要 */
+function ToolRow({ e, running }: { e: RunEvent; running: boolean }) {
+  const [open, setOpen] = useState(false);
+  const kind = toolKind(e.tool);
+  const more = !!e.out || e.code != null || e.ms != null;
+  const state = e.ok === true ? 'ok' : e.ok === false ? 'fail' : running ? 'busy' : 'none';
+  return (
+    <div className={cx('ev-tool', state, open && 'open')}>
+      <button type="button" className="ev-tool-row" aria-expanded={more ? open : undefined} disabled={!more} onClick={() => setOpen(v => !v)}>
+        <Icon name={TOOL_ICON[kind]} />
+        <b>{e.tool || '工具'}</b>
+        {e.args && <code title={e.args}>{e.args}</code>}
+        <span className="ev-mark" title={state === 'ok' ? '成功' : state === 'fail' ? '失败' : state === 'busy' ? '在跑' : '没有结果'}>
+          {state === 'ok' ? <Icon name="check" /> : state === 'fail' ? <Icon name="close" /> : state === 'busy' ? <i className="ev-spin" /> : '—'}
+        </span>
+      </button>
+      {open && more && (
+        <div className="ev-tool-out">
+          {(e.code != null || e.ms != null) && (
+            <span className="ev-tool-meta">
+              {e.code != null && `退出码 ${e.code}`}
+              {e.code != null && e.ms != null && ' · '}
+              {e.ms != null && `用时 ${durWords(e.ms)}`}
+            </span>
+          )}
+          {e.out && <pre>{e.out}</pre>}
+          {e.cut && <span className="ev-cut">（超过 4 KB，已截断）</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 连续的读文件、搜索：折成一行，点开列出每一次 */
+function GroupRow({ events, running }: { events: RunEvent[]; running: boolean }) {
+  const [open, setOpen] = useState(false);
+  const busy = running && events.some(e => e.ok == null);
+  const failed = events.some(e => e.ok === false);
+  return (
+    <div className={cx('ev-group', open && 'open')}>
+      <button type="button" className="ev-tool-row" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+        <Icon name={toolKind(events[0].tool) === 'search' ? 'search' : 'file'} />
+        <span className="ev-group-words">{groupWords(events)}</span>
+        <span className={cx('ev-mark', failed ? 'fail' : busy ? 'busy' : 'ok')}>{busy ? <i className="ev-spin" /> : <Icon name={open ? 'chevUp' : 'chevDown'} />}</span>
+      </button>
+      {open && (
+        <div className="ev-group-list">
+          {events.map(e => (
+            <ToolRow key={e.id} e={e} running={running} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 每张卡那一段末尾的结束：成功或出错、用时、轮数、用量；结果文字和最后一句话不同时才写 */
+function ResultRow({ e, text }: { e: RunEvent; text: string }) {
+  const bits: string[] = [];
+  if (e.ms != null) bits.push(`用时 ${durWords(e.ms)}`);
+  if (e.turns != null) bits.push(`${e.turns} 轮`);
+  const usage = usageWords(e);
+  if (usage) bits.push(usage);
+  return (
+    <div className={cx('ev-result', e.ok === false ? 'fail' : 'ok')}>
+      <div className="ev-result-head">
+        <Icon name={e.ok === false ? 'alert' : 'checkCircle'} />
+        <b>{e.ok === false ? '结束 · 出错' : '结束'}</b>
+        {bits.length > 0 && <span>{bits.join(' · ')}</span>}
+      </div>
+      {text && <Markdown src={text} className="ev-result-text" />}
     </div>
   );
 }

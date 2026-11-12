@@ -1,0 +1,21 @@
+Reading prompt from stdin...
+{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Reading the card**\n\nFirst read it."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc 'board show 184 --json'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"bash -lc 'board show 184 --json'","aggregated_output":"{\n  \"id\": 184\n}\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"先读卡片。"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"bash -lc 'cargo test'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.updated","item":{"id":"item_3","type":"command_execution","command":"bash -lc 'cargo test'","aggregated_output":"   Compiling board\n","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"bash -lc 'cargo test'","aggregated_output":"error[E0425]: cannot find value `x`\n","exit_code":101,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"file_change","changes":[{"path":"crates/board-cli/src/host.rs","kind":"update"},{"path":"docs/agents.md","kind":"update"}],"status":"completed"}}
+{"type":"item.started","item":{"id":"item_5","type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"query":"exec json"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_5","type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"query":"exec json"},"result":{"content":[{"type":"text","text":"found 2 pages"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_6","type":"web_search","query":"codex exec json events"}}
+{"type":"item.started","item":{"id":"item_7","type":"todo_list","items":[{"text":"读卡","completed":true},{"text":"改代码","completed":false}]}}
+{"type":"item.completed","item":{"id":"item_7","type":"todo_list","items":[{"text":"读卡","completed":true},{"text":"改代码","completed":true}]}}
+{"type":"item.completed","item":{"id":"item_8","type":"error","message":"command timed out"}}
+{"type":"item.completed","item":{"id":"item_9","type":"agent_message","text":"改好了，已推到 main。\n\n提交：a5ea001"}}
+{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122}}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}
+{"type":"error","message":"Reconnecting... 1/5"}

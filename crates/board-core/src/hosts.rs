@@ -115,6 +115,19 @@ CREATE TABLE IF NOT EXISTS dispatches (
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
 CREATE INDEX IF NOT EXISTS dispatches_host ON dispatches (host_id, state, id);
+
+-- agent 运行过程的结构化事件（会话「过程」，见 runlog.rs）：按派发存，每个派发最多 2000 条；派发删除时一起删
+CREATE TABLE IF NOT EXISTS dispatch_events (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  dispatch INTEGER NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,
+  kind     TEXT NOT NULL,             -- message | tool | error | result | text
+  call     TEXT,                      -- 工具调用的标识：结果后到时合进这一条
+  rev      INTEGER NOT NULL,          -- 写入（或合进结果）时 meta.runs 的值：界面按它增量取
+  data     TEXT NOT NULL              -- 事件本身（JSON，不含 id、call）
+);
+CREATE INDEX IF NOT EXISTS dispatch_events_dispatch ON dispatch_events (dispatch, id);
+CREATE INDEX IF NOT EXISTS dispatch_events_call ON dispatch_events (dispatch, call);
+CREATE INDEX IF NOT EXISTS dispatch_events_rev ON dispatch_events (rev);
 "#;
 
 /// 旧数据库补上启动环境的几列
@@ -147,6 +160,10 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "selftest", "TEXT"),
         ("hosts", "skills", "TEXT"),
         ("hosts", "mcp", "TEXT"),
+        // 结构化事件（runlog.rs）：agent 的输出格式（空 = 只有原始输出，没有 = 旧版 board host 没报）、删掉了几条、结束 30 天后清过没有
+        ("dispatches", "fmt", "TEXT"),
+        ("dispatches", "ev_dropped", "INTEGER NOT NULL DEFAULT 0"),
+        ("dispatches", "ev_old", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -1055,14 +1072,30 @@ pub struct SessionView {
     pub session: i64,
     /// 这个会话的派发，按先后
     pub parts: Vec<SessionPart>,
+    /// 事件的版本（meta.runs）：下次带上 `since` 只取之后新增、改过的事件
+    #[serde(default)]
+    pub runs: i64,
 }
 
-/// 会话里的一张卡：派发记录和它的输出（最后 500 行）
+/// 会话里的一张卡：派发记录、它的输出（最后 500 行）和结构化事件（runlog.rs）
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionPart {
     #[serde(flatten)]
     pub dispatch: Dispatch,
     pub log: Vec<String>,
+    /// agent 的输出格式：`claude`、`codex`、`pi`、`dsh`；空字符串 = 这个 agent 只有原始输出；没有 = board host 没报（旧版，或还没开始）
+    #[serde(default)]
+    pub fmt: Option<String>,
+    /// 事件（按先后）；增量取（`since`）时只有那之后新增、改过的
+    #[serde(default)]
+    pub events: Vec<crate::runlog::RunEvent>,
+    /// 留着的事件里最早的序号：增量取时界面丢掉比它早的（被裁掉了）。没有事件时为 0
+    #[serde(default)]
+    pub events_from: i64,
+    /// 删掉了几条（超过 2000 条删最早的；结束 30 天后只留结果和最后 50 条）
+    #[serde(default)]
+    pub events_dropped: i64,
 }
 
 /// 结果的中文
@@ -1589,8 +1622,13 @@ impl<'a> R<'a> {
     }
 
     /// 一个会话（同一个 agent 进程用 board next 接着做的几张卡）：给出其中任一次派发，返回这个会话的全部派发（按先后，
-    /// 开会话时排着、还没开始的也在）和各自的日志（每个派发最后 500 行）
+    /// 开会话时排着、还没开始的也在）、各自的日志（每个派发最后 500 行）和全部事件
     pub fn session(&self, id: i64) -> Result<SessionView> {
+        self.session_since(id, 0)
+    }
+
+    /// 同 [`R::session`]，事件只取 `rev` 大于 `since` 的（新增的、合进了结果的）；since = 0 取全部
+    pub fn session_since(&self, id: i64, since: i64) -> Result<SessionView> {
         let s: i64 = self
             .conn
             .query_row("SELECT COALESCE(session, id) FROM dispatches WHERE id = ?1", [id], |r| r.get(0))
@@ -1601,10 +1639,42 @@ impl<'a> R<'a> {
             .into_iter()
             .map(|d| {
                 let log = self.dispatch_log(d.id)?;
-                Ok(SessionPart { dispatch: d, log })
+                let (fmt, events_dropped): (Option<String>, i64) =
+                    self.conn.query_row("SELECT fmt, ev_dropped FROM dispatches WHERE id = ?1", [d.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                let events = self.dispatch_events(d.id, since)?;
+                let events_from: i64 =
+                    self.conn.query_row("SELECT COALESCE(MIN(id), 0) FROM dispatch_events WHERE dispatch = ?1", [d.id], |r| r.get(0))?;
+                Ok(SessionPart { dispatch: d, log, fmt, events, events_from, events_dropped })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(SessionView { session: s, parts })
+        Ok(SessionView { session: s, parts, runs: self.runs_rev()? })
+    }
+
+    /// 事件的版本：每次有事件写入（或合进结果）加一。实时推送里带上，界面据此增量取
+    pub fn runs_rev(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE((SELECT value FROM meta WHERE key = 'runs'), 0)", [], |r| r.get(0))?)
+    }
+
+    /// 一次派发的事件（按先后），只取 rev 大于 since 的
+    pub fn dispatch_events(&self, id: i64, since: i64) -> Result<Vec<crate::runlog::RunEvent>> {
+        let mut st = self.conn.prepare("SELECT id, data FROM dispatch_events WHERE dispatch = ?1 AND rev > ?2 ORDER BY id")?;
+        let rows = st.query_map(params![id, since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = vec![];
+        for row in rows {
+            let (eid, data) = row?;
+            let mut e: crate::runlog::RunEvent = serde_json::from_str(&data).unwrap_or_else(|_| crate::runlog::RunEvent::text("text", data));
+            e.id = eid;
+            e.call = None;
+            out.push(e);
+        }
+        Ok(out)
+    }
+
+    /// since 之后有新事件的派发（实时推送里带上，打开着的会话据此马上取）
+    pub fn dispatches_with_events_since(&self, since: i64) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare("SELECT DISTINCT dispatch FROM dispatch_events WHERE rev > ?1 ORDER BY dispatch LIMIT 100")?;
+        let rows = st.query_map([since], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
     }
 
     /// 一台机器最近结束的派发（新的在前）
@@ -2151,7 +2221,7 @@ impl<'a> W<'a> {
                     }
                 }
             } else {
-                self.finish(&d, None, &[], Finish::Missing)?;
+                self.finish(&d, None, &Tail { lines: &[], events: &[] }, Finish::Missing)?;
             }
         }
         self.read().host_work(&name, now)
@@ -3103,6 +3173,12 @@ impl<'a> W<'a> {
     /// 派发结束（任务下发需求 §七「结束」）：board host 在 agent 进程退出后上报退出码和日志最后 20 行。
     /// `why` 只在 `how = timeout` 时有：写给人看的原因（「运行超过 3 小时…」）
     pub fn dispatch_end(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], how: EndHow, why: Option<&str>) -> Result<Dispatch> {
+        self.dispatch_end_with(id, exit_code, tail, &[], how, why)
+    }
+
+    /// 同 [`W::dispatch_end`]，另外带上最后几个事件的文字（runlog.rs `RunEvent::line`）：异常退出、超时的评论里写它们，
+    /// 原始输出的最后 20 行折叠在后面。旧版 board host 不报事件，评论照旧写「日志最后 20 行」
+    pub fn dispatch_end_with(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], events: &[String], how: EndHow, why: Option<&str>) -> Result<Dispatch> {
         let mut d = self.drow(id)?;
         // 进程退出时 board host 可能还不知道会话已经换到下一张（board next）：结算这个会话正在跑的那一张
         if d.state == "done" {
@@ -3125,12 +3201,12 @@ impl<'a> W<'a> {
                 EndHow::HostExit => Finish::HostExit,
                 EndHow::Timeout => Finish::Timeout(why.map(str::trim).filter(|w| !w.is_empty())),
             };
-            self.finish(&d, exit_code, tail, f)?;
+            self.finish(&d, exit_code, &Tail { lines: tail, events }, f)?;
         }
         self.read().dispatch(id)
     }
 
-    fn finish(&mut self, d: &DRow, exit_code: Option<i64>, tail: &[String], how: Finish) -> Result<()> {
+    fn finish(&mut self, d: &DRow, exit_code: Option<i64>, tail: &Tail, how: Finish) -> Result<()> {
         // 超时按异常退出的规则处理，但原因写在评论里，结果记「超时」
         let because = match how {
             Finish::Timeout(why) => Some(why.map(str::to_string).unwrap_or_else(|| "board host 按机器的兜底设置在超时后停止了它".into())),
@@ -3177,9 +3253,7 @@ impl<'a> W<'a> {
                 let mut text = match (&stop_by, how) {
                     (_, Finish::Timeout(_)) => {
                         let mut t = format!("{}，board host 停止了它", because.clone().unwrap_or_default());
-                        if !tail.is_empty() {
-                            t += &format!("\n\n日志最后 {} 行：\n\n```\n{}\n```", tail.len(), tail.join("\n").replace("```", "ˋˋˋ"));
-                        }
+                        t += &tail.words();
                         t
                     }
                     (_, Finish::HostExit) => format!("board host（{}）退出，停止了这次派发", d.host),
@@ -3190,9 +3264,7 @@ impl<'a> W<'a> {
                     (None, _) => {
                         let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into());
                         let mut t = format!("agent 异常退出（退出码 {code}）");
-                        if !tail.is_empty() {
-                            t += &format!("\n\n日志最后 {} 行：\n\n```\n{}\n```", tail.len(), tail.join("\n").replace("```", "ˋˋˋ"));
-                        }
+                        t += &tail.words();
                         t
                     }
                 };
@@ -3258,6 +3330,97 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 追加结构化事件（runlog.rs）：`fmt` 是 agent 的输出格式（空 = 只有原始输出），每次都带上，覆盖原来的。
+    /// 工具结果合进同一个调用先到的那一条；单条超过 4 KB 截断；超过 2000 条删最早的，记下删了几条。
+    /// 不算变更（不推整个工作区），只把 meta.runs 加一：实时推送带上它和有新事件的派发，打开着的会话据此马上取
+    pub fn dispatch_events_append(&mut self, id: i64, fmt: Option<&str>, events: &[crate::runlog::RunEvent]) -> Result<usize> {
+        use crate::runlog::{RunEvent, EVENTS_KEEP, KINDS};
+        let exists: Option<i64> = self.tx.query_row("SELECT id FROM dispatches WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        if exists.is_none() {
+            return Err(BoardError::new(ErrorCode::NotFound, format!("派发 #{id} 不存在")));
+        }
+        if let Some(f) = fmt {
+            let f: String = f.trim().chars().take(32).collect();
+            self.tx.execute("UPDATE dispatches SET fmt = ?2 WHERE id = ?1 AND fmt IS NOT ?2", params![id, f])?;
+        }
+        if events.is_empty() {
+            return Ok(0);
+        }
+        self.tx.execute("INSERT INTO meta (key, value) VALUES ('runs', 1) ON CONFLICT(key) DO UPDATE SET value = value + 1", [])?;
+        let rev: i64 = self.tx.query_row("SELECT value FROM meta WHERE key = 'runs'", [], |r| r.get(0))?;
+        let mut n = 0;
+        for e in events {
+            let mut e = e.clone();
+            if !KINDS.contains(&e.kind.as_str()) {
+                e.kind = "text".into();
+            }
+            e.id = 0;
+            if e.at <= 0 {
+                e.at = self.now;
+            }
+            let call = e.call.take().filter(|c| !c.is_empty()).map(|c| c.chars().take(200).collect::<String>());
+            if e.kind == "tool" {
+                if let Some(c) = call.as_deref() {
+                    let old: Option<(i64, String)> = self
+                        .tx
+                        .query_row(
+                            "SELECT id, data FROM dispatch_events WHERE dispatch = ?1 AND call = ?2 ORDER BY id DESC LIMIT 1",
+                            params![id, c],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional()?;
+                    if let Some((eid, data)) = old {
+                        let mut prev: RunEvent = serde_json::from_str(&data).unwrap_or_else(|_| RunEvent::new("tool"));
+                        prev.merge(&e);
+                        prev.fit();
+                        let data = serde_json::to_string(&prev).unwrap_or_default();
+                        self.tx.execute("UPDATE dispatch_events SET data = ?2, rev = ?3 WHERE id = ?1", params![eid, data, rev])?;
+                        n += 1;
+                        continue;
+                    }
+                }
+            }
+            e.fit();
+            let data = serde_json::to_string(&e).unwrap_or_default();
+            self.tx.execute(
+                "INSERT INTO dispatch_events (dispatch, kind, call, rev, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, e.kind, call, rev, data],
+            )?;
+            n += 1;
+        }
+        let total: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatch_events WHERE dispatch = ?1", [id], |r| r.get(0))?;
+        if total > EVENTS_KEEP {
+            let drop = total - EVENTS_KEEP;
+            self.tx.execute(
+                "DELETE FROM dispatch_events WHERE id IN (SELECT id FROM dispatch_events WHERE dispatch = ?1 ORDER BY id LIMIT ?2)",
+                params![id, drop],
+            )?;
+            self.tx.execute("UPDATE dispatches SET ev_dropped = ev_dropped + ?2 WHERE id = ?1", params![id, drop])?;
+        }
+        Ok(n)
+    }
+
+    /// 结束超过 30 天的派发只留 `result` 事件和最后 50 条（服务端每 10 分钟一次，每次最多处理 200 个派发）。返回删了几条
+    pub fn prune_run_events(&mut self) -> Result<usize> {
+        use crate::runlog::{EVENTS_OLD_KEEP, EVENTS_OLD_MS};
+        let ids: Vec<i64> = self.collect(
+            "SELECT id FROM dispatches WHERE state = 'done' AND ev_old = 0 AND ended_at IS NOT NULL AND ended_at <= ?1 ORDER BY id LIMIT 200",
+            [self.now - EVENTS_OLD_MS],
+            |r| r.get(0),
+        )?;
+        let mut total = 0;
+        for id in ids {
+            let n = self.tx.execute(
+                "DELETE FROM dispatch_events WHERE dispatch = ?1 AND kind != 'result' \
+                 AND id NOT IN (SELECT id FROM dispatch_events WHERE dispatch = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![id, EVENTS_OLD_KEEP],
+            )?;
+            self.tx.execute("UPDATE dispatches SET ev_old = 1, ev_dropped = ev_dropped + ?2 WHERE id = ?1", params![id, n as i64])?;
+            total += n;
+        }
+        Ok(total)
+    }
+
     /// 扫描（服务端每秒一次）：上报中断超过 50 秒的机器标为离线（这一轮领取不再继续）；名字已经离线的在跑派发结束，
     /// 结果「机器掉线」。卡片按现有的心跳超时规则释放（在 sweep_board 里，先于这里执行）
     pub(crate) fn sweep_hosts(&mut self) -> Result<usize> {
@@ -3282,6 +3445,31 @@ impl<'a> W<'a> {
             self.cancel_session_rest(d.session, "机器掉线")?;
         }
         Ok(n + lost.len())
+    }
+}
+
+/// 异常退出、超时时 board host 报的最后的输出：原始输出最后 20 行，和最后 10 个事件的文字（旧版 board host 没有）
+struct Tail<'a> {
+    lines: &'a [String],
+    events: &'a [String],
+}
+
+impl Tail<'_> {
+    /// 评论里接在原因后面的部分：有事件时写「最后 N 个事件」，原始输出折叠在后面；没有事件时照旧写「日志最后 N 行」
+    fn words(&self) -> String {
+        let fence = |ls: &[String]| format!("```\n{}\n```", ls.join("\n").replace("```", "ˋˋˋ"));
+        let events: Vec<String> = self.events.iter().filter(|l| !l.trim().is_empty()).cloned().collect();
+        if events.is_empty() {
+            if self.lines.is_empty() {
+                return String::new();
+            }
+            return format!("\n\n日志最后 {} 行：\n\n{}", self.lines.len(), fence(self.lines));
+        }
+        let mut t = format!("\n\n最后 {} 个事件：\n\n{}", events.len(), fence(&events));
+        if !self.lines.is_empty() {
+            t += &format!("\n\n<details><summary>原始输出最后 {} 行</summary>\n\n{}\n\n</details>", self.lines.len(), fence(self.lines));
+        }
+        t
     }
 }
 

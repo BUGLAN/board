@@ -23,5 +23,5 @@
 {"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":160000},"uuid":"u22","session_id":"s1"}
 {"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"uuid":"u23","session_id":"s1"}
 {"type":"assistant","message":{"content":[]},"error":"max_output_tokens","parent_tool_use_id":null,"session_id":"s1","uuid":"u24"}
-{"type":"result","subtype":"success","is_error":false,"duration_ms":1017000,"duration_api_ms":900000,"num_turns":42,"result":"删掉了状态块右边缘悬浮时出现的竖条。\n\n提交：a5ea001","stop_reason":"end_turn","total_cost_usd":3.1234,"usage":{"input_tokens":1,"output_tokens":2},"modelUsage":{},"permission_denials":[],"uuid":"u25","session_id":"s1"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1017000,"duration_api_ms":900000,"num_turns":42,"result":"删掉了状态块右边缘悬浮时出现的竖条。\n\n提交：a5ea001","stop_reason":"end_turn","total_cost_usd":3.1234,"usage":{"input_tokens":1,"cache_creation_input_tokens":200,"cache_read_input_tokens":30000,"output_tokens":2},"modelUsage":{},"permission_denials":[],"uuid":"u25","session_id":"s1"}
 {"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":5200,"duration_api_ms":5000,"num_turns":3,"stop_reason":null,"usage":{},"modelUsage":{},"permission_denials":[],"errors":["Reached maximum number of turns"],"uuid":"u26","session_id":"s1"}

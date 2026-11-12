@@ -11,6 +11,7 @@ mod backend;
 mod config;
 mod doctor;
 mod envs;
+mod events;
 mod heartbeat;
 mod host;
 mod logfmt;

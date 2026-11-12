@@ -890,3 +890,56 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   .sc-var { flex-wrap: wrap; }
   .sc-var .input:first-child, .sc-var .input:nth-child(2) { flex-basis: 100%; }
 }
+
+/* ---------- 会话「过程」：agent 说的话、工具调用、出错、结束（#184） ---------- */
+.ss-usage { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); }
+.ss-modes { margin-left: auto; }
+.ss-modes .segmented { font-size: 12px; }
+.ss-why { margin: 4px 0 0; }
+.ss-why .hp-link { margin-left: 6px; }
+.ev-list { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+.ev-msg { padding: 2px 0; }
+.ev-msg .md { font-size: 13px; line-height: 1.65; }
+.ev-cut { font-size: 11px; color: var(--text-3); }
+.ev-sub { margin-left: 10px; padding-left: 12px; border-left: 2px solid var(--line-2); }
+.ev-tool, .ev-group { border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); background: var(--surface); overflow: hidden; }
+.ev-tool-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 6px 10px; text-align: left; font-size: 12.5px; color: var(--text-2); }
+.ev-tool-row:not(:disabled):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.ev-tool-row:disabled { cursor: default; opacity: 1; }
+.ev-tool-row > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+.ev-tool-row b { flex: none; font: 600 12px var(--f-mono); color: var(--text); }
+.ev-tool-row code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--f-mono); color: var(--text-2); background: none; box-shadow: none; padding: 0; }
+.ev-group-words { flex: 1; min-width: 0; color: var(--text-2); }
+.ev-mark { flex: none; margin-left: auto; display: inline-grid; place-items: center; min-width: 16px; height: 16px; font-size: 11px; color: var(--text-3); }
+.ev-mark svg { width: 13px; height: 13px; }
+.ev-tool.ok .ev-mark { color: var(--c-done); }
+.ev-tool.fail { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.ev-tool.fail .ev-mark, .ev-group .ev-mark.fail { color: var(--danger-text); }
+.ev-spin { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--c-doing); border-right-color: transparent; animation: ev-spin .8s linear infinite; }
+@keyframes ev-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ev-spin { animation: none; } }
+.ev-tool-out { padding: 0 10px 8px 32px; }
+.ev-tool-meta { display: block; margin-bottom: 4px; font-size: 11.5px; color: var(--text-3); }
+.ev-tool-out pre { margin: 0; padding: 8px 10px; border-radius: var(--r-xs); background: var(--term-bg); color: var(--term-text); font: 11.5px/1.6 var(--f-mono); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; }
+.ev-group-list { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 8px 24px; }
+.ev-group-list .ev-tool { box-shadow: none; background: transparent; }
+.ev-err { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--danger-text); background: color-mix(in srgb, var(--danger) 9%, transparent); overflow-wrap: anywhere; }
+.ev-err svg { flex: none; width: 14px; height: 14px; margin-top: 2px; }
+.ev-text { margin: 0; padding: 6px 10px; border-radius: var(--r-sm); background: var(--term-bg); color: var(--term-text); font: 11px/1.6 var(--f-mono); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; opacity: .85; }
+.ev-result { margin-top: 4px; padding: 8px 12px; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-done) 40%, var(--line)); background: color-mix(in srgb, var(--c-done) 7%, transparent); }
+.ev-result.fail { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, var(--line)); background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.ev-result-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; color: var(--text-2); }
+.ev-result-head svg { width: 15px; height: 15px; color: var(--c-done); }
+.ev-result.fail .ev-result-head svg { color: var(--danger-text); }
+.ev-result-head b { font-weight: 600; color: var(--text); }
+.ev-result-head span { font-family: var(--f-mono); font-size: 11.5px; }
+.ev-result-text { margin-top: 6px; font-size: 13px; }
+.ev-caret { font: 12px var(--f-mono); }
+/* 评论里折叠的原始输出（异常退出的评论） */
+.md details { border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); padding: 6px 10px; }
+.md details > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.md details[open] > summary { margin-bottom: 6px; }
+@media (max-width: 760px) {
+  .ss-modes { margin-left: 0; }
+  .ev-tool-out { padding-left: 10px; }
+}

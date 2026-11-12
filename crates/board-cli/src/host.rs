@@ -26,12 +26,15 @@
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600），每 5 秒上传新增的行（最多最后 500 行）。
-//!   Claude Code、pi 的 `-p` 只在结束时打印结果，运行中日志是空的：内置模板改用它们的事件流（Claude Code
-//!   `--output-format stream-json --verbose`、pi `--mode json`），本机日志文件里存原样的事件，上传和异常退出评论里的
-//!   「日志最后 20 行」用转写后的一行一行（见 logfmt.rs）。上传、写评论之前脱敏（令牌和常见格式的密钥换成
+//!   内置模板都用 agent 的结构化输出（Claude Code `--output-format stream-json --verbose`、pi `--mode json`、
+//!   Codex `exec --json`、dsh `--json`），本机日志文件里存原样的事件，上传的「原始输出」用转写后的一行一行（见 logfmt.rs）。
+//! - 同一份输出逐行解析成结构化事件（agent 说的话、工具调用、出错、结束时的用量，见 events.rs），每 2 秒上传一次新增的，
+//!   界面「会话」的「过程」按它画；会话换到下一张卡后，事件记到当时在做的那张卡上。配置文件覆盖了命令、又没带事件流
+//!   参数的，或者配置文件里新加的 agent，只报格式为空（界面只能看原始输出）。上传、写评论之前脱敏（令牌和常见格式的密钥换成
 //!   `<已隐藏>`，见 redact.rs），本机日志保留原文。单个日志超过 50 MB 只留开头 1 MB 和最后 10 MB；
 //!   结束超过 30 天（`[host] log_days`）的日志在启动时和之后每天删一次。
-//! - agent 退出后上报退出码和日志最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 / 已停止）。
+//! - agent 退出后上报退出码、最后 10 个事件的文字和原始输出最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 /
+//!   已停止），异常退出的评论里写这些。
 //! - 人停止：结束 agent 进程树，包括启动环境的外壳（先 SIGTERM，10 秒后 SIGKILL；Windows 用 taskkill 结束进程树；
 //!   WSL 里在 WSL 中结束 agent 的进程组），再上报。
 //! - `Ctrl+C`（或 SIGTERM）：先按「人停止」结束本机由它启动的全部 agent，再让机器离线，然后退出。
@@ -52,6 +55,7 @@ use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
+use crate::events;
 use crate::logfmt::{self, Stream};
 use crate::redact;
 use crate::selftest;
@@ -61,7 +65,7 @@ use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
 use board_core::*;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -99,6 +103,10 @@ struct Builtin {
     efforts: &'static [&'static str],
     /// 机器设置「模型」下拉里列的常用模型（也可以手填）
     models: &'static [&'static str],
+    /// 命令模板里打开结构化输出的参数从哪个版本起才有（`<命令> --version` 的版本号）：本机版本更低时去掉
+    /// [`Builtin::json_flags`]，按原始输出运行。空表示不看版本
+    json_since: &'static str,
+    json_flags: &'static [&'static str],
 }
 
 /// 顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
@@ -106,7 +114,8 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "dsh",
         name: "DeepSeek Harness",
-        cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--permission-mode", "danger-full-access", "{prompt}"],
+        // --json：运行中把事件（说的话、工具调用、每一步的用量）写成 JSONL（0.2.2 的 headless 才有，见 json_since）
+        cmd: &["dsh", "--profile", "headless", "--json", "--patch", "{patch}", "--permission-mode", "danger-full-access", "{prompt}"],
         model: "deepseek-v4.1-flash",
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
@@ -122,6 +131,9 @@ const BUILTIN: [Builtin; 4] = [
         effort_args: &[],
         efforts: &[],
         models: &[],
+        // 按 0.2.2-rc.1 的 dsh-headless 核实过 --json；更旧的不认这个参数，去掉它按原始输出运行
+        json_since: "0.2.2",
+        json_flags: &["--json"],
     },
     Builtin {
         id: "claude",
@@ -140,6 +152,8 @@ const BUILTIN: [Builtin; 4] = [
         effort_args: &["--effort", "{effort}"],
         efforts: &["low", "medium", "high", "xhigh", "max"],
         models: &["opus", "sonnet", "haiku", "fable"],
+        json_since: "",
+        json_flags: &[],
     },
     Builtin {
         id: "pi",
@@ -158,11 +172,14 @@ const BUILTIN: [Builtin; 4] = [
         effort_args: &["--thinking", "{effort}"],
         efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
         models: &[],
+        json_since: "",
+        json_flags: &[],
     },
     Builtin {
         id: "codex",
         name: "Codex",
-        cmd: &["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
+        // exec --json：运行中把事件（命令、改文件、说的话、每一轮的用量）写成 JSONL（docs/exec.md）
+        cmd: &["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
         model: "",
         also: &[],
         skills: &["$CODEX_HOME/skills"],
@@ -174,6 +191,8 @@ const BUILTIN: [Builtin; 4] = [
         effort_args: &["-c", "model_reasoning_effort={effort}"],
         efforts: &["minimal", "low", "medium", "high"],
         models: &["gpt-5-codex", "gpt-5"],
+        json_since: "",
+        json_flags: &[],
     },
 ];
 
@@ -189,6 +208,8 @@ const SKILL: &str = "board-skills";
 const TICK: Duration = Duration::from_millis(200);
 /// 多久上传一次新增的日志
 const LOG_EVERY: Duration = Duration::from_secs(5);
+/// 多久上传一次新增的结构化事件（会话「过程」：开始跑之后 5 秒内要看得到第一条）
+const EVENTS_EVERY: Duration = Duration::from_secs(2);
 /// 停止 agent：SIGTERM 之后等多久再 SIGKILL
 const KILL_AFTER: Duration = Duration::from_secs(10);
 /// 和服务端断开多久时在本机输出里提醒一次（服务端 50 秒没收到上报就判这台机器掉线）
@@ -280,6 +301,26 @@ struct Spec {
     effort_args: Vec<String>,
     efforts: Vec<String>,
     models: Vec<String>,
+    /// 内置模板的结构化输出参数要求的最低版本和参数（见 [`Builtin::json_since`]）；配置文件覆盖了命令时没有
+    json_gate: Option<(String, Vec<String>)>,
+}
+
+/// 版本号前面的数字：`0.2.2-rc.1` → [0, 2, 2]、`2.1.311 (Claude Code)` → [2, 1, 311]；没有数字时为空
+fn version_nums(v: &str) -> Vec<u64> {
+    let start = v.find(|c: char| c.is_ascii_digit()).unwrap_or(v.len());
+    let head: String = v[start..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    head.split('.').filter_map(|x| x.parse().ok()).collect()
+}
+
+/// `have` 比 `need` 旧（只比数字部分；看不出版本时当作够新）
+fn older_than(have: &str, need: &str) -> bool {
+    let (a, b) = (version_nums(have), version_nums(need));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let n = a.len().max(b.len());
+    let pad = |v: &[u64]| (0..n).map(|i| v.get(i).copied().unwrap_or(0)).collect::<Vec<_>>();
+    pad(&a) < pad(&b)
 }
 
 /// 启动 agent 的参数（命令模板里第一个之后的）：`{prompt}`、`{patch}` 换成提示词和补丁路径；
@@ -310,6 +351,14 @@ impl Spec {
     /// 默认的启动环境：按顺序第一个找到命令的
     fn default_check(&self) -> Option<&Check> {
         self.checks.iter().find(|c| c.found)
+    }
+
+    /// 在这个启动环境里用的命令模板：内置模板的结构化输出参数要求更新的版本、本机的又更旧时去掉它们
+    fn cmd_for(&self, check: &Check) -> Vec<String> {
+        match &self.json_gate {
+            Some((since, flags)) if older_than(&check.version, since) => self.cmd.iter().filter(|a| !flags.contains(a)).cloned().collect(),
+            _ => self.cmd.clone(),
+        }
     }
 
     fn report(&self) -> HostAgent {
@@ -377,6 +426,7 @@ struct Template {
     effort_args: Vec<String>,
     efforts: Vec<String>,
     models: Vec<String>,
+    json_gate: Option<(String, Vec<String>)>,
 }
 
 /// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
@@ -400,6 +450,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             effort_args: strs(b.effort_args),
             efforts: strs(b.efforts),
             models: strs(b.models),
+            json_gate: (!b.json_since.is_empty()).then(|| (b.json_since.to_string(), strs(b.json_flags))),
         })
         .collect();
     for a in conf {
@@ -409,6 +460,10 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 // 换了命令：内置的备用位置不再适用
                 if x.cmd.first() != a.cmd.first() {
                     x.also.clear();
+                }
+                // 命令是配置文件写的：照原样用，不再按版本增删参数
+                if x.cmd != a.cmd {
+                    x.json_gate = None;
                 }
                 x.cmd = a.cmd.clone();
                 if let Some(n) = &a.name {
@@ -441,6 +496,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 effort_args: a.effort_args.clone().unwrap_or_default(),
                 efforts: a.efforts.clone().unwrap_or_else(|| ["low", "medium", "high"].map(String::from).to_vec()),
                 models: vec![],
+                json_gate: None,
             }),
         }
     }
@@ -474,6 +530,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 effort_args: t.effort_args,
                 efforts: t.efforts,
                 models: t.models,
+                json_gate: t.json_gate,
             })
             .collect()
     }))
@@ -582,8 +639,18 @@ struct Run {
     procfile: PathBuf,
     /// 日志已经上传到的位置（字节）
     sent: u64,
-    /// 日志按哪种事件流转写后上传（Claude Code、pi）；其他 agent 原样上传
+    /// 日志按哪种事件流转写后上传；只有原始输出的 agent 原样上传
     fmt: Option<Stream>,
+    /// 结构化事件（会话「过程」，events.rs）：解析器（只有原始输出的 agent 没有）
+    parser: Option<events::Parser>,
+    /// 日志已经解析到的位置（字节）
+    ev_read: u64,
+    /// 解析出来、还没传上去的事件（连不上服务端时攒着，最多 2000 条）
+    ev_queue: Vec<RunEvent>,
+    /// 最后几个事件（工具调用和结果合成一条）：异常退出的评论里写它们
+    ev_recent: VecDeque<RunEvent>,
+    /// 这次派发的格式还没报给服务端（开始时、会话换到下一张时）
+    fmt_due: bool,
     /// SIGTERM 的时间
     term_at: Option<Instant>,
     killed: bool,
@@ -643,6 +710,8 @@ struct Ended {
     id: i64,
     code: Option<i64>,
     tail: Vec<String>,
+    /// 最后 10 个事件的文字（RunEvent::line）
+    events: Vec<String>,
     how: &'static str,
     /// how = timeout 时给人看的原因
     why: Option<String>,
@@ -693,6 +762,55 @@ fn upload_lines(lines: Vec<String>, fmt: Option<Stream>) -> Vec<String> {
 /// 要上传的行：转写，只留最后 500 行，再脱敏（令牌、密钥不上传到服务端）
 fn upload_lines_redacted(lines: Vec<String>, fmt: Option<Stream>, secrets: &[&str]) -> Vec<String> {
     upload_lines(lines, fmt).iter().map(|l| redact::redact(l, secrets)).collect()
+}
+
+/// 解析日志里新增的行，得到结构化事件（只有原始输出的 agent 只挪位置）。last：最后不完整的一行也算（agent 已经退出）。
+/// 事件里的文字先脱敏，再放进待上传的队列和「最后几个事件」
+fn read_events(r: &mut Run, last: bool, secrets: &[&str]) {
+    let (lines, to) = new_lines(&r.log, r.ev_read, last);
+    r.ev_read = to;
+    let Some(p) = r.parser.as_mut() else { return };
+    let at = now_ms();
+    for line in lines {
+        for mut e in p.feed(&line, at) {
+            redact_event(&mut e, secrets);
+            remember(&mut r.ev_recent, &e);
+            r.ev_queue.push(e);
+        }
+    }
+    let keep = board_core::runlog::EVENTS_KEEP as usize;
+    if r.ev_queue.len() > keep {
+        let drop = r.ev_queue.len() - keep;
+        r.ev_queue.drain(..drop);
+    }
+}
+
+/// 事件里的文字脱敏（令牌、密钥不上传到服务端，也不写进评论）
+fn redact_event(e: &mut RunEvent, secrets: &[&str]) {
+    for f in [&mut e.text, &mut e.tool, &mut e.args, &mut e.out] {
+        if let Some(x) = f.as_mut() {
+            *x = redact::redact(x, secrets);
+        }
+    }
+}
+
+/// 记进「最后几个事件」：工具结果合进同一个调用
+fn remember(recent: &mut VecDeque<RunEvent>, e: &RunEvent) {
+    if e.kind == "tool" && e.call.is_some() {
+        if let Some(prev) = recent.iter_mut().rev().find(|p| p.kind == "tool" && p.call == e.call) {
+            prev.merge(e);
+            return;
+        }
+    }
+    recent.push_back(e.clone());
+    while recent.len() > board_core::runlog::EVENTS_TAIL {
+        recent.pop_front();
+    }
+}
+
+/// 异常退出评论里的「最后 10 个事件」
+fn recent_lines(r: &Run) -> Vec<String> {
+    r.ev_recent.iter().map(RunEvent::line).collect()
 }
 
 /// 日志文件的权限设成 0600（只有自己能读）。Windows 上不设：ACL 不是这个模型，用户目录本来就只有本人能进
@@ -1548,6 +1666,11 @@ impl Host<'_> {
                 let _ = self.rm().post::<Value>(&format!("/api/dispatches/{}/log", self.runs[i].d.id), json!({ "lines": lines }));
             }
             self.runs[i].sent = to;
+            // 已经写出的事件也记到上一张；之后的记到新的这张，开头再报一次格式
+            let mut r = self.runs.remove(i);
+            self.flush_events(&mut r, false);
+            r.fmt_due = true;
+            self.runs.insert(i, r);
             self.say(format!(
                 "{} {}  {}  {}",
                 self.p.green("▶"),
@@ -2006,8 +2129,11 @@ impl Host<'_> {
                 continue;
             }
             let log = tmp.join(format!("agent-{}.log", spec.id));
-            let cmd = self.selftest_command(spec, u, &tmp);
-            agents.push(selftest::AgentJob { id: spec.id.clone(), cmd, stream: logfmt::stream_of(&spec.id), log });
+            let (cmd, stream) = match self.selftest_command(spec, u, &tmp) {
+                Ok((c, st)) => (Ok(c), st),
+                Err(e) => (Err(e), None),
+            };
+            agents.push(selftest::AgentJob { id: spec.id.clone(), cmd, stream, log });
         }
         let gits: Vec<selftest::GitJob> = if ask.agent.is_some() {
             vec![]
@@ -2020,7 +2146,7 @@ impl Host<'_> {
     }
 
     /// 自检时启动一个 agent 的命令：和派发一样的启动环境、模型、思考强度，工作目录是临时目录
-    fn selftest_command(&self, spec: &Spec, used: Option<&HostAgent>, tmp: &Path) -> std::result::Result<Command, String> {
+    fn selftest_command(&self, spec: &Spec, used: Option<&HostAgent>, tmp: &Path) -> std::result::Result<(Command, Option<Stream>), String> {
         let cmd0 = spec.cmd.first().cloned().unwrap_or_default();
         let check = used
             .and_then(|u| u.env.as_deref())
@@ -2035,7 +2161,9 @@ impl Host<'_> {
         }
         let model = used.and_then(|u| u.run_model.as_deref());
         let effort = used.and_then(|u| u.run_effort.as_deref());
-        let args = agent_args(&spec.cmd, &spec.model_args, &spec.effort_args, model, effort, selftest::PROMPT, &patch.display().to_string());
+        let cmd = spec.cmd_for(check);
+        let args = agent_args(&cmd, &spec.model_args, &spec.effort_args, model, effort, selftest::PROMPT, &patch.display().to_string());
+        let stream = logfmt::stream_for(&spec.id, &cmd);
         let mut c = env.command(&prog, &args, Some(tmp), true);
         c.env_remove("CLAUDECODE");
         if cfg!(windows) && spec.git_bash && env.wsl().is_none() {
@@ -2048,7 +2176,7 @@ impl Host<'_> {
                 }
             }
         }
-        Ok(c)
+        Ok((c, stream))
     }
 
     fn poll_clones(&mut self) {
@@ -2154,6 +2282,7 @@ impl Host<'_> {
         let every = interval();
         let mut next_beat = Instant::now() + every;
         let mut next_log = Instant::now() + LOG_EVERY;
+        let mut next_events = Instant::now() + EVENTS_EVERY;
         // 启动时清一次本机日志，之后每天一次
         let mut next_clean = Instant::now();
         let mut fetch = false;
@@ -2233,6 +2362,10 @@ impl Host<'_> {
                 fetch = true;
             }
             self.cron(&mut last_min);
+            if now >= next_events {
+                next_events = now + EVENTS_EVERY;
+                self.upload_events();
+            }
             if now >= next_log {
                 next_log = now + LOG_EVERY;
                 self.upload_logs();
@@ -2400,8 +2533,8 @@ impl Host<'_> {
     /// 进程退出后由 reap 上报结束（结果「超时」）。返回有没有新的超时
     ///
     /// - 单次最长运行：从启动算起
-    /// - 没输出多久算卡住：只有已经输出过内容的派发生效。Claude Code 用 `-p` 时运行中没有任何输出，
-    ///   只有结束时才有，所以这条不适用于一行都还没输出的派发（#184 之后改成按结构化事件算）
+    /// - 没输出多久算卡住：只有已经输出过内容的派发生效。内置模板都用结构化输出，运行中每一步都写日志；配置文件里改成
+    ///   只在结束时打印的（例如 Claude Code 的 `-p` 文本输出）运行中一行都没有，所以这条不适用于一行都还没输出的派发
     fn enforce_timeouts(&mut self) -> bool {
         let (max_run, idle_run) = self.limits();
         let min = minute();
@@ -2454,15 +2587,17 @@ impl Host<'_> {
             // 主进程退出了，它起的子进程可能还在（同一进程组）：一起结束
             r.kill_rest();
             r.cleanup();
+            let mut r = r;
             let code = exit_code(status);
             self.flush_log(&r, true);
+            self.flush_events(&mut r, true);
             let secrets = self.secrets();
             let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
             let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, &secrets)).collect();
             // 结束之后才截断：agent 还活着的时候换掉文件内容，它下次写入会从旧位置接着写，中间留一段空洞
             let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
             let how = if r.timeout.is_some() { "timeout" } else { "exit" };
-            self.ended.push(Ended { id: r.d.id, code, tail, how, why: r.timeout.clone() });
+            self.ended.push(Ended { id: r.d.id, code, tail, events: recent_lines(&r), how, why: r.timeout.clone() });
             let what = match &r.timeout {
                 Some(why) => why.clone(),
                 None => format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())),
@@ -2500,7 +2635,7 @@ impl Host<'_> {
     fn report_ended(&mut self) {
         let ended = std::mem::take(&mut self.ended);
         for e in ended {
-            let body = json!({ "exitCode": e.code, "tail": e.tail, "how": e.how, "why": e.why });
+            let body = json!({ "exitCode": e.code, "tail": e.tail, "events": e.events, "how": e.how, "why": e.why });
             match self.rm().post::<Dispatch>(&format!("/api/dispatches/{}/end", e.id), body) {
                 Ok(d) => {
                     let res = d.result.as_deref().map(result_words).unwrap_or("还在跑");
@@ -2636,7 +2771,7 @@ impl Host<'_> {
                 self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
                 let log = self.logs.join(format!("{}.log", d.id));
                 let _ = std::fs::write(&log, format!("{msg}\n"));
-                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], how: "exit", why: None });
+                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None });
                 self.report_ended();
             }
         }
@@ -2677,7 +2812,8 @@ impl Host<'_> {
         write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| e.message)?;
         let patch_arg = patch.display().to_string();
         // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
-        let args = agent_args(&spec.cmd, &spec.model_args, &spec.effort_args, d.model.as_deref(), d.effort.as_deref(), &prompt, &patch_arg);
+        let cmd = spec.cmd_for(check);
+        let args = agent_args(&cmd, &spec.model_args, &spec.effort_args, d.model.as_deref(), d.effort.as_deref(), &prompt, &patch_arg);
         let mut c = env.command(&prog, &args, Some(&dir), true);
         c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
@@ -2723,7 +2859,7 @@ impl Host<'_> {
         let procfile = self.run.join(format!("{}.proc", d.id));
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
-        let fmt = logfmt::stream_of(&spec.id);
+        let fmt = logfmt::stream_for(&spec.id, &cmd);
         let now = Instant::now();
         Ok(Run {
             d: d.clone(),
@@ -2735,6 +2871,11 @@ impl Host<'_> {
             procfile,
             sent: 0,
             fmt,
+            parser: fmt.map(events::Parser::new),
+            ev_read: 0,
+            ev_queue: vec![],
+            ev_recent: VecDeque::new(),
+            fmt_due: true,
             term_at: None,
             killed: false,
             spawned: now,
@@ -2842,6 +2983,41 @@ impl Host<'_> {
         }
     }
 
+    /// 每 2 秒：解析每个在跑的派发新增的输出，把新的结构化事件传上去
+    fn upload_events(&mut self) {
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let mut runs = std::mem::take(&mut self.runs);
+        for r in runs.iter_mut() {
+            read_events(r, false, &secrets);
+            self.post_events(r);
+        }
+        self.runs = runs;
+    }
+
+    /// 一次派发结束（last：agent 已经退出，最后不完整的一行也读）或会话换到下一张之前：读完新增的输出，把事件都传上去
+    fn flush_events(&self, r: &mut Run, last: bool) {
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        read_events(r, last, &secrets);
+        self.post_events(r);
+    }
+
+    /// 传事件：带上格式（只有原始输出的 agent 是空字符串）。连不上、服务端出错（5xx）时留到下一次；其他拒绝（旧版服务端
+    /// 没有这个接口、令牌不让调、派发不存在）就丢掉，不反复重试
+    fn post_events(&self, r: &mut Run) {
+        if r.ev_queue.is_empty() && !r.fmt_due {
+            return;
+        }
+        let events = board_core::runlog::merge_calls(std::mem::take(&mut r.ev_queue));
+        let fmt = r.fmt.map(Stream::key).unwrap_or("");
+        match self.rm().post::<Value>(&format!("/api/dispatches/{}/events", r.d.id), json!({ "fmt": fmt, "events": events })) {
+            Ok(_) => r.fmt_due = false,
+            Err(e) if matches!(e.code, ErrorCode::Unreachable | ErrorCode::Internal) => r.ev_queue = events,
+            Err(_) => r.fmt_due = false,
+        }
+    }
+
     /// 退出：按「人停止」结束本机所有 agent（先 SIGTERM，10 秒后 SIGKILL），上报结束，再让机器离线
     fn shutdown(&mut self, graceful: bool) {
         for r in self.readies.iter_mut() {
@@ -2880,11 +3056,12 @@ impl Host<'_> {
         for mut r in runs {
             let code = r.child.wait().ok().and_then(exit_code);
             self.flush_log(&r, true);
+            self.flush_events(&mut r, true);
             // board host 退出时已经在按兜底停止的，照样报「超时」：原因写清楚
             let (how, why) = if r.timeout.is_some() { ("timeout", r.timeout.clone()) } else { ("host_exit", None) };
             let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, &secrets)).collect();
             let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
-            self.ended.push(Ended { id: r.d.id, code, tail, how, why });
+            self.ended.push(Ended { id: r.d.id, code, tail, events: recent_lines(&r), how, why });
         }
         self.report_ended();
         if graceful {
@@ -3088,16 +3265,20 @@ mod tests {
         assert_eq!(tail_lines(&f, 2, None), vec!["two", "thr"]);
     }
 
-    /// 卡片 #211：Claude Code、pi 的 -p 只在结束时打印结果，运行中日志是空的。内置模板改用事件流，
-    /// 上传和异常退出评论里的「日志最后 20 行」是转写后的一行一行；本机日志文件里还是原样的事件
+    /// 卡片 #211、#184：内置模板都用结构化输出启动（Claude Code、pi 的 -p 只在结束时打印结果；Codex、dsh 的 JSON 里
+    /// 才有工具调用和用量）。上传和异常退出评论里的「日志最后 20 行」是转写后的一行一行；本机日志文件里还是原样的事件
     #[test]
     fn quiet_agents_stream_progress_into_the_log() {
         let cmd = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap().cmd.join(" ");
         assert!(cmd("claude").contains("-p {prompt}") && cmd("claude").ends_with("--output-format stream-json --verbose"), "{}", cmd("claude"));
         assert_eq!(cmd("pi"), "pi --mode json {prompt}", "pi 的 -p 只写最终回答，--mode json 才有过程");
-        // dsh 的推理写标准错误、Codex exec 运行中本来就写过程：不改、不转写
-        assert!(!cmd("dsh").contains("json") && !cmd("codex").contains("--json"));
-        assert_eq!((logfmt::stream_of("claude"), logfmt::stream_of("pi"), logfmt::stream_of("dsh")), (Some(Stream::Claude), Some(Stream::Pi), None));
+        assert_eq!(cmd("codex"), "codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}");
+        assert!(cmd("dsh").starts_with("dsh --profile headless --json "), "{}", cmd("dsh"));
+        // 每个内置模板都认得出事件流
+        for b in &BUILTIN {
+            let c: Vec<String> = b.cmd.iter().map(|s| s.to_string()).collect();
+            assert!(logfmt::stream_for(b.id, &c).is_some(), "{} 的内置模板要用结构化输出", b.id);
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("7.log");
@@ -3205,7 +3386,7 @@ mod tests {
         // Codex：-m、-c model_reasoning_effort=…，子命令 exec 还在最前
         assert_eq!(
             args("codex", Some("gpt-5-codex"), Some("high")),
-            sv(&["exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=high", "P"])
+            sv(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=high", "P"])
         );
         // pi：--model、--thinking；只选一项时只传那一项
         assert_eq!(args("pi", Some("anthropic/claude-sonnet"), Some("xhigh")), sv(&["--mode", "json", "--model", "anthropic/claude-sonnet", "--thinking", "xhigh", "P"]));
@@ -3252,6 +3433,7 @@ mod tests {
         std::fs::create_dir_all(repo.join(".agents").join("skills").join(SKILL)).unwrap();
         std::fs::write(repo.join(".agents").join("skills").join(SKILL).join("SKILL.md"), "x").unwrap();
         let spec = Spec {
+            json_gate: None,
             id: "pi".into(),
             name: "pi".into(),
             model: String::new(),
@@ -3288,6 +3470,110 @@ mod tests {
         claude.check_skills(std::slice::from_ref(&direct), &dirs);
         let to = claude.report().no_skill.unwrap();
         assert!(to.contains("仓库的 .claude/skills/board-skills") && !to.contains(".agents/skills"), "{to}");
+    }
+
+    /// dsh 的 --json 从 0.2.2 起才有：本机更旧的去掉它，按原始输出运行；配置文件覆盖了命令的照原样用
+    #[test]
+    fn json_flag_is_dropped_for_old_dsh() {
+        assert!(older_than("0.2.1", "0.2.2") && older_than("dsh 0.1.9", "0.2.2") && older_than("0.2", "0.2.2"));
+        assert!(!older_than("0.2.2-rc.1", "0.2.2") && !older_than("0.10.0", "0.2.2") && !older_than("1.0", "0.2.2"));
+        assert!(!older_than("", "0.2.2") && !older_than("unknown", "0.2.2"), "看不出版本时当作够新");
+        let specs = agent_specs(&[], &[]).unwrap();
+        let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
+        let check = |v: &str| Check { env: "direct".into(), found: true, version: v.into(), prog: Some("dsh".into()) };
+        assert!(dsh.cmd_for(&check("0.2.2-rc.1")).contains(&"--json".to_string()));
+        let old = dsh.cmd_for(&check("0.2.0"));
+        assert!(!old.contains(&"--json".to_string()), "{old:?}");
+        assert_eq!(logfmt::stream_for("dsh", &old), None, "去掉之后按原始输出处理");
+        let conf = vec![AgentConf { id: "dsh".into(), cmd: vec!["dsh".into(), "--json".into(), "{prompt}".into()], ..Default::default() }];
+        let specs = agent_specs(&conf, &[]).unwrap();
+        let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
+        assert!(dsh.cmd_for(&check("0.1.0")).contains(&"--json".to_string()), "配置文件写的命令照原样用");
+    }
+
+    /// 结构化事件：按行解析、脱敏，异常退出评论里的最后几个事件把工具调用和结果合成一条
+    #[test]
+    fn events_are_read_from_the_log_and_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("9.log");
+        let ev = |v: serde_json::Value| v.to_string() + "\n";
+        let mut raw = String::from("warning: something\n");
+        raw += &ev(json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": "令牌是 sekrit-token-123" }] }, "parent_tool_use_id": null }));
+        raw += &ev(json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "cargo test" } }] }, "parent_tool_use_id": null }));
+        std::fs::write(&log, &raw).unwrap();
+        let mut r = test_run(&log, Some(Stream::Claude));
+        read_events(&mut r, false, &["sekrit-token-123"]);
+        assert_eq!(r.ev_read, raw.len() as u64);
+        assert_eq!(r.ev_queue.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["text", "message", "tool"]);
+        assert_eq!(r.ev_queue[1].text.as_deref(), Some("令牌是 <已隐藏>"));
+        // 结果后到：最后几个事件里合进同一条；最后一行没有换行，last 时也读
+        let more = ev(json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "test failed", "is_error": true }] }, "parent_tool_use_id": null }));
+        std::fs::write(&log, raw.clone() + more.trim_end()).unwrap();
+        read_events(&mut r, false, &[]);
+        assert_eq!(r.ev_queue.len(), 3, "不完整的一行先不读");
+        read_events(&mut r, true, &[]);
+        assert_eq!(r.ev_queue.len(), 4);
+        let lines = recent_lines(&r);
+        assert_eq!(lines.last().unwrap(), "▸ Bash  cargo test  ✗ test failed");
+        assert_eq!(lines.len(), 3);
+        // 只有原始输出的 agent：只挪位置，不出事件
+        let mut r = test_run(&log, None);
+        read_events(&mut r, true, &[]);
+        assert!(r.ev_queue.is_empty() && r.ev_read > 0);
+    }
+
+    fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
+        let child = Command::new("true").spawn().unwrap();
+        Run {
+            d: Dispatch {
+                id: 9,
+                board: "default/main".into(),
+                card: 1,
+                title: String::new(),
+                host_id: 1,
+                host: "mbp".into(),
+                agent: "claude".into(),
+                agent_label: "Claude Code".into(),
+                name: None,
+                env: None,
+                env_name: None,
+                source: "manual".into(),
+                by: board_core::Actor::system(),
+                state: "running".into(),
+                result: None,
+                created_at: 0,
+                started_at: None,
+                ended_at: None,
+                exit_code: None,
+                stop_by: None,
+                beat_at: None,
+                session: 9,
+                seq: 1,
+                total: 1,
+                model: None,
+                effort: None,
+            },
+            child,
+            env: Env::direct(),
+            pidfile: None,
+            log: log.to_path_buf(),
+            conf: log.with_extension("toml"),
+            procfile: log.with_extension("proc"),
+            sent: 0,
+            fmt,
+            parser: fmt.map(events::Parser::new),
+            ev_read: 0,
+            ev_queue: vec![],
+            ev_recent: VecDeque::new(),
+            fmt_due: true,
+            term_at: None,
+            killed: false,
+            spawned: Instant::now(),
+            lost: false,
+            timeout: None,
+            output_at: Instant::now(),
+            seen_len: 0,
+        }
     }
 
     #[test]

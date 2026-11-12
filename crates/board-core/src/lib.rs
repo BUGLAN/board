@@ -13,6 +13,7 @@ pub mod flow;
 pub mod hosts;
 pub mod model;
 pub mod moves;
+pub mod runlog;
 pub mod search;
 pub mod seed;
 pub mod service;
@@ -32,6 +33,7 @@ pub use hosts::{
     RunPatch, SelfTest, SelfTestAsk, SelfTestItem, SessionPart, SessionView,
 };
 pub use model::*;
+pub use runlog::RunEvent;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
 
 #[cfg(test)]

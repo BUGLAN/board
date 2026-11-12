@@ -2839,3 +2839,130 @@ fn selftest_needs_online_host_and_stale_request_can_be_replaced() {
     assert!(e.message.contains("还不会自检"), "{}", e.message);
     assert!(beat(&mut s, t + 2 * S, &report("mbp", "i9", vec![])).unwrap().host.selftest.able);
 }
+
+/* ------------------------------ 结构化事件（runlog.rs，#184） ------------------------------ */
+
+fn ev(kind: &str, text: &str) -> RunEvent {
+    RunEvent::text(kind, text)
+}
+
+fn tool(call: &str, name: &str, args: &str) -> RunEvent {
+    RunEvent { kind: "tool".into(), call: Some(call.into()), tool: Some(name.into()), args: Some(args.into()), ..Default::default() }
+}
+
+fn tool_done(call: &str, out: &str, ok: bool) -> RunEvent {
+    RunEvent { kind: "tool".into(), call: Some(call.into()), out: Some(out.into()), ok: Some(ok), ..Default::default() }
+}
+
+fn push_events(s: &mut Store, at: i64, id: i64, fmt: Option<&str>, events: &[RunEvent]) -> usize {
+    s.write(at, Origin::cli(), |w| w.dispatch_events_append(id, fmt, events)).unwrap()
+}
+
+fn running_dispatch(s: &mut Store) -> (i64, Dispatch) {
+    beat(s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(s, T0, "A");
+    let d = dispatch(s, T0, a, "mbp", None).unwrap();
+    let d = begin(s, T0 + S, d.id).unwrap();
+    (a, d)
+}
+
+#[test]
+fn events_are_saved_per_dispatch_and_a_tool_result_joins_its_call() {
+    let mut s = store();
+    let (_, d) = running_dispatch(&mut s);
+    let rev0 = s.read(|r| r.runs_rev()).unwrap();
+    // 第一批：一句话、一个还没结果的工具调用
+    push_events(&mut s, T0 + 2 * S, d.id, Some("claude"), &[ev("message", "先领卡"), tool("t1", "Bash", "cargo test")]);
+    let v = s.read(|r| r.session(d.id)).unwrap();
+    let p = &v.parts[0];
+    assert_eq!(p.fmt.as_deref(), Some("claude"));
+    assert_eq!(p.events.len(), 2);
+    assert_eq!(p.events[0].at, T0 + 2 * S, "没带时间的用服务端时间");
+    assert!(p.events[1].ok.is_none() && p.events[1].call.is_none(), "调用标识不给界面");
+    let since = v.runs;
+    assert!(since > rev0, "有事件时 runs 加一");
+    // 第二批：结果合进同一条，不另占一行；增量取只拿到新增、改过的
+    push_events(&mut s, T0 + 4 * S, d.id, Some("claude"), &[tool_done("t1", "test result: ok", true), ev("result", "完成")]);
+    let all = s.read(|r| r.session(d.id)).unwrap().parts[0].events.clone();
+    assert_eq!(all.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["message", "tool", "result"]);
+    assert_eq!((all[1].tool.as_deref(), all[1].out.as_deref(), all[1].ok), (Some("Bash"), Some("test result: ok"), Some(true)));
+    let inc = s.read(|r| r.session_since(d.id, since)).unwrap();
+    assert_eq!(inc.parts[0].events.iter().map(|e| e.id).collect::<Vec<_>>(), [all[1].id, all[2].id], "增量：改过的工具调用和新的结果");
+    assert_eq!(inc.parts[0].events_from, all[0].id);
+    // 推送里带上有新事件的派发
+    assert_eq!(s.read(|r| r.dispatches_with_events_since(since)).unwrap(), [d.id]);
+    // 不是变更：不推整个工作区
+    let rev = s.rev().unwrap();
+    push_events(&mut s, T0 + 5 * S, d.id, None, &[ev("text", "warning: x")]);
+    assert_eq!(s.rev().unwrap(), rev);
+    // 不存在的派发
+    let e = s.write(T0, Origin::cli(), |w| w.dispatch_events_append(9999, None, &[ev("text", "x")])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+}
+
+#[test]
+fn only_the_newest_2000_events_are_kept_and_big_ones_are_cut() {
+    let mut s = store();
+    let (_, d) = running_dispatch(&mut s);
+    let batch: Vec<RunEvent> = (0..1500).map(|i| ev("text", &format!("第 {i} 行"))).collect();
+    push_events(&mut s, T0 + 2 * S, d.id, Some("dsh"), &batch);
+    let batch: Vec<RunEvent> = (1500..2100).map(|i| ev("text", &format!("第 {i} 行"))).collect();
+    push_events(&mut s, T0 + 3 * S, d.id, None, &batch);
+    let p = s.read(|r| r.session(d.id)).unwrap().parts.remove(0);
+    assert_eq!(p.events.len(), 2000);
+    assert_eq!(p.events_dropped, 100);
+    assert_eq!(p.events[0].text.as_deref(), Some("第 100 行"), "删的是最早的");
+    assert_eq!(p.events_from, p.events[0].id);
+    assert_eq!(p.fmt.as_deref(), Some("dsh"), "没带格式时不改");
+    // 单条超过 4 KB：截断并标明
+    push_events(&mut s, T0 + 4 * S, d.id, None, &[ev("message", &"长".repeat(3000))]);
+    let p = s.read(|r| r.session(d.id)).unwrap().parts.remove(0);
+    let last = p.events.last().unwrap();
+    assert!(last.cut);
+    assert!(serde_json::to_string(last).unwrap().len() <= runlog::EVENT_MAX + 64);
+    // 只有原始输出的 agent：格式是空字符串
+    let (_, d2) = {
+        let b = new_card(&mut s, T0, "B");
+        let d2 = dispatch(&mut s, T0, b, "mbp", None).unwrap();
+        (b, d2)
+    };
+    push_events(&mut s, T0 + 5 * S, d2.id, Some(""), &[]);
+    assert_eq!(s.read(|r| r.session(d2.id)).unwrap().parts[0].fmt.as_deref(), Some(""));
+}
+
+#[test]
+fn events_older_than_30_days_keep_results_and_the_last_50() {
+    let mut s = store();
+    let (_, d) = running_dispatch(&mut s);
+    let mut batch: Vec<RunEvent> = vec![ev("result", "第一张的结果")];
+    batch.extend((0..200).map(|i| ev("text", &format!("第 {i} 行"))));
+    push_events(&mut s, T0 + 2 * S, d.id, Some("claude"), &batch);
+    end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
+    // 不到 30 天：不动
+    let n = s.write(T0 + 29 * 24 * 3600 * S, Origin::system(), |w| w.prune_run_events()).unwrap();
+    assert_eq!(n, 0);
+    let n = s.write(T0 + 31 * 24 * 3600 * S, Origin::system(), |w| w.prune_run_events()).unwrap();
+    assert_eq!(n, 150);
+    let p = s.read(|r| r.session(d.id)).unwrap().parts.remove(0);
+    assert_eq!(p.events.len(), 51);
+    assert_eq!(p.events[0].kind, "result", "结果留着");
+    assert_eq!(p.events[1].text.as_deref(), Some("第 150 行"));
+    assert_eq!(p.events_dropped, 150);
+    // 只清一次
+    assert_eq!(s.write(T0 + 32 * 24 * 3600 * S, Origin::system(), |w| w.prune_run_events()).unwrap(), 0);
+}
+
+#[test]
+fn crash_comment_shows_the_last_events_and_folds_the_raw_output() {
+    let mut s = store();
+    let (a, d) = running_dispatch(&mut s);
+    let tail: Vec<String> = vec!["raw 1".into(), "raw 2".into()];
+    let events: Vec<String> = vec!["▸ Bash  cargo test  ✗ test failed（退出码 101）".into(), "agent：测试没过，我看看。".into()];
+    s.write(T0 + 9 * S, Origin::cli(), |w| w.dispatch_end_with(d.id, Some(1), &tail, &events, EndHow::Exit, None)).unwrap();
+    let c = card(&s, a);
+    let t = &c.activity.iter().rev().find(|x| x.kind == "comment").unwrap().text;
+    assert!(t.starts_with("agent 异常退出（退出码 1）"), "{t}");
+    assert!(t.contains("最后 2 个事件：\n\n```\n▸ Bash  cargo test  ✗ test failed（退出码 101）\nagent：测试没过，我看看。\n```"), "{t}");
+    assert!(t.contains("<details><summary>原始输出最后 2 行</summary>\n\n```\nraw 1\nraw 2\n```\n\n</details>"), "{t}");
+    assert!(!t.contains("日志最后"), "{t}");
+}
