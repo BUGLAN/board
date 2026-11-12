@@ -85,7 +85,13 @@ ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.agents/skills/board-skil
 ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skills   # Claude Code
 ```
 
-`board host` 启动时在每个 agent 用的启动环境里检查它的 skill 目录（WSL 里看 WSL 用户目录下的，例如 `/home/<用户>/.agents/skills`），看不到 `board-skills` 会提醒一行。在 WSL 里跑的 agent 要在 WSL 里另装一份（或放在仓库里它会读的目录）。链接指向的目录不存在（例如仓库挪过位置）和没装一样，`ls ~/.agents/skills/board-skills/SKILL.md` 能看到文件才算装好。
+`board host` 启动时在每个 agent 用的启动环境里检查它的 skill 目录（WSL 里看 WSL 用户目录下的，例如 `/home/<用户>/.agents/skills`），看不到 `board-skills` 会提醒一行。在 WSL 里跑的 agent 要在 WSL 里另装一份（或放在仓库里它会读的目录）。链接指向的目录不存在（例如仓库挪过位置）和没装一样。skill 由入口 `SKILL.md` 和按场景的分文件 `work.md`（处理卡片）、`plan.md`（拆解建卡、整理未整理）、`host.md`（board host 启动的会话）、`reference.md`（工作流、命令、错误码）组成，agent 读到哪一步再读对应的文件；这五个文件都在才算装好：
+
+```sh
+ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
+```
+
+只复制 `SKILL.md` 不够（分文件缺了，agent 读不到那部分规则）：解压 `board-skills.zip` 或链接整个目录。
 
 用 Board 桌面端让这台电脑接任务时，可以不手动装：「机器」里点开这台机器，「本机 agent」上方会写有几个 agent 看不到 `board-skills`，点「一键安装」，桌面端把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录（dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`），再让 `board host` 重新检查一遍。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
 

@@ -57,7 +57,7 @@ npm test                      # 即 cargo test && npm --prefix web run typecheck
 ## 提交
 
 - 第一行按 Conventional Commits，描述用中文，例如 `feat(web): …`、`fix(cli): …`、`docs: …`、`chore: …`。
-- 处理 Board 卡片时，一次领取压成一个提交，最后一行是 `卡片：<项目>/<白板>#<ID>`（见 `.agents/skills/board-skills/SKILL.md`）。
+- 处理 Board 卡片时，一次领取压成一个提交，最后一行是 `卡片：<项目>/<白板>#<ID>`（见 `.agents/skills/board-skills/work.md`「代码」）。
 
 ## 发版
 

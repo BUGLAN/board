@@ -820,7 +820,10 @@ export function SettingsPage() {
               <LabelPrompt key={s.key} path={path} status={s.name} names={flow.claimables.map(x => x.name)} />
             ))}
           </div>
-          <Row label="安装 skill" hint="保存为 ~/.agents/skills/board-skills/SKILL.md（Claude Code 放在 ~/.claude/skills/board-skills/）；skill 自带的 board 在同目录的 scripts/、bin/ 里，推荐解压发版附件 board-skills.zip，或用下面的命令链接整个目录">
+          <Row
+            label="安装 skill"
+            hint="skill 是 ~/.agents/skills/board-skills/ 整个目录（Claude Code 放在 ~/.claude/skills/board-skills/）：入口 SKILL.md、按场景的 work.md、plan.md、host.md、reference.md，自带的 board 在 scripts/、bin/ 里。只复制 SKILL.md 不够，解压发版附件 board-skills.zip，或用下面的命令链接整个目录"
+          >
             <CopySkill />
           </Row>
           <div className="code-block">

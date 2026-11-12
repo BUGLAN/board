@@ -1,7 +1,7 @@
 //! 「设置 → 本机」的「一键安装 board-skills」：桌面端直接把 skill 写进这台电脑上 agent 读 skill 的用户级目录，
 //! 不经过 board host，也不联网。
 //!
-//! - skill 的文字部分（`SKILL.md`、`scripts/`）编译时打进桌面端，`bin/<平台>/board` 用桌面端自带的 board 命令行
+//! - skill 的文字部分（`SKILL.md` 和按场景的分文件 `work.md`、`plan.md`、`host.md`、`reference.md`，`scripts/`）编译时打进桌面端，`bin/<平台>/board` 用桌面端自带的 board 命令行
 //!   （[`crate::cli_path`]），和桌面端、board host 是同一个版本。
 //! - 装到哪由 agent 决定（[`user_dir`]，和 `docs/agents.md`「读 skill 的目录」、board host 的内置模板一致）；
 //!   页面只传 agent 的标识，不能指定任意目录。
@@ -17,6 +17,11 @@ const SKILL: &str = "board-skills";
 /// skill 的文字部分：（相对路径，内容，要不要可执行权限）
 const FILES: &[(&str, &[u8], bool)] = &[
     ("SKILL.md", include_bytes!("../../.agents/skills/board-skills/SKILL.md"), false),
+    // 按场景的分文件：SKILL.md 的「按场景读哪个文件」指到它们，少一个 agent 就读不到那部分规则
+    ("work.md", include_bytes!("../../.agents/skills/board-skills/work.md"), false),
+    ("plan.md", include_bytes!("../../.agents/skills/board-skills/plan.md"), false),
+    ("host.md", include_bytes!("../../.agents/skills/board-skills/host.md"), false),
+    ("reference.md", include_bytes!("../../.agents/skills/board-skills/reference.md"), false),
     ("scripts/board", include_bytes!("../../.agents/skills/board-skills/scripts/board"), true),
     ("scripts/board.cmd", include_bytes!("../../.agents/skills/board-skills/scripts/board.cmd"), false),
     ("scripts/heartbeat.sh", include_bytes!("../../.agents/skills/board-skills/scripts/heartbeat.sh"), true),
@@ -190,6 +195,9 @@ mod tests {
         let to = install_into(&root, Some(&cli)).unwrap();
         assert_eq!(to, root.join(SKILL));
         assert!(to.join("SKILL.md").is_file());
+        for f in ["work.md", "plan.md", "host.md", "reference.md"] {
+            assert!(to.join(f).is_file(), "一键安装要带上分文件 {f}");
+        }
         assert!(to.join("scripts/board").is_file());
         if let Some(p) = platform_dir() {
             let name = if cfg!(target_os = "windows") { "board.exe" } else { "board" };
