@@ -10,8 +10,6 @@
    ========================================================================== */
 import type { Activity, BoardSnapshot, Status } from './types';
 
-/** 交审状态名称里的关键词 */
-const REVIEW_WORDS = ['审核', '审查', '评审', 'review'];
 /** 需要人处理的状态名称里的关键词 */
 const HUMAN_WORDS = ['人工', '人处理', '人确认', '需人', 'check', 'manual', 'human'];
 
@@ -34,9 +32,6 @@ export function statusRoles(statuses: Status[] | null | undefined): { review: Se
   }
   return { review, human };
 }
-
-/** 交审状态里名字像「审核」的排前面（只是为了从大盘进来时先看最像交审的那个） */
-export const looksLikeReview = (s: Status) => has(s, REVIEW_WORDS);
 
 /** 复盘台的队列：这几个状态里的卡片，按进入当前状态的时间从早到晚 */
 export function deskQueue(board: BoardSnapshot | null | undefined, cols: string[]): number[] {

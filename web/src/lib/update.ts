@@ -116,13 +116,6 @@ export function progressText(p: UpdateProgress | null): string {
   return `${size} / ${formatBytes(p.total ?? 0)}（${pct}%）`;
 }
 
-/** 检查结果的一句话（设置页和确认框共用）：已是最新、发现新版本、没有拿到当前版本 */
-export function checkSummary(r: UpdateCheck | null): string {
-  if (!r) return '还没有检查过更新';
-  const v = newerVersion(r);
-  return v ? `有新版本 ${v}（当前 ${r.current}）` : `已是最新版本（${r.current}）`;
-}
-
 /** 检查失败的提示：保持原样，加上可以重试的说法（旧版外壳不支持时原样是 'unsupported'，自动检查不看它） */
 export function failureText(e: unknown): string {
   return `${String(e)}。当前版本不受影响，可以重新检查`;
@@ -136,9 +129,6 @@ export type CheckState =
   | { kind: 'up-to-date'; result: UpdateCheck }
   | { kind: 'available'; result: UpdateCheck; version: string }
   | { kind: 'failed'; error: string };
-
-/** 开始检查（清掉上一次的结果） */
-export const startCheck = (): CheckState => ({ kind: 'checking' });
 
 /** 一次检查完了：版本号更大才算发现新版本 */
 export function finishCheck(r: UpdateCheck): CheckState {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cmpVersion, compareHosts, oddOnes, readiness, readyMissing } from './ready';
+import { cmpVersion, compareHosts, oddOnes, readiness } from './ready';
 import type { HostAgent, HostInfo } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1.0.0', found: true, env: 'login', model: 'm', ...x });
@@ -38,7 +38,6 @@ describe('就绪清单', () => {
     const cs = readiness(machine(), now, '0.1.19');
     expect(cs.map(c => c.key)).toEqual(['online', 'version', 'dirs', 'skills', 'agent']);
     expect(cs.every(c => c.ok)).toBe(true);
-    expect(readyMissing(machine(), now, '0.1.19')).toBe(0);
   });
 
   it('刚加进来、没配目录、agent 看不到 board-skills：列出缺的项，每项都有按钮打开处理的地方；补齐后全部通过', () => {
@@ -49,7 +48,6 @@ describe('就绪清单', () => {
     expect(miss.find(c => c.key === 'dirs')).toMatchObject({ why: '还没有配白板与目录，派不了卡', go: 'dirs', act: '设置目录' });
     expect(miss.find(c => c.key === 'skills')).toMatchObject({ go: 'agents' });
     expect(miss.find(c => c.key === 'skills')!.why).toContain('claude 看不到 board-skills');
-    expect(readyMissing(fresh, now, '0.1.19')).toBe(2);
 
     expect(failed(machine(), '0.1.19')).toEqual([]);
   });

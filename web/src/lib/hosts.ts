@@ -123,15 +123,8 @@ export function queueReason(h: HostInfo | undefined, d?: Dispatch): string {
   return '等空位';
 }
 
-/** 定时领取的摘要：「每天 23:00、03:00」或「只接手动」 */
 /** 定时领取的摘要（「每天 23:00、工作日 09:00」，和机器详情里的胶囊一致）；没开或没设时为空，不显示占位 */
 export const cronSummary = (h: HostInfo) => (h.cronOn && h.cron.length ? h.cron.map(describeCron).join('、') : '');
-
-/** 机器设置里实际会用到的 agent：默认 agent、领取规则和兜底里的 agent（去重、按这个顺序）；不是检测到的全部 */
-export const usedAgents = (h: HostInfo) => {
-  const ids = [h.agent, ...(h.rules ?? []).map(r => r.agent), h.fallback].filter((x): x is string => !!x);
-  return [...new Set(ids)].map(id => h.agents.find(a => a.id === id)).filter((a): a is HostAgent => !!a);
-};
 
 const NO_HOSTS: HostInfo[] = [];
 const NO_DISPATCHES: Dispatch[] = [];
@@ -179,9 +172,6 @@ export function since(t: number, now: number) {
   if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
   return `${Math.round(s / 86400)} 天前`;
 }
-
-/** 已用分钟 */
-export const mins = (t: number | null, now: number) => (t == null ? 0 : Math.max(0, Math.floor((now - t) / 60000)));
 
 /** agent 在实际用的启动环境里看不到 board-skills 时的提醒（和 board host 终端里那行一致）；看得到、没找到命令、旧版 board host 返回 null */
 export function skillMiss(h: HostInfo, a: HostAgent): string | null {

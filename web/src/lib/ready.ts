@@ -120,9 +120,6 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
   return out;
 }
 
-/** 没通过的项数（磁贴上的「还差 N 项」） */
-export const readyMissing = (h: HostInfo, now: number, server?: string | null) => readiness(h, now, server).filter(c => !c.ok).length;
-
 /* ---------- 多机对比 ---------- */
 
 export interface CmpCell {

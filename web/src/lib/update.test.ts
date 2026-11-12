@@ -5,7 +5,6 @@ import {
   AUTO_CHECK_START_DELAY,
   autoCheckDelay,
   autoCheckUpdate,
-  checkSummary,
   downloadPercent,
   failCheck,
   failureText,
@@ -17,7 +16,6 @@ import {
   newerVersion,
   progressText,
   setAutoCheckUpdate,
-  startCheck,
   versionParts,
   type UpdateCheck,
 } from './update';
@@ -72,19 +70,13 @@ describe('newerVersion / finishCheck', () => {
     expect(newerVersion(check('0.1.12', null))).toBeNull();
     expect(newerVersion(null)).toBeNull();
   });
-  it('检查的状态：进行中、已是最新、发现新版本、失败', () => {
-    expect(startCheck()).toEqual({ kind: 'checking' });
+  it('检查的状态：已是最新、发现新版本、失败', () => {
     expect(finishCheck(check('0.1.12', '0.1.13'))).toMatchObject({ kind: 'available', version: '0.1.13' });
     expect(finishCheck(check('0.1.13', '0.1.13')).kind).toBe('up-to-date');
     expect(finishCheck(check('0.1.13', null)).kind).toBe('up-to-date');
     const failed = failCheck('检查更新失败：网络不可用');
     expect(failed.kind).toBe('failed');
     expect(failed.kind === 'failed' && failed.error).toContain('当前版本不受影响');
-  });
-  it('一句话说清检查结果', () => {
-    expect(checkSummary(null)).toBe('还没有检查过更新');
-    expect(checkSummary(check('0.1.12', '0.1.13'))).toBe('有新版本 0.1.13（当前 0.1.12）');
-    expect(checkSummary(check('0.1.12', '0.1.12'))).toBe('已是最新版本（0.1.12）');
   });
   it('失败的提示保留原因，并说明可以重试', () => {
     expect(failureText('下载或安装 0.1.13 失败：签名不对')).toBe('下载或安装 0.1.13 失败：签名不对。当前版本不受影响，可以重新检查');

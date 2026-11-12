@@ -245,8 +245,6 @@ export const api = {
   dispatch: (board: string, card: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent }),
   /** 取消排队中的派发，或停止正在跑的派发 */
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
-  /** 派发日志的最后 500 行 */
-  dispatchLog: (id: number) => req<{ lines: string[] }>('GET', `/api/dispatches/${id}/log`),
   /** 一张卡片的全部派发，新的在前（卡片详情「派发记录」） */
   cardDispatches: (board: string, card: number) =>
     req<Dispatch[]>('GET', `/api/dispatches?board=${encodeURIComponent(board)}&card=${card}`),
