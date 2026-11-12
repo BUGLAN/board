@@ -453,18 +453,21 @@ fn hold_waits_for_the_server() {
             ("BOARD_HOLD_INTERVAL", "0.2".to_string()),
         ]
     };
-    // 一直连不上：等满 --wait 就 UNREACHABLE，写明改推 wip 分支
+    // 一直连不上：等满 --wait 就 UNREACHABLE，写明改推 wip 分支。
+    // Windows 上连接被拒绝要 ~2 秒才返回，--wait 1 时第一次还没回来就等满了，不会打印重试提示：多等几秒
+    let wait = if cfg!(windows) { 6 } else { 1 };
     let begun = std::time::Instant::now();
-    let r = s.raw(&env(format!("http://127.0.0.1:{port}")), &["hold", "1", "--wait", "1", "--json"]);
+    let r = s.raw(&env(format!("http://127.0.0.1:{port}")), &["hold", "1", "--wait", &wait.to_string(), "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "UNREACHABLE"), "{}{}", r.out, r.err);
     assert!(r.json()["error"]["message"].as_str().unwrap().contains("wip 分支"));
-    assert!(begun.elapsed() < std::time::Duration::from_secs(10));
+    assert!(begun.elapsed() < std::time::Duration::from_secs(15));
     assert!(r.err.contains("连不上服务端"), "重试时在标准错误里提示：{}", r.err);
     // 停了一会儿又恢复：等到恢复后确认成功
     let home = s.home.clone();
     let e = env(format!("http://127.0.0.1:{port}"));
     let cli = std::thread::spawn(move || common::board(&home, &e, &["hold", "1", "--wait", "20", "--json"]));
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // 等第一次确认确实失败了再开始转发（Windows 上连接被拒绝要 ~2 秒才返回，太快接上就看不到重试提示）
+    std::thread::sleep(std::time::Duration::from_secs(if cfg!(windows) { 4 } else { 1 }));
     let l = TcpListener::bind(("127.0.0.1", port)).unwrap();
     std::thread::spawn(move || {
         for c in l.incoming().flatten() {

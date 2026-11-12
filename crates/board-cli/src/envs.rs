@@ -482,12 +482,8 @@ fn version_in(env: &Env, prog: &str) -> String {
 }
 
 fn first_line(t: &str) -> Option<String> {
-    let noise = |l: &str| {
-        l.starts_with("bash: cannot set terminal process group")
-            || l.starts_with("bash: no job control")
-            || l.starts_with("zsh: ")
-            || l.starts_with("stty: ")
-    };
+    // 登录 shell 自己打的提示（见 board_core::hosts::shell_noise）；`zsh: ` 也跳过：读 `.zshrc` 时的告警不是版本号
+    let noise = |l: &str| board_core::hosts::shell_noise(l) || l.starts_with("zsh: ");
     t.lines().map(str::trim).find(|l| !l.is_empty() && !noise(l)).map(|l| l.chars().take(60).collect())
 }
 

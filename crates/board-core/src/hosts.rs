@@ -447,6 +447,18 @@ pub const READY_TAIL: usize = 20;
 /// 环境检查最长跑多久，超过就结束它、算没通过
 pub const READY_LIMIT_MS: i64 = 120_000;
 
+/// 登录 shell 自己打的启动、退出提示，不是检查命令的输出：白板的环境检查在 `$SHELL -l -i -c` 里跑，
+/// 没有终端（CI、桌面端）时 bash 会打作业控制提示，退出时再打一行 `logout`。上报和判断结果之前去掉这些行，
+/// 否则失败原因会显示成 `logout`。只认这几种固定形状：`zsh:1: command not found: cargo` 这类真正的错误要留着
+/// （它就是派发被拒的原因）
+pub fn shell_noise(line: &str) -> bool {
+    let l = line.trim();
+    l == "logout"
+        || l.starts_with("bash: cannot set terminal process group")
+        || l.starts_with("bash: no job control")
+        || (l.starts_with("stty: ") && l.contains("Inappropriate ioctl"))
+}
+
 /// 一台机器上一块白板能不能接卡（环境检查）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Readiness {
@@ -474,7 +486,7 @@ pub fn readiness(cmd: Option<&str>, ready: Option<&DirReady>) -> Readiness {
             if r.ok {
                 Readiness::Passed
             } else {
-                let last = r.tail.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty());
+                let last = r.tail.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty() && !shell_noise(l));
                 Readiness::Failed(match (last, r.code) {
                     (Some(l), _) => l.to_string(),
                     (None, Some(c)) => format!("退出码 {c}"),
@@ -486,14 +498,16 @@ pub fn readiness(cmd: Option<&str>, ready: Option<&DirReady>) -> Readiness {
     }
 }
 
-/// 上报的检查结果：最多留最后 20 行，每行最长 500 个字符
+/// 上报的检查结果：去掉登录 shell 自己的提示，最多留最后 20 行，每行最长 500 个字符
 fn clean_ready(r: &DirReady) -> DirReady {
-    let skip = r.tail.len().saturating_sub(READY_TAIL);
+    let mut tail: Vec<&String> = r.tail.iter().filter(|l| !shell_noise(l)).collect();
+    let skip = tail.len().saturating_sub(READY_TAIL);
+    tail.drain(..skip);
     DirReady {
         cmd: r.cmd.clone(),
         ok: r.ok,
         code: r.code,
-        tail: r.tail[skip..].iter().map(|l| l.chars().take(500).collect()).collect(),
+        tail: tail.iter().map(|l| l.chars().take(500).collect()).collect(),
         at: r.at,
     }
 }

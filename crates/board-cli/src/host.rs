@@ -1505,7 +1505,9 @@ impl Host<'_> {
             if status.is_none() && !late {
                 continue;
             }
-            let mut tail = tail_lines(&r.log, READY_TAIL, None);
+            // 登录 shell 自己打的启动、退出提示不算输出（#232）：这里就去掉，上报的 tail 和下面的提示都用干净的。
+            // 先多取几行，去掉噪声之后仍能凑满 READY_TAIL 行
+            let mut tail: Vec<String> = tail_lines(&r.log, READY_TAIL + 5, None).into_iter().filter(|l| !board_core::hosts::shell_noise(l)).collect();
             let (ok, code) = match status {
                 Some(s) => (s.success(), exit_code(s)),
                 None => {
@@ -2564,11 +2566,20 @@ mod tests {
         assert!(ok, "git {args:?}");
     }
 
+    /// 去掉 Windows 上 `canonicalize()` 加的 `\\?\` 前缀：git 不把带前缀的路径当本地路径
+    /// （`git clone \\?\C:\…` 会报「hostname contains invalid characters」）
+    fn plain(p: &Path) -> PathBuf {
+        match p.to_string_lossy().strip_prefix(r"\\?\") {
+            Some(rest) => PathBuf::from(rest),
+            None => p.to_path_buf(),
+        }
+    }
+
     /// 派发被服务端结束后找没推的改动：没提交的文件、不在远端的提交；agent 的 worktree 按 board-skills 的约定找
     #[test]
     fn leftovers_find_unpushed_changes_in_skill_worktree() {
         let t = tempfile::tempdir().unwrap();
-        let root = t.path().canonicalize().unwrap();
+        let root = plain(&t.path().canonicalize().unwrap());
         let remote = root.join("remote.git");
         std::fs::create_dir(&remote).unwrap();
         git(&remote, &["init", "-q", "--bare", "-b", "main"]);
@@ -2608,6 +2619,25 @@ mod tests {
         let s = offline_note(Duration::from_secs(30), 2);
         assert!(s.starts_with("和服务端断开 30 秒了：2 个 agent 还在跑"), "{s}");
         assert!(s.contains("50 秒") && s.contains("board hold"), "{s}");
+    }
+
+    /// 卡片 #232：环境检查在 `$SHELL -l -i -c` 里跑，CI 上没有终端，bash 往 stderr 打作业控制提示、退出时打 `logout`。
+    /// 这些不能进上报的 tail（不然界面显示「环境检查没通过：logout」）。真正的错误要留着
+    #[test]
+    fn ready_tail_skips_login_shell_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("ready-default-main.log");
+        std::fs::write(
+            &f,
+            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\nbash: no job control in this shell\nchecking\nmissing ok.txt\nlogout\n",
+        )
+        .unwrap();
+        let tail: Vec<String> = tail_lines(&f, READY_TAIL + 5, None).into_iter().filter(|l| !board_core::hosts::shell_noise(l)).collect();
+        assert_eq!(tail, vec!["checking", "missing ok.txt"]);
+        // 只有噪声时 tail 是空的：调用方按退出码写原因，不显示 logout
+        std::fs::write(&f, "bash: no job control in this shell\nlogout\n").unwrap();
+        let tail: Vec<String> = tail_lines(&f, READY_TAIL + 5, None).into_iter().filter(|l| !board_core::hosts::shell_noise(l)).collect();
+        assert!(tail.is_empty(), "{tail:?}");
     }
 
     #[test]

@@ -2255,6 +2255,37 @@ fn manual_dispatch_needs_a_passed_ready_check() {
     dispatch(&mut s, T0 + 5 * S, id2, "mbp", None).unwrap();
 }
 
+/// 卡片 #232：环境检查在登录 shell 里跑，bash 没有终端时会打作业控制提示、退出时打 `logout`。
+/// 这些不是命令的输出：上报时去掉，失败原因取真正的错误；zsh 的 `command not found` 这类真错误要留着
+#[test]
+fn ready_tail_drops_login_shell_noise_but_keeps_real_errors() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    set_ready_check(&mut s, "cargo --version", "");
+    let noise = ["bash: cannot set terminal process group (-1): Inappropriate ioctl for device", "bash: no job control in this shell"];
+    let with_noise: Vec<&str> = noise.iter().copied().chain(["zsh:1: command not found: cargo"]).chain(["logout"]).collect();
+    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &with_noise)).unwrap();
+    // 上报的 tail 里没有噪声，真正的错误还在
+    let d = &host(&s, T0 + S).dirs[0];
+    let tail = &d.ready.as_ref().unwrap().tail;
+    assert_eq!(tail, &["zsh:1: command not found: cargo"], "{tail:?}");
+    assert_eq!(hosts::readiness(d.check.as_deref(), d.ready.as_ref()), hosts::Readiness::Failed("zsh:1: command not found: cargo".into()));
+    // 只有噪声、没有真正的输出：不拿噪声当失败原因
+    beat(&mut s, T0 + 2 * S, &ready_report("i1", "cargo --version", false, &["bash: no job control in this shell", "logout"])).unwrap();
+    let d = host(&s, T0 + 2 * S).dirs[0].clone();
+    assert_eq!(hosts::readiness(d.check.as_deref(), d.ready.as_ref()), hosts::Readiness::Failed("退出码 127".into()));
+    // 通过时 tail 里的噪声也去掉
+    beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["bash: no job control in this shell", "cargo 1.91.0", "logout"])).unwrap();
+    assert_eq!(host(&s, T0 + 3 * S).dirs[0].ready.as_ref().unwrap().tail, ["cargo 1.91.0"]);
+    // 噪声的形状：只认固定的几行，普通输出、真正的错误不算
+    for line in ["logout", " bash: no job control in this shell ", "bash: cannot set terminal process group (-1): Inappropriate ioctl for device", "stty: standard input: Inappropriate ioctl for device"] {
+        assert!(hosts::shell_noise(line), "{line}");
+    }
+    for line in ["", "zsh:1: command not found: cargo", "logout finished", "missing ok.txt", "checking", "stty -a failed"] {
+        assert!(!hosts::shell_noise(line), "{line}");
+    }
+}
+
 #[test]
 fn cron_skips_boards_that_failed_the_ready_check() {
     let mut s = store();
