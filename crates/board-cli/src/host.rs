@@ -1948,6 +1948,8 @@ mod tests {
             stop_by: None,
             beat_at: None,
             session,
+            seq: 1,
+            total: 1,
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));

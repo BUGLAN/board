@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
@@ -323,8 +323,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className={cx('hp-knob', failed('perSession'))}>
                   <div className="hp-knob-text">
                     <b>一个会话最多做几张</b>
-                    <span data-tip="定时领取启动的 agent 做完一张后用 board next 接着做，优先挑和第一张相近的，做满就退出、下一批换新会话；手动派发只做指定的那一张">
-                      定时领取的会话做满就换新会话
+                    <span data-tip="定时领取开会话时一次排好这个会话要做的卡片（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做排着的下一张，做完就退出；设为 1 时有几个空位就同时开几个会话。改了只影响之后新开的会话；手动派发只做指定的那一张">
+                      定时领取先把一个会话排满再开下一个
                     </span>
                   </div>
                   <span className="hp-ctl">
@@ -1228,6 +1228,9 @@ function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncStat
 
 function RunRow({ r, now }: { r: Dispatch; now: number }) {
   const [open, setOpen] = useState(false);
+  // 这个会话开会话时排好、还没开始的卡片：按顺序挂在这一行下面，每张可以单独取消
+  const ws = useData(s => s.ws);
+  const rest = sessionQueue(ws, r.session);
   return (
     <div className="hp-run">
       <div className="hp-run-main">
@@ -1260,6 +1263,27 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         )}
       </div>
       {open && <LogView id={r.id} live />}
+      {rest.length > 0 && (
+        <ol className="hp-run-rest" aria-label="这个会话排着的卡片">
+          {rest.map(q => (
+            <li key={q.id}>
+              <button type="button" className="hp-cid link" onClick={() => goCard(q)}>
+                #{q.card}
+              </button>
+              <span className="hp-run-title">
+                <Title text={q.title} />
+              </span>
+              <span className="hp-run-seq">
+                第 {q.seq ?? '?'}/{q.total ?? '?'} 张
+              </span>
+              <button className="hp-link danger" type="button" onClick={() => cancel(q)}>
+                <Icon name="close" />
+                取消派发
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

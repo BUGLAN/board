@@ -122,6 +122,12 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-run-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; }
 .hp-run-board { margin-left: auto; flex: none; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
 .hp-run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; padding-left: 28px; font-size: 12px; color: var(--text-3); }
+/* 会话里排着的卡片：挂在会话正在跑的那一行下面，虚线隔开，按排好的顺序 */
+.hp-run-rest { margin: 8px 0 0 28px; padding: 6px 0 0; list-style: none; border-top: 1px dashed var(--line-2); }
+.hp-run-rest li { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; font-size: 12.5px; color: var(--text-2); }
+.hp-run-rest .hp-run-title { flex: 1; font-size: 12.5px; font-weight: 400; color: var(--text-2); }
+.hp-run-seq { flex: none; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hp-run-rest .hp-link { flex: none; }
 
 /* ---------- 规则 ---------- */
 .hp-rule { display: flex; align-items: center; gap: 16px; padding: 11px 0; border-top: 1px solid var(--line); }
@@ -333,6 +339,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-lane-t { flex: none; min-width: 5.2em; text-align: right; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hp-lane .hp-beat { flex: none; min-width: 5.6em; font-size: 11.5px; white-space: nowrap; }
 .hp-lane .hp-stopping { flex: none; font-size: 11.5px; }
+.hp-lane-more { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 11px; white-space: nowrap; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); }
 /* 排队：虚线车道 */
 .hp-lane.queued { outline: 1px dashed var(--line-3); outline-offset: -1px; }
 .hp-lane.queued:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
@@ -423,6 +430,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .dn-text { flex: 1; min-width: 0; }
 .dn-text b { display: block; font-size: 13px; font-weight: 600; }
 .dn-text span { display: block; margin-top: 2px; font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dn-text .dn-lead { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); }
 
 /* 窄窗口：机器在上、车道在下 */
 @media (max-width: 980px) {

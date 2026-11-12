@@ -453,6 +453,11 @@ impl Store {
         Ok(out)
     }
 
+    /// `board next`：结算上一张、开始这个会话排着的下一张。不再接着做时（SESSION_DONE）先提交——排着的派发要取消——再返回错误
+    pub fn next(&mut self, now: i64, origin: Origin, name: &str) -> Result<CardDetail> {
+        self.write(now, origin, |w| w.dispatch_next(name))?
+    }
+
     /// 只读快照：在一个读事务里完成，保证 rev 与数据一致
     pub fn read<T>(&self, f: impl FnOnce(&R) -> Result<T>) -> Result<T> {
         let tx = self.conn.unchecked_transaction()?;

@@ -102,3 +102,18 @@ describe('磁贴上的「还差 N 项」', () => {
     expect(host.querySelector('.hp-ready-badge')).toBeNull();
   });
 });
+
+describe('机位卡片：会话里排着的', () => {
+  it('在跑的格子写「后面还有 N 张」，排队列表里不列它们', () => {
+    const h = machine([agent('dsh')], { dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' }] });
+    const base = { board: 'default/main', hostId: 1, host: 'win2', agent: 'dsh', agentLabel: 'dsh', source: 'cron', by: { kind: 'system', name: '系统' }, result: null, createdAt: 0, endedAt: null, exitCode: null, stopBy: null, beatAt: null };
+    const dispatches = [
+      { ...base, id: 5, card: 5, title: '第一张', name: 'dsh-win2/x', state: 'running', startedAt: Date.now(), session: 5, seq: 1, total: 3 },
+      { ...base, id: 6, card: 6, title: '第二张', name: null, state: 'queued', startedAt: null, session: 5, seq: 2, total: 3 },
+      { ...base, id: 7, card: 7, title: '第三张', name: null, state: 'queued', startedAt: null, session: 5, seq: 3, total: 3 },
+    ];
+    show(h, { hosts: [h], dispatches } as unknown as Workspace);
+    expect(host.querySelector('.hp-lane.on .hp-lane-more')?.textContent).toBe('后面还有 2 张');
+    expect(host.querySelectorAll('.hp-lane.queued').length).toBe(0);
+  });
+});

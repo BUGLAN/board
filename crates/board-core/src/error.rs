@@ -139,7 +139,7 @@ impl ErrorCode {
             ErrorCode::NoSuchHost => "机器不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器",
             ErrorCode::AgentNotOnHost => "这台机器上没有这种 agent，或没找到它的命令",
             ErrorCode::BoardNotOnHost => "这台机器没有这块白板的目录：board host 启动时用 --dir <项目>/<白板>=<路径> 加上",
-            ErrorCode::Dispatched => "卡片已经派发给一台机器、正在排队：等它开始，或先取消派发",
+            ErrorCode::Dispatched => "卡片已经派发给一台机器、正在排队（或排在一个会话里）：等它开始，或先取消派发",
             ErrorCode::SessionDone => "这个会话不再接着做下一张：结束会话",
             ErrorCode::InTrash => "卡片在回收站里：先恢复，才能编辑、移动或评论",
             ErrorCode::Internal => "内部错误",

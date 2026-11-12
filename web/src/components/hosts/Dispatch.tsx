@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, cardDispatch, envName, hostLoad, hostsOf, queueReason, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, cardDispatch, envName, hostLoad, hostsOf, inSession, queueReason, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, optimistic, refresh, useData, type Patch } from '../../store/data';
@@ -48,7 +48,7 @@ export async function cancel(d: Dispatch) {
   }
 }
 
-/** 卡片上：排队时写「排队 → <机器> · <agent>（原因）」 */
+/** 卡片上：排队时写「排队 → <机器> · <agent>（原因）」；会话里排着的原因是「会话第 N/M 张」 */
 export function CardDispatchLine({ card }: { card: number }) {
   const d = useData(s => cardDispatch(s.ws, s.path, card));
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
@@ -58,16 +58,17 @@ export function CardDispatchLine({ card }: { card: number }) {
       <Icon name="dispatch" />
       <span>
         排队 → {d.host} · {d.agentLabel}
-        <em>（{queueReason(h)}）</em>
+        <em>（{queueReason(h, d)}）</em>
       </span>
     </div>
   );
 }
 
-/** 卡片详情里：排队或正在跑的派发，以及「取消派发」/「停止」 */
+/** 卡片详情里：排队或正在跑的派发，以及「取消派发」/「停止」。会话里排着的，下面一行写会话的名字和它正在做的卡片 */
 export function DispatchNote({ board, card }: { board: string; card: number }) {
   const d = useData(s => cardDispatch(s.ws, board, card));
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
+  const lead = useData(s => (d && inSession(d) ? sessionRunning(s.ws, d) : undefined));
   const now = useNow(1000);
   const [log, setLog] = useState(false);
   if (!d) return null;
@@ -83,7 +84,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           <span>
             {queued ? (
               <>
-                {queueReason(h)} · {SOURCE[d.source]}派发 · 排了 {durWords(now - d.createdAt)}
+                {queueReason(h, d)} · {SOURCE[d.source]}派发 · 排了 {durWords(now - d.createdAt)}
               </>
             ) : (
               <>
@@ -93,6 +94,11 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
               </>
             )}
           </span>
+          {lead && (
+            <span className="dn-lead">
+              {lead.name} 正在做 #{lead.card}
+            </span>
+          )}
         </div>
         {!queued && (
           <button className="btn sm ghost" type="button" onClick={() => setLog(!log)}>

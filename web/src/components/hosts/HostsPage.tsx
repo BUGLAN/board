@@ -1,6 +1,6 @@
 /* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务）；主区可以切到多机对比 */
 import { useState } from 'react';
-import { agentMark, cronSummary, hostLoad, hostState, hostsOf, queueReason, since, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { readiness } from '../../lib/ready';
 import { cx, pref } from '../../lib/util';
@@ -88,7 +88,8 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
   const open = on.filter(h => !h.paused);
   const slots = open.reduce((n, h) => n + h.max, 0);
   const used = open.reduce((n, h) => n + hostLoad(ws, h).running.length, 0);
-  const queue = (ws?.dispatches ?? []).filter(d => d.state === 'queued').length;
+  // 会话里排着的不算排队：它们不等空位，由会话接着做
+  const queue = (ws?.dispatches ?? []).filter(d => d.state === 'queued' && !inSession(d)).length;
   return (
     <div className="hp-fleet enter" style={{ ['--i' as string]: 0 }}>
       <dl className="hp-stats">
@@ -135,8 +136,8 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
   );
 }
 
-/** 一条车道：在跑的任务（agent 色的轨、标题、已用时间、心跳），点开是那张卡片 */
-function RunLane({ r, now }: { r: Dispatch; now: number }) {
+/** 一条车道：在跑的任务（agent 色的轨、标题、已用时间、心跳），点开是那张卡片；会话里还排着卡片时写「后面还有 N 张」 */
+function RunLane({ r, now, more }: { r: Dispatch; now: number; more: number }) {
   return (
     <button type="button" className="hp-lane on" style={{ ['--ac' as string]: agentMark(r.agent).color }} onClick={() => goCard(r)} title={`打开 ${r.board}#${r.card}`}>
       <Mark id={r.agent} title={r.agentLabel} />
@@ -145,6 +146,7 @@ function RunLane({ r, now }: { r: Dispatch; now: number }) {
         <Title text={r.title} />
       </span>
       {r.stopBy && <span className="hp-stopping">正在停止</span>}
+      {more > 0 && <span className="hp-lane-more">后面还有 {more} 张</span>}
       <span className="hp-lane-board">{r.board}</span>
       <span className="hp-lane-src">{SOURCE[r.source]}</span>
       <span className="hp-lane-t">{r.startedAt != null ? span(now - r.startedAt) : '刚开始'}</span>
@@ -237,7 +239,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
       </button>
       <div className="hp-lanes">
         {running.map(r => (
-          <RunLane key={r.id} r={r} now={now} />
+          <RunLane key={r.id} r={r} now={now} more={sessionQueue(ws, r.session).length} />
         ))}
         {!h.online ? (
           <div className="hp-lane idle dead">离线{queued.length > 0 ? ` · 上线后接着做排队的 ${queued.length} 张` : ' · 上线后才能接单'}</div>

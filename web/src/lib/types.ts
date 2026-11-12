@@ -257,6 +257,11 @@ export interface Dispatch {
   stopBy: string | null;
   /** 持有者最近一次心跳 */
   beatAt: number | null;
+  /** 同一个 agent 进程做的几张卡共用的会话标识：第一张的派发 ID。排队中、session 不是自己的，是开会话时排进去的（只由那个会话的 board next 开始）；旧版服务端没有 */
+  session?: number;
+  /** 这个会话的第几张、一共排了几张；不属于会话时 1、1；旧版服务端没有 */
+  seq?: number;
+  total?: number;
 }
 
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */

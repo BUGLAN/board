@@ -644,7 +644,8 @@ fn cron_round_fills_slots_rotates_boards_and_ends() {
         .id;
     // 规则「全部」→ claude：两块白板的卡片都不带它，靠「其余卡片 →」兜底给 claude，都能领
     s.write(T0, Origin::ui(None), |w| w.create_label("default", "全部", None, false)).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), max: Some(2), ..Default::default() })).unwrap();
+    // 一个会话只做一张（N = 1）：这里测的是占空位、多块白板轮流；会话排几张见 session_* 的用例
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), max: Some(2), per_session: Some(1), ..Default::default() })).unwrap();
     let pull = |s: &mut Store, at: i64| s.write(at, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap();
     // 没有开始一轮时不领
     assert!(pull(&mut s, T0 + S).is_none());
@@ -1170,7 +1171,7 @@ fn submit(s: &mut Store, at: i64, name: &str, id: i64) {
 }
 
 fn next(s: &mut Store, at: i64, name: &str) -> Result<CardDetail> {
-    s.write(at, Origin::cli(), |w| w.dispatch_next(name))
+    s.next(at, Origin::cli(), name)
 }
 
 fn pull(s: &mut Store, at: i64) -> Option<Dispatch> {
@@ -1261,40 +1262,61 @@ fn session_does_up_to_n_cards_then_a_new_one_starts() {
     assert_eq!(next(&mut s, t + 4 * S, &name2).unwrap_err().code, ErrorCode::SessionDone, "没有可领取的卡片");
 }
 
-/// 怎么挑下一张：优先标签 > 和第一张共同标签最多 > 规则 1 的顺序
+/// 开会话时怎么排：优先标签 > 和第一张共同标签多的 > 规则 1 的顺序；排好之后不再变
 #[test]
-fn next_prefers_priority_then_common_labels() {
+fn session_plan_prefers_priority_then_common_labels() {
+    // N = 2，第一张带 UI，其余从上到下 X（无共同标签）、Y（带 UI）：排进去的是 Y
+    let setup = |extra: &dyn Fn(&mut Store, i64, i64)| {
+        let mut s = store();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        let ui = label(&mut s, "UI");
+        let first = new_card_tagged(&mut s, "第一张");
+        tag(&mut s, first, ui);
+        let x = new_card_tagged(&mut s, "X");
+        let y = new_card_tagged(&mut s, "Y");
+        extra(&mut s, y, ui);
+        set_host(&mut s, HostPatch { per_session: Some(2), ..Default::default() }).unwrap();
+        lead_round(&mut s);
+        s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+        let d = pull(&mut s, T0 + S).unwrap();
+        assert_eq!(d.card, first);
+        let planned: Vec<i64> = session_of(&s, d.id).into_iter().filter(|q| q.state == "queued").map(|q| q.card).collect();
+        (s, d, x, y, planned)
+    };
+    let (_, _, _, y, planned) = setup(&|s, y, ui| tag(s, y, ui));
+    assert_eq!(planned, vec![y]);
+    // 都没有共同标签：按规则 1 的顺序排 X
+    let (_, _, x, _, planned) = setup(&|_, _, _| {});
+    assert_eq!(planned, vec![x]);
+    // 有带优先标签的（Z，在最下面）：排它
+    let (mut s, d, x, y, planned) = setup(&|s, y, ui| tag(s, y, ui));
+    assert_eq!(planned, vec![y]);
+    // 会话开始后再给 X 打优先标签：board next 仍领 Y（排好之后不再变）
+    let urgent = label(&mut s, "急");
+    s.write(T0, Origin::ui(None), |w| w.update_label("default", urgent, None, None, None, Some(true))).unwrap();
+    tag(&mut s, x, urgent);
+    let name = d.name.unwrap();
+    submit(&mut s, T0 + 2 * S, &name, d.card);
+    assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap().card.id, y);
+
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let ui = label(&mut s, "UI");
-    let api = label(&mut s, "接口");
     let first = new_card_tagged(&mut s, "第一张");
     tag(&mut s, first, ui);
-    let x = new_card_tagged(&mut s, "X");
-    let y = new_card_tagged(&mut s, "Y");
-    tag(&mut s, y, ui);
+    let _y = new_card_tagged(&mut s, "Y");
     let z = new_card_tagged(&mut s, "Z");
-    tag(&mut s, z, api);
-    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { per_session: Some(8), ..Default::default() })).unwrap();
-    lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
-    let d = pull(&mut s, T0 + S).unwrap();
-    let name = d.name.unwrap();
-    assert_eq!(d.card, first);
-    // X 没有共同标签、Y 带 UI：领 Y
-    submit(&mut s, T0 + 2 * S, &name, first);
-    assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap().card.id, y);
-    // 候选里都没有共同标签：按规则 1 的顺序领 X
-    submit(&mut s, T0 + 3 * S, &name, y);
-    assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, x);
-    // 出现带优先标签的卡片：领它，不管标签是否相近
     let urgent = label(&mut s, "急");
     s.write(T0, Origin::ui(None), |w| w.update_label("default", urgent, None, None, None, Some(true))).unwrap();
-    let w = new_card(&mut s, T0, "W");
-    tag(&mut s, w, ui);
     tag(&mut s, z, urgent);
-    submit(&mut s, T0 + 4 * S, &name, x);
-    assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap().card.id, z);
+    set_host(&mut s, HostPatch { per_session: Some(2), ..Default::default() }).unwrap();
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    // 带优先标签的 Z 先被开始（规则 1）；第一张排进会话
+    let d = pull(&mut s, T0 + S).unwrap();
+    assert_eq!(d.card, z);
+    let planned: Vec<i64> = session_of(&s, d.id).into_iter().filter(|q| q.state == "queued").map(|q| q.card).collect();
+    assert_eq!(planned, vec![first]);
 }
 
 /// N = 1、手动派发、不是 board host 的会话、上一张还没交审、暂停接单、有人停止
@@ -1374,37 +1396,239 @@ fn second_card_crash_or_stop_keeps_first_result() {
     }
 }
 
-/// 同时跑 2 个、N = 4：两个会话各自取下一张，不会领到同一张卡，在跑的不超过 2 个
-#[test]
-fn two_sessions_never_take_the_same_card() {
+/// 一轮领取开几个会话（同时跑 4 个）：先把一个会话排满再开下一个。返回每个会话（开始的那张 + 排着的）
+fn open_sessions(cards: usize, per: i64) -> (Store, Vec<Vec<i64>>) {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    for i in 0..6 {
+    for i in 0..cards {
         new_card_tagged(&mut s, &format!("卡{i}"));
     }
-    set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
+    set_host(&mut s, HostPatch { max: Some(4), per_session: Some(per), ..Default::default() }).unwrap();
     lead_round(&mut s);
     s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
-    let a = pull(&mut s, T0 + S).unwrap();
-    let b = pull(&mut s, T0 + S).unwrap();
-    assert!(pull(&mut s, T0 + S).is_none(), "没有空位");
-    let (na, nb) = (a.name.unwrap(), b.name.unwrap());
-    let mut seen = vec![a.card, b.card];
-    let (mut ca, mut cb) = (a.card, b.card);
-    for k in 0..2 {
-        let t = T0 + (2 + k) * S;
-        submit(&mut s, t, &na, ca);
-        ca = next(&mut s, t, &na).unwrap().card.id;
-        submit(&mut s, t, &nb, cb);
-        cb = next(&mut s, t, &nb).unwrap().card.id;
-        seen.extend([ca, cb]);
-        let running = s.read(|r| r.active_dispatches()).unwrap().into_iter().filter(|d| d.state == "running").count();
-        assert_eq!(running, 2);
+    let mut sessions = vec![];
+    while let Some(d) = pull(&mut s, T0 + S) {
+        sessions.push(session_of(&s, d.id).iter().map(|x| x.card).collect::<Vec<_>>());
     }
-    let mut uniq = seen.clone();
-    uniq.sort();
-    uniq.dedup();
-    assert_eq!(uniq.len(), seen.len(), "{seen:?}");
+    (s, sessions)
+}
+
+/// 同时跑 4 个、N = 4：4、6、16、20 张卡分别开 1、2（4 + 2）、4、4 个会话；两个会话不会排到同一张卡；N = 1 时 4 张开 4 个会话
+#[test]
+fn session_fills_one_before_opening_the_next() {
+    let sizes = |n: usize, per: i64| open_sessions(n, per).1.iter().map(Vec::len).collect::<Vec<_>>();
+    assert_eq!(sizes(4, 4), vec![4]);
+    assert_eq!(sizes(6, 4), vec![4, 2]);
+    assert_eq!(sizes(16, 4), vec![4, 4, 4, 4]);
+    assert_eq!(sizes(4, 1), vec![1, 1, 1, 1], "N = 1：有几个空位就同时开几个会话，各做一张");
+    // 20 张：先开 4 个会话，剩下 4 张没有派发；在跑的进程不超过 4 个
+    let (mut s, sessions) = open_sessions(20, 4);
+    assert_eq!(sessions.iter().map(Vec::len).collect::<Vec<_>>(), vec![4, 4, 4, 4]);
+    let mut all: Vec<i64> = sessions.concat();
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 16, "两个会话不会排到同一张卡");
+    let active = s.read(|r| r.active_dispatches()).unwrap();
+    assert_eq!(active.iter().filter(|d| d.state == "running").count(), 4);
+    assert!(host(&s, T0 + S).round, "空位满了，这一轮还没结束");
+    // 有会话结束后再开新会话，排剩下的 4 张
+    let first = active.iter().find(|d| d.state == "running").unwrap().clone();
+    let name = first.name.clone().unwrap();
+    let mut t = T0 + 2 * S;
+    let mut cur = first.card;
+    loop {
+        submit(&mut s, t, &name, cur);
+        match next(&mut s, t, &name) {
+            Ok(c) => cur = c.card.id,
+            Err(e) => {
+                assert_eq!(e.code, ErrorCode::SessionDone);
+                break;
+            }
+        }
+        t += S;
+    }
+    end(&mut s, t, first.id, Some(0), &[]);
+    let d = pull(&mut s, t + S).expect("空出位置：开新会话");
+    let rest: Vec<i64> = session_of(&s, d.id).iter().map(|x| x.card).collect();
+    assert_eq!(rest.len(), 4);
+    assert!(rest.iter().all(|c| !all.contains(c)));
+}
+
+/// N = 4、6 张同标签的卡、同时跑 1 个：第 1 张在跑，第 2–4 张排在会话里（会话第 N/4 张）；第 5、6 张没有派发；
+/// 会话里排着的不给 board host、不占空位；第一个进程做完排着的退出，第二个进程排好并做剩下的
+#[test]
+fn session_queue_is_planned_and_shown() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let cards: Vec<i64> = (0..6).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let name = d1.name.clone().unwrap();
+    assert_eq!((d1.card, d1.seq, d1.total), (cards[0], 1, 4));
+    let queued: Vec<Dispatch> = session_of(&s, d1.id).into_iter().filter(|d| d.state == "queued").collect();
+    assert_eq!(queued.iter().map(|d| (d.card, d.seq, d.total)).collect::<Vec<_>>(), vec![(cards[1], 2, 4), (cards[2], 3, 4), (cards[3], 4, 4)]);
+    assert!(queued.iter().all(|d| d.in_session_queue() && d.session == d1.id && d.source == "cron"));
+    let a = card(&s, cards[2]).activity.into_iter().rev().find(|a| a.text.starts_with("派发到")).unwrap();
+    assert_eq!(a.text, format!("派发到 mbp · Claude Code（定时），会话第 3/4 张，排队等 {name} 接着做"));
+    assert!(s.read(|r| r.card_dispatch(&r.resolve(B)?, cards[4])).unwrap().is_none(), "第 5 张没有派发");
+    // board host 拿到的排队里没有会话里排着的，也不能用 begin 开始它们
+    let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![d1.id])).unwrap();
+    assert!(w.queued.is_empty(), "{:?}", w.queued);
+    assert_eq!(begin(&mut s, T0 + S, queued[0].id).unwrap_err().code, ErrorCode::Usage);
+    assert!(pull(&mut s, T0 + S).is_none(), "同时跑 1 个：没有空位");
+    // board next 按排好的顺序开始
+    let mut t = T0 + 2 * S;
+    for (k, want) in cards[1..4].iter().enumerate() {
+        let cur = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+        submit(&mut s, t, &name, cur.card);
+        let c = next(&mut s, t, &name).unwrap();
+        assert_eq!((c.card.id, c.card.holder.as_deref()), (*want, Some(name.as_str())));
+        let started = c.activity.iter().rev().find(|a| a.text.starts_with("派发开始")).unwrap();
+        assert!(started.text.ends_with(&format!("接着做（定时，这个会话的第 {} 张）", k + 2)), "{}", started.text);
+        t += S;
+    }
+    let cur = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+    submit(&mut s, t, &name, cur.card);
+    let e = next(&mut s, t, &name).unwrap_err();
+    assert_eq!(e.code, ErrorCode::SessionDone);
+    assert!(e.message.contains("排着的卡片都开始过或取消了"), "{}", e.message);
+    let e = end(&mut s, t + S, d1.id, Some(0), &[]);
+    assert_eq!((e.id, e.result.as_deref()), (cur.id, Some("review")));
+    let all = session_of(&s, d1.id);
+    assert_eq!(all.len(), 4, "每张卡各一条派发");
+    assert!(all.iter().all(|d| d.result.as_deref() == Some("review")));
+    // 第二个进程：排好剩下的 2 张
+    let d5 = pull(&mut s, t + 2 * S).unwrap();
+    assert_eq!((d5.card, d5.total), (cards[4], 2));
+    let name2 = d5.name.clone().unwrap();
+    submit(&mut s, t + 3 * S, &name2, cards[4]);
+    assert_eq!(next(&mut s, t + 3 * S, &name2).unwrap().card.id, cards[5]);
+}
+
+/// 会话里排着的卡：别人领不走、手动派发不了；人取消其中一张或拖出待办，board next 跳过它领后面那张
+#[test]
+fn session_queue_occupies_cards_and_can_be_canceled() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let cards: Vec<i64> = (0..5).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
+    let free = new_card(&mut s, T0, "没有派发");
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let name = d1.name.clone().unwrap();
+    let queued: Vec<Dispatch> = session_of(&s, d1.id).into_iter().filter(|d| d.state == "queued").collect();
+    assert_eq!(queued.len(), 3);
+    s.write(T0, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
+    let alpha = Actor::agent("alpha/x");
+    assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: Some(cards[1]) }).unwrap_err().code, ErrorCode::Dispatched);
+    assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: None }).unwrap().card.id, cards[4], "不带 ID 的领取跳过排着的");
+    assert_eq!(dispatch(&mut s, T0 + S, cards[2], "mbp", None).unwrap_err().code, ErrorCode::AlreadyDispatched);
+    let _ = free;
+    // 人取消第 2 张、把第 3 张拖出待办：都「已取消」，board next 领第 4 张
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(queued[0].id, &Actor::human(), "buglan")).unwrap();
+    exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: cards[2], column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    assert_eq!(get(&s, queued[0].id).result.as_deref(), Some("canceled"));
+    assert_eq!(get(&s, queued[1].id).result.as_deref(), Some("canceled"));
+    submit(&mut s, T0 + 3 * S, &name, d1.card);
+    assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, cards[3]);
+    // 人取消的那张这一轮不再排：会话结束后新开的会话不会排它
+    submit(&mut s, T0 + 4 * S, &name, cards[3]);
+    assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
+    end(&mut s, T0 + 5 * S, d1.id, Some(0), &[]);
+    assert!(pull(&mut s, T0 + 6 * S).is_none());
+    assert_eq!(card(&s, cards[1]).card.column, "todo");
+}
+
+/// N = 4 的会话做第 2 张时异常退出、被人停止：第 1 张结果不变，第 2 张异常退出 / 已停止，第 3、4 张「已取消」、
+/// 卡片留在待办，这一轮有空位时由新会话重新排进去。暂停接单：board next 返回 SESSION_DONE，排着的取消
+#[test]
+fn session_end_cancels_the_rest_and_a_new_session_takes_them() {
+    for stop in [false, true] {
+        let mut s = store();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        let cards: Vec<i64> = (0..4).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
+        set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
+        lead_round(&mut s);
+        s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+        let d1 = pull(&mut s, T0 + S).unwrap();
+        assert!(pull(&mut s, T0 + S).is_none(), "卡都排进了第一个会话");
+        assert!(host(&s, T0 + S).round, "还有会话排着卡片：这一轮不算结束");
+        let name = d1.name.clone().unwrap();
+        submit(&mut s, T0 + 2 * S, &name, cards[0]);
+        assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap().card.id, cards[1]);
+        let d2 = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+        if stop {
+            s.write(T0 + 3 * S, Origin::ui(None), |w| w.dispatch_cancel(d2.id, &Actor::human(), "buglan")).unwrap();
+        }
+        let e = end(&mut s, T0 + 4 * S, d1.id, Some(1), &["boom"]);
+        assert_eq!((e.id, e.result.as_deref()), (d2.id, Some(if stop { "stopped" } else { "crashed" })));
+        assert_eq!(get(&s, d1.id).result.as_deref(), Some("review"), "第 1 张的结果不变");
+        let rest: Vec<Dispatch> = session_of(&s, d1.id).into_iter().filter(|d| d.card == cards[2] || d.card == cards[3]).collect();
+        assert!(rest.iter().all(|d| d.result.as_deref() == Some("canceled")), "{rest:?}");
+        assert_eq!(card(&s, cards[2]).card.column, "todo");
+        // 这一轮还没结束、有空位：新会话把它们重新排进去
+        let d3 = pull(&mut s, T0 + 5 * S).expect("新会话");
+        assert_eq!(session_of(&s, d3.id).iter().map(|d| d.card).collect::<Vec<_>>(), vec![cards[2], cards[3]]);
+    }
+
+    // 暂停接单：在跑的会话做完当前这张，board next 返回 SESSION_DONE，排着的取消
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let cards: Vec<i64> = (0..3).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let name = d1.name.clone().unwrap();
+    set_host(&mut s, HostPatch { paused: Some(true), ..Default::default() }).unwrap();
+    submit(&mut s, T0 + 2 * S, &name, cards[0]);
+    let e = next(&mut s, T0 + 2 * S, &name).unwrap_err();
+    assert_eq!(e.code, ErrorCode::SessionDone);
+    assert!(e.message.contains("暂停接单"), "{}", e.message);
+    let rest: Vec<Dispatch> = session_of(&s, d1.id).into_iter().filter(|d| d.id != d1.id).collect();
+    assert_eq!(rest.len(), 2);
+    assert!(rest.iter().all(|d| d.result.as_deref() == Some("canceled")), "SESSION_DONE 时排着的已经取消（先提交再报错）");
+    let a = card(&s, cards[1]).activity.into_iter().rev().find(|a| a.text.starts_with("会话结束")).unwrap();
+    assert!(a.text.contains("暂停接单"), "{}", a.text);
+}
+
+/// 机器掉线：会话里排着的取消
+#[test]
+fn session_queue_is_canceled_when_host_goes_offline() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    for i in 0..3 {
+        new_card_tagged(&mut s, &format!("卡{i}"));
+    }
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    s.write(T0 + 120 * S, Origin::system(), |w| w.sweep_hosts()).unwrap();
+    let all = session_of(&s, d1.id);
+    assert_eq!(get(&s, d1.id).result.as_deref(), Some("lost"));
+    assert!(all.iter().filter(|d| d.id != d1.id).all(|d| d.result.as_deref() == Some("canceled")), "{all:?}");
+}
+
+/// 改「一个会话最多做几张」：已经排好的会话不变，之后新开的按新值排；手动派发仍然一个会话一张
+#[test]
+fn per_session_change_only_affects_new_sessions() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    for i in 0..8 {
+        new_card_tagged(&mut s, &format!("卡{i}"));
+    }
+    set_host(&mut s, HostPatch { max: Some(2), per_session: Some(2), ..Default::default() }).unwrap();
+    lead_round(&mut s);
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    set_host(&mut s, HostPatch { per_session: Some(4), ..Default::default() }).unwrap();
+    assert_eq!(session_of(&s, d1.id).len(), 2, "已经排好的会话不变");
+    let d2 = pull(&mut s, T0 + S).unwrap();
+    assert_eq!(session_of(&s, d2.id).len(), 4, "新开的按新值排");
+    // 手动派发：一个会话一张
+    let c = new_card(&mut s, T0, "手动");
+    let m = dispatch(&mut s, T0 + 2 * S, c, "mbp", None).unwrap();
+    assert_eq!((m.seq, m.total), (1, 1));
 }
 
 /* ---------------- 领取规则：按标签筛卡片、按标签选 agent ---------------- */
@@ -1437,7 +1661,8 @@ fn rules(s: &mut Store, list: &[(&str, &str)], fallback: Option<&str>) -> Result
 
 /// 一轮领取能派发的全部（同时跑 8 个，派发完为止）：（卡片，agent）
 fn round_all(s: &mut Store, at: i64) -> Vec<(i64, String)> {
-    set_host(s, HostPatch { max: Some(8), ..Default::default() }).unwrap();
+    // 这里只看规则把卡片交给谁：一个会话一张（N = 1），每张卡都由 pull 开始
+    set_host(s, HostPatch { max: Some(8), per_session: Some(1), ..Default::default() }).unwrap();
     s.write(at, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let mut out = vec![];
     while let Some(d) = pull(s, at) {

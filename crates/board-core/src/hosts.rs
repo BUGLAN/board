@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
   ended_at    INTEGER,
   exit_code   INTEGER,
   stop_by     TEXT,                   -- 有人请求停止：谁
-  session     INTEGER,                -- 同一个 agent 进程做的几张卡：第一张的派发 ID（board next 接着做的那几张都写它）；空表示就是自己
+  session     INTEGER,                -- 同一个 agent 进程做的几张卡：第一张的派发 ID（开会话时排进去、board next 接着做的那几张都写它）；空表示就是自己
   log         TEXT NOT NULL DEFAULT '' -- 日志的最后 500 行
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
@@ -116,6 +116,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
     }
+    // 会话里排着的派发按会话找（session 列是后加的，索引放在补列之后）
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS dispatches_session ON dispatches (session, id)")?;
     // 领取规则原来是「单个标签 → agent」：换成等价的 in [标签]
     let rows: Vec<(i64, String)> = conn
         .prepare("SELECT id, rules FROM hosts")?
@@ -652,9 +654,26 @@ pub struct Dispatch {
     pub stop_by: Option<String>,
     /// 持有者最近一次心跳（在跑时）
     pub beat_at: Option<i64>,
-    /// 同一个 agent 进程做的几张卡共用的会话标识：第一张的派发 ID（旧数据、还没开始时就是自己的 ID）
+    /// 同一个 agent 进程做的几张卡共用的会话标识：第一张的派发 ID（旧数据、还没开始时就是自己的 ID）。
+    /// 排队中、`session` 不是自己的派发是开会话时排进去的，由这个会话的 `board next` 开始
     #[serde(default)]
     pub session: i64,
+    /// 这个会话的第几张（从 1 开始），和这个会话一共排了几张（开会话时排好的，取消了的也算）；不属于会话时是 1、1
+    #[serde(default = "one")]
+    pub seq: i64,
+    #[serde(default = "one")]
+    pub total: i64,
+}
+
+fn one() -> i64 {
+    1
+}
+
+impl Dispatch {
+    /// 开会话时排进去、还在等这个会话的 `board next` 开始的派发
+    pub fn in_session_queue(&self) -> bool {
+        self.state == "queued" && self.session != self.id
+    }
 }
 
 /// 结果的中文
@@ -863,7 +882,9 @@ impl HostRow {
 
 const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, COALESCE(c.title, d.title), d.host_id, d.host, d.agent,
        d.agent_label, d.name, d.source, d.by_kind, d.by_name, d.state, d.result, d.created_at, d.started_at, d.ended_at,
-       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id)
+       d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
+       CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session AND s.id <= d.id) END,
+       CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -890,6 +911,8 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         stop_by: r.get(18)?,
         beat_at: r.get(19)?,
         session: r.get(22)?,
+        seq: r.get(23)?,
+        total: r.get(24)?,
     })
 }
 
@@ -1074,7 +1097,8 @@ impl<'a> R<'a> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         Ok(HostWork {
             running: self.dispatches("WHERE d.host = ?1 AND d.state = 'running' ORDER BY d.id", [name])?,
-            queued: self.dispatches("WHERE d.host_id = ?1 AND d.state = 'queued' ORDER BY d.id", [h.id])?,
+            // 会话里排着的派发只由那个会话的 board next 开始，不给 board host（它按创建先后开始 queued 里的）
+            queued: self.dispatches("WHERE d.host_id = ?1 AND d.state = 'queued' AND d.session IS NULL ORDER BY d.id", [h.id])?,
             host: self.host_info(&h, now)?,
             now,
         })
@@ -1216,13 +1240,12 @@ impl<'a> W<'a> {
         )
     }
 
-    /// `board next`（只在 board host 启动的会话里用）：结算这个名字正在跑的派发，挑下一张，以同一个名字领取，
-    /// 记一条新的派发（同一台机器、agent、启动环境，来源定时，同一个会话）。都在一个写事务里。
+    /// `board next`（只在 board host 启动的会话里用）：结算这个名字正在跑的派发，按开会话时排好的顺序开始这个会话排着的
+    /// 下一张（以同一个名字领取，同一台机器、agent、启动环境）。都在一个写事务里。领取失败的那张结果「没领到」，接着取再下一张。
     ///
-    /// 怎么挑：候选是会话所在白板上可领取、没有排队派发、这一轮（或这个会话里）没派发过的卡片。
-    /// 1. 有带优先标签的，按规则 1 领到的就是它；2. 否则和会话第一张卡共同标签最多的（至少一个），并列按规则 1 的顺序；
-    /// 3. 都没有共同标签时按规则 1 的顺序取第一张。
-    pub fn dispatch_next(&mut self, name: &str) -> Result<CardDetail> {
+    /// 返回 `Ok(Err(SESSION_DONE))` 时这个会话不再接着做：还排着的派发已经取消、卡片不动。闭包返回错误会让写事务回滚，
+    /// 所以调用方先提交、再把这个错误交给 agent（见 [`crate::Store::next`]）。
+    pub fn dispatch_next(&mut self, name: &str) -> Result<std::result::Result<CardDetail, BoardError>> {
         let cur: Option<i64> = self
             .tx
             .query_row("SELECT id FROM dispatches WHERE name = ?1 AND state = 'running' ORDER BY id DESC LIMIT 1", [name], |r| r.get(0))
@@ -1245,68 +1268,31 @@ impl<'a> W<'a> {
                 format!("#{} 还由你持有：先交审（board heartbeat final，再沿连线移到交审状态）或交给人处理，再 board next", d.card),
             ));
         }
-        let done = |why: String| Err(BoardError::new(ErrorCode::SessionDone, format!("{why}：结束这个会话")));
-        if d.source != "cron" {
-            return done("这个会话是手动派发启动的，只做指定的那一张".into());
-        }
-        if d.stop_by.is_some() {
-            return done("有人停止了这个会话".into());
-        }
-        let Some(h) = self.host_row(&d.host)? else {
-            return done(format!("机器「{}」已被移除", d.host));
-        };
-        if h.paused {
-            return done(format!("机器「{}」暂停接单", h.name));
-        }
-        let n: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE COALESCE(session, id) = ?1", [d.session], |r| r.get(0))?;
-        if n >= h.per_session {
-            return done(format!("这个会话已经做了 {n} 张（机器设置：一个会话最多做 {} 张）", h.per_session));
-        }
-        // 候选：这一轮、这个会话里这台机器派发过的卡片不再领
-        let (first_card, first_at): (i64, i64) =
-            self.tx.query_row("SELECT card, created_at FROM dispatches WHERE id = ?1", [d.session], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        let since = h.round_at.map_or(first_at, |r| r.min(first_at));
-        let skip: Vec<i64> = self.collect(
-            "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3",
-            params![d.board, h.id, since],
-            |r| r.get(0),
-        )?;
-        let flow = flow_of(self.tx, d.board)?;
-        let list = self.claimable_order(d.board, &flow, &skip)?;
-        // 只留按规则交给这个会话的 agent 的卡片；规则里的标签只表示谁来做，不算「共同标签」。
-        // 一条规则也没有了（例如被删光）时不接着领：这个会话做完当前这张就结束
-        let Some(rules) = h.claim_rules() else {
-            return done(format!("机器「{}」已经没有领取规则", h.name));
-        };
-        let mut keep = vec![];
-        for c in list {
-            if rules.route(&card_label_names(self.tx, d.board, c.0)?) == Some(d.agent.as_str()) {
-                keep.push(c);
-            }
-        }
-        let list = keep;
-        let rule_labels = rules.labels();
-        if list.is_empty() {
-            return done(format!("白板 {} 上没有这个会话能领的卡片", board.path()));
-        }
-        let urgent = self.priority_cards(d.board)?;
-        let card = match list.iter().find(|(id, _)| urgent.contains(id)) {
-            Some((id, _)) => *id,
-            None => {
-                let mine: Vec<String> =
-                    card_label_names(self.tx, d.board, first_card)?.into_iter().filter(|l| !rule_labels.contains(l)).collect();
-                let mut best = (0usize, list[0].0);
-                for (id, _) in &list {
-                    let theirs = card_label_names(self.tx, d.board, *id)?;
-                    let common = theirs.iter().filter(|l| mine.contains(l)).count();
-                    if common > best.0 {
-                        best = (common, *id);
-                    }
-                }
-                best.1
+        let h = self.host_row(&d.host)?;
+        let why = if d.source != "cron" {
+            Some("这个会话是手动派发启动的，只做指定的那一张".to_string())
+        } else if d.stop_by.is_some() {
+            Some("有人停止了这个会话".into())
+        } else {
+            match &h {
+                None => Some(format!("机器「{}」已被移除", d.host)),
+                Some(h) if h.paused => Some(format!("机器「{}」暂停接单", h.name)),
+                // 规则被删光：做完当前这张就结束，排着的取消
+                Some(h) if h.claim_rules().is_none() => Some(format!("机器「{}」已经没有领取规则", h.name)),
+                Some(_) => None,
             }
         };
+        if let Some(why) = why {
+            return self.session_done(&d, &why);
+        }
+        let h = h.expect("上面已经处理了机器不存在");
+        let queue: Vec<i64> =
+            self.collect("SELECT id FROM dispatches WHERE session = ?1 AND state = 'queued' ORDER BY id", [d.session], |r| r.get(0))?;
+        if queue.is_empty() {
+            return self.session_done(&d, "这个会话排着的卡片都开始过或取消了");
+        }
         // 结算上一张：卡片已经不由这个名字持有，在交审状态记「已交审」，其他状态记「做不下去」
+        let flow = flow_of(self.tx, d.board)?;
         let col: Option<String> =
             self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0)).optional()?;
         let result = if col.as_deref().is_some_and(|c| flow.is_review(c)) { "review" } else { "stuck" };
@@ -1315,29 +1301,103 @@ impl<'a> W<'a> {
         let took = d.started_at.map(|t| format!("，用时 {}", crate::engine::dur_words(self.now - t))).unwrap_or_default();
         let text = format!("派发结束：{}（{}{took}），接着做下一张", result_words(result), Self::dispatch_words(&d));
         self.track_dispatch(d.board, d.card, &actor, "dispatch", &text)?;
-        // 以同一个名字领取下一张
-        self.dispatch_ok = true;
-        let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(card) });
-        self.dispatch_ok = false;
-        claimed?;
-        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, card], |r| r.get(0))?;
+        // 按排好的顺序以同一个名字领取；领不到的记「没领到」，接着取再下一张
+        for id in queue {
+            let q = self.drow(id)?;
+            let q = DRow { name: Some(name.to_string()), env: d.env.clone(), env_name: d.env_name.clone(), ..q };
+            self.dispatch_ok = true;
+            let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(q.card) });
+            self.dispatch_ok = false;
+            match claimed {
+                Ok(_) => {
+                    self.tx.execute(
+                        "UPDATE dispatches SET state = 'running', name = ?2, env = ?3, env_name = ?4, started_at = ?5 WHERE id = ?1",
+                        params![q.id, name, q.env, q.env_name, self.now],
+                    )?;
+                    let seq: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE session = ?1 AND id <= ?2", params![d.session, q.id], |r| r.get(0))?;
+                    let who = match &q.env_name {
+                        Some(e) => format!("{}（{e}）", q.agent_label),
+                        None => format!("{} ", q.agent_label),
+                    };
+                    let text = format!("派发开始：{} 上的 {who}以 {name} 接着做（定时，这个会话的第 {seq} 张）", h.name);
+                    self.track(d.board, q.card, &actor, "dispatch", &text)?;
+                    self.touch_hosts();
+                    return Ok(Ok(self.read().card(&board, q.card)?));
+                }
+                Err(e) if e.code == ErrorCode::Internal => return Err(e),
+                Err(e) => {
+                    self.close_row(&q, "unclaimed", None)?;
+                    let text = format!("派发没领到：{}（{}）", e.message, Self::dispatch_words(&q));
+                    self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
+                }
+            }
+        }
+        Ok(Err(session_done_error("这个会话排着的卡片都没领到")))
+    }
+
+    /// 会话不再接着做：取消这个会话还排着的派发（卡片不动），返回 SESSION_DONE（由调用方提交后交给 agent）
+    fn session_done(&mut self, d: &DRow, why: &str) -> Result<std::result::Result<CardDetail, BoardError>> {
+        self.cancel_session_rest(d.session, why)?;
+        Ok(Err(session_done_error(why)))
+    }
+
+    /// 会话不再接着做（board next 返回 SESSION_DONE、进程退出、被人停止、机器掉线）：这个会话还排着的派发都取消，
+    /// 结果「已取消」，卡片不动、留在可领取状态；这一轮还没结束时由新开的会话重新排
+    fn cancel_session_rest(&mut self, session: i64, why: &str) -> Result<()> {
+        let ids: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE session = ?1 AND state = 'queued' ORDER BY id", [session], |r| r.get(0))?;
+        for id in ids {
+            let q = self.drow(id)?;
+            self.close_dispatch(&q, "canceled", None)?;
+            let text = format!("会话结束（{why}），排着的派发取消（{}），卡片留在原地", Self::dispatch_words(&q));
+            self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
+        }
+        Ok(())
+    }
+
+    /// 开会话时排好后面几张（第一张已经开始）：从同一块白板、按领取规则交给同一个 agent 的可领取卡片里取，连第一张最多
+    /// 「一个会话最多做几张」张。先后：带优先标签的在前（按规则 1 的顺序），再是其余卡片里和第一张共同标签多的
+    /// （领取规则里用到的标签不算，它只表示谁来做），一样多时按规则 1 的顺序。每张记一条排队的派发，属于这个会话
+    fn plan_session(&mut self, h: &HostRow, rules: &Rules, first: &Dispatch, board: &BoardRef, flow: &Flow, skip: &[i64]) -> Result<()> {
+        let want = (h.per_session.max(1) - 1) as usize;
+        if want == 0 {
+            return Ok(());
+        }
+        let mut skip = skip.to_vec();
+        skip.push(first.card);
+        let rule_labels = rules.labels();
+        let mine: Vec<String> = card_label_names(self.tx, board.id, first.card)?.into_iter().filter(|l| !rule_labels.contains(l)).collect();
+        let urgent = self.priority_cards(board.id)?;
+        // （不带优先标签，共同标签数取反，规则 1 的顺序，卡片）
+        let mut list: Vec<(bool, std::cmp::Reverse<usize>, usize, i64)> = vec![];
+        for (i, (id, _)) in self.claimable_order(board.id, flow, &skip)?.into_iter().enumerate() {
+            let labels = card_label_names(self.tx, board.id, id)?;
+            if rules.route(&labels) != Some(first.agent.as_str()) {
+                continue;
+            }
+            let hot = urgent.contains(&id);
+            let common = if hot { 0 } else { labels.iter().filter(|l| mine.contains(l)).count() };
+            list.push((!hot, std::cmp::Reverse(common), i, id));
+        }
+        list.sort();
+        list.truncate(want);
+        if list.is_empty() {
+            return Ok(());
+        }
+        let total = list.len() + 1;
+        let name = first.name.clone().unwrap_or_default();
         let by = Actor::system();
-        self.tx.execute(
-            "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, name, env, env_name, source, by_kind, by_name, state, created_at, started_at, session)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'cron', ?11, ?12, 'running', ?13, ?13, ?14)",
-            params![
-                d.board, card, title, h.id, h.name, d.agent, d.agent_label, name, d.env, d.env_name,
-                by.kind.as_str(), by.name, self.now, d.session
-            ],
-        )?;
-        let who = match &d.env_name {
-            Some(e) => format!("{}（{e}）", d.agent_label),
-            None => format!("{} ", d.agent_label),
-        };
-        let text = format!("派发开始：{} 上的 {who}以 {name} 接着做（定时，这个会话的第 {} 张）", h.name, n + 1);
-        self.track(d.board, card, &actor, "dispatch", &text)?;
+        for (k, (.., card)) in list.into_iter().enumerate() {
+            let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![board.id, card], |r| r.get(0))?;
+            self.tx.execute(
+                "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, session)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'cron', ?8, ?9, 'queued', ?10, ?11)",
+                params![board.id, card, title, h.id, h.name, first.agent, first.agent_label, by.kind.as_str(), by.name, self.now, first.id],
+            )?;
+            let text = format!("派发到 {} · {}（定时），会话第 {}/{total} 张，排队等 {name} 接着做", h.name, first.agent_label, k + 2);
+            self.track(board.id, card, &by, "dispatch", &text)?;
+        }
         self.touch_hosts();
-        self.read().card(&board, card)
+        Ok(())
     }
 
     /// 写一条派发的结束（不动名字：board next 接着做下一张时用）
@@ -1869,6 +1929,8 @@ impl<'a> W<'a> {
         let d = self.drow(id)?;
         match d.state.as_str() {
             "queued" => {
+                // 记下是谁取消的：会话结束时自动取消的排队这一轮还能重排，人取消的不再排（见 dispatch_pull 的 skip）
+                self.tx.execute("UPDATE dispatches SET stop_by = ?2 WHERE id = ?1", params![id, who])?;
                 self.close_dispatch(&d, "canceled", None)?;
                 self.track_dispatch(d.board, d.card, by, "dispatch", &format!("取消了派发（{}）", Self::dispatch_words(&d)))?;
             }
@@ -1945,6 +2007,9 @@ impl<'a> W<'a> {
         let d = self.drow(id)?;
         if d.state != "queued" || d.host_id != h.id {
             return Err(BoardError::usage(format!("派发 #{id} 不在机器「{host}」的排队里")));
+        }
+        if d.session != d.id {
+            return Err(BoardError::usage(format!("派发 #{id} 排在会话里，由那个会话的 board next 开始")));
         }
         if h.paused {
             return Err(BoardError::usage(format!("机器「{host}」暂停接单")));
@@ -2032,16 +2097,21 @@ impl<'a> W<'a> {
             let flow = flow_of(self.tx, board.id)?;
             // 这一轮里这台机器已经派发过的卡片不再领：派发异常退出/被停止后卡片 50 秒会回到可领取状态最上面，
             // 不跳的话同一个空位会反复领到它、白跑 agent。下一轮（round_at 更新后）可以正常再领。
+            // 会话结束时还没轮到、被自动取消的排队不算（stop_by 为空；人取消的记了是谁）：新开的会话可以把它们重新排进去
             let round_at = h.round_at.unwrap_or(0);
             let skip: Vec<i64> = self.collect(
-                "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3",
+                "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3
+                   AND NOT (state = 'done' AND result = 'canceled' AND started_at IS NULL AND stop_by IS NULL AND session IS NOT NULL AND session != id)",
                 params![board.id, h.id, round_at],
                 |r| r.get(0),
             )?;
             // 规则会给它派一个这台机器上找得到的 agent 的卡片，按规则 1 的先后（带优先标签的在前）取第一张
             let found = h.resolved();
             let mut hit: Option<(i64, HostAgent)> = None;
-            for (id, _) in self.claimable_order(board.id, &flow, &skip)? {
+            let urgent = self.priority_cards(board.id)?;
+            let mut order = self.claimable_order(board.id, &flow, &skip)?;
+            order.sort_by_key(|(id, _)| !urgent.contains(id));
+            for (id, _) in order {
                 let Some(want) = rules.route(&card_label_names(self.tx, board.id, id)?) else { continue };
                 if let Some(a) = found.iter().find(|x| x.id == want) {
                     hit = Some((id, a.clone()));
@@ -2053,8 +2123,19 @@ impl<'a> W<'a> {
             let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system())?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
-                return Ok(Some(d));
+                // 开会话时把这个会话要做的卡片一次排好：先把一个会话排满，再开下一个
+                self.plan_session(&h, &rules, &d, &board, &flow, &skip)?;
+                return self.read().dispatch(d.id).map(Some);
             }
+        }
+        // 还有会话排着卡片时这一轮不算结束：会话中途退出时它们被取消，要能由新开的会话重新排
+        let pending: i64 = self.tx.query_row(
+            "SELECT COUNT(*) FROM dispatches WHERE host_id = ?1 AND state = 'queued' AND session IS NOT NULL",
+            [h.id],
+            |r| r.get(0),
+        )?;
+        if pending > 0 {
+            return Ok(None);
         }
         self.end_round(&h)
     }
@@ -2178,7 +2259,13 @@ impl<'a> W<'a> {
         let code = exit_code.map(|c| format!("，退出码 {c}")).unwrap_or_default();
         let text = format!("派发结束：{}（{}{took}{code}）", result_words(result), Self::dispatch_words(d));
         self.track_dispatch(d.board, d.card, &actor, "dispatch", &text)?;
-        Ok(())
+        // 进程不在了：这个会话还排着的取消
+        let why = match (&stop_by, how) {
+            (_, Finish::HostExit) => format!("board host（{}）退出", d.host),
+            (Some(who), _) => format!("{who} 停止了这个会话"),
+            _ => "agent 进程退出".to_string(),
+        };
+        self.cancel_session_rest(d.session, &why)
     }
 
     /// 追加日志，只保留最后 500 行（不算变更，不推送；界面打开日志时自己去取）
@@ -2216,6 +2303,7 @@ impl<'a> W<'a> {
             self.close_dispatch(&d, "lost", None)?;
             let text = format!("派发结束：机器掉线，超过 {} 秒没有收到 {} 的上报（{}）", HOST_GAP_MS / 1000, d.host, Self::dispatch_words(&d));
             self.track_dispatch(d.board, d.card, &Actor::system(), "dispatch", &text)?;
+            self.cancel_session_rest(d.session, "机器掉线")?;
         }
         Ok(n + lost.len())
     }
@@ -2230,6 +2318,11 @@ enum Finish {
     HostExit,
     /// board host 重启后，本机没有这次派发的进程
     Missing,
+}
+
+/// `board next` 的 SESSION_DONE：这个会话不再接着做
+fn session_done_error(why: &str) -> BoardError {
+    BoardError::new(ErrorCode::SessionDone, format!("{why}：结束这个会话"))
 }
 
 /// 规则拒绝不算失败（存储故障照样报错）

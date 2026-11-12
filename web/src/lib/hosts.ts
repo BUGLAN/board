@@ -65,8 +65,12 @@ export function envName(h: HostInfo | undefined, id: string | null | undefined):
   return h?.envs?.find(e => e.id === id)?.name ?? id;
 }
 
-/** 排队的原因 */
-export function queueReason(h: HostInfo | undefined): string {
+/** 开会话时排进去、等这个会话的 board next 开始的派发：不占空位，不在「排队」里列 */
+export const inSession = (d: Dispatch) => d.state === 'queued' && d.session != null && d.session !== d.id;
+
+/** 排队的原因；会话里排着的写「会话第 N/M 张」 */
+export function queueReason(h: HostInfo | undefined, d?: Dispatch): string {
+  if (d && inSession(d)) return `会话第 ${d.seq ?? '?'}/${d.total ?? '?'} 张`;
   if (!h) return '机器已移除';
   if (!h.online) return '等机器上线';
   if (h.paused) return '暂停接单';
@@ -92,14 +96,22 @@ export const dispatchesOf = (ws: Workspace | null) => ws?.dispatches ?? NO_DISPA
 export const cardDispatch = (ws: Workspace | null, board: string, card: number) =>
   dispatchesOf(ws).find(d => d.board === board && d.card === card);
 
-/** 一台机器在跑、排队的派发（在跑按机器名，排队按机器 ID） */
+/** 一台机器在跑、排队的派发（在跑按机器名，排队按机器 ID）；排队不含会话里排着的（它们挂在会话正在跑的那一行下面） */
 export function hostLoad(ws: Workspace | null, h: HostInfo) {
   const all = dispatchesOf(ws);
   return {
     running: all.filter(d => d.state === 'running' && d.host === h.name),
-    queued: all.filter(d => d.state === 'queued' && d.hostId === h.id),
+    queued: all.filter(d => d.state === 'queued' && d.hostId === h.id && !inSession(d)),
   };
 }
+
+/** 一个会话还排着的派发，按排好的顺序 */
+export const sessionQueue = (ws: Workspace | null, session: number | undefined) =>
+  session == null ? NO_DISPATCHES : dispatchesOf(ws).filter(d => inSession(d) && d.session === session);
+
+/** 会话里排着的派发，它的会话正在跑的那一张（名字、卡片）；会话没在跑时为空 */
+export const sessionRunning = (ws: Workspace | null, d: Dispatch) =>
+  dispatchesOf(ws).find(x => x.state === 'running' && x.session === d.session);
 
 /** 多久之前：3 秒前 / 5 分钟前 / 2 小时前 / 3 天前 */
 export function since(t: number, now: number) {
