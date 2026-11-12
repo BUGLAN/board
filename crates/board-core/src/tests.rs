@@ -1909,6 +1909,59 @@ fn trash_delete_releases_claim_and_restore_does_not_rekeep_it() {
 }
 
 #[test]
+fn trash_restore_from_inbox_goes_back_to_inbox() {
+    // 「未整理」不在工作流（statuses 表）里：恢复时不能当成「原来所在的状态已经删除」扔回待办，
+    // 否则刚记下、还没整理的条目会直接进可领取状态被领走
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("先记下")).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::New { title: "想法".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![] })
+        .unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::New { title: "想法二".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![] })
+        .unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols[INBOX], vec![2, 3]);
+
+    exec(&mut s, B, &human(), T0 + SEC, Cmd::Delete { id: 2 }).unwrap();
+    let t = s.read(|r| r.trash(&r.resolve(B).unwrap())).unwrap();
+    assert_eq!((t[0].col.as_str(), t[0].pos), (INBOX, 0), "回收站里记着原来在未整理");
+
+    let r = exec(&mut s, B, &human(), T0 + 2 * SEC, Cmd::Restore { id: 2 }).unwrap();
+    assert_eq!(r.card.column, INBOX, "从「未整理」删除的条目，恢复后回到「未整理」");
+    assert!(r.activity.iter().any(|a| a.action == "restore" && a.text == "从回收站恢复，放回「未整理」"));
+    assert_eq!(snapshot(&s, B, T0 + 2 * SEC).cols[INBOX], vec![2, 3], "放回原来的位置");
+    assert!(snapshot(&s, B, T0 + 2 * SEC).cols["todo"] == vec![1], "没有进待办");
+}
+
+#[test]
+fn trash_restore_of_held_card_goes_back_to_claimed_from() {
+    // 删除会释放领取并清空 claimed_from：恢复要回到「当初领取它的可领取状态」，不能一律回首个可领取状态
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("返工里的")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(1, "review")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(1, "rework")).unwrap();
+    exec(&mut s, B, &alpha(), T0 + SEC, claim(Some(1))).unwrap();
+    assert_eq!(card(&s, B, 1).card.claimed_from.as_deref(), Some("rework"));
+
+    exec(&mut s, B, &human(), T0 + 2 * SEC, Cmd::Delete { id: 1 }).unwrap();
+    let t = s.read(|r| r.trash(&r.resolve(B).unwrap())).unwrap();
+    assert_eq!(t[0].held_from.as_deref(), Some("rework"), "删除前把领取来源存进回收站");
+    assert!(t[0].was_held);
+
+    let r = exec(&mut s, B, &human(), T0 + 3 * SEC, Cmd::Restore { id: 1 }).unwrap();
+    assert_eq!(r.card.column, "rework", "回到当初领取它的返工，而不是首个可领取状态的待办");
+    assert_eq!(r.card.holder, None);
+    assert_eq!(r.card.claimed_from, None, "恢复后不保留领取来源");
+    assert!(r.activity.iter().any(|a| a.action == "restore" && a.text == "从回收站恢复，原来在「进行中」（被删时还在做），放回「返工」"));
+    assert_eq!(snapshot(&s, B, T0 + 3 * SEC).cols["todo"], Vec::<i64>::new(), "没有扔回待办");
+
+    // 领取它的那个可领取状态后来被删了：退回首个可领取状态
+    exec(&mut s, B, &alpha(), T0 + 4 * SEC, claim(Some(1))).unwrap();
+    exec(&mut s, B, &human(), T0 + 5 * SEC, Cmd::Delete { id: 1 }).unwrap();
+    run(&mut s, |w| w.delete_status(B, "rework"));
+    let r = exec(&mut s, B, &human(), T0 + 6 * SEC, Cmd::Restore { id: 1 }).unwrap();
+    assert_eq!(r.card.column, "todo");
+}
+
+#[test]
 fn trash_restore_after_status_deleted_goes_home() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("返工里的")).unwrap();

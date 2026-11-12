@@ -149,10 +149,14 @@ struct Row {
     body: String,
 }
 
-/// 回收站里一张卡片删除前所在的状态和在状态里的位置
+/// 回收站里一张卡片删除前所在的状态和在状态里的位置，以及删除前领取它的那个可领取状态
+/// （只有删掉时还被持有的卡片才有；恢复时据此回到「当初领取它的可领取状态」）
 struct TrashMeta {
     del_col: Option<String>,
     del_pos: Option<i64>,
+    del_from: Option<String>,
+    /// 删除前是不是被持有
+    held: bool,
 }
 
 impl TrashCard {
@@ -673,8 +677,11 @@ impl<'a> W<'a> {
                 let mut detail = self.read().card(board, id)?;
                 let holder = self.holder_of(b, id)?;
                 self.on_card_delete(b, id, actor)?;
+                // 删除前领取它的那个可领取状态：下面 clear_claim 会把它清空，先取出来存进 del_from，
+                // 恢复时靠它回到「当初领取它的可领取状态」（PRD §8 规则 10）
+                let from = self.claimed_from(b, id)?;
                 // 持有的先释放：进行中的这一次在此时结束
-                if let Some(who) = holder {
+                if let Some(who) = holder.as_deref() {
                     let run = self.clear_claim(b, id, "release")?;
                     detail.card.holder = None;
                     detail.card.claimed_at = None;
@@ -688,9 +695,20 @@ impl<'a> W<'a> {
                     )?;
                 }
                 self.tx.execute(
-                    "UPDATE cards SET deleted_at = ?1, deleted_by_kind = ?2, deleted_by_name = ?3, del_col = ?4, del_pos = ?5
-                     WHERE board = ?6 AND id = ?7",
-                    params![self.now, actor.kind.as_str(), actor.name, detail.card.column, self.row_pos(b, id)?, b, id],
+                    "UPDATE cards SET deleted_at = ?1, deleted_by_kind = ?2, deleted_by_name = ?3, del_col = ?4, del_pos = ?5,
+                            del_from = ?6, del_held = ?7
+                     WHERE board = ?8 AND id = ?9",
+                    params![
+                        self.now,
+                        actor.kind.as_str(),
+                        actor.name,
+                        detail.card.column,
+                        self.row_pos(b, id)?,
+                        from,
+                        holder.is_some() as i64,
+                        b,
+                        id
+                    ],
                 )?;
                 self.event(b, id, &detail.card.title, actor, "delete", &format!("{} 删除", actor.display()))?;
                 self.trim_trash(b, id)?;
@@ -708,19 +726,29 @@ impl<'a> W<'a> {
                     return Err(BoardError::new(ErrorCode::NotFound, format!("#{id} 不在回收站里")));
                 };
                 let saved = row.del_col.clone().unwrap_or_default();
-                let (mut target, at) = match flow.get(&saved) {
-                    // 原来在锁定状态（被删时还在做）：回到当初领取它的可领取状态，放最下面，不保留领取
-                    Some(s) if s.lock => (self.claimed_from(b, id)?.unwrap_or_else(|| flow.home().key.clone()), At::Bottom),
+                // 删除前在锁定状态（被删时还在做）：回到当初领取它的可领取状态；
+                // 「未整理」不在工作流里，之前在这里判断不到，被当成「原来所在的状态已经删除」扔回待办
+                let (mut target, at) = if saved == INBOX {
+                    (saved.clone(), At::Index(row.del_pos.unwrap_or(0).max(0) as usize))
+                } else if let Some(s) = flow.get(&saved) {
+                    if s.lock {
+                        let from = row.del_from.clone().filter(|k| flow.is_claim(k)).unwrap_or_else(|| flow.home().key.clone());
+                        (from, At::Bottom)
+                    } else {
+                        // 还在原来的状态里：原来的位置上排第几就放回第几（还是原来那一列时才不会和别的卡片撞位）
+                        (saved.clone(), At::Index(row.del_pos.unwrap_or(0).max(0) as usize))
+                    }
+                } else {
                     // 原来的状态已经删了：首个可领取状态最下面
-                    None => (flow.home().key.clone(), At::Bottom),
-                    // 还在原来的状态里：原来的位置上排第几就放回第几（还是原来那一列时才不会和别的卡片撞位）
-                    Some(_) => (saved.clone(), At::Index(row.del_pos.unwrap_or(0).max(0) as usize)),
+                    (flow.home().key.clone(), At::Bottom)
                 };
-                if !flow.is_claim(&target) && flow.get(&target).is_none() {
+                // 「未整理」不在工作流里，是合法的去处
+                if target != INBOX && !flow.is_claim(&target) && flow.get(&target).is_none() {
                     target = flow.home().key.clone();
                 }
                 self.tx.execute(
                     "UPDATE cards SET deleted_at = NULL, deleted_by_kind = NULL, deleted_by_name = NULL, del_col = NULL, del_pos = NULL,
+                            del_from = NULL, del_held = NULL,
                             holder = NULL, claimed_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL, moved_at = ?1
                      WHERE board = ?2 AND id = ?3",
                     params![self.now, b, id],
@@ -731,6 +759,8 @@ impl<'a> W<'a> {
                     format!("从回收站恢复，放回「{}」", flow.name(&target))
                 } else if flow.get(&saved).is_none() {
                     format!("从回收站恢复，原来所在的状态已经删除，放回「{}」", flow.name(&target))
+                } else if row.held {
+                    format!("从回收站恢复，原来在「{}」（被删时还在做），放回「{}」", flow.name(&saved), flow.name(&target))
                 } else {
                     format!("从回收站恢复，原来在「{}」，放回「{}」", flow.name(&saved), flow.name(&target))
                 };
@@ -951,14 +981,21 @@ impl<'a> W<'a> {
         Ok(self.tx.query_row("SELECT pos FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?)
     }
 
-    /// 回收站里这张卡片删除前在哪个状态、排第几位（不在回收站里时为 None）
+    /// 回收站里这张卡片删除前在哪个状态、排第几位、领取它的那个可领取状态（不在回收站里时为 None）
     fn trash_row(&self, b: i64, id: i64) -> Result<Option<TrashMeta>> {
         Ok(self
             .tx
             .query_row(
-                "SELECT del_col, del_pos FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NOT NULL",
+                "SELECT del_col, del_pos, del_from, del_held FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NOT NULL",
                 params![b, id],
-                |r| Ok(TrashMeta { del_col: r.get(0)?, del_pos: r.get(1)? }),
+                |r| {
+                    Ok(TrashMeta {
+                        del_col: r.get(0)?,
+                        del_pos: r.get(1)?,
+                        del_from: r.get(2)?,
+                        held: r.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                    })
+                },
             )
             .optional()?)
     }

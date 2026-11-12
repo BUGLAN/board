@@ -73,14 +73,22 @@ export async function deleteCards(ids: number[], { silent = false, titles = {} }
 
 /* ------------------------------ 恢复 ------------------------------ */
 
-/** 恢复后的列：原来那一列还在就用它；原来在锁定状态（被删时还在做）、或者那一列已经删了的，回到首个可领取状态 */
-export function restoreColumn(saved: string | null | undefined, statuses: Status[] | undefined): string {
+/**
+ * 恢复后的列，和服务端的规则一致：
+ * - 「未整理」不在工作流里，从这儿删的条目恢复后还是回「未整理」
+ * - 原来在锁定状态（被删时还在做）：回到当初领取它的可领取状态（{@link TrashCard.heldFrom}），那个状态没了才回首个可领取状态
+ * - 原来那一列还在就用它；已经删了的回首个可领取状态
+ */
+export function restoreColumn(t: Pick<TrashCard, 'col' | 'heldFrom'> | null | undefined, statuses: Status[] | undefined): string {
   const home = statuses?.find(s => s.claim)?.key ?? 'todo';
+  const saved = t?.col;
   if (!saved) return home;
   if (saved === 'inbox') return saved;
   const s = statuses?.find(x => x.key === saved);
-  if (!s || s.lock) return home;
-  return saved;
+  if (!s) return home;
+  if (!s.lock) return saved;
+  const from = t?.heldFrom;
+  return from && statuses?.some(x => x.key === from && x.claim) ? from : home;
 }
 
 /** 恢复后排第几位：还是原来那一列就放回原来的位置，否则放最后 */
@@ -102,7 +110,7 @@ async function restoreOne(path: string, id: number) {
   const t = await trashed(path, id);
   const w = useData.getState();
   const live = w.path === path && w.board?.path === path ? w.board : null;
-  const column = restoreColumn(t?.column, live?.statuses);
+  const column = restoreColumn(t, live?.statuses);
   const pos = restorePos(t, column, live?.cols[column]);
   // 补丁里放上去的那一份：回收站里有就按它的（标题、标签、附件都还在），没有就等刷新
   const card = (t as unknown as Card | null) ?? ({ id, title: '', body: '', column } as Card);

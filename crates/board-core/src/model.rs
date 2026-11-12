@@ -648,6 +648,13 @@ pub struct TrashCard {
     pub col: String,
     /// 删除前在状态里的位置；恢复时排回原来的位置
     pub pos: i64,
+    /// 删除前领取它的那个可领取状态（被删时还被持有的才有）：恢复后回到这里，而不是首个可领取状态。
+    /// 卡片本身的 `claimedFrom` 在删除时已被清空，这里另起名字，免得和它的 JSON 字段撞上
+    #[serde(default)]
+    pub held_from: Option<String>,
+    /// 删除前是不是被持有
+    #[serde(default)]
+    pub was_held: bool,
 }
 
 /// 全局事件流里的一条（界面的「最近动态」与跨窗口高亮用）

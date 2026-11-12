@@ -96,6 +96,11 @@ CREATE TABLE IF NOT EXISTS cards (
   -- 回收站里：删除前在哪个状态、排第几位，恢复时放回去
   del_col         TEXT,
   del_pos         INTEGER,
+  -- 回收站里：删除前领取它的那个可领取状态（被删时还被持有的才有）。删除会释放领取、清空 claimed_from，
+  -- 恢复时靠这一列回到「当初领取它的可领取状态」（PRD §8 规则 10）
+  del_from        TEXT,
+  -- 回收站里：删除前是不是被持有
+  del_held        INTEGER,
   PRIMARY KEY (board, id)
 );
 CREATE INDEX IF NOT EXISTS cards_col ON cards (board, col, pos);
@@ -380,8 +385,16 @@ impl Store {
                  ALTER TABLE cards ADD COLUMN deleted_by_name TEXT;
                  ALTER TABLE cards ADD COLUMN del_col TEXT;
                  ALTER TABLE cards ADD COLUMN del_pos INTEGER;
+                 ALTER TABLE cards ADD COLUMN del_from TEXT;
+                 ALTER TABLE cards ADD COLUMN del_held INTEGER;
                  CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at);",
             )?;
+        }
+        // 旧数据库的回收站不记删除前的领取来源
+        let has_del_from: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'del_from'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_del_from {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN del_from TEXT; ALTER TABLE cards ADD COLUMN del_held INTEGER;")?;
         }
         // 旧数据库的白板没有说明
         let has_readme: bool =
@@ -753,7 +766,15 @@ impl<'a> R<'a> {
                 v.into_iter()
                     .map(|(card, row)| {
                         let deleted_at = row.deleted_at.unwrap_or(card.created_at);
-                        TrashCard { card, deleted_at, deleted_by: row.deleted_by, col: row.del_col.unwrap_or_default(), pos: row.del_pos.unwrap_or(0) }
+                        TrashCard {
+                            card,
+                            deleted_at,
+                            deleted_by: row.deleted_by,
+                            col: row.del_col.unwrap_or_default(),
+                            pos: row.del_pos.unwrap_or(0),
+                            held_from: row.del_from,
+                            was_held: row.del_held,
+                        }
                     })
                     .collect()
             })
@@ -969,6 +990,10 @@ struct TrashRow {
     deleted_by: Actor,
     del_col: Option<String>,
     del_pos: Option<i64>,
+    /// 删除前领取它的那个可领取状态
+    del_from: Option<String>,
+    /// 删除前是不是被持有
+    del_held: bool,
 }
 
 /// 按条件读出卡片（不带 skip 时排除 skip 里的）。`cond` 接在 WHERE 后面，用参数 ?1…
@@ -992,7 +1017,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 COALESCE(c.moved_at, c.created_at),
                 c.seen_at,
-                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos
+                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from, c.del_held
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1031,6 +1056,8 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             deleted_by: row_actor(by_kind.unwrap_or_else(|| "human".into()), r.get::<_, Option<String>>(24)?.unwrap_or_default()),
             del_col: r.get(25)?,
             del_pos: r.get(26)?,
+            del_from: r.get(27)?,
+            del_held: r.get::<_, Option<bool>>(28)?.unwrap_or(false),
         };
         Ok((card, row))
     })?;
