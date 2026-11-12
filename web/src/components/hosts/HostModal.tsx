@@ -1,11 +1,12 @@
-/* 机器详情：居中弹窗（正在跑、排队、派发规则、本机 agent、启动环境、白板与目录、最近）；添加机器 */
+/* 机器详情：居中弹窗（就绪、正在跑、排队、派发规则、本机 agent、启动环境、白板与目录、最近）；添加机器 */
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
-import { copyText, cx, durWords, pref } from '../../lib/util';
+import { readiness, type ReadyGo } from '../../lib/ready';
+import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
@@ -13,6 +14,7 @@ import { LabelChip, Select, Sync, Title, useNow, useSync, type SyncState } from 
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
+import { ReadySection, useServerVersion } from './Ready';
 
 export function HostModal() {
   const sel = useUI(s => s.host);
@@ -155,6 +157,22 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 
   const { save, sync } = useSaver(h.name);
   const failed = (...fs: string[]) => fs.some(f => sync[f] === 'failed') && 'hp-rollback';
+  const server = useServerVersion();
+  // 就绪清单里没通过的项点按钮：展开对应的那一块（收起的「白板与目录」先展开），滚过去闪一下
+  const [reveal, setReveal] = useState<{ to: ReadyGo | null; n: number }>({ to: null, n: 0 });
+  const go = (to: ReadyGo) => setReveal(r => ({ to, n: r.n + 1 }));
+  useEffect(() => {
+    if (!reveal.to) return;
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(`hp-sec-${reveal.to}`);
+      if (!el) return;
+      el.scrollIntoView?.({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+      el.classList.remove('hp-flash');
+      void el.offsetWidth;
+      el.classList.add('hp-flash');
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [reveal]);
   const canRound = h.online && !h.paused && !h.round && hasRules;
   const roundTip = h.round
     ? '正在领一轮：有空位就领下一张，所有白板都没有符合规则的卡片时结束'
@@ -262,6 +280,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             </div>
           </section>
 
+          <ReadySection checks={readiness(h, now, server)} go={go} i={1} />
+
           <section className="d-section" style={{ ['--i' as string]: 1 }}>
             <div className="d-label">
               正在跑{' '}
@@ -332,7 +352,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             {h.rules != null && <ClaimRules h={h} save={save} sync={sync.rules} />}
           </section>
 
-          <section className="d-section" style={{ ['--i' as string]: 3 }}>
+          <section className="d-section" id="hp-sec-agents" style={{ ['--i' as string]: 3 }}>
             <div className="d-label">本机 agent</div>
             <SkillBanner h={h} fixed={fixed} setFixed={setFixed} />
             {h.agents.map(a => (
@@ -355,7 +375,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             </Fold>
           )}
 
-          <Fold id="dirs" title="白板与目录" n={h.dirs.length} i={5}>
+          <Fold id="dirs" title="白板与目录" n={h.dirs.length} i={5} reveal={reveal.to === 'dirs' ? reveal.n : 0}>
             <DirsEditor h={h} save={save} sync={sync.dirs} hosts={hostsOf(ws)} now={now} />
           </Fold>
 
@@ -1047,11 +1067,16 @@ function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: Sy
   );
 }
 
-/** 次要区块：标题行点一下收起 / 展开，状态记在本机（默认收起），重开弹窗保持 */
-function Fold({ id, title, n, i, children }: { id: string; title: string; n: number; i: number; children: React.ReactNode }) {
+/** 次要区块：标题行点一下收起 / 展开，状态记在本机（默认收起），重开弹窗保持；reveal 变了（就绪清单里点了按钮）就展开 */
+function Fold({ id, title, n, i, reveal = 0, children }: { id: string; title: string; n: number; i: number; reveal?: number; children: React.ReactNode }) {
   const [open, setOpen] = useState(() => pref.get(`hostFold.${id}`, false));
+  useEffect(() => {
+    if (!reveal) return;
+    pref.set(`hostFold.${id}`, true);
+    setOpen(true);
+  }, [reveal, id]);
   return (
-    <section className={cx('d-section hp-fold', !open && 'folded')} style={{ ['--i' as string]: i }}>
+    <section id={`hp-sec-${id}`} className={cx('d-section hp-fold', !open && 'folded')} style={{ ['--i' as string]: i }}>
       <button
         type="button"
         className="d-label hp-fold-btn"

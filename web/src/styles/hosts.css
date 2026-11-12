@@ -574,3 +574,82 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   /* 「其余卡片」单占一行，下面的 → agent 和规则行的第三行左边对齐 */
   .hp-crule.fallback > .hp-crule-label { flex-basis: 100%; }
 }
+
+/* ---------------- 就绪：机器详情顶部的清单、磁贴上的「还差 N 项」、多机对比 ---------------- */
+.hp-b-acts { display: flex; align-items: center; gap: 10px; flex: none; }
+
+/* 磁贴：只加一个小标记，挤不下时让给状态胶囊 */
+.hp-ready-badge {
+  flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; margin-left: auto; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn) 11%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent);
+}
+
+/* 详情：标题「就绪 N/M 项通过」，展开是清单 */
+.hp-ready-n { margin-left: 4px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hp-ready-n.ok { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hp-ready-n.bad { color: var(--warn-text); }
+.hp-ready-list { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 0; padding: 0; list-style: none; }
+.hp-ready-list li { display: flex; align-items: flex-start; gap: 10px; min-height: 34px; padding: 7px 10px; border-radius: var(--r-sm); }
+.hp-ready-list li > svg { flex: none; width: 15px; height: 15px; margin-top: 2px; }
+.hp-ready-list li.ok > svg { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hp-ready-list li.bad { background: color-mix(in srgb, var(--warn) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 22%, transparent); }
+.hp-ready-list li.bad > svg { color: var(--warn); }
+.hp-ready-list li > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.hp-ready-list b { font-size: 13px; font-weight: 500; line-height: 1.45; }
+.hp-ready-list li.ok b { color: var(--text-2); font-weight: 400; }
+.hp-ready-list li > div > span { font-size: 12px; line-height: 1.5; color: var(--warn-text); overflow-wrap: anywhere; }
+.hp-ready-list small { display: block; font-size: 11.5px; color: var(--text-3); }
+.hp-ready-list .btn { flex: none; align-self: center; }
+
+/* 从就绪清单跳过来的那一块闪一下 */
+.hp-flash { animation: hp-flash 1.1s var(--ease-out); border-radius: var(--r-md); }
+@keyframes hp-flash { 0%, 30% { background: color-mix(in srgb, var(--brand) 10%, transparent); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .hp-flash { animation: none; } }
+:root[data-motion="reduced"] .hp-flash { animation: none; }
+
+/* 多机对比：一台机器一行；横向放不下时表格自己横向滚动，第一列（机器名）固定在左边 */
+.hp-cmp-box {
+  border-radius: var(--r-lg); overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 85%, transparent); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
+}
+.hp-cmp-scroll { overflow-x: auto; }
+.hp-cmp { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+.hp-cmp th, .hp-cmp td { padding: 0 12px; height: 38px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.hp-cmp thead th { height: 30px; font-size: 11.5px; font-weight: 500; color: var(--text-3); background: var(--surface-2); }
+.hp-cmp thead tr:first-child th { height: 32px; }
+.hp-cmp .hp-cmp-g { font-weight: 600; color: var(--text-2); border-left: 1px solid var(--line); }
+.hp-cmp .hp-cmp-g > span { display: inline-flex; align-items: center; gap: 6px; }
+.hp-cmp .hp-cmp-g .hp-logo, .hp-cmp .hp-cmp-g b { width: 16px; height: 16px; flex: none; }
+.hp-cmp .hp-cmp-g b { display: inline-grid; place-items: center; border-radius: 4px; font-size: 9px; color: #fff; background: var(--ac); }
+.hp-cmp .first { border-left: 1px solid var(--line); }
+.hp-cmp tbody tr:last-child > * { border-bottom: 0; }
+.hp-cmp-host { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+.hp-cmp thead .hp-cmp-host { z-index: 2; vertical-align: bottom; padding-bottom: 8px; background: var(--surface-2); }
+.hp-cmp-host button { display: inline-flex; align-items: center; gap: 8px; max-width: 200px; min-height: 28px; padding: 0 6px; margin: 0 -6px; border-radius: var(--r-xs); font-family: var(--f-display); font-size: 13.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.hp-cmp-host button:hover { background: var(--surface-3); }
+.hp-cmp-host button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.hp-cmp tbody tr.off .hp-cmp-host button { color: var(--text-3); }
+.hp-cmp td { font-family: var(--f-mono); font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.hp-cmp td.none { color: var(--text-3); }
+.hp-cmp td svg { width: 14px; height: 14px; vertical-align: -2px; }
+.hp-cmp td.ok { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hp-cmp td.bad { color: var(--warn-text); }
+.hp-cmp td.bad svg { color: var(--warn); }
+/* 和其他机器不一致：警告色的底和描边 */
+.hp-cmp td.diff, .hp-cmp-key.diff {
+  color: var(--warn-text); font-weight: 600;
+  background: color-mix(in srgb, var(--warn) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 38%, transparent);
+}
+.hp-cmp-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 10px 14px; font-size: 11.5px; color: var(--text-3); border-top: 1px solid var(--line); }
+.hp-cmp-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.hp-cmp-legend svg { width: 12px; height: 12px; color: var(--warn); }
+.hp-cmp-key { display: inline-block; width: 14px; height: 12px; border-radius: 3px; }
+
+@media (max-width: 760px) {
+  .hp-b-head { flex-wrap: wrap; align-items: flex-start; }
+  .hp-b-head > div:first-child { flex-basis: 100%; }
+  .hp-b-acts { width: 100%; justify-content: space-between; }
+  .hp-ready-list li { flex-wrap: wrap; }
+  .hp-ready-list .btn { margin-left: 25px; }
+}

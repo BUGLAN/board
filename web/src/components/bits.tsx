@@ -421,3 +421,29 @@ export function Sync({ s, inline }: { s?: SyncState; inline?: boolean }) {
     </span>
   );
 }
+
+/** 分段控件：选中的一段下面垫一块滑动的底（设置页、机器页的视图切换） */
+export function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pill, setPill] = useState({ w: 0, x: 0 });
+  useLayoutEffect(() => {
+    const place = () => {
+      const on = ref.current?.querySelector<HTMLElement>('button.on');
+      if (on) setPill({ w: on.offsetWidth, x: on.offsetLeft - 3 });
+    };
+    place();
+    document.fonts?.ready.then(place);
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [value]);
+  return (
+    <div className="segmented" role="radiogroup" ref={ref}>
+      {options.map(([v, label]) => (
+        <button key={v} type="button" role="radio" aria-checked={v === value} className={cx(v === value && 'on')} onClick={() => onChange(v)}>
+          {label}
+        </button>
+      ))}
+      <i className="seg-pill" style={{ width: pill.w, transform: `translateX(${pill.x}px)` }} />
+    </div>
+  );
+}

@@ -2,7 +2,7 @@
    设置 Tab（PRD §10.6）：账号 / 外观 / 白板规则 / Agent 接入 / 快捷键
    侧栏是目录，点击跳到对应部分；滚动时目录跟随
    ========================================================================== */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import {
   boardCli, canHost, canSetEnv, canUpdate, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder, saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme,
@@ -19,36 +19,11 @@ import { logout, useAuth } from '../store/auth';
 import { allBoards, colCount, refresh, useCurrent, useData } from '../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
-import { Select } from './bits';
+import { Segmented, Select } from './bits';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { SECTIONS, useSpy } from './SettingsNav';
 import { UpdateCard } from './update-card';
-
-function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pill, setPill] = useState({ w: 0, x: 0 });
-  useLayoutEffect(() => {
-    const place = () => {
-      const on = ref.current?.querySelector<HTMLElement>('button.on');
-      if (on) setPill({ w: on.offsetWidth, x: on.offsetLeft - 3 });
-    };
-    place();
-    document.fonts?.ready.then(place);
-    window.addEventListener('resize', place);
-    return () => window.removeEventListener('resize', place);
-  }, [value]);
-  return (
-    <div className="segmented" role="radiogroup" ref={ref}>
-      {options.map(([v, label]) => (
-        <button key={v} type="button" role="radio" aria-checked={v === value} className={cx(v === value && 'on')} onClick={() => onChange(v)}>
-          {label}
-        </button>
-      ))}
-      <i className="seg-pill" style={{ width: pill.w, transform: `translateX(${pill.x}px)` }} />
-    </div>
-  );
-}
 
 const Row = ({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) => (
   <div className="set-row">

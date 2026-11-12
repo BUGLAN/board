@@ -543,11 +543,20 @@ fn host_follows_config_without_restart() {
     let local = std::fs::read_to_string(log_file(&rig.s.home, d2)).unwrap();
     assert!(local.contains("as: claude-win/opus-5.5 host: win"), "{local}");
 
-    // 配置不对（目录不存在）：打印一行，接着用原来的
-    std::fs::write(&cfg, host_conf("win", &rig.repo.with_file_name("nope"))).unwrap();
+    // 目录不存在不算配置不对（#185）：照样换上，上报「不存在」，界面上可以克隆
+    let nope = rig.repo.with_file_name("nope");
+    std::fs::write(&cfg, host_conf("win", &nope)).unwrap();
+    reload();
+    wait_until("board host 换上不存在的目录并上报", Duration::from_secs(10), || {
+        let d = rig.workspace()["hosts"][0]["dirs"][0].clone();
+        d["path"] == nope.display().to_string() && d["status"] == "missing"
+    });
+
+    // 配置不对（白板没写成 <项目>/<白板>）：打印一行，接着用原来的
+    std::fs::write(&cfg, format!("{base}\n[host]\nname = \"win\"\n\n[host.dirs]\n\"nope\" = \"{}\"\n", other.display())).unwrap();
     reload();
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], other.display().to_string());
+    assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], nope.display().to_string());
 
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");

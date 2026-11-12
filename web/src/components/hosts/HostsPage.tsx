@@ -1,13 +1,16 @@
-/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务） */
+/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务）；主区可以切到多机对比 */
+import { useState } from 'react';
 import { agentMark, cronSummary, hostLoad, hostState, hostsOf, queueReason, since, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { readiness } from '../../lib/ready';
+import { cx, pref } from '../../lib/util';
 import { useData } from '../../store/data';
 import { openHost, useUI } from '../../store/ui';
-import { Title, useNow } from '../bits';
+import { Segmented, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { goCard } from './Dispatch';
 import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
+import { Compare, ReadyBadge, useServerVersion } from './Ready';
 
 export function HostsSide() {
   const ws = useData(s => s.ws);
@@ -168,8 +171,8 @@ function QueueLane({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
   );
 }
 
-/** 一台机器的一行（磁贴 + 车道）；单独导出给单元测试画 */
-export function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null; now: number; index: number }) {
+/** 一台机器的一行（磁贴 + 车道）；单独导出给单元测试画。server 是服务端版本，没取到时不检查 board 版本 */
+export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace | null; now: number; index: number; server?: string | null }) {
   const { running, queued } = hostLoad(ws, h);
   const free = Math.max(0, h.max - running.length);
   const cron = cronSummary(h);
@@ -199,6 +202,8 @@ export function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null;
               {running.length}/{h.max}
             </span>
           )}
+          {/* 磁贴上只加这一个小标记，哪几项没通过在机器详情的「就绪」里看 */}
+          <ReadyBadge checks={readiness(h, now, server)} />
         </span>
         {(cron || h.round || (!!h.unmatched && !h.fallback) || noskill > 0) && (
           <span className="hp-rack-notes">
@@ -256,11 +261,24 @@ export function Rack({ h, ws, now, index }: { h: HostInfo; ws: Workspace | null;
   );
 }
 
+type View = 'racks' | 'compare';
+const VIEWS: [View, string][] = [
+  ['racks', '总览'],
+  ['compare', '对比'],
+];
+
 export function HostsPage() {
   const ws = useData(s => s.ws);
   const tab = useUI(s => s.tab);
   const now = useNow(5000);
   const hosts = ordered(hostsOf(ws));
+  const server = useServerVersion();
+  // 机位总览 / 多机对比，选过的记在本机
+  const [view, setView] = useState<View>(() => (pref.get<string>('hosts.view', 'racks') === 'compare' ? 'compare' : 'racks'));
+  const pick = (v: View) => {
+    pref.set('hosts.view', v);
+    setView(v);
+  };
   usePollHosts(tab === 'hosts');
   return (
     <div className="page page-hosts" data-page="hosts">
@@ -268,13 +286,20 @@ export function HostsPage() {
         <div className="hp-b-head">
           <div>
             <h1>机器</h1>
-            <p>每台机器常驻一个 board host。一行一台机器，一条车道一个任务：点任务看卡片，点机器改规则。</p>
+            <p>
+              {view === 'compare'
+                ? '每台机器一行，对比就绪的每一项和 agent 的版本、模型、启动环境；和其他机器不一致的格子标出来。'
+                : '每台机器常驻一个 board host。一行一台机器，一条车道一个任务：点任务看卡片，点机器改规则。'}
+            </p>
           </div>
           {hosts.length > 0 && (
-            <button className="btn sm" type="button" onClick={() => openHost('new')}>
-              <Icon name="plus" />
-              添加机器
-            </button>
+            <div className="hp-b-acts">
+              <Segmented value={view} options={VIEWS} onChange={pick} />
+              <button className="btn sm" type="button" onClick={() => openHost('new')}>
+                <Icon name="plus" />
+                添加机器
+              </button>
+            </div>
           )}
         </div>
         {hosts.length === 0 ? (
@@ -286,12 +311,14 @@ export function HostsPage() {
               添加机器
             </button>
           </div>
+        ) : view === 'compare' ? (
+          <Compare hosts={hosts} ws={ws} now={now} server={server} />
         ) : (
           <>
             <Fleet ws={ws} hosts={hosts} />
             <div className="hp-racks">
               {hosts.map((h, i) => (
-                <Rack key={h.id} h={h} ws={ws} now={now} index={i} />
+                <Rack key={h.id} h={h} ws={ws} now={now} index={i} server={server} />
               ))}
             </div>
           </>

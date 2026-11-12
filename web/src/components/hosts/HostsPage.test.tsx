@@ -86,3 +86,19 @@ describe('机器磁贴底部', () => {
   });
 
 });
+
+describe('磁贴上的「还差 N 项」', () => {
+  it('没有全部就绪时显示，在状态那一行，不占底部说明的位置', () => {
+    // 没配目录：差 1 项
+    show(machine([agent('dsh')]));
+    const badge = host.querySelector('.hp-rack-state .hp-ready-badge');
+    expect(badge?.textContent).toBe('还差 1 项');
+    expect(badge?.getAttribute('title')).toContain('每块白板的目录和仓库正常');
+    expect(host.querySelector('.hp-rack-notes')).toBeNull();
+  });
+
+  it('全部就绪时不显示', () => {
+    show(machine([agent('dsh')], { dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' }] }));
+    expect(host.querySelector('.hp-ready-badge')).toBeNull();
+  });
+});
