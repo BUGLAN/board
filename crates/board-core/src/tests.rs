@@ -1905,7 +1905,9 @@ fn trash_delete_releases_claim_and_restore_does_not_rekeep_it() {
     let r = exec(&mut s, B, &human(), T0 + 3 * SEC, Cmd::Restore { id: 1 }).unwrap().card;
     assert_eq!(r.holder, None, "恢复后不再被任何人持有");
     assert_eq!(r.column, "todo", "原来在锁定状态（进行中），回到当初领取它的待办");
-    assert!(r.beat_at.is_none() || r.beat_at.is_some());
+    // 领取已经释放：不用再等心跳，看板上的耗时也不再算下去
+    assert_eq!(r.beat_at, None, "恢复后没有心跳：这张卡不在任何一次领取里");
+    assert_eq!((r.claimed_at, r.run_started_at), (None, None));
 }
 
 #[test]

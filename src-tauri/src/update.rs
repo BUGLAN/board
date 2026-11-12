@@ -96,8 +96,7 @@ pub async fn update_install(app: AppHandle, version: String) -> Result<Installed
                     *total.lock().unwrap() = length;
                 }
                 let all = *total.lock().unwrap();
-                // 按 1% 报一次：小文件也能看到进展，又不会把事件刷爆
-                if all.is_some_and(|all| all > 0 && (sent - reported) * 100 < all) {
+                if !should_report(reported, sent, all) {
                     return;
                 }
                 reported = sent;
@@ -116,6 +115,15 @@ pub fn update_restart(app: AppHandle) {
     app.restart();
 }
 
+/// 这一块下载完该不该报一次进度：按 1% 报，小文件也能看到进展，又不会把事件刷爆。
+/// `reported` 是上一次报出去时的字节数，`total` 是服务端给的总大小（没给时每次都报，否则进度一直不动）
+fn should_report(reported: u64, sent: u64, total: Option<u64>) -> bool {
+    match total {
+        Some(all) if all > 0 => (sent - reported) * 100 >= all,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,22 +136,33 @@ mod tests {
         assert!(e.contains("检查更新"), "{e}");
     }
 
-    // 下载进度按 1% 报一次，不会每次回调都推事件
+    // 下载进度按 1% 报一次，不会每次回调都推事件：模拟 download_and_install 的回调循环，
+    // 判定走生产代码里的 should_report
     #[test]
     fn progress_threshold() {
         let (total, mut sent, mut reported, mut events) = (1000u64, 0u64, 0u64, 0);
         for _ in 0..334 {
             sent += 3;
-            if (sent - reported) * 100 < total {
+            if !should_report(reported, sent, Some(total)) {
                 continue;
             }
             reported = sent;
             events += 1;
         }
-        // 攒够 1%（10 字节）才报一次：1002 字节里约 83 次；不按 1% 的话是 334 次（每次回调都报）。
+        // 一块 3 字节，攒够 1%（10 字节）才报：每 12 字节报一次，1002 字节里 83 次；不按 1% 的话是 334 次（每次回调都报）。
         // 最后一次不足 1% 的不报，下载结束时页面自己算完成
         assert_eq!(sent, 1002);
-        assert!((80..=90).contains(&events), "{events}");
-        assert!(reported * 100 / total >= 99);
+        assert_eq!(events, 83);
+        assert_eq!(reported, 996, "报的最后一块是 996 字节（再往下不够 1%）");
+    }
+
+    // 第一块就超过 1%、总大小未知、总大小为 0：都不能一直不报
+    #[test]
+    fn progress_reports_when_total_unknown_or_tiny() {
+        assert!(should_report(0, 500, Some(1000)), "第一块就超过 1%");
+        assert!(should_report(0, 1, None), "不知道总大小时每次都报");
+        assert!(should_report(0, 1, Some(0)), "总大小为 0 时不能除零，也不能一直不报");
+        assert!(!should_report(0, 9, Some(1000)), "还差一点到 1% 的不报");
+        assert!(should_report(0, 10, Some(1000)), "到了 1% 就报");
     }
 }

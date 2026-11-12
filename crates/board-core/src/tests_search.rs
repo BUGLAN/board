@@ -86,8 +86,8 @@ fn title_hits_rank_before_body_hits_and_limit_is_50() {
     }
     let c = new_card(&mut s, "default/main", "圆角", "");
     let hits = search(&s, "圆角");
-    assert_eq!(hits.len(), SEARCH_LIMIT.max(50).min(hits.len()), "最多 50 条");
-    assert_eq!(hits.len(), 50);
+    // 再加一张就是 61 张：最多只返回 SEARCH_LIMIT 条
+    assert_eq!(hits.len(), SEARCH_LIMIT, "最多 {SEARCH_LIMIT} 条");
     assert_eq!(hits[0].id, c, "标题命中排在前面");
     assert_eq!(hits[0].matched, "title");
     assert!(hits[1..].iter().all(|h| h.score == 40));

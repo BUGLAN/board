@@ -78,6 +78,8 @@ pub async fn ps1(State(s): State<AppState>, h: HeaderMap) -> Response {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    // 下面两个用例真的跑一遍 install.sh（需要 sh）
+    #[cfg(unix)]
     use std::process::Command;
 
     #[test]
@@ -106,6 +108,8 @@ mod tests {
     }
 
     /// 安装脚本的平台判断（sh 的 --platform-of 只算平台名）
+    /// install.sh 只支持 darwin、linux：Windows 上（包括 Git Bash 里 uname 报 MINGW64）脚本自己就会拒绝，所以只在 unix 上跑
+    #[cfg(unix)]
     #[test]
     fn install_sh_platforms() {
         let d = tempfile::tempdir().unwrap();
@@ -128,7 +132,8 @@ mod tests {
         assert!(String::from_utf8_lossy(&out.stderr).contains("没有经过服务端"));
     }
 
-    /// 校验文件对不上：中止，现有的 board 不动
+    /// 校验文件对不上：中止，现有的 board 不动（同上面：脚本只支持 darwin、linux）
+    #[cfg(unix)]
     #[test]
     fn install_sh_refuses_bad_checksum() {
         let d = tempfile::tempdir().unwrap();
@@ -137,12 +142,13 @@ mod tests {
         std::fs::create_dir_all(&assets).unwrap();
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("board"), "old").unwrap();
+        // 平台名要和本机一致：脚本按 uname 找发版附件
         let plat = match (std::env::consts::OS, std::env::consts::ARCH) {
             ("macos", "aarch64") => "darwin-arm64",
             ("macos", _) => "darwin-x64",
             ("linux", "aarch64") => "linux-arm64",
             ("linux", _) => "linux-x64",
-            _ => return,
+            (os, arch) => unreachable!("install.sh 只支持 darwin、linux：{os} {arch}"),
         };
         let archive = format!("board-{plat}.tar.gz");
         std::fs::write(assets.join(&archive), "not really a tarball").unwrap();

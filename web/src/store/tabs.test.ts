@@ -9,7 +9,9 @@ describe('活动栏顺序', () => {
   });
 
   it('数字快捷键 1~6 按这个顺序切换（App 用 TAB_ORDER[n-1]，命令面板的提示也按同一个下标）', () => {
-    expect(['1', '2', '3', '4', '5', '6'].map(k => TAB_ORDER[Number(k) - 1])).toEqual(TAB_ORDER);
+    // 独立写一遍期望的顺序：不能拿 TAB_ORDER 和自己比，那样恒真
+    const expected = ['board', 'inbox', 'stats', 'projects', 'hosts', 'settings'];
+    expect(['1', '2', '3', '4', '5', '6'].map(k => TAB_ORDER[Number(k) - 1])).toEqual(expected);
   });
 
   it('每个 Tab 正好出现一次', () => {

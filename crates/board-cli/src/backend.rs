@@ -223,8 +223,10 @@ impl Remote {
             return Err(BoardError::usage(format!("服务端地址需要以 https:// 或 http:// 开头：{url}")));
         }
         let token = token.to_string();
+        // 0 秒在 ureq 里是「不限」，不是「立刻超时」：调用方给了 0 就不设超时
+        let timeout = Some(timeout).filter(|t| !t.is_zero());
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(timeout))
+            .timeout_global(timeout)
             .http_status_as_error(false)
             .user_agent(concat!("board-cli/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -247,6 +249,11 @@ impl Remote {
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// 建这个连接时给的请求超时（0 秒等于不限，见 `with_timeout`）
+    fn timeout(&self) -> Option<Duration> {
+        self.agent.config().timeouts().global
     }
 
     pub fn token(&self) -> &str {
@@ -344,9 +351,21 @@ impl Remote {
 mod tests {
     use super::*;
 
+    // 测试不连服务端：只建连接，看它带上的是哪种请求超时
+    fn timeout_of(be: fn(&str, &str, Duration) -> Result<Remote>, t: Duration) -> Option<Duration> {
+        be("http://127.0.0.1:1", "token", t).unwrap().timeout()
+    }
+
+    // board host 的请求最多等 10 秒，普通命令 30 秒：主循环上的上报不能被一个慢请求卡住
     #[test]
     fn host_uses_short_timeout_commands_keep_long_one() {
-        assert_eq!(HOST_TIMEOUT, Duration::from_secs(10));
-        assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(timeout_of(Remote::with_timeout, HOST_TIMEOUT), Some(Duration::from_secs(10)));
+        assert_eq!(timeout_of(Remote::with_timeout, COMMAND_TIMEOUT), Some(Duration::from_secs(30)));
+    }
+
+    // 0 秒在 ureq 里是「不限」：不能把「没给超时」变成「立刻超时」
+    #[test]
+    fn zero_timeout_means_no_limit() {
+        assert_eq!(timeout_of(Remote::with_timeout, Duration::ZERO), None);
     }
 }

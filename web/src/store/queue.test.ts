@@ -194,7 +194,7 @@ describe('写队列', () => {
     expect(D.cardBusy(1)).toBe(true);
     await settle();
     server.calls[0].fail();
-    await expect(a).rejects.toBeTruthy();
+    await expect(a).rejects.toMatchObject({ code: 'INTERNAL', message: '失败了' });
     expect(title(1)).toBe('卡片 1');
   });
 
@@ -207,7 +207,7 @@ describe('写队列', () => {
     await settle();
     expect(server.calls[0].board).toBe('p/a');
     server.calls[0].fail();
-    await expect(a).rejects.toBeTruthy();
+    await expect(a).rejects.toMatchObject({ code: 'INTERNAL', message: '失败了' });
     expect(title(1)).toBe('B 白板的卡片');
   });
 
