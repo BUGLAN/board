@@ -809,3 +809,55 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   border: 1.5px solid currentColor; border-right-color: transparent; animation: login-spin .8s linear infinite;
 }
 .hp-st-btn.is-busy > svg { display: none; }
+
+/* ==========================================================================
+   机器 Tab「共用配置」（components/hosts/Shared.tsx）：skills 共用库和各机器的同步状态
+   ========================================================================== */
+.hp-side-shared { margin-bottom: 6px; }
+.hp-side-shared > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+.sc { max-width: 980px; }
+.sc-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
+.sc-head > div:first-child { flex: 1; min-width: 0; }
+.sc-head h2 { font-family: var(--f-display); font-size: 17px; font-weight: 700; margin: 0 0 4px; }
+.sc-head p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
+.sc-head code { font: 11.5px var(--f-mono); color: var(--text-2); }
+.sc-acts { display: flex; gap: 8px; flex: none; }
+.sc-list { display: flex; flex-direction: column; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.sc-item { border-top: 1px solid var(--line); }
+.sc-item:first-child { border-top: 0; }
+.sc-row { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 10px 6px 6px; }
+.sc-toggle { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px; border-radius: var(--r-sm); text-align: left; }
+.sc-toggle:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.sc-toggle svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+.sc-toggle b { font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+.sc-toggle code { font: 11.5px var(--f-mono); color: var(--text-3); }
+.sc-fixed { font-size: 11px; padding: 1px 7px; border-radius: 999px; color: var(--text-2); background: var(--surface-3); white-space: nowrap; }
+.sc-meta { flex: 1; min-width: 0; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-sum { flex: none; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.sc-sum.ok { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.sc-sum.bad { color: var(--warn-text); }
+.sc-hosts { display: flex; flex-direction: column; gap: 2px; padding: 2px 12px 12px 36px; }
+.sc-host { display: flex; align-items: flex-start; gap: 12px; padding: 6px 0; border-top: 1px dashed var(--line); }
+.sc-host:first-child { border-top: 0; }
+.sc-host-name { display: inline-flex; align-items: center; gap: 7px; flex: none; width: 140px; padding-top: 3px; font-size: 12.5px; font-weight: 500; text-align: left; }
+.sc-host-name:hover { text-decoration: underline; }
+.sc-cells { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; flex: 1; }
+.sc-cell { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; max-width: 100%; padding: 4px 9px; border-radius: var(--r-sm); font-size: 12px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.sc-cell .hp-aicon, .sc-cell img { width: 14px; height: 14px; }
+.sc-cell b { font-weight: 500; }
+.sc-cell em { font-style: normal; color: var(--text-2); }
+.sc-cell small { flex-basis: 100%; font-size: 11.5px; line-height: 1.5; color: var(--text-3); word-break: break-word; }
+.sc-cell.synced em { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.sc-cell.behind, .sc-cell.local, .sc-cell.failed { background: color-mix(in srgb, var(--warn) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 28%, transparent); }
+.sc-cell.behind em, .sc-cell.local em, .sc-cell.failed em { color: var(--warn-text); }
+.sc-cell.pending em { color: var(--text-3); }
+.sc-cell.old { color: var(--text-3); background: transparent; box-shadow: none; padding-left: 0; }
+.sc-empty { margin: 0; padding: 10px 14px; border-top: 1px solid var(--line); }
+@media (max-width: 760px) {
+  .sc-head { flex-direction: column; }
+  .sc-row { flex-wrap: wrap; }
+  .sc-meta { flex-basis: 100%; order: 3; padding-left: 34px; white-space: normal; }
+  .sc-hosts { padding-left: 12px; }
+  .sc-host { flex-direction: column; gap: 4px; }
+  .sc-host-name { width: auto; }
+}

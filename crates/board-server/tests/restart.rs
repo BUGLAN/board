@@ -25,6 +25,7 @@ fn report(running: Vec<i64>) -> HostReport {
         asked: None,
         ask_error: None,
         selftest: false,
+        skills: None,
     }
 }
 

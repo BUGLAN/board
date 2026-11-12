@@ -118,6 +118,12 @@ export interface DragUI {
   veto: { title: string; message: string; code: string } | null;
 }
 
+export type HostsView = 'racks' | 'compare' | 'shared';
+function initialHostsView(): HostsView {
+  const v = pref.get<string>('hosts.view', 'racks');
+  return v === 'compare' || v === 'shared' ? v : 'racks';
+}
+
 interface UIState {
   tab: Tab;
   side: boolean;
@@ -144,6 +150,8 @@ interface UIState {
   boardSettings: { path: string; focus?: string } | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
+  /** 机器 Tab 主区：总览、对比、共用配置（选过的记在本机） */
+  hostsView: HostsView;
   /** 回收站弹窗：哪块白板（路径）的回收站；null 是没打开 */
   trash: string | null;
   /** 卡片详情里的「派发」对话框：卡片编号 */
@@ -188,6 +196,7 @@ export const useUI = create<UIState>(() => ({
   image: null,
   boardSettings: null,
   host: null,
+  hostsView: initialHostsView(),
   trash: null,
   dispatchOf: null,
   session: null,
@@ -281,6 +290,11 @@ export const updatePicker = (selected: number[]) => set(s => (s.picker ? { picke
 export const closePicker = () => set({ picker: null });
 
 export const openHost = (name: string | null) => set({ host: name });
+/** 机器 Tab 主区切到总览、对比或共用配置 */
+export const setHostsView = (v: HostsView) => {
+  pref.set('hosts.view', v);
+  set({ hostsView: v });
+};
 /** 打开 / 关掉（null）这块白板的回收站 */
 export const openTrash = (path: string | null) => set({ trash: path });
 export const openDispatch = (card: number | null) => set({ dispatchOf: card });

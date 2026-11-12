@@ -55,6 +55,7 @@ use crate::heartbeat::{Proc, Procs};
 use crate::logfmt::{self, Stream};
 use crate::redact;
 use crate::selftest;
+use crate::skills;
 use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
 use board_core::*;
@@ -225,6 +226,8 @@ pub const EXIT_RESTART: i32 = 75;
 pub const EXIT_UPGRADE: i32 = 76;
 /// `board update` 最长跑多久
 const UPDATE_LIMIT: Duration = Duration::from_secs(600);
+/// skills 共用库没变时多久再核对一次本机（有人手动改了、删了同步装的目录）
+const SKILLS_EVERY: Duration = Duration::from_secs(600);
 
 /// 远程管理请求处理完、退出主循环之后要做的事
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -907,6 +910,15 @@ struct Host<'a> {
     selftest_seen: Option<i64>,
     /// 自检启动的子进程：退出时结束它们
     selftest_pids: selftest::Pids,
+    /// skills 共用库：正在后台做的同步
+    skill_job: Option<std::thread::JoinHandle<skills::Synced>>,
+    /// 最近一次同步的结果（上报里带上；新版 board host 总是带，空表示还没同步完）
+    skill_states: Vec<board_core::skills::SkillState>,
+    /// 上一次同步时的库和目录：变了就再同步一次
+    skill_key: Option<String>,
+    skill_at: Instant,
+    /// 重新检查、重新读配置后马上再同步一次
+    skill_force: bool,
 }
 
 /// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
@@ -1045,7 +1057,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         selftest_out: None,
         selftest_seen: None,
         selftest_pids: selftest::Pids::default(),
-
+        skill_job: None,
+        skill_states: vec![],
+        skill_key: None,
+        skill_at: Instant::now(),
+        skill_force: false,
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1327,6 +1343,7 @@ impl Host<'_> {
             asked: self.asked,
             ask_error: self.ask_error.clone(),
             selftest: true,
+            skills: Some(self.skill_states.clone()),
         }
     }
 
@@ -1442,6 +1459,7 @@ impl Host<'_> {
     /// 重新检查（远程请求）：重新找启动环境、本机 agent（找不找得到、版本号）、board-skills，环境检查也重跑。
     /// 配置文件读不了、agent 配置不对时保留原来的 agent
     fn recheck(&mut self) {
+        self.skill_force = true;
         self.envs = envs::discover();
         match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.envs)) {
             Ok(a) => self.agents = a,
@@ -1772,6 +1790,68 @@ impl Host<'_> {
         }
     }
 
+    /// skills 共用库（PRD §10.12「共用配置」）：同步做完了就记下结果（变了返回 true，马上上报）；
+    /// 没在做、库或要写的目录变了（重新检查后、超过 10 分钟）就在后台开始一次
+    fn poll_skills(&mut self) -> bool {
+        let mut changed = false;
+        if self.skill_job.as_ref().is_some_and(|h| h.is_finished()) {
+            if let Ok(out) = self.skill_job.take().expect("上面看过").join() {
+                for c in &out.changes {
+                    self.say(format!("{} skills：{c}", self.p.green("✓")));
+                }
+                let bad: Vec<String> = out
+                    .states
+                    .iter()
+                    .filter(|s| s.state == "failed" || s.state == "behind")
+                    .map(|s| format!("{}/{}：{}", s.dir, s.skill, s.why.as_deref().unwrap_or("没同步")))
+                    .collect();
+                if !bad.is_empty() && out.states != self.skill_states {
+                    self.say(format!("{} skills 没同步好：{}", self.p.yellow("!"), bad.join("；")));
+                }
+                changed = out.states != self.skill_states;
+                self.skill_states = out.states;
+                // 装上、换掉了东西：重新看一遍各 agent 看不看得到 board-skills（界面上「缺 skill」的提醒跟着变）
+                if !out.changes.is_empty() && self.recheck_skills() {
+                    changed = true;
+                }
+            }
+        }
+        if self.skill_job.is_some() {
+            return changed;
+        }
+        let Some(lib) = self.work.as_ref().and_then(|w| w.skills.clone()) else { return changed };
+        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
+        let mut list: Vec<(String, Env, String)> = vec![];
+        for spec in &self.agents {
+            let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
+            let Some(dir) = spec.skills.first() else { continue };
+            let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
+            if let Some(env) = self.envs.iter().find(|e| e.id == env_id) {
+                list.push((spec.id.clone(), env.clone(), dir.clone()));
+            }
+        }
+        let key = format!(
+            "{:?}|{:?}",
+            lib.iter().map(|s| (&s.name, &s.version)).collect::<Vec<_>>(),
+            list.iter().map(|(a, e, d)| (a, &e.id, d)).collect::<Vec<_>>()
+        );
+        if !self.skill_force && self.skill_key.as_deref() == Some(key.as_str()) && self.skill_at.elapsed() < SKILLS_EVERY {
+            return changed;
+        }
+        self.skill_force = false;
+        self.skill_key = Some(key);
+        self.skill_at = Instant::now();
+        let rm = self.rm().clone();
+        let exe = self.exe.clone();
+        self.skill_job = Some(std::thread::spawn(move || {
+            let (targets, mut bad) = skills::host_targets(list, &lib);
+            let mut out = skills::sync(&lib, &targets, Some(&exe), |name| rm.get(&format!("/api/skills/{name}"), &[]));
+            out.states.append(&mut bad);
+            out
+        }));
+        changed
+    }
+
     /// 自检（PRD §10.12「自检」）：取到的任务里有新的请求就在后台线程里做；做完回报，回报失败下一轮再报
     fn poll_selftest(&mut self) {
         if self.selftest.as_ref().is_some_and(|(_, h)| h.is_finished()) {
@@ -2033,6 +2113,10 @@ impl Host<'_> {
             }
             // 自检：界面上点了就在后台做，做完回报
             self.poll_selftest();
+            // skills 共用库：库变了（或重新检查后、每 10 分钟）在后台同步，结果马上上报
+            if self.poll_skills() {
+                next_beat = Instant::now();
+            }
             // 远程管理：重新检查、重启、升级
             let (soon, quit) = self.handle_ask();
             let (soon2, quit2) = self.poll_update();
@@ -2065,6 +2149,7 @@ impl Host<'_> {
     /// 桌面端通知（标准输入一行 `reload`）：「设置 → 本机」保存了配置，或者「一键安装」装好了 board-skills。
     /// 先重新看一遍 skill，再重新读配置。返回有没有变（变了马上上报）
     fn reload(&mut self) -> bool {
+        self.skill_force = true;
         let skills = self.recheck_skills();
         // 重新读配置时把环境检查重跑一遍（可能刚装好了缺的工具）
         self.ready_all = true;

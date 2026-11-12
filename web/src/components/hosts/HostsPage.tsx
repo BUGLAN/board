@@ -1,23 +1,25 @@
-/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务）；主区可以切到多机对比 */
+/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务）；主区可以切到多机对比、共用配置（skills 共用库） */
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { readiness } from '../../lib/ready';
-import { cx, pref } from '../../lib/util';
+import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
-import { confirm, openHost, toast, toastError, useUI } from '../../store/ui';
+import { confirm, openHost, setHostsView, toast, toastError, useUI, type HostsView } from '../../store/ui';
 import { Segmented, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { goCard } from './Dispatch';
 import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
+import { SharedConfig } from './Shared';
 
 export function HostsSide() {
   const ws = useData(s => s.ws);
   const sel = useUI(s => s.host);
   const now = useNow(10000);
   const hosts = hostsOf(ws);
+  const view = useUI(s => s.hostsView);
   const online = hosts.filter(h => h.online).length;
   return (
     <section className="side-view" data-view="hosts">
@@ -34,6 +36,11 @@ export function HostsSide() {
         )}
       </header>
       <div className="side-scroll hp-side">
+        <button type="button" className={cx('hp-side-row hp-side-shared', view === 'shared' && 'active')} onClick={() => setHostsView('shared')}>
+          <Icon name="settings" />
+          <span className="hp-side-name">共用配置</span>
+          <span className="hp-side-sub">skills</span>
+        </button>
         {hosts.map(h => {
           const { running } = hostLoad(ws, h);
           return (
@@ -314,10 +321,10 @@ export function FleetActions({ hosts }: { hosts: HostInfo[] }) {
   );
 }
 
-type View = 'racks' | 'compare';
-const VIEWS: [View, string][] = [
+const VIEWS: [HostsView, string][] = [
   ['racks', '总览'],
   ['compare', '对比'],
+  ['shared', '共用配置'],
 ];
 
 export function HostsPage() {
@@ -326,12 +333,8 @@ export function HostsPage() {
   const now = useNow(5000);
   const hosts = ordered(hostsOf(ws));
   const server = useServerVersion();
-  // 机位总览 / 多机对比，选过的记在本机
-  const [view, setView] = useState<View>(() => (pref.get<string>('hosts.view', 'racks') === 'compare' ? 'compare' : 'racks'));
-  const pick = (v: View) => {
-    pref.set('hosts.view', v);
-    setView(v);
-  };
+  // 机位总览 / 多机对比 / 共用配置，选过的记在本机（侧栏的「共用配置」也切这里）
+  const view = useUI(s => s.hostsView);
   usePollHosts(tab === 'hosts');
   return (
     <div className="page page-hosts" data-page="hosts">
@@ -342,12 +345,14 @@ export function HostsPage() {
             <p>
               {view === 'compare'
                 ? '每台机器一行，对比就绪的每一项和 agent 的版本、模型、启动环境；和其他机器不一致的格子标出来。'
-                : '每台机器常驻一个 board host。一行一台机器，一条车道一个任务：点任务看卡片，点机器改规则。'}
+                : view === 'shared'
+                  ? '所有机器共用的配置：放在这里的 skills 自动同步到每台机器的每个 agent。'
+                  : '每台机器常驻一个 board host。一行一台机器，一条车道一个任务：点任务看卡片，点机器改规则。'}
             </p>
           </div>
           {hosts.length > 0 && (
             <div className="hp-b-acts">
-              <Segmented value={view} options={VIEWS} onChange={pick} />
+              <Segmented value={view} options={VIEWS} onChange={setHostsView} />
               <FleetActions hosts={hosts} />
               <button className="btn sm" type="button" onClick={() => openHost('new')}>
                 <Icon name="plus" />
@@ -365,6 +370,8 @@ export function HostsPage() {
               添加机器
             </button>
           </div>
+        ) : view === 'shared' ? (
+          <SharedConfig hosts={hosts} />
         ) : view === 'compare' ? (
           <Compare hosts={hosts} ws={ws} now={now} server={server} />
         ) : (

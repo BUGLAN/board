@@ -7,7 +7,8 @@
 //!   页面只传 agent 的标识，不能指定任意目录。
 //! - 先写到旁边的临时目录，写完再整体换上去：装到一半失败不会留下半个 skill。已经有的是链接（开发时
 //!   `ln -sfn` 到仓库）并且看得到 `SKILL.md` 就不动。
-//! - 装好后通知在跑的 board host（标准输入一行 `reload`），它重新检查一遍并上报，界面上的提醒随之消失。
+//! - board host 在跑时不自己写：通知它（标准输入一行 `reload`）马上按 skills 共用库同步一次（board-skills 跟着服务端版本，
+//!   PRD §10.12「共用配置」），它重新检查并上报，界面上的提醒随之消失。board host 没在跑时才由桌面端直接写。
 
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -154,12 +155,15 @@ pub async fn skill_install(app: AppHandle, agents: Vec<String>) -> Result<Vec<St
             roots.push(r);
         }
     }
+    // board host 在跑：交给它按 skills 共用库同步（board-skills 跟着服务端的版本），通知它马上做一次
+    if crate::host::notify_reload(&app) {
+        return Ok(roots.iter().map(|r| r.join(SKILL).display().to_string()).collect());
+    }
     let cli = crate::cli_path();
     let mut done = Vec::new();
     for r in &roots {
         done.push(install_into(r, cli.as_deref())?.display().to_string());
     }
-    crate::host::notify_reload(&app);
     Ok(done)
 }
 

@@ -445,7 +445,8 @@ fn tokens_are_redacted_before_upload_but_kept_locally() {
     // 异常退出评论里的「日志最后 20 行」同样脱敏
     let c = rig.show(1);
     let texts = activity(&c);
-    let comment = texts.iter().find(|t| t.contains("异常退出")).unwrap_or_else(|| panic!("{texts:?}"));
+    // 「开始第 1 次（……判定异常退出）」也带这几个字：找 agent 异常退出的那条评论
+    let comment = texts.iter().find(|t| t.starts_with("agent 异常退出")).unwrap_or_else(|| panic!("{texts:?}"));
     assert!(!comment.contains(&token) && !comment.contains(gh), "评论里不能有令牌、密钥原文：{comment}");
     assert!(comment.contains("<已隐藏>"), "{comment}");
     // 本机日志保留原文
@@ -1071,4 +1072,98 @@ fn service_restarts_host_after_kill9() {
     let text = std::fs::read_to_string(&log).unwrap();
     assert!(text.contains("收到停止信号") && text.contains("守护进程退出"), "{text}");
     assert!(!rig.s.home.join(".board").join("host").join("service.pid").exists());
+}
+
+/* ------------------------------ skills 共用库（#186） ------------------------------ */
+
+/// A 上 `board skills push`：在线的 B（这里的 board host）几秒内装进它每个找到的 agent 的 skill 目录，上报「已同步」；
+/// 改了再推换成新版本；本机原来就有的同名目录不覆盖；`rm` 之后同步装的那份删掉。
+/// 随服务端版本的 board-skills 自动装上，bin/<平台>/board 是 board host 自己的
+#[test]
+fn skills_push_sync_update_and_remove() {
+    let rig = Rig::new();
+    let skills = rig.s.home.join(".claude").join("skills");
+    // B 上本来就有一个同名的 mine（不是同步装的）
+    std::fs::create_dir_all(skills.join("mine")).unwrap();
+    std::fs::write(skills.join("mine").join("SKILL.md"), "local").unwrap();
+    let host = rig.host("mbp");
+    let state = |rig: &Rig, skill: &str| -> Option<(String, Option<String>)> {
+        let h = rig.workspace()["hosts"][0].clone();
+        h["skills"].as_array()?.iter().find(|s| s["skill"] == skill && s["agent"] == "claude").map(|s| (s["state"].as_str().unwrap_or("").to_string(), s["version"].as_str().map(str::to_string)))
+    };
+    wait_until("board-skills 自动同步", Duration::from_secs(20), || state(&rig, "board-skills").is_some_and(|(s, _)| s == "synced"));
+    let bs = skills.join("board-skills");
+    assert!(bs.join("SKILL.md").is_file() && bs.join("scripts").join("board").is_file());
+    assert!(bs.join(".board-sync").is_file());
+    let plat = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("macos", _) => "darwin-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        _ => "linux-x64",
+    };
+    let own = std::fs::metadata(env!("CARGO_BIN_EXE_board")).unwrap().len();
+    assert_eq!(std::fs::metadata(bs.join("bin").join(plat).join("board")).unwrap().len(), own, "bin 里是 board host 自己的 board");
+
+    // A 上 push 一个 skill
+    let src = rig.repo.parent().unwrap().join("notes");
+    std::fs::create_dir_all(src.join("ref")).unwrap();
+    std::fs::write(src.join("SKILL.md"), "# notes v1").unwrap();
+    std::fs::write(src.join("ref").join("a.md"), "a").unwrap();
+    let r = rig.board(&["skills", "push", src.to_str().unwrap(), "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v1 = r.json()["skills"][0]["version"].as_str().unwrap().to_string();
+    wait_until("B 装上 notes", Duration::from_secs(10), || state(&rig, "notes").is_some_and(|(s, v)| s == "synced" && v.as_deref() == Some(v1.as_str())));
+    assert_eq!(std::fs::read_to_string(skills.join("notes").join("ref").join("a.md")).unwrap(), "a");
+    // 同名的本机目录：没覆盖，写明
+    let r = rig.board(&["skills", "push", skills.join("mine").to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("mine 报「本机有同名」", Duration::from_secs(10), || state(&rig, "mine").is_some_and(|(s, _)| s == "local"));
+    assert_eq!(std::fs::read_to_string(skills.join("mine").join("SKILL.md")).unwrap(), "local");
+    // 改了再推：更新到新版本
+    std::fs::write(src.join("SKILL.md"), "# notes v2").unwrap();
+    let r = rig.board(&["skills", "push", src.to_str().unwrap(), "--json"]);
+    let v2 = r.json()["skills"][0]["version"].as_str().unwrap().to_string();
+    assert_ne!(v1, v2);
+    wait_until("B 更新 notes", Duration::from_secs(10), || state(&rig, "notes").is_some_and(|(_, v)| v.as_deref() == Some(v2.as_str())));
+    assert_eq!(std::fs::read_to_string(skills.join("notes").join("SKILL.md")).unwrap(), "# notes v2");
+    // ls 能看到库和本机状态
+    let r = rig.board(&["skills", "ls"]);
+    assert!(r.out.contains("board-skills") && r.out.contains("notes") && r.out.contains("已同步"), "{}", r.out);
+    // board-skills 不能删；rm notes：B 上同步装的删掉，本机的 mine 留着
+    assert_ne!(rig.board(&["skills", "rm", "board-skills"]).code, 0);
+    let r = rig.board(&["skills", "rm", "notes"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("B 删掉 notes", Duration::from_secs(10), || !skills.join("notes").exists());
+    assert!(skills.join("mine").join("SKILL.md").is_file());
+    // board host 在跑时 sync 交给它
+    let r = rig.board(&["skills", "sync"]);
+    assert!(r.out.contains("由它来做"), "{}", r.out);
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("skills：装上") && out.contains("notes"), "{out}");
+}
+
+/// 超过 5 MB 的 skill 被拒绝，并说明原因（命令行先拦，服务端也拦）
+#[test]
+fn skills_push_rejects_big_skill() {
+    let rig = Rig::new();
+    let big = rig.repo.parent().unwrap().join("big");
+    std::fs::create_dir_all(&big).unwrap();
+    std::fs::write(big.join("SKILL.md"), "x").unwrap();
+    std::fs::write(big.join("blob.bin"), vec![0u8; 5 * 1024 * 1024 + 1]).unwrap();
+    let r = rig.board(&["skills", "push", big.to_str().unwrap()]);
+    assert_ne!(r.code, 0);
+    assert!(r.err.contains("超过 5 MB"), "{}", r.err);
+    // 绕过命令行直接调接口：服务端同样拒绝
+    let data = board_core::skills::b64(&vec![0u8; 5 * 1024 * 1024 + 1]);
+    let res = ureq::post(format!("{}/api/skills", rig.s.url))
+        .header("authorization", format!("Bearer {}", rig.s.token))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send_json(serde_json::json!({ "name": "big", "files": [{ "path": "SKILL.md", "data": "eA==" }, { "path": "blob.bin", "data": data }] }))
+        .unwrap();
+    let mut res = res;
+    let body = res.body_mut().read_to_string().unwrap();
+    assert!(body.contains("超过 5 MB"), "{body}");
 }

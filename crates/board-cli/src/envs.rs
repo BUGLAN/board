@@ -505,6 +505,20 @@ pub fn has_skill(env: &Env, dirs: &[String], skill: &str) -> bool {
     }
 }
 
+/// WSL 里的一个用户级目录在 Windows 上怎么访问：在 WSL 里展开（`~`、`$CODEX_HOME`），换成 `\\wsl.localhost\<发行版>\…`。
+/// 取不到时为 None
+pub fn wsl_unc(env: &Env, dir: &str) -> Option<PathBuf> {
+    let d = env.wsl()?;
+    let mut c = Command::new(&env.prog);
+    c.args(["-d", d, "--exec", "sh", "-c", &format!("printf %s \"{}\"", wsl_dir(dir))]);
+    let out = run_out(c, env.limit())?;
+    let p = out.stdout.trim();
+    if !out.ok || !p.starts_with('/') {
+        return None;
+    }
+    Some(PathBuf::from(format!("\\\\wsl.localhost\\{d}{}", p.replace('/', "\\"))))
+}
+
 /// 内置模板里的 skill 目录写成 WSL 里 sh 的写法：`~/x` → `$HOME/x`，`$CODEX_HOME/x` → `${CODEX_HOME:-$HOME/.codex}/x`
 fn wsl_dir(d: &str) -> String {
     if let Some(rest) = d.strip_prefix("~/") {

@@ -76,11 +76,17 @@ pub(crate) async fn beat(
     tracing::Span::current().record("who", format!("{}（机器上报）", rep.name));
     let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_beat(&rep, token))).await?;
     s.poke();
-    Ok(Json(out))
+    Ok(Json(with_builtin(out)))
+}
+
+/// 任务里的 skills 库补上随服务端版本的 board-skills
+fn with_builtin(mut w: HostWork) -> HostWork {
+    w.skills = w.skills.take().map(crate::skills::index);
+    w
 }
 
 pub(crate) async fn work(State(s): State<AppState>, Path(name): Path<String>) -> ApiResult<HostWork> {
-    Ok(Json(s.db(move |st| st.read(|r| r.host_work(&name, now_ms()))).await?))
+    Ok(Json(with_builtin(s.db(move |st| st.read(|r| r.host_work(&name, now_ms()))).await?)))
 }
 
 #[derive(Deserialize)]

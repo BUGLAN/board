@@ -17,6 +17,7 @@ import { AgentIcon, Beat, lastSeen, Mark, OsGlyph, patchHost, StatePill, usePoll
 import { ManageSection, versionLt } from './Manage';
 import { ReadySection, useServerVersion } from './Ready';
 import { SelfTestAgentButton, SelfTestSection } from './SelfTest';
+import { STATE_WORDS } from '../../lib/skills';
 
 export function HostModal() {
   const sel = useUI(s => s.host);
@@ -1012,6 +1013,9 @@ function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | nu
   }, [done, setFixed]);
 
   const gaps = skillGaps(h);
+  // 新版 board host 按「共用配置」同步 board-skills：同步没成的写出来
+  const syncing = h.skills != null;
+  const syncBad = (h.skills ?? []).filter(s => s.skill === 'board-skills' && s.state !== 'synced');
   if (done) {
     return (
       <div className="hp-skill-ban ok" role="status">
@@ -1023,9 +1027,10 @@ function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | nu
       </div>
     );
   }
-  if (!gaps.missing.length) return null;
+  if (!gaps.missing.length && !syncBad.length) return null;
   const can = shell === 'desktop' && !noSupport && isLocalHost(h, local) && gaps.auto.length > 0;
   const ids = gaps.auto.map(a => a.id);
+  const why = syncBad.map(s => `${s.dir}：${s.why ?? STATE_WORDS[s.state]}`).join('；');
 
   const install = async () => {
     setInstalling(true);
@@ -1047,9 +1052,11 @@ function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | nu
     <div className="hp-skill-ban" role="status">
       <Icon name="alert" />
       <p>
-        {gaps.missing.length} 个 agent 看不到 board-skills，派给它们的卡片会做不成
+        {gaps.missing.length ? `${gaps.missing.length} 个 agent 看不到 board-skills，派给它们的卡片会做不成` : 'board-skills 没有同步好'}
         <small>
-          {can ? (
+          {syncing ? (
+            <>board host 按「机器 → 共用配置」把 board-skills（随服务端版本）同步到各个 agent 的目录{why ? `：${why}` : '，正在同步…'}</>
+          ) : can ? (
             <>
               装到 {gaps.dirs.join('、')}（这台电脑）
               {gaps.manualPlaces.length > 0 && <>；{gaps.manualPlaces.join('、')} 要手动装（见 docs/agents.md）</>}
@@ -1062,7 +1069,7 @@ function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | nu
       {can && (
         <button type="button" className={cx('btn sm', installing && 'is-busy')} disabled={installing} onClick={() => void install()}>
           <Icon name="download" />
-          {installing ? '正在安装…' : '一键安装'}
+          {installing ? (syncing ? '正在同步…' : '正在安装…') : syncing ? '立即同步' : '一键安装'}
         </button>
       )}
     </div>

@@ -37,6 +37,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         asked: None,
         ask_error: None,
         selftest: true,
+        skills: None,
     }
 }
 

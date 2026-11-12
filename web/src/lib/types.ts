@@ -273,6 +273,34 @@ export interface HostInfo {
   token?: HostToken | null;
   /** 自检：等 board host 做的请求、最近一次的结果；旧版服务端没有 */
   selftest?: SelfTest;
+  /** skills 共用库同步到这台机器各个 agent 目录的状态；旧版 board host 不同步，为 null / 没有 */
+  skills?: SkillState[] | null;
+}
+
+/** skills 共用库里的一个 skill（PRD §10.12「共用配置」） */
+export interface SkillInfo {
+  name: string;
+  /** 内容的哈希（12 位） */
+  version: string;
+  size: number;
+  files: number;
+  updatedAt: number;
+  by: string;
+  /** 从哪里上传：机器名、界面；board-skills 是「随服务端 x.y.z」 */
+  source: string;
+  /** board-skills：随服务端版本，不能删、不能改 */
+  builtin?: boolean;
+}
+
+/** 一台机器上一个 agent 目录里一个 skill 的同步状态 */
+export interface SkillState {
+  skill: string;
+  agent: string;
+  env: string;
+  dir: string;
+  state: 'synced' | 'behind' | 'local' | 'failed';
+  version?: string | null;
+  why?: string | null;
 }
 
 /** 自检（PRD §10.12「自检」）：agent 能不能干活、每块白板的目录能不能推送、board 版本是否落后 */

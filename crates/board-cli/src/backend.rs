@@ -231,6 +231,11 @@ impl Remote {
         Ok(Remote { url, token, agent })
     }
 
+    pub fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let res = self.agent.delete(format!("{}{path}", self.url)).header("authorization", format!("Bearer {}", self.token)).call();
+        self.handle(res)
+    }
+
     pub fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T> {
         let mut req = self.agent.get(format!("{}{path}", self.url)).header("authorization", format!("Bearer {}", self.token));
         for (k, v) in query {

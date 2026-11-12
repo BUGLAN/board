@@ -167,6 +167,7 @@ board new "标题" --body "描述" --image 1.png --file run.log  # 截图、日�
 board attach 2 shot.png --comment "截图"  # 上传附件
 board host --name mbp --dir oss/main=~/repo/oss   # 在这台机器上常驻接任务（Ctrl+C 退出）；内置 dsh、Claude Code、pi、Codex，其他 agent 见 docs/agents.md
 board host --install --name mbp --dir oss/main=~/repo/oss   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
+board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有机器的 board host 自动装到各 agent 的 skill 目录；ls / rm / sync
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止
 ```
 

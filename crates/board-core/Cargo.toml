@@ -13,6 +13,8 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+# skills 共用库：文件内容按 base64 传输、存储
+base64 = "0.23"
 # 配置文件 ~/.board/config.toml 的读写（config 模块）：CLI 和桌面端用，服务端不带
 toml_edit = { version = "0.25", optional = true }
 

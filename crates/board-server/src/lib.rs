@@ -11,6 +11,7 @@
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
 //! - `GET /install.sh`、`/install.ps1`：命令行版 board 的安装脚本，不需要登录（`install`）
+//! - `/api/skills`：skills 共用库（列出、取内容、上传、删除；`skills`）
 //! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`）/ 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/layout/saved`、`…/layout/apply`（白板设置：保存、应用布局）、`…/order`（白板设置：保存顺序）、`…/{状态}`（修改、删除）
 //! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
@@ -24,6 +25,7 @@ pub mod agents;
 pub mod auth;
 pub mod hosts;
 pub mod install;
+pub mod skills;
 
 use auth::{Auth, Caller};
 use axum::{
@@ -264,6 +266,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/stream", get(stream))
         .route("/me", get(auth::me))
         .route("/auth/logout", post(auth::logout))
+        .route("/skills", get(skills::list).post(skills::put).layer(DefaultBodyLimit::max(12 * 1024 * 1024)))
+        .route("/skills/{name}", get(skills::get).delete(skills::remove))
         .route("/tokens", get(auth::tokens).post(auth::new_token))
         .route("/tokens/{id}", delete(auth::revoke))
         .route("/health", get(health))

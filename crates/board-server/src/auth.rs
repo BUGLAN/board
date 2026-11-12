@@ -368,10 +368,12 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
         Caller::Agent { token } => {
             // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令，读取和上传附件；
             // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）；
-            // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、上传和读取日志、订阅实时推送，board dispatch 派发和取消
+            // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、上传和读取日志、订阅实时推送，board dispatch 派发和取消；
+            // skills 共用库：board skills ls / push / rm / sync，board host 同步
             let m = req.method().clone();
             let cli = (m == Method::GET
-                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search")
+                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills")
+                    || path.starts_with("/skills/")
                     || path.starts_with("/files/")
                     || host_path(&path, &["work"])
                     || dispatch_path(&path, "log")))
@@ -379,7 +381,10 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                     && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel")
                         || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested"])
                         || dispatch_path(&path, "end")
-                        || dispatch_path(&path, "log")));
+                        || dispatch_path(&path, "log")
+                        || path == "/skills"))
+                // board skills rm
+                || (m == Method::DELETE && path.starts_with("/skills/"));
             if !cli {
                 return ApiError(BoardError::new(
                     ErrorCode::NotLoggedIn,

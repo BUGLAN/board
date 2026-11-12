@@ -16,6 +16,7 @@ pub mod moves;
 pub mod search;
 pub mod seed;
 pub mod service;
+pub mod skills;
 pub mod stats;
 pub mod store;
 

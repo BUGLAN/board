@@ -122,6 +122,16 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 ## 装 `board-skills`
 
+**跑着 `board host` 的机器不用手动装**：board host 按「机器 → 共用配置」的 skills 共用库自动同步，`board-skills` 是库里固定的一项，内容随服务端版本，服务端升级后各台机器自动换成新的；`bin/<平台>/board` 用 board host 自己的 board。它写进每个找到的 agent 读用户级 skill 的目录（`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`，WSL 里的 agent 写到 WSL 用户目录下），目录里放标记文件 `.board-sync`。已经有同名、不是同步装的（例如开发时链接到仓库的）不覆盖，界面上写「本机有同名，没有覆盖」；以前一键安装、解压 zip 装的 `board-skills` 旧拷贝会被换成同步装的。自己的其他 skill 也可以放进库里，所有机器都会装上：
+
+```sh
+board skills push ~/.claude/skills/my-skill     # 传进库里（目录名就是名称，合计不超过 5 MB），同名的换成新版本
+board skills ls                                 # 库里有哪些、本机各目录的状态
+board skills rm my-skill                        # 从库里删掉，各台机器上同步装的那份随后删掉
+```
+
+下面是不跑 board host 时手动装的办法。
+
 agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，agent 也会读工作目录（仓库根目录）里的 skill：dsh、pi 读 `.agents/skills`（pi 还读 `.pi/skills`），Claude Code 只读 `.claude/skills`、不读 `.agents/skills`。所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍；给 Claude Code 用时再在仓库里建一个 `.claude/skills/board-skills` 链接指向它。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
 
 ```sh

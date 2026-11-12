@@ -369,6 +369,7 @@ dependencies = [
 name = "board-core"
 version = "0.1.19"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "jiff",
  "rusqlite",
