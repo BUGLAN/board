@@ -549,9 +549,12 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     } else {
         None
     };
+    // 卡片的网址：服务端地址 + /<项目>/<白板>/<ID>（和服务端的单页应用回退、界面的路由一致，PRD §10.1）
+    let origin = be.remote().url().trim_end_matches('/').to_string();
     let mut exec = |cmd: Cmd| -> Result<CardDetail> { be.exec(&path, &actor, cmd) };
     let label_priority = |id: i64| labels.iter().any(|l| l.id == id && l.priority);
-    let fmt = Fmt { p, label_name: &label_name, label_priority: &label_priority, path: &path, now, flow: &flow };
+    let url_of = |id: i64| format!("{origin}/{path}/{id}");
+    let fmt = Fmt { p, label_name: &label_name, label_priority: &label_priority, path: &path, url_of: &url_of, now, flow: &flow };
 
     let out = match sub {
         "flow" => {
@@ -693,12 +696,14 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             } else {
                 let ls: Vec<String> = d.card.labels.iter().map(|l| p.magenta(&format!("#{}", label_name(*l)))).collect();
                 Output::Text(format!(
-                    "{} 已新建 {}  {}{}{}\n",
+                    "{} 已新建 {}  {}{}{}\n{}{}\n",
                     p.green("✓"),
                     p.cyan(&format!("#{}", d.card.id)),
                     d.card.title,
                     if ls.is_empty() { String::new() } else { format!("  {}", ls.join(" ")) },
-                    p.dim(&format!("  → {}最{}", if inbox { INBOX_NAME } else { flow.home().name.as_str() }, if top { "上面" } else { "下面" }))
+                    p.dim(&format!("  → {}最{}", if inbox { INBOX_NAME } else { flow.home().name.as_str() }, if top { "上面" } else { "下面" })),
+                    p.dim("网址  "),
+                    url_of(d.card.id),
                 ))
             }
         }
@@ -1084,6 +1089,8 @@ struct Fmt<'a> {
     label_name: &'a dyn Fn(i64) -> String,
     label_priority: &'a dyn Fn(i64) -> bool,
     path: &'a str,
+    /// 卡片的网址（服务端地址 + 路径）
+    url_of: &'a dyn Fn(i64) -> String,
     now: i64,
     flow: &'a Flow,
 }
@@ -1150,6 +1157,7 @@ impl Fmt<'_> {
         json!({
             "id": c.id,
             "board": self.path,
+            "url": (self.url_of)(c.id),
             "column": c.column,
             "title": c.title,
             "body": c.body,
@@ -1227,6 +1235,7 @@ impl Fmt<'_> {
         let mut s = String::new();
         let row = |k: &str| p.dim(&pad(k, 10));
         s += &format!("{}  {}\n", p.cyan(&format!("#{}", c.id)), p.bold(&c.title));
+        s += &format!("{}{}\n", row("网址"), (self.url_of)(c.id));
         s += &format!("{}{} {}\n", row("状态"), self.flow.name(&c.column), self.col(&c.column, &format!("({})", c.column)));
         if !c.labels.is_empty() {
             s += &format!("{}{}\n", row("标签"), p.magenta(&self.tags(c)));

@@ -7,6 +7,7 @@ import { copyCardPrompt, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { cardDispatch } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
+import { cardUrl } from '../lib/route';
 import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
@@ -135,11 +136,17 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     openDetail(next);
   };
 
-  // 详情里的快捷键：↑↓ / K J 切换，C 复制为提示词，L 加标签
+  // 详情里的快捷键：↑↓ / K J 切换，C 复制为提示词，L 加标签，⌘⇧C / Ctrl⇧C 复制链接
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        copyLink();
+        return;
+      }
+      if (mod || e.altKey) return;
       const t = e.target as HTMLElement;
       if (t.closest?.('input, textarea, [contenteditable]')) return;
       // 菜单（「移动到」、右键菜单）、弹窗打开时只作用于它们：名单和全局快捷键共用 overlayOpen
@@ -180,6 +187,14 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     prevCol.current = c.column;
   }, [c.column]);
 
+  /** 复制这张卡片的完整网址（发给别人、收藏、写进别的卡片） */
+  const copyLink = () => {
+    const url = cardUrl(useData.getState().path, c.id);
+    void copyText(url).then(ok =>
+      toast(ok ? { type: 'success', title: '已复制链接', text: url, duration: 2400 } : { type: 'error', title: '复制失败', text: url, duration: 8000 }),
+    );
+  };
+
   const creator = c.createdBy;
   return (
     <div className="drawer-body" ref={bodyRef}>
@@ -204,6 +219,10 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           {saving ? '保存中' : ''}
         </span>
         <span className="spacer" />
+        <button className="btn sm ghost d-prompt d-link" type="button" data-tip={`复制链接  ${accel('C', true)}`} data-tip-align="end" onClick={copyLink}>
+          <Icon name="clip" />
+          复制链接
+        </button>
         <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${cardPrompt(useData.getState().path, c.id)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
           <Icon name="prompt" />
           复制为提示词

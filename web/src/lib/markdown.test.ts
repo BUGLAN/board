@@ -1,6 +1,6 @@
 /* Markdown 清理：描述和评论可能来自任何 agent，渲染前必须去掉脚本、事件属性、javascript: 链接 */
 import { describe, expect, it } from 'vitest';
-import { inlineCode, markdown } from './markdown';
+import { inlineCode, markdown, type Refs } from './markdown';
 
 const dom = (html: string) => {
   const d = document.createElement('div');
@@ -107,6 +107,46 @@ describe('markdown 装饰', () => {
     expect(d.querySelector('.gh')!.tagName).toBe('SPAN');
   });
 
+  it('卡片编号变成链接：`#12` 指本白板，`项目/白板#3` 指那块白板；悬停写标题和状态', () => {
+    // #12 在本白板、oss/main#3 在另一块白板存在，#99999 不存在
+    const refs: Refs = {
+      path: 'default/main',
+      find: (board, id) =>
+        (board === 'default/main' && id === 12) || (board === 'oss/main' && id === 3)
+          ? { title: `卡片 ${id}`, status: '待办' }
+          : null,
+    };
+    const d = dom(markdown('见 #12 和 oss/main#3，还有 #99999', { refs }));
+    const links = [...d.querySelectorAll('a.xref')].map(a => [a.getAttribute('href'), a.textContent, a.getAttribute('title')]);
+    expect(links).toEqual([
+      ['/default/main/12', '#12', '#12 卡片 12 · 待办'],
+      ['/oss/main/3', 'oss/main#3', '#3 卡片 3 · 待办'],
+    ]);
+    // 不存在的保持纯文本
+    expect(d.textContent).toContain('#99999');
+  });
+
+  it('代码里的卡片编号不变成链接；gh#12 仍是高亮（不拆出 #12 的链接）', () => {
+    const refs: Refs = { path: 'default/main', find: () => ({ title: 'x', status: '待办' }) };
+    const d = dom(markdown('`#12`\n\n```\n#12\n```\n\n见 gh#12', { refs }));
+    expect(d.querySelectorAll('a.xref')).toHaveLength(0);
+    expect([...d.querySelectorAll('.gh')].map(s => s.textContent)).toEqual(['gh#12']);
+  });
+
+  it('卡片引用不带 target=_blank（在当前窗口打开）；链接的提示用 data-tip', () => {
+    const refs: Refs = { path: 'default/main', find: () => ({ title: '标题', status: '进行中' }) };
+    const a = dom(markdown('#7', { refs })).querySelector('a.xref')!;
+    expect(a.hasAttribute('target')).toBe(false);
+    expect(a.getAttribute('data-tip')).toBe('#7 标题 · 进行中');
+    expect(a.getAttribute('data-card')).toBe('default/main#7');
+  });
+
+  it('没有解析器（新建弹窗的预览、更新说明）时原样显示', () => {
+    const d = dom(markdown('见 #12'));
+    expect(d.querySelector('a.xref')).toBeNull();
+    expect(d.textContent).toContain('#12');
+  });
+
   it('inlineCode：拆出 `代码`', () => {
     expect(inlineCode('改 `a.ts` 和 `b`')).toEqual(['改 ', { code: 'a.ts' }, ' 和 ', { code: 'b' }]);
     expect(inlineCode('没有代码')).toEqual(['没有代码']);
@@ -116,30 +156,30 @@ describe('markdown 装饰', () => {
 describe('markdown 按白板的仓库地址生成链接（PRD §4）', () => {
   const repo = 'git@github.com:o/r.git';
   it('「提交：abc1234」的提交号变成提交页的链接，全角、半角冒号都认', () => {
-    const d = dom(markdown('提交：abc1234\n检查：npm test 通过', repo));
+    const d = dom(markdown('提交：abc1234\n检查：npm test 通过', { repo }));
     const a = d.querySelector('a.commit')!;
     expect(a.getAttribute('href')).toBe('https://github.com/o/r/commit/abc1234');
     expect(a.textContent).toBe('abc1234');
     expect(a.getAttribute('target')).toBe('_blank');
     expect(d.textContent).toContain('提交：abc1234');
     expect(d.textContent).toContain('检查：npm test 通过');
-    const half = dom(markdown('提交: abc1234', repo)).querySelector('a.commit')!;
+    const half = dom(markdown('提交: abc1234', { repo })).querySelector('a.commit')!;
     expect(half.getAttribute('href')).toBe('https://github.com/o/r/commit/abc1234');
   });
 
   it('gh#12 变成 issue 的链接，样式仍高亮', () => {
-    const a = dom(markdown('见 gh#12', repo)).querySelector('a.gh')!;
+    const a = dom(markdown('见 gh#12', { repo })).querySelector('a.gh')!;
     expect(a.getAttribute('href')).toBe('https://github.com/o/r/issues/12');
     expect(a.textContent).toBe('gh#12');
   });
 
   it('代码块、行内代码里的不变成链接', () => {
-    const d = dom(markdown('```\n提交：abc1234\ngh#1\n```\n\n`提交：abc1234` `gh#2`', repo));
+    const d = dom(markdown('```\n提交：abc1234\ngh#1\n```\n\n`提交：abc1234` `gh#2`', { repo }));
     expect(d.querySelector('a.commit, a.gh')).toBeNull();
   });
 
   it('不是提交号的十六进制不动：太短、太长、后面紧跟着别的字符', () => {
-    const d = dom(markdown('提交：abc123（6 位）\n提交：abc1234def\n提交：abc1234g', repo));
+    const d = dom(markdown('提交：abc123（6 位）\n提交：abc1234def\n提交：abc1234g', { repo }));
     expect([...d.querySelectorAll('a.commit')].map(a => a.textContent)).toEqual(['abc1234def']);
     expect(d.textContent).toContain('提交：abc123（6 位）');
     expect(d.textContent).toContain('提交：abc1234g');

@@ -1,11 +1,14 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { openCard, openOtherCard } from '../lib/actions';
 import { inlineCode, markdown } from '../lib/markdown';
+import { shell } from '../lib/platform';
+import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
 import { PROJECT_COLORS } from '../lib/schema';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
-import { serverNow } from '../store/data';
+import { serverNow, useData } from '../store/data';
 import { closeCtx, openCtx, openImage, toastError, useUI } from '../store/ui';
 import { Icon } from './Icon';
 
@@ -248,17 +251,35 @@ export function ProjectAvatar({ name, color, className }: { name: string; color:
   );
 }
 
-/** repo：这块白板的仓库地址（PRD §4）；给了时评论里的提交号、gh#123 变成链接 */
-export function Markdown({ src, className, repo }: { src: string; className?: string; repo?: string | null }) {
-  const html = useMemo(() => markdown(src, repo), [src, repo]);
+/** repo：这块白板的仓库地址（PRD §4）；给了时评论里的提交号、gh#123 变成链接。
+    links 为 false 时不把卡片编号变成链接（新建弹窗的预览、更新说明：点开会打断正在做的事） */
+export function Markdown({ src, className, repo, links = true }: { src: string; className?: string; repo?: string | null; links?: boolean }) {
+  const path = useData(s => s.path);
+  const board = useData(s => s.board);
+  // 其他白板的卡片引用查到了重画一次
+  const refsV = useSyncExternalStore(subscribeRefs, refsVersion, refsVersion);
+  const html = useMemo(() => markdown(src, { refs: links ? refsFor(path) : undefined, repo }), [src, path, links, refsV, board, repo]);
   return (
     <div
       className={cx('md', className)}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={e => {
-        // 图片（附件）点击放大；同一段里的其他图片可以左右切换
         const t = e.target as HTMLElement;
+        // 卡片编号：在当前窗口打开那张卡片（不开新标签；桌面端也不交给系统浏览器）
+        const a = t.closest?.('a.xref') as HTMLAnchorElement | null;
+        if (a) {
+          // 网页端带着修饰键时让浏览器自己开新标签；桌面端一律在这个窗口打开（不交给系统浏览器，也开不了新窗口）
+          if (e.button !== 0 || (shell === 'web' && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey))) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const [board, id] = (a.dataset.card || '').split('#');
+          if (!board || !id) return;
+          if (board === useData.getState().path) openCard(Number(id));
+          else void openOtherCard(board, Number(id));
+          return;
+        }
         if (t.tagName !== 'IMG') return;
+        // 图片（附件）点击放大；同一段里的其他图片可以左右切换
         e.preventDefault();
         e.stopPropagation();
         const list = [...e.currentTarget.querySelectorAll('img')].map(i => ({ src: i.getAttribute('src') || '', alt: i.getAttribute('alt') || '' }));

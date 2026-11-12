@@ -122,7 +122,7 @@ export function UpdateCard() {
           </div>
           {check.result.notes?.trim() ? (
             <div className="up-notes md">
-              <Markdown src={check.result.notes} />
+              <Markdown src={check.result.notes} links={false} />
             </div>
           ) : (
             <div className="up-notes">这一版没有写更新说明</div>

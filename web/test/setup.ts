@@ -23,4 +23,6 @@ window.matchMedia ??= (query: string) =>
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
+  // 地址栏（lib/route）也要回到初始状态：上一个用例打开的白板、卡片不能带到下一个用例
+  history.replaceState(null, '', '/');
 });

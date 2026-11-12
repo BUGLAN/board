@@ -20,9 +20,10 @@ import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
+import { parseRoute } from './lib/route';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
 import { checkAuth, useAuth } from './store/auth';
-import { boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './store/data';
+import { applyRoute, boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './store/data';
 import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, TAB_ORDER, toast, useUI, type Tab,
 } from './store/ui';
@@ -120,6 +121,16 @@ function BoardApp() {
   const ws = useData(s => s.ws);
 
   useEffect(() => boot(), []);
+  // 地址栏：打开、关闭卡片和切换白板时写进去（lib/route 的 syncUrl）；后退、前进按地址改回来
+  useEffect(() => {
+    // 打开页面时的地址（卡片链接）由 store/data 的初始状态和 load 处理，这里只接后退、前进
+    const onPop = () => {
+      const r = parseRoute(location.pathname, location.search);
+      applyRoute({ path: r.path, card: r.card, tab: r.tab ?? 'board' });
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   // 空闲时预取按需加载的页面
   useEffect(() => {
     const t = setTimeout(() => (window.requestIdleCallback ?? ((f: () => void) => f()))(prefetch), 2500);

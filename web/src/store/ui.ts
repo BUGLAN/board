@@ -3,6 +3,7 @@
    ========================================================================== */
 import { create } from 'zustand';
 import type { ApiError } from '../lib/api';
+import { syncUrl } from '../lib/route';
 import type { ColumnKey, Label } from '../lib/types';
 import { pref } from '../lib/util';
 
@@ -164,9 +165,10 @@ interface UIState {
 
 /** 活动栏从上到下的顺序，也是数字快捷键 ⌘/Ctrl 1~6 的顺序（设置固定在活动栏底部） */
 export const TAB_ORDER: Tab[] = ['board', 'inbox', 'stats', 'projects', 'hosts', 'settings'];
+export const isTab = (t: unknown): t is Tab => TAB_ORDER.includes(t as Tab);
 const initialTab = (): Tab => {
-  const q = new URLSearchParams(location.search).get('tab') as Tab | null;
-  if (q && TAB_ORDER.includes(q)) return q;
+  const q = new URLSearchParams(location.search).get('tab');
+  if (isTab(q)) return q;
   const p = pref.get<Tab>('tab', 'board');
   return TAB_ORDER.includes(p) ? p : 'board';
 };
@@ -219,6 +221,8 @@ export function setTab(tab: Tab, { toggle = false } = {}) {
   const changed = side !== get().side;
   set({ tab, side });
   pref.set('tab', tab);
+  // 地址栏带着当前白板和 Tab：刷新后回到同一个页面
+  syncUrl();
   if (changed) notifyResize();
 }
 

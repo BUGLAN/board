@@ -184,6 +184,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .md a { color: color-mix(in oklab, var(--brand), var(--ink)); text-decoration: none; background-image: linear-gradient(currentColor, currentColor); background-size: 0 1px; background-position: 0 100%; background-repeat: no-repeat; transition: background-size var(--dur-3) var(--ease-out); }
 .md a:hover { background-size: 100% 1px; }
 .md .gh { font-family: var(--f-mono); font-size: .88em; padding: .1em .45em; border-radius: var(--r-xs); color: color-mix(in oklab, var(--c-review), var(--ink)); background: color-mix(in srgb, var(--c-review) 12%, transparent); }
+/* 卡片编号：和 gh#123 一样的样子，但是能点开（悬停显示标题和状态） */
+.md a.xref { font-family: var(--f-mono); font-size: .88em; padding: .1em .45em; border-radius: var(--r-xs); color: color-mix(in oklab, var(--c-review), var(--ink)); background: color-mix(in srgb, var(--c-review) 12%, transparent); background-image: none; cursor: pointer; transition: background-color var(--dur-2) var(--ease-out); }
+.md a.xref:hover { background: color-mix(in srgb, var(--c-review) 22%, transparent); }
 .md blockquote { padding-left: 12px; border-left: 3px solid var(--line-2); color: var(--text-2); }
 
 /* 动态 */

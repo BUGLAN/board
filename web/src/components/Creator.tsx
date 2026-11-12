@@ -350,7 +350,7 @@ export function Creator() {
                 onChange={e => setBody(e.target.value)}
               />
               {mode === 'preview' && (
-                <div className="cr-preview">{body.trim() ? <Markdown src={body} repo={repo} /> : <p className="cr-empty">还没有描述</p>}</div>
+                <div className="cr-preview">{body.trim() ? <Markdown src={body} repo={repo} links={false} /> : <p className="cr-empty">还没有描述</p>}</div>
               )}
             </div>
           </div>

@@ -3,11 +3,13 @@
    - 服务端推送 rev 变化 → 重新取快照；新事件交给界面做高亮与提示
    - 写操作乐观更新（见「乐观更新」一节）：当帧生效，按发起顺序一个接一个发给服务端，
      成功后刷新再撤掉本地补丁，失败只撤掉自己那一层；保存完之前同一个对象不能再改（见 busy）
+   - 当前白板、打开的卡片都在地址栏里（lib/route.ts）：打开、关闭详情和切换白板时写进去
    ========================================================================== */
 import { create } from 'zustand';
 import { api, ApiError, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
+import { applySilently, bindRoute, parseRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
-import { clearLabelSel, toast } from './ui';
+import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
 import { INBOX } from '../lib/schema';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardDetail, type Cmd, type ColumnKey, type ProjectInfo, type Workspace } from '../lib/types';
 
@@ -58,9 +60,14 @@ const save = (p: string) => {
   }
 };
 
+/** 启动时的地址：/<项目>/<白板>[/<ID>]，没有时用本地记住的白板 */
+const initial = typeof location !== 'undefined' ? parseRoute(location.pathname, location.search) : { path: null, card: null, tab: null };
+/** 地址栏里的卡片：第一次加载时和列表一起取回来再打开（见 load）；之后由 applyRoute 直接打开 */
+let pendingCard: number | null = initial.card;
+
 export const useData = create<DataState>(() => ({
   ws: null,
-  path: saved(),
+  path: initial.path ?? saved(),
   board: null,
   detailId: null,
   detail: null,
@@ -77,6 +84,8 @@ export const useData = create<DataState>(() => ({
 
 const set = useData.setState;
 const get = useData.getState;
+// 地址栏跟着 store 里的白板、卡片和 Tab 走（lib/route 的 syncUrl 读它）
+bindRoute(() => ({ path: get().path, card: get().detailId, tab: useUI.getState().tab }));
 
 /* ------------------------------ 乐观更新 ------------------------------ */
 /*
@@ -708,9 +717,18 @@ async function load() {
   if (!paths.includes(path)) {
     const s = saved();
     path = paths.includes(s) ? s : paths[0];
+    pendingCard = null; // 地址里的白板不在了：地址里的卡片也不打开
     switchTo(path);
   }
-  const detailId = get().detailId;
+  // 地址栏里的卡片（刷新页面、从别处打开链接）：和这块白板一起取回来，取回来的那一帧就打开详情。
+  // 不写地址栏：这时可能正按地址（后退、前进）改状态，写回去会把历史弄乱
+  let detailId = get().detailId;
+  if (pendingCard != null) {
+    detailId = pendingCard;
+    pendingCard = null;
+    base.detail = null;
+    render({ detailId });
+  }
   const [fetched, rawDetail] = await Promise.all([
     api.board(path, fullPaths.has(path)),
     // 卡片不在了（NOT_FOUND）记为 gone：详情要关掉。不在快照里的卡片（终点状态更早的）不能靠快照判断
@@ -736,6 +754,8 @@ async function load() {
   boardRev = Math.max(ws.rev, board.rev);
   wsRev = ws.rev;
   render({ rev: boardRev, offset: ws.now - Date.now(), ...(gone ? { detailId: null } : {}) });
+  // 地址栏和现在打开的保持一致：记着的白板不在了、换了白板之后地址跟着改（后退、前进时由 applySilently 挡住）
+  syncUrl();
 }
 
 /** 只取工作区：推送里的变化都属于别的白板时用（顶栏、切换器要用它的卡片数），不重取当前白板 */
@@ -836,6 +856,8 @@ function switchTo(path: string) {
   base.board = snapshots.get(path) ?? null;
   base.detail = null;
   render({ path, detailId: null, generation: get().generation + 1 });
+  // 切换白板写进地址栏（新的一块白板是一条新的历史记录：后退能回到原来那块）
+  syncUrl(get().detailId == null ? 'push' : 'replace');
 }
 
 /** 打开另一块白板 */
@@ -854,8 +876,12 @@ export async function openDetail(id: number) {
   if (isDraft(id)) return;
   const path = get().path;
   const k = `${path}#${id}`;
+  const was = get().detailId;
   base.detail = base.detail?.id === id ? base.detail : details.get(k) ?? null;
   render({ detailId: id, detailError: null });
+  // 打开卡片加一条历史记录（后退能关掉）；详情里切上一张 / 下一张换掉当前这条
+  if (was !== id) syncUrl(was == null ? 'push' : 'replace');
+  save(path);
   try {
     const w = writes;
     const d = await api.card(path, id);
@@ -881,8 +907,29 @@ export async function openDetail(id: number) {
   }
 }
 export function closeDetail() {
+  const had = get().detailId != null;
   base.detail = null;
   render({ detailId: null });
+  // 关掉详情也加一条历史记录：后退能重新打开（卡片已经被删、不是从这个窗口打开的不算）
+  if (had) syncUrl('push');
+}
+
+/** 按地址栏改界面状态（后退、前进、打开链接时 App 调用）：期间不往地址栏写。地址里没有白板时不动 */
+export function applyRoute(r: { path: string | null; card: number | null; tab: Tab }) {
+  // Tab 也在里面改：它一般会顺手写地址栏，这时列表还没取回来，会把地址里的卡片弄丢
+  applySilently(() => {
+    setTab(r.tab);
+    const switching = !!r.path && (r.path !== get().path || !get().board);
+    if (switching) void setPath(r.path!);
+    if (r.card != null) {
+      // 刚切过去、列表还没到：等它到了和详情一起打开（见 load）
+      if (switching) pendingCard = r.card;
+      else if (get().detailId !== r.card) void openDetail(r.card);
+    } else {
+      pendingCard = null;
+      if (get().detailId != null) closeDetail();
+    }
+  });
 }
 
 /* ------------------------------ 写 ------------------------------ */

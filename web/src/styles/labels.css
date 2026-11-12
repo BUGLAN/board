@@ -99,9 +99,11 @@
 @media (prefers-reduced-motion: reduce) { .lb-field { transition: none; } }
 :root[data-motion="reduced"] .lb-field { transition: none; }
 
-/* 详情里的「复制为提示词」 */
+/* 详情里的「复制链接」「复制为提示词」 */
 .d-prompt { height: 28px; color: var(--text-2); }
 .d-prompt:hover { color: color-mix(in oklab, var(--brand), var(--ink)); }
+/* 窄窗口（手机上文字收起、只剩图标）时链接按钮和提示词按钮之间留一点空隙 */
+.d-link + .d-prompt { margin-left: 2px; }
 
 /* ---------------- 标签选择器 ---------------- */
 .lb-picker {
@@ -181,6 +183,7 @@
 @media (max-width: 760px) {
   .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
   .d-prompt svg { margin: 0; }
+  .d-link + .d-prompt { margin-left: 0; }
   .lbm-list { grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; }
   .lbm-preview { display: none; }
 }
