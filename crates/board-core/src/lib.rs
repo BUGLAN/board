@@ -36,7 +36,7 @@ pub use hosts::{
 pub use model::*;
 pub use runlog::RunEvent;
 pub use templates::AgentTemplate;
-pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
+pub use store::{hhmm, now_ms, valid_board, valid_key, NewBoard, Store, R, W};
 
 #[cfg(test)]
 mod tests;

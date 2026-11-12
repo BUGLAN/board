@@ -5,7 +5,7 @@
 //! - `DELETE /api/mcp/{名称}`：删掉（只能在界面上做）；各台机器上同步加的条目随后删掉
 //! - `GET /api/hosts/{名字}/mcp`：完整内容（含密钥原文），只给 board host 的访问令牌
 
-use crate::auth::Caller;
+use crate::auth::{human, Caller};
 use crate::{client_of, parse, ApiError, ApiResult, AppState};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -13,13 +13,6 @@ use axum::{Extension, Json};
 use board_core::mcp::McpServer;
 use board_core::*;
 use serde_json::{json, Value};
-
-fn human(c: &Caller) -> Result<String> {
-    match c {
-        Caller::Human { login, .. } => Ok(login.clone().unwrap_or_else(|| "人".into())),
-        Caller::Agent { .. } => Err(BoardError::code(ErrorCode::NotLoggedIn)),
-    }
-}
 
 pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<Vec<McpServer>> {
     let all = s.db(|st| st.read(|r| r.mcp_servers())).await?;

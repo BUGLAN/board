@@ -143,7 +143,7 @@ fn claude(v: &Value, out: &mut Vec<String>) {
             }
             for c in arr(&v["message"]["content"]) {
                 match s(&c["type"]) {
-                    "text" => text(s(&c["text"]), "", &mut push),
+                    "text" => text(s(&c["text"]), &mut push),
                     "thinking" => thinking(s(&c["thinking"]), &mut push),
                     "tool_use" => push(tool_line(s(&c["name"]), &c["input"])),
                     _ => {}
@@ -171,7 +171,7 @@ fn claude(v: &Value, out: &mut Vec<String>) {
                 t += &format!(" · ${c:.2}");
             }
             push(t);
-            text(s(&v["result"]), "", &mut push);
+            text(s(&v["result"]), &mut push);
             for e in arr(&v["errors"]) {
                 if let Some(e) = e.as_str() {
                     push(format!("✗ {}", clip(e, BRIEF)));
@@ -211,7 +211,7 @@ fn pi(v: &Value, out: &mut Vec<String>) {
             }
             for c in arr(&m["content"]) {
                 match s(&c["type"]) {
-                    "text" => text(s(&c["text"]), "", &mut push),
+                    "text" => text(s(&c["text"]), &mut push),
                     "thinking" => thinking(s(&c["thinking"]), &mut push),
                     // 工具调用看 tool_execution_start（带参数，执行前就写）
                     _ => {}
@@ -277,7 +277,7 @@ fn codex(v: &Value, out: &mut Vec<String>) {
         }
         ("item.completed", "web_search") => push(tool_line("web_search", &json_str(s(&item["query"])))),
         ("item.completed", "todo_list") => push(tool_line("todo", &json_str(&codex_todos(item)))),
-        ("item.completed", "agent_message") => text(s(&item["text"]), "", &mut push),
+        ("item.completed", "agent_message") => text(s(&item["text"]), &mut push),
         ("item.completed", "reasoning") => thinking(s(&item["text"]), &mut push),
         ("item.completed", "error") => push(format!("✗ {}", clip(s(&item["message"]), BRIEF))),
         ("turn.completed", _) => {
@@ -374,7 +374,7 @@ fn dsh(v: &Value, out: &mut Vec<String>) {
             push(head);
         }
         "thinking" => thinking(s(&v["text"]), &mut push),
-        "text" => text(s(&v["text"]), "", &mut push),
+        "text" => text(s(&v["text"]), &mut push),
         "tool_call" => push(tool_line(s(&v["tool"]), &dsh_input(&v["input"]))),
         "tool_result" => {
             let err = s(&v["status"]) == "error";
@@ -397,7 +397,7 @@ fn dsh(v: &Value, out: &mut Vec<String>) {
                 k => k,
             };
             push(format!("■ 结束 · {how}"));
-            text(s(&v["text"]), "", &mut push);
+            text(s(&v["text"]), &mut push);
         }
         "error" => push(format!("✗ {}", clip(s(&v["message"]), BRIEF))),
         _ => {}
@@ -483,13 +483,13 @@ fn result_line(body: &str, err: bool, ms: Option<i64>) -> String {
 }
 
 /// agent 说的一段话：去掉空行，最多 TEXT_LINES 行
-fn text(t: &str, prefix: &str, push: &mut impl FnMut(String)) {
+fn text(t: &str, push: &mut impl FnMut(String)) {
     let lines: Vec<&str> = t.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
     for l in lines.iter().take(TEXT_LINES) {
-        push(format!("{prefix}{l}"));
+        push(l.to_string());
     }
     if lines.len() > TEXT_LINES {
-        push(format!("{prefix}…（还有 {} 行）", lines.len() - TEXT_LINES));
+        push(format!("…（还有 {} 行）", lines.len() - TEXT_LINES));
     }
 }
 

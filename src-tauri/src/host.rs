@@ -88,7 +88,7 @@ fn check_conf(name: &str, dirs: &[Dir]) -> Result<(), String> {
     let mut seen: Vec<&str> = vec![];
     for d in dirs {
         let b = d.board.trim();
-        if !config::valid_board(b) {
+        if !board_core::valid_board(b) {
             return Err(format!("白板要写成 <项目>/<白板>：{}", d.board));
         }
         if seen.contains(&b) {

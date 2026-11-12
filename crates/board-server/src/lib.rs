@@ -70,12 +70,6 @@ pub struct Config {
     pub auth: Auth,
 }
 
-impl Config {
-    pub fn new(db: PathBuf, auth: Auth) -> Self {
-        Config { db, demo: false, serve_web: true, auth }
-    }
-}
-
 struct Inner {
     store: Mutex<Store>,
     tx: broadcast::Sender<Arc<str>>,

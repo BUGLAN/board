@@ -170,7 +170,10 @@ impl Backend {
     }
 }
 
-/// 卡片命令的 JSON（与界面发给服务端的格式相同）
+/// 卡片命令的 JSON（与界面发给服务端的格式相同）。
+///
+/// CLI 只构造这里列出的命令；回复并移动、改评论、删评论、释放、删除、恢复、永久删除、合并、标为已读
+/// 只有界面会发，CLI 不构造，所以在这里是 `unreachable!`（漏一个会在编译时报出来，不会漏发请求）
 fn cmd_json(cmd: &Cmd) -> Value {
     match cmd {
         Cmd::New { title, body, column, top, labels } => {
@@ -180,18 +183,17 @@ fn cmd_json(cmd: &Cmd) -> Value {
         Cmd::Move { id, column, top, index, .. } => json!({ "op": "move", "id": id, "column": column, "top": top, "index": index }),
         Cmd::Claim { id } => json!({ "op": "claim", "id": id }),
         Cmd::Comment { id, text } => json!({ "op": "comment", "id": id, "text": text }),
-        Cmd::Reply { id, text, column } => json!({ "op": "reply", "id": id, "text": text, "column": column }),
-        Cmd::EditComment { id, activity, text } => json!({ "op": "edit_comment", "id": id, "activity": activity, "text": text }),
-        Cmd::DeleteComment { id, activity } => json!({ "op": "delete_comment", "id": id, "activity": activity }),
         Cmd::Label { id, add, remove } => json!({ "op": "label", "id": id, "add": add, "remove": remove }),
         Cmd::Beat { id, done } => json!({ "op": "beat", "id": id, "final": done }),
-        Cmd::Release { id } => json!({ "op": "release", "id": id }),
-        Cmd::Delete { id } => json!({ "op": "delete", "id": id }),
-        Cmd::Restore { id } => json!({ "op": "restore", "id": id }),
-        Cmd::Purge { id } => json!({ "op": "purge", "id": id }),
-        Cmd::Merge { id, from, title, body } => json!({ "op": "merge", "id": id, "from": from, "title": title, "body": body }),
-        // 只有界面会发（人看过的未整理条目）
-        Cmd::Seen { id } => json!({ "op": "seen", "id": id }),
+        Cmd::Reply { .. }
+        | Cmd::EditComment { .. }
+        | Cmd::DeleteComment { .. }
+        | Cmd::Release { .. }
+        | Cmd::Delete { .. }
+        | Cmd::Restore { .. }
+        | Cmd::Purge { .. }
+        | Cmd::Merge { .. }
+        | Cmd::Seen { .. } => unreachable!("CLI 不构造这条命令"),
     }
 }
 
@@ -251,7 +253,8 @@ impl Remote {
         &self.url
     }
 
-    /// 建这个连接时给的请求超时（0 秒等于不限，见 `with_timeout`）
+    /// 建这个连接时给的请求超时（0 秒等于不限，见 `with_timeout`）；只有测试看它
+    #[cfg(test)]
     fn timeout(&self) -> Option<Duration> {
         self.agent.config().timeouts().global
     }

@@ -1349,7 +1349,7 @@ fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec
     for (board, path) in raw {
         let board = board.trim().to_string();
         let path = path.trim().to_string();
-        if !board_core::config::valid_board(&board) {
+        if !board_core::valid_board(&board) {
             return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
         }
         if dirs.iter().any(|(b, _)| *b == board) {

@@ -20,6 +20,7 @@ mod redact;
 mod selftest;
 mod service;
 mod skills;
+mod text;
 mod update;
 
 use backend::{env, Backend, BoardData, Remote};
@@ -29,7 +30,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::time::Duration;
-use unicode_width::UnicodeWidthStr;
+use text::{pad, truncate, width};
 
 const VALUE_FLAGS: [&str; 21] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
@@ -575,37 +576,9 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 let kw = flow.0.iter().map(|st| width(&st.key)).max().unwrap_or(0).max(5) + 2;
                 let nw = flow.0.iter().map(|st| width(&st.name)).max().unwrap_or(0) + 2;
                 let mut s = String::new();
-                let rule_of = |st: &Status| {
-                    let mut rules = vec![];
-                    if st.claim {
-                        rules.push("可领取");
-                    }
-                    if st.lock {
-                        rules.push("锁定");
-                    }
-                    if st.fin {
-                        rules.push("终点");
-                    }
-                    if st.err {
-                        rules.push("错误节点");
-                    }
-                    rules.join(" · ")
-                };
                 let rw = flow.0.iter().map(|st| width(&rule_of(st))).max().unwrap_or(0) + 2;
                 for (i, st) in flow.0.iter().enumerate() {
-                    let mut rules = vec![];
-                    if st.claim {
-                        rules.push("可领取");
-                    }
-                    if st.lock {
-                        rules.push("锁定");
-                    }
-                    if st.fin {
-                        rules.push("终点");
-                    }
-                    if st.err {
-                        rules.push("错误节点");
-                    }
+                    let rules = rule_of(st);
                     let to: Vec<&str> = st.to.iter().map(|k| flow.name(k)).collect();
                     s += &format!(
                         "{} {}{}{}{}{}\n",
@@ -613,7 +586,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                         fmt.col(&st.key, &pad(&st.key, kw)),
                         pad(&st.name, nw),
                         p.dim(&pad(&format!("{} 张", count(&st.key)), 8)),
-                        p.yellow(&pad(&rules.join(" · "), rw)),
+                        p.yellow(&pad(&rules, rw)),
                         if to.is_empty() { p.dim("→ （没有连线）") } else { format!("→ {}", to.join("、")) }
                     );
                 }
@@ -1203,12 +1176,12 @@ impl Fmt<'_> {
             return format!("{}\n", p.dim("（没有匹配的卡片）"));
         }
         let tw = cards.iter().map(|c| width(&c.title)).max().unwrap_or(0).min(56) + 2;
-        let lw = cards.iter().map(|c| width(&self.tags(c))).max().unwrap_or(0) + 2;
+        let tags: Vec<String> = cards.iter().map(|c| self.tags(c)).collect();
+        let lw = tags.iter().map(|t| width(t)).max().unwrap_or(0) + 2;
+        let cw = cards.iter().map(|c| width(&c.column)).max().unwrap_or(0).max(6) + 2;
         let mut s = String::new();
-        for c in cards {
-            let tags = self.tags(c);
+        for (c, tags) in cards.iter().zip(&tags) {
             let holder = c.holder.as_deref().unwrap_or("");
-            let cw = cards.iter().map(|c| width(&c.column)).max().unwrap_or(0).max(6) + 2;
             let mut line = format!("{}{}", p.cyan(&pad(&format!("#{}", c.id), 6)), self.col(&c.column, &pad(&c.column, cw)));
             let title = truncate(&c.title, 56);
             if tags.is_empty() && holder.is_empty() {
@@ -1216,9 +1189,9 @@ impl Fmt<'_> {
             } else {
                 line += &pad(&title, tw);
                 if holder.is_empty() {
-                    line += &p.magenta(&tags);
+                    line += &p.magenta(tags);
                 } else {
-                    line += &format!("{}{}", p.magenta(&pad(&tags, lw)), p.yellow(holder));
+                    line += &format!("{}{}", p.magenta(&pad(tags, lw)), p.yellow(holder));
                 }
             }
             s += &line;
@@ -1464,35 +1437,30 @@ fn attachment_json(f: &Attachment) -> Value {
     })
 }
 
+/// 状态规则的一行文字，例如「可领取 · 锁定」；`board flow` 用来算列宽和显示
+fn rule_of(st: &Status) -> String {
+    let mut rules = vec![];
+    if st.claim {
+        rules.push("可领取");
+    }
+    if st.lock {
+        rules.push("锁定");
+    }
+    if st.fin {
+        rules.push("终点");
+    }
+    if st.err {
+        rules.push("错误节点");
+    }
+    rules.join(" · ")
+}
+
 fn human_size(n: i64) -> String {
     match n {
         n if n < 1024 => format!("{n} B"),
         n if n < 1024 * 1024 => format!("{:.0} KB", n as f64 / 1024.0),
         n => format!("{:.1} MB", n as f64 / 1048576.0),
     }
-}
-
-fn width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
-}
-
-fn pad(s: &str, w: usize) -> String {
-    let n = width(s);
-    if n >= w { s.to_string() } else { format!("{s}{}", " ".repeat(w - n)) }
-}
-
-fn truncate(s: &str, w: usize) -> String {
-    if width(s) <= w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        if width(&out) + unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) > w - 1 {
-            break;
-        }
-        out.push(ch);
-    }
-    out + "…"
 }
 
 pub(crate) struct Paint {

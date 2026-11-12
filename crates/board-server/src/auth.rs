@@ -72,6 +72,14 @@ pub enum Caller {
     Agent { token: i64 },
 }
 
+/// 只有人能做：返回发起人的名字（登录名，没有时写「人」）；agent 的令牌得到 `NOT_LOGGED_IN`
+pub(crate) fn human(c: &Caller) -> Result<String> {
+    match c {
+        Caller::Human { login, .. } => Ok(login.clone().unwrap_or_else(|| "人".into())),
+        Caller::Agent { .. } => Err(BoardError::code(ErrorCode::NotLoggedIn)),
+    }
+}
+
 /// 会话是否还在（实时推送用来判断要不要断开）
 pub(crate) fn session_alive(conn: &Connection, session_hash: &str, now: i64) -> Result<bool> {
     let n: i64 = conn.query_row(

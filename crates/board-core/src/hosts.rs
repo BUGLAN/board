@@ -573,10 +573,6 @@ fn same_dir_settings(a: &[HostDir], b: &[HostDir]) -> bool {
         && a.iter().zip(b).all(|(x, y)| x.board == y.board && x.path == y.path && x.fixed == y.fixed)
 }
 
-fn valid_board_ref(board: &str) -> bool {
-    matches!(board.split_once('/'), Some((project, key)) if crate::valid_key(project) && crate::valid_key(key))
-}
-
 /// 把 board host 上报或界面提交的目录整理成设置：去掉首尾空白，保留同一块白板已有的检查结果
 fn clean_dirs(raw: &[HostDir], old: &[HostDir]) -> Vec<HostDir> {
     raw.iter()
@@ -2106,7 +2102,7 @@ impl<'a> W<'a> {
         let mut seen: Vec<&str> = vec![];
         for d in &rep.dirs {
             let board = d.board.trim();
-            if !valid_board_ref(board) {
+            if !crate::valid_board(board) {
                 return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{}", d.board)));
             }
             if d.path.trim().is_empty() {
@@ -2525,7 +2521,7 @@ impl<'a> W<'a> {
         for d in raw {
             let board = d.board.trim().to_string();
             let path = d.path.trim();
-            if !valid_board_ref(&board) {
+            if !crate::valid_board(&board) {
                 return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{}", d.board)));
             }
             if path.is_empty() {

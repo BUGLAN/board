@@ -10,7 +10,7 @@
 //!
 //! 需要 `config` feature（服务端不带 toml_edit）。
 
-use crate::{valid_key, BoardError, Result};
+use crate::{BoardError, Result};
 use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
@@ -62,11 +62,6 @@ pub fn expand(p: &str) -> PathBuf {
         },
         _ => PathBuf::from(p),
     }
-}
-
-/// 白板路径：`<项目>/<白板>`，两段都是标识（[`valid_key`]）
-pub fn valid_board(b: &str) -> bool {
-    matches!(b.split_once('/'), Some((p, k)) if valid_key(p) && valid_key(k))
 }
 
 /// 读进来的配置文件；文件不存在时是空的
@@ -523,10 +518,10 @@ mod tests {
 
     #[test]
     fn checks_and_expand() {
-        assert!(valid_board("default/main"));
-        assert!(!valid_board("default"));
-        assert!(!valid_board("default/main/x"));
-        assert!(!valid_board("Default/main"));
+        assert!(crate::valid_board("default/main"));
+        assert!(!crate::valid_board("default"));
+        assert!(!crate::valid_board("default/main/x"));
+        assert!(!crate::valid_board("Default/main"));
         assert_eq!(expand("/abs/x"), PathBuf::from("/abs/x"));
         assert_eq!(expand("~x"), PathBuf::from("~x"));
         if let Some(h) = home() {

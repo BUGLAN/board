@@ -259,7 +259,7 @@ pub fn service_args(exe: &Path, name: Option<&str>, dirs: &[String], cwd: &Path)
     for d in dirs {
         let (board, path) = d.split_once('=').ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>/<白板>=<路径>：{d}")))?;
         let (board, path) = (board.trim(), path.trim());
-        if !board_core::config::valid_board(board) {
+        if !board_core::valid_board(board) {
             return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
         }
         let p = Path::new(path);

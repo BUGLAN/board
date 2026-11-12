@@ -16,9 +16,9 @@ use serde_json::{json, Value};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use unicode_width::UnicodeWidthStr;
 
 use crate::config::{self, env, Source};
+use crate::text::{pad, width};
 use crate::{Output, Paint};
 
 /// 命令名；PATH 检查找的就是它
@@ -596,15 +596,6 @@ fn path_hint(dir: &Path) -> String {
 fn path_hint(dir: &Path) -> String {
     let d = dir.display();
     format!("export PATH=\"$PATH:{d}\"（写进 ~/.zshrc 或 ~/.bashrc 长期生效）")
-}
-
-fn width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
-}
-
-fn pad(s: &str, w: usize) -> String {
-    let n = width(s);
-    if n >= w { s.to_string() } else { format!("{s}{}", " ".repeat(w - n)) }
 }
 
 /* ------------------------------ 测试 ------------------------------ */

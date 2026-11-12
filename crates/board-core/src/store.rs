@@ -220,6 +220,11 @@ pub fn valid_key(key: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// 白板路径：`<项目>/<白板>`，两段都是标识（[`valid_key`]）
+pub fn valid_board(b: &str) -> bool {
+    matches!(b.split_once('/'), Some((p, k)) if valid_key(p) && valid_key(k))
+}
+
 pub(crate) fn split_path(raw: &str) -> (&str, Option<&str>) {
     match raw.find('/') {
         Some(i) => (&raw[..i], Some(&raw[i + 1..])),
