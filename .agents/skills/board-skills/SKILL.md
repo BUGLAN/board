@@ -117,7 +117,9 @@ Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以
    - 运行环境用 claude、codex、dsh 这类名称；模型名转成小写，空格换成 `-`。
    - 两段都只能用小写字母、数字、`.`、`-`，以字母或数字开头；只有一个 `/`，总长不超过 48 个字符。
    - 本机已有同名会话时，加一个和本会话相关的后缀，例如任务名或分支名：`claude/opus-5.5-login`。
-2. **占用名字**：`board check --as <名字>`。返回 `NAME_TAKEN`：名字正被另一个在线会话使用，加一个和本会话相关的后缀再 check。
+2. **占用名字**：`board check --as <名字>`，**单独执行、看它的结果**再往下走。返回 `NAME_TAKEN`：名字正被另一个在线会话使用，加一个和本会话相关的后缀再 check；之后所有命令都用 check 成功的那个名字，同一个脚本里不能接着用原来的名字。
+   - 反例（2026-11-11 真实发生过）：一个会话的脚本里 check 得到了 `NAME_TAKEN`，没看结果，接着用这个名字打标签，最后 `board heartbeat stop`，把另一个会话的心跳停了、名字下线了，那个会话正在做的卡差点被释放。
+   - 现在 check 成功时服务端会发一个会话标识，`board` 记在本机，心跳和 `stop` 都带上它：别的会话停不掉你的心跳，你也停不掉别人的（`NAME_TAKEN`，写明是哪个进程）。用了别人的名字做别的事时，输出里会有一行提醒（`--json` 里是 `warning`），看到就换名字。
 3. **启动心跳**（整个会话只执行这一次）：
 
    ```sh
@@ -377,7 +379,7 @@ board check --as <名字>                   # 会话开始时占用名字
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线
 board heartbeat start                     # 会话开始：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
 board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
-board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错
+board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错。名字是别的会话 check 的时候拒绝（NAME_TAKEN）
 board next --json                         # 只在 board host 启动的会话里：上一张交审或交给人之后领这个会话排着的下一张；SESSION_DONE 时结束
 board hold <ID>                           # 推集成分支前确认领取仍有效；NOT_HOLDER 时改推 wip 分支；连不上时每 30 秒重试、最多等 5 分钟
 board move <ID> <状态标识或名称> [--top]
@@ -394,7 +396,7 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | 错误码 | 含义 |
 |---|---|
 | `NO_IDENTITY` / `NO_BOARD` | 命令没带名字 / 白板：先 `board check --as <名字>`，之后每条命令都带 `--as <名字>`（或前缀 `BOARD_AS=<名字>`）和 `--board <项目>/<白板>`（或前缀 `BOARD=<项目>/<白板>`） |
-| `NAME_TAKEN` | 名字正被另一个在线会话使用：加一个和本会话相关的后缀再 check |
+| `NAME_TAKEN` | 名字正被另一个在线会话使用：加一个和本会话相关的后缀再 check。`heartbeat start / stop`、`beat --final` 得到它：这个名字是别的会话 check 的，你用错名字了，换成你自己 check 成功的那个 |
 | `NAME_OFFLINE` | 名字不在线：没有 check，或心跳中断超过 50 秒。重新 check 并启动心跳（见「会话结束」最后一段） |
 | `BOARD_NOT_FOUND` | 白板不存在；或项目有多块白板却只写了项目标识（原因里列出了可选的白板） |
 | `NOT_FOUND` | 卡片不存在 |

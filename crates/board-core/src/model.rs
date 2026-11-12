@@ -506,6 +506,9 @@ pub struct AgentInfo {
     pub beat_at: i64,
     /// 它持有的卡片（每块白板最多一张；可能没有）
     pub cards: Vec<HeldCard>,
+    /// 会话标识：只在新版 CLI check 成功时返回一次，之后 agent 级心跳和 final 都要带上
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// agent 持有的一张卡片：白板路径加上卡片本身

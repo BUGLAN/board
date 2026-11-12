@@ -130,7 +130,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn random_hex(n: usize) -> String {
+pub(crate) fn random_hex(n: usize) -> String {
     let mut buf = vec![0u8; n];
     getrandom::fill(&mut buf).expect("系统随机数不可用");
     hex(&buf)

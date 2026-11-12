@@ -139,6 +139,10 @@ pub fn board_stdin(home: &Path, env: &[(&str, String)], args: &[&str], input: Op
         .env_remove("BOARD_TOKEN")
         .env_remove("BOARD_DB")
         .env_remove("BOARD_CONFIG");
+    // 名字的本机状态文件（<临时目录>/board-heartbeat）写在测试自己的目录里，不碰开发者机器上的；env 里给了就用给的
+    let tmp = home.join("tmp");
+    let _ = std::fs::create_dir_all(&tmp);
+    cmd.env("TMPDIR", &tmp).env("TMP", &tmp).env("TEMP", &tmp);
     for (k, v) in env {
         cmd.env(k, v);
     }

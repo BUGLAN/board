@@ -7,6 +7,10 @@
 //! - `board beat`（agent 级心跳）：更新名字的心跳时间，并对这个名字持有、还没 final 的每张卡片
 //!   做一次与 `board beat <ID>` 相同的心跳。名字已离线时 `NAME_OFFLINE`。
 //! - `board beat --final`（不带 ID）：名字立刻离线。它持有的卡片不再收到心跳，按规则 7 在 50 秒内释放。
+//! - 会话标识（防止同名会话互相干扰）：新版 CLI check 时要一个随机的会话标识，之后它的 agent 级心跳和 final 都带上；
+//!   board host 开始派发时生成的名字属于那台 host。名字在线时，标识对不上（或没带）的 agent 级心跳和 final 被拒绝
+//!   （`NAME_TAKEN`），名字的状态不变；属于 board host 的名字只有 board host 能发心跳、让它离线。
+//!   旧版 CLI check 的名字没有标识，规则和以前一样。卡片级心跳（`board beat <ID>`）不看标识。
 //! - 严格模式：带令牌的卡片命令、上传附件里的名字必须在线（[`R::require_online`]）。
 //! - 只有上线、下线算变更（推送给界面）；只更新心跳时间的 `board beat` 不推送。
 
@@ -23,9 +27,69 @@ CREATE TABLE IF NOT EXISTS agents (
   checked_at INTEGER NOT NULL, -- 首次 check 的时间
   beat_at    INTEGER NOT NULL, -- 最近一次心跳（check 也算一次）
   token      INTEGER,          -- 最近一次 check 用的访问令牌 ID
-  off_at     INTEGER           -- 离线的时间：board beat --final，或扫描发现心跳中断；在线时为空
+  off_at     INTEGER,          -- 离线的时间：board beat --final，或扫描发现心跳中断；在线时为空
+  session    TEXT              -- 最近一次 check 时占用它的会话：s:<随机标识>（新版 CLI）| host（board host 派发）；旧版 CLI 为空
 );
 "#;
+
+/// 旧数据库的名字表补上会话标识一列
+pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let has: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'session'", [], |r| r.get::<_, i64>(0))? > 0;
+    if !has {
+        conn.execute_batch("ALTER TABLE agents ADD COLUMN session TEXT")?;
+    }
+    Ok(())
+}
+
+/// 谁占用一个名字：决定之后谁能给它发 agent 级心跳、让它离线
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameOwner<'a> {
+    /// 旧版 CLI：没有会话标识，任何人都能发心跳和 final（和以前一样）
+    Anyone,
+    /// 新版 CLI 的一个会话：只接受带同一个标识的 agent 级心跳和 final
+    Session(&'a str),
+    /// board host 开始派发时生成的名字：只有 board host 能发 agent 级心跳、让它离线
+    Host,
+}
+
+/// agent 级心跳是谁发的
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatBy<'a> {
+    /// CLI（`board beat`、后台心跳、`board heartbeat stop`），带着 check 时拿到的会话标识（旧版 CLI 没有）
+    Cli(Option<&'a str>),
+    /// board host 替它派发的 agent 发的
+    Host,
+}
+
+const HOST_OWNED: &str = "host";
+
+fn stored(owner: NameOwner<'_>) -> Option<String> {
+    match owner {
+        NameOwner::Anyone => None,
+        NameOwner::Session(s) => Some(format!("s:{s}")),
+        NameOwner::Host => Some(HOST_OWNED.into()),
+    }
+}
+
+/// 名字在线时，这次 agent 级心跳 / final 能不能被接受：标识对得上才行；名字没有标识（旧版 CLI check 的）时都接受
+fn allowed(session: Option<&str>, by: BeatBy<'_>) -> bool {
+    match (session, by) {
+        (None, _) => true,
+        (Some(_), BeatBy::Host) => true,
+        (Some(HOST_OWNED), BeatBy::Cli(_)) => false,
+        (Some(s), BeatBy::Cli(Some(mine))) => s.strip_prefix("s:") == Some(mine),
+        (Some(_), BeatBy::Cli(None)) => false,
+    }
+}
+
+fn not_yours(name: &str, session: Option<&str>) -> BoardError {
+    let why = if session == Some(HOST_OWNED) {
+        format!("名字「{name}」属于 board host 派发的会话：只有 board host 能给它发心跳、让它离线（派发会话里不用 heartbeat start / stop）")
+    } else {
+        format!("名字「{name}」现在属于另一个会话（会话标识对不上）：不能替它发心跳或让它离线。你的名字要么 check 时得到了 NAME_TAKEN，要么已经被别的会话重新 check；换一个带后缀的名字 check")
+    };
+    BoardError::new(ErrorCode::NameTaken, why).with_detail(json!({ "name": name }))
+}
 
 /// 名字多久没有心跳算离线：连续 5 次（50 秒）
 pub const NAME_GAP_MS: i64 = BEAT_MS * BEAT_MISSES;
@@ -35,6 +99,11 @@ type Row = (i64, Option<i64>);
 
 fn online(row: Option<Row>, now: i64) -> bool {
     matches!(row, Some((beat, None)) if beat + NAME_GAP_MS > now)
+}
+
+/// 名字现在属于哪个会话（存的原样：s:<标识> | host | 空）
+fn session_of(conn: &rusqlite::Connection, name: &str) -> Result<Option<String>> {
+    Ok(conn.query_row("SELECT session FROM agents WHERE name = ?1", [name], |r| r.get(0)).optional()?.flatten())
 }
 
 fn offline(name: &str) -> BoardError {
@@ -69,7 +138,7 @@ impl<'a> R<'a> {
             .query_row("SELECT checked_at, beat_at FROM agents WHERE name = ?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let Some((checked_at, beat_at)) = row else { return Ok(None) };
-        Ok(Some(AgentInfo { name: name.to_string(), checked_at, beat_at, cards: self.held(name)? }))
+        Ok(Some(AgentInfo { name: name.to_string(), checked_at, beat_at, cards: self.held(name)?, session: None }))
     }
 
     /// 在线的 agent（所有白板），按名字排序
@@ -80,7 +149,7 @@ impl<'a> R<'a> {
         let rows: Vec<(String, i64, i64)> =
             st.query_map(params![now, NAME_GAP_MS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
         rows.into_iter()
-            .map(|(name, checked_at, beat_at)| Ok(AgentInfo { cards: self.held(&name)?, name, checked_at, beat_at }))
+            .map(|(name, checked_at, beat_at)| Ok(AgentInfo { cards: self.held(&name)?, name, checked_at, beat_at, session: None }))
             .collect()
     }
 
@@ -105,9 +174,15 @@ impl<'a> R<'a> {
 }
 
 impl<'a> W<'a> {
-    /// `board check --as <名字>`：格式不对 `USAGE`；正被在线 agent 使用 `NAME_TAKEN`；
-    /// 否则标为在线，心跳时间记为现在（首次 check 时间保留第一次的）
+    /// `board check --as <名字>`（旧版 CLI，名字没有会话标识）：见 [`W::agent_check_owned`]
     pub fn agent_check(&mut self, name: &str, token: Option<i64>) -> Result<AgentInfo> {
+        self.agent_check_owned(name, token, NameOwner::Anyone)
+    }
+
+    /// `board check --as <名字>`：格式不对 `USAGE`；正被在线 agent 使用 `NAME_TAKEN`；
+    /// 否则标为在线，心跳时间记为现在（首次 check 时间保留第一次的），记下名字现在属于谁。
+    /// 新版 CLI 的会话：返回里带上会话标识（只在这里返回一次）
+    pub fn agent_check_owned(&mut self, name: &str, token: Option<i64>, owner: NameOwner<'_>) -> Result<AgentInfo> {
         check_agent_name(name).map_err(BoardError::usage)?;
         if online(self.read().agent_row(name)?, self.now) {
             return Err(BoardError::new(
@@ -117,21 +192,37 @@ impl<'a> W<'a> {
             .with_detail(json!({ "name": name })));
         }
         self.tx.execute(
-            "INSERT INTO agents (name, checked_at, beat_at, token, off_at) VALUES (?1, ?2, ?2, ?3, NULL)
-             ON CONFLICT (name) DO UPDATE SET beat_at = excluded.beat_at, token = excluded.token, off_at = NULL",
-            params![name, self.now, token],
+            "INSERT INTO agents (name, checked_at, beat_at, token, off_at, session) VALUES (?1, ?2, ?2, ?3, NULL, ?4)
+             ON CONFLICT (name) DO UPDATE SET beat_at = excluded.beat_at, token = excluded.token, off_at = NULL, session = excluded.session",
+            params![name, self.now, token, stored(owner)],
         )?;
         self.changed = true;
-        self.read().agent(name)?.ok_or_else(|| offline(name))
+        let mut info = self.read().agent(name)?.ok_or_else(|| offline(name))?;
+        if let NameOwner::Session(s) = owner {
+            info.session = Some(s.to_string());
+        }
+        Ok(info)
     }
 
     /// agent 级心跳 `board beat`：更新名字的心跳时间；对这个名字持有、还没 final 的每张卡片做一次心跳
     /// （与 `board beat <ID>` 相同）。名字不在线时 `NAME_OFFLINE`。
     ///
-    /// `done`（`board beat --final`）：名字立刻离线；已经离线时什么也不做。返回名字的情况和它持有的卡片
+    /// `done`（`board beat --final`）：名字立刻离线；已经离线时什么也不做。返回名字的情况和它持有的卡片。
+    /// 不带会话标识（旧版 CLI 的写法）：见 [`W::agent_beat_by`]
     pub fn agent_beat(&mut self, name: &str, done: bool) -> Result<AgentInfo> {
+        self.agent_beat_by(name, done, BeatBy::Cli(None))
+    }
+
+    /// 同 [`W::agent_beat`]，说明是谁发的：名字在线、而且属于某个会话时，标识对不上的拒绝（`NAME_TAKEN`），名字的状态不变
+    pub fn agent_beat_by(&mut self, name: &str, done: bool, by: BeatBy<'_>) -> Result<AgentInfo> {
         let row = self.read().agent_row(name)?;
         let is_online = online(row, self.now);
+        if is_online {
+            let session = session_of(self.tx, name)?;
+            if !allowed(session.as_deref(), by) {
+                return Err(not_yours(name, session.as_deref()));
+            }
+        }
         if done {
             if row.is_none() {
                 return Err(offline(name));

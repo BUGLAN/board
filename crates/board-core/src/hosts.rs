@@ -1571,7 +1571,7 @@ impl<'a> W<'a> {
             let d = self.drow(id)?;
             if rep.running.contains(&id) || alive.contains(&d.session) {
                 if let Some(name) = &d.name {
-                    match self.agent_beat(name, false) {
+                    match self.agent_beat_by(name, false, crate::agents::BeatBy::Host) {
                         Ok(_) => {}
                         // 名字已经离线：扫描会按机器掉线结束这次派发
                         Err(e) if e.code == ErrorCode::NameOffline => {}
@@ -2051,7 +2051,8 @@ impl<'a> W<'a> {
             params![d.id, name, env, env_name],
         )?;
         let d = DRow { name: Some(name.clone()), env_name: env_name.clone(), ..d };
-        self.agent_check(&name, token)?;
+        // 这个名字属于这台 board host：派发会话里的 agent 自己 heartbeat stop 也不会让它离线
+        self.agent_check_owned(&name, token, crate::agents::NameOwner::Host)?;
         let board = self.board_of(d.board)?;
         let actor = Actor::agent(name.clone());
         self.dispatch_ok = true;

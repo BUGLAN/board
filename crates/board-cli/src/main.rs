@@ -28,7 +28,7 @@ const VALUE_FLAGS: [&str; 21] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait",
 ];
-const BOOL_FLAGS: [&str; 9] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V"];
+const BOOL_FLAGS: [&str; 10] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
 const COMMANDS: [(&str, &str, &str); 25] = [
@@ -36,8 +36,8 @@ const COMMANDS: [(&str, &str, &str); 25] = [
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
         ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
-        ("heartbeat", "start | stop | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；final <ID>：结束这张卡片这一次的计时"),
-        ("beat", "[<ID>] [--final]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
+        ("heartbeat", "start | stop [--force] | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；名字是本机另一个还在运行的 agent 进程 check 的时，start、stop 都拒绝（NAME_TAKEN），--force 清理本机残留时用；final <ID>：结束这张卡片这一次的计时"),
+        ("beat", "[<ID>] [--final] [--force]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线（带着 check 时拿到的会话标识，名字属于别的会话时 NAME_TAKEN）。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
         ("boards", "", "列出所有白板"),
         ("flow", "", "列出白板的工作流：状态的顺序、标识、名称、规则，以及每个状态能去哪里"),
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
@@ -64,7 +64,19 @@ fn main() {
     let json = args.iter().any(|a| a == "--json");
     let p = Paint { on: !json && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
     match run(&args, &p) {
-        Ok(out) => {
+        Ok(mut out) => {
+            // 用的名字是本机另一个 agent 进程 check 的：照常执行，但提醒一句（--json 里加 warning 字段）
+            if let Some(w) = borrowed(&args) {
+                match &mut out {
+                    Output::Json(Value::Object(m)) => {
+                        m.insert("warning".into(), json!(w));
+                    }
+                    _ => {
+                        let pe = Paint { on: std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
+                        eprintln!("{} {w}", pe.yellow("!"));
+                    }
+                }
+            }
             let code = emit(out);
             if code != 0 {
                 std::process::exit(code);
@@ -84,6 +96,20 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// 带名字的命令（不含 check、heartbeat、不带 ID 的 beat：它们自己处理）用的名字是本机另一个还活着的 agent 进程 check 的：提醒的话
+fn borrowed(tokens: &[String]) -> Option<String> {
+    let a = Args::parse(tokens).ok()?;
+    let sub = a.pos.first()?.as_str();
+    if a.flag("--help") || a.flag("-h") || a.flag("--version") || a.flag("-V") {
+        return None;
+    }
+    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "doctor" | "help" | "host" | "dispatch") || (sub == "beat" && a.pos.len() == 1) {
+        return None;
+    }
+    let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))?;
+    heartbeat::borrowed_warning(&name)
 }
 
 enum Output {
@@ -295,6 +321,8 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     if sub == "check" {
         check_agent_name(&name).map_err(BoardError::usage)?;
         let info = be.check(&name)?;
+        // 记下这个名字属于调用它的 agent 进程和服务端发的会话标识：之后的心跳带上它，别的会话停不掉
+        heartbeat::checked(&name, info.session.clone())?;
         return Ok(if json {
             Output::Json(agent_json(&info))
         } else {
@@ -315,7 +343,8 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     }
     if sub == "beat" && a.pos.len() == 1 {
         let done = a.flag("--final");
-        let info = be.agent_beat(&name, done)?;
+        let session = heartbeat::session_for(&name, a.flag("--force"))?;
+        let info = be.agent_beat(&name, done, session.as_deref())?;
         if json {
             return Ok(Output::Json(agent_json(&info)));
         }
@@ -1296,7 +1325,7 @@ fn heartbeat_cmd(a: &Args, name: &str, json: bool, p: &Paint) -> Result<Output> 
     const USAGE: &str = "用法：board heartbeat start | stop | final <ID>";
     match a.pos.get(1).map(|s| s.as_str()) {
         Some("start") => {
-            let s = heartbeat::start(name)?;
+            let s = heartbeat::start(name, a.flag("--force"))?;
             Ok(if json {
                 Output::Json(json!({
                     "name": name,
@@ -1319,7 +1348,7 @@ fn heartbeat_cmd(a: &Args, name: &str, json: bool, p: &Paint) -> Result<Output> 
             })
         }
         Some("stop") => {
-            let info = heartbeat::stop(name)?;
+            let info = heartbeat::stop(name, a.flag("--force"))?;
             Ok(match (json, info) {
                 (true, Some(info)) => Output::Json(agent_json(&info)),
                 (true, None) => Output::Json(json!({ "name": name, "already_offline": true })),

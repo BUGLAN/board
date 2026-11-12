@@ -69,8 +69,9 @@ impl Backend {
     }
 
     /// `board check --as <名字>`
+    /// 同时要一个会话标识（新版服务端返回在 `session` 里；旧版服务端不认这个字段，返回里没有）
     pub fn check(&mut self, name: &str) -> Result<AgentInfo> {
-        self.0.post("/api/agents/check", json!({ "name": name }))
+        self.0.post("/api/agents/check", json!({ "name": name, "session": true }))
     }
 
     /// `board next`：board host 启动的会话接着做下一张
@@ -79,8 +80,13 @@ impl Backend {
     }
 
     /// agent 级心跳 `board beat [--final]`
-    pub fn agent_beat(&mut self, name: &str, done: bool) -> Result<AgentInfo> {
-        self.0.post("/api/agents/beat", json!({ "name": name, "final": done }))
+    /// session：check 时拿到的会话标识（本机状态文件里的）；没有时不带
+    pub fn agent_beat(&mut self, name: &str, done: bool, session: Option<&str>) -> Result<AgentInfo> {
+        let mut body = json!({ "name": name, "final": done });
+        if let Some(s) = session {
+            body["session"] = json!(s);
+        }
+        self.0.post("/api/agents/beat", body)
     }
 
     pub fn workspace(&mut self) -> Result<Workspace> {

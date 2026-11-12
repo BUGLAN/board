@@ -18,7 +18,7 @@ pub mod seed;
 pub mod stats;
 pub mod store;
 
-pub use agents::NAME_GAP_MS;
+pub use agents::{BeatBy, NameOwner, NAME_GAP_MS};
 pub use engine::{purge_trash, Cmd, TRASH_KEEP_MS};
 pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;

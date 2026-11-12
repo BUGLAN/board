@@ -2123,3 +2123,51 @@ fn rename_while_host_keeps_running() {
     let e = s.write(T0 + 6 * S, Origin::cli(), |w| w.dispatch_pull("desk", "zz", Some(1))).unwrap_err();
     assert_eq!(e.code, ErrorCode::NoSuchHost);
 }
+
+/* ---------------- 名字的会话标识（同名会话互相干扰） ---------------- */
+
+#[test]
+fn name_session_guards_beats_and_final() {
+    use crate::agents::{BeatBy, NameOwner};
+    let mut s = store();
+    // 旧版 CLI：没有标识，谁发心跳、final 都接受（和以前一样）
+    s.write(T0, Origin::cli(), |w| w.agent_check("old/x", None)).unwrap();
+    s.write(T0 + S, Origin::cli(), |w| w.agent_beat_by("old/x", false, BeatBy::Cli(Some("whatever")))).unwrap();
+    s.write(T0 + S, Origin::cli(), |w| w.agent_beat("old/x", true)).unwrap();
+    assert_eq!(s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_beat("old/x", false)).unwrap_err().code, ErrorCode::NameOffline);
+
+    // 新版 CLI：check 时发标识，只有带同一个标识的心跳和 final 被接受
+    let info = s.write(T0, Origin::cli(), |w| w.agent_check_owned("new/x", None, NameOwner::Session("abc"))).unwrap();
+    assert_eq!(info.session.as_deref(), Some("abc"), "check 返回会话标识");
+    assert!(s.read(|r| r.agent("new/x")).unwrap().unwrap().session.is_none(), "别处读不到标识");
+    for by in [BeatBy::Cli(None), BeatBy::Cli(Some("xyz"))] {
+        let e = s.write(T0 + S, Origin::cli(), |w| w.agent_beat_by("new/x", true, by)).unwrap_err();
+        assert_eq!(e.code, ErrorCode::NameTaken);
+        assert!(e.message.contains("另一个会话"), "{}", e.message);
+    }
+    s.read(|r| r.require_online("new/x", T0 + S)).expect("被拒之后名字仍在线");
+    s.write(T0 + S, Origin::cli(), |w| w.agent_beat_by("new/x", false, BeatBy::Cli(Some("abc")))).unwrap();
+    s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_beat_by("new/x", true, BeatBy::Cli(Some("abc")))).unwrap();
+    assert!(s.read(|r| r.require_online("new/x", T0 + 2 * S)).is_err(), "自己的 final 照常让名字离线");
+    // 离线后别的会话重新 check：拿到新标识，旧标识的心跳被拒
+    s.write(T0 + 3 * S, Origin::cli(), |w| w.agent_check_owned("new/x", None, NameOwner::Session("def"))).unwrap();
+    assert_eq!(s.write(T0 + 4 * S, Origin::cli(), |w| w.agent_beat_by("new/x", false, BeatBy::Cli(Some("abc")))).unwrap_err().code, ErrorCode::NameTaken);
+}
+
+/// board host 派发生成的名字属于那台 host：派发会话里的 agent 发 final 被拒，名字照样在线、派发不受影响
+#[test]
+fn dispatch_name_belongs_to_the_host() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    let name = d.name.clone().unwrap();
+    let e = s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_beat(&name, true)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken);
+    assert!(e.message.contains("board host"), "{}", e.message);
+    // board host 的上报照常替它发心跳
+    beat(&mut s, T0 + 30 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    s.read(|r| r.require_online(&name, T0 + 60 * S)).expect("board host 的心跳维持在线");
+    assert_eq!(get(&s, d.id).state, "running");
+}

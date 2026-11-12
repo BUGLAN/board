@@ -266,6 +266,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::files::SCHEMA)?;
         conn.execute_batch(crate::agents::SCHEMA)?;
+        crate::agents::migrate(&conn)?;
         conn.execute_batch(crate::hosts::SCHEMA)?;
         crate::hosts::migrate(&conn)?;
         conn.execute_batch(crate::moves::SCHEMA)?;

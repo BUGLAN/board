@@ -86,10 +86,20 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 - 名字正被在线 agent 使用时报 `NAME_TAKEN`，`detail` 里带上名字。
 - 否则把名字标为在线，心跳时间记为当前时间，然后返回。
 - 查重和占用是一个原子操作：同时 check 同一个名字，只有一个成功。
+- 会话标识：`board` 在 check 时向服务端要一个随机的会话标识，服务端记下名字现在属于这个会话，只在这次返回里给出。`board` 把「名字、会话标识、check 它的 agent 进程（从 board 往上找第一个不是 shell 的祖先进程）」记在本机的状态文件里（`<临时目录>/board-heartbeat/<名字>.json`），之后的 agent 级心跳和 `board beat --final` 都带上这个标识。旧版 `board` check 时不要标识，名字没有标识。
+- `board host` 开始派发时生成的名字记为属于这台 host。
+
+**会话标识的规则**（防止同名会话互相干扰）：
+
+- 名字在线、有会话标识时，agent 级心跳和 `--final` 带的标识和记录的一致才接受；不一致或没带时拒绝（`NAME_TAKEN`，原因写「这个名字现在属于另一个会话」），名字的状态不变。
+- 属于 `board host` 的名字只有 `board host` 能发 agent 级心跳、让它离线：派发会话里的 agent 自己执行 `board heartbeat stop`，名字不离线，派发不受影响。
+- 没有标识的名字（旧版 `board` check 的）规则和以前一样。卡片级心跳（`board beat <ID>`）不看标识。
+- 本机保护：`board heartbeat start`、`board heartbeat stop`、不带 ID 的 `board beat` 只在 check 这个名字的 agent 进程里生效。名字是本机另一个还在运行的 agent 进程 check 的时候拒绝（`NAME_TAKEN`，写明是哪个进程），不停它的后台心跳、不顶掉它、不发 final；那个进程已经不在了才接管。`--force` 只放开本机这一层，服务端的校验照旧。
+- 其他带名字的命令：调用它的 agent 进程不是 check 这个名字的那个、而那个进程还在运行时，照常执行，但在输出里加一行提醒（`--json` 里加 `warning` 字段），说明可能用了别人的名字。
 
 **在线**：名字最近一次心跳在 50 秒以内（每 10 秒一次，连续 5 次没收到算离线）。`board beat --final`（不带 ID）让名字立刻离线。离线后，同一个名字可以被任何会话重新 check，原会话也可以。
 
-**名字表**：服务端记录名字、首次 check 时间、最近心跳时间、令牌 ID。表只增不删。
+**名字表**：服务端记录名字、首次 check 时间、最近心跳时间、令牌 ID、现在属于哪个会话（会话标识或 `board host`）。表只增不删。
 
 **严格模式**：带令牌的卡片命令（`POST /api/cmd`）和上传附件（`POST /api/files`）里的名字必须在线，否则报 `NAME_OFFLINE`。读接口不检查名字。
 
@@ -213,7 +223,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 3. **一个 agent 在一块白板上同时只持有一张卡片。**
 4. **进入锁定状态只能靠领取**：人和 agent 都不能把卡片直接移进锁定状态。例外：持有者可以沿连线把自己持有的卡片从一个锁定状态移到另一个锁定状态，领取保持不变。
 5. **持有者独占**：被持有的卡片只有持有者能编辑和移动，其他人和 agent 只能评论、加或去标签。人可以在界面上「强制释放」。
-6. **心跳与耗时**：一个 agent 会话只有一路后台心跳。check 之后，`board heartbeat start` 启动的后台循环每 10 秒发一次 `board beat`（不带 ID）：更新名字的心跳时间（名字已离线时被拒绝，`NAME_OFFLINE`），并对这个名字持有、这一次还没 final 的每张卡片记一次心跳，效果等同于 `board beat <ID>`：更新卡片的心跳时间，计入心跳次数。领取后的第一次心跳是这一次的开始，动态里记「开始第 n 次」；final（`board beat <ID> --final`）是结束，两者之差是这一次的耗时，记在动态里；卡片显示累计耗时。final 之后这张卡片不再被后台心跳刷新，再发 `board beat <ID>` 被拒绝。同一张卡片被多次领取时，每一次分别计时、分别记录。评论、编辑不代替心跳。
+6. **心跳与耗时**：一个 agent 会话只有一路后台心跳。check 之后，`board heartbeat start` 启动的后台循环每 10 秒发一次 `board beat`（不带 ID）：更新名字的心跳时间（名字已离线时被拒绝，`NAME_OFFLINE`；带的会话标识对不上时被拒绝，`NAME_TAKEN`，见 §3.2），并对这个名字持有、这一次还没 final 的每张卡片记一次心跳，效果等同于 `board beat <ID>`：更新卡片的心跳时间，计入心跳次数。领取后的第一次心跳是这一次的开始，动态里记「开始第 n 次」；final（`board beat <ID> --final`）是结束，两者之差是这一次的耗时，记在动态里；卡片显示累计耗时。final 之后这张卡片不再被后台心跳刷新，再发 `board beat <ID>` 被拒绝。同一张卡片被多次领取时，每一次分别计时、分别记录。评论、编辑不代替心跳。
 7. **心跳中断释放**：从领取或最近一次心跳算起，连续 5 次（50 秒）没收到心跳，卡片回到领取它时所在的可领取状态最上面（那个状态已删除或不再可领取时，回到首个可领取状态最上面），持有者清空，动态里记「心跳中断」。进行中的这一次以最后一次心跳为结束，记为异常退出；还没开始心跳、或发了 final 后 50 秒内没有沿连线移走的，动态里写明原因。名字离线后，它持有的卡片收不到心跳，按这条规则在 50 秒内释放。本次耗时有四种结束方式：final 正常结束、持有者移出锁定状态、人强制释放、心跳中断。
 8. **离开锁定状态即释放**：持有者把卡片移到不锁定的状态时，持有者清空，进行中的这一次在此时结束。人强制释放后，卡片回到的位置同规则 7，进行中的这一次在此时结束。
 9. **终点只归人管**：只有人能把卡片移入或移出终点状态。错误节点只有人能移出（agent 可以沿连线移入）。
@@ -280,9 +290,9 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 |---|---|
 | `board check --as <名字>` | 占用名字（§3.2）。会话开始时执行一次 |
 | `board heartbeat start` | 启动后台心跳（§8 规则 6）：先同步发一次 `board beat`，失败直接报错；成功后后台每 10 秒发一次，立即返回。后台心跳跟随 agent 进程（从 board 往上找第一个不是 shell 的祖先进程），agent 进程不在了就停下，不发 final；心跳被拒绝时停下，连不上服务端时继续重试 |
-| `board heartbeat stop` | 先停掉后台心跳、等它退出，再发 `board beat --final`，名字立刻离线；重复执行不报错 |
+| `board heartbeat stop [--force]` | 先停掉后台心跳、等它退出，再发 `board beat --final`，名字立刻离线；重复执行不报错。名字是本机另一个还在运行的 agent 进程 check 的时候，`start`、`stop` 都拒绝（`NAME_TAKEN`），不动它的后台心跳；`--force` 只放开本机这一层（§3.2） |
 | `board heartbeat final <ID>` | 等同 `board beat <ID> --final`：结束这张卡片这一次的计时 |
-| `board beat [--final]` | agent 级心跳（§8 规则 6），一般由 `board heartbeat` 的后台循环发送；`--final` 让名字立刻离线 |
+| `board beat [--final] [--force]` | agent 级心跳（§8 规则 6），一般由 `board heartbeat` 的后台循环发送；`--final` 让名字立刻离线。带着 check 时拿到的会话标识，规则同 §3.2 |
 | `board beat <ID> [--final]` | 一张卡片的心跳；`--final` 结束这一次计时（§8 规则 6） |
 | `board boards` | 列出所有白板：路径、项目名、白板名、各状态卡片数 |
 | `board flow` | 列出当前白板的工作流：顺序、标识、名称、规则、卡片数，以及每个状态可以去往的状态 |
@@ -712,7 +722,7 @@ GET /api/stats?scope=board|project|all&path=<项目/白板 或 项目>&from=<ms>
 | `NOT_LOGGED_IN` | 没有登录：界面没有登录会话；CLI 的环境变量和配置文件里都没有服务端地址或令牌（提示运行 `board login`）；用访问令牌调用只能在界面上做的管理接口（项目、白板、工作流、标签、机器） |
 | `INVALID_TOKEN` | 访问令牌不存在或已吊销 |
 | `UNREACHABLE` | CLI 连不上服务端 |
-| `NAME_TAKEN` | `board check` 的名字正被在线 agent 使用（HTTP 409） |
+| `NAME_TAKEN` | `board check` 的名字正被在线 agent 使用；agent 级心跳、`board beat --final` 带的会话标识和名字记录的对不上（名字属于另一个会话或 `board host`）；本机 `board heartbeat start / stop`、不带 ID 的 `board beat` 用的名字是另一个还在运行的 agent 进程 check 的（HTTP 409，§3.2） |
 | `NAME_OFFLINE` | 名字没有 check，或心跳中断超过 50 秒：带令牌的卡片命令、上传附件、agent 级心跳被拒绝（HTTP 409）。原因：「名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>」 |
 | `NOT_AUTHOR` | 修改或删除不是自己发的评论：agent 修改、删除任何评论，或人修改、删除 agent 的评论（HTTP 403） |
 | `HOST_NAME_TAKEN` | `board host` 的机器名正被另一个在线的 `board host` 使用（HTTP 409） |

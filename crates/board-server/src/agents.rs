@@ -1,14 +1,16 @@
 //! agent 接口（PRD §3）：check 名字、agent 级心跳、在线列表。访问令牌可以调用。
 //!
-//! - `POST /api/agents/check {name}`：名字正被在线 agent 使用时 `NAME_TAKEN`；否则标为在线
-//! - `POST /api/agents/beat {name, final}`：agent 级心跳，同时维持名字在线和它持有的卡片；`final` 让名字立刻离线
+//! - `POST /api/agents/check {name, session}`：名字正被在线 agent 使用时 `NAME_TAKEN`；否则标为在线。`session: true`（新版 CLI）
+//!   时发一个随机的会话标识，名字记成属于这个会话，返回里带上 `session`
+//! - `POST /api/agents/beat {name, final, session}`：agent 级心跳，同时维持名字在线和它持有的卡片；`final` 让名字立刻离线。
+//!   名字属于某个会话时，`session` 对不上（或没带）就 `NAME_TAKEN`
 //! - `GET /api/agents`：在线的 agent，以及它们持有的卡片
 //!
 //! 规则在 board-core 的 `agents` 里。上线、下线会推送给界面，只更新心跳时间的心跳不推送。
 
 use axum::extract::State;
 use axum::{Extension, Json};
-use board_core::{now_ms, AgentInfo, BoardError, CardDetail, ErrorCode, Origin};
+use board_core::{now_ms, AgentInfo, BeatBy, BoardError, CardDetail, ErrorCode, NameOwner, Origin};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -19,6 +21,9 @@ use crate::{ApiError, AppState};
 pub(crate) struct CheckBody {
     #[serde(default)]
     name: String,
+    /// 新版 CLI：要一个会话标识（旧版 CLI 不带，名字没有标识，规则和以前一样）
+    #[serde(default)]
+    session: bool,
 }
 
 #[derive(Deserialize)]
@@ -27,6 +32,9 @@ pub(crate) struct BeatBody {
     name: String,
     #[serde(default, rename = "final")]
     done: bool,
+    /// check 时拿到的会话标识（旧版 CLI 不带）
+    #[serde(default)]
+    session: Option<String>,
 }
 
 /// 名字不能为空（格式由 board-core 检查）
@@ -51,7 +59,13 @@ pub(crate) async fn check(
         Caller::Human { .. } => None,
     };
     tracing::Span::current().record("who", format!("{name}（check）"));
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.agent_check(&name, token))).await?;
+    let session = b.session.then(|| crate::auth::random_hex(16));
+    let out = s
+        .db(move |st| {
+            let owner = session.as_deref().map_or(NameOwner::Anyone, NameOwner::Session);
+            st.write(now_ms(), Origin::cli(), |w| w.agent_check_owned(&name, token, owner))
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -61,7 +75,8 @@ pub(crate) async fn beat(State(s): State<AppState>, Json(v): Json<Value>) -> Res
     let b: BeatBody = crate::parse(v)?;
     let name = name_of(&b.name)?;
     tracing::Span::current().record("who", format!("{name}（心跳{}）", if b.done { " final" } else { "" }));
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.agent_beat(&name, b.done))).await?;
+    let session = b.session.filter(|x| !x.trim().is_empty());
+    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.agent_beat_by(&name, b.done, BeatBy::Cli(session.as_deref())))).await?;
     s.poke();
     Ok(Json(out))
 }
