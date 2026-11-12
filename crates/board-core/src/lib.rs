@@ -26,7 +26,7 @@ pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
 pub use hosts::{
     AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork,
-    RunPatch,
+    RunPatch, SessionPart, SessionView,
 };
 pub use model::*;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};

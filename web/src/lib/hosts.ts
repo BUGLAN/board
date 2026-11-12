@@ -158,6 +158,18 @@ export const sessionQueue = (ws: Workspace | null, session: number | undefined) 
 export const sessionRunning = (ws: Workspace | null, d: Dispatch) =>
   dispatchesOf(ws).find(x => x.state === 'running' && x.session === d.session);
 
+/** 「最近」里同一个会话（同一个 agent 进程）的派发合成一组：按最近一张结束的时间排，组里新的在前 */
+export function sessionGroups(list: Dispatch[]) {
+  const groups: { session: number; t: number; list: Dispatch[] }[] = [];
+  for (const d of list) {
+    const key = d.session || d.id;
+    const g = groups.find(x => x.session === key);
+    if (g) g.list.push(d);
+    else groups.push({ session: key, t: d.endedAt ?? d.createdAt, list: [d] });
+  }
+  return groups;
+}
+
 /** 多久之前：3 秒前 / 5 分钟前 / 2 小时前 / 3 天前 */
 export function since(t: number, now: number) {
   const s = Math.max(0, Math.round((now - t) / 1000));

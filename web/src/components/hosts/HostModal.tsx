@@ -2,18 +2,18 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
-import { confirm, confirmCheck, openHost, openPicker, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
+import { confirm, confirmCheck, openHost, openPicker, openSession, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
 import { LabelChip, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
-import { AgentIcon, Beat, lastSeen, LogView, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
+import { AgentIcon, Beat, lastSeen, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
 import { ManageSection } from './Manage';
 import { ReadySection, useServerVersion } from './Ready';
 
@@ -43,7 +43,7 @@ export function HostModal() {
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, [contenteditable]')) return;
       const ui = useUI.getState();
-      if (ui.confirm || ui.palette.open || ui.ctx) return;
+      if (ui.confirm || ui.palette.open || ui.ctx || ui.session) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       // 焦点在选择框上：上下键是打开它的选项，不是换机器
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (e.target as HTMLElement).closest?.('.sel')) return;
@@ -447,10 +447,10 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             ) : recent.length === 0 && !h.ops?.length ? (
               <p className="hp-note hp-pad">还没有结束的派发</p>
             ) : (
-              // 派发和操作记录（谁、什么时间、做了什么）按时间混在一起，新的在前
-              [...recent.map(p => ({ t: p.endedAt ?? p.createdAt, p, o: null })), ...(h.ops ?? []).map(o => ({ t: o.at, p: null, o }))]
+              // 派发（同一个会话的合成一行）和操作记录（谁、什么时间、做了什么）按时间混在一起，新的在前
+              [...sessionGroups(recent).map(g => ({ t: g.t, g, o: null })), ...(h.ops ?? []).map(o => ({ t: o.at, g: null, o }))]
                 .sort((a, b) => b.t - a.t)
-                .map(({ p, o }) => {
+                .map(({ g, o }) => {
                 if (o)
                   return (
                     <div className="hp-hist hp-op" key={`op${o.at}${o.text}`}>
@@ -463,10 +463,38 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                       </div>
                     </div>
                   );
-                if (!p) return null;
+                if (!g) return null;
+                const p = g.list[0];
+                if (g.list.length > 1) {
+                  // 同一个会话：一行，写做了几张、各自的结果
+                  const first = g.list[g.list.length - 1];
+                  return (
+                    <button type="button" className="hp-hist" key={`s${g.session}`} onClick={() => openSession({ id: g.session })} title="打开这个会话">
+                      <Mark id={p.agent} title={p.agentLabel} />
+                      <div>
+                        <b>
+                          会话 · {g.list.length} 张 <span className="hp-cid">{[...g.list].reverse().map(x => `#${x.card}`).join(' ')}</span>
+                        </b>
+                        <span>
+                          {[...g.list].reverse().map((x, k) => {
+                            const r = resultOf(x);
+                            return (
+                              <em key={x.id} style={{ ['--c' as string]: r.color }}>
+                                {k > 0 && ' · '}
+                                {r.label}
+                              </em>
+                            );
+                          })}
+                          {first.startedAt != null && p.endedAt != null && <> · 用时 {durWords(p.endedAt - first.startedAt)}</>}
+                          {p.endedAt != null && <> · {since(p.endedAt, now)}</>}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                }
                 const r = resultOf(p);
                 return (
-                  <button type="button" className="hp-hist" key={p.id} onClick={() => goCard(p)}>
+                  <button type="button" className="hp-hist" key={p.id} onClick={() => openSession({ id: p.session || p.id, card: p.card })} title="打开这个会话">
                     <Mark id={p.agent} title={p.agentLabel} />
                     <div>
                       <b>
@@ -1385,7 +1413,6 @@ function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncStat
 }
 
 function RunRow({ r, now }: { r: Dispatch; now: number }) {
-  const [open, setOpen] = useState(false);
   // 这个会话开会话时排好、还没开始的卡片：按顺序挂在这一行下面，每张可以单独取消
   const ws = useData(s => s.ws);
   const rest = sessionQueue(ws, r.session);
@@ -1410,9 +1437,9 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         <span>{SOURCE[r.source]}</span>
         {r.stopBy && <span className="hp-stopping">正在停止</span>}
         <span className="hp-sp" />
-        <button className="hp-link" type="button" onClick={() => setOpen(!open)}>
+        <button className="hp-link" type="button" onClick={() => openSession({ id: r.session || r.id, card: r.card })}>
           <Icon name="log" />
-          {open ? '收起日志' : '日志'}
+          会话
         </button>
         {!r.stopBy && (
           <button className="hp-link danger" type="button" onClick={() => cancel(r)}>
@@ -1421,7 +1448,6 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
           </button>
         )}
       </div>
-      {open && <LogView id={r.id} live />}
       {rest.length > 0 && (
         <ol className="hp-run-rest" aria-label="这个会话排着的卡片">
           {rest.map(q => (

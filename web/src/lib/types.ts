@@ -358,6 +358,13 @@ export interface AgentInfo {
 /** agent 持有的一张卡片：白板路径加上卡片本身 */
 export type HeldCard = Card & { board: string };
 
+/** 一个会话（同一个 agent 进程用 board next 接着做的几张卡）：会话标识是第一张的派发 ID */
+export interface SessionView {
+  session: number;
+  /** 这个会话的派发，按先后；每张带它的输出（最后 500 行） */
+  parts: (Dispatch & { log: string[] })[];
+}
+
 export interface Card {
   id: number;
   title: string;

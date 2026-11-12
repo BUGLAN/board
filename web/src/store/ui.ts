@@ -146,6 +146,8 @@ interface UIState {
   trash: string | null;
   /** 卡片详情里的「派发」对话框：卡片编号 */
   dispatchOf: number | null;
+  /** 打开的「会话」弹窗：会话里任一次派发的 ID；card 是要定位到的那张卡 */
+  session: { id: number; card?: number } | null;
   /** 手机白板页的底部抽屉：筛选框、标签、正在工作、最近动态（桌面端在侧栏里） */
   boardSheet: boolean;
 }
@@ -186,6 +188,7 @@ export const useUI = create<UIState>(() => ({
   host: null,
   trash: null,
   dispatchOf: null,
+  session: null,
   boardSheet: false,
 }));
 
@@ -279,6 +282,8 @@ export const openHost = (name: string | null) => set({ host: name });
 /** 打开 / 关掉（null）这块白板的回收站 */
 export const openTrash = (path: string | null) => set({ trash: path });
 export const openDispatch = (card: number | null) => set({ dispatchOf: card });
+/** 打开 / 关掉（null）「会话」弹窗：id 是会话里任一次派发，card 是要定位到的卡 */
+export const openSession = (req: { id: number; card?: number } | null) => set({ session: req });
 
 export const openCtx = (req: CtxReq) => set({ ctx: req });
 export const closeCtx = () => set({ ctx: null });
@@ -292,7 +297,7 @@ export function overlayOpen() {
   const s = get();
   return !!(
     s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.host ||
-    s.dispatchOf != null || s.boardSettings || s.trash
+    s.dispatchOf != null || s.boardSettings || s.trash || s.session
   );
 }
 

@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, SearchHit, ServerInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
+import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, SearchHit, ServerInfo, SessionView, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -224,6 +224,11 @@ export const api = {
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
   /** 派发日志的最后 500 行 */
   dispatchLog: (id: number) => req<{ lines: string[] }>('GET', `/api/dispatches/${id}/log`),
+  /** 一张卡片的全部派发，新的在前（卡片详情「派发记录」） */
+  cardDispatches: (board: string, card: number) =>
+    req<Dispatch[]>('GET', `/api/dispatches?board=${encodeURIComponent(board)}&card=${card}`),
+  /** 一个会话的全部派发和各自的输出：id 是会话里任一次派发 */
+  session: (id: number) => req<SessionView>('GET', `/api/sessions/${id}`),
 };
 
 export type LiveStatus = 'connecting' | 'live' | 'offline';

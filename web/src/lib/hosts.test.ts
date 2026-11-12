@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, checkFor, hostLoad, inSession, isLocalHost, queueReason, dirReadiness, readyOk, readyWhy, sessionQueue, sessionRunning, skillGaps } from './hosts';
+import { boardHosts, checkFor, hostLoad, inSession, isLocalHost, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -152,5 +152,19 @@ describe('环境检查（readiness）', () => {
       ['win', 'pending'],
     ]);
     expect(boardHosts(ws, 'p/b')).toEqual([]);
+  });
+});
+
+describe('sessionGroups（机器详情「最近」按会话合成一行）', () => {
+  const d = (id: number, session: number, endedAt: number) => ({ id, session, endedAt, createdAt: 0, card: id }) as unknown as Dispatch;
+  it('同一个会话的合成一组，按最近一张结束的时间排；单独的一张自己一组', () => {
+    // 最近的在前：会话 1 做了 1、2、3，会话 4 只做了 4
+    const g = sessionGroups([d(3, 1, 30), d(4, 4, 25), d(2, 1, 20), d(1, 1, 10)]);
+    expect(g.map(x => [x.session, x.t, x.list.map(y => y.id)])).toEqual([
+      [1, 30, [3, 2, 1]],
+      [4, 25, [4]],
+    ]);
+    // 旧版服务端没有 session：按自己的 ID
+    expect(sessionGroups([{ id: 7, endedAt: 1, createdAt: 0 } as unknown as Dispatch]).map(x => x.session)).toEqual([7]);
   });
 });

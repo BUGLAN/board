@@ -8,6 +8,7 @@ import { FloatTips } from './components/Card';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
+import { SessionModal } from './components/hosts/Session';
 import { InboxPage } from './components/Inbox';
 import { StatsPage } from './components/StatsTab';
 import { Login } from './components/Login';
@@ -260,6 +261,7 @@ function BoardApp() {
       <CardDetail />
       <HostModal />
       <DispatchDialog />
+      <SessionModal />
       <Creator />
       <Overlays />
       <FloatTips />

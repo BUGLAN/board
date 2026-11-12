@@ -2505,3 +2505,47 @@ fn dispatch_passes_model_and_effort_and_names_after_the_model() {
     let d2 = begin(&mut s, T0 + 3 * S, d2.id).unwrap();
     assert_eq!((d2.model, d2.effort, d2.name.as_deref()), (None, None, Some("claude-mbp/opus-5.5")));
 }
+
+/* ------------------------------ 会话页（PRD §10.8、§10.12） ------------------------------ */
+
+#[test]
+fn session_view_groups_a_process_and_card_history_lists_every_dispatch() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let cards: Vec<i64> = (0..3).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
+    lead_round(&mut s);
+    set_host(&mut s, HostPatch { per_session: Some(3), ..Default::default() }).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let name = d1.name.clone().unwrap();
+    s.write(T0 + S, Origin::cli(), |w| w.dispatch_log_append(d1.id, &["第一张的输出".to_string()])).unwrap();
+    // 第一张还在跑：会话里排着后面两张
+    let v = s.read(|r| r.session(d1.id)).unwrap();
+    assert_eq!(v.session, d1.id);
+    assert_eq!(v.parts.iter().map(|p| (p.dispatch.card, p.dispatch.state.as_str())).collect::<Vec<_>>(), vec![(cards[0], "running"), (cards[1], "queued"), (cards[2], "queued")]);
+    assert_eq!(v.parts[0].log, vec!["第一张的输出".to_string()]);
+    // 接着做完三张：从任一张的派发都能打开整个会话，按先后
+    let mut t = T0 + 2 * S;
+    for _ in 0..2 {
+        let cur = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+        submit(&mut s, t, &name, cur.card);
+        next(&mut s, t, &name).unwrap();
+        t += S;
+    }
+    let last = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
+    s.write(t, Origin::cli(), |w| w.dispatch_log_append(last.id, &["第三张的输出".to_string()])).unwrap();
+    let v = s.read(|r| r.session(last.id)).unwrap();
+    assert_eq!(v.session, d1.id);
+    assert_eq!(v.parts.iter().map(|p| p.dispatch.card).collect::<Vec<_>>(), cards);
+    assert_eq!(v.parts[2].log, vec!["第三张的输出".to_string()]);
+    assert_eq!(s.read(|r| r.session(9999)).unwrap_err().code, ErrorCode::NotFound);
+    // 一张卡做过几次：每次一条，新的在前
+    end(&mut s, t, last.id, Some(1), &[]);
+    let list = s.read(|r| {
+        let b = r.resolve(B)?;
+        r.card_dispatches(&b, cards[0])
+    })
+    .unwrap();
+    assert_eq!(list.iter().map(|x| x.id).collect::<Vec<_>>(), vec![d1.id]);
+    assert_eq!(list[0].result.as_deref(), Some("review"));
+}

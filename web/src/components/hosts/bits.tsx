@@ -1,6 +1,5 @@
 /* 机器页共用的小部件：系统图标、状态、agent 标记、心跳；轮询机器列表；改机器设置的补丁 */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { api } from '../../lib/api';
+import { useEffect, type ReactNode } from 'react';
 import { agentMark, hostState, osKind, since, type OsKind } from '../../lib/hosts';
 import type { HostAgent, HostInfo } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
@@ -116,45 +115,3 @@ export const patchHost = (name: string, fn: (h: HostInfo) => HostInfo): Patch =>
   keys: [hostKey(name)],
 });
 
-/** 派发日志：最后 500 行；在跑时每 3 秒取一次 */
-export function LogView({ id, live }: { id: number; live?: boolean }) {
-  const [lines, setLines] = useState<string[] | null>(null);
-  const ref = useRef<HTMLPreElement>(null);
-  const stick = useRef(true);
-  useEffect(() => {
-    let alive = true;
-    const load = () =>
-      api
-        .dispatchLog(id)
-        .then(r => alive && setLines(r.lines))
-        .catch(() => alive && setLines(l => l ?? []));
-    void load();
-    const t = live ? window.setInterval(load, 3000) : 0;
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [id, live]);
-  useEffect(() => {
-    const el = ref.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [lines]);
-  return (
-    <pre
-      className="hp-log"
-      ref={ref}
-      onScroll={e => {
-        const el = e.currentTarget;
-        stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
-      }}
-    >
-      {lines === null ? '正在加载…' : lines.length ? lines.join('\n') : '还没有输出（host 每 5 秒上传一次新增的行）'}
-      {live && lines !== null && (
-        <>
-          {'\n'}
-          <span className="hp-caret">▍</span>
-        </>
-      )}
-    </pre>
-  );
-}

@@ -11,7 +11,8 @@
 //!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
 //! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、`GET /api/hosts/{名字}/recent`、
-//! `GET /api/dispatches/{ID}/log`。这些用令牌调用时 NOT_LOGGED_IN。
+//! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
+//! `GET /api/sessions/{派发 ID}`（一个会话的全部派发和输出）。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发）、`POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
 
 use axum::extract::{Path, Query, State};
@@ -174,6 +175,31 @@ pub(crate) async fn log(State(s): State<AppState>, Path(id): Path<i64>) -> ApiRe
 }
 
 /* ------------------------------ 界面 ------------------------------ */
+
+#[derive(Deserialize)]
+pub(crate) struct CardDispatchesQuery {
+    /// 白板路径
+    board: String,
+    card: i64,
+}
+
+/// 一张卡片的全部派发，新的在前（卡片详情「派发记录」）
+pub(crate) async fn card_dispatches(State(s): State<AppState>, Query(q): Query<CardDispatchesQuery>) -> ApiResult<Vec<Dispatch>> {
+    Ok(Json(
+        s.db(move |st| {
+            st.read(|r| {
+                let b = r.resolve(&q.board)?;
+                r.card_dispatches(&b, q.card)
+            })
+        })
+        .await?,
+    ))
+}
+
+/// 一个会话的全部派发和各自的输出（「会话」弹窗）；id 是会话里任一次派发
+pub(crate) async fn session(State(s): State<AppState>, Path(id): Path<i64>) -> ApiResult<SessionView> {
+    Ok(Json(s.db(move |st| st.read(|r| r.session(id))).await?))
+}
 
 pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<Value> {
     let (hosts, dispatches) = s

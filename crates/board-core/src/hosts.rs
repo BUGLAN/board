@@ -918,6 +918,22 @@ impl Dispatch {
     }
 }
 
+/// 一个会话（界面「会话」弹窗）：会话标识是第一张的派发 ID
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionView {
+    pub session: i64,
+    /// 这个会话的派发，按先后
+    pub parts: Vec<SessionPart>,
+}
+
+/// 会话里的一张卡：派发记录和它的输出（最后 500 行）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPart {
+    #[serde(flatten)]
+    pub dispatch: Dispatch,
+    pub log: Vec<String>,
+}
+
 /// 结果的中文
 pub fn result_words(r: &str) -> &'static str {
     match r {
@@ -1416,6 +1432,30 @@ impl<'a> R<'a> {
     /// 一张卡片排队或正在跑的派发
     pub fn card_dispatch(&self, board: &BoardRef, card: i64) -> Result<Option<Dispatch>> {
         Ok(self.dispatches("WHERE d.board = ?1 AND d.card = ?2 AND d.state != 'done' ORDER BY d.id DESC LIMIT 1", params![board.id, card])?.pop())
+    }
+
+    /// 一张卡片的全部派发（排队、在跑、结束的都算），新的在前（卡片详情「派发记录」）
+    pub fn card_dispatches(&self, board: &BoardRef, card: i64) -> Result<Vec<Dispatch>> {
+        self.dispatches("WHERE d.board = ?1 AND d.card = ?2 ORDER BY d.id DESC", params![board.id, card])
+    }
+
+    /// 一个会话（同一个 agent 进程用 board next 接着做的几张卡）：给出其中任一次派发，返回这个会话的全部派发（按先后，
+    /// 开会话时排着、还没开始的也在）和各自的日志（每个派发最后 500 行）
+    pub fn session(&self, id: i64) -> Result<SessionView> {
+        let s: i64 = self
+            .conn
+            .query_row("SELECT COALESCE(session, id) FROM dispatches WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("派发 #{id} 不存在")))?;
+        let list = self.dispatches("WHERE COALESCE(d.session, d.id) = ?1 ORDER BY d.id", [s])?;
+        let parts = list
+            .into_iter()
+            .map(|d| {
+                let log = self.dispatch_log(d.id)?;
+                Ok(SessionPart { dispatch: d, log })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SessionView { session: s, parts })
     }
 
     /// 一台机器最近结束的派发（新的在前）

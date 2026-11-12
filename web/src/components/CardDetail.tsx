@@ -16,7 +16,7 @@ import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overla
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
-import { DispatchNote } from './hosts/Dispatch';
+import { DispatchHistory, DispatchNote } from './hosts/Dispatch';
 import { Icon, type IconName } from './Icon';
 
 const NO_IDS: number[] = [];
@@ -227,6 +227,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <CardLabels card={c} saving={saving} />
           </section>
           <DispatchNote board={useData.getState().path} card={c.id} />
+          <DispatchHistory board={useData.getState().path} card={c.id} />
           <ClaimPart card={c} now={now} busy={saving} />
           <section className="d-section" data-part="desc" style={{ ['--i' as string]: 2 }}>
             <DescEditor card={c} locked={locked} busy={saving} />

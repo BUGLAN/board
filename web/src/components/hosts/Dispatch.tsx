@@ -6,11 +6,12 @@ import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, optimistic, refresh, useData, type Patch } from '../../store/data';
-import { confirm, openDispatch, openHost, toast, toastError, useUI } from '../../store/ui';
+import { confirm, openDispatch, openHost, openSession, toast, toastError, useUI } from '../../store/ui';
 import { useNow } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from '../overlays/presence';
-import { AgentChip, Dot, LogView, Mark } from './bits';
+import { AgentChip, Dot, Mark } from './bits';
+import { partState, partTook } from './Session';
 
 /** 打开卡片：切到它的白板，打开详情 */
 export function goCard(d: Dispatch) {
@@ -70,7 +71,6 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
   const lead = useData(s => (d && inSession(d) ? sessionRunning(s.ws, d) : undefined));
   const now = useNow(1000);
-  const [log, setLog] = useState(false);
   if (!d) return null;
   const queued = d.state === 'queued';
   return (
@@ -103,9 +103,9 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           )}
         </div>
         {!queued && (
-          <button className="btn sm ghost" type="button" onClick={() => setLog(!log)}>
+          <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card })}>
             <Icon name="log" />
-            {log ? '收起日志' : '日志'}
+            会话
           </button>
         )}
         {!d.stopBy && (
@@ -115,7 +115,51 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           </button>
         )}
       </div>
-      {log && !queued && <LogView id={d.id} live />}
+    </section>
+  );
+}
+
+/** 卡片详情「派发记录」：这张卡结束过的每一次派发，新的在前（时间、机器、agent、结果、用时）；点一行打开那个会话、定位到这张卡。
+ *  打开时取一次，派发有变化（推送）时再取 */
+export function DispatchHistory({ board, card }: { board: string; card: number }) {
+  const [list, setList] = useState<Dispatch[] | null>(null);
+  const rev = useData(s => s.ws?.rev);
+  const active = useData(s => cardDispatch(s.ws, board, card)?.state);
+  useEffect(() => {
+    let alive = true;
+    api
+      .cardDispatches(board, card)
+      .then(r => alive && setList(r))
+      .catch(() => alive && setList(l => l ?? []));
+    return () => {
+      alive = false;
+    };
+  }, [board, card, active, rev]);
+  const done = (list ?? []).filter(d => d.state === 'done');
+  if (!done.length) return null;
+  return (
+    <section className="d-section" data-part="history" style={{ ['--i' as string]: 1 }}>
+      <div className="d-label">
+        派发记录 <span className="count">{done.length}</span>
+      </div>
+      <div className="dh-list">
+        {done.map(d => {
+          const st = partState(d);
+          const took = partTook(d, d.endedAt ?? 0);
+          return (
+            <button key={d.id} type="button" className="dh-row" onClick={() => openSession({ id: d.session || d.id, card: d.card })} title="打开这个会话">
+              <Mark id={d.agent} title={d.agentLabel} />
+              <span className="dh-when">{d.endedAt != null ? new Date(d.endedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+              <span className="dh-where">
+                {d.host} · {d.agentLabel}
+              </span>
+              <em style={{ ['--c' as string]: st.color }}>{st.label}</em>
+              <span className="dh-took">{took != null ? durWords(took) : ''}</span>
+              {(d.total ?? 1) > 1 && <span className="dh-seq">会话第 {d.seq}/{d.total} 张</span>}
+            </button>
+          );
+        })}
+      </div>
     </section>
   );
 }
