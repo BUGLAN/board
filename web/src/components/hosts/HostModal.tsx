@@ -98,6 +98,20 @@ const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
 /** 步进器连点：停手这么久才发请求，只发最后的值 */
 const STEPPED = new Set(['max', 'perSession']);
 const STEP_MS = 450;
+
+/** 单次最长运行可以选的档位（分钟，0 = 不限） */
+const MAX_RUN_CHOICES = [0, 30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 660, 720];
+/** 没输出多久算卡住可以选的档位（分钟，0 = 不限） */
+const IDLE_RUN_CHOICES = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
+
+/** 分钟数写成人看的话：3 小时、1 小时 30 分、20 分钟、不限 */
+function minsWords(n: number): string {
+  if (n <= 0) return '不限';
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  if (h > 0 && m > 0) return `${h} 小时 ${m} 分`;
+  return h > 0 ? `${h} 小时` : `${n} 分钟`;
+}
 /** 机器设置的保存：每一项各存各的（store 的 saveSetting）。改动当帧生效，不禁用任何控件，没确认时也能接着改；
     sync 是每一项的保存状态，画在那个控件旁边：保存中（转圈，晚一点才出现）→ 已保存（打勾后淡出）；
     被拒绝时值回到原处、那一行回弹，并提示 */
@@ -356,6 +370,46 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                   <span className="hp-ctl">
                     <Sync s={sync.perSession} />
                     <Stepper value={h.perSession} label="一个会话最多做几张" onChange={v => save({ perSession: v })} />
+                  </span>
+                </div>
+              )}
+              {h.maxRun != null && (
+                <div className={cx('hp-knob', failed('maxRun'))}>
+                  <div className="hp-knob-text">
+                    <b>单次最长运行</b>
+                    <span data-tip="到时间后 board host 按「停止」的流程结束整个进程树，派发记「超时」，卡片按异常退出的规则移到错误节点（没有时移到需要人处理的状态），评论写明原因和日志最后 20 行">
+                      到时间就停止，防止卡住的 agent 一直占着并发位
+                    </span>
+                  </div>
+                  <span className="hp-ctl">
+                    <Sync s={sync.maxRun} />
+                    <Select
+                      className="hp-env-select"
+                      value={String(h.maxRun)}
+                      options={MAX_RUN_CHOICES.map(n => ({ value: String(n), label: minsWords(n) }))}
+                      onChange={v => save({ maxRun: +v })}
+                      aria-label="单次最长运行"
+                    />
+                  </span>
+                </div>
+              )}
+              {h.idleRun != null && (
+                <div className={cx('hp-knob', failed('idleRun'))}>
+                  <div className="hp-knob-text">
+                    <b>没输出多久算卡住</b>
+                    <span data-tip="只对已经输出过内容的派发生效。Claude Code 用 -p 时运行中没有任何输出，只有结束时才有，所以这条不适用于一行都还没输出的派发">
+                      长时间没有输出就停止，不等它自己退出
+                    </span>
+                  </div>
+                  <span className="hp-ctl">
+                    <Sync s={sync.idleRun} />
+                    <Select
+                      className="hp-env-select"
+                      value={String(h.idleRun)}
+                      options={IDLE_RUN_CHOICES.map(n => ({ value: String(n), label: minsWords(n) }))}
+                      onChange={v => save({ idleRun: +v })}
+                      aria-label="没输出多久算卡住"
+                    />
                   </span>
                 </div>
               )}

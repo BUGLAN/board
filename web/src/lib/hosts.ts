@@ -36,6 +36,7 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
   stuck: { label: '做不下去', color: 'var(--warn)' },
   crashed: { label: '异常退出', color: 'var(--danger)' },
   stopped: { label: '已停止', color: 'var(--text-3)' },
+  timeout: { label: '超时', color: 'var(--danger)' },
   canceled: { label: '已取消', color: 'var(--text-3)' },
   lost: { label: '机器掉线', color: 'var(--danger)' },
   unclaimed: { label: '没领到', color: 'var(--text-3)' },

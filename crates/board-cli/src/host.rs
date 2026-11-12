@@ -195,6 +195,13 @@ const TAIL: usize = 20;
 /// 转写后只剩一两行，所以读得多一些
 const LOG_CHUNK: u64 = 4 * 1024 * 1024;
 
+/// 「一分钟」有多长：`BOARD_HOST_MINUTE_MS`（毫秒，只给测试用），默认 60 秒。
+/// 兜底设置（单次最长运行、没输出多久算卡住）的最小档是分钟，测试里用它把分钟缩短
+fn minute() -> Duration {
+    let ms = std::env::var("BOARD_HOST_MINUTE_MS").ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|n| *n > 0);
+    ms.map(Duration::from_millis).unwrap_or(Duration::from_secs(60))
+}
+
 /// 收到 Ctrl+C / SIGTERM，或者（桌面端）标准输入关闭
 static QUIT: AtomicBool = AtomicBool::new(false);
 /// （桌面端）标准输入里来了一行 `reload`：配置文件的 `[host]` 改了，或者装好了 board-skills，重新读、重新检查
@@ -568,6 +575,12 @@ struct Run {
     spawned: Instant,
     /// 服务端已经结束了这次派发（机器掉线后卡片被释放）才停的：agent 退出后看看它的目录里有没有没推的改动
     lost: bool,
+    /// 已经按机器的兜底设置要求停止：原因（「运行超过 3 小时…」）。停止流程走完后上报结束，结果「超时」
+    timeout: Option<String>,
+    /// 最近一次有输出（日志变长）的时间：判断「没输出多久算卡住」
+    output_at: Instant,
+    /// 上一次看到的日志长度（判断有没有新的输出）
+    seen_len: u64,
 }
 
 impl Run {
@@ -616,6 +629,8 @@ struct Ended {
     code: Option<i64>,
     tail: Vec<String>,
     how: &'static str,
+    /// how = timeout 时给人看的原因
+    why: Option<String>,
 }
 
 /// 读日志里 from 之后新增的完整行，返回（行，新的位置）；last 为 true 时最后不完整的一行也算
@@ -662,6 +677,21 @@ fn upload_lines(lines: Vec<String>, fmt: Option<Stream>) -> Vec<String> {
 
 fn clock() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
+}
+
+/// 多久：3 小时、20 分钟、1 分 30 秒（和 board-core 的 dur_words 一样，但整分钟不带秒）
+fn span_words(d: Duration) -> String {
+    let t = d.as_secs();
+    let (h, m) = (t / 3600, t % 3600 / 60);
+    if h > 0 && m > 0 {
+        format!("{h} 小时 {m} 分")
+    } else if h > 0 {
+        format!("{h} 小时")
+    } else if m > 0 {
+        format!("{m} 分钟")
+    } else {
+        format!("{t} 秒")
+    }
 }
 
 /// 结束上报失败：派发不存在这类明确的 4xx 不用再试；其余错误（连不上、5xx 等）留到下一轮
@@ -1792,6 +1822,7 @@ impl Host<'_> {
             if soon || soon2 {
                 next_beat = Instant::now();
             }
+            self.enforce_timeouts();
             self.enforce();
             if self.fill()? {
                 fetch = true;
@@ -1939,6 +1970,54 @@ impl Host<'_> {
         }
     }
 
+    /// 机器的兜底设置：单次最长运行、没输出多久算卡住（分钟，0 = 不限）。每次从服务端的最新设置算，
+    /// 改了不用重启 board host 就生效
+    fn limits(&self) -> (Option<i64>, Option<i64>) {
+        let Some(w) = &self.work else { return (None, None) };
+        let mins = |n: i64| (n > 0).then_some(n);
+        (mins(w.host.max_run), mins(w.host.idle_run))
+    }
+
+    /// 到时间按「人停止」的流程结束进程树（先 SIGTERM，10 秒后 SIGKILL），原因记在 `Run.timeout` 里，
+    /// 进程退出后由 reap 上报结束（结果「超时」）。返回有没有新的超时
+    ///
+    /// - 单次最长运行：从启动算起
+    /// - 没输出多久算卡住：只有已经输出过内容的派发生效。Claude Code 用 `-p` 时运行中没有任何输出，
+    ///   只有结束时才有，所以这条不适用于一行都还没输出的派发（#184 之后改成按结构化事件算）
+    fn enforce_timeouts(&mut self) -> bool {
+        let (max_run, idle_run) = self.limits();
+        let min = minute();
+        let mut said = vec![];
+        let mut any = false;
+        for r in &mut self.runs.iter_mut().filter(|r| r.timeout.is_none()) {
+            // 日志变长了就是有输出：「没输出多久算卡住」从这里算
+            let len = std::fs::metadata(&r.log).map(|m| m.len()).unwrap_or(0);
+            if len > r.seen_len {
+                r.seen_len = len;
+                r.output_at = Instant::now();
+            }
+            // 原因只写「运行超过 30 分钟」「20 分钟没有任何输出」：服务端在评论里补上「，board host 停止了它」
+            let run = max_run.filter(|n| r.spawned.elapsed() >= min * *n as u32).map(|n| {
+                format!("运行超过 {}", span_words(Duration::from_secs(n as u64 * 60)))
+            });
+            let idle = idle_run.filter(|n| r.seen_len > 0 && r.output_at.elapsed() >= min * *n as u32).map(|n| {
+                format!("{}没有任何输出", span_words(Duration::from_secs(n as u64 * 60)))
+            });
+            let Some(why) = run.or(idle) else { continue };
+            r.timeout = Some(why.clone());
+            if r.term_at.is_none() {
+                r.stop(false);
+                r.term_at = Some(Instant::now());
+            }
+            said.push(format!("停止 {}#{}：{why}", r.d.board, r.d.card));
+            any = true;
+        }
+        for s in said {
+            self.say(format!("{} {s}", self.p.yellow("◼")));
+        }
+        any
+    }
+
     /// agent 退出：上传剩下的日志，上报结束。返回有没有派发结束
     fn reap(&mut self) -> bool {
         let mut done = false;
@@ -1960,13 +2039,18 @@ impl Host<'_> {
             let code = exit_code(status);
             self.flush_log(&r, true);
             let tail = tail_lines(&r.log, TAIL, r.fmt);
-            self.ended.push(Ended { id: r.d.id, code, tail, how: "exit" });
+            let how = if r.timeout.is_some() { "timeout" } else { "exit" };
+            self.ended.push(Ended { id: r.d.id, code, tail, how, why: r.timeout.clone() });
+            let what = match &r.timeout {
+                Some(why) => why.clone(),
+                None => format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())),
+            };
             self.say(format!(
                 "{} {}  {}  {}",
                 self.p.dim("■"),
                 self.p.cyan(&format!("{}#{}", r.d.board, r.d.card)),
                 r.d.name.as_deref().unwrap_or_default(),
-                self.p.dim(&format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())))
+                self.p.dim(&what)
             ));
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
             if r.lost {
@@ -1994,7 +2078,7 @@ impl Host<'_> {
     fn report_ended(&mut self) {
         let ended = std::mem::take(&mut self.ended);
         for e in ended {
-            let body = json!({ "exitCode": e.code, "tail": e.tail, "how": e.how });
+            let body = json!({ "exitCode": e.code, "tail": e.tail, "how": e.how, "why": e.why });
             match self.rm().post::<Dispatch>(&format!("/api/dispatches/{}/end", e.id), body) {
                 Ok(d) => {
                     let res = d.result.as_deref().map(result_words).unwrap_or("还在跑");
@@ -2130,7 +2214,7 @@ impl Host<'_> {
                 self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
                 let log = self.logs.join(format!("{}.log", d.id));
                 let _ = std::fs::write(&log, format!("{msg}\n"));
-                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], how: "exit" });
+                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], how: "exit", why: None });
                 self.report_ended();
             }
         }
@@ -2219,7 +2303,25 @@ impl Host<'_> {
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
         let fmt = logfmt::stream_of(&spec.id);
-        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, procfile, sent: 0, fmt, term_at: None, killed: false, spawned: Instant::now(), lost: false })
+        let now = Instant::now();
+        Ok(Run {
+            d: d.clone(),
+            child,
+            env,
+            pidfile,
+            log,
+            conf,
+            procfile,
+            sent: 0,
+            fmt,
+            term_at: None,
+            killed: false,
+            spawned: now,
+            lost: false,
+            timeout: None,
+            output_at: now,
+            seen_len: 0,
+        })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
@@ -2306,7 +2408,9 @@ impl Host<'_> {
         for mut r in runs {
             let code = r.child.wait().ok().and_then(exit_code);
             self.flush_log(&r, true);
-            self.ended.push(Ended { id: r.d.id, code, tail: tail_lines(&r.log, TAIL, r.fmt), how: "host_exit" });
+            // board host 退出时已经在按兜底停止的，照样报「超时」：原因写清楚
+            let (how, why) = if r.timeout.is_some() { ("timeout", r.timeout.clone()) } else { ("host_exit", None) };
+            self.ended.push(Ended { id: r.d.id, code, tail: tail_lines(&r.log, TAIL, r.fmt), how, why });
         }
         self.report_ended();
         if graceful {

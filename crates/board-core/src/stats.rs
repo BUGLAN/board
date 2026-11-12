@@ -639,7 +639,8 @@ impl Data {
             return "running";
         }
         match x.how.as_deref() {
-            Some("lost") => return "lost",
+            // 超时按异常退出算（board host 按机器的兜底设置结束了它）
+            Some("lost") | Some("timeout") => return "lost",
             Some("release") => return "released",
             _ => {}
         }

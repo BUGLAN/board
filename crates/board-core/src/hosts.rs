@@ -16,7 +16,9 @@
 //!   `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`，见 [`dispatch_agent_name`]）、check 这个名字、
 //!   以它领取卡片。领不到时这次派发结束，结果「没领到」。之后 host 每次上报时替这些名字发 agent 级心跳，直到派发结束。
 //! - **结束**（[`W::dispatch_end`]）：agent 退出后，卡片仍由这个名字持有就发 final、沿连线移到「错误」节点（没有时去需要人处理的状态）
-//!   并评论（异常退出 / 已停止）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
+//!   并评论（异常退出 / 已停止 / 超时）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
+//! - **兜底**：每台机器可以设「单次最长运行」和「没输出多久算卡住」（分钟，0 = 不限）。board host 到时间后按「人停止」的流程
+//!   结束整个进程树，上报 `how: "timeout"` 和原因，服务端记结果「超时」、按异常退出的规则处理卡片。
 //! - **占用**：卡片有排队中的派发时，别的 agent `board claim <ID>` 报 `DISPATCHED`，不带 ID 的 `board claim` 跳过它；
 //!   人把它拖出可领取状态时这次派发自动取消。
 //! - **掉线**：机器掉线超过 50 秒，名字跟着离线，卡片按现有的心跳超时规则释放，在跑的派发结束（机器掉线），见 [`W::sweep_hosts`]。
@@ -49,6 +51,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   dirs_by  TEXT,                      -- 最近一次改目录设置的人；本机 board host 上报的是「本机」
   max      INTEGER NOT NULL DEFAULT 1,-- 同时跑几个
   per_session INTEGER NOT NULL DEFAULT 4,-- 定时领取启动的会话一个最多做几张（board next）
+  max_run  INTEGER NOT NULL DEFAULT 180,-- 单次最长运行（分钟，0 = 不限）
+  idle_run INTEGER NOT NULL DEFAULT 20,-- 多久没有输出算卡住（分钟，0 = 不限）
   rules    TEXT NOT NULL DEFAULT '[]',-- 定时领取的领取规则（JSON，有顺序：[{"label": "claude", "agent": "claude"}]）
   fallback TEXT,                      -- 兜底：不带任何规则标签的卡片由这个 agent 做；空表示不领这些卡片
   paused   INTEGER NOT NULL DEFAULT 0,-- 暂停接单
@@ -95,7 +99,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
   by_kind     TEXT NOT NULL,
   by_name     TEXT NOT NULL,
   state       TEXT NOT NULL,          -- queued 排队 | running 在跑 | done 结束
-  result      TEXT,                   -- review | stuck | crashed | stopped | canceled | lost | unclaimed
+  result      TEXT,                   -- review | stuck | crashed | stopped | timeout | canceled | lost | unclaimed
   created_at  INTEGER NOT NULL,
   started_at  INTEGER,
   ended_at    INTEGER,
@@ -135,6 +139,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "rechecked_at", "INTEGER"),
         ("dispatches", "model", "TEXT"),
         ("dispatches", "effort", "TEXT"),
+        ("hosts", "max_run", "INTEGER NOT NULL DEFAULT 180"),
+        ("hosts", "idle_run", "INTEGER NOT NULL DEFAULT 20"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -175,6 +181,18 @@ pub const HOST_NAME_MAX: usize = 24;
 pub const HOST_MAX_LIMIT: i64 = 8;
 /// 一个会话最多做几张的上限（1–8，默认 4）
 pub const PER_SESSION_LIMIT: i64 = 8;
+/// 单次最长运行的默认值（分钟，0 = 不限）
+pub const MAX_RUN_DEFAULT: i64 = 180;
+/// 没输出多久算卡住的默认值（分钟，0 = 不限）
+pub const IDLE_RUN_DEFAULT: i64 = 20;
+/// 单次最长运行最多几分钟（12 小时）；0 表示不限。测试里可以设得很小
+pub const MAX_RUN_LIMIT: i64 = 720;
+/// 没输出多久算卡住最多几分钟（2 小时）；0 表示不限
+pub const IDLE_RUN_LIMIT: i64 = 120;
+/// 界面上可以选的档位（分钟，0 = 不限）；逐档列出，选不了别的
+pub const MAX_RUN_CHOICES: [i64; 13] = [0, 30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 660, 720];
+/// 界面上可以选的档位（分钟，0 = 不限）
+pub const IDLE_RUN_CHOICES: [i64; 12] = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
 /// 领取规则最多几条
 pub const RULES_LIMIT: usize = 20;
 /// 每个派发保留的日志行数
@@ -660,6 +678,12 @@ pub struct HostInfo {
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
     #[serde(default = "default_per_session")]
     pub per_session: i64,
+    /// 单次最长运行（分钟，0 = 不限，默认 180）；旧版服务端没有这一项
+    #[serde(default = "default_max_run")]
+    pub max_run: i64,
+    /// 多久没有输出算卡住（分钟，0 = 不限，默认 20）；旧版服务端没有这一项
+    #[serde(default = "default_idle_run")]
+    pub idle_run: i64,
     /// 定时领取的领取规则（有顺序）；没有规则时定时领取不领卡、也不能开始一轮
     #[serde(default)]
     pub rules: Vec<ClaimRule>,
@@ -760,6 +784,14 @@ pub fn version_lt(a: &str, b: &str) -> bool {
     x < y
 }
 
+fn default_max_run() -> i64 {
+    MAX_RUN_DEFAULT
+}
+
+fn default_idle_run() -> i64 {
+    IDLE_RUN_DEFAULT
+}
+
 /// board host 每 10 秒的上报（`POST /api/hosts/beat`）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostReport {
@@ -814,6 +846,12 @@ pub struct HostPatch {
     pub max: Option<i64>,
     #[serde(default)]
     pub per_session: Option<i64>,
+    /// 单次最长运行（分钟，0 = 不限）
+    #[serde(default)]
+    pub max_run: Option<i64>,
+    /// 多久没有输出算卡住（分钟，0 = 不限）
+    #[serde(default)]
+    pub idle_run: Option<i64>,
     /// 领取规则（整个列表替换）
     #[serde(default)]
     pub rules: Option<Vec<ClaimRule>>,
@@ -881,7 +919,7 @@ pub struct Dispatch {
     pub by: Actor,
     /// queued 排队 | running 在跑 | done 结束
     pub state: String,
-    /// review 已交审 | stuck 做不下去 | crashed 异常退出 | stopped 已停止 | canceled 已取消 | lost 机器掉线 | unclaimed 没领到
+    /// review 已交审 | stuck 做不下去 | crashed 异常退出 | stopped 已停止 | timeout 超时 | canceled 已取消 | lost 机器掉线 | unclaimed 没领到
     pub result: Option<String>,
     pub created_at: i64,
     pub started_at: Option<i64>,
@@ -941,6 +979,7 @@ pub fn result_words(r: &str) -> &'static str {
         "stuck" => "做不下去",
         "crashed" => "异常退出",
         "stopped" => "已停止",
+        "timeout" => "超时",
         "canceled" => "已取消",
         "lost" => "机器掉线",
         "unclaimed" => "没领到",
@@ -965,13 +1004,15 @@ fn source_words(s: &str) -> &'static str {
 }
 
 /// 派发怎么结束（host 上报）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndHow {
     /// agent 进程退出（任何退出码；人停止时也是这样上报）
     Exit,
     /// board host 退出前结束了 agent 进程
     HostExit,
+    /// board host 按机器的兜底设置结束了 agent 进程（运行超时 / 长时间没有输出），原因在 `why` 里
+    Timeout,
 }
 
 /* ------------------------------ 读 ------------------------------ */
@@ -991,6 +1032,8 @@ struct HostRow {
     dirs_by: Option<String>,
     max: i64,
     per_session: i64,
+    max_run: i64,
+    idle_run: i64,
     rules: Vec<ClaimRule>,
     fallback: Option<String>,
     paused: bool,
@@ -1014,7 +1057,7 @@ struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1037,6 +1080,8 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         dirs_by: r.get(24)?,
         max: r.get(7)?,
         per_session: r.get(19)?,
+        max_run: r.get(31)?,
+        idle_run: r.get(32)?,
         rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>(20)?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
         fallback: r.get(21)?,
         paused: r.get::<_, i64>(8)? != 0,
@@ -1157,6 +1202,8 @@ impl HostRow {
             dirs_changed_by: self.dirs_by.clone(),
             max: self.max,
             per_session: self.per_session,
+            max_run: self.max_run,
+            idle_run: self.idle_run,
             rules: self.rules.iter().map(|x| ClaimRule { active: self.has_agent(&x.agent), ..x.clone() }).collect(),
             fallback: self.fallback.clone(),
             fallback_active: self.fallback.as_deref().is_some_and(|a| self.has_agent(a)),
@@ -1792,6 +1839,18 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 超时：卡片仍由这个名字持有。和 final 一样结束这一次（记耗时、之后 50 秒内要移走），
+    /// 但这一次记成 `how = timeout`：大盘「按 agent」里算进异常退出
+    fn timeout_beat(&mut self, b: i64, card: i64, actor: &Actor) -> Result<()> {
+        // 先像普通心跳一样打一次：没有进行中的一次时由它开始（生产里 board host 早就打过心跳了）
+        self.beat_card(b, card, actor)?;
+        if let Some((n, ms)) = self.close_run(b, card, self.now, "timeout")? {
+            self.tx.execute("UPDATE cards SET beat_at = ?1, final_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, card])?;
+            self.track(b, card, actor, "beat", &format!("结束了心跳：超时，第 {n} 次耗时 {}", crate::engine::dur_words(ms)))?;
+        }
+        Ok(())
+    }
+
     /// 写一条派发的结束，并让它的名字离线（名字只给这个会话用）
     fn close_dispatch(&mut self, d: &DRow, result: &str, exit_code: Option<i64>) -> Result<()> {
         self.close_row(d, result, exit_code)?;
@@ -2219,6 +2278,18 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET per_session = ?2 WHERE id = ?1", params![h.id, n])?;
         }
+        if let Some(n) = p.max_run {
+            if !(0..=MAX_RUN_LIMIT).contains(&n) {
+                return Err(BoardError::usage(format!("单次最长运行要在 1 到 {MAX_RUN_LIMIT} 分钟之间，或者不限（0）")));
+            }
+            self.tx.execute("UPDATE hosts SET max_run = ?2 WHERE id = ?1", params![h.id, n])?;
+        }
+        if let Some(n) = p.idle_run {
+            if !(0..=IDLE_RUN_LIMIT).contains(&n) {
+                return Err(BoardError::usage(format!("没输出多久算卡住要在 1 到 {IDLE_RUN_LIMIT} 分钟之间，或者不限（0）")));
+            }
+            self.tx.execute("UPDATE hosts SET idle_run = ?2 WHERE id = ?1", params![h.id, n])?;
+        }
         if let Some(rules) = &p.rules {
             if rules.len() > RULES_LIMIT {
                 return Err(BoardError::usage(format!("领取规则最多 {RULES_LIMIT} 条")));
@@ -2411,6 +2482,28 @@ impl<'a> W<'a> {
         self.tx.execute("DELETE FROM host_ops WHERE host_id = ?1", [h.id])?;
         self.touch_hosts();
         Ok(revoked)
+    }
+
+    /// 机器页顶部的「全部暂停 / 全部恢复」：所有机器一起设成暂停接单（或恢复），排队的派发照样排队。
+    /// 返回所有机器
+    pub fn hosts_pause_all(&mut self, paused: bool) -> Result<Vec<HostInfo>> {
+        self.tx.execute("UPDATE hosts SET paused = ?1", [paused as i64])?;
+        if paused {
+            // 暂停接单时这一轮就结束（与单台机器一样，PRD §9.1）
+            self.tx.execute("UPDATE hosts SET round_at = NULL WHERE round_at IS NOT NULL", [])?;
+        }
+        self.touch_hosts();
+        self.read().hosts(self.now)
+    }
+
+    /// 机器页顶部的「全部停止」：请求停止所有正在跑的派发，同时全部暂停（界面二次确认后调用）。
+    /// 各台机器的 board host 收到停止请求后结束 agent 进程树并上报；排队的派发继续排队
+    pub fn hosts_stop_all(&mut self, by: &Actor, who: &str) -> Result<Vec<HostInfo>> {
+        let running: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE state = 'running' ORDER BY id", [], |r| r.get(0))?;
+        for id in running {
+            self.request_stop(id, by, who)?;
+        }
+        self.hosts_pause_all(true)
     }
 
     /// 机器改名（桌面端「设置 → 本机」保存机器名时调用）：机器记录原地改名，id 不变，
@@ -2765,8 +2858,9 @@ impl<'a> W<'a> {
         Ok(None)
     }
 
-    /// 派发结束（任务下发需求 §七「结束」）：board host 在 agent 进程退出后上报退出码和日志最后 20 行
-    pub fn dispatch_end(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], how: EndHow) -> Result<Dispatch> {
+    /// 派发结束（任务下发需求 §七「结束」）：board host 在 agent 进程退出后上报退出码和日志最后 20 行。
+    /// `why` 只在 `how = timeout` 时有：写给人看的原因（「运行超过 3 小时…」）
+    pub fn dispatch_end(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], how: EndHow, why: Option<&str>) -> Result<Dispatch> {
         let mut d = self.drow(id)?;
         // 进程退出时 board host 可能还不知道会话已经换到下一张（board next）：结算这个会话正在跑的那一张
         if d.state == "done" {
@@ -2787,6 +2881,7 @@ impl<'a> W<'a> {
             let f = match how {
                 EndHow::Exit => Finish::Exit,
                 EndHow::HostExit => Finish::HostExit,
+                EndHow::Timeout => Finish::Timeout(why.map(str::trim).filter(|w| !w.is_empty())),
             };
             self.finish(&d, exit_code, tail, f)?;
         }
@@ -2794,8 +2889,13 @@ impl<'a> W<'a> {
     }
 
     fn finish(&mut self, d: &DRow, exit_code: Option<i64>, tail: &[String], how: Finish) -> Result<()> {
+        // 超时按异常退出的规则处理，但原因写在评论里，结果记「超时」
+        let because = match how {
+            Finish::Timeout(why) => Some(why.map(str::to_string).unwrap_or_else(|| "board host 按机器的兜底设置在超时后停止了它".into())),
+            _ => None,
+        };
         let Some(name) = d.name.clone() else {
-            return self.close_dispatch(d, "crashed", exit_code);
+            return self.close_dispatch(d, if because.is_some() { "timeout" } else { "crashed" }, exit_code);
         };
         let actor = Actor::agent(name.clone());
         let stop_by = match how {
@@ -2812,7 +2912,11 @@ impl<'a> W<'a> {
             // 卡片仍由这个名字持有：发 final，沿连线移到「错误」节点（没有时去需要人处理的状态），评论原因。
             // 这几步尽力而为：规则拒绝（例如刚好被超时释放）不影响记下派发的结果
             Some((col, Some(holder))) if *holder == name => {
-                soft(self.exec(&board, &actor, Cmd::Beat { id: d.card, done: true }))?;
+                // 超时：和 final 一样结束这次计时，但记成「超时」，大盘里算异常退出（§10.13 按 agent）
+                match how {
+                    Finish::Timeout(_) => soft(self.timeout_beat(d.board, d.card, &actor))?,
+                    _ => soft(self.exec(&board, &actor, Cmd::Beat { id: d.card, done: true }))?,
+                }
                 let still: Option<String> = self
                     .tx
                     .query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0))
@@ -2829,6 +2933,13 @@ impl<'a> W<'a> {
                     }
                 }
                 let mut text = match (&stop_by, how) {
+                    (_, Finish::Timeout(_)) => {
+                        let mut t = format!("{}，board host 停止了它", because.clone().unwrap_or_default());
+                        if !tail.is_empty() {
+                            t += &format!("\n\n日志最后 {} 行：\n\n```\n{}\n```", tail.len(), tail.join("\n").replace("```", "ˋˋˋ"));
+                        }
+                        t
+                    }
                     (_, Finish::HostExit) => format!("board host（{}）退出，停止了这次派发", d.host),
                     (Some(who), _) => format!("{who} 停止了这次派发"),
                     (None, Finish::Missing) => {
@@ -2865,7 +2976,13 @@ impl<'a> W<'a> {
                     text += &format!("\n\n没有能接住异常退出的状态：{no_error}{no_human}卡片 50 秒后会回到「{}」最上面。", back);
                 }
                 soft(self.exec(&board, &actor, Cmd::Comment { id: d.card, text }))?;
-                if stop_by.is_some() { "stopped" } else { "crashed" }
+                if because.is_some() {
+                    "timeout"
+                } else if stop_by.is_some() {
+                    "stopped"
+                } else {
+                    "crashed"
+                }
             }
             _ if stop_by.is_some() => "stopped",
             Some((col, _)) if flow.is_review(col) => "review",
@@ -2928,11 +3045,13 @@ impl<'a> W<'a> {
 
 /// 派发是怎么结束的
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Finish {
+enum Finish<'a> {
     /// agent 进程退出
     Exit,
     /// board host 退出前结束了 agent 进程
     HostExit,
+    /// board host 按机器的兜底设置结束了 agent 进程（运行超时 / 长时间没有输出）；带给人看的原因
+    Timeout(Option<&'a str>),
     /// board host 重启后，本机没有这次派发的进程
     Missing,
 }

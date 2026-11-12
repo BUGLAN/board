@@ -1,9 +1,19 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostAgent, HostInfo, Workspace } from '../../lib/types';
-import { useUI } from '../../store/ui';
-import { Rack } from './HostsPage';
+import { settleConfirm, useUI } from '../../store/ui';
+import { FleetActions, Rack } from './HostsPage';
+
+// 机器页要发的请求：默认都成功，用例里换成自己的
+const mocked = vi.hoisted(() => ({
+  pauseAllHosts: async (_paused: boolean): Promise<unknown[]> => [],
+  stopAllHosts: async (): Promise<unknown[]> => [],
+}));
+vi.mock('../../lib/api', async orig => {
+  const real = await orig<typeof import('../../lib/api')>();
+  return { ...real, api: { ...real.api, pauseAllHosts: (p: boolean) => mocked.pauseAllHosts(p), stopAllHosts: () => mocked.stopAllHosts() } };
+});
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -115,5 +125,59 @@ describe('机位卡片：会话里排着的', () => {
     show(h, { hosts: [h], dispatches } as unknown as Workspace);
     expect(host.querySelector('.hp-lane.on .hp-lane-more')?.textContent).toBe('后面还有 2 张');
     expect(host.querySelectorAll('.hp-lane.queued').length).toBe(0);
+  });
+});
+
+describe('全部暂停 / 全部停止', () => {
+  it('在线机器都暂停时按钮是「全部恢复」，否则是「全部暂停」；离线机器不算', () => {
+    act(() => root.render(<FleetActions hosts={[machine([agent('dsh')], { paused: true }), machine([agent('dsh')], { paused: true, name: 'off', online: false })]} />));
+    expect(host.textContent).toContain('全部恢复');
+    act(() => root.render(<FleetActions hosts={[machine([agent('dsh')], { paused: true }), machine([agent('dsh')], { paused: false, name: 'win' })]} />));
+    expect(host.textContent).toContain('全部暂停');
+  });
+
+  it('没有在线机器时「全部暂停」不能点；全部停止随时可以点（会二次确认）', () => {
+    act(() => root.render(<FleetActions hosts={[]} />));
+    const [pause, stop] = [...host.querySelectorAll('button')] as HTMLButtonElement[];
+    expect(pause.textContent).toContain('全部暂停');
+    expect(pause.disabled).toBe(true);
+    expect(stop.textContent).toContain('全部停止');
+    expect(stop.disabled).toBe(false);
+  });
+
+  it('点「全部暂停」调接口；按钮在请求返回之前禁用', async () => {
+    let done!: (v: HostInfo[]) => void;
+    const call = vi.fn(() => new Promise<HostInfo[]>(res => (done = res)));
+    mocked.pauseAllHosts = call;
+    act(() => root.render(<FleetActions hosts={[machine([agent('dsh')])]} />));
+    const pause = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('全部暂停')) as HTMLButtonElement;
+    act(() => pause.click());
+    await act(async () => {});
+    expect(call).toHaveBeenCalledWith(true);
+    const now = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('全部暂停')) as HTMLButtonElement;
+    expect(now.disabled).toBe(true);
+    await act(async () => done([]));
+    expect(useUI.getState().toasts.at(-1)?.title).toBe('所有机器暂停接单');
+  });
+
+  it('点「全部停止」先确认：取消时不调接口；确认后调接口并提示', async () => {
+    const stop = vi.fn(async () => []);
+    mocked.stopAllHosts = stop;
+    act(() => root.render(<FleetActions hosts={[machine([agent('dsh')])]} />));
+    const btn = () => [...host.querySelectorAll('button')].find(b => b.textContent?.includes('全部停止')) as HTMLButtonElement;
+    act(() => btn().click());
+    // 确认框打开，说明里写了会结束几个派发、卡片按异常退出处理
+    const req = useUI.getState().confirm!;
+    expect(req.title).toContain('停止所有机器');
+    expect(req.tone).toBe('danger');
+    act(() => settleConfirm(false));
+    await act(async () => {});
+    expect(stop).not.toHaveBeenCalled();
+    // 再点一次，确认
+    act(() => btn().click());
+    act(() => settleConfirm(true));
+    await act(async () => {});
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(useUI.getState().toasts.at(-1)?.title).toBe('已停止所有派发，所有机器暂停接单');
   });
 });

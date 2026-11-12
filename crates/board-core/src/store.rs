@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS cards_col ON cards (board, col, pos);
 CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at);
 
 -- 每一次领取的耗时：第一次心跳开始，final / 交审 / 释放 / 异常退出（最后一次心跳）结束
--- how：final 正常结束 | move 持有者移出锁定状态 | release 人强制释放 | lost 心跳中断
+-- how：final 正常结束 | move 持有者移出锁定状态 | release 人强制释放 | lost 心跳中断 | timeout board host 超时停止
 CREATE TABLE IF NOT EXISTS card_runs (
   board      INTEGER NOT NULL,
   card       INTEGER NOT NULL,
@@ -967,7 +967,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 (SELECT r.started_at FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NULL),
                 (SELECT COALESCE(SUM(r.ended_at - r.started_at), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NOT NULL),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
-                (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how = 'lost'),
+                (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how IN ('lost', 'timeout')),
                 (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 COALESCE(c.moved_at, c.created_at),

@@ -196,6 +196,10 @@ export const api = {
     patch: {
       max?: number;
       perSession?: number;
+      /** 单次最长运行（分钟，0 = 不限） */
+      maxRun?: number;
+      /** 多久没有输出算卡住（分钟，0 = 不限） */
+      idleRun?: number;
       rules?: ClaimRule[];
       fallback?: string;
       paused?: boolean;
@@ -215,6 +219,10 @@ export const api = {
   /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、排空、取消请求 */
   askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel', now = false) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
+  /** 全部暂停 / 全部恢复：所有机器一起设成暂停接单（排队的派发照样排队） */
+  pauseAllHosts: (paused: boolean) => req<HostInfo[]>('POST', '/api/hosts/pause-all', { paused }),
+  /** 全部停止：停止所有正在跑的派发，同时全部暂停 */
+  stopAllHosts: () => req<HostInfo[]>('POST', '/api/hosts/stop-all'),
   /** 现在领一轮（效果与定时到点相同） */
   hostRound: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/round`, {}),
   /** 这台机器最近 50 个结束的派发 */

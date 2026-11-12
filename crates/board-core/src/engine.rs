@@ -1071,7 +1071,7 @@ impl<'a> W<'a> {
     }
 
     /// 进行中的这一次收到一次心跳
-    fn count_beat(&mut self, b: i64, id: i64) -> Result<()> {
+    pub(crate) fn count_beat(&mut self, b: i64, id: i64) -> Result<()> {
         self.tx.execute("UPDATE card_runs SET beats = beats + 1 WHERE board = ?1 AND card = ?2 AND ended_at IS NULL", params![b, id])?;
         Ok(())
     }

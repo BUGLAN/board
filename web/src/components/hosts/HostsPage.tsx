@@ -1,11 +1,12 @@
 /* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务）；主区可以切到多机对比 */
 import { useState } from 'react';
+import { api } from '../../lib/api';
 import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { readiness } from '../../lib/ready';
 import { cx, pref } from '../../lib/util';
-import { useData } from '../../store/data';
-import { openHost, useUI } from '../../store/ui';
+import { optimistic, useData } from '../../store/data';
+import { confirm, openHost, toast, toastError, useUI } from '../../store/ui';
 import { Segmented, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { goCard } from './Dispatch';
@@ -263,6 +264,56 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
   );
 }
 
+/** 全部暂停 / 全部恢复、全部停止：机器的状态要等服务端返回，按钮先变忙、禁用，直到返回 */
+export function FleetActions({ hosts }: { hosts: HostInfo[] }) {
+  const all = hosts.filter(h => h.online);
+  const paused = all.length > 0 && all.every(h => h.paused);
+  const [busy, setBusy] = useState<'pause' | 'stop' | null>(null);
+  const pause = async () => {
+    setBusy('pause');
+    try {
+      await optimistic(null, () => api.pauseAllHosts(!paused));
+      toast({ type: 'success', title: paused ? '所有机器恢复接单' : '所有机器暂停接单' });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const stop = async () => {
+    const running = (useData.getState().ws?.dispatches ?? []).filter(d => d.state === 'running').length;
+    const yes = await confirm({
+      title: '停止所有机器上正在跑的派发？',
+      text: `会结束 ${running} 个正在跑的 agent 进程（连同它们启动的子进程），卡片按异常退出处理；所有机器同时暂停接单，排队的派发继续排队。确认后要点「全部恢复」才会重新接单。`,
+      ok: '全部停止',
+      icon: 'alert',
+      tone: 'danger',
+    });
+    if (!yes) return;
+    setBusy('stop');
+    try {
+      await optimistic(null, () => api.stopAllHosts());
+      toast({ type: 'success', title: '已停止所有派发，所有机器暂停接单' });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <>
+      <button className={cx('btn sm', busy === 'pause' && 'is-busy')} type="button" disabled={busy !== null || all.length === 0} onClick={pause}>
+        <Icon name={paused ? 'play' : 'pause'} />
+        {paused ? '全部恢复' : '全部暂停'}
+      </button>
+      <button className={cx('btn sm danger', busy === 'stop' && 'is-busy')} type="button" disabled={busy !== null} onClick={stop}>
+        <Icon name="stop" />
+        全部停止
+      </button>
+    </>
+  );
+}
+
 type View = 'racks' | 'compare';
 const VIEWS: [View, string][] = [
   ['racks', '总览'],
@@ -297,6 +348,7 @@ export function HostsPage() {
           {hosts.length > 0 && (
             <div className="hp-b-acts">
               <Segmented value={view} options={VIEWS} onChange={pick} />
+              <FleetActions hosts={hosts} />
               <button className="btn sm" type="button" onClick={() => openHost('new')}>
                 <Icon name="plus" />
                 添加机器

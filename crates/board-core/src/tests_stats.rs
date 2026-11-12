@@ -283,6 +283,40 @@ fn dispatch_names_merge_and_lost_runs() {
     assert_eq!(st.runs.iter().find(|r| r.card == a).map(|r| (r.agent.as_str(), r.name.as_str())), Some(("claude/mbp", "claude/mbp-1")));
 }
 
+/// #198 验收 5：board host 按机器的兜底设置结束了这次领取（card_runs.how = timeout），
+/// 大盘「按 agent」里算进异常退出，「领取明细」的结果也是异常退出
+#[test]
+fn timeout_runs_count_as_lost() {
+    let mut s = store();
+    let a = new(&mut s, B, BASE, "一");
+    work(&mut s, B, "claude/mbp-1", a, BASE + MIN, BASE + 10 * MIN);
+    let b = new(&mut s, B, BASE, "二");
+    // 领取、心跳，然后 board host 按兜底设置结束了它：这一次记成 how = timeout
+    let x = Actor::agent("claude/mbp-2");
+    exec(&mut s, B, &x, BASE + MIN, Cmd::Claim { id: Some(b) });
+    exec(&mut s, B, &x, BASE + MIN + 20_000, Cmd::Beat { id: b, done: false });
+    s.conn()
+        .execute(
+            "UPDATE card_runs SET ended_at = ?1, how = 'timeout' WHERE board = 1 AND card = ?2 AND ended_at IS NULL",
+            rusqlite::params![BASE + 20 * MIN, b],
+        )
+        .unwrap();
+    for (name, card) in [("claude/mbp-1", a), ("claude/mbp-2", b)] {
+        s.conn()
+            .execute(
+                "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, name, source, by_kind, by_name, state, created_at)
+                 VALUES (1, ?1, 't', 1, 'mbp', 'claude', 'Claude Code', ?2, 'manual', 'human', '', 'done', 0)",
+                rusqlite::params![card, name],
+            )
+            .unwrap();
+    }
+    let st = stats(&s, Scope::Board, Some(B), BASE, BASE + HOUR, "UTC", BASE + DAY);
+    assert_eq!(st.agents.len(), 1);
+    assert_eq!((st.agents[0].claims, st.agents[0].lost), (2, 1), "超时算进异常退出");
+    let lost: Vec<&str> = st.runs.iter().filter(|r| r.card == b).map(|r| r.result).collect();
+    assert_eq!(lost, vec!["lost"], "领取明细里也是异常退出");
+}
+
 /// 验收 13 的数据：待复盘最久的一张等了多久；正在卡着的卡按停的时间排
 #[test]
 fn present_reports_the_oldest_waits() {

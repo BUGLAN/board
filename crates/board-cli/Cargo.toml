@@ -25,4 +25,7 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# 集成测试直接写服务端的库（造会话、标签）和账本（rusqlite 的 params）
 board-server = { workspace = true, features = ["test-hooks"] }
+rusqlite.workspace = true
+sha2 = "0.10"

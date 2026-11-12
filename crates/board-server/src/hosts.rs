@@ -132,6 +132,9 @@ pub(crate) struct EndBody {
     tail: Vec<String>,
     #[serde(default = "exit")]
     how: EndHow,
+    /// how = timeout 时给人看的原因（「运行超过 3 小时…」）
+    #[serde(default)]
+    why: Option<String>,
 }
 
 fn exit() -> EndHow {
@@ -152,7 +155,9 @@ pub(crate) async fn end(State(s): State<AppState>, Path(id): Path<i64>, Json(v):
 
 async fn end_inner(s: AppState, id: i64, v: Value) -> ApiResult<Dispatch> {
     let b: EndBody = parse(v)?;
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_end(id, b.exit_code, &b.tail, b.how))).await?;
+    let out = s
+        .db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_end(id, b.exit_code, &b.tail, b.how, b.why.as_deref())))
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -311,6 +316,28 @@ pub(crate) async fn ask(
         Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
     };
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_ask(&name, &b.kind, b.now, &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+/// 所有机器一起暂停接单（`paused: false` 是全部恢复）
+pub(crate) async fn pause_all(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Vec<HostInfo>> {
+    #[derive(Deserialize)]
+    struct Body {
+        paused: bool,
+    }
+    let b: Body = parse(v)?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.hosts_pause_all(b.paused))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+/// 停止所有正在跑的派发，同时全部暂停
+pub(crate) async fn stop_all(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap) -> ApiResult<Vec<HostInfo>> {
+    let (actor, by) = who(&s, &caller, None).await?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.hosts_stop_all(&actor, &by))).await?;
     s.poke();
     Ok(Json(out))
 }

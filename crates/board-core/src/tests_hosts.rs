@@ -1,6 +1,6 @@
 //! 任务下发（board host）的规则：机器上报、手动派发的校验、开始、结束、占用、掉线、定时领取、移除（任务下发需求 §十二）。
 
-use crate::hosts::EndHow;
+use crate::hosts::{EndHow, IDLE_RUN_DEFAULT, IDLE_RUN_LIMIT, MAX_RUN_DEFAULT};
 use crate::*;
 
 const T0: i64 = 1_700_000_000_000;
@@ -77,7 +77,7 @@ fn begin(s: &mut Store, at: i64, id: i64) -> Result<Dispatch> {
 
 fn end(s: &mut Store, at: i64, id: i64, code: Option<i64>, tail: &[&str]) -> Dispatch {
     let tail: Vec<String> = tail.iter().map(|x| x.to_string()).collect();
-    s.write(at, Origin::cli(), |w| w.dispatch_end(id, code, &tail, EndHow::Exit)).unwrap()
+    s.write(at, Origin::cli(), |w| w.dispatch_end(id, code, &tail, EndHow::Exit, None)).unwrap()
 }
 
 fn card(s: &Store, id: i64) -> CardDetail {
@@ -2548,4 +2548,113 @@ fn session_view_groups_a_process_and_card_history_lists_every_dispatch() {
     .unwrap();
     assert_eq!(list.iter().map(|x| x.id).collect::<Vec<_>>(), vec![d1.id]);
     assert_eq!(list[0].result.as_deref(), Some("review"));
+}
+
+/* ------------------------------ 兜底：超时、全部暂停、全部停止 ------------------------------ */
+
+/// #198 验收 1：到时间后 board host 按「人停止」的流程结束进程树、上报超时；结果「超时」，卡片在错误节点，评论写明原因。
+/// 超时也计入大盘「按 agent」的异常退出
+#[test]
+fn timeout_dispatch_records_timeout_and_moves_card_to_error_status() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!(d.state, "running");
+    // board host 到时间后结束进程树，上报 timeout 和原因
+    let done = s
+        .write(T0 + 3 * S, Origin::cli(), |w| w.dispatch_end(d.id, Some(137), &["sleeping".into()], EndHow::Timeout, Some("运行超过 30 分钟，board host 停止了它")))
+        .unwrap();
+    assert_eq!((done.state.as_str(), done.result.as_deref()), ("done", Some("timeout")));
+    assert_eq!(card(&s, a).card.column, key, "超时按异常退出的规则移到错误节点");
+    let texts: Vec<String> = card(&s, a).activity.into_iter().map(|x| x.text).collect();
+    assert!(texts.iter().any(|t| t.contains("运行超过 30 分钟，board host 停止了它")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("sleeping")), "评论里附上日志最后几行：{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("派发结束：超时")), "{texts:?}");
+    // 这一次记成 how = timeout：卡片上的异常退出次数 +1
+    assert_eq!(card(&s, a).card.runs_lost, 1);
+    assert_eq!(card(&s, a).card.holder, None);
+}
+
+/// 没有错误节点时，超时去需要人处理的状态（和异常退出一样）
+#[test]
+fn timeout_dispatch_goes_to_human_status_without_error_status() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, d.id).unwrap();
+    let d = s
+        .write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_end(1, None, &[], EndHow::Timeout, Some("20 分钟没有任何输出，board host 停止了它")))
+        .unwrap();
+    assert_eq!(d.result.as_deref(), Some("timeout"));
+    assert_eq!(card(&s, a).card.column, "check");
+    assert!(card(&s, a).activity.iter().any(|x| x.text.contains("20 分钟没有任何输出")));
+}
+
+/// 一台机器的兜底设置：默认 3 小时、20 分钟；改了什么范围都拒绝；改了马上能读到（board host 每次上报都拿到最新值）
+#[test]
+fn host_run_limits_default_and_validation() {
+    let mut s = store();
+    let w = beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!((w.host.max_run, w.host.idle_run), (MAX_RUN_DEFAULT, IDLE_RUN_DEFAULT));
+    let h = s.write(T0, Origin::ui(None), |w| {
+        w.host_update("mbp", &HostPatch { max_run: Some(30), idle_run: Some(5), ..Default::default() })
+    })
+    .unwrap();
+    assert_eq!((h.max_run, h.idle_run), (30, 5));
+    // 下一次上报（board host 每 10 秒一次）就拿到新值，不用重启
+    let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!((w.host.max_run, w.host.idle_run), (30, 5));
+    // 0 = 不限
+    let h = s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max_run: Some(0), ..Default::default() })).unwrap();
+    assert_eq!(h.max_run, 0);
+    // 超出范围拒绝
+    for p in [HostPatch { max_run: Some(-1), ..Default::default() }, HostPatch { idle_run: Some(IDLE_RUN_LIMIT + 1), ..Default::default() }] {
+        assert_eq!(s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &p)).unwrap_err().code, ErrorCode::Usage);
+    }
+}
+
+/// 验收 4：全部暂停把所有机器设成暂停、排队的照样排队；全部恢复后恢复接单。
+/// 全部停止：所有在跑的派发收到停止请求，同时全部暂停
+#[test]
+fn pause_all_and_stop_all_touch_every_host() {
+    let mut s = store();
+    for (name, inst) in [("mbp", "i1"), ("win", "w1")] {
+        let mut rep = report(name, inst, vec![]);
+        rep.dirs = vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }];
+        beat(&mut s, T0, &rep).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.host_update(name, &HostPatch { max: Some(2), ..Default::default() })).unwrap();
+    }
+    let a = new_card(&mut s, T0, "A");
+    let b = new_card(&mut s, T0, "B");
+    let c = new_card(&mut s, T0, "C");
+    let d1 = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d1 = begin(&mut s, T0 + S, d1.id).unwrap();
+    let d2 = dispatch(&mut s, T0, b, "win", None).unwrap();
+    let d2 = s.write(T0 + S, Origin::cli(), |w| w.dispatch_begin("win", "w1", d2.id, Some(1))).unwrap();
+    assert_eq!((d1.state.as_str(), d2.state.as_str()), ("running", "running"));
+    // 还有一张排队（mbp 满 2 个之前先再派一张）：两个都跑着，排队
+    let d3 = dispatch(&mut s, T0, c, "mbp", None).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
+    assert_eq!(d3.state, "queued");
+
+    // 全部暂停：两台都暂停，排队的还在排队
+    let all = s.write(T0 + 2 * S, Origin::ui(None), |w| w.hosts_pause_all(true)).unwrap();
+    assert_eq!(all.iter().map(|h| (h.name.as_str(), h.paused)).collect::<Vec<_>>(), vec![("mbp", true), ("win", true)]);
+    assert_eq!(get(&s, d3.id).state, "queued", "排队的派发继续排队");
+    assert_eq!((get(&s, d1.id).state.as_str(), get(&s, d2.id).state.as_str()), ("running", "running"), "在跑的不受影响");
+
+    // 全部恢复
+    let all = s.write(T0 + 3 * S, Origin::ui(None), |w| w.hosts_pause_all(false)).unwrap();
+    assert!(all.iter().all(|h| !h.paused));
+
+    // 全部停止：两台机器上在跑的派发都收到停止请求，同时全部暂停
+    let all = s.write(T0 + 4 * S, Origin::ui(None), |w| w.hosts_stop_all(&Actor::human(), "buglan")).unwrap();
+    assert!(all.iter().all(|h| h.paused), "全部停止之后全部暂停");
+    let stop = |id: i64| get(&s, id).stop_by.clone();
+    assert_eq!((stop(d1.id).as_deref(), stop(d2.id).as_deref()), (Some("buglan"), Some("buglan")));
+    assert_eq!(get(&s, d3.id).state, "queued", "排队的不在停止之列");
 }

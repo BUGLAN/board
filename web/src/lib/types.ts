@@ -234,6 +234,10 @@ export interface HostInfo {
   max: number;
   /** 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
+  /** 单次最长运行（分钟，0 = 不限，默认 180）；旧版服务端没有 */
+  maxRun?: number;
+  /** 多久没有输出算卡住（分钟，0 = 不限，默认 20）；旧版服务端没有 */
+  idleRun?: number;
   /** 定时领取的领取规则（有顺序）：带这个标签的卡片由这个 agent 做；没有一条规则时定时领取不领卡 */
   rules?: ClaimRule[];
   /** 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片 */
@@ -293,7 +297,7 @@ export interface HostToken {
   shared?: string[];
 }
 
-export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'canceled' | 'lost' | 'unclaimed';
+export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed';
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */

@@ -5,6 +5,7 @@
 mod common;
 use common::*;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -12,6 +13,11 @@ use std::time::{Duration, Instant};
 const FAKE: &str = r#"#!/bin/sh
 # 假 agent：$1 是提示词；按 $FAKE_DIR/mode 决定做什么
 if [ "$1" = "--version" ]; then echo "9.9.9 (fake)"; exit 0; fi
+# 一行都不输出（Claude Code -p 运行中就是这样）：不该按「没输出多久算卡住」停止。放在前面，下面几行也不打
+if [ "$(cat "$FAKE_DIR/mode")" = "quiet" ]; then
+  echo $$ > "$FAKE_DIR/agent.pid"
+  exec sleep 120
+fi
 echo "prompt: $1"
 echo "as: $BOARD_AS host: $BOARD_HOST board: $BOARD"
 [ -f "$BOARD_CONFIG" ] && echo "config: ok"
@@ -43,6 +49,11 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo $! > "$FAKE_DIR/child.pid"
     echo "left a child"
     exit 0 ;;
+  chatty)
+    # 输出一行就再也不输出：到「没输出多久算卡住」的时间该被停止
+    echo "working"
+    echo $$ > "$FAKE_DIR/agent.pid"
+    exec sleep 120 ;;
   *)
     echo "sleeping"
     echo $$ > "$FAKE_DIR/agent.pid"
@@ -86,6 +97,16 @@ impl Rig {
         std::fs::write(self.fake.parent().unwrap().join("mode"), m).unwrap();
     }
 
+    /// board host 启动时读的 `BOARD_HOST_MINUTE_MS`：兜底相关的测试先写 `minute-ms` 文件把它缩短，
+    /// 其余按默认的 60 秒
+    fn minute_ms(&self) -> String {
+        std::fs::read_to_string(self.fake.parent().unwrap().join("minute-ms"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "60000".into())
+    }
+
     fn host(&self, name: &str) -> Child {
         self.host_with(&["host", "--name", name, "--dir", &format!("default/main={}", self.repo.display())])
     }
@@ -108,6 +129,9 @@ impl Rig {
             .env("BOARD_URL", &self.s.url)
             .env("BOARD_TOKEN", &self.s.token)
             .env("BOARD_HOST_INTERVAL", "0.5")
+            // 兜底设置的最小档是分钟：测试里一分钟 = 1 秒（`minute-ms` 文件，见 Rig::minute_ms），
+            // 30 分钟、20 分钟才等得起。其他测试用默认的 60 秒，没有影响
+            .env("BOARD_HOST_MINUTE_MS", self.minute_ms())
             .env("BOARD_BIN", env!("CARGO_BIN_EXE_board"))
             .env("FAKE_DIR", self.fake.parent().unwrap())
             .env_remove("BOARD")
@@ -144,6 +168,29 @@ impl Rig {
     fn dispatch_log(&self, id: i64) -> Vec<String> {
         let store = board_core::Store::open(&self.s.db).unwrap();
         store.read(|r| r.dispatch_log(id)).unwrap()
+    }
+
+    /// 像界面一样 POST（GitHub 会话 Cookie + `x-board-client`），只给界面上才有的接口（全部暂停、全部停止）用。
+    /// 会话直接写进服务端的库：测试不经过 GitHub 登录
+    fn ui_post(&self, path: &str, body: Value) -> Value {
+        let sid = "test-ui-session";
+        let hash: String = Sha256::digest(sid.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let store = board_core::Store::open(&self.s.db).unwrap();
+        let now = board_core::now_ms();
+        store
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO auth_sessions (hash, login, name, avatar, created_at, expires_at) VALUES (?1, 'buglan', 'buglan', '', ?2, ?3)",
+                rusqlite::params![hash, now, now + 86_400_000],
+            )
+            .unwrap();
+        drop(store);
+        let mut res = ureq::post(&format!("{}{path}", self.s.url))
+            .header("cookie", format!("board_session={sid}"))
+            .header("x-board-client", "test")
+            .send_json(body)
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap_or(Value::Null)
     }
 }
 
@@ -682,5 +729,184 @@ fn model_and_effort_reach_the_agent() {
     let acts = activity(&rig.show(1));
     assert!(acts.iter().any(|t| t.contains("以 claude-mbp/sonnet 领取") && t.contains("模型 sonnet，强度 high")), "{acts:?}");
     let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/* ------------------------------ 兜底：单次最长运行、没输出多久算卡住 ------------------------------ */
+
+impl Rig {
+    /// 在界面上改这台机器的一项设置（走服务端，和界面一样）
+    fn set_host(&self, name: &str, patch: serde_json::Value) {
+        let mut store = board_core::Store::open(&self.s.db).unwrap();
+        let p: board_core::HostPatch = serde_json::from_value(patch).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update(name, &p)).unwrap();
+    }
+
+    /// 在这块白板上加一个错误节点（「搁置」，从 doing 连过去），超时的卡片移到这里；返回它的标识
+    fn add_error_status(&self) -> String {
+        let mut store = board_core::Store::open(&self.s.db).unwrap();
+        let now = board_core::now_ms();
+        let st = store
+            .write(now, board_core::Origin::ui(None), |w| w.create_status("default/main", "搁置", None))
+            .unwrap();
+        store
+            .write(now, board_core::Origin::ui(None), |w| {
+                w.update_edges("default/main", &[(String::from("doing"), st.key.clone())], &[])
+            })
+            .unwrap();
+        store
+            .write(now, board_core::Origin::ui(None), |w| {
+                w.update_status("default/main", &st.key, board_core::StatusPatch { err: Some(true), ..Default::default() })
+            })
+            .unwrap();
+        st.key
+    }
+}
+
+/// #198 验收 1：单次最长运行到时间后，进程树按「人停止」的流程被结束，结果「超时」，
+/// 卡片移到错误节点，评论写明原因和日志最后 20 行
+#[test]
+fn max_run_stops_agent_and_records_timeout() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let error = rig.add_error_status();
+    rig.minute_ms_short();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    // 界面上把单次最长运行改成 30 分钟、关掉「没输出多久算卡住」（假 agent 输出一行后就睡，不然它先到）；
+    // 不重启 board host
+    rig.set_host("mbp", serde_json::json!({ "maxRun": 30, "idleRun": 0 }));
+    rig.mode("sleep");
+    let d = rig.dispatch_running(1);
+    let agent = rig.pid("agent.pid");
+    assert!(running(agent));
+    // 30 分钟 × 1 秒/分钟：到时间后 host 自己结束它
+    wait_until("#1 超时", Duration::from_secs(45), || ended(&rig.show(1), "超时"));
+    let c = rig.show(1);
+    assert_eq!(c["column"], error, "超时按异常退出的规则移到错误节点");
+    let texts = activity(&c);
+    assert!(texts.iter().any(|t| t.contains("运行超过 30 分钟，board host 停止了它")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("sleeping")), "评论里附上日志最后几行：{texts:?}");
+    assert!(!running(agent), "进程树要被结束");
+    // 派发记录的结果
+    let store = board_core::Store::open(&rig.s.db).unwrap();
+    let d1 = store.read(|r| r.dispatch(d)).unwrap();
+    assert_eq!(d1.result.as_deref(), Some("timeout"));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// #198 验收 2：输出过内容后长时间没有输出的假 agent 到时间被停止；一行都没输出过的（Claude Code -p）不受影响
+#[test]
+fn idle_run_stops_only_after_output() {
+    let rig = Rig::new();
+    for t in ["一", "二"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    rig.minute_ms_short();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    // 同时跑 2 个；没输出 5 分钟算卡住；单次最长运行不限。
+    // 用直接启动：登录 shell 自己会往标准错误里写几行（「no job control…」），那样就没有「一行都没输出」的派发了
+    rig.set_host("mbp", serde_json::json!({ "max": 2, "idleRun": 5, "maxRun": 0, "env": { "agent": "claude", "env": "direct" } }));
+    // 一：输出一行后再也不输出 → 该被停止
+    rig.mode("chatty");
+    rig.dispatch_running(1);
+    let chatty = rig.pid("agent.pid");
+    wait_until("#1 超时", Duration::from_secs(40), || ended(&rig.show(1), "超时"));
+    assert!(activity(&rig.show(1)).iter().any(|t| t.contains("5 分钟没有任何输出，board host 停止了它")));
+    assert!(!running(chatty));
+    // 二：一行都不输出 → 不按这条算，接着跑
+    std::fs::remove_file(rig.fake.parent().unwrap().join("agent.pid")).unwrap();
+    rig.mode("quiet");
+    assert_eq!(rig.board(&["dispatch", "2", "--host", "mbp"]).code, 0);
+    wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "claude-mbp/opus-5.5");
+    let quiet = rig.pid("agent.pid");
+    std::thread::sleep(Duration::from_secs(12));
+    assert!(running(quiet), "一行都没输出过的派发不受「没输出多久算卡住」影响");
+    assert_eq!(rig.show(2)["column"], "doing");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(ended(&rig.show(2), "已停止"));
+}
+
+impl Rig {
+    /// 兜底相关的测试：一分钟 = 1 秒（必须在启动 board host 之前写）
+    fn minute_ms_short(&self) {
+        std::fs::write(self.fake.parent().unwrap().join("minute-ms"), "1000").unwrap();
+    }
+}
+
+/// #198 验收 3：改了兜底设置，board host 不重启就按新值算
+#[test]
+fn run_limits_apply_without_restart() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    rig.minute_ms_short();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("sleep");
+    rig.dispatch_running(1);
+    // 默认 3 小时（180 秒）：等 10 秒还在跑
+    std::thread::sleep(Duration::from_secs(10));
+    assert_eq!(rig.show(1)["column"], "doing", "默认 3 小时，10 秒不该停");
+    // 改成 30 分钟（30 秒）：同一个进程、不重启，接下来按新值算。关掉「没输出多久算卡住」，不然默认的 20 分钟先到
+    rig.set_host("mbp", serde_json::json!({ "maxRun": 30, "idleRun": 0 }));
+    wait_until("#1 超时", Duration::from_secs(45), || ended(&rig.show(1), "超时"));
+    assert!(activity(&rig.show(1)).iter().any(|t| t.contains("运行超过 30 分钟")));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// #198 验收 4：两台机器都在跑时点「全部停止」：确认后（界面上）两边的派发都在 10 秒内结束，
+/// 两台机器都变成暂停；「全部恢复」后恢复接单。排队的派发继续排队
+#[test]
+fn pause_all_and_stop_all_from_ui() {
+    let rig = Rig::new();
+    for t in ["一", "二"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    let a = rig.host("mbp");
+    rig.online("mbp");
+    let b = rig.host("desk");
+    rig.online("desk");
+    rig.mode("sleep");
+    assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
+    assert_eq!(rig.board(&["dispatch", "2", "--host", "desk"]).code, 0);
+    wait_until("#1 开始", Duration::from_secs(15), || rig.show(1)["holder"] == "claude-mbp/opus-5.5");
+    wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "claude-desk/opus-5.5");
+
+    // 全部暂停：两台都暂停接单，在跑的不受影响
+    let hosts = rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": true }));
+    assert!(hosts.as_array().is_some_and(|h| h.iter().all(|x| x["paused"] == true)), "{hosts}");
+    assert_eq!(rig.workspace()["dispatches"][0]["state"], "running");
+
+    // 全部恢复
+    let hosts = rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": false }));
+    assert!(hosts.as_array().is_some_and(|h| h.iter().all(|x| x["paused"] == false)), "{hosts}");
+
+    // 全部停止：两边的派发 10 秒内结束，两台都暂停
+    let hosts = rig.ui_post("/api/hosts/stop-all", serde_json::json!({}));
+    assert!(hosts.as_array().is_some_and(|h| h.iter().all(|x| x["paused"] == true)), "{hosts}");
+    wait_until("#1 已停止", Duration::from_secs(10), || ended(&rig.show(1), "已停止"));
+    wait_until("#2 已停止", Duration::from_secs(10), || ended(&rig.show(2), "已停止"));
+    let texts = activity(&rig.show(1));
+    assert!(texts.iter().any(|t| t.contains("buglan 停止了这次派发")), "停止评论写是谁停的：{texts:?}");
+    let ws = rig.workspace();
+    assert!(ws["hosts"].as_array().unwrap().iter().all(|h| h["paused"] == true));
+
+    // 暂停时新的派发排队
+    assert_eq!(rig.board(&["new", "三"]).code, 0);
+    assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp"]).code, 0);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(rig.show(3)["holder"].is_null(), "全部停止之后暂停接单，新的派发排队");
+
+    // 恢复接单后，排队的接着开始
+    rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": false }));
+    wait_until("#3 开始", Duration::from_secs(15), || rig.show(3)["holder"] == "claude-mbp/opus-5.5");
+
+    let (code, out) = stop(a);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = stop(b);
     assert_eq!(code, 0, "{out}");
 }
