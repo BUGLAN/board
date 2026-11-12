@@ -30,7 +30,8 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         version: "0.1.1".into(),
         agents: vec![claude(true), HostAgent { id: "pi".into(), name: "pi".into(), version: String::new(), found: false, ..Default::default() }],
         envs: vec![],
-        dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into() }],
+        dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }],
+        dirs_rev: 0,
         running,
         done: false,
     }
@@ -119,6 +120,151 @@ fn host_registers_with_defaults_and_name_is_exclusive() {
     assert_eq!(beat(&mut s, T0, &report("MBP!", "x", vec![])).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(hosts::host_name_from("My-MacBook-Pro.local"), "my-macbook-pro.local");
     assert_eq!(hosts::host_name_from("__WIN PC__"), "win-pc");
+}
+
+#[test]
+fn host_dirs_are_server_authoritative_and_keep_reported_checks() {
+    let mut s = store();
+    let w = beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str(), w.host.dirs[0].status.as_deref()), (1, "/tmp/board", None));
+
+    // 在别的设备上把目录改掉：服务端升版本，旧版本的 board host 上报不能把它改回去
+    let h = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            w.host_update_as(
+                "mbp",
+                &HostPatch {
+                    dirs: Some(vec![HostDir { board: B.into(), path: "/tmp/new".into(), ..Default::default() }]),
+                    ..Default::default()
+                },
+                "buglan",
+            )
+        })
+        .unwrap();
+    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str(), h.dirs_changed_by.as_deref()), (2, "/tmp/new", Some("buglan")));
+
+    let mut stale = report("mbp", "i1", vec![]);
+    stale.dirs[0].status = Some("missing".into());
+    stale.dirs[0].checked_at = Some(T0 + 2 * S);
+    let w = beat(&mut s, T0 + 2 * S, &stale).unwrap();
+    assert_eq!(w.host.dirs[0].path, "/tmp/new", "旧版本上报的是本机配置，不能覆盖服务端设置");
+    assert_eq!(w.host.dirs[0].status, None, "旧路径的检查结果不挂到新路径上");
+
+    // 应用了服务端版本后，同一路径的检查结果合进来
+    let mut checked = report("mbp", "i1", vec![]);
+    checked.dirs_rev = 2;
+    checked.dirs[0].path = "/tmp/new".into();
+    checked.dirs[0].status = Some("ok".into());
+    checked.dirs[0].origin = Some("git@github.com:buglan/board.git".into());
+    checked.dirs[0].branch = Some("main".into());
+    checked.dirs[0].checked_at = Some(T0 + 3 * S);
+    let w = beat(&mut s, T0 + 3 * S, &checked).unwrap();
+    assert_eq!(w.host.dirs[0].status.as_deref(), Some("ok"));
+    assert_eq!(w.host.dirs[0].origin.as_deref(), Some("git@github.com:buglan/board.git"));
+    assert_eq!(w.host.dirs[0].branch.as_deref(), Some("main"));
+    assert_eq!(w.host.dirs_rev, 2);
+
+    // 本机配置先改了（版本还是 2）：服务端收下，记成「本机」改的
+    let mut local = checked;
+    local.dirs[0].path = "/tmp/local".into();
+    let w = beat(&mut s, T0 + 4 * S, &local).unwrap();
+    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str(), w.host.dirs_changed_by.as_deref()), (3, "/tmp/local", Some("本机")));
+}
+
+#[test]
+fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "第三块", "third", "", None)).unwrap();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.dirs = vec![
+        HostDir { board: B.into(), path: "/tmp/board".into(), fixed: true, status: Some("missing".into()), checked_at: Some(T0), ..Default::default() },
+        HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() },
+    ];
+    beat(&mut s, T0, &rep).unwrap();
+
+    // --dir 固定的行不能删、不能改
+    let e = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            w.host_update("mbp", &HostPatch { dirs: Some(vec![HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() }]), ..Default::default() })
+        })
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("--dir"));
+    let e = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            w.host_update(
+                "mbp",
+                &HostPatch {
+                    dirs: Some(vec![
+                        HostDir { board: B.into(), path: "/tmp/changed".into(), ..Default::default() },
+                        HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() },
+                    ]),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+
+    // 其他行照常增删改，固定行保留 fixed
+    let h = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            w.host_update(
+                "mbp",
+                &HostPatch {
+                    dirs: Some(vec![
+                        HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() },
+                        HostDir { board: "default/other".into(), path: "/tmp/other-new".into(), ..Default::default() },
+                        HostDir { board: "default/third".into(), path: "/tmp/third".into(), ..Default::default() },
+                    ]),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(), vec![
+        (B, "/tmp/board", true),
+        ("default/other", "/tmp/other-new", false),
+        ("default/third", "/tmp/third", false),
+    ]);
+    let h = s
+        .write(T0 + 2 * S, Origin::ui(None), |w| {
+            w.host_update(
+                "mbp",
+                &HostPatch {
+                    dirs: Some(vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }]),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.fixed)).collect::<Vec<_>>(), vec![(B, true)]);
+
+    // 目录不存在：请求克隆，状态排队；board host 上报失败原因
+    let mut s2 = store();
+    let mut missing = report("mbp", "i1", vec![]);
+    missing.dirs[0].status = Some("missing".into());
+    missing.dirs[0].checked_at = Some(T0);
+    beat(&mut s2, T0, &missing).unwrap();
+    let h = s2
+        .write(T0 + S, Origin::ui(None), |w| w.host_clone_request("mbp", B, "git@github.com:buglan/board.git", "buglan"))
+        .unwrap();
+    let clone = h.dirs[0].clone.as_ref().unwrap();
+    assert_eq!((clone.state.as_str(), clone.url.as_str(), clone.by.as_str()), ("queued", "git@github.com:buglan/board.git", "buglan"));
+
+    let mut failed = missing;
+    failed.dirs[0].clone = Some(HostClone {
+        state: "failed".into(),
+        url: "git@github.com:buglan/board.git".into(),
+        message: "Permission denied (publickey)".into(),
+        updated_at: T0 + 2 * S,
+        by: "本机".into(),
+    });
+    let w = beat(&mut s2, T0 + 2 * S, &failed).unwrap();
+    let clone = w.host.dirs[0].clone.as_ref().unwrap();
+    assert_eq!(clone.state, "failed");
+    assert!(clone.message.contains("Permission denied"));
 }
 
 #[test]
@@ -484,7 +630,7 @@ fn cron_round_fills_slots_rotates_boards_and_ends() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
     let mut rep = report("mbp", "i1", vec![]);
-    rep.dirs.push(HostDir { board: "default/other".into(), path: "/tmp/other".into() });
+    rep.dirs.push(HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() });
     beat(&mut s, T0, &rep).unwrap();
     let a = new_card(&mut s, T0, "A");
     let b = new_card(&mut s, T0, "B");

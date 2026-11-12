@@ -54,7 +54,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -601,6 +601,14 @@ struct Host<'a> {
     envs: Vec<Env>,
     agents: Vec<Spec>,
     dirs: Vec<(String, PathBuf)>,
+    /// 配置里写的目录原文（`~` 不展开），上报和服务端写回配置都用它
+    dir_raw: Vec<(String, String)>,
+    /// 命令行 `--dir` 固定的白板：界面上只读
+    fixed_dirs: BTreeMap<String, bool>,
+    /// 已经从服务端应用到的目录设置版本
+    dirs_rev: i64,
+    /// 服务端请求的克隆任务（以及刚结束的）
+    clones: Vec<CloneRun>,
     pidfile: PathBuf,
     logs: PathBuf,
     /// board 自己的路径（BOARD_EXE）
@@ -621,6 +629,17 @@ struct Host<'a> {
     follow_dirs: bool,
     /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
     conf_seen: (Option<String>, Vec<(String, String)>),
+}
+
+struct CloneRun {
+    board: String,
+    url: String,
+    /// queued | running | done | failed
+    state: String,
+    message: String,
+    updated_at: i64,
+    child: Option<Child>,
+    log: PathBuf,
 }
 
 /// `board host`：一直运行，直到 Ctrl+C
@@ -649,7 +668,12 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
             })
             .collect::<Result<_>>()?
     };
-    let dirs = parse_dirs(raw)?;
+    let (dirs, dir_raw) = parse_dirs(raw)?;
+    let fixed_dirs = if follow_dirs {
+        BTreeMap::new()
+    } else {
+        dir_raw.iter().map(|(b, _)| (b.clone(), true)).collect()
+    };
     let be = Backend::open_host()?;
     let envs = envs::discover();
     let mut agents = agent_specs(&conf.agents, &envs)?;
@@ -685,6 +709,10 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         envs,
         agents,
         dirs,
+        dir_raw,
+        fixed_dirs,
+        dirs_rev: 0,
+        clones: vec![],
         pidfile,
         logs: hd.join("logs"),
         runs: vec![],
@@ -725,26 +753,66 @@ fn conf_name(name: Option<&str>) -> String {
     }
 }
 
-/// 校验白板与目录：白板写成 <项目>/<白板>、不重复，目录存在（相对路径按当前目录）
-fn parse_dirs(raw: Vec<(String, String)>) -> Result<Vec<(String, PathBuf)>> {
+/// 校验白板与目录：白板写成 <项目>/<白板>、不重复；目录可以暂时不存在（界面上显示状态、可以克隆）。
+/// 返回展开后的目录（相对路径按当前目录）和配置里写的原文
+fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec<(String, String)>)> {
     let mut dirs: Vec<(String, PathBuf)> = vec![];
+    let mut raw_out: Vec<(String, String)> = vec![];
     for (board, path) in raw {
+        let board = board.trim().to_string();
+        let path = path.trim().to_string();
         if !board_core::config::valid_board(&board) {
             return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
         }
         if dirs.iter().any(|(b, _)| *b == board) {
             return Err(BoardError::usage(format!("白板 {board} 写了两次")));
         }
+        if path.is_empty() {
+            return Err(BoardError::usage(format!("{board} 还没有目录")));
+        }
         let mut dir = expand(&path);
         if dir.is_relative() {
             dir = std::env::current_dir().map(|c| c.join(&dir)).unwrap_or(dir);
         }
-        if !dir.is_dir() {
-            return Err(BoardError::usage(format!("目录不存在：{}（{board}）", dir.display())));
-        }
-        dirs.push((board, dir));
+        dirs.push((board.clone(), dir));
+        raw_out.push((board, path));
     }
-    Ok(dirs)
+    Ok((dirs, raw_out))
+}
+
+/// 服务端把目录设置写回本机配置；保留 `[host]` 里的机器名和文件里的其他项、注释
+fn save_host_dirs(dirs: &[(String, String)]) -> Result<()> {
+    config::update(|c| {
+        let name = c.host()?.name;
+        c.set_host(name.as_deref(), dirs)?;
+        Ok(((), true))
+    })
+}
+
+fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// 目录状态：存在且是 git 仓库（同时取 origin、当前分支）、不存在、存在但不是 git 仓库
+fn check_git_dir(dir: &Path) -> (&'static str, Option<String>, Option<String>) {
+    if !dir.exists() {
+        return ("missing", None, None);
+    }
+    if !dir.is_dir() || git_line(dir, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+        return ("not_git", None, None);
+    }
+    let origin = git_line(dir, &["remote", "get-url", "origin"]);
+    let branch = git_line(dir, &["branch", "--show-current"]);
+    ("ok", origin, branch)
+}
+
+fn clone_tail(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok().and_then(|s| s.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()))
 }
 
 /// `board host rename <新机器名>`：让服务端把这台机器的记录原地改名（桌面端「设置 → 本机」保存机器名时调用）。
@@ -839,11 +907,41 @@ impl Host<'_> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             agents: self.agents.iter().map(Spec::report).collect(),
             envs: self.envs.iter().map(Env::report).collect(),
-            dirs: self.dirs.iter().map(|(b, p)| HostDir { board: b.clone(), path: p.display().to_string() }).collect(),
+            dirs: self.dir_reports(),
+            dirs_rev: self.dirs_rev,
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
             running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
             done,
         }
+    }
+
+    /// 每块白板：配置里写的路径、是否 --dir 固定、目录状态、git 的 origin / 分支、克隆进度
+    fn dir_reports(&self) -> Vec<HostDir> {
+        self.dirs
+            .iter()
+            .enumerate()
+            .map(|(i, (board, path))| {
+                let raw = self.dir_raw.get(i).map(|(_, p)| p.clone()).unwrap_or_else(|| path.display().to_string());
+                let (status, origin, branch) = check_git_dir(path);
+                let clone = self.clones.iter().rev().find(|c| c.board == *board).map(|c| HostClone {
+                    state: c.state.clone(),
+                    url: c.url.clone(),
+                    message: c.message.clone(),
+                    updated_at: c.updated_at,
+                    by: "本机".into(),
+                });
+                HostDir {
+                    board: board.clone(),
+                    path: raw,
+                    fixed: self.fixed_dirs.get(board).copied().unwrap_or(false),
+                    status: Some(status.into()),
+                    origin,
+                    branch,
+                    checked_at: Some(now_ms()),
+                    clone,
+                }
+            })
+            .collect()
     }
 
     fn rm(&self) -> &Remote {
@@ -856,6 +954,7 @@ impl Host<'_> {
     }
 
     fn set_work(&mut self, w: HostWork) {
+        self.sync_server_dirs(&w.host);
         // 会话里 agent 执行了 board next：同一个进程换到这个会话正在跑的那一张，之后的日志、停止、结束都跟着它。
         // 换之前把已经写出的日志传给上一张
         let switches: Vec<(usize, Dispatch)> =
@@ -879,6 +978,160 @@ impl Host<'_> {
         self.work = Some(w);
         self.work_at = Instant::now();
         self.hold = false;
+        self.start_clones();
+    }
+
+    /// 服务端的目录设置是主版本：配置文件没变、但服务端改了（别的设备上改的）就写回 `[host]` 并直接换上。
+    /// `--dir` 启动时这一项不跟，服务端也不会让它改
+    fn sync_server_dirs(&mut self, h: &HostInfo) {
+        if !self.follow_dirs {
+            self.dirs_rev = h.dirs_rev;
+            return;
+        }
+        let desired: Vec<(String, String)> = h.dirs.iter().map(|d| (d.board.clone(), d.path.clone())).collect();
+        if desired != self.dir_raw {
+            match save_host_dirs(&desired) {
+                Ok(()) => match parse_dirs(desired.clone()) {
+                    Ok((dirs, raw)) => {
+                        for a in &mut self.agents {
+                            a.check_skills(&self.envs, &dirs);
+                        }
+                        let list: Vec<String> = raw.iter().map(|(b, d)| format!("{b} → {d}")).collect();
+                        let list = if list.is_empty() { "（没有）".to_string() } else { list.join("，") };
+                        self.say(format!("{} 服务端改的白板与目录已生效：{list}", self.p.green("✓")));
+                        self.dirs = dirs;
+                        self.dir_raw = raw;
+                        self.conf_seen = (self.conf_seen.0.clone(), desired);
+                        self.dirs_rev = h.dirs_rev;
+                    }
+                    Err(e) => self.say(format!("{} 服务端改的白板与目录没有生效：{}", self.p.yellow("!"), e.message)),
+                },
+                Err(e) => self.say(format!("{} 服务端改的白板与目录没有写进配置：{}", self.p.yellow("!"), e.message)),
+            }
+        } else {
+            self.dirs_rev = h.dirs_rev;
+        }
+    }
+
+    /// 服务端请求了克隆，就在本机执行 `git clone`；一块白板失败不影响其他白板
+    fn start_clones(&mut self) {
+        let Some(w) = &self.work else { return };
+        let jobs: Vec<(String, String)> = w
+            .host
+            .dirs
+            .iter()
+            .filter(|d| d.clone.as_ref().is_some_and(|c| c.state == "queued"))
+            .filter(|d| !self.clones.iter().any(|c| c.board == d.board && (c.state == "queued" || c.state == "running")))
+            .filter_map(|d| d.clone.as_ref().map(|c| (d.board.clone(), c.url.clone())))
+            .collect();
+        for (board, url) in jobs {
+            self.start_clone(&board, &url);
+        }
+    }
+
+    fn start_clone(&mut self, board: &str, url: &str) {
+        let Some((_, dir)) = self.dirs.iter().find(|(b, _)| b == board).cloned() else { return };
+        let _ = std::fs::create_dir_all(&self.logs);
+        let safe: String = board
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect();
+        let log = self.logs.join(format!("clone-{safe}.log"));
+        let out = match std::fs::File::create(&log) {
+            Ok(f) => f,
+            Err(e) => {
+                self.clones.push(CloneRun {
+                    board: board.into(),
+                    url: url.into(),
+                    state: "failed".into(),
+                    message: format!("无法创建克隆日志：{e}"),
+                    updated_at: now_ms(),
+                    child: None,
+                    log,
+                });
+                return;
+            }
+        };
+        let err = match out.try_clone() {
+            Ok(f) => f,
+            Err(e) => {
+                self.clones.push(CloneRun {
+                    board: board.into(),
+                    url: url.into(),
+                    state: "failed".into(),
+                    message: format!("无法创建克隆日志：{e}"),
+                    updated_at: now_ms(),
+                    child: None,
+                    log,
+                });
+                return;
+            }
+        };
+        if let Some(parent) = dir.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.clones.push(CloneRun {
+                    board: board.into(),
+                    url: url.into(),
+                    state: "failed".into(),
+                    message: format!("无法创建 {}：{e}", parent.display()),
+                    updated_at: now_ms(),
+                    child: None,
+                    log,
+                });
+                return;
+            }
+        }
+        let child = Command::new("git")
+            .args(["clone", "--", url])
+            .arg(&dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn();
+        match child {
+            Ok(child) => self.clones.push(CloneRun {
+                board: board.into(),
+                url: url.into(),
+                state: "running".into(),
+                message: "正在克隆…".into(),
+                updated_at: now_ms(),
+                child: Some(child),
+                log,
+            }),
+            Err(e) => self.clones.push(CloneRun {
+                board: board.into(),
+                url: url.into(),
+                state: "failed".into(),
+                message: format!("没法运行 git clone：{e}"),
+                updated_at: now_ms(),
+                child: None,
+                log,
+            }),
+        }
+    }
+
+    fn poll_clones(&mut self) {
+        for c in &mut self.clones {
+            if c.state != "running" {
+                continue;
+            }
+            let status = c.child.as_mut().and_then(|child| child.try_wait().ok().flatten());
+            if let Some(status) = status {
+                let tail = clone_tail(&c.log);
+                if status.success() {
+                    c.state = "done".into();
+                    c.message = "克隆完成".into();
+                } else {
+                    c.state = "failed".into();
+                    c.message = tail.unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", status.code()));
+                }
+                c.updated_at = now_ms();
+                c.child = None;
+            } else if let Some(line) = clone_tail(&c.log) {
+                c.message = line;
+            }
+        }
     }
 
     /// 启动后打印一次：机器、agent、白板与目录
@@ -975,6 +1228,7 @@ impl Host<'_> {
                 }
             }
             let now = Instant::now();
+            self.poll_clones();
             // 桌面端保存了配置：换了名字、目录就马上上报，界面「机器」里立刻看到
             if RELOAD.swap(false, Ordering::SeqCst) && self.reload() {
                 next_beat = now;
@@ -1070,7 +1324,7 @@ impl Host<'_> {
         }
         if self.follow_dirs {
             match parse_dirs(conf.dirs) {
-                Ok(dirs) if dirs != self.dirs => {
+                Ok((dirs, raw)) if dirs != self.dirs => {
                     for a in &mut self.agents {
                         a.check_skills(&self.envs, &dirs);
                     }
@@ -1078,6 +1332,7 @@ impl Host<'_> {
                     let list = if list.is_empty() { "（没有）".to_string() } else { list.join("，") };
                     self.say(format!("{} 白板与目录已更新：{list}", self.p.green("✓")));
                     self.dirs = dirs;
+                    self.dir_raw = raw;
                     changed = true;
                 }
                 Ok(_) => {}
@@ -1607,6 +1862,15 @@ mod tests {
         let home = expand("~");
         assert!(home.is_absolute() || home == PathBuf::from("~"));
         assert_eq!(expand("/abs/x"), PathBuf::from("/abs/x"));
+    }
+
+    #[test]
+    fn missing_dirs_are_reported_instead_of_failing_startup() {
+        let missing = "~/board-test-no-such-dir";
+        let (dirs, raw) = parse_dirs(vec![("default/main".into(), missing.into())]).unwrap();
+        assert_eq!(raw, vec![("default/main".to_string(), missing.to_string())], "配置里的 ~ 原样保留");
+        assert_eq!(dirs[0].0, "default/main");
+        assert!(!dirs[0].1.is_dir(), "目录可以暂时不存在，交给界面显示并克隆");
     }
 
     #[test]

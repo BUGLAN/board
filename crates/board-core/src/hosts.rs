@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS hosts (
   envs     TEXT NOT NULL DEFAULT '[]',-- 启动环境（JSON，按发现的顺序）；旧版 board host 不上报，为空
   run      TEXT NOT NULL DEFAULT '{}',-- 每个 agent 的运行设置（JSON：{"<agent>": {"env": "<启动环境>"}}）
   dirs     TEXT NOT NULL DEFAULT '[]',-- 白板与目录（JSON，按 --dir 的顺序）
+  dirs_rev INTEGER NOT NULL DEFAULT 0,-- 目录设置的版本：服务端和 board host 用它分清远程修改和本机配置修改
+  dirs_at  INTEGER,                   -- 最近一次改目录设置的时间
+  dirs_by  TEXT,                      -- 最近一次改目录设置的人；本机 board host 上报的是「本机」
   max      INTEGER NOT NULL DEFAULT 1,-- 同时跑几个
   per_session INTEGER NOT NULL DEFAULT 4,-- 定时领取启动的会话一个最多做几张（board next）
   rules    TEXT NOT NULL DEFAULT '[]',-- 定时领取的领取规则（JSON，有顺序：[{"label": "claude", "agent": "claude"}]）
@@ -104,6 +107,9 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "per_session", "INTEGER NOT NULL DEFAULT 4"),
         ("hosts", "rules", "TEXT NOT NULL DEFAULT '[]'"),
         ("hosts", "fallback", "TEXT"),
+        ("hosts", "dirs_rev", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "dirs_at", "INTEGER"),
+        ("hosts", "dirs_by", "TEXT"),
         ("dispatches", "session", "INTEGER"),
     ] {
         if !has(table, col)? {
@@ -301,11 +307,112 @@ pub struct AgentRun {
 }
 
 /// 白板与目录：派到这台机器的卡片，agent 在对应目录里启动
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HostDir {
     /// `<项目>/<白板>`
     pub board: String,
+    /// 配置里写的路径（`~` 不展开）
     pub path: String,
+    /// 命令行用 `--dir` 固定：界面上只读，要改启动参数
+    #[serde(default)]
+    pub fixed: bool,
+    /// ok | missing | not_git；旧版 board host 不上报
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// 是 git 仓库时的 `origin`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// 是 git 仓库时的当前分支
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// board host 最近一次检查的时间
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<i64>,
+    /// 目录不存在时，在这台机器上克隆的状态
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone: Option<HostClone>,
+}
+
+/// 在 board host 那台机器上克隆一块白板的目录
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostClone {
+    /// queued | running | done | failed
+    pub state: String,
+    /// 仓库地址
+    pub url: String,
+    /// 正在做什么 / 失败原因
+    #[serde(default)]
+    pub message: String,
+    /// 状态最近一次变化的时间
+    pub updated_at: i64,
+    /// 谁发起的
+    #[serde(default)]
+    pub by: String,
+}
+
+/// 只比较目录设置本身（白板、路径、是否 --dir 固定），不看检查结果和克隆状态
+fn same_dir_settings(a: &[HostDir], b: &[HostDir]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| x.board == y.board && x.path == y.path && x.fixed == y.fixed)
+}
+
+fn valid_board_ref(board: &str) -> bool {
+    matches!(board.split_once('/'), Some((project, key)) if crate::valid_key(project) && crate::valid_key(key))
+}
+
+/// 把 board host 上报或界面提交的目录整理成设置：去掉首尾空白，保留同一块白板已有的检查结果
+fn clean_dirs(raw: &[HostDir], old: &[HostDir]) -> Vec<HostDir> {
+    raw.iter()
+        .map(|d| {
+            let board = d.board.trim().to_string();
+            let path = d.path.trim().to_string();
+            let mut out = HostDir {
+                board: board.clone(),
+                path: path.clone(),
+                fixed: d.fixed,
+                status: d.status.clone(),
+                origin: d.origin.clone(),
+                branch: d.branch.clone(),
+                checked_at: d.checked_at,
+                clone: d.clone.clone(),
+            };
+            if let Some(prev) = old.iter().find(|x| x.board == board && x.path == path) {
+                out.status = prev.status.clone();
+                out.origin = prev.origin.clone();
+                out.branch = prev.branch.clone();
+                out.checked_at = prev.checked_at;
+                out.clone = prev.clone.clone();
+            }
+            out
+        })
+        .collect()
+}
+
+/// 服务端设置不变时，把 board host 刚检查到的目录状态合进来；旧版 board host 没有状态，保留原值
+fn merge_dir_checks(settings: &mut [HostDir], checks: &[HostDir]) {
+    for s in settings {
+        let Some(r) = checks.iter().find(|r| r.board == s.board && r.path == s.path) else { continue };
+        if r.checked_at.is_some() || r.status.is_some() {
+            s.status = r.status.clone();
+            s.origin = r.origin.clone();
+            s.branch = r.branch.clone();
+            s.checked_at = r.checked_at;
+        }
+        // 远程发起的克隆以服务端为准；board host 只上报 running / done / failed 覆盖排队状态
+        if let Some(run) = &r.clone {
+            match &s.clone {
+                Some(old) if old.url == run.url => {
+                    if run.state != "queued" {
+                        s.clone = Some(run.clone());
+                    }
+                }
+                Some(_) => {}
+                None => s.clone = Some(run.clone()),
+            }
+        }
+    }
 }
 
 /// 定时领取的一条领取规则：卡片的标签满足条件就由这个 agent 做。标签按名称匹配，不区分大小写
@@ -389,6 +496,14 @@ pub struct HostInfo {
     #[serde(default)]
     pub envs: Vec<HostEnv>,
     pub dirs: Vec<HostDir>,
+    /// 服务端目录设置的版本
+    #[serde(default)]
+    pub dirs_rev: i64,
+    /// 最近一次改目录设置的时间、是谁改的
+    #[serde(default)]
+    pub dirs_changed_at: Option<i64>,
+    #[serde(default)]
+    pub dirs_changed_by: Option<String>,
     /// 同时跑几个（1–8）
     pub max: i64,
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
@@ -445,6 +560,9 @@ pub struct HostReport {
     pub envs: Vec<HostEnv>,
     #[serde(default)]
     pub dirs: Vec<HostDir>,
+    /// board host 已经应用的服务端目录版本；本机配置先改了时还是旧版本
+    #[serde(default)]
+    pub dirs_rev: i64,
     /// 本机正在跑（有进程）的派发
     #[serde(default)]
     pub running: Vec<i64>,
@@ -487,6 +605,9 @@ pub struct HostPatch {
     /// 一个 agent 的启动环境
     #[serde(default)]
     pub env: Option<EnvPatch>,
+    /// 白板与目录（整个列表替换）
+    #[serde(default)]
+    pub dirs: Option<Vec<HostDir>>,
 }
 
 /// 改一个 agent 的启动环境
@@ -576,6 +697,9 @@ struct HostRow {
     envs: Vec<HostEnv>,
     run: std::collections::BTreeMap<String, AgentRun>,
     dirs: Vec<HostDir>,
+    dirs_rev: i64,
+    dirs_at: Option<i64>,
+    dirs_by: Option<String>,
     max: i64,
     per_session: i64,
     rules: Vec<ClaimRule>,
@@ -595,7 +719,7 @@ struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -613,6 +737,9 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         envs: serde_json::from_str(&envs_raw).unwrap_or_default(),
         run: serde_json::from_str(&run).unwrap_or_default(),
         dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
+        dirs_rev: r.get(22)?,
+        dirs_at: r.get(23)?,
+        dirs_by: r.get(24)?,
         max: r.get(7)?,
         per_session: r.get(19)?,
         rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>(20)?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
@@ -712,6 +839,9 @@ impl HostRow {
             agents: self.resolved(),
             envs: self.envs.clone(),
             dirs: self.dirs.clone(),
+            dirs_rev: self.dirs_rev,
+            dirs_changed_at: self.dirs_at,
+            dirs_changed_by: self.dirs_by.clone(),
             max: self.max,
             per_session: self.per_session,
             rules: self.rules.iter().map(|x| ClaimRule { active: self.has_agent(&x.agent), ..x.clone() }).collect(),
@@ -1271,14 +1401,22 @@ impl<'a> W<'a> {
                 return Err(BoardError::usage(format!("启动环境标识不对：{}", e.id)));
             }
         }
+        let mut seen: Vec<&str> = vec![];
         for d in &rep.dirs {
-            if !d.board.contains('/') {
+            let board = d.board.trim();
+            if !valid_board_ref(board) {
                 return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{}", d.board)));
             }
+            if d.path.trim().is_empty() {
+                return Err(BoardError::usage(format!("白板 {board} 还没有目录")));
+            }
+            if seen.contains(&board) {
+                return Err(BoardError::usage(format!("白板 {board} 写了两次")));
+            }
+            seen.push(board);
         }
         let now = self.now;
         let agents = serde_json::to_string(&rep.agents).unwrap_or_else(|_| "[]".into());
-        let dirs = serde_json::to_string(&rep.dirs).unwrap_or_else(|_| "[]".into());
         let envs = serde_json::to_string(&rep.envs).unwrap_or_else(|_| "[]".into());
         // 改名后还用旧名字上报：认回改名后的记录（见 host_of_proc），下面都用记录里的名字
         let found = self.host_of_proc(&rep.name, &rep.instance)?;
@@ -1288,8 +1426,14 @@ impl<'a> W<'a> {
                 if rep.done {
                     return Err(no_such_host(&rep.name));
                 }
+                let mut dirs = clean_dirs(&rep.dirs, &[]);
+                for d in &mut dirs {
+                    d.clone = None;
+                }
+                let dirs = serde_json::to_string(&dirs).unwrap_or_else(|_| "[]".into());
                 self.tx.execute(
-                    "INSERT INTO hosts (name, token, instance, os, version, agents, dirs, envs, first_at, beat_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, ?8, ?8)",
+                    "INSERT INTO hosts (name, token, instance, os, version, agents, dirs, dirs_rev, dirs_at, dirs_by, envs, first_at, beat_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, '本机', ?9, ?8, ?8)",
                     params![rep.name, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs],
                 )?;
                 self.touch_hosts();
@@ -1310,6 +1454,24 @@ impl<'a> W<'a> {
                     }
                     return self.read().host_work(&name, now);
                 }
+                let mut current = h.dirs.clone();
+                let changed_settings = !same_dir_settings(&current, &rep.dirs);
+                let mut dirs_rev = h.dirs_rev;
+                let mut dirs_at = h.dirs_at;
+                let mut dirs_by = h.dirs_by.clone();
+                if rep.dirs_rev == h.dirs_rev && changed_settings {
+                    // 没有远程修改在先，但配置里的目录变了：本机改了配置，服务端收下并升版本
+                    current = clean_dirs(&rep.dirs, &current);
+                    dirs_rev = h.dirs_rev + 1;
+                    dirs_at = Some(now);
+                    dirs_by = Some("本机".into());
+                } else {
+                    // 服务端有更新的设置时以服务端为准；只把同一路径的检查结果合进来
+                    let mut next = current.clone();
+                    merge_dir_checks(&mut next, &rep.dirs);
+                    current = next;
+                }
+                let dirs = serde_json::to_string(&current).unwrap_or_else(|_| "[]".into());
                 let differs = !online
                     || h.instance != rep.instance
                     || h.os != rep.os
@@ -1318,8 +1480,9 @@ impl<'a> W<'a> {
                     || h.envs_raw != envs
                     || h.dirs_raw != dirs;
                 self.tx.execute(
-                    "UPDATE hosts SET token = ?2, instance = ?3, os = ?4, version = ?5, agents = ?6, dirs = ?7, beat_at = ?8, off_at = NULL, envs = ?9 WHERE id = ?1",
-                    params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs],
+                    "UPDATE hosts SET token = ?2, instance = ?3, os = ?4, version = ?5, agents = ?6, dirs = ?7, beat_at = ?8, off_at = NULL, envs = ?9,
+                                      dirs_rev = ?10, dirs_at = ?11, dirs_by = ?12 WHERE id = ?1",
+                    params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs, dirs_rev, dirs_at, dirs_by],
                 )?;
                 // 换了一个 board host 进程（重启接回）：上一个进程的那一轮领取不再继续
                 if h.instance != rep.instance && h.round_at.is_some() {
@@ -1362,8 +1525,105 @@ impl<'a> W<'a> {
         self.read().host_work(&name, now)
     }
 
+    /// 替换这台机器的「白板与目录」，服务端成为新设置的主版本。`--dir` 固定的白板要原样保留，
+    /// 其他白板可以照常增删改
+    fn host_set_dirs(&mut self, name: &str, raw: &[HostDir], by: &str) -> Result<()> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        for old in h.dirs.iter().filter(|d| d.fixed) {
+            let kept = raw
+                .iter()
+                .find(|d| d.board.trim() == old.board)
+                .is_some_and(|d| d.path.trim() == old.path);
+            if !kept {
+                return Err(BoardError::usage(format!(
+                    "{} 用 --dir 固定，不能删除或修改；要在那台机器上改启动参数",
+                    old.board
+                )));
+            }
+        }
+        let mut seen: Vec<String> = vec![];
+        for d in raw {
+            let board = d.board.trim().to_string();
+            let path = d.path.trim();
+            if !valid_board_ref(&board) {
+                return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{}", d.board)));
+            }
+            if path.is_empty() {
+                return Err(BoardError::usage(format!("白板 {board} 还没有填目录")));
+            }
+            if seen.contains(&board) {
+                return Err(BoardError::usage(format!("白板 {board} 写了两次")));
+            }
+            seen.push(board.clone());
+            self.resolve(&board)?;
+        }
+        if same_dir_settings(&h.dirs, raw) {
+            return Ok(());
+        }
+        let mut dirs = clean_dirs(raw, &h.dirs);
+        for d in &mut dirs {
+            d.fixed = h.dirs.iter().any(|old| old.fixed && old.board == d.board && old.path == d.path);
+        }
+        self.tx.execute(
+            "UPDATE hosts SET dirs = ?2, dirs_rev = ?3, dirs_at = ?4, dirs_by = ?5 WHERE id = ?1",
+            params![
+                h.id,
+                serde_json::to_string(&dirs).unwrap_or_else(|_| "[]".into()),
+                h.dirs_rev + 1,
+                self.now,
+                by.trim().to_string()
+            ],
+        )?;
+        self.touch_hosts();
+        Ok(())
+    }
+
+    /// 界面上请求在一台机器的某个目录里克隆仓库；真正执行的是那台机器的 board host
+    pub fn host_clone_request(&mut self, name: &str, board: &str, url: &str, by: &str) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(BoardError::usage("先填仓库地址"));
+        }
+        let mut dirs = h.dirs.clone();
+        let d = dirs
+            .iter_mut()
+            .find(|d| d.board == board)
+            .ok_or_else(|| BoardError::usage(format!("机器「{name}」没有白板 {board} 的目录")))?;
+        if d.fixed {
+            return Err(BoardError::usage(format!("{board} 用 --dir 固定，不能从界面上克隆")));
+        }
+        if d.status.as_deref() != Some("missing") {
+            return Err(BoardError::usage(format!("{board} 的目录现在不需要克隆")));
+        }
+        if d.clone.as_ref().is_some_and(|c| c.state == "queued" || c.state == "running") {
+            return Err(BoardError::usage(format!("{board} 已经有一个克隆在进行")));
+        }
+        d.clone = Some(HostClone {
+            state: "queued".into(),
+            url: url.into(),
+            message: "等待 board host 开始克隆".into(),
+            updated_at: self.now,
+            by: by.trim().to_string(),
+        });
+        self.tx.execute(
+            "UPDATE hosts SET dirs = ?2 WHERE id = ?1",
+            params![h.id, serde_json::to_string(&dirs).unwrap_or_else(|_| "[]".into())],
+        )?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
+    }
+
     /// 界面上修改机器设置（任务下发需求 §四）
     pub fn host_update(&mut self, name: &str, p: &HostPatch) -> Result<HostInfo> {
+        self.host_update_as(name, p, "人")
+    }
+
+    /// 同 [`Self::host_update`]；by 是界面上是谁改的（写进「白板与目录」的修改记录）
+    pub fn host_update_as(&mut self, name: &str, p: &HostPatch, by: &str) -> Result<HostInfo> {
+        if p.dirs.is_some() {
+            self.host_set_dirs(name, p.dirs.as_deref().unwrap_or_default(), by)?;
+        }
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         if let Some(max) = p.max {
             if !(1..=HOST_MAX_LIMIT).contains(&max) {

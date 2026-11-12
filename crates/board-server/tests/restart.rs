@@ -18,7 +18,8 @@ fn report(running: Vec<i64>) -> HostReport {
         version: "0.1.6".into(),
         agents: vec![HostAgent { id: "claude".into(), name: "Claude Code".into(), version: "2.4.1".into(), found: true, model: "opus-5.5".into(), ..Default::default() }],
         envs: vec![],
-        dirs: vec![HostDir { board: B.into(), path: "E:\\repo\\board".into() }],
+        dirs: vec![HostDir { board: B.into(), path: "E:\\repo\\board".into(), ..Default::default() }],
+        dirs_rev: 0,
         running,
         done: false,
     }

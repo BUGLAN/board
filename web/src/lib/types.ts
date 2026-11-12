@@ -150,7 +150,29 @@ export interface HostEnv {
 export interface HostDir {
   /** 项目/白板 */
   board: string;
+  /** 配置里写的路径（~ 不展开） */
   path: string;
+  /** 命令行用 --dir 固定：界面只读 */
+  fixed?: boolean;
+  /** ok | missing | not_git；旧版 board host 没有 */
+  status?: 'ok' | 'missing' | 'not_git' | null;
+  /** 是 git 仓库时的 origin */
+  origin?: string | null;
+  /** 是 git 仓库时的当前分支 */
+  branch?: string | null;
+  /** board host 最近一次检查的时间 */
+  checkedAt?: number | null;
+  /** 目录不存在时的克隆状态 */
+  clone?: HostClone | null;
+}
+
+export interface HostClone {
+  /** queued | running | done | failed */
+  state: 'queued' | 'running' | 'done' | 'failed';
+  url: string;
+  message: string;
+  updatedAt: number;
+  by?: string;
 }
 
 /** 一台机器（运行 board host 的进程） */
@@ -164,6 +186,11 @@ export interface HostInfo {
   /** 启动环境（按发现的顺序）；旧版 board host 不上报，为空 */
   envs?: HostEnv[];
   dirs: HostDir[];
+  /** 服务端目录设置的版本 */
+  dirsRev?: number;
+  /** 最近一次改目录设置的时间、是谁改的 */
+  dirsChangedAt?: number | null;
+  dirsChangedBy?: string | null;
   /** 同时跑几个（1–8） */
   max: number;
   /** 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */

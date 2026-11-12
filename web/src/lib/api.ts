@@ -190,9 +190,22 @@ export const api = {
   /** 修改机器设置：同时跑几个、暂停接单、默认 agent、定时领取 */
   updateHost: (
     name: string,
-    patch: { max?: number; perSession?: number; rules?: ClaimRule[]; fallback?: string; paused?: boolean; agent?: string; cronOn?: boolean; cron?: string[]; env?: { agent: string; env: string } },
+    patch: {
+      max?: number;
+      perSession?: number;
+      rules?: ClaimRule[];
+      fallback?: string;
+      paused?: boolean;
+      agent?: string;
+      cronOn?: boolean;
+      cron?: string[];
+      env?: { agent: string; env: string };
+      dirs?: { board: string; path: string }[];
+    },
   ) =>
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
+  /** 请那台机器的 board host 把仓库克隆到这一行的目录 */
+  cloneHostDir: (name: string, board: string, url: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/dirs/clone`, { board, url }),
   removeHost: (name: string) => req('DELETE', `/api/hosts/${q(name)}`),
   /** 现在领一轮（效果与定时到点相同） */
   hostRound: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/round`, {}),

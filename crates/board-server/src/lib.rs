@@ -240,6 +240,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts", get(hosts::list))
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
         .route("/hosts/{name}/rename", post(hosts::rename))
+        .route("/hosts/{name}/dirs/clone", post(hosts::clone_dir))
         .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
         .route("/hosts/{name}/work", get(hosts::work))
         .route("/hosts/{name}/begin", post(hosts::begin))

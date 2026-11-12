@@ -93,9 +93,6 @@ fn check_conf(name: &str, dirs: &[Dir]) -> Result<(), String> {
         if d.path.trim().is_empty() {
             return Err(format!("{b} 还没有选目录"));
         }
-        if !config::expand(d.path.trim()).is_dir() {
-            return Err(format!("目录不存在：{}（{b}）", d.path.trim()));
-        }
     }
     Ok(())
 }

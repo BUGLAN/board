@@ -24,7 +24,9 @@ pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;
 pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
-pub use hosts::{AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork};
+pub use hosts::{
+    AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork,
+};
 pub use model::*;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
 

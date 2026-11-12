@@ -371,7 +371,8 @@ fn host_rename_renames_the_machine_record() {
         version: "0.0.0".into(),
         agents: vec![],
         envs: vec![],
-        dirs: vec![board_core::HostDir { board: "default/main".into(), path: "/tmp/board".into() }],
+        dirs: vec![board_core::HostDir { board: "default/main".into(), path: "/tmp/board".into(), ..Default::default() }],
+        dirs_rev: 0,
         running: vec![],
         done: false,
     };

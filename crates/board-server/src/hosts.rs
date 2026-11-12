@@ -185,10 +185,47 @@ pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<Value> {
     Ok(Json(json!({ "hosts": hosts, "dispatches": dispatches })))
 }
 
-pub(crate) async fn update(State(s): State<AppState>, h: HeaderMap, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+pub(crate) async fn update(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<HostInfo> {
     let p: HostPatch = parse(v)?;
     let client = client_of(&h);
-    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_update(&name, &p))).await?;
+    let by = match caller {
+        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
+        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
+    };
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_update_as(&name, &p, &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CloneDirBody {
+    board: String,
+    url: String,
+}
+
+/// 在那台机器上克隆一块白板的目录。访问令牌不能调用（守卫只放行界面登录）
+pub(crate) async fn clone_dir(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<HostInfo> {
+    let b: CloneDirBody = parse(v)?;
+    let client = client_of(&h);
+    let by = match caller {
+        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
+        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
+    };
+    let out = s
+        .db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_clone_request(&name, &b.board, &b.url, &by)))
+        .await?;
     s.poke();
     Ok(Json(out))
 }

@@ -196,6 +196,35 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-path-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hp-path-tail { flex: none; white-space: nowrap; }
 .hp-dir code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; padding: 2px 8px; border-radius: var(--r-xs); background: var(--surface-3); }
+/* 白板与目录：可编辑，状态在每一行右侧；缺失时下面出现克隆 */
+.hp-dirs { display: flex; flex-direction: column; }
+.hp-dir-edit { align-items: stretch; flex-direction: column; gap: 6px; }
+.hp-dir-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hp-dir-path { flex: 1; min-width: 90px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
+.hp-dir-path[readonly] { color: var(--text-2); background: var(--surface-2); }
+.hp-dir-state { flex: none; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.hp-dir-state.ok { color: var(--ok); }
+.hp-dir-state.missing, .hp-dir-state.not_git { color: var(--warn-text); }
+.hp-dir.warn { border-left: 2px solid var(--warn); padding-left: 8px; }
+.hp-dir-fixed { flex: none; font-size: 11.5px; color: var(--text-3); }
+.hp-clone { display: flex; align-items: center; gap: 8px; padding: 0 0 2px 2px; }
+.hp-clone .input { flex: 1; min-width: 120px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
+.hp-clone-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-3); }
+.hp-clone-msg.bad { color: var(--danger-text); }
+.hp-clone-msg.ok { color: var(--ok); }
+.hp-dir-add, .hp-dir-copy { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.hp-dir-add .input, .hp-dir-copy .input.sel { height: 28px; font-size: 12px; }
+.hp-dir-add .input { flex: 1; min-width: 110px; font-family: var(--f-mono); }
+.hp-dir-add .input.sel, .hp-dir-copy .input.sel { flex: none; width: 190px; }
+.hp-dir-copy { border-top: 0; }
+.hp-remote { color: var(--warn-text); }
+@media (max-width: 760px) {
+  .hp-dir-main, .hp-clone, .hp-dir-add, .hp-dir-copy { flex-wrap: wrap; }
+  .hp-dir-main > .hp-dir-path { flex: 1 0 100%; order: 2; }
+  .hp-dir-main > .hp-dir-state { margin-left: auto; }
+  .hp-clone > .input { flex: 1 0 100%; }
+  .hp-dir-add .input.sel, .hp-dir-copy .input.sel { flex: 1 0 100%; width: 100%; }
+}
 
 /* ---------- 侧栏 ---------- */
 .hp-side { padding: 4px 8px 16px; }

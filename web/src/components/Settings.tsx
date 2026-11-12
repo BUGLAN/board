@@ -553,6 +553,12 @@ function LocalHostCard() {
               </button>
             </div>
           </div>
+          {online?.dirsChangedAt && online.dirsChangedBy && online.dirsChangedBy !== '本机' && (
+            <p className="set-p lh-warn">
+              {new Date(online.dirsChangedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 由{' '}
+              {online.dirsChangedBy} 在别的设备上修改；board host 已按服务端的设置更新本机配置。
+            </p>
+          )}
           {st.log.length > 0 && (
             <details className="errcodes lh-log">
               <summary>board host 的输出</summary>

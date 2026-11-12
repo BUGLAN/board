@@ -384,6 +384,7 @@ fn tokens_are_for_cli_only() {
         ("POST", "/api/flow/default/main", Some(json!({ "name": "新状态" }))),
         ("GET", "/api/hosts", None),
         ("PATCH", "/api/hosts/mbp", Some(json!({ "max": 2 }))),
+        ("POST", "/api/hosts/mbp/dirs/clone", Some(json!({ "board": "default/main", "url": "https://example.com/repo.git" }))),
         ("DELETE", "/api/hosts/mbp", None),
         ("GET", "/api/hosts/mbp/recent", None),
         ("GET", "/api/tokens", None),
