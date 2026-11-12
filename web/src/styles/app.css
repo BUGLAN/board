@@ -79,7 +79,6 @@
 .token-fresh { margin-bottom: 10px; padding: 12px; border-radius: var(--r-md); background: var(--brand-soft); }
 .token-fresh b { display: block; margin-bottom: 8px; font-size: 12.5px; font-weight: 500; }
 .token-fresh .code-block { margin-bottom: 8px; }
-.env-cmd-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; font-size: 12.5px; color: var(--text-2); }
 .env-cmd-note { margin: -2px 0 10px; font-size: 12px; color: var(--text-3); }
 .env-apply { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 10px; }
 .env-apply .btn { flex: none; }

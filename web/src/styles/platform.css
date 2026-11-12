@@ -85,13 +85,11 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .ab-item.on svg { transform: translateY(-1px) scale(1.06); }
   .ab-label { display: block; font-size: 11px; font-weight: 500; }
   .ab-spacer, .ab-indicator { display: none; }
-  .ab-badge { top: 3px; right: calc(50% - 24px); box-shadow: 0 0 0 2px var(--surface); }
   [data-tip-pos="right"]::after { display: none; }
 
   .topbar { gap: 10px; padding: 0 12px 0 14px; padding-top: env(safe-area-inset-top); }
   html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .win-btn { width: 40px; }
-  .brand-sub { display: none; }
   .search-trigger { height: 34px; padding: 0 9px; }
   .search-keys { display: none; }
   .presence { display: none; }

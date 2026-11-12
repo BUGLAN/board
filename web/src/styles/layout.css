@@ -58,9 +58,7 @@
 .avatar.brand-mark .brand-bars i:nth-child(3) { background: color-mix(in srgb, var(--c-review) 92%, var(--text)); }
 .avatar.brand-mark .brand-bars i:nth-child(4) { background: color-mix(in srgb, var(--c-done) 92%, var(--text)); }
 @keyframes logo-bar { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(.62); } }
-.brand-text { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
 .brand-name { font-family: var(--f-display); font-weight: 800; font-size: 17px; letter-spacing: -.02em; }
-.brand-sub { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); white-space: nowrap; }
 
 .search-trigger {
   flex: 1; max-width: 440px; margin: 0 auto; height: 36px;
@@ -79,7 +77,6 @@
 /* 左右两侧等分剩余宽度，搜索框始终居中，不随右侧头像数量、窗口按钮变化而移动 */
 .topbar-left { flex: 1 1 0; display: flex; align-items: center; gap: inherit; min-width: 0; }
 .topbar-right { flex: 1 1 0; align-self: stretch; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-.divider { width: 1px; height: 20px; background: var(--line-2); margin: 0 6px; }
 
 /* 离线标记：实时连接断了 */
 .live-off {

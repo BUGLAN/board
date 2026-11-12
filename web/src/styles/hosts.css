@@ -139,14 +139,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-run-seq { flex: none; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hp-run-rest .hp-link { flex: none; }
 
-/* ---------- 规则 ---------- */
-.hp-rule { display: flex; align-items: center; gap: 16px; padding: 11px 0; border-top: 1px solid var(--line); }
-.d-label + .hp-rule { border-top: 0; }
-.hp-rule > div { flex: 1; min-width: 0; }
-.hp-rule > div > b { display: block; font-size: 13.5px; font-weight: 500; }
-.hp-rule > div > span { display: block; font-size: 12px; color: var(--text-3); line-height: 1.5; }
-.hp-rule .toggle { flex: none; }
-/* 领取规则（标签 → agent） */
+/* ---------- 领取规则（标签 → agent） ---------- */
 .hp-crules { padding: 11px 0; border-top: 1px solid var(--line); }
 .hp-rule-text b { display: block; font-size: 13.5px; font-weight: 500; }
 .hp-rule-text span { display: block; font-size: 12px; color: var(--text-3); line-height: 1.5; margin-bottom: 8px; }
@@ -155,7 +148,6 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-crule-label { display: inline-flex; align-items: center; gap: 4px; min-width: 72px; font-size: 13px; font-weight: 500; }
 .hp-crule-label svg { width: 12px; height: 12px; color: var(--text-3); }
 .hp-crule .input { width: auto; height: 30px; padding: 0 8px; font-size: 12.5px; }
-.hp-crule-input { width: 120px !important; }
 .hp-crule-op { flex: none; }
 /* 规则里的标签：和卡片详情的标签一行一样（胶囊 + 标签按钮），不画成输入框 */
 .hp-lset { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 30px; max-width: 100%; }

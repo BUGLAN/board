@@ -85,11 +85,6 @@
 .keys div { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
 .keys div span { display: inline-flex; gap: 3px; min-width: 76px; }
 
-.about { display: flex; align-items: center; gap: 14px; padding: 6px 0 14px; }
-.about .logo { width: 44px; height: 44px; padding: 10px 9px; border-radius: var(--r-md); flex: none; }
-.about b { display: block; font-family: var(--f-display); font-size: 16px; }
-.about span { display: block; font-size: 12.5px; color: var(--text-3); line-height: 1.6; }
-
 /* 侧栏：设置目录 */
 .settings-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; overflow-y: auto; }
 .sn-item {

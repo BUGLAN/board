@@ -63,7 +63,6 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col:has(.card.doing) .col-dot { border-radius: 50%; animation: breathe 2.4s var(--ease-in-out) infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 0%, transparent); } }
 .col-name { font-family: var(--f-display); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.col-key { font-size: 11px; color: var(--text-3); padding: 1px 6px; border-radius: var(--r-xs); background: var(--surface-3); }
 .col-count {
   margin-left: auto; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
   border-radius: 999px; font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2);
@@ -92,12 +91,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 @container (max-width: 260px) { .col-order svg, .col-order .t { display: none; } .col-order .ts { display: inline; } }
 @keyframes count-roll { from { transform: translateY(var(--roll, 100%)); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes count-pop { 40% { transform: scale(1.18); } }
-.col-info { color: var(--text-3); display: grid; place-items: center; width: 24px; height: 24px; border-radius: var(--r-xs); transition: color var(--dur-2), background-color var(--dur-2); }
-.col-info:hover { color: var(--text-2); background: var(--surface-3); }
-.col-info svg { width: 14px; height: 14px; }
-@media (pointer: coarse) { .col-order, .col-info { min-width: 32px; min-height: 32px; } }
-.col-info[data-tip]::after { left: auto; right: -6px; transform: translate(0, -4px) scale(.96); white-space: normal; width: max-content; max-width: 220px; }
-.col-info[data-tip]:hover::after { transform: none; }
+@media (pointer: coarse) { .col-order { min-width: 32px; min-height: 32px; } }
 
 .col-body { position: relative; padding: 2px 10px 10px; }
 /* 块变宽后卡片排成多列，瀑布流上下挨紧（lib/masonry.ts：行高 1px，卡片按高度 + 间距跨行） */
