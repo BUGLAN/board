@@ -7,7 +7,7 @@
 //! | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号 |
 //! | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
 //! | `pwsh` | PowerShell 7 | Windows | `PATH` 里的 `pwsh.exe`，或 `%ProgramFiles%\PowerShell\7\pwsh.exe` | 同上，换成 `pwsh.exe` |
-//! | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里的 git 旁边 | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
+//! | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 `git` 所在目录往上三层的 `bin`（见 [`git_bash_beside`]） | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
 //! | `wsl:<发行版>` | WSL（<发行版>） | Windows | `wsl.exe -l -q` 列出的每个发行版 | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
 //!
 //! - 登录 shell 和 WSL 加 `-i`：很多人把 `PATH` 写在 `~/.zshrc`、`~/.bashrc` 里，只有交互式 shell 才读。
@@ -365,6 +365,7 @@ fn login_shell() -> PathBuf {
 }
 
 /// Git Bash：`%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 PATH 里 git 旁边的
+/// （[`git_bash_beside`]：`<Git>\bin\git.exe`、`<Git>\cmd\git.exe`、`<Git>\mingw64\bin\git.exe` 三种布局都认）
 fn git_bash() -> Option<PathBuf> {
     ["ProgramFiles", "ProgramFiles(x86)"]
         .iter()
@@ -658,14 +659,33 @@ pub fn git_bash_dir() -> Option<PathBuf> {
     git_bash_beside(&which("git")?)
 }
 
-/// git.exe 的上级或上上级里的 `bin\bash.exe`（`<Git>\bin\git.exe` 或 `<Git>\cmd\git.exe` 两种安装布局）
+/// `git.exe` 所在的 Git 安装里带 `bash.exe` 的目录。
+///
+/// Git for Windows 把 `git.exe` 放出来有三种布局：`<Git>\bin`、`<Git>\cmd`、`<Git>\mingw64\bin`，
+/// PATH 里的 `git` 是哪一种取决于安装时勾了什么，`where git` 常常先得到 `<Git>\mingw64\bin\git.exe`。
+/// 从 `git.exe` 的目录往上找三层：`<Git>\bin\bash.exe`（Git for Windows 自己的包装）优先，
+/// 没有时用 `<Git>\usr\bin\bash.exe`（MSYS2 的原身）。
 pub fn git_bash_beside(git: &Path) -> Option<PathBuf> {
     let dir = git.parent()?;
-    let mut candidates = vec![dir.to_path_buf()];
-    if let Some(root) = dir.parent() {
-        candidates.push(root.join("bin"));
+    // `<Git>\bin\git.exe`：git.exe 自己就在 `bin` 里
+    if dir.join("bash.exe").is_file() {
+        return Some(dir.to_path_buf());
     }
-    candidates.into_iter().find(|d| d.join("bash.exe").is_file())
+    // `<Git>\cmd\git.exe`、`<Git>\mingw64\bin\git.exe`：往上找到 `<Git>`，再用它下面的 `bin`
+    let mut usr = None;
+    for d in dir.ancestors().take(3) {
+        let bin = d.join("bin");
+        if bin.join("bash.exe").is_file() {
+            return Some(bin);
+        }
+        if usr.is_none() {
+            let u = d.join("usr").join("bin");
+            if u.join("bash.exe").is_file() {
+                usr = Some(u);
+            }
+        }
+    }
+    usr
 }
 
 pub fn is_exe(p: &Path) -> bool {

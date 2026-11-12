@@ -3862,9 +3862,27 @@ mod tests {
         let root = tmp.path();
         std::fs::create_dir_all(root.join("cmd")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::create_dir_all(root.join("mingw64").join("bin")).unwrap();
         std::fs::write(root.join("cmd").join("git.exe"), "").unwrap();
+        std::fs::write(root.join("mingw64").join("bin").join("git.exe"), "").unwrap();
         std::fs::write(root.join("bin").join("bash.exe"), "").unwrap();
         assert_eq!(envs::git_bash_beside(&root.join("cmd").join("git.exe")), Some(root.join("bin")));
+        // PATH 里先找到的是 mingw64\bin 里的 git（#226）：也要找到 <Git>\bin\bash.exe
+        assert_eq!(envs::git_bash_beside(&root.join("mingw64").join("bin").join("git.exe")), Some(root.join("bin")));
         assert_eq!(envs::git_bash_beside(&root.join("bin").join("git.exe")), Some(root.join("bin")));
+        // 只有 usr\bin\bash.exe 的老布局
+        let usr = tempfile::tempdir().unwrap();
+        let u = usr.path().join("mingw64").join("bin");
+        std::fs::create_dir_all(&u).unwrap();
+        std::fs::create_dir_all(usr.path().join("usr").join("bin")).unwrap();
+        std::fs::write(u.join("git.exe"), "").unwrap();
+        std::fs::write(usr.path().join("usr").join("bin").join("bash.exe"), "").unwrap();
+        assert_eq!(envs::git_bash_beside(&u.join("git.exe")), Some(usr.path().join("usr").join("bin")));
+        // 哪里都没有 bash.exe
+        let bare = tempfile::tempdir().unwrap();
+        let b = bare.path().join("mingw64").join("bin");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("git.exe"), "").unwrap();
+        assert_eq!(envs::git_bash_beside(&b.join("git.exe")), None);
     }
 }

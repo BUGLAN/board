@@ -358,7 +358,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号 |
   | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"`，参数里的 `'` 写成 `''` |
   | `pwsh` | PowerShell 7 | Windows | `PATH` 里的 `pwsh.exe`，或 `%ProgramFiles%\PowerShell\7\pwsh.exe` | 同上，换成 `pwsh.exe` |
-  | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 git 旁边的 | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
+  | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 `git` 所在的那套 Git 安装：从 `git.exe` 的目录往上三层找 `bin\bash.exe`（`<Git>\bin`、`<Git>\cmd`、`<Git>\mingw64\bin` 三种布局都认），没有时用 `usr\bin\bash.exe` | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
   | `wsl:<发行版>` | WSL（<发行版>） | Windows | `wsl.exe -l -q` 列出的每个发行版各算一个 | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
 
   - 提示词作为独立参数传入，不拼进 shell 命令文本（cmd 除外：加双引号拼进命令行）。启动环境的退出码就是 agent 的退出码。
@@ -370,7 +370,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   |---|---|---|---|---|---|
   | `dsh` | DeepSeek Harness | `dsh --profile headless --json --patch {patch} --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
   | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
-  | `pi` | pi | `pi --mode json {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`；不在 WSL 里时把 `PATH` 里 git 旁边的 Git Bash 放到 pi 的 `PATH` 前面） |
+  | `pi` | pi | `pi --mode json {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`；不在 WSL 里时把 `PATH` 里 git 所在那套 Git 的 Git Bash 放到 pi 的 `PATH` 前面） |
   | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
   | 配置文件里新加的 | | | | | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct` |
 
