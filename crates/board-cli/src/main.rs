@@ -21,16 +21,17 @@ use chrono::TimeZone;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
+use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
-const VALUE_FLAGS: [&str; 20] = [
+const VALUE_FLAGS: [&str; 21] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit",
+    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait",
 ];
 const BOOL_FLAGS: [&str; 9] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V"];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 24] = [
+const COMMANDS: [(&str, &str, &str); 25] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
@@ -47,6 +48,7 @@ const COMMANDS: [(&str, &str, &str); 24] = [
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领这个会话排着的下一张；排着的做完了、不再接着做时返回 SESSION_DONE"),
+        ("hold", "<ID> [--wait <秒>]", "推集成分支前确认领取仍有效：这张卡仍由你持有、在锁定状态，否则 NOT_HOLDER（不要推集成分支，改推 wip 分支）；连不上服务端时每 30 秒重试，最多等 --wait 秒（默认 300），还连不上就 UNREACHABLE"),
         ("comment", "<ID> \"<内容>\" | <ID> --comment-file <文件>", "追加评论；多行内容用 --comment-file（- 读标准输入）"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
@@ -169,6 +171,63 @@ impl Args {
             .filter(|n| *n >= 1)
             .ok_or_else(|| BoardError::usage(format!("无效的 ID「{raw}」")))
     }
+}
+
+/* ------------------------------ board hold ------------------------------ */
+
+/// `board hold` 连不上服务端时最多等多久（秒）
+const HOLD_WAIT_SECS: u64 = 300;
+
+/// 两次确认之间等多久：`BOARD_HOLD_INTERVAL`（秒，只给测试用），默认 30 秒
+fn hold_every() -> Duration {
+    let secs = std::env::var("BOARD_HOLD_INTERVAL").ok().and_then(|s| s.trim().parse::<f64>().ok()).filter(|s| *s > 0.0);
+    secs.map(Duration::from_secs_f64).unwrap_or(Duration::from_secs(30))
+}
+
+/// 取卡片：连不上服务端（UNREACHABLE）时每 `every` 重试一次，总共最多等 `wait`；等不到就把最后一次的错误换成写明怎么办的 UNREACHABLE。
+/// 其他错误直接返回。`note` 在每次重试前调用，参数是还能等多久
+fn hold_retry<T>(mut get: impl FnMut() -> Result<T>, wait: Duration, every: Duration, mut note: impl FnMut(Duration)) -> Result<T> {
+    let begun = std::time::Instant::now();
+    loop {
+        match get() {
+            Ok(x) => return Ok(x),
+            Err(e) if e.code == ErrorCode::Unreachable => {
+                let used = begun.elapsed();
+                if used + every > wait {
+                    return Err(BoardError::new(
+                        ErrorCode::Unreachable,
+                        format!(
+                            "等了 {} 秒还是连不上服务端（{}）：不要推集成分支，把改动推到 wip 分支，等能连上后在卡片上补一条评论",
+                            used.as_secs(),
+                            e.message
+                        ),
+                    ));
+                }
+                note(wait - used);
+                std::thread::sleep(every);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// 领取仍有效：卡片由这个名字持有，并且在锁定状态。否则 NOT_HOLDER，写明现在在哪个状态（status 是状态名称）、谁持有
+fn hold_check(id: i64, status: &str, locked: bool, holder: Option<&str>, name: &str) -> Result<()> {
+    if holder == Some(name) && locked {
+        return Ok(());
+    }
+    let who = match holder {
+        Some(h) if h != name => format!("由 {h} 持有"),
+        Some(_) => "还由你持有，但已经不在锁定状态".to_string(),
+        None => "没人持有".to_string(),
+    };
+    Err(BoardError::new(
+        ErrorCode::NotHolder,
+        format!(
+            "领取已经失效：#{id} 现在在「{status}」，{who}。不要推集成分支：把改动推到 wip 分支，在卡片上评论说明，然后结束这张卡（不 final、不移动）"
+        ),
+    )
+    .with_detail(json!({ "status": status, "holder": holder })))
 }
 
 /* ------------------------------ 执行 ------------------------------ */
@@ -364,6 +423,36 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         s += &p.dim(&format!("{} 条", hits.len()));
         s.push('\n');
         return Ok(Output::Text(s));
+    }
+
+    // 推集成分支前确认领取仍有效（PRD §9.1「执行」、skill「推送」）：连不上服务端时重试，所以放在读整块白板之前
+    if sub == "hold" {
+        let id = a.id(sub)?;
+        let raw = a.value("--board").map(|s| s.to_string()).or_else(|| env("BOARD")).filter(|s| !s.trim().is_empty());
+        let Some(raw) = raw else {
+            return Err(BoardError::code(ErrorCode::NoBoard));
+        };
+        let wait = match a.value("--wait") {
+            Some(v) => v.trim().parse::<u64>().map_err(|_| BoardError::usage("board hold 的 --wait 需要是秒数（整数）"))?,
+            None => HOLD_WAIT_SECS,
+        };
+        let every = hold_every();
+        let (path, flow, card) = hold_retry(
+            || {
+                let d = be.board(&raw)?;
+                let c = d.cards.into_iter().find(|c| c.id == id).ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("#{id} 不存在")))?;
+                Ok((d.path, d.flow, c))
+            },
+            Duration::from_secs(wait),
+            every,
+            |left| eprintln!("{} 连不上服务端，{} 秒后再确认 #{id} 的领取（还能等 {} 秒）", p.yellow("!"), every.as_secs_f64().round(), left.as_secs()),
+        )?;
+        hold_check(id, &flow.name(&card.column), flow.is_lock(&card.column), card.holder.as_deref(), &name)?;
+        return Ok(if json {
+            Output::Json(json!({ "ok": true, "board": path, "id": id, "column": card.column, "holder": name }))
+        } else {
+            Output::Text(format!("{} #{id} 仍由你持有，在「{}」：可以推集成分支\n", p.green("✓"), flow.name(&card.column)))
+        });
     }
 
     // 白板（PRD §3）
@@ -1369,6 +1458,52 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), COMMANDS.len(), "命令表里有重复");
+    }
+
+    /// board hold：连不上时按间隔重试，等到了就接着确认；等不到就 UNREACHABLE（写明改推 wip 分支）；其他错误不重试
+    #[test]
+    fn hold_retries_only_while_unreachable() {
+        let down = || BoardError::new(ErrorCode::Unreachable, "连不上");
+        let mut n = 0;
+        let mut notes = 0;
+        let r = hold_retry(
+            || {
+                n += 1;
+                if n < 3 { Err(down()) } else { Ok(n) }
+            },
+            Duration::from_millis(500),
+            Duration::from_millis(10),
+            |_| notes += 1,
+        );
+        assert_eq!((r.unwrap(), notes), (3, 2), "恢复后接着确认");
+        let begun = std::time::Instant::now();
+        let e = hold_retry(|| Err::<(), _>(down()), Duration::from_millis(120), Duration::from_millis(30), |_| {}).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unreachable);
+        assert!(e.message.contains("wip 分支"), "{}", e.message);
+        assert!(begun.elapsed() < Duration::from_millis(400));
+        let mut tries = 0;
+        let e = hold_retry(
+            || {
+                tries += 1;
+                Err::<(), _>(BoardError::code(ErrorCode::NotFound))
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!((e.code, tries), (ErrorCode::NotFound, 1));
+    }
+
+    #[test]
+    fn hold_needs_holder_and_locked_status() {
+        assert!(hold_check(7, "进行中", true, Some("me/x"), "me/x").is_ok());
+        let e = hold_check(7, "待办", false, None, "me/x").unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotHolder);
+        assert!(e.message.contains("#7 现在在「待办」，没人持有"), "{}", e.message);
+        let e = hold_check(7, "进行中", true, Some("other/y"), "me/x").unwrap_err();
+        assert!(e.message.contains("由 other/y 持有"), "{}", e.message);
+        assert!(hold_check(7, "待审核", false, Some("me/x"), "me/x").is_err(), "不在锁定状态也不算");
     }
 
     #[test]

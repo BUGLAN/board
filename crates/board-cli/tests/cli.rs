@@ -402,3 +402,95 @@ fn host_rename_renames_the_machine_record() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert_eq!(r.json()["unchanged"], true);
 }
+
+/// board hold：推集成分支前确认领取仍有效。仍由自己持有、在锁定状态时成功；被人强制释放后 NOT_HOLDER
+#[test]
+fn hold_confirms_the_claim_before_pushing() {
+    let s = start();
+    s.run(ALPHA, &["new", "a"]);
+    assert_eq!(s.run(ALPHA, &["claim", "1"]).code, 0);
+    let r = s.run(ALPHA, &["hold", "1", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!((r.json()["ok"].as_bool(), r.json()["column"].as_str()), (Some(true), Some("doing")));
+    // 人在界面上强制释放：卡片回到待办，领取失效
+    let mut store = board_core::Store::open(&s.db).unwrap();
+    store
+        .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
+            let b = w.resolve("default/main")?;
+            w.exec(&b, &board_core::Actor::human(), board_core::Cmd::Release { id: 1 }).map(|_| ())
+        })
+        .unwrap();
+    let r = s.run(ALPHA, &["hold", "1", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_HOLDER"));
+    let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(msg.contains("领取已经失效") && msg.contains("「待办」") && msg.contains("wip 分支"), "{msg}");
+    // 别人领走了：也是 NOT_HOLDER，写明是谁
+    s.run("test/beta", &["claim", "1"]);
+    let r = s.run(ALPHA, &["hold", "1", "--json"]);
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("由 test/beta 持有"), "{}", r.out);
+}
+
+/// board hold：连不上服务端时按间隔重试（测试里把 30 秒缩短成 0.2 秒），恢复后接着确认；一直连不上就 UNREACHABLE
+#[test]
+fn hold_waits_for_the_server() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    let s = start();
+    s.run(ALPHA, &["new", "a"]);
+    assert_eq!(s.run(ALPHA, &["claim", "1"]).code, 0);
+    // 一个先没人监听、1 秒后才开始转发到服务端的端口：模拟服务端停了一会儿又恢复
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let target = s.url.trim_start_matches("http://").to_string();
+    let env = |url: String| {
+        vec![
+            ("BOARD_URL", url),
+            ("BOARD_TOKEN", s.token.clone()),
+            ("BOARD_AS", ALPHA.to_string()),
+            ("BOARD", "default".to_string()),
+            ("BOARD_HOLD_INTERVAL", "0.2".to_string()),
+        ]
+    };
+    // 一直连不上：等满 --wait 就 UNREACHABLE，写明改推 wip 分支
+    let begun = std::time::Instant::now();
+    let r = s.raw(&env(format!("http://127.0.0.1:{port}")), &["hold", "1", "--wait", "1", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "UNREACHABLE"), "{}{}", r.out, r.err);
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("wip 分支"));
+    assert!(begun.elapsed() < std::time::Duration::from_secs(10));
+    assert!(r.err.contains("连不上服务端"), "重试时在标准错误里提示：{}", r.err);
+    // 停了一会儿又恢复：等到恢复后确认成功
+    let home = s.home.clone();
+    let e = env(format!("http://127.0.0.1:{port}"));
+    let cli = std::thread::spawn(move || common::board(&home, &e, &["hold", "1", "--wait", "20", "--json"]));
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let l = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    std::thread::spawn(move || {
+        for c in l.incoming().flatten() {
+            let t = target.clone();
+            std::thread::spawn(move || {
+                let Ok(up) = TcpStream::connect(&t) else { return };
+                let (mut a, mut b) = (c.try_clone().unwrap(), up.try_clone().unwrap());
+                let (mut c2, mut up2) = (c, up);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n) = a.read(&mut buf) {
+                        if n == 0 || up2.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = up2.shutdown(std::net::Shutdown::Write);
+                });
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = b.read(&mut buf) {
+                    if n == 0 || c2.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                let _ = c2.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    let r = cli.join().unwrap();
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["ok"].as_bool(), Some(true));
+    assert!(r.err.contains("连不上服务端"), "{}", r.err);
+}

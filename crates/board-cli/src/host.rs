@@ -153,6 +153,8 @@ const TICK: Duration = Duration::from_millis(200);
 const LOG_EVERY: Duration = Duration::from_secs(5);
 /// 停止 agent：SIGTERM 之后等多久再 SIGKILL
 const KILL_AFTER: Duration = Duration::from_secs(10);
+/// 和服务端断开多久时在本机输出里提醒一次（服务端 50 秒没收到上报就判这台机器掉线）
+const OFFLINE_WARN: Duration = Duration::from_secs(30);
 /// 重启时结束上一次留下的 agent：SIGTERM 后等这么久，还在就 SIGKILL
 const ORPHAN_KILL_AFTER: Duration = Duration::from_secs(5);
 /// 异常退出时评论里带的日志行数
@@ -449,6 +451,8 @@ struct Run {
     term_at: Option<Instant>,
     killed: bool,
     spawned: Instant,
+    /// 服务端已经结束了这次派发（机器掉线后卡片被释放）才停的：agent 退出后看看它的目录里有没有没推的改动
+    lost: bool,
 }
 
 impl Run {
@@ -624,6 +628,9 @@ struct Host<'a> {
     hold: bool,
     /// 上一次打印的连接错误（同样的错误不重复打印）
     last_err: String,
+    /// 最近一次和服务端通上的时间；断开超过 OFFLINE_WARN 时提醒一次（offline_warned），恢复时再说一声
+    last_ok: Instant,
+    offline_warned: bool,
     /// 机器名、白板与目录跟着配置文件变（命令行没给 `--name` / `--dir`）
     follow_name: bool,
     follow_dirs: bool,
@@ -721,6 +728,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         work_at: Instant::now(),
         hold: false,
         last_err: String::new(),
+        last_ok: Instant::now(),
+        offline_warned: false,
         follow_name,
         follow_dirs,
         conf_seen: (conf.name.clone(), conf.dirs.clone()),
@@ -796,6 +805,58 @@ fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!s.is_empty()).then_some(s)
+}
+
+/// 断开 OFFLINE_WARN 时打印的提醒
+fn offline_note(gap: Duration, running: usize) -> String {
+    let base = format!("和服务端断开 {} 秒了", gap.as_secs());
+    if running == 0 {
+        return format!("{base}（继续重试）");
+    }
+    format!(
+        "{base}：{running} 个 agent 还在跑。超过 50 秒服务端会判这台机器掉线、放回它们的卡片，别的机器可能接走；恢复连接后这些 agent 会被结束（它们推集成分支前会先用 board hold 确认领取）"
+    )
+}
+
+/// 目录里没推到远端的改动：没提交的文件、不在任何远端分支上的提交。不是 git 仓库、都推了时为空；
+/// 没有远端的仓库不看提交（所有提交都不在远端，说明不了什么）
+fn unpushed(dir: &Path) -> Option<String> {
+    if !dir.is_dir() || git_line(dir, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+        return None;
+    }
+    let mut parts = vec![];
+    let dirty = git_line(dir, &["status", "--porcelain"]).map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+    if dirty > 0 {
+        parts.push(format!("{dirty} 个文件没提交"));
+    }
+    if git_line(dir, &["remote"]).is_some() {
+        if let Some(head) = git_line(dir, &["rev-parse", "--short", "HEAD"]) {
+            if git_line(dir, &["branch", "-r", "--contains", "HEAD"]).is_none() {
+                parts.push(format!("提交 {head} 不在任何远端分支上"));
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("，"))
+}
+
+/// board-skills 给这个名字的会话开的 worktree：主仓库目录旁边的 `<仓库目录名>.wt/<名字，/ 换成 ->`
+fn skill_worktree(repo: &Path, name: &str) -> Option<PathBuf> {
+    let common = git_line(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let main = Path::new(&common).parent()?.to_path_buf();
+    let base = main.file_name()?.to_string_lossy().to_string();
+    Some(main.parent()?.join(format!("{base}.wt")).join(name.replace('/', "-")))
+}
+
+/// 一次派发结束后可能留着改动的地方：agent 的 worktree（board-skills 的约定）和白板目录本身；只列有没推改动的
+fn leftovers(repo: &Path, name: &str) -> Vec<(PathBuf, String)> {
+    let mut dirs: Vec<PathBuf> = vec![];
+    if !name.is_empty() {
+        if let Some(wt) = skill_worktree(repo, name) {
+            dirs.push(wt);
+        }
+    }
+    dirs.push(repo.to_path_buf());
+    dirs.into_iter().filter_map(|d| unpushed(&d).map(|w| (d, w))).collect()
 }
 
 /// 目录状态：存在且是 git 仓库（同时取 origin、当前分支）、不存在、存在但不是 git 仓库
@@ -1238,6 +1299,7 @@ impl Host<'_> {
                 fetch = false;
                 match self.beat(false) {
                     Ok(w) => {
+                        self.connected();
                         self.set_work(w);
                         self.last_err.clear();
                     }
@@ -1246,9 +1308,16 @@ impl Host<'_> {
             } else if fetch {
                 fetch = false;
                 match self.rm().get::<HostWork>(&format!("/api/hosts/{}/work", self.name), &[]) {
-                    Ok(w) => self.set_work(w),
+                    Ok(w) => {
+                        self.connected();
+                        self.set_work(w);
+                    }
                     Err(e) => self.trouble(e, &mut next_beat)?,
                 }
+            }
+            if !self.offline_warned && self.last_ok.elapsed() >= OFFLINE_WARN {
+                self.offline_warned = true;
+                self.say(format!("{} {}", self.p.yellow("!"), offline_note(self.last_ok.elapsed(), self.runs.len())));
             }
             if self.reap() {
                 fetch = true;
@@ -1370,6 +1439,15 @@ impl Host<'_> {
         Ok(())
     }
 
+    /// 和服务端通上了：断开时提醒过的，说一声恢复了
+    fn connected(&mut self) {
+        if self.offline_warned {
+            self.say(format!("{} 和服务端恢复连接（断开了 {} 秒）", self.p.green("✓"), self.last_ok.elapsed().as_secs()));
+            self.offline_warned = false;
+        }
+        self.last_ok = Instant::now();
+    }
+
     /// 请求失败：名字被别的 board host 占用时退出；机器被移除时马上重新上报（按新机器建立）；其他（连不上等）打印一次后继续重试
     fn trouble(&mut self, e: BoardError, next_beat: &mut Instant) -> Result<()> {
         match e.code {
@@ -1418,6 +1496,20 @@ impl Host<'_> {
                 r.d.name.as_deref().unwrap_or_default(),
                 self.p.dim(&format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())))
             ));
+            // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
+            if r.lost {
+                if let Some((_, repo)) = self.dirs.iter().find(|(b, _)| *b == r.d.board) {
+                    for (dir, what) in leftovers(repo, r.d.name.as_deref().unwrap_or_default()) {
+                        self.say(format!(
+                            "{} {} 里有没推到远端的改动（{what}）：{}#{} 的派发已被服务端结束，需要的话去那里捞回来",
+                            self.p.yellow("!"),
+                            dir.display(),
+                            r.d.board,
+                            r.d.card
+                        ));
+                    }
+                }
+            }
             done = true;
         }
         if done {
@@ -1453,7 +1545,10 @@ impl Host<'_> {
                 let on_server = w.running.iter().find(|x| x.id == r.d.id);
                 let why = match on_server {
                     Some(x) => x.stop_by.as_ref().map(|by| format!("{by} 请求停止")),
-                    None if work_at > r.spawned => Some("服务端上这次派发已经结束".to_string()),
+                    None if work_at > r.spawned => {
+                        r.lost = true;
+                        Some("服务端上这次派发已经结束".to_string())
+                    }
                     None => None,
                 };
                 if let Some(why) = why {
@@ -1649,7 +1744,7 @@ impl Host<'_> {
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
         let fmt = logfmt::stream_of(&spec.id);
-        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, procfile, sent: 0, fmt, term_at: None, killed: false, spawned: Instant::now() })
+        Ok(Run { d: d.clone(), child, env, pidfile, log, conf, procfile, sent: 0, fmt, term_at: None, killed: false, spawned: Instant::now(), lost: false })
     }
 
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
@@ -1750,6 +1845,66 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// 派发被服务端结束后找没推的改动：没提交的文件、不在远端的提交；agent 的 worktree 按 board-skills 的约定找
+    #[test]
+    fn leftovers_find_unpushed_changes_in_skill_worktree() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let remote = root.join("remote.git");
+        std::fs::create_dir(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        let repo = root.join("board");
+        git(&root, &["clone", "-q", remote.to_str().unwrap(), "board"]);
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "a"]);
+        git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+        assert!(unpushed(&repo).is_none(), "都推了");
+        let wt = skill_worktree(&repo, "claude-mbp/opus-5.5").unwrap();
+        assert_eq!(wt, root.join("board.wt").join("claude-mbp-opus-5.5"));
+        git(&repo, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), "HEAD"]);
+        assert_eq!(skill_worktree(&wt, "x/y").unwrap(), root.join("board.wt").join("x-y"), "在 worktree 里也以主仓库为准");
+        assert!(leftovers(&repo, "claude-mbp/opus-5.5").is_empty());
+        // worktree 里改了没提交、提交了没推
+        std::fs::write(wt.join("b.txt"), "b").unwrap();
+        assert_eq!(unpushed(&wt).as_deref(), Some("1 个文件没提交"));
+        git(&wt, &["add", "."]);
+        git(&wt, &["commit", "-q", "-m", "b"]);
+        let got = leftovers(&repo, "claude-mbp/opus-5.5");
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, wt);
+        assert!(got[0].1.starts_with("提交 ") && got[0].1.ends_with("不在任何远端分支上"), "{}", got[0].1);
+        // 推到 wip 分支之后就不算了
+        git(&wt, &["push", "-q", "origin", "HEAD:refs/heads/wip/main/1"]);
+        git(&wt, &["fetch", "-q", "origin"]);
+        assert!(leftovers(&repo, "claude-mbp/opus-5.5").is_empty());
+        // 不是 git 仓库、不存在：不算
+        assert!(unpushed(&root).is_none());
+        assert!(unpushed(&root.join("nope")).is_none());
+    }
+
+    #[test]
+    fn offline_note_says_what_happens_to_running_agents() {
+        assert_eq!(offline_note(Duration::from_secs(31), 0), "和服务端断开 31 秒了（继续重试）");
+        let s = offline_note(Duration::from_secs(30), 2);
+        assert!(s.starts_with("和服务端断开 30 秒了：2 个 agent 还在跑"), "{s}");
+        assert!(s.contains("50 秒") && s.contains("board hold"), "{s}");
+    }
 
     #[test]
     fn reads_only_whole_lines() {

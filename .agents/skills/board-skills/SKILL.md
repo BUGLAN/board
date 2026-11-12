@@ -294,7 +294,7 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
    有的话先看提交和卡片动态：
    - 动态里还没有这个提交的「提交：」行：上一个 agent 推完、还没来得及交审就中断了。不重做，确认提交满足卡片后直接按「交审」处理。
    - 卡片交审过，又被人拖回可领取状态（复盘打回）：按动态里人的意见，接着在集成分支上修（第 3 步），再提交一次，同样带 `卡片：<项目>/<白板>#<ID>`。不改写已经推上去的提交；评论要求回滚时，`git revert --no-commit <sha>` 后按「提交」的格式提交，作为这一次的提交。
-2. 卡片动态里有 `未完成的改动：wip/...`（上一个 agent 做不下去时留下的），就从那条分支接着做：`git fetch origin && git switch --detach origin/wip/main/21`。
+2. 卡片动态里有 `未完成的改动：wip/...`（上一个 agent 做不下去、或推送前发现领取已经失效时留下的），就从那条分支接着做：`git fetch origin && git switch --detach origin/wip/main/21`。
 3. 否则 `git fetch origin && git switch --detach origin/main`。
 
 切换之前 worktree 必须是干净的：没有未提交的改动，也没有没推到远端的提交。不干净说明上一张卡没收尾，先按「做不下去」把它推到那张卡的 wip 分支，并在那张卡上评论。
@@ -306,8 +306,12 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 1. 把改动提交（可以是多个提交），然后 `git fetch origin && git rebase origin/main`。有冲突自己解决。
 2. 在 rebase 之后的代码上跑仓库规定的全部检查。不在 rebase 之前跑：旧代码上通过，推上去的未必通过。不通过就修好再跑。
 3. 压成一个提交：`git reset --soft origin/main`，再 `git commit`，提交信息按上表。
-4. `git push origin HEAD:main`。被拒（别人先推了）就回到第 1 步：重新 rebase、重新跑检查，再推。推送被拒就是锁：不要 `--force`，不改写集成分支上已有的提交。
-5. 这张卡是从 wip 分支接着做的，推上去之后删掉那条分支：`git push origin --delete wip/main/21`。
+4. **推之前确认领取仍有效**：`board hold <ID>`。你干活期间卡片可能已经被释放、被别人领走（例如这台机器和服务端断开超过 50 秒被判掉线，卡片回到可领取状态被别的机器接走）。这时再推，集成分支上就会有同一张卡的两份改动。
+   - 成功：接着第 5 步。
+   - `NOT_HOLDER`（领取已经失效：被释放、被别人领走、被人移走）：**不推集成分支**。按「做不下去」第 1 步把改动推到 `wip/<白板标识>/<ID>`，在卡片上评论「领取已经失效（<错误信息里的原因>），改动推在 wip/<白板标识>/<ID>」，评论最后一行写 `未完成的改动：wip/<白板标识>/<ID>`。然后结束这张卡：不 final、不移动（卡片已经不归你）。由 board host 启动的会话也不再 `board next`，直接结束。
+   - `UNREACHABLE`：`board hold` 已经每 30 秒重试、等了 5 分钟还连不上服务端。同样不推集成分支，先把改动推到 wip 分支，再执行一次 `board hold <ID>` 等服务端恢复：能连上了就补上面那条评论（不管 hold 的结果），然后结束这张卡（不 final、不移动）；还是连不上，就在给人的汇报里写明 wip 分支，结束。
+5. `git push origin HEAD:main`。被拒（别人先推了）就回到第 1 步：重新 rebase、重新跑检查、重新 `board hold`，再推。推送被拒就是锁：不要 `--force`，不改写集成分支上已有的提交。
+6. 这张卡是从 wip 分支接着做的，推上去之后删掉那条分支：`git push origin --delete wip/main/21`。
 
 推上去的提交号（`git rev-parse --short HEAD`）写进交审评论的「提交：」行。
 
@@ -375,6 +379,7 @@ board heartbeat start                     # 会话开始：启动后台心跳（
 board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
 board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错
 board next --json                         # 只在 board host 启动的会话里：上一张交审或交给人之后领这个会话排着的下一张；SESSION_DONE 时结束
+board hold <ID>                           # 推集成分支前确认领取仍有效；NOT_HOLDER 时改推 wip 分支；连不上时每 30 秒重试、最多等 5 分钟
 board move <ID> <状态标识或名称> [--top]
 board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些；「仅人可打」的标签不能加、去
 board labels
@@ -396,11 +401,11 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | `EMPTY_TODO` | 可领取的状态里都没有能领的卡片 |
 | `NOT_IN_TODO` | 卡片不在可领取状态，也不是你持有的 |
 | `ALREADY_HOLDING` | 你已经持有另一张卡片 |
-| `NOT_HOLDER` | 卡片被别人持有 |
+| `NOT_HOLDER` | 卡片被别人持有；`board hold`：领取已经失效，不推集成分支，改推 wip 分支（见「推送」第 4 步） |
 | `FORBIDDEN_COLUMN` | 不沿连线移动；直接移进锁定状态；移入、移出终点状态或「未整理」；移出错误节点；从没有连到锁定状态的可领取状态领取 |
 | `EMPTY_TITLE` / `USAGE` | 标题为空 / 命令或参数不对（例如不存在的状态或标签、空评论） |
 | `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「设置 → Agent 接入」新建） |
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「设置 → Agent 接入」新建一个，再 `board login --token <令牌>` |
-| `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里） |
+| `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里）；`board hold` 返回它时已经等过 5 分钟，按「推送」第 4 步改推 wip 分支 |
 | `DISPATCHED` | 卡片已经派发给一台机器、正在排队：跳过这张，不要领 |
 | `SESSION_DONE` | `board next`：这个会话不再接着做（排着的做完了、手动派发、有人停止、暂停接单、没有领取规则）：结束会话 |
