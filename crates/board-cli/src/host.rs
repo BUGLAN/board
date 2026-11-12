@@ -55,6 +55,7 @@ use crate::heartbeat::{Proc, Procs};
 use crate::logfmt::{self, Stream};
 use crate::redact;
 use crate::selftest;
+use crate::mcpsync;
 use crate::skills;
 use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
@@ -917,8 +918,14 @@ struct Host<'a> {
     /// 上一次同步时的库和目录：变了就再同步一次
     skill_key: Option<String>,
     skill_at: Instant,
-    /// 重新检查、重新读配置后马上再同步一次
+    /// 重新检查、重新读配置后马上再同步一次（skills 和 MCP 一起）
     skill_force: bool,
+    /// MCP 共用配置：正在后台做的同步、最近的结果、上一次的索引和 agent、时间
+    mcp_job: Option<std::thread::JoinHandle<mcpsync::Synced>>,
+    mcp_states: Vec<board_core::mcp::McpState>,
+    mcp_key: Option<String>,
+    mcp_at: Instant,
+    mcp_force: bool,
 }
 
 /// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
@@ -1062,6 +1069,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         skill_key: None,
         skill_at: Instant::now(),
         skill_force: false,
+        mcp_job: None,
+        mcp_states: vec![],
+        mcp_key: None,
+        mcp_at: Instant::now(),
+        mcp_force: false,
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1344,6 +1356,7 @@ impl Host<'_> {
             ask_error: self.ask_error.clone(),
             selftest: true,
             skills: Some(self.skill_states.clone()),
+            mcp: Some(self.mcp_states.clone()),
         }
     }
 
@@ -1460,6 +1473,7 @@ impl Host<'_> {
     /// 配置文件读不了、agent 配置不对时保留原来的 agent
     fn recheck(&mut self) {
         self.skill_force = true;
+        self.mcp_force = true;
         self.envs = envs::discover();
         match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.envs)) {
             Ok(a) => self.agents = a,
@@ -1852,6 +1866,89 @@ impl Host<'_> {
         changed
     }
 
+    /// MCP 共用配置（PRD §10.12「共用配置」）：同步做完了记下结果（变了返回 true，马上上报）；
+    /// 没在做、索引或找到的 agent 变了（重新检查后、超过 10 分钟）就在后台开始一次：先用令牌取完整内容（含密钥），再写各 agent 的配置
+    fn poll_mcp(&mut self) -> bool {
+        let mut changed = false;
+        if self.mcp_job.as_ref().is_some_and(|h| h.is_finished()) {
+            if let Ok(out) = self.mcp_job.take().expect("上面看过").join() {
+                for c in &out.changes {
+                    self.say(format!("{} MCP：{c}", self.p.green("✓")));
+                }
+                let bad: Vec<String> = out.states.iter().filter(|s| s.state == "failed").map(|s| format!("{} 的 {}：{}", s.agent, s.server, s.why.as_deref().unwrap_or("失败"))).collect();
+                if !bad.is_empty() && out.states != self.mcp_states {
+                    self.say(format!("{} MCP 没同步好：{}", self.p.yellow("!"), bad.join("；")));
+                }
+                changed = out.states != self.mcp_states;
+                self.mcp_states = out.states;
+            }
+        }
+        if self.mcp_job.is_some() {
+            return changed;
+        }
+        let Some(index) = self.work.as_ref().and_then(|w| w.mcp.clone()) else { return changed };
+        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
+        let mut found: Vec<(String, Env, Option<String>)> = vec![];
+        for spec in &self.agents {
+            let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
+            let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
+            let Some(env) = self.envs.iter().find(|e| e.id == env_id) else { continue };
+            let prog = spec.checks.iter().find(|c| c.env == env_id).and_then(|c| c.prog.clone());
+            found.push((spec.id.clone(), env.clone(), prog));
+        }
+        let key = format!("{:?}|{:?}", index.iter().map(|s| (&s.name, &s.version)).collect::<Vec<_>>(), found.iter().map(|(a, e, _)| (a, &e.id)).collect::<Vec<_>>());
+        if !self.mcp_force && self.mcp_key.as_deref() == Some(key.as_str()) && self.mcp_at.elapsed() < SKILLS_EVERY {
+            return changed;
+        }
+        self.mcp_force = false;
+        self.mcp_key = Some(key);
+        self.mcp_at = Instant::now();
+        let rm = self.rm().clone();
+        let name = self.name.clone();
+        let owned = self.logs.parent().map(|d| d.join("mcp-sync.json")).unwrap_or_else(|| PathBuf::from("mcp-sync.json"));
+        let any = !index.is_empty();
+        self.mcp_job = Some(std::thread::spawn(move || {
+            // 共用配置是空的：不用取，直接按空的同步（删掉以前同步加的）
+            let lib: Vec<board_core::mcp::McpServer> = if any {
+                match rm.get(&format!("/api/hosts/{name}/mcp"), &[]) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let mut states = vec![];
+                        for (a, _, _) in found.iter().filter(|(a, _, _)| board_core::mcp::AGENTS.contains(&a.as_str())) {
+                            for s in &index {
+                                states.push(board_core::mcp::McpState { server: s.name.clone(), agent: a.clone(), state: "failed".into(), why: Some(format!("取不到 MCP 配置：{}", e.message)) });
+                            }
+                        }
+                        return mcpsync::Synced { states, changes: vec![] };
+                    }
+                }
+            } else {
+                vec![]
+            };
+            let mut targets = vec![];
+            let mut unsupported = vec![];
+            let mut bad = vec![];
+            for (agent, env, prog) in found {
+                if !board_core::mcp::AGENTS.contains(&agent.as_str()) {
+                    unsupported.push(agent);
+                    continue;
+                }
+                match mcpsync::file_of(&agent, &env) {
+                    Some((file, shown)) => targets.push(mcpsync::Target { agent, env, prog, file, shown }),
+                    None => {
+                        for s in lib.iter().filter(|s| s.for_agent(&agent)) {
+                            bad.push(board_core::mcp::McpState { server: s.name.clone(), agent: agent.clone(), state: "failed".into(), why: Some(format!("取不到{}里的配置文件位置", env.name)) });
+                        }
+                    }
+                }
+            }
+            let mut out = mcpsync::sync(&lib, &targets, &unsupported, &owned);
+            out.states.append(&mut bad);
+            out
+        }));
+        changed
+    }
+
     /// 自检（PRD §10.12「自检」）：取到的任务里有新的请求就在后台线程里做；做完回报，回报失败下一轮再报
     fn poll_selftest(&mut self) {
         if self.selftest.as_ref().is_some_and(|(_, h)| h.is_finished()) {
@@ -2117,6 +2214,10 @@ impl Host<'_> {
             if self.poll_skills() {
                 next_beat = Instant::now();
             }
+            // MCP 共用配置：一样在后台写进各 agent 的配置
+            if self.poll_mcp() {
+                next_beat = Instant::now();
+            }
             // 远程管理：重新检查、重启、升级
             let (soon, quit) = self.handle_ask();
             let (soon2, quit2) = self.poll_update();
@@ -2150,6 +2251,7 @@ impl Host<'_> {
     /// 先重新看一遍 skill，再重新读配置。返回有没有变（变了马上上报）
     fn reload(&mut self) -> bool {
         self.skill_force = true;
+        self.mcp_force = true;
         let skills = self.recheck_skills();
         // 重新读配置时把环境检查重跑一遍（可能刚装好了缺的工具）
         self.ready_all = true;

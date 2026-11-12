@@ -275,6 +275,40 @@ export interface HostInfo {
   selftest?: SelfTest;
   /** skills 共用库同步到这台机器各个 agent 目录的状态；旧版 board host 不同步，为 null / 没有 */
   skills?: SkillState[] | null;
+  /** MCP 服务器同步到这台机器各个 agent 的状态；旧版 board host 不同步，为 null / 没有 */
+  mcp?: McpState[] | null;
+}
+
+/** MCP 服务器的一个环境变量或请求头。列表接口里密钥的 value 是空的，tail 是末尾 4 位；保存时密钥留空表示保留原来的值 */
+export interface McpVar {
+  key: string;
+  value?: string | null;
+  secret?: boolean;
+  tail?: string | null;
+}
+
+/** 共用配置里的一个 MCP 服务器（PRD §10.12「共用配置」） */
+export interface McpServer {
+  name: string;
+  kind: 'stdio' | 'http';
+  command: string;
+  args: string[];
+  env: McpVar[];
+  url: string;
+  headers: McpVar[];
+  /** 同步给哪些 agent；空 = 所有支持的（claude、codex、pi） */
+  agents: string[];
+  version?: string;
+  updatedAt?: number;
+  by?: string;
+  source?: string;
+}
+
+export interface McpState {
+  server: string;
+  agent: string;
+  state: 'synced' | 'local' | 'unsupported' | 'failed';
+  why?: string | null;
 }
 
 /** skills 共用库里的一个 skill（PRD §10.12「共用配置」） */

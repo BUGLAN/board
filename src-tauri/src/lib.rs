@@ -16,11 +16,13 @@
 //! - 检查更新：设置页手动检查、启动后自动检查一次，确认后下载、验签、安装，见 [`update`]
 //! - 「设置 → 本机」里 agent 看不到 board-skills 时一键安装到它读 skill 的目录，见 [`skill`]
 //! - 「设置 → 本机」的「开机时自动启动」：登录系统时带 `--autostart` 在后台启动，接任务时不弹窗口，见 [`autostart`]
+//! - 「机器 → 共用配置 → MCP 服务器」的「从本机导入」：读出这台电脑上各 agent 已经配好的 MCP 服务器，见 [`mcp`]
 
 mod autostart;
 mod env;
 mod host;
 mod login;
+mod mcp;
 mod server;
 mod skill;
 mod splash;
@@ -305,6 +307,7 @@ pub fn run() {
             host::host_enable,
             host::host_autostart,
             host::pick_folder,
+            mcp::mcp_local,
             skill::skill_install,
             update::update_check,
             update::update_install,
@@ -423,6 +426,7 @@ mod acl_tests {
         let perms = default_permissions();
         assert!(perms.iter().any(|p| p == "allow-host-enable"), "{perms:?}");
         assert!(perms.iter().any(|p| p == "allow-host-autostart"), "{perms:?}");
+        assert!(perms.iter().any(|p| p == "allow-mcp-local"), "{perms:?}");
         assert!(perms.iter().any(|p| p == "core:default"), "{perms:?}");
         // 切换服务端：「设置 → 账号」要调这三个
         for p in ["allow-server-current", "allow-server-check", "allow-server-connect"] {

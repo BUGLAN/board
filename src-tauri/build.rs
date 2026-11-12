@@ -19,6 +19,7 @@ fn main() {
         "host_enable",
         "host_autostart",
         "pick_folder",
+        "mcp_local",
         "skill_install",
         "update_check",
         "update_install",

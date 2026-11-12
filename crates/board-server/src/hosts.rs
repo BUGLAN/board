@@ -79,7 +79,7 @@ pub(crate) async fn beat(
     Ok(Json(with_builtin(out)))
 }
 
-/// 任务里的 skills 库补上随服务端版本的 board-skills
+/// 任务里的 skills 库补上随服务端版本的 board-skills（MCP 的索引 board-core 已经带上）
 fn with_builtin(mut w: HostWork) -> HostWork {
     w.skills = w.skills.take().map(crate::skills::index);
     w

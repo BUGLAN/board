@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
+import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -223,6 +223,10 @@ export const api = {
   skills: () => req<SkillInfo[]>('GET', '/api/skills'),
   pushSkill: (name: string, files: { path: string; exec: boolean; data: string }[]) => req<SkillInfo>('POST', '/api/skills', { name, files }),
   removeSkill: (name: string) => req('DELETE', `/api/skills/${q(name)}`),
+  /** MCP 服务器共用配置：列表（密钥只给末尾 4 位）、新增或修改（密钥留空保留原值）、删除 */
+  mcp: () => req<McpServer[]>('GET', '/api/mcp'),
+  putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),
+  removeMcp: (name: string) => req('DELETE', `/api/mcp/${q(name)}`),
   /** 自检：整台机器，或只查一个 agent（PRD §10.12「自检」） */
   selfTest: (name: string, agent?: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/selftest`, agent ? { agent } : {}),
   /** 全部暂停 / 全部恢复：所有机器一起设成暂停接单（排队的派发照样排队） */

@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { UpdateCheck as CheckUpdate, UpdateInstalled, UpdateProgress } from './update';
+import type { McpServer } from './types';
 import { pref } from './util';
 
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || window.__BOARD_SHELL__ === 'desktop');
@@ -257,6 +258,16 @@ export async function enableLocalHost(on: boolean, name: string, dirs: { board: 
     await invoke('host_enable', { on, name, dirs });
   } catch (e) {
     throw String(e);
+  }
+}
+
+/** 「从本机导入」：这台电脑上各 agent 已经配好的 MCP 服务器（同步加的不列）；外壳不支持（网页端、旧版桌面端）时返回 null */
+export async function localMcp(): Promise<{ agent: string; server: McpServer }[] | null> {
+  if (!ipc) return null;
+  try {
+    return await invoke<{ agent: string; server: McpServer }[]>('mcp_local');
+  } catch {
+    return null;
   }
 }
 

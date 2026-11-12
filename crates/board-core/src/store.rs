@@ -277,6 +277,7 @@ impl Store {
         crate::hosts::migrate(&conn)?;
         conn.execute_batch(crate::moves::SCHEMA)?;
         conn.execute_batch(crate::skills::SCHEMA)?;
+        conn.execute_batch(crate::mcp::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beat {

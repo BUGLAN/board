@@ -379,6 +379,7 @@ fn host_rename_renames_the_machine_record() {
         ask_error: None,
         selftest: false,
         skills: None,
+        mcp: None,
     };
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
     // 机器名写在配置文件 [host] 里（和桌面端保存的一样）

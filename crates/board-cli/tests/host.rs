@@ -13,6 +13,22 @@ use std::time::{Duration, Instant};
 const FAKE: &str = r#"#!/bin/sh
 # 假 agent：$1 是提示词；按 $FAKE_DIR/mode 决定做什么
 if [ "$1" = "--version" ]; then echo "9.9.9 (fake)"; exit 0; fi
+# claude mcp add-json --scope user <名称> <JSON> / claude mcp remove --scope user <名称>：改 ~/.claude.json 的 mcpServers
+if [ "$1" = "mcp" ]; then
+  python3 -c '
+import json, os, sys
+p = os.path.expanduser("~/.claude.json")
+d = json.load(open(p)) if os.path.exists(p) else {}
+a = sys.argv[1:]
+d.setdefault("mcpServers", {})
+if a[1] == "add-json":
+    d["mcpServers"][a[4]] = json.loads(a[5])
+elif a[1] == "remove":
+    d["mcpServers"].pop(a[4], None)
+json.dump(d, open(p, "w"))
+' "$@"
+  exit $?
+fi
 # 自检问的那一句：答出 skill 的名字；mode 是 nologin 时像没登录的 Claude Code 那样报错退出
 case "$1" in *不要执行任何命令*)
   if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = "nologin" ]; then echo "Not logged in · Please run /login"; exit 1; fi
@@ -1166,4 +1182,86 @@ fn skills_push_rejects_big_skill() {
     let mut res = res;
     let body = res.body_mut().read_to_string().unwrap();
     assert!(body.contains("超过 5 MB"), "{body}");
+}
+
+/* ------------------------------ MCP 共用配置（#187） ------------------------------ */
+
+/// 在服务端加一个 stdio MCP 服务器（带一个密钥）：B 上 Claude Code（经 claude mcp add-json）、Codex（config.toml）、pi（mcp.json）
+/// 的用户级配置里都出现；列表接口、board host 的输出里看不到密钥原文；B 上已有同名的不覆盖；删掉后同步加的删掉、用户自己的留着。
+/// 三个 agent 都是假脚本，不执行本机真实的 claude、codex、pi
+#[test]
+fn mcp_servers_sync_to_claude_codex_pi() {
+    let rig = Rig::new();
+    let home = rig.s.home.clone();
+    // codex、pi 也换成假脚本（找得到命令才同步）；dsh 仍是不存在的命令
+    let conf = home.join(".board").join("config.toml");
+    let fake = rig.fake.display().to_string();
+    let text = std::fs::read_to_string(&conf).unwrap();
+    let text = text.replace("[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\"", &format!("[agents.pi]\nname = \"pi\"\ncmd = [\"{fake}\""));
+    let text = text.replace("[agents.codex]\ncmd = [\"board-test-no-such-command\"", &format!("[agents.codex]\ncmd = [\"{fake}\""));
+    std::fs::write(&conf, text).unwrap();
+    // B 上 pi 本来就有一个同名的 shared（用户自己加的），Codex 有一个用户自己的 mine
+    std::fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
+    std::fs::write(home.join(".pi/agent/mcp.json"), r#"{"mcpServers":{"shared":{"command":"user-own"}}}"#).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/config.toml"), "[mcp_servers.mine]\ncommand = \"mine\"\n").unwrap();
+    let host = rig.host("mbp");
+    let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
+    wait_until("mbp 上线", Duration::from_secs(20), || online(&rig));
+    let secret = "sk-live-0123456789abcdef";
+    let put = |name: &str| {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        let srv: board_core::mcp::McpServer = serde_json::from_value(serde_json::json!({
+            "name": name, "kind": "stdio", "command": "npx", "args": ["-y", "db-mcp"],
+            "env": [{ "key": "DB_URL", "value": "postgres://db" }, { "key": "DB_TOKEN", "value": secret, "secret": true }],
+        }))
+        .unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.mcp_put(srv, "octocat", "界面")).unwrap();
+    };
+    put("db");
+    put("shared");
+    let state = |rig: &Rig, server: &str, agent: &str| -> String {
+        let h = rig.workspace()["hosts"][0].clone();
+        h["mcp"].as_array().and_then(|a| a.iter().find(|s| s["server"] == server && s["agent"] == agent)).map(|s| s["state"].as_str().unwrap_or("").to_string()).unwrap_or_default()
+    };
+    wait_until("db 同步到三个 agent", Duration::from_secs(15), || ["claude", "codex", "pi"].iter().all(|a| state(&rig, "db", a) == "synced"));
+    let claude: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
+    assert_eq!(claude["mcpServers"]["db"]["command"], "npx");
+    assert_eq!(claude["mcpServers"]["db"]["env"]["DB_TOKEN"], secret);
+    let codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    assert!(codex.contains("[mcp_servers.db]") && codex.contains(secret) && codex.contains("[mcp_servers.mine]"), "{codex}");
+    let pi: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap()).unwrap();
+    assert_eq!(pi["mcpServers"]["db"]["args"], serde_json::json!(["-y", "db-mcp"]));
+    // pi 上同名的 shared 是用户自己的：没覆盖，写明；其他 agent 照常加上
+    assert_eq!(pi["mcpServers"]["shared"]["command"], "user-own");
+    assert_eq!(state(&rig, "shared", "pi"), "local");
+    assert_eq!(state(&rig, "shared", "claude"), "synced");
+    // dsh 找不到命令，不报；列表接口（令牌也能读）只给末尾 4 位
+    let mut res = ureq::get(format!("{}/api/mcp", rig.s.url)).header("authorization", format!("Bearer {}", rig.s.token)).call().unwrap();
+    let list = res.body_mut().read_to_string().unwrap();
+    assert!(!list.contains(secret) && list.contains("cdef"), "{list}");
+    // 密钥原文只给 board host 的令牌接口
+    let mut res = ureq::get(format!("{}/api/hosts/mbp/mcp", rig.s.url)).header("authorization", format!("Bearer {}", rig.s.token)).call().unwrap();
+    assert!(res.body_mut().read_to_string().unwrap().contains(secret));
+    // 删掉 db：同步加的删掉，用户自己的 mine、shared（pi）留着
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.mcp_rm("db")).unwrap();
+    }
+    wait_until("db 从三个 agent 删掉", Duration::from_secs(15), || {
+        let pi = std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap_or_default();
+        let codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap_or_default();
+        let claude = std::fs::read_to_string(home.join(".claude.json")).unwrap_or_default();
+        !pi.contains("\"db\"") && !codex.contains("mcp_servers.db") && !claude.contains("\"db\"")
+    });
+    assert!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap().contains("[mcp_servers.mine]"));
+    assert!(std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap().contains("user-own"));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("MCP：加上 claude 的 MCP 服务器 db"), "{out}");
+    assert!(!out.contains(secret), "board host 的输出里没有密钥原文：{out}");
+    // 本机的 board host 日志、派发日志目录里也没有
+    for e in std::fs::read_dir(home.join(".board").join("host").join("logs")).unwrap().flatten() {
+        assert!(!std::fs::read_to_string(e.path()).unwrap_or_default().contains(secret), "{}", e.path().display());
+    }
 }

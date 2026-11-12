@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   up_pause INTEGER NOT NULL DEFAULT 0,-- 1 = 为升级暂停了接单：升级完成或失败后恢复
   rechecked_at INTEGER,               -- 最近一次「重新检查」做完的时间
   selftest TEXT,                      -- 自检（JSON，见 SelfTest）：等 board host 做的请求和最近一次的结果；没做过时为空
-  skills   TEXT                       -- skills 同步状态（JSON，见 SkillState）；旧版 board host 不上报，为空
+  skills   TEXT,                      -- skills 同步状态（JSON，见 SkillState）；旧版 board host 不上报，为空
+  mcp      TEXT                       -- MCP 服务器同步状态（JSON，见 McpState）；旧版 board host 不上报，为空
 );
 
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
@@ -145,6 +146,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "idle_run", "INTEGER NOT NULL DEFAULT 20"),
         ("hosts", "selftest", "TEXT"),
         ("hosts", "skills", "TEXT"),
+        ("hosts", "mcp", "TEXT"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -748,6 +750,9 @@ pub struct HostInfo {
     /// skills 共用库同步到这台机器各个 agent 目录的状态；旧版 board host 不同步，为空
     #[serde(default)]
     pub skills: Option<Vec<crate::skills::SkillState>>,
+    /// MCP 服务器同步到这台机器各个 agent 的状态；旧版 board host 不同步，为空
+    #[serde(default)]
+    pub mcp: Option<Vec<crate::mcp::McpState>>,
 }
 
 /// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
@@ -906,6 +911,9 @@ pub struct HostReport {
     /// skills 同步状态（PRD §10.12「共用配置」）；旧版 board host 不带，带了才更新
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<crate::skills::SkillState>>,
+    /// MCP 服务器同步状态；旧版 board host 不带，带了才更新
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<crate::mcp::McpState>>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -918,6 +926,9 @@ pub struct HostWork {
     /// skills 共用库（不带内容）：board host 按它同步本机；服务端在前面补上随它版本的 board-skills。旧版服务端没有这一项
     #[serde(default)]
     pub skills: Option<Vec<crate::skills::SkillInfo>>,
+    /// MCP 服务器共用配置的索引（名称、版本）：变了 board host 用令牌接口取完整内容。旧版服务端没有这一项
+    #[serde(default)]
+    pub mcp: Option<Vec<crate::mcp::McpIndex>>,
 }
 
 /// 界面上修改机器设置
@@ -1135,13 +1146,14 @@ struct HostRow {
     token: Option<i64>,
     selftest: SelfTest,
     skills_raw: Option<String>,
+    mcp_raw: Option<String>,
     agents_raw: String,
     envs_raw: String,
     dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1185,6 +1197,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         token: r.get(30)?,
         selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         skills_raw: r.get(34)?,
+        mcp_raw: r.get(35)?,
         agents_raw,
         envs_raw,
         dirs_raw,
@@ -1310,6 +1323,7 @@ impl HostRow {
             token: None,
             selftest: self.selftest.clone(),
             skills: self.skills_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
+            mcp: self.mcp_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
         }
     }
     /// 正在等重启或升级：board host 不再开始新的派发
@@ -1615,6 +1629,7 @@ impl<'a> R<'a> {
             host: self.host_info(&h, now)?,
             now,
             skills: Some(self.skills()?),
+            mcp: Some(self.mcp_index()?),
         })
     }
 }
@@ -2088,6 +2103,14 @@ impl<'a> W<'a> {
                     let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
                     if h.skills_raw.as_deref() != Some(raw.as_str()) {
                         self.tx.execute("UPDATE hosts SET skills = ?2 WHERE id = ?1", params![h.id, raw])?;
+                        self.touch_hosts();
+                    }
+                }
+                // MCP 同步状态：带了、变了才写
+                if let Some(st) = &rep.mcp {
+                    let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
+                    if h.mcp_raw.as_deref() != Some(raw.as_str()) {
+                        self.tx.execute("UPDATE hosts SET mcp = ?2 WHERE id = ?1", params![h.id, raw])?;
                         self.touch_hosts();
                     }
                 }

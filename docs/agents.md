@@ -73,6 +73,21 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
   Linux 上 systemd 用户服务默认只在这个用户登录后运行；要开机后没人登录也运行，执行一次 `loginctl enable-linger $USER`（可能要 sudo），`--install` 发现没开时会提示。服务只读 `~/.board/config.toml` 里的服务端地址和令牌，不带 shell 里的 `BOARD_URL`、`BOARD_TOKEN`：先 `board login`。
 
+## MCP 服务器：在「共用配置」里维护
+
+卡片要用到的工具（浏览器、数据库、内部文档这类 MCP 服务器）不用每台机器、每个 agent 一个个配：在「机器 → 共用配置 → MCP 服务器」里加一次，每台机器的 board host 写进它找到的 agent 的用户级配置：
+
+| agent | 写到哪里 | 怎么写 |
+|---|---|---|
+| Claude Code | `~/.claude.json` 顶层 `mcpServers`（user scope） | 在它的启动环境里执行 `claude mcp add-json --scope user <名称> '<JSON>'`，改之前先 `claude mcp remove --scope user <名称>` |
+| Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `[mcp_servers.<名称>]` | 直接改文件：`command`、`args`、`env`，或 `url`、`http_headers` |
+| pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | 直接改文件：`command`、`args`、`env`，或 `url`、`headers` |
+| dsh | — | 不支持，界面上写「不支持」 |
+
+- 只动同步加进去的：加过哪些记在 `~/.board/host/mcp-sync.json`。agent 里已经有同名、不是同步加的，不覆盖，界面上写「有同名，没有覆盖」；在共用配置里删掉的，同步加的那条也删掉，自己加的不动。
+- 值可以标成密钥（token、API key）：只存在服务端，界面上只显示末尾 4 位，只发给 board host；会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
+- 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
+
 ## 一个 agent 要满足什么
 
 接入前逐条验证（「本机验证」一节有命令）：

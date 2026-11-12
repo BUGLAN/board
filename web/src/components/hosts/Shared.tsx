@@ -105,11 +105,11 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
           </p>
         </div>
         <div className="sc-acts">
-          <button className={cx('btn sm', busy === 'upload' && 'is-busy')} type="button" disabled={!!busy} onClick={() => dirInput.current?.click()} data-tip="选一个 skill 目录（里面直接有 SKILL.md），合计不超过 5 MB">
+          <button className={cx('btn sm', busy === 'upload' && 'is-busy')} type="button" disabled={!!busy} onClick={() => dirInput.current?.click()} data-tip="选一个 skill 目录（里面直接有 SKILL.md），合计不超过 5 MB" data-tip-align="end">
             <Icon name="folder" />
             上传目录
           </button>
-          <button className="btn sm" type="button" disabled={!!busy} onClick={() => zipInput.current?.click()} data-tip="一个 skill 打成的 zip（解开后是 skill 目录，或直接是 SKILL.md 这些文件）">
+          <button className="btn sm" type="button" disabled={!!busy} onClick={() => zipInput.current?.click()} data-tip="一个 skill 打成的 zip（解开后是 skill 目录，或直接是 SKILL.md 这些文件）" data-tip-align="end">
             <Icon name="file" />
             上传 zip
           </button>
