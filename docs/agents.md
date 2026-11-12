@@ -68,6 +68,15 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
+**模型和思考强度**：机器详情「本机 agent」每个 agent 下面可以选「模型」（可以手填）和「强度」，没选就是 agent 自己的默认（不传参数，命令和上表完全一样）。选了的，`board host` 按模板把参数插到 `{prompt}` 前面；设置了模型时派发名字的第二段用它（例如 `claude-mbp/sonnet`）。各模板怎么传（参数按各自 `--help` 核对；Codex 的档位按它的配置文档，本机不执行 codex）：
+
+| 标识 | 模型 | 思考强度 | 能选的强度 |
+|---|---|---|---|
+| `dsh` | — | — | 不能选（headless profile 和补丁里没有能按次设置的项） |
+| `claude` | `--model <模型>`（别名 `opus`、`sonnet`、`haiku`、`fable` 或全名） | `--effort <档位>` | `low`、`medium`、`high`、`xhigh`、`max` |
+| `pi` | `--model <模型>`（模式或 `provider/id`） | `--thinking <档位>` | `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
+| `codex` | `-m <模型>` | `-c model_reasoning_effort=<档位>` | `minimal`、`low`、`medium`、`high` |
+
 各自的说明：
 
 - **dsh**：`headless` 档案做完一个任务就退出，最终回答写标准输出，推理过程和诊断写标准错误（日志里都能看到）。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。dsh 的 headless profile 默认还挂着 goal 工具和 goal-round-driver：模型一旦 `create_goal`，任务结束后会自动续一轮，进程退出时把被终止的续轮当成最后一轮（aborted/disposed），退出码变成 1。`board host` 每次 dsh 派发会写一份禁用 `goal-round-driver`、`tool-goal`、`command-goal` 的 profile 补丁，通过 `--patch {patch}` 传入（见 `crates/board-cli/src/dsh-headless.patch.yml`）。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
@@ -135,6 +144,16 @@ model = "<它实际用的模型名>"
 
 `model` 写进派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`，PRD §3.2）；不写时用内置模板的默认值（上表），内置模板也没有时用 agent 标识。转成小写、空白换成 `-`。
 
+要在机器设置里选模型和思考强度，再写怎么传参（不写的 agent 不显示这两项）：
+
+```toml
+model_args = ["--model", "{model}"]          # {model} 换成选的模型
+effort_args = ["--effort", "{effort}"]       # {effort} 换成选的档位
+efforts = ["low", "medium", "high"]          # 能选的档位，从低到高；不写时是这三档
+```
+
+参数插在 `{prompt}` 那一个前面。覆盖内置模板时写了哪项就换哪项，没写的沿用内置的。
+
 在界面「机器」里点开这台机器，点「维护」里的「重新检查」（或重启 `board host`），启动输出和界面「机器」里应该出现它，带版本号；机器详情「本机 agent」的启动环境下拉里能看到它在每个启动环境里找没找到。同标识的 `[agents.*]` 也用来临时改内置模板（例如换参数、换路径、换模型）。
 
 ### 4. 端到端验证：用本机服务端，不碰线上
@@ -160,8 +179,8 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 这一批都通过第 4 步后：
 
-- `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）。放在哪一位就是默认顺序里的哪一位。
-- 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序。
+- `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写），以及 `model_args`、`effort_args`、`efforts`、`models`（按它的 `--help` 核对过的传参方式、档位和常用模型；不支持的留空，界面上就不显示）。放在哪一位就是默认顺序里的哪一位。
+- 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序；`model_and_effort_args`：加上它的拼参断言。
 - 用了事件流 / JSON 输出的：在 `crates/board-cli/src/logfmt.rs` 里加它的转写（`stream_of` 认标识），按它文档里的事件格式写一份样例放进 `crates/board-cli/tests/fixtures/`，加单元测试。
 - 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用，并配一个主色（并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
 - `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表。

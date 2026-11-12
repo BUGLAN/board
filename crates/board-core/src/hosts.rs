@@ -102,7 +102,9 @@ CREATE TABLE IF NOT EXISTS dispatches (
   exit_code   INTEGER,
   stop_by     TEXT,                   -- 有人请求停止：谁
   session     INTEGER,                -- 同一个 agent 进程做的几张卡：第一张的派发 ID（开会话时排进去、board next 接着做的那几张都写它）；空表示就是自己
-  log         TEXT NOT NULL DEFAULT '' -- 日志的最后 500 行
+  log         TEXT NOT NULL DEFAULT '', -- 日志的最后 500 行
+  model       TEXT,                   -- 开始时按机器设置传给 agent 的模型；没设（agent 自己的默认）、旧版 board host 为空
+  effort      TEXT                    -- 开始时传给 agent 的思考强度；同上
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
 CREATE INDEX IF NOT EXISTS dispatches_host ON dispatches (host_id, state, id);
@@ -131,6 +133,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "drain_at", "INTEGER"),
         ("hosts", "up_pause", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "rechecked_at", "INTEGER"),
+        ("dispatches", "model", "TEXT"),
+        ("dispatches", "effort", "TEXT"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -291,6 +295,38 @@ pub struct HostAgent {
     /// 生成名字时用 agent 标识代替
     #[serde(default)]
     pub model: String,
+    /// 机器设置里能选的模型和思考强度（board host 按模板上报，PRD §9.1）；旧版 board host 没有这一项：界面上置灰、要升级
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opts: Option<AgentOpts>,
+    /// 服务端发出去时才有：机器设置里选的模型；没选是 agent 自己的默认（不传参数）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_model: Option<String>,
+    /// 服务端发出去时才有：机器设置里选的思考强度；没选是 agent 自己的默认
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_effort: Option<String>,
+}
+
+/// 一个 agent 能在机器设置里选什么（模板决定怎么传参）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentOpts {
+    /// 能选模型（模板有传模型的参数）
+    #[serde(default)]
+    pub model: bool,
+    /// 下拉里列的常用模型（也可以手填）
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// 支持的思考强度档位，按从低到高；空表示不能选强度
+    #[serde(default)]
+    pub efforts: Vec<String>,
+}
+
+/// 模型名：字母或数字开头，字母、数字和 `. _ : / @ + -`，最长 64 个字符（作为一个参数传给 agent，也是派发名字的第二段）
+pub fn check_model(m: &str) -> std::result::Result<(), String> {
+    let ok = !m.is_empty()
+        && m.len() <= 64
+        && m.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && m.chars().all(|c| c.is_ascii_alphanumeric() || "._:/@+-".contains(c));
+    if ok { Ok(()) } else { Err(format!("模型名「{m}」不对：字母或数字开头，只能用字母、数字和 . _ : / @ + -，最长 64 个字符")) }
 }
 
 /// 一个 agent 在一个启动环境里的检查结果
@@ -326,6 +362,12 @@ pub struct AgentRun {
     /// 启动环境；没有时按默认规则选
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
+    /// 模型；没有时不传（agent 自己的默认）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 思考强度；没有时不传
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// 白板与目录：派到这台机器的卡片，agent 在对应目录里启动
@@ -789,6 +831,9 @@ pub struct HostPatch {
     /// 一个 agent 的启动环境
     #[serde(default)]
     pub env: Option<EnvPatch>,
+    /// 一个 agent 的模型、思考强度（各自 None 表示不改，空字符串表示回到 agent 自己的默认）
+    #[serde(default)]
+    pub run: Option<RunPatch>,
     /// 白板与目录（整个列表替换）
     #[serde(default)]
     pub dirs: Option<Vec<HostDir>>,
@@ -799,6 +844,16 @@ pub struct HostPatch {
 pub struct EnvPatch {
     pub agent: String,
     pub env: String,
+}
+
+/// 改一个 agent 的模型、思考强度
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RunPatch {
+    pub agent: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// 一次派发
@@ -845,6 +900,11 @@ pub struct Dispatch {
     pub seq: i64,
     #[serde(default = "one")]
     pub total: i64,
+    /// 开始时按机器设置传给 agent 的模型、思考强度；没设、旧版时为空
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 fn one() -> i64 {
@@ -870,6 +930,18 @@ pub fn result_words(r: &str) -> &'static str {
         "unclaimed" => "没领到",
         _ => "已结束",
     }
+}
+
+/// 动态里的「，模型 sonnet，强度 high」；都没设时为空
+fn opts_words(model: &Option<String>, effort: &Option<String>) -> String {
+    let mut s = String::new();
+    if let Some(m) = model {
+        s += &format!("，模型 {m}");
+    }
+    if let Some(e) = effort {
+        s += &format!("，强度 {e}");
+    }
+    s
 }
 
 fn source_words(s: &str) -> &'static str {
@@ -999,10 +1071,22 @@ impl HostRow {
                     out.env = c.map(|c| c.env.clone());
                     out.no_skill = c.filter(|c| c.found).and_then(|c| c.no_skill.clone());
                 }
+                let run = self.run.get(&a.id);
+                out.run_model = run.and_then(|r| r.model.clone());
+                out.run_effort = run.and_then(|r| r.effort.clone());
                 out
             })
             .collect()
     }
+    /// 开始派发时传给这个 agent 的模型、思考强度：机器设置里选了、board host 上报了这个 agent 能选（新版）才传
+    fn run_opts(&self, agent: &str) -> (Option<String>, Option<String>) {
+        let Some(opts) = self.agents.iter().find(|a| a.id == agent).and_then(|a| a.opts.as_ref()) else { return (None, None) };
+        let run = self.run.get(agent);
+        let model = run.and_then(|r| r.model.clone()).filter(|_| opts.model);
+        let effort = run.and_then(|r| r.effort.clone()).filter(|e| opts.efforts.contains(e));
+        (model, effort)
+    }
+
     /// 启动环境的名称
     fn env_name(&self, id: &str) -> String {
         self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string())
@@ -1087,7 +1171,8 @@ const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, C
        d.agent_label, d.name, d.source, d.by_kind, d.by_name, d.state, d.result, d.created_at, d.started_at, d.ended_at,
        d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session AND s.id <= d.id) END,
-       CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END
+       CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END,
+       d.model, d.effort
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -1116,6 +1201,8 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         session: r.get(22)?,
         seq: r.get(23)?,
         total: r.get(24)?,
+        model: r.get(25)?,
+        effort: r.get(26)?,
     })
 }
 
@@ -1376,6 +1463,8 @@ struct DRow {
     env: Option<String>,
     /// 会话标识：第一张的派发 ID
     session: i64,
+    model: Option<String>,
+    effort: Option<String>,
 }
 
 impl<'a> W<'a> {
@@ -1400,7 +1489,7 @@ impl<'a> W<'a> {
     fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
-                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id) FROM dispatches WHERE id = ?1",
+                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort FROM dispatches WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(DRow {
@@ -1419,6 +1508,8 @@ impl<'a> W<'a> {
                         env_name: r.get(12)?,
                         env: r.get(13)?,
                         session: r.get(14)?,
+                        model: r.get(15)?,
+                        effort: r.get(16)?,
                     })
                 },
             )
@@ -1555,22 +1646,22 @@ impl<'a> W<'a> {
         // 按排好的顺序以同一个名字领取；领不到的记「没领到」，接着取再下一张
         for id in queue {
             let q = self.drow(id)?;
-            let q = DRow { name: Some(name.to_string()), env: d.env.clone(), env_name: d.env_name.clone(), ..q };
+            let q = DRow { name: Some(name.to_string()), env: d.env.clone(), env_name: d.env_name.clone(), model: d.model.clone(), effort: d.effort.clone(), ..q };
             self.dispatch_ok = true;
             let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(q.card) });
             self.dispatch_ok = false;
             match claimed {
                 Ok(_) => {
                     self.tx.execute(
-                        "UPDATE dispatches SET state = 'running', name = ?2, env = ?3, env_name = ?4, started_at = ?5 WHERE id = ?1",
-                        params![q.id, name, q.env, q.env_name, self.now],
+                        "UPDATE dispatches SET state = 'running', name = ?2, env = ?3, env_name = ?4, started_at = ?5, model = ?6, effort = ?7 WHERE id = ?1",
+                        params![q.id, name, q.env, q.env_name, self.now, q.model, q.effort],
                     )?;
                     let seq: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE session = ?1 AND id <= ?2", params![d.session, q.id], |r| r.get(0))?;
                     let who = match &q.env_name {
                         Some(e) => format!("{}（{e}）", q.agent_label),
                         None => format!("{} ", q.agent_label),
                     };
-                    let text = format!("派发开始：{} 上的 {who}以 {name} 接着做（定时，这个会话的第 {seq} 张）", h.name);
+                    let text = format!("派发开始：{} 上的 {who}以 {name} 接着做（定时，这个会话的第 {seq} 张{}）", h.name, opts_words(&q.model, &q.effort));
                     self.track(d.board, q.card, &actor, "dispatch", &text)?;
                     self.touch_hosts();
                     return Ok(Ok(self.read().card(&board, q.card)?));
@@ -2170,7 +2261,51 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET cron = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&v).unwrap_or_default()])?;
         }
+        if let Some(rp) = &p.run {
+            let a = h
+                .agents
+                .iter()
+                .find(|a| a.id == rp.agent)
+                .ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{}」", rp.agent)))?;
+            let Some(opts) = &a.opts else {
+                return Err(BoardError::usage(format!(
+                    "机器「{name}」的 board 是旧版（{}），不能设置模型和思考强度：升级到 {} 后再设",
+                    h.version,
+                    env!("CARGO_PKG_VERSION")
+                )));
+            };
+            let mut run = h.run.clone();
+            let cur = run.entry(rp.agent.clone()).or_default();
+            if let Some(m) = &rp.model {
+                let m = m.trim();
+                if m.is_empty() {
+                    cur.model = None;
+                } else {
+                    if !opts.model {
+                        return Err(BoardError::usage(format!("{} 不能在机器设置里选模型", a.name)));
+                    }
+                    check_model(m).map_err(BoardError::usage)?;
+                    cur.model = Some(m.to_string());
+                }
+            }
+            if let Some(e) = &rp.effort {
+                let e = e.trim();
+                if e.is_empty() {
+                    cur.effort = None;
+                } else if !opts.efforts.iter().any(|x| x == e) {
+                    return Err(BoardError::usage(if opts.efforts.is_empty() {
+                        format!("{} 不能在机器设置里选思考强度", a.name)
+                    } else {
+                        format!("{} 不支持思考强度「{e}」：只能是 {}", a.name, opts.efforts.join("、"))
+                    }));
+                } else {
+                    cur.effort = Some(e.to_string());
+                }
+            }
+            self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+        }
         if let Some(e) = &p.env {
+            let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
             let check = h.env_check(&e.agent, &e.env)?;
             let mut run = h.run.clone();
             run.entry(e.agent.clone()).or_default().env = Some(check.env);
@@ -2461,7 +2596,10 @@ impl<'a> W<'a> {
         // 不带序号的名字空闲就直接用；同一台机器同一 agent、模型有多个并发派发时模型名后面加 -2、-3 …
         // （dsh-win/deepseek-v4.1-flash-2），只有在线的名字算占用，
         // 上一个会话离线后名字可以复用
-        let model = h.agents.iter().find(|a| a.id == d.agent).map(|a| a.model.as_str()).unwrap_or_default();
+        // 机器设置里选了模型时名字第二段用它；没选时用 board host 上报的（配置文件 → 内置默认 → agent 标识）
+        let (run_model, run_effort) = h.run_opts(&d.agent);
+        let model = run_model.clone().unwrap_or_else(|| h.agents.iter().find(|a| a.id == d.agent).map(|a| a.model.clone()).unwrap_or_default());
+        let model = model.as_str();
         let gap = crate::agents::NAME_GAP_MS;
         let mut seq = 0u32;
         let name = loop {
@@ -2481,10 +2619,10 @@ impl<'a> W<'a> {
         let env = h.agents.iter().find(|a| a.id == d.agent).and_then(|a| h.pick(a)).map(|c| c.env.clone());
         let env_name = env.as_deref().map(|e| h.env_name(e));
         self.tx.execute(
-            "UPDATE dispatches SET name = ?2, env = ?3, env_name = ?4 WHERE id = ?1",
-            params![d.id, name, env, env_name],
+            "UPDATE dispatches SET name = ?2, env = ?3, env_name = ?4, model = ?5, effort = ?6 WHERE id = ?1",
+            params![d.id, name, env, env_name, run_model, run_effort],
         )?;
-        let d = DRow { name: Some(name.clone()), env_name: env_name.clone(), ..d };
+        let d = DRow { name: Some(name.clone()), env_name: env_name.clone(), model: run_model.clone(), effort: run_effort.clone(), ..d };
         // 这个名字属于这台 board host：派发会话里的 agent 自己 heartbeat stop 也不会让它离线
         self.agent_check_owned(&name, token, crate::agents::NameOwner::Host)?;
         let board = self.board_of(d.board)?;
@@ -2501,7 +2639,7 @@ impl<'a> W<'a> {
                     Some(e) => format!("{}（{e}）", d.agent_label),
                     None => format!("{} ", d.agent_label),
                 };
-                let text = format!("派发开始：{} 上的 {who}以 {name} 领取（{}）", h.name, source_words(&d.source));
+                let text = format!("派发开始：{} 上的 {who}以 {name} 领取（{}{}）", h.name, source_words(&d.source), opts_words(&d.model, &d.effort));
                 self.track(d.board, d.card, &actor, "dispatch", &text)?;
             }
             Err(e) if e.code == ErrorCode::Internal => return Err(e),

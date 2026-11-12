@@ -134,6 +134,21 @@ export interface HostAgent {
   no_skill?: string | null;
   /** 这个 agent 在这台机器上实际配的模型名：派发的 agent 名字（<agent 标识>-<机器名>/<模型名>）的第二段；旧版 board host 没有 */
   model?: string;
+  /** 机器设置里能选的模型和思考强度（按模板）；旧版 board host 没有：置灰、要升级 */
+  opts?: AgentOpts | null;
+  /** 机器设置里选的模型、思考强度；没选是 agent 自己的默认（不传参数） */
+  run_model?: string | null;
+  run_effort?: string | null;
+}
+
+/** 一个 agent 能在机器设置里选什么 */
+export interface AgentOpts {
+  /** 能选模型 */
+  model: boolean;
+  /** 「模型」下拉里列的常用模型（也可以手填） */
+  models: string[];
+  /** 支持的思考强度档位，从低到高；空表示不能选强度 */
+  efforts: string[];
 }
 
 /** 一个 agent 在一个启动环境里的检查结果 */
@@ -324,6 +339,9 @@ export interface Dispatch {
   /** 这个会话的第几张、一共排了几张；不属于会话时 1、1；旧版服务端没有 */
   seq?: number;
   total?: number;
+  /** 开始时传给 agent 的模型、思考强度（机器设置里选的）；没选、旧版时没有 */
+  model?: string | null;
+  effort?: string | null;
 }
 
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */

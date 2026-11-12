@@ -72,8 +72,29 @@ export function HostModal() {
 type HostPatch = Parameters<typeof api.updateHost>[1];
 type Save = (p: HostPatch) => void;
 
-/** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则和兜底算同一项，启动环境按 agent 分 */
-const fieldOf = (p: HostPatch) => (p.env ? `env:${p.env.agent}` : 'rules' in p || 'fallback' in p ? 'rules' : Object.keys(p)[0] ?? 'host');
+/** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则和兜底算同一项，启动环境按 agent 分，模型、思考强度按 agent 各算一项 */
+const fieldOf = (p: HostPatch) =>
+  p.env
+    ? `env:${p.env.agent}`
+    : p.run
+      ? `run:${p.run.agent}:${p.run.model !== undefined ? 'model' : 'effort'}`
+      : 'rules' in p || 'fallback' in p
+        ? 'rules'
+        : (Object.keys(p)[0] ?? 'host');
+
+/** 改一个 agent 的启动环境、模型、思考强度（当帧画出来） */
+const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
+  if (p.env?.agent === a.id) return { ...a, env: p.env.env };
+  if (p.run?.agent === a.id) {
+    const r = p.run;
+    return {
+      ...a,
+      ...(r.model !== undefined ? { run_model: r.model.trim() || null } : {}),
+      ...(r.effort !== undefined ? { run_effort: r.effort || null } : {}),
+    };
+  }
+  return a;
+};
 /** 步进器连点：停手这么久才发请求，只发最后的值 */
 const STEPPED = new Set(['max', 'perSession']);
 const STEP_MS = 450;
@@ -84,15 +105,13 @@ function useSaver(name: string) {
   const { sync, track } = useSync();
   const save: Save = p => {
     const f = fieldOf(p);
-    const { env, ...fields } = p;
+    const { env, run, ...fields } = p;
     const done = saveSetting(
       `${hostKey(name)}:${f}`,
       {
         ws: ws => ({
           ...ws,
-          hosts: ws.hosts?.map(x =>
-            x.name === name ? { ...x, ...fields, agents: env ? x.agents.map(a => (a.id === env.agent ? { ...a, env: env.env } : a)) : x.agents } : x,
-          ),
+          hosts: ws.hosts?.map(x => (x.name === name ? { ...x, ...fields, agents: env || run ? x.agents.map(a => agentPatch(a, p)) : x.agents } : x)),
         }),
       },
       () => api.updateHost(name, p),
@@ -366,7 +385,16 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             </div>
             <SkillBanner h={h} fixed={fixed} setFixed={setFixed} />
             {h.agents.map(a => (
-              <AgentRow key={a.id} h={h} a={a} save={save} sync={sync[`env:${a.id}`] ?? (a.id === h.agent ? sync.agent : undefined)} fixed={fixed?.includes(a.id)} />
+              <AgentRow
+                key={a.id}
+                h={h}
+                a={a}
+                save={save}
+                sync={sync[`env:${a.id}`] ?? (a.id === h.agent ? sync.agent : undefined)}
+                runSync={{ model: sync[`run:${a.id}:model`], effort: sync[`run:${a.id}:effort`] }}
+                server={server}
+                fixed={fixed?.includes(a.id)}
+              />
             ))}
             {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
           </section>
@@ -447,6 +475,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                       <span>
                         <em style={{ ['--c' as string]: r.color }}>{r.label}</em>
                         {p.envName && <> · {p.envName}</>}
+                        {p.model && <> · {p.model}</>}
+                        {p.effort && <> · {p.effort}</>}
                         {p.startedAt != null && p.endedAt != null && <> · 用时 {durWords(p.endedAt - p.startedAt)}</>}
                         {p.endedAt != null && <> · {since(p.endedAt, now)}</>}
                       </span>
@@ -715,7 +745,23 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
 /** 本机 agent 的一行：图标、名称（看不到 board-skills 时后面一个「缺 skill」小胶囊，悬停写装到哪里；刚一键装好的变绿「skill 已装」）、
  *  启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
  *  旧版 board host 不上报启动环境：不显示下拉，写版本号 */
-function AgentRow({ h, a, save, sync, fixed }: { h: HostInfo; a: HostAgent; save: Save; sync?: SyncState; fixed?: boolean }) {
+function AgentRow({
+  h,
+  a,
+  save,
+  sync,
+  runSync,
+  server,
+  fixed,
+}: {
+  h: HostInfo;
+  a: HostAgent;
+  save: Save;
+  sync?: SyncState;
+  runSync: { model?: SyncState; effort?: SyncState };
+  server: string | null;
+  fixed?: boolean;
+}) {
   const def = a.id === h.agent;
   const envs = h.envs ?? [];
   const checks = a.envs ?? [];
@@ -770,7 +816,76 @@ function AgentRow({ h, a, save, sync, fixed }: { h: HostInfo; a: HostAgent; save
         </button>
         </span>
       </div>
+      <AgentRunRow h={h} a={a} save={save} sync={runSync} server={server} />
     </>
+  );
+}
+
+/** 一个 agent 的模型、思考强度（PRD §9.1）：模型是可以手填的下拉，强度只列它支持的档位；空是 agent 自己的默认（不传参数）。
+ *  各存各的、当帧生效，保存状态画在控件旁边。旧版 board host 不上报能选什么：置灰，写要升级到哪个版本；
+ *  模板没有这两项的 agent（dsh）不显示 */
+function AgentRunRow({ h, a, save, sync, server }: { h: HostInfo; a: HostAgent; save: Save; sync: { model?: SyncState; effort?: SyncState }; server: string | null }) {
+  const opts = a.opts;
+  const [model, setModel] = useState(a.run_model ?? '');
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setModel(a.run_model ?? '');
+  }, [a.run_model, editing]);
+  if (!a.found) return null;
+  if (opts && !opts.model && !opts.efforts.length) return null;
+  const old = !opts;
+  const tip = old ? `这台机器的 board 要升级到 ${server ?? '服务端的版本'} 才能设置` : undefined;
+  const commit = () => {
+    setEditing(false);
+    const v = model.trim();
+    if (v !== (a.run_model ?? '')) save({ run: { agent: a.id, model: v } });
+  };
+  const listId = `hp-models-${h.id}-${a.id}`;
+  return (
+    <div className={cx('hp-arun', old && 'off')} title={tip}>
+      {(old || opts?.model) && (
+        <label className="hp-arun-f">
+          <span>模型</span>
+          <input
+            className="input hp-arun-model"
+            list={listId}
+            value={model}
+            disabled={old}
+            placeholder={a.model ? `默认（${a.model}）` : '默认'}
+            spellCheck={false}
+            autoComplete="off"
+            aria-label={`${a.name} 的模型`}
+            onFocus={() => setEditing(true)}
+            onChange={e => setModel(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+            }}
+          />
+          <datalist id={listId}>
+            {(opts?.models ?? []).map(m => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+          <Sync s={sync.model} />
+        </label>
+      )}
+      {(old || !!opts?.efforts.length) && (
+        <span className="hp-arun-f">
+          <span>强度</span>
+          <Select
+            className="hp-arun-effort"
+            disabled={old}
+            value={a.run_effort ?? ''}
+            options={[{ value: '', label: '默认' }, ...(opts?.efforts ?? []).map(e => ({ value: e, label: e }))]}
+            onChange={v => save({ run: { agent: a.id, effort: v } })}
+            aria-label={`${a.name} 的思考强度`}
+          />
+          <Sync s={sync.effort} />
+        </span>
+      )}
+      {old && <em className="hp-arun-old">{tip}</em>}
+    </div>
   );
 }
 
@@ -1289,6 +1404,7 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
       <div className="hp-run-meta">
         <span className="hp-mono">{r.name}</span>
         {r.envName && <span>{r.envName}</span>}
+        {(r.model || r.effort) && <span>{[r.model, r.effort].filter(Boolean).join(' · ')}</span>}
         <span>{r.startedAt != null ? durWords(now - r.startedAt) : '刚开始'}</span>
         <Beat at={r.beatAt} now={now} />
         <span>{SOURCE[r.source]}</span>

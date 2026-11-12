@@ -89,7 +89,9 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
             ) : (
               <>
                 {d.name}
-                {d.envName && ` · ${d.envName}`} · {SOURCE[d.source]}派发 · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
+                {d.envName && ` · ${d.envName}`}
+                {d.model && ` · ${d.model}`}
+                {d.effort && ` · 强度 ${d.effort}`} · {SOURCE[d.source]}派发 · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
                 {d.stopBy && ' · 正在停止'}
               </>
             )}

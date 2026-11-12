@@ -203,6 +203,8 @@ export const api = {
       cronOn?: boolean;
       cron?: string[];
       env?: { agent: string; env: string };
+      /** 一个 agent 的模型、思考强度：不带的那一项不改，空字符串回到 agent 自己的默认 */
+      run?: { agent: string; model?: string; effort?: string };
       dirs?: { board: string; path: string }[];
     },
   ) =>

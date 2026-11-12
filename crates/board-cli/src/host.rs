@@ -85,6 +85,14 @@ struct Builtin {
     /// Windows 上支持的启动环境，顺序就是默认选择的顺序（`wsl:*` 是每个 WSL 发行版）；
     /// macOS、Linux 上都是登录 shell → 直接启动（[`envs::UNIX_ORDER`]）
     win: &'static [&'static str],
+    /// 机器设置里选了模型时插到 `{prompt}` 前面的参数（`{model}` 换成模型）；空表示不能选模型
+    model_args: &'static [&'static str],
+    /// 选了思考强度时插到 `{prompt}` 前面的参数（`{effort}` 换成档位）；空表示不能选强度
+    effort_args: &'static [&'static str],
+    /// 支持的思考强度档位（按各自 `--help` 核对过），从低到高
+    efforts: &'static [&'static str],
+    /// 机器设置「模型」下拉里列的常用模型（也可以手填）
+    models: &'static [&'static str],
 }
 
 /// 顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
@@ -103,6 +111,11 @@ const BUILTIN: [Builtin; 4] = [
         project: &[".agents/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "cmd"],
+        // DeepSeek Harness 的 headless profile 和补丁里没有能按次设置模型、思考强度的项：不显示这两项
+        model_args: &[],
+        effort_args: &[],
+        efforts: &[],
+        models: &[],
     },
     Builtin {
         id: "claude",
@@ -116,6 +129,11 @@ const BUILTIN: [Builtin; 4] = [
         project: &[".claude/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
+        // claude --help：--model <别名或全名>、--effort <low, medium, high, xhigh, max>
+        model_args: &["--model", "{model}"],
+        effort_args: &["--effort", "{effort}"],
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+        models: &["opus", "sonnet", "haiku", "fable"],
     },
     Builtin {
         id: "pi",
@@ -129,6 +147,11 @@ const BUILTIN: [Builtin; 4] = [
         git_bash: true,
         // pi 不支持 cmd
         win: &["git-bash", "wsl:*", "pwsh", "powershell"],
+        // pi --help：--model <模式或 provider/id>、--thinking <off, minimal, low, medium, high, xhigh, max>
+        model_args: &["--model", "{model}"],
+        effort_args: &["--thinking", "{effort}"],
+        efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        models: &[],
     },
     Builtin {
         id: "codex",
@@ -140,6 +163,11 @@ const BUILTIN: [Builtin; 4] = [
         project: &[".agents/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
+        // codex exec：-m <模型>、-c model_reasoning_effort=<minimal|low|medium|high>（配置项按 Codex 文档；本机不执行 codex 核对）
+        model_args: &["-m", "{model}"],
+        effort_args: &["-c", "model_reasoning_effort={effort}"],
+        efforts: &["minimal", "low", "medium", "high"],
+        models: &["gpt-5-codex", "gpt-5"],
     },
 ];
 
@@ -225,6 +253,35 @@ struct Spec {
     checks: Vec<Check>,
     /// 找到了命令、却看不到 `board-skills` 的启动环境 → 该装到哪里（启动时由 [`Spec::check_skills`] 检查一次）
     no_skill: BTreeMap<String, String>,
+    /// 选了模型、思考强度时追加的参数；能选的档位、常用模型（见 [`Builtin`]）
+    model_args: Vec<String>,
+    effort_args: Vec<String>,
+    efforts: Vec<String>,
+    models: Vec<String>,
+}
+
+/// 启动 agent 的参数（命令模板里第一个之后的）：`{prompt}`、`{patch}` 换成提示词和补丁路径；
+/// 机器设置里选了模型、思考强度时，把对应的参数插到 `{prompt}` 那一个前面（没有 `{prompt}` 时放在最后）。
+/// 都没选时和原来完全一样
+fn agent_args(cmd: &[String], model_args: &[String], effort_args: &[String], model: Option<&str>, effort: Option<&str>, prompt: &str, patch: &str) -> Vec<String> {
+    let mut extra: Vec<String> = vec![];
+    if let Some(m) = model.filter(|_| !model_args.is_empty()) {
+        extra.extend(model_args.iter().map(|a| a.replace("{model}", m)));
+    }
+    if let Some(e) = effort.filter(|_| !effort_args.is_empty()) {
+        extra.extend(effort_args.iter().map(|a| a.replace("{effort}", e)));
+    }
+    let mut out: Vec<String> = vec![];
+    let mut placed = extra.is_empty();
+    for a in cmd.iter().skip(1) {
+        if !placed && a.contains("{prompt}") {
+            out.append(&mut extra);
+            placed = true;
+        }
+        out.push(a.replace("{prompt}", prompt).replace("{patch}", patch));
+    }
+    out.append(&mut extra);
+    out
 }
 
 impl Spec {
@@ -244,6 +301,13 @@ impl Spec {
             env: None,
             no_skill: def.and_then(|c| self.no_skill.get(&c.env).cloned()),
             model: self.model.clone(),
+            opts: Some(AgentOpts {
+                model: !self.model_args.is_empty(),
+                models: if self.model_args.is_empty() { vec![] } else { self.models.clone() },
+                efforts: if self.effort_args.is_empty() { vec![] } else { self.efforts.clone() },
+            }),
+            run_model: None,
+            run_effort: None,
         }
     }
 
@@ -287,6 +351,10 @@ struct Template {
     git_bash: bool,
     /// 支持的启动环境，按默认选择的顺序
     order: Vec<String>,
+    model_args: Vec<String>,
+    effort_args: Vec<String>,
+    efforts: Vec<String>,
+    models: Vec<String>,
 }
 
 /// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
@@ -306,6 +374,10 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             project: strs(b.project),
             git_bash: b.git_bash,
             order: order(b.win),
+            model_args: strs(b.model_args),
+            effort_args: strs(b.effort_args),
+            efforts: strs(b.efforts),
+            models: strs(b.models),
         })
         .collect();
     for a in conf {
@@ -323,6 +395,15 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 if let Some(m) = &a.model {
                     x.model = m.clone();
                 }
+                if let Some(v) = &a.model_args {
+                    x.model_args = v.clone();
+                }
+                if let Some(v) = &a.effort_args {
+                    x.effort_args = v.clone();
+                }
+                if let Some(v) = &a.efforts {
+                    x.efforts = v.clone();
+                }
             }
             None => out.push(Template {
                 id: a.id.clone(),
@@ -334,6 +415,10 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 project: vec![],
                 git_bash: false,
                 order: order(envs::CONF_WIN_ORDER),
+                model_args: a.model_args.clone().unwrap_or_default(),
+                effort_args: a.effort_args.clone().unwrap_or_default(),
+                efforts: a.efforts.clone().unwrap_or_else(|| ["low", "medium", "high"].map(String::from).to_vec()),
+                models: vec![],
             }),
         }
     }
@@ -363,6 +448,10 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 git_bash: t.git_bash,
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
                 no_skill: BTreeMap::new(),
+                model_args: t.model_args,
+                effort_args: t.effort_args,
+                efforts: t.efforts,
+                models: t.models,
             })
             .collect()
     }))
@@ -2082,7 +2171,8 @@ impl Host<'_> {
         let conf = self.run.join(format!("{}.toml", d.id));
         write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| e.message)?;
         let patch_arg = patch.display().to_string();
-        let args: Vec<String> = spec.cmd.iter().skip(1).map(|a| a.replace("{prompt}", &prompt).replace("{patch}", &patch_arg)).collect();
+        // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
+        let args = agent_args(&spec.cmd, &spec.model_args, &spec.effort_args, d.model.as_deref(), d.effort.as_deref(), &prompt, &patch_arg);
         let mut c = env.command(&prog, &args, Some(&dir), true);
         c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
@@ -2374,13 +2464,13 @@ mod tests {
         assert!(BUILTIN.iter().find(|b| b.id == "codex").unwrap().model.is_empty());
         // 内置 agent 全部换成找不到的命令：本机真装了 dsh、pi、codex 也不去执行它们的 --version
         // （本机执行 codex 会被 macOS 拦下、反复弹「包含恶意软件」的提示）
-        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
+        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()], ..Default::default() };
         let conf = vec![
             nope("dsh"),
             nope("claude"),
             nope("pi"),
             nope("codex"),
-            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
+            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()], ..Default::default() },
         ];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex", "mycli"]);
@@ -2395,9 +2485,58 @@ mod tests {
         let r = specs[4].report();
         assert_eq!((r.found, r.envs.len(), r.env, r.no_skill, r.model.as_str()), (false, 1, None, None, "gpt-5"));
         // 配置文件里的 model 覆盖内置模板的
-        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()] }];
+        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()], ..Default::default() }];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs[0].model, "deepseek-reasoner");
+    }
+
+    fn sv(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// 机器设置里的模型、思考强度怎么传给 agent（PRD §9.1）
+    #[test]
+    fn model_and_effort_args() {
+        let b = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap();
+        let args = |id: &str, m: Option<&str>, e: Option<&str>| {
+            let x = b(id);
+            agent_args(&sv(x.cmd), &sv(x.model_args), &sv(x.effort_args), m, e, "P", "/tmp/patch.yml")
+        };
+        // 都没选：和原来的拼法完全一样
+        for x in &BUILTIN {
+            let old: Vec<String> = x.cmd.iter().skip(1).map(|a| a.replace("{prompt}", "P").replace("{patch}", "/tmp/patch.yml")).collect();
+            assert_eq!(args(x.id, None, None), old, "{} 没选时命令不变", x.id);
+        }
+        // Claude Code：--model、--effort 插在提示词前面
+        assert_eq!(
+            args("claude", Some("sonnet"), Some("high")),
+            sv(&["-p", "--model", "sonnet", "--effort", "high", "P", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"])
+        );
+        // Codex：-m、-c model_reasoning_effort=…，子命令 exec 还在最前
+        assert_eq!(
+            args("codex", Some("gpt-5-codex"), Some("high")),
+            sv(&["exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=high", "P"])
+        );
+        // pi：--model、--thinking；只选一项时只传那一项
+        assert_eq!(args("pi", Some("anthropic/claude-sonnet"), Some("xhigh")), sv(&["--mode", "json", "--model", "anthropic/claude-sonnet", "--thinking", "xhigh", "P"]));
+        assert_eq!(args("pi", None, Some("low")), sv(&["--mode", "json", "--thinking", "low", "P"]));
+        // dsh 没有这两项：选了也不传
+        assert_eq!(args("dsh", Some("x"), Some("high")), args("dsh", None, None));
+        // 模板里没有 {prompt}：放在最后
+        assert_eq!(agent_args(&sv(&["a", "b"]), &sv(&["--m", "{model}"]), &[], Some("x"), None, "P", ""), sv(&["b", "--m", "x"]));
+        // 上报能选什么：claude 能选模型和五档强度；dsh 都不能；配置文件里新加的 agent 写了 effort_args 没写 efforts 时是三档
+        let conf = vec![
+            AgentConf { id: "claude".into(), cmd: sv(&["/nope/claude", "{prompt}"]), ..Default::default() },
+            AgentConf { id: "dsh".into(), cmd: sv(&["/nope/dsh", "{prompt}"]), ..Default::default() },
+            AgentConf { id: "mycli".into(), cmd: sv(&["/nope/mycli", "{prompt}"]), effort_args: Some(sv(&["--effort={effort}"])), ..Default::default() },
+            AgentConf { id: "plain".into(), cmd: sv(&["/nope/plain", "{prompt}"]), ..Default::default() },
+        ];
+        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
+        let opts = |id: &str| specs.iter().find(|s| s.id == id).unwrap().report().opts.unwrap();
+        assert_eq!(opts("claude"), AgentOpts { model: true, models: sv(&["opus", "sonnet", "haiku", "fable"]), efforts: sv(&["low", "medium", "high", "xhigh", "max"]) });
+        assert_eq!(opts("dsh"), AgentOpts::default());
+        assert_eq!(opts("mycli"), AgentOpts { model: false, models: vec![], efforts: sv(&["low", "medium", "high"]) });
+        assert_eq!(opts("plain"), AgentOpts::default(), "没写 model_args、effort_args 的 agent 不显示这两项");
     }
 
     #[test]
@@ -2432,6 +2571,10 @@ mod tests {
             git_bash: true,
             checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
             no_skill: BTreeMap::new(),
+            model_args: vec![],
+            effort_args: vec![],
+            efforts: vec![],
+            models: vec![],
         };
         let direct = Env::direct();
         let dirs = [("default/main".into(), repo.clone())];
@@ -2493,6 +2636,8 @@ mod tests {
             session,
             seq: 1,
             total: 1,
+            model: None,
+            effort: None,
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));

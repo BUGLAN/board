@@ -184,7 +184,7 @@ pub struct HostConf {
     pub agents: Vec<AgentConf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AgentConf {
     pub id: String,
     /// 名称（界面上显示）；不写时用标识
@@ -193,6 +193,13 @@ pub struct AgentConf {
     /// 内置模板也没有时用 agent 标识
     pub model: Option<String>,
     pub cmd: Vec<String>,
+    /// 机器设置里选了模型时追加的参数（`{model}` 换成模型），例如 `["--model", "{model}"]`；不写时不能选模型
+    /// （内置模板有自己的）
+    pub model_args: Option<Vec<String>>,
+    /// 选了思考强度时追加的参数（`{effort}` 换成档位）；不写时不能选强度（内置模板有自己的）
+    pub effort_args: Option<Vec<String>>,
+    /// 支持的思考强度档位（写了 effort_args 才有用）；不写时是 low、medium、high
+    pub efforts: Option<Vec<String>>,
 }
 
 impl Config {
@@ -226,7 +233,14 @@ impl Config {
                     .ok_or_else(|| bad(&format!("agents.{id}.cmd（要写成字符串数组）")))?;
                 let name = at.get("name").and_then(|x| x.as_str()).map(str::to_string);
                 let model = at.get("model").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                c.agents.push(AgentConf { id: id.to_string(), name, model, cmd });
+                let list = |key: &str| -> Result<Option<Vec<String>>> {
+                    let Some(v) = at.get(key) else { return Ok(None) };
+                    let what = format!("agents.{id}.{key}（要写成字符串数组）");
+                    let arr = v.as_array().ok_or_else(|| bad(&what))?;
+                    arr.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().ok_or_else(|| bad(&what)).map(Some)
+                };
+                let (model_args, effort_args, efforts) = (list("model_args")?, list("effort_args")?, list("efforts")?);
+                c.agents.push(AgentConf { id: id.to_string(), name, model, cmd, model_args, effort_args, efforts });
             }
         }
         Ok(c)

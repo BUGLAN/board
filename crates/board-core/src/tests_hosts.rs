@@ -1009,6 +1009,7 @@ fn win_report(instance: &str) -> HostReport {
             env: None,
             no_skill: None,
             model: String::new(),
+            ..Default::default()
         },
         HostAgent {
             id: "claude".into(),
@@ -1019,6 +1020,7 @@ fn win_report(instance: &str) -> HostReport {
             env: None,
             no_skill: None,
             model: "opus-5.5".into(),
+            ..Default::default()
         },
     ];
     r
@@ -2439,4 +2441,67 @@ fn version_order() {
     assert!(hosts::version_lt("v0.1.19", "0.2.0"));
     assert!(!hosts::version_lt("0.1.19", "0.1.19"));
     assert!(!hosts::version_lt("1.0.0", "0.9.9"));
+}
+
+/* ------------------------------ 模型和思考强度（PRD §9.1） ------------------------------ */
+
+/// 新版 board host：claude 上报能选的模型和强度
+fn report_opts(instance: &str) -> HostReport {
+    let mut r = report("mbp", instance, vec![]);
+    r.agents[0].opts = Some(AgentOpts {
+        model: true,
+        models: vec!["opus".into(), "sonnet".into()],
+        efforts: ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec(),
+    });
+    r
+}
+
+fn set_run(s: &mut Store, model: Option<&str>, effort: Option<&str>) -> Result<HostInfo> {
+    let run = RunPatch { agent: "claude".into(), model: model.map(str::to_string), effort: effort.map(str::to_string) };
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { run: Some(run), ..Default::default() }))
+}
+
+#[test]
+fn model_and_effort_are_validated_and_shown() {
+    let mut s = store();
+    // 旧版 board host（不上报能选什么）：不能设
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let e = set_run(&mut s, Some("sonnet"), None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("升级到"), "{}", e.message);
+    beat(&mut s, T0 + S, &report_opts("i1")).unwrap();
+    let h = set_run(&mut s, Some(" sonnet "), Some("high")).unwrap();
+    let a = h.agents.iter().find(|a| a.id == "claude").unwrap();
+    assert_eq!((a.run_model.as_deref(), a.run_effort.as_deref()), (Some("sonnet"), Some("high")));
+    // 不支持的档位、不像模型名的值：USAGE
+    assert_eq!(set_run(&mut s, None, Some("turbo")).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(set_run(&mut s, Some("son net; rm -rf"), None).unwrap_err().code, ErrorCode::Usage);
+    // 只改一项另一项不动；空字符串回到默认
+    let h = set_run(&mut s, None, Some("")).unwrap();
+    let a = h.agents.iter().find(|a| a.id == "claude").unwrap();
+    assert_eq!((a.run_model.as_deref(), a.run_effort.as_deref()), (Some("sonnet"), None));
+    // 和启动环境一起存：互不覆盖
+    let h = set_run(&mut s, Some(""), None).unwrap();
+    assert!(h.agents.iter().all(|a| a.run_model.is_none() && a.run_effort.is_none()));
+}
+
+#[test]
+fn dispatch_passes_model_and_effort_and_names_after_the_model() {
+    let mut s = store();
+    beat(&mut s, T0, &report_opts("i1")).unwrap();
+    set_run(&mut s, Some("sonnet"), Some("high")).unwrap();
+    let id = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, id, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!((d.model.as_deref(), d.effort.as_deref()), (Some("sonnet"), Some("high")));
+    assert_eq!(d.name.as_deref(), Some("claude-mbp/sonnet"), "设置了模型时名字第二段用它");
+    let acts = card(&s, id).activity;
+    assert!(acts.iter().any(|a| a.text.contains("派发开始") && a.text.contains("模型 sonnet，强度 high")), "{acts:?}");
+    end(&mut s, T0 + 2 * S, d.id, Some(0), &[]);
+    // 都改回默认：名字、派发记录和原来一样
+    set_run(&mut s, Some(""), Some("")).unwrap();
+    let id2 = new_card(&mut s, T0, "B");
+    let d2 = dispatch(&mut s, T0 + 3 * S, id2, "mbp", None).unwrap();
+    let d2 = begin(&mut s, T0 + 3 * S, d2.id).unwrap();
+    assert_eq!((d2.model, d2.effort, d2.name.as_deref()), (None, None, Some("claude-mbp/opus-5.5")));
 }

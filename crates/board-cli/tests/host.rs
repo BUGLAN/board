@@ -645,3 +645,42 @@ fn remote_recheck_and_restart() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("重新检查完了") && out.contains("请求重启 board host") && out.contains("重新启动 board host"), "{out}");
 }
+
+/// 机器设置里的模型、思考强度（PRD §9.1）：不重启 board host，下一次派发就按模板把参数传给 agent，
+/// agent 名字第二段用模型，卡片动态的「派发开始」写着模型和强度
+#[test]
+fn model_and_effort_reach_the_agent() {
+    let rig = Rig::new();
+    // claude 换成一个把参数打印出来的假脚本（内置模板的 --model / --effort 照样插在提示词前面）
+    let printer = rig.fake.parent().unwrap().join("printer.sh");
+    std::fs::write(&printer, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&printer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let conf = rig.s.home.join(".board").join("config.toml");
+    let text = std::fs::read_to_string(&conf).unwrap().replace(&rig.fake.display().to_string(), &printer.display().to_string());
+    std::fs::write(&conf, text).unwrap();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    let a = rig.workspace()["hosts"][0]["agents"].as_array().unwrap().iter().find(|a| a["id"] == "claude").cloned().unwrap();
+    assert_eq!(a["opts"]["efforts"], serde_json::json!(["low", "medium", "high", "xhigh", "max"]), "{a}");
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        let run = board_core::RunPatch { agent: "claude".into(), model: Some("sonnet".into()), effort: Some("high".into()) };
+        let p = board_core::HostPatch { run: Some(run), ..Default::default() };
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &p)).unwrap();
+    }
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d = r.json()["id"].as_i64().unwrap();
+    let log = log_file(&rig.s.home, d);
+    wait_until("假 agent 打印参数", Duration::from_secs(15), || std::fs::read_to_string(&log).is_ok_and(|s| s.contains("args:")));
+    let out = std::fs::read_to_string(&log).unwrap();
+    assert!(out.contains("args: --model sonnet --effort high /board-skills 开始执行"), "{out}");
+    let acts = activity(&rig.show(1));
+    assert!(acts.iter().any(|t| t.contains("以 claude-mbp/sonnet 领取") && t.contains("模型 sonnet，强度 high")), "{acts:?}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}

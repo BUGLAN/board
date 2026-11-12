@@ -66,6 +66,14 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-arow.missing > b:not(.hp-arow-name) { background: var(--text-4); }
 .hp-arow.missing .hp-arow-name { color: var(--text-3); }
 .hp-arow-none { font-size: 12px; color: var(--text-3); }
+/* agent 的模型、思考强度：agent 那一行下面一行，和名称对齐 */
+.hp-arun { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 0 0 8px 30px; font-size: 12px; color: var(--text-3); }
+.hp-arun-f { display: inline-flex; align-items: center; gap: 6px; }
+.hp-arun-f > span:first-child { white-space: nowrap; }
+.input.hp-arun-model { width: 168px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
+.input.hp-arun-effort { width: 104px; height: 28px; padding: 0 8px; font-size: 12px; }
+.hp-arun.off { opacity: .55; }
+.hp-arun-old { font-style: normal; font-size: 11.5px; color: var(--text-3); }
 /* 看不到 board-skills：名称后的小胶囊（悬停写装到哪里）；刚一键装好的变绿 */
 .hp-skill { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; cursor: default;
   color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, transparent); }
