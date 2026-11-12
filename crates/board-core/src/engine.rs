@@ -500,7 +500,7 @@ impl<'a> W<'a> {
             }
 
             // 上面已经拆成评论和移动
-            Cmd::Reply { id, .. } => id,
+            Cmd::Reply { .. } => unreachable!(),
 
             /* ---------------- 评论 ---------------- */
             Cmd::Comment { id, text } => {

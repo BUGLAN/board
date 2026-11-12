@@ -208,14 +208,12 @@ pub const PER_SESSION_LIMIT: i64 = 8;
 pub const MAX_RUN_DEFAULT: i64 = 180;
 /// 没输出多久算卡住的默认值（分钟，0 = 不限）
 pub const IDLE_RUN_DEFAULT: i64 = 20;
-/// 单次最长运行最多几分钟（12 小时）；0 表示不限。测试里可以设得很小
+/// 单次最长运行最多几分钟（12 小时）；0 表示不限。测试里可以设得很小。
+/// 界面上能选的档位（`web/src/components/hosts/HostModal.tsx` 的 `MAX_RUN_CHOICES`）只在这张范围里，
+/// 最高一档就是这个上限；服务端只校验范围，选不选得到哪几档由界面决定
 pub const MAX_RUN_LIMIT: i64 = 720;
-/// 没输出多久算卡住最多几分钟（2 小时）；0 表示不限
+/// 没输出多久算卡住最多几分钟（2 小时）；0 表示不限。界面的 `IDLE_RUN_CHOICES` 同上
 pub const IDLE_RUN_LIMIT: i64 = 120;
-/// 界面上可以选的档位（分钟，0 = 不限）；逐档列出，选不了别的
-pub const MAX_RUN_CHOICES: [i64; 13] = [0, 30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 660, 720];
-/// 界面上可以选的档位（分钟，0 = 不限）
-pub const IDLE_RUN_CHOICES: [i64; 12] = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
 /// 领取规则最多几条
 pub const RULES_LIMIT: usize = 20;
 /// 「复制设置到…」能选的项：标识和说法
@@ -1084,7 +1082,9 @@ fn one() -> i64 {
 }
 
 impl Dispatch {
-    /// 开会话时排进去、还在等这个会话的 `board next` 开始的派发
+    /// 开会话时排进去、还在等这个会话的 `board next` 开始的派发。
+    /// 服务端只按 `state` 筛排队中的派发，界面拿的是 `session` 和 `id`，所以只在测试里用它
+    #[cfg(test)]
     pub fn in_session_queue(&self) -> bool {
         self.state == "queued" && self.session != self.id
     }
@@ -2848,12 +2848,15 @@ impl<'a> W<'a> {
         self.read().host(name, self.now)
     }
 
-    /// 移除机器（任务下发需求 §九）：取消它所有排队中的派发，停止正在跑的派发，删除机器设置；派发记录保留
+    /// 移除机器（任务下发需求 §九），不吊销令牌：见 [`Self::host_remove_revoke`]。
+    /// 服务端删除机器都走 `host_remove_revoke`（带不带吊销由请求决定），只有测试用不吊销的这一个
+    #[cfg(test)]
     pub fn host_remove(&mut self, name: &str, by: &Actor, who: &str) -> Result<()> {
         self.host_remove_revoke(name, by, who, false).map(|_| ())
     }
 
-    /// 同 [`Self::host_remove`]；revoke 时同时吊销它最近一次上报用的令牌（只在别的在线机器都不用这个令牌时），
+    /// 移除机器（任务下发需求 §九）：取消它所有排队中的派发，停止正在跑的派发，删除机器设置；派发记录保留。
+    /// revoke 时同时吊销它最近一次上报用的令牌（只在别的在线机器都不用这个令牌时），
     /// 返回吊销的令牌 ID
     pub fn host_remove_revoke(&mut self, name: &str, by: &Actor, who: &str, revoke: bool) -> Result<Option<i64>> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;

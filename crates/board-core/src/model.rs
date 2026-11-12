@@ -504,6 +504,9 @@ impl ReadyCheck {
         let t = pick.trim();
         (!t.is_empty()).then(|| t.to_string())
     }
+    /// 两条命令都空：这块白板不检查。服务端和 CLI 都只用 [`Self::for_os`]（它已经对空命令返回 None），
+    /// 界面上用前端自己的判断，所以只在测试里用
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.cmd.trim().is_empty() && self.win.trim().is_empty()
     }

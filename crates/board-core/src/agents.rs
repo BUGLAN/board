@@ -174,7 +174,9 @@ impl<'a> R<'a> {
 }
 
 impl<'a> W<'a> {
-    /// `board check --as <名字>`（旧版 CLI，名字没有会话标识）：见 [`W::agent_check_owned`]
+    /// `board check --as <名字>`（旧版 CLI，名字没有会话标识）：见 [`W::agent_check_owned`]。
+    /// 生产路径都走 `agent_check_owned`（服务端带会话、board host 带 [`NameOwner::Host`]），只有测试用它
+    #[cfg(test)]
     pub fn agent_check(&mut self, name: &str, token: Option<i64>) -> Result<AgentInfo> {
         self.agent_check_owned(name, token, NameOwner::Anyone)
     }
@@ -208,7 +210,9 @@ impl<'a> W<'a> {
     /// （与 `board beat <ID>` 相同）。名字不在线时 `NAME_OFFLINE`。
     ///
     /// `done`（`board beat --final`）：名字立刻离线；已经离线时什么也不做。返回名字的情况和它持有的卡片。
-    /// 不带会话标识（旧版 CLI 的写法）：见 [`W::agent_beat_by`]
+    /// 不带会话标识（旧版 CLI 的写法）：见 [`W::agent_beat_by`]。
+    /// CLI 和 board host 都传了会话标识/来源（`agent_beat_by`），只有测试用不带标识的这一个
+    #[cfg(test)]
     pub fn agent_beat(&mut self, name: &str, done: bool) -> Result<AgentInfo> {
         self.agent_beat_by(name, done, BeatBy::Cli(None))
     }

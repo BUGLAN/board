@@ -102,9 +102,10 @@ const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
 const STEPPED = new Set(['max', 'perSession']);
 const STEP_MS = 450;
 
-/** 单次最长运行可以选的档位（分钟，0 = 不限） */
+/** 单次最长运行可以选的档位（分钟，0 = 不限）。服务端只校验范围（`board-core` 的 `MAX_RUN_LIMIT`，
+    就是最高一档），选哪几档由界面决定，所以档位只在这里列一份 */
 const MAX_RUN_CHOICES = [0, 30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 660, 720];
-/** 没输出多久算卡住可以选的档位（分钟，0 = 不限） */
+/** 没输出多久算卡住可以选的档位（分钟，0 = 不限）；范围是 `IDLE_RUN_LIMIT`，最高一档就是它 */
 const IDLE_RUN_CHOICES = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
 
 /** 分钟数写成人看的话：3 小时、1 小时 30 分、20 分钟、不限 */

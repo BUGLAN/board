@@ -70,11 +70,8 @@ pub(crate) fn parse(action: &str, text: &str) -> Option<(Option<String>, String)
         "claim" => pair("从「", "进入「"),
         // 强制释放了 X 的领取，卡片回到「B」最上面；心跳中断……卡片回到「B」最上面
         "release" | "lost" | "timeout" => Some((None, quoted_after(text, "回到「")?.to_string())),
-        // 回收站：从回收站恢复，放回「B」（恢复前后都在这个状态）
-        "restore" => {
-            let to = quoted_after(text, "放回「")?.to_string();
-            Some((Some(to.clone()), to))
-        }
+        // 回收站恢复（`restore`）不在这里解析：回填的查询（见 [`backfill`]）只取上面这几种，
+        // 恢复不换状态、不参与统计，所以没有这一支
         _ => None,
     }
 }
@@ -162,6 +159,8 @@ mod tests {
         assert_eq!(parse("release", "强制释放了 alpha 的领取，卡片回到「待办」最上面"), Some((None, "待办".into())));
         assert_eq!(parse("lost", "心跳中断：……卡片回到「返工」最上面"), Some((None, "返工".into())));
         assert_eq!(parse("release", "「进行中」取消了锁定，alpha 的领取已释放"), None);
+        // 回收站恢复不换状态，回填不取它（查询里没有 restore）
+        assert_eq!(parse("restore", "从回收站恢复，放回「待办」"), None);
         assert_eq!(parse("comment", "从「A」移到「B」"), None);
     }
 }

@@ -45,7 +45,7 @@ fn seed(path: &Path, at: i64) {
     let mut s = Store::open(path).unwrap();
     s.ensure_default(at).unwrap();
     s.write(at, Origin::cli(), |w| w.host_beat(&report(vec![]), Some(1))).unwrap();
-    s.write(at, Origin::cli(), |w| w.agent_check("claude/alpha", Some(1))).unwrap();
+    s.write(at, Origin::cli(), |w| w.agent_check_owned("claude/alpha", Some(1), NameOwner::Anyone)).unwrap();
     let a = new_card(&mut s, at, "A");
     s.write(at, Origin::cli(), |w| {
         let b = w.resolve(B)?;
