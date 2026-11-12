@@ -262,6 +262,19 @@ describe('项目与标签', () => {
   });
 });
 
+describe('readyCheckPatch（白板的环境检查）', () => {
+  it('只改这一块白板，重复执行结果相同；没写过时补上另一项的空值；白板不在了原样返回', () => {
+    const ws = twice(D.readyCheckPatch('p/a', { cmd: 'cargo --version' }).ws!, workspace());
+    const boards = ws.projects[0].boards;
+    expect(boards[0].readyCheck).toEqual({ cmd: 'cargo --version', win: '' });
+    expect(boards[1].readyCheck).toBeUndefined();
+    const both = twice(D.readyCheckPatch('p/a', { win: 'where cargo' }).ws!, ws);
+    expect(both.projects[0].boards[0].readyCheck).toEqual({ cmd: 'cargo --version', win: 'where cargo' });
+    const orig = workspace();
+    expect(D.readyCheckPatch('p/nope', { cmd: 'x' }).ws!(orig)).toBe(orig);
+  });
+});
+
 describe('draftCard（新建）', () => {
   const draft = (title = '新卡片') => D.draftCard({ title, body: '', labels: [], column: 'todo' });
   const start = () => D.useData.setState({ board: board() });

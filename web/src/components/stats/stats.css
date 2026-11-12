@@ -290,6 +290,7 @@
 /* ---------- 总览 ---------- */
 .sp-ov { padding: 20px 22px; }
 .sp-ov-head { display: flex; align-items: flex-start; gap: 14px; padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.sp-ov-nohost { margin: -4px 0 16px; }
 .sp-ov-av { width: 44px; height: 44px; font-size: 19px; border-radius: var(--r-md); flex: none; }
 .sp-ov-title { flex: 1; min-width: 0; }
 .sp-ov-crumb { font-size: 12.5px; font-weight: 600; color: var(--text-2); }

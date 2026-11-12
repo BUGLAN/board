@@ -189,6 +189,33 @@ impl Env {
     }
 }
 
+/// 执行一行 shell 命令（白板的环境检查，PRD §9.1）：Windows 在 cmd 里（`cmd /d /s /c "<命令>"`），
+/// macOS、Linux 在登录 shell 里（`$SHELL -l -i -c <命令>`，和启动 agent 时读到同样的 `PATH`），找不到时用 `/bin/sh -c`。
+/// 工作目录是 dir
+pub fn shell_line(envs: &[Env], line: &str, dir: &Path) -> Command {
+    let mut c = if cfg!(windows) {
+        let prog = envs.iter().find(|e| e.kind == Kind::Cmd).map(|e| e.prog.clone()).unwrap_or_else(|| PathBuf::from("cmd.exe"));
+        let mut c = Command::new(prog);
+        raw(&mut c, &format!("/d /s /c \"{line}\""));
+        c
+    } else {
+        match envs.iter().find(|e| e.kind == Kind::Login) {
+            Some(e) => {
+                let mut c = Command::new(&e.prog);
+                c.args(["-l", "-i", "-c", line]);
+                c
+            }
+            None => {
+                let mut c = Command::new("/bin/sh");
+                c.args(["-c", line]);
+                c
+            }
+        }
+    };
+    c.current_dir(dir);
+    c
+}
+
 /* ------------------------------ 脚本 ------------------------------ */
 
 /// sh 类的包装脚本：`exec "$0" "$@"`；派发时先用 board host 的连接覆盖启动脚本里可能设的，WSL 还要写进程号
@@ -695,6 +722,17 @@ mod tests {
         let c = direct.command("/usr/local/bin/pi", &s(&["-p", PROMPT]), None, true);
         assert_eq!(c.get_program(), "/usr/local/bin/pi");
         assert_eq!(args(&c), &["-p", PROMPT]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_line_runs_in_dir_and_keeps_exit_code() {
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let out = shell_line(&[], "pwd && echo bad >&2 && exit 3", &dir).output().unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        let pwd = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(Path::new(pwd.trim()).canonicalize().unwrap(), dir);
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "bad");
     }
 
     #[test]

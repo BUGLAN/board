@@ -17,6 +17,7 @@ import { cx, reduceMotion } from '../lib/util';
 import { colCount, flowKey, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { openBoardSettings, toast, useUI } from '../store/ui';
 import { Select, Sync, useSync } from './bits';
+import { ReadyCheckSection } from './BoardReady';
 import { pack, withDefaults } from './BoardView';
 import { Icon } from './Icon';
 
@@ -295,6 +296,7 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
               </div>
               <p className="bs-note">复原以后保存的布局还在，可以再应用。保存之后删掉的状态应用时跳过，新加的状态按默认规则补位。</p>
             </section>
+            <ReadyCheckSection path={path} i={2} />
             <div className="bs-foot">改动立即生效，同步到所有窗口和机器。</div>
           </div>
           <aside className="d-side bs-side" aria-label="预览">

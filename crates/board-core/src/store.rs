@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS boards (
   keep_sorted INTEGER NOT NULL DEFAULT 0,
   -- 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改
   readme      TEXT NOT NULL DEFAULT '',
+  -- 环境检查（PRD §9.1）：所有系统 / 只给 Windows 的一行命令；都为空时不检查
+  ready_check     TEXT NOT NULL DEFAULT '',
+  ready_check_win TEXT NOT NULL DEFAULT '',
   UNIQUE (project, key)
 );
 
@@ -380,6 +383,15 @@ impl Store {
         if !has_readme {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN readme TEXT NOT NULL DEFAULT ''")?;
         }
+        // 旧数据库的白板没有环境检查：不检查，和原来一样
+        let has_check: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'ready_check'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_check {
+            conn.execute_batch(
+                "ALTER TABLE boards ADD COLUMN ready_check TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE boards ADD COLUMN ready_check_win TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
         // 旧数据库不记「未整理」的条目有没有被人看过：已经不在「未整理」里的都算看过（那次整理就是看过），
         // 还在「未整理」里的算没看过——和升级前一样，没有点；之后有人打开时照常标成看过
         let has_seen: bool =
@@ -583,7 +595,8 @@ impl<'a> R<'a> {
             p.labels = labels_of(conn, &p.key)?;
             let mut st = conn.prepare(
                 "SELECT b.id, b.key, b.name, b.description, b.pos_x, b.pos_y, b.created_at,
-                        COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme
+                        COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme,
+                        b.ready_check, b.ready_check_win
                  FROM boards b WHERE b.project = ?1 ORDER BY b.sort, b.created_at, b.key",
             )?;
             let rows = st.query_map([&p.key], |r| {
@@ -595,6 +608,7 @@ impl<'a> R<'a> {
                         name: r.get(2)?,
                         desc: r.get(3)?,
                         readme: r.get(8)?,
+                        ready_check: ReadyCheck { cmd: r.get(9)?, win: r.get(10)? },
                         pos: Pos { x: r.get(4)?, y: r.get(5)? },
                         created_at: r.get(6)?,
                         updated_at: r.get(7)?,
@@ -1232,6 +1246,31 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE boards SET description = ?1 WHERE id = ?2", params![d.trim(), b.id])?;
         }
         self.changed = true;
+        Ok(())
+    }
+
+    /// 白板的环境检查（PRD §9.1）：一行命令，最长 500 个字符；None 表示这一项不改，空字符串表示不检查
+    pub fn set_ready_check(&mut self, path: &str, cmd: Option<&str>, win: Option<&str>) -> Result<()> {
+        let b = self.resolve_exact(path)?;
+        let clean = |t: &str| -> Result<String> {
+            let t = t.trim();
+            if t.contains('\n') || t.contains('\r') {
+                return Err(BoardError::usage("环境检查只能写一行：几条命令用 && 连起来"));
+            }
+            if t.chars().count() > READY_CHECK_MAX {
+                return Err(BoardError::usage(format!("环境检查最长 {READY_CHECK_MAX} 个字符")));
+            }
+            Ok(t.to_string())
+        };
+        if let Some(t) = cmd {
+            self.tx.execute("UPDATE boards SET ready_check = ?1 WHERE id = ?2", params![clean(t)?, b.id])?;
+        }
+        if let Some(t) = win {
+            self.tx.execute("UPDATE boards SET ready_check_win = ?1 WHERE id = ?2", params![clean(t)?, b.id])?;
+        }
+        self.changed = true;
+        // 机器拿到的检查命令变了：board host 收到推送后马上重新检查
+        self.hosts_changed = true;
         Ok(())
     }
 

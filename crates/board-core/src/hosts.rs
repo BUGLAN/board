@@ -334,6 +334,86 @@ pub struct HostDir {
     /// 目录不存在时，在这台机器上克隆的状态
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone: Option<HostClone>,
+    /// 服务端发出去时才有：这块白板的环境检查命令（按这台机器的系统选好）；白板没写检查命令时为空。不存进数据库
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// board host 最近一次跑环境检查的结果；旧版 board host 不上报
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<DirReady>,
+}
+
+/// 一台机器在一块白板的目录里跑环境检查的结果（PRD §9.1「环境检查」）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirReady {
+    /// 跑的是哪条命令：白板的检查命令改了之后，旧结果不算
+    pub cmd: String,
+    /// 退出码为 0
+    pub ok: bool,
+    /// 退出码；超时被结束、没能运行时为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<i64>,
+    /// 输出（标准输出和标准错误）的最后 20 行
+    #[serde(default)]
+    pub tail: Vec<String>,
+    /// 跑完的时间
+    pub at: i64,
+}
+
+/// 环境检查保留的输出行数
+pub const READY_TAIL: usize = 20;
+/// 环境检查最长跑多久，超过就结束它、算没通过
+pub const READY_LIMIT_MS: i64 = 120_000;
+
+/// 一台机器上一块白板能不能接卡（环境检查）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Readiness {
+    /// 白板没写检查命令：照常接卡
+    NoCheck,
+    Passed,
+    /// 没通过：输出的最后一行（没有输出时写退出码）
+    Failed(String),
+    /// 还没检查，或者命令改了之后还没跑完；旧版 board host 一直是这样
+    Pending,
+}
+
+impl Readiness {
+    /// 接这块白板的卡
+    pub fn ok(&self) -> bool {
+        matches!(self, Readiness::NoCheck | Readiness::Passed)
+    }
+}
+
+/// 按检查命令和 board host 上报的结果判断（cmd 为空表示白板不检查）
+pub fn readiness(cmd: Option<&str>, ready: Option<&DirReady>) -> Readiness {
+    let Some(cmd) = cmd else { return Readiness::NoCheck };
+    match ready {
+        Some(r) if r.cmd == cmd => {
+            if r.ok {
+                Readiness::Passed
+            } else {
+                let last = r.tail.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty());
+                Readiness::Failed(match (last, r.code) {
+                    (Some(l), _) => l.to_string(),
+                    (None, Some(c)) => format!("退出码 {c}"),
+                    (None, None) => "没有输出".into(),
+                })
+            }
+        }
+        _ => Readiness::Pending,
+    }
+}
+
+/// 上报的检查结果：最多留最后 20 行，每行最长 500 个字符
+fn clean_ready(r: &DirReady) -> DirReady {
+    let skip = r.tail.len().saturating_sub(READY_TAIL);
+    DirReady {
+        cmd: r.cmd.clone(),
+        ok: r.ok,
+        code: r.code,
+        tail: r.tail[skip..].iter().map(|l| l.chars().take(500).collect()).collect(),
+        at: r.at,
+    }
 }
 
 /// 在 board host 那台机器上克隆一块白板的目录
@@ -379,6 +459,8 @@ fn clean_dirs(raw: &[HostDir], old: &[HostDir]) -> Vec<HostDir> {
                 branch: d.branch.clone(),
                 checked_at: d.checked_at,
                 clone: d.clone.clone(),
+                check: None,
+                ready: d.ready.as_ref().map(clean_ready),
             };
             if let Some(prev) = old.iter().find(|x| x.board == board && x.path == path) {
                 out.status = prev.status.clone();
@@ -386,6 +468,7 @@ fn clean_dirs(raw: &[HostDir], old: &[HostDir]) -> Vec<HostDir> {
                 out.branch = prev.branch.clone();
                 out.checked_at = prev.checked_at;
                 out.clone = prev.clone.clone();
+                out.ready = prev.ready.clone();
             }
             out
         })
@@ -401,6 +484,10 @@ fn merge_dir_checks(settings: &mut [HostDir], checks: &[HostDir]) {
             s.origin = r.origin.clone();
             s.branch = r.branch.clone();
             s.checked_at = r.checked_at;
+        }
+        // 环境检查的结果：旧版 board host 不上报，保留原值
+        if let Some(ready) = &r.ready {
+            s.ready = Some(clean_ready(ready));
         }
         // 远程发起的克隆以服务端为准；board host 只上报 running / done / failed 覆盖排队状态
         if let Some(run) = &r.clone {
@@ -1019,6 +1106,13 @@ impl<'a> R<'a> {
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
     fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
         let mut info = h.info(now);
+        // 每块白板的环境检查命令（按这台机器的系统选好）：board host 照着跑，界面照着判断结果算不算数
+        for d in info.dirs.iter_mut() {
+            d.check = match self.resolve(&d.board) {
+                Ok(b) => self.ready_check(b.id)?.for_os(&h.os),
+                Err(_) => None,
+            };
+        }
         // 规则里这台机器有目录的项目里都没有的标签：界面上标出来
         let known = self.host_labels(h)?;
         for r in info.rules.iter_mut() {
@@ -1040,6 +1134,21 @@ impl<'a> R<'a> {
             }
         }
         Ok(info)
+    }
+
+    /// 白板的环境检查命令
+    pub(crate) fn ready_check(&self, board: i64) -> Result<ReadyCheck> {
+        Ok(self.conn.query_row("SELECT ready_check, ready_check_win FROM boards WHERE id = ?1", [board], |r| {
+            Ok(ReadyCheck { cmd: r.get(0)?, win: r.get(1)? })
+        })?)
+    }
+
+    /// 这台机器上这块白板能不能接卡（环境检查）
+    fn dir_readiness(&self, h: &HostRow, board: &BoardRef) -> Result<Readiness> {
+        let path = board.path();
+        let cmd = self.ready_check(board.id)?.for_os(&h.os);
+        let ready = h.dirs.iter().find(|d| d.board == path).and_then(|d| d.ready.as_ref());
+        Ok(readiness(cmd.as_deref(), ready))
     }
 
     /// 这台机器有目录的白板所在项目里的标签名（小写）
@@ -1900,6 +2009,20 @@ impl<'a> W<'a> {
                 format!("机器「{host}」没有白板 {path} 的目录：那台机器的 board host 启动时用 --dir {path}=<路径> 加上"),
             ));
         }
+        match self.read().dir_readiness(&h, board)? {
+            Readiness::Failed(last) => {
+                return Err(BoardError::new(ErrorCode::BoardNotReady, format!("机器「{host}」上 {path} 的环境检查没通过：{last}"))
+                    .with_detail(json!({ "host": host, "board": path })));
+            }
+            Readiness::Pending => {
+                return Err(BoardError::new(
+                    ErrorCode::BoardNotReady,
+                    format!("机器「{host}」还没跑完 {path} 的环境检查：等它跑完再派（旧版 board host 不会检查，要先升级 board）"),
+                )
+                .with_detail(json!({ "host": host, "board": path })));
+            }
+            Readiness::NoCheck | Readiness::Passed => {}
+        }
         let (agent_id, label) = (a.id.clone(), a.name.clone());
         self.insert_dispatch(board.id, card, &h, &agent_id, &label, "manual", by)
     }
@@ -2095,6 +2218,10 @@ impl<'a> W<'a> {
         for k in 0..n {
             let i = (h.rr.max(0) as usize + k) % n;
             let Ok(board) = self.resolve(&h.dirs[i].board) else { continue };
+            // 环境检查没通过（或还没检查）的白板这台机器不接
+            if !self.read().dir_readiness(&h, &board)?.ok() {
+                continue;
+            }
             let flow = flow_of(self.tx, board.id)?;
             // 这一轮里这台机器已经派发过的卡片不再领：派发异常退出/被停止后卡片 50 秒会回到可领取状态最上面，
             // 不跳的话同一个空位会反复领到它、白跑 agent。下一轮（round_at 更新后）可以正常再领。

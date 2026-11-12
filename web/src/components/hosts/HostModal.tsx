@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostsOf, isLocalHost, queueReason, resultOf, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
@@ -436,6 +436,22 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   );
 }
 
+/** 一块白板的环境检查结果（白板写了检查命令时才有这一行） */
+function DirReadyLine({ h, d, now }: { h: HostInfo; d: HostDir; now: number }) {
+  const rc = useData(s => boardOf(s.ws, d.board)?.readyCheck);
+  const r = dirReadiness(rc, h, d);
+  if (r.key === 'none') return null;
+  return (
+    <div className={cx('hp-dir-ready', r.key)} title={d.ready?.tail.join('\n') || undefined}>
+      <span className="hp-dir-ready-k">环境检查</span>
+      <span className="hp-dir-ready-v">
+        {r.key === 'ok' ? '通过' : r.key === 'failed' ? `没通过：${r.last}` : '还没检查（等 board host 跑完；旧版不会检查）'}
+      </span>
+      {'at' in r && <span className="hp-dir-ready-at">{since(r.at, now)}</span>}
+    </div>
+  );
+}
+
 /** 白板与目录：逐行编辑、检查状态、缺失时克隆、复制到其他机器 */
 function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sync?: SyncState; hosts: HostInfo[]; now: number }) {
   const ws = useData(s => s.ws);
@@ -590,6 +606,7 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
                   </button>
                 )}
               </div>
+              <DirReadyLine h={h} d={d} now={now} />
               {state !== 'missing' && d.clone && (
                 <div className="hp-clone">
                   <span className={cx('hp-clone-msg', cloneState === 'failed' && 'bad', cloneState === 'done' && 'ok')} title={d.clone.message}>

@@ -750,6 +750,11 @@ struct PatchBody {
     /// 白板说明（Markdown）
     #[serde(default)]
     readme: Option<String>,
+    /// 白板的环境检查：所有系统 / 只给 Windows 的一行命令（空字符串表示不检查）
+    #[serde(default, rename = "readyCheck")]
+    ready_check: Option<String>,
+    #[serde(default, rename = "readyCheckWin")]
+    ready_check_win: Option<String>,
     #[serde(default)]
     project: Option<String>,
     /// 标签：仅人可打
@@ -792,7 +797,14 @@ async fn update_board(
 ) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
     let path = format!("{project}/{board}");
-    write(&s, &h, move |w| w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())).await?;
+    write(&s, &h, move |w| {
+        w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())?;
+        if p.ready_check.is_some() || p.ready_check_win.is_some() {
+            w.set_ready_check(&path, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
+        }
+        Ok(())
+    })
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 

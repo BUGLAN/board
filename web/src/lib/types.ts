@@ -75,12 +75,20 @@ export interface BoardInfo {
   desc: string;
   /** 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改 */
   readme?: string;
+  /** 环境检查：机器先在这块白板的目录里跑通它，才接这块白板的卡；都为空时不检查。旧服务端没有这一项 */
+  readyCheck?: ReadyCheck;
   pos: Pos;
   createdAt: number;
   updatedAt: number;
   counts: Counts;
   statuses: Status[];
   holders: string[];
+}
+
+/** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
+export interface ReadyCheck {
+  cmd: string;
+  win: string;
 }
 
 export interface ProjectInfo {
@@ -164,6 +172,22 @@ export interface HostDir {
   checkedAt?: number | null;
   /** 目录不存在时的克隆状态 */
   clone?: HostClone | null;
+  /** 服务端算好的：这块白板要这台机器跑的环境检查命令（按系统选好）；白板不检查时没有 */
+  check?: string | null;
+  /** board host 最近一次跑环境检查的结果；旧版 board host 没有 */
+  ready?: DirReady | null;
+}
+
+/** 一台机器在一块白板的目录里跑环境检查的结果 */
+export interface DirReady {
+  /** 跑的是哪条命令：命令改了之后旧结果不算 */
+  cmd: string;
+  ok: boolean;
+  code?: number | null;
+  /** 输出的最后 20 行 */
+  tail: string[];
+  /** 跑完的时间 */
+  at: number;
 }
 
 export interface HostClone {
@@ -431,6 +455,7 @@ export type ErrorCode =
   | 'NO_SUCH_HOST'
   | 'AGENT_NOT_ON_HOST'
   | 'BOARD_NOT_ON_HOST'
+  | 'BOARD_NOT_READY'
   | 'DISPATCHED'
   | 'SESSION_DONE'
   | 'INTERNAL'

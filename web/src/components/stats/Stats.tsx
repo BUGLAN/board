@@ -15,6 +15,7 @@ import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsScope } from '../.
 import { agentColor, cx } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
 import { ProjectAvatar } from '../bits';
+import { NoHostsNote } from '../BoardReady';
 import { StatsIcon24 } from '../Icon';
 import { CalHeat, HeatLegend, HourHeat, PairBars, Spark, TrendBars, fmtDay, useWidth } from './charts';
 import { HINT, LEAD_BINS, METRICS, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, type Metric } from './format';
@@ -383,6 +384,8 @@ export function BoardOverview({ s }: { s: Stats }) {
           </span>
         </div>
       </header>
+
+      <NoHostsNote path={b.path} />
 
       {/* 上下布局：上面是日历热力图，下面是「创建以来」这些数（原「白板说明」的位置就放热力图） */}
       <div className="sp-ov-cal">

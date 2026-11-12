@@ -433,6 +433,21 @@ export const patchProject = (key: string, fn: (p: ProjectInfo) => ProjectInfo): 
   ws: ws => ({ ...ws, projects: ws.projects.map(p => (p.key === key ? fn(p) : p)) }),
 });
 
+/** 改白板的环境检查命令（所有系统 / Windows）：白板不在了原样返回 */
+export const readyCheckPatch = (path: string, change: { cmd?: string; win?: string }): Patch => ({
+  ws: ws => {
+    if (!ws.projects.some(p => p.boards.some(b => b.path === path))) return ws;
+    return {
+      ...ws,
+      projects: ws.projects.map(p =>
+        p.boards.some(b => b.path === path)
+          ? { ...p, boards: p.boards.map(b => (b.path === path ? { ...b, readyCheck: { cmd: '', win: '', ...b.readyCheck, ...change } } : b)) }
+          : p,
+      ),
+    };
+  },
+});
+
 /** 改项目里的一个标签（名称、颜色、类型、是否优先） */
 export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string; humanOnly?: boolean; priority?: boolean }): Patch => ({
   ...patchProject(project, p => ({ ...p, labels: p.labels.map(l => (l.id === id ? { ...l, ...change } : l)) })),

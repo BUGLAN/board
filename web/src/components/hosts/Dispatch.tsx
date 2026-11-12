@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, cardDispatch, envName, hostLoad, hostsOf, inSession, queueReason, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, optimistic, refresh, useData, type Patch } from '../../store/data';
@@ -133,7 +133,11 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
   const path = useData(s => s.path);
   const title = useData(s => s.board?.cards[card]?.title ?? '');
   const hosts = hostsOf(ws);
-  const usable = (h: HostInfo) => h.dirs.some(d => d.board === path);
+  const rc = boardOf(ws, path)?.readyCheck;
+  const hasDir = (h: HostInfo) => h.dirs.some(d => d.board === path);
+  // 环境检查没通过（或还没检查）的机器不能选（PRD §9.1）
+  const ready = (h: HostInfo) => dirReadiness(rc, h, h.dirs.find(d => d.board === path));
+  const usable = (h: HostInfo) => hasDir(h) && readyOk(ready(h));
   const busy = (h: HostInfo) => !h.online || h.paused || hostLoad(ws, h).running.length >= h.max;
   // 默认选中：有这块白板目录的机器里，在线、没满、没暂停的优先
   const first = hosts.filter(usable).sort((a, b) => Number(busy(a)) - Number(busy(b)))[0];
@@ -225,7 +229,17 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
                     {x.paused && <span className="dp-tag">暂停接单</span>}
                     {!x.online && <span className="dp-tag">离线</span>}
                     <span className="hp-sp" />
-                    {!ok ? <em>没有这块白板的目录</em> : why ? <em>会排队</em> : <em className="ok">有空位</em>}
+                    {!hasDir(x) ? (
+                      <em>没有这块白板的目录</em>
+                    ) : !ok ? (
+                      <em className="bad" title={readyWhy(ready(x))}>
+                        {readyWhy(ready(x))}
+                      </em>
+                    ) : why ? (
+                      <em>会排队</em>
+                    ) : (
+                      <em className="ok">有空位</em>
+                    )}
                   </button>
                 );
               })}

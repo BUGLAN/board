@@ -456,6 +456,9 @@ pub struct BoardInfo {
     /// 白板说明（Markdown，可以为空）
     #[serde(default)]
     pub readme: String,
+    /// 环境检查：机器要先在这块白板的目录里跑通它，才接这块白板的卡（PRD §9.1「环境检查」）。旧服务端没有这一项
+    #[serde(default)]
+    pub ready_check: ReadyCheck,
     pub pos: Pos,
     pub created_at: i64,
     pub updated_at: i64,
@@ -464,6 +467,34 @@ pub struct BoardInfo {
     pub statuses: Vec<Status>,
     /// 正在这块白板上工作的 agent（按工作流和状态内顺序）
     pub holders: Vec<String>,
+}
+
+/// 白板的环境检查命令（PRD §9.1「环境检查」）：一行命令，在机器上这块白板的目录里执行，退出码 0 算通过。
+/// 都为空时不检查；Windows 写了 `win` 就用它（cmd 里执行），没写用 `cmd`
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadyCheck {
+    /// 所有系统（macOS、Linux 在登录 shell 里执行，Windows 没单独写时在 cmd 里执行）
+    #[serde(default)]
+    pub cmd: String,
+    /// 只给 Windows（cmd 里执行）；空表示和 `cmd` 一样
+    #[serde(default)]
+    pub win: String,
+}
+
+/// 环境检查命令最长多少个字符
+pub const READY_CHECK_MAX: usize = 500;
+
+impl ReadyCheck {
+    /// 这台机器（按它上报的系统）要跑的命令；不检查时为 None
+    pub fn for_os(&self, os: &str) -> Option<String> {
+        let win = os.to_lowercase().contains("windows");
+        let pick = if win && !self.win.trim().is_empty() { &self.win } else { &self.cmd };
+        let t = pick.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    }
+    pub fn is_empty(&self) -> bool {
+        self.cmd.trim().is_empty() && self.win.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

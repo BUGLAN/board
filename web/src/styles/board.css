@@ -627,6 +627,36 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-note { margin: 8px 2px 0; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
 .bs-foot { margin-top: auto; padding: 16px 22px 0; font-size: 11.5px; color: var(--text-3); }
 
+/* 环境检查（components/BoardReady.tsx）：两条命令 + 能接这块白板的机器 */
+.bs-rc { display: flex; flex-direction: column; gap: 8px; }
+.bs-rc-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 10px; }
+.bs-rc-l { display: flex; align-items: center; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.bs-rc-row .input { height: 32px; font-size: 12.5px; }
+.bs-rc-hosts { margin-top: 18px; }
+.bs-rc-list { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.bs-rc-host {
+  display: grid; grid-template-columns: auto auto auto auto auto 1fr; align-items: center; column-gap: 8px; row-gap: 3px;
+  width: 100%; padding: 9px 12px; text-align: left; font-size: 12.5px; color: var(--text); transition: background-color var(--dur-2);
+}
+.bs-rc-host + .bs-rc-host { border-top: 1px solid var(--line); }
+.bs-rc-host:hover { background: var(--surface-2); }
+.bs-rc-host b { font-weight: 600; white-space: nowrap; }
+.bs-rc-on, .bs-rc-os, .bs-rc-at { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.bs-rc-st { padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 18px; white-space: nowrap; color: var(--text-3); background: var(--surface-3); }
+.bs-rc-st.ok { color: color-mix(in oklab, var(--ok), var(--ink)); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.bs-rc-st.failed { color: var(--danger-text); background: var(--danger-soft); }
+.bs-rc-st.pending { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.bs-rc-dir { grid-column: 2 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-3); }
+.bs-rc-why { grid-column: 2 / -1; min-width: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.bs-rc-host.failed .bs-rc-why { color: var(--danger-text); }
+.bs-rc-empty {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 10px 12px; border-radius: var(--r-md);
+  font-size: 12.5px; line-height: 1.5; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent);
+}
+.bs-rc-empty > svg { width: 15px; height: 15px; flex: none; }
+.bs-rc-empty > span { flex: 1; min-width: 200px; }
+
 /* 布局图：按假想的白板缩放（--s），块里按卡片形态画出格子；位置变化有补间 */
 .bs-map { position: relative; width: 100%; }
 .bs-map-b, .bs-map-g { position: absolute; border-radius: calc(18px * var(--s) + 2px); }

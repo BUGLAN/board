@@ -563,3 +563,44 @@ fn host_follows_config_without_restart() {
     assert!(out.contains("机器名已改为 win"), "{out}");
     assert!(out.contains("白板与目录没有更新"), "{out}");
 }
+
+/// 白板的环境检查（PRD §9.1）：board host 在白板目录里跑检查命令、上报结果；没通过的机器派发被拒（BOARD_NOT_READY），
+/// 命令改了马上重跑，通过之后恢复
+#[test]
+fn ready_check_runs_in_board_dir_and_gates_dispatch() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    // 白板设置只有人能改（界面）：直接写数据库，board host 下一次上报就拿到新命令
+    let patch = |cmd: &str| {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.set_ready_check("default/main", Some(cmd), None)).unwrap();
+    };
+    let dir = |ws: &Value| ws["hosts"][0]["dirs"][0].clone();
+    // 检查命令在白板目录里执行：目录里没有 ok.txt，不通过，输出的最后一行写进派发的拒绝原因
+    patch("echo checking; test -f ok.txt || { echo 'missing ok.txt'; exit 4; }");
+    wait_until("检查没通过", Duration::from_secs(20), || dir(&rig.workspace())["ready"]["ok"] == false && dir(&rig.workspace())["ready"]["cmd"].as_str().is_some_and(|c| c.contains("ok.txt")));
+    let d = dir(&rig.workspace());
+    assert_eq!(d["ready"]["code"], 4, "{d}");
+    assert_eq!(d["ready"]["tail"], serde_json::json!(["checking", "missing ok.txt"]), "{d}");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.error_code(), "BOARD_NOT_READY", "{}{}", r.out, r.err);
+    assert!(r.out.contains("missing ok.txt") || r.err.contains("missing ok.txt"), "{}{}", r.out, r.err);
+    // 补上文件、改命令（命令变了马上重跑）：通过，可以派发
+    std::fs::write(rig.repo.join("ok.txt"), "").unwrap();
+    patch("test -f ok.txt");
+    wait_until("检查通过", Duration::from_secs(20), || {
+        let d = dir(&rig.workspace());
+        d["ready"]["ok"] == true && d["ready"]["cmd"] == "test -f ok.txt"
+    });
+    rig.mode("review");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("#1 交审", Duration::from_secs(15), || ended(&rig.show(1), "已交审"));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("环境检查没通过：missing ok.txt") && out.contains("环境检查通过"), "{out}");
+}

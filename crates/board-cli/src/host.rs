@@ -48,7 +48,7 @@ use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
 use crate::logfmt::{self, Stream};
 use crate::{Output, Paint};
-use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, LOG_KEEP};
+use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
 use board_core::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -613,6 +613,10 @@ struct Host<'a> {
     dirs_rev: i64,
     /// 服务端请求的克隆任务（以及刚结束的）
     clones: Vec<CloneRun>,
+    /// 每块白板的环境检查（正在跑的、最近一次的结果）
+    readies: Vec<ReadyRun>,
+    /// 下一次取到任务时把所有白板的环境检查重跑一遍（启动、重新读配置之后）
+    ready_all: bool,
     pidfile: PathBuf,
     logs: PathBuf,
     /// board 自己的路径（BOARD_EXE）
@@ -636,6 +640,35 @@ struct Host<'a> {
     follow_dirs: bool,
     /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文）：没变就不重新校验
     conf_seen: (Option<String>, Vec<(String, String)>),
+}
+
+/// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
+/// 启动时、重新读配置时、每天一次、白板的检查命令（或目录）改了之后各跑一次，最长 2 分钟
+struct ReadyRun {
+    board: String,
+    cmd: String,
+    dir: PathBuf,
+    /// 正在跑的进程和开始的时间
+    child: Option<(Child, Instant)>,
+    log: PathBuf,
+    /// 最近一次跑完的结果（命令可能是改之前的：服务端只认命令对得上的）
+    last: Option<DirReady>,
+    /// 上一次跑的时候目录不存在：目录有了（克隆完）就重跑
+    missing: bool,
+}
+
+/// 环境检查每天重跑一次
+const READY_EVERY_MS: i64 = 24 * 3600 * 1000;
+
+impl ReadyRun {
+    /// 结束正在跑的检查（连同它起的子进程）
+    fn kill(&mut self) {
+        if let Some((mut child, _)) = self.child.take() {
+            kill_tree(child.id(), true);
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 struct CloneRun {
@@ -720,6 +753,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         fixed_dirs,
         dirs_rev: 0,
         clones: vec![],
+        readies: vec![],
+        ready_all: true,
         pidfile,
         logs: hd.join("logs"),
         runs: vec![],
@@ -1000,6 +1035,8 @@ impl Host<'_> {
                     branch,
                     checked_at: Some(now_ms()),
                     clone,
+                    check: None,
+                    ready: self.readies.iter().find(|r| r.board == *board).and_then(|r| r.last.clone()),
                 }
             })
             .collect()
@@ -1040,6 +1077,131 @@ impl Host<'_> {
         self.work_at = Instant::now();
         self.hold = false;
         self.start_clones();
+        self.plan_readies();
+    }
+
+    /// 按服务端发来的检查命令决定哪些白板要（重新）跑环境检查：没跑过、命令或目录变了、目录刚有了、
+    /// 上次跑完超过一天、启动或重新读配置之后。白板不再检查（或这台机器不再有它的目录）时停掉、丢掉结果
+    fn plan_readies(&mut self) {
+        let Some(w) = &self.work else { return };
+        let want: Vec<(String, String, PathBuf)> = w
+            .host
+            .dirs
+            .iter()
+            .filter_map(|d| {
+                let cmd = d.check.clone()?;
+                let dir = self.dirs.iter().find(|(b, _)| *b == d.board)?.1.clone();
+                Some((d.board.clone(), cmd, dir))
+            })
+            .collect();
+        for r in self.readies.iter_mut().filter(|r| !want.iter().any(|(b, ..)| *b == r.board)) {
+            r.kill();
+        }
+        self.readies.retain(|r| want.iter().any(|(b, ..)| *b == r.board));
+        let all = std::mem::take(&mut self.ready_all);
+        let now = now_ms();
+        for (board, cmd, dir) in want {
+            let due = match self.readies.iter().find(|r| r.board == board) {
+                None => true,
+                Some(r) if r.cmd != cmd || r.dir != dir => true,
+                Some(r) if r.child.is_some() => false,
+                Some(r) if r.missing && dir.is_dir() => true,
+                Some(r) => all || r.last.as_ref().is_none_or(|l| now - l.at >= READY_EVERY_MS),
+            };
+            if due {
+                self.start_ready(&board, &cmd, &dir);
+            }
+        }
+    }
+
+    /// 开始跑一块白板的环境检查（同一块白板还在跑的先结束）。目录不存在时直接记为没通过
+    fn start_ready(&mut self, board: &str, cmd: &str, dir: &Path) {
+        let last = match self.readies.iter_mut().position(|r| r.board == board) {
+            Some(i) => {
+                let mut old = self.readies.remove(i);
+                old.kill();
+                old.last
+            }
+            None => None,
+        };
+        let _ = std::fs::create_dir_all(&self.logs);
+        let safe: String = board.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+        let log = self.logs.join(format!("ready-{safe}.log"));
+        let mut r = ReadyRun { board: board.into(), cmd: cmd.into(), dir: dir.to_path_buf(), child: None, log, last, missing: false };
+        let fail = |r: &mut ReadyRun, why: String| {
+            r.last = Some(DirReady { cmd: r.cmd.clone(), ok: false, code: None, tail: vec![why], at: now_ms() });
+        };
+        if !dir.is_dir() {
+            r.missing = true;
+            fail(&mut r, format!("目录不存在：{}", dir.display()));
+        } else {
+            let files = std::fs::File::create(&r.log).and_then(|out| out.try_clone().map(|err| (out, err)));
+            match files {
+                Err(e) => fail(&mut r, format!("无法创建检查日志：{e}")),
+                Ok((out, err)) => {
+                    let mut c = envs::shell_line(&self.envs, cmd, dir);
+                    c.stdin(Stdio::null()).stdout(out).stderr(err);
+                    envs::detach(&mut c);
+                    match c.spawn() {
+                        Ok(child) => r.child = Some((child, Instant::now())),
+                        Err(e) => fail(&mut r, format!("没法运行检查命令：{e}")),
+                    }
+                }
+            }
+        }
+        if r.child.is_some() {
+            self.say(format!("{} {}  {}", self.p.dim("…"), self.p.cyan(board), self.p.dim(&format!("环境检查：{cmd}"))));
+        } else {
+            self.ready_said(&r);
+        }
+        self.readies.push(r);
+    }
+
+    /// 看一眼正在跑的环境检查：跑完的记下结果，超过 2 分钟的结束它、算没通过。返回有没有新结果（有就马上上报）
+    fn poll_readies(&mut self) -> bool {
+        let mut done: Vec<usize> = vec![];
+        for (i, r) in self.readies.iter_mut().enumerate() {
+            let Some((child, begun)) = r.child.as_mut() else { continue };
+            let status = child.try_wait().ok().flatten();
+            let late = begun.elapsed() >= Duration::from_millis(READY_LIMIT_MS as u64);
+            if status.is_none() && !late {
+                continue;
+            }
+            let mut tail = tail_lines(&r.log, READY_TAIL, None);
+            let (ok, code) = match status {
+                Some(s) => (s.success(), exit_code(s)),
+                None => {
+                    r.kill();
+                    tail.push(format!("超过 {} 分钟没跑完，已结束", READY_LIMIT_MS / 60_000));
+                    (false, None)
+                }
+            };
+            let skip = tail.len().saturating_sub(READY_TAIL);
+            r.last = Some(DirReady { cmd: r.cmd.clone(), ok, code, tail: tail[skip..].to_vec(), at: now_ms() });
+            r.child = None;
+            done.push(i);
+        }
+        for &i in &done {
+            self.ready_said(&self.readies[i]);
+        }
+        !done.is_empty()
+    }
+
+    /// 打印环境检查的结果
+    fn ready_said(&self, r: &ReadyRun) {
+        let Some(l) = &r.last else { return };
+        if l.ok {
+            self.say(format!("{} {}  环境检查通过", self.p.green("✓"), self.p.cyan(&r.board)));
+        } else {
+            let last = l.tail.iter().rev().find(|x| !x.trim().is_empty()).cloned().unwrap_or_else(|| format!("退出码 {:?}", l.code));
+            self.say(format!(
+                "{} {}  环境检查没通过：{}  {}",
+                self.p.red("✗"),
+                self.p.cyan(&r.board),
+                last,
+                self.p.dim("这台机器不接这块白板的卡，装好之后重新检查")
+            ));
+        }
     }
 
     /// 服务端的目录设置是主版本：配置文件没变、但服务端改了（别的设备上改的）就写回 `[host]` 并直接换上。
@@ -1290,6 +1452,10 @@ impl Host<'_> {
             }
             let now = Instant::now();
             self.poll_clones();
+            // 环境检查有了新结果：马上上报，界面和派发立刻按新结果算
+            if self.poll_readies() {
+                next_beat = now;
+            }
             // 桌面端保存了配置：换了名字、目录就马上上报，界面「机器」里立刻看到
             if RELOAD.swap(false, Ordering::SeqCst) && self.reload() {
                 next_beat = now;
@@ -1340,6 +1506,8 @@ impl Host<'_> {
     /// 先重新看一遍 skill，再重新读配置。返回有没有变（变了马上上报）
     fn reload(&mut self) -> bool {
         let skills = self.recheck_skills();
+        // 重新读配置时把环境检查重跑一遍（可能刚装好了缺的工具）
+        self.ready_all = true;
         self.reload_conf() || skills
     }
 
@@ -1801,6 +1969,9 @@ impl Host<'_> {
 
     /// 退出：按「人停止」结束本机所有 agent（先 SIGTERM，10 秒后 SIGKILL），上报结束，再让机器离线
     fn shutdown(&mut self, graceful: bool) {
+        for r in self.readies.iter_mut() {
+            r.kill();
+        }
         if !self.runs.is_empty() {
             self.say(format!("{} 正在退出：结束 {} 个 agent", self.p.yellow("◼"), self.runs.len()));
         }

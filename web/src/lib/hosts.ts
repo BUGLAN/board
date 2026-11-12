@@ -5,7 +5,7 @@ import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
 import { describeCron } from './cron';
-import type { Dispatch, DispatchResult, HostAgent, HostInfo, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostDir, HostInfo, ReadyCheck, Workspace } from './types';
 import { agentColor } from './util';
 
 /** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
@@ -58,6 +58,51 @@ export function hostState(h: HostInfo, running: number): { key: HostState; label
 
 export type OsKind = 'mac' | 'win' | 'linux';
 export const osKind = (os: string): OsKind => (/mac|darwin|os x/i.test(os) ? 'mac' : /windows/i.test(os) ? 'win' : 'linux');
+
+/* ---------- 环境检查（PRD §9.1）：没通过的机器不接这块白板的卡 ---------- */
+
+/** 这台机器（按它的系统）要跑的检查命令；白板不检查时为空。和服务端 ReadyCheck::for_os 一致 */
+export function checkFor(rc: ReadyCheck | undefined, os: string): string | null {
+  if (!rc) return null;
+  const pick = osKind(os) === 'win' && rc.win.trim() ? rc.win : rc.cmd;
+  return pick.trim() || null;
+}
+
+export type Readiness = { key: 'none' } | { key: 'ok'; at: number } | { key: 'failed'; last: string; at: number } | { key: 'pending' };
+
+/** 一台机器上一块白板的环境检查：不检查 / 通过 / 没通过（输出最后一行） / 还没检查（命令改了之后还没跑完、旧版 board host） */
+export function dirReadiness(rc: ReadyCheck | undefined, h: HostInfo, d: HostDir | undefined): Readiness {
+  const cmd = checkFor(rc, h.os);
+  if (!cmd) return { key: 'none' };
+  const r = d?.ready;
+  if (!r || r.cmd !== cmd) return { key: 'pending' };
+  if (r.ok) return { key: 'ok', at: r.at };
+  const last = [...r.tail].reverse().find(l => l.trim())?.trim() ?? (r.code != null ? `退出码 ${r.code}` : '没有输出');
+  return { key: 'failed', last, at: r.at };
+}
+
+/** 接这块白板的卡 */
+export const readyOk = (r: Readiness) => r.key === 'none' || r.key === 'ok';
+
+/** 环境检查没通过时的说明（派发对话框里写在那台机器旁边） */
+export function readyWhy(r: Readiness): string {
+  if (r.key === 'failed') return `环境检查没通过：${r.last}`;
+  if (r.key === 'pending') return '环境检查还没跑完';
+  return '';
+}
+
+/** 一块白板的设置（工作区里找） */
+export const boardOf = (ws: Workspace | null, path: string): BoardInfo | undefined =>
+  ws?.projects.flatMap(p => p.boards).find(b => b.path === path);
+
+/** 能接这块白板的卡的机器：有这块白板目录的每台机器，带它的目录和环境检查结果 */
+export function boardHosts(ws: Workspace | null, path: string) {
+  const rc = boardOf(ws, path)?.readyCheck;
+  return hostsOf(ws).flatMap(h => {
+    const d = h.dirs.find(x => x.board === path);
+    return d ? [{ h, d, ready: dirReadiness(rc, h, d) }] : [];
+  });
+}
 
 /** 启动环境的名称：机器上报的列表里找，找不到时用标识 */
 export function envName(h: HostInfo | undefined, id: string | null | undefined): string | null {

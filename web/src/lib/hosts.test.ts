@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostLoad, inSession, isLocalHost, queueReason, sessionQueue, sessionRunning, skillGaps } from './hosts';
+import { boardHosts, checkFor, hostLoad, inSession, isLocalHost, queueReason, dirReadiness, readyOk, readyWhy, sessionQueue, sessionRunning, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -109,5 +109,48 @@ describe('会话里排着的派发', () => {
     expect(sessionQueue(ws, 10).map(d => d.id)).toEqual([11, 12]);
     expect(sessionQueue(ws, undefined)).toEqual([]);
     expect(sessionRunning(ws, q2)?.card).toBe(10);
+  });
+});
+
+describe('环境检查（readiness）', () => {
+  const rc = { cmd: 'cargo --version', win: 'where cargo' };
+  const dir = (ready?: { cmd: string; ok: boolean; tail?: string[]; code?: number }) => ({ board: 'p/a', path: '~/a', ready: ready && { tail: [], at: 5, ...ready } });
+
+  it('按系统选命令：Windows 写了单独的就用它，否则和所有系统一样；都空时不检查', () => {
+    expect(checkFor(rc, 'macOS 15.4')).toBe('cargo --version');
+    expect(checkFor(rc, 'Windows 11 Pro')).toBe('where cargo');
+    expect(checkFor({ cmd: 'cargo --version', win: ' ' }, 'Windows 11')).toBe('cargo --version');
+    expect(checkFor({ cmd: '', win: '' }, 'macOS')).toBeNull();
+    expect(checkFor(undefined, 'macOS')).toBeNull();
+  });
+
+  it('通过 / 没通过（输出最后一行）/ 还没检查（命令改了、旧版 board host）/ 不检查', () => {
+    const h = host([]);
+    expect(dirReadiness(undefined, h, dir())).toEqual({ key: 'none' });
+    expect(dirReadiness(rc, h, dir())).toEqual({ key: 'pending' });
+    expect(dirReadiness(rc, h, dir({ cmd: 'node --version', ok: true }))).toEqual({ key: 'pending' });
+    expect(dirReadiness(rc, h, dir({ cmd: 'cargo --version', ok: true }))).toEqual({ key: 'ok', at: 5 });
+    const bad = dirReadiness(rc, h, dir({ cmd: 'cargo --version', ok: false, tail: ['zsh: command not found: cargo', ''] }));
+    expect(bad).toEqual({ key: 'failed', last: 'zsh: command not found: cargo', at: 5 });
+    expect(dirReadiness(rc, h, dir({ cmd: 'cargo --version', ok: false, code: 2 }))).toMatchObject({ last: '退出码 2' });
+    expect(readyOk({ key: 'none' }) && readyOk({ key: 'ok', at: 1 })).toBe(true);
+    expect(readyOk(bad) || readyOk({ key: 'pending' })).toBe(false);
+    expect(readyWhy(bad)).toBe('环境检查没通过：zsh: command not found: cargo');
+  });
+
+  it('boardHosts：只列有这块白板目录的机器，带检查结果', () => {
+    const ws = {
+      projects: [{ key: 'p', boards: [{ path: 'p/a', readyCheck: rc }] }],
+      hosts: [
+        { ...host([]), name: 'mac', dirs: [dir({ cmd: 'cargo --version', ok: true })] },
+        { ...host([]), id: 2, name: 'win', os: 'Windows 11', dirs: [dir({ cmd: 'cargo --version', ok: true })] },
+        { ...host([]), id: 3, name: 'none', dirs: [] },
+      ],
+    } as unknown as Workspace;
+    expect(boardHosts(ws, 'p/a').map(x => [x.h.name, x.ready.key])).toEqual([
+      ['mac', 'ok'],
+      ['win', 'pending'],
+    ]);
+    expect(boardHosts(ws, 'p/b')).toEqual([]);
   });
 });

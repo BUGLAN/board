@@ -2171,3 +2171,119 @@ fn dispatch_name_belongs_to_the_host() {
     s.read(|r| r.require_online(&name, T0 + 60 * S)).expect("board host 的心跳维持在线");
     assert_eq!(get(&s, d.id).state, "running");
 }
+
+/* ------------------------------ 环境检查（PRD §9.1） ------------------------------ */
+
+fn set_ready_check(s: &mut Store, cmd: &str, win: &str) {
+    s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some(cmd), Some(win))).unwrap();
+}
+
+/// board host 上报 default/main 的环境检查结果
+fn ready_report(instance: &str, cmd: &str, ok: bool, tail: &[&str]) -> HostReport {
+    let mut rep = report("mbp", instance, vec![]);
+    rep.dirs[0].ready = Some(hosts::DirReady {
+        cmd: cmd.into(),
+        ok,
+        code: Some(if ok { 0 } else { 127 }),
+        tail: tail.iter().map(|x| x.to_string()).collect(),
+        at: T0,
+    });
+    rep
+}
+
+#[test]
+fn ready_check_is_sent_per_os_and_validated() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(host(&s, T0).dirs[0].check, None, "没写检查命令：不检查");
+    set_ready_check(&mut s, "  cargo --version  ", "where cargo");
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    let b = ws.projects[0].boards.iter().find(|b| b.path == B).unwrap();
+    assert_eq!(b.ready_check, ReadyCheck { cmd: "cargo --version".into(), win: "where cargo".into() }, "去掉首尾空白");
+    assert_eq!(host(&s, T0).dirs[0].check.as_deref(), Some("cargo --version"), "macOS 跑「所有系统」那条");
+    let mut w = report("win", "w1", vec![]);
+    w.os = "Windows 11 Pro".into();
+    beat(&mut s, T0, &w).unwrap();
+    assert_eq!(s.read(|r| r.host("win", T0)).unwrap().dirs[0].check.as_deref(), Some("where cargo"), "Windows 写了单独的就用它");
+    set_ready_check(&mut s, "cargo --version", "");
+    assert_eq!(s.read(|r| r.host("win", T0)).unwrap().dirs[0].check.as_deref(), Some("cargo --version"), "Windows 没单独写时和所有系统一样");
+    // 只能一行、有长度上限
+    let e = s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some("a\nb"), None)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    let long = "x".repeat(READY_CHECK_MAX + 1);
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some(&long), None)).unwrap_err().code, ErrorCode::Usage);
+    // 检查命令不存进机器的目录设置
+    let raw: String = s.read(|r| Ok(r.conn.query_row("SELECT dirs FROM hosts WHERE name = 'mbp'", [], |x| x.get(0))?)).unwrap();
+    assert!(!raw.contains("\"check\""), "{raw}");
+}
+
+#[test]
+fn manual_dispatch_needs_a_passed_ready_check() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let id = new_card(&mut s, T0, "A");
+    set_ready_check(&mut s, "cargo --version", "");
+    // 还没检查（旧版 board host 不上报）：不能派
+    let e = dispatch(&mut s, T0, id, "mbp", None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotReady);
+    assert!(e.message.contains("还没跑完"), "{}", e.message);
+    // 没通过：写明输出的最后一行
+    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &["zsh:1: command not found: cargo", ""])).unwrap();
+    let d = &host(&s, T0 + S).dirs[0];
+    assert_eq!(hosts::readiness(d.check.as_deref(), d.ready.as_ref()), hosts::Readiness::Failed("zsh:1: command not found: cargo".into()));
+    let e = dispatch(&mut s, T0 + S, id, "mbp", None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotReady);
+    assert!(e.message.contains("command not found: cargo"), "{}", e.message);
+    // 后来的心跳不带结果（旧版）：保留上一次的
+    beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![])).unwrap();
+    assert!(host(&s, T0 + 2 * S).dirs[0].ready.is_some());
+    // 装好、重新检查通过之后恢复
+    beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["cargo 1.91.0"])).unwrap();
+    let d = dispatch(&mut s, T0 + 3 * S, id, "mbp", None).unwrap();
+    // 命令改了：旧结果不算，等重新检查；已经在排队的派发不受影响
+    set_ready_check(&mut s, "cargo --version && node --version", "");
+    assert_eq!(get(&s, d.id).state, "queued");
+    let id2 = new_card(&mut s, T0, "B");
+    assert_eq!(dispatch(&mut s, T0 + 4 * S, id2, "mbp", None).unwrap_err().code, ErrorCode::BoardNotReady);
+    // 去掉检查命令：和原来一样
+    set_ready_check(&mut s, "", "");
+    dispatch(&mut s, T0 + 5 * S, id2, "mbp", None).unwrap();
+}
+
+#[test]
+fn cron_skips_boards_that_failed_the_ready_check() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    let id = new_card_tagged(&mut s, "A");
+    set_ready_check(&mut s, "cargo --version", "");
+    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &["command not found: cargo"])).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(pull(&mut s, T0 + 2 * S).is_none(), "没通过的白板不领");
+    assert_eq!(card(&s, id).card.column, "todo");
+    // 通过之后下一轮照常领
+    beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["cargo 1.91.0"])).unwrap();
+    s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + 4 * S).unwrap();
+    assert_eq!((d.card, d.state.as_str()), (id, "running"));
+}
+
+#[test]
+fn old_database_boards_get_no_ready_check() {
+    let dir = std::env::temp_dir().join(format!("board-ready-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("b.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("ALTER TABLE boards DROP COLUMN ready_check; ALTER TABLE boards DROP COLUMN ready_check_win").unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    assert!(ws.projects[0].boards[0].ready_check.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
