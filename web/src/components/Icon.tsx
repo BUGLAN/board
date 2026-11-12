@@ -264,7 +264,6 @@ export const SettingsIcon24 = () => (
     <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.4h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z" />
   </svg>
 );
-/** 机器（board host）：两层服务器 */
 /** 大盘：三根柱子 */
 export const StatsIcon24 = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
@@ -275,6 +274,7 @@ export const StatsIcon24 = () => (
   </svg>
 );
 
+/** 机器（board host）：两层服务器 */
 export const HostsIcon24 = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
     <rect x="3.5" y="4" width="17" height="6.5" rx="2" />

@@ -220,7 +220,7 @@ html[data-titlebar="custom"] .win { display: flex; }
   transition: opacity 200ms ease-out;
 }
 .boot.leave { opacity: 0; }
-/* 与网页端 .logo（layout.css）一致：底色跟着主题走——浅色主题浅色面、深色主题深色面，
+/* 与网页端启动页的 `.boot .logo`（`web/src/styles/app.css`）一致：底色跟着主题走——浅色主题浅色面、深色主题深色面，
    不用反色；柱子掺 8% 当前主题的文字色，深浅两种底色上四根柱子都看得清 */
 .logo {
   display: flex; align-items: flex-start; gap: 2.5px; width: 44px; height: 44px; padding: 10px 9px;

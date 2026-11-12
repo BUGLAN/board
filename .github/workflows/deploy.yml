@@ -81,7 +81,8 @@ jobs:
       - name: 安装脚本 shellcheck
         run: shellcheck -s sh scripts/install.sh
 
-  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs）、多行正文经过 board.cmd（tests/multiline.rs），Linux 上的已经在 test 里跑过；
+  # 推 main：后台心跳在 Windows 上的行为（tests/heartbeat.rs）、agent 名字与心跳（tests/agents.rs）、多行正文经过 board.cmd
+  # （tests/multiline.rs），Linux 上的已经在 test 里跑过；
   # 桌面端（src-tauri）的单元测试也在这里跑：cargo test 默认不编桌面端，Linux 上还要装 GTK、WebKitGTK 这些系统依赖
   heartbeat-windows:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -101,7 +102,7 @@ jobs:
       - name: board heartbeat、多行正文经过 board.cmd 的测试
         run: cargo test --locked -p board-cli --test heartbeat --test agents --test multiline
 
-      # 桌面端的测试（src-tauri/src 下的 31 个用例：ACL、路径校验、更新、登录等）。不需要先编安装包自带的 board：
+      # 桌面端的测试（src-tauri/src 下的 33 个用例：ACL、路径校验、更新、登录等）。不需要先编安装包自带的 board：
       # src-tauri/build.rs 在 src-tauri/binaries 里没有 sidecar 时按不带 sidecar 构建
       - name: 桌面端单元测试
         run: cargo test --locked -p board-desktop
@@ -229,7 +230,7 @@ jobs:
         env:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
 
-      # 桌面端的单元测试（src-tauri/src 下的 31 个用例）：macOS、Windows 各跑一次，和安装包同一个缓存、编过的依赖不用再编
+      # 桌面端的单元测试（src-tauri/src 下的 33 个用例）：macOS、Windows 各跑一次，和安装包同一个缓存、编过的依赖不用再编
       - name: 桌面端单元测试
         run: cargo test --locked -p board-desktop
 

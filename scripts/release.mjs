@@ -5,11 +5,12 @@
    1. 拉到最新：git fetch；工作区要干净；本地只是落后于 origin/main（别的电脑先推了）时自动快进过去，
       本地有没推到远端的提交时中止（先按 AGENTS.md 推到 main）。只在 main 分支或分离 HEAD 上发版
    2. 核对：版本号格式；tag 还不存在；比上一个 tag 大
-   3. 从上一个 tag 到现在的每个提交生成这一版的 changelog，写到 CHANGELOG.md 最上面
+   3. 从上一个 tag 到现在的每个提交生成这一版的 changelog（先在内存里生成，没有新提交就不用改版本号）
    4. 改版本号：Cargo.toml（workspace.package.version）和 Cargo.lock、package.json 和 web/package.json
       （连同各自的 package-lock.json）、src-tauri/tauri.conf.json
-   5. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
-   6. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令。
+   5. 把第 3 步生成的这一节写到 CHANGELOG.md 最上面
+   6. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
+   7. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令。
       推 main 被拒（发版途中别人推了 main）：撤掉这次的发版提交和 tag，重新拉到最新再发一次；第二次还被拒才停下
 
    --dry-run：只打印这一版的 changelog（按 origin/main 列，和真正发出去的一致），不改文件、不提交、不打 tag、不动工作区
@@ -191,7 +192,7 @@ for (const dir of ['.', 'web']) {
 }
 edit('src-tauri/tauri.conf.json', s => s.replace(/^(\s*"version":\s*")[^"]*(")/m, `$1${version}$2`));
 
-/* ---------- 4. 写 CHANGELOG.md（第 3 步生成的这一节） ---------- */
+/* ---------- 5. 写 CHANGELOG.md（第 3 步生成的这一节） ---------- */
 
 const HEADER = '# 更新日志\n\n版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。\n';
 const file = join(root, 'CHANGELOG.md');
@@ -199,7 +200,7 @@ const old = existsSync(file) ? readFileSync(file, 'utf8') : HEADER;
 const at = old.indexOf('\n## ');
 writeFileSync(file, at < 0 ? `${old.trimEnd()}\n\n${notes}` : `${old.slice(0, at + 1)}${notes}\n${old.slice(at + 1)}`);
 
-/* ---------- 5. 提交、打 tag ---------- */
+/* ---------- 6. 提交、打 tag ---------- */
 
 git(
   'add',
@@ -219,7 +220,7 @@ git('tag', '-a', tag, '--cleanup=whitespace', '-m', `Board ${tag}`, '-m', notes.
 console.log(notes);
 console.log(`已提交「chore: 发版 ${tag}」并打了 tag ${tag}（上一个 tag：${prev ?? '没有'}）。`);
 
-/* ---------- 6. 推送 ---------- */
+/* ---------- 7. 推送 ---------- */
 
 const cmds = [`git push origin HEAD:${BRANCH}`, `git push origin ${tag}`];
 if (!push) {

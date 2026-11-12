@@ -221,20 +221,15 @@ npm run release -- 0.1.1 --push      # 发版并推送
 
 1. 拉到最新：`git fetch`；工作区要干净；本地只是落后于 `origin/main`（别的电脑先推了）时自动快进过去；本地有没推到 `main` 的提交、或在别的分支上时中止
 2. 核对版本号格式、tag 还不存在、比上一个 tag 大
-3. 从上一个 tag 之后的每个提交生成这一版的 changelog，按提交类型分组（新功能、修复、性能、重构、文档、其他），写到 `CHANGELOG.md` 最上面
+3. 从上一个 tag 之后的每个提交生成这一版的 changelog，按提交类型分组（新功能、修复、性能、重构、文档、其他）
 4. 改版本号：`Cargo.toml` 的 `workspace.package.version` 和 `Cargo.lock`、`package.json` 和 `web/package.json`（连同 `package-lock.json`）、`src-tauri/tauri.conf.json`
-5. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
-6. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因
+5. 把第 3 步生成的这一节写到 `CHANGELOG.md` 最上面
+6. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
+7. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因
 
 tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，部署成功后一起附到 GitHub Release（见「自动部署」「桌面端安装包」）。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
-
-**agent 名字查重、agent 级心跳、CLI 配置文件**这一版的服务端、CLI、skill 要一起发布：
-
-- 新服务端要求带令牌的卡片命令、上传附件里的名字先 `board check` 并保持心跳（严格模式）。旧名字（例如 `claude`）不符合新格式，新服务端上线后会报 `NAME_OFFLINE`。
-- 每台跑 agent 的电脑重装 CLI：`cargo install --path crates/board-cli`（或装新版桌面端），再 `board login --url <服务端地址> --token <令牌>`，删掉 shell 配置文件里旧的 `export BOARD_URL`、`export BOARD_TOKEN`（`board doctor` 会提示）。
-- 更新 skill（`.agents/skills/board-skills/`，含 `scripts/`；发版附件 `board-skills.zip` 还带 `bin/` 里各平台的 `board`）。
 
 ## 自动部署
 
@@ -242,7 +237,7 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test -p board-cli --test heartbeat --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等 31 个用例）。不构建镜像、不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等 33 个用例）。不构建镜像、不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
 | 推 `v*` tag | build → deploy；skill、desktop（和它们同时跑）→ release，见下图 |
 | 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
 

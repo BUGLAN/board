@@ -203,8 +203,7 @@ fn start_proc(cli: &Path, ask_error: Option<&str>) -> Result<Running, String> {
     Ok(Running { child, stdin })
 }
 
-/// 停止：关闭标准输入，board host 自己结束 agent、让机器离线后退出（最多等 wait）
-/// 关闭标准输入（board host 按 Ctrl+C 收尾：结束 agent、让机器离线），等它真的退出。到时间还没退出时把它交回来
+/// 停止：关闭标准输入（board host 按 Ctrl+C 收尾：结束 agent、让机器离线），等它真的退出。到时间还没退出时把它交回来
 fn stop_proc(mut r: Running, wait: std::time::Duration) -> Result<(), Running> {
     drop(r.stdin.take());
     let begun = std::time::Instant::now();

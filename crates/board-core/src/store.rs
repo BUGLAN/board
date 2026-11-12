@@ -450,7 +450,7 @@ impl Store {
             }
             conn.execute("INSERT INTO meta (key, value) VALUES ('edges', 1)", [])?;
         }
-        // 旧数据库里的白板没有工作流：补上默认的四个状态
+        // 旧数据库里的白板没有工作流：补上默认的六个状态（DEFAULT_FLOW，见 model.rs）
         let missing: Vec<i64> = conn
             .prepare("SELECT id FROM boards b WHERE NOT EXISTS (SELECT 1 FROM statuses s WHERE s.board = b.id)")?
             .query_map([], |r| r.get(0))?

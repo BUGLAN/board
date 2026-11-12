@@ -70,13 +70,13 @@ export function applySilently(fn: () => void) {
     applying--;
   }
 }
-/** 把当前状态写进地址栏。open / close 详情、切换白板用 push（后退能回到原来），
-    详情里切上一张 / 下一张、内部收起用 replace；和现在一样时什么也不做 */
 /** 一张卡片（或一块白板）的完整网址：服务端地址 + 路由（复制链接、CLI 输出用） */
 export function cardUrl(path: string, id?: number | null): string {
   return `${location.origin}${routeUrl(path, id ?? null)}`;
 }
 
+/** 把当前状态写进地址栏。open / close 详情、切换白板用 push（后退能回到原来），
+    详情里切上一张 / 下一张、内部收起用 replace；和现在一样时什么也不做 */
 export function syncUrl(mode: 'push' | 'replace' = 'replace') {
   if (!source || applying) return;
   const s = source();

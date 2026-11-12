@@ -127,7 +127,8 @@ pub struct Checked {
     pub url: String,
     /// 服务端版本（旧服务端没有时为空）
     pub version: String,
-    /// 地址来自哪里：env / config / default（BOARD_URL 等的页面拿这个决定「切换服务端」怎么显示）
+    /// 地址来自哪里：env / config / saved / default（`env` 是环境变量 BOARD_URL；`config` 是配置文件里的 url；
+    /// `saved` 是这次启动时选过、写进本地记录但配置文件里还没有的地址；`default` 是构建时注入的默认地址）
     pub from: String,
     /// 地址不是来自环境变量（切换会写进配置文件）
     pub configured: bool,

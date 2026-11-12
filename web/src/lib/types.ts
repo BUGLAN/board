@@ -10,7 +10,6 @@ export interface Tile {
   y: number;
 }
 
-/** 工作流里的一个状态（PRD §7） */
 /** 状态块里卡片的形态：卡片 / 单行 / 磁贴（只显示编号，横向排列、自动换行） */
 export type StatusView = 'card' | 'line' | 'tile';
 
@@ -22,6 +21,7 @@ export interface Order {
   desc: boolean;
 }
 
+/** 工作流里的一个状态（PRD §7） */
 export interface Status {
   key: string;
   name: string;
@@ -293,7 +293,6 @@ export interface McpVar {
   tail?: string | null;
 }
 
-/** 共用配置里的一个 MCP 服务器（PRD §10.12「共用配置」） */
 /** 共用配置里的 agent 模板（board-core templates.rs）：字段和配置文件的 [agents.<标识>] 一样 */
 export interface AgentTemplate {
   id: string;
@@ -310,6 +309,7 @@ export interface AgentTemplate {
   by?: string;
 }
 
+/** 共用配置里的一个 MCP 服务器（PRD §10.12「共用配置」） */
 export interface McpServer {
   name: string;
   kind: 'stdio' | 'http';
@@ -409,7 +409,6 @@ export interface HostToken {
 
 export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed';
 
-/** 一次派发：在某台机器上用某种 agent 做某张卡 */
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {
   /** in 带其中任一个 · all 全都带 · not_in 一个都不带 · equal 标签正好是这几个 · only 只在这几个里 · none 没有标签 */
@@ -422,6 +421,7 @@ export interface ClaimRule {
   missing?: string[];
 }
 
+/** 一次派发：在某台机器上用某种 agent 做某张卡 */
 export interface Dispatch {
   id: number;
   board: string;
