@@ -8,7 +8,7 @@
      [agents.*] 时以本机为准，标「本机配置覆盖」
    保存、删除要等服务端：按钮转圈、禁用直到返回（optimistic(null, …)）；失败时表单留着，人填的不丢
    ========================================================================== */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../../lib/api';
 import { since } from '../../lib/hosts';
 import { blankForm, CELL_WORDS, cmdLine, fromForm, templateError, templateRows, toForm, WIN_ENVS, type TemplateForm } from '../../lib/templates';
@@ -19,6 +19,7 @@ import { confirm, openHost, toast, toastError } from '../../store/ui';
 import { useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon, Dot } from './bits';
+import { useRemoteList } from './useRemoteList';
 
 /** 内置模板的标识：同标识的模板是覆盖它的命令 */
 const BUILTIN: Record<string, string> = { dsh: 'DeepSeek Harness', claude: 'Claude Code', pi: 'pi', codex: 'Codex' };
@@ -26,23 +27,10 @@ const BUILTIN: Record<string, string> = { dsh: 'DeepSeek Harness', claude: 'Clau
 export function TemplatesSection({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const [list, setList] = useState<AgentTemplate[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const { list, err, refresh: load } = useRemoteList(() => api.agentTemplates(), ws?.hosts);
   const [open, setOpen] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ f: TemplateForm; editing: boolean } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const load = async () => {
-    try {
-      setList(await api.agentTemplates());
-      setErr(null);
-    } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, [ws?.hosts]);
-
   const save = async () => {
     if (!edit || !list) return;
     const t = fromForm(edit.f);

@@ -5,7 +5,7 @@
    - 「上传目录」选本机的 skill 目录（桌面端、网页端都能选），「上传 zip」传一个 zip；同名的换成新版本，在线的机器马上同步
    上传、删除要等服务端记下：按钮转圈、禁用直到返回（optimistic(null, …)）；同步的进展按机器上报画
    ========================================================================== */
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { since } from '../../lib/hosts';
 import { packFiles, readZip, skillRows, skillSummary, STATE_WORDS, type RawFile } from '../../lib/skills';
@@ -16,31 +16,18 @@ import { confirm, openHost, toast, toastError } from '../../store/ui';
 import { useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon, Dot } from './bits';
+import { useRemoteList } from './useRemoteList';
 
 const kb = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.ceil(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 
 export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const [lib, setLib] = useState<SkillInfo[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const { list: lib, err, refresh: load } = useRemoteList(() => api.skills(), ws?.hosts);
   const [open, setOpen] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const dirInput = useRef<HTMLInputElement>(null);
   const zipInput = useRef<HTMLInputElement>(null);
-  const load = async () => {
-    try {
-      setLib(await api.skills());
-      setErr(null);
-    } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
-    }
-  };
-  // 库变了服务端会推送机器有变化：跟着重新取一次
-  useEffect(() => {
-    void load();
-  }, [ws?.hosts]);
-
   const push = async (raw: RawFile[], fallback: string) => {
     const p = packFiles(raw, fallback);
     if ('error' in p) {

@@ -6,7 +6,7 @@
    - 桌面端「从本机导入」：读出这台电脑上各 agent 已经配好的，勾选后加进来（名字像密钥的值标成密钥）
    保存、删除、导入要等服务端：按钮转圈、禁用直到返回（optimistic(null, …)）；失败时表单留着，人填的不丢
    ========================================================================== */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../../lib/api';
 import { since } from '../../lib/hosts';
 import { argsOf, blankMcp, maskOf, MCP_AGENT_NAMES, MCP_AGENTS, MCP_WORDS, mcpError, mcpRows, mcpSummary, toSave } from '../../lib/mcp';
@@ -18,29 +18,17 @@ import { confirm, openHost, toast, toastError } from '../../store/ui';
 import { Segmented, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon, Dot } from './bits';
+import { useRemoteList } from './useRemoteList';
 
 export function McpSection({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const [list, setList] = useState<McpServer[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const { list, err, refresh: load } = useRemoteList(() => api.mcp(), ws?.hosts);
   const [open, setOpen] = useState<string | null>(null);
   // 正在编辑的：null 没有；name 为空串是新加
   const [edit, setEdit] = useState<{ s: McpServer; editing: boolean } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [importing, setImporting] = useState<{ agent: string; server: McpServer; on: boolean }[] | null>(null);
-  const load = async () => {
-    try {
-      setList(await api.mcp());
-      setErr(null);
-    } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, [ws?.hosts]);
-
   const save = async () => {
     if (!edit || !list) return;
     const why = mcpError(edit.s, list.map(x => x.name), edit.editing);
