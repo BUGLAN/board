@@ -598,12 +598,12 @@ mod tests {
         assert!(!html.contains("--invert"));
     }
 
-    /// 探测服务端不能用 no-cors：Chrome 里对 http 的 no-cors 跨源请求会被拦下，本机服务端一直被当成连不上
     #[test]
     fn probe_does_not_use_no_cors() {
         let url: Url = "http://127.0.0.1:7420/".parse().unwrap();
         let html = page(&url, Theme::Auto, false);
-        assert!(!html.contains("no-cors"), "启动页的探测请求不能用 no-cors");
+        // 注释里会提到为什么不用它，只看真正发出去的请求
+        assert!(!html.contains("mode: 'no-cors'"), "启动页的探测请求不能用 no-cors（Chrome 里对 http 的 no-cors 跨源请求会被拦下）");
         assert!(html.contains("await fetch(target, { cache: 'no-store', signal: ctl.signal });"));
     }
 
