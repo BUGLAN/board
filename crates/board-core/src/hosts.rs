@@ -218,6 +218,14 @@ pub const MAX_RUN_CHOICES: [i64; 13] = [0, 30, 60, 90, 120, 180, 240, 300, 360, 
 pub const IDLE_RUN_CHOICES: [i64; 12] = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
 /// 领取规则最多几条
 pub const RULES_LIMIT: usize = 20;
+/// 「复制设置到…」能选的项：标识和说法
+pub const COPY_ITEMS: [(&str, &str); 5] = [
+    ("limits", "同时跑几个和一个会话最多做几张"),
+    ("cron", "定时领取"),
+    ("rules", "领取规则和兜底"),
+    ("agent", "默认 agent"),
+    ("run", "每个 agent 的启动环境、模型、强度"),
+];
 /// 每个派发保留的日志行数
 pub const LOG_KEEP: usize = 500;
 /// 机器多久没上报算离线：与 agent 相同，连续 5 次（50 秒）
@@ -345,6 +353,12 @@ pub struct HostAgent {
     /// 服务端发出去时才有：机器设置里选的思考强度；没选是 agent 自己的默认
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_effort: Option<String>,
+    /// 服务端发出去时才有：机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 `env` 是实际用的）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_env: Option<String>,
+    /// 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 `[agents.*]`：用的是本机的那份（board host 上报）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_override: bool,
 }
 
 /// 一个 agent 能在机器设置里选什么（模板决定怎么传参）
@@ -737,6 +751,9 @@ pub struct HostInfo {
     pub paused: bool,
     /// 默认 agent：设置过且找到了就是它，否则是本机 agent 里第一个找到的；都没找到时为空
     pub agent: Option<String>,
+    /// 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效，用的是 `agent`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_set: Option<String>,
     /// 定时领取开关和 cron 表达式（5 段「分 时 日 月 周」，机器本地时区）
     pub cron_on: bool,
     pub cron: Vec<String>,
@@ -946,6 +963,9 @@ pub struct HostWork {
     /// MCP 服务器共用配置的索引（名称、版本）：变了 board host 用令牌接口取完整内容。旧版服务端没有这一项
     #[serde(default)]
     pub mcp: Option<Vec<crate::mcp::McpIndex>>,
+    /// 共用配置里的 agent 模板（全部内容）：board host 合进本机 agent；旧版服务端没有
+    #[serde(default)]
+    pub templates: Option<Vec<crate::templates::AgentTemplate>>,
 }
 
 /// 界面上修改机器设置
@@ -1267,6 +1287,7 @@ impl HostRow {
                 let run = self.run.get(&a.id);
                 out.run_model = run.and_then(|r| r.model.clone());
                 out.run_effort = run.and_then(|r| r.effort.clone());
+                out.run_env = run.and_then(|r| r.env.clone());
                 out
             })
             .collect()
@@ -1342,6 +1363,7 @@ impl HostRow {
             unmatched: 0,
             paused: self.paused,
             agent: self.default_agent().map(|a| a.id.clone()),
+            agent_set: self.agent.clone().filter(|a| !self.has_agent(a)),
             cron_on: self.cron_on,
             cron: self.cron.clone(),
             round: self.round_at.is_some(),
@@ -1700,6 +1722,7 @@ impl<'a> R<'a> {
             now,
             skills: Some(self.skills()?),
             mcp: Some(self.mcp_index()?),
+            templates: Some(self.agent_templates()?),
         })
     }
 }
@@ -2736,6 +2759,69 @@ impl<'a> W<'a> {
         }
         self.touch_hosts();
         self.read().host(name, self.now)
+    }
+
+    /// 复制机器设置（PRD §10.12「复制设置到…」）：把 `from` 的这几项换到每台目标机器上，没选的项不变。
+    /// 照原样复制、不按目标机器校验：目标机器上找不到的 agent、没有的启动环境、项目里没有的标签照样写进去，界面按现有规则标「不生效」。
+    /// 每台目标机器记一条操作记录
+    pub fn host_copy(&mut self, from: &str, to: &[String], items: &[String], by: &str) -> Result<Vec<HostInfo>> {
+        let src = self.host_row(from)?.ok_or_else(|| no_such_host(from))?;
+        if items.is_empty() {
+            return Err(BoardError::usage("至少选一项要复制的设置"));
+        }
+        if let Some(bad) = items.iter().find(|i| !COPY_ITEMS.iter().any(|(k, _)| k == i)) {
+            return Err(BoardError::usage(format!("不认识要复制的设置「{bad}」：只能是 {}", COPY_ITEMS.map(|(k, _)| k).join("、"))));
+        }
+        let mut targets: Vec<HostRow> = vec![];
+        for name in to {
+            if name == from {
+                return Err(BoardError::usage("不能复制到它自己"));
+            }
+            let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+            if !targets.iter().any(|t| t.id == h.id) {
+                targets.push(h);
+            }
+        }
+        if targets.is_empty() {
+            return Err(BoardError::usage("至少选一台目标机器"));
+        }
+        let rules = serde_json::to_string(&src.rules.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
+        let cron = serde_json::to_string(&src.cron).unwrap_or_else(|_| "[]".into());
+        let words: Vec<&str> = COPY_ITEMS.iter().filter(|(k, _)| items.iter().any(|i| i == k)).map(|(_, w)| *w).collect();
+        let mut out = vec![];
+        for t in &targets {
+            for item in items {
+                match item.as_str() {
+                    "limits" => {
+                        self.tx.execute("UPDATE hosts SET max = ?2, per_session = ?3 WHERE id = ?1", params![t.id, src.max, src.per_session])?;
+                    }
+                    "cron" => {
+                        self.tx.execute("UPDATE hosts SET cron_on = ?2, cron = ?3 WHERE id = ?1", params![t.id, src.cron_on as i64, cron])?;
+                    }
+                    "rules" => {
+                        self.tx.execute("UPDATE hosts SET rules = ?2, fallback = ?3 WHERE id = ?1", params![t.id, rules, src.fallback])?;
+                    }
+                    "agent" => {
+                        self.tx.execute("UPDATE hosts SET agent = ?2 WHERE id = ?1", params![t.id, src.agent])?;
+                    }
+                    "run" => {
+                        // 每个 agent 的启动环境、模型、强度：源机器设置过的 agent 换成它的；源机器没设置的保持目标机器原来的
+                        let mut run = t.run.clone();
+                        for (k, v) in &src.run {
+                            run.insert(k.clone(), v.clone());
+                        }
+                        self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![t.id, serde_json::to_string(&run).unwrap_or_default()])?;
+                    }
+                    _ => {}
+                }
+            }
+            self.host_op(t.id, by, &format!("复制了 {from} 的设置：{}", words.join("、")))?;
+        }
+        self.touch_hosts();
+        for t in &targets {
+            out.push(self.read().host(&t.name, self.now)?);
+        }
+        Ok(out)
     }
 
     /// 开始一轮领取：定时到点（board host 发起）或界面上「现在领一轮」。机器离线、暂停接单、或者一条领取规则也没有时

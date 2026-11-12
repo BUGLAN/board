@@ -21,6 +21,7 @@ pub mod mcp;
 pub mod skills;
 pub mod stats;
 pub mod store;
+pub mod templates;
 
 pub use agents::{BeatBy, NameOwner, NAME_GAP_MS};
 pub use engine::{purge_trash, Cmd, TRASH_KEEP_MS};
@@ -34,6 +35,7 @@ pub use hosts::{
 };
 pub use model::*;
 pub use runlog::RunEvent;
+pub use templates::AgentTemplate;
 pub use store::{hhmm, now_ms, valid_key, NewBoard, Store, R, W};
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ pub mod hosts;
 pub mod install;
 pub mod mcp;
 pub mod skills;
+pub mod templates;
 
 use auth::{Auth, Caller};
 use axum::{
@@ -253,6 +254,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/{name}/ask", post(hosts::ask))
         .route("/hosts/{name}/selftest", post(hosts::selftest))
         .route("/hosts/{name}/selftested", post(hosts::selftest_done))
+        .route("/hosts/{name}/copy", post(hosts::copy))
         .route("/hosts/{name}/dirs/clone", post(hosts::clone_dir))
         .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
         .route("/hosts/{name}/work", get(hosts::work))
@@ -273,6 +275,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/skills/{name}", get(skills::get).delete(skills::remove))
         .route("/mcp", get(mcp::list).post(mcp::put))
         .route("/mcp/{name}", delete(mcp::remove))
+        .route("/agent-templates", get(templates::list).post(templates::put))
+        .route("/agent-templates/{id}", delete(templates::remove))
         .route("/hosts/{name}/mcp", get(mcp::for_host))
         .route("/tokens", get(auth::tokens).post(auth::new_token))
         .route("/tokens/{id}", delete(auth::revoke))

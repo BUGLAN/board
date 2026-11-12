@@ -56,7 +56,9 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-agent-warn { display: inline-grid; place-items: center; color: var(--warn); }
 .hp-agent-warn svg { width: 14px; height: 14px; }
 /* 机器详情「本机 agent」：每个 agent 一行 */
-.hp-arow { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
+.hp-arow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 42px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
+/* 名字后面的标记多了放不下时，右边的控件换到下一行、靠右 */
+.hp-arow > .hp-ctl { margin-left: auto; }
 .d-label + .hp-arow { border-top: 0; }
 .hp-arow > img.hp-logo { width: 20px; height: 20px; }
 .hp-arow > b:not(.hp-arow-name) { display: grid; place-items: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
@@ -942,4 +944,24 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 @media (max-width: 760px) {
   .ss-modes { margin-left: 0; }
   .ev-tool-out { padding-left: 10px; }
+}
+
+/* ---------- 复制设置到其他机器、模板覆盖、不生效的设置（#188） ---------- */
+.hp-copy { display: flex; flex-direction: column; gap: 10px; margin: 2px 0 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.hp-copy-row { display: flex; align-items: flex-start; gap: 12px; }
+.hp-copy-row .hp-add-k { padding-top: 2px; }
+.hp-copy-opts { flex: 1; display: flex; flex-wrap: wrap; gap: 6px 14px; min-width: 0; }
+.hp-copy-opts.col { flex-direction: column; gap: 6px; }
+.hp-copy-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.hp-copy-opt input { flex: none; margin: 0; }
+.hp-copy-opt em { font-style: normal; font-size: 11px; color: var(--text-3); }
+.hp-copy .hp-note { margin: 0; }
+.hp-skill.local { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.hp-warn-line { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-text); }
+.hp-warn-line svg { flex: none; width: 13px; height: 13px; margin-top: 3px; }
+.hp-arow-note { margin: -2px 0 6px 30px; }
+.sc-form-note { margin: -4px 0 0; }
+@media (max-width: 760px) {
+  .hp-copy-row { flex-direction: column; gap: 6px; }
+  .hp-arow-note { margin-left: 0; }
 }

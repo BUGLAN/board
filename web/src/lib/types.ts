@@ -143,6 +143,10 @@ export interface HostAgent {
   /** 机器设置里选的模型、思考强度；没选是 agent 自己的默认（不传参数） */
   run_model?: string | null;
   run_effort?: string | null;
+  /** 机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 env 是实际用的） */
+  run_env?: string | null;
+  /** 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 [agents.*]：用的是本机的 */
+  local_override?: boolean;
 }
 
 /** 一个 agent 能在机器设置里选什么 */
@@ -252,6 +256,8 @@ export interface HostInfo {
   paused: boolean;
   /** 默认 agent（设置过且找到了就是它，否则第一个找到的） */
   agent: string | null;
+  /** 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效 */
+  agentSet?: string | null;
   cronOn: boolean;
   /** 定时领取的时间点 HH:MM（机器本地时区） */
   cron: string[];
@@ -288,6 +294,22 @@ export interface McpVar {
 }
 
 /** 共用配置里的一个 MCP 服务器（PRD §10.12「共用配置」） */
+/** 共用配置里的 agent 模板（board-core templates.rs）：字段和配置文件的 [agents.<标识>] 一样 */
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  cmd: string[];
+  model: string;
+  modelArgs: string[];
+  effortArgs: string[];
+  efforts: string[];
+  /** Windows 上支持的启动环境，按默认选择的顺序；空 = 默认 */
+  win: string[];
+  version?: string;
+  updatedAt?: number;
+  by?: string;
+}
+
 export interface McpServer {
   name: string;
   kind: 'stdio' | 'http';

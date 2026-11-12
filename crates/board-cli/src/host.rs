@@ -303,6 +303,8 @@ struct Spec {
     models: Vec<String>,
     /// 内置模板的结构化输出参数要求的最低版本和参数（见 [`Builtin::json_since`]）；配置文件覆盖了命令时没有
     json_gate: Option<(String, Vec<String>)>,
+    /// 共用配置里有这个标识的模板，但本机配置文件里有同标识的 `[agents.*]`：用的是本机的（上报给界面标出来）
+    local_override: bool,
 }
 
 /// 版本号前面的数字：`0.2.2-rc.1` → [0, 2, 2]、`2.1.311 (Claude Code)` → [2, 1, 311]；没有数字时为空
@@ -379,6 +381,8 @@ impl Spec {
             }),
             run_model: None,
             run_effort: None,
+            run_env: None,
+            local_override: self.local_override,
         }
     }
 
@@ -427,11 +431,15 @@ struct Template {
     efforts: Vec<String>,
     models: Vec<String>,
     json_gate: Option<(String, Vec<String>)>,
+    /// 来自服务端下发的模板（共用配置）
+    server: bool,
+    local_override: bool,
 }
 
-/// 内置模板加上配置文件里的模板（同标识覆盖内置）；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
-/// 每个 agent 在它支持、本机有的启动环境里各检查一次
-fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
+/// 内置模板、服务端下发的共用模板（共用配置「agent 模板」）、配置文件里的模板，后面的覆盖前面同标识的；
+/// 顺序：内置的在前，共用模板里新加的按标识排在后面，配置文件里新加的再按文件顺序排在后面。
+/// 本机配置文件覆盖了共用模板的，标上 `local_override`。每个 agent 在它支持、本机有的启动环境里各检查一次
+fn agent_specs(conf: &[AgentConf], server: &[AgentTemplate], envs: &[Env]) -> Result<Vec<Spec>> {
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let order = |win: &[&str]| if cfg!(windows) { strs(win) } else { strs(envs::UNIX_ORDER) };
     let mut out: Vec<Template> = BUILTIN
@@ -451,8 +459,65 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             efforts: strs(b.efforts),
             models: strs(b.models),
             json_gate: (!b.json_since.is_empty()).then(|| (b.json_since.to_string(), strs(b.json_flags))),
+            server: false,
+            local_override: false,
         })
         .collect();
+    let order_of = |win: &[String]| if cfg!(windows) { win.to_vec() } else { strs(envs::UNIX_ORDER) };
+    for t in server {
+        // 服务端校验过；旧版服务端、坏数据里不对的跳过
+        if check_agent_id(&t.id).is_err() || t.cmd.is_empty() {
+            continue;
+        }
+        match out.iter_mut().find(|x| x.id == t.id) {
+            Some(x) => {
+                if x.cmd.first() != t.cmd.first() {
+                    x.also.clear();
+                }
+                if x.cmd != t.cmd {
+                    x.json_gate = None;
+                }
+                x.cmd = t.cmd.clone();
+                if !t.name.is_empty() {
+                    x.name = t.name.clone();
+                }
+                if !t.model.is_empty() {
+                    x.model = t.model.clone();
+                }
+                if !t.model_args.is_empty() {
+                    x.model_args = t.model_args.clone();
+                }
+                if !t.effort_args.is_empty() {
+                    x.effort_args = t.effort_args.clone();
+                }
+                if !t.efforts.is_empty() {
+                    x.efforts = t.efforts.clone();
+                }
+                if !t.win.is_empty() {
+                    x.order = order_of(&t.win);
+                }
+                x.server = true;
+            }
+            None => out.push(Template {
+                id: t.id.clone(),
+                name: if t.name.is_empty() { t.id.clone() } else { t.name.clone() },
+                model: t.model.clone(),
+                cmd: t.cmd.clone(),
+                also: vec![],
+                skills: vec![],
+                project: vec![],
+                git_bash: false,
+                order: if t.win.is_empty() { order(envs::CONF_WIN_ORDER) } else { order_of(&t.win) },
+                model_args: t.model_args.clone(),
+                effort_args: t.effort_args.clone(),
+                efforts: if t.efforts.is_empty() { ["low", "medium", "high"].map(String::from).to_vec() } else { t.efforts.clone() },
+                models: vec![],
+                json_gate: None,
+                server: true,
+                local_override: false,
+            }),
+        }
+    }
     for a in conf {
         check_agent_id(&a.id).map_err(BoardError::usage)?;
         match out.iter_mut().find(|x| x.id == a.id) {
@@ -465,6 +530,8 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 if x.cmd != a.cmd {
                     x.json_gate = None;
                 }
+                // 本机配置覆盖了共用配置里的模板：以本机为准，上报时标出来
+                x.local_override = x.server;
                 x.cmd = a.cmd.clone();
                 if let Some(n) = &a.name {
                     x.name = n.clone();
@@ -497,6 +564,8 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 efforts: a.efforts.clone().unwrap_or_else(|| ["low", "medium", "high"].map(String::from).to_vec()),
                 models: vec![],
                 json_gate: None,
+                server: false,
+                local_override: false,
             }),
         }
     }
@@ -531,6 +600,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 efforts: t.efforts,
                 models: t.models,
                 json_gate: t.json_gate,
+                local_override: t.local_override,
             })
             .collect()
     }))
@@ -1044,6 +1114,10 @@ struct Host<'a> {
     mcp_key: Option<String>,
     mcp_at: Instant,
     mcp_force: bool,
+    /// 共用配置里的 agent 模板（服务端随任务下发）：已经合进本机 agent 的那一份
+    templates: Vec<AgentTemplate>,
+    /// 马上上报一次（共用模板变了、重新检查完 agent 之后）
+    beat_soon: bool,
 }
 
 /// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
@@ -1121,7 +1195,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     };
     let be = Backend::open_host()?;
     let envs = envs::discover();
-    let mut agents = agent_specs(&conf.agents, &envs)?;
+    // 共用配置里的 agent 模板随第一次取到的任务下发，到时再合进来（见 Host::apply_templates）
+    let mut agents = agent_specs(&conf.agents, &[], &envs)?;
     for a in &mut agents {
         a.check_skills(&envs, &dirs);
     }
@@ -1192,6 +1267,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         mcp_key: None,
         mcp_at: Instant::now(),
         mcp_force: false,
+        templates: vec![],
+        beat_soon: false,
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1593,7 +1670,7 @@ impl Host<'_> {
         self.skill_force = true;
         self.mcp_force = true;
         self.envs = envs::discover();
-        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.envs)) {
+        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.templates, &self.envs)) {
             Ok(a) => self.agents = a,
             Err(e) => self.say(format!("{} 重新检查 agent 没成：{}（接着用原来的）", self.p.yellow("!"), e.message)),
         }
@@ -1680,11 +1757,47 @@ impl Host<'_> {
             ));
             self.runs[i].d = n;
         }
+        let templates = w.templates.clone();
         self.work = Some(w);
         self.work_at = Instant::now();
         self.hold = false;
+        if let Some(t) = templates.filter(|t| *t != self.templates) {
+            self.apply_templates(t);
+        }
         self.start_clones();
         self.plan_readies();
+    }
+
+    /// 共用配置里的 agent 模板变了：合进本机 agent（本机配置文件的同标识优先），重新检查一遍，马上上报。不用重启
+    fn apply_templates(&mut self, t: Vec<AgentTemplate>) {
+        let first = self.templates.is_empty();
+        self.templates = t;
+        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.templates, &self.envs)) {
+            Ok(a) => self.agents = a,
+            Err(e) => {
+                self.say(format!("{} 共用配置里的 agent 模板没有用上：{}（接着用原来的）", self.p.yellow("!"), e.message));
+                return;
+            }
+        }
+        for a in &mut self.agents {
+            a.check_skills(&self.envs, &self.dirs);
+        }
+        self.skill_force = true;
+        self.mcp_force = true;
+        self.beat_soon = true;
+        let ids: Vec<String> = self.templates.iter().map(|t| t.id.clone()).collect();
+        let over: Vec<String> = self.agents.iter().filter(|a| a.local_override).map(|a| a.id.clone()).collect();
+        if !(first && ids.is_empty()) {
+            let mut line = format!(
+                "{} 共用配置的 agent 模板：{}",
+                self.p.green("✓"),
+                if ids.is_empty() { "（没有）".to_string() } else { ids.join("、") }
+            );
+            if !over.is_empty() {
+                line += &format!("；本机配置覆盖：{}", over.join("、"));
+            }
+            self.say(line);
+        }
     }
 
     /// 按服务端发来的检查命令决定哪些白板要（重新）跑环境检查：没跑过、命令或目录变了、目录刚有了、
@@ -2306,6 +2419,10 @@ impl Host<'_> {
             }
             // 桌面端保存了配置：换了名字、目录就马上上报，界面「机器」里立刻看到
             if RELOAD.swap(false, Ordering::SeqCst) && self.reload() {
+                next_beat = now;
+            }
+            // 共用模板变了、重新检查过 agent：马上上报
+            if std::mem::take(&mut self.beat_soon) {
                 next_beat = now;
             }
             if now >= next_beat {
@@ -3343,7 +3460,7 @@ mod tests {
             nope("codex"),
             AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()], ..Default::default() },
         ];
-        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
+        let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex", "mycli"]);
         let claude = specs.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.name, "Claude Code");
@@ -3357,7 +3474,7 @@ mod tests {
         assert_eq!((r.found, r.envs.len(), r.env, r.no_skill, r.model.as_str()), (false, 1, None, None, "gpt-5"));
         // 配置文件里的 model 覆盖内置模板的
         let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()], ..Default::default() }];
-        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
+        let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
         assert_eq!(specs[0].model, "deepseek-reasoner");
     }
 
@@ -3402,7 +3519,7 @@ mod tests {
             AgentConf { id: "mycli".into(), cmd: sv(&["/nope/mycli", "{prompt}"]), effort_args: Some(sv(&["--effort={effort}"])), ..Default::default() },
             AgentConf { id: "plain".into(), cmd: sv(&["/nope/plain", "{prompt}"]), ..Default::default() },
         ];
-        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
+        let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
         let opts = |id: &str| specs.iter().find(|s| s.id == id).unwrap().report().opts.unwrap();
         assert_eq!(opts("claude"), AgentOpts { model: true, models: sv(&["opus", "sonnet", "haiku", "fable"]), efforts: sv(&["low", "medium", "high", "xhigh", "max"]) });
         assert_eq!(opts("dsh"), AgentOpts::default());
@@ -3434,6 +3551,7 @@ mod tests {
         std::fs::write(repo.join(".agents").join("skills").join(SKILL).join("SKILL.md"), "x").unwrap();
         let spec = Spec {
             json_gate: None,
+            local_override: false,
             id: "pi".into(),
             name: "pi".into(),
             model: String::new(),
@@ -3472,13 +3590,43 @@ mod tests {
         assert!(to.contains("仓库的 .claude/skills/board-skills") && !to.contains(".agents/skills"), "{to}");
     }
 
+    /// 共用配置的 agent 模板（#188）：合在内置模板后面、本机配置文件前面；本机配置覆盖了共用模板时标出来
+    #[test]
+    fn server_templates_merge_between_builtin_and_local_config() {
+        let t = |id: &str, cmd: &[&str]| AgentTemplate { id: id.into(), cmd: cmd.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+        let server = vec![
+            AgentTemplate { name: "Kimi".into(), model: "k2".into(), model_args: vec!["--model".into(), "{model}".into()], ..t("kimi", &["/nope/kimi", "{prompt}"]) },
+            t("claude", &["/nope/claude", "-p", "{prompt}"]),
+            t("pi", &["/nope/pi", "{prompt}"]),
+        ];
+        let local = vec![AgentConf { id: "pi".into(), cmd: vec!["/nope/my-pi".into(), "{prompt}".into()], ..Default::default() }];
+        let specs = agent_specs(&local, &server, &[]).unwrap();
+        let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["dsh", "claude", "pi", "codex", "kimi"], "共用模板里新加的排在内置的后面");
+        let kimi = specs.iter().find(|s| s.id == "kimi").unwrap();
+        assert_eq!((kimi.name.as_str(), kimi.model.as_str(), kimi.cmd[0].as_str()), ("Kimi", "k2", "/nope/kimi"));
+        assert!(kimi.report().opts.unwrap().model, "模板写了传模型的参数：能选模型");
+        assert_eq!(kimi.efforts, ["low", "medium", "high"]);
+        let claude = specs.iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!(claude.cmd, ["/nope/claude", "-p", "{prompt}"], "共用模板覆盖内置命令");
+        assert_eq!(claude.name, "Claude Code", "没写名称时用内置的");
+        assert!(!claude.model_args.is_empty(), "没写传参方式时用内置的");
+        assert!(claude.json_gate.is_none() && !claude.report().local_override);
+        let pi = specs.iter().find(|s| s.id == "pi").unwrap();
+        assert_eq!(pi.cmd[0], "/nope/my-pi", "本机配置文件优先");
+        assert!(pi.report().local_override, "本机配置覆盖了共用模板：上报时标出来");
+        // 没有共用模板时，本机配置覆盖内置模板不算
+        let specs = agent_specs(&local, &[], &[]).unwrap();
+        assert!(!specs.iter().find(|s| s.id == "pi").unwrap().local_override);
+    }
+
     /// dsh 的 --json 从 0.2.2 起才有：本机更旧的去掉它，按原始输出运行；配置文件覆盖了命令的照原样用
     #[test]
     fn json_flag_is_dropped_for_old_dsh() {
         assert!(older_than("0.2.1", "0.2.2") && older_than("dsh 0.1.9", "0.2.2") && older_than("0.2", "0.2.2"));
         assert!(!older_than("0.2.2-rc.1", "0.2.2") && !older_than("0.10.0", "0.2.2") && !older_than("1.0", "0.2.2"));
         assert!(!older_than("", "0.2.2") && !older_than("unknown", "0.2.2"), "看不出版本时当作够新");
-        let specs = agent_specs(&[], &[]).unwrap();
+        let specs = agent_specs(&[], &[], &[]).unwrap();
         let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
         let check = |v: &str| Check { env: "direct".into(), found: true, version: v.into(), prog: Some("dsh".into()) };
         assert!(dsh.cmd_for(&check("0.2.2-rc.1")).contains(&"--json".to_string()));
@@ -3486,7 +3634,7 @@ mod tests {
         assert!(!old.contains(&"--json".to_string()), "{old:?}");
         assert_eq!(logfmt::stream_for("dsh", &old), None, "去掉之后按原始输出处理");
         let conf = vec![AgentConf { id: "dsh".into(), cmd: vec!["dsh".into(), "--json".into(), "{prompt}".into()], ..Default::default() }];
-        let specs = agent_specs(&conf, &[]).unwrap();
+        let specs = agent_specs(&conf, &[], &[]).unwrap();
         let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
         assert!(dsh.cmd_for(&check("0.1.0")).contains(&"--json".to_string()), "配置文件写的命令照原样用");
     }

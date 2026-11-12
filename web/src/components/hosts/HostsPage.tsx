@@ -14,6 +14,7 @@ import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './b
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
 import { McpSection } from './Mcp';
 import { SharedConfig } from './Shared';
+import { TemplatesSection } from './Templates';
 
 export function HostsSide() {
   const ws = useData(s => s.ws);
@@ -375,6 +376,7 @@ export function HostsPage() {
           <>
             <SharedConfig hosts={hosts} />
             <McpSection hosts={hosts} />
+            <TemplatesSection hosts={hosts} />
           </>
         ) : view === 'compare' ? (
           <Compare hosts={hosts} ws={ws} now={now} server={server} />

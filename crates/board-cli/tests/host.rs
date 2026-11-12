@@ -1417,3 +1417,43 @@ fn raw_only_agents_report_an_empty_format() {
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }
+
+
+/* ------------------------------ 共用配置的 agent 模板（#188） ------------------------------ */
+
+/// #188 验收：在共用配置里新加一个 agent 模板（命令是假脚本），在线的机器 10 秒内上报它，不用重启 board host；
+/// 本机配置文件里有同标识的 `[agents.*]` 时用本机的，上报里标「本机配置覆盖」；删掉模板后它不再出现
+#[test]
+fn shared_agent_templates_reach_online_hosts_without_restart() {
+    let rig = Rig::new();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    let fake = rig.fake.display().to_string();
+    let put = |id: &str, cmd: Vec<String>| {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        let t = board_core::AgentTemplate { id: id.into(), name: format!("{id} 模板"), cmd, ..Default::default() };
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.template_put(t, "buglan")).unwrap();
+    };
+    let agent = |id: &str| -> Option<Value> { rig.workspace()["hosts"][0]["agents"].as_array()?.iter().find(|a| a["id"] == id).cloned() };
+    // 新加：命令是假脚本，找得到
+    put("kimi", vec![fake.clone(), "{prompt}".into()]);
+    let begun = Instant::now();
+    wait_until("mbp 上报 kimi", Duration::from_secs(10), || agent("kimi").is_some_and(|a| a["found"] == true));
+    assert!(begun.elapsed() < Duration::from_secs(10));
+    let a = agent("kimi").unwrap();
+    assert_eq!((a["name"].as_str(), a["version"].as_str()), (Some("kimi 模板"), Some("9.9.9 (fake)")));
+    assert!(a.get("local_override").is_none());
+    // 共用模板覆盖 claude，本机配置文件里也有 [agents.claude]：用本机的，标出来
+    put("claude", vec!["/board-test-no-such-command".into(), "{prompt}".into()]);
+    wait_until("claude 标出本机配置覆盖", Duration::from_secs(10), || agent("claude").is_some_and(|a| a["local_override"] == true));
+    assert_eq!(agent("claude").unwrap()["found"], true, "用的是本机配置文件里的假脚本");
+    // 删掉 kimi：不再出现
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.template_rm("kimi")).unwrap();
+    }
+    wait_until("kimi 不再上报", Duration::from_secs(10), || agent("kimi").is_none());
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("共用配置的 agent 模板：kimi"), "{out}");
+}

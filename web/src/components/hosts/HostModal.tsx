@@ -6,6 +6,7 @@ import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostNameError, hos
 import { installSkill, isWindows, localHost, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
+import { COPY_ITEMS } from '../../lib/templates';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
@@ -197,6 +198,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const behind = !!server && !!h.version && versionLt(h.version, server);
   // 就绪清单里没通过的项点按钮：展开对应的那一块（收起的「白板与目录」先展开），滚过去闪一下
   const [reveal, setReveal] = useState<{ to: ReadyGo | null; n: number }>({ to: null, n: 0 });
+  /** 「复制设置到…」展开着 */
+  const [copying, setCopying] = useState(false);
   const go = (to: ReadyGo) => setReveal(r => ({ to, n: r.n + 1 }));
   useEffect(() => {
     if (!reveal.to) return;
@@ -359,7 +362,15 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
           </section>
 
           <section className="d-section" style={{ ['--i' as string]: 2 }}>
-            <div className="d-label">接单</div>
+            <div className="d-label">
+              接单
+              {hostsOf(ws).length > 1 && (
+                <button type="button" className="act hp-link" aria-expanded={copying} onClick={() => setCopying(v => !v)}>
+                  {copying ? '收起' : '复制设置到…'}
+                </button>
+              )}
+            </div>
+            {copying && <CopySettings h={h} hosts={hostsOf(ws).filter(x => x.name !== h.name)} close={() => setCopying(false)} />}
             <div className="hp-knobs">
               <div className={cx('hp-knob', failed('max'))}>
                 <div className="hp-knob-text">
@@ -409,7 +420,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className={cx('hp-knob', failed('idleRun'))}>
                   <div className="hp-knob-text">
                     <b>没输出多久算卡住</b>
-                    <span data-tip="只对已经输出过内容的派发生效。Claude Code 用 -p 时运行中没有任何输出，只有结束时才有，所以这条不适用于一行都还没输出的派发">
+                    <span data-tip="只对已经输出过内容的派发生效。内置模板都用结构化输出，运行中每一步都有输出；配置文件里改成只在结束时打印的 agent 一行都还没输出时，这条不适用">
                       长时间没有输出就停止，不等它自己退出
                     </span>
                   </div>
@@ -450,6 +461,12 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
               {h.recheckedAt && <span className="act">{new Date(h.recheckedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 重新检查过</span>}
             </div>
             <SkillBanner h={h} fixed={fixed} setFixed={setFixed} />
+            {h.agentSet && (
+              <p className="hp-note hp-warn-line">
+                <Icon name="alert" />
+                设置的默认 agent「{h.agentSet}」这台机器上找不到，不生效{h.agent ? `：用的是 ${h.agents.find(a => a.id === h.agent)?.name ?? h.agent}` : ''}
+              </p>
+            )}
             {h.agents.map(a => (
               <AgentRow
                 key={a.id}
@@ -868,6 +885,11 @@ function AgentRow({
       <div className={cx('hp-arow', !a.found && 'missing', sync === 'failed' && 'hp-rollback')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
         <AgentIcon id={a.id} />
         <b className="hp-arow-name">{a.name}</b>
+        {a.local_override && (
+          <span className="hp-skill local" tabIndex={0} data-tip={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
+            本机配置覆盖
+          </span>
+        )}
         {fixed ? (
           <span className="hp-skill ok">
             <Icon name="check" />
@@ -913,8 +935,71 @@ function AgentRow({
         </button>
         </span>
       </div>
+      {a.run_env && a.env && a.run_env !== a.env && (
+        <p className="hp-note hp-warn-line hp-arow-note">
+          <Icon name="alert" />
+          设置的启动环境「{name(a.run_env)}」这台机器上没有，不生效：用的是 {name(a.env)}
+        </p>
+      )}
       <AgentRunRow h={h} a={a} save={save} sync={runSync} server={server} />
     </>
+  );
+}
+
+/** 复制设置到其他机器（PRD §10.12）：选目标机器和要复制的项，目标机器的这几项换成这台的，没选的不变。
+ *  照原样复制：目标机器上找不到的 agent、没有的启动环境照样带过去，在那台机器的详情里标「不生效」。要等服务端：按钮转圈 */
+function CopySettings({ h, hosts, close }: { h: HostInfo; hosts: HostInfo[]; close: () => void }) {
+  const [to, setTo] = useState<string[]>([]);
+  const [items, setItems] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const flip = (list: string[], v: string, on: boolean) => (on ? [...list, v] : list.filter(x => x !== v));
+  const go = async () => {
+    setBusy(true);
+    try {
+      await optimistic(null, () => api.copyHost(h.name, to, items));
+      toast({ type: 'success', title: `已复制到 ${to.join('、')}`, text: COPY_ITEMS.filter(([k]) => items.includes(k)).map(([, w]) => w).join('、'), duration: 2400 });
+      close();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="hp-copy">
+      <div className="hp-copy-row">
+        <span className="hp-add-k">复制到</span>
+        <div className="hp-copy-opts">
+          {hosts.map(x => (
+            <label key={x.name} className="hp-copy-opt">
+              <input type="checkbox" checked={to.includes(x.name)} onChange={e => setTo(flip(to, x.name, e.currentTarget.checked))} />
+              {x.name}
+              {!x.online && <em>离线</em>}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="hp-copy-row">
+        <span className="hp-add-k">复制哪些</span>
+        <div className="hp-copy-opts col">
+          {COPY_ITEMS.map(([k, w]) => (
+            <label key={k} className="hp-copy-opt">
+              <input type="checkbox" checked={items.includes(k)} onChange={e => setItems(flip(items, k, e.currentTarget.checked))} />
+              {w}
+            </label>
+          ))}
+        </div>
+      </div>
+      <p className="hp-note">目标机器的这几项换成 {h.name} 的，没选的不变。那台机器上找不到的 agent、没有的启动环境照样带过去，在它的详情里标「不生效」。</p>
+      <div className="lh-actions">
+        <button className="btn sm ghost" type="button" disabled={busy} onClick={close}>
+          取消
+        </button>
+        <button className={cx('btn sm brand', busy && 'is-busy')} type="button" disabled={busy || !to.length || !items.length} onClick={() => void go()}>
+          复制
+        </button>
+      </div>
+    </div>
   );
 }
 

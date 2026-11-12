@@ -12,7 +12,7 @@
 //!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
 //! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、
-//! `POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
+//! `POST /api/hosts/{名字}/copy {to, items}`（复制设置到其他机器）、`POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
 //! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
 //! `GET /api/sessions/{派发 ID}[?since=<runs>]`（一个会话的全部派发、输出和事件；带 since 时事件只取之后新增、改过的）。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发）、`POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
@@ -394,6 +394,27 @@ pub(crate) struct SelfTestDoneBody {
     id: i64,
     #[serde(default)]
     items: Vec<SelfTestItem>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CopyBody {
+    /// 目标机器
+    to: Vec<String>,
+    /// 要复制的项（board-core hosts::COPY_ITEMS）
+    items: Vec<String>,
+}
+
+/// 复制机器设置到其他机器（机器详情「复制设置到…」）：只能在登录后的界面上做。返回目标机器
+pub(crate) async fn copy(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<Vec<HostInfo>> {
+    let b: CopyBody = parse(v)?;
+    let client = client_of(&h);
+    let by = match caller {
+        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
+        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
+    };
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_copy(&name, &b.to, &b.items, &by))).await?;
+    s.poke();
+    Ok(Json(out))
 }
 
 /// board host 做完了自检，回报结果

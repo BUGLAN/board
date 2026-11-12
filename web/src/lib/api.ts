@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
+import type { AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -227,6 +227,11 @@ export const api = {
   mcp: () => req<McpServer[]>('GET', '/api/mcp'),
   putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),
   removeMcp: (name: string) => req('DELETE', `/api/mcp/${q(name)}`),
+  agentTemplates: () => req<AgentTemplate[]>('GET', '/api/agent-templates'),
+  putAgentTemplate: (t: AgentTemplate) => req<AgentTemplate>('POST', '/api/agent-templates', t),
+  removeAgentTemplate: (id: string) => req('DELETE', `/api/agent-templates/${q(id)}`),
+  /** 复制机器设置到其他机器：items 是 limits、cron、rules、agent、run 里的几项 */
+  copyHost: (name: string, to: string[], items: string[]) => req<HostInfo[]>('POST', `/api/hosts/${q(name)}/copy`, { to, items }),
   /** 自检：整台机器，或只查一个 agent（PRD §10.12「自检」） */
   selfTest: (name: string, agent?: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/selftest`, agent ? { agent } : {}),
   /** 全部暂停 / 全部恢复：所有机器一起设成暂停接单（排队的派发照样排队） */

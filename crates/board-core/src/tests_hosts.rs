@@ -2966,3 +2966,68 @@ fn crash_comment_shows_the_last_events_and_folds_the_raw_output() {
     assert!(t.contains("<details><summary>原始输出最后 2 行</summary>\n\n```\nraw 1\nraw 2\n```\n\n</details>"), "{t}");
     assert!(!t.contains("日志最后"), "{t}");
 }
+
+/* ------------------------------ 复制机器设置、agent 模板（#188） ------------------------------ */
+
+#[test]
+fn copy_settings_to_other_hosts_changes_only_the_chosen_items() {
+    let mut s = store();
+    for (n, i) in [("a", "ia"), ("b", "ib"), ("c", "ic")] {
+        beat(&mut s, T0, &report(n, i, vec![])).unwrap();
+    }
+    new_card_tagged(&mut s, "x");
+    let patch = |v: serde_json::Value| -> HostPatch { serde_json::from_value(v).unwrap() };
+    s.write(T0, Origin::ui(None), |w| {
+        w.host_update("a", &patch(serde_json::json!({ "rules": [cond("in", &["deepseek"], "claude")], "fallback": "claude", "cronOn": true, "cron": ["0 9 * * 1-5"], "max": 3 })))
+    })
+    .unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("b", &patch(serde_json::json!({ "max": 2 })))).unwrap();
+    let out = s
+        .write(T0 + S, Origin::ui(None), |w| w.host_copy("a", &["b".into(), "c".into()], &["rules".into(), "cron".into()], "buglan"))
+        .unwrap();
+    assert_eq!(out.len(), 2);
+    let a = s.read(|r| r.host("a", T0 + S)).unwrap();
+    for name in ["b", "c"] {
+        let h = s.read(|r| r.host(name, T0 + S)).unwrap();
+        assert_eq!(h.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect::<Vec<_>>(), a.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect::<Vec<_>>());
+        assert_eq!((h.fallback.as_deref(), h.cron_on, h.cron.clone()), (Some("claude"), true, vec!["0 9 * * 1-5".to_string()]));
+        let ops = h.ops.clone();
+        assert!(ops.iter().any(|o| o.text == "复制了 a 的设置：定时领取、领取规则和兜底" && o.by == "buglan"), "{ops:?}");
+    }
+    // 没选的项不变
+    assert_eq!(s.read(|r| r.host("b", T0 + S)).unwrap().max, 2);
+    assert_eq!(s.read(|r| r.host("c", T0 + S)).unwrap().max, 1);
+    // 目标机器上找不到的 agent、没有的启动环境照样复制，标出不生效
+    s.write(T0, Origin::ui(None), |w| {
+        w.tx.execute("UPDATE hosts SET agent = 'kimi', run = '{\"claude\":{\"env\":\"wsl:Ubuntu\",\"model\":\"sonnet\"}}' WHERE name = 'a'", [])?;
+        Ok(())
+    })
+    .unwrap();
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_copy("a", &["b".into()], &["agent".into(), "run".into()], "buglan")).unwrap();
+    let b = s.read(|r| r.host("b", T0 + 2 * S)).unwrap();
+    assert_eq!((b.agent.as_deref(), b.agent_set.as_deref()), (Some("claude"), Some("kimi")), "找不到的默认 agent 不生效，用第一个找到的");
+    let c = b.agents.iter().find(|x| x.id == "claude").unwrap();
+    assert_eq!((c.run_env.as_deref(), c.run_model.as_deref()), (Some("wsl:Ubuntu"), Some("sonnet")));
+    // 校验
+    let mut e = |from: &str, to: &[&str], items: &[&str]| {
+        s.write(T0, Origin::ui(None), |w| w.host_copy(from, &to.iter().map(|x| x.to_string()).collect::<Vec<_>>(), &items.iter().map(|x| x.to_string()).collect::<Vec<_>>(), "x")).unwrap_err().message
+    };
+    assert!(e("a", &["a"], &["cron"]).contains("它自己"));
+    assert!(e("a", &["b"], &[]).contains("至少选一项"));
+    assert!(e("a", &[], &["cron"]).contains("至少选一台"));
+    assert!(e("a", &["b"], &["dirs"]).contains("不认识"));
+    assert!(e("a", &["nope"], &["cron"]).contains("nope"));
+}
+
+#[test]
+fn agent_templates_reach_every_host_in_its_work() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let hosts = s.rev().unwrap();
+    let t = AgentTemplate { id: "kimi".into(), cmd: vec!["/tmp/kimi".into(), "{prompt}".into()], ..Default::default() };
+    s.write(T0, Origin::ui(None), |w| w.template_put(t, "buglan")).unwrap();
+    assert!(s.rev().unwrap() > hosts, "改了模板算变更：在线的 board host 马上重新取任务");
+    let w = s.read(|r| r.host_work("mbp", T0)).unwrap();
+    let list = w.templates.unwrap();
+    assert_eq!((list.len(), list[0].id.as_str(), list[0].cmd.clone()), (1, "kimi", vec!["/tmp/kimi".to_string(), "{prompt}".to_string()]));
+}
