@@ -629,10 +629,14 @@ fn remote_recheck_and_restart() {
     let h = rig.workspace()["hosts"][0].clone();
     assert!(h["ask"].is_null(), "{h}");
     assert!(h["recheckedAt"].is_i64(), "{h}");
-    // 重启：先离线（final），再以新进程上线；进程号不变（原地换进程）
+    // 重启：先离线（final），再以新进程上线；进程号不变（原地换进程）。新进程的标识写在 pid 文件里：
+    // 看它换了（离线到上线可能快得轮询看不到）
     let pid = host.id();
+    let pidfile = rig.s.home.join(".board").join("host").join("mbp.pid");
+    let instance = |p: &Path| std::fs::read_to_string(p).ok().and_then(|s| s.split_whitespace().nth(2).map(str::to_string));
+    let before = instance(&pidfile).expect("pid 文件");
     ask("restart");
-    wait_until("重启时离线", Duration::from_secs(10), || !online(&rig));
+    wait_until("重启成新进程", Duration::from_secs(20), || instance(&pidfile).is_some_and(|i| i != before));
     wait_until("重启后上线", Duration::from_secs(20), || online(&rig));
     assert!(host.try_wait().unwrap().is_none(), "还是同一个进程 {pid}");
     let ops: Vec<String> = rig.workspace()["hosts"][0]["ops"].as_array().unwrap().iter().map(|o| o["text"].as_str().unwrap().to_string()).collect();
