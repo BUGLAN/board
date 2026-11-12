@@ -901,7 +901,8 @@ fn resolve(conn: &Connection, raw: &str) -> Result<BoardRef> {
 
 fn labels_of(conn: &Connection, project: &str) -> Result<Vec<Label>> {
     let mut st = conn.prepare(
-        "SELECT l.id, l.name, l.color, (SELECT COUNT(*) FROM card_labels cl WHERE cl.label = l.id), l.human_only, l.priority
+        "SELECT l.id, l.name, l.color, (SELECT COUNT(*) FROM card_labels cl JOIN cards c ON c.board = cl.board AND c.id = cl.card \
+         WHERE cl.label = l.id AND c.deleted_at IS NULL), l.human_only, l.priority \
          FROM labels l WHERE l.project = ?1 ORDER BY l.sort, l.id",
     )?;
     let out = st

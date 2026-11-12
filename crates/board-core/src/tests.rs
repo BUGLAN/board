@@ -1886,6 +1886,32 @@ fn trash_delete_hides_restore_and_never_reuses_ids() {
     assert_eq!(snapshot(&s, B, T0).trash, 0);
 }
 
+/// 标签使用数只算没进回收站的卡片（卡片 default/main#250）
+#[test]
+fn label_uses_skip_trashed_cards() {
+    let mut s = store();
+    let bug = ui(&mut s, |w| w.create_label("default", "bug", None, false)).unwrap();
+    for t in ["一", "二"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    for id in [1, 2] {
+        exec(&mut s, B, &human(), T0, Cmd::Label { id, add: vec![bug.id], remove: vec![] }).unwrap();
+    }
+    let uses = |s: &Store| s.read(|r| r.labels("default")).unwrap().into_iter().find(|l| l.id == bug.id).unwrap().uses;
+    assert_eq!(uses(&s), 2);
+
+    // 删除的卡片不算在里面
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 1 }).unwrap();
+    assert_eq!(uses(&s), 1);
+    // 从回收站恢复后又算上
+    exec(&mut s, B, &human(), T0, Cmd::Restore { id: 1 }).unwrap();
+    assert_eq!(uses(&s), 2);
+    // 永久删除后标签行也一起没了
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 2 }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Purge { id: 2 }).unwrap();
+    assert_eq!(uses(&s), 1);
+}
+
 fn card_activity(s: &Store, path: &str, id: i64) -> Result<CardDetail> {
     s.read(|r| {
         let b = r.resolve(path)?;
