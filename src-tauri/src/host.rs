@@ -16,7 +16,7 @@
 use board_core::config;
 use board_core::hosts::{check_host_name, host_name_from};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
@@ -333,15 +333,40 @@ fn hostname() -> String {
     }
 }
 
+/// 从文件尾往前读这么多字节找最后 n 行：日志很大时不再整份读进来（设置页每 4 秒看一次状态）
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+/// 日志最后 n 行（去掉颜色控制符和空行）：从文件尾 seek 读一块，不够 n 行时再往前扩（最多读到文件头）
 fn log_tail(n: usize) -> Vec<String> {
-    let Some(p) = log_path() else { return vec![] };
-    let mut s = String::new();
-    if std::fs::File::open(p).and_then(|mut f| f.read_to_string(&mut s)).is_err() {
-        return vec![];
+    match log_path() {
+        Some(p) => tail_of(&p, n),
+        None => vec![],
     }
-    // 去掉颜色控制符
-    let lines: Vec<String> = s.lines().map(|l| l.replace('\u{1b}', "")).filter(|l| !l.trim().is_empty()).collect();
-    lines[lines.len().saturating_sub(n)..].to_vec()
+}
+
+fn tail_of(path: &Path, n: usize) -> Vec<String> {
+    let Ok(mut f) = std::fs::File::open(path) else { return vec![] };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut size = LOG_TAIL_BYTES;
+    loop {
+        let from = len.saturating_sub(size);
+        if f.seek(SeekFrom::Start(from)).is_err() {
+            return vec![];
+        }
+        let mut buf = Vec::with_capacity((len - from) as usize);
+        if f.read_to_end(&mut buf).is_err() {
+            return vec![];
+        }
+        let text = String::from_utf8_lossy(&buf);
+        // 不是从文件头读的：第一行可能只剩半截，丢掉
+        let all: Vec<&str> = text.lines().skip(if from > 0 { 1 } else { 0 }).collect();
+        let lines: Vec<String> = all.iter().map(|l| l.replace('\u{1b}', "")).filter(|l| !l.trim().is_empty()).collect();
+        if lines.len() >= n || from == 0 {
+            return lines[lines.len().saturating_sub(n)..].to_vec();
+        }
+        // 这一块里的行不够：往前扩一倍再读
+        size *= 2;
+    }
 }
 
 pub fn status<R: Runtime>(app: &AppHandle<R>) -> Status {
@@ -565,6 +590,25 @@ mod tests {
         assert!(matches!(r.child.try_wait(), Ok(None)));
         let _ = r.child.kill();
         let _ = r.child.wait();
+    }
+
+    /// 日志最后几行从文件尾读：大文件不整份读进来；第一行只剩半截时丢掉，往前扩一块接着找
+    #[test]
+    fn log_tail_reads_from_end() {
+        let d = tempfile_dir("logtail");
+        let f = d.join("desktop.log");
+        let body: String = (0..500).map(|i| format!("第 {i} 行\n")).collect();
+        std::fs::write(&f, &body).unwrap();
+        // 定位用的文件由调用方给好了路径：这里直接测读文件的那段
+        assert_eq!(tail_of(&f, 3), vec!["第 497 行", "第 498 行", "第 499 行"]);
+        // 空行、颜色控制符去掉
+        std::fs::write(&f, "\u{1b}[32m好\u{1b}[0m\n\n  \n尾行\n").unwrap();
+        assert_eq!(tail_of(&f, 10), vec!["[32m好[0m", "尾行"]);
+        // 一个 64 KB 里凑不够 n 行（每行很长）：往前扩一块，不把中间丢了
+        let big: String = (0..40).map(|i| format!("{i} {}\n", "x".repeat(4000))).collect();
+        std::fs::write(&f, &big).unwrap();
+        assert_eq!(tail_of(&f, 20).len(), 20);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

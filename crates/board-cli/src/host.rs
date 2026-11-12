@@ -16,7 +16,8 @@
 //!   是默认。每个 agent 用哪个启动环境由机器设置决定（服务端写进派发记录）。找到了、但在它用的环境里看不到 `board-skills`
 //!   的 agent 启动时提醒一行。怎么接入新的 agent 见 docs/agents.md。
 //! - 每 10 秒向服务端上报一次（机器心跳），同时替正在跑的派发的名字发 agent 级心跳；订阅实时推送，
-//!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。
+//!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。每块白板目录的 git 状态（origin、
+//!   当前分支）只每 5 分钟重新看一次，配置、目录、克隆完时马上重看：心跳不跑 git 子进程。
 //! - 有空位、没有暂停时，按创建先后开始排队中的派发：服务端生成名字 `<agent 标识>-<机器名>/<模型名>`、check、领取，
 //!   host 在这块白板对应的目录里、在派发记录写的启动环境里启动 agent（`{prompt}` 换成 `/board-skills 开始执行 …`
 //!   那一行，`{patch}` 换成这次派发的 profile 补丁路径；都作为一个参数传入，不拼进 shell 命令文本），环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD`，以及 `BOARD_CONFIG`：
@@ -229,6 +230,8 @@ const LOG_CLEAN_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// 一次最多读多少字节的新日志（多出来的只留最后这些）。Claude Code、pi 的事件流一行可能很长（工具结果整段在里面），
 /// 转写后只剩一两行，所以读得多一些
 const LOG_CHUNK: u64 = 4 * 1024 * 1024;
+/// 白板目录的 git 状态（origin、当前分支）多久重新看一次：机器心跳 10 秒一次，不能每次都跑 git 子进程
+const DIR_CHECK_EVERY: Duration = Duration::from_secs(300);
 
 /// 「一分钟」有多长：`BOARD_HOST_MINUTE_MS`（毫秒，只给测试用），默认 60 秒。
 /// 兜底设置（单次最长运行、没输出多久算卡住）的最小档是分钟，测试里用它把分钟缩短
@@ -1057,6 +1060,8 @@ struct Host<'a> {
     fixed_dirs: BTreeMap<String, bool>,
     /// 已经从服务端应用到的目录设置版本
     dirs_rev: i64,
+    /// 每块白板目录的 git 状态（最近一次看的结果和看的时间）：心跳时沿用，隔 DIR_CHECK_EVERY 再跑 git
+    dir_checks: Vec<DirCheck>,
     /// 服务端请求的克隆任务（以及刚结束的）
     clones: Vec<CloneRun>,
     /// 每块白板的环境检查（正在跑的、最近一次的结果）
@@ -1123,6 +1128,16 @@ struct Host<'a> {
     templates: Vec<AgentTemplate>,
     /// 马上上报一次（共用模板变了、重新检查完 agent 之后）
     beat_soon: bool,
+}
+
+/// 一块白板目录的 git 状态（目录在不在、是不是 git 仓库、origin、当前分支）和看的时间。
+/// 目录状态不看文件系统时间：改分支、换远端都不碰目录的修改时间，按时间判断会看到旧的
+struct DirCheck {
+    path: PathBuf,
+    status: &'static str,
+    origin: Option<String>,
+    branch: Option<String>,
+    at: Instant,
 }
 
 /// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
@@ -1237,6 +1252,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         dir_raw,
         fixed_dirs,
         dirs_rev: 0,
+        dir_checks: vec![],
         clones: vec![],
         readies: vec![],
         ready_all: true,
@@ -1538,7 +1554,7 @@ impl Host<'_> {
         }
     }
 
-    fn report(&self, done: bool) -> HostReport {
+    fn report(&mut self, done: bool) -> HostReport {
         HostReport {
             name: self.name.clone(),
             instance: self.instance.clone(),
@@ -1693,14 +1709,50 @@ impl Host<'_> {
         ));
     }
 
+    /// 该重新看目录状态了：目录刚变过（配置、克隆完）、到时间了、或者还没有结果
+    fn dir_check_due(checks: &[DirCheck], path: &Path) -> bool {
+        match checks.iter().find(|c| c.path == path) {
+            Some(c) => c.at.elapsed() >= DIR_CHECK_EVERY,
+            None => true,
+        }
+    }
+
+    /// 每块白板目录的 git 状态：到时间的重新看一遍，其余沿用上一次的结果（心跳不跑 git 子进程）
+    fn refresh_dir_checks(&mut self) {
+        let dirs: Vec<PathBuf> = self.dirs.iter().map(|(_, p)| p.clone()).collect();
+        self.dir_checks.retain(|c| dirs.contains(&c.path));
+        for dir in dirs {
+            if !Self::dir_check_due(&self.dir_checks, &dir) {
+                continue;
+            }
+            let (status, origin, branch) = check_git_dir(&dir);
+            let at = Instant::now();
+            match self.dir_checks.iter_mut().find(|c| c.path == dir) {
+                Some(c) => {
+                    c.status = status;
+                    c.origin = origin;
+                    c.branch = branch;
+                    c.at = at;
+                }
+                None => self.dir_checks.push(DirCheck { path: dir, status, origin, branch, at }),
+            }
+        }
+    }
+
     /// 每块白板：配置里写的路径、是否 --dir 固定、目录状态、git 的 origin / 分支、克隆进度
-    fn dir_reports(&self) -> Vec<HostDir> {
+    fn dir_reports(&mut self) -> Vec<HostDir> {
+        self.refresh_dir_checks();
         self.dirs
             .iter()
             .enumerate()
             .map(|(i, (board, path))| {
                 let raw = self.dir_raw.get(i).map(|(_, p)| p.clone()).unwrap_or_else(|| path.display().to_string());
-                let (status, origin, branch) = check_git_dir(path);
+                let c = self.dir_checks.iter().find(|c| c.path == *path);
+                let (status, origin, branch) = match c {
+                    Some(c) => (c.status, c.origin.clone(), c.branch.clone()),
+                    None => ("missing", None, None),
+                };
+                let checked_at = c.map(|c| now_ms() - c.at.elapsed().as_millis() as i64).unwrap_or_else(now_ms);
                 let clone = self.clones.iter().rev().find(|c| c.board == *board).map(|c| HostClone {
                     state: c.state.clone(),
                     url: c.url.clone(),
@@ -1715,7 +1767,7 @@ impl Host<'_> {
                     status: Some(status.into()),
                     origin,
                     branch,
-                    checked_at: Some(now_ms()),
+                    checked_at: Some(checked_at),
                     clone,
                     check: None,
                     ready: self.readies.iter().find(|r| r.board == *board).and_then(|r| r.last.clone()),
@@ -1728,7 +1780,7 @@ impl Host<'_> {
         self.be.remote()
     }
 
-    fn beat(&self, done: bool) -> Result<HostWork> {
+    fn beat(&mut self, done: bool) -> Result<HostWork> {
         let rep = serde_json::to_value(self.report(done)).unwrap_or(Value::Null);
         self.rm().post(&format!("/api/hosts/{}/beat", self.name), rep)
     }
@@ -2300,6 +2352,7 @@ impl Host<'_> {
     }
 
     fn poll_clones(&mut self) {
+        let mut done: Vec<String> = vec![];
         for c in &mut self.clones {
             if c.state != "running" {
                 continue;
@@ -2310,6 +2363,8 @@ impl Host<'_> {
                 if status.success() {
                     c.state = "done".into();
                     c.message = "克隆完成".into();
+                    // 目录里刚有了仓库：下一次上报重新看这块白板的目录状态，不等 DIR_CHECK_EVERY
+                    done.push(c.board.clone());
                 } else {
                     c.state = "failed".into();
                     c.message = tail.unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", status.code()));
@@ -2320,6 +2375,14 @@ impl Host<'_> {
                 c.message = line;
             }
         }
+        // 刚克隆完的白板：删掉旧的目录状态，下一次上报马上重新看
+        let paths: Vec<PathBuf> = self
+            .dirs
+            .iter()
+            .filter(|(b, _)| done.contains(b))
+            .map(|(_, p)| p.clone())
+            .collect();
+        self.dir_checks.retain(|c| !paths.contains(&c.path));
     }
 
     /// 启动后打印一次：机器、agent、白板与目录
@@ -3575,6 +3638,38 @@ mod tests {
         let home = expand("~");
         assert!(home.is_absolute() || home == PathBuf::from("~"));
         assert_eq!(expand("/abs/x"), PathBuf::from("/abs/x"));
+    }
+
+    /// 目录状态缓存：刚看过的沿用，隔 DIR_CHECK_EVERY 才重新跑 git 子进程（心跳 10 秒一次，不能每次都跑）；
+    /// 目录变了（或克隆完）就丢掉旧结果。上报的 checkedAt 是真正跑 git 的那一次的时间
+    #[test]
+    fn dir_checks_are_cached_between_beats() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = plain(&t.path().canonicalize().unwrap());
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let taken = |checks: &[DirCheck]| checks.iter().find(|c| c.path == repo).map(|c| (c.status, c.at));
+        // 还没有结果：当成不存在（不会跑 git 以外的东西，也不会让上报出错）
+        assert!(Host::dir_check_due(&[], &repo));
+        let mut checks = vec![];
+        let (status, origin, branch) = check_git_dir(&repo);
+        assert_eq!(status, "ok");
+        checks.push(DirCheck { path: repo.clone(), status, origin, branch, at: Instant::now() });
+        let first = taken(&checks).unwrap();
+        // 刚看过：不到时间，不再跑 git；结果和看的时间都不变
+        assert!(!Host::dir_check_due(&checks, &repo));
+        assert_eq!(taken(&checks).unwrap().1, first.1);
+        // 到时间了：重新看，看的时间换新的
+        checks[0].at = Instant::now() - DIR_CHECK_EVERY;
+        assert!(Host::dir_check_due(&checks, &repo));
+        let (status, origin, branch) = check_git_dir(&repo);
+        checks[0] = DirCheck { path: repo.clone(), status, origin, branch, at: Instant::now() };
+        assert_eq!(taken(&checks).unwrap().0, "ok");
+        assert!(taken(&checks).unwrap().1 > first.1);
+        // 目录没了：到时间之后看到「不存在」
+        std::fs::remove_dir_all(&repo).unwrap();
+        checks[0].at = Instant::now() - DIR_CHECK_EVERY;
+        let (status, _, _) = check_git_dir(&repo);
+        assert_eq!(status, "missing");
     }
 
     #[test]

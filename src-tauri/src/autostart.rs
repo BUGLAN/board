@@ -63,8 +63,25 @@ fn reg(args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// 开机自启开着吗
+/// 开机自启开着吗。设置页每 4 秒轮询一次状态：结果缓存起来，写注册表 / 文件（[`set`]）或第一次问的时候才真的去看
 pub fn enabled() -> bool {
+    if let Some(v) = *CACHED.lock().unwrap_or_else(|e| e.into_inner()) {
+        return v;
+    }
+    let v = probe();
+    *CACHED.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+    v
+}
+
+/// 缓存的「开着吗」；None 表示还没看过
+static CACHED: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+fn cache(v: bool) {
+    *CACHED.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+}
+
+/// 真的去看：Windows 查注册表（会跑 reg query），其他系统看文件在不在
+fn probe() -> bool {
     #[cfg(target_os = "windows")]
     {
         reg(&["query", RUN_KEY, "/v", "Board"]).is_ok()
@@ -83,9 +100,10 @@ pub fn set(on: bool) -> Result<(), String> {
             let args = launch_args()?;
             let data = format!("\"{}\" {}", args[0], args[1..].join(" "));
             reg(&["add", RUN_KEY, "/v", "Board", "/t", "REG_SZ", "/d", &data, "/f"]).map_err(|e| format!("写注册表失败：{e}"))?;
-        } else if enabled() {
+        } else if probe() {
             reg(&["delete", RUN_KEY, "/v", "Board", "/f"]).map_err(|e| format!("改注册表失败：{e}"))?;
         }
+        cache(on);
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -94,7 +112,10 @@ pub fn set(on: bool) -> Result<(), String> {
         if !on {
             return match std::fs::remove_file(&f) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("删不掉 {}：{e}", f.display())),
-                _ => Ok(()),
+                _ => {
+                    cache(false);
+                    Ok(())
+                }
             };
         }
         let args = launch_args()?;
@@ -102,7 +123,9 @@ pub fn set(on: bool) -> Result<(), String> {
         if let Some(d) = f.parent() {
             std::fs::create_dir_all(d).map_err(|e| format!("无法创建 {}：{e}", d.display()))?;
         }
-        std::fs::write(&f, text).map_err(|e| format!("写不了 {}：{e}", f.display()))
+        std::fs::write(&f, text).map_err(|e| format!("写不了 {}：{e}", f.display()))?;
+        cache(true);
+        Ok(())
     }
 }
 
@@ -116,5 +139,32 @@ mod tests {
         assert_eq!(a.last().map(String::as_str), Some(FLAG));
         // 测试程序不在 .app 里：直接执行自己
         assert!(!a[0].ends_with("/usr/bin/open"));
+    }
+
+    /// 缓存了就一直用缓存（设置页每 4 秒问一次）；set 之后换成新的值，不再去查
+    #[test]
+    fn enabled_is_cached_until_set() {
+        if cfg!(windows) {
+            // Windows 上真的读写注册表：不动本机的开机自启，只验缓存这一层
+            let before = crate::autostart::enabled();
+            assert_eq!(crate::autostart::enabled(), before);
+            cache(!before);
+            assert_eq!(crate::autostart::enabled(), !before);
+            cache(before);
+            assert_eq!(crate::autostart::enabled(), before);
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("board-autostart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("board.desktop");
+        cache(false);
+        assert!(!crate::autostart::enabled());
+        // 文件出现了、缓存还是 false：还是 false（不每次去问）
+        std::fs::write(&f, "x").unwrap();
+        assert!(!crate::autostart::enabled());
+        cache(true);
+        assert!(crate::autostart::enabled());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
