@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { api } from '../lib/api';
 import {
   boardCli, canHost, canSetEnv, canSwitchServer, canUpdate, checkServer, connectServer, currentServer, enableLocalHost, getTheme, isMac, isWindows, localHost, pickFolder,
-  saveLocalHost, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type LocalHost, type Motion, type ServerInfo, type ThemePref,
+  saveLocalHost, setAutostart, setBoardEnv, setDensity, setMotion, setTheme, shellVersion, type Density, type LocalHost, type Motion, type ServerInfo, type ThemePref,
 } from '../lib/platform';
 import { hostsOf } from '../lib/hosts';
 import { hostConfirmText, serverConfirmText } from '../lib/localHost';
@@ -523,13 +523,29 @@ function LocalHostCard() {
       await enableLocalHost(!st.enabled, name.trim(), next);
       // 打开时把表格里还没保存的机器名、白板与目录一起存了（和确认框里看到的一致），不用再点保存
       if (!st.enabled) setDirty(false);
-      toast({ type: 'success', title: st.enabled ? '这台电脑不再接任务' : '这台电脑开始接任务', text: st.enabled ? '已停止 board host' : '桌面端在后台运行 board host，关掉窗口也继续接' });
+      toast({ type: 'success', title: st.enabled ? '这台电脑不再接任务' : '这台电脑开始接任务', text: st.enabled ? '已停止 board host' : '桌面端在后台运行 board host，关掉窗口也继续接；开机时也会自动启动' });
       await load();
+      // 打开接任务时外壳一起打开了开机自启：按外壳报的现状画
+      setAuto(null);
       setTimeout(() => void refresh(), 1500);
     } catch (e) {
       toast({ type: 'error', title: '没有切换', text: String(e) });
     } finally {
       setBusy(false);
+    }
+  };
+
+  // 开机时自动启动：当帧切换，失败时拨回去并提示
+  const [auto, setAuto] = useState<boolean | null>(null);
+  const autoOn = auto ?? !!st?.autostart;
+  const toggleAuto = async () => {
+    const next = !autoOn;
+    setAuto(next);
+    try {
+      setAuto(await setAutostart(next));
+    } catch (e) {
+      setAuto(!next);
+      toast({ type: 'error', title: next ? '没有打开开机自启' : '没有关掉开机自启', text: String(e) });
     }
   };
 
@@ -560,6 +576,13 @@ function LocalHostCard() {
               <i />
             </button>
           </Row>
+          {st.autostart !== undefined && (
+            <Row label="开机时自动启动" hint="登录系统时在后台启动桌面端：接任务时不弹窗口，只显示托盘 / Dock 图标，照常运行 board host。打开「让这台电脑接任务」时一起打开">
+              <button className={cx('toggle', autoOn && 'on')} type="button" role="switch" aria-checked={autoOn} aria-label="开机时自动启动" onClick={() => void toggleAuto()}>
+                <i />
+              </button>
+            </Row>
+          )}
           <Row label="机器名" hint="小写字母、数字、. 和 -，最长 24 个字符；不填用本机主机名">
             <input
               className="input lh-name"

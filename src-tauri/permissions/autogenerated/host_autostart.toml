@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-host-autostart"
+description = "Enables the host_autostart command without any pre-configured scope."
+commands.allow = ["host_autostart"]
+
+[[permission]]
+identifier = "deny-host-autostart"
+description = "Denies the host_autostart command without any pre-configured scope."
+commands.deny = ["host_autostart"]

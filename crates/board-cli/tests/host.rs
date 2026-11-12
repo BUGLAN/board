@@ -120,13 +120,24 @@ impl Rig {
         self.spawn_host(args, false)
     }
 
+    /// `board host --service …`（守护进程）：board host 异常退出后重启的等待缩短到 0.5 秒
+    fn service(&self, name: &str) -> Child {
+        let dir = format!("default/main={}", self.repo.display());
+        self.spawn_host_env(&["host", "--service", "--name", name, "--dir", &dir], false, &[("BOARD_HOST_RESTART_MS", "500")])
+    }
+
     /// 像桌面端那样运行：`BOARD_HOST_STDIN=1`，标准输入接管道（写一行 reload 通知重新读配置，关掉就退出）
     fn host_desktop(&self) -> Child {
         self.spawn_host(&["host"], true)
     }
 
     fn spawn_host(&self, args: &[&str], desktop: bool) -> Child {
+        self.spawn_host_env(args, desktop, &[])
+    }
+
+    fn spawn_host_env(&self, args: &[&str], desktop: bool, extra: &[(&str, &str)]) -> Child {
         let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
+        c.envs(extra.iter().copied());
         c.args(args)
             .env("HOME", &self.s.home)
             .env("USERPROFILE", &self.s.home)
@@ -977,4 +988,37 @@ fn selftest_checks_agent_git_and_version() {
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("请求自检") && out.contains("自检做完"), "{out}");
+}
+
+/* ------------------------------ 装成服务（#190）：守护进程 ------------------------------ */
+
+/// `board host --service`（`board host --install` 装的服务里运行的就是它）：board host 被 kill -9 后很快重新上线
+/// （测试里等 0.5 秒，默认 10 秒），输出写进 ~/.board/host/host.log；停止服务（SIGTERM）时 board host 收尾、机器离线，守护进程退出码 0
+#[test]
+fn service_restarts_host_after_kill9() {
+    let rig = Rig::new();
+    rig.mode("review");
+    let sup = rig.service("mbp");
+    let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
+    wait_until("mbp 上线", Duration::from_secs(20), || online(&rig));
+    let pidfile = rig.s.home.join(".board").join("host").join("mbp.pid");
+    let field = |i: usize| std::fs::read_to_string(&pidfile).ok().and_then(|s| s.split_whitespace().nth(i).map(str::to_string));
+    let (pid, before) = (field(0).unwrap(), field(2).unwrap());
+    assert_ne!(pid.parse::<u32>().unwrap(), sup.id(), "board host 是守护进程的子进程");
+    unsafe {
+        libc_kill(pid.parse().unwrap(), 9);
+    }
+    // 10 秒内（这里 0.5 秒）重新启动，以新进程上线（带上一次的标识接回名字）
+    wait_until("被 kill -9 后重新上线", Duration::from_secs(15), || field(2).is_some_and(|i| i != before) && online(&rig));
+    let log = rig.s.home.join(".board").join("host").join("host.log");
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("启动 board host（第 1 次") && text.contains("异常退出（被信号 9 结束）") && text.contains("启动 board host（第 2 次"), "{text}");
+    assert!(text.contains("mbp 已上线"), "board host 的输出写进 host.log：{text}");
+    // 停止服务：board host 收尾（机器离线），守护进程退出码 0
+    let (code, out) = stop(sup);
+    assert_eq!(code, 0, "{out}");
+    wait_until("mbp 离线", Duration::from_secs(10), || !online(&rig));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("收到停止信号") && text.contains("守护进程退出"), "{text}");
+    assert!(!rig.s.home.join(".board").join("host").join("service.pid").exists());
 }

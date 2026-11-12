@@ -15,6 +15,7 @@ mod heartbeat;
 mod host;
 mod logfmt;
 mod selftest;
+mod service;
 mod update;
 
 use backend::{env, Backend, BoardData, Remote};
@@ -30,7 +31,9 @@ const VALUE_FLAGS: [&str; 21] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait",
 ];
-const BOOL_FLAGS: [&str; 11] = ["--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest"];
+const BOOL_FLAGS: [&str; 14] = [
+    "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
+];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
 const COMMANDS: [(&str, &str, &str); 26] = [
@@ -57,7 +60,7 @@ const COMMANDS: [(&str, &str, &str); 26] = [
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\" | --comment-file <文件>]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
-        ("host", "[run] [--name <机器名>] [--dir <项目>/<白板>=<路径>]… | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，派来的卡片在对应目录里启动本机 agent，Ctrl+C 退出（机器名、白板与目录也可写在 ~/.board/config.toml 的 [host]）；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
+        ("host", "[run] [--name <机器名>] [--dir <项目>/<白板>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，派来的卡片在对应目录里启动本机 agent，Ctrl+C 退出（机器名、白板与目录也可写在 ~/.board/config.toml 的 [host]）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
@@ -306,6 +309,24 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| BoardError::usage("用法：board host rename <新机器名>"))?;
             return host::rename(to, json, p);
+        }
+        // 装成开机自启的服务、卸载；--service 是服务里运行的守护进程（见 service.rs）
+        if a.flag("--install") {
+            return service::install(a.value("--name"), &a.all("--dir"), json, p);
+        }
+        if a.flag("--uninstall") {
+            return service::uninstall(json, p);
+        }
+        if a.flag("--service") {
+            let mut args: Vec<String> = vec![];
+            if let Some(n) = a.value("--name") {
+                args.extend(["--name".to_string(), n.to_string()]);
+            }
+            for d in a.all("--dir") {
+                args.extend(["--dir".to_string(), d]);
+            }
+            service::supervise(args)?;
+            return Ok(Output::Text(String::new()));
         }
         host::run(host::Opts { name: a.value("--name").map(str::to_string), dirs: a.all("--dir") }, p)?;
         return Ok(Output::Text(String::new()));

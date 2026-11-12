@@ -47,6 +47,28 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 （Windows 是一行 PowerShell）。它从发版附件下载本平台的 `board`、校验 SHA-256（对不上就中止）、装到 `~/.local/bin` 并写进 PATH，然后 `board login`、`board host --install`（装成系统服务，开机自动接任务）。装的 `board` 和服务端同一个版本；之后服务端升级了，在机器详情「管理」里点「升级到 <版本>」，或在那台机器上执行 `board update`。agent 本身（Claude Code、Codex……）和 `board-skills` 仍要在那台机器上自己装好，见下面两节。
 
+## 让机器重启后自动接任务
+
+机器重启（系统更新、断电）后，要在有人登录、打开程序之前就自己上线，不然派给它的卡只会排队，定时领取也白设。
+
+- **装了桌面端的电脑**：「设置 → 本机」打开「让这台电脑接任务」时会一起打开「开机时自动启动」。之后登录系统时桌面端在后台启动，不弹窗口，只显示托盘 / Dock 图标，照常接任务。不想要时单独关掉这个开关。
+- **只有命令行的机器**：「添加机器」生成的那一行已经带了这一步。手动装：
+
+  ```sh
+  board host --install --name devbox --dir default/main=~/repo/board
+  ```
+
+  它按这些参数装成开机自启的服务并立即启动：macOS 是 launchd 用户代理（`~/Library/LaunchAgents/dev.board.host.plist`），Linux 是 systemd 用户服务（`~/.config/systemd/user/board-host.service`），Windows 是登录时运行的计划任务「Board host」。`board host` 异常退出（包括被 `kill -9`）10 秒后自动重启；输出在 `~/.board/host/host.log`（超过 5 MB 轮转）。
+
+  ```sh
+  launchctl print gui/$(id -u)/dev.board.host     # macOS：看状态
+  systemctl --user status board-host.service       # Linux：看状态
+  tail -f ~/.board/host/host.log                   # 看输出
+  board host --uninstall                           # 卸载：停掉并删掉服务
+  ```
+
+  Linux 上 systemd 用户服务默认只在这个用户登录后运行；要开机后没人登录也运行，执行一次 `loginctl enable-linger $USER`（可能要 sudo），`--install` 发现没开时会提示。服务只读 `~/.board/config.toml` 里的服务端地址和令牌，不带 shell 里的 `BOARD_URL`、`BOARD_TOKEN`：先 `board login`。
+
 ## 一个 agent 要满足什么
 
 接入前逐条验证（「本机验证」一节有命令）：

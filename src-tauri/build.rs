@@ -17,6 +17,7 @@ fn main() {
         "host_status",
         "host_save",
         "host_enable",
+        "host_autostart",
         "pick_folder",
         "skill_install",
         "update_check",

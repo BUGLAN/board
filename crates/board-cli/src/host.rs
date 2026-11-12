@@ -208,8 +208,7 @@ static QUIT: AtomicBool = AtomicBool::new(false);
 /// （桌面端）标准输入里来了一行 `reload`：配置文件的 `[host]` 改了，或者装好了 board-skills，重新读、重新检查
 static RELOAD: AtomicBool = AtomicBool::new(false);
 
-/// 桌面端运行时，board host 要桌面端重启它（Windows 上不能原地换进程）
-#[cfg_attr(unix, allow(dead_code))]
+/// 桌面端运行、装成服务（守护进程）时，board host 要它们重启自己（Windows 上不能原地换进程）
 pub const EXIT_RESTART: i32 = 75;
 /// 桌面端运行时，board host 要桌面端升级（下载、验签、安装新版本后重启；失败时用 `BOARD_HOST_ASK_ERROR` 带上原因重新启动它）
 pub const EXIT_UPGRADE: i32 = 76;
@@ -972,6 +971,10 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
 /// 命令行运行时启动一个新的、自己退出
 fn restart_self(exe: &Path, p: &Paint) -> Result<()> {
     let _ = writeln!(std::io::stdout(), "{} {}", p.dim(&clock()), "重新启动 board host…");
+    // 装成服务时由守护进程重启（Windows 上不能原地换进程，换了守护进程也看不到新的那个）
+    if crate::service::supervised() {
+        std::process::exit(EXIT_RESTART);
+    }
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     #[cfg(unix)]
     {

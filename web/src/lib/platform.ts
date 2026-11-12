@@ -228,6 +228,8 @@ export interface LocalHost {
   loggedIn: boolean;
   /** 桌面端自带的 board 命令行找到了 */
   cli: boolean;
+  /** 开机时自动启动；旧版桌面端没有这一项 */
+  autostart?: boolean;
 }
 
 /** 本机 board host 的现状；外壳不支持（旧版桌面端）时返回 null */
@@ -253,6 +255,15 @@ export async function saveLocalHost(name: string, dirs: { board: string; path: s
 export async function enableLocalHost(on: boolean, name: string, dirs: { board: string; path: string }[]): Promise<void> {
   try {
     await invoke('host_enable', { on, name, dirs });
+  } catch (e) {
+    throw String(e);
+  }
+}
+
+/** 打开 / 关掉「开机时自动启动」：返回现在是不是开着。失败时抛出原因文字 */
+export async function setAutostart(on: boolean): Promise<boolean> {
+  try {
+    return await invoke<boolean>('host_autostart', { on });
   } catch (e) {
     throw String(e);
   }

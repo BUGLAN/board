@@ -1737,6 +1737,10 @@ function CliInstall() {
             令牌「{token.name}」的原文只在这里显示这一次，关掉弹窗后看不到了；不再用这台机器时在「设置 → Agent 接入」吊销它。
             {os === 'windows' ? '在 PowerShell 里执行。' : '在终端里执行（装到 ~/.local/bin）。'}执行完几分钟内，这台机器会出现在列表里并在线。
           </p>
+          <p className="hp-note">
+            最后一步 <code>board host --install</code> 把它装成开机自启的服务（{os === 'windows' ? '登录时运行的计划任务' : 'macOS 是 launchd，Linux 是 systemd 用户服务'}）：重启后自动上线，board host 异常退出 10 秒后自动重启，日志在 <code>~/.board/host/host.log</code>，卸载用 <code>board host --uninstall</code>。
+            {os === 'unix' && ' Linux 上要在没人登录时也运行，再执行一次 loginctl enable-linger。'}
+          </p>
         </>
       )}
     </section>

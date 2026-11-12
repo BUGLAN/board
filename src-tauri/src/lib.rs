@@ -15,7 +15,9 @@
 //!   （macOS 点 Dock 图标、其他系统点托盘图标重新打开窗口），退出桌面端时结束，见 [`host`]
 //! - 检查更新：设置页手动检查、启动后自动检查一次，确认后下载、验签、安装，见 [`update`]
 //! - 「设置 → 本机」里 agent 看不到 board-skills 时一键安装到它读 skill 的目录，见 [`skill`]
+//! - 「设置 → 本机」的「开机时自动启动」：登录系统时带 `--autostart` 在后台启动，接任务时不弹窗口，见 [`autostart`]
 
+mod autostart;
 mod env;
 mod host;
 mod login;
@@ -301,6 +303,7 @@ pub fn run() {
             host::host_status,
             host::host_save,
             host::host_enable,
+            host::host_autostart,
             host::pick_folder,
             skill::skill_install,
             update::update_check,
@@ -347,7 +350,11 @@ pub fn run() {
                     }
                 });
             }
-            open_window(handle)?;
+            // 开机自启（--autostart）并且在接任务：不弹窗口，只留托盘 / Dock 图标，照常运行 board host
+            let quiet = autostart::launched() && host::enabled(handle) && board_url(handle).is_some();
+            if !quiet {
+                open_window(handle)?;
+            }
             // board host 按远程「重启」「升级」退出时接手（见 host::watch）
             host::watch(handle.clone());
             // 上次打开了「让这台电脑接任务」：连上了服务端就在后台运行 board host（还没连时等连接好再启动，见 server.rs）
@@ -415,6 +422,7 @@ mod acl_tests {
         assert_eq!(urls, ["http://boardsplash.localhost/*"]);
         let perms = default_permissions();
         assert!(perms.iter().any(|p| p == "allow-host-enable"), "{perms:?}");
+        assert!(perms.iter().any(|p| p == "allow-host-autostart"), "{perms:?}");
         assert!(perms.iter().any(|p| p == "core:default"), "{perms:?}");
         // 切换服务端：「设置 → 账号」要调这三个
         for p in ["allow-server-current", "allow-server-check", "allow-server-connect"] {

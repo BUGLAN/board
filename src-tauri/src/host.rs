@@ -60,6 +60,8 @@ pub struct Status {
     pub logged_in: bool,
     /// 桌面端自带的 board 命令行找到了
     pub cli: bool,
+    /// 开机时自动启动（见 autostart.rs）
+    pub autostart: bool,
 }
 
 /* ------------------------------ 配置文件 ------------------------------ */
@@ -363,6 +365,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Status {
         log: log_tail(40),
         logged_in,
         cli: crate::cli_path().is_some(),
+        autostart: crate::autostart::enabled(),
     }
 }
 
@@ -409,6 +412,7 @@ pub async fn host_status(app: AppHandle) -> Status {
         log: vec![],
         logged_in: false,
         cli: false,
+        autostart: false,
     })
 }
 
@@ -491,6 +495,10 @@ pub async fn host_enable(app: AppHandle, on: bool, name: String, dirs: Vec<Dir>)
         }
         save_flag(&app, on)?;
         if on {
+            // 打开「让这台电脑接任务」时默认一起打开开机自启（可以在设置里单独关掉）；没开成不影响接任务，设置页上开关是关的
+            if let Err(e) = crate::autostart::set(true) {
+                eprintln!("开机时自动启动没打开：{e}");
+            }
             ensure_started(&app)?;
         } else {
             stop(&app, STOP_WAIT)?;
@@ -498,6 +506,17 @@ pub async fn host_enable(app: AppHandle, on: bool, name: String, dirs: Vec<Dir>)
         let a = app.clone();
         let _ = app.run_on_main_thread(move || tray(&a, on));
         Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 打开 / 关掉「开机时自动启动」（登录系统时在后台启动桌面端，见 autostart.rs）
+#[tauri::command]
+pub async fn host_autostart(on: bool) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::autostart::set(on)?;
+        Ok(crate::autostart::enabled())
     })
     .await
     .map_err(|e| e.to_string())?
