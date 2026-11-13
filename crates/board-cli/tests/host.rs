@@ -1258,8 +1258,16 @@ fn skills_push_sync_update_and_remove() {
     let v1 = r.json()["skills"][0]["version"].as_str().unwrap().to_string();
     wait_until("B 装上 notes", Duration::from_secs(10), || state(&rig, "notes").is_some_and(|(s, v)| s == "synced" && v.as_deref() == Some(v1.as_str())));
     assert_eq!(std::fs::read_to_string(skills.join("notes").join("ref").join("a.md")).unwrap(), "a");
-    // 同名的本机目录：没覆盖，写明
+    // 同名的本机目录，内容和库里一样（就是从它推的）：算已同步，不动它
     let r = rig.board(&["skills", "push", skills.join("mine").to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("mine 内容一样算已同步", Duration::from_secs(10), || state(&rig, "mine").is_some_and(|(s, _)| s == "synced"));
+    assert!(!skills.join("mine").join(".board-sync").exists(), "本机自己的目录不加标记");
+    // 库里换成别的内容：本机的不覆盖，写明「本机有同名」
+    let other = rig.repo.parent().unwrap().join("other").join("mine");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("SKILL.md"), "other").unwrap();
+    let r = rig.board(&["skills", "push", other.to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     wait_until("mine 报「本机有同名」", Duration::from_secs(10), || state(&rig, "mine").is_some_and(|(s, _)| s == "local"));
     assert_eq!(std::fs::read_to_string(skills.join("mine").join("SKILL.md")).unwrap(), "local");
