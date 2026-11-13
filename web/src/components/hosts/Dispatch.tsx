@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
+import { agentMark, boardOf, cardDispatch, envName, hostDirFor, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
@@ -189,9 +189,10 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
   const split = useData(s => s.board?.cards[card]?.column === 'inbox');
   const hosts = hostsOf(ws);
   const rc = boardOf(ws, path)?.readyCheck;
-  const hasDir = (h: HostInfo) => h.dirs.some(d => d.board === path);
+  // 有工作空间的机器就视为有这块白板的目录（目录状态只在机器详情里提示，不再拒绝派发）
+  const hasDir = (h: HostInfo) => !!hostDirFor(h, path);
   // 环境检查没通过（或还没检查）的机器不能选（PRD §9.1）
-  const ready = (h: HostInfo) => dirReadiness(rc, h, h.dirs.find(d => d.board === path));
+  const ready = (h: HostInfo) => dirReadiness(rc, h, hostDirFor(h, path));
   const usable = (h: HostInfo) => hasDir(h) && readyOk(ready(h));
   const busy = (h: HostInfo) => !h.online || h.paused || hostLoad(ws, h).running.length >= h.max;
   // 默认选中：有这块白板目录的机器里，在线、没满、没暂停的优先
@@ -290,7 +291,7 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
                     {!x.online && <span className="dp-tag">离线</span>}
                     <span className="hp-sp" />
                     {!hasDir(x) ? (
-                      <em>没有这块白板的目录</em>
+                      <em>还没有配工作空间</em>
                     ) : !ok ? (
                       <em className="bad" title={readyWhy(ready(x))}>
                         {readyWhy(ready(x))}

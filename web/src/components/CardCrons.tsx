@@ -13,7 +13,7 @@ import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { boardOf, defaultAgent, envName, hostLoad, hostsOf } from '../lib/hosts';
+import { boardOf, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
 import { boardFlow } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
@@ -395,7 +395,8 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
   const ws = useData(s => s.ws);
   const hosts = hostsOf(ws);
   const h = host ? hosts.find(x => x.name === host) : undefined;
-  const hasDir = (x: HostInfo) => x.dirs.some(d => d.board === path);
+  // 有工作空间的机器就视为有这块白板的目录
+  const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
   const def = h ? defaultAgent(h) : undefined;
   return (
     <span className="cc-pick">
@@ -414,7 +415,7 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
               aria-checked={host === x.name}
               className={cx('cc-host', host === x.name && 'on')}
               disabled={inbox || !ok}
-              data-tip={inbox ? undefined : !ok ? '没有这块白板的目录：先在机器详情的「白板与目录」里加上' : why ? `${why}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
+              data-tip={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : why ? `${why}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
               onClick={() => onChange(x.name, null)}
             >
               <Dot h={x} running={hostLoad(ws, x).running.length} />

@@ -222,7 +222,8 @@ export interface LocalHost {
   name: string;
   /** 不填时用的机器名 */
   defaultName: string;
-  dirs: { board: string; path: string }[];
+  /** 工作空间（`[host] workspace`）：每块白板的目录是 `<工作空间>/<项目>/<白板>`；旧版桌面端没有这一项 */
+  workspace?: string;
   /** board host 最近的输出 */
   log: string[];
   /** 配置文件里有服务端地址和令牌 */
@@ -242,20 +243,20 @@ export async function localHost(): Promise<LocalHost | null> {
   }
 }
 
-/** 保存机器名、白板与目录（写进 ~/.board/config.toml 的 [host]）；失败时抛出原因文字 */
-export async function saveLocalHost(name: string, dirs: { board: string; path: string }[]): Promise<void> {
+/** 保存机器名、工作空间（写进 ~/.board/config.toml 的 [host]）；失败时抛出原因文字 */
+export async function saveLocalHost(name: string, workspace: string): Promise<void> {
   try {
-    await invoke('host_save', { name, dirs });
+    await invoke('host_save', { name, workspace });
   } catch (e) {
     throw String(e);
   }
 }
 
-/** 打开 / 关掉「让这台电脑接任务」；打开时一起写进机器名、白板与目录（页面已经在自己的确认框里确认过）。
+/** 打开 / 关掉「让这台电脑接任务」；打开时一起写进机器名、工作空间（页面已经在自己的确认框里确认过）。
     失败时抛出原因文字 */
-export async function enableLocalHost(on: boolean, name: string, dirs: { board: string; path: string }[]): Promise<void> {
+export async function enableLocalHost(on: boolean, name: string, workspace: string): Promise<void> {
   try {
-    await invoke('host_enable', { on, name, dirs });
+    await invoke('host_enable', { on, name, workspace });
   } catch (e) {
     throw String(e);
   }

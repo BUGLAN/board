@@ -41,6 +41,8 @@ const machine = (agents: HostAgent[], x: Partial<HostInfo> = {}): HostInfo => ({
   version: '0.1.19',
   agents,
   envs: [{ id: 'pwsh', name: 'Windows PowerShell' }, { id: 'git-bash', name: 'Git Bash' }] as HostInfo['envs'],
+  // 默认配了工作空间（有工作空间就视为有这块白板的目录）
+  workspace: { path: 'C:\\repo' },
   dirs: [],
   max: 4,
   paused: false,
@@ -99,8 +101,8 @@ describe('机器磁贴底部', () => {
 
 describe('磁贴上的「还差 N 项」', () => {
   it('没有全部就绪时显示，在状态那一行，不占底部说明的位置', () => {
-    // 没配目录：差 1 项
-    show(machine([agent('dsh')]));
+    // 没配工作空间：差 1 项
+    show(machine([agent('dsh')], { workspace: null }));
     const badge = host.querySelector('.hp-rack-state .hp-ready-badge');
     expect(badge?.textContent).toBe('还差 1 项');
     expect(badge?.getAttribute('title')).toContain('每块白板的目录和仓库正常');
@@ -108,13 +110,13 @@ describe('磁贴上的「还差 N 项」', () => {
   });
 
   it('全部就绪时不显示', () => {
-    show(machine([agent('dsh')], { dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' }] }));
+    show(machine([agent('dsh')], { workspace: { path: '~' }, dirs: [{ board: 'default/main', path: '~/default/main', status: 'ok' }] }));
     expect(host.querySelector('.hp-ready-badge')).toBeNull();
   });
 });
 
 describe('机位卡片：机器 → 会话 → 会话里的卡', () => {
-  const ready = { dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' as const }] };
+  const ready = { workspace: { path: '~' }, dirs: [{ board: 'default/main', path: '~/default/main', status: 'ok' as const }] };
   const base = { board: 'default/main', hostId: 1, host: 'win2', agent: 'dsh', agentLabel: 'dsh', source: 'cron', by: { kind: 'system', name: '系统' }, result: null, createdAt: 0, endedAt: null, exitCode: null, stopBy: null, beatAt: null };
 
   it('一栏一个会话：做完几张、正在做的、后面排着的；排队列表里不列会话里的', () => {

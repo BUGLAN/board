@@ -170,7 +170,8 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 /// ```toml
 /// [host]
 /// name = "macbook"
-/// dirs = { "default/main" = "~/repo/board", "mini/main" = "~/repo/mini" }
+/// workspace = "~/repo"          # 每块白板在这个目录里是 <项目>/<白板>
+/// dirs = { "default/main" = "~/repo/board" }   # 旧写法：逐块配；启动时换成对应的 workspace
 /// log_days = 30
 ///
 /// [agents.claude]
@@ -180,7 +181,9 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 #[derive(Debug, Clone, Default)]
 pub struct HostConf {
     pub name: Option<String>,
-    /// 白板与目录，按文件里的顺序
+    /// 工作空间：每台设备一个目录，每块白板的目录是 `<工作空间>/<项目>/<白板>`（`~` 不展开）
+    pub workspace: Option<String>,
+    /// 旧的白板与目录（`[host] dirs`、`--dir`），按文件里的顺序。启动时换成工作空间，兼容保留
     pub dirs: Vec<(String, String)>,
     /// 本机派发日志保留几天（`~/.board/host/logs` 里结束超过这么多天的删掉）；不写时用默认值
     pub log_days: Option<i64>,
@@ -213,6 +216,9 @@ impl Config {
             let t = h.as_table_like().ok_or_else(|| bad("[host]"))?;
             if let Some(n) = t.get("name") {
                 c.name = Some(n.as_str().ok_or_else(|| bad("host.name"))?.trim().to_string()).filter(|s| !s.is_empty());
+            }
+            if let Some(w) = t.get("workspace") {
+                c.workspace = Some(w.as_str().ok_or_else(|| bad("host.workspace（要写成一个目录）"))?.trim().to_string()).filter(|s| !s.is_empty());
             }
             if let Some(d) = t.get("dirs") {
                 let d = d.as_table_like().ok_or_else(|| bad("host.dirs"))?;
@@ -256,9 +262,9 @@ impl Config {
         Ok(c)
     }
 
-    /// 写 `[host]` 的机器名和白板目录，保留 `[host]` 里的其他项；机器名为 None 时去掉 name（用本机主机名）。
-    /// 不校验，调用方先校验
-    pub fn set_host(&mut self, name: Option<&str>, dirs: &[(String, String)]) -> Result<()> {
+    /// 写 `[host]` 的机器名和工作空间，保留 `[host]` 里的其他项；机器名为 None 时去掉 name（用本机主机名）。
+    /// 旧的白板与目录（`[host] dirs`）原样留着（`--dir` 还在用它），不再改。不校验，调用方先校验
+    pub fn set_host(&mut self, name: Option<&str>, workspace: Option<&str>) -> Result<()> {
         if self.doc.get("host").and_then(|h| h.as_table_like()).is_none() {
             self.doc["host"] = toml_edit::table();
         }
@@ -273,11 +279,14 @@ impl Config {
                 host.remove("name");
             }
         }
-        let mut t = toml_edit::InlineTable::new();
-        for (b, p) in dirs {
-            t.insert(b, p.as_str().into());
+        match workspace.map(str::trim).filter(|w| !w.is_empty()) {
+            Some(w) => {
+                host.insert("workspace", toml_edit::value(w));
+            }
+            None => {
+                host.remove("workspace");
+            }
         }
-        host.insert("dirs", toml_edit::value(t));
         Ok(())
     }
 }
@@ -427,20 +436,31 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("config.toml");
         std::fs::write(&f, "url = \"https://a\"\n\n[host]\nmax = 2\n").unwrap();
-        let dirs = vec![("default/main".to_string(), "~/repo/board".to_string())];
-        update_at(&f, false, |c| c.set_host(Some("macbook"), &dirs).map(|_| ((), true))).unwrap();
-        assert_eq!(read(&f), "url = \"https://a\"\n\n[host]\nmax = 2\nname = \"macbook\"\ndirs = { \"default/main\" = \"~/repo/board\" }\n");
+        update_at(&f, false, |c| c.set_host(Some("macbook"), Some("~/repo")).map(|_| ((), true))).unwrap();
+        assert_eq!(read(&f), "url = \"https://a\"\n\n[host]\nmax = 2\nname = \"macbook\"\nworkspace = \"~/repo\"\n");
         let h = Config::load_from(&f).unwrap().host().unwrap();
         assert_eq!(h.name.as_deref(), Some("macbook"));
-        assert_eq!(h.dirs, dirs);
-        update_at(&f, false, |c| c.set_host(None, &dirs).map(|_| ((), true))).unwrap();
+        assert_eq!(h.workspace.as_deref(), Some("~/repo"));
+        update_at(&f, false, |c| c.set_host(None, Some("~/repo")).map(|_| ((), true))).unwrap();
         assert!(!read(&f).contains("name ="));
-        // 日志保留天数：不写时用默认值（None），写了要是不小于 1 的整数；改机器名、目录时不碰它
+        // 不配工作空间：去掉这一项
+        update_at(&f, false, |c| c.set_host(None, None).map(|_| ((), true))).unwrap();
+        assert!(!read(&f).contains("workspace"), "{}", read(&f));
+        assert_eq!(Config::load_from(&f).unwrap().host().unwrap().workspace, None);
+        // 旧的 [host] dirs 照样读得出来，改机器名、工作空间时不碰它
+        let o = d.path().join("old.toml");
+        std::fs::write(&o, "[host]\ndirs = { \"default/main\" = \"~/repo/board\" }\n").unwrap();
+        let h = Config::load_from(&o).unwrap().host().unwrap();
+        assert_eq!(h.dirs, vec![("default/main".to_string(), "~/repo/board".to_string())]);
+        assert_eq!(h.workspace, None);
+        update_at(&o, false, |c| c.set_host(Some("win"), Some("D:/repo")).map(|_| ((), true))).unwrap();
+        assert!(read(&o).contains("dirs = { \"default/main\" = \"~/repo/board\" }"), "{}", read(&o));
+        // 日志保留天数：不写时用默认值（None），写了要是不小于 1 的整数；改机器名、工作空间时不碰它
         let g = d.path().join("log.toml");
         std::fs::write(&g, "[host]\nlog_days = 7\n").unwrap();
         let h = Config::load_from(&g).unwrap().host().unwrap();
         assert_eq!(h.log_days, Some(7));
-        update_at(&g, false, |c| c.set_host(Some("mbp"), &dirs).map(|_| ((), true))).unwrap();
+        update_at(&g, false, |c| c.set_host(Some("mbp"), Some("~/repo")).map(|_| ((), true))).unwrap();
         assert!(read(&g).contains("log_days = 7"), "{}", read(&g));
         assert_eq!(Config::load_from(&g).unwrap().host().unwrap().log_days, Some(7));
         assert_eq!(Config::load_from(&f).unwrap().host().unwrap().log_days, None);
@@ -474,7 +494,7 @@ mod tests {
                 bb.wait();
                 update_at(&fb, false, |c| {
                     std::thread::sleep(std::time::Duration::from_millis(2));
-                    c.set_host(Some(&format!("m{round}")), &[]).map(|_| ((), true))
+                    c.set_host(Some(&format!("m{round}")), None).map(|_| ((), true))
                 })
                 .unwrap()
             });
@@ -562,18 +582,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join(&backups[0])).unwrap(), bad);
     }
 
-    // Windows 路径带反斜杠：写进 [host].dirs 再读回来仍是原值
+    // Windows 路径带反斜杠：写进 [host].workspace 再读回来仍是原值
     #[test]
-    fn host_dirs_with_windows_paths_roundtrip() {
+    fn host_workspace_with_windows_paths_roundtrip() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("config.toml");
-        let dirs = vec![("default/main".to_string(), r"C:\Users\buglan\repo".to_string())];
-        update_at(&f, false, |c| c.set_host(Some("win"), &dirs).map(|_| ((), true))).unwrap();
+        let ws = r"C:\Users\buglan\repo";
+        update_at(&f, false, |c| c.set_host(Some("win"), Some(ws)).map(|_| ((), true))).unwrap();
         let text = read(&f);
         assert!(Config::load_from(&f).is_ok(), "写出的配置必须是合法 TOML：{text}");
         let h = Config::load_from(&f).unwrap().host().unwrap();
         assert_eq!(h.name.as_deref(), Some("win"));
-        assert_eq!(h.dirs, dirs);
+        assert_eq!(h.workspace.as_deref(), Some(ws));
+    }
+
+    // [host] workspace 要写成字符串；不是字符串时报错，不偷偷换成别的
+    #[test]
+    fn host_workspace_must_be_a_string() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(&f, "[host]\nworkspace = 3\n").unwrap();
+        let e = Config::load_from(&f).unwrap().host().unwrap_err();
+        assert!(e.message.contains("host.workspace"), "{}", e.message);
     }
 
     // 反斜杠、引号、换行交给 toml_edit 序列化：写进去再读回来必须一模一样

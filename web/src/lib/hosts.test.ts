@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { boardHosts, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -67,14 +67,12 @@ describe('目录选择文件夹（只在本机的桌面端）', () => {
     expect(pathParts('Ubuntu-24.04')).toEqual({ head: '', tail: 'Ubuntu-24.04' });
   });
 
-  it('只在本机桌面端、不是 --dir 固定的行能选；别的机器、网页端都不显示按钮', () => {
-    expect(canPickDir({}, { isLocal: true, desktop: true })).toBe(true);
-    // --dir 固定：由启动参数决定
-    expect(canPickDir({ fixed: true }, { isLocal: true, desktop: true })).toBe(false);
+  it('只在本机桌面端能选工作空间的文件夹；别的机器、网页端都不显示按钮', () => {
+    expect(canPickDir({ isLocal: true, desktop: true })).toBe(true);
     // 别的机器：选出来的目录是这台电脑的
-    expect(canPickDir({}, { isLocal: false, desktop: true })).toBe(false);
+    expect(canPickDir({ isLocal: false, desktop: true })).toBe(false);
     // 网页端没有系统的文件夹选择框
-    expect(canPickDir({}, { isLocal: true, desktop: false })).toBe(false);
+    expect(canPickDir({ isLocal: true, desktop: false })).toBe(false);
   });
 });
 
@@ -157,20 +155,42 @@ describe('环境检查（readiness）', () => {
     expect(readyWhy(bad)).toBe('环境检查没通过：zsh: command not found: cargo');
   });
 
-  it('boardHosts：只列有这块白板目录的机器，带检查结果', () => {
+  it('boardHosts：配了工作空间的机器都算有这块白板的目录（目录由工作空间派生），带检查结果', () => {
     const ws = {
       projects: [{ key: 'p', boards: [{ path: 'p/a', readyCheck: rc }] }],
       hosts: [
-        { ...host([]), name: 'mac', dirs: [dir({ cmd: 'cargo --version', ok: true })] },
-        { ...host([]), id: 2, name: 'win', os: 'Windows 11', dirs: [dir({ cmd: 'cargo --version', ok: true })] },
-        { ...host([]), id: 3, name: 'none', dirs: [] },
+        { ...host([]), name: 'mac', workspace: { path: '~/repo' }, dirs: [dir({ cmd: 'cargo --version', ok: true })] },
+        // 工作空间里有这块白板、还没上报状态：算「还没检查」
+        { ...host([]), id: 2, name: 'win', os: 'Windows 11', workspace: { path: 'C:\\repo' }, dirs: [] },
+        { ...host([]), id: 3, name: 'none', workspace: null, dirs: [] },
       ],
     } as unknown as Workspace;
-    expect(boardHosts(ws, 'p/a').map(x => [x.h.name, x.ready.key])).toEqual([
-      ['mac', 'ok'],
-      ['win', 'pending'],
+    expect(boardHosts(ws, 'p/a').map(x => [x.h.name, x.ready.key, x.d.path])).toEqual([
+      ['mac', 'ok', '~/a'],
+      ['win', 'pending', 'C:\\repo\\p\\a'],
     ]);
-    expect(boardHosts(ws, 'p/b')).toEqual([]);
+    // 配了工作空间的机器都有任意白板的目录（目录按 <工作空间>/<项目>/<白板> 派生）；白板没写检查命令时不检查
+    expect(boardHosts(ws, 'p/b').map(x => [x.h.name, x.ready.key, x.d.path])).toEqual([
+      ['mac', 'none', '~/repo/p/b'],
+      ['win', 'none', 'C:\\repo\\p\\b'],
+    ]);
+  });
+
+  it('dirFresh：刚重连上来、还没重新看过的目录不算数（board host 每 10 秒上报，最少每 30 秒看一次目录）', () => {
+    const h = { ...host([]), beatAt: 1_000_000 };
+    // 上报在心跳前后 30 秒内：算新的
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'ok', checkedAt: 990_000 })).toBe(true);
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'ok', checkedAt: 1_010_000 })).toBe(true);
+    // 掉线之前的结果：不算（等它重新检查）
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'missing', checkedAt: 500_000 })).toBe(false);
+    // 旧版 board host 没报检查时间：照旧算
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'missing' })).toBe(true);
+  });
+
+  it('hostDirFor：机器报过的用报的，没报过的按工作空间派生（分隔符跟着系统走）', () => {
+    expect(hostDirFor({ ...host([]), workspace: { path: '/srv/repo/' } }, 'p/a')?.path).toBe('/srv/repo/p/a');
+    expect(hostDirFor({ ...host([]), os: 'Windows 11', workspace: { path: 'C:\\repo' } }, 'p/a')?.path).toBe('C:\\repo\\p\\a');
+    expect(hostDirFor({ ...host([]), workspace: null }, 'p/a')).toBeUndefined();
   });
 });
 
@@ -221,30 +241,19 @@ describe('sessionGroups（机器详情「最近」按会话合成一行）', () 
 
 describe('添加机器：一行安装命令', () => {
   const base = { origin: 'https://board.example.com', token: 'bd_abc', name: 'devbox' };
-  it('macOS / Linux：curl | sh，带令牌、机器名、白板与目录、--service', () => {
-    expect(installCommand({ ...base, os: 'unix', dirs: [{ board: 'default/main', path: '~/repo/board' }] })).toBe(
-      'curl -fsSL https://board.example.com/install.sh | sh -s -- --token bd_abc --name devbox --dir default/main=~/repo/board --service',
+  it('macOS / Linux：curl | sh，带令牌、机器名、工作空间、--service', () => {
+    expect(installCommand({ ...base, os: 'unix', workspace: '~/repo' })).toBe(
+      'curl -fsSL https://board.example.com/install.sh | sh -s -- --token bd_abc --name devbox --workspace ~/repo --service',
     );
   });
-  it('路径里有空格、引号时加引号；没填完的行不带', () => {
-    const c = installCommand({
-      ...base,
-      os: 'unix',
-      dirs: [
-        { board: 'a/b', path: "/srv/my repo/it's" },
-        { board: 'c/d', path: '  ' },
-        { board: '', path: '/x' },
-      ],
-    });
-    expect(c).toContain(`--dir 'a/b=/srv/my repo/it'\\''s' --service`);
-    expect(c).not.toContain('c/d');
-    expect(c).not.toContain('/x');
+  it('路径里有空格、引号时加引号；还没填工作空间时不带', () => {
+    const c = installCommand({ ...base, os: 'unix', workspace: "/srv/my repo/it's" });
+    expect(c).toContain(`--workspace '/srv/my repo/it'\\''s' --service`);
+    expect(installCommand({ ...base, os: 'unix', workspace: '  ' })).not.toContain('--workspace');
   });
-  it('Windows：一行 PowerShell，多个目录用逗号分开', () => {
-    expect(
-      installCommand({ ...base, os: 'windows', dirs: [{ board: 'default/main', path: 'C:\\repo\\board' }, { board: 'x/y', path: "D:\\it's" }] }),
-    ).toBe(
-      "& ([scriptblock]::Create((irm 'https://board.example.com/install.ps1'))) -Token 'bd_abc' -Name 'devbox' -Dir 'default/main=C:\\repo\\board','x/y=D:\\it''s' -Service",
+  it('Windows：一行 PowerShell', () => {
+    expect(installCommand({ ...base, os: 'windows', workspace: "D:\\it's" })).toBe(
+      "& ([scriptblock]::Create((irm 'https://board.example.com/install.ps1'))) -Token 'bd_abc' -Name 'devbox' -Workspace 'D:\\it''s' -Service",
     );
   });
   it('机器名的规则和服务端一致', () => {

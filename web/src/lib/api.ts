@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick } from './types';
+import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick } from './types';
 
 declare global {
   interface Window {
@@ -218,11 +218,12 @@ export const api = {
       env?: { agent: string; env: string };
       /** 一个 agent 的模型、思考强度、模型供应商：不带的那一项不改，空字符串回到默认（供应商空 = 跟随共用配置） */
       run?: { agent: string; model?: string; effort?: string; provider?: string };
-      dirs?: { board: string; path: string }[];
+      /** 工作空间（整个替换）：每块白板的目录是 `<工作空间>/<项目>/<白板>`；空路径表示不配 */
+      workspace?: HostWorkspace;
     },
   ) =>
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
-  /** 请那台机器的 board host 把仓库克隆到这一行的目录 */
+  /** 请那台机器的 board host 把仓库克隆到这块白板的目录（`<工作空间>/<项目>/<白板>`） */
   cloneHostDir: (name: string, board: string, url: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/dirs/clone`, { board, url }),
   removeHost: (name: string, revoke = false) => req('DELETE', `/api/hosts/${q(name)}${revoke ? '?revoke=1' : ''}`),
   /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、排空、取消请求 */

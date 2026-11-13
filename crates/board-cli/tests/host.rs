@@ -165,8 +165,25 @@ impl Rig {
             .unwrap_or_else(|| "60000".into())
     }
 
+    /// 这台机器的工作空间：`<临时目录>/ws`，`default/main` 的目录就是 `<工作空间>/default/main`
+    fn ws(&self) -> PathBuf {
+        self.repo.with_file_name("ws")
+    }
+
+    /// 像桌面端那样配好工作空间：`default/main` 的目录摆到 `<工作空间>/default/main`（`repo` 作为它的内容）
+    fn ws_ready(&self) -> PathBuf {
+        let dir = self.ws().join("default").join("main");
+        if !dir.exists() {
+            std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+            std::fs::rename(&self.repo, &dir).unwrap();
+        }
+        dir
+    }
+
     fn host(&self, name: &str) -> Child {
-        self.host_with(&["host", "--name", name, "--dir", &format!("default/main={}", self.repo.display())])
+        self.ws_ready();
+        let ws = format!("--workspace={}", self.ws().display());
+        self.host_with(&["host", "--name", name, &ws])
     }
 
     fn host_with(&self, args: &[&str]) -> Child {
@@ -175,8 +192,9 @@ impl Rig {
 
     /// `board host --service …`（守护进程）：board host 异常退出后重启的等待缩短到 0.5 秒
     fn service(&self, name: &str) -> Child {
-        let dir = format!("default/main={}", self.repo.display());
-        self.spawn_host_env(&["host", "--service", "--name", name, "--dir", &dir], false, &[("BOARD_HOST_RESTART_MS", "500")])
+        self.ws_ready();
+        let ws = format!("--workspace={}", self.ws().display());
+        self.spawn_host_env(&["host", "--service", "--name", name, &ws], false, &[("BOARD_HOST_RESTART_MS", "500")])
     }
 
     /// 像桌面端那样运行：`BOARD_HOST_STDIN=1`，标准输入接管道（写一行 reload 通知重新读配置，关掉就退出）
@@ -739,8 +757,10 @@ fn host_follows_config_without_restart() {
     }
     let cfg = rig.s.home.join(".board").join("config.toml");
     let base = std::fs::read_to_string(&cfg).unwrap();
-    let host_conf = |name: &str, dir: &Path| format!("{base}\n[host]\nname = \"{name}\"\n\n[host.dirs]\n\"default/main\" = \"{}\"\n", dir.display());
-    std::fs::write(&cfg, host_conf("mbp", &rig.repo)).unwrap();
+    // 工作空间是白板目录的上一级（`<工作空间>/<项目>/<白板>`）；`repo` 已经摆到 `<工作空间>/default/main`
+    let repo = rig.ws_ready();
+    let host_conf = |name: &str, dir: &Path| format!("{base}\n[host]\nname = \"{name}\"\nworkspace = \"{}\"\n", dir.parent().unwrap_or(dir).display());
+    std::fs::write(&cfg, host_conf("mbp", &repo)).unwrap();
     // 像桌面端那样运行，不带 --name、--dir：都跟着配置文件
     let mut host = rig.host_desktop();
     let mut stdin = host.stdin.take().unwrap();
@@ -771,7 +791,7 @@ fn host_follows_config_without_restart() {
     std::fs::write(&cfg, host_conf("win", &other)).unwrap();
     // 没有通知：不去读配置，目录还是原来的
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], rig.repo.display().to_string());
+    assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], repo.display().to_string());
     reload();
     wait_until("board host 换上新目录", Duration::from_secs(10), || {
         let ws = rig.workspace();
@@ -848,7 +868,7 @@ fn ready_check_runs_in_board_dir_and_gates_dispatch() {
     assert_eq!(r.error_code(), "BOARD_NOT_READY", "{}{}", r.out, r.err);
     assert!(r.out.contains("missing ok.txt") || r.err.contains("missing ok.txt"), "{}{}", r.out, r.err);
     // 补上文件、改命令（命令变了马上重跑）：通过，可以派发
-    std::fs::write(rig.repo.join("ok.txt"), "").unwrap();
+    std::fs::write(rig.ws().join("default/main/ok.txt"), "").unwrap();
     patch("test -f ok.txt");
     wait_until("检查通过", Duration::from_secs(20), || {
         let d = dir(&rig.workspace());

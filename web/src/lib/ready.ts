@@ -3,7 +3,7 @@
  * 每一项的数据来自做它的那张卡；那张卡还没做的项先不列（不显示、也不算进 N/M）：
  *   开机自启或已装成服务（#190）、白板的环境检查（#215）、skills / MCP / 环境变量同步（#186、#187、#200）、agent 自检（#191）、
  *   每个 agent 的思考强度（#182）。做了的卡在这里加一项、在对比视图里加一列。 */
-import { envName, osKind, since, skillGaps } from './hosts';
+import { dirFresh, envName, osKind, since, skillGaps } from './hosts';
 import type { HostInfo } from './types';
 
 export type ReadyKey = 'online' | 'version' | 'dirs' | 'skills' | 'agent';
@@ -73,9 +73,11 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
     }
   }
 
-  const bad = h.dirs.filter(d => d.status === 'missing' || d.status === 'not_git');
-  const dirsWhy = !h.dirs.length
-    ? '还没有配白板与目录，派不了卡'
+  // 有工作空间就视为有这块白板的目录（目录状态只在详情里提示，不影响接卡）；没配时派不了卡
+  const ws = h.workspace?.path?.trim() ?? '';
+  const bad = h.dirs.filter(d => dirFresh(h, d) && (d.status === 'missing' || d.status === 'not_git'));
+  const dirsWhy = !ws
+    ? '还没有配工作空间，派不了卡'
     : bad
         .map(d =>
           d.status === 'not_git'
@@ -86,9 +88,9 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
   out.push({
     key: 'dirs',
     label: '每块白板的目录和仓库正常',
-    short: '白板与目录',
+    short: '工作空间',
     ok: !dirsWhy,
-    ...(!!dirsWhy && { why: dirsWhy, go: 'dirs' as const, act: h.dirs.length ? '去处理' : '设置目录' }),
+    ...(!!dirsWhy && { why: dirsWhy, go: 'dirs' as const, act: ws ? '去处理' : '设置工作空间' }),
   });
 
   const miss = skillGaps(h).missing;

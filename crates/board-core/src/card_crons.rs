@@ -585,7 +585,7 @@ impl<'a> W<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HostAgent, HostDir, HostReport, Origin, Store};
+    use crate::{HostAgent, HostDir, HostReport, HostWorkspace, Origin, Store};
 
     const B: &str = "default/main";
     /// 2023-11-14 22:13:20 UTC；上海是 11-15 06:13:20
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(n, 0, "白板删掉了，定时建卡也没了");
     }
 
-    /// 一台机器上报：有 claude（找到了）和 pi（没找到），`dirs` 是它有目录的白板
+    /// 一台机器上报：有 claude（找到了）和 pi（没找到）；`dirs` 非空时配了工作空间（`/tmp`），为空时没配
     fn host_up(s: &mut Store, name: &str, dirs: &[&str]) {
         let agent = |id: &str, label: &str, found: bool| HostAgent { id: id.into(), name: label.into(), found, model: "m".into(), ..Default::default() };
         let rep = HostReport {
@@ -789,7 +789,8 @@ mod tests {
             version: "0.1.24".into(),
             agents: vec![agent("claude", "Claude Code", true), agent("pi", "pi", false)],
             envs: vec![],
-            dirs: dirs.iter().map(|b| HostDir { board: b.to_string(), path: "/tmp/board".into(), ..Default::default() }).collect(),
+            workspace: (!dirs.is_empty()).then(|| HostWorkspace { path: "/tmp".into(), ..Default::default() }),
+            dirs: dirs.iter().map(|b| HostDir { board: b.to_string(), path: format!("/tmp/{b}"), ..Default::default() }).collect(),
             dirs_rev: 0,
             running: vec![],
             done: false,
@@ -874,7 +875,7 @@ mod tests {
         };
         let on = |h: &str| CardCronPatch { host: Some(h.into()), ..patch("更新代码", "0 3 * * *") };
         assert!(usage(create(&mut s, on("nope"))).contains("没有叫「nope」的机器"));
-        assert!(usage(create(&mut s, on("win"))).contains("没有白板 default/main 的目录"));
+        assert!(usage(create(&mut s, on("win"))).contains("还没有配工作空间"));
         assert!(usage(create(&mut s, CardCronPatch { agent: Some("codex".into()), ..on("mbp") })).contains("没有 agent「codex」"));
         assert!(usage(create(&mut s, CardCronPatch { place: Some(INBOX.into()), ..on("mbp") })).contains("不派发"));
         // 没找到命令的 agent 也能先选上（到点时再看）

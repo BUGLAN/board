@@ -223,12 +223,22 @@ export interface HostEnv {
   path: string;
 }
 
+/** 一台机器的工作空间（PRD §9.1）：每块白板的目录是 `<工作空间>/<项目>/<白板>` */
+export interface HostWorkspace {
+  /** 配置里写的路径（~ 不展开） */
+  path: string;
+  /** 目录不存在、是在这台机器上给这块白板新建的 */
+  created?: boolean;
+  /** `--dir <项目>/<白板>=<路径>` 单独覆盖的白板（旧写法，兼容保留） */
+  overrides?: { board: string; path: string }[];
+}
+
 export interface HostDir {
   /** 项目/白板 */
   board: string;
-  /** 配置里写的路径（~ 不展开） */
+  /** 实际用的路径：`<工作空间>/<项目>/<白板>`（`--dir` 覆盖的是覆盖的路径） */
   path: string;
-  /** 命令行用 --dir 固定：界面只读 */
+  /** 命令行用 --dir 单独覆盖：界面只读 */
   fixed?: boolean;
   /** ok | missing | not_git；旧版 board host 没有 */
   status?: 'ok' | 'missing' | 'not_git' | null;
@@ -244,6 +254,8 @@ export interface HostDir {
   check?: string | null;
   /** board host 最近一次跑环境检查的结果；旧版 board host 没有 */
   ready?: DirReady | null;
+  /** board host 上报过这块白板的目录状态 */
+  reported?: boolean;
 }
 
 /** 一台机器在一块白板的目录里跑环境检查的结果 */
@@ -277,8 +289,10 @@ export interface HostInfo {
   agents: HostAgent[];
   /** 启动环境（按发现的顺序）；旧版 board host 不上报，为空 */
   envs?: HostEnv[];
+  /** 工作空间：每台设备一个目录，每块白板的目录由它派生；还没配时没有 */
+  workspace?: HostWorkspace | null;
   dirs: HostDir[];
-  /** 服务端目录设置的版本 */
+  /** 服务端工作空间设置的版本 */
   dirsRev?: number;
   /** 最近一次改目录设置的时间、是谁改的 */
   dirsChangedAt?: number | null;
