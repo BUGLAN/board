@@ -171,7 +171,7 @@ board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止
 ```
 
-所有命令都支持 `--json`；完整的命令和参数见 `board help`，规则与错误码见 skill。
+所有命令都支持 `--json`；每个命令的输出样例见 [docs/cli.md](docs/cli.md)，完整的命令和参数见 `board help`，规则与错误码见 skill。
 
 ## 边界
 
