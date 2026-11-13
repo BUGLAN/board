@@ -1,62 +1,77 @@
 # 接入 agent
 
-`board host` 在派到这台机器的卡片上启动本机的 agent（PRD §9.1）。这份文档写清楚：一个 agent 要满足什么才能接进来、已经接入了哪些、怎么按批次接入新的。
+Board 自己不是 agent：它只把卡片交给一台机器上的 `board host`，由 `board host` 启动那台机器上已经装好的 agent。这份文档是接入一个 agent 的唯一入口：要满足什么、已经接入了哪些、怎么一台上机、怎么按批次接入新的、出了问题看哪里。
 
-## board host 怎么启动 agent
+其他地方只说必要的一句，细节都指到这里：`README.md`「接入 agent」是给人看的三步概览，`docs/PRD.md` §9.1 是 `board host` 的产品行为（排队、会话位、兜底、远程管理这些和具体 agent 无关的规则），`.agents/skills/board-skills/` 是 agent 干活时用的 skill（它管的是领卡、干活、交审，不是接入）。
 
-派发开始时，`board host` 已经以 `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`）领到了卡片，然后：
+按你的身份读：
 
-1. 在这块白板对应的目录（`--dir <项目>/<白板>=<路径>`）里、在这个 agent 的**启动环境**里执行它的**命令模板**。模板里的 `{prompt}` 换成一行提示词，作为**一个参数**传入，不拼进 shell 命令文本：
+| 你要做的事 | 读 |
+|---|---|
+| 第一次把某台机器接上 Board | 「接入前准备」→「三种接法」→「一个 agent 要满足什么」→「装 board-skills」 |
+| 在界面上接一个新 agent（不改代码） | 「按批次接入新的 agent」第 1–4 步（第 3 步走「不改代码」那两条） |
+| 把一个验证过的 agent 变成内置模板 | 「按批次接入新的 agent」第 5 步 → 「接入下一个 agent 时改哪些地方」 |
+| 接好的机器不干活、结果不对 | 「出了问题看哪里」 |
 
-   ```
-   /board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务
-   ```
+## 接入前准备
 
-   启动环境是「在哪种 shell 里启动」，按机器、按 agent 在机器详情里选（PRD §9.1）：
+一个 agent 能接 Board，靠三样东西，缺一样都跑不起来：
 
-   | 启动环境 | 系统 | 怎么启动 |
-   |---|---|---|
-   | 直接启动（`direct`） | 所有 | 直接执行命令，不经过 shell |
-   | 登录 shell（`login`） | macOS、Linux | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…`：读 `~/.zprofile`、`~/.zshrc` 这些启动脚本，写在里面的 `PATH` 也生效 |
-   | cmd | Windows | `cmd.exe /d /s /c "<命令> <参数>…"`：每个参数加双引号；命令名是普通名字时不加引号，含路径、空格等字符时才加（`.cmd` 靠 `%~dp0` 找自己旁边的文件，加了引号的命令 `%~dp0` 是当前目录，相对路径就找错了） |
-   | Windows PowerShell、PowerShell 7（`powershell`、`pwsh`） | Windows | `-NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
-   | Git Bash（`git-bash`） | Windows | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
-   | WSL（`wsl:<发行版>`） | Windows | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…`，目录换成 `/mnt/…` |
+| 要装的东西 | 装在哪 | 怎么来 |
+|---|---|---|
+| `board` 命令行 | 和 agent 同一台机器、同一个 `PATH`（或在命令模板里写绝对路径） | 桌面端自带；或服务端的 `install.sh` / `install.ps1`；或发版附件 `board-skills.zip` 里 `bin/<平台>/board`（由 skill 的 `scripts/board` 调用）；源码安装 `cargo install --path crates/board-cli` |
+| `board-skills` skill | agent 读用户级 skill 的目录（见下表），或仓库里的 `.agents/skills`、`.claude/skills`、`.pi/skills` | 跑着 `board host` 的机器不用手动装：它按「机器 → 共用配置 → skills 共用库」自动同步（`board-skills` 随服务端版本）。桌面端「设置 → 本机」的「一键安装」也行；都没有时解压 `board-skills.zip` |
+| 连接（服务端地址 + 令牌） | `~/.board/config.toml`，权限 0600 | 在界面「设置 → Agent 接入」新建令牌（原文只显示一次），执行 `board login --url <地址> --token <令牌>`；环境变量 `BOARD_URL`、`BOARD_TOKEN` 优先于配置文件 |
 
-   没选时按这个 agent「支持的启动环境」的顺序（下表），取本机有、并且在里面找得到命令的第一个。macOS、Linux 上都是登录 shell → 直接启动。
+`board-skills` 由五个文件组成，少一个 agent 就读不到那部分规则（只复制 `SKILL.md` 不够）：
 
-2. 环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`（上面的名字）、`BOARD_HOST`（机器名）、`BOARD`（`<项目>/<白板>`），以及 `BOARD_CONFIG`：这次派发自己的配置文件 `~/.board/host/run/<机器名>/<派发 ID>.toml`（服务端地址和令牌，只有自己能读，派发结束时删除）。agent 里的 `board` 命令直接用它们，不用再 `--as`、`--board`。
+```sh
+ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
+```
 
-   还有 `BOARD_EXE`：`board host` 自己的路径。`board-skills` 的 `scripts/board` 看到它就用它，不用 skill 里打包的 `board`，两边版本一致。
+每个 agent 读哪个目录：
 
-   经过 shell 启动时，shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：包装脚本在 `exec` 之前用 `board host` 的值（`BOARD_HOST_URL`、`BOARD_HOST_TOKEN`）再设一遍。WSL 里的变量经 `WSLENV` 传进去：`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（Windows 的 `board.exe` 在 WSL 里用不了，用 skill 自带的 Linux 版 `board`）。
+| agent | 用户级目录 | 仓库里也读 |
+|---|---|---|
+| dsh | `~/.agents/skills` | `.agents/skills` |
+| Claude Code | `~/.claude/skills` | `.claude/skills`（**不读 `.agents/skills`**） |
+| pi | `~/.agents/skills`、`~/.pi/agent/skills` | `.agents/skills`、`.pi/skills` |
+| Codex | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `.agents/skills` |
+| 配置文件里新加的 | 自己写进命令模板，`board host` 不检查 | — |
 
-   为什么还要 `BOARD_CONFIG`：有的 agent 不把名字像密钥的环境变量传给它执行的命令。dsh 会去掉名字里带 `KEY`、`PASSWORD`、`SECRET`、`TOKEN` 的变量，`BOARD_TOKEN` 到不了 `board`，`board` 就会拿 `~/.board/config.toml` 里别的令牌去连，得到 `INVALID_TOKEN`。`board` 读 `BOARD_CONFIG` 指向的文件代替 `~/.board/config.toml`，这个变量名不像密钥，能传过去。
-3. 标准输入是空的，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`。内置模板都用 agent 的结构化输出（事件流，JSONL）运行，本机的日志文件里是原样的事件，`board host` 拿它做两件事：
+在仓库里开发、不想每台机器再装一遍 skill 时用链接：
 
-   - **原始输出**：每 5 秒上传新增的行（最多最后 500 行），是 `board host` 转写后的一行一行（`crates/board-cli/src/logfmt.rs`）：agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、出错的 `✗ …`、结束时的 `■ 结束 · 用时 · 轮数 · 费用`。不是 JSON 的行（标准错误里的提示）原样保留。界面「会话」切到「原始输出」看它。
-   - **过程**（结构化事件，`crates/board-cli/src/events.rs`，定义在 `crates/board-core/src/runlog.rs`）：每一行解析成统一的事件——`message`（agent 说的话，Markdown）、`tool`（工具名、参数摘要、结果摘要、成功或失败、退出码）、`error`（出错、接口重试）、`result`（结束：结果文字、用时、输入 / 输出 tokens、费用，agent 输出里有才记）；解析不了的行记成 `text`，原样保留。每 2 秒上传一次新增的（`POST /api/dispatches/<ID>/events {fmt, events}`），服务端按派发存（每个派发最多 2000 条，单条超过 4 KB 截断；派发结束 30 天后只留 `result` 和最后 50 条），有新事件时推送，会话页打开着就实时追加。工具调用和结果分成两条传、带着同一个调用标识，服务端合成一条。会话换到下一张卡后，事件记到当时在做的那张卡上。界面「会话」默认显示它。
+```sh
+mkdir -p ~/.agents/skills ~/.claude/skills
+ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.agents/skills/board-skills   # dsh、pi 等
+ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skills   # Claude Code
+```
 
-   配置文件里覆盖了命令、又没带事件流参数的，或者配置文件里新加的 agent：只有原始输出，`board host` 上报格式为空，「过程」里写明这个 agent 只能看原始输出。
+## 三种接法
 
-   上传前脱敏（`crates/board-cli/src/redact.rs`）：agent 执行 `env`、打印配置文件、报错时带出请求头，令牌和其他密钥不能跟着上传到服务端（任何登录的人都能看到界面上的输出，异常退出时评论里还带最后几个事件和最后 20 行）。`board host` 在向服务端发原始输出、事件，写异常退出评论之前，把这些换成 `<已隐藏>`：当前令牌的原文、这次派发注入的 `BOARD_TOKEN`、`BOARD_HOST_TOKEN`，以及常见格式的密钥（`sk-…`、`ghp_…`、`github_pat_…`、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----` 块、`Authorization: Bearer …` 的凭据）。本机的日志文件保留原文。普通的十六进制提交号不会被误伤。
+接入方式和「谁启动 agent」有关，`board host` 的机制（命令模板、启动环境、环境变量、日志）三种都一样：
 
-   本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
-4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。
-5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面；只有原始输出的 agent 照旧写「日志最后 20 行」。
-6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
+| 接法 | 谁启动 agent | 怎么用 | 适合 |
+|---|---|---|---|
+| **常驻接任务** | 那台机器上的 `board host` | 机器详情里「派发」，或设好定时领取；机器重启后自动上线（`board host --install` / 桌面端「让这台电脑接任务」） | 日常干活，多张卡连着做 |
+| **终端里手动跑** | 你自己 | 复制卡片详情的「复制为提示词」（`/board-skills 开始执行 …`），粘给任何能执行命令的 agent | 试一个新 agent、临时做一张卡 |
+| **只有命令行的机器** | 那台机器的 `board host`（装成服务） | `install.sh` / `install.ps1` 带 `--token --name --dir --service`，或 `board host --install` | 服务器、devbox |
 
-## 在一台新机器上装 `board`、接任务
+只有常驻接任务这一种需要把 agent 写成模板（内置模板或配置）。第二种接法对 agent 没有额外要求：它认得 `/board-skills` 这句话、能执行 `board` 就行。
 
-只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行命令：填机器名、选白板和路径，界面以机器名新建一个访问令牌，给出
+### 在一台新机器上装 board、接任务
+
+只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行：填机器名、选白板和路径，界面以机器名新建一个访问令牌，给出
 
 ```sh
 curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --dir <项目>/<白板>=<路径> --service
 ```
 
-（Windows 是一行 PowerShell）。它从发版附件下载本平台的 `board`、校验 SHA-256（对不上就中止）、装到 `~/.local/bin` 并写进 PATH，然后 `board login`、`board host --install`（装成系统服务，开机自动接任务）。装的 `board` 和服务端同一个版本；之后服务端升级了，在机器详情「管理」里点「升级到 <版本>」，或在那台机器上执行 `board update`。agent 本身（Claude Code、Codex……）和 `board-skills` 仍要在那台机器上自己装好，见下面两节。
+（Windows 是一行 PowerShell。）它从发版附件下载本平台的 `board`、校验 SHA-256（对不上就中止）、装到 `~/.local/bin` 并写进 `PATH`，然后 `board login`、`board host --install`（装成系统服务，开机自动接任务）。装的 `board` 和服务端同一个版本；之后服务端升级了，在机器详情「维护」里点「升级到 <版本>」，或在那台机器上执行 `board update`。
 
-## 让机器重启后自动接任务
+agent 本身（Claude Code、Codex……）和 `board-skills` 仍要按上面「接入前准备」装好。
+
+### 让机器重启后自动接任务
 
 机器重启（系统更新、断电）后，要在有人登录、打开程序之前就自己上线，不然派给它的卡只会排队，定时领取也白设。
 
@@ -76,31 +91,15 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
   board host --uninstall                           # 卸载：停掉并删掉服务
   ```
 
-  Linux 上 systemd 用户服务默认只在这个用户登录后运行；要开机后没人登录也运行，执行一次 `loginctl enable-linger $USER`（可能要 sudo），`--install` 发现没开时会提示。服务只读 `~/.board/config.toml` 里的服务端地址和令牌，不带 shell 里的 `BOARD_URL`、`BOARD_TOKEN`：先 `board login`。
-
-## MCP 服务器：在「共用配置」里维护
-
-卡片要用到的工具（浏览器、数据库、内部文档这类 MCP 服务器）不用每台机器、每个 agent 一个个配：在「机器 → 共用配置 → MCP 服务器」里加一次，每台机器的 board host 写进它找到的 agent 的用户级配置：
-
-| agent | 写到哪里 | 怎么写 |
-|---|---|---|
-| Claude Code | `~/.claude.json` 顶层 `mcpServers`（user scope） | 在它的启动环境里执行 `claude mcp add-json --scope user <名称> '<JSON>'`，改之前先 `claude mcp remove --scope user <名称>` |
-| Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `[mcp_servers.<名称>]` | 直接改文件：`command`、`args`、`env`，或 `url`、`http_headers` |
-| pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | 直接改文件：`command`、`args`、`env`，或 `url`、`headers` |
-| dsh | — | 不支持，界面上写「不支持」 |
-
-- 只动同步加进去的：加过哪些记在 `~/.board/host/mcp-sync.json`。agent 里已经有同名、不是同步加的，不覆盖，界面上写「有同名，没有覆盖」；在共用配置里删掉的，同步加的那条也删掉，自己加的不动。
-- 值可以标成密钥（token、API key）：只存在服务端，界面上只显示末尾 4 位，只发给 board host；会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
-  - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`，只能用打码的 `GET /api/mcp`。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
-- 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
+  Linux 上 systemd 用户服务默认只在这个用户登录后运行；要开机后没人登录也运行，执行一次 `loginctl enable-linger $USER`（可能要 sudo）。`--install` 发现没开时会提示。服务只读 `~/.board/config.toml` 里的服务端地址和令牌，不带 shell 里的 `BOARD_URL`、`BOARD_TOKEN`：先 `board login`。
 
 ## 一个 agent 要满足什么
 
-接入前逐条验证（「本机验证」一节有命令）：
+`board host` 派发时要靠命令行模板非交互地跑完一张卡，所以接之前逐条验证（「本机验证」一节有命令）：
 
 | # | 要求 | 不满足会怎样 |
 |---|---|---|
-| 1 | **非交互模式**：命令行带一个任务，做完就退出，不等输入 | 一直挂着，占着并发位 |
+| 1 | **非交互模式**：命令行带一个任务，做完就退出，不等输入 | 一直挂着，占着会话位 |
 | 2 | **不问权限**：能读写仓库、执行命令、访问网络（`git push`、`board`），没有审批弹窗；用这个 agent 自己的「跳过审批 / 关沙箱」参数 | 卡在审批上，或者命令被拒，做不下去 |
 | 3 | **找得到 `board-skills`**：从某个 skill 目录加载它，提示词以 `/board-skills` 开头时照着它做 | 不认识这句话，什么也不做就退出 → 异常退出（退出码常常是 0） |
 | 4 | **在这台机器上已经登录 / 配好模型**（API key、OAuth、provider） | 一启动就报错退出 |
@@ -111,6 +110,58 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 | 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，非交互命令在里面能做完一张卡。Windows 上不支持的环境（例如 pi 不支持 cmd）不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
 
 agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<标识>-<机器名>/<模型名>` 不超过 48 个字符）。
+
+## board host 怎么启动 agent
+
+派发开始时，`board host` 已经以 `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`）领到了卡片，然后：
+
+1. 在这块白板对应的目录（`--dir <项目>/<白板>=<路径>`）里、在这个 agent 的**启动环境**里执行它的**命令模板**。模板里的 `{prompt}` 换成一行提示词，作为**一个参数**传入，不拼进 shell 命令文本：
+
+   ```
+   /board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务
+   ```
+
+   后面还带一句 board host 身份提示（`BOARD_AS`、`BOARD_HOST`，名字已经上线，不要 check、心跳、claim，不要创建 goal；交审或交给人之后执行 `board next --json`）。
+
+   启动环境是「在哪种 shell 里启动」，按机器、按 agent 在机器详情里选：
+
+   | 启动环境 | 系统 | 怎么启动 |
+   |---|---|---|
+   | 直接启动（`direct`） | 所有 | 直接执行命令，不经过 shell |
+   | 登录 shell（`login`） | macOS、Linux | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…`：读 `~/.zprofile`、`~/.zshrc` 这些启动脚本，写在里面的 `PATH` 也生效 |
+   | cmd | Windows | `cmd.exe /d /s /c "<命令> <参数>…"`：每个参数加双引号；命令名是普通名字时不加引号，含路径、空格等字符时才加（`.cmd` 靠 `%~dp0` 找自己旁边的文件，加了引号的命令 `%~dp0` 是当前目录，相对路径就找错了） |
+   | Windows PowerShell、PowerShell 7（`powershell`、`pwsh`） | Windows | `-NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
+   | Git Bash（`git-bash`） | Windows | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
+   | WSL（`wsl:<发行版>`） | Windows | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…`，目录换成 `/mnt/…` |
+
+   没选时按这个 agent「支持的启动环境」的顺序（下表），取本机有、并且在里面找得到命令的第一个。macOS、Linux 上都是登录 shell → 直接启动。
+
+2. 环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`（上面的名字）、`BOARD_HOST`（机器名）、`BOARD`（`<项目>/<白板>`），以及 `BOARD_CONFIG`：这次派发自己的配置文件 `~/.board/host/run/<机器名>/<派发 ID>.toml`（服务端地址和令牌，只有自己能读，派发结束时删除）。agent 里的 `board` 命令直接用它们，不用再 `--as`、`--board`。
+
+   还有 `BOARD_EXE`：`board host` 自己的路径。`board-skills` 的 `scripts/board` 看到它就用它，不用 skill 里打包的 `board`，两边版本一致。
+
+   经过 shell 启动时，shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：包装脚本在 `exec` 之前用 `board host` 的值（`BOARD_HOST_URL`、`BOARD_HOST_TOKEN`）再设一遍。WSL 里的变量经 `WSLENV` 传进去：`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（Windows 的 `board.exe` 在 WSL 里用不了，用 skill 自带的 Linux 版 `board`）。
+
+   为什么还要 `BOARD_CONFIG`：有的 agent 不把名字像密钥的环境变量传给它执行的命令。dsh 会去掉名字里带 `KEY`、`PASSWORD`、`SECRET`、`TOKEN` 的变量，`BOARD_TOKEN` 到不了 `board`，`board` 就会拿 `~/.board/config.toml` 里别的令牌去连，得到 `INVALID_TOKEN`。`board` 读 `BOARD_CONFIG` 指向的文件代替 `~/.board/config.toml`，这个变量名不像密钥，能传过去。
+
+3. 标准输入是空的，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`。内置模板都用 agent 的结构化输出（事件流，JSONL）运行，本机的日志文件里是原样的事件，`board host` 拿它做两件事：
+
+   - **原始输出**：每 5 秒上传新增的行（最多最后 500 行），是 `board host` 转写后的一行一行（`crates/board-cli/src/logfmt.rs`）：agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、出错的 `✗ …`、结束时的 `■ 结束 · 用时 · 轮数 · 费用`。不是 JSON 的行（标准错误里的提示）原样保留。界面「会话」切到「原始输出」看它。
+   - **过程**（结构化事件，`crates/board-cli/src/events.rs`，定义在 `crates/board-core/src/runlog.rs`）：每一行解析成统一的事件——`message`（agent 说的话，Markdown）、`tool`（工具名、参数摘要、结果摘要、成功或失败、退出码）、`error`（出错、接口重试）、`result`（结束：结果文字、用时、输入 / 输出 tokens、费用，agent 输出里有才记）；解析不了的行记成 `text`，原样保留。每 2 秒上传一次新增的（`POST /api/dispatches/<ID>/events {fmt, events}`），服务端按派发存（每个派发最多 2000 条，单条超过 4 KB 截断；派发结束 30 天后只留 `result` 和最后 50 条），有新事件时推送，会话页打开着就实时追加。工具调用和结果分成两条传、带着同一个调用标识，服务端合成一条。会话换到下一张卡后，事件记到当时在做的那张卡上。界面「会话」默认显示它。
+
+   配置文件里覆盖了命令、又没带事件流参数的，或者配置文件里新加的 agent：只有原始输出，`board host` 上报格式为空，「过程」里写明这个 agent 只能看原始输出。
+
+   上传前脱敏（`crates/board-cli/src/redact.rs`）：agent 执行 `env`、打印配置文件、报错时带出请求头，令牌和其他密钥不能跟着上传到服务端（任何登录的人都能看到界面上的输出，异常退出时评论里还带最后几个事件和最后 20 行）。`board host` 在向服务端发原始输出、事件，写异常退出评论之前，把这些换成 `<已隐藏>`：当前令牌的原文、这次派发注入的 `BOARD_TOKEN`、`BOARD_HOST_TOKEN`，以及常见格式的密钥（`sk-…`、`ghp_…`、`github_pat_…`、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----` 块、`Authorization: Bearer …` 的凭据）。本机的日志文件保留原文。普通的十六进制提交号不会被误伤。
+
+   本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
+
+4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。
+
+5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面；只有原始输出的 agent 照旧写「日志最后 20 行」。
+
+6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
+
+排队、会话位、一个会话做几张、单次最长运行、没输出多久算卡住、定时领取、领取规则这些和具体 agent 无关的规则，见 `docs/PRD.md` §9.1；接入时只要知道默认值：一台机器同时 1 个会话、一个会话最多 4 张卡、单次最长 3 小时、20 分钟没有输出算卡住。
 
 ## 已经接入的（内置模板）
 
@@ -151,29 +202,30 @@ board skills ls                                 # 库里有哪些、本机各目
 board skills rm my-skill                        # 从库里删掉，各台机器上同步装的那份随后删掉
 ```
 
-下面是不跑 board host 时手动装的办法。
+不跑 board host 时（手动接法、或者机器上还没有 board host）按上面「接入前准备」手动装：解压 `board-skills.zip` 到 agent 的 skill 目录，或在仓库里做链接。
 
-agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，agent 也会读工作目录（仓库根目录）里的 skill：dsh、pi 读 `.agents/skills`（pi 还读 `.pi/skills`），Claude Code 只读 `.claude/skills`、不读 `.agents/skills`。所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍；给 Claude Code 用时再在仓库里建一个 `.claude/skills/board-skills` 链接指向它。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
+用 Board 桌面端让这台电脑接任务时，可以不手动装：「机器」里点开这台机器，「本机 agent」上方会写有几个 agent 看不到 `board-skills`，点「一键安装」，桌面端把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录，再让 `board host` 重新检查一遍。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
 
-```sh
-mkdir -p ~/.agents/skills ~/.claude/skills
-ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.agents/skills/board-skills   # dsh、pi 等
-ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skills   # Claude Code
-```
+## MCP 服务器：在「共用配置」里维护
 
-`board host` 启动时在每个 agent 用的启动环境里检查它的 skill 目录（WSL 里看 WSL 用户目录下的，例如 `/home/<用户>/.agents/skills`），看不到 `board-skills` 会提醒一行。在 WSL 里跑的 agent 要在 WSL 里另装一份（或放在仓库里它会读的目录）。链接指向的目录不存在（例如仓库挪过位置）和没装一样。skill 由入口 `SKILL.md` 和按场景的分文件 `work.md`（处理卡片）、`plan.md`（拆解建卡、整理未整理）、`host.md`（board host 启动的会话）、`reference.md`（工作流、命令、错误码）组成，agent 读到哪一步再读对应的文件；这五个文件都在才算装好：
+卡片要用到的工具（浏览器、数据库、内部文档这类 MCP 服务器）不用每台机器、每个 agent 一个个配：在「机器 → 共用配置 → MCP 服务器」里加一次，每台机器的 board host 写进它找到的 agent 的用户级配置：
 
-```sh
-ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
-```
+| agent | 写到哪里 | 怎么写 |
+|---|---|---|
+| Claude Code | `~/.claude.json` 顶层 `mcpServers`（user scope） | 在它的启动环境里执行 `claude mcp add-json --scope user <名称> '<JSON>'`，改之前先 `claude mcp remove --scope user <名称>` |
+| Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `[mcp_servers.<名称>]` | 直接改文件：`command`、`args`、`env`，或 `url`、`http_headers` |
+| pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | 直接改文件：`command`、`args`、`env`，或 `url`、`headers` |
+| dsh | — | 不支持，界面上写「不支持」 |
 
-只复制 `SKILL.md` 不够（分文件缺了，agent 读不到那部分规则）：解压 `board-skills.zip` 或链接整个目录。
-
-用 Board 桌面端让这台电脑接任务时，可以不手动装：「机器」里点开这台机器，「本机 agent」上方会写有几个 agent 看不到 `board-skills`，点「一键安装」，桌面端把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录（dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`），再让 `board host` 重新检查一遍。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
+- 只动同步加进去的：加过哪些记在 `~/.board/host/mcp-sync.json`。agent 里已经有同名、不是同步加的，不覆盖，界面上写「有同名，没有覆盖」；在共用配置里删掉的，同步加的那条也删掉，自己加的不动。
+- 值可以标成密钥（token、API key）：只存在服务端，界面上只显示末尾 4 位，只发给 board host；会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
+  - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`，只能用打码的 `GET /api/mcp`。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
+- 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
+- 新接入的 agent 能不能同步 MCP、写到哪个文件，由 `crates/board-cli/src/mcpsync.rs` 里的 `file_of`（配置文件）、`put` / `remove`（怎么加、怎么删）决定（现在是 Claude Code、Codex、pi 三个）；没写进去的 agent 在界面上写「不支持」。接入新 agent 时按它自己的文档加一项，或者先写「不支持」。
 
 ## 按批次接入新的 agent
 
-每一批几个 agent，每个都走完下面五步。前四步只靠配置文件和本机测试，不改代码；第五步把这一批验证过的写成内置模板，一起提交、发版。
+每一批几个 agent，每个都走完下面五步。前四步只靠配置文件和本机测试，不改代码；第五步把这一批验证过的写成内置模板，一起提交、发版。「功能完善时陆续接入其他 agent」走的就是这条路：新的一批复制这五步，不用改别处的文档。
 
 ### 1. 调研：每个 agent 填一张表
 
@@ -187,6 +239,8 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 | 安装位置 | `command -v <命令>`；装成 app 的再看 app 里有没有自带的命令行（macOS 在 `*.app/Contents/` 下找） |
 | 版本 | `<命令> --version` |
 | 日志特点 | 过程是写标准输出、标准错误，还是只在最后打印；只在最后打印的，找它的事件流 / JSON 输出参数（`stream-json`、`--mode json`、`--json` 之类） |
+| MCP | 它的文档里 MCP 服务器的配置文件和写法；不支持就记「不支持」 |
+| 模型 / 思考强度参数 | `--help` 里模型、reasoning / thinking / effort 之类的参数和可选档位 |
 
 ### 2. 本机验证：不碰白板
 
@@ -196,15 +250,17 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 <非交互命令> "/board-skills 不要执行任何命令。只回答两行：第一行是你加载的 skill 的 name，第二行是它 SKILL.md 里第一个二级标题。"
 ```
 
-应该回答 `board-skills` 和 `参数`，然后退出。回答「没有这个 skill」：先按上一节装好，再问一次。
+应该回答 `board-skills` 和 `参数`，然后退出。回答「没有这个 skill」：先按「装 `board-skills`」装好，再问一次。
 
-这一步可以直接在界面上做：第 3 步在界面上接上之后，在「机器」里点开那台机器，「本机 agent」里这个 agent 那一行点「自检」（或者整台机器的「自检」，顺带检查每块白板的目录能不能推送）。board host 用它设置好的启动环境、模型和思考强度，在一个临时目录里问同样的这一句，界面上写结果：通过；没登录；超时；回答里没有 `board-skills`。人不用登录到那台机器上。
+这一步可以直接在界面上做：第 3 步在界面上接上之后，在「机器」里点开那台机器，「本机 agent」里这个 agent 那一行点「自检」（或者整台机器的「自检」，顺带检查每块白板的目录能不能推送）。board host 用它设置好的启动环境、模型和思考强度，在一个临时目录里问同样的这一句，界面上写结果：通过；没登录；超时；回答里没有 `board-skills`。人不用登录到那台机器上。自检会消耗 agent 的额度，agent 一项最长 3 分钟。
 
 ### 3. 在界面上接上
 
-在界面「机器 → 共用配置 → agent 模板」点「添加」：填标识、名称、命令模板（一行一个参数，第一行是命令，`{prompt}` 单独一行）、默认模型，要在机器设置里选模型和思考强度的再填传参的写法和能选的档位，Windows 上支持哪些启动环境（按勾选的顺序选默认的；不勾是所有启动环境）。保存后服务端随任务下发给所有 `board host`：它们重新检查本机 agent 并上报，不用重启，几秒内「机器」里每台机器的「本机 agent」都出现它（找到 / 没找到）。展开这一项能看到每台机器的情况。和内置 agent 同标识的是改它的命令：写了哪项换哪项，没写的沿用内置的；删掉后换回内置的。
+两条不改代码的路：共用配置里的模板（所有机器都能用），或者某台机器的配置文件（只影响这一台）。
 
-只想在一台机器上试，或者某台机器要用不一样的命令时，写那台机器的 `~/.board/config.toml`（`{prompt}` 单独作为一个元素）。配置文件里同标识的 `[agents.*]` 优先于共用配置里的模板，机器详情里这个 agent 标出「本机配置覆盖」：
+**不改代码：共用配置里的 agent 模板**（推荐先这样试）。在「机器 → 共用配置 → agent 模板」点「添加」：填标识、名称、命令模板（一行一个参数，第一行是命令，`{prompt}` 单独一行）、默认模型，要在机器设置里选模型和思考强度的再填传参的写法和能选的档位，Windows 上支持哪些启动环境（按勾选的顺序选默认的；不勾是所有启动环境）。保存后服务端随任务下发给所有 `board host`：它们重新检查本机 agent 并上报，不用重启，几秒内「机器」里每台机器的「本机 agent」都出现它（找到 / 没找到）。展开这一项能看到每台机器的情况。和内置 agent 同标识的是改它的命令：写了哪项换哪项，没写的沿用内置的；删掉后换回内置的。
+
+**不改代码：配置文件**——只在一台机器上试，或者某台机器要用不一样的命令时，写那台机器的 `~/.board/config.toml`（`{prompt}` 单独作为一个元素）。配置文件里同标识的 `[agents.*]` 优先于共用配置里的模板，机器详情里这个 agent 标出「本机配置覆盖」：
 
 ```toml
 [agents.<标识>]
@@ -250,18 +306,28 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 ### 5. 写成内置模板
 
-这一批都通过第 4 步后：
+这一批都通过第 4 步后，按「接入下一个 agent 时改哪些地方」改代码：加 `BUILTIN` 的一项、接上事件流、加图标、改 PRD 的表、跑 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`。需要在别的机器上试时请人发版（发版由人决定）。
 
-- `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写），以及 `model_args`、`effort_args`、`efforts`、`models`（按它的 `--help` 核对过的传参方式、档位和常用模型；不支持的留空，界面上就不显示）。放在哪一位就是默认顺序里的哪一位。
-- 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序；`model_and_effort_args`：加上它的拼参断言。
-- 接上结构化输出（事件流 / JSON 输出）：
-  - `crates/board-cli/src/logfmt.rs`：`Stream` 加一种，`stream_for` 按标识和命令里的事件流参数认出它（配置文件覆盖了命令、没带参数的按原始输出）；加它的转写（原始输出）。
-  - `crates/board-cli/src/events.rs`：`Parser` 加它的解析，转成 `message`、`tool`（工具调用带 agent 给的调用标识，结果后到时同一个标识）、`error`、`result`（用量、费用有就填；没有整次汇总的，按每一步 / 每一轮的加起来，在结束时写进去）；对人没用的事件（流式片段、状态变化、思考）不记，不是 JSON 的行记成 `text`。
-  - 按它文档里的事件格式写一份样例放进 `crates/board-cli/tests/fixtures/`，`logfmt.rs`、`events.rs` 各加单元测试（转写出的行、事件的种类和条数）。测试不执行真实的 agent。
-  - 打开事件流的参数在某个版本之后才有的，在 `BUILTIN` 里写 `json_since`、`json_flags`：本机版本更旧时去掉这些参数。
-- 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用，并配一个主色（并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
-- `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表。
-- 跑完 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`；需要在别的机器上试时请人发版。
+## 接入下一个 agent 时改哪些地方
+
+新 agent 接进来只动这几处，位置都写清楚，照着填：
+
+| 改哪里 | 改什么 |
+|---|---|
+| `crates/board-cli/src/host.rs` 的 `BUILTIN` | 加一项：`id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`project`（仓库里也读的目录）、`git_bash`（Windows 上要不要把 Git Bash 放到 `PATH` 前面）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）、`model`（默认模型）、`model_args`、`effort_args`、`efforts`、`models`（按它的 `--help` 核对过；不支持的留空，界面上就不显示）、`json_since` / `json_flags`（事件流参数从哪个版本起才有；一直有就留空）。放在数组的哪一位就是默认顺序里的哪一位 |
+| 同文件测试 `builtin_order_and_overrides` | 改期望的顺序和平台相关的断言 |
+| 同文件测试 `model_and_effort_args` | 加上它的拼参断言（选了模型 / 强度时命令是什么样） |
+| `crates/board-cli/src/logfmt.rs` | `Stream` 加一种，`stream_for` 按标识和命令里的事件流参数认出它（配置文件覆盖了命令、没带参数的按原始输出）；加它的转写（原始输出） |
+| `crates/board-cli/src/events.rs` | `Parser` 加它的解析，转成 `message`、`tool`（工具调用带 agent 给的调用标识，结果后到时同一个标识）、`error`、`result`（用量、费用有就填；没有整次汇总的，按每一步 / 每一轮的加起来，在结束时写进去）；对人没用的事件（流式片段、状态变化、思考）不记，不是 JSON 的行记成 `text` |
+| `crates/board-cli/tests/fixtures/<标识>*.jsonl` | 按它文档里的事件格式写一份样例；`logfmt.rs`、`events.rs` 各加单元测试（转写出的行、事件的种类和条数）。测试不执行真实的 agent |
+| `crates/board-cli/src/mcpsync.rs` 的 `file_of`、`put`、`remove` | 能同步 MCP 的加一项（配置文件在哪、怎么加、怎么删）；不支持的不加，界面上自动写「不支持」 |
+| `web/src/assets/agents/<标识>.png` 或 `.svg` | 用它自己的图标（应用图标或官网 logo），裁掉透明边，64×64；白底的图标在 `web/src/lib/hosts.ts` 的 `MARKS` 里标 `light: true`。没有图标时显示标识的前两个字母 |
+| `web/src/lib/hosts.ts` 的 `MARKS` | 引用上面的图标，配一个主色（并发位顶边用） |
+| `docs/PRD.md` §9.1 的内置模板表 | 加一行（标识、名称、命令模板、默认模型、读 skill 的目录、支持的启动环境） |
+| 本文「已经接入的」 | 加一行到内置模板表、一行到模型 / 强度表，写一段「各自的说明」（`--help` 核对过的事实、坑） |
+| `README.md`「接入 agent」 | 只在新增一类 agent 时才改（现在是 dsh、Claude Code、pi、Codex 四个）；通常不用动 |
+
+跑完 `npm test` 再提交（检查项见仓库 `AGENTS.md`）。
 
 ## 出了问题看哪里
 
@@ -281,6 +347,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 原始输出里是一行一行的 JSON，「过程」里写只能看原始输出 | 配置文件里给别的标识的 agent 用了 JSON 输出：`board host` 只解析内置的 Claude Code（`claude`）、pi（`pi`）、Codex（`codex`）、dsh（`dsh`）四个标识，而且命令里要带事件流参数；换回文本输出，或者按「写成内置模板」接上它的解析 |
 | dsh 的「过程」里只能看原始输出 | 本机的 dsh 比 0.2.2 旧，没有 `--json`：升级 DeepSeek Harness |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |
+| 共用配置里加了 MCP 服务器，agent 里没有 | 这个 agent 不支持同步（dsh 和配置文件里新加的 agent 写「不支持」），或者界面那一项里没勾上它；展开 MCP 那一项看每台机器、每个 agent 的状态和原因 |
 | 桌面端「本机」打开后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |
 | 从设置了 `BOARD_TOKEN` 的终端或 agent 会话里启动桌面端，打开「让这台电脑接任务」后 board host 以 `INVALID_TOKEN` 停止 | 旧版桌面端把启动环境里的 `BOARD_URL`、`BOARD_TOKEN`（还有 `BOARD_CONFIG`、`BOARD_AS`、`BOARD`）继承给了后台的 board host，环境变量优先于配置文件，令牌是别的服务端的。新版启动 board host 和改机器名时都去掉这些变量，只用配置文件；升级桌面端 |
 | Windows 上 `npm run desktop:dev` 报 `failed to remove file ... target\debug\board.exe`（os error 5：拒绝访问） | 上次开发启动的 `board-desktop.exe` / `board host` 还在从 `target\debug\board.exe` 运行，锁住了文件。新版 `scripts/build-sidecar.mjs` 会在 dev 构建前自动结束本仓库这两个进程；如果还失败，先从托盘退出 Board，再运行 `npm run desktop:dev` |

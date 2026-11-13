@@ -1,6 +1,6 @@
 //! 自检（PRD §10.12「自检」）：界面上点「自检」后，board host 在后台线程里做，不占会话位、不影响在跑的派发。
 //!
-//! - agent：在它设置的启动环境里、进一个临时目录，带上设置好的模型和思考强度，用 docs/agents.md 第 2 步那句
+//! - agent：在它设置的启动环境里、进一个临时目录，带上设置好的模型和思考强度，用 docs/agents.md「按批次接入新的 agent」第 2 步（「本机验证」）那句
 //!   不改任何文件的提示词跑一次（最长 3 分钟）。回答里有 `board-skills` 算通过；没登录、超时、不认识 skill 分别写明。
 //! - git：每块白板的目录 `git fetch origin`，再 `git push --dry-run origin HEAD:refs/heads/board-selftest`
 //!   （只检查权限，不会真的推上去）；失败时分清没有权限、没有 origin、网络不通。
@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// 问 agent 的那一句（docs/agents.md「本机验证」）：不改任何文件，答完就退出
+/// 问 agent 的那一句（docs/agents.md「按批次接入新的 agent」第 2 步「本机验证」）：不改任何文件，答完就退出
 pub const PROMPT: &str = "/board-skills 不要执行任何命令。只回答两行：第一行是你加载的 skill 的 name，第二行是它 SKILL.md 里第一个二级标题。";
 /// agent 一项最长多久
 pub const AGENT_LIMIT: Duration = Duration::from_secs(180);

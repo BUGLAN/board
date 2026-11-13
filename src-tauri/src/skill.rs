@@ -3,7 +3,7 @@
 //!
 //! - skill 的文字部分（`SKILL.md` 和按场景的分文件 `work.md`、`plan.md`、`host.md`、`reference.md`，`scripts/`）编译时打进桌面端，`bin/<平台>/board` 用桌面端自带的 board 命令行
 //!   （[`crate::cli_path`]），和桌面端、board host 是同一个版本。
-//! - 装到哪由 agent 决定（[`user_dir`]，和 `docs/agents.md`「读 skill 的目录」、board host 的内置模板一致）；
+//! - 装到哪由 agent 决定（[`user_dir`]，和 `docs/agents.md`「接入前准备」里「每个 agent 读哪个目录」的表、board host 的内置模板一致）；
 //!   页面只传 agent 的标识，不能指定任意目录。
 //! - 先写到旁边的临时目录，写完再整体换上去：装到一半失败不会留下半个 skill。已经有的是链接（开发时
 //!   `ln -sfn` 到仓库）并且看得到 `SKILL.md` 就不动。

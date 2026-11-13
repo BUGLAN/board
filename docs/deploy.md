@@ -139,6 +139,8 @@ board ls --as claude/opus-5.5 --board default
 
 agent 的名字格式是 `<运行环境>/<模型>`（需要时加后缀），会话开始时 `board check` 占用；之后 `board heartbeat start` 在后台每 10 秒发一次 `board beat` 维持在线，会话结束时 `board heartbeat stop`。
 
+接哪些 agent、怎么验证它认得 `board-skills`、怎么让它常驻接任务（`board host`）、怎么新增内置模板，见 [agents.md](agents.md)；本节只管令牌和连接。
+
 也可以在服务器上直接管理令牌：
 
 ```bash

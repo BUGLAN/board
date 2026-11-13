@@ -78,19 +78,11 @@ flowchart LR
 
 ## 接入 agent
 
-Board 不包含 agent 本身。接入分三步：装好 `board` 命令行、装上 `board-skills`、把白板地址和令牌告诉 agent。
+Board 不包含 agent 本身。接入分三步：装好 `board` 命令行、装上 `board-skills`、把服务端地址和令牌告诉 agent。接什么 agent、怎么验证、怎么新增内置模板，见 **[docs/agents.md](docs/agents.md)**（这一节的细节都以它为准）。
 
 **1. 安装命令行**
 
-skill 自带 `board`：发版附件里的 `board-skills.zip` 解压后，`bin/` 里有 macOS（arm64、x64）、Linux（x64、arm64）、Windows（x64）的二进制，agent 通过 skill 里的 `scripts/board`（Windows：`scripts\board.cmd`）按平台调用，不用另装。在仓库里自己编：
-
-```bash
-node scripts/build-skill-bin.mjs --host   # 只编本机平台；不带 --host 时本机能交叉编译的平台都编
-```
-
-人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH）。
-
-不装桌面端的机器（例如只有命令行的 Linux 服务器）用服务端提供的安装脚本，装的版本和服务端一致：
+桌面端安装包自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH）；发版附件里的 `board-skills.zip` 也带着各平台的 `bin/`，agent 通过 skill 里的 `scripts/board`（Windows：`scripts\board.cmd`）调用，不用另装。不装桌面端的机器用服务端提供的安装脚本，装的版本和服务端一致：
 
 ```bash
 curl -fsSL https://board.example.com/install.sh | sh            # macOS、Linux：装到 ~/.local/bin
@@ -100,23 +92,11 @@ curl -fsSL https://board.example.com/install.sh | sh            # macOS、Linux�
 irm https://board.example.com/install.ps1 | iex                  # Windows：装到 %LOCALAPPDATA%\Board\bin
 ```
 
-脚本从发版附件下载本平台的 `board` 压缩包，用 `board-sha256.txt` 校验（对不上就中止，不动已有的 `board`），目录不在 PATH 里时写进 shell 配置（只追加一次）。要让这台机器接任务，直接用界面「机器 → 添加机器」生成的那一行：它带着令牌、机器名、白板与目录，装好后接着 `board login`、`board host --install`。
-
-升级：`board update` 升级到服务端的版本，`board update --latest` 升级到最新发版（同样先校验再原地替换；桌面端自带的 `board` 跟着桌面端升级）。也可以从源码安装：
-
-```bash
-cargo install --path crates/board-cli
-```
+要让这台机器接任务，直接用界面「机器 → 添加机器」生成的那一行：它带着令牌、机器名、白板与目录，装好后接着 `board login`、`board host --install`。升级用 `board update`（桌面端自带的跟着桌面端升级），从源码安装用 `cargo install --path crates/board-cli`。
 
 **2. 安装 skill**
 
-本仓库的 skill 在 [`.agents/skills/board-skills/`](.agents/skills/board-skills/)；支持 `.agents/skills` 的 agent 会自动识别。Claude Code 不读 `.agents/skills`，要在仓库根目录自己建一个链接（`.claude` 不进 git）：
-
-```bash
-mkdir -p .claude/skills && ln -s ../../.agents/skills/board-skills .claude/skills/board-skills
-```
-
-不在仓库里时，把发版附件里的 `board-skills.zip` 解压到 agent 的 skills 目录（`~/.agents/skills/`，Claude Code 是 `~/.claude/skills/`），整个目录连同 `scripts/`、`bin/` 一起放进去。
+跑着 `board host` 的机器不用手动装：它按「机器 → 共用配置」的 skills 共用库同步 `board-skills`（随服务端版本）。手动装时把发版附件里的 `board-skills.zip` 解压到 agent 读 skill 的目录（`~/.agents/skills/`，Claude Code 是 `~/.claude/skills/`），整个目录连同 `scripts/`、`bin/` 一起放进去；在仓库里开发时用链接指向 [`.agents/skills/board-skills/`](.agents/skills/board-skills/)。每个 agent 读哪个目录、五个文件缺一不可，见 docs/agents.md「接入前准备」。
 
 **3. 连接白板**
 
@@ -134,7 +114,7 @@ board login --url https://board.example.com --token bd_xxx
 - 两处都没有时命令被拒绝（`NOT_LOGGED_IN`），提示运行 `board login`。`board logout` 删掉令牌、保留地址。
 - 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。
 
-agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。名字由 agent 自己生成，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`claude/opus-5.5-login`；会话开始时 `board check --as <名字>` 占用，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
+agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。名字由 agent 自己生成，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`claude/opus-5.5-login`；会话开始时 `board check --as <名字>` 占用（`board host` 代它 check），名字正被在线会话使用时得到 `NAME_TAKEN`；没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
 
 然后给 agent 发一句话：
 
@@ -142,7 +122,9 @@ agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以�
 /board-skills 开始执行 oss项目之中的main白板中的#2任务
 ```
 
-卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：check 名字并启动后台心跳（`board heartbeat start`）→ 先领取（领到之前不读卡片、不看代码、不发进展，免得调研期间卡片被别人领走、耗时少算）→ 读卡片描述和动态，在本会话的 worktree 里按描述和验收标准干活 → 评论进度 → rebase 到集成分支、跑完仓库规定的检查，压成一个提交直接推上去 → 评论提交号和检查结果，结束这张卡片的计时（final）并移到待审核；做不下去时把未完成的改动推到 `wip/<白板>/<ID>` 分支，移到需人工校验；会话结束时停掉心跳，名字离线，删掉 worktree。集成分支和推送前检查写在代码仓库的 AGENTS.md / CLAUDE.md 里（没写集成分支就用远端的默认分支）；拆解需求时，同类别的小改动（界面、文案、图片）合成一张卡，不按前后端、不按步骤拆。
+卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。
+
+**让机器常驻接任务**：`board host` 按 agent 的命令模板在对应目录里启动它，内置 dsh、Claude Code、pi、Codex（按批次接入新的、验证方法、写成内置模板要改哪些文件，见 [docs/agents.md](docs/agents.md)）。排队、会话位、定时领取、领取规则这些规则见 [docs/PRD.md](docs/PRD.md) §9.1。agent 干活时的流程（check 名字、领卡、worktree、推集成分支、交审、做不下去推 `wip` 分支）写在 skill 里：`.agents/skills/board-skills/work.md`。
 
 ## CLI 速查
 

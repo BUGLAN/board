@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS agent_templates (
 /// Windows 上能选的启动环境（`wsl:*` 是每个 WSL 发行版）
 pub const WIN_ENVS: [&str; 6] = ["pwsh", "powershell", "git-bash", "wsl:*", "cmd", "direct"];
 
-/// 一个 agent 模板：字段和配置文件的 `[agents.<标识>]` 一样（docs/agents.md「用配置文件接上」）
+/// 一个 agent 模板：字段和配置文件的 `[agents.<标识>]` 一样（docs/agents.md「按批次接入新的 agent」第 3 步）
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTemplate {
