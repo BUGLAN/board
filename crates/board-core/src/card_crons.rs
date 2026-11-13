@@ -1,7 +1,7 @@
 //! 定时建卡（PRD §4「白板设置」、§8「卡片在状态里的位置」）：每块白板可以设几条「到点按模板建一张卡」，
 //! 例如每周「清理死代码」、每天「找找可以改进的地方」，建出来的卡由定时领取或人派发去做。
 //!
-//! - 每条：名称（白板内唯一）、卡片标题、描述、标签、放到哪（首个可领取状态 / 未整理）、派给哪台机器（可选，
+//! - 每条：名称（白板内唯一，同时是建卡标题）、描述、标签、放到哪（首个可领取状态 / 未整理）、派给哪台机器（可选，
 //!   和用哪个 agent）、cron 表达式（和定时领取同一套，见 cron.rs）、时区（IANA 名称，保存时取浏览器的）、开关。
 //!   每块白板最多 [`CARD_CRON_MAX`] 条。
 //! - **服务端自己计时**：服务端每分钟调用一次 [`W::card_crons_due`]，按每条的时区算出这一分钟的本地时间，对上 cron 就建卡；
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS card_crons (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   board      INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
   name       TEXT NOT NULL,
-  title      TEXT NOT NULL,
+  title      TEXT NOT NULL,              -- 旧版的「卡片标题」：现在标题就是名称，这一列只为旧库留着（不再写、不读）
   body       TEXT NOT NULL DEFAULT '',
   labels     TEXT NOT NULL DEFAULT '[]', -- 标签 ID（JSON 数组）；建卡时只带项目里还在的
   place      TEXT NOT NULL DEFAULT 'home', -- home 首个可领取状态 | inbox 未整理
@@ -79,8 +79,9 @@ pub const CARD_CRON_ACTOR: &str = "定时建卡";
 #[serde(rename_all = "camelCase")]
 pub struct CardCron {
     pub id: i64,
+    /// 白板内唯一，最长 [`CARD_CRON_NAME_MAX`] 个字；建卡标题也是它（后面加日期）
     pub name: String,
-    /// 卡片标题（建卡时后面加日期）
+    /// 卡片标题：和 [`Self::name`] 相同，只为旧版客户端留着（旧版按它显示标题）
     pub title: String,
     /// 卡片描述（Markdown）
     pub body: String,
@@ -129,6 +130,7 @@ pub struct CardCron {
 pub struct CardCronPatch {
     #[serde(default)]
     pub name: Option<String>,
+    /// 旧版的「卡片标题」：现在标题就是名称，传了也不用、不检查
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -159,7 +161,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(CardCron, i64)> {
         CardCron {
             id: r.get(0)?,
             name: r.get(1)?,
-            title: r.get(2)?,
+            title: r.get(1)?,
             body: r.get(3)?,
             labels: serde_json::from_str(&labels).unwrap_or_default(),
             place: r.get(5)?,
@@ -278,7 +280,8 @@ impl<'a> W<'a> {
     /// （新建、改了机器或 agent 时；只开关、改别的时不看，免得机器后来被移除了连开关都改不了）
     fn check_card_cron(&self, board: &BoardRef, id: Option<i64>, mut c: CardCron, target: bool) -> Result<CardCron> {
         c.name = c.name.trim().to_string();
-        c.title = c.title.trim().to_string();
+        // 标题就是名称：旧库里和名称不一样的标题以名称修改时给的为准，这里统一成名称
+        c.title = c.name.clone();
         c.body = c.body.trim().to_string();
         c.tz = c.tz.trim().to_string();
         if c.name.is_empty() {
@@ -294,9 +297,6 @@ impl<'a> W<'a> {
         )?;
         if dup {
             return Err(BoardError::usage(format!("这块白板已经有叫「{}」的定时建卡", c.name)));
-        }
-        if c.title.is_empty() {
-            return Err(BoardError::usage("卡片标题不能为空"));
         }
         if c.place != "home" && c.place != INBOX {
             return Err(BoardError::usage(format!("「放到哪」只能是 home（首个可领取状态）或 {INBOX}（未整理），不认识「{}」", c.place)));
@@ -334,7 +334,8 @@ impl<'a> W<'a> {
         let c = CardCron {
             id: 0,
             name: p.name.clone().unwrap_or_default(),
-            title: p.title.clone().unwrap_or_default(),
+            // 标题就是名称：先用空的，后面 check_card_cron 统一成名称；旧客户端传的 title 不用
+            title: String::new(),
             body: p.body.clone().unwrap_or_default(),
             labels: p.labels.clone().unwrap_or_default(),
             place: p.place.clone().unwrap_or_else(|| "home".into()),
@@ -383,7 +384,8 @@ impl<'a> W<'a> {
         let old = self.card_cron_row(board.id, id)?;
         let c = CardCron {
             name: p.name.clone().unwrap_or(old.name.clone()),
-            title: p.title.clone().unwrap_or(old.title.clone()),
+            // 标题跟着名称走：先用空的，后面 check_card_cron 统一成名称（旧库里和名称不一样的标题，打开改一次保存后就统一成名称）
+            title: String::new(),
             body: p.body.clone().unwrap_or(old.body.clone()),
             labels: p.labels.clone().unwrap_or(old.labels.clone()),
             place: p.place.clone().unwrap_or(old.place.clone()),
@@ -499,7 +501,7 @@ impl<'a> W<'a> {
         let actor = Actor { kind: ActorKind::System, name: CARD_CRON_ACTOR.into() };
         let inbox = c.place == INBOX;
         let column = if inbox { Some(INBOX.to_string()) } else { None };
-        let d = self.exec(board, &actor, Cmd::New { title: dated(&c.title, &tz, at), body: Some(body), column, top: false, labels, from: None })?;
+        let d = self.exec(board, &actor, Cmd::New { title: dated(&c.name, &tz, at), body: Some(body), column, top: false, labels, from: None })?;
         let id = d.card.id;
         // 动态第一条写明是哪条定时建卡建的
         let text = format!("定时建卡「{}」建了这张卡", c.name);
@@ -597,7 +599,7 @@ mod tests {
     }
 
     fn patch(name: &str, cron: &str) -> CardCronPatch {
-        CardCronPatch { name: Some(name.into()), title: Some(name.into()), cron: Some(cron.into()), tz: Some("UTC".into()), ..Default::default() }
+        CardCronPatch { name: Some(name.into()), cron: Some(cron.into()), tz: Some("UTC".into()), ..Default::default() }
     }
 
     fn create(s: &mut Store, p: CardCronPatch) -> Result<CardCron> {
@@ -659,6 +661,7 @@ mod tests {
         let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None, false)).unwrap();
         let c = create(&mut s, CardCronPatch { labels: Some(vec![bug.id, bug.id]), ..patch("清理死代码", "0  9 * * 1") }).unwrap();
         assert_eq!((c.cron.as_str(), c.labels.clone(), c.place.as_str(), c.on), ("0 9 * * 1", vec![bug.id], "home", true), "默认开、放到首个可领取状态");
+        assert_eq!((c.name.as_str(), c.title.as_str()), ("清理死代码", "清理死代码"), "标题就是名称");
         assert!(c.next_at.is_some());
         let usage = |s: &mut Store, p: CardCronPatch| {
             let e = create(s, p).unwrap_err();
@@ -668,19 +671,23 @@ mod tests {
         assert!(usage(&mut s, patch("清理死代码", "0 9 * * *")).contains("已经有"), "名称在白板内唯一");
         assert!(usage(&mut s, patch(" ", "0 9 * * *")).contains("名称"));
         assert!(usage(&mut s, patch(&"长".repeat(25), "0 9 * * *")).contains("24"));
-        assert!(usage(&mut s, CardCronPatch { title: Some(" ".into()), ..patch("a", "0 9 * * *") }).contains("标题"));
+        assert!(usage(&mut s, CardCronPatch { title: Some(" ".into()), ..patch(" ", "0 9 * * *") }).contains("名称"), "只传卡片标题（旧客户端）不当成名称");
+        let only_title = create(&mut s, CardCronPatch { title: Some("标题".into()), ..patch(" 只传标题 ", "0 9 * * *") }).unwrap();
+        assert_eq!((only_title.name.as_str(), only_title.title.as_str()), ("只传标题", "只传标题"));
+        let extra = create(&mut s, CardCronPatch { title: Some("别的标题".into()), ..patch("标题没用", "0 9 * * *") }).unwrap();
+        assert_eq!(extra.title, "标题没用", "旧的卡片标题不再单独存");
         assert!(usage(&mut s, patch("b", "61 9 * * *")).contains("第 1 段"), "不合法的 cron 写明哪一段不对");
         assert!(usage(&mut s, CardCronPatch { tz: Some("Mars/Base".into()), ..patch("c", "0 9 * * *") }).contains("时区"));
         assert!(usage(&mut s, CardCronPatch { place: Some("done".into()), ..patch("d", "0 9 * * *") }).contains("放到哪"));
         assert!(usage(&mut s, CardCronPatch { labels: Some(vec![9999]), ..patch("e", "0 9 * * *") }).contains("标签"));
-        for i in 1..20 {
+        for i in 4..=20 {
             create(&mut s, patch(&format!("第 {i} 条"), "0 9 * * *")).unwrap();
         }
         assert!(usage(&mut s, patch("第 21 条", "0 9 * * *")).contains("最多 20 条"));
         // 修改：没给的项不变；改名撞上别的也拒绝
         let u = s.write(T0, Origin::ui(None), |w| w.card_cron_update(B, c.id, &CardCronPatch { on: Some(false), ..Default::default() })).unwrap();
         assert_eq!((u.on, u.name.as_str(), u.next_at), (false, "清理死代码", None), "关着没有下次");
-        let e = s.write(T0, Origin::ui(None), |w| w.card_cron_update(B, c.id, &CardCronPatch { name: Some("第 1 条".into()), ..Default::default() })).unwrap_err();
+        let e = s.write(T0, Origin::ui(None), |w| w.card_cron_update(B, c.id, &CardCronPatch { name: Some("标题没用".into()), ..Default::default() })).unwrap_err();
         assert_eq!(e.code, ErrorCode::Usage);
         s.write(T0, Origin::ui(None), |w| w.card_cron_delete(B, c.id)).unwrap();
         assert_eq!(s.write(T0, Origin::ui(None), |w| w.card_cron_delete(B, c.id)).unwrap_err().code, ErrorCode::NotFound);
@@ -825,6 +832,36 @@ mod tests {
         assert_eq!(due(&mut s, c.next_at.unwrap()), 1);
     }
 
+    /// 旧库里名称和卡片标题不一样（以前是两个输入框）：标题按名称显示；打开改一次保存后统一成名称，到点建的卡用名称
+    #[test]
+    fn old_title_follows_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let (id, name) = {
+            let mut s = Store::open(&path).unwrap();
+            s.ensure_default(T0).unwrap();
+            let c = create(&mut s, patch("清道夫", "* * * * *")).unwrap();
+            (c.id, c.name.clone())
+        };
+        // 以前是两个输入框：标题可以写成别的
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("UPDATE card_crons SET title = '扫地' WHERE id = ?1", params![id]).unwrap();
+        }
+        let mut s = Store::open(&path).expect("旧库要能打开");
+        let c = list(&s, T0).pop().unwrap();
+        assert_eq!((c.name.as_str(), c.title.as_str()), ("清道夫", "清道夫"), "标题就是名称");
+        // 到点建的卡用名称，不用旧的标题
+        let r = s.write(T0 + MIN, Origin::ui(None), |w| w.card_cron_run(B, id)).unwrap();
+        let d = card(&s, r.ran_card.expect("建了卡"));
+        assert_eq!(d.card.title, "清道夫（11-14）");
+        // 打开编辑时只填名称，保存（不带 title）后旧标题也换成名称
+        let c = update(&mut s, id, CardCronPatch { body: Some("找出没人用的代码".into()), ..Default::default() }).unwrap();
+        assert_eq!((c.name, c.title), (name.clone(), name.clone()));
+        let old: String = s.conn().query_row("SELECT title FROM card_crons WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(old, name, "旧列也存成名称");
+    }
+
     #[test]
     fn host_is_checked_when_saving() {
         let mut s = store();
@@ -855,7 +892,8 @@ mod tests {
         assert_eq!(list(&s, T0)[0].host.as_deref(), Some("mbp2"));
         // 机器被移除后：只开关、改别的照样能保存，再选它才拒绝
         s.write(T0, Origin::ui(None), |w| w.host_remove("mbp2", &Actor::human(), "人")).unwrap();
-        let c = update(&mut s, c.id, CardCronPatch { on: Some(false), title: Some("拉代码".into()), ..Default::default() }).unwrap();
+        let c = update(&mut s, c.id, CardCronPatch { on: Some(false), name: Some("拉代码".into()), ..Default::default() }).unwrap();
+        assert_eq!((c.name.as_str(), c.title.as_str()), ("拉代码", "拉代码"), "改名称，标题跟着变");
         assert_eq!((c.on, c.host.as_deref()), (false, Some("mbp2")));
         assert!(usage(update(&mut s, c.id, CardCronPatch { host: Some("mbp".into()), ..Default::default() })).contains("没有叫「mbp」的机器"));
     }

@@ -94,9 +94,9 @@ export interface BoardInfo {
 /** 一条定时建卡（PRD §4「白板设置」）：到点按模板在白板上建一张卡；上一张还没完成时跳过 */
 export interface CardCron {
   id: number;
-  /** 白板内唯一，最长 24 个字 */
+  /** 白板内唯一，最长 24 个字；也是建卡标题（建卡时后面加日期） */
   name: string;
-  /** 卡片标题（建卡时后面加「（MM-DD）」） */
+  /** 和 `name` 相同：旧版客户端的「卡片标题」，服务端只为兼容旧版返回，新建、修改都不用传 */
   title: string;
   body: string;
   labels: number[];
@@ -128,7 +128,7 @@ export interface CardCron {
 }
 
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
-export type CardCronInput = Partial<Pick<CardCron, 'name' | 'title' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent'>>;
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent'>>;
 
 /** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
 export interface ReadyCheck {
