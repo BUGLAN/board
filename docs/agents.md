@@ -1,6 +1,6 @@
 # 接入 agent
 
-Board 自己不是 agent：它只把卡片交给一台机器上的 `board host`，由 `board host` 启动那台机器上已经装好的 agent。这份文档是接入一个 agent 的唯一入口：要满足什么、已经接入了哪些、怎么一台上机、怎么按批次接入新的、出了问题看哪里。
+Board 自己不是 agent：它只把卡片交给一台机器上的 `board host`，由 `board host` 启动那台机器上已经装好的 agent。这份文档是接入一个 agent 的唯一入口：要满足什么、已经接入了哪些、怎么在一台新机器上装好、怎么按批次接入新的、出了问题看哪里。
 
 其他地方只说必要的一句，细节都指到这里：`README.md`「接入 agent」是给人看的三步概览，`docs/PRD.md` §9.1 是 `board host` 的产品行为（排队、会话位、兜底、远程管理这些和具体 agent 无关的规则），`.agents/skills/board-skills/` 是 agent 干活时用的 skill（它管的是领卡、干活、交审，不是接入）。
 
@@ -20,7 +20,7 @@ Board 自己不是 agent：它只把卡片交给一台机器上的 `board host`�
 | 要装的东西 | 装在哪 | 怎么来 |
 |---|---|---|
 | `board` 命令行 | 和 agent 同一台机器、同一个 `PATH`（或在命令模板里写绝对路径） | 桌面端自带；或服务端的 `install.sh` / `install.ps1`；或发版附件 `board-skills.zip` 里 `bin/<平台>/board`（由 skill 的 `scripts/board` 调用）；源码安装 `cargo install --path crates/board-cli` |
-| `board-skills` skill | agent 读用户级 skill 的目录（见下表），或仓库里的 `.agents/skills`、`.claude/skills`、`.pi/skills` | 跑着 `board host` 的机器不用手动装：它按「机器 → 共用配置 → skills 共用库」自动同步（`board-skills` 随服务端版本）。桌面端「设置 → 本机」的「一键安装」也行；都没有时解压 `board-skills.zip` |
+| `board-skills` skill | agent 读用户级 skill 的目录（见下表），或仓库里的 `.agents/skills`、`.claude/skills`、`.pi/skills` | 跑着 `board host` 的机器不用手动装：它按「机器 → 共用配置 → skills 共用库」自动同步（`board-skills` 随服务端版本）。桌面端机器详情「本机 agent」上方的「立即同步」（board host 在跑）或「一键安装」（没在跑，桌面端直接写）也行；都没有时解压 `board-skills.zip` |
 | 连接（服务端地址 + 令牌） | `~/.board/config.toml`，权限 0600 | 在界面「设置 → Agent 接入」新建令牌（原文只显示一次），执行 `board login --url <地址> --token <令牌>`；环境变量 `BOARD_URL`、`BOARD_TOKEN` 优先于配置文件 |
 
 `board-skills` 由五个文件组成，少一个 agent 就读不到那部分规则（只复制 `SKILL.md` 不够）：
@@ -49,7 +49,7 @@ ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skil
 
 ## 三种接法
 
-接入方式和「谁启动 agent」有关，`board host` 的机制（命令模板、启动环境、环境变量、日志）三种都一样：
+接入方式和「谁启动 agent」有关。两种 `board host` 接法（常驻接任务、装成服务）机制一样：命令模板、启动环境、环境变量、日志都在 `board host` 里；终端里手动跑不经过 `board host`。
 
 | 接法 | 谁启动 agent | 怎么用 | 适合 |
 |---|---|---|---|
@@ -57,7 +57,7 @@ ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skil
 | **终端里手动跑** | 你自己 | 复制卡片详情的「复制为提示词」（`/board-skills 开始执行 …`），粘给任何能执行命令的 agent | 试一个新 agent、临时做一张卡 |
 | **只有命令行的机器** | 那台机器的 `board host`（装成服务） | `install.sh` / `install.ps1` 带 `--token --name --dir --service`，或 `board host --install` | 服务器、devbox |
 
-只有常驻接任务这一种需要把 agent 写成模板（内置模板或配置）。第二种接法对 agent 没有额外要求：它认得 `/board-skills` 这句话、能执行 `board` 就行。
+两种 `board host` 接法都要把 agent 写成模板（内置模板、共用配置里的模板，或本机配置文件），因为它要按命令模板非交互地启动 agent。终端里手动跑不需要模板：agent 认得 `/board-skills` 这句话、能执行 `board` 就行。
 
 ### 在一台新机器上装 board、接任务
 
@@ -95,7 +95,7 @@ agent 本身（Claude Code、Codex……）和 `board-skills` 仍要按上面「
 
 ## 一个 agent 要满足什么
 
-`board host` 派发时要靠命令行模板非交互地跑完一张卡，所以接之前逐条验证（「本机验证」一节有命令）：
+`board host` 派发时要靠命令行模板非交互地跑完一张卡，所以接之前逐条验证（「按批次接入新的 agent」第 2 步「本机验证」有命令）：
 
 | # | 要求 | 不满足会怎样 |
 |---|---|---|
@@ -204,7 +204,7 @@ board skills rm my-skill                        # 从库里删掉，各台机器
 
 不跑 board host 时（手动接法、或者机器上还没有 board host）按上面「接入前准备」手动装：解压 `board-skills.zip` 到 agent 的 skill 目录，或在仓库里做链接。
 
-用 Board 桌面端让这台电脑接任务时，可以不手动装：「机器」里点开这台机器，「本机 agent」上方会写有几个 agent 看不到 `board-skills`，点「一键安装」，桌面端把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录，再让 `board host` 重新检查一遍。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
+用 Board 桌面端让这台电脑接任务时，可以不手动装：「机器」里点开这台机器，「本机 agent」上方会写有几个 agent 看不到 `board-skills`。本机 `board host` 在跑时按钮是「立即同步」，点了通知它按 skills 共用库马上同步一次；没在跑时是「一键安装」，桌面端把 skill（带桌面端自带的 `board`）直接写进这些 agent 读 skill 的用户级目录，`board host` 下次启动或重新检查时就能看到。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
 
 ## MCP 服务器：在「共用配置」里维护
 
@@ -325,7 +325,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | `web/src/lib/hosts.ts` 的 `MARKS` | 引用上面的图标，配一个主色（并发位顶边用） |
 | `docs/PRD.md` §9.1 的内置模板表 | 加一行（标识、名称、命令模板、默认模型、读 skill 的目录、支持的启动环境） |
 | 本文「已经接入的」 | 加一行到内置模板表、一行到模型 / 强度表，写一段「各自的说明」（`--help` 核对过的事实、坑） |
-| `README.md`「接入 agent」 | 只在新增一类 agent 时才改（现在是 dsh、Claude Code、pi、Codex 四个）；通常不用动 |
+| `README.md`「接入 agent」 | 只在内置 agent 名单变化时改「让机器常驻接任务」那一句（现在列的是 dsh、Claude Code、pi、Codex）；步骤细节不重复，留在本文 |
 
 跑完 `npm test` 再提交（检查项见仓库 `AGENTS.md`）。
 
