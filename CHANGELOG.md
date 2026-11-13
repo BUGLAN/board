@@ -2,6 +2,12 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.23 · 2026-11-13
+
+### 修复
+
+- **cli**：host 测试里 RunPatch 补上 provider 字段，恢复编译（d112c35）
+
 ## v0.1.22 · 2026-11-13
 
 ### 新功能
