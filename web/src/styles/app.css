@@ -224,7 +224,7 @@
 
 /* 错误边界（components/ErrorBoundary.tsx）：渲染出错时代替整页白屏 */
 .crash { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); }
-.crash-box { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: min(520px, 100%); }
+.crash-box { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: min(560px, 100%); }
 .crash-box b { font-size: 18px; font-weight: 600; }
 .crash-box p { margin: 0; color: var(--text-2); line-height: 1.6; }
 .crash-box pre {
@@ -232,3 +232,6 @@
   font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
   color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2);
 }
+/* 组件栈：比原因再淡一点，几行就够 */
+.crash-box .crash-stack { color: var(--text-3); max-height: 24vh; }
+.crash-acts { display: flex; flex-wrap: wrap; gap: 8px; }

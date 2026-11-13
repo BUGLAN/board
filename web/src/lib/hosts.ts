@@ -27,8 +27,9 @@ const MARKS: Record<string, AgentMark> = {
   codex: { short: 'CX', color: '#10A37F' },
 };
 
-export function agentMark(id: string): AgentMark {
-  return MARKS[id] ?? { short: id.slice(0, 2).toUpperCase(), color: agentColor(id) };
+export function agentMark(id: string | null | undefined): AgentMark {
+  const key = id ?? '';
+  return MARKS[key] ?? { short: key.slice(0, 2).toUpperCase() || '?', color: agentColor(key) };
 }
 
 export const RESULT: Record<DispatchResult, { label: string; color: string }> = {
@@ -47,7 +48,21 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
 /** 拆解「未整理」里的条目的派发（不领取、不移动它，PRD §9.1） */
 export const isSplit = (d: Pick<Dispatch, 'kind'>) => d.kind === 'split';
 
-export const resultOf = (d: Dispatch) => (d.result ? RESULT[d.result] : { label: '已结束', color: 'var(--text-3)' });
+export interface ResultPill {
+  label: string;
+  color: string;
+}
+
+/** 没有结果，或者结果不认识时的样子（不认识的值原样写出来，例如新版服务端加了结果而界面还是旧版）。
+ *  以前直接取 RESULT[d.result]，查不到时是 undefined，界面再取 .color 就整页崩（线上报错 reading 'color'） */
+export function resultPill(result: string | null | undefined): ResultPill {
+  const known = result ? RESULT[result as DispatchResult] : undefined;
+  if (known) return known;
+  return { label: result || '已结束', color: 'var(--text-3)' };
+}
+
+/** 一次派发的结果：没结束也是「已结束」（旧行为），查不到时兜底，永远不返回 undefined */
+export const resultOf = (d: Pick<Dispatch, 'result'>): ResultPill => resultPill(d.result);
 
 export const SOURCE: Record<Dispatch['source'], string> = { manual: '手动', cron: '定时', schedule: '定时建卡' };
 

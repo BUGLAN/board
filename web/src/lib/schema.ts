@@ -5,8 +5,8 @@ export const INBOX_NAME = '未整理';
 
 /** 状态色板：前 4 个是主题色（随浅色 / 深色变化），其余固定 */
 export const STATUS_COLORS = ['todo', 'doing', 'review', 'done', '#A855F7', '#EC4899', '#14B8A6', '#F59E0B', '#EF4444', '#84CC16'];
-/** 状态颜色 → CSS 颜色 */
-export const statusColor = (c: string) => (c.startsWith('#') ? c : `var(--c-${c})`);
+/** 状态颜色 → CSS 颜色；查不到（旧数据、已删的状态没带颜色）时按首个状态的「todo」色，不抛错 */
+export const statusColor = (c: string | null | undefined) => (!c ? 'var(--c-todo)' : c.startsWith('#') ? c : `var(--c-${c})`);
 
 /** 状态块里卡片的形态；没设置过时终点用磁贴，其他用卡片 */
 export const viewOf = (s: Status): StatusView => s.view ?? (s.final ? 'tile' : 'card');
@@ -50,7 +50,7 @@ export function flowOf(statuses: Status[] | undefined | null) {
       return first;
     },
     name: (k: string) => (k === INBOX ? INBOX_NAME : get(k)?.name ?? k),
-    color: (k: string) => (k === INBOX ? 'var(--c-inbox)' : statusColor(get(k)?.color ?? 'todo')),
+    color: (k: string) => (k === INBOX ? 'var(--c-inbox)' : statusColor(get(k)?.color)),
     isLock: (k: string) => !!get(k)?.lock,
     isFinal: (k: string) => !!get(k)?.final,
     isError: (k: string) => !!get(k)?.error,

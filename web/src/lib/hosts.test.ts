@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps } from './hosts';
+import { agentMark, boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, resultPill, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -253,6 +253,32 @@ describe('添加机器：一行安装命令', () => {
     expect(hostNameError('DevBox')).toBeTruthy();
     expect(hostNameError('-x')).toBeTruthy();
     expect(hostNameError('a'.repeat(25))).toBeTruthy();
+  });
+});
+
+describe('派发结果的颜色：查不到时兜底（线上 reading color 整页崩的那一类数据）', () => {
+  const d = (result: unknown): Pick<Dispatch, 'result'> => ({ result: result as Dispatch['result'] });
+
+  it('认识的每种结果都有文字和颜色', () => {
+    for (const k of Object.keys(RESULT)) expect(resultOf(d(k)).color).toBeTruthy();
+  });
+
+  it('没有结果是「已结束」；结果不在表里（新版服务端加了结果、数据里的别的值）也画得出来，不返回 undefined', () => {
+    expect(resultOf(d(null))).toEqual({ label: '已结束', color: 'var(--text-3)' });
+    expect(resultOf(d(undefined))).toEqual({ label: '已结束', color: 'var(--text-3)' });
+    expect(resultOf(d(''))).toEqual({ label: '已结束', color: 'var(--text-3)' });
+    // 旧版界面拿到不认识的 result：原来 RESULT['paused'] 是 undefined，界面取 .color 就崩
+    expect(resultOf(d('paused'))).toEqual({ label: 'paused', color: 'var(--text-3)' });
+    expect(resultPill('paused').label).toBe('paused');
+  });
+
+  it('agentMark 拿到空标识也给出能取色的标记', () => {
+    for (const id of [null, undefined, '', 'dsh', 'claude', '没见过的']) {
+      const m = agentMark(id as string | undefined);
+      expect(m.color).toEqual(expect.any(String));
+      expect(m.short).toEqual(expect.any(String));
+    }
+    expect(agentMark(null).color).toBe(agentMark('').color);
   });
 });
 
