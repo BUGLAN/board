@@ -182,6 +182,8 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-time button svg { width: 11px; height: 11px; }
 /* 加一个定时：多久一次 + 周几 / 几号 + 时:分（或每隔几分钟 / 几小时），不手写 cron */
 .hp-sched { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; animation: hp-in var(--dur-2) var(--ease-out); }
+/* 定时领取「加时间」那一排：选择框（components/SchedulePick）后面跟「加上」「收起」 */
+.hp-sched-add { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .hp-sched .input { width: auto; height: 28px; padding: 0 6px; font-size: 12.5px; }
 .hp-hm { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); }
 .hp-hm .input { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }

@@ -355,6 +355,8 @@ impl Actor {
     pub fn display(&self) -> &str {
         match self.kind {
             ActorKind::Human => "人",
+            // 系统身份带名字的（「定时建卡」）显示名字，其余是 board 本身
+            ActorKind::System if !self.name.is_empty() => &self.name,
             ActorKind::System => "board",
             ActorKind::Agent => &self.name,
         }
@@ -474,6 +476,9 @@ pub struct BoardInfo {
     pub statuses: Vec<Status>,
     /// 正在这块白板上工作的 agent（按工作流和状态内顺序）
     pub holders: Vec<String>,
+    /// 定时建卡（PRD §4「白板设置」）。旧服务端没有这一项
+    #[serde(default)]
+    pub card_crons: Vec<crate::card_crons::CardCron>,
 }
 
 /// 白板的环境检查命令（PRD §9.1「环境检查」）：一行命令，在机器上这块白板的目录里执行，退出码 0 算通过。

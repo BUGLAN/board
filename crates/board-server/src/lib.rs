@@ -233,6 +233,9 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/labels/{id}", patch(update_label))
         .route("/labels/{project}/{id}", delete(delete_label))
         .route("/layout", put(layout))
+        .route("/card-crons/{project}/{board}", post(create_card_cron))
+        .route("/card-crons/{project}/{board}/{id}", patch(update_card_cron).delete(delete_card_cron))
+        .route("/card-crons/{project}/{board}/{id}/run", post(run_card_cron))
         .route("/flow/{project}/{board}", post(create_status).put(reorder_statuses))
         .route("/flow/{project}/{board}/layout", put(flow_layout))
         .route("/flow/{project}/{board}/layout/saved", put(save_flow_layout))
@@ -342,12 +345,26 @@ fn spawn_background(state: AppState) {
     let s = state.clone();
     tokio::spawn(async move {
         let mut tick: u64 = 0;
+        // 定时建卡（PRD §4）：每进入新的一分钟按这一分钟到点一次；从启动的那一分钟之后算起，停机期间错过的不补建。
+        // 一次最多补 5 分钟（服务端卡住、睡眠唤醒后不一口气补很多次）
+        let mut minute = now_ms().div_euclid(60_000);
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             match s.db(|st| st.sweep(now_ms())).await {
                 Ok(n) if n > 0 => s.0.poke.notify_one(),
                 Ok(_) => {}
                 Err(e) => tracing::warn!("超时扫描失败：{e}"),
+            }
+            let cur = now_ms().div_euclid(60_000);
+            if cur > minute {
+                for m in (minute + 1).max(cur - 4)..=cur {
+                    match s.db(move |st| st.write(now_ms(), Origin::system(), |w| w.card_crons_due(m * 60_000))).await {
+                        Ok(n) if n > 0 => s.0.poke.notify_one(),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("定时建卡失败：{e}"),
+                    }
+                }
+                minute = cur;
             }
             tick += 1;
             if tick % 600 == 0 {
@@ -852,6 +869,58 @@ async fn update_board(
     })
     .await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/* ---------------- 定时建卡（PRD §4「白板设置」）：只有人能改 ---------------- */
+
+async fn create_card_cron(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path((project, board)): Path<(String, String)>,
+    Json(v): Json<Value>,
+) -> ApiResult<board_core::card_crons::CardCron> {
+    auth::human(&caller)?;
+    let p: board_core::card_crons::CardCronPatch = parse(v)?;
+    let path = format!("{project}/{board}");
+    Ok(Json(write(&s, &h, move |w| w.card_cron_create(&path, &p)).await?))
+}
+
+async fn update_card_cron(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path((project, board, id)): Path<(String, String, i64)>,
+    Json(v): Json<Value>,
+) -> ApiResult<board_core::card_crons::CardCron> {
+    auth::human(&caller)?;
+    let p: board_core::card_crons::CardCronPatch = parse(v)?;
+    let path = format!("{project}/{board}");
+    Ok(Json(write(&s, &h, move |w| w.card_cron_update(&path, id, &p)).await?))
+}
+
+async fn delete_card_cron(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path((project, board, id)): Path<(String, String, i64)>,
+) -> ApiResult<Value> {
+    auth::human(&caller)?;
+    let path = format!("{project}/{board}");
+    write(&s, &h, move |w| w.card_cron_delete(&path, id)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 「现在建一张」：同样受跳过规则约束，返回这条（带这一次的结果）
+async fn run_card_cron(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path((project, board, id)): Path<(String, String, i64)>,
+) -> ApiResult<board_core::card_crons::CardCron> {
+    auth::human(&caller)?;
+    let path = format!("{project}/{board}");
+    Ok(Json(write(&s, &h, move |w| w.card_cron_run(&path, id)).await?))
 }
 
 async fn delete_board(State(s): State<AppState>, h: HeaderMap, Path((project, board)): Path<(String, String)>) -> ApiResult<Value> {

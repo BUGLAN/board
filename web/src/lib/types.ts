@@ -87,7 +87,40 @@ export interface BoardInfo {
   counts: Counts;
   statuses: Status[];
   holders: string[];
+  /** 定时建卡（PRD §4）。旧服务端没有这一项 */
+  cardCrons?: CardCron[];
 }
+
+/** 一条定时建卡（PRD §4「白板设置」）：到点按模板在白板上建一张卡；上一张还没完成时跳过 */
+export interface CardCron {
+  id: number;
+  /** 白板内唯一，最长 24 个字 */
+  name: string;
+  /** 卡片标题（建卡时后面加「（MM-DD）」） */
+  title: string;
+  body: string;
+  labels: number[];
+  /** home 首个可领取状态 | inbox 未整理 */
+  place: 'home' | 'inbox';
+  cron: string;
+  /** IANA 时区名，保存时取浏览器的 */
+  tz: string;
+  on: boolean;
+  /** 下次到点（毫秒）；关着、一年内不会到点时为空 */
+  nextAt?: number | null;
+  /** 最近一次到点（或「现在建一张」）的时间 */
+  ranAt?: number | null;
+  /** 那一次建的卡 */
+  ranCard?: number | null;
+  /** 那一次跳过：上一张（这个编号）还没完成 */
+  ranSkip?: number | null;
+  lastCard?: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'title' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on'>>;
 
 /** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
 export interface ReadyCheck {

@@ -4,7 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
-import type { AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
+import type { AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -153,6 +153,12 @@ export const api = {
     req<{ path: string }>('POST', '/api/boards', b),
   updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; readyCheck?: string; readyCheckWin?: string; repo?: string; branch?: string }) =>
     req('PATCH', `/api/boards/${path}`, patch),
+  /** 定时建卡（PRD §4）：只有人能改 */
+  createCardCron: (path: string, c: CardCronInput) => req<CardCron>('POST', `/api/card-crons/${path}`, c),
+  updateCardCron: (path: string, id: number, c: CardCronInput) => req<CardCron>('PATCH', `/api/card-crons/${path}/${id}`, c),
+  deleteCardCron: (path: string, id: number) => req('DELETE', `/api/card-crons/${path}/${id}`),
+  /** 现在建一张：同样受跳过规则约束，返回这条（ranCard / ranSkip 是这一次的结果） */
+  runCardCron: (path: string, id: number) => req<CardCron>('POST', `/api/card-crons/${path}/${id}/run`),
   /** 大盘：一个范围在 [from, to) 里的全部统计，按 tz 分桶 */
   stats: (q: { scope: StatsScope; path?: string; from: number; to: number; tz: string }) => {
     const p = new URLSearchParams({ scope: q.scope, from: String(q.from), to: String(q.to), tz: q.tz });

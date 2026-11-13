@@ -9,6 +9,7 @@ import { readiness, type ReadyGo } from '../../lib/ready';
 import { COPY_ITEMS } from '../../lib/templates';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
+import { DEFAULT_SCHEDULE, SchedulePick } from '../SchedulePick';
 import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, confirmCheck, openHost, openPicker, openSession, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
 import { LabelChip, Segmented, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
@@ -1454,48 +1455,18 @@ function MidPath({ path }: { path: string }) {
   );
 }
 
-const KINDS: [Schedule['kind'], string][] = [
-  ['daily', '每天'],
-  ['weekdays', '工作日'],
-  ['weekly', '每周'],
-  ['monthly', '每月'],
-  ['minutes', '每隔几分钟'],
-  ['hours', '每隔几小时'],
-];
-const WEEKDAYS: [number, string][] = [[1, '一'], [2, '二'], [3, '三'], [4, '四'], [5, '五'], [6, '六'], [0, '日']];
-const EVERY = { minutes: [5, 10, 15, 20, 30], hours: [1, 2, 3, 4, 6, 8, 12] };
-const two = (n: number) => String(n).padStart(2, '0');
-const KIND_OPTIONS = KINDS.map(([value, label]) => ({ value, label }));
-const DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 号` }));
-const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => ({ value: String(i), label: two(i) }));
-const MIN_OPTIONS = Array.from({ length: 12 }, (_, i) => ({ value: String(i * 5), label: two(i * 5) }));
-
 /** 定时领取：胶囊列表（写说明，悬停看 cron 表达式），可去掉；加的时候选「每天 / 工作日 / 每周几 / 每月几号」和时间，
     或「每隔几分钟 / 几小时」，由 buildCron 生成表达式，不让人手写（手写容易错）。旧的手写表达式说不出来时原样显示 */
 function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
   // 加时间的那一排选择器平时收着，点「加时间」才展开；一个时间点都没有时直接展开
   const [adding, setAdding] = useState(h.cron.length === 0);
-  const [kind, setKind] = useState<Schedule['kind']>('daily');
-  const [hour, setHour] = useState(9);
-  const [min, setMin] = useState(0);
-  const [days, setDays] = useState<number[]>([1]);
-  const [day, setDay] = useState(1);
-  const [every, setEvery] = useState({ minutes: 15, hours: 1 });
-  const spec: Schedule =
-    kind === 'minutes' || kind === 'hours'
-      ? { kind, every: every[kind] }
-      : kind === 'weekly'
-        ? { kind, days, h: hour, m: min }
-        : kind === 'monthly'
-          ? { kind, day, h: hour, m: min }
-          : { kind, h: hour, m: min };
+  const [spec, setSpec] = useState<Schedule>(DEFAULT_SCHEDULE);
   const cron = buildCron(spec);
   const dup = !!cron && h.cron.map(normalizeCron).includes(cron);
   const add = () => {
     if (!cron || dup) return;
     save({ cron: [...h.cron, cron] });
   };
-  const timed = kind !== 'minutes' && kind !== 'hours';
   return (
     <div className={cx('hp-cron', !h.cronOn && 'off')}>
       <div className="hp-times">
@@ -1517,44 +1488,8 @@ function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncStat
         <Sync s={sync} inline />
       </div>
       {adding && (
-      <span className="hp-sched" role="group" aria-label="加一个定时">
-        <Select value={kind} options={KIND_OPTIONS} aria-label="多久一次" onChange={v => setKind(v as Schedule['kind'])} />
-        {kind === 'weekly' && (
-          <span className="hp-wdays">
-            {WEEKDAYS.map(([d, n]) => {
-              const on = days.includes(d);
-              return (
-                <button
-                  key={d}
-                  type="button"
-                  className={cx('hp-wday', on && 'on')}
-                  aria-pressed={on}
-                  aria-label={`周${n}`}
-                  onClick={() => setDays(on ? days.filter(x => x !== d) : [...days, d])}
-                >
-                  {n}
-                </button>
-              );
-            })}
-          </span>
-        )}
-        {kind === 'monthly' && (
-          <Select value={String(day)} options={DAY_OPTIONS} aria-label="几号" onChange={v => setDay(+v)} data-tip="没有这一天的月份（例如 2 月 30 号）不领" />
-        )}
-        {timed ? (
-          <span className="hp-hm">
-            <Select value={String(hour)} options={HOUR_OPTIONS} aria-label="时" onChange={v => setHour(+v)} />
-            :
-            <Select value={String(min)} options={MIN_OPTIONS} aria-label="分" onChange={v => setMin(+v)} />
-          </span>
-        ) : (
-          <Select
-            value={String(every[kind])}
-            options={EVERY[kind].map(n => ({ value: String(n), label: `${n} ${kind === 'minutes' ? '分钟' : '小时'}` }))}
-            aria-label={kind === 'minutes' ? '每隔几分钟' : '每隔几小时'}
-            onChange={v => setEvery({ ...every, [kind]: +v })}
-          />
-        )}
+      <span className="hp-sched-add" role="group" aria-label="加一个定时">
+        <SchedulePick spec={spec} onChange={setSpec} />
         <span data-tip={dup ? '已经有这一条了' : !cron ? '至少选一天' : undefined}>
           <button className="btn sm" type="button" disabled={!cron || dup} onClick={add}>
             <Icon name="plus" />

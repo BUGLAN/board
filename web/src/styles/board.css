@@ -669,6 +669,50 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-rc-empty > svg { width: 15px; height: 15px; flex: none; }
 .bs-rc-empty > span { flex: 1; min-width: 200px; }
 
+/* 定时建卡（components/CardCrons.tsx）：每条一行（开关、名称、时间、放到哪、标签；下次和最近一次的结果；操作），编辑原地展开 */
+.cc-list { display: flex; flex-direction: column; margin-bottom: 10px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
+.cc-list > * + * { border-top: 1px solid var(--line); }
+.cc-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; transition: opacity var(--dur-2); }
+.cc-row > .switch { flex: none; margin-top: 1px; }
+.cc-row.saving { opacity: .6; }
+.cc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.cc-l1 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; }
+.cc-l1 b { font-weight: 600; }
+.cc-row.off .cc-l1 > :not(b):not(.hp-sync) { opacity: .55; }
+.cc-when { display: inline-flex; align-items: baseline; gap: 6px; color: var(--text-2); font-size: 12.5px; }
+.cc-when code { font: 11.5px var(--f-mono); }
+.cc-when em { font-style: normal; font-size: 11px; color: var(--text-3); }
+.cc-place { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.cc-l2 { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; font-size: 11.5px; color: var(--text-3); }
+.cc-last { display: inline-flex; align-items: center; gap: 3px; }
+.cc-last.skip { color: var(--warn-text); }
+.cc-acts { flex: none; display: flex; align-items: center; gap: 2px; }
+.cc-acts .btn { margin-right: 4px; }
+.cc-del:hover { color: var(--danger-text); }
+.cc-add { margin-top: 2px; }
+.cc-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--surface-2); }
+.cc-list > .cc-form { border-radius: 0; }
+.cc-list > .cc-form:first-child { border-top-left-radius: var(--r-md); border-top-right-radius: var(--r-md); }
+.cc-list > .cc-form:last-child { border-bottom-left-radius: var(--r-md); border-bottom-right-radius: var(--r-md); }
+section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
+.bs-rc-row.top { align-items: start; }
+.bs-rc-row.top > .bs-rc-l { padding-top: 7px; }
+.cc-title, .cc-time { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cc-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+.cc-desc { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cc-desc-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cc-desc-box .textarea { width: 100%; min-height: 96px; font-size: 12.5px; }
+.cc-desc-box .textarea[hidden] { display: none; }
+.cc-preview { min-height: 96px; padding: 8px 10px; border-radius: var(--r-sm); font-size: 13px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.cc-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cc-raw { display: inline-flex; align-items: center; gap: 8px; }
+.cc-raw code { font: 12px var(--f-mono); }
+.cc-form-acts { display: flex; justify-content: flex-end; gap: 8px; }
+@media (max-width: 760px) {
+  .cc-row { flex-wrap: wrap; }
+  .cc-acts { width: 100%; justify-content: flex-end; }
+}
+
 /* 布局图：按假想的白板缩放（--s），块里按卡片形态画出格子；位置变化有补间 */
 .bs-map { position: relative; width: 100%; }
 .bs-map-b, .bs-map-g { position: absolute; border-radius: calc(18px * var(--s) + 2px); }

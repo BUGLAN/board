@@ -3,6 +3,7 @@
 //! 网页端（board-server）、桌面端（Tauri）与 CLI（board）都通过这个 crate 读写同一个数据库。
 
 pub mod agents;
+pub mod card_crons;
 #[cfg(feature = "config")]
 pub mod config;
 pub mod cron;

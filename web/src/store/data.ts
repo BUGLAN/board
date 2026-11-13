@@ -11,7 +11,7 @@ import { applySilently, bindRoute, parseRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
 import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
 import { boardFlow, INBOX } from '../lib/schema';
-import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type Workspace } from '../lib/types';
+import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type Workspace } from '../lib/types';
 
 interface DataState {
   ws: Workspace | null;
@@ -520,6 +520,27 @@ export const repoPatch = (path: string, change: { repo?: string; branch?: string
   },
   board: b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b),
 });
+
+/** 改白板的一条定时建卡（PRD §4）：开关、模板、时间。下次时间等服务端算，改了时间就先清掉；白板或这条不在了原样返回 */
+export const cardCronPatch = (path: string, id: number, change: CardCronInput): Patch => ({
+  ws: ws => {
+    const has = ws.projects.some(p => p.boards.some(b => b.path === path && b.cardCrons?.some(c => c.id === id)));
+    if (!has) return ws;
+    const stale = change.cron !== undefined || change.tz !== undefined || change.on === false;
+    return {
+      ...ws,
+      projects: ws.projects.map(p => ({
+        ...p,
+        boards: p.boards.map(b =>
+          b.path === path ? { ...b, cardCrons: b.cardCrons?.map(c => (c.id === id ? { ...c, ...change, ...(stale ? { nextAt: null } : {}) } : c)) } : b,
+        ),
+      })),
+    };
+  },
+});
+
+/** 一条定时建卡在保存完之前不能再改（编辑、删除、现在建一张）：改模板时补丁带上它；开关是设置项（saveSetting），不锁 */
+export const cardCronKey = (path: string, id: number) => `cardCron:${path}:${id}`;
 
 /** 改项目里的一个标签（名称、颜色、类型、是否优先） */
 export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string; humanOnly?: boolean; priority?: boolean }): Patch => ({

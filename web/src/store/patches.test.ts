@@ -334,6 +334,29 @@ describe('readyCheckPatch（白板的环境检查）', () => {
   });
 });
 
+describe('cardCronPatch（白板的定时建卡）', () => {
+  const cron = { id: 7, name: '清理死代码', title: '清理死代码', body: '', labels: [], place: 'home' as const, cron: '0 9 * * 1', tz: 'Asia/Shanghai', on: true, nextAt: 123, createdAt: 0, updatedAt: 0 };
+  const withCron = () => {
+    const ws = workspace();
+    return { ...ws, projects: ws.projects.map((p, i) => (i ? p : { ...p, boards: p.boards.map((b, j) => (j ? b : { ...b, cardCrons: [cron] })) })) };
+  };
+  it('只改这一条，重复执行结果相同；改时间、关掉时先清掉下次时间', () => {
+    const ws = twice(D.cardCronPatch('p/a', 7, { title: '清理废代码' }).ws!, withCron());
+    expect(ws.projects[0].boards[0].cardCrons![0]).toMatchObject({ title: '清理废代码', nextAt: 123, on: true });
+    const off = twice(D.cardCronPatch('p/a', 7, { on: false }).ws!, withCron());
+    expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ on: false, nextAt: null });
+    const moved = twice(D.cardCronPatch('p/a', 7, { cron: '0 10 * * 1' }).ws!, withCron());
+    expect(moved.projects[0].boards[0].cardCrons![0].nextAt).toBeNull();
+  });
+  it('白板或这一条不在了原样返回', () => {
+    const orig = withCron();
+    expect(D.cardCronPatch('p/nope', 7, { on: false }).ws!(orig)).toBe(orig);
+    expect(D.cardCronPatch('p/a', 8, { on: false }).ws!(orig)).toBe(orig);
+    const plain = workspace();
+    expect(D.cardCronPatch('p/a', 7, { on: false }).ws!(plain)).toBe(plain);
+  });
+});
+
 describe('repoPatch（白板的仓库地址、集成分支）', () => {
   it('只改这一块白板：工作区和当前白板的快照一起改；重复执行结果相同；白板不在了原样返回', () => {
     const p = D.repoPatch('p/a', { repo: 'git@github.com:o/r.git', branch: 'dev' });

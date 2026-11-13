@@ -35,7 +35,8 @@ export const agentGlyph = (name: string) =>
   GREEK[String(name).toLowerCase()] || [...String(name || '?').trim()][0]?.toUpperCase() || '?';
 
 /** 界面上怎么称呼：人 = 你，系统 = board（和服务端 Actor::display() 一致） */
-export const actorName = (a: Actor) => (a.kind === 'human' ? '你' : a.kind === 'system' ? 'board' : a.name);
+/** 界面上怎么称呼：人是「你」；系统身份带名字的（「定时建卡」）写名字，其余是 board 本身 */
+export const actorName = (a: Actor) => (a.kind === 'human' ? '你' : a.kind === 'system' ? a.name || 'board' : a.name);
 
 /* ---------- 时间 ---------- */
 const pad2 = (n: number) => String(n).padStart(2, '0');

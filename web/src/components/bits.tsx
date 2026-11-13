@@ -88,7 +88,7 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
   // 系统身份就是 board 本身：头像换成品牌图标，底色用面板色，深色、浅色主题下柱子都看得清
   if (actor.kind === 'system')
     return (
-      <span className={cx('avatar brand-mark', className)} title={SYSTEM_NAME}>
+      <span className={cx('avatar brand-mark', className)} title={actor.name || SYSTEM_NAME}>
         <BrandMark className="brand-bars" />
       </span>
     );

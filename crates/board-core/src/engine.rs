@@ -1207,7 +1207,7 @@ impl<'a> W<'a> {
     }
 
     /// 标签必须属于白板所在的项目
-    fn check_labels(&self, board: &BoardRef, ids: &[i64]) -> Result<()> {
+    pub(crate) fn check_labels(&self, board: &BoardRef, ids: &[i64]) -> Result<()> {
         for id in ids {
             let ok: Option<i64> = self
                 .tx

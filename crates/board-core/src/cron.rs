@@ -46,8 +46,12 @@ impl Cron {
 
     /// 这一分钟到点了吗。dow：0 是周日
     pub fn matches(&self, min: u32, hour: u32, dom: u32, mon: u32, dow: u32) -> bool {
-        let has = |b: u64, v: u32| v < 64 && b & (1 << v) != 0;
-        if !(has(self.min, min) && has(self.hour, hour) && has(self.mon, mon)) {
+        self.matches_min(min) && self.matches_hour(hour) && self.matches_day(dom, mon, dow)
+    }
+
+    /// 这一天（日、月、周）对得上吗。dow：0 是周日
+    pub fn matches_day(&self, dom: u32, mon: u32, dow: u32) -> bool {
+        if !has(self.mon, mon) {
             return false;
         }
         let (d, w) = (has(self.dom, dom), has(self.dow, dow % 7));
@@ -57,6 +61,18 @@ impl Cron {
             d || w
         }
     }
+
+    pub fn matches_hour(&self, hour: u32) -> bool {
+        has(self.hour, hour)
+    }
+
+    pub fn matches_min(&self, min: u32) -> bool {
+        has(self.min, min)
+    }
+}
+
+fn has(bits: u64, v: u32) -> bool {
+    v < 64 && bits & (1 << v) != 0
 }
 
 /// 一段：逗号分开的若干项，每项是 `*`、`a`、`a-b`，可以带 `/n`

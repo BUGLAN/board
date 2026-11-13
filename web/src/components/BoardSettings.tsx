@@ -3,6 +3,7 @@
    沿用卡片详情的居中弹窗（.scrim / .drawer / .d-*）：左边是设置，右栏是「预览」（手机上是底部 sheet，预览在上）
    - 卡片顺序：「保留顺序」开关 + 每个状态的排序依据（选择框 + 方向）。预览用示例卡片演示拖动的结果（lib/orderDemo.ts）
    - 状态块布局：现在的 / 保存的 / 默认三张缩略图，按钮放在各自的图下面；预览里块在「现在」和「换过去以后」之间来回移动
+   - 代码仓库、环境检查、定时建卡（CardCrons.tsx）各一节
    保存：开关和排序依据是设置项，各存各的（saveSetting）：当帧生效、不锁别的控件，保存状态画在控件旁边（Sync）；
    布局的三个操作沿用工作流的乐观更新（flowKey），保存完之前再点不发请求
    ========================================================================== */
@@ -16,9 +17,10 @@ import { ORDERS, orderDir, orderName, orderOf, orderOption } from '../lib/sort';
 import type { BoardSnapshot, Label, Order, Status, Tile } from '../lib/types';
 import { cx, reduceMotion } from '../lib/util';
 import { colCount, flowKey, optimistic, repoPatch, saveSetting, useBusy, useCurrent, useData } from '../store/data';
-import { openBoardSettings, toast, useUI } from '../store/ui';
+import { closePicker, openBoardSettings, toast, useUI } from '../store/ui';
 import { Select, Sync, useSync } from './bits';
 import { ReadyCheckSection } from './BoardReady';
+import { CardCronSection } from './CardCrons';
 import { pack, withDefaults } from './BoardView';
 import { Icon } from './Icon';
 
@@ -46,9 +48,15 @@ export function BoardSettings({ path }: { path: string }) {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      // 选择框的列表、确认框先关自己
+      // 选择框的列表、确认框先关自己；定时建卡里打开的标签选择器先关它，不连白板设置一起关
       const ui = useUI.getState();
       if (ui.ctx || ui.confirm || ui.palette.open) return;
+      if (ui.picker) {
+        e.preventDefault();
+        e.stopPropagation();
+        closePicker();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       close();
@@ -299,6 +307,7 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
             </section>
             <RepoSection path={path} i={2} />
             <ReadyCheckSection path={path} i={3} />
+            <CardCronSection path={path} i={4} />
             <div className="bs-foot">改动立即生效，同步到所有窗口和机器。</div>
           </div>
           <aside className="d-side bs-side" aria-label="预览">

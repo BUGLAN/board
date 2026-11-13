@@ -16,6 +16,7 @@ describe('actorName（界面上怎么称呼）', () => {
 
   it('系统 = board，不再是「系统」（和后端 Actor::display() 一致）', () => {
     expect(actorName({ kind: 'system', name: '' })).toBe('board');
+    expect(actorName({ kind: 'system', name: '定时建卡' })).toBe('定时建卡');
   });
 });
 

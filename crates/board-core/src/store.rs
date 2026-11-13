@@ -291,6 +291,7 @@ impl Store {
         conn.execute_batch(crate::skills::SCHEMA)?;
         conn.execute_batch(crate::mcp::SCHEMA)?;
         conn.execute_batch(crate::templates::SCHEMA)?;
+        conn.execute_batch(crate::card_crons::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_beat {
@@ -659,12 +660,14 @@ impl<'a> R<'a> {
                         counts: Counts::new(),
                         statuses: vec![],
                         holders: vec![],
+                        card_crons: vec![],
                     },
                 ))
             })?;
             for row in rows {
                 let (id, mut b) = row?;
                 b.path = format!("{}/{}", p.key, b.key);
+                b.card_crons = R { conn }.card_crons(id, now)?;
                 b.statuses = flow_of(conn, id)?.0.into_iter().map(|s| Status { layout: None, ..s }).collect();
                 b.counts.insert(INBOX.to_string(), 0);
                 for s in &b.statuses {

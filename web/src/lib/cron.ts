@@ -23,6 +23,7 @@ export function describeCron(raw: string): string {
   if (m) return `每周${[...new Set(m[3].split(',').map(Number).sort((a, b) => (a || 7) - (b || 7)).map(d => WEEK[d]))].join('、')} ${pad(+m[2])}:${pad(+m[1])}`;
   m = s.match(/^(\d+) (\d+) (\d+) \* \*$/);
   if (m) return `每月 ${+m[3]} 号 ${pad(+m[2])}:${pad(+m[1])}`;
+  if (s === '* * * * *') return '每分钟';
   m = s.match(/^\*\/(\d+) \* \* \* \*$/);
   if (m) return `每 ${m[1]} 分钟`;
   m = s.match(/^0 \*\/(\d+) \* \* \*$/);
@@ -53,8 +54,27 @@ export function buildCron(s: Schedule): string | null {
     case 'monthly':
       return `${s.m} ${s.h} ${s.day} * *`;
     case 'minutes':
-      return `*/${s.every} * * * *`;
+      return s.every === 1 ? '* * * * *' : `*/${s.every} * * * *`;
     case 'hours':
       return `0 */${s.every} * * *`;
   }
+}
+
+/** cron 表达式 → 界面上选出来的定时（buildCron 的反过来）；不是选择组件能生成的（手写的）返回 null */
+export function parseSchedule(raw: string): Schedule | null {
+  const s = normalizeCron(raw);
+  let m = s.match(/^(\d+) (\d+) \* \* \*$/);
+  if (m) return { kind: 'daily', h: +m[2], m: +m[1] };
+  m = s.match(/^(\d+) (\d+) \* \* 1-5$/);
+  if (m) return { kind: 'weekdays', h: +m[2], m: +m[1] };
+  m = s.match(/^(\d+) (\d+) \* \* ([0-7](?:,[0-7])*)$/);
+  if (m) return { kind: 'weekly', days: [...new Set(m[3].split(',').map(d => +d % 7))], h: +m[2], m: +m[1] };
+  m = s.match(/^(\d+) (\d+) (\d+) \* \*$/);
+  if (m) return { kind: 'monthly', day: +m[3], h: +m[2], m: +m[1] };
+  if (s === '* * * * *') return { kind: 'minutes', every: 1 };
+  m = s.match(/^\*\/(\d+) \* \* \* \*$/);
+  if (m) return { kind: 'minutes', every: +m[1] };
+  m = s.match(/^0 \*\/(\d+) \* \* \*$/);
+  if (m) return { kind: 'hours', every: +m[1] };
+  return null;
 }
