@@ -355,7 +355,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   |---|---|---|---|---|
   | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令模板，不经过 shell |
   | `login` | 登录 shell | macOS、Linux | `$SHELL`，没有时 passwd 里的登录 shell，再没有 `/bin/sh` | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
-  | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号 |
+  | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号；命令名是普通名字（字母、数字、`.`、`-`、`_`）时不加引号，含路径、空格等字符时才加（加了引号的 `.cmd` 拿到的 `%~dp0` 是当前目录，脚本里拼的相对路径会找错——DeepSeek Harness 的 `dsh.cmd` 就是这样，退出码 9009） |
   | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"`，参数里的 `'` 写成 `''` |
   | `pwsh` | PowerShell 7 | Windows | `PATH` 里的 `pwsh.exe`，或 `%ProgramFiles%\PowerShell\7\pwsh.exe` | 同上，换成 `pwsh.exe` |
   | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 `git` 所在的那套 Git 安装：从 `git.exe` 的目录往上三层找 `bin\bash.exe`（`<Git>\bin`、`<Git>\cmd`、`<Git>\mingw64\bin` 三种布局都认），没有时用 `usr\bin\bash.exe` | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |

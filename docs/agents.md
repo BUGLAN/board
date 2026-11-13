@@ -18,7 +18,7 @@
    |---|---|---|
    | 直接启动（`direct`） | 所有 | 直接执行命令，不经过 shell |
    | 登录 shell（`login`） | macOS、Linux | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…`：读 `~/.zprofile`、`~/.zshrc` 这些启动脚本，写在里面的 `PATH` 也生效 |
-   | cmd | Windows | `cmd.exe /d /s /c "<命令> <参数>…"` |
+   | cmd | Windows | `cmd.exe /d /s /c "<命令> <参数>…"`：每个参数加双引号；命令名是普通名字时不加引号，含路径、空格等字符时才加（`.cmd` 靠 `%~dp0` 找自己旁边的文件，加了引号的命令 `%~dp0` 是当前目录，相对路径就找错了） |
    | Windows PowerShell、PowerShell 7（`powershell`、`pwsh`） | Windows | `-NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
    | Git Bash（`git-bash`） | Windows | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
    | WSL（`wsl:<发行版>`） | Windows | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…`，目录换成 `/mnt/…` |

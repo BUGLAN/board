@@ -4,7 +4,7 @@
 //! |---|---|---|---|---|
 //! | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令模板，不经过 shell |
 //! | `login` | 登录 shell | macOS、Linux | `$SHELL`，没有时 passwd 里的登录 shell，再没有 `/bin/sh` | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
-//! | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号 |
+//! | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号；命令名是普通名字时不加，否则 `.cmd` 里的 `%~dp0` 会变成当前目录 |
 //! | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
 //! | `pwsh` | PowerShell 7 | Windows | `PATH` 里的 `pwsh.exe`，或 `%ProgramFiles%\PowerShell\7\pwsh.exe` | 同上，换成 `pwsh.exe` |
 //! | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 `git` 所在目录往上三层的 `bin`（见 [`git_bash_beside`]） | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
@@ -259,10 +259,17 @@ pub fn ps_script(prog: &str, args: &[String], run: bool) -> String {
     s + "; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE"
 }
 
-/// cmd 的命令行：`/d /s /c "<命令> <参数>…"`，每个参数加双引号（/s：去掉最外面一对引号，其余原样）
+/// cmd 的命令行：`/d /s /c "<命令> <参数>…"`。参数逐个加双引号；命令名是普通名字时不加，含路径、空格等
+/// 字符时才加（/s：去掉最外面一对引号，其余原样）。
+///
+/// 命令名不能一律加引号：找 `.cmd` 批处理（DeepSeek Harness 装的 `dsh.cmd` 就是）时，加了引号的命令在
+/// 脚本里 `%~dp0` 变成当前目录，脚本用 `%~dp0..\..\..\..\DeepSeek Harness.exe` 拼的路径就找错了地方，
+/// 退出码 9009（#230）。不加引号的名字由 cmd 自己找，`%~dp0` 是命令真正所在的目录。
 pub fn cmd_line(prog: &str, args: &[String]) -> String {
     let q = |s: &str| format!("\"{}\"", s.replace('"', ""));
-    let mut parts = vec![q(prog)];
+    // 只有「普通名字」（字母、数字、`.`、`-`、`_`）不加引号，其余（路径、空格、括号、`&`）都加
+    let plain = !prog.is_empty() && prog.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    let mut parts = vec![if plain { prog.to_string() } else { q(prog) }];
     parts.extend(args.iter().map(|a| q(a)));
     format!("/d /s /c \"{}\"", parts.join(" "))
 }
@@ -771,7 +778,37 @@ mod tests {
         assert!(script.contains("& 'pi' '-p' 'it''s'; "), "{script}");
         assert!(script.ends_with("exit $LASTEXITCODE"), "退出码就是 agent 的");
         assert!(ps_script("pi", &[], true).contains("$env:BOARD_URL = $env:BOARD_HOST_URL"));
-        assert_eq!(cmd_line("dsh", &s(&["--profile", "headless", PROMPT])), format!("/d /s /c \"\"dsh\" \"--profile\" \"headless\" \"{PROMPT}\"\""));
+        assert_eq!(cmd_line("dsh", &s(&["--profile", "headless", PROMPT])), format!("/d /s /c \"dsh \"--profile\" \"headless\" \"{PROMPT}\"\""));
+        // 命令名是普通名字时不加引号：加了引号的 .cmd 拿到的 %~dp0 是当前目录，脚本里拼的相对路径会找错
+        assert_eq!(cmd_line(r"C:\Program Files\dsh.cmd", &s(&["--version"])), r#"/d /s /c ""C:\Program Files\dsh.cmd" "--version"""#);
+        assert_eq!(cmd_line("dsh", &[]), r#"/d /s /c "dsh""#);
+        // 普通名字以外的一律加引号（空格、路径、cmd 的语法字符）
+        assert_eq!(cmd_line(r"\tools\a&b.cmd", &[]), r#"/d /s /c ""\tools\a&b.cmd"""#);
+    }
+
+    /// `.cmd` 批处理靠 `%~dp0` 找自己旁边的文件：命令名不加引号时 `%~dp0` 才是命令真正所在的目录，
+    /// 加了引号会变成当前目录，脚本里拼的相对路径就找错了（DeepSeek Harness 的 `dsh.cmd` 因此退出码 9009，#230）
+    #[cfg(windows)]
+    #[test]
+    fn cmd_runs_dot_cmd_from_path_with_its_own_dir() {
+        let dir = std::env::temp_dir().join(format!("board-cmd-dp0-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(dir.join("data.txt"), "found\r\n").unwrap();
+        // 和 dsh.cmd 一样用 %~dp0 拼上级目录里的文件
+        let script = "@echo off\r\ntype \"%~dp0..\\data.txt\"\r\necho one=[%1]\r\n";
+        std::fs::write(bin.join("board-no-such-agent.cmd"), script).unwrap();
+        let prog = std::env::var_os("ComSpec").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cmd.exe"));
+        let mut c = Env::new(Kind::Cmd, prog).command("board-no-such-agent", &s(&["a b"]), None, false);
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let mut parts: Vec<std::ffi::OsString> = vec![bin.clone().into_os_string()];
+        parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
+        c.env("PATH", std::env::join_paths(parts).unwrap());
+        let out = run_out(c, Duration::from_secs(20)).expect("cmd 能跑");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.ok, "{}{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("found"), "%~dp0 不是命令所在的目录：{}", out.stdout);
+        assert!(out.stdout.contains("one=[\"a b\"]"), "参数仍然逐个加引号：{}", out.stdout);
     }
 
     #[test]
