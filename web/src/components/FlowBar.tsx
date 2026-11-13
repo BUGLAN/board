@@ -584,7 +584,7 @@ function StatusMenu({
           () => patch({ claim: !s.claim }),
           lastClaim ? '至少要有一个可领取的状态：先把另一个状态设为可领取' : undefined,
         )}
-        {sw(s.lock, '锁定', '只能由 agent 领取进入；被持有期间只有持有者能移动', () => patch({ lock: !s.lock }))}
+        {sw(s.lock, '锁定', '只能由 agent 领取进入（派发排队的卡片也在这里等）；被持有期间只有持有者能移动', () => patch({ lock: !s.lock }))}
         {sw(s.final, '终点', '进来算完成：只有人能移入移出', () => patch({ final: !s.final }))}
         {sw(
           !!s.error,

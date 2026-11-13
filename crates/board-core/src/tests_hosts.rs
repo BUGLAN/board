@@ -453,6 +453,18 @@ fn stop_kills_then_moves_to_check() {
     assert!(c.activity.iter().any(|x| x.kind == "comment" && x.text == "buglan 停止了这次派发"));
 }
 
+fn mv(id: i64, column: &str, index: Option<usize>) -> Cmd {
+    Cmd::Move { id, column: column.into(), top: false, index, order: None, before: None, after: None }
+}
+
+fn col(s: &Store, key: &str) -> Vec<i64> {
+    s.read(|r| {
+        let b = r.resolve(B)?;
+        Ok(r.board_snapshot(&b, T0, true)?.cols.get(key).cloned().unwrap_or_default())
+    })
+    .unwrap()
+}
+
 #[test]
 fn queued_dispatch_occupies_the_card() {
     let mut s = store();
@@ -465,9 +477,94 @@ fn queued_dispatch_occupies_the_card() {
     assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: Some(a) }).unwrap_err().code, ErrorCode::Dispatched);
     // 不带 ID 的领取跳过它
     assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: None }).unwrap().card.id, b);
-    // 人把它拖出可领取状态：派发自动取消
-    exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    // 人把它拖出它排队的状态：派发自动取消
+    exec(&mut s, T0 + 2 * S, &Actor::human(), mv(a, "review", None)).unwrap();
     assert_eq!(get(&s, d.id).result.as_deref(), Some("canceled"));
+}
+
+/// 派发排队时卡片就进了「进行中」：没有持有者、显示排队，别的 agent 领不了、移不了；
+/// 开始时原地领取；没开始就取消时回到原来的可领取状态最上面；人把它拖出进行中等于取消派发
+#[test]
+fn queued_dispatch_waits_in_the_lock_status() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let b = new_card(&mut s, T0, "B");
+    let c = new_card(&mut s, T0, "C");
+    let da = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let ca = card(&s, a);
+    assert_eq!((ca.card.column.as_str(), ca.card.holder.as_deref(), ca.card.claimed_from.as_deref()), ("doing", None, Some("todo")));
+    let text = &ca.activity.iter().rev().find(|x| x.text.starts_with("派发到")).unwrap().text;
+    assert_eq!(text, "派发到 mbp · Claude Code（手动），在「进行中」排队");
+    assert_eq!(col(&s, "todo"), vec![b, c]);
+    // 流转记录：派发排队算一次换状态（不算领取、不算返工）
+    let kinds: Vec<(String, Option<String>, Option<String>)> = s
+        .conn()
+        .prepare("SELECT kind, from_key, to_key FROM moves WHERE card = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([a], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert_eq!(kinds, vec![("dispatch".into(), Some("todo".into()), Some("doing".into()))]);
+
+    // 别的 agent：带 ID 领、沿连线移都报 DISPATCHED；不带 ID 领到 B，排在排队的 A 前面
+    s.write(T0, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
+    let alpha = Actor::agent("alpha/x");
+    let e = exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: Some(a) }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Dispatched);
+    assert!(e.message.contains("在「进行中」排队"), "{}", e.message);
+    assert_eq!(exec(&mut s, T0 + S, &alpha, mv(a, "review", None)).unwrap_err().code, ErrorCode::Dispatched);
+    assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: None }).unwrap().card.id, b);
+    assert_eq!(col(&s, "doing"), vec![b, a], "被持有的排在排队的前面");
+    // 手动派发报「已经派发」，而不是「不在可领取状态」
+    assert_eq!(dispatch(&mut s, T0 + S, a, "mbp", None).unwrap_err().code, ErrorCode::AlreadyDispatched);
+
+    // 开始：原地领取，claimed_from 仍是原来的可领取状态（异常退出、释放时回那里）
+    let da = begin(&mut s, T0 + 2 * S, da.id).unwrap();
+    let ca = card(&s, a);
+    assert_eq!((ca.card.column.as_str(), ca.card.holder.as_deref(), ca.card.claimed_from.as_deref()), ("doing", da.name.as_deref(), Some("todo")));
+    assert!(ca.activity.iter().any(|x| x.action == "claim" && x.text == "领取了卡片（派发排队时已在「进行中」）"));
+
+    // C 排队后被取消：回到待办最上面
+    let dc = dispatch(&mut s, T0 + 3 * S, c, "mbp", None).unwrap();
+    assert_eq!(col(&s, "doing"), vec![b, a, c]);
+    s.write(T0 + 4 * S, Origin::ui(None), |w| w.dispatch_cancel(dc.id, &Actor::human(), "buglan")).unwrap();
+    let cc = card(&s, c);
+    assert_eq!((cc.card.column.as_str(), cc.card.claimed_from.as_deref()), ("todo", None));
+    assert!(cc.activity.iter().any(|x| x.text.starts_with("取消了派发") && x.text.ends_with("，卡片回到「待办」最上面")));
+    // 人把排队的卡片拖回待办（拖到哪就在哪）：派发自动取消
+    new_card(&mut s, T0 + 4 * S, "D");
+    let dc = dispatch(&mut s, T0 + 5 * S, c, "mbp", None).unwrap();
+    exec(&mut s, T0 + 6 * S, &Actor::human(), mv(c, "todo", Some(1))).unwrap();
+    assert_eq!(get(&s, dc.id).result.as_deref(), Some("canceled"));
+    assert_eq!(col(&s, "todo")[1], c);
+    assert_eq!(card(&s, c).card.claimed_from, None);
+    // 人在进行中里调整排队卡片的顺序：派发不受影响
+    let dc = dispatch(&mut s, T0 + 7 * S, c, "mbp", None).unwrap();
+    exec(&mut s, T0 + 7 * S, &Actor::human(), mv(c, "doing", Some(0))).unwrap();
+    assert_eq!(get(&s, dc.id).state, "queued");
+    // 删除后恢复：回到排队前的可领取状态
+    exec(&mut s, T0 + 8 * S, &Actor::human(), Cmd::Delete { id: c }).unwrap();
+    assert_eq!(get(&s, dc.id).result.as_deref(), Some("canceled"));
+    let r = exec(&mut s, T0 + 9 * S, &Actor::human(), Cmd::Restore { id: c }).unwrap();
+    assert_eq!((r.card.column.as_str(), r.card.holder.as_deref()), ("todo", None));
+}
+
+/// 会话结束、机器移除时排着的回到待办，仍按原来的先后排在最上面
+#[test]
+fn canceled_queue_goes_back_in_order() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let x = new_card(&mut s, T0, "X");
+    let a = new_card(&mut s, T0, "A");
+    let b = new_card(&mut s, T0, "B");
+    dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    dispatch(&mut s, T0, b, "mbp", None).unwrap();
+    assert_eq!((col(&s, "todo"), col(&s, "doing")), (vec![x], vec![a, b]));
+    s.write(T0 + S, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "buglan")).unwrap();
+    assert_eq!((col(&s, "todo"), col(&s, "doing")), (vec![a, b, x], vec![]));
+    assert!(card(&s, a).activity.iter().any(|t| t.text.starts_with("移除了机器 mbp") && t.text.ends_with("，卡片回到「待办」最上面")));
 }
 
 /// 优先标签（PRD §8 规则 1）：有排队派发的优先卡片照样被跳过；定时领取一轮里优先卡片先被派发；手动派发不受影响
@@ -1476,7 +1573,11 @@ fn session_queue_is_planned_and_shown() {
     assert_eq!(queued.iter().map(|d| (d.card, d.seq, d.total)).collect::<Vec<_>>(), vec![(cards[1], 2, 4), (cards[2], 3, 4), (cards[3], 4, 4)]);
     assert!(queued.iter().all(|d| d.in_session_queue() && d.session == d1.id && d.source == "cron"));
     let a = card(&s, cards[2]).activity.into_iter().rev().find(|a| a.text.starts_with("派发到")).unwrap();
-    assert_eq!(a.text, format!("派发到 mbp · Claude Code（定时），会话第 3/4 张，排队等 {name} 接着做"));
+    assert_eq!(a.text, format!("派发到 mbp · Claude Code（定时），会话第 3/4 张，在「进行中」排队等 {name} 接着做"));
+    // 排着的卡片在「进行中」，没有持有者；第 1 张被持有、排在它们前面
+    assert_eq!(col(&s, "doing"), cards[..4].to_vec());
+    assert!(cards[1..4].iter().all(|c| card(&s, *c).card.holder.is_none()));
+    assert_eq!(col(&s, "todo"), cards[4..].to_vec());
     assert!(s.read(|r| r.card_dispatch(&r.resolve(B)?, cards[4])).unwrap().is_none(), "第 5 张没有派发");
     // board host 拿到的排队里没有会话里排着的，也不能用 begin 开始它们
     let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![d1.id])).unwrap();
@@ -1573,7 +1674,7 @@ fn session_end_cancels_the_rest_and_a_new_session_takes_them() {
         assert_eq!(get(&s, d1.id).result.as_deref(), Some("review"), "第 1 张的结果不变");
         let rest: Vec<Dispatch> = session_of(&s, d1.id).into_iter().filter(|d| d.card == cards[2] || d.card == cards[3]).collect();
         assert!(rest.iter().all(|d| d.result.as_deref() == Some("canceled")), "{rest:?}");
-        assert_eq!(card(&s, cards[2]).card.column, "todo");
+        assert_eq!(col(&s, "todo"), vec![cards[2], cards[3]], "回到待办最上面，仍是排好的顺序");
         // 这一轮还没结束、有空位：新会话把它们重新排进去
         let d3 = pull(&mut s, T0 + 5 * S).expect("新会话");
         assert_eq!(session_of(&s, d3.id).iter().map(|d| d.card).collect::<Vec<_>>(), vec![cards[2], cards[3]]);

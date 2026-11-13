@@ -1,7 +1,7 @@
 /* 乐观更新的补丁（store/data.ts）：纯函数，每次刷新都会重新叠到新数据上，
    所以要能重复执行（结果不变），目标不在了原样返回 */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BoardSnapshot, Workspace } from '../lib/types';
+import type { BoardSnapshot, Dispatch, Workspace } from '../lib/types';
 import { card, detail, snapshot, workspace } from '../../test/fixtures';
 import type * as Data from './data';
 
@@ -87,6 +87,65 @@ describe('movePatch', () => {
     const same = twice(D.movePatch(3, 'todo', 0).board!, snapshot('p/a', { todo: [1, 2, 3] }, [{ id: 3, movedAt: 100 }]));
     expect(same.cards[3].movedAt).toBe(100);
     now.mockRestore();
+  });
+});
+
+/** 派发：只填用到的字段 */
+const disp = (over: Partial<Dispatch>): Dispatch =>
+  ({ id: 1, board: 'p/a', card: 4, title: '', hostId: 1, host: 'mbp', agent: 'claude', agentLabel: 'Claude Code', name: null, source: 'manual',
+     by: { kind: 'human', name: '' }, state: 'queued', result: null, createdAt: 0, startedAt: null, endedAt: null, exitCode: null, stopBy: null, beatAt: null,
+     ...over }) as Dispatch;
+
+describe('派发排队的卡片（在「进行中」里等，没有持有者）', () => {
+  // 4 号卡在 doing 里排队（从 todo 来），5 号卡被持有
+  const queuedBoard = () => snapshot('p/a', { todo: [1, 2], doing: [5, 4], review: [] }, [{ id: 4, claimedFrom: 'todo' }, { id: 5, holder: 'claude/x' }]);
+  const ws = () => workspace({ dispatches: [disp({ id: 7, card: 4 }), disp({ id: 8, card: 4, board: 'p/b' }), disp({ id: 9, card: 5, state: 'running' })] });
+  const start = () => D.useData.setState({ path: 'p/a', board: queuedBoard(), ws: ws() });
+
+  it('unqueuePatch：只去掉这块白板这张卡片排队的那条；重复执行结果相同；没有时原样返回', () => {
+    const w = twice(D.unqueuePatch('p/a', 4).ws!, ws());
+    expect(w.dispatches!.map(d => d.id)).toEqual([8, 9]);
+    const w2 = ws();
+    expect(D.unqueuePatch('p/a', 5).ws!(w2)).toBe(w2);
+  });
+
+  it('movePatch：拖出进行中时排队的派发一起去掉、claimedFrom 清空；在进行中里调顺序不动派发', () => {
+    start();
+    const p = D.movePatch(4, 'todo', 1);
+    const b = twice(p.board!, queuedBoard());
+    expect(b.cols).toEqual({ todo: [1, 4, 2], doing: [5], review: [] });
+    expect(b.cards[4]).toMatchObject({ column: 'todo', claimedFrom: null });
+    expect(twice(p.ws!, ws()).dispatches!.map(d => d.id)).toEqual([8, 9]);
+    expect(D.movePatch(4, 'doing', 0).ws).toBeUndefined();
+    // 被持有的卡片、没有排队派发的卡片：不碰派发
+    expect(D.movePatch(1, 'review').ws).toBeUndefined();
+  });
+
+  it('unqueueCard：当前白板上排队的卡片回到原来的可领取状态最上面；别的白板只去掉派发', () => {
+    start();
+    const p = D.unqueueCard('p/a', 4);
+    const b = twice(p.board!, queuedBoard());
+    expect(b.cols).toEqual({ todo: [4, 1, 2], doing: [5], review: [] });
+    expect(b.cards[4]).toMatchObject({ column: 'todo', claimedFrom: null });
+    expect(twice(p.ws!, ws()).dispatches!.map(d => d.id)).toEqual([8, 9]);
+    expect(p.cards).toEqual([4]);
+    const other = D.unqueueCard('p/b', 4);
+    expect(other.board).toBeUndefined();
+    expect(other.ws!(ws()).dispatches!.map(d => d.id)).toEqual([7, 9]);
+  });
+
+  it('unqueueCard：原来的状态不再可领取时回首个可领取状态；卡片已经回去了原样返回', () => {
+    D.useData.setState({ path: 'p/a', board: snapshot('p/a', { todo: [1], doing: [4] }, [{ id: 4, claimedFrom: 'review' }]), ws: ws() });
+    expect(D.unqueueCard('p/a', 4).board!(queuedBoard()).cols.todo).toEqual([4, 1, 2]);
+    const back = snapshot('p/a', { todo: [4, 1, 2], doing: [5], review: [] });
+    D.useData.setState({ board: back });
+    expect(D.unqueueCard('p/a', 4).board).toBeUndefined();
+  });
+
+  it('joinPatch：按顺序叠，保存中的卡片和对象合在一起', () => {
+    const p = D.joinPatch({ ws: w => ({ ...w, rev: w.rev + 1 }), keys: ['a'] }, { ws: w => ({ ...w, rev: w.rev * 10 }), cards: [3], keys: ['b'] });
+    expect(p.ws!(workspace()).rev).toBe(20);
+    expect([p.cards, p.keys, p.acts, p.board]).toEqual([[3], ['a', 'b'], undefined, undefined]);
   });
 });
 

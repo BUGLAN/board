@@ -10,8 +10,8 @@ import { api, ApiError, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
 import { applySilently, bindRoute, parseRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
 import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
-import { INBOX } from '../lib/schema';
-import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardDetail, type Cmd, type ColumnKey, type ProjectInfo, type Workspace } from '../lib/types';
+import { boardFlow, INBOX } from '../lib/schema';
+import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type Workspace } from '../lib/types';
 
 interface DataState {
   ws: Workspace | null;
@@ -298,13 +298,51 @@ export function editCard(id: number, change: Partial<Card> | ((c: Card) => Parti
   };
 }
 
+/** 一张卡片排队中的派发去掉（卡片被人移走、取消派发时服务端随之取消）。没有这一条时原样返回 */
+export function unqueuePatch(board: string, card: number): Patch {
+  const hit = (d: Dispatch) => d.board === board && d.card === card && d.state === 'queued';
+  return { ws: ws => (ws.dispatches?.some(hit) ? { ...ws, dispatches: ws.dispatches.filter(d => !hit(d)) } : ws) };
+}
+
+/** 几层补丁合成一层：按顺序叠，「保存中」的卡片、评论、对象合在一起 */
+export function joinPatch(...list: Patch[]): Patch {
+  const chain = <T,>(fs: (((x: T) => T) | undefined)[]) => {
+    const on = fs.filter((f): f is (x: T) => T => !!f);
+    return on.length ? (x: T) => on.reduce((v, f) => f(v), x) : undefined;
+  };
+  const all = <T,>(xs: (T[] | undefined)[]) => (xs.some(Boolean) ? xs.flatMap(x => x ?? []) : undefined);
+  return {
+    ws: chain(list.map(p => p.ws)),
+    board: chain(list.map(p => p.board)),
+    detail: chain(list.map(p => p.detail)),
+    cards: all(list.map(p => p.cards)),
+    acts: all(list.map(p => p.acts)),
+    keys: all(list.map(p => p.keys)),
+  };
+}
+
+/** 派发排队的卡片（在它排队的锁定状态里，没有持有者）离开这里时，服务端取消这次派发：和服务端同一条规则——
+    换了状态、并且不是在两个可领取状态之间移动。在建补丁时按当前白板判断 */
+function leavesQueue(id: number, to: ColumnKey) {
+  const { board, path, ws } = get();
+  const c = board?.cards[id];
+  if (!c || c.holder || c.column === to) return false;
+  const f = boardFlow(board);
+  if (f.get(c.column)?.claim && f.get(to)?.claim) return false;
+  return !!ws?.dispatches?.some(d => d.board === path && d.card === id && d.state === 'queued');
+}
+
 /** 把卡片放到 to 的第 index 位（按去掉它之后的列表算；省略时放最后）。order：排序状态下拖动时整块的新顺序（与服务端规则一致：没列出的补在后面）。
     extra：一起改的其他字段（例如释放时清空持有者）。
-    换了状态时移入时间记成发起的时刻（「保留顺序」按移入时间排时，确认之前就排到新移入的位置）；时刻在建补丁时取定，重复执行结果不变 */
+    换了状态时移入时间记成发起的时刻（「保留顺序」按移入时间排时，确认之前就排到新移入的位置）；时刻在建补丁时取定，重复执行结果不变。
+    派发排队的卡片被移走时，排队的派发当帧一起去掉（服务端随之取消） */
 export function movePatch(id: number, to: ColumnKey, index?: number, order?: number[], extra: Partial<Card> = {}): Patch {
   const at = serverNow();
+  const unqueue = leavesQueue(id, to);
+  if (unqueue) extra = { claimedFrom: null, ...extra };
   const moved = <T extends Card>(c: T): T => ({ ...c, ...extra, movedAt: c.column === to ? c.movedAt : at, column: to });
   return {
+    ws: unqueue ? unqueuePatch(get().path, id).ws : undefined,
     board: b => {
       const c = b.cards[id];
       if (!c) return b;
@@ -318,6 +356,16 @@ export function movePatch(id: number, to: ColumnKey, index?: number, order?: num
     detail: d => (d.id === id ? moved(d) : d),
     cards: [id],
   };
+}
+
+/** 取消排队的派发：卡片还在它排队的锁定状态里（当前白板上、没有持有者）时，当帧回到原来的可领取状态最上面（和服务端一致）；
+    排队的派发一起去掉 */
+export function unqueueCard(board: string, card: number): Patch {
+  const { board: b, path } = get();
+  const c = path === board ? b?.cards[card] : undefined;
+  const f = boardFlow(b);
+  const back = c && !c.holder && f.isLock(c.column) ? (c.claimedFrom && f.get(c.claimedFrom)?.claim ? c.claimedFrom : f.home?.key) : undefined;
+  return back ? joinPatch(unqueuePatch(board, card), movePatch(card, back, 0, undefined, { claimedFrom: null })) : unqueuePatch(board, card);
 }
 
 /** 从白板上拿掉一张卡片（删除：移进回收站）。回收站里的张数跟着加一；卡片的列换个新数组（FLIP 用得上） */

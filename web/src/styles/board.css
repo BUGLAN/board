@@ -217,6 +217,17 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 }
 @property --angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes orbit { to { --angle: 360deg; } }
+/* 派发排队：在「进行中」里等机器开始，还没有人持有。虚线框、底色淡一些，和正在做的（流光边框）分开 */
+.card.queued {
+  --c: var(--ac, var(--c-doing));
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  box-shadow: inset 0 0 0 1px transparent;
+  outline: 1.5px dashed color-mix(in srgb, var(--c) 42%, var(--line-2)); outline-offset: -1.5px;
+}
+.card.queued:hover { box-shadow: var(--shadow-1); outline-color: color-mix(in srgb, var(--c) 70%, var(--line-2)); }
+.card.queued .card-title { color: var(--text-2); }
+.card.queued .card-dispatch { outline: none; padding: 0; color: var(--text-2); }
+.card.queued.is-open { box-shadow: inset 0 0 0 1.5px var(--brand), 0 0 0 4px var(--brand-soft), var(--shadow-2); outline-color: transparent; }
 .card-claim {
   display: flex; align-items: center; gap: 7px; margin-top: 10px; padding-top: 9px;
   border-top: 1px dashed var(--line-2);

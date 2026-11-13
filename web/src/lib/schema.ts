@@ -118,7 +118,7 @@ export const ERRORS: [ErrorCode, string][] = [
   ['AGENT_NOT_ON_HOST', '机器上没有这种 agent，或标为没找到'],
   ['BOARD_NOT_ON_HOST', '机器没有这块白板的目录'],
   ['BOARD_NOT_READY', '机器上这块白板的环境检查没通过（或还没检查）'],
-  ['DISPATCHED', '卡片有排队中的派发：别的 agent 不能领取它'],
+  ['DISPATCHED', '卡片有排队中的派发：别的 agent 不能领取、移动它'],
   ['SESSION_DONE', 'board next：这个会话不再接着做（排着的卡片做完了、手动派发、有人停止、暂停接单或机器已移除、没有领取规则）：结束会话'],
 ];
 

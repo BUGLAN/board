@@ -19,12 +19,14 @@
 //!   并评论（异常退出 / 已停止 / 超时）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
 //! - **兜底**：每台机器可以设「单次最长运行」和「没输出多久算卡住」（分钟，0 = 不限）。board host 到时间后按「人停止」的流程
 //!   结束整个进程树，上报 `how: "timeout"` 和原因，服务端记结果「超时」、按异常退出的规则处理卡片。
-//! - **占用**：卡片有排队中的派发时，别的 agent `board claim <ID>` 报 `DISPATCHED`，不带 ID 的 `board claim` 跳过它；
-//!   人把它拖出可领取状态时这次派发自动取消。
+//! - **占用**：派发排队时卡片沿连线进入领取时会进的锁定状态（「进行中」），没有持有者、显示排队（[`W::reserve`]）；
+//!   开始时在那里原地领取，没开始就取消（或没领到）时回到原来的可领取状态最上面（[`W::unreserve`]）。
+//!   别的 agent `board claim <ID>` 报 `DISPATCHED`，也不能移动它；人把它拖出那个状态时这次派发自动取消。
 //! - **掉线**：机器掉线超过 50 秒，名字跟着离线，卡片按现有的心跳超时规则释放，在跑的派发结束（机器掉线），见 [`W::sweep_hosts`]。
 //!
 //! 派发、取消、开始、结束都在卡片动态里追加一条，写明机器、agent、来源和结果。
 
+use crate::engine::At;
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::*;
 use crate::store::{flow_of, R, W};
@@ -1843,6 +1845,69 @@ impl<'a> W<'a> {
             .optional()?)
     }
 
+    /// 派发排队：卡片沿连线进入领取时会进的锁定状态（排在那一块最下面），没有持有者，`claimed_from` 记下原来的可领取状态。
+    /// 排队的卡片别人领不到，留在可领取状态里看起来像「谁都能领」（PRD §9.1「占用」）。
+    /// 卡片不在可领取状态、被持有、或者那个状态没有连到锁定状态时不动。返回进入的状态名称（写进动态）
+    fn reserve(&mut self, b: i64, card: i64, by: &Actor) -> Result<Option<String>> {
+        let row: Option<(String, Option<String>)> = self
+            .tx
+            .query_row("SELECT col, holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        let Some((col, None)) = row else { return Ok(None) };
+        let flow = flow_of(self.tx, b)?;
+        if !flow.is_claim(&col) {
+            return Ok(None);
+        }
+        let Some(dest) = flow.claim_target(&col).cloned() else { return Ok(None) };
+        self.place(b, card, Some(&col), &dest.key, At::Bottom)?;
+        self.tx.execute("UPDATE cards SET claimed_from = ?1 WHERE board = ?2 AND id = ?3", params![col, b, card])?;
+        self.log_move(b, card, "dispatch", &col, &dest.key, by, &flow)?;
+        Ok(Some(dest.name))
+    }
+
+    /// 排队的派发没开始就结束了（取消、没领到、会话结束、移除机器）：卡片还在排队时进的锁定状态里、没有人持有时，
+    /// 回到原来的可领取状态最上面（和释放一样，PRD §8 规则 7）；已经在可领取状态里的（例如锁定状态被删掉时被移了回去）
+    /// 只清掉记录。返回写进动态的后半句（没有移动时为空）
+    fn unreserve(&mut self, b: i64, card: i64, by: &Actor) -> Result<String> {
+        let row: Option<(String, Option<String>, Option<String>)> = self
+            .tx
+            .query_row(
+                "SELECT col, holder, claimed_from FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL",
+                params![b, card],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((col, None, from)) = row else { return Ok(String::new()) };
+        let flow = flow_of(self.tx, b)?;
+        // 没有持有者时 claimed_from 只在派发排队时记（释放会清掉它）；锁定状态被删掉时它也被清掉，这时按「在锁定状态里」认
+        if from.is_none() && !flow.is_lock(&col) {
+            return Ok(String::new());
+        }
+        self.tx.execute("UPDATE cards SET claimed_from = NULL WHERE board = ?1 AND id = ?2", params![b, card])?;
+        if col == INBOX || flow.is_claim(&col) {
+            return Ok(String::new());
+        }
+        let dest = flow.back_to(from.as_deref()).clone();
+        self.place(b, card, Some(&col), &dest.key, At::Top)?;
+        self.log_move(b, card, "dispatch", &col, &dest.key, by, &flow)?;
+        Ok(format!("，卡片回到「{}」最上面", dest.name))
+    }
+
+    /// 锁定状态里被持有的卡片排在派发排队的卡片前面：领取进来（含排队后原地开始）时放在第一张排队的卡片前面，没有就放到最下面
+    pub(crate) fn lock_slot(&self, b: i64, col: &str, card: i64) -> Result<At> {
+        let queued: Vec<i64> = self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state = 'queued'", [b], |r| r.get(0))?;
+        if queued.is_empty() {
+            return Ok(At::Bottom);
+        }
+        let ids: Vec<i64> = self.col_ids(b, col)?.into_iter().filter(|x| *x != card).collect();
+        Ok(match ids.iter().position(|x| queued.contains(x)) {
+            Some(i) => At::Index(i),
+            None => At::Bottom,
+        })
+    }
+
     /// 按规则 1 找下一张可领取的卡片：在连到锁定状态的可领取状态里（按工作流顺序，状态内从上到下），
     /// 没有排队派发的卡片中，带优先标签的先领；都不带时取最前面那张。
     /// `skip` 是调用方额外要跳过的卡片（定时领取传这一轮已经派发过的卡片）。
@@ -1960,7 +2025,8 @@ impl<'a> W<'a> {
                 Err(e) if e.code == ErrorCode::Internal => return Err(e),
                 Err(e) => {
                     self.close_row(&q, "unclaimed", None)?;
-                    let text = format!("派发没领到：{}（{}）", e.message, Self::dispatch_words(&q));
+                    let back = self.unreserve(q.board, q.card, &Actor::system())?;
+                    let text = format!("派发没领到：{}（{}）{back}", e.message, Self::dispatch_words(&q));
                     self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
                 }
             }
@@ -1975,13 +2041,15 @@ impl<'a> W<'a> {
     }
 
     /// 会话不再接着做（board next 返回 SESSION_DONE、进程退出、被人停止、机器掉线）：这个会话还排着的派发都取消，
-    /// 结果「已取消」，卡片不动、留在可领取状态；这一轮还没结束时由新开的会话重新排
+    /// 结果「已取消」，卡片回到原来的可领取状态最上面；这一轮还没结束时由新开的会话重新排
     fn cancel_session_rest(&mut self, session: i64, why: &str) -> Result<()> {
-        let ids: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE session = ?1 AND state = 'queued' ORDER BY id", [session], |r| r.get(0))?;
+        // 后排的先回去：卡片一张张回到可领取状态最上面，最后回去的在最上面，回去后仍是排好的顺序
+        let ids: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE session = ?1 AND state = 'queued' ORDER BY id DESC", [session], |r| r.get(0))?;
         for id in ids {
             let q = self.drow(id)?;
             self.close_dispatch(&q, "canceled", None)?;
-            let text = format!("会话结束（{why}），排着的派发取消（{}），卡片留在原地", Self::dispatch_words(&q));
+            let back = self.unreserve(q.board, q.card, &Actor::system())?;
+            let text = format!("会话结束（{why}），排着的派发取消（{}）{back}", Self::dispatch_words(&q));
             self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
         }
         Ok(())
@@ -2026,7 +2094,8 @@ impl<'a> W<'a> {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'cron', ?8, ?9, 'queued', ?10, ?11)",
                 params![board.id, card, title, h.id, h.name, first.agent, first.agent_label, by.kind.as_str(), by.name, self.now, first.id],
             )?;
-            let text = format!("派发到 {} · {}（定时），会话第 {}/{total} 张，排队等 {name} 接着做", h.name, first.agent_label, k + 2);
+            let at = self.reserve(board.id, card, &by)?.map(|n| format!("在「{n}」")).unwrap_or_default();
+            let text = format!("派发到 {} · {}（定时），会话第 {}/{total} 张，{at}排队等 {name} 接着做", h.name, first.agent_label, k + 2);
             self.track(board.id, card, &by, "dispatch", &text)?;
         }
         self.touch_hosts();
@@ -2875,11 +2944,13 @@ impl<'a> W<'a> {
             self.tx.execute("DELETE FROM auth_tokens WHERE id = ?1", [t.id])?;
             revoked = Some(t.id);
         }
-        let queued: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host_id = ?1 AND state = 'queued'", [h.id], |r| r.get(0))?;
+        // 后派的先回去：卡片回到可领取状态最上面后仍按派发的先后排
+        let queued: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host_id = ?1 AND state = 'queued' ORDER BY id DESC", [h.id], |r| r.get(0))?;
         for id in queued {
             let d = self.drow(id)?;
             self.close_dispatch(&d, "canceled", None)?;
-            let text = format!("移除了机器 {}，派发取消（{}）", h.name, Self::dispatch_words(&d));
+            let back = self.unreserve(d.board, d.card, by)?;
+            let text = format!("移除了机器 {}，派发取消（{}）{back}", h.name, Self::dispatch_words(&d));
             self.track_dispatch(d.board, d.card, by, "dispatch", &text)?;
         }
         let running: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running'", [name], |r| r.get(0))?;
@@ -2951,13 +3022,7 @@ impl<'a> W<'a> {
         let col: Option<String> =
             self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0)).optional()?;
         let col = col.ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("卡片 #{card} 不存在")))?;
-        if !flow.is_claim(&col) {
-            let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
-            return Err(BoardError::new(
-                ErrorCode::NotInTodo,
-                format!("#{card} 在「{}」，不在可领取的状态{}，不能派发", flow.name(&col), names.join("")),
-            ));
-        }
+        // 先看派发：排队的卡片已经在锁定状态里，报「已经派发」比「不在可领取状态」清楚
         if let Some(d) = self.read().card_dispatch(board, card)? {
             let what = if d.state == "queued" { "排队" } else { "在跑" };
             return Err(BoardError::new(
@@ -2965,6 +3030,13 @@ impl<'a> W<'a> {
                 format!("#{card} 已经派发给 {} · {}，正在{what}：先取消或停止它", d.host, d.agent_label),
             )
             .with_detail(json!({ "dispatch": d.id })));
+        }
+        if !flow.is_claim(&col) {
+            let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
+            return Err(BoardError::new(
+                ErrorCode::NotInTodo,
+                format!("#{card} 在「{}」，不在可领取的状态{}，不能派发", flow.name(&col), names.join("")),
+            ));
         }
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         let all = h.resolved();
@@ -3008,10 +3080,12 @@ impl<'a> W<'a> {
             Readiness::NoCheck | Readiness::Passed => {}
         }
         let (agent_id, label) = (a.id.clone(), a.name.clone());
-        self.insert_dispatch(board.id, card, &h, &agent_id, &label, "manual", by)
+        self.insert_dispatch(board.id, card, &h, &agent_id, &label, "manual", by, true)
     }
 
-    fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor) -> Result<Dispatch> {
+    /// 记一条排队的派发。`reserve` 时卡片进入领取时会进的锁定状态排队（[`W::reserve`]）；定时领取的第一张马上开始，不经过排队
+    #[allow(clippy::too_many_arguments)]
+    fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, reserve: bool) -> Result<Dispatch> {
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at)
@@ -3019,12 +3093,14 @@ impl<'a> W<'a> {
             params![b, card, title, h.id, h.name, agent, label, source, by.kind.as_str(), by.name, self.now],
         )?;
         let id = self.tx.last_insert_rowid();
+        let into = if reserve { self.reserve(b, card, by)? } else { None };
+        let at = into.map(|n| format!("在「{n}」")).unwrap_or_default();
         let wait = if !h.online(self.now) {
-            "，排队等机器上线"
+            format!("，{at}排队等机器上线")
         } else if h.paused {
-            "，排队（机器暂停接单）"
+            format!("，{at}排队（机器暂停接单）")
         } else {
-            "，排队"
+            format!("，{at}排队")
         };
         self.track(b, card, by, "dispatch", &format!("派发到 {} · {}（{}）{wait}", h.name, label, source_words(source)))?;
         self.touch_hosts();
@@ -3039,7 +3115,8 @@ impl<'a> W<'a> {
                 // 记下是谁取消的：会话结束时自动取消的排队这一轮还能重排，人取消的不再排（见 dispatch_pull 的 skip）
                 self.tx.execute("UPDATE dispatches SET stop_by = ?2 WHERE id = ?1", params![id, who])?;
                 self.close_dispatch(&d, "canceled", None)?;
-                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("取消了派发（{}）", Self::dispatch_words(&d)))?;
+                let back = self.unreserve(d.board, d.card, by)?;
+                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("取消了派发（{}）{back}", Self::dispatch_words(&d)))?;
             }
             "running" => self.request_stop(id, by, who)?,
             _ => return Err(BoardError::usage(format!("派发 #{id} 已经结束"))),
@@ -3067,12 +3144,14 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 人把卡片拖出可领取状态：排队中的派发自动取消（规则引擎调用）
+    /// 人把排队的卡片移走（拖出它排队的锁定状态，或拖出可领取状态）：排队中的派发自动取消（规则引擎调用，卡片已经放到新位置）
     pub(crate) fn cancel_queued_on_move(&mut self, b: i64, card: i64, by: &Actor) -> Result<()> {
         if let Some((id, _)) = self.queued_dispatch(b, card)? {
             let d = self.drow(id)?;
             self.close_dispatch(&d, "canceled", None)?;
-            self.track(b, card, by, "dispatch", &format!("卡片移出了可领取状态，派发自动取消（{}）", Self::dispatch_words(&d)))?;
+            // 排队时记下的原来的可领取状态：卡片已经被人移走，不再用它
+            self.tx.execute("UPDATE cards SET claimed_from = NULL WHERE board = ?1 AND id = ?2 AND holder IS NULL", params![b, card])?;
+            self.track(b, card, by, "dispatch", &format!("卡片被移走，排队的派发自动取消（{}）", Self::dispatch_words(&d)))?;
         }
         Ok(())
     }
@@ -3186,7 +3265,8 @@ impl<'a> W<'a> {
             Err(e) if e.code == ErrorCode::Internal => return Err(e),
             Err(e) => {
                 self.close_dispatch(&d, "unclaimed", None)?;
-                let text = format!("派发没领到：{}（{}）", e.message, Self::dispatch_words(&d));
+                let back = self.unreserve(d.board, d.card, &Actor::system())?;
+                let text = format!("派发没领到：{}（{}）{back}", e.message, Self::dispatch_words(&d));
                 self.track_dispatch(d.board, d.card, &Actor::system(), "dispatch", &text)?;
             }
         }
@@ -3238,7 +3318,7 @@ impl<'a> W<'a> {
             }
             let Some((card, agent)) = hit else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
-            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system())?;
+            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system(), false)?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
                 // 开会话时把这个会话要做的卡片一次排好：先把一个会话排满，再开下一个

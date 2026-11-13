@@ -9,6 +9,7 @@ import { renderKey, useCurrent, useData, useOnline } from '../store/data';
 import { Avatar, LabelChips, Title, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
+import { agentMark, cardDispatch } from '../lib/hosts';
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {
@@ -65,6 +66,12 @@ export const CardView = memo(function CardView({
   const online = useOnline();
   const t = timing(c, now, online);
   const doing = held;
+  // 派发排队：卡片在「进行中」里等机器开始，还没有人持有，画成虚线框（和正在做的区分开）
+  const queue = useData(s => {
+    if (held) return undefined;
+    const d = cardDispatch(s.ws, s.path, c.id);
+    return d?.state === 'queued' ? d.agent : undefined;
+  });
   const gh = (c.body.match(/gh#\d+/) || [])[0];
   // 入场动画放完才去掉 entering：白板在动画中途重画（推送刷新、新建的卡片换成真卡片）时 entering 已经变回 false，
   // 立刻去掉会把动画掐断；一直留着又会在「保存中」结束、animation 换回来时再弹一次
@@ -79,6 +86,7 @@ export const CardView = memo(function CardView({
   const style: Record<string, string> = {};
   if (color) style['--c'] = color;
   if (doing) style['--ac'] = agentColor(c.holder!);
+  else if (queue) style['--ac'] = agentMark(queue).color;
   if (flash) style['--flash'] = flash.color;
   if (delay != null) style.animation = `card-in var(--dur-4) var(--spring-soft) both ${delay}ms`;
 
@@ -88,6 +96,7 @@ export const CardView = memo(function CardView({
       className={cx(
         'card',
         doing && 'doing',
+        queue && 'queued',
         final && !doing && shape !== 'card' && 'done',
         shape === 'line' && 'v-line',
         shape === 'tile' && 'v-tile',

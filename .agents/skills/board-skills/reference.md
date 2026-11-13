@@ -87,5 +87,5 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「设置 → Agent 接入」新建） |
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「设置 → Agent 接入」新建一个，再 `board login --token <令牌>` |
 | `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里）；`board hold` 返回它时已经等过 5 分钟，按 work.md「推送」第 4 步改推 wip 分支 |
-| `DISPATCHED` | 卡片已经派发给一台机器、正在排队：跳过这张，不要领 |
+| `DISPATCHED` | 卡片已经派发给一台机器、正在排队（在「进行中」这类锁定状态里，没有持有者）：跳过这张，不要领、不要移动 |
 | `SESSION_DONE` | `board next`：这个会话不再接着做（排着的做完了、手动派发、有人停止、暂停接单、没有领取规则）：结束会话 |

@@ -5,7 +5,7 @@ import { api } from '../../lib/api';
 import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
-import { hold, optimistic, refresh, useData, type Patch } from '../../store/data';
+import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
 import { confirm, openDispatch, openHost, openSession, toast, toastError, useUI } from '../../store/ui';
 import { useNow } from '../bits';
 import { Icon } from '../Icon';
@@ -31,8 +31,9 @@ export async function cancel(d: Dispatch) {
     });
     if (!yes) return;
   }
-  // 当帧生效：排队的从队列里消失，在跑的标成「正在停止」（停止按钮随之隐藏，不会重复提交）；被拒绝时改回来并提示
-  const patch: Patch = {
+  // 当帧生效：排队的从队列里消失、卡片回到原来的可领取状态最上面，在跑的标成「正在停止」（停止按钮随之隐藏，不会重复提交）；
+  // 被拒绝时改回来并提示
+  const mark: Patch = {
     ws: ws => ({
       ...ws,
       dispatches: running
@@ -41,6 +42,7 @@ export async function cancel(d: Dispatch) {
     }),
     keys: [`dispatch:${d.id}`],
   };
+  const patch = running ? mark : joinPatch(mark, unqueueCard(d.board, d.card));
   try {
     await optimistic(patch, () => api.cancelDispatch(d.id));
     toast({ type: 'success', title: running ? `已通知 ${d.host} 停止 #${d.card}` : `已取消 #${d.card} 的派发` });

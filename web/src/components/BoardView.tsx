@@ -377,7 +377,7 @@ interface ColumnProps {
 function emptyText(s: Status, f: FlowQ) {
   if (s.claim && s.key === f.home?.key) return `${s.name}是空的。新建一张卡片，或等 agent 用 board new 创建`;
   if (s.claim) return `${s.name}是空的。agent 也会从这里领取`;
-  if (s.lock && f.claimables.some(c => f.claimTarget(c.key)?.key === s.key)) return 'agent 执行 board claim 后出现在这里';
+  if (s.lock && f.claimables.some(c => f.claimTarget(c.key)?.key === s.key)) return 'agent 执行 board claim、或派发排队后出现在这里';
   if (s.lock) return '持有者把卡片移过来后出现在这里';
   if (s.final) return '把确认完成的卡片拖到这里';
   return '把卡片拖到这里';
@@ -431,7 +431,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
           </span>
         )}
         {col.lock && (
-          <span className="col-tag" title="锁定：只能由 agent 领取进入">
+          <span className="col-tag" title="锁定：只能由 agent 领取进入；派发排队的卡片也在这里等机器开始">
             <Icon name="lock" />
             <span className="t">仅领取进入</span>
           </span>

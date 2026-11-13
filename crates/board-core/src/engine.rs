@@ -322,6 +322,16 @@ impl<'a> W<'a> {
                     };
                     return Err(BoardError::new(ErrorCode::NotHolder, msg).with_detail(json!({ "holder": holder })));
                 }
+                // 派发排队中的卡片（在它排队的锁定状态里，没有持有者）：只有人能移走它（派发随之取消），agent 不能动
+                if actor.is_agent() && !self.dispatch_ok && from != to && r.holder.is_none() {
+                    if let Some((_, host)) = self.queued_dispatch(b, id)? {
+                        return Err(BoardError::new(
+                            ErrorCode::Dispatched,
+                            format!("#{id} 已经派发给机器 {host}，正在排队：等它开始，或请人先取消派发"),
+                        )
+                        .with_detail(json!({ "host": host })));
+                    }
+                }
                 // 规则 4：进入锁定状态只能靠领取；持有者可以在锁定状态之间移动
                 let keep_claim = is_holder(&r) && flow.is_lock(&from);
                 if flow.is_lock(&to) && from != to && !keep_claim {
@@ -390,8 +400,8 @@ impl<'a> W<'a> {
                     }
                     new = ids.iter().position(|x| *x == id).unwrap_or(new);
                 }
-                // 拖出可领取状态：排队中的派发自动取消（任务下发）
-                if from != to && flow.is_claim(&from) && !flow.is_claim(&to) {
+                // 排队的卡片被移走（拖出它排队的锁定状态；还在可领取状态里的，拖出可领取状态）：排队中的派发自动取消（任务下发）
+                if from != to && !(flow.is_claim(&from) && flow.is_claim(&to)) {
                     self.cancel_queued_on_move(b, id, actor)?;
                 }
                 // 人把「未整理」的条目整理进工作流：算看过（PRD §10.5）
@@ -460,6 +470,33 @@ impl<'a> W<'a> {
                         if is_holder(&r) {
                             return self.read().card(board, id);
                         }
+                        // 派发排队时卡片已经进了锁定状态（没有持有者）：只有这次派发自己能领，在那里原地领取
+                        if r.holder.is_none() && !flow.is_claim(&r.col) {
+                            if let Some((_, host)) = self.queued_dispatch(b, id)? {
+                                if !self.dispatch_ok {
+                                    return Err(BoardError::new(
+                                        ErrorCode::Dispatched,
+                                        format!("#{id} 已经派发给机器 {host}，在「{}」排队：等它开始，或请人先取消派发", flow.name(&r.col)),
+                                    )
+                                    .with_detail(json!({ "host": host })));
+                                }
+                                if flow.is_lock(&r.col) {
+                                    if let Some(m) = mine {
+                                        return Err(already(m));
+                                    }
+                                    let from = flow.back_to(self.claimed_from(b, id)?.as_deref()).key.clone();
+                                    let at = self.lock_slot(b, &r.col, id)?;
+                                    self.place(b, id, Some(&r.col), &r.col, at)?;
+                                    self.tx.execute(
+                                        "UPDATE cards SET holder = ?1, claimed_at = ?2, beat_at = NULL, final_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
+                                        params![actor.name, self.now, from, b, id],
+                                    )?;
+                                    self.log_move(b, id, "claim", &r.col, &r.col, actor, &flow)?;
+                                    self.track(b, id, actor, "claim", &format!("领取了卡片（派发排队时已在「{}」）", flow.name(&r.col)))?;
+                                    return self.read().card(board, id);
+                                }
+                            }
+                        }
                         if !flow.is_claim(&r.col) {
                             let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
                             return Err(BoardError::new(
@@ -489,7 +526,9 @@ impl<'a> W<'a> {
                         format!("「{}」没有连到任何锁定状态，不能从这里领取", flow.name(&from)),
                     ));
                 };
-                self.place(b, target, Some(&from), &dest.key, At::Bottom)?;
+                // 排在派发排队的卡片前面
+                let at = self.lock_slot(b, &dest.key, target)?;
+                self.place(b, target, Some(&from), &dest.key, at)?;
                 self.tx.execute(
                     "UPDATE cards SET holder = ?1, claimed_at = ?2, beat_at = NULL, final_at = NULL, claimed_from = ?3 WHERE board = ?4 AND id = ?5",
                     params![actor.name, self.now, from, b, target],
