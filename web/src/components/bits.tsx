@@ -9,7 +9,7 @@ import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
 import { serverNow, useData } from '../store/data';
-import { closeCtx, openCtx, openImage, toastError, useUI } from '../store/ui';
+import { closeCtx, openCtx, openImage, openTextFile, toastError, useUI } from '../store/ui';
 import { Icon } from './Icon';
 
 /** 同一间隔的 useNow 共用一个定时器 */
@@ -275,6 +275,15 @@ export function Markdown({ src, className, repo, links = true }: { src: string; 
           const [board, id] = (a.dataset.card || '').split('#');
           if (!board || !id) return;
           openLink(board, Number(id));
+          return;
+        }
+        // 文本类附件（.txt、.log……）：在界面里查看，不下载；带修饰键时照旧下载
+        const f = t.closest?.('a.file-link[data-text]') as HTMLAnchorElement | null;
+        if (f) {
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          e.preventDefault();
+          e.stopPropagation();
+          openTextFile(f.getAttribute('href') || '', f.getAttribute('download') || f.textContent || '');
           return;
         }
         if (t.tagName !== 'IMG') return;

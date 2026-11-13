@@ -4,6 +4,7 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { repoWeb, type RepoWeb } from './repo';
+import { isTextFile } from './textFile';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -119,7 +120,8 @@ function decorate(html: string, refs?: Refs, repo: RepoWeb | null = null): strin
     const ul = li.parentElement;
     if (ul) ul.classList.add('tasks');
   });
-  // 附件：图片延迟加载，点击放大（bits.tsx 的 Markdown）；文件链接直接下载（不开新窗口，桌面端新窗口没有登录状态）
+  // 附件：图片延迟加载，点击放大（bits.tsx 的 Markdown）；文本类文件点开在界面里查看（data-text），其余直接下载
+  // （不开新窗口，桌面端新窗口没有登录状态）
   root.querySelectorAll('img').forEach(img => {
     img.setAttribute('loading', 'lazy');
     img.setAttribute('decoding', 'async');
@@ -128,6 +130,7 @@ function decorate(html: string, refs?: Refs, repo: RepoWeb | null = null): strin
     if ((a.getAttribute('href') || '').startsWith('/api/files/')) {
       a.setAttribute('download', a.textContent || '');
       a.classList.add('file-link');
+      if (isTextFile(a.textContent || '')) a.setAttribute('data-text', '');
       return;
     }
     a.setAttribute('target', '_blank');

@@ -83,6 +83,13 @@ describe('markdown 正常内容不受影响', () => {
 });
 
 describe('markdown 装饰', () => {
+  it('文本类附件标上 data-text（点开在界面里查看）；别的文件只下载', () => {
+    const d = dom(markdown('[prd80-review.txt](/api/files/7) [run.log](/api/files/8) [build.zip](/api/files/9) [外站.txt](https://example.com/a.txt)'));
+    const [txt, log, zip, ext] = [...d.querySelectorAll('a')];
+    expect([txt.hasAttribute('data-text'), log.hasAttribute('data-text'), zip.hasAttribute('data-text'), ext.hasAttribute('data-text')]).toEqual([true, true, false, false]);
+    expect(zip.getAttribute('download')).toBe('build.zip');
+  });
+
   it('普通链接在新窗口打开；附件链接直接下载', () => {
     const d = dom(markdown('[外站](https://example.com) [附件](/api/files/1/a.txt)'));
     const [ext, file] = [...d.querySelectorAll('a')];

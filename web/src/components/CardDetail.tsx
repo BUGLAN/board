@@ -14,7 +14,8 @@ import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, dateTime, FWD_KEY, hhmm, isMobile, replay, since } from '../lib/util';
 import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
-import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
+import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
+import { isTextFile } from '../lib/textFile';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
@@ -509,7 +510,7 @@ export function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boo
   );
 }
 
-/** 卡片的全部附件：图片缩略图点开放大，文件点击下载 */
+/** 卡片的全部附件：图片缩略图点开放大，文本类文件点开查看（default/main#287），其余文件点击下载 */
 function Attachments({ list }: { list: Attachment[] }) {
   // 图片附件可以在放大查看时左右切换
   const images = list.filter(a => a.image).map(a => ({ src: a.url, alt: a.name }));
@@ -525,12 +526,27 @@ function Attachments({ list }: { list: Attachment[] }) {
               <button className="att-thumb" type="button" aria-label={`查看 ${a.name}`} onClick={() => openImage(a.url, a.name, images)}>
                 <img src={a.url} alt="" loading="lazy" />
               </button>
+            ) : isTextFile(a.name, a.mime) ? (
+              <button className="att-thumb file" type="button" aria-label={`查看 ${a.name}`} onClick={() => openTextFile(a.url, a.name)}>
+                <Icon name="file" />
+              </button>
             ) : (
               <span className="att-thumb file">
                 <Icon name="file" />
               </span>
             )}
-            <a className="att-name" href={a.url} download={a.name} title={`下载 ${a.name}`}>
+            <a
+              className="att-name"
+              href={a.url}
+              download={a.name}
+              title={isTextFile(a.name, a.mime) ? `查看 ${a.name}` : `下载 ${a.name}`}
+              onClick={e => {
+                // 文本类文件在界面里查看；带修饰键时照旧下载
+                if (a.image || !isTextFile(a.name, a.mime) || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                openTextFile(a.url, a.name);
+              }}
+            >
               {a.name}
             </a>
             <span className="att-meta">

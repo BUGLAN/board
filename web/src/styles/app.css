@@ -97,6 +97,7 @@
   background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
 }
 .md a.file-link:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
+.md a.file-link[data-text] { cursor: zoom-in; }
 
 /* 卡片详情：附件列表 */
 .att-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
@@ -145,6 +146,44 @@
 .lightbox img { animation: lb-img-in var(--dur-2) var(--ease-out) both; }
 @keyframes lb-img-in { from { opacity: 0; } }
 @keyframes lb-in { from { opacity: 0; } }
+
+/* 查看文本类附件（default/main#287）：等宽、保留换行，复制全部 / 下载 / Esc 关闭 */
+.tv-wrap {
+  position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 32px 24px;
+  background: color-mix(in srgb, #000 42%, transparent); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  animation: lb-in var(--dur-3) var(--ease-out) both;
+}
+.tv {
+  display: flex; flex-direction: column; width: min(980px, 100%); height: min(82vh, 100%); min-height: 0; overflow: hidden;
+  border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-3);
+  animation: enter-up var(--dur-3) var(--ease-out) both;
+}
+.tv-head { display: flex; align-items: center; gap: 8px; flex: none; min-height: 52px; padding: 8px 10px 8px 18px; box-shadow: inset 0 -1px 0 var(--line); }
+.tv-head > svg { flex: none; width: 16px; height: 16px; color: var(--text-3); }
+.tv-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; color: var(--text); }
+.tv-meta { flex: none; font-size: 11.5px; color: var(--text-3); }
+.tv-head .spacer { flex: 1; }
+.tv-note {
+  display: flex; align-items: center; gap: 8px; flex: none; padding: 8px 18px; font-size: 12.5px; color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn-text) 8%, transparent); box-shadow: inset 0 -1px 0 var(--line);
+}
+.tv-note svg { flex: none; width: 14px; height: 14px; }
+.tv-body {
+  flex: 1; min-height: 0; margin: 0; padding: 16px 18px 24px; overflow: auto; outline: none;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.65; color: var(--text); tab-size: 4;
+  white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2);
+}
+.tv-loading { display: grid; gap: 12px; padding: 20px 18px; }
+.tv-empty { display: grid; place-content: center; justify-items: center; gap: 6px; flex: 1; font-size: 13px; color: var(--text-3); }
+.tv-empty b { font-size: 14px; color: var(--text-2); }
+@media (max-width: 760px) {
+  .tv-wrap { padding: 0; place-items: stretch; }
+  .tv { width: 100%; height: 100%; border-radius: 0; }
+  .tv-meta, .tv-bl { display: none; }
+  .tv-head .btn svg { margin: 0; }
+}
+:root[data-motion="reduced"] :is(.tv-wrap, .tv) { animation: none; }
+@media (prefers-reduced-motion: reduce) { :is(.tv-wrap, .tv) { animation: none; } }
 
 /* ---------------- 乐观更新：还没确认的写操作（store/data.ts「乐观更新」） ----------------
    改动当帧就画出来，服务端确认前画成「保存中」。都延迟一点才出现：网络快时看不到闪动 */

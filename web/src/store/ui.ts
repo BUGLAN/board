@@ -147,6 +147,8 @@ interface UIState {
   reject: { col: ColumnKey; key: number } | null;
   /** 放大查看的图片（附件）：同一张卡片 / 同一条动态里的全部图片，index 是正在看的那张 */
   image: { list: ImageRef[]; index: number } | null;
+  /** 查看文本类附件（default/main#287）：链接、文件名 */
+  textFile: { url: string; name: string } | null;
   /** 打开的白板设置（居中弹窗）：白板路径；focus 是要定位到的状态（点状态块标题上的排序标记打开时） */
   boardSettings: { path: string; focus?: string } | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
@@ -198,6 +200,7 @@ export const useUI = create<UIState>(() => ({
   reveal: null,
   reject: null,
   image: null,
+  textFile: null,
   boardSettings: null,
   host: null,
   hostsView: initialHostsView(),
@@ -266,6 +269,9 @@ export const stepImage = (d: -1 | 1) =>
     return index < 0 || index >= s.image.list.length ? {} : { image: { ...s.image, index } };
   });
 export const closeImage = () => set({ image: null });
+/** 在界面里查看文本类附件（lib/textFile 判断哪些算），不下载 */
+export const openTextFile = (url: string, name: string) => set({ textFile: { url, name } });
+export const closeTextFile = () => set({ textFile: null });
 export const openPalette = (prefill = '') => set({ palette: { open: true, prefill } });
 export const closePalette = () => set(s => ({ palette: { ...s.palette, open: false } }));
 
@@ -328,7 +334,7 @@ export const openBoardSettings = (path: string | null, focus?: string) => set({ 
 export function overlayOpen() {
   const s = get();
   return !!(
-    s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.host ||
+    s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.textFile || s.host ||
     s.dispatchOf != null || s.boardSettings || s.trash || s.session
   );
 }
