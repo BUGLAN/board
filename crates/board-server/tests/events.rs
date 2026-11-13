@@ -3,73 +3,18 @@
 //! 每个测试起一个真实的 board-server（后台线程、随机端口），用 HTTP 访问；
 //! 本机模式（Auth::Local）不需要登录，请求按「人」处理。
 
+mod common;
+
 use board_server::auth::{Auth, GitHub};
-use board_server::{bind, serve_in_thread, AppState, Config};
+use common::{send, Server, UI};
 use serde_json::{json, Value};
 
-struct Res {
-    status: u16,
-    body: Value,
-    text: String,
-}
-
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build().into()
-}
-
-fn send(method: &str, url: &str, headers: &[(&str, &str)], body: Option<Value>) -> Res {
-    let a = agent();
-    let mut res = match (method, body) {
-        ("GET", _) => {
-            let mut r = a.get(url);
-            for (k, v) in headers {
-                r = r.header(*k, *v);
-            }
-            r.call()
-        }
-        ("POST", body) => {
-            let mut r = a.post(url);
-            for (k, v) in headers {
-                r = r.header(*k, *v);
-            }
-            r.send_json(body.unwrap_or(json!({})))
-        }
-        _ => unreachable!(),
-    }
-    .unwrap_or_else(|e| panic!("{method} {url}: {e}"));
-    let status = res.status().as_u16();
-    let text = res.body_mut().read_to_string().unwrap_or_default();
-    let body = serde_json::from_str(&text).unwrap_or(Value::Null);
-    Res { status, body, text }
-}
-
-fn code(r: &Res) -> String {
-    r.body["error"]["code"].as_str().unwrap_or_default().to_string()
-}
-
-struct Server {
-    url: String,
-    _dir: tempfile::TempDir,
-}
-
-fn serve(auth: Auth) -> Server {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("b.db");
-    let cfg = Config { db, demo: false, serve_web: false, auth };
-    let state = AppState::open(&cfg).unwrap();
-    let l = bind(([127, 0, 0, 1], 0).into()).unwrap();
-    let url = format!("http://{}", l.local_addr().unwrap());
-    serve_in_thread(state, cfg, l);
-    Server { url, _dir: dir }
-}
-
-/// 本机模式：不需要登录，请求就是「人」
 fn local() -> Server {
-    serve(Auth::Local)
+    Server::start(Auth::Local)
 }
 
 fn github() -> Server {
-    serve(Auth::GitHub(GitHub {
+    Server::start(Auth::GitHub(GitHub {
         client_id: "cid".into(),
         client_secret: "secret".into(),
         user: "buglan".into(),
@@ -79,8 +24,6 @@ fn github() -> Server {
         api_url: "http://127.0.0.1:1".into(),
     }))
 }
-
-const UI: (&str, &str) = ("x-board-client", "test-window");
 
 fn new_card(s: &Server, title: &str) {
     let r = send(
@@ -152,13 +95,13 @@ fn events_limit_is_capped() {
     // 超出范围：按既有用法错误
     for q in ["limit=0", "limit=101", "limit=-1"] {
         let r = send("GET", &format!("{}/api/events?path=default/main&{q}", s.url), &[], None);
-        assert_eq!((r.status, code(&r)), (400, "USAGE".to_string()), "{q} {}", r.text);
+        assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{q} {}", r.text);
     }
     // 不是整数：参数解析直接拒绝
     assert_eq!(send("GET", &format!("{}/api/events?path=default/main&limit=abc", s.url), &[], None).status, 400);
     // 白板不存在：按既有约定
     let r = send("GET", &format!("{}/api/events?path=default/nope", s.url), &[], None);
-    assert_eq!((r.status, code(&r)), (404, "BOARD_NOT_FOUND".to_string()), "{}", r.text);
+    assert_eq!((r.status, r.code().as_str()), (404, "BOARD_NOT_FOUND"), "{}", r.text);
 }
 
 #[test]
@@ -187,7 +130,7 @@ fn events_before_out_of_range() {
 fn events_require_login() {
     let s = github();
     let r = send("GET", &format!("{}/api/events?path=default/main", s.url), &[], None);
-    assert_eq!((r.status, code(&r)), (401, "NOT_LOGGED_IN".to_string()), "{}", r.text);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
     let r = send("GET", &format!("{}/api/events?path=default/main", s.url), &[("authorization", "Bearer bd_nope")], None);
-    assert_eq!((r.status, code(&r)), (401, "INVALID_TOKEN".to_string()), "{}", r.text);
+    assert_eq!((r.status, r.code().as_str()), (401, "INVALID_TOKEN"), "{}", r.text);
 }

@@ -1,4 +1,5 @@
-//! 大盘的验收标准（大盘需求「验收标准」，PRD §13）：流转记录的回填与写入、统计口径。
+//! 大盘的验收标准（大盘需求「验收标准」，PRD §13）：流转记录的回填与写入、统计口径、
+//! 待复盘最久的卡片、领取明细。白板说明和附件相关的用例在 `tests.rs`。
 
 use crate::hosts::EndHow;
 use crate::stats::{Scope, Stats, StatsQuery};
@@ -442,25 +443,4 @@ fn empty_range_has_no_nan() {
     let json = serde_json::to_string(&st).unwrap();
     assert!(!json.contains("NaN") && !json.contains("Infinity"));
     assert_eq!(st.cur.first_pass, None);
-}
-
-/// 白板说明：保存、清空；说明里引用的附件不会被 24 小时清理
-#[test]
-fn readme_is_saved_and_keeps_its_images() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
-    s.ensure_default(BASE).unwrap();
-    let b = s.read(|r| r.resolve(B)).unwrap();
-    let png = b"\x89PNG\r\n\x1a\nxxxx";
-    let att = s.attach(BASE, &b, None, &Actor::human(), "a.png", png).unwrap();
-    let other = s.attach(BASE, &b, None, &Actor::human(), "b.png", b"\x89PNG\r\n\x1a\nyyyy").unwrap();
-    let text = format!("# 说明\n\n![a]({})", crate::files::url_of(att.id));
-    s.write(BASE, Origin::ui(None), |w| w.update_board(B, None, None, Some(&text))).unwrap();
-    let ws = s.read(|r| r.workspace(BASE)).unwrap();
-    assert_eq!(ws.projects[0].boards[0].readme, text);
-    s.gc_files(BASE + 2 * DAY).unwrap();
-    assert!(s.attachment(att.id).unwrap().is_some(), "说明引用的图片留着");
-    assert!(s.attachment(other.id).unwrap().is_none(), "没被引用的照常清理");
-    s.write(BASE, Origin::ui(None), |w| w.update_board(B, None, None, Some(""))).unwrap();
-    assert_eq!(s.read(|r| r.workspace(BASE)).unwrap().projects[0].boards[0].readme, "");
 }

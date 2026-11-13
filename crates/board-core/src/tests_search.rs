@@ -122,7 +122,7 @@ fn multiple_words_need_all_first_then_fall_back_to_any() {
 fn id_forms_locate_cards_across_boards() {
     let mut s = store();
     other_board(&mut s);
-    let a = new_card(&mut s, "default/main", "主白板第一条", "");
+    new_card(&mut s, "default/main", "主白板第一条", "");
     let b = new_card(&mut s, "default/other", "其他白板第一条", "");
     // 不同白板的编号各自从头开始：#1 有两张
     let hits = search(&s, "#1");
@@ -134,7 +134,6 @@ fn id_forms_locate_cards_across_boards() {
     assert_eq!(hits.len(), 1);
     assert_eq!((hits[0].board.as_str(), hits[0].id, hits[0].title.as_str()), ("default/other", b, "其他白板第一条"));
     assert_eq!(hits[0].id, b);
-    let _ = a;
     // 白板不存在时明确报错
     let e = s.read(|r| r.search("nope/main#1", 10)).unwrap_err();
     assert_eq!(e.code, ErrorCode::BoardNotFound);

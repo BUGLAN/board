@@ -267,7 +267,8 @@ fn heartbeat_after_final_does_not_start_new_run() {
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
     exec(&mut s, B, &alpha(), T0 + SEC, beat(1, false)).unwrap();
     exec(&mut s, B, &alpha(), T0 + 9 * SEC, beat(1, true)).unwrap();
-    let _ = exec(&mut s, B, &alpha(), T0 + 10 * SEC, beat(1, false));
+    // final 之后的心跳被拒绝（这次领取已经结束），也不新开第 2 次
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0 + 10 * SEC, beat(1, false))), ErrorCode::Usage);
     let c = exec(&mut s, B, &alpha(), T0 + 11 * SEC, mv(1, "review")).unwrap();
     assert!(c.activity.iter().any(|a| a.action == "move" && a.text.ends_with("领取已释放")), "{:?}", c.activity.last().map(|a| &a.text));
     assert_eq!(c.card.runs, 1);
@@ -429,7 +430,7 @@ fn ac10_rev_increments() {
     assert!(s.rev().unwrap() > r0);
     // 被拒绝的命令不改变 rev
     let r1 = s.rev().unwrap();
-    let _ = exec(&mut s, B, &alpha(), T0, mv(1, "doing"));
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, mv(1, "doing"))), ErrorCode::ForbiddenColumn, "直接移进锁定状态");
     assert_eq!(s.rev().unwrap(), r1);
 }
 
@@ -1311,6 +1312,29 @@ fn label_color_palette_or_any_hex() {
     ui(&mut s, |w| w.update_label("default", a.id, None, Some("#00ff7f"), None, None)).unwrap();
     let ls = s.read(|r| r.labels("default")).unwrap();
     assert_eq!(ls.iter().find(|l| l.id == a.id).unwrap().color, "#00FF7F");
+}
+
+/* ---------------- 白板说明（PRD §5） ---------------- */
+
+/// 白板说明：保存、清空；说明里引用的附件不会被 24 小时清理
+#[test]
+fn readme_is_saved_and_keeps_its_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let png = b"\x89PNG\r\n\x1a\nxxxx";
+    let att = s.attach(T0, &b, None, &Actor::human(), "a.png", png).unwrap();
+    let other = s.attach(T0, &b, None, &Actor::human(), "b.png", b"\x89PNG\r\n\x1a\nyyyy").unwrap();
+    let text = format!("# 说明\n\n![a]({})", crate::files::url_of(att.id));
+    s.write(T0, Origin::ui(None), |w| w.update_board(B, None, None, Some(&text))).unwrap();
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    assert_eq!(ws.projects[0].boards[0].readme, text);
+    s.gc_files(T0 + 2 * DAY).unwrap();
+    assert!(s.attachment(att.id).unwrap().is_some(), "说明引用的图片留着");
+    assert!(s.attachment(other.id).unwrap().is_none(), "没被引用的照常清理");
+    s.write(T0, Origin::ui(None), |w| w.update_board(B, None, None, Some(""))).unwrap();
+    assert_eq!(s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].readme, "");
 }
 
 /* ------------------------------ 动态分页（#55） ------------------------------ */

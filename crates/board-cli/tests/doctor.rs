@@ -5,8 +5,11 @@
 //! 每个用例启动一个线上配置（GitHub 登录）的 board-server，令牌直接写进它的数据库。
 //! HOME 指向临时目录，不会读开发者的 ~/.board/config.toml。
 
+mod common;
+
 use board_server::auth::{self, Auth, GitHub};
 use board_server::{bind, serve_in_thread, AppState, Config};
+use common::config_shown;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,15 +33,6 @@ fn check<'a>(v: &'a Value, key: &str) -> &'a Value {
         .iter()
         .find(|c| c["key"] == key)
         .unwrap_or_else(|| panic!("缺少检查项 {key}：{v}"))
-}
-
-/// 配置路径文案：Windows 是 %USERPROFILE%\.board\config.toml，其他系统是 ~/.board/config.toml
-fn config_shown() -> &'static str {
-    if cfg!(windows) {
-        r"%USERPROFILE%\.board\config.toml"
-    } else {
-        "~/.board/config.toml"
-    }
 }
 
 struct Server {

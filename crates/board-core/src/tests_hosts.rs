@@ -477,7 +477,7 @@ fn priority_labels_in_queue_and_cron() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let p = s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, false)).unwrap();
     s.write(T0, Origin::ui(None), |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
-    let a = new_card(&mut s, T0, "A");
+    new_card(&mut s, T0, "A");
     let b = new_card(&mut s, T0, "B");
     let c = new_card(&mut s, T0, "C");
     // A 在最上面、不带优先标签
@@ -504,7 +504,6 @@ fn priority_labels_in_queue_and_cron() {
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().unwrap();
     assert_eq!(d1.card, b2, "带优先标签的先派发");
-    let _ = a;
 }
 
 #[test]
@@ -790,7 +789,7 @@ fn releasing_running_dispatch_requests_stop() {
 fn pausing_during_round_clears_it_and_does_not_resume() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let _ = new_card(&mut s, T0, "A");
+    new_card(&mut s, T0, "A");
     lead_round(&mut s);
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(host(&s, T0 + S).round);
@@ -1519,6 +1518,7 @@ fn session_queue_occupies_cards_and_can_be_canceled() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let cards: Vec<i64> = (0..5).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
+    // 没有派发的那张一直在待办：别人领得走，不会被这一轮的会话排进去
     let free = new_card(&mut s, T0, "没有派发");
     lead_round(&mut s);
     s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
@@ -1531,7 +1531,6 @@ fn session_queue_occupies_cards_and_can_be_canceled() {
     assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: Some(cards[1]) }).unwrap_err().code, ErrorCode::Dispatched);
     assert_eq!(exec(&mut s, T0 + S, &alpha, Cmd::Claim { id: None }).unwrap().card.id, cards[4], "不带 ID 的领取跳过排着的");
     assert_eq!(dispatch(&mut s, T0 + S, cards[2], "mbp", None).unwrap_err().code, ErrorCode::AlreadyDispatched);
-    let _ = free;
     // 人取消第 2 张、把第 3 张拖出待办：都「已取消」，board next 领第 4 张
     s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(queued[0].id, &Actor::human(), "buglan")).unwrap();
     exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: cards[2], column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
@@ -1539,6 +1538,7 @@ fn session_queue_occupies_cards_and_can_be_canceled() {
     assert_eq!(get(&s, queued[1].id).result.as_deref(), Some("canceled"));
     submit(&mut s, T0 + 3 * S, &name, d1.card);
     assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, cards[3]);
+    assert_eq!(card(&s, free).card.column, "todo", "没有派发的卡片这一轮不动");
     // 人取消的那张这一轮不再排：会话结束后新开的会话不会排它
     submit(&mut s, T0 + 4 * S, &name, cards[3]);
     assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
@@ -1708,7 +1708,8 @@ fn rules_route_labels_to_agents_and_fallback() {
     tag(&mut s, c, lc);
     let d = new_card(&mut s, T0, "D");
     tag(&mut s, d, ld);
-    let none = new_card(&mut s, T0, "无标签");
+    // 不带标签的卡片没有规则，留在待办（这一轮不派）
+    new_card(&mut s, T0, "无标签");
     // 标签名大小写不同也能匹配
     rules(&mut s, &[("CLAUDE", "claude"), ("deepseek", "dsh")], None).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into()), (d, "dsh".into())]);
@@ -1725,7 +1726,6 @@ fn rules_route_labels_to_agents_and_fallback() {
     tag(&mut s, d, ld);
     rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(n1, "dsh".into()), (c, "claude".into()), (d, "dsh".into())]);
-    let _ = none;
 }
 
 /// 没有一条领取规则时不自动领取：「现在领一轮」被拒绝，定时到点也不领卡；兜底单独设了也不算规则。
@@ -2326,10 +2326,8 @@ fn cron_skips_boards_that_failed_the_ready_check() {
 
 #[test]
 fn old_database_boards_get_no_ready_check() {
-    let dir = std::env::temp_dir().join(format!("board-ready-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("b.db");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
     {
         let mut s = Store::open(&path).unwrap();
         s.ensure_default(T0).unwrap();
@@ -2341,7 +2339,6 @@ fn old_database_boards_get_no_ready_check() {
     let s = Store::open(&path).unwrap();
     let ws = s.read(|r| r.workspace(T0)).unwrap();
     assert!(ws.projects[0].boards[0].ready_check.is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /* ------------------------------ 代码仓库地址、集成分支（PRD §4） ------------------------------ */
@@ -2390,10 +2387,8 @@ fn board_repo_and_branch_are_optional_and_validated() {
 
 #[test]
 fn old_database_boards_get_no_repo_or_branch() {
-    let dir = std::env::temp_dir().join(format!("board-repo-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("b.db");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
     {
         let mut s = Store::open(&path).unwrap();
         s.ensure_default(T0).unwrap();
@@ -2409,7 +2404,6 @@ fn old_database_boards_get_no_repo_or_branch() {
     ui(&mut s, |w| w.set_repo_branch(B, Some("git@github.com:o/r.git"), Some("dev"))).unwrap();
     let b = s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].clone();
     assert_eq!((b.repo.as_str(), b.branch.as_str()), ("git@github.com:o/r.git", "dev"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /* ------------------------------ 远程管理（PRD §9.1） ------------------------------ */

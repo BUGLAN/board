@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{board, board_stdin, start, Server};
+use common::{board, board_stdin, config_shown, start, Server};
 use std::path::PathBuf;
 
 fn config(s: &Server) -> PathBuf {
@@ -12,15 +12,6 @@ fn config(s: &Server) -> PathBuf {
 
 fn read(s: &Server) -> String {
     std::fs::read_to_string(config(s)).unwrap_or_default()
-}
-
-/// 配置路径文案：Windows 是 %USERPROFILE%\.board\config.toml，其他系统是 ~/.board/config.toml
-fn config_shown() -> &'static str {
-    if cfg!(windows) {
-        r"%USERPROFILE%\.board\config.toml"
-    } else {
-        "~/.board/config.toml"
-    }
 }
 
 /// 只用参数（不设任何环境变量）

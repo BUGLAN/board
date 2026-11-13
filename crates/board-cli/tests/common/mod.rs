@@ -11,6 +11,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// 配置路径文案：Windows 是 %USERPROFILE%\\.board\\config.toml，其他系统是 ~/.board/config.toml
+pub fn config_shown() -> &'static str {
+    if cfg!(windows) {
+        r"%USERPROFILE%\.board\config.toml"
+    } else {
+        "~/.board/config.toml"
+    }
+}
+
 pub struct Run {
     pub code: i32,
     pub out: String,
