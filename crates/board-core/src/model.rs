@@ -670,9 +670,6 @@ pub struct TrashCard {
     /// 卡片本身的 `claimedFrom` 在删除时已被清空，这里另起名字，免得和它的 JSON 字段撞上
     #[serde(default)]
     pub held_from: Option<String>,
-    /// 删除前是不是被持有
-    #[serde(default)]
-    pub was_held: bool,
 }
 
 /// 全局事件流里的一条（界面的「最近动态」与跨窗口高亮用）

@@ -198,10 +198,6 @@ mod tests {
         }
     }
 
-    fn direct() -> Env {
-        envs::discover().into_iter().find(|e| e.id == "direct").expect("直接启动总有")
-    }
-
     /// Codex、pi 直接改文件：加上、更新、删掉；用户自己的、同名不是同步加的不动。HOME 指到临时目录（只在这个测试进程里）
     #[cfg(unix)]
     #[test]
@@ -210,7 +206,7 @@ mod tests {
         let codex_home = d.path().join("codex");
         std::fs::create_dir_all(&codex_home).unwrap();
         std::fs::write(codex_home.join("config.toml"), "model = \"m\"\n[mcp_servers.mine]\ncommand = \"mine\"\n[mcp_servers.taken]\ncommand = \"user\"\n").unwrap();
-        let t = vec![Target { agent: "codex".into(), env: direct(), prog: None, file: codex_home.join("config.toml"), shown: "$CODEX_HOME/config.toml".into() }];
+        let t = vec![Target { agent: "codex".into(), env: envs::direct(), prog: None, file: codex_home.join("config.toml"), shown: "$CODEX_HOME/config.toml".into() }];
         let owned = d.path().join("owned.json");
         let out = sync(&[srv("db", "npx", "sk-1"), srv("taken", "x", "s")], &t, &["dsh".into()], &owned);
         let text = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
@@ -233,7 +229,7 @@ mod tests {
         assert_eq!(out.changes.len(), 1);
         // pi 的 mcp.json 一样
         let pi = d.path().join("pi").join("mcp.json");
-        let t = vec![Target { agent: "pi".into(), env: direct(), prog: None, file: pi.clone(), shown: "~/.pi/agent/mcp.json".into() }];
+        let t = vec![Target { agent: "pi".into(), env: envs::direct(), prog: None, file: pi.clone(), shown: "~/.pi/agent/mcp.json".into() }];
         sync(&[srv("db", "npx", "sk-1")], &t, &[], &owned);
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pi).unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["db"]["env"]["TOKEN"], "sk-1");

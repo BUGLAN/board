@@ -2081,7 +2081,6 @@ fn trash_restore_of_held_card_goes_back_to_claimed_from() {
     exec(&mut s, B, &human(), T0 + 2 * SEC, Cmd::Delete { id: 1 }).unwrap();
     let t = s.read(|r| r.trash(&r.resolve(B).unwrap())).unwrap();
     assert_eq!(t[0].held_from.as_deref(), Some("rework"), "删除前把领取来源存进回收站");
-    assert!(t[0].was_held);
 
     let r = exec(&mut s, B, &human(), T0 + 3 * SEC, Cmd::Restore { id: 1 }).unwrap();
     assert_eq!(r.card.column, "rework", "回到当初领取它的返工，而不是首个可领取状态的待办");

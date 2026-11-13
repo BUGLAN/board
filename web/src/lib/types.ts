@@ -788,8 +788,6 @@ export interface TrashCard extends Card {
   pos: number;
   /** 删除前领取它的那个可领取状态（被删时还被持有的才有）；卡片本身的 claimedFrom 在删除时已经清空。旧服务端没有 */
   heldFrom?: string | null;
-  /** 删除前是不是被持有（被删时还在做） */
-  wasHeld?: boolean;
 }
 
 export type ErrorCode =

@@ -272,7 +272,7 @@ export const api = {
 export type LiveStatus = 'connecting' | 'live' | 'offline';
 
 /** 推送：rev 变了是工作区的变更；runs 变了是有新的结构化事件，ran 是有新事件的派发（会话「过程」据此马上取） */
-export interface PushMessage {
+interface PushMessage {
   rev: number;
   events: BoardEvent[];
   runs?: number;

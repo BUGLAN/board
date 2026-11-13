@@ -809,7 +809,6 @@ impl<'a> R<'a> {
                             col: row.del_col.unwrap_or_default(),
                             pos: row.del_pos.unwrap_or(0),
                             held_from: row.del_from,
-                            was_held: row.del_held,
                         }
                     })
                     .collect()
@@ -1037,8 +1036,6 @@ struct TrashRow {
     del_pos: Option<i64>,
     /// 删除前领取它的那个可领取状态
     del_from: Option<String>,
-    /// 删除前是不是被持有
-    del_held: bool,
 }
 
 /// 按条件读出卡片（不带 skip 时排除 skip 里的）。`cond` 接在 WHERE 后面，用参数 ?1…
@@ -1062,7 +1059,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 COALESCE(c.moved_at, c.created_at),
                 c.seen_at,
-                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from, c.del_held,
+                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from,
                 c.split_from
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
@@ -1095,7 +1092,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             comments: r.get(12)?,
             labels,
             seen_at: r.get(21)?,
-            split_from: r.get(29)?,
+            split_from: r.get(28)?,
         };
         let by_kind: Option<String> = r.get(23)?;
         let row = TrashRow {
@@ -1104,7 +1101,6 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             del_col: r.get(25)?,
             del_pos: r.get(26)?,
             del_from: r.get(27)?,
-            del_held: r.get::<_, Option<bool>>(28)?.unwrap_or(false),
         };
         Ok((card, row))
     })?;
