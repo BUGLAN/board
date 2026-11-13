@@ -1,4 +1,4 @@
-/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一条车道一个会话）；主区可以切到多机对比、共用配置（skills 共用库） */
+/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一栏一个会话，栏里是这个会话的卡）；主区可以切到多机对比、共用配置（skills 共用库） */
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, SOURCE } from '../../lib/hosts';
@@ -147,22 +147,54 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
   );
 }
 
-/** 一条车道：在跑的任务（agent 色的轨、标题、已用时间、心跳），点开是那张卡片；会话里还排着卡片时写「后面还有 N 张」 */
-function RunLane({ r, now, more }: { r: Dispatch; now: number; more: number }) {
+/** 一个会话一栏（PRD §10.12「机位总览」）：栏头是 agent 标记、「会话 N」、agent 名称、第几张 / 一共几张；
+ *  下面从上到下是这个会话的卡——做完了几张（一行合起来）、正在做的那张（#ID、标题、已用时间，有人请求停止时写「正在停止」）、
+ *  后面排着的（#ID、标题）；栏底是白板、来源、最近心跳。点一张卡打开那张卡片 */
+function SessionCol({ r, i, ws, now }: { r: Dispatch; i: number; ws: Workspace | null; now: number }) {
+  const rest = sessionQueue(ws, r.session);
+  const seq = r.seq ?? 1;
+  const total = Math.max(r.total ?? 1, seq + rest.length);
   return (
-    <button type="button" className="hp-lane on" style={{ ['--ac' as string]: agentMark(r.agent).color }} onClick={() => goCard(r)} title={`打开 ${r.board}#${r.card}`}>
-      <Mark id={r.agent} title={r.agentLabel} />
-      <span className="hp-cid">#{r.card}</span>
-      <span className="hp-lane-title">
-        <Title text={r.title} />
-      </span>
-      {r.stopBy && <span className="hp-stopping">正在停止</span>}
-      {more > 0 && <span className="hp-lane-more">后面还有 {more} 张</span>}
-      <span className="hp-lane-board">{r.board}</span>
-      <span className="hp-lane-src">{SOURCE[r.source]}</span>
-      <span className="hp-lane-t">{r.startedAt != null ? span(now - r.startedAt) : '刚开始'}</span>
-      <Beat at={r.beatAt} now={now} />
-    </button>
+    <div className="hp-sess on" style={{ ['--ac' as string]: agentMark(r.agent).color }}>
+      <div className="hp-sess-head">
+        <Mark id={r.agent} title={r.agentLabel} />
+        <b>会话 {i + 1}</b>
+        <span className="hp-sess-agent">{r.agentLabel}</span>
+        {total > 1 && (
+          <span className="hp-sess-n" title={`这个会话排了 ${total} 张，正在做第 ${seq} 张`}>
+            {seq}/{total}
+          </span>
+        )}
+      </div>
+      {seq > 1 && (
+        <div className="hp-sess-done">
+          <Icon name="check" />
+          做完 {seq - 1} 张
+        </div>
+      )}
+      <button type="button" className="hp-sess-card cur" onClick={() => goCard(r)} title={`打开 ${r.board}#${r.card}`}>
+        <i className="hp-sess-dot" />
+        <span className="hp-cid">#{r.card}</span>
+        <span className="hp-sess-title">
+          <Title text={r.title} />
+        </span>
+        {r.stopBy ? <span className="hp-stopping">正在停止</span> : <span className="hp-sess-t">{r.startedAt != null ? span(now - r.startedAt) : '刚开始'}</span>}
+      </button>
+      {rest.map(q => (
+        <button key={q.id} type="button" className="hp-sess-card next" onClick={() => goCard(q)} title={`打开 ${q.board}#${q.card}`}>
+          <i className="hp-sess-dot" />
+          <span className="hp-cid">#{q.card}</span>
+          <span className="hp-sess-title">
+            <Title text={q.title} />
+          </span>
+        </button>
+      ))}
+      <div className="hp-sess-foot">
+        <span className="hp-lane-board">{r.board}</span>
+        <span className="hp-lane-src">{SOURCE[r.source]}</span>
+        <Beat at={r.beatAt} now={now} />
+      </div>
+    </div>
   );
 }
 
@@ -188,6 +220,9 @@ function QueueLane({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
 export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace | null; now: number; index: number; server?: string | null }) {
   const { running, queued } = hostLoad(ws, h);
   const free = Math.max(0, h.max - running.length);
+  const slots = Math.max(h.max, running.length);
+  // 一个会话最多做几张（旧版服务端没有：一个会话一张）
+  const per = h.perSession ?? 1;
   const cron = cronSummary(h);
   // 磁贴上不放 agent 胶囊（默认 agent、领取规则、兜底里的 agent 在机器详情里看）；只在有 agent 看不到 board-skills 时提一行
   const noskill = h.agents.filter(a => skillMiss(h, a)).length;
@@ -249,22 +284,33 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
         )}
       </button>
       <div className="hp-lanes">
-        {running.map(r => (
-          <RunLane key={r.id} r={r} now={now} more={sessionQueue(ws, r.session).length} />
-        ))}
         {!h.online ? (
           <div className="hp-lane idle dead">离线{queued.length > 0 ? ` · 上线后接着做排队的 ${queued.length} 张` : ' · 上线后才能接单'}</div>
-        ) : h.paused ? (
-          <div className="hp-lane idle paused">
-            <Icon name="pause" />
-            暂停接单{free > 0 ? ` · ${free} 个会话位停用` : ''}
-          </div>
         ) : (
-          free > 0 && (
-            <div className="hp-lane idle">
-              {free} 个空位{running.length === 0 ? ' · 等卡片派过来' : ''}
+          <>
+            <div className="hp-sess-sum">
+              <span>
+                会话 <b>{running.length}</b>/{h.max}
+              </span>
+              <i />
+              <span>{per > 1 ? `定时领取一个会话最多做 ${per} 张` : '一个会话做一张'}</span>
+              {h.paused && <span className="warn">· 暂停接单，不开新会话</span>}
             </div>
-          )
+            <div className="hp-sess-grid" data-n={Math.min(slots, 4)}>
+              {running.map((r, i) => (
+                <SessionCol key={r.id} r={r} i={i} ws={ws} now={now} />
+              ))}
+              {Array.from({ length: free }, (_, k) => (
+                <div key={`e${k}`} className={cx('hp-sess empty', h.paused && 'paused')}>
+                  <div className="hp-sess-head">
+                    <b>会话 {running.length + k + 1}</b>
+                    <span className="hp-sess-agent">{h.paused ? '暂停' : '空位'}</span>
+                  </div>
+                  {h.paused ? <p>暂停接单：恢复后才开新会话</p> : k === 0 && <p>{per > 1 ? `来卡后开一个会话，定时领取时一次排好最多 ${per} 张` : '来卡后开一个会话'}</p>}
+                </div>
+              ))}
+            </div>
+          </>
         )}
         {queued.map(r => (
           <QueueLane key={r.id} r={r} h={h} now={now} />
@@ -350,7 +396,7 @@ export function HostsPage() {
                 ? '每台机器一行，对比就绪的每一项和 agent 的版本、模型、启动环境；和其他机器不一致的格子标出来。'
                 : view === 'shared'
                   ? '所有机器共用的配置：放在这里的 skills、MCP 服务器、模型供应商自动同步到每台机器的每个 agent。'
-                  : '每台机器常驻一个 board host。一行一台机器，一条车道一个任务：点任务看卡片，点机器改规则。'}
+                  : '每台机器常驻一个 board host，同时开几个会话，一个会话接着做排好的几张卡：点卡片看详情，点机器改规则。'}
             </p>
           </div>
           {hosts.length > 0 && (

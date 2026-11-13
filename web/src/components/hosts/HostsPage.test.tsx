@@ -113,18 +113,52 @@ describe('磁贴上的「还差 N 项」', () => {
   });
 });
 
-describe('机位卡片：会话里排着的', () => {
-  it('在跑的格子写「后面还有 N 张」，排队列表里不列它们', () => {
-    const h = machine([agent('dsh')], { dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' }] });
-    const base = { board: 'default/main', hostId: 1, host: 'win2', agent: 'dsh', agentLabel: 'dsh', source: 'cron', by: { kind: 'system', name: '系统' }, result: null, createdAt: 0, endedAt: null, exitCode: null, stopBy: null, beatAt: null };
+describe('机位卡片：机器 → 会话 → 会话里的卡', () => {
+  const ready = { dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' as const }] };
+  const base = { board: 'default/main', hostId: 1, host: 'win2', agent: 'dsh', agentLabel: 'dsh', source: 'cron', by: { kind: 'system', name: '系统' }, result: null, createdAt: 0, endedAt: null, exitCode: null, stopBy: null, beatAt: null };
+
+  it('一栏一个会话：做完几张、正在做的、后面排着的；排队列表里不列会话里的', () => {
+    const h = machine([agent('dsh')], { ...ready, perSession: 4 });
     const dispatches = [
-      { ...base, id: 5, card: 5, title: '第一张', name: 'dsh-win2/x', state: 'running', startedAt: Date.now(), session: 5, seq: 1, total: 3 },
-      { ...base, id: 6, card: 6, title: '第二张', name: null, state: 'queued', startedAt: null, session: 5, seq: 2, total: 3 },
-      { ...base, id: 7, card: 7, title: '第三张', name: null, state: 'queued', startedAt: null, session: 5, seq: 3, total: 3 },
+      { ...base, id: 5, card: 5, title: '第二张', name: 'dsh-win2/x', state: 'running', startedAt: Date.now(), session: 4, seq: 2, total: 4 },
+      { ...base, id: 6, card: 6, title: '第三张', name: null, state: 'queued', startedAt: null, session: 4, seq: 3, total: 4 },
+      { ...base, id: 7, card: 7, title: '第四张', name: null, state: 'queued', startedAt: null, session: 4, seq: 4, total: 4 },
     ];
     show(h, { hosts: [h], dispatches } as unknown as Workspace);
-    expect(host.querySelector('.hp-lane.on .hp-lane-more')?.textContent).toBe('后面还有 2 张');
+    const col = host.querySelector('.hp-sess.on')!;
+    expect(col.querySelector('.hp-sess-head b')?.textContent).toBe('会话 1');
+    expect(col.querySelector('.hp-sess-n')?.textContent).toBe('2/4');
+    expect(col.querySelector('.hp-sess-done')?.textContent).toBe('做完 1 张');
+    expect(col.querySelector('.hp-sess-card.cur')?.textContent).toContain('#5');
+    expect([...col.querySelectorAll('.hp-sess-card.next')].map(e => e.querySelector('.hp-cid')?.textContent)).toEqual(['#6', '#7']);
     expect(host.querySelectorAll('.hp-lane.queued').length).toBe(0);
+    // 上限 4 个会话：另外 3 栏是空位，只有第一栏写怎么开会话
+    const empty = host.querySelectorAll('.hp-sess.empty');
+    expect(empty.length).toBe(3);
+    expect(empty[0].textContent).toContain('一次排好最多 4 张');
+    expect(empty[1].querySelector('p')).toBeNull();
+    expect(host.querySelector('.hp-sess-sum')?.textContent).toBe('会话 1/4定时领取一个会话最多做 4 张');
+  });
+
+  it('暂停接单：空的会话位画成暂停；离线：不画会话，只写离线', () => {
+    show(machine([agent('dsh')], { ...ready, max: 2, paused: true }));
+    expect([...host.querySelectorAll('.hp-sess.empty.paused')].length).toBe(2);
+    expect(host.querySelector('.hp-sess-sum')?.textContent).toContain('暂停接单，不开新会话');
+    show(machine([agent('dsh')], { ...ready, online: false }));
+    expect(host.querySelector('.hp-sess')).toBeNull();
+    expect(host.querySelector('.hp-lane.dead')?.textContent).toContain('离线');
+  });
+
+  it('不属于会话的排队照旧排在下面', () => {
+    const h = machine([agent('dsh')], { ...ready, max: 1 });
+    const dispatches = [
+      { ...base, id: 5, card: 5, title: '在跑', name: 'dsh-win2/x', state: 'running', startedAt: Date.now(), session: 5, seq: 1, total: 1 },
+      { ...base, id: 8, card: 8, title: '等空位', name: null, state: 'queued', startedAt: null, source: 'manual' },
+    ];
+    show(h, { hosts: [h], dispatches } as unknown as Workspace);
+    expect(host.querySelector('.hp-sess-n')).toBeNull();
+    expect(host.querySelectorAll('.hp-sess.empty').length).toBe(0);
+    expect(host.querySelector('.hp-lane.queued')?.textContent).toContain('#8');
   });
 });
 
