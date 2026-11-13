@@ -4,6 +4,12 @@
 # 平台：darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64（Git Bash 等）。
 # bin/ 由 node scripts/build-skill-bin.mjs 生成，发版附件 board-skills.zip 里已经带好。
 set -u
+# board host 启动的会话：board host 把连接和名字（BOARD_*）也写进这次派发的配置文件 [agent_env]，
+# 有的 agent 不把环境变量传给命令，board 自己从那里补上（见 crates/board-cli/src/config.rs）
+if [ -n "${BOARD_CONFIG:-}" ]; then
+    BOARD_AGENT_ENV=1
+    export BOARD_AGENT_ENV
+fi
 # board host 启动的会话：用 host 自己的 board（BOARD_EXE），版本和 host 一致
 if [ -n "${BOARD_EXE:-}" ] && [ -f "$BOARD_EXE" ] && [ -x "$BOARD_EXE" ]; then
     exec "$BOARD_EXE" "$@"

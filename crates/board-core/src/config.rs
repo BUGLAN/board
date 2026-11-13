@@ -120,6 +120,11 @@ impl Config {
         self.doc[key] = toml_edit::value(v);
     }
 
+    /// 写一张表（例如派发时带给 agent 的 `[agent_env]`），这个键原来的内容整个换掉
+    pub fn set_table(&mut self, key: &str, t: toml_edit::Table) {
+        self.doc.insert(key, toml_edit::Item::Table(t));
+    }
+
     /// 删掉一项，返回原来有没有
     pub fn remove(&mut self, key: &str) -> bool {
         self.doc.remove(key).is_some()

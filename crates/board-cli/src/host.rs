@@ -630,11 +630,21 @@ fn write_dsh_patch(path: &Path) -> std::io::Result<()> {
     std::fs::write(path, DSH_HEADLESS_PATCH)
 }
 
-/// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）
-fn write_run_config(path: &Path, url: &str, token: &str) -> Result<()> {
+/// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）。
+///
+/// 还有 `[agent_env]`：这次派发要带给 agent 的 `BOARD_*` 变量。agent 会过滤传给命令的环境变量：Codex 按 shell 环境策略
+/// 只放行 `core` 里的几个（`BOARD_*` 不在里面，`shell` 工具里就看不到连接），dsh 去掉名字里带 `TOKEN` 的。
+/// `scripts/board` 看到 `BOARD_AGENT_ENV=1` 时从 `BOARD_CONFIG` 读这一节、再设进它自己的环境，它起的 `board` 就有了
+/// （[`crate::backend`] 读配置时也用它们，所以没经过包装脚本、直接执行 `board` 时也连得上）
+fn write_run_config(path: &Path, url: &str, token: &str, vars: &[(String, String)]) -> Result<()> {
     board_core::config::write_new(path, |c| {
         c.set(config::URL, url);
         c.set(config::TOKEN, token);
+        let mut t = toml_edit::Table::new();
+        for (k, v) in vars {
+            t.insert(k, toml_edit::value(v.as_str()));
+        }
+        c.set_table("agent_env", t);
     })
 }
 
@@ -3209,6 +3219,23 @@ impl Host<'_> {
         }
     }
 
+    /// 这次派发带给 agent 的 `BOARD_*` 变量，写进它的 `BOARD_CONFIG` 的 `[agent_env]`（见 [`write_run_config`]）：
+    /// `scripts/board` 读它们再设进自己的环境——agent 会过滤传给命令的环境变量（Codex 的 shell 环境策略、
+    /// dsh 去掉带 TOKEN 的），只靠进程环境传给 agent 的话，它执行 `board` 时就看不到连接。
+    /// 不含派发 ID 之后才写的 `BOARD_PIDFILE`（那是给 WSL 包装脚本的）
+    fn agent_env(&self, d: &Dispatch, name: &str, conf: &Path) -> Vec<(String, String)> {
+        let s = |v: &str| v.to_string();
+        vec![
+            ("BOARD_URL".into(), s(self.rm().url())),
+            ("BOARD_TOKEN".into(), s(self.rm().token())),
+            ("BOARD_AS".into(), s(name)),
+            ("BOARD_HOST".into(), s(&self.name)),
+            ("BOARD".into(), s(&d.board)),
+            ("BOARD_CONFIG".into(), conf.display().to_string()),
+            ("BOARD_EXE".into(), self.exe.display().to_string()),
+        ]
+    }
+
     /// 在派发记录写的启动环境里启动 agent。旧版服务端不写启动环境、或写的环境本机已经没有：按本机的默认（第一个找到的）
     fn spawn(&self, d: &Dispatch) -> std::result::Result<Run, String> {
         let spec = self.agents.iter().find(|a| a.id == d.agent).ok_or_else(|| format!("本机没有 agent「{}」", d.agent))?;
@@ -3237,7 +3264,7 @@ impl Host<'_> {
         let log = self.logs.join(format!("{}.log", d.id));
         let (out, err) = create_log(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
-        write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| e.message)?;
+        write_run_config(&conf, self.rm().url(), self.rm().token(), &self.agent_env(d, &name, &conf)).map_err(|e| e.message)?;
         let patch_arg = patch.display().to_string();
         // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
         let cmd = spec.cmd_for(check);
@@ -3498,6 +3525,26 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 派发的配置文件：服务端地址、令牌，以及带给 agent 的 `BOARD_*`（`[agent_env]`），agent 从里面补回来
+    #[test]
+    fn run_config_carries_the_agent_variables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("7.toml");
+        let vars = vec![
+            ("BOARD_AS".to_string(), "codex-win/codex".to_string()),
+            ("BOARD".to_string(), "oss/main".to_string()),
+            ("BOARD_CONFIG".to_string(), path.display().to_string()),
+        ];
+        write_run_config(&path, "http://127.0.0.1:7493", "tok", &vars).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("url = \"http://127.0.0.1:7493\"") && text.contains("token = \"tok\""), "{text}");
+        assert!(text.contains("[agent_env]") && text.contains("BOARD_AS = \"codex-win/codex\""), "{text}");
+        // 同名文件再写一次：旧的 agent_env 换掉，不叠加
+        write_run_config(&path, "http://127.0.0.1:7493", "tok", &vars[..1]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("BOARD_AS") && !text.contains("BOARD_CONFIG"), "{text}");
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")

@@ -47,7 +47,8 @@ impl Backend {
     }
 
     fn open_with_timeout(timeout: Duration) -> Result<Backend> {
-        let conn = Conn::resolve()?;
+        // 派发的配置文件里有 `[agent_env]` 时先补上 `BOARD_*`：agent 可能把环境变量过滤掉了（见 config::from_agent_env）
+        let conn = Conn::resolve_for_agent()?;
         let Some((url, url_src)) = conn.url else {
             return Err(BoardError::new(ErrorCode::NotLoggedIn, format!("还没有登录：{LOGIN_HINT}")));
         };
@@ -64,7 +65,11 @@ impl Backend {
 
     /// `board help` 里「数据」一行
     pub fn describe() -> String {
-        match Conn::resolve() {
+        match Conn::resolve_for_agent() {
+            // 连接来自派发的配置文件（`[agent_env]`）：说清楚，别让人以为写进了 ~/.board/config.toml
+            Ok(Conn { url: Some((url, _)), agent_env: true, .. }) => {
+                format!("服务端 {url}（来自派发的配置 {} 的 [agent_env]）", config::shown())
+            }
             Ok(Conn { url: Some((url, src)), .. }) => format!("服务端 {url}（地址来自{}）", config::origin(src, "BOARD_URL")),
             Ok(_) => format!("还没有登录：{LOGIN_HINT}"),
             Err(e) => e.message,

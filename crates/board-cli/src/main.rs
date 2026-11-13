@@ -82,6 +82,11 @@ const COMMANDS: [(&str, &str, &str); 28] = [
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 在 board host 启动的会话里（BOARD_AGENT_ENV，skill 的包装脚本设的）：有的 agent 不把它该有的 BOARD_* 传给命令，
+    // 从这次派发的配置文件 [agent_env] 补上，名字、白板、连接都用得到（见 config::from_agent_env）
+    if env("BOARD_AGENT_ENV").is_some() {
+        config::from_agent_env();
+    }
     let json = args.iter().any(|a| a == "--json");
     let p = Paint { on: !json && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
     match run(&args, &p) {
