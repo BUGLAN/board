@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
+import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
 
 declare global {
   interface Window {
@@ -216,8 +216,8 @@ export const api = {
       cronOn?: boolean;
       cron?: string[];
       env?: { agent: string; env: string };
-      /** 一个 agent 的模型、思考强度：不带的那一项不改，空字符串回到 agent 自己的默认 */
-      run?: { agent: string; model?: string; effort?: string };
+      /** 一个 agent 的模型、思考强度、模型供应商：不带的那一项不改，空字符串回到默认（供应商空 = 跟随共用配置） */
+      run?: { agent: string; model?: string; effort?: string; provider?: string };
       dirs?: { board: string; path: string }[];
     },
   ) =>
@@ -236,6 +236,11 @@ export const api = {
   mcp: () => req<McpServer[]>('GET', '/api/mcp'),
   putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),
   removeMcp: (name: string) => req('DELETE', `/api/mcp/${q(name)}`),
+  /** 模型供应商共用配置：列表（API key 只给末尾 4 位）、新增或修改（留空保留原值）、删除、每个 agent 用哪个 */
+  providers: () => req<ProviderView>('GET', '/api/providers'),
+  putProvider: (p: Provider) => req<Provider>('POST', '/api/providers', p),
+  removeProvider: (name: string) => req('DELETE', `/api/providers/${q(name)}`),
+  putProviderAgent: (a: AgentProvider) => req<AgentProvider>('POST', '/api/providers/agents', a),
   agentTemplates: () => req<AgentTemplate[]>('GET', '/api/agent-templates'),
   putAgentTemplate: (t: AgentTemplate) => req<AgentTemplate>('POST', '/api/agent-templates', t),
   removeAgentTemplate: (id: string) => req('DELETE', `/api/agent-templates/${q(id)}`),

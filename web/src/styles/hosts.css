@@ -85,6 +85,9 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-arun-f > span:first-child { white-space: nowrap; }
 .input.hp-arun-model { width: 168px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
 .input.hp-arun-effort { width: 104px; height: 28px; padding: 0 8px; font-size: 12px; }
+.input.hp-arun-provider { width: 136px; height: 28px; padding: 0 8px; font-size: 12px; }
+/* 机器详情里供应商那一行的说明：配置文件里实际写的是什么 */
+.hp-arun-note { margin: -3px 0 9px 30px; font-size: 11.5px; }
 .hp-arun.off { opacity: .55; }
 .hp-arun-old { font-style: normal; font-size: 11.5px; color: var(--text-3); }
 /* 看不到 board-skills：名称后的小胶囊（悬停写装到哪里）；刚一键装好的变绿 */
@@ -902,6 +905,23 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 }
 /* 共用配置：MCP 服务器一节 */
 .sc-mcp { margin-top: 28px; }
+.sc-providers { margin-top: 28px; }
+.sc-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sc-presets .hp-note { margin: 0 0 0 4px; }
+/* 每个 agent 用哪个供应商：一行一个内置 agent，四列（名称、供应商、模型、强度）加保存状态 */
+.sc-agents-map { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; padding: 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
+.sc-sub-head { display: flex; flex-direction: column; gap: 3px; }
+.sc-sub-head b { font-size: 13px; }
+.sc-sub-head .hp-note { margin: 0; }
+.sc-provider-agent { display: grid; grid-template-columns: minmax(124px, 1fr) repeat(3, minmax(118px, 1.15fr)) auto; align-items: end; gap: 8px 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.sc-provider-agent-name { display: inline-flex; align-items: center; gap: 6px; align-self: center; font-size: 13px; min-width: 0; }
+.sc-provider-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sc-provider-f > span:first-child { font-size: 11.5px; color: var(--text-3); }
+.sc-provider-agent .hp-sync { align-self: center; }
+@media (max-width: 760px) {
+  .sc-provider-agent { grid-template-columns: 1fr 1fr; }
+  .sc-provider-agent-name { grid-column: 1 / -1; }
+}
 .sc-meta code { font: 11.5px var(--f-mono); color: var(--text-2); }
 .sc-vars { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 0 8px; font-size: 12px; color: var(--text-3); }
 .sc-vars b { font: 500 11.5px var(--f-mono); color: var(--text-2); }

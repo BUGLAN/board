@@ -174,7 +174,7 @@ const col = (key: string, title: string, values: (string | null)[], diff: boolea
   cells: values.map((v, i) => ({ text: v ?? '—', diff: diff[i] || undefined, tip: tips?.[i] })),
 });
 
-/** 对比视图的列：就绪的每一项、board 版本、每个 agent 的版本 / 模型 / 启动环境。hosts 的顺序就是行的顺序 */
+/** 对比视图的列：就绪的每一项、board 版本、每个 agent 的版本 / 模型 / 供应商 / 启动环境。hosts 的顺序就是行的顺序 */
 export function compareHosts(hosts: HostInfo[], now: number, server?: string | null): CmpGroup[] {
   const checks = hosts.map(h => readiness(h, now, server));
   const keys: ReadyCheck[] = [];
@@ -216,6 +216,17 @@ export function compareHosts(hosts: HostInfo[], now: number, server?: string | n
     const version = of.map(a => (a ? (a.found ? a.version || '找到了' : '没找到') : null));
     const model = of.map(a => (a?.found && a.model ? a.model : null));
     const env = hosts.map((h, i) => (of[i]?.found ? envName(h, of[i]!.env) : null));
+    // 供应商共用配置写进配置文件的供应商和模型（PRD §10.12）；旧版 board host 没上报时不参与比较
+    const prov = hosts.map((h, i) => {
+      if (!of[i]?.found || h.providers == null) return null;
+      const s = h.providers.find(x => x.agent === id);
+      if (!s) return h.online ? '还没写入' : null;
+      if (s.state === 'synced') return `${s.provider || '?'} / ${s.model || '?'}`;
+      if (s.state === 'local') return '本机自己管';
+      if (s.state === 'unsupported') return '不支持';
+      return '失败';
+    });
+    const provTip = hosts.map((h, i) => (of[i]?.found ? h.providers?.find(x => x.agent === id)?.why ?? undefined : undefined));
     return {
       key: `agent:${id}`,
       title: name,
@@ -223,6 +234,7 @@ export function compareHosts(hosts: HostInfo[], now: number, server?: string | n
       cols: [
         col(`${id}:version`, '版本', version, oddOnes(version)),
         col(`${id}:model`, '模型', model, oddOnes(model)),
+        col(`${id}:provider`, '供应商 / 模型', prov, oddOnes(prov), provTip),
         // 启动环境只在同一种系统的机器之间比（Windows 的 Git Bash 和 macOS 的登录 shell 不算不一致）
         col(`${id}:env`, '启动环境', env, oddBy(env, os)),
       ],

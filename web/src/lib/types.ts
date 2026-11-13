@@ -178,6 +178,8 @@ export interface HostAgent {
   run_effort?: string | null;
   /** 机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 env 是实际用的） */
   run_env?: string | null;
+  /** 机器设置里选的模型供应商：没选 = 跟随共用配置，`@local` = 本机自己管 */
+  run_provider?: string | null;
   /** 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 [agents.*]：用的是本机的 */
   local_override?: boolean;
 }
@@ -190,6 +192,8 @@ export interface AgentOpts {
   models: string[];
   /** 支持的思考强度档位，从低到高；空表示不能选强度 */
   efforts: string[];
+  /** 这个 agent 认哪些模型供应商接口（anthropic、openai-chat、openai-responses）；旧版 board host 没有 */
+  protocols?: string[];
 }
 
 /** 一个 agent 在一个启动环境里的检查结果 */
@@ -316,6 +320,8 @@ export interface HostInfo {
   skills?: SkillState[] | null;
   /** MCP 服务器同步到这台机器各个 agent 的状态；旧版 board host 不同步，为 null / 没有 */
   mcp?: McpState[] | null;
+  /** 模型供应商写进这台机器各个 agent 配置文件的状态；旧版 board host 不同步，为 null / 没有 */
+  providers?: ProviderState[] | null;
 }
 
 /** MCP 服务器的一个环境变量或请求头。列表接口里密钥的 value 是空的，tail 是末尾 4 位；保存时密钥留空表示保留原来的值 */
@@ -364,6 +370,57 @@ export interface McpState {
   agent: string;
   state: 'synced' | 'local' | 'unsupported' | 'failed';
   why?: string | null;
+}
+
+/* ---------------- 模型供应商（PRD §10.12「共用配置」） ---------------- */
+
+/** 一个供应商的一个接口和地址（三种接口各一个地址） */
+export interface ProviderEndpoint {
+  interface: 'anthropic' | 'openai-chat' | 'openai-responses';
+  url: string;
+}
+
+/** 共用配置里的一个模型供应商：API key 只存在服务端，列表里只有末尾 4 位 */
+export interface Provider {
+  name: string;
+  endpoints: ProviderEndpoint[];
+  /** 列表接口里为空，保存时留空 = 保留原来的值 */
+  apiKey?: string | null;
+  /** 密钥末尾 4 位 */
+  tail?: string | null;
+  models: string[];
+  version?: string;
+  updatedAt?: number;
+  by?: string;
+  source?: string;
+}
+
+/** 一个内置 agent 在共用配置里用哪个供应商、哪个模型、什么强度 */
+export interface AgentProvider {
+  agent: string;
+  /** 空 = 不管（不改配置文件） */
+  provider: string;
+  model: string;
+  /** 空 = agent 自己的默认 */
+  effort: string;
+  updatedAt?: number;
+  by?: string;
+}
+
+/** 一台机器上一个 agent 的配置文件写入状态 */
+export interface ProviderState {
+  agent: string;
+  state: 'synced' | 'local' | 'unsupported' | 'failed';
+  /** 写进去的供应商、模型（synced 时） */
+  provider?: string;
+  model?: string;
+  why?: string | null;
+}
+
+/** 列表接口：供应商（打码）和每个内置 agent 的分配 */
+export interface ProviderView {
+  providers: Provider[];
+  agents: AgentProvider[];
 }
 
 /** skills 共用库里的一个 skill（PRD §10.12「共用配置」） */

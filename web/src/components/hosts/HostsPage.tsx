@@ -13,6 +13,7 @@ import { goCard } from './Dispatch';
 import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
 import { McpSection } from './Mcp';
+import { ProvidersSection } from './Providers';
 import { SharedConfig } from './Shared';
 import { TemplatesSection } from './Templates';
 
@@ -41,7 +42,7 @@ export function HostsSide() {
         <button type="button" className={cx('hp-side-row hp-side-shared', view === 'shared' && 'active')} onClick={() => setHostsView('shared')}>
           <Icon name="settings" />
           <span className="hp-side-name">共用配置</span>
-          <span className="hp-side-sub">skills · MCP</span>
+          <span className="hp-side-sub">skills · MCP · 供应商</span>
         </button>
         {hosts.map(h => {
           const { running } = hostLoad(ws, h);
@@ -348,7 +349,7 @@ export function HostsPage() {
               {view === 'compare'
                 ? '每台机器一行，对比就绪的每一项和 agent 的版本、模型、启动环境；和其他机器不一致的格子标出来。'
                 : view === 'shared'
-                  ? '所有机器共用的配置：放在这里的 skills、MCP 服务器自动同步到每台机器的每个 agent。'
+                  ? '所有机器共用的配置：放在这里的 skills、MCP 服务器、模型供应商自动同步到每台机器的每个 agent。'
                   : '每台机器常驻一个 board host。一行一台机器，一条车道一个任务：点任务看卡片，点机器改规则。'}
             </p>
           </div>
@@ -376,6 +377,7 @@ export function HostsPage() {
           <>
             <SharedConfig hosts={hosts} />
             <McpSection hosts={hosts} />
+            <ProvidersSection hosts={hosts} />
             <TemplatesSection hosts={hosts} />
           </>
         ) : view === 'compare' ? (

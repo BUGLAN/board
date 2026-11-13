@@ -4,7 +4,8 @@ import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { agentMark, boardOf, canPickDir, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, isWindows, localHost, pickFolder, shell, type LocalHost } from '../../lib/platform';
-import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
+import { agentProviderView, PROVIDER_AGENTS, PROVIDER_LOCAL, providersFor } from '../../lib/providers';
+import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label, ProviderView } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
 import { COPY_ITEMS } from '../../lib/templates';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
@@ -81,7 +82,7 @@ const fieldOf = (p: HostPatch) =>
   p.env
     ? `env:${p.env.agent}`
     : p.run
-      ? `run:${p.run.agent}:${p.run.model !== undefined ? 'model' : 'effort'}`
+      ? `run:${p.run.agent}:${p.run.provider !== undefined ? 'provider' : p.run.model !== undefined ? 'model' : 'effort'}`
       : 'rules' in p || 'fallback' in p
         ? 'rules'
         : (Object.keys(p)[0] ?? 'host');
@@ -95,6 +96,7 @@ const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
       ...a,
       ...(r.model !== undefined ? { run_model: r.model.trim() || null } : {}),
       ...(r.effort !== undefined ? { run_effort: r.effort || null } : {}),
+      ...(r.provider !== undefined ? { run_provider: r.provider || null } : {}),
     };
   }
   return a;
@@ -172,6 +174,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   // 没有一条领取规则时定时领取不会领卡，「现在领一轮」也不能开始
   const hasRules = (h.rules?.length ?? 0) > 0;
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
+  // 共用配置里的模型供应商和每个 agent 的分配：机器设置「供应商」下拉、模型下拉据此过滤
+  const [providers, setProviders] = useState<ProviderView | null>(null);
   const rev = ws?.rev;
   /** 刚一键装好 board-skills 的 agent：它们那一行的胶囊变绿，横幅消失时清掉 */
   const [fixed, setFixed] = useState<string[] | null>(null);
@@ -193,6 +197,17 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
       alive = false;
     };
   }, [on, h.name, rev]);
+  useEffect(() => {
+    if (!on) return;
+    let alive = true;
+    api
+      .providers()
+      .then(v => alive && setProviders(v))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [on, rev]);
 
   const { save, sync } = useSaver(h.name);
   const failed = (...fs: string[]) => fs.some(f => sync[f] === 'failed') && 'hp-rollback';
@@ -476,7 +491,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 a={a}
                 save={save}
                 sync={sync[`env:${a.id}`] ?? (a.id === h.agent ? sync.agent : undefined)}
-                runSync={{ model: sync[`run:${a.id}:model`], effort: sync[`run:${a.id}:effort`] }}
+                runSync={{ provider: sync[`run:${a.id}:provider`], model: sync[`run:${a.id}:model`], effort: sync[`run:${a.id}:effort`] }}
+                providers={providers}
                 server={server}
                 fixed={fixed?.includes(a.id)}
               />
@@ -956,6 +972,7 @@ function AgentRow({
   save,
   sync,
   runSync,
+  providers,
   server,
   fixed,
 }: {
@@ -963,7 +980,8 @@ function AgentRow({
   a: HostAgent;
   save: Save;
   sync?: SyncState;
-  runSync: { model?: SyncState; effort?: SyncState };
+  runSync: { provider?: SyncState; model?: SyncState; effort?: SyncState };
+  providers: ProviderView | null;
   server: string | null;
   fixed?: boolean;
 }) {
@@ -1034,7 +1052,7 @@ function AgentRow({
           设置的启动环境「{name(a.run_env)}」这台机器上没有，不生效：用的是 {name(a.env)}
         </p>
       )}
-      <AgentRunRow h={h} a={a} save={save} sync={runSync} server={server} />
+      <AgentRunRow h={h} a={a} save={save} sync={runSync} providers={providers} server={server} />
     </>
   );
 }
@@ -1096,18 +1114,24 @@ function CopySettings({ h, hosts, close }: { h: HostInfo; hosts: HostInfo[]; clo
   );
 }
 
-/** 一个 agent 的模型、思考强度（PRD §9.1）：模型是可以手填的下拉，强度只列它支持的档位；空是 agent 自己的默认（不传参数）。
+/** 一个 agent 的模型供应商、模型、思考强度（PRD §9.1、§10.12）：
+ *  - 供应商：跟随共用配置（默认）/ 本机自己管（不碰配置文件）/ 单独指定一个。新版 board host 按它改写配置文件
+ *  - 模型、强度：只管 Board 派发的这一次，空是 agent 自己的默认（不传参数）；
+ *    模型下拉列当前供应商的模型，强度只列它支持的档位
  *  各存各的、当帧生效，保存状态画在控件旁边。旧版 board host 不上报能选什么：置灰，写要升级到哪个版本；
- *  模板没有这两项的 agent（dsh）不显示 */
-function AgentRunRow({ h, a, save, sync, server }: { h: HostInfo; a: HostAgent; save: Save; sync: { model?: SyncState; effort?: SyncState }; server: string | null }) {
+ *  配置文件里新加的 agent（认不了供应商接口）不显示供应商，模板也没有模型、强度时不显示这一行 */
+function AgentRunRow({ h, a, save, sync, providers, server }: { h: HostInfo; a: HostAgent; save: Save; sync: { provider?: SyncState; model?: SyncState; effort?: SyncState }; providers: ProviderView | null; server: string | null }) {
   const opts = a.opts;
   const [model, setModel] = useState(a.run_model ?? '');
   const [editing, setEditing] = useState(false);
   useEffect(() => {
     if (!editing) setModel(a.run_model ?? '');
   }, [a.run_model, editing]);
+  const pv = agentProviderView(providers, a);
+  const known = PROVIDER_AGENTS.some(x => x.id === a.id);
+  const showProvider = !opts || (known && (opts.protocols?.length ?? 0) > 0);
   if (!a.found) return null;
-  if (opts && !opts.model && !opts.efforts.length) return null;
+  if (!showProvider && !(opts && (opts.model || opts.efforts.length))) return null;
   const old = !opts;
   const tip = old ? `这台机器的 board 要升级到 ${server ?? '服务端的版本'} 才能设置` : undefined;
   const commit = () => {
@@ -1116,51 +1140,81 @@ function AgentRunRow({ h, a, save, sync, server }: { h: HostInfo; a: HostAgent; 
     if (v !== (a.run_model ?? '')) save({ run: { agent: a.id, model: v } });
   };
   const listId = `hp-models-${h.id}-${a.id}`;
+  const fits = providersFor(providers, a.id);
+  const options = [{ value: '', label: '跟随共用配置' }, { value: PROVIDER_LOCAL, label: '本机自己管' }, ...fits.map(p => ({ value: p.name, label: p.name }))];
+  if (a.run_provider && !options.some(o => o.value === a.run_provider)) options.push({ value: a.run_provider, label: `${a.run_provider}（没有了）` });
+  const shared = pv.shared;
+  // 共用配置给它选了这个供应商时用选的模型，否则（这台机器单独指定）用它的第一个模型
+  const confModel = shared && shared.provider === pv.provider?.name && shared.model ? shared.model : (pv.provider?.models[0] ?? '');
+  const note = pv.local
+    ? '本机自己管：不改这台机器上它的配置文件'
+    : !pv.provider
+      ? '共用配置里没有给它指定供应商：不改配置文件'
+      : `配置文件：${pv.provider.name}${confModel ? ` · ${confModel}` : ''}${a.run_provider === pv.provider.name ? '（这台机器单独指定）' : ''}`;
   return (
-    <div className={cx('hp-arun', old && 'off')} title={tip}>
-      {(old || opts?.model) && (
-        <label className="hp-arun-f">
-          <span>模型</span>
-          <input
-            className="input hp-arun-model"
-            list={listId}
-            value={model}
-            disabled={old}
-            placeholder={a.model ? `默认（${a.model}）` : '默认'}
-            spellCheck={false}
-            autoComplete="off"
-            aria-label={`${a.name} 的模型`}
-            onFocus={() => setEditing(true)}
-            onChange={e => setModel(e.target.value)}
-            onBlur={commit}
-            onKeyDown={e => {
-              if (e.key === 'Enter') e.currentTarget.blur();
-            }}
-          />
-          <datalist id={listId}>
-            {(opts?.models ?? []).map(m => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
-          <Sync s={sync.model} />
-        </label>
-      )}
-      {(old || !!opts?.efforts.length) && (
-        <span className="hp-arun-f">
-          <span>强度</span>
-          <Select
-            className="hp-arun-effort"
-            disabled={old}
-            value={a.run_effort ?? ''}
-            options={[{ value: '', label: '默认' }, ...(opts?.efforts ?? []).map(e => ({ value: e, label: e }))]}
-            onChange={v => save({ run: { agent: a.id, effort: v } })}
-            aria-label={`${a.name} 的思考强度`}
-          />
-          <Sync s={sync.effort} />
-        </span>
-      )}
-      {old && <em className="hp-arun-old">{tip}</em>}
-    </div>
+    <>
+      <div className={cx('hp-arun', old && 'off')} title={tip}>
+        {showProvider && (
+          <span className="hp-arun-f">
+            <span>供应商</span>
+            <Select
+              className="hp-arun-provider"
+              disabled={old || !providers}
+              value={a.run_provider ?? ''}
+              options={options}
+              onChange={v => save({ run: { agent: a.id, provider: v } })}
+              aria-label={`${a.name} 的模型供应商`}
+              data-tip="跟随共用配置：按共用配置里给这个 agent 分的供应商改写它的配置文件；本机自己管：不碰它的配置文件"
+            />
+            <Sync s={sync.provider} />
+          </span>
+        )}
+        {(old || opts?.model) && (
+          <label className="hp-arun-f">
+            <span>模型</span>
+            <input
+              className="input hp-arun-model"
+              list={listId}
+              value={model}
+              disabled={old}
+              placeholder={a.model ? `默认（${a.model}）` : '默认'}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label={`${a.name} 的模型`}
+              data-tip="只管 Board 派发的这一次：配置文件里的默认模型在共用配置里设"
+              onFocus={() => setEditing(true)}
+              onChange={e => setModel(e.target.value)}
+              onBlur={commit}
+              onKeyDown={e => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+            />
+            <datalist id={listId}>
+              {(pv.provider?.models ?? opts?.models ?? []).map(m => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            <Sync s={sync.model} />
+          </label>
+        )}
+        {(old || !!opts?.efforts.length) && (
+          <span className="hp-arun-f">
+            <span>强度</span>
+            <Select
+              className="hp-arun-effort"
+              disabled={old}
+              value={a.run_effort ?? ''}
+              options={[{ value: '', label: '默认' }, ...(opts?.efforts ?? []).map(e => ({ value: e, label: e }))]}
+              onChange={v => save({ run: { agent: a.id, effort: v } })}
+              aria-label={`${a.name} 的思考强度`}
+            />
+            <Sync s={sync.effort} />
+          </span>
+        )}
+        {old && <em className="hp-arun-old">{tip}</em>}
+      </div>
+      {showProvider && !old && <p className="hp-note hp-arun-note">{note}</p>}
+    </>
   );
 }
 

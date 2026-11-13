@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   rechecked_at INTEGER,               -- 最近一次「重新检查」做完的时间
   selftest TEXT,                      -- 自检（JSON，见 SelfTest）：等 board host 做的请求和最近一次的结果；没做过时为空
   skills   TEXT,                      -- skills 同步状态（JSON，见 SkillState）；旧版 board host 不上报，为空
-  mcp      TEXT                       -- MCP 服务器同步状态（JSON，见 McpState）；旧版 board host 不上报，为空
+  mcp      TEXT,                      -- MCP 服务器同步状态（JSON，见 McpState）；旧版 board host 不上报，为空
+  providers TEXT                      -- 模型供应商写进各 agent 配置文件的状态（JSON，见 ProviderState）；旧版 board host 不上报，为空
 );
 
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
@@ -168,6 +169,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "selftest", "TEXT"),
         ("hosts", "skills", "TEXT"),
         ("hosts", "mcp", "TEXT"),
+        ("hosts", "providers", "TEXT"),
         // 结构化事件（runlog.rs）：agent 的输出格式（空 = 只有原始输出，没有 = 旧版 board host 没报）、删掉了几条、结束 30 天后清过没有
         ("dispatches", "fmt", "TEXT"),
         ("dispatches", "ev_dropped", "INTEGER NOT NULL DEFAULT 0"),
@@ -363,6 +365,9 @@ pub struct HostAgent {
     /// 服务端发出去时才有：机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 `env` 是实际用的）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_env: Option<String>,
+    /// 服务端发出去时才有：机器设置里选的模型供应商。没选 = 跟随共用配置；`@local` = 本机自己管
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_provider: Option<String>,
     /// 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 `[agents.*]`：用的是本机的那份（board host 上报）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_override: bool,
@@ -380,6 +385,10 @@ pub struct AgentOpts {
     /// 支持的思考强度档位，按从低到高；空表示不能选强度
     #[serde(default)]
     pub efforts: Vec<String>,
+    /// 这个 agent 认哪些模型供应商接口（`anthropic`、`openai-chat`、`openai-responses`）：
+    /// 共用配置里「模型供应商」的下拉据此过滤；旧版 board host 没有这一项
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocols: Vec<String>,
 }
 
 /// 模型名：字母或数字开头，字母、数字和 `. _ : / @ + -`，最长 64 个字符（作为一个参数传给 agent，也是派发名字的第二段）
@@ -430,6 +439,9 @@ pub struct AgentRun {
     /// 思考强度；没有时不传
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// 模型供应商：没有 = 跟随共用配置；`@local` = 本机自己管（不改配置文件）；其余是供应商名称
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// 白板与目录：派到这台机器的卡片，agent 在对应目录里启动
@@ -794,6 +806,9 @@ pub struct HostInfo {
     /// MCP 服务器同步到这台机器各个 agent 的状态；旧版 board host 不同步，为空
     #[serde(default)]
     pub mcp: Option<Vec<crate::mcp::McpState>>,
+    /// 模型供应商写进这台机器各个 agent 配置文件的状态；旧版 board host 不同步，为空
+    #[serde(default)]
+    pub providers: Option<Vec<crate::providers::ProviderState>>,
 }
 
 /// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
@@ -955,6 +970,9 @@ pub struct HostReport {
     /// MCP 服务器同步状态；旧版 board host 不带，带了才更新
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<Vec<crate::mcp::McpState>>,
+    /// 模型供应商写进各 agent 配置文件的状态；旧版 board host 不带，带了才更新
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers: Option<Vec<crate::providers::ProviderState>>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -970,6 +988,9 @@ pub struct HostWork {
     /// MCP 服务器共用配置的索引（名称、版本）：变了 board host 用令牌接口取完整内容。旧版服务端没有这一项
     #[serde(default)]
     pub mcp: Option<Vec<crate::mcp::McpIndex>>,
+    /// 模型供应商共用配置：索引（取完整内容用）和每个 agent 用哪个。旧版服务端没有这一项
+    #[serde(default)]
+    pub providers: Option<crate::providers::ProviderWork>,
     /// 共用配置里的 agent 模板（全部内容）：board host 合进本机 agent；旧版服务端没有
     #[serde(default)]
     pub templates: Option<Vec<crate::templates::AgentTemplate>>,
@@ -1029,6 +1050,9 @@ pub struct RunPatch {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// 模型供应商：空字符串 = 跟随共用配置，`@local` = 本机自己管，其余是供应商名称
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// 一次派发
@@ -1217,13 +1241,14 @@ struct HostRow {
     selftest: SelfTest,
     skills_raw: Option<String>,
     mcp_raw: Option<String>,
+    providers_raw: Option<String>,
     agents_raw: String,
     envs_raw: String,
     dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1268,6 +1293,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         skills_raw: r.get(34)?,
         mcp_raw: r.get(35)?,
+        providers_raw: r.get(36)?,
         agents_raw,
         envs_raw,
         dirs_raw,
@@ -1305,6 +1331,7 @@ impl HostRow {
                 out.run_model = run.and_then(|r| r.model.clone());
                 out.run_effort = run.and_then(|r| r.effort.clone());
                 out.run_env = run.and_then(|r| r.env.clone());
+                out.run_provider = run.and_then(|r| r.provider.clone());
                 out
             })
             .collect()
@@ -1396,6 +1423,7 @@ impl HostRow {
             selftest: self.selftest.clone(),
             skills: self.skills_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
             mcp: self.mcp_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
+            providers: self.providers_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
         }
     }
     /// 正在等重启或升级：board host 不再开始新的派发
@@ -1747,6 +1775,7 @@ impl<'a> R<'a> {
             now,
             skills: Some(self.skills()?),
             mcp: Some(self.mcp_index()?),
+            providers: Some(self.provider_work()?),
             templates: Some(self.agent_templates()?),
         })
     }
@@ -2308,6 +2337,14 @@ impl<'a> W<'a> {
                         self.touch_hosts();
                     }
                 }
+                // 模型供应商写进各 agent 配置文件的状态：带了、变了才写
+                if let Some(st) = &rep.providers {
+                    let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
+                    if h.providers_raw.as_deref() != Some(raw.as_str()) {
+                        self.tx.execute("UPDATE hosts SET providers = ?2 WHERE id = ?1", params![h.id, raw])?;
+                        self.touch_hosts();
+                    }
+                }
                 // 换成了会（或不会）自检的 board host
                 if h.selftest.able != rep.selftest {
                     let st = SelfTest { able: rep.selftest, ..h.selftest.clone() };
@@ -2847,6 +2884,20 @@ impl<'a> W<'a> {
                     }));
                 } else {
                     cur.effort = Some(e.to_string());
+                }
+            }
+            if let Some(pv) = &rp.provider {
+                let pv = pv.trim();
+                if pv.is_empty() {
+                    cur.provider = None;
+                } else if pv == crate::providers::PROVIDER_LOCAL {
+                    cur.provider = Some(crate::providers::PROVIDER_LOCAL.into());
+                } else {
+                    let known = self.read().providers()?.into_iter().any(|p| p.name == pv);
+                    if !known {
+                        return Err(BoardError::usage(format!("没有模型供应商「{pv}」")));
+                    }
+                    cur.provider = Some(pv.to_string());
                 }
             }
             self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;

@@ -94,6 +94,24 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
   - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`，只能用打码的 `GET /api/mcp`。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
 - 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
 
+## 模型供应商：在「共用配置」里维护
+
+agent 连哪个模型供应商（地址、API key、默认模型）不用每台机器、每个 agent 一个个填：在「机器 → 共用配置 → 模型供应商」里加一次，每台机器的 board host 写进它找到的内置 agent 的用户级配置文件。agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。
+
+| agent | 写到哪里 | 写什么 |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；选了强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
+| Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | `model_provider`、`[model_providers.board-<供应商>]`（`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort` |
+| pi | `~/.pi/agent/models.json` 的 `providers.board-<供应商>`（`api`、`apiKey`、`baseUrl`、`models`）；`~/.pi/agent/settings.json` 的 `defaultProvider`、`defaultModel`（选了强度时还有 `defaultThinkingLevel`） | 按 pi 的 provider 格式写 |
+| dsh | `~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里一条 `board-<供应商>` 路由、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY` | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
+| 配置文件里新加的 agent、WSL 里的 agent | — | 不支持，界面上写「不支持」 |
+
+- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，pi、dsh 三种都认。模型只能从这家供应商的模型里选，强度只列这个 agent 支持的档位。这些都只是配置文件里的默认；机器详情「本机 agent」那一行的模型、强度仍然只是 Board 派发那一次的命令行参数，不改配置文件。
+- 只改 Board 管的那几项，文件里别的配置、注释和顺序不动；先写临时文件再整体换上；文件解析不了时整份不覆盖，上报「失败」和原因，修好文件后下一次同步再写。
+- 第一次改某个 agent 之前，把要改的这几项原来的值备份到 `~/.board/host/agent-config/<agent>.json`。改回「不管」、在机器详情选「本机自己管」、共用配置里删掉这个供应商、或者单独指定的供应商被删除时，按备份恢复原来的值（原来没有的项删掉），然后删掉备份。机器设置的优先级是「本机自己管」> 这台机器单独指定的供应商 > 共用配置里给这个 agent 分的供应商 > 不管。
+- 同步时机和 skills、MCP 一样：board host 启动、共用配置变了、重新检查或桌面端重新读配置后、没变化时每 10 分钟。已经在跑的 agent 不受影响，下一次启动读新的配置。
+- API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`），不写进日志和卡片动态。它会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
+
 ## 一个 agent 要满足什么
 
 接入前逐条验证（「本机验证」一节有命令）：
@@ -285,3 +303,6 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 从设置了 `BOARD_TOKEN` 的终端或 agent 会话里启动桌面端，打开「让这台电脑接任务」后 board host 以 `INVALID_TOKEN` 停止 | 旧版桌面端把启动环境里的 `BOARD_URL`、`BOARD_TOKEN`（还有 `BOARD_CONFIG`、`BOARD_AS`、`BOARD`）继承给了后台的 board host，环境变量优先于配置文件，令牌是别的服务端的。新版启动 board host 和改机器名时都去掉这些变量，只用配置文件；升级桌面端 |
 | Windows 上 `npm run desktop:dev` 报 `failed to remove file ... target\debug\board.exe`（os error 5：拒绝访问） | 上次开发启动的 `board-desktop.exe` / `board host` 还在从 `target\debug\board.exe` 运行，锁住了文件。新版 `scripts/build-sidecar.mjs` 会在 dev 构建前自动结束本仓库这两个进程；如果还失败，先从托盘退出 Board，再运行 `npm run desktop:dev` |
 | 卡片动态里 agent 又 check 了一个新名字、领取失败 | 用的 `board-skills` 是旧版（没有「由 board host 启动的会话」一节），更新 skill |
+| 机器详情里这个 agent 的「供应商」置灰，写要升级到服务端版本 | 旧版 `board host` 不认模型供应商：升级那台机器的 board |
+| 「模型供应商」里这个 agent 写「失败」 | 它的配置文件解析不了（原因写在同一行，文件没动）：按原因修好那个文件，下一次同步会写进去；改回「不管」能按备份恢复 |
+| 这个 agent 写「不支持」 | 它是配置文件里新加的 agent，或者在 WSL 里跑：这一版不改这两种 agent 的配置文件，手动配 |

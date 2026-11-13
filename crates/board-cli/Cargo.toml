@@ -16,6 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
+# board host 改 Codex 的 config.toml 时保留别的配置、注释和顺序
+toml_edit = "0.25"
 unicode-width = "0.2"
 ureq = { version = "3", features = ["json"] }
 

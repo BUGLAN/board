@@ -16,6 +16,7 @@ mod heartbeat;
 mod host;
 mod logfmt;
 mod mcpsync;
+mod providersync;
 mod redact;
 mod selftest;
 mod service;

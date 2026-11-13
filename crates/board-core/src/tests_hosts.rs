@@ -39,6 +39,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         selftest: true,
         skills: None,
         mcp: None,
+        providers: None,
     }
 }
 
@@ -2769,12 +2770,13 @@ fn report_opts(instance: &str) -> HostReport {
         model: true,
         models: vec!["opus".into(), "sonnet".into()],
         efforts: ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec(),
+        ..Default::default()
     });
     r
 }
 
 fn set_run(s: &mut Store, model: Option<&str>, effort: Option<&str>) -> Result<HostInfo> {
-    let run = RunPatch { agent: "claude".into(), model: model.map(str::to_string), effort: effort.map(str::to_string) };
+    let run = RunPatch { agent: "claude".into(), model: model.map(str::to_string), effort: effort.map(str::to_string), ..Default::default() };
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { run: Some(run), ..Default::default() }))
 }
 

@@ -15,6 +15,7 @@ pub mod hosts;
 pub mod model;
 pub mod releases;
 pub mod moves;
+pub mod providers;
 pub mod runlog;
 pub mod search;
 pub mod seed;

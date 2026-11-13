@@ -61,6 +61,7 @@ use crate::logfmt::{self, Stream};
 use crate::redact;
 use crate::selftest;
 use crate::mcpsync;
+use crate::providersync;
 use crate::skills;
 use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, DirReady, HostAsk, LOG_KEEP, READY_LIMIT_MS, READY_TAIL};
@@ -381,10 +382,13 @@ impl Spec {
                 model: !self.model_args.is_empty(),
                 models: if self.model_args.is_empty() { vec![] } else { self.models.clone() },
                 efforts: if self.effort_args.is_empty() { vec![] } else { self.efforts.clone() },
+                // 共用配置「模型供应商」里这个 agent 能选哪些接口：内置 agent 按核实过的来，配置文件里新加的是空
+                protocols: board_core::providers::protocols_of(&self.id).iter().map(|x| x.to_string()).collect(),
             }),
             run_model: None,
             run_effort: None,
             run_env: None,
+            run_provider: None,
             local_override: self.local_override,
         }
     }
@@ -1150,6 +1154,12 @@ struct Host<'a> {
     mcp_key: Option<String>,
     mcp_at: Instant,
     mcp_force: bool,
+    /// 模型供应商共用配置：正在后台做的同步、最近的结果、上一次的索引和 agent、时间
+    provider_job: Option<std::thread::JoinHandle<providersync::Synced>>,
+    provider_states: Vec<board_core::providers::ProviderState>,
+    provider_key: Option<String>,
+    provider_at: Instant,
+    provider_force: bool,
     /// 共用配置里的 agent 模板（服务端随任务下发）：已经合进本机 agent 的那一份
     templates: Vec<AgentTemplate>,
     /// 马上上报一次（共用模板变了、重新检查完 agent 之后）
@@ -1314,6 +1324,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         mcp_key: None,
         mcp_at: Instant::now(),
         mcp_force: false,
+        provider_job: None,
+        provider_states: vec![],
+        provider_key: None,
+        provider_at: Instant::now(),
+        provider_force: false,
         templates: vec![],
         beat_soon: false,
     };
@@ -1615,6 +1630,7 @@ impl Host<'_> {
             selftest: true,
             skills: Some(self.skill_states.clone()),
             mcp: Some(self.mcp_states.clone()),
+            providers: Some(self.provider_states.clone()),
         }
     }
 
@@ -1732,6 +1748,7 @@ impl Host<'_> {
     fn recheck(&mut self) {
         self.skill_force = true;
         self.mcp_force = true;
+        self.provider_force = true;
         self.envs = envs::discover();
         match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.templates, &self.envs)) {
             Ok(a) => self.agents = a,
@@ -1883,6 +1900,7 @@ impl Host<'_> {
         }
         self.skill_force = true;
         self.mcp_force = true;
+        self.provider_force = true;
         self.beat_soon = true;
         let ids: Vec<String> = self.templates.iter().map(|t| t.id.clone()).collect();
         let over: Vec<String> = self.agents.iter().filter(|a| a.local_override).map(|a| a.id.clone()).collect();
@@ -2286,6 +2304,99 @@ impl Host<'_> {
         changed
     }
 
+    /// 模型供应商共用配置（PRD §10.12「共用配置」）：和 MCP 一样，索引、每个 agent 用哪个、机器设置里的供应商
+    /// 或本机找到的 agent 变了（重新检查后、超过 10 分钟）就在后台开始一次：用令牌取完整内容（含 API key 原文），
+    /// 再按备份/设置写各 agent 的配置文件
+    fn poll_providers(&mut self) -> bool {
+        let mut changed = false;
+        if self.provider_job.as_ref().is_some_and(|h| h.is_finished()) {
+            if let Ok(out) = self.provider_job.take().expect("上面看过").join() {
+                for c in &out.changes {
+                    self.say(format!("{} 模型供应商：{c}", self.p.green("✓")));
+                }
+                let bad: Vec<String> = out
+                    .states
+                    .iter()
+                    .filter(|s| s.state == "failed")
+                    .map(|s| format!("{}：{}", s.agent, s.why.as_deref().unwrap_or("失败")))
+                    .collect();
+                if !bad.is_empty() && out.states != self.provider_states {
+                    self.say(format!("{} 模型供应商没写进配置文件：{}", self.p.yellow("!"), bad.join("；")));
+                }
+                changed = out.states != self.provider_states;
+                self.provider_states = out.states;
+            }
+        }
+        if self.provider_job.is_some() {
+            return changed;
+        }
+        let Some(work) = self.work.as_ref().and_then(|w| w.providers.clone()) else { return changed };
+        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
+        let mut found: Vec<(String, Env, Option<String>)> = vec![];
+        for spec in &self.agents {
+            let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
+            let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
+            let Some(env) = self.envs.iter().find(|e| e.id == env_id) else { continue };
+            found.push((spec.id.clone(), env.clone(), u.run_provider.clone()));
+        }
+        let key = format!(
+            "{:?}|{:?}|{:?}",
+            work.providers.iter().map(|p| (&p.name, &p.version)).collect::<Vec<_>>(),
+            work.agents.iter().map(|a| (&a.agent, &a.provider, &a.model, &a.effort)).collect::<Vec<_>>(),
+            found.iter().map(|(a, e, r)| (a, &e.id, r)).collect::<Vec<_>>()
+        );
+        if !self.provider_force && self.provider_key.as_deref() == Some(key.as_str()) && self.provider_at.elapsed() < SKILLS_EVERY {
+            return changed;
+        }
+        self.provider_force = false;
+        self.provider_key = Some(key);
+        self.provider_at = Instant::now();
+        let rm = self.rm().clone();
+        let name = self.name.clone();
+        let dir = self.logs.parent().map(|d| d.join("agent-config")).unwrap_or_else(|| PathBuf::from("agent-config"));
+        let any = !work.providers.is_empty();
+        self.provider_job = Some(std::thread::spawn(move || {
+            // 共用配置是空的：不用取，直接按空的同步（恢复以前写的）
+            let lib = if any {
+                match rm.get::<providersync::Lib>(&format!("/api/hosts/{name}/providers"), &[]) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let states = found
+                            .iter()
+                            .map(|(a, _, _)| board_core::providers::ProviderState {
+                                agent: a.clone(),
+                                state: "failed".into(),
+                                provider: String::new(),
+                                model: String::new(),
+                                why: Some(format!("取不到模型供应商配置：{}", e.message)),
+                            })
+                            .collect();
+                        return providersync::Synced { states, changes: vec![] };
+                    }
+                }
+            } else {
+                providersync::Lib::default()
+            };
+            let mut targets = vec![];
+            let mut unsupported = vec![];
+            for (agent, env, run_provider) in found {
+                match providersync::files_of(&agent, &env) {
+                    Some(files) => targets.push(providersync::Target { agent, run_provider, files }),
+                    None => {
+                        let why = if env.wsl().is_some() {
+                            format!("{}里的 agent 还不能改写配置文件", env.name)
+                        } else {
+                            "配置文件里新加的 agent 不支持按共用配置改写（只支持 Claude Code、Codex、pi、dsh）".to_string()
+                        };
+                        unsupported.push((agent, why));
+                    }
+                }
+            }
+            providersync::sync(&lib.providers, &lib.agents, &targets, &unsupported, &dir)
+        }));
+        changed
+    }
+
     /// 自检（PRD §10.12「自检」）：取到的任务里有新的请求就在后台线程里做；做完回报，回报失败下一轮再报
     fn poll_selftest(&mut self) {
         if self.selftest.as_ref().is_some_and(|(_, h)| h.is_finished()) {
@@ -2576,6 +2687,10 @@ impl Host<'_> {
             if self.poll_mcp() {
                 next_beat = Instant::now();
             }
+            // 模型供应商共用配置：写进各 agent 的配置文件
+            if self.poll_providers() {
+                next_beat = Instant::now();
+            }
             // 远程管理：重新检查、重启、升级
             let (soon, quit) = self.handle_ask();
             let (soon2, quit2) = self.poll_update();
@@ -2614,6 +2729,7 @@ impl Host<'_> {
     fn reload(&mut self) -> bool {
         self.skill_force = true;
         self.mcp_force = true;
+        self.provider_force = true;
         let skills = self.recheck_skills();
         // 重新读配置时把环境检查重跑一遍（可能刚装好了缺的工具）
         self.ready_all = true;
@@ -3668,9 +3784,14 @@ mod tests {
         ];
         let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
         let opts = |id: &str| specs.iter().find(|s| s.id == id).unwrap().report().opts.unwrap();
-        assert_eq!(opts("claude"), AgentOpts { model: true, models: sv(&["opus", "sonnet", "haiku", "fable"]), efforts: sv(&["low", "medium", "high", "xhigh", "max"]) });
-        assert_eq!(opts("dsh"), AgentOpts::default());
-        assert_eq!(opts("mycli"), AgentOpts { model: false, models: vec![], efforts: sv(&["low", "medium", "high"]) });
+        let a = |p: &[&str]| sv(p);
+        assert_eq!(
+            opts("claude"),
+            AgentOpts { model: true, models: sv(&["opus", "sonnet", "haiku", "fable"]), efforts: sv(&["low", "medium", "high", "xhigh", "max"]), protocols: a(&["anthropic"]) }
+        );
+        // dsh 不能选模型和强度，但它是内置 agent：共用配置「模型供应商」里能给它选三种接口的供应商
+        assert_eq!(opts("dsh"), AgentOpts { protocols: a(&["anthropic", "openai-chat", "openai-responses"]), ..Default::default() });
+        assert_eq!(opts("mycli"), AgentOpts { model: false, models: vec![], efforts: sv(&["low", "medium", "high"]), protocols: vec![] });
         assert_eq!(opts("plain"), AgentOpts::default(), "没写 model_args、effort_args 的 agent 不显示这两项");
     }
 

@@ -95,6 +95,7 @@ fn host_report(running: Vec<i64>) -> HostReport {
         selftest: false,
         skills: None,
         mcp: None,
+        providers: None,
     }
 }
 

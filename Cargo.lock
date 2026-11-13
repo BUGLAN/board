@@ -361,6 +361,7 @@ dependencies = [
  "sha2 0.10.9",
  "sysinfo",
  "tempfile",
+ "toml_edit 0.25.19+spec-1.1.0",
  "unicode-width",
  "ureq",
 ]

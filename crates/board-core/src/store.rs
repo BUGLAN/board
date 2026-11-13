@@ -291,6 +291,7 @@ impl Store {
         conn.execute_batch(crate::skills::SCHEMA)?;
         conn.execute_batch(crate::mcp::SCHEMA)?;
         conn.execute_batch(crate::templates::SCHEMA)?;
+        conn.execute_batch(crate::providers::SCHEMA)?;
         conn.execute_batch(crate::card_crons::SCHEMA)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
