@@ -588,7 +588,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                   // 同一个会话：一行，写做了几张、各自的结果
                   const first = g.list[g.list.length - 1];
                   return (
-                    <button type="button" className="hp-hist" key={`s${g.session}`} onClick={() => openSession({ id: g.session })} title="打开这个会话">
+                    <button type="button" className="hp-hist" key={`s${g.session}`} onClick={() => openSession({ id: g.session, known: g.list })} title="打开这个会话">
                       <Mark id={p.agent} title={p.agentLabel} />
                       <div>
                         <b>
@@ -613,7 +613,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 }
                 const r = resultOf(p);
                 return (
-                  <button type="button" className="hp-hist" key={p.id} onClick={() => openSession({ id: p.session || p.id, card: p.card })} title="打开这个会话">
+                  <button type="button" className="hp-hist" key={p.id} onClick={() => openSession({ id: p.session || p.id, card: p.card, known: [p] })} title="打开这个会话">
                     <Mark id={p.agent} title={p.agentLabel} />
                     <div>
                       <b>
@@ -1817,7 +1817,7 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         <span>{SOURCE[r.source]}</span>
         {r.stopBy && <span className="hp-stopping">正在停止</span>}
         <span className="hp-sp" />
-        <button className="hp-link" type="button" onClick={() => openSession({ id: r.session || r.id, card: r.card })}>
+        <button className="hp-link" type="button" onClick={() => openSession({ id: r.session || r.id, card: r.card, known: [r] })}>
           <Icon name="log" />
           会话
         </button>

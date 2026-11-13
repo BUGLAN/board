@@ -696,7 +696,7 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           </span>
           <span className="spacer" />
           {d.state === 'running' && (
-            <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card })}>
+            <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card, known: [d] })}>
               <Icon name="log" />
               会话
             </button>

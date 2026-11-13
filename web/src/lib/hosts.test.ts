@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
+import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -171,6 +171,37 @@ describe('环境检查（readiness）', () => {
       ['win', 'pending'],
     ]);
     expect(boardHosts(ws, 'p/b')).toEqual([]);
+  });
+});
+
+describe('sessionSlots（会话弹窗取回来之前已经知道的几张）', () => {
+  // 会话 #10 一共 3 张：第 1 张做完了（「最近」里带来的），第 2 张在跑、第 3 张排着（推送里的）
+  const a = disp(10, { state: 'done', result: 'review', session: 10, seq: 1, total: 3 });
+  const b = disp(11, { state: 'running', session: 10, seq: 2, total: 3 });
+  const c = disp(12, { state: 'queued', session: 10, seq: 3, total: 3 });
+  const other = disp(20, { state: 'running', session: 20, seq: 1, total: 1 });
+
+  it('按 seq 放好位置，不是这个会话的不要；推送里的盖掉打开时带来的旧数据', () => {
+    const stale = { ...b, state: 'queued' as const };
+    const s = sessionSlots(10, [a, stale], [other, b, c]);
+    expect(s.map(d => d?.id)).toEqual([10, 11, 12]);
+    expect(s[1]?.state).toBe('running');
+  });
+
+  it('只知道一部分：一共几张取 total，不知道的位置是 null（画骨架）', () => {
+    expect(sessionSlots(10, [b], []).map(d => d?.id ?? null)).toEqual([null, 11, null]);
+    // total 比 seq 小（之后又排进来的）按 seq 算
+    expect(sessionSlots(10, [disp(13, { session: 10, seq: 4, total: 3 })], []).length).toBe(4);
+  });
+
+  it('一张都不知道时为空；排得再多也最多先画 20 张', () => {
+    expect(sessionSlots(10, undefined, [other])).toEqual([]);
+    expect(sessionSlots(10, [disp(10, { session: 10, seq: 1, total: 99 })], []).length).toBe(20);
+  });
+
+  it('旧版服务端没有 session、seq：认自己的 ID，只列出知道的', () => {
+    const old = disp(7, { state: 'done' });
+    expect(sessionSlots(7, [old], [])).toEqual([old]);
   });
 });
 

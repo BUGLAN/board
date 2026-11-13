@@ -1,6 +1,7 @@
 /* ==========================================================================
    骨架屏（components/Skeleton.tsx）：--surface-3 底色 + 一道扫光
    减弱动态效果（系统设置或「设置 → 动效」）时只留底色
+   类名前缀 sk- 只给骨架屏用：别的界面用了同名的类（例如 .sk-row）会把骨架行改成那边的样子
    ========================================================================== */
 .sk {
   display: block; flex: none; position: relative; overflow: hidden; max-width: 100%;
@@ -83,12 +84,14 @@
 .ss-card.sk-row > div { flex: 1; }
 .ss-card.sk-row b .sk, .ss-card.sk-row div > span .sk { display: inline-block; vertical-align: middle; margin-top: 0; }
 .ss-card.sk-row .sk-cid { display: inline-flex; align-items: center; min-height: 24px; margin: -3px 0; }
-/* 主区：段落标题和真实标题同高；工具行和真实的行同高 */
-.sk-out .ss-seg h4 { align-items: center; min-height: calc(1.5em + 17px); }
-.sk-out .ss-seg h4 .sk-state { margin-left: auto; }
-.sk-out .ev-msg { padding: 7px 0; }
-.sk-out .ev-tool-row { min-height: 28px; }
-.sk-out .ev-tool-row .sk-mark { margin-left: auto; }
+/* 主区：不知道的段落标题和真实标题同高；内容里工具行和真实的行同高 */
+.ss-seg h4.sk-h4 { align-items: center; min-height: calc(1.5em + 17px); }
+.ss-seg h4.sk-h4 .sk-state { margin-left: auto; }
+.sk-body .ev-msg { padding: 7px 0; }
+.sk-body .ev-tool-row { min-height: 28px; }
+.sk-body .ev-tool-row .sk-mark { margin-left: auto; }
+/* 标题先按知道的画出来的段：内容换成真的时淡入，标题不动 */
+.ss-seg-fill > :not(h4) { animation: sk-swap var(--dur-2) var(--ease-out) both; }
 
 /* 按需加载的页面还在下载（Skeleton.tsx 的 PageLoading） */
 .page-loading { display: flex; flex-direction: column; gap: 14px; width: min(720px, 100%); margin: 0 auto; padding: 48px 24px; }

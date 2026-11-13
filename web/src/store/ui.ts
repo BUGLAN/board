@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { ApiError } from '../lib/api';
 import { syncUrl } from '../lib/route';
-import type { ColumnKey, Label } from '../lib/types';
+import type { ColumnKey, Dispatch, Label } from '../lib/types';
 import { pref } from '../lib/util';
 
 /** 一张可以放大查看的图片 */
@@ -158,7 +158,7 @@ interface UIState {
   /** 卡片详情里的「派发」对话框：卡片编号 */
   dispatchOf: number | null;
   /** 打开的「会话」弹窗：会话里任一次派发的 ID；card 是要定位到的那张卡 */
-  session: { id: number; card?: number } | null;
+  session: SessionReq | null;
   /** 打开的复盘台（PRD §10.14）：当前白板上哪几个状态；mode 是复盘（交审）还是处理（需要人处理） */
   review: { cols: string[]; mode: 'review' | 'human' } | null;
   /** 手机白板页的底部抽屉：筛选框、标签、正在工作、最近动态（桌面端在侧栏里） */
@@ -305,8 +305,15 @@ export const setHostsView = (v: HostsView) => {
 /** 打开 / 关掉（null）这块白板的回收站 */
 export const openTrash = (path: string | null) => set({ trash: path });
 export const openDispatch = (card: number | null) => set({ dispatchOf: card });
-/** 打开 / 关掉（null）「会话」弹窗：id 是会话里任一次派发，card 是要定位到的卡 */
-export const openSession = (req: { id: number; card?: number } | null) => set({ session: req });
+/** 打开「会话」弹窗：id 是会话里任一次派发，card 是要定位到的卡；known 是打开它的那一行已经有的派发（这个会话的），
+    取回来之前头部、卡片列表、各段标题先按它画，只有输出画骨架 */
+export interface SessionReq {
+  id: number;
+  card?: number;
+  known?: Dispatch[];
+}
+/** 打开 / 关掉（null）「会话」弹窗 */
+export const openSession = (req: SessionReq | null) => set({ session: req });
 export const openReview = (req: { cols: string[]; mode: 'review' | 'human' } | null) => set({ review: req });
 
 export const openCtx = (req: CtxReq) => set({ ctx: req });

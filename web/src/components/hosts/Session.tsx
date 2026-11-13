@@ -8,17 +8,19 @@
      事件第一次全取，之后带 since 增量取：推送里有这个会话的派发（ran）时马上取，在跑时另外每 5 秒取一次（原始输出每 5 秒
      上传）。滚在底部时跟着新内容，往上翻时位置不动
    - 头部：各张卡结束事件里的用量加起来（agent 输出里有才显示）
-   - 第一次取回来之前：头部、左栏、主区按真实形状画骨架（Skeleton），容器 aria-busy；取到后淡入（sk-swap）
+   - 第一次取回来之前：打开它的那一行带来的派发、推送里这个会话在跑和排着的（sessionSlots），先把头部、元信息、左栏的卡片行、
+     各段标题按真实内容画出来，张数按会话一共几张；只有输出内容、不知道的那几张画骨架（Skeleton）。一张都不知道时整块按
+     真实形状画骨架。容器 aria-busy；取到后内容淡入（sk-swap），先画出来的部分原地不动
    ========================================================================== */
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { hostsOf, resultOf, SOURCE } from '../../lib/hosts';
+import { dispatchesOf, hostsOf, resultOf, sessionSlots, SOURCE } from '../../lib/hosts';
 import { groupEvents, groupWords, mergeSession, resultText, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
 import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
 import { cx, durWords, hhmm, isMobile } from '../../lib/util';
 import { onRuns, useData } from '../../store/data';
-import { openHost, openSession, useUI } from '../../store/ui';
+import { openHost, openSession, useUI, type SessionReq } from '../../store/ui';
 import { Markdown, Segmented, useNow } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from '../overlays/presence';
@@ -50,7 +52,7 @@ export function SessionModal() {
   return createPortal(<SessionShell req={last.current} on={on && !!req} />, document.body);
 }
 
-function SessionShell({ req, on }: { req: { id: number; card?: number }; on: boolean }) {
+function SessionShell({ req, on }: { req: SessionReq; on: boolean }) {
   const close = () => openSession(null);
   const drawer = useRef<HTMLElement>(null);
   const [sheetY, setSheetY] = useState<number | null>(null);
@@ -111,13 +113,13 @@ function SessionShell({ req, on }: { req: { id: number; card?: number }; on: boo
         <div className="drawer-grab">
           <i />
         </div>
-        <SessionBody key={req.id} id={req.id} card={req.card} on={on} close={close} />
+        <SessionBody key={req.id} id={req.id} card={req.card} known={req.known} on={on} close={close} />
       </aside>
     </>
   );
 }
 
-function SessionBody({ id, card, on, close }: { id: number; card?: number; on: boolean; close: () => void }) {
+function SessionBody({ id, card, known, on, close }: { id: number; card?: number; known?: Dispatch[]; on: boolean; close: () => void }) {
   const [view, setView] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<'events' | 'raw'>('events');
@@ -173,6 +175,11 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
     };
   }, [id, on, rev, running]);
 
+  // 第一次还没取回来（出错时不算，直接显示错误）
+  const loading = !view && !error;
+  // 取回来之前已经知道的几张，按第几张排好；不知道的是 null。一张都不知道时为空，整块画骨架
+  const slots = useMemo(() => (loading ? sessionSlots(id, known, dispatchesOf(ws)) : []), [loading, id, known, ws]);
+
   // 输出：在底部时跟着新内容；往上翻了就不动
   const main = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -180,10 +187,9 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
   const total = view?.parts.reduce((n, p) => n + p.log.length + (p.events?.length ?? 0) * 7 + (p.events?.filter(e => e.ok != null).length ?? 0), 0) ?? 0;
   useLayoutEffect(() => {
     const el = main.current;
-    if (!el || !view) return;
-    // 第一次：定位到要看的那张卡（没有时到底部）
-    if (!placed.current) {
-      placed.current = true;
+    if (!el) return;
+    // 定位到要看的那张卡（没有、或者是最后一张时到底部）。先按知道的几张画出来时也定位一次，取回来后再按真实内容定位
+    const place = () => {
       const seg = card != null ? el.querySelector<HTMLElement>(`[data-card="${card}"]`) : null;
       if (seg && seg !== el.lastElementChild) {
         el.scrollTop = seg.offsetTop - el.offsetTop - 8;
@@ -191,11 +197,20 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
         return;
       }
       el.scrollTop = el.scrollHeight;
+    };
+    if (!view) {
+      if (slots.length) place();
+      return;
+    }
+    if (!placed.current) {
+      placed.current = true;
+      stick.current = true;
+      place();
       return;
     }
     if (stick.current) el.scrollTop = el.scrollHeight;
-  }, [view, total, card, mode]);
-  const jump = (p: Part) => {
+  }, [view, total, card, mode, slots.length]);
+  const jump = (p: Dispatch) => {
     const el = main.current;
     const seg = el?.querySelector<HTMLElement>(`[data-part="${p.id}"]`);
     if (!el || !seg) return;
@@ -203,16 +218,21 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
   };
 
   const parts = view?.parts ?? [];
-  const first = parts[0];
-  const cur = parts.find(p => p.state === 'running');
-  const lastDone = [...parts].reverse().find(p => p.state === 'done');
-  const started = parts.find(p => p.startedAt != null)?.startedAt ?? null;
-  const ended = running ? null : (lastDone?.endedAt ?? null);
+  // 头部、元信息按取回来的画；还没取回来时按已经知道的几张
+  const src: Dispatch[] = view ? parts : slots.filter((p): p is Dispatch => !!p);
+  const first = src[0];
+  // 第 1 张：来源以它为准；开始时间、用时、状态要每一张都知道（第一张什么时候开始、最后一张的结果）才画，不全时画骨架
+  const lead = view ? parts[0] : slots[0];
+  const exact = !!view || (slots.length > 0 && slots.every(Boolean));
+  const live = src.some(p => p.state === 'running');
+  const cur = src.find(p => p.state === 'running');
+  const lastDone = [...src].reverse().find(p => p.state === 'done');
+  const started = src.find(p => p.startedAt != null)?.startedAt ?? null;
+  const ended = live ? null : (lastDone?.endedAt ?? null);
   const removed = first && !hostsOf(ws).some(h => h.id === first.hostId);
-  const state = running ? { label: '在跑', color: 'var(--c-doing)' } : lastDone ? resultOf(lastDone) : { label: '还没开始', color: 'var(--text-3)' };
+  const state = live ? { label: '在跑', color: 'var(--c-doing)' } : lastDone ? resultOf(lastDone) : { label: '还没开始', color: 'var(--text-3)' };
   const usage = totals(parts);
-  // 第一次还没取回来：画骨架（出错时不画，直接显示错误）
-  const loading = !view && !error;
+  const rows: (Dispatch | null)[] = view ? parts : slots;
   return (
     <div className="drawer-body">
       <div className="d-head ss-head">
@@ -220,7 +240,7 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           <Icon name="log" />
           会话
         </span>
-        {loading && (
+        {loading && !first && (
           <span className="ss-who sk-who" aria-hidden="true">
             <Skeleton w={20} h={18} r={5} />
             <Skeleton w={76} h={11} />
@@ -256,20 +276,33 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           <Icon name="close" />
         </button>
       </div>
-      {loading && <MetaSkeleton />}
+      {loading && !first && <MetaSkeleton />}
       {first && (
         <div className="ss-meta sk-swap">
           {first.name && <span className="hp-mono">{first.name}</span>}
           {first.envName && <span>{first.envName}</span>}
           {(first.model || first.effort) && <span>{[first.model, first.effort && `强度 ${first.effort}`].filter(Boolean).join(' · ')}</span>}
-          <span>{SOURCE[first.source]}</span>
-          {started != null && <span>开始于 {hhmm(started)}</span>}
-          {started != null && <span>用时 {durWords((ended ?? now) - started)}</span>}
+          {lead ? <span>{SOURCE[lead.source]}</span> : <Skeleton w={28} h={10} />}
+          {exact ? (
+            <>
+              {started != null && <span>开始于 {hhmm(started)}</span>}
+              {started != null && <span>用时 {durWords((ended ?? now) - started)}</span>}
+            </>
+          ) : (
+            <>
+              <Skeleton w={76} h={10} />
+              <Skeleton w={84} h={10} />
+            </>
+          )}
           {usage && <span className="ss-usage">{usageWords(usage)}</span>}
-          <span className="ss-state" style={{ ['--c' as string]: state.color }}>
-            {state.label}
-            {cur?.stopBy && ' · 正在停止'}
-          </span>
+          {exact ? (
+            <span className="ss-state" style={{ ['--c' as string]: state.color }}>
+              {state.label}
+              {cur?.stopBy && ' · 正在停止'}
+            </span>
+          ) : (
+            <Skeleton w={28} h={10} />
+          )}
           <span className="ss-modes">
             <Segmented
               value={mode}
@@ -285,76 +318,109 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
       <div className="ss-grid" aria-busy={loading || undefined}>
         <nav className="ss-cards" aria-label="这个会话做过的卡片">
           <div className="d-label">
-            卡片 {loading ? <Skeleton className="count" w={10} h={10} /> : <span className="count">{parts.length || ''}</span>}
+            卡片 {loading && !rows.length ? <Skeleton className="count" w={10} h={10} /> : <span className="count">{rows.length || ''}</span>}
           </div>
-          {loading && <CardsSkeleton />}
-          {parts.map((p, i) => {
-            const st = partState(p);
-            const took = partTook(p, now);
-            return (
-              <div key={p.id} className={cx('ss-card sk-swap', p.card === card && 'on')} role="button" tabIndex={0} onClick={() => jump(p)} onKeyDown={e => e.key === 'Enter' && jump(p)}>
-                <span className="ss-n">{i + 1}</span>
-                <div>
-                  <b>
-                    <button
-                      type="button"
-                      className="hp-cid link"
-                      onClick={e => {
-                        e.stopPropagation();
-                        close();
-                        goCard(p);
-                      }}
-                      title="打开卡片"
-                    >
-                      #{p.card}
-                    </button>{' '}
-                    {p.title}
-                  </b>
-                  <span>
-                    <em style={{ ['--c' as string]: st.color }}>{st.label}</em>
-                    {took != null && <> · {durWords(took)}</>}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+          {loading && <span className="sr-only">正在加载…</span>}
+          {loading && !rows.length && <CardsSkeleton />}
+          {rows.map((p, i) =>
+            p ? (
+              <CardRow
+                key={p.id}
+                p={p}
+                n={i + 1}
+                on={p.card === card}
+                now={now}
+                jump={() => jump(p)}
+                open={() => {
+                  close();
+                  goCard(p);
+                }}
+              />
+            ) : (
+              <CardRowSkeleton key={`sk${i}`} i={i} />
+            ),
+          )}
         </nav>
         <div className="ss-out" ref={main} onScroll={e => {
           const el = e.currentTarget;
           stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 12;
         }}>
-          {loading && <OutSkeleton />}
+          {loading && !rows.length && <OutSkeleton />}
           {error && <p className="hp-note ss-err">{error}</p>}
-          {parts.map(p => (
-            <section key={p.id} className="ss-seg sk-swap" data-part={p.id} data-card={p.card}>
-              <h4>
-                #{p.card} {p.title}
-                <em style={{ ['--c' as string]: partState(p).color }}>{partState(p).label}</em>
-              </h4>
-              {mode === 'events' ? (
-                <Process p={p} showRaw={() => setMode('raw')} />
-              ) : (
-                <pre className="hp-log ss-log">
-                  {p.log.length
-                    ? p.log.join('\n')
-                    : p.state === 'queued'
-                      ? '排着：等这个会话做完前面的卡再开始'
-                      : p.state === 'running'
-                        ? '还没有输出（host 每 5 秒上传一次新增的行）'
-                        : '没有输出'}
-                  {p.state === 'running' && (
-                    <>
-                      {'\n'}
-                      <span className="hp-caret">▍</span>
-                    </>
-                  )}
-                </pre>
-              )}
-            </section>
-          ))}
+          {rows.map((p, i) => (p ? <Segment key={p.id} p={p} mode={mode} pending={!view} showRaw={() => setMode('raw')} /> : <SegSkeleton key={`sk${i}`} i={i} />))}
         </div>
       </div>
     </div>
+  );
+}
+
+/** 左栏的一行：序号、#ID（点开卡片）、标题、状态 · 用时；点这一行跳到它那一段输出 */
+function CardRow({ p, n, on, now, jump, open }: { p: Dispatch; n: number; on: boolean; now: number; jump: () => void; open: () => void }) {
+  const st = partState(p);
+  const took = partTook(p, now);
+  return (
+    <div className={cx('ss-card sk-swap', on && 'on')} role="button" tabIndex={0} onClick={jump} onKeyDown={e => e.key === 'Enter' && jump()}>
+      <span className="ss-n">{n}</span>
+      <div>
+        <b>
+          <button
+            type="button"
+            className="hp-cid link"
+            onClick={e => {
+              e.stopPropagation();
+              open();
+            }}
+            title="打开卡片"
+          >
+            #{p.card}
+          </button>{' '}
+          {p.title}
+        </b>
+        <span>
+          <em style={{ ['--c' as string]: st.color }}>{st.label}</em>
+          {took != null && <> · {durWords(took)}</>}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 一张卡那一段：标题（#ID 标题 … 状态），下面是过程或原始输出。
+ *  pending：还没取回来，标题按已经知道的画，内容画骨架（排着的没有内容，直接写排着）；取回来后内容淡入，标题不动 */
+function Segment({ p, mode, pending, showRaw }: { p: Part | Dispatch; mode: 'events' | 'raw'; pending: boolean; showRaw: () => void }) {
+  const st = partState(p);
+  // 先按已经知道的画出来的段：内容到了要淡入（标题不动）
+  const fill = useRef(pending).current;
+  const part: Part = 'log' in p ? p : { ...p, log: [], events: [], eventsFrom: 0, eventsDropped: 0 };
+  const body = pending && p.state !== 'queued';
+  return (
+    <section className={cx('ss-seg sk-swap', fill && 'ss-seg-fill')} data-part={p.id} data-card={p.card}>
+      <h4>
+        #{p.card} {p.title}
+        <em style={{ ['--c' as string]: st.color }}>{st.label}</em>
+      </h4>
+      {body ? (
+        <SegBodySkeleton key="sk" i={(p.seq ?? 1) - 1} />
+      ) : mode === 'events' ? (
+        <Process key="events" p={part} showRaw={showRaw} />
+      ) : (
+        <pre key="raw" className="hp-log ss-log">
+          {part.log.length
+            ? part.log.join('\n')
+            : part.state === 'queued'
+              ? '排着：等这个会话做完前面的卡再开始'
+              : part.state === 'running'
+                ? '还没有输出（host 每 5 秒上传一次新增的行）'
+                : '没有输出'}
+          {part.state === 'running' && (
+            <>
+              {'\n'}
+              <span className="hp-caret">▍</span>
+            </>
+          )}
+        </pre>
+      )}
+    </section>
   );
 }
 
@@ -364,11 +430,11 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
 function MetaSkeleton() {
   return (
     <div className="ss-meta sk-meta" aria-hidden="true">
-      {[92, 64, 118, 56, 72, 60, 36].map((w, i) => (
+      {[124, 22, 104, 28, 76, 84, 28].map((w, i) => (
         <Skeleton key={i} w={w} h={10} />
       ))}
       <span className="ss-modes">
-        <Skeleton w={128} h={32} r="var(--r-sm)" />
+        <Skeleton w={131} h={32} r="var(--r-sm)" />
       </span>
     </div>
   );
@@ -382,39 +448,46 @@ const CARD_ROWS: { title: string[]; meta: number }[] = [
   { title: ['50%'], meta: 58 },
 ];
 
+function CardRowSkeleton({ i }: { i: number }) {
+  const r = CARD_ROWS[i % CARD_ROWS.length];
+  return (
+    <div className="ss-card sk-row" aria-hidden="true">
+      <Skeleton w={18} h={18} r={9} />
+      <div>
+        <b>
+          {/* 和真实的 #ID 按钮同样的盒子（等宽字、24px 高、上下 -3px），第一行才一样高 */}
+          <span className="hp-cid sk-cid">
+            {'​'}
+            <Skeleton w={30} h={10} />
+          </span>{' '}
+          {r.title.map((w, j) => (
+            <Fragment key={j}>
+              {j > 0 && <br />}
+              <Skeleton w={w} h={10} />
+            </Fragment>
+          ))}
+        </b>
+        <span>
+          <Skeleton w={r.meta} h={9} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 一张都不知道时：左栏 4 行 */
 function CardsSkeleton() {
   return (
     <>
-      <span className="sr-only">正在加载…</span>
-      {CARD_ROWS.map((r, i) => (
-        <div key={i} className="ss-card sk-row" aria-hidden="true">
-          <Skeleton w={18} h={18} r={9} />
-          <div>
-            <b>
-              {/* 和真实的 #ID 按钮同样的盒子（等宽字、24px 高、上下 -3px），第一行才一样高 */}
-              <span className="hp-cid sk-cid">
-                {'\u200b'}
-                <Skeleton w={30} h={10} />
-              </span>{' '}
-              {r.title.map((w, j) => (
-                <Fragment key={j}>
-                  {j > 0 && <br />}
-                  <Skeleton w={w} h={10} />
-                </Fragment>
-              ))}
-            </b>
-            <span>
-              <Skeleton w={r.meta} h={9} />
-            </span>
-          </div>
-        </div>
+      {CARD_ROWS.map((_, i) => (
+        <CardRowSkeleton key={i} i={i} />
       ))}
     </>
   );
 }
 
-/** 主区：两段，每段一个标题（#ID 标题 … 状态），下面是 agent 说的话、工具调用行 */
-function OutSkeleton() {
+/** 一段的内容：agent 说的话、工具调用行（第几段错开长短） */
+function SegBodySkeleton({ i }: { i: number }) {
   const tool = (w: string, k: number) => (
     <div key={k} className="ev-tool">
       <span className="ev-tool-row">
@@ -430,22 +503,37 @@ function OutSkeleton() {
       <SkeletonText lines={lines} h={10} gap={11} last={last} />
     </div>
   );
-  const segs = [
-    { title: '46%', rows: [msg(2, '58%', 0), tool('52%', 1), tool('38%', 2), tool('60%', 3), msg(3, '44%', 4)] },
-    { title: '34%', rows: [msg(2, '66%', 0), tool('44%', 1), tool('56%', 2), tool('36%', 3), msg(1, '40%', 4)] },
-  ];
+  const rows = [
+    [msg(2, '58%', 0), tool('52%', 1), tool('38%', 2), tool('60%', 3), msg(3, '44%', 4)],
+    [msg(2, '66%', 0), tool('44%', 1), tool('56%', 2), tool('36%', 3), msg(1, '40%', 4)],
+  ][i % 2];
   return (
-    <div className="sk-out" aria-hidden="true">
-      {segs.map((s, i) => (
-        <section key={i} className="ss-seg">
-          <h4>
-            <Skeleton w={s.title} h={11} />
-            <Skeleton className="sk-state" w={36} h={10} />
-          </h4>
-          <div className="ev-list">{s.rows}</div>
-        </section>
-      ))}
+    <div className="ev-list sk-body" aria-hidden="true">
+      {rows}
     </div>
+  );
+}
+
+/** 不知道的一段：标题（#ID 标题 … 状态）和内容都是骨架 */
+function SegSkeleton({ i }: { i: number }) {
+  return (
+    <section className="ss-seg" aria-hidden="true">
+      <h4 className="sk-h4">
+        <Skeleton w={['46%', '34%'][i % 2]} h={11} />
+        <Skeleton className="sk-state" w={36} h={10} />
+      </h4>
+      <SegBodySkeleton i={i} />
+    </section>
+  );
+}
+
+/** 一张都不知道时：主区两段 */
+function OutSkeleton() {
+  return (
+    <>
+      <SegSkeleton i={0} />
+      <SegSkeleton i={1} />
+    </>
   );
 }
 

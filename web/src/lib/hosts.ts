@@ -157,6 +157,23 @@ export const sessionQueue = (ws: Workspace | null, session: number | undefined) 
 export const sessionRunning = (ws: Workspace | null, d: Dispatch) =>
   dispatchesOf(ws).find(x => x.state === 'running' && x.session === d.session);
 
+/** 会话弹窗最多先画几张（排得再多也只占这么多行骨架） */
+const SLOTS_MAX = 20;
+
+/** 会话弹窗取回来之前已经知道的派发：打开它的那一行带来的（known），加上推送里这个会话在跑、排着的（live，较新，盖掉前者）。
+ *  按会话里的先后排成第 1…N 张，N 取 seq、total 里最大的：知道的放在自己的位置，不知道的是 null（那一行、那一段画骨架）。
+ *  一张都不知道时为空（画通用骨架）；旧版服务端没有 seq 时只按先后列出知道的 */
+export function sessionSlots(id: number, known: readonly Dispatch[] | undefined, live: readonly Dispatch[]): (Dispatch | null)[] {
+  const byId = new Map<number, Dispatch>();
+  for (const d of [...(known ?? []), ...live]) if ((d.session || d.id) === id) byId.set(d.id, d);
+  const list = [...byId.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || a.id - b.id);
+  if (!list.length || list.some(d => d.seq == null || d.seq < 1)) return list;
+  const n = Math.min(SLOTS_MAX, Math.max(list.length, ...list.map(d => Math.max(d.seq ?? 1, d.total ?? 1))));
+  const slots: (Dispatch | null)[] = Array.from({ length: n }, () => null);
+  for (const d of list) if (d.seq! <= n && !slots[d.seq! - 1]) slots[d.seq! - 1] = d;
+  return slots;
+}
+
 /** 「最近」里同一个会话（同一个 agent 进程）的派发合成一组：按最近一张结束的时间排，组里新的在前 */
 export function sessionGroups(list: Dispatch[]) {
   const groups: { session: number; t: number; list: Dispatch[] }[] = [];

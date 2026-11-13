@@ -1167,40 +1167,40 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .fm-none { grid-column: 1 / -1; margin: 6px 4px; font-size: 12px; color: var(--text-3); }
 .fm-from { margin: 0; padding: 6px 10px; border-top: 1px dashed var(--line); font: 11px var(--f-mono); color: var(--text-3); overflow-wrap: anywhere; }
 :root[data-motion="reduced"] :is(.fm, .fm-chip, .fm-picker, .sy-detail) { animation: none; }
-/* 从机器导入 skills（SkillImport.tsx）：选机器的磁贴、本机 skill 的清单、等待和结果 */
-.sk-host { display: grid; min-width: 0; }
-.sk-host.off .fm-tile { opacity: .5; cursor: not-allowed; }
-.sk-host.off .fm-tile:hover { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
-.sk-host .hp-os { width: 22px; height: 22px; }
-.sk-list { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
-.sk-row { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 52px; padding: 8px 12px; text-align: left; transition: background-color var(--dur-1); }
-.sk-row + .sk-row { border-top: 1px solid var(--line); }
-.sk-row:not(:disabled):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
-.sk-row:disabled { cursor: default; opacity: 1; }
-.sk-row:disabled .fm-check { opacity: .35; }
-.sk-row.on { background: color-mix(in srgb, var(--brand) 6%, transparent); }
-.sk-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.sk-name { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; }
-.sk-name b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sk-name code { font: 11px var(--f-mono); color: var(--text-3); }
-.sk-kind { flex: none; height: 18px; padding: 0 7px; border-radius: 999px; font-style: normal; font-size: 10.5px; line-height: 18px; color: var(--text-3); background: var(--surface-3); }
-.sk-kind.k-new { color: color-mix(in oklab, var(--ok), var(--ink)); background: color-mix(in srgb, var(--ok) 12%, transparent); }
-.sk-kind.k-differs { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
-.sk-kind.k-bad { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 10%, transparent); }
-.sk-meta { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sk-row.k-same .sk-name b, .sk-row.k-bad .sk-name b { color: var(--text-2); }
-.sk-agents { flex: none; display: inline-flex; gap: 3px; }
-.sk-agents img.hp-logo { width: 15px; height: 15px; }
-.sk-agents > b { display: inline-grid; place-items: center; min-width: 18px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
-.sk-result { display: flex; flex-direction: column; gap: 6px; }
-.sk-res { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; color: var(--text-2); }
-.sk-res b { font-weight: 600; color: var(--text); }
-.sk-res span { color: var(--text-3); }
-.sk-res svg { width: 14px; height: 14px; flex: none; }
-.sk-res.ok svg { color: var(--ok); }
-.sk-res.bad svg, .sk-res.bad span { color: var(--danger-text); }
-.sk-spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .8s linear infinite; }
-:root[data-motion="reduced"] .sk-spin { animation: none; }
+/* 从机器导入 skills（SkillImport.tsx）：选机器的磁贴、本机 skill 的清单、等待和结果。前缀用 si-：sk- 留给骨架屏（skeleton.css），撞名会把骨架行改成这里的样子 */
+.si-host { display: grid; min-width: 0; }
+.si-host.off .fm-tile { opacity: .5; cursor: not-allowed; }
+.si-host.off .fm-tile:hover { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.si-host .hp-os { width: 22px; height: 22px; }
+.si-list { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
+.si-row { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 52px; padding: 8px 12px; text-align: left; transition: background-color var(--dur-1); }
+.si-row + .si-row { border-top: 1px solid var(--line); }
+.si-row:not(:disabled):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.si-row:disabled { cursor: default; opacity: 1; }
+.si-row:disabled .fm-check { opacity: .35; }
+.si-row.on { background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.si-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.si-name { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; }
+.si-name b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.si-name code { font: 11px var(--f-mono); color: var(--text-3); }
+.si-kind { flex: none; height: 18px; padding: 0 7px; border-radius: 999px; font-style: normal; font-size: 10.5px; line-height: 18px; color: var(--text-3); background: var(--surface-3); }
+.si-kind.k-new { color: color-mix(in oklab, var(--ok), var(--ink)); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.si-kind.k-differs { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.si-kind.k-bad { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.si-meta { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.si-row.k-same .si-name b, .si-row.k-bad .si-name b { color: var(--text-2); }
+.si-agents { flex: none; display: inline-flex; gap: 3px; }
+.si-agents img.hp-logo { width: 15px; height: 15px; }
+.si-agents > b { display: inline-grid; place-items: center; min-width: 18px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
+.si-result { display: flex; flex-direction: column; gap: 6px; }
+.si-res { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; color: var(--text-2); }
+.si-res b { font-weight: 600; color: var(--text); }
+.si-res span { color: var(--text-3); }
+.si-res svg { width: 14px; height: 14px; flex: none; }
+.si-res.ok svg { color: var(--ok); }
+.si-res.bad svg, .si-res.bad span { color: var(--danger-text); }
+.si-spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .8s linear infinite; }
+:root[data-motion="reduced"] .si-spin { animation: none; }
 @media (max-width: 760px) {
   .fm-tiles, .fm-tiles.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .fm-fields { grid-template-columns: minmax(0, 1fr); }

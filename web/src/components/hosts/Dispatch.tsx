@@ -110,7 +110,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           )}
         </div>
         {!queued && (
-          <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card })}>
+          <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card, known: [d] })}>
             <Icon name="log" />
             会话
           </button>
@@ -154,7 +154,7 @@ export function DispatchHistory({ board, card }: { board: string; card: number }
           const st = partState(d);
           const took = partTook(d, d.endedAt ?? 0);
           return (
-            <button key={d.id} type="button" className="dh-row" onClick={() => openSession({ id: d.session || d.id, card: d.card })} title="打开这个会话">
+            <button key={d.id} type="button" className="dh-row" onClick={() => openSession({ id: d.session || d.id, card: d.card, known: [d] })} title="打开这个会话">
               <Mark id={d.agent} title={d.agentLabel} />
               <span className="dh-when">{d.endedAt != null ? new Date(d.endedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span>
               <span className="dh-where">

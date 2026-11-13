@@ -86,7 +86,7 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
             {hosts.map(x => {
               const n = hostNote(x);
               return (
-                <span key={x.id} className={cx('sk-host', !n.ok && 'off')} data-tip={n.ok ? undefined : n.note}>
+                <span key={x.id} className={cx('si-host', !n.ok && 'off')} data-tip={n.ok ? undefined : n.note}>
                   <FormTile on={x.name === h?.name} mark={<OsGlyph os={x.os} small />} title={x.name} desc={n.note} onClick={() => n.ok && !sent && setName(x.name)} />
                 </span>
               );
@@ -109,10 +109,10 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
           }
         >
           {sent ? (
-            <div className="sk-result">
+            <div className="si-result">
               {(done ? [...(last?.ok ?? []).map(n => ({ name: n, ok: true, why: '' })), ...(last?.failed ?? []).map(f => ({ name: f.name, ok: false, why: f.why }))] : (h.skillImport?.ask?.picks ?? picked).map(p => ({ name: p.name, ok: false, why: '' }))).map(r => (
-                <div key={r.name} className={cx('sk-res', done && (r.ok ? 'ok' : 'bad'))}>
-                  {done ? <Icon name={r.ok ? 'check' : 'alert'} /> : <i className="sk-spin" />}
+                <div key={r.name} className={cx('si-res', done && (r.ok ? 'ok' : 'bad'))}>
+                  {done ? <Icon name={r.ok ? 'check' : 'alert'} /> : <i className="si-spin" />}
                   <b>{r.name}</b>
                   <span>{done ? (r.ok ? '已放进库，在线的机器马上同步' : r.why) : '等 board host 上传'}</span>
                 </div>
@@ -122,7 +122,7 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
           ) : !rows.length ? (
             <p className="fm-empty">这台机器的各 agent 目录里没有自己放的 skill：都是从库里同步装的，或者还没装 skill</p>
           ) : (
-            <div className="sk-list">
+            <div className="si-list">
               {rows.map(r => {
                 const ok = r.kind === 'new' || r.kind === 'differs';
                 const on = has(r.skill.name) && picked.find(p => p.name === r.skill.name)?.dir === r.skill.dirs[0];
@@ -133,25 +133,25 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
                     role="checkbox"
                     aria-checked={on}
                     disabled={!ok}
-                    className={cx('sk-row', on && 'on', `k-${r.kind}`)}
+                    className={cx('si-row', on && 'on', `k-${r.kind}`)}
                     onClick={() => flip(r.skill.name, r.skill.dirs[0])}
                   >
                     <span className={cx('fm-check', on && 'on')}>{on && <Icon name="check" />}</span>
-                    <span className="sk-main">
-                      <span className="sk-name">
+                    <span className="si-main">
+                      <span className="si-name">
                         <b>{r.skill.name}</b>
                         {r.skill.version && <code>{r.skill.version.slice(0, 7)}</code>}
-                        <em className={cx('sk-kind', `k-${r.kind}`)} data-tip={r.note}>
+                        <em className={cx('si-kind', `k-${r.kind}`)} data-tip={r.note}>
                           {KIND_WORDS[r.kind]}
                         </em>
                       </span>
-                      <span className="sk-meta">
+                      <span className="si-meta">
                         {r.kind === 'bad' || r.kind === 'differs' ? `${r.note} · ` : ''}
                         {r.skill.dirs.join('、')}
                         {r.skill.files ? ` · ${r.skill.files} 个文件 · ${kb(r.skill.size)}` : ''}
                       </span>
                     </span>
-                    <span className="sk-agents">
+                    <span className="si-agents">
                       {r.skill.agents.map(a => (
                         <AgentIcon key={a} id={a} />
                       ))}
