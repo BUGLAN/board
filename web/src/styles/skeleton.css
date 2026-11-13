@@ -63,8 +63,8 @@
 .d-side-head .sk.count { display: inline-block; vertical-align: middle; margin-left: 4px; }
 .sk-attach { display: flex; flex-direction: column; gap: 10px; }
 .sk-attach-row { display: flex; gap: 8px; }
-/* 骨架换成真实动态：淡入，≤240ms */
-.timeline.sk-swap { animation: sk-swap var(--dur-2) var(--ease-out) both; }
+/* 骨架换成真实内容：淡入，≤240ms（卡片详情的动态、会话弹窗的头部、卡片行、各段输出）；减弱动效时时长变成 1ms */
+.sk-swap { animation: sk-swap var(--dur-2) var(--ease-out) both; }
 @keyframes sk-swap { from { opacity: 0; } }
 /* 没有动态 / 没取回来 */
 .d-activity-empty {
@@ -72,6 +72,23 @@
   font-size: 12.5px; color: var(--text-3); text-align: center;
 }
 .d-activity-empty b { font-size: 13px; color: var(--text); font-weight: 600; }
+
+/* ---------------- 会话弹窗（hosts/Session.tsx）：头部、左栏卡片行、主区各段 ---------------- */
+.ss-who.sk-who { gap: 8px; }
+.ss-meta.sk-meta { min-height: 44px; }
+.ss-cards .d-label .sk.count { display: inline-block; vertical-align: middle; margin-left: 4px; }
+/* 卡片行：骨架摆在行内，行高由真实的字号、行高撑开，和真实的行一样高 */
+.ss-card.sk-row { cursor: default; pointer-events: none; }
+.ss-card.sk-row > .sk { margin-top: 1px; }
+.ss-card.sk-row > div { flex: 1; }
+.ss-card.sk-row b .sk, .ss-card.sk-row div > span .sk { display: inline-block; vertical-align: middle; margin-top: 0; }
+.ss-card.sk-row .sk-cid { display: inline-flex; align-items: center; min-height: 24px; margin: -3px 0; }
+/* 主区：段落标题和真实标题同高；工具行和真实的行同高 */
+.sk-out .ss-seg h4 { align-items: center; min-height: calc(1.5em + 17px); }
+.sk-out .ss-seg h4 .sk-state { margin-left: auto; }
+.sk-out .ev-msg { padding: 7px 0; }
+.sk-out .ev-tool-row { min-height: 28px; }
+.sk-out .ev-tool-row .sk-mark { margin-left: auto; }
 
 /* 按需加载的页面还在下载（Skeleton.tsx 的 PageLoading） */
 .page-loading { display: flex; flex-direction: column; gap: 14px; width: min(720px, 100%); margin: 0 auto; padding: 48px 24px; }

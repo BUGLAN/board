@@ -8,8 +8,9 @@
      事件第一次全取，之后带 since 增量取：推送里有这个会话的派发（ran）时马上取，在跑时另外每 5 秒取一次（原始输出每 5 秒
      上传）。滚在底部时跟着新内容，往上翻时位置不动
    - 头部：各张卡结束事件里的用量加起来（agent 输出里有才显示）
+   - 第一次取回来之前：头部、左栏、主区按真实形状画骨架（Skeleton），容器 aria-busy；取到后淡入（sk-swap）
    ========================================================================== */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { hostsOf, resultOf, SOURCE } from '../../lib/hosts';
@@ -21,6 +22,7 @@ import { openHost, openSession, useUI } from '../../store/ui';
 import { Markdown, Segmented, useNow } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from '../overlays/presence';
+import { Skeleton, SkeletonText } from '../Skeleton';
 import { Mark } from './bits';
 import { cancel, goCard } from './Dispatch';
 
@@ -209,6 +211,8 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
   const removed = first && !hostsOf(ws).some(h => h.id === first.hostId);
   const state = running ? { label: '在跑', color: 'var(--c-doing)' } : lastDone ? resultOf(lastDone) : { label: '还没开始', color: 'var(--text-3)' };
   const usage = totals(parts);
+  // 第一次还没取回来：画骨架（出错时不画，直接显示错误）
+  const loading = !view && !error;
   return (
     <div className="drawer-body">
       <div className="d-head ss-head">
@@ -216,8 +220,15 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           <Icon name="log" />
           会话
         </span>
+        {loading && (
+          <span className="ss-who sk-who" aria-hidden="true">
+            <Skeleton w={20} h={18} r={5} />
+            <Skeleton w={76} h={11} />
+            <Skeleton w={52} h={11} />
+          </span>
+        )}
         {first && (
-          <span className="ss-who">
+          <span className="ss-who sk-swap">
             <Mark id={first.agent} title={first.agentLabel} />
             <b>{first.agentLabel}</b>
             <button
@@ -245,8 +256,9 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           <Icon name="close" />
         </button>
       </div>
+      {loading && <MetaSkeleton />}
       {first && (
-        <div className="ss-meta">
+        <div className="ss-meta sk-swap">
           {first.name && <span className="hp-mono">{first.name}</span>}
           {first.envName && <span>{first.envName}</span>}
           {(first.model || first.effort) && <span>{[first.model, first.effort && `强度 ${first.effort}`].filter(Boolean).join(' · ')}</span>}
@@ -270,16 +282,17 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           </span>
         </div>
       )}
-      <div className="ss-grid">
+      <div className="ss-grid" aria-busy={loading || undefined}>
         <nav className="ss-cards" aria-label="这个会话做过的卡片">
           <div className="d-label">
-            卡片 <span className="count">{parts.length || ''}</span>
+            卡片 {loading ? <Skeleton className="count" w={10} h={10} /> : <span className="count">{parts.length || ''}</span>}
           </div>
+          {loading && <CardsSkeleton />}
           {parts.map((p, i) => {
             const st = partState(p);
             const took = partTook(p, now);
             return (
-              <div key={p.id} className={cx('ss-card', p.card === card && 'on')} role="button" tabIndex={0} onClick={() => jump(p)} onKeyDown={e => e.key === 'Enter' && jump(p)}>
+              <div key={p.id} className={cx('ss-card sk-swap', p.card === card && 'on')} role="button" tabIndex={0} onClick={() => jump(p)} onKeyDown={e => e.key === 'Enter' && jump(p)}>
                 <span className="ss-n">{i + 1}</span>
                 <div>
                   <b>
@@ -305,15 +318,15 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
               </div>
             );
           })}
-          {!view && !error && <p className="hp-note">正在加载…</p>}
         </nav>
         <div className="ss-out" ref={main} onScroll={e => {
           const el = e.currentTarget;
           stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 12;
         }}>
+          {loading && <OutSkeleton />}
           {error && <p className="hp-note ss-err">{error}</p>}
           {parts.map(p => (
-            <section key={p.id} className="ss-seg" data-part={p.id} data-card={p.card}>
+            <section key={p.id} className="ss-seg sk-swap" data-part={p.id} data-card={p.card}>
               <h4>
                 #{p.card} {p.title}
                 <em style={{ ['--c' as string]: partState(p).color }}>{partState(p).label}</em>
@@ -341,6 +354,97 @@ function SessionBody({ id, card, on, close }: { id: number; card?: number; on: b
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------ 加载中的骨架 ------------------------------ */
+
+/** 头部下面那一行：名字、启动环境、模型、来源、开始时间、用时、状态，右边「过程 / 原始输出」 */
+function MetaSkeleton() {
+  return (
+    <div className="ss-meta sk-meta" aria-hidden="true">
+      {[92, 64, 118, 56, 72, 60, 36].map((w, i) => (
+        <Skeleton key={i} w={w} h={10} />
+      ))}
+      <span className="ss-modes">
+        <Skeleton w={128} h={32} r="var(--r-sm)" />
+      </span>
+    </div>
+  );
+}
+
+/** 左栏的卡片行：序号圈、#ID + 标题（有的折成两行）、状态 · 用时；行高和真实的行一样 */
+const CARD_ROWS: { title: string[]; meta: number }[] = [
+  { title: ['74%', '42%'], meta: 72 },
+  { title: ['58%'], meta: 64 },
+  { title: ['70%', '30%'], meta: 76 },
+  { title: ['50%'], meta: 58 },
+];
+
+function CardsSkeleton() {
+  return (
+    <>
+      <span className="sr-only">正在加载…</span>
+      {CARD_ROWS.map((r, i) => (
+        <div key={i} className="ss-card sk-row" aria-hidden="true">
+          <Skeleton w={18} h={18} r={9} />
+          <div>
+            <b>
+              {/* 和真实的 #ID 按钮同样的盒子（等宽字、24px 高、上下 -3px），第一行才一样高 */}
+              <span className="hp-cid sk-cid">
+                {'\u200b'}
+                <Skeleton w={30} h={10} />
+              </span>{' '}
+              {r.title.map((w, j) => (
+                <Fragment key={j}>
+                  {j > 0 && <br />}
+                  <Skeleton w={w} h={10} />
+                </Fragment>
+              ))}
+            </b>
+            <span>
+              <Skeleton w={r.meta} h={9} />
+            </span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** 主区：两段，每段一个标题（#ID 标题 … 状态），下面是 agent 说的话、工具调用行 */
+function OutSkeleton() {
+  const tool = (w: string, k: number) => (
+    <div key={k} className="ev-tool">
+      <span className="ev-tool-row">
+        <Skeleton w={14} h={14} r={4} />
+        <Skeleton w={[36, 44, 30][k % 3]} h={10} />
+        <Skeleton w={w} h={9} />
+        <Skeleton className="sk-mark" w={13} h={13} r={7} />
+      </span>
+    </div>
+  );
+  const msg = (lines: number, last: string, k: number) => (
+    <div key={k} className="ev-msg">
+      <SkeletonText lines={lines} h={10} gap={11} last={last} />
+    </div>
+  );
+  const segs = [
+    { title: '46%', rows: [msg(2, '58%', 0), tool('52%', 1), tool('38%', 2), tool('60%', 3), msg(3, '44%', 4)] },
+    { title: '34%', rows: [msg(2, '66%', 0), tool('44%', 1), tool('56%', 2), tool('36%', 3), msg(1, '40%', 4)] },
+  ];
+  return (
+    <div className="sk-out" aria-hidden="true">
+      {segs.map((s, i) => (
+        <section key={i} className="ss-seg">
+          <h4>
+            <Skeleton w={s.title} h={11} />
+            <Skeleton className="sk-state" w={36} h={10} />
+          </h4>
+          <div className="ev-list">{s.rows}</div>
+        </section>
+      ))}
     </div>
   );
 }
