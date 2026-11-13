@@ -1,7 +1,7 @@
 {
   "name": "board",
   "private": true,
-  "version": "0.1.23",
+  "version": "0.1.24",
   "scripts": {
     "postinstall": "cd web && npm install",
     "dev:web": "npm --prefix web run dev",
