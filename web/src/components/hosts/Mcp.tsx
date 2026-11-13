@@ -17,11 +17,11 @@ import type { HostInfo, McpServer, McpVar } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, toast, toastError } from '../../store/ui';
-import { Segmented, useNow } from '../bits';
+import { useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 import { ChipInput } from './ChipInput';
-import { FormFoot, FormModal } from './FormModal';
+import { FormField, FormFoot, FormModal, FormSec, FormTile } from './FormModal';
 import { HostSyncPills, HowTip, OldHostsNote, SyncMatrix } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
 
@@ -235,20 +235,21 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
   );
 }
 
-const KINDS: ['stdio' | 'http', string][] = [
-  ['stdio', '本地命令（stdio）'],
-  ['http', '远程 HTTP'],
-];
-
-/** 添加 / 修改：居中弹窗。名称和类型一行；stdio 是命令 + 参数（一个参数一个胶囊，下面预览整条命令），HTTP 是地址；
- *  环境变量 / 请求头一行一个（名字 = 值，「密钥」开关）；同步给「所有支持的 agent / 只给」，只给时点选 agent。点保存时先在界面上校验 */
+/** 添加 / 修改：居中弹窗，和模型供应商的表单同一种样子——类型（两块磁贴）、连接（名称；本地命令是命令 + 参数胶囊 + 整条命令的预览，远程 HTTP 是地址）、
+ *  环境变量 / 请求头（名字 = 值，「密钥」开关）、同步给（Claude Code、Codex、pi 各一块，全选 = 所有支持的）；底部写会写进哪些 agent。点保存先在界面上校验 */
 function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel }: { value: McpServer; editing: boolean; busy: boolean; existing: string[]; onChange: (s: McpServer) => void; onSave: () => void; onCancel: () => void }) {
   const [tried, setTried] = useState(false);
-  const [only, setOnly] = useState(s.agents.length > 0);
   const field = s.kind === 'stdio' ? 'env' : 'headers';
   const vars = s[field];
   const setVars = (vs: McpVar[]) => onChange({ ...s, [field]: vs });
   const why = mcpError(s, existing, editing);
+  // 同步给：空 = 所有支持的；全选了也存成空
+  const sel: string[] = s.agents.length ? s.agents : [...MCP_AGENTS];
+  const flip = (a: string) => {
+    const next = sel.includes(a) ? sel.filter(x => x !== a) : [...sel, a];
+    if (!next.length) return;
+    onChange({ ...s, agents: next.length === MCP_AGENTS.length ? [] : MCP_AGENTS.filter(x => next.includes(x)) });
+  };
   return (
     <FormModal
       title={editing ? `修改 ${s.name}` : '添加 MCP 服务器'}
@@ -263,117 +264,97 @@ function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel
             setTried(true);
             if (!why) onSave();
           }}
+          agentsLabel="会写进"
+          agents={[...MCP_AGENTS.map(a => ({ id: a, on: sel.includes(a), tip: sel.includes(a) ? `写进 ${MCP_AGENT_NAMES[a]} 的用户级配置` : `不给 ${MCP_AGENT_NAMES[a]}` })), { id: 'dsh', on: false, tip: 'DeepSeek Harness 不支持 MCP 同步' }]}
         />
       }
     >
-      <div className="fm-row two">
-        <label className="fm-f">
-          <span className="fm-k">名称</span>
-          <input className="input mono" value={s.name} disabled={editing} placeholder="github" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...s, name: e.target.value.trim() })} />
-        </label>
-        <span className="fm-f">
-          <span className="fm-k">类型</span>
-          <Segmented value={s.kind} options={KINDS} onChange={k => onChange({ ...s, kind: k })} />
-        </span>
-      </div>
-      {s.kind === 'stdio' ? (
-        <>
-          <div className="fm-row">
-            <span className="fm-k">命令</span>
-            <div className="fm-v">
-              <input className="input mono fm-short" value={s.command} placeholder="npx" spellCheck={false} aria-label="命令" onChange={e => onChange({ ...s, command: e.target.value })} />
-            </div>
-          </div>
-          <div className="fm-row">
-            <span className="fm-k">参数</span>
-            <div className="fm-v">
-              <ChipInput value={s.args} allowSpace onChange={args => onChange({ ...s, args })} placeholder="一个参数一个，回车加，例如 -y、@modelcontextprotocol/server-github" label="参数" />
-              {(s.command || s.args.length > 0) && (
-                <code className="fm-preview" title="board host 会这样启动它">
-                  {[s.command, ...s.args.map(a => (/\s/.test(a) ? `"${a}"` : a))].filter(Boolean).join(' ')}
-                </code>
-              )}
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="fm-row">
-          <span className="fm-k">地址</span>
-          <div className="fm-v">
-            <input className="input mono" value={s.url} placeholder="https://example.com/mcp" spellCheck={false} aria-label="地址" onChange={e => onChange({ ...s, url: e.target.value })} />
-          </div>
+      <FormSec title="类型">
+        <div className="fm-tiles two">
+          <FormTile on={s.kind === 'stdio'} mark={<Icon name="terminal" />} title="本地命令（stdio）" desc="每台机器上启动一个命令，例如 npx、uvx" onClick={() => onChange({ ...s, kind: 'stdio' })} />
+          <FormTile on={s.kind === 'http'} mark={<Icon name="target" />} title="远程 HTTP" desc="连一个 MCP 地址，可以带请求头" onClick={() => onChange({ ...s, kind: 'http' })} />
         </div>
-      )}
-      <div className="fm-row">
-        <span className="fm-k">{s.kind === 'stdio' ? '环境变量' : '请求头'}</span>
-        <div className="fm-v fm-vars">
-          {vars.map((v, i) => (
-            <div className="fm-var" key={i}>
-              <input className="input mono" value={v.key} placeholder={s.kind === 'stdio' ? 'GITHUB_TOKEN' : 'Authorization'} spellCheck={false} aria-label="名字" onChange={e => setVars(vars.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
-              <span className="fm-eq">=</span>
-              <input
-                className="input mono"
-                type={v.secret ? 'password' : 'text'}
-                value={v.value ?? ''}
-                placeholder={v.secret && v.tail != null ? `${maskOf(v)}，不改就留空` : '值'}
-                spellCheck={false}
-                autoComplete="off"
-                aria-label="值"
-                onChange={e => setVars(vars.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
-              />
-              <button
-                type="button"
-                className={cx('fm-secret', v.secret && 'on')}
-                aria-pressed={!!v.secret}
-                data-tip="密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host"
-                onClick={() => setVars(vars.map((x, j) => (j === i ? { ...x, secret: !x.secret } : x)))}
-              >
-                <Icon name="lock" />
-                密钥
-              </button>
-              <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => setVars(vars.filter((_, j) => j !== i))}>
-                <Icon name="close" />
-              </button>
-            </div>
-          ))}
-          <button className="act hp-link fm-add" type="button" onClick={() => setVars([...vars, { key: '', value: '', secret: false }])}>
+      </FormSec>
+      <FormSec title="连接">
+        <div className="fm-fields">
+          <FormField label="名称" hint={editing ? '名称不能改' : '字母、数字、_、-；agent 配置里用它'}>
+            <input className="input mono" value={s.name} disabled={editing} placeholder="github" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...s, name: e.target.value.trim() })} />
+          </FormField>
+          {s.kind === 'stdio' ? (
+            <FormField label="命令">
+              <input className="input mono" value={s.command} placeholder="npx" spellCheck={false} onChange={e => onChange({ ...s, command: e.target.value })} />
+            </FormField>
+          ) : (
+            <FormField label="地址">
+              <input className="input mono" value={s.url} placeholder="https://example.com/mcp" spellCheck={false} onChange={e => onChange({ ...s, url: e.target.value })} />
+            </FormField>
+          )}
+        </div>
+        {s.kind === 'stdio' && (
+          <div className="fm-field">
+            <span>参数</span>
+            <ChipInput value={s.args} allowSpace onChange={args => onChange({ ...s, args })} placeholder="一个参数一个，回车加，例如 -y、@modelcontextprotocol/server-github" label="参数" />
+            {(s.command || s.args.length > 0) && (
+              <code className="fm-preview" title="board host 会这样启动它">
+                {[s.command, ...s.args.map(a => (/\s/.test(a) ? `"${a}"` : a))].filter(Boolean).join(' ')}
+              </code>
+            )}
+          </div>
+        )}
+      </FormSec>
+      <FormSec
+        title={s.kind === 'stdio' ? '环境变量' : '请求头'}
+        hint="值可以标成密钥：只存在服务端，界面上只显示末尾 4 位"
+        act={
+          <button className="act hp-link" type="button" onClick={() => setVars([...vars, { key: '', value: '', secret: false }])}>
             <Icon name="plus" />
             加一个
           </button>
+        }
+      >
+        {vars.length ? (
+          <div className="fm-vars">
+            {vars.map((v, i) => (
+              <div className="fm-var" key={i}>
+                <input className="input mono" value={v.key} placeholder={s.kind === 'stdio' ? 'GITHUB_TOKEN' : 'Authorization'} spellCheck={false} aria-label="名字" onChange={e => setVars(vars.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+                <span className="fm-eq">=</span>
+                <input
+                  className="input mono"
+                  type={v.secret ? 'password' : 'text'}
+                  value={v.value ?? ''}
+                  placeholder={v.secret && v.tail != null ? `${maskOf(v)}，不改就留空` : '值'}
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-label="值"
+                  onChange={e => setVars(vars.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
+                />
+                <button
+                  type="button"
+                  className={cx('fm-secret', v.secret && 'on')}
+                  aria-pressed={!!v.secret}
+                  data-tip="密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host"
+                  onClick={() => setVars(vars.map((x, j) => (j === i ? { ...x, secret: !x.secret } : x)))}
+                >
+                  <Icon name="lock" />
+                  密钥
+                </button>
+                <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => setVars(vars.filter((_, j) => j !== i))}>
+                  <Icon name="close" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="fm-empty">没有：点右边「加一个」</p>
+        )}
+      </FormSec>
+      <FormSec title="同步给" hint="都选上 = 所有支持的 agent（dsh 不支持）">
+        <div className="fm-tiles three">
+          {MCP_AGENTS.map(a => (
+            <FormTile key={a} on={sel.includes(a)} mark={<AgentIcon id={a} />} title={MCP_AGENT_NAMES[a]} desc={sel.includes(a) ? '写进它的用户级配置' : '不给它'} onClick={() => flip(a)} />
+          ))}
         </div>
-      </div>
-      <div className="fm-row">
-        <span className="fm-k">同步给</span>
-        <div className="fm-v fm-who">
-          <Segmented
-            value={only ? 'some' : 'all'}
-            options={[
-              ['all', '所有支持的 agent'],
-              ['some', '只给'],
-            ]}
-            onChange={v => {
-              setOnly(v === 'some');
-              if (v === 'all') onChange({ ...s, agents: [] });
-              else if (!s.agents.length) onChange({ ...s, agents: ['claude'] });
-            }}
-          />
-          {only ? (
-            <span className="fm-agents">
-              {MCP_AGENTS.map(a => {
-                const yes = s.agents.includes(a);
-                return (
-                  <button key={a} type="button" className={cx('fm-agent', yes && 'on')} aria-pressed={yes} onClick={() => onChange({ ...s, agents: yes ? s.agents.filter(x => x !== a) : [...s.agents, a] })}>
-                    <AgentIcon id={a} />
-                    {MCP_AGENT_NAMES[a]}
-                  </button>
-                );
-              })}
-            </span>
-          ) : (
-            <em className="fm-hint">Claude Code、Codex、pi（dsh 不支持）</em>
-          )}
-        </div>
-      </div>
+      </FormSec>
     </FormModal>
   );
 }

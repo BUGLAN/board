@@ -85,13 +85,6 @@ export const blankAgentProvider = (agent: string): AgentProvider => ({ agent, pr
 /** API key 的显示：只给末尾 4 位 */
 export const maskKey = (p: Pick<Provider, 'tail'>) => (p.tail ? `••••${p.tail}` : '••••');
 
-/** 一行一个模型（空行去掉） */
-export const modelsOf = (text: string) =>
-  text
-    .split('\n')
-    .map(s => s.trim())
-    .filter(Boolean);
-
 /** 校验（和服务端一致）：不对时返回原因 */
 export function providerError(p: Provider, existing: string[], editing: boolean): string | null {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(p.name)) return '名称只能用字母、数字、_、-，以字母或数字开头';

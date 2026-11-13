@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignProvider, effectiveProvider, endpointLines, maskKey, modelsOf, providerCell, providerError, providersFor, toProviderSave } from './providers';
+import { assignProvider, effectiveProvider, endpointLines, maskKey, providerCell, providerError, providersFor, toProviderSave } from './providers';
 import type { AgentProvider, HostInfo, Provider, ProviderView } from './types';
 
 const prov = (x: Partial<Provider> = {}): Provider => ({
@@ -80,7 +80,6 @@ describe('模型供应商共用配置', () => {
 
   it('表单：名称、接口、地址、密钥、模型；修改时密钥留空保留原值', () => {
     expect(maskKey(prov())).toBe('••••6789');
-    expect(modelsOf(' deepseek-chat\n\ndeepseek-reasoner \n')).toEqual(['deepseek-chat', 'deepseek-reasoner']);
     expect(providerError(prov({ name: 'bad name' }), [], false)).toContain('名称');
     expect(providerError(prov(), ['deepseek'], false)).toContain('已经有');
     expect(providerError(prov(), ['deepseek'], true)).toBeNull();

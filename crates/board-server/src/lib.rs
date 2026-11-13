@@ -278,6 +278,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/mcp/{name}", delete(mcp::remove))
         .route("/providers", get(providers::list).post(providers::put))
         .route("/providers/agents", post(providers::assign))
+        .route("/providers/models", post(providers::models))
         .route("/providers/{name}", delete(providers::remove))
         .route("/agent-templates", get(templates::list).post(templates::put))
         .route("/agent-templates/{id}", delete(templates::remove))

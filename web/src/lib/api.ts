@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
+import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint } from './types';
 
 declare global {
   interface Window {
@@ -241,6 +241,8 @@ export const api = {
   putProvider: (p: Provider) => req<Provider>('POST', '/api/providers', p),
   removeProvider: (name: string) => req('DELETE', `/api/providers/${q(name)}`),
   putProviderAgent: (a: AgentProvider) => req<AgentProvider>('POST', '/api/providers/agents', a),
+  /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */
+  providerModels: (body: { name?: string; endpoints: ProviderEndpoint[]; apiKey?: string | null }) => req<{ models: string[]; from: string }>('POST', '/api/providers/models', body),
   agentTemplates: () => req<AgentTemplate[]>('GET', '/api/agent-templates'),
   putAgentTemplate: (t: AgentTemplate) => req<AgentTemplate>('POST', '/api/agent-templates', t),
   removeAgentTemplate: (id: string) => req('DELETE', `/api/agent-templates/${q(id)}`),

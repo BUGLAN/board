@@ -15,12 +15,9 @@ import {
   blankProvider,
   endpointLines,
   maskKey,
-  modelsOf,
   PROVIDER_AGENT_NAMES,
   PROVIDER_AGENTS,
   PROVIDER_CELL_WORDS,
-  PROVIDER_INTERFACES,
-  PROVIDER_PRESETS,
   providerCell,
   providerError,
   providersFor,
@@ -36,6 +33,7 @@ import { Select, Sync, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 import { HowTip, OldHostsNote } from './SyncBits';
+import { ProviderForm } from './ProviderForm';
 import { useRemoteList } from './useRemoteList';
 
 /** 把一项按 agent 换掉（没有就加上） */
@@ -136,7 +134,9 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
         </div>
       </div>
       {err && <p className="hp-note lh-warn">取不到模型供应商配置：{err}</p>}
-      {edit && <ProviderForm value={edit.p} editing={edit.editing} busy={busy === 'save'} onChange={p => setEdit({ ...edit, p })} onSave={() => void save()} onCancel={() => setEdit(null)} />}
+      {edit && (
+        <ProviderForm value={edit.p} editing={edit.editing} busy={busy === 'save'} existing={list?.providers.map(x => x.name) ?? []} onChange={p => setEdit({ ...edit, p })} onSave={() => void save()} onCancel={() => setEdit(null)} />
+      )}
       {!view && !err && <p className="hp-note">正在读取…</p>}
       {view && !view.providers.length && !edit && <p className="hp-note">还没有：点「添加」，或从常用供应商预填一个</p>}
       {view && view.providers.length > 0 && (
@@ -262,87 +262,5 @@ function CellPill({ h, c }: { h: HostInfo; c: ProviderCell }) {
       <b>{h.name}</b>
       <span>{PROVIDER_CELL_WORDS[c.kind]}</span>
     </button>
-  );
-}
-
-function ProviderForm({ value: p, editing, busy, onChange, onSave, onCancel }: { value: Provider; editing: boolean; busy: boolean; onChange: (p: Provider) => void; onSave: () => void; onCancel: () => void }) {
-  const [models, setModels] = useState(p.models.join('\n'));
-  const setEndpoint = (id: string, url: string) => {
-    const others = p.endpoints.filter(e => e.interface !== id);
-    onChange({ ...p, endpoints: url.trim() ? [...others, { interface: id as Provider['endpoints'][number]['interface'], url }] : others });
-  };
-  const fill = (name: string) => {
-    const preset = PROVIDER_PRESETS.find(x => x.name === name);
-    if (!preset) return;
-    setModels(preset.models.join('\n'));
-    onChange({ ...p, name: preset.name, endpoints: preset.endpoints.map(e => ({ ...e })), models: preset.models });
-  };
-  return (
-    <div className="sc-form">
-      <div className="hp-add-row">
-        <span className="hp-add-k">名称</span>
-        <input className="input mono" value={p.name} disabled={editing} placeholder="deepseek" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...p, name: e.target.value.trim() })} />
-      </div>
-      {!editing && (
-        <div className="hp-add-row">
-          <span className="hp-add-k">预填</span>
-          <div className="sc-presets">
-            {PROVIDER_PRESETS.map(x => (
-              <button key={x.name} className="btn sm ghost" type="button" onClick={() => fill(x.name)}>
-                {x.label}
-              </button>
-            ))}
-            <span className="hp-note">只填接口地址和常用模型，API key 要自己填</span>
-          </div>
-        </div>
-      )}
-      {PROVIDER_INTERFACES.map(i => (
-        <div className="hp-add-row" key={i.id}>
-          <span className="hp-add-k">{i.name}</span>
-          <input
-            className="input mono"
-            value={p.endpoints.find(e => e.interface === i.id)?.url ?? ''}
-            placeholder={`${i.placeholder}（不用这个接口就留空）`}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={e => setEndpoint(i.id, e.target.value)}
-          />
-        </div>
-      ))}
-      <div className="hp-add-row">
-        <span className="hp-add-k">API key</span>
-        <input
-          className="input mono"
-          type="password"
-          value={p.apiKey ?? ''}
-          placeholder={editing && p.tail != null ? `${maskKey(p)}（不改就留空）` : 'sk-…'}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={e => onChange({ ...p, apiKey: e.target.value })}
-        />
-      </div>
-      <div className="hp-add-row top">
-        <span className="hp-add-k">模型</span>
-        <textarea
-          className="input mono sc-args"
-          value={models}
-          rows={4}
-          placeholder={'一行一个，例如\ndeepseek-chat\ndeepseek-reasoner'}
-          spellCheck={false}
-          onChange={e => {
-            setModels(e.target.value);
-            onChange({ ...p, models: modelsOf(e.target.value) });
-          }}
-        />
-      </div>
-      <div className="lh-actions sc-form-acts">
-        <button className="btn sm ghost" type="button" disabled={busy} onClick={onCancel}>
-          取消
-        </button>
-        <button className={cx('btn sm brand', busy && 'is-busy')} type="button" disabled={busy} onClick={onSave}>
-          保存
-        </button>
-      </div>
-    </div>
   );
 }
