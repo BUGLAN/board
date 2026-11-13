@@ -35,6 +35,7 @@ import { confirm, openHost, toast, toastError } from '../../store/ui';
 import { Select, Sync, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
+import { HowTip, OldHostsNote } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
 
 /** 把一项按 agent 换掉（没有就加上） */
@@ -124,14 +125,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
           <h2>模型供应商</h2>
           <p>
             给 agent 选一个供应商，每台机器的 board host 就把地址、API key、模型写进那个 agent 的用户级配置文件，agent 直接连供应商，不经过 Board。{' '}
-            <span
-              className="sc-how"
-              tabIndex={0}
-              data-tip="第一次改写前备份 agent 配置文件里原来的值，改成「不管」或删掉供应商时恢复。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。"
-            >
-              <Icon name="info" />
-              怎么生效
-            </span>
+            <HowTip tip="第一次改写前备份 agent 配置文件里原来的值，改成「不管」或删掉供应商时恢复。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
           </p>
         </div>
         <div className="sc-acts">
@@ -255,23 +249,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
           <span className="pv-idle-hint">在供应商卡片里「给 agent 用」</span>
         </p>
       )}
-      {view && old.length > 0 && (
-        <p className="pv-old">
-          <Icon name="alert" />
-          <span>
-            {old.map((h, i) => (
-              <span key={h.id}>
-                {i > 0 && '、'}
-                <button type="button" className="pv-link" onClick={() => openHost(h.name)}>
-                  {h.name}
-                </button>
-                <em>（{h.version || '?'}）</em>
-              </span>
-            ))}
-            的 board 版本太旧，不写入供应商：升级后自动写入
-          </span>
-        </p>
-      )}
+      {view && <OldHostsNote hosts={old} what="供应商" verb="写入" />}
     </section>
   );
 }
