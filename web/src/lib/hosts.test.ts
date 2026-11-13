@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
+import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, skillGaps } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -56,6 +56,25 @@ describe('isLocalHost（看的是不是本机桌面端跑的 board host）', () 
     expect(isLocalHost(h, { running: true, name: 'win', defaultName: 'mac' })).toBe(false);
     expect(isLocalHost(h, { running: false, name: '', defaultName: 'mac' })).toBe(false);
     expect(isLocalHost(h, null)).toBe(false);
+  });
+});
+
+describe('目录选择文件夹（只在本机的桌面端）', () => {
+  it('目录中间省略时保留开头的目录和最后一级，左端对得齐', () => {
+    expect(pathParts('C:\\Users\\lan\\repo\\board')).toEqual({ head: 'C:\\Users\\lan\\repo\\', tail: 'board' });
+    expect(pathParts('/home/me/repo/board')).toEqual({ head: '/home/me/repo/', tail: 'board' });
+    // 没有分隔符：整串都在「最后一级」里
+    expect(pathParts('Ubuntu-24.04')).toEqual({ head: '', tail: 'Ubuntu-24.04' });
+  });
+
+  it('只在本机桌面端、不是 --dir 固定的行能选；别的机器、网页端都不显示按钮', () => {
+    expect(canPickDir({}, { isLocal: true, desktop: true })).toBe(true);
+    // --dir 固定：由启动参数决定
+    expect(canPickDir({ fixed: true }, { isLocal: true, desktop: true })).toBe(false);
+    // 别的机器：选出来的目录是这台电脑的
+    expect(canPickDir({}, { isLocal: false, desktop: true })).toBe(false);
+    // 网页端没有系统的文件夹选择框
+    expect(canPickDir({}, { isLocal: true, desktop: false })).toBe(false);
   });
 });
 

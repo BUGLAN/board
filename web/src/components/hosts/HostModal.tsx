@@ -2,8 +2,8 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
-import { installSkill, isWindows, localHost, shell, type LocalHost } from '../../lib/platform';
+import { agentMark, boardOf, canPickDir, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { installSkill, isWindows, localHost, pickFolder, shell, type LocalHost } from '../../lib/platform';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
 import { COPY_ITEMS } from '../../lib/templates';
@@ -486,15 +486,19 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
 
           {!!h.envs?.length && (
             <Fold id="envs" title="启动环境" n={h.envs.length} i={4}>
-              {h.envs.map(e => (
-                <div className="hp-dir hp-env" key={e.id}>
-                  <span className="hp-board" title={e.name}>
-                    {e.name}
-                  </span>
-                  {e.path && <MidPath path={e.path} />}
-                  {e.id === 'direct' && <span className="hp-env-hint">不经过 shell，直接执行命令</span>}
-                </div>
-              ))}
+              <div className="hp-envs">
+                {h.envs.map(e => (
+                  <div className="hp-dir hp-env" key={e.id}>
+                    <span className="hp-board" title={e.name}>
+                      {e.name}
+                    </span>
+                    <span className="hp-env-body">
+                      {e.path ? <MidPath path={e.path} /> : <span className="hp-path-none">—</span>}
+                      {e.id === 'direct' && <span className="hp-env-hint">不经过 shell，直接执行命令</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </Fold>
           )}
 
@@ -621,6 +625,9 @@ function DirReadyLine({ h, d, now }: { h: HostInfo; d: HostDir; now: number }) {
   );
 }
 
+/** 新一行（还没选白板）的选择文件夹状态用的键，和已有的白板标识分开 */
+const ADD = '\u0000add';
+
 /** 白板与目录：逐行编辑、检查状态、缺失时克隆、复制到其他机器 */
 function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sync?: SyncState; hosts: HostInfo[]; now: number }) {
   const ws = useData(s => s.ws);
@@ -633,7 +640,10 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
   const [cloning, setCloning] = useState('');
   const [copying, setCopying] = useState(false);
   const [active, setActive] = useState<string | null>(null);
+  const [picking, setPicking] = useState<string | null>(null);
   const [local, setLocal] = useState(false);
+  /** 本机的桌面端：只有这台电脑能弹系统的文件夹选择框 */
+  const env = { isLocal: local, desktop: shell === 'desktop' };
   useEffect(() => {
     setPaths(Object.fromEntries(h.dirs.map(d => [d.board, d.path])));
     setCloneUrls({});
@@ -673,6 +683,38 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
   const commitPath = (d: HostDir) => {
     const path = (paths[d.board] ?? d.path).trim();
     if (path && path !== d.path) void apply(h.dirs.map(x => (x.board === d.board ? { ...x, path } : x)));
+  };
+
+  /** 选择文件夹：弹系统的文件夹选择框，选中后填进这一行并保存（和手填走同一条保存），取消不改动。
+      弹不出来（旧版桌面端）时提示升级，其他失败提示原因 */
+  const pick = async (board: string) => {
+    setPicking(board);
+    try {
+      const p = await pickFolder((paths[board] ?? '').trim());
+      if (!p) return;
+      setPaths(v => ({ ...v, [board]: p }));
+      const d = h.dirs.find(x => x.board === board);
+      if (d && p !== d.path) await apply(h.dirs.map(x => (x.board === board ? { ...x, path: p } : x)));
+    } catch (e) {
+      if (e === 'unsupported') toast({ type: 'info', title: '这个版本的桌面端不支持选择文件夹', text: '升级桌面端后再用；现在可以直接在输入框里填目录' });
+      else toast({ type: 'error', title: '没有打开文件夹选择框', text: String(e) });
+    } finally {
+      setPicking(null);
+    }
+  };
+
+  /** 新一行还没选白板：选文件夹只填路径，点「加一块白板」时再一起保存 */
+  const pickDraft = async () => {
+    setPicking(ADD);
+    try {
+      const p = await pickFolder(draft.path.trim());
+      if (p) setDraft(v => ({ ...v, path: p }));
+    } catch (e) {
+      if (e === 'unsupported') toast({ type: 'info', title: '这个版本的桌面端不支持选择文件夹', text: '升级桌面端后再用；现在可以直接在输入框里填目录' });
+      else toast({ type: 'error', title: '没有打开文件夹选择框', text: String(e) });
+    } finally {
+      setPicking(null);
+    }
   };
 
   const add = () => {
@@ -747,35 +789,59 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
         h.dirs.map(d => {
           const state = d.status ?? '';
           const cloneState = d.clone?.state;
+          // 只在本机（桌面端跑 board host 的那台）显示选择按钮；别的机器的详情只显示输入框
+          const pickable = canPickDir(d, env);
           return (
             <div className={cx('hp-dir hp-dir-edit', state === 'missing' && 'warn', state === 'not_git' && 'warn')} key={d.board}>
               <div className="hp-dir-main">
-                <span className="hp-board">{d.board}</span>
-                <Icon name="move" />
-                <input
-                  className="input hp-dir-path"
-                  value={paths[d.board] ?? d.path}
-                  readOnly={d.fixed}
-                  spellCheck={false}
-                  aria-label={`${d.board} 的目录`}
-                  onFocus={() => setActive(d.board)}
-                  onChange={e => setPaths(v => ({ ...v, [d.board]: e.target.value }))}
-                  onBlur={() => commitPath(d)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') e.currentTarget.blur();
-                  }}
-                />
-                <span className={cx('hp-dir-state', state)} data-tip={d.checkedAt ? `检查于 ${since(d.checkedAt, now)}` : undefined}>
-                  {state === 'ok' ? `git${d.branch ? ` · ${d.branch}` : ''}` : state === 'missing' ? '不存在' : state === 'not_git' ? '不是 git 仓库' : '等待检查'}
+                <span className="hp-board" title={d.board}>
+                  {d.board}
                 </span>
-                <Sync s={active === d.board ? sync : undefined} />
-                {d.fixed ? (
-                  <span className="hp-dir-fixed">--dir 固定</span>
-                ) : (
-                  <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => void apply(h.dirs.filter(x => x.board !== d.board))}>
-                    <Icon name="close" />
-                  </button>
-                )}
+                <div className="hp-dir-fields">
+                  <input
+                    className="input hp-dir-path"
+                    value={paths[d.board] ?? d.path}
+                    readOnly={d.fixed}
+                    spellCheck={false}
+                    aria-label={`${d.board} 的目录`}
+                    title={d.path}
+                    onFocus={() => setActive(d.board)}
+                    onChange={e => setPaths(v => ({ ...v, [d.board]: e.target.value }))}
+                    onBlur={() => {
+                      setActive(null);
+                      commitPath(d);
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') e.currentTarget.blur();
+                    }}
+                  />
+                  <span className="hp-dir-ctl">
+                    <span className={cx('hp-dir-state', state)} data-tip={d.checkedAt ? `检查于 ${since(d.checkedAt, now)}` : undefined}>
+                      {state === 'ok' ? `git${d.branch ? ` · ${d.branch}` : ''}` : state === 'missing' ? '不存在' : state === 'not_git' ? '不是 git 仓库' : '等待检查'}
+                    </span>
+                    <Sync s={active === d.board ? sync : undefined} />
+                    {pickable && (
+                      <button
+                        className={cx('icon-btn sm', picking === d.board && 'is-busy')}
+                        type="button"
+                        aria-label={`选择 ${d.board} 的文件夹`}
+                        data-tip={picking === d.board ? '正在打开文件夹选择框' : '选择文件夹：选中后填进这一行并保存'}
+                        data-tip-align="end"
+                        disabled={picking !== null}
+                        onClick={() => void pick(d.board)}
+                      >
+                        <Icon name="folder" />
+                      </button>
+                    )}
+                    {d.fixed ? (
+                      <span className="hp-dir-fixed">--dir 固定</span>
+                    ) : (
+                      <button className="icon-btn sm" type="button" aria-label={`去掉 ${d.board} 这一行`} onClick={() => void apply(h.dirs.filter(x => x.board !== d.board))}>
+                        <Icon name="close" />
+                      </button>
+                    )}
+                  </span>
+                </div>
               </div>
               <DirReadyLine h={h} d={d} now={now} />
               {state !== 'missing' && d.clone && (
@@ -817,28 +883,52 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
       ) : (
         <p className="hp-note">没有白板：在下面加一块，或在那台机器上用 --dir 启动。</p>
       )}
+      {shell === 'desktop' && !local && h.dirs.length > 0 && (
+        <p className="hp-note">目录要在那台机器上选 / 改：这台电脑只能改自己的目录。</p>
+      )}
+      {h.dirs.some(d => d.fixed) && local && <p className="hp-note">带「--dir 固定」的行由那台机器的启动参数决定，在这里改不了。</p>}
       <div className="hp-dir-add">
-        <Select
-          value={draft.board}
-          options={[
-            { value: '', label: '选白板…' },
-            ...boards.filter(b => !h.dirs.some(d => d.board === b)).map(b => ({ value: b, label: b })),
-          ]}
-          onChange={board => setDraft(v => ({ ...v, board }))}
-          aria-label="要加的白板"
-        />
-        <input
-          className="input"
-          value={draft.path}
-          placeholder="~/repo/board"
-          spellCheck={false}
-          aria-label="目录"
-          onChange={e => setDraft(v => ({ ...v, path: e.target.value }))}
-        />
-        <button className="btn sm" type="button" disabled={!draft.board || !draft.path.trim()} onClick={add}>
-          <Icon name="plus" />
-          加一块白板
-        </button>
+        <span className="hp-board">加一块</span>
+        <div className="hp-dir-fields">
+          <div className="hp-dir-pick">
+            <Select
+              value={draft.board}
+              options={[
+                { value: '', label: '选白板…' },
+                ...boards.filter(b => !h.dirs.some(d => d.board === b)).map(b => ({ value: b, label: b })),
+              ]}
+              onChange={board => setDraft(v => ({ ...v, board }))}
+              aria-label="要加的白板"
+            />
+            <input
+              className="input hp-dir-path"
+              value={draft.path}
+              placeholder={isWindows ? 'C:\\repo\\board' : '~/repo/board'}
+              spellCheck={false}
+              aria-label="目录"
+              onChange={e => setDraft(v => ({ ...v, path: e.target.value }))}
+            />
+            <span className="hp-dir-ctl hp-dir-ctl-end">
+              {env.isLocal && env.desktop && (
+                <button
+                  className={cx('icon-btn sm', picking === ADD && 'is-busy')}
+                  type="button"
+                  aria-label="选择新一行的文件夹"
+                  data-tip={picking === ADD ? '正在打开文件夹选择框' : '选择文件夹：选中后填进这一行'}
+                  data-tip-align="end"
+                  disabled={picking !== null}
+                  onClick={() => void pickDraft()}
+                >
+                  <Icon name="folder" />
+                </button>
+              )}
+              <button className="btn sm" type="button" disabled={!draft.board || !draft.path.trim()} onClick={add}>
+                <Icon name="plus" />
+                加一块白板
+              </button>
+            </span>
+          </div>
+        </div>
       </div>
       {others.length > 0 && h.dirs.length > 0 && (
         <div className="hp-dir-copy">
@@ -885,28 +975,29 @@ function AgentRow({
   return (
     <>
       <div className={cx('hp-arow', !a.found && 'missing', sync === 'failed' && 'hp-rollback')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
-        <AgentIcon id={a.id} />
-        <b className="hp-arow-name">{a.name}</b>
-        {a.local_override && (
-          <span className="hp-skill local" tabIndex={0} data-tip={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
-            本机配置覆盖
-          </span>
-        )}
-        {fixed ? (
-          <span className="hp-skill ok">
-            <Icon name="check" />
-            skill 已装
-          </span>
-        ) : (
-          miss && (
-            <span className="hp-skill" data-tip={miss} tabIndex={0}>
-              <Icon name="alert" />
-              缺 skill
+        <span className="hp-arow-id">
+          <AgentIcon id={a.id} />
+          <b className="hp-arow-name">{a.name}</b>
+          {a.local_override && (
+            <span className="hp-skill local" tabIndex={0} data-tip={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
+              本机配置覆盖
             </span>
-          )
-        )}
-        {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
-        <span className="hp-sp" />
+          )}
+          {fixed ? (
+            <span className="hp-skill ok">
+              <Icon name="check" />
+              skill 已装
+            </span>
+          ) : (
+            miss && (
+              <span className="hp-skill" data-tip={miss} tabIndex={0}>
+                <Icon name="alert" />
+                缺 skill
+              </span>
+            )
+          )}
+          {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
+        </span>
         <span className="hp-ctl">
           <Sync s={sync} />
         {envs.length > 0 &&
@@ -1444,9 +1535,7 @@ function Fold({ id, title, n, i, reveal = 0, children }: { id: string; title: st
 
 /** 长路径中间省略：开头和最后一级目录始终可见，悬停看全路径 */
 function MidPath({ path }: { path: string }) {
-  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  const head = cut > 0 ? path.slice(0, cut + 1) : '';
-  const tail = cut > 0 ? path.slice(cut + 1) : path;
+  const { head, tail } = pathParts(path);
   return (
     <code className="hp-path" title={path}>
       <span className="hp-path-head">{head}</span>

@@ -55,21 +55,32 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-agent.noskill { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 60%, transparent); }
 .hp-agent-warn { display: inline-grid; place-items: center; color: var(--warn); }
 .hp-agent-warn svg { width: 14px; height: 14px; }
-/* 机器详情「本机 agent」：每个 agent 一行 */
-.hp-arow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 42px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
-/* 名字后面的标记多了放不下时，右边的控件换到下一行、靠右 */
-.hp-arow > .hp-ctl { margin-left: auto; }
+/* 机器详情「本机 agent」：每个 agent 一行
+   左边是图标、名称（固定列宽）和标记，右边是启动环境下拉、自检、默认按钮，成组右对齐；
+   行高、分隔线、字号和上方表格（机器列表 / 对比表）一致 */
+.hp-arow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 44px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
 .d-label + .hp-arow { border-top: 0; }
-.hp-arow > img.hp-logo { width: 20px; height: 20px; }
-.hp-arow > b:not(.hp-arow-name) { display: grid; place-items: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
-.hp-arow-name { font-weight: 500; white-space: nowrap; }
+/* 名称那一格：图标 + 名称（固定宽度）+ 标记（缺 skill 等），标记多了换行也不把右边的控件挤乱 */
+.hp-arow-id { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; min-width: 0; flex: 1 1 0; }
+.hp-arow > img.hp-logo, .hp-arow-id > img.hp-logo { width: 20px; height: 20px; }
+.hp-arow > b:not(.hp-arow-name), .hp-arow-id > b:not(.hp-arow-name) { display: grid; place-items: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
+.hp-arow-name { flex: 0 1 auto; width: 9em; min-width: 4.5em; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hp-arow-ver { font-style: normal; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hp-arow.missing > img.hp-logo { filter: grayscale(1); opacity: .6; }
-.hp-arow.missing > b:not(.hp-arow-name) { background: var(--text-4); }
+.hp-arow.missing > img.hp-logo, .hp-arow.missing .hp-arow-id > img.hp-logo { filter: grayscale(1); opacity: .6; }
+.hp-arow.missing > b:not(.hp-arow-name), .hp-arow.missing .hp-arow-id > b:not(.hp-arow-name) { background: var(--text-4); }
 .hp-arow.missing .hp-arow-name { color: var(--text-3); }
 .hp-arow-none { font-size: 12px; color: var(--text-3); }
-/* agent 的模型、思考强度：agent 那一行下面一行，和名称对齐 */
-.hp-arun { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 0 0 8px 30px; font-size: 12px; color: var(--text-3); }
+.hp-arow > .hp-ctl { margin-left: auto; flex: 0 1 auto; min-width: 0; }
+/* 名称那一格有胶囊时，下拉先收窄一点再考虑换行 */
+.hp-arow .input.hp-env-select { flex: 0 1 240px; min-width: 190px; }
+/* 窄屏：右边的控件整组换到下一行、靠右，不压到名称上；下拉占满一行 */
+@media (max-width: 760px) {
+  .hp-arow > .hp-ctl { flex: 1 1 100%; justify-content: flex-end; }
+  .input.hp-env-select { flex: 1 1 auto; width: auto; min-width: 140px; }
+  .hp-arow-name { width: auto; max-width: 60%; min-width: 0; }
+}
+/* agent 的模型、思考强度：agent 那一行下面一行，和名称起始位置（图标 + 间距）对齐 */
+.hp-arun { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 0 0 9px 30px; font-size: 12px; color: var(--text-3); }
 .hp-arun-f { display: inline-flex; align-items: center; gap: 6px; }
 .hp-arun-f > span:first-child { white-space: nowrap; }
 .input.hp-arun-model { width: 168px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
@@ -201,39 +212,70 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-dir { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
 .d-label + .hp-dir { border-top: 0; }
 .hp-dir svg { width: 14px; height: 14px; color: var(--text-4); flex: none; }
-.hp-board { font-weight: 600; flex: none; }
+.hp-board { flex: none; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 名称列同宽：启动环境的名称、白板与目录的白板名都占同样的宽度，路径、输入框左端对齐 */
+:root { --hp-name-col: 10.5em; }
+.hp-env .hp-board, .hp-dir-edit .hp-board, .hp-dir-add .hp-board { width: var(--hp-name-col); }
 .hp-dir code.hp-path { display: flex; }
 .hp-path-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hp-path-tail { flex: none; white-space: nowrap; }
 .hp-dir code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; padding: 2px 8px; border-radius: var(--r-xs); background: var(--surface-3); }
 /* 白板与目录：可编辑，状态在每一行右侧；缺失时下面出现克隆 */
 .hp-dirs { display: flex; flex-direction: column; }
-.hp-dir-edit { align-items: stretch; flex-direction: column; gap: 6px; }
-.hp-dir-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hp-envs { display: flex; flex-direction: column; }
+/* 启动环境、白板与目录的行高、字号、分隔线一致：路径和输入框都从名称列右边开始 */
+.hp-env { min-height: 42px; }
+.hp-env-body { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.hp-env .hp-path { flex: 0 1 auto; }
+.hp-path-none { font-size: 12px; color: var(--text-3); }
+/* 可编辑的一行：名称那一列和启动环境对齐，右边是输入框和状态 / 按钮；「目录不存在」时的克隆行排在下面 */
+.hp-dir-edit { flex-direction: column; align-items: stretch; gap: 6px; padding: 7px 0; }
+.hp-dir-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+/* 目录不存在时下面一行放仓库地址和克隆：和路径输入框同一条起线 */
+.hp-dir-edit > .hp-clone { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 0; margin-left: calc(var(--hp-name-col) + 10px); }
+/* 输入框和右边的状态 / 按钮同一行，输入框吃掉剩余宽度；窄屏时状态和按钮换到下一行靠右 */
+.hp-dir-fields { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.hp-dir-ctl { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.hp-dir-ctl-end { margin-left: auto; }
 .hp-dir-path { flex: 1; min-width: 90px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
 .hp-dir-path[readonly] { color: var(--text-2); background: var(--surface-2); }
 .hp-dir-state { flex: none; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
 .hp-dir-state.ok { color: var(--ok); }
 .hp-dir-state.missing, .hp-dir-state.not_git { color: var(--warn-text); }
-.hp-dir.warn { border-left: 2px solid var(--warn); padding-left: 8px; }
-.hp-dir-fixed { flex: none; font-size: 11.5px; color: var(--text-3); }
+.hp-dir.warn { box-shadow: inset 2px 0 0 var(--warn); }
+.hp-dir-fixed { flex: none; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.hp-dir-ctl .icon-btn.sm { flex: none; }
+.hp-dir-ctl .icon-btn.is-busy { opacity: .6; }
 .hp-clone { display: flex; align-items: center; gap: 8px; padding: 0 0 2px 2px; }
 .hp-clone .input { flex: 1; min-width: 120px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
 .hp-clone-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-3); }
 .hp-clone-msg.bad { color: var(--danger-text); }
 .hp-clone-msg.ok { color: var(--ok); }
-.hp-dir-add, .hp-dir-copy { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.hp-dir-add, .hp-dir-copy { display: flex; align-items: center; gap: 10px; padding-top: 8px; margin-top: 2px; border-top: 1px solid var(--line); min-width: 0; }
 .hp-dir-add .input, .hp-dir-copy .input.sel { height: 28px; font-size: 12px; }
-.hp-dir-add .input { flex: 1; min-width: 110px; font-family: var(--f-mono); }
-.hp-dir-add .input.sel, .hp-dir-copy .input.sel { flex: none; width: 190px; }
+.hp-dir-add .hp-dir-pick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.hp-dir-add .input.sel { flex: 0 1 9.5em; width: auto; min-width: 6.5em; }
+.hp-dir-copy .input.sel { flex: none; width: 190px; }
+.hp-dir-add .hp-dir-path { flex: 1; min-width: 110px; }
 .hp-dir-copy { border-top: 0; }
 .hp-remote { color: var(--warn-text); }
 @media (max-width: 760px) {
-  .hp-dir-main, .hp-clone, .hp-dir-add, .hp-dir-copy { flex-wrap: wrap; }
-  .hp-dir-main > .hp-dir-path { flex: 1 0 100%; order: 2; }
-  .hp-dir-main > .hp-dir-state { margin-left: auto; }
-  .hp-clone > .input { flex: 1 0 100%; }
-  .hp-dir-add .input.sel, .hp-dir-copy .input.sel { flex: 1 0 100%; width: 100%; }
+  /* 窄屏：名称和路径一行（路径吃剩余宽度），状态和按钮换到下一行靠右，不重叠 */
+  .hp-dir-fields { flex-wrap: wrap; gap: 6px; }
+  .hp-dir-edit .hp-board { width: auto; max-width: 100%; }
+  .hp-dir-path { flex: 1 1 140px; order: 1; }
+  .hp-dir-ctl { order: 3; margin-left: auto; }
+  .hp-dir-add { flex-wrap: wrap; }
+  .hp-dir-add .hp-board { width: auto; }
+  .hp-dir-add > .hp-dir-fields { flex: 1 1 100%; }
+  .hp-dir-add .hp-dir-pick { flex-wrap: wrap; }
+  .hp-dir-add .input.sel { flex: 1 1 100%; width: 100%; order: 1; }
+  .hp-dir-add .hp-dir-path { order: 2; }
+  .hp-dir-add .hp-dir-ctl-end { flex: 1 1 100%; order: 3; margin-left: 0; justify-content: flex-end; }
+  .hp-dir-edit > .hp-clone { margin-left: 0; flex-wrap: wrap; }
+  .hp-clone > .input { flex: 1 1 100%; }
+  .hp-dir-copy { flex-wrap: wrap; }
+  .hp-dir-copy .input.sel { flex: 1 1 100%; width: 100%; }
 }
 
 /* ---------- 侧栏 ---------- */
@@ -475,8 +517,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .d-side-head { display: flex; align-items: center; gap: 8px; }
 .d-side.folded { flex: none; }
 
-/* 启动环境：名称列同宽，路径左端对齐（长路径中间省略，悬停看全） */
-.hp-env .hp-board { width: 8.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 启动环境：名称列同宽（和「白板与目录」同一个宽度）、路径左端对齐（长路径中间省略，悬停看全） */
 .hp-env .hp-path, .hp-env .hp-env-hint { margin-left: 0; }
 
 /* ---------------- 乐观更新的反馈 ---------------- */

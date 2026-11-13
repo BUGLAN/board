@@ -209,6 +209,18 @@ const places = (as: HostAgent[]) => [...new Set(as.map(a => (a.no_skill ?? '').s
 export const isLocalHost = (h: HostInfo, local: { running: boolean; name: string; defaultName: string } | null) =>
   !!local?.running && (local.name.trim() || local.defaultName) === h.name;
 
+/** 目录太长时中间省略：开头和最后一级对齐（两块并排看时左端一致），悬停看全路径 */
+export type PathParts = { head: string; tail: string };
+export const pathParts = (path: string): PathParts => {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return cut > 0 ? { head: path.slice(0, cut + 1), tail: path.slice(cut + 1) } : { head: '', tail: path };
+};
+
+/** 只在本机（桌面端运行 board host 的那台）的机器详情里能选文件夹：
+    别的机器上选的目录是那台机器上的，选了也没用；`--dir` 启动的行由启动参数固定。
+    `isLocal` 是这台电脑正在跑的 board host 就是它（见 isLocalHost），`desktop` 是桌面端（只有它能弹系统的文件夹选择框） */
+export const canPickDir = (d: { fixed?: boolean }, env: { isLocal: boolean; desktop: boolean }) => !d.fixed && env.isLocal && env.desktop;
+
 /* ------------------------------ 添加机器：一行安装命令 ------------------------------ */
 
 /** 机器名的规则（和 board-core 的 check_host_name 一样）：不对时返回原因 */
