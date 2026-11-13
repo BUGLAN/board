@@ -131,7 +131,8 @@ impl Input {
             url_file,
             token_file,
             file_error,
-            board_as: flag(as_flag).or_else(|| env("BOARD_AS")),
+            // 没写 --as / BOARD_AS 时用本机 check 时记下的名字（board check --agent <标识> 生成的）
+            board_as: flag(as_flag).or_else(|| env("BOARD_AS")).or_else(crate::heartbeat::current_name),
             board: flag(board_flag).or_else(|| env("BOARD")),
         }
     }
@@ -500,7 +501,7 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
 
     // 6. 名字：没提供时跳过；提供了就检查格式和是否在线
     match &input.board_as {
-        None => checks.push(Check::skip("board_as", "名字", "没有提供（--as 或 BOARD_AS），跳过")),
+        None => checks.push(Check::skip("board_as", "名字", "没有提供（先 board check --agent <标识> 或 --as <名字>），跳过")),
         Some(n) => match board_core::check_agent_name(n) {
             Err(e) => checks.push(Check::fail("board_as", "名字", e, "按格式取名，例如 claude/opus-5.5，再 board check --as <名字>")),
             Ok(()) => match (usable_url, token) {
@@ -510,7 +511,7 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
                         "board_as",
                         "名字",
                         format!("{n} 不在线：没有 check，或心跳中断超过 {} 秒", board_core::NAME_GAP_MS / 1000),
-                        format!("board check --as {n}，再 board heartbeat start --as {n}"),
+                        format!("board check --as {n}（名字由 Board 生成时重跑 board check --agent <标识>），再 board heartbeat start"),
                     )),
                     Err(e) => checks.push(Check::fail("board_as", "名字", format!("{n}：查不到在线列表：{}", e.describe()), e.next_step())),
                 },

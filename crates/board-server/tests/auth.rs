@@ -702,3 +702,61 @@ fn agent_names_check_beat_and_online_list() {
     // 离线后可以重新 check
     assert_eq!(post("/api/agents/check", json!({ "name": NAME })).status, 200);
 }
+
+/// `board check --agent <标识>`（PRD §3.2）：不带名字，服务端按这台机器、这个 agent 的设置生成名字——
+/// 认机器的顺序是请求里的 `host` → 令牌是它的 board host 上报用的那个；查不到机器时退回 `<标识>/<模型>`
+#[test]
+fn agent_check_generates_the_name_from_machine_settings() {
+    use board_core::{HostAgent, HostDir, HostReport, Origin};
+    let s = github("buglan");
+    let agent_token = new_token(&s.db, "ci");
+    // 这台机器的 board host 用的令牌：上报时带上它的 ID
+    let (host_info, host_token) = {
+        let store = board_core::Store::open(&s.db).unwrap();
+        auth::create_token(store.conn(), "win2", board_core::now_ms()).unwrap()
+    };
+    let agent = |id: &str, model: &str| HostAgent { id: id.into(), name: id.into(), version: "1.0".into(), found: true, model: model.into(), ..Default::default() };
+    let rep = HostReport {
+        name: "win".into(),
+        instance: "i1".into(),
+        resume: None,
+        os: "Windows 11".into(),
+        version: "0.1.24".into(),
+        agents: vec![agent("claude", "opus-5.5"), agent("pi", "")],
+        envs: vec![],
+        dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\board".into(), ..Default::default() }],
+        dirs_rev: 0,
+        running: vec![],
+        done: false,
+        asked: None,
+        ask_error: None,
+        selftest: false,
+        skills: None,
+        mcp: None,
+        providers: None,
+        local_skills: None,
+    };
+    board_core::Store::open(&s.db).unwrap().write(board_core::now_ms(), Origin::cli(), |w| w.host_beat(&rep, Some(host_info.id))).unwrap();
+    let check = |token: &str, body: Value| send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &format!("Bearer {token}"))], Some(body));
+    // 带机器名：claude 配了 opus-5.5；名字和派发一致，占用时自动加序号
+    let r = check(&agent_token, json!({ "agent": "claude", "host": "win", "session": true }));
+    assert_eq!((r.status, r.body["name"].as_str()), (200, Some("claude-win/opus-5.5")), "{:?}", r.body);
+    assert!(r.body["session"].is_string());
+    let r = check(&agent_token, json!({ "agent": "claude", "host": "win", "session": true }));
+    assert_eq!(r.body["name"], "claude-win/opus-5.5-2", "{:?}", r.body);
+    // 没配模型：pi-win/pi
+    assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "win" })).body["name"], "pi-win/pi");
+    // 不带机器名、令牌不是任何机器的：退回 <标识>/<标识>
+    let r = check(&agent_token, json!({ "agent": "codex" }));
+    assert_eq!((r.status, r.body["name"].as_str(), r.body["modeled"].as_bool()), (200, Some("codex/codex"), Some(false)));
+    // 令牌是 win 的 board host 上报用的：认得出这台机器（pi-win/pi 已经被上一个会话占了，加序号）
+    assert_eq!(check(&host_token, json!({ "agent": "pi", "session": true })).body["name"], "pi-win/pi-2");
+    // 机器名不合法：USAGE；agent 标识不合法：USAGE
+    assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "Win 1" })).code().as_str(), "USAGE");
+    assert_eq!(check(&agent_token, json!({ "agent": "Pi Code", "host": "win" })).code().as_str(), "USAGE");
+    // GET /api/hosts/mine：令牌是它的机器（登录的界面没有）
+    let mine = send("GET", &format!("{}/api/hosts/mine", s.url), &[("authorization", &format!("Bearer {host_token}"))], None);
+    assert_eq!((mine.status, mine.body["name"].as_str()), (200, Some("win")));
+    let other = send("GET", &format!("{}/api/hosts/mine", s.url), &[("authorization", &format!("Bearer {agent_token}"))], None);
+    assert_eq!((200, other.body), (200, json!(null)));
+}

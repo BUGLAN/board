@@ -7,28 +7,29 @@
 每个会话开始时做一次（处理卡片、白板、一句话需求之前）。由 board host 启动的会话只做第 0、4、5 步（见 host.md）：
 
 0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），本 skill 各文件里写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。
-1. **生成名字**：`<运行环境>/<模型>`，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`codex/gpt-5`。
-   - 运行环境用 claude、codex、dsh 这类名称；模型名转成小写，空格换成 `-`。
-   - 两段都只能用小写字母、数字、`.`、`-`，以字母或数字开头；只有一个 `/`，总长不超过 48 个字符。
-   - 本机已有同名会话时，加一个和本会话相关的后缀，例如任务名或分支名：`claude/opus-5.5-login`。
-2. **占用名字**：`board check --as <名字>`，**单独执行、看它的结果**再往下走。返回 `NAME_TAKEN`：名字正被另一个在线会话使用，加一个和本会话相关的后缀再 check；之后所有命令都用 check 成功的那个名字，同一个脚本里不能接着用原来的名字。
+1. **名字由 Board 生成**：不用自己拼。运行环境、模型都能在 Board 的机器设置里看到（界面「机器详情 → 本机 agent」），名字按 `<agent 标识>-<机器名>/<模型名>` 生成，例如 `dsh-win/deepseek-v4.1-flash`、`claude-mbp/opus-5.5`。
+2. **占用名字**：`board check --agent <你实际运行的 agent 标识>`（pi、claude、codex、dsh），**单独执行、看它的结果**再往下走。输出（`--json` 里是 `name`）里是这次用的名字。
+   - 同一台机器同一 agent 已经有在线会话时，Board 在模型名后面加 `-2`、`-3`……，不会报 `NAME_TAKEN`；名字太长时截断模型名，序号留在最后。
+   - 这台机器没跑 board host、白板不在这台机器时，退回 `<agent 标识>/<模型>`（例如 `pi/pi`）。
+   - 名字 check 成功时 `board` 记在本机：之后的命令不写 `--as` / `BOARD_AS` 就用这个名字（`board heartbeat start`、`board beat`、`board claim`、`board hold` 都一样）；在别的终端、别的进程里跑的命令带上输出里的名字（`--as <名字>`）也行。
+   - 自己起名字（旧写法、要指定名字时）照旧：`board check --as <名字>`，例如 `claude/opus-5.5`。两段都只能用小写字母、数字、`.`、`-`，以字母或数字开头，只有一个 `/`，总长不超过 48 个字符；被在线会话占用时返回 `NAME_TAKEN`，加一个和本会话相关的后缀再 check。之后所有命令都用 check 成功的那个名字，同一个脚本里不能接着用原来的名字。
    - 反例（2026-11-11 真实发生过）：一个会话的脚本里 check 得到了 `NAME_TAKEN`，没看结果，接着用这个名字打标签，最后 `board heartbeat stop`，把另一个会话的心跳停了、名字下线了，那个会话正在做的卡差点被释放。
-   - 现在 check 成功时服务端会发一个会话标识，`board` 记在本机，心跳和 `stop` 都带上它：别的会话停不掉你的心跳，你也停不掉别人的（`NAME_TAKEN`，写明是哪个进程）。用了别人的名字做别的事时，输出里会有一行提醒（`--json` 里是 `warning`），看到就换名字。
+   - check 成功时服务端会发一个会话标识，`board` 记在本机，心跳和 `stop` 都带上它：别的会话停不掉你的心跳，你也停不掉别人的（`NAME_TAKEN`，写明是哪个进程）。用了别人的名字做别的事时，输出里会有一行提醒（`--json` 里是 `warning`），看到就换名字。
 3. **启动心跳**（整个会话只执行这一次）：
 
    ```sh
-   board heartbeat start --as <名字>
+   board heartbeat start
    ```
 
    先同步发一次心跳（失败直接报错，按错误码处理），再在后台每 10 秒发一次，立即返回。这一路心跳同时维持你的名字在线和你持有的所有卡片，领卡后不再单独为卡片启动心跳。后台心跳跟随你的进程（Claude Code、Codex 等）：你的进程不在了（崩溃、被关掉），它跟着停下，不发 final；服务端连续 5 次（50 秒）收不到心跳，名字离线，你持有的卡片回到领取它时所在的可领取状态最上面。
-4. **之后每条命令都带名字和白板**：`--as <名字> --board <项目>/<白板>`，或前缀 `BOARD_AS=<名字> BOARD=<项目>/<白板>`，例如：
+4. **之后每条命令带白板**（名字不写时用 check 记在本机的那个）：`--board <项目>/<白板>`，或前缀 `BOARD=<项目>/<白板>`；想明确写名字时也带 `--as <名字>` 或前缀 `BOARD_AS=<名字>`，例如：
 
    ```sh
-   BOARD_AS=claude/opus-5.5 BOARD=mini/main board claim 2 --json
-   board claim 2 --as claude/opus-5.5 --board mini/main --json
+   BOARD=mini/main board claim 2 --json
+   board claim 2 --board mini/main --as dsh-win/deepseek-v4.1-flash --json
    ```
 
-   你的每条命令都在新的 shell 里跑，`export` 留不到下一条。本 skill 各文件里的命令为了简洁省略了这两个参数。
+   你的每条命令都在新的 shell 里跑，`export` 留不到下一条；名字记在本机的状态文件里，不用每条都带。本 skill 各文件里的命令为了简洁省略了这两个参数。
 5. **多行内容写进文件再传**：卡片描述、评论（交审评论就有多行）在 Windows 上**必须**这样传：`board.cmd` 要经过 cmd.exe，参数里的换行会把整条命令截断在第一行，只剩第一行被保存。先把内容写进一个 UTF-8 文件（例如会话的临时目录里），再用：
 
    ```sh
@@ -46,7 +47,7 @@ worktree 不在这里创建：会话里第一次处理要改代码的卡片时�
 
 - 得到 `NOT_LOGGED_IN` 时停下来，请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在界面「设置 → Agent 接入」新建）。不要自己去找令牌。
 - 令牌是密钥：不要写进代码、提交、卡片评论或输出里。
-- 名字只是你的身份，和令牌无关；同一个令牌可以被多个不同名字的 agent 使用。
+- 名字只是你的身份，和令牌无关；同一个令牌可以被多个不同名字的 agent 使用。名字由 Board 按机器设置生成（`board check --agent <标识>`）时，同一台机器上的几个会话自动分到 `-2`、`-3`；机器设置里换了模型、改了机器名，下一次 check 换成新名字（旧记录会清掉）。
 
 ## 处理一张卡片
 
@@ -193,9 +194,9 @@ wip 分支由接着做的 agent 在推进集成分支后删除，或者由人处
 所有卡片都处理完（都已交审或交给人）后，停掉后台心跳，名字立刻离线（由 board host 启动的会话跳过这一步，心跳由 board host 停）：
 
 ```sh
-board heartbeat stop --as <名字>
+board heartbeat stop
 ```
 
 然后在主仓库目录删掉本会话的 worktree（见「会话的 worktree → 删除」）。
 
-会话中途得到 `NAME_OFFLINE`：你的名字已经离线（心跳中断超过 50 秒，或后台心跳停了），你持有的卡片可能已经被释放。重新 `board check --as <名字>`（被占用就加后缀），再 `board heartbeat start`，然后 `board show <ID> --json` 看卡片现在的状态再决定。
+会话中途得到 `NAME_OFFLINE`：你的名字已经离线（心跳中断超过 50 秒，或后台心跳停了），你持有的卡片可能已经被释放。重新 `board check --agent <标识>`（自己起的名字就 `board check --as <名字>`，被占用就加后缀），再 `board heartbeat start`，然后 `board show <ID> --json` 看卡片现在的状态再决定。

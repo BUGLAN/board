@@ -77,6 +77,22 @@ impl Backend {
         self.0.post("/api/agents/check", json!({ "name": name, "session": true }))
     }
 
+    /// `board check --agent <标识>`：不带名字，服务端按这台机器（`host` 是 `[host] name`，空时按令牌认）、
+    /// 这个 agent 的设置生成名字（`<agent 标识>-<机器名>/<模型名>`，占用时加序号），返回在 `name` 里
+    pub fn check_generated(&mut self, agent: &str, host: Option<&str>) -> Result<AgentInfo> {
+        let mut body = json!({ "agent": agent, "session": true });
+        if let Some(h) = host {
+            body["host"] = json!(h);
+        }
+        self.0.post("/api/agents/check", body)
+    }
+
+    /// 这个令牌是哪台在线机器用的：`GET /api/hosts/mine`，返回那台机器（没有时为空）。
+    /// `board check --agent <标识>` 收到旧服务端（不认 `agent`，报 `NO_IDENTITY`）时用它自己拼名字
+    pub fn my_host(&mut self) -> Result<Option<HostInfo>> {
+        self.0.get("/api/hosts/mine", &[])
+    }
+
     /// `board next`：board host 启动的会话接着做下一张
     pub fn next(&mut self, name: &str) -> Result<CardDetail> {
         self.0.post("/api/agents/next", json!({ "name": name }))

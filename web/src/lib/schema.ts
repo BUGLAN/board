@@ -95,7 +95,7 @@ export const LABEL_COLORS = ['#F43F5E', '#F97316', '#EAB308', '#22C55E', '#14B8A
 
 /** 错误码与默认原因（设置页 · Agent 接入） */
 export const ERRORS: [ErrorCode, string][] = [
-  ['NO_IDENTITY', 'CLI 没有提供 agent 名字：先 board check --as <名字>，之后每条命令都带 --as <名字>'],
+  ['NO_IDENTITY', 'CLI 没有提供 agent 名字：先 board check --agent <标识>（名字由 Board 生成，记在本机，之后不用再带 --as），或者 board check --as <名字> 自己起名字'],
   ['NO_BOARD', 'CLI 没有指定白板：使用 --board <项目>/<白板> 或设置环境变量 BOARD'],
   ['BOARD_NOT_FOUND', '指定的项目或白板不存在；或项目下有多块白板却只写了项目标识'],
   ['NOT_FOUND', '卡片不存在'],
@@ -109,7 +109,7 @@ export const ERRORS: [ErrorCode, string][] = [
   ['NOT_LOGGED_IN', '没有登录：界面没有登录会话；CLI 还没有 board login（环境变量和 ~/.board/config.toml 里都没有服务端地址或令牌）；用访问令牌做只有人能在界面上做的操作'],
   ['INVALID_TOKEN', '访问令牌不存在或已吊销'],
   ['UNREACHABLE', 'CLI 连不上服务端'],
-  ['NAME_TAKEN', 'board check 的名字正被在线 agent 使用：加一个和本会话相关的后缀再 check'],
+  ['NAME_TAKEN', 'board check --as <名字> 的名字正被在线 agent 使用：加一个和本会话相关的后缀再 check（board check --agent <标识> 不会，它会自动加序号）'],
   ['NAME_OFFLINE', '名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>'],
   ['NOT_AUTHOR', '修改不是自己发的评论：只有人能在界面上修改自己发的评论'],
   ['HOST_NAME_TAKEN', 'board host 的机器名正被另一个在线的 board host 使用'],

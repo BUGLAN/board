@@ -39,6 +39,7 @@ use crate::Cmd;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 pub(crate) const SCHEMA: &str = r#"
 -- 机器（board host）。设置（max … cron）在界面上修改；被移除时整行删除，再连上来按新机器建立
@@ -260,6 +261,27 @@ pub fn check_host_name(name: &str) -> std::result::Result<(), String> {
     }
 }
 
+/// 本机主机名（Windows 上是 `COMPUTERNAME`，其他系统用 `hostname`）：`board check --agent` 在本机模式下认机器时用
+pub(crate) fn machine_hostname() -> Result<String> {
+    if cfg!(windows) {
+        if let Ok(n) = std::env::var("COMPUTERNAME") {
+            if !n.trim().is_empty() {
+                return Ok(n);
+            }
+        }
+    }
+    let out = std::process::Command::new("hostname")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| BoardError::usage(format!("取不到本机主机名：{e}")))?;
+    let n = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if n.is_empty() {
+        return Err(BoardError::usage("取不到本机主机名"));
+    }
+    Ok(n)
+}
+
 /// 本机主机名转成机器名：转成小写，非法字符换成 `-`，去掉开头不是字母或数字的部分，最长 24 个字符
 pub fn host_name_from(raw: &str) -> String {
     let s: String = raw
@@ -289,6 +311,18 @@ pub fn dispatch_agent_name(agent: &str, host: &str, model: &str, seq: u32) -> St
         seg = name_segment(agent, room);
     }
     format!("{first}/{seg}{suffix}")
+}
+
+/// 没有机器（没跑 board host、白板不在这台机器）时的 agent 名字：`<agent 标识>/<模型名>`，例如 `pi/pi`、`dsh/deepseek-v4.1-flash`。
+/// 规则同 [`dispatch_agent_name`] 的第二段（转成名字能用的样子，放不下时截断），`modeled` 说明第二段是不是真的模型名
+pub fn plain_agent_name(agent: &str, model: &str) -> (String, bool) {
+    let room = AGENT_NAME_MAX.saturating_sub(agent.chars().count() + 1).max(1);
+    let mut seg = name_segment(model, room);
+    let modeled = !seg.is_empty();
+    if seg.is_empty() {
+        seg = name_segment(agent, room);
+    }
+    (format!("{agent}/{seg}"), modeled)
 }
 
 /// 名字的一段（机器名、模型名）：小写，空白和非法字符换成 `-`，去掉开头结尾的 `-`，最长 max 个字符
@@ -1408,6 +1442,11 @@ impl HostRow {
             })
             .collect()
     }
+    /// 生成 agent 名字时第二段（模型名）用什么，见 [`model_of`]
+    fn model_for(&self, agent: &str) -> (String, bool) {
+        model_of(&self.agents, &self.run, agent)
+    }
+
     /// 开始派发时传给这个 agent 的模型、思考强度：机器设置里选了、board host 上报了这个 agent 能选（新版）才传
     fn run_opts(&self, agent: &str) -> (Option<String>, Option<String>) {
         let Some(opts) = self.agents.iter().find(|a| a.id == agent).and_then(|a| a.opts.as_ref()) else { return (None, None) };
@@ -1623,6 +1662,51 @@ fn card_label_names(conn: &rusqlite::Connection, b: i64, card: i64) -> Result<Ve
     Ok(out)
 }
 
+/// 生成 agent 名字时第二段（模型名）用什么，以及它是不是机器设置里选的：机器设置里选了这个 agent 的模型时用它
+/// （`set` 为真），否则用 board host 上报的（配置文件 `[agents.<标识>] model` → 内置模板默认值 → 空，空表示用 agent 标识）
+fn model_of(agents: &[HostAgent], run: &BTreeMap<String, AgentRun>, agent: &str) -> (String, bool) {
+    let reported = agents.iter().find(|a| a.id == agent).map(|a| a.model.clone()).unwrap_or_default();
+    // 机器设置里选了模型：board host 上报了这个 agent 能选（新版）才算
+    let set = agents.iter().find(|a| a.id == agent).and_then(|a| a.opts.as_ref()).is_some_and(|o| o.model);
+    let selected = run.get(agent).and_then(|r| r.model.clone()).filter(|_| set).filter(|m| check_model(m).is_ok());
+    if let Some(m) = selected {
+        return (m, true);
+    }
+    // 没在机器设置里选：用 board host 上报的（配置文件 → 内置模板默认值）。它就是名字里的模型名，算得上是「按设置来的」
+    let reported = reported.trim().to_string();
+    if !reported.is_empty() {
+        return (reported, true);
+    }
+    (String::new(), false)
+}
+
+/// `board check --agent <标识>` 用：按写事务里的机器记录（[`W::agent_check_generated`] 已经按机器名或令牌找到的那台）
+/// 算这个 agent 该用的模型名
+pub(crate) fn model_for_transaction(conn: &rusqlite::Connection, h: &HostInfo, agent: &str) -> Result<(String, bool)> {
+    let run: BTreeMap<String, AgentRun> = conn
+        .query_row("SELECT run FROM hosts WHERE id = ?1", [h.id], |r| r.get::<_, String>(0))
+        .optional()?
+        .map(|raw| serde_json::from_str(&raw).unwrap_or_default())
+        .unwrap_or_default();
+    Ok(model_of(&h.agents, &run, agent))
+}
+
+/// 按名字找一台在线的机器（带上按机器设置算好的 agent 数据）：`board check --agent <标识>` 用它。
+/// 机器不存在、已移除、离线时为空（这条命令不报 `NO_SUCH_HOST`，按「查不到机器」退回 `<agent 标识>/<模型>`）
+pub(crate) fn named_host(conn: &rusqlite::Connection, name: &str, now: i64) -> Result<Option<HostInfo>> {
+    let h: Option<HostRow> = conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE name = ?1"), [name], host_row).optional()?;
+    Ok(h.filter(|h| h.online(now)).map(|h| h.info(now)))
+}
+
+
+/// 令牌是某台在线机器的 board host 最后一次上报用的那个：`board check --agent <标识>` 没带机器名时按它认机器。
+/// 没有时为空（同时有多台机器用同一个令牌时取名字排在前面的，不该发生）
+pub(crate) fn host_by_token(conn: &rusqlite::Connection, token: i64, now: i64) -> Result<Option<HostInfo>> {
+    let h: Option<HostRow> =
+        conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE token = ?1 ORDER BY name LIMIT 1"), [token], host_row).optional()?;
+    Ok(h.filter(|h| h.online(now)).map(|h| h.info(now)))
+}
+
 fn no_such_host(name: &str) -> BoardError {
     BoardError::new(ErrorCode::NoSuchHost, format!("机器「{name}」不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器"))
         .with_detail(json!({ "host": name }))
@@ -1650,6 +1734,28 @@ impl<'a> R<'a> {
     pub fn host_uses_token(&self, name: &str, token: i64, now: i64) -> Result<bool> {
         let Some(h) = self.host_row(name)? else { return Ok(false) };
         Ok(h.token == Some(token) && h.online(now))
+    }
+
+    /// `GET /api/hosts/mine`：这个令牌是哪台在线机器用的（`board check --agent <标识>` 在旧服务端上自己拼名字时用它）。
+    /// 本机模式（服务端以 `--local` 运行，本机来的请求没有令牌）返回本机这一台：按本机主机名转成的机器名找，
+    /// 找不到时（机器名改过、还没重新上报）取唯一的一台。登录的界面不带令牌，不看令牌找时为空
+    pub fn my_host(&self, token: Option<i64>, now: i64) -> Result<Option<HostInfo>> {
+        match token {
+            Some(t) => host_by_token(self.conn, t, now),
+            None if self.local => {
+                let mut hosts = self.hosts(now)?;
+                if hosts.len() > 1 {
+                    // 本机到底跑的是哪一台：按主机名转成的机器名找
+                    if let Ok(name) = crate::hosts::machine_hostname() {
+                        let want = crate::hosts::host_name_from(&name);
+                        hosts.retain(|h| h.name == want);
+                    }
+                }
+                hosts.retain(|h| h.online);
+                Ok(if hosts.len() == 1 { hosts.pop() } else { None })
+            }
+            None => Ok(None),
+        }
     }
 
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
@@ -3486,32 +3592,33 @@ impl<'a> W<'a> {
         self.start(&h, d, token)
     }
 
-    /// 生成名字、check、以它领取卡片。领不到时这次派发结束，结果「没领到」
-    fn start(&mut self, h: &HostRow, d: DRow, token: Option<i64>) -> Result<Dispatch> {
-        // 名字：<agent 标识>-<机器名>/<模型名>（dsh-win/deepseek-v4.1-flash）。模型名来自 board host 上报的
-        // agent 数据（配置文件 [agents.<标识>] model，内置模板有默认值），没有时用 agent 标识。
-        // 不带序号的名字空闲就直接用；同一台机器同一 agent、模型有多个并发派发时模型名后面加 -2、-3 …
-        // （dsh-win/deepseek-v4.1-flash-2），只有在线的名字算占用，
-        // 上一个会话离线后名字可以复用
-        // 机器设置里选了模型时名字第二段用它；没选时用 board host 上报的（配置文件 → 内置默认 → agent 标识）
-        let (run_model, run_effort) = h.run_opts(&d.agent);
-        let model = run_model.clone().unwrap_or_else(|| h.agents.iter().find(|a| a.id == d.agent).map(|a| a.model.clone()).unwrap_or_default());
-        let model = model.as_str();
+    /// `<agent 标识>-<机器名>/<模型名>` 这个名字没被在线 agent 用就返回它，否则按 [`dispatch_agent_name`] 的规则
+    /// 依次试模型名后面的 `-2`、`-3` …（只有在线的名字算占用）。派发开始时和 `board check --agent <标识>` 都用它
+    pub(crate) fn free_agent_name(&self, agent: &str, host: &str, model: &str) -> Result<String> {
         let gap = crate::agents::NAME_GAP_MS;
         let mut seq = 0u32;
-        let name = loop {
-            let n = dispatch_agent_name(&d.agent, &h.name, model, seq);
+        loop {
+            let n = dispatch_agent_name(agent, host, model, seq);
             let taken: bool = self.tx.query_row(
                 "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1 AND off_at IS NULL AND beat_at + ?3 > ?2",
                 params![n, self.now, gap],
                 |r| r.get(0),
             )?;
             if !taken {
-                break n;
+                return Ok(n);
             }
             // 不带序号的被占用：依次试 -2、-3 …
             seq = if seq == 0 { 2 } else { seq + 1 };
-        };
+        }
+    }
+
+    /// 生成名字、check、以它领取卡片。领不到时这次派发结束，结果「没领到」
+    fn start(&mut self, h: &HostRow, d: DRow, token: Option<i64>) -> Result<Dispatch> {
+        // 名字：<agent 标识>-<机器名>/<模型名>（dsh-win/deepseek-v4.1-flash），见 free_agent_name。
+        // 模型名来自机器设置里选的模型、board host 上报的 agent 数据（配置文件 [agents.<标识>] model，内置模板有默认值），
+        // 都没有时用 agent 标识
+        let (run_model, run_effort) = h.run_opts(&d.agent);
+        let name = self.free_agent_name(&d.agent, &h.name, h.model_for(&d.agent).0.as_str())?;
         // 用哪个启动环境：按开始这一刻的机器设置
         let env = h.agents.iter().find(|a| a.id == d.agent).and_then(|a| h.pick(a)).map(|c| c.env.clone());
         let env_name = env.as_deref().map(|e| h.env_name(e));

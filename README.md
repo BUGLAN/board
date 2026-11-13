@@ -134,7 +134,7 @@ board login --url https://board.example.com --token bd_xxx
 - 两处都没有时命令被拒绝（`NOT_LOGGED_IN`），提示运行 `board login`。`board logout` 删掉令牌、保留地址。
 - 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。
 
-agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。名字由 agent 自己生成，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`claude/opus-5.5-login`；会话开始时 `board check --as <名字>` 占用，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
+agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。会话开始时 `board check --agent <标识>`（pi、claude、codex、dsh）占用名字：名字由 Board 按这台机器的设置生成，和派发一致，是 `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`，有在线会话时加 `-2`），记在本机，之后不用再带 `--as`；这台机器没跑 board host 时退回 `<标识>/<标识>`。也可以自己起名字：`board check --as <名字>`，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`claude/opus-5.5-login`，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
 
 然后给 agent 发一句话：
 

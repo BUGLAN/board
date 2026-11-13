@@ -291,7 +291,7 @@ impl Store {
             }
         }
         // 定时建卡的模板描述里贴的图片也不属于卡片：被模板引用着就留着（每次建卡复制一份归到新卡）
-        for (board, text) in (crate::store::R { conn: self.conn() }).card_cron_files()? {
+        for (board, text) in (crate::store::R { conn: self.conn(), local: false }).card_cron_files()? {
             for id in referenced_ids(&text) {
                 let mine: i64 = self.conn().query_row("SELECT COUNT(*) FROM attachments WHERE id = ?1 AND board = ?2", params![id, board], |r| r.get(0))?;
                 if mine > 0 {

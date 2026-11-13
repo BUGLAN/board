@@ -4,12 +4,12 @@
 
 ## 由 board host 启动的会话
 
-Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以生成的名字（`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；心跳由 board host 替你发。
+Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以生成的名字（`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`；手动启动的会话用 `board check --agent <标识>` 也是这个规则）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；心跳由 board host 替你发。
 
 **怎么认**：环境变量里有 `BOARD_HOST`（机器名），并且 `board show <ID> --json` 的 `holder` 是 `BOARD_AS`。这时：
 
 - **不 check 名字、不 claim、不启动也不停止心跳**：跳过 work.md「会话开始」第 1–3 步、work.md「处理一张卡片」第 1 步里的 `board claim`（改用 `board show <ID> --json` 读卡片，同样先读动态、下载附件）、work.md「会话结束」里的 `board heartbeat stop`。
-- 名字和白板已经在环境变量 `BOARD_AS`、`BOARD` 里，命令不用再带 `--as`、`--board`。
+- 名字和白板已经在环境变量 `BOARD_AS`、`BOARD` 里，命令不用再带 `--as`、`--board`。这个名字就是 `board check --agent <标识>` 会生成的那个（同一套规则：`<agent 标识>-<机器名>/<模型名>`，有一模一样的在线会话时加 `-2`），不用再 check。
 - 其余步骤不变：worktree、干活、提交推送、交审（`board heartbeat final <ID>` 后马上沿连线移到交审状态），或者做不下去（评论、`board heartbeat final <ID>`、移到错误节点；没有错误节点时移到需要人处理的状态）。
 - 会话里没有人和你对话：要停下来问用户的情况（需要人确认、`NOT_LOGGED_IN` 之类），按 work.md「做不下去」处理，把问题写进评论，不要等回答。
 - **不要创建 goal**：board host 的 agent 是非交互的一次性运行；goal 的自动续轮会在任务结束后继续跑，dsh 的 headless 会因此以退出码 1 结束。用 `todo_write` 记进度就够了。

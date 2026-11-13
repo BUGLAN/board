@@ -90,6 +90,14 @@ pub(crate) async fn work(State(s): State<AppState>, Path(name): Path<String>) ->
     Ok(Json(with_builtin(s.db(move |st| st.read(|r| r.host_work(&name, now_ms()))).await?)))
 }
 
+/// `GET /api/hosts/mine`：这个令牌是哪台在线机器的 board host 用的那个（`board check --agent <标识>` 在旧服务端上
+/// 自己拼名字时用它）；没有时返回 null。本机模式（不用令牌）返回这台机器的记录。登录的界面也是 null
+pub(crate) async fn mine(State(s): State<AppState>, Extension(caller): Extension<Caller>) -> ApiResult<Option<HostInfo>> {
+    let token = token_of(&caller);
+    let out = s.db(move |st| st.read(|r| r.my_host(token, now_ms()))).await?;
+    Ok(Json(out))
+}
+
 #[derive(Deserialize)]
 pub(crate) struct BeginBody {
     instance: String,

@@ -381,7 +381,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
             // 里程碑：board versions sync 写入版本记录（PRD §10.15）
             let m = req.method().clone();
             let cli = (m == Method::GET
-                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/mcp")
+                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/mcp" | "/hosts/mine")
                     || path.starts_with("/skills/")
                     || path.starts_with("/files/")
                     || host_path(&path, &["work", "mcp"])

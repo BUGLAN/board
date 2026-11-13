@@ -4,6 +4,11 @@
 //! - 在线：最近一次心跳在 50 秒以内（每 10 秒一次，连续 5 次没收到算离线），并且没有主动下线。
 //! - `board check --as <名字>`：名字正被在线 agent 使用时 `NAME_TAKEN`；否则标为在线，心跳时间记为现在。
 //!   查重和占用在同一个写事务里完成，同时 check 同一个名字只有一个成功。
+//! - `board check --agent <标识>`（不带名字）：名字由服务端按这台机器、这个 agent 的设置生成（[`W::agent_check_generated`]），
+//!   规则和 `board host` 派发时一样（[`crate::hosts::dispatch_agent_name`]）：`<agent 标识>-<机器名>/<模型名>`，
+//!   模型名后面按需要加 `-2`、`-3` …，只有在线的名字算占用；被占用时自动换下一个序号，不报 `NAME_TAKEN`。
+//!   服务端查不到这台机器（没跑 board host、名字对不上）时退回 `<agent 标识>/<模型>`。服务端怎么知道是哪台机器：
+//!   请求里带的机器名，或者令牌是某台在线机器的 board host 上报用的那个。
 //! - `board beat`（agent 级心跳）：更新名字的心跳时间，并对这个名字持有、还没 final 的每张卡片
 //!   做一次与 `board beat <ID>` 相同的心跳。名字已离线时 `NAME_OFFLINE`。
 //! - `board beat --final`（不带 ID）：名字立刻离线。它持有的卡片不再收到心跳，按规则 7 在 50 秒内释放。
@@ -143,7 +148,7 @@ impl<'a> R<'a> {
             .query_row("SELECT checked_at, beat_at FROM agents WHERE name = ?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let Some((checked_at, beat_at)) = row else { return Ok(None) };
-        Ok(Some(AgentInfo { name: name.to_string(), checked_at, beat_at, cards: self.held(name)?, session: None }))
+        Ok(Some(AgentInfo { name: name.to_string(), checked_at, beat_at, cards: self.held(name)?, session: None, modeled: None }))
     }
 
     /// 在线的 agent（所有白板），按名字排序
@@ -154,7 +159,7 @@ impl<'a> R<'a> {
         let rows: Vec<(String, i64, i64)> =
             st.query_map(params![now, NAME_GAP_MS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
         rows.into_iter()
-            .map(|(name, checked_at, beat_at)| Ok(AgentInfo { cards: self.held(&name)?, name, checked_at, beat_at, session: None }))
+            .map(|(name, checked_at, beat_at)| Ok(AgentInfo { cards: self.held(&name)?, name, checked_at, beat_at, session: None, modeled: None }))
             .collect()
     }
 
@@ -220,6 +225,37 @@ impl<'a> W<'a> {
     #[cfg(test)]
     pub fn agent_beat(&mut self, name: &str, done: bool) -> Result<AgentInfo> {
         self.agent_beat_by(name, done, BeatBy::Cli(None))
+    }
+
+    /// `board check --agent <标识>`（不带名字）：按这台机器、这个 agent 的设置生成名字并 check。
+    ///
+    /// `host` 是请求里带的机器名（`~/.board/config.toml` 的 `[host] name`），`token` 是这次请求用的访问令牌。
+    /// 机器按这个顺序认：带了的机器名（在这台机器在线时）→ 令牌是它的 board host 上报用的那个。查不到时没有机器名，
+    /// 名字退回 `<agent 标识>/<模型>`。模型名按 `board host` 派发时同样的顺序取：机器设置里选的模型 → board host 上报的
+    /// `model`（配置文件 → 内置模板默认值）→ agent 标识。不带名字的 check 还没有名字，所以不怕重名：占用时自动换序号。
+    pub fn agent_check_generated(&mut self, host: Option<&str>, agent: &str, token: Option<i64>, owner: NameOwner<'_>) -> Result<AgentInfo> {
+        crate::hosts::check_agent_id(agent).map_err(BoardError::usage)?;
+        if let Some(h) = host.map(str::trim).filter(|h| !h.is_empty()) {
+            crate::hosts::check_host_name(h).map_err(BoardError::usage)?;
+        }
+        let now = self.now;
+        // 机器按「带了的机器名 → 令牌是它的 board host 用的那个」认；查不到时没有机器
+        let found = match host.map(str::trim).filter(|h| !h.is_empty()) {
+            Some(h) => crate::hosts::named_host(self.tx, h, now)?,
+            None => token.and_then(|t| crate::hosts::host_by_token(self.tx, t, now).transpose()).transpose()?,
+        };
+        // 名字：<agent 标识>-<机器名>/<模型名>；没有机器时退回 <agent 标识>/<模型>（模型也取不到时是 <agent 标识>/<agent 标识>）
+        let (name, modeled) = match found {
+            Some(m) => {
+                let (model, set) = crate::hosts::model_for_transaction(self.tx, &m, agent)?;
+                (self.free_agent_name(agent, &m.name, &model)?, set)
+            }
+            None => crate::hosts::plain_agent_name(agent, ""),
+        };
+        let mut info = self.agent_check_owned(&name, token, owner)?;
+        // 名字里的模型和这台机器、这个 agent 的设置对不上（机器改名了、模型不是这个）：之后按设置里的修正
+        info.modeled = Some(modeled);
+        Ok(info)
     }
 
     /// 同 [`W::agent_beat`]，说明是谁发的：名字在线、而且属于某个会话时，标识对不上的拒绝（`NAME_TAKEN`），名字的状态不变

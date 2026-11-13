@@ -46,7 +46,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 | 操作方式 | 身份 | 操作哪块白板 |
 |---|---|---|
 | 界面 | 人：登录的 GitHub 账号（§3.1） | 界面上当前打开的白板。每个窗口可以打开不同的白板 |
-| CLI | agent。名字由 `--as <名字>` 或环境变量 `BOARD_AS` 给出，两者都没有时命令被拒绝（`NO_IDENTITY`）；会话开始时先 `board check` 占用名字（§3.2）。连接服务端时用访问令牌认证（§3.1、§9） | 由 `--board <项目>/<白板>` 或环境变量 `BOARD` 给出，两者都没有时命令被拒绝（`NO_BOARD`） |
+| CLI | agent。会话开始时先 `board check --agent <标识>` 占用名字，名字由 Board 按机器设置生成、记在本机（§3.2）；也可以自己起名字：`--as <名字>` 或环境变量 `BOARD_AS`。两者都没有、本机也没有 check 过的名字时命令被拒绝（`NO_IDENTITY`）。连接服务端时用访问令牌认证（§3.1、§9） | 由 `--board <项目>/<白板>` 或环境变量 `BOARD` 给出，两者都没有时命令被拒绝（`NO_BOARD`） |
 
 - 白板路径写成「项目标识/白板标识」，例如 `oss/release`。
 - 项目下只有一块白板时，可以只写项目标识，例如 `site`。项目下有多块白板时只写项目标识，返回 `BOARD_NOT_FOUND`，原因里列出该项目的白板标识。
@@ -67,7 +67,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 - 在「设置 → Agent 接入」新建令牌，填写用途（例如 `macbook`）。令牌原文只在新建时显示一次。
 - 令牌列表显示用途、令牌开头几位、创建时间、最近使用时间。令牌可以吊销，吊销后使用它的命令被拒绝（`INVALID_TOKEN`）。
 - `--as` / `BOARD_AS` 是 agent 的名字，与令牌无关：同一个令牌可以用不同的名字运行多个 agent。§8 的持有者仍按 agent 名字判断。
-- 令牌只能用于 CLI 的命令（§9）和 agent 接口：check、心跳、在线列表（§3.2）；`board host` 的上报、开始与结束派发、上传日志、订阅实时推送，以及创建、取消派发（§9.1）。项目、白板、工作流、标签的管理，机器的设置与移除，以及删除卡片、强制释放，只能在登录后的界面上做。
+- 令牌只能用于 CLI 的命令（§9）和 agent 接口：check、心跳、在线列表（§3.2），以及问「这个令牌是哪台机器的」（`GET /api/hosts/mine`）；`board host` 的上报、开始与结束派发、上传日志、订阅实时推送，以及创建、取消派发（§9.1）。项目、白板、工作流、标签的管理，机器的设置与移除，以及删除卡片、强制释放，只能在登录后的界面上做。
 
 ### 3.2 agent 名字
 
@@ -77,13 +77,19 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 - 例子：`claude/opus-5.5`、`dsh/deepseek-v4.1-flash`、`claude/opus-5.5-login`。
 - 格式不对时 `board check` 报 `USAGE`，原因里给出格式说明。
 
-**名字由 agent 自己生成**：运行环境用 claude、codex 这类名称；模型名转成小写，空格换成 `-`；本机已有同名会话时，加一个和本会话相关的后缀，例如任务名或分支名。
+**名字由 Board 生成**（`board check --agent <标识>`）：机器名、agent、模型在 Board 的机器设置里都有（§9.1），名字不用 agent 自己拼。规则和 `board host` 派发时一样（同一个函数）：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`、`claude-mbp/opus-5.5`。
 
-**board host 生成的名字**：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`。模型名来自这台机器上这个 agent 实际配的模型（`~/.board/config.toml` 的 `[agents.<标识>] model`，内置模板有默认值，见 §9.1；没有时用 agent 标识）。不带序号的这个名字空闲时直接用；同一台机器同一 agent、模型有多个并发派发时模型名后面加 `-<序号>`（例如 `dsh-win/deepseek-v4.1-flash-2`、`dsh-win/deepseek-v4.1-flash-3`），只有在线的名字算占用，上一个会话离线后名字可以复用。`board host` 以这个名字 check、领取卡片、发心跳，再启动 agent（§9.1）。
+- `<agent 标识>` 由会话给出（`board check --agent <标识>`，pi、claude、codex、dsh …），按 §9.1 的 agent 标识校验。机器名取本机 `~/.board/config.toml` 的 `[host] name`（桌面端「设置 → 本机」或 `board host --name` 写的）；没写时服务端按令牌认：令牌是哪台在线机器的 board host 最近一次上报用的。两者都认不出（没跑 board host、白板不在这台机器）时退回 `<agent 标识>/<模型>`，模型也取不到时是 `<agent 标识>/<agent 标识>`。
+- 模型名按这个顺序取：机器设置里选的模型 → `board host` 上报的 `model`（`[agents.<标识>] model`，内置模板有默认值）→ agent 标识。
+- 不带序号的这个名字空闲时直接用；同一台机器同一 agent、模型已经有在线会话时，模型名后面加 `-2`、`-3`……（例如 `dsh-win/deepseek-v4.1-flash-2`），不报 `NAME_TAKEN`；模型名太长时先截断模型名，序号留在最后，总长不超过 48。只有在线的名字算占用，上一个会话离线后名字可以复用。
+- 返回里 `name` 是生成的名字，`modeled` 说明名字的第二段是不是这个 agent 配的模型。`board` 把名字记在本机；之后不写 `--as` / `BOARD_AS` 的命令都用它。本机配置的机器名变了（改了机器名、换了模型）时，下一次按配置重新 check、换成新名字。
+- `board host` 派发的会话行为不变：`board host` 以同样的规则生成名字、check、领取卡片、发心跳，再启动 agent（§9.1），用环境变量 `BOARD_AS` 告诉 agent。
 
-**check**：`board check --as <名字>`。
+**自己起名字**：`board check --as <名字>`。运行环境用 claude、codex 这类名称；模型名转成小写，空格换成 `-`；本机已有同名会话时，加一个和本会话相关的后缀，例如任务名或分支名。写了 `--as` / `BOARD_AS` 就按写的名字 check，不加序号，被占用时照旧 `NAME_TAKEN`。
 
-- 名字正被在线 agent 使用时报 `NAME_TAKEN`，`detail` 里带上名字。
+**check**：`board check [--agent <标识> | --as <名字>]`。
+
+- 名字正被在线 agent 使用时报 `NAME_TAKEN`，`detail` 里带上名字（自己写名字时；Board 生成的名字被占用时自动换序号）。
 - 否则把名字标为在线，心跳时间记为当前时间，然后返回。
 - 查重和占用是一个原子操作：同时 check 同一个名字，只有一个成功。
 - 会话标识：`board` 在 check 时向服务端要一个随机的会话标识，服务端记下名字现在属于这个会话，只在这次返回里给出。`board` 把「名字、会话标识、check 它的 agent 进程（从 board 往上找第一个不是 shell 的祖先进程）」记在本机的状态文件里（`<临时目录>/board-heartbeat/<名字>.json`），之后的 agent 级心跳和 `board beat --final` 都带上这个标识。旧版 `board` check 时不要标识，名字没有标识。
@@ -297,6 +303,8 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 - `sync`：按库更新本机；本机有 `board host` 在跑时不做，提示由它来做。
 - `rm <名称>`：从库里删掉，各台机器上由同步装的那份随后删掉；`board-skills` 不能删。
 
+**agent 接口**（访问令牌就能调用，都在 `/api/agents` 下）：`POST /api/agents/check {name?, agent?, host?, session?}` 占用名字（§3.2）——带 `name` 时按它 check，不带 `name`、带 `agent` 时名字由服务端生成（返回里的 `name`、`modeled`）；`POST /api/agents/beat {name, final?, session?}` agent 级心跳；`GET /api/agents` 在线的 agent。`GET /api/hosts/mine` 返回这个令牌是哪台在线机器用的（`board check --agent` 在旧服务端上自己拼名字时用；本机模式下返回本机这一台，登录的界面是 `null`）。
+
 **`board versions sync [<tag>…] [--project <项目>] [--dir <仓库>] [--dry-run]`**：在代码仓库里从 git tag 和提交历史反推每个版本做了哪些卡片，写进服务端（§10.15）。访问令牌就能执行，不用 `--as`、`--board`。
 
 - 版本是 `v` 加数字开头的 tag，按版本号排。两个相邻 tag 之间的提交（不含合并提交）属于后一个 tag，第一个 tag 是它之前的全部提交；发版提交本身（`chore` 开头、说明里写着这个 tag 名）不算。
@@ -335,13 +343,13 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 **`board doctor [--as <名字>] [--board <白板>]`**：环境自检，没通过的项给出原因和下一步，有失败项时退出码为 1。
 
 - 服务端地址和令牌两项写明值来自哪里：环境变量还是 `~/.board/config.toml`。两处都有时状态为 warn，说明环境变量覆盖了文件；两处都没有时，下一步提示 `board login --url <服务端地址>`。
-- 名字（`--as` 或 `BOARD_AS`）和白板（`--board` 或 `BOARD`）没提供时跳过，不判失败；提供了名字时，检查格式和是否在线。
+- 名字（`--as` / `BOARD_AS`，都没有时用本机 check 时记下的名字）和白板（`--board` 或 `BOARD`）没提供时跳过，不判失败；提供了名字时，检查格式和是否在线。
 
 除 `board help`、`board login`、`board logout`、`board doctor`、`board update` 外，所有命令都需要连接服务端；除这几个和 `board host`、`board dispatch`、`board skills` 外，都需要身份（§3）；此外除 `board boards`、`board check`、不带 ID 的 `board beat`、`board host` 外，都需要白板（§3）。
 
 | 命令 | 作用 |
 |---|---|
-| `board check --as <名字>` | 占用名字（§3.2）。会话开始时执行一次 |
+| `board check --agent <标识>` | 占用名字（§3.2），会话开始时执行一次：`--agent <标识>`（或环境变量 `BOARD_AGENT`）时名字由 Board 按这台机器、这个 agent 的设置生成（`<agent 标识>-<机器名>/<模型名>`，有在线会话时加 `-2`），记在本机，之后不写 `--as` 的命令都用它。`--as <名字>`（或 `BOARD_AS`）时自己起名字，被在线会话占用时报 `NAME_TAKEN`。两个都没写时报 `USAGE` |
 | `board heartbeat start` | 启动后台心跳（§8 规则 6）：先同步发一次 `board beat`，失败直接报错；成功后后台每 10 秒发一次，立即返回。后台心跳跟随 agent 进程（从 board 往上找第一个不是 shell 的祖先进程），agent 进程不在了就停下，不发 final；心跳被拒绝时停下，连不上服务端时继续重试 |
 | `board heartbeat stop [--force]` | 先停掉后台心跳、等它退出，再发 `board beat --final`，名字立刻离线；重复执行不报错。名字是本机另一个还在运行的 agent 进程 check 的时候，`start`、`stop` 都拒绝（`NAME_TAKEN`），不动它的后台心跳；`--force` 只放开本机这一层（§3.2） |
 | `board heartbeat final <ID>` | 等同 `board beat <ID> --final`：结束这张卡片这一次的计时 |
@@ -921,7 +929,7 @@ agent 交审以后，人逐张复盘：看交审评论、对照验收标准，�
 
 | 错误码 | 出现时机 |
 |---|---|
-| `NO_IDENTITY` | CLI 没有提供 agent 名字。提示：先 `board check --as <名字>`，之后每条命令都带 `--as <名字>` |
+| `NO_IDENTITY` | CLI 没有提供 agent 名字。提示：先 `board check --agent <标识>`（名字由 Board 生成，记在本机，之后不用再带 `--as`），或者 `board check --as <名字>` 自己起名字、之后每条命令都带 `--as <名字>` |
 | `NO_BOARD` | CLI 没有指定白板 |
 | `BOARD_NOT_FOUND` | 指定的项目或白板不存在；或项目下有多块白板却只写了项目标识 |
 | `NOT_FOUND` | 卡片不存在 |
@@ -935,8 +943,8 @@ agent 交审以后，人逐张复盘：看交审评论、对照验收标准，�
 | `NOT_LOGGED_IN` | 没有登录：界面没有登录会话；CLI 的环境变量和配置文件里都没有服务端地址或令牌（提示运行 `board login`）；用访问令牌调用只能在界面上做的管理接口（项目、白板、工作流、标签、机器） |
 | `INVALID_TOKEN` | 访问令牌不存在或已吊销 |
 | `UNREACHABLE` | CLI 连不上服务端 |
-| `NAME_TAKEN` | `board check` 的名字正被在线 agent 使用；agent 级心跳、`board beat --final` 带的会话标识和名字记录的对不上（名字属于另一个会话或 `board host`）；本机 `board heartbeat start / stop`、不带 ID 的 `board beat` 用的名字是另一个还在运行的 agent 进程 check 的（HTTP 409，§3.2） |
-| `NAME_OFFLINE` | 名字没有 check，或心跳中断超过 50 秒：带令牌的卡片命令、上传附件、agent 级心跳被拒绝（HTTP 409）。原因：「名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>」 |
+| `NAME_TAKEN` | `board check --as <名字>` 的名字正被在线 agent 使用（`board check --agent <标识>` 生成的名字被占用时自动加 `-2`、`-3`，不报它）；agent 级心跳、`board beat --final` 带的会话标识和名字记录的对不上（名字属于另一个会话或 `board host`）；本机 `board heartbeat start / stop`、不带 ID 的 `board beat` 用的名字是另一个还在运行的 agent 进程 check 的（HTTP 409，§3.2） |
+| `NAME_OFFLINE` | 名字没有 check，或心跳中断超过 50 秒：带令牌的卡片命令、上传附件、agent 级心跳被拒绝（HTTP 409）。原因：「名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>」（名字由 Board 生成时同样先 `board check --agent <标识>` 再 check） |
 | `NOT_AUTHOR` | 修改或删除不是自己发的评论：agent 修改、删除任何评论，或人修改、删除 agent 的评论（HTTP 403） |
 | `HOST_NAME_TAKEN` | `board host` 的机器名正被另一个在线的 `board host` 使用（HTTP 409） |
 | `ALREADY_DISPATCHED` | 派发的卡片已经有排队或正在跑的派发（HTTP 409） |

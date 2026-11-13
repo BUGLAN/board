@@ -1,6 +1,7 @@
 //! `board` —— agent 用的命令行（PRD §9）。
 //!
-//! 身份：先 `board check --as <名字>`，之后每条命令都带 `--as <名字>`（或环境变量 `BOARD_AS`）；
+//! 身份：先 `board check --agent <标识>`（名字由 Board 按机器设置生成，记在本机），之后不用再带 `--as`；
+//! 也可以自己起名字：`board check --as <名字>`，之后每条命令都带 `--as <名字>`（或环境变量 `BOARD_AS`）；
 //! 白板：`--board <项目>/<白板>` 或环境变量 `BOARD`。
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
 //! 数据：通过服务端读写。服务端地址和访问令牌由 `board login` 写进 `~/.board/config.toml`，
@@ -49,7 +50,11 @@ const COMMANDS: [(&str, &str, &str); 28] = [
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
         ("doctor", "[--as <名字>] [--board <白板>]", "环境自检：board 路径、PATH、服务端地址和令牌（以及来自哪里）、服务端版本、名字是否在线；有问题退出码非 0"),
-        ("check", "--as <名字>", "会话开始时占用名字（<运行环境>/<模型>[-后缀]）；名字正被在线 agent 使用时 NAME_TAKEN"),
+        (
+            "check",
+            "[--agent <标识>] [--as <名字>]",
+            "会话开始时占用名字。--agent <标识>（pi、claude、codex、dsh …）：名字由 Board 按这台机器（[host] name 或令牌认出的机器）、这个 agent 的设置生成，例如 dsh-win/deepseek-v4.1-flash，已有在线会话时加 -2、-3，查不到机器时用 <标识>/<标识>；占到的名字记在本机，之后不写 --as 的命令都用它。--as <名字>（或 BOARD_AS）照旧：自己起名字，被在线 agent 占用时 NAME_TAKEN",
+        ),
         ("heartbeat", "start | stop [--force] | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；名字是本机另一个还在运行的 agent 进程 check 的时，start、stop 都拒绝（NAME_TAKEN），--force 清理本机残留时用；final <ID>：结束这张卡片这一次的计时"),
         ("beat", "[<ID>] [--final] [--force]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线（带着 check 时拿到的会话标识，名字属于别的会话时 NAME_TAKEN）。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
         ("boards", "", "列出所有白板"),
@@ -112,20 +117,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-/// 带名字的命令（不含 check、heartbeat、不带 ID 的 beat：它们自己处理）用的名字是本机另一个还活着的 agent 进程 check 的：提醒的话
-fn borrowed(tokens: &[String]) -> Option<String> {
-    let a = Args::parse(tokens).ok()?;
-    let sub = a.pos.first()?.as_str();
-    if a.flag("--help") || a.flag("-h") || a.flag("--version") || a.flag("-V") {
-        return None;
-    }
-    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch" | "skills" | "versions") || (sub == "beat" && a.pos.len() == 1) {
-        return None;
-    }
-    let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))?;
-    heartbeat::borrowed_warning(&name)
 }
 
 enum Output {
@@ -357,34 +348,17 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         return versions::run(&a.pos, a.value("--project"), a.value("--dir"), a.flag("--dry-run"), json, p, be.remote());
     }
 
-    // 身份（PRD §3）
-    let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"));
+    // 名字（PRD §3）：check 占用名字；不带 ID 的 beat 是 agent 级心跳。都不需要白板
+    if sub == "check" {
+        return check(&a, &mut be, json, p);
+    }
+
+    // 身份（PRD §3）：--as / BOARD_AS，没有时用本机 check 时记下的名字（board check --agent <标识> 生成的）
+    let name = explicit_name(&a).or_else(heartbeat::current_name);
     let Some(name) = name else {
         return Err(BoardError::code(ErrorCode::NoIdentity));
     };
     let actor = Actor::agent(name.clone());
-
-    // 名字（PRD §3）：check 占用名字；不带 ID 的 beat 是 agent 级心跳。都不需要白板
-    if sub == "check" {
-        check_agent_name(&name).map_err(BoardError::usage)?;
-        let info = be.check(&name)?;
-        // 记下这个名字属于调用它的 agent 进程和服务端发的会话标识：之后的心跳带上它，别的会话停不掉
-        heartbeat::checked(&name, info.session.clone())?;
-        return Ok(if json {
-            Output::Json(agent_json(&info))
-        } else {
-            Output::Text(format!(
-                "{} {} 已在线\n{}\n",
-                p.green("✓"),
-                p.bold(&name),
-                p.yellow(&format!(
-                    "马上启动心跳：board heartbeat start --as {name}（后台每 {} 秒发一次心跳；{} 秒没收到就离线）",
-                    BEAT_MS / 1000,
-                    NAME_GAP_MS / 1000
-                ))
-            ))
-        });
-    }
     if sub == "heartbeat" {
         return heartbeat_cmd(&a, &name, json, p);
     }
@@ -1082,6 +1056,8 @@ fn agent_json(a: &AgentInfo) -> Value {
             "run_started_at": iso(h.card.run_started_at),
             "beats": h.card.beats,
         })).collect::<Vec<_>>(),
+        // 名字由 Board 生成时才有：名字里的模型和这台机器、这个 agent 的设置是否一致（见 check --agent）
+        "modeled": a.modeled,
     })
 }
 
@@ -1370,7 +1346,7 @@ fn help(p: &Paint) -> String {
         String::new(),
         format!("  {}默认是 todo  doing  review  done  rework  check；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
         format!(
-            "  {}先 board check --as <名字>（例如 claude/opus-5.5），之后每条命令都带 --as <名字>，或前缀 BOARD_AS=<名字>",
+            "  {}会话开始时 board check --agent <标识>（例如 board check --agent dsh），名字由 Board 按这台机器的设置生成，之后不用再带 --as；也可以自己起名字：board check --as <名字>，之后每条命令都带 --as <名字>，或前缀 BOARD_AS=<名字>",
             p.dim("身份：")
         ),
         format!("  {}--board <项目>/<白板>，或前缀 BOARD=<项目>/<白板>", p.dim("白板：")),
@@ -1385,6 +1361,128 @@ fn help(p: &Paint) -> String {
         String::new(),
     ]);
     out.join("\n")
+}
+
+/* ------------------------------ 名字 ------------------------------ */
+
+/// `--as <名字>` 或 `BOARD_AS`：写了就自己起名字（照旧，被占用时 NAME_TAKEN，不加序号）
+fn explicit_name(a: &Args) -> Option<String> {
+    a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))
+}
+
+/// `--agent <标识>` 或 `BOARD_AGENT`：这个会话跑在哪个 agent 里（skill 按自己实际运行的 agent 填）
+fn agent_id(a: &Args) -> Option<String> {
+    a.value("--agent").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AGENT"))
+}
+
+/// `board check [--agent <标识>] [--as <名字>]`：占用名字。返回里 `name` 是实际用的名字（不带名字时是 Board 生成的）
+fn check(a: &Args, be: &mut Backend, json: bool, p: &Paint) -> Result<Output> {
+    let info = match explicit_name(a) {
+        Some(name) => {
+            check_agent_name(&name).map_err(BoardError::usage)?;
+            be.check(&name)?
+        }
+        None => match agent_id(a) {
+            Some(agent) => generated_check(be, &agent)?,
+            None => {
+                return Err(BoardError::usage(
+                    "board check 要 --agent <标识>（名字由 Board 生成，例如 board check --agent dsh）或 --as <名字>（自己起名字）",
+                ))
+            }
+        },
+    };
+    let name = info.name.clone();
+    // 记下这个名字属于调用它的 agent 进程和服务端发的会话标识：之后的心跳带上它，别的会话停不掉。
+    // 名字由 Board 生成时连着 agent 标识、机器一起记下，以后换名字了还按它算
+    heartbeat::checked_with(&name, info.session.clone(), agent_id(a), if info.modeled.is_some() { config::host_name() } else { None })?;
+    if !json {
+        return Ok(Output::Text(format!(
+            "{} {} 已在线\n{}\n",
+            p.green("✓"),
+            p.bold(&name),
+            p.yellow(&format!(
+                "马上启动心跳：board heartbeat start（后台每 {} 秒发一次心跳；{} 秒没收到就离线）",
+                BEAT_MS / 1000,
+                NAME_GAP_MS / 1000
+            ))
+        )));
+    }
+    Ok(Output::Json(agent_json(&info)))
+}
+
+/// `board check --agent <标识>`：名字由 Board 生成。
+///
+/// 新版服务端按机器名 / 令牌认机器、按机器设置生成名字（占用时加序号）。旧服务端不认 `agent`（报 `NO_IDENTITY`）：
+/// 先问「这个令牌是哪台机器的」（`GET /api/hosts/mine`）拿到机器设置，自己按同样的规则拼名字再带名字 check
+/// （带了机器名，让服务端也按这个名字生成；连着名都不认的旧服务端直接 check 拼出来的名字，占用时自己加序号）。
+/// 问不出机器时退回 `<agent 标识>/<模型>`
+fn generated_check(be: &mut Backend, agent: &str) -> Result<AgentInfo> {
+    board_core::hosts::check_agent_id(agent).map_err(BoardError::usage)?;
+    let host = config::host_name();
+    let mut info = match be.check_generated(agent, host.as_deref()) {
+        Ok(i) => i,
+        Err(e) if e.code == ErrorCode::NoIdentity => {
+            let mine = be.my_host()?;
+            let (name, modeled, query) = match mine {
+                Some(h) => {
+                    // 名字第二段：机器设置里选的模型 → board host 上报的 → agent 标识（和派发、新版服务端一样）
+                    let a = h.agents.iter().find(|a| a.id == agent);
+                    let set = a.and_then(|a| a.run_model.clone().filter(|_| a.opts.as_ref().is_some_and(|o| o.model)));
+                    let modeled = set.is_some();
+                    let model = set.or_else(|| a.map(|a| a.model.clone())).unwrap_or_default();
+                    (board_core::hosts::dispatch_agent_name(agent, &h.name, &model, 0), modeled, Some(h.name))
+                }
+                None => {
+                    let (name, modeled) = board_core::hosts::plain_agent_name(agent, "");
+                    (name, modeled, None)
+                }
+            };
+            // 再问一次：这一次知道是哪台机器了（旧服务端两次都报 NO_IDENTITY，就自己拼名字）
+            let info = match be.check_generated(agent, query.as_deref()) {
+                Ok(i) => i,
+                Err(e) if e.code == ErrorCode::NoIdentity => {
+                    // 旧服务端：带名字 check；被占用时在模型名后面加 -2、-3 …（和派发、新版服务端一样）
+                    let (first, seg) = name.split_once('/').map_or((name.clone(), String::new()), |(f, s)| (f.to_string(), s.to_string()));
+                    let mut seq = 0u32;
+                    loop {
+                        let n = if seq == 0 { name.clone() } else { format!("{first}/{seg}-{seq}") };
+                        check_agent_name(&n).map_err(BoardError::usage)?;
+                        match be.check(&n) {
+                            Ok(i) => break i,
+                            Err(e) if e.code == ErrorCode::NameTaken => seq = if seq == 0 { 2 } else { seq + 1 },
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            };
+            let mut info = info;
+            info.modeled = Some(modeled);
+            info
+        }
+        Err(e) => return Err(e),
+    };
+    info.modeled.get_or_insert(false);
+    Ok(info)
+}
+
+/// 带名字的命令用的名字是本机另一个还活着的 agent 进程 check 的：提醒的话
+
+/// 本机记下的名字（`board check --agent <标识>` 生成的）不只属于某个进程时，其他命令也可以用它。
+/// 用了别人 check 的名字时的提醒（--json 里加 warning 字段）
+fn borrowed(tokens: &[String]) -> Option<String> {
+    let a = Args::parse(tokens).ok()?;
+    let sub = a.pos.first()?.as_str();
+    if a.flag("--help") || a.flag("-h") || a.flag("--version") || a.flag("-V") {
+        return None;
+    }
+    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch" | "skills" | "versions")
+        || (sub == "beat" && a.pos.len() == 1)
+    {
+        return None;
+    }
+    let name = explicit_name(&a).or_else(heartbeat::current_name)?;
+    heartbeat::borrowed_warning(&name)
 }
 
 /* ------------------------------ 心跳 ------------------------------ */

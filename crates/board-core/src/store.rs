@@ -238,6 +238,8 @@ pub struct Store {
     conn: Connection,
     /// 附件目录（数据库旁边的 files/）；内存数据库没有
     files: Option<PathBuf>,
+    /// 以本机模式运行（服务端 `--local`）：本机来的请求没有访问令牌，`GET /api/hosts/mine` 按本机认机器
+    local: bool,
 }
 
 /// 新建项目时的第一块白板
@@ -473,7 +475,9 @@ impl Store {
         }
         // 旧数据库没有流转记录：从动态回填（只跑一次）
         crate::moves::backfill(&conn)?;
-        Ok(Store { conn, files })
+        // 服务端以 --local 启动时 BOARD_LOCAL=1（见 board-server）：本机来的请求没有令牌，按本机认机器
+        let local = std::env::var("BOARD_LOCAL").ok().is_some_and(|v| v == "1" || v == "true");
+        Ok(Store { conn, files, local })
     }
 
     /// 工作区为空时建立默认项目（整个工作区至少保留一块白板）
@@ -498,7 +502,7 @@ impl Store {
     /// 执行一组写操作：同一时刻只有一个写事务；出错则整体回滚
     pub fn write<T>(&mut self, now: i64, origin: Origin, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut w = W { tx: &tx, now, origin, changed: false, hosts_changed: false, dispatch_ok: false };
+        let mut w = W { tx: &tx, now, local: self.local, origin, changed: false, hosts_changed: false, dispatch_ok: false };
         let out = f(&mut w)?;
         let (changed, hosts) = (w.changed || w.hosts_changed, w.hosts_changed);
         if changed {
@@ -520,7 +524,7 @@ impl Store {
     /// 只读快照：在一个读事务里完成，保证 rev 与数据一致
     pub fn read<T>(&self, f: impl FnOnce(&R) -> Result<T>) -> Result<T> {
         let tx = self.conn.unchecked_transaction()?;
-        let out = f(&R { conn: &tx });
+        let out = f(&R { conn: &tx, local: self.local });
         drop(tx);
         out
     }
@@ -598,6 +602,8 @@ impl Store {
 
 pub struct R<'a> {
     pub(crate) conn: &'a Connection,
+    /// 服务端以本机模式运行（`--local`，本机来的请求没有访问令牌）；`GET /api/hosts/mine` 认本机的机器时用
+    pub(crate) local: bool,
 }
 
 fn row_actor(kind: String, name: String) -> Actor {
@@ -670,7 +676,7 @@ impl<'a> R<'a> {
             for row in rows {
                 let (id, mut b) = row?;
                 b.path = format!("{}/{}", p.key, b.key);
-                b.card_crons = R { conn }.card_crons(id, now)?;
+                b.card_crons = R { conn, local: self.local }.card_crons(id, now)?;
                 b.statuses = flow_of(conn, id)?.0.into_iter().map(|s| Status { layout: None, ..s }).collect();
                 b.counts.insert(INBOX.to_string(), 0);
                 for s in &b.statuses {
@@ -1134,6 +1140,8 @@ fn events_query(conn: &Connection, tail: &str, p: impl rusqlite::Params) -> Resu
 pub struct W<'a> {
     pub(crate) tx: &'a Transaction<'a>,
     pub(crate) now: i64,
+    /// 同 [`R::local`]
+    pub(crate) local: bool,
     pub(crate) origin: Origin,
     pub(crate) changed: bool,
     /// 机器或派发有变化（另外把 meta.hosts 加一）
@@ -1164,7 +1172,7 @@ impl<'a> W<'a> {
     }
 
     pub fn read(&self) -> R<'_> {
-        R { conn: self.tx }
+        R { conn: self.tx, local: self.local }
     }
 
     pub fn resolve(&self, raw: &str) -> Result<BoardRef> {

@@ -152,6 +152,8 @@ fn run(o: Opts) {
         if !host.is_loopback() {
             fail("本机模式（--local）只能监听 127.0.0.1 或 ::1；要在网络上提供服务，请配置 GitHub 登录");
         }
+        // 本机来的请求没有令牌：`GET /api/hosts/mine`（board check --agent 自己拼名字时用）按本机认机器
+        std::env::set_var("BOARD_LOCAL", "1");
         Auth::Local
     } else {
         Auth::GitHub(github_from_env())

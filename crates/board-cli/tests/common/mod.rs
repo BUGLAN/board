@@ -44,6 +44,8 @@ pub struct Server {
     pub state: AppState,
     /// CLI 进程的 HOME
     pub home: PathBuf,
+    /// 用哪个令牌执行（默认是 self.token；测试里换成别的机器用的令牌）
+    pub tok: String,
     /// 已经 check 过的名字
     checked: RefCell<HashSet<String>>,
     _dir: tempfile::TempDir,
@@ -76,12 +78,12 @@ pub fn start() -> Server {
         let store = board_core::Store::open(&db).unwrap();
         auth::create_token(store.conn(), "test", board_core::now_ms()).unwrap().1
     };
-    Server { url, db, token, state, home, checked: RefCell::default(), _dir: dir }
+    Server { url, db, tok: token.clone(), token, state, home, checked: RefCell::default(), _dir: dir }
 }
 
 impl Server {
     pub fn env(&self) -> Vec<(&'static str, String)> {
-        vec![("BOARD_URL", self.url.clone()), ("BOARD_TOKEN", self.token.clone())]
+        vec![("BOARD_URL", self.url.clone()), ("BOARD_TOKEN", self.tok.clone())]
     }
     /// 以 agent `who` 在白板 default 上执行；第一次用这个名字时先 check
     pub fn run(&self, who: &str, args: &[&str]) -> Run {
@@ -171,7 +173,10 @@ pub fn board_stdin(home: &Path, env: &[(&str, String)], args: &[&str], input: Op
         .env("NO_COLOR", "1")
         .env_remove("BOARD")
         .env_remove("BOARD_AS")
+        .env_remove("BOARD_AGENT")
         .env_remove("BOARD_HOST")
+        .env_remove("BOARD_HOST_NAME")
+        .env_remove("BOARD_LOCAL")
         .env_remove("BOARD_URL")
         .env_remove("BOARD_TOKEN")
         .env_remove("BOARD_DB")

@@ -171,6 +171,12 @@ pub struct State {
     /// 后台循环（进程号:启动时间）
     #[serde(default)]
     pub heartbeat: Option<String>,
+    /// 名字是 `board check --agent <标识>` 由 Board 生成时记下的 agent 标识：之后没带 --as 的命令用它接着 check
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// 生成这个名字时本机配置的机器名（`[host] name`）：配置里的名字改了时按新名字再 check
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 impl State {
@@ -300,11 +306,81 @@ pub fn session_for(name: &str, force: bool) -> Result<Option<String>> {
 }
 
 /// `board check` 成功后：记下这个名字属于调用它的 agent 进程和服务端发的会话标识。
-/// 本机还留着这个名字之前的后台循环（名字已经离线，它的心跳会被拒绝）就先停掉
-pub fn checked(name: &str, session: Option<String>) -> Result<()> {
+/// 本机还留着这个名字之前的后台循环（名字已经离线，它的心跳会被拒绝）就先停掉。
+/// `board check --agent <标识>` 还把 agent 标识、本机的机器名记下（见 [`State::agent_id`]）
+/// 名字换了一个（模型变了、机器改名了）时，之前那个名字的记录也清掉，免得以后又用回旧名字
+pub fn checked_with(name: &str, session: Option<String>, agent_id: Option<String>, host: Option<String>) -> Result<()> {
     let mut old = read_state(name).unwrap_or(State { name: name.to_string(), ..Default::default() });
     stop_loop(&mut old)?;
-    write_state(&State { name: name.to_string(), session, agent: agent_process().map(|a| a.arg()), heartbeat: None })
+    if agent_id.is_some() {
+        drop_stale(name, agent_id.as_deref());
+    }
+    write_state(&State { name: name.to_string(), session, agent: agent_process().map(|a| a.arg()), heartbeat: None, agent_id, host })
+}
+
+/// 本机记下的、agent 标识相同的其他名字（不是 name）：名字由 Board 生成时换过名字留下的，删掉
+fn drop_stale(name: &str, agent_id: Option<&str>) {
+    let Some(id) = agent_id else { return };
+    let Ok(dir) = dir() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        if path.file_stem().and_then(|x| x.to_str()) == Some(key(name).as_str()) {
+            continue;
+        }
+        let Some(st) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<State>(&t).ok()) else { continue };
+        if st.agent_id.as_deref() == Some(id) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// 最近一次 `board check --agent <标识>` 记下的名字（不是本机另一个还活着的 agent 进程的）：
+/// 之后没带 `--as` / `BOARD_AS` 的心跳、beat、claim、hold 等命令用它。同时有几个时取最近 check 的那个。
+/// 本机配置里的机器名变了（桌面端「设置 → 本机」改了名字）时按它重新 check 一遍、换成新名字
+pub fn current_name() -> Option<String> {
+    let mut best: Option<(i64, State)> = None;
+    for st in states() {
+        if st.agent_id.is_none() {
+            continue;
+        }
+        let at = state_file(&st.name).ok().and_then(|f| std::fs::metadata(f).ok()).and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+        if best.as_ref().is_none_or(|(b, _)| at >= *b) {
+            best = Some((at, st));
+        }
+    }
+    let (_, st) = best?;
+    // 本机另一个还活着的 agent 进程 check 的：它自己也按这个名字做事（心跳由它维持），只是发不了 final
+    let name = st.name.clone();
+    Some(refreshed(st).unwrap_or(name))
+}
+
+/// 配置里的机器名和记下的不一样了：按新名字重新 check 一次，记下新的名字（失败时照旧用原来的）
+fn refreshed(st: State) -> Option<String> {
+    let host = crate::config::host_name();
+    if st.host == host {
+        return Some(st.name);
+    }
+    let id = st.agent_id.clone()?;
+    let mut be = Backend::open().ok()?;
+    let info = be.check_generated(&id, host.as_deref()).ok()?;
+    let name = info.name.clone();
+    checked_with(&name, info.session.clone(), Some(id), host).ok()?;
+    Some(name)
+}
+
+/// 本机记下的所有名字
+fn states() -> Vec<State> {
+    let Ok(dir) = dir() else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<State>(&t).ok()))
+        .collect()
 }
 
 /* ------------------------------ 命令 ------------------------------ */

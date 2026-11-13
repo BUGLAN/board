@@ -53,7 +53,8 @@ board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]… [--from <
 board show <ID> --json                    # 全部字段和动态；split_from 拆自哪张，split_into 拆出了哪几张
 board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>
-board check --as <名字>                   # 会话开始时占用名字
+board check --agent <标识>                # 会话开始时占用名字：名字由 Board 按这台机器的设置生成（例如 dsh-win/deepseek-v4.1-flash）
+board check --as <名字>                   # 自己起名字（旧写法、要指定名字时）：被占用时 NAME_TAKEN
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线
 board heartbeat start                     # 会话开始：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
 board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
@@ -73,8 +74,8 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 
 | 错误码 | 含义 |
 |---|---|
-| `NO_IDENTITY` / `NO_BOARD` | 命令没带名字 / 白板：先 `board check --as <名字>`，之后每条命令都带 `--as <名字>`（或前缀 `BOARD_AS=<名字>`）和 `--board <项目>/<白板>`（或前缀 `BOARD=<项目>/<白板>`） |
-| `NAME_TAKEN` | 名字正被另一个在线会话使用：加一个和本会话相关的后缀再 check。`heartbeat start / stop`、`beat --final` 得到它：这个名字是别的会话 check 的，你用错名字了，换成你自己 check 成功的那个 |
+| `NO_IDENTITY` / `NO_BOARD` | 命令没带名字 / 白板：先 `board check --agent <标识>`（名字由 Board 生成，记在本机，之后不用再带 `--as`）；旧写法 `board check --as <名字>` 之后每条命令都带 `--as <名字>`（或前缀 `BOARD_AS=<名字>`）。白板用 `--board <项目>/<白板>`（或前缀 `BOARD=<项目>/<白板>`） |
+| `NAME_TAKEN` | 自己写了名字（`--as`）时：名字正被另一个在线会话使用，加一个和本会话相关的后缀再 check；`board check --agent <标识>` 不会出现它（被占用时自动加 `-2`、`-3`）。`heartbeat start / stop`、`beat --final` 得到它：这个名字是别的会话 check 的，你用错名字了，换成你自己 check 成功的那个 |
 | `NAME_OFFLINE` | 名字不在线：没有 check，或心跳中断超过 50 秒。重新 check 并启动心跳（见 work.md「会话结束」最后一段） |
 | `BOARD_NOT_FOUND` | 白板不存在；或项目有多块白板却只写了项目标识（原因里列出了可选的白板） |
 | `NOT_FOUND` | 卡片不存在 |

@@ -3469,3 +3469,112 @@ fn skill_import_lists_local_skills_and_runs_once() {
     beat(&mut s, T0 + 6 * S + SKILL_IMPORT_STALE_MS + S, &rep).unwrap();
     assert!(import(&mut s, T0 + 6 * S + SKILL_IMPORT_STALE_MS + 2 * S, vec![pick("design", "~/.claude/skills")]).is_ok());
 }
+
+/* ------------------------------ agent 名字由 Board 生成（PRD §3.2，board check --agent） ------------------------------ */
+
+fn check_gen(s: &mut Store, at: i64, host: Option<&str>, agent: &str, token: Option<i64>) -> Result<AgentInfo> {
+    s.write(at, Origin::cli(), |w| w.agent_check_generated(host, agent, token, crate::agents::NameOwner::Session("s1")))
+}
+
+/// 不带名字的 check：名字按这台机器的 agent 设置生成（和派发一致），没配模型时第二段是 agent 标识
+#[test]
+fn check_generates_name_from_host_agent_settings() {
+    let mut s = store();
+    let mut rep = report("win", "i1", vec![]);
+    rep.agents.push(HostAgent { id: "dsh".into(), name: "DeepSeek Harness".into(), version: "1.0".into(), found: true, ..Default::default() });
+    beat(&mut s, T0, &rep).unwrap();
+    // pi 没配模型：pi-win/pi
+    let info = check_gen(&mut s, T0 + S, Some("win"), "pi", Some(1)).unwrap();
+    assert_eq!(info.name, "pi-win/pi");
+    assert_eq!(info.modeled, Some(false), "没配模型：第二段是 agent 标识，不是模型");
+    check_agent_name(&info.name).unwrap();
+    // dsh 没有模型（board host 没上报）：同样退回 agent 标识
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "dsh", Some(1)).unwrap().name, "dsh-win/dsh");
+    // claude 配了 opus-5.5：claude-win/opus-5.5，和派发出来的名字一致
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
+}
+
+/// 机器设置里选了模型时名字第二段用它，和派发一致
+#[test]
+fn check_uses_the_model_selected_in_machine_settings() {
+    let mut s = store();
+    beat(&mut s, T0, &report_opts("i1")).unwrap();
+    set_run(&mut s, Some("sonnet"), None).unwrap();
+    assert_eq!(check_gen(&mut s, T0 + S, Some("mbp"), "claude", Some(1)).unwrap().name, "claude-mbp/sonnet");
+}
+
+/// 同一机器同一 agent 已经有在线会话时自动加 -2、-3 …，不报 NAME_TAKEN；离线后复用
+#[test]
+fn check_generated_name_adds_sequence_instead_of_name_taken() {
+    let mut s = store();
+    beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5-2");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5-3");
+    // 名字太长的：先截断模型名，序号保留在最后，总长不超过 48
+    let mut rep = report("win", "i1", vec![]);
+    rep.agents[0].model = "gpt-5.1-codex-max-preview-very-long-model-name".into();
+    beat(&mut s, T0 + 2 * S, &rep).unwrap();
+    // 换了模型（现在是这个名字）：算新名字，从第一个空闲的序号开始
+    let a = check_gen(&mut s, T0 + 2 * S, Some("win"), "claude", Some(1)).unwrap().name;
+    let b = check_gen(&mut s, T0 + 2 * S, Some("win"), "claude", Some(1)).unwrap().name;
+    for n in [&a, &b] {
+        check_agent_name(n).unwrap();
+        assert!(n.chars().count() <= 48, "{n}");
+    }
+    assert!(b.ends_with("-2") && !a.ends_with("-2"), "{a} {b}");
+    // 不带序号的名字离线后可以重新用
+    assert!(a.starts_with("claude-win/gpt-5.1-codex-max-preview-"), "{a}");
+    s.write(T0 + 3 * S, Origin::cli(), |w| w.agent_beat_by(&a, true, BeatBy::Cli(Some("s1")))).unwrap();
+    assert_eq!(check_gen(&mut s, T0 + 3 * S, Some("win"), "claude", Some(1)).unwrap().name, a);
+}
+
+/// 查不到这台机器（没跑 board host、机器名不存在、离线）时退回 <agent 标识>/<模型>，仍然合法
+#[test]
+fn check_falls_back_to_agent_slash_model_without_host() {
+    let mut s = store();
+    let info = check_gen(&mut s, T0, Some("nope"), "pi", Some(1)).unwrap();
+    assert_eq!(info.name, "pi/pi");
+    assert_eq!(info.modeled, Some(false));
+    check_agent_name(&info.name).unwrap();
+    // 不带机器名、令牌也不是任何机器的：一样退回
+    assert_eq!(check_gen(&mut s, T0, None, "dsh", None).unwrap().name, "dsh/dsh");
+    // 机器存在但离线：按查不到处理
+    beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
+    let later = T0 + hosts::HOST_GAP_MS + S;
+    assert_eq!(check_gen(&mut s, later, Some("win"), "claude", Some(1)).unwrap().name, "claude/claude");
+}
+
+/// 没带机器名时按令牌认机器：令牌是它的 board host 上报用的那个
+#[test]
+fn check_finds_the_host_by_token() {
+    let mut s = store();
+    beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
+    assert_eq!(check_gen(&mut s, T0 + S, None, "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
+    // 别的令牌（它不是任何机器上报用的）：退回
+    assert_eq!(check_gen(&mut s, T0 + S, None, "claude", Some(9)).unwrap().name, "claude/claude");
+}
+
+/// 带了名字（--as）的 check 不受影响：照写的名字 check，被占用时 NAME_TAKEN，不加序号
+#[test]
+fn check_with_an_explicit_name_is_unchanged() {
+    let mut s = store();
+    beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
+    s.write(T0, Origin::cli(), |w| w.agent_check("claude-win/opus-5.5", Some(1))).unwrap();
+    let e = s.write(T0 + S, Origin::cli(), |w| w.agent_check("claude-win/opus-5.5", Some(1))).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken);
+    // board host 派发还是用自己生成的名字：同一机器的同一 agent 加序号
+    let id = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, id, "win", Some("claude")).unwrap();
+    let d = s.write(T0 + S, Origin::cli(), |w| w.dispatch_begin("win", "i1", d.id, Some(1))).unwrap();
+    assert_eq!(d.name.as_deref(), Some("claude-win/opus-5.5-2"));
+}
+
+/// agent 标识、机器名不合法时报 USAGE（不带名字的 check 的输入要校验）
+#[test]
+fn check_generated_validates_agent_and_host() {
+    let mut s = store();
+    beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "Claude Code", Some(1)).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(check_gen(&mut s, T0 + S, Some("Win 1"), "claude", Some(1)).unwrap_err().code, ErrorCode::Usage);
+}

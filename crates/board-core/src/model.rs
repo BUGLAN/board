@@ -560,6 +560,10 @@ pub struct AgentInfo {
     /// 会话标识：只在新版 CLI check 成功时返回一次，之后 agent 级心跳和 final 都要带上
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// 名字由服务端按机器设置生成时（`board check --agent <标识>`）才有：名字里的模型和这台机器、这个 agent
+    /// 现在的设置一致。对不上（机器改名了、模型不是这个）时，之后的心跳会按设置算出的名字换过去
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modeled: Option<bool>,
 }
 
 /// agent 持有的一张卡片：白板路径加上卡片本身

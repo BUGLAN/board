@@ -248,6 +248,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/flow/{project}/{board}/edges", put(flow_edges))
         .route("/flow/{project}/{board}/{key}", patch(update_status).delete(delete_status))
         .route("/hosts", get(hosts::list))
+        .route("/hosts/mine", get(hosts::mine))
         .route("/hosts/pause-all", post(hosts::pause_all))
         .route("/hosts/stop-all", post(hosts::stop_all))
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))

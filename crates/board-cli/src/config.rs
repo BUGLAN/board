@@ -75,3 +75,10 @@ pub fn origin(src: Source, var: &str) -> String {
         Source::File => shown().to_string(),
     }
 }
+
+/// 本机配置的机器名（`~/.board/config.toml` 的 `[host] name`，桌面端「设置 → 本机」或 `board host --name` 写的）：
+/// `board check --agent <标识>` 拿它告诉服务端是哪台机器，名字由服务端按这台机器的 agent 设置生成（PRD §3.2）。
+/// 没写、配置文件读不了时为空（服务端再按令牌认机器）
+pub fn host_name() -> Option<String> {
+    env("BOARD_HOST_NAME").or_else(|| File::load().ok()?.host().ok()?.name)
+}

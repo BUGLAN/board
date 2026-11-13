@@ -1,7 +1,10 @@
 //! agent 接口（PRD §3）：check 名字、agent 级心跳、在线列表。访问令牌可以调用。
 //!
 //! - `POST /api/agents/check {name, session}`：名字正被在线 agent 使用时 `NAME_TAKEN`；否则标为在线。`session: true`（新版 CLI）
-//!   时发一个随机的会话标识，名字记成属于这个会话，返回里带上 `session`
+//!   时发一个随机的会话标识，名字记成属于这个会话，返回里带上 `session`。
+//!   不带 `name`、带 `agent` 时名字由服务端生成（`board check --agent <标识>`，PRD §3.2）：按 `host`（本机
+//!   `~/.board/config.toml` 的 `[host] name`）或令牌认这台机器，名字是 `<agent 标识>-<机器名>/<模型名>`，
+//!   占用时自动加序号；查不到机器时退回 `<agent 标识>/<模型>`。返回里 `name` 是生成的名字
 //! - `POST /api/agents/beat {name, final, session}`：agent 级心跳，同时维持名字在线和它持有的卡片；`final` 让名字立刻离线。
 //!   名字属于某个会话时，`session` 对不上（或没带）就 `NAME_TAKEN`
 //! - `GET /api/agents`：在线的 agent，以及它们持有的卡片
@@ -24,6 +27,12 @@ pub(crate) struct CheckBody {
     /// 新版 CLI：要一个会话标识（旧版 CLI 不带，名字没有标识，规则和以前一样）
     #[serde(default)]
     session: bool,
+    /// 不带名字时：会话所在的 agent 标识（pi、claude、codex、dsh …），名字由服务端按机器设置生成
+    #[serde(default)]
+    agent: String,
+    /// 不带名字时：本机配置的机器名（`~/.board/config.toml` 的 `[host] name`）；不带时按令牌认机器
+    #[serde(default)]
+    host: String,
 }
 
 #[derive(Deserialize)]
@@ -53,19 +62,32 @@ pub(crate) async fn check(
     Json(v): Json<Value>,
 ) -> Result<Json<AgentInfo>, ApiError> {
     let b: CheckBody = crate::parse(v)?;
-    let name = name_of(&b.name)?;
     let token = match caller {
         Caller::Agent { token } => Some(token),
         Caller::Human { .. } => None,
     };
-    tracing::Span::current().record("who", format!("{name}（check）"));
+    let agent = b.agent.trim().to_string();
+    tracing::Span::current().record(
+        "who",
+        if b.name.trim().is_empty() && !agent.is_empty() { format!("{agent}（check，名字由服务端生成）") } else { format!("{}（check）", b.name.trim()) },
+    );
     let session = b.session.then(|| crate::auth::random_hex(16));
-    let out = s
-        .db(move |st| {
+    // 不带名字、带了 agent 标识：名字由服务端按这台机器、这个 agent 的设置生成（占用时自动加序号）
+    let host = b.host.trim().to_string();
+    let out = if b.name.trim().is_empty() && !agent.is_empty() {
+        s.db(move |st| {
+            let owner = session.as_deref().map_or(NameOwner::Anyone, NameOwner::Session);
+            st.write(now_ms(), Origin::cli(), |w| w.agent_check_generated(Some(&host), &agent, token, owner))
+        })
+        .await?
+    } else {
+        let name = name_of(&b.name)?;
+        s.db(move |st| {
             let owner = session.as_deref().map_or(NameOwner::Anyone, NameOwner::Session);
             st.write(now_ms(), Origin::cli(), |w| w.agent_check_owned(&name, token, owner))
         })
-        .await?;
+        .await?
+    };
     s.poke();
     Ok(Json(out))
 }
