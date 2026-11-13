@@ -181,8 +181,9 @@
 /* ---------------- 提示词预览 ---------------- */
 
 @media (max-width: 760px) {
-  .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
-  .d-prompt svg { margin: 0; }
+  /* 手机上顶栏放不下字：只留图标（.btn.sm 也写了 font-size，这里要压过它） */
+  .d-head .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
+  .d-head .d-prompt svg { margin: 0; }
   .d-link + .d-prompt { margin-left: 0; }
   .lbm-list { grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; }
   .lbm-preview { display: none; }
