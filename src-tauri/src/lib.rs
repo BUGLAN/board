@@ -296,6 +296,7 @@ pub fn run() {
             set_board_env,
             remember_theme,
             server::server_current,
+            server::server_probe,
             server::server_check,
             server::server_connect,
             host::host_status,
@@ -480,6 +481,11 @@ mod acl_tests {
                     .resolve_access("host_status", "board-0", "board-0", &Origin::Remote { url: url.clone() })
                     .is_none(),
                 "{raw} 的页面不应该只靠 default.json 就能调本机命令"
+            );
+            // 启动页（本地页面）只靠 default.json 就能让外壳探测服务端：否则调不通，又会一直显示「连不上」
+            assert!(
+                only_default.resolve_access("server_probe", "board-0", "board-0", &Origin::Local).is_some(),
+                "启动页调不到 server_probe"
             );
 
             // 按当前地址放行（启动、换地址时做的事）：本机命令全都能调

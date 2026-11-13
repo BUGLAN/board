@@ -5,7 +5,8 @@
 //! - 还没连服务端（没有 `BOARD_URL`、配置文件里也没有 `url`、构建时也没注入默认地址）时，启动页就是
 //!   「连接服务端」页：填地址 → 校验 `/api/health` → 写进配置文件 → 按这个地址打开（`server_connect`，见 [`crate::server`]）
 //! - 页面上和网页端加载中的样子一致（四个色条 logo +「正在打开白板…」），跳到线上页面后由网页端的加载态接上
-//! - 先用一个 GET 请求探测服务端（不读内容）：通了就跳转；断网或 8 秒没响应显示「连不上 Board 服务」和重试，恢复网络时自动重试
+//! - 先探测服务端连不连得上（不读内容）：外壳请求（`server_probe`，不受跨源限制）和页面里的 no-cors 请求（走系统代理）
+//!   同时发，任一通了就跳转；断网或 8 秒没响应显示「连不上 Board 服务」和重试，恢复网络时自动重试
 //! - 最短展示 300ms，免得一闪而过；跳转时启动页内容 200ms 淡出
 //! - 主题：启动页是本地页面，读不到线上页面的 localStorage。网页端每次应用主题时调用 `remember_theme`，
 //!   外壳写到 app config 目录的 theme.txt（auto / light / dark），启动页和窗口底色按它来；
@@ -238,7 +239,8 @@ html[data-titlebar="custom"] .win { display: flex; }
 .boot.failed .err { display: flex; }
 .boot.failed .wait { display: none; }
 .err b { font-family: var(--f-display); font-size: 16px; color: var(--text); }
-.err code { font-family: var(--f-mono); font-size: 12px; color: var(--text-2); }
+.err code { font-family: var(--f-mono); font-size: 12px; color: var(--text-2); max-width: 480px; overflow-wrap: anywhere; }
+.err code:empty { display: none; }
 .retry {
   height: 34px; padding: 0 16px; border: 0; border-radius: 10px; font: 600 13px var(--f-sans); color: #fff; background: var(--brand);
   box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--brand) 70%, transparent); cursor: pointer;
@@ -260,6 +262,7 @@ html[data-titlebar="custom"] .win { display: flex; }
   <div class="err" role="alert">
     <b>连不上 Board 服务</b>
     <span id="why">__HOST__ 没有响应，检查网络后重试</span>
+    <code id="detail"></code>
     <button type="button" class="retry" id="retry">重试</button>
   </div>
 </div>
@@ -269,6 +272,7 @@ html[data-titlebar="custom"] .win { display: flex; }
   const MIN = 300, TIMEOUT = 8000;
   const boot = document.getElementById('boot');
   const why = document.getElementById('why');
+  const detail = document.getElementById('detail');
   const ipc = window.__TAURI_INTERNALS__;
   const label = ipc && ipc.metadata && ipc.metadata.currentWindow && ipc.metadata.currentWindow.label;
 
@@ -286,18 +290,31 @@ html[data-titlebar="custom"] .win { display: flex; }
     const t0 = Date.now();
     boot.classList.remove('failed', 'leave');
     let ok = false;
+    const ctl = new AbortController();
+    let timer;
     try {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), TIMEOUT);
-      // 只要连得上，不读内容。不能用 no-cors：Chrome 里对 http 的 no-cors 跨源请求会被拦下，本机
-      // 服务端（http://127.0.0.1:7420）一直被当成连不上，连好服务端也进不去
-      await fetch(target, { cache: 'no-store', signal: ctl.signal });
-      clearTimeout(timer);
+      // 只要连得上，不读内容。两路同时发，任一通了就跳转：
+      // - 外壳请求（server_probe）：启动页请求服务端是跨源请求，服务端不发 CORS 头，页面里的普通 fetch
+      //   拿不到回应，连得上的服务端也一直被当成连不上，只能交给外壳去请求
+      // - 页面里的 no-cors 请求：和打开页面走同一条网络（系统代理），外壳直连不通时还能连上；
+      //   Chrome 里对 http 的 no-cors 跨源请求会被拦下（本机服务端 http://127.0.0.1:7420），这时靠外壳那一路
+      const probes = [fetch(target, { mode: 'no-cors', cache: 'no-store', signal: ctl.signal })];
+      if (ipc) probes.unshift(ipc.invoke('server_probe'));
+      await Promise.race([
+        Promise.any(probes),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new DOMException('timeout', 'AbortError')), TIMEOUT); }),
+      ]);
       ok = true;
     } catch (e) {
+      // 外壳那一路的原因（字符串）留给排查用
+      const shell = e && e.errors && typeof e.errors[0] === 'string' ? e.errors[0] : '';
       if (navigator.onLine === false) why.textContent = '网络已断开，恢复后会自动重试';
       else if (e && e.name === 'AbortError') why.textContent = __HOST_JS__ + ' 超过 8 秒没有响应，检查网络后重试';
       else why.textContent = __HOST_JS__ + ' 没有响应，检查网络后重试';
+      detail.textContent = shell;
+    } finally {
+      clearTimeout(timer);
+      ctl.abort();
     }
     await sleep(Math.max(0, MIN - (Date.now() - t0)));
     if (id !== run) return;
@@ -598,13 +615,23 @@ mod tests {
         assert!(!html.contains("--invert"));
     }
 
+    /// 探测不能只靠页面里的 fetch：普通 fetch 是跨源请求，服务端不发 CORS 头，连得上也会失败（v0.1.20 桌面端一直
+    /// 显示「连不上 Board 服务」）；只用 no-cors 时 Chrome 又会拦下对 http 本机服务端的请求。
+    /// 所以外壳请求（server_probe）和 no-cors 请求一起发，任一通了就跳转
     #[test]
-    fn probe_does_not_use_no_cors() {
+    fn probe_goes_through_shell_and_no_cors() {
         let url: Url = "http://127.0.0.1:7420/".parse().unwrap();
         let html = page(&url, Theme::Auto, false);
-        // 注释里会提到为什么不用它，只看真正发出去的请求
-        assert!(!html.contains("mode: 'no-cors'"), "启动页的探测请求不能用 no-cors（Chrome 里对 http 的 no-cors 跨源请求会被拦下）");
-        assert!(html.contains("await fetch(target, { cache: 'no-store', signal: ctl.signal });"));
+        assert!(html.contains("ipc.invoke('server_probe')"), "启动页要让外壳去探测服务端");
+        assert!(html.contains("Promise.any(probes)"), "任一路通了就算连得上");
+        assert!(html.contains("fetch(target, { mode: 'no-cors', cache: 'no-store', signal: ctl.signal })"));
+        // 页面里发出去的 fetch 只有这一个 no-cors 请求：普通（cors）fetch 拿不到没有 CORS 头的回应
+        assert_eq!(html.matches("fetch(target").count(), 1);
+        // 外壳命令要登记在 ACL、并由 default.json 放行（启动页是本地页面，按 default.json 的权限调用）
+        assert!(include_str!("../build.rs").contains("\"server_probe\""));
+        assert!(include_str!("../capabilities/default.json").contains("\"allow-server-probe\""));
+        // 外壳的原因有地方显示
+        assert!(html.contains(r#"<code id="detail"></code>"#));
     }
 
     #[test]

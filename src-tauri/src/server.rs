@@ -98,18 +98,28 @@ pub fn read_health(body: &str) -> Option<String> {
     Some(v.get("version").and_then(|x| x.as_str()).unwrap_or_default().to_string())
 }
 
-/// 请求 `<地址>/api/health`，确认对方是 Board 服务端；返回它的版本号（旧服务端没有时为空）
-pub fn health(url: &Url) -> Result<String, String> {
+/// 请求 `<地址>/api/health`：4xx / 5xx 也是回应，不当成传输错误
+fn get_health(url: &Url) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
     let mut target = url.clone();
     target.set_path("/api/health");
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(HEALTH_WAIT))
-        // 4xx / 5xx 也当作「不是 Board」处理，不要当成传输错误
         .http_status_as_error(false)
         .user_agent(concat!("board-desktop/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
-    let res = agent.get(target.as_str()).call().map_err(|e| format!("连不上 {}：{e}", origin(url)))?;
+    agent.get(target.as_str()).call()
+}
+
+/// 启动页用：连不连得上。请求 `<地址>/api/health`，有 HTTP 回应就算连得上（不看状态码、不读内容），
+/// 和启动页原来的探测一样「通了就跳转」，服务端出错由跳过去的网页端自己显示
+pub fn reachable(url: &Url) -> Result<(), String> {
+    get_health(url).map(drop).map_err(|e| e.to_string())
+}
+
+/// 请求 `<地址>/api/health`，确认对方是 Board 服务端；返回它的版本号（旧服务端没有时为空）
+pub fn health(url: &Url) -> Result<String, String> {
+    let res = get_health(url).map_err(|e| format!("连不上 {}：{e}", origin(url)))?;
     if !res.status().is_success() {
         return Err(format!("{} 返回了 HTTP {}，不是 Board 服务端", origin(url), res.status()));
     }
@@ -187,6 +197,14 @@ pub async fn server_current<R: Runtime>(app: AppHandle<R>) -> Checked {
     .await
     .unwrap_or_default();
     checked(&url, from, version)
+}
+
+/// 启动页探测当前服务端连不连得上（见 [`crate::splash`]）。由外壳请求：启动页（`boardsplash`）请求服务端是跨源请求，
+/// 服务端不发 CORS 头，webview 里的普通 fetch 拿不到回应，连得上的服务端也会被当成连不上
+#[tauri::command]
+pub async fn server_probe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let url = app.state::<Current>().0.lock().ok().and_then(|g| g.clone()).ok_or("还没有连接服务端")?;
+    tauri::async_runtime::spawn_blocking(move || reachable(&url)).await.map_err(|e| e.to_string())?
 }
 
 /// 校验一个地址是不是 Board 服务端（只校验，不保存、不切换）：返回它的版本号
@@ -306,6 +324,27 @@ mod tests {
         assert!(is_local_host(&normalize("http://[::1]:7420").unwrap()));
         assert!(!is_local_host(&normalize("http://192.168.1.5:7420").unwrap()));
         assert!(!is_local_host(&normalize("https://board.example.com").unwrap()));
+    }
+
+    /// 启动页的探测：有 HTTP 回应就算连得上（服务端出错的 502 也算，由网页端显示），连不上才报错
+    #[test]
+    fn reachable_accepts_any_http_response() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = s.read(&mut buf).unwrap();
+            s.write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        assert_eq!(reachable(&normalize(&format!("http://{addr}")).unwrap()), Ok(()));
+        assert!(server.join().unwrap().starts_with("GET /api/health "), "探测请求的是 /api/health");
+
+        // 端口上没人监听：连不上
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert!(reachable(&normalize(&format!("http://{closed}")).unwrap()).is_err());
     }
 
     /// 默认地址来自构建时的 BOARD_DEFAULT_URL：不注入时为空（第一次打开显示「连接服务端」页），注入时要能解析

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "界面窗口（服务端的 Board 页面）：顶栏拖动窗口、双击最大化；Windows 上的窗口按钮；在默认浏览器里登录；新建窗口；新建令牌后一键写入 board 命令行的配置文件；把主题告诉外壳（启动页用）；设置 → 账号：切换服务端（校验地址、写进配置文件、按新地址重新打开）；设置 → 本机：让这台电脑接任务（后台运行 board host）、开机时自动启动、给白板选目录（系统文件夹选择框）、给本机 agent 一键安装 board-skills；共用配置：从本机导入 MCP 服务器；设置 → 桌面端更新：检查更新、下载安装、重启（Windows 上安装器接管，重启只在 macOS 用到）。这里只放行启动页；连着的服务端地址（包括构建时注入的 BOARD_DEFAULT_URL）在启动、换地址时按那个来源另外放行同一份权限（lib.rs 的 allow_configured_url），不放行整个 localhost：换了地址，旧地址的页面就调不到本机命令",
+  "description": "界面窗口（服务端的 Board 页面）：顶栏拖动窗口、双击最大化；Windows 上的窗口按钮；在默认浏览器里登录；新建窗口；新建令牌后一键写入 board 命令行的配置文件；把主题告诉外壳（启动页用）；启动页探测服务端连不连得上；设置 → 账号：切换服务端（校验地址、写进配置文件、按新地址重新打开）；设置 → 本机：让这台电脑接任务（后台运行 board host）、开机时自动启动、给白板选目录（系统文件夹选择框）、给本机 agent 一键安装 board-skills；共用配置：从本机导入 MCP 服务器；设置 → 桌面端更新：检查更新、下载安装、重启（Windows 上安装器接管，重启只在 macOS 用到）。这里只放行启动页；连着的服务端地址（包括构建时注入的 BOARD_DEFAULT_URL）在启动、换地址时按那个来源另外放行同一份权限（lib.rs 的 allow_configured_url），不放行整个 localhost：换了地址，旧地址的页面就调不到本机命令",
   "windows": [
     "*"
   ],
@@ -17,6 +17,7 @@
     "allow-set-board-env",
     "allow-remember-theme",
     "allow-server-current",
+    "allow-server-probe",
     "allow-server-check",
     "allow-server-connect",
     "allow-host-status",

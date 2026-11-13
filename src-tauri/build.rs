@@ -27,6 +27,7 @@ fn main() {
         "set_board_env",
         "remember_theme",
         "server_current",
+        "server_probe",
         "server_check",
         "server_connect",
         "host_status",
