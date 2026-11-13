@@ -1,0 +1,8 @@
+# board-skills 里的 sh 脚本、Markdown 一律 LF 检出：WSL、Linux 里按 `#!/bin/sh` 执行，
+# 行尾是 CRLF 时 shebang 认不出来（`cannot execute: required file not found`）。
+# Windows 上 `core.autocrlf=true`（Git for Windows 的默认值）会把检出改成 CRLF，而服务端、桌面端
+# 都把这里的文件原样打包（`crates/board-server/build.rs`、`src-tauri/src/skill.rs`），
+# 同步到 WSL 里就坏了。`.cmd`、`.ps1` 不动，保持原来的行尾。
+.agents/skills/board-skills/*.md text eol=lf
+.agents/skills/board-skills/scripts/board text eol=lf
+.agents/skills/board-skills/scripts/heartbeat.sh text eol=lf

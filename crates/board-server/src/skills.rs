@@ -137,5 +137,18 @@ mod tests {
         assert!(b.files.iter().find(|f| f.path == "scripts/board").unwrap().exec, "scripts/board 可执行");
         assert!(b.info.builtin && b.info.name == BUILTIN && b.info.version.len() == 12);
         assert_eq!(index(vec![])[0].name, BUILTIN);
+        // 同步到 WSL、Linux 里的那份靠 `/bin/sh` 跑，Markdown 也是原样落的：行尾必须是 LF。
+        // Windows 上检出（core.autocrlf=true）是 CRLF，打包时换成 LF（build.rs），这里守住它
+        for f in &b.files {
+            let sh = f.path.starts_with("scripts/") && (!f.path.contains('.') || f.path.ends_with(".sh"));
+            if !(sh || f.path.ends_with(".md")) {
+                continue;
+            }
+            let raw = skills::unb64(&f.data).unwrap();
+            assert!(!raw.contains(&b'\r'), "{} 里有 CR：在 WSL / Linux 里跑不起来", f.path);
+            if sh {
+                assert!(raw.starts_with(b"#!"), "{} 要以 #! 开头", f.path);
+            }
+        }
     }
 }
