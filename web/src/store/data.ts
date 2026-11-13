@@ -915,15 +915,16 @@ export async function reorderLabels(project: string, ids: number[]) {
 /** 打开过的白板的最近一份快照：切回来时先显示它，不闪骨架，refresh 拿到新的再替换 */
 const snapshots = new Map<string, BoardSnapshot>();
 
-function switchTo(path: string) {
+function switchTo(path: string, opts: { open?: number | null } = {}) {
   save(path);
   flip.reset();
   clearLabelSel(); // 标签属于项目，换白板时清掉选中
   base.board = snapshots.get(path) ?? null;
   base.detail = null;
-  render({ path, detailId: null, generation: get().generation + 1 });
-  // 切换白板写进地址栏（新的一块白板是一条新的历史记录：后退能回到原来那块）
-  syncUrl(get().detailId == null ? 'push' : 'replace');
+  // open：切过去的同时打开那张卡片（每一张卡片有自己的网址，不是「白板 + 详情」两条）
+  render({ path, detailId: opts.open ?? null, generation: get().generation + 1 });
+  // 切换白板写进地址栏（新的一块白板是一条新的历史记录：后退能回到原来那块）；地址里开着卡片时连卡片一起写
+  syncUrl(opts.open != null ? 'replace' : get().detailId == null ? 'push' : 'replace');
 }
 
 /** 打开另一块白板 */
@@ -931,6 +932,17 @@ export function setPath(path: string) {
   if (path === get().path && get().board) return;
   switchTo(path);
   return refresh();
+}
+
+/** 打开另一块白板上的卡片：只算一条地址（`/<项目>/<白板>/<ID>`），后退直接回到打开之前那张
+    （先切白板再打开卡片会写两条：退一次只关掉详情，停在只有白板那一页） */
+export async function switchToCard(path: string, id: number) {
+  if (path === get().path) return openDetail(id);
+  switchTo(path, { open: id });
+  // 详情和白板一起取：详情有缓存时先显示它，不闪骨架
+  const shown = openDetail(id);
+  await refresh();
+  await shown;
 }
 
 /* ------------------------------ 卡片详情 ------------------------------ */
@@ -1021,8 +1033,7 @@ export async function jumpDetail(id: number) {
 export async function jumpToCard(path: string, id: number) {
   if (path === get().path) return jumpDetail(id);
   remember(base.detail);
-  await setPath(path);
-  await openDetail(id);
+  await switchToCard(path, id);
 }
 
 const cardBackwards = () => cardBack.some(p => p.path !== get().path || p.id !== get().detailId);
@@ -1030,8 +1041,8 @@ const cardForwards = () => cardFwd.some(p => p.path !== get().path || p.id !== g
 
 /** 切到那张卡片、换掉当前这条地址；返回 / 前进的记录由调用方先放好 */
 async function openPlace(p: CardPlace) {
-  if (p.path !== get().path) await setPath(p.path);
-  await openDetail(p.id);
+  if (p.path !== get().path) await switchToCard(p.path, p.id);
+  else await openDetail(p.id);
 }
 
 /** 「返回」：回到跳转之前在看的卡片（在另一块白板上时先切过去）。没有可返回的就不做 */

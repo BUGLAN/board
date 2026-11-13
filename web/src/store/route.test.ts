@@ -162,6 +162,17 @@ describe('详情里的返回 / 前进（#195）', () => {
     expect(D.canCardBack()).toBe(false);
   });
 
+  it('跳到另一块白板上的卡片只算一条地址：后退直接回到原来那张', async () => {
+    await D.openDetail(1);
+    const push = vi.spyOn(history, 'pushState');
+    await D.jumpToCard('p/b', 1);
+    await settle();
+    await settle();
+    expect(push).not.toHaveBeenCalled(); // 换掉当前这条，不是用两条记录夹出一页只有白板的地址
+    expect(href()).toBe('/p/b/1');
+    push.mockRestore();
+  });
+
   it('跳到另一块白板上的卡片：返回时先回到原来那块白板', async () => {
     await D.openDetail(1);
     await D.jumpToCard('p/b', 1);
