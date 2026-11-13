@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { LABEL_COLORS } from '../../lib/schema';
 import { cx, replay } from '../../lib/util';
-import { deleteLabelPatch, editLabelPatch, optimistic, useData, type Patch } from '../../store/data';
+import { deleteLabelPatch, editLabelPatch, optimistic, reorderLabels, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
 import { ColorPick, LabelChip } from '../bits';
 import { Icon } from '../Icon';
@@ -200,6 +200,68 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
   const list = useRef<HTMLDivElement>(null);
   const labels = p?.labels ?? [];
   const nc = newColor ?? LABEL_COLORS[labels.length % LABEL_COLORS.length];
+  // 拖动调整顺序（default/main#289）：拖着的那一行跟着指针走，插入位置画一道线，松手当帧换位，顺序写进项目；侧栏跟着变
+  const [drag, setDrag] = useState<{ id: number; dy: number; to: number } | null>(null);
+  const move = (id: number, to: number) => {
+    const ids = labels.map(l => l.id);
+    const from = ids.indexOf(id);
+    if (from < 0 || to < 0 || to > ids.length || to === from || to === from + 1) return;
+    ids.splice(from, 1);
+    ids.splice(to > from ? to - 1 : to, 0, id);
+    reorderLabels(pk, ids).catch(toastError);
+  };
+  const grip = (e: React.PointerEvent<HTMLElement>, id: number) => {
+    if (e.button !== 0 || !list.current) return;
+    e.preventDefault();
+    const box = list.current;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const y0 = e.clientY + box.scrollTop;
+    let to = labels.findIndex(l => l.id === id);
+    let auto = 0;
+    let lastY = e.clientY;
+    const at = (y: number) => {
+      const rows = [...box.querySelectorAll<HTMLElement>(':scope > .lbm-row')];
+      const i = rows.findIndex(r => {
+        const b = r.getBoundingClientRect();
+        return y < b.top + b.height / 2;
+      });
+      return i < 0 ? rows.length : i;
+    };
+    const update = () => {
+      to = at(lastY);
+      setDrag({ id, dy: lastY + box.scrollTop - y0, to });
+    };
+    // 拖到列表上下边缘时自动滚动
+    const scroll = () => {
+      const b = box.getBoundingClientRect();
+      const d = lastY < b.top + 24 ? -8 : lastY > b.bottom - 24 ? 8 : 0;
+      if (d) {
+        box.scrollTop += d;
+        update();
+      }
+      auto = requestAnimationFrame(scroll);
+    };
+    auto = requestAnimationFrame(scroll);
+    const onMove = (ev: PointerEvent) => {
+      lastY = ev.clientY;
+      update();
+    };
+    const end = (ok: boolean) => {
+      cancelAnimationFrame(auto);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onCancel);
+      setDrag(null);
+      if (ok) move(id, to);
+    };
+    const onUp = () => end(true);
+    const onCancel = () => end(false);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onCancel);
+    update();
+  };
 
   useEffect(() => {
     const t = setTimeout(() => input.current?.focus(), 40);
@@ -247,14 +309,33 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
             <Icon name="close" />
           </button>
         </div>
-        <p className="lbm-p">
-          标签属于项目，项目下的所有白板共用。改名或改色会立即生效；删除会从所有卡片上移除。agent 用 <code>board label &lt;ID&gt; +名称</code> 打标签；
-          <b>仅人可打</b>的标签带小锁，只有人能在界面上加、去，agent 打会被拒绝。<b>优先</b>的标签带闪电：不带 ID 领取（和定时领取）时，带它的卡片先被领取，卡片在状态里的位置不变。
-        </p>
         <div className="lbm-list" ref={list}>
           {labels.length === 0 && <div className="lbp-empty">这个项目还没有标签</div>}
-          {labels.map(l => (
-            <div className="lbm-row" key={l.id} style={{ ['--lc' as string]: l.color }}>
+          {labels.map((l, i) => (
+            <div
+              className={cx(
+                'lbm-row',
+                drag?.id === l.id && 'dragging',
+                drag && drag.id !== l.id && drag.to === i && 'ins-before',
+                drag && drag.id !== l.id && drag.to === labels.length && i === labels.length - 1 && 'ins-after',
+              )}
+              key={l.id}
+              style={{ ['--lc' as string]: l.color, ...(drag?.id === l.id ? { transform: `translateY(${drag.dy}px)` } : null) }}
+            >
+              <button
+                type="button"
+                className="lbm-grip"
+                aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
+                data-tip="拖动调整顺序"
+                onPointerDown={e => grip(e, l.id)}
+                onKeyDown={e => {
+                  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                  e.preventDefault();
+                  move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
+                }}
+              >
+                <Icon name="reorder" />
+              </button>
               <button type="button" className="lbm-color" aria-label="改颜色" onClick={() => setSwatch(swatch === l.id ? null : l.id)} />
               <input
                 className="lbm-name"

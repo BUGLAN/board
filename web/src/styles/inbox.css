@@ -10,7 +10,6 @@
 .ib-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 6px; }
 .ib-head > div:first-child { flex: 1; min-width: 0; }
 .ib-head h1 { display: flex; align-items: center; gap: 10px; font-family: var(--f-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
-.ib-head p { margin-top: 2px; font-size: 13.5px; color: var(--text-3); text-wrap: pretty; }
 .ib-head .desc-tabs { flex: none; }
 .ib-modes { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -245,7 +244,6 @@
 .ib-side-name.mono { font-size: 12px; }
 .ib-side-dot { width: 6px; height: 6px; margin: 0 7px; border-radius: 50%; background: var(--c-inbox); opacity: .7; flex: none; }
 .ib-side-row.sk { pointer-events: none; }
-.ib-side-hint { margin: 0 18px; font-size: 12px; color: var(--text-3); line-height: 1.6; }
 
 /* ---------------- 拆解（PRD §10.5）：拆自 #ID、拆解中、拆解组 ---------------- */
 .ib-mark {
@@ -305,7 +303,6 @@
   .ib-wrap { padding: 16px 14px 150px; }
   .ib-head { flex-direction: column; align-items: stretch; gap: 12px; }
   .ib-head h1 { font-size: 24px; }
-  .ib-head p { display: none; }
   .ib-head .ib-modes { justify-content: flex-start; }
   .ib-one-head { padding: 10px 14px 0; }
   .ib-one-card .ib-edit { padding: 6px 14px 16px; }

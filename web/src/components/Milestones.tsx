@@ -665,9 +665,6 @@ export function MilestonesSideParts() {
           <span className="msp-n mono">{cardsOf(data, 'none').length} 张</span>
         </button>
       )}
-      <p className="msp-note">
-        版本 = v 开头的标签。发版后在代码仓库里运行 <code>board versions sync</code>，按 git tag 和提交里的「卡片：#ID」给卡片打上。
-      </p>
     </div>
   );
 }

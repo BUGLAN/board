@@ -7,6 +7,8 @@
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMasonry } from '../lib/masonry';
+import { groupRuns, sessionOrder, type SessGroup } from '../lib/sessionGroups';
+import { setShownCols } from '../lib/drag';
 import { api } from '../lib/api';
 import * as flip from '../lib/flip';
 import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
@@ -73,7 +75,23 @@ export function BoardView() {
   const mobile = useMobile();
   const [flowOpen, setFlowOpen] = useState(false);
   // 保留顺序开着时每块按自己的排序依据显示（只改显示顺序）；拖拽预览的位置是「看到的顺序」里的位置
-  const shown = useMemo(() => (board ? shownCols(board, labels, serverNow()) : null), [board, labels]);
+  const shown0 = useMemo(() => (board ? shownCols(board, labels, serverNow()) : null), [board, labels]);
+  // 同一会话的卡挨着放、框在一起（lib/sessionGroups）：拖拽预览、落点都按这个看到的顺序算
+  const dispatches = useData(s => s.ws?.dispatches);
+  const boardPath = board?.path ?? '';
+  const grouped = useMemo(() => {
+    if (!shown0) return null;
+    const cols: BoardSnapshot['cols'] = {};
+    const groups: Record<number, SessGroup> = {};
+    for (const [k, ids] of Object.entries(shown0)) {
+      const r = sessionOrder(ids, dispatches, boardPath);
+      cols[k] = r.ids;
+      Object.assign(groups, r.groups);
+    }
+    return { cols, groups };
+  }, [shown0, dispatches, boardPath]);
+  const shown = grouped?.cols ?? null;
+  useEffect(() => setShownCols(shown), [shown]);
   const cols = useMemo(() => (shown ? previewCols(shown, drag) : null), [shown, drag]);
   // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
   const f = flowOf(board?.statuses ?? cur?.board.statuses);
@@ -236,6 +254,7 @@ export function BoardView() {
                   resizer={h.resizer}
                   next={nextId}
                   sorted={!!board.keepSorted}
+                  groups={grouped?.groups ?? NO_GROUPS}
                   path={path}
                   role={roles.review.has(s.key) ? 'review' : roles.human.has(s.key) ? 'human' : undefined}
                 />
@@ -266,15 +285,13 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
         {col.claim && (
-          <span className="col-tag claim">
+          <span className="col-tag claim" aria-label="可领取">
             <Icon name="claim" />
-            <span className="t">agent 从这里领</span>
           </span>
         )}
         {col.lock && (
-          <span className="col-tag">
+          <span className="col-tag" aria-label="锁定">
             <Icon name="lock" />
-            <span className="t">仅领取进入</span>
           </span>
         )}
         {fake ? (
@@ -371,6 +388,8 @@ interface ColumnProps {
   next: number | undefined;
   /** 白板设置开着「保留顺序」：标题上显示这块的排序依据 */
   sorted: boolean;
+  /** 同一会话的卡成组（lib/sessionGroups）：按卡片编号查 */
+  groups: Record<number, SessGroup>;
   path: string;
 }
 
@@ -383,12 +402,14 @@ function emptyText(s: Status, f: FlowQ) {
   return '把卡片拖到这里';
 }
 
-function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, path, role }: ColumnProps) {
+function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, role }: ColumnProps) {
   const count = colCount(board, col.key);
   const earlier = omittedIn(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
   const list = useRef<HTMLDivElement>(null);
-  useMasonry(list);
+  useMasonry(list, sessionFrames);
+  const runs = groupRuns(ids, groups);
+  const runAt = new Map(runs.map(r => [r.start, r]));
   const prev = useRef<number | null>(null);
   useEffect(() => {
     if (prev.current != null && prev.current !== count) {
@@ -425,15 +446,13 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
         {col.claim && (
-          <span className="col-tag claim" title="可领取：agent 从这里领取">
+          <span className="col-tag claim" role="img" aria-label="可领取" data-tip="可领取：agent 从这里领">
             <Icon name="claim" />
-            <span className="t">agent 从这里领</span>
           </span>
         )}
         {col.lock && (
-          <span className="col-tag" title="锁定：只能由 agent 领取进入；派发排队的卡片也在这里等机器开始">
+          <span className="col-tag" role="img" aria-label="锁定" data-tip="锁定：只能领取进入；派发排队的卡片也在这里等机器开始">
             <Icon name="lock" />
-            <span className="t">仅领取进入</span>
           </span>
         )}
         {sorted && <OrderChip col={col} path={path} />}
@@ -455,10 +474,12 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
       </header>
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
-          {ids.map((id, idx) => {
+          {ids.flatMap((id, idx) => {
             const c = board.cards[id];
-            if (!c) return null;
-            return (
+            if (!c) return [];
+            const run = runAt.get(idx);
+            const end = runs.find(r => r.start + r.n - 1 === idx);
+            const card = (
               <CardView
                 key={renderKey(id)}
                 card={drag?.id === id ? { ...c, column: col.key } : c}
@@ -475,6 +496,12 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
                 next={firstFree === id}
               />
             );
+            // 组头、组尾和卡片是同一层的兄弟（不包一层）：成组、散开时卡片不重新挂载，拖拽按 data-deco 跳过它们
+            return [
+              run && <SessionHead key={`sh:${run.g.key}`} g={run.g} n={run.n} gk={`${run.g.key}@${run.start}`} />,
+              card,
+              end && <i key={`sf:${end.g.key}`} className="sess-foot" data-deco="" data-g={`${end.g.key}@${end.start}`} aria-hidden="true" />,
+            ].filter(Boolean);
           })}
           {earlier > 0 && <EarlierButton n={earlier} view={view} />}
         </div>
@@ -811,4 +838,35 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
       ))}
     </nav>
   );
+}
+
+const NO_GROUPS: Record<number, SessGroup> = {};
+
+/** 一组的开头：铺满整行，写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */
+function SessionHead({ g, n, gk }: { g: SessGroup; n: number; gk: string }) {
+  return (
+    <div className={cx('sess-head', g.kind)} data-deco="" data-g={gk}>
+      <Icon name={g.kind === 'session' ? 'terminal' : 'timer'} />
+      {g.kind === 'session' ? (
+        <span>
+          <b>{g.host}</b> · {g.agentLabel}
+        </span>
+      ) : (
+        <span>
+          排队等空位 · <b>{g.host}</b>
+        </span>
+      )}
+      <em className="mono">{g.kind === 'session' ? `会话 ${n} 张` : `${n} 张`}</em>
+    </div>
+  );
+}
+
+/** 瀑布流排好之后：每组的框从组头一直画到组尾（--fh） */
+function sessionFrames(list: HTMLElement) {
+  for (const h of list.querySelectorAll<HTMLElement>(':scope > .sess-head')) {
+    const foot = list.querySelector<HTMLElement>(`:scope > .sess-foot[data-g="${CSS.escape(h.dataset.g || '')}"]`);
+    if (!foot) continue;
+    const fh = `${Math.max(0, Math.round(foot.getBoundingClientRect().top - h.getBoundingClientRect().top))}px`;
+    if (h.style.getPropertyValue('--fh') !== fh) h.style.setProperty('--fh', fh);
+  }
 }

@@ -241,3 +241,9 @@ kbd, .kbd {
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 [hidden] { display: none !important; }
+
+/* 说明收成的小图标（bits.tsx 的 InfoTip，default/main#289）：悬停、聚焦看全文，长文字折行 */
+.info-tip { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 4px; vertical-align: -3px; border-radius: 50%; color: var(--text-3); cursor: help; }
+.info-tip:hover, .info-tip:focus-visible { color: var(--text-2); }
+.info-tip svg { width: 13px; height: 13px; }
+.info-tip[data-tip]::after { white-space: normal; width: max-content; max-width: 300px; line-height: 1.45; text-transform: none; letter-spacing: .01em; font-weight: 500; }

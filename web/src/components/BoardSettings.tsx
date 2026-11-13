@@ -12,13 +12,12 @@ import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { playDemo, scenesOf, stepsOf, type DemoInput, type Scene } from '../lib/orderDemo';
 import { statusColor, viewOf } from '../lib/schema';
-import { repoWeb } from '../lib/repo';
 import { ORDERS, orderDir, orderName, orderOf, orderOption } from '../lib/sort';
 import type { BoardSnapshot, Label, Order, Status, Tile } from '../lib/types';
 import { cx, reduceMotion } from '../lib/util';
 import { colCount, flowKey, optimistic, repoPatch, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { closePicker, openBoardSettings, toast, useUI } from '../store/ui';
-import { Select, Sync, useSync } from './bits';
+import { InfoTip, Select, Sync, useSync } from './bits';
 import { ReadyCheckSection } from './BoardReady';
 import { CardCronSection } from './CardCrons';
 import { pack, withDefaults } from './BoardView';
@@ -303,7 +302,6 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                 )}
                 {lay('def', '默认布局', defNow && <span className="bs-badge eq">和现在一样</span>, '每块 3 栏、一行 4 块，按工作流顺序', defNow ? '正在使用' : '复原', !defNow, doReset)}
               </div>
-              <p className="bs-note">复原以后保存的布局还在，可以再应用。保存之后删掉的状态应用时跳过，新加的状态按默认规则补位。</p>
             </section>
             <RepoSection path={path} i={2} />
             <ReadyCheckSection path={path} i={3} />
@@ -393,11 +391,11 @@ export function RepoSection({ path, i }: { path: string; i: number }) {
       </span>
     </label>
   );
-  const web = repoWeb(repo);
   return (
     <section className="d-section" style={{ ['--i' as string]: i }}>
       <div className="d-label">
-        代码仓库<span className="act">skill 按这里的集成分支推送</span>
+        代码仓库
+        <InfoTip text="设了仓库地址后，描述和评论里的「提交：abc1234」和 gh#12 变成链接，给新机器克隆仓库时也优先用它。集成分支是 skill 推送的目标，留空按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支" />
       </div>
       <div className="bs-rc bs-rp">
         {field(
@@ -421,11 +419,6 @@ export function RepoSection({ path, i }: { path: string; i: number }) {
         )}
         {field('branch', '集成分支', '留空按 AGENTS.md / CLAUDE.md，没写用远端默认分支')}
       </div>
-      <p className="bs-note">
-        设了仓库地址后，描述和评论里的「提交：<span className="mono">abc1234</span>」和 <span className="mono">gh#12</span> 会变成链接
-        {web ? <>（<a href={web.home} target="_blank" rel="noopener noreferrer">{web.home}</a>）</> : null}
-        ；给新机器克隆仓库时也优先用它。集成分支留空时，agent 按仓库里的 AGENTS.md / CLAUDE.md，没写就用远端的默认分支。
-      </p>
     </section>
   );
 }

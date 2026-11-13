@@ -180,7 +180,7 @@ function onDown(e: PointerEvent) {
     id, card, pointerId: e.pointerId, type: e.pointerType,
     x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY,
     fromCol: list.dataset.list as ColumnKey,
-    fromIndex: [...list.children].indexOf(card),
+    fromIndex: [...list.children].filter(n => !n.hasAttribute('data-deco')).indexOf(card),
     started: false, rot: 0, vx: 0, lastX: e.clientX, lastT: performance.now(),
     offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null,
   };
@@ -262,9 +262,11 @@ function locate() {
   const col = zoneAt(zones(), s.x, s.y, s.target?.col);
   const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
-  // 「更早的 M 张」那一格（data-earlier）不是卡片，不算落点
+  // 「更早的 M 张」那一格（data-earlier）、会话组的组头组尾（data-deco）不是卡片，不算落点
   const items = list
-    ? ([...list.children] as HTMLElement[]).filter(n => n !== s.card && n.getAttribute('data-flip') !== `c${renderKey(s.id)}` && !n.hasAttribute('data-earlier'))
+    ? ([...list.children] as HTMLElement[]).filter(
+        n => n !== s.card && n.getAttribute('data-flip') !== `c${renderKey(s.id)}` && !n.hasAttribute('data-earlier') && !n.hasAttribute('data-deco'),
+      )
     : [];
   const state = useData.getState();
   const index = insertIndex(list, items, s.x, s.y, cardEl(s.id)?.offsetHeight || s.h);
@@ -536,11 +538,22 @@ function finish(cancelled: boolean) {
   cleanup(true);
 }
 
-/** 目标状态的快照省略了卡片时，落点换成锚点：放到看到的下一张前面，落在末尾时放到看到的最后一张后面 */
+/** 状态块里看到的顺序（BoardView 设置）：同一会话的卡挨着放（lib/sessionGroups）时，和优先级顺序不一样 */
+let shownCols: Record<string, number[]> | null = null;
+export const setShownCols = (cols: Record<string, number[]> | null) => {
+  shownCols = cols;
+};
+
+/** 目标状态的快照省略了卡片，或者看到的顺序和优先级顺序不一样（会话成组）时，落点换成锚点：
+    放到看到的下一张前面，落在末尾时放到看到的最后一张后面 */
 function anchorOf(id: number, col: ColumnKey, index: number): { before?: number; after?: number } {
   const board = useData.getState().board;
-  if (!board || !omittedIn(board, col)) return {};
-  const prio = (board.cols[col] ?? []).filter(x => x !== id);
+  if (!board) return {};
+  const server = board.cols[col] ?? [];
+  const seen = shownCols?.[col];
+  const regrouped = !!seen && (seen.length !== server.length || seen.some((x, i) => x !== server[i]));
+  if (!omittedIn(board, col) && !regrouped) return {};
+  const prio = (regrouped ? seen! : server).filter(x => x !== id);
   const next = prio[index];
   if (next != null) return { before: next };
   const last = prio[index - 1];

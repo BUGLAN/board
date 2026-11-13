@@ -112,7 +112,7 @@ button.msp-row:hover { background: color-mix(in srgb, var(--text) 3.5%, transpar
 .msp-intro h1 { font-family: var(--f-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
 .msp-intro p { margin-top: 10px; font-size: 13.5px; color: var(--text-2); }
 .msp-intro ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
-.msp-intro code, .msp-note code { font-family: var(--f-mono); font-size: .92em; padding: 1px 5px; border-radius: var(--r-xs); background: var(--surface-3); }
+.msp-intro code { font-family: var(--f-mono); font-size: .92em; padding: 1px 5px; border-radius: var(--r-xs); background: var(--surface-3); }
 .msp-sk-h { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px; }
 
 /* ---------------- 侧栏 ---------------- */
@@ -135,7 +135,6 @@ button.msp-row:hover { background: color-mix(in srgb, var(--text) 3.5%, transpar
 .msp-older { gap: 6px; font-size: 12px; color: var(--text-3); }
 .msp-older:hover { color: var(--text); }
 .msp-older svg { width: 14px; height: 14px; margin: 0 1px 0 2px; }
-.msp-note { margin: 14px 8px 0; font-size: 11.5px; line-height: 1.6; color: var(--text-3); text-wrap: pretty; }
 
 /* ---------------- 手机 ---------------- */
 @media (max-width: 760px) {

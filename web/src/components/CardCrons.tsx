@@ -19,7 +19,7 @@ import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
 import { cardCronKey, cardCronPatch, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { confirm, openBoardSettings, openPicker, toast, toastError } from '../store/ui';
-import { DescTabs, LabelChip, Markdown, Segmented, Sync, useNow, useSync } from './bits';
+import { DescTabs, InfoTip, LabelChip, Markdown, Segmented, Sync, useNow, useSync } from './bits';
 import { AgentChip, Dot } from './hosts/bits';
 import { Icon } from './Icon';
 import { DEFAULT_SCHEDULE, EVERY_MINUTES, SchedulePick } from './SchedulePick';
@@ -79,7 +79,7 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
     <section className="d-section cc" style={{ ['--i' as string]: i }}>
       <div className="d-label">
         定时建卡 <span className="count">{list.length || ''}</span>
-        <span className="act">到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器</span>
+        <InfoTip text="到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器。上一次建的卡还没进终点、也没删时，到点不建（记「跳过」）；服务端停机期间错过的不补建" />
       </div>
       {list.length > 0 && (
         <div className="cc-list">
@@ -102,9 +102,6 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
           </button>
         </span>
       )}
-      <p className="bs-note">
-        这条上一次建的卡还没进终点状态、也没删除时，到点不建，记「跳过」；服务端停机期间错过的不补建。建卡人是「定时建卡」，标题后面加日期。选了机器的，建出卡后马上派发过去，派不出去时卡留在原地、评论写明原因。
-      </p>
     </section>
   );
 }

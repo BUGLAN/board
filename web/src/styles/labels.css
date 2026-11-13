@@ -52,52 +52,19 @@
 .d-labels .lb { height: 24px; font-size: 12px; padding: 0 8px; }
 .cr-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
-/* 侧栏「标签」：整块就是输入框。平时扁平（悬停也没有底色），双击空白处进入编辑态才显出输入框边框；点胶囊筛选，回车新建 */
+/* 侧栏「标签」：一排胶囊，点胶囊筛选、拖到卡片上加标签；最后是「管理」入口（新建、改名、删除、排序都在管理标签弹窗里） */
 .lb-block { padding: 4px 14px 10px 20px; }
 .lb-field {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   margin: 0 -6px; padding: 5px 6px; border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  transition: border-color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out);
 }
-/* 编辑态（双击空白进入，见 Workbench.tsx LabelBlock）：显出输入框的底色和边框，淡入淡出 */
-.lb-field.editing { cursor: text; background: var(--surface); border-color: color-mix(in srgb, var(--brand) 55%, transparent); }
 .lb-pick { height: 24px; max-width: 100%; padding: 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
 .lb-pick:hover { background: color-mix(in srgb, var(--lc) 22%, transparent); }
 .lb-pick:active { transform: scale(.96); }
 .lb-pick em { font-style: normal; font-family: var(--f-mono); font-size: 11px; opacity: .6; margin-left: 2px; }
 .lb-pick.on { color: #fff; background: var(--lc); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--lc) 70%, transparent); }
 .lb-pick.on em { opacity: .85; }
-/* 删除：悬停胶囊时盖在右端的计数上，不占位、不改变排列；没有底色，只显示 ×（可悬停的区域仍是右端 24×24） */
 .lb-item { position: relative; display: inline-flex; max-width: 100%; }
-.lb-del {
-  --lc: #888;
-  position: absolute; right: 0; top: 50%; width: 24px; height: 24px; margin-top: -12px;
-  display: grid; place-items: center; font-size: 14px; line-height: 1;
-  color: color-mix(in srgb, var(--lc) 80%, var(--text));
-  background: transparent;
-  opacity: 0; pointer-events: none; transform: scale(.7);
-  transition: opacity var(--dur-1), transform var(--dur-1) var(--ease-out), color var(--dur-1);
-}
-.lb-item:hover .lb-del, .lb-del:focus-visible { opacity: 1; pointer-events: auto; transform: none; }
-.lb-item:hover .lb-pick em { opacity: 0; }
-.lb-del:hover { color: var(--danger-text); }
-/* 选中的胶囊是实色底：× 保持白色，悬停时从半透明变成不透明 */
-.lb-del.on { color: color-mix(in srgb, #fff 80%, transparent); }
-.lb-del.on:hover { color: #fff; }
-@media (hover: none) { .lb-del { display: none; } }
-/* 失焦时只占一丝宽度，不让空输入框单独挤出一行；聚焦时至少 4em，最后一行放不下就换行 */
-.lb-input {
-  flex: 1 1 4px; min-width: 4px; height: 24px; padding: 0 4px;
-  border: 0; outline: none; background: transparent;
-  font-size: 12px; color: var(--text); caret-color: var(--brand);
-}
-.lb-input::placeholder { color: var(--text-3); }
-/* 不在编辑态时单击不到输入框：点击落在空白处，单击什么也不做 */
-.lb-field:not(.editing) .lb-input { pointer-events: none; }
-.lb-field.editing .lb-input { min-width: 4em; }
-@media (prefers-reduced-motion: reduce) { .lb-field { transition: none; } }
-:root[data-motion="reduced"] .lb-field { transition: none; }
 
 /* 详情里的「复制链接」「复制为提示词」 */
 .d-prompt { height: 28px; color: var(--text-2); }
@@ -138,12 +105,10 @@
 .lbm-head h3 { font-family: var(--f-display); font-size: 18px; }
 .lbm-sub { font-size: 12px; color: var(--text-3); }
 .lbm-head .icon-btn { margin-left: auto; }
-.lbm-p { margin: 6px 0 14px; font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
-.lbm-p code { font-family: var(--f-mono); font-size: .92em; padding: 0 .35em; border-radius: var(--r-xs); background: var(--surface-3); }
 /* 各行共用列表的列（subgrid）：预览胶囊、类型开关、卡片数逐行对齐，不随标签名长短、开关文字长短错开 */
 .lbm-list {
-  max-height: 46vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px;
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto; align-content: start; column-gap: 10px; row-gap: 4px;
+  max-height: 46vh; overflow-y: auto; margin: 12px -4px 0; padding: 0 4px;
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto auto auto; align-content: start; column-gap: 10px; row-gap: 4px;
 }
 .lbm-list > .lbp-empty { grid-column: 1 / -1; }
 .lbm-row { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 6px 6px 6px 8px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
@@ -185,7 +150,7 @@
   .d-head .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
   .d-head .d-prompt svg { margin: 0; }
   .d-link + .d-prompt { margin-left: 0; }
-  .lbm-list { grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; }
+  .lbm-list { grid-template-columns: auto auto minmax(0, 1fr) auto auto auto auto; }
   .lbm-preview { display: none; }
 }
 
@@ -248,3 +213,25 @@
 @keyframes lb-ins-in { from { transform: scaleY(.3); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .lb-item.ins-before::before, .lb-item.ins-after::after { animation: none; } }
 :root[data-motion="reduced"] .lb-item.ins-before::before, :root[data-motion="reduced"] .lb-item.ins-after::after { animation: none; }
+
+.lb-manage {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--r-xs);
+  font-size: 11.5px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); background: transparent;
+  transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
+}
+.lb-manage svg { width: 12px; height: 12px; }
+.lb-manage:hover { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.lb-manage.empty { color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); border-style: dashed; }
+
+/* 管理标签：拖动调整顺序（default/main#289） */
+.lbm-grip { display: grid; place-items: center; width: 18px; height: 26px; margin-left: -4px; border-radius: var(--r-xs); color: var(--text-3); cursor: grab; touch-action: none; opacity: .55; transition: opacity var(--dur-1), color var(--dur-1); }
+.lbm-grip svg { width: 13px; height: 13px; }
+.lbm-row:hover .lbm-grip, .lbm-grip:focus-visible { opacity: 1; }
+.lbm-grip:hover { color: var(--text); }
+.lbm-row.dragging { z-index: 3; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3); cursor: grabbing; transition: none; }
+.lbm-row.dragging .lbm-grip { cursor: grabbing; opacity: 1; }
+.lbm-row.ins-before::before, .lbm-row.ins-after::after {
+  content: ''; position: absolute; left: 8px; right: 8px; height: 2px; border-radius: 1px; background: var(--brand); pointer-events: none;
+}
+.lbm-row.ins-before::before { top: -3px; }
+.lbm-row.ins-after::after { bottom: -3px; }

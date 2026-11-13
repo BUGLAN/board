@@ -63,7 +63,6 @@ export function HostsSide() {
             </button>
           );
         })}
-        <p className="hp-side-hint">在机器上运行 board host，或在桌面端「设置 → 本机」打开「让这台电脑接任务」。</p>
       </div>
     </section>
   );

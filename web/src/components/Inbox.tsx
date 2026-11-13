@@ -20,7 +20,7 @@ import { boardFlow, INBOX } from '../lib/schema';
 import { canUndoSplit, kidsOf, hiddenEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
-import { actorName, ago, autosize, cx, isMac, pref, reduceMotion, replay } from '../lib/util';
+import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
 import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Title, useNow } from './bits';
@@ -368,7 +368,6 @@ export function InboxPage() {
                   </button>
                 </div>
               )}
-              <p>agent 和你记下的想法、需求。点一行展开修改；勾选几条一起合并、打标签，或整理进「{home}」。</p>
             </div>
             <div className="ib-modes">
               <DescTabs
@@ -1297,7 +1296,6 @@ export function InboxSideParts() {
           </button>
         ))}
       </SideSec>
-      <p className="ib-side-hint">点一行展开修改；勾选几条一起合并、打标签或整理。按住 Shift 连着勾，{isMac ? '⌘' : 'Ctrl+'}A 全选。</p>
     </>
   );
 }

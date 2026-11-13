@@ -477,3 +477,12 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
     </div>
   );
 }
+
+/** 说明收成一个小图标，悬停（或聚焦）时看全文：代替常驻的说明段落（default/main#289） */
+export function InfoTip({ text, className }: { text: string; className?: string }) {
+  return (
+    <span className={cx('info-tip', className)} tabIndex={0} role="img" aria-label={text} data-tip={text}>
+      <Icon name="info" />
+    </span>
+  );
+}

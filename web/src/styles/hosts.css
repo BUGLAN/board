@@ -310,7 +310,6 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-side-runs { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 6px; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
 .hp-side-runs > span { display: inline-flex; align-items: center; gap: 3px; }
 .hp-side-runs .hp-mini { min-width: 16px; height: 14px; font-size: 11px; padding: 0 3px; }
-.hp-side-hint { margin: 14px 10px 0; font-size: 12px; color: var(--text-3); line-height: 1.6; }
 
 /* ---------- 主区：机架总览（一行一台机器，一条车道一个任务） ---------- */
 .hp-b { max-width: 1120px; margin: 0 auto; padding: 28px 28px 100px; }

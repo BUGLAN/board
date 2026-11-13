@@ -7,7 +7,7 @@
    ========================================================================== */
 import { useLayoutEffect, type RefObject } from 'react';
 
-function apply(list: HTMLElement) {
+function apply(list: HTMLElement, after?: (list: HTMLElement) => void) {
   // 所在页面被隐藏（切到别的 Tab，display: none）时量不到高度：保持原样，切回来不用重排、不跳
   if (!list.offsetParent) return;
   const gap = parseFloat(getComputedStyle(list).columnGap) || 0;
@@ -20,17 +20,18 @@ function apply(list: HTMLElement) {
   items.forEach((el, i) => {
     if (el.style.gridRowEnd !== spans[i]) el.style.gridRowEnd = spans[i];
   });
+  after?.(list);
 }
 
-/** 每次渲染后同步排一次（在父组件的 FLIP play 之前），卡片尺寸变化时再排 */
-export function useMasonry(ref: RefObject<HTMLElement | null>) {
+/** 每次渲染后同步排一次（在父组件的 FLIP play 之前），卡片尺寸变化时再排；after：排完之后（例如量会话框的高度） */
+export function useMasonry(ref: RefObject<HTMLElement | null>, after?: (list: HTMLElement) => void) {
   useLayoutEffect(() => {
-    if (ref.current) apply(ref.current);
+    if (ref.current) apply(ref.current, after);
   });
   useLayoutEffect(() => {
     const list = ref.current;
     if (!list || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => apply(list));
+    const ro = new ResizeObserver(() => apply(list, after));
     const watch = () => {
       ro.disconnect();
       ro.observe(list);
@@ -43,5 +44,5 @@ export function useMasonry(ref: RefObject<HTMLElement | null>) {
       ro.disconnect();
       mo.disconnect();
     };
-  }, [ref]);
+  }, [ref]); // eslint-disable-line react-hooks/exhaustive-deps
 }

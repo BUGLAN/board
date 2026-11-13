@@ -56,7 +56,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-tag svg { width: 11px; height: 11px; flex: none; }
 .col-tag.claim { color: color-mix(in oklab, var(--brand), var(--ink)); }
 .col { container-type: inline-size; }
-@container (max-width: 300px) { .col-tag .t { display: none; } }
+
 /* 窄的块（1200px 宽、每块 3 栏）：序号让位给名称 */
 @container (max-width: 260px) { .col-head .col-i { display: none; } }
 .col-dot { width: 8px; height: 8px; border-radius: var(--r-hair); background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 18%, transparent); }
@@ -809,3 +809,25 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .bsp-ghost .bsp-card { width: 100%; min-height: 100%; background: transparent; box-shadow: none; }
 .bsp-cursor { position: absolute; left: 60%; top: 46%; z-index: 2; width: 20px; height: 20px; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35)); animation: bsp-cursor .3s var(--ease-out); }
 @keyframes bsp-cursor { from { opacity: 0; transform: translate(10px, 12px); } }
+
+/* 同一会话的卡框在一起（lib/sessionGroups，default/main#289）：组头铺满整行写机器 · agent，
+   框从组头画到组尾（--fh 由 BoardView 的 sessionFrames 在瀑布流排完后量），卡片照常是列表的直接子元素 */
+.sess-head {
+  grid-column: 1 / -1; position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; height: 26px; padding: 0 6px;
+  font-family: var(--f-ui, inherit); font-size: 11.5px; color: var(--text-3); white-space: nowrap;
+}
+.sess-head > * { position: relative; z-index: 1; }
+.sess-head > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sess-head svg { width: 12px; height: 12px; flex: none; color: var(--c-doing); }
+.sess-head b { font-weight: 600; color: var(--text-2); }
+.sess-head em { margin-left: auto; flex: none; font-style: normal; font-size: 11px; }
+.sess-head::before {
+  content: ''; position: absolute; z-index: 0; left: -5px; right: -5px; top: 0; height: max(26px, calc(var(--fh, 26px) - 1px));
+  border-radius: calc(var(--r-md) + 4px); pointer-events: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-doing) 42%, var(--line));
+  background: color-mix(in srgb, var(--c-doing) 4%, transparent);
+}
+.sess-head.wait svg { color: var(--text-3); }
+.sess-head.wait::before { box-shadow: inset 0 0 0 1px var(--line-2); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.sess-foot { grid-column: 1 / -1; height: 6px; }
+.view-tile .sess-head { height: 22px; font-size: 11px; }

@@ -219,8 +219,8 @@
 @media (prefers-reduced-motion: reduce) { .card.saving { animation: none; opacity: .7; } }
 :root[data-motion="reduced"] .card.saving { animation: none; opacity: .7; }
 /* 输入框里新建（工作流加状态、侧栏加标签、标签选择器里新建）：等服务端分配标识时只读 + 半透明 + 等待光标 */
-.wf-node.add.busy, .lb-input.busy, .lbp-row.create.busy { cursor: progress; }
-.wf-node.add.busy .wf-input, .lb-input.busy, .lbp-row.create.busy { opacity: .6; }
+.wf-node.add.busy, .lbp-row.create.busy { cursor: progress; }
+.wf-node.add.busy .wf-input, .lbp-row.create.busy { opacity: .6; }
 
 /* 错误边界（components/ErrorBoundary.tsx）：渲染出错时代替整页白屏 */
 .crash { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); }

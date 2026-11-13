@@ -11,7 +11,7 @@ import { boardHosts, boardOf, hostLoad, hostsOf, osKind, since, type Readiness }
 import { cx } from '../lib/util';
 import { readyCheckPatch, saveSetting, useData } from '../store/data';
 import { openBoardSettings, openHost } from '../store/ui';
-import { Sync, useNow, useSync } from './bits';
+import { InfoTip, Sync, useNow, useSync } from './bits';
 import { Dot } from './hosts/bits';
 import { Icon } from './Icon';
 
@@ -81,15 +81,13 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
   return (
     <section className="d-section" style={{ ['--i' as string]: i }}>
       <div className="d-label">
-        环境检查<span className="act">没通过的机器不接这块白板的卡</span>
+        环境检查
+        <InfoTip text="没通过的机器不接这块白板的卡。在每台机器上这块白板的目录里执行（macOS、Linux 在登录 shell 里，Windows 在 cmd 里），退出码 0 算通过，最长 2 分钟；board host 启动、重新读配置、每天一次、命令改了之后各跑一次。留空不检查" />
       </div>
       <div className="bs-rc">
         {field('cmd', '所有系统', '例如 cargo --version && node --version')}
         {field('win', 'Windows', '留空和上面一样；写了就用它（cmd 里执行）')}
       </div>
-      <p className="bs-note">
-        在每台机器上这块白板的目录里执行（macOS、Linux 在登录 shell 里，Windows 在 cmd 里），退出码为 0 算通过，最长 2 分钟。board host 启动、重新读配置、每天一次、命令改了之后各跑一次。留空表示不检查。
-      </p>
 
       <div className="d-label bs-rc-hosts">
         能接这块白板的机器<span className="act">{rows.length ? `${rows.filter(r => r.ready.key === 'none' || r.ready.key === 'ok').length}/${rows.length} 台能接` : ''}</span>
