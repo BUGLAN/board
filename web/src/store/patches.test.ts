@@ -348,6 +348,12 @@ describe('cardCronPatch（白板的定时建卡）', () => {
     const moved = twice(D.cardCronPatch('p/a', 7, { cron: '0 10 * * 1' }).ws!, withCron());
     expect(moved.projects[0].boards[0].cardCrons![0].nextAt).toBeNull();
   });
+  it('派给机器：改机器、agent 不动下次时间；空字符串画成不派发', () => {
+    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', agent: 'claude' }).ws!, withCron());
+    expect(to.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: 'mbp', agent: 'claude', nextAt: 123 });
+    const off = twice(D.cardCronPatch('p/a', 7, { host: '', agent: '' }).ws!, to);
+    expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: null, agent: null, nextAt: 123 });
+  });
   it('白板或这一条不在了原样返回', () => {
     const orig = withCron();
     expect(D.cardCronPatch('p/nope', 7, { on: false }).ws!(orig)).toBe(orig);

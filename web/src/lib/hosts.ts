@@ -49,7 +49,10 @@ export const isSplit = (d: Pick<Dispatch, 'kind'>) => d.kind === 'split';
 
 export const resultOf = (d: Dispatch) => (d.result ? RESULT[d.result] : { label: '已结束', color: 'var(--text-3)' });
 
-export const SOURCE: Record<Dispatch['source'], string> = { manual: '手动', cron: '定时' };
+export const SOURCE: Record<Dispatch['source'], string> = { manual: '手动', cron: '定时', schedule: '定时建卡' };
+
+/** 机器的默认 agent：设置过且找到了就是它，否则第一个找到的（和服务端 default_agent 一致） */
+export const defaultAgent = (h: HostInfo) => h.agents.find(a => a.id === h.agent && a.found) ?? h.agents.find(a => a.found);
 
 export type HostState = 'full' | 'busy' | 'idle' | 'paused' | 'off';
 

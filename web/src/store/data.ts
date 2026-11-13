@@ -521,11 +521,13 @@ export const repoPatch = (path: string, change: { repo?: string; branch?: string
   board: b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b),
 });
 
-/** 改白板的一条定时建卡（PRD §4）：开关、模板、时间。下次时间等服务端算，改了时间就先清掉；白板或这条不在了原样返回 */
-export const cardCronPatch = (path: string, id: number, change: CardCronInput): Patch => ({
+/** 改白板的一条定时建卡（PRD §4）：开关、模板、派给机器、时间。下次时间等服务端算，改了时间就先清掉；
+ *  机器、agent 发空字符串表示不派发 / 默认 agent，画成空；白板或这条不在了原样返回 */
+export const cardCronPatch = (path: string, id: number, input: CardCronInput): Patch => ({
   ws: ws => {
     const has = ws.projects.some(p => p.boards.some(b => b.path === path && b.cardCrons?.some(c => c.id === id)));
     if (!has) return ws;
+    const change = { ...input, ...(input.host !== undefined ? { host: input.host || null } : {}), ...(input.agent !== undefined ? { agent: input.agent || null } : {}) };
     const stale = change.cron !== undefined || change.tz !== undefined || change.on === false;
     return {
       ...ws,

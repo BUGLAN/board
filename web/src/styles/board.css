@@ -683,9 +683,15 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .cc-when code { font: 11.5px var(--f-mono); }
 .cc-when em { font-style: normal; font-size: 11px; color: var(--text-3); }
 .cc-place { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+/* 派给哪台机器：一行里写「⇥ mbp · Claude Code」，机器被移除时用警告色 */
+.cc-to { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.cc-to svg { width: 13px; height: 13px; color: var(--text-3); }
+.cc-to.gone { color: var(--warn-text); }
 .cc-l2 { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; font-size: 11.5px; color: var(--text-3); }
 .cc-last { display: inline-flex; align-items: center; gap: 3px; }
 .cc-last.skip { color: var(--warn-text); }
+/* 没派发出去的原因：单独一行 */
+.cc-err { flex-basis: 100%; min-width: 0; color: var(--warn-text); line-height: 1.5; }
 .cc-acts { flex: none; display: flex; align-items: center; gap: 2px; }
 .cc-acts .btn { margin-right: 4px; }
 .cc-del:hover { color: var(--danger-text); }
@@ -705,6 +711,18 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .cc-desc-box .textarea[hidden] { display: none; }
 .cc-preview { min-height: 96px; padding: 8px 10px; border-radius: var(--r-sm); font-size: 13px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
 .cc-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* 派给机器：「不派发」和每台机器一个按钮，选了机器再选 agent（和机器页的 agent 按钮同一种样子） */
+.cc-pick { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cc-hosts { display: flex; flex-wrap: wrap; gap: 8px; }
+.cc-host {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: var(--r-sm);
+  font-size: 12.5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); white-space: nowrap;
+}
+.cc-host:hover:not(:disabled):not(.on) { box-shadow: inset 0 0 0 1px var(--line-3), var(--shadow-1); }
+.cc-host.on { box-shadow: inset 0 0 0 2px var(--brand), 0 0 0 3px var(--brand-soft); }
+.cc-host:disabled { opacity: .5; cursor: not-allowed; }
+.cc-host em { font-style: normal; font-size: 11px; color: var(--text-3); }
+.cc-host.gone em { color: var(--warn-text); }
 .cc-raw { display: inline-flex; align-items: center; gap: 8px; }
 .cc-raw code { font: 12px var(--f-mono); }
 .cc-form-acts { display: flex; justify-content: flex-end; gap: 8px; }

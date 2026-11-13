@@ -1,9 +1,10 @@
 /* ==========================================================================
-   定时建卡（PRD §4「白板设置」，白板设置里的一节）：到点按模板在这块白板上建一张卡，由定时领取或人派发去做
-   - 每条一行：开关、名称、时间（和时区）、放到哪、标签；下面一行写「下次：<时间>」和最近一次的结果
-     （「11-12 09:00 建了 #263」或「11-12 09:00 跳过：上一张 #250 还没完成」）；右边「现在建一张」、编辑、删除
-   - 编辑（和新建）原地展开：名称、卡片标题、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、时间（SchedulePick，
-     和机器设置的「定时领取」同一个组件）；时区取保存时浏览器的
+   定时建卡（PRD §4「白板设置」，白板设置里的一节）：到点按模板在这块白板上建一张卡，由定时领取或人派发去做，
+   也可以直接派给一台机器（例如定期让某台机器更新代码）
+   - 每条一行：开关、名称、时间（和时区）、放到哪、派给哪台机器、标签；下面一行写「下次：<时间>」和最近一次的结果
+     （「11-12 09:00 建了 #263 · 派发到 mbp · Claude Code」或「11-12 09:00 跳过：上一张 #250 还没完成」）；右边「现在建一张」、编辑、删除
+   - 编辑（和新建）原地展开：名称、卡片标题、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、派给机器（和 agent）、
+     时间（SchedulePick，和机器设置的「定时领取」同一个组件）；时区取保存时浏览器的
    写操作（AGENTS.md「界面写操作」）：新建、删除、现在建一张要等服务端返回（optimistic(null, …)，按钮转圈并禁用）；
    开关是设置项（saveSetting，不锁）；改模板用乐观补丁（cardCronPatch + cardCronKey），当帧生效，失败时带着草稿重新打开
    ========================================================================== */
@@ -12,13 +13,14 @@ import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { boardOf } from '../lib/hosts';
+import { boardOf, defaultAgent, envName, hostLoad, hostsOf } from '../lib/hosts';
 import { boardFlow } from '../lib/schema';
-import type { CardCron, CardCronInput, Label } from '../lib/types';
+import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
 import { cardCronKey, cardCronPatch, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { confirm, openBoardSettings, openPicker, toast, toastError } from '../store/ui';
 import { DescTabs, LabelChip, Markdown, Segmented, Sync, useNow, useSync } from './bits';
+import { AgentChip, Dot } from './hosts/bits';
 import { Icon } from './Icon';
 import { DEFAULT_SCHEDULE, EVERY_MINUTES, SchedulePick } from './SchedulePick';
 
@@ -45,6 +47,10 @@ interface Draft {
   body: string;
   labels: number[];
   place: 'home' | 'inbox';
+  /** 派给哪台机器；不派发时为空 */
+  host: string | null;
+  /** 用哪个 agent；空表示那台机器的默认 agent */
+  agent: string | null;
   spec: Schedule;
   /** 原来的表达式不是选择组件能生成的（手写的）：不动它就原样保存 */
   raw: string | null;
@@ -58,6 +64,8 @@ const draftOf = (c?: CardCron): Draft => {
     body: c?.body ?? '',
     labels: c?.labels ?? [],
     place: c?.place ?? 'home',
+    host: c?.host || null,
+    agent: c?.agent || null,
     spec: spec ?? DEFAULT_SCHEDULE,
     raw: c && !spec ? normalizeCron(c.cron) : null,
   };
@@ -71,7 +79,7 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
     <section className="d-section cc" style={{ ['--i' as string]: i }}>
       <div className="d-label">
         定时建卡 <span className="count">{list.length || ''}</span>
-        <span className="act">到点按模板建一张卡，由定时领取或人派发去做</span>
+        <span className="act">到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器</span>
       </div>
       {list.length > 0 && (
         <div className="cc-list">
@@ -94,7 +102,9 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
           </button>
         </span>
       )}
-      <p className="bs-note">这条上一次建的卡还没进终点状态、也没删除时，到点不建，记「跳过」；服务端停机期间错过的不补建。建卡人是「定时建卡」，标题后面加日期。</p>
+      <p className="bs-note">
+        这条上一次建的卡还没进终点状态、也没删除时，到点不建，记「跳过」；服务端停机期间错过的不补建。建卡人是「定时建卡」，标题后面加日期。选了机器的，建出卡后马上派发过去，派不出去时卡留在原地、评论写明原因。
+      </p>
     </section>
   );
 }
@@ -119,7 +129,10 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
       const r = await optimistic(null, () => api.runCardCron(path, c.id));
       if (r.ranCard != null) {
         const id = r.ranCard;
-        toast({ type: 'success', title: `「${c.name}」建了 #${id}`, text: `放在${c.place === 'inbox' ? '未整理' : `「${home}」`}最下面`, action: { label: '打开', fn: () => openFromSettings(id) } });
+        const open = { label: '打开', fn: () => openFromSettings(id) };
+        if (r.ranErr) toast({ type: 'error', title: `「${c.name}」建了 #${id}，但没派发出去`, text: `${r.ranErr}。卡片留在「${home}」，评论里写了原因`, action: open });
+        else if (r.ranTo) toast({ type: 'success', title: `「${c.name}」建了 #${id}`, text: `已派发到 ${r.ranTo}`, action: open });
+        else toast({ type: 'success', title: `「${c.name}」建了 #${id}`, text: `放在${c.place === 'inbox' ? '未整理' : `「${home}」`}最下面`, action: open });
       } else if (r.ranSkip != null) toast({ type: 'info', title: `跳过：上一张 #${r.ranSkip} 还没完成`, text: '它进了终点状态或被删除后才会建下一张' });
     } catch (e) {
       toastError(e);
@@ -140,6 +153,7 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   };
   const tags = c.labels.map(id => labels.find(l => l.id === id)).filter(Boolean) as Label[];
   const describe = describeCron(c.cron);
+  const to = useData(s => (c.host ? hostsOf(s.ws).find(h => h.name === c.host) : undefined));
   return (
     <div className={cx('cc-row', !c.on && 'off', (busy || removing) && 'saving')}>
       <button type="button" className={cx('switch', c.on && 'on')} role="switch" aria-checked={c.on} aria-label={`「${c.name}」到点建卡`} onClick={toggle}>
@@ -154,6 +168,13 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
             <em>{c.tz}</em>
           </span>
           <span className="cc-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
+          {c.host && (
+            <span className={cx('cc-to', !to && 'gone')} data-tip={to ? '建出卡后马上派发到这台机器' : '这台机器已经移除：到点照样建卡，但派发不出去'}>
+              <Icon name="dispatch" />
+              {c.host}
+              {to ? ` · ${agentName(to, c.agent)}` : '（已移除）'}
+            </span>
+          )}
           {tags.map(l => (
             <LabelChip key={l.id} label={l} />
           ))}
@@ -161,7 +182,7 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
         <div className="cc-l2">
           <span>{!c.on ? '关着：到点不建' : c.nextAt ? `下次：${when(c.nextAt)}` : '一年内不会到点'}</span>
           {c.ranAt != null && (
-            <span className={cx('cc-last', c.ranSkip != null && 'skip')}>
+            <span className={cx('cc-last', (c.ranSkip != null || c.ranErr) && 'skip')}>
               {when(c.ranAt)}{' '}
               {c.ranCard != null ? (
                 <>
@@ -169,12 +190,15 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
                   <button type="button" className="d-ref" onClick={() => openFromSettings(c.ranCard!)}>
                     #{c.ranCard}
                   </button>
+                  {c.ranTo && <> · 派发到 {c.ranTo}</>}
+                  {c.ranErr && <> · 没派发出去</>}
                 </>
               ) : (
                 <>跳过：上一张 #{c.ranSkip} 还没完成</>
               )}
             </span>
           )}
+          {c.ranAt != null && c.ranCard != null && c.ranErr && <span className="cc-err">{c.ranErr}</span>}
         </div>
       </div>
       <span className="cc-acts">
@@ -190,6 +214,13 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
       </span>
     </div>
   );
+}
+
+/** 这条用的 agent 的名称：没指定时是那台机器的默认 agent */
+function agentName(h: HostInfo, agent: string | null | undefined) {
+  if (agent) return h.agents.find(a => a.id === agent)?.name ?? agent;
+  const d = defaultAgent(h);
+  return d ? `${d.name}（默认）` : '默认 agent';
 }
 
 /** 关掉白板设置，打开这张卡 */
@@ -216,7 +247,7 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
 
   const save = async () => {
     if (!ok || stillUploading(attach.busy)) return;
-    const input: CardCronInput = { name: d.name.trim(), title: d.title.trim(), body: d.body.trim(), labels: d.labels, place: d.place, cron: expr!, tz };
+    const input: CardCronInput = { name: d.name.trim(), title: d.title.trim(), body: d.body.trim(), labels: d.labels, place: d.place, host: d.host ?? '', agent: d.agent ?? '', cron: expr!, tz };
     if (!cron) {
       // 新建要等服务端返回（编号、下次时间）：按钮转圈，失败时表单留着
       setSending(true);
@@ -321,9 +352,13 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
               ['home', home],
               ['inbox', '未整理'],
             ]}
-            onChange={v => set({ place: v })}
+            onChange={v => set(v === 'inbox' ? { place: v, host: null, agent: null } : { place: v })}
           />
         </span>
+      </div>
+      <div className="bs-rc-row top">
+        <span className="bs-rc-l">派给机器</span>
+        <HostPick path={path} home={home} inbox={d.place === 'inbox'} host={d.host} agent={d.agent} onChange={(host, agent) => set({ host, agent })} />
       </div>
       <div className="bs-rc-row top">
         <span className="bs-rc-l">时间</span>
@@ -354,5 +389,82 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
         </span>
       </div>
     </div>
+  );
+}
+
+/** 派给哪台机器、用哪个 agent：「不派发」或有这块白板目录的机器；选了机器再选 agent（默认是那台机器的默认 agent）。
+ *  机器离线、暂停接单也能选：到点时派发排队等它。已经移除的机器还选着时照样列出来，标「已移除」 */
+function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; home: string; inbox: boolean; host: string | null; agent: string | null; onChange: (host: string | null, agent: string | null) => void }) {
+  const ws = useData(s => s.ws);
+  const hosts = hostsOf(ws);
+  const h = host ? hosts.find(x => x.name === host) : undefined;
+  const hasDir = (x: HostInfo) => x.dirs.some(d => d.board === path);
+  const def = h ? defaultAgent(h) : undefined;
+  return (
+    <span className="cc-pick">
+      <span className="cc-hosts" role="radiogroup" aria-label="派给机器">
+        <button type="button" role="radio" aria-checked={!host} className={cx('cc-host', !host && 'on')} onClick={() => onChange(null, null)}>
+          不派发
+        </button>
+        {hosts.map(x => {
+          const ok = hasDir(x);
+          const why = !x.online ? '离线' : x.paused ? '暂停接单' : '';
+          return (
+            <button
+              key={x.id}
+              type="button"
+              role="radio"
+              aria-checked={host === x.name}
+              className={cx('cc-host', host === x.name && 'on')}
+              disabled={inbox || !ok}
+              data-tip={inbox ? undefined : !ok ? '没有这块白板的目录：先在机器详情的「白板与目录」里加上' : why ? `${why}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
+              onClick={() => onChange(x.name, null)}
+            >
+              <Dot h={x} running={hostLoad(ws, x).running.length} />
+              {x.name}
+              {why && <em>{why}</em>}
+            </button>
+          );
+        })}
+        {host && !h && (
+          <button type="button" role="radio" aria-checked className="cc-host on gone" data-tip="这台机器已经移除：到点照样建卡，但派发不出去">
+            {host}
+            <em>已移除</em>
+          </button>
+        )}
+      </span>
+      {h && (
+        <span className="hp-agents" role="radiogroup" aria-label="agent">
+          <button type="button" role="radio" aria-checked={!agent} className={cx('cc-host', !agent && 'on')} onClick={() => onChange(host, null)}>
+            默认 agent{def ? `（${def.name}）` : ''}
+          </button>
+          {h.agents.map(a => (
+            <button
+              key={a.id}
+              type="button"
+              role="radio"
+              aria-checked={agent === a.id}
+              aria-label={a.name}
+              className={cx('hp-agent-btn', agent === a.id && 'on')}
+              disabled={!a.found && agent !== a.id}
+              data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
+              onClick={() => onChange(host, a.id)}
+            >
+              {/* 默认的那个写在「默认 agent（…）」里，chip 上不再标，免得看起来像选中了两个 */}
+              <AgentChip a={a} env={envName(h, a.env)} />
+            </button>
+          ))}
+        </span>
+      )}
+      <span className="cc-hint">
+        {inbox
+          ? '放到未整理的不派发：要派给机器，「放到哪」选「' + home + '」'
+          : host
+            ? `到点建卡后马上派发到 ${host}（和手动派发一样：机器离线、暂停接单或没有空位时排队）；派不出去时卡留在「${home}」，评论写明原因`
+            : hosts.length
+              ? '只建卡，由定时领取或人派发去做'
+              : '还没有机器：在要干活的机器上运行 board host，它会出现在这里'}
+      </span>
+    </span>
   );
 }

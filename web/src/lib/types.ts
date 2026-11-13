@@ -106,6 +106,10 @@ export interface CardCron {
   /** IANA 时区名，保存时取浏览器的 */
   tz: string;
   on: boolean;
+  /** 建出卡后派给哪台机器（机器名）；不派发时为空。修改时发空字符串表示不派发 */
+  host?: string | null;
+  /** 用哪个 agent；空表示那台机器的默认 agent */
+  agent?: string | null;
   /** 下次到点（毫秒）；关着、一年内不会到点时为空 */
   nextAt?: number | null;
   /** 最近一次到点（或「现在建一张」）的时间 */
@@ -114,13 +118,17 @@ export interface CardCron {
   ranCard?: number | null;
   /** 那一次跳过：上一张（这个编号）还没完成 */
   ranSkip?: number | null;
+  /** 那一次建的卡派发到了哪：「<机器> · <agent>」 */
+  ranTo?: string | null;
+  /** 那一次建的卡没派发出去的原因（卡留在首个可领取状态） */
+  ranErr?: string | null;
   lastCard?: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
-export type CardCronInput = Partial<Pick<CardCron, 'name' | 'title' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on'>>;
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'title' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent'>>;
 
 /** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
 export interface ReadyCheck {
@@ -558,7 +566,8 @@ export interface Dispatch {
   /** 开始时用的启动环境标识与名称（Git Bash、WSL（Ubuntu）…）；旧版 board host、还没开始时为空 */
   env?: string | null;
   envName?: string | null;
-  source: 'manual' | 'cron';
+  /** manual 手动 | cron 定时领取 | schedule 定时建卡 */
+  source: 'manual' | 'cron' | 'schedule';
   by: Actor;
   state: 'queued' | 'running' | 'done';
   result: DispatchResult | null;

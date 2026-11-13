@@ -1136,7 +1136,7 @@ pub struct Dispatch {
     /// 开始时用的启动环境标识与名称；旧版 board host（直接启动）、还没开始时为空
     pub env: Option<String>,
     pub env_name: Option<String>,
-    /// manual 手动 | cron 定时
+    /// manual 手动 | cron 定时领取 | schedule 定时建卡（[`SOURCE_SCHEDULE`]）
     pub source: String,
     /// 发起人
     pub by: Actor,
@@ -1173,6 +1173,10 @@ pub struct Dispatch {
 
 /// 派发的类型：拆解「未整理」里的条目（PRD §9.1）
 pub const KIND_SPLIT: &str = "split";
+
+/// 派发的来源：定时建卡建出卡后按这一条的设置派给指定的机器（PRD §4「定时建卡」）。
+/// 和手动派发一样排队、占用卡片，只做这一张；动态里写「定时建卡」
+pub const SOURCE_SCHEDULE: &str = "schedule";
 
 fn one() -> i64 {
     1
@@ -1249,7 +1253,11 @@ fn opts_words(model: &Option<String>, effort: &Option<String>) -> String {
 }
 
 fn source_words(s: &str) -> &'static str {
-    if s == "cron" { "定时" } else { "手动" }
+    match s {
+        "cron" => "定时",
+        SOURCE_SCHEDULE => "定时建卡",
+        _ => "手动",
+    }
 }
 
 /// 派发怎么结束（host 上报）
@@ -2087,7 +2095,7 @@ impl<'a> W<'a> {
         }
         let h = self.host_row(&d.host)?;
         let why = if d.source != "cron" {
-            Some("这个会话是手动派发启动的，只做指定的那一张".to_string())
+            Some(format!("这个会话是{}派发启动的，只做指定的那一张", source_words(&d.source)))
         } else if d.stop_by.is_some() {
             Some("有人停止了这个会话".into())
         } else {
@@ -3236,6 +3244,8 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET name = ?2 WHERE id = ?1", params![h.id, to])?;
             self.tx.execute("UPDATE dispatches SET host = ?2 WHERE host_id = ?1", params![h.id, to])?;
+            // 定时建卡按机器名派发：跟着改名
+            self.tx.execute("UPDATE card_crons SET host = ?2 WHERE host = ?1", params![h.name, to])?;
             self.touch_hosts();
         }
         self.read().host(to, self.now)
@@ -3245,6 +3255,31 @@ impl<'a> W<'a> {
 
     /// 手动派发（任务下发需求 §五）：校验通过后进入排队。agent 为空时用这台机器的默认 agent
     pub fn dispatch_create(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
+        self.dispatch_create_from(board, card, host, agent, by, "manual")
+    }
+
+    /// 定时建卡保存前看它要派的机器：机器存在、有这块白板的目录，指定的 agent 在这台机器上（找没找到命令到点时再看）。
+    /// 不合适时 `USAGE`，写明哪里不对
+    pub(crate) fn dispatch_target_check(&self, board: &BoardRef, host: &str, agent: Option<&str>) -> Result<()> {
+        let h = self.host_row(host)?.ok_or_else(|| BoardError::usage(format!("没有叫「{host}」的机器：界面「机器」里能看到所有机器")))?;
+        let path = board.path();
+        if !h.dirs.iter().any(|d| d.board == path) {
+            return Err(BoardError::usage(format!(
+                "机器「{host}」没有白板 {path} 的目录：先在机器详情的「白板与目录」里加上，或者那台机器的 board host 启动时用 --dir {path}=<路径>"
+            )));
+        }
+        if let Some(a) = agent {
+            if !h.agents.iter().any(|x| x.id == a) {
+                let all: Vec<String> = h.agents.iter().map(|x| x.id.clone()).collect();
+                let all = if all.is_empty() { "（这台机器还没上报 agent）".to_string() } else { all.join("、") };
+                return Err(BoardError::usage(format!("机器「{host}」上没有 agent「{a}」，可选：{all}")));
+            }
+        }
+        Ok(())
+    }
+
+    /// 派发一张卡（手动派发、定时建卡共用）：source 是 manual 或 [`SOURCE_SCHEDULE`]
+    pub(crate) fn dispatch_create_from(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor, source: &str) -> Result<Dispatch> {
         let flow = flow_of(self.tx, board.id)?;
         let col: Option<String> =
             self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0)).optional()?;
@@ -3310,11 +3345,11 @@ impl<'a> W<'a> {
         }
         let (agent_id, label) = (a.id.clone(), a.name.clone());
         let kind = if split { KIND_SPLIT } else { "" };
-        self.insert_dispatch(board.id, card, &h, &agent_id, &label, "manual", by, kind)
+        self.insert_dispatch(board.id, card, &h, &agent_id, &label, source, by, kind)
     }
 
-    /// 记一条排队的派发。手动派发（source 是 manual）的卡片进入领取时会进的锁定状态排队（[`W::reserve`]）；
-    /// 定时领取的第一张马上开始，不经过排队；拆解（kind 是 split）不动卡片
+    /// 记一条排队的派发。手动派发、定时建卡派发（source 是 manual、schedule）的卡片进入领取时会进的锁定状态排队
+    /// （[`W::reserve`]）；定时领取（cron）的第一张马上开始，不经过排队；拆解（kind 是 split）不动卡片
     #[allow(clippy::too_many_arguments)]
     fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, kind: &str) -> Result<Dispatch> {
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
@@ -3325,7 +3360,7 @@ impl<'a> W<'a> {
         )?;
         let id = self.tx.last_insert_rowid();
         let split = kind == KIND_SPLIT;
-        let reserve = source == "manual" && !split;
+        let reserve = source != "cron" && !split;
         let into = if reserve { self.reserve(b, card, by)? } else { None };
         let at = into.map(|n| format!("在「{n}」")).unwrap_or_default();
         let wait = if !h.online(self.now) {

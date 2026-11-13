@@ -22,10 +22,15 @@ fn card_crons_crud_and_run_now() {
     let r = send("POST", &base, &[UI], Some(json!({ "name": "清理死代码", "title": "清理死代码", "cron": "0 25 * * *", "tz": "Asia/Shanghai" })));
     assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
     assert!(r.text.contains("第 2 段"), "{}", r.text);
-    let r = send("POST", &base, &[UI], Some(json!({ "name": "清理死代码", "title": "清理死代码", "body": "找出没人用的代码", "cron": "0 9 * * 1", "tz": "Asia/Shanghai" })));
+    // 派给不存在的机器：USAGE
+    let r = send("POST", &base, &[UI], Some(json!({ "name": "更新代码", "title": "更新代码", "cron": "0 3 * * *", "tz": "Asia/Shanghai", "host": "nope" })));
+    assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
+    assert!(r.text.contains("没有叫「nope」的机器"), "{}", r.text);
+    // host 是空字符串：不派发
+    let r = send("POST", &base, &[UI], Some(json!({ "name": "清理死代码", "title": "清理死代码", "body": "找出没人用的代码", "cron": "0 9 * * 1", "tz": "Asia/Shanghai", "host": "" })));
     assert_eq!(r.status, 200, "{}", r.text);
     let id = r.body["id"].as_i64().unwrap();
-    assert_eq!((r.body["on"].as_bool(), r.body["place"].as_str()), (Some(true), Some("home")));
+    assert_eq!((r.body["on"].as_bool(), r.body["place"].as_str(), r.body["host"].is_null()), (Some(true), Some("home"), true));
     let list = crons(&s);
     assert_eq!(list.len(), 1);
     assert!(list[0]["nextAt"].is_i64(), "workspace 里带下次时间：{:?}", list[0]);
