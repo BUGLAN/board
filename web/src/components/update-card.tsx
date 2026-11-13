@@ -84,7 +84,7 @@ export function UpdateCard() {
 
   return (
     <>
-      <div className="set-row up-row">
+      <div className="set-row">
         <div className="set-label">
           <b>桌面端更新</b>
           <span>

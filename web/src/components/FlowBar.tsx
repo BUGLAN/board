@@ -270,7 +270,7 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
             const inner = (
               <>
                 <i className="wf-dot" />
-                <span className="wf-name">{s.name}</span>
+                <span>{s.name}</span>
                 <b>{n}</b>
                 {s.claim && (
                   <span className="wf-glyph claim" title="可领取：agent 从这里领取">

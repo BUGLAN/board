@@ -287,7 +287,7 @@ function BoardApp() {
 /** 把项目颜色设为界面的主题色（--brand 系列）；没有项目时恢复默认的橙色 */
 function applyAccent(color: string | undefined) {
   const s = document.documentElement.style;
-  const names = ['--project', '--brand', '--brand-2', '--brand-soft', '--brand-fg'];
+  const names = ['--project', '--brand', '--brand-soft', '--brand-fg'];
   const hex = color && /^#[0-9a-f]{6}$/i.test(color) ? color : null;
   if (!hex) {
     names.forEach(n => s.removeProperty(n));
@@ -295,7 +295,6 @@ function applyAccent(color: string | undefined) {
   }
   s.setProperty('--project', hex);
   s.setProperty('--brand', hex);
-  s.setProperty('--brand-2', `color-mix(in srgb, ${hex} 72%, #fff)`);
   s.setProperty('--brand-soft', `color-mix(in srgb, ${hex} 14%, transparent)`);
   // 白字和深色字里选对比度高的：橙、黄、浅色上是深色字，深蓝、深紫上是白字
   const l = luminance(hex);

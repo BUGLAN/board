@@ -261,7 +261,7 @@ function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () =>
         <Icon name="prompt" />
         <b>复制给 agent 的提示词</b>
       </div>
-      <div className="qp-list">
+      <div>
         {list.map(q => (
           <button key={q.id} type="button" data-do={`quick-${q.id}`} className="qp-item" title={q.text} onClick={go(() => copyQuickPrompt(q))}>
             <span className="qp-title">{q.title}</span>
