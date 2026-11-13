@@ -318,6 +318,13 @@ fn log_file(home: &Path, id: i64) -> PathBuf {
     home.join(".board").join("host").join("logs").join(format!("{id}.log"))
 }
 
+/// 用访问令牌 GET 一个接口：返回（状态码，正文）
+fn get_raw(url: &str, token: &str) -> (u16, String) {
+    let a: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+    let mut res = a.get(url).header("authorization", format!("Bearer {token}")).call().unwrap();
+    (res.status().as_u16(), res.body_mut().read_to_string().unwrap())
+}
+
 #[test]
 fn host_runs_dispatches_end_to_end() {
     let rig = Rig::new();
@@ -1273,9 +1280,21 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     let mut res = ureq::get(format!("{}/api/mcp", rig.s.url)).header("authorization", format!("Bearer {}", rig.s.token)).call().unwrap();
     let list = res.body_mut().read_to_string().unwrap();
     assert!(!list.contains(secret) && list.contains("cdef"), "{list}");
-    // 密钥原文只给 board host 的令牌接口
-    let mut res = ureq::get(format!("{}/api/hosts/mbp/mcp", rig.s.url)).header("authorization", format!("Bearer {}", rig.s.token)).call().unwrap();
-    assert!(res.body_mut().read_to_string().unwrap().contains(secret));
+    // 密钥原文只给 board host 的令牌接口，而且只给这台机器上报时用的令牌
+    let (code, body) = get_raw(&format!("{}/api/hosts/mbp/mcp", rig.s.url), &rig.s.token);
+    assert_eq!(code, 200, "{body}");
+    assert!(body.contains(secret));
+    // 另一个令牌（没绑到这台机器）、机器名不对：都拿不到原文
+    let other = {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        board_server::auth::create_token(store.conn(), "agent 用的", board_core::now_ms()).unwrap().1
+    };
+    let (code, body) = get_raw(&format!("{}/api/hosts/mbp/mcp", rig.s.url), &other);
+    assert_eq!(code, 401, "别的令牌不能取原文：{body}");
+    assert!(body.contains("NOT_LOGGED_IN") && !body.contains(secret), "{body}");
+    let (code, body) = get_raw(&format!("{}/api/hosts/nope/mcp", rig.s.url), &rig.s.token);
+    assert_eq!(code, 401, "机器不存在：{body}");
+    assert!(!body.contains(secret), "{body}");
     // 删掉 db：同步加的删掉，用户自己的 mine、shared（pi）留着
     {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();

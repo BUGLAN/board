@@ -2,7 +2,7 @@
 //!
 //! - 每一项：名称、类型（本地命令 stdio：命令、参数、环境变量；远程 HTTP：地址、请求头）、同步给哪些 agent（空 = 所有支持 MCP 的内置 agent）。
 //! - 环境变量、请求头的值可以标成「密钥」：只存在服务端；列表接口只给末尾 4 位（[`McpServer::masked`]），完整的值只经
-//!   board host 的令牌接口（`GET /api/hosts/{名字}/mcp`）下发；改一项时密钥没填就保留原来的值。
+//!   board host 的令牌接口（`GET /api/hosts/{名字}/mcp`，只给这台机器上报时用的令牌）下发；改一项时密钥没填就保留原来的值。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
 //! - 列表变了算机器有变化，在线的 board host 马上重新取任务。
 
@@ -203,7 +203,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<McpServer> {
 }
 
 impl R<'_> {
-    /// 全部（含密钥原文：只给 board host 的令牌接口；界面用 [`McpServer::masked`]）
+    /// 全部（含密钥原文：只给这台机器用的令牌接口，见 [`R::host_uses_token`]；界面用 [`McpServer::masked`]）
     pub fn mcp_servers(&self) -> Result<Vec<McpServer>> {
         let mut st = self.conn.prepare("SELECT name, spec, version, updated_at, by_name, source FROM mcp_servers ORDER BY name")?;
         let rows = st.query_map([], row)?;

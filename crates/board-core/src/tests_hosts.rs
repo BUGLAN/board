@@ -2549,6 +2549,25 @@ fn drain_pauses_and_resuming_ends_it() {
 }
 
 #[test]
+fn only_the_token_a_live_host_reports_may_take_secrets() {
+    // board host 的令牌接口（GET /api/hosts/{名字}/mcp）只给这台机器上报时用的令牌：
+    // 别的令牌、机器不存在、离线之后都拿不到密钥原文（卡片 #236）
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let own = |s: &Store, name: &str, token: i64, at: i64| s.read(|r| r.host_uses_token(name, token, at)).unwrap();
+    assert!(own(&s, "mbp", 1, T0 + S));
+    // 另一个令牌（没绑到这台机器）：不行
+    assert!(!own(&s, "mbp", 2, T0 + S));
+    // 机器名不对、机器不存在：不行
+    assert!(!own(&s, "nope", 1, T0 + S));
+    // 机器改名或换成另一个令牌上报后，旧令牌不再能用
+    beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![])).unwrap();
+    assert!(own(&s, "mbp", 1, T0 + 3 * S));
+    // 机器离线（50 秒没有上报）：不行
+    assert!(!own(&s, "mbp", 1, T0 + 2 * S + 60 * S));
+}
+
+#[test]
 fn host_token_is_shown_and_can_be_revoked_on_remove() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| {

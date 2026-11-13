@@ -1526,6 +1526,13 @@ impl<'a> R<'a> {
         self.host_info(&h, now)
     }
 
+    /// 这台机器用的是不是这个令牌：board host 每 10 秒上报一次，最后一次上报用的令牌就是它现在的令牌。
+    /// 机器不存在、已移除、或者没上报过令牌时为 false；只看在线的机器（离线的不再取配置）
+    pub fn host_uses_token(&self, name: &str, token: i64, now: i64) -> Result<bool> {
+        let Some(h) = self.host_row(name)? else { return Ok(false) };
+        Ok(h.token == Some(token) && h.online(now))
+    }
+
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
     fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
         let mut info = h.info(now);
