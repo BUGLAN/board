@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { agentMark, boardOf, canPickDir, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
 import { installSkill, isWindows, localHost, pickFolder, shell, type LocalHost } from '../../lib/platform';
-import { agentProviderView, PROVIDER_AGENTS, PROVIDER_LOCAL, providersFor } from '../../lib/providers';
+import { effectiveProvider, PROVIDER_AGENTS, PROVIDER_LOCAL, providersFor } from '../../lib/providers';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label, ProviderView } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
 import { COPY_ITEMS } from '../../lib/templates';
@@ -217,6 +217,8 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const [reveal, setReveal] = useState<{ to: ReadyGo | null; n: number }>({ to: null, n: 0 });
   /** 「复制设置到…」展开着 */
   const [copying, setCopying] = useState(false);
+  /** 本机 agent 里点开的那一个（一次只开一个） */
+  const [agentOpen, setAgentOpen] = useState<string | null>(null);
   const go = (to: ReadyGo) => setReveal(r => ({ to, n: r.n + 1 }));
   useEffect(() => {
     if (!reveal.to) return;
@@ -484,19 +486,24 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 设置的默认 agent「{h.agentSet}」这台机器上找不到，不生效{h.agent ? `：用的是 ${h.agents.find(a => a.id === h.agent)?.name ?? h.agent}` : ''}
               </p>
             )}
-            {h.agents.map(a => (
-              <AgentRow
-                key={a.id}
-                h={h}
-                a={a}
-                save={save}
-                sync={sync[`env:${a.id}`] ?? (a.id === h.agent ? sync.agent : undefined)}
-                runSync={{ provider: sync[`run:${a.id}:provider`], model: sync[`run:${a.id}:model`], effort: sync[`run:${a.id}:effort`] }}
-                providers={providers}
-                server={server}
-                fixed={fixed?.includes(a.id)}
-              />
-            ))}
+            {h.agents.length > 0 && (
+              <div className="ha-list">
+                {h.agents.map(a => (
+                  <AgentRow
+                    key={a.id}
+                    h={h}
+                    a={a}
+                    save={save}
+                    sync={sync}
+                    providers={providers}
+                    server={server}
+                    fixed={fixed?.includes(a.id)}
+                    open={agentOpen === a.id}
+                    toggle={() => setAgentOpen(agentOpen === a.id ? null : a.id)}
+                  />
+                ))}
+              </div>
+            )}
             {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
           </section>
 
@@ -509,8 +516,17 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                       {e.name}
                     </span>
                     <span className="hp-env-body">
-                      {e.path ? <MidPath path={e.path} /> : <span className="hp-path-none">—</span>}
-                      {e.id === 'direct' && <span className="hp-env-hint">不经过 shell，直接执行命令</span>}
+                      {e.path ? <MidPath path={e.path} /> : <span className="hp-env-hint">{e.id === 'direct' ? '不经过 shell，直接执行命令' : '—'}</span>}
+                    </span>
+                    {/* 哪些 agent 在这里启动 */}
+                    <span className="hp-env-users">
+                      {h.agents
+                        .filter(a => a.found && a.env === e.id)
+                        .map(a => (
+                          <span key={a.id} className="hp-env-user" data-tip={`${a.name} 在这里启动`} data-tip-align="end">
+                            <AgentIcon id={a.id} />
+                          </span>
+                        ))}
                     </span>
                   </div>
                 ))}
@@ -518,9 +534,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             </Fold>
           )}
 
-          <Fold id="dirs" title="白板与目录" n={h.dirs.length} i={5} reveal={reveal.to === 'dirs' ? reveal.n : 0}>
-            <DirsEditor h={h} save={save} sync={sync.dirs} hosts={hostsOf(ws)} now={now} />
-          </Fold>
+          <DirsEditor h={h} save={save} sync={sync.dirs} hosts={hostsOf(ws)} now={now} reveal={reveal.to === 'dirs' ? reveal.n : 0} />
 
           <section className="d-section hp-danger" style={{ ['--i' as string]: 6 }}>
             <div>
@@ -645,8 +659,10 @@ function DirReadyLine({ h, d, now }: { h: HostInfo; d: HostDir; now: number }) {
 const ADD = '\u0000add';
 
 /** 白板与目录：逐行编辑、检查状态、缺失时克隆、复制到其他机器 */
-function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sync?: SyncState; hosts: HostInfo[]; now: number }) {
+function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: Save; sync?: SyncState; hosts: HostInfo[]; now: number; reveal: number }) {
   const ws = useData(s => s.ws);
+  /** 标题行的「加一块」「复制到…」点开的那一个 */
+  const [mode, setMode] = useState<'add' | 'copy' | null>(null);
   const boards = allBoards(ws).map(b => b.path);
   const key = h.dirs.map(d => `${d.board}\u0000${d.path}`).join('\u0001');
   const [paths, setPaths] = useState<Record<string, string>>({});
@@ -719,7 +735,7 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
     }
   };
 
-  /** 新一行还没选白板：选文件夹只填路径，点「加一块白板」时再一起保存 */
+  /** 新一行还没选白板：选文件夹只填路径，点「加上」时再一起保存 */
   const pickDraft = async () => {
     setPicking(ADD);
     try {
@@ -739,6 +755,7 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
     if (!board || !path || h.dirs.some(d => d.board === board)) return;
     void apply([...h.dirs, { board, path }]);
     setDraft({ board: '', path: '' });
+    setMode(null);
   };
 
   const clone = async (d: HostDir) => {
@@ -788,6 +805,8 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
         () => api.updateHost(to.name, { dirs: next.map(d => ({ board: d.board, path: d.path })) }),
       );
       toast({ type: 'success', title: `已复制到 ${to.name}`, text: `${carried.length} 块白板；以服务端保存的设置为准` });
+      setMode(null);
+      setTarget('');
     } catch (e) {
       toastError(e);
     } finally {
@@ -795,8 +814,47 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
     }
   };
 
+  const free = boards.filter(b => !h.dirs.some(d => d.board === b));
+  const showAdd = mode === 'add' || (!h.dirs.length && free.length > 0);
+  const remoteTip = shell === 'desktop' && !local ? '文件夹选择框只在那台机器的桌面端里有；这里直接改路径也行，保存后那台机器的 board host 换上新目录' : undefined;
+  const acts = (
+    <>
+      {free.length > 0 && h.dirs.length > 0 && (
+        <button type="button" className={cx('act hp-link', mode === 'add' && 'on')} aria-expanded={mode === 'add'} onClick={() => setMode(mode === 'add' ? null : 'add')}>
+          <Icon name="plus" />
+          加一块
+        </button>
+      )}
+      {others.length > 0 && h.dirs.length > 0 && (
+        <button type="button" className={cx('act hp-link', mode === 'copy' && 'on')} aria-expanded={mode === 'copy'} onClick={() => setMode(mode === 'copy' ? null : 'copy')}>
+          <Icon name="copy" />
+          复制到…
+        </button>
+      )}
+    </>
+  );
+
   return (
+    <Fold id="dirs" title="白板与目录" n={h.dirs.length} i={5} reveal={reveal} acts={acts}>
     <div className="hp-dirs">
+      {mode === 'copy' && others.length > 0 && h.dirs.length > 0 && (
+        <div className="hp-dir-copy">
+          <span className="hp-add-k">复制到</span>
+          <Select
+            value={target}
+            options={[{ value: '', label: '选机器…' }, ...others.map(x => ({ value: x.name, label: x.online ? x.name : `${x.name}（离线）` }))]}
+            onChange={setTarget}
+            aria-label="复制到哪台机器"
+          />
+          <button className={cx('btn sm brand', copying && 'is-busy')} type="button" disabled={!target || copying} onClick={() => void copy()}>
+            复制 {h.dirs.length} 块
+          </button>
+          <button className="btn sm ghost" type="button" disabled={copying} onClick={() => setMode(null)}>
+            取消
+          </button>
+          <p className="hp-note">目标机器的同一块白板换成这里的目录，别的白板不变；~ 开头的路径原样带过去，绝对路径逐个确认。</p>
+        </div>
+      )}
       {fixed && <p className="hp-note">这台机器用 --dir 启动，带「固定」的行要在那台机器上改启动参数。</p>}
       {when && h.dirsChangedBy && h.dirsChangedBy !== '本机' && (
         <p className="hp-note hp-remote">{when} 由 {h.dirsChangedBy} 在别的设备上修改</p>
@@ -820,7 +878,8 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
                     readOnly={d.fixed}
                     spellCheck={false}
                     aria-label={`${d.board} 的目录`}
-                    title={d.path}
+                    title={remoteTip ? undefined : d.path}
+                    data-tip={remoteTip}
                     onFocus={() => setActive(d.board)}
                     onChange={e => setPaths(v => ({ ...v, [d.board]: e.target.value }))}
                     onBlur={() => {
@@ -897,22 +956,17 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
           );
         })
       ) : (
-        <p className="hp-note">没有白板：在下面加一块，或在那台机器上用 --dir 启动。</p>
-      )}
-      {shell === 'desktop' && !local && h.dirs.length > 0 && (
-        <p className="hp-note">目录要在那台机器上选 / 改：这台电脑只能改自己的目录。</p>
+        <p className="hp-note">{free.length ? '没有白板：在下面加一块，或在那台机器上用 --dir 启动。' : '没有白板：先在「项目」里建一块白板，或在那台机器上用 --dir 启动。'}</p>
       )}
       {h.dirs.some(d => d.fixed) && local && <p className="hp-note">带「--dir 固定」的行由那台机器的启动参数决定，在这里改不了。</p>}
+      {showAdd && (
       <div className="hp-dir-add">
         <span className="hp-board">加一块</span>
         <div className="hp-dir-fields">
           <div className="hp-dir-pick">
             <Select
               value={draft.board}
-              options={[
-                { value: '', label: '选白板…' },
-                ...boards.filter(b => !h.dirs.some(d => d.board === b)).map(b => ({ value: b, label: b })),
-              ]}
+              options={[{ value: '', label: '选白板…' }, ...free.map(b => ({ value: b, label: b }))]}
               onChange={board => setDraft(v => ({ ...v, board }))}
               aria-label="要加的白板"
             />
@@ -938,122 +992,310 @@ function DirsEditor({ h, save, sync, hosts, now }: { h: HostInfo; save: Save; sy
                   <Icon name="folder" />
                 </button>
               )}
-              <button className="btn sm" type="button" disabled={!draft.board || !draft.path.trim()} onClick={add}>
-                <Icon name="plus" />
-                加一块白板
+              <button className="btn sm brand" type="button" disabled={!draft.board || !draft.path.trim()} onClick={add}>
+                加上
               </button>
+              {h.dirs.length > 0 && (
+                <button className="icon-btn sm" type="button" aria-label="不加了" onClick={() => setMode(null)}>
+                  <Icon name="close" />
+                </button>
+              )}
             </span>
           </div>
         </div>
       </div>
-      {others.length > 0 && h.dirs.length > 0 && (
-        <div className="hp-dir-copy">
-          <Select
-            value={target}
-            options={[{ value: '', label: '复制到其他机器…' }, ...others.map(x => ({ value: x.name, label: x.name }))]}
-            onChange={setTarget}
-            aria-label="复制到其他机器"
-          />
-          <button className={cx('btn sm', copying && 'is-busy')} type="button" disabled={!target} onClick={() => void copy()}>
-            复制过去
-          </button>
-        </div>
       )}
     </div>
+    </Fold>
   );
 }
 
-/** 本机 agent 的一行：图标、名称（看不到 board-skills 时后面一个「缺 skill」小胶囊，悬停写装到哪里；刚一键装好的变绿「skill 已装」）、
- *  启动环境（下拉，每项带版本号，找不到的置灰写「没找到」）、「默认」（点一下设为默认）。
- *  旧版 board host 不上报启动环境：不显示下拉，写版本号 */
+/** 本机 agent 的一行（PRD §10.12「机器详情」）：平时只有两句话，点开才出现控件，一次只开一个
+ *  - 第一句：图标、名称、小胶囊（「默认」、看不到 board-skills 时「缺 skill」、刚一键装好的「skill 已装」、「本机配置覆盖」），下面写启动环境 · 版本
+ *  - 第二句：配置文件写的是什么（跟随共用配置 / 本机自己管 / 这台机器单独指定），Board 派发时改了模型、强度时再写一行
+ *  - 点开：启动环境（下拉，每项带版本号，找不到的置灰）、自检、设为默认；配置文件（跟随共用配置 / 本机自己管 / 单独指定，下面写实际写进去的）；
+ *    Board 派发时的模型（可手填，列当前供应商的模型）、强度（只列它支持的档位）。各存各的、当帧生效，保存状态画在控件旁边
+ *  旧版 board host 不上报启动环境：不显示下拉，写版本号；不上报能选什么：供应商、模型、强度置灰，写要升级到哪个版本；
+ *  配置文件里新加的 agent（认不了供应商接口）不显示配置文件这一项 */
 function AgentRow({
   h,
   a,
   save,
   sync,
-  runSync,
   providers,
   server,
   fixed,
+  open,
+  toggle,
 }: {
   h: HostInfo;
   a: HostAgent;
   save: Save;
-  sync?: SyncState;
-  runSync: { provider?: SyncState; model?: SyncState; effort?: SyncState };
+  sync: Record<string, SyncState | undefined>;
   providers: ProviderView | null;
   server: string | null;
   fixed?: boolean;
+  open: boolean;
+  toggle: () => void;
 }) {
   const def = a.id === h.agent;
-  const envs = h.envs ?? [];
-  const checks = a.envs ?? [];
   const name = (id: string) => envName(h, id) ?? id;
   const miss = skillMiss(h, a);
+  const e = effectiveProvider(providers, a);
+  const opts = a.opts;
+  const canProvider = !opts || (PROVIDER_AGENTS.some(x => x.id === a.id) && (opts.protocols?.length ?? 0) > 0);
+  const keys = [`env:${a.id}`, `run:${a.id}:provider`, `run:${a.id}:model`, `run:${a.id}:effort`, ...(def ? ['agent'] : [])];
+  const ss = keys.map(k => sync[k]);
+  const rowSync: SyncState | undefined = ss.includes('failed') ? 'failed' : ss.includes('saving') ? 'saving' : ss.includes('saved') ? 'saved' : undefined;
+  const run = [a.run_model, a.run_effort].filter(Boolean);
+  const conf =
+    e.mode === 'local'
+      ? '本机自己管'
+      : e.gone
+        ? `${e.name}（共用配置里没有了）`
+        : e.provider
+          ? [e.provider.name, e.model, e.effort].filter(Boolean).join(' · ')
+          : '不改（共用配置里没给它选）';
   return (
-    <>
-      <div className={cx('hp-arow', !a.found && 'missing', sync === 'failed' && 'hp-rollback')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
-        <span className="hp-arow-id">
-          <AgentIcon id={a.id} />
-          <b className="hp-arow-name">{a.name}</b>
-          {a.local_override && (
-            <span className="hp-skill local" tabIndex={0} data-tip={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
-              本机配置覆盖
-            </span>
-          )}
-          {fixed ? (
-            <span className="hp-skill ok">
-              <Icon name="check" />
-              skill 已装
-            </span>
-          ) : (
-            miss && (
-              <span className="hp-skill" data-tip={miss} tabIndex={0}>
-                <Icon name="alert" />
-                缺 skill
+    <div className={cx('ha-row', open && 'open', !a.found && 'missing', rowSync === 'failed' && 'hp-rollback')} style={{ ['--ac' as string]: agentMark(a.id).color }}>
+      <button type="button" className="ha-sum" aria-expanded={open} disabled={!a.found} onClick={toggle}>
+        <AgentIcon id={a.id} />
+        <span className="ha-id">
+          <span className="ha-name">
+            <b>{a.name}</b>
+            {def && <span className="ha-def">默认</span>}
+            {a.local_override && (
+              <span className="hp-skill local" data-tip={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
+                本机配置覆盖
               </span>
-            )
-          )}
-          {envs.length === 0 && <em className="hp-arow-ver">{a.found ? a.version || '找到了' : '没找到'}</em>}
+            )}
+            {fixed ? (
+              <span className="hp-skill ok">
+                <Icon name="check" />
+                skill 已装
+              </span>
+            ) : (
+              miss && (
+                <span className="hp-skill" data-tip={miss}>
+                  <Icon name="alert" />
+                  缺 skill
+                </span>
+              )
+            )}
+          </span>
+          <span className="ha-meta">{a.found ? [a.env ? name(a.env) : '', a.version].filter(Boolean).join(' · ') || '找到了' : '这台机器上没找到'}</span>
         </span>
-        <span className="hp-ctl">
-          <Sync s={sync} />
-        {envs.length > 0 &&
-          (checks.length ? (
-            <Select
-              className="hp-env-select"
-              disabled={!checks.some(c => c.found)}
-              value={a.env ?? ''}
-              placeholder="没找到"
-              options={checks.map(c => ({ value: c.env, label: `${name(c.env)} · ${c.found ? c.version || '找到了' : '没找到'}`, disabled: !c.found && c.env !== a.env }))}
-              onChange={v => save({ env: { agent: a.id, env: v } })}
-              aria-label={`${a.name} 的启动环境`}
-              data-tip="启动环境：在哪种 shell 里启动它；改了下一次派发就用新的"
-            />
-          ) : (
-            <span className="hp-arow-none">本机没有它支持的启动环境</span>
-          ))}
-        <SelfTestAgentButton h={h} a={a} />
-        <button
-          type="button"
-          className={cx('hp-def', def && 'on')}
-          disabled={!a.found}
-          onClick={() => !def && save({ agent: a.id })}
-          data-tip={!a.found ? '这台机器上没找到命令' : def ? '定时领取用它；手动派发时预先选中它' : '设为默认'}
-          data-tip-align="end"
-        >
-          {def ? '默认' : '设为默认'}
-        </button>
-        </span>
-      </div>
+        {a.found && (
+          <span className="ha-conf">
+            {canProvider && (
+              <span className={cx('ha-line', !e.provider && e.mode !== 'local' && 'muted')}>
+                <i>配置文件</i>
+                {opts ? conf : 'board 太旧，不写'}
+                {e.mode === 'own' && opts && <em>（这台机器单独指定）</em>}
+              </span>
+            )}
+            {run.length > 0 && (
+              <span className="ha-line run">
+                <i>派发时</i>
+                {run.join(' · ')}
+              </span>
+            )}
+          </span>
+        )}
+        <Sync s={rowSync} inline />
+        {a.found && <Icon name="chevDown" />}
+      </button>
       {a.run_env && a.env && a.run_env !== a.env && (
-        <p className="hp-note hp-warn-line hp-arow-note">
+        <p className="hp-note hp-warn-line ha-note">
           <Icon name="alert" />
           设置的启动环境「{name(a.run_env)}」这台机器上没有，不生效：用的是 {name(a.env)}
         </p>
       )}
-      <AgentRunRow h={h} a={a} save={save} sync={runSync} providers={providers} server={server} />
-    </>
+      {open && a.found && <AgentEdit h={h} a={a} save={save} sync={sync} providers={providers} server={server} def={def} canProvider={canProvider} />}
+    </div>
+  );
+}
+
+/** 点开的那个 agent：启动环境、配置文件、Board 派发时三行 */
+function AgentEdit({
+  h,
+  a,
+  save,
+  sync,
+  providers,
+  server,
+  def,
+  canProvider,
+}: {
+  h: HostInfo;
+  a: HostAgent;
+  save: Save;
+  sync: Record<string, SyncState | undefined>;
+  providers: ProviderView | null;
+  server: string | null;
+  def: boolean;
+  canProvider: boolean;
+}) {
+  const opts = a.opts;
+  const old = !opts;
+  const e = effectiveProvider(providers, a);
+  const fits = providersFor(providers, a.id);
+  const envs = h.envs ?? [];
+  const checks = a.envs ?? [];
+  const [model, setModel] = useState(a.run_model ?? '');
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setModel(a.run_model ?? '');
+  }, [a.run_model, editing]);
+  const listId = `ha-models-${h.id}-${a.id}`;
+  const upgrade = `这台机器的 board 要升级到 ${server ?? '服务端的版本'} 才能设置`;
+  const setMode = (m: 'follow' | 'local' | 'own') => {
+    if (m === e.mode) return;
+    if (m === 'follow') save({ run: { agent: a.id, provider: '' } });
+    else if (m === 'local') save({ run: { agent: a.id, provider: PROVIDER_LOCAL } });
+    else {
+      // 单独指定：先选一个和共用配置不同的（没有就同一个），下拉里再换
+      const pick = fits.find(p => p.name !== e.shared.provider) ?? fits[0];
+      if (pick) save({ run: { agent: a.id, provider: pick.name } });
+    }
+  };
+  const own = a.run_provider && a.run_provider !== PROVIDER_LOCAL ? a.run_provider : '';
+  const ownOptions = fits.map(p => ({ value: p.name, label: p.name }));
+  if (own && !ownOptions.some(o => o.value === own)) ownOptions.push({ value: own, label: `${own}（没有了）` });
+  return (
+    <div className="ha-edit">
+      <span className="ha-k">启动环境</span>
+      <span className="ha-v">
+        {envs.length > 0 ? (
+          checks.length ? (
+            <span className="hp-ctl">
+              <Sync s={sync[`env:${a.id}`]} />
+              <Select
+                className="ha-sel wide"
+                disabled={!checks.some(c => c.found)}
+                value={a.env ?? ''}
+                placeholder="没找到"
+                options={checks.map(c => ({ value: c.env, label: `${envName(h, c.env) ?? c.env} · ${c.found ? c.version || '找到了' : '没找到'}`, disabled: !c.found && c.env !== a.env }))}
+                onChange={v => save({ env: { agent: a.id, env: v } })}
+                aria-label={`${a.name} 的启动环境`}
+                data-tip="在哪种 shell 里启动它；改了下一次派发就用新的"
+              />
+            </span>
+          ) : (
+            <span className="ha-hint">本机没有它支持的启动环境</span>
+          )
+        ) : (
+          <span className="ha-hint">{a.version || '找到了'}</span>
+        )}
+        <SelfTestAgentButton h={h} a={a} />
+        {def ? (
+          <span className="ha-hint">默认 agent：定时领取用它，手动派发时预先选中</span>
+        ) : (
+          <span className="hp-ctl">
+            <Sync s={sync.agent} />
+            <button className="btn sm ghost" type="button" onClick={() => save({ agent: a.id })}>
+              设为默认
+            </button>
+          </span>
+        )}
+      </span>
+
+      {canProvider && (
+        <>
+          <span className="ha-k">配置文件</span>
+          <span className={cx('ha-v ha-col', old && 'off')} title={old ? upgrade : undefined}>
+            <span className="ha-modes">
+              <span className="hp-ctl">
+                <Sync s={sync[`run:${a.id}:provider`]} />
+                {old ? (
+                  <span className="ha-hint">{upgrade}</span>
+                ) : (
+                  <Segmented
+                    value={e.mode}
+                    options={[
+                      ['follow', '跟随共用配置'],
+                      ['local', '本机自己管'],
+                      ['own', '单独指定'],
+                    ]}
+                    onChange={setMode}
+                  />
+                )}
+              </span>
+              {!old && e.mode === 'own' && (
+                <Select className="ha-sel" value={own} options={ownOptions} onChange={v => save({ run: { agent: a.id, provider: v } })} aria-label={`${a.name} 单独用哪个供应商`} />
+              )}
+            </span>
+            {!old && (
+              <span className="ha-hint">
+                {e.mode === 'local'
+                  ? '不碰这台机器上它的配置文件'
+                  : e.gone
+                    ? `共用配置里没有「${e.name}」了：不改配置文件`
+                    : e.provider
+                      ? `写进去的是 ${[e.provider.name, e.model, e.effort].filter(Boolean).join(' · ')}${e.mode === 'follow' ? '（在共用配置里改）' : ''}`
+                      : e.mode === 'own'
+                        ? '没有接口对得上的供应商'
+                        : '共用配置里没给它选供应商：不改配置文件'}
+              </span>
+            )}
+          </span>
+        </>
+      )}
+
+      {(old || opts?.model || !!opts?.efforts.length) && (
+        <>
+          <span className="ha-k">Board 派发时</span>
+          <span className={cx('ha-v ha-col', old && 'off')} title={old ? upgrade : undefined}>
+            <span className="ha-modes">
+              {(old || opts?.model) && (
+                <label className="hp-ctl">
+                  <Sync s={sync[`run:${a.id}:model`]} />
+                  <input
+                    className="input ha-in"
+                    list={listId}
+                    value={model}
+                    disabled={old}
+                    placeholder={e.model || a.model ? `模型：默认（${e.model || a.model}）` : '模型：默认'}
+                    spellCheck={false}
+                    autoComplete="off"
+                    aria-label={`${a.name} 派发时的模型`}
+                    onFocus={() => setEditing(true)}
+                    onChange={ev => setModel(ev.target.value)}
+                    onBlur={() => {
+                      setEditing(false);
+                      const v = model.trim();
+                      if (v !== (a.run_model ?? '')) save({ run: { agent: a.id, model: v } });
+                    }}
+                    onKeyDown={ev => {
+                      if (ev.key === 'Enter') ev.currentTarget.blur();
+                    }}
+                  />
+                  <datalist id={listId}>
+                    {(e.provider?.models ?? opts?.models ?? []).map(m => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </label>
+              )}
+              {(old || !!opts?.efforts.length) && (
+                <span className="hp-ctl">
+                  <Sync s={sync[`run:${a.id}:effort`]} />
+                  <Select
+                    className="ha-sel sm"
+                    disabled={old}
+                    value={a.run_effort ?? ''}
+                    options={[{ value: '', label: '强度默认' }, ...(opts?.efforts ?? []).map(x => ({ value: x, label: `强度 ${x}` }))]}
+                    onChange={v => save({ run: { agent: a.id, effort: v } })}
+                    aria-label={`${a.name} 派发时的思考强度`}
+                  />
+                </span>
+              )}
+            </span>
+            <span className="ha-hint">{old ? upgrade : '只管 Board 派发的那一次；空着就用配置文件里的'}</span>
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1111,110 +1353,6 @@ function CopySettings({ h, hosts, close }: { h: HostInfo; hosts: HostInfo[]; clo
         </button>
       </div>
     </div>
-  );
-}
-
-/** 一个 agent 的模型供应商、模型、思考强度（PRD §9.1、§10.12）：
- *  - 供应商：跟随共用配置（默认）/ 本机自己管（不碰配置文件）/ 单独指定一个。新版 board host 按它改写配置文件
- *  - 模型、强度：只管 Board 派发的这一次，空是 agent 自己的默认（不传参数）；
- *    模型下拉列当前供应商的模型，强度只列它支持的档位
- *  各存各的、当帧生效，保存状态画在控件旁边。旧版 board host 不上报能选什么：置灰，写要升级到哪个版本；
- *  配置文件里新加的 agent（认不了供应商接口）不显示供应商，模板也没有模型、强度时不显示这一行 */
-function AgentRunRow({ h, a, save, sync, providers, server }: { h: HostInfo; a: HostAgent; save: Save; sync: { provider?: SyncState; model?: SyncState; effort?: SyncState }; providers: ProviderView | null; server: string | null }) {
-  const opts = a.opts;
-  const [model, setModel] = useState(a.run_model ?? '');
-  const [editing, setEditing] = useState(false);
-  useEffect(() => {
-    if (!editing) setModel(a.run_model ?? '');
-  }, [a.run_model, editing]);
-  const pv = agentProviderView(providers, a);
-  const known = PROVIDER_AGENTS.some(x => x.id === a.id);
-  const showProvider = !opts || (known && (opts.protocols?.length ?? 0) > 0);
-  if (!a.found) return null;
-  if (!showProvider && !(opts && (opts.model || opts.efforts.length))) return null;
-  const old = !opts;
-  const tip = old ? `这台机器的 board 要升级到 ${server ?? '服务端的版本'} 才能设置` : undefined;
-  const commit = () => {
-    setEditing(false);
-    const v = model.trim();
-    if (v !== (a.run_model ?? '')) save({ run: { agent: a.id, model: v } });
-  };
-  const listId = `hp-models-${h.id}-${a.id}`;
-  const fits = providersFor(providers, a.id);
-  const options = [{ value: '', label: '跟随共用配置' }, { value: PROVIDER_LOCAL, label: '本机自己管' }, ...fits.map(p => ({ value: p.name, label: p.name }))];
-  if (a.run_provider && !options.some(o => o.value === a.run_provider)) options.push({ value: a.run_provider, label: `${a.run_provider}（没有了）` });
-  const shared = pv.shared;
-  // 共用配置给它选了这个供应商时用选的模型，否则（这台机器单独指定）用它的第一个模型
-  const confModel = shared && shared.provider === pv.provider?.name && shared.model ? shared.model : (pv.provider?.models[0] ?? '');
-  const note = pv.local
-    ? '本机自己管：不改这台机器上它的配置文件'
-    : !pv.provider
-      ? '共用配置里没有给它指定供应商：不改配置文件'
-      : `配置文件：${pv.provider.name}${confModel ? ` · ${confModel}` : ''}${a.run_provider === pv.provider.name ? '（这台机器单独指定）' : ''}`;
-  return (
-    <>
-      <div className={cx('hp-arun', old && 'off')} title={tip}>
-        {showProvider && (
-          <span className="hp-arun-f">
-            <span>供应商</span>
-            <Select
-              className="hp-arun-provider"
-              disabled={old || !providers}
-              value={a.run_provider ?? ''}
-              options={options}
-              onChange={v => save({ run: { agent: a.id, provider: v } })}
-              aria-label={`${a.name} 的模型供应商`}
-              data-tip="跟随共用配置：按共用配置里给这个 agent 分的供应商改写它的配置文件；本机自己管：不碰它的配置文件"
-            />
-            <Sync s={sync.provider} />
-          </span>
-        )}
-        {(old || opts?.model) && (
-          <label className="hp-arun-f">
-            <span>模型</span>
-            <input
-              className="input hp-arun-model"
-              list={listId}
-              value={model}
-              disabled={old}
-              placeholder={a.model ? `默认（${a.model}）` : '默认'}
-              spellCheck={false}
-              autoComplete="off"
-              aria-label={`${a.name} 的模型`}
-              data-tip="只管 Board 派发的这一次：配置文件里的默认模型在共用配置里设"
-              onFocus={() => setEditing(true)}
-              onChange={e => setModel(e.target.value)}
-              onBlur={commit}
-              onKeyDown={e => {
-                if (e.key === 'Enter') e.currentTarget.blur();
-              }}
-            />
-            <datalist id={listId}>
-              {(pv.provider?.models ?? opts?.models ?? []).map(m => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-            <Sync s={sync.model} />
-          </label>
-        )}
-        {(old || !!opts?.efforts.length) && (
-          <span className="hp-arun-f">
-            <span>强度</span>
-            <Select
-              className="hp-arun-effort"
-              disabled={old}
-              value={a.run_effort ?? ''}
-              options={[{ value: '', label: '默认' }, ...(opts?.efforts ?? []).map(e => ({ value: e, label: e }))]}
-              onChange={v => save({ run: { agent: a.id, effort: v } })}
-              aria-label={`${a.name} 的思考强度`}
-            />
-            <Sync s={sync.effort} />
-          </span>
-        )}
-        {old && <em className="hp-arun-old">{tip}</em>}
-      </div>
-      {showProvider && !old && <p className="hp-note hp-arun-note">{note}</p>}
-    </>
   );
 }
 
@@ -1561,7 +1699,7 @@ function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: Sy
 }
 
 /** 次要区块：标题行点一下收起 / 展开，状态记在本机（默认收起），重开弹窗保持；reveal 变了（就绪清单里点了按钮）就展开 */
-function Fold({ id, title, n, i, reveal = 0, children }: { id: string; title: string; n: number; i: number; reveal?: number; children: React.ReactNode }) {
+function Fold({ id, title, n, i, reveal = 0, acts, children }: { id: string; title: string; n: number; i: number; reveal?: number; acts?: React.ReactNode; children: React.ReactNode }) {
   const [open, setOpen] = useState(() => pref.get(`hostFold.${id}`, false));
   useEffect(() => {
     if (!reveal) return;
@@ -1570,18 +1708,21 @@ function Fold({ id, title, n, i, reveal = 0, children }: { id: string; title: st
   }, [reveal, id]);
   return (
     <section id={`hp-sec-${id}`} className={cx('d-section hp-fold', !open && 'folded')} style={{ ['--i' as string]: i }}>
-      <button
-        type="button"
-        className="d-label hp-fold-btn"
-        aria-expanded={open}
-        onClick={() => {
-          pref.set(`hostFold.${id}`, !open);
-          setOpen(!open);
-        }}
-      >
-        <Icon name="chevDown" />
-        {title} <span className="count">{n}</span>
-      </button>
+      <div className="d-label hp-fold-head">
+        <button
+          type="button"
+          className="hp-fold-btn"
+          aria-expanded={open}
+          onClick={() => {
+            pref.set(`hostFold.${id}`, !open);
+            setOpen(!open);
+          }}
+        >
+          <Icon name="chevDown" />
+          {title} <span className="count">{n}</span>
+        </button>
+        {open && acts && <span className="hp-fold-acts">{acts}</span>}
+      </div>
       {open && <div className="hp-fold-body">{children}</div>}
     </section>
   );

@@ -55,41 +55,55 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-agent.noskill { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 60%, transparent); }
 .hp-agent-warn { display: inline-grid; place-items: center; color: var(--warn); }
 .hp-agent-warn svg { width: 14px; height: 14px; }
-/* 机器详情「本机 agent」：每个 agent 一行
-   左边是图标、名称（固定列宽）和标记，右边是启动环境下拉、自检、默认按钮，成组右对齐；
-   行高、分隔线、字号和上方表格（机器列表 / 对比表）一致 */
-.hp-arow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 44px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
-.d-label + .hp-arow { border-top: 0; }
-/* 名称那一格：图标 + 名称（固定宽度）+ 标记（缺 skill 等），标记多了换行也不把右边的控件挤乱 */
-.hp-arow-id { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; min-width: 0; flex: 1 1 0; }
-.hp-arow > img.hp-logo, .hp-arow-id > img.hp-logo { width: 20px; height: 20px; }
-.hp-arow > b:not(.hp-arow-name), .hp-arow-id > b:not(.hp-arow-name) { display: grid; place-items: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
-.hp-arow-name { flex: 0 1 auto; width: 9em; min-width: 4.5em; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hp-arow-ver { font-style: normal; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hp-arow.missing > img.hp-logo, .hp-arow.missing .hp-arow-id > img.hp-logo { filter: grayscale(1); opacity: .6; }
-.hp-arow.missing > b:not(.hp-arow-name), .hp-arow.missing .hp-arow-id > b:not(.hp-arow-name) { background: var(--text-4); }
-.hp-arow.missing .hp-arow-name { color: var(--text-3); }
-.hp-arow-none { font-size: 12px; color: var(--text-3); }
-.hp-arow > .hp-ctl { margin-left: auto; flex: 0 1 auto; min-width: 0; }
-/* 名称那一格有胶囊时，下拉先收窄一点再考虑换行 */
-.hp-arow .input.hp-env-select { flex: 0 1 240px; min-width: 190px; }
-/* 窄屏：右边的控件整组换到下一行、靠右，不压到名称上；下拉占满一行 */
+/* 机器详情「本机 agent」（HostModal AgentRow）：一个 agent 一行两句话，点开才有控件，一次只开一个
+   第一句：图标、名称、小胶囊，下面写启动环境 · 版本；第二句：配置文件写的是什么，派发时改了模型、强度时再写一行 */
+.ha-list { display: flex; flex-direction: column; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.ha-row + .ha-row { border-top: 1px solid var(--line); }
+.ha-row.open { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+.ha-sum { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 8px 12px; text-align: left; transition: background-color var(--dur-1); }
+.ha-sum:not(:disabled):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.ha-sum:disabled { cursor: default; opacity: 1; }
+.ha-sum > img.hp-logo { flex: none; width: 22px; height: 22px; }
+.ha-sum > b { flex: none; display: grid; place-items: center; min-width: 24px; height: 22px; padding: 0 4px; border-radius: 6px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
+.ha-sum > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); transition: transform var(--dur-2) var(--ease-out); }
+.ha-row.open .ha-sum > svg { transform: rotate(180deg); }
+.ha-id { display: flex; flex-direction: column; gap: 1px; flex: 0 1 200px; min-width: 0; }
+.ha-name { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 6px; font-size: 13px; min-width: 0; }
+.ha-name b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ha-def { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: color-mix(in oklab, var(--brand), var(--ink)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 45%, transparent); }
+.ha-meta { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ha-conf { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; font-size: 12.5px; }
+.ha-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.ha-line.muted { color: var(--text-3); }
+.ha-line.run { font-size: 11.5px; color: var(--text-2); }
+.ha-line i { display: inline-block; width: 4.6em; font-style: normal; font-size: 11px; color: var(--text-3); }
+.ha-line em { font-style: normal; color: var(--text-3); }
+.ha-row.missing .ha-sum > img.hp-logo { filter: grayscale(1); opacity: .55; }
+.ha-row.missing .ha-sum > b { background: var(--text-4); }
+.ha-row.missing .ha-name b { color: var(--text-3); }
+.ha-note { margin: -4px 12px 8px 44px; }
+/* 点开：三行，左边标签、右边控件和一句说明；保存状态贴在控件左边 */
+.ha-edit { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: start; gap: 12px; padding: 4px 14px 14px 44px; animation: hp-in var(--dur-3) var(--ease-out); }
+.ha-k { padding-top: 6px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.ha-v { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
+.ha-v.ha-col { flex-direction: column; align-items: flex-start; gap: 5px; }
+.ha-v.off { opacity: .55; }
+.ha-modes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ha-modes .segmented { font-size: 12px; }
+.ha-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+.input.sel.ha-sel { height: 28px; min-width: 120px; max-width: 230px; padding: 0 9px; font-size: 12px; }
+.input.sel.ha-sel.wide { min-width: 180px; }
+.input.sel.ha-sel.sm { min-width: 96px; }
+.input.ha-in { width: 230px; height: 28px; padding: 0 9px; font-size: 12px; }
 @media (max-width: 760px) {
-  .hp-arow > .hp-ctl { flex: 1 1 100%; justify-content: flex-end; }
-  .input.hp-env-select { flex: 1 1 auto; width: auto; min-width: 140px; }
-  .hp-arow-name { width: auto; max-width: 60%; min-width: 0; }
+  .ha-sum { flex-wrap: wrap; }
+  .ha-id { flex-basis: calc(100% - 70px); }
+  .ha-conf { flex-basis: 100%; order: 3; padding-left: 32px; }
+  .ha-edit { grid-template-columns: minmax(0, 1fr); gap: 6px; padding-left: 14px; }
+  .ha-k { padding-top: 4px; }
+  .input.ha-in { width: 100%; }
 }
-/* agent 的模型、思考强度：agent 那一行下面一行，和名称起始位置（图标 + 间距）对齐 */
-.hp-arun { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 0 0 9px 30px; font-size: 12px; color: var(--text-3); }
-.hp-arun-f { display: inline-flex; align-items: center; gap: 6px; }
-.hp-arun-f > span:first-child { white-space: nowrap; }
-.input.hp-arun-model { width: 168px; height: 28px; padding: 0 8px; font-family: var(--f-mono); font-size: 12px; }
-.input.hp-arun-effort { width: 104px; height: 28px; padding: 0 8px; font-size: 12px; }
-.input.hp-arun-provider { width: 136px; height: 28px; padding: 0 8px; font-size: 12px; }
-/* 机器详情里供应商那一行的说明：配置文件里实际写的是什么 */
-.hp-arun-note { margin: -3px 0 9px 30px; font-size: 11.5px; }
-.hp-arun.off { opacity: .55; }
-.hp-arun-old { font-style: normal; font-size: 11.5px; color: var(--text-3); }
+:root[data-motion="reduced"] .ha-edit { animation: none; }
 /* 看不到 board-skills：名称后的小胶囊（悬停写装到哪里）；刚一键装好的变绿 */
 .hp-skill { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; cursor: default;
   color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, transparent); }
@@ -108,11 +122,11 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 @keyframes hp-ban-in { from { opacity: 0; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) { .hp-skill-ban { animation: none; } }
 .input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height: 30px; padding: 0 8px; font-size: 12.5px; }
-.hp-def { flex: none; min-width: 66px; height: 26px; padding: 0 9px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); }
-.hp-def:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
-.hp-def.on { color: color-mix(in oklab, var(--brand), var(--ink)); font-weight: 600; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }
-.hp-def:disabled { opacity: .45; cursor: not-allowed; }
 .hp-env-hint { font-size: 12px; color: var(--text-3); }
+.hp-env-users { display: inline-flex; gap: 3px; flex: none; margin-left: auto; }
+.hp-env-user { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.hp-env-user img.hp-logo { width: 15px; height: 15px; }
+.hp-env-user > b { display: grid; place-items: center; min-width: 16px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
 .hp-beat { display: inline-flex; align-items: center; gap: 5px; }
 .hp-beat i { width: 6px; height: 6px; border-radius: 50%; background: var(--c-done); animation: hp-pulse 1.6s var(--ease-out) infinite; }
 .hp-beat.off { color: var(--text-3); }
@@ -230,7 +244,6 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-env { min-height: 42px; }
 .hp-env-body { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
 .hp-env .hp-path { flex: 0 1 auto; }
-.hp-path-none { font-size: 12px; color: var(--text-3); }
 /* 可编辑的一行：名称那一列和启动环境对齐，右边是输入框和状态 / 按钮；「目录不存在」时的克隆行排在下面 */
 .hp-dir-edit { flex-direction: column; align-items: stretch; gap: 6px; padding: 7px 0; }
 .hp-dir-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
@@ -254,13 +267,15 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-clone-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-3); }
 .hp-clone-msg.bad { color: var(--danger-text); }
 .hp-clone-msg.ok { color: var(--ok); }
-.hp-dir-add, .hp-dir-copy { display: flex; align-items: center; gap: 10px; padding-top: 8px; margin-top: 2px; border-top: 1px solid var(--line); min-width: 0; }
+.hp-dir-add { display: flex; align-items: center; gap: 10px; padding-top: 8px; margin-top: 2px; border-top: 1px solid var(--line); min-width: 0; animation: hp-in var(--dur-3) var(--ease-out); }
 .hp-dir-add .input, .hp-dir-copy .input.sel { height: 28px; font-size: 12px; }
+/* 「复制到…」点开的一块：选机器、复制、取消，下面一句说明 */
+.hp-dir-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 2px 0 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); animation: hp-in var(--dur-3) var(--ease-out); }
+.hp-dir-copy .hp-note { flex-basis: 100%; margin: 0; font-size: 11.5px; }
 .hp-dir-add .hp-dir-pick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .hp-dir-add .input.sel { flex: 0 1 9.5em; width: auto; min-width: 6.5em; }
 .hp-dir-copy .input.sel { flex: none; width: 190px; }
 .hp-dir-add .hp-dir-path { flex: 1; min-width: 110px; }
-.hp-dir-copy { border-top: 0; }
 .hp-remote { color: var(--warn-text); }
 @media (max-width: 760px) {
   /* 窄屏：名称和路径一行（路径吃剩余宽度），状态和按钮换到下一行靠右，不重叠 */
@@ -515,6 +530,11 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-fold-btn[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .hp-fold-btn:hover { color: var(--text-2); }
 .hp-fold-btn .count { margin-left: 2px; }
+/* 折叠块的标题行：左边箭头和标题，展开时右边放这一块的操作（白板与目录的「加一块」「复制到…」） */
+.hp-fold-head { display: flex; align-items: center; gap: 8px; }
+.hp-fold-head .hp-fold-btn { flex: 1; width: auto; }
+.hp-fold-acts { display: inline-flex; gap: 4px; flex: none; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.hp-fold-acts .hp-link.on { color: var(--text); background: var(--surface-3); }
 .hp-fold-body { animation: hp-in var(--dur-3) var(--ease-out); }
 .d-side-head .hp-fold-btn { width: auto; flex: 1; }
 .d-side-head { display: flex; align-items: center; gap: 8px; }
@@ -558,7 +578,6 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 /* 数字变化、新出现的时间点和规则：轻轻滑入 */
 .hp-num { display: inline-block; animation: count-roll var(--dur-2) var(--ease-out); }
 .hp-time, .hp-crule { animation: hp-in var(--dur-3) var(--spring-soft); }
-.hp-def, .hp-env-select, .hp-crule-agent, .hp-pause { transition: color var(--dur-2), background-color var(--dur-2), box-shadow var(--dur-2), transform var(--dur-1) var(--ease-out); }
 @keyframes hp-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) {
   .hp-sync[data-s="saving"] .ring, .hp-rollback, .hp-sync[data-s="failed"] { animation: none; }
@@ -585,7 +604,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-knob-text { flex: 1; min-width: 0; }
 .hp-knob-text b { display: block; font-size: 13.5px; font-weight: 600; }
 .hp-knob-text span { display: block; margin-top: 1px; font-size: 12px; line-height: 1.5; color: var(--text-3); text-wrap: pretty; }
-.hp-knob-text span[data-tip] { text-decoration: underline dotted var(--line-3); text-underline-offset: 3px; cursor: help; }
+.hp-knob-text span[data-tip] { cursor: help; }
 .hp-block { margin-top: 10px; padding: 12px 14px 13px; }
 .hp-block-head { display: flex; align-items: center; gap: 30px; }
 /* 领取规则放进同样的一块里；新规则那一排和已有的规则用虚线隔开 */
@@ -905,23 +924,69 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 }
 /* 共用配置：MCP 服务器一节 */
 .sc-mcp { margin-top: 28px; }
-.sc-providers { margin-top: 28px; }
+.sc-providers, .sc-tpl { margin-top: 28px; }
+.sc-how { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-2); white-space: nowrap; cursor: help; }
+.sc-how svg { width: 13px; height: 13px; }
+/* 模型供应商（Providers.tsx）：一个供应商一张卡，上面是名称、地址、模型，下面是用它的 agent 和各台机器写没写进去 */
+.pv-cards { display: flex; flex-direction: column; gap: 12px; }
+.pv-card { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.pv-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 4px 14px; }
+.pv-name { font-size: 14px; font-weight: 650; }
+.pv-upd { margin-left: auto; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.pv-kv { display: flex; flex-direction: column; gap: 3px; padding: 2px 14px 10px; }
+.pv-line { display: flex; align-items: baseline; gap: 10px; min-width: 0; font-size: 12px; }
+.pv-k { flex: none; width: 15em; font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-line code { font: 11.5px var(--f-mono); color: var(--text-2); overflow-wrap: anywhere; }
+.pv-models { display: flex; flex-wrap: wrap; gap: 4px; }
+.pv-models code { padding: 0 6px; border-radius: var(--r-xs); background: var(--surface-3); }
+.pv-users { display: flex; flex-direction: column; padding: 4px 10px 10px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.pv-user { display: grid; grid-template-columns: 150px auto minmax(0, 1fr) 26px; align-items: center; gap: 10px; min-height: 42px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.pv-agent { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; }
+.pv-agent b { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-agent img.hp-logo { width: 18px; height: 18px; flex: none; }
+.pv-agent > b:first-child { flex: none; display: grid; place-items: center; min-width: 22px; height: 18px; padding: 0 3px; border-radius: 5px; font: 700 10px var(--f-mono); color: #18181A; background: var(--ac); }
+.pv-ctl { display: inline-flex; align-items: center; gap: 6px; }
+.input.sel.pv-sel { height: 28px; min-width: 120px; max-width: 220px; padding: 0 9px; font-size: 12px; }
+.input.sel.pv-sel.sm { min-width: 96px; }
+.pv-cells { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.pv-cells em, .pv-none { margin: 0; font-style: normal; font-size: 12px; color: var(--text-3); }
+.pv-none { padding: 10px 0 4px; }
+.pv-x { opacity: .55; }
+.pv-user:hover .pv-x, .pv-x:focus-visible { opacity: 1; }
+.input.sel.pv-add { align-self: flex-start; height: 28px; margin-top: 8px; padding: 0 10px; font-size: 12px; background: transparent; box-shadow: inset 0 0 0 1px var(--line-2); }
+.pv-add .sel-v { color: var(--text-2); }
+/* 一台机器的写入情况：小胶囊，前面一个状态标记 */
+.pv-cell { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: 999px; font-size: 11.5px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background-color var(--dur-1), box-shadow var(--dur-1); }
+.pv-cell:hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pv-cell b { font-weight: 600; color: var(--text); }
+.pv-cell-mark { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
+.pv-cell.k-synced .pv-cell-mark { background: var(--ok); }
+.pv-cell.k-synced span { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.pv-cell.k-pending .pv-cell-mark { width: 8px; height: 8px; background: none; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .9s linear infinite; }
+.pv-cell.k-local .pv-cell-mark { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.pv-cell.k-failed, .pv-cell.k-unsupported { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); }
+.pv-cell.k-failed .pv-cell-mark, .pv-cell.k-unsupported .pv-cell-mark { background: var(--danger); }
+.pv-cell.k-failed span, .pv-cell.k-unsupported span { color: var(--danger-text); }
+.pv-cell.k-offline { opacity: .7; }
+:root[data-motion="reduced"] .pv-cell.k-pending .pv-cell-mark { animation: none; }
+.pv-idle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 12px 2px 0; font-size: 12px; }
+.pv-idle-k, .pv-idle-hint { color: var(--text-3); }
+.pv-idle-hint { font-size: 11.5px; }
+.pv-idle-a { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px 0 6px; border-radius: 999px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.pv-idle-a img.hp-logo { width: 14px; height: 14px; }
+.pv-idle-a > b { display: grid; place-items: center; min-width: 18px; height: 14px; padding: 0 2px; border-radius: 3px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
+.pv-old { display: flex; align-items: flex-start; gap: 6px; margin: 10px 2px 0; font-size: 12px; line-height: 1.6; color: var(--text-3); }
+.pv-old > svg { flex: none; width: 13px; height: 13px; margin-top: 3px; color: var(--warn); }
+.pv-old em { font-style: normal; font-family: var(--f-mono); font-size: 11px; }
+.pv-link { font: inherit; color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; }
+.pv-link:hover { color: var(--text); }
+@media (max-width: 760px) {
+  .pv-line { flex-direction: column; gap: 0; }
+  .pv-user { grid-template-columns: minmax(0, 1fr) 26px; }
+  .pv-ctl, .pv-cells { grid-column: 1 / -1; }
+}
 .sc-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sc-presets .hp-note { margin: 0 0 0 4px; }
-/* 每个 agent 用哪个供应商：一行一个内置 agent，四列（名称、供应商、模型、强度）加保存状态 */
-.sc-agents-map { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; padding: 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
-.sc-sub-head { display: flex; flex-direction: column; gap: 3px; }
-.sc-sub-head b { font-size: 13px; }
-.sc-sub-head .hp-note { margin: 0; }
-.sc-provider-agent { display: grid; grid-template-columns: minmax(124px, 1fr) repeat(3, minmax(118px, 1.15fr)) auto; align-items: end; gap: 8px 12px; padding-top: 10px; border-top: 1px solid var(--line); }
-.sc-provider-agent-name { display: inline-flex; align-items: center; gap: 6px; align-self: center; font-size: 13px; min-width: 0; }
-.sc-provider-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.sc-provider-f > span:first-child { font-size: 11.5px; color: var(--text-3); }
-.sc-provider-agent .hp-sync { align-self: center; }
-@media (max-width: 760px) {
-  .sc-provider-agent { grid-template-columns: 1fr 1fr; }
-  .sc-provider-agent-name { grid-column: 1 / -1; }
-}
 .sc-meta code { font: 11.5px var(--f-mono); color: var(--text-2); }
 .sc-vars { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 0 8px; font-size: 12px; color: var(--text-3); }
 .sc-vars b { font: 500 11.5px var(--f-mono); color: var(--text-2); }
@@ -1016,9 +1081,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-skill.local { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .hp-warn-line { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-text); }
 .hp-warn-line svg { flex: none; width: 13px; height: 13px; margin-top: 3px; }
-.hp-arow-note { margin: -2px 0 6px 30px; }
 .sc-form-note { margin: -4px 0 0; }
 @media (max-width: 760px) {
   .hp-copy-row { flex-direction: column; gap: 6px; }
-  .hp-arow-note { margin-left: 0; }
 }

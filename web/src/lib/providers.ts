@@ -2,11 +2,11 @@
    模型供应商共用配置（PRD §10.12「共用配置」）：界面上用到的纯函数和常量
    - 三种接口、四个内置 agent 认哪些接口、能选哪些思考强度（和服务端 board-core/providers.rs 一致）
    - 常用供应商的预填：真实接口地址和常用模型（API key 要自己填）
-   - 每个供应商在各台机器上的写入状态（providerRows）、汇总
-   - 一台机器上一个 agent 实际用的供应商和模型（agentProviderView）：机器详情里的下拉据此过滤
+   - 一台机器上一个 agent 的写入情况（providerCell）、地址相同的接口并成一行（endpointLines）
+   - 一台机器上一个 agent 的配置文件实际写什么（effectiveProvider）：机器详情据此写摘要、过滤下拉
    - 编辑表单：空白的一项、校验、整理成要保存的
    ========================================================================== */
-import type { AgentProvider, HostAgent, HostInfo, Provider, ProviderEndpoint, ProviderState, ProviderView } from './types';
+import type { AgentProvider, HostAgent, HostInfo, Provider, ProviderEndpoint, ProviderView } from './types';
 
 /** 三种接口 */
 export const PROVIDER_INTERFACES: { id: ProviderEndpoint['interface']; name: string; short: string; placeholder: string }[] = [
@@ -123,74 +123,72 @@ export function toProviderSave(p: Provider): Provider {
 
 /* ------------------------------ 各机器的写入状态 ------------------------------ */
 
-export type ProviderCell = { agent: string; state: ProviderState['state'] | 'pending'; provider?: string; model?: string; why?: string | null };
-export type ProviderRow = { host: HostInfo; old: boolean; cells: ProviderCell[] };
+/** 一台机器上一个 agent 的写入情况（界面上一个小胶囊）：
+ *  old 旧版 board host 不同步 · missing 没找到这个 agent · local 机器设置为本机自己管 · none 没有要写的（共用配置「不管」、机器也没单独指定）·
+ *  offline 该写、机器离线 · synced 写进去的就是该写的 · failed / unsupported 上报的失败、不支持（不管带没带供应商名都算）· pending 该写、还没报 */
+export type ProviderCellKind = 'synced' | 'pending' | 'local' | 'failed' | 'unsupported' | 'offline' | 'old' | 'missing' | 'none';
+export type ProviderCell = { kind: ProviderCellKind; why?: string | null; provider?: string };
 
-export const PROVIDER_WORDS: Record<ProviderCell['state'], string> = {
+export const PROVIDER_CELL_WORDS: Record<ProviderCellKind, string> = {
   synced: '已写入',
-  local: '本机自己管',
-  unsupported: '不支持',
-  failed: '失败',
   pending: '正在写入',
+  local: '本机自己管',
+  failed: '失败',
+  unsupported: '不支持',
+  offline: '离线',
+  old: '版本太旧',
+  missing: '没装',
+  none: '不改',
 };
 
-/** 一个供应商在每台机器上的写入状态：旧版 board host 不同步（old）；
- *  共用配置里给它分了 agent、机器上又找到了的，还没报的算「正在写入」（机器设成「本机自己管」的不算）；
- *  这台机器把它设成「本机自己管」「不支持」的也列出来，写明原因 */
-export function providerRows(hosts: HostInfo[], p: Provider, agents: AgentProvider[]): ProviderRow[] {
-  const assigned = agents.filter(a => a.provider === p.name);
-  return hosts.map(h => {
-    if (h.providers == null) return { host: h, old: true, cells: [] };
-    const cells: ProviderCell[] = h.providers
-      .filter(s => s.provider === p.name)
-      .map(s => ({ agent: s.agent, state: s.state, provider: s.provider, model: s.model, why: s.why }));
-    if (h.online) {
-      for (const a of assigned) {
-        const st = h.providers.find(x => x.agent === a.agent);
-        const ha = h.agents.find(x => x.id === a.agent);
-        if (!ha?.found || cells.some(c => c.agent === a.agent)) continue;
-        if (st && (st.state === 'local' || st.state === 'unsupported')) cells.push({ agent: a.agent, state: st.state, why: st.why });
-        else if (!st && ha.run_provider !== PROVIDER_LOCAL) cells.push({ agent: a.agent, state: 'pending' });
-      }
-    }
-    return { host: h, old: false, cells };
-  });
+export function providerCell(h: HostInfo, agent: string, view: ProviderView | null): ProviderCell {
+  if (h.providers == null) return { kind: 'old', why: `board ${h.version || '?'} 不同步供应商：升级这台机器的 board` };
+  const a = h.agents.find(x => x.id === agent);
+  if (!a?.found) return { kind: 'missing' };
+  if (a.run_provider === PROVIDER_LOCAL) return { kind: 'local', why: '机器详情里设置为本机自己管：不改它的配置文件' };
+  const want = a.run_provider || sharedOf(view, agent).provider;
+  if (!want) return { kind: 'none' };
+  if (!h.online) return { kind: 'offline', why: '上线后写入', provider: want };
+  const st = h.providers.find(s => s.agent === agent);
+  if (st?.state === 'synced' && st.provider === want) return { kind: 'synced', why: `${st.provider} · ${st.model}`, provider: want };
+  if (st?.state === 'failed' || st?.state === 'unsupported') return { kind: st.state, why: st.why, provider: want };
+  return { kind: 'pending', why: 'board host 收到后改写配置文件、上报', provider: want };
 }
 
-export function providerSummary(rows: ProviderRow[]) {
-  let synced = 0;
-  let used = 0;
-  let bad = 0;
-  let old = 0;
-  for (const r of rows) {
-    if (r.old) {
-      old++;
-      continue;
-    }
-    // 本机自己管、不支持：这台机器不会为这个供应商写文件，不算进分母
-    const active = r.cells.filter(c => c.state !== 'local' && c.state !== 'unsupported');
-    if (!active.length) continue;
-    used++;
-    if (active.some(c => c.state === 'failed')) bad++;
-    else if (active.every(c => c.state === 'synced')) synced++;
-  }
-  return { synced, used, bad, old };
+/** 接口和地址：地址相同的接口并成一行（OpenAI Chat · OpenAI Responses → 同一个地址） */
+export function endpointLines(p: Pick<Provider, 'endpoints'>) {
+  const m = new Map<string, string[]>();
+  for (const e of p.endpoints) m.set(e.url, [...(m.get(e.url) ?? []), interfaceName(e.interface)]);
+  return [...m.entries()].map(([url, names]) => ({ url, names }));
 }
 
-/** 用着这个供应商的内置 agent */
-export const agentsUsing = (agents: AgentProvider[], name: string) => agents.filter(a => a.provider === name);
+/** 共用配置里一个内置 agent 的分配（没有时是「不管」） */
+export const sharedOf = (view: ProviderView | null, agent: string): AgentProvider => view?.agents.find(a => a.agent === agent) ?? blankAgentProvider(agent);
+
+/** 给一个 agent 换供应商：模型取新供应商的第一个，强度保留；换成「不管」时都清空 */
+export const assignProvider = (a: AgentProvider, provider: string, view: ProviderView): AgentProvider => ({
+  agent: a.agent,
+  provider,
+  model: provider ? (view.providers.find(p => p.name === provider)?.models[0] ?? '') : '',
+  effort: provider ? a.effort : '',
+});
 
 /* ------------------------------ 机器详情 ------------------------------ */
 
-/** 这台机器上一个 agent 实际用的供应商、模型：
- *  - local：机器设置成「本机自己管」，不改配置文件
- *  - provider：共用配置里给它分的，或这台机器单独指定的（机器设置优先）
- *  - model：共用配置里选的那个（跟着供应商）；机器设置的模型只是派发时的覆盖，不算在内 */
-export function agentProviderView(view: ProviderView | null, a: HostAgent): { local: boolean; shared: AgentProvider | null; provider: Provider | null } {
-  const shared = view?.agents.find(x => x.agent === a.id) ?? null;
-  if (a.run_provider === PROVIDER_LOCAL) return { local: true, shared, provider: null };
-  const name = a.run_provider || shared?.provider || '';
-  return { local: false, shared, provider: view?.providers.find(p => p.name === name) ?? null };
+/** 这台机器上一个 agent 的配置文件实际写什么：
+ *  - mode：follow 跟随共用配置 / local 本机自己管（不改配置文件）/ own 这台机器单独指定（机器设置优先）
+ *  - provider、model、effort：写进配置文件的；模型、强度跟着共用配置里给这个供应商选的，单独指定别的供应商时用它的第一个模型、强度不写
+ *  - gone：设置的供应商在共用配置里没有了
+ *  机器设置里的模型、强度只是派发那一次的覆盖，不算在内 */
+export function effectiveProvider(view: ProviderView | null, a: HostAgent) {
+  const shared = sharedOf(view, a.id);
+  const mode: 'follow' | 'local' | 'own' = a.run_provider === PROVIDER_LOCAL ? 'local' : a.run_provider ? 'own' : 'follow';
+  const name = mode === 'local' ? '' : mode === 'own' ? (a.run_provider ?? '') : shared.provider;
+  const provider = view?.providers.find(p => p.name === name) ?? null;
+  const same = shared.provider === name;
+  const model = provider ? (same && provider.models.includes(shared.model) ? shared.model : (provider.models[0] ?? '')) : '';
+  const effort = provider && same ? shared.effort : '';
+  return { mode, shared, name, provider, model, effort, gone: !!name && !provider };
 }
 
 /** 这个 agent 能选的供应商：接口对得上 */
