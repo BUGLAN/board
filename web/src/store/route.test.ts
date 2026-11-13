@@ -123,6 +123,79 @@ describe('后退、前进（applyRoute）', () => {
   });
 });
 
+describe('详情里的返回 / 前进（#195）', () => {
+  it('从一张卡片跳到另一张（描述里的编号、上一张 / 下一张）：能返回，再能前进', async () => {
+    await D.openDetail(1);
+    await D.jumpDetail(2);
+    await settle();
+    expect(href()).toBe('/p/a/2');
+    expect(D.canCardBack()).toBe(true);
+    expect(D.canCardFwd()).toBe(false);
+
+    D.cardBackStep();
+    await settle();
+    expect(D.useData.getState().detailId).toBe(1);
+    expect(href()).toBe('/p/a/1');
+    expect(D.canCardBack()).toBe(false);
+    expect(D.canCardFwd()).toBe(true);
+
+    D.cardFwdStep();
+    await settle();
+    expect(D.useData.getState().detailId).toBe(2);
+    expect(href()).toBe('/p/a/2');
+  });
+
+  it('同一张不算跳转；在两张之间来回跳时一层层退回', async () => {
+    await D.openDetail(1);
+    await D.jumpDetail(2);
+    await settle();
+    await D.jumpDetail(2); // 还是这一张：不记
+    await D.jumpDetail(1);
+    await settle();
+    expect(D.useData.getState().detailId).toBe(1);
+    D.cardBackStep();
+    await settle();
+    expect(D.useData.getState().detailId).toBe(2);
+    D.cardBackStep();
+    await settle();
+    expect(D.useData.getState().detailId).toBe(1);
+    expect(D.canCardBack()).toBe(false);
+  });
+
+  it('跳到另一块白板上的卡片：返回时先回到原来那块白板', async () => {
+    await D.openDetail(1);
+    await D.jumpToCard('p/b', 1);
+    await settle();
+    await settle();
+    expect(D.useData.getState().path).toBe('p/b');
+    expect(D.useData.getState().detailId).toBe(1);
+    D.cardBackStep();
+    await settle();
+    await settle();
+    expect(D.useData.getState().path).toBe('p/a');
+    expect(D.useData.getState().detailId).toBe(1);
+  });
+
+  it('关掉详情后不再有可返回的；重新打开的卡片从头开始记', async () => {
+    await D.openDetail(1);
+    await D.jumpDetail(2);
+    await settle();
+    D.closeDetail();
+    await D.openDetail(1);
+    expect(D.canCardBack()).toBe(false);
+    expect(D.canCardFwd()).toBe(false);
+  });
+
+  it('浏览器后退（applyRoute）不留下可返回的记录', async () => {
+    await D.openDetail(1);
+    history.replaceState(null, '', '/p/a/3');
+    D.applyRoute({ path: 'p/a', card: 3, tab: 'board' });
+    await settle();
+    expect(D.useData.getState().detailId).toBe(3);
+    expect(D.canCardBack()).toBe(false);
+  });
+});
+
 describe('打开页面时的地址（卡片链接）', () => {
   it('刷新后直接打开地址里的卡片', async () => {
     history.replaceState(null, '', '/p/b/1');

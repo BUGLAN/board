@@ -6,7 +6,7 @@ import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { boardMeta, exec, isDraft, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, repoPatch, setPath, useData, type Patch } from '../store/data';
+import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, repoPatch, setPath, useData, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -38,15 +38,41 @@ export function openCard(id: number) {
   const tab = useUI.getState().tab;
   if (c?.column === 'inbox' && tab !== 'inbox' && isMobile()) setTab('inbox');
   else if (c && c.column !== 'inbox' && (tab === 'settings' || tab === 'projects')) setTab('board');
-  openDetail(id);
+  // 已经打开着别的卡片（例如从命令面板、搜索结果打开）：同样是换一张，能返回
+  if (data().detailId != null && data().detailId !== id) void jumpDetail(id);
+  else openDetail(id);
   setTimeout(() => reveal(id), 60);
 }
 
 /** 打开另一块白板上的卡片（命令面板的跨白板搜索结果）：先切到那块白板，打开详情 */
 export async function openOtherCard(path: string, id: number) {
   if (path !== data().path || !data().board) await openBoard(path);
-  openDetail(id);
+  if (data().detailId != null && data().detailId !== id) await jumpDetail(id);
+  else await openDetail(id);
   setTimeout(() => reveal(id), 60);
+}
+
+/** 详情里打开另一张卡片（描述、评论里的 `项目/白板#ID`、上一张 / 下一张）：换掉当前这条地址，
+    原来那张记进「返回」，所以卡片详情顶部有返回 / 前进 */
+export function openLink(path: string, id: number) {
+  if (isDraft(id)) return;
+  const tab = useUI.getState().tab;
+  if (tab === 'settings' || tab === 'projects') setTab('board');
+  if (path === data().path) void jumpDetail(id);
+  else void jumpToCard(path, id);
+  setTimeout(() => reveal(id), 60);
+}
+
+/** 卡片详情顶部的「返回」「前进」（不是浏览器的后退 / 前进：只在打开过的卡片之间走） */
+export function cardBack() {
+  const id = data().detailId;
+  if (canCardBack()) void cardBackStep();
+  if (id != null) setTimeout(() => reveal(data().detailId ?? id), 60);
+}
+export function cardFwd() {
+  const id = data().detailId;
+  if (canCardFwd()) void cardFwdStep();
+  if (id != null) setTimeout(() => reveal(data().detailId ?? id), 60);
 }
 
 /** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示）。

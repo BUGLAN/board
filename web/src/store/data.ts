@@ -938,6 +938,33 @@ export function setPath(path: string) {
 /** 打开过的卡片详情：再次打开先显示它（不闪骨架），取回新的再替换 */
 const details = new Map<string, CardDetail>();
 
+/**
+ * 卡片详情的历史记录（PRD §10.8「前进 / 返回」）：这个窗口里按地址打开过的卡片，新的在前。
+ * 换掉当前这条地址时（详情里切上一张 / 下一张、点卡片编号跳过去）记下原来那张，
+ * 于是详情里能在卡片之间「返回」「前进」，和浏览器的后退、前进不是一回事。
+ * 另一块白板的卡片记成「白板路径#ID」，返回时先切回那块白板。
+ */
+interface CardPlace {
+  path: string;
+  id: number;
+}
+let cardBack: CardPlace[] = [];
+let cardFwd: CardPlace[] = [];
+
+/** 一张卡片在这个窗口里的地址：另一块白板的白板路径 + ID */
+const placeKey = (p: CardPlace) => `${p.path}#${p.id}`;
+
+function placeOf(id: number): CardPlace {
+  return { path: get().path, id };
+}
+
+/** 记一次「换掉当前的卡片」：原来那张能返回，前进的记录作废 */
+function remember(from: CardDetail | null | undefined) {
+  if (!from) return;
+  cardBack.push(placeOf(from.id));
+  cardFwd = [];
+}
+
 export async function openDetail(id: number) {
   if (isDraft(id)) return;
   const path = get().path;
@@ -945,7 +972,7 @@ export async function openDetail(id: number) {
   const was = get().detailId;
   base.detail = base.detail?.id === id ? base.detail : details.get(k) ?? null;
   render({ detailId: id, detailError: null });
-  // 打开卡片加一条历史记录（后退能关掉）；详情里切上一张 / 下一张换掉当前这条
+  // 打开卡片加一条历史记录（后退能关掉）；详情里切上一张 / 下一张换掉当前这条。按地址栏改状态时不写
   if (was !== id) syncUrl(was == null ? 'push' : 'replace');
   save(path);
   try {
@@ -976,9 +1003,60 @@ export function closeDetail() {
   const had = get().detailId != null;
   base.detail = null;
   render({ detailId: null });
-  // 关掉详情也加一条历史记录：后退能重新打开（卡片已经被删、不是从这个窗口打开的不算）
+  // 关掉详情也加一条历史记录：后退能重新打开（卡片已经被删、不是从这个窗口打开的不算）。按地址改的时候不写
   if (had) syncUrl('push');
+  // 关了就不再是「在哪张卡片之间返回」：再打开一张重新算
+  cardBack = [];
+  cardFwd = [];
 }
+
+/** 详情里跳到另一张卡片：换掉当前这条地址，原来那张记进「返回」 */
+export async function jumpDetail(id: number) {
+  if (id === get().detailId) return;
+  remember(base.detail);
+  await openDetail(id);
+}
+
+/** 打开另一块白板上的卡片（描述、评论里的 `项目/白板#ID`）：切到那块白板，换掉当前这条地址 */
+export async function jumpToCard(path: string, id: number) {
+  if (path === get().path) return jumpDetail(id);
+  remember(base.detail);
+  await setPath(path);
+  await openDetail(id);
+}
+
+const cardBackwards = () => cardBack.some(p => p.path !== get().path || p.id !== get().detailId);
+const cardForwards = () => cardFwd.some(p => p.path !== get().path || p.id !== get().detailId);
+
+/** 切到那张卡片、换掉当前这条地址；返回 / 前进的记录由调用方先放好 */
+async function openPlace(p: CardPlace) {
+  if (p.path !== get().path) await setPath(p.path);
+  await openDetail(p.id);
+}
+
+/** 「返回」：回到跳转之前在看的卡片（在另一块白板上时先切过去）。没有可返回的就不做 */
+export function cardBackStep(): Promise<void> | void {
+  const cur = get().detailId;
+  if (cur == null || !cardBackwards()) return;
+  const to = cardBack.pop()!;
+  cardBack = cardBack.filter(p => placeKey(p) !== placeKey(to)); // 同一张卡片只留最近一次
+  cardFwd = [{ path: get().path, id: cur }, ...cardFwd.filter(p => p.path !== get().path || p.id !== cur)];
+  return openPlace(to);
+}
+
+/** 「前进」：回到刚才返回之前看的那张（在另一块白板上时先切过去）。没有可前进的就不做 */
+export function cardFwdStep(): Promise<void> | void {
+  const cur = get().detailId;
+  if (cur == null || !cardForwards()) return;
+  const to = cardFwd.shift()!;
+  cardFwd = cardFwd.filter(p => placeKey(p) !== placeKey(to));
+  cardBack = [...cardBack.filter(p => p.path !== get().path || p.id !== cur), { path: get().path, id: cur }];
+  return openPlace(to);
+}
+
+/** 详情里的「返回 / 前进」能不能点（组件用，不是 zustand 的 store） */
+export const canCardBack = () => cardBackwards();
+export const canCardFwd = () => cardForwards();
 
 /** 按地址栏改界面状态（后退、前进、打开链接时 App 调用）：期间不往地址栏写。地址里没有白板时不动 */
 export function applyRoute(r: { path: string | null; card: number | null; tab: Tab }) {

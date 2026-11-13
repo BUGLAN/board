@@ -3,7 +3,7 @@
    桌面：居中弹窗 920×640，左内容 / 右动态；手机：底部 sheet，可下拉关闭
    ========================================================================== */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { copyCardPrompt, triage } from '../lib/actions';
+import { cardBack, cardFwd, copyCardPrompt, openLink, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { cardDispatch } from '../lib/hosts';
 import { cardPrompt } from '../lib/prompt';
@@ -11,8 +11,8 @@ import { cardUrl } from '../lib/route';
 import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, dateTime, hhmm, isMobile, replay, since } from '../lib/util';
-import { addLabel, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
+import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, dateTime, FWD_KEY, hhmm, isMobile, replay, since } from '../lib/util';
+import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
 import { RunPill } from './Card';
@@ -134,10 +134,10 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     }
     (document.activeElement as HTMLElement | null)?.blur?.(); // 先提交正在编辑的标题
     navDir = d;
-    openDetail(next);
+    openLink(useData.getState().path, next);
   };
 
-  // 详情里的快捷键：↑↓ / K J 切换，C 复制为提示词，L 加标签，⌘⇧C / Ctrl⇧C 复制链接
+  // 详情里的快捷键：↑↓ / K J 切换，⌘← / ⌘→ 返回、前进，C 复制为提示词，L 加标签，⌘⇧C / Ctrl⇧C 复制链接
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
@@ -145,6 +145,13 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
       if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
         e.preventDefault();
         copyLink();
+        return;
+      }
+      // 返回 / 前进：和浏览器一样的 ⌘[ ⌘] ，Windows 上是 Alt+← / Alt+→（浏览器也用这两个）
+      if ((e.altKey && !mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) || (mod && !e.shiftKey && !e.altKey && (e.key === '[' || e.key === ']'))) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft' || e.key === '[') cardBack();
+        else cardFwd();
         return;
       }
       if (mod || e.altKey) return;
@@ -218,6 +225,14 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
         <span className={cx('d-saving', saving && 'on')} role="status" aria-live="polite">
           <i aria-hidden="true" />
           {saving ? '保存中' : ''}
+        </span>
+        <span className="d-jump">
+          <button aria-label="返回" className="icon-btn sm" type="button" data-tip={`返回  ${BACK_KEY}`} data-tip-align="start" disabled={!canCardBack()} onClick={cardBack}>
+            <Icon name="chevLeft" />
+          </button>
+          <button aria-label="前进" className="icon-btn sm" type="button" data-tip={`前进  ${FWD_KEY}`} data-tip-align="start" disabled={!canCardFwd()} onClick={cardFwd}>
+            <Icon name="chevRight" />
+          </button>
         </span>
         <span className="spacer" />
         <button className="btn sm ghost d-prompt d-link" type="button" data-tip={`复制链接  ${accel('C', true)}`} data-tip-align="end" onClick={copyLink}>

@@ -154,6 +154,8 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .drawer-body { overflow-y: auto; overscroll-behavior: contain; }
   .d-head { height: auto; padding: 4px 10px 10px 18px; border-bottom: 0; }
   .d-nav { display: none; }
+  /* 手机上没有 ⌘[ / Alt+←，返回 / 前进反而更用得着，留着 */
+  .d-jump .icon-btn { width: 36px; height: 36px; }
   .d-grid { display: block; }
   .d-main { overflow: visible; padding-top: 4px; }
   .d-main .d-actions { margin: 22px 18px 0; }

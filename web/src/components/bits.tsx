@@ -1,6 +1,6 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { openCard, openOtherCard } from '../lib/actions';
+import { openLink } from '../lib/actions';
 import { inlineCode, markdown } from '../lib/markdown';
 import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
@@ -274,8 +274,7 @@ export function Markdown({ src, className, repo, links = true }: { src: string; 
           e.stopPropagation();
           const [board, id] = (a.dataset.card || '').split('#');
           if (!board || !id) return;
-          if (board === useData.getState().path) openCard(Number(id));
-          else void openOtherCard(board, Number(id));
+          openLink(board, Number(id));
           return;
         }
         if (t.tagName !== 'IMG') return;

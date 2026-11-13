@@ -8,6 +8,9 @@ export const MOD = isMac ? '⌘' : 'Ctrl';
 export function accel(key: string, shift = false): string {
   return isMac ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
 }
+/** 返回 / 前进（和浏览器一致：macOS 上是 ⌘[ ⌘] ，Windows / Linux 上是 Alt+← Alt+→） */
+export const BACK_KEY = isMac ? '⌘[' : 'Alt+←';
+export const FWD_KEY = isMac ? '⌘]' : 'Alt+→';
 export const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
 export const reduceMotion = () =>
   document.documentElement.dataset.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;

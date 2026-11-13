@@ -39,6 +39,11 @@
 .d-nav .icon-btn { width: 24px; height: 24px; }
 .d-nav .icon-btn:disabled { opacity: .3; pointer-events: none; }
 .d-pos { min-width: 38px; text-align: center; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* 返回 / 前进：在打开过的卡片之间走（和浏览器的后退不同），没事可做时置灰 */
+.d-jump { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px; }
+.d-jump .icon-btn { width: 26px; height: 26px; color: var(--text-3); }
+.d-jump .icon-btn:hover { color: color-mix(in oklab, var(--brand), var(--ink)); }
+.d-jump .icon-btn:disabled { opacity: .3; pointer-events: none; }
 
 /* 左：内容；右：动态 + 评论 */
 .d-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) var(--modal-side, 340px); }
