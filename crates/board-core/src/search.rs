@@ -9,6 +9,8 @@
 //!
 //! 结果按相关度、再按更新时间排序，最多 [`SEARCH_LIMIT`] 条。现在是直接查 SQLite：
 //! 一万张卡片一次搜索在几十毫秒内（cards 扫一遍够快），还不需要全文索引。
+//!
+//! 回收站里的卡片（`deleted_at` 非空）不出现在结果里，恢复后重新可以被搜到。
 
 use crate::error::{BoardError, Result};
 use crate::model::{INBOX, INBOX_NAME};
@@ -65,8 +67,8 @@ const COLS: &str = "b.project || '/' || b.key, c.id, c.title, c.col, \
                WHERE cl.board = c.board AND cl.card = c.id), ''), \
      c.updated_at";
 
-/// 卡片和白板
-const FROM: &str = "FROM cards c JOIN boards b ON b.id = c.board";
+/// 卡片和白板；回收站里的卡片（`deleted_at` 非空）一律排除
+const FROM: &str = "FROM cards c JOIN boards b ON b.id = c.board WHERE c.deleted_at IS NULL";
 
 /// 带公共列的一条完整查询
 fn select() -> String {
@@ -91,7 +93,7 @@ impl R<'_> {
                     .parse()
                     .map_err(|_| BoardError::usage(format!("「{q}」里的编号不是数字，写成像 oss/main#3 这样")))?;
                 let b = self.resolve(left)?;
-                let sql = format!("{} WHERE c.board = ?1 AND c.id = ?2 LIMIT {limit}", select());
+                let sql = format!("{} AND c.board = ?1 AND c.id = ?2 LIMIT {limit}", select());
                 let mut out = self.rows(&sql, vec![&b.id, &id])?;
                 mark(&mut out, "ref", 1000);
                 return Ok(out);
@@ -99,7 +101,7 @@ impl R<'_> {
         }
         // #ID
         if let Some(id) = q.strip_prefix('#').and_then(|s| s.trim().parse::<i64>().ok()) {
-            let sql = format!("{} WHERE c.id = ?1 ORDER BY b.project, b.key LIMIT {limit}", select());
+            let sql = format!("{} AND c.id = ?1 ORDER BY b.project, b.key LIMIT {limit}", select());
             let mut out = self.rows(&sql, vec![&id])?;
             mark(&mut out, "ref", 1000);
             return Ok(out);
@@ -111,7 +113,7 @@ impl R<'_> {
                 return Err(BoardError::usage("标签写成 label:bug 这样"));
             }
             let sql = format!(
-                "{} WHERE EXISTS (SELECT 1 FROM card_labels cl JOIN labels l ON l.id = cl.label \
+                "{} AND EXISTS (SELECT 1 FROM card_labels cl JOIN labels l ON l.id = cl.label \
                    WHERE cl.board = c.board AND cl.card = c.id AND lower(l.name) = ?1) \
                  ORDER BY c.updated_at DESC LIMIT {limit}",
                 select()
@@ -177,7 +179,7 @@ impl R<'_> {
             "SELECT {COLS}, instr(lower(c.title), ?{flag}) > 0, instr(lower(c.body), ?{flag}) > 0, \
                EXISTS (SELECT 1 FROM activity a WHERE a.board = c.board AND a.card = c.id AND a.kind = 'comment' \
                  AND instr(lower(a.text), ?{flag}) > 0) \
-             {FROM} WHERE {} \
+             {FROM} AND {} \
              ORDER BY c.updated_at DESC LIMIT ?{}",
             conds.join(join),
             2 * n + 2

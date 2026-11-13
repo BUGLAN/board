@@ -172,6 +172,39 @@ fn label_form_finds_cards_with_that_label() {
     assert_eq!(e.code, ErrorCode::Usage);
 }
 
+/// 执行一条卡片命令（删除、恢复只由人做）
+fn card_cmd(s: &mut Store, path: &str, cmd: Cmd) {
+    s.write(T0, Origin::ui(None), |w| {
+        let b = w.resolve(path)?;
+        w.exec(&b, &Actor::human(), cmd).map(|_| ())
+    })
+    .unwrap();
+}
+
+/// 验收标准：回收站里的卡片，四种搜索都不返回；恢复后重新可以搜到
+#[test]
+fn deleted_cards_leave_every_search_form_until_restored() {
+    let mut s = store();
+    let bug = s.write(T0, Origin::ui(None), |w| Ok(w.create_label("default", "bug", None, false)?.id)).unwrap();
+    let id = new_card(&mut s, "default/main", "回收站的圆角", "描述里也提到圆角");
+    comment(&mut s, "default/main", id, "评论里也提到圆角");
+    card_cmd(&mut s, "default/main", Cmd::Label { id, add: vec![bug], remove: vec![] });
+    let forms = ["圆角".to_string(), format!("#{id}"), format!("default/main#{id}"), "label:bug".to_string()];
+    for q in &forms {
+        assert_eq!(search(&s, q).iter().map(|h| h.id).collect::<Vec<_>>(), vec![id], "删之前搜「{q}」找得到");
+    }
+
+    card_cmd(&mut s, "default/main", Cmd::Delete { id });
+    for q in &forms {
+        assert!(search(&s, q).is_empty(), "回收站里的卡片不该被搜到：「{q}」");
+    }
+
+    card_cmd(&mut s, "default/main", Cmd::Restore { id });
+    for q in &forms {
+        assert_eq!(search(&s, q).iter().map(|h| h.id).collect::<Vec<_>>(), vec![id], "恢复后搜「{q}」又能找到");
+    }
+}
+
 #[test]
 fn empty_query_is_rejected() {
     let s = store();
