@@ -224,9 +224,7 @@ pub fn switch_to(app: &AppHandle, url: Url) -> Result<(), String> {
         let _ = w.close();
     }
     // 新窗口按新地址放行本机命令（和启动时同一份权限）
-    if let Some(cap) = crate::configured_capability(&url) {
-        app.add_capability(cap).map_err(|e| e.to_string())?;
-    }
+    app.add_capability(crate::configured_capability(&url)).map_err(|e| e.to_string())?;
     crate::open_window(app).map_err(|e| e.to_string())
 }
 

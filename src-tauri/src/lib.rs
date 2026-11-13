@@ -235,31 +235,27 @@ fn window_ready(window: WebviewWindow) {
     let _ = window;
 }
 
-/// capabilities/default.json 只放行构建时注入的默认地址（BOARD_DEFAULT_URL）和启动页。
-/// 当前打开的服务端是别的地址（配置文件、BOARD_URL、人填的地址，开发时的 localhost:1420）时，
-/// 只给这一个来源放行同样的命令，不放行整个 localhost：窗口导航到本机别的端口上的页面时调不了本机命令。
+/// capabilities/default.json 只放行启动页。当前打开的服务端——构建时注入的默认地址（BOARD_DEFAULT_URL）、
+/// 配置文件里的地址、BOARD_URL、人填的地址、开发时的 localhost:1420——在启动、换地址时按这个来源另外放行同一份命令，
+/// 不放行整个 localhost：窗口导航到本机别的端口上的页面时调不了本机命令。
 /// 换了地址就是新开窗口，按新地址重新调用这里——旧地址的页面从此调不到本机命令
 pub(crate) fn allow_configured_url(app: &AppHandle) -> tauri::Result<()> {
     if let Some(url) = board_url(app) {
-        if let Some(cap) = configured_capability(&url) {
-            app.add_capability(cap)?;
-        }
+        app.add_capability(configured_capability(&url))?;
     }
     Ok(())
 }
 
-/// 给一个服务端地址放行本机命令的能力（见 [`allow_configured_url`]）；是默认地址（default.json 已经放行）时是 None
-fn configured_capability(url: &Url) -> Option<tauri::ipc::CapabilityBuilder> {
+/// 给一个服务端地址放行本机命令的能力（见 [`allow_configured_url`]）。
+/// 构建时注入的默认地址也走这里：它在构建时来自环境变量，不进 capabilities/default.json，
+/// 不能当成「配置里已经放行」而跳过——那样带默认地址的安装包第一次打开时页面调不到本机命令
+fn configured_capability(url: &Url) -> tauri::ipc::CapabilityBuilder {
     let origin = url.origin().ascii_serialization();
-    let default = server::normalize(server::DEFAULT_URL).ok().map(|u| u.origin().ascii_serialization());
-    if default.as_deref() == Some(origin.as_str()) {
-        return None;
-    }
     let mut cap = tauri::ipc::CapabilityBuilder::new("configured-url").remote(format!("{origin}/*")).window("*");
     for p in default_permissions() {
         cap = cap.permission(p);
     }
-    Some(cap)
+    cap
 }
 
 /// default.json 里的权限（和它保持一份）
@@ -416,8 +412,8 @@ mod acl_tests {
         }
     }
 
-    /// 发布版不放行 localhost / 127.0.0.1 的任意端口：只放行启动页，当前连的服务端按地址另外放行同一份权限。
-    /// 代码里不写死服务端地址：默认地址只在构建时注入（BOARD_DEFAULT_URL）
+    /// 发布版不放行 localhost / 127.0.0.1 的任意端口：default.json 只放行启动页，当前连的服务端（包括构建时注入的
+    /// 默认地址）按地址另外放行同一份权限。代码里不写死服务端地址：默认地址只在构建时注入（BOARD_DEFAULT_URL）
     #[test]
     fn remote_urls_and_permissions() {
         let v: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
@@ -435,6 +431,86 @@ mod acl_tests {
         // 检查更新：三个命令都要放行，否则线上页面里「检查更新」调不通
         for p in ["allow-update-check", "allow-update-install", "allow-update-restart"] {
             assert!(perms.iter().any(|x| x == p), "缺 {p}：{perms:?}");
+        }
+    }
+
+    /// 带 BOARD_DEFAULT_URL 的构建第一次打开就连默认地址：那里的页面必须能调本机命令。
+    /// default.json 只放行启动页，所以默认地址和别的地址一样靠 [`configured_capability`] 放行；
+    /// 真的把它当成「配置里已经放行」跳过时，这个用例会拿到拒绝。
+    #[test]
+    fn default_url_is_allowed_by_the_configured_capability() {
+        use std::collections::BTreeMap;
+        use tauri::ipc::{Origin, RuntimeCapability, RuntimeAuthority};
+        use tauri::utils::acl::{
+            APP_ACL_KEY,
+            capability::{Capability, CapabilityFile},
+            manifest::Manifest,
+            resolved::Resolved,
+        };
+        use tauri::utils::platform::Target;
+
+        // build.rs 把这次构建的 ACL（本应用自己的命令和各插件的权限）写在这里
+        let manifests = include_str!(concat!(env!("OUT_DIR"), "/acl-manifests.json"));
+        // Manifest 不能 clone，每次重新解析
+        let acl = || -> BTreeMap<String, Manifest> { serde_json::from_str(manifests).unwrap() };
+        assert!(acl().contains_key(APP_ACL_KEY), "构建产里的 ACL 应该带上本应用自己的命令");
+        let default_cap = || -> Capability {
+            match serde_json::from_str(include_str!("../capabilities/default.json")).unwrap() {
+                CapabilityFile::Capability(c) => c,
+                _ => panic!("default.json 应该是一份能力"),
+            }
+        };
+        let default_perms = default_permissions();
+        let command_of = |p: &str| p.strip_prefix("allow-").unwrap_or(p).replace('-', "_");
+
+        let mut urls = vec!["https://board.example.com".to_string(), "http://127.0.0.1:7420".to_string()];
+        // 注入过默认地址的构建：第一次打开的就是它，同样是靠这里放行
+        if !server::DEFAULT_URL.trim().is_empty() {
+            urls.push(server::DEFAULT_URL.to_string());
+        }
+
+        for raw in urls {
+            let url: Url = server::normalize(&raw).unwrap();
+
+            // 只有 default.json：服务端的页面调不到本机命令（它只放行启动页）
+            let caps = BTreeMap::from([("default".to_string(), default_cap())]);
+            let only_default = RuntimeAuthority::new(acl(), Resolved::resolve(&acl(), caps, Target::current()).unwrap());
+            assert!(
+                only_default
+                    .resolve_access("host_status", "board-0", "board-0", &Origin::Remote { url: url.clone() })
+                    .is_none(),
+                "{raw} 的页面不应该只靠 default.json 就能调本机命令"
+            );
+
+            // 按当前地址放行（启动、换地址时做的事）：本机命令全都能调
+            let mut caps: BTreeMap<String, _> = BTreeMap::from([("default".to_string(), default_cap())]);
+            match configured_capability(&url).build() {
+                CapabilityFile::Capability(c) => caps.insert(c.identifier.clone(), c),
+                _ => panic!("configured_capability 应该给出一份能力"),
+            };
+            let authority = RuntimeAuthority::new(acl(), Resolved::resolve(&acl(), caps, Target::current()).unwrap());
+            for p in &default_perms {
+                // 只看本应用自己的命令（标识里不带插件前缀）：插件的权限名对不上命令名
+                if p.contains(':') {
+                    continue;
+                }
+                let command = command_of(p);
+                assert!(
+                    authority
+                        .resolve_access(&command, "board-0", "board-0", &Origin::Remote { url: url.clone() })
+                        .is_some(),
+                    "{raw} 的页面调不到 {command}（{p}）"
+                );
+            }
+
+            // 只放行当前这个地址：别的服务端的页面调不到本机命令
+            let other: Url = "https://someone-else.example.com".parse().unwrap();
+            assert!(
+                authority
+                    .resolve_access("host_status", "board-0", "board-0", &Origin::Remote { url: other })
+                    .is_none(),
+                "换了地址，旧地址的页面就调不到本机命令"
+            );
         }
     }
 }
