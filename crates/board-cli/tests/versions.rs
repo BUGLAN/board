@@ -92,3 +92,30 @@ fn versions_sync_labels_cards_from_git_history() {
     let r = s.raw(&s.env(), &["versions", "sync", "--dir", empty.path().to_str().unwrap(), "--json"]);
     assert_eq!(r.error_code(), "USAGE");
 }
+
+/// 无网络时 `versions sync` 也要给出可读的错误并以退出码 1 结束，不能 panic
+#[test]
+fn sync_offline_reports_unreachable_without_panicking() {
+    let s = start();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    commit(dir, "feat: 第一版\n\n卡片：default/main#1");
+    git(dir, &["tag", "v0.1.0"]);
+
+    let env = vec![
+        ("BOARD_URL", "http://127.0.0.1:9".to_string()),
+        ("BOARD_TOKEN", "x".to_string()),
+    ];
+    let d = dir.to_str().unwrap();
+    let r = s.raw(&env, &["versions", "sync", "--dir", d, "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "UNREACHABLE"), "{}{}", r.out, r.err);
+    assert!(r.out.contains("连不上"), "错误信息要可读：{}", r.out);
+    assert!(!r.out.contains("panicked"), "不能 panic：{}", r.out);
+
+    // 文本模式也同样：错误码写在 stderr，退出码 1
+    let r = s.raw(&env, &["versions", "sync", "--dir", d]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    assert!(r.err.contains("UNREACHABLE") && r.err.contains("连不上"), "{}", r.err);
+    assert!(!r.err.contains("panicked"), "不能 panic：{}", r.err);
+}
