@@ -2179,6 +2179,35 @@ fn dispatch_name_belongs_to_the_host() {
     assert_eq!(get(&s, d.id).state, "running");
 }
 
+/// board host 级别的心跳 / final 只对自己派发生成的名字有效：
+/// 不能给另一个会话（新版 CLI check 的）或另一台机器派发的名字发心跳、让它离线
+#[test]
+fn host_cannot_beat_or_final_another_sessions_name() {
+    use crate::agents::{BeatBy, NameOwner};
+    let mut s = store();
+    // 一个新版 CLI 会话 check 的名字
+    s.write(T0, Origin::cli(), |w| w.agent_check_owned("claude-mbp/opus-5.5", None, NameOwner::Session("abc"))).unwrap();
+    let agent = "claude-mbp/opus-5.5";
+    // board host 的心跳、final 都被拒，名字的状态不变
+    let e = s.write(T0 + S, Origin::cli(), |w| w.agent_beat_by(agent, false, BeatBy::Host)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken);
+    assert!(e.message.contains("board host"), "{}", e.message);
+    let e = s.write(T0 + S, Origin::cli(), |w| w.agent_beat_by(agent, true, BeatBy::Host)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken);
+    s.read(|r| r.require_online(agent, T0 + S)).expect("被拒之后名字仍在线");
+    // 它自己的会话照常被接受
+    s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_beat_by(agent, false, BeatBy::Cli(Some("abc")))).unwrap();
+    // 另一个 host 派发生成的名字：别的 host 也不能替它心跳，只有它自己的 host 可以
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    let name = d.name.clone().unwrap();
+    // 名字归属由 board host 的派发维持；这里直接发一次 board host 级心跳，自己的 host 能发
+    s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_beat_by(&name, false, BeatBy::Host)).unwrap();
+    s.read(|r| r.require_online(&name, T0 + 2 * S)).expect("board host 能给自己派发的名字发心跳");
+}
+
 /* ------------------------------ 环境检查（PRD §9.1） ------------------------------ */
 
 fn set_ready_check(s: &mut Store, cmd: &str, win: &str) {

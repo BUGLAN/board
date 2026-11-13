@@ -92,7 +92,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 **会话标识的规则**（防止同名会话互相干扰）：
 
 - 名字在线、有会话标识时，agent 级心跳和 `--final` 带的标识和记录的一致才接受；不一致或没带时拒绝（`NAME_TAKEN`，原因写「这个名字现在属于另一个会话」），名字的状态不变。
-- 属于 `board host` 的名字只有 `board host` 能发 agent 级心跳、让它离线：派发会话里的 agent 自己执行 `board heartbeat stop`，名字不离线，派发不受影响。
+- 属于 `board host` 的名字只有 `board host` 能发 agent 级心跳、让它离线：派发会话里的 agent 自己执行 `board heartbeat stop`，名字不离线，派发不受影响。反过来的方向也不放开：`board host` 级的心跳和 `--final` 只对这个规则生成的名字有效，不能用来给 `NameOwner::Session`（新版 CLI check 的）或别的机器派发的名字发心跳、让它离线（`NAME_TAKEN`，原因写「board host 只能给自己派发生成的名字发心跳、让它离线」）。
 - 没有标识的名字（旧版 `board` check 的）规则和以前一样。卡片级心跳（`board beat <ID>`）不看标识。
 - 本机保护：`board heartbeat start`、`board heartbeat stop`、不带 ID 的 `board beat` 只在 check 这个名字的 agent 进程里生效。名字是本机另一个还在运行的 agent 进程 check 的时候拒绝（`NAME_TAKEN`，写明是哪个进程），不停它的后台心跳、不顶掉它、不发 final；那个进程已经不在了才接管。`--force` 只放开本机这一层，服务端的校验照旧。
 - 其他带名字的命令：调用它的 agent 进程不是 check 这个名字的那个、而那个进程还在运行时，照常执行，但在输出里加一行提醒（`--json` 里加 `warning` 字段），说明可能用了别人的名字。

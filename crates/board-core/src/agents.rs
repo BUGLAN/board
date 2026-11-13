@@ -57,7 +57,7 @@ pub enum NameOwner<'a> {
 pub enum BeatBy<'a> {
     /// CLI（`board beat`、后台心跳、`board heartbeat stop`），带着 check 时拿到的会话标识（旧版 CLI 没有）
     Cli(Option<&'a str>),
-    /// board host 替它派发的 agent 发的
+    /// board host 替它派发的 agent 发的：只对 board host 生成的名字（`NameOwner::Host`）有效
     Host,
 }
 
@@ -71,20 +71,25 @@ fn stored(owner: NameOwner<'_>) -> Option<String> {
     }
 }
 
-/// 名字在线时，这次 agent 级心跳 / final 能不能被接受：标识对得上才行；名字没有标识（旧版 CLI check 的）时都接受
+/// 名字在线时，这次 agent 级心跳 / final 能不能被接受：标识对得上才行；名字没有标识（旧版 CLI check 的）时都接受。
+/// `BeatBy::Host` 只放行 `board host` 自己派发时生成的名字（`session` 为 `host`）：别的机器（或会话）不能替
+/// `NameOwner::Session` 的名字发 agent 级心跳、让它离线
 fn allowed(session: Option<&str>, by: BeatBy<'_>) -> bool {
     match (session, by) {
         (None, _) => true,
-        (Some(_), BeatBy::Host) => true,
+        (Some(HOST_OWNED), BeatBy::Host) => true,
+        (Some(_), BeatBy::Host) => false,
         (Some(HOST_OWNED), BeatBy::Cli(_)) => false,
         (Some(s), BeatBy::Cli(Some(mine))) => s.strip_prefix("s:") == Some(mine),
         (Some(_), BeatBy::Cli(None)) => false,
     }
 }
 
-fn not_yours(name: &str, session: Option<&str>) -> BoardError {
+fn not_yours(name: &str, session: Option<&str>, by: BeatBy<'_>) -> BoardError {
     let why = if session == Some(HOST_OWNED) {
         format!("名字「{name}」属于 board host 派发的会话：只有 board host 能给它发心跳、让它离线（派发会话里不用 heartbeat start / stop）")
+    } else if matches!(by, BeatBy::Host) {
+        format!("名字「{name}」现在属于另一个会话：board host 只能给自己派发生成的名字发心跳、让它离线，不能替它操作")
     } else {
         format!("名字「{name}」现在属于另一个会话（会话标识对不上）：不能替它发心跳或让它离线。你的名字要么 check 时得到了 NAME_TAKEN，要么已经被别的会话重新 check；换一个带后缀的名字 check")
     };
@@ -224,7 +229,7 @@ impl<'a> W<'a> {
         if is_online {
             let session = session_of(self.tx, name)?;
             if !allowed(session.as_deref(), by) {
-                return Err(not_yours(name, session.as_deref()));
+                return Err(not_yours(name, session.as_deref(), by));
             }
         }
         if done {
