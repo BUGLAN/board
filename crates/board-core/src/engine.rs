@@ -29,6 +29,9 @@ pub enum Cmd {
         top: bool,
         #[serde(default)]
         labels: Vec<i64>,
+        /// 拆自：同一块白板上另一张卡的编号（含回收站里的），不存在时 NOT_FOUND
+        #[serde(default)]
+        from: Option<i64>,
     },
     Edit {
         id: i64,
@@ -162,7 +165,7 @@ struct TrashMeta {
 impl TrashCard {
     /// 永久删除时返回给界面、CLI 的卡片（不含动态和附件）
     fn into_detail(self) -> CardDetail {
-        CardDetail { card: self.card, activity: vec![], attachments: vec![] }
+        CardDetail { card: self.card, activity: vec![], attachments: vec![], split_into: vec![] }
     }
 }
 
@@ -223,10 +226,17 @@ impl<'a> W<'a> {
 
         let id = match cmd {
             /* ---------------- 新建 ---------------- */
-            Cmd::New { title, body, column, top, labels } => {
+            Cmd::New { title, body, column, top, labels, from } => {
                 let title = title.trim().to_string();
                 if title.is_empty() {
                     return Err(BoardError::code(ErrorCode::EmptyTitle));
+                }
+                // 拆自：同一块白板上的卡片，回收站里的也算
+                if let Some(f) = from {
+                    let n: i64 = self.tx.query_row("SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2", params![b, f], |r| r.get(0))?;
+                    if n == 0 {
+                        return Err(BoardError::new(ErrorCode::NotFound, format!("--from #{f}：这块白板上没有这张卡片")));
+                    }
                 }
                 let start = flow.home();
                 let col = match column.as_deref().map(|c| flow.resolve(c)) {
@@ -244,9 +254,9 @@ impl<'a> W<'a> {
                 self.tx.execute("UPDATE boards SET seq = seq + 1 WHERE id = ?1", [b])?;
                 let id: i64 = self.tx.query_row("SELECT seq FROM boards WHERE id = ?1", [b], |r| r.get(0))?;
                 self.tx.execute(
-                    "INSERT INTO cards (board, id, title, body, col, pos, created_at, updated_at, created_by_kind, created_by_name)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, ?7, ?8)",
-                    params![b, id, title, body.as_deref().unwrap_or_default().trim(), col, self.now, actor.kind.as_str(), actor.name],
+                    "INSERT INTO cards (board, id, title, body, col, pos, created_at, updated_at, created_by_kind, created_by_name, split_from)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, ?7, ?8, ?9)",
+                    params![b, id, title, body.as_deref().unwrap_or_default().trim(), col, self.now, actor.kind.as_str(), actor.name, from],
                 )?;
                 // 新建弹窗里先上传的附件归到这张卡片
                 self.bind_attachments(b, id, body.as_deref().unwrap_or_default())?;
@@ -254,13 +264,16 @@ impl<'a> W<'a> {
                 for l in dedup(&labels) {
                     self.tx.execute("INSERT INTO card_labels (board, card, label) VALUES (?1, ?2, ?3)", params![b, id, l])?;
                 }
-                let text = if col == INBOX {
+                let mut text = if col == INBOX {
                     "记下了一条未整理的条目".to_string()
                 } else if top {
                     format!("新建了卡片，放在「{}」最上面", start.name)
                 } else {
                     "新建了卡片".to_string()
                 };
+                if let Some(f) = from {
+                    text += &format!("，拆自 #{f}");
+                }
                 self.track(b, id, actor, "create", &text)?;
                 // 人自己记下的不算「新」（PRD §10.5）
                 if actor.is_human() {
@@ -895,7 +908,7 @@ impl<'a> W<'a> {
                 return match id {
                     Some(id) => self.read().card(board, id),
                     // 全部标为已读：不是对某一张卡片的操作，返回一块空白
-                    None => Ok(CardDetail { card: blank_card(), activity: vec![], attachments: vec![] }),
+                    None => Ok(CardDetail { card: blank_card(), activity: vec![], attachments: vec![], split_into: vec![] }),
                 };
             }
         };
@@ -1277,6 +1290,7 @@ fn blank_card() -> Card {
         created_by: Actor::system(),
         comments: 0,
         seen_at: None,
+        split_from: None,
     }
 }
 

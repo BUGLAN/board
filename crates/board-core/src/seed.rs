@@ -11,10 +11,10 @@ const H: i64 = 60 * M;
 const D: i64 = 24 * H;
 
 fn new(title: &str, body: &str) -> Cmd {
-    Cmd::New { title: title.into(), body: Some(body.into()), column: None, top: false, labels: vec![] }
+    Cmd::New { title: title.into(), body: Some(body.into()), column: None, top: false, labels: vec![], from: None }
 }
 fn inbox(title: &str, body: &str) -> Cmd {
-    Cmd::New { title: title.into(), body: Some(body.into()), column: Some("inbox".into()), top: false, labels: vec![] }
+    Cmd::New { title: title.into(), body: Some(body.into()), column: Some("inbox".into()), top: false, labels: vec![], from: None }
 }
 fn claim(id: i64) -> Cmd {
     Cmd::Claim { id: Some(id) }

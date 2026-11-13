@@ -31,7 +31,7 @@ fn try_exec(s: &mut Store, path: &str, who: &Actor, at: i64, cmd: Cmd) -> Result
 }
 
 fn new(s: &mut Store, path: &str, at: i64, title: &str) -> i64 {
-    exec(s, path, &Actor::human(), at, Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![] }).card.id
+    exec(s, path, &Actor::human(), at, Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![], from: None }).card.id
 }
 
 fn mv(s: &mut Store, path: &str, who: &Actor, at: i64, id: i64, col: &str) {
@@ -146,7 +146,7 @@ fn backfill_parses_every_move_and_keeps_renamed_names() {
     let h = Actor::human();
     let a = new(&mut s, B, BASE, "一");
     let b = new(&mut s, B, BASE, "二");
-    exec(&mut s, B, &h, BASE, Cmd::New { title: "三".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] });
+    exec(&mut s, B, &h, BASE, Cmd::New { title: "三".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![], from: None });
     mv(&mut s, B, &h, BASE + MIN, 3, "todo"); // 整理好了，从「未整理」移到「待办」
     work(&mut s, B, "alpha", a, BASE + 2 * MIN, BASE + 10 * MIN);
     mv(&mut s, B, &h, BASE + 11 * MIN, a, "done");

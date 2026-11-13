@@ -20,7 +20,7 @@ fn exec(s: &mut Store, path: &str, who: &Actor, at: i64, cmd: Cmd) -> Result<Car
 }
 
 fn new(title: &str) -> Cmd {
-    Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![] }
+    Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![], from: None }
 }
 fn claim(id: Option<i64>) -> Cmd {
     Cmd::Claim { id }
@@ -518,7 +518,7 @@ fn ac19_21_inbox() {
     for id in 1..=4 {
         exec(&mut s, B, &human(), T0, Cmd::Delete { id }).unwrap();
     }
-    let c = exec(&mut s, B, &human(), T0, Cmd::New { title: "想法".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }).unwrap();
+    let c = exec(&mut s, B, &human(), T0, Cmd::New { title: "想法".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![], from: None }).unwrap();
     assert_eq!(c.card.id, 5);
     assert_eq!(c.card.column, "inbox");
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(None))), ErrorCode::EmptyTodo);
@@ -530,10 +530,10 @@ fn ac19_21_inbox() {
     exec(&mut s, B, &human(), T0, mv(5, "todo")).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![6, 5]);
     // agent/CLI 也可以在「未整理」里新建，放在最下面，持有者为空
-    let a = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "agent 记的".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }).unwrap();
+    let a = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "agent 记的".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![], from: None }).unwrap();
     assert_eq!(a.card.column, "inbox");
     assert_eq!(a.card.holder, None);
-    let b = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "agent 又记的".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }).unwrap();
+    let b = exec(&mut s, B, &alpha(), T0, Cmd::New { title: "agent 又记的".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![], from: None }).unwrap();
     assert_eq!(b.card.column, "inbox");
     assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![7, 8]);
 }
@@ -577,7 +577,7 @@ fn human_only_labels() {
     // agent 可打的标签照常
     exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![any.id], remove: vec![] }).unwrap();
     // agent 新建时带上：拒绝
-    let e = exec(&mut s, B, &beta(), T0, Cmd::New { title: "b".into(), body: None, column: None, top: false, labels: vec![mine.id] })
+    let e = exec(&mut s, B, &beta(), T0, Cmd::New { title: "b".into(), body: None, column: None, top: false, labels: vec![mine.id], from: None })
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::Usage);
 
@@ -694,7 +694,7 @@ fn drag_index_and_reorder() {
     let snap = snapshot(&s, B, T0);
     assert_eq!(snap.cols["todo"], vec![2]);
     assert_eq!(snap.cols["review"], vec![1, 3]);
-    exec(&mut s, B, &alpha(), T0, Cmd::New { title: "top".into(), body: None, column: None, top: true, labels: vec![] }).unwrap();
+    exec(&mut s, B, &alpha(), T0, Cmd::New { title: "top".into(), body: None, column: None, top: true, labels: vec![], from: None }).unwrap();
     assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![4, 2]);
 }
 
@@ -1227,7 +1227,7 @@ fn attachments_upload_bind_delete_and_gc() {
     assert_eq!((a.card_id, a.name.as_str(), a.image), (None, "截图.png", true));
     assert_eq!(a.markdown, format!("![截图.png](/api/files/{})", a.id));
     let body = format!("看图：{}", a.markdown);
-    let c = exec(&mut s, B, &human(), T0, Cmd::New { title: "有图".into(), body: Some(body), column: None, top: false, labels: vec![] })
+    let c = exec(&mut s, B, &human(), T0, Cmd::New { title: "有图".into(), body: Some(body), column: None, top: false, labels: vec![], from: None })
         .unwrap();
     assert_eq!(c.attachments.len(), 1);
     assert_eq!(c.attachments[0].card_id, Some(c.card.id));
@@ -1706,6 +1706,7 @@ fn inbox_merge() {
         column: Some("inbox".into()),
         top: false,
         labels,
+        from: None,
     };
     let merge = |id: i64, from: Vec<i64>| Cmd::Merge { id, from, title: None, body: None };
 
@@ -1756,7 +1757,7 @@ fn inbox_merge() {
 /* ------------------------------ 未整理：新条目（PRD §10.5） ------------------------------ */
 
 fn inbox_new(title: &str) -> Cmd {
-    Cmd::New { title: title.into(), body: None, column: Some("inbox".into()), top: false, labels: vec![] }
+    Cmd::New { title: title.into(), body: None, column: Some("inbox".into()), top: false, labels: vec![], from: None }
 }
 fn seen(id: Option<i64>) -> Cmd {
     Cmd::Seen { id }
@@ -2050,9 +2051,9 @@ fn trash_restore_from_inbox_goes_back_to_inbox() {
     // 否则刚记下、还没整理的条目会直接进可领取状态被领走
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("先记下")).unwrap();
-    exec(&mut s, B, &human(), T0, Cmd::New { title: "想法".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![] })
+    exec(&mut s, B, &human(), T0, Cmd::New { title: "想法".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: None })
         .unwrap();
-    exec(&mut s, B, &human(), T0, Cmd::New { title: "想法二".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![] })
+    exec(&mut s, B, &human(), T0, Cmd::New { title: "想法二".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: None })
         .unwrap();
     assert_eq!(snapshot(&s, B, T0).cols[INBOX], vec![2, 3]);
 

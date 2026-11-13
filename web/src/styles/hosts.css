@@ -421,6 +421,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .dp-host em.bad { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger-text); }
 .dp-host:disabled em { color: var(--text-3); }
 .dp-note { margin-top: 10px !important; font-size: 12px !important; color: var(--warn-text) !important; }
+.dp-note.dp-split { margin-top: 2px !important; color: var(--text-3) !important; line-height: 1.6; }
 .dp-empty { margin-top: 14px; }
 .dp-empty .btn { margin-top: 10px; }
 

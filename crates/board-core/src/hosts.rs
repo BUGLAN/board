@@ -24,6 +24,11 @@
 //!   别的 agent `board claim <ID>` 报 `DISPATCHED`，也不能移动它；人把它拖出那个状态时这次派发自动取消。
 //! - **掉线**：机器掉线超过 50 秒，名字跟着离线，卡片按现有的心跳超时规则释放，在跑的派发结束（机器掉线），见 [`W::sweep_hosts`]。
 //!
+//! - **拆解**（`kind = split`，PRD §9.1）：派发「未整理」里的条目，让 agent 把它拆成几张卡、记回「未整理」（`board new --inbox --from`）。
+//!   不领取、不移动这条，也不占用它（人照样能编辑、整理）；开始时只生成名字、check，host 替这个名字发心跳；
+//!   结束时按这次派发期间建了几张「拆自」是它的卡记「已拆解」或「没拆出卡」，退出码非 0 记「异常退出」并评论，人停止、超时记「已停止」并评论。
+//!   和普通派发一样占机器的一个会话位。
+//!
 //! 派发、取消、开始、结束都在卡片动态里追加一条，写明机器、agent、来源和结果。
 
 use crate::engine::At;
@@ -113,7 +118,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
   session     INTEGER,                -- 同一个 agent 进程做的几张卡：第一张的派发 ID（开会话时排进去、board next 接着做的那几张都写它）；空表示就是自己
   log         TEXT NOT NULL DEFAULT '', -- 日志的最后 500 行
   model       TEXT,                   -- 开始时按机器设置传给 agent 的模型；没设（agent 自己的默认）、旧版 board host 为空
-  effort      TEXT                    -- 开始时传给 agent 的思考强度；同上
+  effort      TEXT,                   -- 开始时传给 agent 的思考强度；同上
+  kind        TEXT NOT NULL DEFAULT '' -- 空 = 做这张卡（领取）；split = 拆解「未整理」里的这条（不领取、不移动）
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
 CREATE INDEX IF NOT EXISTS dispatches_host ON dispatches (host_id, state, id);
@@ -166,6 +172,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "fmt", "TEXT"),
         ("dispatches", "ev_dropped", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "ev_old", "INTEGER NOT NULL DEFAULT 0"),
+        ("dispatches", "kind", "TEXT NOT NULL DEFAULT ''"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -1073,7 +1080,13 @@ pub struct Dispatch {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// 空 = 做这张卡（领取它）；`split` = 拆解「未整理」里的这条（不领取、不移动，见 [`KIND_SPLIT`]）。旧服务端没有这个字段
+    #[serde(default)]
+    pub kind: String,
 }
+
+/// 派发的类型：拆解「未整理」里的条目（PRD §9.1）
+pub const KIND_SPLIT: &str = "split";
 
 fn one() -> i64 {
     1
@@ -1131,6 +1144,8 @@ pub fn result_words(r: &str) -> &'static str {
         "canceled" => "已取消",
         "lost" => "机器掉线",
         "unclaimed" => "没领到",
+        "split" => "已拆解",
+        "nosplit" => "没拆出卡",
         _ => "已结束",
     }
 }
@@ -1394,7 +1409,7 @@ const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, C
        d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session AND s.id <= d.id) END,
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END,
-       d.model, d.effort
+       d.model, d.effort, d.kind
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -1425,6 +1440,7 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         total: r.get(24)?,
         model: r.get(25)?,
         effort: r.get(26)?,
+        kind: r.get(27)?,
     })
 }
 
@@ -1758,6 +1774,14 @@ struct DRow {
     session: i64,
     model: Option<String>,
     effort: Option<String>,
+    /// 空 = 做这张卡；`split` = 拆解
+    kind: String,
+}
+
+impl DRow {
+    fn split(&self) -> bool {
+        self.kind == KIND_SPLIT
+    }
 }
 
 impl<'a> W<'a> {
@@ -1782,7 +1806,7 @@ impl<'a> W<'a> {
     fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
-                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort FROM dispatches WHERE id = ?1",
+                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort, kind FROM dispatches WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(DRow {
@@ -1803,6 +1827,7 @@ impl<'a> W<'a> {
                         session: r.get(14)?,
                         model: r.get(15)?,
                         effort: r.get(16)?,
+                        kind: r.get(17)?,
                     })
                 },
             )
@@ -3031,11 +3056,13 @@ impl<'a> W<'a> {
             )
             .with_detail(json!({ "dispatch": d.id })));
         }
-        if !flow.is_claim(&col) {
+        // 「未整理」里的条目：派给 agent 拆解（不领取、不移动）
+        let split = col == INBOX;
+        if !split && !flow.is_claim(&col) {
             let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
             return Err(BoardError::new(
                 ErrorCode::NotInTodo,
-                format!("#{card} 在「{}」，不在可领取的状态{}，不能派发", flow.name(&col), names.join("")),
+                format!("#{card} 在「{}」，不在可领取的状态{}，不能派发（「{INBOX_NAME}」里的条目可以派给 agent 拆解）", flow.name(&col), names.join("")),
             ));
         }
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
@@ -3080,19 +3107,23 @@ impl<'a> W<'a> {
             Readiness::NoCheck | Readiness::Passed => {}
         }
         let (agent_id, label) = (a.id.clone(), a.name.clone());
-        self.insert_dispatch(board.id, card, &h, &agent_id, &label, "manual", by, true)
+        let kind = if split { KIND_SPLIT } else { "" };
+        self.insert_dispatch(board.id, card, &h, &agent_id, &label, "manual", by, kind)
     }
 
-    /// 记一条排队的派发。`reserve` 时卡片进入领取时会进的锁定状态排队（[`W::reserve`]）；定时领取的第一张马上开始，不经过排队
+    /// 记一条排队的派发。手动派发（source 是 manual）的卡片进入领取时会进的锁定状态排队（[`W::reserve`]）；
+    /// 定时领取的第一张马上开始，不经过排队；拆解（kind 是 split）不动卡片
     #[allow(clippy::too_many_arguments)]
-    fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, reserve: bool) -> Result<Dispatch> {
+    fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, kind: &str) -> Result<Dispatch> {
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
         self.tx.execute(
-            "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'queued', ?11)",
-            params![b, card, title, h.id, h.name, agent, label, source, by.kind.as_str(), by.name, self.now],
+            "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'queued', ?11, ?12)",
+            params![b, card, title, h.id, h.name, agent, label, source, by.kind.as_str(), by.name, self.now, kind],
         )?;
         let id = self.tx.last_insert_rowid();
+        let split = kind == KIND_SPLIT;
+        let reserve = source == "manual" && !split;
         let into = if reserve { self.reserve(b, card, by)? } else { None };
         let at = into.map(|n| format!("在「{n}」")).unwrap_or_default();
         let wait = if !h.online(self.now) {
@@ -3102,7 +3133,8 @@ impl<'a> W<'a> {
         } else {
             format!("，{at}排队")
         };
-        self.track(b, card, by, "dispatch", &format!("派发到 {} · {}（{}）{wait}", h.name, label, source_words(source)))?;
+        let what = if split { format!("派给 {} · {} 拆解", h.name, label) } else { format!("派发到 {} · {}", h.name, label) };
+        self.track(b, card, by, "dispatch", &format!("{what}（{}）{wait}", source_words(source)))?;
         self.touch_hosts();
         self.read().dispatch(id)
     }
@@ -3255,6 +3287,18 @@ impl<'a> W<'a> {
         self.agent_check_owned(&name, token, crate::agents::NameOwner::Host)?;
         let board = self.board_of(d.board)?;
         let actor = Actor::agent(name.clone());
+        // 拆解：不领取、不移动这一条，名字上线就开始（host 替它发心跳）
+        if d.split() {
+            self.tx.execute("UPDATE dispatches SET state = 'running', started_at = ?2, session = ?1 WHERE id = ?1", params![d.id, self.now])?;
+            self.touch_hosts();
+            let who = match &env_name {
+                Some(e) => format!("{}（{e}）", d.agent_label),
+                None => format!("{} ", d.agent_label),
+            };
+            let text = format!("拆解开始：{} 上的 {who}以 {name} 拆解这一条（{}{}）", h.name, source_words(&d.source), opts_words(&d.model, &d.effort));
+            self.track_dispatch(d.board, d.card, &actor, "dispatch", &text)?;
+            return self.read().dispatch(d.id);
+        }
         self.dispatch_ok = true;
         let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(d.card) });
         self.dispatch_ok = false;
@@ -3326,7 +3370,7 @@ impl<'a> W<'a> {
             }
             let Some((card, agent)) = hit else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
-            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system(), false)?;
+            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system(), "")?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
                 // 开会话时把这个会话要做的卡片一次排好：先把一个会话排满，再开下一个
@@ -3404,6 +3448,9 @@ impl<'a> W<'a> {
             Finish::HostExit => Some(format!("board host（{}）", d.host)),
             _ => d.stop_by.clone(),
         };
+        if d.split() {
+            return self.finish_split(d, &actor, exit_code, tail, how, because, stop_by);
+        }
         let row: Option<(String, Option<String>)> = self
             .tx
             .query_row("SELECT col, holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -3498,6 +3545,43 @@ impl<'a> W<'a> {
             _ => "agent 进程退出".to_string(),
         };
         self.cancel_session_rest(d.session, &why)
+    }
+
+    /// 拆解结束（PRD §9.1）：卡片在任何情况下都不动。退出码 0 时按这次派发期间建了几张「拆自」是这条的卡记「已拆解」或「没拆出卡」；
+    /// 退出码非 0（或 board host 上没有进程）记「异常退出」，人停止、board host 退出、超时记「已停止」，都在这一条上评论原因
+    #[allow(clippy::too_many_arguments)]
+    fn finish_split(&mut self, d: &DRow, actor: &Actor, exit_code: Option<i64>, tail: &Tail, how: Finish, because: Option<String>, stop_by: Option<String>) -> Result<()> {
+        let since = d.started_at.unwrap_or(self.now);
+        let made: i64 = self.tx.query_row(
+            "SELECT COUNT(*) FROM cards WHERE board = ?1 AND split_from = ?2 AND created_at >= ?3",
+            params![d.board, d.card, since],
+            |r| r.get(0),
+        )?;
+        let (result, why) = match (how, &stop_by) {
+            (Finish::Timeout(_), _) => ("stopped", Some(format!("{}，board host 停止了这次拆解{}", because.unwrap_or_default(), tail.words()))),
+            (Finish::HostExit, _) => ("stopped", Some(format!("board host（{}）退出，停止了这次拆解", d.host))),
+            (_, Some(who)) => ("stopped", Some(format!("{who} 停止了这次拆解"))),
+            (Finish::Missing, None) => (
+                "crashed",
+                Some("拆解的 agent 异常退出（board host 上没有这次派发的 agent 进程：board host 重启过，或开始派发时连接中断）".to_string()),
+            ),
+            (Finish::Exit, None) if exit_code == Some(0) => (if made > 0 { "split" } else { "nosplit" }, None),
+            (Finish::Exit, None) => {
+                let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into());
+                ("crashed", Some(format!("拆解的 agent 异常退出（退出码 {code}）{}", tail.words())))
+            }
+        };
+        if let Some(text) = why {
+            let board = self.board_of(d.board)?;
+            soft(self.exec(&board, actor, Cmd::Comment { id: d.card, text }))?;
+        }
+        self.close_dispatch(d, result, exit_code)?;
+        let took = d.started_at.map(|t| format!("，用时 {}", crate::engine::dur_words(self.now - t))).unwrap_or_default();
+        let code = exit_code.map(|c| format!("，退出码 {c}")).unwrap_or_default();
+        let made = if made > 0 { format!("，拆出 {made} 条") } else { String::new() };
+        let text = format!("拆解结束：{}（{}{took}{code}{made}）", result_words(result), Self::dispatch_words(d));
+        self.track_dispatch(d.board, d.card, actor, "dispatch", &text)?;
+        Ok(())
     }
 
     /// 追加日志，只保留最后 500 行（不算变更，不推送；界面打开日志时自己去取）

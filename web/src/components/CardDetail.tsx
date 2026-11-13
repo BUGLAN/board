@@ -6,7 +6,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cardBack, cardFwd, copyCardPrompt, openLink, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { cardDispatch } from '../lib/hosts';
-import { cardPrompt } from '../lib/prompt';
+import { detailPrompt } from '../lib/prompt';
+import { api, ApiError } from '../lib/api';
 import { cardUrl } from '../lib/route';
 import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
@@ -239,7 +240,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <Icon name="clip" />
           复制链接
         </button>
-        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${cardPrompt(useData.getState().path, c.id)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
+        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${detailPrompt(useData.getState().path, c)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
           <Icon name="prompt" />
           复制为提示词
         </button>
@@ -260,6 +261,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               </span>
             </div>
             <CardLabels card={c} saving={saving} />
+            <SplitLinks card={c} />
           </section>
           <DispatchNote board={useData.getState().path} card={c.id} />
           <DispatchHistory board={useData.getState().path} card={c.id} />
@@ -291,15 +293,24 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               <Icon name="trash" />
               删除卡片
             </button>
+            {/* 「未整理」里的条目：派给 agent 拆解（不领取、不移动它，拆出的卡记回未整理） */}
             <button
               className="btn sm d-move"
               type="button"
-              disabled={saving || !f.list.find(s => s.key === c.column)?.claim || !!dispatched}
-              data-tip={dispatched ? '已经派发过了：在上面取消派发或停止' : !f.list.find(s => s.key === c.column)?.claim ? '只有可领取状态里的卡片能派发' : '派给一台机器上的 agent'}
+              disabled={saving || (c.column !== 'inbox' && !f.list.find(s => s.key === c.column)?.claim) || !!dispatched}
+              data-tip={
+                dispatched
+                  ? '已经派发过了：在上面取消派发或停止'
+                  : c.column === 'inbox'
+                    ? '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理、挂在这条下面'
+                    : !f.list.find(s => s.key === c.column)?.claim
+                      ? '只有可领取状态里的卡片能派发'
+                      : '派给一台机器上的 agent'
+              }
               onClick={() => openDispatch(c.id)}
             >
               <Icon name="dispatch" />
-              派发
+              {c.column === 'inbox' ? '派给 agent 拆解' : '派发'}
             </button>
             <button
               className="btn sm"
@@ -641,6 +652,58 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
       </div>
     </>
   );
+}
+
+/** 拆自 #5 / 拆出 #6 #7：拆出的按编号，白板上的（实时）和详情里服务端给的（含快照省略的）合在一起 */
+function SplitLinks({ card: c }: { card: Detail }) {
+  const kids = useData(s => s.board?.cards);
+  const into = [...new Set([...(c.splitInto ?? []), ...Object.values(kids ?? {}).filter(x => x.splitFrom === c.id).map(x => x.id)])].sort((a, b) => a - b);
+  if (c.splitFrom == null && !into.length) return null;
+  return (
+    <div className="d-splits">
+      {c.splitFrom != null && (
+        <span>
+          拆自 <SplitRef id={c.splitFrom} />
+        </span>
+      )}
+      {into.length > 0 && (
+        <span>
+          拆出
+          {into.map(id => (
+            <SplitRef key={id} id={id} />
+          ))}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SplitRef({ id }: { id: number }) {
+  const title = useData(s => s.board?.cards[id]?.title);
+  return (
+    <button type="button" className="d-ref" data-tip={title} onClick={() => void openSplitRef(id)}>
+      #{id}
+    </button>
+  );
+}
+
+/** 打开「拆自」「拆出」的那张：在白板上就直接换过去；不在（终点状态里省略的、回收站里的、永久删除的）先问服务端，
+ *  删掉了的提示「在回收站里」或「不存在」，不报错 */
+async function openSplitRef(id: number) {
+  const { path, board } = useData.getState();
+  if (board?.cards[id]) return openLink(path, id);
+  try {
+    await api.card(path, id);
+    openLink(path, id);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.code !== 'NOT_FOUND') {
+      toastError(e);
+      return;
+    }
+    const trash = await api.trash(path).catch(() => []);
+    if (trash.some(t => t.id === id)) toast({ type: 'info', title: `#${id} 在回收站里`, text: '在侧栏「回收站」里可以恢复它' });
+    else toast({ type: 'info', title: `#${id} 不存在`, text: '已经永久删除了' });
+  }
 }
 
 function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: boolean }) {

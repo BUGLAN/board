@@ -44,7 +44,19 @@ echo "as: $BOARD_AS host: $BOARD_HOST board: $BOARD"
 [ -f "$BOARD_CONFIG" ] && echo "config: ok"
 [ -x "$BOARD_EXE" ] && echo "exe: ok"
 id=$(echo "$1" | sed 's/.*#\([0-9]*\)任务.*/\1/')
+# 拆解「未整理」里的条目：提示词是「/board-skills 拆解 …#<ID>需求（…）」
+need=$(echo "$1" | sed -n 's/^\/board-skills 拆解 .*#\([0-9]*\)需求.*/\1/p')
 case "$(cat "$FAKE_DIR/mode")" in
+  split2)
+    # 按提示词拆出两张，记回未整理、挂在原需求下面，在原条目上评论后退出 0
+    env -u BOARD_TOKEN "$BOARD_BIN" new "拆出的一" --inbox --from "$need" >/dev/null || exit 9
+    env -u BOARD_TOKEN "$BOARD_BIN" new "拆出的二" --inbox --from "$need" >/dev/null || exit 9
+    env -u BOARD_TOKEN "$BOARD_BIN" comment "$need" "拆成了两张" >/dev/null
+    echo "拆完了 #$need"
+    exit 0 ;;
+  split0)
+    echo "没拆出来 #$need"
+    exit 0 ;;
   review)
     # 像 dsh 那样拿不到名字像密钥的环境变量：令牌只能从 BOARD_CONFIG 指向的文件里读
     env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
@@ -413,6 +425,55 @@ fn host_runs_dispatches_end_to_end() {
     assert_eq!(code, 0, "{out}");
     assert!(ended(&rig.show(4), "已停止"), "{:?}", activity(&rig.show(4)));
     assert!(rig.workspace()["hosts"][0]["online"] == false);
+}
+
+/// 未整理里的条目派给 agent 拆解（PRD §9.1）：不领取、不移动；按建出的子卡数记「已拆解」「没拆出卡」，退出码非 0 记「异常退出」
+#[test]
+fn host_splits_inbox_entries() {
+    let rig = Rig::new();
+    for t in ["需求一", "需求二", "需求三"] {
+        assert_eq!(rig.board(&["new", t, "--inbox"]).code, 0);
+    }
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    let split_ended = |id: i64, what: &str| activity(&rig.show(id)).iter().any(|t| t.starts_with(&format!("拆解结束：{what}")));
+
+    // 拆出两张：#1 一直在未整理、没人持有；两张新条目拆自 #1
+    rig.mode("split2");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["kind"], "split");
+    let d1 = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 已拆解", Duration::from_secs(15), || split_ended(1, "已拆解"));
+    let c1 = rig.show(1);
+    assert_eq!((c1["column"].as_str(), c1["holder"].is_null()), (Some("inbox"), true), "拆解不领取、不移动");
+    assert_eq!(c1["split_into"], serde_json::json!([4, 5]));
+    for id in [4, 5] {
+        let c = rig.show(id);
+        assert_eq!((c["column"].as_str(), c["split_from"].as_i64()), (Some("inbox"), Some(1)));
+    }
+    assert!(activity(&c1).iter().any(|t| t == "拆成了两张"), "{:?}", activity(&c1));
+    let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
+    assert!(local.contains("prompt: /board-skills 拆解 default项目之中的main白板中的#1需求（board host 派发：BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "{local}");
+
+    // 一张也没建、退出 0：没拆出卡
+    rig.mode("split0");
+    assert_eq!(rig.board(&["dispatch", "2", "--host", "mbp"]).code, 0);
+    wait_until("#2 没拆出卡", Duration::from_secs(15), || split_ended(2, "没拆出卡"));
+    assert_eq!(rig.show(2)["column"], "inbox");
+
+    // 退出 3：异常退出，在原条目上评论退出码和最后几行输出，条目仍在未整理
+    rig.mode("crash");
+    assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp"]).code, 0);
+    wait_until("#3 异常退出", Duration::from_secs(15), || split_ended(3, "异常退出"));
+    let c3 = rig.show(3);
+    assert_eq!((c3["column"].as_str(), c3["holder"].is_null()), (Some("inbox"), true));
+    assert!(activity(&c3).iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "{:?}", activity(&c3));
+
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
 }
 
 /// 定时领取的会话接着做（board next）：N = 4、6 张卡、最多 1 个会话 → 第一个进程做 4 张，第二个做 2 张；每张各一条派发

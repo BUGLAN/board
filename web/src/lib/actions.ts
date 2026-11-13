@@ -2,7 +2,7 @@
    跨组件的界面动作：打开白板、整理、复制为提示词、项目与白板的新建 / 编辑 / 删除
    ========================================================================== */
 import { api } from './api';
-import { boardPrompt, cardPrompt, type QuickPrompt } from './prompt';
+import { boardPrompt, detailPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
@@ -121,8 +121,8 @@ async function copyPrompt(text: string, hint = '发给装了 board-skills 的 ag
 /** 一块白板：agent 循环领取可领取状态里的卡片，直到为空 */
 export const copyBoardPrompt = (path = data().path) => copyPrompt(boardPrompt(path));
 
-/** 一张卡片 */
-export const copyCardPrompt = (c: Pick<CardDetail, 'id'>, path = data().path) => copyPrompt(cardPrompt(path, c.id));
+/** 一张卡片；在「未整理」里的复制拆解这一句 */
+export const copyCardPrompt = (c: Pick<CardDetail, 'id' | 'column'>, path = data().path) => copyPrompt(detailPrompt(path, c));
 
 /** 快捷提示词：拆解 / 上传任务（可到待办或未整理）、做待办全部、做待办中带指定标签的任务 */
 export const copyQuickPrompt = (q: QuickPrompt) => copyPrompt(q.text, q.hint);

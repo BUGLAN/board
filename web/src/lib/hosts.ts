@@ -40,7 +40,12 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
   canceled: { label: '已取消', color: 'var(--text-3)' },
   lost: { label: '机器掉线', color: 'var(--danger)' },
   unclaimed: { label: '没领到', color: 'var(--text-3)' },
+  split: { label: '已拆解', color: 'var(--c-done)' },
+  nosplit: { label: '没拆出卡', color: 'var(--warn)' },
 };
+
+/** 拆解「未整理」里的条目的派发（不领取、不移动它，PRD §9.1） */
+export const isSplit = (d: Pick<Dispatch, 'kind'>) => d.kind === 'split';
 
 export const resultOf = (d: Dispatch) => (d.result ? RESULT[d.result] : { label: '已结束', color: 'var(--text-3)' });
 

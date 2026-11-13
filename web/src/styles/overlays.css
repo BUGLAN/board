@@ -106,6 +106,11 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .d-title[readonly] { cursor: default; }
 .d-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: 12px; color: var(--text-3); }
 .d-meta b { color: var(--text-2); font-weight: 500; }
+/* 拆自 #5 / 拆出 #6 #7（PRD §10.8）：#ID 点开那张卡 */
+.d-splits { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--text-3); }
+.d-splits > span { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.d-ref { padding: 1px 5px; border-radius: var(--r-xs); font: 600 11.5px var(--f-mono); color: var(--text-2); background: var(--surface-3); }
+.d-ref:hover { color: var(--text); background: color-mix(in srgb, var(--brand) 14%, var(--surface-3)); }
 
 /* 锁定提示 */
 .lock-note {

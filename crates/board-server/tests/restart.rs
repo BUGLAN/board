@@ -33,7 +33,7 @@ fn report(running: Vec<i64>) -> HostReport {
 fn new_card(s: &mut Store, at: i64, title: &str) -> i64 {
     s.write(at, Origin::ui(None), |w| {
         let b = w.resolve(B)?;
-        w.exec(&b, &Actor::human(), Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![] })
+        w.exec(&b, &Actor::human(), Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![], from: None })
     })
     .unwrap()
     .card

@@ -89,6 +89,29 @@ fn new_inbox_creates_unfiled_entry() {
     assert_eq!((r.code, r.error_code().as_str()), (1, "FORBIDDEN_COLUMN"));
 }
 
+/// 拆解：board new --inbox --from <ID> 记下拆自哪张，board show 两边都显示（PRD §9）
+#[test]
+fn new_from_shows_split_relation() {
+    let s = start();
+    assert_eq!(s.run(ALPHA, &["new", "原始需求", "--inbox", "--json"]).json()["id"], 1);
+    let r = s.run(ALPHA, &["new", "a", "--inbox", "--from", "1", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!((c["column"].as_str(), c["split_from"].as_i64()), (Some("inbox"), Some(1)));
+    let r = s.run(ALPHA, &["new", "b", "--inbox", "--from", "#1"]);
+    assert!(r.out.contains("拆自 #1"), "{}", r.out);
+    let p = s.run(ALPHA, &["show", "1", "--json"]).json();
+    assert_eq!(p["split_into"], serde_json::json!([2, 3]));
+    assert!(p["split_from"].is_null());
+    let t = s.run(ALPHA, &["show", "1"]).out;
+    assert!(t.contains("拆出") && t.contains("#2 #3"), "{t}");
+    assert!(s.run(ALPHA, &["show", "2"]).out.contains("拆自"), "子卡显示拆自");
+    let r = s.run(ALPHA, &["new", "c", "--inbox", "--from", "9999", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_FOUND"));
+    let r = s.run(ALPHA, &["new", "c", "--from", "abc", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+}
+
 #[test]
 fn ac12_identity_and_board_required() {
     let s = start();

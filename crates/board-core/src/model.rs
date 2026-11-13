@@ -608,6 +608,9 @@ pub struct Card {
     /// 人展开过、在详情里打开过、编辑过、整理过、合并过都算看过。旧服务端没有这个字段
     #[serde(default)]
     pub seen_at: Option<i64>,
+    /// 拆自：同一块白板上另一张卡的编号（`board new --from`）。原卡删除、永久删除后照样留着编号。旧服务端没有这个字段
+    #[serde(default)]
+    pub split_from: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -632,6 +635,9 @@ pub struct CardDetail {
     /// 附件（PRD §5）
     #[serde(default)]
     pub attachments: Vec<crate::files::Attachment>,
+    /// 拆出：「拆自」是这张的卡片（不含回收站里的），按编号。旧服务端没有这个字段
+    #[serde(default, rename = "splitInto")]
+    pub split_into: Vec<i64>,
 }
 
 /// 回收站里的张数上限：超出时按删除时间先清掉最早的（PRD §8 规则 10）

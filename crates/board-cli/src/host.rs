@@ -1460,6 +1460,22 @@ fn unpushed(dir: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("，"))
 }
 
+/// 启动 agent 的提示词（一行 skill 调用，后面带 board host 的身份提示）。
+/// 做卡：定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）；
+/// 拆解「未整理」里的条目：不领取，拆完评论后直接结束（PRD §9.1）
+fn dispatch_prompt(d: &Dispatch, project: &str, board: &str, name: &str, host: &str) -> String {
+    if d.kind == board_core::hosts::KIND_SPLIT {
+        return format!(
+            "/board-skills 拆解 {project}项目之中的{board}白板中的#{}需求（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；名字已经上线，不要 check、不要心跳、不要 claim，不要创建 goal；拆出的卡用 board new --inbox --from {}，在原条目上评论拆成了哪几张后直接结束，不要 board next）",
+            d.card, d.card
+        );
+    }
+    format!(
+        "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal；交审或交给人之后执行 board next --json，领到卡片就接着做，返回 SESSION_DONE 就结束）",
+        d.card
+    )
+}
+
 /// board-skills 给这个名字的会话开的 worktree：主仓库目录旁边的 `<仓库目录名>.wt/<名字，/ 换成 ->`
 fn skill_worktree(repo: &Path, name: &str) -> Option<PathBuf> {
     let common = git_line(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
@@ -2981,13 +2997,14 @@ impl Host<'_> {
                 // 先记进 runs 再打印：之后无论发生什么，退出流程都会结束它
                 let env = r.env.name.clone();
                 self.runs.push(r);
+                let what = if d.kind == board_core::hosts::KIND_SPLIT { format!("拆解：{}", d.title) } else { d.title.clone() };
                 self.say(format!(
                     "{} {}  {}  {}  {}",
                     self.p.green("▶"),
                     self.p.cyan(&format!("{}#{}", d.board, d.card)),
                     self.p.yellow(d.name.as_deref().unwrap_or_default()),
                     self.p.dim(&env),
-                    d.title
+                    what
                 ));
             }
             Err(msg) => {
@@ -3018,11 +3035,7 @@ impl Host<'_> {
         }
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
-        // 定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）
-        let prompt = format!(
-            "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal；交审或交给人之后执行 board next --json，领到卡片就接着做，返回 SESSION_DONE 就结束）",
-            d.card, self.name
-        );
+        let prompt = dispatch_prompt(d, project, board, &name, &self.name);
         // dsh 的一次性派发要带一份禁用 goal 的 profile 补丁，见 DSH_HEADLESS_PATCH
         let patch = self.run.join("dsh-headless.patch.yml");
         let uses_patch = spec.cmd.iter().any(|a| a.contains("{patch}"));
@@ -3866,6 +3879,7 @@ mod tests {
                 total: 1,
                 model: None,
                 effort: None,
+                kind: String::new(),
             },
             child,
             env: Env::direct(),
@@ -3949,11 +3963,30 @@ mod tests {
             total: 1,
             model: None,
             effort: None,
+            kind: String::new(),
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));
         assert!(successor(&cur, &[d(1, 1), d(3, 3)]).is_none(), "别的会话不跟随");
         assert!(successor(&d(1, 0), &[d(2, 0)]).is_none(), "旧版服务端不跟随");
+    }
+
+    /// 拆解「未整理」里的条目用拆解句子，不让 agent board next；做卡照旧
+    #[test]
+    fn split_dispatch_uses_split_prompt() {
+        let mut d: Dispatch = serde_json::from_value(json!({
+            "id": 7, "board": "default/main", "card": 12, "title": "需求", "hostId": 1, "host": "mbp", "agent": "claude",
+            "agentLabel": "Claude Code", "name": "claude-mbp/opus-5.5", "source": "manual", "by": { "kind": "human", "name": "人" },
+            "state": "running", "result": null, "createdAt": 0, "startedAt": null, "endedAt": null, "exitCode": null, "stopBy": null, "beatAt": null
+        }))
+        .unwrap();
+        assert_eq!(d.kind, "", "旧服务端没有 kind：按做卡");
+        let work = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp");
+        assert!(work.starts_with("/board-skills 开始执行 default项目之中的main白板中的#12任务") && work.contains("board next"), "{work}");
+        d.kind = board_core::hosts::KIND_SPLIT.into();
+        let split = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp");
+        assert!(split.starts_with("/board-skills 拆解 default项目之中的main白板中的#12需求（board host 派发：BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "{split}");
+        assert!(split.contains("board new --inbox --from 12") && split.contains("不要 board next"), "{split}");
     }
 
     #[test]

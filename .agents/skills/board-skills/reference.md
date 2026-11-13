@@ -47,10 +47,10 @@
 
 ```sh
 board flow                                # 工作流：状态的顺序、标识、名称、规则；以及白板设置的仓库、集成分支
-board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]…  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签
+board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]… [--from <ID>]  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签；--from 记下拆自哪张
                                           # 多行描述用 --body-file <文件>（Windows 上必须，见 work.md「会话开始」第 5 步）；edit 同样
                                           # --image <图片>、--file <文件> 可以写多次：附件随卡片一起建，按顺序接在描述后面（图片直接显示）
-board show <ID> --json                    # 全部字段和动态
+board show <ID> --json                    # 全部字段和动态；split_from 拆自哪张，split_into 拆出了哪几张
 board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>
 board check --as <名字>                   # 会话开始时占用名字

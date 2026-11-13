@@ -14,7 +14,7 @@ fn store() -> Store {
 fn new_card(s: &mut Store, path: &str, title: &str, body: &str) -> i64 {
     s.write(T0, Origin::ui(None), |w| {
         let b = w.resolve(path)?;
-        w.exec(&b, &Actor::human(), Cmd::New { title: title.into(), body: Some(body.into()), column: None, top: false, labels: vec![] })
+        w.exec(&b, &Actor::human(), Cmd::New { title: title.into(), body: Some(body.into()), column: None, top: false, labels: vec![], from: None })
             .map(|d| d.card.id)
     })
     .unwrap()
@@ -46,7 +46,7 @@ fn text_search_covers_every_board_and_the_inbox() {
     let inbox = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("default/main")?;
-            w.exec(&b, &Actor::human(), Cmd::New { title: "按钮的说明".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![] })
+            w.exec(&b, &Actor::human(), Cmd::New { title: "按钮的说明".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: None })
                 .map(|d| d.card.id)
         })
         .unwrap();
@@ -156,7 +156,7 @@ fn label_form_finds_cards_with_that_label() {
             let d = w.exec(
                 &b,
                 &Actor::human(),
-                Cmd::New { title: "带 bug 的卡".into(), body: None, column: None, top: false, labels: vec![bug, ui] },
+                Cmd::New { title: "带 bug 的卡".into(), body: None, column: None, top: false, labels: vec![bug, ui], from: None },
             )?;
             Ok(d.card.id)
         })
@@ -226,8 +226,8 @@ fn search_is_fast_with_ten_thousand_cards() {
         let other = w.resolve("default/other")?;
         for i in 0..5000 {
             let title = format!("卡片 {i} 搜索");
-            w.exec(&b, &Actor::human(), Cmd::New { title: title.clone(), body: Some(format!("第 {i} 张，正文里也提到关键词")), column: None, top: false, labels: vec![] })?;
-            w.exec(&other, &Actor::human(), Cmd::New { title: format!("其他 {i}"), body: Some("无关".into()), column: None, top: false, labels: vec![] })?;
+            w.exec(&b, &Actor::human(), Cmd::New { title: title.clone(), body: Some(format!("第 {i} 张，正文里也提到关键词")), column: None, top: false, labels: vec![], from: None })?;
+            w.exec(&other, &Actor::human(), Cmd::New { title: format!("其他 {i}"), body: Some("无关".into()), column: None, top: false, labels: vec![], from: None })?;
         }
         Ok(())
     })

@@ -55,7 +55,7 @@ fn exec(s: &mut Store, at: i64, who: &Actor, cmd: Cmd) -> Result<CardDetail> {
 }
 
 fn new_card(s: &mut Store, at: i64, title: &str) -> i64 {
-    exec(s, at, &Actor::human(), Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![] }).unwrap().card.id
+    exec(s, at, &Actor::human(), Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![], from: None }).unwrap().card.id
 }
 
 /// 建一张带上 `deepseek` 标签的卡片：给机器加了 `deepseek → claude` 规则后照样领得到
@@ -291,7 +291,7 @@ fn dispatch_validation_follows_the_table() {
     let c = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("default/other")?;
-            w.exec(&b, &Actor::human(), Cmd::New { title: "C".into(), body: None, column: None, top: false, labels: vec![] })
+            w.exec(&b, &Actor::human(), Cmd::New { title: "C".into(), body: None, column: None, top: false, labels: vec![], from: None })
         })
         .unwrap()
         .card
@@ -738,7 +738,7 @@ fn cron_round_fills_slots_rotates_boards_and_ends() {
     let o = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("default/other")?;
-            w.exec(&b, &Actor::human(), Cmd::New { title: "O".into(), body: None, column: None, top: false, labels: vec![] })
+            w.exec(&b, &Actor::human(), Cmd::New { title: "O".into(), body: None, column: None, top: false, labels: vec![], from: None })
         })
         .unwrap()
         .card
@@ -3245,4 +3245,148 @@ fn agent_templates_reach_every_host_in_its_work() {
     let w = s.read(|r| r.host_work("mbp", T0)).unwrap();
     let list = w.templates.unwrap();
     assert_eq!((list.len(), list[0].id.as_str(), list[0].cmd.clone()), (1, "kimi", vec!["/tmp/kimi".to_string(), "{prompt}".to_string()]));
+}
+
+/* ------------------------------ 拆解「未整理」里的条目（PRD §9.1） ------------------------------ */
+
+fn inbox_card(s: &mut Store, at: i64, who: &Actor, title: &str, from: Option<i64>) -> Result<CardDetail> {
+    exec(s, at, who, Cmd::New { title: title.into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from })
+}
+
+#[test]
+fn new_from_records_split_relation_both_ways() {
+    let mut s = store();
+    let a = inbox_card(&mut s, T0, &Actor::human(), "原始需求", None).unwrap().card.id;
+    let x = inbox_card(&mut s, T0 + S, &Actor::agent("claude-mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap();
+    assert_eq!((x.card.column.as_str(), x.card.split_from), (INBOX, Some(a)), "子卡在未整理，记着拆自");
+    assert!(x.activity.last().unwrap().text.contains(&format!("拆自 #{a}")));
+    let y = exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::New { title: "拆出来的二".into(), body: None, column: None, top: false, labels: vec![], from: Some(a) })
+        .unwrap()
+        .card
+        .id;
+    assert_eq!(card(&s, a).split_into, vec![x.card.id, y], "原卡列出拆出的卡，按编号");
+    assert!(card(&s, x.card.id).split_into.is_empty());
+    // 不在这块白板上：NOT_FOUND，不建卡
+    let e = inbox_card(&mut s, T0, &Actor::human(), "没有原卡", Some(9999)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+    // 原卡进回收站：照样能 --from；子卡留着编号，原卡的「拆出」不含回收站里的
+    exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: a }).unwrap();
+    let z = inbox_card(&mut s, T0 + 4 * S, &Actor::human(), "回收站里的原卡也行", Some(a)).unwrap();
+    assert_eq!(z.card.split_from, Some(a));
+    exec(&mut s, T0 + 5 * S, &Actor::human(), Cmd::Delete { id: y }).unwrap();
+    exec(&mut s, T0 + 6 * S, &Actor::human(), Cmd::Purge { id: a }).unwrap();
+    assert_eq!(card(&s, x.card.id).card.split_from, Some(a), "原卡永久删除后子卡还留着编号");
+}
+
+#[test]
+fn split_dispatch_keeps_card_in_inbox_and_counts_children() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = inbox_card(&mut s, T0, &Actor::human(), "一句话需求", None).unwrap().card.id;
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    assert_eq!((d.kind.as_str(), d.state.as_str()), (hosts::KIND_SPLIT, "queued"));
+    let c = card(&s, a).card;
+    assert_eq!((c.column.as_str(), c.holder.as_deref()), (INBOX, None), "排队时不动这一条");
+    // 同一条已经在排队：ALREADY_DISPATCHED
+    assert_eq!(dispatch(&mut s, T0 + S, a, "mbp", None).unwrap_err().code, ErrorCode::AlreadyDispatched);
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!(d.state, "running");
+    let name = d.name.clone().unwrap();
+    let c = card(&s, a).card;
+    assert_eq!((c.column.as_str(), c.holder.as_deref()), (INBOX, None), "开始时不领取、不移动");
+    assert!(card(&s, a).activity.iter().any(|x| x.text.starts_with("拆解开始")));
+    // 正在拆解：人照样能编辑这一条；再派一次 ALREADY_DISPATCHED
+    exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Edit { id: a, title: Some("一句话需求（补充）".into()), body: None }).unwrap();
+    assert_eq!(dispatch(&mut s, T0 + 2 * S, a, "mbp", None).unwrap_err().code, ErrorCode::AlreadyDispatched);
+    // 占一个会话位：最多 1 个会话时，别的派发排着
+    let b = new_card(&mut s, T0, "B");
+    let db = dispatch(&mut s, T0 + 2 * S, b, "mbp", None).unwrap();
+    assert_eq!(begin(&mut s, T0 + 2 * S, db.id).unwrap_err().code, ErrorCode::Usage, "拆解占着会话位");
+    // host 替这个名字发心跳；agent 按提示词建两张拆自它的卡
+    beat(&mut s, T0 + 3 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    let agent = Actor::agent(name.clone());
+    let x = inbox_card(&mut s, T0 + 4 * S, &agent, "子卡一", Some(a)).unwrap().card.id;
+    let y = inbox_card(&mut s, T0 + 5 * S, &agent, "子卡二", Some(a)).unwrap().card.id;
+    let d = end(&mut s, T0 + 6 * S, d.id, Some(0), &[]);
+    assert_eq!(d.result.as_deref(), Some("split"), "已拆解");
+    assert_eq!(hosts::result_words("split"), "已拆解");
+    let c = card(&s, a);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), (INBOX, None), "结束后还在未整理");
+    assert_eq!(c.split_into, vec![x, y]);
+    assert!(c.activity.iter().any(|x| x.text.starts_with("拆解结束：已拆解") && x.text.contains("拆出 2 条")), "{:?}", c.activity.last());
+    for id in [x, y] {
+        assert_eq!(card(&s, id).card.column, INBOX, "拆出的卡在未整理");
+    }
+    // 空出了会话位
+    assert_eq!(begin(&mut s, T0 + 7 * S, db.id).unwrap().state, "running");
+}
+
+#[test]
+fn split_dispatch_results_without_cards_crash_stop_and_timeout() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(4), ..Default::default() })).unwrap();
+    let run = |s: &mut Store, title: &str| -> (i64, Dispatch) {
+        let a = inbox_card(s, T0, &Actor::human(), title, None).unwrap().card.id;
+        let d = dispatch(s, T0, a, "mbp", None).unwrap();
+        (a, begin(s, T0 + S, d.id).unwrap())
+    };
+    // 一张也没建，退出 0：没拆出卡
+    let (a, d) = run(&mut s, "拆不出来");
+    // 拆解开始之前建的、拆自别的条目的都不算
+    inbox_card(&mut s, T0 + 2 * S, &Actor::human(), "别的", None).unwrap();
+    assert_eq!(end(&mut s, T0 + 3 * S, d.id, Some(0), &[]).result.as_deref(), Some("nosplit"));
+    assert_eq!(hosts::result_words("nosplit"), "没拆出卡");
+    assert_eq!(card(&s, a).card.column, INBOX);
+    // 退出 1：异常退出，在原条目上评论退出码和最后的输出，卡片仍在未整理
+    let (a, d) = run(&mut s, "会出错");
+    let tail: Vec<String> = vec!["读需求".into()];
+    let events: Vec<String> = vec!["工具 Bash：board show".into()];
+    let d = s.write(T0 + 3 * S, Origin::cli(), |w| w.dispatch_end_with(d.id, Some(1), &tail, &events, EndHow::Exit, None)).unwrap();
+    assert_eq!(d.result.as_deref(), Some("crashed"));
+    let c = card(&s, a);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), (INBOX, None));
+    let comment = c.activity.iter().find(|x| x.kind == "comment").expect("异常退出要评论");
+    assert!(comment.text.contains("退出码 1") && comment.text.contains("board show"), "{}", comment.text);
+    // 人停止：已停止，评论是谁停的
+    let (a, d) = run(&mut s, "人停了");
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "buglan")).unwrap();
+    assert_eq!(end(&mut s, T0 + 3 * S, d.id, Some(143), &[]).result.as_deref(), Some("stopped"));
+    let c = card(&s, a);
+    assert_eq!(c.card.column, INBOX);
+    assert!(c.activity.iter().any(|x| x.kind == "comment" && x.text.contains("buglan 停止了这次拆解")));
+    // 兜底（超时）：也记已停止，评论原因
+    let (a, d) = run(&mut s, "卡住了");
+    let d = s.write(T0 + 3 * S, Origin::cli(), |w| w.dispatch_end_with(d.id, None, &[], &[], EndHow::Timeout, Some("20 分钟没有输出"))).unwrap();
+    assert_eq!(d.result.as_deref(), Some("stopped"));
+    let c = card(&s, a);
+    assert_eq!(c.card.column, INBOX);
+    assert!(c.activity.iter().any(|x| x.kind == "comment" && x.text.contains("20 分钟没有输出")));
+    // 排队中取消：条目不动
+    let a = inbox_card(&mut s, T0, &Actor::human(), "取消", None).unwrap().card.id;
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "buglan")).unwrap();
+    assert_eq!(get(&s, d.id).result.as_deref(), Some("canceled"));
+    assert_eq!(card(&s, a).card.column, INBOX);
+}
+
+#[test]
+fn split_dispatch_checks_host_and_cron_never_takes_inbox() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = inbox_card(&mut s, T0, &Actor::human(), "需求", None).unwrap().card.id;
+    assert_eq!(dispatch(&mut s, T0, a, "nope", None).unwrap_err().code, ErrorCode::NoSuchHost);
+    assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap_err().code, ErrorCode::AgentNotOnHost);
+    // 人把排队中的条目整理进工作流：拆解自动取消
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    exec(&mut s, T0 + S, &Actor::human(), Cmd::Move { id: a, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    assert_eq!(get(&s, d.id).result.as_deref(), Some("canceled"));
+    // 定时领取不碰未整理：规则命中所有卡片（兜底），白板上只有未整理的条目
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    inbox_card(&mut s, T0, &Actor::human(), "只在未整理", None).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_label("default", "全部", None, false)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), ..Default::default() })).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "定时领取不会派发未整理里的条目");
 }

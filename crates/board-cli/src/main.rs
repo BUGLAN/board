@@ -32,9 +32,9 @@ use std::io::IsTerminal;
 use std::time::Duration;
 use text::{pad, truncate, width};
 
-const VALUE_FLAGS: [&str; 21] = [
+const VALUE_FLAGS: [&str; 22] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait",
+    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from",
 ];
 const BOOL_FLAGS: [&str; 14] = [
     "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
@@ -54,7 +54,7 @@ const COMMANDS: [(&str, &str, &str); 27] = [
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("search", "\"<文字>\" [--limit <条数>]", "跨所有白板搜卡片（不用 --board）：文字搜标题、描述、评论，也认 #ID、项目/白板#ID、label:标签；输出白板路径、ID、状态、标题"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--image <图片>]… [--file <文件>]… [--top] [--inbox] [--label <标签>]…", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）；--image、--file 可以写多次，按顺序附在描述后面（图片直接显示，文件是下载链接）"),
+        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--image <图片>]… [--file <文件>]… [--top] [--inbox] [--label <标签>]… [--from <ID>]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）；--image、--file 可以写多次，按顺序附在描述后面（图片直接显示，文件是下载链接）；--from 记下拆自同一块白板上的哪张卡（回收站里的也行，不存在时 NOT_FOUND）"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\" | --body-file <文件>]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
@@ -67,7 +67,7 @@ const COMMANDS: [(&str, &str, &str); 27] = [
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
         ("host", "[run] [--name <机器名>] [--dir <项目>/<白板>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，派来的卡片在对应目录里启动本机 agent，Ctrl+C 退出（机器名、白板与目录也可写在 ~/.board/config.toml 的 [host]）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("skills", "ls | push <目录>… | sync | rm <名称>", "skills 共用库（不用 --as、--board）：ls 列出库里的 skill 和本机各 agent 目录里的状态；push 把本机的 skill 目录（目录名就是名称，里面要有 SKILL.md，合计不超过 5 MB）传进库里，同名的换成新版本，在线的机器自动同步；sync 按库更新本机（有 board host 在跑时由它来做）；rm 从库里删掉，各台机器上同步装的那份随后删掉。board-skills 随服务端版本，不能传、不能删"),
-        ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--cancel 取消排队或停止正在跑的派发"),
+        ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
 
@@ -659,24 +659,37 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 let text = text.trim_end();
                 body = Some(format!("{text}{}{}", if text.is_empty() { "" } else { "\n\n" }, refs.join("\n\n")));
             }
+            let from = match a.value("--from") {
+                Some(raw) => Some(
+                    raw.trim()
+                        .trim_start_matches('#')
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| BoardError::usage(format!("--from：无效的 ID「{raw}」")))?,
+                ),
+                None => None,
+            };
             let d = be.exec(&path, &actor, Cmd::New {
                 title,
                 body,
                 column: inbox.then(|| INBOX.to_string()),
                 top,
                 labels: with,
+                from,
             })?;
             if json {
                 Output::Json(fmt.full(&d))
             } else {
                 let ls: Vec<String> = d.card.labels.iter().map(|l| p.magenta(&format!("#{}", label_name(*l)))).collect();
                 Output::Text(format!(
-                    "{} 已新建 {}  {}{}{}\n{}{}\n",
+                    "{} 已新建 {}  {}{}{}{}\n{}{}\n",
                     p.green("✓"),
                     p.cyan(&format!("#{}", d.card.id)),
                     d.card.title,
                     if ls.is_empty() { String::new() } else { format!("  {}", ls.join(" ")) },
                     p.dim(&format!("  → {}最{}", if inbox { INBOX_NAME } else { flow.home().name.as_str() }, if top { "上面" } else { "下面" })),
+                    d.card.split_from.map(|f| p.dim(&format!("  拆自 #{f}"))).unwrap_or_default(),
                     p.dim("网址  "),
                     url_of(d.card.id),
                 ))
@@ -943,13 +956,20 @@ fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
     if json {
         return Ok(Output::Json(serde_json::to_value(&d).unwrap_or_default()));
     }
+    // 「未整理」里的条目是派给 agent 拆解：不领取、不移动它
+    let split = d.kind == board_core::hosts::KIND_SPLIT;
+    let (what, after, tail) = if split {
+        ("已派给", " 拆解", "排队，机器有空位时开始；这一条留在「未整理」，拆出的卡也记到「未整理」")
+    } else {
+        ("已派发到", "", "排队，机器有空位时开始")
+    };
     Ok(Output::Text(format!(
-        "{} {} 已派发到 {} · {}  {}\n",
+        "{} {} {what} {} · {}{after}  {}\n",
         p.green("✓"),
         p.cyan(&format!("#{}", d.card)),
         p.bold(&d.host),
         d.agent_label,
-        p.dim("排队，机器有空位时开始")
+        p.dim(tail)
     )))
 }
 
@@ -1148,6 +1168,8 @@ impl Fmt<'_> {
             },
             "labels": self.labels(c),
             "priority_labels": self.priority_labels(c),
+            "split_from": c.split_from,
+            "split_into": d.split_into,
             "attachments": d.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
             "created_at": iso(Some(c.created_at)),
             "updated_at": iso(Some(c.updated_at)),
@@ -1214,6 +1236,13 @@ impl Fmt<'_> {
         s += &format!("{}{} {}\n", row("状态"), self.flow.name(&c.column), self.col(&c.column, &format!("({})", c.column)));
         if !c.labels.is_empty() {
             s += &format!("{}{}\n", row("标签"), p.magenta(&self.tags(c)));
+        }
+        if let Some(f) = c.split_from {
+            s += &format!("{}{}\n", row("拆自"), p.cyan(&format!("#{f}")));
+        }
+        if !d.split_into.is_empty() {
+            let ids: Vec<String> = d.split_into.iter().map(|i| format!("#{i}")).collect();
+            s += &format!("{}{}\n", row("拆出"), p.cyan(&ids.join(" ")));
         }
         if let Some(h) = &c.holder {
             s += &format!("{}{}\n", row("持有者"), p.yellow(h));

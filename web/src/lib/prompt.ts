@@ -12,6 +12,15 @@ export const cardPrompt = (path: string, id: number) => {
   return `/${SKILL} 开始执行 ${project}项目之中的${board}白板中的#${id}任务`;
 };
 
+/** 「未整理」里的条目：/board-skills 拆解 mini项目之中的main白板中的#2需求（拆出的卡记回未整理、挂在这条下面） */
+export const splitPrompt = (path: string, id: number) => {
+  const [project, board] = path.split('/');
+  return `/${SKILL} 拆解 ${project}项目之中的${board}白板中的#${id}需求`;
+};
+
+/** 卡片详情「复制为提示词」：在「未整理」里的复制拆解这一句，其他复制开始执行（PRD §10.9） */
+export const detailPrompt = (path: string, c: { id: number; column: string }) => (c.column === 'inbox' ? splitPrompt(path, c.id) : cardPrompt(path, c.id));
+
 /** 一块白板（领完可领取状态为止）：/board-skills mini/main */
 export const boardPrompt = (path: string) => `/${SKILL} ${path}`;
 

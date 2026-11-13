@@ -176,8 +176,13 @@ impl Backend {
 /// 只有界面会发，CLI 不构造，所以在这里是 `unreachable!`（漏一个会在编译时报出来，不会漏发请求）
 fn cmd_json(cmd: &Cmd) -> Value {
     match cmd {
-        Cmd::New { title, body, column, top, labels } => {
-            json!({ "op": "new", "title": title, "body": body, "column": column, "top": top, "labels": labels })
+        Cmd::New { title, body, column, top, labels, from } => {
+            let mut v = json!({ "op": "new", "title": title, "body": body, "column": column, "top": top, "labels": labels });
+            // 旧服务端不认 from：只在用到时带上
+            if let Some(f) = from {
+                v["from"] = json!(f);
+            }
+            v
         }
         Cmd::Edit { id, title, body } => json!({ "op": "edit", "id": id, "title": title, "body": body }),
         Cmd::Move { id, column, top, index, .. } => json!({ "op": "move", "id": id, "column": column, "top": top, "index": index }),

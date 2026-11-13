@@ -1,8 +1,9 @@
-/* 卡片的派发：白板卡片上的状态行、卡片详情里的派发说明、「派发」对话框、取消派发 */
+/* 卡片的派发：白板卡片上的状态行、卡片详情里的派发说明、「派发」对话框、取消派发。
+   「未整理」里的条目派出去是拆解（kind = split）：不领取、不移动它，拆出的卡记回未整理（PRD §9.1） */
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
@@ -22,10 +23,13 @@ export function goCard(d: Dispatch) {
 
 export async function cancel(d: Dispatch) {
   const running = d.state === 'running';
+  const split = isSplit(d);
   if (running) {
     const yes = await confirm({
-      title: `停止 #${d.card}？`,
-      text: `${d.host} 会结束 agent 进程（先 SIGTERM，10 秒后强制结束），卡片移到需要人处理的状态，评论写明是你停止的。`,
+      title: split ? `停止拆解 #${d.card}？` : `停止 #${d.card}？`,
+      text: split
+        ? `${d.host} 会结束 agent 进程（先 SIGTERM，10 秒后强制结束）。这一条留在未整理，已经拆出的卡不动，评论写明是你停止的。`
+        : `${d.host} 会结束 agent 进程（先 SIGTERM，10 秒后强制结束），卡片移到需要人处理的状态，评论写明是你停止的。`,
       ok: '停止',
       icon: 'trash',
     });
@@ -45,7 +49,7 @@ export async function cancel(d: Dispatch) {
   const patch = running ? mark : joinPatch(mark, unqueueCard(d.board, d.card));
   try {
     await optimistic(patch, () => api.cancelDispatch(d.id));
-    toast({ type: 'success', title: running ? `已通知 ${d.host} 停止 #${d.card}` : `已取消 #${d.card} 的派发` });
+    toast({ type: 'success', title: running ? `已通知 ${d.host} 停止 #${d.card}` : split ? `已取消 #${d.card} 的拆解` : `已取消 #${d.card} 的派发` });
   } catch (e) {
     toastError(e);
   }
@@ -75,25 +79,26 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
   const now = useNow(1000);
   if (!d) return null;
   const queued = d.state === 'queued';
+  const split = isSplit(d);
   return (
     <section className="d-section" data-part="dispatch" style={{ ['--i' as string]: 1 }}>
       <div className={cx('dispatch-note', queued && 'queued')} style={{ ['--ac' as string]: agentMark(d.agent).color }}>
         <Mark id={d.agent} title={d.agentLabel} />
         <div className="dn-text">
           <b>
-            {queued ? '排队' : '在跑'} → {d.host} · {d.agentLabel}
+            {split ? (queued ? '排队拆解' : '拆解中') : queued ? '排队' : '在跑'} → {d.host} · {d.agentLabel}
           </b>
           <span>
             {queued ? (
               <>
-                {queueReason(h, d)} · {SOURCE[d.source]}派发 · 排了 {durWords(now - d.createdAt)}
+                {queueReason(h, d)} · {SOURCE[d.source]}{split ? '拆解' : '派发'} · 排了 {durWords(now - d.createdAt)}
               </>
             ) : (
               <>
                 {d.name}
                 {d.envName && ` · ${d.envName}`}
                 {d.model && ` · ${d.model}`}
-                {d.effort && ` · 强度 ${d.effort}`} · {SOURCE[d.source]}派发 · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
+                {d.effort && ` · 强度 ${d.effort}`} · {SOURCE[d.source]}{split ? '拆解' : '派发'} · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
                 {d.stopBy && ' · 正在停止'}
               </>
             )}
@@ -113,7 +118,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
         {!d.stopBy && (
           <button className="btn sm danger" type="button" onClick={() => cancel(d)}>
             <Icon name={queued ? 'close' : 'stop'} />
-            {queued ? '取消派发' : '停止'}
+            {queued ? (split ? '取消拆解' : '取消派发') : '停止'}
           </button>
         )}
       </div>
@@ -180,6 +185,8 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
   const title = useData(s => s.board?.cards[card]?.title ?? '');
+  // 「未整理」里的条目：派给 agent 拆解
+  const split = useData(s => s.board?.cards[card]?.column === 'inbox');
   const hosts = hostsOf(ws);
   const rc = boardOf(ws, path)?.readyCheck;
   const hasDir = (h: HostInfo) => h.dirs.some(d => d.board === path);
@@ -222,7 +229,11 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
       // 派发要服务端排进队列才有记录：按钮进行中（转圈、禁用）直到返回；返回后当即在卡片和机器页上画出这条派发，不等刷新
       const d = await api.dispatch(path, card, h.name, agent);
       close();
-      toast({ type: 'success', title: `#${card} 已派发到 ${d.host} · ${d.agentLabel}`, text: busy(h) ? `排队：${queueReason(h)}` : '机器有空位，马上开始' });
+      toast({
+        type: 'success',
+        title: split ? `#${card} 已派给 ${d.host} · ${d.agentLabel} 拆解` : `#${card} 已派发到 ${d.host} · ${d.agentLabel}`,
+        text: busy(h) ? `排队：${queueReason(h)}` : split ? '机器有空位，马上开始；拆出的卡会记到未整理' : '机器有空位，马上开始',
+      });
       void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
     } catch (e) {
       toastError(e);
@@ -233,9 +244,10 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
 
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
-      <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={`派发 #${card}`}>
-        <h3>派发 #{card}</h3>
+      <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `派给 agent 拆解 #${card}` : `派发 #${card}`}>
+        <h3>{split ? `派给 agent 拆解 #${card}` : `派发 #${card}`}</h3>
         <p className="dp-sub">{title}</p>
+        {split && <p className="dp-note dp-split">agent 读这一条，把它拆成几张卡记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
         {hosts.length === 0 ? (
           <div className="dp-empty">
             <p>还没有机器。在要干活的机器上运行 board host，它会出现在这里。</p>
@@ -314,7 +326,7 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
                     {miss}
                   </p>
                 )}
-                {busy(h) && <p className="dp-note">{h.name} {!h.online ? '离线' : h.paused ? '暂停接单' : '没有空位'}：派发会排队，{queueReason(h)}后开始。</p>}
+                {busy(h) && <p className="dp-note">{h.name} {!h.online ? '离线' : h.paused ? '暂停接单' : '没有空位'}：{split ? '拆解' : '派发'}会排队，{queueReason(h)}后开始。</p>}
               </>
             )}
           </>
@@ -325,7 +337,7 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
           </button>
           <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={!h || !agent || sending || !usable(h)} aria-busy={sending || undefined} onClick={submit}>
             <Icon name="dispatch" />
-            派发
+            {split ? '派给 agent 拆解' : '派发'}
           </button>
         </div>
       </div>

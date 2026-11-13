@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS cards (
   created_by_name TEXT NOT NULL,
   -- 人看过「未整理」里的这一条的时间（PRD §10.5）：agent 记下、还没被人看过的条目算「新」
   seen_at         INTEGER,
+  -- 拆自：同一块白板上另一张卡的编号（board new --from）。原卡删除、永久删除后这里照样留着编号
+  split_from      INTEGER,
   -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，30 天后由 purge_trash 永久删除
   deleted_at      INTEGER,
   -- 回收站里：谁删的
@@ -435,6 +437,12 @@ impl Store {
                 "ALTER TABLE cards ADD COLUMN seen_at INTEGER;
                  UPDATE cards SET seen_at = COALESCE(moved_at, created_at) WHERE col != 'inbox' OR created_by_kind = 'human';",
             )?;
+        }
+        // 旧数据库的卡片没有「拆自」
+        let has_split: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'split_from'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_split {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN split_from INTEGER")?;
         }
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -815,7 +823,15 @@ impl<'a> R<'a> {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let attachments = crate::files::attachments_of(self.conn, board.id, id)?;
-        Ok(CardDetail { card, activity, attachments })
+        let split_into = self.split_into(board.id, id)?;
+        Ok(CardDetail { card, activity, attachments, split_into })
+    }
+
+    /// 「拆自」是这张的卡片（不含回收站里的），按编号
+    pub(crate) fn split_into(&self, b: i64, id: i64) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND split_from = ?2 AND deleted_at IS NULL ORDER BY id")?;
+        let ids = st.query_map(params![b, id], |r| r.get(0))?.collect::<std::result::Result<Vec<i64>, _>>()?;
+        Ok(ids)
     }
 
     /// id 之后的全局事件（服务端推给界面）
@@ -1024,7 +1040,8 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 (SELECT MAX(r.ended_at) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 COALESCE(c.moved_at, c.created_at),
                 c.seen_at,
-                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from, c.del_held
+                c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from, c.del_held,
+                c.split_from
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1056,6 +1073,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             comments: r.get(12)?,
             labels,
             seen_at: r.get(21)?,
+            split_from: r.get(29)?,
         };
         let by_kind: Option<String> = r.get(23)?;
         let row = TrashRow {

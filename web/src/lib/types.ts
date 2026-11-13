@@ -407,7 +407,7 @@ export interface HostToken {
   shared?: string[];
 }
 
-export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed';
+export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'nosplit';
 
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {
@@ -456,6 +456,8 @@ export interface Dispatch {
   /** 开始时传给 agent 的模型、思考强度（机器设置里选的）；没选、旧版时没有 */
   model?: string | null;
   effort?: string | null;
+  /** '' = 做这张卡（领取）；'split' = 拆解「未整理」里的这条（不领取、不移动）。旧服务端没有 */
+  kind?: string;
 }
 
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */
@@ -549,6 +551,8 @@ export interface Card {
   comments: number;
   /** 人看过这一条的时间（PRD §10.5）：「未整理」里 agent 记下、还没被人看过的条目算「新」；旧服务端没有这个字段 */
   seenAt?: number | null;
+  /** 拆自：同一块白板上另一张卡的编号（board new --from）；原卡删除后照样留着编号。旧服务端没有 */
+  splitFrom?: number | null;
 }
 
 /** 「未整理」里的条目是不是「新」：agent 记下、人还没看过 */
@@ -584,6 +588,8 @@ export interface Attachment {
 export interface CardDetail extends Card {
   activity: Activity[];
   attachments?: Attachment[];
+  /** 拆出：「拆自」是这张的卡片（不含回收站里的），按编号。旧服务端没有 */
+  splitInto?: number[];
 }
 
 /**
