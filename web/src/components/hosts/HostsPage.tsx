@@ -1,7 +1,7 @@
 /* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一栏一个会话，栏里是这个会话的卡）；主区可以切到多机对比、共用配置（skills 共用库） */
 import { useState } from 'react';
 import { api } from '../../lib/api';
-import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { readiness } from '../../lib/ready';
 import { cx } from '../../lib/util';
@@ -190,7 +190,7 @@ function SessionCol({ r, i, ws, now }: { r: Dispatch; i: number; ws: Workspace |
       ))}
       <div className="hp-sess-foot">
         <span className="hp-lane-board">{r.board}</span>
-        <span className="hp-lane-src">{SOURCE[r.source]}</span>
+        <span className="hp-lane-src">{sourceOf(r)}</span>
         <Beat at={r.beatAt} now={now} />
       </div>
     </div>

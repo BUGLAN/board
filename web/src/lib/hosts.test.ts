@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps } from './hosts';
+import { boardHosts, canPickDir, checkFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -283,5 +283,30 @@ describe('自检', () => {
       }),
     );
     expect(rows.map(r => r.label)).toEqual(['pi', 'default/main 的仓库', 'board 版本']);
+  });
+});
+
+/* 线上报过：整页变成「界面出错了」，原因是 Cannot read properties of undefined (reading 'color')。
+   表里查不到结果（服务端先上线、界面还是旧版）时 resultOf 以前返回 undefined，调用方取 .color 就崩了 */
+describe('派发结果的样子（查不到时兜底）', () => {
+  const d = (x: Partial<Dispatch>) => ({ result: null, source: 'cron', ...x }) as Dispatch;
+  it('认识的每个结果都有名称和颜色', () => {
+    for (const k of Object.keys(RESULT)) {
+      const r = resultOf(d({ result: k as Dispatch['result'] }));
+      expect(r.color).toBeTruthy();
+      expect(r.label).toBeTruthy();
+    }
+  });
+  it('还没结束的（结果是 null）按「已结束」画', () => {
+    expect(resultOf(d({ result: null }))).toEqual({ label: '已结束', color: 'var(--text-3)' });
+  });
+  it('查不到的结果不返回 undefined：取 .color、.label 都不崩', () => {
+    const r = resultOf(d({ result: 'brand-new-result' as Dispatch['result'] }));
+    expect(r).toEqual({ label: '已结束', color: 'var(--text-3)' });
+    expect(r.color).toBeTruthy();
+  });
+  it('查不到的来源也不返回 undefined（只画文字）', () => {
+    expect(sourceOf(d({ source: 'cron' }))).toBe('定时');
+    expect(sourceOf(d({ source: 'brand-new-source' as Dispatch['source'] }))).toBe('派发');
   });
 });

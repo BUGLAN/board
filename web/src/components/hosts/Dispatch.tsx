@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, cardDispatch, envName, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
@@ -61,7 +61,7 @@ export function CardDispatchLine({ card }: { card: number }) {
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
   if (!d || d.state !== 'queued') return null;
   return (
-    <div className="card-dispatch" title={`派发于 ${hhmm(d.createdAt)}（${SOURCE[d.source]}）`}>
+    <div className="card-dispatch" title={`派发于 ${hhmm(d.createdAt)}（${sourceOf(d)}）`}>
       <Icon name="dispatch" />
       <span>
         排队 → {d.host} · {d.agentLabel}
@@ -91,14 +91,14 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           <span>
             {queued ? (
               <>
-                {queueReason(h, d)} · {SOURCE[d.source]}{split ? '拆解' : '派发'} · 排了 {durWords(now - d.createdAt)}
+                {queueReason(h, d)} · {sourceOf(d)}{split ? '拆解' : '派发'} · 排了 {durWords(now - d.createdAt)}
               </>
             ) : (
               <>
                 {d.name}
                 {d.envName && ` · ${d.envName}`}
                 {d.model && ` · ${d.model}`}
-                {d.effort && ` · 强度 ${d.effort}`} · {SOURCE[d.source]}{split ? '拆解' : '派发'} · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
+                {d.effort && ` · 强度 ${d.effort}`} · {sourceOf(d)}{split ? '拆解' : '派发'} · 已跑 {d.startedAt != null ? durWords(now - d.startedAt) : '0 秒'}
                 {d.stopBy && ' · 正在停止'}
               </>
             )}

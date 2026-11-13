@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, canPickDir, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, canPickDir, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, sourceOf } from '../../lib/hosts';
 import { installSkill, isWindows, localHost, pickFolder, shell, type LocalHost } from '../../lib/platform';
 import { effectiveProvider, PROVIDER_AGENTS, PROVIDER_LOCAL, providersFor } from '../../lib/providers';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label, ProviderView } from '../../lib/types';
@@ -1814,7 +1814,7 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         {(r.model || r.effort) && <span>{[r.model, r.effort].filter(Boolean).join(' · ')}</span>}
         <span>{r.startedAt != null ? durWords(now - r.startedAt) : '刚开始'}</span>
         <Beat at={r.beatAt} now={now} />
-        <span>{SOURCE[r.source]}</span>
+        <span>{sourceOf(r)}</span>
         {r.stopBy && <span className="hp-stopping">正在停止</span>}
         <span className="hp-sp" />
         <button className="hp-link" type="button" onClick={() => openSession({ id: r.session || r.id, card: r.card, known: [r] })}>
@@ -1868,7 +1868,7 @@ function QueueRow({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
       </div>
       <div className="hp-run-meta">
         <span>{queueReason(h)}</span>
-        <span>{SOURCE[r.source]}</span>
+        <span>{sourceOf(r)}</span>
         <span>排了 {durWords(now - r.createdAt)}</span>
         <span className="hp-sp" />
         <button className="hp-link danger" type="button" onClick={() => cancel(r)}>

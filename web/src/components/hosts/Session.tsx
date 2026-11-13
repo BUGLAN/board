@@ -15,7 +15,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { dispatchesOf, hostsOf, resultOf, sessionSlots, SOURCE } from '../../lib/hosts';
+import { dispatchesOf, hostsOf, resultOf, sessionSlots, sourceOf } from '../../lib/hosts';
 import { groupEvents, groupKind, groupWords, mergeSession, resultText, runningTool, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
 import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
 import { cx, durWords, hhmm, isMobile, reduceMotion } from '../../lib/util';
@@ -320,7 +320,7 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
           {first.name && <span className="hp-mono">{first.name}</span>}
           {first.envName && <span>{first.envName}</span>}
           {(first.model || first.effort) && <span>{[first.model, first.effort && `强度 ${first.effort}`].filter(Boolean).join(' · ')}</span>}
-          {lead ? <span>{SOURCE[lead.source]}</span> : <Skeleton w={28} h={10} />}
+          {lead ? <span>{sourceOf(lead)}</span> : <Skeleton w={28} h={10} />}
           {exact ? (
             <>
               {started != null && <span>开始于 {hhmm(started)}</span>}

@@ -232,3 +232,7 @@
   font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
   color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2);
 }
+/* 出错的组件：比原因淡一档，免得抢在原因前面 */
+.crash-h { margin: -4px 0 -6px; font-size: 12px; font-weight: 600; color: var(--text-3); }
+.crash-box pre.crash-stack { max-height: 26vh; color: var(--text-3); }
+.crash-actions { display: flex; flex-wrap: wrap; gap: 8px; }

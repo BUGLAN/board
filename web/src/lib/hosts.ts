@@ -47,9 +47,17 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
 /** 拆解「未整理」里的条目的派发（不领取、不移动它，PRD §9.1） */
 export const isSplit = (d: Pick<Dispatch, 'kind'>) => d.kind === 'split';
 
-export const resultOf = (d: Dispatch) => (d.result ? RESULT[d.result] : { label: '已结束', color: 'var(--text-3)' });
+/** 表里查不到时用的样子：服务端先上线、界面还是旧版时，可能发来这里还不认识的结果
+    （和 board-core 的 result_words 一样，查不到按「已结束」画，不整页崩） */
+const UNKNOWN: { label: string; color: string } = { label: '已结束', color: 'var(--text-3)' };
+
+/** 结果的样子（名称、颜色）：查不到时兜底，绝不返回 undefined */
+export const resultOf = (d: Dispatch): { label: string; color: string } => (d.result ? RESULT[d.result] ?? UNKNOWN : UNKNOWN);
 
 export const SOURCE: Record<Dispatch['source'], string> = { manual: '手动', cron: '定时', schedule: '定时建卡' };
+
+/** 派发的来源；查不到时同 resultOf 兜底（只画文字） */
+export const sourceOf = (d: Pick<Dispatch, 'source'>): string => SOURCE[d.source] ?? '派发';
 
 /** 机器的默认 agent：设置过且找到了就是它，否则第一个找到的（和服务端 default_agent 一致） */
 export const defaultAgent = (h: HostInfo) => h.agents.find(a => a.id === h.agent && a.found) ?? h.agents.find(a => a.found);
