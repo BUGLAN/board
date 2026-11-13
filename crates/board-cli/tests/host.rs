@@ -926,7 +926,7 @@ fn model_and_effort_reach_the_agent() {
     assert_eq!(a["opts"]["efforts"], serde_json::json!(["low", "medium", "high", "xhigh", "max"]), "{a}");
     {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();
-        let run = board_core::RunPatch { agent: "claude".into(), model: Some("sonnet".into()), effort: Some("high".into()) };
+        let run = board_core::RunPatch { agent: "claude".into(), model: Some("sonnet".into()), effort: Some("high".into()), ..Default::default() };
         let p = board_core::HostPatch { run: Some(run), ..Default::default() };
         store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &p)).unwrap();
     }
