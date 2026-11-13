@@ -87,3 +87,29 @@ fn fetch_models_uses_stored_key_when_editing() {
     let r = ask(&s, json!({ "name": "relay", "endpoints": [{ "interface": "openai-chat", "url": format!("{vendor}/v1") }], "apiKey": "" }));
     assert_eq!(r.body["models"], json!(["m-chat", "m-reasoner"]), "{}", r.text);
 }
+
+/// board host 用自己的令牌取供应商原文：`GET /api/hosts/{名字}/providers` 要放行给 agent 令牌，
+/// 别的令牌拿不到；`GET /api/providers` 的列表（API key 打码）访问令牌能读（PRD §10.12「共用配置」）
+#[test]
+fn host_token_can_read_provider_config() {
+    let s = Server::start(Auth::Local);
+    let store = board_core::Store::open(&s.db).unwrap();
+    let tok = board_server::auth::create_token(store.conn(), "win 的令牌", board_core::now_ms()).unwrap().1;
+    let other = board_server::auth::create_token(store.conn(), "别的令牌", board_core::now_ms()).unwrap().1;
+    let bearer = format!("Bearer {tok}");
+    let headers = [("authorization", bearer.as_str())];
+    // board host 上报：它用的令牌记在这台机器上
+    let r = send("POST", &format!("{}/api/hosts/win/beat", s.url), &headers, Some(json!({ "name": "win", "instance": "i1" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    // 这台机器的令牌能取原文；别的令牌不行
+    let r = send("GET", &format!("{}/api/hosts/win/providers", s.url), &headers, None);
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert!(r.body["providers"].is_array(), "{}", r.text);
+    let other_bearer = format!("Bearer {other}");
+    let r = send("GET", &format!("{}/api/hosts/win/providers", s.url), &[("authorization", other_bearer.as_str())], None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+    // 列表（打码）访问令牌能读
+    let r = send("GET", &format!("{}/api/providers", s.url), &headers, None);
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert!(r.body["providers"].is_array(), "{}", r.text);
+}

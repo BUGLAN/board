@@ -377,14 +377,14 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
             // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令，读取和上传附件；
             // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）；
             // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、上传和读取日志、上传结构化事件、订阅实时推送，board dispatch 派发和取消；
-            // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP 共用配置：读列表（打码）、board host 取原文
+            // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP / 模型供应商共用配置：读列表（打码）、board host 取原文
             // 里程碑：board versions sync 写入版本记录（PRD §10.15）
             let m = req.method().clone();
             let cli = (m == Method::GET
-                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/mcp" | "/hosts/mine")
+                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/mcp" | "/hosts/mine" | "/providers")
                     || path.starts_with("/skills/")
                     || path.starts_with("/files/")
-                    || host_path(&path, &["work", "mcp"])
+                    || host_path(&path, &["work", "mcp", "providers"])
                     || dispatch_path(&path, "log")))
                 || (m == Method::POST
                     && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/releases")
