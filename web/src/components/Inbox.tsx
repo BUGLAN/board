@@ -3,6 +3,8 @@
    - 按时间 / 来源 / 标签分组，一行一条；点一行原地展开编辑（标题、标签、描述，和卡片详情同一套编辑器）
    - 勾选（Shift 连选）后底部浮出批量条：合并成一条、标签、删除、整理到首个可领取状态
    - 合并先预览：选保留哪一条的编号，合并后的标题和描述可以先改再确认
+   - 两种视图（default/main#286）：列表（一行一条）和逐条（一次一条的完整内容，左右按钮、← → 键切换，在这一条上直接处理；
+     整理走、删掉后自动到下一条），切换入口和分组放在一起，记住上次用的
    侧栏（Workbench 的 InboxSide）：记一条未整理、筛选、来源、放了多久
    写操作都走 store/data 的乐观更新：当帧生效，行在原位播离场，其余的行用弹簧补间补位
    - 拆解（PRD §10.5、§9.1）：展开的一行「派给 agent 拆解」；正在拆解的标「拆解中 · 机器 · agent」，展开后可以停止。
@@ -31,6 +33,7 @@ import { cancel } from './hosts/Dispatch';
 /* ------------------------------ 状态 ------------------------------ */
 
 type Group = 'time' | 'source' | 'label';
+type View = 'list' | 'one';
 interface MergeReq {
   ids: number[];
   keep: number;
@@ -45,14 +48,26 @@ interface InboxUI {
   /** 展开编辑的那一行 */
   open: number | null;
   merge: MergeReq | null;
+  view: View;
+  /** 逐条视图里显示的那一条 */
+  focus: number | null;
 }
 const GROUPS: Group[] = ['time', 'source', 'label'];
 const savedGroup = pref.get<Group>('inboxGroup', 'time');
-export const useInbox = create<InboxUI>(() => ({ src: null, group: GROUPS.includes(savedGroup) ? savedGroup : 'time', checked: [], open: null, merge: null }));
+const savedView = pref.get<View>('inboxView', 'list');
+export const useInbox = create<InboxUI>(() => ({
+  src: null, group: GROUPS.includes(savedGroup) ? savedGroup : 'time', checked: [], open: null, merge: null,
+  view: savedView === 'one' ? 'one' : 'list', focus: null,
+}));
 const setInbox = (p: Partial<InboxUI>) => useInbox.setState(p);
 const setGroup = (group: Group) => {
   setInbox({ group });
   pref.set('inboxGroup', group);
+};
+const setView = (view: View) => {
+  // 逐条视图里没有勾选：切过去时清掉，免得批量条挂在那儿
+  setInbox(view === 'one' ? { view, checked: [], open: null } : { view });
+  pref.set('inboxView', view);
 };
 
 /* ------------------------------ 分组 ------------------------------ */
@@ -264,6 +279,7 @@ export function InboxPage() {
   const cur = useCurrent();
   const path = useData(s => s.path);
   const group = useInbox(s => s.group);
+  const view = useInbox(s => s.view);
   const checked = useInbox(s => s.checked);
   const open = useInbox(s => s.open);
   const merge = useInbox(s => s.merge);
@@ -283,7 +299,7 @@ export function InboxPage() {
   const newCount = useMemo(() => (all ?? []).filter(c => entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length, [all, path, sent]);
 
   // 换白板：勾选、展开、来源筛选清空
-  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null }), [path]);
+  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null, focus: null }), [path]);
   // 已经不在「未整理」里的条目从勾选里去掉（整理走了、别的窗口删了）
   useEffect(() => {
     if (!all) return;
@@ -318,6 +334,7 @@ export function InboxPage() {
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null || useInbox.getState().merge) return;
       const st = useInbox.getState();
+      if (st.view === 'one') return;
       if (e.key === 'Escape' && (st.checked.length || st.open != null)) {
         e.preventDefault();
         setInbox(st.checked.length ? { checked: [] } : { open: null });
@@ -353,15 +370,25 @@ export function InboxPage() {
               )}
               <p>agent 和你记下的想法、需求。点一行展开修改；勾选几条一起合并、打标签，或整理进「{home}」。</p>
             </div>
-            <DescTabs
-              mode={group}
-              setMode={m => setGroup(m as Group)}
-              modes={[
-                ['time', '按时间'],
-                ['source', '按来源'],
-                ['label', '按标签'],
-              ]}
-            />
+            <div className="ib-modes">
+              <DescTabs
+                mode={view}
+                setMode={m => setView(m as View)}
+                modes={[
+                  ['list', '列表'],
+                  ['one', '逐条'],
+                ]}
+              />
+              <DescTabs
+                mode={group}
+                setMode={m => setGroup(m as Group)}
+                modes={[
+                  ['time', '按时间'],
+                  ['source', '按来源'],
+                  ['label', '按标签'],
+                ]}
+              />
+            </div>
           </header>
 
           {/* 手机上没有侧栏：筛选和「记一条」放在页头下面 */}
@@ -381,7 +408,8 @@ export function InboxPage() {
 
           {/* 快照还没到：按工作区里的计数放骨架行；计数是 0 就什么都不放 */}
           {!list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
-          {groups.map(g => (
+          {view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
+          {view === 'list' && groups.map(g => (
             <GroupSection
               key={`${group}-${g.key}`}
               g={g}
@@ -445,7 +473,7 @@ export function InboxPage() {
           )}
         </div>
       </div>
-      <BulkBar checked={checked} cards={all ?? []} home={home} />
+      {view === 'list' && <BulkBar checked={checked} cards={all ?? []} home={home} />}
       {merge && <MergeSheet key={`${merge.ids.join(',')}`} req={merge} />}
     </div>
   );
@@ -924,6 +952,80 @@ function MergePick({ anchor, self, all, onPick, onClose }: { anchor: DOMRect; se
       </div>
     </div>,
     document.body,
+  );
+}
+
+/* ------------------------------ 逐条视图 ------------------------------ */
+
+/** 输入框、编辑器里按方向键是移动光标，不切换 */
+const typing = (t: EventTarget | null) => !!(t as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]');
+
+/** 逐条：一次显示一条的完整内容，左右按钮、← → 键切换上一条 / 下一条（顺序和列表视图一样）。
+    显示的这一条整理走、删掉、并走之后，自动显示原来位置上的下一条（到底了就是上一条） */
+function OneView({ groups, now, all, home }: { groups: GroupOf[]; now: number; all: Card[]; home: string }) {
+  const flat = useMemo(() => groups.flatMap(g => g.rows.map(c => ({ c, g: g.label }))).filter(x => !isDraft(x.c.id)), [groups]);
+  const focus = useInbox(s => s.focus);
+  const last = useRef(0);
+  const dir = useRef<1 | -1>(1);
+  const found = flat.findIndex(x => x.c.id === focus);
+  const i = found >= 0 ? found : Math.min(last.current, flat.length - 1);
+  const cur = flat[i];
+  const id = cur?.c.id ?? 0;
+  const saving = useCardBusy(id);
+  useEffect(() => {
+    if (found >= 0) last.current = found;
+    else if (cur) setInbox({ focus: cur.c.id });
+  }, [found, cur]);
+  // 看到了就是人看过了：去掉「新」的点（同列表里展开一行）
+  useEffect(() => {
+    if (id > 0) void markSeen(id);
+  }, [id]);
+  const go = (d: 1 | -1) => {
+    const n = flat[i + d];
+    if (!n) return;
+    dir.current = d;
+    setInbox({ focus: n.c.id });
+  };
+  const goRef = useRef(go);
+  goRef.current = go;
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.metaKey || e.ctrlKey || e.altKey || typing(e.target) || overlayOpen() || useData.getState().detailId != null || useInbox.getState().merge) return;
+      e.preventDefault();
+      goRef.current(e.key === 'ArrowLeft' ? -1 : 1);
+    };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, []);
+  if (!cur) return null;
+  const c = cur.c;
+  return (
+    <div className="ib-one">
+      <div className="ib-one-nav">
+        <button type="button" className="icon-btn" aria-label="上一条" data-tip="上一条  ←" disabled={i <= 0} onClick={() => go(-1)}>
+          <Icon name="chevLeft" />
+        </button>
+        <span className="ib-one-pos">
+          <b className="mono">{i + 1}</b>
+          <span className="mono"> / {flat.length}</span>
+          <span className="ib-one-grp">{cur.g}</span>
+        </span>
+        <button type="button" className="icon-btn" aria-label="下一条" data-tip="下一条  →" data-tip-align="end" disabled={i >= flat.length - 1} onClick={() => go(1)}>
+          <Icon name="chevRight" />
+        </button>
+      </div>
+      <article key={c.id} className={cx('ib-one-card', dir.current > 0 ? 'from-r' : 'from-l', saving && 'saving')} aria-label={`#${c.id} ${c.title}`}>
+        <div className="ib-one-head">
+          <span className="ib-id mono">#{c.id}</span>
+          {/* 拆自、记下多久在下面来源那一行里写了：这里只标拆解中 */}
+          <SplitMarks card={c} inBundle />
+          <span className="spacer" />
+          {saving && <span className="ib-saving" role="status" aria-label="保存中" />}
+        </div>
+        <RowEdit card={c} now={now} all={all} home={home} saving={saving} />
+      </article>
+    </div>
   );
 }
 

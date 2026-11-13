@@ -12,6 +12,25 @@
 .ib-head h1 { display: flex; align-items: center; gap: 10px; font-family: var(--f-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
 .ib-head p { margin-top: 2px; font-size: 13.5px; color: var(--text-3); text-wrap: pretty; }
 .ib-head .desc-tabs { flex: none; }
+.ib-modes { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---------------- 逐条视图（default/main#286）：一次一条的完整内容，左右切换 ---------------- */
+.ib-one { margin-top: 14px; }
+.ib-one-nav { display: flex; align-items: center; gap: 10px; padding: 0 2px 10px; }
+.ib-one-pos { flex: 1; display: flex; align-items: baseline; justify-content: center; gap: 2px; font-size: 12px; color: var(--text-3); }
+.ib-one-pos b { font-size: 14px; font-weight: 600; color: var(--text); }
+.ib-one-grp { margin-left: 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.ib-one-card {
+  position: relative; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
+  animation: ib-one-in var(--dur-3) var(--ease-out) backwards;
+}
+.ib-one-card.from-l { --from: -18px; }
+.ib-one-card.from-r { --from: 18px; }
+@keyframes ib-one-in { from { opacity: 0; transform: translateX(var(--from, 18px)); } }
+.ib-one-head { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 22px 0; flex-wrap: wrap; }
+.ib-one-head .spacer { flex: 1; }
+.ib-one-card .ib-edit { padding: 6px 22px 20px; animation: none; }
+.ib-one-card .ib-desc .desc-view { min-height: 120px; }
 .ib-total {
   display: inline-grid; place-items: center; min-width: 26px; height: 22px; padding: 0 7px; border-radius: 999px;
   font-size: 12px; font-weight: 500; letter-spacing: 0;
@@ -287,7 +306,9 @@
   .ib-head { flex-direction: column; align-items: stretch; gap: 12px; }
   .ib-head h1 { font-size: 24px; }
   .ib-head p { display: none; }
-  .ib-head .desc-tabs { align-self: flex-start; }
+  .ib-head .ib-modes { justify-content: flex-start; }
+  .ib-one-head { padding: 10px 14px 0; }
+  .ib-one-card .ib-edit { padding: 6px 14px 16px; }
   .ib-mtools { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
   .ib-mtools .side-filter { flex: 1; margin: 0; height: 36px; }
   .ib-line { grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; min-height: 52px; padding: 8px 12px; }
@@ -308,8 +329,8 @@
 }
 
 /* ---------------- 减弱动效 ---------------- */
-:root[data-motion="reduced"] :is(.ib-row.flash, .ib-row.pulse, .ib-edit, .ib-bdesc, .ib-bulk-n b, .ib-check i, .ib-empty, .ib-newdot, .ib-splitting i) { animation: none !important; }
+:root[data-motion="reduced"] :is(.ib-one-card, .ib-row.flash, .ib-row.pulse, .ib-edit, .ib-bdesc, .ib-bulk-n b, .ib-check i, .ib-empty, .ib-newdot, .ib-splitting i) { animation: none !important; }
 :root[data-motion="reduced"] .ib-exp { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  :is(.ib-row.flash, .ib-row.pulse, .ib-edit, .ib-bdesc, .ib-bulk-n b, .ib-check i, .ib-empty, .ib-newdot, .ib-splitting i) { animation: none !important; }
+  :is(.ib-one-card, .ib-row.flash, .ib-row.pulse, .ib-edit, .ib-bdesc, .ib-bulk-n b, .ib-check i, .ib-empty, .ib-newdot, .ib-splitting i) { animation: none !important; }
 }
