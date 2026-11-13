@@ -44,8 +44,9 @@ export function toolKind(name: string | undefined): ToolKind {
   return 'other';
 }
 
-/** 读文件、搜索：连续几次折叠成一行 */
-const quiet = (e: RunEvent) => e.kind === 'tool' && (toolKind(e.tool) === 'read' || toolKind(e.tool) === 'search');
+/** 工具调用（命令、读写文件、搜索、Skill、WebFetch……）：连续几次折叠成一行（default/main#288）。
+    agent 说的话、原始输出、出错、结束不折进去，把工具组隔开 */
+const quiet = (e: RunEvent) => e.kind === 'tool';
 
 export type Row =
   | { type: 'message'; e: RunEvent }
@@ -80,15 +81,48 @@ export function groupEvents(events: RunEvent[]): Row[] {
   return out;
 }
 
-/** 折叠的一行写什么：「读了 3 个文件、搜索 2 次」（读同一个文件几次算几个） */
+const KIND_WORDS: [ToolKind, (n: number) => string][] = [
+  ['shell', n => `运行了 ${n} 条命令`],
+  ['read', n => `读了 ${n} 个文件`],
+  ['search', n => `搜索 ${n} 次`],
+  ['edit', n => `改了 ${n} 个文件`],
+  ['web', n => `查了 ${n} 次网页`],
+  ['task', n => `派了 ${n} 个子 agent`],
+  ['todo', n => `更新了 ${n} 次待办`],
+];
+
+/** 折叠的一行写什么：「运行了 5 条命令、读了 3 个文件、搜索 2 次（1 次出错）」（读同一个文件几次算几个）；
+    认不出种类的写工具名：「调用 Skill、ToolSearch 3 次」，多于两种时「调用 Skill、ToolSearch 等 4 种工具 6 次」 */
 export function groupWords(events: RunEvent[]): string {
-  const reads = events.filter(e => toolKind(e.tool) === 'read').length;
-  const searches = events.length - reads;
   const parts: string[] = [];
-  if (reads) parts.push(`读了 ${reads} 个文件`);
-  if (searches) parts.push(`搜索 ${searches} 次`);
+  for (const [k, words] of KIND_WORDS) {
+    const n = events.filter(e => toolKind(e.tool) === k).length;
+    if (n) parts.push(words(n));
+  }
+  const others = events.filter(e => toolKind(e.tool) === 'other');
+  if (others.length) {
+    const names = [...new Set(others.map(e => (e.tool || '工具').trim() || '工具'))];
+    parts.push(names.length <= 2 ? `调用 ${names.join('、')} ${others.length} 次` : `调用 ${names.slice(0, 2).join('、')} 等 ${names.length} 种工具 ${others.length} 次`);
+  }
   const failed = events.filter(e => e.ok === false).length;
   return parts.join('、') + (failed ? `（${failed} 次出错）` : '');
+}
+
+/** 折叠组的图标：组里最多的那一种（一样多时取先出现的） */
+export function groupKind(events: RunEvent[]): ToolKind {
+  const n = new Map<ToolKind, number>();
+  for (const e of events) n.set(toolKind(e.tool), (n.get(toolKind(e.tool)) ?? 0) + 1);
+  let best: ToolKind = 'other';
+  let max = 0;
+  for (const [k, c] of n) if (c > max) [best, max] = [k, c];
+  return best;
+}
+
+/** 正在跑的那一条：还没有结果的最后一次调用；会话不在跑时为空 */
+export function runningTool(events: RunEvent[], running: boolean): RunEvent | null {
+  if (!running) return null;
+  for (let i = events.length - 1; i >= 0; i--) if (events[i].ok == null) return events[i];
+  return null;
 }
 
 /** 一个会话的累计用量：各张卡的结束事件加起来；agent 输出里都没有时为 null */

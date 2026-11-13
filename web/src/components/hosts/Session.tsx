@@ -16,9 +16,9 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { dispatchesOf, hostsOf, resultOf, sessionSlots, SOURCE } from '../../lib/hosts';
-import { groupEvents, groupWords, mergeSession, resultText, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
+import { groupEvents, groupKind, groupWords, mergeSession, resultText, runningTool, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
 import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
-import { cx, durWords, hhmm, isMobile } from '../../lib/util';
+import { cx, durWords, hhmm, isMobile, reduceMotion } from '../../lib/util';
 import { onRuns, useData } from '../../store/data';
 import { openHost, openSession, useUI, type SessionReq } from '../../store/ui';
 import { Markdown, Segmented, useNow } from '../bits';
@@ -180,23 +180,59 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
   // 取回来之前已经知道的几张，按第几张排好；不知道的是 null。一张都不知道时为空，整块画骨架
   const slots = useMemo(() => (loading ? sessionSlots(id, known, dispatchesOf(ws)) : []), [loading, id, known, ws]);
 
-  // 输出：在底部时跟着新内容；往上翻了就不动
+  // 输出：在底部时跟着新内容；往上翻了就不动（新内容进来、展开收起折叠组都不把位置拉走），右下角出现「到最底下」
   const main = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const placed = useRef(false);
+  const [away, setAway] = useState(false);
+  // 点了「到最底下」、平滑滚动还没到底时：滚动事件不算「往上翻」
+  const chasing = useRef(0);
+  const follow = (on: boolean) => {
+    stick.current = on;
+    setAway(!on);
+  };
+  const onScroll = () => {
+    const el = scrollerOf(main.current);
+    if (!el) return;
+    const bottom = atBottom(el);
+    if (chasing.current) {
+      if (!bottom) return;
+      chasing.current = 0;
+    }
+    follow(bottom);
+  };
+  const toBottom = () => {
+    const el = scrollerOf(main.current);
+    if (!el) return;
+    chasing.current = Date.now();
+    follow(true);
+    el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion() ? 'auto' : 'smooth' });
+    // 平滑滚动被打断（比如人又往上翻）也别一直不认滚动
+    window.setTimeout(() => {
+      if (chasing.current && Date.now() - chasing.current >= 1200) chasing.current = 0;
+    }, 1300);
+  };
+  // 手机上整块一起滚（.ss-grid），桌面上输出区自己滚
+  useEffect(() => {
+    const el = scrollerOf(main.current);
+    if (!el || el === main.current) return;
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  });
   const total = view?.parts.reduce((n, p) => n + p.log.length + (p.events?.length ?? 0) * 7 + (p.events?.filter(e => e.ok != null).length ?? 0), 0) ?? 0;
   useLayoutEffect(() => {
     const el = main.current;
     if (!el) return;
     // 定位到要看的那张卡（没有、或者是最后一张时到底部）。先按知道的几张画出来时也定位一次，取回来后再按真实内容定位
+    const sc = scrollerOf(el) ?? el;
     const place = () => {
       const seg = card != null ? el.querySelector<HTMLElement>(`[data-card="${card}"]`) : null;
-      if (seg && seg !== el.lastElementChild) {
-        el.scrollTop = seg.offsetTop - el.offsetTop - 8;
-        stick.current = false;
+      if (seg && seg !== el.querySelector('section.ss-seg:last-of-type')) {
+        sc.scrollTop = seg.offsetTop - el.offsetTop - 8;
+        follow(false);
         return;
       }
-      el.scrollTop = el.scrollHeight;
+      sc.scrollTop = sc.scrollHeight;
     };
     if (!view) {
       if (slots.length) place();
@@ -204,12 +240,14 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
     }
     if (!placed.current) {
       placed.current = true;
-      stick.current = true;
+      follow(true);
       place();
       return;
     }
-    if (stick.current) el.scrollTop = el.scrollHeight;
-  }, [view, total, card, mode, slots.length]);
+    if (stick.current) sc.scrollTop = sc.scrollHeight;
+    // 不跟随时内容变长了：还在底部的话（例如本来就差一点）照常认作到底
+    else if (!chasing.current) setAway(!atBottom(sc));
+  }, [view, total, card, mode, slots.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const jump = (p: Dispatch) => {
     const el = main.current;
     const seg = el?.querySelector<HTMLElement>(`[data-part="${p.id}"]`);
@@ -341,17 +379,41 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
             ),
           )}
         </nav>
-        <div className="ss-out" ref={main} onScroll={e => {
-          const el = e.currentTarget;
-          stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 12;
-        }}>
+        <div
+          className="ss-out"
+          ref={main}
+          onScroll={onScroll}
+          onClickCapture={e => {
+            // 展开、收起折叠组或一条工具调用：内容变了但人没滚，按现在是不是在底部重新认（不把位置拉走）
+            if (!(e.target as HTMLElement).closest?.('[aria-expanded]')) return;
+            requestAnimationFrame(() => {
+              const el = scrollerOf(main.current);
+              if (el && !chasing.current) follow(atBottom(el));
+            });
+          }}
+        >
           {loading && !rows.length && <OutSkeleton />}
           {error && <p className="hp-note ss-err">{error}</p>}
           {rows.map((p, i) => (p ? <Segment key={p.id} p={p} mode={mode} pending={!view} showRaw={() => setMode('raw')} /> : <SegSkeleton key={`sk${i}`} i={i} />))}
+          <div className={cx('ss-bottom', away && rows.length > 0 && 'on')} aria-hidden={!away || undefined}>
+            <button type="button" className="btn sm ss-tobottom" tabIndex={away ? 0 : -1} onClick={toBottom} data-tip="到最底下，接着跟新内容" data-tip-pos="top" data-tip-align="end">
+              <Icon name="chevDown" />
+              到最底下
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+/** 离底部不到 12px 算在底部 */
+const atBottom = (el: HTMLElement) => el.scrollTop + el.clientHeight >= el.scrollHeight - 12;
+
+/** 输出区真正滚动的那一层：桌面上是输出区自己，手机上是整块（.ss-grid） */
+function scrollerOf(el: HTMLElement | null): HTMLElement | null {
+  if (!el) return null;
+  return getComputedStyle(el).overflowY === 'visible' ? el.parentElement : el;
 }
 
 /** 左栏的一行：序号、#ID（点开卡片）、标题、状态 · 用时；点这一行跳到它那一段输出 */
@@ -570,6 +632,8 @@ function Process({ p, showRaw }: { p: Part; showRaw: () => void }) {
     return raw('没有事件。');
   }
   const rows = groupEvents(events);
+  // 在跑的那一条：折叠组折着时也写出来
+  const now = runningTool(events, running);
   return (
     <div className="ev-list">
       {p.eventsDropped > 0 && (
@@ -578,7 +642,7 @@ function Process({ p, showRaw }: { p: Part; showRaw: () => void }) {
         </p>
       )}
       {rows.map(r => (
-        <EventRow key={rowKey(r)} r={r} events={events} running={running} />
+        <EventRow key={rowKey(r)} r={r} events={events} running={running} now={now} />
       ))}
       {running && <span className="hp-caret ev-caret">▍</span>}
     </div>
@@ -589,7 +653,7 @@ function rowKey(r: Row): string {
   return r.type === 'group' || r.type === 'text' ? `${r.type}-${r.events[0].id}` : `${r.type}-${r.e.id}`;
 }
 
-function EventRow({ r, events, running }: { r: Row; events: RunEvent[]; running: boolean }) {
+function EventRow({ r, events, running, now }: { r: Row; events: RunEvent[]; running: boolean; now: RunEvent | null }) {
   const sub = r.type === 'group' || r.type === 'text' ? r.events[0].sub : r.e.sub;
   const body = (() => {
     switch (r.type) {
@@ -603,7 +667,7 @@ function EventRow({ r, events, running }: { r: Row; events: RunEvent[]; running:
       case 'tool':
         return <ToolRow e={r.e} running={running} />;
       case 'group':
-        return <GroupRow events={r.events} running={running} />;
+        return <GroupRow events={r.events} running={running} now={now && r.events.includes(now) ? now : null} />;
       case 'error':
         return (
           <div className="ev-err">
@@ -653,16 +717,26 @@ function ToolRow({ e, running }: { e: RunEvent; running: boolean }) {
   );
 }
 
-/** 连续的读文件、搜索：折成一行，点开列出每一次 */
-function GroupRow({ events, running }: { events: RunEvent[]; running: boolean }) {
+/** 连续的工具调用（命令、读写文件、搜索、Skill……）：折成一行，写明各类几次；点开列出每一次。
+    在跑的会话里这一组有正在跑的那一条（now）时，折着也写出来 */
+function GroupRow({ events, running, now }: { events: RunEvent[]; running: boolean; now: RunEvent | null }) {
   const [open, setOpen] = useState(false);
-  const busy = running && events.some(e => e.ok == null);
+  const busy = !!now;
   const failed = events.some(e => e.ok === false);
   return (
-    <div className={cx('ev-group', open && 'open')}>
+    <div className={cx('ev-group', open && 'open', busy && 'busy')}>
       <button type="button" className="ev-tool-row" aria-expanded={open} onClick={() => setOpen(v => !v)}>
-        <Icon name={toolKind(events[0].tool) === 'search' ? 'search' : 'file'} />
-        <span className="ev-group-words">{groupWords(events)}</span>
+        <Icon name={TOOL_ICON[groupKind(events)]} />
+        <span className="ev-group-words">
+          <span>{groupWords(events)}</span>
+          {now && !open && (
+            <span className="ev-group-now">
+              <span>正在</span>
+              <b>{now.tool || '工具'}</b>
+              {now.args && <code title={now.args}>{now.args}</code>}
+            </span>
+          )}
+        </span>
         <span className={cx('ev-mark', failed ? 'fail' : busy ? 'busy' : 'ok')}>{busy ? <i className="ev-spin" /> : <Icon name={open ? 'chevUp' : 'chevDown'} />}</span>
       </button>
       {open && (

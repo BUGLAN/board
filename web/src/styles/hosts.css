@@ -822,6 +822,16 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .ss-seg h4 em { margin-left: auto; font-size: 11.5px; }
 .hp-log.ss-log { max-height: none; overflow: visible; }
 .ss-err { color: var(--danger-text); }
+/* 「到最底下」（default/main#288）：往上翻离开底部时浮在输出区右下角；高度为 0、贴着底部，不占位置 */
+.ss-bottom { position: sticky; bottom: 14px; z-index: 2; height: 0; display: flex; justify-content: flex-end; pointer-events: none; }
+.ss-tobottom {
+  transform: translateY(calc(-100% + 6px)) scale(.94); opacity: 0; pointer-events: none;
+  background: var(--glass-strong); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-3) var(--spring-soft);
+}
+.ss-bottom.on .ss-tobottom { transform: translateY(-100%); opacity: 1; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) { .ss-tobottom { transition: none; } }
 
 /* 卡片详情「派发记录」 */
 .dh-list { display: flex; flex-direction: column; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
@@ -1253,7 +1263,12 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .ev-tool-row > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
 .ev-tool-row b { flex: none; font: 600 12px var(--f-mono); color: var(--text); }
 .ev-tool-row code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--f-mono); color: var(--text-2); background: none; box-shadow: none; padding: 0; }
-.ev-group-words { flex: 1; min-width: 0; color: var(--text-2); }
+.ev-group-words { flex: 1; min-width: 0; color: var(--text-2); display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
+.ev-group-words > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 折着的组里正在跑的那一条 */
+.ev-group-now { display: flex; align-items: baseline; gap: 6px; min-width: 0; padding-left: 8px; border-left: 1px solid var(--line-2); color: color-mix(in oklab, var(--c-doing), var(--ink)); }
+.ev-group-now > span { flex: none; font-size: 11.5px; }
+.ev-group.busy { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-doing) 35%, var(--line)); }
 .ev-mark { flex: none; margin-left: auto; display: inline-grid; place-items: center; min-width: 16px; height: 16px; font-size: 11px; color: var(--text-3); }
 .ev-mark svg { width: 13px; height: 13px; }
 .ev-tool.ok .ev-mark { color: var(--c-done); }
