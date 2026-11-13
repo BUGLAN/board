@@ -183,16 +183,10 @@ fn run(o: Opts) {
 
 /// Ctrl-C 或 SIGTERM（docker stop）
 async fn shutdown() {
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("信号");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
+    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let on_signal = notify.clone();
+    ctrlc::set_handler(move || on_signal.notify_one()).expect("信号处理");
+    notify.notified().await;
 }
 
 /* ------------------------------ 子命令 ------------------------------ */
