@@ -60,6 +60,7 @@
 .app[data-tab="projects"] .side-view[data-view="projects"],
 .app[data-tab="board"] .side-view[data-view="board"],
 .app[data-tab="inbox"] .side-view[data-view="inbox"],
+.app[data-tab="milestones"] .side-view[data-view="milestones"],
 .app[data-tab="stats"] .side-view[data-view="stats"],
 .app[data-tab="hosts"] .side-view[data-view="hosts"],
 .app[data-tab="settings"] .side-view[data-view="settings"] { display: flex; animation: side-in var(--dur-3) var(--ease-out); }

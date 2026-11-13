@@ -216,6 +216,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/events", get(events))
         .route("/stats", get(stats))
         .route("/search", get(search))
+        .route("/milestones", get(milestones))
+        .route("/releases", post(sync_release))
         .route("/cmd", post(cmd))
         .route("/agents", get(agents::list))
         .route("/agents/check", post(agents::check))
@@ -553,6 +555,34 @@ async fn stats(State(s): State<AppState>, Query(q): Query<StatsQueryRaw>) -> Api
     }
     let q = StatsQuery { scope, path: q.path, from: q.from, to: q.to, tz: q.tz };
     Ok(Json(s.db(move |st| st.read(|r| r.stats(&q, now_ms()))).await?))
+}
+
+#[derive(Deserialize)]
+struct MilestonesQuery {
+    project: String,
+}
+
+/// `GET /api/milestones?project=<项目>`：里程碑页（PRD §10.15）——项目里的版本、带版本标签的卡片、未发版和没有版本的卡片
+async fn milestones(State(s): State<AppState>, Query(q): Query<MilestonesQuery>) -> ApiResult<board_core::releases::Milestones> {
+    Ok(Json(s.db(move |st| st.read(|r| r.milestones(q.project.trim()))).await?))
+}
+
+/// `POST /api/releases`：写入一个版本的记录（`board versions sync`，PRD §9）：
+/// 版本标签不存在时新建，提交里连到的卡片带上这个标签，记录按项目和名称覆盖
+async fn sync_release(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    headers: HeaderMap,
+    Json(v): Json<Value>,
+) -> ApiResult<board_core::releases::SyncResult> {
+    let req: board_core::releases::ReleaseSync = parse(v)?;
+    let origin = match caller {
+        Caller::Human { .. } => Origin::ui(client_of(&headers)),
+        Caller::Agent { .. } => Origin::cli(),
+    };
+    let out = s.db(move |st| st.write(now_ms(), origin, |w| w.sync_release(req))).await?;
+    s.0.poke.notify_one();
+    Ok(Json(out))
 }
 
 /* ------------------------------ 卡片命令 ------------------------------ */

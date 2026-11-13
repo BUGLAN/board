@@ -22,6 +22,7 @@ mod service;
 mod skills;
 mod text;
 mod update;
+mod versions;
 
 use backend::{env, Backend, BoardData, Remote};
 use board_core::*;
@@ -32,16 +33,17 @@ use std::io::IsTerminal;
 use std::time::Duration;
 use text::{pad, truncate, width};
 
-const VALUE_FLAGS: [&str; 22] = [
+const VALUE_FLAGS: [&str; 23] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from",
+    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project",
 ];
-const BOOL_FLAGS: [&str; 14] = [
+const BOOL_FLAGS: [&str; 15] = [
     "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
+    "--dry-run",
 ];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 27] = [
+const COMMANDS: [(&str, &str, &str); 28] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
@@ -67,6 +69,7 @@ const COMMANDS: [(&str, &str, &str); 27] = [
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
         ("host", "[run] [--name <机器名>] [--dir <项目>/<白板>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，派来的卡片在对应目录里启动本机 agent，Ctrl+C 退出（机器名、白板与目录也可写在 ~/.board/config.toml 的 [host]）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("skills", "ls | push <目录>… | sync | rm <名称>", "skills 共用库（不用 --as、--board）：ls 列出库里的 skill 和本机各 agent 目录里的状态；push 把本机的 skill 目录（目录名就是名称，里面要有 SKILL.md，合计不超过 5 MB）传进库里，同名的换成新版本，在线的机器自动同步；sync 按库更新本机（有 board host 在跑时由它来做）；rm 从库里删掉，各台机器上同步装的那份随后删掉。board-skills 随服务端版本，不能传、不能删"),
+        ("versions", "sync [<tag>…] [--project <项目>] [--dir <仓库>] [--dry-run]", "在代码仓库里从 git tag 和提交历史反推每个版本做了哪些卡片（不用 --as、--board）：v 开头的 tag 是版本，上一个 tag 之后的提交属于这个 tag，提交说明里的「卡片：<项目>/<白板>#<ID>」把提交连到卡片；这些卡片带上和 tag 同名的版本标签（没有就新建），这一版的提交记到服务端，界面「里程碑」里按版本看。--project 不写时取提交里出现最多的项目；只同步某几个 tag 时写在 sync 后面；--dry-run 只列出来不写入；反复运行结果一样"),
         ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
@@ -117,7 +120,7 @@ fn borrowed(tokens: &[String]) -> Option<String> {
     if a.flag("--help") || a.flag("-h") || a.flag("--version") || a.flag("-V") {
         return None;
     }
-    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch" | "skills") || (sub == "beat" && a.pos.len() == 1) {
+    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch" | "skills" | "versions") || (sub == "beat" && a.pos.len() == 1) {
         return None;
     }
     let name = a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))?;
@@ -347,6 +350,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     // skills 共用库：只要连接，不需要名字和白板
     if sub == "skills" {
         return skills::run(&a.pos, json, p, be.remote());
+    }
+    // 里程碑：从 git 反推版本，只要连接，不需要名字和白板
+    if sub == "versions" {
+        return versions::run(&a.pos, a.value("--project"), a.value("--dir"), a.flag("--dry-run"), json, p, be.remote());
     }
 
     // 身份（PRD §3）

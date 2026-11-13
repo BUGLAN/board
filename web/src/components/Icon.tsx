@@ -12,6 +12,12 @@ const P: Record<string, ReactNode> = {
       <circle cx="15" cy="10" r=".9" fill="currentColor" />
     </>
   ),
+  flag: (
+    <>
+      <path d="M4.5 17.5V3.5" />
+      <path d="M4.5 4h9.3l-1.9 3.1 1.9 3.2H4.5" />
+    </>
+  ),
   tag: (
     <>
       <path d="M3.5 10.2V4.5a1 1 0 0 1 1-1h5.7l6.3 6.3a1 1 0 0 1 0 1.4l-5.6 5.6a1 1 0 0 1-1.4 0Z" />
@@ -248,6 +254,13 @@ export const InboxIcon24 = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
     <path d="M3.5 13.5h4.8l1.4 2.6h4.6l1.4-2.6h4.8" />
     <path d="M6.2 5h11.6l2.7 8.5v4A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5v-4Z" />
+  </svg>
+);
+/** 里程碑：一面小旗 */
+export const MilestonesIcon24 = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+    <path d="M5.5 21V4" />
+    <path d="M5.5 4.5h11.2l-2.3 3.7 2.3 3.8H5.5" />
   </svg>
 );
 export const ProjectsIcon24 = () => (

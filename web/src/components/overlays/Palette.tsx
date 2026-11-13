@@ -18,6 +18,7 @@ import { usePresence } from './presence';
 const TAB_ITEM: Record<Tab, { title: string; icon: IconName }> = {
   board: { title: '白板', icon: 'board' },
   inbox: { title: '未整理', icon: 'inbox' },
+  milestones: { title: '里程碑', icon: 'flag' },
   stats: { title: '大盘', icon: 'chart' },
   projects: { title: '项目总览（画布）', icon: 'folder' },
   hosts: { title: '机器（board host）', icon: 'host' },

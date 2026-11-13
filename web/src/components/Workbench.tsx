@@ -1,6 +1,6 @@
 /* ==========================================================================
    左侧操作台：活动栏 + 侧栏（PRD §10.1）
-   - 活动栏：白板 / 未整理 / 大盘 / 项目 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
+   - 活动栏：白板 / 未整理 / 里程碑 / 大盘 / 项目 / 机器 / 设置。再次点击当前 Tab 收起或展开侧栏
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
@@ -17,7 +17,8 @@ import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, ag
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
 import { InboxSideParts } from './Inbox';
-import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, ProjectsIcon24, SettingsIcon24, StatsIcon24 } from './Icon';
+import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, MilestonesIcon24, ProjectsIcon24, SettingsIcon24, StatsIcon24 } from './Icon';
+import { MilestonesSideParts, setMsFilter, useMsCount, useMsFilter } from './Milestones';
 import { SettingsNav } from './SettingsNav';
 import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
@@ -26,6 +27,7 @@ import { Skeleton } from './Skeleton';
 const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
   board: { label: '白板', tip: '白板', icon: <BoardIcon24 /> },
   inbox: { label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },
+  milestones: { label: '里程碑', tip: '里程碑 · 按版本看卡片', icon: <MilestonesIcon24 /> },
   stats: { label: '大盘', tip: '大盘 · 白板和项目的统计', icon: <StatsIcon24 /> },
   projects: { label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
   hosts: { label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
@@ -121,6 +123,7 @@ export function SidePanel() {
         <ProjectsSide />
         <BoardSide />
         <InboxSide />
+        <MilestonesSide />
         <StatsSide />
         <HostsSide />
         <section className="side-view" data-view="settings">
@@ -747,6 +750,28 @@ function InboxSide() {
       <div className="side-scroll ib-side">
         <SideFilter value={filter} onChange={setFilter} placeholder="筛选标题、描述、#编号" />
         <InboxSideParts />
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- 里程碑 Tab ----------------
+   主区是里程碑页（components/Milestones）；侧栏放筛选和版本列表 */
+
+function MilestonesSide() {
+  const count = useMsCount();
+  const q = useMsFilter();
+  const cur = useCurrent();
+  return (
+    <section className="side-view" data-view="milestones" aria-label="里程碑">
+      <header className="side-head">
+        <span className="side-title">里程碑</span>
+        {cur && <span className="side-sub">{cur.project.name}</span>}
+        {count != null && <span className="side-count mono ms-count">{count}</span>}
+      </header>
+      <div className="side-scroll">
+        <SideFilter value={q} onChange={setMsFilter} placeholder="筛选标题、#编号" />
+        <MilestonesSideParts />
       </div>
     </section>
   );

@@ -378,6 +378,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
             // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）；
             // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、上传和读取日志、上传结构化事件、订阅实时推送，board dispatch 派发和取消；
             // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP 共用配置：读列表（打码）、board host 取原文
+            // 里程碑：board versions sync 写入版本记录（PRD §10.15）
             let m = req.method().clone();
             let cli = (m == Method::GET
                 && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/mcp")
@@ -386,7 +387,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                     || host_path(&path, &["work", "mcp"])
                     || dispatch_path(&path, "log")))
                 || (m == Method::POST
-                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel")
+                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/releases")
                         || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested"])
                         || dispatch_path(&path, "end")
                         || dispatch_path(&path, "log")

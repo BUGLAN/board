@@ -11,6 +11,7 @@ import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
 import { SessionModal } from './components/hosts/Session';
 import { ReviewDesk } from './components/ReviewDesk';
 import { InboxPage } from './components/Inbox';
+import { MilestonesPage } from './components/Milestones';
 import { StatsPage } from './components/StatsTab';
 import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
@@ -49,8 +50,8 @@ const OP_LABEL: Record<string, string> = {
   timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发', merge: '合并',
 };
 
-const PAGE: Record<Tab, 'board' | 'canvas' | 'stats' | 'hosts' | 'inbox' | 'settings'> = {
-  board: 'board', inbox: 'inbox', projects: 'canvas', stats: 'stats', hosts: 'hosts', settings: 'settings',
+const PAGE: Record<Tab, 'board' | 'canvas' | 'stats' | 'hosts' | 'inbox' | 'milestones' | 'settings'> = {
+  board: 'board', inbox: 'inbox', milestones: 'milestones', projects: 'canvas', stats: 'stats', hosts: 'hosts', settings: 'settings',
 };
 
 /** 侧栏收起 / 展开时主内容跟着平移（只动 transform，不逐帧改宽度）：
@@ -190,7 +191,7 @@ function BoardApp() {
         setSide(!useUI.getState().side);
         return;
       }
-      if (mod && ['1', '2', '3', '4', '5', '6'].includes(e.key)) {
+      if (mod && ['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) {
         e.preventDefault();
         setTab(TAB_ORDER[Number(e.key) - 1]);
         return;
@@ -258,6 +259,7 @@ function BoardApp() {
               <Page show={page === 'stats'}>{page === 'stats' && <StatsPage />}</Page>
               <Page show={page === 'hosts'}>{page === 'hosts' && <HostsPage />}</Page>
               <Page show={page === 'inbox'}>{page === 'inbox' && <InboxPage />}</Page>
+              <Page show={page === 'milestones'}>{page === 'milestones' && <MilestonesPage />}</Page>
               <Page show={page === 'settings'}>
                 {page === 'settings' && (
                   <Lazy name="settings">

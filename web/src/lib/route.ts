@@ -25,7 +25,7 @@ export interface Route {
 export function parseRoute(pathname: string, search = ''): Route {
   const parts = pathname.split('/').filter(Boolean);
   const tab = new URLSearchParams(search).get('tab');
-  const known: Tab[] = ['board', 'projects', 'inbox', 'stats', 'hosts', 'settings'];
+  const known: Tab[] = ['board', 'projects', 'inbox', 'milestones', 'stats', 'hosts', 'settings'];
   const found = known.includes(tab as Tab) ? (tab as Tab) : null;
   if (parts.length < 2 || parts.length > 3) return { path: null, card: null, tab: found };
   const [project, board, raw] = parts;

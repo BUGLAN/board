@@ -12,6 +12,8 @@
    6. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
    7. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令。
       推 main 被拒（发版途中别人推了 main）：撤掉这次的发版提交和 tag，重新拉到最新再发一次；第二次还被拒才停下
+   8. 推 tag 之前（线上服务端还没开始重启）运行 board versions sync vX.Y.Z：按 git 历史给这一版的卡片打上版本标签（PRD §10.15）。
+      只是方便：没装 board、没登录、服务端还不认这个接口时只提示一句，不影响发版
 
    --dry-run：只打印这一版的 changelog（按 origin/main 列，和真正发出去的一致），不改文件、不提交、不打 tag、不动工作区
    ========================================================================== */
@@ -40,6 +42,16 @@ function tryGit(...argv) {
     return git(...argv);
   } catch {
     return null;
+  }
+}
+/** 第 8 步：给这一版的卡片打上版本标签。失败只提示，发版照常 */
+function syncVersions(tag) {
+  try {
+    const out = execFileSync('board', ['versions', 'sync', tag], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 });
+    process.stdout.write(out);
+  } catch (e) {
+    const why = String(e.stderr || e.message || '').trim().split('\n').pop();
+    console.log(`没能给 ${tag} 的卡片打上版本标签（${why}）。部署完成后在仓库里运行：board versions sync ${tag}`);
   }
 }
 function fail(msg) {
@@ -254,6 +266,7 @@ try {
     process.exit(err.status ?? 1);
   }
 }
+syncVersions(tag);
 try {
   git('push', 'origin', tag);
 } catch (e) {

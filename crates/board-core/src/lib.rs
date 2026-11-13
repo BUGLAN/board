@@ -13,6 +13,7 @@ pub mod files;
 pub mod flow;
 pub mod hosts;
 pub mod model;
+pub mod releases;
 pub mod moves;
 pub mod runlog;
 pub mod search;
@@ -47,3 +48,5 @@ mod tests_hosts;
 mod tests_stats;
 #[cfg(test)]
 mod tests_search;
+#[cfg(test)]
+mod tests_releases;

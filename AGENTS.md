@@ -77,6 +77,6 @@ npm test                      # 即 cargo test && cargo test -p board-desktop &&
 
 1. `npm run release -- <上一版的 z 加 1> --dry-run` 看这一版有哪些提交（按 `origin/main` 列，不改任何文件、不动工作区）。
 2. 里面有重构或大升级（`refactor` 提交、标了「不兼容」的提交，或者你判断算大升级的）：停下来，列出这些提交，问人升 y 还是 z。没有就升 z。
-3. `npm run release -- <版本号> --push`：改版本号（Cargo.toml、Cargo.lock、package.json、package-lock.json、web/package.json、web/package-lock.json、tauri.conf.json）、从上一个 tag 之后的每个提交生成 `CHANGELOG.md` 里这一版的一节，提交「chore: 发版 vX.Y.Z」、打 tag，再推 `main` 和 tag。
+3. `npm run release -- <版本号> --push`：改版本号（Cargo.toml、Cargo.lock、package.json、package-lock.json、web/package.json、web/package-lock.json、tauri.conf.json）、从上一个 tag 之后的每个提交生成 `CHANGELOG.md` 里这一版的一节，提交「chore: 发版 vX.Y.Z」、打 tag，再推 `main` 和 tag。推 tag 之前顺带运行 `board versions sync vX.Y.Z`：按提交末行的「卡片：…」给这一版的卡片打上版本标签，界面「里程碑」里按版本看（没装 `board`、没登录、线上服务端还不认这个接口时只提示一句，部署完成后在仓库里补跑同一条命令）。
 
 推 `main` 只跑测试；推 tag 才构建镜像、部署线上服务端，部署成功后用 `CHANGELOG.md` 里这一版的一节建 GitHub Release（见 `docs/deploy.md`「升级」「自动部署」）。tag 推出去后不改、不删、不挪，发错了就再发一个版本。

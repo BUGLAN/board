@@ -4,6 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
+import type { Milestones } from './milestones';
 import type { AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace } from './types';
 
 declare global {
@@ -159,6 +160,8 @@ export const api = {
   deleteCardCron: (path: string, id: number) => req('DELETE', `/api/card-crons/${path}/${id}`),
   /** 现在建一张：同样受跳过规则约束，返回这条（ranCard / ranSkip 是这一次的结果） */
   runCardCron: (path: string, id: number) => req<CardCron>('POST', `/api/card-crons/${path}/${id}/run`),
+  /** 里程碑（PRD §10.15）：项目里的版本、带版本标签的卡片、未发版和没有版本的卡片 */
+  milestones: (project: string) => req<Milestones>('GET', `/api/milestones?project=${encodeURIComponent(project)}`),
   /** 大盘：一个范围在 [from, to) 里的全部统计，按 tz 分桶 */
   stats: (q: { scope: StatsScope; path?: string; from: number; to: number; tz: string }) => {
     const p = new URLSearchParams({ scope: q.scope, from: String(q.from), to: String(q.to), tz: q.tz });
