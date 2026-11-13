@@ -1853,6 +1853,90 @@ fn inbox_edit_merge_mark_seen() {
 const HOUR: i64 = 60 * MIN;
 const DAY: i64 = 24 * HOUR;
 
+/// 各模块的建表语句（SCHEMA）在打开数据库时最先执行，那时旧库还没补上迁移新增的列：
+/// SCHEMA 里的索引只要用到「ALTER TABLE … ADD COLUMN」补的列，打开旧库就报 no such column，服务端起不来。
+/// 这类索引要放到补完列之后建
+#[test]
+fn schema_indexes_do_not_use_migrated_columns() {
+    let sources = [
+        ("store.rs", include_str!("store.rs")),
+        ("files.rs", include_str!("files.rs")),
+        ("agents.rs", include_str!("agents.rs")),
+        ("hosts.rs", include_str!("hosts.rs")),
+        ("moves.rs", include_str!("moves.rs")),
+        ("skills.rs", include_str!("skills.rs")),
+        ("mcp.rs", include_str!("mcp.rs")),
+        ("templates.rs", include_str!("templates.rs")),
+    ];
+    let word = |s: &str| s.trim().split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
+    // 迁移补的列：(表, 列)
+    let mut added = std::collections::HashSet::new();
+    for (_, text) in sources {
+        for part in text.split("ALTER TABLE ").skip(1) {
+            let table = word(part);
+            if let Some(rest) = part.trim_start_matches(&table).trim_start().strip_prefix("ADD COLUMN ") {
+                added.insert((table, word(rest)));
+            }
+        }
+    }
+    assert!(added.contains(&("cards".to_string(), "deleted_at".to_string())), "应该认出迁移补的列：{added:?}");
+    let mut checked = 0;
+    for (name, text) in sources {
+        for block in text.split("SCHEMA: &str = r#\"").skip(1) {
+            let schema = block.split("\"#;").next().unwrap();
+            for stmt in schema.split("INDEX IF NOT EXISTS ").skip(1) {
+                // <索引名> ON <表> (<列>, …)
+                let (head, cols) = stmt.split_once('(').unwrap();
+                let table = word(head.split(" ON ").nth(1).unwrap());
+                for col in cols.split(')').next().unwrap().split(',') {
+                    let col = word(col);
+                    assert!(
+                        !added.contains(&(table.clone(), col.clone())),
+                        "{name} 的 SCHEMA 里有索引用到迁移才补的列 {table}.{col}：{}",
+                        stmt.lines().next().unwrap()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 10, "应该检查到各个 SCHEMA 里的索引（只检查了 {checked} 列）");
+}
+
+/// v0.1.19 及更早的数据库：cards 没有回收站的列，也没有 cards_trash 索引。
+/// 建表语句里的索引不能先于迁移补列执行，否则打开旧库就报 no such column: deleted_at，服务端起不来（v0.1.20 部署失败）
+#[test]
+fn old_db_without_trash_columns_opens_and_migrates() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        exec(&mut s, B, &human(), T0, new("旧卡")).unwrap();
+    }
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX cards_trash;
+             ALTER TABLE cards DROP COLUMN deleted_at; ALTER TABLE cards DROP COLUMN deleted_by_kind;
+             ALTER TABLE cards DROP COLUMN deleted_by_name; ALTER TABLE cards DROP COLUMN del_col;
+             ALTER TABLE cards DROP COLUMN del_pos; ALTER TABLE cards DROP COLUMN del_from; ALTER TABLE cards DROP COLUMN del_held;",
+        )
+        .unwrap();
+    let mut s = Store::open(&path).expect("旧库要能打开");
+    // 守住同一类问题：见 schema_indexes_do_not_use_migrated_columns
+    let has_index: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'cards_trash'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(has_index, 1, "迁移后补上回收站的索引");
+    // 旧卡不在回收站里，删除、恢复照常
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![1]);
+    exec(&mut s, B, &human(), T0 + MIN, Cmd::Delete { id: 1 }).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    assert_eq!(s.read(|r| r.trash(&b)).unwrap().len(), 1);
+}
+
 #[test]
 fn trash_delete_hides_restore_and_never_reuses_ids() {
     let dir = tempfile::tempdir().unwrap();

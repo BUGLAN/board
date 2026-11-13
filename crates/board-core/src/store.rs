@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS cards (
   PRIMARY KEY (board, id)
 );
 CREATE INDEX IF NOT EXISTS cards_col ON cards (board, col, pos);
-CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at);
+-- 回收站的索引 cards_trash 不在这里建：旧库的 cards 还没有 deleted_at，要等 setup 里补完列再建
 
 -- 每一次领取的耗时：第一次心跳开始，final / 交审 / 释放 / 异常退出（最后一次心跳）结束
 -- how：final 正常结束 | move 持有者移出锁定状态 | release 人强制释放 | lost 心跳中断 | timeout board host 超时停止
@@ -391,10 +391,11 @@ impl Store {
                  ALTER TABLE cards ADD COLUMN del_col TEXT;
                  ALTER TABLE cards ADD COLUMN del_pos INTEGER;
                  ALTER TABLE cards ADD COLUMN del_from TEXT;
-                 ALTER TABLE cards ADD COLUMN del_held INTEGER;
-                 CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at);",
+                 ALTER TABLE cards ADD COLUMN del_held INTEGER;",
             )?;
         }
+        // 回收站的索引：新库、旧库都在补完列之后建（放进 SCHEMA 会先于补列执行，旧库打开就报 no such column）
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at)")?;
         // 旧数据库的回收站不记删除前的领取来源
         let has_del_from: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'del_from'", [], |r| r.get::<_, i64>(0))? > 0;
