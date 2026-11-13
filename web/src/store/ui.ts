@@ -240,8 +240,9 @@ export function setSide(open: boolean) {
 const notifyResize = () => setTimeout(() => window.dispatchEvent(new Event('resize')), 440);
 
 export const setFilter = (filter: string) => set({ filter });
+// 选中、取消时换一个新数组（取消时元素变了），侧栏按 labelSel 过滤标签（lib/sidebarLabels.ts）拿它当 useMemo 的依赖
 export const toggleLabelSel = (id: number) =>
-  set(s => ({ labelSel: s.labelSel.includes(id) ? s.labelSel.filter(x => x !== id) : [...s.labelSel, id] }));
+  set(s => (s.labelSel.some(x => x === id) ? { labelSel: s.labelSel.filter(x => x !== id) } : { labelSel: [...s.labelSel, id] }));
 export const setBoardSheet = (open: boolean) => set({ boardSheet: open });
 export const clearLabelSel = () => set(s => (s.labelSel.length ? { labelSel: [] } : s));
 
