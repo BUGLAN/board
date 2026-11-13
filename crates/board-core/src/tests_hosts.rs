@@ -3282,6 +3282,24 @@ fn new_from_records_split_relation_both_ways() {
 }
 
 #[test]
+fn inbox_count_leaves_out_entries_already_split() {
+    let mut s = store();
+    let inbox = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects.iter().flat_map(|p| p.boards.iter()).map(|b| b.counts[INBOX]).sum::<i64>();
+    let a = inbox_card(&mut s, T0, &Actor::human(), "原始需求", None).unwrap().card.id;
+    inbox_card(&mut s, T0, &Actor::human(), "别的一条", None).unwrap();
+    assert_eq!(inbox(&s), 2);
+    let x = inbox_card(&mut s, T0 + S, &Actor::agent("claude-mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap().card.id;
+    let y = inbox_card(&mut s, T0 + S, &Actor::agent("claude-mbp/opus-5.5"), "拆出来的二", Some(a)).unwrap().card.id;
+    assert_eq!(inbox(&s), 3, "原条目并进拆出的那组，不单独算");
+    exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: x, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    assert_eq!(inbox(&s), 2, "拆出的卡整理走了，原条目照样不算");
+    // 撤销拆解 = 删掉拆出的卡：原条目回来
+    exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: x }).unwrap();
+    exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: y }).unwrap();
+    assert_eq!(inbox(&s), 2);
+}
+
+#[test]
 fn split_dispatch_keeps_card_in_inbox_and_counts_children() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();

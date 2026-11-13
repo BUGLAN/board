@@ -11,6 +11,7 @@ import { applySilently, bindRoute, parseRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
 import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
 import { boardFlow, INBOX } from '../lib/schema';
+import { visibleInbox } from '../lib/split';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type Workspace } from '../lib/types';
 
 interface DataState {
@@ -596,7 +597,7 @@ export const entryIsNew = (path: string, c: Card) => isNewEntry(c) && !seenIds.h
     标完之后记下的照常算 */
 export function newEntryCount(path: string, b: BoardSnapshot | null, sent: number | null): number {
   if (!b) return 0;
-  return (b.cols[INBOX] ?? []).map(id => b.cards[id]).filter(c => c && entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length;
+  return visibleInbox(b).filter(c => entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length;
 }
 
 /** 人看过一条（展开了这一行）：服务端记下看过的时刻，同步到所有窗口。当帧把点去掉；被拒绝时（例如已经在「未整理」之外）只是回到原样，不提示 */

@@ -681,6 +681,16 @@ impl<'a> R<'a> {
                     let (col, n) = c?;
                     *b.counts.entry(col).or_default() += n;
                 }
+                // 「未整理」里已经拆出卡的原条目并进了拆出的那组，不单独算（和界面一致）
+                let split: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM cards p WHERE p.board = ?1 AND p.col = ?2 AND p.deleted_at IS NULL
+                       AND EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL)",
+                    params![id, INBOX],
+                    |r| r.get(0),
+                )?;
+                if let Some(n) = b.counts.get_mut(INBOX) {
+                    *n -= split;
+                }
                 let mut hs = conn.prepare(&format!(
                     "SELECT holder FROM cards c WHERE board = ?1 AND holder IS NOT NULL AND deleted_at IS NULL ORDER BY {}, pos",
                     COL_ORDER

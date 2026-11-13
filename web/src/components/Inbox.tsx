@@ -5,8 +5,9 @@
    - 合并先预览：选保留哪一条的编号，合并后的标题和描述可以先改再确认
    侧栏（Workbench 的 InboxSide）：记一条未整理、筛选、来源、放了多久
    写操作都走 store/data 的乐观更新：当帧生效，行在原位播离场，其余的行用弹簧补间补位
-   - 拆解（PRD §10.5、§9.1）：展开的一行「派给 agent 拆解」；拆出的卡那一行标「拆自 #ID」，原条目标「已拆成 N 条」，
-     点它勾选还在未整理的那几条（底部浮出批量条）；正在拆解的标「拆解中 · 机器 · agent」，展开后可以停止
+   - 拆解（PRD §10.5、§9.1）：展开的一行「派给 agent 拆解」；正在拆解的标「拆解中 · 机器 · agent」，展开后可以停止。
+     拆出卡之后原条目不再单独占一行：拆出的卡成组，组头写「拆自 #ID 标题」，展开看原条目的描述，
+     拆出的卡都还在未整理里时可以「撤销拆解」（拆出的卡进回收站，原条目回来）；整理走了之后原条目一直隐藏（lib/split）
    ========================================================================== */
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
@@ -14,11 +15,12 @@ import { create } from 'zustand';
 import { openCard, triage, untriage } from '../lib/actions';
 import { cardDispatch } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
-import { deleteCards } from '../lib/trash';
+import { canUndoSplit, kidsOf, hiddenEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
+import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, isMac, pref, reduceMotion, replay } from '../lib/util';
-import { addLabel, cardBusy, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
-import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
+import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
+import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Title, useNow } from './bits';
 import { matches } from './Card';
 import { CardLabels, DescEditor, TitleEditor } from './CardDetail';
@@ -76,48 +78,63 @@ interface GroupOf {
   key: string;
   label: string;
   stale?: boolean;
+  /** 一条一行，或者拆自同一条的一组（lib/split） */
+  units: Unit[];
+  /** 展平后的每一行（勾选、连选、计数用） */
   rows: Card[];
 }
 
-function groupsOf(list: Card[], group: Group, now: number, labels: Label[]): GroupOf[] {
+const groupOf = (key: string, label: string, units: Unit[], stale?: boolean): GroupOf => ({ key, label, stale, units, rows: units.flatMap(unitCards) });
+
+/** 分组：拆自同一条的一组按组里最新的那张算（时间、来源、标签都是） */
+function groupsOf(units: Unit[], group: Group, now: number, labels: Label[]): GroupOf[] {
   if (group === 'time')
-    return BUCKETS.map(k => ({ key: k, label: BUCKET_NAME[k], stale: k === 'stale', rows: list.filter(c => bucketOf(c.createdAt, now) === k) })).filter(g => g.rows.length);
+    return BUCKETS.map(k => groupOf(k, BUCKET_NAME[k], units.filter(u => bucketOf(unitRep(u).createdAt, now) === k), k === 'stale')).filter(g => g.rows.length);
   if (group === 'source') {
-    const map = new Map<string, Card[]>();
-    for (const c of list) map.set(srcKey(c.createdBy), [...(map.get(srcKey(c.createdBy)) ?? []), c]);
+    const map = new Map<string, Unit[]>();
+    for (const u of units) map.set(srcKey(unitRep(u).createdBy), [...(map.get(srcKey(unitRep(u).createdBy)) ?? []), u]);
     // 条目多的来源在前，人自己记的放最后
     return [...map.entries()]
-      .sort(([a, x], [b, y]) => Number(a.startsWith('human')) - Number(b.startsWith('human')) || y.length - x.length)
-      .map(([key, rows]) => ({ key, label: actorName(rows[0].createdBy), rows }));
+      .map(([key, us]) => groupOf(key, actorName(unitRep(us[0]).createdBy), us))
+      .sort((x, y) => Number(x.key.startsWith('human')) - Number(y.key.startsWith('human')) || y.rows.length - x.rows.length);
   }
   // 按标签：按项目里标签的顺序，一条放在它的第一个标签下
-  const first = (c: Card) => labels.find(l => c.labels.includes(l.id))?.id;
-  const out: GroupOf[] = labels.map(l => ({ key: `l${l.id}`, label: l.name, rows: list.filter(c => first(c) === l.id) })).filter(g => g.rows.length);
-  const none = list.filter(c => first(c) == null);
-  return none.length ? [...out, { key: 'none', label: '没有标签', rows: none }] : out;
+  const first = (u: Unit) => labels.find(l => unitRep(u).labels.includes(l.id))?.id;
+  const out: GroupOf[] = labels.map(l => groupOf(`l${l.id}`, l.name, units.filter(u => first(u) === l.id))).filter(g => g.rows.length);
+  const none = units.filter(u => first(u) == null);
+  return none.length ? [...out, groupOf('none', '没有标签', none)] : out;
 }
 
 const NO_LABELS: Label[] = [];
 
-/** 当前白板「未整理」里的条目（最新的在前）和筛选后的列表；快照还没到时为 null */
+const NO_PARENTS: Record<number, Card> = {};
+
+/** 当前白板「未整理」里显示的条目（最新的在前；已经拆出卡的原条目不算，见 lib/split）和筛选后的列表；快照还没到时为 null。
+    parents：被隐藏的原条目，拆出的卡按它成组；筛选词对上原条目时，整组都留着 */
 function useInboxCards() {
   const board = useData(s => s.board);
   const cur = useCurrent();
   const q = useUI(s => s.filter.trim().toLowerCase());
   const src = useInbox(s => s.src);
   const labels = cur?.project.labels ?? NO_LABELS;
-  const all = useMemo(
-    () =>
-      board
-        ? (board.cols[INBOX] ?? [])
-            .map(id => board.cards[id])
-            .filter(Boolean)
-            .sort((a, b) => b.createdAt - a.createdAt || b.id - a.id)
-        : null,
-    [board],
-  );
-  const list = useMemo(() => all?.filter(c => (!src || srcKey(c.createdBy) === src) && matches(c, q, labels)) ?? null, [all, src, q, labels]);
-  return { board, all, list, labels };
+  const { all, parents } = useMemo(() => {
+    if (!board) return { all: null, parents: NO_PARENTS };
+    const inbox = board.cols[INBOX] ?? [];
+    const hidden = hiddenEntries(board.cards, inbox);
+    const parents: Record<number, Card> = {};
+    for (const id of hidden) if (board.cards[id]) parents[id] = board.cards[id];
+    const all = inbox
+      .filter(id => !hidden.has(id))
+      .map(id => board.cards[id])
+      .filter(Boolean)
+      .sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
+    return { all, parents };
+  }, [board]);
+  const list = useMemo(() => {
+    const hit = (c: Card) => matches(c, q, labels) || (c.splitFrom != null && !!parents[c.splitFrom] && matches(parents[c.splitFrom], q, labels));
+    return all?.filter(c => (!src || srcKey(c.createdBy) === src) && hit(c)) ?? null;
+  }, [all, parents, src, q, labels]);
+  return { board, all, list, labels, parents };
 }
 
 /** 描述的第一行文字：跳过 Markdown 小标题（只有小标题时才用它），去掉列表、引用、勾选框的符号，图片和链接只留文字 */
@@ -243,7 +260,7 @@ async function doMerge(req: MergeReq, value: { title: string; body: string }) {
 /* ------------------------------ 主区 ------------------------------ */
 
 export function InboxPage() {
-  const { board, all, list, labels } = useInboxCards();
+  const { board, all, list, labels, parents } = useInboxCards();
   const cur = useCurrent();
   const path = useData(s => s.path);
   const group = useInbox(s => s.group);
@@ -257,7 +274,7 @@ export function InboxPage() {
   const home = boardFlow(board).home?.name ?? '待办';
   const wrap = useRef<HTMLDivElement>(null);
   const lastCheck = useRef<number | null>(null);
-  const groups = useMemo(() => (list ? groupsOf(list, group, now, labels) : []), [list, group, now, labels]);
+  const groups = useMemo(() => (list ? groupsOf(unitsOf(list, parents), group, now, labels) : []), [list, parents, group, now, labels]);
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
   const present = useMemo(() => new Set((all ?? []).map(c => renderKey(c.id))), [all]);
   useRowMotion(wrap, present, path);
@@ -478,9 +495,13 @@ function GroupSection({
         {g.stale && <span className="ib-gh-hint">还要做吗？不做就删掉</span>}
       </div>
       <div className="ib-rows">
-        {g.rows.map(c => (
-          <Row key={renderKey(c.id)} card={c} now={now} labels={labels} all={all} home={home} checked={checked.includes(c.id)} open={open === c.id} onCheck={onCheck} />
-        ))}
+        {g.units.map(u =>
+          u.kind === 'one' ? (
+            <Row key={renderKey(u.card.id)} card={u.card} now={now} labels={labels} all={all} home={home} checked={checked.includes(u.card.id)} open={open === u.card.id} onCheck={onCheck} />
+          ) : (
+            <SplitBundle key={`split-${u.parent.id}`} parent={u.parent} cards={u.cards} checked={checked} open={open} now={now} labels={labels} all={all} home={home} onCheck={onCheck} />
+          ),
+        )}
       </div>
     </section>
   );
@@ -520,67 +541,157 @@ function Age({ card: c, now }: { card: Card; now: number }) {
 
 /* ------------------------------ 拆解 ------------------------------ */
 
-/** 「拆自」是这条的卡片（白板上的，不含回收站里的），按编号。返回 "6,7" 这样的字符串：选择器的结果是基本类型，不会每次都变 */
-const kidsKey = (cards: Record<number, Card> | undefined, id: number) =>
-  Object.values(cards ?? {})
-    .filter(x => x.splitFrom === id)
-    .map(x => x.id)
-    .sort((a, b) => a - b)
-    .join(',');
-
-function useKids(id: number): number[] {
-  const key = useData(s => kidsKey(s.board?.cards, id));
-  return useMemo(() => (key ? key.split(',').map(Number) : []), [key]);
+/** 撤销拆解：拆出的卡（都还在未整理里）当帧删掉、进回收站，原条目随之回到列表里并闪一下；提示里可以把拆出的卡恢复回来 */
+async function undoSplit(parent: Card) {
+  const s = useData.getState();
+  const cards = s.board?.cards;
+  if (!canUndoSplit(cards, parent.id)) return;
+  const kids = (kidsOf(cards).get(parent.id) ?? []).filter(id => !isDraft(id));
+  const path = s.path;
+  kids.forEach(id => exits.set(id, 'delete'));
+  setInbox({ checked: useInbox.getState().checked.filter(c => !kids.includes(c)) });
+  const done = deleteCards(kids, { silent: true });
+  // 原条目当帧出现在列表里：滚到它并闪一下
+  requestAnimationFrame(() => reveal(parent.id));
+  if (!(await done)) return;
+  toast({
+    type: 'success',
+    title: `已撤销拆解 #${parent.id}`,
+    text: `拆出的 ${kids.map(k => `#${k}`).join('、')} 在回收站里，「${parent.title}」回到了未整理`,
+    action: { label: '恢复拆出的卡', fn: () => void undoDelete(path, kids) },
+    duration: 6000,
+  });
 }
 
-/** 「已拆成 N 条」：勾选其中还在未整理的那些，底部浮出批量条（整理到首个可领取状态、删除……） */
-function pickKids(kids: number[]) {
-  const cards = useData.getState().board?.cards ?? {};
-  const left = kids.filter(id => cards[id]?.column === INBOX && !isDraft(id));
-  if (!left.length) {
-    toast({ type: 'info', title: `这 ${kids.length} 条都已经整理走了`, text: '拆出的卡都不在未整理里了', duration: 2400 });
-    return;
-  }
-  setInbox({ checked: left });
+type Dispatched = NonNullable<ReturnType<typeof cardDispatch>>;
+
+/** 正在拆解（排队拆解）的说明条：机器、agent，运行中可以看会话，可以停止或取消 */
+function SplitNote({ d }: { d: Dispatched }) {
+  return (
+    <div className="ib-split-note" role="status">
+      <Icon name="dispatch" />
+      <span>
+        <b>{d.state === 'queued' ? '排队拆解' : '拆解中'}</b> · {d.host} · {d.agentLabel}
+        {d.stopBy && ' · 正在停止'}
+      </span>
+      <span className="spacer" />
+      {d.state === 'running' && (
+        <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card, known: [d] })}>
+          <Icon name="log" />
+          会话
+        </button>
+      )}
+      {!d.stopBy && (
+        <button className="btn sm danger" type="button" onClick={() => void cancel(d)}>
+          <Icon name={d.state === 'queued' ? 'close' : 'stop'} />
+          {d.state === 'queued' ? '取消拆解' : '停止'}
+        </button>
+      )}
+    </div>
+  );
 }
 
-/** 这一行的拆解标记：拆自 #ID、已拆成 N 条、拆解中（排队拆解）· 机器 · agent */
-function SplitMarks({ card: c }: { card: Card }) {
-  const kids = useKids(c.id);
+function SplittingMark({ d }: { d: Dispatched }) {
+  return (
+    <span className={cx('ib-mark ib-splitting', d.state === 'queued' && 'queued')} data-tip={d.state === 'queued' ? '排队等机器有空位' : `${d.name ?? ''} 正在拆这一条`}>
+      <i aria-hidden="true" />
+      {d.state === 'queued' ? '排队拆解' : '拆解中'} · {d.host} · {d.agentLabel}
+    </span>
+  );
+}
+
+/** 这一行的拆解标记：拆解中（排队拆解）· 机器 · agent；拆自 #ID（在拆解组里时组头已经写了，不再标） */
+function SplitMarks({ card: c, inBundle }: { card: Card; inBundle?: boolean }) {
   const d = useData(s => cardDispatch(s.ws, s.path, c.id));
   return (
     <>
-      {d && (
-        <span className={cx('ib-mark ib-splitting', d.state === 'queued' && 'queued')} data-tip={d.state === 'queued' ? '排队等机器有空位' : `${d.name ?? ''} 正在拆这一条`}>
-          <i aria-hidden="true" />
-          {d.state === 'queued' ? '排队拆解' : '拆解中'} · {d.host} · {d.agentLabel}
-        </span>
-      )}
-      {c.splitFrom != null && (
+      {d && <SplittingMark d={d} />}
+      {c.splitFrom != null && !inBundle && (
         <span className="ib-mark ib-from" data-tip={`从 #${c.splitFrom} 拆出来的`}>
           拆自 #{c.splitFrom}
         </span>
-      )}
-      {kids.length > 0 && (
-        <button
-          type="button"
-          className="ib-mark ib-kids"
-          data-tip={`勾选拆出的 ${kids.map(k => `#${k}`).join(' ')} 里还在未整理的`}
-          onClick={e => {
-            e.stopPropagation();
-            pickKids(kids);
-          }}
-        >
-          已拆成 {kids.length} 条
-        </button>
       )}
     </>
   );
 }
 
+/** 拆解组：组头「拆自 #ID 标题」（点开看原条目的描述）、勾选整组、撤销拆解；下面是拆出的、还在未整理里的卡 */
+function SplitBundle({
+  parent: p, cards, checked, open, now, labels, all, home, onCheck,
+}: { parent: Card; cards: Card[]; checked: number[]; open: number | null; now: number; labels: Label[]; all: Card[]; home: string; onCheck: (id: number, shift: boolean) => void }) {
+  const [exp, setExp] = useState(false);
+  const d = useData(s => cardDispatch(s.ws, s.path, p.id));
+  const undoable = useData(s => canUndoSplit(s.board?.cards, p.id));
+  const busy = useData(s => [p.id, ...cards.map(c => c.id)].some(id => !!s.saving[cardKey(s.path, id)]));
+  const board = useData(s => s.board);
+  const ids = cards.filter(c => !isDraft(c.id)).map(c => c.id);
+  const allOn = ids.length > 0 && ids.every(id => checked.includes(id));
+  const some = !allOn && ids.some(id => checked.includes(id));
+  return (
+    <div className={cx('ib-bundle', exp && 'open')} data-split={p.id}>
+      <div className="ib-bh">
+        <Check
+          on={allOn}
+          some={some}
+          label={allOn ? `取消勾选拆自 #${p.id} 的这组` : `勾选拆自 #${p.id} 的这组`}
+          onToggle={() => {
+            const cur = useInbox.getState().checked;
+            setInbox({ checked: allOn ? cur.filter(c => !ids.includes(c)) : [...new Set([...cur, ...ids])] });
+          }}
+        />
+        <button type="button" className="ib-bh-main" aria-expanded={exp} onClick={() => setExp(!exp)}>
+          <span className="ib-bh-k">拆自</span>
+          <span className="ib-id mono">#{p.id}</span>
+          <b>
+            <Title text={p.title} />
+          </b>
+          <span className="ib-gh-n mono">{cards.length}</span>
+          <Icon name="chevDown" className="ib-chev" />
+        </button>
+        {d && <SplittingMark d={d} />}
+        {undoable && (
+          <button
+            type="button"
+            className="btn sm ghost ib-undo-split"
+            disabled={busy || !!d}
+            data-tip={d ? '还在拆：先停止' : '删掉拆出的卡（进回收站），原条目回到未整理'}
+            data-tip-pos="top"
+            onClick={() => void undoSplit(p)}
+          >
+            <Icon name="replay" />
+            撤销拆解
+          </button>
+        )}
+      </div>
+      {exp && (
+        <div className="ib-bdesc">
+          {d && <SplitNote d={d} />}
+          <div className="ib-src">
+            <Avatar actor={p.createdBy} className="ib-av" />
+            <span>
+              <b className={cx(p.createdBy.kind === 'agent' && 'mono')}>{actorName(p.createdBy)}</b> 记下 · {ago(p.createdAt, now)}
+              {p.comments > 0 && <> · {p.comments} 条评论</>}
+            </span>
+            <span className="spacer" />
+            <button className="btn sm ghost" type="button" onClick={() => openCard(p.id)} data-tip="动态、评论、附件" data-tip-pos="top">
+              打开原条目
+            </button>
+          </div>
+          <div className="desc-view">{p.body.trim() ? <Markdown src={p.body} repo={board?.repo} /> : <span className="ib-muted">没有描述</span>}</div>
+        </div>
+      )}
+      <div className="ib-brows">
+        {cards.map(c => (
+          <Row key={renderKey(c.id)} card={c} now={now} labels={labels} all={all} home={home} checked={checked.includes(c.id)} open={open === c.id} onCheck={onCheck} inBundle />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const Row = memo(function Row({
-  card: c, now, labels, all, home, checked, open, onCheck,
-}: { card: Card; now: number; labels: Label[]; all: Card[]; home: string; checked: boolean; open: boolean; onCheck: (id: number, shift: boolean) => void }) {
+  card: c, now, labels, all, home, checked, open, onCheck, inBundle,
+}: { card: Card; now: number; labels: Label[]; all: Card[]; home: string; checked: boolean; open: boolean; onCheck: (id: number, shift: boolean) => void; inBundle?: boolean }) {
   const saving = useCardBusy(c.id);
   const flash = useUI(s => s.flashes[c.id]) as Flash | undefined;
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
@@ -639,7 +750,7 @@ const Row = memo(function Row({
           {text && <span>{text}</span>}
         </span>
         <span className="ib-labels">
-          <SplitMarks card={c} />
+          <SplitMarks card={c} inBundle={inBundle} />
           <LabelChips ids={c.labels} labels={labels} max={2} pending={pending} />
         </span>
         <span className="ib-meta">{saving ? <span className="ib-saving" role="status" aria-label="保存中" /> : <Age card={c} now={now} />}</span>
@@ -684,31 +795,9 @@ const Row = memo(function Row({
 function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number; all: Card[]; home: string; saving: boolean }) {
   const [pick, setPick] = useState<DOMRect | null>(null);
   const d = useData(s => cardDispatch(s.ws, s.path, c.id));
-  const kids = useKids(c.id);
   return (
     <div className="ib-edit">
-      {d && (
-        <div className="ib-split-note" role="status">
-          <Icon name="dispatch" />
-          <span>
-            <b>{d.state === 'queued' ? '排队拆解' : '拆解中'}</b> · {d.host} · {d.agentLabel}
-            {d.stopBy && ' · 正在停止'}
-          </span>
-          <span className="spacer" />
-          {d.state === 'running' && (
-            <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card, known: [d] })}>
-              <Icon name="log" />
-              会话
-            </button>
-          )}
-          {!d.stopBy && (
-            <button className="btn sm danger" type="button" onClick={() => void cancel(d)}>
-              <Icon name={d.state === 'queued' ? 'close' : 'stop'} />
-              {d.state === 'queued' ? '取消拆解' : '停止'}
-            </button>
-          )}
-        </div>
-      )}
+      {d && <SplitNote d={d} />}
       <div className="ib-src">
         <Avatar actor={c.createdBy} className="ib-av" />
         <span>
@@ -717,11 +806,6 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           {c.comments > 0 && <> · {c.comments} 条评论</>}
           {c.splitFrom != null && <> · 拆自 #{c.splitFrom}</>}
         </span>
-        {kids.length > 0 && (
-          <button type="button" className="ib-mark ib-kids" onClick={() => pickKids(kids)}>
-            已拆成 {kids.length} 条
-          </button>
-        )}
       </div>
       <TitleEditor card={c} locked={false} busy={saving} />
       <CardLabels card={c} saving={saving} />
@@ -745,7 +829,7 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           className="btn sm"
           type="button"
           disabled={saving || !!d}
-          data-tip={d ? '已经派出去了：在上面取消或停止' : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理、挂在这条下面'}
+          data-tip={d ? '已经派出去了：在上面取消或停止' : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理，这一条并进拆出的那组里'}
           data-tip-pos="top"
           onClick={() => openDispatch(c.id)}
         >

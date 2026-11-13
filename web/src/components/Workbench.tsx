@@ -22,6 +22,7 @@ import { MilestonesSideParts, setMsFilter, useMsCount, useMsFilter } from './Mil
 import { SettingsNav } from './SettingsNav';
 import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
+import { visibleInbox } from '../lib/split';
 
 /** 每个标签的名称、提示和图标；顺序由 store/ui 的 TAB_ORDER 决定（和数字快捷键一致），设置固定在底部 */
 const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
@@ -720,8 +721,8 @@ function InboxSide() {
   const board = useData(s => s.board);
   const cur = useCurrent();
   const filter = useUI(s => s.filter);
-  // 快照还没到：数量用工作区里的计数
-  const count = board ? board.cols.inbox?.length ?? 0 : cur?.board.counts.inbox ?? null;
+  // 快照还没到：数量用工作区里的计数。已经拆出卡的原条目不算（并进了拆出的那组，lib/split）
+  const count = board ? visibleInbox(board).length : cur?.board.counts.inbox ?? null;
   // agent 新记下、人还没看过几条（PRD §10.5）
   const fresh = useData(s => newEntryCount(s.path, s.board, null));
   return (

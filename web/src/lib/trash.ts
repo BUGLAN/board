@@ -45,8 +45,8 @@ export async function deleteCards(ids: number[], { silent = false, titles = {} }
   const ok = ids.filter(id => id > 0);
   if (!ok.length) return false;
   const board = useData.getState().board;
-  // 删除之前先取回收站的编号：撤销时要知道每张卡片原来在哪一列、排第几位（取不到时按放回最下面算）
-  await Promise.all(ok.map(id => trashed(path, id)));
+  // 顺带预取回收站：撤销时要知道每张卡片原来在哪一列、排第几位（取不到时按放回最下面算）。不等它，删除当帧生效
+  void Promise.all(ok.map(id => trashed(path, id)));
   const results = await Promise.allSettled(
     ok.map(id =>
       exec({ op: 'delete', id }, removeCard(id)).then((r): { id: number; title: string } => ({
