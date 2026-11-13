@@ -88,9 +88,10 @@ fn run_limited(mut cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Ou
     out
 }
 
-/// 输出里像「没有登录」的那一行
-fn login_line(raw: &str) -> Option<String> {
-    const MARKS: [&str; 12] = [
+/// 输出里像「没有登录」的那一行。`lines` 是转写后的日志，原始 JSON 事件里的 uuid、session_id 等元数据不算；
+/// 401 只认单独的状态码（uuid 里的 `401e8ee6-…` 不算）
+fn login_line(lines: &[String]) -> Option<String> {
+    const MARKS: [&str; 11] = [
         "not logged in",
         "please run /login",
         "run /login",
@@ -101,14 +102,25 @@ fn login_line(raw: &str) -> Option<String> {
         "authentication_error",
         "authentication failed",
         "unauthorized",
-        "401",
         "未登录",
     ];
-    raw.lines().find(|l| {
-        let l = l.to_lowercase();
-        MARKS.iter().any(|m| l.contains(m))
+    lines
+        .iter()
+        .find(|l| {
+            let l = l.to_lowercase();
+            MARKS.iter().any(|m| l.contains(m)) || has_status_401(&l)
+        })
+        .map(|l| short(l.trim()))
+}
+
+/// 单独的 401（前后不是字母数字）：`status 401 Unauthorized` 算，`uuid: 401e8ee6…`、`1401` 不算
+fn has_status_401(s: &str) -> bool {
+    let b = s.as_bytes();
+    (0..b.len().saturating_sub(2)).any(|i| {
+        &b[i..i + 3] == b"401"
+            && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+            && (i + 3 == b.len() || !b[i + 3].is_ascii_alphanumeric())
     })
-    .map(|l| short(l.trim()))
 }
 
 fn short(s: &str) -> String {
@@ -116,8 +128,8 @@ fn short(s: &str) -> String {
     s
 }
 
-/// agent 这一项的结论：通过吗、原因、回答的前几行。`raw` 是原样的输出，`lines` 是转写后的
-pub fn judge_agent(out: &Outcome, raw: &str, lines: &[String]) -> (bool, Option<String>, Option<String>) {
+/// agent 这一项的结论：通过吗、原因、回答的前几行。`lines` 是转写后的日志
+pub fn judge_agent(out: &Outcome, lines: &[String]) -> (bool, Option<String>, Option<String>) {
     // 回答：去掉提示词本身（有的 agent 会回显）、开始和结束的摘要行
     let answer: Vec<&str> = lines
         .iter()
@@ -126,7 +138,7 @@ pub fn judge_agent(out: &Outcome, raw: &str, lines: &[String]) -> (bool, Option<
         .collect();
     let detail = (!answer.is_empty()).then(|| answer.iter().take(4).copied().collect::<Vec<_>>().join("\n"));
     let knows = answer.iter().any(|l| l.contains("board-skills"));
-    let login = login_line(raw);
+    let login = login_line(lines);
     match out {
         Outcome::Spawn(e) => (false, Some(format!("启动失败：{e}")), None),
         Outcome::Timeout => {
@@ -136,7 +148,8 @@ pub fn judge_agent(out: &Outcome, raw: &str, lines: &[String]) -> (bool, Option<
             };
             (false, Some(why), detail)
         }
-        Outcome::Exit(..) if knows && login.is_none() => (true, None, detail),
+        // 已经答出 board-skills 就算通过：日志里顺带的报错（重试、接口抖动）不影响结论
+        Outcome::Exit(..) if knows => (true, None, detail),
         Outcome::Exit(..) if login.is_some() => (false, Some(format!("没有登录：{}", login.unwrap_or_default())), detail),
         Outcome::Exit(false, code) => {
             let last = lines.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty()).map(short).unwrap_or_default();
@@ -258,7 +271,7 @@ pub fn check_agent(job: AgentJob, pids: &Pids) -> SelfTestItem {
     let out = run_limited(cmd, &job.log, AGENT_LIMIT, pids);
     let raw = std::fs::read_to_string(&job.log).unwrap_or_default();
     let lines = logfmt::render(job.stream, raw.lines().map(str::to_string).collect());
-    item(judge_agent(&out, &raw, &lines))
+    item(judge_agent(&out, &lines))
 }
 
 /// 全部检查：每个 agent、每块白板各一个线程，一起跑
@@ -287,24 +300,47 @@ mod tests {
     fn agent_answers_are_judged() {
         let ok = Outcome::Exit(true, Some(0));
         // 认得 skill
-        let (pass, why, detail) = judge_agent(&ok, "board-skills\n参数\n", &sv(&["board-skills", "参数"]));
+        let (pass, why, detail) = judge_agent(&ok, &sv(&["board-skills", "参数"]));
         assert!(pass && why.is_none());
         assert_eq!(detail.as_deref(), Some("board-skills\n参数"));
         // 回显的提示词里也有 board-skills，不算
-        let (pass, why, _) = judge_agent(&ok, PROMPT, &sv(&[PROMPT, "我没有找到这个 skill"]));
+        let (pass, why, _) = judge_agent(&ok, &sv(&[PROMPT, "我没有找到这个 skill"]));
         assert!(!pass && why.unwrap().contains("回答里没有 board-skills"));
+        // Claude Code 的 thinking_tokens 事件：uuid 以 401 开头，转写后不该当成没有登录
+        let raw = [
+            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":247,"estimated_tokens_delta":1,"session_id":"5ae182c3-42b3-4513-ac68-d25bae593b47","uuid":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"board-skills\n参数"}]},"parent_tool_use_id":null,"session_id":"s1","uuid":"u1"}"#,
+        ]
+        .join("\n");
+        let lines = logfmt::render(Some(Stream::Claude), raw.lines().map(str::to_string).collect());
+        let (pass, why, _) = judge_agent(&ok, &lines);
+        assert!(pass, "{why:?}");
+        // 已经答出 board-skills：日志里顺带的 401 重试不影响结论
+        let (pass, why, _) = judge_agent(
+            &ok,
+            &sv(&["✗ Reconnecting... 1/5 (unexpected status 401 Unauthorized: Invalid token)", "board-skills", "参数"]),
+        );
+        assert!(pass, "{why:?}");
         // 没登录（假脚本输出 Not logged in 后退出）
-        let (pass, why, _) = judge_agent(&Outcome::Exit(false, Some(1)), "Not logged in · Please run /login\n", &sv(&["Not logged in · Please run /login"]));
+        let (pass, why, _) = judge_agent(&Outcome::Exit(false, Some(1)), &sv(&["Not logged in · Please run /login"]));
         assert!(!pass);
         assert!(why.unwrap().starts_with("没有登录：Not logged in"));
         // 超时
-        let (pass, why, _) = judge_agent(&Outcome::Timeout, "", &[]);
+        let (pass, why, _) = judge_agent(&Outcome::Timeout, &[]);
         assert!(!pass && why.unwrap().contains("超时"));
         // 退出码非 0：写最后一行
-        let (_, why, _) = judge_agent(&Outcome::Exit(false, Some(2)), "boom\n", &sv(&["boom"]));
+        let (_, why, _) = judge_agent(&Outcome::Exit(false, Some(2)), &sv(&["boom"]));
         assert_eq!(why.as_deref(), Some("退出码 2：boom"));
-        let (_, why, _) = judge_agent(&Outcome::Spawn("No such file or directory".into()), "", &[]);
+        let (_, why, _) = judge_agent(&Outcome::Spawn("No such file or directory".into()), &[]);
         assert_eq!(why.as_deref(), Some("启动失败：No such file or directory"));
+    }
+
+    #[test]
+    fn login_markers_ignore_uuid_metadata() {
+        assert!(!has_status_401("uuid: 401e8ee6-e6c2-4642-86d5-3d3fc9e6de00"));
+        assert!(!has_status_401("1401"));
+        assert!(has_status_401("unexpected status 401 Unauthorized"));
+        assert!(has_status_401("http 401"));
     }
 
     #[test]
