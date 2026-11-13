@@ -190,7 +190,7 @@ export const api = {
   /* 任务下发（board host） */
   /** 机器和排队、正在跑的派发（工作区里也有；机器页每 10 秒取一次，刷新心跳时间） */
   hosts: () => req<{ hosts: HostInfo[]; dispatches: Dispatch[] }>('GET', '/api/hosts'),
-  /** 修改机器设置：同时跑几个、暂停接单、默认 agent、定时领取 */
+  /** 修改机器设置：最多几个会话、暂停接单、默认 agent、定时领取 */
   updateHost: (
     name: string,
     patch: {

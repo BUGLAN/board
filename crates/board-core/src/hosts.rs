@@ -3,7 +3,7 @@
 //! - **机器**：每台干活的机器上常驻一个 `board host`。它每 10 秒上报一次（[`W::host_beat`]）：机器名、系统、
 //!   board 版本、本机 agent、白板与目录，以及本机正在跑的派发；连续 5 次没收到算离线。机器名正被另一个在线的
 //!   board host 使用时 `HOST_NAME_TAKEN`；同一台机器上 board host 异常退出后重启，带上上一次的标识（resume）可以接回名字。
-//! - **机器设置**（同时跑几个、暂停接单、默认 agent、定时领取、每个 agent 的启动环境）存在服务端，界面上修改，
+//! - **机器设置**（最多几个会话、暂停接单、默认 agent、定时领取、每个 agent 的启动环境）存在服务端，界面上修改，
 //!   host 通过推送实时拿到。机器第一次连上时按默认值建立；被移除后再连上来，按新机器处理。
 //! - **启动环境**（启动环境与桌面端需求 §二）：在哪种 shell 里启动 agent 的命令（直接启动、登录 shell、cmd、
 //!   PowerShell、Git Bash、WSL 的发行版 …）。board host 启动时发现本机有哪些，并在每个 agent 支持的环境里各检查
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   dirs_rev INTEGER NOT NULL DEFAULT 0,-- 目录设置的版本：服务端和 board host 用它分清远程修改和本机配置修改
   dirs_at  INTEGER,                   -- 最近一次改目录设置的时间
   dirs_by  TEXT,                      -- 最近一次改目录设置的人；本机 board host 上报的是「本机」
-  max      INTEGER NOT NULL DEFAULT 1,-- 同时跑几个
+  max      INTEGER NOT NULL DEFAULT 1,-- 最多几个会话（同时在跑的 agent 进程数）
   per_session INTEGER NOT NULL DEFAULT 4,-- 定时领取启动的会话一个最多做几张（board next）
   max_run  INTEGER NOT NULL DEFAULT 180,-- 单次最长运行（分钟，0 = 不限）
   idle_run INTEGER NOT NULL DEFAULT 20,-- 多久没有输出算卡住（分钟，0 = 不限）
@@ -202,7 +202,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 /// 机器名最长多少个字符
 pub const HOST_NAME_MAX: usize = 24;
-/// 同时跑几个的上限
+/// 「最多几个会话」（同时在跑的 agent 进程数）的上限
 pub const HOST_MAX_LIMIT: i64 = 8;
 /// 一个会话最多做几张的上限（1–8，默认 4）
 pub const PER_SESSION_LIMIT: i64 = 8;
@@ -220,7 +220,7 @@ pub const IDLE_RUN_LIMIT: i64 = 120;
 pub const RULES_LIMIT: usize = 20;
 /// 「复制设置到…」能选的项：标识和说法
 pub const COPY_ITEMS: [(&str, &str); 5] = [
-    ("limits", "同时跑几个和一个会话最多做几张"),
+    ("limits", "最多几个会话和一个会话最多做几张"),
     ("cron", "定时领取"),
     ("rules", "领取规则和兜底"),
     ("agent", "默认 agent"),
@@ -724,7 +724,7 @@ pub struct HostInfo {
     pub dirs_changed_at: Option<i64>,
     #[serde(default)]
     pub dirs_changed_by: Option<String>,
-    /// 同时跑几个（1–8）
+    /// 最多几个会话：同一时间最多开几个 agent 进程（1–8）
     pub max: i64,
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
     #[serde(default = "default_per_session")]
@@ -2467,7 +2467,7 @@ impl<'a> W<'a> {
 
     /// 自检（PRD §10.12「自检」，只能在登录后的界面上做）：记下请求，board host 取到任务时在后台做。
     /// `agent` 给了就只检查这个 agent（「本机 agent」那一行的按钮），否则整台机器（每个找得到的 agent、每块白板的目录）。
-    /// 要机器在线；同一台机器同时只做一次（上一次超过 [`SELFTEST_STALE_MS`] 还没做完的算作废）。不占并发位，不影响在跑的派发
+    /// 要机器在线；同一台机器同时只做一次（上一次超过 [`SELFTEST_STALE_MS`] 还没做完的算作废）。不占会话位，不影响在跑的派发
     pub fn host_selftest(&mut self, name: &str, agent: Option<&str>, by: &str) -> Result<HostInfo> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         if !h.online(self.now) {
@@ -2679,7 +2679,7 @@ impl<'a> W<'a> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         if let Some(max) = p.max {
             if !(1..=HOST_MAX_LIMIT).contains(&max) {
-                return Err(BoardError::usage(format!("同时跑几个要在 1 到 {HOST_MAX_LIMIT} 之间")));
+                return Err(BoardError::usage(format!("最多几个会话要在 1 到 {HOST_MAX_LIMIT} 之间")));
             }
             self.tx.execute("UPDATE hosts SET max = ?2 WHERE id = ?1", params![h.id, max])?;
         }
@@ -2986,7 +2986,7 @@ impl<'a> W<'a> {
     }
 
     /// 机器改名（桌面端「设置 → 本机」保存机器名时调用）：机器记录原地改名，id 不变，
-    /// 所有设置（同时跑几个、默认 agent、领取规则、定时领取、暂停 …）和历史派发记录都保留，
+    /// 所有设置（最多几个会话、默认 agent、领取规则、定时领取、暂停 …）和历史派发记录都保留，
     /// 派发记录里的机器名也跟着改（在跑的派发按机器名找）。
     /// - 新名字的规则和 [`check_host_name`] 相同；正被另一台**在线**机器使用时 `HOST_NAME_TAKEN`；
     ///   被一台**离线**机器占用时 `USAGE`（先在「机器」里移除它再改）
@@ -3183,11 +3183,19 @@ impl<'a> W<'a> {
         Ok(h)
     }
 
-    fn running_on(&self, h: &HostRow) -> Result<i64> {
-        Ok(self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE host = ?1 AND state = 'running'", [&h.name], |r| r.get(0))?)
+    /// 这台机器现在开着几个会话（= 同时在跑的几个 agent 进程）。`max` 限制的是会话数，不是派发条数：
+    /// 定时领取的会话里排着的派发（`session != id`）不占额外的会话位，它们由同一个进程用 `board next` 接着做；
+    /// 手动派发的一张卡各自是一个会话（`session` 为空或等于自己）
+    fn sessions_on(&self, h: &HostRow) -> Result<i64> {
+        Ok(self.tx.query_row(
+            "SELECT COUNT(DISTINCT COALESCE(session, id)) FROM dispatches WHERE host = ?1 AND state = 'running'",
+            [&h.name],
+            |r| r.get(0),
+        )?)
     }
 
     /// 开始一次排队中的派发（board host 有空位时按创建先后调用）：机器在线、没有暂停、有空位才开始
+    /// （「空位」是会话位：同时在跑的几个 agent 进程还没到「最多几个会话」）
     pub fn dispatch_begin(&mut self, host: &str, instance: &str, id: i64, token: Option<i64>) -> Result<Dispatch> {
         let h = self.host_of(host, instance)?;
         let d = self.drow(id)?;
@@ -3203,8 +3211,8 @@ impl<'a> W<'a> {
         if h.restarting() {
             return Err(BoardError::usage(format!("机器「{host}」正在等重启或升级，不开始新的派发")));
         }
-        if self.running_on(&h)? >= h.max {
-            return Err(BoardError::usage(format!("机器「{host}」没有空位（同时跑 {}）", h.max)));
+        if self.sessions_on(&h)? >= h.max {
+            return Err(BoardError::usage(format!("机器「{host}」没有空位（最多 {} 个会话同时跑）", h.max)));
         }
         self.start(&h, d, token)
     }
@@ -3273,12 +3281,12 @@ impl<'a> W<'a> {
         self.read().dispatch(d.id)
     }
 
-    /// 定时领取（任务下发需求 §六）：正在一轮领取、没有暂停、有空位时，在这台机器有目录的白板上按 --dir 的顺序轮流，
+    /// 定时领取（任务下发需求 §六）：正在一轮领取、没有暂停、有空位（会话位没满）时，在这台机器有目录的白板上按 --dir 的顺序轮流，
     /// 按领取规则挑下一张卡片和它的 agent。一条领取规则也没有时不领卡（这一轮直接结束，返回 None）。
     /// 规则没命中的卡片、也没有可领取的卡片时这一轮结束，返回 None
     pub fn dispatch_pull(&mut self, host: &str, instance: &str, token: Option<i64>) -> Result<Option<Dispatch>> {
         let h = self.host_of(host, instance)?;
-        if h.round_at.is_none() || h.paused || h.restarting() || self.running_on(&h)? >= h.max {
+        if h.round_at.is_none() || h.paused || h.restarting() || self.sessions_on(&h)? >= h.max {
             return Ok(None);
         }
         let Some(rules) = h.claim_rules() else {

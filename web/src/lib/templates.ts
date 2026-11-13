@@ -7,7 +7,7 @@ import type { AgentTemplate, HostInfo } from './types';
 
 /** 复制设置能选的项（和服务端 COPY_ITEMS 一致） */
 export const COPY_ITEMS: [string, string][] = [
-  ['limits', '同时跑几个和一个会话最多做几张'],
+  ['limits', '最多几个会话和一个会话最多做几张'],
   ['cron', '定时领取'],
   ['rules', '领取规则和兜底'],
   ['agent', '默认 agent'],

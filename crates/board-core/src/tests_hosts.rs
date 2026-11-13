@@ -356,7 +356,7 @@ fn dispatch_agent_name_format() {
     assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", 0), "pi-mbp/pi");
     assert_eq!(hosts::dispatch_agent_name("codex", "mbp", "---", 0), "codex-mbp/codex");
     // 名字都能通过 board check 的格式校验；长机器名、长标识、多位的序号也一样（序号只在并发时加，
-    // 最多「同时跑几个」（≤8）个，实际是个位数；模型名放不下时截断）
+    // 最多「最多几个会话」（≤8）个，实际是个位数；模型名放不下时截断）
     let cases = [
         ("dsh", "win", "deepseek-v4.1-flash", 0u32),
         ("dsh", "win", "deepseek-v4.1-flash", 12),
@@ -612,7 +612,7 @@ fn capacity_and_pause_keep_dispatches_queued() {
     let da = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     let db = dispatch(&mut s, T0, b, "mbp", None).unwrap();
     begin(&mut s, T0 + S, da.id).unwrap();
-    assert_eq!(begin(&mut s, T0 + S, db.id).unwrap_err().code, ErrorCode::Usage, "同时跑 1 个：没有空位");
+    assert_eq!(begin(&mut s, T0 + S, db.id).unwrap_err().code, ErrorCode::Usage, "最多 1 个会话：没有空位");
     let w = s.read(|r| r.host_work("mbp", T0 + S)).unwrap();
     assert_eq!((w.running.len(), w.queued.len()), (1, 1));
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(2), paused: Some(true), ..Default::default() })).unwrap();
@@ -1306,6 +1306,60 @@ fn session_of(s: &Store, session: i64) -> Vec<Dispatch> {
     s.read(|r| r.host_recent(1, 50)).unwrap().into_iter().chain(s.read(|r| r.active_dispatches()).unwrap()).filter(|d| d.session == session).collect()
 }
 
+/// 「最多几个会话」限的是同时在跑的会话（agent 进程）数，不是派发条数：
+/// N = 2、最多 2 个会话、6 张卡。第一个会话在跑；第二个会话的卡片在会话里排着，不额外占会话位；
+/// 两个会话占满 2 个位置后这一轮不再开新会话，第三个会话要等有会话结束后才开
+#[test]
+fn session_capacity_counts_sessions_not_dispatches() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    set_host(&mut s, HostPatch { max: Some(2), per_session: Some(2), ..Default::default() }).unwrap();
+    for t in ["A", "B", "C", "D", "E", "F"] {
+        new_card_tagged(&mut s, t);
+    }
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    // 第一个会话：1 张在跑 + 1 张排着，只占 1 个会话位
+    let d1 = pull(&mut s, T0 + 2 * S).unwrap();
+    assert_eq!((d1.state.as_str(), d1.seq, d1.total), ("running", 1, 2));
+    // 第二个会话照常开得起来（会话位还剩 1 个），它排着的卡不占位
+    let d2 = pull(&mut s, T0 + 2 * S).expect("还有 1 个会话位");
+    assert_eq!((d2.state.as_str(), d2.seq, d2.total), ("running", 1, 2));
+    let running = |s: &Store| s.read(|r| r.active_dispatches()).unwrap().into_iter().filter(|d| d.state == "running").collect::<Vec<_>>();
+    assert_eq!(running(&s).len(), 2, "两个会话各一张在跑");
+    let queued = |s: &Store| s.read(|r| r.active_dispatches()).unwrap().into_iter().filter(|d| d.state == "queued").collect::<Vec<_>>();
+    assert_eq!(queued(&s).len(), 2, "两个会话各排着 1 张，不占会话位");
+    // 两个会话位都占满：这一轮不开新会话（E、F 还没派）
+    assert!(pull(&mut s, T0 + 2 * S).is_none(), "会话位满了");
+    assert_eq!(col(&s, "todo").len(), 2, "E、F 留在待办");
+    // 手动派发的另一张卡同样等会话位
+    let q0 = queued(&s)[0].card;
+    assert_eq!(dispatch(&mut s, T0 + 3 * S, q0, "mbp", None).unwrap_err().code, ErrorCode::AlreadyDispatched, "排着派的卡片不能再派");
+    // 第一个会话做完两张、进程退出：空出一个会话位，接着开新会话
+    let name = d1.name.clone().unwrap();
+    let mut cur = d1.card;
+    for k in 0..2 {
+        submit(&mut s, T0 + (4 + k) * S, &name, cur);
+        match next(&mut s, T0 + (4 + k) * S, &name) {
+            Ok(c) => cur = c.card.id,
+            Err(e) => {
+                assert_eq!(e.code, ErrorCode::SessionDone);
+                assert!(e.message.contains("排着的卡片都开始过或取消了"), "{}", e.message);
+            }
+        }
+    }
+    end(&mut s, T0 + 7 * S, d1.id, Some(0), &[]);
+    let d3 = pull(&mut s, T0 + 8 * S).expect("空出一个会话位：开新会话");
+    assert_eq!((d3.state.as_str(), d3.total), ("running", 2));
+    // 会话位不够时的错误提示按会话口径写：新卡手派到这台机器上先排队，begin 报没有空位
+    let e5 = new_card(&mut s, T0 + 9 * S, "G");
+    let extra = dispatch(&mut s, T0 + 9 * S, e5, "mbp", None).unwrap();
+    let err = begin(&mut s, T0 + 9 * S, extra.id).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Usage);
+    assert!(err.message.contains("最多 2 个会话同时跑"), "{}", err.message);
+    assert_eq!(get(&s, extra.id).state, "queued");
+}
+
 #[test]
 fn per_session_setting_is_validated() {
     let mut s = store();
@@ -1317,7 +1371,7 @@ fn per_session_setting_is_validated() {
     assert_eq!(set_host(&mut s, HostPatch { per_session: Some(8), ..Default::default() }).unwrap().per_session, 8);
 }
 
-/// N = 4、6 张同标签的卡片、同时跑 1 个：第一个会话做 4 张后 SESSION_DONE，第二个会话做剩下 2 张；每张卡各一条派发
+/// N = 4、6 张同标签的卡片、最多 1 个会话：第一个会话做 4 张后 SESSION_DONE，第二个会话做剩下 2 张；每张卡各一条派发
 #[test]
 fn session_does_up_to_n_cards_then_a_new_one_starts() {
     let mut s = store();
@@ -1499,7 +1553,7 @@ fn second_card_crash_or_stop_keeps_first_result() {
     }
 }
 
-/// 一轮领取开几个会话（同时跑 4 个）：先把一个会话排满再开下一个。返回每个会话（开始的那张 + 排着的）
+/// 一轮领取开几个会话（最多 4 个会话）：先把一个会话排满再开下一个。返回每个会话（开始的那张 + 排着的）
 fn open_sessions(cards: usize, per: i64) -> (Store, Vec<Vec<i64>>) {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
@@ -1516,7 +1570,7 @@ fn open_sessions(cards: usize, per: i64) -> (Store, Vec<Vec<i64>>) {
     (s, sessions)
 }
 
-/// 同时跑 4 个、N = 4：4、6、16、20 张卡分别开 1、2（4 + 2）、4、4 个会话；两个会话不会排到同一张卡；N = 1 时 4 张开 4 个会话
+/// 最多 4 个会话、N = 4：4、6、16、20 张卡分别开 1、2（4 + 2）、4、4 个会话；两个会话不会排到同一张卡；N = 1 时 4 张开 4 个会话
 #[test]
 fn session_fills_one_before_opening_the_next() {
     let sizes = |n: usize, per: i64| open_sessions(n, per).1.iter().map(Vec::len).collect::<Vec<_>>();
@@ -1557,7 +1611,7 @@ fn session_fills_one_before_opening_the_next() {
     assert!(rest.iter().all(|c| !all.contains(c)));
 }
 
-/// N = 4、6 张同标签的卡、同时跑 1 个：第 1 张在跑，第 2–4 张排在会话里（会话第 N/4 张）；第 5、6 张没有派发；
+/// N = 4、6 张同标签的卡、最多 1 个会话：第 1 张在跑，第 2–4 张排在会话里（会话第 N/4 张）；第 5、6 张没有派发；
 /// 会话里排着的不给 board host、不占空位；第一个进程做完排着的退出，第二个进程排好并做剩下的
 #[test]
 fn session_queue_is_planned_and_shown() {
@@ -1583,7 +1637,7 @@ fn session_queue_is_planned_and_shown() {
     let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![d1.id])).unwrap();
     assert!(w.queued.is_empty(), "{:?}", w.queued);
     assert_eq!(begin(&mut s, T0 + S, queued[0].id).unwrap_err().code, ErrorCode::Usage);
-    assert!(pull(&mut s, T0 + S).is_none(), "同时跑 1 个：没有空位");
+    assert!(pull(&mut s, T0 + S).is_none(), "最多 1 个会话：没有空位");
     // board next 按排好的顺序开始
     let mut t = T0 + 2 * S;
     for (k, want) in cards[1..4].iter().enumerate() {
@@ -1767,7 +1821,7 @@ fn rules(s: &mut Store, list: &[(&str, &str)], fallback: Option<&str>) -> Result
     )
 }
 
-/// 一轮领取能派发的全部（同时跑 8 个，派发完为止）：（卡片，agent）
+/// 一轮领取能派发的全部（最多 8 个会话，派发完为止）：（卡片，agent）
 fn round_all(s: &mut Store, at: i64) -> Vec<(i64, String)> {
     // 这里只看规则把卡片交给谁：一个会话一张（N = 1），每张卡都由 pull 开始
     set_host(s, HostPatch { max: Some(8), per_session: Some(1), ..Default::default() }).unwrap();

@@ -1,4 +1,4 @@
-/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的并发位，一条车道一个任务）；主区可以切到多机对比、共用配置（skills 共用库） */
+/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一条车道一个会话）；主区可以切到多机对比、共用配置（skills 共用库） */
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, SOURCE } from '../../lib/hosts';
@@ -78,10 +78,10 @@ function span(ms: number) {
 const rank = (h: HostInfo) => (!h.online ? 2 : h.paused ? 1 : 0);
 const ordered = (hosts: HostInfo[]) => hosts.map((h, i) => ({ h, i })).sort((a, b) => rank(a.h) - rank(b.h) || a.i - b.i).map(x => x.h);
 
-/** 一台机器的并发位：在跑的排前面（颜色是 agent 的），剩下的是空位 */
+/** 一台机器的会话位：在跑的排前面（颜色是 agent 的），剩下的是空位（一个会话一格） */
 const slotsOf = (h: HostInfo, running: Dispatch[]) => Array.from({ length: Math.max(h.max, running.length) }, (_, i) => running[i] ?? null);
 
-/** 并发位的小格子：机器行里一台机器一组，顶部总览里所有机器连成一条 */
+/** 会话位的小格子：机器行里一台机器一组，顶部总览里所有机器连成一条 */
 function Pips({ h, running }: { h: HostInfo; running: Dispatch[] }) {
   return (
     <span className={cx('hp-pips', !h.online && 'off', h.online && h.paused && 'paused')} aria-hidden="true">
@@ -92,7 +92,7 @@ function Pips({ h, running }: { h: HostInfo; running: Dispatch[] }) {
   );
 }
 
-/** 顶部总览：在线、并发位、排队三个数，加一条所有机器的并发位（点一组打开那台机器） */
+/** 顶部总览：在线、会话位、排队三个数，加一条所有机器的会话位（点一组打开那台机器） */
 function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
   const on = hosts.filter(h => h.online);
   const open = on.filter(h => !h.paused);
@@ -111,7 +111,7 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
           </dd>
         </div>
         <div>
-          <dt>并发位在用</dt>
+          <dt>会话位在用</dt>
           <dd>
             {used}
             <small>/{slots}</small>
@@ -122,7 +122,7 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
           <dd>{queue}</dd>
         </div>
       </dl>
-      <div className="hp-strip" role="list" aria-label="所有机器的并发位">
+      <div className="hp-strip" role="list" aria-label="所有机器的会话位">
         {hosts.map(h => {
           const { running } = hostLoad(ws, h);
           const s = hostState(h, running.length);
@@ -256,7 +256,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
         ) : h.paused ? (
           <div className="hp-lane idle paused">
             <Icon name="pause" />
-            暂停接单{free > 0 ? ` · ${free} 个并发位停用` : ''}
+            暂停接单{free > 0 ? ` · ${free} 个会话位停用` : ''}
           </div>
         ) : (
           free > 0 && (

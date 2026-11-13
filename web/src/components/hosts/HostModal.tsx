@@ -375,20 +375,20 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
             <div className="hp-knobs">
               <div className={cx('hp-knob', failed('max'))}>
                 <div className="hp-knob-text">
-                  <b>同时跑几个</b>
-                  <span>跑满之后，新的派发在服务端排队</span>
+                  <b>最多几个会话</b>
+                  <span>同一时间最多开几个 agent 会话（一个会话 = 一个 agent 进程）；达到上限后新的会话在服务端排队，手动派发的一张卡也算一个会话</span>
                 </div>
                 <span className="hp-ctl">
                   <Sync s={sync.max} />
-                  <Stepper value={h.max} label="同时跑几个" onChange={v => save({ max: v })} />
+                  <Stepper value={h.max} label="最多几个会话" onChange={v => save({ max: v })} />
                 </span>
               </div>
               {h.perSession != null && (
                 <div className={cx('hp-knob', failed('perSession'))}>
                   <div className="hp-knob-text">
                     <b>一个会话最多做几张</b>
-                    <span data-tip="定时领取开会话时一次排好这个会话要做的卡片（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做排着的下一张，做完就退出；设为 1 时有几个空位就同时开几个会话。改了只影响之后新开的会话；手动派发只做指定的那一张">
-                      定时领取先把一个会话排满再开下一个
+                    <span data-tip="定时领取时一个会话一次排好最多 N 张卡（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做下一张，排完就退出">
+                      定时领取时一个会话一次排好最多这么多张卡，agent 做完一张用 board next 接着做下一张，排完就退出；N = 1 时一个会话只做一张，有几个空位就同时开几个会话
                     </span>
                   </div>
                   <span className="hp-ctl">
@@ -402,7 +402,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                   <div className="hp-knob-text">
                     <b>单次最长运行</b>
                     <span data-tip="到时间后 board host 按「停止」的流程结束整个进程树，派发记「超时」，卡片按异常退出的规则移到错误节点（没有时移到需要人处理的状态），评论写明原因和日志最后 20 行">
-                      到时间就停止，防止卡住的 agent 一直占着并发位
+                      到时间就停止，防止卡住的 agent 一直占着会话位
                     </span>
                   </div>
                   <span className="hp-ctl">

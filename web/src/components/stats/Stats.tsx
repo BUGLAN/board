@@ -1010,7 +1010,7 @@ function Report({ s }: { s: Stats }) {
             <LeadCard s={s} />
           </div>
           <Trend s={s} />
-          <Card title="agent 时间轴" id="sp-agent-tl" extra={<Note>每次领取一段 · 同一个 agent 同时跑几个就叠几行 · 悬停看是哪张卡</Note>}>
+          <Card title="agent 时间轴" id="sp-agent-tl" extra={<Note>每次领取一段 · 同一个 agent 同时跑几个会话就叠几行 · 悬停看是哪张卡</Note>}>
             <AgentTimeline runs={s.runs} from={s.from} to={s.to} now={s.now} idle={s.idle} showBoard={many} />
           </Card>
           {/* 日历热力图在上面白板概览里，这里只留时段热力图 */}

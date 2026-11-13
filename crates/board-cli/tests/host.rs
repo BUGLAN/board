@@ -391,7 +391,7 @@ fn host_runs_dispatches_end_to_end() {
     assert_eq!(c2["column"], "check");
     assert!(activity(&c2).iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "{:?}", activity(&c2));
 
-    // 同时跑 1 个：#3 在跑时派发 #4 排队，别的 agent 领 #4 报 DISPATCHED
+    // 最多 1 个会话：#3 在跑时派发 #4 排队，别的 agent 领 #4 报 DISPATCHED
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp"]).code, 0);
     wait_until("#3 开始", Duration::from_secs(10), || rig.show(3)["holder"] == "claude-mbp/opus-5.5");
@@ -415,7 +415,7 @@ fn host_runs_dispatches_end_to_end() {
     assert!(rig.workspace()["hosts"][0]["online"] == false);
 }
 
-/// 定时领取的会话接着做（board next）：N = 4、6 张卡、同时跑 1 个 → 第一个进程做 4 张，第二个做 2 张；每张各一条派发
+/// 定时领取的会话接着做（board next）：N = 4、6 张卡、最多 1 个会话 → 第一个进程做 4 张，第二个做 2 张；每张各一条派发
 #[test]
 fn cron_session_does_several_cards() {
     let rig = Rig::new();
@@ -956,7 +956,7 @@ fn idle_run_stops_only_after_output() {
     rig.minute_ms_short();
     let host = rig.host("mbp");
     rig.online("mbp");
-    // 同时跑 2 个；没输出 5 分钟算卡住；单次最长运行不限。
+    // 最多 2 个会话；没输出 5 分钟算卡住；单次最长运行不限。
     // 用直接启动：登录 shell 自己会往标准错误里写几行（「no job control…」），那样就没有「一行都没输出」的派发了
     rig.set_host("mbp", serde_json::json!({ "max": 2, "idleRun": 5, "maxRun": 0, "env": { "agent": "claude", "env": "direct" } }));
     // 一：输出一行后再也不输出 → 该被停止

@@ -2955,7 +2955,7 @@ impl Host<'_> {
         Ok(changed)
     }
 
-    /// 还没在停的 agent 个数（占着并发位）
+    /// 还没在停的 agent 个数（占着会话位：一个会话 = 一个 agent 进程）
     fn live(&self) -> usize {
         self.runs.len()
     }
