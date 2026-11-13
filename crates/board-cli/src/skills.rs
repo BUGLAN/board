@@ -12,10 +12,14 @@
 //! 本机已有同名、没有标记的目录（包括开发用的链接）不覆盖，状态是「本机有同名，没有覆盖」；库里删掉的、带标记的删掉。
 //! board-skills 例外：不是链接的旧拷贝（以前桌面端一键安装、解压 board-skills.zip 装的，没有标记）换成同步装的。
 //! board-skills 写好后把 `bin/<平台>/board` 换成 board host 自己的 board（WSL 里不放：那里用 PATH 里的 Linux 版）。
+//! 本机自己的同名目录内容和库里的一样（例如就是从这台机器导入的）时算已同步，也不动它。
+//!
+//! 从机器导入（界面「从机器导入」）：board host 每次同步后列出各目录里不是同步装的 skill（[`local_skills`]）随上报带上；
+//! 人勾了要导入的，board host 用 [`import_one`] 把那几个目录传进库（和 `board skills push` 一样），本机的目录不动。
 
 use crate::backend::Remote;
 use crate::{Output, Paint};
-use board_core::skills::{self, SkillFile, SkillInfo, SkillPack, SkillState, BUILTIN, MARK, MAX_BYTES};
+use board_core::skills::{self, LocalSkill, SkillFile, SkillInfo, SkillPack, SkillState, BUILTIN, MARK, MAX_BYTES};
 use board_core::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -194,6 +198,10 @@ fn install(dir: &Path, pack: &SkillPack, exe: Option<&Path>) -> std::result::Res
 pub struct Synced {
     pub states: Vec<SkillState>,
     pub changes: Vec<String>,
+    /// 各目录里不是同步装的 skill（board host 在同步之后填上，「从机器导入」用）
+    pub local: Vec<LocalSkill>,
+    /// 这次同步的目录（导入时按显示的路径找回去）
+    pub targets: Vec<Target>,
 }
 
 /// 按库同步这些目录。`fetch` 取一个 skill 的内容（board host、命令行都从服务端取）；`exe` 是放进 board-skills 的 board
@@ -227,6 +235,11 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, mut fetch
             // board-skills 例外：不是链接的旧拷贝（以前桌面端一键安装、解压 board-skills.zip 装的，没有标记）换成同步装的
             let adopt = s.name == BUILTIN && !link && dest.join("SKILL.md").is_file();
             if std::fs::symlink_metadata(&dest).is_ok() && mark_of(&dest).is_none() && !adopt {
+                // 本机自己的这份和库里的内容一样（例如就是从这台机器导入的）：算已同步，不动它
+                if scan(&dest).is_ok_and(|(_, _, v)| v == s.version) {
+                    states.extend(state(&s.name, "synced", Some(s.version.clone()), None));
+                    continue;
+                }
                 let what = if std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_symlink()) { "链接" } else { "目录" };
                 states.extend(state(&s.name, "local", None, Some(format!("本机已有同名的{what}（不是同步装的），没有覆盖"))));
                 continue;
@@ -253,7 +266,79 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, mut fetch
             }
         }
     }
-    Synced { states, changes }
+    Synced { states, changes, local: vec![], targets: vec![] }
+}
+
+/// 各目录里不是同步装的 skill：有 SKILL.md、没有标记文件（开发用的链接也算），board-skills 不算。
+/// 同名同版本、在几个目录里的合成一项；读不了、太大、名称不对的写明原因
+pub fn local_skills(targets: &[Target]) -> Vec<LocalSkill> {
+    let mut out: Vec<LocalSkill> = vec![];
+    for t in targets {
+        let Ok(rd) = std::fs::read_dir(&t.dir) else { continue };
+        let mut entries: Vec<std::fs::DirEntry> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let raw = e.file_name().to_string_lossy().into_owned();
+            let p = e.path();
+            if raw.starts_with('.') || !p.join("SKILL.md").is_file() || mark_of(&p).is_some() {
+                continue;
+            }
+            let name = raw.to_lowercase();
+            if name == BUILTIN {
+                continue;
+            }
+            let mut l = LocalSkill { name: name.clone(), agents: t.agents.clone(), dirs: vec![t.shown.clone()], ..Default::default() };
+            match skills::check_name(&name).and_then(|_| scan(&p)) {
+                Ok((files, size, version)) => {
+                    l.files = files;
+                    l.size = size;
+                    l.version = version;
+                }
+                Err(err) => l.why = Some(err.message),
+            }
+            match out.iter_mut().find(|x| x.name == l.name && x.version == l.version && x.why == l.why) {
+                Some(x) => {
+                    for a in &l.agents {
+                        if !x.agents.contains(a) {
+                            x.agents.push(a.clone());
+                        }
+                    }
+                    if !x.dirs.contains(&t.shown) {
+                        x.dirs.push(t.shown.clone());
+                    }
+                }
+                None => out.push(l),
+            }
+        }
+    }
+    out
+}
+
+/// 读一个 skill 目录：文件数、大小、版本号（和库里的算法一样）
+fn scan(dir: &Path) -> Result<(i64, i64, String)> {
+    let mut files = vec![];
+    let mut size = 0usize;
+    walk(dir, dir, &mut files, &mut size)?;
+    let raw: Vec<(String, bool, Vec<u8>)> = files.iter().map(|f| Ok((f.path.clone(), f.exec, skills::unb64(&f.data)?))).collect::<Result<_>>()?;
+    Ok((raw.len() as i64, size as i64, skills::pack_version(&raw)))
+}
+
+/// 从机器导入一个 skill：在显示路径是 `shown` 的那个目录里找名称对上的 skill，读出来交给 `push`（传进库），返回 skill 名。
+/// 本机的目录不动（之后同步时内容和库里一样就算已同步）
+pub fn import_one(targets: &[Target], name: &str, shown: &str, push: impl FnOnce(&str, &[SkillFile]) -> Result<SkillInfo>) -> std::result::Result<String, String> {
+    let t = targets.iter().find(|t| t.shown == shown).ok_or_else(|| format!("这台机器上已经没有 {shown} 这个目录"))?;
+    let rd = std::fs::read_dir(&t.dir).map_err(|e| format!("读不了 {shown}：{e}"))?;
+    let path = rd
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase() == name))
+        .ok_or_else(|| format!("{shown} 里已经没有 {name}"))?;
+    if mark_of(&path).is_some() {
+        return Err(format!("{shown}/{name} 是从库里同步装的，不用导入"));
+    }
+    let (n, files) = read_dir(&path).map_err(|e| e.message)?;
+    push(&n, &files).map_err(|e| e.message)?;
+    Ok(n)
 }
 
 /// board-skills 目录里的 bin/<平台>/board 和 exe 是同一个文件内容（大小一样就算）
@@ -501,6 +586,50 @@ mod tests {
         assert_eq!(out.changes.len(), 1);
         // 没有留下临时目录
         assert_eq!(std::fs::read_dir(&claude).unwrap().count(), 0);
+    }
+
+    /// 「从机器导入」：列出不是同步装的 skill（同名同内容的合成一项，没有 SKILL.md、同步装的、board-skills 不算），
+    /// 导入一个交给 push；导入之后本机这份和库里一样，同步时算已同步、不覆盖
+    #[test]
+    fn local_skills_listed_imported_and_then_counted_as_synced() {
+        let d = tempfile::tempdir().unwrap();
+        let claude = d.path().join("claude");
+        let agents = d.path().join("agents");
+        let t = vec![target(&claude, &["claude"]), target(&agents, &["dsh", "pi"])];
+        for dir in [&claude, &agents] {
+            std::fs::create_dir_all(dir.join("design/ref")).unwrap();
+            std::fs::write(dir.join("design/SKILL.md"), "# design").unwrap();
+            std::fs::write(dir.join("design/ref/a.md"), "a").unwrap();
+        }
+        std::fs::create_dir_all(claude.join("notes")).unwrap();
+        std::fs::write(claude.join("notes/SKILL.md"), "# notes").unwrap();
+        std::fs::create_dir_all(claude.join("empty")).unwrap();
+        std::fs::create_dir_all(claude.join(BUILTIN)).unwrap();
+        std::fs::write(claude.join(BUILTIN).join("SKILL.md"), "x").unwrap();
+        // 同步装的不算
+        let synced = pack("synced", &[("SKILL.md", b"# s")]);
+        sync(&[synced.info.clone()], &t[..1], None, |_| Ok(synced.clone()));
+        let list = local_skills(&t);
+        assert_eq!(list.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["design", "notes"]);
+        let design = &list[0];
+        assert_eq!((design.files, design.agents.clone(), design.dirs.len()), (2, vec!["claude".to_string(), "dsh".into(), "pi".into()], 2));
+        // 版本和库里的算法一样
+        let same = pack("design", &[("SKILL.md", b"# design"), ("ref/a.md", b"a")]);
+        assert_eq!(design.version, same.info.version);
+        // 导入：交给 push 的是目录名和文件
+        let mut pushed = vec![];
+        let n = import_one(&t, "design", &claude.display().to_string(), |name, files| {
+            pushed = files.iter().map(|f| f.path.clone()).collect();
+            Ok(SkillInfo { name: name.into(), ..same.info.clone() })
+        })
+        .unwrap();
+        assert_eq!((n.as_str(), pushed), ("design", vec!["SKILL.md".to_string(), "ref/a.md".into()]));
+        assert!(import_one(&t, "nope", &claude.display().to_string(), |_, _| unreachable!()).unwrap_err().contains("没有"));
+        assert!(import_one(&t, "synced", &claude.display().to_string(), |_, _| unreachable!()).unwrap_err().contains("同步装的"));
+        // 库里有了 design（就是这一份）：同步时本机自己的算已同步，不覆盖、不取内容
+        let out = sync(&[same.info.clone()], &t, None, |_| panic!("内容一样，不该取"));
+        assert!(out.states.iter().all(|s| s.state == "synced"), "{:?}", out.states);
+        assert!(mark_of(&claude.join("design")).is_none(), "本机自己的目录不动");
     }
 
     /// 以前一键安装、解压 zip 装的 board-skills（没有标记、不是链接）换成同步装的；别的同名目录照样不动

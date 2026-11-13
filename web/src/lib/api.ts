@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint } from './types';
+import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick } from './types';
 
 declare global {
   interface Window {
@@ -230,8 +230,9 @@ export const api = {
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
   /** skills 共用库（PRD §10.12「共用配置」）：列出、上传（同名换成新版本）、删除 */
   skills: () => req<SkillInfo[]>('GET', '/api/skills'),
-  pushSkill: (name: string, files: { path: string; exec: boolean; data: string }[]) => req<SkillInfo>('POST', '/api/skills', { name, files }),
   removeSkill: (name: string) => req('DELETE', `/api/skills/${q(name)}`),
+  /** 从这台机器导入 skills：board host 把选中的目录传进库 */
+  importSkills: (host: string, picks: SkillImportPick[]) => req<HostInfo>('POST', `/api/hosts/${q(host)}/skills/import`, { picks }),
   /** MCP 服务器共用配置：列表（密钥只给末尾 4 位）、新增或修改（密钥留空保留原值）、删除 */
   mcp: () => req<McpServer[]>('GET', '/api/mcp'),
   putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),

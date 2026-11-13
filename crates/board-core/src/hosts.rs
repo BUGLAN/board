@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   selftest TEXT,                      -- 自检（JSON，见 SelfTest）：等 board host 做的请求和最近一次的结果；没做过时为空
   skills   TEXT,                      -- skills 同步状态（JSON，见 SkillState）；旧版 board host 不上报，为空
   mcp      TEXT,                      -- MCP 服务器同步状态（JSON，见 McpState）；旧版 board host 不上报，为空
-  providers TEXT                      -- 模型供应商写进各 agent 配置文件的状态（JSON，见 ProviderState）；旧版 board host 不上报，为空
+  providers TEXT,                     -- 模型供应商写进各 agent 配置文件的状态（JSON，见 ProviderState）；旧版 board host 不上报，为空
+  skill_import TEXT                   -- 从这台机器导入 skills（JSON，见 SkillImport）：本机的 skill、等 board host 做的请求、最近一次的结果
 );
 
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
@@ -170,6 +171,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "skills", "TEXT"),
         ("hosts", "mcp", "TEXT"),
         ("hosts", "providers", "TEXT"),
+        ("hosts", "skill_import", "TEXT"),
         // 结构化事件（runlog.rs）：agent 的输出格式（空 = 只有原始输出，没有 = 旧版 board host 没报）、删掉了几条、结束 30 天后清过没有
         ("dispatches", "fmt", "TEXT"),
         ("dispatches", "ev_dropped", "INTEGER NOT NULL DEFAULT 0"),
@@ -809,7 +811,64 @@ pub struct HostInfo {
     /// 模型供应商写进这台机器各个 agent 配置文件的状态；旧版 board host 不同步，为空
     #[serde(default)]
     pub providers: Option<Vec<crate::providers::ProviderState>>,
+    /// 从这台机器导入 skills：本机有哪些 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有这一项
+    #[serde(default)]
+    pub skill_import: SkillImport,
 }
+
+/// 从一台机器导入 skills（PRD §10.12「共用配置」）：board host 上报本机各 agent skill 目录里、不是同步装的 skill；
+/// 人在界面上勾了要导入的，board host 把这几个目录传进共用库（和 `board skills push` 一样），再回报结果
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillImport {
+    /// 这台机器的 board host 会上报、会导入；旧版不会，界面上写要升级
+    #[serde(default)]
+    pub able: bool,
+    #[serde(default)]
+    pub local: Vec<crate::skills::LocalSkill>,
+    /// 等 board host 做（或正在做）的导入；做完清掉
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<SkillImportAsk>,
+    /// 最近一次导入的结果
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<SkillImportResult>,
+}
+
+/// 要导入的一个：名称和它所在的 skill 目录（几个目录里有同名不同内容时靠它分）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillImportPick {
+    pub name: String,
+    pub dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillImportAsk {
+    /// 序号：board host 做完带着它回报
+    pub id: i64,
+    pub picks: Vec<SkillImportPick>,
+    pub by: String,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillImportFail {
+    pub name: String,
+    pub why: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillImportResult {
+    pub id: i64,
+    pub at: i64,
+    pub by: String,
+    /// 传进库里的
+    #[serde(default)]
+    pub ok: Vec<String>,
+    #[serde(default)]
+    pub failed: Vec<SkillImportFail>,
+}
+
+/// 导入请求多久没做完算作废：之后可以重新请求
+pub const SKILL_IMPORT_STALE_MS: i64 = 5 * 60_000;
 
 /// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
 /// agent 能不能干活、每块白板的目录能不能推送，服务端补上 board 版本是否落后。结果一直保留到下一次自检
@@ -973,6 +1032,9 @@ pub struct HostReport {
     /// 模型供应商写进各 agent 配置文件的状态；旧版 board host 不带，带了才更新
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<crate::providers::ProviderState>>,
+    /// 本机各 agent skill 目录里、不是同步装的 skill（「从机器导入」用）；旧版 board host 不带，带了就算会导入
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_skills: Option<Vec<crate::skills::LocalSkill>>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -1242,13 +1304,14 @@ struct HostRow {
     skills_raw: Option<String>,
     mcp_raw: Option<String>,
     providers_raw: Option<String>,
+    skill_import: SkillImport,
     agents_raw: String,
     envs_raw: String,
     dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers";
+    "id, name, instance, os, version, agents, dirs, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers, skill_import";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1294,6 +1357,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         skills_raw: r.get(34)?,
         mcp_raw: r.get(35)?,
         providers_raw: r.get(36)?,
+        skill_import: r.get::<_, Option<String>>(37)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         agents_raw,
         envs_raw,
         dirs_raw,
@@ -1424,6 +1488,7 @@ impl HostRow {
             skills: self.skills_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
             mcp: self.mcp_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
             providers: self.providers_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
+            skill_import: self.skill_import.clone(),
         }
     }
     /// 正在等重启或升级：board host 不再开始新的派发
@@ -2268,6 +2333,10 @@ impl<'a> W<'a> {
                     let st = SelfTest { able: true, ..Default::default() };
                     self.tx.execute("UPDATE hosts SET selftest = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&st).unwrap_or_default()])?;
                 }
+                if let Some(local) = &rep.local_skills {
+                    let si = SkillImport { able: true, local: local.clone(), ..Default::default() };
+                    self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&si).unwrap_or_default()])?;
+                }
                 self.touch_hosts();
             }
             Some(h) => {
@@ -2342,6 +2411,14 @@ impl<'a> W<'a> {
                     let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
                     if h.providers_raw.as_deref() != Some(raw.as_str()) {
                         self.tx.execute("UPDATE hosts SET providers = ?2 WHERE id = ?1", params![h.id, raw])?;
+                        self.touch_hosts();
+                    }
+                }
+                // 本机的 skill（「从机器导入」）：带了、变了才写；带了就算会导入
+                if let Some(local) = &rep.local_skills {
+                    if !h.skill_import.able || &h.skill_import.local != local {
+                        let si = SkillImport { able: true, local: local.clone(), ..h.skill_import.clone() };
+                        self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&si).unwrap_or_default()])?;
                         self.touch_hosts();
                     }
                 }
@@ -2566,6 +2643,80 @@ impl<'a> W<'a> {
             params![h.id, serde_json::to_string(&st).unwrap_or_default(), h.ask_seq + 1],
         )?;
         self.host_op(h.id, by, &label)?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
+    }
+
+    /// 从这台机器导入 skills（PRD §10.12「共用配置」，只能在登录后的界面上做）：记下要导入的（名称 + 所在目录），
+    /// board host 取到任务时把这几个目录传进共用库。要机器在线、board host 会导入；同一台机器同时只做一次
+    /// （上一次超过 [`SKILL_IMPORT_STALE_MS`] 还没做完的算作废）；只能选它上报的、没写原因的，board-skills 不能导入
+    pub fn host_skill_import(&mut self, name: &str, picks: Vec<SkillImportPick>, by: &str) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        if !h.online(self.now) {
+            return Err(BoardError::usage(format!("机器「{name}」离线：等它上线再导入")));
+        }
+        if !h.skill_import.able {
+            return Err(BoardError::usage(format!(
+                "机器「{name}」的 board（{}）还不会导入 skills：先升级到 {}",
+                if h.version.is_empty() { "旧版" } else { &h.version },
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+        if let Some(a) = &h.skill_import.ask {
+            if a.at + SKILL_IMPORT_STALE_MS > self.now {
+                return Err(BoardError::usage(format!("机器「{name}」正在导入（{} 请求的）：等它做完再来", a.by)));
+            }
+        }
+        let mut seen: Vec<SkillImportPick> = vec![];
+        for p in picks {
+            let p = SkillImportPick { name: p.name.trim().to_string(), dir: p.dir.trim().to_string() };
+            if p.name == crate::skills::BUILTIN {
+                return Err(BoardError::usage("board-skills 随服务端版本，不能导入"));
+            }
+            let Some(l) = h.skill_import.local.iter().find(|l| l.name == p.name && l.dirs.contains(&p.dir)) else {
+                return Err(BoardError::usage(format!("机器「{name}」的 {} 里没有 skill「{}」：刷新后再选", p.dir, p.name)));
+            };
+            if let Some(why) = &l.why {
+                return Err(BoardError::usage(format!("{} 不能导入：{why}", p.name)));
+            }
+            if seen.iter().any(|x| x.name == p.name) {
+                return Err(BoardError::usage(format!("skill「{}」选了两份：同名的只能导入一份", p.name)));
+            }
+            seen.push(p);
+        }
+        if seen.is_empty() {
+            return Err(BoardError::usage("至少选一个要导入的 skill"));
+        }
+        let by = if by.trim().is_empty() { "人" } else { by.trim() };
+        let label = format!("请求导入 skills：{}", seen.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("、"));
+        let mut si = h.skill_import.clone();
+        si.ask = Some(SkillImportAsk { id: h.ask_seq + 1, picks: seen, by: by.into(), at: self.now });
+        self.tx.execute(
+            "UPDATE hosts SET skill_import = ?2, ask_seq = ?3 WHERE id = ?1",
+            params![h.id, serde_json::to_string(&si).unwrap_or_default(), h.ask_seq + 1],
+        )?;
+        self.host_op(h.id, by, &label)?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
+    }
+
+    /// board host 做完了导入：记下结果（传进去的、没传成的和原因），清掉请求，记一条操作。
+    /// 序号对不上（被新的请求换掉、或是别的 board host 进程）时不记
+    pub fn host_skill_imported(&mut self, name: &str, instance: &str, id: i64, ok: Vec<String>, failed: Vec<SkillImportFail>) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let Some(ask) = h.skill_import.ask.clone().filter(|a| a.id == id && h.instance == instance) else {
+            return self.read().host(name, self.now);
+        };
+        let failed: Vec<SkillImportFail> = failed.into_iter().map(|f| SkillImportFail { name: f.name, why: f.why.chars().take(300).collect() }).collect();
+        let mut si = h.skill_import.clone();
+        si.ask = None;
+        si.last = Some(SkillImportResult { id, at: self.now, by: ask.by.clone(), ok: ok.clone(), failed: failed.clone() });
+        self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&si).unwrap_or_default()])?;
+        let mut text = if ok.is_empty() { "导入 skills 没成".to_string() } else { format!("导入了 skills：{}", ok.join("、")) };
+        if !failed.is_empty() {
+            text += &format!("；{}", failed.iter().map(|f| format!("{} 没传成（{}）", f.name, f.why)).collect::<Vec<_>>().join("；"));
+        }
+        self.host_op(h.id, &ask.by, &text)?;
         self.touch_hosts();
         self.read().host(name, self.now)
     }

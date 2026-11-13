@@ -34,7 +34,7 @@ pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
 pub use hosts::{
     AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork,
-    RunPatch, SelfTest, SelfTestAsk, SelfTestItem, SessionPart, SessionView,
+    RunPatch, SelfTest, SelfTestAsk, SelfTestItem, SessionPart, SessionView, SkillImport, SkillImportAsk, SkillImportFail, SkillImportPick, SkillImportResult, SKILL_IMPORT_STALE_MS,
 };
 pub use model::*;
 pub use runlog::RunEvent;

@@ -322,6 +322,8 @@ export interface HostInfo {
   mcp?: McpState[] | null;
   /** 模型供应商写进这台机器各个 agent 配置文件的状态；旧版 board host 不同步，为 null / 没有 */
   providers?: ProviderState[] | null;
+  /** 从这台机器导入 skills：本机的 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有 */
+  skillImport?: SkillImport;
 }
 
 /** MCP 服务器的一个环境变量或请求头。列表接口里密钥的 value 是空的，tail 是末尾 4 位；保存时密钥留空表示保留原来的值 */
@@ -421,6 +423,36 @@ export interface ProviderState {
 export interface ProviderView {
   providers: Provider[];
   agents: AgentProvider[];
+}
+
+/** 一台机器上各 agent 的 skill 目录里、不是同步装的 skill（「从机器导入」用）；同名同内容在几个目录里的合成一项 */
+export interface LocalSkill {
+  name: string;
+  /** 内容的版本号（和库里的算法一样）；读不了时为空 */
+  version: string;
+  files: number;
+  size: number;
+  agents: string[];
+  /** 所在的 skill 目录（显示用），导入时用它找 */
+  dirs: string[];
+  /** 不能导入的原因 */
+  why?: string | null;
+}
+
+export interface SkillImportPick {
+  name: string;
+  dir: string;
+}
+
+/** 从一台机器导入 skills（PRD §10.12「共用配置」） */
+export interface SkillImport {
+  /** 这台机器的 board host 会上报、会导入；旧版不会 */
+  able: boolean;
+  local: LocalSkill[];
+  /** 等 board host 做（或正在做）的导入 */
+  ask?: { id: number; picks: SkillImportPick[]; by: string; at: number } | null;
+  /** 最近一次导入的结果 */
+  last?: { id: number; at: number; by: string; ok: string[]; failed: { name: string; why: string }[] } | null;
 }
 
 /** skills 共用库里的一个 skill（PRD §10.12「共用配置」） */

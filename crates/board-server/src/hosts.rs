@@ -425,6 +425,49 @@ pub(crate) async fn selftest_done(State(s): State<AppState>, Path(name): Path<St
     Ok(Json(out))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct SkillImportBody {
+    #[serde(default)]
+    picks: Vec<SkillImportPick>,
+}
+
+/// 从这台机器导入 skills（只能在登录后的界面上做）：记下要导入的，board host 取到任务时传进共用库
+pub(crate) async fn skills_import(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<HostInfo> {
+    let b: SkillImportBody = parse(v)?;
+    let client = client_of(&h);
+    let by = match caller {
+        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
+        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
+    };
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_skill_import(&name, b.picks, &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SkillImportedBody {
+    instance: String,
+    id: i64,
+    #[serde(default)]
+    ok: Vec<String>,
+    #[serde(default)]
+    failed: Vec<SkillImportFail>,
+}
+
+/// board host 做完了导入，回报结果
+pub(crate) async fn skills_imported(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+    let b: SkillImportedBody = parse(v)?;
+    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_skill_imported(&name, &b.instance, b.id, b.ok, b.failed))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
 /// 所有机器一起暂停接单（`paused: false` 是全部恢复）
 pub(crate) async fn pause_all(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Vec<HostInfo>> {
     #[derive(Deserialize)]

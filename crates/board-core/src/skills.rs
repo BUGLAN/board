@@ -91,6 +91,29 @@ pub struct SkillState {
     pub why: Option<String>,
 }
 
+/// 一台机器上各 agent 的 skill 目录里、不是同步装的 skill（board host 上报，界面「从机器导入」列出来选）。
+/// 同名同版本、在几个目录里的合成一项；读不了、太大、名称不对的也报，写明原因，界面上不能选
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalSkill {
+    pub name: String,
+    /// 内容的版本号（和库里的算法一样，能直接比）；读不了时为空
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub files: i64,
+    #[serde(default)]
+    pub size: i64,
+    /// 在哪些 agent 的目录里
+    #[serde(default)]
+    pub agents: Vec<String>,
+    /// 所在的 skill 目录（显示用，例如 ~/.claude/skills；WSL 里的写 WSL 里的写法），导入时用它找
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    /// 不能导入的原因（读不了、超过 5 MB、名称不对）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
 pub fn b64(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
 }

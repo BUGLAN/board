@@ -28,6 +28,7 @@ fn report(running: Vec<i64>) -> HostReport {
         skills: None,
         mcp: None,
         providers: None,
+        local_skills: None,
     }
 }
 

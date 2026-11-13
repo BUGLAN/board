@@ -106,6 +106,10 @@ export function FormFoot({
   onSave,
   agents,
   agentsLabel,
+  note,
+  saveLabel = '保存',
+  cancelLabel = '取消',
+  canSave = true,
 }: {
   why: string | null;
   tried: boolean;
@@ -114,6 +118,11 @@ export function FormFoot({
   onSave: () => void;
   agents?: { id: string; on: boolean; tip: string }[];
   agentsLabel?: string;
+  /** 没有 agent 图标时左边写的一句话 */
+  note?: string;
+  saveLabel?: string;
+  cancelLabel?: string;
+  canSave?: boolean;
 }) {
   return (
     <>
@@ -124,6 +133,7 @@ export function FormFoot({
         </span>
       ) : (
         <span className="fm-who">
+          {note}
           {agents && (
             <>
               <span>{agentsLabel}</span>
@@ -137,10 +147,10 @@ export function FormFoot({
         </span>
       )}
       <button className="btn sm ghost" type="button" disabled={busy} onClick={onCancel}>
-        取消
+        {cancelLabel}
       </button>
-      <button className={cx('btn sm brand', busy && 'is-busy')} type="button" disabled={busy} onClick={onSave}>
-        保存
+      <button className={cx('btn sm brand', busy && 'is-busy')} type="button" disabled={busy || !canSave} onClick={onSave}>
+        {saveLabel}
       </button>
     </>
   );

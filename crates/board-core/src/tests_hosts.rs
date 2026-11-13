@@ -40,6 +40,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         skills: None,
         mcp: None,
         providers: None,
+        local_skills: None,
     }
 }
 
@@ -3391,4 +3392,62 @@ fn split_dispatch_checks_host_and_cron_never_takes_inbox() {
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), ..Default::default() })).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "定时领取不会派发未整理里的条目");
+}
+
+/* ------------------------------ 从机器导入 skills ------------------------------ */
+
+fn local(name: &str, dirs: &[&str], why: Option<&str>) -> crate::skills::LocalSkill {
+    crate::skills::LocalSkill { name: name.into(), version: "abc123abc123".into(), files: 2, size: 900, agents: vec!["claude".into()], dirs: dirs.iter().map(|d| d.to_string()).collect(), why: why.map(str::to_string) }
+}
+
+fn pick(name: &str, dir: &str) -> SkillImportPick {
+    SkillImportPick { name: name.into(), dir: dir.into() }
+}
+
+fn import(s: &mut Store, at: i64, picks: Vec<SkillImportPick>) -> Result<HostInfo> {
+    s.write(at, Origin::ui(None), |w| w.host_skill_import("mbp", picks, "octocat"))
+}
+
+#[test]
+fn skill_import_lists_local_skills_and_runs_once() {
+    let mut s = store();
+    // 旧版 board host 不报本机的 skill：不能导入，写要升级
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let e = import(&mut s, T0, vec![pick("design", "~/.claude/skills")]).unwrap_err();
+    assert!(e.message.contains("升级"), "{}", e.message);
+    // 新版带上本机的 skill
+    let rep = HostReport { local_skills: Some(vec![local("design", &["~/.claude/skills"], None), local("huge", &["~/.claude/skills"], Some("超过 5 MB"))]), ..report("mbp", "i1", vec![]) };
+    let w = beat(&mut s, T0 + S, &rep).unwrap();
+    assert!(w.host.skill_import.able);
+    assert_eq!(w.host.skill_import.local.len(), 2);
+    // 只能选它报的、能导入的
+    assert_eq!(import(&mut s, T0 + S, vec![]).unwrap_err().code, ErrorCode::Usage);
+    assert!(import(&mut s, T0 + S, vec![pick("nope", "~/.claude/skills")]).unwrap_err().message.contains("没有"));
+    assert!(import(&mut s, T0 + S, vec![pick("huge", "~/.claude/skills")]).unwrap_err().message.contains("5 MB"));
+    assert!(import(&mut s, T0 + S, vec![pick("board-skills", "~/.claude/skills")]).unwrap_err().message.contains("board-skills"));
+    let h = import(&mut s, T0 + 2 * S, vec![pick("design", "~/.claude/skills")]).unwrap();
+    let ask = h.skill_import.ask.clone().expect("记下请求");
+    assert_eq!((ask.picks.len(), ask.by.as_str()), (1, "octocat"));
+    assert_eq!(h.ops[0].text, "请求导入 skills：design");
+    // 取任务时 board host 能看到请求；同时只做一次
+    let w = s.read(|r| r.host_work("mbp", T0 + 3 * S)).unwrap();
+    assert_eq!(w.host.skill_import.ask.as_ref().map(|a| a.id), Some(ask.id));
+    assert!(import(&mut s, T0 + 3 * S, vec![pick("design", "~/.claude/skills")]).unwrap_err().message.contains("正在导入"));
+    // 别的进程、序号对不上的回报不算
+    let h = s.write(T0 + 4 * S, Origin::cli(), |w| w.host_skill_imported("mbp", "i2", ask.id, vec!["design".into()], vec![])).unwrap();
+    assert!(h.skill_import.ask.is_some());
+    // 做完：记下结果、清掉请求、记操作；上报里的本机 skill 不被冲掉
+    let fail = SkillImportFail { name: "x".into(), why: "读不了".into() };
+    let h = s.write(T0 + 5 * S, Origin::cli(), |w| w.host_skill_imported("mbp", "i1", ask.id, vec!["design".into()], vec![fail])).unwrap();
+    assert!(h.skill_import.ask.is_none());
+    let last = h.skill_import.last.clone().unwrap();
+    assert_eq!((last.ok.clone(), last.failed.len(), last.by.as_str()), (vec!["design".to_string()], 1, "octocat"));
+    assert!(h.ops[0].text.starts_with("导入了 skills：design；x 没传成"), "{:?}", h.ops);
+    assert_eq!(h.skill_import.local.len(), 2);
+    // 离线不能导入；超过时间没做完的请求可以重新发
+    let h = import(&mut s, T0 + 6 * S, vec![pick("design", "~/.claude/skills")]).unwrap();
+    assert!(h.skill_import.ask.is_some());
+    assert!(import(&mut s, T0 + 6 * S + SKILL_IMPORT_STALE_MS + S, vec![pick("design", "~/.claude/skills")]).unwrap_err().message.contains("离线"));
+    beat(&mut s, T0 + 6 * S + SKILL_IMPORT_STALE_MS + S, &rep).unwrap();
+    assert!(import(&mut s, T0 + 6 * S + SKILL_IMPORT_STALE_MS + 2 * S, vec![pick("design", "~/.claude/skills")]).is_ok());
 }

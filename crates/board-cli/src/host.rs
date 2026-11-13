@@ -1145,6 +1145,13 @@ struct Host<'a> {
     skill_job: Option<std::thread::JoinHandle<skills::Synced>>,
     /// 最近一次同步的结果（上报里带上；新版 board host 总是带，空表示还没同步完）
     skill_states: Vec<board_core::skills::SkillState>,
+    /// 各 agent skill 目录里不是同步装的 skill（上报里带上，界面「从机器导入」用）和这些目录（导入时找回去）
+    local_skills: Vec<board_core::skills::LocalSkill>,
+    skill_targets: Vec<skills::Target>,
+    /// 从这台机器导入 skills：正在后台做的（请求序号）、做完还没报上去的结果、报过的序号
+    import_job: Option<(i64, std::thread::JoinHandle<(Vec<String>, Vec<SkillImportFail>)>)>,
+    import_out: Option<(i64, Vec<String>, Vec<SkillImportFail>)>,
+    import_seen: Option<i64>,
     /// 上一次同步时的库和目录：变了就再同步一次
     skill_key: Option<String>,
     skill_at: Instant,
@@ -1318,6 +1325,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         selftest_pids: selftest::Pids::default(),
         skill_job: None,
         skill_states: vec![],
+        local_skills: vec![],
+        skill_targets: vec![],
+        import_job: None,
+        import_out: None,
+        import_seen: None,
         skill_key: None,
         skill_at: Instant::now(),
         skill_force: false,
@@ -1633,6 +1645,7 @@ impl Host<'_> {
             skills: Some(self.skill_states.clone()),
             mcp: Some(self.mcp_states.clone()),
             providers: Some(self.provider_states.clone()),
+            local_skills: Some(self.local_skills.clone()),
         }
     }
 
@@ -2179,8 +2192,10 @@ impl Host<'_> {
                 if !bad.is_empty() && out.states != self.skill_states {
                     self.say(format!("{} skills 没同步好：{}", self.p.yellow("!"), bad.join("；")));
                 }
-                changed = out.states != self.skill_states;
+                changed = out.states != self.skill_states || out.local != self.local_skills;
                 self.skill_states = out.states;
+                self.local_skills = out.local;
+                self.skill_targets = out.targets;
                 // 装上、换掉了东西：重新看一遍各 agent 看不看得到 board-skills（界面上「缺 skill」的提醒跟着变）
                 if !out.changes.is_empty() && self.recheck_skills() {
                     changed = true;
@@ -2218,6 +2233,9 @@ impl Host<'_> {
             let (targets, mut bad) = skills::host_targets(list, &lib);
             let mut out = skills::sync(&lib, &targets, Some(&exe), |name| rm.get(&format!("/api/skills/{name}"), &[]));
             out.states.append(&mut bad);
+            // 顺带列出不是同步装的 skill（「从机器导入」）
+            out.local = skills::local_skills(&targets);
+            out.targets = targets;
             out
         }));
         changed
@@ -2434,6 +2452,60 @@ impl Host<'_> {
             return;
         }
         self.start_selftest(&ask);
+    }
+
+    /// 从这台机器导入 skills（PRD §10.12「共用配置」）：取到的任务里有新的请求就在后台把选中的目录传进库；
+    /// 做完回报结果（回报失败下一轮再报），再同步一次（库里多了它们，本机这份内容一样就算已同步）
+    fn poll_skill_import(&mut self) {
+        if self.import_job.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+            let (id, h) = self.import_job.take().expect("上面看过");
+            let (ok, failed) = h.join().unwrap_or_else(|_| (vec![], vec![SkillImportFail { name: "?".into(), why: "导入的线程出错".into() }]));
+            self.import_out = Some((id, ok, failed));
+        }
+        if let Some((id, ok, failed)) = self.import_out.take() {
+            let body = json!({ "instance": self.instance, "id": id, "ok": ok, "failed": failed });
+            match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/skills/imported", self.name), body) {
+                Ok(_) => {
+                    if !ok.is_empty() {
+                        self.say(format!("{} 导入了 skills：{}", self.p.green("✓"), ok.join("、")));
+                    }
+                    for f in &failed {
+                        self.say(format!("{} {} 没导入：{}", self.p.yellow("!"), f.name, f.why));
+                    }
+                    self.import_seen = Some(id);
+                    self.skill_force = true;
+                }
+                Err(e) if e.code == ErrorCode::Unreachable => self.import_out = Some((id, ok, failed)),
+                Err(e) => {
+                    self.say(format!("{} 导入结果没报上去：{}", self.p.yellow("!"), e.message));
+                    self.import_seen = Some(id);
+                }
+            }
+        }
+        if self.import_job.is_some() || self.import_out.is_some() {
+            return;
+        }
+        let Some(ask) = self.work.as_ref().and_then(|w| w.host.skill_import.ask.clone()) else { return };
+        if self.import_seen == Some(ask.id) {
+            return;
+        }
+        self.say(format!("导入 skills 到共用库：{}", ask.picks.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("、")));
+        let rm = self.rm().clone();
+        let targets = self.skill_targets.clone();
+        let source = self.name.clone();
+        let h = std::thread::spawn(move || {
+            let mut ok = vec![];
+            let mut failed = vec![];
+            for p in &ask.picks {
+                let res = skills::import_one(&targets, &p.name, &p.dir, |name, files| rm.post("/api/skills", json!({ "name": name, "files": files, "source": source })));
+                match res {
+                    Ok(n) => ok.push(n),
+                    Err(why) => failed.push(SkillImportFail { name: p.name.clone(), why }),
+                }
+            }
+            (ok, failed)
+        });
+        self.import_job = Some((ask.id, h));
     }
 
     /// 在后台开始一次自检：agent 按派发同样的办法拼命令（启动环境、模型、思考强度），进一个临时目录问一句；
@@ -2681,6 +2753,8 @@ impl Host<'_> {
             }
             // 自检：界面上点了就在后台做，做完回报
             self.poll_selftest();
+            // 从这台机器导入 skills：界面上选了就在后台传进库，做完回报
+            self.poll_skill_import();
             // skills 共用库：库变了（或重新检查后、每 10 分钟）在后台同步，结果马上上报
             if self.poll_skills() {
                 next_beat = Instant::now();

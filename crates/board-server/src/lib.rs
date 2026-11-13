@@ -255,6 +255,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/{name}/ask", post(hosts::ask))
         .route("/hosts/{name}/selftest", post(hosts::selftest))
         .route("/hosts/{name}/selftested", post(hosts::selftest_done))
+        .route("/hosts/{name}/skills/import", post(hosts::skills_import))
+        .route("/hosts/{name}/skills/imported", post(hosts::skills_imported))
         .route("/hosts/{name}/copy", post(hosts::copy))
         .route("/hosts/{name}/dirs/clone", post(hosts::clone_dir))
         .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
