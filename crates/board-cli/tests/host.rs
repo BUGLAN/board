@@ -77,6 +77,14 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo $! > "$FAKE_DIR/child.pid"
     echo "left a child"
     exit 0 ;;
+  grandchild)
+    # 先留下一个忽略 SIGTERM 的子进程（同一进程组），自己接着睡：board host 退出时两个都要结束（卡片 #251）。
+    # 子进程忽略 SIGTERM，只有 `kill_rest()` 的 SIGKILL 能结束它
+    ( trap '' TERM; exec sleep 60 ) &
+    echo $! > "$FAKE_DIR/child.pid"
+    echo "started a child"
+    echo $$ > "$FAKE_DIR/agent.pid"
+    exec sleep 60 ;;
   stream)
     # 像 Claude Code 的 stream-json 那样一行一个事件：先说一句话、调一个工具，等测试写 go 文件再出结果、异常退出
     echo '{"type":"system","subtype":"init","cwd":"/repo","model":"m","claude_code_version":"9.9.9"}'
@@ -638,6 +646,25 @@ fn agent_exit_ends_its_process_group() {
     wait_until("留下的子进程被结束", Duration::from_secs(10), || !running(child));
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
+}
+
+/// 卡片 #251：board host 退出时结束的不只是 agent 主进程，它起的子进程（同一进程组）也要结束。
+/// 和 `agent_exit_ends_its_process_group` 一起守住 `finish_run()` 里 `kill_rest()` 那一行
+#[test]
+fn host_exit_ends_the_whole_agent_process_group() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("grandchild");
+    assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
+    let agent = rig.pid("agent.pid");
+    let child = rig.pid("child.pid");
+    assert!(running(agent) && running(child));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    wait_until("agent 和它的子进程都被结束", Duration::from_secs(15), || !running(agent) && !running(child));
+    assert!(ended(&rig.show(1), "已停止"), "{:?}", activity(&rig.show(1)));
 }
 
 /// 桌面端「设置 → 本机」保存（改配置文件的 [host]，再往 board host 的标准输入写一行 reload）：board host 不重启，

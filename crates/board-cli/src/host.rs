@@ -757,7 +757,10 @@ impl Run {
     }
 
     /// 主进程已经退出：结束同一进程组里剩下的进程（agent 起的子进程）。
-    /// Windows 上不做：进程号可能已经被复用，taskkill /T 会结束别的进程树
+    ///
+    /// Windows 上不做：进程号可能已经被复用，`taskkill /T` 会结束别的进程树。
+    /// 调用前要先把主进程回收（agent 自己退出时 `reap` 已经 `try_wait` 过，board host 退出时先 `wait()`）：
+    /// 不然 `kill` / `taskkill` 打的还是主进程自己
     fn kill_rest(&self) {
         if let Some(env) = self.env.wsl().map(|_| &self.env) {
             let pid = self.pidfile.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok());
@@ -776,6 +779,29 @@ impl Run {
             let _ = std::fs::remove_file(p);
         }
     }
+}
+
+/// 收尾时记一笔结束，等 `report_ended()` 上报给服务端：取最后几行做错误摘录，再截断过大的日志。
+///
+/// 截断要在 agent 确实不在了之后：它还活着时换掉文件内容，下次写入会从旧位置接着写、中间留一段空洞。
+/// `how` 是给服务端的结果（`exit`、`host_exit`）；兜底停止过（`Run.timeout` 有值）的无论哪种都报 `timeout`，
+/// 原因照原样带上
+fn ended_of(r: &Run, code: Option<i64>, how: &'static str, secrets: &[&str]) -> Ended {
+    let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, secrets)).collect();
+    let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
+    let (how, why) = if r.timeout.is_some() { ("timeout", r.timeout.clone()) } else { (how, None) };
+    Ended { id: r.d.id, code, tail, events: recent_lines(r), how, why }
+}
+
+/// 一次派发收尾后给调用方打印用的信息
+struct RunSummary {
+    board: String,
+    card: i64,
+    name: Option<String>,
+    /// 派发已经被服务端结束（机器掉线）
+    lost: bool,
+    /// 兜底停止的原因
+    why: Option<String>,
 }
 
 /// 还没上报成功的结束（连不上服务端时下一轮再报）
@@ -2771,41 +2797,29 @@ impl Host<'_> {
                 continue;
             };
             let r = self.runs.remove(i);
-            // 主进程退出了，它起的子进程可能还在（同一进程组）：一起结束
-            r.kill_rest();
-            r.cleanup();
-            let mut r = r;
             let code = exit_code(status);
-            self.flush_log(&r, true);
-            self.flush_events(&mut r, true);
-            let secrets = self.secrets();
-            let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
-            let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, &secrets)).collect();
-            // 结束之后才截断：agent 还活着的时候换掉文件内容，它下次写入会从旧位置接着写，中间留一段空洞
-            let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
-            let how = if r.timeout.is_some() { "timeout" } else { "exit" };
-            self.ended.push(Ended { id: r.d.id, code, tail, events: recent_lines(&r), how, why: r.timeout.clone() });
-            let what = match &r.timeout {
+            let ended = self.finish_run(r, code, "exit");
+            let what = match &ended.why {
                 Some(why) => why.clone(),
                 None => format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())),
             };
             self.say(format!(
                 "{} {}  {}  {}",
                 self.p.dim("■"),
-                self.p.cyan(&format!("{}#{}", r.d.board, r.d.card)),
-                r.d.name.as_deref().unwrap_or_default(),
+                self.p.cyan(&format!("{}#{}", ended.board, ended.card)),
+                ended.name.as_deref().unwrap_or_default(),
                 self.p.dim(&what)
             ));
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
-            if r.lost {
-                if let Some((_, repo)) = self.dirs.iter().find(|(b, _)| *b == r.d.board) {
-                    for (dir, what) in leftovers(repo, r.d.name.as_deref().unwrap_or_default()) {
+            if ended.lost {
+                if let Some((_, repo)) = self.dirs.iter().find(|(b, _)| *b == ended.board) {
+                    for (dir, what) in leftovers(repo, ended.name.as_deref().unwrap_or_default()) {
                         self.say(format!(
                             "{} {} 里有没推到远端的改动（{what}）：{}#{} 的派发已被服务端结束，需要的话去那里捞回来",
                             self.p.yellow("!"),
                             dir.display(),
-                            r.d.board,
-                            r.d.card
+                            ended.board,
+                            ended.card
                         ));
                     }
                 }
@@ -2816,6 +2830,28 @@ impl Host<'_> {
             self.report_ended();
         }
         done
+    }
+
+    /// 一次派发结束的收尾，`reap`（agent 自己退出）和 `shutdown`（board host 退出）共用：
+    ///
+    /// 1. 主进程已经不在了，它起的子进程可能还在同一个进程组里：`kill_rest()` 一起结束
+    /// 2. 删掉这次派发自己的临时文件（配置、进程号、结果文件）
+    /// 3. 上传剩下的日志和事件（`last = true`，最后不完整的一行也读）
+    /// 4. 取最后几行做错误摘录，再截断过大的日志。截断要在 agent 确实不在了之后：它还活着时换掉文件内容，
+    ///    下次写入会从旧位置接着写、中间留一段空洞
+    /// 5. 记一笔 `Ended`，等 `report_ended()` 上报给服务端
+    ///
+    /// `how` 是给服务端的结果：`exit`（agent 退出）、`host_exit`（board host 退出时停的）；
+    /// 兜底停止过（`Run.timeout` 有值）的无论哪种都报 `timeout`，原因照原样带上。
+    fn finish_run(&mut self, mut r: Run, code: Option<i64>, how: &'static str) -> RunSummary {
+        r.kill_rest();
+        r.cleanup();
+        self.flush_log(&r, true);
+        self.flush_events(&mut r, true);
+        let secrets = self.secrets();
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        self.ended.push(ended_of(&r, code, how, &secrets));
+        RunSummary { board: r.d.board.clone(), card: r.d.card, name: r.d.name.clone(), lost: r.lost, why: r.timeout.clone() }
     }
 
     /// 上报结束；连不上时留到下一轮
@@ -3234,22 +3270,14 @@ impl Host<'_> {
             }
         }
         let runs = std::mem::take(&mut self.runs);
-        for r in &runs {
-            r.cleanup();
-        }
-        let _ = std::fs::remove_dir_all(&self.run);
-        let secrets = self.secrets();
-        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         for mut r in runs {
+            // 先回收主进程，`finish_run` 里的 `kill_rest` 才是对已经退出的进程号下手
             let code = r.child.wait().ok().and_then(exit_code);
-            self.flush_log(&r, true);
-            self.flush_events(&mut r, true);
             // board host 退出时已经在按兜底停止的，照样报「超时」：原因写清楚
-            let (how, why) = if r.timeout.is_some() { ("timeout", r.timeout.clone()) } else { ("host_exit", None) };
-            let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, &secrets)).collect();
-            let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
-            self.ended.push(Ended { id: r.d.id, code, tail, events: recent_lines(&r), how, why });
+            self.finish_run(r, code, "host_exit");
         }
+        // 派发的临时文件由 `finish_run` 逐个删掉；WSL 的进程号文件要等 `kill_rest` 读完再删整个目录
+        let _ = std::fs::remove_dir_all(&self.run);
         self.report_ended();
         if graceful {
             let _ = self.beat(true);
@@ -3860,6 +3888,27 @@ mod tests {
             output_at: Instant::now(),
             seen_len: 0,
         }
+    }
+
+    /// 卡片 #251：`reap` 与 `shutdown` 共用的结束逻辑。兜底停止过的一律报「超时」（原因照原样带上），
+    /// 否则用调用方给的结果；错误摘录里不出现令牌
+    #[test]
+    fn ended_takes_the_timeout_reason_and_redacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("9.log");
+        std::fs::write(&log, "BOARD_TOKEN=secret-token\nboom\n").unwrap();
+        let r = test_run(&log, None);
+        let e = ended_of(&r, Some(3), "exit", &["secret-token"]);
+        assert_eq!((e.id, e.code, e.how, e.why.as_deref()), (9, Some(3), "exit", None));
+        assert!(e.tail.iter().all(|l| !l.contains("secret-token")), "{:?}", e.tail);
+        // board host 退出时 agent 还活着：主进程退出后用调用方给的结果
+        let e = ended_of(&r, None, "host_exit", &[]);
+        assert_eq!((e.how, e.why.as_deref()), ("host_exit", None));
+        // 兜底停止过：报「超时」，原因写清楚
+        let mut r = r;
+        r.timeout = Some("运行超过 30 分钟".into());
+        let e = ended_of(&r, None, "host_exit", &[]);
+        assert_eq!((e.how, e.why.as_deref()), ("timeout", Some("运行超过 30 分钟")));
     }
 
     #[test]
