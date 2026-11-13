@@ -402,7 +402,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
   | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） |
   |---|---|---|---|---|---|
-  | `dsh` | DeepSeek Harness | `dsh --profile headless --json --patch {patch} --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
+  | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --json --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
   | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
   | `pi` | pi | `pi --mode json {prompt}` | — | `~/.agents/skills`、`~/.pi/agent/skills` | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`；不在 WSL 里时把 `PATH` 里 git 所在那套 Git 的 Git Bash 放到 pi 的 `PATH` 前面） |
   | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |

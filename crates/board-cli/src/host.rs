@@ -116,8 +116,10 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "dsh",
         name: "DeepSeek Harness",
-        // --json：运行中把事件（说的话、工具调用、每一步的用量）写成 JSONL（0.2.2 的 headless 才有，见 json_since）
-        cmd: &["dsh", "--profile", "headless", "--json", "--patch", "{patch}", "--permission-mode", "danger-full-access", "{prompt}"],
+        // 参数分两段：--profile、--patch 是 dsh 启动器的参数，必须放在应用参数前面；
+        // --json、--permission-mode 和任务文本是 headless 的参数。--json 之后 dsh 启动器不再解析选项，
+        // --patch 放在 --json 后面会被 headless 当成自己的参数，报 unknown option '--patch'
+        cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--json", "--permission-mode", "danger-full-access", "{prompt}"],
         model: "deepseek-v4.1-flash",
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
@@ -3653,7 +3655,7 @@ mod tests {
         assert!(cmd("claude").contains("-p {prompt}") && cmd("claude").ends_with("--output-format stream-json --verbose"), "{}", cmd("claude"));
         assert_eq!(cmd("pi"), "pi --mode json {prompt}", "pi 的 -p 只写最终回答，--mode json 才有过程");
         assert_eq!(cmd("codex"), "codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}");
-        assert!(cmd("dsh").starts_with("dsh --profile headless --json "), "{}", cmd("dsh"));
+        assert!(cmd("dsh").starts_with("dsh --profile headless --patch {patch} --json "), "{}", cmd("dsh"));
         // 每个内置模板都认得出事件流
         for b in &BUILTIN {
             let c: Vec<String> = b.cmd.iter().map(|s| s.to_string()).collect();
@@ -3704,6 +3706,9 @@ mod tests {
         // dsh 的一次性派发要带禁用 goal 的 profile 补丁；其他 agent 不带
         let dsh = BUILTIN.iter().find(|b| b.id == "dsh").unwrap();
         assert_eq!(dsh.cmd.iter().filter(|a| a.contains("{patch}")).count(), 1, "dsh 的模板里要有一个 {{patch}}");
+        let patch_at = dsh.cmd.iter().position(|a| *a == "--patch").expect("dsh 的模板里要有 --patch");
+        let json_at = dsh.cmd.iter().position(|a| *a == "--json").expect("dsh 的模板里要有 --json");
+        assert!(patch_at < json_at, "dsh 的 --patch 是启动器参数，要放在 --json（应用参数）前面：{:?}", dsh.cmd);
         assert!(DSH_HEADLESS_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
         assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
         assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
