@@ -175,6 +175,34 @@ fn shell_path() -> Option<String> {
     }
 }
 
+/// 启动 board host 时要从环境里去掉的变量。
+///
+/// 桌面端自己怎么连服务端（`BOARD_URL` 可能指向本机页面 :1420）、从哪个终端启动（里面可能开着别的服务端的令牌，
+/// 或者某个 agent 会话的 `BOARD_AS` / `BOARD`），都和后台的 board host 无关：它只用配置文件
+/// （或 `BOARD_CONFIG` 指的那份）里的地址和令牌，agent 名字和白板由它自己按派发设置。
+/// 继承下来的话，环境变量优先于配置文件，board host 会拿别人的令牌去连配置文件里的服务端，只得到 `INVALID_TOKEN`。
+const INHERITED: [&str; 9] = [
+    "BOARD_URL",
+    "BOARD_TOKEN",
+    "BOARD_HOST_URL",
+    "BOARD_HOST_TOKEN",
+    "BOARD_CONFIG",
+    "BOARD_AS",
+    "BOARD_HOST",
+    "BOARD",
+    "BOARD_EXE",
+];
+
+/// 启动 board host 的进程参数（[`start_proc`] 和 [`rename_host`] 共用：两条命令都只认配置文件）
+fn base_command(cli: &Path) -> Command {
+    let mut c = Command::new(cli);
+    for k in INHERITED {
+        c.env_remove(k);
+    }
+    c.env("NO_COLOR", "1");
+    c
+}
+
 fn start_proc(cli: &Path, ask_error: Option<&str>) -> Result<Running, String> {
     let log = log_path().ok_or("找不到用户目录")?;
     if let Some(d) = log.parent() {
@@ -182,13 +210,11 @@ fn start_proc(cli: &Path, ask_error: Option<&str>) -> Result<Running, String> {
     }
     let out = std::fs::File::create(&log).map_err(|e| format!("无法创建 {}：{e}", log.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut c = Command::new(cli);
-    c.arg("host").env("BOARD_HOST_STDIN", "1").env("NO_COLOR", "1").stdin(Stdio::piped()).stdout(out).stderr(err);
+    let mut c = base_command(cli);
+    c.arg("host").env("BOARD_HOST_STDIN", "1").stdin(Stdio::piped()).stdout(out).stderr(err);
     if let Some(e) = ask_error {
         c.env("BOARD_HOST_ASK_ERROR", e);
     }
-    // 桌面端开发时 BOARD_URL 指向本机页面（:1420），不是服务端：board host 用配置文件里的地址
-    c.env_remove("BOARD_URL");
     if let Some(p) = shell_path() {
         c.env("PATH", p);
     }
@@ -456,9 +482,8 @@ fn rename_host(new_name: &str) -> Result<(), (String, String)> {
     let Some(cli) = crate::cli_path() else {
         return Err((String::new(), "没找到桌面端自带的 board 命令行：机器名没法在服务端上改，重新安装桌面端试试".into()));
     };
-    let mut c = Command::new(cli);
-    c.args(["host", "rename", new_name]).env_remove("BOARD_URL").env("NO_COLOR", "1").stdin(Stdio::null());
-    // 桌面端开发时 BOARD_URL 指向本机页面（:1420），不是服务端：board 用配置文件里的地址
+    let mut c = base_command(&cli);
+    c.args(["host", "rename", new_name]).stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -630,6 +655,18 @@ mod tests {
         assert_eq!(effective_name(""), host_name_from(&hostname()));
         assert_eq!(effective_name("  win  "), "win");
         assert_eq!(effective_name("macbook"), "macbook");
+    }
+
+    /// 桌面端启动的 board host（和改机器名的 board 命令）只认配置文件：从启动环境继承的
+    /// 服务端地址、令牌、`BOARD_CONFIG`、名字和白板都要去掉，否则会拿别人的令牌去连配置文件里的服务端
+    #[test]
+    fn host_ignores_inherited_connection_env() {
+        let probe = base_command(Path::new("/bin/true"));
+        for k in INHERITED {
+            assert_eq!(probe.get_envs().filter(|(n, v)| *n == k && v.is_none()).count(), 1, "没去掉 {k}");
+        }
+        // 路径、颜色这些还得有：去掉的只能是连接相关的
+        assert!(probe.get_envs().any(|(n, v)| n == "NO_COLOR" && v == Some("1".as_ref())));
     }
 
     fn tempfile_dir(name: &str) -> PathBuf {
