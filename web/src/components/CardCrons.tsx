@@ -13,7 +13,7 @@ import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { boardHosts, boardOf, defaultAgent, envName, hostDirFor, hostLoad, hostsOf, readyOk } from '../lib/hosts';
+import { boardOf, boardTakers, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
 import { boardFlow } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
@@ -165,11 +165,11 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   const to = useData(s => (c.host ? hostsOf(s.ws).find(h => h.name === c.host) : undefined));
   // 随机派发：没有指定的机器
   const random = c.pick === 'random' && !c.host;
-  // 随机挑的时候能接的机器数（和服务端挑候选一样：有工作空间、环境检查没通过的不算、有找到了命令的 agent），
-  // 和其中现在在线、没暂停接单的（到点只在这些里挑）
-  const takers = useData(s => (random ? boardHosts(s.ws, path) : []).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)));
+  // 随机挑的时候能接的机器数（服务端算好的「能不能接」，加上有能用的 agent），和其中现在在线、没暂停接单的（到点只在这些里挑）
+  const ws = useData(s => s.ws);
+  const takers = random ? boardTakers(ws, path) : [];
   const canTake = takers.length;
-  const liveTake = takers.filter(x => x.h.online && !x.h.paused).length;
+  const liveTake = takers.filter(x => x.online && !x.paused).length;
   return (
     <div className={cx('cc-row', !c.on && 'off', (busy || removing) && 'saving')}>
       <button type="button" className={cx('switch', c.on && 'on')} role="switch" aria-checked={c.on} aria-label={`「${c.name}」到点建卡`} onClick={toggle}>
@@ -447,9 +447,9 @@ function HostPick({
   const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
   const def = h ? defaultAgent(h) : undefined;
   const random = pick === 'random' && !host;
-  // 随机挑的时候能接的机器：有工作空间、环境检查没通过的不算、有找到了命令的 agent。到点只在其中在线、没暂停接单的里挑；
+  // 随机挑的时候能接的机器：服务端算好的「能不能接」，加上有能用的 agent。到点只在其中在线、没暂停接单的里挑；
   // 现在都不在线也能选（到点时可能就在线了）
-  const can = boardHosts(ws, path).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)).map(x => x.h);
+  const can = boardTakers(ws, path);
   const live = can.filter(x => x.online && !x.paused);
   const why = (x: HostInfo) => (!x.online ? '离线' : x.paused ? '暂停接单' : '');
   return (
@@ -463,7 +463,7 @@ function HostPick({
             inbox
               ? undefined
               : !can.length
-                ? '没有能接这块白板的机器：要配了工作空间，并且有找到了命令的 agent'
+                ? '没有能接这块白板的机器：要配了工作空间、目录和环境检查正常，并且有找到了命令的 agent'
                 : `到点在这 ${can.length} 台里挑一台在线、没暂停接单的（现在 ${live.length} 台）`
           }
         >

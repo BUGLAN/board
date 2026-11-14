@@ -81,7 +81,9 @@ type Save = (p: HostPatch) => void;
 const fieldOf = (p: HostPatch) =>
   p.env
     ? `env:${p.env.agent}`
-    : p.run
+    : p.resume
+      ? `resume:${p.resume}`
+      : p.run
       ? `run:${p.run.agent}:${p.run.provider !== undefined ? 'provider' : p.run.model !== undefined ? 'model' : 'effort'}`
       : 'rules' in p || 'fallback' in p
         ? 'rules'
@@ -90,6 +92,7 @@ const fieldOf = (p: HostPatch) =>
 /** 改一个 agent 的启动环境、模型、思考强度（当帧画出来） */
 const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
   if (p.env?.agent === a.id) return { ...a, env: p.env.env };
+  if (p.resume === a.id) return { ...a, tripped: false };
   if (p.run?.agent === a.id) {
     const r = p.run;
     return {
@@ -126,13 +129,13 @@ function useSaver(name: string) {
   const { sync, track } = useSync();
   const save: Save = p => {
     const f = fieldOf(p);
-    const { env, run, ...fields } = p;
+    const { env, run, resume, ...fields } = p;
     const done = saveSetting(
       `${hostKey(name)}:${f}`,
       {
         ws: ws => ({
           ...ws,
-          hosts: ws.hosts?.map(x => (x.name === name ? { ...x, ...fields, agents: env || run ? x.agents.map(a => agentPatch(a, p)) : x.agents } : x)),
+          hosts: ws.hosts?.map(x => (x.name === name ? { ...x, ...fields, agents: env || run || resume ? x.agents.map(a => agentPatch(a, p)) : x.agents } : x)),
         }),
       },
       () => api.updateHost(name, p),
@@ -1062,6 +1065,15 @@ function AgentRow({
         <Sync s={rowSync} inline />
         {a.found && <Icon name="chevDown" />}
       </button>
+      {a.tripped && (
+        <p className="hp-note hp-warn-line ha-note" role="status">
+          <Icon name="alert" />
+          <span>连续 3 次异常退出，已经暂停接单：不再给它派新的卡。看「最近」里那几次的原因，修好后恢复。</span>
+          <button type="button" className={cx('btn sm', sync[`resume:${a.id}`] === 'saving' && 'is-busy')} onClick={() => save({ resume: a.id })}>
+            恢复
+          </button>
+        </p>
+      )}
       {a.run_env && a.env && a.run_env !== a.env && (
         <p className="hp-note hp-warn-line ha-note">
           <Icon name="alert" />

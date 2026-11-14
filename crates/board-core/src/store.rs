@@ -751,7 +751,7 @@ impl<'a> R<'a> {
                 p.boards.push(b);
             }
         }
-        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)?, hosts: self.hosts(now)?, dispatches: self.active_dispatches()? })
+        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)?, hosts: self.hosts(now)?, dispatches: self.active_dispatches()?, blocks: self.blocks()? })
     }
 
     pub fn labels(&self, project: &str) -> Result<Vec<Label>> {

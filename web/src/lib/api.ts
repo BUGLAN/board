@@ -218,6 +218,8 @@ export const api = {
       env?: { agent: string; env: string };
       /** 一个 agent 的模型、思考强度、模型供应商：不带的那一项不改，空字符串回到默认（供应商空 = 跟随共用配置） */
       run?: { agent: string; model?: string; effort?: string; provider?: string };
+      /** 恢复一个连续异常退出、暂停了接单的 agent（写它的标识） */
+      resume?: string;
       /** 工作空间（整个替换）：每个项目的目录是 `<工作空间>/<项目>`；空路径表示不配 */
       workspace?: HostWorkspace;
     },

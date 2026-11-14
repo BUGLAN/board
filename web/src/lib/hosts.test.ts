@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdOf, agentMark, agentMarkOf, boardHosts, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -370,5 +370,37 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
     const mine = agentMarkOf('我的助手');
     expect(mine.icon).toBeUndefined();
     expect(mine.short).toBe('我');
+  });
+});
+
+describe('能不能接（服务端算好，界面照着用）', () => {
+  const mac = { ...host([agent('claude')]), workspace: { path: '/w' } } as HostInfo;
+  const win = { ...host([agent('claude', { tripped: true }), agent('pi', { found: false, env: 'pwsh' })]), id: 2, name: 'win', workspace: { path: 'D:\\w' } } as HostInfo;
+  const ws = (blocks?: Workspace['blocks']): Workspace => ({ rev: 1, now: 0, projects: [], hosts: [mac, win], blocks });
+
+  it('blockOf：按机器和白板找原因；别的白板、旧版服务端（没有这一项）都当能接', () => {
+    const w = ws([{ host: 'mac', board: 'a/main', code: 'BOARD_NOT_READY', why: '环境检查没通过：cargo 没装' }]);
+    expect(blockOf(w, 'mac', 'a/main')?.why).toBe('环境检查没通过：cargo 没装');
+    expect(blockOf(w, 'mac', 'a/docs')).toBeUndefined();
+    expect(blockOf(w, 'win', 'a/main')).toBeUndefined();
+    expect(blockOf(ws(), 'mac', 'a/main')).toBeUndefined();
+    expect(blockOf(null, 'mac', 'a/main')).toBeUndefined();
+  });
+
+  it('agent 能用 = 找到了命令，并且没有因为连续异常退出暂停；用不了时写明原因', () => {
+    expect(win.agents.map(agentUsable)).toEqual([false, false]);
+    expect(agentWhy(win, win.agents[0])).toContain('暂停接单');
+    expect(agentWhy(win, win.agents[1])).toBe('在PowerShell 7里没找到命令');
+    expect(agentWhy(mac, mac.agents[0])).toBe('');
+  });
+
+  it('boardTakers：接得了这块白板、又有能用的 agent 的机器；boardHosts 每行带上接不了的原因', () => {
+    expect(boardTakers(ws([]), 'a/main').map(h => h.name)).toEqual(['mac']);
+    const blocked = ws([{ host: 'mac', board: 'a/main', code: 'BOARD_NOT_ON_HOST', why: '/w/a 不是 git 仓库' }]);
+    expect(boardTakers(blocked, 'a/main')).toEqual([]);
+    expect(boardHosts(blocked, 'a/main').map(x => [x.h.name, x.block?.why])).toEqual([
+      ['mac', '/w/a 不是 git 仓库'],
+      ['win', undefined],
+    ]);
   });
 });

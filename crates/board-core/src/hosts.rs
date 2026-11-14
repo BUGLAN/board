@@ -412,6 +412,9 @@ pub struct HostAgent {
     /// 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 `[agents.*]`：用的是本机的那份（board host 上报）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_override: bool,
+    /// 服务端发出去时才有：这个 agent 在这台机器上连续异常退出、已经暂停接单（PRD §9.1「能不能接」），人点「恢复」才继续
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tripped: bool,
 }
 
 /// 一个 agent 能在机器设置里选什么（模板决定怎么传参）
@@ -483,6 +486,9 @@ pub struct AgentRun {
     /// 模型供应商：没有 = 跟随共用配置；`@local` = 本机自己管（不改配置文件）；其余是供应商名称
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// 人最近一次点「恢复」的时间：连续异常退出从这之后重新数（`fit.rs` 的 `agent_streak`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_at: Option<i64>,
 }
 
 /// 一台机器的工作空间（PRD §9.1「工作空间」）：每台设备只配一个目录，每块白板在它里面的目录固定是
@@ -800,7 +806,7 @@ pub fn host_board_dir(ws: Option<&HostWorkspace>, board: &str, os: &str) -> Opti
 /// 这台机器上当每块白板的目录：工作空间里摆着 `[host] dirs`（升级前逐块配的）里的白板、`--dir` 覆盖的白板，
 /// 加上 board host 上报过的目录（盘上确实有、但主人删了 `[host] dirs` 的那些也留着，免得检查结果没了）。
 /// 每块白板的路径由工作空间派生，检查结果、克隆状态从上报的目录里按白板取
-fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>) -> Vec<HostDir> {
+fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>, os: &str) -> Vec<HostDir> {
     let Some(ws) = ws.filter(|w| !w.path.trim().is_empty() || !w.overrides.is_empty()) else { return vec![] };
     let mut out: Vec<HostDir> = vec![];
     // 存着的目录（升级前逐块配的，或者 board host 上报过的）；旧版 board host 上报的 `board` 一列是白板标识、
@@ -816,7 +822,7 @@ fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>) -> Vec<HostDir> 
             out.push(old.clone());
             continue;
         }
-        match derive_dir(ws, board, "") {
+        match derive_dir(ws, board, os) {
             Some(mut d) => {
                 let same = old.path == d.path;
                 d.status = old.status.clone().filter(|_| same);
@@ -834,7 +840,7 @@ fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>) -> Vec<HostDir> 
     // `--dir` 覆盖的白板（还没在存着的里面）；覆盖整个项目的不是一块白板，由上面每块白板派生时用上
     for o in &ws.overrides {
         if crate::valid_board(&o.board) && !out.iter().any(|d| d.board == o.board) {
-            if let Some(d) = derive_dir(ws, &o.board, "") {
+            if let Some(d) = derive_dir(ws, &o.board, os) {
                 out.push(d);
             }
         }
@@ -1317,6 +1323,9 @@ pub struct HostPatch {
     /// 一个 agent 的模型、思考强度（各自 None 表示不改，空字符串表示回到 agent 自己的默认）
     #[serde(default)]
     pub run: Option<RunPatch>,
+    /// 恢复一个连续异常退出、暂停了接单的 agent（写它的标识）
+    #[serde(default)]
+    pub resume: Option<String>,
     /// 工作空间（整个替换）。空字符串表示不配工作空间；None 表示不改
     #[serde(default, deserialize_with = "workspace_patch")]
     pub workspace: Option<HostWorkspace>,
@@ -1718,7 +1727,7 @@ impl HostRow {
             version: self.version.clone(),
             agents: self.resolved(),
             envs: self.envs.clone(),
-            dirs: derived_dirs(&self.dirs, workspace.as_ref()),
+            dirs: derived_dirs(&self.dirs, workspace.as_ref(), &self.os),
             workspace,
             dirs_rev: self.dirs_rev,
             dirs_changed_at: self.dirs_at,
@@ -1933,11 +1942,16 @@ impl<'a> R<'a> {
         Ok(self.conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE name = ?1"), [name], host_row).optional()?)
     }
 
-    /// 所有机器，按名字排序
-    pub fn hosts(&self, now: i64) -> Result<Vec<HostInfo>> {
+    /// 所有机器的记录，按名字排序
+    pub(crate) fn host_rows(&self) -> Result<Vec<HostRow>> {
         let mut st = self.conn.prepare(&format!("SELECT {HOST_COLS} FROM hosts ORDER BY name"))?;
         let rows = st.query_map([], host_row)?.collect::<std::result::Result<Vec<_>, _>>()?;
-        rows.iter().map(|h| self.host_info(h, now)).collect()
+        Ok(rows)
+    }
+
+    /// 所有机器，按名字排序
+    pub fn hosts(&self, now: i64) -> Result<Vec<HostInfo>> {
+        self.host_rows()?.iter().map(|h| self.host_info(h, now)).collect()
     }
 
     pub fn host(&self, name: &str, now: i64) -> Result<HostInfo> {
@@ -1977,6 +1991,9 @@ impl<'a> R<'a> {
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
     fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
         let mut info = h.info(now);
+        for a in info.agents.iter_mut() {
+            a.tripped = self.agent_tripped(h, &a.id)?;
+        }
         info.ops = self.host_ops(h.id)?;
         info.token = self.host_token(h, now)?;
         // 每块白板的环境检查命令（按这台机器的系统选好）：board host 照着跑，界面照着判断结果算不算数
@@ -2038,14 +2055,6 @@ impl<'a> R<'a> {
         Ok(self.conn.query_row("SELECT ready_check, ready_check_win FROM boards WHERE id = ?1", [board], |r| {
             Ok(ReadyCheck { cmd: r.get(0)?, win: r.get(1)? })
         })?)
-    }
-
-    /// 这台机器上这块白板能不能接卡（环境检查）
-    pub(crate) fn dir_readiness(&self, h: &HostRow, board: &BoardRef) -> Result<Readiness> {
-        let path = board.path();
-        let cmd = self.ready_check(board.id)?.for_os(&h.os);
-        let ready = h.dirs.iter().find(|d| d.board == path).and_then(|d| d.ready.as_ref());
-        Ok(readiness(cmd.as_deref(), ready))
     }
 
     /// 这台机器有目录的白板所在项目里的标签名（小写）。工作空间能放任意白板，规则里用哪块白板的标签就在哪块生效
@@ -2587,6 +2596,9 @@ impl<'a> W<'a> {
     /// 写一条派发的结束，并让它的名字离线（名字只给这个会话用）
     fn close_dispatch(&mut self, d: &DRow, result: &str, exit_code: Option<i64>) -> Result<()> {
         self.close_row(d, result, exit_code)?;
+        if result == "crashed" {
+            self.trip_check(d)?;
+        }
         if let Some(name) = &d.name {
             let online: bool = self.tx.query_row(
                 "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1 AND off_at IS NULL",
@@ -2598,6 +2610,22 @@ impl<'a> W<'a> {
             }
         }
         self.touch_hosts();
+        Ok(())
+    }
+
+    /// 一次派发异常退出之后：这个 agent 在这台机器上正好连续异常退出了 [`crate::fit::TRIP_AFTER`] 次，就记一条操作记录
+    /// （暂停本身不用存：`fit.rs` 的 `agent_tripped` 每次按派发记录数出来）
+    fn trip_check(&mut self, d: &DRow) -> Result<()> {
+        let Some(h) = self.host_row(&d.host)?.filter(|h| h.id == d.host_id) else { return Ok(()) };
+        if self.read().agent_streak(&h, &d.agent)? == crate::fit::TRIP_AFTER {
+            let text = format!(
+                "{} 连续 {} 次异常退出，暂停了它在这台机器上接单：修好后在机器详情里点「恢复」",
+                d.agent_label,
+                crate::fit::TRIP_AFTER
+            );
+            self.host_op(h.id, "board", &text)?;
+            self.touch_hosts();
+        }
         Ok(())
     }
 
@@ -2767,7 +2795,7 @@ impl<'a> W<'a> {
                 // 报上来的目录：不在存着的主体里的（`--dir` 覆盖的、旧版 board host 的白板标识）补上；工作空间派生得出
                 // 那几块的不补，免得按上报的白板标识再存一份派发不了的目录
                 for r in &rep.dirs {
-                    if dirs.iter().any(|d| d.board == r.board) || workspace.as_ref().and_then(|w| derive_dir(w, &r.board, "")).is_some() {
+                    if dirs.iter().any(|d| d.board == r.board) || workspace.as_ref().and_then(|w| derive_dir(w, &r.board, &rep.os)).is_some() {
                         continue;
                     }
                     let mut d = r.clone();
@@ -3175,7 +3203,7 @@ impl<'a> W<'a> {
                 }
             }
             // 按本机 agent 的顺序、再 git、再版本
-            let dirs = derived_dirs(&h.dirs, workspace_of(h.workspace_raw.as_deref(), &h.dirs).as_ref());
+            let dirs = derived_dirs(&h.dirs, workspace_of(h.workspace_raw.as_deref(), &h.dirs).as_ref(), &h.os);
             let order = |i: &SelfTestItem| -> (usize, usize) {
                 match i.kind.as_str() {
                     "agent" => (0, h.agents.iter().position(|a| a.id == i.key).unwrap_or(usize::MAX)),
@@ -3250,8 +3278,8 @@ impl<'a> W<'a> {
             return Ok(());
         }
         // 已经摆着的老白板（升级前逐块配的、board host 报过的）跟着换成工作空间派生的路径
-        let dirs = derived_dirs(&derived_dirs(&h.dirs, stored.as_ref()), Some(&next));
-        if same_workspace(stored.as_ref(), Some(&next)) && derived_dirs(&h.dirs, stored.as_ref()).iter().map(|d| &d.board).eq(dirs.iter().map(|d| &d.board)) {
+        let dirs = derived_dirs(&derived_dirs(&h.dirs, stored.as_ref(), &h.os), Some(&next), &h.os);
+        if same_workspace(stored.as_ref(), Some(&next)) && derived_dirs(&h.dirs, stored.as_ref(), &h.os).iter().map(|d| &d.board).eq(dirs.iter().map(|d| &d.board)) {
             return Ok(());
         }
         for d in &dirs {
@@ -3318,7 +3346,7 @@ impl<'a> W<'a> {
         let Some(d0) = host_board_dir(ws.as_ref(), board, &h.os) else {
             return Err(BoardError::usage(format!("机器「{name}」没有配置工作空间：先配好工作空间，白板的目录是 <工作空间>/{board}")));
         };
-        let mut dirs = derived_dirs(&h.dirs, ws.as_ref());
+        let mut dirs = derived_dirs(&h.dirs, ws.as_ref(), &h.os);
         let d = dirs
             .iter_mut()
             .find(|d| d.board == board)
@@ -3524,6 +3552,17 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
         }
+        if let Some(id) = p.resume.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+            let a = h.agents.iter().find(|a| a.id == id).ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{id}」")))?;
+            // 没暂停的不用恢复（重复点、别的窗口已经点过）：不记操作
+            if self.read().agent_tripped(&h, id)? {
+                let mut run = h.run.clone();
+                run.entry(id.to_string()).or_default().resumed_at = Some(self.now);
+                self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+                self.host_op(h.id, by, &format!("恢复了 {} 接单", a.name))?;
+            }
+        }
         if let Some(e) = &p.env {
             let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
             let check = h.env_check(&e.agent, &e.env)?;
@@ -3728,8 +3767,8 @@ impl<'a> W<'a> {
         // 有工作空间的机器就视为有这块白板的目录（目录状态只在机器详情里提示，不再拒绝派发）
         if workspace_of(h.workspace_raw.as_deref(), &h.dirs).is_none() && !h.dirs.iter().any(|d| d.board == board.path()) {
             return Err(BoardError::usage(format!(
-                "机器「{host}」还没有配工作空间：先在机器详情里填上，每块白板的目录是 <工作空间>/{}",
-                board.path()
+                "机器「{host}」还没有配工作空间：先在机器详情里填上，{} 项目的目录是 <工作空间>/{}",
+                board.project, board.project
             )));
         }
         if let Some(a) = agent {
@@ -3786,27 +3825,21 @@ impl<'a> W<'a> {
                 .default_agent()
                 .ok_or_else(|| BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」上一个 agent 也没找到")))?,
         };
-        let path = board.path();
-        let ws = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
-        if ws.is_none() && !h.dirs.iter().any(|d| d.board == path) {
+        // 连续异常退出、暂停了接单的 agent 不接新的派发（`fit.rs`）
+        if self.read().agent_tripped(&h, &a.id)? {
             return Err(BoardError::new(
-                ErrorCode::BoardNotOnHost,
-                format!("机器「{host}」还没有配工作空间：先在机器详情里填上，每块白板的目录是 <工作空间>/{path}"),
-            ));
+                ErrorCode::AgentNotOnHost,
+                format!(
+                    "机器「{host}」上的 {} 连续 {} 次异常退出，已经暂停接单：修好后在机器详情里点「恢复」",
+                    a.name,
+                    crate::fit::TRIP_AFTER
+                ),
+            )
+            .with_detail(json!({ "host": host, "agent": a.id })));
         }
-        match self.read().dir_readiness(&h, board)? {
-            Readiness::Failed(last) => {
-                return Err(BoardError::new(ErrorCode::BoardNotReady, format!("机器「{host}」上 {path} 的环境检查没通过：{last}"))
-                    .with_detail(json!({ "host": host, "board": path })));
-            }
-            Readiness::Pending => {
-                return Err(BoardError::new(
-                    ErrorCode::BoardNotReady,
-                    format!("机器「{host}」还没跑完 {path} 的环境检查：等它跑完再派（旧版 board host 不会检查，要先升级 board）"),
-                )
-                .with_detail(json!({ "host": host, "board": path })));
-            }
-            Readiness::NoCheck | Readiness::Passed => {}
+        // 这台机器接不了这块白板的卡：没有工作空间、目录不对、环境检查没通过（`fit.rs`）
+        if let Some(u) = self.read().board_unfit(&h, board)? {
+            return Err(u.error(host, board));
         }
         let (agent_id, label) = (a.id.clone(), a.name.clone());
         let kind = if split { KIND_SPLIT } else { "" };
@@ -4061,8 +4094,8 @@ impl<'a> W<'a> {
         for k in 0..n {
             let i = (h.rr.max(0) as usize + k) % n;
             let Ok(board) = self.resolve(&boards[i]) else { continue };
-            // 环境检查没通过（或还没检查）的白板这台机器不接
-            if !self.read().dir_readiness(&h, &board)?.ok() {
+            // 这台机器接不了的白板（目录不对、环境检查没通过或还没检查）跳过
+            if self.read().board_unfit(&h, &board)?.is_some() {
                 continue;
             }
             let flow = flow_of(self.tx, board.id)?;
@@ -4082,8 +4115,21 @@ impl<'a> W<'a> {
             let urgent = self.priority_cards(board.id)?;
             let mut order = self.claimable_order(board.id, &flow, &skip)?;
             order.sort_by_key(|(id, _)| !urgent.contains(id));
+            // 连续异常退出、暂停了接单的 agent：规则交给它的卡片先不领
+            let mut tripped: BTreeMap<String, bool> = BTreeMap::new();
             for (id, _) in order {
                 let Some(want) = rules.route(&card_label_names(self.tx, board.id, id)?) else { continue };
+                let off = match tripped.get(want) {
+                    Some(t) => *t,
+                    None => {
+                        let t = self.read().agent_tripped(&h, want)?;
+                        tripped.insert(want.to_string(), t);
+                        t
+                    }
+                };
+                if off {
+                    continue;
+                }
                 if let Some(a) = found.iter().find(|x| x.id == want) {
                     hit = Some((id, a.clone()));
                     break;

@@ -10,6 +10,7 @@ pub mod cron;
 pub mod engine;
 pub mod error;
 pub mod files;
+pub mod fit;
 pub mod flow;
 pub mod hosts;
 pub mod model;

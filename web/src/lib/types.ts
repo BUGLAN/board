@@ -165,6 +165,19 @@ export interface Workspace {
   hosts?: HostInfo[];
   /** 排队和正在跑的派发（按创建先后）；旧服务端没有这个字段 */
   dispatches?: Dispatch[];
+  /** 接不了的「机器 × 白板」和原因（服务端 fit.rs 算好）：界面照着禁用、显示；旧服务端没有这个字段 */
+  blocks?: HostBlock[];
+}
+
+/** 一台机器接不了一块白板的卡 */
+export interface HostBlock {
+  host: string;
+  /** `<项目>/<白板>` */
+  board: string;
+  /** 手动派发会得到的错误码：BOARD_NOT_ON_HOST、BOARD_NOT_READY */
+  code: string;
+  /** 原因，一句话 */
+  why: string;
 }
 
 /* ---------------- 任务下发（board host） ---------------- */
@@ -198,6 +211,8 @@ export interface HostAgent {
   run_provider?: string | null;
   /** 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 [agents.*]：用的是本机的 */
   local_override?: boolean;
+  /** 这个 agent 在这台机器上连续异常退出、已经暂停接单：点「恢复」才继续 */
+  tripped?: boolean;
 }
 
 /** 一个 agent 能在机器设置里选什么 */

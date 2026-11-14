@@ -397,6 +397,8 @@ impl Spec {
             run_env: None,
             run_provider: None,
             local_override: self.local_override,
+            // 连续异常退出的暂停由服务端按派发记录数出来，这里不报
+            tripped: false,
         }
     }
 
@@ -1965,6 +1967,8 @@ impl Host<'_> {
         }
         self.ready_all = true;
         self.plan_readies();
+        // 目录状态也重新看一遍（平时每 5 分钟看一次）：刚把目录修好、克隆好的，点「重新检查」马上就能接卡
+        self.dir_checks.clear();
         let found: Vec<String> = self.agents.iter().filter(|a| a.report().found).map(|a| a.id.clone()).collect();
         self.say(format!(
             "{} 重新检查完了：启动环境 {} 个，找到 agent {}",

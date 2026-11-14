@@ -21,7 +21,7 @@
 use crate::cron::Cron;
 use crate::engine::Cmd;
 use crate::error::{BoardError, ErrorCode, Result};
-use crate::hosts::{workspace_of, Readiness, SOURCE_SCHEDULE};
+use crate::hosts::SOURCE_SCHEDULE;
 use crate::model::*;
 use crate::store::{flow_of, R, W};
 use jiff::civil::DateTime;
@@ -620,7 +620,6 @@ impl<'a> W<'a> {
     /// 能接这块白板的机器，按注册先后：每台（机器名，agent 或 None）；一台都没有时为空。
     /// `live`：只要现在在线、没暂停接单的（到点挑机器时）；保存时不看这一项，机器暂时离线也能存
     fn cron_host_candidates(&self, board: &BoardRef, agent: Option<&str>, live: bool) -> Result<Option<Vec<(String, Option<String>)>>> {
-        let path = board.path();
         let names: Vec<String> = self.collect("SELECT name FROM hosts ORDER BY id", [], |r| r.get(0))?;
         let mut out = vec![];
         for name in names {
@@ -628,14 +627,13 @@ impl<'a> W<'a> {
             if live && (!h.online(self.now) || h.paused) {
                 continue;
             }
-            if workspace_of(h.workspace_raw.as_deref(), &h.dirs).is_none() && !h.dirs.iter().any(|d| d.board == path) {
+            // 和派发本身用同一个判断（`fit.rs`）：没有工作空间、目录不对、环境检查没通过的机器派不过去，不当候选
+            if self.read().board_unfit(&h, board)?.is_some() {
                 continue;
             }
-            // 和派发本身一样：环境检查没通过、还没跑完的机器派不过去（hosts.rs `dispatch_create_from`），不当候选
-            if !self.read().dir_readiness(&h, board)?.ok() {
-                continue;
-            }
-            let found = |a: &crate::hosts::HostAgent| a.found;
+            // 连续异常退出、暂停了接单的 agent 也不算
+            let read = self.read();
+            let found = |a: &crate::hosts::HostAgent| a.found && !read.agent_tripped(&h, &a.id).unwrap_or(false);
             match agent {
                 Some(a) => {
                     if h.resolved().iter().any(|x| x.id == a && found(x)) {
@@ -644,7 +642,7 @@ impl<'a> W<'a> {
                 }
                 // 没指定：这台机器有默认 agent（默认 agent 设的那个找到了，或第一个找到了的）
                 None => {
-                    if h.default_agent().is_some() {
+                    if h.default_agent().is_some_and(|a| found(&a)) {
                         out.push((h.name.clone(), None));
                     }
                 }

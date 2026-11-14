@@ -564,6 +564,9 @@ pub struct Workspace {
     /// 排队和正在跑的派发（按创建先后）
     #[serde(default)]
     pub dispatches: Vec<crate::hosts::Dispatch>,
+    /// 接不了的「机器 × 白板」和原因（`fit.rs`）：界面照着禁用、显示，不自己再算
+    #[serde(default)]
+    pub blocks: Vec<crate::fit::Block>,
 }
 
 /// 一个在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内

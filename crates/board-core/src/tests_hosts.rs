@@ -3890,3 +3890,136 @@ fn check_generated_validates_agent_and_host() {
     assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "Claude Code", Some(1)).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(check_gen(&mut s, T0 + S, Some("Win 1"), "claude", Some(1)).unwrap_err().code, ErrorCode::Usage);
 }
+
+/* ------------------------------ 能不能接（fit.rs） ------------------------------ */
+
+fn dir_report(status: &str, origin: Option<&str>) -> HostReport {
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.dirs[0].status = Some(status.into());
+    rep.dirs[0].origin = origin.map(str::to_string);
+    rep.dirs[0].checked_at = Some(T0);
+    rep
+}
+
+fn blocks(s: &Store) -> Vec<(String, String, String)> {
+    s.read(|r| r.blocks()).unwrap().into_iter().map(|b| (b.host, b.board, b.code)).collect()
+}
+
+/// 项目设了仓库地址：机器上它的目录不存在、不是 git 仓库、origin 不是项目的仓库时，这台机器接不了这个项目的卡——
+/// 手动派发被拒、定时领取跳过、工作区数据的 `blocks` 里写明原因。项目没设仓库时不看目录
+#[test]
+fn project_repo_must_be_cloned_right_before_the_host_takes_its_cards() {
+    let mut s = store();
+    beat(&mut s, T0, &dir_report("missing", None)).unwrap();
+    lead_round(&mut s);
+    let id = new_card_tagged(&mut s, "A");
+    // 没设仓库的项目用空目录，board host 开始派发时自己建：不拦
+    assert!(blocks(&s).is_empty(), "{:?}", blocks(&s));
+    ui(&mut s, |w| w.set_repo_branch("default", Some("git@github.com:o/r.git"), None)).unwrap();
+    let e = dispatch(&mut s, T0, id, "mbp", None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotOnHost);
+    assert!(e.message.contains("/tmp/default 还不存在"), "{}", e.message);
+    assert_eq!(blocks(&s), vec![("mbp".to_string(), B.to_string(), "BOARD_NOT_ON_HOST".to_string())]);
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(pull(&mut s, T0 + S).is_none(), "目录不存在的项目不领");
+    // 同一个项目的另一块白板共用这个目录：它还没被这台机器报过，也按这个目录的状态算
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    assert_eq!(blocks(&s).len(), 2, "{:?}", blocks(&s));
+    // 不是 git 仓库
+    beat(&mut s, T0 + 2 * S, &dir_report("not_git", None)).unwrap();
+    let e = dispatch(&mut s, T0 + 2 * S, id, "mbp", None).unwrap_err();
+    assert!(e.code == ErrorCode::BoardNotOnHost && e.message.contains("不是 git 仓库"), "{}", e.message);
+    // 是别的仓库
+    beat(&mut s, T0 + 3 * S, &dir_report("ok", Some("git@github.com:o/other.git"))).unwrap();
+    let e = dispatch(&mut s, T0 + 3 * S, id, "mbp", None).unwrap_err();
+    assert!(e.code == ErrorCode::BoardNotOnHost && e.message.contains("origin 是 git@github.com:o/other.git"), "{}", e.message);
+    // 就是项目的仓库（写法不同也算）：照常领
+    beat(&mut s, T0 + 4 * S, &dir_report("ok", Some("https://github.com/O/R.git"))).unwrap();
+    assert!(blocks(&s).is_empty(), "{:?}", blocks(&s));
+    s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + 5 * S).unwrap();
+    assert_eq!((d.card, d.state.as_str()), (id, "running"));
+}
+
+/// 环境检查没通过、没有工作空间也从同一个判断出来，错误码和手动派发的一致
+#[test]
+fn blocks_list_every_host_board_pair_that_cannot_take_cards() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert!(blocks(&s).is_empty());
+    set_ready_check(&mut s, "cargo --version", "");
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    assert_eq!(ws.blocks.len(), 1);
+    assert_eq!((ws.blocks[0].code.as_str(), ws.blocks[0].why.as_str()), ("BOARD_NOT_READY", "环境检查还没跑完"));
+    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &["command not found: cargo"])).unwrap();
+    assert_eq!(s.read(|r| r.blocks()).unwrap()[0].why, "环境检查没通过：command not found: cargo");
+    beat(&mut s, T0 + 2 * S, &ready_report("i1", "cargo --version", true, &["cargo 1.91.0"])).unwrap();
+    assert!(blocks(&s).is_empty());
+}
+
+fn crash_once(s: &mut Store, t: i64) {
+    let c = new_card(s, t, "x");
+    let d = dispatch(s, t, c, "mbp", None).unwrap();
+    let d = begin(s, t + S, d.id).unwrap();
+    beat(s, t + 2 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    assert_eq!(end(s, t + 3 * S, d.id, Some(1), &["Not logged in"]).result.as_deref(), Some("crashed"));
+}
+
+fn tripped(s: &Store, at: i64) -> bool {
+    host(s, at).agents.iter().find(|a| a.id == "claude").unwrap().tripped
+}
+
+/// 一个 agent 在一台机器上连续 3 次异常退出就暂停接单：手动派发被拒、定时领取不领交给它的卡，记一条操作记录；
+/// 人点「恢复」之后重新数
+#[test]
+fn agent_pauses_after_three_crashes_in_a_row_until_resumed() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    let mut t = T0;
+    for i in 0..3 {
+        crash_once(&mut s, t);
+        assert_eq!(tripped(&s, t + 3 * S), i == 2, "第 {} 次", i + 1);
+        t += 10 * S;
+    }
+    let ops = host(&s, t).ops;
+    assert_eq!(ops.iter().filter(|o| o.text.contains("连续 3 次异常退出")).count(), 1, "{:?}", ops.iter().map(|o| &o.text).collect::<Vec<_>>());
+    // 手动派发被拒，写明怎么恢复
+    let c = new_card_tagged(&mut s, "T");
+    let e = dispatch(&mut s, t, c, "mbp", None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::AgentNotOnHost);
+    assert!(e.message.contains("暂停接单") && e.message.contains("恢复"), "{}", e.message);
+    // 定时领取不领交给它的卡
+    beat(&mut s, t, &report("mbp", "i1", vec![])).unwrap();
+    s.write(t, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(pull(&mut s, t + S).is_none());
+    assert_eq!(card(&s, c).card.column, "todo");
+    // 恢复：重新数，照常派
+    let p = HostPatch { resume: Some("claude".into()), ..Default::default() };
+    s.write(t + 2 * S, Origin::ui(None), |w| w.host_update_as("mbp", &p, "lan")).unwrap();
+    assert!(!tripped(&s, t + 2 * S));
+    assert!(host(&s, t + 2 * S).ops[0].text.contains("恢复了 Claude Code 接单"));
+    // 再点一次不重复记
+    s.write(t + 3 * S, Origin::ui(None), |w| w.host_update_as("mbp", &p, "lan")).unwrap();
+    assert_eq!(host(&s, t + 3 * S).ops.iter().filter(|o| o.text.contains("恢复了")).count(), 1);
+    s.write(t + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert_eq!(pull(&mut s, t + 4 * S).map(|d| d.card), Some(c));
+    // 恢复之后的一次异常退出只算一次
+    let t2 = t + 20 * S;
+    beat(&mut s, t2, &report("mbp", "i1", vec![])).unwrap();
+    crash_once(&mut s, t2);
+    assert!(!tripped(&s, t2 + 3 * S));
+}
+
+/// Windows 机器的目录用 `\` 拼：服务端派生的路径和机器上报的一样，检查结果才对得上
+#[test]
+fn windows_dirs_keep_their_reported_status() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.os = "Windows 11 Pro".into();
+    rep.workspace = Some(HostWorkspace { path: "D:\\repo".into(), ..Default::default() });
+    rep.dirs = vec![HostDir { board: B.into(), path: "D:\\repo\\default".into(), status: Some("ok".into()), checked_at: Some(T0), ..Default::default() }];
+    beat(&mut s, T0, &rep).unwrap();
+    let d = &host(&s, T0).dirs[0];
+    assert_eq!((d.path.as_str(), d.status.as_deref()), ("D:\\repo\\default", Some("ok")));
+}

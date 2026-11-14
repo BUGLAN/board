@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
 import codexIcon from '../assets/agents/codex.svg';
 import { describeCron } from './cron';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
 import { agentColor, agentGlyph } from './util';
 
 /** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
@@ -167,14 +167,33 @@ export function workspacePath(workspace: string, board: string, os: string): str
   return base + sep + board.trim().split('/')[0];
 }
 
-/** 能接这块白板的卡的机器：配了工作空间的每台机器（有工作空间就视为有这块白板的目录），带它的目录和环境检查结果 */
+/** 这台机器接不了这块白板的卡时的原因。服务端算好放在工作区数据里（fit.rs：没有工作空间、目录不对、环境检查没通过），
+    界面只照着禁用、显示，不自己再判断一遍；旧版服务端没有这一项时一律当能接，由派发时服务端拒绝 */
+export const blockOf = (ws: Workspace | null, host: string, path: string): HostBlock | undefined =>
+  ws?.blocks?.find(b => b.host === host && b.board === path);
+
+/** 能派给这个 agent：找到了命令，也没有因为连续异常退出暂停接单 */
+export const agentUsable = (a: HostAgent) => a.found && !a.tripped;
+
+/** agent 用不了的原因（派发对话框里的提示）；能用时为空 */
+export function agentWhy(h: HostInfo, a: HostAgent): string {
+  if (!a.found) return a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令';
+  if (a.tripped) return '连续 3 次异常退出，已经暂停接单：修好后在机器详情里点「恢复」';
+  return '';
+}
+
+/** 配了工作空间的每台机器，带它在这块白板上的目录、环境检查结果，和接不了时的原因（`block`） */
 export function boardHosts(ws: Workspace | null, path: string) {
   const rc = boardOf(ws, path)?.readyCheck;
   return hostsOf(ws).flatMap(h => {
     const d = hostDirFor(h, path);
-    return d ? [{ h, d, ready: dirReadiness(rc, h, d) }] : [];
+    return d ? [{ h, d, ready: dirReadiness(rc, h, d), block: blockOf(ws, h.name, path) }] : [];
   });
 }
+
+/** 随机派发、任意机器能挑的机器：接得了这块白板，并且有能用的 agent */
+export const boardTakers = (ws: Workspace | null, path: string): HostInfo[] =>
+  hostsOf(ws).filter(h => !!hostDirFor(h, path) && !blockOf(ws, h.name, path) && h.agents.some(agentUsable));
 
 /** 启动环境的名称：机器上报的列表里找，找不到时用标识 */
 export function envName(h: HostInfo | undefined, id: string | null | undefined): string | null {

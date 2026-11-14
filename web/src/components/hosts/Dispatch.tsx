@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
 import { judge } from '../../lib/granularity';
-import { agentMark, boardOf, cardDispatch, envName, hostDirFor, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
+import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, envName, hostLoad, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
@@ -194,18 +194,18 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
   // 粒度预检说这一条已经够细（已经拆出来的子项不再判）
   const small = split && !force && entry?.splitFrom == null ? judge(entry.title, entry.body) : null;
   const hosts = hostsOf(ws);
-  const rc = boardOf(ws, path)?.readyCheck;
-  // 有工作空间的机器就视为有这块白板的目录（目录状态只在机器详情里提示，不再拒绝派发）
-  const hasDir = (h: HostInfo) => !!hostDirFor(h, path);
-  // 环境检查没通过（或还没检查）的机器不能选（PRD §9.1）
-  const ready = (h: HostInfo) => dirReadiness(rc, h, hostDirFor(h, path));
-  const usable = (h: HostInfo) => hasDir(h) && readyOk(ready(h));
+  // 接不了这块白板的机器不能选（PRD §9.1「能不能接」）：没有工作空间、目录不对、环境检查没通过。
+  // 原因是服务端给的（工作区数据里的 blocks），这里不自己再判断
+  const block = (h: HostInfo) => blockOf(ws, h.name, path);
+  const usable = (h: HostInfo) => !block(h);
+  // 预先选中的 agent：机器的默认 agent 能用就是它，否则第一个能用的
+  const agentOf = (h: HostInfo | null | undefined) => h?.agents.find(a => a.id === h.agent && agentUsable(a))?.id ?? h?.agents.find(agentUsable)?.id ?? null;
   const busy = (h: HostInfo) => !h.online || h.paused || hostLoad(ws, h).running.length >= h.max;
   // 默认选中：有这块白板目录的机器里，在线、没满、没暂停的优先
   const first = hosts.filter(usable).sort((a, b) => Number(busy(a)) - Number(busy(b)))[0];
   const [host, setHost] = useState<string | null>(first?.name ?? null);
   const h = hosts.find(x => x.name === host) ?? null;
-  const [agent, setAgent] = useState<string | null>(h?.agent ?? null);
+  const [agent, setAgent] = useState<string | null>(agentOf(h));
   const chosen = h?.agents.find(x => x.id === agent);
   // 看不到 board-skills 的 agent 照样能派，只提醒
   const miss = h && chosen ? skillMiss(h, chosen) : null;
@@ -226,7 +226,7 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
 
   const pick = (x: HostInfo) => {
     setHost(x.name);
-    setAgent(x.agent);
+    setAgent(agentOf(x));
   };
 
   const submit = async () => {
@@ -309,11 +309,9 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
                     {x.paused && <span className="dp-tag">暂停接单</span>}
                     {!x.online && <span className="dp-tag">离线</span>}
                     <span className="hp-sp" />
-                    {!hasDir(x) ? (
-                      <em>还没有配工作空间</em>
-                    ) : !ok ? (
-                      <em className="bad" title={readyWhy(ready(x))}>
-                        {readyWhy(ready(x))}
+                    {!ok ? (
+                      <em className="bad" title={block(x)?.why}>
+                        {block(x)?.why}
                       </em>
                     ) : why ? (
                       <em>会排队</em>
@@ -329,8 +327,8 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
                 <div className="dp-label">agent</div>
                 <div className="hp-agents">
                   {h.agents.map(a => (
-                    <Tip key={a.id} text={a.found ? '' : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}>
-                      <button type="button" className={cx('hp-agent-btn', agent === a.id && 'on')} disabled={!a.found} onClick={() => setAgent(a.id)}>
+                    <Tip key={a.id} text={agentWhy(h, a)}>
+                      <button type="button" className={cx('hp-agent-btn', agent === a.id && 'on')} disabled={!agentUsable(a)} onClick={() => setAgent(a.id)}>
                         <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} />
                       </button>
                     </Tip>
