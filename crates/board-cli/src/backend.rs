@@ -66,12 +66,8 @@ impl Backend {
     /// `board help` 里「数据」一行
     pub fn describe() -> String {
         match Conn::resolve_for_agent() {
-            // 连接来自派发的配置文件（`[agent_env]`），地址本身可能还是来自别处（环境变量、~/.board/config.toml）：
-            // 说清楚从哪补的，别让人以为写进了 ~/.board/config.toml
-            Ok(Conn { url: Some((url, _)), agent_env: true, .. }) => {
-                format!("服务端 {url}（从派发的配置 {} 的 [agent_env] 补过 BOARD_*）", config::shown())
-            }
-            Ok(Conn { url: Some((url, src)), .. }) => format!("服务端 {url}（地址来自{}）", config::origin(src, "BOARD_URL")),
+            // 地址是从派发的配置文件（`[agent_env]`）补来的时说清楚，只补了别的变量时照旧按环境变量、配置文件说（见 config::describe）
+            Ok(Conn { url: Some((url, src)), filled, .. }) => config::describe(&url, src, &filled),
             Ok(_) => format!("还没有登录：{LOGIN_HINT}"),
             Err(e) => e.message,
         }
