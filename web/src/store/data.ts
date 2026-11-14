@@ -523,7 +523,9 @@ export const repoPatch = (path: string, change: { repo?: string; branch?: string
 });
 
 /** 改白板的一条定时建卡（PRD §4）：开关、模板、派给机器（指定一台 / 随机）、时间。下次时间等服务端算，改了时间就先清掉；
- *  机器、agent 发空字符串表示不派发 / 默认 agent，画成空；选了随机就没有指定的机器；白板或这条不在了原样返回 */
+ *  机器、agent 发空字符串表示不派发 / 默认 agent，画成空；选了随机就没有指定的机器；
+ *  名称就是建卡标题，服务端把它同时写回 `title`（旧版客户端读它），改名时 `title` 一起改；
+ *  白板或这条不在了原样返回 */
 export const cardCronPatch = (path: string, id: number, input: CardCronInput): Patch => ({
   ws: ws => {
     const has = ws.projects.some(p => p.boards.some(b => b.path === path && b.cardCrons?.some(c => c.id === id)));
@@ -533,6 +535,7 @@ export const cardCronPatch = (path: string, id: number, input: CardCronInput): P
       ...input,
       ...(random || input.host !== undefined ? { host: random ? null : input.host || null } : {}),
       ...(random && input.agent === undefined ? { agent: null } : input.agent !== undefined ? { agent: input.agent || null } : {}),
+      ...(input.name !== undefined ? { title: input.name.trim() } : {}),
     };
     const stale = change.cron !== undefined || change.tz !== undefined || change.on === false;
     return {
