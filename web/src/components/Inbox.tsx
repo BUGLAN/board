@@ -182,7 +182,8 @@ function related(c: Card, all: Card[]) {
 /* ------------------------------ 动作 ------------------------------ */
 
 /** 行离开时在原位播的动画：整理、收到「稍后再做」→ 往右滑走，放回「未整理」→ 往左滑走，删除 → 原地淡出，合并 → 往上收 */
-type Exit = 'triage' | 'delete' | 'merge' | 'later' | 'back';
+/** gone：行已经在列表里原地收起了（横滑走的、行上按钮收起 / 放回的），移走时不再播离场 */
+type Exit = 'triage' | 'delete' | 'merge' | 'later' | 'back' | 'gone';
 const exits = new Map<number, Exit>();
 
 async function doTriage(ids: number[]) {
@@ -203,12 +204,12 @@ async function doTriage(ids: number[]) {
 }
 
 /** 收到「稍后再做」（default/main#303）：当帧从列表里消失，提示里可以「撤销」；失败的回到原处并提示 */
-async function doLater(ids: number[]) {
+async function doLater(ids: number[], gone = false) {
   const ok = ids.filter(id => !isDraft(id));
   if (!ok.length) return;
   const st = useInbox.getState();
   setInbox({ checked: st.checked.filter(c => !ok.includes(c)), open: st.open != null && ok.includes(st.open) ? null : st.open });
-  ok.forEach(id => exits.set(id, 'later'));
+  ok.forEach(id => exits.set(id, gone ? 'gone' : 'later'));
   const done = setLater(ok, true);
   toast({
     type: 'success',
@@ -221,10 +222,10 @@ async function doLater(ids: number[]) {
 }
 
 /** 从「稍后再做」放回「未整理」：回到原来的位置，标签、描述、评论都不动；当帧离开这一页，提示里可以「撤销」 */
-async function doUnlater(ids: number[]) {
+async function doUnlater(ids: number[], gone = false) {
   const ok = ids.filter(id => !isDraft(id));
   if (!ok.length) return;
-  ok.forEach(id => exits.set(id, 'back'));
+  ok.forEach(id => exits.set(id, gone ? 'gone' : 'back'));
   const done = setLater(ok, false);
   toast({
     type: 'success',
@@ -791,7 +792,7 @@ const Row = memo(function Row({
   const toggle = () => setInbox({ open: open ? null : c.id });
   const text = snippet(c.body);
   // 往右滑：直接收到「稍后再做」（default/main#303）
-  const sw = useSwipe(1, !draft && !saving, () => void doLater([c.id]));
+  const sw = useSwipe(1, !draft && !saving, () => void doLater([c.id], true));
   return (
     <div
       ref={ref}
@@ -866,7 +867,8 @@ const Row = memo(function Row({
               disabled={saving || draft}
               onClick={e => {
                 e.stopPropagation();
-                void doLater([c.id]);
+                // 和右滑一样：行往右滑出去、原地收起，再移走
+                sw.leave(e.currentTarget);
               }}
             >
               <Icon name="timer" />
@@ -1458,6 +1460,9 @@ function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>,
     const prev = last.current;
     last.current = { path, sig, rows };
     if (!prev || prev.path !== path || prev.sig === sig || reduceMotion()) return;
+    // 这次移走的行已经在列表里原地收起过（横滑走、行上按钮收起 / 放回）：下面的行跟着收起已经到了新位置，
+    // 记下的旧位置是收起之前的，再补位会先往下弹一下再回来，所以这一轮不补位
+    const collapsed = [...prev.rows.keys()].some(id => !rows.has(id) && exits.get(id) === 'gone');
     for (const [id, row] of rows) {
       const p = prev.rows.get(id);
       if (!p) {
@@ -1473,10 +1478,14 @@ function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>,
         continue;
       }
       const dy = p.top - row.top;
-      if (Math.abs(dy) > 1) row.el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 560, easing: SPRING });
+      if (!collapsed && Math.abs(dy) > 1) row.el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 560, easing: SPRING });
     }
     for (const [id, p] of prev.rows) {
       if (rows.has(id) || present.has(id) || !p.rect.width || p.el.isConnected) continue;
+      if (exits.get(id) === 'gone') {
+        exits.delete(id);
+        continue;
+      }
       // 位置按列表现在的位置算（记下位置之后页面可能滚动过）
       const now = r.getBoundingClientRect();
       ghost(p.el, new DOMRect(now.left + p.left, now.top + p.top, p.rect.width, p.rect.height), exits.get(id), p.edge);
@@ -1526,21 +1535,79 @@ type SwipeState = 'drag' | 'armed' | 'out';
 function useSwipe(dir: SwipeDir, enabled: boolean, onCommit: () => void) {
   const [dx, setDx] = useState<number | null>(null);
   const [state, setState] = useState<SwipeState | null>(null);
-  const st = useRef<{ x: number; y: number; on: boolean; w: number; lx: number; lt: number; v: number; dx: number } | null>(null);
+  const st = useRef<{ x: number; y: number; on: boolean; w: number; lx: number; lt: number; v: number; dx: number; el: HTMLElement } | null>(null);
   const ended = useRef(0);
+  /** 原地收起高度的动画：没走成时撤掉 */
+  const shrink = useRef<Animation | null>(null);
+  const commit = useRef(onCommit);
+  commit.current = onCommit;
+  /** 拖动中挂在窗口上的兜底监听（松手没传到这一行时也能收尾）；结束时摘掉 */
+  const off = useRef<(() => void) | null>(null);
+  const unhook = () => {
+    off.current?.();
+    off.current = null;
+  };
   const reset = () => {
+    unhook();
     st.current = null;
+    shrink.current?.cancel();
+    shrink.current = null;
     setDx(null);
     setState(null);
   };
+  /** 走：行滑出去（170ms），再在列表里原地把高度收到 0，收完才真的移走（commit）。
+      一直在列表里排版：列表的底边、阴影、下面的行都跟着动，不会有一块脱离列表的色条 */
+  const go = (el: HTMLElement, w: number) => {
+    setState('out');
+    setDx(dir * w);
+    const row = el.closest<HTMLElement>('.ib-row');
+    let sent = false;
+    const done = () => {
+      if (sent) return;
+      sent = true;
+      commit.current();
+      // 移走之后这一行还在（例如服务端拒绝）：回到原位
+      setTimeout(() => {
+        if (row) row.style.overflow = '';
+        reset();
+      }, 700);
+    };
+    setTimeout(() => {
+      if (!row || reduceMotion()) return done();
+      row.style.overflow = 'hidden';
+      shrink.current = row.animate([{ height: `${row.offsetHeight}px` }, { height: '0px' }], { duration: 240, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' });
+      shrink.current.onfinish = done;
+      // 动画迟迟没播完（页面在后台之类）：照样移走
+      setTimeout(done, 640);
+    }, reduceMotion() ? 0 : 170);
+  };
+  /** 收尾：松手、丢了指针捕获、窗口上收到松手、移动时发现按键已经松开，都走这里；只收一次 */
+  const finish = () => {
+    const s = st.current;
+    // 已经收过尾（窗口上和行上的松手都会到这里）：什么也不做，别把正在滑出去的行拉回来
+    if (!s) return;
+    unhook();
+    st.current = null;
+    if (!s.on) return;
+    ended.current = performance.now();
+    if (!swipeCommits(s.dx, s.v, dir, s.w)) return reset();
+    go(s.el, s.w);
+  };
+  const fin = useRef(finish);
+  fin.current = finish;
+  useEffect(() => unhook, []);
   const handlers = {
     onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      // 正在拖的时候又按下一次（另一根手指、连点）：不理，免得把这次拖动的状态冲掉、行停在半路
+      if (st.current?.on) return;
       if (!enabled || e.button !== 0 || (e.target as HTMLElement).closest('button, input, textarea, a, [role="checkbox"]')) return;
-      st.current = { x: e.clientX, y: e.clientY, on: false, w: e.currentTarget.offsetWidth, lx: e.clientX, lt: e.timeStamp, v: 0, dx: 0 };
+      st.current = { x: e.clientX, y: e.clientY, on: false, w: e.currentTarget.offsetWidth, lx: e.clientX, lt: e.timeStamp, v: 0, dx: 0, el: e.currentTarget };
     },
     onPointerMove: (e: React.PointerEvent<HTMLElement>) => {
       const s = st.current;
       if (!s) return;
+      // 按键已经松开了（松手发生在窗口外、没传进来）：就地收尾
+      if (s.on && e.pointerType === 'mouse' && e.buttons === 0) return fin.current();
       const mx = e.clientX - s.x;
       const my = e.clientY - s.y;
       if (!s.on) {
@@ -1550,7 +1617,20 @@ function useSwipe(dir: SwipeDir, enabled: boolean, onCommit: () => void) {
           if (mx * dir < 0) st.current = null;
           else {
             s.on = true;
-            e.currentTarget.setPointerCapture?.(e.pointerId);
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              /* 指针已经不在了：靠窗口上的监听收尾 */
+            }
+            const up = () => fin.current();
+            window.addEventListener('pointerup', up, true);
+            window.addEventListener('pointercancel', up, true);
+            window.addEventListener('blur', up);
+            off.current = () => {
+              window.removeEventListener('pointerup', up, true);
+              window.removeEventListener('pointercancel', up, true);
+              window.removeEventListener('blur', up);
+            };
           }
         }
         if (!st.current?.on) return;
@@ -1563,27 +1643,31 @@ function useSwipe(dir: SwipeDir, enabled: boolean, onCommit: () => void) {
       setDx(s.dx);
       setState(swipeCommits(s.dx, 0, dir, s.w) ? 'armed' : 'drag');
     },
-    onPointerUp: () => {
-      const s = st.current;
-      st.current = null;
-      if (!s?.on) return;
-      ended.current = performance.now();
-      if (!swipeCommits(s.dx, s.v, dir, s.w)) return reset();
-      // 算数：行接着滑出去，滑完再移走（行在原位播离场时已经在外面了）
-      setState('out');
-      setDx(dir * s.w);
-      setTimeout(onCommit, reduceMotion() ? 0 : 170);
-      // 没走成（例如服务端拒绝、这一行还在）：回到原位
-      setTimeout(reset, 900);
-    },
+    onPointerUp: () => fin.current(),
     onPointerCancel: reset,
+    onLostPointerCapture: () => {
+      if (st.current?.on) fin.current();
+    },
   };
   return {
     state,
     handlers,
+    /** 行上的按钮（收起、放回）：和滑过去松手一样地走；el 是这一行里的任意元素 */
+    leave: (el: HTMLElement) => {
+      if (st.current?.on || state === 'out') return;
+      const line = el.closest<HTMLElement>('.ib-line');
+      go(el, line?.offsetWidth ?? 0);
+    },
     style: dx != null ? { transform: `translateX(${dx}px)`, transition: state === 'out' ? undefined : 'none' } : undefined,
-    /** 这次点击要不要吞掉：刚滑完 */
-    swallow: () => performance.now() - ended.current < 300,
+    /** 这次点击要不要吞掉：刚滑完；行停在半路（不该出现，兜底）时点一下先弹回 */
+    swallow: () => {
+      if (performance.now() - ended.current < 300) return true;
+      if (dx != null && state !== 'out') {
+        reset();
+        return true;
+      }
+      return false;
+    },
   };
 }
 
@@ -1713,7 +1797,7 @@ function LaterRow({ card: c, labels, project, now, checked, onCheck }: { card: C
   const saving = useCardBusy(c.id);
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
   // 往左滑：直接放回「未整理」
-  const sw = useSwipe(-1, !saving, () => void doUnlater([c.id]));
+  const sw = useSwipe(-1, !saving, () => void doUnlater([c.id], true));
   const text = snippet(c.body);
   return (
     <div data-lt={renderKey(c.id)} className={cx('ib-row', checked && 'checked', saving && 'saving', sw.state && `swipe-${sw.state}`)}>
@@ -1802,7 +1886,8 @@ function LaterRow({ card: c, labels, project, now, checked, onCheck }: { card: C
                 disabled={saving}
                 onClick={e => {
                   e.stopPropagation();
-                  void doUnlater([c.id]);
+                  // 和左滑一样：行往左滑出去、原地收起，再移走
+                  sw.leave(e.currentTarget);
                 }}
               >
                 <Icon name="inbox" />
