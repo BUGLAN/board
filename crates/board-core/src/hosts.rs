@@ -4398,10 +4398,11 @@ impl<'a> W<'a> {
                 continue;
             }
             let flow = flow_of(self.tx, board.id)?;
-            // 这台机器这一段接单里（最多往回看 24 小时）没做成的卡片先不再领：派发异常退出、被停止、超时之后，没有能接住它的
-            // 状态时卡片 50 秒会回到可领取状态最上面，不跳的话同一个空位会反复领到它、白跑 agent；人取消的排队也不再排。
-            // 做完了（已交审、做不下去）又被人拖回可领取状态的照常领；别的机器不受影响
-            let horizon = since.max(self.now - 24 * 3600 * 1000);
+            // 这台机器这一段接单里没做成的卡片先不再领（原来的「这一轮不再领」）：派发异常退出、被停止、超时之后卡片一般已经在
+            // 错误节点 / 需要人处理的状态里；工作流里没有能接住它的状态时卡片 50 秒会回到可领取状态最上面，不跳的话同一个
+            // 空位会反复领到它、白跑 agent。人取消的排队也不再排。做完了（已交审、做不下去）又被人拖回可领取状态的照常领；
+            // 别的机器不受影响。出了接单时段、关了自动接单、暂停接单之后这一段结束，下一段重新算
+            let horizon = since;
             let skip: Vec<i64> = self.collect(
                 "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3 AND state = 'done'
                    AND (result IN ('crashed', 'stopped', 'timeout') OR (result = 'canceled' AND stop_by IS NOT NULL))",

@@ -2224,9 +2224,9 @@ fn next_follows_rules() {
 /* ---------------- 升级：每台机器的规则和定时领取 → 全局规则、自动接单和接单时段 ---------------- */
 
 /// 升级前的库：规则、兜底、定时领取都存在机器上。升级后规则并成全局的一份（一模一样的只留一条）；
-/// 时间表是「全天每隔几分钟」的机器迁移成自动接单、全天；是每天几个时间点的换不成时段，自动接单先关着，操作记录里写明
+/// 旧的定时领取不迁移——每台机器的自动接单都是关着的、接单时段全天，由人在「调度」里重新设
 #[test]
-fn per_host_rules_and_cron_migrate_to_global_rules_and_windows() {
+fn per_host_rules_migrate_to_global_rules_and_old_cron_is_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.db");
     {
@@ -2256,11 +2256,12 @@ fn per_host_rules_and_cron_migrate_to_global_rules_and_windows() {
     assert_eq!(got, want.into_iter().map(|(o, l, a)| (o.to_string(), l.into_iter().map(String::from).collect(), a.to_string())).collect::<Vec<_>>(), "按机器建立的先后接上，一模一样的（不分大小写）只留一条");
     assert_eq!(sched.fallback.as_deref(), Some("dsh"));
     let h = |n: &str| s.read(|r| r.host(n, T0)).unwrap();
-    assert!(h("mbp").auto && h("mbp").windows == vec![[0, 1440]], "全天每 5 分钟一轮 → 自动接单、全天");
-    assert!(!h("win").auto, "每天 23:00 一轮换不成时段：先关着");
-    assert!(h("win").ops.iter().any(|o| o.text.contains("0 23 * * *") && o.text.contains("调度")), "{:?}", h("win").ops);
-    assert!(!h("air").auto, "原来就关着的还是关着");
-    assert!(h("air").ops.is_empty());
+    for n in ["mbp", "win", "air"] {
+        assert!(!h(n).auto, "{n}：旧的定时领取不迁移，自动接单关着，打开之前不会自己领卡");
+        assert_eq!(h(n).windows, vec![[0, 1440]], "{n}：接单时段全天");
+        assert!(h(n).ops.is_empty(), "{n}：不写操作记录");
+        assert!(!h(n).round);
+    }
     // 每台机器读到的都是全局这一份；旧的定时领取字段不再有值
     assert_eq!(h("air").rules.len(), 3);
     assert!(!h("mbp").cron_on && h("mbp").cron.is_empty());

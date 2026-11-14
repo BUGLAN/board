@@ -72,12 +72,6 @@ pub fn server_minute(now_ms: i64) -> i64 {
     }
 }
 
-/// 旧的定时领取表达式是不是「全天每隔几分钟领一轮」（`* * * * *`、`*/5 * * * *`）：这种迁移成全天接单
-pub fn all_day_cron(expr: &str) -> bool {
-    let p: Vec<&str> = expr.split_whitespace().collect();
-    p.len() == 5 && (p[0] == "*" || p[0].strip_prefix("*/").is_some_and(|n| n.parse::<u32>().is_ok())) && p[1..].iter().all(|x| *x == "*")
-}
-
 fn same_rule(a: &ClaimRule, b: &ClaimRule) -> bool {
     let low = |v: &[String]| {
         let mut v: Vec<String> = v.iter().map(|l| l.to_lowercase()).collect();
@@ -91,9 +85,9 @@ fn same_rule(a: &ClaimRule, b: &ClaimRule) -> bool {
 /// - 加上 `hosts.auto`、`hosts.windows`、`boards.auto` 三列；
 /// - 第一次（`sched` 表还是空的）把各台机器上的领取规则并成全局的一份：按机器建立的先后依次接上，一模一样的只留一条；
 ///   兜底取第一台设了的。几台机器的规则不一样时合并后的顺序可能不是想要的，由人在「调度」里调；
-/// - 机器的自动接单：原来开着定时领取、有规则，并且时间表是「全天每隔几分钟」的，迁移成开着、全天；
-///   时间表是每天某几个时间点的没法换成时段，迁移成**关着**（免得白天也开始接单），在这台机器的操作记录里写明要重新设
-pub(crate) fn migrate(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<()> {
+/// - 旧的定时领取（开关和 cron 时间表）**不迁移**：到点领一轮换不成接单时段，由人在「调度」里重新设。
+///   升级后每台机器的自动接单都是关着的、接单时段是全天，打开之前不会自己领卡
+pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
         conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get::<_, i64>(0)).map(|n| n > 0)
     };
@@ -110,32 +104,18 @@ pub(crate) fn migrate(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result
     if done > 0 {
         return Ok(());
     }
-    let mut st = conn.prepare("SELECT id, rules, fallback, cron_on, cron FROM hosts ORDER BY id")?;
-    let hosts = st
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut st = conn.prepare("SELECT rules, fallback FROM hosts ORDER BY id")?;
+    let hosts = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut rules: Vec<ClaimRule> = vec![];
     let mut fallback: Option<String> = None;
-    for (id, raw, fb, cron_on, cron) in &hosts {
-        let mine: Vec<ClaimRule> = serde_json::from_str::<Vec<ClaimRule>>(raw).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect();
-        for r in &mine {
-            if rules.len() < RULES_LIMIT && !rules.iter().any(|x| same_rule(x, r)) {
-                rules.push(r.clone());
+    for (raw, fb) in &hosts {
+        for r in serde_json::from_str::<Vec<ClaimRule>>(raw).unwrap_or_default().into_iter().map(ClaimRule::upgraded) {
+            if rules.len() < RULES_LIMIT && !rules.iter().any(|x| same_rule(x, &r)) {
+                rules.push(r);
             }
         }
         if fallback.is_none() {
             fallback = fb.clone().map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
-        }
-        let crons: Vec<String> = serde_json::from_str(cron).unwrap_or_default();
-        let was_on = *cron_on != 0 && !mine.is_empty() && !crons.is_empty();
-        let auto = was_on && crons.iter().all(|c| all_day_cron(c));
-        conn.execute("UPDATE hosts SET auto = ?2 WHERE id = ?1", params![id, auto as i64])?;
-        if was_on && !auto {
-            let text = format!(
-                "升级：定时领取换成了接单时段。这台机器原来的时间表（{}）是每天的时间点，换不成时段，自动接单先关着：在「机器 → 共用配置 → 调度」里拖出它的接单时段，再打开自动接单",
-                crons.join("、")
-            );
-            conn.execute("INSERT INTO host_ops (host_id, at, by_name, text) VALUES (?1, ?2, 'board', ?3)", params![id, now, text])?;
         }
     }
     let raw = serde_json::to_string(&rules.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
@@ -288,12 +268,5 @@ mod tests {
         }
         assert!(in_windows(&all_day(), 0) && in_windows(&all_day(), 1439));
         assert!(!in_windows(&[], 600));
-    }
-
-    #[test]
-    fn only_every_n_minutes_all_day_counts_as_all_day() {
-        for (expr, want) in [("* * * * *", true), ("*/5 * * * *", true), ("*/30  *  * * *", true), ("0 23 * * *", false), ("*/5 9-18 * * *", false), ("0 * * * *", false), ("*/5 * * * 1-5", false), ("bad", false)] {
-            assert_eq!(all_day_cron(expr), want, "{expr}");
-        }
     }
 }
