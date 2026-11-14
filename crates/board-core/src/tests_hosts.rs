@@ -4434,3 +4434,39 @@ fn wip_comment_tells_the_next_agent_where_to_pick_up() {
         assert_eq!(s.write(T0 + 5 * S, Origin::cli(), |w| w.dispatch_wip(d.id, bad, "", "", &[])).unwrap_err().code, ErrorCode::Usage, "{bad}");
     }
 }
+
+/// 自动升级：开关开着时，board 比服务端旧的机器一上报就替它发起升级（和人点「升级」一样：暂停接单、等在跑的做完）；
+/// 同一个服务端版本只自动试一次，没成不反复试；不比服务端旧的、关着开关的不动
+#[test]
+fn auto_upgrade_asks_outdated_hosts_once_per_server_version() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert!(host(&s, T0).ask.is_none(), "默认关着");
+    assert!(!s.read(|r| r.sched(T0)).unwrap().auto_upgrade);
+    assert!(s.write(T0, Origin::ui(None), |w| w.set_auto_upgrade(true)).unwrap().auto_upgrade);
+    // 这台机器是 0.1.1，比服务端旧：下一次上报就发起升级
+    beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
+    let h = host(&s, T0 + S);
+    let ask = h.ask.clone().expect("应该有升级请求");
+    assert_eq!((ask.kind.as_str(), ask.by.as_str(), ask.to.as_deref()), ("upgrade", "自动升级", Some(env!("CARGO_PKG_VERSION"))));
+    assert!(h.paused, "升级前先暂停接单");
+    // 再上报不重复发起
+    beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(host(&s, T0 + 2 * S).ask.map(|a| a.id), Some(ask.id));
+    // 机器开始处理、报升级没成：恢复接单，这个版本不再自动试
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.asked = Some(ask.id);
+    beat(&mut s, T0 + 3 * S, &rep).unwrap();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.ask_error = Some("升级没成：下载不了".into());
+    beat(&mut s, T0 + 4 * S, &rep).unwrap();
+    beat(&mut s, T0 + 5 * S, &report("mbp", "i1", vec![])).unwrap();
+    let h = host(&s, T0 + 5 * S);
+    assert!(h.ask.is_none() && !h.paused, "没成：恢复接单，不反复试");
+    // 版本和服务端一样的机器不动
+    let mut cur = report("win", "w1", vec![]);
+    cur.version = env!("CARGO_PKG_VERSION").into();
+    beat(&mut s, T0 + 5 * S, &cur).unwrap();
+    beat(&mut s, T0 + 6 * S, &cur).unwrap();
+    assert!(s.read(|r| r.host("win", T0 + 6 * S)).unwrap().ask.is_none());
+}

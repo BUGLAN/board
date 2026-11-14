@@ -1588,6 +1588,8 @@ pub(crate) struct HostRow {
     pub(crate) auto: bool,
     /// 接单时段：一天里的几段 `[起, 止)`，分钟，按服务端时区
     pub(crate) windows: Vec<crate::sched::Window>,
+    /// 自动升级已经替它试过升级到哪个服务端版本（没成也不再自动试，等下一个版本或人手动点）
+    pub(crate) up_tried: Option<String>,
     pub(crate) round_at: Option<i64>,
     pub(crate) rr: i64,
     pub(crate) first_at: i64,
@@ -1610,7 +1612,7 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers, skill_import, dirs, auto, windows";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers, skill_import, dirs, auto, windows, up_tried";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1642,6 +1644,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         agent: r.get(9)?,
         auto: r.get::<_, i64>(39)? != 0,
         windows: serde_json::from_str(&r.get::<_, String>(40)?).unwrap_or_else(|_| crate::sched::all_day()),
+        up_tried: r.get(41)?,
         round_at: r.get(12)?,
         rr: r.get(13)?,
         first_at: r.get(14)?,
@@ -2913,6 +2916,7 @@ impl<'a> W<'a> {
                     self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
                 }
                 self.host_acks(&h, rep)?;
+                self.auto_upgrade_host(&name)?;
                 // skills 同步状态：带了、变了才写
                 if let Some(st) = &rep.skills {
                     let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
@@ -3040,6 +3044,23 @@ impl<'a> W<'a> {
             restore(self)?;
             self.touch_hosts();
         }
+        Ok(())
+    }
+
+    /// 自动升级（PRD §9.1「自动升级」）：开关开着、这台机器的 board 比服务端旧、没有别的请求在等，就替它发起一次
+    /// 和人点「升级到 <版本>」一样的升级（暂停接单，等在跑的派发结束再升）。同一个服务端版本只自动试一次：
+    /// 没成（旧版本不会 `board update`、下载不了）就留给人处理，等服务端下一次升级再试，不反复打断它接单
+    fn auto_upgrade_host(&mut self, name: &str) -> Result<()> {
+        if !self.read().auto_upgrade()? {
+            return Ok(());
+        }
+        let Some(h) = self.host_row(name)? else { return Ok(()) };
+        let server = env!("CARGO_PKG_VERSION");
+        if h.ask.is_some() || h.version.trim().is_empty() || !version_lt(&h.version, server) || h.up_tried.as_deref() == Some(server) {
+            return Ok(());
+        }
+        self.tx.execute("UPDATE hosts SET up_tried = ?2 WHERE id = ?1", params![h.id, server])?;
+        self.host_ask(name, "upgrade", false, "自动升级")?;
         Ok(())
     }
 

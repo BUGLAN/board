@@ -607,6 +607,8 @@ export interface Sched {
   tz?: string;
   /** 取数据那一刻是服务端时区一天里的第几分钟 */
   minute: number;
+  /** 自动升级：服务端的版本比机器新时，机器等手上的派发做完自己升级 */
+  autoUpgrade?: boolean;
 }
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */

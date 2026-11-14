@@ -95,6 +95,9 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "auto", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "windows", "TEXT NOT NULL DEFAULT '[[0,1440]]'"),
         ("boards", "auto", "INTEGER NOT NULL DEFAULT 1"),
+        // 自动升级：全局开关，和每台机器已经替它试过升级到哪个版本（失败了不反复重试）
+        ("sched", "auto_upgrade", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "up_tried", "TEXT"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -140,6 +143,9 @@ pub struct Sched {
     pub tz: String,
     /// 现在是服务端时区一天里的第几分钟：界面上画「现在」那条线、判断机器在不在时段里
     pub minute: i64,
+    /// 自动升级（PRD §9.1「自动升级」）：服务端的版本比机器新时，机器等手上的派发做完自己升级
+    #[serde(default)]
+    pub auto_upgrade: bool,
 }
 
 impl R<'_> {
@@ -149,6 +155,11 @@ impl R<'_> {
         let (raw, fallback) = row.unwrap_or_else(|| ("[]".into(), None));
         let rules = serde_json::from_str::<Vec<ClaimRule>>(&raw).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect();
         Ok((rules, fallback))
+    }
+
+    /// 自动升级开没开
+    pub(crate) fn auto_upgrade(&self) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT auto_upgrade FROM sched WHERE id = 1", [], |r| r.get::<_, i64>(0)).optional()?.unwrap_or(0) != 0)
     }
 
     /// 所有项目里的标签名（小写）
@@ -173,6 +184,7 @@ impl R<'_> {
             fallback,
             tz: std::env::var("TZ").unwrap_or_default().trim().to_string(),
             minute: server_minute(now),
+            auto_upgrade: self.auto_upgrade()?,
         })
     }
 }
@@ -230,6 +242,14 @@ impl W<'_> {
                 self.tx.execute("INSERT INTO sched (id, fallback) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET fallback = ?1", [f])?;
             }
         }
+        self.changed = true;
+        self.hosts_changed = true;
+        self.read().sched(self.now)
+    }
+
+    /// 开、关自动升级。打开后各台机器下一次上报时就会按服务端的版本检查一遍
+    pub fn set_auto_upgrade(&mut self, on: bool) -> Result<Sched> {
+        self.tx.execute("INSERT INTO sched (id, auto_upgrade) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET auto_upgrade = ?1", [on as i64])?;
         self.changed = true;
         self.hosts_changed = true;
         self.read().sched(self.now)

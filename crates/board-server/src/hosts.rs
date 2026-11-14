@@ -516,7 +516,7 @@ pub(crate) async fn pause_all(State(s): State<AppState>, h: HeaderMap, Json(v): 
     Ok(Json(out))
 }
 
-/// `PATCH /api/sched {rules?, fallback?}`：改全局的领取规则和兜底（只有人能改；访问令牌调不到这个接口）
+/// `PATCH /api/sched {rules?, fallback?, autoUpgrade?}`：改全局的领取规则、兜底和自动升级的开关（只有人能改；访问令牌调不到这个接口）
 pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<board_core::sched::Sched> {
     #[derive(Deserialize)]
     struct Body {
@@ -526,10 +526,22 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
         /// 兜底的 agent；空字符串表示取消兜底
         #[serde(default)]
         fallback: Option<String>,
+        /// 自动升级的开关
+        #[serde(default, rename = "autoUpgrade")]
+        auto_upgrade: Option<bool>,
     }
     let b: Body = parse(v)?;
     let client = client_of(&h);
-    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.sched_update(b.rules.as_deref(), b.fallback.as_deref()))).await?;
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::ui(client), |w| {
+                if let Some(on) = b.auto_upgrade {
+                    w.set_auto_upgrade(on)?;
+                }
+                w.sched_update(b.rules.as_deref(), b.fallback.as_deref())
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }

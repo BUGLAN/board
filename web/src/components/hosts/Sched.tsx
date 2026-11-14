@@ -81,6 +81,11 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
         api.updateBoard(path, { auto: on }),
       ),
     );
+  const setAutoUpgrade = (on: boolean) =>
+    track(
+      'upgrade',
+      saveSetting('sched:upgrade', { ws: w => (w.sched ? { ...w, sched: { ...w.sched, autoUpgrade: on } } : w) }, () => api.updateSched({ autoUpgrade: on })),
+    );
   const edit = (i: number, change: Partial<ClaimRule>) => saveRules(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
   const move = (i: number, d: number) => {
     const next = [...rules];
@@ -251,6 +256,27 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
           ))}
         </div>
       )}
+
+      <h3 className="sd-h">升级</h3>
+      <div className={cx('sd-up', sync.upgrade === 'failed' && 'hp-rollback')}>
+        <div>
+          <b>自动升级 board</b>
+          <span>
+            服务端升级之后，每台机器等手上的派发做完，自己升级到同一个版本再接着接单，不用逐台点「升级」。升级没成的恢复接单、在机器的操作记录里写明，同一个版本不反复试。
+          </span>
+        </div>
+        <Sync s={sync.upgrade} />
+        <button
+          className={cx('switch', sched.autoUpgrade && 'on')}
+          type="button"
+          role="switch"
+          aria-checked={!!sched.autoUpgrade}
+          aria-label="自动升级 board"
+          onClick={() => setAutoUpgrade(!sched.autoUpgrade)}
+        >
+          <i />
+        </button>
+      </div>
     </section>
   );
 }
