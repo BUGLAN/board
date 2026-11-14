@@ -535,22 +535,31 @@ function GroupSection({
   );
 }
 
-/** 勾选框：自己画的方块（选中打勾、部分选中一道横线），点的时候弹一下 */
-function Check({ on, some, label, onToggle }: { on: boolean; some?: boolean; label: string; onToggle: (shift: boolean) => void }) {
+/** 勾选框：自己画的方块（选中打勾、部分选中一道横线），点的时候弹一下。
+    一个按钮就是一个勾选框（读屏报出名称和勾没勾），空格、回车切换，按住 Shift 连选；
+    「全选」和各行的勾选一起按 aria-checked / aria-label 报出来（default/main#315） */
+export function Check({ on, some, label, onToggle }: { on: boolean; some?: boolean; label: string; onToggle: (shift: boolean) => void }) {
   return (
-    <label className={cx('ib-check', on && 'on', some && 'some')} onClick={e => e.stopPropagation()}>
-      <input
-        type="checkbox"
-        checked={on}
-        aria-label={label}
-        onChange={() => {}}
-        onClick={e => {
-          e.stopPropagation();
-          onToggle(e.shiftKey);
-        }}
-      />
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={some ? 'mixed' : on}
+      aria-label={label}
+      className={cx('ib-check', on && 'on', some && 'some')}
+      onClick={e => {
+        e.stopPropagation();
+        onToggle(e.shiftKey);
+      }}
+      onKeyDown={e => {
+        // 回车照常触发 click；空格默认会滚页面，这里自己切换
+        if (e.key !== ' ') return;
+        e.preventDefault();
+        e.stopPropagation();
+        onToggle(e.shiftKey);
+      }}
+    >
       <i />
-    </label>
+    </button>
   );
 }
 
@@ -762,7 +771,7 @@ const Row = memo(function Row({
           if (e.key === 'x') onCheck(c.id, e.shiftKey);
         }}
       >
-        {draft ? <span className="ib-check" /> : <Check on={checked} label={`勾选 #${c.id}`} onToggle={shift => onCheck(c.id, shift)} />}
+        {draft ? <span className="ib-check" aria-hidden="true" /> : <Check on={checked} label={`勾选 #${c.id} ${c.title}`} onToggle={shift => onCheck(c.id, shift)} />}
         <span className="ib-idwrap">
           {/* 新条目：编号前面一个点（展开看过就消失，PRD §10.5） */}
           {isnew && <i className="ib-newdot" aria-label="新的" role="img" />}
