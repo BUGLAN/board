@@ -105,6 +105,9 @@ fn milestones_groups_cards() {
     let todo = new_card(&mut s, T0 + 3 * H, "还没开始的");
     let inbox = new_card(&mut s, T0 + 3 * H, "想法");
     mv(&mut s, T0 + 4 * H, inbox, INBOX);
+    // 返工也是可领取状态：只有人把卡片打回来才会在里面
+    let rework = new_card(&mut s, T0 + 3 * H, "打回来的");
+    mv(&mut s, T0 + 4 * H, rework, "rework");
     // 手动建的下一个版本标签（还没打 tag）
     s.write(T0, Origin::ui(None), |w| w.create_label("default", "v0.2.0", None, false).map(|_| ())).unwrap();
 
@@ -117,7 +120,9 @@ fn milestones_groups_cards() {
     assert_eq!(group(untraced), Some(Group::None));
     assert_eq!(group(after), Some(Group::Next));
     assert_eq!(group(doing), Some(Group::Next));
-    assert_eq!(group(todo), None);
+    // 待办、返工（可领取状态）里的也是这一轮的活儿：算「未发版」，一处都不能漏（default/main#313）
+    assert_eq!(group(todo), Some(Group::Next));
+    assert_eq!(group(rework), Some(Group::Next));
     assert_eq!(group(inbox), None);
     // 终点状态里的卡片带着移入时间（= 做完的时间）
     assert_eq!(m.cards.iter().find(|c| c.id == shipped).unwrap().moved_at, Some(T0 + H));
