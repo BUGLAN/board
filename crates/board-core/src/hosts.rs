@@ -1473,6 +1473,7 @@ pub fn result_words(r: &str) -> &'static str {
         "lost" => "机器掉线",
         "unclaimed" => "没领到",
         "split" => "已拆解",
+        "fine" => "不用拆",
         "nosplit" => "没拆出卡",
         _ => "已结束",
     }
@@ -4277,7 +4278,7 @@ impl<'a> W<'a> {
                 "crashed",
                 Some("拆解的 agent 异常退出（board host 上没有这次派发的 agent 进程：board host 重启过，或开始派发时连接中断）".to_string()),
             ),
-            (Finish::Exit, None) if exit_code == Some(0) => (if made > 0 { "split" } else { "nosplit" }, None),
+            (Finish::Exit, None) if exit_code == Some(0) => (if made > 0 { "split" } else { "fine" }, None),
             (Finish::Exit, None) => {
                 let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into());
                 ("crashed", Some(format!("拆解的 agent 异常退出（退出码 {code}）{}", tail.words())))

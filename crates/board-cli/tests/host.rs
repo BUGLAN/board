@@ -445,7 +445,7 @@ fn host_runs_dispatches_end_to_end() {
     assert!(rig.workspace()["hosts"][0]["online"] == false);
 }
 
-/// 未整理里的条目派给 agent 拆解（PRD §9.1）：不领取、不移动；按建出的子卡数记「已拆解」「没拆出卡」，退出码非 0 记「异常退出」
+/// 未整理里的条目派给 agent 拆解（PRD §9.1）：不领取、不移动；按建出的子卡数记「已拆解」「不用拆」，退出码非 0 记「异常退出」
 #[test]
 fn host_splits_inbox_entries() {
     let rig = Rig::new();
@@ -475,11 +475,12 @@ fn host_splits_inbox_entries() {
     assert!(activity(&c1).iter().any(|t| t == "拆成了两张"), "{:?}", activity(&c1));
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
     assert!(local.contains("prompt: /board-skills 拆解 default项目之中的main白板中的#1需求（board host 派发：BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "{local}");
+    assert!(local.contains("先按粒度预检") && local.contains("不要拆"), "粒度预检写在提示词里：{local}");
 
-    // 一张也没建、退出 0：没拆出卡
+    // 一张也没建、退出 0：粒度预检判过，不用拆（default/main#306）
     rig.mode("split0");
     assert_eq!(rig.board(&["dispatch", "2", "--host", "mbp"]).code, 0);
-    wait_until("#2 没拆出卡", Duration::from_secs(15), || split_ended(2, "没拆出卡"));
+    wait_until("#2 不用拆", Duration::from_secs(15), || split_ended(2, "不用拆"));
     assert_eq!(rig.show(2)["column"], "inbox");
 
     // 退出 3：异常退出，在原条目上评论退出码和最后几行输出，条目仍在未整理

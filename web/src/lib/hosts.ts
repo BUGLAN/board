@@ -41,6 +41,9 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
   lost: { label: '机器掉线', color: 'var(--danger)' },
   unclaimed: { label: '没领到', color: 'var(--text-3)' },
   split: { label: '已拆解', color: 'var(--c-done)' },
+  // 粒度预检判过：这一条本身够小，不用拆（default/main#306）
+  fine: { label: '不用拆', color: 'var(--text-3)' },
+  // 旧版服务端记的结果，照样显示
   nosplit: { label: '没拆出卡', color: 'var(--warn)' },
 };
 

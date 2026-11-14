@@ -553,7 +553,7 @@ export interface HostToken {
   shared?: string[];
 }
 
-export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'nosplit';
+export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'fine' | 'nosplit';
 
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {

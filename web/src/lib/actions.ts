@@ -2,6 +2,7 @@
    跨组件的界面动作：打开白板、整理、复制为提示词、项目与白板的新建 / 编辑 / 删除
    ========================================================================== */
 import { api } from './api';
+import { judge } from './granularity';
 import { boardPrompt, detailPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
@@ -122,7 +123,8 @@ async function copyPrompt(text: string, hint = '发给装了 board-skills 的 ag
 export const copyBoardPrompt = (path = data().path) => copyPrompt(boardPrompt(path));
 
 /** 一张卡片；在「未整理」里的复制拆解这一句 */
-export const copyCardPrompt = (c: Pick<CardDetail, 'id' | 'column'>, path = data().path) => copyPrompt(detailPrompt(path, c));
+export const copyCardPrompt = (c: Pick<CardDetail, 'id' | 'column' | 'title' | 'body' | 'splitFrom'>, path = data().path) =>
+  copyPrompt(detailPrompt(path, c, c.column === 'inbox' && c.splitFrom == null && judge(c.title, c.body).size === 'small'));
 
 /** 快捷提示词：拆解 / 上传任务（可到待办或未整理）、做待办全部、做待办中带指定标签的任务 */
 export const copyQuickPrompt = (q: QuickPrompt) => copyPrompt(q.text, q.hint);

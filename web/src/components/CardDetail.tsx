@@ -5,6 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cardBack, cardFwd, copyCardPrompt, openLink, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
+import { judge } from '../lib/granularity';
 import { cardDispatch } from '../lib/hosts';
 import { detailPrompt } from '../lib/prompt';
 import { api, ApiError } from '../lib/api';
@@ -117,6 +118,9 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   // 这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
   const saving = useCardBusy(c.id);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
+  // 粒度预检（default/main#306）：「未整理」里够细的一条不拆，已经拆出来的子项不再判
+  const verdict = c.column === 'inbox' && c.splitFrom == null ? judge(c.title, c.body) : null;
+  const small = verdict?.size === 'small' ? verdict : null;
   const list = board?.cols[c.column] ?? [];
   const i = list.indexOf(c.id);
   const skipped = omittedIn(board, c.column);
@@ -241,7 +245,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <Icon name="clip" />
           复制链接
         </button>
-        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${detailPrompt(useData.getState().path, c)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
+        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${detailPrompt(useData.getState().path, c, !!small)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
           <Icon name="prompt" />
           复制为提示词
         </button>
@@ -294,7 +298,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               <Icon name="trash" />
               删除卡片
             </button>
-            {/* 「未整理」里的条目：派给 agent 拆解（不领取、不移动它，拆出的卡记回未整理） */}
+            {/* 「未整理」里的条目：派给 agent 拆解（不领取、不移动它，拆出的卡记回未整理）。
+                粒度预检（default/main#306）：够细的一条不拆，按钮改成「强制拆解」 */}
             <button
               className="btn sm d-move"
               type="button"
@@ -303,15 +308,17 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                 dispatched
                   ? '已经派发过了：在上面取消派发或停止'
                   : c.column === 'inbox'
-                    ? '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理、挂在这条下面'
+                    ? small
+                      ? `任务粒度合适，不用拆（${small.why}）；点「强制拆解」仍可派给 agent 再切`
+                      : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理、挂在这条下面'
                     : !f.list.find(s => s.key === c.column)?.claim
                       ? '只有可领取状态里的卡片能派发'
                       : '派给一台机器上的 agent'
               }
-              onClick={() => openDispatch(c.id)}
+              onClick={() => openDispatch(c.id, { force: !!small })}
             >
               <Icon name="dispatch" />
-              {c.column === 'inbox' ? '派给 agent 拆解' : '派发'}
+              {c.column === 'inbox' ? (small ? '强制拆解' : '派给 agent 拆解') : '派发'}
             </button>
             <button
               className="btn sm"

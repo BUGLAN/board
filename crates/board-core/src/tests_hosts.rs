@@ -3478,13 +3478,17 @@ fn split_dispatch_results_without_cards_crash_stop_and_timeout() {
         let d = dispatch(s, T0, a, "mbp", None).unwrap();
         (a, begin(s, T0 + S, d.id).unwrap())
     };
-    // 一张也没建，退出 0：没拆出卡
+    // 一张也没建，退出 0：粒度预检判过了，不用拆（default/main#306）
     let (a, d) = run(&mut s, "拆不出来");
     // 拆解开始之前建的、拆自别的条目的都不算
     inbox_card(&mut s, T0 + 2 * S, &Actor::human(), "别的", None).unwrap();
-    assert_eq!(end(&mut s, T0 + 3 * S, d.id, Some(0), &[]).result.as_deref(), Some("nosplit"));
+    assert_eq!(end(&mut s, T0 + 3 * S, d.id, Some(0), &[]).result.as_deref(), Some("fine"));
+    assert_eq!(hosts::result_words("fine"), "不用拆");
+    // 旧版服务端记的 nosplit 照样有中文
     assert_eq!(hosts::result_words("nosplit"), "没拆出卡");
-    assert_eq!(card(&s, a).card.column, INBOX);
+    let c = card(&s, a);
+    assert_eq!(c.card.column, INBOX);
+    assert!(c.activity.iter().any(|x| x.text.starts_with("拆解结束：不用拆")), "{:?}", c.activity.last());
     // 退出 1：异常退出，在原条目上评论退出码和最后的输出，卡片仍在未整理
     let (a, d) = run(&mut s, "会出错");
     let tail: Vec<String> = vec!["读需求".into()];

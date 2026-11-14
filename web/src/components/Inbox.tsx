@@ -15,6 +15,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type React
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { openCard, triage, untriage } from '../lib/actions';
+import { judge } from '../lib/granularity';
 import { cardDispatch } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
 import { canUndoSplit, kidsOf, hiddenEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
@@ -822,6 +823,9 @@ const Row = memo(function Row({
 function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number; all: Card[]; home: string; saving: boolean }) {
   const [pick, setPick] = useState<DOMRect | null>(null);
   const d = useData(s => cardDispatch(s.ws, s.path, c.id));
+  // 粒度预检（default/main#306）：已经拆出来的子项不再判；偏小的不拆，要拆需点「强制拆解」
+  const verdict = c.splitFrom == null ? judge(c.title, c.body) : null;
+  const small = verdict?.size === 'small' ? verdict : null;
   return (
     <div className="ib-edit">
       {d && <SplitNote d={d} />}
@@ -856,12 +860,18 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           className="btn sm"
           type="button"
           disabled={saving || !!d}
-          data-tip={d ? '已经派出去了：在上面取消或停止' : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理，这一条并进拆出的那组里'}
+          data-tip={
+            d
+              ? '已经派出去了：在上面取消或停止'
+              : small
+                ? `任务粒度合适，不用拆（${small.why}）；点「强制拆解」仍可派给 agent 再切`
+                : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理，这一条并进拆出的那组里'
+          }
           data-tip-pos="top"
-          onClick={() => openDispatch(c.id)}
+          onClick={() => openDispatch(c.id, { force: !!small })}
         >
           <Icon name="dispatch" />
-          派给 agent 拆解
+          {small ? '强制拆解' : '派给 agent 拆解'}
         </button>
         <button
           className="btn sm"
