@@ -11,9 +11,9 @@ import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { sidebarLabels } from '../lib/sidebarLabels';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
-import { clock, cx, ago, agentInk, pref } from '../lib/util';
-import { newEntryCount, useCurrent, useData, useOnline } from '../store/data';
-import { manageLabels, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toggleLabelSel, useUI, type Tab } from '../store/ui';
+import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
+import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
+import { confirm, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, agent, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
@@ -209,15 +209,65 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
   );
 }
 
-/** 标签：一排胶囊，单击筛选（可多选），拖到卡片上给卡片加这个标签（lib/labelDrag.ts）。
-    新建、改名、改色、删除、调整顺序都在「管理标签」弹窗里（default/main#289），这里留一个入口。
+/** 标签：整块就是输入框。平时看着只是一排胶囊；双击胶囊以外的空白处进入编辑态，光标跟在最后一个胶囊后面，
+    输入名称回车新建；Esc 或点到区块外退出。单击空白不做任何事；单击胶囊筛选、点 × 删除、拖胶囊到卡片都不进入编辑态。
+    胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts）。
     版本标签（v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts） */
 function LabelBlock({ project, all, used }: { project: string; all: Label[]; used: Record<number, number> }) {
   const sel = useUI(s => s.labelSel);
   const labels = useMemo(() => sidebarLabels(all, sel), [all, sel]);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const edit = () => {
+    setEditing(true);
+    const el = input.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  };
+  const create = async () => {
+    const n = name.trim();
+    if (!n || busy) return;
+    // 新标签要等服务端分配 ID：输入框进行中（只读、转圈），不会重复新建
+    setBusy(true);
+    try {
+      await optimistic(null, () => api.createLabel(project, n));
+      setName('');
+    } catch (e) {
+      toastError(e);
+      replay(input.current, 'invalid');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (l: Label) => {
+    const text = l.uses ? `${l.uses} 张卡片在用这个标签，删除后会从这些卡片上一起去掉。` : '还没有卡片在用这个标签。';
+    if (!(await confirm({ title: `删除标签「${l.name}」？`, text, ok: '删除标签', icon: 'tag' }))) return;
+    // 当帧从侧栏和卡片上拿掉，被拒绝时回来并提示
+    if (useUI.getState().labelSel.includes(l.id)) toggleLabelSel(l.id);
+    try {
+      await optimistic(deleteLabelPatch(project, l.id), () => api.deleteLabel(project, l.id));
+    } catch (e) {
+      toastError(e);
+    }
+  };
   return (
     <div className="lb-block">
-      <div className="lb-field">
+      <div
+        className={cx('lb-field', editing && 'editing')}
+        onMouseDown={e => {
+          // 胶囊、× 照常；空白处单击什么也不做：不聚焦、不选中文字，编辑中也不让输入框失焦
+          if ((e.target as HTMLElement).closest('button, input')) return;
+          e.preventDefault();
+        }}
+        onDoubleClick={e => {
+          // 只有双击胶囊以外的空白处才进入编辑态；刚拖完胶囊补发的点击不算
+          if ((e.target as HTMLElement).closest('button') || labelDragJustEnded()) return;
+          edit();
+        }}
+      >
         {labels.map(l => (
           <span key={l.id} className="lb-item" data-label={l.id}>
             <button
@@ -225,8 +275,8 @@ function LabelBlock({ project, all, used }: { project: string; all: Label[]; use
               className={cx('lb lb-pick', sel.includes(l.id) && 'on')}
               style={{ ['--lc' as string]: l.color }}
               aria-pressed={sel.includes(l.id)}
-              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签`}
-              onPointerDown={e => labelPointerDown(e, l, project, false)}
+              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签，在这里拖动调整顺序`}
+              onPointerDown={e => labelPointerDown(e, l, project)}
               onClick={() => {
                 if (!labelDragJustEnded()) toggleLabelSel(l.id);
               }}
@@ -236,14 +286,46 @@ function LabelBlock({ project, all, used }: { project: string; all: Label[]; use
               {l.name}
               <em>{used[l.id] || 0}</em>
             </button>
+            {/* 悬停时盖在计数上，不占位，胶囊排列不变 */}
+            <button
+              type="button"
+              className={cx('lb-del', sel.includes(l.id) && 'on')}
+              style={{ ['--lc' as string]: l.color }}
+              aria-label={`删除标签「${l.name}」`}
+              title="删除标签"
+              onClick={() => remove(l)}
+            >
+              ×
+            </button>
           </span>
         ))}
-        <Tip text="新建、改名、改色、删除、调整顺序">
-          <button type="button" className={cx('lb-manage', !labels.length && 'empty')} aria-label="管理标签" onClick={() => manageLabels(project)}>
-            <Icon name="settings" />
-            {labels.length ? '管理' : '新建标签'}
-          </button>
-        </Tip>
+        <input
+          ref={input}
+          className={cx('lb-input', busy && 'busy')}
+          value={name}
+          placeholder={labels.length ? '' : editing ? '输入标签名，回车新建' : '双击新建标签'}
+          maxLength={24}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label="新标签"
+          readOnly={busy}
+          aria-busy={busy || undefined}
+          // 键盘 Tab 进来也算进入编辑态；鼠标单击不到它（不在编辑态时 pointer-events: none）
+          onFocus={() => setEditing(true)}
+          onBlur={() => setEditing(false)}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              create();
+            }
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              setName('');
+              input.current?.blur();
+            }
+          }}
+        />
       </div>
     </div>
   );
