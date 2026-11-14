@@ -179,10 +179,7 @@
 /* ---------------- 提示词预览 ---------------- */
 
 @media (max-width: 760px) {
-  /* 手机上顶栏放不下字：只留图标（.btn.sm 也写了 font-size，这里要压过它） */
-  .d-head .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
-  .d-head .d-prompt svg { margin: 0; }
-  .d-link + .d-prompt { margin-left: 0; }
+  /* 「复制链接」「复制为提示词」在手机上收进「更多」菜单（CardDetail 按 isMobile 渲染），顶栏不再挤成只剩图标的按钮 */
   .lbm-list { grid-template-columns: auto auto minmax(0, 1fr) auto auto auto auto; }
   .lbm-preview { display: none; }
 }

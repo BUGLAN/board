@@ -44,6 +44,21 @@
 .d-jump .icon-btn { width: 26px; height: 26px; color: var(--text-3); }
 .d-jump .icon-btn:hover { color: color-mix(in oklab, var(--brand), var(--ink)); }
 .d-jump .icon-btn:disabled { opacity: .3; pointer-events: none; }
+/* 手机顶栏的「更多」：菜单项带文字，点菜单外的地方关掉 */
+.d-more { position: relative; display: inline-flex; }
+.d-more-back { position: fixed; inset: 0; z-index: 40; }
+.d-more-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 41; min-width: 176px; padding: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  box-shadow: var(--shadow-3); animation: enter-up var(--dur-2) var(--ease-out) backwards;
+}
+.d-more-menu button {
+  display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px; border-radius: var(--r-xs);
+  font-size: 13.5px; color: var(--text); text-align: left;
+}
+.d-more-menu button:hover, .d-more-menu button:focus-visible { background: var(--surface-3); }
+.d-more-menu button svg { width: 16px; height: 16px; color: var(--text-3); flex: none; }
 
 /* 左：内容；右：动态 + 评论 */
 .d-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) var(--modal-side, 340px); }

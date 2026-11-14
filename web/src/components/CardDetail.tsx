@@ -201,6 +201,13 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     prevCol.current = c.column;
   }, [c.column]);
 
+  // 手机（底部 sheet）上顶栏只放图标：「复制链接」「复制为提示词」收进「更多」菜单
+  const mobile = isMobile();
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    if (!mobile) setMore(false);
+  }, [mobile]);
+
   /** 复制这张卡片的完整网址（发给别人、收藏、写进别的卡片） */
   const copyLink = () => {
     const url = cardUrl(useData.getState().path, c.id);
@@ -218,7 +225,9 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <i />
           <span>{f.name(c.column)}</span>
         </span>
-        <span className="d-nav">
+        {/* 上一张 / 下一张：手机上顶栏放不下，CSS 整组藏了（display:none）。藏起来的按钮不能还能 Tab 到、被读屏读到，
+            所以手机上整组 inert + aria-hidden 一起移出焦点序列（↑↓ / K J 手机上用不上，详情里靠左右滑） */}
+        <span className="d-nav" inert={mobile || undefined} aria-hidden={mobile || undefined}>
           <Tip text="上一张  ↑ / K">
             <button aria-label="上一张" className="icon-btn sm" type="button" disabled={i <= 0} onClick={() => step(-1)}>
               <Icon name="chevUp" />
@@ -249,25 +258,73 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           </Tip>
         </span>
         <span className="spacer" />
-        <Tip text={`复制链接  ${accel('C', true)}`}>
-          <button className="btn sm ghost d-prompt d-link" type="button" data-tip-align="end" onClick={copyLink}>
-            <Icon name="clip" />
-            复制链接
-          </button>
-        </Tip>
-        <Tip text={`复制 ${detailPrompt(useData.getState().path, c, !!small)}  C`}>
-          <button className="btn sm ghost d-prompt" type="button" data-tip-align="end" onClick={() => copyCardPrompt(c)}>
-            <Icon name="prompt" />
-            复制为提示词
-          </button>
-        </Tip>
+        {mobile ? (
+          // 手机上顶栏只放得下图标：这两件事收进「更多」菜单，菜单项带文字；点菜单外的地方关掉
+          <span className="d-more">
+            <button
+              aria-label="更多"
+              aria-haspopup="menu"
+              aria-expanded={more}
+              className="icon-btn"
+              type="button"
+              data-tip="更多"
+              data-tip-align="end"
+              onClick={() => setMore(v => !v)}
+            >
+              <Icon name="more" />
+            </button>
+            {more && (
+              <>
+                <span className="d-more-back" aria-hidden="true" onClick={() => setMore(false)} />
+                <div className="menu d-more-menu" role="menu" aria-label="更多操作">
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setMore(false);
+                      copyLink();
+                    }}
+                  >
+                    <Icon name="clip" />
+                    复制链接
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setMore(false);
+                      copyCardPrompt(c);
+                    }}
+                  >
+                    <Icon name="prompt" />
+                    复制为提示词
+                  </button>
+                </div>
+              </>
+            )}
+          </span>
+        ) : (
+          <>
+            <Tip text={`复制链接  ${accel('C', true)}`}>
+              <button className="btn sm ghost d-prompt d-link" type="button" data-tip-align="end" onClick={copyLink}>
+                <Icon name="clip" />
+                复制链接
+              </button>
+            </Tip>
+            <Tip text={`复制 ${detailPrompt(useData.getState().path, c, !!small)}  C`}>
+              <button className="btn sm ghost d-prompt" type="button" data-tip-align="end" onClick={() => copyCardPrompt(c)}>
+                <Icon name="prompt" />
+                复制为提示词
+              </button>
+            </Tip>
+          </>
+        )}
         <Tip text="关闭  esc">
           <button aria-label="关闭" className="icon-btn" type="button" data-act="close" data-tip-align="end" onClick={closeDetail}>
             <Icon name="close" />
           </button>
         </Tip>
-      </div>
-      <div className="d-grid">
+      </div>      <div className="d-grid">
         <div className="d-main">
           <section className="d-section" style={{ ['--i' as string]: 0 }}>
             <TitleEditor card={c} locked={locked} busy={saving} />
