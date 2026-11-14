@@ -165,9 +165,14 @@ impl Backend {
         &self.0
     }
 
-    /// `board dispatch <ID> --host <机器名> [--agent <标识>]`
+    /// `board dispatch <ID> --host <机器名> | --any [--agent <标识>]`（host 为空 = 任意机器，服务端挑）
     pub fn dispatch(&mut self, path: &str, card: i64, host: &str, agent: Option<&str>, who: Option<&str>) -> Result<Dispatch> {
         self.0.post("/api/dispatches", json!({ "board": path, "card": card, "host": host, "agent": agent, "as": who }))
+    }
+
+    /// `board dispatch <ID> --move --host <机器名> | --any`：改派一条还在排队的派发（host 为空 = 交给任意机器）
+    pub fn move_dispatch(&mut self, path: &str, card: i64, host: &str, agent: Option<&str>, who: Option<&str>) -> Result<Dispatch> {
+        self.0.post("/api/dispatches/move", json!({ "board": path, "card": card, "host": host, "agent": agent, "as": who }))
     }
 
     /// `board dispatch <ID> --cancel`：取消排队中的派发，或停止正在跑的派发

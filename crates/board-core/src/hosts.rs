@@ -168,6 +168,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "up_pause", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "rechecked_at", "INTEGER"),
         ("dispatches", "model", "TEXT"),
+        ("dispatches", "any_host", "INTEGER NOT NULL DEFAULT 0"),
+        ("dispatches", "any_agent", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "effort", "TEXT"),
         ("hosts", "max_run", "INTEGER NOT NULL DEFAULT 180"),
         ("hosts", "idle_run", "INTEGER NOT NULL DEFAULT 20"),
@@ -1419,7 +1421,14 @@ pub struct Dispatch {
     /// 开始这次派发时这块白板在这台机器上的目录（工作空间里的 `<工作空间>/<项目>`）；还没开始、旧数据时为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// 派给任意机器（PRD §9.1「任意机器」）：由服务端挑机器。还没挑到时 `host` 是空的、`hostId` 是 0；
+    /// 没指定 agent 时 `agent` 也是空的，挑到机器后换成那台的默认 agent
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any: bool,
 }
+
+/// 「任意机器」的派发还没指定 agent 时写的名称
+pub const ANY_AGENT_LABEL: &str = "机器的默认 agent";
 
 /// 派发的类型：拆解「未整理」里的条目（PRD §9.1）
 pub const KIND_SPLIT: &str = "split";
@@ -1773,7 +1782,7 @@ const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, C
        d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session AND s.id <= d.id) END,
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END,
-       d.model, d.effort, d.kind, d.path
+       d.model, d.effort, d.kind, d.path, d.any_host
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -1806,6 +1815,7 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         effort: r.get(26)?,
         kind: r.get(27)?,
         path: r.get(28)?,
+        any: r.get::<_, i64>(29)? != 0,
     })
 }
 
@@ -2211,6 +2221,10 @@ struct DRow {
     kind: String,
     /// 开始这次派发时这块白板在这台机器上的目录；还没开始、旧数据时为空
     path: Option<String>,
+    /// 派给任意机器：由服务端挑机器
+    any_host: bool,
+    /// 派给任意机器时没指定 agent：用挑中那台的默认 agent
+    any_agent: bool,
 }
 
 impl DRow {
@@ -2241,7 +2255,7 @@ impl<'a> W<'a> {
     fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
-                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort, kind, path FROM dispatches WHERE id = ?1",
+                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort, kind, path, any_host, any_agent FROM dispatches WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(DRow {
@@ -2264,6 +2278,8 @@ impl<'a> W<'a> {
                         effort: r.get(16)?,
                         kind: r.get(17)?,
                         path: r.get(18)?,
+                        any_host: r.get::<_, i64>(19)? != 0,
+                        any_agent: r.get::<_, i64>(20)? != 0,
                     })
                 },
             )
@@ -2631,7 +2647,9 @@ impl<'a> W<'a> {
 
     /// 动态里的「mbp · Claude Code · claude-mbp/opus-5.5，手动」；有启动环境时「mbp · pi · Git Bash · pi-mbp/pi，手动」
     fn dispatch_words(d: &DRow) -> String {
-        let mut s = format!("{} · {}", d.host, d.agent_label);
+        // 「任意机器」的派发还没挑到机器
+        let host = if d.host.is_empty() { "任意机器" } else { d.host.as_str() };
+        let mut s = format!("{host} · {}", d.agent_label);
         if let Some(e) = &d.env_name {
             s += &format!(" · {e}");
         }
@@ -2744,6 +2762,8 @@ impl<'a> W<'a> {
                     if h.instance == rep.instance && h.off_at.is_none() {
                         self.tx.execute("UPDATE hosts SET off_at = ?2, round_at = NULL WHERE id = ?1", params![h.id, now])?;
                         self.touch_hosts();
+                        // 分给它、还没开始的「任意机器」派发收回，换别的机器
+                        self.assign_any()?;
                     }
                     return self.read().host_work(&name, now);
                 }
@@ -2904,6 +2924,8 @@ impl<'a> W<'a> {
                 self.finish(&d, None, &Tail { lines: &[], events: &[] }, Finish::Missing)?;
             }
         }
+        // 这台机器上线了、空出位置了：等着的「任意机器」派发挑一遍机器，分给它的随这次的任务一起发回去
+        self.assign_any()?;
         self.read().host_work(&name, now)
     }
 
@@ -3571,6 +3593,8 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
         }
         self.touch_hosts();
+        // 暂停、恢复、会话上限、恢复 agent 都会改变谁能接：等着的「任意机器」派发重新挑一遍
+        self.assign_any()?;
         self.read().host(name, self.now)
     }
 
@@ -3685,6 +3709,10 @@ impl<'a> W<'a> {
         let queued: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host_id = ?1 AND state = 'queued' ORDER BY id DESC", [h.id], |r| r.get(0))?;
         for id in queued {
             let d = self.drow(id)?;
+            // 「任意机器」的派发不跟着这台机器取消：机器删掉之后收回，换别的机器（下面的 assign_any）
+            if d.any_host {
+                continue;
+            }
             self.close_dispatch(&d, "canceled", None)?;
             let back = self.unreserve(d.board, d.card, by)?;
             let text = format!("移除了机器 {}，派发取消（{}）{back}", h.name, Self::dispatch_words(&d));
@@ -3697,6 +3725,7 @@ impl<'a> W<'a> {
         self.tx.execute("DELETE FROM hosts WHERE id = ?1", [h.id])?;
         self.tx.execute("DELETE FROM host_ops WHERE host_id = ?1", [h.id])?;
         self.touch_hosts();
+        self.assign_any()?;
         Ok(revoked)
     }
 
@@ -3709,6 +3738,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE hosts SET round_at = NULL WHERE round_at IS NOT NULL", [])?;
         }
         self.touch_hosts();
+        self.assign_any()?;
         self.read().hosts(self.now)
     }
 
@@ -3783,6 +3813,19 @@ impl<'a> W<'a> {
 
     /// 派发一张卡（手动派发、定时建卡共用）：source 是 manual 或 [`SOURCE_SCHEDULE`]
     pub(crate) fn dispatch_create_from(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor, source: &str) -> Result<Dispatch> {
+        let split = self.dispatch_card_check(board, card)?;
+        let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
+        let a = self.dispatch_agent(&h, agent)?;
+        // 这台机器接不了这块白板的卡：没有工作空间、目录不对、环境检查没通过（`fit.rs`）
+        if let Some(u) = self.read().board_unfit(&h, board)? {
+            return Err(u.error(host, board));
+        }
+        let kind = if split { KIND_SPLIT } else { "" };
+        self.insert_dispatch(board.id, card, &h, &a.id, &a.name, source, by, kind)
+    }
+
+    /// 派发前看卡片：存在、没有排队或在跑的派发、在可领取状态或「未整理」。返回这是不是拆解（卡片在「未整理」）
+    fn dispatch_card_check(&self, board: &BoardRef, card: i64) -> Result<bool> {
         let flow = flow_of(self.tx, board.id)?;
         let col: Option<String> =
             self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0)).optional()?;
@@ -3805,7 +3848,13 @@ impl<'a> W<'a> {
                 format!("#{card} 在「{}」，不在可领取的状态{}，不能派发（「{INBOX_NAME}」里的条目可以派给 agent 拆解）", flow.name(&col), names.join("")),
             ));
         }
-        let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
+        Ok(split)
+    }
+
+    /// 这次派发在这台机器上用哪个 agent：指定了就要找得到命令，没指定用机器的默认 agent；
+    /// 连续异常退出、暂停了接单的不接新的派发（`fit.rs`）
+    fn dispatch_agent(&self, h: &HostRow, agent: Option<&str>) -> Result<HostAgent> {
+        let host = h.name.as_str();
         let all = h.resolved();
         let a = match agent.map(str::trim).filter(|s| !s.is_empty()) {
             Some(id) => all.iter().find(|a| a.id == id && a.found).cloned().ok_or_else(|| {
@@ -3817,7 +3866,7 @@ impl<'a> W<'a> {
                             Some(e) => format!("机器「{host}」上在{}里没找到 agent「{id}」的命令", h.env_name(e)),
                             None => format!("机器「{host}」上没找到 agent「{id}」的命令"),
                         },
-                        None => format!("机器「{host}」上没有 agent「{id}」，可选：{}", found_list(&h)),
+                        None => format!("机器「{host}」上没有 agent「{id}」，可选：{}", found_list(h)),
                     },
                 )
             })?,
@@ -3826,7 +3875,7 @@ impl<'a> W<'a> {
                 .ok_or_else(|| BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」上一个 agent 也没找到")))?,
         };
         // 连续异常退出、暂停了接单的 agent 不接新的派发（`fit.rs`）
-        if self.read().agent_tripped(&h, &a.id)? {
+        if self.read().agent_tripped(h, &a.id)? {
             return Err(BoardError::new(
                 ErrorCode::AgentNotOnHost,
                 format!(
@@ -3837,13 +3886,7 @@ impl<'a> W<'a> {
             )
             .with_detail(json!({ "host": host, "agent": a.id })));
         }
-        // 这台机器接不了这块白板的卡：没有工作空间、目录不对、环境检查没通过（`fit.rs`）
-        if let Some(u) = self.read().board_unfit(&h, board)? {
-            return Err(u.error(host, board));
-        }
-        let (agent_id, label) = (a.id.clone(), a.name.clone());
-        let kind = if split { KIND_SPLIT } else { "" };
-        self.insert_dispatch(board.id, card, &h, &agent_id, &label, source, by, kind)
+        Ok(a)
     }
 
     /// 记一条排队的派发。手动派发、定时建卡派发（source 是 manual、schedule）的卡片进入领取时会进的锁定状态排队
@@ -3871,6 +3914,250 @@ impl<'a> W<'a> {
         let what = if split { format!("派给 {} · {} 拆解", h.name, label) } else { format!("派发到 {} · {}", h.name, label) };
         self.track(b, card, by, "dispatch", &format!("{what}（{}）{wait}", source_words(source)))?;
         self.touch_hosts();
+        self.read().dispatch(id)
+    }
+
+    /* ---------------- 任意机器、改派（PRD §9.1「任意机器」「改派」） ---------------- */
+
+    /// 派给任意机器：不指定机器，服务端在能接的机器里挑空位最多的一台（[`crate::fit::pick_host`]）；现在没有能马上
+    /// 开始的就排着，等有机器上线、恢复接单、空出位置。agent 为空时用挑中那台的默认 agent。
+    /// 一台能接这块白板的机器都没有（看的是能不能接，不看在不在线）时拒绝
+    pub fn dispatch_create_any(&mut self, board: &BoardRef, card: i64, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
+        let split = self.dispatch_card_check(board, card)?;
+        let agent = agent.map(str::trim).filter(|s| !s.is_empty());
+        let label = self.any_target(board, agent)?;
+        let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0))?;
+        self.tx.execute(
+            "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, kind, any_host, any_agent)
+             VALUES (?1, ?2, ?3, 0, '', ?4, ?5, 'manual', ?6, ?7, 'queued', ?8, ?9, 1, ?10)",
+            params![board.id, card, title, agent.unwrap_or(""), label, by.kind.as_str(), by.name, self.now, if split { KIND_SPLIT } else { "" }, agent.is_none() as i64],
+        )?;
+        let id = self.tx.last_insert_rowid();
+        let into = if split { None } else { self.reserve(board.id, card, by)? };
+        let at = into.map(|n| format!("，在「{n}」排队")).unwrap_or_else(|| "，排队".into());
+        let what = if split { format!("派给任意机器 · {label} 拆解") } else { format!("派发到任意机器 · {label}") };
+        self.track(board.id, card, by, "dispatch", &format!("{what}（手动）{at}，等服务端挑一台能接的机器"))?;
+        self.touch_hosts();
+        self.assign_any()?;
+        self.read().dispatch(id)
+    }
+
+    /// 「任意机器」能不能派：至少有一台机器接得了这块白板，并且上面有能用的这个 agent（没指定时是它的默认 agent）。
+    /// 返回 agent 的名称（没指定时是 [`ANY_AGENT_LABEL`]）
+    fn any_target(&self, board: &BoardRef, agent: Option<&str>) -> Result<String> {
+        let hosts = self.read().host_rows()?;
+        if hosts.is_empty() {
+            return Err(BoardError::new(ErrorCode::NoSuchHost, "还没有机器：在要干活的机器上运行 board host，它会出现在「机器」里"));
+        }
+        let path = board.path();
+        let mut able: Vec<&HostRow> = vec![];
+        let mut why: Vec<String> = vec![];
+        for h in &hosts {
+            match self.read().board_unfit(h, board)? {
+                Some(u) => why.push(format!("{}（{}）", h.name, u.short())),
+                None => able.push(h),
+            }
+        }
+        if able.is_empty() {
+            return Err(BoardError::new(ErrorCode::BoardNotOnHost, format!("没有能接 {path} 的机器：{}", why.join("；"))).with_detail(json!({ "board": path })));
+        }
+        let mut label: Option<String> = None;
+        for h in &able {
+            let a = match agent {
+                Some(id) => h.resolved().into_iter().find(|a| a.id == id && a.found),
+                None => h.default_agent(),
+            };
+            if let Some(a) = a {
+                if !self.read().agent_tripped(h, &a.id)? {
+                    label = Some(if agent.is_some() { a.name } else { ANY_AGENT_LABEL.to_string() });
+                    break;
+                }
+            }
+        }
+        label.ok_or_else(|| {
+            let names: Vec<&str> = able.iter().map(|h| h.name.as_str()).collect();
+            BoardError::new(
+                ErrorCode::AgentNotOnHost,
+                match agent {
+                    Some(id) => format!("能接 {path} 的机器（{}）上都没有能用的 agent「{id}」", names.join("、")),
+                    None => format!("能接 {path} 的机器（{}）上都没有能用的 agent", names.join("、")),
+                },
+            )
+        })
+    }
+
+    /// 挑机器时的一台候选：还能再开几个会话（上限 − 在跑的会话 − 已经排在它上面、还没开始的；会话里排着的不占会话位），
+    /// 和最近一次给它派发的时间
+    pub(crate) fn candidate(&self, h: &HostRow) -> Result<crate::fit::Candidate> {
+        let queued: i64 = self.tx.query_row(
+            "SELECT COUNT(*) FROM dispatches WHERE host_id = ?1 AND state = 'queued' AND (session IS NULL OR session = id)",
+            [h.id],
+            |r| r.get(0),
+        )?;
+        let last_at: i64 = self.tx.query_row("SELECT COALESCE(MAX(COALESCE(started_at, created_at)), 0) FROM dispatches WHERE host_id = ?1", [h.id], |r| r.get(0))?;
+        Ok(crate::fit::Candidate { name: h.name.clone(), free: h.max - self.sessions_on(h)? - queued, last_at })
+    }
+
+    /// 一台机器现在能开始新的派发：在线、没暂停接单、没在等重启或升级
+    fn can_start(h: &HostRow, now: i64) -> bool {
+        h.online(now) && !h.paused && !h.restarting()
+    }
+
+    /// 给「任意机器」的排队派发挑机器（创建时、机器上报时、有派发结束时、机器设置变了时都跑一遍）：
+    /// 1. 已经分给一台机器、但那台机器现在开始不了它的（离线、暂停接单、等重启、被移除、接不了这块白板了）收回；
+    /// 2. 没有机器的按创建先后，在「接得了这块白板、有能用的 agent、现在能开始、还有空位」的机器里用
+    ///    [`crate::fit::pick_host`] 挑一台，记到派发上——之后和指定机器的派发一样，由那台 board host 开始。
+    /// 没有合适的机器就接着排
+    pub(crate) fn assign_any(&mut self) -> Result<()> {
+        let pending: Vec<i64> = self.collect(
+            "SELECT id FROM dispatches WHERE any_host = 1 AND state = 'queued' AND (session IS NULL OR session = id) ORDER BY id",
+            [],
+            |r| r.get(0),
+        )?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let hosts = self.read().host_rows()?;
+        let now = self.now;
+        for id in &pending {
+            let d = self.drow(*id)?;
+            if d.host_id == 0 {
+                continue;
+            }
+            let board = self.board_of(d.board)?;
+            let why = match hosts.iter().find(|h| h.id == d.host_id) {
+                None => Some("已经被移除".to_string()),
+                Some(h) if !h.online(now) => Some("离线了".to_string()),
+                Some(h) if h.paused => Some("暂停接单了".to_string()),
+                Some(h) if h.restarting() => Some("在等重启或升级".to_string()),
+                Some(h) => self.read().board_unfit(h, &board)?.map(|u| format!("接不了这块白板了（{}）", u.short())),
+            };
+            if let Some(why) = why {
+                self.unassign(&d, &why)?;
+            }
+        }
+        let mut cands: Vec<(usize, crate::fit::Candidate)> = vec![];
+        for (i, h) in hosts.iter().enumerate() {
+            if !Self::can_start(h, now) {
+                continue;
+            }
+            cands.push((i, self.candidate(h)?));
+        }
+        let mut seq = 0;
+        for id in pending {
+            let d = self.drow(id)?;
+            if d.host_id != 0 {
+                continue;
+            }
+            let board = self.board_of(d.board)?;
+            // 这张卡能去的机器，和它在那台机器上用的 agent
+            let mut list: Vec<crate::fit::Candidate> = vec![];
+            let mut agents: Vec<(String, HostAgent)> = vec![];
+            for (i, c) in &cands {
+                let h = &hosts[*i];
+                if c.free <= 0 || self.read().board_unfit(h, &board)?.is_some() {
+                    continue;
+                }
+                let a = if d.any_agent { h.default_agent() } else { h.resolved().into_iter().find(|a| a.id == d.agent && a.found) };
+                let Some(a) = a else { continue };
+                if self.read().agent_tripped(h, &a.id)? {
+                    continue;
+                }
+                list.push(c.clone());
+                agents.push((h.name.clone(), a));
+            }
+            let Some(pick) = crate::fit::pick_host(&list).map(|c| c.name.clone()) else { continue };
+            let Some((_, a)) = agents.into_iter().find(|(n, _)| *n == pick) else { continue };
+            let Some((_, c)) = cands.iter_mut().find(|(_, c)| c.name == pick) else { continue };
+            let h = hosts.iter().find(|h| h.name == pick).expect("候选来自 hosts");
+            self.tx.execute(
+                "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5 WHERE id = ?1",
+                params![d.id, h.id, h.name, a.id, a.name],
+            )?;
+            let text = format!("任意机器：分给 {} · {}（能接的机器里空位最多，还有 {} 个）", h.name, a.name, c.free);
+            self.track_dispatch(d.board, d.card, &Actor::system(), "dispatch", &text)?;
+            // 这一遍里后面的卡片看到的是分完之后的空位；刚分到的排到轮流的最后
+            c.free -= 1;
+            seq += 1;
+            c.last_at = now + seq;
+            self.touch_hosts();
+        }
+        Ok(())
+    }
+
+    /// 收回一条已经分给某台机器、还没开始的「任意机器」派发：回到没有机器的状态，等下一遍重新挑
+    fn unassign(&mut self, d: &DRow, why: &str) -> Result<()> {
+        self.tx.execute(
+            "UPDATE dispatches SET host_id = 0, host = '',
+                    agent = CASE WHEN any_agent = 1 THEN '' ELSE agent END,
+                    agent_label = CASE WHEN any_agent = 1 THEN ?2 ELSE agent_label END
+             WHERE id = ?1",
+            params![d.id, ANY_AGENT_LABEL],
+        )?;
+        self.track_dispatch(d.board, d.card, &Actor::system(), "dispatch", &format!("任意机器：{} {why}，这次派发收回，重新挑机器", d.host))?;
+        self.touch_hosts();
+        Ok(())
+    }
+
+    /// 改派：把一条还在排队的派发换到另一台机器（`host` 是机器名），或者交给任意机器（`host` 为空）。
+    /// 已经开始的不能改（先停止它）；会话里排着的由那个会话接着做，也不能改。
+    /// 换到指定机器时：`agent` 没给就沿用原来的，那台机器上用不了时换成它的默认 agent；校验和手动派发一样
+    pub fn dispatch_move(&mut self, id: i64, host: Option<&str>, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
+        let d = self.drow(id)?;
+        match d.state.as_str() {
+            "queued" => {}
+            "running" => return Err(BoardError::usage(format!("派发 #{id} 已经开始，不能改派：先停止它，再重新派发"))),
+            _ => return Err(BoardError::usage(format!("派发 #{id} 已经结束"))),
+        }
+        if d.session != d.id {
+            return Err(BoardError::usage(format!("派发 #{id} 排在会话里，由那个会话接着做，不能改派：先取消它，再重新派发")));
+        }
+        let board = self.board_of(d.board)?;
+        let agent = agent.map(str::trim).filter(|s| !s.is_empty());
+        let from = Self::dispatch_words(&d);
+        match host.map(str::trim).filter(|s| !s.is_empty()) {
+            None => {
+                let label = self.any_target(&board, agent)?;
+                self.tx.execute(
+                    "UPDATE dispatches SET host_id = 0, host = '', agent = ?2, agent_label = ?3, any_host = 1, any_agent = ?4 WHERE id = ?1",
+                    params![d.id, agent.unwrap_or(""), label, agent.is_none() as i64],
+                )?;
+                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("改派给任意机器 · {label}（原来 {from}）"))?;
+                self.touch_hosts();
+                self.assign_any()?;
+            }
+            Some(name) => {
+                let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+                // 没说用哪个 agent：沿用原来的；那台机器上用不了它时换成默认 agent
+                let keep = if d.agent.is_empty() { None } else { Some(d.agent.as_str()) };
+                let a = match agent {
+                    Some(id) => self.dispatch_agent(&h, Some(id))?,
+                    None => match keep.map(|id| self.dispatch_agent(&h, Some(id))) {
+                        Some(Ok(a)) => a,
+                        _ => self.dispatch_agent(&h, None)?,
+                    },
+                };
+                if let Some(u) = self.read().board_unfit(&h, &board)? {
+                    return Err(u.error(name, &board));
+                }
+                if h.id == d.host_id && a.id == d.agent && !d.any_host {
+                    return self.read().dispatch(id);
+                }
+                self.tx.execute(
+                    "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5, any_host = 0, any_agent = 0 WHERE id = ?1",
+                    params![d.id, h.id, h.name, a.id, a.name],
+                )?;
+                let wait = if !h.online(self.now) {
+                    "，等机器上线"
+                } else if h.paused {
+                    "（机器暂停接单）"
+                } else {
+                    ""
+                };
+                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("改派到 {} · {}{wait}（原来 {from}）", h.name, a.name))?;
+                self.touch_hosts();
+            }
+        }
         self.read().dispatch(id)
     }
 
@@ -4465,6 +4752,8 @@ impl<'a> W<'a> {
         )?;
         if n > 0 {
             self.touch_hosts();
+            // 掉线的机器上还没开始的「任意机器」派发收回，换别的机器
+            self.assign_any()?;
         }
         let lost: Vec<i64> = self.collect(
             "SELECT d.id FROM dispatches d LEFT JOIN agents a ON a.name = d.name

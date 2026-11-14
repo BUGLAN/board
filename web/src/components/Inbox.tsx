@@ -16,7 +16,7 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { openCard, triage, untriage } from '../lib/actions';
 import { judge } from '../lib/granularity';
-import { cardDispatch } from '../lib/hosts';
+import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
 import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
 import { deleteCards, undoDelete } from '../lib/trash';
@@ -638,7 +638,7 @@ function SplitNote({ d }: { d: Dispatched }) {
     <div className="ib-split-note" role="status">
       <Icon name="dispatch" />
       <span>
-        <b>{d.state === 'queued' ? '排队拆解' : '拆解中'}</b> · {d.host} · {d.agentLabel}
+        <b>{d.state === 'queued' ? '排队拆解' : '拆解中'}</b> · {hostWords(d)} · {d.agentLabel}
         {d.stopBy && ' · 正在停止'}
       </span>
       <span className="spacer" />
@@ -663,7 +663,7 @@ function SplittingMark({ d }: { d: Dispatched }) {
     <Tip text={d.state === 'queued' ? '排队等机器有空位' : `${d.name ?? ''} 正在拆这一条`}>
       <span className={cx('ib-mark ib-splitting', d.state === 'queued' && 'queued')}>
         <i aria-hidden="true" />
-        {d.state === 'queued' ? '排队拆解' : '拆解中'} · {d.host} · {d.agentLabel}
+        {d.state === 'queued' ? '排队拆解' : '拆解中'} · {hostWords(d)} · {d.agentLabel}
       </span>
     </Tip>
   );

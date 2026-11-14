@@ -207,11 +207,15 @@ export const inSession = (d: Dispatch) => d.state === 'queued' && d.session != n
 /** 排队的原因；会话里排着的写「会话第 N/M 张」 */
 export function queueReason(h: HostInfo | undefined, d?: Dispatch): string {
   if (d && inSession(d)) return `会话第 ${d.seq ?? '?'}/${d.total ?? '?'} 张`;
+  if (d?.any && !d.host) return '等一台能接的机器';
   if (!h) return '机器已移除';
   if (!h.online) return '等机器上线';
   if (h.paused) return '暂停接单';
   return '等空位';
 }
+
+/** 派发在哪台机器：「任意机器」的派发还没挑到机器时写「任意机器」 */
+export const hostWords = (d: Pick<Dispatch, 'host'>) => d.host || '任意机器';
 
 /** 定时领取的摘要（「每天 23:00、工作日 09:00」，和机器详情里的胶囊一致）；没开或没设时为空，不显示占位 */
 export const cronSummary = (h: HostInfo) => (h.cronOn && h.cron.length ? h.cron.map(describeCron).join('、') : '');

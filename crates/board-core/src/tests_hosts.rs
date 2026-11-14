@@ -4023,3 +4023,157 @@ fn windows_dirs_keep_their_reported_status() {
     let d = &host(&s, T0).dirs[0];
     assert_eq!((d.path.as_str(), d.status.as_deref()), ("D:\\repo\\default", Some("ok")));
 }
+
+/* ------------------------------ 任意机器、改派 ------------------------------ */
+
+fn report_as(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
+    report(name, instance, running)
+}
+
+fn any(s: &mut Store, at: i64, card: i64, agent: Option<&str>) -> Result<Dispatch> {
+    s.write(at, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.dispatch_create_any(&b, card, agent, &Actor::human())
+    })
+}
+
+fn begin_on(s: &mut Store, at: i64, host: &str, instance: &str, id: i64) -> Result<Dispatch> {
+    s.write(at, Origin::cli(), |w| w.dispatch_begin(host, instance, id, Some(1)))
+}
+
+fn set_on(s: &mut Store, at: i64, host: &str, p: HostPatch) {
+    s.write(at, Origin::ui(None), |w| w.host_update(host, &p)).unwrap();
+}
+
+/// 派给任意机器：服务端挑空位最多的；一样多时轮流；挑中的机器照常开始
+#[test]
+fn any_host_dispatch_goes_to_the_freest_host_and_rotates() {
+    let mut s = store();
+    beat(&mut s, T0, &report_as("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report_as("win", "w1", vec![])).unwrap();
+    set_on(&mut s, T0, "win", HostPatch { max: Some(2), ..Default::default() });
+    // win 有 2 个空位，mbp 1 个：先给 win
+    let a = new_card(&mut s, T0, "A");
+    let d = any(&mut s, T0 + S, a, None).unwrap();
+    assert!(d.any);
+    assert_eq!((d.host.as_str(), d.agent.as_str(), d.state.as_str()), ("win", "claude", "queued"));
+    assert_eq!(card(&s, a).card.column, "doing", "和指定机器的派发一样，排队时就进锁定状态");
+    let log = card(&s, a).activity.iter().map(|x| x.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(log.contains("派发到任意机器") && log.contains("任意机器：分给 win · Claude Code"), "{log}");
+    // 现在各剩 1 个：轮到最久没接过的 mbp
+    let b = new_card(&mut s, T0, "B");
+    assert_eq!(any(&mut s, T0 + 2 * S, b, None).unwrap().host, "mbp");
+    // 再来一张：win 还有 1 个空位，mbp 没有了
+    let c = new_card(&mut s, T0, "C");
+    assert_eq!(any(&mut s, T0 + 3 * S, c, None).unwrap().host, "win");
+    // 都排满了：没有机器，接着排
+    let e = new_card(&mut s, T0, "E");
+    let waiting = any(&mut s, T0 + 4 * S, e, None).unwrap();
+    assert_eq!((waiting.host.as_str(), waiting.host_id, waiting.agent.as_str(), waiting.agent_label.as_str()), ("", 0, "", hosts::ANY_AGENT_LABEL));
+    // 分到的机器照常开始；随它的任务一起发下去
+    let w = beat(&mut s, T0 + 5 * S, &report_as("win", "w1", vec![])).unwrap();
+    assert_eq!(w.queued.iter().map(|x| x.card).collect::<Vec<_>>(), vec![a, c]);
+    let run = begin_on(&mut s, T0 + 6 * S, "win", "w1", d.id).unwrap();
+    assert_eq!((run.state.as_str(), run.host.as_str(), run.agent.as_str()), ("running", "win", "claude"));
+}
+
+/// 分到的机器开始不了（暂停接单、掉线、被移除）时收回，换一台；都不行就等，有机器能接了再分
+#[test]
+fn any_host_dispatch_is_taken_back_when_its_host_cannot_start_it() {
+    let mut s = store();
+    beat(&mut s, T0, &report_as("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = any(&mut s, T0, a, None).unwrap();
+    assert_eq!(d.host, "mbp");
+    // 暂停接单：收回，没有别的机器，等着
+    set_on(&mut s, T0 + S, "mbp", HostPatch { paused: Some(true), ..Default::default() });
+    assert_eq!(get(&s, d.id).host, "");
+    assert_eq!(get(&s, d.id).state, "queued");
+    // 另一台机器上线：它一上报就分给它
+    let w = beat(&mut s, T0 + 2 * S, &report_as("win", "w1", vec![])).unwrap();
+    assert_eq!(w.queued.iter().map(|x| x.id).collect::<Vec<_>>(), vec![d.id]);
+    assert_eq!(get(&s, d.id).host, "win");
+    // 它被移除：这条派发不跟着取消，回去等
+    s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_remove("win", &Actor::human(), "人")).unwrap();
+    let g = get(&s, d.id);
+    assert_eq!((g.host.as_str(), g.state.as_str()), ("", "queued"));
+    assert_eq!(card(&s, a).card.column, "doing");
+    // mbp 恢复接单：分回它
+    set_on(&mut s, T0 + 4 * S, "mbp", HostPatch { paused: Some(false), ..Default::default() });
+    assert_eq!(get(&s, d.id).host, "mbp");
+    // 掉线超过 50 秒：收回
+    s.sweep(T0 + 4 * S + hosts::HOST_GAP_MS + S).unwrap();
+    assert_eq!(get(&s, d.id).host, "");
+    // 人取消：卡片回到可领取状态
+    s.write(T0 + 100 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "人")).unwrap();
+    assert_eq!(card(&s, a).card.column, "todo");
+}
+
+/// 「任意机器」创建时就拒绝的情况：一台机器都没有、没有机器接得了这块白板、能接的机器上没有这个 agent
+#[test]
+fn any_host_dispatch_needs_some_host_that_could_take_it() {
+    let mut s = store();
+    let a = new_card(&mut s, T0, "A");
+    assert_eq!(any(&mut s, T0, a, None).unwrap_err().code, ErrorCode::NoSuchHost);
+    beat(&mut s, T0, &report_as("mbp", "i1", vec![])).unwrap();
+    // 指定的 agent 没找到命令
+    let e = any(&mut s, T0, a, Some("pi")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::AgentNotOnHost);
+    assert!(e.message.contains("mbp") && e.message.contains("pi"), "{}", e.message);
+    // 环境检查没过：写明是哪台、为什么
+    set_ready_check(&mut s, "cargo --version", "");
+    let e = any(&mut s, T0, a, None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotOnHost);
+    assert!(e.message.contains("mbp（环境检查还没跑完）"), "{}", e.message);
+    set_ready_check(&mut s, "", "");
+    // 机器离线也能派：看的是能不能接，不看在不在线
+    s.sweep(T0 + hosts::HOST_GAP_MS + S).unwrap();
+    let d = any(&mut s, T0 + hosts::HOST_GAP_MS + 2 * S, a, Some("claude")).unwrap();
+    assert_eq!((d.host.as_str(), d.agent.as_str(), d.state.as_str()), ("", "claude", "queued"));
+    // 已经有派发的卡不能再派
+    assert_eq!(any(&mut s, T0 + hosts::HOST_GAP_MS + 3 * S, a, None).unwrap_err().code, ErrorCode::AlreadyDispatched);
+}
+
+/// 改派：排队中的派发换到另一台机器，或交给任意机器；已经开始的不能改
+#[test]
+fn queued_dispatch_can_be_moved_to_another_host_or_to_any() {
+    let mut s = store();
+    beat(&mut s, T0, &report_as("mbp", "i1", vec![])).unwrap();
+    let mut win = report_as("win", "w1", vec![]);
+    win.agents = vec![dsh(true)];
+    beat(&mut s, T0, &win).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let mv = |s: &mut Store, at: i64, host: Option<&str>, agent: Option<&str>| s.write(at, Origin::ui(None), |w| w.dispatch_move(d.id, host, agent, &Actor::human()));
+    // 换到 win：那台没有 Claude Code，换成它的默认 agent
+    let m = mv(&mut s, T0 + S, Some("win"), None).unwrap();
+    assert_eq!((m.host.as_str(), m.agent.as_str(), m.state.as_str(), m.any), ("win", "dsh", "queued", false));
+    assert_eq!(card(&s, a).card.column, "doing", "改派不动卡片");
+    assert!(card(&s, a).activity.iter().any(|x| x.text.contains("改派到 win · DeepSeek Harness（原来 mbp · Claude Code")), "{:?}", card(&s, a).activity.iter().map(|x| &x.text).collect::<Vec<_>>());
+    // 校验和手动派发一样
+    assert_eq!(mv(&mut s, T0 + S, Some("nope"), None).unwrap_err().code, ErrorCode::NoSuchHost);
+    assert_eq!(mv(&mut s, T0 + S, Some("win"), Some("claude")).unwrap_err().code, ErrorCode::AgentNotOnHost);
+    // 交给任意机器：挑空位多的（win 上排着它自己，收回后两台各 1 个空位，按轮流）
+    let m = mv(&mut s, T0 + 2 * S, None, None).unwrap();
+    assert!(m.any && !m.host.is_empty(), "{m:?}");
+    // 已经开始的不能改
+    let host = m.host.clone();
+    let inst = if host == "win" { "w1" } else { "i1" };
+    begin_on(&mut s, T0 + 3 * S, &host, inst, d.id).unwrap();
+    let e = mv(&mut s, T0 + 4 * S, Some("mbp"), None).unwrap_err();
+    assert!(e.code == ErrorCode::Usage && e.message.contains("已经开始"), "{}", e.message);
+}
+
+/// 定时建卡的「随机」先挑有空位的：空位最多的那台
+#[test]
+fn candidate_counts_running_and_queued_against_the_session_limit() {
+    let mut s = store();
+    beat(&mut s, T0, &report_as("mbp", "i1", vec![])).unwrap();
+    let free = |s: &mut Store| s.write(T0 + S, Origin::ui(None), |w| { let h = w.host_row("mbp")?.unwrap(); Ok(w.candidate(&h)?.free) }).unwrap();
+    assert_eq!(free(&mut s), 1);
+    let a = new_card(&mut s, T0, "A");
+    dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    assert_eq!(free(&mut s), 0, "排着还没开始的也占一个位置");
+    set_on(&mut s, T0, "mbp", HostPatch { max: Some(3), ..Default::default() });
+    assert_eq!(free(&mut s), 2);
+}

@@ -15,7 +15,8 @@
 //! `POST /api/hosts/{名字}/copy {to, items}`（复制设置到其他机器）、`POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
 //! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
 //! `GET /api/sessions/{派发 ID}[?since=<runs>]`（一个会话的全部派发、输出和事件；带 since 时事件只取之后新增、改过的）。这些用令牌调用时 NOT_LOGGED_IN。
-//! 登录或令牌：`POST /api/dispatches`（派发）、`POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
+//! 登录或令牌：`POST /api/dispatches`（派发；不带 `host` 是任意机器）、`POST /api/dispatches/move`（改派排队中的派发）、
+//! `POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -546,6 +547,8 @@ pub(crate) async fn recent(State(s): State<AppState>, Path(name): Path<String>) 
 pub(crate) struct CreateBody {
     board: String,
     card: i64,
+    /// 机器名；不带或是空的 = 任意机器（服务端挑）
+    #[serde(default)]
     host: String,
     #[serde(default)]
     agent: Option<String>,
@@ -562,7 +565,53 @@ pub(crate) async fn create(State(s): State<AppState>, Extension(caller): Extensi
         .db(move |st| {
             st.write(now_ms(), origin, |w| {
                 let board = w.resolve(&b.board)?;
-                w.dispatch_create(&board, b.card, b.host.trim(), b.agent.as_deref(), &actor)
+                match b.host.trim() {
+                    "" => w.dispatch_create_any(&board, b.card, b.agent.as_deref(), &actor),
+                    host => w.dispatch_create(&board, b.card, host, b.agent.as_deref(), &actor),
+                }
+            })
+        })
+        .await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct MoveBody {
+    /// 派发 ID；不给时按白板和卡片找它排队的派发
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    board: Option<String>,
+    #[serde(default)]
+    card: Option<i64>,
+    /// 换到哪台机器；不带或是空的 = 交给任意机器
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default, rename = "as")]
+    who: Option<String>,
+}
+
+/// `POST /api/dispatches/move`：改派一条还在排队的派发（换一台机器，或交给任意机器）
+pub(crate) async fn move_to(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Dispatch> {
+    let b: MoveBody = parse(v)?;
+    let (actor, _) = who(&s, &caller, b.who.as_deref()).await?;
+    let origin = origin_of(&caller, &h);
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), origin, |w| {
+                let id = match (b.id, b.board.as_deref(), b.card) {
+                    (Some(id), _, _) => id,
+                    (None, Some(board), Some(card)) => {
+                        let board = w.resolve(board)?;
+                        w.card_dispatch_id(&board, card)?
+                    }
+                    _ => return Err(BoardError::usage("缺少 id，或 board 和 card")),
+                };
+                let host = Some(b.host.trim()).filter(|h| !h.is_empty());
+                w.dispatch_move(id, host, b.agent.as_deref(), &actor)
             })
         })
         .await?;

@@ -108,6 +108,22 @@ pub fn repo_key(url: &str) -> String {
     out.to_lowercase()
 }
 
+/// 分配「任意机器」的派发时的一台候选机器（已经确认能接、现在能开始）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub name: String,
+    /// 还能再开几个会话（会话上限 − 在跑的 − 已经分给它、还没开始的）
+    pub free: i64,
+    /// 最近一次给它派发的时间；没派过是 0
+    pub last_at: i64,
+}
+
+/// 在候选机器里挑一台（PRD §9.1「任意机器」）：空位多的优先；一样多时挑最久没接过派发的，几台机器轮流；
+/// 再一样按名字。没有空位的不挑；都没有空位时为 None
+pub fn pick_host(list: &[Candidate]) -> Option<&Candidate> {
+    list.iter().filter(|c| c.free > 0).max_by(|a, b| a.free.cmp(&b.free).then(b.last_at.cmp(&a.last_at)).then(b.name.cmp(&a.name)))
+}
+
 impl R<'_> {
     /// 这台机器接不了这块白板的卡时返回原因；能接时为 None。先看工作空间，再看目录，最后看环境检查
     pub(crate) fn board_unfit(&self, h: &HostRow, board: &BoardRef) -> Result<Option<Unfit>> {
@@ -201,7 +217,29 @@ impl R<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::repo_key;
+    use super::{pick_host, repo_key, Candidate};
+
+    fn c(name: &str, free: i64, last_at: i64) -> Candidate {
+        Candidate { name: name.into(), free, last_at }
+    }
+
+    /// 挑机器的规则，一行一种情况：候选（名字、空位、最近一次派发的时间）→ 挑中谁
+    #[test]
+    fn pick_host_prefers_free_slots_then_rotates() {
+        let cases: Vec<(&str, Vec<Candidate>, Option<&str>)> = vec![
+            ("没有候选", vec![], None),
+            ("都没有空位", vec![c("a", 0, 1), c("b", 0, 2)], None),
+            ("只有一台有空位", vec![c("a", 0, 1), c("b", 1, 9)], Some("b")),
+            ("空位多的优先，不管谁更久没接", vec![c("a", 1, 1), c("b", 3, 9)], Some("b")),
+            ("空位一样多：最久没接过的", vec![c("a", 2, 9), c("b", 2, 3)], Some("b")),
+            ("空位一样多：没接过的（0）最先", vec![c("a", 2, 5), c("b", 2, 0)], Some("b")),
+            ("都一样：按名字", vec![c("b", 1, 4), c("a", 1, 4)], Some("a")),
+            ("负数空位（上限调小了）不挑", vec![c("a", -1, 0), c("b", 1, 9)], Some("b")),
+        ];
+        for (what, list, want) in cases {
+            assert_eq!(pick_host(&list).map(|x| x.name.as_str()), want, "{what}");
+        }
+    }
 
     #[test]
     fn repo_addresses_compare_across_spellings() {

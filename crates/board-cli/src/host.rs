@@ -4362,6 +4362,7 @@ mod tests {
                 effort: None,
                 kind: String::new(),
                 path: None,
+                any: false,
             },
             child,
             env: Env::direct(),
@@ -4447,6 +4448,7 @@ mod tests {
             effort: None,
             kind: String::new(),
             path: None,
+            any: false,
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));

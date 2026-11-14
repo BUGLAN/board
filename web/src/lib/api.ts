@@ -262,7 +262,10 @@ export const api = {
   hostRound: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/round`, {}),
   /** 这台机器最近 50 个结束的派发 */
   hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`),
+  /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */
   dispatch: (board: string, card: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent }),
+  /** 改派一条还在排队的派发：换到 host 这台机器，host 是空的 = 交给任意机器 */
+  moveDispatch: (id: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches/move', { id, host, agent }),
   /** 取消排队中的派发，或停止正在跑的派发 */
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
   /** 一张卡片的全部派发，新的在前（卡片详情「派发记录」） */

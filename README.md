@@ -169,6 +169,7 @@ board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务�
 board host --install --name mbp --workspace ~/repo   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
 board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有机器的 board host 自动装到各 agent 的 skill 目录；ls / rm / sync
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止
+board dispatch 3 --any        # 不指定机器，服务端挑空位最多的一台；--move --host <机器名> 改派排队中的派发
 ```
 
 所有命令都支持 `--json`；每个命令的输出样例见 [docs/cli.md](docs/cli.md)，完整的命令和参数见 `board help`，规则与错误码见 skill。

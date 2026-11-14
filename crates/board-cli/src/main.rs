@@ -39,8 +39,8 @@ const VALUE_FLAGS: [&str; 24] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project", "--workspace",
 ];
-const BOOL_FLAGS: [&str; 15] = [
-    "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
+const BOOL_FLAGS: [&str; 17] = [
+    "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--any", "--move", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
     "--dry-run",
 ];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
@@ -76,7 +76,7 @@ const COMMANDS: [(&str, &str, &str); 28] = [
         ("host", "[run] [--name <机器名>] [--workspace <工作空间>] [--dir <项目>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，每个项目的目录是 <工作空间>/<项目>（不存在时自动建好；白板设了仓库地址时自动克隆），派来的卡片在那里启动本机 agent，Ctrl+C 退出（机器名、工作空间也可写在 ~/.board/config.toml 的 [host]）；--dir 只给单独一块白板指定目录（覆盖工作空间派生的目录）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("skills", "ls | push <目录>… | sync | rm <名称>", "skills 共用库（不用 --as、--board）：ls 列出库里的 skill 和本机各 agent 目录里的状态；push 把本机的 skill 目录（目录名就是名称，里面要有 SKILL.md，合计不超过 5 MB）传进库里，同名的换成新版本，在线的机器自动同步；sync 按库更新本机（有 board host 在跑时由它来做）；rm 从库里删掉，各台机器上同步装的那份随后删掉。board-skills 随服务端版本，不能传、不能删"),
         ("versions", "sync [<tag>…] [--project <项目>] [--dir <仓库>] [--dry-run]", "在代码仓库里从 git tag 和提交历史反推每个版本做了哪些卡片（不用 --as、--board）：v 开头的 tag 是版本，上一个 tag 之后的提交属于这个 tag，提交说明里的「卡片：<项目>/<白板>#<ID>」把提交连到卡片；这些卡片带上和 tag 同名的版本标签（没有就新建），这一版的提交记到服务端，界面「里程碑」里按版本看。--project 不写时取提交里出现最多的项目；只同步某几个 tag 时写在 sync 后面；--dry-run 只列出来不写入；反复运行结果一样"),
-        ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--cancel 取消排队或停止正在跑的派发"),
+        ("dispatch", "<ID> --host <机器名> | --any [--agent <标识>] [--move] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--any 不指定机器，由服务端在能接的机器里挑空位最多的；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--move 把还在排队的派发改派到 --host 的机器或 --any；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
 
@@ -939,12 +939,28 @@ fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
         };
         return Ok(Output::Text(format!("{} {}  {what}\n", p.green("✓"), p.cyan(&format!("#{id}")))));
     }
-    let host = a.value("--host").map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| {
-        BoardError::usage("用法：board dispatch <ID> --host <机器名> [--agent <标识>]，或 board dispatch <ID> --cancel")
-    })?;
-    let d = be.dispatch(&path, id, host, a.value("--agent"), who.as_deref())?;
+    // --any：不指定机器，由服务端挑（发给服务端的 host 是空的）
+    let any = a.flag("--any");
+    let host = match (a.value("--host").map(str::trim).filter(|s| !s.is_empty()), any) {
+        (Some(_), true) => return Err(BoardError::usage("--host 和 --any 只能写一个")),
+        (Some(h), false) => h,
+        (None, true) => "",
+        (None, false) => {
+            return Err(BoardError::usage(
+                "用法：board dispatch <ID> --host <机器名> | --any [--agent <标识>] [--move]，或 board dispatch <ID> --cancel",
+            ))
+        }
+    };
+    let moved = a.flag("--move");
+    let d = if moved { be.move_dispatch(&path, id, host, a.value("--agent"), who.as_deref())? } else { be.dispatch(&path, id, host, a.value("--agent"), who.as_deref())? };
     if json {
         return Ok(Output::Json(serde_json::to_value(&d).unwrap_or_default()));
+    }
+    // 任意机器、还没挑到机器
+    let host_words = if d.host.is_empty() { "任意机器".to_string() } else { d.host.clone() };
+    if moved {
+        let tail = if d.host.is_empty() { "等服务端挑一台能接的机器" } else { "排队，机器有空位时开始" };
+        return Ok(Output::Text(format!("{} {} 已改派到 {} · {}  {}\n", p.green("✓"), p.cyan(&format!("#{}", d.card)), p.bold(&host_words), d.agent_label, p.dim(tail))));
     }
     // 「未整理」里的条目是派给 agent 拆解：不领取、不移动它
     let split = d.kind == board_core::hosts::KIND_SPLIT;
@@ -957,7 +973,7 @@ fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
         "{} {} {what} {} · {}{after}  {}\n",
         p.green("✓"),
         p.cyan(&format!("#{}", d.card)),
-        p.bold(&d.host),
+        p.bold(&host_words),
         d.agent_label,
         p.dim(tail)
     )))

@@ -614,6 +614,17 @@ impl<'a> W<'a> {
     /// 放在同一个写事务里，一条失败会把别的也回滚掉
     fn cron_pick_host(&self, board: &BoardRef, agent: Option<&str>) -> Result<Option<(String, Option<String>)>> {
         let Some(list) = self.cron_host_candidates(board, agent, true)? else { return Ok(None) };
+        // 先挑有空位的：空位最多的一台，一样多时轮流（和「任意机器」同一个挑法，`fit.rs` 的 `pick_host`）
+        let mut cands = vec![];
+        for (name, _) in &list {
+            if let Some(h) = self.host_row(name)? {
+                cands.push(self.candidate(&h)?);
+            }
+        }
+        if let Some(c) = crate::fit::pick_host(&cands) {
+            return Ok(list.iter().find(|(n, _)| *n == c.name).cloned());
+        }
+        // 都满了：随便挑一台排队
         Ok(Some(list[self.roll(list.len())].clone()))
     }
 

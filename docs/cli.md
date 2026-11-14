@@ -967,6 +967,8 @@
 
 `--cancel` 取消排队或停止正在跑的派发，返回同一条记录；开始时 `startedAt`、`env`、`name`、`path` 才有值。
 
+`--any` 不指定机器，由服务端在能接的机器里挑空位最多的一台：返回的记录带 `"any": true`，挑到机器之前 `host` 是空字符串、`hostId` 是 0，没带 `--agent` 时 `agent` 也是空的（挑到后换成那台的默认 agent）。`--move --host <机器名>`（或 `--move --any`）把还在排队的派发改派，返回改过的记录。
+
 ## 共用配置与版本
 
 ### `board skills ls`

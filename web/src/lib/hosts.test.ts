@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, hostWords, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -402,5 +402,22 @@ describe('能不能接（服务端算好，界面照着用）', () => {
       ['mac', '/w/a 不是 git 仓库'],
       ['win', undefined],
     ]);
+  });
+});
+
+describe('任意机器的派发', () => {
+  const d = (x: Partial<Dispatch>): Dispatch => ({ id: 1, board: 'a/main', card: 1, title: '', hostId: 0, host: '', agent: '', agentLabel: '机器的默认 agent', state: 'queued', createdAt: 0, ...x }) as Dispatch;
+
+  it('还没挑到机器：机器写「任意机器」，排队原因写在等一台能接的机器，不当成机器已移除', () => {
+    const waiting = d({ any: true });
+    expect(hostWords(waiting)).toBe('任意机器');
+    expect(queueReason(undefined, waiting)).toBe('等一台能接的机器');
+  });
+
+  it('挑到机器之后和指定机器的派发一样显示', () => {
+    const got = d({ any: true, hostId: 1, host: 'mac' });
+    expect(hostWords(got)).toBe('mac');
+    expect(queueReason(host([]), got)).toBe('等空位');
+    expect(queueReason(undefined, d({ host: 'gone', hostId: 9 }))).toBe('机器已移除');
   });
 });

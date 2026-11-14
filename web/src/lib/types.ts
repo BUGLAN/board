@@ -594,6 +594,8 @@ export interface Dispatch {
   board: string;
   card: number;
   title: string;
+  /** 派给任意机器（服务端挑）：还没挑到机器时 host 是空的、hostId 是 0，没指定 agent 时 agent 也是空的 */
+  any?: boolean;
   hostId: number;
   host: string;
   agent: string;

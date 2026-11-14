@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
 import { judge } from '../../lib/granularity';
-import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, envName, hostLoad, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
+import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
@@ -65,7 +65,7 @@ export function CardDispatchLine({ card }: { card: number }) {
     <div className="card-dispatch" title={`派发于 ${hhmm(d.createdAt)}（${sourceOf(d)}）`}>
       <Icon name="dispatch" />
       <span>
-        排队 → {d.host} · {d.agentLabel}
+        排队 → {hostWords(d)} · {d.agentLabel}
         <em>（{queueReason(h, d)}）</em>
       </span>
     </div>
@@ -87,7 +87,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
         <Mark id={d.agent} title={d.agentLabel} />
         <div className="dn-text">
           <b>
-            {split ? (queued ? '排队拆解' : '拆解中') : queued ? '排队' : '在跑'} → {d.host} · {d.agentLabel}
+            {split ? (queued ? '排队拆解' : '拆解中') : queued ? '排队' : '在跑'} → {hostWords(d)} · {d.agentLabel}
           </b>
           <span>
             {queued ? (
@@ -114,6 +114,12 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           <button className="btn sm ghost" type="button" onClick={() => openSession({ id: d.session || d.id, card: d.card, known: [d] })}>
             <Icon name="log" />
             会话
+          </button>
+        )}
+        {queued && !inSession(d) && (
+          <button className="btn sm ghost" type="button" onClick={() => openDispatch(d.card, { move: d.id })}>
+            <Icon name="move" />
+            改派
           </button>
         )}
         {!d.stopBy && (
@@ -159,7 +165,7 @@ export function DispatchHistory({ board, card }: { board: string; card: number }
               <Mark id={d.agent} title={d.agentLabel} />
               <span className="dh-when">{d.endedAt != null ? new Date(d.endedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span>
               <span className="dh-where">
-                {d.host} · {d.agentLabel}
+                {hostWords(d)} · {d.agentLabel}
               </span>
               <em style={{ ['--c' as string]: st.color }}>{st.label}</em>
               <span className="dh-took">{took != null ? durWords(took) : ''}</span>
@@ -179,12 +185,12 @@ export function DispatchDialog() {
   const last = useRef(req);
   if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
-  const { card, force } = last.current;
-  return <DispatchBody key={`${card}-${force}`} card={card} force={force} on={on && req != null} />;
+  const { card, force, move } = last.current;
+  return <DispatchBody key={`${card}-${force}-${move ?? ''}`} card={card} force={force} move={move} on={on && req != null} />;
 }
 
 /** force：粒度预检判偏小，人点了「强制拆解」仍要拆（default/main#306） */
-function DispatchBody({ card, force, on }: { card: number; force: boolean; on: boolean }) {
+function DispatchBody({ card, force, move, on }: { card: number; force: boolean; move?: number; on: boolean }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
   const entry = useData(s => s.board?.cards[card]);
@@ -201,11 +207,19 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
   // 预先选中的 agent：机器的默认 agent 能用就是它，否则第一个能用的
   const agentOf = (h: HostInfo | null | undefined) => h?.agents.find(a => a.id === h.agent && agentUsable(a))?.id ?? h?.agents.find(agentUsable)?.id ?? null;
   const busy = (h: HostInfo) => !h.online || h.paused || hostLoad(ws, h).running.length >= h.max;
-  // 默认选中：有这块白板目录的机器里，在线、没满、没暂停的优先
+  // 能接这块白板、又有能用的 agent 的机器：「任意机器」就在它们里面挑
+  const takers = hosts.filter(x => usable(x) && x.agents.some(agentUsable));
+  // 默认选中：两台以上能接时是「任意机器」（服务端挑空位最多的）；只有一台时就是它，在线、没满、没暂停的优先
   const first = hosts.filter(usable).sort((a, b) => Number(busy(a)) - Number(busy(b)))[0];
-  const [host, setHost] = useState<string | null>(first?.name ?? null);
+  // host：机器名；'' = 任意机器；null = 还没有能选的
+  const [host, setHost] = useState<string | null>(takers.length >= 2 ? '' : (first?.name ?? null));
+  const any = host === '';
   const h = hosts.find(x => x.name === host) ?? null;
-  const [agent, setAgent] = useState<string | null>(agentOf(h));
+  // agent：标识；任意机器时 '' = 挑中那台的默认 agent
+  const [agent, setAgent] = useState<string | null>(any ? '' : agentOf(h));
+  // 任意机器时能选的 agent：至少在一台能接的机器上能用的
+  const anyAgents = takers.flatMap(x => x.agents.filter(agentUsable)).filter((a, i, all) => all.findIndex(b => b.id === a.id) === i);
+  const idle = takers.filter(x => !busy(x)).length;
   const chosen = h?.agents.find(x => x.id === agent);
   // 看不到 board-skills 的 agent 照样能派，只提醒
   const miss = h && chosen ? skillMiss(h, chosen) : null;
@@ -230,16 +244,18 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
   };
 
   const submit = async () => {
-    if (!h || !agent) return;
+    if (any ? agent == null : !h || !agent) return;
     setSending(true);
     try {
       // 派发要服务端排进队列才有记录：按钮进行中（转圈、禁用）直到返回；返回后当即在卡片和机器页上画出这条派发，不等刷新
-      const d = await api.dispatch(path, card, h.name, agent);
+      const to = any ? '' : h!.name;
+      const d = move != null ? await api.moveDispatch(move, to, agent || undefined) : await api.dispatch(path, card, to, agent || undefined);
       close();
+      const got = hosts.find(x => x.name === d.host);
       toast({
         type: 'success',
-        title: split ? `#${card} 已派给 ${d.host} · ${d.agentLabel} 拆解` : `#${card} 已派发到 ${d.host} · ${d.agentLabel}`,
-        text: busy(h) ? `排队：${queueReason(h)}` : split ? '机器有空位，马上开始；拆出的卡会记到未整理' : '机器有空位，马上开始',
+        title: move != null ? `#${card} 已改派到 ${hostWords(d)} · ${d.agentLabel}` : split ? `#${card} 已派给 ${hostWords(d)} · ${d.agentLabel} 拆解` : `#${card} 已派发到 ${hostWords(d)} · ${d.agentLabel}`,
+        text: !got ? '排队：等一台能接的机器' : busy(got) ? `排队：${queueReason(got)}` : split ? '机器有空位，马上开始；拆出的卡会记到未整理' : '机器有空位，马上开始',
       });
       void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
     } catch (e) {
@@ -252,7 +268,7 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
       <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `派给 agent 拆解 #${card}` : `派发 #${card}`}>
-        <h3>{split ? `${force ? '强制' : ''}派给 agent 拆解 #${card}` : `派发 #${card}`}</h3>
+        <h3>{move != null ? `改派 #${card}` : split ? `${force ? '强制' : ''}派给 agent 拆解 #${card}` : `派发 #${card}`}</h3>
         <p className="dp-sub">{title}</p>
         {split && <p className="dp-note dp-split">agent 读这一条，把它拆成几张卡记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
         {/* 粒度预检（default/main#306）：够细的一条先别拆，说清楚为什么；强制拆解时提醒 agent 只切真的有先后依赖的部分 */}
@@ -287,6 +303,22 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
           <>
             <div className="dp-label">机器</div>
             <div className="dp-hosts" role="radiogroup" aria-label="机器">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={any}
+                className={cx('dp-host', any && 'on')}
+                disabled={takers.length === 0}
+                onClick={() => {
+                  setHost('');
+                  setAgent('');
+                }}
+              >
+                <Icon name="dispatch" />
+                <b>任意机器</b>
+                <span className="hp-sp" />
+                {takers.length === 0 ? <em>没有能接这块白板的机器</em> : idle > 0 ? <em className="ok">{idle} 台有空位，挑最空的</em> : <em>会排队，谁先空出来给谁</em>}
+              </button>
               {hosts.map(x => {
                 const ok = usable(x);
                 const run = hostLoad(ws, x).running.length;
@@ -322,6 +354,24 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
                 );
               })}
             </div>
+            {any && (
+              <>
+                <div className="dp-label">agent</div>
+                <div className="hp-agents">
+                  <button type="button" className={cx('hp-agent-btn', agent === '' && 'on')} onClick={() => setAgent('')}>
+                    <span className="hp-agent">机器的默认 agent</span>
+                  </button>
+                  {anyAgents.map(a => (
+                    <button key={a.id} type="button" className={cx('hp-agent-btn', agent === a.id && 'on')} onClick={() => setAgent(a.id)}>
+                      <AgentChip a={a} />
+                    </button>
+                  ))}
+                </div>
+                <p className="dp-note">
+                  服务端在能接这块白板的 {takers.length} 台机器里挑空位最多的一台，一样多时轮流；现在都没有空位就排着，分到的机器离线、暂停接单时自动换一台。
+                </p>
+              </>
+            )}
             {h && (
               <>
                 <div className="dp-label">agent</div>
@@ -348,9 +398,9 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
           <button className="btn" type="button" onClick={close}>
             取消
           </button>
-          <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={!h || !agent || sending || !usable(h)} aria-busy={sending || undefined} onClick={submit}>
+          <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={sending || (any ? takers.length === 0 : !h || !agent || !usable(h))} aria-busy={sending || undefined} onClick={submit}>
             <Icon name="dispatch" />
-            {split ? (force ? '强制拆解' : '派给 agent 拆解') : '派发'}
+            {move != null ? '改派' : split ? (force ? '强制拆解' : '派给 agent 拆解') : '派发'}
           </button>
         </div>
       </div>

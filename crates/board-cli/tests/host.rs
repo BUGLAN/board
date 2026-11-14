@@ -1604,3 +1604,41 @@ fn shared_agent_templates_reach_online_hosts_without_restart() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("共用配置的 agent 模板：kimi"), "{out}");
 }
+
+/// 任意机器、改派（PRD §9.1）：`board dispatch <ID> --any` 不指定机器，服务端分给在线的那台，它照常开始、交审；
+/// `--move --any` 把指定机器的排队派发交给服务端挑
+#[test]
+fn any_host_dispatch_and_move_end_to_end() {
+    let rig = Rig::new();
+    for t in ["一", "二"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    // 还没有机器：拒绝
+    assert_eq!(rig.board(&["dispatch", "1", "--any", "--json"]).error_code(), "NO_SUCH_HOST");
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    assert_eq!(rig.board(&["dispatch", "1", "--any", "--host", "mbp", "--json"]).error_code(), "USAGE");
+    rig.mode("review");
+    let r = rig.board(&["dispatch", "1", "--any", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d = r.json();
+    assert_eq!((d["any"].as_bool(), d["host"].as_str(), d["agent"].as_str()), (Some(true), Some("mbp"), Some("claude")), "创建时就分给了唯一在线、有空位的机器：{d}");
+    wait_until("#1 交审", Duration::from_secs(15), || ended(&rig.show(1), "已交审"));
+    assert!(activity(&rig.show(1)).iter().any(|t| t.contains("任意机器：分给 mbp · Claude Code")), "{:?}", activity(&rig.show(1)));
+    // 改派：暂停接单时派给 mbp 的排着；交给任意机器后没有能开始的机器，接着排（机器是空的）
+    rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": true }));
+    let r = rig.board(&["dispatch", "2", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let r = rig.board(&["dispatch", "2", "--move", "--any", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let m = r.json();
+    assert_eq!((m["any"].as_bool(), m["host"].as_str(), m["state"].as_str()), (Some(true), Some(""), Some("queued")), "{m}");
+    // 恢复接单：分回 mbp，照常做完
+    rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": false }));
+    wait_until("#2 交审", Duration::from_secs(20), || ended(&rig.show(2), "已交审"));
+    assert!(activity(&rig.show(2)).iter().any(|t| t.contains("改派给任意机器")), "{:?}", activity(&rig.show(2)));
+    let (code, _) = stop(host);
+    assert_eq!(code, 0);
+}
