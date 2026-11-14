@@ -61,7 +61,10 @@
 .ib-rows { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1); }
 
 /* ---------------- 一行 ---------------- */
-.ib-row { position: relative; border-radius: inherit; }
+.ib-row { position: relative; }
+/* 圆角只在整块列表的外角：中间的行是直角（行的分隔线、滑动时的提示色块才是直的） */
+.ib-row:first-child { border-top-left-radius: var(--r-md); border-top-right-radius: var(--r-md); }
+.ib-row:last-child:not(.open) { border-bottom-left-radius: var(--r-md); border-bottom-right-radius: var(--r-md); }
 .ib-row + .ib-row { box-shadow: inset 0 1px 0 var(--line); }
 .ib-line {
   display: grid; grid-template-columns: 18px 34px 20px minmax(0, 1fr) auto 64px 60px 14px; align-items: center; gap: 10px;
@@ -123,6 +126,8 @@
 /* 离场的行（整理、删除、合并）：挂到 body 上在原位播完再拿掉 */
 .ib-ghost { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-2); }
 .ib-ghost .ib-acts { opacity: 0; }
+/* 横滑走的行：不浮起来，圆角由 ghost() 按它在列表里的位置写在行内 */
+.ib-ghost.flat { box-shadow: none; background: transparent; }
 
 /* ---------------- 展开编辑 ---------------- */
 /* 列宽写成 minmax(0, 1fr)：默认 auto 列按内容的最小宽度撑开，描述里有长代码块时编辑区比行宽、按钮伸出右边（default/main#320） */
@@ -293,8 +298,8 @@
   background: color-mix(in srgb, var(--c-inbox) 45%, transparent); pointer-events: none;
 }
 .ib-brows > .ib-row:first-child { box-shadow: inset 0 1px 0 var(--line); }
-.ib-brows > .ib-row:first-child .ib-line { border-top-left-radius: 0; border-top-right-radius: 0; }
-.ib-bundle:not(:last-child) .ib-brows > .ib-row:last-child .ib-line { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.ib-brows > .ib-row:first-child, .ib-brows > .ib-row:first-child .ib-line { border-top-left-radius: 0; border-top-right-radius: 0; }
+.ib-bundle:not(:last-child) .ib-brows > .ib-row:last-child, .ib-bundle:not(:last-child) .ib-brows > .ib-row:last-child .ib-line { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
 /* ---------------- 窄屏 ---------------- */
 @media (max-width: 980px) {
@@ -350,32 +355,33 @@
 .ib-later-n {
   display: inline-grid; place-items: center; min-width: 22px; height: 20px; padding: 0 7px; border-radius: 999px;
   font-size: 11.5px; font-weight: 500; letter-spacing: 0;
-  color: var(--warn-text); background: color-mix(in srgb, var(--warn) 13%, transparent);
+  color: color-mix(in oklab, var(--c-later), var(--ink)); background: color-mix(in srgb, var(--c-later) 15%, transparent);
 }
 .ib-title button.on .ib-later-n { min-width: 26px; height: 22px; font-size: 12px; }
 .ib-later-sub { margin: 10px 0 2px; max-width: 560px; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
 
 /* 「稍后再做」的行：和「未整理」同一套行，点开看详情，没有展开箭头；最右边是收起的时间 */
 .ib-later-line { grid-template-columns: 18px 34px 20px minmax(0, 1fr) auto auto 64px; }
-.ib-later-art { display: grid; place-items: center; width: 44px; height: 44px; margin: 0 auto 4px; border-radius: 14px; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.ib-later-art { display: grid; place-items: center; width: 44px; height: 44px; margin: 0 auto 4px; border-radius: 14px; color: color-mix(in oklab, var(--c-later), var(--ink)); background: color-mix(in srgb, var(--c-later) 14%, transparent); }
 .ib-later-art svg { width: 20px; height: 20px; }
 
-/* 横滑：行跟着手走，底下露出「松手会去哪」的提示（不能点）；过了阈值提示变实色，松手行接着滑出去 */
+/* 横滑：行跟着手走，底下露出「松手会去哪」的提示（不能点）；过了阈值提示变实色，松手行接着滑出去。
+   只在整块列表的外角裁圆角（第一行的上角、最后一行的下角），中间的行是直角；拖动时行本身不带圆角和描边，
+   接缝处是一条直边，提示色块和行的边对齐 */
 .ib-swipe { position: relative; overflow: hidden; border-radius: inherit; }
 .ib-swipe > .ib-line { position: relative; z-index: 1; touch-action: pan-y; transition: transform var(--dur-3) var(--spring-soft), background-color var(--dur-2) var(--ease-out); }
-.ib-row:is(.swipe-drag, .swipe-armed, .swipe-out) .ib-swipe > .ib-line { background: var(--surface); box-shadow: 0 0 0 1px var(--line-2), var(--shadow-2, var(--shadow-1)); }
+.ib-row:is(.swipe-drag, .swipe-armed, .swipe-out) .ib-swipe > .ib-line { background: var(--surface); border-radius: 0; }
 .ib-row.swipe-out .ib-swipe > .ib-line { transition: transform 170ms var(--ease-out); }
 .ib-swipe-hint {
-  position: absolute; inset: 0; z-index: 0; display: flex; align-items: center; gap: 7px; padding: 0 20px; border-radius: inherit;
+  position: absolute; inset: 0; z-index: 0; display: flex; align-items: center; gap: 7px; padding: 0 20px;
   font-size: 12.5px; font-weight: 600; white-space: nowrap; opacity: 0; pointer-events: none;
   transition: opacity var(--dur-1), background-color var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out);
 }
 .ib-swipe-hint svg { width: 15px; height: 15px; transition: transform var(--dur-3) var(--spring); }
-.ib-swipe-hint.to-later { justify-content: flex-start; --tint: var(--warn); color: var(--warn-text); }
+.ib-swipe-hint.to-later { justify-content: flex-start; --tint: var(--c-later); color: color-mix(in oklab, var(--c-later), var(--ink)); }
 .ib-swipe-hint.to-inbox { justify-content: flex-end; --tint: var(--c-inbox); color: color-mix(in oklab, var(--c-inbox), var(--ink)); }
 .ib-row:is(.swipe-drag, .swipe-armed, .swipe-out) .ib-swipe-hint { opacity: 1; background: color-mix(in srgb, var(--tint) 14%, transparent); }
 .ib-row:is(.swipe-armed, .swipe-out) .ib-swipe-hint { color: #fff; background: var(--tint); }
-.ib-row:is(.swipe-armed, .swipe-out) .ib-swipe-hint.to-later { color: #1a1205; }
 .ib-row:is(.swipe-armed, .swipe-out) .ib-swipe-hint svg { transform: scale(1.18); }
 
 @media (max-width: 980px) {

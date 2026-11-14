@@ -1438,16 +1438,20 @@ const SPRING = 'cubic-bezier(.22, 1.18, .36, 1)';
     真的离开「未整理」的行（整理、删除、合并）在原位播离场（exits 里记着是哪一种）。
     换白板时整体重建，不补间；只是被筛选掉的行直接消失 */
 function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>, path: string, attr: 'ib' | 'lt' = 'ib') {
-  const last = useRef<{ path: string; sig: string; rows: Map<number, { el: HTMLElement; top: number; rect: DOMRect }> } | null>(null);
+  const last = useRef<{ path: string; sig: string; rows: Map<number, Spot> } | null>(null);
   useLayoutEffect(() => {
     const r = root.current;
     if (!r) return;
-    const base = r.getBoundingClientRect().top;
+    const box = r.getBoundingClientRect();
+    const base = box.top;
     const els = [...r.querySelectorAll<HTMLElement>(`[data-${attr}]`)];
     const rows = new Map(
       els.map(el => {
         const rect = el.getBoundingClientRect();
-        return [Number(el.dataset[attr]), { el, top: rect.top - base, rect }] as const;
+        // 拆解组里的行不在整块列表的外角上
+        const inner = !!el.parentElement?.classList.contains('ib-brows');
+        const spot: Spot = { el, top: rect.top - base, left: rect.left - box.left, rect, edge: { top: !inner && !el.previousElementSibling, bottom: !inner && !el.nextElementSibling } };
+        return [Number(el.dataset[attr]), spot] as const;
       }),
     );
     const sig = els.map(el => el.dataset[attr]).join(',');
@@ -1473,24 +1477,40 @@ function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>,
     }
     for (const [id, p] of prev.rows) {
       if (rows.has(id) || present.has(id) || !p.rect.width || p.el.isConnected) continue;
-      ghost(p.el, p.rect, exits.get(id));
+      // 位置按列表现在的位置算（记下位置之后页面可能滚动过）
+      const now = r.getBoundingClientRect();
+      ghost(p.el, new DOMRect(now.left + p.left, now.top + p.top, p.rect.width, p.rect.height), exits.get(id), p.edge);
       exits.delete(id);
     }
   });
 }
 
-function ghost(el: HTMLElement, r: DOMRect, kind: Exit | undefined) {
+/** 一行在列表里的位置：相对列表的偏移、上次的矩形、是不是整块列表的上 / 下外角 */
+type Spot = { el: HTMLElement; top: number; left: number; rect: DOMRect; edge: { top: boolean; bottom: boolean } };
+
+function ghost(el: HTMLElement, r: DOMRect, kind: Exit | undefined, edge: Spot['edge']) {
   if (r.bottom < 0 || r.top > window.innerHeight) return;
+  // 横滑走的（收起、放回）还是列表里的那一行：圆角按它在列表里的位置（第一行只圆上角，中间的行全是直角），不另加描边
+  const flat = kind === 'later' || kind === 'back';
+  const rad = (on: boolean) => (on ? 'var(--r-md)' : '0');
   Object.assign(el.style, {
     position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, margin: '0', zIndex: '60', pointerEvents: 'none',
+    ...(flat ? { borderRadius: `${rad(edge.top)} ${rad(edge.top)} ${rad(edge.bottom)} ${rad(edge.bottom)}` } : {}),
   });
   el.classList.add('ib-ghost');
+  if (flat) el.classList.add('flat');
   document.body.appendChild(el);
+  if (flat) {
+    // 行已经滑出去了，剩下底下的提示色块：原地收起高度（和下面补位的行同一条曲线、同样长，补位的行正好贴着它的下沿），
+    // 同时淡出；不浮在列表上、不横移出列表
+    el.style.overflow = 'hidden';
+    el.animate([{ height: `${r.height}px` }, { height: '0px' }], { duration: 560, easing: SPRING, fill: 'forwards' }).onfinish = () => el.remove();
+    el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 320, easing: 'ease-out', fill: 'forwards' });
+    return;
+  }
   const to =
-    kind === 'triage' || kind === 'later'
+    kind === 'triage'
       ? { opacity: 0, transform: 'translateX(56px)' }
-      : kind === 'back'
-        ? { opacity: 0, transform: 'translateX(-56px)' }
       : kind === 'merge'
         ? { opacity: 0, transform: 'translateY(-10px) scale(.94)' }
         : { opacity: 0, transform: 'scale(.97)', filter: 'blur(4px)' };

@@ -52,6 +52,8 @@
   --c-doing: #F07A12;
   --c-review: #1D8FE0;
   --c-done: #12A06A;
+  /* 「稍后再做」（未整理里收起的条目）：页头条数、横滑提示 */
+  --c-later: #4F74B8;
 
   --shadow-1: 0 1px 0 rgba(26, 24, 20, .04), 0 1px 3px rgba(26, 24, 20, .06);
   --shadow-2: 0 1px 0 rgba(26, 24, 20, .03), 0 6px 18px -6px rgba(26, 24, 20, .16);
@@ -125,6 +127,7 @@
     --c-doing: #FF9A3C;
     --c-review: #4DB5FF;
     --c-done: #3DDC97;
+    --c-later: #7FA2E8;
     --shadow-1: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 1px 2px rgba(0, 0, 0, .4);
     --shadow-2: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 8px 22px -8px rgba(0, 0, 0, .7);
     --shadow-3: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 30px 60px -18px rgba(0, 0, 0, .8);
@@ -169,6 +172,7 @@
   --c-doing: #FF9A3C;
   --c-review: #4DB5FF;
   --c-done: #3DDC97;
+  --c-later: #7FA2E8;
   --shadow-1: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 1px 2px rgba(0, 0, 0, .4);
   --shadow-2: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 8px 22px -8px rgba(0, 0, 0, .7);
   --shadow-3: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 30px 60px -18px rgba(0, 0, 0, .8);
