@@ -115,6 +115,8 @@ export const CardView = memo(function CardView({
         draft && 'draft',
       )}
       aria-busy={saving || undefined}
+      // 整张卡就是「打开详情」的按钮：Enter / 空格打开（lib/drag.ts），拖动换状态（pointerdown）
+      role="button"
       tabIndex={0}
       data-id={c.id}
       data-flip={`c${renderKey(c.id)}`}
@@ -158,7 +160,8 @@ export const CardView = memo(function CardView({
             <span className="card-flags">
               {gh && <span className="card-tag">{gh}</span>}
               {c.comments > 0 && (
-                <span className="f" title={`${c.comments} 条评论`}>
+                // 纯文本（不是按钮）：读屏读「2 条评论」，点这里和点卡片一样打开详情（评论在详情里）
+                <span className="f" aria-label={`${c.comments} 条评论`} title={`${c.comments} 条评论 · 点卡片看评论`}>
                   <Icon name="comment" />
                   {c.comments}
                 </span>
