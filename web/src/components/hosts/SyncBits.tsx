@@ -10,15 +10,18 @@ import type { HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { openHost } from '../../store/ui';
 import { Icon } from '../Icon';
+import { Tip } from '../bits';
 import { AgentIcon } from './bits';
 
 export function HostSyncPill({ s }: { s: HostSync }) {
   return (
-    <button type="button" className={cx('pv-cell', `k-${s.kind}`)} data-tip={s.tip} onClick={() => openHost(s.host.name)}>
-      <i className="pv-cell-mark" aria-hidden="true" />
-      <b>{s.host.name}</b>
-      <span>{s.word}</span>
-    </button>
+    <Tip text={s.tip}>
+      <button type="button" className={cx('pv-cell', `k-${s.kind}`)} onClick={() => openHost(s.host.name)}>
+        <i className="pv-cell-mark" aria-hidden="true" />
+        <b>{s.host.name}</b>
+        <span>{s.word}</span>
+      </button>
+    </Tip>
   );
 }
 
@@ -64,9 +67,9 @@ export function SyncMatrix({ list }: { list: HostSync[] }) {
             {agents.map(a => {
               const c = s.cells.find(x => x.agent === a);
               return (
-                <td key={a} className={cx(c && `s-${c.state}`)} data-tip={c?.why ?? undefined}>
-                  {c ? c.word : '—'}
-                </td>
+                <Tip key={a} text={c?.why ?? ''}>
+                  <td className={cx(c && `s-${c.state}`)}>{c ? c.word : '—'}</td>
+                </Tip>
               );
             })}
           </tr>
@@ -78,10 +81,12 @@ export function SyncMatrix({ list }: { list: HostSync[] }) {
 
 export function HowTip({ tip }: { tip: string }) {
   return (
-    <span className="sc-how" tabIndex={0} data-tip={tip}>
-      <Icon name="info" />
-      怎么生效
-    </span>
+    <Tip text={tip}>
+      <span className="sc-how" tabIndex={0}>
+        <Icon name="info" />
+        怎么生效
+      </span>
+    </Tip>
   );
 }
 

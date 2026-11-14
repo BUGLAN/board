@@ -15,7 +15,7 @@ import { cx } from '../../lib/util';
 import { optimistic } from '../../store/data';
 import { toast, toastError } from '../../store/ui';
 import { Icon } from '../Icon';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 
 /** 发自检请求；返回进行中的状态和发请求的函数（整机、某个 agent 共用一个，免得同时点两个） */
 function useSelfTest(h: HostInfo) {
@@ -65,12 +65,14 @@ export function SelfTestSection({ h, server, i }: { h: HostInfo; server: string 
         {last > 0 && <span className="act">{when(last)} 检查</span>}
       </div>
       <div className="hp-manage-acts">
-        <span data-tip={tip}>
-          <button className={cx('btn sm', busy === '*' && 'is-busy')} type="button" disabled={!!busy || pending || !h.online || old} aria-busy={busy === '*' || undefined} onClick={() => void run()}>
-            <Icon name="check" />
-            自检
-          </button>
-        </span>
+        <Tip text={tip}>
+          <span>
+            <button className={cx('btn sm', busy === '*' && 'is-busy')} type="button" disabled={!!busy || pending || !h.online || old} aria-busy={busy === '*' || undefined} onClick={() => void run()}>
+              <Icon name="check" />
+              自检
+            </button>
+          </span>
+        </Tip>
         {old ? (
           <span className="hp-note hp-st-none">{tip}</span>
         ) : (
@@ -128,17 +130,19 @@ export function SelfTestAgentButton({ h, a }: { h: HostInfo; a: HostAgent }) {
         ? `${res.ok ? '上次自检通过' : `上次自检没通过：${res.why ?? ''}`}（${since(res.at, now)}）；点一下用设置好的启动环境、模型、强度问它一句`
         : '用设置好的启动环境、模型、强度问它一句，确认它登录了、认得 board-skills';
   return (
-    <span data-tip={tip} data-tip-align="end">
-      <button
-        className={cx('hp-st-btn', (busy === a.id || mine) && 'is-busy', res && (res.ok ? 'ok' : 'bad'))}
-        type="button"
-        aria-label={`自检 ${a.name}`}
-        disabled={!!busy || pending || !h.online}
-        onClick={() => void run(a)}
-      >
-        <Icon name={res && !res.ok ? 'alert' : 'check'} />
-        自检
-      </button>
-    </span>
+    <Tip text={tip}>
+      <span data-tip-align="end">
+        <button
+          className={cx('hp-st-btn', (busy === a.id || mine) && 'is-busy', res && (res.ok ? 'ok' : 'bad'))}
+          type="button"
+          aria-label={`自检 ${a.name}`}
+          disabled={!!busy || pending || !h.online}
+          onClick={() => void run(a)}
+        >
+          <Icon name={res && !res.ok ? 'alert' : 'check'} />
+          自检
+        </button>
+      </span>
+    </Tip>
   );
 }

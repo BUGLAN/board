@@ -15,6 +15,7 @@ import type { HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, toast, toastError } from '../../store/ui';
+import { Tip } from '../bits';
 import { Icon } from '../Icon';
 
 type Kind = 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel';
@@ -90,12 +91,14 @@ export function ManageSection({ h, server, i }: { h: HostInfo; server: string | 
     if (yes) void send('upgrade', true);
   };
   const btn = (kind: Kind, label: string, icon: Parameters<typeof Icon>[0]['name'], act: () => void, tip: string, disabled = false) => (
-    <span data-tip={tip}>
-      <button className={cx('btn sm', busy === kind && 'is-busy')} type="button" disabled={!!busy || disabled} aria-busy={busy === kind || undefined} onClick={act}>
-        <Icon name={icon} />
-        {label}
-      </button>
-    </span>
+    <Tip text={tip}>
+      <span>
+        <button className={cx('btn sm', busy === kind && 'is-busy')} type="button" disabled={!!busy || disabled} aria-busy={busy === kind || undefined} onClick={act}>
+          <Icon name={icon} />
+          {label}
+        </button>
+      </span>
+    </Tip>
   );
   const offline = !h.online;
   const pending = !!h.ask;

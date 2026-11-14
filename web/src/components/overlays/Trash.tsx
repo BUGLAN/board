@@ -10,7 +10,7 @@ import { statusColor } from '../../lib/schema';
 import { purgeCards, restoreMany, restoredToast, trashOf } from '../../lib/trash';
 import type { Status, TrashCard } from '../../lib/types';
 import { actorName, ago, cx } from '../../lib/util';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { useData } from '../../store/data';
 import { confirm, openTrash, useUI } from '../../store/ui';
 import { Icon } from '../Icon';
@@ -128,9 +128,11 @@ function TrashBody({ path, on }: { path: string; on: boolean }) {
           </span>
         </span>
         <span className="spacer" />
-        <button ref={close} aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={() => openTrash(null)}>
-          <Icon name="close" />
-        </button>
+        <Tip text="关闭  esc">
+          <button ref={close} aria-label="关闭" className="icon-btn" type="button" data-tip-align="end" onClick={() => openTrash(null)}>
+            <Icon name="close" />
+          </button>
+        </Tip>
       </header>
 
       {all.length > 0 && (
@@ -213,17 +215,23 @@ function TrashBody({ path, on }: { path: string; on: boolean }) {
                       {actorName(t.deletedBy)} 删除 · {ago(t.deletedAt, now)}
                     </span>
                   </span>
-                  <span className={cx('trash-left', left <= SOON_DAYS && 'soon')} data-tip={left > 0 ? `${left} 天后自动永久删除` : '马上会永久删除'}>
-                    {left > 0 ? `${left} 天` : '即将'}
-                  </span>
+                  <Tip text={left > 0 ? `${left} 天后自动永久删除` : '马上会永久删除'}>
+                    <span className={cx('trash-left', left <= SOON_DAYS && 'soon')}>
+                      {left > 0 ? `${left} 天` : '即将'}
+                    </span>
+                  </Tip>
                   <span className="trash-acts">
-                    <button className="btn sm" type="button" disabled={busy} onClick={() => void restore([t.id])} data-tip="恢复到原来状态">
-                      <Icon name="replay" />
-                      恢复
-                    </button>
-                    <button className="icon-btn sm danger" type="button" aria-label={`永久删除 #${t.id}`} data-tip="永久删除" disabled={busy} onClick={() => void purge([t.id])}>
-                      <Icon name="trash" />
-                    </button>
+                    <Tip text="恢复到原来状态">
+                      <button className="btn sm" type="button" disabled={busy} onClick={() => void restore([t.id])}>
+                        <Icon name="replay" />
+                        恢复
+                      </button>
+                    </Tip>
+                    <Tip text="永久删除">
+                      <button className="icon-btn sm danger" type="button" aria-label={`永久删除 #${t.id}`} disabled={busy} onClick={() => void purge([t.id])}>
+                        <Icon name="trash" />
+                      </button>
+                    </Tip>
                   </span>
                 </div>
               );

@@ -6,7 +6,7 @@ import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { renderKey, useCurrent, useData, useOnline } from '../store/data';
-import { AgentAvatar, LabelChips, Title, useNow } from './bits';
+import { AgentAvatar, LabelChips, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
 import { agentMark, cardDispatch } from '../lib/hosts';
@@ -230,10 +230,12 @@ export function RunPill({ card: c, now, big }: { card: CardT; now: number; big?:
           ? `领取了，还没收到第一次心跳；${BEAT_MS * BEAT_MISSES / 1000} 秒内没收到就释放`
           : `已发 final，${BEAT_MS * BEAT_MISSES / 1000} 秒内没移走就释放`;
   return (
-    <span className={cx('run-pill live', t.beat, big && 'big')} data-tip={tip} data-tip-align="end">
-      <i className="beat" />
-      {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
-    </span>
+    <Tip text={tip}>
+      <span className={cx('run-pill live', t.beat, big && 'big')} data-tip-align="end">
+        <i className="beat" />
+        {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
+      </span>
+    </Tip>
   );
 }
 
@@ -456,8 +458,10 @@ export function FloatTips() {
   }, [tip]);
 
   if (!tip || !tip.el.isConnected) return null;
+  // 不写 role="tooltip"：它得配 aria-describedby 才读得到，而这里不挂的时候就没有（default/main#314），
+  // 可读名称由 bits 的 Tip / TipNote 补，挂的那份浮层对读屏隐藏
   return createPortal(
-    <div ref={box} className="float-tip" role="tooltip">
+    <div ref={box} className="float-tip" aria-hidden="true">
       {tip.text}
     </div>,
     document.body,

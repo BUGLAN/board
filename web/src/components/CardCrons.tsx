@@ -8,7 +8,7 @@
    写操作（AGENTS.md「界面写操作」）：新建、删除、现在建一张要等服务端返回（optimistic(null, …)，按钮转圈并禁用）；
    开关是设置项（saveSetting，不锁）；改模板用乐观补丁（cardCronPatch + cardCronKey），当帧生效，失败时带着草稿重新打开
    ========================================================================== */
-import { useRef, useState, type SetStateAction } from 'react';
+import { useRef, useState, type ReactElement, type SetStateAction } from 'react';
 import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
@@ -19,7 +19,7 @@ import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
 import { cardCronKey, cardCronPatch, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { confirm, openBoardSettings, openPicker, toast, toastError } from '../store/ui';
-import { DescTabs, InfoTip, LabelChip, Markdown, Segmented, Sync, useNow, useSync } from './bits';
+import { DescTabs, InfoTip, LabelChip, Markdown, Segmented, Sync, Tip, useNow, useSync } from './bits';
 import { AgentChip, Dot } from './hosts/bits';
 import { Icon } from './Icon';
 import { DEFAULT_SCHEDULE, EVERY_MINUTES, SchedulePick } from './SchedulePick';
@@ -33,6 +33,11 @@ const MINUTES = [1, ...EVERY_MINUTES];
 
 /** 这台电脑的时区（IANA 名称），保存时带上 */
 export const browserTz = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+/** 提示可能是空的（这个选项现在没有理由说明）：空的时候原样放回元素，不套 <Tip> */
+function TipOr({ text, children }: { text?: string; children: ReactElement }) {
+  return text ? <Tip text={text}>{children}</Tip> : children;
+}
 
 const pad = (n: number) => String(n).padStart(2, '0');
 /** 「11-12 09:00」（按这台电脑的时间） */
@@ -102,12 +107,12 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
       {open?.id === 'new' ? (
         <CronForm path={path} initial={open.draft} close={() => setOpen(null)} reopen={d => setOpen({ id: 'new', draft: d })} />
       ) : (
-        <span data-tip={list.length >= MAX ? `每块白板最多 ${MAX} 条` : undefined}>
+        <TipOr text={list.length >= MAX ? `每块白板最多 ${MAX} 条` : undefined}>
           <button className="btn sm cc-add" type="button" disabled={list.length >= MAX} onClick={() => setOpen({ id: 'new' })}>
             <Icon name="plus" />
             加一条定时建卡
           </button>
-        </span>
+        </TipOr>
       )}
     </section>
   );
@@ -171,24 +176,30 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
         <div className="cc-l1">
           <b>{c.name}</b>
           <Sync s={sync.on} inline />
-          <span className="cc-when" data-tip={`cron：${normalizeCron(c.cron)}`}>
-            {describe === normalizeCron(c.cron) ? <code>{describe}</code> : describe}
-            <em>{c.tz}</em>
-          </span>
+          <Tip text={`cron：${normalizeCron(c.cron)}`}>
+            <span className="cc-when">
+              {describe === normalizeCron(c.cron) ? <code>{describe}</code> : describe}
+              <em>{c.tz}</em>
+            </span>
+          </Tip>
           <span className="cc-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
           {random && (
-            <span className="cc-to" data-tip="到点在这块白板能接的机器里随机挑一台，用它的默认 agent">
-              <Icon name="dispatch" />
-              随机
-              {canTake > 0 && <em>{canTake} 台</em>}
-            </span>
+            <Tip text="到点在这块白板能接的机器里随机挑一台，用它的默认 agent">
+              <span className="cc-to">
+                <Icon name="dispatch" />
+                随机
+                {canTake > 0 && <em>{canTake} 台</em>}
+              </span>
+            </Tip>
           )}
           {c.host && (
-            <span className={cx('cc-to', !to && 'gone')} data-tip={to ? '建出卡后马上派发到这台机器' : '这台机器已经移除：到点照样建卡，但派发不出去'}>
-              <Icon name="dispatch" />
-              {c.host}
-              {to ? ` · ${agentName(to, c.agent)}` : '（已移除）'}
-            </span>
+            <Tip text={to ? '建出卡后马上派发到这台机器' : '这台机器已经移除：到点照样建卡，但派发不出去'}>
+              <span className={cx('cc-to', !to && 'gone')}>
+                <Icon name="dispatch" />
+                {c.host}
+                {to ? ` · ${agentName(to, c.agent)}` : '（已移除）'}
+              </span>
+            </Tip>
           )}
           {tags.map(l => (
             <LabelChip key={l.id} label={l} />
@@ -220,12 +231,16 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
         <button className={cx('btn sm', running && 'is-busy')} type="button" disabled={running || busy || removing} aria-busy={running || undefined} onClick={() => void run()}>
           现在建一张
         </button>
-        <button className="icon-btn sm" type="button" aria-label={`编辑「${c.name}」`} data-tip="编辑" disabled={busy || removing} onClick={edit}>
-          <Icon name="edit" />
-        </button>
-        <button className={cx('icon-btn sm cc-del', removing && 'is-busy')} type="button" aria-label={`删除「${c.name}」`} data-tip="删除" disabled={busy || removing} onClick={() => void remove()}>
-          <Icon name="trash" />
-        </button>
+        <Tip text="编辑">
+          <button className="icon-btn sm" type="button" aria-label={`编辑「${c.name}」`} disabled={busy || removing} onClick={edit}>
+            <Icon name="edit" />
+          </button>
+        </Tip>
+        <Tip text="删除">
+          <button className={cx('icon-btn sm cc-del', removing && 'is-busy')} type="button" aria-label={`删除「${c.name}」`} disabled={busy || removing} onClick={() => void remove()}>
+            <Icon name="trash" />
+          </button>
+        </Tip>
       </span>
     </div>
   );
@@ -393,11 +408,11 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
         <button className="btn sm" type="button" onClick={close}>
           取消
         </button>
-        <span data-tip={!d.name.trim() ? '写个名称' : !expr ? '至少选一天' : undefined}>
+        <TipOr text={!d.name.trim() ? '写个名称' : !expr ? '至少选一天' : undefined}>
           <button className={cx('btn sm primary', sending && 'is-busy')} type="button" disabled={!ok || sending} aria-busy={sending || undefined} onClick={() => void save()}>
             {cron ? '保存' : '加上'}
           </button>
-        </span>
+        </TipOr>
       </div>
     </div>
   );
@@ -438,43 +453,46 @@ function HostPick({
         <button type="button" role="radio" aria-checked={!host && !random} className={cx('cc-host', !host && !random && 'on')} onClick={() => onChange({ host: null, pick: 'host', agent: null })}>
           不派发
         </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={random}
-          className={cx('cc-host', random && 'on')}
-          disabled={inbox || !can.length}
-          data-tip={inbox ? undefined : !can.length ? '没有能接这块白板的机器：要配了工作空间，并且有找到了命令的 agent' : `到点在这 ${can.length} 台机器里随机挑一台`}
-          onClick={() => onChange({ host: null, pick: 'random', agent: null })}
-        >
-          随机
-          {!inbox && can.length > 0 && <em>{can.length} 台</em>}
-        </button>
+        <TipOr text={inbox ? undefined : !can.length ? '没有能接这块白板的机器：要配了工作空间，并且有找到了命令的 agent' : `到点在这 ${can.length} 台机器里随机挑一台`}>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={random}
+            className={cx('cc-host', random && 'on')}
+            disabled={inbox || !can.length}
+            onClick={() => onChange({ host: null, pick: 'random', agent: null })}
+          >
+            随机
+            {!inbox && can.length > 0 && <em>{can.length} 台</em>}
+          </button>
+        </TipOr>
         {hosts.map(x => {
           const ok = hasDir(x);
           const w = why(x);
           return (
-            <button
-              key={x.id}
-              type="button"
-              role="radio"
-              aria-checked={host === x.name}
-              className={cx('cc-host', host === x.name && 'on')}
-              disabled={inbox || !ok}
-              data-tip={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : w ? `${w}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
-              onClick={() => onChange({ host: x.name, pick: 'host', agent: null })}
-            >
-              <Dot h={x} running={hostLoad(ws, x).running.length} />
-              {x.name}
-              {w && <em>{w}</em>}
-            </button>
+            <TipOr key={x.id} text={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : w ? `${w}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={host === x.name}
+                className={cx('cc-host', host === x.name && 'on')}
+                disabled={inbox || !ok}
+                onClick={() => onChange({ host: x.name, pick: 'host', agent: null })}
+              >
+                <Dot h={x} running={hostLoad(ws, x).running.length} />
+                {x.name}
+                {w && <em>{w}</em>}
+              </button>
+            </TipOr>
           );
         })}
         {host && !h && (
-          <button type="button" role="radio" aria-checked className="cc-host on gone" data-tip="这台机器已经移除：到点照样建卡，但派发不出去">
-            {host}
-            <em>已移除</em>
-          </button>
+          <Tip text="这台机器已经移除：到点照样建卡，但派发不出去">
+            <button type="button" role="radio" aria-checked className="cc-host on gone">
+              {host}
+              <em>已移除</em>
+            </button>
+          </Tip>
         )}
       </span>
       {h && (
@@ -483,20 +501,20 @@ function HostPick({
             默认 agent{def ? `（${def.name}）` : ''}
           </button>
           {h.agents.map(a => (
-            <button
-              key={a.id}
-              type="button"
-              role="radio"
-              aria-checked={agent === a.id}
-              aria-label={a.name}
-              className={cx('hp-agent-btn', agent === a.id && 'on')}
-              disabled={!a.found && agent !== a.id}
-              data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
-              onClick={() => onChange({ host, pick: 'host', agent: a.id })}
-            >
-              {/* 默认的那个写在「默认 agent（…）」里，chip 上不再标，免得看起来像选中了两个 */}
-              <AgentChip a={a} env={envName(h, a.env)} />
-            </button>
+            <TipOr key={a.id} text={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={agent === a.id}
+                aria-label={a.name}
+                className={cx('hp-agent-btn', agent === a.id && 'on')}
+                disabled={!a.found && agent !== a.id}
+                onClick={() => onChange({ host, pick: 'host', agent: a.id })}
+              >
+                {/* 默认的那个写在「默认 agent（…）」里，chip 上不再标，免得看起来像选中了两个 */}
+                <AgentChip a={a} env={envName(h, a.env)} />
+              </button>
+            </TipOr>
           ))}
         </span>
       )}

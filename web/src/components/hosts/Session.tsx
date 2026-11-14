@@ -21,7 +21,7 @@ import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
 import { cx, durWords, hhmm, isMobile, reduceMotion } from '../../lib/util';
 import { onRuns, useData } from '../../store/data';
 import { openHost, openSession, useUI, type SessionReq } from '../../store/ui';
-import { Markdown, Segmented, useNow } from '../bits';
+import { Markdown, Segmented, Tip, useNow } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from '../overlays/presence';
 import { Skeleton, SkeletonText } from '../Skeleton';
@@ -310,9 +310,11 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
             停止
           </button>
         )}
-        <button aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
-          <Icon name="close" />
-        </button>
+        <Tip text="关闭  esc">
+          <button aria-label="关闭" className="icon-btn" type="button" data-tip-align="end" onClick={close}>
+            <Icon name="close" />
+          </button>
+        </Tip>
       </div>
       {loading && !first && <MetaSkeleton />}
       {first && (
@@ -396,10 +398,12 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
           {error && <p className="hp-note ss-err">{error}</p>}
           {rows.map((p, i) => (p ? <Segment key={p.id} p={p} mode={mode} pending={!view} showRaw={() => setMode('raw')} /> : <SegSkeleton key={`sk${i}`} i={i} />))}
           <div className={cx('ss-bottom', away && rows.length > 0 && 'on')} aria-hidden={!away || undefined}>
-            <button type="button" className="btn sm ss-tobottom" tabIndex={away ? 0 : -1} onClick={toBottom} data-tip="到最底下，接着跟新内容" data-tip-pos="top" data-tip-align="end">
-              <Icon name="chevDown" />
-              到最底下
-            </button>
+            <Tip text="到最底下，接着跟新内容">
+              <button type="button" className="btn sm ss-tobottom" tabIndex={away ? 0 : -1} onClick={toBottom} data-tip-pos="top" data-tip-align="end">
+                <Icon name="chevDown" />
+                到最底下
+              </button>
+            </Tip>
           </div>
         </div>
       </div>

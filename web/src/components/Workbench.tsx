@@ -14,7 +14,7 @@ import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref } from '../lib/util';
 import { newEntryCount, useCurrent, useData, useOnline } from '../store/data';
 import { manageLabels, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toggleLabelSel, useUI, type Tab } from '../store/ui';
-import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
+import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, agent, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
 import { InboxSideParts } from './Inbox';
@@ -53,20 +53,20 @@ export function ActivityBar() {
   const item = (t: Tab) => {
     const m = TAB_META[t];
     return (
-      <button
-        key={t}
-        className={cx('ab-item', tab === t && 'on')}
-        type="button"
-        data-tab={t}
-        data-tip={m.tip}
-        data-tip-pos="right"
-        aria-label={m.label}
-        aria-current={tab === t ? 'page' : undefined}
-        onClick={() => setTab(t, { toggle: true })}
-      >
-        {m.icon}
-        <span className="ab-label">{m.label}</span>
-      </button>
+      <Tip key={t} text={m.tip}>
+        <button
+          className={cx('ab-item', tab === t && 'on')}
+          type="button"
+          data-tab={t}
+          data-tip-pos="right"
+          aria-label={m.label}
+          aria-current={tab === t ? 'page' : undefined}
+          onClick={() => setTab(t, { toggle: true })}
+        >
+          {m.icon}
+          <span className="ab-label">{m.label}</span>
+        </button>
+      </Tip>
     );
   };
   return (
@@ -238,10 +238,12 @@ function LabelBlock({ project, all, used }: { project: string; all: Label[]; use
             </button>
           </span>
         ))}
-        <button type="button" className={cx('lb-manage', !labels.length && 'empty')} aria-label="管理标签" data-tip="新建、改名、改色、删除、调整顺序" onClick={() => manageLabels(project)}>
-          <Icon name="settings" />
-          {labels.length ? '管理' : '新建标签'}
-        </button>
+        <Tip text="新建、改名、改色、删除、调整顺序">
+          <button type="button" className={cx('lb-manage', !labels.length && 'empty')} aria-label="管理标签" onClick={() => manageLabels(project)}>
+            <Icon name="settings" />
+            {labels.length ? '管理' : '新建标签'}
+          </button>
+        </Tip>
       </div>
     </div>
   );
@@ -503,22 +505,23 @@ function BoardSide() {
       <header className="side-head">
         <span className="side-title">白板</span>
         <span className="side-sub">{cur?.board.path}</span>
-        <button
-          className="icon-btn sm"
-          type="button"
-          aria-label="折叠 / 展开分组"
-          data-tip="折叠 / 展开分组"
-          data-tip-align="end"
-          onClick={() => {
-            const all = ['labels', 'working', 'recent'];
-            const close = all.some(x => !closed.has(x));
-            const n = new Set(close ? all : []);
-            pref.set('treeClosed', [...n]);
-            setClosed(n);
-          }}
-        >
-          <Icon name="collapse" />
-        </button>
+        <Tip text="折叠 / 展开分组">
+          <button
+            className="icon-btn sm"
+            type="button"
+            aria-label="折叠 / 展开分组"
+            data-tip-align="end"
+            onClick={() => {
+              const all = ['labels', 'working', 'recent'];
+              const close = all.some(x => !closed.has(x));
+              const n = new Set(close ? all : []);
+              pref.set('treeClosed', [...n]);
+              setClosed(n);
+            }}
+          >
+            <Icon name="collapse" />
+          </button>
+        </Tip>
       </header>
       <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent" />
       <div className="side-scroll">
@@ -628,11 +631,13 @@ function TrashEntry({ path }: { path?: string }) {
   if (!path) return null;
   const n = count ?? 0;
   return (
-    <button className={cx('trash-entry', n > 0 && 'has')} type="button" disabled={!count && n === 0} data-tip={n ? '删除的卡片，30 天内可以恢复' : '还没有删掉的卡片'} data-tip-pos="top" onClick={() => openTrash(path)}>
-      <Icon name="trash" />
-      <span className="trash-entry-name">回收站</span>
-      <span className="trash-entry-n mono">{n}</span>
-    </button>
+    <Tip text={n ? '删除的卡片，30 天内可以恢复' : '还没有删掉的卡片'}>
+      <button className={cx('trash-entry', n > 0 && 'has')} type="button" disabled={!count && n === 0} data-tip-pos="top" onClick={() => openTrash(path)}>
+        <Icon name="trash" />
+        <span className="trash-entry-name">回收站</span>
+        <span className="trash-entry-n mono">{n}</span>
+      </button>
+    </Tip>
   );
 }
 
@@ -770,9 +775,11 @@ function ProjectsSide() {
       <header className="side-head">
         <span className="side-title">项目</span>
         {ws ? <span className="side-sub">{projects.length} 个项目</span> : <Skeleton w={52} h={10} />}
-        <button aria-label="新建项目" className="icon-btn sm" type="button" data-tip="新建项目" data-tip-align="end" onClick={() => newProject()}>
-          <Icon name="plus" sw={1.9} />
-        </button>
+        <Tip text="新建项目">
+          <button aria-label="新建项目" className="icon-btn sm" type="button" data-tip-align="end" onClick={() => newProject()}>
+            <Icon name="plus" sw={1.9} />
+          </button>
+        </Tip>
       </header>
       <SideFilter value={q} onChange={setQ} placeholder="筛选项目和白板" />
       <div className="side-scroll" role="tree" onPointerLeave={() => canvasHighlight(null)}>

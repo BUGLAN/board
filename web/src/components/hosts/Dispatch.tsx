@@ -9,7 +9,7 @@ import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
 import { confirm, openDispatch, openHost, openSession, toast, toastError, useUI } from '../../store/ui';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from '../overlays/presence';
 import { AgentChip, Dot, Mark } from './bits';
@@ -329,16 +329,11 @@ function DispatchBody({ card, force, on }: { card: number; force: boolean; on: b
                 <div className="dp-label">agent</div>
                 <div className="hp-agents">
                   {h.agents.map(a => (
-                    <button
-                      key={a.id}
-                      type="button"
-                      className={cx('hp-agent-btn', agent === a.id && 'on')}
-                      disabled={!a.found}
-                      onClick={() => setAgent(a.id)}
-                      data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
-                    >
-                      <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} />
-                    </button>
+                    <Tip key={a.id} text={a.found ? '' : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}>
+                      <button type="button" className={cx('hp-agent-btn', agent === a.id && 'on')} disabled={!a.found} onClick={() => setAgent(a.id)}>
+                        <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} />
+                      </button>
+                    </Tip>
                   ))}
                 </div>
                 {miss && (

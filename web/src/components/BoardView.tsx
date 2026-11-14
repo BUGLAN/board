@@ -5,7 +5,7 @@
    - 卡片位置变化用 FLIP 补间；新卡片弹入；通过 CLI 或其他窗口做的修改：卡片闪光 + 角标说明是谁做的
    - 手机：状态块上下排列，顶部有状态切换条
    ========================================================================== */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { useMasonry } from '../lib/masonry';
 import { groupRuns, sessionOrder, type SessGroup } from '../lib/sessionGroups';
 import { setShownCols } from '../lib/drag';
@@ -18,6 +18,7 @@ import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/type
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurrent, useData } from '../store/data';
 import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
+import { Tip } from './bits';
 import { BoardSettings } from './BoardSettings';
 import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
@@ -402,10 +403,12 @@ function ColTags({ col, icons }: { col: Status; icons?: boolean }) {
   return (
     <>
       {rulesOf(col).map(r => (
-        <span key={r.key} className="col-tag" data-rule={r.key} aria-label={r.name} data-tip={icons ? r.tip : undefined}>
-          <Icon name={r.icon} />
-          {icons ? null : <span className="t">{r.name}</span>}
-        </span>
+        <Tip key={r.key} text={icons ? r.tip : ''}>
+          <span className="col-tag" data-rule={r.key} aria-label={r.name}>
+            <Icon name={r.icon} />
+            {icons ? null : <span className="t">{r.name}</span>}
+          </span>
+        </Tip>
       ))}
     </>
   );
@@ -472,16 +475,17 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         <ColTags col={col} />
         {sorted && <OrderChip col={col} path={path} />}
         {role && count > 0 && (
-          <button
-            type="button"
-            className={cx('col-desk', role)}
-            onPointerDown={e => e.stopPropagation()}
-            onClick={() => openReview({ cols: [col.key], mode: role })}
-            data-tip={role === 'review' ? '复盘台：逐张看，通过或打回' : '逐张看 agent 留的问题，回复后放回'}
-          >
-            <Icon name={role === 'review' ? 'checkCircle' : 'comment'} />
-            {role === 'review' ? '复盘' : '处理'}
-          </button>
+          <Tip text={role === 'review' ? '复盘台：逐张看，通过或打回' : '逐张看 agent 留的问题，回复后放回'}>
+            <button
+              type="button"
+              className={cx('col-desk', role)}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => openReview({ cols: [col.key], mode: role })}
+            >
+              <Icon name={role === 'review' ? 'checkCircle' : 'comment'} />
+              {role === 'review' ? '复盘' : '处理'}
+            </button>
+          </Tip>
         )}
         <span className="col-count" aria-label="卡片数量" ref={badge}>
           <span>{count}</span>
@@ -532,6 +536,11 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
   );
 }
 
+/** 提示可能为空（不是磁贴时不加提示）：为空时原样返回元素，不套 <Tip> */
+function TipOr({ text, children }: { text?: string; children: ReactElement }) {
+  return text ? <Tip text={text}>{children}</Tip> : children;
+}
+
 /** 终点状态只带了最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态一样大（磁贴里写成 +M）；
     点开取全量（这个窗口里这块白板之后都带全量）。拖拽算落点时不算它（data-earlier） */
 function EarlierButton({ n, view }: { n: number; view: StatusView }) {
@@ -546,34 +555,35 @@ function EarlierButton({ n, view }: { n: number; view: StatusView }) {
     if (el.style.height !== h) el.style.height = h;
   });
   return (
-    <button
-      ref={ref}
-      type="button"
-      data-earlier=""
-      className={cx('col-earlier', `v-${view}`, busy && 'is-busy')}
-      disabled={busy}
-      aria-label={`显示更早的 ${n} 张`}
-      data-tip={view === 'tile' ? `更早的 ${n} 张` : undefined}
-      onClick={async () => {
-        setBusy(true);
-        try {
-          await loadFull();
-        } catch (e) {
-          toastError(e);
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      {view === 'tile' ? (
-        `+${n}`
-      ) : (
-        <>
-          <Icon name="more" />
-          更早的 {n} 张
-        </>
-      )}
-    </button>
+    <TipOr text={view === 'tile' ? `更早的 ${n} 张` : undefined}>
+      <button
+        ref={ref}
+        type="button"
+        data-earlier=""
+        className={cx('col-earlier', `v-${view}`, busy && 'is-busy')}
+        disabled={busy}
+        aria-label={`显示更早的 ${n} 张`}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await loadFull();
+          } catch (e) {
+            toastError(e);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {view === 'tile' ? (
+          `+${n}`
+        ) : (
+          <>
+            <Icon name="more" />
+            更早的 {n} 张
+          </>
+        )}
+      </button>
+    </TipOr>
   );
 }
 
@@ -582,18 +592,19 @@ function OrderChip({ col, path }: { col: Status; path: string }) {
   const o = orderOf(col);
   const x = orderOption(o);
   return (
-    <button
-      type="button"
-      className="col-order"
-      aria-label={`「${col.name}」按${orderName(o)}排，${orderDir(o)}。点开白板设置更改`}
-      data-tip={`保留顺序：按${orderName(o)}，${orderDir(o)}`}
-      onClick={() => openBoardSettings(path, col.key)}
-    >
-      <Icon name="sort" />
-      <span className="t">{x.name}</span>
-      <span className="ts">{x.short}</span>
-      {x.dirs && <i aria-hidden="true">{o.desc ? '↓' : '↑'}</i>}
-    </button>
+    <Tip text={`保留顺序：按${orderName(o)}，${orderDir(o)}`}>
+      <button
+        type="button"
+        className="col-order"
+        aria-label={`「${col.name}」按${orderName(o)}排，${orderDir(o)}。点开白板设置更改`}
+        onClick={() => openBoardSettings(path, col.key)}
+      >
+        <Icon name="sort" />
+        <span className="t">{x.name}</span>
+        <span className="ts">{x.short}</span>
+        {x.dirs && <i aria-hidden="true">{o.desc ? '↓' : '↑'}</i>}
+      </button>
+    </Tip>
   );
 }
 

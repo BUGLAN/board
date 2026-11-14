@@ -6,6 +6,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cx } from '../../lib/util';
 import { useUI } from '../../store/ui';
+import { Tip } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 
@@ -138,9 +139,11 @@ export function FormFoot({
             <>
               <span>{agentsLabel}</span>
               {agents.map(a => (
-                <span key={a.id} className={cx('fm-who-a', a.on && 'on')} data-tip={a.tip}>
-                  <AgentIcon id={a.id} />
-                </span>
+                <Tip key={a.id} text={a.tip}>
+                  <span className={cx('fm-who-a', a.on && 'on')}>
+                    <AgentIcon id={a.id} />
+                  </span>
+                </Tip>
               ))}
             </>
           )}

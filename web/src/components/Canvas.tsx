@@ -14,7 +14,7 @@ import type { BoardInfo, Pos, ProjectInfo } from '../lib/types';
 import { cx, pref, reduceMotion, replay } from '../lib/util';
 import { onEvents, optimistic, patchProject, useData, type Patch } from '../store/data';
 import { openCtx, toastError, useUI } from '../store/ui';
-import { Avatar, agent } from './bits';
+import { Avatar, Tip, agent } from './bits';
 import { Icon } from './Icon';
 
 const K_MIN = 0.25;
@@ -437,12 +437,16 @@ export function CanvasPage() {
             +
           </button>
           <i />
-          <button aria-label="适应画布" type="button" data-tip="适应画布" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('fit')}>
-            <Icon name="fit" />
-          </button>
-          <button aria-label="定位到当前白板" type="button" data-tip="定位到当前白板" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('current')}>
-            <Icon name="target" />
-          </button>
+          <Tip text="适应画布">
+            <button aria-label="适应画布" type="button" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('fit')}>
+              <Icon name="fit" />
+            </button>
+          </Tip>
+          <Tip text="定位到当前白板">
+            <button aria-label="定位到当前白板" type="button" data-tip-pos="top" data-tip-align="end" onClick={() => zoom('current')}>
+              <Icon name="target" />
+            </button>
+          </Tip>
         </div>
       </div>
     </div>
@@ -487,19 +491,20 @@ function ProjectGroup({
           <Icon name="more" />
         </button>
         <span className="cv-port out" />
-        <button
-          type="button"
-          className="cv-add"
-          aria-label={`在「${p.name}」里新建白板`}
-          data-tip={`在「${p.name}」里新建白板`}
-          data-tip-pos="right"
-          onClick={() => {
-            const ys = p.boards.map(b => b.pos.y);
-            newBoard(p.key, { pos: { x: pos.x + 420, y: ys.length ? Math.max(...ys) + 200 : pos.y - 10 } });
-          }}
-        >
-          <Icon name="plus" />
-        </button>
+        <Tip text={`在「${p.name}」里新建白板`}>
+          <button
+            type="button"
+            className="cv-add"
+            aria-label={`在「${p.name}」里新建白板`}
+            data-tip-pos="right"
+            onClick={() => {
+              const ys = p.boards.map(b => b.pos.y);
+              newBoard(p.key, { pos: { x: pos.x + 420, y: ys.length ? Math.max(...ys) + 200 : pos.y - 10 } });
+            }}
+          >
+            <Icon name="plus" />
+          </button>
+        </Tip>
       </div>
       {p.boards.map(b => (
         <BoardNode key={b.path} b={b} p={p} i={bIndex()} current={b.path === path} hl={hl === b.path} dragging={override?.id === b.path} pos={posOf('board', b.path, b.pos)} ctx={ctx} />

@@ -24,7 +24,7 @@ import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
 import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
-import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Title, useNow } from './bits';
+import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
 import { matches } from './Card';
 import { CardLabels, DescEditor, TitleEditor } from './CardDetail';
 import { Icon } from './Icon';
@@ -630,10 +630,12 @@ function SplitNote({ d }: { d: Dispatched }) {
 
 function SplittingMark({ d }: { d: Dispatched }) {
   return (
-    <span className={cx('ib-mark ib-splitting', d.state === 'queued' && 'queued')} data-tip={d.state === 'queued' ? '排队等机器有空位' : `${d.name ?? ''} 正在拆这一条`}>
-      <i aria-hidden="true" />
-      {d.state === 'queued' ? '排队拆解' : '拆解中'} · {d.host} · {d.agentLabel}
-    </span>
+    <Tip text={d.state === 'queued' ? '排队等机器有空位' : `${d.name ?? ''} 正在拆这一条`}>
+      <span className={cx('ib-mark ib-splitting', d.state === 'queued' && 'queued')}>
+        <i aria-hidden="true" />
+        {d.state === 'queued' ? '排队拆解' : '拆解中'} · {d.host} · {d.agentLabel}
+      </span>
+    </Tip>
   );
 }
 
@@ -644,9 +646,11 @@ function SplitMarks({ card: c, inBundle }: { card: Card; inBundle?: boolean }) {
     <>
       {d && <SplittingMark d={d} />}
       {c.splitFrom != null && !inBundle && (
-        <span className="ib-mark ib-from" data-tip={`从 #${c.splitFrom} 拆出来的`}>
-          拆自 #{c.splitFrom}
-        </span>
+        <Tip text={`从 #${c.splitFrom} 拆出来的`}>
+          <span className="ib-mark ib-from">
+            拆自 #{c.splitFrom}
+          </span>
+        </Tip>
       )}
     </>
   );
@@ -687,17 +691,18 @@ function SplitBundle({
         </button>
         {d && <SplittingMark d={d} />}
         {undoable && (
-          <button
-            type="button"
-            className="btn sm ghost ib-undo-split"
-            disabled={busy || !!d}
-            data-tip={d ? '还在拆：先停止' : '删掉拆出的卡（进回收站），原条目回到未整理'}
-            data-tip-pos="top"
-            onClick={() => void undoSplit(p)}
-          >
-            <Icon name="replay" />
-            撤销拆解
-          </button>
+          <Tip text={d ? '还在拆：先停止' : '删掉拆出的卡（进回收站），原条目回到未整理'}>
+            <button
+              type="button"
+              className="btn sm ghost ib-undo-split"
+              disabled={busy || !!d}
+              data-tip-pos="top"
+              onClick={() => void undoSplit(p)}
+            >
+              <Icon name="replay" />
+              撤销拆解
+            </button>
+          </Tip>
         )}
       </div>
       {exp && (
@@ -710,9 +715,11 @@ function SplitBundle({
               {p.comments > 0 && <> · {p.comments} 条评论</>}
             </span>
             <span className="spacer" />
-            <button className="btn sm ghost" type="button" onClick={() => openCard(p.id)} data-tip="动态、评论、附件" data-tip-pos="top">
-              打开原条目
-            </button>
+            <Tip text="动态、评论、附件">
+              <button className="btn sm ghost" type="button" onClick={() => openCard(p.id)} data-tip-pos="top">
+                打开原条目
+              </button>
+            </Tip>
           </div>
           <div className="desc-view">{p.body.trim() ? <Markdown src={p.body} repo={board?.repo} /> : <span className="ib-muted">没有描述</span>}</div>
         </div>
@@ -792,32 +799,34 @@ const Row = memo(function Row({
         </span>
         <span className="ib-meta">{saving ? <span className="ib-saving" role="status" aria-label="保存中" /> : <Age card={c} now={now} />}</span>
         <span className="ib-acts">
-          <button
-            type="button"
-            className="icon-btn sm"
-            aria-label={`整理到「${home}」`}
-            data-tip={`整理到「${home}」`}
-            disabled={saving || draft}
-            onClick={e => {
-              e.stopPropagation();
-              void doTriage([c.id]);
-            }}
-          >
-            <Icon name="move" />
-          </button>
-          <button
-            type="button"
-            className="icon-btn sm ib-del"
-            aria-label="删除"
-            data-tip="删除"
-            disabled={saving || draft}
-            onClick={e => {
-              e.stopPropagation();
-              void doDelete([c.id], [c]);
-            }}
-          >
-            <Icon name="trash" />
-          </button>
+          <Tip text={`整理到「${home}」`}>
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label={`整理到「${home}」`}
+              disabled={saving || draft}
+              onClick={e => {
+                e.stopPropagation();
+                void doTriage([c.id]);
+              }}
+            >
+              <Icon name="move" />
+            </button>
+          </Tip>
+          <Tip text="删除">
+            <button
+              type="button"
+              className="icon-btn sm ib-del"
+              aria-label="删除"
+              disabled={saving || draft}
+              onClick={e => {
+                e.stopPropagation();
+                void doDelete([c.id], [c]);
+              }}
+            >
+              <Icon name="trash" />
+            </button>
+          </Tip>
         </span>
         <Icon name="chevDown" className="ib-chev" />
       </div>
@@ -858,30 +867,35 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           删除
         </button>
         <span className="spacer" />
-        <button className="btn sm ghost" type="button" onClick={() => openCard(c.id)} data-tip="动态、评论、附件" data-tip-pos="top">
-          打开详情
-        </button>
+        <Tip text="动态、评论、附件">
+          <button className="btn sm ghost" type="button" onClick={() => openCard(c.id)} data-tip-pos="top">
+            打开详情
+          </button>
+        </Tip>
         <button className="btn sm" type="button" disabled={saving || all.length < 2} onClick={e => setPick(e.currentTarget.getBoundingClientRect())}>
           <Icon name="merge" />
           并到…
         </button>
-        <button
-          className="btn sm"
-          type="button"
-          disabled={saving || !!d}
-          data-tip={
+        <Tip
+          text={
             d
               ? '已经派出去了：在上面取消或停止'
               : small
                 ? `任务粒度合适，不用拆（${small.why}）；点「强制拆解」仍可派给 agent 再切`
                 : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理，这一条并进拆出的那组里'
           }
-          data-tip-pos="top"
-          onClick={() => openDispatch(c.id, { force: !!small })}
         >
-          <Icon name="dispatch" />
-          {small ? '强制拆解' : '派给 agent 拆解'}
-        </button>
+          <button
+            className="btn sm"
+            type="button"
+            disabled={saving || !!d}
+            data-tip-pos="top"
+            onClick={() => openDispatch(c.id, { force: !!small })}
+          >
+            <Icon name="dispatch" />
+            {small ? '强制拆解' : '派给 agent 拆解'}
+          </button>
+        </Tip>
         <button
           className="btn sm"
           type="button"
@@ -1021,17 +1035,21 @@ function OneView({ groups, now, all, home }: { groups: GroupOf[]; now: number; a
   return (
     <div className="ib-one">
       <div className="ib-one-nav">
-        <button type="button" className="icon-btn" aria-label="上一条" data-tip="上一条  ←" disabled={i <= 0} onClick={() => go(-1)}>
-          <Icon name="chevLeft" />
-        </button>
+        <Tip text="上一条  ←">
+          <button type="button" className="icon-btn" aria-label="上一条" disabled={i <= 0} onClick={() => go(-1)}>
+            <Icon name="chevLeft" />
+          </button>
+        </Tip>
         <span className="ib-one-pos">
           <b className="mono">{i + 1}</b>
           <span className="mono"> / {flat.length}</span>
           <span className="ib-one-grp">{cur.g}</span>
         </span>
-        <button type="button" className="icon-btn" aria-label="下一条" data-tip="下一条  →" data-tip-align="end" disabled={i >= flat.length - 1} onClick={() => go(1)}>
-          <Icon name="chevRight" />
-        </button>
+        <Tip text="下一条  →">
+          <button type="button" className="icon-btn" aria-label="下一条" data-tip-align="end" disabled={i >= flat.length - 1} onClick={() => go(1)}>
+            <Icon name="chevRight" />
+          </button>
+        </Tip>
       </div>
       <article key={c.id} className={cx('ib-one-card', dir.current > 0 ? 'from-r' : 'from-l', saving && 'saving')} aria-label={`#${c.id} ${c.title}`}>
         <div className="ib-one-head">
@@ -1077,10 +1095,12 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
         条已选
       </span>
       <i className="ib-bulk-sep" />
-      <button type="button" className="btn sm ghost" disabled={n < 2} data-tip={n < 2 ? '至少勾选两条' : undefined} data-tip-pos="top" onClick={() => openMerge(checked)}>
-        <Icon name="merge" />
-        <span className="ib-bl">合并成一条</span>
-      </button>
+      <Tip text={n < 2 ? '至少勾选两条' : ''}>
+        <button type="button" className="btn sm ghost" disabled={n < 2} data-tip-pos="top" onClick={() => openMerge(checked)}>
+          <Icon name="merge" />
+          <span className="ib-bl">合并成一条</span>
+        </button>
+      </Tip>
       <button type="button" className="btn sm ghost" data-label-picker onClick={e => bulkLabels(e.currentTarget.getBoundingClientRect())}>
         <Icon name="tag" />
         <span className="ib-bl">标签</span>
@@ -1100,9 +1120,11 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
       >
         整理到「{home}」
       </button>
-      <button type="button" className="icon-btn sm" aria-label="取消选择" data-tip="取消选择 · esc" data-tip-pos="top" onClick={() => setInbox({ checked: [] })}>
-        <Icon name="close" />
-      </button>
+      <Tip text="取消选择 · esc">
+        <button type="button" className="icon-btn sm" aria-label="取消选择" data-tip-pos="top" onClick={() => setInbox({ checked: [] })}>
+          <Icon name="close" />
+        </button>
+      </Tip>
     </div>
   );
 }
@@ -1167,9 +1189,11 @@ function MergeSheet({ req }: { req: MergeReq }) {
           <b>合并 {src.length} 条</b>
           <span className="ib-muted">合并后只留一条，其余几条的内容接进描述里</span>
           <span className="spacer" />
-          <button className="icon-btn" type="button" aria-label="关闭" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
-            <Icon name="close" />
-          </button>
+          <Tip text="关闭  esc">
+            <button className="icon-btn" type="button" aria-label="关闭" data-tip-align="end" onClick={close}>
+              <Icon name="close" />
+            </button>
+          </Tip>
         </div>
         <div className="d-grid">
           <div className="d-main">

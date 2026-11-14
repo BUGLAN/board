@@ -4,7 +4,7 @@
    ========================================================================== */
 import type { Schedule } from '../lib/cron';
 import { cx } from '../lib/util';
-import { Select } from './bits';
+import { Select, Tip } from './bits';
 
 const KINDS: [Schedule['kind'], string][] = [
   ['daily', '每天'],
@@ -72,7 +72,9 @@ export function SchedulePick({ spec, onChange, minutes = EVERY_MINUTES, disabled
         </span>
       )}
       {spec.kind === 'monthly' && (
-        <Select value={String(spec.day)} options={DAY_OPTIONS} aria-label="几号" disabled={disabled} onChange={v => onChange({ ...spec, day: +v })} data-tip="没有这一天的月份（例如 2 月 30 号）不到点" />
+        <Tip text="没有这一天的月份（例如 2 月 30 号）不到点">
+          <Select value={String(spec.day)} options={DAY_OPTIONS} aria-label="几号" disabled={disabled} onChange={v => onChange({ ...spec, day: +v })} />
+        </Tip>
       )}
       {'h' in spec ? (
         <span className="hp-hm">

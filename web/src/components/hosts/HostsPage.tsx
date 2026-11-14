@@ -7,7 +7,7 @@ import { readiness } from '../../lib/ready';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, openHost, setHostsView, toast, toastError, useUI, type HostsView } from '../../store/ui';
-import { Segmented, Title, useNow } from '../bits';
+import { Segmented, Tip, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { goCard } from './Dispatch';
 import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
@@ -33,9 +33,11 @@ export function HostsSide() {
         </span>
         {/* 没有机器时只留主区空状态里的一个「添加机器」 */}
         {hosts.length > 0 && (
-          <button aria-label="添加机器" className="icon-btn sm" type="button" data-tip="添加机器" data-tip-align="end" onClick={() => openHost('new')}>
-            <Icon name="plus" />
-          </button>
+          <Tip text="添加机器">
+            <button aria-label="添加机器" className="icon-btn sm" type="button" data-tip-align="end" onClick={() => openHost('new')}>
+              <Icon name="plus" />
+            </button>
+          </Tip>
         )}
       </header>
       <div className="side-scroll hp-side">
@@ -127,18 +129,18 @@ function Fleet({ ws, hosts }: { ws: Workspace | null; hosts: HostInfo[] }) {
           const { running } = hostLoad(ws, h);
           const s = hostState(h, running.length);
           return (
-            <button
-              key={h.id}
-              type="button"
-              role="listitem"
-              className="hp-strip-g"
-              style={{ ['--n' as string]: Math.max(h.max, running.length) }}
-              data-tip={`${h.name} · ${s.label}${h.online && !h.paused ? ` ${running.length}/${h.max}` : ''}`}
-              onClick={() => openHost(h.name)}
-            >
-              <Pips h={h} running={running} />
-              <span className="hp-strip-name">{h.name}</span>
-            </button>
+            <Tip key={h.id} text={`${h.name} · ${s.label}${h.online && !h.paused ? ` ${running.length}/${h.max}` : ''}`}>
+              <button
+                type="button"
+                role="listitem"
+                className="hp-strip-g"
+                style={{ ['--n' as string]: Math.max(h.max, running.length) }}
+                onClick={() => openHost(h.name)}
+              >
+                <Pips h={h} running={running} />
+                <span className="hp-strip-name">{h.name}</span>
+              </button>
+            </Tip>
           );
         })}
       </div>

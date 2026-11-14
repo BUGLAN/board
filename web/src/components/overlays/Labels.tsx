@@ -5,7 +5,7 @@ import { LABEL_COLORS } from '../../lib/schema';
 import { cx, replay } from '../../lib/util';
 import { deleteLabelPatch, editLabelPatch, optimistic, reorderLabels, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
-import { ColorPick, LabelChip } from '../bits';
+import { ColorPick, LabelChip, Tip } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from './presence';
 
@@ -322,20 +322,21 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
               key={l.id}
               style={{ ['--lc' as string]: l.color, ...(drag?.id === l.id ? { transform: `translateY(${drag.dy}px)` } : null) }}
             >
-              <button
-                type="button"
-                className="lbm-grip"
-                aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
-                data-tip="拖动调整顺序"
-                onPointerDown={e => grip(e, l.id)}
-                onKeyDown={e => {
-                  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-                  e.preventDefault();
-                  move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
-                }}
-              >
-                <Icon name="reorder" />
-              </button>
+              <Tip text="拖动调整顺序">
+                <button
+                  type="button"
+                  className="lbm-grip"
+                  aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
+                  onPointerDown={e => grip(e, l.id)}
+                  onKeyDown={e => {
+                    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                    e.preventDefault();
+                    move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
+                  }}
+                >
+                  <Icon name="reorder" />
+                </button>
+              </Tip>
               <button type="button" className="lbm-color" aria-label="改颜色" onClick={() => setSwatch(swatch === l.id ? null : l.id)} />
               <input
                 className="lbm-name"

@@ -19,7 +19,7 @@ import type { CardDetail, Status } from '../lib/types';
 import { cx, isMobile } from '../lib/util';
 import { exec, movePatch, useCardBusy, useCurrent, useData } from '../store/data';
 import { openReview, toastError, useUI } from '../store/ui';
-import { Avatar, LabelChips, Markdown, Select, useNow } from './bits';
+import { Avatar, LabelChips, Markdown, Select, Tip, useNow } from './bits';
 import { Icon } from './Icon';
 import { DispatchHistory } from './hosts/Dispatch';
 import { usePresence } from './overlays/presence';
@@ -189,20 +189,26 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
         <span className="spacer" />
         {queue.length > 0 && (
           <span className="d-nav">
-            <button className="icon-btn" type="button" aria-label="上一张" data-tip="上一张  K" disabled={index <= 0} onClick={() => go(-1)}>
-              <Icon name="chevUp" />
-            </button>
+            <Tip text="上一张  K">
+              <button className="icon-btn" type="button" aria-label="上一张" disabled={index <= 0} onClick={() => go(-1)}>
+                <Icon name="chevUp" />
+              </button>
+            </Tip>
             <span className="rv-pos">
               {index + 1} / {queue.length}
             </span>
-            <button className="icon-btn" type="button" aria-label="下一张" data-tip="下一张 / 跳过  J" disabled={index >= queue.length - 1} onClick={() => go(1)}>
-              <Icon name="chevDown" />
-            </button>
+            <Tip text="下一张 / 跳过  J">
+              <button className="icon-btn" type="button" aria-label="下一张" disabled={index >= queue.length - 1} onClick={() => go(1)}>
+                <Icon name="chevDown" />
+              </button>
+            </Tip>
           </span>
         )}
-        <button aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
-          <Icon name="close" />
-        </button>
+        <Tip text="关闭  esc">
+          <button aria-label="关闭" className="icon-btn" type="button" data-tip-align="end" onClick={close}>
+            <Icon name="close" />
+          </button>
+        </Tip>
       </div>
       {!c ? (
         <div className="rv-empty">
@@ -217,12 +223,14 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
         <>
           <div className="rv-main" key={c.id}>
             <div className="rv-card-head">
-              <button type="button" className="rv-id" data-tip="在卡片详情里打开" onClick={() => {
-                close();
-                openCard(c.id);
-              }}>
-                #{c.id}
-              </button>
+              <Tip text="在卡片详情里打开">
+                <button type="button" className="rv-id" onClick={() => {
+                  close();
+                  openCard(c.id);
+                }}>
+                  #{c.id}
+                </button>
+              </Tip>
               <h2 className="rv-card-title">{c.title}</h2>
               {busy && <span className="rv-saving">保存中</span>}
             </div>
@@ -266,28 +274,36 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
             />
             {need > 0 && <span className="rv-need">{review ? '打回要写意见' : '要写回复'}</span>}
             <div className="rv-acts">
-              <button className="btn sm ghost" type="button" disabled={index >= queue.length - 1} onClick={() => go(1)} data-tip="看下一张  J">
-                跳过
-              </button>
+              <Tip text="看下一张  J">
+                <button className="btn sm ghost" type="button" disabled={index >= queue.length - 1} onClick={() => go(1)}>
+                  跳过
+                </button>
+              </Tip>
               <span className="spacer" />
               {review ? (
                 <>
                   <Target list={reject} value={toReject?.key ?? null} onChange={setRejectTo} label="打回到" />
-                  <button className="btn sm rv-reject" type="button" disabled={busy || !toReject} onClick={doReject} data-tip={`意见作为评论发出，卡片移到「${toReject?.name ?? ''}」  R 写意见 · ⌘↵ 打回`}>
-                    <Icon name="replay" />
-                    打回
-                  </button>
+                  <Tip text={`意见作为评论发出，卡片移到「${toReject?.name ?? ''}」  R 写意见 · ⌘↵ 打回`}>
+                    <button className="btn sm rv-reject" type="button" disabled={busy || !toReject} onClick={doReject}>
+                      <Icon name="replay" />
+                      打回
+                    </button>
+                  </Tip>
                   <Target list={approve} value={toApprove?.key ?? null} onChange={setApproveTo} label="通过到" />
-                  <button className="btn sm brand rv-approve" type="button" disabled={busy || !toApprove} onClick={doApprove} data-tip={`移到「${toApprove?.name ?? ''}」  A`}>
-                    <Icon name="check" />
-                    通过
-                  </button>
+                  <Tip text={`移到「${toApprove?.name ?? ''}」  A`}>
+                    <button className="btn sm brand rv-approve" type="button" disabled={busy || !toApprove} onClick={doApprove}>
+                      <Icon name="check" />
+                      通过
+                    </button>
+                  </Tip>
                 </>
               ) : (
-                <button className="btn sm brand" type="button" disabled={busy || !toReject} onClick={doReject} data-tip={`回复作为评论发出，卡片移到「${toReject?.name ?? ''}」  ⌘↵`}>
-                  <Icon name="send" />
-                  回复并放回{toReject ? `「${toReject.name}」` : ''}
-                </button>
+                <Tip text={`回复作为评论发出，卡片移到「${toReject?.name ?? ''}」  ⌘↵`}>
+                  <button className="btn sm brand" type="button" disabled={busy || !toReject} onClick={doReject}>
+                    <Icon name="send" />
+                    回复并放回{toReject ? `「${toReject.name}」` : ''}
+                  </button>
+                </Tip>
               )}
             </div>
           </div>

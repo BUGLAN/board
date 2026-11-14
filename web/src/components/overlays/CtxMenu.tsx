@@ -9,7 +9,7 @@ import { boardFlow, INBOX, INBOX_NAME } from '../../lib/schema';
 import { cx } from '../../lib/util';
 import { allBoards, boardMeta, colCount, useData } from '../../store/data';
 import { closeCtx, manageLabels, useUI } from '../../store/ui';
-import { ColorRow, LabelChip, ProjectAvatar } from '../bits';
+import { ColorRow, LabelChip, ProjectAvatar, Tip } from '../bits';
 import { Icon } from '../Icon';
 
 export function CtxMenu() {
@@ -277,9 +277,11 @@ function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () =>
               {labels.map(l => {
                 const q = quickPrompts(path, claimables, l.name).find(x => x.kind === 'label' && x.status === name)!;
                 return (
-                  <button key={l.id} type="button" data-do={`quick-label-${name}-${l.id}`} data-tip={q.text} onClick={go(() => copyQuickPrompt(q))}>
-                    <LabelChip label={l} />
-                  </button>
+                  <Tip key={l.id} text={q.text}>
+                    <button type="button" data-do={`quick-label-${name}-${l.id}`} onClick={go(() => copyQuickPrompt(q))}>
+                      <LabelChip label={l} />
+                    </button>
+                  </Tip>
                 );
               })}
             </div>

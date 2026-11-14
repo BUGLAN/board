@@ -17,7 +17,7 @@ import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
 import { Topbar } from './components/Topbar';
-import { BrandMark, SYSTEM_NAME } from './components/bits';
+import { BrandMark, SYSTEM_NAME, TipHost } from './components/bits';
 import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
@@ -280,6 +280,7 @@ function BoardApp() {
       <Creator />
       <Overlays />
       <FloatTips />
+      <TipHost />
     </>
   );
 }

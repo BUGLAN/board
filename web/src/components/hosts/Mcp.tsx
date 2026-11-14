@@ -17,7 +17,7 @@ import type { HostInfo, McpServer, McpVar } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, toast, toastError } from '../../store/ui';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 import { ChipInput } from './ChipInput';
@@ -131,10 +131,12 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
         </div>
         <div className="sc-acts">
           {shell === 'desktop' && (
-            <button className={cx('btn sm', busy === 'scan' && 'is-busy')} type="button" disabled={!!busy} onClick={() => void startImport()} data-tip="读出这台电脑上各 agent 已经配好的 MCP 服务器，勾选后加进来" data-tip-align="end">
-              <Icon name="download" />
-              从本机导入
-            </button>
+            <Tip text="读出这台电脑上各 agent 已经配好的 MCP 服务器，勾选后加进来">
+              <button className={cx('btn sm', busy === 'scan' && 'is-busy')} type="button" disabled={!!busy} onClick={() => void startImport()} data-tip-align="end">
+                <Icon name="download" />
+                从本机导入
+              </button>
+            </Tip>
           )}
           <button className="btn sm" type="button" disabled={!!busy || !!edit} onClick={() => setEdit({ s: blankMcp(), editing: false })}>
             <Icon name="plus" />
@@ -189,19 +191,25 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
                   <code className="sy-cmd" title={cmd}>
                     {cmd}
                   </code>
-                  <span className="sy-who" data-tip={s.agents.length ? `只同步给 ${s.agents.map(a => MCP_AGENT_NAMES[a] ?? a).join('、')}` : '同步给所有支持的 agent（Claude Code、Codex、pi）'}>
-                    {(s.agents.length ? s.agents : [...MCP_AGENTS]).map(a => (
-                      <AgentIcon key={a} id={a} />
-                    ))}
-                  </span>
+                  <Tip text={s.agents.length ? `只同步给 ${s.agents.map(a => MCP_AGENT_NAMES[a] ?? a).join('、')}` : '同步给所有支持的 agent（Claude Code、Codex、pi）'}>
+                    <span className="sy-who">
+                      {(s.agents.length ? s.agents : [...MCP_AGENTS]).map(a => (
+                        <AgentIcon key={a} id={a} />
+                      ))}
+                    </span>
+                  </Tip>
                   <HostSyncPills list={sync} />
                   <span className="sy-acts">
-                    <button className="icon-btn sm" type="button" aria-label={`修改 ${s.name}`} data-tip="修改" disabled={!!busy || !!edit} onClick={() => startEdit(s)}>
-                      <Icon name="edit" />
-                    </button>
-                    <button className={cx('icon-btn sm', busy === `rm:${s.name}` && 'is-busy')} type="button" aria-label={`删掉 ${s.name}`} data-tip="删掉" data-tip-align="end" disabled={!!busy} onClick={() => void remove(s)}>
-                      <Icon name="trash" />
-                    </button>
+                    <Tip text="修改">
+                      <button className="icon-btn sm" type="button" aria-label={`修改 ${s.name}`} disabled={!!busy || !!edit} onClick={() => startEdit(s)}>
+                        <Icon name="edit" />
+                      </button>
+                    </Tip>
+                    <Tip text="删掉">
+                      <button className={cx('icon-btn sm', busy === `rm:${s.name}` && 'is-busy')} type="button" aria-label={`删掉 ${s.name}`} data-tip-align="end" disabled={!!busy} onClick={() => void remove(s)}>
+                        <Icon name="trash" />
+                      </button>
+                    </Tip>
                   </span>
                 </div>
                 {on && (
@@ -328,16 +336,17 @@ function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel
                   aria-label="值"
                   onChange={e => setVars(vars.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
                 />
-                <button
-                  type="button"
-                  className={cx('fm-secret', v.secret && 'on')}
-                  aria-pressed={!!v.secret}
-                  data-tip="密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host"
-                  onClick={() => setVars(vars.map((x, j) => (j === i ? { ...x, secret: !x.secret } : x)))}
-                >
-                  <Icon name="lock" />
-                  密钥
-                </button>
+                <Tip text="密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host">
+                  <button
+                    type="button"
+                    className={cx('fm-secret', v.secret && 'on')}
+                    aria-pressed={!!v.secret}
+                    onClick={() => setVars(vars.map((x, j) => (j === i ? { ...x, secret: !x.secret } : x)))}
+                  >
+                    <Icon name="lock" />
+                    密钥
+                  </button>
+                </Tip>
                 <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => setVars(vars.filter((_, j) => j !== i))}>
                   <Icon name="close" />
                 </button>

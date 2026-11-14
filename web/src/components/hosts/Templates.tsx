@@ -16,7 +16,7 @@ import type { AgentTemplate, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, openHost, toast, toastError } from '../../store/ui';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon, Dot } from './bits';
 import { useRemoteList } from './useRemoteList';
@@ -119,12 +119,16 @@ export function TemplatesSection({ hosts }: { hosts: HostInfo[] }) {
                   <span className={cx('sc-sum', rows.length && found === rows.length ? 'ok' : '')}>
                     {rows.length === 0 ? '还没有机器' : `${found}/${rows.length} 台找到了${local ? ` · ${local} 台本机配置覆盖` : ''}`}
                   </span>
-                  <button className="icon-btn sm" type="button" aria-label={`修改 ${t.id}`} data-tip="修改" disabled={!!busy || !!edit} onClick={() => setEdit({ f: toForm(t), editing: true })}>
-                    <Icon name="edit" />
-                  </button>
-                  <button className={cx('icon-btn sm', busy === `rm:${t.id}` && 'is-busy')} type="button" aria-label={`删掉 ${t.id}`} data-tip="删掉" data-tip-align="end" disabled={!!busy} onClick={() => void remove(t)}>
-                    <Icon name="trash" />
-                  </button>
+                  <Tip text="修改">
+                    <button className="icon-btn sm" type="button" aria-label={`修改 ${t.id}`} disabled={!!busy || !!edit} onClick={() => setEdit({ f: toForm(t), editing: true })}>
+                      <Icon name="edit" />
+                    </button>
+                  </Tip>
+                  <Tip text="删掉">
+                    <button className={cx('icon-btn sm', busy === `rm:${t.id}` && 'is-busy')} type="button" aria-label={`删掉 ${t.id}`} data-tip-align="end" disabled={!!busy} onClick={() => void remove(t)}>
+                      <Icon name="trash" />
+                    </button>
+                  </Tip>
                 </div>
                 {on && (
                   <div className="sc-hosts">
