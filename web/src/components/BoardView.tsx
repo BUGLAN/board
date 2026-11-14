@@ -499,6 +499,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
             if (!c) return [];
             const run = runAt.get(idx);
             const end = runs.find(r => r.start + r.n - 1 === idx);
+            const grouped = runs.some(r => idx >= r.start && idx < r.start + r.n);
             const card = (
               <CardView
                 key={renderKey(id)}
@@ -514,13 +515,14 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
                 final={col.final}
                 view={view}
                 next={firstFree === id}
+                grouped={grouped}
               />
             );
             // 组头、组尾和卡片是同一层的兄弟（不包一层）：成组、散开时卡片不重新挂载，拖拽按 data-deco 跳过它们
             return [
               run && <SessionHead key={`sh:${run.g.key}`} g={run.g} n={run.n} gk={`${run.g.key}@${run.start}`} />,
               card,
-              end && <i key={`sf:${end.g.key}`} className="sess-foot" data-deco="" data-g={`${end.g.key}@${end.start}`} aria-hidden="true" />,
+              end && <i key={`sf:${end.g.key}`} className="sess-foot" data-deco="" data-block-end="" data-g={`${end.g.key}@${end.start}`} aria-hidden="true" />,
             ].filter(Boolean);
           })}
           {earlier > 0 && <EarlierButton n={earlier} view={view} />}
@@ -869,10 +871,10 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
 
 const NO_GROUPS: Record<number, SessGroup> = {};
 
-/** 一组的开头：铺满整行，写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */
+/** 一组的开头：和整块一样宽（lib/masonry 按块摆），写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */
 function SessionHead({ g, n, gk }: { g: SessGroup; n: number; gk: string }) {
   return (
-    <div className={cx('sess-head', g.kind)} data-deco="" data-g={gk}>
+    <div className={cx('sess-head', g.kind)} data-deco="" data-block="" data-g={gk}>
       <Icon name={g.kind === 'session' ? 'terminal' : 'timer'} />
       {g.kind === 'session' ? (
         <span>

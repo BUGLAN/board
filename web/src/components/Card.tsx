@@ -45,10 +45,12 @@ interface Props {
   view?: StatusView;
   /** 不带 ID 执行 board claim 时会被领走的那张 */
   next?: boolean;
+  /** 在同一会话的框里（lib/sessionGroups）：左右往里缩，和框留出间距 */
+  grouped?: boolean;
 }
 
 export const CardView = memo(function CardView({
-  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next,
+  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next, grouped,
 }: Props) {
   const held = !!c.holder;
   // 只有被持有的卡片要每秒走表；做过的卡片显示「完成于几分钟前」，半分钟一次；其他卡片不起定时器
@@ -101,6 +103,7 @@ export const CardView = memo(function CardView({
         shape === 'line' && 'v-line',
         shape === 'tile' && 'v-tile',
         next && 'next',
+        grouped && 'in-sess',
         open && 'is-open',
         active && !hit && 'filtered-out',
         active && hit && 'matched',
