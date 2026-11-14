@@ -356,6 +356,13 @@ describe('cardCronPatch（白板的定时建卡）', () => {
     const off = twice(D.cardCronPatch('p/a', 7, { host: '', agent: '' }).ws!, to);
     expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: null, agent: null, nextAt: 123 });
   });
+  it('随机派发：换成随机时清掉指定的机器和 agent（不动下次时间）；换回指定机器时照样画出来', () => {
+    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', agent: 'claude' }).ws!, withCron());
+    const any = twice(D.cardCronPatch('p/a', 7, { pick: 'random' }).ws!, to);
+    expect(any.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'random', host: null, agent: null, nextAt: 123 });
+    const back = twice(D.cardCronPatch('p/a', 7, { pick: 'host', host: 'mini', agent: '' }).ws!, any);
+    expect(back.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'host', host: 'mini', agent: null, nextAt: 123 });
+  });
   it('白板或这一条不在了原样返回', () => {
     const orig = withCron();
     expect(D.cardCronPatch('p/nope', 7, { on: false }).ws!(orig)).toBe(orig);

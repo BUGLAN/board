@@ -52,8 +52,10 @@ interface Draft {
   body: string;
   labels: number[];
   place: 'home' | 'inbox';
-  /** 派给哪台机器；不派发时为空 */
+  /** 派给哪台机器；不派发、随机派发时为空 */
   host: string | null;
+  /** 指定一台还是随机挑一台 */
+  pick: 'host' | 'random';
   /** 用哪个 agent；空表示那台机器的默认 agent */
   agent: string | null;
   spec: Schedule;
@@ -69,6 +71,7 @@ const draftOf = (c?: CardCron): Draft => {
     labels: c?.labels ?? [],
     place: c?.place ?? 'home',
     host: c?.host || null,
+    pick: c?.pick ?? 'host',
     agent: c?.agent || null,
     spec: spec ?? DEFAULT_SCHEDULE,
     raw: c && !spec ? normalizeCron(c.cron) : null,
@@ -83,7 +86,7 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
     <section className="d-section cc" style={{ ['--i' as string]: i }}>
       <div className="d-label">
         定时建卡 <span className="count">{list.length || ''}</span>
-        <InfoTip text="到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器。上一次建的卡还没进终点、也没删时，到点不建（记「跳过」）；服务端停机期间错过的不补建" />
+        <InfoTip text="到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器（指定的那台，或每次在能接的机器里随机挑一台）。上一次建的卡还没进终点、也没删时，到点不建（记「跳过」）；服务端停机期间错过的不补建" />
       </div>
       {list.length > 0 && (
         <div className="cc-list">
@@ -155,6 +158,10 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   const tags = c.labels.map(id => labels.find(l => l.id === id)).filter(Boolean) as Label[];
   const describe = describeCron(c.cron);
   const to = useData(s => (c.host ? hostsOf(s.ws).find(h => h.name === c.host) : undefined));
+  // 随机派发：没有指定的机器
+  const random = c.pick === 'random' && !c.host;
+  // 随机挑的时候能接的机器数（和手动派发一样能派到的：有工作空间、有找到了命令的 agent）
+  const canTake = useData(s => (random ? hostsOf(s.ws) : []).filter(x => hostDirFor(x, path) && x.agents.some(a => a.found)).length);
   return (
     <div className={cx('cc-row', !c.on && 'off', (busy || removing) && 'saving')}>
       <button type="button" className={cx('switch', c.on && 'on')} role="switch" aria-checked={c.on} aria-label={`「${c.name}」到点建卡`} onClick={toggle}>
@@ -169,6 +176,13 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
             <em>{c.tz}</em>
           </span>
           <span className="cc-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
+          {random && (
+            <span className="cc-to" data-tip="到点在这块白板能接的机器里随机挑一台，用它的默认 agent">
+              <Icon name="dispatch" />
+              随机
+              {canTake > 0 && <em>{canTake} 台</em>}
+            </span>
+          )}
           {c.host && (
             <span className={cx('cc-to', !to && 'gone')} data-tip={to ? '建出卡后马上派发到这台机器' : '这台机器已经移除：到点照样建卡，但派发不出去'}>
               <Icon name="dispatch" />
@@ -248,7 +262,7 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
 
   const save = async () => {
     if (!ok || stillUploading(attach.busy)) return;
-    const input: CardCronInput = { name: d.name.trim(), body: d.body.trim(), labels: d.labels, place: d.place, host: d.host ?? '', agent: d.agent ?? '', cron: expr!, tz };
+    const input: CardCronInput = { name: d.name.trim(), body: d.body.trim(), labels: d.labels, place: d.place, pick: d.pick, host: d.host ?? '', agent: d.agent ?? '', cron: expr!, tz };
     if (!cron) {
       // 新建要等服务端返回（编号、下次时间）：按钮转圈，失败时表单留着
       setSending(true);
@@ -349,13 +363,13 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
               ['home', home],
               ['inbox', '未整理'],
             ]}
-            onChange={v => set(v === 'inbox' ? { place: v, host: null, agent: null } : { place: v })}
+            onChange={v => set(v === 'inbox' ? { place: v, host: null, agent: null, pick: 'host' } : { place: v })}
           />
         </span>
       </div>
       <div className="bs-rc-row top">
         <span className="bs-rc-l">派给机器</span>
-        <HostPick path={path} home={home} inbox={d.place === 'inbox'} host={d.host} agent={d.agent} onChange={(host, agent) => set({ host, agent })} />
+        <HostPick path={path} home={home} inbox={d.place === 'inbox'} host={d.host} pick={d.pick} agent={d.agent} onChange={p => set(p)} />
       </div>
       <div className="bs-rc-row top">
         <span className="bs-rc-l">时间</span>
@@ -389,24 +403,56 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
   );
 }
 
-/** 派给哪台机器、用哪个 agent：「不派发」或有这块白板目录的机器；选了机器再选 agent（默认是那台机器的默认 agent）。
+/** 派给哪台机器、用哪个 agent：「不派发」、随机挑一台，或有这块白板目录的机器。选了机器再选 agent（默认是那台机器的默认 agent）。
  *  机器离线、暂停接单也能选：到点时派发排队等它。已经移除的机器还选着时照样列出来，标「已移除」 */
-function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; home: string; inbox: boolean; host: string | null; agent: string | null; onChange: (host: string | null, agent: string | null) => void }) {
+function HostPick({
+  path,
+  home,
+  inbox,
+  host,
+  pick,
+  agent,
+  onChange,
+}: {
+  path: string;
+  home: string;
+  inbox: boolean;
+  host: string | null;
+  pick: 'host' | 'random';
+  agent: string | null;
+  onChange: (p: { host: string | null; pick: 'host' | 'random'; agent: string | null }) => void;
+}) {
   const ws = useData(s => s.ws);
   const hosts = hostsOf(ws);
   const h = host ? hosts.find(x => x.name === host) : undefined;
   // 有工作空间的机器就视为有这块白板的目录
   const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
   const def = h ? defaultAgent(h) : undefined;
+  const random = pick === 'random' && !host;
+  // 随机挑的时候能接的机器：和手动派发一样能派到的（有工作空间、有找到了命令的 agent），在线、离线、暂停接单都算
+  const can = hosts.filter(x => hasDir(x) && x.agents.some(a => a.found));
+  const why = (x: HostInfo) => (!x.online ? '离线' : x.paused ? '暂停接单' : '');
   return (
     <span className="cc-pick">
       <span className="cc-hosts" role="radiogroup" aria-label="派给机器">
-        <button type="button" role="radio" aria-checked={!host} className={cx('cc-host', !host && 'on')} onClick={() => onChange(null, null)}>
+        <button type="button" role="radio" aria-checked={!host && !random} className={cx('cc-host', !host && !random && 'on')} onClick={() => onChange({ host: null, pick: 'host', agent: null })}>
           不派发
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={random}
+          className={cx('cc-host', random && 'on')}
+          disabled={inbox || !can.length}
+          data-tip={inbox ? undefined : !can.length ? '没有能接这块白板的机器：要配了工作空间，并且有找到了命令的 agent' : `到点在这 ${can.length} 台机器里随机挑一台`}
+          onClick={() => onChange({ host: null, pick: 'random', agent: null })}
+        >
+          随机
+          {!inbox && can.length > 0 && <em>{can.length} 台</em>}
         </button>
         {hosts.map(x => {
           const ok = hasDir(x);
-          const why = !x.online ? '离线' : x.paused ? '暂停接单' : '';
+          const w = why(x);
           return (
             <button
               key={x.id}
@@ -415,12 +461,12 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
               aria-checked={host === x.name}
               className={cx('cc-host', host === x.name && 'on')}
               disabled={inbox || !ok}
-              data-tip={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : why ? `${why}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
-              onClick={() => onChange(x.name, null)}
+              data-tip={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : w ? `${w}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
+              onClick={() => onChange({ host: x.name, pick: 'host', agent: null })}
             >
               <Dot h={x} running={hostLoad(ws, x).running.length} />
               {x.name}
-              {why && <em>{why}</em>}
+              {w && <em>{w}</em>}
             </button>
           );
         })}
@@ -433,7 +479,7 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
       </span>
       {h && (
         <span className="hp-agents" role="radiogroup" aria-label="agent">
-          <button type="button" role="radio" aria-checked={!agent} className={cx('cc-host', !agent && 'on')} onClick={() => onChange(host, null)}>
+          <button type="button" role="radio" aria-checked={!agent} className={cx('cc-host', !agent && 'on')} onClick={() => onChange({ host, pick: 'host', agent: null })}>
             默认 agent{def ? `（${def.name}）` : ''}
           </button>
           {h.agents.map(a => (
@@ -446,7 +492,7 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
               className={cx('hp-agent-btn', agent === a.id && 'on')}
               disabled={!a.found && agent !== a.id}
               data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
-              onClick={() => onChange(host, a.id)}
+              onClick={() => onChange({ host, pick: 'host', agent: a.id })}
             >
               {/* 默认的那个写在「默认 agent（…）」里，chip 上不再标，免得看起来像选中了两个 */}
               <AgentChip a={a} env={envName(h, a.env)} />
@@ -457,11 +503,13 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
       <span className="cc-hint">
         {inbox
           ? '放到未整理的不派发：要派给机器，「放到哪」选「' + home + '」'
-          : host
-            ? `到点建卡后马上派发到 ${host}（和手动派发一样：机器离线、暂停接单或没有空位时排队）；派不出去时卡留在「${home}」，评论写明原因`
-            : hosts.length
-              ? '只建卡，由定时领取或人派发去做'
-              : '还没有机器：在要干活的机器上运行 board host，它会出现在这里'}
+          : random
+            ? `到点建卡后在那 ${can.length} 台能接这块白板的机器里随机挑一台，用它的默认 agent 派过去（离线、暂停接单的排队等它）；没有能接的就不派发，评论写明原因`
+            : host
+              ? `到点建卡后马上派发到 ${host}（和手动派发一样：机器离线、暂停接单或没有空位时排队）；派不出去时卡留在「${home}」，评论写明原因`
+              : hosts.length
+                ? '只建卡，由定时领取或人派发去做'
+                : '还没有机器：在要干活的机器上运行 board host，它会出现在这里'}
       </span>
     </span>
   );

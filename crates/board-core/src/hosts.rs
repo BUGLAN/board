@@ -766,7 +766,7 @@ fn exported_workspace(dirs: &[HostDir]) -> Option<HostWorkspace> {
 
 /// 这台机器的工作空间：新数据读 `workspace` 列；还没有时（升级前的机器）用旧的「白板与目录」导出，
 /// 导出不了时退回第一块非 `--dir` 白板的上一级；也没有时为空
-fn workspace_of(stored: Option<&str>, dirs: &[HostDir]) -> Option<HostWorkspace> {
+pub(crate) fn workspace_of(stored: Option<&str>, dirs: &[HostDir]) -> Option<HostWorkspace> {
     // 存着的（包括清掉了路径、只剩 `--dir` 覆盖的）：以它为准，不从旧的目录里再导出
     if let Some(w) = stored.and_then(|j| serde_json::from_str::<HostWorkspace>(j).ok()) {
         return Some(w).filter(|w| !w.path.trim().is_empty() || !dirs.is_empty());
@@ -1512,51 +1512,51 @@ pub enum EndHow {
 
 /* ------------------------------ 读 ------------------------------ */
 
-struct HostRow {
-    id: i64,
-    name: String,
-    instance: String,
-    os: String,
-    version: String,
-    agents: Vec<HostAgent>,
-    envs: Vec<HostEnv>,
-    run: std::collections::BTreeMap<String, AgentRun>,
+pub(crate) struct HostRow {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) instance: String,
+    pub(crate) os: String,
+    pub(crate) version: String,
+    pub(crate) agents: Vec<HostAgent>,
+    pub(crate) envs: Vec<HostEnv>,
+    pub(crate) run: std::collections::BTreeMap<String, AgentRun>,
     /// 工作空间（存的是 JSON；升级前只有白板与目录时为空，用 dirs 导出）
-    workspace_raw: Option<String>,
+    pub(crate) workspace_raw: Option<String>,
     /// 旧的白板与目录（升级前的数据，或者旧版 board host 上报的）
-    dirs: Vec<HostDir>,
-    dirs_rev: i64,
-    dirs_at: Option<i64>,
-    dirs_by: Option<String>,
-    max: i64,
-    per_session: i64,
-    max_run: i64,
-    idle_run: i64,
-    rules: Vec<ClaimRule>,
-    fallback: Option<String>,
-    paused: bool,
-    agent: Option<String>,
-    cron_on: bool,
-    cron: Vec<String>,
-    round_at: Option<i64>,
-    rr: i64,
-    first_at: i64,
-    beat_at: i64,
-    off_at: Option<i64>,
-    ask: Option<HostAsk>,
-    ask_seq: i64,
-    drain_at: Option<i64>,
-    up_pause: bool,
-    rechecked_at: Option<i64>,
-    token: Option<i64>,
-    selftest: SelfTest,
-    skills_raw: Option<String>,
-    mcp_raw: Option<String>,
-    providers_raw: Option<String>,
-    skill_import: SkillImport,
-    agents_raw: String,
-    envs_raw: String,
-    dirs_raw: String,
+    pub(crate) dirs: Vec<HostDir>,
+    pub(crate) dirs_rev: i64,
+    pub(crate) dirs_at: Option<i64>,
+    pub(crate) dirs_by: Option<String>,
+    pub(crate) max: i64,
+    pub(crate) per_session: i64,
+    pub(crate) max_run: i64,
+    pub(crate) idle_run: i64,
+    pub(crate) rules: Vec<ClaimRule>,
+    pub(crate) fallback: Option<String>,
+    pub(crate) paused: bool,
+    pub(crate) agent: Option<String>,
+    pub(crate) cron_on: bool,
+    pub(crate) cron: Vec<String>,
+    pub(crate) round_at: Option<i64>,
+    pub(crate) rr: i64,
+    pub(crate) first_at: i64,
+    pub(crate) beat_at: i64,
+    pub(crate) off_at: Option<i64>,
+    pub(crate) ask: Option<HostAsk>,
+    pub(crate) ask_seq: i64,
+    pub(crate) drain_at: Option<i64>,
+    pub(crate) up_pause: bool,
+    pub(crate) rechecked_at: Option<i64>,
+    pub(crate) token: Option<i64>,
+    pub(crate) selftest: SelfTest,
+    pub(crate) skills_raw: Option<String>,
+    pub(crate) mcp_raw: Option<String>,
+    pub(crate) providers_raw: Option<String>,
+    pub(crate) skill_import: SkillImport,
+    pub(crate) agents_raw: String,
+    pub(crate) envs_raw: String,
+    pub(crate) dirs_raw: String,
 }
 
 const HOST_COLS: &str =
@@ -1630,7 +1630,7 @@ impl HostRow {
         set.and_then(|e| a.envs.iter().find(|c| c.env == e)).or_else(|| a.envs.iter().find(|c| c.found))
     }
     /// 本机 agent，`found`、`version`、`env` 换成实际用的启动环境里的结果
-    fn resolved(&self) -> Vec<HostAgent> {
+    pub(crate) fn resolved(&self) -> Vec<HostAgent> {
         self.agents
             .iter()
             .map(|a| {
@@ -1700,7 +1700,7 @@ impl HostRow {
         !self.rules.is_empty()
     }
     /// 默认 agent：设置过且找到了就是它，否则第一个找到的
-    fn default_agent(&self) -> Option<HostAgent> {
+    pub(crate) fn default_agent(&self) -> Option<HostAgent> {
         let all = self.resolved();
         let found = |id: &str| all.iter().find(|a| a.id == id && a.found).cloned();
         self.agent.as_deref().and_then(found).or_else(|| all.iter().find(|a| a.found).cloned())
@@ -1925,7 +1925,7 @@ fn no_such_host(name: &str) -> BoardError {
 }
 
 impl<'a> R<'a> {
-    fn host_row(&self, name: &str) -> Result<Option<HostRow>> {
+    pub(crate) fn host_row(&self, name: &str) -> Result<Option<HostRow>> {
         Ok(self.conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE name = ?1"), [name], host_row).optional()?)
     }
 
@@ -2037,7 +2037,7 @@ impl<'a> R<'a> {
     }
 
     /// 这台机器上这块白板能不能接卡（环境检查）
-    fn dir_readiness(&self, h: &HostRow, board: &BoardRef) -> Result<Readiness> {
+    pub(crate) fn dir_readiness(&self, h: &HostRow, board: &BoardRef) -> Result<Readiness> {
         let path = board.path();
         let cmd = self.ready_check(board.id)?.for_os(&h.os);
         let ready = h.dirs.iter().find(|d| d.board == path).and_then(|d| d.ready.as_ref());
@@ -2207,7 +2207,7 @@ impl DRow {
 }
 
 impl<'a> W<'a> {
-    fn host_row(&self, name: &str) -> Result<Option<HostRow>> {
+    pub(crate) fn host_row(&self, name: &str) -> Result<Option<HostRow>> {
         self.read().host_row(name)
     }
 

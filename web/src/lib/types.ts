@@ -106,10 +106,12 @@ export interface CardCron {
   /** IANA 时区名，保存时取浏览器的 */
   tz: string;
   on: boolean;
-  /** 建出卡后派给哪台机器（机器名）；不派发时为空。修改时发空字符串表示不派发 */
+  /** 建出卡后派给哪台机器（机器名）；不派发、随机派发时为空。修改时发空字符串表示不派发 */
   host?: string | null;
-  /** 用哪个 agent；空表示那台机器的默认 agent */
+  /** 用哪个 agent；空表示那台机器（随机派发时是挑中那台）的默认 agent */
   agent?: string | null;
+  /** 选哪台机器：host 派给 `host`，random 每次在能接这块白板的机器里随机挑一台；不派发时也留着（host） */
+  pick?: 'host' | 'random';
   /** 下次到点（毫秒）；关着、一年内不会到点时为空 */
   nextAt?: number | null;
   /** 最近一次到点（或「现在建一张」）的时间 */
@@ -128,7 +130,7 @@ export interface CardCron {
 }
 
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
-export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent'>>;
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent' | 'pick'>>;
 
 /** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
 export interface ReadyCheck {
