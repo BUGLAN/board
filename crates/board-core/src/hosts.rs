@@ -1620,7 +1620,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
 }
 
 impl HostRow {
-    fn online(&self, now: i64) -> bool {
+    pub(crate) fn online(&self, now: i64) -> bool {
         self.off_at.is_none() && self.beat_at + HOST_GAP_MS > now
     }
     /// 一个 agent 实际用的启动环境（启动环境与桌面端需求 §2.4）：设置过、本机还有（在它支持的环境里）就用它，

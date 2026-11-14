@@ -11,7 +11,8 @@
 //!   模板自己的那份留着（附件清理时按模板描述的引用保留）。
 //! - **跳过**：这条上一次建的卡还没进终点状态、也没被删除时，这一次不建，结果记「跳过：上一张 #N 还没完成」。
 //! - **派给机器**：选了一台（[`PICK_HOST`]）时，建出卡后马上派发到那台机器（和手动派发一样排队、占用卡片，来源记「定时建卡」，
-//!   机器离线、暂停接单时排队等它）；选了随机（[`PICK_RANDOM`]）时，到点在能接这块白板的机器里随机挑一台（候选见 [`W::cron_host_candidates`]）。
+//!   机器离线、暂停接单时排队等它）；选了随机（[`PICK_RANDOM`]）时，到点在能接这块白板、在线、没暂停接单的机器里随机挑一台
+//!   （候选见 [`W::cron_host_candidates`]；都不在线时卡照样建，评论写明原因）。
 //!   派不出去（机器被移除、没有这块白板的目录、环境检查没通过、agent 没找到……）时卡片留在首个可领取状态，
 //!   评论写明原因，这一次的结果也记下原因。只能和「放到首个可领取状态」一起用。机器改名时跟着改（hosts.rs `host_rename`）。
 //! - 「现在建一张」（[`W::card_cron_run`]）：立即按这条建一张，同样受跳过规则约束。
@@ -567,7 +568,7 @@ impl<'a> W<'a> {
             (PICK_RANDOM, false) => match self.cron_pick_host(board, c.agent.as_deref())? {
                 Some(t) => Some(t),
                 None => {
-                    pick_err = Some(self.cron_host_pick_why(board, c.agent.as_deref()));
+                    pick_err = Some(self.cron_host_pick_why(board, c.agent.as_deref(), true));
                     None
                 }
             },
@@ -608,20 +609,25 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 随机挑一台能接这块白板的机器（以及上面用哪个 agent）。没有能接的机器时为空（到点照样建卡、评论写明原因），
-    /// 不把错误往上抛：`card_crons_due` 把这一分钟到点的条目放在同一个写事务里，一条失败会把别的也回滚掉
+    /// 随机挑一台能接这块白板、现在在线、没暂停接单的机器（以及上面用哪个 agent）：派给离线的机器只会排队干等。
+    /// 没有这样的机器时为空（到点照样建卡、评论写明原因），不把错误往上抛：`card_crons_due` 把这一分钟到点的条目
+    /// 放在同一个写事务里，一条失败会把别的也回滚掉
     fn cron_pick_host(&self, board: &BoardRef, agent: Option<&str>) -> Result<Option<(String, Option<String>)>> {
-        let Some(list) = self.cron_host_candidates(board, agent)? else { return Ok(None) };
+        let Some(list) = self.cron_host_candidates(board, agent, true)? else { return Ok(None) };
         Ok(Some(list[self.roll(list.len())].clone()))
     }
 
-    /// 能接这块白板的机器，按注册先后：每台（机器名，agent 或 None）；一台都没有时为空
-    fn cron_host_candidates(&self, board: &BoardRef, agent: Option<&str>) -> Result<Option<Vec<(String, Option<String>)>>> {
+    /// 能接这块白板的机器，按注册先后：每台（机器名，agent 或 None）；一台都没有时为空。
+    /// `live`：只要现在在线、没暂停接单的（到点挑机器时）；保存时不看这一项，机器暂时离线也能存
+    fn cron_host_candidates(&self, board: &BoardRef, agent: Option<&str>, live: bool) -> Result<Option<Vec<(String, Option<String>)>>> {
         let path = board.path();
         let names: Vec<String> = self.collect("SELECT name FROM hosts ORDER BY id", [], |r| r.get(0))?;
         let mut out = vec![];
         for name in names {
             let Some(h) = self.host_row(&name)? else { continue };
+            if live && (!h.online(self.now) || h.paused) {
+                continue;
+            }
             if workspace_of(h.workspace_raw.as_deref(), &h.dirs).is_none() && !h.dirs.iter().any(|d| d.board == path) {
                 continue;
             }
@@ -649,18 +655,24 @@ impl<'a> W<'a> {
 
     /// 保存一条随机派发的时看现在有没有能接这块白板的机器、agent 有没有找到：没有就 `USAGE`，写明原因
     fn cron_host_pick_check(&self, board: &BoardRef, agent: Option<&str>) -> Result<()> {
-        if self.cron_host_candidates(board, agent)?.is_some() {
+        if self.cron_host_candidates(board, agent, false)?.is_some() {
             return Ok(());
         }
-        Err(BoardError::usage(self.cron_host_pick_why(board, agent)))
+        Err(BoardError::usage(self.cron_host_pick_why(board, agent, false)))
     }
 
-    /// 没有机器能接时写明为什么
-    fn cron_host_pick_why(&self, board: &BoardRef, agent: Option<&str>) -> String {
+    /// 没有机器能接时写明为什么。`live`：到点挑机器时，能接的机器有、只是都不在线或暂停接单，写出是哪几台
+    fn cron_host_pick_why(&self, board: &BoardRef, agent: Option<&str>, live: bool) -> String {
         let path = board.path();
         let all: Vec<String> = self.collect("SELECT name FROM hosts ORDER BY id", [], |r| r.get(0)).unwrap_or_default();
         if all.is_empty() {
             return "还没有机器：在要干活的机器上运行 board host，它会出现在这里".into();
+        }
+        if live {
+            if let Ok(Some(able)) = self.cron_host_candidates(board, agent, false) {
+                let names: Vec<String> = able.into_iter().map(|(n, _)| n).collect();
+                return format!("能接 {path} 的机器（{}）现在都不在线或暂停接单：随机派发只挑在线的机器", names.join("、"));
+            }
         }
         let machines = all.join("、");
         match &agent {
@@ -959,9 +971,16 @@ mod tests {
         r.ran_to.expect("派发了").split(" · ").next().unwrap().to_string()
     }
 
-    /// 随机派发这条在 `at` 起跑 40 次，收集都挑到了哪些机器
-    fn pick(s: &mut Store, at: i64, cron: i64) -> std::collections::BTreeSet<String> {
-        (1..=40).map(|i| run_once(s, at + i * MIN, cron)).collect()
+    /// 随机派发这条在 `at` 起跑 40 次，收集都挑到了哪些机器；每次跑之前 `live` 里的机器先上报一次（一直在线）
+    fn pick(s: &mut Store, at: i64, cron: i64, live: &[&str]) -> std::collections::BTreeSet<String> {
+        (1..=40)
+            .map(|i| {
+                for h in live {
+                    host_report(s, h, &[B], &DirReady::default(), 0, at + i * MIN);
+                }
+                run_once(s, at + i * MIN, cron)
+            })
+            .collect()
     }
 
     /// 一台机器在 `at` 上报。`ready` 是它上报的环境检查结果（`cmd` 为空表示没报过，白板设了检查命令时是「还没检查」）
@@ -1146,7 +1165,7 @@ mod tests {
         assert!(last.text.contains("卡片留在「待办」"), "{}", last.text);
     }
 
-    /// 随机派发：不指定机器，每次在能接这块白板的机器里挑一台，按那台的默认 agent 派
+    /// 随机派发：不指定机器，每次在能接这块白板、在线、没暂停接单的机器里挑一台，按那台的默认 agent 派
     #[test]
     fn random_dispatches_to_any_host_that_can_take_the_board() {
         let mut s = store();
@@ -1163,8 +1182,9 @@ mod tests {
         assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), agent: Some("codex".into()), ..patch("x1", "0 9 * * *") })).contains("codex"));
         assert!(usage(create(&mut s, CardCronPatch { pick: Some("any".into()), ..patch("x2", "0 9 * * *") })).contains("random"));
         assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), place: Some(INBOX.into()), ..patch("x3", "0 9 * * *") })).contains(INBOX_NAME));
-        // 到点：派给能接的那台
+        // 到点：派给能接的那台（它在线）
         let t1 = T0 + MIN;
+        host_report(&mut s, "mbp", &[B], &DirReady::default(), 0, t1);
         assert_eq!(due(&mut s, t1), 1);
         let r = list(&s, t1).into_iter().find(|x| x.id == c.id).unwrap();
         assert_eq!((r.ran_to.as_deref(), r.ran_err.as_deref()), (Some("mbp · Claude Code"), None));
@@ -1184,20 +1204,33 @@ mod tests {
         .unwrap();
         // 再来一台能接的：两台都会挑到（谁都不暂停、都在线）
         host_up(&mut s, "mini", &[B]);
-        assert_eq!(pick(&mut s, t1, c.id), ["mbp", "mini"].map(String::from).into_iter().collect(), "两台能接的都会挑到");
-        // 只暂停接单的照样算能接：mini 每轮都重新上报（一直在线），只是 paused，照样挑得到
-        s.write(t1 + 2 * MIN, Origin::ui(None), |w| w.host_update_as("mini", &crate::HostPatch { paused: Some(true), ..Default::default() }, "人").map(|_| ()))
+        assert_eq!(pick(&mut s, t1, c.id, &["mbp", "mini"]), ["mbp", "mini"].map(String::from).into_iter().collect(), "两台能接的都会挑到");
+        // 离线的不挑：mini 不再上报（50 秒后算离线），只剩 mbp 在线，40 次都是 mbp
+        let t3 = t1 + 100 * MIN;
+        assert_eq!(pick(&mut s, t3, c.id, &["mbp"]), ["mbp"].map(String::from).into_iter().collect(), "离线的机器不挑");
+        // 暂停接单的也不挑：mini 一直在线，只是暂停接单
+        let t4 = t3 + 100 * MIN;
+        s.write(t4, Origin::ui(None), |w| w.host_update_as("mini", &crate::HostPatch { paused: Some(true), ..Default::default() }, "人").map(|_| ()))
             .unwrap();
-        assert!(s.read(|r| r.host_row("mini")).unwrap().unwrap().paused, "mini 还在，只是暂停接单");
-        let mut seen = std::collections::BTreeSet::new();
-        for i in 1..=40 {
-            let at = t1 + 3 * MIN + i * MIN;
-            host_report(&mut s, "mini", &[B], &DirReady::default(), 0, at);
-            let h = s.read(|r| r.hosts(at)).unwrap().into_iter().find(|h| h.name == "mini").unwrap();
-            assert!(h.paused && h.online, "暂停接单、在线：{h:?}");
-            seen.insert(run_once(&mut s, at, c.id));
-        }
-        assert_eq!(seen, ["mbp", "mini"].map(String::from).into_iter().collect(), "暂停接单、在线的照样挑得到");
+        host_report(&mut s, "mini", &[B], &DirReady::default(), 0, t4 + MIN);
+        let h = s.read(|r| r.hosts(t4 + MIN)).unwrap().into_iter().find(|h| h.name == "mini").unwrap();
+        assert!(h.paused && h.online, "暂停接单、在线：{h:?}");
+        assert_eq!(pick(&mut s, t4, c.id, &["mbp", "mini"]), ["mbp"].map(String::from).into_iter().collect(), "暂停接单的机器不挑");
+        // 能接的都不在线（或暂停）：到点照样建卡，评论和这一次的结果写明是哪几台、都不在线
+        let t5 = t4 + 100 * MIN;
+        let r = s.write(t5, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        assert_eq!(r.ran_to, None);
+        let why = r.ran_err.clone().unwrap_or_default();
+        assert!(why.contains("mbp、mini") && why.contains("都不在线或暂停接单"), "{why}");
+        let id = r.ran_card.expect("照样建卡");
+        assert!(card(&s, id).activity.last().unwrap().text.contains("这次没有派发出去"), "评论写明没派发出去");
+        s.write(t5, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Delete { id })
+        })
+        .unwrap();
+        // 都不在线时照样能保存随机派发（机器暂时离线，到点时可能就在线了）
+        create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..patch("离线也能存", "0 9 * * *") }).unwrap();
         // 能接的机器都被移除了：随机没有能接的机器，保存被拒绝并写明原因；已经有的照样能开关
         s.write(t1, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "人")).unwrap();
         s.write(t1, Origin::ui(None), |w| w.host_remove("mini", &Actor::human(), "人")).unwrap();
@@ -1233,7 +1266,8 @@ mod tests {
         assert_eq!(e.code, ErrorCode::Usage);
         assert!(e.message.contains("没有能接"), "还没检查、没通过的都不算能接：{}", e.message);
         let rev = 1;
-        host_report(&mut s, "win", &[B], &DirReady { cmd: "cargo test".into(), ok: true, code: Some(0), tail: vec![], at: T0 }, rev, T0);
+        // 到点时 win 在线（刚上报过）
+        host_report(&mut s, "win", &[B], &DirReady { cmd: "cargo test".into(), ok: true, code: Some(0), tail: vec![], at: T0 }, rev, T0 + MIN);
         let r = s.write(T0 + MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
         assert_eq!(r.ran_to.as_ref().map(|t| t.split(" · ").next().unwrap()), Some("win"), "{:?} {:?}", r.ran_to, r.ran_err);
         assert!(r.ran_card.is_some());

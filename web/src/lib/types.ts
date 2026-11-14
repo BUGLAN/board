@@ -110,7 +110,7 @@ export interface CardCron {
   host?: string | null;
   /** 用哪个 agent；空表示那台机器（随机派发时是挑中那台）的默认 agent */
   agent?: string | null;
-  /** 选哪台机器：host 派给 `host`，random 每次在能接这块白板的机器里随机挑一台；不派发时也留着（host） */
+  /** 选哪台机器：host 派给 `host`，random 每次在能接这块白板、在线、没暂停接单的机器里随机挑一台；不派发时也留着（host） */
   pick?: 'host' | 'random';
   /** 下次到点（毫秒）；关着、一年内不会到点时为空 */
   nextAt?: number | null;

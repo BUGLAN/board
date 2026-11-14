@@ -91,7 +91,7 @@ export function CardCronSection({ path, i }: { path: string; i: number }) {
     <section className="d-section cc" style={{ ['--i' as string]: i }}>
       <div className="d-label">
         定时建卡 <span className="count">{list.length || ''}</span>
-        <InfoTip text="到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器（指定的那台，或每次在能接的机器里随机挑一台）。上一次建的卡还没进终点、也没删时，到点不建（记「跳过」）；服务端停机期间错过的不补建" />
+        <InfoTip text="到点按模板建一张卡，由定时领取、人派发去做，或者直接派给一台机器（指定的那台，或每次在能接、在线的机器里随机挑一台）。上一次建的卡还没进终点、也没删时，到点不建（记「跳过」）；服务端停机期间错过的不补建" />
       </div>
       {list.length > 0 && (
         <div className="cc-list">
@@ -165,8 +165,11 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   const to = useData(s => (c.host ? hostsOf(s.ws).find(h => h.name === c.host) : undefined));
   // 随机派发：没有指定的机器
   const random = c.pick === 'random' && !c.host;
-  // 随机挑的时候能接的机器数（和服务端挑候选一样：有工作空间、环境检查没通过的不算、有找到了命令的 agent）
-  const canTake = useData(s => (random ? boardHosts(s.ws, path) : []).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)).length);
+  // 随机挑的时候能接的机器数（和服务端挑候选一样：有工作空间、环境检查没通过的不算、有找到了命令的 agent），
+  // 和其中现在在线、没暂停接单的（到点只在这些里挑）
+  const takers = useData(s => (random ? boardHosts(s.ws, path) : []).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)));
+  const canTake = takers.length;
+  const liveTake = takers.filter(x => x.h.online && !x.h.paused).length;
   return (
     <div className={cx('cc-row', !c.on && 'off', (busy || removing) && 'saving')}>
       <button type="button" className={cx('switch', c.on && 'on')} role="switch" aria-checked={c.on} aria-label={`「${c.name}」到点建卡`} onClick={toggle}>
@@ -184,11 +187,11 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
           </Tip>
           <span className="cc-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
           {random && (
-            <Tip text="到点在这块白板能接的机器里随机挑一台，用它的默认 agent">
-              <span className="cc-to">
+            <Tip text={`到点在这块白板能接、在线、没暂停接单的机器里随机挑一台，用它的默认 agent；现在 ${canTake} 台能接，${liveTake} 台在线`}>
+              <span className={cx('cc-to', canTake > 0 && !liveTake && 'gone')}>
                 <Icon name="dispatch" />
                 随机
-                {canTake > 0 && <em>{canTake} 台</em>}
+                {canTake > 0 && <em>{liveTake}/{canTake} 台在线</em>}
               </span>
             </Tip>
           )}
@@ -444,8 +447,10 @@ function HostPick({
   const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
   const def = h ? defaultAgent(h) : undefined;
   const random = pick === 'random' && !host;
-  // 随机挑的时候能接的机器：有工作空间、环境检查没通过的不算、有找到了命令的 agent；在线、离线、暂停接单都算
+  // 随机挑的时候能接的机器：有工作空间、环境检查没通过的不算、有找到了命令的 agent。到点只在其中在线、没暂停接单的里挑；
+  // 现在都不在线也能选（到点时可能就在线了）
   const can = boardHosts(ws, path).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)).map(x => x.h);
+  const live = can.filter(x => x.online && !x.paused);
   const why = (x: HostInfo) => (!x.online ? '离线' : x.paused ? '暂停接单' : '');
   return (
     <span className="cc-pick">
@@ -453,7 +458,15 @@ function HostPick({
         <button type="button" role="radio" aria-checked={!host && !random} className={cx('cc-host', !host && !random && 'on')} onClick={() => onChange({ host: null, pick: 'host', agent: null })}>
           不派发
         </button>
-        <TipOr text={inbox ? undefined : !can.length ? '没有能接这块白板的机器：要配了工作空间，并且有找到了命令的 agent' : `到点在这 ${can.length} 台机器里随机挑一台`}>
+        <TipOr
+          text={
+            inbox
+              ? undefined
+              : !can.length
+                ? '没有能接这块白板的机器：要配了工作空间，并且有找到了命令的 agent'
+                : `到点在这 ${can.length} 台里挑一台在线、没暂停接单的（现在 ${live.length} 台）`
+          }
+        >
           <button
             type="button"
             role="radio"
@@ -463,7 +476,11 @@ function HostPick({
             onClick={() => onChange({ host: null, pick: 'random', agent: null })}
           >
             随机
-            {!inbox && can.length > 0 && <em>{can.length} 台</em>}
+            {!inbox && can.length > 0 && (
+              <em>
+                {live.length}/{can.length} 台在线
+              </em>
+            )}
           </button>
         </TipOr>
         {hosts.map(x => {
@@ -522,7 +539,7 @@ function HostPick({
         {inbox
           ? '放到未整理的不派发：要派给机器，「放到哪」选「' + home + '」'
           : random
-            ? `到点建卡后在那 ${can.length} 台能接这块白板的机器里随机挑一台，用它的默认 agent 派过去（离线、暂停接单的排队等它）；没有能接的就不派发，评论写明原因`
+            ? `到点建卡后在能接这块白板、在线、没暂停接单的机器里随机挑一台（现在 ${live.length ? live.map(x => x.name).join('、') : '一台都没有'}），用它的默认 agent 派过去；到点时都不在线就不派发，评论写明原因`
             : host
               ? `到点建卡后马上派发到 ${host}（和手动派发一样：机器离线、暂停接单或没有空位时排队）；派不出去时卡留在「${home}」，评论写明原因`
               : hosts.length
