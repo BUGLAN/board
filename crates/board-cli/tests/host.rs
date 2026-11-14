@@ -1644,3 +1644,74 @@ fn any_host_dispatch_and_move_end_to_end() {
     let (code, _) = stop(host);
     assert_eq!(code, 0);
 }
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git {args:?} 在 {} 失败", dir.display());
+}
+
+/// 派发前更新代码（PRD §9.1）：项目目录是有 origin 的仓库时，board host 先拉最新、备好这个会话的 worktree，
+/// agent 在 worktree 里启动，读到的是远端刚推上来的内容；拉不到时不启动 agent，这台机器先不接这个项目的卡
+#[test]
+fn host_fetches_and_starts_the_agent_in_a_fresh_worktree() {
+    let rig = Rig::new();
+    for t in ["一", "二", "三"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    // 「远端」裸仓库、往里推提交的上游克隆、机器上的项目目录（克隆）
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    let origin = root.join("origin.git");
+    std::fs::create_dir(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), "up"]);
+    let up = root.join("up");
+    std::fs::write(up.join("AGENTS.md"), "v1\n").unwrap();
+    git_in(&up, &["add", "."]);
+    git_in(&up, &["commit", "-q", "-m", "v1"]);
+    git_in(&up, &["push", "-q", "origin", "HEAD:main"]);
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), rig.repo.to_str().unwrap()]);
+    let url = origin.to_str().unwrap().to_string();
+    board_core::Store::open(&rig.s.db).unwrap().write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.set_repo_branch("default", Some(&url), None)).unwrap();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    // 项目目录：<工作空间>/default（装置把刚才的克隆挪到了这里）
+    let proj = rig.ws().join("default");
+    // 机器克隆之后远端又有了新提交
+    std::fs::write(up.join("AGENTS.md"), "v2\n").unwrap();
+    git_in(&up, &["commit", "-q", "-am", "v2"]);
+    git_in(&up, &["push", "-q", "origin", "HEAD:main"]);
+    rig.mode("review");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d1 = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 交审", Duration::from_secs(20), || ended(&rig.show(1), "已交审"));
+    let wt = rig.ws().join("default.wt").join("claude-mbp-opus-5.5");
+    assert_eq!(std::fs::read_to_string(wt.join("AGENTS.md")).unwrap(), "v2\n", "worktree 停在刚拉下来的提交上");
+    assert_eq!(std::fs::read_to_string(proj.join("AGENTS.md")).unwrap(), "v1\n", "项目主目录不动");
+    let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
+    assert!(local.contains("代码已经备好：当前目录就是你这个会话的 worktree，停在刚拉下来的 origin/main 上"), "{local}");
+    // 拉不到最新代码：不启动 agent，派发结束并写明原因；上报之后这台机器接不了这个项目的卡
+    git_in(&proj, &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
+    let r = rig.board(&["dispatch", "2", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("#2 的派发结束", Duration::from_secs(20), || ended(&rig.show(2), "异常退出"));
+    assert!(activity(&rig.show(2)).iter().any(|t| t.contains("拉不到") && t.contains("没有启动 agent")), "{:?}", activity(&rig.show(2)));
+    wait_until("机器报上来拉取失败", Duration::from_secs(20), || {
+        rig.workspace()["blocks"].as_array().is_some_and(|b| b.iter().any(|x| x["host"] == "mbp" && x["why"].as_str().is_some_and(|w| w.contains("拉不到最新代码"))))
+    });
+    assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp", "--json"]).error_code(), "BOARD_NOT_ON_HOST");
+    let (code, _) = stop(host);
+    assert_eq!(code, 0);
+}

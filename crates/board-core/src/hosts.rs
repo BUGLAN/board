@@ -554,6 +554,9 @@ pub struct HostDir {
     /// board host 上报过这块白板的目录状态、还没被这台机器上报过的替换（server 发出时才有）
     #[serde(default, skip_serializing_if = "is_false")]
     pub reported: bool,
+    /// board host 最近一次在这个目录里 `git fetch origin` 没成的原因（拉成了、没拉过为空）：这台机器先不接这个项目的卡
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch_error: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -828,6 +831,7 @@ fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>, os: &str) -> Vec
             Some(mut d) => {
                 let same = old.path == d.path;
                 d.status = old.status.clone().filter(|_| same);
+                d.fetch_error = old.fetch_error.clone().filter(|_| same);
                 d.origin = old.origin.clone().filter(|_| same);
                 d.branch = old.branch.clone().filter(|_| same);
                 d.checked_at = old.checked_at.filter(|_| same);
@@ -857,6 +861,7 @@ fn merge_dir_checks(settings: &mut [HostDir], checks: &[HostDir]) {
         s.reported = true;
         if r.checked_at.is_some() || r.status.is_some() {
             s.status = r.status.clone();
+            s.fetch_error = r.fetch_error.as_ref().map(|e| e.chars().take(300).collect());
             s.origin = r.origin.clone();
             s.branch = r.branch.clone();
             s.checked_at = r.checked_at;
@@ -1440,6 +1445,12 @@ pub struct Dispatch {
     /// 没指定 agent 时 `agent` 也是空的，挑到机器后换成那台的默认 agent
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub any: bool,
+    /// 这张卡所在项目的仓库地址（没设是空的）：board host 开始派发前据此拉最新代码（PRD §9.1「派发前更新代码」）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repo: String,
+    /// 项目的集成分支（没设是空的，board host 用远端的默认分支）：会话的 worktree 停在它上面
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch: String,
 }
 
 /// 「任意机器」的派发还没指定 agent 时写的名称
@@ -1804,8 +1815,8 @@ const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key, d.card, C
        d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session AND s.id <= d.id) END,
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END,
-       d.model, d.effort, d.kind, d.path, d.any_host
-  FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
+       d.model, d.effort, d.kind, d.path, d.any_host, COALESCE(p.repo, ''), COALESCE(p.branch, '')
+  FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN projects p ON p.key = b.project LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
     Ok(Dispatch {
@@ -1838,6 +1849,8 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         kind: r.get(27)?,
         path: r.get(28)?,
         any: r.get::<_, i64>(29)? != 0,
+        repo: r.get(30)?,
+        branch: r.get(31)?,
     })
 }
 
@@ -2028,6 +2041,21 @@ impl<'a> R<'a> {
         }
         info.ops = self.host_ops(h.id)?;
         info.token = self.host_token(h, now)?;
+        // 服务端上的每块白板都列出来（default/main#330）：机器只上报它已经知道的白板，运行中新建的白板、项目
+        // 不在它报过的里面——这里按工作空间派生好目录一起发下去，board host 拿到就建目录、克隆、跑环境检查，不用重启。
+        // 没有工作空间路径的机器（旧版 board host 逐块配的目录）不派生
+        if let Some(ws) = info.workspace.clone().filter(|w| !w.path.trim().is_empty()) {
+            let mut st = self.conn.prepare("SELECT b.project || '/' || b.key FROM boards b JOIN projects p ON p.key = b.project ORDER BY p.sort, p.created_at, p.key, b.sort, b.created_at, b.key")?;
+            let all = st.query_map([], |r| r.get::<_, String>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+            for board in all {
+                if info.dirs.iter().any(|d| d.board == board) {
+                    continue;
+                }
+                if let Some(d) = derive_dir(&ws, &board, &h.os) {
+                    info.dirs.push(d);
+                }
+            }
+        }
         // 每块白板的环境检查命令（按这台机器的系统选好）：board host 照着跑，界面照着判断结果算不算数
         for d in info.dirs.iter_mut() {
             d.check = match self.resolve(&d.board) {
@@ -2842,6 +2870,8 @@ impl<'a> W<'a> {
                             dirs.push(HostDir { reported: true, ..d });
                         }
                     }
+                    // 刚露出来的白板：这次上报里带着的目录状态、环境检查结果马上合进来，不等下一次上报
+                    merge_dir_checks(&mut dirs, &rep.dirs);
                 }
                 // 报上来的目录：不在存着的主体里的（`--dir` 覆盖的、旧版 board host 的白板标识）补上；工作空间派生得出
                 // 那几块的不补，免得按上报的白板标识再存一份派发不了的目录

@@ -751,6 +751,8 @@ struct Run {
     term_at: Option<Instant>,
     killed: bool,
     spawned: Instant,
+    /// agent 在哪个目录里启动：board host 备好的 worktree，或者项目目录
+    cwd: PathBuf,
     /// 服务端已经结束了这次派发（机器掉线后卡片被释放）才停的：agent 退出后看看它的目录里有没有没推的改动
     lost: bool,
     /// 已经按机器的兜底设置要求停止：原因（「运行超过 3 小时…」）。停止流程走完后上报结束，结果「超时」
@@ -1189,6 +1191,11 @@ struct Host<'a> {
     templates: Vec<AgentTemplate>,
     /// 马上上报一次（共用模板变了、重新检查完 agent 之后）
     beat_soon: bool,
+    /// 最近一次 `git fetch` 没成的项目目录：目录、原因、什么时候试的。随上报带给服务端（这台机器先不接这个项目的卡），
+    /// 每 5 分钟重试一次，拉成了就去掉
+    fetch_errs: Vec<(PathBuf, String, Instant)>,
+    /// 下一次清理没用的 worktree 的时间
+    next_wt_sweep: Instant,
 }
 
 /// 一块白板目录的 git 状态（目录在不在、是不是 git 仓库、origin、当前分支）和看的时间。
@@ -1370,6 +1377,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         provider_force: false,
         templates: vec![],
         beat_soon: false,
+        fetch_errs: vec![],
+        next_wt_sweep: Instant::now(),
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1683,15 +1692,20 @@ fn unpushed(dir: &Path) -> Option<String> {
 /// 启动 agent 的提示词（一行 skill 调用，后面带 board host 的身份提示）。
 /// 做卡：定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）；
 /// 拆解「未整理」里的条目：不领取，先按粒度预检（偏小的不拆、不建卡），拆完评论后直接结束（PRD §9.1）
-fn dispatch_prompt(d: &Dispatch, project: &str, board: &str, name: &str, host: &str) -> String {
+fn dispatch_prompt(d: &Dispatch, project: &str, board: &str, name: &str, host: &str, ready: Option<&str>) -> String {
     if d.kind == board_core::hosts::KIND_SPLIT {
         return format!(
             "/board-skills 拆解 {project}项目之中的{board}白板中的#{}需求（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；名字已经上线，不要 check、不要心跳、不要 claim，不要创建 goal；先按粒度预检：这一条如果只做一件事、能整个做完，就不要拆，不建卡，在原条目上评一句「任务粒度合适，未进行拆解」后直接结束；偏大才拆，拆出的卡用 board new --inbox --from {}，在原条目上评论拆成了哪几张后直接结束，不要 board next）",
             d.card, d.card
         );
     }
+    // board host 已经备好代码时告诉 agent：当前目录就是它的 worktree，不用自己建、不要删
+    let code = match ready {
+        Some(branch) => format!("；代码已经备好：当前目录就是你这个会话的 worktree，停在刚拉下来的 origin/{branch} 上，不要另建 worktree，会话结束时也不要删它"),
+        None => String::new(),
+    };
     format!(
-        "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal；交审或交给人之后执行 board next --json，领到卡片就接着做，返回 SESSION_DONE 就结束）",
+        "/board-skills 开始执行 {project}项目之中的{board}白板中的#{}任务（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；卡片已由你领取，不要 check、不要 claim、不要心跳，不要创建 goal{code}；交审或交给人之后执行 board next --json，领到卡片就接着做，返回 SESSION_DONE 就结束）",
         d.card
     )
 }
@@ -1969,6 +1983,10 @@ impl Host<'_> {
         self.plan_readies();
         // 目录状态也重新看一遍（平时每 5 分钟看一次）：刚把目录修好、克隆好的，点「重新检查」马上就能接卡
         self.dir_checks.clear();
+        // 拉取失败的项目目录下一次检查时马上重试，不等 5 分钟
+        for x in self.fetch_errs.iter_mut() {
+            x.2 = Instant::now() - DIR_CHECK_EVERY;
+        }
         let found: Vec<String> = self.agents.iter().filter(|a| a.report().found).map(|a| a.id.clone()).collect();
         self.say(format!(
             "{} 重新检查完了：启动环境 {} 个，找到 agent {}",
@@ -1988,6 +2006,22 @@ impl Host<'_> {
 
     /// 每块白板目录的 git 状态：到时间的重新看一遍，其余沿用上一次的结果（心跳不跑 git 子进程）
     fn refresh_dir_checks(&mut self) {
+        // 上次拉不到最新代码的项目目录：隔 5 分钟再试一次，拉成了就恢复接这个项目的卡
+        let due: Vec<PathBuf> = self.fetch_errs.iter().filter(|(_, _, at)| at.elapsed() >= DIR_CHECK_EVERY).map(|(p, ..)| p.clone()).collect();
+        for dir in due {
+            match crate::code::fetch(&dir) {
+                Ok(()) => {
+                    self.fetch_errs.retain(|(p, ..)| *p != dir);
+                    self.say(format!("{} {} 又能拉到最新代码了", self.p.green("✓"), dir.display()));
+                }
+                Err(e) => {
+                    if let Some(x) = self.fetch_errs.iter_mut().find(|(p, ..)| *p == dir) {
+                        x.1 = e;
+                        x.2 = Instant::now();
+                    }
+                }
+            }
+        }
         let dirs: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
         self.dir_checks.retain(|c| dirs.contains(&c.path));
         for dir in dirs {
@@ -2045,6 +2079,7 @@ impl Host<'_> {
                     check: None,
                     ready: self.readies.iter().find(|r| r.board == *board).and_then(|r| r.last.clone()),
                     reported: true,
+                    fetch_error: self.fetch_errs.iter().find(|(p, ..)| *p == path).map(|(_, e, _)| e.clone()),
                 }
             })
             .collect()
@@ -3023,6 +3058,11 @@ impl Host<'_> {
                 self.upload_logs();
                 self.report_ended();
             }
+            // board host 备的 worktree 超过 24 小时没用的清掉：启动时一次，之后每小时看一次
+            if now >= self.next_wt_sweep {
+                self.next_wt_sweep = now + Duration::from_secs(3600);
+                self.sweep_worktrees();
+            }
             // 本机日志清理：启动时一次，之后每天一次
             if now >= next_clean {
                 next_clean = now + LOG_CLEAN_EVERY;
@@ -3423,7 +3463,9 @@ impl Host<'_> {
             w.running.push(d.clone());
             w.queued.retain(|x| x.id != d.id);
         }
-        match self.spawn(&d) {
+        // 派发前更新代码：拉最新、备好这个会话的 worktree（PRD §9.1「派发前更新代码」）；没成就不启动 agent
+        let started = self.prepare(&d).and_then(|code| self.spawn(&d, code.as_ref()));
+        match started {
             Ok(r) => {
                 // 先记进 runs 再打印：之后无论发生什么，退出流程都会结束它
                 let env = r.env.name.clone();
@@ -3465,8 +3507,47 @@ impl Host<'_> {
         ]
     }
 
+    /// 派发前把代码准备好：项目目录是有 `origin` 的 git 仓库时，先 `git fetch`，再备好这个会话的 worktree（停在最新的
+    /// 集成分支上），agent 就在 worktree 里启动（`code.rs`）。返回 None 表示照旧在项目目录里启动：没有仓库的项目、
+    /// 拆解（不改代码）、WSL 里的 agent（worktree 要由 WSL 里的 git 来建，还是由 skill 自己建）。
+    /// 拉不到最新代码时记下来、马上报给服务端：这台机器先不接这个项目的卡
+    fn prepare(&mut self, d: &Dispatch) -> std::result::Result<Option<crate::code::Ready>, String> {
+        if d.kind == board_core::hosts::KIND_SPLIT || d.env.as_deref().is_some_and(|e| e.starts_with("wsl:")) {
+            return Ok(None);
+        }
+        let Some(dir) = dispatch_dir(d, &self.ws, &self.os) else { return Ok(None) };
+        if !crate::code::is_repo(&dir) || !crate::code::has_origin(&dir) {
+            return Ok(None);
+        }
+        let name = d.name.clone().unwrap_or_default();
+        match crate::code::prepare(&dir, &name, d.id, &d.branch) {
+            Ok(r) => {
+                if self.fetch_errs.iter().any(|(p, ..)| *p == dir) {
+                    self.fetch_errs.retain(|(p, ..)| *p != dir);
+                    self.beat_soon = true;
+                }
+                if let Some((left, what)) = &r.left {
+                    self.say(format!(
+                        "{} {} 里有上一次没推到远端的改动（{what}），没有动它：这次在 {} 里做",
+                        self.p.yellow("!"),
+                        left.display(),
+                        r.cwd.display()
+                    ));
+                }
+                Ok(Some(r))
+            }
+            Err(crate::code::Fail::Fetch(e)) => {
+                self.fetch_errs.retain(|(p, ..)| *p != dir);
+                self.fetch_errs.push((dir.clone(), e.clone(), Instant::now()));
+                self.beat_soon = true;
+                Err(format!("拉不到 {} 的最新代码，没有启动 agent：{e}", dir.display()))
+            }
+            Err(crate::code::Fail::Other(e)) => Err(format!("没能准备好代码，没有启动 agent：{e}")),
+        }
+    }
+
     /// 在派发记录写的启动环境里启动 agent。旧版服务端不写启动环境、或写的环境本机已经没有：按本机的默认（第一个找到的）
-    fn spawn(&self, d: &Dispatch) -> std::result::Result<Run, String> {
+    fn spawn(&self, d: &Dispatch, code: Option<&crate::code::Ready>) -> std::result::Result<Run, String> {
         let spec = self.agents.iter().find(|a| a.id == d.agent).ok_or_else(|| format!("本机没有 agent「{}」", d.agent))?;
         let cmd0 = spec.cmd.first().cloned().unwrap_or_default();
         let check = d
@@ -3482,9 +3563,11 @@ impl Host<'_> {
             // 目录还没建好（服务端没有这块白板的目录）：按工作空间建一个空的，agent 在里面做
             std::fs::create_dir_all(&dir).map_err(|e| format!("目录不存在：{}（建不了：{e}）", dir.display()))?;
         }
+        // agent 在哪里启动：board host 备好的 worktree，没备（没有仓库的项目、拆解、WSL）时是项目目录
+        let run_dir = code.map_or_else(|| dir.clone(), |c| c.cwd.clone());
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
-        let prompt = dispatch_prompt(d, project, board, &name, &self.name);
+        let prompt = dispatch_prompt(d, project, board, &name, &self.name, code.map(|c| c.branch.as_str()));
         // dsh 的一次性派发要带一份禁用 goal 的 profile 补丁，见 DSH_HEADLESS_PATCH
         let patch = self.run.join("dsh-headless.patch.yml");
         let uses_patch = spec.cmd.iter().any(|a| a.contains("{patch}"));
@@ -3499,7 +3582,7 @@ impl Host<'_> {
         // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
         let cmd = spec.cmd_for(check);
         let args = agent_args(&cmd, &spec.model_args, &spec.effort_args, d.model.as_deref(), d.effort.as_deref(), &prompt, &patch_arg);
-        let mut c = env.command(&prog, &args, Some(&dir), true);
+        let mut c = env.command(&prog, &args, Some(&run_dir), true);
         c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
             .env("BOARD_AS", &name)
@@ -3564,6 +3647,7 @@ impl Host<'_> {
             term_at: None,
             killed: false,
             spawned: now,
+            cwd: run_dir.clone(),
             lost: false,
             timeout: None,
             output_at: now,
@@ -3593,6 +3677,25 @@ impl Host<'_> {
                 false
             }
         });
+    }
+
+    /// 清理 board host 备的、超过 24 小时没用的 worktree（`code.rs` 的 `sweep`）：干净的删掉，有没推改动的留着并写明
+    fn sweep_worktrees(&mut self) {
+        let mut repos: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
+        repos.sort();
+        repos.dedup();
+        let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).collect();
+        for repo in repos {
+            if !crate::code::is_repo(&repo) {
+                continue;
+            }
+            for (wt, kept) in crate::code::sweep(&repo, &in_use, crate::code::WT_UNUSED, std::time::SystemTime::now()) {
+                match kept {
+                    None => self.say(format!("{} 清理了 24 小时没用的 worktree {}", self.p.dim("·"), wt.display())),
+                    Some(what) => self.say(format!("{} worktree {} 超过 24 小时没用，但有没推到远端的改动（{what}），留着", self.p.yellow("!"), wt.display())),
+                }
+            }
+        }
     }
 
     /// 清理本机派发日志：结束超过 `log_days` 天的删掉，正在跑的留着；留下来的单个超过 50 MB 的只保留开头和结尾
@@ -4364,6 +4467,8 @@ mod tests {
                 kind: String::new(),
                 path: None,
                 any: false,
+                repo: String::new(),
+                branch: String::new(),
             },
             child,
             env: Env::direct(),
@@ -4381,6 +4486,7 @@ mod tests {
             term_at: None,
             killed: false,
             spawned: Instant::now(),
+            cwd: PathBuf::new(),
             lost: false,
             timeout: None,
             output_at: Instant::now(),
@@ -4450,6 +4556,8 @@ mod tests {
             kind: String::new(),
             path: None,
             any: false,
+            repo: String::new(),
+            branch: String::new(),
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));
@@ -4467,10 +4575,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(d.kind, "", "旧服务端没有 kind：按做卡");
-        let work = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp");
+        let work = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp", None);
         assert!(work.starts_with("/board-skills 开始执行 default项目之中的main白板中的#12任务") && work.contains("board next"), "{work}");
         d.kind = board_core::hosts::KIND_SPLIT.into();
-        let split = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp");
+        let split = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp", None);
         assert!(split.starts_with("/board-skills 拆解 default项目之中的main白板中的#12需求（board host 派发：BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "{split}");
         assert!(split.contains("board new --inbox --from 12") && split.contains("不要 board next"), "{split}");
         assert!(split.contains("先按粒度预检") && split.contains("任务粒度合适，未进行拆解"), "粒度预检写在提示词里：{split}");

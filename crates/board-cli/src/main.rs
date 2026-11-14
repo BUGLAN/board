@@ -9,6 +9,7 @@
 //! 任务下发：`board host` 在这台机器上常驻接派发（host.rs），`board dispatch` 把卡片派给一台机器。
 
 mod backend;
+mod code;
 mod config;
 mod doctor;
 mod envs;

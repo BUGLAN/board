@@ -124,7 +124,7 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 
 ### 会话的 worktree
 
-每个会话一个 worktree，一张卡接一张卡地在里面做。worktree 属于开它的会话，不碰别人的。
+每个会话一个 worktree，一张卡接一张卡地在里面做。worktree 属于开它的会话，不碰别人的。由 board host 启动、提示词里写着「代码已经备好」的会话，worktree 已经由 board host 建好（就是当前目录），不用按下面创建、也不要删，见 host.md。
 
 - **位置**：主仓库目录是 `git rev-parse --path-format=absolute --git-common-dir` 的上一级；你当前所在的目录也是一个 worktree 时，同样以主仓库目录为准。worktree 放在主仓库目录旁边的 `<仓库目录名>.wt/` 里，目录名是你的名字（`/` 换成 `-`），例如主仓库是 `~/repo/board`、名字是 `claude/opus-5.5` 时，是 `~/repo/board.wt/claude-opus-5.5`。
 - **创建**：会话里第一次处理要改代码的卡片时创建。`<仓库目录名>.wt/` 里已经有锁着你名字的 worktree（上次中断后用同一个名字重新 check）就直接接着用。否则先清理，再在主仓库目录：

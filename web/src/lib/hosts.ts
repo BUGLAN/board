@@ -205,9 +205,11 @@ export function envName(h: HostInfo | undefined, id: string | null | undefined):
 export const inSession = (d: Dispatch) => d.state === 'queued' && d.session != null && d.session !== d.id;
 
 /** 排队的原因；会话里排着的写「会话第 N/M 张」 */
-export function queueReason(h: HostInfo | undefined, d?: Dispatch): string {
+export function queueReason(h: HostInfo | undefined, d?: Dispatch, block?: HostBlock): string {
   if (d && inSession(d)) return `会话第 ${d.seq ?? '?'}/${d.total ?? '?'} 张`;
   if (d?.any && !d.host) return '等一台能接的机器';
+  // 排上之后这台机器接不了这块白板了（目录坏了、拉不到最新代码、环境检查没过）：写明原因，人可以改派
+  if (block) return `这台机器现在接不了：${block.why}`;
   if (!h) return '机器已移除';
   if (!h.online) return '等机器上线';
   if (h.paused) return '暂停接单';

@@ -60,13 +60,14 @@ export async function cancel(d: Dispatch) {
 export function CardDispatchLine({ card }: { card: number }) {
   const d = useData(s => cardDispatch(s.ws, s.path, card));
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
+  const block = useData(s => (d && d.host ? blockOf(s.ws, d.host, d.board) : undefined));
   if (!d || d.state !== 'queued') return null;
   return (
     <div className="card-dispatch" title={`派发于 ${hhmm(d.createdAt)}（${sourceOf(d)}）`}>
       <Icon name="dispatch" />
       <span>
         排队 → {hostWords(d)} · {d.agentLabel}
-        <em>（{queueReason(h, d)}）</em>
+        <em>（{queueReason(h, d, block)}）</em>
       </span>
     </div>
   );
@@ -77,6 +78,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
   const d = useData(s => cardDispatch(s.ws, board, card));
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
   const lead = useData(s => (d && inSession(d) ? sessionRunning(s.ws, d) : undefined));
+  const block = useData(s => (d && d.host && d.state === 'queued' ? blockOf(s.ws, d.host, d.board) : undefined));
   const now = useNow(1000);
   if (!d) return null;
   const queued = d.state === 'queued';
@@ -92,7 +94,7 @@ export function DispatchNote({ board, card }: { board: string; card: number }) {
           <span>
             {queued ? (
               <>
-                {queueReason(h, d)} · {sourceOf(d)}{split ? '拆解' : '派发'} · 排了 {durWords(now - d.createdAt)}
+                {queueReason(h, d, block)} · {sourceOf(d)}{split ? '拆解' : '派发'} · 排了 {durWords(now - d.createdAt)}
               </>
             ) : (
               <>

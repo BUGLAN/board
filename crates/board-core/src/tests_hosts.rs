@@ -360,7 +360,9 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
             )
         })
         .unwrap();
-    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(), vec![(B, "/tmp/board", true)]);
+    // `--dir` 覆盖的白板用覆盖的路径、只读；服务端上别的白板按工作空间派生（default/main#330）
+    assert_eq!(h.dirs.iter().filter(|d| d.fixed).map(|d| (d.board.as_str(), d.path.as_str())).collect::<Vec<_>>(), vec![(B, "/tmp/board")]);
+    assert!(h.dirs.iter().filter(|d| !d.fixed).all(|d| d.path == "/repo/default"), "{:?}", h.dirs.iter().map(|d| (&d.board, &d.path)).collect::<Vec<_>>());
     let h = s
         .write(T0 + 2 * S, Origin::ui(None), |w| {
             let p = HostPatch {
@@ -4298,4 +4300,70 @@ fn auto_claim_follows_the_board_switch_and_sees_new_boards() {
     set_on(&mut s, T0, "mbp", HostPatch { max: Some(2), ..Default::default() });
     let d = pull_on(&mut s, T0 + 2 * S, "mbp", "i1").unwrap();
     assert_eq!((d.board.as_str(), d.card), ("default/docs", c));
+}
+
+/// default/main#330：机器上报之后才建的白板、项目，随下一次的任务一起发给它（带派生的目录和环境检查命令），
+/// 它不用重启就能建目录、克隆、跑检查；没有工作空间路径的旧机器不派生
+#[test]
+fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(host(&s, T0).dirs.iter().map(|d| d.board.as_str()).collect::<Vec<_>>(), vec![B]);
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_project("新项目", "newp", "", None, None, NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.set_ready_check("newp/main", Some("cargo --version"), None)).unwrap();
+    let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
+    let got: Vec<(String, String, Option<String>)> = w.host.dirs.iter().map(|d| (d.board.clone(), d.path.clone(), d.check.clone())).collect();
+    assert!(got.contains(&("default/docs".into(), "/tmp/default".into(), None)), "{got:?}");
+    assert!(got.contains(&("newp/main".into(), "/tmp/newp".into(), Some("cargo --version".into()))), "{got:?}");
+    // 机器照着跑完检查、报上来：这块白板能派了
+    let id = s
+        .write(T0, Origin::ui(None), |w| {
+            let b = w.resolve("newp/main")?;
+            w.exec(&b, &Actor::human(), Cmd::New { title: "N".into(), body: None, column: None, top: false, labels: vec![], from: None })
+        })
+        .unwrap()
+        .card
+        .id;
+    let put = |s: &mut Store, at: i64| {
+        s.write(at, Origin::ui(None), |w| {
+            let b = w.resolve("newp/main")?;
+            w.dispatch_create(&b, id, "mbp", None, &Actor::human())
+        })
+    };
+    assert_eq!(put(&mut s, T0 + S).unwrap_err().code, ErrorCode::BoardNotReady);
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.dirs.push(HostDir {
+        board: "newp/main".into(),
+        path: "/tmp/newp".into(),
+        ready: Some(hosts::DirReady { cmd: "cargo --version".into(), ok: true, code: Some(0), tail: vec![], at: T0 }),
+        ..Default::default()
+    });
+    beat(&mut s, T0 + 2 * S, &rep).unwrap();
+    assert_eq!(put(&mut s, T0 + 2 * S).unwrap().state, "queued");
+    // 旧版 board host（没有工作空间路径）：不替它派生
+    let mut s = store();
+    beat(&mut s, T0, &legacy_report("old", "o1")).unwrap();
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    let h = s.read(|r| r.host("old", T0)).unwrap();
+    assert!(!h.dirs.iter().any(|d| d.board == "default/docs"), "{:?}", h.dirs.iter().map(|d| &d.board).collect::<Vec<_>>());
+}
+
+/// 项目目录没问题、但这台机器拉不到最新代码：先不接这个项目的卡，原因里写明；拉成了（不再报）就恢复
+#[test]
+fn host_that_cannot_fetch_does_not_take_the_projects_cards() {
+    let mut s = store();
+    ui(&mut s, |w| w.set_repo_branch("default", Some("git@github.com:o/r.git"), Some("main"))).unwrap();
+    let mut rep = dir_report("ok", Some("git@github.com:o/r.git"));
+    rep.dirs[0].fetch_error = Some("Permission denied (publickey).".into());
+    beat(&mut s, T0, &rep).unwrap();
+    let id = new_card(&mut s, T0, "A");
+    let e = dispatch(&mut s, T0, id, "mbp", None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotOnHost);
+    assert!(e.message.contains("/tmp/default 拉不到最新代码：Permission denied (publickey)."), "{}", e.message);
+    assert_eq!(s.read(|r| r.blocks()).unwrap()[0].why, "/tmp/default 拉不到最新代码：Permission denied (publickey).");
+    beat(&mut s, T0 + S, &dir_report("ok", Some("git@github.com:o/r.git"))).unwrap();
+    let d = dispatch(&mut s, T0 + S, id, "mbp", None).unwrap();
+    // 派发带着项目的仓库和集成分支：board host 据此拉代码、备 worktree
+    assert_eq!((d.repo.as_str(), d.branch.as_str()), ("git@github.com:o/r.git", "main"));
 }

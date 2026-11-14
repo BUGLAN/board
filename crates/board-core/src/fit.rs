@@ -4,7 +4,7 @@
 //! 和界面（工作区数据里的 `blocks`）以前各写各的，条件互相对不上；现在都问这里：
 //!
 //! - [`R::board_unfit`]：机器 × 白板。还没有配工作空间、项目设了仓库但目录不对（不存在、不是 git 仓库、`origin` 不是
-//!   项目的仓库）、环境检查没通过或还没跑完时接不了，返回原因 [`Unfit`]。
+//!   项目的仓库、拉不到最新代码）、环境检查没通过或还没跑完时接不了，返回原因 [`Unfit`]。
 //! - [`R::agent_tripped`]：机器 × agent。这个 agent 在这台机器上连续 [`TRIP_AFTER`] 次异常退出后暂停接单，
 //!   人在机器详情里点「恢复」才继续。
 //! - [`R::blocks`]：所有接不了的「机器 × 白板」，随工作区数据发给界面，界面只照着显示，不自己再算一遍。
@@ -31,6 +31,8 @@ pub enum Unfit {
     DirNotGit { path: String },
     /// 目录是 git 仓库，但 `origin` 不是项目的仓库
     WrongRepo { path: String, origin: Option<String>, repo: String },
+    /// 目录是项目的仓库，但这台机器最近一次 `git fetch origin` 没成（没权限、网络不通）：拉不到最新代码
+    FetchFailed { path: String, why: String },
     /// 环境检查没通过：输出的最后一行
     CheckFailed(String),
     /// 环境检查还没跑完（旧版 board host 不会检查）
@@ -54,6 +56,7 @@ impl Unfit {
             Unfit::DirNotGit { path } => format!("{path} 不是 git 仓库"),
             Unfit::WrongRepo { path, origin: Some(o), repo } => format!("{path} 的 origin 是 {o}，不是项目的仓库 {repo}"),
             Unfit::WrongRepo { path, origin: None, repo } => format!("{path} 没有 origin，项目的仓库是 {repo}"),
+            Unfit::FetchFailed { path, why } => format!("{path} 拉不到最新代码：{why}"),
             Unfit::CheckFailed(last) => format!("环境检查没通过：{last}"),
             Unfit::CheckPending => "环境检查还没跑完".into(),
         }
@@ -67,6 +70,7 @@ impl Unfit {
             Unfit::DirMissing { .. } => format!("机器「{host}」上 {}：等它克隆完，或在机器详情里重新克隆", self.short()),
             Unfit::DirNotGit { .. } => format!("机器「{host}」上 {}：把它换成项目仓库的克隆", self.short()),
             Unfit::WrongRepo { .. } => format!("机器「{host}」上 {}：改项目设置里的仓库地址，或把那台机器的目录换成项目的仓库", self.short()),
+            Unfit::FetchFailed { .. } => format!("机器「{host}」上 {}：检查那台机器访问仓库的权限和网络，它每 5 分钟重试一次，也可以在机器详情里点「重新检查」", self.short()),
             Unfit::CheckFailed(last) => format!("机器「{host}」上 {path} 的环境检查没通过：{last}"),
             Unfit::CheckPending => format!("机器「{host}」还没跑完 {path} 的环境检查：等它跑完再派（旧版 board host 不会检查，要先升级 board）"),
         };
@@ -154,6 +158,9 @@ impl R<'_> {
                     Some("not_git") => return Ok(Some(Unfit::DirNotGit { path: d.path.clone() })),
                     Some("ok") if d.origin.as_deref().is_none_or(|o| repo_key(o) != repo_key(repo)) => {
                         return Ok(Some(Unfit::WrongRepo { path: d.path.clone(), origin: d.origin.clone(), repo: repo.to_string() }));
+                    }
+                    Some("ok") if d.fetch_error.is_some() => {
+                        return Ok(Some(Unfit::FetchFailed { path: d.path.clone(), why: d.fetch_error.clone().unwrap_or_default() }));
                     }
                     // 旧版 board host 不上报目录状态：不拦
                     _ => {}
