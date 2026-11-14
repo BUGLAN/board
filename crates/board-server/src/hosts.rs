@@ -182,6 +182,25 @@ async fn end_inner(s: AppState, id: i64, v: Value) -> ApiResult<Dispatch> {
     Ok(Json(out))
 }
 
+/// `POST /api/dispatches/{ID}/wip {branch, how, changes, tail}`：board host 在派发结束时把没推的改动保存成了 wip 分支，
+/// 在卡片上评论（半成品交接，PRD §9.1）
+pub(crate) async fn wip(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
+    #[derive(Deserialize)]
+    struct Body {
+        branch: String,
+        #[serde(default)]
+        how: String,
+        #[serde(default)]
+        changes: String,
+        #[serde(default)]
+        tail: Vec<String>,
+    }
+    let b: Body = parse(v)?;
+    s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_wip(id, &b.branch, &b.how, &b.changes, &b.tail))).await?;
+    s.poke();
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 pub(crate) struct LogBody {
     #[serde(default)]

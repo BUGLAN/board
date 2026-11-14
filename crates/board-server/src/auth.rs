@@ -390,6 +390,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                     && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/dispatches/move" | "/releases")
                         || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested"])
                         || dispatch_path(&path, "end")
+                        || dispatch_path(&path, "wip")
                         || dispatch_path(&path, "log")
                         || dispatch_path(&path, "events")
                         || path == "/skills"))

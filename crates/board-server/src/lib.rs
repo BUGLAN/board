@@ -272,6 +272,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/dispatches/cancel", post(hosts::cancel))
         .route("/dispatches/move", post(hosts::move_to))
         .route("/dispatches/{id}/end", post(hosts::end))
+        .route("/dispatches/{id}/wip", post(hosts::wip))
         .route("/dispatches/{id}/log", get(hosts::log).post(hosts::append_log).layer(axum::middleware::map_response(quiet)))
         .route("/dispatches/{id}/events", post(hosts::append_events).layer(axum::middleware::map_response(quiet)))
         .route("/stream", get(stream))

@@ -4368,3 +4368,69 @@ fn host_that_cannot_fetch_does_not_take_the_projects_cards() {
     // 派发带着项目的仓库和集成分支：board host 据此拉代码、备 worktree
     assert_eq!((d.repo.as_str(), d.branch.as_str()), ("git@github.com:o/r.git", "main"));
 }
+
+/* ------------------------------ 掉线后接回、半成品交接 ------------------------------ */
+
+/// 机器掉线超过 50 秒：派发按「机器掉线」结束、卡片回到待办。它恢复连接时还报着这次派发在跑，卡片没被别人领走：
+/// 接回，名字重新持有卡片，派发回到在跑；已经被别人领走的不接
+#[test]
+fn lost_dispatch_is_revived_when_the_host_comes_back_and_the_card_is_still_free() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    let name = d.name.clone().unwrap();
+    let gone = T0 + S + hosts::HOST_GAP_MS + 5 * S;
+    s.sweep(gone).unwrap();
+    assert_eq!(get(&s, d.id).result.as_deref(), Some("lost"));
+    assert_eq!((card(&s, a).card.column.as_str(), card(&s, a).card.holder.clone()), ("todo", None));
+    // 恢复连接：agent 进程还在，board host 报着这次派发
+    let w = beat(&mut s, gone + S, &report("mbp", "i1", vec![d.id])).unwrap();
+    assert_eq!(w.running.iter().map(|x| x.id).collect::<Vec<_>>(), vec![d.id], "接回之后随任务发回去，board host 不会结束它");
+    let g = get(&s, d.id);
+    assert_eq!((g.state.as_str(), g.result.clone(), g.ended_at), ("running", None, None));
+    let c = card(&s, a);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("doing", Some(name.as_str())));
+    assert!(c.activity.iter().any(|x| x.text.contains("恢复连接") && x.text.contains("接着做")), "{:?}", c.activity.iter().map(|x| &x.text).collect::<Vec<_>>());
+    // 照常结束
+    assert_eq!(end(&mut s, gone + 2 * S, d.id, Some(1), &["boom"]).result.as_deref(), Some("crashed"));
+
+    // 另一张：掉线期间被别人领走了，不接
+    let b = new_card(&mut s, gone + 3 * S, "B");
+    let d2 = dispatch(&mut s, gone + 3 * S, b, "mbp", None).unwrap();
+    let d2 = begin(&mut s, gone + 4 * S, d2.id).unwrap();
+    let gone2 = gone + 4 * S + hosts::HOST_GAP_MS + 5 * S;
+    s.sweep(gone2).unwrap();
+    s.write(gone2, Origin::cli(), |w| w.agent_check("other/x", None)).unwrap();
+    exec(&mut s, gone2 + S, &Actor::agent("other/x"), Cmd::Claim { id: Some(b) }).unwrap();
+    let w = beat(&mut s, gone2 + 2 * S, &report("mbp", "i1", vec![d2.id])).unwrap();
+    assert!(w.running.is_empty(), "已经被别人领走：不接回，board host 会结束那个 agent");
+    assert_eq!(get(&s, d2.id).result.as_deref(), Some("lost"));
+    assert_eq!(card(&s, b).card.holder.as_deref(), Some("other/x"));
+}
+
+/// 半成品交接：board host 把没推的改动保存成 wip 分支后，在卡片上评论怎么结束的、留下了什么、agent 最后做了什么，
+/// 最后一行是 board-skills 认的「未完成的改动：<分支>」；派发已经结束（机器掉线）也能评论
+#[test]
+fn wip_comment_tells_the_next_agent_where_to_pick_up() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![d.id])).unwrap();
+    end(&mut s, T0 + 3 * S, d.id, Some(1), &["boom"]);
+    let tail: Vec<String> = (1..=12).map(|i| format!("▸ 第 {i} 步")).collect();
+    s.write(T0 + 4 * S, Origin::cli(), |w| w.dispatch_wip(d.id, "wip/main/1", "agent 退出，退出码 1", "2 个没提交的文件（a.rs、b.tsx）", &tail)).unwrap();
+    let c = card(&s, a);
+    let text = &c.activity.iter().rev().find(|x| x.kind == "comment").unwrap().text;
+    assert!(text.contains("board host（mbp）") && text.contains("已经保存到分支 `wip/main/1`"), "{text}");
+    assert!(text.contains("怎么结束的：agent 退出，退出码 1") && text.contains("留下了什么：2 个没提交的文件（a.rs、b.tsx）"), "{text}");
+    assert!(text.contains("第 12 步") && text.contains("第 3 步") && !text.contains("第 2 步"), "只留最后 10 条：{text}");
+    assert_eq!(text.lines().last(), Some("未完成的改动：wip/main/1"), "{text}");
+    // 分支名不对的拒绝
+    for bad in ["main", "wip/../x", "wip/a b"] {
+        assert_eq!(s.write(T0 + 5 * S, Origin::cli(), |w| w.dispatch_wip(d.id, bad, "", "", &[])).unwrap_err().code, ErrorCode::Usage, "{bad}");
+    }
+}

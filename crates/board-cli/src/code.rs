@@ -210,6 +210,48 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str) -> Result<Re
     Ok(Ready { cwd: target, branch, left })
 }
 
+/// 保存下来的半成品
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wip {
+    /// 推到了哪条分支
+    pub branch: String,
+    /// 留下了什么，一句话
+    pub changes: String,
+}
+
+/// 半成品交接：worktree 里还有没推到远端的改动时，把没提交的文件提交掉（提交人写 board host，不跑钩子），
+/// 推到 `branch`；那条分支已经有别的内容、推不进去时改推 `alt`（带机器名，免得盖掉别人的）。
+/// worktree 是干净的（都推了）时返回 None
+pub fn save_wip(wt: &Path, branch: &str, alt: &str, message: &str) -> Result<Option<Wip>, String> {
+    if unpushed(wt).is_none() {
+        return Ok(None);
+    }
+    let status = git(wt, &["status", "--porcelain"], QUICK)?;
+    let files: Vec<String> = status.lines().filter(|l| l.len() > 3).map(|l| l[3..].trim().to_string()).collect();
+    if !files.is_empty() {
+        git(wt, &["add", "-A"], WT_LIMIT)?;
+        git(wt, &["-c", "user.name=board host", "-c", "user.email=board-host@localhost", "commit", "--quiet", "--no-verify", "-m", message], WT_LIMIT)?;
+    }
+    let ahead = git(wt, &["rev-list", "--count", "HEAD", "--not", "--remotes"], QUICK).ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+    let mut used = branch.to_string();
+    if git(wt, &["push", "--quiet", "origin", &format!("HEAD:refs/heads/{branch}")], FETCH_LIMIT).is_err() {
+        used = alt.to_string();
+        git(wt, &["push", "--quiet", "--force", "origin", &format!("HEAD:refs/heads/{alt}")], FETCH_LIMIT)?;
+    }
+    // 让本地认得这条远端分支：之后这个 worktree 就算干净的，下一次派发可以接着用
+    let _ = git(wt, &["fetch", "--quiet", "origin", &format!("+refs/heads/{used}:refs/remotes/origin/{used}")], FETCH_LIMIT);
+    // 留下了什么：这次替它提交的文件，和它自己提交了、但没推的提交
+    let earlier = ahead.saturating_sub(usize::from(!files.is_empty()));
+    let shown: Vec<&str> = files.iter().take(8).map(String::as_str).collect();
+    let more = if files.len() > shown.len() { format!(" 等 {} 个", files.len()) } else { String::new() };
+    let changes = match (files.is_empty(), earlier) {
+        (true, n) => format!("{n} 个没推的提交"),
+        (false, 0) => format!("{} 个没提交的文件（{}{more}）", files.len(), shown.join("、")),
+        (false, n) => format!("{} 个没提交的文件（{}{more}），另有 {n} 个没推的提交", files.len(), shown.join("、")),
+    };
+    Ok(Some(Wip { branch: used, changes }))
+}
+
 /// 清理 board host 备的、超过 `older` 没用的 worktree：干净的删掉（返回的第二项为空），有没推改动的留着（第二项写留着什么）。
 /// `in_use` 是正在跑的会话用着的，不碰；没有使用记号的（人手动跑的会话自己建的）也不碰
 pub fn sweep(repo: &Path, in_use: &[PathBuf], older: Duration, now: SystemTime) -> Vec<(PathBuf, Option<String>)> {
@@ -336,6 +378,35 @@ mod tests {
         assert_eq!(prepare(&r.repo, "a/b", 1, "release").unwrap_err(), Fail::Other("远端没有分支 release".into()));
         run(&r.repo, &["remote", "set-url", "origin", "/nonexistent/repo.git"]);
         assert!(matches!(prepare(&r.repo, "a/b", 1, "").unwrap_err(), Fail::Fetch(_)));
+    }
+
+    /// 半成品交接：没提交的文件和没推的提交一起推成 wip 分支，之后 worktree 算干净的；都推了时什么也不做；
+    /// 那条分支上已经有别的内容时改推带机器名的分支
+    #[test]
+    fn save_wip_commits_and_pushes_whatever_was_not_pushed() {
+        let r = rig();
+        let wt = prepare(&r.repo, "a/b", 1, "").unwrap().cwd;
+        assert_eq!(save_wip(&wt, "wip/main/7", "wip/main/7-mbp", "wip").unwrap(), None, "干净的 worktree 不用保存");
+        // agent 自己提交过一次、没推，又留了两个没提交的文件
+        std::fs::write(wt.join("done.txt"), "做完的一半").unwrap();
+        run(&wt, &["add", "."]);
+        run(&wt, &["commit", "-q", "-m", "做了一半"]);
+        std::fs::write(wt.join("half.txt"), "还没提交").unwrap();
+        std::fs::write(wt.join("AGENTS.md"), "改了\n").unwrap();
+        let w = save_wip(&wt, "wip/main/7", "wip/main/7-mbp", "wip: default/main#7").unwrap().unwrap();
+        assert_eq!(w.branch, "wip/main/7");
+        assert!(w.changes.starts_with("2 个没提交的文件（") && w.changes.ends_with("，另有 1 个没推的提交"), "{}", w.changes);
+        assert!(unpushed(&wt).is_none(), "推上去之后 worktree 算干净的，下一次派发可以接着用");
+        // 远端的 wip 分支上三样都在
+        let names = git(&r.up, &["fetch", "-q", "origin"], QUICK).and_then(|_| git(&r.up, &["ls-tree", "--name-only", "origin/wip/main/7"], QUICK)).unwrap();
+        assert!(names.contains("done.txt") && names.contains("half.txt"), "{names}");
+        assert_eq!(git(&r.up, &["log", "-1", "--format=%an|%s", "origin/wip/main/7"], QUICK).unwrap(), "board host|wip: default/main#7");
+        // 另一台机器从集成分支另起了一份：那条分支推不进去，改推带机器名的
+        let other = prepare(&r.repo, "c/d", 2, "").unwrap().cwd;
+        std::fs::write(other.join("other.txt"), "另一份").unwrap();
+        let w = save_wip(&other, "wip/main/7", "wip/main/7-win", "wip").unwrap().unwrap();
+        assert_eq!(w.branch, "wip/main/7-win");
+        assert_eq!(w.changes, "1 个没提交的文件（other.txt）");
     }
 
     /// 清理：board host 备的、超过时限没用的干净 worktree 删掉；正在用的、有没推改动的、不是 board host 备的都留着

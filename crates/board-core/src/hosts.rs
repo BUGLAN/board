@@ -2956,6 +2956,10 @@ impl<'a> W<'a> {
                 }
             }
         }
+        // 掉线后回来（PRD §9.1「掉线后接回」）：它报着还在跑、服务端已经按「机器掉线」结束的派发，卡片还没被别人领走就接回
+        for id in &rep.running {
+            self.dispatch_revive(*id, &name, token)?;
+        }
         // 在跑的派发。board host 报的是它知道的派发 ID：board next 刚换到下一张、board host 还没取到新任务时，
         // 它报的还是上一张。同一个会话（同一个进程）里的任何一张在报，就算有进程
         let running: Vec<i64> =
@@ -4159,6 +4163,88 @@ impl<'a> W<'a> {
             }
         }
         self.read().dispatch(id)
+    }
+
+    /* ---------------- 掉线后接回、半成品交接（PRD §9.1） ---------------- */
+
+    /// 机器掉线超过 50 秒，服务端已经把它在跑的派发按「机器掉线」结束、卡片放回了可领取状态；之后机器恢复连接、
+    /// agent 进程其实还在干活。卡片还没被别人领走（还在可领取状态、没有持有者、没有别的排队或在跑的派发）时把这次派发接回：
+    /// 名字重新上线、以它重新领取卡片、派发回到在跑，agent 接着做，不用结束它、换一台从头来。
+    /// 接不回（卡片已经被领走、被人移走、被删）时什么也不做，board host 照旧结束那个 agent。返回有没有接回
+    fn dispatch_revive(&mut self, id: i64, host: &str, token: Option<i64>) -> Result<bool> {
+        let row: Option<(String, Option<String>, String)> =
+            self.tx.query_row("SELECT state, result, host FROM dispatches WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+        let Some((state, result, on)) = row else { return Ok(false) };
+        if state != "done" || result.as_deref() != Some("lost") || on != host {
+            return Ok(false);
+        }
+        let d = self.drow(id)?;
+        let Some(name) = d.name.clone() else { return Ok(false) };
+        let board = self.board_of(d.board)?;
+        let actor = Actor::agent(name.clone());
+        if !d.split() {
+            let card: Option<(String, Option<String>)> = self
+                .tx
+                .query_row("SELECT col, holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            let Some((col, holder)) = card else { return Ok(false) };
+            let flow = flow_of(self.tx, d.board)?;
+            let busy: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE board = ?1 AND card = ?2 AND state != 'done'", params![d.board, d.card], |r| r.get(0))?;
+            if holder.is_some() || !flow.is_claim(&col) || busy > 0 {
+                return Ok(false);
+            }
+        }
+        // 名字被别的在线会话用着（很少见）：不接
+        if self.agent_check_owned(&name, token, crate::agents::NameOwner::Host).is_err() {
+            return Ok(false);
+        }
+        if !d.split() {
+            self.dispatch_ok = true;
+            let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(d.card) });
+            self.dispatch_ok = false;
+            if claimed.is_err() {
+                self.tx.execute("UPDATE agents SET off_at = ?2 WHERE name = ?1", params![name, self.now])?;
+                return Ok(false);
+            }
+        }
+        self.tx.execute("UPDATE dispatches SET state = 'running', result = NULL, ended_at = NULL, exit_code = NULL WHERE id = ?1", [id])?;
+        let text = format!("机器 {host} 恢复连接：这张卡还没被别人领走，{name} 接着做（接回掉线前的派发，{}）", Self::dispatch_words(&d));
+        self.track_dispatch(d.board, d.card, &actor, "dispatch", &text)?;
+        self.touch_hosts();
+        Ok(true)
+    }
+
+    /// 半成品交接：派发结束时 agent 的 worktree 里还有没推到远端的改动，board host 把它们保存成了 wip 分支。
+    /// 在卡片上评论怎么结束的、留下了什么、agent 最后做了什么，最后一行是 `未完成的改动：<分支>`——接手的 agent
+    /// 按 board-skills 的约定从这条分支接着做，不用从头来。派发结束之后也能调（机器掉线的那种就是结束之后才推的）
+    pub fn dispatch_wip(&mut self, id: i64, branch: &str, how: &str, changes: &str, tail: &[String]) -> Result<()> {
+        let branch = branch.trim();
+        let ok = branch.starts_with("wip/") && branch.len() <= 120 && branch.chars().all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c)) && !branch.contains("..");
+        if !ok {
+            return Err(BoardError::usage(format!("wip 分支名不对：{branch}")));
+        }
+        let d = self.drow(id)?;
+        if !self.card_exists(d.board, d.card)? {
+            return Ok(());
+        }
+        let board = self.board_of(d.board)?;
+        let line = |t: &str| t.trim().chars().take(300).collect::<String>();
+        let mut text = format!(
+            "board host（{}）：这次派发结束时，{} 的 worktree 里还有没推到远端的改动，已经保存到分支 `{branch}`。\n\n- 怎么结束的：{}\n- 留下了什么：{}",
+            d.host,
+            d.name.as_deref().unwrap_or(&d.agent_label),
+            line(how),
+            line(changes)
+        );
+        let tail: Vec<String> = tail.iter().map(|t| line(t)).filter(|t| !t.is_empty()).collect();
+        if !tail.is_empty() {
+            let skip = tail.len().saturating_sub(10);
+            text += "\n- agent 最后做的：\n";
+            text += &tail[skip..].iter().map(|t| format!("  - {t}")).collect::<Vec<_>>().join("\n");
+        }
+        text += &format!("\n\n接手时从这条分支接着做（先看它相对集成分支改了什么），不用从头来；做完推进集成分支后删掉这条分支。\n\n未完成的改动：{branch}");
+        soft(self.exec(&board, &Actor::system(), Cmd::Comment { id: d.card, text }))?;
+        Ok(())
     }
 
     /// 取消排队中的派发，或请求停止正在跑的派发（board host 结束 agent 进程后上报结束）。who 是给人看的称呼

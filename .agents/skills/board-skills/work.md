@@ -155,7 +155,7 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
    有的话先看提交和卡片动态：
    - 动态里还没有这个提交的「提交：」行：上一个 agent 推完、还没来得及交审就中断了。不重做，确认提交满足卡片后直接按「交审」处理。
    - 卡片交审过，又被人拖回可领取状态（复盘打回）：按动态里人的意见，接着在集成分支上修（第 3 步），再提交一次，同样带 `卡片：<项目>/<白板>#<ID>`。不改写已经推上去的提交；评论要求回滚时，`git revert --no-commit <sha>` 后按「提交」的格式提交，作为这一次的提交。
-2. 卡片动态里有 `未完成的改动：wip/...`（上一个 agent 做不下去、或推送前发现领取已经失效时留下的），就从那条分支接着做：`git fetch origin && git switch --detach origin/wip/main/21`。
+2. 卡片动态里有 `未完成的改动：wip/...`（上一个 agent 做不下去、推送前发现领取已经失效，或者它中途退出、board host 替它把没推的改动保存下来时留下的），就从那条分支接着做：`git fetch origin && git switch --detach origin/wip/main/21`。分支名照评论里写的（board host 保存的有时带机器名，例如 `wip/main/21-win`）。board host 的那条评论里还写了上一个 agent 怎么结束的、留下了哪些文件、最后做了什么：先看这些和 `git diff origin/main...HEAD`，弄清做到哪了再接着做，不要从头重做。
 3. 否则 `git fetch origin && git switch --detach origin/main`。
 
 切换之前 worktree 必须是干净的：没有未提交的改动，也没有没推到远端的提交。不干净说明上一张卡没收尾，先按「做不下去」把它推到那张卡的 wip 分支，并在那张卡上评论。

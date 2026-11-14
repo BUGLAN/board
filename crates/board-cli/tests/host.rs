@@ -41,6 +41,8 @@ if [ "$(cat "$FAKE_DIR/mode")" = "quiet" ]; then
 fi
 echo "prompt: $1"
 echo "as: $BOARD_AS host: $BOARD_HOST board: $BOARD"
+# 在当前目录（board host 备好的 worktree）里留一个没提交的文件：测半成品交接
+[ -f "$FAKE_DIR/leave" ] && cp "$FAKE_DIR/leave" ./half.txt
 [ -f "$BOARD_CONFIG" ] && echo "config: ok"
 [ -x "$BOARD_EXE" ] && echo "exe: ok"
 id=$(echo "$1" | sed 's/.*#\([0-9]*\)任务.*/\1/')
@@ -1712,6 +1714,44 @@ fn host_fetches_and_starts_the_agent_in_a_fresh_worktree() {
         rig.workspace()["blocks"].as_array().is_some_and(|b| b.iter().any(|x| x["host"] == "mbp" && x["why"].as_str().is_some_and(|w| w.contains("拉不到最新代码"))))
     });
     assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp", "--json"]).error_code(), "BOARD_NOT_ON_HOST");
+    let (code, _) = stop(host);
+    assert_eq!(code, 0);
+}
+
+/// 半成品交接（PRD §9.1）：agent 异常退出时 worktree 里还有没提交的文件，board host 把它保存成 wip/<白板>/<ID> 推到远端，
+/// 卡片上多一条评论，最后一行是「未完成的改动：wip/main/1」；接手的 agent 从这条分支接着做
+#[test]
+fn host_saves_unpushed_work_as_a_wip_branch_and_comments() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    let origin = root.join("origin.git");
+    std::fs::create_dir(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), "up"]);
+    let up = root.join("up");
+    std::fs::write(up.join("AGENTS.md"), "v1\n").unwrap();
+    git_in(&up, &["add", "."]);
+    git_in(&up, &["commit", "-q", "-m", "v1"]);
+    git_in(&up, &["push", "-q", "origin", "HEAD:main"]);
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), rig.repo.to_str().unwrap()]);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    std::fs::write(rig.fake.with_file_name("leave"), "做到一半的内容\n").unwrap();
+    rig.mode("crash");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("#1 异常退出", Duration::from_secs(20), || ended(&rig.show(1), "异常退出"));
+    wait_until("卡片上有 wip 评论", Duration::from_secs(20), || {
+        rig.show(1)["activity"].as_array().is_some_and(|a| a.iter().any(|x| x["text"].as_str().is_some_and(|t| t.trim_end().ends_with("未完成的改动：wip/main/1"))))
+    });
+    let c = rig.show(1);
+    let text = c["activity"].as_array().unwrap().iter().filter_map(|x| x["text"].as_str()).find(|t| t.contains("已经保存到分支")).unwrap().to_string();
+    assert!(text.contains("board host（mbp）") && text.contains("1 个没提交的文件（half.txt）") && text.contains("退出码"), "{text}");
+    // 远端真的有这条分支，里面是那个文件
+    git_in(&up, &["fetch", "-q", "origin"]);
+    let out = Command::new("git").arg("-C").arg(&up).args(["show", "origin/wip/main/1:half.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "做到一半的内容\n");
     let (code, _) = stop(host);
     assert_eq!(code, 0);
 }

@@ -753,6 +753,8 @@ struct Run {
     spawned: Instant,
     /// agent 在哪个目录里启动：board host 备好的 worktree，或者项目目录
     cwd: PathBuf,
+    /// `cwd` 是 board host 备好的 worktree：派发结束时里面没推的改动由 board host 保存成 wip 分支
+    managed: bool,
     /// 服务端已经结束了这次派发（机器掉线后卡片被释放）才停的：agent 退出后看看它的目录里有没有没推的改动
     lost: bool,
     /// 已经按机器的兜底设置要求停止：原因（「运行超过 3 小时…」）。停止流程走完后上报结束，结果「超时」
@@ -827,6 +829,15 @@ struct RunSummary {
     lost: bool,
     /// 兜底停止的原因
     why: Option<String>,
+    /// 派发 ID
+    id: i64,
+    /// agent 在哪里跑的；`managed` 时是 board host 备好的 worktree
+    cwd: PathBuf,
+    managed: bool,
+    /// 有人请求停止（或 board host 自己要停它）之后才退出的
+    stopped: bool,
+    /// agent 最后做的几件事（事件的文字，没有事件流时是日志最后几行）
+    tail: Vec<String>,
 }
 
 /// 还没上报成功的结束（连不上服务端时下一轮再报）
@@ -3297,8 +3308,12 @@ impl Host<'_> {
                 ended.name.as_deref().unwrap_or_default(),
                 self.p.dim(&what)
             ));
+            // 半成品交接：board host 备的 worktree 里还有没推到远端的改动，保存成 wip 分支并在卡片上评论，接手的不用从头来
+            if ended.managed {
+                self.save_wip(&ended, code);
+            }
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
-            if ended.lost {
+            if ended.lost && !ended.managed {
                 if let Some(repo) = ws_dir(&self.ws, &ended.board, &self.os) {
                     for (dir, what) in leftovers(&repo, ended.name.as_deref().unwrap_or_default()) {
                         self.say(format!(
@@ -3337,8 +3352,63 @@ impl Host<'_> {
         self.flush_events(&mut r, true);
         let secrets = self.secrets();
         let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
-        self.ended.push(ended_of(&r, code, how, &secrets));
-        RunSummary { board: r.d.board.clone(), card: r.d.card, name: r.d.name.clone(), lost: r.lost, why: r.timeout.clone() }
+        let ended = ended_of(&r, code, how, &secrets);
+        let tail = if ended.events.is_empty() { ended.tail.iter().rev().take(10).rev().cloned().collect() } else { ended.events.clone() };
+        self.ended.push(ended);
+        RunSummary {
+            board: r.d.board.clone(),
+            card: r.d.card,
+            name: r.d.name.clone(),
+            lost: r.lost,
+            why: r.timeout.clone(),
+            id: r.d.id,
+            cwd: r.cwd.clone(),
+            managed: r.managed,
+            stopped: r.term_at.is_some(),
+            tail,
+        }
+    }
+
+    /// 派发结束时 agent 的 worktree 里还有没推的改动（没提交的文件、不在远端的提交）：提交、推成 `wip/<白板标识>/<ID>`，
+    /// 再让服务端在卡片上评论（怎么结束的、留下了什么、agent 最后做了什么）。agent 自己交审了、或者自己推了 wip 分支时
+    /// worktree 是干净的，什么也不做。推不上去时在本机输出里写明，改动留在 worktree 里（下一次派发不会动它）
+    fn save_wip(&mut self, ended: &RunSummary, code: Option<i64>) {
+        let key = ended.board.split_once('/').map_or(ended.board.as_str(), |(_, b)| b);
+        let branch = format!("wip/{key}/{}", ended.card);
+        let alt = format!("{branch}-{}", self.name);
+        let how = if ended.lost {
+            "机器和服务端断开超过 50 秒，派发被服务端结束，卡片可能已经被别的机器接走".to_string()
+        } else if let Some(why) = &ended.why {
+            why.clone()
+        } else if ended.stopped {
+            "被停止".to_string()
+        } else {
+            format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into()))
+        };
+        let message = format!("wip: {}#{} 没做完的改动（board host 在派发结束时保存）", ended.board, ended.card);
+        match crate::code::save_wip(&ended.cwd, &branch, &alt, &message) {
+            Ok(None) => {}
+            Ok(Some(w)) => {
+                self.say(format!(
+                    "{} {} 没推的改动（{}）已经保存到分支 {}",
+                    self.p.green("✓"),
+                    self.p.cyan(&format!("{}#{}", ended.board, ended.card)),
+                    w.changes,
+                    w.branch
+                ));
+                let secrets = self.secrets();
+                let tail: Vec<String> = ended.tail.iter().map(|l| crate::redact::redact(l, &secrets.iter().map(String::as_str).collect::<Vec<_>>())).collect();
+                let body = json!({ "branch": w.branch, "how": how, "changes": w.changes, "tail": tail });
+                if let Err(e) = self.rm().post::<Value>(&format!("/api/dispatches/{}/wip", ended.id), body) {
+                    self.say(format!("{} 没能在卡片上评论 wip 分支 {}：{}", self.p.yellow("!"), w.branch, e.message));
+                }
+            }
+            Err(e) => self.say(format!(
+                "{} {} 里有没推到远端的改动，没能保存成 wip 分支（{e}）：留在那里，需要的话去捞回来",
+                self.p.yellow("!"),
+                ended.cwd.display()
+            )),
+        }
     }
 
     /// 上报结束；连不上时留到下一轮
@@ -3648,6 +3718,7 @@ impl Host<'_> {
             killed: false,
             spawned: now,
             cwd: run_dir.clone(),
+            managed: code.is_some(),
             lost: false,
             timeout: None,
             output_at: now,
@@ -4487,6 +4558,7 @@ mod tests {
             killed: false,
             spawned: Instant::now(),
             cwd: PathBuf::new(),
+            managed: false,
             lost: false,
             timeout: None,
             output_at: Instant::now(),
