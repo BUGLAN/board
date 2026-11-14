@@ -947,6 +947,23 @@ mod tests {
         host_report(s, name, dirs, &DirReady::default(), 0, T0);
     }
 
+    /// 随机派发这条到点跑一次（建了卡随即删掉，免得挡住下一次），返回挑到的机器名
+    fn run_once(s: &mut Store, at: i64, cron: i64) -> String {
+        let r = s.write(at, Origin::ui(None), |w| w.card_cron_run(B, cron)).unwrap();
+        let id = r.ran_card.expect("建了卡");
+        s.write(at, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Delete { id })
+        })
+        .unwrap();
+        r.ran_to.expect("派发了").split(" · ").next().unwrap().to_string()
+    }
+
+    /// 随机派发这条在 `at` 起跑 40 次，收集都挑到了哪些机器
+    fn pick(s: &mut Store, at: i64, cron: i64) -> std::collections::BTreeSet<String> {
+        (1..=40).map(|i| run_once(s, at + i * MIN, cron)).collect()
+    }
+
     /// 一台机器在 `at` 上报。`ready` 是它上报的环境检查结果（`cmd` 为空表示没报过，白板设了检查命令时是「还没检查」）
     fn host_report(s: &mut Store, name: &str, dirs: &[&str], ready: &DirReady, rev: i64, at: i64) {
         let agent = |id: &str, label: &str, found: bool| HostAgent { id: id.into(), name: label.into(), found, model: "m".into(), ..Default::default() };
@@ -1165,21 +1182,22 @@ mod tests {
             w.exec(&b, &Actor::human(), Cmd::Delete { id })
         })
         .unwrap();
-        // 再来一台暂停接单的也能接（离线、暂停接单的排队等它）：两台能接的都会挑到
+        // 再来一台能接的：两台都会挑到（谁都不暂停、都在线）
         host_up(&mut s, "mini", &[B]);
-        s.write(t1, Origin::ui(None), |w| w.host_update_as("mini", &crate::HostPatch { paused: Some(true), ..Default::default() }, "人").map(|_| ())).unwrap();
+        assert_eq!(pick(&mut s, t1, c.id), ["mbp", "mini"].map(String::from).into_iter().collect(), "两台能接的都会挑到");
+        // 只暂停接单的照样算能接：mini 每轮都重新上报（一直在线），只是 paused，照样挑得到
+        s.write(t1 + 2 * MIN, Origin::ui(None), |w| w.host_update_as("mini", &crate::HostPatch { paused: Some(true), ..Default::default() }, "人").map(|_| ()))
+            .unwrap();
+        assert!(s.read(|r| r.host_row("mini")).unwrap().unwrap().paused, "mini 还在，只是暂停接单");
         let mut seen = std::collections::BTreeSet::new();
         for i in 1..=40 {
-            let r = s.write(t1 + i * MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
-            let id = r.ran_card.expect("建了卡");
-            seen.insert(r.ran_to.expect("派发了").split(" · ").next().unwrap().to_string());
-            s.write(t1, Origin::ui(None), |w| {
-                let b = w.resolve(B)?;
-                w.exec(&b, &Actor::human(), Cmd::Delete { id })
-            })
-            .unwrap();
+            let at = t1 + 3 * MIN + i * MIN;
+            host_report(&mut s, "mini", &[B], &DirReady::default(), 0, at);
+            let h = s.read(|r| r.hosts(at)).unwrap().into_iter().find(|h| h.name == "mini").unwrap();
+            assert!(h.paused && h.online, "暂停接单、在线：{h:?}");
+            seen.insert(run_once(&mut s, at, c.id));
         }
-        assert_eq!(seen, ["mbp", "mini"].map(String::from).into_iter().collect(), "两台能接的都会挑到");
+        assert_eq!(seen, ["mbp", "mini"].map(String::from).into_iter().collect(), "暂停接单、在线的照样挑得到");
         // 能接的机器都被移除了：随机没有能接的机器，保存被拒绝并写明原因；已经有的照样能开关
         s.write(t1, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "人")).unwrap();
         s.write(t1, Origin::ui(None), |w| w.host_remove("mini", &Actor::human(), "人")).unwrap();
