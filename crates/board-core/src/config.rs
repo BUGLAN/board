@@ -170,7 +170,7 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 /// ```toml
 /// [host]
 /// name = "macbook"
-/// workspace = "~/repo"          # 每块白板在这个目录里是 <项目>/<白板>
+/// workspace = "~/repo"          # 每个项目的目录是 <工作空间>/<项目>，项目下的白板共用
 /// dirs = { "default/main" = "~/repo/board" }   # 旧写法：逐块配；启动时换成对应的 workspace
 /// log_days = 30
 ///

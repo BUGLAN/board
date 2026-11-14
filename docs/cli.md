@@ -919,8 +919,8 @@
           pi pi  1.5.2 · Git Bash
           codex Codex  codex-cli 0.167.1 · PowerShell 7
   工作空间C:\Users\you\repo
-  白板    oss/main → C:\Users\you\repo\oss\main
-          oss/release → C:\Users\you\repo\oss\release
+  白板    oss/main → C:\Users\you\repo\oss
+          oss/release → C:\Users\you\repo\oss
   Ctrl+C 退出（先结束本机由它启动的 agent）
 ```
 
