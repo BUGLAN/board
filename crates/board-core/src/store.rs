@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS cards (
   seen_at         INTEGER,
   -- 拆自：同一块白板上另一张卡的编号（board new --from）。原卡删除、永久删除后这里照样留着编号
   split_from      INTEGER,
+  -- 「稍后再做」（default/main#303）：人把「未整理」里的这一条收起来的时间；NULL = 没收起。离开「未整理」时清掉
+  later_at        INTEGER,
   -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，30 天后由 purge_trash 永久删除
   deleted_at      INTEGER,
   -- 回收站里：谁删的
@@ -449,6 +451,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'hidden_labels'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_hidden {
             conn.execute_batch("ALTER TABLE projects ADD COLUMN hidden_labels TEXT")?;
+        }
+        // 旧数据库的卡片没有「稍后再做」：都没收起
+        let has_later: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'later_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_later {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN later_at INTEGER")?;
         }
         // 旧数据库的卡片没有「拆自」
         let has_split: bool =
@@ -1070,7 +1078,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 COALESCE(c.moved_at, c.created_at),
                 c.seen_at,
                 c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from,
-                c.split_from
+                c.split_from, c.later_at
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1103,6 +1111,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             labels,
             seen_at: r.get(21)?,
             split_from: r.get(28)?,
+            later_at: r.get(29)?,
         };
         let by_kind: Option<String> = r.get(23)?;
         let row = TrashRow {

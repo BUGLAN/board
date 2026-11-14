@@ -700,6 +700,8 @@ export interface Card {
   comments: number;
   /** 人看过这一条的时间（PRD §10.5）：「未整理」里 agent 记下、还没被人看过的条目算「新」；旧服务端没有这个字段 */
   seenAt?: number | null;
+  /** 「稍后再做」（default/main#303）：人把「未整理」里的这一条收起来的时间；没收起为 null。旧服务端没有这个字段 */
+  laterAt?: number | null;
   /** 拆自：同一块白板上另一张卡的编号（board new --from）；原卡删除后照样留着编号。旧服务端没有 */
   splitFrom?: number | null;
 }
@@ -880,7 +882,9 @@ export type Cmd =
   /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
   | { op: 'merge'; id: number; from: number[]; title?: string; body?: string }
   /** 人看过「未整理」里的条目（仅人）：不给 id 时是这块白板「未整理」里的全部（「全部标为已读」） */
-  | { op: 'seen'; id?: number };
+  | { op: 'seen'; id?: number }
+  /** 「稍后再做」（default/main#303）：收起（on）/ 放回「未整理」里的一条，仅人 */
+  | { op: 'later'; id: number; on: boolean };
 
 /* ------------------------------ 大盘（GET /api/stats） ------------------------------ */
 

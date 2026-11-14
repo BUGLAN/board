@@ -216,7 +216,8 @@ fn cmd_json(cmd: &Cmd) -> Value {
         | Cmd::Restore { .. }
         | Cmd::Purge { .. }
         | Cmd::Merge { .. }
-        | Cmd::Seen { .. } => unreachable!("CLI 不构造这条命令"),
+        | Cmd::Seen { .. }
+        | Cmd::Later { .. } => unreachable!("CLI 不构造这条命令"),
     }
 }
 

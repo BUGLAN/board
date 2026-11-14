@@ -136,6 +136,12 @@ pub enum Cmd {
         #[serde(default)]
         id: Option<i64>,
     },
+    /// 「稍后再做」（仅人，只在「未整理」里；default/main#303）：on 把这一条收起来，不在「未整理」的列表里显示；
+    /// off 放回来。状态、位置、标签、描述、评论都不动；已经是这样的不变（重复执行结果相同）
+    Later {
+        id: i64,
+        on: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -890,6 +896,26 @@ impl<'a> W<'a> {
             /* ---------------- 看过（仅人，只在「未整理」里；PRD §10.5） ----------------
                展开一条、点「全部标为已读」都走这里：记下人看过的时间，条目的点消失，同步到所有窗口和机器。
                不新增动态；已经看过的不再刷新时间（重复执行、别的窗口也在看时结果不变） */
+            Cmd::Later { id, on } => {
+                if !actor.is_human() {
+                    return Err(BoardError::usage("「稍后再做」只能在界面上做"));
+                }
+                let r = self.row(b, id)?;
+                if r.col != INBOX {
+                    return Err(BoardError::usage(format!("#{id} 在「{}」，不在「{INBOX_NAME}」里", flow.name(&r.col))));
+                }
+                let cur: Option<i64> = self.tx.query_row("SELECT later_at FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
+                if cur.is_some() != on {
+                    self.tx.execute(
+                        "UPDATE cards SET later_at = ?1 WHERE board = ?2 AND id = ?3",
+                        params![if on { Some(self.now) } else { None }, b, id],
+                    )?;
+                    let text = if on { "移到「稍后再做」" } else { "从「稍后再做」放回「未整理」" };
+                    self.track(b, id, actor, if on { "later" } else { "unlater" }, text)?;
+                    self.changed = true;
+                }
+                id
+            }
             Cmd::Seen { id } => {
                 if !actor.is_human() {
                     return Err(BoardError::usage("「看过」只能在界面上做"));
@@ -1079,6 +1105,10 @@ impl<'a> W<'a> {
         // 换了状态（含新建）：记下移入时间，界面「保留顺序」按移入时间排时用；同一状态里调整顺序不算
         if from != Some(to) {
             self.tx.execute("UPDATE cards SET moved_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+            // 「稍后再做」只在「未整理」里有意义：离开就清掉（default/main#303）
+            if to != INBOX {
+                self.tx.execute("UPDATE cards SET later_at = NULL WHERE board = ?1 AND id = ?2 AND later_at IS NOT NULL", params![b, id])?;
+            }
         }
         if let At::Bottom = at {
             // 放到最下面：只改这一张（MAX(pos) + 1），不重写整列；终点状态的卡片只增不减，重写整列的耗时随张数增长。
@@ -1290,6 +1320,7 @@ fn blank_card() -> Card {
         created_by: Actor::system(),
         comments: 0,
         seen_at: None,
+        later_at: None,
         split_from: None,
     }
 }

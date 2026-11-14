@@ -679,6 +679,7 @@ fn card_id_of(cmd: &Cmd) -> Option<i64> {
         | Cmd::Purge { id }
         | Cmd::Merge { id, .. }
         | Cmd::Seen { id: Some(id) }
+        | Cmd::Later { id, .. }
         | Cmd::Claim { id: Some(id) } => Some(*id),
         // 全部标为已读没有卡片 id
         Cmd::Seen { id: None } => None,

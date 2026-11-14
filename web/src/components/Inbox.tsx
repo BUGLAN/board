@@ -18,11 +18,11 @@ import { openCard, triage, untriage } from '../lib/actions';
 import { judge } from '../lib/granularity';
 import { cardDispatch } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
-import { canUndoSplit, kidsOf, hiddenEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
+import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
-import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, useCardBusy, useCurrent, useData } from '../store/data';
+import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
 import { matches } from './Card';
@@ -52,13 +52,15 @@ interface InboxUI {
   view: View;
   /** 逐条视图里显示的那一条 */
   focus: number | null;
+  /** 看「稍后再做」里收起的条目（default/main#303） */
+  later: boolean;
 }
 const GROUPS: Group[] = ['time', 'source', 'label'];
 const savedGroup = pref.get<Group>('inboxGroup', 'time');
 const savedView = pref.get<View>('inboxView', 'list');
 export const useInbox = create<InboxUI>(() => ({
   src: null, group: GROUPS.includes(savedGroup) ? savedGroup : 'time', checked: [], open: null, merge: null,
-  view: savedView === 'one' ? 'one' : 'list', focus: null,
+  view: savedView === 'one' ? 'one' : 'list', focus: null, later: false,
 }));
 const setInbox = (p: Partial<InboxUI>) => useInbox.setState(p);
 const setGroup = (group: Group) => {
@@ -142,7 +144,7 @@ function useInboxCards() {
     const all = inbox
       .filter(id => !hidden.has(id))
       .map(id => board.cards[id])
-      .filter(Boolean)
+      .filter(c => c && !c.laterAt)
       .sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
     return { all, parents };
   }, [board]);
@@ -196,6 +198,30 @@ async function doTriage(ids: number[]) {
   toast({ type: 'success', title: `${ok.length} 条已整理到「${home?.name ?? '待办'}」`, text: ok.map(i => `#${i}`).join('、'), action: { label: '撤销', fn: undo } });
   const bad = (await all).find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
   if (bad) toastError(bad.reason);
+}
+
+/** 收到「稍后再做」（default/main#303）：当帧从列表里消失，提示里可以「撤销」；失败的回到原处并提示 */
+async function doLater(ids: number[]) {
+  const ok = ids.filter(id => !isDraft(id));
+  if (!ok.length) return;
+  const st = useInbox.getState();
+  setInbox({ checked: st.checked.filter(c => !ok.includes(c)), open: st.open != null && ok.includes(st.open) ? null : st.open });
+  const done = setLater(ok, true);
+  toast({
+    type: 'success',
+    title: ok.length === 1 ? `#${ok[0]} 已移到「稍后再做」` : `${ok.length} 条已移到「稍后再做」`,
+    text: '在页头「稍后再做」里查看、放回',
+    action: { label: '撤销', fn: () => void setLater(ok, false).then(errs => errs.length && toastError(errs[0])) },
+  });
+  const errs = await done;
+  if (errs.length) toastError(errs[0]);
+}
+
+/** 从「稍后再做」放回「未整理」：回到原来的位置，标签、描述、评论都不动 */
+async function doUnlater(c: Card) {
+  const errs = await setLater([c.id], false);
+  if (errs.length) toastError(errs[0]);
+  else toast({ type: 'success', title: `#${c.id} 已放回「未整理」` });
 }
 
 async function doDelete(ids: number[], cards: Card[]) {
@@ -284,6 +310,8 @@ export function InboxPage() {
   const checked = useInbox(s => s.checked);
   const open = useInbox(s => s.open);
   const merge = useInbox(s => s.merge);
+  const later = useInbox(s => s.later);
+  const laterCards = useMemo(() => (board ? laterEntries(board) : null), [board]);
   const filter = useUI(s => s.filter);
   const src = useInbox(s => s.src);
   const reveal = useUI(s => s.reveal);
@@ -388,6 +416,7 @@ export function InboxPage() {
                   ['label', '按标签'],
                 ]}
               />
+              <LaterButton on={later} n={laterCards?.length ?? 0} />
             </div>
           </header>
 
@@ -408,8 +437,9 @@ export function InboxPage() {
 
           {/* 快照还没到：按工作区里的计数放骨架行；计数是 0 就什么都不放 */}
           {!list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
-          {view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
-          {view === 'list' && groups.map(g => (
+          {later && <LaterView cards={laterCards} labels={labels} project={cur?.project.key ?? ''} />}
+          {!later && view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
+          {!later && view === 'list' && groups.map(g => (
             <GroupSection
               key={`${group}-${g.key}`}
               g={g}
@@ -422,7 +452,7 @@ export function InboxPage() {
               onCheck={check}
             />
           ))}
-          {list && !list.length && (
+          {!later && list && !list.length && (
             <div className="ib-empty">
               {all?.length ? (
                 <>
@@ -456,7 +486,7 @@ export function InboxPage() {
               )}
             </div>
           )}
-          {(filter || src) && list && list.length > 0 && (
+          {!later && (filter || src) && list && list.length > 0 && (
             <p className="ib-filtered">
               筛选后 {list.length} / {all?.length} 条 ·{' '}
               <button
@@ -473,7 +503,7 @@ export function InboxPage() {
           )}
         </div>
       </div>
-      {view === 'list' && <BulkBar checked={checked} cards={all ?? []} home={home} />}
+      {!later && view === 'list' && <BulkBar checked={checked} cards={all ?? []} home={home} />}
       {merge && <MergeSheet key={`${merge.ids.join(',')}`} req={merge} />}
     </div>
   );
@@ -751,21 +781,39 @@ const Row = memo(function Row({
   }, [open, draft, c.id]);
   const toggle = () => setInbox({ open: open ? null : c.id });
   const text = snippet(c.body);
+  const sw = useSwipe(!draft && !saving);
   return (
     <div
       ref={ref}
       data-ib={renderKey(c.id)}
-      className={cx('ib-row', checked && 'checked', open && 'open', saving && 'saving', draft && 'draft', isnew && 'is-new')}
+      className={cx('ib-row', checked && 'checked', open && 'open', saving && 'saving', draft && 'draft', isnew && 'is-new', sw.shown && 'swiped')}
       style={flash ? { ['--flash' as string]: flash.color } : undefined}
     >
+      <div className="ib-swipe">
+      {/* 左滑露出来的「稍后再做」（default/main#303）：滑开时才能点、能聚焦 */}
+      <button
+        type="button"
+        className="ib-swipe-act"
+        tabIndex={sw.open ? 0 : -1}
+        aria-hidden={!sw.open}
+        onClick={() => {
+          sw.close();
+          void doLater([c.id]);
+        }}
+      >
+        <Icon name="timer" />
+        稍后再做
+      </button>
       <div
         className="ib-line"
         role="button"
         tabIndex={0}
         aria-expanded={open}
         aria-label={`#${c.id} ${c.title}${isnew ? '（新的）' : ''}`}
+        style={sw.style}
+        {...sw.handlers}
         onClick={e => {
-          if (draft) return;
+          if (draft || sw.swallow()) return;
           if (e.shiftKey) return onCheck(c.id, true);
           toggle();
         }}
@@ -813,6 +861,20 @@ const Row = memo(function Row({
               <Icon name="move" />
             </button>
           </Tip>
+          <Tip text="稍后再做：先收起来，不在列表里">
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label="稍后再做"
+              disabled={saving || draft}
+              onClick={e => {
+                e.stopPropagation();
+                void doLater([c.id]);
+              }}
+            >
+              <Icon name="timer" />
+            </button>
+          </Tip>
           <Tip text="删除">
             <button
               type="button"
@@ -829,6 +891,7 @@ const Row = memo(function Row({
           </Tip>
         </span>
         <Icon name="chevDown" className="ib-chev" />
+      </div>
       </div>
       <div className="ib-exp">
         <div>{open && <RowEdit card={c} now={now} all={all} home={home} saving={saving} />}</div>
@@ -865,6 +928,10 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
         <button className="btn sm ghost ib-del" type="button" disabled={saving} onClick={() => void doDelete([c.id], [c])}>
           <Icon name="trash" />
           删除
+        </button>
+        <button className="btn sm ghost" type="button" disabled={saving} onClick={() => void doLater([c.id])}>
+          <Icon name="timer" />
+          稍后再做
         </button>
         <span className="spacer" />
         <Tip text="动态、评论、附件">
@@ -1429,4 +1496,157 @@ function ghost(el: HTMLElement, r: DOMRect, kind: 'triage' | 'delete' | 'merge' 
         ? { opacity: 0, transform: 'translateY(-10px) scale(.94)' }
         : { opacity: 0, transform: 'scale(.97)', filter: 'blur(4px)' };
   el.animate([{ opacity: 1, transform: 'none', filter: 'blur(0)' }, to], { duration: 380, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' }).onfinish = () => el.remove();
+}
+
+/* ------------------------------ 稍后再做（default/main#303） ------------------------------ */
+
+const SWIPE_W = 104;
+
+/** 行的左滑：横着拖（触屏、鼠标）超过一半露出「稍后再做」，不到一半弹回；竖着拖照常滚动。
+    滑开后点这一行别处先收回；刚滑完的那次点击不算展开 */
+function useSwipe(enabled: boolean) {
+  const [open, setOpen] = useState(false);
+  const [dx, setDx] = useState<number | null>(null);
+  const st = useRef<{ x: number; y: number; on: boolean; base: number } | null>(null);
+  const ended = useRef(0);
+  const handlers = {
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      if (!enabled || e.button !== 0 || (e.target as HTMLElement).closest('button, input, a, [role="checkbox"]')) return;
+      st.current = { x: e.clientX, y: e.clientY, on: false, base: open ? -SWIPE_W : 0 };
+    },
+    onPointerMove: (e: React.PointerEvent<HTMLElement>) => {
+      const s = st.current;
+      if (!s) return;
+      const mx = e.clientX - s.x;
+      const my = e.clientY - s.y;
+      if (!s.on) {
+        if (Math.abs(my) > 10 && Math.abs(my) > Math.abs(mx)) st.current = null;
+        else if (Math.abs(mx) > 10) {
+          s.on = true;
+          e.currentTarget.setPointerCapture?.(e.pointerId);
+        }
+        if (!s.on) return;
+      }
+      setDx(Math.max(-SWIPE_W - 24, Math.min(0, s.base + mx)));
+    },
+    onPointerUp: () => {
+      const s = st.current;
+      st.current = null;
+      if (!s?.on) return;
+      ended.current = performance.now();
+      setOpen((dx ?? 0) < -SWIPE_W / 2);
+      setDx(null);
+    },
+    onPointerCancel: () => {
+      st.current = null;
+      setDx(null);
+    },
+  };
+  return {
+    open,
+    shown: open || dx != null,
+    handlers,
+    style: dx != null ? { transform: `translateX(${dx}px)`, transition: 'none' } : open ? { transform: `translateX(-${SWIPE_W}px)` } : undefined,
+    close: () => setOpen(false),
+    /** 这次点击要不要吞掉：刚滑完、或者滑开着（点一下先收回） */
+    swallow: () => {
+      if (performance.now() - ended.current < 300) return true;
+      if (open) {
+        setOpen(false);
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
+/** 页头「按标签」旁边的入口：写着收起了几条，点一下看「稍后再做」，再点回到列表 */
+function LaterButton({ on, n }: { on: boolean; n: number }) {
+  return (
+    <button
+      type="button"
+      className={cx('ib-later-btn', on && 'on')}
+      aria-pressed={on}
+      onClick={() => setInbox({ later: !on, checked: [], open: null })}
+    >
+      <Icon name="timer" />
+      稍后再做
+      {n > 0 && (
+        <span className="ib-later-n mono" aria-label={`${n} 条`}>
+          {n}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** 「稍后再做」里收起的条目：最近收起的在前；每条能打开详情、改标签、删除、放回「未整理」 */
+function LaterView({ cards, labels, project }: { cards: Card[] | null; labels: Label[]; project: string }) {
+  const now = useNow(30000);
+  if (!cards) return <RowsSkeleton n={3} />;
+  if (!cards.length)
+    return (
+      <div className="ib-empty">
+        <b>暂无待延后处理的内容</b>
+        <span>在「未整理」里左滑一条，或点行上的「稍后再做」，它会收到这里；放回后回到原来的位置。</span>
+      </div>
+    );
+  return (
+    <div className="ib-later" role="list" aria-label="稍后再做">
+      {cards.map(c => (
+        <LaterRow key={c.id} card={c} labels={labels} project={project} now={now} />
+      ))}
+    </div>
+  );
+}
+
+function LaterRow({ card: c, labels, project, now }: { card: Card; labels: Label[]; project: string; now: number }) {
+  const saving = useCardBusy(c.id);
+  const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
+  return (
+    <div className={cx('ib-later-row', saving && 'saving')} role="listitem">
+      <span className="ib-id mono">#{c.id}</span>
+      <button type="button" className="ib-later-t" onClick={() => openCard(c.id)}>
+        <Title text={c.title} />
+      </button>
+      <span className="ib-labels">
+        <LabelChips ids={c.labels} labels={labels} max={3} pending={pending} />
+      </span>
+      <span className="ib-later-at">{c.laterAt ? `${ago(c.laterAt, now)}收起` : ''}</span>
+      <span className="ib-later-acts">
+        <Tip text="标签">
+          <button
+            type="button"
+            className="icon-btn sm"
+            aria-label={`给 #${c.id} 打标签`}
+            disabled={saving}
+            onClick={e =>
+              openPicker({
+                rect: e.currentTarget.getBoundingClientRect(),
+                project,
+                selected: c.labels,
+                onToggle: async (id, on) => {
+                  try {
+                    await (on ? addLabel(c.id, id) : removeLabel(c.id, id));
+                  } catch (err) {
+                    toastError(err);
+                  }
+                },
+              })
+            }
+          >
+            <Icon name="tag" />
+          </button>
+        </Tip>
+        <Tip text="删除（进回收站）">
+          <button type="button" className="icon-btn sm ib-del" aria-label={`删除 #${c.id}`} disabled={saving} onClick={() => void doDelete([c.id], [c])}>
+            <Icon name="trash" />
+          </button>
+        </Tip>
+        <button type="button" className={cx('btn sm', saving && 'is-busy')} disabled={saving} aria-busy={saving || undefined} onClick={() => void doUnlater(c)}>
+          放回未整理
+        </button>
+      </span>
+    </div>
+  );
 }

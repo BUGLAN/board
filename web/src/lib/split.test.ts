@@ -1,7 +1,8 @@
 /* 「未整理」里的拆解组（default/main#285）：原条目拆出卡之后隐藏，拆出的卡成组，可以撤销拆解 */
 import { describe, expect, it, vi } from 'vitest';
-import { snapshot } from '../../test/fixtures';
-import { canUndoSplit, hiddenEntries, kidsOf, unitsOf, visibleInbox } from './split';
+import { card, snapshot } from '../../test/fixtures';
+import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, unitsOf, visibleInbox } from './split';
+import type { Card } from './types';
 
 // 1 是原条目，拆成 3、4；2 是别的一条；5 是从待办里的 9 拆出来的
 const board = () =>
@@ -86,5 +87,18 @@ describe('撤销拆解的补丁：拆出的卡当帧拿掉，原条目当帧回�
     expect(visibleInbox(once).map(c => c.id)).toEqual([1, 2, 5]);
     const again = D.removeCard(4).board!(D.removeCard(3).board!(once));
     expect(visibleInbox(again).map(c => c.id)).toEqual([1, 2, 5]);
+  });
+});
+
+describe('稍后再做（default/main#303）', () => {
+  const b = () => {
+    const cards: Record<number, Card> = {};
+    for (const [id, laterAt] of [[1, null], [2, 100], [3, null], [4, 200]] as const) cards[id] = { ...card(id, { column: 'inbox' }), laterAt } as Card;
+    return { cards, cols: { inbox: [1, 2, 3, 4] } };
+  };
+  it('visibleInbox 不含收起的；laterEntries 只列收起的，最近收起的在前', () => {
+    expect(visibleInbox(b()).map(c => c.id)).toEqual([1, 3]);
+    expect(laterEntries(b()).map(c => c.id)).toEqual([4, 2]);
+    expect(laterEntries(null)).toEqual([]);
   });
 });

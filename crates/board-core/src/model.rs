@@ -633,6 +633,10 @@ pub struct Card {
     /// 拆自：同一块白板上另一张卡的编号（`board new --from`）。原卡删除、永久删除后照样留着编号。旧服务端没有这个字段
     #[serde(default)]
     pub split_from: Option<i64>,
+    /// 「稍后再做」（default/main#303）：人把「未整理」里的这一条先收起来的时间；NULL = 没收起。
+    /// 收起的条目不在「未整理」的列表里显示，状态、位置、标签、描述、评论都不动；离开「未整理」时清掉。旧服务端没有这个字段
+    #[serde(default)]
+    pub later_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

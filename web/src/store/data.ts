@@ -601,6 +601,29 @@ export function seenPatch(ids: number[]): Patch {
   };
 }
 
+/** 「稍后再做」（default/main#303）：把「未整理」里的条目收起（on）或放回。当帧从「未整理」的列表里消失 / 回来，
+    位置、标签都不动。目标不在了、不在「未整理」里、已经是这样：原样返回；时刻在建补丁时取定，重复执行结果不变 */
+export function laterPatch(ids: number[], on: boolean): Patch {
+  const at = serverNow();
+  const mark = <T extends Card>(c: T): T => (c.column !== INBOX || !!c.laterAt === on ? c : { ...c, laterAt: on ? at : null });
+  return {
+    board: b => {
+      const hit = ids.filter(id => b.cards[id] && mark(b.cards[id]) !== b.cards[id]);
+      if (!hit.length) return b;
+      const cards = { ...b.cards };
+      hit.forEach(id => (cards[id] = mark(cards[id])));
+      return { ...b, cards };
+    },
+    detail: d => (ids.includes(d.id) ? mark(d) : d),
+  };
+}
+
+/** 收起 / 放回几条：每条一个请求，按发起顺序排队；失败的只撤自己那一条，返回失败的原因（全成功为空） */
+export async function setLater(ids: number[], on: boolean): Promise<unknown[]> {
+  const rs = await Promise.allSettled(ids.filter(id => !isDraft(id)).map(id => exec({ op: 'later', id, on }, laterPatch([id], on))));
+  return rs.filter((r): r is PromiseRejectedResult => r.status === 'rejected').map(r => r.reason);
+}
+
 /* ------------------------------ 「未整理」的新条目 ------------------------------ */
 
 /** 已经标过「看过」的条目（补丁生效到服务端确认之间）：点当帧消失，别的刷新叠不上补丁时也不会闪回来 */

@@ -282,6 +282,30 @@ describe('editCard', () => {
   });
 });
 
+describe('稍后再做（default/main#303）', () => {
+  const inboxBoard = () => {
+    const b = snapshot('p/a', { inbox: [1, 2], todo: [3] });
+    return b;
+  };
+  it('laterPatch：收起、放回只改「未整理」里的；重复执行结果相同；目标不在了原样返回', () => {
+    const on = D.laterPatch([1, 3, 99], true);
+    const b = twice(on.board!, inboxBoard());
+    expect(b.cards[1].laterAt).toEqual(expect.any(Number));
+    expect(b.cards[2].laterAt ?? null).toBeNull();
+    expect(b.cards[3].laterAt ?? null).toBeNull();
+    const off = twice(D.laterPatch([1], false).board!, b);
+    expect(off.cards[1].laterAt).toBeNull();
+    const orig = inboxBoard();
+    expect(D.laterPatch([99], true).board!(orig)).toBe(orig);
+    expect(D.laterPatch([2], false).board!(orig)).toBe(orig);
+  });
+  it('laterPatch：详情跟着改', () => {
+    const d = detail(card(1, { column: 'inbox' }));
+    expect(D.laterPatch([1], true).detail!(d).laterAt).toEqual(expect.any(Number));
+    expect(D.laterPatch([2], true).detail!(d)).toBe(d);
+  });
+});
+
 describe('项目与标签', () => {
   const labelsOf = (ws: Workspace, key: string) => ws.projects.find(p => p.key === key)!.labels;
 
