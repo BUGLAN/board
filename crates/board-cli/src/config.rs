@@ -43,7 +43,7 @@ pub struct Conn {
     pub url: Option<(String, Source)>,
     pub token: Option<(String, Source)>,
     /// 这次读连接时从派发的配置文件（`BOARD_CONFIG` 的 `[agent_env]`）补过 `BOARD_*`，见 [`from_agent_env`]：
-    /// 只说连接从哪来用，连接本身还是按环境变量优先、其次是 `~/.board/config.toml`
+    /// 只说补过 `BOARD_*`，地址和令牌本身还是按环境变量优先、其次是 `~/.board/config.toml` 依次取
     pub agent_env: bool,
 }
 
