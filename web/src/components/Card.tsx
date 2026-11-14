@@ -6,7 +6,7 @@ import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { renderKey, useCurrent, useData, useOnline } from '../store/data';
-import { Avatar, LabelChips, Title, agent, useNow } from './bits';
+import { AgentAvatar, LabelChips, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
 import { agentMark, cardDispatch } from '../lib/hosts';
@@ -142,7 +142,7 @@ export const CardView = memo(function CardView({
           </span>
           {doing && (
             <span className={cx('line-holder', t.beat)} title={c.holder!}>
-              <Avatar actor={agent(c.holder!)} />
+              <AgentAvatar name={c.holder} />
               <i className="beat" />
             </span>
           )}
@@ -173,7 +173,7 @@ export const CardView = memo(function CardView({
           {!doing && <CardDispatchLine card={c.id} />}
           {doing ? (
             <div className="card-claim">
-              <Avatar actor={agent(c.holder!)} />
+              <AgentAvatar name={c.holder} />
               <MidName className="claim-name" name={c.holder!} />
               <RunPill card={c} now={now} />
               {t.runs > 1 && (
@@ -351,7 +351,7 @@ export function TilePeek() {
         {doing && (
           <>
             <span className="ct-pop-holder">
-              <Avatar actor={agent(card.holder!)} />
+              <AgentAvatar name={card.holder} />
               <MidName name={card.holder!} />
             </span>
             <RunPill card={card} now={now} />

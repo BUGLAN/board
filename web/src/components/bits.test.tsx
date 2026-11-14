@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Avatar, BrandMark, ColorPick, SYSTEM_NAME } from './bits';
+import { AgentAvatar, Avatar, BrandMark, ColorPick, SYSTEM_NAME } from './bits';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,6 +49,31 @@ describe('系统身份的头像', () => {
     act(() => root.render(<BrandMark className="logo" />));
     const bars = [...host.querySelectorAll('i')] as HTMLElement[];
     expect(bars.map(b => b.style.getPropertyValue('--h'))).toEqual(['100%', '70%', '46%', '82%']);
+  });
+});
+
+describe('按名字画 agent 头像（AgentAvatar）', () => {
+  it('认得出标识：画 agent 自己的图标', () => {
+    act(() => root.render(<AgentAvatar name="dsh-win/deepseek-v4.1-flash" />));
+    const el = host.querySelector('.avatar.agent-logo') as HTMLElement;
+    expect(el.title).toBe('dsh-win/deepseek-v4.1-flash');
+    expect(el.querySelector('img')?.getAttribute('src')).toBeTruthy();
+    // 是图标，不是字母
+    expect(el.textContent.trim()).toBe('');
+  });
+
+  it('认不出：退回字母头像（和原来一样）', () => {
+    act(() => root.render(<AgentAvatar name="alpha" />));
+    const el = host.querySelector('.avatar') as HTMLElement;
+    expect(el.classList.contains('agent-logo')).toBe(false);
+    expect(el.textContent).toBe('α');
+  });
+
+  it('名字为空时什么都不画', () => {
+    act(() => root.render(<AgentAvatar name="" />));
+    expect(host.innerHTML).toBe('');
+    act(() => root.render(<AgentAvatar name={null} />));
+    expect(host.innerHTML).toBe('');
   });
 });
 

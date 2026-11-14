@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHosts, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdOf, agentMark, agentMarkOf, boardHosts, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -317,5 +317,53 @@ describe('派发结果的样子（查不到时兜底）', () => {
   it('查不到的来源也不返回 undefined（只画文字）', () => {
     expect(sourceOf(d({ source: 'cron' }))).toBe('定时');
     expect(sourceOf(d({ source: 'brand-new-source' as Dispatch['source'] }))).toBe('派发');
+  });
+});
+
+describe('按 agent 名字认出标识（agentIdOf）', () => {
+  it('`<标识>-<机器名>/<模型名>`：取第一个 `/` 之前、第一个 `-` 之前的部分', () => {
+    expect(agentIdOf('dsh-win/deepseek-v4.1-flash')).toBe('dsh');
+    expect(agentIdOf('claude-mac-2/claude-opus-4')).toBe('claude');
+    expect(agentIdOf('codex-win/codex')).toBe('codex');
+    // 机器名里带 `.`、`-`；模型名里有什么都不影响
+    expect(agentIdOf('dsh-win-2.lan/deepseek-v4.1-flash-4')).toBe('dsh');
+  });
+
+  it('没有机器名、只有 `<标识>/<模型名>`（pi/pi）', () => {
+    expect(agentIdOf('pi/pi')).toBe('pi');
+    expect(agentIdOf('dsh/anything')).toBe('dsh');
+  });
+
+  it('认不出、空名字返回 null，不报错', () => {
+    expect(agentIdOf('alpha')).toBeNull();
+    expect(agentIdOf('我的助手')).toBeNull();
+    expect(agentIdOf('my-dsh/1')).toBeNull();
+    expect(agentIdOf('')).toBeNull();
+    expect(agentIdOf(null)).toBeNull();
+    expect(agentIdOf(undefined)).toBeNull();
+    expect(agentIdOf('   ')).toBeNull();
+    expect(agentIdOf('/x')).toBeNull();
+  });
+
+  it('大小写、两边的空格不影响', () => {
+    expect(agentIdOf(' DSH-win/DeepSeek ')).toBe('dsh');
+    expect(agentIdOf('Claude/opus')).toBe('claude');
+  });
+
+  it('agentMarkOf：认得出用它的图标，认不出按名字退回字母头像（和 Avatar 的首字母一样），不出现空图标', () => {
+    const dsh = agentMark('dsh');
+    expect(agentMarkOf('dsh-win/deepseek-v4.1-flash').icon).toBe(dsh.icon);
+    expect(agentMarkOf('dsh-win/deepseek-v4.1-flash').color).toBe(dsh.color);
+    expect(agentMarkOf('pi/pi').icon).toBe(agentMark('pi').icon);
+    // Codex 现在有自己的图标
+    expect(agentMark('codex').icon).toBeTruthy();
+    expect(agentMarkOf('codex-win/codex').icon).toBe(agentMark('codex').icon);
+    const free = agentMarkOf('alpha');
+    expect(free.icon).toBeUndefined();
+    // 和 Avatar 的 agentGlyph 一样：alpha 是希腊字母 α
+    expect(free.short).toBe('α');
+    const mine = agentMarkOf('我的助手');
+    expect(mine.icon).toBeUndefined();
+    expect(mine.short).toBe('我');
   });
 });

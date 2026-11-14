@@ -1,6 +1,7 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { openLink } from '../lib/actions';
+import { agentIdOf, agentMark } from '../lib/hosts';
 import { inlineCode, markdown } from '../lib/markdown';
 import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
@@ -100,6 +101,27 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
 }
 
 export const agent = (name: string): Actor => ({ kind: 'agent', name });
+
+/**
+ * 按 agent 名字画头像（`<标识>-<机器名>/<模型名>`，见 `agentIdOf`）：认得出标识就用 agent 自己的图标（`AgentIcon`）画在位子上，
+ * 认不出退回现在的字母头像（`Avatar`），名字为空时什么都不画。尺寸、圆角、描边沿用 `.avatar` 位，用到的地方按原来的写法调大小。
+ */
+export function AgentAvatar({ name, className, title }: { name: string | null | undefined; className?: string; title?: string }) {
+  const id = agentIdOf(name);
+  const tip = title ?? name ?? '';
+  if (!id) return name ? <Avatar actor={agent(name)} className={className} /> : null;
+  const m = agentMark(id);
+  return m.icon ? (
+    <span className={cx('avatar', 'agent-logo', m.light && 'ring', className)} style={{ ['--c' as string]: m.color }} title={tip}>
+      <img src={m.icon} alt="" draggable={false} />
+    </span>
+  ) : (
+    // 认识的 agent 还没有自己的图标（旧版 `MARKS`）：两个字母
+    <span className={cx('avatar', className)} style={{ ['--c' as string]: m.color }} title={tip}>
+      {m.short}
+    </span>
+  );
+}
 
 /** 仅人可打的标签在名称前带一把小锁 */
 export const LabelLock = ({ label }: { label: Pick<Label, 'humanOnly'> }) =>
