@@ -35,9 +35,9 @@ use std::io::IsTerminal;
 use std::time::Duration;
 use text::{pad, truncate, width};
 
-const VALUE_FLAGS: [&str; 23] = [
+const VALUE_FLAGS: [&str; 24] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project",
+    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project", "--workspace",
 ];
 const BOOL_FLAGS: [&str; 15] = [
     "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
@@ -73,7 +73,7 @@ const COMMANDS: [(&str, &str, &str); 28] = [
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\" | --comment-file <文件>]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
-        ("host", "[run] [--name <机器名>] [--dir <项目>/<白板>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，派来的卡片在对应目录里启动本机 agent，Ctrl+C 退出（机器名、白板与目录也可写在 ~/.board/config.toml 的 [host]）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
+        ("host", "[run] [--name <机器名>] [--workspace <工作空间>] [--dir <项目>/<白板>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，每块白板的目录是 <工作空间>/<项目>/<白板>（不存在时自动建好；白板设了仓库地址时自动克隆），派来的卡片在那里启动本机 agent，Ctrl+C 退出（机器名、工作空间也可写在 ~/.board/config.toml 的 [host]）；--dir 只给单独一块白板指定目录（覆盖工作空间派生的目录）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("skills", "ls | push <目录>… | sync | rm <名称>", "skills 共用库（不用 --as、--board）：ls 列出库里的 skill 和本机各 agent 目录里的状态；push 把本机的 skill 目录（目录名就是名称，里面要有 SKILL.md，合计不超过 5 MB）传进库里，同名的换成新版本，在线的机器自动同步；sync 按库更新本机（有 board host 在跑时由它来做）；rm 从库里删掉，各台机器上同步装的那份随后删掉。board-skills 随服务端版本，不能传、不能删"),
         ("versions", "sync [<tag>…] [--project <项目>] [--dir <仓库>] [--dry-run]", "在代码仓库里从 git tag 和提交历史反推每个版本做了哪些卡片（不用 --as、--board）：v 开头的 tag 是版本，上一个 tag 之后的提交属于这个 tag，提交说明里的「卡片：<项目>/<白板>#<ID>」把提交连到卡片；这些卡片带上和 tag 同名的版本标签（没有就新建），这一版的提交记到服务端，界面「里程碑」里按版本看。--project 不写时取提交里出现最多的项目；只同步某几个 tag 时写在 sync 后面；--dry-run 只列出来不写入；反复运行结果一样"),
         ("dispatch", "<ID> --host <机器名> [--agent <标识>] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--cancel 取消排队或停止正在跑的派发"),
@@ -82,6 +82,11 @@ const COMMANDS: [(&str, &str, &str); 28] = [
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 在 board host 启动的会话里（BOARD_AGENT_ENV，skill 的包装脚本设的）：有的 agent 不把它该有的 BOARD_* 传给命令，
+    // 从这次派发的配置文件 [agent_env] 补上，名字、白板、连接都用得到（见 config::from_agent_env）
+    if env("BOARD_AGENT_ENV").is_some() {
+        config::from_agent_env();
+    }
     let json = args.iter().any(|a| a == "--json");
     let p = Paint { on: !json && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
     match run(&args, &p) {
@@ -313,7 +318,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         }
         // 装成开机自启的服务、卸载；--service 是服务里运行的守护进程（见 service.rs）
         if a.flag("--install") {
-            return service::install(a.value("--name"), &a.all("--dir"), json, p);
+            return service::install(a.value("--name"), a.value("--workspace"), &a.all("--dir"), json, p);
         }
         if a.flag("--uninstall") {
             return service::uninstall(json, p);
@@ -323,13 +328,16 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             if let Some(n) = a.value("--name") {
                 args.extend(["--name".to_string(), n.to_string()]);
             }
+            if let Some(w) = a.value("--workspace") {
+                args.extend(["--workspace".to_string(), w.to_string()]);
+            }
             for d in a.all("--dir") {
                 args.extend(["--dir".to_string(), d]);
             }
             service::supervise(args)?;
             return Ok(Output::Text(String::new()));
         }
-        host::run(host::Opts { name: a.value("--name").map(str::to_string), dirs: a.all("--dir") }, p)?;
+        host::run(host::Opts { name: a.value("--name").map(str::to_string), workspace: a.value("--workspace").map(str::to_string), dirs: a.all("--dir") }, p)?;
         return Ok(Output::Text(String::new()));
     }
     if sub == "dispatch" {

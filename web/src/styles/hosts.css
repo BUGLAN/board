@@ -267,8 +267,14 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-clone-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-3); }
 .hp-clone-msg.bad { color: var(--danger-text); }
 .hp-clone-msg.ok { color: var(--ok); }
-.hp-dir-add { display: flex; align-items: center; gap: 10px; padding-top: 8px; margin-top: 2px; border-top: 1px solid var(--line); min-width: 0; animation: hp-in var(--dur-3) var(--ease-out); }
 .hp-dir-add .input, .hp-dir-copy .input.sel { height: 28px; font-size: 12px; }
+/* 工作空间：一个路径输入，下面是每块白板派生出来的目录、git 和环境检查状态 */
+.hp-ws { display: flex; align-items: center; gap: 10px; padding: 4px 0 2px; min-width: 0; }
+.hp-ws .hp-dir-path { height: 32px; padding: 0 10px; font-size: 12.5px; }
+.hp-ws-dirs { display: flex; flex-direction: column; margin-top: 8px; }
+.hp-dir-list-head { padding: 6px 0 2px; font-size: 11.5px; color: var(--text-3); }
+.hp-dir-derived { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; color: var(--text-2); }
+.hp-note.hp-warn, .hp-note .hp-warn { color: var(--warn-text); }
 /* 「复制到…」点开的一块：选机器、复制、取消，下面一句说明 */
 .hp-dir-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 2px 0 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); animation: hp-in var(--dur-3) var(--ease-out); }
 .hp-dir-copy .hp-note { flex-basis: 100%; margin: 0; font-size: 11.5px; }
@@ -849,23 +855,21 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
   .ss-out { overflow: visible; }
 }
 
-/* 添加机器：命令行机器的表单（机器名、白板与目录）和生成命令 */
+/* 添加机器：命令行机器的表单（机器名、工作空间）和生成命令 */
 .hp-add { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 14px; }
 .hp-add-row { display: flex; align-items: center; gap: 12px; }
 .hp-add-row.top { align-items: flex-start; }
 .hp-add-row.top .hp-add-k { padding-top: 7px; }
 .hp-add-k { flex: none; width: 76px; font-size: 12.5px; color: var(--text-2); }
 .hp-add-row > .input { flex: 1; max-width: 280px; height: 32px; padding: 0 10px; font-size: 12.5px; }
-.hp-add-dirs { flex: 1; min-width: 0; padding-bottom: 0; }
-.hp-add-dirs .lh-dir .input.sel { width: 170px; }
+.hp-add-note { margin: 0 0 0 88px; }
 .hp-add-go { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
 .hp-add-go .hp-note { margin: 0; }
 @media (max-width: 560px) {
   .hp-add-row, .hp-add-row.top { flex-direction: column; align-items: stretch; gap: 6px; }
   .hp-add-row.top .hp-add-k { padding-top: 0; }
   .hp-add-row > .input { max-width: none; }
-  .hp-add-dirs .lh-dir { flex-wrap: wrap; }
-  .hp-add-dirs .lh-dir .input.sel { width: 100%; }
+  .hp-add-note { margin-left: 0; }
 }
 
 /* ==========================================================================

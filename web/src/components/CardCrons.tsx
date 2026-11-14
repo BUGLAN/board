@@ -3,7 +3,7 @@
    也可以直接派给一台机器（例如定期让某台机器更新代码）
    - 每条一行：开关、名称、时间（和时区）、放到哪、派给哪台机器、标签；下面一行写「下次：<时间>」和最近一次的结果
      （「11-12 09:00 建了 #263 · 派发到 mbp · Claude Code」或「11-12 09:00 跳过：上一张 #250 还没完成」）；右边「现在建一张」、编辑、删除
-   - 编辑（和新建）原地展开：名称、卡片标题、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、派给机器（和 agent）、
+   - 编辑（和新建）原地展开：名称（同时是建卡标题）、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、派给机器（和 agent）、
      时间（SchedulePick，和机器设置的「定时领取」同一个组件）；时区取保存时浏览器的
    写操作（AGENTS.md「界面写操作」）：新建、删除、现在建一张要等服务端返回（optimistic(null, …)，按钮转圈并禁用）；
    开关是设置项（saveSetting，不锁）；改模板用乐观补丁（cardCronPatch + cardCronKey），当帧生效，失败时带着草稿重新打开
@@ -13,7 +13,7 @@ import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { boardOf, defaultAgent, envName, hostLoad, hostsOf } from '../lib/hosts';
+import { boardOf, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
 import { boardFlow } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
@@ -40,10 +40,15 @@ const when = (t: number) => {
   const d = new Date(t);
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
+/** 建卡时标题的样子：「清道夫（11-13）」 */
+const dated = (name: string) => {
+  const d = new Date();
+  return `${name}（${pad(d.getMonth() + 1)}-${pad(d.getDate())}）`;
+};
 
 interface Draft {
+  /** 名称：白板内唯一，也是建卡标题 */
   name: string;
-  title: string;
   body: string;
   labels: number[];
   place: 'home' | 'inbox';
@@ -60,7 +65,6 @@ const draftOf = (c?: CardCron): Draft => {
   const spec = c ? parseSchedule(c.cron) : null;
   return {
     name: c?.name ?? '',
-    title: c?.title ?? '',
     body: c?.body ?? '',
     labels: c?.labels ?? [],
     place: c?.place ?? 'home',
@@ -226,7 +230,7 @@ function openFromSettings(id: number) {
   setTimeout(() => openCard(id), 120);
 }
 
-/** 新建或编辑一条：名称、卡片标题、描述、标签、放到哪、时间 */
+/** 新建或编辑一条：名称（同时是建卡标题）、描述、标签、放到哪、时间 */
 function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?: CardCron; initial?: Draft; close: () => void; reopen: (d: Draft) => void }) {
   const cur = useCurrent();
   const labels = cur?.project.labels ?? NO_LABELS;
@@ -239,12 +243,12 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
   const attach = useAttach({ board: path, card: null, setValue: setBody, textarea: bodyRef });
   const set = (p: Partial<Draft>) => setD(x => ({ ...x, ...p }));
   const expr = d.raw ?? buildCron(d.spec);
-  const ok = !!d.name.trim() && !!d.title.trim() && !!expr;
+  const ok = !!d.name.trim() && !!expr;
   const tz = browserTz();
 
   const save = async () => {
     if (!ok || stillUploading(attach.busy)) return;
-    const input: CardCronInput = { name: d.name.trim(), title: d.title.trim(), body: d.body.trim(), labels: d.labels, place: d.place, host: d.host ?? '', agent: d.agent ?? '', cron: expr!, tz };
+    const input: CardCronInput = { name: d.name.trim(), body: d.body.trim(), labels: d.labels, place: d.place, host: d.host ?? '', agent: d.agent ?? '', cron: expr!, tz };
     if (!cron) {
       // 新建要等服务端返回（编号、下次时间）：按钮转圈，失败时表单留着
       setSending(true);
@@ -273,13 +277,9 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
     <div className="cc-form" role="group" aria-label={cron ? `编辑「${cron.name}」` : '新的定时建卡'}>
       <label className="bs-rc-row">
         <span className="bs-rc-l">名称</span>
-        <input className="input" value={d.name} maxLength={24} placeholder="例如：清理死代码" autoFocus={!cron} onChange={e => set({ name: e.target.value })} />
-      </label>
-      <label className="bs-rc-row">
-        <span className="bs-rc-l">卡片标题</span>
         <span className="cc-title">
-          <input className="input" value={d.title} placeholder="例如：清理死代码" onChange={e => set({ title: e.target.value })} />
-          <span className="cc-hint">建卡时后面加日期，例如「{d.title.trim() || '清理死代码'}（{pad(new Date().getMonth() + 1)}-{pad(new Date().getDate())}）」</span>
+          <input className="input" value={d.name} maxLength={24} placeholder="例如：清理死代码" autoFocus={!cron} onChange={e => set({ name: e.target.value })} />
+          <span className="cc-hint">建卡时后面加日期，例如「{dated(d.name.trim() || '清理死代码')}」</span>
         </span>
       </label>
       <div className="bs-rc-row top">
@@ -379,7 +379,7 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
         <button className="btn sm" type="button" onClick={close}>
           取消
         </button>
-        <span data-tip={!d.name.trim() ? '写个名称' : !d.title.trim() ? '写个卡片标题' : !expr ? '至少选一天' : undefined}>
+        <span data-tip={!d.name.trim() ? '写个名称' : !expr ? '至少选一天' : undefined}>
           <button className={cx('btn sm primary', sending && 'is-busy')} type="button" disabled={!ok || sending} aria-busy={sending || undefined} onClick={() => void save()}>
             {cron ? '保存' : '加上'}
           </button>
@@ -395,7 +395,8 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
   const ws = useData(s => s.ws);
   const hosts = hostsOf(ws);
   const h = host ? hosts.find(x => x.name === host) : undefined;
-  const hasDir = (x: HostInfo) => x.dirs.some(d => d.board === path);
+  // 有工作空间的机器就视为有这块白板的目录
+  const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
   const def = h ? defaultAgent(h) : undefined;
   return (
     <span className="cc-pick">
@@ -414,7 +415,7 @@ function HostPick({ path, home, inbox, host, agent, onChange }: { path: string; 
               aria-checked={host === x.name}
               className={cx('cc-host', host === x.name && 'on')}
               disabled={inbox || !ok}
-              data-tip={inbox ? undefined : !ok ? '没有这块白板的目录：先在机器详情的「白板与目录」里加上' : why ? `${why}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
+              data-tip={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : why ? `${why}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}
               onClick={() => onChange(x.name, null)}
             >
               <Dot h={x} running={hostLoad(ws, x).running.length} />

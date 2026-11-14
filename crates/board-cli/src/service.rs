@@ -247,14 +247,20 @@ fn wait_or_quit(d: Duration) {
 
 /* ------------------------------ 安装、卸载 ------------------------------ */
 
-/// 服务里运行的参数：`<board> host --service [--name …] [--dir …]`。`--dir` 里的相对路径按当前目录换成绝对路径
-/// （服务的工作目录不是这里）；`~` 原样保留，board host 按家目录展开
-pub fn service_args(exe: &Path, name: Option<&str>, dirs: &[String], cwd: &Path) -> Result<Vec<String>> {
+/// 服务里运行的参数：`<board> host --service [--name …] [--workspace …] [--dir …]`。`--workspace`、`--dir` 里的
+/// 相对路径按当前目录换成绝对路径（服务的工作目录不是这里）；`~` 原样保留，board host 按家目录展开
+pub fn service_args(exe: &Path, name: Option<&str>, workspace: Option<&str>, dirs: &[String], cwd: &Path) -> Result<Vec<String>> {
     let mut out = vec![exe.display().to_string(), "host".into(), "--service".into()];
     if let Some(n) = name.map(str::trim).filter(|s| !s.is_empty()) {
         board_core::hosts::check_host_name(n).map_err(BoardError::usage)?;
         out.push("--name".into());
         out.push(n.into());
+    }
+    if let Some(ws) = workspace.map(str::trim).filter(|s| !s.is_empty()) {
+        let p = Path::new(ws);
+        let ws = if ws.starts_with('~') || p.is_absolute() { ws.to_string() } else { cwd.join(p).display().to_string() };
+        out.push("--workspace".into());
+        out.push(ws);
     }
     for d in dirs {
         let (board, path) = d.split_once('=').ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>/<白板>=<路径>：{d}")))?;
@@ -330,7 +336,7 @@ fn write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// `board host --install`
-pub fn install(name: Option<&str>, dirs: &[String], json: bool, p: &Paint) -> Result<Output> {
+pub fn install(name: Option<&str>, workspace: Option<&str>, dirs: &[String], json: bool, p: &Paint) -> Result<Output> {
     let exe = std::env::current_exe().map_err(|e| BoardError::usage(format!("找不到 board 自己：{e}")))?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     if crate::update::bundled_with_desktop(&exe) {
@@ -347,7 +353,7 @@ pub fn install(name: Option<&str>, dirs: &[String], json: bool, p: &Paint) -> Re
         ));
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let args = service_args(&exe, name, dirs, &cwd)?;
+    let args = service_args(&exe, name, workspace, dirs, &cwd)?;
     let plan = plan()?;
     let dir = host_dir()?;
     let log = dir.join("host.log");
@@ -462,15 +468,32 @@ mod tests {
     fn service_args_make_dirs_absolute_and_check_names() {
         let exe = Path::new("/usr/local/bin/board");
         let cwd = Path::new("/home/me/work");
-        let a = service_args(exe, Some("devbox"), &["a/b=repo".into(), "c/d=~/x".into(), "e/f=/srv/y".into()], cwd).unwrap();
+        let a = service_args(exe, Some("devbox"), Some("repos"), &["a/b=repo".into(), "c/d=~/x".into(), "e/f=/srv/y".into()], cwd).unwrap();
         // 相对路径按当前目录拼：分隔符跟着系统走（Windows 上是 \）
         let abs = format!("a/b={}", cwd.join("repo").display());
-        assert_eq!(a, ["/usr/local/bin/board", "host", "--service", "--name", "devbox", "--dir", &abs, "--dir", "c/d=~/x", "--dir", "e/f=/srv/y"]);
-        // 不给机器名、目录时跟着配置文件走
-        assert_eq!(service_args(exe, None, &[], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service"]);
-        assert!(service_args(exe, Some("Dev Box"), &[], cwd).is_err());
-        assert!(service_args(exe, None, &["nope".into()], cwd).is_err());
-        assert!(service_args(exe, None, &["bad=/x".into()], cwd).is_err());
+        let ws = cwd.join("repos").display().to_string();
+        assert_eq!(a, [
+            "/usr/local/bin/board",
+            "host",
+            "--service",
+            "--name",
+            "devbox",
+            "--workspace",
+            &ws,
+            "--dir",
+            &abs,
+            "--dir",
+            "c/d=~/x",
+            "--dir",
+            "e/f=/srv/y"
+        ]);
+        // `~` 开头的原样留着，board host 启动时按家目录展开
+        assert_eq!(service_args(exe, None, Some("~/repos"), &[], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service", "--workspace", "~/repos"]);
+        // 不给机器名、工作空间、目录时跟着配置文件走
+        assert_eq!(service_args(exe, None, None, &[], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service"]);
+        assert!(service_args(exe, Some("Dev Box"), None, &[], cwd).is_err());
+        assert!(service_args(exe, None, None, &["nope".into()], cwd).is_err());
+        assert!(service_args(exe, None, None, &["bad=/x".into()], cwd).is_err());
     }
 
     #[test]

@@ -42,6 +42,60 @@ pub fn env(k: &str) -> Option<String> {
 pub struct Conn {
     pub url: Option<(String, Source)>,
     pub token: Option<(String, Source)>,
+    /// 这次读连接时从派发的配置文件（`BOARD_CONFIG` 的 `[agent_env]`）补过 `BOARD_*`，见 [`from_agent_env`]：
+    /// 只说连接从哪来用，连接本身还是按环境变量优先、其次是 `~/.board/config.toml`
+    pub agent_env: bool,
+}
+
+/// 派发的配置文件（`BOARD_CONFIG`）里有没有 `[agent_env]`：有就把其中的 `BOARD_*` 设进本进程的环境。
+///
+/// board host 启动 agent 时把连接和名字放在它的环境变量里，但 agent 会过滤传给命令的环境变量（Codex 只在 shell 的
+/// 环境策略放行的那几个里传，`BOARD_*` 不在里面；dsh 去掉名字里带 `TOKEN` 的），agent 执行 `board` 时可能看不到。
+/// 所以 board host 把它们也写进这次派发的配置文件的 `[agent_env]`，`scripts/board`（带 `BOARD_AGENT_ENV=1`）和
+/// `board` 自己都从这里补上。已经在环境里的不覆盖。返回补上了没有
+pub fn from_agent_env() -> bool {
+    let Some(path) = env("BOARD_CONFIG") else { return false };
+    let Ok(text) = std::fs::read_to_string(&path) else { return false };
+    apply_agent_env(&text)
+}
+
+/// [`from_agent_env`] 的实体：把配置文本里 `[agent_env]` 的 `BOARD_*` 设进环境（有的就不动）。返回有没有这一节
+fn apply_agent_env(text: &str) -> bool {
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return false };
+    let Some(t) = doc.get("agent_env").and_then(|t| t.as_table_like()) else { return false };
+    for (k, v) in t.iter() {
+        if !k.starts_with("BOARD_") {
+            continue;
+        }
+        let Some(s) = v.as_str() else { continue };
+        if env(k).is_some() {
+            continue;
+        }
+        std::env::set_var(k, s);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 派发的配置文件里 `[agent_env]` 的 `BOARD_*` 补进环境；环境里已经有的不覆盖
+    #[test]
+    fn agent_env_section_fills_the_environment() {
+        // 名字带用例自己的后缀：几个用例在同一个进程里跑，别互相抢变量
+        let text = "[agent_env]\nBOARD_AS = \"codex-win/codex-test\"\nBOARD = \"oss/main\"\nNOT_BOARD = \"x\"\n";
+        std::env::remove_var("BOARD_AS");
+        std::env::set_var("BOARD", "already/here");
+        assert!(apply_agent_env(text));
+        assert_eq!(std::env::var("BOARD_AS").ok().as_deref(), Some("codex-win/codex-test"));
+        assert_eq!(std::env::var("BOARD").ok().as_deref(), Some("already/here"), "环境里已经有的不覆盖");
+        assert!(std::env::var("NOT_BOARD").is_err(), "只补 BOARD_ 开头的");
+        std::env::remove_var("BOARD_AS");
+        std::env::remove_var("BOARD");
+        // 没有这一节：什么也不做
+        assert!(!apply_agent_env("url = \"http://127.0.0.1:1\"\n"));
+    }
 }
 
 impl Conn {
@@ -64,7 +118,16 @@ impl Conn {
                 Some(t) => Some((t, Source::Env)),
                 None => from_file(TOKEN)?,
             },
+            agent_env: false,
         })
+    }
+
+    /// 从派发的配置文件补上 `BOARD_*` 之后读连接（[`crate::backend::Backend`] 用这个，见 [`from_agent_env`]）
+    pub fn resolve_for_agent() -> Result<Conn> {
+        let agent_env = from_agent_env();
+        let mut c = Conn::resolve()?;
+        c.agent_env = agent_env;
+        Ok(c)
     }
 }
 

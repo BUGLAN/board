@@ -14,6 +14,58 @@ fn crons(s: &Server) -> Vec<Value> {
     b["cardCrons"].as_array().cloned().unwrap_or_default()
 }
 
+/// 旧版界面（只认「白板与目录」）调 PATCH /api/hosts/{名字}：请求头带着工作空间（`x-board-workspace`）时按工作空间收，
+/// 不带时把旧的目录列表换成工作空间。派发不再因为「没有这块白板的目录」拒绝——有工作空间就视为有
+#[test]
+fn host_patch_accepts_workspace_from_old_and_new_clients() {
+    use board_core::hosts::{HostDir, HostReport, HostWorkspace};
+    let s = Server::start(Auth::Local);
+    let mut st = board_core::Store::open(&s.db).unwrap();
+    let now = board_core::now_ms();
+    let mut rep = HostReport {
+        name: "mbp".into(),
+        instance: "i1".into(),
+        resume: None,
+        os: "macOS 15".into(),
+        version: "0.1.25".into(),
+        agents: vec![],
+        envs: vec![],
+        workspace: Some(HostWorkspace { path: "/tmp/ws".into(), ..Default::default() }),
+        dirs: vec![],
+        dirs_rev: 0,
+        running: vec![],
+        done: false,
+        asked: None,
+        ask_error: None,
+        selftest: false,
+        skills: None,
+        mcp: None,
+        providers: None,
+        local_skills: None,
+    };
+    st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, None)).unwrap();
+    let base = format!("{}/api/hosts/mbp", s.url);
+    // 新版界面：工作空间
+    let r = send("PATCH", &base, &[UI], Some(json!({ "workspace": { "path": "/srv/repo" } })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["workspace"]["path"], "/srv/repo");
+    // 旧版界面：只有白板与目录，请求头里带着工作空间
+    let r = send(
+        "PATCH",
+        &base,
+        &[UI, ("x-board-workspace", "/srv/repo2")],
+        Some(json!({ "dirs": [{ "board": "default/main", "path": "/srv/repo2/default/main" }] })),
+    );
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["workspace"]["path"], "/srv/repo2", "{}", r.text);
+    // 旧版上报（不报工作空间、白板标识不合规则）碰到服务端按工作空间配好的机器：拒绝，不改存着的
+    rep.workspace = None;
+    rep.dirs = vec![HostDir { board: "main".into(), path: "/tmp/board".into(), ..Default::default() }];
+    rep.dirs_rev = r.body["dirsRev"].as_i64().unwrap_or(0);
+    let e = st.write(now + 1000, board_core::Origin::cli(), |w| w.host_beat(&rep, None)).unwrap_err();
+    assert_eq!(e.code, board_core::ErrorCode::Usage);
+}
+
 #[test]
 fn card_crons_crud_and_run_now() {
     let s = Server::start(Auth::Local);
@@ -53,4 +105,29 @@ fn card_crons_crud_and_run_now() {
     assert_eq!(send("DELETE", &format!("{base}/{id}"), &[UI], None).status, 200);
     assert!(crons(&s).is_empty());
     assert_eq!(send("DELETE", &format!("{base}/{id}"), &[UI], None).code(), "NOT_FOUND");
+}
+
+/// 标题就是名称：不传 title 也能建；传到 title 不用（旧客户端带着它）；只传 title 不当成名称
+#[test]
+fn title_follows_the_name() {
+    let s = Server::start(Auth::Local);
+    let base = format!("{}/api/card-crons/default/main", s.url);
+    let r = send("POST", &base, &[UI], Some(json!({ "name": "清道夫", "body": "找出没人用的代码", "cron": "0 9 * * 1", "tz": "Asia/Shanghai" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!((r.body["name"].as_str(), r.body["title"].as_str()), (Some("清道夫"), Some("清道夫")));
+    let id = r.body["id"].as_i64().unwrap();
+    let r = send("POST", &base, &[UI], Some(json!({ "name": "清道夫 2", "title": "别的标题", "cron": "0 9 * * 1", "tz": "Asia/Shanghai" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["title"].as_str(), Some("清道夫 2"), "旧的卡片标题不再单独存");
+    let r = send("POST", &base, &[UI], Some(json!({ "title": "只有标题", "cron": "0 9 * * 1", "tz": "Asia/Shanghai" })));
+    assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
+    assert!(r.text.contains("名称"), "{}", r.text);
+    // 现在建一张：标题是名称加日期
+    let r = send("POST", &format!("{base}/{id}/run"), &[UI], None);
+    let card = r.body["ranCard"].as_i64().expect("建了一张");
+    let c = send("GET", &format!("{}/api/card?path=default/main&id={card}", s.url), &[], None);
+    assert!(c.body["title"].as_str().unwrap().starts_with("清道夫（"), "{}", c.text);
+    // 修改只给名称：标题跟着变
+    let r = send("PATCH", &format!("{base}/{id}"), &[UI], Some(json!({ "name": "清理死代码" })));
+    assert_eq!((r.body["name"].as_str(), r.body["title"].as_str()), (Some("清理死代码"), Some("清理死代码")));
 }

@@ -340,9 +340,11 @@ describe('cardCronPatch（白板的定时建卡）', () => {
     const ws = workspace();
     return { ...ws, projects: ws.projects.map((p, i) => (i ? p : { ...p, boards: p.boards.map((b, j) => (j ? b : { ...b, cardCrons: [cron] })) })) };
   };
-  it('只改这一条，重复执行结果相同；改时间、关掉时先清掉下次时间', () => {
-    const ws = twice(D.cardCronPatch('p/a', 7, { title: '清理废代码' }).ws!, withCron());
-    expect(ws.projects[0].boards[0].cardCrons![0]).toMatchObject({ title: '清理废代码', nextAt: 123, on: true });
+  it('只改这一条，重复执行结果相同；改名称只改名称；改时间、关掉时先清掉下次时间', () => {
+    const ws = twice(D.cardCronPatch('p/a', 7, { name: '清理废代码' }).ws!, withCron());
+    expect(ws.projects[0].boards[0].cardCrons![0]).toMatchObject({ name: '清理废代码', title: '清理死代码', nextAt: 123, on: true });
+    const again = twice(D.cardCronPatch('p/a', 7, { name: '清理废代码' }).ws!, ws);
+    expect(again.projects[0].boards[0].cardCrons![0]).toMatchObject({ name: '清理废代码', title: '清理死代码' });
     const off = twice(D.cardCronPatch('p/a', 7, { on: false }).ws!, withCron());
     expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ on: false, nextAt: null });
     const moved = twice(D.cardCronPatch('p/a', 7, { cron: '0 10 * * 1' }).ws!, withCron());

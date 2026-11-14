@@ -34,12 +34,6 @@ struct Running {
     stdin: Option<ChildStdin>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Dir {
-    pub board: String,
-    pub path: String,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -53,7 +47,8 @@ pub struct Status {
     pub name: String,
     /// 不填时用的机器名
     pub default_name: String,
-    pub dirs: Vec<Dir>,
+    /// 工作空间（`[host] workspace`）：每块白板的目录是 `<工作空间>/<项目>/<白板>`；空表示还没配
+    pub workspace: String,
     /// board host 最近的输出
     pub log: Vec<String>,
     /// 配置文件里有服务端地址和令牌
@@ -70,51 +65,74 @@ fn log_path() -> Option<PathBuf> {
     config::board_dir().ok().map(|d| d.join("host").join("desktop.log"))
 }
 
-/// 读 `[host]`：机器名、白板与目录（按文件里的顺序）；以及有没有服务端地址和令牌
-fn read_conf() -> (String, Vec<Dir>, bool) {
-    let Ok(c) = config::Config::load() else { return (String::new(), vec![], false) };
+/// 读 `[host]`：机器名、工作空间（`[host] workspace`；升级前只有 `[host] dirs` 时取它们共同的上两级）；
+/// 以及有没有服务端地址和令牌
+fn read_conf() -> (String, String, bool) {
+    let Ok(c) = config::Config::load() else { return (String::new(), String::new(), false) };
     let has = |k: &str| c.get(k).ok().flatten().is_some();
     let logged_in = (has(config::URL) || crate::server::env_url().is_some()) && has(config::TOKEN);
-    let Ok(h) = c.host() else { return (String::new(), vec![], logged_in) };
-    let dirs = h.dirs.into_iter().map(|(board, path)| Dir { board, path }).collect();
-    (h.name.unwrap_or_default(), dirs, logged_in)
+    let Ok(h) = c.host() else { return (String::new(), String::new(), logged_in) };
+    let ws = h.workspace.clone().filter(|w| !w.trim().is_empty()).unwrap_or_else(|| workspace_of_dirs(&h.dirs));
+    (h.name.unwrap_or_default(), ws, logged_in)
 }
 
-/// 校验机器名、白板与目录（规则与 board 命令行相同，都在 board_core）
-fn check_conf(name: &str, dirs: &[Dir]) -> Result<(), String> {
+/// 升级前逐块配的 `[host] dirs`：取它们共同的上两级当工作空间（`<工作空间>/<项目>/<白板>`）；
+/// 只有一块白板、路径最后两段和 `<项目>/<白板>` 对不上时取它的上一级；对不上、不在同一个父目录时为空
+fn workspace_of_dirs(dirs: &[(String, String)]) -> String {
+    let dirs: Vec<(&str, &str)> = dirs.iter().map(|(b, p)| (b.trim(), p.trim())).filter(|(b, p)| !b.is_empty() && !p.is_empty()).collect();
+    let split = |p: &str| -> Vec<String> { p.split(['/', '\\']).map(str::to_string).collect() };
+    let parts: Vec<Vec<String>> = dirs.iter().map(|(_, p)| split(p)).collect();
+    let sep = if dirs.first().is_some_and(|(_, p)| p.contains('\\')) { "\\" } else { "/" };
+    match dirs.len() {
+        0 => String::new(),
+        1 => {
+            let p = &parts[0];
+            if p.len() < 3 {
+                return String::new();
+            }
+            let (proj, board) = dirs[0].0.split_once('/').unwrap_or_default();
+            let matches = p[p.len() - 2] == proj && p[p.len() - 1] == board;
+            p[..p.len() - if matches { 2 } else { 2 }].join(sep)
+        }
+        _ => {
+            let same = parts.iter().all(|p| p.len() == parts[0].len() && p[..p.len() - 1] == parts[0][..parts[0].len() - 1]);
+            let ok = dirs
+                .iter()
+                .zip(parts.iter())
+                .all(|((b, _), p)| b.split_once('/').is_some_and(|(proj, board)| p.len() >= 2 && p[p.len() - 2] == proj && p[p.len() - 1] == board));
+            if same && ok {
+                parts[0][..parts[0].len() - 2].join(sep)
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+/// 校验机器名、工作空间（规则与 board 命令行相同，都在 board_core）。工作空间可以为空（先只设机器名），
+/// 不填时这台电脑不接任何白板的卡
+fn check_conf(name: &str, workspace: &str) -> Result<(), String> {
     if !name.is_empty() {
         check_host_name(name)?;
     }
-    let mut seen: Vec<&str> = vec![];
-    for d in dirs {
-        let b = d.board.trim();
-        if !board_core::valid_board(b) {
-            return Err(format!("白板要写成 <项目>/<白板>：{}", d.board));
-        }
-        if seen.contains(&b) {
-            return Err(format!("白板 {b} 写了两次"));
-        }
-        seen.push(b);
-        if d.path.trim().is_empty() {
-            return Err(format!("{b} 还没有选目录"));
-        }
-    }
+    let _ = workspace;
     Ok(())
 }
 
 /// 写 `[host]`，保留文件里的其他配置项和注释；机器名为空时去掉 name（用本机主机名）
-pub fn write_conf(path: &Path, own_dir: bool, name: &str, dirs: &[Dir]) -> Result<(), String> {
+pub fn write_conf(path: &Path, own_dir: bool, name: &str, workspace: &str) -> Result<(), String> {
     let name = name.trim();
-    check_conf(name, dirs)?;
-    let dirs: Vec<(String, String)> = dirs.iter().map(|d| (d.board.trim().to_string(), d.path.trim().to_string())).collect();
-    config::update_at(path, own_dir, |c| c.set_host(Some(name).filter(|n| !n.is_empty()), &dirs).map(|_| ((), true))).map_err(|e| e.message)
+    let workspace = workspace.trim();
+    check_conf(name, workspace)?;
+    config::update_at(path, own_dir, |c| c.set_host(Some(name).filter(|n| !n.is_empty()), Some(workspace).filter(|w| !w.is_empty())).map(|_| ((), true)))
+        .map_err(|e| e.message)
 }
 
 /// 写 `[host]` 到 board 命令行用的配置文件（`BOARD_CONFIG`，否则 `~/.board/config.toml`）
-fn save_conf(name: &str, dirs: &[Dir]) -> Result<(), String> {
+fn save_conf(name: &str, workspace: &str) -> Result<(), String> {
     let path = config::path().map_err(|e| e.message)?;
     let own = config::board_dir().is_ok_and(|d| path.parent() == Some(d.as_path()));
-    write_conf(&path, own, name, dirs)
+    write_conf(&path, own, name, workspace)
 }
 
 /* ------------------------------ 开关 ------------------------------ */
@@ -395,7 +413,7 @@ fn tail_of(path: &Path, n: usize) -> Vec<String> {
 }
 
 pub fn status<R: Runtime>(app: &AppHandle<R>) -> Status {
-    let (name, dirs, logged_in) = read_conf();
+    let (name, workspace, logged_in) = read_conf();
     let (running, exit) = match app.state::<HostProc>().0.lock() {
         Ok(mut g) => match g.as_mut().map(|r| r.child.try_wait()) {
             Some(Ok(None)) => (true, None),
@@ -411,7 +429,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Status {
         exit,
         name,
         default_name: host_name_from(&host),
-        dirs,
+        workspace,
         log: log_tail(40),
         logged_in,
         cli: crate::cli_path().is_some(),
@@ -458,7 +476,7 @@ pub async fn host_status(app: AppHandle) -> Status {
         exit: None,
         name: String::new(),
         default_name: String::new(),
-        dirs: vec![],
+        workspace: String::new(),
         log: vec![],
         logged_in: false,
         cli: false,
@@ -508,11 +526,11 @@ fn rename_host(new_name: &str) -> Result<(), (String, String)> {
 /// 在 board host 读到新配置之前，它用旧名字的上报由服务端按进程标识认回改名后的记录，不会新建一台机器。
 /// 确认（机器名、白板与目录、免审批运行的风险）由页面用应用内的确认框做完再调用这里
 #[tauri::command]
-pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(), String> {
+pub async fn host_save(app: AppHandle, name: String, workspace: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let name = name.trim();
-        check_conf(name, &dirs)?;
-        let (old_name, _old_dirs, logged_in) = read_conf();
+        check_conf(name, &workspace)?;
+        let (old_name, _old_ws, logged_in) = read_conf();
         let new = effective_name(name);
         if logged_in && effective_name(&old_name) != new {
             if let Err((code, msg)) = rename_host(&new) {
@@ -522,7 +540,7 @@ pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(
                 }
             }
         }
-        save_conf(name, &dirs)?;
+        save_conf(name, &workspace)?;
         // 在跑：通知它重新读配置；没在跑（之前出错退出了）才启动，启动时就读新配置
         if enabled(&app) && !notify_reload(&app) {
             ensure_started(&app)?;
@@ -536,11 +554,11 @@ pub async fn host_save(app: AppHandle, name: String, dirs: Vec<Dir>) -> Result<(
 /// 打开 / 关掉「让这台电脑接任务」。打开时连同页面上的机器名、白板与目录一起传来（人在应用内的
 /// 确认框里看过、确认过），先校验再写进配置，然后启动 board host；关掉不用确认
 #[tauri::command]
-pub async fn host_enable(app: AppHandle, on: bool, name: String, dirs: Vec<Dir>) -> Result<(), String> {
+pub async fn host_enable(app: AppHandle, on: bool, name: String, workspace: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         if on {
-            check_conf(name.trim(), &dirs)?;
-            save_conf(&name, &dirs)?;
+            check_conf(name.trim(), &workspace)?;
+            save_conf(&name, &workspace)?;
         }
         save_flag(&app, on)?;
         if on {
@@ -571,13 +589,13 @@ pub async fn host_autostart(on: bool) -> Result<bool, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// 「白板与目录」选择文件夹：弹系统的文件夹选择框，从这一行现在的目录开始（存在时，`~` 按家目录展开）。
-/// 返回选中的目录；取消时返回 None。只取路径、不写配置：保存仍走 host_save（目录变化由页面确认）
+/// 「工作空间」选择文件夹：弹系统的文件夹选择框，从现在的路径开始（存在时，`~` 按家目录展开）。
+/// 返回选中的目录；取消时返回 None。只取路径、不写配置：保存仍走 host_save（改了要让页面确认）
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle, start: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     tauri::async_runtime::spawn_blocking(move || {
-        let mut dlg = app.dialog().file().set_title("选择这块白板的代码仓库");
+        let mut dlg = app.dialog().file().set_title("选择工作空间（每块白板的目录是 <工作空间>/<项目>/<白板>）");
         let start = config::expand(start.trim());
         if start.is_dir() {
             dlg = dlg.set_directory(start);
@@ -638,14 +656,13 @@ mod tests {
     #[test]
     fn checks() {
         let d = tempfile_dir("checks");
-        let ok = vec![Dir { board: "default/main".into(), path: d.display().to_string() }];
-        assert!(check_conf("macbook", &ok).is_ok());
-        assert!(check_conf("", &ok).is_ok());
-        assert!(check_conf("MacBook", &ok).unwrap_err().contains("机器名"));
-        let bad = vec![Dir { board: "default".into(), path: d.display().to_string() }];
-        assert!(check_conf("", &bad).unwrap_err().contains("<项目>/<白板>"));
-        let twice = vec![ok[0].clone(), ok[0].clone()];
-        assert!(check_conf("", &twice).unwrap_err().contains("两次"));
+        let ws = d.display().to_string();
+        assert!(check_conf("macbook", &ws).is_ok());
+        assert!(check_conf("", &ws).is_ok());
+        assert!(check_conf("MacBook", &ws).unwrap_err().contains("机器名"));
+        // 工作空间可以先不填（先只设机器名）：这台电脑不接任何白板的卡
+        assert!(check_conf("macbook", "").is_ok());
+        assert!(check_conf("macbook", "  ").is_ok());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -685,19 +702,38 @@ mod tests {
         let f = d.join(".board").join("config.toml");
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, "url = \"https://site.example.com\"\ntoken = \"bd_x\"\n").unwrap();
-        let dirs = vec![Dir { board: "default/main".into(), path: repo.display().to_string() }];
-        write_conf(&f, true, "macbook", &dirs).unwrap();
+        write_conf(&f, true, "macbook", &repo.display().to_string()).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
         assert!(text.starts_with("url = \"https://site.example.com\"\ntoken = \"bd_x\"\n"), "{text}");
-        assert!(text.contains("[host]\nname = \"macbook\"\ndirs = { \"default/main\" = "), "{text}");
+        assert!(text.contains("[host]\nname = \"macbook\"\nworkspace = "), "{text}");
+        let h = config::Config::load_from(&f).unwrap().host().unwrap();
+        assert_eq!(h.workspace.as_deref(), Some(repo.display().to_string().as_str()));
         // 机器名清空：去掉 name
-        write_conf(&f, true, "", &dirs).unwrap();
+        write_conf(&f, true, "", &repo.display().to_string()).unwrap();
         assert!(!std::fs::read_to_string(&f).unwrap().contains("name ="));
         // 目录不存在也照样保存（#185：board host 上报「不存在」，界面上可以克隆），写进去的是填的路径
-        let gone = vec![Dir { board: "default/main".into(), path: d.join("nope").display().to_string() }];
-        write_conf(&f, true, "macbook", &gone).unwrap();
+        write_conf(&f, true, "macbook", &d.join("nope").display().to_string()).unwrap();
         assert!(std::fs::read_to_string(&f).unwrap().contains("nope"), "{}", std::fs::read_to_string(&f).unwrap());
+        // 工作空间清空：去掉这一项（这台电脑不接任何白板的卡）
+        write_conf(&f, true, "macbook", "  ").unwrap();
+        assert!(!std::fs::read_to_string(&f).unwrap().contains("workspace"), "{}", std::fs::read_to_string(&f).unwrap());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // 升级前只有 `[host] dirs`（逐块配的）：读出来的工作空间是它们共同的上两级
+    #[test]
+    fn old_dirs_become_a_workspace() {
+        assert_eq!(workspace_of_dirs(&[("default/main".into(), "/repo/default/main".into())]), "/repo");
+        assert_eq!(workspace_of_dirs(&[("default/main".into(), "C:\\repo\\default\\main".into())]), "C:\\repo");
+        assert_eq!(
+            workspace_of_dirs(&[("default/main".into(), "/repo/default/main".into()), ("default/other".into(), "/repo/default/other".into())]),
+            "/repo"
+        );
+        // 只有一块、路径和 `<项目>/<白板>` 对不上：从上一级往上取（和 board host 导出的一样）
+        assert_eq!(workspace_of_dirs(&[("default/main".into(), "/home/me/legacy".into())]), "/home");
+        // 不在同一个父目录、没有：留空（得在设置里重新填）
+        assert_eq!(workspace_of_dirs(&[("a/b".into(), "/x/a/b".into()), ("a/c".into(), "/y/a/c".into())]), "");
+        assert_eq!(workspace_of_dirs(&[]), "");
     }
 
     // 设置 → 本机保存机器名：现有配置不是合法 TOML 时，先备份原文件，再写一份合法的 [host]
@@ -711,8 +747,7 @@ mod tests {
         let f = dir.join("config.toml");
         let bad = "# 旧配置\n[agents.claude]\ncmd = [\"bash\", \"-c\", \"echo agent \\; exec sleep 300\", \"-\"]\n";
         std::fs::write(&f, bad).unwrap();
-        let dirs = vec![Dir { board: "default/main".into(), path: repo.display().to_string() }];
-        write_conf(&f, true, "macbook", &dirs).unwrap();
+        write_conf(&f, true, "macbook", &repo.display().to_string()).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
         assert!(text.contains("[host]\nname = \"macbook\""), "{text}");
         let backups: Vec<_> = std::fs::read_dir(&dir)

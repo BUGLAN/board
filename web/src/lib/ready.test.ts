@@ -11,7 +11,8 @@ const machine = (x: Partial<HostInfo> = {}): HostInfo => ({
   version: '0.1.19',
   agents: [agent('claude')],
   envs: [{ id: 'login', name: '登录 shell', path: '/bin/zsh' }],
-  dirs: [{ board: 'default/main', path: '~/repo/board', status: 'ok', origin: 'git@x:y.git', branch: 'main' }],
+  workspace: { path: '~/repo' },
+  dirs: [{ board: 'default/main', path: '~/repo/default/main', status: 'ok', origin: 'git@x:y.git', branch: 'main' }],
   max: 2,
   paused: false,
   agent: 'claude',
@@ -41,11 +42,11 @@ describe('就绪清单', () => {
   });
 
   it('刚加进来、没配目录、agent 看不到 board-skills：列出缺的项，每项都有按钮打开处理的地方；补齐后全部通过', () => {
-    const fresh = machine({ dirs: [], agents: [agent('claude', { no_skill: '~/.claude/skills/board-skills' })] });
+    const fresh = machine({ workspace: null, dirs: [], agents: [agent('claude', { no_skill: '~/.claude/skills/board-skills' })] });
     const cs = readiness(fresh, now, '0.1.19');
     const miss = cs.filter(c => !c.ok);
     expect(miss.map(c => c.key)).toEqual(['dirs', 'skills']);
-    expect(miss.find(c => c.key === 'dirs')).toMatchObject({ why: '还没有配白板与目录，派不了卡', go: 'dirs', act: '设置目录' });
+    expect(miss.find(c => c.key === 'dirs')).toMatchObject({ why: '还没有配工作空间，派不了卡', go: 'dirs', act: '设置工作空间' });
     expect(miss.find(c => c.key === 'skills')).toMatchObject({ go: 'agents' });
     expect(miss.find(c => c.key === 'skills')!.why).toContain('claude 看不到 board-skills');
 
@@ -147,12 +148,12 @@ describe('多机对比', () => {
 
   it('就绪列：每台机器的通过数和每一项', () => {
     const ok = machine({ id: 1, name: 'ok' });
-    const fresh = machine({ id: 2, name: 'fresh', dirs: [] });
+    const fresh = machine({ id: 2, name: 'fresh', workspace: null, dirs: [] });
     expect(cell([ok, fresh], 'ready:n').map(c => [c.text, c.ok])).toEqual([
       ['5/5', true],
       ['4/5', false],
     ]);
     expect(cell([ok, fresh], 'ready:dirs').map(c => c.ok)).toEqual([true, false]);
-    expect(cell([ok, fresh], 'ready:dirs')[1].tip).toBe('还没有配白板与目录，派不了卡');
+    expect(cell([ok, fresh], 'ready:dirs')[1].tip).toBe('还没有配工作空间，派不了卡');
   });
 });

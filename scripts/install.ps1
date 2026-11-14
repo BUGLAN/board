@@ -3,18 +3,19 @@
 # 服务端在 <服务端>/install.ps1 提供这个文件，下面三个 @…@ 由服务端换成它自己的版本号、地址和发版附件的地址：
 #
 #   irm <服务端>/install.ps1 | iex
-#   & ([scriptblock]::Create((irm '<服务端>/install.ps1'))) -Token <令牌> -Name <机器名> -Dir '<项目>/<白板>=<路径>' [-Service]
+#   & ([scriptblock]::Create((irm '<服务端>/install.ps1'))) -Token <令牌> -Name <机器名> -Workspace '<工作空间>' [-Dir '<项目>/<白板>=<路径>'] [-Service]
 #
 # 依次做：
 #   1. 下载发版附件里的 board-windows-x64.zip 和校验文件 board-sha256.txt，SHA-256 对不上就中止（不动现有的 board）
 #   2. 装到 %LOCALAPPDATA%\Board\bin（环境变量 BOARD_INSTALL_DIR 可改）；不在用户 PATH 里时写进去，只写一次
 #   3. 带 -Token：board login --url <服务端> --token <令牌>
-#   4. 带 -Name / -Dir：带 -Service 时装成开机自动运行（board host --install），否则给出前台运行的命令
+#   4. 带 -Name / -Workspace / -Dir：带 -Service 时装成开机自动运行（board host --install），否则给出前台运行的命令
 #
 # 环境变量 BOARD_DOWNLOAD 换下载地址（镜像，或本机目录，测试用）。
 param(
   [string]$Token = '',
   [string]$Name = '',
+  [string]$Workspace = '',
   [string[]]$Dir = @(),
   [switch]$Service
 )
@@ -105,10 +106,11 @@ if ($Token) {
   if ($LASTEXITCODE -ne 0) { Fail "登录 $BoardServer 失败：令牌在界面「设置 → Agent 接入」新建" }
 }
 
-if ($Name -or $Dir.Count) {
+if ($Name -or $Workspace -or $Dir.Count) {
   $hostArgs = @('host')
   if ($Service) { $hostArgs += '--install' }
   if ($Name) { $hostArgs += @('--name', $Name) }
+  if ($Workspace) { $hostArgs += @('--workspace', $Workspace) }
   foreach ($d in $Dir) { $hostArgs += @('--dir', $d) }
   if ($Service) {
     Write-Host '→ 装成开机自动运行 board host'

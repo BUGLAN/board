@@ -33,7 +33,6 @@
   --invert-text: #F5F4F0;
 
   --brand: #F2541B;
-  --brand-2: #FF8A4C;
   --brand-soft: rgba(242, 84, 27, .11);
   /* 品牌色上的文字颜色：白字和深色字里对比度高的那个（App.tsx 按项目颜色算）；默认橙色上是深色字 */
   --brand-fg: #18181A;
@@ -113,7 +112,6 @@
     --invert: #EDECE8;
     --invert-text: #121214;
     --brand: #FF6A33;
-    --brand-2: #FF9A5E;
     --brand-soft: rgba(255, 106, 51, .14);
     --ink: #000 0%;
     --danger: #FF4D61;
@@ -158,7 +156,6 @@
   --invert: #EDECE8;
   --invert-text: #121214;
   --brand: #FF6A33;
-  --brand-2: #FF9A5E;
   --brand-soft: rgba(255, 106, 51, .14);
   --ink: #000 0%;
   --danger: #FF4D61;

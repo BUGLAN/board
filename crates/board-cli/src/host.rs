@@ -1,12 +1,12 @@
 //! `board host`：在这台机器上常驻，接服务端派来的卡片，在本机启动 agent（任务下发需求 §三、§七）。
 //!
 //! ```text
-//! board host [--name <机器名>] [--dir <项目>/<白板>=<路径>]...
+//! board host [--name <机器名>] [--workspace <工作空间>] [--dir <项目>/<白板>=<路径>]...
 //! ```
 //!
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
-//!   桌面端「设置 → 本机」保存后在标准输入里写一行 `reload` 通知它：重新读 `[host]`，机器名、白板与目录变了就直接换上，
-//!   不用重启，正在跑的 agent 不受影响（命令行给了 `--name` / `--dir` 的那一项不跟着配置文件变）。机器名变了先让服务端把
+//!   桌面端「设置 → 本机」保存后在标准输入里写一行 `reload` 通知它：重新读 `[host]`，机器名、工作空间变了就直接换上，
+//!   不用重启，正在跑的 agent 不受影响（命令行给了 `--name` / `--workspace` / `--dir` 的那一项不跟着配置文件变）。机器名变了先让服务端把
 //!   机器记录原地改名（桌面端已经改过的不再改），改名失败就接着用原来的名字。桌面端「一键安装 board-skills」装好后也发一行
 //!   `reload`：先重新看一遍每个 agent 的 skill，看得到了马上上报，界面上的提醒随之消失。
 //! - 启动时找本机的启动环境（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL 的发行版 …，见 envs.rs），
@@ -15,6 +15,9 @@
 //!   （`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。内置模板的顺序就是默认 agent 的顺序：本机找到的第一个
 //!   是默认。每个 agent 用哪个启动环境由机器设置决定（服务端写进派发记录）。找到了、但在它用的环境里看不到 `board-skills`
 //!   的 agent 启动时提醒一行。怎么接入新的 agent 见 docs/agents.md。
+//! - 工作空间（PRD §9.1）：每台设备只配一个目录，每块白板在这台机器上的目录是 `<工作空间>/<项目>/<白板>`。启动时、之后取到
+//!   任务时把服务端上摆着的白板在盘上摆好（不存在时建目录，白板设了仓库地址时 `git clone`）；`--dir` 单独覆盖某几块。
+//!   旧配置的 `[host] dirs` 读进来换成工作空间（见 [`to_workspace`]、[`bootstrap_dirs`]）。
 //! - 每 10 秒向服务端上报一次（机器心跳），同时替正在跑的派发的名字发 agent 级心跳；订阅实时推送，
 //!   机器和派发有变化（推送里的 `hosts` 变了）就马上重新取自己的任务。每块白板目录的 git 状态（origin、
 //!   当前分支）只每 5 分钟重新看一次，配置、目录、克隆完时马上重看：心跳不跑 git 子进程。
@@ -280,7 +283,9 @@ fn interval() -> Duration {
 /// 命令行参数
 pub struct Opts {
     pub name: Option<String>,
-    /// `--dir <项目>/<白板>=<路径>`，可以有多个
+    /// `--workspace <路径>`：这台设备的工作空间，每块白板的目录是 `<工作空间>/<项目>/<白板>`
+    pub workspace: Option<String>,
+    /// `--dir <项目>/<白板>=<路径>`，可以有多个：单独覆盖某一块白板的目录（旧写法，兼容保留）
     pub dirs: Vec<String>,
 }
 
@@ -630,11 +635,21 @@ fn write_dsh_patch(path: &Path) -> std::io::Result<()> {
     std::fs::write(path, DSH_HEADLESS_PATCH)
 }
 
-/// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）
-fn write_run_config(path: &Path, url: &str, token: &str) -> Result<()> {
+/// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）。
+///
+/// 还有 `[agent_env]`：这次派发要带给 agent 的 `BOARD_*` 变量。agent 会过滤传给命令的环境变量：Codex 按 shell 环境策略
+/// 只放行 `core` 里的几个（`BOARD_*` 不在里面，`shell` 工具里就看不到连接），dsh 去掉名字里带 `TOKEN` 的。
+/// `scripts/board` 看到 `BOARD_AGENT_ENV=1` 时从 `BOARD_CONFIG` 读这一节、再设进它自己的环境，它起的 `board` 就有了
+/// （[`crate::backend`] 读配置时也用它们，所以没经过包装脚本、直接执行 `board` 时也连得上）
+fn write_run_config(path: &Path, url: &str, token: &str, vars: &[(String, String)]) -> Result<()> {
     board_core::config::write_new(path, |c| {
         c.set(config::URL, url);
         c.set(config::TOKEN, token);
+        let mut t = toml_edit::Table::new();
+        for (k, v) in vars {
+            t.insert(k, toml_edit::value(v.as_str()));
+        }
+        c.set_table("agent_env", t);
     })
 }
 
@@ -1085,11 +1100,10 @@ struct Host<'a> {
     /// 本机的启动环境
     envs: Vec<Env>,
     agents: Vec<Spec>,
-    dirs: Vec<(String, PathBuf)>,
-    /// 配置里写的目录原文（`~` 不展开），上报和服务端写回配置都用它
-    dir_raw: Vec<(String, String)>,
-    /// 命令行 `--dir` 固定的白板：界面上只读
-    fixed_dirs: BTreeMap<String, bool>,
+    /// 工作空间（`<工作空间>/<项目>/<白板>`）和 `--dir` 单独覆盖的目录：上报、运行环境检查、启动 agent 都用它
+    ws: HostWorkspace,
+    /// 工作空间里摆着的白板：路径由 `ws` 派生，这里只记「是哪几块」（服务端摆着、盘上已经有目录的）
+    boards: Vec<String>,
     /// 已经从服务端应用到的目录设置版本
     dirs_rev: i64,
     /// 每块白板目录的 git 状态（最近一次看的结果和看的时间）：心跳时沿用，隔 DIR_CHECK_EVERY 再跑 git
@@ -1128,11 +1142,11 @@ struct Host<'a> {
     /// 最近一次和服务端通上的时间；断开超过 OFFLINE_WARN 时提醒一次（offline_warned），恢复时再说一声
     last_ok: Instant,
     offline_warned: bool,
-    /// 机器名、白板与目录跟着配置文件变（命令行没给 `--name` / `--dir`）
+    /// 机器名、工作空间跟着配置文件变（命令行没给 `--name` / `--workspace` / `--dir`）
     follow_name: bool,
     follow_dirs: bool,
-    /// 上一次读到的配置文件 `[host]`（机器名、白板与目录原文、日志保留天数）：没变就不重新校验
-    conf_seen: (Option<String>, Vec<(String, String)>, Option<i64>),
+    /// 上一次读到的配置文件 `[host]`（机器名、工作空间、日志保留天数）：没变就不重新校验
+    conf_seen: (Option<String>, Option<String>, Option<i64>),
     /// 正在后台做的自检（请求序号、线程）
     selftest: Option<(i64, std::thread::JoinHandle<Vec<SelfTestItem>>)>,
     /// 做完了、还没回报成功的自检结果（连不上服务端时下一轮再报）
@@ -1230,45 +1244,55 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let file = config::File::load()?;
     let conf = file.host()?;
     let follow_name = opts.name.as_deref().is_none_or(|s| s.trim().is_empty());
-    let follow_dirs = opts.dirs.is_empty();
     // 机器名
     let name = match opts.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(n) => n.to_string(),
         None => conf_name(conf.name.as_deref()),
     };
     check_host_name(&name).map_err(BoardError::usage)?;
-    // 白板与目录：命令行给了就只用命令行的
-    let raw: Vec<(String, String)> = if opts.dirs.is_empty() {
-        conf.dirs.clone()
-    } else {
-        opts.dirs
-            .iter()
-            .map(|d| {
-                d.split_once('=')
-                    .map(|(b, p)| (b.trim().to_string(), p.trim().to_string()))
-                    .filter(|(b, p)| !b.is_empty() && !p.is_empty())
-                    .ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>/<白板>=<路径>：{d}")))
-            })
-            .collect::<Result<_>>()?
-    };
-    let (dirs, dir_raw) = parse_dirs(raw)?;
+    // 工作空间、单独覆盖的目录：命令行给了（`--workspace`、`--dir`）就只用命令行的，否则用配置文件里的；
+    // `follow_dirs` 是「工作空间跟着配置文件变」（两个都没给时）
+    let cmd_overrides = parse_raw_dirs(opts.dirs.clone())?;
+    let from_cmd = workspace_arg(opts.workspace.as_deref()).is_some() || !cmd_overrides.is_empty();
+    let raw_ws = workspace_arg(opts.workspace.as_deref()).or_else(|| workspace_arg(conf.workspace.as_deref()));
+    let raw_overrides = if from_cmd { cmd_overrides } else { conf.dirs.clone() };
+    let ws = to_workspace(raw_ws.as_deref(), &raw_overrides)?;
+    let follow_dirs = !from_cmd;
     let log_days = conf.log_days.unwrap_or(LOG_DAYS);
-    let fixed_dirs = if follow_dirs {
-        BTreeMap::new()
-    } else {
-        dir_raw.iter().map(|(b, _)| (b.clone(), true)).collect()
-    };
-    let be = Backend::open_host()?;
-    let envs = envs::discover();
-    // 共用配置里的 agent 模板随第一次取到的任务下发，到时再合进来（见 Host::apply_templates）
-    let mut agents = agent_specs(&conf.agents, &[], &envs)?;
-    for a in &mut agents {
-        a.check_skills(&envs, &dirs);
-    }
     let os = sysinfo::System::long_os_version()
         .ok()
         .or_else(|| sysinfo::System::name().ok())
         .unwrap_or_else(|| std::env::consts::OS.to_string());
+    let mut be = Backend::open_host()?;
+    let envs = envs::discover();
+    // 盘上已经摆着的白板（`--dir` 覆盖的，加上服务端上报过的）：启动时先按它查一遍 board-skills
+    let mut boards = ws_boards(&ws, &os);
+    // 服务端上摆着的白板：工作空间里还没有目录的，先按 `<工作空间>/<项目>/<白板>` 建好（设了仓库地址的 `git clone`）
+    let server: Vec<(String, Option<String>)> = match be.workspace() {
+        Ok(w) => w.projects.iter().flat_map(|p| p.boards.iter().map(|b| (b.path.clone(), Some(b.repo.clone()).filter(|r| !r.trim().is_empty())))).collect(),
+        Err(e) => {
+            let _ = writeln!(std::io::stdout(), "{} 取不到服务端上的白板：{}（工作空间里还没有目录的白板派来时再建）", p.yellow("!"), e.message);
+            vec![]
+        }
+    };
+    let mut checks: Vec<DirCheck> = vec![];
+    let mut cloned: Vec<CloneRun> = vec![];
+    let failed = bootstrap_dirs(&ws, &server, &mut checks, &mut cloned, &os, &host_dir()?.join("logs"));
+    for (board, why) in &failed {
+        let what = if board.is_empty() { String::new() } else { format!("{board}：") };
+        let _ = writeln!(std::io::stdout(), "{} 工作空间里{what}{why}", p.yellow("!"));
+    }
+    for (board, _) in &server {
+        if !boards.contains(board) {
+            boards.push(board.clone());
+        }
+    }
+    boards.sort();
+    // 共用配置里的 agent 模板随第一次取到的任务下发，到时再合进来（见 Host::apply_templates）
+    let mut agents = agent_specs(&conf.agents, &[], &envs)?;
+    for a in &mut agents {
+        a.check_skills(&envs, &ws_pairs(&ws, &boards, &os));
+    }
     let hd = host_dir()?;
     let pidfile = hd.join(format!("{name}.pid"));
     // 上一次在这台机器上用这个名字的 board host：进程不在了就接回它的名字
@@ -1293,12 +1317,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         os,
         envs,
         agents,
-        dirs,
-        dir_raw,
-        fixed_dirs,
+        ws,
+        boards,
         dirs_rev: 0,
-        dir_checks: vec![],
-        clones: vec![],
+        dir_checks: checks,
+        clones: cloned,
         readies: vec![],
         ready_all: true,
         asked: None,
@@ -1318,7 +1341,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         offline_warned: false,
         follow_name,
         follow_dirs,
-        conf_seen: (conf.name.clone(), conf.dirs.clone(), conf.log_days),
+        conf_seen: (conf.name.clone(), conf.workspace.clone(), conf.log_days),
         selftest: None,
         selftest_out: None,
         selftest_seen: None,
@@ -1412,8 +1435,9 @@ fn conf_name(name: Option<&str>) -> String {
     }
 }
 
-/// 校验白板与目录：白板写成 <项目>/<白板>、不重复；目录可以暂时不存在（界面上显示状态、可以克隆）。
-/// 返回展开后的目录（相对路径按当前目录）和配置里写的原文
+/// 校验白板与目录（`--dir`、旧配置里的 `[host] dirs`）：白板写成 <项目>/<白板>、不重复；目录可以暂时不存在
+/// （界面上显示状态、可以克隆）。返回展开后的目录（相对路径按当前目录）和配置里写的原文
+#[cfg(test)]
 fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec<(String, String)>)> {
     let mut dirs: Vec<(String, PathBuf)> = vec![];
     let mut raw_out: Vec<(String, String)> = vec![];
@@ -1439,13 +1463,199 @@ fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec
     Ok((dirs, raw_out))
 }
 
-/// 服务端把目录设置写回本机配置；保留 `[host]` 里的机器名和文件里的其他项、注释
-fn save_host_dirs(dirs: &[(String, String)]) -> Result<()> {
+/// `--workspace` 的值：去掉首尾空白，空的当作没给
+fn workspace_arg(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// `--dir <项目>/<白板>=<路径>`（可以有多个）拆成 (白板, 路径)；写成别的样子时说明怎么写
+fn parse_raw_dirs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
+    raw.iter()
+        .map(|d| {
+            d.split_once('=')
+                .map(|(b, p)| (b.trim().to_string(), p.trim().to_string()))
+                .filter(|(b, p)| !b.is_empty() && !p.is_empty())
+                .ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>/<白板>=<路径>：{d}")))
+        })
+        .collect()
+}
+
+/// 两个工作空间是不是一样：路径和 `--dir` 覆盖的目录（顺序不比）
+fn same_ws(a: &HostWorkspace, b: &HostWorkspace) -> bool {
+    a.path == b.path
+        && a.overrides.len() == b.overrides.len()
+        && a.overrides.iter().all(|x| b.overrides.iter().any(|y| y.board == x.board && y.path == x.path))
+}
+
+/// 工作空间里盘上已经有的白板（有目录的），加上 `--dir` 覆盖的白板
+fn ws_boards(ws: &HostWorkspace, os: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for o in &ws.overrides {
+        if !out.contains(&o.board) {
+            out.push(o.board.clone());
+        }
+    }
+    let base = expand(&ws.path);
+    if ws.path.trim().is_empty() {
+        return out;
+    }
+    // `<工作空间>/<项目>/<白板>`：两级目录里找
+    let Ok(projects) = std::fs::read_dir(&base) else { return out };
+    let mut found: Vec<String> = vec![];
+    for p in projects.flatten() {
+        let project = p.file_name().to_string_lossy().into_owned();
+        if !p.path().is_dir() {
+            continue;
+        }
+        let Ok(names) = std::fs::read_dir(p.path()) else { continue };
+        for n in names.flatten() {
+            let board = format!("{project}/{}", n.file_name().to_string_lossy());
+            if n.path().is_dir() && board_core::valid_board(&board) {
+                found.push(board);
+            }
+        }
+    }
+    let _ = os;
+    found.sort();
+    for b in found {
+        if !out.contains(&b) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// 工作空间的目录：`~` 展开，相对路径按当前目录换成绝对路径
+fn workspace_path(raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(BoardError::usage("工作空间不能是空的：填一个目录，每块白板的目录是 <工作空间>/<项目>/<白板>"));
+    }
+    let mut dir = expand(raw);
+    if dir.is_relative() {
+        dir = std::env::current_dir().map(|c| c.join(&dir)).unwrap_or(dir);
+    }
+    Ok(dir)
+}
+
+/// 命令行、配置文件里的工作空间和 `--dir` 覆盖的目录：去掉首尾空白，工作空间展开 `~`
+fn to_workspace(raw: Option<&str>, overrides: &[(String, String)]) -> Result<HostWorkspace> {
+    let mut out: Vec<HostDirOverride> = vec![];
+    for (b, p) in overrides {
+        let (b, p) = (b.trim(), p.trim());
+        if b.is_empty() || p.is_empty() {
+            continue;
+        }
+        if out.iter().any(|o| o.board == b) {
+            return Err(BoardError::usage(format!("白板 {b} 写了两次")));
+        }
+        out.push(HostDirOverride { board: b.to_string(), path: p.to_string() });
+    }
+    let path = match workspace_arg(raw) {
+        Some(w) => {
+            // 存展开后的路径：相对路径按启动时的目录，之后重新读配置、重启也还是它
+            let dir = workspace_path(&w)?;
+            dir.display().to_string()
+        }
+        None => String::new(),
+    };
+    Ok(HostWorkspace { path, created: false, overrides: out })
+}
+
+/// 服务端把工作空间写回本机配置；保留 `[host]` 里的机器名和文件里的其他项、注释
+fn save_host_workspace(ws: &str) -> Result<()> {
     config::update(|c| {
         let name = c.host()?.name;
-        c.set_host(name.as_deref(), dirs)?;
+        c.set_host(name.as_deref(), Some(ws))?;
         Ok(((), true))
     })
+}
+
+/// 把服务端上摆着的每块白板在盘上摆好：每块白板的目录是 `<工作空间>/<项目>/<白板>`。已经有的不动；白板设了仓库地址时
+/// 在那里 `git clone`（进度和失败原因照常上报），没设时建一个空目录。一块白板失败不影响其他白板，返回失败的那几块
+fn bootstrap_dirs(
+    ws: &HostWorkspace,
+    boards: &[(String, Option<String>)],
+    checks: &mut Vec<DirCheck>,
+    clones: &mut Vec<CloneRun>,
+    os: &str,
+    logs: &Path,
+) -> Vec<(String, String)> {
+    let mut failed: Vec<(String, String)> = vec![];
+    if ws.path.trim().is_empty() {
+        return failed;
+    }
+    if let Err(e) = std::fs::create_dir_all(expand(&ws.path)) {
+        return vec![(String::new(), format!("无法创建工作空间 {}：{e}", ws.path))];
+    }
+    let _ = std::fs::create_dir_all(logs);
+    for (board, repo) in boards {
+        let Some(dir) = board_core::hosts::derive_dir(ws, board, os).map(|x| expand(&x.path)) else { continue };
+        // `--dir` 覆盖的白板、已经有目录的：不动
+        if ws.overrides.iter().any(|o| &o.board == board) || dir.is_dir() {
+            continue;
+        }
+        let repos = repo.as_deref().map(str::trim).filter(|r| !r.is_empty());
+        let mut fail = |why: String| failed.push((board.clone(), why));
+        if let Some(parent) = dir.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                fail(format!("无法创建 {}：{e}", parent.display()));
+                continue;
+            }
+        }
+        match repos {
+            None => {
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    fail(format!("无法创建 {}：{e}", dir.display()));
+                }
+            }
+            Some(url) => {
+                let safe: String = board.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+                let log = logs.join(format!("clone-{safe}.log"));
+                let spawn = create_log(&log).and_then(|(out, err)| {
+                    Command::new("git")
+                        .args(["clone", "--", url])
+                        .arg(&dir)
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .stdin(Stdio::null())
+                        .stdout(out)
+                        .stderr(err)
+                        .status()
+                });
+                let at = Instant::now();
+                match spawn {
+                    Ok(s) if s.success() => checks.push(DirCheck { path: dir, status: "ok", origin: Some(url.to_string()), branch: None, at }),
+                    Ok(s) => {
+                        let why = clone_tail(&log).unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", s.code()));
+                        fail(format!("{url} 克隆到 {} 失败：{why}", dir.display()));
+                        clones.push(CloneRun { board: board.clone(), url: url.to_string(), state: "failed".into(), message: why, updated_at: now_ms(), child: None, log });
+                    }
+                    Err(e) => fail(format!("没法运行 git clone：{e}")),
+                }
+            }
+        }
+    }
+    failed
+}
+
+/// 这块白板在这台机器上的目录（`<工作空间>/<项目>/<白板>`，`--dir` 覆盖的用覆盖的路径；`~` 展开成实际的路径）
+fn ws_dir(ws: &HostWorkspace, board: &str, os: &str) -> Option<PathBuf> {
+    board_core::hosts::derive_dir(ws, board, os).map(|d| expand(&d.path))
+}
+
+/// 几块白板的 (白板, 目录)
+fn ws_pairs(ws: &HostWorkspace, boards: &[String], os: &str) -> Vec<(String, PathBuf)> {
+    boards.iter().filter_map(|b| ws_dir(ws, b, os).map(|p| (b.clone(), p))).collect()
+}
+
+/// 派到这台机器的卡片在哪个目录里做：先看派发开始那一刻记下的目录（`<工作空间>/<项目>/<白板>`，机器之后换了
+/// 工作空间也还按这里），没有再按现在的工作空间算
+fn dispatch_dir(d: &board_core::Dispatch, ws: &HostWorkspace, os: &str) -> Option<PathBuf> {
+    d.path
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| expand(p))
+        .or_else(|| board_core::hosts::derive_dir(ws, &d.board, os).map(|x| expand(&x.path)))
 }
 
 fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
@@ -1634,6 +1844,7 @@ impl Host<'_> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             agents: self.agents.iter().map(Spec::report).collect(),
             envs: self.envs.iter().map(Env::report).collect(),
+            workspace: Some(self.ws.clone()),
             dirs: self.dir_reports(),
             dirs_rev: self.dirs_rev,
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
@@ -1769,8 +1980,9 @@ impl Host<'_> {
             Ok(a) => self.agents = a,
             Err(e) => self.say(format!("{} 重新检查 agent 没成：{}（接着用原来的）", self.p.yellow("!"), e.message)),
         }
+        let pairs = ws_pairs(&self.ws, &self.boards, &self.os);
         for a in &mut self.agents {
-            a.check_skills(&self.envs, &self.dirs);
+            a.check_skills(&self.envs, &pairs);
         }
         self.ready_all = true;
         self.plan_readies();
@@ -1793,7 +2005,7 @@ impl Host<'_> {
 
     /// 每块白板目录的 git 状态：到时间的重新看一遍，其余沿用上一次的结果（心跳不跑 git 子进程）
     fn refresh_dir_checks(&mut self) {
-        let dirs: Vec<PathBuf> = self.dirs.iter().map(|(_, p)| p.clone()).collect();
+        let dirs: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
         self.dir_checks.retain(|c| dirs.contains(&c.path));
         for dir in dirs {
             if !Self::dir_check_due(&self.dir_checks, &dir) {
@@ -1813,15 +2025,19 @@ impl Host<'_> {
         }
     }
 
-    /// 每块白板：配置里写的路径、是否 --dir 固定、目录状态、git 的 origin / 分支、克隆进度
+    /// 每块白板：工作空间派生的（或 `--dir` 覆盖的）路径、目录状态、git 的 origin / 分支、克隆进度
     fn dir_reports(&mut self) -> Vec<HostDir> {
         self.refresh_dir_checks();
-        self.dirs
+        let ws = self.ws.clone();
+        let boards = self.boards.clone();
+        boards
             .iter()
-            .enumerate()
-            .map(|(i, (board, path))| {
-                let raw = self.dir_raw.get(i).map(|(_, p)| p.clone()).unwrap_or_else(|| path.display().to_string());
-                let c = self.dir_checks.iter().find(|c| c.path == *path);
+            .filter_map(|board| board_core::hosts::derive_dir(&ws, board, &self.os))
+            .map(|d| {
+                let board = &d.board;
+                let path = expand(&d.path);
+                let raw = d.path.clone();
+                let c = self.dir_checks.iter().find(|c| c.path == path);
                 let (status, origin, branch) = match c {
                     Some(c) => (c.status, c.origin.clone(), c.branch.clone()),
                     None => ("missing", None, None),
@@ -1837,7 +2053,7 @@ impl Host<'_> {
                 HostDir {
                     board: board.clone(),
                     path: raw,
-                    fixed: self.fixed_dirs.get(board).copied().unwrap_or(false),
+                    fixed: d.fixed,
                     status: Some(status.into()),
                     origin,
                     branch,
@@ -1845,6 +2061,7 @@ impl Host<'_> {
                     clone,
                     check: None,
                     ready: self.readies.iter().find(|r| r.board == *board).and_then(|r| r.last.clone()),
+                    reported: true,
                 }
             })
             .collect()
@@ -1861,6 +2078,29 @@ impl Host<'_> {
 
     fn set_work(&mut self, w: HostWork) {
         self.sync_server_dirs(&w.host);
+        // 服务端上的白板变了（新建了白板）：工作空间里还没有目录的按 `<工作空间>/<项目>/<白板>` 建好
+        let new: Vec<String> = w.host.dirs.iter().map(|d| d.board.clone()).filter(|b| !self.boards.contains(b)).collect();
+        if !new.is_empty() {
+            let server: Vec<(String, Option<String>)> = match self.rm().get::<Workspace>("/api/workspace", &[]) {
+                Ok(v) => v
+                    .projects
+                    .iter()
+                    .flat_map(|p| p.boards.iter().map(|b| (b.path.clone(), Some(b.repo.clone()).filter(|r| !r.trim().is_empty()))))
+                    .filter(|(b, _)| new.contains(b))
+                    .collect(),
+                Err(_) => vec![],
+            };
+            let ws = self.ws.clone();
+            let failed = bootstrap_dirs(&ws, &server, &mut self.dir_checks, &mut self.clones, &self.os, &self.logs);
+            for (board, why) in &failed {
+                self.say(format!("{} 工作空间里 {}：{why}", self.p.yellow("!"), if board.is_empty() { "（工作空间）".to_string() } else { board.clone() }));
+            }
+            for b in new {
+                self.boards.push(b);
+            }
+            self.boards.sort();
+            self.boards.dedup();
+        }
         // 会话里 agent 执行了 board next：同一个进程换到这个会话正在跑的那一张，之后的日志、停止、结束都跟着它。
         // 换之前把已经写出的日志传给上一张
         let switches: Vec<(usize, Dispatch)> =
@@ -1911,7 +2151,7 @@ impl Host<'_> {
             }
         }
         for a in &mut self.agents {
-            a.check_skills(&self.envs, &self.dirs);
+            a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
         }
         self.skill_force = true;
         self.mcp_force = true;
@@ -1942,7 +2182,7 @@ impl Host<'_> {
             .iter()
             .filter_map(|d| {
                 let cmd = d.check.clone()?;
-                let dir = self.dirs.iter().find(|(b, _)| *b == d.board)?.1.clone();
+                let dir = ws_dir(&self.ws, &d.board, &self.os)?;
                 Some((d.board.clone(), cmd, dir))
             })
             .collect();
@@ -2059,35 +2299,42 @@ impl Host<'_> {
         }
     }
 
-    /// 服务端的目录设置是主版本：配置文件没变、但服务端改了（别的设备上改的）就写回 `[host]` 并直接换上。
-    /// `--dir` 启动时这一项不跟，服务端也不会让它改
+    /// 服务端的工作空间是主版本：配置文件没变、但服务端改了（别的设备上改的）就写回 `[host] workspace` 并直接换上
+    /// （工作空间里的白板按新的工作空间派生目录）。`--workspace` / `--dir` 启动时这一项不跟，服务端也不会让它改
     fn sync_server_dirs(&mut self, h: &HostInfo) {
-        if !self.follow_dirs {
-            self.dirs_rev = h.dirs_rev;
+        self.dirs_rev = h.dirs_rev;
+        let Some(ws) = h.workspace.as_ref().filter(|w| !w.path.trim().is_empty()) else { return };
+        // `--dir` 覆盖的那几块以本机启动参数为准
+        let mut want = ws.clone();
+        for o in &self.ws.overrides {
+            match want.overrides.iter_mut().find(|x| x.board == o.board) {
+                Some(x) => x.path = o.path.clone(),
+                None => want.overrides.push(o.clone()),
+            }
+        }
+        if !self.follow_dirs || same_ws(&want, &self.ws) {
             return;
         }
-        let desired: Vec<(String, String)> = h.dirs.iter().map(|d| (d.board.clone(), d.path.clone())).collect();
-        if desired != self.dir_raw {
-            match save_host_dirs(&desired) {
-                Ok(()) => match parse_dirs(desired.clone()) {
-                    Ok((dirs, raw)) => {
-                        for a in &mut self.agents {
-                            a.check_skills(&self.envs, &dirs);
-                        }
-                        let list: Vec<String> = raw.iter().map(|(b, d)| format!("{b} → {d}")).collect();
-                        let list = if list.is_empty() { "（没有）".to_string() } else { list.join("，") };
-                        self.say(format!("{} 服务端改的白板与目录已生效：{list}", self.p.green("✓")));
-                        self.dirs = dirs;
-                        self.dir_raw = raw;
-                        self.conf_seen.1 = desired;
-                        self.dirs_rev = h.dirs_rev;
+        match save_host_workspace(&want.path) {
+            Ok(()) => {
+                // 之前摆着的白板、服务端报过的白板，都摆到新的工作空间里
+                let mut boards = self.boards.clone();
+                for d in h.dirs.iter() {
+                    if !boards.contains(&d.board) {
+                        boards.push(d.board.clone());
                     }
-                    Err(e) => self.say(format!("{} 服务端改的白板与目录没有生效：{}", self.p.yellow("!"), e.message)),
-                },
-                Err(e) => self.say(format!("{} 服务端改的白板与目录没有写进配置：{}", self.p.yellow("!"), e.message)),
+                }
+                boards.sort();
+                boards.dedup();
+                self.ws = want.clone();
+                self.boards = boards;
+                for a in &mut self.agents {
+                    a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
+                }
+                self.say(format!("{} 服务端改的工作空间已生效：{}", self.p.green("✓"), want.path));
+                self.conf_seen.1 = Some(want.path);
             }
-        } else {
-            self.dirs_rev = h.dirs_rev;
+            Err(e) => self.say(format!("{} 服务端改的工作空间没有写进配置：{}", self.p.yellow("!"), e.message)),
         }
     }
 
@@ -2108,7 +2355,7 @@ impl Host<'_> {
     }
 
     fn start_clone(&mut self, board: &str, url: &str) {
-        let Some((_, dir)) = self.dirs.iter().find(|(b, _)| b == board).cloned() else { return };
+        let Some(dir) = ws_dir(&self.ws, board, &self.os) else { return };
         let _ = std::fs::create_dir_all(&self.logs);
         let safe: String = board
             .chars()
@@ -2537,7 +2784,7 @@ impl Host<'_> {
         let gits: Vec<selftest::GitJob> = if ask.agent.is_some() {
             vec![]
         } else {
-            self.dirs.iter().map(|(b, d)| selftest::GitJob { board: b.clone(), dir: d.clone() }).collect()
+            ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(b, d)| selftest::GitJob { board: b, dir: d }).collect()
         };
         let pids = self.selftest_pids.clone();
         let h = std::thread::spawn(move || selftest::run(agents, gits, tmp, pids));
@@ -2603,12 +2850,7 @@ impl Host<'_> {
             }
         }
         // 刚克隆完的白板：删掉旧的目录状态，下一次上报马上重新看
-        let paths: Vec<PathBuf> = self
-            .dirs
-            .iter()
-            .filter(|(b, _)| done.contains(b))
-            .map(|(_, p)| p.clone())
-            .collect();
+        let paths: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().filter(|(b, _)| done.contains(b)).map(|(_, p)| p).collect();
         self.dir_checks.retain(|c| !paths.contains(&c.path));
     }
 
@@ -2644,16 +2886,23 @@ impl Host<'_> {
             let Some(to) = a.no_skill.get(&e.id) else { continue };
             s += &format!("  {} {} 在{}里看不到 {SKILL}：派给它的卡片会做不成，先装到 {to}（见 docs/agents.md）\n", p.yellow("!"), a.id, e.name);
         }
-        if self.dirs.is_empty() {
-            s += &format!("  {}{}\n", p.dim("白板    "), p.yellow("（没有）：用 --dir <项目>/<白板>=<路径> 加上，否则接不到卡片"));
+        let pairs = ws_pairs(&self.ws, &self.boards, &self.os);
+        if self.ws.path.trim().is_empty() {
+            s += &format!("  {}{}\n", p.dim("工作空间"), p.yellow("（没有）：用 --workspace <路径> 或 --dir <项目>/<白板>=<路径> 加上，否则接不到卡片"));
+        } else {
+            s += &format!("  {}{}\n", p.dim("工作空间"), p.cyan(&self.ws.path));
         }
-        for (i, (b, d)) in self.dirs.iter().enumerate() {
+        if pairs.is_empty() {
+            s += &format!("  {}{}\n", p.dim("白板    "), p.dim("（工作空间里还没有白板的目录：派来卡片时按 <工作空间>/<项目>/<白板> 建好）"));
+        }
+        for (i, (b, d)) in pairs.iter().enumerate() {
             let head = if i == 0 { p.dim("白板    ") } else { "        ".into() };
-            s += &format!("  {head}{} → {}\n", p.cyan(b), d.display());
+            let why = if d.is_dir() { "" } else { "（还没有目录）" };
+            s += &format!("  {head}{} → {}{}\n", p.cyan(b), d.display(), p.dim(why));
         }
-        // 服务端上没有的白板
+        // 服务端上没有的白板（工作空间里的目录、`--dir` 覆盖的）
         if let Ok(ws) = self.rm().get::<Workspace>("/api/workspace", &[]) {
-            for (b, _) in &self.dirs {
+            for (b, _) in &pairs {
                 if !ws.projects.iter().flat_map(|x| &x.boards).any(|x| &x.path == b) {
                     s += &format!("  {} 服务端没有白板 {b}，这台机器接不到它的卡片\n", p.yellow("!"));
                 }
@@ -2816,9 +3065,10 @@ impl Host<'_> {
     fn recheck_skills(&mut self) -> bool {
         let mut changed = false;
         let mut fixed = Vec::new();
+        let pairs = ws_pairs(&self.ws, &self.boards, &self.os);
         for a in &mut self.agents {
             let before = a.no_skill.clone();
-            a.check_skills(&self.envs, &self.dirs);
+            a.check_skills(&self.envs, &pairs);
             if before != a.no_skill {
                 changed = true;
                 if a.no_skill.len() < before.len() {
@@ -2839,7 +3089,7 @@ impl Host<'_> {
             return false;
         }
         let Ok(conf) = config::File::load().and_then(|f| f.host()) else { return false };
-        let raw = (conf.name.clone(), conf.dirs.clone(), conf.log_days);
+        let raw = (conf.name.clone(), conf.workspace.clone(), conf.log_days);
         if raw == self.conf_seen {
             return false;
         }
@@ -2867,20 +3117,20 @@ impl Host<'_> {
             }
         }
         if self.follow_dirs {
-            match parse_dirs(conf.dirs) {
-                Ok((dirs, raw)) if dirs != self.dirs => {
+            // `[host] workspace`，加上 `[host] dirs`（旧写法：单独给某几块白板指定目录）
+            match to_workspace(conf.workspace.as_deref(), &conf.dirs) {
+                Ok(ws) if !same_ws(&ws, &self.ws) => {
+                    self.ws = ws;
+                    self.boards = ws_boards(&self.ws, &self.os);
                     for a in &mut self.agents {
-                        a.check_skills(&self.envs, &dirs);
+                        a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
                     }
-                    let list: Vec<String> = dirs.iter().map(|(b, d)| format!("{b} → {}", d.display())).collect();
-                    let list = if list.is_empty() { "（没有）".to_string() } else { list.join("，") };
-                    self.say(format!("{} 白板与目录已更新：{list}", self.p.green("✓")));
-                    self.dirs = dirs;
-                    self.dir_raw = raw;
+                    let path = if self.ws.path.is_empty() { "（没有）".to_string() } else { self.ws.path.clone() };
+                    self.say(format!("{} 工作空间已更新：{path}", self.p.green("✓")));
                     changed = true;
                 }
                 Ok(_) => {}
-                Err(e) => self.say(format!("{} 白板与目录没有更新：{}（接着用原来的）", self.p.yellow("!"), e.message)),
+                Err(e) => self.say(format!("{} 工作空间没有更新：{}（接着用原来的）", self.p.yellow("!"), e.message)),
             }
         }
         changed
@@ -3020,8 +3270,8 @@ impl Host<'_> {
             ));
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
             if ended.lost {
-                if let Some((_, repo)) = self.dirs.iter().find(|(b, _)| *b == ended.board) {
-                    for (dir, what) in leftovers(repo, ended.name.as_deref().unwrap_or_default()) {
+                if let Some(repo) = ws_dir(&self.ws, &ended.board, &self.os) {
+                    for (dir, what) in leftovers(&repo, ended.name.as_deref().unwrap_or_default()) {
                         self.say(format!(
                             "{} {} 里有没推到远端的改动（{what}）：{}#{} 的派发已被服务端结束，需要的话去那里捞回来",
                             self.p.yellow("!"),
@@ -3209,6 +3459,23 @@ impl Host<'_> {
         }
     }
 
+    /// 这次派发带给 agent 的 `BOARD_*` 变量，写进它的 `BOARD_CONFIG` 的 `[agent_env]`（见 [`write_run_config`]）：
+    /// `scripts/board` 读它们再设进自己的环境——agent 会过滤传给命令的环境变量（Codex 的 shell 环境策略、
+    /// dsh 去掉带 TOKEN 的），只靠进程环境传给 agent 的话，它执行 `board` 时就看不到连接。
+    /// 不含派发 ID 之后才写的 `BOARD_PIDFILE`（那是给 WSL 包装脚本的）
+    fn agent_env(&self, d: &Dispatch, name: &str, conf: &Path) -> Vec<(String, String)> {
+        let s = |v: &str| v.to_string();
+        vec![
+            ("BOARD_URL".into(), s(self.rm().url())),
+            ("BOARD_TOKEN".into(), s(self.rm().token())),
+            ("BOARD_AS".into(), s(name)),
+            ("BOARD_HOST".into(), s(&self.name)),
+            ("BOARD".into(), s(&d.board)),
+            ("BOARD_CONFIG".into(), conf.display().to_string()),
+            ("BOARD_EXE".into(), self.exe.display().to_string()),
+        ]
+    }
+
     /// 在派发记录写的启动环境里启动 agent。旧版服务端不写启动环境、或写的环境本机已经没有：按本机的默认（第一个找到的）
     fn spawn(&self, d: &Dispatch) -> std::result::Result<Run, String> {
         let spec = self.agents.iter().find(|a| a.id == d.agent).ok_or_else(|| format!("本机没有 agent「{}」", d.agent))?;
@@ -3221,9 +3488,10 @@ impl Host<'_> {
             .ok_or_else(|| format!("本机没找到 agent「{}」的命令 {cmd0}", d.agent))?;
         let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
         let prog = check.prog.clone().ok_or_else(|| format!("在{}里没找到 agent「{}」的命令 {cmd0}", env.name, d.agent))?;
-        let dir = self.dirs.iter().find(|(b, _)| *b == d.board).map(|(_, p)| p.clone()).ok_or_else(|| format!("本机没有白板 {} 的目录", d.board))?;
+        let dir = dispatch_dir(d, &self.ws, &self.os).ok_or_else(|| format!("本机还没有白板 {} 的目录：先配好工作空间", d.board))?;
         if !dir.is_dir() {
-            return Err(format!("目录不存在：{}", dir.display()));
+            // 目录还没建好（服务端没有这块白板的目录）：按工作空间建一个空的，agent 在里面做
+            std::fs::create_dir_all(&dir).map_err(|e| format!("目录不存在：{}（建不了：{e}）", dir.display()))?;
         }
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
@@ -3237,7 +3505,7 @@ impl Host<'_> {
         let log = self.logs.join(format!("{}.log", d.id));
         let (out, err) = create_log(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
-        write_run_config(&conf, self.rm().url(), self.rm().token()).map_err(|e| e.message)?;
+        write_run_config(&conf, self.rm().url(), self.rm().token(), &self.agent_env(d, &name, &conf)).map_err(|e| e.message)?;
         let patch_arg = patch.display().to_string();
         // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
         let cmd = spec.cmd_for(check);
@@ -3498,6 +3766,26 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 派发的配置文件：服务端地址、令牌，以及带给 agent 的 `BOARD_*`（`[agent_env]`），agent 从里面补回来
+    #[test]
+    fn run_config_carries_the_agent_variables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("7.toml");
+        let vars = vec![
+            ("BOARD_AS".to_string(), "codex-win/codex".to_string()),
+            ("BOARD".to_string(), "oss/main".to_string()),
+            ("BOARD_CONFIG".to_string(), path.display().to_string()),
+        ];
+        write_run_config(&path, "http://127.0.0.1:7493", "tok", &vars).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("url = \"http://127.0.0.1:7493\"") && text.contains("token = \"tok\""), "{text}");
+        assert!(text.contains("[agent_env]") && text.contains("BOARD_AS = \"codex-win/codex\""), "{text}");
+        // 同名文件再写一次：旧的 agent_env 换掉，不叠加
+        write_run_config(&path, "http://127.0.0.1:7493", "tok", &vars[..1]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("BOARD_AS") && !text.contains("BOARD_CONFIG"), "{text}");
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")
@@ -4050,6 +4338,10 @@ mod tests {
     }
 
     fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
+        // 跑一个马上结束的进程：Windows 上没有 `true`，用 cmd 的 exit
+        #[cfg(windows)]
+        let child = Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+        #[cfg(not(windows))]
         let child = Command::new("true").spawn().unwrap();
         Run {
             d: Dispatch {
@@ -4080,6 +4372,7 @@ mod tests {
                 model: None,
                 effort: None,
                 kind: String::new(),
+                path: None,
             },
             child,
             env: Env::direct(),
@@ -4164,6 +4457,7 @@ mod tests {
             model: None,
             effort: None,
             kind: String::new(),
+            path: None,
         };
         let cur = d(1, 1);
         assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));

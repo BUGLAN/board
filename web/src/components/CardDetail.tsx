@@ -614,7 +614,7 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
           />
         )}
       </div>
-      <div className="desc-holder">
+      <div>
         {mode === 'edit' ? (
           <div className={cx('desc-edit', attach.over && 'drop-on')}>
             <textarea

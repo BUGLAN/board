@@ -24,5 +24,9 @@ if defined BIN (
 echo board: no bin\windows-x64\board.exe in the skill directory and no board.exe on PATH. Reinstall the skill from the board-skills.zip release asset. 1>&2
 exit /b 127
 :run
+rem Sessions started by board host write the BOARD_* variables they need into %BOARD_CONFIG%'s
+rem [agent_env]: agents that filter the environment they give to commands (Codex, dsh) drop them,
+rem so board.exe reads them from there itself (see crates/board-cli/src/config.rs from_agent_env).
+set "BOARD_AGENT_ENV=1"
 "%BIN%" %*
 exit /b %ERRORLEVEL%

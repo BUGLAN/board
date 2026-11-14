@@ -33,7 +33,8 @@ pub use files::Attachment;
 pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
 pub use hosts::{
-    AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostEnv, HostInfo, HostPatch, HostReport, HostWork,
+    AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostDirOverride, HostEnv, HostInfo, HostPatch, HostReport,
+    HostWork, HostWorkspace,
     RunPatch, SelfTest, SelfTestAsk, SelfTestItem, SessionPart, SessionView, SkillImport, SkillImportAsk, SkillImportFail, SkillImportPick, SkillImportResult, SKILL_IMPORT_STALE_MS,
 };
 pub use model::*;

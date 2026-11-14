@@ -86,7 +86,8 @@ fn host_report(running: Vec<i64>) -> HostReport {
             ..Default::default()
         }],
         envs: vec![],
-        dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }],
+        workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
+        dirs: vec![HostDir { board: B.into(), path: format!("/tmp/{B}"), ..Default::default() }],
         dirs_rev: 0,
         running,
         done: false,

@@ -251,7 +251,7 @@ export function Creator() {
           </button>
         </div>
         <form
-          className="d-grid cr-form"
+          className="d-grid"
           noValidate
           onSubmit={e => {
             e.preventDefault();
@@ -357,7 +357,7 @@ export function Creator() {
           <div className="d-side cr-side">
             <div className="cr-sec">
               <div className="d-label">放到</div>
-              <div className="cr-dest" role="radiogroup" aria-label="放到">
+              <div role="radiogroup" aria-label="放到">
                 {(
                   [
                     ['todo', startName, '放在最下面，agent 可以领取', <BoardIcon24 key="b" />],

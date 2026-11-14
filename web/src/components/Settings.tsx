@@ -16,7 +16,7 @@ import type { TokenInfo } from '../lib/types';
 import { accel, ago, copyText, cx, pref } from '../lib/util';
 import skill from '../../../.agents/skills/board-skills/SKILL.md?raw';
 import { logout, useAuth } from '../store/auth';
-import { allBoards, colCount, refresh, useCurrent, useData } from '../store/data';
+import { colCount, refresh, useCurrent, useData } from '../store/data';
 import { confirm, openHost, setTab, toast, toastError, useUI } from '../store/ui';
 import { quickPrompts } from '../lib/prompt';
 import { Segmented, Select } from './bits';
@@ -413,21 +413,19 @@ function SwitchServer() {
 
 /* ---------------- 本机：让这台电脑接任务（桌面端） ---------------- */
 
-type Dir = { board: string; path: string };
-
 function LocalHostCard() {
   const tab = useUI(s => s.tab);
   const ws = useData(s => s.ws);
   const [st, setSt] = useState<LocalHost | null>(null);
   const [old, setOld] = useState(false);
   const [name, setName] = useState('');
-  const [dirs, setDirs] = useState<Dir[]>([]);
+  /** 工作空间：每块白板的目录是 `<工作空间>/<项目>/<白板>` */
+  const [workspace, setWorkspace] = useState('');
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   /** 外壳不支持选择文件夹（旧版桌面端）：点过一次后不再显示按钮 */
   const [noPick, setNoPick] = useState(false);
-  /** 正在弹文件夹选择框的那一行 */
-  const [picking, setPicking] = useState<number | null>(null);
+  const [picking, setPicking] = useState(false);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
@@ -440,7 +438,7 @@ function LocalHostCard() {
     setSt(s);
     if (!dirtyRef.current) {
       setName(s.name);
-      setDirs(s.dirs);
+      setWorkspace(s.workspace ?? '');
     }
   };
   // 设置页打开时每 4 秒看一次 board host 还在不在跑
@@ -451,53 +449,51 @@ function LocalHostCard() {
     return () => clearInterval(t);
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const boards = allBoards(ws).map(b => b.path);
   const me = st ? (st.name || st.defaultName) : '';
   const online = hostsOf(ws).find(h => h.name === me);
-  const edit = (f: (d: Dir[]) => Dir[]) => {
-    setDirs(f);
+  const edit = (w: string) => {
+    setWorkspace(w);
     setDirty(true);
   };
-  /** 表格里填的白板与目录（只留下填了一半的行，保存时也这样交给外壳） */
-  const filled = () => dirs.filter(d => d.board || d.path);
-  const sameDirs = (a: Dir[], b: Dir[]) =>
-    a.length === b.length && a.every((d, i) => d.board.trim() === b[i].board.trim() && d.path.trim() === b[i].path.trim());
+  const wsTrim = () => workspace.trim();
+  const sameWs = (a: string, b: string) => a.trim() === b.trim();
+  /** 工作空间里已有的白板目录（这台电脑盘上有的）：`<工作空间>/<项目>/<白板>` */
+  const derived = (online?.dirs ?? []).filter(d => d.reported || d.status);
 
-  // 打开开关 / 改了白板与目录要保存：先用应用内的确认框说清机器名、目录和免审批运行的风险，
+  // 打开开关 / 改了工作空间要保存：先用应用内的确认框说清机器名、工作空间和免审批运行的风险，
   // 人确认之后再调外壳（确认过就不再弹系统确认框）。取消时什么都不做：不保存
-  const ask = async (title: string, ok: string, ds: Dir[]) =>
+  const ask = async (title: string, ok: string, w: string) =>
     confirm({
       title,
-      text: hostConfirmText(name, st?.defaultName ?? '', ds),
+      text: hostConfirmText(name, st?.defaultName ?? '', w),
       ok,
       icon: 'alert',
       tone: 'warn',
     });
 
-  // 弹系统的文件夹选择框，选中后填进这一行；取消保持原值
-  const pick = async (i: number) => {
-    setPicking(i);
+  // 弹系统的文件夹选择框，选中后填进去；取消保持原值
+  const pick = async () => {
+    setPicking(true);
     try {
-      const p = await pickFolder(dirs[i]?.path ?? '');
-      if (p) edit(v => v.map((x, j) => (j === i ? { ...x, path: p } : x)));
+      const p = await pickFolder(wsTrim());
+      if (p) edit(p);
     } catch (e) {
       if (e === 'unsupported') {
         setNoPick(true);
         toast({ type: 'info', title: '这个版本的桌面端不支持选择文件夹', text: '升级桌面端后再用；现在可以直接在输入框里填目录' });
       } else toast({ type: 'error', title: '没有打开文件夹选择框', text: String(e) });
     } finally {
-      setPicking(null);
+      setPicking(false);
     }
   };
 
   const save = async () => {
-    // 正在接任务时改了白板与目录：先确认（agent 会去新目录干活），取消就不保存。
+    // 正在接任务时改了工作空间：先确认（agent 会去新的目录干活），取消就不保存。
     // 保存不重启 board host：它自己读到新配置，正在跑的 agent 不受影响
-    const next = filled();
-    if (st?.enabled && !sameDirs(st.dirs, next) && !(await ask('修改这台电脑接任务的白板目录？', '保存', next))) return;
+    if (st?.enabled && !sameWs(st.workspace ?? '', workspace) && !(await ask('修改这台电脑的工作空间？', '保存', workspace))) return;
     setBusy(true);
     try {
-      await saveLocalHost(name.trim(), filled());
+      await saveLocalHost(name.trim(), wsTrim());
       setDirty(false);
       toast({
         type: 'success',
@@ -514,14 +510,13 @@ function LocalHostCard() {
 
   const toggle = async () => {
     if (!st) return;
-    // 打开前确认：机器名、白板与目录一起写进配置，派到这台电脑的卡片会在这些目录里免审批运行
-    // 打开时表格里改过还没保存的先确认（关掉不用确认）
-    if (!st.enabled && !(await ask('让这台电脑开始接任务？', '开始接任务', filled()))) return;
+    // 打开前确认：机器名、工作空间一起写进配置，派到这台电脑的卡片会在 `<工作空间>/<项目>/<白板>` 里免审批运行
+    // 打开时改了还没保存的先确认（关掉不用确认）
+    if (!st.enabled && !(await ask('让这台电脑开始接任务？', '开始接任务', workspace))) return;
     setBusy(true);
     try {
-      const next = filled();
-      await enableLocalHost(!st.enabled, name.trim(), next);
-      // 打开时把表格里还没保存的机器名、白板与目录一起存了（和确认框里看到的一致），不用再点保存
+      await enableLocalHost(!st.enabled, name.trim(), wsTrim());
+      // 打开时把还没保存的机器名、工作空间一起存了（和确认框里看到的一致），不用再点保存
       if (!st.enabled) setDirty(false);
       toast({ type: 'success', title: st.enabled ? '这台电脑不再接任务' : '这台电脑开始接任务', text: st.enabled ? '已停止 board host' : '桌面端在后台运行 board host，关掉窗口也继续接；开机时也会自动启动' });
       await load();
@@ -551,8 +546,8 @@ function LocalHostCard() {
 
   let state = '关';
   if (st?.enabled) state = st.running ? (online?.online ? `在线：${me}` : '正在连接服务端…') : `已停止${st.exit != null ? `（退出码 ${st.exit}）` : ''}：看下面的输出`;
-  // 表格里有没保存的改动：确认框里列的是表格里的（和打开开关时一起写进配置的一致）
-  const unsaved = [name.trim() !== (st?.name ?? ''), !sameDirs(st?.dirs ?? [], filled())].some(Boolean);
+  // 有没保存的改动：确认框里列的是输入框里的（和打开开关时一起写进配置的一致）
+  const unsaved = name.trim() !== (st?.name ?? '') || !sameWs(st?.workspace ?? '', workspace);
 
   return (
     <section className="set-card" id="set-host" style={{ ['--i' as string]: 6 }}>
@@ -561,7 +556,8 @@ function LocalHostCard() {
         本机
       </h2>
       <p className="set-p">
-        让这台电脑接任务：桌面端在后台用自带的 <code>board</code> 运行 <code>board host</code>，派给这台电脑的卡片在对应目录里启动本机的 agent（提示词仍是「复制为提示词」那一行）。关掉窗口也继续运行，退出桌面端时结束。
+        让这台电脑接任务：桌面端在后台用自带的 <code>board</code> 运行 <code>board host</code>，派给这台电脑的卡片在{' '}
+        <code>&lt;工作空间&gt;/&lt;项目&gt;/&lt;白板&gt;</code> 里启动本机的 agent（提示词仍是「复制为提示词」那一行）。关掉窗口也继续运行，退出桌面端时结束。
       </p>
       {old ? (
         <p className="set-p">这个版本的桌面端还不支持，升级桌面端后再打开。</p>
@@ -571,7 +567,7 @@ function LocalHostCard() {
         <>
           {!st.loggedIn && <p className="set-p lh-warn">还没有服务端地址和令牌：先在上面「Agent 接入」新建令牌并写入配置文件，board host 才连得上。</p>}
           {!st.cli && <p className="set-p lh-warn">没找到桌面端自带的 board 命令行，重新安装桌面端试试。</p>}
-          <Row label="让这台电脑接任务" hint={unsaved ? `${state} · 表格里有还没保存的改动，打开时会一起保存` : state}>
+          <Row label="让这台电脑接任务" hint={unsaved ? `${state} · 还有没保存的改动，打开时会一起保存` : state}>
             <button className={cx('toggle', st.enabled && 'on')} type="button" role="switch" aria-checked={st.enabled} aria-label="让这台电脑接任务" disabled={busy || !st.cli} onClick={toggle}>
               <i />
             </button>
@@ -595,70 +591,60 @@ function LocalHostCard() {
               }}
             />
           </Row>
-          <div className="set-row lh-dirs-row">
-            <div className="set-label">
-              <b>白板与目录</b>
-              <span>派到这台电脑的卡片，agent 在对应目录（这块白板的代码仓库）里启动；没有目录的白板不接</span>
-            </div>
-          </div>
-          <div className="lh-dirs">
-            {dirs.map((d, i) => (
-              <div className="lh-dir" key={i}>
-                <Select
-                  value={d.board}
-                  options={[{ value: '', label: '选白板…' }, ...[...new Set([...boards, ...(d.board ? [d.board] : [])])].map(b => ({ value: b, label: b }))]}
-                  onChange={val => edit(v => v.map((x, j) => (j === i ? { ...x, board: val } : x)))}
-                  aria-label="白板"
-                />
-                <Icon name="move" />
-                <input
-                  className="input"
-                  value={d.path}
-                  placeholder={isWindows ? 'C:\\repo\\board' : '~/repo/board'}
-                  spellCheck={false}
-                  onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
-                  aria-label="目录"
-                />
-                {!noPick && (
-                  <button
-                    className={cx('icon-btn sm', picking === i && 'is-busy')}
-                    type="button"
-                    aria-label="选择文件夹"
-                    title="选择文件夹"
-                    disabled={picking !== null}
-                    onClick={() => void pick(i)}
-                  >
-                    <Icon name="folder" />
-                  </button>
-                )}
-                <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => edit(v => v.filter((_, j) => j !== i))}>
-                  <Icon name="close" />
-                </button>
-              </div>
-            ))}
-            <div className="lh-actions">
-              <button className="btn sm" type="button" onClick={() => edit(v => [...v, { board: boards.find(b => !v.some(x => x.board === b)) ?? '', path: '' }])}>
-                <Icon name="plus" />
-                加一块白板
-              </button>
-              <span className="lh-sp" />
-              {online && (
+          <Row label="工作空间" hint="这台电脑只配这一个目录：每块白板的目录是 <工作空间>/<项目>/<白板>，派来的卡片那里启动 agent；还没有时自动建好，白板设了仓库地址时自动克隆">
+            <span className="lh-ws">
+              <input
+                className="input lh-ws-path"
+                value={workspace}
+                placeholder={isWindows ? 'C:\\repo' : '~/repo'}
+                spellCheck={false}
+                aria-label="工作空间"
+                onChange={e => edit(e.target.value)}
+              />
+              {!noPick && (
                 <button
-                  className="btn sm ghost"
+                  className={cx('icon-btn sm', picking && 'is-busy')}
                   type="button"
-                  onClick={() => {
-                    setTab('hosts');
-                    openHost(online.name);
-                  }}
+                  aria-label="选择文件夹"
+                  title="选择文件夹"
+                  disabled={picking}
+                  onClick={() => void pick()}
                 >
-                  <Icon name="host" />
-                  在「机器」里查看
+                  <Icon name="folder" />
                 </button>
               )}
-              <button className="btn sm brand" type="button" disabled={!dirty || busy} onClick={save}>
-                保存
-              </button>
+            </span>
+          </Row>
+          {derived.length > 0 && (
+            <div className="lh-derived">
+              <span className="lh-derived-k">这台电脑上的白板目录</span>
+              {derived.map(d => (
+                <span className="lh-derived-row" key={d.board}>
+                  <b>{d.board}</b>
+                  <code>{d.path}</code>
+                </span>
+              ))}
             </div>
+          )}
+          {!wsTrim() && <p className="set-p lh-warn">还没有填工作空间：这台电脑不接任何白板的卡。</p>}
+          <div className="lh-actions">
+            {online && (
+              <button
+                className="btn sm ghost"
+                type="button"
+                onClick={() => {
+                  setTab('hosts');
+                  openHost(online.name);
+                }}
+              >
+                <Icon name="host" />
+                在「机器」里查看
+              </button>
+            )}
+            <span className="lh-sp" />
+            <button className="btn sm brand" type="button" disabled={!dirty || busy} onClick={save}>
+              保存
+            </button>
           </div>
           {online?.dirsChangedAt && online.dirsChangedBy && online.dirsChangedBy !== '本机' && (
             <p className="set-p lh-warn">

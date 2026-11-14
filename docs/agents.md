@@ -6,7 +6,7 @@
 
 派发开始时，`board host` 已经以 `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`）领到了卡片，然后：
 
-1. 在这块白板对应的目录（`--dir <项目>/<白板>=<路径>`）里、在这个 agent 的**启动环境**里执行它的**命令模板**。模板里的 `{prompt}` 换成一行提示词，作为**一个参数**传入，不拼进 shell 命令文本：
+1. 在这块白板对应的目录（这台设备的工作空间里的 `<工作空间>/<项目>/<白板>`，`--dir <项目>/<白板>=<路径>` 可以单独覆盖某一块；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里执行它的**命令模板**。模板里的 `{prompt}` 换成一行提示词，作为**一个参数**传入，不拼进 shell 命令文本：
 
    ```
    /board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务
@@ -48,10 +48,10 @@
 
 ## 在一台新机器上装 `board`、接任务
 
-只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行命令：填机器名、选白板和路径，界面以机器名新建一个访问令牌，给出
+只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行命令：填机器名和工作空间（每块白板的目录是 `<工作空间>/<项目>/<白板>`），界面以机器名新建一个访问令牌，给出
 
 ```sh
-curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --dir <项目>/<白板>=<路径> --service
+curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --workspace <工作空间> --service
 ```
 
 （Windows 是一行 PowerShell）。它从发版附件下载本平台的 `board`、校验 SHA-256（对不上就中止）、装到 `~/.local/bin` 并写进 PATH，然后 `board login`、`board host --install`（装成系统服务，开机自动接任务）。装的 `board` 和服务端同一个版本；之后服务端升级了，在机器详情「管理」里点「升级到 <版本>」，或在那台机器上执行 `board update`。agent 本身（Claude Code、Codex……）和 `board-skills` 仍要在那台机器上自己装好，见下面两节。
@@ -64,7 +64,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 - **只有命令行的机器**：「添加机器」生成的那一行已经带了这一步。手动装：
 
   ```sh
-  board host --install --name devbox --dir default/main=~/repo/board
+  board host --install --name devbox --workspace ~/repo
   ```
 
   它按这些参数装成开机自启的服务并立即启动：macOS 是 launchd 用户代理（`~/Library/LaunchAgents/dev.board.host.plist`），Linux 是 systemd 用户服务（`~/.config/systemd/user/board-host.service`），Windows 是登录时运行的计划任务「Board host」。`board host` 异常退出（包括被 `kill -9`）10 秒后自动重启；输出在 `~/.board/host/host.log`（超过 5 MB 轮转）。
@@ -255,7 +255,7 @@ git init --bare -b main /tmp/e2e/origin.git && git clone /tmp/e2e/origin.git /tm
 board-server --local --port 7478 --db /tmp/e2e/board.db
 # 新建令牌：curl -X POST http://127.0.0.1:7478/api/tokens -H 'content-type: application/json' -H 'x-board-client: e2e' -d '{"name":"e2e"}'
 export BOARD_URL=http://127.0.0.1:7478 BOARD_TOKEN=<令牌>
-board host --name e2e --dir default/main=/tmp/e2e/repo
+board host --name e2e --workspace /tmp/e2e
 # 另一个终端：建一张小卡（例如「新建 notes/<标识>.txt，内容是一行 hello」），派给它
 BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 ```

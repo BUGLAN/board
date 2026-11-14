@@ -31,7 +31,8 @@ const machine = (x: Partial<HostInfo> = {}): HostInfo => ({
   version: '0.1.19',
   agents: [agent('claude')],
   envs: [],
-  dirs: [{ board: 'default/main', path: '~/repo', status: 'ok' }],
+  workspace: { path: '~' },
+  dirs: [{ board: 'default/main', path: '~/default/main', status: 'ok' }],
   max: 2,
   paused: false,
   agent: 'claude',
@@ -50,7 +51,7 @@ const machine = (x: Partial<HostInfo> = {}): HostInfo => ({
 describe('机器详情的就绪清单', () => {
   it('有没通过的项时默认展开，点按钮打开对应的设置', () => {
     const go = vi.fn();
-    const h = machine({ dirs: [], agents: [agent('claude', { no_skill: '~/.claude/skills/board-skills' })] });
+    const h = machine({ workspace: null, dirs: [], agents: [agent('claude', { no_skill: '~/.claude/skills/board-skills' })] });
     act(() => root.render(<ReadySection checks={readiness(h, Date.now())} go={go} i={1} />));
     expect(host.querySelector('.hp-ready-n')!.textContent).toBe('2/4 项通过');
     const bad = [...host.querySelectorAll('.hp-ready-list li.bad')];

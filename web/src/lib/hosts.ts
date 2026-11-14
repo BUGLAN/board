@@ -47,9 +47,17 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
 /** 拆解「未整理」里的条目的派发（不领取、不移动它，PRD §9.1） */
 export const isSplit = (d: Pick<Dispatch, 'kind'>) => d.kind === 'split';
 
-export const resultOf = (d: Dispatch) => (d.result ? RESULT[d.result] : { label: '已结束', color: 'var(--text-3)' });
+/** 表里查不到时用的样子：服务端先上线、界面还是旧版时，可能发来这里还不认识的结果
+    （和 board-core 的 result_words 一样，查不到按「已结束」画，不整页崩） */
+const UNKNOWN: { label: string; color: string } = { label: '已结束', color: 'var(--text-3)' };
+
+/** 结果的样子（名称、颜色）：查不到时兜底，绝不返回 undefined */
+export const resultOf = (d: Dispatch): { label: string; color: string } => (d.result ? RESULT[d.result] ?? UNKNOWN : UNKNOWN);
 
 export const SOURCE: Record<Dispatch['source'], string> = { manual: '手动', cron: '定时', schedule: '定时建卡' };
+
+/** 派发的来源；查不到时同 resultOf 兜底（只画文字） */
+export const sourceOf = (d: Pick<Dispatch, 'source'>): string => SOURCE[d.source] ?? '派发';
 
 /** 机器的默认 agent：设置过且找到了就是它，否则第一个找到的（和服务端 default_agent 一致） */
 export const defaultAgent = (h: HostInfo) => h.agents.find(a => a.id === h.agent && a.found) ?? h.agents.find(a => a.found);
@@ -104,11 +112,31 @@ export function readyWhy(r: Readiness): string {
 export const boardOf = (ws: Workspace | null, path: string): BoardInfo | undefined =>
   ws?.projects.flatMap(p => p.boards).find(b => b.path === path);
 
-/** 能接这块白板的卡的机器：有这块白板目录的每台机器，带它的目录和环境检查结果 */
+/** 机器上报的目录状态是不是新的：服务端的机器数据里带着心跳时间，board host 每 10 秒上报一次（最少每 30 秒看一次
+    目录）：上报在心跳之前的不算数，重连上来要先检查一遍，不拿掉线之前的旧结果说事 */
+export const dirFresh = (h: HostInfo, d: HostDir) => d.checkedAt == null || !h.beatAt || d.checkedAt >= h.beatAt - 30_000;
+
+/** 一块白板在一台机器上的目录：`<工作空间>/<项目>/<白板>`（`--dir` 单独覆盖的用覆盖的路径，机器报过就用它报的） */
+export function hostDirFor(h: HostInfo, path: string): HostDir | undefined {
+  const known = h.dirs.find(x => x.board === path);
+  if (known) return known;
+  const ws = h.workspace?.path?.trim();
+  if (!ws) return undefined;
+  return { board: path, path: workspacePath(ws, path, h.os), fixed: false };
+}
+
+/** 工作空间里的目录：分隔符跟着机器系统走，工作空间末尾的分隔符去掉 */
+export function workspacePath(workspace: string, board: string, os: string): string {
+  const base = workspace.trim().replace(/[\\/]+$/, '');
+  const sep = osKind(os) === 'win' ? '\\' : '/';
+  return base + sep + board.trim().split('/').join(sep);
+}
+
+/** 能接这块白板的卡的机器：配了工作空间的每台机器（有工作空间就视为有这块白板的目录），带它的目录和环境检查结果 */
 export function boardHosts(ws: Workspace | null, path: string) {
   const rc = boardOf(ws, path)?.readyCheck;
   return hostsOf(ws).flatMap(h => {
-    const d = h.dirs.find(x => x.board === path);
+    const d = hostDirFor(h, path);
     return d ? [{ h, d, ready: dirReadiness(rc, h, d) }] : [];
   });
 }
@@ -236,10 +264,10 @@ export const pathParts = (path: string): PathParts => {
   return cut > 0 ? { head: path.slice(0, cut + 1), tail: path.slice(cut + 1) } : { head: '', tail: path };
 };
 
-/** 只在本机（桌面端运行 board host 的那台）的机器详情里能选文件夹：
-    别的机器上选的目录是那台机器上的，选了也没用；`--dir` 启动的行由启动参数固定。
+/** 只在本机（桌面端运行 board host 的那台）的机器详情里能选工作空间的文件夹：
+    别的机器上选的目录是那台机器上的，选了也没用。
     `isLocal` 是这台电脑正在跑的 board host 就是它（见 isLocalHost），`desktop` 是桌面端（只有它能弹系统的文件夹选择框） */
-export const canPickDir = (d: { fixed?: boolean }, env: { isLocal: boolean; desktop: boolean }) => !d.fixed && env.isLocal && env.desktop;
+export const canPickDir = (env: { isLocal: boolean; desktop: boolean }) => env.isLocal && env.desktop;
 
 /* ------------------------------ 添加机器：一行安装命令 ------------------------------ */
 
@@ -255,16 +283,17 @@ const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 /**
  * 「添加机器」给命令行机器的那一行（PRD §10.12）：下载服务端的安装脚本 → 安装 board → board login → board host --install。
+ * 一台机器只填一个工作空间（每块白板的目录是 `<工作空间>/<项目>/<白板>`）。
  * macOS / Linux 是 curl | sh，Windows 是一行 PowerShell；值里有空格、引号时加引号
  */
-export function installCommand(o: { origin: string; token: string; name: string; dirs: { board: string; path: string }[]; os: 'unix' | 'windows' }): string {
-  const dirs = o.dirs.filter(d => d.board && d.path.trim()).map(d => `${d.board}=${d.path.trim()}`);
+export function installCommand(o: { origin: string; token: string; name: string; workspace: string; os: 'unix' | 'windows' }): string {
+  const ws = o.workspace.trim();
   if (o.os === 'windows') {
-    const dir = dirs.length ? ` -Dir ${dirs.map(psQuote).join(',')}` : '';
-    return `& ([scriptblock]::Create((irm ${psQuote(`${o.origin}/install.ps1`)}))) -Token ${psQuote(o.token)} -Name ${psQuote(o.name)}${dir} -Service`;
+    const w = ws ? ` -Workspace ${psQuote(ws)}` : '';
+    return `& ([scriptblock]::Create((irm ${psQuote(`${o.origin}/install.ps1`)}))) -Token ${psQuote(o.token)} -Name ${psQuote(o.name)}${w} -Service`;
   }
-  const dir = dirs.map(d => ` --dir ${shQuote(d)}`).join('');
-  return `curl -fsSL ${shQuote(`${o.origin}/install.sh`)} | sh -s -- --token ${shQuote(o.token)} --name ${shQuote(o.name)}${dir} --service`;
+  const w = ws ? ` --workspace ${shQuote(ws)}` : '';
+  return `curl -fsSL ${shQuote(`${o.origin}/install.sh`)} | sh -s -- --token ${shQuote(o.token)} --name ${shQuote(o.name)}${w} --service`;
 }
 
 /* ------------------------------ 自检（PRD §10.12「自检」） ------------------------------ */

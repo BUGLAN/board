@@ -66,6 +66,9 @@ export const RESULT: Record<RunResult, { label: string; legend: string }> = {
 };
 const ORDER: RunResult[] = ['review', 'rework', 'lost', 'gaveup', 'released', 'running'];
 
+/** 查结果的样子：服务端先上线、界面还是旧版时可能发来还不认识的结果，查不到按「进行中」画，不整页崩 */
+const resultOf = (k: RunResult) => RESULT[k] ?? { label: '进行中', legend: '进行中' };
+
 export function AgentTimeline({
   runs,
   from,
@@ -170,7 +173,7 @@ export function AgentTimeline({
                       <span>
                         {r.name} · {clock(r.start)} 起 · {fmtDur(end - r.start)}
                       </span>
-                      <span>结果：{RESULT[r.result].label}</span>
+                      <span>结果：{resultOf(r.result).label}</span>
                     </>,
                   )
                 }
@@ -185,7 +188,7 @@ export function AgentTimeline({
         {used.map(k => (
           <span key={k}>
             <i className={cx('tl-run', k)} />
-            {RESULT[k].legend}
+            {resultOf(k).legend}
           </span>
         ))}
         <span>

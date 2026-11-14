@@ -100,7 +100,7 @@ curl -fsSL https://board.example.com/install.sh | sh            # macOS、Linux�
 irm https://board.example.com/install.ps1 | iex                  # Windows：装到 %LOCALAPPDATA%\Board\bin
 ```
 
-脚本从发版附件下载本平台的 `board` 压缩包，用 `board-sha256.txt` 校验（对不上就中止，不动已有的 `board`），目录不在 PATH 里时写进 shell 配置（只追加一次）。要让这台机器接任务，直接用界面「机器 → 添加机器」生成的那一行：它带着令牌、机器名、白板与目录，装好后接着 `board login`、`board host --install`。
+脚本从发版附件下载本平台的 `board` 压缩包，用 `board-sha256.txt` 校验（对不上就中止，不动已有的 `board`），目录不在 PATH 里时写进 shell 配置（只追加一次）。要让这台机器接任务，直接用界面「机器 → 添加机器」生成的那一行：它带着令牌、机器名、工作空间（每块白板的目录是 `<工作空间>/<项目>/<白板>`），装好后接着 `board login`、`board host --install`。
 
 升级：`board update` 升级到服务端的版本，`board update --latest` 升级到最新发版（同样先校验再原地替换；桌面端自带的 `board` 跟着桌面端升级）。也可以从源码安装：
 
@@ -165,13 +165,13 @@ board new "标题" --body "描述" # 新建卡片；--inbox 记到「未整理�
 board new "标题" --body-file body.md   # 多行描述写进文件（Windows 的 board.cmd 只能这样传多行）；comment 用 --comment-file
 board new "标题" --body "描述" --image 1.png --file run.log  # 截图、日志随卡片一起建，图片直接显示在描述里
 board attach 2 shot.png --comment "截图"  # 上传附件
-board host --name mbp --dir oss/main=~/repo/oss   # 在这台机器上常驻接任务（Ctrl+C 退出）；内置 dsh、Claude Code、pi、Codex，其他 agent 见 docs/agents.md
-board host --install --name mbp --dir oss/main=~/repo/oss   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
+board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每块白板的目录是 <工作空间>/<项目>/<白板>，没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、pi、Codex，其他 agent 见 docs/agents.md
+board host --install --name mbp --workspace ~/repo   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
 board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有机器的 board host 自动装到各 agent 的 skill 目录；ls / rm / sync
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止
 ```
 
-所有命令都支持 `--json`；完整的命令和参数见 `board help`，规则与错误码见 skill。
+所有命令都支持 `--json`；每个命令的输出样例见 [docs/cli.md](docs/cli.md)，完整的命令和参数见 `board help`，规则与错误码见 skill。
 
 ## 边界
 

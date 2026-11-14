@@ -364,6 +364,10 @@ mod tests {
         if Command::new("git").arg("--version").output().is_err() {
             return;
         }
+        // 用 shell 串起几条 git：Windows 上没有 sh，这台机器上也就跑不了这个用例
+        if cfg!(windows) {
+            return;
+        }
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         sh(root, "git init -q --bare origin.git && git init -q work && cd work && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && git remote add origin ../origin.git && git push -q origin HEAD:refs/heads/main");

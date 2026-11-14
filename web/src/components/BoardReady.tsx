@@ -2,8 +2,9 @@
    白板的环境检查（PRD §9.1「环境检查」，白板设置里的一节）
    - 检查命令：所有系统一条，Windows 可以单独写一条（cmd 里执行）。设置项（saveSetting）：失焦或回车时保存，
      不锁别的控件，保存状态画在输入框旁边
-   - 能接这块白板的机器：每台有这块白板目录的机器一行（在线、检查结果、上次检查时间、目录），点一行打开机器详情。
-     一台都没有时写提醒，并给出去机器「白板与目录」的入口；大盘总览里同样的提醒用 NoHostsNote
+   - 能接这块白板的机器：配了工作空间的每台机器一行（有工作空间就视为有这块白板的目录；在线、检查结果、
+     上次检查时间、那块白板派生的目录），点一行打开机器详情。一台都没有时写提醒，并给出去机器「工作空间」的入口；
+     大盘总览里同样的提醒用 NoHostsNote
    ========================================================================== */
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
@@ -17,7 +18,7 @@ import { Icon } from './Icon';
 
 const LABEL: Record<Readiness['key'], string> = { none: '不检查', ok: '通过', failed: '没通过', pending: '还没检查' };
 
-/** 去机器的「白板与目录」：有机器就打开第一台的详情，没有就打开「添加机器」 */
+/** 去机器的「工作空间」：有机器就打开第一台的详情，没有就打开「添加机器」 */
 function goDirs() {
   const first = hostsOf(useData.getState().ws)[0];
   openBoardSettings(null);
@@ -95,9 +96,11 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
       {rows.length === 0 ? (
         <div className="bs-rc-empty" role="status">
           <Icon name="alert" />
-          <span>还没有机器能接这块白板的卡：定时领取不会领它的卡，也派发不了。在机器的「白板与目录」里加上 {path}。</span>
+          <span>
+            还没有机器能接这块白板的卡：定时领取不会领它的卡，也派发不了。给机器配上工作空间（白板的目录是 &lt;工作空间&gt;/{path}）就能接。
+          </span>
           <button type="button" className="btn sm" onClick={goDirs}>
-            去设置白板与目录
+            去设置工作空间
           </button>
         </div>
       ) : (
@@ -123,16 +126,16 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
   );
 }
 
-/** 大盘总览：一台机器都没有这块白板的目录时的提醒 */
+/** 大盘总览：一台机器都没有配工作空间（接得了这块白板）时的提醒 */
 export function NoHostsNote({ path }: { path: string }) {
   const none = useData(s => boardHosts(s.ws, path).length === 0);
   if (!none) return null;
   return (
     <div className="bs-rc-empty sp-ov-nohost" role="status">
       <Icon name="alert" />
-      <span>还没有机器能接这块白板的卡：定时领取不会领它的卡，也派发不了。</span>
+      <span>还没有机器能接这块白板的卡：定时领取不会领它的卡，也派发不了。给机器配上工作空间就能接。</span>
       <button type="button" className="btn sm" onClick={goDirs}>
-        去设置白板与目录
+        去设置工作空间
       </button>
     </div>
   );

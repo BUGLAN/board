@@ -4,13 +4,13 @@
 # 服务端在 <服务端>/install.sh 提供这个文件，下面三个 @…@ 由服务端换成它自己的版本号、地址和发版附件的地址：
 #
 #   curl -fsSL <服务端>/install.sh | sh
-#   curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --dir <项目>/<白板>=<路径> [--service]
+#   curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --workspace <工作空间> [--dir <项目>/<白板>=<路径>] [--service]
 #
 # 依次做：
 #   1. 按平台下载发版附件里的 board-<平台>.tar.gz 和校验文件 board-sha256.txt，SHA-256 对不上就中止（不动现有的 board）
 #   2. 装到 ~/.local/bin（环境变量 BOARD_INSTALL_DIR 可改）；这个目录不在 PATH 里时写进 shell 配置，只追加一次
 #   3. 带 --token：board login --url <服务端> --token <令牌>
-#   4. 带 --name / --dir：带 --service 时装成系统服务、开机自动接任务（board host --install），否则给出前台运行的命令
+#   4. 带 --name / --workspace / --dir：带 --service 时装成系统服务、开机自动接任务（board host --install），否则给出前台运行的命令
 #
 # 环境变量 BOARD_DOWNLOAD 换下载地址（镜像，或本机目录，测试用）。
 set -eu
@@ -107,12 +107,17 @@ ensure_path() {
 
 token=''
 name=''
+workspace=''
 dirs=''
 service=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --token) token=${2:?--token 需要一个值}; shift 2 ;;
     --name) name=${2:?--name 需要一个值}; shift 2 ;;
+    --workspace)
+      workspace=${2:?--workspace 需要一个值，每块白板的目录是 <工作空间>/<项目>/<白板>}
+      shift 2
+      ;;
     --dir)
       d=${2:?--dir 需要一个值，写成 <项目>/<白板>=<路径>}
       dirs="$dirs$d
@@ -129,7 +134,7 @@ while [ $# -gt 0 ]; do
       sed -n '2,15p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) die "未知参数 $1（可用：--token、--name、--dir、--service）" ;;
+    *) die "未知参数 $1（可用：--token、--name、--workspace、--dir、--service）" ;;
   esac
 done
 
@@ -174,10 +179,11 @@ if [ -n "$token" ]; then
   "$bin" login --url "$BOARD_SERVER" --token "$token" || die "登录 $BOARD_SERVER 失败：令牌在界面「设置 → Agent 接入」新建"
 fi
 
-if [ -n "$name" ] || [ -n "$dirs" ]; then
+if [ -n "$name" ] || [ -n "$workspace" ] || [ -n "$dirs" ]; then
   set -- host
   [ "$service" = 1 ] && set -- host --install
   [ -n "$name" ] && set -- "$@" --name "$name"
+  [ -n "$workspace" ] && set -- "$@" --workspace "$workspace"
   while IFS= read -r d; do
     [ -n "$d" ] && set -- "$@" --dir "$d"
   done <<EOF

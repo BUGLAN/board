@@ -21,6 +21,8 @@ fn dsh(found: bool) -> HostAgent {
     HostAgent { id: "dsh".into(), name: "DeepSeek Harness".into(), version: if found { "1.0".into() } else { String::new() }, found, model: "deepseek-v4.1-flash".into(), ..Default::default() }
 }
 
+/// 一台机器的上报：工作空间 `/tmp`（每块白板的目录是 `/tmp/<项目>/<白板>`），`dirs` 是它派生、检查过的白板目录。
+/// 旧版 board host（只报白板与目录、没有 workspace）用 [`legacy_report`]
 fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
     HostReport {
         name: name.into(),
@@ -30,7 +32,8 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         version: "0.1.1".into(),
         agents: vec![claude(true), HostAgent { id: "pi".into(), name: "pi".into(), version: String::new(), found: false, ..Default::default() }],
         envs: vec![],
-        dirs: vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }],
+        workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
+        dirs: vec![HostDir { board: B.into(), path: "/tmp/default/main".into(), ..Default::default() }],
         dirs_rev: 0,
         running,
         done: false,
@@ -130,41 +133,38 @@ fn host_registers_with_defaults_and_name_is_exclusive() {
 }
 
 #[test]
-fn host_dirs_are_server_authoritative_and_keep_reported_checks() {
+fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     let mut s = store();
     let w = beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str(), w.host.dirs[0].status.as_deref()), (1, "/tmp/board", None));
+    assert_eq!(w.host.workspace.as_ref().map(|x| x.path.as_str()), Some("/tmp"));
+    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str()), (1, "/tmp/default/main"), "目录由工作空间派生");
 
-    // 在别的设备上把目录改掉：服务端升版本，旧版本的 board host 上报不能把它改回去
+    // 在别的设备上把工作空间改掉：服务端升版本，同一块白板的目录跟着换
     let h = s
-        .write(T0 + S, Origin::ui(None), |w| {
-            w.host_update_as(
-                "mbp",
-                &HostPatch {
-                    dirs: Some(vec![HostDir { board: B.into(), path: "/tmp/new".into(), ..Default::default() }]),
-                    ..Default::default()
-                },
-                "buglan",
-            )
-        })
+        .write(T0 + S, Origin::ui(None), |w| w.host_update_as("mbp", &HostPatch { workspace: Some(HostWorkspace { path: "/tmp/new".into(), ..Default::default() }), ..Default::default() }, "buglan"))
         .unwrap();
-    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str(), h.dirs_changed_by.as_deref()), (2, "/tmp/new", Some("buglan")));
+    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str(), h.dirs_changed_by.as_deref()), (2, "/tmp/new/default/main", Some("buglan")));
 
+    // 旧版本（还是版本 1 的本机配置）上报的检查结果不挂在新的目录上
     let mut stale = report("mbp", "i1", vec![]);
     stale.dirs[0].status = Some("missing".into());
     stale.dirs[0].checked_at = Some(T0 + 2 * S);
     let w = beat(&mut s, T0 + 2 * S, &stale).unwrap();
-    assert_eq!(w.host.dirs[0].path, "/tmp/new", "旧版本上报的是本机配置，不能覆盖服务端设置");
-    assert_eq!(w.host.dirs[0].status, None, "旧路径的检查结果不挂到新路径上");
+    assert_eq!(w.host.dirs[0].path, "/tmp/new/default/main", "本机上报的是旧的工作空间，不能覆盖服务端设置");
 
-    // 应用了服务端版本后，同一路径的检查结果合进来
+    // 应用了服务端版本后，同一块白板的检查结果合进来
     let mut checked = report("mbp", "i1", vec![]);
     checked.dirs_rev = 2;
-    checked.dirs[0].path = "/tmp/new".into();
-    checked.dirs[0].status = Some("ok".into());
-    checked.dirs[0].origin = Some("git@github.com:buglan/board.git".into());
-    checked.dirs[0].branch = Some("main".into());
-    checked.dirs[0].checked_at = Some(T0 + 3 * S);
+    checked.workspace = Some(HostWorkspace { path: "/tmp/new".into(), ..Default::default() });
+    checked.dirs[0] = HostDir {
+        board: B.into(),
+        path: "/tmp/new/default/main".into(),
+        status: Some("ok".into()),
+        origin: Some("git@github.com:buglan/board.git".into()),
+        branch: Some("main".into()),
+        checked_at: Some(T0 + 3 * S),
+        ..Default::default()
+    };
     let w = beat(&mut s, T0 + 3 * S, &checked).unwrap();
     assert_eq!(w.host.dirs[0].status.as_deref(), Some("ok"));
     assert_eq!(w.host.dirs[0].origin.as_deref(), Some("git@github.com:buglan/board.git"));
@@ -173,9 +173,142 @@ fn host_dirs_are_server_authoritative_and_keep_reported_checks() {
 
     // 本机配置先改了（版本还是 2）：服务端收下，记成「本机」改的
     let mut local = checked;
-    local.dirs[0].path = "/tmp/local".into();
+    local.workspace = Some(HostWorkspace { path: "/tmp/local".into(), ..Default::default() });
+    local.dirs[0].path = "/tmp/local/default/main".into();
     let w = beat(&mut s, T0 + 4 * S, &local).unwrap();
-    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str(), w.host.dirs_changed_by.as_deref()), (3, "/tmp/local", Some("本机")));
+    assert_eq!(
+        (w.host.dirs_rev, w.host.workspace.as_ref().map(|x| x.path.as_str()), w.host.dirs[0].path.as_str(), w.host.dirs_changed_by.as_deref()),
+        (3, Some("/tmp/local"), "/tmp/local/default/main", Some("本机"))
+    );
+}
+
+/// 一台只报白板与目录的旧版 board host（`--dir` 写的白板标识）：升级前照样能派卡
+fn legacy_report(name: &str, instance: &str) -> HostReport {
+    let mut r = report(name, instance, vec![]);
+    r.workspace = None;
+    r.dirs = vec![
+        HostDir { board: "main".into(), path: "/tmp/board".into(), fixed: true, ..Default::default() },
+        HostDir { board: "other".into(), path: "/elsewhere/repo".into(), fixed: true, ..Default::default() },
+    ];
+    r
+}
+
+
+#[test]
+fn legacy_host_dirs_still_work_and_upgrade_to_a_workspace() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    // 旧版 board host 上报白板标识、不报工作空间：导出不了工作空间，但存着的目录照样让它派卡
+    let w = beat(&mut s, T0, &legacy_report("mbp", "i1")).unwrap();
+    assert!(w.host.workspace.as_ref().is_none_or(|x| x.path.is_empty()), "白板标识不是路径，导出不了工作空间");
+    let a = new_card(&mut s, T0, "A");
+    assert!(dispatch(&mut s, T0, a, "mbp", None).is_ok(), "旧版按白板标识存着目录，照样能派");
+
+    // 老数据（升级前逐块配的 `[host] dirs`）：重新连上时导出成工作空间，几块白板取共同的上两级
+    let mut s2 = store();
+    s2.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    let mut rep = report("old", "i1", vec![]);
+    rep.workspace = None;
+    rep.dirs = vec![
+        HostDir { board: B.into(), path: "/repo/default/main".into(), ..Default::default() },
+        HostDir { board: "default/other".into(), path: "/repo/default/other".into(), ..Default::default() },
+    ];
+    let w = beat(&mut s2, T0, &rep).unwrap();
+    assert_eq!(w.host.workspace.as_ref().map(|x| x.path.as_str()), Some("/repo"));
+    assert_eq!(w.host.dirs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(), vec!["/repo/default/main", "/repo/default/other"]);
+    assert!(w.host.dirs.iter().all(|d| !d.fixed));
+    // 服务端按导出的工作空间记着：之后用旧版 board host 继续上报也不丢
+    let w = beat(&mut s2, T0 + S, &rep).unwrap();
+    assert_eq!(w.host.workspace.as_ref().map(|x| x.path.as_str()), Some("/repo"));
+
+    // 服务端已经按工作空间记着的机器（新版）：上报的白板标识不合规则时拒绝，不改存着的目录
+    let mut s3 = store();
+    beat(&mut s3, T0, &report("mbp", "i1", vec![])).unwrap();
+    let mut rep2 = report("mbp", "i1", vec![]);
+    rep2.workspace = None;
+    rep2.dirs = vec![HostDir { board: "main".into(), path: "/tmp/board".into(), ..Default::default() }];
+    let e = beat(&mut s3, T0 + S, &rep2).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("<项目>/<白板>"), "{}", e.message);
+    assert_eq!(s3.read(|r| r.host("mbp", T0 + S)).unwrap().workspace.as_ref().map(|w| w.path.as_str()), Some("/tmp"), "拒绝的上报不改存着的目录");
+}
+
+#[test]
+fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.workspace = Some(HostWorkspace {
+        path: "/tmp".into(),
+        created: false,
+        overrides: vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }],
+    });
+    beat(&mut s, T0, &rep).unwrap();
+    let h = host(&s, T0);
+    assert_eq!(
+        h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(),
+        vec![(B, "/tmp/default/main", false), ("default/other", "/elsewhere/repo", true)]
+    );
+
+    // --dir 覆盖的目录不能从界面上改掉（没带上的补回去，带了别的路径就拒绝）
+    let h = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            w.host_update("mbp", &HostPatch { workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }), ..Default::default() })
+        })
+        .unwrap();
+    assert_eq!(h.workspace.as_ref().map(|w| w.overrides.clone()).unwrap_or_default(), vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }]);
+    let e = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            let p = HostPatch {
+                workspace: Some(HostWorkspace {
+                    path: "/tmp".into(),
+                    created: false,
+                    overrides: vec![HostDirOverride { board: "default/other".into(), path: "/tmp/other".into() }],
+                }),
+                ..Default::default()
+            };
+            w.host_update("mbp", &p)
+        })
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("--dir"), "{}", e.message);
+
+    // 带上覆盖的照常改：覆盖的路径不变，其他白板的目录跟着工作空间换
+    let h = s
+        .write(T0 + S, Origin::ui(None), |w| {
+            w.host_update(
+                "mbp",
+                &HostPatch {
+                    workspace: Some(HostWorkspace {
+                        path: "/tmp/new".into(),
+                        created: false,
+                        overrides: vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }],
+                    }),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str())).collect::<Vec<_>>(), vec![
+        (B, "/tmp/new/default/main"),
+        ("default/other", "/elsewhere/repo")
+    ]);
+    assert_eq!(h.dirs_changed_by.as_deref(), Some("人"));
+
+    // 不配工作空间：清掉，派发时按「还没有配工作空间」拒绝
+    let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { workspace: Some(HostWorkspace::default()), ..Default::default() })).unwrap();
+    assert!(h.workspace.is_none() && h.dirs.is_empty());
+    let a = new_card(&mut s, T0, "A");
+    assert_eq!(dispatch(&mut s, T0, a, "mbp", None).unwrap_err().code, ErrorCode::BoardNotOnHost);
+}
+
+#[test]
+fn board_dir_uses_the_machines_separator() {
+    assert_eq!(hosts::board_dir("/repo", "default/main", "macOS 15.4").as_deref(), Some("/repo/default/main"));
+    assert_eq!(hosts::board_dir("~/repo/", "default/main", "Linux").as_deref(), Some("~/repo/default/main"));
+    assert_eq!(hosts::board_dir("C:\\repo\\", "default/main", "Windows 11 Pro").as_deref(), Some("C:\\repo\\default\\main"));
+    assert_eq!(hosts::board_dir("", "default/main", "macOS").as_deref(), None);
+    assert_eq!(hosts::board_dir("/repo", "nope", "macOS").as_deref(), None);
 }
 
 #[test]
@@ -183,70 +316,62 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
     s.write(T0, Origin::ui(None), |w| w.create_board("default", "第三块", "third", "", None)).unwrap();
+    // `--dir default/main=<路径>` 单独覆盖一块白板，其他白板由工作空间派生
     let mut rep = report("mbp", "i1", vec![]);
-    rep.dirs = vec![
-        HostDir { board: B.into(), path: "/tmp/board".into(), fixed: true, status: Some("missing".into()), checked_at: Some(T0), ..Default::default() },
-        HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() },
-    ];
+    rep.workspace = Some(HostWorkspace {
+        path: "/tmp".into(),
+        created: false,
+        overrides: vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }],
+    });
+    rep.dirs = vec![HostDir {
+        board: B.into(),
+        path: "/tmp/board".into(),
+        fixed: true,
+        status: Some("missing".into()),
+        checked_at: Some(T0),
+        ..Default::default()
+    }];
     beat(&mut s, T0, &rep).unwrap();
 
-    // --dir 固定的行不能删、不能改
-    let e = s
+    // `--dir` 覆盖的白板不能从界面上删掉（提交里没带上的补回去）
+    let h = s
         .write(T0 + S, Origin::ui(None), |w| {
-            w.host_update("mbp", &HostPatch { dirs: Some(vec![HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() }]), ..Default::default() })
+            w.host_update("mbp", &HostPatch { workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }), ..Default::default() })
         })
-        .unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
-    assert!(e.message.contains("--dir"));
-    let e = s
-        .write(T0 + S, Origin::ui(None), |w| {
-            w.host_update(
-                "mbp",
-                &HostPatch {
-                    dirs: Some(vec![
-                        HostDir { board: B.into(), path: "/tmp/changed".into(), ..Default::default() },
-                        HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() },
-                    ]),
-                    ..Default::default()
-                },
-            )
-        })
-        .unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
+        .unwrap();
+    assert_eq!(h.workspace.as_ref().map(|w| w.overrides.clone()).unwrap_or_default(), vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }]);
 
-    // 其他行照常增删改，固定行保留 fixed
+    // 换工作空间：覆盖的那块不变，别的白板由新的工作空间派生；旧界面把几块白板放在同一个工作空间里的照常收
     let h = s
         .write(T0 + S, Origin::ui(None), |w| {
             w.host_update(
                 "mbp",
                 &HostPatch {
-                    dirs: Some(vec![
-                        HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() },
-                        HostDir { board: "default/other".into(), path: "/tmp/other-new".into(), ..Default::default() },
-                        HostDir { board: "default/third".into(), path: "/tmp/third".into(), ..Default::default() },
-                    ]),
+                    workspace: Some(HostWorkspace {
+                        path: "/repo".into(),
+                        created: false,
+                        overrides: vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }],
+                    }),
                     ..Default::default()
                 },
             )
         })
         .unwrap();
-    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(), vec![
-        (B, "/tmp/board", true),
-        ("default/other", "/tmp/other-new", false),
-        ("default/third", "/tmp/third", false),
-    ]);
+    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(), vec![(B, "/tmp/board", true)]);
     let h = s
         .write(T0 + 2 * S, Origin::ui(None), |w| {
-            w.host_update(
-                "mbp",
-                &HostPatch {
-                    dirs: Some(vec![HostDir { board: B.into(), path: "/tmp/board".into(), ..Default::default() }]),
-                    ..Default::default()
-                },
-            )
+            let p = HostPatch {
+                dirs: Some(vec![
+                    HostDir { board: "default/other".into(), path: "/repo/default/other".into(), ..Default::default() },
+                    HostDir { board: "default/third".into(), path: "/repo/default/third".into(), ..Default::default() },
+                ]),
+                ..Default::default()
+            };
+            w.host_update("mbp", &p)
         })
         .unwrap();
-    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.fixed)).collect::<Vec<_>>(), vec![(B, true)]);
+    assert_eq!(h.workspace.as_ref().map(|w| w.path.as_str()), Some("/repo"));
+    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(), vec![(B, "/tmp/board", true)]);
 
     // 目录不存在：请求克隆，状态排队；board host 上报失败原因
     let mut s2 = store();
@@ -288,7 +413,7 @@ fn dispatch_validation_follows_the_table() {
     // agent 没找到 / 没有这种 agent
     assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap_err().code, ErrorCode::AgentNotOnHost);
     assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("codex")).unwrap_err().code, ErrorCode::AgentNotOnHost);
-    // 没有这块白板的目录
+    // 有工作空间的机器就视为有这块白板的目录：没在它上面见到的白板也派得出去
     s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
     let c = s
         .write(T0, Origin::ui(None), |w| {
@@ -298,13 +423,14 @@ fn dispatch_validation_follows_the_table() {
         .unwrap()
         .card
         .id;
-    let e = s
+    let d = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("default/other")?;
             w.dispatch_create(&b, c, "mbp", None, &Actor::human())
         })
-        .unwrap_err();
-    assert_eq!(e.code, ErrorCode::BoardNotOnHost);
+        .unwrap();
+    assert_eq!(d.board, "default/other");
+    s.write(T0, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "人")).unwrap();
     // 不带 agent 用默认 agent；同一张卡片不能派发两次
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     assert_eq!((d.agent.as_str(), d.state.as_str(), d.source.as_str()), ("claude", "queued", "manual"));

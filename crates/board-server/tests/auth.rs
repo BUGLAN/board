@@ -707,7 +707,7 @@ fn agent_names_check_beat_and_online_list() {
 /// 认机器的顺序是请求里的 `host` → 令牌是它的 board host 上报用的那个；查不到机器时退回 `<标识>/<模型>`
 #[test]
 fn agent_check_generates_the_name_from_machine_settings() {
-    use board_core::{HostAgent, HostDir, HostReport, Origin};
+    use board_core::{HostAgent, HostDir, HostReport, HostWorkspace, Origin};
     let s = github("buglan");
     let agent_token = new_token(&s.db, "ci");
     // 这台机器的 board host 用的令牌：上报时带上它的 ID
@@ -724,7 +724,8 @@ fn agent_check_generates_the_name_from_machine_settings() {
         version: "0.1.24".into(),
         agents: vec![agent("claude", "opus-5.5"), agent("pi", "")],
         envs: vec![],
-        dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\board".into(), ..Default::default() }],
+        workspace: Some(HostWorkspace { path: "C:\\repo".into(), ..Default::default() }),
+        dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
         dirs_rev: 0,
         running: vec![],
         done: false,

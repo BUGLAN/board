@@ -1,8 +1,8 @@
-/* 机器详情：居中弹窗（就绪、正在跑、排队、派发规则、本机 agent、启动环境、白板与目录、最近）；添加机器 */
+/* 机器详情：居中弹窗（就绪、正在跑、排队、派发规则、本机 agent、启动环境、工作空间、最近）；添加机器 */
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
-import { agentMark, boardOf, canPickDir, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, SOURCE } from '../../lib/hosts';
+import { agentMark, boardOf, canPickDir, dirFresh, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, sourceOf } from '../../lib/hosts';
 import { installSkill, isWindows, localHost, pickFolder, shell, type LocalHost } from '../../lib/platform';
 import { effectiveProvider, PROVIDER_AGENTS, PROVIDER_LOCAL, providersFor } from '../../lib/providers';
 import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label, ProviderView } from '../../lib/types';
@@ -11,7 +11,7 @@ import { COPY_ITEMS } from '../../lib/templates';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
 import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
 import { DEFAULT_SCHEDULE, SchedulePick } from '../SchedulePick';
-import { allBoards, hostKey, optimistic, saveSetting, useData } from '../../store/data';
+import { hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, confirmCheck, openHost, openPicker, openSession, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
 import { LabelChip, Segmented, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
@@ -213,7 +213,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const failed = (...fs: string[]) => fs.some(f => sync[f] === 'failed') && 'hp-rollback';
   const server = useServerVersion();
   const behind = !!server && !!h.version && versionLt(h.version, server);
-  // 就绪清单里没通过的项点按钮：展开对应的那一块（收起的「白板与目录」先展开），滚过去闪一下
+  // 就绪清单里没通过的项点按钮：展开对应的那一块（收起的「工作空间」先展开），滚过去闪一下
   const [reveal, setReveal] = useState<{ to: ReadyGo | null; n: number }>({ to: null, n: 0 });
   /** 「复制设置到…」展开着 */
   const [copying, setCopying] = useState(false);
@@ -655,32 +655,26 @@ function DirReadyLine({ h, d, now }: { h: HostInfo; d: HostDir; now: number }) {
   );
 }
 
-/** 新一行（还没选白板）的选择文件夹状态用的键，和已有的白板标识分开 */
-const ADD = '\u0000add';
-
-/** 白板与目录：逐行编辑、检查状态、缺失时克隆、复制到其他机器 */
+/** 工作空间：一个路径输入（选择文件夹、本机确认、远程修改），下面列出每块白板派生出来的目录、git 和环境检查状态 */
 function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: Save; sync?: SyncState; hosts: HostInfo[]; now: number; reveal: number }) {
   const ws = useData(s => s.ws);
-  /** 标题行的「加一块」「复制到…」点开的那一个 */
-  const [mode, setMode] = useState<'add' | 'copy' | null>(null);
-  const boards = allBoards(ws).map(b => b.path);
-  const key = h.dirs.map(d => `${d.board}\u0000${d.path}`).join('\u0001');
-  const [paths, setPaths] = useState<Record<string, string>>({});
-  const [draft, setDraft] = useState({ board: '', path: '' });
+  /** 标题行的「复制到…」点开的那一个 */
+  const [mode, setMode] = useState<'copy' | null>(null);
+  const key = h.workspace?.path ?? '';
+  const [path, setPath] = useState(key);
   const [target, setTarget] = useState('');
   const [cloneUrls, setCloneUrls] = useState<Record<string, string>>({});
   const [cloning, setCloning] = useState('');
   const [copying, setCopying] = useState(false);
-  const [active, setActive] = useState<string | null>(null);
-  const [picking, setPicking] = useState<string | null>(null);
+  const [active, setActive] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [local, setLocal] = useState(false);
   /** 本机的桌面端：只有这台电脑能弹系统的文件夹选择框 */
   const env = { isLocal: local, desktop: shell === 'desktop' };
   useEffect(() => {
-    setPaths(Object.fromEntries(h.dirs.map(d => [d.board, d.path])));
+    setPath(key);
     setCloneUrls({});
-    setDraft(v => ({ ...v, board: v.board || boards.find(b => !h.dirs.some(d => d.board === b)) || '' }));
-  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key]);
   useEffect(() => {
     if (shell !== 'desktop') return;
     let alive = true;
@@ -691,13 +685,13 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
   }, [h]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const others = hosts.filter(x => x.name !== h.name);
-  const fixed = h.dirs.some(d => d.fixed);
-  const apply = async (next: HostDir[]) => {
+  /** 存工作空间（`--dir` 单独覆盖的那几块原样带着）；本机改之前先确认 */
+  const apply = async (next: string) => {
     if (
       local &&
       !(await confirm({
-        title: '修改这台电脑接任务的目录？',
-        text: '保存后 board host 会换上新的白板与目录，正在跑的 agent 不受影响。',
+        title: '修改这台电脑的工作空间？',
+        text: '保存后 board host 会换上新的工作空间：每块白板的目录是 <工作空间>/<项目>/<白板>，正在跑的 agent 不受影响。',
         ok: '保存',
         icon: 'alert',
         tone: 'warn',
@@ -705,57 +699,30 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
     ) {
       return;
     }
-    save({ dirs: next.map(d => ({ board: d.board, path: d.path })) });
+    save({ workspace: { path: next.trim(), overrides: h.workspace?.overrides ?? [] } });
   };
-  // 仓库地址的建议：白板设置里设了就用它（PRD §4），没设时看别的机器上报的这块白板目录的 origin
-  const originOf = (board: string) =>
-    boardOf(ws, board)?.repo?.trim() || hosts.find(x => x.name !== h.name)?.dirs.find(d => d.board === board && d.origin)?.origin || '';
   const when = h.dirsChangedAt ? new Date(h.dirsChangedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 
-  const commitPath = (d: HostDir) => {
-    const path = (paths[d.board] ?? d.path).trim();
-    if (path && path !== d.path) void apply(h.dirs.map(x => (x.board === d.board ? { ...x, path } : x)));
-  };
-
-  /** 选择文件夹：弹系统的文件夹选择框，选中后填进这一行并保存（和手填走同一条保存），取消不改动。
+  /** 选择文件夹：弹系统的文件夹选择框，选中后填进去并保存（和手填走同一条保存），取消不改动。
       弹不出来（旧版桌面端）时提示升级，其他失败提示原因 */
-  const pick = async (board: string) => {
-    setPicking(board);
+  const pick = async () => {
+    setPicking(true);
     try {
-      const p = await pickFolder((paths[board] ?? '').trim());
+      const p = await pickFolder(path.trim());
       if (!p) return;
-      setPaths(v => ({ ...v, [board]: p }));
-      const d = h.dirs.find(x => x.board === board);
-      if (d && p !== d.path) await apply(h.dirs.map(x => (x.board === board ? { ...x, path: p } : x)));
+      setPath(p);
+      if (p !== key) await apply(p);
     } catch (e) {
       if (e === 'unsupported') toast({ type: 'info', title: '这个版本的桌面端不支持选择文件夹', text: '升级桌面端后再用；现在可以直接在输入框里填目录' });
       else toast({ type: 'error', title: '没有打开文件夹选择框', text: String(e) });
     } finally {
-      setPicking(null);
+      setPicking(false);
     }
   };
 
-  /** 新一行还没选白板：选文件夹只填路径，点「加上」时再一起保存 */
-  const pickDraft = async () => {
-    setPicking(ADD);
-    try {
-      const p = await pickFolder(draft.path.trim());
-      if (p) setDraft(v => ({ ...v, path: p }));
-    } catch (e) {
-      if (e === 'unsupported') toast({ type: 'info', title: '这个版本的桌面端不支持选择文件夹', text: '升级桌面端后再用；现在可以直接在输入框里填目录' });
-      else toast({ type: 'error', title: '没有打开文件夹选择框', text: String(e) });
-    } finally {
-      setPicking(null);
-    }
-  };
-
-  const add = () => {
-    const board = draft.board.trim();
-    const path = draft.path.trim();
-    if (!board || !path || h.dirs.some(d => d.board === board)) return;
-    void apply([...h.dirs, { board, path }]);
-    setDraft({ board: '', path: '' });
-    setMode(null);
+  const commit = () => {
+    const next = path.trim();
+    if (next !== key) void apply(next);
   };
 
   const clone = async (d: HostDir) => {
@@ -779,32 +746,28 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
     }
   };
 
+  /** 复制到…：把那台机器的工作空间换成这里的（每块白板的目录跟着它派生） */
   const copy = async () => {
     const to = others.find(x => x.name === target);
-    if (!to) return;
-    const carried: HostDir[] = [];
-    for (const d of h.dirs) {
-      if (!d.path.startsWith('~')) {
-        const yes = await confirm({
-          title: `把 ${d.board} 的绝对路径带过去？`,
-          text: `目标机器会使用 ${d.path}。如果那台机器上的目录不同，带过去后还要再改。`,
-          ok: '带过去',
-          icon: 'alert',
-          tone: 'warn',
-        });
-        if (!yes) return;
-      }
-      carried.push({ board: d.board, path: d.path });
+    if (!to || !key) return;
+    if (!key.startsWith('~')) {
+      const yes = await confirm({
+        title: '把这台机器的工作空间带过去？',
+        text: `${to.name} 会使用 ${key}，每块白板的目录是 ${key}/<项目>/<白板>。如果那台机器上的目录不同，带过去后还要再改。`,
+        ok: '带过去',
+        icon: 'alert',
+        tone: 'warn',
+      });
+      if (!yes) return;
     }
-    const next = [...to.dirs.filter(x => !carried.some(d => d.board === x.board)), ...carried];
     setCopying(true);
     try {
       await saveSetting(
-        `${hostKey(to.name)}:dirs`,
-        patchHost(to.name, x => ({ ...x, dirs: next })),
-        () => api.updateHost(to.name, { dirs: next.map(d => ({ board: d.board, path: d.path })) }),
+        `${hostKey(to.name)}:workspace`,
+        patchHost(to.name, x => ({ ...x, workspace: { path: key, overrides: [] } })),
+        () => api.updateHost(to.name, { workspace: { path: key } }),
       );
-      toast({ type: 'success', title: `已复制到 ${to.name}`, text: `${carried.length} 块白板；以服务端保存的设置为准` });
+      toast({ type: 'success', title: `已复制到 ${to.name}`, text: '以服务端保存的设置为准' });
       setMode(null);
       setTarget('');
     } catch (e) {
@@ -814,18 +777,13 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
     }
   };
 
-  const free = boards.filter(b => !h.dirs.some(d => d.board === b));
-  const showAdd = mode === 'add' || (!h.dirs.length && free.length > 0);
-  const remoteTip = shell === 'desktop' && !local ? '文件夹选择框只在那台机器的桌面端里有；这里直接改路径也行，保存后那台机器的 board host 换上新目录' : undefined;
+  // 仓库地址的建议：白板设置里设了就用它（PRD §4），没设时看别的机器上报的这块白板目录的 origin
+  const originOf = (board: string) =>
+    boardOf(ws, board)?.repo?.trim() || hosts.find(x => x.name !== h.name)?.dirs.find(d => d.board === board && d.origin)?.origin || '';
+  const remoteTip = shell === 'desktop' && !local ? '文件夹选择框只在那台机器的桌面端里有；这里直接改路径也行，保存后那台机器的 board host 换上新工作空间' : undefined;
   const acts = (
     <>
-      {free.length > 0 && h.dirs.length > 0 && (
-        <button type="button" className={cx('act hp-link', mode === 'add' && 'on')} aria-expanded={mode === 'add'} onClick={() => setMode(mode === 'add' ? null : 'add')}>
-          <Icon name="plus" />
-          加一块
-        </button>
-      )}
-      {others.length > 0 && h.dirs.length > 0 && (
+      {others.length > 0 && key && (
         <button type="button" className={cx('act hp-link', mode === 'copy' && 'on')} aria-expanded={mode === 'copy'} onClick={() => setMode(mode === 'copy' ? null : 'copy')}>
           <Icon name="copy" />
           复制到…
@@ -835,177 +793,140 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
   );
 
   return (
-    <Fold id="dirs" title="白板与目录" n={h.dirs.length} i={5} reveal={reveal} acts={acts}>
-    <div className="hp-dirs">
-      {mode === 'copy' && others.length > 0 && h.dirs.length > 0 && (
-        <div className="hp-dir-copy">
-          <span className="hp-add-k">复制到</span>
-          <Select
-            value={target}
-            options={[{ value: '', label: '选机器…' }, ...others.map(x => ({ value: x.name, label: x.online ? x.name : `${x.name}（离线）` }))]}
-            onChange={setTarget}
-            aria-label="复制到哪台机器"
+    <Fold id="dirs" title="工作空间" n={h.dirs.length} i={5} reveal={reveal} acts={acts}>
+      <div className="hp-dirs">
+        {mode === 'copy' && others.length > 0 && key && (
+          <div className="hp-dir-copy">
+            <span className="hp-add-k">复制到</span>
+            <Select
+              value={target}
+              options={[{ value: '', label: '选机器…' }, ...others.map(x => ({ value: x.name, label: x.online ? x.name : `${x.name}（离线）` }))]}
+              onChange={setTarget}
+              aria-label="复制到哪台机器"
+            />
+            <button className={cx('btn sm brand', copying && 'is-busy')} type="button" disabled={!target || copying} onClick={() => void copy()}>
+              复制
+            </button>
+            <button className="btn sm ghost" type="button" disabled={copying} onClick={() => setMode(null)}>
+              取消
+            </button>
+            <p className="hp-note">目标机器的工作空间换成这里的，~ 开头的路径原样带过去，绝对路径先确认。</p>
+          </div>
+        )}
+        {when && h.dirsChangedBy && h.dirsChangedBy !== '本机' && (
+          <p className="hp-note hp-remote">{when} 由 {h.dirsChangedBy} 在别的设备上修改</p>
+        )}
+        <div className="hp-ws">
+          <span className="hp-add-k">工作空间</span>
+          <input
+            className="input hp-dir-path"
+            value={path}
+            spellCheck={false}
+            placeholder={isWindows ? 'C:\\repo' : '~/repo'}
+            aria-label="工作空间"
+            title={remoteTip ? undefined : path}
+            data-tip={remoteTip}
+            onFocus={() => setActive(true)}
+            onChange={e => setPath(e.target.value)}
+            onBlur={() => {
+              setActive(false);
+              commit();
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+            }}
           />
-          <button className={cx('btn sm brand', copying && 'is-busy')} type="button" disabled={!target || copying} onClick={() => void copy()}>
-            复制 {h.dirs.length} 块
-          </button>
-          <button className="btn sm ghost" type="button" disabled={copying} onClick={() => setMode(null)}>
-            取消
-          </button>
-          <p className="hp-note">目标机器的同一块白板换成这里的目录，别的白板不变；~ 开头的路径原样带过去，绝对路径逐个确认。</p>
+          <span className="hp-dir-ctl">
+            <Sync s={active ? sync : undefined} />
+            {canPickDir(env) && (
+              <button
+                className={cx('icon-btn sm', picking && 'is-busy')}
+                type="button"
+                aria-label="选择工作空间的文件夹"
+                data-tip={picking ? '正在打开文件夹选择框' : '选择文件夹：选中后填进去并保存'}
+                data-tip-align="end"
+                disabled={picking}
+                onClick={() => void pick()}
+              >
+                <Icon name="folder" />
+              </button>
+            )}
+          </span>
         </div>
-      )}
-      {fixed && <p className="hp-note">这台机器用 --dir 启动，带「固定」的行要在那台机器上改启动参数。</p>}
-      {when && h.dirsChangedBy && h.dirsChangedBy !== '本机' && (
-        <p className="hp-note hp-remote">{when} 由 {h.dirsChangedBy} 在别的设备上修改</p>
-      )}
-      {h.dirs.length ? (
-        h.dirs.map(d => {
-          const state = d.status ?? '';
-          const cloneState = d.clone?.state;
-          // 只在本机（桌面端跑 board host 的那台）显示选择按钮；别的机器的详情只显示输入框
-          const pickable = canPickDir(d, env);
-          return (
-            <div className={cx('hp-dir hp-dir-edit', state === 'missing' && 'warn', state === 'not_git' && 'warn')} key={d.board}>
-              <div className="hp-dir-main">
-                <span className="hp-board" title={d.board}>
-                  {d.board}
-                </span>
-                <div className="hp-dir-fields">
-                  <input
-                    className="input hp-dir-path"
-                    value={paths[d.board] ?? d.path}
-                    readOnly={d.fixed}
-                    spellCheck={false}
-                    aria-label={`${d.board} 的目录`}
-                    title={remoteTip ? undefined : d.path}
-                    data-tip={remoteTip}
-                    onFocus={() => setActive(d.board)}
-                    onChange={e => setPaths(v => ({ ...v, [d.board]: e.target.value }))}
-                    onBlur={() => {
-                      setActive(null);
-                      commitPath(d);
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') e.currentTarget.blur();
-                    }}
-                  />
-                  <span className="hp-dir-ctl">
-                    <span className={cx('hp-dir-state', state)} data-tip={d.checkedAt ? `检查于 ${since(d.checkedAt, now)}` : undefined}>
-                      {state === 'ok' ? `git${d.branch ? ` · ${d.branch}` : ''}` : state === 'missing' ? '不存在' : state === 'not_git' ? '不是 git 仓库' : '等待检查'}
+        <p className="hp-note">
+          这台机器只配这一个目录：每块白板的目录是 <code>{path.trim() ? `${path.trim().replace(/[\\/]+$/, '')}/${'<项目>/<白板>'}` : '<工作空间>/<项目>/<白板>'}</code>
+          ，还没有时 board host 自动建好（白板设了仓库地址时自动克隆），不用挨个配白板。
+        </p>
+        {h.workspace?.overrides?.length ? (
+          <p className="hp-note">用 --dir 单独指定的：{h.workspace.overrides.map(o => `${o.board} → ${o.path}`).join('，')}（在那台机器上改启动参数）</p>
+        ) : null}
+        {!key && <p className="hp-note hp-warn">还没有配工作空间：这台机器接不了任何白板的卡。</p>}
+        {h.dirs.length > 0 && (
+          <div className="hp-ws-dirs">
+            <span className="hp-dir-list-head">每块白板的目录</span>
+            {h.dirs.map(d => {
+              // 机器刚重连上来、还没重新看过的目录：按「等待检查」画，不拿掉线之前的旧结果说事
+              const state = dirFresh(h, d) ? (d.status ?? '') : '';
+              const cloneState = d.clone?.state;
+              return (
+                <div className={cx('hp-dir', state === 'missing' && 'warn', state === 'not_git' && 'warn')} key={d.board}>
+                  <div className="hp-dir-main">
+                    <span className="hp-board" title={d.board}>
+                      {d.board}
                     </span>
-                    <Sync s={active === d.board ? sync : undefined} />
-                    {pickable && (
+                    <div className="hp-dir-fields">
+                      <code className="hp-dir-derived" title={d.path}>
+                        {d.path}
+                      </code>
+                      <span className="hp-dir-ctl">
+                        <span className={cx('hp-dir-state', state)} data-tip={d.checkedAt ? `检查于 ${since(d.checkedAt, now)}` : undefined}>
+                          {state === 'ok' ? `git${d.branch ? ` · ${d.branch}` : ''}` : state === 'missing' ? '不存在' : state === 'not_git' ? '不是 git 仓库' : '等待检查'}
+                        </span>
+                        {d.fixed && <span className="hp-dir-fixed">--dir 指定</span>}
+                      </span>
+                    </div>
+                  </div>
+                  <DirReadyLine h={h} d={d} now={now} />
+                  {state !== 'missing' && d.clone && cloneState !== 'queued' && cloneState !== 'running' && (
+                    <div className="hp-clone">
+                      <span className={cx('hp-clone-msg', cloneState === 'failed' && 'bad', cloneState === 'done' && 'ok')} title={d.clone.message}>
+                        {d.clone.message}
+                      </span>
+                    </div>
+                  )}
+                  {state === 'missing' && !d.fixed && (
+                    <div className="hp-clone">
+                      <input
+                        className="input"
+                        value={cloneUrls[d.board] ?? originOf(d.board)}
+                        placeholder="仓库地址，例如 git@github.com:org/repo.git"
+                        spellCheck={false}
+                        aria-label={`${d.board} 的仓库地址`}
+                        onChange={e => setCloneUrls(v => ({ ...v, [d.board]: e.target.value }))}
+                      />
                       <button
-                        className={cx('icon-btn sm', picking === d.board && 'is-busy')}
+                        className={cx('btn sm', cloning === d.board && 'is-busy')}
                         type="button"
-                        aria-label={`选择 ${d.board} 的文件夹`}
-                        data-tip={picking === d.board ? '正在打开文件夹选择框' : '选择文件夹：选中后填进这一行并保存'}
-                        data-tip-align="end"
-                        disabled={picking !== null}
-                        onClick={() => void pick(d.board)}
+                        disabled={cloning === d.board || !(cloneUrls[d.board] ?? originOf(d.board)).trim()}
+                        onClick={() => void clone(d)}
                       >
                         <Icon name="folder" />
+                        克隆到这里
                       </button>
-                    )}
-                    {d.fixed ? (
-                      <span className="hp-dir-fixed">--dir 固定</span>
-                    ) : (
-                      <button className="icon-btn sm" type="button" aria-label={`去掉 ${d.board} 这一行`} onClick={() => void apply(h.dirs.filter(x => x.board !== d.board))}>
-                        <Icon name="close" />
-                      </button>
-                    )}
-                  </span>
-                </div>
-              </div>
-              <DirReadyLine h={h} d={d} now={now} />
-              {state !== 'missing' && d.clone && (
-                <div className="hp-clone">
-                  <span className={cx('hp-clone-msg', cloneState === 'failed' && 'bad', cloneState === 'done' && 'ok')} title={d.clone.message}>
-                    {d.clone.message}
-                  </span>
-                </div>
-              )}
-              {state === 'missing' && !d.fixed && (
-                <div className="hp-clone">
-                  <input
-                    className="input"
-                    value={cloneUrls[d.board] ?? originOf(d.board)}
-                    placeholder="仓库地址，例如 git@github.com:org/repo.git"
-                    spellCheck={false}
-                    aria-label={`${d.board} 的仓库地址`}
-                    onChange={e => setCloneUrls(v => ({ ...v, [d.board]: e.target.value }))}
-                  />
-                  <button
-                    className={cx('btn sm', cloning === d.board && 'is-busy')}
-                    type="button"
-                    disabled={cloning === d.board || !(cloneUrls[d.board] ?? originOf(d.board)).trim()}
-                    onClick={() => void clone(d)}
-                  >
-                    <Icon name="folder" />
-                    克隆到这里
-                  </button>
-                  {d.clone && (
-                    <span className={cx('hp-clone-msg', cloneState === 'failed' && 'bad', cloneState === 'done' && 'ok')} title={d.clone.message}>
-                      {d.clone.message || (cloneState === 'queued' ? '等待 board host 开始克隆' : '正在克隆…')}
-                    </span>
+                      {d.clone && cloneState !== 'done' && (
+                        <span className={cx('hp-clone-msg', cloneState === 'failed' && 'bad', 'ok')} title={d.clone.message}>
+                          {d.clone.message || (cloneState === 'queued' ? '等待 board host 开始克隆' : '正在克隆…')}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })
-      ) : (
-        <p className="hp-note">{free.length ? '没有白板：在下面加一块，或在那台机器上用 --dir 启动。' : '没有白板：先在「项目」里建一块白板，或在那台机器上用 --dir 启动。'}</p>
-      )}
-      {h.dirs.some(d => d.fixed) && local && <p className="hp-note">带「--dir 固定」的行由那台机器的启动参数决定，在这里改不了。</p>}
-      {showAdd && (
-      <div className="hp-dir-add">
-        <span className="hp-board">加一块</span>
-        <div className="hp-dir-fields">
-          <div className="hp-dir-pick">
-            <Select
-              value={draft.board}
-              options={[{ value: '', label: '选白板…' }, ...free.map(b => ({ value: b, label: b }))]}
-              onChange={board => setDraft(v => ({ ...v, board }))}
-              aria-label="要加的白板"
-            />
-            <input
-              className="input hp-dir-path"
-              value={draft.path}
-              placeholder={isWindows ? 'C:\\repo\\board' : '~/repo/board'}
-              spellCheck={false}
-              aria-label="目录"
-              onChange={e => setDraft(v => ({ ...v, path: e.target.value }))}
-            />
-            <span className="hp-dir-ctl hp-dir-ctl-end">
-              {env.isLocal && env.desktop && (
-                <button
-                  className={cx('icon-btn sm', picking === ADD && 'is-busy')}
-                  type="button"
-                  aria-label="选择新一行的文件夹"
-                  data-tip={picking === ADD ? '正在打开文件夹选择框' : '选择文件夹：选中后填进这一行'}
-                  data-tip-align="end"
-                  disabled={picking !== null}
-                  onClick={() => void pickDraft()}
-                >
-                  <Icon name="folder" />
-                </button>
-              )}
-              <button className="btn sm brand" type="button" disabled={!draft.board || !draft.path.trim()} onClick={add}>
-                加上
-              </button>
-              {h.dirs.length > 0 && (
-                <button className="icon-btn sm" type="button" aria-label="不加了" onClick={() => setMode(null)}>
-                  <Icon name="close" />
-                </button>
-              )}
-            </span>
+              );
+            })}
           </div>
-        </div>
+        )}
+        {h.dirs.length === 0 && key && <p className="hp-note">工作空间里还没有白板的目录：派来卡片时按 <code>{path.trim()}/&lt;项目&gt;/&lt;白板&gt;</code> 建好。</p>}
       </div>
-      )}
-    </div>
     </Fold>
   );
 }
@@ -1528,16 +1449,17 @@ function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: Sy
   const rules = h.rules ?? [];
   const found = h.agents.filter(a => a.found);
   const agentName = (id: string) => h.agents.find(a => a.id === id)?.name ?? id;
-  // 这台机器有目录的项目里的标签，同名（不区分大小写）的只留第一个（颜色取它的）；id 换成序号，选择器按它勾选
+  // 工作空间里摆着的老白板所在项目里的标签（还没有时就是全部项目：工作空间能放任意白板），同名（不区分大小写）的
+  // 只留第一个（颜色取它的）；id 换成序号，选择器按它勾选
   const labels = useMemo(() => {
     const seen = new Set<string>();
     return (ws?.projects ?? [])
-      .filter(p => h.dirs.some(d => d.board.startsWith(`${p.key}/`)))
+      .filter(p => !h.dirs.length || h.dirs.some(d => d.board.startsWith(`${p.key}/`)))
       .flatMap(p => p.labels)
       .filter(l => !seen.has(l.name.toLowerCase()) && !!seen.add(l.name.toLowerCase()))
       .map((l, i) => ({ ...l, id: i + 1 }));
   }, [ws, h.dirs]);
-  // 只对应一个项目时，用这个项目的标签和选择器（和卡片详情一样，能新建、管理标签）
+  // 只对应一个项目时，用这个项目的标签和选择器（和卡片详情一样，能新建、管理标签）；还没有白板时看打开的这块
   const keys = [...new Set(h.dirs.map(d => d.board.split('/')[0]))];
   const one = keys.length === 1 ? ws?.projects.find(p => p.key === keys[0]) : undefined;
   const [op, setOp] = useState<ClaimRule['op']>('in');
@@ -1814,7 +1736,7 @@ function RunRow({ r, now }: { r: Dispatch; now: number }) {
         {(r.model || r.effort) && <span>{[r.model, r.effort].filter(Boolean).join(' · ')}</span>}
         <span>{r.startedAt != null ? durWords(now - r.startedAt) : '刚开始'}</span>
         <Beat at={r.beatAt} now={now} />
-        <span>{SOURCE[r.source]}</span>
+        <span>{sourceOf(r)}</span>
         {r.stopBy && <span className="hp-stopping">正在停止</span>}
         <span className="hp-sp" />
         <button className="hp-link" type="button" onClick={() => openSession({ id: r.session || r.id, card: r.card, known: [r] })}>
@@ -1868,7 +1790,7 @@ function QueueRow({ r, h, now }: { r: Dispatch; h: HostInfo; now: number }) {
       </div>
       <div className="hp-run-meta">
         <span>{queueReason(h)}</span>
-        <span>{SOURCE[r.source]}</span>
+        <span>{sourceOf(r)}</span>
         <span>排了 {durWords(now - r.createdAt)}</span>
         <span className="hp-sp" />
         <button className="hp-link danger" type="button" onClick={() => cancel(r)}>
@@ -1900,7 +1822,7 @@ function AddHostBody({ close }: { close: () => void }) {
           </section>
           <section className="d-section">
             <div className="d-label">装了桌面端的电脑</div>
-            <p className="hp-note">在「设置 → 本机」打开「让这台电脑接任务」，填好机器名和白板与目录。桌面端在后台运行 board host，关掉窗口也继续接任务，退出桌面端时结束。</p>
+            <p className="hp-note">在「设置 → 本机」打开「让这台电脑接任务」，填好机器名和工作空间。桌面端在后台运行 board host，关掉窗口也继续接任务，退出桌面端时结束。</p>
             {shell === 'desktop' && (
               <button
                 className="btn sm"
@@ -1924,33 +1846,22 @@ function AddHostBody({ close }: { close: () => void }) {
 }
 
 /**
- * 只有命令行的机器：填机器名、选白板和路径，「生成命令」时以机器名新建一个访问令牌，给出一行命令——
+ * 只有命令行的机器：填机器名和工作空间，「生成命令」时以机器名新建一个访问令牌，给出一行命令——
  * 在新机器上执行就依次安装 board、board login、board host --install（装成服务，开机自动接任务）。
- * 令牌原文只在这里显示这一次；生成之后再改机器名、目录，命令跟着变，令牌不变
+ * 令牌原文只在这里显示这一次；生成之后再改机器名、工作空间，命令跟着变，令牌不变
  */
 function CliInstall() {
-  const ws = useData(s => s.ws);
-  const path = useData(s => s.path);
-  const boards = allBoards(ws).map(b => b.path);
   // 就是这个页面的服务端地址（网页端、桌面端都一样，不写死地址）
   const origin = typeof location !== 'undefined' ? location.origin : '<服务端地址>';
   const [os, setOs] = useState<'unix' | 'windows'>(isWindows ? 'windows' : 'unix');
   const [name, setName] = useState('');
-  const [dirs, setDirs] = useState<{ board: string; path: string }[]>(() => [{ board: path || boards[0] || '', path: '' }]);
+  const [workspace, setWorkspace] = useState('');
   const [token, setToken] = useState<{ raw: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const nameErr = hostNameError(name);
-  const picked = dirs.filter(d => d.board);
-  const dirsErr = !picked.some(d => d.path.trim())
-    ? '至少给一块白板填上目录'
-    : new Set(picked.map(d => d.board)).size !== picked.length
-      ? '同一块白板写了两次'
-      : picked.some(d => !d.path.trim())
-        ? '选了白板的行都要填目录'
-        : null;
-  const err = nameErr ?? dirsErr;
-  const cmd = token && !err ? installCommand({ origin, token: token.raw, name, dirs, os }) : null;
-  const edit = (f: (v: typeof dirs) => typeof dirs) => setDirs(f);
+  const wsErr = !workspace.trim() ? '先填工作空间：每块白板的目录是 <工作空间>/<项目>/<白板>' : null;
+  const err = nameErr ?? wsErr;
+  const cmd = token && !err ? installCommand({ origin, token: token.raw, name, workspace, os }) : null;
   const copy = async (t: string) => {
     if (await copyText(t)) toast({ type: 'success', title: '已复制', text: '在新机器的终端里粘贴执行', duration: 1800 });
   };
@@ -1969,7 +1880,7 @@ function CliInstall() {
   return (
     <section className="d-section">
       <div className="d-label">只有命令行的机器（服务器、devbox）</div>
-      <p className="hp-note">填好机器名和要接的白板、目录，生成一行命令，在那台机器上执行：安装 board、登录、装成服务（开机自动接任务）。</p>
+      <p className="hp-note">填好机器名和工作空间，生成一行命令，在那台机器上执行：安装 board、登录、装成服务（开机自动接任务）。</p>
       <div className="hp-add">
         <div className="hp-add-row">
           <span className="hp-add-k">系统</span>
@@ -1993,41 +1904,21 @@ function CliInstall() {
             onChange={e => setName(e.target.value.toLowerCase().trim())}
           />
         </label>
-        <div className="hp-add-row top">
-          <span className="hp-add-k">白板与目录</span>
-          <div className="lh-dirs hp-add-dirs">
-            {dirs.map((d, i) => (
-              <div className="lh-dir" key={i}>
-                <Select
-                  value={d.board}
-                  options={[{ value: '', label: '选白板…' }, ...[...new Set([...boards, ...(d.board ? [d.board] : [])])].map(b => ({ value: b, label: b }))]}
-                  onChange={val => edit(v => v.map((x, j) => (j === i ? { ...x, board: val } : x)))}
-                  aria-label="白板"
-                />
-                <Icon name="move" />
-                <input
-                  className="input"
-                  value={d.path}
-                  placeholder={os === 'windows' ? 'C:\\repo\\board' : '~/repo/board'}
-                  spellCheck={false}
-                  onChange={e => edit(v => v.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
-                  aria-label="目录"
-                />
-                {dirs.length > 1 && (
-                  <button className="icon-btn sm" type="button" aria-label="去掉这一行" onClick={() => edit(v => v.filter((_, j) => j !== i))}>
-                    <Icon name="close" />
-                  </button>
-                )}
-              </div>
-            ))}
-            <div className="lh-actions">
-              <button className="btn sm" type="button" onClick={() => edit(v => [...v, { board: boards.find(b => !v.some(x => x.board === b)) ?? '', path: '' }])}>
-                <Icon name="plus" />
-                加一块白板
-              </button>
-            </div>
-          </div>
-        </div>
+        <label className="hp-add-row">
+          <span className="hp-add-k">工作空间</span>
+          <input
+            className="input mono"
+            value={workspace}
+            placeholder={os === 'windows' ? 'C:\\repo' : '~/repo'}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={e => setWorkspace(e.target.value)}
+          />
+        </label>
+        <p className="hp-note hp-add-note">
+          一台机器只填这一个目录：每块白板的目录是 <code>{workspace.trim() ? `${workspace.trim().replace(/[\\/]+$/, '')}/${'<项目>/<白板>'}` : '<工作空间>/<项目>/<白板>'}</code>
+          ，还没有时 board host 自动建好（白板设了仓库地址时自动克隆）。之后新加的白板也一样，不用再到这台机器上配。
+        </p>
       </div>
       {!token ? (
         <div className="hp-add-go">
