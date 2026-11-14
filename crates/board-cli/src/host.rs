@@ -4338,7 +4338,7 @@ mod tests {
     }
 
     fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
-        // 跑一个马上结束的进程：Windows 上没有 `true`，用 cmd 的 exit
+        // 跑一个马上结束的进程：Windows 上没有 `true`，用 cmd 的 exit（这里只在 Windows 上编它，别的平台用 `true`）
         #[cfg(windows)]
         let child = Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
         #[cfg(not(windows))]
