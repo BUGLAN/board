@@ -133,55 +133,99 @@
 .lbp-foot svg { width: 14px; height: 14px; }
 
 /* ---------------- 标签管理 ---------------- */
-.dialog.lbm { width: min(560px, 100%); text-align: left; padding: 20px 20px 18px; }
-.lbm-head { display: flex; align-items: center; gap: 10px; }
-.lbm-head h3 { font-family: var(--f-display); font-size: 18px; }
-.lbm-sub { font-size: 12px; color: var(--text-3); }
-.lbm-head .icon-btn { margin-left: auto; }
-/* 各行共用列表的列（subgrid）：预览胶囊、类型开关、卡片数逐行对齐，不随标签名长短、开关文字长短错开 */
-.lbm-list {
-  max-height: 46vh; overflow-y: auto; margin: 12px -4px 0; padding: 0 4px;
-  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto auto auto; align-content: start; column-gap: 10px; row-gap: 4px;
-}
-.lbm-list > .lbp-empty { grid-column: 1 / -1; }
-.lbm-row { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 6px 6px 6px 8px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
-.lbm-preview { display: flex; min-width: 0; }
+/* 一个标签一行：拖动把手 · 名称胶囊（自身可改名、左边色块改色） · 仅人可打 · 优先 · 卡片数 · 删除。
+   各列固定宽度，名称列吃剩下的宽度：再长的名称、再窄的窗口都不会横向滚动 */
+.dialog.lbm { width: min(500px, 100%); min-width: 0; text-align: left; padding: 20px 20px 18px; }
+.lbm-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.lbm-head h3 { font-family: var(--f-display); font-size: 18px; flex: none; }
+.lbm-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-3); }
+.lbm-head .icon-btn { margin-left: auto; flex: none; }
+.lbm-cols, .lbm-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) 28px 28px 40px 28px; column-gap: 8px; align-items: center; }
+.lbm-cols { margin-top: 10px; padding: 0 6px 6px 8px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--text-3); }
+.lbm-cols > span { display: grid; place-items: center; }
+.lbm-cols > span:nth-child(2) { place-items: center start; padding-left: 4px; }
+.lbm-cols > span:nth-child(5) { place-items: center end; }
+.lbm-cols svg { width: 13px; height: 13px; }
+.lbm-list { max-height: 52vh; overflow: hidden auto; margin: 4px -4px 0; padding: 0 4px 2px; }
+.lbm-list > .lbp-empty { padding: 20px 0 12px; }
+.lbm-row { position: relative; padding: 4px 6px 4px 8px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
 .lbm-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .lbm-row.new { animation: tl-in var(--dur-4) var(--spring-soft); }
-.lbm-color { width: 22px; height: 22px; border-radius: var(--r-xs); background: var(--lc, #888); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2), 0 2px 6px -2px var(--lc); transition: transform var(--dur-2) var(--spring); flex: none; }
-.lbm-color:hover { transform: scale(1.1); }
-.lbm-name { min-width: 0; height: 30px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; font-size: 13.5px; box-shadow: inset 0 0 0 1px transparent; transition: box-shadow var(--dur-1), background-color var(--dur-1); }
-.lbm-name:hover { box-shadow: inset 0 0 0 1px var(--line-2); }
-.lbm-name:focus { background: var(--surface); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent), 0 0 0 3px var(--brand-soft); }
-/* 标签类型开关：agent 可打（淡）⇄ 仅人可打（带锁、实色） */
-.lbm-kind {
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--r-sm); white-space: nowrap;
-  font-size: 11.5px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2);
-  transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
+/* 被隐藏的标签：胶囊淡一些 */
+.lbm-row.dim .lbm-chip { opacity: .7; }
+/* 名称胶囊：样子和卡片上的标签胶囊一样，只是高一点；聚焦时显出输入框的光圈 */
+.lbm-chip {
+  display: inline-flex; align-items: center; gap: 6px; justify-self: start; min-width: 0; max-width: 100%; height: 28px; padding: 0 10px 0 7px; border-radius: var(--r-sm);
+  color: color-mix(in srgb, var(--lc, #888) 80%, var(--text));
+  background: color-mix(in srgb, var(--lc, #888) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc, #888) 26%, transparent);
+  transition: box-shadow var(--dur-1), background-color var(--dur-1), opacity var(--dur-1);
 }
-.lbm-kind svg { width: 12px; height: 12px; flex: none; }
-.lbm-prio.on svg { fill: currentColor; }
-.lbm-kind:hover { color: var(--text); background: var(--surface-3); }
-.lbm-kind.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3); }
-.lbm-row .lbm-kind { justify-self: stretch; }
-.lbm-new .lbm-kind { height: 34px; }
-.lbm-count { font-size: 11.5px; color: var(--text-3); font-family: var(--f-mono); white-space: nowrap; text-align: right; }
+.lbm-chip:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc, #888) 45%, transparent); }
+.lbm-chip:focus-within {
+  background: color-mix(in srgb, var(--lc, #888) 18%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lc, #888) 60%, transparent), 0 0 0 3px color-mix(in srgb, var(--lc, #888) 20%, transparent);
+}
+.lbm-chip > svg { width: 12px; height: 12px; flex: none; opacity: .85; }
+.lbm-chip > .lbm-chip-prio { fill: currentColor; }
+.lbm-color { width: 12px; height: 12px; border-radius: 4px; flex: none; background: var(--lc, #888); box-shadow: 0 0 0 2px color-mix(in srgb, var(--lc, #888) 25%, transparent); transition: transform var(--dur-2) var(--spring); }
+/* 色块只有 12px：点击区域向外扩到 24px */
+.lbm-color { position: relative; }
+.lbm-color::after { content: ""; position: absolute; inset: -6px; }
+.lbm-color:hover { transform: scale(1.25); }
+/* 输入框随文字变宽：同一格里叠一份看不见的文字（data-text）撑开 */
+.lbm-name-wrap { display: inline-grid; min-width: 0; }
+.lbm-name-wrap::after { content: attr(data-text) " "; visibility: hidden; white-space: pre; overflow: hidden; }
+.lbm-name-wrap::after, .lbm-name { grid-area: 1 / 1; min-width: 2ch; font-size: 13px; font-weight: 500; }
+.lbm-name { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-overflow: ellipsis; }
+.lbm-name:focus { outline: none; }
+/* 图标开关：关着时淡，开着时实底；悬停变清楚 */
+.lbm-ic {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-sm); color: var(--text-3); opacity: .5;
+  transition: color var(--dur-1), background-color var(--dur-1), opacity var(--dur-1), box-shadow var(--dur-1);
+}
+.lbm-ic svg { width: 14px; height: 14px; }
+.lbm-ic:hover { opacity: 1; color: var(--text); background: var(--surface-3); }
+.lbm-ic.on { opacity: 1; color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3); }
+.lbm-ic.prio.on svg { fill: currentColor; }
+.lbm-count { font-size: 11.5px; color: var(--text-3); font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 .lbm-del { opacity: 0; }
-.lbm-row:hover .lbm-del { opacity: 1; }
+.lbm-row:hover .lbm-del, .lbm-del:focus-visible { opacity: 1; }
 .lbm-del:hover { color: var(--danger-text); }
-.lbm-swatches { position: absolute; left: 0; top: calc(100% + 2px); z-index: 5; display: flex; gap: 6px; padding: 8px; border-radius: var(--r-md); background: var(--glass-strong); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3); animation: pop-in var(--dur-2) var(--spring); }
+/* 触屏没有悬停：删除一直显示 */
+@media (hover: none) { .lbm-del { opacity: .6; } }
+.lbm-swatches { position: absolute; left: 26px; top: calc(100% + 2px); z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 26px); padding: 8px; border-radius: var(--r-md); background: var(--glass-strong); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3); animation: pop-in var(--dur-2) var(--spring); }
 .lbm-swatches .swatch { width: 20px; height: 20px; border-radius: var(--r-xs); }
-.lbm-new { position: relative; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-.lbm-new .input { flex: 1; height: 34px; padding: 0 10px; }
-.lbm-new .btn { height: 34px; }
-.lbm-new .lbm-swatches { top: auto; bottom: calc(100% - 8px); }
-
-/* ---------------- 提示词预览 ---------------- */
+/* 「已隐藏」组：一行标题，点开在下面列出被隐藏的标签和隐藏规则 */
+.lbm-group {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 34px; margin-top: 6px; padding: 0 8px;
+  border-top: 1px solid var(--line); border-radius: 0; font-size: 12.5px; color: var(--text-2); text-align: left;
+  transition: background-color var(--dur-1), color var(--dur-1);
+}
+.lbm-group:hover { color: var(--text); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.lbm-group b { font-family: var(--f-mono); font-weight: 500; color: var(--text-3); }
+.lbm-chev { width: 14px; height: 14px; flex: none; transition: transform var(--dur-2) var(--ease-out); }
+.lbm-group.open .lbm-chev { transform: rotate(90deg); }
+.lbm-group-why { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-3); }
+.lbm-group-why code { margin: 0 3px; font-family: var(--f-mono); color: var(--text-2); }
+.lbm-new { position: relative; display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.lbm-new .lbm-chip { flex: 1; height: 34px; }
+.lbm-new .lbm-chip input { flex: 1; width: 0; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; font-size: 13px; font-weight: 500; color: inherit; }
+.lbm-new .lbm-chip input:focus { outline: none; }
+.lbm-new .lbm-chip input::placeholder { color: var(--text-3); font-weight: 400; }
+.lbm-new .lbm-ic { width: 34px; height: 34px; flex: none; opacity: 1; box-shadow: inset 0 0 0 1px var(--line-2); }
+.lbm-new .lbm-ic.on { box-shadow: inset 0 0 0 1px var(--line-3); }
+.lbm-new .btn { height: 34px; flex: none; }
+.lbm-new .lbm-swatches { left: 0; top: auto; bottom: calc(100% - 6px); }
+@media (prefers-reduced-motion: reduce) { .lbm-chev { transition: none; } }
+:root[data-motion="reduced"] .lbm-chev { transition: none; }
 
 @media (max-width: 760px) {
-  /* 「复制链接」「复制为提示词」在手机上收进「更多」菜单（CardDetail 按 isMobile 渲染），顶栏不再挤成只剩图标的按钮 */
-  .lbm-list { grid-template-columns: auto auto minmax(0, 1fr) auto auto auto auto; }
-  .lbm-preview { display: none; }
+  .lbm-group-why { display: none; }
+}
+/* 触屏、窄屏上输入框统一 16px（base.css）：撑宽度的那份文字跟着变大，否则名称被截断 */
+@media (pointer: coarse), (max-width: 480px) {
+  .lbm-name-wrap::after { font-size: 16px; }
 }
 
 .tree-row > svg { width: 14px; height: 14px; flex: none; }
@@ -255,16 +299,13 @@
 .lbm-row.ins-before::before, .lbm-row.ins-after::after {
   content: ''; position: absolute; left: 8px; right: 8px; height: 2px; border-radius: 1px; background: var(--brand); pointer-events: none;
 }
-.lbm-row.ins-before::before { top: -3px; }
-.lbm-row.ins-after::after { bottom: -3px; }
+.lbm-row.ins-before::before { top: -1px; }
+.lbm-row.ins-after::after { bottom: -1px; }
 
-/* 管理标签：隐藏的标签（default/main#324） */
-.lbm-hid { margin-right: 6px; padding: 1px 6px; border-radius: var(--r-xs); font-style: normal; font-size: 11px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); }
-.lbm-hidden { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-.lbm-hidden-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
-.lbm-hidden-head b { font-weight: 600; color: var(--text); }
-.lbm-rules { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.lbm-rules-empty { font-size: 12px; color: var(--text-3); }
+/* 管理标签：隐藏规则（default/main#324），在「已隐藏」组展开后的最下面 */
+.lbm-hidden { padding: 8px 8px 6px; }
+.lbm-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lbm-rules-k { display: inline-flex; align-items: center; gap: 4px; margin-right: 2px; font-size: 12px; color: var(--text-2); }
 .lbm-rule {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 2px 0 8px; border-radius: var(--r-sm);
   background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
@@ -275,7 +316,7 @@
 .lbm-rule.bad em { color: var(--danger-text); }
 .lbm-rule .icon-btn { width: 24px; height: 24px; }
 .lbm-rule-new { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.lbm-rule-new .input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; font-family: var(--f-mono); font-size: 12.5px; }
+.lbm-rule-new .input { flex: 1; min-width: 0; height: 30px; padding: 0 10px; font-family: var(--f-mono); font-size: 12.5px; }
 .lbm-rule-new .input.invalid { box-shadow: inset 0 0 0 1px var(--danger); }
-.lbm-rule-new .btn { height: 32px; }
+.lbm-rule-new .btn { height: 30px; flex: none; }
 .lbm-rule-err { margin: 6px 0 0; font-size: 12px; color: var(--danger-text); }

@@ -7,6 +7,7 @@ import { cx, replay } from '../../lib/util';
 import { deleteLabelPatch, editLabelPatch, hiddenLabelsKey, hiddenLabelsPatch, optimistic, reorderLabels, useBusy, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
 import { ColorPick, InfoTip, LabelChip, Tip } from '../bits';
+import type { Label } from '../../lib/types';
 import { Icon } from '../Icon';
 import { usePresence } from './presence';
 
@@ -152,36 +153,39 @@ export function LabelPicker() {
 }
 
 /* ============================ 标签管理 ============================ */
+/* 一个标签一行（default/main：管理标签横向滚动条）：名称输入本身画成标签胶囊（所见即所得，不另放预览），
+   「仅人可打」「优先」是两个图标开关，卡片数只写数字；隐藏的标签收进列表底部一组，默认收起 */
 
-/** 标签类型开关：agent 可打 ⇄ 仅人可打 */
-function KindToggle({ human, onChange }: { human: boolean; onChange: (human: boolean) => void }) {
+const HUMAN_TIP = (on: boolean) => (on ? '仅人可打：agent 不能加、去这个标签；点一下改成 agent 可打' : 'agent 可打：人和 agent 都能打；点一下改成仅人可打');
+const PRIO_TIP = (on: boolean) => (on ? '优先：带这个标签的卡片先被领取；点一下取消' : '点一下设为优先：带这个标签的卡片先被领取');
+
+/** 图标开关：仅人可打 / 优先 */
+function IconToggle({ kind, on, onChange, label }: { kind: 'human' | 'prio'; on: boolean; onChange: (on: boolean) => void; label?: string }) {
   return (
-    <button
-      type="button"
-      className={cx('lbm-kind', human && 'on')}
-      aria-pressed={human}
-      title={human ? '仅人可打：只有人能在界面上加、去；点一下改成 agent 可打' : 'agent 可打：人和 agent 都能打；点一下改成仅人可打'}
-      onClick={() => onChange(!human)}
-    >
-      <Icon name={human ? 'lock' : 'unlock'} />
-      {human ? '仅人可打' : 'agent 可打'}
-    </button>
+    <Tip text={kind === 'human' ? HUMAN_TIP(on) : PRIO_TIP(on)}>
+      <button
+        type="button"
+        className={cx('lbm-ic', kind === 'prio' && 'prio', on && 'on')}
+        aria-pressed={on}
+        aria-label={`${label ? `「${label}」` : ''}${kind === 'human' ? '仅人可打' : '优先'}`}
+        onClick={() => onChange(!on)}
+      >
+        <Icon name={kind === 'human' ? (on ? 'lock' : 'unlock') : 'bolt'} />
+      </button>
+    </Tip>
   );
 }
 
-/** 「优先」开关：带这个标签的卡片先被领取 */
-function PriorityToggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+/** 色板浮层：九个颜色 + 取色器 */
+function Swatches({ value, label, onPick }: { value: string; label: string; onPick: (c: string) => void }) {
   return (
-    <button
-      type="button"
-      className={cx('lbm-kind lbm-prio', on && 'on')}
-      aria-pressed={on}
-      title={on ? '优先：带这个标签的卡片先被领取；点一下取消' : '点一下设为优先：带这个标签的卡片先被领取'}
-      onClick={() => onChange(!on)}
-    >
-      <Icon name="bolt" />
-      优先
-    </button>
+    <div className="lbm-swatches">
+      {LABEL_COLORS.map(c => (
+        <button key={c} type="button" className="swatch" style={{ ['--sw' as string]: c }} aria-label={c} onClick={() => onPick(c)} />
+      ))}
+      {/* 最后是取色器：任意颜色 */}
+      <ColorPick value={value} custom={!LABEL_COLORS.includes(value.toUpperCase())} label={label} onPick={onPick} />
+    </div>
   );
 }
 
@@ -201,19 +205,25 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
   const [newColor, setNewColor] = useState<string | null>(null);
   const [newHuman, setNewHuman] = useState(false);
   const [names, setNames] = useState<Record<number, string>>({});
+  const [showHidden, setShowHidden] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const labels = p?.labels ?? [];
   const rules = hiddenRules(p);
+  const shown = labels.filter(l => !hiddenBy(l.name, rules));
+  const hidden = labels.filter(l => hiddenBy(l.name, rules));
+  // 列表里画出来的行，按画的顺序：拖动、↑↓ 的位置都按它算
+  const rows = showHidden ? [...shown, ...hidden] : shown;
   const nc = newColor ?? LABEL_COLORS[labels.length % LABEL_COLORS.length];
   // 拖动调整顺序（default/main#289）：拖着的那一行跟着指针走，插入位置画一道线，松手当帧换位，顺序写进项目；侧栏跟着变
   const [drag, setDrag] = useState<{ id: number; dy: number; to: number } | null>(null);
+  /** 把 id 挪到画出来的第 to 行之前（to = 行数：最后一行之后）；换算成项目里全部标签的顺序 */
   const move = (id: number, to: number) => {
-    const ids = labels.map(l => l.id);
-    const from = ids.indexOf(id);
-    if (from < 0 || to < 0 || to > ids.length || to === from || to === from + 1) return;
-    ids.splice(from, 1);
-    ids.splice(to > from ? to - 1 : to, 0, id);
+    const from = rows.findIndex(l => l.id === id);
+    if (from < 0 || to < 0 || to > rows.length || to === from || to === from + 1) return;
+    const ids = labels.map(l => l.id).filter(x => x !== id);
+    const at = to < rows.length ? ids.indexOf(rows[to].id) : ids.indexOf(rows[rows.length - 1].id) + 1;
+    ids.splice(at, 0, id);
     reorderLabels(pk, ids).catch(toastError);
   };
   const grip = (e: React.PointerEvent<HTMLElement>, id: number) => {
@@ -223,16 +233,16 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const y0 = e.clientY + box.scrollTop;
-    let to = labels.findIndex(l => l.id === id);
+    let to = rows.findIndex(l => l.id === id);
     let auto = 0;
     let lastY = e.clientY;
     const at = (y: number) => {
-      const rows = [...box.querySelectorAll<HTMLElement>(':scope > .lbm-row')];
-      const i = rows.findIndex(r => {
+      const els = [...box.querySelectorAll<HTMLElement>('.lbm-row')];
+      const i = els.findIndex(r => {
         const b = r.getBoundingClientRect();
         return y < b.top + b.height / 2;
       });
-      return i < 0 ? rows.length : i;
+      return i < 0 ? els.length : i;
     };
     const update = () => {
       to = at(lastY);
@@ -289,6 +299,103 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
     return true;
   };
 
+  const row = (l: Label, i: number) => {
+    const shownName = names[l.id] ?? l.name;
+    return (
+      <div
+        className={cx(
+          'lbm-row',
+          i >= shown.length && 'dim',
+          drag?.id === l.id && 'dragging',
+          drag && drag.id !== l.id && drag.to === i && 'ins-before',
+          drag && drag.id !== l.id && drag.to === rows.length && i === rows.length - 1 && 'ins-after',
+        )}
+        key={l.id}
+        style={{ ['--lc' as string]: l.color, ...(drag?.id === l.id ? { transform: `translateY(${drag.dy}px)` } : null) }}
+      >
+        <Tip text="拖动调整顺序">
+          <button
+            type="button"
+            className="lbm-grip"
+            aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
+            onPointerDown={e => grip(e, l.id)}
+            onKeyDown={e => {
+              if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+              e.preventDefault();
+              move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
+            }}
+          >
+            <Icon name="reorder" />
+          </button>
+        </Tip>
+        {/* 名称输入画成这个标签的胶囊：左边色块点开改色，锁、闪电和卡片上的胶囊一样 */}
+        <span className="lbm-chip">
+          <Tip text="改颜色">
+            <button type="button" className="lbm-color" aria-label={`改「${l.name}」的颜色`} onClick={() => setSwatch(swatch === l.id ? null : l.id)} />
+          </Tip>
+          {l.priority && <Icon name="bolt" className="lbm-chip-prio" />}
+          {l.humanOnly && <Icon name="lock" />}
+          {/* 输入框跟着文字变宽：同一格里叠一个看不见的同样文字撑开宽度 */}
+          <span className="lbm-name-wrap" data-text={shownName}>
+            <input
+              className="lbm-name"
+              value={shownName}
+              maxLength={24}
+              size={1}
+              spellCheck={false}
+              aria-label="标签名称"
+              onChange={e => setNames(n => ({ ...n, [l.id]: e.target.value }))}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              onBlur={async () => {
+                const v = names[l.id];
+                const next = v?.trim();
+                if (v != null && next && next !== l.name) await run(editLabelPatch(pk, l.id, { name: next }), () => api.updateLabel(pk, l.id, { name: next }));
+                setNames(n => {
+                  const x = { ...n };
+                  delete x[l.id];
+                  return x;
+                });
+              }}
+            />
+          </span>
+        </span>
+        <IconToggle kind="human" on={!!l.humanOnly} label={l.name} onChange={h => run(editLabelPatch(pk, l.id, { humanOnly: h }), () => api.updateLabel(pk, l.id, { humanOnly: h }))} />
+        <IconToggle kind="prio" on={!!l.priority} label={l.name} onChange={v => run(editLabelPatch(pk, l.id, { priority: v }), () => api.updateLabel(pk, l.id, { priority: v }))} />
+        <span className="lbm-count" title={`${l.uses} 张卡片带这个标签`}>
+          {l.uses}
+        </span>
+        <button
+          type="button"
+          className="icon-btn sm lbm-del"
+          aria-label={`删除「${l.name}」`}
+          onClick={async () => {
+            if (l.uses && !(await confirm({ title: `删除标签「${l.name}」？`, text: `${l.uses} 张卡片上的这个标签会一起移除。`, ok: '删除标签', icon: 'tag' })))
+              return;
+            await run(deleteLabelPatch(pk, l.id), () => api.deleteLabel(pk, l.id));
+          }}
+        >
+          <Icon name="trash" />
+        </button>
+        {swatch === l.id && (
+          <Swatches
+            value={l.color}
+            label={`「${l.name}」的颜色`}
+            onPick={async c => {
+              setSwatch(null);
+              if (c.toUpperCase() === l.color.toUpperCase()) return;
+              await run(editLabelPatch(pk, l.id, { color: c }), () => api.updateLabel(pk, l.id, { color: c }));
+            }}
+          />
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
       className={cx('dialog-wrap', on && 'on')}
@@ -315,124 +422,57 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
             <Icon name="close" />
           </button>
         </div>
+        {labels.length > 0 && (
+          <div className="lbm-cols" aria-hidden="true">
+            <span />
+            <span>名称</span>
+            <Tip text="仅人可打">
+              <span>
+                <Icon name="lock" />
+              </span>
+            </Tip>
+            <Tip text="优先领取">
+              <span>
+                <Icon name="bolt" />
+              </span>
+            </Tip>
+            <span>卡片</span>
+            <span />
+          </div>
+        )}
         <div className="lbm-list" ref={list}>
           {labels.length === 0 && <div className="lbp-empty">这个项目还没有标签</div>}
-          {labels.map((l, i) => (
-            <div
-              className={cx(
-                'lbm-row',
-                drag?.id === l.id && 'dragging',
-                drag && drag.id !== l.id && drag.to === i && 'ins-before',
-                drag && drag.id !== l.id && drag.to === labels.length && i === labels.length - 1 && 'ins-after',
-              )}
-              key={l.id}
-              style={{ ['--lc' as string]: l.color, ...(drag?.id === l.id ? { transform: `translateY(${drag.dy}px)` } : null) }}
-            >
-              <Tip text="拖动调整顺序">
-                <button
-                  type="button"
-                  className="lbm-grip"
-                  aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
-                  onPointerDown={e => grip(e, l.id)}
-                  onKeyDown={e => {
-                    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-                    e.preventDefault();
-                    move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
-                  }}
-                >
-                  <Icon name="reorder" />
-                </button>
-              </Tip>
-              <button type="button" className="lbm-color" aria-label="改颜色" onClick={() => setSwatch(swatch === l.id ? null : l.id)} />
-              <input
-                className="lbm-name"
-                value={names[l.id] ?? l.name}
-                maxLength={24}
-                spellCheck={false}
-                aria-label="标签名称"
-                onChange={e => setNames(n => ({ ...n, [l.id]: e.target.value }))}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-                onBlur={async () => {
-                  const v = names[l.id];
-                  if (v == null || v === l.name) return;
-                  await run(editLabelPatch(pk, l.id, { name: v.trim() }), () => api.updateLabel(pk, l.id, { name: v }));
-                  setNames(n => {
-                    const x = { ...n };
-                    delete x[l.id];
-                    return x;
-                  });
-                }}
-              />
-              <span className="lbm-preview">
-                <LabelChip label={{ ...l, name: names[l.id] ?? l.name }} />
-              </span>
-              <KindToggle
-                human={!!l.humanOnly}
-                onChange={h => run(editLabelPatch(pk, l.id, { humanOnly: h }), () => api.updateLabel(pk, l.id, { humanOnly: h }))}
-              />
-              <PriorityToggle
-                on={!!l.priority}
-                onChange={v => run(editLabelPatch(pk, l.id, { priority: v }), () => api.updateLabel(pk, l.id, { priority: v }))}
-              />
-              <span className="lbm-count">
-                {hiddenBy(l.name, rules) && (
-                  <Tip text={`名称匹配隐藏规则 ${hiddenBy(l.name, rules)}：不出现在侧栏、提示词菜单、标签选择器`}>
-                    <em className="lbm-hid">已隐藏</em>
-                  </Tip>
-                )}
-                {l.uses} 张卡片
-              </span>
-              <button
-                type="button"
-                className="icon-btn sm lbm-del"
-                aria-label="删除"
-                onClick={async () => {
-                  if (l.uses && !(await confirm({ title: `删除标签「${l.name}」？`, text: `${l.uses} 张卡片上的这个标签会一起移除。`, ok: '删除标签', icon: 'tag' })))
-                    return;
-                  await run(deleteLabelPatch(pk, l.id), () => api.deleteLabel(pk, l.id));
-                }}
-              >
-                <Icon name="trash" />
-              </button>
-              {swatch === l.id && (
-                <div className="lbm-swatches">
-                  {LABEL_COLORS.map(c => (
-                    <button
-                      key={c}
-                      type="button"
-                      className="swatch"
-                      style={{ ['--sw' as string]: c }}
-                      aria-label={c}
-                      onClick={async () => {
-                        setSwatch(null);
-                        await run(editLabelPatch(pk, l.id, { color: c }), () => api.updateLabel(pk, l.id, { color: c }));
-                      }}
-                    />
+          {shown.map(row)}
+          <button type="button" className={cx('lbm-group', showHidden && 'open')} aria-expanded={showHidden} onClick={() => setShowHidden(!showHidden)}>
+            <svg className="lbm-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m7.5 5 5 5-5 5" />
+            </svg>
+            已隐藏 <b>{hidden.length}</b>
+            <span className="lbm-group-why">
+              {rules.length ? (
+                <>
+                  名称匹配
+                  {rules.map(r => (
+                    <code key={r}>{r}</code>
                   ))}
-                  {/* 最后是取色器：任意颜色 */}
-                  <ColorPick
-                    value={l.color}
-                    custom={!LABEL_COLORS.includes(l.color.toUpperCase())}
-                    label={`「${l.name}」的颜色`}
-                    onPick={async c => {
-                      setSwatch(null);
-                      if (c === l.color.toUpperCase()) return;
-                      await run(editLabelPatch(pk, l.id, { color: c }), () => api.updateLabel(pk, l.id, { color: c }));
-                    }}
-                  />
-                </div>
+                  ，不出现在侧栏和选择器
+                </>
+              ) : (
+                '没有隐藏规则'
               )}
-            </div>
-          ))}
+            </span>
+          </button>
+          {showHidden && (
+            <>
+              {hidden.map((l, i) => row(l, shown.length + i))}
+              <HiddenRules pk={pk} rules={rules} labels={labels} />
+            </>
+          )}
         </div>
         <form
           className="lbm-new"
           noValidate
+          style={{ ['--lc' as string]: nc }}
           onSubmit={async e => {
             e.preventDefault();
             if (!name.trim()) {
@@ -447,64 +487,46 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
               setName('');
               setNewColor(null);
               setNewHuman(false);
+              // 新标签排在可见标签最后（被隐藏规则命中时在隐藏组里）：滚到它那一行
               requestAnimationFrame(() => {
-                const el = list.current;
-                if (!el) return;
-                el.scrollTop = el.scrollHeight;
-                el.lastElementChild?.classList.add('new');
+                const rs = list.current?.querySelectorAll('.lbm-row');
+                const el = rs?.[shown.length] as HTMLElement | undefined;
+                el?.scrollIntoView({ block: 'nearest' });
+                el?.classList.add('new');
               });
             }
             input.current?.focus();
           }}
         >
-          <button
-            type="button"
-            className="lbm-color"
-            aria-label="选择颜色"
-            style={{ ['--lc' as string]: nc }}
-            onClick={() => setSwatch(swatch === 'new' ? null : 'new')}
-          />
-          <input ref={input} className="input" placeholder="新标签名称" maxLength={24} autoComplete="off" spellCheck={false} value={name} onChange={e => setName(e.target.value)} />
-          <KindToggle human={newHuman} onChange={setNewHuman} />
+          <span className="lbm-chip wide">
+            <Tip text="选颜色">
+              <button type="button" className="lbm-color" aria-label="选择颜色" onClick={() => setSwatch(swatch === 'new' ? null : 'new')} />
+            </Tip>
+            <input ref={input} placeholder="新标签名称，回车新建" maxLength={24} autoComplete="off" spellCheck={false} aria-label="新标签名称" value={name} onChange={e => setName(e.target.value)} />
+          </span>
+          <IconToggle kind="human" on={newHuman} onChange={setNewHuman} />
           <button type="submit" className={cx('btn sm primary', creating && 'is-busy')} disabled={creating} aria-busy={creating || undefined}>
             <Icon name="plus" />
             新建
           </button>
           {swatch === 'new' && (
-            <div className="lbm-swatches">
-              {LABEL_COLORS.map(c => (
-                <button
-                  key={c}
-                  type="button"
-                  className="swatch"
-                  style={{ ['--sw' as string]: c }}
-                  aria-label={c}
-                  onClick={() => {
-                    setNewColor(c);
-                    setSwatch(null);
-                  }}
-                />
-              ))}
-              <ColorPick
-                value={nc}
-                custom={!LABEL_COLORS.includes(nc.toUpperCase())}
-                label="新标签的颜色"
-                onPick={c => {
-                  setNewColor(c);
-                  setSwatch(null);
-                }}
-              />
-            </div>
+            <Swatches
+              value={nc}
+              label="新标签的颜色"
+              onPick={c => {
+                setNewColor(c);
+                setSwatch(null);
+              }}
+            />
           )}
         </form>
-        <HiddenRules pk={pk} rules={rules} labels={labels} />
       </div>
     </div>
   );
 }
 
-/** 隐藏的标签（default/main#324）：一组正则，名称匹配任一条的标签不出现在侧栏、提示词菜单、标签选择器。
-    每条后面写命中几个标签；× 删掉一条就是取消隐藏。整组保存在项目上，所有白板、所有设备一样 */
+/** 隐藏规则（default/main#324）：一组正则，名称匹配任一条的标签不出现在侧栏、提示词菜单、标签选择器。
+    放在「已隐藏」组展开后的最下面；每条后面写命中几个标签；× 删掉一条就是取消隐藏。整组保存在项目上，所有白板、所有设备一样 */
 function HiddenRules({ pk, rules, labels }: { pk: string; rules: string[]; labels: { name: string }[] }) {
   const [text, setText] = useState('');
   const [error, setError] = useState('');
@@ -535,13 +557,12 @@ function HiddenRules({ pk, rules, labels }: { pk: string; rules: string[]; label
   };
   const hits = (r: string) => labels.filter(l => hiddenBy(l.name, [r])).length;
   return (
-    <section className="lbm-hidden" aria-label="隐藏的标签">
-      <div className="lbm-hidden-head">
-        <b>隐藏的标签</b>
-        <InfoTip text="名称匹配任一条正则（不区分大小写）的标签，不出现在侧栏、提示词菜单和标签选择器里；卡片上、卡片详情、里程碑照常显示。删掉一条规则就取消隐藏。" />
-      </div>
+    <section className="lbm-hidden" aria-label="隐藏规则">
       <div className="lbm-rules">
-        {rules.length === 0 && <span className="lbm-rules-empty">没有隐藏的标签</span>}
+        <span className="lbm-rules-k">
+          隐藏规则
+          <InfoTip text="名称匹配任一条正则（不区分大小写）的标签，不出现在侧栏、提示词菜单和标签选择器里；卡片上、卡片详情、里程碑照常显示。删掉一条规则就取消隐藏。" />
+        </span>
         {rules.map(r => {
           const bad = ruleError(r) !== null;
           const n = hits(r);
