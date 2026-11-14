@@ -293,6 +293,16 @@ describe('项目与标签', () => {
     expect(D.patchProject('nope', x => ({ ...x, name: 'x' })).ws!(orig)).toEqual(orig);
   });
 
+  it('hiddenLabelsPatch：整组替换规则；带 hiddenLabelsKey；项目不在了内容不变', () => {
+    const p = D.hiddenLabelsPatch('p', ['^v\\d', '^tmp-']);
+    const ws = twice(p.ws!, workspace());
+    expect(ws.projects.find(x => x.key === 'p')!.hiddenLabels).toEqual(['^v\\d', '^tmp-']);
+    expect(ws.projects.find(x => x.key === 'q')!.hiddenLabels).toBeUndefined();
+    expect(p.keys).toEqual([D.hiddenLabelsKey('p')]);
+    const orig = workspace();
+    expect(D.hiddenLabelsPatch('nope', []).ws!(orig)).toEqual(orig);
+  });
+
   it('editLabelPatch：改名、改颜色；带 labelKey；标签不在了内容不变', () => {
     const p = D.editLabelPatch('p', 2, { name: '界面', color: '#00f' });
     const ws = twice(p.ws!, workspace());

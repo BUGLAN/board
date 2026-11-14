@@ -856,11 +856,25 @@ struct PatchBody {
     /// 标签：优先（带这个标签的卡片先被领取）
     #[serde(default)]
     priority: Option<bool>,
+    /// 项目：隐藏的标签规则（整组替换，default/main#324）
+    #[serde(default, rename = "hiddenLabels")]
+    hidden_labels: Option<Vec<String>>,
 }
 
 async fn update_project(State(s): State<AppState>, h: HeaderMap, Path(key): Path<String>, Json(v): Json<Value>) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
-    write(&s, &h, move |w| w.update_project(&key, p.name.as_deref(), p.desc.as_deref(), p.color.as_deref())).await?;
+    write(&s, &h, move |w| {
+        w.update_project_with(
+            &key,
+            board_core::store::ProjectPatch {
+                name: p.name.as_deref(),
+                desc: p.desc.as_deref(),
+                color: p.color.as_deref(),
+                hidden_labels: p.hidden_labels.as_deref(),
+            },
+        )
+    })
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 

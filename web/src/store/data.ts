@@ -559,6 +559,15 @@ export const editLabelPatch = (project: string, id: number, change: { name?: str
   keys: [labelKey(project, id)],
 });
 
+/** 隐藏的标签规则保存完之前不能再改（管理标签里的规则列表按它禁用） */
+export const hiddenLabelsKey = (project: string) => `hiddenLabels:${project}`;
+
+/** 改项目的隐藏标签规则（整组替换）：侧栏、提示词菜单、标签选择器当帧按新规则显示；项目不在了原样返回 */
+export const hiddenLabelsPatch = (project: string, rules: string[]): Patch => ({
+  ...patchProject(project, p => ({ ...p, hiddenLabels: rules })),
+  keys: [hiddenLabelsKey(project)],
+});
+
 /** 删除项目里的一个标签：从项目和当前白板的卡片上一起拿掉 */
 export const deleteLabelPatch = (project: string, id: number): Patch => ({
   ...patchProject(project, p => ({ ...p, labels: p.labels.filter(l => l.id !== id) })),

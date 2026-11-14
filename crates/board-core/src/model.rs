@@ -527,8 +527,21 @@ pub struct ProjectInfo {
     pub pos: Pos,
     pub created_at: i64,
     pub labels: Vec<Label>,
+    /// 隐藏的标签：名称匹配任一条正则（不区分大小写）的标签不出现在侧栏、提示词菜单、标签选择器里（default/main#324）。
+    /// 旧库、新建的项目默认 `^v\d`（版本标签）；旧服务端没有这个字段，界面按默认处理
+    #[serde(default = "default_hidden_labels")]
+    pub hidden_labels: Vec<String>,
     pub boards: Vec<BoardInfo>,
 }
+
+/// 项目默认隐藏的标签：版本标签（v0.1.24 这类，里程碑按它认版本）
+pub fn default_hidden_labels() -> Vec<String> {
+    vec![r"^v\d".to_string()]
+}
+
+/// 隐藏规则最多几条、每条最长几个字符
+pub const HIDDEN_LABELS_MAX: usize = 20;
+pub const HIDDEN_LABEL_LEN: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {

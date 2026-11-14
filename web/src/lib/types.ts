@@ -146,6 +146,8 @@ export interface ProjectInfo {
   pos: Pos;
   createdAt: number;
   labels: Label[];
+  /** 隐藏的标签：名称匹配任一条正则的不出现在侧栏、提示词菜单、标签选择器（lib/sidebarLabels，default/main#324）；旧服务端没有，按默认 `^v\d` */
+  hiddenLabels?: string[];
   boards: BoardInfo[];
 }
 

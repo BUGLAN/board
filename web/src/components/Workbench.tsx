@@ -8,7 +8,7 @@ import { newBoard, newProject, openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
-import { sidebarLabels } from '../lib/sidebarLabels';
+import { hiddenRules, sidebarLabels } from '../lib/sidebarLabels';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
@@ -212,10 +212,10 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
 /** 标签：整块就是输入框。平时看着只是一排胶囊；双击胶囊以外的空白处进入编辑态，光标跟在最后一个胶囊后面，
     输入名称回车新建；Esc 或点到区块外退出。单击空白不做任何事；单击胶囊筛选、点 × 删除、拖胶囊到卡片都不进入编辑态。
     胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts）。
-    版本标签（v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts） */
-function LabelBlock({ project, all, used }: { project: string; all: Label[]; used: Record<number, number> }) {
+    项目的隐藏规则命中的标签（默认是版本标签 v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts，default/main#324） */
+function LabelBlock({ project, all, rules, used }: { project: string; all: Label[]; rules: string[]; used: Record<number, number> }) {
   const sel = useUI(s => s.labelSel);
-  const labels = useMemo(() => sidebarLabels(all, sel), [all, sel]);
+  const labels = useMemo(() => sidebarLabels(all, sel, rules), [all, sel, rules]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -573,8 +573,9 @@ function BoardSide() {
   };
 
   const labels = cur?.project.labels ?? [];
-  // 侧栏只列非版本标签（选中的版本标签例外），计数和胶囊一致；卡片、详情、里程碑页照旧用 labels
-  const shown = useMemo(() => sidebarLabels(labels, labelSel), [labels, labelSel]);
+  // 侧栏不列被隐藏的标签（选中的例外），计数和胶囊一致；卡片、详情、里程碑页照旧用 labels
+  const rules = hiddenRules(cur?.project);
+  const shown = useMemo(() => sidebarLabels(labels, labelSel, rules), [labels, labelSel, rules]);
   const used = useMemo(() => {
     const m: Record<number, number> = {};
     if (board) for (const c of Object.values(board.cards)) for (const l of c.labels) m[l] = (m[l] || 0) + 1;
@@ -609,7 +610,7 @@ function BoardSide() {
       <div className="side-scroll">
         <Section id="labels" title="标签" n={cur ? shown.length : 'loading'} closed={closed.has('labels')} onToggle={toggle}>
           {cur && (board || !shown.length) ? (
-            <LabelBlock project={cur.project.key} all={labels} used={used} />
+            <LabelBlock project={cur.project.key} all={labels} rules={rules} used={used} />
           ) : (
             <SkeletonLabels n={cur ? shown.length : 5} />
           )}

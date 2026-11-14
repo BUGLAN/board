@@ -2182,3 +2182,65 @@ fn reply_comments_and_moves_in_one_write() {
     assert_eq!(card(&s, B, id).activity.len(), n, "整个写回滚：没有留下评论");
     assert_eq!(card(&s, B, id).card.column, "rework");
 }
+
+/* ---------------- 隐藏的标签（default/main#324） ---------------- */
+
+fn hidden_of(s: &Store, key: &str) -> Vec<String> {
+    s.read(|r| r.workspace(T0)).unwrap().projects.into_iter().find(|p| p.key == key).unwrap().hidden_labels
+}
+
+/// 新项目默认隐藏版本标签（`^v\d`）；改规则是整组替换，去掉空行、首尾空白和重复的
+#[test]
+fn hidden_labels_default_and_update() {
+    let mut s = store();
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string()]);
+    let rules: Vec<String> = vec![" ^v\\d ".into(), "".into(), "^tmp-".into(), "^v\\d".into()];
+    s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&rules), ..Default::default() }))
+        .unwrap();
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string(), "^tmp-".to_string()]);
+    // 只改名字不动规则
+    s.write(T0, Origin::ui(None), |w| w.update_project("default", Some("改名"), None, None)).unwrap();
+    assert_eq!(hidden_of(&s, "default").len(), 2);
+    // 清空：一条都不隐藏（不会回到默认）
+    s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&[]), ..Default::default() }))
+        .unwrap();
+    assert!(hidden_of(&s, "default").is_empty());
+}
+
+/// 条数、长度有上限，超了拒绝（USAGE），原来的规则不变
+#[test]
+fn hidden_labels_limits() {
+    let mut s = store();
+    let many: Vec<String> = (0..=HIDDEN_LABELS_MAX).map(|i| format!("^x{i}")).collect();
+    let r = s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&many), ..Default::default() }));
+    assert_eq!(r.expect_err("太多条").code, ErrorCode::Usage);
+    let long = vec!["a".repeat(HIDDEN_LABEL_LEN + 1)];
+    let r = s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&long), ..Default::default() }));
+    assert_eq!(r.expect_err("太长").code, ErrorCode::Usage);
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string()]);
+    assert_eq!(store::check_hidden_labels(&many[..HIDDEN_LABELS_MAX]).unwrap().len(), HIDDEN_LABELS_MAX);
+}
+
+/// 旧数据库的项目没有隐藏规则列：迁移后按默认隐藏版本标签
+#[test]
+fn old_projects_hide_version_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE projects DROP COLUMN hidden_labels").unwrap();
+    let s = Store::open(&path).unwrap();
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string()]);
+}
+
+/// 旧服务端的工作区没有 hiddenLabels：按默认处理
+#[test]
+fn project_info_without_hidden_labels_uses_default() {
+    let p: ProjectInfo = serde_json::from_value(serde_json::json!({
+        "key": "a", "name": "甲", "desc": "", "color": "#000000", "pos": { "x": 0.0, "y": 0.0 }, "createdAt": 0, "labels": [], "boards": []
+    }))
+    .unwrap();
+    assert_eq!(p.hidden_labels, vec![r"^v\d".to_string()]);
+}
