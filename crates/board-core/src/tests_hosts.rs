@@ -1399,6 +1399,52 @@ fn new_host_reads_work_from_old_server() {
     assert!(w.host.envs.is_empty() && w.host.agents[0].envs.is_empty());
 }
 
+/* ---------------- 定时领取：--dir 覆盖的目录 ---------------- */
+
+/// `--dir` 覆盖（或旧版 board host 上报）的目录 `fixed: true`：只是目录由启动参数固定，照样按顺序参与定时领取；
+/// 白板标识不是 `<项目>/<白板>` 的旧目录仍跳过（win2 的 `D:\repo\board` 被标成 fixed，导致 default/main 一轮都领不到）
+#[test]
+fn pull_includes_fixed_dirs_and_skips_legacy_board_ids() {
+    let mut s = store();
+    // 旧版 board host：只有一个 `--dir` 目录、`board` 一列是老的白板标识，工作空间从它导出
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.workspace = None;
+    rep.dirs = vec![
+        HostDir { board: "main".into(), path: "/repo/board".into(), fixed: true, ..Default::default() },
+        HostDir { board: B.into(), path: "/repo/board".into(), fixed: true, ..Default::default() },
+    ];
+    beat(&mut s, T0, &rep).unwrap();
+    let h = host(&s, T0);
+    assert!(h.dirs.iter().any(|d| d.board == B && d.fixed), "default/main 是 --dir 覆盖的目录：{:?}", h.dirs.iter().map(|d| (&d.board, d.fixed)).collect::<Vec<_>>());
+    lead_round(&mut s);
+    let a = new_card_tagged(&mut s, "A");
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", Some(1))).unwrap().expect("--dir 覆盖的 default/main 也要参与定时领取");
+    assert_eq!(d.card, a);
+    assert_eq!(d.state, "running");
+    assert_eq!(d.path.as_deref(), Some("/repo/board"), "派发在 --dir 指定的目录里做");
+    assert_eq!(card(&s, a).card.holder.as_deref(), Some("claude-mbp/opus-5.5"));
+
+    // 白板标识不是 `<项目>/<白板>` 的旧目录（`main` 这种）仍跳过：一块白板都领不到，这一轮照常结束
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.workspace = None;
+    rep.dirs = vec![HostDir { board: "main".into(), path: "/repo/board".into(), fixed: true, ..Default::default() }];
+    beat(&mut s, T0, &rep).unwrap();
+    // 规则原样写进库（不经过 host_update 的校验：没有目录能派生时它不给加规则）
+    new_card(&mut s, T0, "B");
+    s.write(T0, Origin::cli(), |w| {
+        let rules = serde_json::json!([{ "op": "in", "labels": ["deepseek"], "agent": "claude" }]).to_string();
+        w.tx.execute("UPDATE hosts SET rules = ?1 WHERE name = 'mbp'", rusqlite::params![rules])?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(host(&s, T0).dirs.iter().all(|d| !crate::valid_board(&d.board)), "只有旧的 `main`：{:?}", host(&s, T0).dirs.iter().map(|d| &d.board).collect::<Vec<_>>());
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "非法的旧目录不会被领取");
+    assert!(!s.read(|r| r.host("mbp", T0 + 2 * S)).unwrap().round, "没有可领的白板，这一轮结束");
+}
+
 /* ---------------- 会话接着做（board next） ---------------- */
 
 /// agent 交审：final，再移到「待审核」

@@ -4046,10 +4046,11 @@ impl<'a> W<'a> {
             return self.end_round(&h);
         };
         // 工作空间里摆着 `[host] dirs` 的白板（升级前列的），加上 `--dir` 覆盖的白板：按这个顺序轮流。
-        // 没有工作空间时就是旧的「白板与目录」
+        // 没有工作空间时就是旧的「白板与目录」。`--dir` 覆盖的（`fixed`）照常接卡：它只是目录由启动参数固定，
+        // 跳过它就等于这台机器在这些白板上永远不领卡（旧版 board host 只报一个 `--dir` 目录时一块白板都没有）
         let mut boards: Vec<String> = vec![];
         for d in h.dirs.iter() {
-            if d.fixed || !crate::valid_board(d.board.trim()) {
+            if !crate::valid_board(d.board.trim()) {
                 continue;
             }
             if !boards.contains(&d.board) {
