@@ -426,7 +426,9 @@ impl<'a> W<'a> {
     pub fn card_cron_update(&mut self, path: &str, id: i64, p: &CardCronPatch) -> Result<CardCron> {
         let board = self.resolve(path)?;
         let old = self.card_cron_row(board.id, id)?;
-        let pick = p.pick.clone().map(|v| if v.trim().is_empty() { PICK_HOST.to_string() } else { v }).unwrap_or(old.pick.clone());
+        // 先按 `pick_of` 整理好再比对，免得 " host "、"random " 这些写法被当成「没变」或「变了」而漏掉校验
+        let pick = pick_of(Some(p.pick.clone().unwrap_or_else(|| old.pick.clone())))?;
+        let pick_changed = pick != old.pick;
         let c = CardCron {
             name: p.name.clone().unwrap_or(old.name.clone()),
             // 标题跟着名称走：先用空的，后面 check_card_cron 统一成名称（旧库里和名称不一样的标题，打开改一次保存后就统一成名称）
@@ -439,15 +441,13 @@ impl<'a> W<'a> {
             on: p.on.unwrap_or(old.on),
             host: p.host.clone().or(old.host.clone()),
             // 换了机器、没说用哪个 agent 时用新机器的默认 agent；换成随机时也一样
-            agent: p.agent
-                .clone()
-                .or_else(|| if p.host.is_some() || (p.pick.is_some() && p.pick.as_deref().map(str::trim) != Some(old.pick.as_str())) { None } else { old.agent.clone() }),
+            agent: p.agent.clone().or_else(|| if p.host.is_some() || pick_changed { None } else { old.agent.clone() }),
             pick,
             ..old
         };
         // 换了机器、换了 agent 时重新检查（随机的和指定的一起看：有没有能接的机器、agent 找到了没有）。
         // 只换「随机 ↔ 指定」、别的不动时不看，机器后来被移除了也照样能改，和只改开关、模板时一样
-        let how_changed = c.pick == PICK_RANDOM && p.pick.is_some();
+        let how_changed = c.pick == PICK_RANDOM && pick_changed;
         let target = p.agent.is_some() || how_changed || ((p.host.is_some()) && opt(c.host.clone()) != old.host);
         let c = self.check_card_cron(&board, Some(id), c, target)?;
         self.tx.execute(
@@ -560,12 +560,29 @@ impl<'a> W<'a> {
         let text = format!("定时建卡「{}」建了这张卡", c.name);
         self.tx.execute("UPDATE activity SET text = ?3 WHERE board = ?1 AND card = ?2 AND action = 'create'", params![board.id, id, text])?;
         self.tx.execute("UPDATE events SET text = ?3 WHERE board = ?1 AND card = ?2 AND op = 'create'", params![board.id, id, text])?;
-        // 派给哪台：指定的就是它；随机挑的在这里挑一台
+        // 派给哪台：指定的就是它；随机挑的在这里挑一台。一台能接的都没有、或挑的那台派不出去时卡照样建，
+        // 评论和这一次的结果写明原因（不往上抛：`card_crons_due` 这一分钟的其他条目不能跟着回滚）
+        let mut pick_err: Option<String> = None;
         let target: Option<(String, Option<String>)> = match (c.pick.as_str(), inbox) {
-            (PICK_RANDOM, false) => Some(self.cron_pick_host(board, c.agent.as_deref())?),
+            (PICK_RANDOM, false) => match self.cron_pick_host(board, c.agent.as_deref())? {
+                Some(t) => Some(t),
+                None => {
+                    pick_err = Some(self.cron_host_pick_why(board, c.agent.as_deref()));
+                    None
+                }
+            },
             (PICK_HOST, false) => c.host.clone().map(|h| (h, c.agent.clone())),
             _ => None,
         };
+        if let Some(why) = &pick_err {
+            let home = flow_of(self.tx, board.id)?.home().name.clone();
+            let text = format!("定时建卡「{}」这次没有派发出去：{why}\n\n卡片留在「{home}」，可以手动派发，或者由定时领取去做。", c.name);
+            if let Err(e) = self.exec(board, &actor, Cmd::Comment { id, text }) {
+                if e.code == ErrorCode::Internal {
+                    return Err(e);
+                }
+            }
+        }
         let (to, err) = match target {
             Some((host, agent)) => match self.send(board, id, &host, agent.as_deref(), &actor)? {
                 Ok(to) => (Some(to), None),
@@ -581,7 +598,7 @@ impl<'a> W<'a> {
                     (None, Some(why))
                 }
             },
-            None => (None, None),
+            None => (None, pick_err),
         };
         self.tx.execute(
             "UPDATE card_crons SET ran_at = ?2, ran_card = ?3, ran_skip = NULL, last_card = ?3, ran_to = ?4, ran_err = ?5 WHERE id = ?1",
@@ -591,16 +608,11 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 随机挑一台能接这块白板的机器（以及上面用哪个 agent）：和手动派发一样能派到就算能接——
-    /// 机器存在、配了工作空间（或这块白板的目录）、在线或离线都算（离线时排队等它上线）、暂停接单也算（排队等它恢复）、
-    /// 环境检查没通过的不算（派过去也做不了）；没指定 agent 时这台机器上至少有一个找到了命令。
-    /// `agent` 指定了时只留这台机器上有这个 agent 的。返回（机器名，agent 或 None 表示用它默认的）
-    fn cron_pick_host(&self, board: &BoardRef, agent: Option<&str>) -> Result<(String, Option<String>)> {
-        let list = self.cron_host_candidates(board, agent)?;
-        let Some(list) = list else {
-            return Err(BoardError::usage(self.cron_host_pick_why(board, agent)));
-        };
-        Ok(list[self.roll(list.len())].clone())
+    /// 随机挑一台能接这块白板的机器（以及上面用哪个 agent）。没有能接的机器时为空（到点照样建卡、评论写明原因），
+    /// 不把错误往上抛：`card_crons_due` 把这一分钟到点的条目放在同一个写事务里，一条失败会把别的也回滚掉
+    fn cron_pick_host(&self, board: &BoardRef, agent: Option<&str>) -> Result<Option<(String, Option<String>)>> {
+        let Some(list) = self.cron_host_candidates(board, agent)? else { return Ok(None) };
+        Ok(Some(list[self.roll(list.len())].clone()))
     }
 
     /// 能接这块白板的机器，按注册先后：每台（机器名，agent 或 None）；一台都没有时为空
@@ -613,7 +625,8 @@ impl<'a> W<'a> {
             if workspace_of(h.workspace_raw.as_deref(), &h.dirs).is_none() && !h.dirs.iter().any(|d| d.board == path) {
                 continue;
             }
-            if let Readiness::Failed(_) = self.read().dir_readiness(&h, board)? {
+            // 和派发本身一样：环境检查没通过、还没跑完的机器派不过去（hosts.rs `dispatch_create_from`），不当候选
+            if !self.read().dir_readiness(&h, board)?.ok() {
                 continue;
             }
             let found = |a: &crate::hosts::HostAgent| a.found;
@@ -656,10 +669,13 @@ impl<'a> W<'a> {
         }
     }
 
-    /// 随机数：`0..n`。每次取一个新的随机状态，再从系统时间、进程号、卡片数、派发记录数混出结果：
-    /// 同一毫秒里连着建几张、几台机器一起跑，也都会变（只用时间的低位时，连续几次常常落在同一台）
+    /// 随机数：`0..n`。系统时间、进程号、卡片数、派发记录数用 SipHash 混出起始状态（同一个进程里连着抽，
+    /// 后两个几乎不变，靠 `RandomState` 的随机键），再用 SplitMix64 连着混 4 轮，免得起始状态弱的时候
+    /// 连着几次落在同一台机器上
     fn roll(&self, n: usize) -> usize {
         use std::hash::{BuildHasher, Hasher};
+        debug_assert!(n > 0);
+        let n = n.max(1);
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         h.write_i64(self.now);
         h.write_u32(std::process::id());
@@ -667,7 +683,15 @@ impl<'a> W<'a> {
         h.write_i64(cards);
         let sends: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches", [], |r| r.get(0)).unwrap_or(0);
         h.write_i64(sends);
-        (h.finish() % n as u64) as usize
+        let mut x = h.finish();
+        for _ in 0..4 {
+            x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            x = z ^ (z >> 31);
+        }
+        (x % n as u64) as usize
     }
 
     /// 把刚建的卡派发到这台机器（来源「定时建卡」）。派不出去时撤掉这一步的改动，返回原因；
@@ -723,6 +747,8 @@ impl<'a> W<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hosts::DirReady;
+
     use crate::{HostAgent, HostDir, HostReport, HostWorkspace, Origin, Store};
 
     const B: &str = "default/main";
@@ -918,6 +944,11 @@ mod tests {
 
     /// 一台机器上报：有 claude（找到了）和 pi（没找到）；`dirs` 非空时配了工作空间（`/tmp`），为空时没配
     fn host_up(s: &mut Store, name: &str, dirs: &[&str]) {
+        host_report(s, name, dirs, &DirReady::default(), 0, T0);
+    }
+
+    /// 一台机器在 `at` 上报。`ready` 是它上报的环境检查结果（`cmd` 为空表示没报过，白板设了检查命令时是「还没检查」）
+    fn host_report(s: &mut Store, name: &str, dirs: &[&str], ready: &DirReady, rev: i64, at: i64) {
         let agent = |id: &str, label: &str, found: bool| HostAgent { id: id.into(), name: label.into(), found, model: "m".into(), ..Default::default() };
         let rep = HostReport {
             name: name.into(),
@@ -928,8 +959,11 @@ mod tests {
             agents: vec![agent("claude", "Claude Code", true), agent("pi", "pi", false)],
             envs: vec![],
             workspace: (!dirs.is_empty()).then(|| HostWorkspace { path: "/tmp".into(), ..Default::default() }),
-            dirs: dirs.iter().map(|b| HostDir { board: b.to_string(), path: format!("/tmp/{b}"), ..Default::default() }).collect(),
-            dirs_rev: 0,
+            dirs: dirs
+                .iter()
+                .map(|b| HostDir { board: b.to_string(), path: format!("/tmp/{b}"), ready: (!ready.cmd.is_empty()).then(|| ready.clone()), ..Default::default() })
+                .collect(),
+            dirs_rev: rev,
             running: vec![],
             done: false,
             asked: None,
@@ -940,7 +974,7 @@ mod tests {
             providers: None,
             local_skills: None,
         };
-        s.write(T0, Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
+        s.write(at, Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
     }
 
     fn update(s: &mut Store, id: i64, p: CardCronPatch) -> Result<CardCron> {
@@ -1150,6 +1184,55 @@ mod tests {
         s.write(t1, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "人")).unwrap();
         s.write(t1, Origin::ui(None), |w| w.host_remove("mini", &Actor::human(), "人")).unwrap();
         assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..patch("随机", "0 9 * * *") })).contains("没有能接"));
-        update(&mut s, c.id, CardCronPatch { on: Some(false), ..Default::default() }).unwrap();
+        // 一台能接的都没有了，到点：照建卡，评论和这一次的结果写明没能派发；不往上抛（这一分钟别的条目不受牵连）
+        let t2 = t1 + 100 * MIN;
+        s.write(t2, Origin::cli(), |w| w.card_cron_update(B, c.id, &CardCronPatch { on: Some(true), ..Default::default() })).unwrap().on.then_some(()).expect("能重新打开");
+        assert_eq!(due(&mut s, t2), 1);
+        let r = list(&s, t2).into_iter().find(|x| x.id == c.id).unwrap();
+        assert_eq!(r.ran_to, None);
+        assert!(r.ran_err.as_deref().unwrap_or_default().contains("没有能接"), "{:?}", r.ran_err);
+        let id = r.ran_card.expect("照样建卡");
+        assert_eq!(*cols(&s)["todo"].last().unwrap(), id, "留在待办");
+        assert!(card(&s, id).activity.last().unwrap().text.contains("这次没有派发出去"), "评论写明没派发出去");
+    }
+
+    /// 随机派发这次改的几处：还没检查完、没通过检查的机器不算能接；白板没设检查命令的照常接；
+    /// 一台能接的都没有时卡照样建、评论写明原因，不往上抛（这一分钟别的定时建卡不受牵连）
+    #[test]
+    fn random_pick_skips_hosts_that_cannot_take_the_board() {
+        let mut s = store();
+        host_up(&mut s, "mbp", &[B]);
+        host_report(&mut s, "win", &[B], &DirReady::default(), 0, T0);
+        let failed = DirReady { cmd: "cargo test".into(), ok: false, code: Some(1), tail: vec!["boom".into()], at: T0 };
+        host_report(&mut s, "mini", &[B], &failed, 0, T0);
+        let names = |s: &Store| s.read(|r| r.hosts(T0)).unwrap().into_iter().map(|h| h.name).collect::<Vec<_>>();
+        assert_eq!(names(&s), ["mbp", "mini", "win"], "三台都在");
+        // 白板没设检查命令：三台都能接
+        let c = create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..patch("更新代码", "* * * * *") }).unwrap();
+        // 白板设了检查命令：mbp 没上报结果（还没检查）、mini 没通过，都不算能接；只有 win 通过
+        s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some("cargo test"), None)).unwrap();
+        let e = create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..patch("再加一条", "0 9 * * *") }).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert!(e.message.contains("没有能接"), "还没检查、没通过的都不算能接：{}", e.message);
+        let rev = 1;
+        host_report(&mut s, "win", &[B], &DirReady { cmd: "cargo test".into(), ok: true, code: Some(0), tail: vec![], at: T0 }, rev, T0);
+        let r = s.write(T0 + MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        assert_eq!(r.ran_to.as_ref().map(|t| t.split(" · ").next().unwrap()), Some("win"), "{:?} {:?}", r.ran_to, r.ran_err);
+        assert!(r.ran_card.is_some());
+        // 机器全被移除了：到点照样建卡，评论写明没能派发，这一次的结果也记下原因（不往上抛）
+        let prev = r.ran_card.expect("上一张建了");
+        s.write(T0, Origin::ui(None), |w| w.host_remove("win", &Actor::human(), "人")).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "人")).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.host_remove("mini", &Actor::human(), "人")).unwrap();
+        s.write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Delete { id: prev })
+        })
+        .unwrap();
+        let r = s.write(T0 + 2 * MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        assert_eq!(r.ran_to, None);
+        assert!(r.ran_err.as_deref().unwrap_or_default().contains("还没有机器"), "{:?}", r.ran_err);
+        let id = r.ran_card.expect("照样建卡");
+        assert!(card(&s, id).activity.last().unwrap().text.contains("这次没有派发出去"), "评论写明没派发出去");
     }
 }

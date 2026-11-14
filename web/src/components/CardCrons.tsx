@@ -13,7 +13,7 @@ import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { boardOf, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
+import { boardHosts, boardOf, defaultAgent, envName, hostDirFor, hostLoad, hostsOf, readyOk } from '../lib/hosts';
 import { boardFlow } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
@@ -160,8 +160,8 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   const to = useData(s => (c.host ? hostsOf(s.ws).find(h => h.name === c.host) : undefined));
   // 随机派发：没有指定的机器
   const random = c.pick === 'random' && !c.host;
-  // 随机挑的时候能接的机器数（和手动派发一样能派到的：有工作空间、有找到了命令的 agent）
-  const canTake = useData(s => (random ? hostsOf(s.ws) : []).filter(x => hostDirFor(x, path) && x.agents.some(a => a.found)).length);
+  // 随机挑的时候能接的机器数（和服务端挑候选一样：有工作空间、环境检查没通过的不算、有找到了命令的 agent）
+  const canTake = useData(s => (random ? boardHosts(s.ws, path) : []).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)).length);
   return (
     <div className={cx('cc-row', !c.on && 'off', (busy || removing) && 'saving')}>
       <button type="button" className={cx('switch', c.on && 'on')} role="switch" aria-checked={c.on} aria-label={`「${c.name}」到点建卡`} onClick={toggle}>
@@ -429,8 +429,8 @@ function HostPick({
   const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
   const def = h ? defaultAgent(h) : undefined;
   const random = pick === 'random' && !host;
-  // 随机挑的时候能接的机器：和手动派发一样能派到的（有工作空间、有找到了命令的 agent），在线、离线、暂停接单都算
-  const can = hosts.filter(x => hasDir(x) && x.agents.some(a => a.found));
+  // 随机挑的时候能接的机器：有工作空间、环境检查没通过的不算、有找到了命令的 agent；在线、离线、暂停接单都算
+  const can = boardHosts(ws, path).filter(x => readyOk(x.ready) && x.h.agents.some(a => a.found)).map(x => x.h);
   const why = (x: HostInfo) => (!x.online ? '离线' : x.paused ? '暂停接单' : '');
   return (
     <span className="cc-pick">
