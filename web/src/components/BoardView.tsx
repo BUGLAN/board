@@ -284,16 +284,7 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
         <span className="col-i">{index + 1}</span>
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
-        {col.claim && (
-          <span className="col-tag claim" aria-label="可领取">
-            <Icon name="claim" />
-          </span>
-        )}
-        {col.lock && (
-          <span className="col-tag" aria-label="锁定">
-            <Icon name="lock" />
-          </span>
-        )}
+        <ColTags col={col} icons />
         {fake ? (
           <Skeleton className="sk-count" w={26} h={22} r={11} />
         ) : (
@@ -302,6 +293,7 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
           </span>
         )}
       </header>
+      <ColRules col={col} />
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} style={{ ['--tile-ch' as string]: 2 }}>
           {Array.from({ length: n }, (_, i) =>
@@ -393,6 +385,38 @@ interface ColumnProps {
   path: string;
 }
 
+/** 状态的规则：可领取 / 锁定 / 错误节点 / 终点（互斥：错误节点和另外三个不同时打开）。只有图标时（标题旁）按顺序取这几个 */
+const COL_RULES = [
+  { key: 'claim', icon: 'claim', name: '可领取', tip: '可领取：agent 从这里领' },
+  { key: 'lock', icon: 'lock', name: '锁定', tip: '锁定：只能领取进入；派发排队的卡片也在这里等机器开始' },
+  { key: 'error', icon: 'alert', name: '错误节点', tip: '错误节点：agent 异常退出、做不下去时移到这里，只有人能移出' },
+  { key: 'final', icon: 'checkCircle', name: '终点', tip: '终点：只有人能移入移出' },
+] as const;
+
+function rulesOf(col: Status) {
+  return COL_RULES.filter(r => col[r.key]);
+}
+
+/** 标题旁的规则图标；`icons` 时只有图标（一排带文字的胶囊会把名称挤没），说清楚是哪条规则的文字在标题下面一行（ColRules） */
+function ColTags({ col, icons }: { col: Status; icons?: boolean }) {
+  return (
+    <>
+      {rulesOf(col).map(r => (
+        <span key={r.key} className="col-tag" data-rule={r.key} aria-label={r.name} data-tip={icons ? r.tip : undefined}>
+          <Icon name={r.icon} />
+          {icons ? null : <span className="t">{r.name}</span>}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** 标题下面一行：图标 + 规则名称的小胶囊（可领取 / 锁定 / 错误节点 / 终点）；没有规则的状态不占这一行 */
+function ColRules({ col }: { col: Status }) {
+  if (!rulesOf(col).length) return null;
+  return <div className="col-rules"><ColTags col={col} /></div>;
+}
+
 function emptyText(s: Status, f: FlowQ) {
   if (s.claim && s.key === f.home?.key) return `${s.name}是空的。新建一张卡片，或等 agent 用 board new 创建`;
   if (s.claim) return `${s.name}是空的。agent 也会从这里领取`;
@@ -445,16 +469,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         <span className="col-i">{index + 1}</span>
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
-        {col.claim && (
-          <span className="col-tag claim" role="img" aria-label="可领取" data-tip="可领取：agent 从这里领">
-            <Icon name="claim" />
-          </span>
-        )}
-        {col.lock && (
-          <span className="col-tag" role="img" aria-label="锁定" data-tip="锁定：只能领取进入；派发排队的卡片也在这里等机器开始">
-            <Icon name="lock" />
-          </span>
-        )}
+        <ColTags col={col} />
         {sorted && <OrderChip col={col} path={path} />}
         {role && count > 0 && (
           <button
@@ -472,6 +487,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
           <span>{count}</span>
         </span>
       </header>
+      <ColRules col={col} />
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
           {ids.flatMap((id, idx) => {

@@ -44,17 +44,29 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   content: ""; position: absolute; left: 18px; right: 18px; top: 0; height: 2px; border-radius: 0 0 var(--r-hair) var(--r-hair);
   background: linear-gradient(90deg, transparent, var(--c), transparent); opacity: .7;
 }
+/* 网格：序号、圆点、名称、规则标签、排序标记、复盘/处理、数量各占一列；只有名称可以被压窄。
+   规则标签（可领取 / 锁定 / 错误节点 / 终点）按内容定宽，不会被名称挤成一条竖线（before: min-width: 0 的 flex 子项会被压到 0，default/main#312） */
 .col-head {
-  display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px 14px; flex: none; min-width: 0;
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px;
+  padding: 12px 12px 8px 14px; flex: none; min-width: 0;
   cursor: grab; user-select: none; -webkit-user-select: none;
 }
+/* 顺序号与圆点挨着（两列之间不要 gap） */
+.col-head > .col-i { margin-right: -2px; }
 .col-i {
   display: grid; place-items: center; width: 17px; height: 17px; border-radius: var(--r-xs); flex: none;
   font-family: var(--f-mono); font-size: 11px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2);
 }
-.col-tag { display: inline-flex; align-items: center; gap: 3px; min-width: 0; font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 规则标签：图标 + 文字的小胶囊，放在标题下面一行（第二行），块窄也不裁掉；只有图标时是一个 18px 的圆 */
+.col-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 18px; padding: 0 14px 9px; }
+.col-tag { display: inline-flex; align-items: center; justify-content: center; gap: 3px; flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 6px 0 5px; border-radius: 999px; font-size: 11px; color: var(--text-3); white-space: nowrap; box-shadow: inset 0 0 0 1px var(--line-2); }
+.col-tag > svg:only-child { margin: 0 1px; }
 .col-tag svg { width: 11px; height: 11px; flex: none; }
-.col-tag.claim { color: color-mix(in oklab, var(--brand), var(--ink)); }
+.col-tag .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.col-tag[data-rule="claim"] { color: color-mix(in oklab, var(--brand), var(--ink)); }
+.col-tag[data-rule="lock"] { color: color-mix(in oklab, var(--c-doing), var(--text-3)); }
+.col-tag[data-rule="error"] { color: var(--danger-text); }
+.col-tag[data-rule="final"] { color: color-mix(in oklab, var(--c-done), var(--text-3)); }
 .col { container-type: inline-size; }
 
 /* 窄的块（1200px 宽、每块 3 栏）：序号让位给名称 */
@@ -64,7 +76,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 @keyframes breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 0%, transparent); } }
 .col-name { font-family: var(--f-display); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .col-count {
-  margin-left: auto; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
+  grid-column: -2 / -1; justify-self: end; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
   border-radius: 999px; font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2);
   overflow: hidden;
@@ -74,7 +86,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-count.bump { animation: count-pop var(--dur-3) var(--spring); color: var(--c); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 50%, transparent); }
 /* 保留顺序开着时标题上的排序标记（lib/sort.ts）：写这块按什么排、方向；点开白板设置，定位到这一块 */
 .col-order {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px 0 6px; flex: none;
+  justify-self: end; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px 0 6px; flex: none;
   border-radius: 999px; white-space: nowrap; font-size: 11px; font-weight: 500; cursor: pointer;
   color: color-mix(in oklab, var(--c), var(--ink)); background: color-mix(in srgb, var(--c) 12%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent);
@@ -84,10 +96,8 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-order svg { width: 12px; height: 12px; flex: none; }
 .col-order i { font-style: normal; }
 .col-order .ts { display: none; }
-.col-order ~ .col-count { margin-left: 0; }
-/* 窄的块：让出排序标记的位置，名称至少留三个字；再窄换成简称 */
+/* 窄的块：名称至少留三个字，先换成简称 */
 .col-head:has(.col-order) .col-name { min-width: 3.2em; }
-@container (max-width: 300px) { .col-head:has(.col-order) .col-tag { display: none; } }
 @container (max-width: 260px) { .col-order svg, .col-order .t { display: none; } .col-order .ts { display: inline; } }
 @keyframes count-roll { from { transform: translateY(var(--roll, 100%)); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes count-pop { 40% { transform: scale(1.18); } }
