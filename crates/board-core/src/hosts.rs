@@ -240,8 +240,8 @@ pub const RULES_LIMIT: usize = 20;
 /// 「复制设置到…」能选的项：标识和说法
 pub const COPY_ITEMS: [(&str, &str); 5] = [
     ("limits", "最多几个会话和一个会话最多做几张"),
-    ("cron", "定时领取"),
-    ("rules", "领取规则和兜底"),
+    ("cron", "自动接单和接单时段"),
+    ("rules", "领取规则（已经是所有机器共用的，不用复制）"),
     ("agent", "默认 agent"),
     ("run", "每个 agent 的启动环境、模型、强度"),
 ];
@@ -915,7 +915,7 @@ fn op_needs_labels(op: &str) -> bool {
 
 impl ClaimRule {
     /// 旧数据的单个标签换成 `in [标签]`；标签去掉空白、按名称（不区分大小写）去重
-    fn upgraded(mut self) -> ClaimRule {
+    pub(crate) fn upgraded(mut self) -> ClaimRule {
         if let Some(l) = self.label.take() {
             if self.labels.is_empty() {
                 self.labels = vec![l];
@@ -942,7 +942,7 @@ impl ClaimRule {
         self
     }
     /// 存进数据库的样子
-    fn stored(&self) -> serde_json::Value {
+    pub(crate) fn stored(&self) -> serde_json::Value {
         json!({ "op": self.op, "labels": self.labels, "agent": self.agent })
     }
 }
@@ -1004,11 +1004,18 @@ pub struct HostInfo {
     /// 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效，用的是 `agent`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_set: Option<String>,
-    /// 定时领取开关和 cron 表达式（5 段「分 时 日 月 周」，机器本地时区）
+    /// 旧的定时领取开关和 cron 表达式：现在一直是关、空的（换成了 `auto`、`windows`），留着给旧版 board host、旧界面读
     pub cron_on: bool,
     pub cron: Vec<String>,
-    /// 正在进行一轮领取（定时到点或「现在领一轮」）
+    /// 现在在自动接单：开了自动接单、没暂停、有领取规则、现在在接单时段里。board host 看到它就在有空位时来领卡
+    /// （字段名沿用以前的「正在进行一轮领取」，旧版 board host 照样认）
     pub round: bool,
+    /// 参与自动接单（PRD §9.1「自动领取」）
+    #[serde(default)]
+    pub auto: bool,
+    /// 接单时段：一天里的几段 `[起, 止)`，单位分钟，每天一样，按服务端的时区；一段都没有 = 不接单
+    #[serde(default = "crate::sched::all_day")]
+    pub windows: Vec<crate::sched::Window>,
     pub online: bool,
     pub first_at: i64,
     pub beat_at: i64,
@@ -1315,10 +1322,18 @@ pub struct HostPatch {
     pub paused: Option<bool>,
     #[serde(default)]
     pub agent: Option<String>,
+    /// 旧界面的「定时领取」开关：当成自动接单的开关
     #[serde(default)]
     pub cron_on: Option<bool>,
+    /// 旧界面的定时领取时间表：不再用，收到也不存
     #[serde(default)]
     pub cron: Option<Vec<String>>,
+    /// 参与自动接单
+    #[serde(default)]
+    pub auto: Option<bool>,
+    /// 接单时段（整个列表替换）：一天里的几段 `[起, 止)`，分钟
+    #[serde(default)]
+    pub windows: Option<Vec<crate::sched::Window>>,
     /// 一个 agent 的启动环境
     #[serde(default)]
     pub env: Option<EnvPatch>,
@@ -1558,8 +1573,10 @@ pub(crate) struct HostRow {
     pub(crate) fallback: Option<String>,
     pub(crate) paused: bool,
     pub(crate) agent: Option<String>,
-    pub(crate) cron_on: bool,
-    pub(crate) cron: Vec<String>,
+    /// 参与自动接单（`sched.rs`）
+    pub(crate) auto: bool,
+    /// 接单时段：一天里的几段 `[起, 止)`，分钟，按服务端时区
+    pub(crate) windows: Vec<crate::sched::Window>,
     pub(crate) round_at: Option<i64>,
     pub(crate) rr: i64,
     pub(crate) first_at: i64,
@@ -1582,13 +1599,12 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, rules, fallback, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers, skill_import, dirs";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers, skill_import, dirs, auto, windows";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
     let workspace_raw: Option<String> = r.get(6)?;
     let dirs_raw: String = r.get(38)?;
-    let cron: String = r.get(11)?;
     let envs_raw: String = r.get(17)?;
     let run: String = r.get(18)?;
     Ok(HostRow {
@@ -1613,8 +1629,8 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         fallback: r.get(21)?,
         paused: r.get::<_, i64>(8)? != 0,
         agent: r.get(9)?,
-        cron_on: r.get::<_, i64>(10)? != 0,
-        cron: serde_json::from_str(&cron).unwrap_or_default(),
+        auto: r.get::<_, i64>(39)? != 0,
+        windows: serde_json::from_str(&r.get::<_, String>(40)?).unwrap_or_else(|_| crate::sched::all_day()),
         round_at: r.get(12)?,
         rr: r.get(13)?,
         first_at: r.get(14)?,
@@ -1692,7 +1708,7 @@ impl HostRow {
         self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string())
     }
     /// 这台机器上找得到这个 agent
-    fn has_agent(&self, id: &str) -> bool {
+    pub(crate) fn has_agent(&self, id: &str) -> bool {
         self.resolved().iter().any(|a| a.id == id && a.found)
     }
     /// 解析后的领取规则；一条规则也没有时为 None：定时领取不领卡（兜底只处理规则没命中的卡片，不算规则）
@@ -1752,9 +1768,11 @@ impl HostRow {
             paused: self.paused,
             agent: self.default_agent().map(|a| a.id.clone()),
             agent_set: self.agent.clone().filter(|a| !self.has_agent(a)),
-            cron_on: self.cron_on,
-            cron: self.cron.clone(),
-            round: self.round_at.is_some(),
+            cron_on: false,
+            cron: vec![],
+            round: self.auto_active(now),
+            auto: self.auto,
+            windows: self.windows.clone(),
             online: self.online(now),
             first_at: self.first_at,
             beat_at: self.beat_at,
@@ -1770,6 +1788,10 @@ impl HostRow {
             providers: self.providers_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
             skill_import: self.skill_import.clone(),
         }
+    }
+    /// 现在在自动接单：开了自动接单、没暂停接单、有领取规则，并且现在在接单时段里（按服务端的时区）
+    pub(crate) fn auto_active(&self, now: i64) -> bool {
+        self.auto && !self.paused && self.has_rules() && crate::sched::in_windows(&self.windows, crate::sched::server_minute(now))
     }
     /// 正在等重启或升级：board host 不再开始新的派发
     fn restarting(&self) -> bool {
@@ -2068,19 +2090,9 @@ impl<'a> R<'a> {
     }
 
     /// 这台机器有目录的白板所在项目里的标签名（小写）。工作空间能放任意白板，规则里用哪块白板的标签就在哪块生效
-    fn host_labels(&self, h: &HostRow) -> Result<Vec<String>> {
-        let mut out: Vec<String> = vec![];
-        for dir in &h.dirs {
-            let Some(project) = dir.board.split('/').next() else { continue };
-            let mut st = self.conn.prepare("SELECT lower(name) FROM labels WHERE project = ?1")?;
-            for n in st.query_map([project], |r| r.get::<_, String>(0))? {
-                let n = n?;
-                if !out.contains(&n) {
-                    out.push(n);
-                }
-            }
-        }
-        Ok(out)
+    fn host_labels(&self, _h: &HostRow) -> Result<Vec<String>> {
+        // 领取规则是全局的：哪个项目里有这个标签都算有
+        self.all_labels()
     }
 
     fn dispatches(&self, tail: &str, p: impl rusqlite::Params) -> Result<Vec<Dispatch>> {
@@ -2543,6 +2555,22 @@ impl<'a> W<'a> {
     /// 开会话时排好后面几张（第一张已经开始）：从同一块白板、按领取规则交给同一个 agent 的可领取卡片里取，连第一张最多
     /// 「一个会话最多做几张」张。先后：带优先标签的在前（按规则 1 的顺序），再是其余卡片里和第一张共同标签多的
     /// （领取规则里用到的标签不算，它只表示谁来做），一样多时按规则 1 的顺序。每张记一条排队的派发，属于这个会话
+    /// 除了这台机器，现在还有几台机器也能自动领这块白板上交给这个 agent 的卡：在自动接单、在线、没在等重启、
+    /// 还有空的会话位、接得了这块白板、这个 agent 能用
+    fn session_peers(&self, h: &HostRow, board: &BoardRef, agent: &str) -> Result<usize> {
+        let mut n = 0;
+        for x in self.read().host_rows()? {
+            if x.id == h.id || !x.online(self.now) || !x.auto_active(self.now) || x.restarting() || !x.has_agent(agent) {
+                continue;
+            }
+            if self.sessions_on(&x)? >= x.max || self.read().board_unfit(&x, board)?.is_some() || self.read().agent_tripped(&x, agent)? {
+                continue;
+            }
+            n += 1;
+        }
+        Ok(n)
+    }
+
     fn plan_session(&mut self, h: &HostRow, rules: &Rules, first: &Dispatch, board: &BoardRef, flow: &Flow, skip: &[i64]) -> Result<()> {
         let want = (h.per_session.max(1) - 1) as usize;
         if want == 0 {
@@ -2565,7 +2593,10 @@ impl<'a> W<'a> {
             list.push((!hot, std::cmp::Reverse(common), i, id));
         }
         list.sort();
-        list.truncate(want);
+        // 按现在也能接这些卡的机器分摊：4 张卡、2 台机器都有空位，就各排 2 张，而不是先来的一台排满 4 张
+        let peers = self.session_peers(h, board, &first.agent)?;
+        let share = (list.len() + 1).div_ceil(peers + 1);
+        list.truncate(want.min(share.saturating_sub(1)));
         if list.is_empty() {
             return Ok(());
         }
@@ -2922,6 +2953,12 @@ impl<'a> W<'a> {
                 }
             } else {
                 self.finish(&d, None, &Tail { lines: &[], events: &[] }, Finish::Missing)?;
+            }
+        }
+        // 出了接单时段（或关了自动接单）：这一段接单结束，下次进入时重新算
+        if let Some(h) = self.host_row(&name)? {
+            if h.round_at.is_some() && !h.auto_active(now) {
+                self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
             }
         }
         // 这台机器上线了、空出位置了：等着的「任意机器」派发挑一遍机器，分给它的随这次的任务一起发回去
@@ -3435,53 +3472,9 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET idle_run = ?2 WHERE id = ?1", params![h.id, n])?;
         }
-        if let Some(rules) = &p.rules {
-            if rules.len() > RULES_LIMIT {
-                return Err(BoardError::usage(format!("领取规则最多 {RULES_LIMIT} 条")));
-            }
-            let known = self.read().host_labels(&h)?;
-            let mut out: Vec<ClaimRule> = vec![];
-            for r in rules {
-                let r = r.clone().upgraded();
-                if !RULE_OPS.contains(&r.op.as_str()) {
-                    return Err(BoardError::usage(format!("领取规则的条件「{}」不对：只能是 {}", r.op, RULE_OPS.join("、"))));
-                }
-                if op_needs_labels(&r.op) && r.labels.is_empty() {
-                    return Err(BoardError::usage("领取规则至少要选一个标签"));
-                }
-                // 新加或改过的规则：标签要在这台机器有目录的项目里有，agent 要在这台机器上找得到。
-                // 原样保留的规则（标签被删了、agent 之后找不到了）不拦，界面上标出来
-                let same = |x: &ClaimRule| {
-                    let low = |v: &[String]| {
-                        let mut v: Vec<String> = v.iter().map(|l| l.to_lowercase()).collect();
-                        v.sort();
-                        v
-                    };
-                    x.op == r.op && x.agent == r.agent && low(&x.labels) == low(&r.labels)
-                };
-                if !h.rules.iter().any(same) {
-                    if let Some(l) = r.labels.iter().find(|l| !known.contains(&l.to_lowercase())) {
-                        return Err(BoardError::usage(format!("这台机器有目录的项目里没有标签「{l}」")));
-                    }
-                    if !h.has_agent(&r.agent) {
-                        return Err(BoardError::usage(format!("机器「{name}」上没有找到 agent「{}」，可选：{}", r.agent, found_list(&h))));
-                    }
-                }
-                out.push(r);
-            }
-            let raw = serde_json::to_string(&out.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
-            self.tx.execute("UPDATE hosts SET rules = ?2 WHERE id = ?1", params![h.id, raw])?;
-        }
-        if let Some(f) = &p.fallback {
-            let f = f.trim();
-            if f.is_empty() {
-                self.tx.execute("UPDATE hosts SET fallback = NULL WHERE id = ?1", [h.id])?;
-            } else {
-                if h.fallback.as_deref() != Some(f) && !h.has_agent(f) {
-                    return Err(BoardError::usage(format!("机器「{name}」上没有找到 agent「{f}」，可选：{}", found_list(&h))));
-                }
-                self.tx.execute("UPDATE hosts SET fallback = ?2 WHERE id = ?1", params![h.id, f])?;
-            }
+        // 领取规则、兜底现在是全局的一份（`sched.rs`）：旧界面还从机器设置里改，改的就是全局的
+        if p.rules.is_some() || p.fallback.is_some() {
+            self.sched_update(p.rules.as_deref(), p.fallback.as_deref())?;
         }
         if let Some(paused) = p.paused {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;
@@ -3503,19 +3496,12 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET agent = ?2 WHERE id = ?1", params![h.id, agent])?;
         }
-        if let Some(on) = p.cron_on {
-            self.tx.execute("UPDATE hosts SET cron_on = ?2 WHERE id = ?1", params![h.id, on as i64])?;
+        if let Some(on) = p.auto.or(p.cron_on) {
+            self.tx.execute("UPDATE hosts SET auto = ?2 WHERE id = ?1", params![h.id, on as i64])?;
         }
-        if let Some(times) = &p.cron {
-            // 每条是一个 cron 表达式（旧的 HH:MM 换成等价的「M H * * *」）；不对的拒绝，写明哪一段不对
-            let mut v: Vec<String> = vec![];
-            for t in times {
-                let t = crate::cron::normalize(t).map_err(BoardError::usage)?;
-                if !v.contains(&t) {
-                    v.push(t);
-                }
-            }
-            self.tx.execute("UPDATE hosts SET cron = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&v).unwrap_or_default()])?;
+        if let Some(w) = &p.windows {
+            let w = crate::sched::tidy_windows(w).map_err(BoardError::usage)?;
+            self.tx.execute("UPDATE hosts SET windows = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&w).unwrap_or_default()])?;
         }
         if let Some(rp) = &p.run {
             let a = h
@@ -3622,8 +3608,7 @@ impl<'a> W<'a> {
         if targets.is_empty() {
             return Err(BoardError::usage("至少选一台目标机器"));
         }
-        let rules = serde_json::to_string(&src.rules.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
-        let cron = serde_json::to_string(&src.cron).unwrap_or_else(|_| "[]".into());
+        let windows = serde_json::to_string(&src.windows).unwrap_or_else(|_| "[[0,1440]]".into());
         let words: Vec<&str> = COPY_ITEMS.iter().filter(|(k, _)| items.iter().any(|i| i == k)).map(|(_, w)| *w).collect();
         let mut out = vec![];
         for t in &targets {
@@ -3633,11 +3618,10 @@ impl<'a> W<'a> {
                         self.tx.execute("UPDATE hosts SET max = ?2, per_session = ?3 WHERE id = ?1", params![t.id, src.max, src.per_session])?;
                     }
                     "cron" => {
-                        self.tx.execute("UPDATE hosts SET cron_on = ?2, cron = ?3 WHERE id = ?1", params![t.id, src.cron_on as i64, cron])?;
+                        self.tx.execute("UPDATE hosts SET auto = ?2, windows = ?3 WHERE id = ?1", params![t.id, src.auto as i64, windows])?;
                     }
-                    "rules" => {
-                        self.tx.execute("UPDATE hosts SET rules = ?2, fallback = ?3 WHERE id = ?1", params![t.id, rules, src.fallback])?;
-                    }
+                    // 领取规则是全局的一份，不用复制（旧界面还会带上这一项）
+                    "rules" => {}
                     "agent" => {
                         self.tx.execute("UPDATE hosts SET agent = ?2 WHERE id = ?1", params![t.id, src.agent])?;
                     }
@@ -3661,23 +3645,9 @@ impl<'a> W<'a> {
         Ok(out)
     }
 
-    /// 开始一轮领取：定时到点（board host 发起）或界面上「现在领一轮」。机器离线、暂停接单、或者一条领取规则也没有时
-    /// 不开始；一轮还没结束时什么也不做（不重复开始）
+    /// 以前的「开始一轮领取」（定时到点时旧版 board host 发起，或界面上「现在领一轮」）：现在机器在接单时段里持续领卡，
+    /// 没有「一轮」了。接口留着给旧版 board host 调，什么也不做，返回机器现在的样子
     pub fn host_round(&mut self, name: &str) -> Result<HostInfo> {
-        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
-        if !h.online(self.now) {
-            return Err(BoardError::usage(format!("机器「{name}」离线，不能领取")));
-        }
-        if h.paused {
-            return Err(BoardError::usage(format!("机器「{name}」暂停接单，不能领取")));
-        }
-        if !h.has_rules() {
-            return Err(BoardError::usage(format!("机器「{name}」还没有领取规则：先在「领取规则」里添加一条，才会自动领取卡片")));
-        }
-        if h.round_at.is_none() {
-            self.tx.execute("UPDATE hosts SET round_at = ?2 WHERE id = ?1", params![h.id, self.now])?;
-            self.touch_hosts();
-        }
         self.read().host(name, self.now)
     }
 
@@ -4359,23 +4329,35 @@ impl<'a> W<'a> {
     /// 规则没命中的卡片、也没有可领取的卡片时这一轮结束，返回 None
     pub fn dispatch_pull(&mut self, host: &str, instance: &str, token: Option<i64>) -> Result<Option<Dispatch>> {
         let h = self.host_of(host, instance)?;
-        if h.round_at.is_none() || h.paused || h.restarting() || self.sessions_on(&h)? >= h.max {
+        // 现在不在自动接单（没开、暂停接单、没有领取规则、不在接单时段里）：这一段接单结束
+        if !h.auto_active(self.now) {
+            if h.round_at.is_some() {
+                self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
+                self.touch_hosts();
+            }
             return Ok(None);
         }
-        let Some(rules) = h.claim_rules() else {
-            return self.end_round(&h);
+        if h.restarting() || self.sessions_on(&h)? >= h.max {
+            return Ok(None);
+        }
+        let Some(rules) = h.claim_rules() else { return Ok(None) };
+        // 这一段接单从什么时候开始（进入接单时段后第一次来领时记下）
+        let since = match h.round_at {
+            Some(t) => t,
+            None => {
+                self.tx.execute("UPDATE hosts SET round_at = ?2 WHERE id = ?1", params![h.id, self.now])?;
+                self.now
+            }
         };
-        // 工作空间里摆着 `[host] dirs` 的白板（升级前列的），加上 `--dir` 覆盖的白板：按这个顺序轮流。
-        // 没有工作空间时就是旧的「白板与目录」。`--dir` 覆盖的（`fixed`）照常接卡：它只是目录由启动参数固定，
-        // 跳过它就等于这台机器在这些白板上永远不领卡（旧版 board host 只报一个 `--dir` 目录时一块白板都没有）
-        let mut boards: Vec<String> = vec![];
-        for d in h.dirs.iter() {
-            if !crate::valid_board(d.board.trim()) {
-                continue;
-            }
-            if !boards.contains(&d.board) {
-                boards.push(d.board.clone());
-            }
+        // 参与自动领取的白板（`boards.auto`），按项目、白板的顺序轮流；这台机器接不了的在下面跳过
+        let boards: Vec<String> = self.collect(
+            "SELECT b.project || '/' || b.key FROM boards b JOIN projects p ON p.key = b.project
+             WHERE b.auto = 1 ORDER BY p.sort, p.created_at, p.key, b.sort, b.created_at, b.key",
+            [],
+            |r| r.get(0),
+        )?;
+        if boards.is_empty() {
+            return Ok(None);
         }
         let n = boards.len();
         for k in 0..n {
@@ -4386,14 +4368,14 @@ impl<'a> W<'a> {
                 continue;
             }
             let flow = flow_of(self.tx, board.id)?;
-            // 这一轮里这台机器已经派发过的卡片不再领：派发异常退出/被停止后卡片 50 秒会回到可领取状态最上面，
-            // 不跳的话同一个空位会反复领到它、白跑 agent。下一轮（round_at 更新后）可以正常再领。
-            // 会话结束时还没轮到、被自动取消的排队不算（stop_by 为空；人取消的记了是谁）：新开的会话可以把它们重新排进去
-            let round_at = h.round_at.unwrap_or(0);
+            // 这台机器这一段接单里（最多往回看 24 小时）没做成的卡片先不再领：派发异常退出、被停止、超时之后，没有能接住它的
+            // 状态时卡片 50 秒会回到可领取状态最上面，不跳的话同一个空位会反复领到它、白跑 agent；人取消的排队也不再排。
+            // 做完了（已交审、做不下去）又被人拖回可领取状态的照常领；别的机器不受影响
+            let horizon = since.max(self.now - 24 * 3600 * 1000);
             let skip: Vec<i64> = self.collect(
-                "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3
-                   AND NOT (state = 'done' AND result = 'canceled' AND started_at IS NULL AND stop_by IS NULL AND session IS NOT NULL AND session != id)",
-                params![board.id, h.id, round_at],
+                "SELECT DISTINCT card FROM dispatches WHERE board = ?1 AND host_id = ?2 AND created_at >= ?3 AND state = 'done'
+                   AND (result IN ('crashed', 'stopped', 'timeout') OR (result = 'canceled' AND stop_by IS NOT NULL))",
+                params![board.id, h.id, horizon],
                 |r| r.get(0),
             )?;
             // 规则会给它派一个这台机器上找得到的 agent 的卡片，按规则 1 的先后（带优先标签的在前）取第一张
@@ -4431,23 +4413,6 @@ impl<'a> W<'a> {
                 self.plan_session(&h, &rules, &d, &board, &flow, &skip)?;
                 return self.read().dispatch(d.id).map(Some);
             }
-        }
-        // 还有会话排着卡片时这一轮不算结束：会话中途退出时它们被取消，要能由新开的会话重新排
-        let pending: i64 = self.tx.query_row(
-            "SELECT COUNT(*) FROM dispatches WHERE host_id = ?1 AND state = 'queued' AND session IS NOT NULL",
-            [h.id],
-            |r| r.get(0),
-        )?;
-        if pending > 0 {
-            return Ok(None);
-        }
-        self.end_round(&h)
-    }
-
-    fn end_round(&mut self, h: &HostRow) -> Result<Option<Dispatch>> {
-        if h.round_at.is_some() {
-            self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
-            self.touch_hosts();
         }
         Ok(None)
     }

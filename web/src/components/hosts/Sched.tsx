@@ -1,0 +1,403 @@
+/* ==========================================================================
+   机器 Tab「共用配置」第一节「调度」（PRD §10.12「调度」）：哪些卡自动交给哪个 agent 在这里定一次，所有机器共用
+   - 自动领取的白板：一块白板一个胶囊，点一下参与 / 不参与（不参与的只是不被自动领取，手动派发照常）
+   - 领取规则：按 agent 分卡——这个 agent 领哪些卡（规则前面的数字是全局的先后，第一条命中的生效）、由哪些机器做
+     （每台一个胶囊：现在能接、要等、接不了和原因）；下面一行是兜底「其余卡片 →」
+   - 机器什么时候接单：一台机器一条 24 小时的时间带，直接在上面拖出接单时段（空白处拖是新加一段，拖两头改起止，
+     拖中间平移，双击删掉，半小时一格）；右边是会话上限、一个会话几张、自动接单的开关。时间按服务器时间
+   写操作都是设置项（saveSetting）：当帧生效，保存状态画在那一项旁边，失败回到原处并提示
+   ========================================================================== */
+import { useMemo, useRef, useState } from 'react';
+import { api } from '../../lib/api';
+import { hostLoad } from '../../lib/hosts';
+import { ALL_DAY, DAY, SNAP, agentTake, claimable, hhmm, hostTake, ruleAgents, serverMinute, tidyWins, winWords, type Win } from '../../lib/sched';
+import type { ClaimRule, HostInfo, Label, Workspace } from '../../lib/types';
+import { cx } from '../../lib/util';
+import { saveSetting, useData } from '../../store/data';
+import { openHost } from '../../store/ui';
+import { Select, Sync, Tip, useNow, useSync } from '../bits';
+import { Icon } from '../Icon';
+import { AgentIcon } from './bits';
+import { Stepper, useSaver } from './HostModal';
+import { LabelSet } from './LabelSet';
+
+const OPS: [ClaimRule['op'], string][] = [
+  ['in', '带其中任一个'],
+  ['all', '全都带'],
+  ['not_in', '一个都不带'],
+  ['equal', '标签正好是'],
+  ['only', '只在这几个里'],
+  ['none', '没有标签'],
+];
+const OP_OPTIONS = OPS.map(([value, label]) => ({ value, label }));
+/** 「没有标签」不带标签列表：这一行不选标签，只看卡片有没有标签 */
+const needsLabels = (op: ClaimRule['op']) => op !== 'none';
+const plain = (r: ClaimRule) => ({ op: r.op, labels: needsLabels(r.op) ? r.labels : [], agent: r.agent });
+
+export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
+  const ws = useData(s => s.ws);
+  const now = useNow(30_000);
+  const { sync, track } = useSync();
+  const sched = ws?.sched;
+  const [adding, setAdding] = useState(false);
+  // 所有项目里的标签，同名（不区分大小写）的只留第一个；id 换成序号，选择器按它勾选
+  const labels = useMemo(() => {
+    const seen = new Set<string>();
+    return (ws?.projects ?? [])
+      .flatMap(p => p.labels)
+      .filter(l => !seen.has(l.name.toLowerCase()) && !!seen.add(l.name.toLowerCase()))
+      .map((l, i) => ({ ...l, id: i + 1 }));
+  }, [ws?.projects]);
+  // 标签选择器勾一个存一个：连着勾时回调可能来自上一帧，改的要是最新一份规则
+  const latest = useRef<ClaimRule[]>([]);
+  // 旧版服务端没有这一项：不显示这一节
+  if (!ws || !sched) return null;
+  const rules = sched.rules;
+  latest.current = rules;
+  const minute = serverMinute(ws, now);
+  const fallback = sched.fallback ?? '';
+  // 至少在一台机器上找得到命令的 agent
+  const found = hosts.flatMap(h => h.agents.filter(a => a.found)).filter((a, i, all) => all.findIndex(b => b.id === a.id) === i);
+  const agentName = (id: string) => hosts.flatMap(h => h.agents).find(a => a.id === id)?.name ?? id;
+  const agentOptions = found.map(a => ({ value: a.id, label: a.name }));
+  const boards = ws.projects.flatMap(p => p.boards);
+
+  const saveRules = (next: ClaimRule[]) => {
+    latest.current = next;
+    track(
+      'rules',
+      saveSetting('sched:rules', { ws: w => (w.sched ? { ...w, sched: { ...w.sched, rules: next } } : w) }, () => api.updateSched({ rules: next.map(plain) })),
+    );
+  };
+  const saveFallback = (v: string) =>
+    track(
+      'fallback',
+      saveSetting('sched:fallback', { ws: w => (w.sched ? { ...w, sched: { ...w.sched, fallback: v || null, fallbackActive: !!v } } : w) }, () => api.updateSched({ fallback: v })),
+    );
+  const toggleBoard = (path: string, on: boolean) =>
+    track(
+      `board:${path}`,
+      saveSetting(`sched:board:${path}`, { ws: w => ({ ...w, projects: w.projects.map(p => ({ ...p, boards: p.boards.map(b => (b.path === path ? { ...b, auto: on } : b)) })) }) }, () =>
+        api.updateBoard(path, { auto: on }),
+      ),
+    );
+  const edit = (i: number, change: Partial<ClaimRule>) => saveRules(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
+  const move = (i: number, d: number) => {
+    const next = [...rules];
+    const [r] = next.splice(i, 1);
+    next.splice(i + d, 0, r);
+    saveRules(next);
+  };
+
+  const cards = ruleAgents(rules, fallback);
+  return (
+    <section className="sc sd">
+      <div className="sc-head">
+        <div>
+          <h2>调度</h2>
+          <p>
+            哪些卡自动交给哪个 agent 在这里定一次，所有机器共用；机器在自己的接单时段里有符合规则的卡就领，几台都能接时按空位分。时间都按服务器时间
+            {sched.tz ? `（${sched.tz}）` : ''}。
+          </p>
+        </div>
+        <div className="sc-acts">
+          <Sync s={sync.rules} />
+          <button className="btn sm" type="button" disabled={adding || found.length === 0} onClick={() => setAdding(true)}>
+            <Icon name="plus" />
+            加一条规则
+          </button>
+        </div>
+      </div>
+
+      <div className="sd-boards">
+        <span className="sd-k">自动领取的白板</span>
+        {boards.map(b => {
+          const on = b.auto !== false;
+          return (
+            <Tip key={b.path} text={on ? `${b.name}：点一下不再自动领取（手动派发照常）` : `${b.name}：点一下参与自动领取`}>
+              <button type="button" className={cx('sd-bchip', on && 'on', sync[`board:${b.path}`] === 'failed' && 'hp-rollback')} aria-pressed={on} onClick={() => toggleBoard(b.path, !on)}>
+                <i />
+                {b.path}
+                <small>{claimable(b)}</small>
+              </button>
+            </Tip>
+          );
+        })}
+      </div>
+
+      {adding && (
+        <RuleForm
+          labels={labels}
+          agents={agentOptions}
+          onCancel={() => setAdding(false)}
+          onAdd={r => {
+            saveRules([...latest.current, r]);
+            setAdding(false);
+          }}
+        />
+      )}
+
+      {cards.length === 0 && !adding ? (
+        <p className="hp-empty sd-empty">
+          {found.length === 0 ? '还没有机器上报 agent：先在要干活的机器上运行 board host。' : '还没有领取规则：机器不会自动领卡，只做派给它的。点「加一条规则」开始。'}
+        </p>
+      ) : (
+        <div className={cx('sd-cards', sync.rules === 'failed' && 'hp-rollback')}>
+          {cards.map(a => {
+            const mine = rules.map((r, i) => ({ r, i })).filter(x => x.r.agent === a);
+            const has = hosts.filter(h => h.agents.some(x => x.id === a));
+            const able = has.filter(h => agentTake(h, a, hostLoad(ws, h).running.length, minute).ok).length;
+            return (
+              <article key={a} className="sd-card">
+                <header>
+                  <AgentIcon id={a} />
+                  <b>{agentName(a)}</b>
+                  <span className={cx('sd-sum', able === 0 && 'bad')}>{has.length === 0 ? '没有机器上有它' : able ? `${able} 台现在能接` : '现在没有机器能接'}</span>
+                </header>
+                <div className="sd-row">
+                  <span className="sd-k">领这些卡</span>
+                  <div className="sd-conds">
+                    {mine.map(({ r, i }) => (
+                      <div key={`${i}-${r.op}-${r.labels.join(',')}`} className="sd-cond">
+                        <Tip text="先后顺序：一张卡用第一条命中的规则">
+                          <span className="sd-no">{i + 1}</span>
+                        </Tip>
+                        <Select className="sd-op" value={r.op} options={OP_OPTIONS} aria-label="条件" onChange={v => edit(i, needsLabels(v as ClaimRule['op']) && !r.labels.length ? {} : { op: v as ClaimRule['op'] })} />
+                        {needsLabels(r.op) ? (
+                          <LabelSet value={r.labels} labels={labels} missing={r.missing} onChange={v => (v.length ? edit(i, { labels: v }) : undefined)} />
+                        ) : (
+                          <span className="hp-lset hp-lset-none">卡片没有任何标签</span>
+                        )}
+                        <span className="sd-cond-acts">
+                        <button type="button" className="icon-btn sm" aria-label="提前" disabled={i === 0} onClick={() => move(i, -1)}>
+                          <Icon name="chevUp" />
+                        </button>
+                        <button type="button" className="icon-btn sm" aria-label="推后" disabled={i === rules.length - 1} onClick={() => move(i, 1)}>
+                          <Icon name="chevDown" />
+                        </button>
+                        <button type="button" className="icon-btn sm" aria-label="删掉这条规则" onClick={() => saveRules(rules.filter((_, j) => j !== i))}>
+                          <Icon name="trash" />
+                        </button>
+                        </span>
+                        {!!r.missing?.length && <em className="hp-crule-warn">项目里没有标签 {r.missing.map(l => `「${l}」`).join('')}</em>}
+                      </div>
+                    ))}
+                    {fallback === a && (
+                      <div className="sd-cond">
+                        <span className="sd-no">·</span>
+                        <span className="hp-lset hp-lset-none">其余卡片（规则都没命中的）</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="sd-row">
+                  <span className="sd-k">由这些机器做</span>
+                  <div className="sd-pills">
+                    {has.length === 0 && <em className="sd-none">没有机器上有 {agentName(a)}：这些规则不生效</em>}
+                    {has.map(h => {
+                      const t = agentTake(h, a, hostLoad(ws, h).running.length, minute);
+                      return (
+                        <Tip key={h.id} text={`${h.name}：${t.why}`}>
+                          <button type="button" className={cx('sd-mp', t.tone)} onClick={() => openHost(h.name)}>
+                            <i />
+                            {h.name}
+                            {t.tone !== 'off' && <small>{t.ok ? t.why : t.why.split('，')[0]}</small>}
+                          </button>
+                        </Tip>
+                      );
+                    })}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      {(rules.length > 0 || fallback) && (
+        <p className={cx('hp-note sd-after', sync.fallback === 'failed' && 'hp-rollback')}>
+          其余卡片（规则都没命中的）
+          <Icon name="chevRight" />
+          <Select
+            className="sd-fallback"
+            value={fallback}
+            options={[{ value: '', label: '不领' }, ...(fallback && !found.some(a => a.id === fallback) ? [{ value: fallback, label: `${agentName(fallback)}（找不到）` }] : []), ...agentOptions]}
+            aria-label="规则都没命中的卡片由哪个 agent 做"
+            onChange={saveFallback}
+          />
+          <Sync s={sync.fallback} inline />
+        </p>
+      )}
+
+      <h3 className="sd-h">
+        机器什么时候接单 <small>服务器时间 {hhmm(minute)} · 在时间带上拖出时段：空白处拖是新加一段，拖两头改起止，拖中间平移，双击删掉</small>
+      </h3>
+      {hosts.length === 0 ? (
+        <p className="hp-empty sd-empty">还没有机器。</p>
+      ) : (
+        <div className="sd-time">
+          <div className="sd-axis">
+            <span />
+            <div className="sd-ticks">
+              {[0, 4, 8, 12, 16, 20, 24].map(h => (
+                <i key={h} style={{ left: `${(h / 24) * 100}%` }}>
+                  {String(h).padStart(2, '0')}
+                </i>
+              ))}
+            </div>
+            <span />
+          </div>
+          {hosts.map(h => (
+            <TimeRow key={h.id} h={h} ws={ws} minute={minute} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** 新加一条规则：条件、标签、交给哪个 agent */
+function RuleForm({ labels, agents, onAdd, onCancel }: { labels: Label[]; agents: { value: string; label: string }[]; onAdd: (r: ClaimRule) => void; onCancel: () => void }) {
+  const [op, setOp] = useState<ClaimRule['op']>('in');
+  const [picked, setPicked] = useState<string[]>([]);
+  const [agent, setAgent] = useState(agents[0]?.value ?? '');
+  const ok = !!agent && (!needsLabels(op) || picked.length > 0);
+  return (
+    <div className="sd-form">
+      <Select className="sd-op" value={op} options={OP_OPTIONS} aria-label="新规则的条件" onChange={v => setOp(v as ClaimRule['op'])} />
+      {needsLabels(op) ? <LabelSet value={picked} labels={labels} onChange={setPicked} /> : <span className="hp-lset hp-lset-none">卡片没有任何标签</span>}
+      <Icon name="chevRight" />
+      <Select className="sd-agent-pick" value={agent} options={agents} aria-label="交给哪个 agent" onChange={setAgent} />
+      <span className="hp-sp" />
+      <button className="btn sm" type="button" onClick={onCancel}>
+        取消
+      </button>
+      <button className="btn sm brand" type="button" disabled={!ok} onClick={() => onAdd({ op, labels: needsLabels(op) ? picked : [], agent, active: true })}>
+        <Icon name="plus" />
+        加上
+      </button>
+    </div>
+  );
+}
+
+/** 一台机器一行：时间带、时段文字、会话上限、一个会话几张、自动接单 */
+function TimeRow({ h, ws, minute }: { h: HostInfo; ws: Workspace; minute: number }) {
+  const { save, sync } = useSaver(h.name);
+  const wins = h.windows ?? ALL_DAY;
+  const t = hostTake(h, hostLoad(ws, h).running.length, minute);
+  const words = winWords(wins);
+  const failed = ['windows', 'auto', 'max', 'perSession'].some(k => sync[k] === 'failed');
+  return (
+    <div className={cx('sd-line', (!h.online || !h.auto) && 'off', failed && 'hp-rollback')}>
+      <button type="button" className="sd-m-name" onClick={() => openHost(h.name)} title="打开机器详情">
+        <i className={cx('sd-dot', t.tone)} />
+        <b>{h.name}</b>
+      </button>
+      <Track wins={wins} minute={minute} off={!h.online || !h.auto} onChange={v => save({ windows: v })} />
+      <span className="sd-ctl">
+        <span className="sd-win-words" title={words}>
+          {words}
+        </span>
+        {/* 已经是全天时不再放「全天」按钮：左边的文字就是它 */}
+        {words !== '全天' && (
+          <button type="button" className="sd-all" title="改成全天接单" onClick={() => save({ windows: ALL_DAY })}>
+            全天
+          </button>
+        )}
+        <Sync s={sync.windows ?? sync.max ?? sync.perSession ?? sync.auto} inline />
+        <Tip text="最多同时开几个会话">
+          <span>
+            <Stepper value={h.max} label="最多几个会话" onChange={v => save({ max: v })} />
+          </span>
+        </Tip>
+        <Tip text="一个会话最多做几张">
+          <span>
+            <Stepper value={h.perSession ?? 4} label="一个会话最多做几张" onChange={v => save({ perSession: v })} />
+          </span>
+        </Tip>
+        <Tip text={h.auto ? '自动接单开着：点一下关掉，只做派给它的卡' : '点一下打开自动接单'}>
+          <button className={cx('switch', h.auto && 'on')} type="button" role="switch" aria-checked={!!h.auto} aria-label={`${h.name} 自动接单`} onClick={() => save({ auto: !h.auto })}>
+            <i />
+          </button>
+        </Tip>
+      </span>
+      <small className={cx('sd-now', t.tone)}>{t.why}</small>
+    </div>
+  );
+}
+
+type Mode = 'new' | 'move' | 'l' | 'r';
+const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+
+/** 时间带：在上面直接拖出接单时段。拖动时先画在本地，松手再存（挨着、重叠的并成一段） */
+function Track({ wins, minute, off, onChange }: { wins: Win[]; minute: number; off?: boolean; onChange: (v: Win[]) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [live, setLive] = useState<{ wins: Win[]; at: number } | null>(null);
+  const shown = live?.wins ?? wins;
+  const minuteAt = (x: number) => {
+    const r = ref.current!.getBoundingClientRect();
+    return clamp(Math.round((((x - r.left) / r.width) * DAY) / SNAP) * SNAP, 0, DAY);
+  };
+  const start = (e: React.PointerEvent, mode: Mode, i = -1) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const m0 = minuteAt(e.clientX);
+    const base = wins.map(w => [...w] as Win);
+    const apply = (m: number): { wins: Win[]; at: number } => {
+      const next = base.map(w => [...w] as Win);
+      if (mode === 'new') {
+        next.push([Math.min(m0, m), Math.max(m0, m)]);
+        return { wins: next, at: next.length - 1 };
+      }
+      if (mode === 'l') next[i][0] = Math.min(m, next[i][1]);
+      if (mode === 'r') next[i][1] = Math.max(m, next[i][0]);
+      if (mode === 'move') {
+        const w = base[i][1] - base[i][0];
+        const a = clamp(base[i][0] + (m - m0), 0, DAY - w);
+        next[i] = [a, a + w];
+      }
+      return { wins: next, at: i };
+    };
+    setLive(apply(m0));
+    const move = (ev: PointerEvent) => setLive(apply(minuteAt(ev.clientX)));
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      setLive(null);
+      const next = tidyWins(apply(minuteAt(ev.clientX)).wins);
+      if (JSON.stringify(next) !== JSON.stringify(tidyWins(wins))) onChange(next);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+  };
+  return (
+    <div ref={ref} className={cx('sd-track', off && 'off', live && 'dragging')} onPointerDown={e => start(e, 'new')} title="在空白处拖出一段接单时段">
+      {shown.map(([a, b], i) => {
+        const active = live?.at === i;
+        return (
+          <div
+            key={i}
+            className={cx('sd-span', active && 'active')}
+            style={{ left: `${(a / DAY) * 100}%`, width: `${((b - a) / DAY) * 100}%` }}
+            onPointerDown={e => start(e, 'move', i)}
+            onDoubleClick={() => onChange(wins.filter((_, k) => k !== i))}
+            title={`${hhmm(a)}–${hhmm(b)}：拖中间平移，拖两头改起止，双击删掉`}
+          >
+            <i className="sd-grip l" onPointerDown={e => start(e, 'l', i)} />
+            {b - a >= 180 && (
+              <span>
+                {hhmm(a)}–{hhmm(b)}
+              </span>
+            )}
+            <i className="sd-grip r" onPointerDown={e => start(e, 'r', i)} />
+            {active && (
+              <b className="sd-tip">
+                {hhmm(a)}–{hhmm(b)}
+              </b>
+            )}
+          </div>
+        );
+      })}
+      <i className="sd-nowline" style={{ left: `${(minute / DAY) * 100}%` }} />
+    </div>
+  );
+}

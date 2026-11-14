@@ -5,15 +5,14 @@ import { api } from '../../lib/api';
 import { agentMark, boardOf, canPickDir, dirFresh, dirReadiness, envName, hostLoad, hostNameError, hostsOf, installCommand, isLocalHost, pathParts, queueReason, resultOf, sessionGroups, sessionQueue, since, skillGaps, skillMiss, sourceOf } from '../../lib/hosts';
 import { installSkill, isWindows, localHost, pickFolder, shell, type LocalHost } from '../../lib/platform';
 import { effectiveProvider, PROVIDER_AGENTS, PROVIDER_LOCAL, providersFor } from '../../lib/providers';
-import type { ClaimRule, Dispatch, HostAgent, HostDir, HostInfo, Label, ProviderView } from '../../lib/types';
+import type { Dispatch, HostAgent, HostDir, HostInfo, ProviderView } from '../../lib/types';
 import { readiness, type ReadyGo } from '../../lib/ready';
 import { COPY_ITEMS } from '../../lib/templates';
 import { copyText, cx, durWords, pref, reduceMotion } from '../../lib/util';
-import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib/cron';
-import { DEFAULT_SCHEDULE, SchedulePick } from '../SchedulePick';
+import { ALL_DAY, winWords } from '../../lib/sched';
 import { hostKey, optimistic, saveSetting, useData } from '../../store/data';
-import { confirm, confirmCheck, openHost, openPicker, openSession, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
-import { LabelChip, Segmented, Select, Sync, Tip, Title, useNow, useSync, type SyncState } from '../bits';
+import { confirm, confirmCheck, openHost, openSession, setHostsView, setTab, toast, toastError, useUI } from '../../store/ui';
+import { Segmented, Select, Sync, Tip, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
@@ -125,7 +124,7 @@ function minsWords(n: number): string {
 /** 机器设置的保存：每一项各存各的（store 的 saveSetting）。改动当帧生效，不禁用任何控件，没确认时也能接着改；
     sync 是每一项的保存状态，画在那个控件旁边：保存中（转圈，晚一点才出现）→ 已保存（打勾后淡出）；
     被拒绝时值回到原处、那一行回弹，并提示 */
-function useSaver(name: string) {
+export function useSaver(name: string) {
   const { sync, track } = useSync();
   const save: Save = p => {
     const f = fieldOf(p);
@@ -147,7 +146,7 @@ function useSaver(name: string) {
 }
 
 /** 步进器：数字当帧变，往上加从下面滚进来、往下减从上面滚进来 */
-function Stepper({ value, min = 1, max = 8, label, onChange }: { value: number; min?: number; max?: number; label: string; onChange: (v: number) => void }) {
+export function Stepper({ value, min = 1, max = 8, label, onChange }: { value: number; min?: number; max?: number; label: string; onChange: (v: number) => void }) {
   const prev = useRef(value);
   const up = value >= prev.current;
   useEffect(() => {
@@ -174,8 +173,6 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
   const ws = useData(s => s.ws);
   const now = useNow(1000);
   const { running, queued } = hostLoad(ws, h);
-  // 没有一条领取规则时定时领取不会领卡，「现在领一轮」也不能开始
-  const hasRules = (h.rules?.length ?? 0) > 0;
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
   // 共用配置里的模型供应商和每个 agent 的分配：机器设置「供应商」下拉、模型下拉据此过滤
   const [providers, setProviders] = useState<ProviderView | null>(null);
@@ -235,25 +232,6 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
     });
     return () => cancelAnimationFrame(raf);
   }, [reveal]);
-  const canRound = h.online && !h.paused && !h.round && hasRules;
-  const roundTip = h.round
-    ? '正在领一轮：有空位就领下一张，所有白板都没有符合规则的卡片时结束'
-    : !hasRules
-      ? '先添加一条领取规则'
-      : !h.online
-        ? '机器离线，不能领'
-        : h.paused
-          ? '暂停接单时不能领'
-          : '现在按领取规则领一轮，效果与定时到点相同';
-  const round = async () => {
-    // 当帧变成「正在领」，被拒绝时改回来并提示
-    try {
-      await optimistic(patchHost(h.name, x => ({ ...x, round: true })), () => api.hostRound(h.name));
-      toast({ type: 'success', title: `${h.name} 开始领一轮` });
-    } catch (e) {
-      toastError(e);
-    }
-  };
   const remove = async () => {
     const t = h.token;
     const { ok: yes, checked: revoke } = await confirmCheck({
@@ -319,7 +297,7 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
       </div>
       <div className="d-grid">
         <div className="d-main">
-          {/* 顶部：机器名和最常用的两个操作（领一轮、暂停接单） */}
+          {/* 顶部：机器名和最常用的操作（暂停接单） */}
           <section className="d-section hp-hero" style={{ ['--i' as string]: 0 }}>
             <div className="hp-hero-id">
               <h2 className="hp-m-title">{h.name}</h2>
@@ -338,14 +316,6 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
               )}
             </div>
             <div className="hp-hero-acts">
-              <Tip text={roundTip}>
-                <span>
-                  <button className={cx('btn sm', h.round && 'is-busy')} type="button" disabled={!canRound} onClick={round}>
-                    <Icon name="play" />
-                    {h.round ? '正在领一轮' : '领一轮'}
-                  </button>
-                </span>
-              </Tip>
               <span className="hp-ctl">
                 <Sync s={sync.paused} />
                 <Tip text={h.paused ? '恢复后接着做排队的派发' : '暂停后不启动新的派发，在跑的不受影响'}>
@@ -417,9 +387,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className={cx('hp-knob', failed('perSession'))}>
                   <div className="hp-knob-text">
                     <b>一个会话最多做几张</b>
-                    <Tip text="定时领取时一个会话一次排好最多 N 张卡（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做下一张，排完就退出">
+                    <Tip text="自动领取时一个会话一次排好最多 N 张卡（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做下一张，排完就退出">
                       <span>
-                        定时领取时一个会话一次排好最多这么多张卡，agent 做完一张用 board next 接着做下一张，排完就退出；N = 1 时一个会话只做一张，有几个空位就同时开几个会话
+                        自动领取时一个会话一次排好最多这么多张卡，agent 做完一张用 board next 接着做下一张，排完就退出；N = 1 时一个会话只做一张，有几个空位就同时开几个会话
                       </span>
                     </Tip>
                   </div>
@@ -470,22 +440,34 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 </div>
               )}
             </div>
-            <div className={cx('hp-block', failed('cronOn', 'cron'))}>
+            {/* 自动接单、接单时段、领取规则在「共用配置 → 调度」里统一设（规则所有机器共用）：这里只写这台机器现在的样子 */}
+            <div className={cx('hp-block', failed('auto', 'windows'))}>
               <div className="hp-block-head">
                 <div className="hp-knob-text">
-                  <b>定时领取</b>
-                  <span>到了下面这些时间，按领取规则领卡、把空位填满，直到没有符合规则的卡片</span>
+                  <b>自动接单</b>
+                  <span>
+                    {h.auto ? `接单时段：${winWords(h.windows ?? ALL_DAY)}（服务器时间）。时段内有符合领取规则的卡就领` : '关着：只做派给它的卡'}
+                    {h.auto && (h.rules?.length ?? 0) === 0 && '；还没有领取规则，不会自动领'}
+                  </span>
                 </div>
                 <span className="hp-ctl">
-                  <Sync s={sync.cronOn} />
-                  <button className={cx('toggle', h.cronOn && 'on')} type="button" role="switch" aria-checked={h.cronOn} aria-label="定时领取" onClick={() => save({ cronOn: !h.cronOn })}>
+                  <button
+                    className="btn sm"
+                    type="button"
+                    onClick={() => {
+                      setHostsView('shared');
+                      close();
+                    }}
+                  >
+                    去「调度」里改
+                  </button>
+                  <Sync s={sync.auto} />
+                  <button className={cx('toggle', h.auto && 'on')} type="button" role="switch" aria-checked={!!h.auto} aria-label="自动接单" onClick={() => save({ auto: !h.auto })}>
                     <i />
                   </button>
                 </span>
               </div>
-              <CronTimes h={h} save={save} sync={sync.cron} />
             </div>
-            {h.rules != null && <ClaimRules h={h} save={save} sync={sync.rules} />}
           </section>
 
           <section className="d-section" id="hp-sec-agents" style={{ ['--i' as string]: 3 }}>
@@ -1159,7 +1141,7 @@ function AgentEdit({
         )}
         <SelfTestAgentButton h={h} a={a} />
         {def ? (
-          <span className="ha-hint">默认 agent：定时领取用它，手动派发时预先选中</span>
+          <span className="ha-hint">默认 agent：手动派发时预先选中，任意机器没指定 agent 时也用它</span>
         ) : (
           <span className="hp-ctl">
             <Sync s={sync.agent} />
@@ -1416,259 +1398,6 @@ function SkillBanner({ h, fixed, setFixed }: { h: HostInfo; fixed: string[] | nu
   );
 }
 
-const OPS: [ClaimRule['op'], string][] = [
-  ['in', '带其中任一个'],
-  ['all', '全都带'],
-  ['not_in', '一个都不带'],
-  ['equal', '标签正好是'],
-  ['only', '只在这几个里'],
-  ['none', '没有标签'],
-];
-const OP_OPTIONS = OPS.map(([value, label]) => ({ value, label }));
-/** 「没有标签」不带标签列表：这一行不选标签，只看卡片有没有标签 */
-const NEEDS_LABELS = (op: ClaimRule['op']) => op !== 'none';
-
-/** 一条规则里的标签：和卡片详情的标签一行一样——标签胶囊（项目里的颜色，× 去掉）加标签按钮，点开同一个标签选择器，
-    勾一个就应用一个。机器只对应一个项目时就是那个项目的选择器（能新建、管理标签）；对应几个项目时只列这几个项目里的标签
-    （同名的按第一个），不能新建。项目里已经没有的标签灰色划掉、原样保留 */
-function LabelSet({ value, onChange, labels, project, missing, disabled }: {
-  value: string[];
-  onChange: (v: string[]) => void | Promise<unknown>;
-  labels: Label[];
-  /** 机器只对应一个项目时是它的标识：选择器用这个项目的标签（id 是真的），可以新建、管理 */
-  project?: string;
-  missing?: string[];
-  disabled?: boolean;
-}) {
-  const pool = () => (project ? (useData.getState().ws?.projects.find(p => p.key === project)?.labels ?? labels) : labels);
-  const byName = (n: string, ls = labels) => ls.find(l => l.name.toLowerCase() === n.toLowerCase());
-  const ids = (names: string[]) => names.map(n => byName(n)).filter((l): l is Label => !!l).map(l => l.id);
-  const open = (anchor: HTMLElement) => {
-    // 不在列表里的（项目里已经没有的）标签选择器里没有，原样留在规则里
-    const kept = value.filter(n => !byName(n));
-    let applied = value;
-    let latest = ids(value);
-    // 勾一个应用一个。机器设置保存完之前不能再改（BUSY）：连点时排队，轮到时按选择器最新的勾选保存，中间几次合并成一次
-    let chain: Promise<unknown> = Promise.resolve();
-    openPicker({
-      rect: anchor.getBoundingClientRect(),
-      project: project ?? '',
-      labels: project ? undefined : labels,
-      selected: latest,
-      onToggle: () => {
-        latest = useUI.getState().picker?.selected ?? latest;
-        chain = chain.then(async () => {
-          const ls = pool();
-          const next = [...ls.filter(l => latest.includes(l.id)).map(l => l.name), ...kept];
-          if (!next.length) {
-            // 规则至少要有一个标签：一个都不勾时不改，勾回原样
-            updatePicker(applied.map(n => byName(n, ls)).filter((l): l is Label => !!l).map(l => l.id));
-            return;
-          }
-          if (next.length === applied.length && next.every(n => applied.includes(n))) return;
-          applied = next;
-          await onChange(next);
-        });
-      },
-    });
-  };
-  return (
-    <span className="hp-lset">
-      {value.map(n => {
-        const l = byName(n);
-        const off = !l || missing?.some(m => m.toLowerCase() === n.toLowerCase());
-        return (
-          <span key={n} className={cx('hp-lset-chip', off && 'off')} title={off ? '项目里没有这个标签' : undefined}>
-            <LabelChip label={l ?? { id: -1, name: n, color: 'var(--text-4)' }} onRemove={() => onChange(value.filter(x => x !== n))} removeDisabled={disabled} />
-          </span>
-        );
-      })}
-      <button type="button" className="lb-add" aria-label="添加标签" data-label-picker disabled={disabled} onClick={e => open(e.currentTarget)}>
-        <Icon name="tag" />
-        {value.length ? '' : '选标签'}
-      </button>
-    </span>
-  );
-}
-
-/** 领取规则：条件（带其中任一个 / 全都带 / 一个都不带 / 标签正好是 / 只在这几个里 / 没有标签）→ agent，
- *  有顺序（第一条命中的生效），最后可选兜底。只影响定时领取和会话里的 board next，手动派发、board claim 不受影响 */
-function ClaimRules({ h, save: put, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
-  const ws = useData(s => s.ws);
-  const rules = h.rules ?? [];
-  const found = h.agents.filter(a => a.found);
-  const agentName = (id: string) => h.agents.find(a => a.id === id)?.name ?? id;
-  // 工作空间里摆着的老白板所在项目里的标签（还没有时就是全部项目：工作空间能放任意白板），同名（不区分大小写）的
-  // 只留第一个（颜色取它的）；id 换成序号，选择器按它勾选
-  const labels = useMemo(() => {
-    const seen = new Set<string>();
-    return (ws?.projects ?? [])
-      .filter(p => !h.dirs.length || h.dirs.some(d => d.board.startsWith(`${p.key}/`)))
-      .flatMap(p => p.labels)
-      .filter(l => !seen.has(l.name.toLowerCase()) && !!seen.add(l.name.toLowerCase()))
-      .map((l, i) => ({ ...l, id: i + 1 }));
-  }, [ws, h.dirs]);
-  // 只对应一个项目时，用这个项目的标签和选择器（和卡片详情一样，能新建、管理标签）；还没有白板时看打开的这块
-  const keys = [...new Set(h.dirs.map(d => d.board.split('/')[0]))];
-  const one = keys.length === 1 ? ws?.projects.find(p => p.key === keys[0]) : undefined;
-  const [op, setOp] = useState<ClaimRule['op']>('in');
-  const [picked, setPicked] = useState<string[]>([]);
-  // 从「没有标签」换成要标签的条件：服务端不允许没有标签的规则，先只改界面，选了标签再一起保存
-  const [draft, setDraft] = useState<{ i: number; op: ClaimRule['op'] } | null>(null);
-  const [agent, setAgent] = useState('');
-  const pick = agent || found[0]?.id || '';
-  const has = (a: string) => found.some(x => x.id === a);
-  const agentOptions = found.map(a => ({ value: a.id, label: a.name }));
-  // 标签选择器是勾一个存一个：连着勾时回调可能来自上一帧，改的要是最新一份规则，不能把中间存下的改动覆盖回去
-  const latest = useRef(rules);
-  latest.current = rules;
-  const save = (next: ClaimRule[]) => {
-    latest.current = next;
-    put({
-      rules: next.map(r => ({
-        op: r.op,
-        labels: NEEDS_LABELS(r.op) ? r.labels : [],
-        agent: r.agent,
-        active: has(r.agent),
-        missing: NEEDS_LABELS(r.op) ? r.missing : [],
-      })),
-    });
-  };
-  const edit = (i: number, change: Partial<ClaimRule>) => {
-    // 改这一行的任何一项都从「还没选好标签」的状态里出来，下拉和存下的规则保持一致
-    setDraft(null);
-    save(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
-  };
-  const changeOp = (i: number, next: ClaimRule['op']) => {
-    if (NEEDS_LABELS(next) && !rules[i]?.labels.length) {
-      setDraft({ i, op: next });
-      return;
-    }
-    setDraft(null);
-    edit(i, { op: next });
-  };
-  const move = (i: number, d: number) => {
-    const next = [...rules];
-    const [r] = next.splice(i, 1);
-    next.splice(i + d, 0, r);
-    setDraft(null);
-    void save(next);
-  };
-  const add = () => {
-    if ((NEEDS_LABELS(op) && !picked.length) || !pick) return;
-    void save([...rules, { op, labels: NEEDS_LABELS(op) ? picked : [], agent: pick }]);
-    setPicked([]);
-  };
-  const fallback = h.fallback || '';
-  return (
-    <div className={cx('hp-block hp-crules', sync === 'failed' && 'hp-rollback')}>
-      <div className="hp-rule-text">
-        <b>
-          领取规则
-          <Sync s={sync} inline />
-        </b>
-        <span>定时领取只领满足条件的卡片，交给对应的 agent；从上到下，第一条命中的生效。没有领取规则时不会自动领取，手动派发不受影响</span>
-      </div>
-      {rules.map((r, i) => (
-        <div className={cx('hp-crule', !r.active && 'off')} key={`${i}-${r.op}-${r.labels.join(',')}`}>
-          <Select
-            className="hp-crule-op"
-            value={draft?.i === i ? draft.op : r.op}
-            options={OP_OPTIONS}
-            aria-label="条件"
-            onChange={v => changeOp(i, v as ClaimRule['op'])}
-          />
-          {NEEDS_LABELS(draft?.i === i ? draft.op : r.op) ? (
-            <LabelSet
-              value={r.labels}
-              labels={one?.labels ?? labels}
-              project={one?.key}
-              missing={r.missing}
-              onChange={v => {
-                if (!v.length) return;
-                if (draft?.i !== i) return void edit(i, { labels: v });
-                // 选好标签：新条件和标签一起保存
-                const next = draft.op;
-                setDraft(null);
-                edit(i, { op: next, labels: v });
-              }}
-            />
-          ) : (
-            <span className="hp-lset hp-lset-none">卡片没有任何标签</span>
-          )}
-          <Icon name="chevRight" />
-          <Select
-            className="hp-crule-agent"
-            value={r.agent}
-            options={[...(has(r.agent) ? [] : [{ value: r.agent, label: `${agentName(r.agent)}（找不到）` }]), ...agentOptions]}
-            aria-label="由哪个 agent 做"
-            onChange={v => edit(i, { agent: v })}
-          />
-          <span className="hp-sp" />
-          <button type="button" className="icon-btn sm" aria-label="上移" disabled={i === 0} onClick={() => move(i, -1)}>
-            <Icon name="chevUp" />
-          </button>
-          <button type="button" className="icon-btn sm" aria-label="下移" disabled={i === rules.length - 1} onClick={() => move(i, 1)}>
-            <Icon name="chevDown" />
-          </button>
-          <button
-            type="button"
-            className="icon-btn sm"
-            aria-label="删除这条规则"
-            onClick={() => {
-              setDraft(null);
-              void save(rules.filter((_, j) => j !== i));
-            }}
-          >
-            <Icon name="trash" />
-          </button>
-          {draft?.i === i && <em className="hp-crule-warn">选好标签后才保存这个条件</em>}
-          {!r.active && <em className="hp-crule-warn">这台机器上找不到 {agentName(r.agent)}，这条规则不生效</em>}
-          {!!r.missing?.length && <em className="hp-crule-warn">项目里没有标签 {r.missing.map(l => `「${l}」`).join('')}</em>}
-        </div>
-      ))}
-      <div className="hp-crule add">
-        <Select className="hp-crule-op" value={op} options={OP_OPTIONS} aria-label="新规则的条件" onChange={v => setOp(v as ClaimRule['op'])} />
-        {NEEDS_LABELS(op) ? (
-          <LabelSet value={picked} labels={one?.labels ?? labels} project={one?.key} onChange={setPicked} />
-        ) : (
-          <span className="hp-lset hp-lset-none">卡片没有任何标签</span>
-        )}
-        <Icon name="chevRight" />
-        <Select className="hp-crule-agent" value={pick} options={agentOptions} aria-label="新规则的 agent" onChange={setAgent} />
-        <button className="btn sm" type="button" disabled={(NEEDS_LABELS(op) && !picked.length) || !pick} onClick={add}>
-          <Icon name="plus" />
-          加规则
-        </button>
-      </div>
-      {(rules.length > 0 || fallback) && (
-        <div className={cx('hp-crule fallback', fallback && h.fallbackActive === false && 'off')}>
-          <span className="hp-crule-label">其余卡片</span>
-          <Icon name="chevRight" />
-          <Select
-            className="hp-crule-agent"
-            value={fallback}
-            options={[{ value: '', label: '不领' }, ...(fallback && !has(fallback) ? [{ value: fallback, label: `${agentName(fallback)}（找不到）` }] : []), ...agentOptions]}
-            aria-label="一条规则都没命中的卡片由哪个 agent 做"
-            onChange={v => put({ fallback: v })}
-          />
-          {fallback && h.fallbackActive === false && <em className="hp-crule-warn">这台机器上找不到 {agentName(fallback)}，兜底不生效</em>}
-        </div>
-      )}
-      {rules.length === 0 && (
-        <p className="hp-unmatched">
-          <Icon name="info" />还没有领取规则：定时领取不会自动领卡，「现在领一轮」也不能开始
-        </p>
-      )}
-      {!!h.unmatched && !fallback && (
-        <p className="hp-unmatched">
-          <Icon name="info" />有 {h.unmatched} 张可领取的卡片没有匹配任何规则
-        </p>
-      )}
-    </div>
-  );
-}
-
 /** 次要区块：标题行点一下收起 / 展开，状态记在本机（默认收起），重开弹窗保持；reveal 变了（就绪清单里点了按钮）就展开 */
 function Fold({ id, title, n, i, reveal = 0, acts, children }: { id: string; title: string; n: number; i: number; reveal?: number; acts?: React.ReactNode; children: React.ReactNode }) {
   const [open, setOpen] = useState(() => pref.get(`hostFold.${id}`, false));
@@ -1707,61 +1436,6 @@ function MidPath({ path }: { path: string }) {
       <span className="hp-path-head">{head}</span>
       <span className="hp-path-tail">{tail}</span>
     </code>
-  );
-}
-
-/** 定时领取：胶囊列表（写说明，悬停看 cron 表达式），可去掉；加的时候选「每天 / 工作日 / 每周几 / 每月几号」和时间，
-    或「每隔几分钟 / 几小时」，由 buildCron 生成表达式，不让人手写（手写容易错）。旧的手写表达式说不出来时原样显示 */
-function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
-  // 加时间的那一排选择器平时收着，点「加时间」才展开；一个时间点都没有时直接展开
-  const [adding, setAdding] = useState(h.cron.length === 0);
-  const [spec, setSpec] = useState<Schedule>(DEFAULT_SCHEDULE);
-  const cron = buildCron(spec);
-  const dup = !!cron && h.cron.map(normalizeCron).includes(cron);
-  const add = () => {
-    if (!cron || dup) return;
-    save({ cron: [...h.cron, cron] });
-  };
-  return (
-    <div className={cx('hp-cron', !h.cronOn && 'off')}>
-      <div className="hp-times">
-      {h.cron.map(x => (
-        <span className="hp-time" key={x} title={normalizeCron(x)}>
-          {/* 说不出来的（旧的手写表达式）原样用等宽字显示 */}
-          {describeCron(x) === normalizeCron(x) ? <code>{normalizeCron(x)}</code> : describeCron(x)}
-          <button type="button" aria-label={`去掉 ${describeCron(x)}`} onClick={() => save({ cron: h.cron.filter(y => y !== x) })}>
-            <Icon name="close" />
-          </button>
-        </span>
-      ))}
-        {!adding && (
-          <button type="button" className="hp-time-add" onClick={() => setAdding(true)}>
-            <Icon name="plus" />
-            加时间
-          </button>
-        )}
-        <Sync s={sync} inline />
-      </div>
-      {adding && (
-      <span className="hp-sched-add" role="group" aria-label="加一个定时">
-        <SchedulePick spec={spec} onChange={setSpec} />
-        <Tip text={dup ? '已经有这一条了' : !cron ? '至少选一天' : ''}>
-          <span>
-            <button className="btn sm" type="button" disabled={!cron || dup} onClick={add}>
-              <Icon name="plus" />
-              加上
-            </button>
-          </span>
-        </Tip>
-        {h.cron.length > 0 && (
-          <button className="hp-link" type="button" onClick={() => setAdding(false)}>
-            收起
-          </button>
-        )}
-      </span>
-      )}
-      <span className="hp-cron-hint">按这台机器的本地时间；同一分钟有几条到点只领一轮</span>
-    </div>
   );
 }
 

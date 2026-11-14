@@ -18,6 +18,7 @@ pub mod releases;
 pub mod moves;
 pub mod providers;
 pub mod runlog;
+pub mod sched;
 pub mod search;
 pub mod seed;
 pub mod service;

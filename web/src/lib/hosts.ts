@@ -5,7 +5,7 @@ import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
 import codexIcon from '../assets/agents/codex.svg';
-import { describeCron } from './cron';
+import { ALL_DAY, winWords } from './sched';
 import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
 import { agentColor, agentGlyph } from './util';
 
@@ -217,8 +217,8 @@ export function queueReason(h: HostInfo | undefined, d?: Dispatch): string {
 /** 派发在哪台机器：「任意机器」的派发还没挑到机器时写「任意机器」 */
 export const hostWords = (d: Pick<Dispatch, 'host'>) => d.host || '任意机器';
 
-/** 定时领取的摘要（「每天 23:00、工作日 09:00」，和机器详情里的胶囊一致）；没开或没设时为空，不显示占位 */
-export const cronSummary = (h: HostInfo) => (h.cronOn && h.cron.length ? h.cron.map(describeCron).join('、') : '');
+/** 自动接单的摘要（「自动接单 · 22:00–08:00」）；没开时为空，不显示占位 */
+export const autoSummary = (h: HostInfo) => (h.auto ? `自动接单 · ${winWords(h.windows ?? ALL_DAY)}` : '');
 
 const NO_HOSTS: HostInfo[] = [];
 const NO_DISPATCHES: Dispatch[] = [];

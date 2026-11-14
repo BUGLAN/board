@@ -28,7 +28,7 @@
 //!   有的 agent 不把名字像密钥的环境变量传给它执行的命令（dsh 去掉名字里带 KEY、PASSWORD、SECRET、TOKEN 的），
 //!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
-//! - 正在一轮领取时（定时到点、界面上「现在领一轮」），有空位就向服务端要下一张（定时领取）。
+//! - 服务端说这台机器正在自动接单时（机器信息里的 `round`：开了自动接单、在接单时段里；旧版服务端是「正在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600），每 5 秒上传新增的行（最多最后 500 行）。
 //!   内置模板都用 agent 的结构化输出（Claude Code `--output-format stream-json --verbose`、pi `--mode json`、
 //!   Codex `exec --json`、dsh `--json`），本机日志文件里存原样的事件，上传的「原始输出」用转写后的一行一行（见 logfmt.rs）。
@@ -3571,6 +3571,7 @@ impl Host<'_> {
         })
     }
 
+    /// 连旧版服务端时才会触发（新版服务端把定时领取换成了接单时段，发来的时间表是空的，是否来领卡只看 `round`）。
     /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
     fn cron(&mut self, last: &mut String) {
         // 同一分钟只处理一次：多条表达式同时到点也只开始一轮

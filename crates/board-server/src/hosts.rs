@@ -4,7 +4,7 @@
 //! - `POST /api/hosts/{名字}/beat`：上报（启动时、之后每 10 秒），返回这台机器的任务
 //! - `GET /api/hosts/{名字}/work`：只取任务（收到实时推送里 `hosts` 变化时）
 //! - `POST /api/hosts/{名字}/begin {instance, id}`：开始一次排队中的派发（领取卡片）
-//! - `POST /api/hosts/{名字}/pull {instance}`：定时领取的下一张；这一轮结束时返回 null
+//! - `POST /api/hosts/{名字}/pull {instance}`：自动领取的下一张；现在没有可领的、或机器不在自动接单时返回 null
 //! - `POST /api/hosts/{名字}/round`：开始一轮领取（定时到点；界面上的「现在领一轮」也是它）
 //! - `POST /api/hosts/{名字}/rename {name}`：机器改名（桌面端「设置 → 本机」保存机器名时调用）
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
@@ -493,6 +493,24 @@ pub(crate) async fn pause_all(State(s): State<AppState>, h: HeaderMap, Json(v): 
     let b: Body = parse(v)?;
     let client = client_of(&h);
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.hosts_pause_all(b.paused))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+/// `PATCH /api/sched {rules?, fallback?}`：改全局的领取规则和兜底（只有人能改；访问令牌调不到这个接口）
+pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<board_core::sched::Sched> {
+    #[derive(Deserialize)]
+    struct Body {
+        /// 领取规则（整个列表替换）
+        #[serde(default)]
+        rules: Option<Vec<board_core::hosts::ClaimRule>>,
+        /// 兜底的 agent；空字符串表示取消兜底
+        #[serde(default)]
+        fallback: Option<String>,
+    }
+    let b: Body = parse(v)?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.sched_update(b.rules.as_deref(), b.fallback.as_deref()))).await?;
     s.poke();
     Ok(Json(out))
 }

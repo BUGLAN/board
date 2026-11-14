@@ -510,10 +510,12 @@ fn cron_session_does_several_cards() {
     assert_eq!(rig.workspace()["hosts"][0]["perSession"], 4);
     // 没有领取规则时不自动领取：加一条命中全部卡片的规则（不带「跳过」→ claude）
     let rule = board_core::ClaimRule { op: "not_in".into(), labels: vec!["跳过".into()], agent: "claude".into(), ..Default::default() };
-    let patch = board_core::HostPatch { rules: Some(vec![rule]), ..Default::default() };
+    // 规则是全局的一份；这台机器打开自动接单（默认全天）后，在接单时段里持续领卡
+    let patch = board_core::HostPatch { rules: Some(vec![rule]), auto: Some(true), ..Default::default() };
     let mut store = board_core::Store::open(&rig.s.db).unwrap();
     store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", "跳过", None, false)).unwrap();
     store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &patch)).unwrap();
+    // 旧版 board host 定时到点会调这个接口：现在什么也不做，但不能报错
     ureq::post(format!("{}/api/hosts/mbp/round", rig.s.url))
         .header("authorization", format!("Bearer {}", rig.s.token))
         .send_json(serde_json::json!({}))

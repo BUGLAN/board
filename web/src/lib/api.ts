@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick } from './types';
+import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched } from './types';
 
 declare global {
   interface Window {
@@ -152,7 +152,7 @@ export const api = {
 
   createBoard: (b: { project: string; name: string; key: string; desc?: string; pos?: Pos }) =>
     req<{ path: string }>('POST', '/api/boards', b),
-  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; readyCheck?: string; readyCheckWin?: string; repo?: string; branch?: string }) =>
+  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; readyCheck?: string; readyCheckWin?: string; repo?: string; branch?: string; auto?: boolean }) =>
     req('PATCH', `/api/boards/${path}`, patch),
   /** 定时建卡（PRD §4）：只有人能改 */
   createCardCron: (path: string, c: CardCronInput) => req<CardCron>('POST', `/api/card-crons/${path}`, c),
@@ -199,7 +199,7 @@ export const api = {
   /* 任务下发（board host） */
   /** 机器和排队、正在跑的派发（工作区里也有；机器页每 10 秒取一次，刷新心跳时间） */
   hosts: () => req<{ hosts: HostInfo[]; dispatches: Dispatch[] }>('GET', '/api/hosts'),
-  /** 修改机器设置：最多几个会话、暂停接单、默认 agent、定时领取 */
+  /** 修改机器设置：最多几个会话、暂停接单、默认 agent、自动接单和接单时段 */
   updateHost: (
     name: string,
     patch: {
@@ -220,6 +220,10 @@ export const api = {
       run?: { agent: string; model?: string; effort?: string; provider?: string };
       /** 恢复一个连续异常退出、暂停了接单的 agent（写它的标识） */
       resume?: string;
+      /** 参与自动接单 */
+      auto?: boolean;
+      /** 接单时段（整个替换）：一天里的几段 [起, 止)，分钟 */
+      windows?: [number, number][];
       /** 工作空间（整个替换）：每个项目的目录是 `<工作空间>/<项目>`；空路径表示不配 */
       workspace?: HostWorkspace;
     },
@@ -258,8 +262,8 @@ export const api = {
   pauseAllHosts: (paused: boolean) => req<HostInfo[]>('POST', '/api/hosts/pause-all', { paused }),
   /** 全部停止：停止所有正在跑的派发，同时全部暂停 */
   stopAllHosts: () => req<HostInfo[]>('POST', '/api/hosts/stop-all'),
-  /** 现在领一轮（效果与定时到点相同） */
-  hostRound: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/round`, {}),
+  /** 改全局的领取规则（整个列表替换）和兜底（空字符串 = 不领）：所有机器共用 */
+  updateSched: (patch: { rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[]; fallback?: string }) => req<Sched>('PATCH', '/api/sched', patch),
   /** 这台机器最近 50 个结束的派发 */
   hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`),
   /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */

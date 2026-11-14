@@ -759,12 +759,22 @@ fn capacity_and_pause_keep_dispatches_queued() {
     assert_eq!(e.code, ErrorCode::Usage);
     let e = s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { agent: Some("pi".into()), ..Default::default() })).unwrap_err();
     assert_eq!(e.code, ErrorCode::AgentNotOnHost);
+    // 自动接单和接单时段：时段排好、挨着的并成一段；旧界面的「定时领取」开关当成自动接单的开关，时间表不再存
+    assert!(!host(&s, T0).auto, "新机器默认不自动接单");
+    assert_eq!(host(&s, T0).windows, vec![[0, 1440]], "默认全天");
     let h = s
         .write(T0, Origin::ui(None), |w| {
-            w.host_update("mbp", &HostPatch { cron_on: Some(true), cron: Some(vec!["3:00".into(), "23:00".into(), "03:00".into()]), ..Default::default() })
+            w.host_update("mbp", &HostPatch { auto: Some(true), windows: Some(vec![[1320, 1440], [0, 240], [240, 480]]), ..Default::default() })
         })
         .unwrap();
-    assert_eq!(h.cron, vec!["0 3 * * *", "0 23 * * *"], "旧的 HH:MM 换成等价的 cron 表达式，重复的只留一条");
+    assert!(h.auto);
+    assert_eq!(h.windows, vec![[0, 480], [1320, 1440]]);
+    let e = s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { windows: Some(vec![[600, 600]]), ..Default::default() })).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    let h = s
+        .write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { cron_on: Some(false), cron: Some(vec!["3:00".into()]), ..Default::default() }))
+        .unwrap();
+    assert!(!h.auto && !h.cron_on && h.cron.is_empty());
 }
 
 #[test]
@@ -883,23 +893,24 @@ fn cron_round_fills_slots_rotates_boards_and_ends() {
     // 一个会话只做一张（N = 1）：这里测的是占空位、多块白板轮流；会话排几张见 session_* 的用例
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), max: Some(2), per_session: Some(1), ..Default::default() })).unwrap();
     let pull = |s: &mut Store, at: i64| s.write(at, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap();
-    // 没有开始一轮时不领
+    // 没开自动接单时不领
     assert!(pull(&mut s, T0 + S).is_none());
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(!host(&s, T0 + S).round);
+    s.write(T0 + S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { auto: Some(true), ..Default::default() })).unwrap();
     let d1 = pull(&mut s, T0 + 2 * S).unwrap();
     let d2 = pull(&mut s, T0 + 2 * S).unwrap();
     assert_eq!((d1.board.as_str(), d1.card, d1.source.as_str()), (B, a, "cron"));
     assert_eq!((d2.board.as_str(), d2.card), ("default/other", o), "一块白板领一张再换下一块");
     assert!(pull(&mut s, T0 + 2 * S).is_none(), "没有空位");
-    assert!(host(&s, T0 + 2 * S).round, "空位满了，这一轮还没结束");
+    assert!(host(&s, T0 + 2 * S).round, "在接单时段里");
     // 一张结束后马上领下一张
     end(&mut s, T0 + 3 * S, d2.id, Some(0), &[]);
     let d3 = pull(&mut s, T0 + 4 * S).unwrap();
     assert_eq!(d3.card, b);
     end(&mut s, T0 + 5 * S, d1.id, Some(1), &[]);
-    // 都领完了：这一轮结束
+    // 都领完了：没有卡可领，但还在接单时段里，有新卡再来领
     assert!(pull(&mut s, T0 + 6 * S).is_none());
-    assert!(!host(&s, T0 + 6 * S).round);
+    assert!(host(&s, T0 + 6 * S).round);
     // 刚才异常退出的 #a 在「需人工校验」，不会再被领
     assert_eq!(card(&s, a).card.column, "check");
 }
@@ -966,11 +977,13 @@ fn crashed_dispatch_without_human_status_explains_and_skips_this_round() {
     beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
     s.sweep(T0 + 60 * S).unwrap();
     assert_eq!(card(&s, a).card.column, "todo");
-    assert!(s.write(T0 + 61 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
-    assert!(!host(&s, T0 + 61 * S).round, "没有可领的卡，这一轮结束");
-    // 下一轮（round_at 更新后）可以重新领
-    s.write(T0 + 62 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
-    let d2 = s.write(T0 + 63 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("下一轮应该可以再领");
+    assert!(s.write(T0 + 61 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "这一段接单里没做成的卡先不再领");
+    // 这一段接单结束（关掉自动接单再打开，或出了接单时段再进来）之后可以重新领
+    let auto = |s: &mut Store, at: i64, on: bool| s.write(at, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { auto: Some(on), ..Default::default() })).unwrap();
+    auto(&mut s, T0 + 62 * S, false);
+    assert!(s.write(T0 + 62 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
+    auto(&mut s, T0 + 62 * S, true);
+    let d2 = s.write(T0 + 63 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("新的一段接单应该可以再领");
     assert_eq!(d2.card, a);
 }
 
@@ -1018,7 +1031,7 @@ fn releasing_running_dispatch_requests_stop() {
 }
 
 #[test]
-fn pausing_during_round_clears_it_and_does_not_resume() {
+fn pausing_stops_auto_claim_and_resuming_continues() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     new_card(&mut s, T0, "A");
@@ -1026,10 +1039,21 @@ fn pausing_during_round_clears_it_and_does_not_resume() {
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(host(&s, T0 + S).round);
     let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
-    assert!(!h.round, "暂停接单时这一轮结束");
+    assert!(!h.round, "暂停接单时不自动领");
+    let t = new_card_tagged(&mut s, "T");
+    assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
     let h = s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(false), ..Default::default() })).unwrap();
-    assert!(!h.round, "恢复接单后不自动继续");
-    assert!(s.write(T0 + 4 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none());
+    assert!(h.round, "恢复接单后还在接单时段里：接着领");
+    assert_eq!(s.write(T0 + 4 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().map(|d| d.card), Some(t));
+    // 不在接单时段里也不领：把时段设成不含现在的那一段
+    let m = crate::sched::server_minute(T0 + 5 * S);
+    let away = if m < 720 { [900, 960] } else { [60, 120] };
+    let h = s.write(T0 + 5 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { windows: Some(vec![away]), ..Default::default() })).unwrap();
+    assert!(!h.round, "现在不在接单时段里");
+    let h = s.write(T0 + 5 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { windows: Some(vec![[m, m + 1]]), ..Default::default() })).unwrap();
+    assert!(h.round, "现在在接单时段里");
+    let h = s.write(T0 + 5 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { windows: Some(vec![]), ..Default::default() })).unwrap();
+    assert!(!h.round, "一段都没有：不接单");
 }
 
 #[test]
@@ -1480,7 +1504,7 @@ fn lead_round(s: &mut Store) {
     if s.read(|r| r.labels("default")).unwrap_or_default().iter().all(|l| !l.name.eq_ignore_ascii_case("deepseek")) {
         s.write(T0, Origin::ui(None), |w| w.create_label("default", "deepseek", None, false)).unwrap();
     }
-    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["deepseek"], "claude")]), fallback: Some(String::new()), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["deepseek"], "claude")]), fallback: Some(String::new()), auto: Some(true), ..Default::default() })).unwrap();
 }
 
 fn session_of(s: &Store, session: i64) -> Vec<Dispatch> {
@@ -1997,6 +2021,7 @@ fn rules(s: &mut Store, list: &[(&str, &str)], fallback: Option<&str>) -> Result
         HostPatch {
             rules: Some(list.iter().map(|(l, a)| rule(l, a)).collect()),
             fallback: Some(fallback.unwrap_or("").into()),
+            auto: Some(true),
             ..Default::default()
         },
     )
@@ -2005,8 +2030,7 @@ fn rules(s: &mut Store, list: &[(&str, &str)], fallback: Option<&str>) -> Result
 /// 一轮领取能派发的全部（最多 8 个会话，派发完为止）：（卡片，agent）
 fn round_all(s: &mut Store, at: i64) -> Vec<(i64, String)> {
     // 这里只看规则把卡片交给谁：一个会话一张（N = 1），每张卡都由 pull 开始
-    set_host(s, HostPatch { max: Some(8), per_session: Some(1), ..Default::default() }).unwrap();
-    s.write(at, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    set_host(s, HostPatch { max: Some(8), per_session: Some(1), auto: Some(true), ..Default::default() }).unwrap();
     let mut out = vec![];
     while let Some(d) = pull(s, at) {
         out.push((d.card, d.agent.clone()));
@@ -2028,7 +2052,6 @@ fn rules_pick_cards_and_agents() {
     // 规则 claude → claude：只派带 claude 的那张，另外两张留在待办，这一轮结束
     rules(&mut s, &[("claude", "claude")], None).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".to_string())]);
-    assert!(!host(&s, T0 + S).round, "没有匹配的卡片：这一轮结束");
     assert_eq!(card(&s, d).card.column, "todo");
     assert_eq!(card(&s, none).card.column, "todo");
 }
@@ -2071,18 +2094,17 @@ fn no_rules_never_auto_claims() {
     let mut s = store();
     beat(&mut s, T0, &report_cd("i1")).unwrap();
     new_card(&mut s, T0, "A");
-    // 「现在领一轮」：没有规则时拒绝，不开这一轮
-    let e = s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
-    assert!(e.message.contains("领取规则"), "{}", e.message);
+    // 开了自动接单、但一条规则也没有：不算在自动接单
+    set_host(&mut s, HostPatch { auto: Some(true), ..Default::default() }).unwrap();
     assert!(!host(&s, T0 + S).round);
     // 只设了兜底也一样
-    set_host(&mut s, HostPatch { fallback: Some("dsh".into()), cron_on: Some(true), ..Default::default() }).unwrap();
-    assert_eq!(s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap_err().code, ErrorCode::Usage);
+    set_host(&mut s, HostPatch { fallback: Some("dsh".into()), ..Default::default() }).unwrap();
     assert!(host(&s, T0 + S).rules.is_empty());
-    // 定时到点：board host 收到拒绝，不开始这一轮
     assert!(!host(&s, T0 + S).round);
-    // 就算有一轮在进行（规则删光之前开的），领卡时也不领，这一轮结束
+    // 以前的「现在领一轮」接口留给旧版 board host 调：什么也不做，不报错
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(!host(&s, T0 + S).round);
+    // 来领卡时也不领
     set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
     s.write(T0 + S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap();
     assert_eq!(card(&s, 1).card.column, "todo");
@@ -2093,7 +2115,7 @@ fn no_rules_never_auto_claims() {
     s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_check("alpha/x", None)).unwrap();
     let b = new_card(&mut s, T0, "B");
     assert_eq!(exec(&mut s, T0 + 3 * S, &Actor::agent("alpha/x"), Cmd::Claim { id: Some(b) }).unwrap().card.id, b);
-    // 加一条规则后「现在领一轮」可以开始，只领规则命中的卡片
+    // 加一条规则后开始自动领取，只领规则命中的卡片
     let l = label(&mut s, "dsh");
     let c = new_card(&mut s, T0, "C");
     tag(&mut s, c, l);
@@ -2197,38 +2219,77 @@ fn next_follows_rules() {
     assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone, "只剩给 dsh 的卡片");
 }
 
-/* ---------------- 定时领取：cron 表达式 ---------------- */
+/* ---------------- 升级：每台机器的规则和定时领取 → 全局规则、自动接单和接单时段 ---------------- */
 
+/// 升级前的库：规则、兜底、定时领取都存在机器上。升级后规则并成全局的一份（一模一样的只留一条）；
+/// 时间表是「全天每隔几分钟」的机器迁移成自动接单、全天；是每天几个时间点的换不成时段，自动接单先关着，操作记录里写明
 #[test]
-fn cron_setting_is_validated_and_normalized() {
-    let mut s = store();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let set = |s: &mut Store, list: &[&str]| set_host(s, HostPatch { cron: Some(list.iter().map(|x| x.to_string()).collect()), ..Default::default() });
-    let e = set(&mut s, &["61 * * * *"]).unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
-    assert!(e.message.contains("第 1 段（分）"), "{}", e.message);
-    let e = set(&mut s, &["* * *"]).unwrap_err();
-    assert!(e.message.contains("5 段"), "{}", e.message);
-    // 合法的原样保存；旧的 HH:MM 换成等价的表达式；重复的只留一条
-    let h = set(&mut s, &["*/5 * * * *", "0  9 * * 1-5", "03:00", "0 3 * * *"]).unwrap();
-    assert_eq!(h.cron, vec!["*/5 * * * *", "0 9 * * 1-5", "0 3 * * *"]);
-}
-
-/// 升级：旧库里的 HH:MM 时间点迁移成 cron 表达式，不丢配置
-#[test]
-fn old_hhmm_cron_is_migrated() {
+fn per_host_rules_and_cron_migrate_to_global_rules_and_windows() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.db");
     {
         let mut s = Store::open(&path).unwrap();
         s.ensure_default(T0).unwrap();
-        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        beat(&mut s, T0, &report_cd("i1")).unwrap();
+        let mut win = report_cd("w1");
+        win.name = "win".into();
+        beat(&mut s, T0, &win).unwrap();
+        let mut air = report_cd("a1");
+        air.name = "air".into();
+        beat(&mut s, T0, &air).unwrap();
     }
-    rusqlite::Connection::open(&path).unwrap().execute_batch(r#"UPDATE hosts SET cron = '["03:00","23:30"]', cron_on = 1"#).unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"DELETE FROM sched;
+               UPDATE hosts SET rules = '[{"op":"in","labels":["定时"],"agent":"dsh"},{"label":"claude","agent":"claude"}]', fallback = 'dsh', cron_on = 1, cron = '["*/5 * * * *"]' WHERE name = 'mbp';
+               UPDATE hosts SET rules = '[{"op":"in","labels":["CLAUDE"],"agent":"claude"},{"op":"none","labels":[],"agent":"dsh"}]', cron_on = 1, cron = '["0 23 * * *"]' WHERE name = 'win';
+               UPDATE hosts SET rules = '[{"op":"in","labels":["定时"],"agent":"dsh"}]', cron_on = 0, cron = '["*/5 * * * *"]' WHERE name = 'air';"#,
+        )
+        .unwrap();
     let s = Store::open(&path).unwrap();
-    let h = s.read(|r| r.host("mbp", T0)).unwrap();
-    assert!(h.cron_on);
-    assert_eq!(h.cron, vec!["0 3 * * *", "30 23 * * *"]);
+    let sched = s.read(|r| r.sched(T0)).unwrap();
+    let got: Vec<(String, Vec<String>, String)> = sched.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect();
+    let want = vec![("in", vec!["定时"], "dsh"), ("in", vec!["claude"], "claude"), ("none", vec![], "dsh")];
+    assert_eq!(got, want.into_iter().map(|(o, l, a)| (o.to_string(), l.into_iter().map(String::from).collect(), a.to_string())).collect::<Vec<_>>(), "按机器建立的先后接上，一模一样的（不分大小写）只留一条");
+    assert_eq!(sched.fallback.as_deref(), Some("dsh"));
+    let h = |n: &str| s.read(|r| r.host(n, T0)).unwrap();
+    assert!(h("mbp").auto && h("mbp").windows == vec![[0, 1440]], "全天每 5 分钟一轮 → 自动接单、全天");
+    assert!(!h("win").auto, "每天 23:00 一轮换不成时段：先关着");
+    assert!(h("win").ops.iter().any(|o| o.text.contains("0 23 * * *") && o.text.contains("调度")), "{:?}", h("win").ops);
+    assert!(!h("air").auto, "原来就关着的还是关着");
+    assert!(h("air").ops.is_empty());
+    // 每台机器读到的都是全局这一份；旧的定时领取字段不再有值
+    assert_eq!(h("air").rules.len(), 3);
+    assert!(!h("mbp").cron_on && h("mbp").cron.is_empty());
+    drop(s);
+    // 再打开一次不重复迁移
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.read(|r| r.sched(T0)).unwrap().rules.len(), 3);
+}
+
+/// 领取规则是全局的：在任一处改，每台机器都按它领；校验看的是所有项目的标签、所有机器的 agent
+#[test]
+fn rules_are_global_and_validated_against_all_hosts() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let mut win = report("win", "w1", vec![]);
+    win.agents = vec![dsh(true)];
+    beat(&mut s, T0, &win).unwrap();
+    label(&mut s, "定时");
+    let set = |s: &mut Store, rules: Vec<ClaimRule>, fb: Option<&str>| s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&rules), fb));
+    // dsh 只在 win 上：照样能写进规则；mbp 上这条不生效，win 上生效
+    let out = set(&mut s, vec![cond("in", &["定时"], "dsh")], Some("claude")).unwrap();
+    assert!(out.rules[0].active && out.fallback_active);
+    let active = |s: &Store, n: &str| s.read(|r| r.host(n, T0)).unwrap().rules[0].active;
+    assert!(!active(&s, "mbp") && active(&s, "win"));
+    // 没有哪个项目有的标签、没有机器找得到的 agent 拒绝
+    assert!(set(&mut s, vec![cond("in", &["没有的"], "dsh")], None).unwrap_err().message.contains("没有哪个项目里有标签"));
+    assert!(set(&mut s, vec![cond("in", &["定时"], "pi")], None).unwrap_err().message.contains("没有机器上找得到"));
+    // 旧界面从机器设置里改规则：改的是全局这一份
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![]), ..Default::default() })).unwrap();
+    assert!(s.read(|r| r.sched(T0)).unwrap().rules.is_empty());
+    assert!(s.read(|r| r.host("win", T0)).unwrap().rules.is_empty());
 }
 
 /* ---------------- 领取规则的条件：in / all / not_in / equal / only / none ---------------- */
@@ -2362,7 +2423,7 @@ fn old_single_label_rules_are_migrated() {
         s.ensure_default(T0).unwrap();
         beat(&mut s, T0, &report_cd("i1")).unwrap();
     }
-    rusqlite::Connection::open(&path).unwrap().execute_batch(r#"UPDATE hosts SET rules = '[{"label":"claude","agent":"claude"}]'"#).unwrap();
+    rusqlite::Connection::open(&path).unwrap().execute_batch(r#"UPDATE sched SET rules = '[{"label":"claude","agent":"claude"}]'"#).unwrap();
     let mut s = Store::open(&path).unwrap();
     let h = s.read(|r| r.host("mbp", T0)).unwrap();
     assert_eq!((h.rules[0].op.as_str(), h.rules[0].labels.clone(), h.rules[0].agent.as_str()), ("in", vec!["claude".to_string()], "claude"));
@@ -3504,7 +3565,7 @@ fn copy_settings_to_other_hosts_changes_only_the_chosen_items() {
     new_card_tagged(&mut s, "x");
     let patch = |v: serde_json::Value| -> HostPatch { serde_json::from_value(v).unwrap() };
     s.write(T0, Origin::ui(None), |w| {
-        w.host_update("a", &patch(serde_json::json!({ "rules": [cond("in", &["deepseek"], "claude")], "fallback": "claude", "cronOn": true, "cron": ["0 9 * * 1-5"], "max": 3 })))
+        w.host_update("a", &patch(serde_json::json!({ "rules": [cond("in", &["deepseek"], "claude")], "fallback": "claude", "auto": true, "windows": [[540, 1080]], "max": 3 })))
     })
     .unwrap();
     s.write(T0, Origin::ui(None), |w| w.host_update("b", &patch(serde_json::json!({ "max": 2 })))).unwrap();
@@ -3516,9 +3577,9 @@ fn copy_settings_to_other_hosts_changes_only_the_chosen_items() {
     for name in ["b", "c"] {
         let h = s.read(|r| r.host(name, T0 + S)).unwrap();
         assert_eq!(h.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect::<Vec<_>>(), a.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect::<Vec<_>>());
-        assert_eq!((h.fallback.as_deref(), h.cron_on, h.cron.clone()), (Some("claude"), true, vec!["0 9 * * 1-5".to_string()]));
+        assert_eq!((h.fallback.as_deref(), h.auto, h.windows.clone()), (Some("claude"), true, vec![[540, 1080]]));
         let ops = h.ops.clone();
-        assert!(ops.iter().any(|o| o.text == "复制了 a 的设置：定时领取、领取规则和兜底" && o.by == "buglan"), "{ops:?}");
+        assert!(ops.iter().any(|o| o.text.starts_with("复制了 a 的设置：自动接单和接单时段") && o.by == "buglan"), "{ops:?}");
     }
     // 没选的项不变
     assert_eq!(s.read(|r| r.host("b", T0 + S)).unwrap().max, 2);
@@ -4176,4 +4237,65 @@ fn candidate_counts_running_and_queued_against_the_session_limit() {
     assert_eq!(free(&mut s), 0, "排着还没开始的也占一个位置");
     set_on(&mut s, T0, "mbp", HostPatch { max: Some(3), ..Default::default() });
     assert_eq!(free(&mut s), 2);
+}
+
+/* ------------------------------ 自动领取：全局规则、白板开关、按机器分摊 ------------------------------ */
+
+fn pull_on(s: &mut Store, at: i64, host: &str, instance: &str) -> Option<Dispatch> {
+    s.write(at, Origin::cli(), |w| w.dispatch_pull(host, instance, Some(1))).unwrap()
+}
+
+/// 一个会话排几张卡按现在也能接的机器分摊：4 张卡、两台机器都在自动接单且有空位，先来的一台只排 2 张，另一台接剩下 2 张
+#[test]
+fn session_shares_cards_with_other_hosts_that_can_take_them() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("win", "w1", vec![])).unwrap();
+    lead_round(&mut s);
+    set_on(&mut s, T0, "win", HostPatch { auto: Some(true), ..Default::default() });
+    let cards: Vec<i64> = (0..4).map(|i| new_card_tagged(&mut s, &format!("c{i}"))).collect();
+    let d = pull_on(&mut s, T0 + S, "mbp", "i1").unwrap();
+    let mine: Vec<i64> = session_of(&s, d.session).iter().map(|x| x.card).collect();
+    assert_eq!(mine.len(), 2, "两台机器分 4 张：{mine:?}");
+    let d2 = pull_on(&mut s, T0 + S, "win", "w1").unwrap();
+    assert_eq!(d2.host, "win");
+    let all: i64 = s.read(|r| r.active_dispatches()).unwrap().len() as i64;
+    assert_eq!(all, 4, "四张都排上了：{cards:?}");
+    // 另一台不在自动接单时不分摊：一台排满
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("win", "w1", vec![])).unwrap();
+    lead_round(&mut s);
+    for i in 0..4 {
+        new_card_tagged(&mut s, &format!("c{i}"));
+    }
+    let d = pull_on(&mut s, T0 + S, "mbp", "i1").unwrap();
+    assert_eq!(session_of(&s, d.session).len(), 4);
+}
+
+/// 白板可以不参与自动领取（手动派发照常）；运行中新建的白板不用机器重启、不用它先上报就会被领到
+#[test]
+fn auto_claim_follows_the_board_switch_and_sees_new_boards() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    let a = new_card_tagged(&mut s, "A");
+    s.write(T0, Origin::ui(None), |w| w.set_board_auto(B, false)).unwrap();
+    assert!(!s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].auto);
+    assert!(pull_on(&mut s, T0 + S, "mbp", "i1").is_none(), "不参与的白板不领");
+    assert_eq!(dispatch(&mut s, T0 + S, a, "mbp", None).unwrap().state, "queued", "手动派发照常");
+    // 机器上报之后才建的白板：没有出现在它上报的目录里，照样被领到
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    let l = s.read(|r| r.labels("default")).unwrap().into_iter().find(|l| l.name == "deepseek").unwrap();
+    let c = s
+        .write(T0, Origin::ui(None), |w| {
+            let b = w.resolve("default/docs")?;
+            w.exec(&b, &Actor::human(), Cmd::New { title: "D".into(), body: None, column: None, top: false, labels: vec![l.id], from: None })
+        })
+        .unwrap()
+        .card
+        .id;
+    set_on(&mut s, T0, "mbp", HostPatch { max: Some(2), ..Default::default() });
+    let d = pull_on(&mut s, T0 + 2 * S, "mbp", "i1").unwrap();
+    assert_eq!((d.board.as_str(), d.card), ("default/docs", c));
 }

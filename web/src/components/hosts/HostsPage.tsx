@@ -1,7 +1,7 @@
 /* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一栏一个会话，栏里是这个会话的卡）；主区可以切到多机对比、共用配置（skills 共用库） */
 import { useState } from 'react';
 import { api } from '../../lib/api';
-import { agentMark, cronSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, sourceOf } from '../../lib/hosts';
+import { agentMark, autoSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo, Workspace } from '../../lib/types';
 import { readiness } from '../../lib/ready';
 import { cx } from '../../lib/util';
@@ -14,6 +14,7 @@ import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './b
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
 import { McpSection } from './Mcp';
 import { ProvidersSection } from './Providers';
+import { SchedSection } from './Sched';
 import { SharedConfig } from './Shared';
 import { TemplatesSection } from './Templates';
 
@@ -224,7 +225,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
   const slots = Math.max(h.max, running.length);
   // 一个会话最多做几张（旧版服务端没有：一个会话一张）
   const per = h.perSession ?? 1;
-  const cron = cronSummary(h);
+  const cron = autoSummary(h);
   // 磁贴上不放 agent 胶囊（默认 agent、领取规则、兜底里的 agent 在机器详情里看）；只在有 agent 看不到 board-skills 时提一行
   const noskill = h.agents.filter(a => skillMiss(h, a)).length;
   return (
@@ -254,16 +255,10 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
           {/* 磁贴上只加这一个小标记，哪几项没通过在机器详情的「就绪」里看 */}
           <ReadyBadge checks={readiness(h, now, server)} />
         </span>
-        {(cron || h.round || (!!h.unmatched && !h.fallback) || noskill > 0) && (
+        {(cron || (!!h.unmatched && !h.fallback) || noskill > 0) && (
           <span className="hp-rack-notes">
-            {h.round && (
-              <span className="live">
-                <Icon name="timer" />
-                正在领一轮
-              </span>
-            )}
             {cron && (
-              <span>
+              <span className={h.round ? 'live' : undefined} title={h.round ? '现在在接单时段里，有符合规则的卡就领' : '现在不在接单（时段外、暂停接单或还没有领取规则）'}>
                 <Icon name="timer" />
                 {cron}
               </span>
@@ -294,7 +289,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
                 会话 <b>{running.length}</b>/{h.max}
               </span>
               <i />
-              <span>{per > 1 ? `定时领取一个会话最多做 ${per} 张` : '一个会话做一张'}</span>
+              <span>{per > 1 ? `自动领取的会话一个最多做 ${per} 张` : '一个会话做一张'}</span>
               {h.paused && <span className="warn">· 暂停接单，不开新会话</span>}
             </div>
             <div className="hp-sess-grid" data-n={Math.min(slots, 4)}>
@@ -307,7 +302,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
                     <b>会话 {running.length + k + 1}</b>
                     <span className="hp-sess-agent">{h.paused ? '暂停' : '空位'}</span>
                   </div>
-                  {h.paused ? <p>暂停接单：恢复后才开新会话</p> : k === 0 && <p>{per > 1 ? `来卡后开一个会话，定时领取时一次排好最多 ${per} 张` : '来卡后开一个会话'}</p>}
+                  {h.paused ? <p>暂停接单：恢复后才开新会话</p> : k === 0 && <p>{per > 1 ? `来卡后开一个会话，自动领取时一次排好最多 ${per} 张` : '来卡后开一个会话'}</p>}
                 </div>
               ))}
             </div>
@@ -422,6 +417,7 @@ export function HostsPage() {
           </div>
         ) : view === 'shared' ? (
           <>
+            <SchedSection hosts={hosts} />
             <SharedConfig hosts={hosts} />
             <McpSection hosts={hosts} />
             <ProvidersSection hosts={hosts} />

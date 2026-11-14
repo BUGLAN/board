@@ -479,6 +479,13 @@ pub struct BoardInfo {
     /// 定时建卡（PRD §4「白板设置」）。旧服务端没有这一项
     #[serde(default)]
     pub card_crons: Vec<crate::card_crons::CardCron>,
+    /// 参与自动领取（PRD §9.1「自动领取」）：关掉后机器不会自动领这块白板的卡，手动派发照常。旧服务端没有这一项
+    #[serde(default = "yes")]
+    pub auto: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// 白板的环境检查命令（PRD §9.1「环境检查」）：一行命令，在机器上这块白板的目录里执行，退出码 0 算通过。
@@ -567,6 +574,9 @@ pub struct Workspace {
     /// 接不了的「机器 × 白板」和原因（`fit.rs`）：界面照着禁用、显示，不自己再算
     #[serde(default)]
     pub blocks: Vec<crate::fit::Block>,
+    /// 调度的全局设置：领取规则、兜底、服务端现在的时间（`sched.rs`）
+    #[serde(default)]
+    pub sched: crate::sched::Sched,
 }
 
 /// 一个在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内

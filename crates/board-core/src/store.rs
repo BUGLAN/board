@@ -306,6 +306,9 @@ impl Store {
         conn.execute_batch(crate::providers::SCHEMA)?;
         conn.execute_batch(crate::card_crons::SCHEMA)?;
         crate::card_crons::migrate(&conn)?;
+        // 调度：领取规则挪成全局的一份，机器加自动接单和接单时段，白板加参不参与（要在 hosts、boards 都建好之后）
+        conn.execute_batch(crate::sched::SCHEMA)?;
+        crate::sched::migrate(&conn, now_ms())?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -691,7 +694,7 @@ impl<'a> R<'a> {
             let mut st = conn.prepare(
                 "SELECT b.id, b.key, b.name, b.description, b.pos_x, b.pos_y, b.created_at,
                         COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme,
-                        b.ready_check, b.ready_check_win
+                        b.ready_check, b.ready_check_win, b.auto
                  FROM boards b WHERE b.project = ?1 ORDER BY b.sort, b.created_at, b.key",
             )?;
             let rows = st.query_map([&p.key], |r| {
@@ -704,6 +707,7 @@ impl<'a> R<'a> {
                         desc: r.get(3)?,
                         readme: r.get(8)?,
                         ready_check: ReadyCheck { cmd: r.get(9)?, win: r.get(10)? },
+                        auto: r.get::<_, i64>(11)? != 0,
                         // 仓库是项目的：白板上带一份，旧客户端、CLI 照样从白板上读
                         repo: p.repo.clone(),
                         branch: p.branch.clone(),
@@ -751,7 +755,7 @@ impl<'a> R<'a> {
                 p.boards.push(b);
             }
         }
-        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)?, hosts: self.hosts(now)?, dispatches: self.active_dispatches()?, blocks: self.blocks()? })
+        Ok(Workspace { rev: self.rev()?, now, projects, agents: self.agents(now)?, hosts: self.hosts(now)?, dispatches: self.active_dispatches()?, blocks: self.blocks()?, sched: self.sched(now)? })
     }
 
     pub fn labels(&self, project: &str) -> Result<Vec<Label>> {

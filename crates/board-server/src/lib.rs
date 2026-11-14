@@ -250,6 +250,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts", get(hosts::list))
         .route("/hosts/mine", get(hosts::mine))
         .route("/hosts/pause-all", post(hosts::pause_all))
+        .route("/sched", patch(hosts::sched_update))
         .route("/hosts/stop-all", post(hosts::stop_all))
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
         .route("/hosts/{name}/rename", post(hosts::rename))
@@ -845,6 +846,9 @@ struct PatchBody {
     ready_check: Option<String>,
     #[serde(default, rename = "readyCheckWin")]
     ready_check_win: Option<String>,
+    /// 这块白板参不参与自动领取（PRD §9.1「自动领取」）
+    #[serde(default)]
+    auto: Option<bool>,
     /// 项目的代码仓库地址、集成分支（空字符串表示清空）；改白板时给的也写到它所在的项目上（旧客户端）
     #[serde(default)]
     repo: Option<String>,
@@ -932,6 +936,9 @@ async fn update_board(
         w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())?;
         if p.ready_check.is_some() || p.ready_check_win.is_some() {
             w.set_ready_check(&path, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
+        }
+        if let Some(on) = p.auto {
+            w.set_board_auto(&path, on)?;
         }
         if p.repo.is_some() || p.branch.is_some() {
             w.set_repo_branch(&path, p.repo.as_deref(), p.branch.as_deref())?;

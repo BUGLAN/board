@@ -64,13 +64,13 @@ const ws = (hosts: HostInfo[]): Workspace => ({ hosts, dispatches: [] }) as unkn
 const show = (h: HostInfo, w: Workspace | null = ws([h])) => act(() => root.render(<Rack h={h} ws={w} now={Date.now()} index={0} />));
 
 describe('机器磁贴底部', () => {
-  it('不显示 agent 胶囊，定时领取的摘要还在', () => {
-    show(machine([agent('dsh', { env: 'pwsh' }), agent('claude', { env: 'git-bash' })], { cronOn: true, cron: ['0 23 * * *'] }));
+  it('不显示 agent 胶囊，自动接单的时段摘要在', () => {
+    show(machine([agent('dsh', { env: 'pwsh' }), agent('claude', { env: 'git-bash' })], { auto: true, windows: [[1320, 1440], [0, 480]] }));
     const rack = host.querySelector('.hp-rack');
     expect(rack).not.toBeNull();
     expect(rack!.querySelector('.hp-agent')).toBeNull();
     expect(rack!.textContent).not.toContain('DeepSeek Harness');
-    expect(rack!.querySelector('.hp-rack-notes')!.textContent).toContain('每天 23:00');
+    expect(rack!.querySelector('.hp-rack-notes')!.textContent).toContain('自动接单 · 22:00–08:00');
     expect(rack!.textContent).not.toContain('board-skills');
   });
 
@@ -139,7 +139,7 @@ describe('机位卡片：机器 → 会话 → 会话里的卡', () => {
     expect(empty.length).toBe(3);
     expect(empty[0].textContent).toContain('一次排好最多 4 张');
     expect(empty[1].querySelector('p')).toBeNull();
-    expect(host.querySelector('.hp-sess-sum')?.textContent).toBe('会话 1/4定时领取一个会话最多做 4 张');
+    expect(host.querySelector('.hp-sess-sum')?.textContent).toBe('会话 1/4自动领取的会话一个最多做 4 张');
   });
 
   it('暂停接单：空的会话位画成暂停；离线：不画会话，只写离线', () => {

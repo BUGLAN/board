@@ -64,7 +64,7 @@ export interface Label {
   uses: number;
   /** 仅人可打：只有人能在界面上给卡片加、去；agent 加、去时被拒绝。旧服务端没有这个字段，按 agent 可打 */
   humanOnly?: boolean;
-  /** 优先：不带 ID 领取（和定时领取）时，带这个标签的卡片先被领取 */
+  /** 优先：不带 ID 领取（和自动领取）时，带这个标签的卡片先被领取 */
   priority?: boolean;
 }
 
@@ -89,6 +89,8 @@ export interface BoardInfo {
   holders: string[];
   /** 定时建卡（PRD §4）。旧服务端没有这一项 */
   cardCrons?: CardCron[];
+  /** 参与自动领取（默认参与）：关掉后机器不自动领这块白板的卡，手动派发照常；旧服务端没有这一项 */
+  auto?: boolean;
 }
 
 /** 一条定时建卡（PRD §4「白板设置」）：到点按模板在白板上建一张卡；上一张还没完成时跳过 */
@@ -167,6 +169,8 @@ export interface Workspace {
   dispatches?: Dispatch[];
   /** 接不了的「机器 × 白板」和原因（服务端 fit.rs 算好）：界面照着禁用、显示；旧服务端没有这个字段 */
   blocks?: HostBlock[];
+  /** 调度的全局设置：领取规则、兜底、服务端现在的时间；旧服务端没有这个字段 */
+  sched?: Sched;
 }
 
 /** 一台机器接不了一块白板的卡 */
@@ -322,13 +326,13 @@ export interface HostInfo {
   dirsChangedBy?: string | null;
   /** 最多几个会话：同一时间最多开几个 agent 进程（1–8） */
   max: number;
-  /** 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
+  /** 自动领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
   /** 单次最长运行（分钟，0 = 不限，默认 180）；旧版服务端没有 */
   maxRun?: number;
   /** 多久没有输出算卡住（分钟，0 = 不限，默认 20）；旧版服务端没有 */
   idleRun?: number;
-  /** 定时领取的领取规则（有顺序）：带这个标签的卡片由这个 agent 做；没有一条规则时定时领取不领卡 */
+  /** 领取规则（全局的一份，每台机器读到的都一样；active 按这台机器算）：没有一条规则时不自动领卡 */
   rules?: ClaimRule[];
   /** 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片 */
   fallback?: string | null;
@@ -340,11 +344,15 @@ export interface HostInfo {
   agent: string | null;
   /** 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效 */
   agentSet?: string | null;
+  /** 旧的定时领取：现在一直是关、空的（换成了 auto、windows） */
   cronOn: boolean;
-  /** 定时领取的时间点 HH:MM（机器本地时区） */
   cron: string[];
-  /** 正在进行一轮领取 */
+  /** 现在在自动接单：开了自动接单、没暂停、有领取规则、现在在接单时段里 */
   round: boolean;
+  /** 参与自动接单；旧服务端没有这一项 */
+  auto?: boolean;
+  /** 接单时段：一天里的几段 [起, 止)，分钟，每天一样，按服务器时间；旧服务端没有这一项 */
+  windows?: [number, number][];
   online: boolean;
   firstAt: number;
   beatAt: number;
@@ -582,10 +590,23 @@ export interface ClaimRule {
   op: 'in' | 'all' | 'not_in' | 'equal' | 'only' | 'none';
   labels: string[];
   agent: string;
-  /** agent 在这台机器上找得到（服务端算）；找不到时这条规则不生效 */
+  /** agent 找得到（服务端算）：机器上的规则看这台机器，全局的规则看有没有任一台机器；找不到时这条规则不生效 */
   active?: boolean;
-  /** 这台机器有目录的项目里都没有的标签（服务端算） */
+  /** 所有项目里都没有的标签（服务端算） */
   missing?: string[];
+}
+
+/** 调度的全局设置（随工作区数据下发） */
+export interface Sched {
+  /** 领取规则，有顺序：第一条命中的生效 */
+  rules: ClaimRule[];
+  /** 兜底的 agent；没有时规则没命中的卡片不领 */
+  fallback?: string | null;
+  fallbackActive?: boolean;
+  /** 服务端的时区（没设时为空） */
+  tz?: string;
+  /** 取数据那一刻是服务端时区一天里的第几分钟 */
+  minute: number;
 }
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */
@@ -605,7 +626,7 @@ export interface Dispatch {
   /** 开始时用的启动环境标识与名称（Git Bash、WSL（Ubuntu）…）；旧版 board host、还没开始时为空 */
   env?: string | null;
   envName?: string | null;
-  /** manual 手动 | cron 定时领取 | schedule 定时建卡 */
+  /** manual 手动 | cron 自动领取 | schedule 定时建卡 */
   source: 'manual' | 'cron' | 'schedule';
   by: Actor;
   state: 'queued' | 'running' | 'done';
