@@ -181,7 +181,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "ev_dropped", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "ev_old", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "kind", "TEXT NOT NULL DEFAULT ''"),
-        // 开始这次派发时那块白板在这台机器上的目录（工作空间里的 `<工作空间>/<项目>/<白板>`）
+        // 开始这次派发时那块白板在这台机器上的目录（工作空间里的 `<工作空间>/<项目>`）
         ("dispatches", "path", "TEXT"),
     ] {
         if !has(table, col)? {
@@ -495,16 +495,16 @@ pub struct HostWorkspace {
     /// 目录不存在、是在这台机器上给这块白板新建的（还在等仓库地址）
     #[serde(default)]
     pub created: bool,
-    /// `--dir <项目>/<白板>=<路径>` 单独覆盖的白板目录（旧写法，兼容保留）
+    /// `--dir <项目>=<路径>` 单独覆盖的项目目录（旧写法 `--dir <项目>/<白板>=<路径>` 只覆盖那一块白板，兼容保留）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<HostDirOverride>,
 }
 
-/// `--dir` 单独覆盖的一块白板的目录
+/// `--dir` 单独覆盖的一个项目（或旧写法的一块白板）的目录
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostDirOverride {
-    /// `<项目>/<白板>`（旧的 `--dir` 写的是白板名，读进来时换成 `<项目>/<白板>`）
+    /// `<项目>`：项目下所有白板都用这个目录；旧写法 `<项目>/<白板>`：只管这一块白板（[`crate::valid_dir_key`]）
     pub board: String,
     /// 配置里写的路径（`~` 不展开）
     pub path: String,
@@ -517,7 +517,7 @@ pub struct HostDirOverride {
 pub struct HostDir {
     /// `<项目>/<白板>`
     pub board: String,
-    /// 实际用的路径：`<工作空间>/<项目>/<白板>`（`--dir` 覆盖的白板是覆盖的路径）
+    /// 实际用的路径：`<工作空间>/<项目>`（同一个项目的几块白板是同一个目录；`--dir` 覆盖的是覆盖的路径）
     pub path: String,
     /// 命令行用 `--dir` 单独覆盖：界面上只读，要改启动参数
     #[serde(default)]
@@ -552,8 +552,9 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// 一块白板在一台机器上的目录（PRD §9.1「工作空间」）：`<工作空间>/<项目标识>/<白板标识>`。
-/// 路径分隔符按那台机器的系统选（Windows 用 `\`，其余用 `/`），工作空间末尾的分隔符去掉；工作空间为空时返回 None
+/// 一块白板在一台机器上的目录（PRD §9.1「工作空间」）：它所在项目的目录 `<工作空间>/<项目标识>`——一个项目一个仓库，
+/// 项目下的几块白板共用这一个目录。路径分隔符按那台机器的系统选（Windows 用 `\`，其余用 `/`），工作空间末尾的分隔符去掉；
+/// 工作空间为空、`board` 不是 `<项目>/<白板>` 时返回 None
 pub fn board_dir(workspace: &str, board: &str, os: &str) -> Option<String> {
     let base = workspace.trim().trim_end_matches(['/', '\\']);
     let (project, name) = board.split_once('/')?;
@@ -561,12 +562,14 @@ pub fn board_dir(workspace: &str, board: &str, os: &str) -> Option<String> {
         return None;
     }
     let sep = if os.to_lowercase().contains("windows") { "\\" } else { "/" };
-    Some(format!("{base}{sep}{project}{sep}{name}"))
+    Some(format!("{base}{sep}{project}"))
 }
 
-/// 派生一块白板的目录：`--dir` 覆盖了的用覆盖的路径（`fixed`），否则由工作空间派生（工作空间为空时返回 None）
+/// 派生一块白板的目录：`--dir` 覆盖了的用覆盖的路径（`fixed`；先看只管这一块白板的旧写法，再看它所在的项目），
+/// 否则由工作空间派生成 `<工作空间>/<项目>`（工作空间为空时返回 None）
 pub fn derive_dir(ws: &HostWorkspace, board: &str, os: &str) -> Option<HostDir> {
-    if let Some(o) = ws.overrides.iter().find(|o| o.board == board) {
+    let project = board.split_once('/').map(|(p, _)| p);
+    if let Some(o) = ws.overrides.iter().find(|o| o.board == board).or_else(|| ws.overrides.iter().find(|o| Some(o.board.as_str()) == project)) {
         return Some(HostDir { board: board.to_string(), path: o.path.clone(), fixed: true, ..Default::default() });
     }
     let path = board_dir(&ws.path, board, os)?;
@@ -578,7 +581,7 @@ pub fn derive_dir(ws: &HostWorkspace, board: &str, os: &str) -> Option<HostDir> 
 pub struct WorkspaceBoard {
     /// `<项目>/<白板>`
     pub board: String,
-    /// `<工作空间>/<项目>/<白板>` 的实际路径
+    /// `<工作空间>/<项目>` 的实际路径
     pub path: PathBuf,
 }
 
@@ -828,9 +831,9 @@ fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>) -> Vec<HostDir> 
             None => out.push(old.clone()),
         }
     }
-    // `--dir` 覆盖的白板（还没在存着的里面）
+    // `--dir` 覆盖的白板（还没在存着的里面）；覆盖整个项目的不是一块白板，由上面每块白板派生时用上
     for o in &ws.overrides {
-        if !out.iter().any(|d| d.board == o.board) {
+        if crate::valid_board(&o.board) && !out.iter().any(|d| d.board == o.board) {
             if let Some(d) = derive_dir(ws, &o.board, "") {
                 out.push(d);
             }
@@ -1224,7 +1227,7 @@ pub struct HostReport {
     /// 本机配置里的工作空间（`[host] workspace`，`--workspace` / `--dir`）；旧版 board host 不上报
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<HostWorkspace>,
-    /// 本机派生出来、检查过的白板目录（`<工作空间>/<项目>/<白板>`，加上 `--dir` 覆盖的）
+    /// 本机派生出来、检查过的白板目录（`<工作空间>/<项目>`，加上 `--dir` 覆盖的）
     #[serde(default)]
     pub dirs: Vec<HostDir>,
     /// board host 已经应用的服务端工作空间版本；本机配置先改了时还是旧版本
@@ -1404,7 +1407,7 @@ pub struct Dispatch {
     /// 空 = 做这张卡（领取它）；`split` = 拆解「未整理」里的这条（不领取、不移动，见 [`KIND_SPLIT`]）。旧服务端没有这个字段
     #[serde(default)]
     pub kind: String,
-    /// 开始这次派发时这块白板在这台机器上的目录（工作空间里的 `<工作空间>/<项目>/<白板>`）；还没开始、旧数据时为空
+    /// 开始这次派发时这块白板在这台机器上的目录（工作空间里的 `<工作空间>/<项目>`）；还没开始、旧数据时为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
@@ -3223,10 +3226,14 @@ impl<'a> W<'a> {
             }
         }
         for o in &next.overrides {
-            if !crate::valid_board(&o.board) {
-                return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{}", o.board)));
+            if !crate::valid_dir_key(&o.board) {
+                return Err(BoardError::usage(format!("要写成 <项目> 或 <项目>/<白板>：{}", o.board)));
             }
-            self.resolve(&o.board)?;
+            if o.board.contains('/') {
+                self.resolve(&o.board)?;
+            } else {
+                self.project_exists(&o.board)?;
+            }
         }
         if next.path.is_empty() {
             // 不配工作空间：旧的「白板与目录」也一起清掉，否则还会按它派生
@@ -3290,7 +3297,7 @@ impl<'a> W<'a> {
             return self.host_set_workspace(name, &HostWorkspace { overrides: fixed, ..Default::default() }, by);
         }
         let mut next = exported_workspace(raw).ok_or_else(|| {
-            BoardError::usage("这几块白板的目录不在同一个工作空间里：改成只填一个工作空间，每块白板的目录是 <工作空间>/<项目>/<白板>")
+            BoardError::usage("这几块白板的目录不在同一个工作空间里：改成只填一个工作空间，每个项目的目录是 <工作空间>/<项目>")
         })?;
         for f in fixed {
             if !next.overrides.iter().any(|o| o.board == f.board) {
@@ -4000,7 +4007,7 @@ impl<'a> W<'a> {
         self.dispatch_ok = false;
         match claimed {
             Ok(_) => {
-                // 记下这一次在哪个目录里做（`<工作空间>/<项目>/<白板>`）：之后机器换了工作空间，这台机器还按这里找仓库
+                // 记下这一次在哪个目录里做（`<工作空间>/<项目>`）：之后机器换了工作空间，这台机器还按这里找仓库
                 let workspace = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
                 let path = workspace.as_ref().and_then(|w| derive_dir(w, &board.path(), &h.os)).map(|x| x.path);
                 self.tx.execute(

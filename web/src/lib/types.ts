@@ -77,9 +77,9 @@ export interface BoardInfo {
   readme?: string;
   /** 环境检查：机器先在这块白板的目录里跑通它，才接这块白板的卡；都为空时不检查。旧服务端没有这一项 */
   readyCheck?: ReadyCheck;
-  /** 代码仓库地址（git 远端，例如 git@github.com:o/r.git）；空表示没设。旧服务端没有这一项 */
+  /** 所在项目的代码仓库地址（git 远端，例如 git@github.com:o/r.git）；空表示没设。仓库设在项目上，这里带一份。旧服务端没有这一项 */
   repo?: string;
-  /** 集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
+  /** 所在项目的集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
   branch?: string;
   pos: Pos;
   createdAt: number;
@@ -148,6 +148,10 @@ export interface ProjectInfo {
   labels: Label[];
   /** 隐藏的标签：名称匹配任一条正则的不出现在侧栏、提示词菜单、标签选择器（lib/sidebarLabels，default/main#324）；旧服务端没有，按默认 `^v\d` */
   hiddenLabels?: string[];
+  /** 代码仓库地址（git 远端）；空表示没设。一个项目一个仓库，项目下所有白板共用（PRD §4）。旧服务端没有这一项（那时设在白板上） */
+  repo?: string;
+  /** 集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
+  branch?: string;
   boards: BoardInfo[];
 }
 
@@ -227,20 +231,20 @@ export interface HostEnv {
   path: string;
 }
 
-/** 一台机器的工作空间（PRD §9.1）：每块白板的目录是 `<工作空间>/<项目>/<白板>` */
+/** 一台机器的工作空间（PRD §9.1）：每个项目的目录是 `<工作空间>/<项目>`，项目下的白板共用 */
 export interface HostWorkspace {
   /** 配置里写的路径（~ 不展开） */
   path: string;
   /** 目录不存在、是在这台机器上给这块白板新建的 */
   created?: boolean;
-  /** `--dir <项目>/<白板>=<路径>` 单独覆盖的白板（旧写法，兼容保留） */
+  /** `--dir <项目>=<路径>` 单独指定的项目目录（旧写法 `<项目>/<白板>=<路径>` 只管那一块白板，兼容保留） */
   overrides?: { board: string; path: string }[];
 }
 
 export interface HostDir {
   /** 项目/白板 */
   board: string;
-  /** 实际用的路径：`<工作空间>/<项目>/<白板>`（`--dir` 覆盖的是覆盖的路径） */
+  /** 实际用的路径：所在项目的 `<工作空间>/<项目>`（`--dir` 覆盖的是覆盖的路径） */
   path: string;
   /** 命令行用 --dir 单独覆盖：界面只读 */
   fixed?: boolean;
@@ -293,7 +297,7 @@ export interface HostInfo {
   agents: HostAgent[];
   /** 启动环境（按发现的顺序）；旧版 board host 不上报，为空 */
   envs?: HostEnv[];
-  /** 工作空间：每台设备一个目录，每块白板的目录由它派生；还没配时没有 */
+  /** 工作空间：每台设备一个目录，每个项目的目录由它派生（`<工作空间>/<项目>`）；还没配时没有 */
   workspace?: HostWorkspace | null;
   dirs: HostDir[];
   /** 服务端工作空间设置的版本 */
@@ -507,7 +511,7 @@ export interface SkillState {
   why?: string | null;
 }
 
-/** 自检（PRD §10.12「自检」）：agent 能不能干活、每块白板的目录能不能推送、board 版本是否落后 */
+/** 自检（PRD §10.12「自检」）：agent 能不能干活、每个项目的目录能不能推送、board 版本是否落后 */
 export interface SelfTest {
   /** 这台机器的 board host 会做自检；旧版不会（按钮置灰、要升级） */
   able?: boolean;
@@ -793,9 +797,9 @@ export interface BoardSnapshot {
   keepSorted?: boolean;
   /** 回收站里的张数（侧栏「回收站 · N」）。旧服务端没有这个字段（当作 0） */
   trash?: number;
-  /** 这块白板的代码仓库地址（空表示没设）：评论里的提交号、gh#123 按它变成链接。旧服务端没有这个字段 */
+  /** 所在项目的代码仓库地址（空表示没设）：评论里的提交号、gh#123 按它变成链接。旧服务端没有这个字段 */
   repo?: string;
-  /** 这块白板的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md）。旧服务端没有这个字段 */
+  /** 所在项目的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md）。旧服务端没有这个字段 */
   branch?: string;
 }
 

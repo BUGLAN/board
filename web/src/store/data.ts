@@ -507,19 +507,27 @@ export const readyCheckPatch = (path: string, change: { cmd?: string; win?: stri
   },
 });
 
-/** 改白板的代码仓库地址和集成分支（PRD §4）：工作区、当前白板的快照一起改；白板不在了原样返回 */
-export const repoPatch = (path: string, change: { repo?: string; branch?: string }): Patch => ({
+/** 改项目的代码仓库地址和集成分支（PRD §4，一个项目一个仓库）：项目、它下面每块白板、当前白板（在这个项目里时）的快照一起改；
+ *  项目不在了原样返回 */
+export const repoPatch = (pk: string, change: { repo?: string; branch?: string }): Patch => ({
   ws: ws => {
-    if (!ws.projects.some(p => p.boards.some(b => b.path === path))) return ws;
+    if (!ws.projects.some(p => p.key === pk)) return ws;
     return {
       ...ws,
-      projects: ws.projects.map(p => ({
-        ...p,
-        boards: p.boards.map(b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b)),
-      })),
+      projects: ws.projects.map(p =>
+        p.key === pk
+          ? {
+              ...p,
+              repo: p.repo ?? '',
+              branch: p.branch ?? '',
+              ...change,
+              boards: p.boards.map(b => ({ ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change })),
+            }
+          : p,
+      ),
     };
   },
-  board: b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b),
+  board: b => (b.path.startsWith(`${pk}/`) ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b),
 });
 
 /** 改白板的一条定时建卡（PRD §4）：开关、模板、派给机器（指定一台 / 随机）、时间。下次时间等服务端算，改了时间就先清掉；

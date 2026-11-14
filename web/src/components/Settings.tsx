@@ -419,7 +419,7 @@ function LocalHostCard() {
   const [st, setSt] = useState<LocalHost | null>(null);
   const [old, setOld] = useState(false);
   const [name, setName] = useState('');
-  /** 工作空间：每块白板的目录是 `<工作空间>/<项目>/<白板>` */
+  /** 工作空间：每个项目的目录是 `<工作空间>/<项目>` */
   const [workspace, setWorkspace] = useState('');
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -457,7 +457,7 @@ function LocalHostCard() {
   };
   const wsTrim = () => workspace.trim();
   const sameWs = (a: string, b: string) => a.trim() === b.trim();
-  /** 工作空间里已有的白板目录（这台电脑盘上有的）：`<工作空间>/<项目>/<白板>` */
+  /** 工作空间里已有的目录（这台电脑盘上有的）：每个项目一个 `<工作空间>/<项目>` */
   const derived = (online?.dirs ?? []).filter(d => d.reported || d.status);
 
   // 打开开关 / 改了工作空间要保存：先用应用内的确认框说清机器名、工作空间和免审批运行的风险，
@@ -510,7 +510,7 @@ function LocalHostCard() {
 
   const toggle = async () => {
     if (!st) return;
-    // 打开前确认：机器名、工作空间一起写进配置，派到这台电脑的卡片会在 `<工作空间>/<项目>/<白板>` 里免审批运行
+    // 打开前确认：机器名、工作空间一起写进配置，派到这台电脑的卡片会在 `<工作空间>/<项目>` 里免审批运行
     // 打开时改了还没保存的先确认（关掉不用确认）
     if (!st.enabled && !(await ask('让这台电脑开始接任务？', '开始接任务', workspace))) return;
     setBusy(true);
@@ -591,7 +591,7 @@ function LocalHostCard() {
               }}
             />
           </Row>
-          <Row label="工作空间" hint="这台电脑只配这一个目录：每块白板的目录是 <工作空间>/<项目>/<白板>，派来的卡片那里启动 agent；还没有时自动建好，白板设了仓库地址时自动克隆">
+          <Row label="工作空间" hint="这台电脑只配这一个目录：每个项目的目录是 <工作空间>/<项目>（项目下的白板共用），派来的卡片在那里启动 agent；还没有时自动建好，项目设了仓库地址时自动克隆">
             <span className="lh-ws">
               <input
                 className="input lh-ws-path"
@@ -617,13 +617,16 @@ function LocalHostCard() {
           </Row>
           {derived.length > 0 && (
             <div className="lh-derived">
-              <span className="lh-derived-k">这台电脑上的白板目录</span>
-              {derived.map(d => (
-                <span className="lh-derived-row" key={d.board}>
-                  <b>{d.board}</b>
-                  <code>{d.path}</code>
-                </span>
-              ))}
+              <span className="lh-derived-k">这台电脑上的项目目录</span>
+              {/* 同一个项目的几块白板是同一个目录：一个目录一行 */}
+              {derived
+                .filter((d, i, a) => a.findIndex(x => x.path === d.path) === i)
+                .map(d => (
+                  <span className="lh-derived-row" key={d.path}>
+                    <b>{d.board.split('/')[0]}</b>
+                    <code>{d.path}</code>
+                  </span>
+                ))}
             </div>
           )}
           {!wsTrim() && <p className="set-p lh-warn">还没有填工作空间：这台电脑不接任何白板的卡。</p>}

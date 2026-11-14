@@ -461,11 +461,11 @@ pub struct BoardInfo {
     /// 环境检查：机器要先在这块白板的目录里跑通它，才接这块白板的卡（PRD §9.1「环境检查」）。旧服务端没有这一项
     #[serde(default)]
     pub ready_check: ReadyCheck,
-    /// 代码仓库地址（git 远端，例如 `git@github.com:o/r.git`）；空表示没设。旧服务端没有这一项。
-    /// 提交号、`gh#123` 变链接和给新机器克隆都用它（PRD §4）
+    /// 所在项目的代码仓库地址（git 远端，例如 `git@github.com:o/r.git`）；空表示没设。旧服务端没有这一项。
+    /// 仓库设在项目上（[`ProjectInfo::repo`]），这里带一份给只看白板的地方用（PRD §4）
     #[serde(default)]
     pub repo: String,
-    /// 集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
+    /// 所在项目的集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
     #[serde(default)]
     pub branch: String,
     pub pos: Pos,
@@ -531,6 +531,13 @@ pub struct ProjectInfo {
     /// 旧库、新建的项目默认 `^v\d`（版本标签）；旧服务端没有这个字段，界面按默认处理
     #[serde(default = "default_hidden_labels")]
     pub hidden_labels: Vec<String>,
+    /// 代码仓库地址（git 远端）；空表示没设。一个项目一个仓库，项目下所有白板共用：提交号、`gh#123` 变链接和
+    /// 给机器克隆（`<工作空间>/<项目>`）都用它（PRD §4）。旧服务端没有这一项（那时设在白板上）
+    #[serde(default)]
+    pub repo: String,
+    /// 集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
+    #[serde(default)]
+    pub branch: String,
     pub boards: Vec<BoardInfo>,
 }
 
@@ -736,10 +743,10 @@ pub struct BoardSnapshot {
     /// 回收站里的张数（PRD §8 规则 10、§10.3 侧栏「回收站 · N」）。旧服务端没有这个字段
     #[serde(default)]
     pub trash: i64,
-    /// 这块白板的代码仓库地址（空表示没设）：评论里的提交号、`gh#123` 按它变成链接（PRD §4）。旧服务端没有这个字段
+    /// 所在项目的代码仓库地址（空表示没设）：评论里的提交号、`gh#123` 按它变成链接（PRD §4）。旧服务端没有这个字段
     #[serde(default)]
     pub repo: String,
-    /// 这块白板的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这个字段
+    /// 所在项目的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这个字段
     #[serde(default)]
     pub branch: String,
 }

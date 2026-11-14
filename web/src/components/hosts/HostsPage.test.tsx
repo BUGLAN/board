@@ -105,7 +105,7 @@ describe('磁贴上的「还差 N 项」', () => {
     show(machine([agent('dsh')], { workspace: null }));
     const badge = host.querySelector('.hp-rack-state .hp-ready-badge');
     expect(badge?.textContent).toBe('还差 1 项');
-    expect(badge?.getAttribute('title')).toContain('每块白板的目录和仓库正常');
+    expect(badge?.getAttribute('title')).toContain('每个项目的目录和仓库正常');
     expect(host.querySelector('.hp-rack-notes')).toBeNull();
   });
 

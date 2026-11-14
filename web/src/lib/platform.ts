@@ -222,7 +222,7 @@ export interface LocalHost {
   name: string;
   /** 不填时用的机器名 */
   defaultName: string;
-  /** 工作空间（`[host] workspace`）：每块白板的目录是 `<工作空间>/<项目>/<白板>`；旧版桌面端没有这一项 */
+  /** 工作空间（`[host] workspace`）：每个项目的目录是 `<工作空间>/<项目>`；旧版桌面端没有这一项 */
   workspace?: string;
   /** board host 最近的输出 */
   log: string[];

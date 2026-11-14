@@ -1,7 +1,7 @@
 //! `board host`：在这台机器上常驻，接服务端派来的卡片，在本机启动 agent（任务下发需求 §三、§七）。
 //!
 //! ```text
-//! board host [--name <机器名>] [--workspace <工作空间>] [--dir <项目>/<白板>=<路径>]...
+//! board host [--name <机器名>] [--workspace <工作空间>] [--dir <项目>=<路径>]...
 //! ```
 //!
 //! - 参数也可以写在 `~/.board/config.toml` 的 `[host]`、`[agents.<标识>]` 里，命令行优先（见 config.rs）。
@@ -15,7 +15,7 @@
 //!   （`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。内置模板的顺序就是默认 agent 的顺序：本机找到的第一个
 //!   是默认。每个 agent 用哪个启动环境由机器设置决定（服务端写进派发记录）。找到了、但在它用的环境里看不到 `board-skills`
 //!   的 agent 启动时提醒一行。怎么接入新的 agent 见 docs/agents.md。
-//! - 工作空间（PRD §9.1）：每台设备只配一个目录，每块白板在这台机器上的目录是 `<工作空间>/<项目>/<白板>`。启动时、之后取到
+//! - 工作空间（PRD §9.1）：每台设备只配一个目录，每块白板在这台机器上的目录是 `<工作空间>/<项目>`。启动时、之后取到
 //!   任务时把服务端上摆着的白板在盘上摆好（不存在时建目录，白板设了仓库地址时 `git clone`）；`--dir` 单独覆盖某几块。
 //!   旧配置的 `[host] dirs` 读进来换成工作空间（见 [`to_workspace`]、[`bootstrap_dirs`]）。
 //! - 每 10 秒向服务端上报一次（机器心跳），同时替正在跑的派发的名字发 agent 级心跳；订阅实时推送，
@@ -283,9 +283,9 @@ fn interval() -> Duration {
 /// 命令行参数
 pub struct Opts {
     pub name: Option<String>,
-    /// `--workspace <路径>`：这台设备的工作空间，每块白板的目录是 `<工作空间>/<项目>/<白板>`
+    /// `--workspace <路径>`：这台设备的工作空间，每个项目的目录是 `<工作空间>/<项目>`
     pub workspace: Option<String>,
-    /// `--dir <项目>/<白板>=<路径>`，可以有多个：单独覆盖某一块白板的目录（旧写法，兼容保留）
+    /// `--dir <项目>=<路径>`，可以有多个：单独指定某个项目的目录（旧写法 `<项目>/<白板>=<路径>` 只管那一块白板，兼容保留）
     pub dirs: Vec<String>,
 }
 
@@ -1100,7 +1100,7 @@ struct Host<'a> {
     /// 本机的启动环境
     envs: Vec<Env>,
     agents: Vec<Spec>,
-    /// 工作空间（`<工作空间>/<项目>/<白板>`）和 `--dir` 单独覆盖的目录：上报、运行环境检查、启动 agent 都用它
+    /// 工作空间（`<工作空间>/<项目>`）和 `--dir` 单独覆盖的目录：上报、运行环境检查、启动 agent 都用它
     ws: HostWorkspace,
     /// 工作空间里摆着的白板：路径由 `ws` 派生，这里只记「是哪几块」（服务端摆着、盘上已经有目录的）
     boards: Vec<String>,
@@ -1267,7 +1267,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let envs = envs::discover();
     // 盘上已经摆着的白板（`--dir` 覆盖的，加上服务端上报过的）：启动时先按它查一遍 board-skills
     let mut boards = ws_boards(&ws, &os);
-    // 服务端上摆着的白板：工作空间里还没有目录的，先按 `<工作空间>/<项目>/<白板>` 建好（设了仓库地址的 `git clone`）
+    // 服务端上摆着的白板：所在项目在工作空间里还没有目录的，先按 `<工作空间>/<项目>` 建好（项目设了仓库地址的 `git clone`）
     let server: Vec<(String, Option<String>)> = match be.workspace() {
         Ok(w) => w.projects.iter().flat_map(|p| p.boards.iter().map(|b| (b.path.clone(), Some(b.repo.clone()).filter(|r| !r.trim().is_empty())))).collect(),
         Err(e) => {
@@ -1435,7 +1435,7 @@ fn conf_name(name: Option<&str>) -> String {
     }
 }
 
-/// 校验白板与目录（`--dir`、旧配置里的 `[host] dirs`）：白板写成 <项目>/<白板>、不重复；目录可以暂时不存在
+/// 校验白板与目录（`--dir`、旧配置里的 `[host] dirs`）：写成 <项目> 或 <项目>/<白板>、不重复；目录可以暂时不存在
 /// （界面上显示状态、可以克隆）。返回展开后的目录（相对路径按当前目录）和配置里写的原文
 #[cfg(test)]
 fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec<(String, String)>)> {
@@ -1444,8 +1444,8 @@ fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec
     for (board, path) in raw {
         let board = board.trim().to_string();
         let path = path.trim().to_string();
-        if !board_core::valid_board(&board) {
-            return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
+        if !board_core::valid_dir_key(&board) {
+            return Err(BoardError::usage(format!("要写成 <项目> 或 <项目>/<白板>：{board}")));
         }
         if dirs.iter().any(|(b, _)| *b == board) {
             return Err(BoardError::usage(format!("白板 {board} 写了两次")));
@@ -1468,14 +1468,14 @@ fn workspace_arg(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
-/// `--dir <项目>/<白板>=<路径>`（可以有多个）拆成 (白板, 路径)；写成别的样子时说明怎么写
+/// `--dir <项目>=<路径>`（旧写法 `<项目>/<白板>=<路径>`，可以有多个）拆成 (项目或白板, 路径)；写成别的样子时说明怎么写
 fn parse_raw_dirs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
     raw.iter()
         .map(|d| {
             d.split_once('=')
                 .map(|(b, p)| (b.trim().to_string(), p.trim().to_string()))
                 .filter(|(b, p)| !b.is_empty() && !p.is_empty())
-                .ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>/<白板>=<路径>：{d}")))
+                .ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>=<路径>：{d}")))
         })
         .collect()
 }
@@ -1487,39 +1487,13 @@ fn same_ws(a: &HostWorkspace, b: &HostWorkspace) -> bool {
         && a.overrides.iter().all(|x| b.overrides.iter().any(|y| y.board == x.board && y.path == x.path))
 }
 
-/// 工作空间里盘上已经有的白板（有目录的），加上 `--dir` 覆盖的白板
-fn ws_boards(ws: &HostWorkspace, os: &str) -> Vec<String> {
+/// 启动时先认的白板：旧写法 `--dir <项目>/<白板>` 单独覆盖的那几块。其余白板的目录是 `<工作空间>/<项目>`，
+/// 盘上看不出有哪几块白板，从服务端取到白板列表后再补上（见 [`run`]、`Host::set_work`）
+fn ws_boards(ws: &HostWorkspace, _os: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for o in &ws.overrides {
-        if !out.contains(&o.board) {
+        if board_core::valid_board(&o.board) && !out.contains(&o.board) {
             out.push(o.board.clone());
-        }
-    }
-    let base = expand(&ws.path);
-    if ws.path.trim().is_empty() {
-        return out;
-    }
-    // `<工作空间>/<项目>/<白板>`：两级目录里找
-    let Ok(projects) = std::fs::read_dir(&base) else { return out };
-    let mut found: Vec<String> = vec![];
-    for p in projects.flatten() {
-        let project = p.file_name().to_string_lossy().into_owned();
-        if !p.path().is_dir() {
-            continue;
-        }
-        let Ok(names) = std::fs::read_dir(p.path()) else { continue };
-        for n in names.flatten() {
-            let board = format!("{project}/{}", n.file_name().to_string_lossy());
-            if n.path().is_dir() && board_core::valid_board(&board) {
-                found.push(board);
-            }
-        }
-    }
-    let _ = os;
-    found.sort();
-    for b in found {
-        if !out.contains(&b) {
-            out.push(b);
         }
     }
     out
@@ -1529,7 +1503,7 @@ fn ws_boards(ws: &HostWorkspace, os: &str) -> Vec<String> {
 fn workspace_path(raw: &str) -> Result<PathBuf> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return Err(BoardError::usage("工作空间不能是空的：填一个目录，每块白板的目录是 <工作空间>/<项目>/<白板>"));
+        return Err(BoardError::usage("工作空间不能是空的：填一个目录，每个项目的目录是 <工作空间>/<项目>"));
     }
     let mut dir = expand(raw);
     if dir.is_relative() {
@@ -1546,9 +1520,9 @@ fn to_workspace(raw: Option<&str>, overrides: &[(String, String)]) -> Result<Hos
         if b.is_empty() || p.is_empty() {
             continue;
         }
-        // 白板写错时整份配置不用（重新读配置时接着用原来的），不能悄悄把工作空间清掉
-        if !board_core::valid_board(b) {
-            return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{b}")));
+        // 项目、白板写错时整份配置不用（重新读配置时接着用原来的），不能悄悄把工作空间清掉
+        if !board_core::valid_dir_key(b) {
+            return Err(BoardError::usage(format!("要写成 <项目> 或 <项目>/<白板>：{b}")));
         }
         if out.iter().any(|o| o.board == b) {
             return Err(BoardError::usage(format!("白板 {b} 写了两次")));
@@ -1575,8 +1549,9 @@ fn save_host_workspace(ws: &str) -> Result<()> {
     })
 }
 
-/// 把服务端上摆着的每块白板在盘上摆好：每块白板的目录是 `<工作空间>/<项目>/<白板>`。已经有的不动；白板设了仓库地址时
-/// 在那里 `git clone`（进度和失败原因照常上报），没设时建一个空目录。一块白板失败不影响其他白板，返回失败的那几块
+/// 把服务端上摆着的项目在盘上摆好：每个项目的目录是 `<工作空间>/<项目>`，项目下的几块白板共用它。已经有的不动；
+/// 项目设了仓库地址时在那里 `git clone`（进度和失败原因照常上报，记在先轮到的那块白板上），没设时建一个空目录。
+/// 一个项目失败不影响其他项目，返回失败的那几块白板
 fn bootstrap_dirs(
     ws: &HostWorkspace,
     boards: &[(String, Option<String>)],
@@ -1595,8 +1570,8 @@ fn bootstrap_dirs(
     let _ = std::fs::create_dir_all(logs);
     for (board, repo) in boards {
         let Some(dir) = board_core::hosts::derive_dir(ws, board, os).map(|x| expand(&x.path)) else { continue };
-        // `--dir` 覆盖的白板、已经有目录的：不动
-        if ws.overrides.iter().any(|o| &o.board == board) || dir.is_dir() {
+        // `--dir` 覆盖的（这块白板或它所在的项目）、已经有目录的（同一个项目里前一块白板刚建好的也算）：不动
+        if board_core::hosts::derive_dir(ws, board, os).is_some_and(|d| d.fixed) || dir.is_dir() {
             continue;
         }
         let repos = repo.as_deref().map(str::trim).filter(|r| !r.is_empty());
@@ -1642,7 +1617,7 @@ fn bootstrap_dirs(
     failed
 }
 
-/// 这块白板在这台机器上的目录（`<工作空间>/<项目>/<白板>`，`--dir` 覆盖的用覆盖的路径；`~` 展开成实际的路径）
+/// 这块白板在这台机器上的目录（它所在项目的 `<工作空间>/<项目>`，`--dir` 覆盖的用覆盖的路径；`~` 展开成实际的路径）
 fn ws_dir(ws: &HostWorkspace, board: &str, os: &str) -> Option<PathBuf> {
     board_core::hosts::derive_dir(ws, board, os).map(|d| expand(&d.path))
 }
@@ -1652,7 +1627,7 @@ fn ws_pairs(ws: &HostWorkspace, boards: &[String], os: &str) -> Vec<(String, Pat
     boards.iter().filter_map(|b| ws_dir(ws, b, os).map(|p| (b.clone(), p))).collect()
 }
 
-/// 派到这台机器的卡片在哪个目录里做：先看派发开始那一刻记下的目录（`<工作空间>/<项目>/<白板>`，机器之后换了
+/// 派到这台机器的卡片在哪个目录里做：先看派发开始那一刻记下的目录（`<工作空间>/<项目>`，机器之后换了
 /// 工作空间也还按这里），没有再按现在的工作空间算
 fn dispatch_dir(d: &board_core::Dispatch, ws: &HostWorkspace, os: &str) -> Option<PathBuf> {
     d.path
@@ -2082,7 +2057,7 @@ impl Host<'_> {
 
     fn set_work(&mut self, w: HostWork) {
         self.sync_server_dirs(&w.host);
-        // 服务端上的白板变了（新建了白板）：工作空间里还没有目录的按 `<工作空间>/<项目>/<白板>` 建好
+        // 服务端上的白板变了（新建了白板、项目）：所在项目在工作空间里还没有目录的按 `<工作空间>/<项目>` 建好
         let new: Vec<String> = w.host.dirs.iter().map(|d| d.board.clone()).filter(|b| !self.boards.contains(b)).collect();
         if !new.is_empty() {
             let server: Vec<(String, Option<String>)> = match self.rm().get::<Workspace>("/api/workspace", &[]) {
@@ -2892,12 +2867,12 @@ impl Host<'_> {
         }
         let pairs = ws_pairs(&self.ws, &self.boards, &self.os);
         if self.ws.path.trim().is_empty() {
-            s += &format!("  {}{}\n", p.dim("工作空间"), p.yellow("（没有）：用 --workspace <路径> 或 --dir <项目>/<白板>=<路径> 加上，否则接不到卡片"));
+            s += &format!("  {}{}\n", p.dim("工作空间"), p.yellow("（没有）：用 --workspace <路径> 或 --dir <项目>=<路径> 加上，否则接不到卡片"));
         } else {
             s += &format!("  {}{}\n", p.dim("工作空间"), p.cyan(&self.ws.path));
         }
         if pairs.is_empty() {
-            s += &format!("  {}{}\n", p.dim("白板    "), p.dim("（工作空间里还没有白板的目录：派来卡片时按 <工作空间>/<项目>/<白板> 建好）"));
+            s += &format!("  {}{}\n", p.dim("白板    "), p.dim("（工作空间里还没有白板的目录：派来卡片时按 <工作空间>/<项目> 建好）"));
         }
         for (i, (b, d)) in pairs.iter().enumerate() {
             let head = if i == 0 { p.dim("白板    ") } else { "        ".into() };
@@ -3125,7 +3100,13 @@ impl Host<'_> {
             match to_workspace(conf.workspace.as_deref(), &conf.dirs) {
                 Ok(ws) if !same_ws(&ws, &self.ws) => {
                     self.ws = ws;
-                    self.boards = ws_boards(&self.ws, &self.os);
+                    // 服务端上的白板照旧（目录跟着新的工作空间派生），加上新写的 `--dir` 白板
+                    for b in ws_boards(&self.ws, &self.os) {
+                        if !self.boards.contains(&b) {
+                            self.boards.push(b);
+                        }
+                    }
+                    self.boards.sort();
                     for a in &mut self.agents {
                         a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
                     }

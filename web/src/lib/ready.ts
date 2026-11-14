@@ -4,7 +4,7 @@
  *   开机自启或已装成服务（#190）、白板的环境检查（#215）、skills / MCP / 环境变量同步（#186、#187、#200）、agent 自检（#191）、
  *   每个 agent 的思考强度（#182）。做了的卡在这里加一项、在对比视图里加一列。 */
 import { dirFresh, envName, osKind, since, skillGaps } from './hosts';
-import type { HostInfo } from './types';
+import type { HostDir, HostInfo } from './types';
 
 export type ReadyKey = 'online' | 'version' | 'dirs' | 'skills' | 'agent';
 /** 没通过时按钮打开机器详情里的哪一块 */
@@ -75,19 +75,23 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
 
   // 有工作空间就视为有这块白板的目录（目录状态只在详情里提示，不影响接卡）；没配时派不了卡
   const ws = h.workspace?.path?.trim() ?? '';
-  const bad = h.dirs.filter(d => dirFresh(h, d) && (d.status === 'missing' || d.status === 'not_git'));
+  // 同一个项目的几块白板是同一个目录：按目录只说一次，写项目名
+  const bad = h.dirs
+    .filter(d => dirFresh(h, d) && (d.status === 'missing' || d.status === 'not_git'))
+    .filter((d, i, a) => a.findIndex(x => x.path === d.path) === i);
+  const dirName = (d: HostDir) => (h.workspace?.overrides?.some(o => o.board === d.board) ? d.board : d.board.split('/')[0]);
   const dirsWhy = !ws
     ? '还没有配工作空间，派不了卡'
     : bad
         .map(d =>
           d.status === 'not_git'
-            ? `${d.board} 的目录不是 git 仓库`
-            : `${d.board} 的目录不存在${d.clone && (d.clone.state === 'queued' || d.clone.state === 'running') ? '（正在克隆）' : ''}`,
+            ? `${dirName(d)} 的目录不是 git 仓库`
+            : `${dirName(d)} 的目录不存在${d.clone && (d.clone.state === 'queued' || d.clone.state === 'running') ? '（正在克隆）' : ''}`,
         )
         .join('；');
   out.push({
     key: 'dirs',
-    label: '每块白板的目录和仓库正常',
+    label: '每个项目的目录和仓库正常',
     short: '工作空间',
     ok: !dirsWhy,
     ...(!!dirsWhy && { why: dirsWhy, go: 'dirs' as const, act: ws ? '去处理' : '设置工作空间' }),

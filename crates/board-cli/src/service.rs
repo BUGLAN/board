@@ -265,8 +265,8 @@ pub fn service_args(exe: &Path, name: Option<&str>, workspace: Option<&str>, dir
     for d in dirs {
         let (board, path) = d.split_once('=').ok_or_else(|| BoardError::usage(format!("--dir 要写成 <项目>/<白板>=<路径>：{d}")))?;
         let (board, path) = (board.trim(), path.trim());
-        if !board_core::valid_board(board) {
-            return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{board}")));
+        if !board_core::valid_dir_key(board) {
+            return Err(BoardError::usage(format!("要写成 <项目> 或 <项目>/<白板>：{board}")));
         }
         let p = Path::new(path);
         let path = if path.starts_with('~') || p.is_absolute() { path.to_string() } else { cwd.join(p).display().to_string() };
@@ -493,7 +493,10 @@ mod tests {
         assert_eq!(service_args(exe, None, None, &[], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service"]);
         assert!(service_args(exe, Some("Dev Box"), None, &[], cwd).is_err());
         assert!(service_args(exe, None, None, &["nope".into()], cwd).is_err());
-        assert!(service_args(exe, None, None, &["bad=/x".into()], cwd).is_err());
+        assert!(service_args(exe, None, None, &["Bad=/x".into()], cwd).is_err());
+        assert!(service_args(exe, None, None, &["a/b/c=/x".into()], cwd).is_err());
+        // 按项目指定目录（项目下所有白板共用）
+        assert_eq!(service_args(exe, None, None, &["proj=/srv/p".into()], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service", "--dir", "proj=/srv/p"]);
     }
 
     #[test]

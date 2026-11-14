@@ -844,7 +844,7 @@ struct PatchBody {
     ready_check: Option<String>,
     #[serde(default, rename = "readyCheckWin")]
     ready_check_win: Option<String>,
-    /// 白板的代码仓库地址、集成分支（空字符串表示清空）
+    /// 项目的代码仓库地址、集成分支（空字符串表示清空）；改白板时给的也写到它所在的项目上（旧客户端）
     #[serde(default)]
     repo: Option<String>,
     #[serde(default)]
@@ -862,8 +862,18 @@ struct PatchBody {
     hidden_labels: Option<Vec<String>>,
 }
 
-async fn update_project(State(s): State<AppState>, h: HeaderMap, Path(key): Path<String>, Json(v): Json<Value>) -> ApiResult<Value> {
+async fn update_project(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(key): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
+    // 代码仓库地址和集成分支（一个项目一个仓库）决定 agent 往哪推、机器往哪克隆：只有人能改（PRD §4）
+    if (p.repo.is_some() || p.branch.is_some()) && matches!(caller, Caller::Agent { .. }) {
+        return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn)));
+    }
     write(&s, &h, move |w| {
         w.update_project_with(
             &key,
@@ -873,7 +883,11 @@ async fn update_project(State(s): State<AppState>, h: HeaderMap, Path(key): Path
                 color: p.color.as_deref(),
                 hidden_labels: p.hidden_labels.as_deref(),
             },
-        )
+        )?;
+        if p.repo.is_some() || p.branch.is_some() {
+            w.set_repo_branch(&key, p.repo.as_deref(), p.branch.as_deref())?;
+        }
+        Ok(())
     })
     .await?;
     Ok(Json(json!({ "ok": true })))
@@ -905,7 +919,8 @@ async fn update_board(
     Json(v): Json<Value>,
 ) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
-    // 代码仓库地址和集成分支决定 agent 往哪推、界面把提交号链到哪：只有人能改（PRD §4）
+    // 代码仓库地址和集成分支决定 agent 往哪推、界面把提交号链到哪：只有人能改（PRD §4）。
+    // 仓库设在项目上：旧客户端改白板时给的写到白板所在的项目
     if p.repo.is_some() || p.branch.is_some() {
         if let Caller::Agent { .. } = caller {
             return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn)));

@@ -323,16 +323,19 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
 
 /* ------------------------------ 代码仓库 ------------------------------ */
 
-/** 代码仓库地址和集成分支（PRD §4）：设置项（saveSetting），失焦或回车时保存，不锁别的控件。
-    仓库地址先看白板自己设的；没设时用别的机器上报的这块白板目录的 origin 作建议（#185 克隆也用同一个来源） */
+/** 代码仓库地址和集成分支（PRD §4）：设在项目上，一个项目一个仓库，项目下所有白板共用；这里改的就是项目的。
+    设置项（saveSetting），失焦或回车时保存，不锁别的控件。
+    仓库地址没设时用机器上报的这个项目目录的 origin 作建议（#185 克隆也用同一个来源） */
 export function RepoSection({ path, i }: { path: string; i: number }) {
   const meta = useCurrent();
   const ws = useData(s => s.ws);
+  const pk = path.split('/')[0];
   const repo = meta?.board.repo ?? '';
   const branch = meta?.board.branch ?? '';
-  // 别的机器上报的 origin：同一块白板可能有好几台机器，取第一台有的
+  const others = (meta?.project.boards.length ?? 1) - 1;
+  // 机器上报的 origin：这个项目的目录可能在好几台机器上，取第一台有的
   const suggested =
-    ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board === path && d.origin)?.origin ?? '';
+    ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board.split('/')[0] === pk && d.origin)?.origin ?? '';
   const [draft, setDraft] = useState({ repo, branch });
   const [editing, setEditing] = useState<'' | 'repo' | 'branch'>('');
   const { sync, track } = useSync();
@@ -354,9 +357,9 @@ export function RepoSection({ path, i }: { path: string; i: number }) {
     track(
       which,
       saveSetting(
-        which === 'repo' ? `repo:${path}` : `branch:${path}`,
-        repoPatch(path, { [which]: v }),
-        () => api.updateBoard(path, which === 'repo' ? { repo: v } : { branch: v }),
+        which === 'repo' ? `repo:${pk}` : `branch:${pk}`,
+        repoPatch(pk, { [which]: v }),
+        () => api.updateProject(pk, which === 'repo' ? { repo: v } : { branch: v }),
       ),
     );
   };
@@ -395,7 +398,8 @@ export function RepoSection({ path, i }: { path: string; i: number }) {
     <section className="d-section" style={{ ['--i' as string]: i }}>
       <div className="d-label">
         代码仓库
-        <InfoTip text="设了仓库地址后，描述和评论里的「提交：abc1234」和 gh#12 变成链接，给新机器克隆仓库时也优先用它。集成分支是 skill 推送的目标，留空按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支" />
+        <InfoTip text="一个项目一个仓库：这里设的是整个项目的，项目下所有白板共用，机器上的目录是 <工作空间>/<项目>。设了仓库地址后，描述和评论里的「提交：abc1234」和 gh#12 变成链接，机器上还没有这个项目的目录时按它克隆。集成分支是 skill 推送的目标，留空按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支" />
+        <span className="bs-rp-scope">项目「{meta?.project.name ?? pk}」{others > 0 ? `的 ${others + 1} 块白板共用` : '共用'}</span>
       </div>
       <div className="bs-rc bs-rp">
         {field(
@@ -410,7 +414,7 @@ export function RepoSection({ path, i }: { path: string; i: number }) {
               onClick={() => {
                 setDraft(d => ({ ...d, repo: suggested }));
                 setEditing('');
-                track('repo', saveSetting(`repo:${path}`, repoPatch(path, { repo: suggested }), () => api.updateBoard(path, { repo: suggested })));
+                track('repo', saveSetting(`repo:${pk}`, repoPatch(pk, { repo: suggested }), () => api.updateProject(pk, { repo: suggested })));
               }}
             >
               用机器的 origin

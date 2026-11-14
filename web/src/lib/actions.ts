@@ -221,24 +221,41 @@ function afterCreate(path: string) {
 
 const saved = () => toast({ type: 'success', title: '已保存', duration: 1400 });
 
-export function editProject(pk: string) {
+/** 编辑项目：名称、描述、代码仓库（一个项目一个仓库，PRD §4）、颜色。draft 是上次没保存成功的内容 */
+export function editProject(pk: string, draft?: Record<string, string>) {
   const p = data().ws?.projects.find(x => x.key === pk);
   if (!p) return;
+  // 仓库地址的建议：机器上报的这个项目目录的 origin（#185 克隆也用同一个来源）
+  const origin = data().ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board.split('/')[0] === pk && d.origin)?.origin ?? '';
   openForm({
     title: '编辑项目',
     submit: '保存',
     preview: 'edit-project',
     previewData: { key: p.key, boards: String(p.boards.length) },
     fields: [
-      { name: 'name', label: '项目名称', value: p.name, required: true },
+      { name: 'name', label: '项目名称', value: draft?.name ?? p.name, required: true },
       { name: 'key', label: '项目标识', hint: '创建后不能修改', type: 'key', value: p.key, readonly: true },
-      { name: 'desc', label: '描述', hint: '选填', value: p.desc },
-      { name: 'color', label: '颜色', type: 'color', value: p.color },
+      { name: 'desc', label: '描述', hint: '选填', value: draft?.desc ?? p.desc },
+      {
+        name: 'repo', label: '仓库地址', hint: '选填，git 远端；项目下所有白板共用，机器上克隆到 <工作空间>/<项目>', type: 'text',
+        maxLength: 500, placeholder: origin ? `例如 ${origin}` : 'git@github.com:org/repo.git', value: draft?.repo ?? p.repo ?? '',
+      },
+      {
+        name: 'branch', label: '集成分支', hint: '选填；留空时按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支', type: 'text',
+        maxLength: 200, placeholder: 'main', value: draft?.branch ?? p.branch ?? '',
+      },
+      { name: 'color', label: '颜色', type: 'color', value: draft?.color ?? p.color },
     ],
-    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示
+    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示，提示里可以带着刚才写的内容重新打开
     onSubmit: async v => {
       const patch = { name: v.name.trim(), desc: v.desc.trim(), color: v.color };
-      optimistic({ ...patchProject(pk, p => ({ ...p, ...patch })), keys: [projectKey(pk)] }, () => api.updateProject(pk, patch)).then(saved, toastError);
+      const repo = v.repo.trim();
+      const branch = v.branch.trim();
+      const repoChanged = repo !== (p.repo ?? '') || branch !== (p.branch ?? '');
+      optimistic(
+        { ...patchProject(pk, x => ({ ...x, ...patch })), ...repoPatch(pk, { repo, branch }), keys: [projectKey(pk)] },
+        () => api.updateProject(pk, repoChanged ? { ...patch, repo, branch } : patch),
+      ).then(saved, e => toastError(e, { action: { label: '重新编辑', fn: () => editProject(pk, v) } }));
     },
   });
 }
@@ -247,8 +264,6 @@ export function editProject(pk: string) {
 export function editBoard(path: string, { focus, draft }: { focus?: string; draft?: Record<string, string> } = {}) {
   const m = boardMeta(data().ws, path);
   if (!m) return;
-  // 仓库地址的建议：别的机器上报的这块白板目录的 origin（#185 克隆也用同一个来源）
-  const origin = data().ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board === path && d.origin)?.origin ?? '';
   openForm({
     title: '编辑白板',
     submit: '保存',
@@ -263,21 +278,11 @@ export function editBoard(path: string, { focus, draft }: { focus?: string; draf
         name: 'readme', label: '说明', hint: '选填，Markdown，可以粘贴图片；打开大盘的人第一眼看到', type: 'markdown', board: path,
         placeholder: '这块白板是做什么的、有哪些约定', value: draft?.readme ?? m.board.readme ?? '',
       },
-      {
-        name: 'repo', label: '仓库地址', hint: '选填，git 远端；评论里的提交号、gh#123 会变成链接，克隆时也用它', type: 'text',
-        maxLength: 500, placeholder: origin ? `例如 ${origin}` : 'git@github.com:org/repo.git', value: draft?.repo ?? m.board.repo ?? '',
-      },
-      {
-        name: 'branch', label: '集成分支', hint: '选填；留空时按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支', type: 'text',
-        maxLength: 200, placeholder: 'main', value: draft?.branch ?? m.board.branch ?? '',
-      },
       { name: 'color', label: '颜色', hint: `白板用所属项目的颜色，改这里会一起改项目「${m.project.name}」`, type: 'color', value: draft?.color ?? m.project.color },
     ],
     // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示，提示里可以带着刚才写的内容重新打开
     onSubmit: async v => {
       const patch = { name: v.name.trim(), desc: v.desc.trim(), readme: v.readme.trimEnd() };
-      const repo = v.repo.trim();
-      const branch = v.branch.trim();
       const recolor = !!v.color && v.color.toUpperCase() !== m.project.color.toUpperCase();
       optimistic(
         {
@@ -286,12 +291,10 @@ export function editBoard(path: string, { focus, draft }: { focus?: string; draf
             color: recolor ? v.color : p.color,
             boards: p.boards.map(b => (b.path === path ? { ...b, ...patch } : b)),
           })),
-          ...repoPatch(path, { repo, branch }),
           keys: [projectKey(m.project.key)],
         },
         async () => {
           await api.updateBoard(path, patch);
-          if (repo !== (m.board.repo ?? '') || branch !== (m.board.branch ?? '')) await api.updateBoard(path, { repo, branch });
           if (recolor) await api.updateProject(m.project.key, { color: v.color });
         },
       ).then(saved, e => toastError(e, { action: { label: '重新编辑', fn: () => editBoard(path, { focus, draft: v }) } }));

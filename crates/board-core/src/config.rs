@@ -181,7 +181,7 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 #[derive(Debug, Clone, Default)]
 pub struct HostConf {
     pub name: Option<String>,
-    /// 工作空间：每台设备一个目录，每块白板的目录是 `<工作空间>/<项目>/<白板>`（`~` 不展开）
+    /// 工作空间：每台设备一个目录，每个项目的目录是 `<工作空间>/<项目>`（`~` 不展开）
     pub workspace: Option<String>,
     /// 旧的白板与目录（`[host] dirs`、`--dir`），按文件里的顺序。启动时换成工作空间，兼容保留
     pub dirs: Vec<(String, String)>,

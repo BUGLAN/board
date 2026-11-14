@@ -165,14 +165,14 @@ impl Rig {
             .unwrap_or_else(|| "60000".into())
     }
 
-    /// 这台机器的工作空间：`<临时目录>/ws`，`default/main` 的目录就是 `<工作空间>/default/main`
+    /// 这台机器的工作空间：`<临时目录>/ws`，`default` 项目（`default/main` 在里面）的目录就是 `<工作空间>/default`
     fn ws(&self) -> PathBuf {
         self.repo.with_file_name("ws")
     }
 
-    /// 像桌面端那样配好工作空间：`default/main` 的目录摆到 `<工作空间>/default/main`（`repo` 作为它的内容）
+    /// 像桌面端那样配好工作空间：`default` 项目的目录摆到 `<工作空间>/default`（`repo` 作为它的内容）
     fn ws_ready(&self) -> PathBuf {
-        let dir = self.ws().join("default").join("main");
+        let dir = self.ws().join("default");
         if !dir.exists() {
             std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
             std::fs::rename(&self.repo, &dir).unwrap();
@@ -758,10 +758,10 @@ fn host_follows_config_without_restart() {
     }
     let cfg = rig.s.home.join(".board").join("config.toml");
     let base = std::fs::read_to_string(&cfg).unwrap();
-    // 白板目录是 `<工作空间>/<项目>/<白板>`，工作空间是它往上两级；`repo` 已经摆到 `<工作空间>/default/main`
+    // 白板目录是所在项目的 `<工作空间>/<项目>`，工作空间是它的上一级；`repo` 已经摆到 `<工作空间>/default`
     let repo = rig.ws_ready();
     let host_conf = |name: &str, dir: &Path| {
-        let ws = dir.parent().and_then(Path::parent).unwrap_or(dir);
+        let ws = dir.parent().unwrap_or(dir);
         format!("{base}\n[host]\nname = \"{name}\"\nworkspace = \"{}\"\n", ws.display())
     };
     std::fs::write(&cfg, host_conf("mbp", &repo)).unwrap();
@@ -786,7 +786,7 @@ fn host_follows_config_without_restart() {
     let pid = std::fs::read_to_string(&pidfile).unwrap();
 
     // 桌面端保存：先在服务端改名（board host rename），再写配置文件；目录也换一个
-    let other = rig.repo.with_file_name("ws2").join("default").join("main");
+    let other = rig.repo.with_file_name("ws2").join("default");
     std::fs::create_dir_all(&other).unwrap();
     let mut env = rig.s.env();
     env.retain(|(k, _)| *k != "BOARD_AS" && *k != "BOARD");
@@ -826,7 +826,7 @@ fn host_follows_config_without_restart() {
     assert!(local.contains("as: claude-win/opus-5.5 host: win"), "{local}");
 
     // 工作空间不存在不算配置不对（#185）：照样换上，白板目录按新的工作空间派生，不会报成可用（界面上可以克隆）
-    let nope = rig.repo.with_file_name("nope").join("default").join("main");
+    let nope = rig.repo.with_file_name("nope").join("default");
     std::fs::write(&cfg, host_conf("win", &nope)).unwrap();
     reload();
     wait_until("board host 换上不存在的工作空间", Duration::from_secs(10), || {
@@ -834,8 +834,8 @@ fn host_follows_config_without_restart() {
         d["path"] == nope.display().to_string() && d["status"] != "ok"
     });
 
-    // 配置不对（白板没写成 <项目>/<白板>）：打印一行，接着用原来的
-    std::fs::write(&cfg, format!("{base}\n[host]\nname = \"win\"\n\n[host.dirs]\n\"nope\" = \"{}\"\n", other.display())).unwrap();
+    // 配置不对（没写成 <项目> 或 <项目>/<白板>）：打印一行，接着用原来的
+    std::fs::write(&cfg, format!("{base}\n[host]\nname = \"win\"\n\n[host.dirs]\n\"No Pe\" = \"{}\"\n", other.display())).unwrap();
     reload();
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], nope.display().to_string());
@@ -843,7 +843,7 @@ fn host_follows_config_without_restart() {
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("机器名已改为 win"), "{out}");
-    assert!(out.contains("工作空间没有更新：白板要写成 <项目>/<白板>：nope"), "{out}");
+    assert!(out.contains("工作空间没有更新：要写成 <项目> 或 <项目>/<白板>：No Pe"), "{out}");
 }
 
 /// 白板的环境检查（PRD §9.1）：board host 在白板目录里跑检查命令、上报结果；没通过的机器派发被拒（BOARD_NOT_READY），
@@ -872,7 +872,7 @@ fn ready_check_runs_in_board_dir_and_gates_dispatch() {
     assert_eq!(r.error_code(), "BOARD_NOT_READY", "{}{}", r.out, r.err);
     assert!(r.out.contains("missing ok.txt") || r.err.contains("missing ok.txt"), "{}{}", r.out, r.err);
     // 补上文件、改命令（命令变了马上重跑）：通过，可以派发
-    std::fs::write(rig.ws().join("default/main/ok.txt"), "").unwrap();
+    std::fs::write(rig.ws().join("default/ok.txt"), "").unwrap();
     patch("test -f ok.txt");
     wait_until("检查通过", Duration::from_secs(20), || {
         let d = dir(&rig.workspace());

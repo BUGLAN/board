@@ -147,20 +147,24 @@ export const boardOf = (ws: Workspace | null, path: string): BoardInfo | undefin
     目录）：上报在心跳之前的不算数，重连上来要先检查一遍，不拿掉线之前的旧结果说事 */
 export const dirFresh = (h: HostInfo, d: HostDir) => d.checkedAt == null || !h.beatAt || d.checkedAt >= h.beatAt - 30_000;
 
-/** 一块白板在一台机器上的目录：`<工作空间>/<项目>/<白板>`（`--dir` 单独覆盖的用覆盖的路径，机器报过就用它报的） */
+/** 一块白板在一台机器上的目录：所在项目的 `<工作空间>/<项目>`（`--dir` 单独指定的用指定的路径，机器报过就用它报的） */
 export function hostDirFor(h: HostInfo, path: string): HostDir | undefined {
   const known = h.dirs.find(x => x.board === path);
   if (known) return known;
+  const project = path.split('/')[0];
+  const o = h.workspace?.overrides?.find(x => x.board === path) ?? h.workspace?.overrides?.find(x => x.board === project);
+  if (o) return { board: path, path: o.path, fixed: true };
   const ws = h.workspace?.path?.trim();
   if (!ws) return undefined;
   return { board: path, path: workspacePath(ws, path, h.os), fixed: false };
 }
 
-/** 工作空间里的目录：分隔符跟着机器系统走，工作空间末尾的分隔符去掉 */
+/** 工作空间里一块白板的目录：它所在项目的 `<工作空间>/<项目>`（一个项目一个仓库，项目下的白板共用）；
+    分隔符跟着机器系统走，工作空间末尾的分隔符去掉 */
 export function workspacePath(workspace: string, board: string, os: string): string {
   const base = workspace.trim().replace(/[\\/]+$/, '');
   const sep = osKind(os) === 'win' ? '\\' : '/';
-  return base + sep + board.trim().split('/').join(sep);
+  return base + sep + board.trim().split('/')[0];
 }
 
 /** 能接这块白板的卡的机器：配了工作空间的每台机器（有工作空间就视为有这块白板的目录），带它的目录和环境检查结果 */
@@ -314,7 +318,7 @@ const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 /**
  * 「添加机器」给命令行机器的那一行（PRD §10.12）：下载服务端的安装脚本 → 安装 board → board login → board host --install。
- * 一台机器只填一个工作空间（每块白板的目录是 `<工作空间>/<项目>/<白板>`）。
+ * 一台机器只填一个工作空间（每个项目的目录是 `<工作空间>/<项目>`）。
  * macOS / Linux 是 curl | sh，Windows 是一行 PowerShell；值里有空格、引号时加引号
  */
 export function installCommand(o: { origin: string; token: string; name: string; workspace: string; os: 'unix' | 'windows' }): string {

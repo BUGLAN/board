@@ -167,12 +167,12 @@ describe('环境检查（readiness）', () => {
     } as unknown as Workspace;
     expect(boardHosts(ws, 'p/a').map(x => [x.h.name, x.ready.key, x.d.path])).toEqual([
       ['mac', 'ok', '~/a'],
-      ['win', 'pending', 'C:\\repo\\p\\a'],
+      ['win', 'pending', 'C:\\repo\\p'],
     ]);
-    // 配了工作空间的机器都有任意白板的目录（目录按 <工作空间>/<项目>/<白板> 派生）；白板没写检查命令时不检查
+    // 配了工作空间的机器都有任意白板的目录（所在项目的 <工作空间>/<项目>）；白板没写检查命令时不检查
     expect(boardHosts(ws, 'p/b').map(x => [x.h.name, x.ready.key, x.d.path])).toEqual([
-      ['mac', 'none', '~/repo/p/b'],
-      ['win', 'none', 'C:\\repo\\p\\b'],
+      ['mac', 'none', '~/repo/p'],
+      ['win', 'none', 'C:\\repo\\p'],
     ]);
   });
 
@@ -188,8 +188,13 @@ describe('环境检查（readiness）', () => {
   });
 
   it('hostDirFor：机器报过的用报的，没报过的按工作空间派生（分隔符跟着系统走）', () => {
-    expect(hostDirFor({ ...host([]), workspace: { path: '/srv/repo/' } }, 'p/a')?.path).toBe('/srv/repo/p/a');
-    expect(hostDirFor({ ...host([]), os: 'Windows 11', workspace: { path: 'C:\\repo' } }, 'p/a')?.path).toBe('C:\\repo\\p\\a');
+    expect(hostDirFor({ ...host([]), workspace: { path: '/srv/repo/' } }, 'p/a')?.path).toBe('/srv/repo/p');
+    expect(hostDirFor({ ...host([]), os: 'Windows 11', workspace: { path: 'C:\\repo' } }, 'p/a')?.path).toBe('C:\\repo\\p');
+    // `--dir p=<路径>` 指定整个项目；旧写法 `--dir p/a=<路径>` 只管那一块
+    const o = { ...host([]), workspace: { path: '/srv/repo', overrides: [{ board: 'p', path: '/x/p' }, { board: 'q/a', path: '/old/qa' }] } };
+    expect(hostDirFor(o, 'p/a')).toMatchObject({ path: '/x/p', fixed: true });
+    expect(hostDirFor(o, 'q/a')).toMatchObject({ path: '/old/qa', fixed: true });
+    expect(hostDirFor(o, 'q/b')).toMatchObject({ path: '/srv/repo/q', fixed: false });
     expect(hostDirFor({ ...host([]), workspace: null }, 'p/a')).toBeUndefined();
   });
 });

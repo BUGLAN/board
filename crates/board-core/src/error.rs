@@ -142,7 +142,7 @@ impl ErrorCode {
             ErrorCode::AlreadyDispatched => "卡片已经有排队或正在跑的派发：先取消或停止它",
             ErrorCode::NoSuchHost => "机器不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器",
             ErrorCode::AgentNotOnHost => "这台机器上没有这种 agent，或没找到它的命令",
-            ErrorCode::BoardNotOnHost => "这台机器没有这块白板的目录：board host 启动时用 --dir <项目>/<白板>=<路径> 加上",
+            ErrorCode::BoardNotOnHost => "这台机器还没有配工作空间：在机器详情里填一个，或 board host 启动时用 --workspace <路径> 加上",
             ErrorCode::BoardNotReady => "这台机器上这块白板的环境检查没通过（或还没检查）：装好缺的工具后重新检查",
             ErrorCode::Dispatched => "卡片已经派发给一台机器，在锁定状态里排队（或排在一个会话里）：别的 agent 不能领取、移动它，等它开始，或先取消派发",
             ErrorCode::SessionDone => "这个会话不再接着做下一张：结束会话",

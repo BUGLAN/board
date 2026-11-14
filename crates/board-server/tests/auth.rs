@@ -298,6 +298,9 @@ fn tokens_are_for_cli_only() {
     for (m, p, body) in [
         ("POST", "/api/projects", Some(json!({ "name": "x", "key": "x", "board": { "name": "m", "key": "main" } }))),
         ("DELETE", "/api/boards/default/main", None),
+        // 代码仓库地址、集成分支在项目上（按白板改的写到它所在的项目）：只有人能改
+        ("PATCH", "/api/projects/default", Some(json!({ "repo": "git@github.com:o/r.git" }))),
+        ("PATCH", "/api/boards/default/main", Some(json!({ "branch": "dev" }))),
         ("POST", "/api/flow/default/main", Some(json!({ "name": "新状态" }))),
         ("POST", "/api/card-crons/default/main", Some(json!({ "name": "清理", "title": "清理", "cron": "0 9 * * *", "tz": "UTC" }))),
         ("PATCH", "/api/card-crons/default/main/1", Some(json!({ "on": false }))),

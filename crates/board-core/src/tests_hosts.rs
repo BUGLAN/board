@@ -33,7 +33,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         agents: vec![claude(true), HostAgent { id: "pi".into(), name: "pi".into(), version: String::new(), found: false, ..Default::default() }],
         envs: vec![],
         workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
-        dirs: vec![HostDir { board: B.into(), path: "/tmp/default/main".into(), ..Default::default() }],
+        dirs: vec![HostDir { board: B.into(), path: "/tmp/default".into(), ..Default::default() }],
         dirs_rev: 0,
         running,
         done: false,
@@ -137,20 +137,20 @@ fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     let mut s = store();
     let w = beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     assert_eq!(w.host.workspace.as_ref().map(|x| x.path.as_str()), Some("/tmp"));
-    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str()), (1, "/tmp/default/main"), "目录由工作空间派生");
+    assert_eq!((w.host.dirs_rev, w.host.dirs[0].path.as_str()), (1, "/tmp/default"), "目录由工作空间派生：<工作空间>/<项目>");
 
     // 在别的设备上把工作空间改掉：服务端升版本，同一块白板的目录跟着换
     let h = s
         .write(T0 + S, Origin::ui(None), |w| w.host_update_as("mbp", &HostPatch { workspace: Some(HostWorkspace { path: "/tmp/new".into(), ..Default::default() }), ..Default::default() }, "buglan"))
         .unwrap();
-    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str(), h.dirs_changed_by.as_deref()), (2, "/tmp/new/default/main", Some("buglan")));
+    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str(), h.dirs_changed_by.as_deref()), (2, "/tmp/new/default", Some("buglan")));
 
     // 旧版本（还是版本 1 的本机配置）上报的检查结果不挂在新的目录上
     let mut stale = report("mbp", "i1", vec![]);
     stale.dirs[0].status = Some("missing".into());
     stale.dirs[0].checked_at = Some(T0 + 2 * S);
     let w = beat(&mut s, T0 + 2 * S, &stale).unwrap();
-    assert_eq!(w.host.dirs[0].path, "/tmp/new/default/main", "本机上报的是旧的工作空间，不能覆盖服务端设置");
+    assert_eq!(w.host.dirs[0].path, "/tmp/new/default", "本机上报的是旧的工作空间，不能覆盖服务端设置");
 
     // 应用了服务端版本后，同一块白板的检查结果合进来
     let mut checked = report("mbp", "i1", vec![]);
@@ -158,7 +158,7 @@ fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     checked.workspace = Some(HostWorkspace { path: "/tmp/new".into(), ..Default::default() });
     checked.dirs[0] = HostDir {
         board: B.into(),
-        path: "/tmp/new/default/main".into(),
+        path: "/tmp/new/default".into(),
         status: Some("ok".into()),
         origin: Some("git@github.com:buglan/board.git".into()),
         branch: Some("main".into()),
@@ -174,11 +174,11 @@ fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     // 本机配置先改了（版本还是 2）：服务端收下，记成「本机」改的
     let mut local = checked;
     local.workspace = Some(HostWorkspace { path: "/tmp/local".into(), ..Default::default() });
-    local.dirs[0].path = "/tmp/local/default/main".into();
+    local.dirs[0].path = "/tmp/local/default".into();
     let w = beat(&mut s, T0 + 4 * S, &local).unwrap();
     assert_eq!(
         (w.host.dirs_rev, w.host.workspace.as_ref().map(|x| x.path.as_str()), w.host.dirs[0].path.as_str(), w.host.dirs_changed_by.as_deref()),
-        (3, Some("/tmp/local"), "/tmp/local/default/main", Some("本机"))
+        (3, Some("/tmp/local"), "/tmp/local/default", Some("本机"))
     );
 }
 
@@ -216,7 +216,8 @@ fn legacy_host_dirs_still_work_and_upgrade_to_a_workspace() {
     let w = beat(&mut s2, T0, &rep).unwrap();
     assert_eq!(w.host.workspace.as_ref().map(|x| x.path.as_str()), Some("/repo"));
     assert_eq!(w.host.dirs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(), vec!["/repo/default/main", "/repo/default/other"]);
-    assert!(w.host.dirs.iter().all(|d| !d.fixed));
+    // 旧的逐块目录（`<工作空间>/<项目>/<白板>`）不是现在的 `<工作空间>/<项目>`：留成单独覆盖，仓库还在原处，照样能接卡
+    assert!(w.host.dirs.iter().all(|d| d.fixed));
     // 服务端按导出的工作空间记着：之后用旧版 board host 继续上报也不丢
     let w = beat(&mut s2, T0 + S, &rep).unwrap();
     assert_eq!(w.host.workspace.as_ref().map(|x| x.path.as_str()), Some("/repo"));
@@ -247,7 +248,7 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
     let h = host(&s, T0);
     assert_eq!(
         h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(),
-        vec![(B, "/tmp/default/main", false), ("default/other", "/elsewhere/repo", true)]
+        vec![(B, "/tmp/default", false), ("default/other", "/elsewhere/repo", true)]
     );
 
     // --dir 覆盖的目录不能从界面上改掉（没带上的补回去，带了别的路径就拒绝）
@@ -290,7 +291,7 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
         })
         .unwrap();
     assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str())).collect::<Vec<_>>(), vec![
-        (B, "/tmp/new/default/main"),
+        (B, "/tmp/new/default"),
         ("default/other", "/elsewhere/repo")
     ]);
     assert_eq!(h.dirs_changed_by.as_deref(), Some("人"));
@@ -304,9 +305,11 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
 
 #[test]
 fn board_dir_uses_the_machines_separator() {
-    assert_eq!(hosts::board_dir("/repo", "default/main", "macOS 15.4").as_deref(), Some("/repo/default/main"));
-    assert_eq!(hosts::board_dir("~/repo/", "default/main", "Linux").as_deref(), Some("~/repo/default/main"));
-    assert_eq!(hosts::board_dir("C:\\repo\\", "default/main", "Windows 11 Pro").as_deref(), Some("C:\\repo\\default\\main"));
+    // 一个项目一个目录：项目下的几块白板共用 `<工作空间>/<项目>`
+    assert_eq!(hosts::board_dir("/repo", "default/main", "macOS 15.4").as_deref(), Some("/repo/default"));
+    assert_eq!(hosts::board_dir("/repo", "default/other", "macOS 15.4").as_deref(), Some("/repo/default"));
+    assert_eq!(hosts::board_dir("~/repo/", "default/main", "Linux").as_deref(), Some("~/repo/default"));
+    assert_eq!(hosts::board_dir("C:\\repo\\", "default/main", "Windows 11 Pro").as_deref(), Some("C:\\repo\\default"));
     assert_eq!(hosts::board_dir("", "default/main", "macOS").as_deref(), None);
     assert_eq!(hosts::board_dir("/repo", "nope", "macOS").as_deref(), None);
 }
@@ -371,7 +374,11 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
         })
         .unwrap();
     assert_eq!(h.workspace.as_ref().map(|w| w.path.as_str()), Some("/repo"));
-    assert_eq!(h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(), vec![(B, "/tmp/board", true)]);
+    // 旧界面按白板提交的 `<工作空间>/<项目>/<白板>` 不是现在派生的目录：留成单独覆盖
+    assert_eq!(
+        h.dirs.iter().map(|d| (d.board.as_str(), d.path.as_str(), d.fixed)).collect::<Vec<_>>(),
+        vec![(B, "/tmp/board", true), ("default/other", "/repo/default/other", true), ("default/third", "/repo/default/third", true)]
+    );
 
     // 目录不存在：请求克隆，状态排队；board host 上报失败原因
     let mut s2 = store();
@@ -2695,6 +2702,135 @@ fn board_repo_and_branch_are_optional_and_validated() {
         let e = s.write(T0, Origin::ui(None), |w| w.set_repo_branch(B, repo, branch)).unwrap_err();
         assert_eq!(e.code, ErrorCode::Usage, "{repo:?} {branch:?}: {}", e.message);
     }
+}
+
+#[test]
+fn repo_belongs_to_the_project_and_all_its_boards_share_it() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| {
+        w.create_board("default", "文档", "docs", "", None)
+    })
+    .unwrap();
+    let ws = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects[0].clone();
+    // 按项目设：项目和它下面每块白板都是这一个仓库
+    ui(&mut s, |w| {
+        w.set_repo_branch("default", Some("git@github.com:o/r.git"), Some("main"))
+    })
+    .unwrap();
+    let p = ws(&s);
+    assert_eq!(
+        (p.repo.as_str(), p.branch.as_str()),
+        ("git@github.com:o/r.git", "main")
+    );
+    assert!(
+        p.boards
+            .iter()
+            .all(|b| b.repo == "git@github.com:o/r.git" && b.branch == "main"),
+        "{:?}",
+        p.boards
+    );
+    // 旧客户端按白板改：改的是它所在的项目，另一块白板跟着变
+    ui(&mut s, |w| {
+        w.set_repo_branch("default/docs", Some("git@github.com:o/x.git"), None)
+    })
+    .unwrap();
+    let p = ws(&s);
+    assert_eq!(p.repo, "git@github.com:o/x.git");
+    assert!(p.boards.iter().all(|b| b.repo == "git@github.com:o/x.git"));
+    let snap = s
+        .read(|r| r.resolve(B).and_then(|b| r.board_snapshot(&b, T0, false)))
+        .unwrap();
+    assert_eq!(
+        snap.repo, "git@github.com:o/x.git",
+        "白板快照里带着项目的仓库"
+    );
+    // 不存在的项目、白板
+    assert_eq!(
+        ui(&mut s, |w| w.set_repo_branch("nope", Some(""), None))
+            .unwrap_err()
+            .code,
+        ErrorCode::BoardNotFound
+    );
+    assert_eq!(
+        ui(&mut s, |w| w.set_repo_branch(
+            "default/nope",
+            Some(""),
+            None
+        ))
+        .unwrap_err()
+        .code,
+        ErrorCode::BoardNotFound
+    );
+}
+
+#[test]
+fn old_database_moves_board_repo_to_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        s.write(T0, Origin::ui(None), |w| {
+            w.create_board("default", "文档", "docs", "", None)
+        })
+        .unwrap();
+    }
+    {
+        // 升级前：仓库地址、集成分支设在白板上（第一块没设地址、第二块设了；分支只有第一块设了）
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "ALTER TABLE projects DROP COLUMN repo; ALTER TABLE projects DROP COLUMN branch;
+             UPDATE boards SET repo = '', branch = 'dev' WHERE key = 'main';
+             UPDATE boards SET repo = 'git@github.com:o/r.git', branch = '' WHERE key = 'docs';",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let p = s.read(|r| r.workspace(T0)).unwrap().projects[0].clone();
+    assert_eq!(
+        (p.repo.as_str(), p.branch.as_str()),
+        ("git@github.com:o/r.git", "dev"),
+        "各取第一块设了的白板"
+    );
+    assert!(p
+        .boards
+        .iter()
+        .all(|b| b.repo == p.repo && b.branch == p.branch));
+}
+
+#[test]
+fn dir_override_can_cover_a_whole_project() {
+    let ws = HostWorkspace {
+        path: "/ws".into(),
+        created: false,
+        overrides: vec![
+            HostDirOverride {
+                board: "a".into(),
+                path: "/srv/a".into(),
+            },
+            HostDirOverride {
+                board: "b/old".into(),
+                path: "/legacy/b-old".into(),
+            },
+        ],
+    };
+    let dir = |b: &str| hosts::derive_dir(&ws, b, "Linux").map(|d| (d.path, d.fixed));
+    // `--dir a=<路径>`：项目 a 的所有白板都用它
+    assert_eq!(dir("a/main"), Some(("/srv/a".into(), true)));
+    assert_eq!(dir("a/docs"), Some(("/srv/a".into(), true)));
+    // 旧写法 `--dir b/old=<路径>` 只管那一块；同项目的其他白板用 `<工作空间>/<项目>`
+    assert_eq!(dir("b/old"), Some(("/legacy/b-old".into(), true)));
+    assert_eq!(dir("b/main"), Some(("/ws/b".into(), false)));
+    assert!(
+        board_core_valid("a")
+            && board_core_valid("a/b")
+            && !board_core_valid("A")
+            && !board_core_valid("a/b/c")
+    );
+}
+
+fn board_core_valid(k: &str) -> bool {
+    crate::valid_dir_key(k)
 }
 
 #[test]

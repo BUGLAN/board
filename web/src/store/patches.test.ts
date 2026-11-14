@@ -406,23 +406,25 @@ describe('cardCronPatch（白板的定时建卡）', () => {
   });
 });
 
-describe('repoPatch（白板的仓库地址、集成分支）', () => {
-  it('只改这一块白板：工作区和当前白板的快照一起改；重复执行结果相同；白板不在了原样返回', () => {
-    const p = D.repoPatch('p/a', { repo: 'git@github.com:o/r.git', branch: 'dev' });
+describe('repoPatch（项目的仓库地址、集成分支）', () => {
+  it('改的是项目：项目、它下面每块白板、当前白板的快照一起改；重复执行结果相同；项目不在了原样返回', () => {
+    const p = D.repoPatch('p', { repo: 'git@github.com:o/r.git', branch: 'dev' });
     const ws = twice(p.ws!, workspace());
-    expect(ws.projects[0].boards[0]).toMatchObject({ repo: 'git@github.com:o/r.git', branch: 'dev' });
-    expect(ws.projects[0].boards[1].repo).toBeUndefined();
+    expect(ws.projects[0]).toMatchObject({ repo: 'git@github.com:o/r.git', branch: 'dev' });
+    expect(ws.projects[0].boards.every(b => b.repo === 'git@github.com:o/r.git' && b.branch === 'dev')).toBe(true);
     const b = twice(p.board!, snapshot('p/a', { todo: [1] }));
     expect(b.repo).toBe('git@github.com:o/r.git');
     expect(b.branch).toBe('dev');
-    const other = snapshot('p/b', { todo: [1] });
-    expect(p.board!(other)).toBe(other);
     const orig = workspace();
-    expect(D.repoPatch('p/nope', { repo: 'x' }).ws!(orig)).toBe(orig);
+    expect(D.repoPatch('nope', { repo: 'x' }).ws!(orig)).toBe(orig);
+    // 别的项目的白板快照不动
+    const other = snapshot('q/a', { todo: [1] });
+    expect(p.board!(other)).toBe(other);
   });
 
   it('只改一项时另一项保持原值（没设过时补成空字符串）', () => {
-    const ws = twice(D.repoPatch('p/a', { branch: 'dev' }).ws!, workspace());
+    const ws = twice(D.repoPatch('p', { branch: 'dev' }).ws!, workspace());
+    expect(ws.projects[0]).toMatchObject({ repo: '', branch: 'dev' });
     expect(ws.projects[0].boards[0]).toMatchObject({ repo: '', branch: 'dev' });
   });
 });

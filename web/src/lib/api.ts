@@ -146,7 +146,7 @@ export const api = {
     pos?: Pos;
     board: { name: string; key: string; desc?: string };
   }) => req<{ key: string }>('POST', '/api/projects', p),
-  updateProject: (key: string, patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[] }) =>
+  updateProject: (key: string, patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; repo?: string; branch?: string }) =>
     req('PATCH', `/api/projects/${q(key)}`, patch),
   deleteProject: (key: string) => req('DELETE', `/api/projects/${q(key)}`),
 
@@ -218,12 +218,12 @@ export const api = {
       env?: { agent: string; env: string };
       /** 一个 agent 的模型、思考强度、模型供应商：不带的那一项不改，空字符串回到默认（供应商空 = 跟随共用配置） */
       run?: { agent: string; model?: string; effort?: string; provider?: string };
-      /** 工作空间（整个替换）：每块白板的目录是 `<工作空间>/<项目>/<白板>`；空路径表示不配 */
+      /** 工作空间（整个替换）：每个项目的目录是 `<工作空间>/<项目>`；空路径表示不配 */
       workspace?: HostWorkspace;
     },
   ) =>
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
-  /** 请那台机器的 board host 把仓库克隆到这块白板的目录（`<工作空间>/<项目>/<白板>`） */
+  /** 请那台机器的 board host 把仓库克隆到这块白板所在项目的目录（`<工作空间>/<项目>`） */
   cloneHostDir: (name: string, board: string, url: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/dirs/clone`, { board, url }),
   removeHost: (name: string, revoke = false) => req('DELETE', `/api/hosts/${q(name)}${revoke ? '?revoke=1' : ''}`),
   /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、排空、取消请求 */

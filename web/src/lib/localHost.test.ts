@@ -14,10 +14,11 @@ describe('shownHostName', () => {
 });
 
 describe('workspaceDir', () => {
-  it('每块白板的目录是 <工作空间>/<项目>/<白板>，分隔符跟着机器走', () => {
-    expect(workspaceDir('~/repo', 'default/main')).toBe('~/repo/default/main');
-    expect(workspaceDir('C:\\repo\\', 'default/main', 'Windows 11')).toBe('C:\\repo\\default\\main');
-    expect(workspaceDir('/srv/repo/', 'p/b', 'macOS 15.4')).toBe('/srv/repo/p/b');
+  it('每块白板的目录是它所在项目的 <工作空间>/<项目>，分隔符跟着机器走', () => {
+    expect(workspaceDir('~/repo', 'default/main')).toBe('~/repo/default');
+    expect(workspaceDir('C:\\repo\\', 'default/main', 'Windows 11')).toBe('C:\\repo\\default');
+    expect(workspaceDir('/srv/repo/', 'p/b', 'macOS 15.4')).toBe('/srv/repo/p');
+    expect(workspaceDir('/srv/repo/', 'p/docs', 'macOS 15.4')).toBe('/srv/repo/p');
   });
 
   it('没填工作空间时为空', () => {
@@ -32,7 +33,7 @@ describe('hostConfirmText', () => {
     const parts = text.split('\n\n');
     expect(parts).toHaveLength(3);
     expect(parts[0]).toBe('机器名：win');
-    expect(parts[1]).toBe('工作空间：E:\\repo（每块白板的目录是 E:\\repo/<项目>/<白板>）');
+    expect(parts[1]).toBe('工作空间：E:\\repo（每个项目的目录是 E:\\repo/<项目>）');
     expect(parts[2]).toContain('以免审批模式运行');
     expect(parts[2]).toContain('只在信任这些白板时确认');
   });

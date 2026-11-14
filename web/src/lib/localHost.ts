@@ -10,12 +10,12 @@ export function shownHostName(name: string, defaultName: string): string {
   return defaultName.trim() ? `${defaultName.trim()}（本机主机名）` : '（本机主机名）';
 }
 
-/** 工作空间里的白板目录：`<工作空间>/<项目>/<白板>`（分隔符跟着机器走）；工作空间为空时为空 */
+/** 工作空间里一块白板的目录：它所在项目的 `<工作空间>/<项目>`（分隔符跟着机器走）；工作空间为空时为空 */
 export function workspaceDir(workspace: string, board: string, os = ''): string {
   const base = workspace.trim().replace(/[\\/]+$/, '');
   if (!base || !board.trim()) return '';
   const sep = /windows/i.test(os) ? '\\' : '/';
-  return base + sep + board.trim().split('/').join(sep);
+  return base + sep + board.trim().split('/')[0];
 }
 
 /** 「切换服务端」确认框的正文：从哪个地址换到哪个、写进哪里、本机命令只对新地址开放；
@@ -32,7 +32,7 @@ export function serverConfirmText(from: string, to: string, version: string, tar
 /** 确认框正文：机器名、工作空间、免审批运行的风险（段落之间空一行，确认框按段落显示） */
 export function hostConfirmText(name: string, defaultName: string, workspace: string): string {
   const ws = workspace.trim();
-  const line = ws ? `${ws}（每块白板的目录是 ${ws.replace(/[\\/]+$/, '')}/<项目>/<白板>）` : '（还没填：这台电脑不接任何白板的卡）';
+  const line = ws ? `${ws}（每个项目的目录是 ${ws.replace(/[\\/]+$/, '')}/<项目>）` : '（还没填：这台电脑不接任何白板的卡）';
   return [
     `机器名：${shownHostName(name, defaultName)}`,
     `工作空间：${line}`,

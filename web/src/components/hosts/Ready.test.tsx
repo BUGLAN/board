@@ -55,7 +55,7 @@ describe('机器详情的就绪清单', () => {
     act(() => root.render(<ReadySection checks={readiness(h, Date.now())} go={go} i={1} />));
     expect(host.querySelector('.hp-ready-n')!.textContent).toBe('2/4 项通过');
     const bad = [...host.querySelectorAll('.hp-ready-list li.bad')];
-    expect(bad.map(li => li.querySelector('b')!.textContent)).toEqual(['每块白板的目录和仓库正常', 'agent 看得到 board-skills']);
+    expect(bad.map(li => li.querySelector('b')!.textContent)).toEqual(['每个项目的目录和仓库正常', 'agent 看得到 board-skills']);
     act(() => (bad[0].querySelector('button') as HTMLButtonElement).click());
     act(() => (bad[1].querySelector('button') as HTMLButtonElement).click());
     expect(go.mock.calls).toEqual([['dirs'], ['agents']]);

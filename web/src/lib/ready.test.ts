@@ -53,17 +53,18 @@ describe('就绪清单', () => {
     expect(failed(machine(), '0.1.19')).toEqual([]);
   });
 
-  it('目录不存在、不是 git 仓库：写明是哪块白板', () => {
+  it('目录不存在、不是 git 仓库：写明是哪个项目，同一个项目的几块白板只说一次', () => {
     const h = machine({
       dirs: [
         { board: 'default/main', path: '~/a', status: 'missing', clone: { state: 'running', url: 'u', message: '', updatedAt: 0 } },
+        { board: 'default/docs', path: '~/a', status: 'missing' },
         { board: 'mini/main', path: '~/b', status: 'not_git' },
         { board: 'x/main', path: '~/c', status: 'ok' },
       ],
     });
     const c = readiness(h, now).find(x => x.key === 'dirs')!;
     expect(c.ok).toBe(false);
-    expect(c.why).toBe('default/main 的目录不存在（正在克隆）；mini/main 的目录不是 git 仓库');
+    expect(c.why).toBe('default 的目录不存在（正在克隆）；mini 的目录不是 git 仓库');
     expect(c.act).toBe('去处理');
   });
 

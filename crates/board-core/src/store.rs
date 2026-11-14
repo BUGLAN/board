@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS projects (
   pos_x       REAL NOT NULL DEFAULT 0,
   pos_y       REAL NOT NULL DEFAULT 0,
   sort        INTEGER NOT NULL DEFAULT 0,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- 代码仓库地址（git 远端）和集成分支（PRD §4）：一个项目一个仓库，项目下所有白板共用；都为空时按原来的规则
+  repo        TEXT NOT NULL DEFAULT '',
+  branch      TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS boards (
@@ -51,7 +54,7 @@ CREATE TABLE IF NOT EXISTS boards (
   -- 环境检查（PRD §9.1）：所有系统 / 只给 Windows 的一行命令；都为空时不检查
   ready_check     TEXT NOT NULL DEFAULT '',
   ready_check_win TEXT NOT NULL DEFAULT '',
-  -- 代码仓库地址（git 远端，例如 git@github.com:o/r.git）和集成分支（PRD §4）；都为空时按原来的规则
+  -- 不再读写（仓库地址和集成分支改到项目上，见 projects.repo / branch）；保留这两列，免得给旧库做删列迁移
   repo        TEXT NOT NULL DEFAULT '',
   branch      TEXT NOT NULL DEFAULT '',
   UNIQUE (project, key)
@@ -227,6 +230,11 @@ pub fn valid_key(key: &str) -> bool {
 /// 白板路径：`<项目>/<白板>`，两段都是标识（[`valid_key`]）
 pub fn valid_board(b: &str) -> bool {
     matches!(b.split_once('/'), Some((p, k)) if valid_key(p) && valid_key(k))
+}
+
+/// `--dir` 覆盖目录的键：项目标识（`<项目>`，项目下所有白板用这个目录），或旧写法的白板路径（`<项目>/<白板>`，只管这一块）
+pub fn valid_dir_key(b: &str) -> bool {
+    valid_key(b) || valid_board(b)
 }
 
 pub(crate) fn split_path(raw: &str) -> (&str, Option<&str>) {
@@ -446,6 +454,21 @@ impl Store {
                  UPDATE cards SET seen_at = COALESCE(moved_at, created_at) WHERE col != 'inbox' OR created_by_kind = 'human';",
             )?;
         }
+        // 仓库地址和集成分支从白板挪到项目上（一个项目一个仓库）：项目取它下面第一块设了的白板的值（按白板顺序），
+        // 几块白板设得不一样的由人自己改项目设置
+        let has_proj_repo: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'repo'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_proj_repo {
+            conn.execute_batch(
+                "ALTER TABLE projects ADD COLUMN repo TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE projects ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+                 UPDATE projects SET
+                   repo = COALESCE((SELECT b.repo FROM boards b WHERE b.project = projects.key AND b.repo != ''
+                                    ORDER BY b.sort, b.created_at, b.key LIMIT 1), ''),
+                   branch = COALESCE((SELECT b.branch FROM boards b WHERE b.project = projects.key AND b.branch != ''
+                                      ORDER BY b.sort, b.created_at, b.key LIMIT 1), '');",
+            )?;
+        }
         // 旧数据库的项目没有隐藏的标签规则：NULL 按默认（`^v\d`，版本标签）处理（default/main#324）
         let has_hidden: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'hidden_labels'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -639,7 +662,7 @@ impl<'a> R<'a> {
         let mut projects: Vec<ProjectInfo> = Vec::new();
         {
             let mut st = conn.prepare(
-                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels FROM projects ORDER BY sort, created_at, key",
+                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch FROM projects ORDER BY sort, created_at, key",
             )?;
             let rows = st.query_map([], |r| {
                 let hidden: Option<String> = r.get(7)?;
@@ -654,6 +677,8 @@ impl<'a> R<'a> {
                     hidden_labels: hidden
                         .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
                         .unwrap_or_else(crate::model::default_hidden_labels),
+                    repo: r.get(8)?,
+                    branch: r.get(9)?,
                     boards: vec![],
                 })
             })?;
@@ -666,7 +691,7 @@ impl<'a> R<'a> {
             let mut st = conn.prepare(
                 "SELECT b.id, b.key, b.name, b.description, b.pos_x, b.pos_y, b.created_at,
                         COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme,
-                        b.ready_check, b.ready_check_win, b.repo, b.branch
+                        b.ready_check, b.ready_check_win
                  FROM boards b WHERE b.project = ?1 ORDER BY b.sort, b.created_at, b.key",
             )?;
             let rows = st.query_map([&p.key], |r| {
@@ -679,8 +704,9 @@ impl<'a> R<'a> {
                         desc: r.get(3)?,
                         readme: r.get(8)?,
                         ready_check: ReadyCheck { cmd: r.get(9)?, win: r.get(10)? },
-                        repo: r.get(11)?,
-                        branch: r.get(12)?,
+                        // 仓库是项目的：白板上带一份，旧客户端、CLI 照样从白板上读
+                        repo: p.repo.clone(),
+                        branch: p.branch.clone(),
                         pos: Pos { x: r.get(4)?, y: r.get(5)? },
                         created_at: r.get(6)?,
                         updated_at: r.get(7)?,
@@ -778,7 +804,10 @@ impl<'a> R<'a> {
         )?;
         log.reverse();
         let (saved, keep_sorted, repo, branch) =
-            self.conn.query_row("SELECT saved_layout, keep_sorted, repo, branch FROM boards WHERE id = ?1", [board.id], |r| {
+            self.conn.query_row(
+                "SELECT b.saved_layout, b.keep_sorted, p.repo, p.branch FROM boards b JOIN projects p ON p.key = b.project WHERE b.id = ?1",
+                [board.id],
+                |r| {
                 Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
             })?;
         // 已保存的布局里只留现在还在的状态
@@ -1308,7 +1337,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    fn project_exists(&self, key: &str) -> Result<()> {
+    pub(crate) fn project_exists(&self, key: &str) -> Result<()> {
         let found: Option<String> =
             self.tx.query_row("SELECT key FROM projects WHERE key = ?1", [key], |r| r.get(0)).optional()?;
         match found {
@@ -1395,9 +1424,15 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 白板的代码仓库地址和集成分支（PRD §4）：都是可选的两项，None 表示这一项不改，空字符串表示清空
+    /// 项目的代码仓库地址和集成分支（PRD §4，一个项目一个仓库、项目下所有白板共用）：都是可选的两项，
+    /// None 表示这一项不改，空字符串表示清空。`path` 是项目标识，或者项目下任一块白板（`<项目>/<白板>`，改的是它所在的项目）
     pub fn set_repo_branch(&mut self, path: &str, repo: Option<&str>, branch: Option<&str>) -> Result<()> {
-        let b = self.resolve_exact(path)?;
+        let project = if path.contains('/') {
+            self.resolve_exact(path)?.project
+        } else {
+            self.project_exists(path)?;
+            path.to_string()
+        };
         let clean = |t: &str, max: usize, what: &str| -> Result<String> {
             let t = t.trim();
             if t.contains('\n') || t.contains('\r') {
@@ -1409,14 +1444,14 @@ impl<'a> W<'a> {
             Ok(t.to_string())
         };
         if let Some(t) = repo {
-            self.tx.execute("UPDATE boards SET repo = ?1 WHERE id = ?2", params![clean(t, REPO_MAX, "仓库地址")?, b.id])?;
+            self.tx.execute("UPDATE projects SET repo = ?1 WHERE key = ?2", params![clean(t, REPO_MAX, "仓库地址")?, project])?;
         }
         if let Some(t) = branch {
             let t = clean(t, BRANCH_MAX, "集成分支")?;
             if t.chars().any(|c| c.is_whitespace() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')) {
                 return Err(BoardError::usage("集成分支只能写分支名，不能有空格和 ~ ^ : ? * [ \\ 这些字符"));
             }
-            self.tx.execute("UPDATE boards SET branch = ?1 WHERE id = ?2", params![t, b.id])?;
+            self.tx.execute("UPDATE projects SET branch = ?1 WHERE key = ?2", params![t, project])?;
         }
         self.changed = true;
         Ok(())

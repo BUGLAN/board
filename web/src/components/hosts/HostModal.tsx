@@ -704,7 +704,7 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
       local &&
       !(await confirm({
         title: '修改这台电脑的工作空间？',
-        text: '保存后 board host 会换上新的工作空间：每块白板的目录是 <工作空间>/<项目>/<白板>，正在跑的 agent 不受影响。',
+        text: '保存后 board host 会换上新的工作空间：每个项目的目录是 <工作空间>/<项目>，正在跑的 agent 不受影响。',
         ok: '保存',
         icon: 'alert',
         tone: 'warn',
@@ -759,14 +759,14 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
     }
   };
 
-  /** 复制到…：把那台机器的工作空间换成这里的（每块白板的目录跟着它派生） */
+  /** 复制到…：把那台机器的工作空间换成这里的（每个项目的目录跟着它派生） */
   const copy = async () => {
     const to = others.find(x => x.name === target);
     if (!to || !key) return;
     if (!key.startsWith('~')) {
       const yes = await confirm({
         title: '把这台机器的工作空间带过去？',
-        text: `${to.name} 会使用 ${key}，每块白板的目录是 ${key}/<项目>/<白板>。如果那台机器上的目录不同，带过去后还要再改。`,
+        text: `${to.name} 会使用 ${key}，每个项目的目录是 ${key}/<项目>。如果那台机器上的目录不同，带过去后还要再改。`,
         ok: '带过去',
         icon: 'alert',
         tone: 'warn',
@@ -790,9 +790,19 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
     }
   };
 
-  // 仓库地址的建议：白板设置里设了就用它（PRD §4），没设时看别的机器上报的这块白板目录的 origin
+  // 仓库地址的建议：项目设置里设了就用它（PRD §4，一个项目一个仓库），没设时看别的机器上报的这个项目目录的 origin
+  const projectOf = (board: string) => board.split('/')[0];
   const originOf = (board: string) =>
-    boardOf(ws, board)?.repo?.trim() || hosts.find(x => x.name !== h.name)?.dirs.find(d => d.board === board && d.origin)?.origin || '';
+    boardOf(ws, board)?.repo?.trim() ||
+    hosts.find(x => x.name !== h.name)?.dirs.find(d => projectOf(d.board) === projectOf(board) && d.origin)?.origin ||
+    '';
+  // 同一个项目的几块白板是同一个目录（`<工作空间>/<项目>`）：按目录合成一行，写上这几块白板
+  const groups: HostDir[][] = [];
+  for (const d of h.dirs) {
+    const g = groups.find(x => x[0].path === d.path);
+    if (g) g.push(d);
+    else groups.push([d]);
+  }
   const remoteTip = shell === 'desktop' && !local ? '文件夹选择框只在那台机器的桌面端里有；这里直接改路径也行，保存后那台机器的 board host 换上新工作空间' : undefined;
   const acts = (
     <>
@@ -806,7 +816,7 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
   );
 
   return (
-    <Fold id="dirs" title="工作空间" n={h.dirs.length} i={5} reveal={reveal} acts={acts}>
+    <Fold id="dirs" title="工作空间" n={groups.length} i={5} reveal={reveal} acts={acts}>
       <div className="hp-dirs">
         {mode === 'copy' && others.length > 0 && key && (
           <div className="hp-dir-copy">
@@ -869,8 +879,8 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
           </span>
         </div>
         <p className="hp-note">
-          这台机器只配这一个目录：每块白板的目录是 <code>{path.trim() ? `${path.trim().replace(/[\\/]+$/, '')}/${'<项目>/<白板>'}` : '<工作空间>/<项目>/<白板>'}</code>
-          ，还没有时 board host 自动建好（白板设了仓库地址时自动克隆），不用挨个配白板。
+          这台机器只配这一个目录：每个项目的目录是 <code>{path.trim() ? `${path.trim().replace(/[\\/]+$/, '')}/${'<项目>'}` : '<工作空间>/<项目>'}</code>
+          ，项目下的几块白板共用它；还没有时 board host 自动建好（项目设了仓库地址时自动克隆），之后新加的项目也一样。
         </p>
         {h.workspace?.overrides?.length ? (
           <p className="hp-note">用 --dir 单独指定的：{h.workspace.overrides.map(o => `${o.board} → ${o.path}`).join('，')}（在那台机器上改启动参数）</p>
@@ -878,16 +888,21 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
         {!key && <p className="hp-note hp-warn">还没有配工作空间：这台机器接不了任何白板的卡。</p>}
         {h.dirs.length > 0 && (
           <div className="hp-ws-dirs">
-            <span className="hp-dir-list-head">每块白板的目录</span>
-            {h.dirs.map(d => {
+            <span className="hp-dir-list-head">每个项目的目录</span>
+            {groups.map(g => {
+              // 一个目录一行：状态、克隆按这个目录算（同一个项目的白板上报的是同一个目录，取第一块的）；环境检查是每块白板自己的
+              const d = g.find(x => x.clone) ?? g[0];
               // 机器刚重连上来、还没重新看过的目录：按「等待检查」画，不拿掉线之前的旧结果说事
               const state = dirFresh(h, d) ? (d.status ?? '') : '';
               const cloneState = d.clone?.state;
+              const boards = g.map(x => x.board.slice(x.board.indexOf('/') + 1)).join('、');
               return (
-                <div className={cx('hp-dir', state === 'missing' && 'warn', state === 'not_git' && 'warn')} key={d.board}>
+                <div className={cx('hp-dir', state === 'missing' && 'warn', state === 'not_git' && 'warn')} key={d.path || d.board}>
                   <div className="hp-dir-main">
-                    <span className="hp-board" title={d.board}>
-                      {d.board}
+                    <span className="hp-board" title={`项目 ${projectOf(d.board)}：白板 ${boards}`}>
+                      {/* 旧写法 `--dir <项目>/<白板>` 只管一块白板：写白板；其余写项目 */}
+                      {h.workspace?.overrides?.some(o => o.board === d.board) ? d.board : projectOf(d.board)}
+                      <small className="hp-board-sub">{boards}</small>
                     </span>
                     <div className="hp-dir-fields">
                       <code className="hp-dir-derived" title={d.path}>
@@ -903,7 +918,9 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
                       </span>
                     </div>
                   </div>
-                  <DirReadyLine h={h} d={d} now={now} />
+                  {g.map(x => (
+                    <DirReadyLine key={x.board} h={h} d={x} now={now} />
+                  ))}
                   {state !== 'missing' && d.clone && cloneState !== 'queued' && cloneState !== 'running' && (
                     <div className="hp-clone">
                       <span className={cx('hp-clone-msg', cloneState === 'failed' && 'bad', cloneState === 'done' && 'ok')} title={d.clone.message}>
@@ -942,7 +959,7 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
             })}
           </div>
         )}
-        {h.dirs.length === 0 && key && <p className="hp-note">工作空间里还没有白板的目录：派来卡片时按 <code>{path.trim()}/&lt;项目&gt;/&lt;白板&gt;</code> 建好。</p>}
+        {h.dirs.length === 0 && key && <p className="hp-note">工作空间里还没有项目的目录：派来卡片时按 <code>{path.trim()}/&lt;项目&gt;</code> 建好。</p>}
       </div>
     </Fold>
   );
@@ -1883,7 +1900,7 @@ function CliInstall() {
   const [token, setToken] = useState<{ raw: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const nameErr = hostNameError(name);
-  const wsErr = !workspace.trim() ? '先填工作空间：每块白板的目录是 <工作空间>/<项目>/<白板>' : null;
+  const wsErr = !workspace.trim() ? '先填工作空间：每个项目的目录是 <工作空间>/<项目>' : null;
   const err = nameErr ?? wsErr;
   const cmd = token && !err ? installCommand({ origin, token: token.raw, name, workspace, os }) : null;
   const copy = async (t: string) => {
@@ -1940,8 +1957,8 @@ function CliInstall() {
           />
         </label>
         <p className="hp-note hp-add-note">
-          一台机器只填这一个目录：每块白板的目录是 <code>{workspace.trim() ? `${workspace.trim().replace(/[\\/]+$/, '')}/${'<项目>/<白板>'}` : '<工作空间>/<项目>/<白板>'}</code>
-          ，还没有时 board host 自动建好（白板设了仓库地址时自动克隆）。之后新加的白板也一样，不用再到这台机器上配。
+          一台机器只填这一个目录：每个项目的目录是 <code>{workspace.trim() ? `${workspace.trim().replace(/[\\/]+$/, '')}/${'<项目>'}` : '<工作空间>/<项目>'}</code>
+          ，项目下的几块白板共用它；还没有时 board host 自动建好（项目设了仓库地址时自动克隆）。之后新加的项目也一样，不用再到这台机器上配。
         </p>
       </div>
       {!token ? (
