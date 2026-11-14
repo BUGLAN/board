@@ -125,10 +125,11 @@
 .ib-ghost .ib-acts { opacity: 0; }
 
 /* ---------------- 展开编辑 ---------------- */
-.ib-exp { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-3) var(--ease-out); }
-.ib-exp > div { min-height: 0; overflow: hidden; }
+/* 列宽写成 minmax(0, 1fr)：默认 auto 列按内容的最小宽度撑开，描述里有长代码块时编辑区比行宽、按钮伸出右边（default/main#320） */
+.ib-exp { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 0fr; transition: grid-template-rows var(--dur-3) var(--ease-out); }
+.ib-exp > div { min-width: 0; min-height: 0; overflow: hidden; }
 .ib-row.open .ib-exp { grid-template-rows: 1fr; }
-.ib-edit { display: grid; gap: 12px; padding: 8px 22px 18px 76px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+.ib-edit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 8px 22px 18px 76px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
 .ib-edit .d-title { font-size: 19px; }
 .ib-edit .d-labels { margin-top: 0; }
 .ib-src { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); }
