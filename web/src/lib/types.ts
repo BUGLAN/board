@@ -106,10 +106,12 @@ export interface CardCron {
   /** IANA 时区名，保存时取浏览器的 */
   tz: string;
   on: boolean;
-  /** 建出卡后派给哪台机器（机器名）；不派发时为空。修改时发空字符串表示不派发 */
+  /** 建出卡后派给哪台机器（机器名）；不派发、随机派发时为空。修改时发空字符串表示不派发 */
   host?: string | null;
-  /** 用哪个 agent；空表示那台机器的默认 agent */
+  /** 用哪个 agent；空表示那台机器（随机派发时是挑中那台）的默认 agent */
   agent?: string | null;
+  /** 选哪台机器：host 派给 `host`，random 每次在能接这块白板的机器里随机挑一台；不派发时也留着（host） */
+  pick?: 'host' | 'random';
   /** 下次到点（毫秒）；关着、一年内不会到点时为空 */
   nextAt?: number | null;
   /** 最近一次到点（或「现在建一张」）的时间 */
@@ -128,7 +130,7 @@ export interface CardCron {
 }
 
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
-export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent'>>;
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent' | 'pick'>>;
 
 /** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
 export interface ReadyCheck {
@@ -144,6 +146,8 @@ export interface ProjectInfo {
   pos: Pos;
   createdAt: number;
   labels: Label[];
+  /** 隐藏的标签：名称匹配任一条正则的不出现在侧栏、提示词菜单、标签选择器（lib/sidebarLabels，default/main#324）；旧服务端没有，按默认 `^v\d` */
+  hiddenLabels?: string[];
   boards: BoardInfo[];
 }
 
@@ -551,7 +555,7 @@ export interface HostToken {
   shared?: string[];
 }
 
-export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'nosplit';
+export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'fine' | 'nosplit';
 
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {
@@ -696,6 +700,8 @@ export interface Card {
   comments: number;
   /** 人看过这一条的时间（PRD §10.5）：「未整理」里 agent 记下、还没被人看过的条目算「新」；旧服务端没有这个字段 */
   seenAt?: number | null;
+  /** 「稍后再做」（default/main#303）：人把「未整理」里的这一条收起来的时间；没收起为 null。旧服务端没有这个字段 */
+  laterAt?: number | null;
   /** 拆自：同一块白板上另一张卡的编号（board new --from）；原卡删除后照样留着编号。旧服务端没有 */
   splitFrom?: number | null;
 }
@@ -876,7 +882,9 @@ export type Cmd =
   /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
   | { op: 'merge'; id: number; from: number[]; title?: string; body?: string }
   /** 人看过「未整理」里的条目（仅人）：不给 id 时是这块白板「未整理」里的全部（「全部标为已读」） */
-  | { op: 'seen'; id?: number };
+  | { op: 'seen'; id?: number }
+  /** 「稍后再做」（default/main#303）：收起（on）/ 放回「未整理」里的一条，仅人 */
+  | { op: 'later'; id: number; on: boolean };
 
 /* ------------------------------ 大盘（GET /api/stats） ------------------------------ */
 

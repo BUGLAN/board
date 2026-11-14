@@ -9,7 +9,7 @@ import { flowOf, timing } from '../lib/schema';
 import { agentColor, clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
-import { Avatar, BrandMark, ProjectAvatar, agent, useNow } from './bits';
+import { Avatar, BrandMark, ProjectAvatar, Tip, agent, useNow } from './bits';
 import { Icon } from './Icon';
 import { WindowControls } from './WindowControls';
 
@@ -54,10 +54,12 @@ function Offline() {
   const offline = useData(s => s.status === 'offline');
   if (!offline) return null;
   return (
-    <span className="live-off" role="status" data-tip="和服务端的连接断了，正在重连；这期间的修改可能保存不了" data-tip-align="end">
-      <i />
-      离线
-    </span>
+    <Tip text="和服务端的连接断了，正在重连；这期间的修改可能保存不了">
+      <span className="live-off" role="status" data-tip-align="end">
+        <i />
+        离线
+      </span>
+    </Tip>
   );
 }
 
@@ -79,22 +81,22 @@ function Presence() {
           : `${a.name} 在线`;
         return (
           // 悬停时展开：头像右边滑出这一次的耗时
-          <span
-            key={a.name}
-            className={cx('pres-item', t ? t.beat : 'idle')}
-            style={{ ['--c' as string]: agentColor(a.name), ['--k' as string]: agents.length - 1 - i }}
-            data-tip={tip}
-            data-tip-align="end"
-            onClick={() => {
-              if (!h) return;
-              if (h.board !== path) openBoard(h.board);
-              openCard(h.id);
-            }}
-          >
-            <Avatar actor={agent(a.name)} />
-            <i className="pres-pulse" />
-            <span className="pres-time">{!t ? '在线' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
-          </span>
+          <Tip key={a.name} text={tip}>
+            <span
+              className={cx('pres-item', t ? t.beat : 'idle')}
+              style={{ ['--c' as string]: agentColor(a.name), ['--k' as string]: agents.length - 1 - i }}
+              data-tip-align="end"
+              onClick={() => {
+                if (!h) return;
+                if (h.board !== path) openBoard(h.board);
+                openCard(h.id);
+              }}
+            >
+              <Avatar actor={agent(a.name)} />
+              <i className="pres-pulse" />
+              <span className="pres-time">{!t ? '在线' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
+            </span>
+          </Tip>
         );
       })}
     </div>

@@ -522,13 +522,21 @@ export const repoPatch = (path: string, change: { repo?: string; branch?: string
   board: b => (b.path === path ? { ...b, repo: b.repo ?? '', branch: b.branch ?? '', ...change } : b),
 });
 
-/** 改白板的一条定时建卡（PRD §4）：开关、模板、派给机器、时间。下次时间等服务端算，改了时间就先清掉；
- *  机器、agent 发空字符串表示不派发 / 默认 agent，画成空；白板或这条不在了原样返回 */
+/** 改白板的一条定时建卡（PRD §4）：开关、模板、派给机器（指定一台 / 随机）、时间。下次时间等服务端算，改了时间就先清掉；
+ *  机器、agent 发空字符串表示不派发 / 默认 agent，画成空；选了随机就没有指定的机器；
+ *  名称就是建卡标题，服务端把它同时写回 `title`（旧版客户端读它），改名时 `title` 一起改；
+ *  白板或这条不在了原样返回 */
 export const cardCronPatch = (path: string, id: number, input: CardCronInput): Patch => ({
   ws: ws => {
     const has = ws.projects.some(p => p.boards.some(b => b.path === path && b.cardCrons?.some(c => c.id === id)));
     if (!has) return ws;
-    const change = { ...input, ...(input.host !== undefined ? { host: input.host || null } : {}), ...(input.agent !== undefined ? { agent: input.agent || null } : {}) };
+    const random = input.pick === 'random';
+    const change = {
+      ...input,
+      ...(random || input.host !== undefined ? { host: random ? null : input.host || null } : {}),
+      ...(random && input.agent === undefined ? { agent: null } : input.agent !== undefined ? { agent: input.agent || null } : {}),
+      ...(input.name !== undefined ? { title: input.name.trim() } : {}),
+    };
     const stale = change.cron !== undefined || change.tz !== undefined || change.on === false;
     return {
       ...ws,
@@ -549,6 +557,15 @@ export const cardCronKey = (path: string, id: number) => `cardCron:${path}:${id}
 export const editLabelPatch = (project: string, id: number, change: { name?: string; color?: string; humanOnly?: boolean; priority?: boolean }): Patch => ({
   ...patchProject(project, p => ({ ...p, labels: p.labels.map(l => (l.id === id ? { ...l, ...change } : l)) })),
   keys: [labelKey(project, id)],
+});
+
+/** 隐藏的标签规则保存完之前不能再改（管理标签里的规则列表按它禁用） */
+export const hiddenLabelsKey = (project: string) => `hiddenLabels:${project}`;
+
+/** 改项目的隐藏标签规则（整组替换）：侧栏、提示词菜单、标签选择器当帧按新规则显示；项目不在了原样返回 */
+export const hiddenLabelsPatch = (project: string, rules: string[]): Patch => ({
+  ...patchProject(project, p => ({ ...p, hiddenLabels: rules })),
+  keys: [hiddenLabelsKey(project)],
 });
 
 /** 删除项目里的一个标签：从项目和当前白板的卡片上一起拿掉 */
@@ -582,6 +599,29 @@ export function seenPatch(ids: number[]): Patch {
     },
     detail: d => (ids.includes(d.id) ? mark(d) : d),
   };
+}
+
+/** 「稍后再做」（default/main#303）：把「未整理」里的条目收起（on）或放回。当帧从「未整理」的列表里消失 / 回来，
+    位置、标签都不动。目标不在了、不在「未整理」里、已经是这样：原样返回；时刻在建补丁时取定，重复执行结果不变 */
+export function laterPatch(ids: number[], on: boolean): Patch {
+  const at = serverNow();
+  const mark = <T extends Card>(c: T): T => (c.column !== INBOX || !!c.laterAt === on ? c : { ...c, laterAt: on ? at : null });
+  return {
+    board: b => {
+      const hit = ids.filter(id => b.cards[id] && mark(b.cards[id]) !== b.cards[id]);
+      if (!hit.length) return b;
+      const cards = { ...b.cards };
+      hit.forEach(id => (cards[id] = mark(cards[id])));
+      return { ...b, cards };
+    },
+    detail: d => (ids.includes(d.id) ? mark(d) : d),
+  };
+}
+
+/** 收起 / 放回几条：每条一个请求，按发起顺序排队；失败的只撤自己那一条，返回失败的原因（全成功为空） */
+export async function setLater(ids: number[], on: boolean): Promise<unknown[]> {
+  const rs = await Promise.allSettled(ids.filter(id => !isDraft(id)).map(id => exec({ op: 'later', id, on }, laterPatch([id], on))));
+  return rs.filter((r): r is PromiseRejectedResult => r.status === 'rejected').map(r => r.reason);
 }
 
 /* ------------------------------ 「未整理」的新条目 ------------------------------ */

@@ -27,6 +27,7 @@ exit /b 127
 rem Sessions started by board host write the BOARD_* variables they need into %BOARD_CONFIG%'s
 rem [agent_env]: agents that filter the environment they give to commands (Codex, dsh) drop them,
 rem so board.exe reads them from there itself (see crates/board-cli/src/config.rs from_agent_env).
-set "BOARD_AGENT_ENV=1"
+rem Only when BOARD_CONFIG is set, same as scripts/board (bash): a plain ~/.board/config.toml is not one.
+if defined BOARD_CONFIG set "BOARD_AGENT_ENV=1"
 "%BIN%" %*
 exit /b %ERRORLEVEL%

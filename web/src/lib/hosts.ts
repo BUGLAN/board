@@ -4,9 +4,10 @@
 import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
+import codexIcon from '../assets/agents/codex.svg';
 import { describeCron } from './cron';
 import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
-import { agentColor } from './util';
+import { agentColor, agentGlyph } from './util';
 
 /** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
 export interface AgentMark {
@@ -24,11 +25,38 @@ const MARKS: Record<string, AgentMark> = {
   dsh: { short: 'DS', color: '#4D6BFE', icon: dshIcon, light: true },
   // pi.dev 的 logo
   pi: { short: 'π', color: '#E5A93F', icon: piIcon },
-  codex: { short: 'CX', color: '#10A37F' },
+  // Codex 的云形终端标志（取自 lobe-icons 的 static-svg/icons/codex.svg，和 Codex 官方应用里的一致）：单色路径，用它的主色填满
+  codex: { short: 'CX', color: '#10A37F', icon: codexIcon },
 };
+
+/** 已知的 agent 标识（`MARKS` 的键）：识别 agent 名字用 */
+export const AGENT_IDS: readonly string[] = Object.keys(MARKS);
 
 export function agentMark(id: string): AgentMark {
   return MARKS[id] ?? { short: id.slice(0, 2).toUpperCase(), color: agentColor(id) };
+}
+
+/**
+ * 把 agent 名字解析成 agent 标识：名字的格式是 `<标识>-<机器名>/<模型名>`（机器名可能带 `-2` 这类序号，`/` 之前也可能只有标识本身），
+ * 服务端不传标识时靠它认出是哪个 agent、画它自己的图标。认不出返回 null（调用方退回字母头像）。
+ *
+ * 只看第一个 `/` 之前的部分（模型名不影响）：第一段是 `<标识>-<机器名>`，机器名里允许 `.`、`-`，
+ * 标识在第一个 `-` 之前；`pi/pi` 这样没有机器名的就是标识本身。拿不准时按已知标识表反过来匹配：
+ * 这一部分以某个已知标识开头、紧跟 `-` 或整体就是它，就认作这个标识（`claude-mac-2` → `claude`）。
+ */
+export function agentIdOf(name: string | null | undefined): string | null {
+  const head = String(name ?? '').trim().split('/')[0].trim().toLowerCase();
+  if (!head) return null;
+  // 第一段就是标识或 `<标识>-<机器名>`：已知标识里最长的先试（以后有名字互相是前缀的标识也不认错）
+  for (const id of [...AGENT_IDS].sort((a, b) => b.length - a.length))
+    if (head === id || head.startsWith(`${id}-`)) return id;
+  return null;
+}
+
+/** 按名字取 agent 标记：认得出标识就用它的图标，认不出退回按名字算的字母头像 */
+export function agentMarkOf(name: string): AgentMark {
+  const id = agentIdOf(name);
+  return id ? agentMark(id) : { short: agentGlyph(name), color: agentColor(name) };
 }
 
 export const RESULT: Record<DispatchResult, { label: string; color: string }> = {
@@ -41,6 +69,9 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
   lost: { label: '机器掉线', color: 'var(--danger)' },
   unclaimed: { label: '没领到', color: 'var(--text-3)' },
   split: { label: '已拆解', color: 'var(--c-done)' },
+  // 粒度预检判过：这一条本身够小，不用拆（default/main#306）
+  fine: { label: '不用拆', color: 'var(--text-3)' },
+  // 旧版服务端记的结果，照样显示
   nosplit: { label: '没拆出卡', color: 'var(--warn)' },
 };
 

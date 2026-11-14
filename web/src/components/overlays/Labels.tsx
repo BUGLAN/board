@@ -2,10 +2,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { LABEL_COLORS } from '../../lib/schema';
+import { hiddenBy, hiddenRules, ruleError, visibleLabels } from '../../lib/sidebarLabels';
 import { cx, replay } from '../../lib/util';
-import { deleteLabelPatch, editLabelPatch, optimistic, reorderLabels, useData, type Patch } from '../../store/data';
+import { deleteLabelPatch, editLabelPatch, hiddenLabelsKey, hiddenLabelsPatch, optimistic, reorderLabels, useBusy, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
-import { ColorPick, LabelChip } from '../bits';
+import { ColorPick, InfoTip, LabelChip, Tip } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from './presence';
 
@@ -19,7 +20,8 @@ export function LabelPicker() {
   const [pos, setPos] = useState({ left: 0, top: 0 });
   const [on, setOn] = useState(false);
   const fixed = !!req?.labels;
-  const labels = req?.labels ?? ws?.projects.find(p => p.key === req?.project)?.labels ?? [];
+  const project = ws?.projects.find(p => p.key === req?.project);
+  const labels = req?.labels ?? project?.labels ?? [];
 
   useLayoutEffect(() => {
     if (!req) {
@@ -45,7 +47,10 @@ export function LabelPicker() {
   }, [req]);
 
   const query = q.trim();
-  const list = labels.filter(l => !query || l.name.toLowerCase().includes(query.toLowerCase()));
+  // 被隐藏的标签（默认是版本标签）不在可选列表里，default/main#324；已经勾上的、名称和输入完全一样的例外
+  const exactId = labels.find(l => l.name.toLowerCase() === query.toLowerCase())?.id;
+  const shown = fixed ? labels : visibleLabels(labels, hiddenRules(project), [...(req?.selected ?? []), ...(exactId != null ? [exactId] : [])]);
+  const list = shown.filter(l => !query || l.name.toLowerCase().includes(query.toLowerCase()));
   const exact = labels.some(l => l.name.toLowerCase() === query.toLowerCase());
   const canCreate = !fixed && !!query && !exact;
   const total = list.length + (canCreate ? 1 : 0);
@@ -199,6 +204,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const labels = p?.labels ?? [];
+  const rules = hiddenRules(p);
   const nc = newColor ?? LABEL_COLORS[labels.length % LABEL_COLORS.length];
   // 拖动调整顺序（default/main#289）：拖着的那一行跟着指针走，插入位置画一道线，松手当帧换位，顺序写进项目；侧栏跟着变
   const [drag, setDrag] = useState<{ id: number; dy: number; to: number } | null>(null);
@@ -322,20 +328,21 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
               key={l.id}
               style={{ ['--lc' as string]: l.color, ...(drag?.id === l.id ? { transform: `translateY(${drag.dy}px)` } : null) }}
             >
-              <button
-                type="button"
-                className="lbm-grip"
-                aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
-                data-tip="拖动调整顺序"
-                onPointerDown={e => grip(e, l.id)}
-                onKeyDown={e => {
-                  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-                  e.preventDefault();
-                  move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
-                }}
-              >
-                <Icon name="reorder" />
-              </button>
+              <Tip text="拖动调整顺序">
+                <button
+                  type="button"
+                  className="lbm-grip"
+                  aria-label={`调整「${l.name}」的顺序（↑ ↓）`}
+                  onPointerDown={e => grip(e, l.id)}
+                  onKeyDown={e => {
+                    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                    e.preventDefault();
+                    move(l.id, e.key === 'ArrowUp' ? i - 1 : i + 2);
+                  }}
+                >
+                  <Icon name="reorder" />
+                </button>
+              </Tip>
               <button type="button" className="lbm-color" aria-label="改颜色" onClick={() => setSwatch(swatch === l.id ? null : l.id)} />
               <input
                 className="lbm-name"
@@ -372,7 +379,14 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
                 on={!!l.priority}
                 onChange={v => run(editLabelPatch(pk, l.id, { priority: v }), () => api.updateLabel(pk, l.id, { priority: v }))}
               />
-              <span className="lbm-count">{l.uses} 张卡片</span>
+              <span className="lbm-count">
+                {hiddenBy(l.name, rules) && (
+                  <Tip text={`名称匹配隐藏规则 ${hiddenBy(l.name, rules)}：不出现在侧栏、提示词菜单、标签选择器`}>
+                    <em className="lbm-hid">已隐藏</em>
+                  </Tip>
+                )}
+                {l.uses} 张卡片
+              </span>
               <button
                 type="button"
                 className="icon-btn sm lbm-del"
@@ -483,7 +497,98 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
             </div>
           )}
         </form>
+        <HiddenRules pk={pk} rules={rules} labels={labels} />
       </div>
     </div>
+  );
+}
+
+/** 隐藏的标签（default/main#324）：一组正则，名称匹配任一条的标签不出现在侧栏、提示词菜单、标签选择器。
+    每条后面写命中几个标签；× 删掉一条就是取消隐藏。整组保存在项目上，所有白板、所有设备一样 */
+function HiddenRules({ pk, rules, labels }: { pk: string; rules: string[]; labels: { name: string }[] }) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+  const busy = useBusy(hiddenLabelsKey(pk));
+  const input = useRef<HTMLInputElement>(null);
+  const save = async (next: string[]) => {
+    try {
+      await optimistic(hiddenLabelsPatch(pk, next), () => api.updateProject(pk, { hiddenLabels: next }));
+      return true;
+    } catch (e) {
+      toastError(e);
+      return false;
+    }
+  };
+  const add = async () => {
+    const r = text.trim();
+    const why = ruleError(r, rules);
+    if (why) {
+      setError(why);
+      replay(input.current, 'invalid');
+      return;
+    }
+    setError('');
+    setText('');
+    // 失败时把输入放回去，不丢
+    if (!(await save([...rules, r]))) setText(r);
+    input.current?.focus();
+  };
+  const hits = (r: string) => labels.filter(l => hiddenBy(l.name, [r])).length;
+  return (
+    <section className="lbm-hidden" aria-label="隐藏的标签">
+      <div className="lbm-hidden-head">
+        <b>隐藏的标签</b>
+        <InfoTip text="名称匹配任一条正则（不区分大小写）的标签，不出现在侧栏、提示词菜单和标签选择器里；卡片上、卡片详情、里程碑照常显示。删掉一条规则就取消隐藏。" />
+      </div>
+      <div className="lbm-rules">
+        {rules.length === 0 && <span className="lbm-rules-empty">没有隐藏的标签</span>}
+        {rules.map(r => {
+          const bad = ruleError(r) !== null;
+          const n = hits(r);
+          return (
+            <span key={r} className={cx('lbm-rule', bad && 'bad')}>
+              <code>{r}</code>
+              <em>{bad ? '写错了，不生效' : n ? `${n} 个` : '没有命中'}</em>
+              <button type="button" className="icon-btn sm" aria-label={`删掉规则 ${r}（取消隐藏）`} disabled={busy} onClick={() => void save(rules.filter(x => x !== r))}>
+                <Icon name="close" />
+              </button>
+            </span>
+          );
+        })}
+      </div>
+      <form
+        className="lbm-rule-new"
+        noValidate
+        onSubmit={e => {
+          e.preventDefault();
+          void add();
+        }}
+      >
+        <input
+          ref={input}
+          className={cx('input mono', error && 'invalid')}
+          placeholder="正则，例如 ^v\d 或 ^tmp-"
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="新的隐藏规则"
+          aria-invalid={!!error || undefined}
+          value={text}
+          onChange={e => {
+            setText(e.target.value);
+            if (error) setError('');
+          }}
+        />
+        <button type="submit" className={cx('btn sm', busy && 'is-busy')} disabled={busy} aria-busy={busy || undefined}>
+          <Icon name="plus" />
+          隐藏
+        </button>
+      </form>
+      {error && (
+        <p className="lbm-rule-err" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }

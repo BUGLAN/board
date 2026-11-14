@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS cards (
   seen_at         INTEGER,
   -- 拆自：同一块白板上另一张卡的编号（board new --from）。原卡删除、永久删除后这里照样留着编号
   split_from      INTEGER,
+  -- 「稍后再做」（default/main#303）：人把「未整理」里的这一条收起来的时间；NULL = 没收起。离开「未整理」时清掉
+  later_at        INTEGER,
   -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，30 天后由 purge_trash 永久删除
   deleted_at      INTEGER,
   -- 回收站里：谁删的
@@ -444,6 +446,18 @@ impl Store {
                  UPDATE cards SET seen_at = COALESCE(moved_at, created_at) WHERE col != 'inbox' OR created_by_kind = 'human';",
             )?;
         }
+        // 旧数据库的项目没有隐藏的标签规则：NULL 按默认（`^v\d`，版本标签）处理（default/main#324）
+        let has_hidden: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'hidden_labels'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_hidden {
+            conn.execute_batch("ALTER TABLE projects ADD COLUMN hidden_labels TEXT")?;
+        }
+        // 旧数据库的卡片没有「稍后再做」：都没收起
+        let has_later: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'later_at'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_later {
+            conn.execute_batch("ALTER TABLE cards ADD COLUMN later_at INTEGER")?;
+        }
         // 旧数据库的卡片没有「拆自」
         let has_split: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'split_from'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -625,9 +639,10 @@ impl<'a> R<'a> {
         let mut projects: Vec<ProjectInfo> = Vec::new();
         {
             let mut st = conn.prepare(
-                "SELECT key, name, description, color, pos_x, pos_y, created_at FROM projects ORDER BY sort, created_at, key",
+                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels FROM projects ORDER BY sort, created_at, key",
             )?;
             let rows = st.query_map([], |r| {
+                let hidden: Option<String> = r.get(7)?;
                 Ok(ProjectInfo {
                     key: r.get(0)?,
                     name: r.get(1)?,
@@ -636,6 +651,9 @@ impl<'a> R<'a> {
                     pos: Pos { x: r.get(4)?, y: r.get(5)? },
                     created_at: r.get(6)?,
                     labels: vec![],
+                    hidden_labels: hidden
+                        .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+                        .unwrap_or_else(crate::model::default_hidden_labels),
                     boards: vec![],
                 })
             })?;
@@ -1060,7 +1078,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 COALESCE(c.moved_at, c.created_at),
                 c.seen_at,
                 c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from,
-                c.split_from
+                c.split_from, c.later_at
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1093,6 +1111,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             labels,
             seen_at: r.get(21)?,
             split_from: r.get(28)?,
+            later_at: r.get(29)?,
         };
         let by_kind: Option<String> = r.get(23)?;
         let row = TrashRow {
@@ -1251,7 +1270,17 @@ impl<'a> W<'a> {
     }
 
     pub fn update_project(&mut self, key: &str, name: Option<&str>, desc: Option<&str>, color: Option<&str>) -> Result<()> {
+        self.update_project_with(key, ProjectPatch { name, desc, color, hidden_labels: None })
+    }
+
+    /// 改项目；hidden_labels 是隐藏标签的整组规则（替换原来的），见 `check_hidden_labels`
+    pub fn update_project_with(&mut self, key: &str, p: ProjectPatch<'_>) -> Result<()> {
+        let ProjectPatch { name, desc, color, hidden_labels } = p;
         self.project_exists(key)?;
+        if let Some(rules) = hidden_labels {
+            let rules = check_hidden_labels(rules)?;
+            self.tx.execute("UPDATE projects SET hidden_labels = ?1 WHERE key = ?2", params![serde_json::to_string(&rules).unwrap_or_else(|_| "[]".into()), key])?;
+        }
         if let Some(n) = name {
             let n = Self::need_name(n, "项目")?;
             self.tx.execute("UPDATE projects SET name = ?1 WHERE key = ?2", params![n, key])?;
@@ -1587,4 +1616,34 @@ impl<'a> W<'a> {
         self.changed = true;
         Ok(())
     }
+}
+
+/// 改项目时给的字段；没给的不改
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ProjectPatch<'a> {
+    pub name: Option<&'a str>,
+    pub desc: Option<&'a str>,
+    pub color: Option<&'a str>,
+    /// 隐藏标签的整组规则（正则，名称匹配任一条的标签在日常列表里不显示，default/main#324）
+    pub hidden_labels: Option<&'a [String]>,
+}
+
+/// 隐藏标签的规则：去掉首尾空白、空行和重复的；最多 HIDDEN_LABELS_MAX 条、每条不超过 HIDDEN_LABEL_LEN 个字符。
+/// 正则的语法由界面（浏览器的 RegExp）校验，服务端只管条数和长度；写错的规则界面上不生效
+pub fn check_hidden_labels(rules: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for r in rules {
+        let r = r.trim();
+        if r.is_empty() || out.iter().any(|x| x == r) {
+            continue;
+        }
+        if r.chars().count() > HIDDEN_LABEL_LEN {
+            return Err(BoardError::usage(format!("隐藏规则每条最多 {HIDDEN_LABEL_LEN} 个字符")));
+        }
+        out.push(r.to_string());
+    }
+    if out.len() > HIDDEN_LABELS_MAX {
+        return Err(BoardError::usage(format!("隐藏规则最多 {HIDDEN_LABELS_MAX} 条")));
+    }
+    Ok(out)
 }

@@ -153,9 +153,15 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   /* 手机上整页滚动，不分栏 */
   .drawer-body { overflow-y: auto; overscroll-behavior: contain; }
   .d-head { height: auto; padding: 4px 10px 10px 18px; border-bottom: 0; }
+  /* 上一张 / 下一张排不下：整组收起来（CardDetail 同时给了 inert + aria-hidden，藏起来的按钮不会留在 Tab 序列里） */
   .d-nav { display: none; }
-  /* 手机上没有 ⌘[ / Alt+←，返回 / 前进反而更用得着，留着 */
-  .d-jump .icon-btn { width: 36px; height: 36px; }
+  /* 手机上没有 ⌘[ / Alt+←，返回 / 前进反而更用得着，留着；触屏目标按 44×44 给 */
+  .d-jump .icon-btn { width: 44px; height: 44px; }
+  .d-jump .icon-btn svg { width: 20px; height: 20px; }
+  .d-head > .icon-btn { width: 44px; height: 44px; }
+  .d-head > .icon-btn svg { width: 20px; height: 20px; }
+  .d-more > .icon-btn { width: 44px; height: 44px; }
+  .d-more > .icon-btn svg { width: 20px; height: 20px; }
   .d-grid { display: block; }
   .d-main { overflow: visible; padding-top: 4px; }
   .d-main .d-actions { margin: 22px 18px 0; }

@@ -395,6 +395,12 @@
 .sp-loading::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; vertical-align: -1px; animation: sp-spin .8s linear infinite; }
 @keyframes sp-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .sp-loading::before { animation: none; } }
+/* 横轴只标了首尾时，图例后面补一句是哪两天 */
+.sp-axis-note { flex-basis: 100%; color: var(--text-3); }
+.sp-axis-note::before { content: '·'; margin-right: 6px; }
+@media (max-width: 420px) {
+  .sp-trend .sp-axis { font-size: 9px; }
+}
 .sp-wait svg { animation: sp-pulse 1.4s ease-in-out infinite; }
 @keyframes sp-pulse { 50% { opacity: .4; } }
 .sp-table-wrap { overflow-x: auto; margin: 0 -2px; padding: 0 2px; }

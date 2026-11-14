@@ -12,14 +12,17 @@ export const cardPrompt = (path: string, id: number) => {
   return `/${SKILL} 开始执行 ${project}项目之中的${board}白板中的#${id}任务`;
 };
 
-/** 「未整理」里的条目：/board-skills 拆解 mini项目之中的main白板中的#2需求（拆出的卡记回未整理、挂在这条下面） */
-export const splitPrompt = (path: string, id: number) => {
+/**
+ * 「未整理」里的条目：/board-skills 拆解 mini项目之中的main白板中的#2需求（拆出的卡记回未整理、挂在这条下面）。
+ * force = 界面上判过这一条够细、人点了「强制拆解」（default/main#306）：agent 再判一遍，只在真有先后依赖时才切
+ */
+export const splitPrompt = (path: string, id: number, { force = false } = {}) => {
   const [project, board] = path.split('/');
-  return `/${SKILL} 拆解 ${project}项目之中的${board}白板中的#${id}需求`;
+  return `/${SKILL} ${force ? '强制' : ''}拆解 ${project}项目之中的${board}白板中的#${id}需求`;
 };
 
-/** 卡片详情「复制为提示词」：在「未整理」里的复制拆解这一句，其他复制开始执行（PRD §10.9） */
-export const detailPrompt = (path: string, c: { id: number; column: string }) => (c.column === 'inbox' ? splitPrompt(path, c.id) : cardPrompt(path, c.id));
+/** 卡片详情「复制为提示词」：在「未整理」里的复制拆解这一句（判过够细的是「强制拆解」），其他复制开始执行（PRD §10.9） */
+export const detailPrompt = (path: string, c: { id: number; column: string }, force = false) => (c.column === 'inbox' ? splitPrompt(path, c.id, { force }) : cardPrompt(path, c.id));
 
 /** 一块白板（领完可领取状态为止）：/board-skills mini/main */
 export const boardPrompt = (path: string) => `/${SKILL} ${path}`;
@@ -52,6 +55,14 @@ const where = (path: string) => {
 };
 
 /**
+ * 拆解的提示词：先判粒度（default/main#306）。需求本身是一个独立的小任务时不拆，整条建一张卡；
+ * 偏大才拆，拆出来的每一条都是能单独做完、单独复盘的卡，不按句子数切
+ */
+const splitText = (target: string) =>
+  `/${SKILL} 先判断下面这条需求的粒度：已经是一个独立的小任务就整条建成一张卡，不拆；确实偏大才拆成可以独立完成的任务。` +
+  `拆成这样的一张卡只算一次复盘，拆出来的每一条都要能单独做完、单独复盘，不要按句子数切；记到${target}：`;
+
+/**
  * claimables：可领取状态的名称，按工作流顺序。第一个就是新卡片的去向，也是「拆解 / 上传」的领取起点；
  * 每个可领取状态各生成一条「做<状态名>里的全部任务」；传了 label 时每个可领取状态再各生成一条
  * 「做<状态名>里带<标签>的任务」。状态改名或增删时菜单跟着变。
@@ -65,7 +76,7 @@ export function quickPrompts(path: string, claimables: string[], label?: string)
       kind: 'split',
       id: 'split',
       title: '拆解任务',
-      text: `/${SKILL} 把下面的需求拆解成可以独立完成的任务，记到${w}的${home}里：`,
+      text: splitText(`${w}的${home}`),
       hint: '粘贴后在冒号后面写上需求',
     },
     {
@@ -79,7 +90,7 @@ export function quickPrompts(path: string, claimables: string[], label?: string)
       kind: 'split-inbox',
       id: 'split-inbox',
       title: '拆解任务到未整理',
-      text: `/${SKILL} 把下面的需求拆解成可以独立完成的任务，记到${w}的未整理里：`,
+      text: splitText(`${w}的未整理`),
       hint: '粘贴后在冒号后面写上需求',
     },
     {

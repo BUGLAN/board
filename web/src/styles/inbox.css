@@ -125,10 +125,11 @@
 .ib-ghost .ib-acts { opacity: 0; }
 
 /* ---------------- 展开编辑 ---------------- */
-.ib-exp { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-3) var(--ease-out); }
-.ib-exp > div { min-height: 0; overflow: hidden; }
+/* 列宽写成 minmax(0, 1fr)：默认 auto 列按内容的最小宽度撑开，描述里有长代码块时编辑区比行宽、按钮伸出右边（default/main#320） */
+.ib-exp { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 0fr; transition: grid-template-rows var(--dur-3) var(--ease-out); }
+.ib-exp > div { min-width: 0; min-height: 0; overflow: hidden; }
 .ib-row.open .ib-exp { grid-template-rows: 1fr; }
-.ib-edit { display: grid; gap: 12px; padding: 8px 22px 18px 76px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+.ib-edit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 8px 22px 18px 76px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
 .ib-edit .d-title { font-size: 19px; }
 .ib-edit .d-labels { margin-top: 0; }
 .ib-src { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); }
@@ -140,15 +141,17 @@
 .ib-editacts .spacer { flex: 1; }
 
 /* ---------------- 勾选框 ---------------- */
-.ib-check { position: relative; display: grid; place-items: center; width: 18px; height: 18px; cursor: pointer; flex: none; }
-.ib-check input { position: absolute; inset: -6px; width: calc(100% + 12px); height: calc(100% + 12px); opacity: 0; margin: 0; cursor: pointer; }
+/* 一个按钮就是一个勾选框（role="checkbox"），里面只有自己画的方块，点它周围的 6px 也能点到 */
+.ib-check { position: relative; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; flex: none; }
+.ib-check::before { content: ""; position: absolute; inset: -6px; }
 .ib-check i {
   position: relative; width: 16px; height: 16px; border-radius: 5px; background: var(--surface);
   box-shadow: inset 0 0 0 1.5px var(--line-3); pointer-events: none;
   transition: background-color var(--dur-2), box-shadow var(--dur-2), transform var(--dur-2) var(--spring);
 }
 .ib-check:hover i { box-shadow: inset 0 0 0 1.5px var(--text-3); }
-.ib-check input:focus-visible + i { outline: 2px solid color-mix(in srgb, var(--brand) 70%, transparent); outline-offset: 2px; }
+.ib-check:focus-visible { outline: none; }
+.ib-check:focus-visible i { outline: 2px solid color-mix(in srgb, var(--brand) 70%, transparent); outline-offset: 2px; }
 .ib-check.on i, .ib-check.some i { background: var(--brand); box-shadow: none; animation: ib-check-pop var(--dur-3) var(--spring); }
 .ib-check.on i::after { content: ""; position: absolute; left: 4.5px; top: 4px; width: 7px; height: 4px; border: 1.8px solid var(--brand-fg); border-top: 0; border-right: 0; transform: rotate(-45deg); }
 .ib-check.some i::after { content: ""; position: absolute; left: 4px; right: 4px; top: 7px; height: 2px; border-radius: 2px; background: var(--brand-fg); }
@@ -331,3 +334,51 @@
 @media (prefers-reduced-motion: reduce) {
   :is(.ib-one-card, .ib-row.flash, .ib-row.pulse, .ib-edit, .ib-bdesc, .ib-bulk-n b, .ib-check i, .ib-empty, .ib-newdot, .ib-splitting i) { animation: none !important; }
 }
+
+/* ---------------- 稍后再做（default/main#303） ---------------- */
+/* 左滑：行往左移，露出右边的「稍后再做」；滑开时行盖一层底色，按钮只在滑开时能点 */
+.ib-swipe { position: relative; overflow: hidden; border-radius: inherit; }
+.ib-swipe > .ib-line { position: relative; z-index: 1; touch-action: pan-y; transition: transform var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out); }
+.ib-row.swiped .ib-swipe > .ib-line { background: var(--surface); }
+.ib-swipe-act {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 104px; z-index: 0;
+  display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: inherit;
+  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--brand-fg); background: var(--brand);
+  opacity: 0; pointer-events: none; transition: opacity var(--dur-1);
+}
+.ib-swipe-act svg { width: 14px; height: 14px; }
+.ib-row.swiped .ib-swipe-act { opacity: 1; pointer-events: auto; }
+.ib-swipe-act:focus-visible { outline: 2px solid var(--text); outline-offset: -3px; }
+
+/* 页头入口：和「按时间 / 按来源 / 按标签」并排，带搁置的条数 */
+.ib-later-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--r-sm);
+  font: inherit; font-size: 12.5px; color: var(--text-2); background: transparent; box-shadow: inset 0 0 0 1px var(--line-2);
+  transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1);
+}
+.ib-later-btn svg { width: 14px; height: 14px; }
+.ib-later-btn:hover { color: var(--text); background: var(--surface-3); }
+.ib-later-btn.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3); }
+.ib-later-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.ib-later-n { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; color: var(--brand-fg); background: var(--brand); }
+
+/* 「稍后再做」列表 */
+.ib-later { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1); }
+.ib-later-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; min-height: 48px; padding: 6px 10px 6px 14px; }
+.ib-later-row + .ib-later-row { box-shadow: inset 0 1px 0 var(--line); }
+.ib-later-row.saving { opacity: .65; }
+.ib-later-t { min-width: 0; padding: 0; border: 0; background: none; text-align: left; font: inherit; font-size: 13.5px; color: var(--text); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-later-t:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ib-later-at { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.ib-later-acts { display: flex; align-items: center; gap: 4px; }
+@media (max-width: 760px) {
+  .ib-later-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 't acts' 'meta meta'; row-gap: 4px; padding: 10px 12px; }
+  .ib-later-row > .ib-id, .ib-later-row > .ib-labels { display: none; }
+  .ib-later-t { grid-area: t; white-space: normal; }
+  .ib-later-at { grid-area: meta; }
+  .ib-later-acts { grid-area: acts; }
+  .ib-later-acts .btn { min-height: 36px; }
+}
+@media (pointer: coarse) { .ib-later-btn { height: 36px; } .ib-later-acts .icon-btn { width: 36px; height: 36px; } }
+@media (prefers-reduced-motion: reduce) { .ib-swipe > .ib-line { transition: none; } }
+:root[data-motion="reduced"] .ib-swipe > .ib-line { transition: none; }

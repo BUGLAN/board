@@ -158,7 +158,7 @@ interface UIState {
   /** 回收站弹窗：哪块白板（路径）的回收站；null 是没打开 */
   trash: string | null;
   /** 卡片详情里的「派发」对话框：卡片编号 */
-  dispatchOf: number | null;
+  dispatchOf: { card: number; force: boolean } | null;
   /** 打开的「会话」弹窗：会话里任一次派发的 ID；card 是要定位到的那张卡 */
   session: SessionReq | null;
   /** 打开的复盘台（PRD §10.14）：当前白板上哪几个状态；mode 是复盘（交审）还是处理（需要人处理） */
@@ -311,7 +311,7 @@ export const setHostsView = (v: HostsView) => {
 };
 /** 打开 / 关掉（null）这块白板的回收站 */
 export const openTrash = (path: string | null) => set({ trash: path });
-export const openDispatch = (card: number | null) => set({ dispatchOf: card });
+export const openDispatch = (card: number | null, { force = false }: { force?: boolean } = {}) => set({ dispatchOf: card == null ? null : { card, force } });
 /** 打开「会话」弹窗：id 是会话里任一次派发，card 是要定位到的卡；known 是打开它的那一行已经有的派发（这个会话的），
     取回来之前头部、卡片列表、各段标题先按它画，只有输出画骨架 */
 export interface SessionReq {

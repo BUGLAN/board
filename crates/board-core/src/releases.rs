@@ -5,8 +5,10 @@
 //!   （[`W::sync_release`]）：两个相邻 tag 之间的提交属于后一个 tag；提交说明里的「卡片：项目/白板#ID」把提交连到卡片，
 //!   这些卡片带上这个版本的标签（标签不存在时新建）。同一个版本再同步一次，记录换成新的，已经带着标签的卡片不重复打。
 //! - 里程碑页的数据（[`R::milestones`]）：项目里所有版本（带不带记录都列出）、带版本标签的卡片，以及
-//!   「未发版」（还没有版本标签、已经开始做的卡片：不在未整理、不在可领取状态；终点状态里的只算最近一次发版之后移进去的）
-//!   和「没有版本」（最近一次发版之前就到了终点、却没有版本标签的卡片，最多 [`NONE_LIMIT`] 张）。
+//!   「未发版」（还没有版本标签、已经进了工作流的卡片：待办、返工这些可领取状态，进行中、待审核这些锁定状态；
+//!   终点状态里的只算最近一次发版之后移进去的）和「没有版本」（最近一次发版之前就到了终点、却没有版本标签的卡片，
+//!   最多 [`NONE_LIMIT`] 张）。只有「未整理」里的不算：还没进工作流的想法。
+//! - 分组只看状态的规则（[`group_of`]），不看状态名称：可领取、锁定都算「未发版」，终点才看时间。
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::{Actor, Label, INBOX};
@@ -158,6 +160,22 @@ pub struct Milestones {
     /// 最近一次发版的时间（所有版本记录里最晚的）；还没有版本记录时为空
     pub last_release: Option<i64>,
     pub cards: Vec<MilestoneCard>,
+}
+
+/// 一张卡片放进里程碑页的哪一组（default/main#313）。
+/// - 带版本标签 → 这一版的
+/// - 未整理里的 → 不算（还没进工作流的想法）
+/// - 终点状态（`final`）：最近一次发版之后移进去的算「未发版」，更早的、没写卡片行的算「没有版本」；
+///   还没有任何版本记录时都算「没有版本」
+/// - 其他状态（可领取的待办、返工，锁定的进行中、待审核，错误节点）→ 「未发版」：进了工作流就是这一轮的活儿
+pub fn group_of(column: &str, in_inbox: bool, final_: bool, moved_at: Option<i64>, created_at: i64, last_release: Option<i64>) -> Option<Group> {
+    if column == INBOX || in_inbox {
+        return None;
+    }
+    if final_ {
+        return Some(if last_release.is_some_and(|t| moved_at.unwrap_or(created_at) > t) { Group::Next } else { Group::None });
+    }
+    Some(Group::Next)
 }
 
 /// 「白板#ID」拆成白板标识和编号
@@ -315,19 +333,18 @@ impl R<'_> {
             holder: Option<String>,
             created_at: i64,
             moved_at: Option<i64>,
-            claim: bool,
             final_: bool,
         }
         let mut st = self.conn.prepare(
             "SELECT b.project || '/' || b.key, c.id, c.title, c.col, c.holder, c.created_at, c.moved_at,
-                    COALESCE(s.claim, 0), COALESCE(s.final, 0),
+                    COALESCE(s.final, 0),
                     COALESCE((SELECT GROUP_CONCAT(cl.label) FROM card_labels cl WHERE cl.board = c.board AND cl.card = c.id), '')
              FROM cards c JOIN boards b ON b.id = c.board
              LEFT JOIN statuses s ON s.board = c.board AND s.key = c.col
              WHERE b.project = ?1 AND c.deleted_at IS NULL",
         )?;
         let rows = st.query_map([project], |r| {
-            let labels: String = r.get(9)?;
+            let labels: String = r.get(8)?;
             Ok(Row {
                 board: r.get(0)?,
                 id: r.get(1)?,
@@ -336,8 +353,7 @@ impl R<'_> {
                 holder: r.get(4)?,
                 created_at: r.get(5)?,
                 moved_at: r.get(6)?,
-                claim: r.get::<_, i64>(7)? != 0,
-                final_: r.get::<_, i64>(8)? != 0,
+                final_: r.get::<_, i64>(7)? != 0,
                 labels: labels.split(',').filter_map(|s| s.parse().ok()).collect(),
             })
         })?;
@@ -347,16 +363,13 @@ impl R<'_> {
         for row in rows {
             let mut r = row?;
             r.labels.sort_by_key(|l| label_order.get(l).copied().unwrap_or(usize::MAX));
-            let group = if r.labels.iter().any(|l| version_ids.contains(l)) {
-                Group::Version
-            } else if r.column == INBOX || r.claim {
-                continue;
-            } else if !r.final_ {
-                Group::Next
-            } else if last_release.is_some_and(|t| r.moved_at.unwrap_or(r.created_at) > t) {
-                Group::Next
+            // 可领取的状态（待办、返工）也算「未发版」：进了工作流就是这一轮的活儿（default/main#313）
+            let Some(group) = (if r.labels.iter().any(|l| version_ids.contains(l)) {
+                Some(Group::Version)
             } else {
-                Group::None
+                group_of(&r.column, false, r.final_, r.moved_at, r.created_at, last_release)
+            }) else {
+                continue;
             };
             let c = MilestoneCard {
                 board: r.board,
@@ -402,6 +415,29 @@ mod unit {
         assert_eq!(version_cmp("v1", "v0.9.9"), Ordering::Greater);
         assert_eq!(version_cmp("v0.2", "v0.2.0"), Ordering::Equal);
         assert_eq!(version_cmp("V0.1.2", "v0.1.3"), Ordering::Less);
+    }
+
+    /// 卡片放进哪一组只看状态的规则，不看状态名称（default/main#313）：可领取、锁定都算未发版，只有未整理不算
+    #[test]
+    fn grouping_by_status_rules() {
+        let rel = Some(100);
+        // 可领取：待办、返工
+        assert_eq!(group_of("todo", false, false, None, 200, rel), Some(Group::Next));
+        assert_eq!(group_of("rework", false, false, None, 200, rel), Some(Group::Next));
+        // 锁定：进行中、审核、错误节点
+        for col in ["doing", "review", "error"] {
+            assert_eq!(group_of(col, false, false, None, 200, rel), Some(Group::Next), "{col}");
+        }
+        // 未整理：还没进工作流的想法，哪一组都不算
+        assert_eq!(group_of(INBOX, false, false, None, 200, rel), None);
+        // 终点：发版之后移进去的算未发版，之前的算没有版本
+        assert_eq!(group_of("done", false, true, Some(150), 10, rel), Some(Group::Next));
+        assert_eq!(group_of("done", false, true, Some(50), 10, rel), Some(Group::None));
+        // 没有移到终点的时间时按建卡时间算
+        assert_eq!(group_of("done", false, true, None, 150, rel), Some(Group::Next));
+        // 还没有任何版本记录：终点的都算没有版本
+        assert_eq!(group_of("done", false, true, Some(150), 10, None), Some(Group::None));
+        assert_eq!(group_of("todo", false, false, None, 150, None), Some(Group::Next));
     }
 
     #[test]

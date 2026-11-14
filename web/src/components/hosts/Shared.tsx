@@ -15,7 +15,7 @@ import type { HostInfo, SkillInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, toastError } from '../../store/ui';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { SkillImportModal } from './SkillImport';
 import { HostSyncPills, HowTip, OldHostsNote, SyncMatrix } from './SyncBits';
@@ -63,10 +63,12 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
           </p>
         </div>
         <div className="sc-acts">
-          <button className="btn sm" type="button" disabled={!lib} onClick={() => setImporting(true)} data-tip="选一台机器，把它各 agent 目录里自己放的 skill 放进共用库" data-tip-align="end">
-            <Icon name="download" />
-            从机器导入
-          </button>
+          <Tip text="选一台机器，把它各 agent 目录里自己放的 skill 放进共用库">
+            <button className="btn sm" type="button" disabled={!lib} onClick={() => setImporting(true)} data-tip-align="end">
+              <Icon name="download" />
+              从机器导入
+            </button>
+          </Tip>
         </div>
       </div>
       {err && <p className="hp-note lh-warn">取不到 skills 库：{err}</p>}
@@ -90,17 +92,18 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
                   <HostSyncPills list={list} />
                   <span className="sy-acts">
                     {!s.builtin && (
-                      <button
-                        className={cx('icon-btn sm', busy === `rm:${s.name}` && 'is-busy')}
-                        type="button"
-                        aria-label={`删掉 ${s.name}`}
-                        data-tip="从库里删掉"
-                        data-tip-align="end"
-                        disabled={!!busy}
-                        onClick={() => void remove(s)}
-                      >
-                        <Icon name="trash" />
-                      </button>
+                      <Tip text="从库里删掉">
+                        <button
+                          className={cx('icon-btn sm', busy === `rm:${s.name}` && 'is-busy')}
+                          type="button"
+                          aria-label={`删掉 ${s.name}`}
+                          data-tip-align="end"
+                          disabled={!!busy}
+                          onClick={() => void remove(s)}
+                        >
+                          <Icon name="trash" />
+                        </button>
+                      </Tip>
                     )}
                   </span>
                 </div>

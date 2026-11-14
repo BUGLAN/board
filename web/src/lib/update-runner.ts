@@ -1,15 +1,17 @@
 /* ==========================================================================
    启动后自动检查更新（lib/update.ts 是逻辑，components/update-card.tsx 是界面，这里把它们接起来）
-   - 桌面端打开时检查一次，之后每 30 分钟一次；设置里关掉后不再检查
+   - 只在桌面端（canUpdate）打开时检查一次，之后每 30 分钟一次；设置里关掉后不再检查；网页端什么都不做
    - 上次检查时间持久化：页面刷新、切换设置页、重复挂载不会多查一次
    - 检查结果放在这里（store）：设置页的更新卡片打开时直接显示，不用再查一遍
    - 有新版本：应用内的确认框（store/ui 的 confirm），「以后再说」就是这次先不装；不弹系统框、不阻塞操作
-   - 连不上、清单不对、旧版桌面端：只发一条 toast，不打扰；可以到设置页手动重试
+   - 已是最新、连不上、清单不对、旧版桌面端：一律静默，不弹任何提示（default/main#327）；
+     要重试或看失败原因就点设置页的「检查更新」
    ========================================================================== */
 import { create } from 'zustand';
-import { checkUpdate } from './platform';
+import { canUpdate, checkUpdate } from './platform';
 import { autoCheckDelay, autoCheckUpdate, failCheck, finishCheck, lastAutoCheck, markAutoCheck, type CheckState } from './update';
-import { confirm, setTab, toast } from '../store/ui';
+import { autoNotice } from './update-notice';
+import { confirm, setTab } from '../store/ui';
 
 interface UpdateStore {
   check: CheckState;
@@ -44,6 +46,8 @@ let started = false;
 let timer: number | null = null;
 
 export function autoUpdateCheck() {
+  // 网页端没有外壳的 update_check（checkUpdate 会抛 unsupported）：不排定时器、不检查，什么都不做
+  if (!canUpdate) return;
   if (started) return;
   started = true;
   if (!autoCheckUpdate()) return;
@@ -52,6 +56,7 @@ export function autoUpdateCheck() {
 
 /** 设置里重新打开「启动后自动检查」：如果之前已经启动过，重新排下一次 */
 export function resumeAutoUpdateCheck() {
+  if (!canUpdate) return;
   if (!autoCheckUpdate()) return;
   started = true;
   scheduleNext();
@@ -77,13 +82,8 @@ function scheduleNext() {
 
 async function checkQuietly() {
   const state = await useUpdate.getState().run();
-  // 旧版桌面端没有这个命令（platform.ts 抛出 'unsupported'）：不算出错，什么都不说
-  if (state.kind === 'failed') {
-    if (state.error === 'unsupported') return;
-    toast({ type: 'info', title: '没有检查到更新', text: state.error, duration: 6000 });
-    return;
-  }
-  if (state.kind !== 'available') return;
+  // 只有发现新版本才弹确认框；已是最新、失败（含旧版桌面端的 unsupported）都静默（lib/update-notice.ts）
+  if (autoNotice(state).action !== 'confirm' || state.kind !== 'available') return;
   const r = state.result;
   const yes = await confirm({
     title: `发现新版本 ${state.version}`,

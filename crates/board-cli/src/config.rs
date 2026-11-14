@@ -42,9 +42,9 @@ pub fn env(k: &str) -> Option<String> {
 pub struct Conn {
     pub url: Option<(String, Source)>,
     pub token: Option<(String, Source)>,
-    /// 这次读连接时从派发的配置文件（`BOARD_CONFIG` 的 `[agent_env]`）补过 `BOARD_*`，见 [`from_agent_env`]：
-    /// 只说连接从哪来用，连接本身还是按环境变量优先、其次是 `~/.board/config.toml`
-    pub agent_env: bool,
+    /// 这次读连接时从派发的配置文件（`BOARD_CONFIG` 的 `[agent_env]`）补了哪些 `BOARD_*`（见 [`from_agent_env`]）。
+    /// 补上的变量就和环境变量一样参与下面的读取，所以地址、令牌可能正是从这里来的
+    pub filled: Vec<String>,
 }
 
 /// 派发的配置文件（`BOARD_CONFIG`）里有没有 `[agent_env]`：有就把其中的 `BOARD_*` 设进本进程的环境。
@@ -52,17 +52,18 @@ pub struct Conn {
 /// board host 启动 agent 时把连接和名字放在它的环境变量里，但 agent 会过滤传给命令的环境变量（Codex 只在 shell 的
 /// 环境策略放行的那几个里传，`BOARD_*` 不在里面；dsh 去掉名字里带 `TOKEN` 的），agent 执行 `board` 时可能看不到。
 /// 所以 board host 把它们也写进这次派发的配置文件的 `[agent_env]`，`scripts/board`（带 `BOARD_AGENT_ENV=1`）和
-/// `board` 自己都从这里补上。已经在环境里的不覆盖。返回补上了没有
-pub fn from_agent_env() -> bool {
-    let Some(path) = env("BOARD_CONFIG") else { return false };
-    let Ok(text) = std::fs::read_to_string(&path) else { return false };
+/// `board` 自己都从这里补上。已经在环境里的不覆盖。返回补上了哪几个（没补的、或没有这一节时为空）
+pub fn from_agent_env() -> Vec<String> {
+    let Some(path) = env("BOARD_CONFIG") else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
     apply_agent_env(&text)
 }
 
-/// [`from_agent_env`] 的实体：把配置文本里 `[agent_env]` 的 `BOARD_*` 设进环境（有的就不动）。返回有没有这一节
-fn apply_agent_env(text: &str) -> bool {
-    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return false };
-    let Some(t) = doc.get("agent_env").and_then(|t| t.as_table_like()) else { return false };
+/// [`from_agent_env`] 的实体：把配置文本里 `[agent_env]` 的 `BOARD_*` 设进环境（有的就不动），返回设了哪几个
+fn apply_agent_env(text: &str) -> Vec<String> {
+    let mut filled = Vec::new();
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return filled };
+    let Some(t) = doc.get("agent_env").and_then(|t| t.as_table_like()) else { return filled };
     for (k, v) in t.iter() {
         if !k.starts_with("BOARD_") {
             continue;
@@ -72,29 +73,49 @@ fn apply_agent_env(text: &str) -> bool {
             continue;
         }
         std::env::set_var(k, s);
+        filled.push(k.to_string());
     }
-    true
+    filled
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 派发的配置文件里 `[agent_env]` 的 `BOARD_*` 补进环境；环境里已经有的不覆盖
+    /// 派发的配置文件里 `[agent_env]` 的 `BOARD_*` 补进环境，返回补了哪几个；环境里已经有的不覆盖、也不算补过
     #[test]
     fn agent_env_section_fills_the_environment() {
         // 名字带用例自己的后缀：几个用例在同一个进程里跑，别互相抢变量
         let text = "[agent_env]\nBOARD_AS = \"codex-win/codex-test\"\nBOARD = \"oss/main\"\nNOT_BOARD = \"x\"\n";
         std::env::remove_var("BOARD_AS");
         std::env::set_var("BOARD", "already/here");
-        assert!(apply_agent_env(text));
+        assert_eq!(apply_agent_env(text), ["BOARD_AS"]);
         assert_eq!(std::env::var("BOARD_AS").ok().as_deref(), Some("codex-win/codex-test"));
         assert_eq!(std::env::var("BOARD").ok().as_deref(), Some("already/here"), "环境里已经有的不覆盖");
         assert!(std::env::var("NOT_BOARD").is_err(), "只补 BOARD_ 开头的");
+        // 同样的文本再来一次：环境里都有了，什么也不补
+        assert!(apply_agent_env(text).is_empty());
         std::env::remove_var("BOARD_AS");
         std::env::remove_var("BOARD");
         // 没有这一节：什么也不做
-        assert!(!apply_agent_env("url = \"http://127.0.0.1:1\"\n"));
+        assert!(apply_agent_env("url = \"http://127.0.0.1:1\"\n").is_empty());
+    }
+
+    /// `board help` 的「数据」一行：从派发配置补上的地址说清楚来自哪，没补过时照旧写环境变量或配置文件
+    #[test]
+    fn describe_says_where_the_url_came_from() {
+        let url = "http://127.0.0.1:7443";
+        assert_eq!(describe(url, Source::Env, &[]), format!("服务端 {url}（地址来自环境变量 BOARD_URL）"));
+        assert_eq!(describe(url, Source::File, &[]), format!("服务端 {url}（地址来自{}）", shown()));
+        assert_eq!(
+            describe(url, Source::Env, &["BOARD_URL".to_string()]),
+            format!("服务端 {url}（从派发的配置 {} 的 [agent_env] 补过 BOARD_URL）", shown())
+        );
+        // 补过的是别的变量：地址还是来自环境变量或配置文件
+        assert_eq!(
+            describe(url, Source::Env, &["BOARD_AS".to_string(), "BOARD".to_string()]),
+            format!("服务端 {url}（地址来自环境变量 BOARD_URL）")
+        );
     }
 }
 
@@ -118,16 +139,26 @@ impl Conn {
                 Some(t) => Some((t, Source::Env)),
                 None => from_file(TOKEN)?,
             },
-            agent_env: false,
+            filled: Vec::new(),
         })
     }
 
     /// 从派发的配置文件补上 `BOARD_*` 之后读连接（[`crate::backend::Backend`] 用这个，见 [`from_agent_env`]）
     pub fn resolve_for_agent() -> Result<Conn> {
-        let agent_env = from_agent_env();
+        let filled = from_agent_env();
         let mut c = Conn::resolve()?;
-        c.agent_env = agent_env;
+        c.filled = filled;
         Ok(c)
+    }
+}
+
+/// `board help` 里「数据」一行的说法：地址和它从哪来。`filled` 是从派发配置补上的变量（[`Conn::filled`]），
+/// 地址正是从那里补来的时说清楚来自派发配置，而不是只说「环境变量」（补上之后它确实也在环境里，看不出是补的）。
+pub fn describe(url: &str, src: Source, filled: &[String]) -> String {
+    if filled.iter().any(|k| k == "BOARD_URL") {
+        format!("服务端 {url}（从派发的配置 {} 的 [agent_env] 补过 BOARD_URL）", shown())
+    } else {
+        format!("服务端 {url}（地址来自{}）", origin(src, "BOARD_URL"))
     }
 }
 

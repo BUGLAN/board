@@ -6,7 +6,7 @@ import type { Card as CardT, Label, StatusView } from '../lib/types';
 import { agentColor, clock, cx, dateTime, durWords, replay, since } from '../lib/util';
 import { useUI, type Flash } from '../store/ui';
 import { renderKey, useCurrent, useData, useOnline } from '../store/data';
-import { Avatar, LabelChips, Title, agent, useNow } from './bits';
+import { AgentAvatar, LabelChips, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
 import { agentMark, cardDispatch } from '../lib/hosts';
@@ -45,10 +45,12 @@ interface Props {
   view?: StatusView;
   /** 不带 ID 执行 board claim 时会被领走的那张 */
   next?: boolean;
+  /** 在同一会话的框里（lib/sessionGroups）：左右往里缩，和框留出间距 */
+  grouped?: boolean;
 }
 
 export const CardView = memo(function CardView({
-  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next,
+  card: c, labels, filter, open, placeholder, flash, entering, delay, color, final, view, next, grouped,
 }: Props) {
   const held = !!c.holder;
   // 只有被持有的卡片要每秒走表；做过的卡片显示「完成于几分钟前」，半分钟一次；其他卡片不起定时器
@@ -101,6 +103,7 @@ export const CardView = memo(function CardView({
         shape === 'line' && 'v-line',
         shape === 'tile' && 'v-tile',
         next && 'next',
+        grouped && 'in-sess',
         open && 'is-open',
         active && !hit && 'filtered-out',
         active && hit && 'matched',
@@ -112,6 +115,8 @@ export const CardView = memo(function CardView({
         draft && 'draft',
       )}
       aria-busy={saving || undefined}
+      // 整张卡就是「打开详情」的按钮：Enter / 空格打开（lib/drag.ts），拖动换状态（pointerdown）
+      role="button"
       tabIndex={0}
       data-id={c.id}
       data-flip={`c${renderKey(c.id)}`}
@@ -142,7 +147,7 @@ export const CardView = memo(function CardView({
           </span>
           {doing && (
             <span className={cx('line-holder', t.beat)} title={c.holder!}>
-              <Avatar actor={agent(c.holder!)} />
+              <AgentAvatar name={c.holder} />
               <i className="beat" />
             </span>
           )}
@@ -155,7 +160,8 @@ export const CardView = memo(function CardView({
             <span className="card-flags">
               {gh && <span className="card-tag">{gh}</span>}
               {c.comments > 0 && (
-                <span className="f" title={`${c.comments} 条评论`}>
+                // 纯文本（不是按钮）：读屏读「2 条评论」，点这里和点卡片一样打开详情（评论在详情里）
+                <span className="f" aria-label={`${c.comments} 条评论`} title={`${c.comments} 条评论 · 点卡片看评论`}>
                   <Icon name="comment" />
                   {c.comments}
                 </span>
@@ -173,7 +179,7 @@ export const CardView = memo(function CardView({
           {!doing && <CardDispatchLine card={c.id} />}
           {doing ? (
             <div className="card-claim">
-              <Avatar actor={agent(c.holder!)} />
+              <AgentAvatar name={c.holder} />
               <MidName className="claim-name" name={c.holder!} />
               <RunPill card={c} now={now} />
               {t.runs > 1 && (
@@ -230,10 +236,12 @@ export function RunPill({ card: c, now, big }: { card: CardT; now: number; big?:
           ? `领取了，还没收到第一次心跳；${BEAT_MS * BEAT_MISSES / 1000} 秒内没收到就释放`
           : `已发 final，${BEAT_MS * BEAT_MISSES / 1000} 秒内没移走就释放`;
   return (
-    <span className={cx('run-pill live', t.beat, big && 'big')} data-tip={tip} data-tip-align="end">
-      <i className="beat" />
-      {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
-    </span>
+    <Tip text={tip}>
+      <span className={cx('run-pill live', t.beat, big && 'big')} data-tip-align="end">
+        <i className="beat" />
+        {t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}
+      </span>
+    </Tip>
   );
 }
 
@@ -351,7 +359,7 @@ export function TilePeek() {
         {doing && (
           <>
             <span className="ct-pop-holder">
-              <Avatar actor={agent(card.holder!)} />
+              <AgentAvatar name={card.holder} />
               <MidName name={card.holder!} />
             </span>
             <RunPill card={card} now={now} />
@@ -456,8 +464,10 @@ export function FloatTips() {
   }, [tip]);
 
   if (!tip || !tip.el.isConnected) return null;
+  // 不写 role="tooltip"：它得配 aria-describedby 才读得到，而这里不挂的时候就没有（default/main#314），
+  // 可读名称由 bits 的 Tip / TipNote 补，挂的那份浮层对读屏隐藏
   return createPortal(
-    <div ref={box} className="float-tip" role="tooltip">
+    <div ref={box} className="float-tip" aria-hidden="true">
       {tip.text}
     </div>,
     document.body,

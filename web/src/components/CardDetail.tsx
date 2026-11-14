@@ -5,6 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cardBack, cardFwd, copyCardPrompt, openLink, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
+import { judge } from '../lib/granularity';
 import { cardDispatch } from '../lib/hosts';
 import { detailPrompt } from '../lib/prompt';
 import { api, ApiError } from '../lib/api';
@@ -16,7 +17,7 @@ import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock,
 import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { isTextFile } from '../lib/textFile';
-import { Avatar, DescTabs, LabelChip, Markdown, agent, useNow } from './bits';
+import { Avatar, DescTabs, LabelChip, Markdown, agent, Tip, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
 import { DispatchHistory, DispatchNote } from './hosts/Dispatch';
@@ -117,6 +118,9 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   // 这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
   const saving = useCardBusy(c.id);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
+  // 粒度预检（default/main#306）：「未整理」里够细的一条不拆，已经拆出来的子项不再判
+  const verdict = c.column === 'inbox' && c.splitFrom == null ? judge(c.title, c.body) : null;
+  const small = verdict?.size === 'small' ? verdict : null;
   const list = board?.cols[c.column] ?? [];
   const i = list.indexOf(c.id);
   const skipped = omittedIn(board, c.column);
@@ -197,6 +201,13 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     prevCol.current = c.column;
   }, [c.column]);
 
+  // 手机（底部 sheet）上顶栏只放图标：「复制链接」「复制为提示词」收进「更多」菜单
+  const mobile = isMobile();
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    if (!mobile) setMore(false);
+  }, [mobile]);
+
   /** 复制这张卡片的完整网址（发给别人、收藏、写进别的卡片） */
   const copyLink = () => {
     const url = cardUrl(useData.getState().path, c.id);
@@ -214,42 +225,106 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           <i />
           <span>{f.name(c.column)}</span>
         </span>
-        <span className="d-nav">
-          <button aria-label="上一张" className="icon-btn sm" type="button" data-tip="上一张  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
-            <Icon name="chevUp" />
-          </button>
+        {/* 上一张 / 下一张：手机上顶栏放不下，CSS 整组藏了（display:none）。藏起来的按钮不能还能 Tab 到、被读屏读到，
+            所以手机上整组 inert + aria-hidden 一起移出焦点序列（↑↓ / K J 手机上用不上，详情里靠左右滑） */}
+        <span className="d-nav" inert={mobile || undefined} aria-hidden={mobile || undefined}>
+          <Tip text="上一张  ↑ / K">
+            <button aria-label="上一张" className="icon-btn sm" type="button" disabled={i <= 0} onClick={() => step(-1)}>
+              <Icon name="chevUp" />
+            </button>
+          </Tip>
           {/* 快照省略了更早的卡片（可能夹在中间）时整个状态里的位置算不出来，只显示总数 */}
           <span className="d-pos mono">{i < 0 ? '' : skipped ? `共 ${list.length + skipped}` : `${i + 1} / ${list.length}`}</span>
-          <button aria-label="下一张" className="icon-btn sm" type="button" data-tip="下一张  ↓ / J" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
-            <Icon name="chevDown" />
-          </button>
+          <Tip text="下一张  ↓ / J">
+            <button aria-label="下一张" className="icon-btn sm" type="button" disabled={i < 0 || i >= list.length - 1} onClick={() => step(1)}>
+              <Icon name="chevDown" />
+            </button>
+          </Tip>
         </span>
         <span className={cx('d-saving', saving && 'on')} role="status" aria-live="polite">
           <i aria-hidden="true" />
           {saving ? '保存中' : ''}
         </span>
         <span className="d-jump">
-          <button aria-label="返回" className="icon-btn sm" type="button" data-tip={`返回  ${BACK_KEY}`} data-tip-align="start" disabled={!canCardBack()} onClick={cardBack}>
-            <Icon name="chevLeft" />
-          </button>
-          <button aria-label="前进" className="icon-btn sm" type="button" data-tip={`前进  ${FWD_KEY}`} data-tip-align="start" disabled={!canCardFwd()} onClick={cardFwd}>
-            <Icon name="chevRight" />
-          </button>
+          <Tip text={`返回  ${BACK_KEY}`}>
+            <button aria-label="返回" className="icon-btn sm" type="button" data-tip-align="start" disabled={!canCardBack()} onClick={cardBack}>
+              <Icon name="chevLeft" />
+            </button>
+          </Tip>
+          <Tip text={`前进  ${FWD_KEY}`}>
+            <button aria-label="前进" className="icon-btn sm" type="button" data-tip-align="start" disabled={!canCardFwd()} onClick={cardFwd}>
+              <Icon name="chevRight" />
+            </button>
+          </Tip>
         </span>
         <span className="spacer" />
-        <button className="btn sm ghost d-prompt d-link" type="button" data-tip={`复制链接  ${accel('C', true)}`} data-tip-align="end" onClick={copyLink}>
-          <Icon name="clip" />
-          复制链接
-        </button>
-        <button className="btn sm ghost d-prompt" type="button" data-tip={`复制 ${detailPrompt(useData.getState().path, c)}  C`} data-tip-align="end" onClick={() => copyCardPrompt(c)}>
-          <Icon name="prompt" />
-          复制为提示词
-        </button>
-        <button aria-label="关闭" className="icon-btn" type="button" data-act="close" data-tip="关闭  esc" data-tip-align="end" onClick={closeDetail}>
-          <Icon name="close" />
-        </button>
-      </div>
-      <div className="d-grid">
+        {mobile ? (
+          // 手机上顶栏只放得下图标：这两件事收进「更多」菜单，菜单项带文字；点菜单外的地方关掉
+          <span className="d-more">
+            <button
+              aria-label="更多"
+              aria-haspopup="menu"
+              aria-expanded={more}
+              className="icon-btn"
+              type="button"
+              data-tip="更多"
+              data-tip-align="end"
+              onClick={() => setMore(v => !v)}
+            >
+              <Icon name="more" />
+            </button>
+            {more && (
+              <>
+                <span className="d-more-back" aria-hidden="true" onClick={() => setMore(false)} />
+                <div className="menu d-more-menu" role="menu" aria-label="更多操作">
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setMore(false);
+                      copyLink();
+                    }}
+                  >
+                    <Icon name="clip" />
+                    复制链接
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setMore(false);
+                      copyCardPrompt(c);
+                    }}
+                  >
+                    <Icon name="prompt" />
+                    复制为提示词
+                  </button>
+                </div>
+              </>
+            )}
+          </span>
+        ) : (
+          <>
+            <Tip text={`复制链接  ${accel('C', true)}`}>
+              <button className="btn sm ghost d-prompt d-link" type="button" data-tip-align="end" onClick={copyLink}>
+                <Icon name="clip" />
+                复制链接
+              </button>
+            </Tip>
+            <Tip text={`复制 ${detailPrompt(useData.getState().path, c, !!small)}  C`}>
+              <button className="btn sm ghost d-prompt" type="button" data-tip-align="end" onClick={() => copyCardPrompt(c)}>
+                <Icon name="prompt" />
+                复制为提示词
+              </button>
+            </Tip>
+          </>
+        )}
+        <Tip text="关闭  esc">
+          <button aria-label="关闭" className="icon-btn" type="button" data-act="close" data-tip-align="end" onClick={closeDetail}>
+            <Icon name="close" />
+          </button>
+        </Tip>
+      </div>      <div className="d-grid">
         <div className="d-main">
           <section className="d-section" style={{ ['--i' as string]: 0 }}>
             <TitleEditor card={c} locked={locked} busy={saving} />
@@ -294,25 +369,31 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               <Icon name="trash" />
               删除卡片
             </button>
-            {/* 「未整理」里的条目：派给 agent 拆解（不领取、不移动它，拆出的卡记回未整理） */}
-            <button
-              className="btn sm d-move"
-              type="button"
-              disabled={saving || (c.column !== 'inbox' && !f.list.find(s => s.key === c.column)?.claim) || !!dispatched}
-              data-tip={
+            {/* 「未整理」里的条目：派给 agent 拆解（不领取、不移动它，拆出的卡记回未整理）。
+                粒度预检（default/main#306）：够细的一条不拆，按钮改成「强制拆解」 */}
+            <Tip
+              text={
                 dispatched
                   ? '已经派发过了：在上面取消派发或停止'
                   : c.column === 'inbox'
-                    ? '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理、挂在这条下面'
+                    ? small
+                      ? `任务粒度合适，不用拆（${small.why}）；点「强制拆解」仍可派给 agent 再切`
+                      : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理、挂在这条下面'
                     : !f.list.find(s => s.key === c.column)?.claim
                       ? '只有可领取状态里的卡片能派发'
                       : '派给一台机器上的 agent'
               }
-              onClick={() => openDispatch(c.id)}
             >
-              <Icon name="dispatch" />
-              {c.column === 'inbox' ? '派给 agent 拆解' : '派发'}
-            </button>
+              <button
+                className="btn sm d-move"
+                type="button"
+                disabled={saving || (c.column !== 'inbox' && !f.list.find(s => s.key === c.column)?.claim) || !!dispatched}
+                onClick={() => openDispatch(c.id, { force: !!small })}
+              >
+                <Icon name="dispatch" />
+                {c.column === 'inbox' ? (small ? '强制拆解' : '派给 agent 拆解') : '派发'}
+              </button>
+            </Tip>
             <button
               className="btn sm"
               type="button"
@@ -697,9 +778,11 @@ function SplitLinks({ card: c }: { card: Detail }) {
 function SplitRef({ id }: { id: number }) {
   const title = useData(s => s.board?.cards[id]?.title);
   return (
-    <button type="button" className="d-ref" data-tip={title} onClick={() => void openSplitRef(id)}>
-      #{id}
-    </button>
+    <Tip text={title ?? ''}>
+      <button type="button" className="d-ref" onClick={() => void openSplitRef(id)}>
+        #{id}
+      </button>
+    </Tip>
   );
 }
 

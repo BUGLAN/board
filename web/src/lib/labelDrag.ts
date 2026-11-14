@@ -55,8 +55,8 @@ let flying: Animation | null = null;
 let endedAt = 0;
 export const labelDragJustEnded = () => performance.now() - endedAt < 400;
 
-/** 标签胶囊的 onPointerDown。reorder：在标签区里拖动能不能调整顺序（侧栏不能，调整顺序在「管理标签」里，default/main#289） */
-export function labelPointerDown(e: ReactPointerEvent, label: Label, project: string, reorder = true) {
+/** 标签胶囊的 onPointerDown：拖到卡片上加标签，在侧栏标签区里拖动调整顺序 */
+export function labelPointerDown(e: ReactPointerEvent, label: Label, project: string) {
   if (e.button !== 0 || st) return;
   const el = e.currentTarget as HTMLElement;
   const r = el.getBoundingClientRect();
@@ -64,7 +64,7 @@ export function labelPointerDown(e: ReactPointerEvent, label: Label, project: st
   st = {
     label,
     project,
-    field: reorder ? el.closest<HTMLElement>('.lb-field') : null,
+    field: el.closest<HTMLElement>('.lb-field'),
     item: el.closest<HTMLElement>('.lb-item'),
     pointerId: e.pointerId,
     type: e.pointerType,

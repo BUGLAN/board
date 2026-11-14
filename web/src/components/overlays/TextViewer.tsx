@@ -6,6 +6,7 @@ import { fileSize } from '../../lib/attach';
 import { readHead, TEXT_LIMIT, type TextHead } from '../../lib/textFile';
 import { copyText, cx } from '../../lib/util';
 import { closeTextFile, toast, useUI } from '../../store/ui';
+import { Tip } from '../bits';
 import { Icon } from '../Icon';
 import { Skeleton } from '../Skeleton';
 
@@ -91,9 +92,11 @@ export function TextViewer() {
             <Icon name="download" />
             <span className="tv-bl">下载</span>
           </a>
-          <button type="button" className="icon-btn" aria-label="关闭" data-tip="关闭  esc" data-tip-align="end" onClick={closeTextFile}>
-            <Icon name="close" />
-          </button>
+          <Tip text="关闭  esc">
+            <button type="button" className="icon-btn" aria-label="关闭" data-tip-align="end" onClick={closeTextFile}>
+              <Icon name="close" />
+            </button>
+          </Tip>
         </div>
         {head?.truncated && (
           <div className="tv-note" role="note">

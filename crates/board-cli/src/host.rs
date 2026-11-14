@@ -1701,11 +1701,11 @@ fn unpushed(dir: &Path) -> Option<String> {
 
 /// 启动 agent 的提示词（一行 skill 调用，后面带 board host 的身份提示）。
 /// 做卡：定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）；
-/// 拆解「未整理」里的条目：不领取，拆完评论后直接结束（PRD §9.1）
+/// 拆解「未整理」里的条目：不领取，先按粒度预检（偏小的不拆、不建卡），拆完评论后直接结束（PRD §9.1）
 fn dispatch_prompt(d: &Dispatch, project: &str, board: &str, name: &str, host: &str) -> String {
     if d.kind == board_core::hosts::KIND_SPLIT {
         return format!(
-            "/board-skills 拆解 {project}项目之中的{board}白板中的#{}需求（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；名字已经上线，不要 check、不要心跳、不要 claim，不要创建 goal；拆出的卡用 board new --inbox --from {}，在原条目上评论拆成了哪几张后直接结束，不要 board next）",
+            "/board-skills 拆解 {project}项目之中的{board}白板中的#{}需求（board host 派发：BOARD_AS={name}，BOARD_HOST={host}；名字已经上线，不要 check、不要心跳、不要 claim，不要创建 goal；先按粒度预检：这一条如果只做一件事、能整个做完，就不要拆，不建卡，在原条目上评一句「任务粒度合适，未进行拆解」后直接结束；偏大才拆，拆出的卡用 board new --inbox --from {}，在原条目上评论拆成了哪几张后直接结束，不要 board next）",
             d.card, d.card
         );
     }
@@ -4338,7 +4338,7 @@ mod tests {
     }
 
     fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
-        // 跑一个马上结束的进程：Windows 上没有 `true`，用 cmd 的 exit
+        // 跑一个马上结束的进程：Windows 上没有 `true`，用 cmd 的 exit（这里只在 Windows 上编它，别的平台用 `true`）
         #[cfg(windows)]
         let child = Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
         #[cfg(not(windows))]
@@ -4481,6 +4481,7 @@ mod tests {
         let split = dispatch_prompt(&d, "default", "main", "claude-mbp/opus-5.5", "mbp");
         assert!(split.starts_with("/board-skills 拆解 default项目之中的main白板中的#12需求（board host 派发：BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "{split}");
         assert!(split.contains("board new --inbox --from 12") && split.contains("不要 board next"), "{split}");
+        assert!(split.contains("先按粒度预检") && split.contains("任务粒度合适，未进行拆解"), "粒度预检写在提示词里：{split}");
     }
 
     #[test]

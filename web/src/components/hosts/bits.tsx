@@ -4,6 +4,7 @@ import { agentMark, hostState, osKind, since, type OsKind } from '../../lib/host
 import type { HostAgent, HostInfo } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
 import { hostKey, refreshHosts, type Patch } from '../../store/data';
+import { Tip } from '../bits';
 import { Icon } from '../Icon';
 
 /** Apple 品牌图标：单色跟随文字颜色，深色、浅色主题都清晰 */
@@ -78,9 +79,11 @@ export function AgentChip({ a, def, env, skill }: { a: HostAgent; def?: boolean;
       <em>{a.found ? a.version || '找到了' : '没找到'}</em>
       {def && <small>默认</small>}
       {skill && (
-        <span className="hp-agent-warn" role="img" aria-label={skill} data-tip={skill}>
-          <Icon name="alert" />
-        </span>
+        <Tip text={skill}>
+          <span className="hp-agent-warn" role="img" aria-label={skill}>
+            <Icon name="alert" />
+          </span>
+        </Tip>
       )}
     </span>
   );

@@ -11,7 +11,7 @@ import { boardFlow } from '../lib/schema';
 import { accel, autosize, cx, pref, replay } from '../lib/util';
 import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
 import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
-import { DescTabs, LabelChip, Markdown, Title } from './bits';
+import { DescTabs, LabelChip, Markdown, Tip, Title } from './bits';
 import { BoardIcon24, Icon, InboxIcon24 } from './Icon';
 
 interface Draft {
@@ -246,9 +246,11 @@ export function Creator() {
             </span>
           )}
           <span className="spacer" />
-          <button aria-label="关闭（保留草稿）" className="icon-btn" type="button" data-tip="关闭（保留草稿）  esc" data-tip-align="end" onClick={close}>
-            <Icon name="close" />
-          </button>
+          <Tip text="关闭（保留草稿）  esc">
+            <button aria-label="关闭（保留草稿）" className="icon-btn" type="button" data-tip-align="end" onClick={close}>
+              <Icon name="close" />
+            </button>
+          </Tip>
         </div>
         <form
           className="d-grid"

@@ -126,20 +126,21 @@
 .comment-attach:hover { background: var(--surface-3); color: var(--text-2); }
 .comment-attach svg { width: 16px; height: 16px; }
 
-/* 放大查看图片 */
+/* 放大查看图片：按视口宽高一起缩放，高图也整张看得到（default/main#320）。
+   网格轨道写成 minmax(0, 1fr)：默认的 auto 轨道按图片原尺寸撑开，图片的 max-height: 100% 就失效，高图下半截跑出视口 */
 .lightbox {
-  position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 40px 24px 84px;
+  position: fixed; inset: 0; z-index: 400; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; padding: 40px 24px 84px;
   background: rgba(8, 8, 10, .8); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
   cursor: zoom-out; animation: lb-in var(--dur-3) var(--ease-out) both;
 }
-.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-sm); box-shadow: 0 30px 80px rgba(0, 0, 0, .5); }
+.lightbox img { display: block; min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-sm); box-shadow: 0 30px 80px rgba(0, 0, 0, .5); }
 .lb-bar {
   position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: calc(100% - 32px);
   display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 14px; border-radius: var(--r-md); cursor: default;
   font-size: 12.5px; color: var(--text-2); background: var(--glass-strong); box-shadow: var(--shadow-3);
 }
 .lb-bar .lb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50vw; }
-/* 多张图片：上一张 / 位置 / 下一张，在下载按钮右边 */
+/* 多张图片：上一张 / 位置 / 下一张，在文件名右边 */
 .lb-nav { display: flex; align-items: center; gap: 2px; padding-left: 8px; margin-left: 2px; border-left: 1px solid var(--line-2); }
 .lb-nav .icon-btn:disabled { opacity: .35; cursor: default; }
 .lb-pos { min-width: 44px; text-align: center; font-family: var(--f-mono); font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }

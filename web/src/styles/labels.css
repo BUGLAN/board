@@ -52,19 +52,52 @@
 .d-labels .lb { height: 24px; font-size: 12px; padding: 0 8px; }
 .cr-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
-/* 侧栏「标签」：一排胶囊，点胶囊筛选、拖到卡片上加标签；最后是「管理」入口（新建、改名、删除、排序都在管理标签弹窗里） */
+/* 侧栏「标签」：整块就是输入框。平时扁平（悬停也没有底色），双击空白处进入编辑态才显出输入框边框；点胶囊筛选，回车新建 */
 .lb-block { padding: 4px 14px 10px 20px; }
 .lb-field {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   margin: 0 -6px; padding: 5px 6px; border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  transition: border-color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out);
 }
+/* 编辑态（双击空白进入，见 Workbench.tsx LabelBlock）：显出输入框的底色和边框，淡入淡出 */
+.lb-field.editing { cursor: text; background: var(--surface); border-color: color-mix(in srgb, var(--brand) 55%, transparent); }
 .lb-pick { height: 24px; max-width: 100%; padding: 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
 .lb-pick:hover { background: color-mix(in srgb, var(--lc) 22%, transparent); }
 .lb-pick:active { transform: scale(.96); }
 .lb-pick em { font-style: normal; font-family: var(--f-mono); font-size: 11px; opacity: .6; margin-left: 2px; }
 .lb-pick.on { color: #fff; background: var(--lc); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--lc) 70%, transparent); }
 .lb-pick.on em { opacity: .85; }
+/* 删除：悬停胶囊时盖在右端的计数上，不占位、不改变排列；没有底色，只显示 ×（可悬停的区域仍是右端 24×24） */
 .lb-item { position: relative; display: inline-flex; max-width: 100%; }
+.lb-del {
+  --lc: #888;
+  position: absolute; right: 0; top: 50%; width: 24px; height: 24px; margin-top: -12px;
+  display: grid; place-items: center; font-size: 14px; line-height: 1;
+  color: color-mix(in srgb, var(--lc) 80%, var(--text));
+  background: transparent;
+  opacity: 0; pointer-events: none; transform: scale(.7);
+  transition: opacity var(--dur-1), transform var(--dur-1) var(--ease-out), color var(--dur-1);
+}
+.lb-item:hover .lb-del, .lb-del:focus-visible { opacity: 1; pointer-events: auto; transform: none; }
+.lb-item:hover .lb-pick em { opacity: 0; }
+.lb-del:hover { color: var(--danger-text); }
+/* 选中的胶囊是实色底：× 保持白色，悬停时从半透明变成不透明 */
+.lb-del.on { color: color-mix(in srgb, #fff 80%, transparent); }
+.lb-del.on:hover { color: #fff; }
+@media (hover: none) { .lb-del { display: none; } }
+/* 失焦时只占一丝宽度，不让空输入框单独挤出一行；聚焦时至少 4em，最后一行放不下就换行 */
+.lb-input {
+  flex: 1 1 4px; min-width: 4px; height: 24px; padding: 0 4px;
+  border: 0; outline: none; background: transparent;
+  font-size: 12px; color: var(--text); caret-color: var(--brand);
+}
+.lb-input::placeholder { color: var(--text-3); }
+/* 不在编辑态时单击不到输入框：点击落在空白处，单击什么也不做 */
+.lb-field:not(.editing) .lb-input { pointer-events: none; }
+.lb-field.editing .lb-input { min-width: 4em; }
+@media (prefers-reduced-motion: reduce) { .lb-field { transition: none; } }
+:root[data-motion="reduced"] .lb-field { transition: none; }
 
 /* 详情里的「复制链接」「复制为提示词」 */
 .d-prompt { height: 28px; color: var(--text-2); }
@@ -146,10 +179,7 @@
 /* ---------------- 提示词预览 ---------------- */
 
 @media (max-width: 760px) {
-  /* 手机上顶栏放不下字：只留图标（.btn.sm 也写了 font-size，这里要压过它） */
-  .d-head .d-prompt { padding: 0 8px; font-size: 0; gap: 0; }
-  .d-head .d-prompt svg { margin: 0; }
-  .d-link + .d-prompt { margin-left: 0; }
+  /* 「复制链接」「复制为提示词」在手机上收进「更多」菜单（CardDetail 按 isMobile 渲染），顶栏不再挤成只剩图标的按钮 */
   .lbm-list { grid-template-columns: auto auto minmax(0, 1fr) auto auto auto auto; }
   .lbm-preview { display: none; }
 }
@@ -214,14 +244,6 @@
 @media (prefers-reduced-motion: reduce) { .lb-item.ins-before::before, .lb-item.ins-after::after { animation: none; } }
 :root[data-motion="reduced"] .lb-item.ins-before::before, :root[data-motion="reduced"] .lb-item.ins-after::after { animation: none; }
 
-.lb-manage {
-  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--r-xs);
-  font-size: 11.5px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); background: transparent;
-  transition: color var(--dur-1), background-color var(--dur-1), box-shadow var(--dur-1);
-}
-.lb-manage svg { width: 12px; height: 12px; }
-.lb-manage:hover { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
-.lb-manage.empty { color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); border-style: dashed; }
 
 /* 管理标签：拖动调整顺序（default/main#289） */
 .lbm-grip { display: grid; place-items: center; width: 18px; height: 26px; margin-left: -4px; border-radius: var(--r-xs); color: var(--text-3); cursor: grab; touch-action: none; opacity: .55; transition: opacity var(--dur-1), color var(--dur-1); }
@@ -235,3 +257,25 @@
 }
 .lbm-row.ins-before::before { top: -3px; }
 .lbm-row.ins-after::after { bottom: -3px; }
+
+/* 管理标签：隐藏的标签（default/main#324） */
+.lbm-hid { margin-right: 6px; padding: 1px 6px; border-radius: var(--r-xs); font-style: normal; font-size: 11px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.lbm-hidden { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.lbm-hidden-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.lbm-hidden-head b { font-weight: 600; color: var(--text); }
+.lbm-rules { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lbm-rules-empty { font-size: 12px; color: var(--text-3); }
+.lbm-rule {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 2px 0 8px; border-radius: var(--r-sm);
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
+}
+.lbm-rule code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; color: var(--text); }
+.lbm-rule em { flex: none; font-style: normal; font-size: 11px; color: var(--text-3); }
+.lbm-rule.bad { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 50%, var(--line)); }
+.lbm-rule.bad em { color: var(--danger-text); }
+.lbm-rule .icon-btn { width: 24px; height: 24px; }
+.lbm-rule-new { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.lbm-rule-new .input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; font-family: var(--f-mono); font-size: 12.5px; }
+.lbm-rule-new .input.invalid { box-shadow: inset 0 0 0 1px var(--danger); }
+.lbm-rule-new .btn { height: 32px; }
+.lbm-rule-err { margin: 6px 0 0; font-size: 12px; color: var(--danger-text); }

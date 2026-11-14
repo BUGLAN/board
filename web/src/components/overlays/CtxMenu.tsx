@@ -5,11 +5,12 @@ import {
 } from '../../lib/actions';
 import { moveTo, vetoFor } from '../../lib/drag';
 import { quickPrompts } from '../../lib/prompt';
+import { hiddenRules, visibleLabels } from '../../lib/sidebarLabels';
 import { boardFlow, INBOX, INBOX_NAME } from '../../lib/schema';
 import { cx } from '../../lib/util';
 import { allBoards, boardMeta, colCount, useData } from '../../store/data';
 import { closeCtx, manageLabels, useUI } from '../../store/ui';
-import { ColorRow, LabelChip, ProjectAvatar } from '../bits';
+import { ColorRow, LabelChip, ProjectAvatar, Tip } from '../bits';
 import { Icon } from '../Icon';
 
 export function CtxMenu() {
@@ -253,7 +254,9 @@ function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () =>
   const flow = boardFlow(board);
   // 可领取状态按工作流顺序；第一个也是「拆解 / 上传」的领取起点
   const claimables = flow.claimables.length ? flow.claimables.map(s => s.name) : [flow.home?.name ?? '待办'];
-  const labels = ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? [];
+  // 被隐藏的标签（默认是版本标签）不列，default/main#324
+  const project = ws?.projects.find(p => p.key === path.split('/')[0]);
+  const labels = visibleLabels(project?.labels ?? [], hiddenRules(project));
   const list = quickPrompts(path, claimables);
   return (
     <>
@@ -277,9 +280,11 @@ function PromptsMenu({ path, go }: { path: string; go: (fn: () => void) => () =>
               {labels.map(l => {
                 const q = quickPrompts(path, claimables, l.name).find(x => x.kind === 'label' && x.status === name)!;
                 return (
-                  <button key={l.id} type="button" data-do={`quick-label-${name}-${l.id}`} data-tip={q.text} onClick={go(() => copyQuickPrompt(q))}>
-                    <LabelChip label={l} />
-                  </button>
+                  <Tip key={l.id} text={q.text}>
+                    <button type="button" data-do={`quick-label-${name}-${l.id}`} onClick={go(() => copyQuickPrompt(q))}>
+                      <LabelChip label={l} />
+                    </button>
+                  </Tip>
                 );
               })}
             </div>

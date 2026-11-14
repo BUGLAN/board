@@ -8,13 +8,13 @@ import { newBoard, newProject, openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
-import { sidebarLabels } from '../lib/sidebarLabels';
+import { hiddenRules, sidebarLabels } from '../lib/sidebarLabels';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
-import { clock, cx, ago, agentInk, pref } from '../lib/util';
-import { newEntryCount, useCurrent, useData, useOnline } from '../store/data';
-import { manageLabels, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toggleLabelSel, useUI, type Tab } from '../store/ui';
-import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Title, agent, useMeName, useNow } from './bits';
+import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
+import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
+import { confirm, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
+import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, agent, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
 import { InboxSideParts } from './Inbox';
@@ -53,20 +53,20 @@ export function ActivityBar() {
   const item = (t: Tab) => {
     const m = TAB_META[t];
     return (
-      <button
-        key={t}
-        className={cx('ab-item', tab === t && 'on')}
-        type="button"
-        data-tab={t}
-        data-tip={m.tip}
-        data-tip-pos="right"
-        aria-label={m.label}
-        aria-current={tab === t ? 'page' : undefined}
-        onClick={() => setTab(t, { toggle: true })}
-      >
-        {m.icon}
-        <span className="ab-label">{m.label}</span>
-      </button>
+      <Tip key={t} text={m.tip}>
+        <button
+          className={cx('ab-item', tab === t && 'on')}
+          type="button"
+          data-tab={t}
+          data-tip-pos="right"
+          aria-label={m.label}
+          aria-current={tab === t ? 'page' : undefined}
+          onClick={() => setTab(t, { toggle: true })}
+        >
+          {m.icon}
+          <span className="ab-label">{m.label}</span>
+        </button>
+      </Tip>
     );
   };
   return (
@@ -209,15 +209,65 @@ function Section({ id, title, n, closed, onToggle, children }: { id: string; tit
   );
 }
 
-/** 标签：一排胶囊，单击筛选（可多选），拖到卡片上给卡片加这个标签（lib/labelDrag.ts）。
-    新建、改名、改色、删除、调整顺序都在「管理标签」弹窗里（default/main#289），这里留一个入口。
-    版本标签（v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts） */
-function LabelBlock({ project, all, used }: { project: string; all: Label[]; used: Record<number, number> }) {
+/** 标签：整块就是输入框。平时看着只是一排胶囊；双击胶囊以外的空白处进入编辑态，光标跟在最后一个胶囊后面，
+    输入名称回车新建；Esc 或点到区块外退出。单击空白不做任何事；单击胶囊筛选、点 × 删除、拖胶囊到卡片都不进入编辑态。
+    胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts）。
+    项目的隐藏规则命中的标签（默认是版本标签 v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts，default/main#324） */
+function LabelBlock({ project, all, rules, used }: { project: string; all: Label[]; rules: string[]; used: Record<number, number> }) {
   const sel = useUI(s => s.labelSel);
-  const labels = useMemo(() => sidebarLabels(all, sel), [all, sel]);
+  const labels = useMemo(() => sidebarLabels(all, sel, rules), [all, sel, rules]);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const edit = () => {
+    setEditing(true);
+    const el = input.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  };
+  const create = async () => {
+    const n = name.trim();
+    if (!n || busy) return;
+    // 新标签要等服务端分配 ID：输入框进行中（只读、转圈），不会重复新建
+    setBusy(true);
+    try {
+      await optimistic(null, () => api.createLabel(project, n));
+      setName('');
+    } catch (e) {
+      toastError(e);
+      replay(input.current, 'invalid');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (l: Label) => {
+    const text = l.uses ? `${l.uses} 张卡片在用这个标签，删除后会从这些卡片上一起去掉。` : '还没有卡片在用这个标签。';
+    if (!(await confirm({ title: `删除标签「${l.name}」？`, text, ok: '删除标签', icon: 'tag' }))) return;
+    // 当帧从侧栏和卡片上拿掉，被拒绝时回来并提示
+    if (useUI.getState().labelSel.includes(l.id)) toggleLabelSel(l.id);
+    try {
+      await optimistic(deleteLabelPatch(project, l.id), () => api.deleteLabel(project, l.id));
+    } catch (e) {
+      toastError(e);
+    }
+  };
   return (
     <div className="lb-block">
-      <div className="lb-field">
+      <div
+        className={cx('lb-field', editing && 'editing')}
+        onMouseDown={e => {
+          // 胶囊、× 照常；空白处单击什么也不做：不聚焦、不选中文字，编辑中也不让输入框失焦
+          if ((e.target as HTMLElement).closest('button, input')) return;
+          e.preventDefault();
+        }}
+        onDoubleClick={e => {
+          // 只有双击胶囊以外的空白处才进入编辑态；刚拖完胶囊补发的点击不算
+          if ((e.target as HTMLElement).closest('button') || labelDragJustEnded()) return;
+          edit();
+        }}
+      >
         {labels.map(l => (
           <span key={l.id} className="lb-item" data-label={l.id}>
             <button
@@ -225,8 +275,8 @@ function LabelBlock({ project, all, used }: { project: string; all: Label[]; use
               className={cx('lb lb-pick', sel.includes(l.id) && 'on')}
               style={{ ['--lc' as string]: l.color }}
               aria-pressed={sel.includes(l.id)}
-              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签`}
-              onPointerDown={e => labelPointerDown(e, l, project, false)}
+              title={`${sel.includes(l.id) ? '取消选中' : `筛选「${l.name}」（可多选，带任一个就显示）`} · 拖到卡片上加这个标签，在这里拖动调整顺序`}
+              onPointerDown={e => labelPointerDown(e, l, project)}
               onClick={() => {
                 if (!labelDragJustEnded()) toggleLabelSel(l.id);
               }}
@@ -236,12 +286,46 @@ function LabelBlock({ project, all, used }: { project: string; all: Label[]; use
               {l.name}
               <em>{used[l.id] || 0}</em>
             </button>
+            {/* 悬停时盖在计数上，不占位，胶囊排列不变 */}
+            <button
+              type="button"
+              className={cx('lb-del', sel.includes(l.id) && 'on')}
+              style={{ ['--lc' as string]: l.color }}
+              aria-label={`删除标签「${l.name}」`}
+              title="删除标签"
+              onClick={() => remove(l)}
+            >
+              ×
+            </button>
           </span>
         ))}
-        <button type="button" className={cx('lb-manage', !labels.length && 'empty')} aria-label="管理标签" data-tip="新建、改名、改色、删除、调整顺序" onClick={() => manageLabels(project)}>
-          <Icon name="settings" />
-          {labels.length ? '管理' : '新建标签'}
-        </button>
+        <input
+          ref={input}
+          className={cx('lb-input', busy && 'busy')}
+          value={name}
+          placeholder={labels.length ? '' : editing ? '输入标签名，回车新建' : '双击新建标签'}
+          maxLength={24}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label="新标签"
+          readOnly={busy}
+          aria-busy={busy || undefined}
+          // 键盘 Tab 进来也算进入编辑态；鼠标单击不到它（不在编辑态时 pointer-events: none）
+          onFocus={() => setEditing(true)}
+          onBlur={() => setEditing(false)}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              create();
+            }
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              setName('');
+              input.current?.blur();
+            }
+          }}
+        />
       </div>
     </div>
   );
@@ -489,8 +573,9 @@ function BoardSide() {
   };
 
   const labels = cur?.project.labels ?? [];
-  // 侧栏只列非版本标签（选中的版本标签例外），计数和胶囊一致；卡片、详情、里程碑页照旧用 labels
-  const shown = useMemo(() => sidebarLabels(labels, labelSel), [labels, labelSel]);
+  // 侧栏不列被隐藏的标签（选中的例外），计数和胶囊一致；卡片、详情、里程碑页照旧用 labels
+  const rules = hiddenRules(cur?.project);
+  const shown = useMemo(() => sidebarLabels(labels, labelSel, rules), [labels, labelSel, rules]);
   const used = useMemo(() => {
     const m: Record<number, number> = {};
     if (board) for (const c of Object.values(board.cards)) for (const l of c.labels) m[l] = (m[l] || 0) + 1;
@@ -503,28 +588,29 @@ function BoardSide() {
       <header className="side-head">
         <span className="side-title">白板</span>
         <span className="side-sub">{cur?.board.path}</span>
-        <button
-          className="icon-btn sm"
-          type="button"
-          aria-label="折叠 / 展开分组"
-          data-tip="折叠 / 展开分组"
-          data-tip-align="end"
-          onClick={() => {
-            const all = ['labels', 'working', 'recent'];
-            const close = all.some(x => !closed.has(x));
-            const n = new Set(close ? all : []);
-            pref.set('treeClosed', [...n]);
-            setClosed(n);
-          }}
-        >
-          <Icon name="collapse" />
-        </button>
+        <Tip text="折叠 / 展开分组">
+          <button
+            className="icon-btn sm"
+            type="button"
+            aria-label="折叠 / 展开分组"
+            data-tip-align="end"
+            onClick={() => {
+              const all = ['labels', 'working', 'recent'];
+              const close = all.some(x => !closed.has(x));
+              const n = new Set(close ? all : []);
+              pref.set('treeClosed', [...n]);
+              setClosed(n);
+            }}
+          >
+            <Icon name="collapse" />
+          </button>
+        </Tip>
       </header>
       <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent" />
       <div className="side-scroll">
         <Section id="labels" title="标签" n={cur ? shown.length : 'loading'} closed={closed.has('labels')} onToggle={toggle}>
           {cur && (board || !shown.length) ? (
-            <LabelBlock project={cur.project.key} all={labels} used={used} />
+            <LabelBlock project={cur.project.key} all={labels} rules={rules} used={used} />
           ) : (
             <SkeletonLabels n={cur ? shown.length : 5} />
           )}
@@ -628,11 +714,13 @@ function TrashEntry({ path }: { path?: string }) {
   if (!path) return null;
   const n = count ?? 0;
   return (
-    <button className={cx('trash-entry', n > 0 && 'has')} type="button" disabled={!count && n === 0} data-tip={n ? '删除的卡片，30 天内可以恢复' : '还没有删掉的卡片'} data-tip-pos="top" onClick={() => openTrash(path)}>
-      <Icon name="trash" />
-      <span className="trash-entry-name">回收站</span>
-      <span className="trash-entry-n mono">{n}</span>
-    </button>
+    <Tip text={n ? '删除的卡片，30 天内可以恢复' : '还没有删掉的卡片'}>
+      <button className={cx('trash-entry', n > 0 && 'has')} type="button" disabled={!count && n === 0} data-tip-pos="top" onClick={() => openTrash(path)}>
+        <Icon name="trash" />
+        <span className="trash-entry-name">回收站</span>
+        <span className="trash-entry-n mono">{n}</span>
+      </button>
+    </Tip>
   );
 }
 
@@ -770,9 +858,11 @@ function ProjectsSide() {
       <header className="side-head">
         <span className="side-title">项目</span>
         {ws ? <span className="side-sub">{projects.length} 个项目</span> : <Skeleton w={52} h={10} />}
-        <button aria-label="新建项目" className="icon-btn sm" type="button" data-tip="新建项目" data-tip-align="end" onClick={() => newProject()}>
-          <Icon name="plus" sw={1.9} />
-        </button>
+        <Tip text="新建项目">
+          <button aria-label="新建项目" className="icon-btn sm" type="button" data-tip-align="end" onClick={() => newProject()}>
+            <Icon name="plus" sw={1.9} />
+          </button>
+        </Tip>
       </header>
       <SideFilter value={q} onChange={setQ} placeholder="筛选项目和白板" />
       <div className="side-scroll" role="tree" onPointerLeave={() => canvasHighlight(null)}>

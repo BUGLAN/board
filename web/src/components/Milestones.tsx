@@ -35,7 +35,7 @@ import type { Label, ProjectInfo, Status } from '../lib/types';
 import { cx, dateTime, reduceMotion, since } from '../lib/util';
 import { jumpDetail, openDetail, setPath, useCurrent, useData } from '../store/data';
 import { overlayOpen } from '../store/ui';
-import { Avatar, LabelChip, Title, useNow } from './bits';
+import { Avatar, LabelChip, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { Skeleton } from './Skeleton';
 
@@ -224,12 +224,16 @@ function VersionView({
         <Icon name="chevRight" />
         <span>里程碑</span>
         <span className="msp-nav">
-          <button type="button" className="icon-btn" aria-label="新一点的版本" data-tip="新一点的版本（K）" disabled={i <= 0} onClick={() => step(pages, page, -1)}>
-            <Icon name="chevUp" />
-          </button>
-          <button type="button" className="icon-btn" aria-label="更早的版本" data-tip="更早的版本（J）" disabled={i >= pages.length - 1} onClick={() => step(pages, page, 1)}>
-            <Icon name="chevDown" />
-          </button>
+          <Tip text="新一点的版本（K）">
+            <button type="button" className="icon-btn" aria-label="新一点的版本" disabled={i <= 0} onClick={() => step(pages, page, -1)}>
+              <Icon name="chevUp" />
+            </button>
+          </Tip>
+          <Tip text="更早的版本（J）">
+            <button type="button" className="icon-btn" aria-label="更早的版本" disabled={i >= pages.length - 1} onClick={() => step(pages, page, 1)}>
+              <Icon name="chevDown" />
+            </button>
+          </Tip>
         </span>
       </div>
 

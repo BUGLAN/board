@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
+import { judge } from '../../lib/granularity';
 import { agentMark, boardOf, cardDispatch, envName, hostDirFor, hostLoad, hostsOf, inSession, isSplit, queueReason, dirReadiness, readyOk, readyWhy, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
 import { confirm, openDispatch, openHost, openSession, toast, toastError, useUI } from '../../store/ui';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { usePresence } from '../overlays/presence';
 import { AgentChip, Dot, Mark } from './bits';
@@ -173,20 +174,25 @@ export function DispatchHistory({ board, card }: { board: string; card: number }
 
 /** 卡片详情底部「派发」对话框：选机器、选 agent */
 export function DispatchDialog() {
-  const card = useUI(s => s.dispatchOf);
-  const { mounted, on } = usePresence(card != null, 220);
-  const last = useRef(card);
-  if (card != null) last.current = card;
+  const req = useUI(s => s.dispatchOf);
+  const { mounted, on } = usePresence(req != null, 220);
+  const last = useRef(req);
+  if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
-  return <DispatchBody key={last.current} card={last.current} on={on && card != null} />;
+  const { card, force } = last.current;
+  return <DispatchBody key={`${card}-${force}`} card={card} force={force} on={on && req != null} />;
 }
 
-function DispatchBody({ card, on }: { card: number; on: boolean }) {
+/** force：粒度预检判偏小，人点了「强制拆解」仍要拆（default/main#306） */
+function DispatchBody({ card, force, on }: { card: number; force: boolean; on: boolean }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
-  const title = useData(s => s.board?.cards[card]?.title ?? '');
+  const entry = useData(s => s.board?.cards[card]);
+  const title = entry?.title ?? '';
   // 「未整理」里的条目：派给 agent 拆解
-  const split = useData(s => s.board?.cards[card]?.column === 'inbox');
+  const split = entry?.column === 'inbox';
+  // 粒度预检说这一条已经够细（已经拆出来的子项不再判）
+  const small = split && !force && entry?.splitFrom == null ? judge(entry.title, entry.body) : null;
   const hosts = hostsOf(ws);
   const rc = boardOf(ws, path)?.readyCheck;
   // 有工作空间的机器就视为有这块白板的目录（目录状态只在机器详情里提示，不再拒绝派发）
@@ -246,9 +252,22 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
       <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `派给 agent 拆解 #${card}` : `派发 #${card}`}>
-        <h3>{split ? `派给 agent 拆解 #${card}` : `派发 #${card}`}</h3>
+        <h3>{split ? `${force ? '强制' : ''}派给 agent 拆解 #${card}` : `派发 #${card}`}</h3>
         <p className="dp-sub">{title}</p>
         {split && <p className="dp-note dp-split">agent 读这一条，把它拆成几张卡记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
+        {/* 粒度预检（default/main#306）：够细的一条先别拆，说清楚为什么；强制拆解时提醒 agent 只切真的有先后依赖的部分 */}
+        {(small || (split && force)) && (
+          <p className="dp-note dp-size" role="status">
+            {small ? (
+              <>
+                <b>任务粒度合适，不用拆</b>
+                （{small.why}）：这一条自己就能做完、单独复盘。点「强制拆解」仍可派给 agent，提示词里会告诉它只在真的有先后依赖时才切。
+              </>
+            ) : (
+              <>强制拆解：这条预检判过够细，agent 会再判一遍，只在真的有先后依赖时才切；能整个做就保留原样、不建卡。</>
+            )}
+          </p>
+        )}
         {hosts.length === 0 ? (
           <div className="dp-empty">
             <p>还没有机器。在要干活的机器上运行 board host，它会出现在这里。</p>
@@ -310,16 +329,11 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
                 <div className="dp-label">agent</div>
                 <div className="hp-agents">
                   {h.agents.map(a => (
-                    <button
-                      key={a.id}
-                      type="button"
-                      className={cx('hp-agent-btn', agent === a.id && 'on')}
-                      disabled={!a.found}
-                      onClick={() => setAgent(a.id)}
-                      data-tip={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}
-                    >
-                      <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} />
-                    </button>
+                    <Tip key={a.id} text={a.found ? '' : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}>
+                      <button type="button" className={cx('hp-agent-btn', agent === a.id && 'on')} disabled={!a.found} onClick={() => setAgent(a.id)}>
+                        <AgentChip a={a} def={a.id === h.agent} env={envName(h, a.env)} skill={skillMiss(h, a)} />
+                      </button>
+                    </Tip>
                   ))}
                 </div>
                 {miss && (
@@ -338,7 +352,7 @@ function DispatchBody({ card, on }: { card: number; on: boolean }) {
           </button>
           <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={!h || !agent || sending || !usable(h)} aria-busy={sending || undefined} onClick={submit}>
             <Icon name="dispatch" />
-            {split ? '派给 agent 拆解' : '派发'}
+            {split ? (force ? '强制拆解' : '派给 agent 拆解') : '派发'}
           </button>
         </div>
       </div>

@@ -5,7 +5,7 @@
    - 卡片位置变化用 FLIP 补间；新卡片弹入；通过 CLI 或其他窗口做的修改：卡片闪光 + 角标说明是谁做的
    - 手机：状态块上下排列，顶部有状态切换条
    ========================================================================== */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { useMasonry } from '../lib/masonry';
 import { groupRuns, sessionOrder, type SessGroup } from '../lib/sessionGroups';
 import { setShownCols } from '../lib/drag';
@@ -18,6 +18,7 @@ import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/type
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
 import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurrent, useData } from '../store/data';
 import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
+import { Tip } from './bits';
 import { BoardSettings } from './BoardSettings';
 import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
@@ -284,16 +285,7 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
         <span className="col-i">{index + 1}</span>
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
-        {col.claim && (
-          <span className="col-tag claim" aria-label="可领取">
-            <Icon name="claim" />
-          </span>
-        )}
-        {col.lock && (
-          <span className="col-tag" aria-label="锁定">
-            <Icon name="lock" />
-          </span>
-        )}
+        <ColTags col={col} icons />
         {fake ? (
           <Skeleton className="sk-count" w={26} h={22} r={11} />
         ) : (
@@ -302,6 +294,7 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
           </span>
         )}
       </header>
+      <ColRules col={col} />
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} style={{ ['--tile-ch' as string]: 2 }}>
           {Array.from({ length: n }, (_, i) =>
@@ -393,6 +386,40 @@ interface ColumnProps {
   path: string;
 }
 
+/** 状态的规则：可领取 / 锁定 / 错误节点 / 终点（互斥：错误节点和另外三个不同时打开）。只有图标时（标题旁）按顺序取这几个 */
+const COL_RULES = [
+  { key: 'claim', icon: 'claim', name: '可领取', tip: '可领取：agent 从这里领' },
+  { key: 'lock', icon: 'lock', name: '锁定', tip: '锁定：只能领取进入；派发排队的卡片也在这里等机器开始' },
+  { key: 'error', icon: 'alert', name: '错误节点', tip: '错误节点：agent 异常退出、做不下去时移到这里，只有人能移出' },
+  { key: 'final', icon: 'checkCircle', name: '终点', tip: '终点：只有人能移入移出' },
+] as const;
+
+function rulesOf(col: Status) {
+  return COL_RULES.filter(r => col[r.key]);
+}
+
+/** 标题旁的规则图标；`icons` 时只有图标（一排带文字的胶囊会把名称挤没），说清楚是哪条规则的文字在标题下面一行（ColRules） */
+function ColTags({ col, icons }: { col: Status; icons?: boolean }) {
+  return (
+    <>
+      {rulesOf(col).map(r => (
+        <Tip key={r.key} text={icons ? r.tip : ''}>
+          <span className="col-tag" data-rule={r.key} aria-label={r.name}>
+            <Icon name={r.icon} />
+            {icons ? null : <span className="t">{r.name}</span>}
+          </span>
+        </Tip>
+      ))}
+    </>
+  );
+}
+
+/** 标题下面一行：图标 + 规则名称的小胶囊（可领取 / 锁定 / 错误节点 / 终点）；没有规则的状态不占这一行 */
+function ColRules({ col }: { col: Status }) {
+  if (!rulesOf(col).length) return null;
+  return <div className="col-rules"><ColTags col={col} /></div>;
+}
+
 function emptyText(s: Status, f: FlowQ) {
   if (s.claim && s.key === f.home?.key) return `${s.name}是空的。新建一张卡片，或等 agent 用 board new 创建`;
   if (s.claim) return `${s.name}是空的。agent 也会从这里领取`;
@@ -445,33 +472,26 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
         <span className="col-i">{index + 1}</span>
         <span className="col-dot" />
         <h2 className="col-name">{col.name}</h2>
-        {col.claim && (
-          <span className="col-tag claim" role="img" aria-label="可领取" data-tip="可领取：agent 从这里领">
-            <Icon name="claim" />
-          </span>
-        )}
-        {col.lock && (
-          <span className="col-tag" role="img" aria-label="锁定" data-tip="锁定：只能领取进入；派发排队的卡片也在这里等机器开始">
-            <Icon name="lock" />
-          </span>
-        )}
+        <ColTags col={col} />
         {sorted && <OrderChip col={col} path={path} />}
         {role && count > 0 && (
-          <button
-            type="button"
-            className={cx('col-desk', role)}
-            onPointerDown={e => e.stopPropagation()}
-            onClick={() => openReview({ cols: [col.key], mode: role })}
-            data-tip={role === 'review' ? '复盘台：逐张看，通过或打回' : '逐张看 agent 留的问题，回复后放回'}
-          >
-            <Icon name={role === 'review' ? 'checkCircle' : 'comment'} />
-            {role === 'review' ? '复盘' : '处理'}
-          </button>
+          <Tip text={role === 'review' ? '复盘台：逐张看，通过或打回' : '逐张看 agent 留的问题，回复后放回'}>
+            <button
+              type="button"
+              className={cx('col-desk', role)}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => openReview({ cols: [col.key], mode: role })}
+            >
+              <Icon name={role === 'review' ? 'checkCircle' : 'comment'} />
+              {role === 'review' ? '复盘' : '处理'}
+            </button>
+          </Tip>
         )}
         <span className="col-count" aria-label="卡片数量" ref={badge}>
           <span>{count}</span>
         </span>
       </header>
+      <ColRules col={col} />
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
           {ids.flatMap((id, idx) => {
@@ -479,6 +499,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
             if (!c) return [];
             const run = runAt.get(idx);
             const end = runs.find(r => r.start + r.n - 1 === idx);
+            const grouped = runs.some(r => idx >= r.start && idx < r.start + r.n);
             const card = (
               <CardView
                 key={renderKey(id)}
@@ -494,13 +515,14 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
                 final={col.final}
                 view={view}
                 next={firstFree === id}
+                grouped={grouped}
               />
             );
             // 组头、组尾和卡片是同一层的兄弟（不包一层）：成组、散开时卡片不重新挂载，拖拽按 data-deco 跳过它们
             return [
               run && <SessionHead key={`sh:${run.g.key}`} g={run.g} n={run.n} gk={`${run.g.key}@${run.start}`} />,
               card,
-              end && <i key={`sf:${end.g.key}`} className="sess-foot" data-deco="" data-g={`${end.g.key}@${end.start}`} aria-hidden="true" />,
+              end && <i key={`sf:${end.g.key}`} className="sess-foot" data-deco="" data-block-end="" data-g={`${end.g.key}@${end.start}`} aria-hidden="true" />,
             ].filter(Boolean);
           })}
           {earlier > 0 && <EarlierButton n={earlier} view={view} />}
@@ -514,6 +536,11 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
       {resizer}
     </section>
   );
+}
+
+/** 提示可能为空（不是磁贴时不加提示）：为空时原样返回元素，不套 <Tip> */
+function TipOr({ text, children }: { text?: string; children: ReactElement }) {
+  return text ? <Tip text={text}>{children}</Tip> : children;
 }
 
 /** 终点状态只带了最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态一样大（磁贴里写成 +M）；
@@ -530,34 +557,35 @@ function EarlierButton({ n, view }: { n: number; view: StatusView }) {
     if (el.style.height !== h) el.style.height = h;
   });
   return (
-    <button
-      ref={ref}
-      type="button"
-      data-earlier=""
-      className={cx('col-earlier', `v-${view}`, busy && 'is-busy')}
-      disabled={busy}
-      aria-label={`显示更早的 ${n} 张`}
-      data-tip={view === 'tile' ? `更早的 ${n} 张` : undefined}
-      onClick={async () => {
-        setBusy(true);
-        try {
-          await loadFull();
-        } catch (e) {
-          toastError(e);
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      {view === 'tile' ? (
-        `+${n}`
-      ) : (
-        <>
-          <Icon name="more" />
-          更早的 {n} 张
-        </>
-      )}
-    </button>
+    <TipOr text={view === 'tile' ? `更早的 ${n} 张` : undefined}>
+      <button
+        ref={ref}
+        type="button"
+        data-earlier=""
+        className={cx('col-earlier', `v-${view}`, busy && 'is-busy')}
+        disabled={busy}
+        aria-label={`显示更早的 ${n} 张`}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await loadFull();
+          } catch (e) {
+            toastError(e);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {view === 'tile' ? (
+          `+${n}`
+        ) : (
+          <>
+            <Icon name="more" />
+            更早的 {n} 张
+          </>
+        )}
+      </button>
+    </TipOr>
   );
 }
 
@@ -566,18 +594,19 @@ function OrderChip({ col, path }: { col: Status; path: string }) {
   const o = orderOf(col);
   const x = orderOption(o);
   return (
-    <button
-      type="button"
-      className="col-order"
-      aria-label={`「${col.name}」按${orderName(o)}排，${orderDir(o)}。点开白板设置更改`}
-      data-tip={`保留顺序：按${orderName(o)}，${orderDir(o)}`}
-      onClick={() => openBoardSettings(path, col.key)}
-    >
-      <Icon name="sort" />
-      <span className="t">{x.name}</span>
-      <span className="ts">{x.short}</span>
-      {x.dirs && <i aria-hidden="true">{o.desc ? '↓' : '↑'}</i>}
-    </button>
+    <Tip text={`保留顺序：按${orderName(o)}，${orderDir(o)}`}>
+      <button
+        type="button"
+        className="col-order"
+        aria-label={`「${col.name}」按${orderName(o)}排，${orderDir(o)}。点开白板设置更改`}
+        onClick={() => openBoardSettings(path, col.key)}
+      >
+        <Icon name="sort" />
+        <span className="t">{x.name}</span>
+        <span className="ts">{x.short}</span>
+        {x.dirs && <i aria-hidden="true">{o.desc ? '↓' : '↑'}</i>}
+      </button>
+    </Tip>
   );
 }
 
@@ -842,10 +871,10 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
 
 const NO_GROUPS: Record<number, SessGroup> = {};
 
-/** 一组的开头：铺满整行，写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */
+/** 一组的开头：和整块一样宽（lib/masonry 按块摆），写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */
 function SessionHead({ g, n, gk }: { g: SessGroup; n: number; gk: string }) {
   return (
-    <div className={cx('sess-head', g.kind)} data-deco="" data-g={gk}>
+    <div className={cx('sess-head', g.kind)} data-deco="" data-block="" data-g={gk}>
       <Icon name={g.kind === 'session' ? 'terminal' : 'timer'} />
       {g.kind === 'session' ? (
         <span>

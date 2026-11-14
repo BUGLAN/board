@@ -2182,3 +2182,127 @@ fn reply_comments_and_moves_in_one_write() {
     assert_eq!(card(&s, B, id).activity.len(), n, "整个写回滚：没有留下评论");
     assert_eq!(card(&s, B, id).card.column, "rework");
 }
+
+/* ---------------- 隐藏的标签（default/main#324） ---------------- */
+
+fn hidden_of(s: &Store, key: &str) -> Vec<String> {
+    s.read(|r| r.workspace(T0)).unwrap().projects.into_iter().find(|p| p.key == key).unwrap().hidden_labels
+}
+
+/// 新项目默认隐藏版本标签（`^v\d`）；改规则是整组替换，去掉空行、首尾空白和重复的
+#[test]
+fn hidden_labels_default_and_update() {
+    let mut s = store();
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string()]);
+    let rules: Vec<String> = vec![" ^v\\d ".into(), "".into(), "^tmp-".into(), "^v\\d".into()];
+    s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&rules), ..Default::default() }))
+        .unwrap();
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string(), "^tmp-".to_string()]);
+    // 只改名字不动规则
+    s.write(T0, Origin::ui(None), |w| w.update_project("default", Some("改名"), None, None)).unwrap();
+    assert_eq!(hidden_of(&s, "default").len(), 2);
+    // 清空：一条都不隐藏（不会回到默认）
+    s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&[]), ..Default::default() }))
+        .unwrap();
+    assert!(hidden_of(&s, "default").is_empty());
+}
+
+/// 条数、长度有上限，超了拒绝（USAGE），原来的规则不变
+#[test]
+fn hidden_labels_limits() {
+    let mut s = store();
+    let many: Vec<String> = (0..=HIDDEN_LABELS_MAX).map(|i| format!("^x{i}")).collect();
+    let r = s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&many), ..Default::default() }));
+    assert_eq!(r.expect_err("太多条").code, ErrorCode::Usage);
+    let long = vec!["a".repeat(HIDDEN_LABEL_LEN + 1)];
+    let r = s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden_labels: Some(&long), ..Default::default() }));
+    assert_eq!(r.expect_err("太长").code, ErrorCode::Usage);
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string()]);
+    assert_eq!(store::check_hidden_labels(&many[..HIDDEN_LABELS_MAX]).unwrap().len(), HIDDEN_LABELS_MAX);
+}
+
+/// 旧数据库的项目没有隐藏规则列：迁移后按默认隐藏版本标签
+#[test]
+fn old_projects_hide_version_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE projects DROP COLUMN hidden_labels").unwrap();
+    let s = Store::open(&path).unwrap();
+    assert_eq!(hidden_of(&s, "default"), vec![r"^v\d".to_string()]);
+}
+
+/// 旧服务端的工作区没有 hiddenLabels：按默认处理
+#[test]
+fn project_info_without_hidden_labels_uses_default() {
+    let p: ProjectInfo = serde_json::from_value(serde_json::json!({
+        "key": "a", "name": "甲", "desc": "", "color": "#000000", "pos": { "x": 0.0, "y": 0.0 }, "createdAt": 0, "labels": [], "boards": []
+    }))
+    .unwrap();
+    assert_eq!(p.hidden_labels, vec![r"^v\d".to_string()]);
+}
+
+/* ---------------- 稍后再做（default/main#303） ---------------- */
+
+fn later(id: i64, on: bool) -> Cmd {
+    Cmd::Later { id, on }
+}
+
+/// 收起、放回：只有人能做、只在「未整理」里；状态、位置、标签都不动；重复执行结果相同；记一条动态
+#[test]
+fn inbox_later_on_and_off() {
+    let mut s = store();
+    let a = exec(&mut s, B, &alpha(), T0, inbox_new("先放一放")).unwrap().card.id;
+    let b = exec(&mut s, B, &alpha(), T0, inbox_new("第二条")).unwrap().card.id;
+    let beyond = exec(&mut s, B, &human(), T0, new("工作流里的")).unwrap().card.id;
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, later(a, true))), ErrorCode::Usage, "agent 不能收");
+    assert_eq!(code(exec(&mut s, B, &human(), T0, later(beyond, true))), ErrorCode::Usage, "工作流里的不能收");
+    assert_eq!(code(exec(&mut s, B, &human(), T0, later(99, true))), ErrorCode::NotFound);
+
+    let before = snapshot(&s, B, T0).cols[INBOX].clone();
+    let d = exec(&mut s, B, &human(), T0 + 5, later(a, true)).unwrap();
+    assert_eq!(d.card.later_at, Some(T0 + 5));
+    assert_eq!(d.card.column, INBOX, "还在「未整理」，只是收起来");
+    assert!(d.activity.iter().any(|x| x.text.contains("稍后再做")));
+    // 再收一次不变（时间不刷新、不再记动态）
+    let n = d.activity.len();
+    let d2 = exec(&mut s, B, &human(), T0 + 9, later(a, true)).unwrap();
+    assert_eq!(d2.card.later_at, Some(T0 + 5));
+    assert_eq!(d2.activity.len(), n);
+    assert_eq!(snapshot(&s, B, T0).cols[INBOX], before, "顺序不动");
+
+    let d = exec(&mut s, B, &human(), T0 + 10, later(a, false)).unwrap();
+    assert_eq!(d.card.later_at, None);
+    assert_eq!(snapshot(&s, B, T0).cols[INBOX], before, "放回原来的位置");
+    assert_eq!(snapshot(&s, B, T0).cards[&b].later_at, None);
+}
+
+/// 收起的条目被整理进工作流时清掉标记；放回「未整理」（回收站恢复之外）不会自己变回收起
+#[test]
+fn inbox_later_cleared_when_leaving_inbox() {
+    let mut s = store();
+    let a = exec(&mut s, B, &alpha(), T0, inbox_new("收起后整理")).unwrap().card.id;
+    exec(&mut s, B, &human(), T0, later(a, true)).unwrap();
+    exec(&mut s, B, &human(), T0, mv(a, "todo")).unwrap();
+    let c = &snapshot(&s, B, T0).cards[&a];
+    assert_eq!(c.column, "todo");
+    assert_eq!(c.later_at, None);
+}
+
+/// 旧数据库的卡片没有 later_at 列：迁移后都没收起
+#[test]
+fn old_cards_are_not_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        exec(&mut s, B, &alpha(), T0, inbox_new("旧条目")).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE cards DROP COLUMN later_at").unwrap();
+    let s = Store::open(&path).unwrap();
+    assert!(snapshot(&s, B, T0).cards.values().all(|c| c.later_at.is_none()));
+}

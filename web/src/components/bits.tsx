@@ -1,6 +1,8 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type Ref } from 'react';
+import { createPortal } from 'react-dom';
 import { openLink } from '../lib/actions';
+import { agentIdOf, agentMark } from '../lib/hosts';
 import { inlineCode, markdown } from '../lib/markdown';
 import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
@@ -100,6 +102,27 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
 }
 
 export const agent = (name: string): Actor => ({ kind: 'agent', name });
+
+/**
+ * 按 agent 名字画头像（`<标识>-<机器名>/<模型名>`，见 `agentIdOf`）：认得出标识就用 agent 自己的图标（`AgentIcon`）画在位子上，
+ * 认不出退回现在的字母头像（`Avatar`），名字为空时什么都不画。尺寸、圆角、描边沿用 `.avatar` 位，用到的地方按原来的写法调大小。
+ */
+export function AgentAvatar({ name, className, title }: { name: string | null | undefined; className?: string; title?: string }) {
+  const id = agentIdOf(name);
+  const tip = title ?? name ?? '';
+  if (!id) return name ? <Avatar actor={agent(name)} className={className} /> : null;
+  const m = agentMark(id);
+  return m.icon ? (
+    <span className={cx('avatar', 'agent-logo', m.light && 'ring', className)} style={{ ['--c' as string]: m.color }} title={tip}>
+      <img src={m.icon} alt="" draggable={false} />
+    </span>
+  ) : (
+    // 认识的 agent 还没有自己的图标（旧版 `MARKS`）：两个字母
+    <span className={cx('avatar', className)} style={{ ['--c' as string]: m.color }} title={tip}>
+      {m.short}
+    </span>
+  );
+}
 
 /** 仅人可打的标签在名称前带一把小锁 */
 export const LabelLock = ({ label }: { label: Pick<Label, 'humanOnly'> }) =>
@@ -482,7 +505,89 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
 export function InfoTip({ text, className }: { text: string; className?: string }) {
   return (
     <span className={cx('info-tip', className)} tabIndex={0} role="img" aria-label={text} data-tip={text}>
-      <Icon name="info" />
+      <Tip text={text}>
+        <Icon name="info" />
+      </Tip>
     </span>
+  );
+}
+
+/* ------------------------------ 悬停提示的可读名称 ------------------------------ */
+
+/** 提示浮层（::after 画的、FloatTips 挂到 body 上的）的宿主 id：挂一份在 App 里，每个提示在里面是一个 span，
+    带 data-tip 的元素用 aria-describedby 指过去。没有宿主时（单元测试单独渲染一个组件）不补可读名称，不报错 */
+export const TIP_HOST = 'board-tips';
+
+/** 按提示文字算的 id：同一段提示共用一个 span；用 `~=` 匹配，不担心前缀撞上（t1 和 t12） */
+export const tipKey = (text: string) => `t${Math.abs([...text].reduce((h, c) => (Math.imul(h, 31) + c.codePointAt(0)!) | 0, 7)).toString(36)}`;
+
+/** 提示浮层本身：::after 画的那种看不见也点不到，FloatTips 的那份也是 pointer-events: none，不占可访问树 */
+const mask = (el: HTMLElement) => {
+  el.setAttribute('aria-hidden', 'true');
+  el.removeAttribute('role');
+  return el;
+};
+
+/** 给带 data-tip 的元素补一个可读的名称（default/main#314）：提示只画在悬停时的伪元素上，
+    读屏看不到，键盘用户也没有地方聚焦它。这里按提示文字生成一个浮层，用 aria-describedby 指过去，
+    读屏在焦点落上去时读出「<元素自己的名称>，<提示>」；元素本身名称是空的时候（只有图标），提示就是它的名称。
+    提示内容变了（例如按钮什么时候变成「取消勾选」）到下一次渲染就对上；元素不在的时候浮层一起摘掉 */
+export function TipNote({ el, text }: { el: HTMLElement; text: string }) {
+  useLayoutEffect(() => {
+    const host = document.getElementById(TIP_HOST);
+    // 没有提示文字（例如按钮可以点之后就不用说了）就不补
+    if (!host || !text.trim()) return;
+    const id = `tip-${tipKey(text)}`;
+    let node = document.getElementById(id);
+    if (!node || node.parentElement !== host) {
+      node = mask(document.createElement('span'));
+      node.id = id;
+      host.append(node);
+    }
+    node.textContent = text;
+    const named = el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby') || !!el.textContent?.trim() || el.matches('input, textarea, select, img, svg');
+    if (!named) el.setAttribute('aria-label', text);
+    el.setAttribute('aria-describedby', id);
+    const span = node;
+    return () => {
+      el.removeAttribute('aria-describedby');
+      el.removeAttribute('aria-label');
+      // 摘之前再确认一次：还有别的元素用着同一段提示就留着（按顺序对上的，不查页面里的老属性）
+      setTimeout(() => {
+        if (span.isConnected && !document.querySelector(`[aria-describedby~="${id}"]`)) span.remove();
+      }, 0);
+    };
+  }, [el, text]);
+  return null;
+}
+
+/** 提示的宿主：一个 `hidden` 的空 div，App 里挂一份；每个提示在其中是一个 span（见 TipNote） */
+export function TipHost() {
+  return <div id={TIP_HOST} hidden />;
+}
+
+/** 一个元素 + 它的提示：提示照旧由 data-tip 画（::after 或 FloatTips），同时按上面说的补上可读的名称 */
+export function Tip({ text, children }: { text: string; children: ReactElement }) {
+  const ref = useRef<HTMLElement>(null);
+  // 第一次渲染时子元素还没挂上、ref 是空的：挂上之后补一遍，浮层在这一遍里画出来
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    if (ref.current) redraw(n => n + 1);
+  }, []);
+  // 元素自己带着 ref（例如「更早的 M 张」要量高度）时两边都收着，不互相顶掉
+  const own = (children as ReactElement<{ ref?: Ref<HTMLElement> }>).props.ref;
+  const set = useCallback(
+    (el: HTMLElement | null) => {
+      ref.current = el;
+      if (typeof own === 'function') own(el);
+      else if (own) (own as { current: HTMLElement | null }).current = el;
+    },
+    [own],
+  );
+  return (
+    <>
+      {cloneElement(children as ReactElement<{ ref?: Ref<HTMLElement>; 'data-tip'?: string }>, { ref: set, 'data-tip': text })}
+      {ref.current && createPortal(<TipNote el={ref.current} text={text} />, document.body)}
+    </>
   );
 }

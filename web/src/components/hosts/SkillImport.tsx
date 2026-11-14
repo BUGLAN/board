@@ -14,7 +14,7 @@ import type { HostInfo, SkillImportPick, SkillInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic } from '../../store/data';
 import { toastError } from '../../store/ui';
-import { useNow } from '../bits';
+import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon, OsGlyph } from './bits';
 import { FormFoot, FormModal, FormSec, FormTile } from './FormModal';
@@ -86,9 +86,11 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
             {hosts.map(x => {
               const n = hostNote(x);
               return (
-                <span key={x.id} className={cx('si-host', !n.ok && 'off')} data-tip={n.ok ? undefined : n.note}>
-                  <FormTile on={x.name === h?.name} mark={<OsGlyph os={x.os} small />} title={x.name} desc={n.note} onClick={() => n.ok && !sent && setName(x.name)} />
-                </span>
+                <Tip key={x.id} text={n.ok ? '' : n.note}>
+                  <span className={cx('si-host', !n.ok && 'off')}>
+                    <FormTile on={x.name === h?.name} mark={<OsGlyph os={x.os} small />} title={x.name} desc={n.note} onClick={() => n.ok && !sent && setName(x.name)} />
+                  </span>
+                </Tip>
               );
             })}
           </div>
@@ -141,9 +143,9 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
                       <span className="si-name">
                         <b>{r.skill.name}</b>
                         {r.skill.version && <code>{r.skill.version.slice(0, 7)}</code>}
-                        <em className={cx('si-kind', `k-${r.kind}`)} data-tip={r.note}>
-                          {KIND_WORDS[r.kind]}
-                        </em>
+                        <Tip text={r.note}>
+                          <em className={cx('si-kind', `k-${r.kind}`)}>{KIND_WORDS[r.kind]}</em>
+                        </Tip>
                       </span>
                       <span className="si-meta">
                         {r.kind === 'bad' || r.kind === 'differs' ? `${r.note} · ` : ''}

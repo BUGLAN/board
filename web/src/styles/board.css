@@ -44,17 +44,29 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   content: ""; position: absolute; left: 18px; right: 18px; top: 0; height: 2px; border-radius: 0 0 var(--r-hair) var(--r-hair);
   background: linear-gradient(90deg, transparent, var(--c), transparent); opacity: .7;
 }
+/* 网格：序号、圆点、名称、规则标签、排序标记、复盘/处理、数量各占一列；只有名称可以被压窄。
+   规则标签（可领取 / 锁定 / 错误节点 / 终点）按内容定宽，不会被名称挤成一条竖线（before: min-width: 0 的 flex 子项会被压到 0，default/main#312） */
 .col-head {
-  display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px 14px; flex: none; min-width: 0;
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px;
+  padding: 12px 12px 8px 14px; flex: none; min-width: 0;
   cursor: grab; user-select: none; -webkit-user-select: none;
 }
+/* 顺序号与圆点挨着（两列之间不要 gap） */
+.col-head > .col-i { margin-right: -2px; }
 .col-i {
   display: grid; place-items: center; width: 17px; height: 17px; border-radius: var(--r-xs); flex: none;
   font-family: var(--f-mono); font-size: 11px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2);
 }
-.col-tag { display: inline-flex; align-items: center; gap: 3px; min-width: 0; font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 规则标签：图标 + 文字的小胶囊，放在标题下面一行（第二行），块窄也不裁掉；只有图标时是一个 18px 的圆 */
+.col-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 18px; padding: 0 14px 9px; }
+.col-tag { display: inline-flex; align-items: center; justify-content: center; gap: 3px; flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 6px 0 5px; border-radius: 999px; font-size: 11px; color: var(--text-3); white-space: nowrap; box-shadow: inset 0 0 0 1px var(--line-2); }
+.col-tag > svg:only-child { margin: 0 1px; }
 .col-tag svg { width: 11px; height: 11px; flex: none; }
-.col-tag.claim { color: color-mix(in oklab, var(--brand), var(--ink)); }
+.col-tag .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.col-tag[data-rule="claim"] { color: color-mix(in oklab, var(--brand), var(--ink)); }
+.col-tag[data-rule="lock"] { color: color-mix(in oklab, var(--c-doing), var(--text-3)); }
+.col-tag[data-rule="error"] { color: var(--danger-text); }
+.col-tag[data-rule="final"] { color: color-mix(in oklab, var(--c-done), var(--text-3)); }
 .col { container-type: inline-size; }
 
 /* 窄的块（1200px 宽、每块 3 栏）：序号让位给名称 */
@@ -64,7 +76,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 @keyframes breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 0%, transparent); } }
 .col-name { font-family: var(--f-display); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .col-count {
-  margin-left: auto; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
+  grid-column: -2 / -1; justify-self: end; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
   border-radius: 999px; font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2);
   overflow: hidden;
@@ -74,7 +86,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-count.bump { animation: count-pop var(--dur-3) var(--spring); color: var(--c); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 50%, transparent); }
 /* 保留顺序开着时标题上的排序标记（lib/sort.ts）：写这块按什么排、方向；点开白板设置，定位到这一块 */
 .col-order {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px 0 6px; flex: none;
+  justify-self: end; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px 0 6px; flex: none;
   border-radius: 999px; white-space: nowrap; font-size: 11px; font-weight: 500; cursor: pointer;
   color: color-mix(in oklab, var(--c), var(--ink)); background: color-mix(in srgb, var(--c) 12%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent);
@@ -84,17 +96,15 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-order svg { width: 12px; height: 12px; flex: none; }
 .col-order i { font-style: normal; }
 .col-order .ts { display: none; }
-.col-order ~ .col-count { margin-left: 0; }
-/* 窄的块：让出排序标记的位置，名称至少留三个字；再窄换成简称 */
+/* 窄的块：名称至少留三个字，先换成简称 */
 .col-head:has(.col-order) .col-name { min-width: 3.2em; }
-@container (max-width: 300px) { .col-head:has(.col-order) .col-tag { display: none; } }
 @container (max-width: 260px) { .col-order svg, .col-order .t { display: none; } .col-order .ts { display: inline; } }
 @keyframes count-roll { from { transform: translateY(var(--roll, 100%)); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes count-pop { 40% { transform: scale(1.18); } }
 @media (pointer: coarse) { .col-order { min-width: 32px; min-height: 32px; } }
 
 .col-body { position: relative; padding: 2px 10px 10px; }
-/* 块变宽后卡片排成多列，瀑布流上下挨紧（lib/masonry.ts：行高 1px，卡片按高度 + 间距跨行） */
+/* 块变宽后卡片排成多列，瀑布流上下挨紧（lib/masonry.ts：行高 1px，卡片按高度 + 间距跨行，位置由它写进 grid-row / grid-column） */
 .col-list {
   --gap: 8px;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); grid-auto-rows: 1px;
@@ -810,24 +820,31 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .bsp-cursor { position: absolute; left: 60%; top: 46%; z-index: 2; width: 20px; height: 20px; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35)); animation: bsp-cursor .3s var(--ease-out); }
 @keyframes bsp-cursor { from { opacity: 0; transform: translate(10px, 12px); } }
 
-/* 同一会话的卡框在一起（lib/sessionGroups，default/main#289）：组头铺满整行写机器 · agent，
-   框从组头画到组尾（--fh 由 BoardView 的 sessionFrames 在瀑布流排完后量），卡片照常是列表的直接子元素 */
+/* 同一会话的卡框在一起（lib/sessionGroups，default/main#289）：整组是一个块（lib/masonry 按块摆，default/main#319），
+   只占组里的卡需要的几栏，旁边可以并排别的卡片或组；组头和块一样宽，写机器 · agent，
+   框从组头画到组尾（--fh 由 BoardView 的 sessionFrames 在瀑布流排完后量），卡片照常是列表的直接子元素。
+   框画在块的格子边上（不往外伸，免得和并排的卡片、组挤在一起），组里的卡片左右往里缩，和框留出间距 */
 .sess-head {
-  grid-column: 1 / -1; position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; height: 26px; padding: 0 6px;
+  position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; height: 26px; padding: 0 8px;
   font-family: var(--f-ui, inherit); font-size: 11.5px; color: var(--text-3); white-space: nowrap;
 }
 .sess-head > * { position: relative; z-index: 1; }
-.sess-head > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 块很窄时（窄的状态块里只占一栏）机器名先让位，「会话几张」最后才截断；不能给组头 overflow: hidden，框是它往下伸的 ::before */
+.sess-head > span { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sess-head svg { width: 12px; height: 12px; flex: none; color: var(--c-doing); }
 .sess-head b { font-weight: 600; color: var(--text-2); }
-.sess-head em { margin-left: auto; flex: none; font-style: normal; font-size: 11px; }
+.sess-head em { margin-left: auto; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: normal; font-size: 11px; }
 .sess-head::before {
-  content: ''; position: absolute; z-index: 0; left: -5px; right: -5px; top: 0; height: max(26px, calc(var(--fh, 26px) - 1px));
+  content: ''; position: absolute; z-index: 0; left: 0; right: 0; top: 0; height: max(26px, calc(var(--fh, 26px) - 1px));
   border-radius: calc(var(--r-md) + 4px); pointer-events: none;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-doing) 42%, var(--line));
   background: color-mix(in srgb, var(--c-doing) 4%, transparent);
 }
 .sess-head.wait svg { color: var(--text-3); }
 .sess-head.wait::before { box-shadow: inset 0 0 0 1px var(--line-2); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
-.sess-foot { grid-column: 1 / -1; height: 6px; }
-.view-tile .sess-head { height: 22px; font-size: 11px; }
+.sess-foot { height: 6px; }
+.card.in-sess { margin-inline: 6px; }
+.card.v-line.in-sess { margin-inline: 5px; }
+.view-tile .sess-head { height: 22px; padding: 0 6px; font-size: 11px; }
+.view-tile .sess-head::before { border-radius: calc(var(--r-xs) + 4px); }
+.card.v-tile.in-sess { margin-inline: 3px; }

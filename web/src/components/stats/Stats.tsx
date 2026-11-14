@@ -784,13 +784,15 @@ function NetFlow({ s }: { s: Stats }) {
   const created = s.cur.created;
   const done = s.cur.done;
   const net = done - created;
+  // 柱数一多横轴就只标首尾（按天改短格式），在图例旁边补一句首尾是哪两天
+  const [axisNote, setAxisNote] = useState('');
   return (
     <Card title="积压净流量" id="sp-net" extra={<Note>新建 vs 完成 · 按{s.bucket === 'hour' ? '小时' : '天'}</Note>}>
       <p className="sp-net-sum">
         新建 <b>{created}</b> · 完成 <b>{done}</b> ·{' '}
         <span className={cx(net > 0 ? 'good' : net < 0 && 'bad')}>{net === 0 ? '积压不变' : net > 0 ? `积压减少 ${net} 张` : `积压增加 ${-net} 张`}</span>
       </p>
-      <PairBars data={s.series.map(b => ({ t: b.t, created: b.created, done: b.done }))} bucket={s.bucket} height={170} />
+      <PairBars data={s.series.map(b => ({ t: b.t, created: b.created, done: b.done }))} bucket={s.bucket} height={170} onAxisNote={setAxisNote} />
       <div className="tl-legend">
         <span>
           <i className="sp-key b2" />
@@ -800,6 +802,7 @@ function NetFlow({ s }: { s: Stats }) {
           <i className="sp-key b1" />
           完成
         </span>
+        {axisNote && <span className="sp-axis-note">{axisNote}</span>}
       </div>
     </Card>
   );

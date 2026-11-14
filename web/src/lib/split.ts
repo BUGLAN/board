@@ -27,12 +27,21 @@ export function hiddenEntries(cards: Record<number, Card> | undefined, inbox: nu
   return new Set(inbox.filter(id => kids.has(id)));
 }
 
-/** 「未整理」里显示的条目（去掉已经拆出卡的原条目），顺序同 inbox */
+/** 「未整理」里显示的条目（去掉已经拆出卡的原条目、收到「稍后再做」里的），顺序同 inbox */
 export function visibleInbox(b: { cards: Record<number, Card>; cols: Record<string, number[]> } | null | undefined): Card[] {
   if (!b) return [];
   const inbox = b.cols[INBOX] ?? [];
   const hidden = hiddenEntries(b.cards, inbox);
-  return inbox.filter(id => !hidden.has(id)).map(id => b.cards[id]).filter(Boolean);
+  return inbox.filter(id => !hidden.has(id)).map(id => b.cards[id]).filter(c => c && !c.laterAt);
+}
+
+/** 收到「稍后再做」里的条目（default/main#303）：最近收起的在前 */
+export function laterEntries(b: { cards: Record<number, Card>; cols: Record<string, number[]> } | null | undefined): Card[] {
+  if (!b) return [];
+  return (b.cols[INBOX] ?? [])
+    .map(id => b.cards[id])
+    .filter((c): c is Card => !!c && !!c.laterAt)
+    .sort((a, b) => (b.laterAt ?? 0) - (a.laterAt ?? 0) || b.id - a.id);
 }
 
 /** 列表里的一项：单独的一条，或者拆自同一条原条目的一组 */

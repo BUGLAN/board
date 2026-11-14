@@ -11,6 +11,7 @@ import { api } from '../../lib/api';
 import { maskKey, PROVIDER_AGENTS, PROVIDER_INTERFACES, PROVIDER_PRESETS, providerError } from '../../lib/providers';
 import type { Provider } from '../../lib/types';
 import { cx } from '../../lib/util';
+import { Tip } from '../bits';
 import { Icon } from '../Icon';
 import { FormField, FormFoot, FormModal, FormSec, FormSwitch, FormTile } from './FormModal';
 
@@ -160,17 +161,18 @@ function Models({ p, editing, onChange }: { p: Provider; editing: boolean; onCha
       title="模型"
       hint="写进 agent 配置文件时从这里选"
       act={
-        <button
-          type="button"
-          className={cx('btn sm fm-fetch', state.busy && 'is-busy')}
-          disabled={state.busy}
-          onClick={() => void run()}
-          data-tip="服务端用上面的地址和 API key 问供应商有哪些模型（修改时 key 留空就用存着的）"
-          data-tip-align="end"
-        >
-          <Icon name="renew" />
-          {state.busy ? '正在获取…' : state.list ? '重新获取' : '获取模型'}
-        </button>
+        <Tip text="服务端用上面的地址和 API key 问供应商有哪些模型（修改时 key 留空就用存着的）">
+          <button
+            type="button"
+            className={cx('btn sm fm-fetch', state.busy && 'is-busy')}
+            disabled={state.busy}
+            onClick={() => void run()}
+            data-tip-align="end"
+          >
+            <Icon name="renew" />
+            {state.busy ? '正在获取…' : state.list ? '重新获取' : '获取模型'}
+          </button>
+        </Tip>
       }
     >
       <div className="fm-chosen">

@@ -282,6 +282,30 @@ describe('editCard', () => {
   });
 });
 
+describe('稍后再做（default/main#303）', () => {
+  const inboxBoard = () => {
+    const b = snapshot('p/a', { inbox: [1, 2], todo: [3] });
+    return b;
+  };
+  it('laterPatch：收起、放回只改「未整理」里的；重复执行结果相同；目标不在了原样返回', () => {
+    const on = D.laterPatch([1, 3, 99], true);
+    const b = twice(on.board!, inboxBoard());
+    expect(b.cards[1].laterAt).toEqual(expect.any(Number));
+    expect(b.cards[2].laterAt ?? null).toBeNull();
+    expect(b.cards[3].laterAt ?? null).toBeNull();
+    const off = twice(D.laterPatch([1], false).board!, b);
+    expect(off.cards[1].laterAt).toBeNull();
+    const orig = inboxBoard();
+    expect(D.laterPatch([99], true).board!(orig)).toBe(orig);
+    expect(D.laterPatch([2], false).board!(orig)).toBe(orig);
+  });
+  it('laterPatch：详情跟着改', () => {
+    const d = detail(card(1, { column: 'inbox' }));
+    expect(D.laterPatch([1], true).detail!(d).laterAt).toEqual(expect.any(Number));
+    expect(D.laterPatch([2], true).detail!(d)).toBe(d);
+  });
+});
+
 describe('项目与标签', () => {
   const labelsOf = (ws: Workspace, key: string) => ws.projects.find(p => p.key === key)!.labels;
 
@@ -291,6 +315,16 @@ describe('项目与标签', () => {
     expect(ws.projects.map(x => x.name)).toEqual(['新名字', 'Q']);
     const orig = workspace();
     expect(D.patchProject('nope', x => ({ ...x, name: 'x' })).ws!(orig)).toEqual(orig);
+  });
+
+  it('hiddenLabelsPatch：整组替换规则；带 hiddenLabelsKey；项目不在了内容不变', () => {
+    const p = D.hiddenLabelsPatch('p', ['^v\\d', '^tmp-']);
+    const ws = twice(p.ws!, workspace());
+    expect(ws.projects.find(x => x.key === 'p')!.hiddenLabels).toEqual(['^v\\d', '^tmp-']);
+    expect(ws.projects.find(x => x.key === 'q')!.hiddenLabels).toBeUndefined();
+    expect(p.keys).toEqual([D.hiddenLabelsKey('p')]);
+    const orig = workspace();
+    expect(D.hiddenLabelsPatch('nope', []).ws!(orig)).toEqual(orig);
   });
 
   it('editLabelPatch：改名、改颜色；带 labelKey；标签不在了内容不变', () => {
@@ -340,11 +374,11 @@ describe('cardCronPatch（白板的定时建卡）', () => {
     const ws = workspace();
     return { ...ws, projects: ws.projects.map((p, i) => (i ? p : { ...p, boards: p.boards.map((b, j) => (j ? b : { ...b, cardCrons: [cron] })) })) };
   };
-  it('只改这一条，重复执行结果相同；改名称只改名称；改时间、关掉时先清掉下次时间', () => {
+  it('只改这一条，重复执行结果相同；改名称时 title 跟着改；改时间、关掉时先清掉下次时间', () => {
     const ws = twice(D.cardCronPatch('p/a', 7, { name: '清理废代码' }).ws!, withCron());
-    expect(ws.projects[0].boards[0].cardCrons![0]).toMatchObject({ name: '清理废代码', title: '清理死代码', nextAt: 123, on: true });
+    expect(ws.projects[0].boards[0].cardCrons![0]).toMatchObject({ name: '清理废代码', title: '清理废代码', nextAt: 123, on: true });
     const again = twice(D.cardCronPatch('p/a', 7, { name: '清理废代码' }).ws!, ws);
-    expect(again.projects[0].boards[0].cardCrons![0]).toMatchObject({ name: '清理废代码', title: '清理死代码' });
+    expect(again.projects[0].boards[0].cardCrons![0]).toMatchObject({ name: '清理废代码', title: '清理废代码' });
     const off = twice(D.cardCronPatch('p/a', 7, { on: false }).ws!, withCron());
     expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ on: false, nextAt: null });
     const moved = twice(D.cardCronPatch('p/a', 7, { cron: '0 10 * * 1' }).ws!, withCron());
@@ -355,6 +389,13 @@ describe('cardCronPatch（白板的定时建卡）', () => {
     expect(to.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: 'mbp', agent: 'claude', nextAt: 123 });
     const off = twice(D.cardCronPatch('p/a', 7, { host: '', agent: '' }).ws!, to);
     expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: null, agent: null, nextAt: 123 });
+  });
+  it('随机派发：换成随机时清掉指定的机器和 agent（不动下次时间）；换回指定机器时照样画出来', () => {
+    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', agent: 'claude' }).ws!, withCron());
+    const any = twice(D.cardCronPatch('p/a', 7, { pick: 'random' }).ws!, to);
+    expect(any.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'random', host: null, agent: null, nextAt: 123 });
+    const back = twice(D.cardCronPatch('p/a', 7, { pick: 'host', host: 'mini', agent: '' }).ws!, any);
+    expect(back.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'host', host: 'mini', agent: null, nextAt: 123 });
   });
   it('白板或这一条不在了原样返回', () => {
     const orig = withCron();

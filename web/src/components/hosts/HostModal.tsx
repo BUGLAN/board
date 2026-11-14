@@ -13,7 +13,7 @@ import { buildCron, describeCron, normalizeCron, type Schedule } from '../../lib
 import { DEFAULT_SCHEDULE, SchedulePick } from '../SchedulePick';
 import { hostKey, optimistic, saveSetting, useData } from '../../store/data';
 import { confirm, confirmCheck, openHost, openPicker, openSession, setTab, toast, toastError, updatePicker, useUI } from '../../store/ui';
-import { LabelChip, Segmented, Select, Sync, Title, useNow, useSync, type SyncState } from '../bits';
+import { LabelChip, Segmented, Select, Sync, Tip, Title, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { cancel, goCard } from './Dispatch';
 import { AgentIcon, Beat, lastSeen, Mark, OsGlyph, patchHost, StatePill, usePollHosts } from './bits';
@@ -293,20 +293,26 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
         <OsGlyph os={h.os} small />
         <StatePill h={h} running={running.length} />
         <span className="d-nav">
-          <button aria-label="上一台" className="icon-btn sm" type="button" data-tip="上一台  ↑ / K" disabled={i <= 0} onClick={() => step(-1)}>
-            <Icon name="chevUp" />
-          </button>
+          <Tip text="上一台  ↑ / K">
+            <button aria-label="上一台" className="icon-btn sm" type="button" disabled={i <= 0} onClick={() => step(-1)}>
+              <Icon name="chevUp" />
+            </button>
+          </Tip>
           <span className="d-pos mono">
             {i + 1} / {n}
           </span>
-          <button aria-label="下一台" className="icon-btn sm" type="button" data-tip="下一台  ↓ / J" disabled={i >= n - 1} onClick={() => step(1)}>
-            <Icon name="chevDown" />
-          </button>
+          <Tip text="下一台  ↓ / J">
+            <button aria-label="下一台" className="icon-btn sm" type="button" disabled={i >= n - 1} onClick={() => step(1)}>
+              <Icon name="chevDown" />
+            </button>
+          </Tip>
         </span>
         <span className="spacer" />
-        <button aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
-          <Icon name="close" />
-        </button>
+        <Tip text="关闭  esc">
+          <button aria-label="关闭" className="icon-btn" type="button" data-tip-align="end" onClick={close}>
+            <Icon name="close" />
+          </button>
+        </Tip>
       </div>
       <div className="d-grid">
         <div className="d-main">
@@ -329,25 +335,28 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
               )}
             </div>
             <div className="hp-hero-acts">
-              <span data-tip={roundTip}>
-                <button className={cx('btn sm', h.round && 'is-busy')} type="button" disabled={!canRound} onClick={round}>
-                  <Icon name="play" />
-                  {h.round ? '正在领一轮' : '领一轮'}
-                </button>
-              </span>
+              <Tip text={roundTip}>
+                <span>
+                  <button className={cx('btn sm', h.round && 'is-busy')} type="button" disabled={!canRound} onClick={round}>
+                    <Icon name="play" />
+                    {h.round ? '正在领一轮' : '领一轮'}
+                  </button>
+                </span>
+              </Tip>
               <span className="hp-ctl">
                 <Sync s={sync.paused} />
-                <button
-                  className={cx('btn sm hp-pause', h.paused && 'on', failed('paused'))}
-                  type="button"
-                  aria-pressed={h.paused}
-                  data-tip={h.paused ? '恢复后接着做排队的派发' : '暂停后不启动新的派发，在跑的不受影响'}
-                  data-tip-align="end"
-                  onClick={() => save({ paused: !h.paused })}
-                >
-                  <Icon name={h.paused ? 'play' : 'pause'} />
-                  {h.paused ? '恢复接单' : '暂停接单'}
-                </button>
+                <Tip text={h.paused ? '恢复后接着做排队的派发' : '暂停后不启动新的派发，在跑的不受影响'}>
+                  <button
+                    className={cx('btn sm hp-pause', h.paused && 'on', failed('paused'))}
+                    type="button"
+                    aria-pressed={h.paused}
+                    data-tip-align="end"
+                    onClick={() => save({ paused: !h.paused })}
+                  >
+                    <Icon name={h.paused ? 'play' : 'pause'} />
+                    {h.paused ? '恢复接单' : '暂停接单'}
+                  </button>
+                </Tip>
               </span>
             </div>
           </section>
@@ -405,9 +414,11 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className={cx('hp-knob', failed('perSession'))}>
                   <div className="hp-knob-text">
                     <b>一个会话最多做几张</b>
-                    <span data-tip="定时领取时一个会话一次排好最多 N 张卡（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做下一张，排完就退出">
-                      定时领取时一个会话一次排好最多这么多张卡，agent 做完一张用 board next 接着做下一张，排完就退出；N = 1 时一个会话只做一张，有几个空位就同时开几个会话
-                    </span>
+                    <Tip text="定时领取时一个会话一次排好最多 N 张卡（先挑带优先标签的，再挑和第一张标签相近的），agent 做完一张用 board next 接着做下一张，排完就退出">
+                      <span>
+                        定时领取时一个会话一次排好最多这么多张卡，agent 做完一张用 board next 接着做下一张，排完就退出；N = 1 时一个会话只做一张，有几个空位就同时开几个会话
+                      </span>
+                    </Tip>
                   </div>
                   <span className="hp-ctl">
                     <Sync s={sync.perSession} />
@@ -419,9 +430,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className={cx('hp-knob', failed('maxRun'))}>
                   <div className="hp-knob-text">
                     <b>单次最长运行</b>
-                    <span data-tip="到时间后 board host 按「停止」的流程结束整个进程树，派发记「超时」，卡片按异常退出的规则移到错误节点（没有时移到需要人处理的状态），评论写明原因和日志最后 20 行">
-                      到时间就停止，防止卡住的 agent 一直占着会话位
-                    </span>
+                    <Tip text="到时间后 board host 按「停止」的流程结束整个进程树，派发记「超时」，卡片按异常退出的规则移到错误节点（没有时移到需要人处理的状态），评论写明原因和日志最后 20 行">
+                      <span>到时间就停止，防止卡住的 agent 一直占着会话位</span>
+                    </Tip>
                   </div>
                   <span className="hp-ctl">
                     <Sync s={sync.maxRun} />
@@ -439,9 +450,9 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                 <div className={cx('hp-knob', failed('idleRun'))}>
                   <div className="hp-knob-text">
                     <b>没输出多久算卡住</b>
-                    <span data-tip="只对已经输出过内容的派发生效。内置模板都用结构化输出，运行中每一步都有输出；配置文件里改成只在结束时打印的 agent 一行都还没输出时，这条不适用">
-                      长时间没有输出就停止，不等它自己退出
-                    </span>
+                    <Tip text="只对已经输出过内容的派发生效。内置模板都用结构化输出，运行中每一步都有输出；配置文件里改成只在结束时打印的 agent 一行都还没输出时，这条不适用">
+                      <span>长时间没有输出就停止，不等它自己退出</span>
+                    </Tip>
                   </div>
                   <span className="hp-ctl">
                     <Sync s={sync.idleRun} />
@@ -523,9 +534,11 @@ function HostBody({ h, i, n, step, close, on }: { h: HostInfo; i: number; n: num
                       {h.agents
                         .filter(a => a.found && a.env === e.id)
                         .map(a => (
-                          <span key={a.id} className="hp-env-user" data-tip={`${a.name} 在这里启动`} data-tip-align="end">
-                            <AgentIcon id={a.id} />
-                          </span>
+                          <Tip key={a.id} text={`${a.name} 在这里启动`}>
+                            <span className="hp-env-user" data-tip-align="end">
+                              <AgentIcon id={a.id} />
+                            </span>
+                          </Tip>
                         ))}
                     </span>
                   </div>
@@ -818,38 +831,40 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
         )}
         <div className="hp-ws">
           <span className="hp-add-k">工作空间</span>
-          <input
-            className="input hp-dir-path"
-            value={path}
-            spellCheck={false}
-            placeholder={isWindows ? 'C:\\repo' : '~/repo'}
-            aria-label="工作空间"
-            title={remoteTip ? undefined : path}
-            data-tip={remoteTip}
-            onFocus={() => setActive(true)}
-            onChange={e => setPath(e.target.value)}
-            onBlur={() => {
-              setActive(false);
-              commit();
-            }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') e.currentTarget.blur();
-            }}
-          />
+          <Tip text={remoteTip ?? ''}>
+            <input
+              className="input hp-dir-path"
+              value={path}
+              spellCheck={false}
+              placeholder={isWindows ? 'C:\\repo' : '~/repo'}
+              aria-label="工作空间"
+              title={remoteTip ? undefined : path}
+              onFocus={() => setActive(true)}
+              onChange={e => setPath(e.target.value)}
+              onBlur={() => {
+                setActive(false);
+                commit();
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+            />
+          </Tip>
           <span className="hp-dir-ctl">
             <Sync s={active ? sync : undefined} />
             {canPickDir(env) && (
-              <button
-                className={cx('icon-btn sm', picking && 'is-busy')}
-                type="button"
-                aria-label="选择工作空间的文件夹"
-                data-tip={picking ? '正在打开文件夹选择框' : '选择文件夹：选中后填进去并保存'}
-                data-tip-align="end"
-                disabled={picking}
-                onClick={() => void pick()}
-              >
-                <Icon name="folder" />
-              </button>
+              <Tip text={picking ? '正在打开文件夹选择框' : '选择文件夹：选中后填进去并保存'}>
+                <button
+                  className={cx('icon-btn sm', picking && 'is-busy')}
+                  type="button"
+                  aria-label="选择工作空间的文件夹"
+                  data-tip-align="end"
+                  disabled={picking}
+                  onClick={() => void pick()}
+                >
+                  <Icon name="folder" />
+                </button>
+              </Tip>
             )}
           </span>
         </div>
@@ -879,9 +894,11 @@ function DirsEditor({ h, save, sync, hosts, now, reveal }: { h: HostInfo; save: 
                         {d.path}
                       </code>
                       <span className="hp-dir-ctl">
-                        <span className={cx('hp-dir-state', state)} data-tip={d.checkedAt ? `检查于 ${since(d.checkedAt, now)}` : undefined}>
-                          {state === 'ok' ? `git${d.branch ? ` · ${d.branch}` : ''}` : state === 'missing' ? '不存在' : state === 'not_git' ? '不是 git 仓库' : '等待检查'}
-                        </span>
+                        <Tip text={d.checkedAt ? `检查于 ${since(d.checkedAt, now)}` : ''}>
+                          <span className={cx('hp-dir-state', state)}>
+                            {state === 'ok' ? `git${d.branch ? ` · ${d.branch}` : ''}` : state === 'missing' ? '不存在' : state === 'not_git' ? '不是 git 仓库' : '等待检查'}
+                          </span>
+                        </Tip>
                         {d.fixed && <span className="hp-dir-fixed">--dir 指定</span>}
                       </span>
                     </div>
@@ -986,9 +1003,9 @@ function AgentRow({
             <b>{a.name}</b>
             {def && <span className="ha-def">默认</span>}
             {a.local_override && (
-              <span className="hp-skill local" data-tip={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
-                本机配置覆盖
-              </span>
+              <Tip text={`共用配置里有 ${a.id} 的 agent 模板，但这台机器的 ~/.board/config.toml 里有 [agents.${a.id}]：用的是本机的那份`}>
+                <span className="hp-skill local">本机配置覆盖</span>
+              </Tip>
             )}
             {fixed ? (
               <span className="hp-skill ok">
@@ -997,10 +1014,12 @@ function AgentRow({
               </span>
             ) : (
               miss && (
-                <span className="hp-skill" data-tip={miss}>
-                  <Icon name="alert" />
-                  缺 skill
-                </span>
+                <Tip text={miss}>
+                  <span className="hp-skill">
+                    <Icon name="alert" />
+                    缺 skill
+                  </span>
+                </Tip>
               )
             )}
           </span>
@@ -1091,16 +1110,17 @@ function AgentEdit({
           checks.length ? (
             <span className="hp-ctl">
               <Sync s={sync[`env:${a.id}`]} />
-              <Select
-                className="ha-sel wide"
-                disabled={!checks.some(c => c.found)}
-                value={a.env ?? ''}
-                placeholder="没找到"
-                options={checks.map(c => ({ value: c.env, label: `${envName(h, c.env) ?? c.env} · ${c.found ? c.version || '找到了' : '没找到'}`, disabled: !c.found && c.env !== a.env }))}
-                onChange={v => save({ env: { agent: a.id, env: v } })}
-                aria-label={`${a.name} 的启动环境`}
-                data-tip="在哪种 shell 里启动它；改了下一次派发就用新的"
-              />
+              <Tip text="在哪种 shell 里启动它；改了下一次派发就用新的">
+                <Select
+                  className="ha-sel wide"
+                  disabled={!checks.some(c => c.found)}
+                  value={a.env ?? ''}
+                  placeholder="没找到"
+                  options={checks.map(c => ({ value: c.env, label: `${envName(h, c.env) ?? c.env} · ${c.found ? c.version || '找到了' : '没找到'}`, disabled: !c.found && c.env !== a.env }))}
+                  onChange={v => save({ env: { agent: a.id, env: v } })}
+                  aria-label={`${a.name} 的启动环境`}
+                />
+              </Tip>
             </span>
           ) : (
             <span className="ha-hint">本机没有它支持的启动环境</span>
@@ -1696,12 +1716,14 @@ function CronTimes({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncStat
       {adding && (
       <span className="hp-sched-add" role="group" aria-label="加一个定时">
         <SchedulePick spec={spec} onChange={setSpec} />
-        <span data-tip={dup ? '已经有这一条了' : !cron ? '至少选一天' : undefined}>
-          <button className="btn sm" type="button" disabled={!cron || dup} onClick={add}>
-            <Icon name="plus" />
-            加上
-          </button>
-        </span>
+        <Tip text={dup ? '已经有这一条了' : !cron ? '至少选一天' : ''}>
+          <span>
+            <button className="btn sm" type="button" disabled={!cron || dup} onClick={add}>
+              <Icon name="plus" />
+              加上
+            </button>
+          </span>
+        </Tip>
         {h.cron.length > 0 && (
           <button className="hp-link" type="button" onClick={() => setAdding(false)}>
             收起
@@ -1808,9 +1830,11 @@ function AddHostBody({ close }: { close: () => void }) {
       <div className="d-head">
         <span className="hp-m-head">添加机器</span>
         <span className="spacer" />
-        <button aria-label="关闭" className="icon-btn" type="button" data-tip="关闭  esc" data-tip-align="end" onClick={close}>
-          <Icon name="close" />
-        </button>
+        <Tip text="关闭  esc">
+          <button aria-label="关闭" className="icon-btn" type="button" data-tip-align="end" onClick={close}>
+            <Icon name="close" />
+          </button>
+        </Tip>
       </div>
       <div className="d-grid hp-single">
         <div className="d-main">
@@ -1931,10 +1955,12 @@ function CliInstall() {
       ) : (
         <>
           {cmd ? (
-            <button type="button" className="hp-cmd" onClick={() => copy(cmd)} data-tip="复制">
-              <code>{cmd}</code>
-              <Icon name="copy" />
-            </button>
+            <Tip text="复制">
+              <button type="button" className="hp-cmd" onClick={() => copy(cmd)}>
+                <code>{cmd}</code>
+                <Icon name="copy" />
+              </button>
+            </Tip>
           ) : (
             <p className="hp-note lh-warn">{err}</p>
           )}

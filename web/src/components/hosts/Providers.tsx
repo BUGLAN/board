@@ -29,7 +29,7 @@ import type { AgentProvider, HostInfo, Provider, ProviderView } from '../../lib/
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, openHost, toast, toastError } from '../../store/ui';
-import { Select, Sync, useNow, useSync, type SyncState } from '../bits';
+import { Select, Sync, Tip, useNow, useSync, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 import { HowTip, OldHostsNote } from './SyncBits';
@@ -150,19 +150,22 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
                   <b className="pv-name">{p.name}</b>
                   <span className="sc-fixed">{p.tail ? maskKey(p) : '没填 key'}</span>
                   <span className="pv-upd">{p.updatedAt ? `${since(p.updatedAt, now)}更新` : ''}</span>
-                  <button
-                    className="icon-btn sm"
-                    type="button"
-                    aria-label={`修改 ${p.name}`}
-                    data-tip="修改地址、key、模型"
-                    disabled={!!busy || !!edit}
-                    onClick={() => setEdit({ p: { ...p, apiKey: '', endpoints: p.endpoints.map(e => ({ ...e })) }, editing: true })}
-                  >
-                    <Icon name="edit" />
-                  </button>
-                  <button className={cx('icon-btn sm', busy === `rm:${p.name}` && 'is-busy')} type="button" aria-label={`删掉 ${p.name}`} data-tip="删掉" data-tip-align="end" disabled={!!busy} onClick={() => void remove(p)}>
-                    <Icon name="trash" />
-                  </button>
+                  <Tip text="修改地址、key、模型">
+                    <button
+                      className="icon-btn sm"
+                      type="button"
+                      aria-label={`修改 ${p.name}`}
+                      disabled={!!busy || !!edit}
+                      onClick={() => setEdit({ p: { ...p, apiKey: '', endpoints: p.endpoints.map(e => ({ ...e })) }, editing: true })}
+                    >
+                      <Icon name="edit" />
+                    </button>
+                  </Tip>
+                  <Tip text="删掉">
+                    <button className={cx('icon-btn sm', busy === `rm:${p.name}` && 'is-busy')} type="button" aria-label={`删掉 ${p.name}`} data-tip-align="end" disabled={!!busy} onClick={() => void remove(p)}>
+                      <Icon name="trash" />
+                    </button>
+                  </Tip>
                 </header>
                 <div className="pv-kv">
                   {endpointLines(p).map(l => (
@@ -204,16 +207,17 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
                         <span className="pv-cells">
                           {cells.length ? cells.map(({ h, c }) => <CellPill key={h.id} h={h} c={c} />) : <em>没有机器要写</em>}
                         </span>
-                        <button
-                          className="icon-btn sm pv-x"
-                          type="button"
-                          aria-label={`${m.name} 不用 ${p.name}`}
-                          data-tip={`不再给 ${m.name} 用：配置文件恢复原来的值`}
-                          data-tip-align="end"
-                          onClick={() => saveAgent(assignProvider(a, '', view))}
-                        >
-                          <Icon name="close" />
-                        </button>
+                        <Tip text={`不再给 ${m.name} 用：配置文件恢复原来的值`}>
+                          <button
+                            className="icon-btn sm pv-x"
+                            type="button"
+                            aria-label={`${m.name} 不用 ${p.name}`}
+                            data-tip-align="end"
+                            onClick={() => saveAgent(assignProvider(a, '', view))}
+                          >
+                            <Icon name="close" />
+                          </button>
+                        </Tip>
                       </div>
                     );
                   })}
@@ -257,10 +261,12 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
 /** 一台机器上一个 agent 的写入情况：小胶囊（状态标记、机器名、状态），悬停看原因，点了打开那台机器 */
 function CellPill({ h, c }: { h: HostInfo; c: ProviderCell }) {
   return (
-    <button type="button" className={cx('pv-cell', `k-${c.kind}`)} data-tip={c.why ?? undefined} onClick={() => openHost(h.name)}>
-      <i className="pv-cell-mark" aria-hidden="true" />
-      <b>{h.name}</b>
-      <span>{PROVIDER_CELL_WORDS[c.kind]}</span>
-    </button>
+    <Tip text={c.why ?? ''}>
+      <button type="button" className={cx('pv-cell', `k-${c.kind}`)} onClick={() => openHost(h.name)}>
+        <i className="pv-cell-mark" aria-hidden="true" />
+        <b>{h.name}</b>
+        <span>{PROVIDER_CELL_WORDS[c.kind]}</span>
+      </button>
+    </Tip>
   );
 }
