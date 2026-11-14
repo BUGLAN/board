@@ -18,7 +18,8 @@ import { openCard, triage, untriage } from '../lib/actions';
 import { judge } from '../lib/granularity';
 import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
-import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
+import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
+import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
@@ -180,8 +181,9 @@ function related(c: Card, all: Card[]) {
 
 /* ------------------------------ 动作 ------------------------------ */
 
-/** 行离开时在原位播的动画：整理 → 往右滑走，删除 → 原地淡出，合并 → 往上收 */
-const exits = new Map<number, 'triage' | 'delete' | 'merge'>();
+/** 行离开时在原位播的动画：整理、收到「稍后再做」→ 往右滑走，放回「未整理」→ 往左滑走，删除 → 原地淡出，合并 → 往上收 */
+type Exit = 'triage' | 'delete' | 'merge' | 'later' | 'back';
+const exits = new Map<number, Exit>();
 
 async function doTriage(ids: number[]) {
   const ok = ids.filter(id => !isDraft(id));
@@ -206,22 +208,31 @@ async function doLater(ids: number[]) {
   if (!ok.length) return;
   const st = useInbox.getState();
   setInbox({ checked: st.checked.filter(c => !ok.includes(c)), open: st.open != null && ok.includes(st.open) ? null : st.open });
+  ok.forEach(id => exits.set(id, 'later'));
   const done = setLater(ok, true);
   toast({
     type: 'success',
     title: ok.length === 1 ? `#${ok[0]} 已移到「稍后再做」` : `${ok.length} 条已移到「稍后再做」`,
-    text: '在页头「稍后再做」里查看、放回',
+    text: '在标题旁的「稍后再做」里查看，左滑放回',
     action: { label: '撤销', fn: () => void setLater(ok, false).then(errs => errs.length && toastError(errs[0])) },
   });
   const errs = await done;
   if (errs.length) toastError(errs[0]);
 }
 
-/** 从「稍后再做」放回「未整理」：回到原来的位置，标签、描述、评论都不动 */
-async function doUnlater(c: Card) {
-  const errs = await setLater([c.id], false);
+/** 从「稍后再做」放回「未整理」：回到原来的位置，标签、描述、评论都不动；当帧离开这一页，提示里可以「撤销」 */
+async function doUnlater(ids: number[]) {
+  const ok = ids.filter(id => !isDraft(id));
+  if (!ok.length) return;
+  ok.forEach(id => exits.set(id, 'back'));
+  const done = setLater(ok, false);
+  toast({
+    type: 'success',
+    title: ok.length === 1 ? `#${ok[0]} 已放回「未整理」` : `${ok.length} 条已放回「未整理」`,
+    action: { label: '撤销', fn: () => void setLater(ok, true).then(errs => errs.length && toastError(errs[0])) },
+  });
+  const errs = await done;
   if (errs.length) toastError(errs[0]);
-  else toast({ type: 'success', title: `#${c.id} 已放回「未整理」` });
 }
 
 async function doDelete(ids: number[], cards: Card[]) {
@@ -328,7 +339,7 @@ export function InboxPage() {
   const newCount = useMemo(() => (all ?? []).filter(c => entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length, [all, path, sent]);
 
   // 换白板：勾选、展开、来源筛选清空
-  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null, focus: null }), [path]);
+  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null, focus: null, later: false }), [path]);
   // 已经不在「未整理」里的条目从勾选里去掉（整理走了、别的窗口删了）
   useEffect(() => {
     if (!all) return;
@@ -363,7 +374,7 @@ export function InboxPage() {
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null || useInbox.getState().merge) return;
       const st = useInbox.getState();
-      if (st.view === 'one') return;
+      if (st.view === 'one' || st.later) return;
       if (e.key === 'Escape' && (st.checked.length || st.open != null)) {
         e.preventDefault();
         setInbox(st.checked.length ? { checked: [] } : { open: null });
@@ -384,12 +395,9 @@ export function InboxPage() {
         <div className="ib-wrap" ref={wrap}>
           <header className="ib-head">
             <div>
-              <h1>
-                未整理
-                {count != null && <span className="ib-total mono">{count}</span>}
-              </h1>
+              <TitleTabs later={later} count={count} laterN={laterCards?.length ?? null} />
               {/* agent 新记下、人还没看过的条数；没有时不占地方 */}
-              {all && newCount > 0 && (
+              {!later && all && newCount > 0 && (
                 <div className="ib-newline">
                   <span className="ib-new mono">{newCount} 条新的</span>
                   <button type="button" className="ib-link ib-markall" onClick={() => void doMarkAll(setSent)}>
@@ -398,7 +406,8 @@ export function InboxPage() {
                 </div>
               )}
             </div>
-            <div className="ib-modes">
+            {/* 列表 / 逐条、分组只管「未整理」：看「稍后再做」时不放 */}
+            {!later && <div className="ib-modes">
               <DescTabs
                 mode={view}
                 setMode={m => setView(m as View)}
@@ -416,9 +425,9 @@ export function InboxPage() {
                   ['label', '按标签'],
                 ]}
               />
-              <LaterButton on={later} n={laterCards?.length ?? 0} />
-            </div>
+            </div>}
           </header>
+          {later && <p className="ib-later-sub">暂时不处理的条目收在这里，不算在「未整理」的条数里。左滑一条放回「未整理」，回到原来的位置。</p>}
 
           {/* 手机上没有侧栏：筛选和「记一条」放在页头下面 */}
           <div className="ib-mtools">
@@ -436,8 +445,8 @@ export function InboxPage() {
           </div>
 
           {/* 快照还没到：按工作区里的计数放骨架行；计数是 0 就什么都不放 */}
-          {!list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
-          {later && <LaterView cards={laterCards} labels={labels} project={cur?.project.key ?? ''} />}
+          {!later && !list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
+          {later && <LaterPage cards={laterCards} labels={labels} project={cur?.project.key ?? ''} path={path} />}
           {!later && view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
           {!later && view === 'list' && groups.map(g => (
             <GroupSection
@@ -781,29 +790,17 @@ const Row = memo(function Row({
   }, [open, draft, c.id]);
   const toggle = () => setInbox({ open: open ? null : c.id });
   const text = snippet(c.body);
-  const sw = useSwipe(!draft && !saving);
+  // 往右滑：直接收到「稍后再做」（default/main#303）
+  const sw = useSwipe(1, !draft && !saving, () => void doLater([c.id]));
   return (
     <div
       ref={ref}
       data-ib={renderKey(c.id)}
-      className={cx('ib-row', checked && 'checked', open && 'open', saving && 'saving', draft && 'draft', isnew && 'is-new', sw.shown && 'swiped')}
+      className={cx('ib-row', checked && 'checked', open && 'open', saving && 'saving', draft && 'draft', isnew && 'is-new', sw.state && `swipe-${sw.state}`)}
       style={flash ? { ['--flash' as string]: flash.color } : undefined}
     >
       <div className="ib-swipe">
-      {/* 左滑露出来的「稍后再做」（default/main#303）：滑开时才能点、能聚焦 */}
-      <button
-        type="button"
-        className="ib-swipe-act"
-        tabIndex={sw.open ? 0 : -1}
-        aria-hidden={!sw.open}
-        onClick={() => {
-          sw.close();
-          void doLater([c.id]);
-        }}
-      >
-        <Icon name="timer" />
-        稍后再做
-      </button>
+      <SwipeHint dir={1} label="稍后再做" icon="timer" />
       <div
         className="ib-line"
         role="button"
@@ -1440,20 +1437,20 @@ const SPRING = 'cubic-bezier(.22, 1.18, .36, 1)';
     行的集合或顺序变了时：留下的行从旧位置弹到新位置；新出现的行（agent 刚记下、撤销回来的）淡入；
     真的离开「未整理」的行（整理、删除、合并）在原位播离场（exits 里记着是哪一种）。
     换白板时整体重建，不补间；只是被筛选掉的行直接消失 */
-function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>, path: string) {
+function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>, path: string, attr: 'ib' | 'lt' = 'ib') {
   const last = useRef<{ path: string; sig: string; rows: Map<number, { el: HTMLElement; top: number; rect: DOMRect }> } | null>(null);
   useLayoutEffect(() => {
     const r = root.current;
     if (!r) return;
     const base = r.getBoundingClientRect().top;
-    const els = [...r.querySelectorAll<HTMLElement>('[data-ib]')];
+    const els = [...r.querySelectorAll<HTMLElement>(`[data-${attr}]`)];
     const rows = new Map(
       els.map(el => {
         const rect = el.getBoundingClientRect();
-        return [Number(el.dataset.ib), { el, top: rect.top - base, rect }] as const;
+        return [Number(el.dataset[attr]), { el, top: rect.top - base, rect }] as const;
       }),
     );
-    const sig = els.map(el => el.dataset.ib).join(',');
+    const sig = els.map(el => el.dataset[attr]).join(',');
     const prev = last.current;
     last.current = { path, sig, rows };
     if (!prev || prev.path !== path || prev.sig === sig || reduceMotion()) return;
@@ -1482,7 +1479,7 @@ function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>,
   });
 }
 
-function ghost(el: HTMLElement, r: DOMRect, kind: 'triage' | 'delete' | 'merge' | undefined) {
+function ghost(el: HTMLElement, r: DOMRect, kind: Exit | undefined) {
   if (r.bottom < 0 || r.top > window.innerHeight) return;
   Object.assign(el.style, {
     position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, margin: '0', zIndex: '60', pointerEvents: 'none',
@@ -1490,8 +1487,10 @@ function ghost(el: HTMLElement, r: DOMRect, kind: 'triage' | 'delete' | 'merge' 
   el.classList.add('ib-ghost');
   document.body.appendChild(el);
   const to =
-    kind === 'triage'
+    kind === 'triage' || kind === 'later'
       ? { opacity: 0, transform: 'translateX(56px)' }
+      : kind === 'back'
+        ? { opacity: 0, transform: 'translateX(-56px)' }
       : kind === 'merge'
         ? { opacity: 0, transform: 'translateY(-10px) scale(.94)' }
         : { opacity: 0, transform: 'scale(.97)', filter: 'blur(4px)' };
@@ -1500,19 +1499,24 @@ function ghost(el: HTMLElement, r: DOMRect, kind: 'triage' | 'delete' | 'merge' 
 
 /* ------------------------------ 稍后再做（default/main#303） ------------------------------ */
 
-const SWIPE_W = 104;
+type SwipeState = 'drag' | 'armed' | 'out';
 
-/** 行的左滑：横着拖（触屏、鼠标）超过一半露出「稍后再做」，不到一半弹回；竖着拖照常滚动。
-    滑开后点这一行别处先收回；刚滑完的那次点击不算展开 */
-function useSwipe(enabled: boolean) {
-  const [open, setOpen] = useState(false);
+/** 行的横滑：只认 dir 那个方向（1 右、-1 左），横着拖（触屏、鼠标）过了阈值、或者甩得够快就松手即走，不露按钮；
+    没到就弹回。竖着拖照常滚动；刚滑完的那次点击不算点开。算数和位移见 lib/swipe */
+function useSwipe(dir: SwipeDir, enabled: boolean, onCommit: () => void) {
   const [dx, setDx] = useState<number | null>(null);
-  const st = useRef<{ x: number; y: number; on: boolean; base: number } | null>(null);
+  const [state, setState] = useState<SwipeState | null>(null);
+  const st = useRef<{ x: number; y: number; on: boolean; w: number; lx: number; lt: number; v: number; dx: number } | null>(null);
   const ended = useRef(0);
+  const reset = () => {
+    st.current = null;
+    setDx(null);
+    setState(null);
+  };
   const handlers = {
     onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
-      if (!enabled || e.button !== 0 || (e.target as HTMLElement).closest('button, input, a, [role="checkbox"]')) return;
-      st.current = { x: e.clientX, y: e.clientY, on: false, base: open ? -SWIPE_W : 0 };
+      if (!enabled || e.button !== 0 || (e.target as HTMLElement).closest('button, input, textarea, a, [role="checkbox"]')) return;
+      st.current = { x: e.clientX, y: e.clientY, on: false, w: e.currentTarget.offsetWidth, lx: e.clientX, lt: e.timeStamp, v: 0, dx: 0 };
     },
     onPointerMove: (e: React.PointerEvent<HTMLElement>) => {
       const s = st.current;
@@ -1520,133 +1524,331 @@ function useSwipe(enabled: boolean) {
       const mx = e.clientX - s.x;
       const my = e.clientY - s.y;
       if (!s.on) {
+        // 竖着拖、往反方向拖：交还给页面（滚动、选字）
         if (Math.abs(my) > 10 && Math.abs(my) > Math.abs(mx)) st.current = null;
         else if (Math.abs(mx) > 10) {
-          s.on = true;
-          e.currentTarget.setPointerCapture?.(e.pointerId);
+          if (mx * dir < 0) st.current = null;
+          else {
+            s.on = true;
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+          }
         }
-        if (!s.on) return;
+        if (!st.current?.on) return;
       }
-      setDx(Math.max(-SWIPE_W - 24, Math.min(0, s.base + mx)));
+      const dt = e.timeStamp - s.lt;
+      if (dt > 0) s.v = (e.clientX - s.lx) / dt;
+      s.lx = e.clientX;
+      s.lt = e.timeStamp;
+      s.dx = swipeOffset(mx, dir, s.w);
+      setDx(s.dx);
+      setState(swipeCommits(s.dx, 0, dir, s.w) ? 'armed' : 'drag');
     },
     onPointerUp: () => {
       const s = st.current;
       st.current = null;
       if (!s?.on) return;
       ended.current = performance.now();
-      setOpen((dx ?? 0) < -SWIPE_W / 2);
-      setDx(null);
+      if (!swipeCommits(s.dx, s.v, dir, s.w)) return reset();
+      // 算数：行接着滑出去，滑完再移走（行在原位播离场时已经在外面了）
+      setState('out');
+      setDx(dir * s.w);
+      setTimeout(onCommit, reduceMotion() ? 0 : 170);
+      // 没走成（例如服务端拒绝、这一行还在）：回到原位
+      setTimeout(reset, 900);
     },
-    onPointerCancel: () => {
-      st.current = null;
-      setDx(null);
-    },
+    onPointerCancel: reset,
   };
   return {
-    open,
-    shown: open || dx != null,
+    state,
     handlers,
-    style: dx != null ? { transform: `translateX(${dx}px)`, transition: 'none' } : open ? { transform: `translateX(-${SWIPE_W}px)` } : undefined,
-    close: () => setOpen(false),
-    /** 这次点击要不要吞掉：刚滑完、或者滑开着（点一下先收回） */
-    swallow: () => {
-      if (performance.now() - ended.current < 300) return true;
-      if (open) {
-        setOpen(false);
-        return true;
-      }
-      return false;
-    },
+    style: dx != null ? { transform: `translateX(${dx}px)`, transition: state === 'out' ? undefined : 'none' } : undefined,
+    /** 这次点击要不要吞掉：刚滑完 */
+    swallow: () => performance.now() - ended.current < 300,
   };
 }
 
-/** 页头「按标签」旁边的入口：写着收起了几条，点一下看「稍后再做」，再点回到列表 */
-function LaterButton({ on, n }: { on: boolean; n: number }) {
+/** 滑动时行底下露出来的提示：写着松手会去哪；过了阈值变实色。只是提示，不能点 */
+function SwipeHint({ dir, label, icon }: { dir: SwipeDir; label: string; icon: 'timer' | 'inbox' }) {
   return (
-    <button
-      type="button"
-      className={cx('ib-later-btn', on && 'on')}
-      aria-pressed={on}
-      onClick={() => setInbox({ later: !on, checked: [], open: null })}
-    >
-      <Icon name="timer" />
-      稍后再做
-      {n > 0 && (
-        <span className="ib-later-n mono" aria-label={`${n} 条`}>
-          {n}
-        </span>
-      )}
-    </button>
+    <span className={cx('ib-swipe-hint', dir > 0 ? 'to-later' : 'to-inbox')} aria-hidden="true">
+      <Icon name={icon} />
+      {label}
+    </span>
   );
 }
 
-/** 「稍后再做」里收起的条目：最近收起的在前；每条能打开详情、改标签、删除、放回「未整理」 */
-function LaterView({ cards, labels, project }: { cards: Card[] | null; labels: Label[]; project: string }) {
-  const now = useNow(30000);
-  if (!cards) return <RowsSkeleton n={3} />;
-  if (!cards.length)
-    return (
-      <div className="ib-empty">
-        <b>暂无待延后处理的内容</b>
-        <span>在「未整理」里左滑一条，或点行上的「稍后再做」，它会收到这里；放回后回到原来的位置。</span>
-      </div>
-    );
+/** 页头的大标题就是切换：「未整理」和「稍后再做」并排，正在看的那个是大字，另一个灰色小一号 */
+function TitleTabs({ later, count, laterN }: { later: boolean; count: number | null; laterN: number | null }) {
+  const pick = (l: boolean) => l !== later && setInbox({ later: l, checked: [], open: null });
   return (
-    <div className="ib-later" role="list" aria-label="稍后再做">
-      {cards.map(c => (
-        <LaterRow key={c.id} card={c} labels={labels} project={project} now={now} />
-      ))}
+    <h1 className="ib-title" role="tablist" aria-label="未整理 / 稍后再做">
+      <button type="button" role="tab" aria-selected={!later} className={cx(!later && 'on')} onClick={() => pick(false)}>
+        未整理
+        {count != null && <span className="ib-total mono">{count}</span>}
+      </button>
+      <button type="button" role="tab" aria-selected={later} className={cx('ib-title-later', later && 'on')} onClick={() => pick(true)}>
+        稍后再做
+        {!!laterN && <span className="ib-later-n mono">{laterN}</span>}
+      </button>
+    </h1>
+  );
+}
+
+/** 「稍后再做」页：按收起时间分组（最近收起的在前），行和「未整理」同一个样子；
+    左滑放回、点开看详情，可以勾选后批量放回、打标签、删除；侧栏的筛选也管这一页 */
+function LaterPage({ cards, labels, project, path }: { cards: Card[] | null; labels: Label[]; project: string; path: string }) {
+  const now = useNow(60000);
+  const filter = useUI(s => s.filter);
+  const q = filter.trim().toLowerCase();
+  const [checked, setChecked] = useState<number[]>([]);
+  const lastCheck = useRef<number | null>(null);
+  const list = useMemo(() => cards?.filter(c => matches(c, q, labels)) ?? null, [cards, q, labels]);
+  const groups = useMemo(() => (list ? laterGroups(list, now) : []), [list, now]);
+  const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
+  const wrap = useRef<HTMLDivElement>(null);
+  const present = useMemo(() => new Set((cards ?? []).map(c => renderKey(c.id))), [cards]);
+  useRowMotion(wrap, present, path, 'lt');
+  // 放回、删掉、别的窗口改了：不在这一页的从勾选里去掉
+  useEffect(() => setChecked(cs => (cs.some(id => !cards?.some(c => c.id === id)) ? cs.filter(id => cards?.some(c => c.id === id)) : cs)), [cards]);
+  const check = (id: number, shift: boolean) => {
+    setChecked(cur => {
+      const on = !cur.includes(id);
+      if (shift && lastCheck.current != null && flat.some(c => c.id === lastCheck.current)) {
+        const a = flat.findIndex(c => c.id === lastCheck.current);
+        const b = flat.findIndex(c => c.id === id);
+        const range = flat.slice(Math.min(a, b), Math.max(a, b) + 1).map(c => c.id);
+        return on ? [...new Set([...cur, ...range])] : cur.filter(c => !range.includes(c));
+      }
+      return on ? [...cur, id] : cur.filter(c => c !== id);
+    });
+    lastCheck.current = id;
+  };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null) return;
+      if (e.key === 'Escape' && checked.length) {
+        e.preventDefault();
+        setChecked([]);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && flat.length) {
+        e.preventDefault();
+        setChecked(flat.map(c => c.id));
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [flat, checked.length]);
+
+  if (!cards) return <RowsSkeleton n={3} />;
+  return (
+    <div ref={wrap}>
+      {groups.map(g => {
+        const ids = g.rows.map(c => c.id);
+        const allOn = ids.every(id => checked.includes(id));
+        const some = !allOn && ids.some(id => checked.includes(id));
+        return (
+          <section key={g.key} className="ib-grp">
+            <div className="ib-gh">
+              <Check
+                on={allOn}
+                some={some}
+                label={allOn ? `取消勾选「${g.label}」` : `勾选「${g.label}」这一组`}
+                onToggle={() => setChecked(cur => (allOn ? cur.filter(c => !ids.includes(c)) : [...new Set([...cur, ...ids])]))}
+              />
+              <span>{g.label}</span>
+              <span className="ib-gh-n mono">{g.rows.length}</span>
+            </div>
+            <div className="ib-rows">
+              {g.rows.map(c => (
+                <LaterRow key={renderKey(c.id)} card={c} labels={labels} project={project} now={now} checked={checked.includes(c.id)} onCheck={check} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+      {!cards.length && (
+        <div className="ib-empty">
+          <div className="ib-later-art" aria-hidden="true">
+            <Icon name="timer" />
+          </div>
+          <b>没有收起来的条目</b>
+          <span>在「未整理」里往右滑一条，暂时不想处理的就收到这里。</span>
+        </div>
+      )}
+      {cards.length > 0 && list && !list.length && (
+        <div className="ib-empty">
+          <b>没有符合的条目</b>
+          <span>换个词试试，或者清除筛选。</span>
+          <button className="btn sm" type="button" onClick={() => setFilter('')}>
+            清除筛选
+          </button>
+        </div>
+      )}
+      <LaterBulk checked={checked} cards={cards} project={project} onClear={() => setChecked([])} />
     </div>
   );
 }
 
-function LaterRow({ card: c, labels, project, now }: { card: Card; labels: Label[]; project: string; now: number }) {
+function LaterRow({ card: c, labels, project, now, checked, onCheck }: { card: Card; labels: Label[]; project: string; now: number; checked: boolean; onCheck: (id: number, shift: boolean) => void }) {
   const saving = useCardBusy(c.id);
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
+  // 往左滑：直接放回「未整理」
+  const sw = useSwipe(-1, !saving, () => void doUnlater([c.id]));
+  const text = snippet(c.body);
   return (
-    <div className={cx('ib-later-row', saving && 'saving')} role="listitem">
-      <span className="ib-id mono">#{c.id}</span>
-      <button type="button" className="ib-later-t" onClick={() => openCard(c.id)}>
-        <Title text={c.title} />
-      </button>
-      <span className="ib-labels">
-        <LabelChips ids={c.labels} labels={labels} max={3} pending={pending} />
-      </span>
-      <span className="ib-later-at">{c.laterAt ? `${ago(c.laterAt, now)}收起` : ''}</span>
-      <span className="ib-later-acts">
-        <Tip text="标签">
-          <button
-            type="button"
-            className="icon-btn sm"
-            aria-label={`给 #${c.id} 打标签`}
-            disabled={saving}
-            onClick={e =>
-              openPicker({
-                rect: e.currentTarget.getBoundingClientRect(),
-                project,
-                selected: c.labels,
-                onToggle: async (id, on) => {
-                  try {
-                    await (on ? addLabel(c.id, id) : removeLabel(c.id, id));
-                  } catch (err) {
-                    toastError(err);
-                  }
-                },
-              })
+    <div data-lt={renderKey(c.id)} className={cx('ib-row', checked && 'checked', saving && 'saving', sw.state && `swipe-${sw.state}`)}>
+      <div className="ib-swipe">
+        <SwipeHint dir={-1} label="放回未整理" icon="inbox" />
+        <div
+          className="ib-line ib-later-line"
+          role="button"
+          tabIndex={0}
+          aria-label={`#${c.id} ${c.title}`}
+          style={sw.style}
+          {...sw.handlers}
+          onClick={e => {
+            if (sw.swallow()) return;
+            if (e.shiftKey) return onCheck(c.id, true);
+            openCard(c.id);
+          }}
+          onKeyDown={e => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              openCard(c.id);
             }
-          >
-            <Icon name="tag" />
-          </button>
-        </Tip>
-        <Tip text="删除（进回收站）">
-          <button type="button" className="icon-btn sm ib-del" aria-label={`删除 #${c.id}`} disabled={saving} onClick={() => void doDelete([c.id], [c])}>
-            <Icon name="trash" />
-          </button>
-        </Tip>
-        <button type="button" className={cx('btn sm', saving && 'is-busy')} disabled={saving} aria-busy={saving || undefined} onClick={() => void doUnlater(c)}>
-          放回未整理
-        </button>
+            if (e.key === 'x') onCheck(c.id, e.shiftKey);
+          }}
+        >
+          <Check on={checked} label={`勾选 #${c.id} ${c.title}`} onToggle={shift => onCheck(c.id, shift)} />
+          <span className="ib-id">#{c.id}</span>
+          <Avatar actor={c.createdBy} className="ib-av" />
+          <span className="ib-t">
+            <b>
+              {saving && <i className="ib-saving" aria-label="保存中" />}
+              <Title text={c.title} />
+            </b>
+            {text && <span>{text}</span>}
+          </span>
+          <span className="ib-labels">
+            <LabelChips ids={c.labels} labels={labels} max={2} pending={pending} />
+          </span>
+          <span className="ib-acts">
+            <Tip text="标签">
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label={`给 #${c.id} 打标签`}
+                disabled={saving}
+                data-label-picker
+                onClick={e => {
+                  e.stopPropagation();
+                  openPicker({
+                    rect: e.currentTarget.getBoundingClientRect(),
+                    project,
+                    selected: c.labels,
+                    onToggle: async (id, on) => {
+                      try {
+                        await (on ? addLabel(c.id, id) : removeLabel(c.id, id));
+                      } catch (err) {
+                        toastError(err);
+                      }
+                    },
+                  });
+                }}
+              >
+                <Icon name="tag" />
+              </button>
+            </Tip>
+            <Tip text="删除（进回收站）">
+              <button
+                type="button"
+                className="icon-btn sm ib-del"
+                aria-label={`删除 #${c.id}`}
+                disabled={saving}
+                onClick={e => {
+                  e.stopPropagation();
+                  void doDelete([c.id], [c]);
+                }}
+              >
+                <Icon name="trash" />
+              </button>
+            </Tip>
+            <Tip text="放回未整理（左滑也行）">
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label={`把 #${c.id} 放回未整理`}
+                disabled={saving}
+                onClick={e => {
+                  e.stopPropagation();
+                  void doUnlater([c.id]);
+                }}
+              >
+                <Icon name="inbox" />
+              </button>
+            </Tip>
+          </span>
+          <span className="ib-meta">
+            <span className="ib-age" title="收起的时间">{c.laterAt ? ago(c.laterAt, now) : ''}</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 「稍后再做」勾选后的批量条：标签、删除、放回「未整理」 */
+function LaterBulk({ checked, cards, project, onClear }: { checked: number[]; cards: Card[]; project: string; onClear: () => void }) {
+  const n = checked.length;
+  const bulkLabels = (rect: DOMRect) => {
+    const ids = checked;
+    const all = useData.getState().board?.cards ?? {};
+    const common = [...new Set(ids.flatMap(id => all[id]?.labels ?? []))].filter(l => ids.every(id => all[id]?.labels.includes(l)));
+    openPicker({
+      rect,
+      project,
+      selected: common,
+      onToggle: async (lid, on) => {
+        const results = await Promise.allSettled(ids.map(id => (on ? addLabel(id, lid) : removeLabel(id, lid))));
+        const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
+        if (bad) toastError(bad.reason);
+      },
+    });
+  };
+  return (
+    <div className={cx('ib-bulk', n > 0 && 'on')} role="toolbar" aria-label="批量操作" aria-hidden={!n} inert={!n || undefined}>
+      <span className="ib-bulk-n">
+        <b className="mono" key={n}>
+          {n}
+        </b>
+        条已选
       </span>
+      <i className="ib-bulk-sep" />
+      <button type="button" className="btn sm ghost" data-label-picker onClick={e => bulkLabels(e.currentTarget.getBoundingClientRect())}>
+        <Icon name="tag" />
+        <span className="ib-bl">标签</span>
+      </button>
+      <button type="button" className="btn sm ghost ib-del" onClick={() => void doDelete(checked, cards)}>
+        <Icon name="trash" />
+        <span className="ib-bl">删除</span>
+      </button>
+      <button
+        type="button"
+        className="btn sm brand"
+        onClick={() => {
+          const ids = checked;
+          onClear();
+          void doUnlater(ids);
+        }}
+      >
+        放回「未整理」
+      </button>
+      <Tip text="取消选择 · esc">
+        <button type="button" className="icon-btn sm" aria-label="取消选择" data-tip-pos="top" onClick={onClear}>
+          <Icon name="close" />
+        </button>
+      </Tip>
     </div>
   );
 }

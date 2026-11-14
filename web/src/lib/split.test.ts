@@ -1,7 +1,7 @@
 /* 「未整理」里的拆解组（default/main#285）：原条目拆出卡之后隐藏，拆出的卡成组，可以撤销拆解 */
 import { describe, expect, it, vi } from 'vitest';
 import { card, snapshot } from '../../test/fixtures';
-import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, unitsOf, visibleInbox } from './split';
+import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, laterGroups, unitsOf, visibleInbox } from './split';
 import type { Card } from './types';
 
 // 1 是原条目，拆成 3、4；2 是别的一条；5 是从待办里的 9 拆出来的
@@ -100,5 +100,22 @@ describe('稍后再做（default/main#303）', () => {
     expect(visibleInbox(b()).map(c => c.id)).toEqual([1, 3]);
     expect(laterEntries(b()).map(c => c.id)).toEqual([4, 2]);
     expect(laterEntries(null)).toEqual([]);
+  });
+  it('laterGroups 按收起时间分今天、这一周、更早，空组不出现', () => {
+    const now = new Date(2026, 10, 14, 15, 0).getTime();
+    const at = (d: number, h = 12) => new Date(2026, 10, 14 - d, h, 0).getTime();
+    const cs = [
+      { ...card(1), laterAt: at(0, 9) },
+      { ...card(2), laterAt: at(1, 23) },
+      { ...card(3), laterAt: at(10) },
+      { ...card(4), laterAt: at(0, 1) },
+    ] as Card[];
+    expect(laterGroups(cs, now).map(g => [g.key, g.rows.map(c => c.id)])).toEqual([
+      ['today', [1, 4]],
+      ['week', [2]],
+      ['older', [3]],
+    ]);
+    expect(laterGroups([cs[2]], now).map(g => g.label)).toEqual(['更早收起']);
+    expect(laterGroups([], now)).toEqual([]);
   });
 });

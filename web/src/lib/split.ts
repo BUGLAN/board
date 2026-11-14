@@ -81,3 +81,18 @@ export function canUndoSplit(cards: Record<number, Card> | undefined, parent: nu
   const kids = kidsOf(cards).get(parent) ?? [];
   return kids.length > 0 && kids.every(id => cards?.[id]?.column === INBOX);
 }
+
+/** 「稍后再做」按收起时间分组：今天（本地零点以后）、这一周（7 天内）、更早；组内顺序同 laterEntries，空组不出现 */
+export type LaterGroup = { key: 'today' | 'week' | 'older'; label: string; rows: Card[] };
+export function laterGroups(cards: Card[], now: number): LaterGroup[] {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const keyOf = (t: number): LaterGroup['key'] => (t >= start.getTime() ? 'today' : now - t < 7 * 86400e3 ? 'week' : 'older');
+  const groups: LaterGroup[] = [
+    { key: 'today', label: '今天收起', rows: [] },
+    { key: 'week', label: '这一周收起', rows: [] },
+    { key: 'older', label: '更早收起', rows: [] },
+  ];
+  for (const c of cards) groups.find(g => g.key === keyOf(c.laterAt ?? 0))!.rows.push(c);
+  return groups.filter(g => g.rows.length);
+}
