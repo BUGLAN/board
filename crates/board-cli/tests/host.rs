@@ -758,9 +758,12 @@ fn host_follows_config_without_restart() {
     }
     let cfg = rig.s.home.join(".board").join("config.toml");
     let base = std::fs::read_to_string(&cfg).unwrap();
-    // 工作空间是白板目录的上一级（`<工作空间>/<项目>/<白板>`）；`repo` 已经摆到 `<工作空间>/default/main`
+    // 白板目录是 `<工作空间>/<项目>/<白板>`，工作空间是它往上两级；`repo` 已经摆到 `<工作空间>/default/main`
     let repo = rig.ws_ready();
-    let host_conf = |name: &str, dir: &Path| format!("{base}\n[host]\nname = \"{name}\"\nworkspace = \"{}\"\n", dir.parent().unwrap_or(dir).display());
+    let host_conf = |name: &str, dir: &Path| {
+        let ws = dir.parent().and_then(Path::parent).unwrap_or(dir);
+        format!("{base}\n[host]\nname = \"{name}\"\nworkspace = \"{}\"\n", ws.display())
+    };
     std::fs::write(&cfg, host_conf("mbp", &repo)).unwrap();
     // 像桌面端那样运行，不带 --name、--dir：都跟着配置文件
     let mut host = rig.host_desktop();
@@ -783,8 +786,8 @@ fn host_follows_config_without_restart() {
     let pid = std::fs::read_to_string(&pidfile).unwrap();
 
     // 桌面端保存：先在服务端改名（board host rename），再写配置文件；目录也换一个
-    let other = rig.repo.with_file_name("repo2");
-    std::fs::create_dir(&other).unwrap();
+    let other = rig.repo.with_file_name("ws2").join("default").join("main");
+    std::fs::create_dir_all(&other).unwrap();
     let mut env = rig.s.env();
     env.retain(|(k, _)| *k != "BOARD_AS" && *k != "BOARD");
     let r = rig.s.raw(&env, &["host", "rename", "win", "--json"]);
@@ -822,13 +825,13 @@ fn host_follows_config_without_restart() {
     let local = std::fs::read_to_string(log_file(&rig.s.home, d2)).unwrap();
     assert!(local.contains("as: claude-win/opus-5.5 host: win"), "{local}");
 
-    // 目录不存在不算配置不对（#185）：照样换上，上报「不存在」，界面上可以克隆
-    let nope = rig.repo.with_file_name("nope");
+    // 工作空间不存在不算配置不对（#185）：照样换上，白板目录按新的工作空间派生，不会报成可用（界面上可以克隆）
+    let nope = rig.repo.with_file_name("nope").join("default").join("main");
     std::fs::write(&cfg, host_conf("win", &nope)).unwrap();
     reload();
-    wait_until("board host 换上不存在的目录并上报", Duration::from_secs(10), || {
+    wait_until("board host 换上不存在的工作空间", Duration::from_secs(10), || {
         let d = rig.workspace()["hosts"][0]["dirs"][0].clone();
-        d["path"] == nope.display().to_string() && d["status"] == "missing"
+        d["path"] == nope.display().to_string() && d["status"] != "ok"
     });
 
     // 配置不对（白板没写成 <项目>/<白板>）：打印一行，接着用原来的
@@ -840,7 +843,7 @@ fn host_follows_config_without_restart() {
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("机器名已改为 win"), "{out}");
-    assert!(out.contains("白板与目录没有更新"), "{out}");
+    assert!(out.contains("工作空间没有更新：白板要写成 <项目>/<白板>：nope"), "{out}");
 }
 
 /// 白板的环境检查（PRD §9.1）：board host 在白板目录里跑检查命令、上报结果；没通过的机器派发被拒（BOARD_NOT_READY），
@@ -1155,7 +1158,11 @@ fn selftest_checks_agent_git_and_version() {
         let out = Command::new("sh").arg("-c").arg(script).current_dir(&root).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     };
-    sh("git init -q --bare origin.git && cd repo && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && git remote add origin ../origin.git && git push -q origin HEAD:refs/heads/main");
+    // 远端写绝对路径：rig.host 会把 repo 搬进工作空间（`<工作空间>/default/main`），相对路径 ../origin.git 就指错了
+    sh(&format!(
+        "git init -q --bare origin.git && cd repo && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && git remote add origin '{}' && git push -q origin HEAD:refs/heads/main",
+        root.join("origin.git").display()
+    ));
     rig.mode("review");
     let host = rig.host("mbp");
     let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
@@ -1189,7 +1196,8 @@ fn selftest_checks_agent_git_and_version() {
 
     // 没登录、origin 指向不存在的地址
     rig.mode("nologin");
-    sh("cd repo && git remote set-url origin /nope/missing.git");
+    // repo 已经被 rig.host 搬进工作空间
+    sh(&format!("git -C '{}' remote set-url origin /nope/missing.git", rig.ws_ready().display()));
     ask(None);
     wait_until("第二次自检做完", Duration::from_secs(30), || done(&rig).is_some_and(|h| item(&h, "agent")["ok"] == false));
     let h = done(&rig).unwrap();

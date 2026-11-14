@@ -1546,6 +1546,10 @@ fn to_workspace(raw: Option<&str>, overrides: &[(String, String)]) -> Result<Hos
         if b.is_empty() || p.is_empty() {
             continue;
         }
+        // 白板写错时整份配置不用（重新读配置时接着用原来的），不能悄悄把工作空间清掉
+        if !board_core::valid_board(b) {
+            return Err(BoardError::usage(format!("白板要写成 <项目>/<白板>：{b}")));
+        }
         if out.iter().any(|o| o.board == b) {
             return Err(BoardError::usage(format!("白板 {b} 写了两次")));
         }
