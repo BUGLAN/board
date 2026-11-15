@@ -124,11 +124,61 @@
 .ib-row.pulse { animation: ib-pulse 1.1s var(--ease-out); }
 @keyframes ib-pulse { 0% { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 70%, transparent); } 100% { box-shadow: inset 0 0 0 1.5px transparent; } }
 
-/* 离场的行（整理、删除、合并）：挂到 body 上在原位播完再拿掉 */
+/* 离场的行（删除、合并）：挂到 body 上在原位播完再拿掉 */
 .ib-ghost { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-2); }
 .ib-ghost .ib-acts { opacity: 0; }
 /* 横滑走的行：不浮起来，圆角由 ghost() 按它在列表里的位置写在行内 */
 .ib-ghost.flat { box-shadow: none; background: transparent; }
+
+/* ---------------- 整理到待办的离场（components/triageMotion，default/main#361） ---------------- */
+/* 槽：整理走的行原地留在列表里收起。槽是列表里的一个块，列表的底边、阴影、下面的行都跟着它走，不会有一块脱离列表的色条 */
+.ib-leave { overflow: hidden; pointer-events: none; }
+/* 槽里的行在列表中间是直角，在整块列表的上 / 下外角才圆（它在槽里既是第一个又是最后一个，要压过上面 .ib-row:first-child 那几条） */
+.ib-wrap .ib-leave > .ib-row, .ib-wrap .ib-leave > .ib-row .ib-line { border-radius: 0; }
+.ib-wrap .ib-leave:first-child > .ib-row, .ib-wrap .ib-leave:first-child > .ib-row .ib-line { border-top-left-radius: var(--r-md); border-top-right-radius: var(--r-md); }
+.ib-wrap .ib-leave:last-child > .ib-row:not(.open), .ib-wrap .ib-leave:last-child > .ib-row:not(.open) .ib-line { border-bottom-left-radius: var(--r-md); border-bottom-right-radius: var(--r-md); }
+/* 分隔线：槽和前后的行之间照样有一条；槽在最上面时下一行不画 */
+.ib-row + .ib-leave > .ib-row, .ib-leave + .ib-leave > .ib-row, .ib-leave + .ib-row { box-shadow: inset 0 1px 0 var(--line); }
+.ib-leave:first-child + .ib-row { box-shadow: none; }
+.ib-leave .ib-acts { opacity: 0; transition: none; }
+/* 按下：染一层品牌色；点的那个按钮留着、按下去填满品牌色 */
+.ib-leave .ib-row.leaving .ib-line { background: color-mix(in srgb, var(--brand) 9%, transparent); }
+.ib-leave .ib-row.acts-on .ib-acts { opacity: 1; transform: none; }
+.ib-leave .ib-pressed { color: var(--brand-fg) !important; background: var(--brand) !important; animation: ib-press 260ms var(--spring) both; }
+@keyframes ib-press { 0% { transform: scale(.8); } 55% { transform: scale(1.1); } 100% { transform: none; } }
+
+/* 小卡片：从行上缩出来，沿弧线飞进「白板」入口 */
+.ib-fly { position: fixed; left: 0; top: 0; z-index: 90; pointer-events: none; will-change: transform; }
+.ib-fly-chip {
+  display: inline-flex; align-items: center; gap: 7px; height: 30px; max-width: 260px; padding: 0 13px 0 10px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 500; color: var(--text); white-space: nowrap;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-2), 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+  will-change: transform, opacity;
+}
+/* 状态点：未整理的紫，飞着飞着变成待办的颜色 */
+.ib-fly-chip i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c-inbox); animation: ib-fly-dot 300ms 180ms var(--ease-out) forwards; }
+@keyframes ib-fly-dot { to { background: var(--c-todo); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-todo) 25%, transparent); } }
+.ib-fly-chip b { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--text-3); }
+.ib-fly-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* 落地：「白板」入口一圈光（图标弹一下在 triageMotion 里），旁边冒出 +n */
+.ab-item.ab-got { animation: ab-got 700ms var(--ease-out); }
+@keyframes ab-got {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 55%, transparent); background: color-mix(in srgb, var(--brand) 16%, transparent); }
+  100% { box-shadow: 0 0 0 12px transparent; }
+}
+.ab-plus {
+  position: fixed; z-index: 91; pointer-events: none; height: 18px; padding: 0 6px; border-radius: 999px; opacity: 0;
+  font: 700 11px/18px var(--f-mono); color: var(--brand-fg); background: var(--brand); box-shadow: 0 0 0 2px var(--bg), var(--shadow-2);
+}
+.ab-plus.go { animation: ab-plus 1100ms var(--ease-out) forwards; }
+@keyframes ab-plus {
+  0% { opacity: 0; transform: translateY(6px) scale(.5); }
+  16% { opacity: 1; transform: translateY(-2px) scale(1.12); }
+  28% { transform: translateY(0) scale(1); }
+  72% { opacity: 1; transform: translateY(-4px); }
+  100% { opacity: 0; transform: translateY(-14px); }
+}
 
 /* ---------------- 展开编辑 ---------------- */
 /* 列宽写成 minmax(0, 1fr)：默认 auto 列按内容的最小宽度撑开，描述里有长代码块时编辑区比行宽、按钮伸出右边（default/main#320） */

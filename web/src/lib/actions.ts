@@ -78,19 +78,24 @@ export function cardFwd() {
 
 /** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示）。
     桌面的白板页上，落位后定位到它；在「未整理」页、手机上当帧提示一下，可以撤销（放回「未整理」最下面；
-    还没保存完就点撤销：等这次移动确认后再放回去） */
-export async function triage(id: number) {
+    还没保存完就点撤销：等这次移动确认后再放回去）。
+    toastDelay：提示晚一点出来（未整理页等行的离场动作做完，免得和动画叠在一起） */
+export async function triage(id: number, { toastDelay = 0 }: { toastDelay?: number } = {}) {
   if (isDraft(id)) return;
   const start = boardFlow(useData.getState().board).home;
   const to = start?.key ?? 'todo';
   const done = exec({ op: 'move', id, column: to }, movePatch(id, to));
   const onBoard = useUI.getState().tab === 'board' && !isMobile();
-  if (!onBoard)
+  const show = () =>
     toast({
       type: 'success',
       title: `#${id} 已整理到「${start?.name ?? '待办'}」最下面`,
       action: { label: '撤销', fn: () => void done.then(() => untriage([id]), () => undefined) },
     });
+  if (!onBoard) {
+    if (toastDelay > 0) setTimeout(show, toastDelay);
+    else show();
+  }
   try {
     await done;
     if (onBoard) setTimeout(() => reveal(id), 60);

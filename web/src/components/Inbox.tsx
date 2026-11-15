@@ -31,6 +31,7 @@ import { CardLabels, DescEditor, TitleEditor } from './CardDetail';
 import { Icon } from './Icon';
 import { Skeleton } from './Skeleton';
 import { cancel } from './hosts/Dispatch';
+import { ancestors, leaveOne, placeSlots, playLeave, triageToastDelay, type LeaveRow } from './triageMotion';
 
 /* ------------------------------ 状态 ------------------------------ */
 
@@ -181,24 +182,45 @@ function related(c: Card, all: Card[]) {
 
 /* ------------------------------ 动作 ------------------------------ */
 
-/** 行离开时在原位播的动画：整理、收到「稍后再做」→ 往右滑走，放回「未整理」→ 往左滑走，删除 → 原地淡出，合并 → 往上收 */
+/** 行离开时在原位播的动画：整理 → 在列表里原地收起、缩成小卡片飞进「白板」入口（triageMotion，default/main#361），
+    收到「稍后再做」→ 往右滑走，放回「未整理」→ 往左滑走，删除 → 原地淡出，合并 → 往上收 */
 /** gone：行已经在列表里原地收起了（横滑走的、行上按钮收起 / 放回的），移走时不再播离场 */
 type Exit = 'triage' | 'delete' | 'merge' | 'later' | 'back' | 'gone';
 const exits = new Map<number, Exit>();
+/** 整理是从哪里点的：行上的图标（'row'）、展开后的「整理到…」按钮（'edit'）；离场时那个按钮在槽里按下去 */
+const pressed = new Map<number, LeaveRow['how']>();
 
-async function doTriage(ids: number[]) {
+/** 用键盘整理（回车、空格按的按钮，click 的 detail 是 0）：这一行移走后焦点落到下一行（没有就上一行），不掉回页面开头 */
+function focusAfter(e: { detail: number; currentTarget: HTMLElement }) {
+  if (e.detail !== 0) return;
+  const row = e.currentTarget.closest<HTMLElement>('[data-ib]');
+  if (!row) return;
+  const rows = [...document.querySelectorAll<HTMLElement>('.page-inbox [data-ib]')];
+  const i = rows.indexOf(row);
+  const to = rows[i + 1] ?? rows[i - 1];
+  requestAnimationFrame(() => to?.querySelector<HTMLElement>('.ib-line')?.focus({ preventScroll: true }));
+}
+
+async function doTriage(ids: number[], how?: LeaveRow['how']) {
   const ok = ids.filter(id => !isDraft(id));
+  // 逐条看：卡片由逐条视图换下一张，这里补「去了白板」的那一下（先量好位置，移走后就没了）
+  if (useInbox.getState().view === 'one') {
+    if (ok.length === 1) leaveOne(document.querySelector<HTMLElement>('.page-inbox .ib-one-card'), ok[0], useData.getState().board?.cards[ok[0]]?.title ?? '');
+  } else if (how && !reduceMotion()) ok.forEach(id => pressed.set(id, how));
   if (ok.length === 1) {
     exits.set(ok[0], 'triage');
-    return triage(ok[0]);
+    return triage(ok[0], { toastDelay: triageToastDelay() });
   }
   const home = boardFlow(useData.getState().board).home;
   const to = home?.key ?? 'todo';
   ok.forEach(id => exits.set(id, 'triage'));
   const all = Promise.allSettled(ok.map(id => exec({ op: 'move', id, column: to }, movePatch(id, to))));
-  // 当帧提示；撤销等这几次移动都确认后，把成功的放回「未整理」
+  // 当帧移走；提示等离场做完再出来。撤销等这几次移动都确认后，把成功的放回「未整理」
   const undo = () => void all.then(rs => untriage(ok.filter((_, i) => rs[i].status === 'fulfilled')));
-  toast({ type: 'success', title: `${ok.length} 条已整理到「${home?.name ?? '待办'}」`, text: ok.map(i => `#${i}`).join('、'), action: { label: '撤销', fn: undo } });
+  const show = () => toast({ type: 'success', title: `${ok.length} 条已整理到「${home?.name ?? '待办'}」`, text: ok.map(i => `#${i}`).join('、'), action: { label: '撤销', fn: undo } });
+  const delay = triageToastDelay();
+  if (delay > 0) setTimeout(show, delay);
+  else show();
   const bad = (await all).find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
   if (bad) toastError(bad.reason);
 }
@@ -853,7 +875,8 @@ const Row = memo(function Row({
               disabled={saving || draft}
               onClick={e => {
                 e.stopPropagation();
-                void doTriage([c.id]);
+                focusAfter(e);
+                void doTriage([c.id], 'row');
               }}
             >
               <Icon name="move" />
@@ -976,7 +999,15 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           <Icon name="move" />
           移动到
         </button>
-        <button className="btn sm brand" type="button" disabled={saving} onClick={() => void doTriage([c.id])}>
+        <button
+          className="btn sm brand"
+          type="button"
+          disabled={saving}
+          onClick={e => {
+            focusAfter(e);
+            void doTriage([c.id], 'edit');
+          }}
+        >
           整理到「{home}」
         </button>
       </div>
@@ -1437,32 +1468,37 @@ const SPRING = 'cubic-bezier(.22, 1.18, .36, 1)';
 
 /** 行的进出与补位（自动 FLIP）：每次布局后记下各行的位置（相对列表，滚动不算移动）。
     行的集合或顺序变了时：留下的行从旧位置弹到新位置；新出现的行（agent 刚记下、撤销回来的）淡入；
-    真的离开「未整理」的行（整理、删除、合并）在原位播离场（exits 里记着是哪一种）。
+    真的离开「未整理」的行在原位播离场（exits 里记着是哪一种）：整理走的原地放回一个槽、收起（下面的行跟着走，不补位），
+    删除、合并的挂到 body 上播完再拿掉。
     换白板时整体重建，不补间；只是被筛选掉的行直接消失 */
 function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>, path: string, attr: 'ib' | 'lt' = 'ib') {
   const last = useRef<{ path: string; sig: string; rows: Map<number, Spot> } | null>(null);
   useLayoutEffect(() => {
     const r = root.current;
     if (!r) return;
-    const box = r.getBoundingClientRect();
-    const base = box.top;
     const els = [...r.querySelectorAll<HTMLElement>(`[data-${attr}]`)];
-    const rows = new Map(
-      els.map(el => {
-        const rect = el.getBoundingClientRect();
-        // 拆解组里的行不在整块列表的外角上
-        const inner = !!el.parentElement?.classList.contains('ib-brows');
-        const spot: Spot = { el, top: rect.top - base, left: rect.left - box.left, rect, edge: { top: !inner && !el.previousElementSibling, bottom: !inner && !el.nextElementSibling } };
-        return [Number(el.dataset[attr]), spot] as const;
-      }),
-    );
     const sig = els.map(el => el.dataset[attr]).join(',');
     const prev = last.current;
+    if (!prev || prev.path !== path || prev.sig === sig || reduceMotion()) {
+      last.current = { path, sig, rows: measure(r, attr, els) };
+      return;
+    }
+    // 整理走的行先原地放回列表（槽），再量位置：留下的行没动，跟着槽收起连续往上走
+    const left =
+      attr === 'ib'
+        ? leaveInPlace(r, prev.rows, present, () => {
+            // 槽收完了：按现在的位置重新记一遍，下一次补位从这里算
+            const cur = last.current;
+            if (cur && cur.path === path && root.current) cur.rows = measure(root.current, attr);
+          })
+        : 0;
+    const rows = measure(r, attr, els);
     last.current = { path, sig, rows };
-    if (!prev || prev.path !== path || prev.sig === sig || reduceMotion()) return;
     // 这次移走的行已经在列表里原地收起过（横滑走、行上按钮收起 / 放回）：下面的行跟着收起已经到了新位置，
-    // 记下的旧位置是收起之前的，再补位会先往下弹一下再回来，所以这一轮不补位
-    const collapsed = [...prev.rows.keys()].some(id => !rows.has(id) && exits.get(id) === 'gone');
+    // 记下的旧位置是收起之前的，再补位会先往下弹一下再回来，所以这一轮不补位。
+    // 只是有行整理走（留了槽、没有新出现的行）：留下的行位置没变，也不补位（接连整理时前一个槽正收到一半，按记下的位置补位会跳一下）
+    const collapsed =
+      [...prev.rows.keys()].some(id => !rows.has(id) && exits.get(id) === 'gone') || (left > 0 && [...rows.keys()].every(id => prev.rows.has(id)));
     for (const [id, row] of rows) {
       const p = prev.rows.get(id);
       if (!p) {
@@ -1494,8 +1530,36 @@ function useRowMotion(root: RefObject<HTMLElement | null>, present: Set<number>,
   });
 }
 
-/** 一行在列表里的位置：相对列表的偏移、上次的矩形、是不是整块列表的上 / 下外角 */
-type Spot = { el: HTMLElement; top: number; left: number; rect: DOMRect; edge: { top: boolean; bottom: boolean } };
+/** 一行在列表里的位置：相对列表的偏移、上次的矩形、是不是整块列表的上 / 下外角；
+    up 是它往上直到列表的各层容器（行被摘下来以后，靠它找回原来挂在哪） */
+type Spot = { el: HTMLElement; top: number; left: number; rect: DOMRect; edge: { top: boolean; bottom: boolean }; up: HTMLElement[] };
+
+function measure(r: HTMLElement, attr: 'ib' | 'lt', els = [...r.querySelectorAll<HTMLElement>(`[data-${attr}]`)]) {
+  const box = r.getBoundingClientRect();
+  return new Map(
+    els.map(el => {
+      const rect = el.getBoundingClientRect();
+      // 拆解组里的行不在整块列表的外角上
+      const inner = !!el.parentElement?.classList.contains('ib-brows');
+      const spot: Spot = { el, top: rect.top - box.top, left: rect.left - box.left, rect, edge: { top: !inner && !el.previousElementSibling, bottom: !inner && !el.nextElementSibling }, up: ancestors(el, r) };
+      return [Number(el.dataset[attr]), spot] as const;
+    }),
+  );
+}
+
+/** 整理走的行（default/main#361）：React 已经把它（整组都走了时是整组）从列表里摘掉了，原地放回一个槽（triageMotion），
+    播离场、收起槽；返回放了几个槽。被筛选掉的、删除合并走的不管（还是走 ghost） */
+function leaveInPlace(r: HTMLElement, prev: Map<number, Spot>, present: Set<number>, settled: () => void) {
+  const slots = placeSlots(r, [...prev.entries()], id => {
+    if (exits.get(id) !== 'triage' || present.has(id) || !prev.get(id)?.rect.width) return false;
+    exits.delete(id);
+    const how = pressed.get(id);
+    pressed.delete(id);
+    return how;
+  });
+  if (slots.length) playLeave(slots, settled);
+  return slots.length;
+}
 
 function ghost(el: HTMLElement, r: DOMRect, kind: Exit | undefined, edge: Spot['edge']) {
   if (r.bottom < 0 || r.top > window.innerHeight) return;
@@ -1517,12 +1581,8 @@ function ghost(el: HTMLElement, r: DOMRect, kind: Exit | undefined, edge: Spot['
     el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 320, easing: 'ease-out', fill: 'forwards' });
     return;
   }
-  const to =
-    kind === 'triage'
-      ? { opacity: 0, transform: 'translateX(56px)' }
-      : kind === 'merge'
-        ? { opacity: 0, transform: 'translateY(-10px) scale(.94)' }
-        : { opacity: 0, transform: 'scale(.97)', filter: 'blur(4px)' };
+  // 整理走的一般在列表里原地收起（leaveInPlace）；原来的容器也没了、放不回去时才到这里，和删除一样原地淡掉
+  const to = kind === 'merge' ? { opacity: 0, transform: 'translateY(-10px) scale(.94)' } : { opacity: 0, transform: 'scale(.97)', filter: 'blur(4px)' };
   el.animate([{ opacity: 1, transform: 'none', filter: 'blur(0)' }, to], { duration: 380, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' }).onfinish = () => el.remove();
 }
 
