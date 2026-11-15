@@ -151,6 +151,7 @@
 .switch i { position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow-1); transition: transform var(--dur-1) var(--ease-out); }
 .switch.on { background: var(--brand); box-shadow: none; }
 .switch.on i { transform: translateX(15px); }
+.switch:disabled { opacity: .45; cursor: not-allowed; }
 
 /* 本机：桌面端更新（当前版本、检查更新、下载进度、重启提示） */
 .up-err-line { margin: 0 0 12px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--danger-soft); word-break: break-word; }

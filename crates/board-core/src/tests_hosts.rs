@@ -1,6 +1,6 @@
 //! 任务下发（board host）的规则：机器上报、手动派发的校验、开始、结束、占用、掉线、定时领取、移除（任务下发需求 §十二）。
 
-use crate::hosts::{EndHow, IDLE_RUN_DEFAULT, IDLE_RUN_LIMIT, MAX_RUN_DEFAULT};
+use crate::hosts::{EndHow, AUTO_UPGRADE_RETRY_MS, AUTO_UPGRADE_TRIES, IDLE_RUN_DEFAULT, IDLE_RUN_LIMIT, MAX_RUN_DEFAULT, NO_SELF_UPDATE};
 use crate::*;
 
 const T0: i64 = 1_700_000_000_000;
@@ -4664,7 +4664,7 @@ fn wip_comment_tells_the_next_agent_where_to_pick_up() {
 }
 
 /// 自动升级：开关开着时，board 比服务端旧的机器一上报就替它发起升级（和人点「升级」一样：暂停接单、等在跑的做完）；
-/// 同一个服务端版本只自动试一次，没成不反复试；不比服务端旧的、关着开关的不动
+/// 没成时恢复接单，不马上再试（重试见下一个用例）；不比服务端旧的、关着开关的不动
 #[test]
 fn auto_upgrade_asks_outdated_hosts_once_per_server_version() {
     let mut s = store();
@@ -4690,11 +4690,121 @@ fn auto_upgrade_asks_outdated_hosts_once_per_server_version() {
     beat(&mut s, T0 + 4 * S, &rep).unwrap();
     beat(&mut s, T0 + 5 * S, &report("mbp", "i1", vec![])).unwrap();
     let h = host(&s, T0 + 5 * S);
-    assert!(h.ask.is_none() && !h.paused, "没成：恢复接单，不反复试");
+    assert!(h.ask.is_none() && !h.paused, "没成：恢复接单，不马上再试");
     // 版本和服务端一样的机器不动
     let mut cur = report("win", "w1", vec![]);
     cur.version = env!("CARGO_PKG_VERSION").into();
     beat(&mut s, T0 + 5 * S, &cur).unwrap();
     beat(&mut s, T0 + 6 * S, &cur).unwrap();
     assert!(s.read(|r| r.host("win", T0 + 6 * S)).unwrap().ask.is_none());
+}
+
+/// 自动升级的一次：机器开始处理（asked），再报结果（`err` 为空时报「升级好了」：换一个进程、版本变成服务端的）
+fn auto_upgrade_round(s: &mut Store, at: i64, err: Option<&str>) {
+    let ask = host(s, at).ask.expect("应该有升级请求");
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.asked = Some(ask.id);
+    beat(s, at, &rep).unwrap();
+    match err {
+        Some(e) => {
+            let mut rep = report("mbp", "i1", vec![]);
+            rep.ask_error = Some(e.into());
+            beat(s, at + S, &rep).unwrap();
+        }
+        None => {
+            // 旧进程退出前发 final（机器离线），新版本的进程再上来
+            beat(s, at, &HostReport { done: true, ..report("mbp", "i1", vec![]) }).unwrap();
+            let mut rep = report("mbp", "i2", vec![]);
+            rep.version = env!("CARGO_PKG_VERSION").into();
+            beat(s, at + S, &rep).unwrap();
+        }
+    }
+}
+
+/// default/main#352：服务端先部署、发版包晚十几分钟才出来时，第一次自动升级下载不到。
+/// 临时失败恢复接单后每隔 10 分钟再试一次，同一个服务端版本最多 5 次；操作记录里写明每一次和结果
+#[test]
+fn auto_upgrade_retries_temporary_failures_every_10_minutes_up_to_5_times() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.set_auto_upgrade(true)).unwrap();
+    let server = env!("CARGO_PKG_VERSION");
+    let mut t = T0 + S;
+    beat(&mut s, t, &report("mbp", "i1", vec![])).unwrap();
+    for i in 1..=AUTO_UPGRADE_TRIES {
+        let ask = host(&s, t).ask.unwrap_or_else(|| panic!("第 {i} 次：应该有升级请求"));
+        let by = if i == 1 { "自动升级".to_string() } else { format!("自动升级（第 {i} 次）") };
+        assert_eq!((ask.by.as_str(), ask.to.as_deref()), (by.as_str(), Some(server)), "第 {i} 次");
+        assert!(host(&s, t).paused, "第 {i} 次：升级前先暂停接单");
+        auto_upgrade_round(&mut s, t + S, Some("升级失败：没有找到比现在新的桌面端版本"));
+        let failed = t + 2 * S;
+        let h = host(&s, failed);
+        assert!(h.ask.is_none() && !h.paused, "第 {i} 次没成：恢复接单");
+        let text = &h.ops[0].text;
+        assert!(text.starts_with("升级失败：没有找到比现在新的桌面端版本；已恢复接单"), "{text}");
+        if i < AUTO_UPGRADE_TRIES {
+            assert!(text.ends_with(&format!("10 分钟后自动再试（第 {}/5 次）", i + 1)), "{text}");
+        } else {
+            assert!(text.ends_with(&format!("自动升级到 {server} 已经试了 5 次，不再重试，请手动升级")), "{text}");
+        }
+        // 不到 10 分钟不试
+        beat(&mut s, failed + AUTO_UPGRADE_RETRY_MS - S, &report("mbp", "i1", vec![])).unwrap();
+        assert!(host(&s, failed + AUTO_UPGRADE_RETRY_MS - S).ask.is_none(), "第 {i} 次没成：不到 10 分钟不再试");
+        t = failed + AUTO_UPGRADE_RETRY_MS;
+        beat(&mut s, t, &report("mbp", "i1", vec![])).unwrap();
+    }
+    // 5 次都没成：之后不再自动试，接单不受影响
+    assert!(host(&s, t).ask.is_none(), "试满 5 次不再试");
+    beat(&mut s, t + 10 * AUTO_UPGRADE_RETRY_MS, &report("mbp", "i1", vec![])).unwrap();
+    let h = host(&s, t + 10 * AUTO_UPGRADE_RETRY_MS);
+    assert!(h.ask.is_none() && !h.paused, "试满 5 次不再试");
+    // 人照样可以手动点「升级」：没成时不再接「自动升级」的半句
+    beat(&mut s, t + 11 * AUTO_UPGRADE_RETRY_MS, &report("mbp", "i1", vec![])).unwrap();
+    s.write(t + 11 * AUTO_UPGRADE_RETRY_MS, Origin::ui(None), |w| w.host_ask("mbp", "upgrade", false, "人")).unwrap();
+    auto_upgrade_round(&mut s, t + 11 * AUTO_UPGRADE_RETRY_MS + S, Some("升级失败：网络不通"));
+    let h = host(&s, t + 11 * AUTO_UPGRADE_RETRY_MS + 2 * S);
+    assert_eq!(h.ops[0].text, "升级失败：网络不通；已恢复接单");
+}
+
+/// 临时失败后再试一次就升上去了：恢复接单、不再发起；CLI 机器下载发版附件 404 同样算临时失败
+#[test]
+fn auto_upgrade_retry_succeeds_after_release_is_published() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.set_auto_upgrade(true)).unwrap();
+    beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
+    auto_upgrade_round(&mut s, T0 + 2 * S, Some("升级失败：发版附件里没有 board-windows-x64.zip（https://example/board-windows-x64.zip 404）：这一版可能还没有单独的 board 包"));
+    let failed = T0 + 3 * S;
+    assert!(host(&s, failed).ops[0].text.ends_with("10 分钟后自动再试（第 2/5 次）"), "{:?}", host(&s, failed).ops);
+    let t = failed + AUTO_UPGRADE_RETRY_MS;
+    beat(&mut s, t, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(host(&s, t).ask.map(|a| a.by), Some("自动升级（第 2 次）".into()));
+    auto_upgrade_round(&mut s, t + S, None);
+    let h = host(&s, t + 2 * S);
+    assert_eq!(h.version, env!("CARGO_PKG_VERSION"));
+    assert!(h.ask.is_none() && !h.paused, "{:?}", h.ops);
+    assert!(h.ops[0].text.starts_with(&format!("升级到 {}，重新上线；已恢复接单", env!("CARGO_PKG_VERSION"))), "{:?}", h.ops);
+    let mut cur = report("mbp", "i2", vec![]);
+    cur.version = env!("CARGO_PKG_VERSION").into();
+    beat(&mut s, t + 2 * S + 10 * AUTO_UPGRADE_RETRY_MS, &cur).unwrap();
+    assert!(host(&s, t + 2 * S + 10 * AUTO_UPGRADE_RETRY_MS).ask.is_none());
+}
+
+/// 旧版本的 board 没有 `board update`：只提示一次，不反复暂停接单
+#[test]
+fn auto_upgrade_does_not_retry_hosts_that_cannot_update_themselves() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.set_auto_upgrade(true)).unwrap();
+    beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
+    let why = format!("升级失败：这个版本的 board 还不能自己升级（{NO_SELF_UPDATE}）：到这台机器上手动升级一次");
+    auto_upgrade_round(&mut s, T0 + 2 * S, Some(&why));
+    let h = host(&s, T0 + 3 * S);
+    assert!(h.ops[0].text.ends_with("这台机器的 board 不会自己升级，自动升级不再重试"), "{:?}", h.ops);
+    for k in 1..=6 {
+        let at = T0 + 3 * S + k * AUTO_UPGRADE_RETRY_MS;
+        beat(&mut s, at, &report("mbp", "i1", vec![])).unwrap();
+        let h = host(&s, at);
+        assert!(h.ask.is_none() && !h.paused, "第 {k} 个 10 分钟：不再自动试");
+    }
 }

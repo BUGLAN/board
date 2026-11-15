@@ -1432,6 +1432,12 @@ pub struct HostToken {
 pub const ASK_KINDS: [&str; 5] = ["recheck", "restart", "upgrade", "drain", "cancel"];
 /// 机器详情「最近」里带几条操作记录
 pub const OPS_KEEP: i64 = 30;
+/// 自动升级临时失败（发版包还没出来、下载不了、网络不通）后隔多久再试：10 分钟
+pub const AUTO_UPGRADE_RETRY_MS: i64 = 10 * 60 * 1000;
+/// 同一个服务端版本最多自动试几次（含第一次）
+pub const AUTO_UPGRADE_TRIES: i64 = 5;
+/// board host 报的升级失败原因里带这句：机器上的 board 太旧、不会自己升级（没有 `board update`），自动升级不再重试
+pub const NO_SELF_UPDATE: &str = "没有 board update";
 
 /// 一次同步配置写进操作记录的一句话，例如「同步配置：2 个 agent 已写入，pi 失败；6 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design」
 pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
@@ -1899,8 +1905,12 @@ pub(crate) struct HostRow {
     pub(crate) auto: bool,
     /// 接单时段：一天里的几段 `[起, 止)`，分钟，按服务端时区
     pub(crate) windows: Vec<crate::sched::Window>,
-    /// 自动升级已经替它试过升级到哪个服务端版本（没成也不再自动试，等下一个版本或人手动点）
+    /// 自动升级已经替它试过升级到哪个服务端版本
     pub(crate) up_tried: Option<String>,
+    /// 升级到 `up_tried` 自动试了几次
+    pub(crate) up_tries: i64,
+    /// 自动升级的下一次：`None` 这一次还在做（或还没试过），毫秒时间戳是临时失败后到这个时间再试，`0` 不再自动试
+    pub(crate) up_retry: Option<i64>,
     pub(crate) round_at: Option<i64>,
     pub(crate) rr: i64,
     pub(crate) first_at: i64,
@@ -1923,7 +1933,7 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1956,6 +1966,8 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         auto: r.get::<_, i64>(39)? != 0,
         windows: serde_json::from_str(&r.get::<_, String>(40)?).unwrap_or_else(|_| crate::sched::all_day()),
         up_tried: r.get(41)?,
+        up_tries: r.get(42)?,
+        up_retry: r.get(43)?,
         round_at: r.get(12)?,
         rr: r.get(13)?,
         first_at: r.get(14)?,
@@ -3364,7 +3376,8 @@ impl<'a> W<'a> {
         };
         if let Some(err) = rep.ask_error.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
             let text: String = err.chars().take(500).collect();
-            self.host_op(h.id, sys, &format!("{text}{}", if h.up_pause { "；已恢复接单" } else { "" }))?;
+            let retry = self.auto_upgrade_failed(h, &text)?;
+            self.host_op(h.id, sys, &format!("{text}{}{retry}", if h.up_pause { "；已恢复接单" } else { "" }))?;
             restore(self)?;
             self.touch_hosts();
         } else if h.up_pause && h.ask.is_none() && h.instance != rep.instance {
@@ -3380,20 +3393,53 @@ impl<'a> W<'a> {
     }
 
     /// 自动升级（PRD §9.1「自动升级」）：开关开着、这台机器的 board 比服务端旧、没有别的请求在等，就替它发起一次
-    /// 和人点「升级到 <版本>」一样的升级（暂停接单，等在跑的派发结束再升）。同一个服务端版本只自动试一次：
-    /// 没成（旧版本不会 `board update`、下载不了）就留给人处理，等服务端下一次升级再试，不反复打断它接单
+    /// 和人点「升级到 <版本>」一样的升级（暂停接单，等在跑的派发结束再升）。
+    /// 同一个服务端版本：第一次直接试；没成时按 [`Self::auto_upgrade_failed`] 排的时间再试，最多 [`AUTO_UPGRADE_TRIES`] 次。
+    /// 服务端先部署、发版包晚十几分钟才出来时，机器第一次下载不到，过 10 分钟再试就能升上去
     fn auto_upgrade_host(&mut self, name: &str) -> Result<()> {
         if !self.read().auto_upgrade()? {
             return Ok(());
         }
         let Some(h) = self.host_row(name)? else { return Ok(()) };
         let server = env!("CARGO_PKG_VERSION");
-        if h.ask.is_some() || h.version.trim().is_empty() || !version_lt(&h.version, server) || h.up_tried.as_deref() == Some(server) {
+        if h.ask.is_some() || h.version.trim().is_empty() || !version_lt(&h.version, server) {
             return Ok(());
         }
-        self.tx.execute("UPDATE hosts SET up_tried = ?2 WHERE id = ?1", params![h.id, server])?;
-        self.host_ask(name, "upgrade", false, "自动升级")?;
+        let tries = if h.up_tried.as_deref() == Some(server) {
+            // 这个版本试过了：上一次临时失败、到了重试时间、次数没用完才再试；还在做的、不再试的（`0`）不动
+            match h.up_retry {
+                Some(at) if at > 0 && at <= self.now && h.up_tries < AUTO_UPGRADE_TRIES => h.up_tries + 1,
+                _ => return Ok(()),
+            }
+        } else {
+            1
+        };
+        self.tx.execute("UPDATE hosts SET up_tried = ?2, up_tries = ?3, up_retry = NULL WHERE id = ?1", params![h.id, server, tries])?;
+        let by = if tries == 1 { "自动升级".to_string() } else { format!("自动升级（第 {tries} 次）") };
+        self.host_ask(name, "upgrade", false, &by)?;
         Ok(())
+    }
+
+    /// 升级没成（board host 报了 `ask_error`）：这一次是自动升级发起的（试过服务端这个版本、还没排下一次）时，
+    /// 临时失败（发版包还没出来、下载 404、网络不通）排上 10 分钟后再试；旧版本不会自己升级（[`NO_SELF_UPDATE`]）、
+    /// 次数用完了的不再自动试。返回接在操作记录后面的半句（不是自动升级的这一次时为空）
+    fn auto_upgrade_failed(&mut self, h: &HostRow, err: &str) -> Result<String> {
+        let server = env!("CARGO_PKG_VERSION");
+        if h.up_tried.as_deref() != Some(server) || h.up_tries < 1 || h.up_retry.is_some() || !self.read().auto_upgrade()? {
+            return Ok(String::new());
+        }
+        let (at, note) = if err.contains(NO_SELF_UPDATE) {
+            (0, "；这台机器的 board 不会自己升级，自动升级不再重试".to_string())
+        } else if h.up_tries >= AUTO_UPGRADE_TRIES {
+            (0, format!("；自动升级到 {server} 已经试了 {AUTO_UPGRADE_TRIES} 次，不再重试，请手动升级"))
+        } else {
+            (
+                self.now + AUTO_UPGRADE_RETRY_MS,
+                format!("；{} 分钟后自动再试（第 {}/{AUTO_UPGRADE_TRIES} 次）", AUTO_UPGRADE_RETRY_MS / 60_000, h.up_tries + 1),
+            )
+        };
+        self.tx.execute("UPDATE hosts SET up_retry = ?2 WHERE id = ?1", params![h.id, at])?;
+        Ok(note)
     }
 
     /// 记一条机器的操作（最近的 OPS_KEEP 条以外的删掉）

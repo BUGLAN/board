@@ -3,11 +3,21 @@
    - 显示当前版本（外壳版本）；右侧「检查更新」按钮手动查一次，结果（已是最新 / 检查失败）在按钮上停 5 秒再变回来，
      失败原因在下一行；有新版本时展开更新说明，「下载并安装」显示下载进度，装完提示重启
    - 启动后自动检查的开关（默认开）；自动检查发现新版本时也用应用内的确认框问（lib/update-runner.ts）
-   单独成文件：设置页本身很大，这一块自己管检查和安装的状态
+   - 「发现新版本后自动下载并安装」的开关（默认关）：开着时自动检查发现新版本直接下载安装、装好重启，不再问
+   检查和安装的状态都在 lib/update-runner.ts 的 store 里：自动安装的进度、结果这里也看得到
    ========================================================================== */
 import { useEffect, useRef, useState } from 'react';
-import { installUpdate, restartApp, shellVersion } from '../lib/platform';
-import { autoCheckUpdate, downloadPercent, installedText, progressText, setAutoCheckUpdate, type CheckState, type InstallState, type UpdateProgress } from '../lib/update';
+import { restartApp, shellVersion } from '../lib/platform';
+import {
+  autoCheckUpdate,
+  autoInstallUpdate,
+  downloadPercent,
+  installedText,
+  progressText,
+  setAutoCheckUpdate,
+  setAutoInstallUpdate,
+  type CheckState,
+} from '../lib/update';
 import { cx } from '../lib/util';
 import { pauseAutoUpdateCheck, resumeAutoUpdateCheck, useUpdate } from '../lib/update-runner';
 import { confirm, toast } from '../store/ui';
@@ -15,9 +25,17 @@ import { Markdown } from './bits';
 import { Icon } from './Icon';
 
 /** 设置里切换开关的小按钮 */
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+function Toggle({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
-    <button type="button" role="switch" aria-checked={on} aria-label={label} className={`switch${on ? ' on' : ''}`} onClick={() => onChange(!on)}>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      className={`switch${on ? ' on' : ''}`}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+    >
       <i />
     </button>
   );
@@ -45,14 +63,15 @@ export function useFlash(kind: CheckState['kind']) {
 export function UpdateCard() {
   const check = useUpdate(s => s.check);
   const run = useUpdate(s => s.run);
+  const install = useUpdate(s => s.install);
+  const installNow = useUpdate(s => s.installNow);
+  const clearInstall = useUpdate(s => s.clearInstall);
   const [auto, setAuto] = useState(autoCheckUpdate);
-  const [install, setInstall] = useState<InstallState>({ kind: 'idle' });
-  const alive = useRef(true);
-  useEffect(() => () => void (alive.current = false), []);
+  const [autoInstall, setAutoInstall] = useState(autoInstallUpdate);
 
   const checkNow = () => {
     // 重新检查：上一次的安装结果（装好了等重启的除外）不再显示
-    if (install.kind !== 'ready') setInstall({ kind: 'idle' });
+    clearInstall();
     void run();
   };
 
@@ -64,16 +83,7 @@ export function UpdateCard() {
       icon: 'update',
     });
     if (!yes) return;
-    setInstall({ kind: 'downloading', progress: null });
-    try {
-      const r = await installUpdate(version, (p: UpdateProgress) => {
-        if (alive.current) setInstall({ kind: 'downloading', progress: p });
-      });
-      if (!alive.current) return;
-      setInstall({ kind: 'ready', version: r.version, restart: r.restart });
-    } catch (e) {
-      if (alive.current) setInstall({ kind: 'failed', error: String(e) });
-    }
+    await installNow(version);
   };
 
   const version = shellVersion ?? '未知';
@@ -200,6 +210,29 @@ export function UpdateCard() {
               if (v) resumeAutoUpdateCheck();
               else pauseAutoUpdateCheck();
               toast({ type: 'info', title: v ? '启动后会自动检查更新' : '启动后不再自动检查更新', duration: 1800 });
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="set-row">
+        <div className="set-label">
+          <b>发现新版本后自动下载并安装</b>
+          <span>
+            {auto
+              ? '自动检查发现新版本时不再弹确认框，直接下载、校验签名并安装，装好后重启 Board。重启会结束这台机器上正在跑的会话，默认关闭'
+              : '要先打开「启动后自动检查」：自动检查发现新版本时才会直接下载并安装'}
+          </span>
+        </div>
+        <div className="set-control">
+          <Toggle
+            on={autoInstall}
+            disabled={!auto}
+            label="发现新版本后自动下载并安装"
+            onChange={v => {
+              setAutoInstall(v);
+              setAutoInstallUpdate(v);
+              toast({ type: 'info', title: v ? '发现新版本后会自动下载并安装' : '发现新版本后先问再装', duration: 1800 });
             }}
           />
         </div>

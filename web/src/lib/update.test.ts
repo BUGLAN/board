@@ -5,6 +5,7 @@ import {
   AUTO_CHECK_START_DELAY,
   autoCheckDelay,
   autoCheckUpdate,
+  autoInstallUpdate,
   downloadPercent,
   failCheck,
   failureText,
@@ -17,6 +18,7 @@ import {
   newerVersion,
   progressText,
   setAutoCheckUpdate,
+  setAutoInstallUpdate,
   versionParts,
   type UpdateCheck,
 } from './update';
@@ -109,6 +111,16 @@ describe('装完的提示', () => {
     expect(installedText(true)).toBe('重启 Board 后就是新版本了。');
     expect(installedText(false)).toBe('安装器会关闭 Board，装好后自动打开新版本。');
     expect(installedText(false)).not.toBe(installedText(true));
+  });
+});
+
+describe('发现新版本后自动下载并安装', () => {
+  it('默认关，打开后记住', () => {
+    expect(autoInstallUpdate()).toBe(false);
+    setAutoInstallUpdate(true);
+    expect(autoInstallUpdate()).toBe(true);
+    setAutoInstallUpdate(false);
+    expect(autoInstallUpdate()).toBe(false);
   });
 });
 

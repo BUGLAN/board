@@ -97,9 +97,11 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "auto", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "windows", "TEXT NOT NULL DEFAULT '[[0,1440]]'"),
         ("boards", "auto", "INTEGER NOT NULL DEFAULT 1"),
-        // 自动升级：全局开关，和每台机器已经替它试过升级到哪个版本（失败了不反复重试）
+        // 自动升级：全局开关，和每台机器已经替它试过升级到哪个版本、试了几次、什么时候再试（hosts.rs auto_upgrade_host）
         ("sched", "auto_upgrade", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "up_tried", "TEXT"),
+        ("hosts", "up_tries", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "up_retry", "INTEGER"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;

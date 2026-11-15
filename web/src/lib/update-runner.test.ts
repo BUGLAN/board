@@ -2,13 +2,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UpdateCheck } from './update';
 
-const shell = vi.hoisted(() => ({ canUpdate: true, checkUpdate: vi.fn() }));
+const shell = vi.hoisted(() => ({ canUpdate: true, checkUpdate: vi.fn(), installUpdate: vi.fn(), restartApp: vi.fn() }));
 
 vi.mock('./platform', () => ({
   get canUpdate() {
     return shell.canUpdate;
   },
   checkUpdate: (...a: unknown[]) => shell.checkUpdate(...a),
+  installUpdate: (...a: unknown[]) => shell.installUpdate(...a),
+  restartApp: (...a: unknown[]) => shell.restartApp(...a),
 }));
 
 const ui = vi.hoisted(() => ({
@@ -38,6 +40,9 @@ async function load() {
 beforeEach(() => {
   shell.canUpdate = true;
   shell.checkUpdate.mockReset();
+  shell.installUpdate.mockReset();
+  shell.restartApp.mockReset();
+  localStorage.clear();
   ui.confirm.mockClear();
   ui.confirm.mockImplementation(async () => false as unknown as never);
   ui.setTab.mockClear();
@@ -135,5 +140,103 @@ describe('只有发现新版本才弹确认框（checkQuietly）', () => {
     expect(ui.toast).not.toHaveBeenCalled();
     expect(ui.confirm).not.toHaveBeenCalled();
     expect(useUpdate.getState().check).toMatchObject({ kind: 'failed' });
+  });
+});
+
+describe('发现新版本后自动下载并安装（default/main#352）', () => {
+  it('默认关：发现新版本照样弹确认框，不下载', async () => {
+    shell.checkUpdate.mockResolvedValue(NEWER);
+    const { autoUpdateCheck, update } = await load();
+    expect(update.autoInstallUpdate()).toBe(false);
+    autoUpdateCheck();
+    await flushCheck();
+    expect(ui.confirm).toHaveBeenCalledTimes(1);
+    expect(shell.installUpdate).not.toHaveBeenCalled();
+    expect(shell.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('打开后：不弹确认框，直接下载安装，进度在 store 里；装好后（macOS / Linux）重启', async () => {
+    shell.checkUpdate.mockResolvedValue(NEWER);
+    shell.installUpdate.mockImplementation(async (_v: string, onProgress?: (p: { downloaded: number; total: number | null }) => void) => {
+      onProgress?.({ downloaded: 5, total: 10 });
+      return { version: '0.2.0', restart: true };
+    });
+    const { autoUpdateCheck, useUpdate, AUTO_RESTART_DELAY, update } = await load();
+    update.setAutoInstallUpdate(true);
+    autoUpdateCheck();
+    await flushCheck();
+    expect(ui.confirm).not.toHaveBeenCalled();
+    expect(shell.installUpdate).toHaveBeenCalledTimes(1);
+    expect(shell.installUpdate.mock.calls[0][0]).toBe('0.2.0');
+    expect(useUpdate.getState().install).toEqual({ kind: 'ready', version: '0.2.0', restart: true });
+    expect(ui.toast).toHaveBeenCalledWith(expect.objectContaining({ title: '0.2.0 已安装，正在重启 Board' }));
+    expect(shell.restartApp).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(AUTO_RESTART_DELAY);
+    expect(shell.restartApp).toHaveBeenCalledTimes(1);
+  });
+
+  it('Windows（装好由安装器重开）：不调重启', async () => {
+    shell.checkUpdate.mockResolvedValue(NEWER);
+    shell.installUpdate.mockResolvedValue({ version: '0.2.0', restart: false });
+    const { autoUpdateCheck, AUTO_RESTART_DELAY, update } = await load();
+    update.setAutoInstallUpdate(true);
+    autoUpdateCheck();
+    await flushCheck();
+    await vi.advanceTimersByTimeAsync(AUTO_RESTART_DELAY);
+    expect(shell.installUpdate).toHaveBeenCalledTimes(1);
+    expect(shell.restartApp).not.toHaveBeenCalled();
+    expect(ui.confirm).not.toHaveBeenCalled();
+  });
+
+  it('装不上：提示一次，不重启，结果留在 store 里给设置页看', async () => {
+    shell.checkUpdate.mockResolvedValue(NEWER);
+    shell.installUpdate.mockRejectedValue('签名对不上');
+    const { autoUpdateCheck, useUpdate, AUTO_RESTART_DELAY, update } = await load();
+    update.setAutoInstallUpdate(true);
+    autoUpdateCheck();
+    await flushCheck();
+    await vi.advanceTimersByTimeAsync(AUTO_RESTART_DELAY);
+    expect(shell.restartApp).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
+    expect(ui.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', title: '自动安装 0.2.0 没成' }));
+    expect(useUpdate.getState().install).toEqual({ kind: 'failed', error: '签名对不上' });
+  });
+
+  it('已是最新：打开了也不下载', async () => {
+    shell.checkUpdate.mockResolvedValue(LATEST);
+    const { autoUpdateCheck, update } = await load();
+    update.setAutoInstallUpdate(true);
+    autoUpdateCheck();
+    await flushCheck();
+    expect(shell.installUpdate).not.toHaveBeenCalled();
+    expect(ui.toast).not.toHaveBeenCalled();
+  });
+});
+
+describe('安装状态（installNow / clearInstall）', () => {
+  it('正在下载时再装一次：直接返回这一次，不重复下载；装好后重新检查不清掉「等重启」', async () => {
+    let finish: (v: { version: string; restart: boolean }) => void = () => {};
+    shell.installUpdate.mockImplementation(() => new Promise(r => (finish = r)));
+    const { useUpdate } = await load();
+    const a = useUpdate.getState().installNow('0.2.0');
+    const b = useUpdate.getState().installNow('0.2.0');
+    expect(a).toBe(b);
+    expect(useUpdate.getState().install.kind).toBe('downloading');
+    useUpdate.getState().clearInstall();
+    expect(useUpdate.getState().install.kind).toBe('downloading');
+    finish({ version: '0.2.0', restart: true });
+    await a;
+    expect(shell.installUpdate).toHaveBeenCalledTimes(1);
+    useUpdate.getState().clearInstall();
+    expect(useUpdate.getState().install.kind).toBe('ready');
+  });
+
+  it('失败后重新检查：清掉失败结果', async () => {
+    shell.installUpdate.mockRejectedValue('网络不通');
+    const { useUpdate } = await load();
+    await useUpdate.getState().installNow('0.2.0');
+    expect(useUpdate.getState().install.kind).toBe('failed');
+    useUpdate.getState().clearInstall();
+    expect(useUpdate.getState().install.kind).toBe('idle');
   });
 });

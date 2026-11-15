@@ -2,6 +2,7 @@
    桌面端更新（外壳命令见 src-tauri/src/update.rs）
    - 设置 → 桌面端更新：显示当前版本、手动「检查更新」，有新版本时展开说明、下载安装、装完提示重启
    - 启动后自动检查一次（默认开，可在设置里关掉）：有新版本时用应用内的确认框问，不阻塞启动、不弹系统框
+   - 「发现新版本后自动下载并安装」（默认关）：自动检查发现新版本时不再问，直接下载、安装，装好后按平台重启
    - 这里只放不碰外壳的逻辑：版本比较、状态文字、检查的状态机；调用外壳的薄封装在 platform.ts
    ========================================================================== */
 import { pref } from './util';
@@ -39,6 +40,13 @@ const AUTO = 'update.auto';
 export const autoCheckUpdate = () => pref.get<boolean>(AUTO, true);
 export function setAutoCheckUpdate(on: boolean) {
   pref.set(AUTO, on);
+}
+
+const AUTO_INSTALL = 'update.autoInstall';
+/** 自动检查发现新版本后直接下载并安装（默认关：装好要重启 Board，会打断这台机器上正在跑的会话） */
+export const autoInstallUpdate = () => pref.get<boolean>(AUTO_INSTALL, false);
+export function setAutoInstallUpdate(on: boolean) {
+  pref.set(AUTO_INSTALL, on);
 }
 
 /** 自动检查的间隔：30 分钟 */

@@ -1944,7 +1944,8 @@ impl Host<'_> {
             Some(_) => {
                 let text = tail.join(" ");
                 let why = if text.contains("未知命令") {
-                    "这个版本的 board 还不能自己升级（没有 board update）：到这台机器上手动升级一次".to_string()
+                    // 服务端认这半句（NO_SELF_UPDATE）：旧版本不会自己升级，自动升级不再重试
+                    format!("这个版本的 board 还不能自己升级（{}）：到这台机器上手动升级一次", board_core::hosts::NO_SELF_UPDATE)
                 } else {
                     tail.last().cloned().unwrap_or_else(|| "board update 失败".into())
                 };

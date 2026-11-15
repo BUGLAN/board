@@ -325,7 +325,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 ### 桌面端检查更新
 
-设置 → 桌面端更新：显示当前版本、「检查更新」；启动后隔几秒自动检查一次（默认开，可以关）。发现新版本时用应用内的确认框问，确认后下载、校验签名、安装，装完提示重启（Windows 上安装器接管：关闭 Board、装完自己拉起新版）。代码在 `src-tauri/src/update.rs`（外壳命令）、`web/src/lib/update.ts`（版本比较、状态）、`web/src/components/update-card.tsx`（设置页）。
+设置 → 桌面端更新：显示当前版本、「检查更新」；启动后隔几秒自动检查一次（默认开，可以关）。发现新版本时用应用内的确认框问，确认后下载、校验签名、安装，装完提示重启（Windows 上安装器接管：关闭 Board、装完自己拉起新版）。打开「发现新版本后自动下载并安装」（默认关，要先开着自动检查）时，自动检查发现新版本不再问，直接下载、校验签名、安装，装好后 macOS / Linux 自己重启（Windows 同样由安装器接管）；重启会结束这台机器上正在跑的会话，所以默认关。装不上时提示一次，当前版本不受影响。代码在 `web/src/lib/update-runner.ts`。代码在 `src-tauri/src/update.rs`（外壳命令）、`web/src/lib/update.ts`（版本比较、状态）、`web/src/components/update-card.tsx`（设置页）。
 
 | 东西 | 在哪 |
 |---|---|

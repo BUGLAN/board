@@ -4,25 +4,68 @@
    - 上次检查时间持久化：页面刷新、切换设置页、重复挂载不会多查一次
    - 检查结果放在这里（store）：设置页的更新卡片打开时直接显示，不用再查一遍
    - 有新版本：应用内的确认框（store/ui 的 confirm），「以后再说」就是这次先不装；不弹系统框、不阻塞操作
+   - 打开了「发现新版本后自动下载并安装」：不弹确认框，直接下载、安装（进度和结果同样在 store 里，设置页的卡片看得到），
+     装好后 macOS / Linux 重启 Board，Windows 由安装器关掉再打开新版本；装不上时提示一次，当前版本不受影响
    - 已是最新、连不上、清单不对、旧版桌面端：一律静默，不弹任何提示（default/main#327）；
      要重试或看失败原因就点设置页的「检查更新」
    ========================================================================== */
 import { create } from 'zustand';
-import { canUpdate, checkUpdate } from './platform';
-import { autoCheckDelay, autoCheckUpdate, failCheck, finishCheck, lastAutoCheck, markAutoCheck, type CheckState } from './update';
+import { canUpdate, checkUpdate, installUpdate, restartApp } from './platform';
+import {
+  autoCheckDelay,
+  autoCheckUpdate,
+  autoInstallUpdate,
+  failCheck,
+  finishCheck,
+  lastAutoCheck,
+  markAutoCheck,
+  type CheckState,
+  type InstallState,
+} from './update';
 import { autoNotice } from './update-notice';
-import { confirm, setTab } from '../store/ui';
+import { confirm, setTab, toast } from '../store/ui';
 
 interface UpdateStore {
   check: CheckState;
+  /** 下载安装的状态（设置页的「下载并安装」和自动安装共用） */
+  install: InstallState;
   /** 检查一次，返回结果（设置页的按钮也用它）；正在查的时候再点直接返回这次的结果 */
   run: () => Promise<CheckState>;
+  /** 下载并安装这个版本，返回结果；正在下载时再调直接返回这次的结果 */
+  installNow: (version: string) => Promise<InstallState>;
+  /** 重新检查前清掉上一次的安装结果（装好了等重启的留着） */
+  clearInstall: () => void;
 }
 
 let running: Promise<CheckState> | null = null;
+let installing: Promise<InstallState> | null = null;
 
-export const useUpdate = create<UpdateStore>(set => ({
+/** 自动安装装好后等这么久再重启：先让「正在重启」的提示露一下 */
+export const AUTO_RESTART_DELAY = 1500;
+
+export const useUpdate = create<UpdateStore>((set, get) => ({
   check: { kind: 'idle' },
+  install: { kind: 'idle' },
+  clearInstall: () => {
+    if (get().install.kind !== 'ready' && !installing) set({ install: { kind: 'idle' } });
+  },
+  installNow: version => {
+    if (installing) return installing;
+    set({ install: { kind: 'downloading', progress: null } });
+    installing = (async () => {
+      let next: InstallState;
+      try {
+        const r = await installUpdate(version, p => set({ install: { kind: 'downloading', progress: p } }));
+        next = { kind: 'ready', version: r.version, restart: r.restart };
+      } catch (e) {
+        next = { kind: 'failed', error: String(e) };
+      }
+      set({ install: next });
+      installing = null;
+      return next;
+    })();
+    return installing;
+  },
   run: () => {
     if (running) return running;
     set({ check: { kind: 'checking' } });
@@ -84,6 +127,7 @@ async function checkQuietly() {
   const state = await useUpdate.getState().run();
   // 只有发现新版本才弹确认框；已是最新、失败（含旧版桌面端的 unsupported）都静默（lib/update-notice.ts）
   if (autoNotice(state).action !== 'confirm' || state.kind !== 'available') return;
+  if (autoInstallUpdate()) return installQuietly(state.version);
   const r = state.result;
   const yes = await confirm({
     title: `发现新版本 ${state.version}`,
@@ -94,6 +138,20 @@ async function checkQuietly() {
     icon: 'update',
   });
   if (yes) goToUpdateCard();
+}
+
+/** 自动下载并安装：不问，装好后按平台重启（Windows 上安装器会关掉 Board 再打开新版本，走不到这里） */
+async function installQuietly(version: string) {
+  // 设置页里正在装、已经装好等重启：不再装一遍
+  if (useUpdate.getState().install.kind === 'ready') return;
+  const done = await useUpdate.getState().installNow(version);
+  if (done.kind === 'failed') {
+    toast({ type: 'error', title: `自动安装 ${version} 没成`, text: `${done.error}。当前版本不受影响，可以在设置里重新检查后再装` });
+    return;
+  }
+  if (done.kind !== 'ready' || !done.restart) return;
+  toast({ type: 'info', title: `${done.version} 已安装，正在重启 Board`, duration: AUTO_RESTART_DELAY });
+  window.setTimeout(() => restartApp(), AUTO_RESTART_DELAY);
 }
 
 /** 确认框里的正文（Markdown）：发布时间和当前版本那行，加更新说明（太长时截断） */
