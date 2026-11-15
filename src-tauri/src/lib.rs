@@ -124,12 +124,15 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
             }
         }
     }
-    // macOS：顶栏即标题栏，交通灯垂直居中在 60px 高的顶栏里
+    // macOS：顶栏即标题栏，交通灯和顶栏里的 logo、标题在同一条水平线上（default/main#346）。
+    // 顶栏 60px（窗口拉窄时也不变矮，见 platform.css）、下边框 1px，内容的垂直中心在 29.5px。tao 把标题栏容器的高度设成
+    // 按钮高度 + y、按钮在容器里的位置不变，量出来交通灯中心在 y + 1.75 左右：原来的 34 中心约 35.75，比 logo 低 6px，
+    // 改成 28 中心约 29.75。缩放窗口（drawRect）、退出全屏后 tao 按这个值重新摆，不会跑回默认位置
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(20.0, 34.0));
+        .traffic_light_position(tauri::LogicalPosition::new(20.0, 28.0));
     #[cfg(target_os = "windows")]
     let builder = custom_titlebar::apply(builder);
     let window = builder.build()?;

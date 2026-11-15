@@ -52,6 +52,8 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
 /* ---------------- 手机 ---------------- */
 @media (max-width: 760px) {
   :root { --topbar-h: 54px; --gutter: 12px; }
+  /* macOS 桌面端：交通灯的位置是固定的（src-tauri/src/lib.rs），窗口拉窄时顶栏不变矮，免得交通灯和 logo 错开（default/main#346） */
+  html[data-shell="desktop"][data-os="mac"] { --topbar-h: 60px; }
 
   /* 布局：顶栏 / 内容 / 底部 Tab 栏（活动栏变成底栏） */
   .app {
