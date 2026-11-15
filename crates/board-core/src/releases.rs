@@ -145,6 +145,8 @@ pub struct MilestoneCard {
     /// 全部标签的 id（按项目里标签的顺序）
     pub labels: Vec<i64>,
     pub holder: Option<String>,
+    /// 持有者跑在哪个 agent 里（名字表里的标识）：新名字不再带标识，界面画图标用它
+    pub holder_agent: Option<String>,
     pub created_at: i64,
     /// 移入现在这个状态的时间：终点状态里的就是做完的时间
     pub moved_at: Option<i64>,
@@ -331,6 +333,7 @@ impl R<'_> {
             column: String,
             labels: Vec<i64>,
             holder: Option<String>,
+            holder_agent: Option<String>,
             created_at: i64,
             moved_at: Option<i64>,
             final_: bool,
@@ -338,7 +341,8 @@ impl R<'_> {
         let mut st = self.conn.prepare(
             "SELECT b.project || '/' || b.key, c.id, c.title, c.col, c.holder, c.created_at, c.moved_at,
                     COALESCE(s.final, 0),
-                    COALESCE((SELECT GROUP_CONCAT(cl.label) FROM card_labels cl WHERE cl.board = c.board AND cl.card = c.id), '')
+                    COALESCE((SELECT GROUP_CONCAT(cl.label) FROM card_labels cl WHERE cl.board = c.board AND cl.card = c.id), ''),
+                    (SELECT a.agent FROM agents a WHERE a.name = c.holder)
              FROM cards c JOIN boards b ON b.id = c.board
              LEFT JOIN statuses s ON s.board = c.board AND s.key = c.col
              WHERE b.project = ?1 AND c.deleted_at IS NULL",
@@ -355,6 +359,7 @@ impl R<'_> {
                 moved_at: r.get(6)?,
                 final_: r.get::<_, i64>(7)? != 0,
                 labels: labels.split(',').filter_map(|s| s.parse().ok()).collect(),
+                holder_agent: r.get(9)?,
             })
         })?;
 
@@ -378,6 +383,7 @@ impl R<'_> {
                 column: r.column,
                 labels: r.labels,
                 holder: r.holder,
+                holder_agent: r.holder_agent,
                 created_at: r.created_at,
                 moved_at: r.moved_at,
                 group,

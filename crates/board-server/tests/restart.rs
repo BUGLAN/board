@@ -92,7 +92,7 @@ fn open_after_downtime_keeps_claims_and_running_dispatch() {
     let s = Store::open(&db).unwrap();
     let now = board_core::now_ms();
     assert_eq!(card(&s, 1).holder.as_deref(), Some("claude/alpha"), "卡片仍由原名字持有");
-    assert_eq!(card(&s, 2).holder.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(card(&s, 2).holder.as_deref(), Some("mbp/opus-5.5"));
     assert!(s.read(|r| r.agents(now)).unwrap().iter().any(|a| a.name == "claude/alpha"), "名字仍在线");
     assert!(s.read(|r| r.host("mbp", now)).unwrap().online, "机器仍在线");
     assert_eq!(s.read(|r| r.dispatch(1)).unwrap().state, "running", "在跑的派发仍然是 running");

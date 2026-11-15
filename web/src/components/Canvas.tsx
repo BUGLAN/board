@@ -537,6 +537,7 @@ function BoardNode({
   const keys = f.list.map(s => s.key);
   const total = keys.reduce((a, k) => a + (c[k] ?? 0), 0);
   const agents = [...new Set(b.holders)];
+  const online = useData(s => s.ws?.agents);
   return (
     <div
       className={cx('cv-node cv-board', current && 'current', agents.length > 0 && 'active', hl && 'hl', dragging && 'dragging')}
@@ -577,7 +578,7 @@ function BoardNode({
             <>
               {/* 正在工作：logo 轮流做签名动作（每 5 秒一次，几个错开） */}
               {agents.map((n, i) => (
-                <AgentAvatar key={n} name={n} enter loop loopIndex={i} />
+                <AgentAvatar key={n} name={n} agentId={online?.find(a => a.name === n)?.agent} enter loop loopIndex={i} />
               ))}
               <em>{agents.length} 个 agent 在工作</em>
             </>

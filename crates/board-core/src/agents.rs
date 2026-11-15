@@ -5,8 +5,8 @@
 //! - `board check --as <名字>`：名字正被在线 agent 使用时 `NAME_TAKEN`；否则标为在线，心跳时间记为现在。
 //!   查重和占用在同一个写事务里完成，同时 check 同一个名字只有一个成功。
 //! - `board check --agent <标识>`（不带名字）：名字由服务端按这台机器、这个 agent 的设置生成（[`W::agent_check_generated`]），
-//!   规则和 `board host` 派发时一样（[`crate::hosts::dispatch_agent_name`]）：`<agent 标识>-<机器名>/<模型名>`，
-//!   模型名后面按需要加 `-2`、`-3` …，只有在线的名字算占用；被占用时自动换下一个序号，不报 `NAME_TAKEN`。
+//!   规则和 `board host` 派发时一样（[`crate::hosts::dispatch_agent_name`]）：`<机器名>/<模型名>-<推理强度>`，
+//!   模型名后面按需要加 `-1`、`-2` …，只有在线的名字算占用；被占用时自动换下一个序号，不报 `NAME_TAKEN`。
 //!   服务端查不到这台机器（没跑 board host、名字对不上）时退回 `<agent 标识>/<模型>`。服务端怎么知道是哪台机器：
 //!   请求里带的机器名，或者令牌是某台在线机器的 board host 上报用的那个。
 //! - `board beat`（agent 级心跳）：更新名字的心跳时间，并对这个名字持有、还没 final 的每张卡片
@@ -29,6 +29,7 @@ pub(crate) const SCHEMA: &str = r#"
 -- agent 名字（PRD §3）：只增不删。在线 = off_at 为空，并且最近一次心跳在 50 秒以内
 CREATE TABLE IF NOT EXISTS agents (
   name       TEXT PRIMARY KEY,
+  agent      TEXT,             -- 跑在哪个 agent 里（claude、dsh、pi …）：名字里不再带标识，界面画图标用它
   checked_at INTEGER NOT NULL, -- 首次 check 的时间
   beat_at    INTEGER NOT NULL, -- 最近一次心跳（check 也算一次）
   token      INTEGER,          -- 最近一次 check 用的访问令牌 ID
@@ -37,11 +38,37 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 "#;
 
-/// 旧数据库的名字表补上会话标识一列
+/// 从旧格式名字里认 agent 标识：`<agent 标识>-<机器名>/<模型名>`、`<agent 标识>/<模型名>`。
+/// 只认内置 agent 的标识（自定义 agent 的旧名字认不出，保持空），大小写不敏感
+pub(crate) fn legacy_agent_id(name: &str) -> Option<String> {
+    let head = name.trim().split('/').next()?.trim().to_lowercase();
+    if head.is_empty() {
+        return None;
+    }
+    let mut ids: Vec<&str> = crate::providers::AGENTS.iter().map(|(id, _, _)| *id).collect();
+    ids.sort_by_key(|id| std::cmp::Reverse(id.len()));
+    ids.into_iter().find(|id| head == *id || head.starts_with(&format!("{id}-"))).map(str::to_string)
+}
+
+/// 旧数据库的名字表补上会话标识、agent 标识两列；已有名字按旧格式解析一次补上 agent
 pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    let has: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'session'", [], |r| r.get::<_, i64>(0))? > 0;
-    if !has {
+    let has_session: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'session'", [], |r| r.get::<_, i64>(0))? > 0;
+    if !has_session {
         conn.execute_batch("ALTER TABLE agents ADD COLUMN session TEXT")?;
+    }
+    let has_agent: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'agent'", [], |r| r.get::<_, i64>(0))? > 0;
+    if !has_agent {
+        conn.execute_batch("ALTER TABLE agents ADD COLUMN agent TEXT")?;
+        let names: Vec<String> = {
+            let mut st = conn.prepare("SELECT name FROM agents WHERE agent IS NULL")?;
+            let rows = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+            rows
+        };
+        for name in names {
+            if let Some(agent) = legacy_agent_id(&name) {
+                conn.execute("UPDATE agents SET agent = ?2 WHERE name = ?1", params![name, agent])?;
+            }
+        }
     }
     Ok(())
 }
@@ -143,23 +170,25 @@ impl<'a> R<'a> {
 
     /// 一个名字的情况（不管在不在线），以及它持有的卡片；没有 check 过时为空
     pub fn agent(&self, name: &str) -> Result<Option<AgentInfo>> {
-        let row: Option<(i64, i64)> = self
+        let row: Option<(i64, i64, Option<String>)> = self
             .conn
-            .query_row("SELECT checked_at, beat_at FROM agents WHERE name = ?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT checked_at, beat_at, agent FROM agents WHERE name = ?1", [name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()?;
-        let Some((checked_at, beat_at)) = row else { return Ok(None) };
-        Ok(Some(AgentInfo { name: name.to_string(), checked_at, beat_at, cards: self.held(name)?, session: None, modeled: None }))
+        let Some((checked_at, beat_at, agent)) = row else { return Ok(None) };
+        Ok(Some(AgentInfo { name: name.to_string(), agent, checked_at, beat_at, cards: self.held(name)?, session: None, modeled: None }))
     }
 
     /// 在线的 agent（所有白板），按名字排序
     pub fn agents(&self, now: i64) -> Result<Vec<AgentInfo>> {
         let mut st = self.conn.prepare(
-            "SELECT name, checked_at, beat_at FROM agents WHERE off_at IS NULL AND beat_at + ?2 > ?1 ORDER BY name",
+            "SELECT name, checked_at, beat_at, agent FROM agents WHERE off_at IS NULL AND beat_at + ?2 > ?1 ORDER BY name",
         )?;
-        let rows: Vec<(String, i64, i64)> =
-            st.query_map(params![now, NAME_GAP_MS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+        let rows: Vec<(String, i64, i64, Option<String>)> =
+            st.query_map(params![now, NAME_GAP_MS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<std::result::Result<_, _>>()?;
         rows.into_iter()
-            .map(|(name, checked_at, beat_at)| Ok(AgentInfo { cards: self.held(&name)?, name, checked_at, beat_at, session: None, modeled: None }))
+            .map(|(name, checked_at, beat_at, agent)| {
+                Ok(AgentInfo { cards: self.held(&name)?, name, agent, checked_at, beat_at, session: None, modeled: None })
+            })
             .collect()
     }
 
@@ -195,6 +224,18 @@ impl<'a> W<'a> {
     /// 否则标为在线，心跳时间记为现在（首次 check 时间保留第一次的），记下名字现在属于谁。
     /// 新版 CLI 的会话：返回里带上会话标识（只在这里返回一次）
     pub fn agent_check_owned(&mut self, name: &str, token: Option<i64>, owner: NameOwner<'_>) -> Result<AgentInfo> {
+        self.agent_check_with_agent(None, name, token, owner)
+    }
+
+    /// 同 [`W::agent_check_owned`]，另外记下这个名字跑在哪个 agent 里（服务端生成名字、board host 派发时知道）。
+    /// `agent` 为空时保留名字表里原来的标识（`--as` 重复 check 不会把它清掉）
+    pub fn agent_check_with_agent(
+        &mut self,
+        agent: Option<&str>,
+        name: &str,
+        token: Option<i64>,
+        owner: NameOwner<'_>,
+    ) -> Result<AgentInfo> {
         check_agent_name(name).map_err(BoardError::usage)?;
         if online(self.read().agent_row(name)?, self.now) {
             return Err(BoardError::new(
@@ -204,9 +245,10 @@ impl<'a> W<'a> {
             .with_detail(json!({ "name": name })));
         }
         self.tx.execute(
-            "INSERT INTO agents (name, checked_at, beat_at, token, off_at, session) VALUES (?1, ?2, ?2, ?3, NULL, ?4)
-             ON CONFLICT (name) DO UPDATE SET beat_at = excluded.beat_at, token = excluded.token, off_at = NULL, session = excluded.session",
-            params![name, self.now, token, stored(owner)],
+            "INSERT INTO agents (name, agent, checked_at, beat_at, token, off_at, session) VALUES (?1, ?2, ?3, ?3, ?4, NULL, ?5)
+             ON CONFLICT (name) DO UPDATE SET agent = COALESCE(excluded.agent, agent), beat_at = excluded.beat_at,
+               token = excluded.token, off_at = NULL, session = excluded.session",
+            params![name, agent, self.now, token, stored(owner)],
         )?;
         self.changed = true;
         let mut info = self.read().agent(name)?.ok_or_else(|| offline(name))?;
@@ -231,8 +273,8 @@ impl<'a> W<'a> {
     ///
     /// `host` 是请求里带的机器名（`~/.board/config.toml` 的 `[host] name`），`token` 是这次请求用的访问令牌。
     /// 机器按这个顺序认：带了的机器名（在这台机器在线时）→ 令牌是它的 board host 上报用的那个。查不到时没有机器名，
-    /// 名字退回 `<agent 标识>/<模型>`。模型名按 `board host` 派发时同样的顺序取：机器设置里选的模型 → board host 上报的
-    /// `model`（配置文件 → 内置模板默认值）→ agent 标识。不带名字的 check 还没有名字，所以不怕重名：占用时自动换序号。
+    /// 名字退回 `<agent 标识>/<模型>`。模型、强度按 `board host` 派发时同样的顺序取：机器设置里选的 → board host 上报的
+    /// `model`、`effort`（配置文件 → 内置模板默认值）→ agent 标识。不带名字的 check 还没有名字，所以不怕重名：占用时自动换序号。
     pub fn agent_check_generated(&mut self, host: Option<&str>, agent: &str, token: Option<i64>, owner: NameOwner<'_>) -> Result<AgentInfo> {
         crate::hosts::check_agent_id(agent).map_err(BoardError::usage)?;
         if let Some(h) = host.map(str::trim).filter(|h| !h.is_empty()) {
@@ -244,15 +286,15 @@ impl<'a> W<'a> {
             Some(h) => crate::hosts::named_host(self.tx, h, now)?,
             None => token.and_then(|t| crate::hosts::host_by_token(self.tx, t, now).transpose()).transpose()?,
         };
-        // 名字：<agent 标识>-<机器名>/<模型名>；没有机器时退回 <agent 标识>/<模型>（模型也取不到时是 <agent 标识>/<agent 标识>）
+        // 名字：<机器名>/<模型名>-<强度>；没有机器时退回 <agent 标识>/<模型>（模型也取不到时是 <agent 标识>/<agent 标识>）
         let (name, modeled) = match found {
             Some(m) => {
-                let (model, set) = crate::hosts::model_for_transaction(self.tx, &m, agent)?;
-                (self.free_agent_name(agent, &m.name, &model)?, set)
+                let (model, effort, set) = crate::hosts::name_opts_for_transaction(self.tx, &m, agent)?;
+                (self.free_agent_name(agent, &m.name, &model, &effort)?, set)
             }
             None => crate::hosts::plain_agent_name(agent, ""),
         };
-        let mut info = self.agent_check_owned(&name, token, owner)?;
+        let mut info = self.agent_check_with_agent(Some(agent), &name, token, owner)?;
         // 名字里的模型和这台机器、这个 agent 的设置对不上（机器改名了、模型不是这个）：之后按设置里的修正
         info.modeled = Some(modeled);
         Ok(info)

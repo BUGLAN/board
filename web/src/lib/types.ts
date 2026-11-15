@@ -202,7 +202,7 @@ export interface HostAgent {
   env?: string | null;
   /** 在实际用的启动环境里找到了命令、却看不到 board-skills：该装到哪里。看得到、旧版 board host 没有 */
   no_skill?: string | null;
-  /** 这个 agent 现在用的模型（board host 读它的配置文件上报）：派发名字（<agent 标识>-<机器名>/<模型名>）的第二段 */
+  /** 这个 agent 现在用的模型（board host 读它的配置文件上报）：派发名字（<机器名>/<模型名>-<强度>）的第二段 */
   model?: string;
   /** 这个 agent 配置文件里现在的思考强度 */
   effort?: string;
@@ -664,7 +664,7 @@ export interface Dispatch {
   host: string;
   agent: string;
   agentLabel: string;
-  /** 开始时生成的 agent 名字 <agent 标识>-<机器名>/<模型名>（并发派发时模型名后面带 -<序号>） */
+  /** 开始时生成的 agent 名字 <机器名>/<模型名>-<强度>（并发派发时末尾带 -<序号>） */
   name: string | null;
   /** 开始时用的启动环境标识与名称（Git Bash、WSL（Ubuntu）…）；旧版 board host、还没开始时为空 */
   env?: string | null;
@@ -697,6 +697,8 @@ export interface Dispatch {
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */
 export interface AgentInfo {
   name: string;
+  /** 这个会话跑在哪个 agent 里（claude、dsh、pi …）：名字里不再带标识，画图标用它 */
+  agent?: string | null;
   /** 首次 check 的时间 */
   checkedAt: number;
   /** 最近一次心跳（只在上线、下线、卡片状态变化时推送，界面上的值不一定是最新的） */
@@ -759,6 +761,8 @@ export interface Card {
   body: string;
   column: ColumnKey;
   holder: string | null;
+  /** 持有者跑在哪个 agent 里（服务端从名字表带出来）：新名字不再带 agent 标识，画图标用它；旧服务端、认不出时为空 */
+  holderAgent?: string | null;
   claimedAt: number | null;
   /** 最近一次心跳（发了 final 之后是 final 的时间）；还没开始心跳时为空 */
   beatAt: number | null;

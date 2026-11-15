@@ -80,7 +80,7 @@ impl Backend {
     }
 
     /// `board check --agent <标识>`：不带名字，服务端按这台机器（`host` 是 `[host] name`，空时按令牌认）、
-    /// 这个 agent 的设置生成名字（`<agent 标识>-<机器名>/<模型名>`，占用时加序号），返回在 `name` 里
+    /// 这个 agent 的设置生成名字（`<机器名>/<模型名>-<强度>`，占用时加序号），返回在 `name` 里
     pub fn check_generated(&mut self, agent: &str, host: Option<&str>) -> Result<AgentInfo> {
         let mut body = json!({ "agent": agent, "session": true });
         if let Some(h) = host {

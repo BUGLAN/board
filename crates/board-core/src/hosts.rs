@@ -17,7 +17,7 @@
 //! - **派发**：一次「在某台机器上用某种 agent 做某张卡」。手动派发（界面「派发」或 `board dispatch`）和定时领取
 //!   都会产生派发记录：排队（queued）→ 在跑（running）→ 结束（done，带结果）。
 //! - **开始**（[`W::dispatch_begin`]、定时领取 [`W::dispatch_pull`]）在一个写事务里完成：生成 agent 名字
-//!   `<agent 标识>-<机器名>/<模型名>`（例如 `dsh-win/deepseek-v4.1-flash`，见 [`dispatch_agent_name`]）、check 这个名字、
+//!   `<机器名>/<模型名>-<推理强度>`（例如 `win/opus-5.5-high`，见 [`dispatch_agent_name`]）、check 这个名字、
 //!   以它领取卡片。领不到时这次派发结束，结果「没领到」。之后 host 每次上报时替这些名字发 agent 级心跳，直到派发结束。
 //! - **结束**（[`W::dispatch_end`]）：agent 退出后，卡片仍由这个名字持有就发 final、沿连线移到「错误」节点（没有时去需要人处理的状态）
 //!   并评论（异常退出 / 已停止 / 超时）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
@@ -426,17 +426,28 @@ pub fn host_name_from(raw: &str) -> String {
     if s.is_empty() { "host".into() } else { s }
 }
 
-/// 一次派发的 agent 名字：`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`；
-/// 同一台机器同一 agent、模型有多个并发派发时模型名后面加 `-<序号>`，例如 `dsh-win/deepseek-v4.1-flash-2`（seq 0 表示不带）。
-/// 模型名来自 board host 上报的 agent 数据（配置文件 `[agents.<标识>] model`，内置模板有默认值）；没有时用 agent 标识。
-/// 转成名字能用的样子（小写、空白和非法字符换成 `-`、去掉开头结尾的 `-`），放不下时截断，保证总长不超过 48 个字符，
+/// 一次派发的 agent 名字：`<机器名>/<模型名>-<推理强度>`，例如 `win/opus-5.5-high`；
+/// 模型有思考强度时接 `-<强度>`，没有时省略；同一台机器、同一模型、同一强度有多个并发派发时末尾加 `-<序号>`，
+/// 例如 `win/opus-5.5-high-1`、`win/opus-5.5-high-2`（seq 0 表示不带）。模型名来自 board host 上报的 agent 数据
+/// （配置文件 `[agents.<标识>] model`，内置模板有默认值）；没有时用 agent 标识。转成名字能用的样子
+/// （小写、空白和非法字符换成 `-`、去掉开头结尾的 `-`），放不下时截断，保证总长不超过 48 个字符，
 /// 能通过 `board check` 的名字格式校验（[`crate::check_agent_name`]）
-pub fn dispatch_agent_name(agent: &str, host: &str, model: &str, seq: u32) -> String {
-    let first = format!("{agent}-{host}");
+pub fn dispatch_agent_name(agent: &str, host: &str, model: &str, effort: &str, seq: u32) -> String {
+    let first = name_segment(host, HOST_NAME_MAX);
+    let first = if first.is_empty() { name_segment(agent, HOST_NAME_MAX) } else { first };
     let suffix = if seq > 0 { format!("-{seq}") } else { String::new() };
     // 序号不截断：模型名先让出序号的位置
     let room = AGENT_NAME_MAX.saturating_sub(first.chars().count() + 1 + suffix.len()).max(1);
-    let mut seg = name_segment(model, room);
+    let model = model.trim();
+    let effort = effort.trim();
+    let raw = if model.is_empty() {
+        agent.to_string()
+    } else if effort.is_empty() {
+        model.to_string()
+    } else {
+        format!("{model}-{effort}")
+    };
+    let mut seg = name_segment(&raw, room);
     if seg.is_empty() {
         seg = name_segment(agent, room);
     }
@@ -467,7 +478,7 @@ fn name_segment(raw: &str, max: usize) -> String {
     s.chars().take(max).collect::<String>().trim_matches(['-', '.']).to_string()
 }
 
-/// agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<标识>-<机器名>/<模型名>` 不超过 48 个字符）
+/// agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<机器名>/<模型名>-<强度>` 不超过 48 个字符）
 pub fn check_agent_id(id: &str) -> std::result::Result<(), String> {
     let ok = !id.is_empty()
         && id.len() <= 16
@@ -514,9 +525,9 @@ pub struct HostAgent {
     /// 看得到、没找到命令、配置文件里的 agent（不检查）、旧版 board host 都为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_skill: Option<String>,
-    /// 这个 agent 现在用的模型名：派发名字的第二段（`<agent 标识>-<机器名>/<模型名>`）和派发记录里的模型。
+    /// 这个 agent 现在用的模型名：派发名字的第二段（`<机器名>/<模型名>-<强度>`）和派发记录里的模型。
     /// board host 上报：内置 agent 读它自己配置文件里现在的模型（同步写进去的、或人自己配的），
-    /// 配置文件里新加的 agent 用 `[agents.<标识>] model`；都没有时为空，生成名字时只写 `<agent 标识>-<机器名>`
+    /// 配置文件里新加的 agent 用 `[agents.<标识>] model`；都没有时为空，生成名字时只写 `<机器名>/<agent 标识>`
     #[serde(default)]
     pub model: String,
     /// 这个 agent 配置文件里现在的思考强度（board host 读出来上报，写进派发记录）；没有时为空
@@ -2285,7 +2296,7 @@ fn card_label_names(conn: &rusqlite::Connection, b: i64, card: i64) -> Result<Ve
 
 /// 生成 agent 名字时第二段（模型名）用什么，以及有没有：board host 上报的这个 agent 现在用的模型
 /// （内置 agent 读它自己的配置文件，写进去的或人配的；配置文件里新加的 agent 是 `[agents.<标识>] model`）。
-/// 没有时为空，名字只写 `<agent 标识>-<机器名>`
+/// 没有时为空，名字只写 `<机器名>/<agent 标识>`
 fn model_of(agents: &[HostAgent], agent: &str) -> (String, bool) {
     let reported = agents.iter().find(|a| a.id == agent).map(|a| a.model.trim().to_string()).unwrap_or_default();
     if !reported.is_empty() && check_model(&reported).is_ok() {
@@ -2294,10 +2305,20 @@ fn model_of(agents: &[HostAgent], agent: &str) -> (String, bool) {
     (String::new(), false)
 }
 
+/// 生成 agent 名字时的思考强度：board host 上报的这个 agent 配置文件里现在的强度，没有时为空
+fn effort_of(agents: &[HostAgent], agent: &str) -> String {
+    agents.iter().find(|a| a.id == agent).map(|a| a.effort.trim().to_string()).filter(|e| !e.is_empty()).unwrap_or_default()
+}
+
 /// `board check --agent <标识>` 用：按写事务里的机器记录（[`W::agent_check_generated`] 已经按机器名或令牌找到的那台）
-/// 算这个 agent 该用的模型名
-pub(crate) fn model_for_transaction(_conn: &rusqlite::Connection, h: &HostInfo, agent: &str) -> Result<(String, bool)> {
-    Ok(model_of(&h.agents, agent))
+/// 算这个 agent 该用的模型名、强度，以及第二段是不是真的模型名
+pub(crate) fn name_opts_for_transaction(
+    _conn: &rusqlite::Connection,
+    h: &HostInfo,
+    agent: &str,
+) -> Result<(String, String, bool)> {
+    let (model, modeled) = model_of(&h.agents, agent);
+    Ok((model, effort_of(&h.agents, agent), modeled))
 }
 
 /// 按名字找一台在线的机器（带上按机器设置算好的 agent 数据）：`board check --agent <标识>` 用它。
@@ -3071,7 +3092,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 动态里的「mbp · Claude Code · claude-mbp/opus-5.5，手动」；有启动环境时「mbp · pi · Git Bash · pi-mbp/pi，手动」
+    /// 动态里的「mbp · Claude Code · mbp/opus-5.5，手动」；有启动环境时「mbp · pi · Git Bash · mbp/pi，手动」
     fn dispatch_words(d: &DRow) -> String {
         // 「任意机器」的派发还没挑到机器
         let host = if d.host.is_empty() { "任意机器" } else { d.host.as_str() };
@@ -4667,7 +4688,7 @@ impl<'a> W<'a> {
             }
         }
         // 名字被别的在线会话用着（很少见）：不接
-        if self.agent_check_owned(&name, token, crate::agents::NameOwner::Host).is_err() {
+        if self.agent_check_with_agent(Some(&d.agent), &name, token, crate::agents::NameOwner::Host).is_err() {
             return Ok(false);
         }
         if !d.split() {
@@ -4829,13 +4850,13 @@ impl<'a> W<'a> {
         self.start(&h, d, token)
     }
 
-    /// `<agent 标识>-<机器名>/<模型名>` 这个名字没被在线 agent 用就返回它，否则按 [`dispatch_agent_name`] 的规则
-    /// 依次试模型名后面的 `-2`、`-3` …（只有在线的名字算占用）。派发开始时和 `board check --agent <标识>` 都用它
-    pub(crate) fn free_agent_name(&self, agent: &str, host: &str, model: &str) -> Result<String> {
+    /// `<机器名>/<模型名>-<强度>` 这个名字没被在线 agent 用就返回它，否则按 [`dispatch_agent_name`] 的规则
+    /// 依次试末尾的 `-1`、`-2` …（只有在线的名字算占用）。派发开始时和 `board check --agent <标识>` 都用它
+    pub(crate) fn free_agent_name(&self, agent: &str, host: &str, model: &str, effort: &str) -> Result<String> {
         let gap = crate::agents::NAME_GAP_MS;
         let mut seq = 0u32;
         loop {
-            let n = dispatch_agent_name(agent, host, model, seq);
+            let n = dispatch_agent_name(agent, host, model, effort, seq);
             let taken: bool = self.tx.query_row(
                 "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1 AND off_at IS NULL AND beat_at + ?3 > ?2",
                 params![n, self.now, gap],
@@ -4844,18 +4865,20 @@ impl<'a> W<'a> {
             if !taken {
                 return Ok(n);
             }
-            // 不带序号的被占用：依次试 -2、-3 …
-            seq = if seq == 0 { 2 } else { seq + 1 };
+            // 不带序号的被占用：依次试 -1、-2 …
+            seq += 1;
         }
     }
 
     /// 生成名字、check、以它领取卡片。领不到时这次派发结束，结果「没领到」
     fn start(&mut self, h: &HostRow, d: DRow, token: Option<i64>) -> Result<Dispatch> {
-        // 名字：<agent 标识>-<机器名>/<模型名>（dsh-win/deepseek-v4.1-flash），见 free_agent_name。
-        // 模型名来自机器设置里选的模型、board host 上报的 agent 数据（配置文件 [agents.<标识>] model，内置模板有默认值），
-        // 都没有时用 agent 标识
+        // 名字：<机器名>/<模型名>-<强度>（win/opus-5.5-high），见 free_agent_name。模型、强度来自
+        // board host 上报的 agent 数据（配置文件 [agents.<标识>] model/effort，内置模板有默认值），
+        // 没有模型时用 agent 标识
         let (run_model, run_effort) = h.run_opts(&d.agent);
-        let name = self.free_agent_name(&d.agent, &h.name, h.model_for(&d.agent).0.as_str())?;
+        let (name_model, _) = h.model_for(&d.agent);
+        let name_effort = effort_of(&h.agents, &d.agent);
+        let name = self.free_agent_name(&d.agent, &h.name, &name_model, &name_effort)?;
         // 用哪个启动环境：按开始这一刻的机器设置
         let env = h.agents.iter().find(|a| a.id == d.agent).and_then(|a| h.pick(a)).map(|c| c.env.clone());
         let env_name = env.as_deref().map(|e| h.env_name(e));
@@ -4865,7 +4888,7 @@ impl<'a> W<'a> {
         )?;
         let d = DRow { name: Some(name.clone()), env_name: env_name.clone(), model: run_model.clone(), effort: run_effort.clone(), ..d };
         // 这个名字属于这台 board host：派发会话里的 agent 自己 heartbeat stop 也不会让它离线
-        self.agent_check_owned(&name, token, crate::agents::NameOwner::Host)?;
+        self.agent_check_with_agent(Some(&d.agent), &name, token, crate::agents::NameOwner::Host)?;
         let board = self.board_of(d.board)?;
         let actor = Actor::agent(name.clone());
         // 拆解：不领取、不移动这一条，名字上线就开始（host 替它发心跳）
@@ -4893,7 +4916,7 @@ impl<'a> W<'a> {
                     params![d.id, self.now, path],
                 )?;
                 self.touch_hosts();
-                // 「mbp 上的 Claude Code（Git Bash）以 claude-mbp/opus-5.5 领取」；旧版 board host 没有启动环境：「mbp 上的 Claude Code 以 …」
+                // 「mbp 上的 Claude Code（Git Bash）以 mbp/opus-5.5 领取」；旧版 board host 没有启动环境：「mbp 上的 Claude Code 以 …」
                 let who = match &env_name {
                     Some(e) => format!("{}（{e}）", d.agent_label),
                     None => format!("{} ", d.agent_label),

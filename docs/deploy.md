@@ -137,7 +137,7 @@ board check --as claude/opus-5.5
 board ls --as claude/opus-5.5 --board default
 ```
 
-agent 的名字格式是 `<运行环境>/<模型>`（需要时加后缀），会话开始时 `board check` 占用；之后 `board heartbeat start` 在后台每 10 秒发一次 `board beat` 维持在线，会话结束时 `board heartbeat stop`。
+agent 的名字格式是 `<运行环境>/<模型>`（需要时加后缀；派发、`board check --agent` 生成的是 `<机器名>/<模型名>-<推理强度>`），会话开始时 `board check` 占用；之后 `board heartbeat start` 在后台每 10 秒发一次 `board beat` 维持在线，会话结束时 `board heartbeat stop`。
 
 也可以在服务器上直接管理令牌：
 

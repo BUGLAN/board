@@ -415,7 +415,7 @@ function Row({
           <span title={dateTime(c.movedAt)}>{since(c.movedAt, now)}</span>
         ) : c.holder ? (
           <span className="msp-holder">
-            <AgentAvatar name={c.holder} className="msp-av" />
+            <AgentAvatar name={c.holder} agentId={c.holderAgent} className="msp-av" />
             <span className="mono">{c.holder}</span>
           </span>
         ) : (

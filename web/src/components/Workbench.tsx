@@ -627,7 +627,7 @@ function BoardSide() {
                 style={{ paddingLeft: 20 }}
                 onClick={() => openCard(c.id)}
               >
-                <AgentAvatar name={c.holder} />
+                <AgentAvatar name={c.holder} agentId={c.holderAgent} />
                 <span className="tt">
                   <span className="mono" style={{ color: agentInk(c.holder!) }}>
                     {c.holder}

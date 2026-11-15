@@ -61,9 +61,15 @@ export function agentIdOf(name: string | null | undefined): string | null {
   return null;
 }
 
-/** 按名字取 agent 标记：认得出标识就用它的图标，认不出退回按名字算的字母头像 */
-export function agentMarkOf(name: string): AgentMark {
-  const id = agentIdOf(name);
+/** 服务端带的 agent 标识优先；旧服务端、旧数据没有时按名字的旧格式解析 */
+export function agentIdFor(name: string | null | undefined, agent?: string | null): string | null {
+  const explicit = String(agent ?? '').trim().toLowerCase();
+  return explicit || agentIdOf(name);
+}
+
+/** 按显式标识（没有时按名字的旧格式）取 agent 标记：认得出就用它的图标，认不出退回按名字算的字母头像 */
+export function agentMarkOf(name: string, agent?: string | null): AgentMark {
+  const id = agentIdFor(name, agent);
   return id ? agentMark(id) : { short: agentGlyph(name), color: agentColor(name) };
 }
 

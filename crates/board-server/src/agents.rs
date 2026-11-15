@@ -3,7 +3,7 @@
 //! - `POST /api/agents/check {name, session}`：名字正被在线 agent 使用时 `NAME_TAKEN`；否则标为在线。`session: true`（新版 CLI）
 //!   时发一个随机的会话标识，名字记成属于这个会话，返回里带上 `session`。
 //!   不带 `name`、带 `agent` 时名字由服务端生成（`board check --agent <标识>`，PRD §3.2）：按 `host`（本机
-//!   `~/.board/config.toml` 的 `[host] name`）或令牌认这台机器，名字是 `<agent 标识>-<机器名>/<模型名>`，
+//!   `~/.board/config.toml` 的 `[host] name`）或令牌认这台机器，名字是 `<机器名>/<模型名>-<强度>`，
 //!   占用时自动加序号；查不到机器时退回 `<agent 标识>/<模型>`。返回里 `name` 是生成的名字
 //! - `POST /api/agents/beat {name, final, session}`：agent 级心跳，同时维持名字在线和它持有的卡片；`final` 让名字立刻离线。
 //!   名字属于某个会话时，`session` 对不上（或没带）就 `NAME_TAKEN`

@@ -584,6 +584,10 @@ pub struct Workspace {
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
     pub name: String,
+    /// 这个名字跑在哪个 agent 里（claude、dsh、pi …）：名字本身不再带 agent 标识，界面靠它画图标。
+    /// 旧格式（`<agent 标识>-<机器名>/<模型名>`）解析不出、`--as` 自己起的名字里也没有时为空，界面退回字母头像
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// 首次 check 的时间
     pub checked_at: i64,
     /// 最近一次心跳（check 也算一次）
@@ -616,6 +620,10 @@ pub struct Card {
     /// 状态标识；「未整理」是 `inbox`
     pub column: String,
     pub holder: Option<String>,
+    /// 持有者跑在哪个 agent 里：从名字表里带出来，界面画持有者的图标用（新名字不再带 agent 标识）。
+    /// 持有者没有记录、旧服务端没有这个字段时为空，界面按旧格式从名字解析
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_agent: Option<String>,
     pub claimed_at: Option<i64>,
     /// 最近一次心跳（发了 final 之后是 final 的时间）；还没开始心跳时为空
     pub beat_at: Option<i64>,

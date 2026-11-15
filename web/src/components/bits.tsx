@@ -3,7 +3,7 @@ import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, 
 import { createPortal } from 'react-dom';
 import { openLink } from '../lib/actions';
 import { LOOP_STAGGER_MS, loopAgentMotion, playAgentMotion, subscribeMotion } from '../lib/agent-motion';
-import { agentIdOf, agentMark, type AgentMark } from '../lib/hosts';
+import { agentIdFor, agentMark, type AgentMark } from '../lib/hosts';
 import { inlineCode, markdown } from '../lib/markdown';
 import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
@@ -126,8 +126,8 @@ export function LogoArt({ mark, className, title }: { mark: AgentMark; className
 }
 
 /**
- * 按 agent 名字画头像（`<标识>-<机器名>/<模型名>`，见 `agentIdOf`）：认得出标识就在位子上画 agent 自己的 logo，
- * 认不出退回现在的字母头像（`Avatar`），名字为空时什么都不画。
+ * 按 agent 标识画头像（服务端带的 `agentId`；旧数据没有时按名字的旧格式 `<标识>-<机器名>/<模型名>` 解析）：
+ * 认得出标识就在位子上画 agent 自己的 logo，认不出退回现在的字母头像（`Avatar`），名字为空时什么都不画。
  *
  * logo 的规范（default/main#357，样式在 base.css 的 `.avatar.agent-logo`）：
  * - 画 logo 本身、透明底，不套圆底、不描边、不投影；位子大小沿用各处 `.avatar` 的尺寸（顶栏 26、卡片 20、单行 18、磁贴 16、详情 38），
@@ -137,6 +137,7 @@ export function LogoArt({ mark, className, title }: { mark: AgentMark; className
  */
 export function AgentAvatar({
   name,
+  agentId,
   className,
   title,
   enter,
@@ -144,13 +145,15 @@ export function AgentAvatar({
   loopIndex = 0,
 }: {
   name: string | null | undefined;
+  /** 服务端带的 agent 标识；不传时按名字的旧格式解析 */
+  agentId?: string | null;
   className?: string;
   title?: string;
   enter?: boolean;
   loop?: boolean;
   loopIndex?: number;
 }) {
-  const id = agentIdOf(name);
+  const id = agentIdFor(name, agentId);
   const tip = title ?? name ?? '';
   const m = id ? agentMark(id) : null;
   const ref = useRef<HTMLSpanElement>(null);

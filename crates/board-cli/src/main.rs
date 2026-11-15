@@ -58,7 +58,7 @@ const COMMANDS: [(&str, &str, &str); 29] = [
         (
             "check",
             "[--agent <标识>] [--as <名字>]",
-            "会话开始时占用名字。--agent <标识>（pi、claude、codex、dsh …）：名字由 Board 按这台机器（[host] name 或令牌认出的机器）、这个 agent 的设置生成，例如 dsh-win/deepseek-v4.1-flash，已有在线会话时加 -2、-3，查不到机器时用 <标识>/<标识>；占到的名字记在本机，之后不写 --as 的命令都用它。--as <名字>（或 BOARD_AS）照旧：自己起名字，被在线 agent 占用时 NAME_TAKEN",
+            "会话开始时占用名字。--agent <标识>（pi、claude、codex、dsh …）：名字由 Board 按这台机器（[host] name 或令牌认出的机器）、这个 agent 的设置生成，例如 win/opus-5.5-high，已有在线会话时加 -1、-2，查不到机器时用 <标识>/<标识>；占到的名字记在本机，之后不写 --as 的命令都用它。--as <名字>（或 BOARD_AS）照旧：自己起名字，被在线 agent 占用时 NAME_TAKEN",
         ),
         ("heartbeat", "start | stop [--force] | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；名字是本机另一个还在运行的 agent 进程 check 的时，start、stop 都拒绝（NAME_TAKEN），--force 清理本机残留时用；final <ID>：结束这张卡片这一次的计时"),
         ("beat", "[<ID>] [--final] [--force]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线（带着 check 时拿到的会话标识，名字属于别的会话时 NAME_TAKEN）。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),
@@ -1465,12 +1465,13 @@ fn generated_check(be: &mut Backend, agent: &str) -> Result<AgentInfo> {
             let mine = be.my_host()?;
             let (name, modeled, query) = match mine {
                 Some(h) => {
-                    // 名字第二段：机器设置里选的模型 → board host 上报的 → agent 标识（和派发、新版服务端一样）
+                    // 名字第二段：机器设置里选的模型、强度 → board host 上报的 → agent 标识（和派发、新版服务端一样）
                     let a = h.agents.iter().find(|a| a.id == agent);
                     let set = a.and_then(|a| a.run_model.clone().filter(|_| a.opts.as_ref().is_some_and(|o| o.model)));
                     let modeled = set.is_some();
                     let model = set.or_else(|| a.map(|a| a.model.clone())).unwrap_or_default();
-                    (board_core::hosts::dispatch_agent_name(agent, &h.name, &model, 0), modeled, Some(h.name))
+                    let effort = a.and_then(|a| a.run_effort.clone()).or_else(|| a.map(|a| a.effort.clone())).unwrap_or_default();
+                    (board_core::hosts::dispatch_agent_name(agent, &h.name, &model, &effort, 0), modeled, Some(h.name))
                 }
                 None => {
                     let (name, modeled) = board_core::hosts::plain_agent_name(agent, "");
@@ -1481,7 +1482,7 @@ fn generated_check(be: &mut Backend, agent: &str) -> Result<AgentInfo> {
             let info = match be.check_generated(agent, query.as_deref()) {
                 Ok(i) => i,
                 Err(e) if e.code == ErrorCode::NoIdentity => {
-                    // 旧服务端：带名字 check；被占用时在模型名后面加 -2、-3 …（和派发、新版服务端一样）
+                    // 旧服务端：带名字 check；被占用时在末尾加 -1、-2 …（和派发、新版服务端一样）
                     let (first, seg) = name.split_once('/').map_or((name.clone(), String::new()), |(f, s)| (f.to_string(), s.to_string()));
                     let mut seq = 0u32;
                     loop {
@@ -1489,7 +1490,7 @@ fn generated_check(be: &mut Backend, agent: &str) -> Result<AgentInfo> {
                         check_agent_name(&n).map_err(BoardError::usage)?;
                         match be.check(&n) {
                             Ok(i) => break i,
-                            Err(e) if e.code == ErrorCode::NameTaken => seq = if seq == 0 { 2 } else { seq + 1 },
+                            Err(e) if e.code == ErrorCode::NameTaken => seq += 1,
                             Err(e) => return Err(e),
                         }
                     }

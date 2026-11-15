@@ -34,6 +34,8 @@ export interface MilestoneCard {
   column: string;
   labels: number[];
   holder: string | null;
+  /** 持有者跑在哪个 agent 里（服务端从名字表带出来）：新名字不再带标识，画图标用它 */
+  holderAgent?: string | null;
   createdAt: number;
   /** 移入现在这个状态的时间：终点状态里的就是做完的时间 */
   movedAt: number | null;

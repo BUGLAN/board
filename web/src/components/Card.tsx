@@ -146,7 +146,7 @@ export const CardView = memo(function CardView({
           </span>
           {doing && (
             <span className={cx('line-holder', t.beat)} title={c.holder!}>
-              <AgentAvatar name={c.holder} enter />
+              <AgentAvatar name={c.holder} agentId={c.holderAgent} enter />
               <i className="beat" />
             </span>
           )}
@@ -179,7 +179,7 @@ export const CardView = memo(function CardView({
           {doing ? (
             <div className="card-claim">
               {/* enter：领到卡、换了持有者时，logo 用签名动作的进场版出来 */}
-              <AgentAvatar name={c.holder} enter />
+              <AgentAvatar name={c.holder} agentId={c.holderAgent} enter />
               <MidName className="claim-name" name={c.holder!} />
               <RunPill card={c} now={now} />
               {t.runs > 1 && (
@@ -359,7 +359,7 @@ export function TilePeek() {
         {doing && (
           <>
             <span className="ct-pop-holder">
-              <AgentAvatar name={card.holder} enter />
+              <AgentAvatar name={card.holder} agentId={card.holderAgent} enter />
               <MidName name={card.holder!} />
             </span>
             <RunPill card={card} now={now} />

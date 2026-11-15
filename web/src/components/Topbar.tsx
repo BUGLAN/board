@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newBoard, openBoard, openCard } from '../lib/actions';
 import { startWindowDrag, toggleMaximize } from '../lib/platform';
 import { flowOf, timing } from '../lib/schema';
-import { agentIdOf, agentMarkOf } from '../lib/hosts';
+import { agentIdFor, agentMarkOf } from '../lib/hosts';
 import { clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
@@ -85,8 +85,8 @@ function Presence() {
           <Tip key={a.name} text={tip}>
             <span
               // is-logo：认得出 agent，画的是 logo 本身（并排不叠、状态画在 logo 上，layout.css）；胶囊的颜色用它 logo 的主色
-              className={cx('pres-item', t ? t.beat : 'idle', agentIdOf(a.name) && 'is-logo')}
-              style={{ ['--c' as string]: agentMarkOf(a.name).color, ['--k' as string]: agents.length - 1 - i }}
+              className={cx('pres-item', t ? t.beat : 'idle', agentIdFor(a.name, a.agent) && 'is-logo')}
+              style={{ ['--c' as string]: agentMarkOf(a.name, a.agent).color, ['--k' as string]: agents.length - 1 - i }}
               data-tip-align="end"
               onClick={() => {
                 if (!h) return;
@@ -96,7 +96,7 @@ function Presence() {
             >
               {/* 认得出 agent 标识就画它自己的 logo，认不出退回字母头像（和卡片上「谁在做」同一套解析）；
                   心跳正常时每 5 秒做一次签名动作，几个错开 */}
-              <AgentAvatar name={a.name} loop={t?.beat === 'live'} loopIndex={i} />
+              <AgentAvatar name={a.name} agentId={a.agent} loop={t?.beat === 'live'} loopIndex={i} />
               <i className="pres-pulse" />
               <span className="pres-time">{!t ? '在线' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
             </span>

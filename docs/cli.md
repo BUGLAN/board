@@ -107,7 +107,7 @@
       "title": "访问令牌"
     },
     {
-      "detail": "codex-mbp/codex 在线",
+      "detail": "mbp/codex 在线",
       "key": "board_as",
       "next": null,
       "ok": true,
@@ -146,7 +146,7 @@
 
 ### `board check`
 
-`--agent` 由 Board 按这台机器生成名字，`modeled` 是名字第二段有没有用上模型（board host 上报的、这个 agent 配置文件里现在的模型；没有时第二段是 agent 标识）；`--as` 自己起名字时 `modeled` 为 `null`：
+`--agent` 由 Board 按这台机器生成名字（`<机器名>/<模型名>-<推理强度>`），`agent` 是这个名字跑在哪个 agent 里（界面画图标用），`modeled` 是名字第二段有没有用上模型（board host 上报的、这个 agent 配置文件里现在的模型；没有时第二段是 agent 标识）；`--as` 自己起名字时 `modeled` 为 `null`：
 
 ```json
 {
@@ -154,7 +154,7 @@
   "cards": [],
   "checked_at": "2026-11-13T15:55:16-05:00",
   "modeled": false,
-  "name": "codex-mbp/codex"
+  "name": "mbp/codex"
 }
 ```
 
@@ -167,13 +167,13 @@
   "agent_pid": 48211,
   "interval_ms": 10000,
   "loop_pid": 48210,
-  "name": "codex-mbp/codex"
+  "name": "mbp/codex"
 }
 ```
 
 ### `board heartbeat stop`
 
-停掉后台心跳并发一次 `final`，返回和 `board beat --final` 相同的 agent 状态。名字本来就不在线时是 `{"already_offline": true, "name": "codex-mbp/codex"}`：
+停掉后台心跳并发一次 `final`，返回和 `board beat --final` 相同的 agent 状态。名字本来就不在线时是 `{"already_offline": true, "name": "mbp/codex"}`：
 
 ```json
 {

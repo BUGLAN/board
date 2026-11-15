@@ -347,7 +347,7 @@ fn dispatch_names_merge_and_lost_runs() {
     let da = dispatch(&mut s, BASE, a);
     let da = begin(&mut s, BASE + MIN, da.id);
     let name = da.name.clone().expect("开始之后就有名字");
-    assert_eq!(name, "claude-mbp/opus-5.5", "名字是 <agent>-<机器>/<模型>");
+    assert_eq!(name, "mbp/opus-5.5", "名字是 <机器>/<模型>-<强度>");
     let mut t = BASE + MIN;
     while t < BASE + 10 * MIN {
         beat(&mut s, t, vec![da.id]);

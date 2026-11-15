@@ -1304,6 +1304,7 @@ fn blank_card() -> Card {
         body: String::new(),
         column: String::new(),
         holder: None,
+        holder_agent: None,
         claimed_at: None,
         beat_at: None,
         run_started_at: None,

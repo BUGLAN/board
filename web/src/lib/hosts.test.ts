@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, hostWords, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, hostWords, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -353,6 +353,15 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
   it('大小写、两边的空格不影响', () => {
     expect(agentIdOf(' DSH-win/DeepSeek ')).toBe('dsh');
     expect(agentIdOf('Claude/opus')).toBe('claude');
+  });
+
+  it('服务端带了 agent 标识时优先用它：新名字 <机器名>/<模型名>-<强度> 里没有标识也画得出来', () => {
+    expect(agentIdFor('win/opus-5.5-high', 'claude')).toBe('claude');
+    expect(agentIdFor('win/opus-5.5-high', null)).toBeNull();
+    expect(agentIdFor('dsh-win/deepseek-v4.1-flash', 'pi')).toBe('pi');
+    const mark = agentMarkOf('win/opus-5.5-high', 'claude');
+    expect(mark.icon).toBe(agentMark('claude').icon);
+    expect(mark.color).toBe(agentMark('claude').color);
   });
 
   it('agentMarkOf：认得出用它的图标，认不出按名字退回字母头像（和 Avatar 的首字母一样），不出现空图标', () => {

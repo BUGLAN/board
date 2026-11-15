@@ -453,17 +453,20 @@ fn begin_claims_with_generated_name_and_end_reports_result() {
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     assert_eq!(d.state, "running");
-    // 名字：<agent 标识>-<机器名>/<模型名>，模型名来自 board host 上报的 agent 数据
-    assert_eq!(d.name.as_deref(), Some("claude-mbp/opus-5.5"));
+    // 名字：<机器名>/<模型名>-<强度>，模型名来自 board host 上报的 agent 数据
+    assert_eq!(d.name.as_deref(), Some("mbp/opus-5.5"));
     check_agent_name(d.name.as_deref().unwrap()).unwrap();
     let c = card(&s, a);
-    assert_eq!(c.card.holder.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(c.card.holder.as_deref(), Some("mbp/opus-5.5"));
+    assert_eq!(c.card.holder_agent.as_deref(), Some("claude"), "卡片上带出持有者的 agent 标识");
     assert_eq!(c.card.column, "doing");
+    let info = s.read(|r| r.agent("mbp/opus-5.5")).unwrap().unwrap();
+    assert_eq!(info.agent.as_deref(), Some("claude"), "在线列表里带出 agent 标识");
     // host 上报时替名字发心跳：开始第 1 次
     beat(&mut s, T0 + 10 * S, &report("mbp", "i1", vec![d.id])).unwrap();
     assert!(card(&s, a).card.run_started_at.is_some());
     // agent 按 skill 交审后退出
-    let me = Actor::agent("claude-mbp/opus-5.5");
+    let me = Actor::agent("mbp/opus-5.5");
     exec(&mut s, T0 + 20 * S, &me, Cmd::Beat { id: a, done: true }).unwrap();
     exec(&mut s, T0 + 21 * S, &me, Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     let d = end(&mut s, T0 + 22 * S, d.id, Some(0), &[]);
@@ -472,44 +475,79 @@ fn begin_claims_with_generated_name_and_end_reports_result() {
     assert!(acts.iter().any(|t| t.starts_with("派发开始")), "{acts:?}");
     assert!(acts.iter().any(|t| t.starts_with("派发结束：已交审")), "{acts:?}");
     // 名字只给这次派发用，结束后离线；下一次派发复用这个名字（序号只在并发时加）
-    assert!(s.read(|r| r.require_online("claude-mbp/opus-5.5", T0 + 23 * S)).is_err());
+    assert!(s.read(|r| r.require_online("mbp/opus-5.5", T0 + 23 * S)).is_err());
     let b = new_card(&mut s, T0, "B");
     let d2 = dispatch(&mut s, T0 + 30 * S, b, "mbp", None).unwrap();
-    assert_eq!(begin(&mut s, T0 + 31 * S, d2.id).unwrap().name.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(begin(&mut s, T0 + 31 * S, d2.id).unwrap().name.as_deref(), Some("mbp/opus-5.5"));
 }
 
-/// 派发的 agent 名字：`<agent 标识>-<机器名>/<模型名>`（卡片 #155 的例子是 `dsh-win/deepseek-v4.1-flash`）
+/// 派发的 agent 名字：`<机器名>/<模型名>-<强度>`（例如 `win/opus-5.5-high`）
 #[test]
 fn dispatch_agent_name_format() {
-    // 基本格式、并发序号加在模型名后面
-    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 0), "dsh-win/deepseek-v4.1-flash");
-    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 2), "dsh-win/deepseek-v4.1-flash-2");
-    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", 3), "dsh-win/deepseek-v4.1-flash-3");
-    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", 2), "pi-mbp/pi-2");
+    // 基本格式：<机器名>/<模型名>-<强度>；强度没有时省略，序号加在末尾
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "opus-5.5", "high", 0), "win/opus-5.5-high");
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "opus-5.5", "high", 1), "win/opus-5.5-high-1");
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "opus-5.5", "", 0), "win/opus-5.5");
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", "medium", 2), "win/deepseek-v4.1-flash-medium-2");
+    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", "", 2), "mbp/pi-2");
     // 模型名转成小写、空白和非法字符换成 -；没有模型时（旧版 board host、没配置）用 agent 标识
-    assert_eq!(hosts::dispatch_agent_name("claude", "mbp", "Opus 5.5", 0), "claude-mbp/opus-5.5");
-    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "  DeepSeek V4.1 Flash ", 0), "dsh-win/deepseek-v4.1-flash");
-    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", 0), "pi-mbp/pi");
-    assert_eq!(hosts::dispatch_agent_name("codex", "mbp", "---", 0), "codex-mbp/codex");
+    assert_eq!(hosts::dispatch_agent_name("claude", "mbp", "Opus 5.5", "HIGH", 0), "mbp/opus-5.5-high");
+    assert_eq!(hosts::dispatch_agent_name("dsh", "win", "  DeepSeek V4.1 Flash ", "  ", 0), "win/deepseek-v4.1-flash");
+    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", "", 0), "mbp/pi");
+    assert_eq!(hosts::dispatch_agent_name("codex", "mbp", "---", "", 0), "mbp/codex");
     // 名字都能通过 board check 的格式校验；长机器名、长标识、多位的序号也一样（序号只在并发时加，
     // 最多「最多几个会话」（≤8）个，实际是个位数；模型名放不下时截断）
     let cases = [
-        ("dsh", "win", "deepseek-v4.1-flash", 0u32),
-        ("dsh", "win", "deepseek-v4.1-flash", 12),
-        ("my-agent-16chars", "host-abc1234567890123456", "a-model", 9),
-        ("dsh", "win", "gpt-5.1-codex-max-preview-very-long-model-name", 8),
+        ("dsh", "win", "deepseek-v4.1-flash", "high", 0u32),
+        ("dsh", "win", "deepseek-v4.1-flash", "xhigh", 12),
+        ("my-agent-16chars", "host-abc1234567890123456", "a-model", "high", 9),
+        ("dsh", "win", "gpt-5.1-codex-max-preview-very-long-model-name", "high", 8),
     ];
-    for (a, h, m, seq) in cases {
-        let n = hosts::dispatch_agent_name(a, h, m, seq);
+    for (a, h, m, e, seq) in cases {
+        let n = hosts::dispatch_agent_name(a, h, m, e, seq);
         check_agent_name(&n).unwrap_or_else(|e| panic!("{n}：{e}"));
         assert!(n.chars().count() <= 48, "{n}");
     }
     // 模型名被截断到放得下为止，序号保留在最后
-    assert_eq!(hosts::dispatch_agent_name("my-agent-16chars", "host-abc1234567890123456", "a-model", 9), "my-agent-16chars-host-abc1234567890123456/a-mo-9");
     assert_eq!(
-        hosts::dispatch_agent_name("dsh", "win", "gpt-5.1-codex-max-preview-very-long-model-name", 8),
-        "dsh-win/gpt-5.1-codex-max-preview-very-long-mo-8"
+        hosts::dispatch_agent_name("my-agent-16chars", "host-abc1234567890123456", "a-model", "high", 9),
+        "host-abc1234567890123456/a-model-high-9"
     );
+    assert_eq!(
+        hosts::dispatch_agent_name("dsh", "win", "gpt-5.1-codex-max-preview-very-long-model-name", "high", 8),
+        "win/gpt-5.1-codex-max-preview-very-long-model-8"
+    );
+}
+
+/// 旧格式名字按已知的内置 agent 解析出标识；认不出的保持空（界面上退回字母头像）
+#[test]
+fn legacy_names_map_to_agent_ids() {
+    use crate::agents::legacy_agent_id;
+    assert_eq!(legacy_agent_id("dsh-win/deepseek-v4.1-flash").as_deref(), Some("dsh"));
+    assert_eq!(legacy_agent_id("claude-mbp/opus-5.5").as_deref(), Some("claude"));
+    assert_eq!(legacy_agent_id("pi/pi").as_deref(), Some("pi"));
+    assert_eq!(legacy_agent_id("Claude/opus").as_deref(), Some("claude"));
+    assert_eq!(legacy_agent_id("win/opus-5.5-high"), None);
+    assert_eq!(legacy_agent_id("my-dsh/1"), None);
+    assert_eq!(legacy_agent_id("alpha"), None);
+    assert_eq!(legacy_agent_id(""), None);
+}
+
+/// 升级旧库：名字表里已有的名字按旧格式解析一次补上 agent；新格式、认不出的保持空
+#[test]
+fn old_agent_names_get_agent_id_on_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        s.write(T0, Origin::cli(), |w| w.agent_check("dsh-win/deepseek-v4.1-flash", None)).unwrap();
+        s.write(T0, Origin::cli(), |w| w.agent_check("win/opus-5.5-high", None)).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE agents DROP COLUMN agent").unwrap();
+    let s = Store::open(&path).expect("旧库要能打开");
+    assert_eq!(s.read(|r| r.agent("dsh-win/deepseek-v4.1-flash")).unwrap().unwrap().agent.as_deref(), Some("dsh"));
+    assert_eq!(s.read(|r| r.agent("win/opus-5.5-high")).unwrap().unwrap().agent, None);
 }
 
 /// 同一台机器同一 agent、模型有多个并发派发时名字仍唯一（加序号）；上一个会话离线后名字复用；
@@ -521,14 +559,14 @@ fn dispatch_names_unique_while_concurrent_and_reused_after() {
     set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
     let a = new_card(&mut s, T0, "A");
     let b = new_card(&mut s, T0, "B");
-    // 两个并发派发：第一个不带序号，第二个在模型名后面加 -2
+    // 两个并发派发：第一个不带序号，第二个在模型名后面加 -1
     let da = dispatch(&mut s, T0, a, "mbp", Some("dsh")).unwrap();
     let db = dispatch(&mut s, T0, b, "mbp", Some("dsh")).unwrap();
     let da = begin(&mut s, T0 + S, da.id).unwrap();
-    assert_eq!(da.name.as_deref(), Some("dsh-mbp/deepseek-v4.1-flash"));
+    assert_eq!(da.name.as_deref(), Some("mbp/deepseek-v4.1-flash"));
     check_agent_name(da.name.as_deref().unwrap()).unwrap();
     let db = begin(&mut s, T0 + S, db.id).unwrap();
-    assert_eq!(db.name.as_deref(), Some("dsh-mbp/deepseek-v4.1-flash-2"), "并发派发在模型名后面加序号");
+    assert_eq!(db.name.as_deref(), Some("mbp/deepseek-v4.1-flash-1"), "并发派发在名字末尾加序号");
     check_agent_name(db.name.as_deref().unwrap()).unwrap();
     // 第一个结束（名字离线）之后：定时领取的会话复用不带序号的名字
     end(&mut s, T0 + 2 * S, da.id, Some(0), &[]);
@@ -541,7 +579,7 @@ fn dispatch_names_unique_while_concurrent_and_reused_after() {
     s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let dp = pull(&mut s, T0 + 4 * S).unwrap();
     assert_eq!(dp.agent, "dsh");
-    assert_eq!(dp.name.as_deref(), Some("dsh-mbp/deepseek-v4.1-flash"), "离线后的名字可以复用");
+    assert_eq!(dp.name.as_deref(), Some("mbp/deepseek-v4.1-flash"), "离线后的名字可以复用");
     // board next 接着做的会话用同一个名字
     let name = dp.name.clone().unwrap();
     submit(&mut s, T0 + 5 * S, &name, dp.card);
@@ -822,7 +860,7 @@ fn restart_grace_keeps_claims_names_and_running_dispatch() {
     assert!(s.read(|r| r.agents(back)).unwrap().iter().any(|a| a.name == "claude/alpha"), "名字仍在线");
     assert!(host(&s, back).online, "机器仍在线");
     assert_eq!(card(&s, 1).card.holder.as_deref(), Some("claude/alpha"), "卡片仍由原名字持有");
-    assert_eq!(card(&s, 2).card.holder.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(card(&s, 2).card.holder.as_deref(), Some("mbp/opus-5.5"));
     assert_eq!(get(&s, 1).state, "running", "在跑的派发仍然是 running");
     // 规则 7 不变：顺延之后再过 50 秒没有心跳，照常释放、离线
     assert_eq!(s.sweep(back + 49 * S).unwrap(), 0);
@@ -1059,7 +1097,7 @@ fn releasing_running_dispatch_requests_stop() {
     let a = new_card(&mut s, T0, "A");
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     let d = begin(&mut s, T0 + S, d.id).unwrap();
-    assert_eq!(card(&s, a).card.holder.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(card(&s, a).card.holder.as_deref(), Some("mbp/opus-5.5"));
     s.write(T0 + 2 * S, Origin::ui(None), |w| {
         let b = w.resolve(B)?;
         w.exec(&b, &Actor::human(), Cmd::Release { id: a })?;
@@ -1278,7 +1316,7 @@ fn review_path_unchanged_with_error_status() {
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     begin(&mut s, T0 + S, d.id).unwrap();
     // agent 正常交审后退出：卡片已经不在它手里，在交审状态，不动
-    exec(&mut s, T0 + 2 * S, &Actor::agent("claude-mbp/opus-5.5"), Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    exec(&mut s, T0 + 2 * S, &Actor::agent("mbp/opus-5.5"), Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     let d = end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
     assert_eq!(d.result.as_deref(), Some("review"));
     assert_eq!(card(&s, a).card.column, "review");
@@ -1347,7 +1385,7 @@ fn env_defaults_to_first_found_in_supported_order() {
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     assert_eq!((d.env.as_deref(), d.env_name.as_deref()), (Some("git-bash"), Some("Git Bash")));
     let acts: Vec<String> = card(&s, a).activity.into_iter().map(|x| x.text).collect();
-    assert!(acts.iter().any(|t| t.starts_with("派发开始：mbp 上的 pi（Git Bash）以 pi-mbp/pi 领取")), "{acts:?}");
+    assert!(acts.iter().any(|t| t.starts_with("派发开始：mbp 上的 pi（Git Bash）以 mbp/pi 领取")), "{acts:?}");
 }
 
 #[test]
@@ -1488,7 +1526,7 @@ fn pull_includes_fixed_dirs_and_skips_legacy_board_ids() {
     assert_eq!(d.card, a);
     assert_eq!(d.state, "running");
     assert_eq!(d.path.as_deref(), Some("/repo/board"), "派发在 --dir 指定的目录里做");
-    assert_eq!(card(&s, a).card.holder.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(card(&s, a).card.holder.as_deref(), Some("mbp/opus-5.5"));
 
     // 白板标识不是 `<项目>/<白板>` 的旧目录（`main` 这种）仍跳过：一块白板都领不到，这一轮照常结束
     let mut s = store();
@@ -2490,7 +2528,7 @@ fn rename_host_keeps_settings_and_dispatches() {
     let a = new_card(&mut s, T0, "A");
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     let d = begin(&mut s, T0 + S, d.id).unwrap();
-    assert_eq!(d.name.as_deref(), Some("claude-mbp/opus-5.5"));
+    assert_eq!(d.name.as_deref(), Some("mbp/opus-5.5"));
     // 不改名：原样返回
     let h = s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("mbp", "mbp")).unwrap();
     assert_eq!((h.name.as_str(), h.id, h.max, h.online), ("mbp", id, 3, true));
@@ -3295,7 +3333,7 @@ fn dispatch_records_the_model_the_agent_config_has() {
     let d = dispatch(&mut s, T0, id, "mbp", None).unwrap();
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     assert_eq!((d.model.as_deref(), d.effort.as_deref()), (Some("sonnet"), Some("high")));
-    assert_eq!(d.name.as_deref(), Some("claude-mbp/sonnet"), "名字第二段是配置文件里的模型");
+    assert_eq!(d.name.as_deref(), Some("mbp/sonnet-high"), "名字第二段是配置文件里的模型");
     let acts = card(&s, id).activity;
     assert!(acts.iter().any(|a| a.text.contains("派发开始") && a.text.contains("模型 sonnet，强度 high")), "{acts:?}");
     end(&mut s, T0 + 2 * S, d.id, Some(0), &[]);
@@ -3306,7 +3344,7 @@ fn dispatch_records_the_model_the_agent_config_has() {
     let id2 = new_card(&mut s, T0, "B");
     let d2 = dispatch(&mut s, T0 + 3 * S, id2, "mbp", None).unwrap();
     let d2 = begin(&mut s, T0 + 3 * S, d2.id).unwrap();
-    assert_eq!((d2.model, d2.effort, d2.name.as_deref()), (None, None, Some("claude-mbp/claude")));
+    assert_eq!((d2.model, d2.effort, d2.name.as_deref()), (None, None, Some("mbp/claude")));
 }
 
 /* ------------------------------ 会话页（PRD §10.8、§10.12） ------------------------------ */
@@ -3900,7 +3938,7 @@ fn inbox_card(s: &mut Store, at: i64, who: &Actor, title: &str, from: Option<i64
 fn new_from_records_split_relation_both_ways() {
     let mut s = store();
     let a = inbox_card(&mut s, T0, &Actor::human(), "原始需求", None).unwrap().card.id;
-    let x = inbox_card(&mut s, T0 + S, &Actor::agent("claude-mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap();
+    let x = inbox_card(&mut s, T0 + S, &Actor::agent("mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap();
     assert_eq!((x.card.column.as_str(), x.card.split_from), (INBOX, Some(a)), "子卡在未整理，记着拆自");
     assert!(x.activity.last().unwrap().text.contains(&format!("拆自 #{a}")));
     let y = exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::New { title: "拆出来的二".into(), body: None, column: None, top: false, labels: vec![], from: Some(a) })
@@ -3928,8 +3966,8 @@ fn inbox_count_leaves_out_entries_already_split() {
     let a = inbox_card(&mut s, T0, &Actor::human(), "原始需求", None).unwrap().card.id;
     inbox_card(&mut s, T0, &Actor::human(), "别的一条", None).unwrap();
     assert_eq!(inbox(&s), 2);
-    let x = inbox_card(&mut s, T0 + S, &Actor::agent("claude-mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap().card.id;
-    let y = inbox_card(&mut s, T0 + S, &Actor::agent("claude-mbp/opus-5.5"), "拆出来的二", Some(a)).unwrap().card.id;
+    let x = inbox_card(&mut s, T0 + S, &Actor::agent("mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap().card.id;
+    let y = inbox_card(&mut s, T0 + S, &Actor::agent("mbp/opus-5.5"), "拆出来的二", Some(a)).unwrap().card.id;
     assert_eq!(inbox(&s), 3, "原条目并进拆出的那组，不单独算");
     exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: x, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     assert_eq!(inbox(&s), 2, "拆出的卡整理走了，原条目照样不算");
@@ -4127,15 +4165,15 @@ fn check_generates_name_from_host_agent_settings() {
     let mut rep = report("win", "i1", vec![]);
     rep.agents.push(HostAgent { id: "dsh".into(), name: "DeepSeek Harness".into(), version: "1.0".into(), found: true, ..Default::default() });
     beat(&mut s, T0, &rep).unwrap();
-    // pi 没配模型：pi-win/pi
+    // pi 没配模型：win/pi
     let info = check_gen(&mut s, T0 + S, Some("win"), "pi", Some(1)).unwrap();
-    assert_eq!(info.name, "pi-win/pi");
+    assert_eq!(info.name, "win/pi");
     assert_eq!(info.modeled, Some(false), "没配模型：第二段是 agent 标识，不是模型");
     check_agent_name(&info.name).unwrap();
     // dsh 没有模型（board host 没上报）：同样退回 agent 标识
-    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "dsh", Some(1)).unwrap().name, "dsh-win/dsh");
-    // claude 配了 opus-5.5：claude-win/opus-5.5，和派发出来的名字一致
-    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "dsh", Some(1)).unwrap().name, "win/dsh");
+    // claude 配了 opus-5.5：win/opus-5.5，和派发出来的名字一致
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "win/opus-5.5");
 }
 
 /// 名字第二段是 board host 上报的、配置文件里现在的模型，和派发一致
@@ -4145,17 +4183,17 @@ fn check_uses_the_model_the_agent_config_has() {
     let mut rep = report("mbp", "i1", vec![]);
     rep.agents[0].model = "sonnet".into();
     beat(&mut s, T0, &rep).unwrap();
-    assert_eq!(check_gen(&mut s, T0 + S, Some("mbp"), "claude", Some(1)).unwrap().name, "claude-mbp/sonnet");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("mbp"), "claude", Some(1)).unwrap().name, "mbp/sonnet");
 }
 
-/// 同一机器同一 agent 已经有在线会话时自动加 -2、-3 …，不报 NAME_TAKEN；离线后复用
+/// 同一机器同一 agent 已经有在线会话时自动加 -1、-2 …，不报 NAME_TAKEN；离线后复用
 #[test]
 fn check_generated_name_adds_sequence_instead_of_name_taken() {
     let mut s = store();
     beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
-    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
-    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5-2");
-    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5-3");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "win/opus-5.5");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "win/opus-5.5-1");
+    assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "win/opus-5.5-2");
     // 名字太长的：先截断模型名，序号保留在最后，总长不超过 48
     let mut rep = report("win", "i1", vec![]);
     rep.agents[0].model = "gpt-5.1-codex-max-preview-very-long-model-name".into();
@@ -4167,9 +4205,9 @@ fn check_generated_name_adds_sequence_instead_of_name_taken() {
         check_agent_name(n).unwrap();
         assert!(n.chars().count() <= 48, "{n}");
     }
-    assert!(b.ends_with("-2") && !a.ends_with("-2"), "{a} {b}");
+    assert!(b.ends_with("-1") && !a.ends_with("-1"), "{a} {b}");
     // 不带序号的名字离线后可以重新用
-    assert!(a.starts_with("claude-win/gpt-5.1-codex-max-preview-"), "{a}");
+    assert!(a.starts_with("win/gpt-5.1-codex-max-preview-"), "{a}");
     s.write(T0 + 3 * S, Origin::cli(), |w| w.agent_beat_by(&a, true, BeatBy::Cli(Some("s1")))).unwrap();
     assert_eq!(check_gen(&mut s, T0 + 3 * S, Some("win"), "claude", Some(1)).unwrap().name, a);
 }
@@ -4195,7 +4233,7 @@ fn check_falls_back_to_agent_slash_model_without_host() {
 fn check_finds_the_host_by_token() {
     let mut s = store();
     beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
-    assert_eq!(check_gen(&mut s, T0 + S, None, "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
+    assert_eq!(check_gen(&mut s, T0 + S, None, "claude", Some(1)).unwrap().name, "win/opus-5.5");
     // 别的令牌（它不是任何机器上报用的）：退回
     assert_eq!(check_gen(&mut s, T0 + S, None, "claude", Some(9)).unwrap().name, "claude/claude");
 }
@@ -4205,14 +4243,14 @@ fn check_finds_the_host_by_token() {
 fn check_with_an_explicit_name_is_unchanged() {
     let mut s = store();
     beat(&mut s, T0, &report("win", "i1", vec![])).unwrap();
-    s.write(T0, Origin::cli(), |w| w.agent_check("claude-win/opus-5.5", Some(1))).unwrap();
-    let e = s.write(T0 + S, Origin::cli(), |w| w.agent_check("claude-win/opus-5.5", Some(1))).unwrap_err();
+    s.write(T0, Origin::cli(), |w| w.agent_check("win/opus-5.5", Some(1))).unwrap();
+    let e = s.write(T0 + S, Origin::cli(), |w| w.agent_check("win/opus-5.5", Some(1))).unwrap_err();
     assert_eq!(e.code, ErrorCode::NameTaken);
     // board host 派发还是用自己生成的名字：同一机器的同一 agent 加序号
     let id = new_card(&mut s, T0, "A");
     let d = dispatch(&mut s, T0, id, "win", Some("claude")).unwrap();
     let d = s.write(T0 + S, Origin::cli(), |w| w.dispatch_begin("win", "i1", d.id, Some(1))).unwrap();
-    assert_eq!(d.name.as_deref(), Some("claude-win/opus-5.5-2"));
+    assert_eq!(d.name.as_deref(), Some("win/opus-5.5-1"));
 }
 
 /// agent 标识、机器名不合法时报 USAGE（不带名字的 check 的输入要校验）

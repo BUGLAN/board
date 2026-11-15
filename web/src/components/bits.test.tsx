@@ -78,6 +78,12 @@ describe('按名字画 agent 头像（AgentAvatar）', () => {
     expect(el.style.getPropertyValue('--c')).toBe('#10A37F');
   });
 
+  it('新格式名字不带 agent 标识：用服务端给的 agentId 画图标', () => {
+    act(() => root.render(<AgentAvatar name="win/opus-5.5-high" agentId="codex" />));
+    const el = host.querySelector('.avatar.agent-logo') as HTMLElement;
+    expect(el.querySelector('img')?.getAttribute('src')).toBe(agentMark('codex').icon);
+  });
+
   it('认不出：退回字母头像（和原来一样）', () => {
     act(() => root.render(<AgentAvatar name="alpha" />));
     const el = host.querySelector('.avatar') as HTMLElement;

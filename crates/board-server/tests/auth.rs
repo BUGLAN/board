@@ -719,13 +719,15 @@ fn agent_check_generates_the_name_from_machine_settings() {
         auth::create_token(store.conn(), "win2", board_core::now_ms()).unwrap()
     };
     let agent = |id: &str, model: &str| HostAgent { id: id.into(), name: id.into(), version: "1.0".into(), found: true, model: model.into(), ..Default::default() };
+    let mut claude = agent("claude", "opus-5.5");
+    claude.effort = "high".into();
     let rep = HostReport {
         name: "win".into(),
         instance: "i1".into(),
         resume: None,
         os: "Windows 11".into(),
         version: "0.1.24".into(),
-        agents: vec![agent("claude", "opus-5.5"), agent("pi", "")],
+        agents: vec![claude, agent("pi", "")],
         envs: vec![],
         workspace: Some(HostWorkspace { path: "C:\\repo".into(), ..Default::default() }),
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
@@ -743,17 +745,18 @@ fn agent_check_generates_the_name_from_machine_settings() {
     let check = |token: &str, body: Value| send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &format!("Bearer {token}"))], Some(body));
     // 带机器名：claude 配了 opus-5.5；名字和派发一致，占用时自动加序号
     let r = check(&agent_token, json!({ "agent": "claude", "host": "win", "session": true }));
-    assert_eq!((r.status, r.body["name"].as_str()), (200, Some("claude-win/opus-5.5")), "{:?}", r.body);
+    assert_eq!((r.status, r.body["name"].as_str()), (200, Some("win/opus-5.5-high")), "{:?}", r.body);
+    assert_eq!(r.body["agent"], "claude", "名字里不再带 agent 标识，返回里单独带上");
     assert!(r.body["session"].is_string());
     let r = check(&agent_token, json!({ "agent": "claude", "host": "win", "session": true }));
-    assert_eq!(r.body["name"], "claude-win/opus-5.5-2", "{:?}", r.body);
-    // 没配模型：pi-win/pi
-    assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "win" })).body["name"], "pi-win/pi");
+    assert_eq!(r.body["name"], "win/opus-5.5-high-1", "{:?}", r.body);
+    // 没配模型：win/pi
+    assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "win" })).body["name"], "win/pi");
     // 不带机器名、令牌不是任何机器的：退回 <标识>/<标识>
     let r = check(&agent_token, json!({ "agent": "codex" }));
     assert_eq!((r.status, r.body["name"].as_str(), r.body["modeled"].as_bool()), (200, Some("codex/codex"), Some(false)));
-    // 令牌是 win 的 board host 上报用的：认得出这台机器（pi-win/pi 已经被上一个会话占了，加序号）
-    assert_eq!(check(&host_token, json!({ "agent": "pi", "session": true })).body["name"], "pi-win/pi-2");
+    // 令牌是 win 的 board host 上报用的：认得出这台机器（win/pi 已经被上一个会话占了，加序号）
+    assert_eq!(check(&host_token, json!({ "agent": "pi", "session": true })).body["name"], "win/pi-1");
     // 机器名不合法：USAGE；agent 标识不合法：USAGE
     assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "Win 1" })).code().as_str(), "USAGE");
     assert_eq!(check(&agent_token, json!({ "agent": "Pi Code", "host": "win" })).code().as_str(), "USAGE");

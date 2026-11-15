@@ -1114,7 +1114,8 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 COALESCE(c.moved_at, c.created_at),
                 c.seen_at,
                 c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from,
-                c.split_from, c.later_at
+                c.split_from, c.later_at,
+                (SELECT a.agent FROM agents a WHERE a.name = c.holder)
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1130,6 +1131,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             body: r.get(2)?,
             column: r.get(3)?,
             holder: r.get(4)?,
+            holder_agent: r.get(30)?,
             claimed_at: r.get(5)?,
             beat_at: r.get(6)?,
             claimed_from: r.get(11)?,

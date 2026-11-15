@@ -195,8 +195,8 @@ pub struct AgentConf {
     pub id: String,
     /// 名称（界面上显示）；不写时用标识
     pub name: Option<String>,
-    /// 模型名：派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段。内置 agent 用它自己配置文件里现在的模型，
-    /// 读不到时才用这里的；都没有时名字只写 `<agent 标识>-<机器名>`。
+    /// 模型名：派发的 agent 名字（`<机器名>/<模型名>-<强度>`）的第二段。内置 agent 用它自己配置文件里现在的模型，
+    /// 读不到时才用这里的；都没有时名字只写 `<机器名>/<agent 标识>`。
     /// 以前的 `model_args`、`effort_args`、`efforts`（派发时按次传模型、强度）不再用，写了也不起作用
     pub model: Option<String>,
     pub cmd: Vec<String>,

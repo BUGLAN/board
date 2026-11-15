@@ -150,7 +150,7 @@ impl Rig {
             ),
         )
         .unwrap();
-        // Claude Code 自己的配置文件里的模型：board host 读出来上报，派发名字的第二段用它（claude-mbp/opus-5.5）
+        // Claude Code 自己的配置文件里的模型：board host 读出来上报，派发名字的第二段用它（mbp/opus-5.5）
         let claude = s.home.join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
         std::fs::write(claude.join("settings.json"), "{\"model\": \"opus-5.5\"}\n").unwrap();
@@ -402,7 +402,7 @@ fn host_runs_dispatches_end_to_end() {
     let r = rig.board(&["dispatch", "5", "--host", "nope", "--json"]);
     assert_eq!(r.error_code(), "NO_SUCH_HOST");
 
-    // 交审：持有者是 claude-mbp/opus-5.5（<agent 标识>-<机器名>/<模型名>，模型名是 Claude Code 配置文件里现在的），
+    // 交审：持有者是 mbp/opus-5.5（<机器名>/<模型名>，模型名是 Claude Code 配置文件里现在的），
     // 日志写到 ~/.board/host/logs/，上传到服务端
     rig.mode("review");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
@@ -411,11 +411,11 @@ fn host_runs_dispatches_end_to_end() {
     wait_until("#1 交审", Duration::from_secs(15), || ended(&rig.show(1), "已交审"));
     let c1 = rig.show(1);
     assert_eq!(c1["column"], "review");
-    assert!(activity(&c1).iter().any(|t| t.contains("以 claude-mbp/opus-5.5 领取")), "{:?}", activity(&c1));
+    assert!(activity(&c1).iter().any(|t| t.contains("以 mbp/opus-5.5 领取")), "{:?}", activity(&c1));
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
     assert!(local.contains("prompt: /board-skills 开始执行 default项目之中的main白板中的#1任务"), "{local}");
-    assert!(local.contains("BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "派发提示词里带上 board host 身份：{local}");
-    assert!(local.contains("as: claude-mbp/opus-5.5 host: mbp board: default/main"), "{local}");
+    assert!(local.contains("BOARD_AS=mbp/opus-5.5，BOARD_HOST=mbp"), "派发提示词里带上 board host 身份：{local}");
+    assert!(local.contains("as: mbp/opus-5.5 host: mbp board: default/main"), "{local}");
     assert!(rig.dispatch_log(d1).iter().any(|l| l == "交审了"));
     assert!(local.contains("config: ok"), "BOARD_CONFIG 指向这次派发的配置文件：{local}");
     assert!(local.contains("exe: ok"), "BOARD_EXE 是 board 自己的路径：{local}");
@@ -433,7 +433,7 @@ fn host_runs_dispatches_end_to_end() {
     // 最多 1 个会话：#3 在跑时派发 #4 排队，别的 agent 领 #4 报 DISPATCHED
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp"]).code, 0);
-    wait_until("#3 开始", Duration::from_secs(10), || rig.show(3)["holder"] == "claude-mbp/opus-5.5");
+    wait_until("#3 开始", Duration::from_secs(10), || rig.show(3)["holder"] == "mbp/opus-5.5");
     assert_eq!(rig.board(&["dispatch", "4", "--host", "mbp"]).code, 0);
     assert_eq!(rig.board(&["claim", "4", "--json"]).error_code(), "DISPATCHED");
     std::thread::sleep(Duration::from_secs(1));
@@ -445,7 +445,7 @@ fn host_runs_dispatches_end_to_end() {
     wait_until("#3 已停止", Duration::from_secs(15), || ended(&rig.show(3), "已停止"));
     assert_eq!(rig.show(3)["column"], "check");
     // 上一个会话离线后名字复用
-    wait_until("#4 开始", Duration::from_secs(10), || rig.show(4)["holder"] == "claude-mbp/opus-5.5");
+    wait_until("#4 开始", Duration::from_secs(10), || rig.show(4)["holder"] == "mbp/opus-5.5");
 
     // Ctrl+C（SIGTERM）：先停掉 #4，再离线
     let (code, out) = stop(host);
@@ -483,7 +483,7 @@ fn host_splits_inbox_entries() {
     }
     assert!(activity(&c1).iter().any(|t| t == "拆成了两张"), "{:?}", activity(&c1));
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
-    assert!(local.contains("prompt: /board-skills 拆解 default项目之中的main白板中的#1需求（board host 派发：BOARD_AS=claude-mbp/opus-5.5，BOARD_HOST=mbp"), "{local}");
+    assert!(local.contains("prompt: /board-skills 拆解 default项目之中的main白板中的#1需求（board host 派发：BOARD_AS=mbp/opus-5.5，BOARD_HOST=mbp"), "{local}");
     assert!(local.contains("先按粒度预检") && local.contains("不要拆"), "粒度预检写在提示词里：{local}");
 
     // 一张也没建、退出 0：粒度预检判过，不用拆（default/main#306）
@@ -647,7 +647,7 @@ impl Rig {
     fn dispatch_running(&self, id: i64) -> i64 {
         let r = self.board(&["dispatch", &id.to_string(), "--host", "mbp", "--json"]);
         assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-        wait_until(&format!("#{id} 开始"), Duration::from_secs(15), || self.show(id)["holder"] == "claude-mbp/opus-5.5");
+        wait_until(&format!("#{id} 开始"), Duration::from_secs(15), || self.show(id)["holder"] == "mbp/opus-5.5");
         r.json()["id"].as_i64().unwrap()
     }
 }
@@ -791,7 +791,7 @@ fn host_follows_config_without_restart() {
     // 一个 agent 在跑
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
-    wait_until("#1 开始", Duration::from_secs(10), || rig.show(1)["holder"] == "claude-mbp/opus-5.5");
+    wait_until("#1 开始", Duration::from_secs(10), || rig.show(1)["holder"] == "mbp/opus-5.5");
     let pidfile = rig.fake.parent().unwrap().join("agent.pid");
     wait_until("agent 写出进程号", Duration::from_secs(10), || std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty()));
     let pid = std::fs::read_to_string(&pidfile).unwrap();
@@ -819,7 +819,7 @@ fn host_follows_config_without_restart() {
     let hs = ws["hosts"].as_array().unwrap();
     assert_eq!(hs.len(), 1, "{hs:?}");
     assert_eq!((hs[0]["id"].clone(), hs[0]["online"].clone()), (id, Value::Bool(true)));
-    assert_eq!(rig.show(1)["holder"], "claude-mbp/opus-5.5");
+    assert_eq!(rig.show(1)["holder"], "mbp/opus-5.5");
     assert!(Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success(), "在跑的 agent 没有被停止");
     let home = rig.s.home.join(".board").join("host");
     assert!(home.join("win.pid").exists() && !home.join("mbp.pid").exists(), "pid 文件换成新名字");
@@ -834,7 +834,7 @@ fn host_follows_config_without_restart() {
     let d2 = r.json()["id"].as_i64().unwrap();
     wait_until("#2 交审", Duration::from_secs(15), || ended(&rig.show(2), "已交审"));
     let local = std::fs::read_to_string(log_file(&rig.s.home, d2)).unwrap();
-    assert!(local.contains("as: claude-win/opus-5.5 host: win"), "{local}");
+    assert!(local.contains("as: win/opus-5.5 host: win"), "{local}");
 
     // 工作空间不存在不算配置不对（#185）：照样换上，白板目录按新的工作空间派生，不会报成可用（界面上可以克隆）
     let nope = rig.repo.with_file_name("nope").join("default");
@@ -994,7 +994,7 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     let out = std::fs::read_to_string(&log).unwrap();
     assert!(out.contains("args: /board-skills 开始执行") && !out.contains("--model"), "派发时不再传模型、强度：{out}");
     let acts = activity(&rig.show(1));
-    assert!(acts.iter().any(|t| t.contains("以 claude-mbp/m2 领取") && t.contains("模型 m2，强度 high")), "{acts:?}");
+    assert!(acts.iter().any(|t| t.contains("以 mbp/m2-high 领取") && t.contains("模型 m2，强度 high")), "{acts:?}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("sk-test-relay"), "输出里没有 key：{out}");
@@ -1088,7 +1088,7 @@ fn idle_run_stops_only_after_output() {
     std::fs::remove_file(rig.fake.parent().unwrap().join("agent.pid")).unwrap();
     rig.mode("quiet");
     assert_eq!(rig.board(&["dispatch", "2", "--host", "mbp"]).code, 0);
-    wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "claude-mbp/opus-5.5");
+    wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "mbp/opus-5.5");
     let quiet = rig.pid("agent.pid");
     std::thread::sleep(Duration::from_secs(12));
     assert!(running(quiet), "一行都没输出过的派发不受「没输出多久算卡住」影响");
@@ -1141,8 +1141,8 @@ fn pause_all_and_stop_all_from_ui() {
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
     assert_eq!(rig.board(&["dispatch", "2", "--host", "desk"]).code, 0);
-    wait_until("#1 开始", Duration::from_secs(15), || rig.show(1)["holder"] == "claude-mbp/opus-5.5");
-    wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "claude-desk/opus-5.5");
+    wait_until("#1 开始", Duration::from_secs(15), || rig.show(1)["holder"] == "mbp/opus-5.5");
+    wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "desk/opus-5.5");
 
     // 全部暂停：两台都暂停接单，在跑的不受影响
     let hosts = rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": true }));
@@ -1171,7 +1171,7 @@ fn pause_all_and_stop_all_from_ui() {
 
     // 恢复接单后，排队的接着开始
     rig.ui_post("/api/hosts/pause-all", serde_json::json!({ "paused": false }));
-    wait_until("#3 开始", Duration::from_secs(15), || rig.show(3)["holder"] == "claude-mbp/opus-5.5");
+    wait_until("#3 开始", Duration::from_secs(15), || rig.show(3)["holder"] == "mbp/opus-5.5");
 
     let (code, out) = stop(a);
     assert_eq!(code, 0, "{out}");
@@ -1718,7 +1718,7 @@ fn host_fetches_and_starts_the_agent_in_a_fresh_worktree() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let d1 = r.json()["id"].as_i64().unwrap();
     wait_until("#1 交审", Duration::from_secs(20), || ended(&rig.show(1), "已交审"));
-    let wt = rig.ws().join("default.wt").join("claude-mbp-opus-5.5");
+    let wt = rig.ws().join("default.wt").join("mbp-opus-5.5");
     assert_eq!(std::fs::read_to_string(wt.join("AGENTS.md")).unwrap(), "v2\n", "worktree 停在刚拉下来的提交上");
     assert_eq!(std::fs::read_to_string(proj.join("AGENTS.md")).unwrap(), "v1\n", "项目主目录不动");
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
