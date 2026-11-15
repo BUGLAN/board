@@ -9,8 +9,8 @@
 //!   保留别的配置、注释和顺序
 //! - pi：`~/.pi/agent/models.json` 的 `providers.board-<供应商>`（`api`、`apiKey`、`baseUrl`、`models`）和
 //!   `~/.pi/agent/settings.json` 的 `defaultProvider`、`defaultModel`（有强度时还有 `defaultThinkingLevel`）
-//! - dsh：`~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里加一条 `board-<供应商>` 路由（标了强度的模型写上
-//!   `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`
+//! - dsh：`~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里加一条 `board-<供应商>` 路由（标了强度的模型按
+//!   DSH 的「档位: 线上写法」对象写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`
 //! - 配置文件里新加的 agent、WSL 里的 agent：不支持，状态写「不支持」
 //!
 //! 写之前检查：强度不在这个模型标的档位里（或这个 agent 写不了）就不写强度，结果里记下没写的那一档（`dropped`）；
@@ -537,10 +537,19 @@ fn apply_dsh(patch: &Path, env_file: &Path, p: &Provider, endpoint: &providers::
     ];
     for m in &p.models {
         block.push(format!("{}- id: {}", " ".repeat(pind + 4), yaml_str(m)));
-        // 模型标了的强度、dsh 能写的：写上 reasoningEfforts（没标的不写，dsh 就不传强度）
+        // 模型标了的强度、dsh 能写的：写上 reasoningEfforts（没标的不写，dsh 就不传强度）。
+        // dsh 的 reasoningEfforts 是「档位: 线上写法」的对象，不是数组；off 留空表示不传参数。
         let ok = providers::writable_efforts("dsh", p, m);
-        if !ok.is_empty() {
-            block.push(format!("{}reasoningEfforts: [{}]", " ".repeat(pind + 6), ok.iter().map(|x| yaml_str(x)).collect::<Vec<_>>().join(", ")));
+        // 只有 off 时 dsh 会认为「没有可用的思考档位」而拒绝整条配置：干脆不写，按非推理模型处理。
+        if ok.iter().any(|e| e != "off") {
+            block.push(format!("{}reasoningEfforts:", " ".repeat(pind + 6)));
+            for e in &ok {
+                if e == "off" {
+                    block.push(format!("{}\"off\":", " ".repeat(pind + 8)));
+                } else {
+                    block.push(format!("{}{}: {}", " ".repeat(pind + 8), yaml_str(e), yaml_str(e)));
+                }
+            }
         }
     }
     block.push(format!("{}streamIdleTimeoutMs: 600000", " ".repeat(pind + 2)));
@@ -727,18 +736,25 @@ mod tests {
         let (patch, env) = (d.path().join("cordis.patch.yml"), d.path().join(".env"));
         std::fs::write(&env, "OTHER=1\nBOARD_PROVIDER_OLD_API_KEY=sk-old\n").unwrap();
         let files = Files::Dsh { patch: patch.clone(), env: env.clone() };
-        let out = sync(&[provider("new-api")], &[target("dsh", ("new-api", "model-b", "max"), files.clone())], &[]);
+        let mut p = provider("new-api");
+        p.efforts.insert("model-b".into(), vec!["off".into(), "low".into(), "high".into(), "max".into()]);
+        let out = sync(&[p.clone()], &[target("dsh", ("new-api", "model-b", "max"), files.clone())], &[]);
         assert_eq!(out.states[0].state, "synced", "{:?}", out.states[0]);
         let text = std::fs::read_to_string(&patch).unwrap();
         assert!(text.contains("board-new-api:") && text.contains("apiKeyEnv: BOARD_PROVIDER_NEW_API_API_KEY"), "{text}");
-        assert!(text.contains("- id: \"model-b\"\n            reasoningEfforts: [\"low\", \"high\", \"max\"]"), "标了强度的模型写上 reasoningEfforts：{text}");
+        assert!(
+            text.contains(
+                "- id: \"model-b\"\n            reasoningEfforts:\n              \"off\":\n              \"low\": \"low\"\n              \"high\": \"high\"\n              \"max\": \"max\""
+            ),
+            "标了强度的模型写成档位到线上写法的对象：{text}"
+        );
         assert!(!text.contains("- id: \"model-a\"\n            reasoningEfforts"), "没标的不写：{text}");
         assert!(text.contains("reasoningEffort: max") && text.contains("model: \"model-b\""), "{text}");
         let e = std::fs::read_to_string(&env).unwrap();
         assert!(e.contains("OTHER=1") && e.contains("BOARD_PROVIDER_NEW_API_API_KEY=sk-secret-1234") && !e.contains("sk-old"), "{e}");
         assert_eq!(current(&files), Some(("model-b".into(), "max".into())));
         // 再写一次：没有变化
-        let out = sync(&[provider("new-api")], &[target("dsh", ("new-api", "model-b", "max"), files)], &[]);
+        let out = sync(&[p], &[target("dsh", ("new-api", "model-b", "max"), files)], &[]);
         assert!(out.changes.is_empty(), "{:?}", out.changes);
     }
 
