@@ -5,7 +5,6 @@ import type { Dispatch, HostAgent, HostInfo, ProviderView, SyncResult } from './
 
 const view: ProviderView = {
   providers: [{ name: 'p1', endpoints: [{ interface: 'anthropic', url: 'https://x' }], models: ['m1'], efforts: { m1: ['high'] } }],
-  agents: [{ agent: 'claude', provider: 'p1', model: 'm1', effort: 'high' }],
   meta: [{ id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'high', 'max'] }],
 };
 const result = (x: Partial<SyncResult> = {}): SyncResult => ({
@@ -16,7 +15,7 @@ const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   mcp: { state: 'synced', count: 2, agents: ['Claude Code', 'Codex'], replaced: [] },
   ...x,
 });
-const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', run_mode: 'server', ...x });
+const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', run_mode: 'own', run_provider: 'p1', run_model: 'm1', run_effort: 'high', ...x });
 const host = (x: Partial<HostInfo> = {}): HostInfo =>
   ({ id: 1, name: 'win2', os: 'Windows 11', online: true, version: '0.2.0', max: 3, perSession: 4, paused: false, auto: true, rules: [{ op: 'in', labels: ['x'], agent: 'claude' }], windows: [[0, 1440]], agents: [claude()], dirs: [], syncSkills: true, syncMcp: true, sync: { able: true, last: result() }, ...x }) as HostInfo;
 const NOW = 61_000;
@@ -34,12 +33,13 @@ describe('机器详情', () => {
     expect(acceptSummary(host({ auto: false }), 0)).toBe('只做派给它的卡 · 最多 3 个会话 · 一个会话 4 张');
   });
 
-  it('配置写进去没有：已写入、正在写入、不改、没配、离线、写入失败', () => {
+  it('配置写进去没有：已写入、正在写入、不改、没有要写的、离线、写入失败', () => {
     const line = (h: HostInfo, a = h.agents[0]) => configLine(h, a, view, NOW).text;
     expect(line(host())).toBe('已写入 p1 · m1 · 强度 high · 1 分钟前');
     expect(line(host({ sync: { able: true, ask: { id: 2, key: 'k2', by: 'me', at: 1 }, last: result() } }))).toBe('正在写入 p1 · m1 · 强度 high…');
     expect(line(host({ agents: [claude({ run_mode: 'off' })] }))).toBe('不改：Board 不碰它的配置文件');
-    expect(configLine(host(), claude(), { ...view, agents: [] }, NOW).text).toBe('服务器上没给它配供应商：不写');
+    // 旧版 board host 报的「没配」
+    expect(line(host({ sync: { able: true, last: result({ agents: [{ agent: 'claude', state: 'none' }] }) } }))).toBe('没有要写的供应商：不写');
     expect(line(host({ online: false, sync: { able: true, ask: { id: 2, key: 'k2', by: 'me', at: 1 } } }))).toBe('机器离线：上线后写入 p1 · m1 · 强度 high');
     const bad = configLine(host({ sync: { able: true, last: result({ agents: [{ agent: 'claude', state: 'failed', why: '文件解析不了' }] }) } }), claude(), view, NOW);
     expect(bad).toEqual({ tone: 'bad', text: '写入失败：文件解析不了', retry: true });

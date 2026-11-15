@@ -1,7 +1,7 @@
 /* ==========================================================================
    机器详情（机器详情与配置同步重构）：界面上用到的纯函数
    - 一个 agent 正不正常（agentHealth）：没找到、看不到 board-skills、配置没写进去、自检没过；页签上的数字按它数
-   - 一个 agent 的配置写进去没有（configLine）：已写入 / 正在写入 / 不改 / 服务器上没给它配 / 机器离线 / 写入失败
+   - 一个 agent 的配置写进去没有（configLine）：已写入 / 正在写入 / 不改 / 机器离线 / 写入失败
    - skills、MCP 各一行（skillsLine、mcpLine）：用服务器的写了几个、写进了哪里；不改时写 Board 不碰
    - 工作空间只列例外（workspaceExceptions）：--dir 单独指定的、克隆失败的、不是 git 仓库的；还没建的项目并进一行（laterProjects）
    - 今天交审几张、异常退出几次（todayCounts）
@@ -47,10 +47,9 @@ export interface ConfigLine {
   retry?: boolean;
 }
 
-/** 这个 agent 的配置写进去没有：已写入 <供应商> · <模型> · <强度> · 时间 / 正在写入… / 不改 / 服务器上没给它配 / 机器离线 / 写入失败 */
+/** 这个 agent 的配置写进去没有：已写入 <供应商> · <模型> · <强度> · 时间 / 正在写入… / 不改 / 机器离线 / 写入失败 */
 export function configLine(h: HostInfo, a: HostAgent, view: ProviderView | null, now: number, pick: RunPick = runPick(view, a)): ConfigLine {
   if (pick.mode === 'off') return { tone: 'muted', text: '不改：Board 不碰它的配置文件' };
-  if (pick.none) return { tone: 'muted', text: '服务器上没给它配供应商：不写' };
   if (!h.sync?.able) return { tone: 'muted', text: `board ${h.version || '?'} 是旧版：按老办法同步，升级后在这里看结果` };
   const st = h.sync.last?.agents.find(s => s.agent === a.id);
   if (!h.online && (h.sync.ask || !st)) return { tone: 'muted', text: `机器离线：上线后写入 ${runWords(pick)}` };
@@ -58,7 +57,7 @@ export function configLine(h: HostInfo, a: HostAgent, view: ProviderView | null,
   if (!st) return { tone: 'busy', text: '等 board host 写入…' };
   if (st.state === 'failed') return { tone: 'bad', text: `写入失败：${st.why ?? '原因没报上来'}`, retry: true };
   if (st.state === 'unsupported') return { tone: 'muted', text: `不支持：${st.why ?? '这个 agent 不能按服务器上的配置写'}` };
-  if (st.state === 'none') return { tone: 'muted', text: '服务器上没给它配供应商：不写' };
+  if (st.state === 'none') return { tone: 'muted', text: '没有要写的供应商：不写' };
   if (st.state === 'off') return { tone: 'muted', text: '不改：Board 不碰它的配置文件' };
   const words = [st.provider, st.model, st.effort ? `强度 ${st.effort}` : st.dropped ? '不写强度' : '强度默认'].filter(Boolean).join(' · ');
   return { tone: 'ok', text: `已写入 ${words} · ${since(h.sync.last!.at, now)}` };

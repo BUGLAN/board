@@ -9,7 +9,7 @@ export type HostPatch = Parameters<typeof api.updateHost>[1];
 export type Save = (p: HostPatch) => void;
 
 /** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则和兜底算同一项，启动环境按 agent 分，
-    一个 agent 的模型（怎么配、供应商、模型、强度）算一项，按发出的先后一个接一个存 */
+    一个 agent 的模型（不改 / 指定：供应商、模型、强度、接口）算一项，按发出的先后一个接一个存 */
 const fieldOf = (p: HostPatch) =>
   p.env
     ? `env:${p.env.agent}`
@@ -27,7 +27,7 @@ const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
   if (p.resume === a.id) return { ...a, tripped: false };
   if (p.run?.agent === a.id) {
     const r = p.run;
-    if (r.mode !== 'own') return { ...a, run_mode: r.mode, run_provider: null, run_model: null, run_effort: null };
+    if (r.mode !== 'own') return { ...a, run_mode: r.mode, run_provider: null, run_model: null, run_effort: null, run_protocol: null };
     const provider = r.provider ?? a.run_provider ?? null;
     const same = provider === a.run_provider;
     return {
@@ -36,6 +36,7 @@ const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
       run_provider: provider,
       run_model: r.model !== undefined ? r.model || null : same ? a.run_model : null,
       run_effort: r.effort !== undefined ? r.effort || null : same ? a.run_effort : null,
+      run_protocol: r.protocol !== undefined ? r.protocol || null : same ? a.run_protocol : null,
     };
   }
   return a;

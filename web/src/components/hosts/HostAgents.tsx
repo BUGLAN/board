@@ -2,8 +2,9 @@
    机器详情「agent」页：每个 agent 一张卡，控件直接摆出来
    - 顶部一句：写进这台机器上 agent 自己的配置文件……；右边「自检 x 前」「全部自检」
    - 卡片：标题行（图标、名称、默认、版本、右上角状态：正常 · 自检 x 前 / 自检没过 / 配置没写进去 / 缺 board-skills，有问题描边变黄）、
-     写入状态一行（已写入 / 正在写入 / 不改 / 服务器上没给它配 / 机器离线 / 写入失败 + 重试）、原因一行（+ 再试一次）、
-     启动环境（每项带版本，没找到的置灰）、模型（用服务器的 / 不改 / 单独配置：供应商、模型、强度）、设为默认、自检这一个
+     写入状态一行（已写入 / 正在写入 / 不改 / 机器离线 / 写入失败 + 重试）、原因一行（+ 再试一次）、
+     启动环境（每项带版本，没找到的置灰）、模型（一个下拉：不改 / 供应商 · 模型；agent 认几种接口、供应商也给了几种时多一个接口；强度）、
+     下面一句写用哪种接口连哪个地址；设为默认、自检这一个
    - 没找到的 agent 卡片置灰，写「这台机器上没找到」
    写操作：模型、启动环境、默认 agent 是设置项（当帧生效，旁边转圈）；自检、重试要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
@@ -11,12 +12,12 @@ import { useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
 import { envName, selftestBusy, since } from '../../lib/hosts';
-import { metaOf, providersFor, RUN_MODES, runPick, runWords, writableEfforts } from '../../lib/providers';
-import type { HostAgent, HostInfo, ProviderView, RunMode } from '../../lib/types';
+import { interfaceName, metaOf, protocolChoices, providersFor, runPick, writableEfforts } from '../../lib/providers';
+import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic } from '../../store/data';
 import { toastError } from '../../store/ui';
-import { Segmented, Select, Sync, Tip, type SyncState } from '../bits';
+import { Select, Sync, Tip, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 import type { Save } from './Saver';
@@ -157,22 +158,33 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
   );
 }
 
-/** 一个 agent 的控件：启动环境、模型（用服务器的 / 不改 / 单独配置）、设为默认、自检这一个 */
+/** 下拉里一项「供应商 · 模型」的值 */
+const pickValue = (provider: string, model: string) => `${provider}\u0001${model}`;
+
+/** 一个 agent 的控件：启动环境、模型（不改 / 供应商 · 模型，接口、强度）、设为默认、自检这一个 */
 function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a: HostAgent; view: ProviderView | null; save: Save; sync: SyncMap; def: boolean; testing: boolean; ask: ReturnType<typeof useAsk> }) {
   const meta = metaOf(view, a.id);
   const p = runPick(view, a);
+  const off = p.mode === 'off';
   const fits = providersFor(view, a.id);
   const prov = view?.providers.find(x => x.name === p.provider);
   const efforts = writableEfforts(meta, prov, p.model);
+  const protos = off ? [] : protocolChoices(view, a.id, p.provider);
   const name = (id: string) => envName(h, id) ?? id;
-  const setMode = (m: RunMode) => {
-    if (m === p.mode) return;
-    if (m !== 'own') return save({ run: { agent: a.id, mode: m } });
-    // 单独配置：先给一个接口对得上的供应商（服务器上给它配的那个，没有时第一个），之后再改
-    const shared = view?.agents.find(x => x.agent === a.id)?.provider;
-    const first = fits.find(x => x.name === shared) ?? fits[0];
-    if (first) save({ run: { agent: a.id, mode: 'own', provider: first.name, model: '', effort: '' } });
+  /** 指定一组。接口：带了用它；没带时同一个供应商留着原来的（新供应商不给那种了就回到第一个对得上的） */
+  const set = (provider: string, model: string, effort: string, protocol?: string) => {
+    const keep = protocol ?? (provider === a.run_provider && protocolChoices(view, a.id, provider).some(e => e.interface === a.run_protocol) ? (a.run_protocol ?? '') : '');
+    save({ run: { agent: a.id, mode: 'own', provider, model, effort, protocol: keep } });
   };
+  /** 换模型时强度：新模型也支持就留着 */
+  const keepEffort = (provider: string, model: string) => (writableEfforts(meta, view?.providers.find(x => x.name === provider), model).includes(p.effort) ? p.effort : '');
+  const hint = off
+    ? `Board 不碰它的配置文件${a.model ? `：本机现在是 ${a.model}${a.effort ? ` · 强度 ${a.effort}` : ''}` : ''}`
+    : p.gone
+      ? `供应商 ${p.provider} 在服务器上已经删了：换一个`
+      : p.ep
+        ? `用 ${interfaceName(p.ep.interface)} 接口连 ${p.ep.url}，写进这台机器上它的配置文件`
+        : `${p.provider} 没有 ${a.name} 认的接口：换一个`;
   return (
     <div className="hd-edit">
       <span className="hd-k">启动环境</span>
@@ -205,29 +217,36 @@ function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a:
           <span className="hd-v hd-col">
             <span className="hp-ctl">
               <Sync s={sync[`run:${a.id}`]} />
-              <Tip text={!fits.length && p.mode !== 'own' ? '服务器上还没有接口对得上的供应商：不能单独配置' : ''}>
+              <Tip text={!fits.length && off ? '服务器上还没有接口对得上的供应商：先在「共用配置 → 模型供应商」里加一个' : ''}>
                 <span>
-                  <Segmented<RunMode> value={p.mode} options={RUN_MODES.map(([k, v]) => [k, v, k === 'own' && !fits.length && p.mode !== 'own'] as [RunMode, string, boolean])} onChange={setMode} />
+                  <Select
+                    className="ha-sel wide"
+                    value={off ? '' : pickValue(p.provider, p.model)}
+                    placeholder={p.gone ? `${p.provider} · ${p.model}（已删）` : undefined}
+                    options={[{ value: '', label: '不改' }, ...fits.flatMap(x => x.models.map(m => ({ value: pickValue(x.name, m), label: `${x.name} · ${m}` })))]}
+                    onChange={v => {
+                      if (!v) return save({ run: { agent: a.id, mode: 'off' } });
+                      const [provider, model] = v.split('\u0001');
+                      set(provider, model, keepEffort(provider, model));
+                    }}
+                    aria-label={`${a.name} 用哪个模型`}
+                  />
                 </span>
               </Tip>
-            </span>
-            {p.mode === 'own' && (
-              <span className="hd-own">
-                <Select
-                  className="ha-sel"
-                  value={p.provider}
-                  placeholder={p.gone ? `${p.provider}（已删）` : '选供应商'}
-                  options={fits.map(x => ({ value: x.name, label: x.name }))}
-                  onChange={v => save({ run: { agent: a.id, mode: 'own', provider: v, model: '', effort: '' } })}
-                  aria-label="供应商"
-                />
-                <Select
-                  className="ha-sel"
-                  value={p.model}
-                  options={(prov?.models ?? []).map(m => ({ value: m, label: m }))}
-                  onChange={v => save({ run: { agent: a.id, mode: 'own', provider: p.provider, model: v, effort: writableEfforts(meta, prov, v).includes(p.effort) ? p.effort : '' } })}
-                  aria-label="模型"
-                />
+              {protos.length > 1 && (
+                <Tip text={`${a.name} 认这几种，${p.provider} 也都给了：选用哪种`}>
+                  <span>
+                    <Select
+                      className="ha-sel"
+                      value={p.ep?.interface ?? ''}
+                      options={protos.map(e => ({ value: e.interface, label: `接口 ${interfaceName(e.interface)}` }))}
+                      onChange={v => set(p.provider, p.model, p.effort, v)}
+                      aria-label={`${a.name} 用哪种接口`}
+                    />
+                  </span>
+                </Tip>
+              )}
+              {!off && (
                 <Tip text={efforts.length ? '只列这个模型支持、这个 agent 也能写的档位' : '供应商里没给这个模型标强度：不能选'}>
                   <span>
                     <Select
@@ -235,24 +254,14 @@ function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a:
                       value={efforts.includes(p.effort) ? p.effort : ''}
                       disabled={!efforts.length}
                       options={[{ value: '', label: '强度默认' }, ...efforts.map(e => ({ value: e, label: `强度 ${e}` }))]}
-                      onChange={v => save({ run: { agent: a.id, mode: 'own', provider: p.provider, model: p.model, effort: v } })}
-                      aria-label="强度"
+                      onChange={v => set(p.provider, p.model, v)}
+                      aria-label={`${a.name} 的强度`}
                     />
                   </span>
                 </Tip>
-              </span>
-            )}
-            <span className="ha-hint">
-              {p.mode === 'off'
-                ? 'Board 不碰它的配置文件'
-                : p.mode === 'own'
-                  ? p.gone
-                    ? `供应商 ${p.provider} 在服务器上已经删了：换一个`
-                    : '只给这台机器：写进它的配置文件，服务器上的不管'
-                  : p.none
-                    ? '服务器上没给它配供应商：不写（在共用配置里改）'
-                    : `服务器上：${runWords(p)}（在共用配置里改）`}
+              )}
             </span>
+            <span className="ha-hint">{hint}</span>
             {p.warn && (
               <span className="ha-hint hd-warn">
                 <Icon name="alert" />

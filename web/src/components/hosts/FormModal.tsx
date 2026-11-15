@@ -38,7 +38,10 @@ export function FormModal({ title, onCancel, children, foot }: { title: string; 
               <Icon name="close" />
             </button>
           </div>
-          <div className="fm-body">{children}</div>
+          {/* 正文固定高度、一直显示滚动条（不用全局的浮层滚动条：它只在滚动时出现，看不出能滚） */}
+          <div className="fm-body" data-scrollbar="none">
+            {children}
+          </div>
           <div className="fm-foot">{foot}</div>
         </div>
       </div>

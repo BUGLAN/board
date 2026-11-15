@@ -14,6 +14,7 @@ import { HostDetail, type DetailTab } from './HostDetail';
 
 export function HostModal() {
   const sel = useUI(s => s.host);
+  const want = useUI(s => s.hostTab);
   const ws = useData(s => s.ws);
   const hosts = hostsOf(ws);
   const [last, setLast] = useState<string | null>(sel);
@@ -31,6 +32,13 @@ export function HostModal() {
   useEffect(() => {
     if (!sel) setDetailTab('overview');
   }, [sel]);
+  // 指定了页签（从供应商卡片点进来）：到那一页，用过就清掉
+  useEffect(() => {
+    if (sel && want) {
+      setDetailTab(want);
+      useUI.setState({ hostTab: null });
+    }
+  }, [sel, want]);
   const i = hosts.findIndex(x => x.name === id);
   const close = () => openHost(null);
   const step = (d: number) => {

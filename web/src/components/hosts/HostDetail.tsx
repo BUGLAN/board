@@ -51,7 +51,7 @@ export function HostDetail({
   const server = useServerVersion();
   const behind = !!server && !!h.version && versionLt(h.version, server);
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
-  // 服务器上的供应商和每个 agent 的分配：agent 页的「用服务器的」写什么、单独配置的下拉
+  // 服务器上的供应商：agent 页「模型」下拉里列的、写进配置文件的地址
   const [view, setView] = useState<ProviderView | null>(null);
   const rev = ws?.rev;
   // 最近：打开时和每次有变化时重新取

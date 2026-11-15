@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentProvider, Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
 
 declare global {
   interface Window {
@@ -212,8 +212,8 @@ export const api = {
       cronOn?: boolean;
       cron?: string[];
       env?: { agent: string; env: string };
-      /** 一个 agent 的模型怎么配：用服务器的 / 不改 / 单独配置（供应商、模型、强度；模型空 = 第一个，强度空 = 不写） */
-      run?: { agent: string; mode: RunMode; provider?: string; model?: string; effort?: string };
+      /** 一个 agent 的模型怎么配：不改 / 指定（供应商、模型、强度、接口；模型空 = 第一个，强度空 = 不写，接口空 = 第一个对得上的） */
+      run?: { agent: string; mode: RunMode; provider?: string; model?: string; effort?: string; protocol?: string };
       /** skills、MCP 用服务器的（true）还是不改（false） */
       syncSkills?: boolean;
       syncMcp?: boolean;
@@ -247,7 +247,6 @@ export const api = {
   providers: () => req<ProviderView>('GET', '/api/providers'),
   putProvider: (p: Provider) => req<Provider>('POST', '/api/providers', p),
   removeProvider: (name: string) => req('DELETE', `/api/providers/${q(name)}`),
-  putProviderAgent: (a: AgentProvider) => req<AgentProvider>('POST', '/api/providers/agents', a),
   /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */
   providerModels: (body: { name?: string; endpoints: ProviderEndpoint[]; apiKey?: string | null }) => req<{ models: string[]; from: string }>('POST', '/api/providers/models', body),
   /** 同步配置写入失败后「重试」：重新下发同步请求 */

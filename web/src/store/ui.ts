@@ -153,6 +153,8 @@ interface UIState {
   boardSettings: { path: string; focus?: string } | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
+  /** 打开机器详情时要直接到的页签（从供应商卡片点进来到 agent 页）；弹窗用过就清掉 */
+  hostTab: 'overview' | 'agents' | 'settings' | null;
   /** 机器 Tab 主区：总览、对比、共用配置（选过的记在本机） */
   hostsView: HostsView;
   /** 回收站弹窗：哪块白板（路径）的回收站；null 是没打开 */
@@ -204,6 +206,7 @@ export const useUI = create<UIState>(() => ({
   textFile: null,
   boardSettings: null,
   host: null,
+  hostTab: null,
   hostsView: initialHostsView(),
   trash: null,
   dispatchOf: null,
@@ -304,7 +307,8 @@ export const openPicker = (req: PickerReq) => set({ picker: req });
 export const updatePicker = (selected: number[]) => set(s => (s.picker ? { picker: { ...s.picker, selected } } : {}));
 export const closePicker = () => set({ picker: null });
 
-export const openHost = (name: string | null) => set({ host: name });
+/** 打开 / 关掉（null）机器详情；tab 是要直接到的页签（不给时换机器留着原来的页签） */
+export const openHost = (name: string | null, tab?: UIState['hostTab']) => set({ host: name, hostTab: tab ?? null });
 /** 机器 Tab 主区切到总览、对比或共用配置 */
 export const setHostsView = (v: HostsView) => {
   pref.set('hosts.view', v);

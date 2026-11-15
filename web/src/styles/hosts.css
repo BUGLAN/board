@@ -969,7 +969,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .sc-providers, .sc-tpl { margin-top: 28px; }
 .sc-how { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-2); white-space: nowrap; cursor: help; }
 .sc-how svg { width: 13px; height: 13px; }
-/* 模型供应商（Providers.tsx）：一个供应商一张卡，上面是名称、地址、模型，下面是用它的 agent 和各台机器写没写进去 */
+/* 模型供应商（Providers.tsx）：一个供应商一张卡，上面是名称、地址、模型，底下「在用」按 agent 汇总，点开列出哪几台 */
 .pv-cards { display: flex; flex-direction: column; gap: 12px; }
 .pv-card { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
 .pv-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 4px 14px; }
@@ -980,43 +980,51 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .pv-k { flex: none; width: 15em; font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pv-line code { font: 11.5px var(--f-mono); color: var(--text-2); overflow-wrap: anywhere; }
 .pv-models { display: flex; flex-wrap: wrap; gap: 4px; }
-.pv-models code { padding: 0 6px; border-radius: var(--r-xs); background: var(--surface-3); }
-.pv-users { display: flex; flex-direction: column; padding: 4px 10px 10px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
-.pv-user { display: grid; grid-template-columns: 150px auto minmax(0, 1fr) 26px; align-items: center; gap: 10px; min-height: 42px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
-.pv-agent { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; }
-.pv-agent b { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pv-agent img.hp-logo { width: 18px; height: 18px; flex: none; }
-.pv-agent > b:first-child { flex: none; display: grid; place-items: center; min-width: 22px; height: 18px; padding: 0 3px; border-radius: 5px; font: 700 10px var(--f-mono); color: #18181A; background: var(--ac); }
-.pv-ctl { display: inline-flex; align-items: center; gap: 6px; }
-.input.sel.pv-sel { height: 28px; min-width: 120px; max-width: 220px; padding: 0 9px; font-size: 12px; }
-.input.sel.pv-sel.sm { min-width: 96px; }
-.pv-cells { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.pv-cells em, .pv-none { margin: 0; font-style: normal; font-size: 12px; color: var(--text-3); }
-.pv-none { padding: 10px 0 4px; }
-.pv-x { opacity: .55; }
-.pv-user:hover .pv-x, .pv-x:focus-visible { opacity: 1; }
-.input.sel.pv-add { align-self: flex-start; height: 28px; margin-top: 8px; padding: 0 10px; font-size: 12px; background: transparent; box-shadow: inset 0 0 0 1px var(--line-2); }
-.pv-add .sel-v { color: var(--text-2); }
+.pv-models code { display: inline-flex; align-items: baseline; gap: 6px; padding: 0 6px; border-radius: var(--r-xs); background: var(--surface-3); }
+.pv-models small { font: 10.5px var(--f-ui, inherit); color: var(--text-3); }
+/* 「在用」：一个 agent 一枚（图标、名称、几台、状态点），点开列出哪几台 */
+.pv-use { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.pv-use > .pv-k { width: auto; padding-top: 5px; }
+.pv-use-body { flex: 1; min-width: 0; }
+.pv-none { font-size: 12px; color: var(--text-3); line-height: 26px; }
+.pv-ags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.pv-ag { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 6px; border-radius: 999px; font-size: 12px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background-color var(--dur-1), box-shadow var(--dur-1); }
+.pv-ag:hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pv-ag.on { background: var(--surface-3); box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.pv-ag img.hp-logo { width: 16px; height: 16px; flex: none; }
+.pv-ag > b:first-child { flex: none; display: grid; place-items: center; min-width: 20px; height: 16px; padding: 0 3px; border-radius: 4px; font: 700 9px var(--f-mono); color: #18181A; background: var(--ac); }
+.pv-ag > b { font-weight: 500; color: var(--text); }
+.pv-ag-n { font-size: 11px; color: var(--text-3); }
+.pv-ag.k-failed, .pv-ag.k-unsupported { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); }
+.pv-ml { display: flex; flex-direction: column; margin-top: 6px; border-radius: var(--r-sm); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.pv-mr { display: grid; grid-template-columns: 8px minmax(48px, auto) auto auto auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 32px; padding: 4px 10px; font-size: 12px; text-align: left; border-top: 1px solid var(--line); }
+.pv-mr:first-child { border-top: 0; }
+.pv-mr:hover { background: var(--surface-2); }
+.pv-mr b { font-weight: 600; }
+.pv-mr code { font: 11.5px var(--f-mono); color: var(--text-2); }
+.pv-if { padding: 1px 7px; border-radius: var(--r-xs); font-size: 11px; font-weight: 500; color: var(--text-2); background: var(--surface-3); white-space: nowrap; }
+.pv-mr-e { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.pv-mr-s { min-width: 0; font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-mr.k-synced .pv-mr-s { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.pv-mr.k-failed .pv-mr-s, .pv-mr.k-unsupported .pv-mr-s { color: var(--danger-text); }
+.pv-mr-go { display: inline-flex; align-items: center; gap: 2px; font-size: 11.5px; color: var(--text-3); opacity: 0; transition: opacity var(--dur-1); }
+.pv-mr-go svg { width: 12px; height: 12px; }
+.pv-mr:hover .pv-mr-go, .pv-mr:focus-visible .pv-mr-go { opacity: 1; }
 /* 一台机器的写入情况：小胶囊，前面一个状态标记 */
 .pv-cell { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: 999px; font-size: 11.5px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background-color var(--dur-1), box-shadow var(--dur-1); }
 .pv-cell:hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
 .pv-cell b { font-weight: 600; color: var(--text); }
 .pv-cell-mark { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
-.pv-cell.k-synced .pv-cell-mark { background: var(--ok); }
+.pv-cell.k-synced .pv-cell-mark, .pv-ag.k-synced .pv-cell-mark, .pv-mr.k-synced .pv-cell-mark { background: var(--ok); }
 .pv-cell.k-synced span { color: color-mix(in oklab, var(--ok), var(--ink)); }
-.pv-cell.k-pending .pv-cell-mark { width: 8px; height: 8px; background: none; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .9s linear infinite; }
-.pv-cell.k-local .pv-cell-mark { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.pv-cell.k-pending .pv-cell-mark, .pv-ag.k-pending .pv-cell-mark, .pv-mr.k-pending .pv-cell-mark { width: 8px; height: 8px; background: none; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .9s linear infinite; }
+.pv-cell.k-local .pv-cell-mark, .pv-ag.k-offline .pv-cell-mark, .pv-mr.k-offline .pv-cell-mark { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
 .pv-cell.k-failed, .pv-cell.k-unsupported { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); }
-.pv-cell.k-failed .pv-cell-mark, .pv-cell.k-unsupported .pv-cell-mark { background: var(--danger); }
+.pv-cell.k-failed .pv-cell-mark, .pv-cell.k-unsupported .pv-cell-mark,
+.pv-ag.k-failed .pv-cell-mark, .pv-ag.k-unsupported .pv-cell-mark, .pv-mr.k-failed .pv-cell-mark, .pv-mr.k-unsupported .pv-cell-mark { background: var(--danger); }
 .pv-cell.k-failed span, .pv-cell.k-unsupported span { color: var(--danger-text); }
 .pv-cell.k-offline { opacity: .7; }
-:root[data-motion="reduced"] .pv-cell.k-pending .pv-cell-mark { animation: none; }
-.pv-idle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 12px 2px 0; font-size: 12px; }
-.pv-idle-k, .pv-idle-hint { color: var(--text-3); }
-.pv-idle-hint { font-size: 11.5px; }
-.pv-idle-a { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px 0 6px; border-radius: 999px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
-.pv-idle-a img.hp-logo { width: 14px; height: 14px; }
-.pv-idle-a > b { display: grid; place-items: center; min-width: 18px; height: 14px; padding: 0 2px; border-radius: 3px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
+:root[data-motion="reduced"] :is(.pv-cell, .pv-ag, .pv-mr).k-pending .pv-cell-mark { animation: none; }
 .pv-old { display: flex; align-items: flex-start; gap: 6px; margin: 10px 2px 0; font-size: 12px; line-height: 1.6; color: var(--text-3); }
 .pv-old > svg { flex: none; width: 13px; height: 13px; margin-top: 3px; color: var(--warn); }
 .pv-old em { font-style: normal; font-family: var(--f-mono); font-size: 11px; }
@@ -1090,10 +1098,16 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 /* 共用配置的表单弹窗（FormModal：模型供应商、MCP 服务器同一种样子）：标题；正文分段（小标题 + 一句说明），字段标签在上；磁贴；底部一行 */
 .fm-scrim { z-index: 118; }
 .fm-wrap { position: fixed; inset: 0; z-index: 119; display: grid; place-items: center; padding: 24px; pointer-events: none; }
-.fm { pointer-events: auto; display: flex; flex-direction: column; width: min(660px, 100%); max-height: calc(100vh - 48px); border-radius: var(--r-lg); background: var(--surface); box-shadow: 0 30px 80px -24px rgba(0, 0, 0, .65), inset 0 0 0 1px var(--line-2); overflow: hidden; animation: hp-in var(--dur-3) var(--spring-soft, var(--ease-out)); }
+.fm { pointer-events: auto; display: flex; flex-direction: column; width: min(660px, 100%); height: min(720px, calc(100vh - 48px)); border-radius: var(--r-lg); background: var(--surface); box-shadow: 0 30px 80px -24px rgba(0, 0, 0, .65), inset 0 0 0 1px var(--line-2); overflow: hidden; animation: hp-in var(--dur-3) var(--spring-soft, var(--ease-out)); }
 .fm-head { display: flex; align-items: center; gap: 8px; padding: 14px 12px 10px 20px; }
 .fm-head b { flex: 1; font-family: var(--f-display); font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
-.fm-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 0 20px 6px; }
+.fm-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 0 12px 6px 20px; scrollbar-width: auto; scrollbar-gutter: stable; }
+/* 表单正文和「获取模型」的列表：一直显示的细滚动条（全局把原生滚动条藏了、浮层滚动条只在滚动时出现，看不出能滚） */
+.fm-body::-webkit-scrollbar, .fm-body .fm-picker-list::-webkit-scrollbar { display: block; width: 8px; }
+.fm-body::-webkit-scrollbar-track, .fm-body .fm-picker-list::-webkit-scrollbar-track { background: transparent; }
+.fm-body::-webkit-scrollbar-thumb, .fm-body .fm-picker-list::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--text) 22%, transparent) padding-box; }
+.fm-body::-webkit-scrollbar-thumb:hover, .fm-body .fm-picker-list::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 38%, transparent); }
+.fm-body .fm-picker-list { scrollbar-width: auto; }
 .fm-sec { display: flex; flex-direction: column; gap: 10px; padding: 14px 0; border-top: 1px solid var(--line); }
 .fm-sec:first-child { border-top: 0; padding-top: 4px; }
 .fm-sec h4 { display: flex; align-items: center; gap: 8px; min-height: 26px; margin: 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
@@ -1229,8 +1243,9 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 }
 @media (max-width: 760px) {
   .pv-line { flex-direction: column; gap: 0; }
-  .pv-user { grid-template-columns: minmax(0, 1fr) 26px; }
-  .pv-ctl, .pv-cells { grid-column: 1 / -1; }
+  .pv-use { flex-direction: column; gap: 6px; }
+  .pv-mr { grid-template-columns: 8px auto minmax(0, 1fr); }
+  .pv-mr code, .pv-mr .pv-if, .pv-mr-e, .pv-mr-go { display: none; }
 }
 .sc-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sc-presets .hp-note { margin: 0 0 0 4px; }

@@ -206,20 +206,22 @@ export interface HostAgent {
   model?: string;
   /** 这个 agent 配置文件里现在的思考强度 */
   effort?: string;
-  /** 模型怎么配：server 用服务器的 | off 不改 | own 单独配置 */
+  /** 模型怎么配：off 不改 | own 指定 */
   run_mode?: RunMode | null;
-  /** 单独配置的供应商、模型、强度（run_mode 是 own 时） */
+  /** 指定的供应商、模型、强度（run_mode 是 own 时） */
   run_provider?: string | null;
   run_model?: string | null;
   run_effort?: string | null;
+  /** 指定用供应商的哪种接口（agent 认几种、供应商也给了几种时才要选）；空 = 供应商里第一个对得上的 */
+  run_protocol?: string | null;
   /** 机器设置里选的启动环境 */
   run_env?: string | null;
   /** 这个 agent 在这台机器上连续异常退出、已经暂停接单：点「恢复」才继续 */
   tripped?: boolean;
 }
 
-/** 一个 agent 的模型怎么配：用服务器的 / 不改（Board 不碰它的配置文件）/ 单独配置 */
-export type RunMode = 'server' | 'off' | 'own';
+/** 一个 agent 的模型怎么配：不改（Board 不碰它的配置文件）/ 指定（这台机器上用哪个供应商、模型、强度、接口） */
+export type RunMode = 'off' | 'own';
 
 /** 一个 agent 在一个启动环境里的检查结果 */
 export interface EnvCheck {
@@ -458,22 +460,10 @@ export interface Provider {
   source?: string;
 }
 
-/** 一个内置 agent 在共用配置里用哪个供应商、哪个模型、什么强度 */
-export interface AgentProvider {
-  agent: string;
-  /** 空 = 不管（不改配置文件） */
-  provider: string;
-  model: string;
-  /** 空 = agent 自己的默认 */
-  effort: string;
-  updatedAt?: number;
-  by?: string;
-}
-
 /** 一台机器上一个 agent 这次同步配置的结果 */
 export interface ProviderState {
   agent: string;
-  /** synced 已写入 | off 不改 | none 服务器上没给它配 | unsupported 不支持 | failed 写入失败 */
+  /** synced 已写入 | off 不改 | unsupported 不支持 | failed 写入失败 | none 旧版 board host 报的「服务器上没给它配」 */
   state: 'synced' | 'off' | 'none' | 'unsupported' | 'failed';
   /** 写进去的供应商、模型、强度（synced 时） */
   provider?: string;
@@ -492,10 +482,9 @@ export interface AgentMeta {
   efforts: string[];
 }
 
-/** 列表接口：供应商（打码）、每个内置 agent 的分配、内置 agent 的说明 */
+/** 列表接口：供应商（打码）、内置 agent 的说明 */
 export interface ProviderView {
   providers: Provider[];
-  agents: AgentProvider[];
   meta?: AgentMeta[];
 }
 

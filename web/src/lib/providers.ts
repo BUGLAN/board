@@ -3,23 +3,17 @@
    - 三种接口；内置 agent 认哪些接口、能写哪些强度从服务端取（ProviderView.meta，board-core 留一份）
    - 常用供应商的预填：真实接口地址和常用模型（API key 要自己填）
    - 一台机器上一个 agent 的写入情况（providerCell）、地址相同的接口并成一行（endpointLines）
-   - 一台机器上一个 agent 的配置文件要写成什么（runPick）：用服务器的 / 不改 / 单独配置
+   - 一台机器上一个 agent 的配置文件要写成什么（runPick）：不改 / 指定（供应商、模型、强度、接口）
+   - 供应商卡片底下的「在用」（usesOf、agentGroups）：按 agent 汇总哪几台机器用着它
    - 编辑表单：空白的一项、校验、整理成要保存的
    ========================================================================== */
-import type { AgentMeta, AgentProvider, HostAgent, HostInfo, Provider, ProviderEndpoint, ProviderView, RunMode } from './types';
+import type { AgentMeta, HostAgent, HostInfo, Provider, ProviderEndpoint, ProviderView, RunMode } from './types';
 
 /** 三种接口 */
 export const PROVIDER_INTERFACES: { id: ProviderEndpoint['interface']; name: string; short: string; placeholder: string }[] = [
   { id: 'anthropic', name: 'Anthropic Messages', short: 'Anthropic', placeholder: 'https://api.anthropic.com' },
   { id: 'openai-chat', name: 'OpenAI Chat Completions', short: 'OpenAI Chat', placeholder: 'https://api.openai.com/v1' },
   { id: 'openai-responses', name: 'OpenAI Responses', short: 'OpenAI Responses', placeholder: 'https://api.openai.com/v1' },
-];
-
-/** 一台机器上一个 agent 的模型怎么配 */
-export const RUN_MODES: [RunMode, string][] = [
-  ['server', '用服务器的'],
-  ['off', '不改'],
-  ['own', '单独配置'],
 ];
 
 /** 所有强度档位，从低到高（供应商里给模型标的只能是这几个，和服务端 ALL_EFFORTS 一致） */
@@ -86,8 +80,6 @@ export const PROVIDER_PRESETS: { name: string; label: string; endpoints: Provide
 
 export const blankProvider = (): Provider => ({ name: '', endpoints: [], apiKey: '', models: [], efforts: {} });
 
-export const blankAgentProvider = (agent: string): AgentProvider => ({ agent, provider: '', model: '', effort: '' });
-
 /** API key 的显示：只给末尾 4 位 */
 export const maskKey = (p: Pick<Provider, 'tail'>) => (p.tail ? `••••${p.tail}` : '••••');
 
@@ -124,7 +116,7 @@ export function toProviderSave(p: Provider): Provider {
 /* ------------------------------ 各机器的写入状态 ------------------------------ */
 
 /** 一台机器上一个 agent 的写入情况（界面上一个小胶囊）：
- *  old 旧版 board host 不按请求同步 · missing 没找到这个 agent · local 这台机器选了「不改」· none 没有要写的（服务器上没给它配）·
+ *  old 旧版 board host 不按请求同步 · missing 没找到这个 agent · local 这台机器选了「不改」· none 没有要写的（指定了却没有供应商）·
  *  offline 该写、机器离线 · synced 写进去的就是该写的 · failed / unsupported 上报的失败、不支持 · pending 正在写入 */
 export type ProviderCellKind = 'synced' | 'pending' | 'local' | 'failed' | 'unsupported' | 'offline' | 'old' | 'missing' | 'none';
 export type ProviderCell = { kind: ProviderCellKind; why?: string | null; provider?: string };
@@ -163,48 +155,72 @@ export function endpointLines(p: Pick<Provider, 'endpoints'>) {
   return [...m.entries()].map(([url, names]) => ({ url, names }));
 }
 
-/** 共用配置里一个内置 agent 的分配（没有时是「没配」） */
-export const sharedOf = (view: ProviderView | null, agent: string): AgentProvider => view?.agents.find(a => a.agent === agent) ?? blankAgentProvider(agent);
-
-/** 给一个 agent 换供应商：模型取新供应商的第一个，强度新模型支持就留着；换成「没配」时都清空 */
-export const assignProvider = (a: AgentProvider, provider: string, view: ProviderView): AgentProvider => {
-  const p = view.providers.find(x => x.name === provider);
-  const model = provider ? (p?.models[0] ?? '') : '';
-  const effort = provider && writableEfforts(metaOf(view, a.agent), p, model).includes(a.effort) ? a.effort : '';
-  return { agent: a.agent, provider, model, effort };
-};
-
 /* ------------------------------ 机器详情 ------------------------------ */
 
+/** 这个 agent 用这家供应商时能选的接口：agent 认的、供应商给了的（按供应商里的顺序，和 board host 一样） */
+export function protocolChoices(view: ProviderView | null, agent: string, provider: string): ProviderEndpoint[] {
+  const want = metaOf(view, agent)?.protocols ?? [];
+  return (view?.providers.find(x => x.name === provider)?.endpoints ?? []).filter(e => want.includes(e.interface));
+}
+
 /** 一台机器上一个 agent 的配置文件要写成什么：
- *  - mode：server 用服务器的 / off 不改 / own 这台机器单独配置
- *  - provider、model、effort：要写进配置文件的；none 是用服务器的、服务器上没给它配；gone 是选的供应商已经删了
+ *  - mode：off 不改 / own 指定
+ *  - provider、model、effort：要写进配置文件的；gone 是选的供应商已经删了
+ *  - ep：实际用哪个接口和地址（指定了、供应商给着、agent 也认就是它，否则第一个对得上的）；对不上任何一种时没有
  *  - warn：选的强度这个模型不支持（写配置时不写强度） */
 export interface RunPick {
   mode: RunMode;
   provider: string;
   model: string;
   effort: string;
-  none?: boolean;
+  ep?: ProviderEndpoint;
   gone?: boolean;
   warn?: string;
 }
 
 export function runPick(view: ProviderView | null, a: HostAgent): RunPick {
-  const mode: RunMode = a.run_mode ?? 'off';
-  if (mode === 'off') return { mode, provider: '', model: '', effort: '' };
-  let out: RunPick;
-  if (mode === 'own') out = { mode, provider: a.run_provider ?? '', model: a.run_model ?? '', effort: a.run_effort ?? '' };
-  else {
-    const s = sharedOf(view, a.id);
-    if (!s.provider) return { mode, provider: '', model: '', effort: '', none: true };
-    out = { mode, provider: s.provider, model: s.model, effort: s.effort };
-  }
+  if (a.run_mode !== 'own') return { mode: 'off', provider: '', model: '', effort: '' };
+  const out: RunPick = { mode: 'own', provider: a.run_provider ?? '', model: a.run_model ?? '', effort: a.run_effort ?? '' };
   const p = view?.providers.find(x => x.name === out.provider);
   if (view && out.provider && !p) out.gone = true;
   if (p && !out.model) out.model = p.models[0] ?? '';
+  const eps = protocolChoices(view, a.id, out.provider);
+  out.ep = eps.find(e => e.interface === a.run_protocol) ?? eps[0];
   if (p && out.effort && !writableEfforts(metaOf(view, a.id), p, out.model).includes(out.effort)) out.warn = `${out.model} 不支持强度 ${out.effort}：写配置时不写强度`;
   return out;
+}
+
+/* ------------------------------ 供应商卡片的「在用」 ------------------------------ */
+
+/** 一台机器上一个 agent 用着某个供应商 */
+export interface ProviderUse {
+  h: HostInfo;
+  a: HostAgent;
+  pick: RunPick;
+  cell: ProviderCell;
+}
+
+/** 这个供应商在哪几台机器的哪几个 agent 上用着（指定了它的；没找到的 agent 不算） */
+export function usesOf(hosts: HostInfo[], view: ProviderView, provider: string): ProviderUse[] {
+  const out: ProviderUse[] = [];
+  for (const h of hosts)
+    for (const a of h.agents) {
+      if (!a.found) continue;
+      const pick = runPick(view, a);
+      if (pick.mode === 'own' && pick.provider === provider) out.push({ h, a, pick, cell: providerCell(h, a.id, view) });
+    }
+  return out;
+}
+
+/** 一组里最该看的状态：失败 > 正在写入 > 离线 > 已写入 */
+const RANK: ProviderCellKind[] = ['failed', 'unsupported', 'pending', 'offline', 'old', 'synced'];
+export const worstCell = (us: ProviderUse[]): ProviderCellKind => RANK.find(k => us.some(u => u.cell.kind === k)) ?? 'synced';
+
+/** 按 agent 汇总（按内置 agent 的顺序）：卡片上一个 agent 一枚，点开列出哪几台 */
+export function agentGroups(us: ProviderUse[], view: ProviderView): { meta: AgentMeta; uses: ProviderUse[] }[] {
+  return metasOf(view)
+    .map(meta => ({ meta, uses: us.filter(u => u.a.id === meta.id) }))
+    .filter(g => g.uses.length);
 }
 
 /** 一句话：「newapi-buglan · cn:deepseek-v4.1-flash · 强度 high」 */
