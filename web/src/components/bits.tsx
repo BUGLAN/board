@@ -124,6 +124,15 @@ export function AgentAvatar({ name, className, title }: { name: string | null | 
   );
 }
 
+/**
+ * 按身份画头像：agent 先按名字认标识（`AgentAvatar`，认不出才退回字母头像），人、系统身份仍用 `Avatar`。
+ * 动态、评论、列表里「谁记下的」这类人、agent、board 都可能出现的位置用它，agent 在哪儿都显示成自己的图标。
+ * 名字为空（理论上不会有）时用 `fallback` 兜底，和 `Avatar` 一样总会画一个位子
+ */
+export function ActorAvatar({ actor, className, fallback = '?' }: { actor: Actor; className?: string; fallback?: string }) {
+  return actor.kind === 'agent' ? <AgentAvatar name={actor.name || fallback} className={className} /> : <Avatar actor={actor} className={className} />;
+}
+
 /** 仅人可打的标签在名称前带一把小锁 */
 export const LabelLock = ({ label }: { label: Pick<Label, 'humanOnly'> }) =>
   label.humanOnly ? (

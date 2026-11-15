@@ -14,7 +14,7 @@ import type { BoardInfo, Pos, ProjectInfo } from '../lib/types';
 import { cx, pref, reduceMotion, replay } from '../lib/util';
 import { onEvents, optimistic, patchProject, useData, type Patch } from '../store/data';
 import { openCtx, toastError, useUI } from '../store/ui';
-import { Avatar, Tip, agent } from './bits';
+import { AgentAvatar, Tip } from './bits';
 import { Icon } from './Icon';
 
 const K_MIN = 0.25;
@@ -576,7 +576,7 @@ function BoardNode({
           {agents.length ? (
             <>
               {agents.map(n => (
-                <Avatar key={n} actor={agent(n)} />
+                <AgentAvatar key={n} name={n} />
               ))}
               <em>{agents.length} 个 agent 在工作</em>
             </>

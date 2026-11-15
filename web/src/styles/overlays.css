@@ -85,7 +85,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .d-activity { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 8px 18px; }
 @media (max-width: 900px) { .drawer { --modal-side: 290px; } }
 
-.d-id { font-family: var(--f-mono); font-size: 13px; font-weight: 500; color: var(--text-3); }
+/* 编号点了复制引用（default/main#345）：看起来仍是纯文本，不加边框、下划线、颜色和 hover 外观，
+   只留着可点击的指针；浏览器默认的 button 内边距要归零，位置和大小和原来的纯文本一致 */
+.d-id { font-family: var(--f-mono); font-size: 13px; font-weight: 500; color: var(--text-3); padding: 0; text-align: left; cursor: pointer; }
 .d-col {
   --c: var(--c-todo);
   display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px;

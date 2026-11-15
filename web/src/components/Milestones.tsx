@@ -35,7 +35,7 @@ import type { Label, ProjectInfo, Status } from '../lib/types';
 import { cx, dateTime, reduceMotion, since } from '../lib/util';
 import { jumpDetail, openDetail, setPath, useCurrent, useData } from '../store/data';
 import { overlayOpen } from '../store/ui';
-import { Avatar, LabelChip, Tip, Title, useNow } from './bits';
+import { AgentAvatar, LabelChip, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { Skeleton } from './Skeleton';
 
@@ -415,7 +415,7 @@ function Row({
           <span title={dateTime(c.movedAt)}>{since(c.movedAt, now)}</span>
         ) : c.holder ? (
           <span className="msp-holder">
-            <Avatar actor={{ kind: 'agent', name: c.holder }} className="msp-av" />
+            <AgentAvatar name={c.holder} className="msp-av" />
             <span className="mono">{c.holder}</span>
           </span>
         ) : (

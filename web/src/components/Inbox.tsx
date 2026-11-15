@@ -25,7 +25,7 @@ import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
 import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
-import { Avatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
+import { ActorAvatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
 import { matches } from './Card';
 import { CardLabels, DescEditor, TitleEditor } from './CardDetail';
 import { Icon } from './Icon';
@@ -749,7 +749,7 @@ function SplitBundle({
         <div className="ib-bdesc">
           {d && <SplitNote d={d} />}
           <div className="ib-src">
-            <Avatar actor={p.createdBy} className="ib-av" />
+            <ActorAvatar actor={p.createdBy} className="ib-av" />
             <span>
               <b className={cx(p.createdBy.kind === 'agent' && 'mono')}>{actorName(p.createdBy)}</b> 记下 · {ago(p.createdAt, now)}
               {p.comments > 0 && <> · {p.comments} 条评论</>}
@@ -830,7 +830,7 @@ const Row = memo(function Row({
           {isnew && <i className="ib-newdot" aria-label="新的" role="img" />}
           <span className="ib-id mono">#{draft ? '…' : c.id}</span>
         </span>
-        <Avatar actor={c.createdBy} className="ib-av" />
+        <ActorAvatar actor={c.createdBy} className="ib-av" />
         <span className="ib-t">
           <b>
             {/* 手机上不显示编号那一栏：新的标记放在标题前面 */}
@@ -910,7 +910,7 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
     <div className="ib-edit">
       {d && <SplitNote d={d} />}
       <div className="ib-src">
-        <Avatar actor={c.createdBy} className="ib-av" />
+        <ActorAvatar actor={c.createdBy} className="ib-av" />
         <span>
           <b className={cx(c.createdBy.kind === 'agent' && 'mono')}>{actorName(c.createdBy)}</b> 记下 · {ago(c.createdAt, now)}
           {c.updatedAt - c.createdAt > 60e3 && <> · 最近更新 {ago(c.updatedAt, now)}</>}
@@ -1332,7 +1332,7 @@ function MergeSheet({ req }: { req: MergeReq }) {
                       <span className="ib-id mono">#{c.id}</span> <Title text={c.title} />
                     </b>
                     <span>
-                      <Avatar actor={c.createdBy} className="ib-av xs" />
+                      <ActorAvatar actor={c.createdBy} className="ib-av xs" />
                       {actorName(c.createdBy)} · {ago(c.createdAt, now)}
                     </span>
                   </span>
@@ -1380,7 +1380,7 @@ export function InboxSideParts() {
         <SideSec title="来源">
           {sources.map(([k, { actor, n }]) => (
             <button key={k} type="button" className={cx('ib-side-row', src === k && 'on', src && src !== k && 'dim')} aria-pressed={src === k} onClick={() => setInbox({ src: src === k ? null : k })}>
-              <Avatar actor={actor} className="ib-av" />
+              <ActorAvatar actor={actor} className="ib-av" />
               <span className={cx('ib-side-name', actor.kind === 'agent' && 'mono')}>{actorName(actor)}</span>
               <b className="mono">{n}</b>
             </button>
@@ -1826,7 +1826,7 @@ function LaterRow({ card: c, labels, project, now, checked, onCheck }: { card: C
         >
           <Check on={checked} label={`勾选 #${c.id} ${c.title}`} onToggle={shift => onCheck(c.id, shift)} />
           <span className="ib-id">#{c.id}</span>
-          <Avatar actor={c.createdBy} className="ib-av" />
+          <ActorAvatar actor={c.createdBy} className="ib-av" />
           <span className="ib-t">
             <b>
               {saving && <i className="ib-saving" aria-label="保存中" />}

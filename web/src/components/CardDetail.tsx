@@ -17,7 +17,7 @@ import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock,
 import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { isTextFile } from '../lib/textFile';
-import { Avatar, DescTabs, LabelChip, Markdown, agent, Tip, useNow } from './bits';
+import { ActorAvatar, AgentAvatar, Avatar, DescTabs, LabelChip, Markdown, Tip, useNow } from './bits';
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
 import { DispatchHistory, DispatchNote } from './hosts/Dispatch';
@@ -216,11 +216,21 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     );
   };
 
+  /** 点编号复制这张卡片的引用（`<项目>/<白板>#<ID>`，例如 default/main#298）：只给提示，不加额外样式 */
+  const copyRef = () => {
+    const ref = `${useData.getState().path}#${c.id}`;
+    void copyText(ref).then(ok =>
+      toast(ok ? { type: 'success', title: `已复制 ${ref}`, duration: 1800 } : { type: 'error', title: '复制失败', text: ref, duration: 8000 }),
+    );
+  };
+
   const creator = c.createdBy;
   return (
     <div className="drawer-body" ref={bodyRef}>
       <div className="d-head">
-        <span className="d-id">#{c.id}</span>
+        <button type="button" className="d-id" title="点击复制卡片引用" onClick={copyRef}>
+          #{c.id}
+        </button>
         <span className="d-col" ref={pill} data-col={c.column} style={{ ['--c' as string]: f.color(c.column) }}>
           <i />
           <span>{f.name(c.column)}</span>
@@ -853,7 +863,7 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
         </div>
       </div>
       <div className={cx('claim-card', t.beat === 'late' && 'late')} style={{ ['--ac' as string]: agentColor(c.holder) }}>
-        <Avatar actor={agent(c.holder)} className="lg" />
+        <AgentAvatar name={c.holder} className="lg" />
         <div className="claim-who">
           <b>{c.holder}</b>
           <span>
@@ -1298,7 +1308,7 @@ function ActivityItem({ a, card, now, fresh }: { a: Activity; card: number; now:
     return (
       <div className={cx('tl-item', a.actor.kind === 'human' && 'mine', fresh && 'new', settled && 'settled', saving && 'sending')} aria-busy={saving || undefined}>
         <div>
-          <Avatar actor={a.actor} />
+          <ActorAvatar actor={a.actor} />
         </div>
         <div className="tl-bubble">
           <div className="who">

@@ -14,7 +14,7 @@ import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
 import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
-import { Avatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, agent, useMeName, useNow } from './bits';
+import { ActorAvatar, AgentAvatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
 import { InboxSideParts } from './Inbox';
@@ -627,7 +627,7 @@ function BoardSide() {
                 style={{ paddingLeft: 20 }}
                 onClick={() => openCard(c.id)}
               >
-                <Avatar actor={agent(c.holder!)} />
+                <AgentAvatar name={c.holder} />
                 <span className="tt">
                   <span className="mono" style={{ color: agentInk(c.holder!) }}>
                     {c.holder}
@@ -652,7 +652,7 @@ function BoardSide() {
                 <>
                   {recent.events.map(ev => (
                     <div key={ev.id} className={cx('recent-row', lastSeen.current > 0 && ev.id > lastSeen.current && 'new')}>
-                      <Avatar actor={ev.actor} />
+                      <ActorAvatar actor={ev.actor} />
                       <div>
                         <b style={ev.actor.kind === 'agent' ? { color: agentInk(ev.actor.name) } : undefined}>
                           {ev.actor.kind === 'human' ? meName || '你' : ev.actor.kind === 'system' ? SYSTEM_NAME : ev.actor.name}

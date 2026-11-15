@@ -19,7 +19,7 @@ import type { CardDetail, Status } from '../lib/types';
 import { cx, isMobile } from '../lib/util';
 import { exec, movePatch, useCardBusy, useCurrent, useData } from '../store/data';
 import { openReview, toastError, useUI } from '../store/ui';
-import { Avatar, LabelChips, Markdown, Select, Tip, useNow } from './bits';
+import { ActorAvatar, LabelChips, Markdown, Select, Tip, useNow } from './bits';
 import { Icon } from './Icon';
 import { DispatchHistory } from './hosts/Dispatch';
 import { usePresence } from './overlays/presence';
@@ -329,7 +329,7 @@ function AgentComment({ detail, repo, mode }: { detail: CardDetail | null; repo?
   return (
     <section className="rv-agent">
       <div className="rv-agent-head">
-        <Avatar actor={a.actor} />
+        <ActorAvatar actor={a.actor} />
         <b>{a.actor.name}</b>
         <span>{mode === 'review' ? '交审评论' : '最近的评论'}</span>
         <time>{ago(a.at, now)}</time>

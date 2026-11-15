@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Card } from '../lib/types';
 import { useData } from '../store/data';
+import { useUI } from '../store/ui';
 import { CardDetail } from './CardDetail';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -106,6 +107,36 @@ describe('卡片详情顶栏 · 手机', () => {
     expect(host.querySelector('.d-more-menu')).not.toBeNull();
     act(() => host.querySelector('.d-more-back')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(host.querySelector('.d-more-menu')).toBeNull();
+  });
+});
+
+describe('卡片详情顶栏的编号：点一下复制整条引用', () => {
+  beforeEach(() => {
+    setViewport(false);
+    useUI.setState({ toasts: [] });
+    render();
+  });
+
+  it('是纯文本样子的按钮，点它把 <项目>/<白板>#<ID> 复制到剪贴板并提示', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+    const id = head().querySelector<HTMLButtonElement>('button.d-id')!;
+    expect(id.textContent).toBe('#2');
+    // 不加图标、不换行，只有编号本身
+    expect(id.querySelector('img, svg')).toBeNull();
+    act(() => id.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => {});
+    expect(writeText).toHaveBeenCalledWith('oss/main#2');
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ type: 'success', title: '已复制 oss/main#2' });
+  });
+
+  it('写不进剪贴板时提示失败', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.reject(new Error('denied'))) } });
+    document.execCommand = vi.fn(() => false);
+    const id = head().querySelector<HTMLButtonElement>('button.d-id')!;
+    act(() => id.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => {});
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ type: 'error', title: '复制失败' });
   });
 });
 

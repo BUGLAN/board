@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentMark } from '../lib/hosts';
-import { AgentAvatar, Avatar, BrandMark, ColorPick, SYSTEM_NAME } from './bits';
+import { ActorAvatar, AgentAvatar, Avatar, BrandMark, ColorPick, SYSTEM_NAME } from './bits';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,6 +84,27 @@ describe('按名字画 agent 头像（AgentAvatar）', () => {
     expect(host.innerHTML).toBe('');
     act(() => root.render(<AgentAvatar name={null} />));
     expect(host.innerHTML).toBe('');
+  });
+});
+
+describe('按身份画头像（ActorAvatar）：动态、列表里 agent 也用自己的图标', () => {
+  it('agent 认得出标识时画图标（卡片详情「领取信息」、动态、评论都是这个样子）', () => {
+    act(() => root.render(<ActorAvatar actor={{ kind: 'agent', name: 'claude/claude' }} className="lg" />));
+    const el = host.querySelector('.avatar.agent-logo.lg') as HTMLElement;
+    expect(el.querySelector('img')?.getAttribute('src')).toBe(agentMark('claude').icon);
+  });
+
+  it('agent 认不出时退回字母头像，大小还是原来的位子', () => {
+    act(() => root.render(<ActorAvatar actor={{ kind: 'agent', name: 'alpha' }} className="ib-av" />));
+    const el = host.querySelector('.avatar.ib-av') as HTMLElement;
+    expect(el.classList.contains('agent-logo')).toBe(false);
+    expect(el.textContent).toBe('α');
+  });
+
+  it('系统身份还是 board 的品牌图标（不受 agent 解析影响）', () => {
+    act(() => root.render(<ActorAvatar actor={{ kind: 'system', name: 'board' }} />));
+    const el = host.querySelector('.avatar') as HTMLElement;
+    expect(el.querySelectorAll('.brand-bars i')).toHaveLength(4);
   });
 });
 
