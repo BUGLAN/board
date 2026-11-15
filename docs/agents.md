@@ -97,7 +97,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 ## 模型供应商：在「共用配置」里维护
 
-agent 连哪个模型供应商（地址、API key、模型、思考强度）不用每台机器、每个 agent 一个个填：在「机器 → 共用配置 → 模型供应商」里加一次、给每个内置 agent 选一组；每台机器上每个 agent 三选一——**用服务器的**（写这一组）/ **不改**（Board 不碰它的配置文件，新机器默认）/ **单独配置**（这台机器单独选供应商、模型、强度）——在机器详情的 agent 页里选。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。
+供应商（地址、API key、模型、每个模型支持的思考强度）在「机器 → 共用配置 → 模型供应商」里加一次，各台机器共用；每台机器上每个内置 agent 在机器详情的 agent 页里选一个——**不改**（Board 不碰它的配置文件，新机器默认）或者「<供应商> · <模型>」，再选强度；agent 认几种接口、供应商也给了几种时（例如 pi 用一个同时给了 Anthropic 和 OpenAI Chat 的中转站），还可以指定用哪种接口，不指定时用供应商里第一个对得上的。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。供应商卡片底下按 agent 汇总哪几台机器在用它，点进去就是那台机器的 agent 页。
 
 | agent | 写到哪里 | 写什么 |
 |---|---|---|
@@ -107,10 +107,10 @@ agent 连哪个模型供应商（地址、API key、模型、思考强度）不�
 | dsh | `~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY` | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
 | 配置文件里新加的 agent、WSL 里的 agent | — | 不支持，界面上写「不支持」 |
 
-- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，pi、dsh 三种都认。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
+- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，pi、dsh 三种都认（用哪种可以在机器上指定，pi 的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
 - 写之前检查：强度不在这个模型标的档位里就不写强度（界面上提示「<模型> 不支持强度 <档>：写配置时不写强度」）；Anthropic 的地址结尾的 `/v1` 保存时就去掉（Claude Code 自己接 `/v1/messages`），「获取模型」也按去掉后的地址问。
 - 只改 Board 管的那几项，文件里别的配置、注释和顺序不动；先写临时文件再整体换上；文件解析不了时整份不覆盖，上报「写入失败」和原因，修好文件后点「重试」再写。改成「不改」时之前写进去的不恢复，Board 只是不再碰它。
-- 什么时候写：board host 启动时写一次；服务器上的配置（供应商、分配、机器上的选择）一改，服务端给受影响的在线机器下发「同步配置」请求，board host 写完上报（每个 agent 一行），记进那台机器的操作记录；离线的机器上线时写。已经在跑的 agent 不受影响，下一次启动读新的配置。
+- 什么时候写：board host 启动时写一次；服务器上的供应商、机器上的选择一改，服务端给受影响的在线机器下发「同步配置」请求，board host 写完上报（每个 agent 一行），记进那台机器的操作记录；离线的机器上线时写。已经在跑的 agent 不受影响，下一次启动读新的配置。
 - 派发时不按次传模型、强度：派发名字的第二段和派发记录里的模型、强度是 board host 从 agent 配置文件里读出来的（写进去的，或人自己配的）。
 - API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`），不写进日志和卡片动态。它会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
 
