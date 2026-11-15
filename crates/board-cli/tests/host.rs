@@ -936,7 +936,7 @@ fn remote_recheck_and_restart() {
     assert!(out.contains("重新检查完了") && out.contains("请求重启 board host") && out.contains("重新启动 board host"), "{out}");
 }
 
-/// 同步配置（机器详情与配置同步重构）：服务器上给 claude 配了供应商，机器选「用服务器的」——不用重启 board host，
+/// 同步配置（机器详情与配置同步重构）：服务器上加了供应商，机器上给 claude 指定它——不用重启 board host，
 /// 地址（去掉 /v1）、key、模型、强度写进 Claude Code 自己的配置文件，结果上报、记进操作记录；
 /// 派发时不再传 --model / --effort，名字第二段和「派发开始」里的模型是配置文件里写进去的
 #[test]
@@ -967,14 +967,9 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
             efforts: [("m2".to_string(), vec!["high".to_string()])].into(),
             ..Default::default()
         };
-        store
-            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
-                w.provider_put(p, "buglan", "")?;
-                w.provider_agent_put(board_core::providers::AgentProvider { agent: "claude".into(), provider: "relay".into(), model: "m2".into(), effort: "high".into(), ..Default::default() }, "buglan")
-            })
-            .unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.provider_put(p, "buglan", "")).unwrap();
     }
-    rig.set_host("mbp", serde_json::json!({ "run": { "agent": "claude", "mode": "server" } }));
+    rig.set_host("mbp", serde_json::json!({ "run": { "agent": "claude", "mode": "own", "provider": "relay", "model": "m2", "effort": "high" } }));
     let settings = rig.s.home.join(".claude").join("settings.json");
     let read = || -> Value { serde_json::from_str(&std::fs::read_to_string(&settings).unwrap_or_default()).unwrap_or(Value::Null) };
     wait_until("写进 Claude Code 的配置文件", Duration::from_secs(15), || read()["model"] == "m2");

@@ -206,7 +206,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     if !has("hosts", "sync_skills")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN sync_skills INTEGER NOT NULL DEFAULT 0")?;
         conn.execute_batch("UPDATE hosts SET sync_skills = 1, sync_mcp = 1")?;
-        let assigned: BTreeMap<String, crate::providers::AgentProvider> = conn
+        let assigned: BTreeMap<String, crate::providers::OldAssignment> = conn
             .prepare("SELECT agent, spec FROM provider_agents")
             .and_then(|mut st| {
                 st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
@@ -242,7 +242,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
                 let old_model = r.model.take();
                 r.effort = None;
                 match r.provider.clone().as_deref() {
-                    None => r.mode = Some(MODE_SERVER.into()),
+                    None => r.mode = Some(OLD_MODE_SERVER.into()),
                     Some(crate::providers::PROVIDER_LOCAL) => {
                         r.mode = Some(MODE_OFF.into());
                         r.provider = None;
@@ -270,6 +270,47 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![id, serde_json::to_string(&run).unwrap_or_default()])?;
         }
     }
+    // 服务器上不再给每个 agent 存一组（去掉「用服务器的」）：选了「用服务器的」的 agent 改成「指定」，值就是服务器上
+    // 那一组，机器上的效果不变；服务器上没给它配的改成「不改」（以前也是不写）。还剩 `server` 就改，表还在就删
+    let old_table: bool = conn
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'provider_agents'", [], |r| r.get::<_, i64>(0))
+        .map(|n| n > 0)?;
+    let assigned: BTreeMap<String, crate::providers::OldAssignment> = if old_table {
+        conn.prepare("SELECT agent, spec FROM provider_agents")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(a, spec)| serde_json::from_str(&spec).ok().map(|x| (a, x)))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    let rows: Vec<(i64, String)> = conn.prepare("SELECT id, run FROM hosts")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    for (id, raw) in rows {
+        let mut run: BTreeMap<String, AgentRun> = serde_json::from_str(&raw).unwrap_or_default();
+        let mut touched = false;
+        for (agent, r) in run.iter_mut().filter(|(_, r)| r.mode.as_deref() == Some(OLD_MODE_SERVER)) {
+            touched = true;
+            match assigned.get(agent).filter(|a| !a.provider.is_empty()) {
+                Some(a) => {
+                    r.mode = Some(MODE_OWN.into());
+                    r.provider = Some(a.provider.clone());
+                    r.model = Some(a.model.clone()).filter(|m| !m.is_empty());
+                    r.effort = Some(a.effort.clone()).filter(|e| !e.is_empty());
+                }
+                None => {
+                    r.mode = Some(MODE_OFF.into());
+                    r.provider = None;
+                    r.model = None;
+                    r.effort = None;
+                }
+            }
+        }
+        if touched {
+            conn.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![id, serde_json::to_string(&run).unwrap_or_default()])?;
+        }
+    }
+    conn.execute_batch("DROP TABLE IF EXISTS provider_agents")?;
     // agent 模板删掉了（本机配置文件里的 [agents.<标识>] 还在）
     conn.execute_batch("DROP TABLE IF EXISTS agent_templates")?;
     // 会话里排着的派发按会话找（session 列是后加的，索引放在补列之后）
@@ -319,12 +360,12 @@ pub const MAX_RUN_LIMIT: i64 = 720;
 pub const IDLE_RUN_LIMIT: i64 = 120;
 /// 领取规则最多几条
 pub const RULES_LIMIT: usize = 20;
-/// 一个 agent 的模型：用服务器的（共用配置里给这个 agent 的那组）
-pub const MODE_SERVER: &str = "server";
 /// 一个 agent 的模型：不改（Board 不碰它的配置文件）。新机器默认是它
 pub const MODE_OFF: &str = "off";
-/// 一个 agent 的模型：这台机器单独配置一组供应商、模型、强度
+/// 一个 agent 的模型：指定这台机器上用哪个供应商、模型、强度（和接口）
 pub const MODE_OWN: &str = "own";
+/// 以前的「用服务器的」：只在迁移旧数据时认（见 `migrate`）
+const OLD_MODE_SERVER: &str = "server";
 /// 每个派发保留的日志行数
 pub const LOG_KEEP: usize = 500;
 /// 机器多久没上报算离线：与 agent 相同，连续 5 次（50 秒）
@@ -482,19 +523,23 @@ pub struct HostAgent {
     /// 旧版 board host 上报的「派发时能选的模型和强度」：不再用，收到也不看
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opts: Option<AgentOpts>,
-    /// 服务端发出去时才有：模型怎么配——`server` 用服务器的 | `off` 不改 | `own` 单独配置
+    /// 服务端发出去时才有：模型怎么配——`off` 不改 | `own` 指定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_mode: Option<String>,
-    /// 服务端发出去时才有：单独配置的模型；没选时写供应商的第一个
+    /// 服务端发出去时才有：指定的模型；没选时写供应商的第一个
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_model: Option<String>,
-    /// 服务端发出去时才有：单独配置的思考强度；没选时不写
+    /// 服务端发出去时才有：指定的思考强度；没选时不写
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_effort: Option<String>,
+    /// 服务端发出去时才有：指定用供应商的哪种接口（`anthropic`、`openai-chat`、`openai-responses`）；
+    /// 没选时用供应商里第一个这个 agent 认的（`Provider::endpoint_for`）。旧版 board host 不看，总是用第一个
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_protocol: Option<String>,
     /// 服务端发出去时才有：机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 `env` 是实际用的）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_env: Option<String>,
-    /// 服务端发出去时才有：单独配置的供应商。给旧版 board host 的写法：用服务器的时为空，不改时是 `@local`
+    /// 服务端发出去时才有：指定的供应商。给旧版 board host 的写法：不改时是 `@local`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_provider: Option<String>,
     /// 服务端发出去时才有：这个 agent 在这台机器上连续异常退出、已经暂停接单（PRD §9.1「能不能接」），人点「恢复」才继续
@@ -562,18 +607,21 @@ pub struct AgentRun {
     /// 启动环境；没有时按默认规则选
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
-    /// 模型怎么配：`server` 用服务器的 | `own` 单独配置 | 没有或 `off` = 不改（新机器的默认）
+    /// 模型怎么配：`own` 指定 | 没有或 `off` = 不改（新机器的默认）。以前的 `server`（用服务器的）迁移成了 `own`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// 单独配置的模型；没有时用供应商的第一个
+    /// 指定的模型；没有时用供应商的第一个
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 单独配置的思考强度；没有时不写
+    /// 指定的思考强度；没有时不写
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// 单独配置的供应商名称
+    /// 指定的供应商名称
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// 指定用供应商的哪种接口；没有时用供应商里第一个这个 agent 认的
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
     /// 人最近一次点「恢复」的时间：连续异常退出从这之后重新数（`fit.rs` 的 `agent_streak`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_at: Option<i64>,
@@ -1505,7 +1553,7 @@ pub struct HostWork {
     /// MCP 服务器共用配置的索引（名称、版本）：变了 board host 用令牌接口取完整内容。旧版服务端没有这一项
     #[serde(default)]
     pub mcp: Option<Vec<crate::mcp::McpIndex>>,
-    /// 模型供应商共用配置：索引（取完整内容用）和每个 agent 用哪个。旧版服务端没有这一项
+    /// 模型供应商共用配置：索引（取完整内容用）；每个 agent 用哪个在 `host.agents` 的 `run_*` 里。旧版服务端没有这一项
     #[serde(default)]
     pub providers: Option<crate::providers::ProviderWork>,
     /// 这台机器要写成的样子（[`R::config_key`]）：board host 同步完带着它回报，服务端据此知道写好的是哪一版
@@ -1600,7 +1648,7 @@ pub struct HostPatch {
     /// 一个 agent 的启动环境
     #[serde(default)]
     pub env: Option<EnvPatch>,
-    /// 一个 agent 的模型：用服务器的 / 不改 / 单独配置（供应商、模型、强度）
+    /// 一个 agent 的模型：不改 / 指定（供应商、模型、强度、接口）
     #[serde(default)]
     pub run: Option<RunPatch>,
     /// 恢复一个连续异常退出、暂停了接单的 agent（写它的标识）
@@ -1631,8 +1679,8 @@ pub struct EnvPatch {
     pub env: String,
 }
 
-/// 改一个 agent 的模型怎么配。`mode` 是 `server` / `off` / `own`；`own` 时带供应商、模型（空 = 第一个）、强度（空 = 不写）。
-/// 旧界面只带 `provider`：空字符串 = 用服务器的，`@local` = 不改，其余 = 单独配置这个供应商
+/// 改一个 agent 的模型怎么配。`mode` 是 `off` / `own`；`own` 时带供应商、模型（空 = 第一个）、强度（空 = 不写）、接口（空 = 第一个对得上的）。
+/// 旧界面只带 `provider`：空字符串、`@local` = 不改，其余 = 指定这个供应商
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RunPatch {
     pub agent: String,
@@ -1644,6 +1692,9 @@ pub struct RunPatch {
     pub effort: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
+    /// 用供应商的哪种接口；空 = 第一个对得上的，不带 = 同一个供应商留着原来的
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 /// 一次派发
@@ -1957,25 +2008,24 @@ impl HostRow {
                 let run = self.run.get(&a.id);
                 out.run_env = run.and_then(|r| r.env.clone());
                 let mode = self.mode_of(&a.id);
-                // 旧版 board host 只认 run_provider：用服务器的 = 空，不改 = @local，单独配置 = 供应商名称
+                // 旧版 board host 只认 run_provider：不改 = @local，指定 = 供应商名称
                 out.run_provider = match mode {
-                    MODE_SERVER => None,
                     MODE_OWN => run.and_then(|r| r.provider.clone()),
                     _ => Some(crate::providers::PROVIDER_LOCAL.into()),
                 };
                 if mode == MODE_OWN {
                     out.run_model = run.and_then(|r| r.model.clone());
                     out.run_effort = run.and_then(|r| r.effort.clone());
+                    out.run_protocol = run.and_then(|r| r.protocol.clone());
                 }
                 out.run_mode = Some(mode.to_string());
                 out
             })
             .collect()
     }
-    /// 一个 agent 的模型怎么配：`server` / `own` / `off`（没设过的是 `off`）
+    /// 一个 agent 的模型怎么配：`own` / `off`（没设过的是 `off`）
     pub(crate) fn mode_of(&self, agent: &str) -> &'static str {
         match self.run.get(agent).and_then(|r| r.mode.as_deref()) {
-            Some(MODE_SERVER) => MODE_SERVER,
             Some(MODE_OWN) => MODE_OWN,
             _ => MODE_OFF,
         }
@@ -2502,24 +2552,27 @@ impl<'a> R<'a> {
     }
 
     /// 这台机器要写成的样子（[`ConfigSync`]）：board-skills 的版本（随服务端），skills、MCP 用服务器的时库里的
-    /// 名称和版本，每个找到的内置 agent 的启动环境和模型怎么配（用服务器的、单独配置时带上供应商的版本）。
+    /// 名称和版本，每个找到的内置 agent 的启动环境和模型怎么配（指定时带上供应商的版本和接口）。
     /// 内容的哈希前 12 位；一样就不用再写
     pub(crate) fn config_key(&self, h: &HostRow) -> Result<String> {
         use sha2::{Digest, Sha256};
         let skills: Vec<(String, String)> = if h.sync_skills { self.skills()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] };
         let mcp: Vec<(String, String)> = if h.sync_mcp { self.mcp_index()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] };
         let providers = self.providers()?;
-        let assigned = self.provider_agents()?;
         let version = |name: &str| providers.iter().find(|p| p.name == name).map(|p| p.version.clone()).unwrap_or_default();
         let mut agents = vec![];
         for a in h.resolved().into_iter().filter(|a| a.found && crate::providers::AGENTS.iter().any(|(k, _, _)| *k == a.id)) {
             let mode = h.mode_of(&a.id);
-            let (provider, model, effort) = match mode {
-                MODE_SERVER => assigned.iter().find(|x| x.agent == a.id).map(|x| (x.provider.clone(), x.model.clone(), x.effort.clone())).unwrap_or_default(),
-                MODE_OWN => (a.run_provider.clone().unwrap_or_default(), a.run_model.clone().unwrap_or_default(), a.run_effort.clone().unwrap_or_default()),
+            let (provider, model, effort, protocol) = match mode {
+                MODE_OWN => (
+                    a.run_provider.clone().unwrap_or_default(),
+                    a.run_model.clone().unwrap_or_default(),
+                    a.run_effort.clone().unwrap_or_default(),
+                    a.run_protocol.clone().unwrap_or_default(),
+                ),
                 _ => Default::default(),
             };
-            agents.push(json!({ "id": a.id, "env": a.env, "mode": mode, "provider": provider, "v": version(&provider), "model": model, "effort": effort }));
+            agents.push(json!({ "id": a.id, "env": a.env, "mode": mode, "provider": provider, "v": version(&provider), "model": model, "effort": effort, "protocol": protocol }));
         }
         let body = json!({ "board": env!("CARGO_PKG_VERSION"), "skills": skills, "mcp": mcp, "agents": agents });
         Ok(Sha256::digest(body.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect())
@@ -3935,26 +3988,26 @@ impl<'a> W<'a> {
                     rp.agent
                 )));
             }
-            // 旧界面只带供应商：空 = 用服务器的，@local = 不改，其余 = 单独配置
+            // 旧界面只带供应商：空、@local = 不改，其余 = 指定
             let mode = match (rp.mode.as_deref().map(str::trim), rp.provider.as_deref().map(str::trim)) {
                 (Some(m), _) => m.to_string(),
-                (None, Some("")) => MODE_SERVER.into(),
-                (None, Some(crate::providers::PROVIDER_LOCAL)) => MODE_OFF.into(),
+                (None, Some("" | crate::providers::PROVIDER_LOCAL)) => MODE_OFF.into(),
                 (None, Some(_)) => MODE_OWN.into(),
                 (None, None) => h.mode_of(&rp.agent).to_string(),
             };
             let mut run = h.run.clone();
             let cur = run.entry(rp.agent.clone()).or_default();
             match mode.as_str() {
-                MODE_SERVER | MODE_OFF => {
+                MODE_OFF => {
                     cur.mode = Some(mode.clone());
                     cur.provider = None;
                     cur.model = None;
                     cur.effort = None;
+                    cur.protocol = None;
                 }
                 MODE_OWN => {
                     let name = rp.provider.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).or_else(|| cur.provider.clone());
-                    let name = name.ok_or_else(|| BoardError::usage("单独配置要选一个供应商"))?;
+                    let name = name.ok_or_else(|| BoardError::usage("指定时要选一个供应商"))?;
                     let pv = self.read().provider(&name)?.ok_or_else(|| BoardError::usage(format!("没有模型供应商「{name}」")))?;
                     if !pv.fits(&rp.agent) {
                         return Err(BoardError::usage(format!(
@@ -3981,12 +4034,29 @@ impl<'a> W<'a> {
                         None => String::new(),
                     };
                     crate::providers::check_effort(&rp.agent, &pv, &model, &effort)?;
+                    // 接口：带了就要是这个 agent 认、供应商也给了的（空 = 第一个对得上的）；没带时同一个供应商留着原来的
+                    let protocol = match rp.protocol.as_deref().map(str::trim) {
+                        Some("") => None,
+                        Some(want) => {
+                            if !pv.endpoints_for(&rp.agent).any(|e| e.interface == want) {
+                                let can: Vec<&str> = pv.endpoints_for(&rp.agent).map(|e| crate::providers::interface_name(&e.interface)).collect();
+                                return Err(BoardError::usage(format!(
+                                    "{} 用供应商 {name} 时接口只能是 {}，不能是「{want}」",
+                                    crate::providers::agent_name(&rp.agent),
+                                    can.join("、")
+                                )));
+                            }
+                            Some(want.to_string())
+                        }
+                        None => cur.protocol.clone().filter(|p| same && pv.endpoints_for(&rp.agent).any(|e| &e.interface == p)),
+                    };
                     cur.mode = Some(MODE_OWN.into());
                     cur.provider = Some(name);
                     cur.model = Some(model);
                     cur.effort = Some(effort).filter(|e| !e.is_empty());
+                    cur.protocol = protocol;
                 }
-                other => return Err(BoardError::usage(format!("模型怎么配只能是 {MODE_SERVER}（用服务器的）、{MODE_OFF}（不改）、{MODE_OWN}（单独配置），不能是「{other}」"))),
+                other => return Err(BoardError::usage(format!("模型怎么配只能是 {MODE_OFF}（不改）、{MODE_OWN}（指定），不能是「{other}」"))),
             }
             self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
             self.config_changed = true;

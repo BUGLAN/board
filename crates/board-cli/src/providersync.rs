@@ -1,5 +1,6 @@
 //! 同步配置里「模型」这一块在本机这一侧（机器详情与配置同步重构 §三）：board host 按机器上每个 agent 的选择
-//! （用服务器的 / 不改 / 单独配置）把供应商的地址、API key、模型、强度写进本机 agent 的用户级配置文件。
+//! （不改 / 指定）把供应商的地址、API key、模型、强度写进本机 agent 的用户级配置文件。地址按指定的接口取
+//! （agent 认几种、供应商也给了几种时机器上可以选；没选或对不上时用供应商里第一个这个 agent 认的）。
 //!
 //! - Claude Code：`~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`
 //!   （有强度时再加 `env.CLAUDE_CODE_EFFORT_LEVEL`），文件里别的配置、顺序不变
@@ -14,14 +15,14 @@
 //!
 //! 写之前检查：强度不在这个模型标的档位里（或这个 agent 写不了）就不写强度，结果里记下没写的那一档（`dropped`）；
 //! 地址按服务端规范化后的用（Anthropic 的不带 `/v1`）。只改 Board 管的那几项，先写临时文件再整体换上；
-//! 文件格式解析不了时不覆盖，上报「写入失败」和原因。选了「不改」的 agent 不碰；从「用服务器的」改成「不改」时
+//! 文件格式解析不了时不覆盖，上报「写入失败」和原因。选了「不改」的 agent 不碰；从「指定」改成「不改」时
 //! 之前写进去的不恢复。API key 只写进 agent 自己的配置文件，不打印、不写日志（输出里只有供应商和模型名称）。
 //!
 //! [`current`] 读出这个 agent 配置文件里现在的模型和强度：board host 上报，派发名字和派发记录用它。
 
 use crate::envs::{self, Env};
-use board_core::hosts::{MODE_OFF, MODE_OWN, MODE_SERVER};
-use board_core::providers::{self, AgentProvider, Provider, ProviderState};
+use board_core::hosts::{MODE_OFF, MODE_OWN};
+use board_core::providers::{self, Provider, ProviderState};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -38,11 +39,22 @@ pub enum Files {
 #[derive(Debug, Clone)]
 pub struct Target {
     pub agent: String,
-    /// `server` 用服务器的 | `off` 不改 | `own` 单独配置
+    /// `own` 指定 | `off` 不改（别的也当不改：旧版服务端发来的「用服务器的」不再认）
     pub mode: String,
-    /// 单独配置的供应商、模型（空 = 第一个）、强度（空 = 不写）
-    pub own: (String, String, String),
+    pub own: Own,
     pub files: Files,
+}
+
+/// 机器上给一个 agent 指定的那一组
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Own {
+    pub provider: String,
+    /// 空 = 供应商的第一个
+    pub model: String,
+    /// 空 = 不写
+    pub effort: String,
+    /// 用哪种接口；空 = 供应商里第一个这个 agent 认的
+    pub protocol: String,
 }
 
 /// 一次同步的结果
@@ -57,8 +69,6 @@ pub struct Synced {
 pub struct Lib {
     #[serde(default)]
     pub providers: Vec<Provider>,
-    #[serde(default)]
-    pub agents: Vec<AgentProvider>,
 }
 
 /// 一个 agent 的配置文件位置；WSL 里的 agent（返回 None）和配置文件里新加的 agent 不支持
@@ -83,30 +93,20 @@ fn failed(agent: &str, why: String) -> ProviderState {
     ProviderState { why: Some(why), ..state(agent, "failed") }
 }
 
-/// 按机器上的选择写这些 agent。`assigned` 是服务器上给每个 agent 的那一组；`unsupported`：本机找到、但不能改写的 agent
-/// （写「不支持」，why 是原因；选了「不改」的写「不改」）
-pub fn sync(lib: &[Provider], assigned: &[AgentProvider], targets: &[Target], unsupported: &[(String, String, String)]) -> Synced {
+/// 按机器上的选择写这些 agent。`unsupported`：本机找到、但不能改写的 agent（写「不支持」，why 是原因；选了「不改」的写「不改」）
+pub fn sync(lib: &[Provider], targets: &[Target], unsupported: &[(String, String, String)]) -> Synced {
     let mut out = Synced::default();
     for t in targets {
-        let (name, model, effort) = match t.mode.as_str() {
-            MODE_SERVER => match assigned.iter().find(|a| a.agent == t.agent).filter(|a| !a.provider.is_empty()) {
-                Some(a) => (a.provider.clone(), a.model.clone(), a.effort.clone()),
-                None => {
-                    out.states.push(state(&t.agent, "none"));
-                    continue;
-                }
-            },
-            MODE_OWN => t.own.clone(),
-            _ => {
-                out.states.push(state(&t.agent, MODE_OFF));
-                continue;
-            }
-        };
+        if t.mode != MODE_OWN {
+            out.states.push(state(&t.agent, MODE_OFF));
+            continue;
+        }
+        let Own { provider: name, model, effort, protocol } = t.own.clone();
         let Some(p) = lib.iter().find(|p| p.name == name) else {
             out.states.push(failed(&t.agent, format!("服务器上没有供应商「{name}」")));
             continue;
         };
-        let Some(endpoint) = p.endpoint_for(&t.agent) else {
+        let Some(endpoint) = p.endpoint_for(&t.agent, &protocol) else {
             let want = providers::protocols_of(&t.agent).iter().map(|x| providers::interface_name(x)).collect::<Vec<_>>().join("、");
             out.states.push(failed(&t.agent, format!("{} 用不了供应商 {}：它没有 {want} 接口", providers::agent_name(&t.agent), p.name)));
             continue;
@@ -614,12 +614,13 @@ mod tests {
         }
     }
 
-    fn assign(agent: &str, provider: &str, model: &str, effort: &str) -> Vec<AgentProvider> {
-        vec![AgentProvider { agent: agent.into(), provider: provider.into(), model: model.into(), effort: effort.into(), ..Default::default() }]
+    /// 指定（供应商、模型、强度），接口不选
+    fn target(agent: &str, own: (&str, &str, &str), files: Files) -> Target {
+        Target { agent: agent.into(), mode: MODE_OWN.into(), own: Own { provider: own.0.into(), model: own.1.into(), effort: own.2.into(), protocol: String::new() }, files }
     }
 
-    fn target(agent: &str, mode: &str, files: Files) -> Target {
-        Target { agent: agent.into(), mode: mode.into(), own: Default::default(), files }
+    fn off(agent: &str, files: Files) -> Target {
+        Target { agent: agent.into(), mode: MODE_OFF.into(), own: Own::default(), files }
     }
 
     fn read_json(p: &Path) -> Value {
@@ -634,8 +635,8 @@ mod tests {
         std::fs::write(&settings, "{\n  \"permissions\": {\"allow\": [\"Bash\"]},\n  \"model\": \"old-model\",\n  \"env\": {\"FOO\": \"1\"}\n}\n").unwrap();
         let files = Files::Claude { settings: settings.clone() };
         assert_eq!(current(&files), Some(("old-model".into(), String::new())));
-        let t = target("claude", "server", files.clone());
-        let out = sync(&[provider("deepseek")], &assign("claude", "deepseek", "model-b", "high"), &[t.clone()], &[]);
+        let t = target("claude", ("deepseek", "model-b", "high"), files.clone());
+        let out = sync(&[provider("deepseek")], &[t.clone()], &[]);
         assert_eq!((out.states[0].state.as_str(), out.states[0].model.as_str(), out.states[0].effort.as_str()), ("synced", "model-b", "high"));
         let v = read_json(&settings);
         assert_eq!(v["model"], "model-b");
@@ -646,23 +647,23 @@ mod tests {
         assert_eq!(current(&files), Some(("model-b".into(), "high".into())));
         assert!(out.changes.iter().all(|c| !c.contains("sk-secret")), "输出里没有密钥");
         // 模型不支持选的强度：不写强度，记下没写的那一档（#344）
-        let out = sync(&[provider("deepseek")], &assign("claude", "deepseek", "model-a", "high"), &[t.clone()], &[]);
+        let out = sync(&[provider("deepseek")], &[target("claude", ("deepseek", "model-a", "high"), files.clone())], &[]);
         assert_eq!((out.states[0].effort.as_str(), out.states[0].dropped.as_str()), ("", "high"));
         assert!(read_json(&settings)["env"].get("CLAUDE_CODE_EFFORT_LEVEL").is_none());
         // 改成「不改」：不碰，之前写进去的留着
         let before = std::fs::read_to_string(&settings).unwrap();
-        let out = sync(&[provider("deepseek")], &assign("claude", "deepseek", "model-b", ""), &[target("claude", "off", files.clone())], &[]);
+        let out = sync(&[provider("deepseek")], &[off("claude", files.clone())], &[]);
         assert_eq!(out.states[0].state, "off");
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
-        // 服务器上没给它配：不写
-        let out = sync(&[provider("deepseek")], &[], &[t.clone()], &[]);
-        assert_eq!(out.states[0].state, "none");
-        // 单独配置
-        let own = Target { own: ("deepseek".into(), "".into(), "".into()), ..target("claude", "own", files.clone()) };
-        let out = sync(&[provider("deepseek")], &[], &[own], &[]);
+        // 旧版服务端发来的「用服务器的」：不再认，当不改
+        let out = sync(&[provider("deepseek")], &[Target { mode: "server".into(), ..t.clone() }], &[]);
+        assert_eq!(out.states[0].state, "off");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
+        // 模型留空用第一个
+        let out = sync(&[provider("deepseek")], &[target("claude", ("deepseek", "", ""), files.clone())], &[]);
         assert_eq!((out.states[0].state.as_str(), out.states[0].model.as_str()), ("synced", "model-a"), "模型留空用第一个");
         // 供应商没了
-        let out = sync(&[], &assign("claude", "gone", "", ""), &[t], &[]);
+        let out = sync(&[], &[target("claude", ("gone", "", ""), files)], &[]);
         assert!(out.states[0].why.as_deref().unwrap().contains("没有供应商"));
     }
 
@@ -671,8 +672,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let settings = d.path().join("settings.json");
         std::fs::write(&settings, "{ not json").unwrap();
-        let t = target("claude", "server", Files::Claude { settings: settings.clone() });
-        let out = sync(&[provider("p")], &assign("claude", "p", "", ""), &[t], &[]);
+        let t = target("claude", ("p", "", ""), Files::Claude { settings: settings.clone() });
+        let out = sync(&[provider("p")], &[t], &[]);
         assert_eq!(out.states[0].state, "failed");
         assert!(out.states[0].why.as_deref().unwrap().contains("JSON"));
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{ not json");
@@ -685,7 +686,7 @@ mod tests {
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(&config, "# 我的配置\nmodel = \"old-model\"\n\n[model_providers.other]\nname = \"other\"\nbase_url = \"https://other\"\n").unwrap();
         let files = Files::Codex { config: config.clone() };
-        let out = sync(&[provider("p")], &assign("codex", "p", "model-b", "high"), &[target("codex", "server", files.clone())], &[]);
+        let out = sync(&[provider("p")], &[target("codex", ("p", "model-b", "high"), files.clone())], &[]);
         assert_eq!(out.states[0].state, "synced", "{:?}", out.states[0]);
         let text = std::fs::read_to_string(&config).unwrap();
         assert!(text.contains("# 我的配置") && text.contains("[model_providers.other]"), "{text}");
@@ -700,13 +701,24 @@ mod tests {
         let (settings, models) = (d.path().join("settings.json"), d.path().join("models.json"));
         std::fs::write(&settings, "{\"theme\": \"dark\"}").unwrap();
         let files = Files::Pi { settings: settings.clone(), models: models.clone() };
-        let out = sync(&[provider("p")], &assign("pi", "p", "model-b", "max"), &[target("pi", "server", files.clone())], &[]);
+        let out = sync(&[provider("p")], &[target("pi", ("p", "model-b", "max"), files.clone())], &[]);
         assert_eq!(out.states[0].state, "synced");
         let (s, m) = (read_json(&settings), read_json(&models));
         assert_eq!((s["defaultProvider"].as_str(), s["defaultModel"].as_str(), s["defaultThinkingLevel"].as_str(), s["theme"].as_str()), (Some("board-p"), Some("model-b"), Some("max"), Some("dark")));
-        assert_eq!(m["providers"]["board-p"]["api"], "anthropic-messages");
+        assert_eq!(m["providers"]["board-p"]["api"], "anthropic-messages", "没选接口：供应商里第一个 pi 认的");
         assert_eq!(m["providers"]["board-p"]["baseUrl"], "https://api.example.com");
         assert_eq!(current(&files), Some(("model-b".into(), "max".into())));
+        // 指定接口：按它的地址和写法
+        let mut t = target("pi", ("p", "model-b", "max"), files.clone());
+        t.own.protocol = "openai-chat".into();
+        assert_eq!(sync(&[provider("p")], &[t.clone()], &[]).states[0].state, "synced");
+        let m = read_json(&models);
+        assert_eq!((m["providers"]["board-p"]["api"].as_str(), m["providers"]["board-p"]["baseUrl"].as_str()), (Some("openai-completions"), Some("https://api.example.com/v1")));
+        // 指定的接口供应商不给了：回到第一个对得上的
+        let mut only = provider("p");
+        only.endpoints.retain(|e| e.interface == "anthropic");
+        assert_eq!(sync(&[only], &[t], &[]).states[0].state, "synced");
+        assert_eq!(read_json(&models)["providers"]["board-p"]["api"], "anthropic-messages");
     }
 
     #[test]
@@ -715,7 +727,7 @@ mod tests {
         let (patch, env) = (d.path().join("cordis.patch.yml"), d.path().join(".env"));
         std::fs::write(&env, "OTHER=1\nBOARD_PROVIDER_OLD_API_KEY=sk-old\n").unwrap();
         let files = Files::Dsh { patch: patch.clone(), env: env.clone() };
-        let out = sync(&[provider("new-api")], &assign("dsh", "new-api", "model-b", "max"), &[target("dsh", "server", files.clone())], &[]);
+        let out = sync(&[provider("new-api")], &[target("dsh", ("new-api", "model-b", "max"), files.clone())], &[]);
         assert_eq!(out.states[0].state, "synced", "{:?}", out.states[0]);
         let text = std::fs::read_to_string(&patch).unwrap();
         assert!(text.contains("board-new-api:") && text.contains("apiKeyEnv: BOARD_PROVIDER_NEW_API_API_KEY"), "{text}");
@@ -726,13 +738,13 @@ mod tests {
         assert!(e.contains("OTHER=1") && e.contains("BOARD_PROVIDER_NEW_API_API_KEY=sk-secret-1234") && !e.contains("sk-old"), "{e}");
         assert_eq!(current(&files), Some(("model-b".into(), "max".into())));
         // 再写一次：没有变化
-        let out = sync(&[provider("new-api")], &assign("dsh", "new-api", "model-b", "max"), &[target("dsh", "server", files)], &[]);
+        let out = sync(&[provider("new-api")], &[target("dsh", ("new-api", "model-b", "max"), files)], &[]);
         assert!(out.changes.is_empty(), "{:?}", out.changes);
     }
 
     #[test]
     fn unsupported_agents_report_off_or_unsupported() {
-        let out = sync(&[], &[], &[], &[("dsh".into(), "server".into(), "WSL 里的 agent 还不能改写配置文件".into()), ("pi".into(), "off".into(), String::new())]);
+        let out = sync(&[], &[], &[("dsh".into(), "own".into(), "WSL 里的 agent 还不能改写配置文件".into()), ("pi".into(), "off".into(), String::new())]);
         assert_eq!((out.states[0].state.as_str(), out.states[1].state.as_str()), ("unsupported", "off"));
     }
 }

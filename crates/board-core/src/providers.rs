@@ -8,8 +8,8 @@
 //!   `/v1/messages`）。写 agent 配置文件和「获取模型」（[`models_url`]）都按规范化后的地址。
 //! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型不能选强度，写配置时也不写强度（[`writable_efforts`]）。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
-//! - 每个内置 agent（claude、codex、pi、dsh）用哪个供应商、哪个模型、什么强度：不放这里，在 [`AgentProvider`] 里；
-//!   每台机器上的每个 agent 选「用服务器的 / 不改 / 单独配置」（机器设置的 `run`，见 hosts.rs 的 [`crate::hosts::AgentRun`]）。
+//! - 每个内置 agent（claude、codex、pi、dsh）用哪个供应商、哪个模型、什么强度、哪种接口：在每台机器上选「不改 / 指定」
+//!   （机器设置的 `run`，见 hosts.rs 的 [`crate::hosts::AgentRun`]）；服务器上不再存一份给所有机器跟的。
 //! - 改了算配置有变化：服务端给受影响的机器下发「同步配置」请求（hosts.rs 的 `request_config_sync`）。
 
 use crate::store::{R, W};
@@ -28,14 +28,6 @@ CREATE TABLE IF NOT EXISTS providers (
   updated_at INTEGER NOT NULL,
   by_name    TEXT NOT NULL,
   source     TEXT NOT NULL
-);
-
--- 每个内置 agent 用哪个供应商、哪个模型、什么强度
-CREATE TABLE IF NOT EXISTS provider_agents (
-  agent      TEXT PRIMARY KEY,
-  spec       TEXT NOT NULL,             -- JSON：AgentProvider
-  updated_at INTEGER NOT NULL,
-  by_name    TEXT NOT NULL
 );
 "#;
 
@@ -186,24 +178,16 @@ pub struct ProviderIndex {
     pub version: String,
 }
 
-/// 一个内置 agent 用哪个供应商、哪个模型、什么强度（共用配置）
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// 以前服务器上给一个内置 agent 存的那一组（`provider_agents` 表，已经去掉）：只在迁移旧数据时读
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentProvider {
-    /// 内置 agent 标识：claude、codex、pi、dsh
-    pub agent: String,
-    /// 供应商名称；空 = 不管（不改这个 agent 的配置文件）
+pub(crate) struct OldAssignment {
     #[serde(default)]
     pub provider: String,
     #[serde(default)]
     pub model: String,
-    /// 思考强度；空 = agent 自己的默认
     #[serde(default)]
     pub effort: String,
-    #[serde(default)]
-    pub updated_at: i64,
-    #[serde(default)]
-    pub by: String,
 }
 
 /// 一台机器上一个 agent 这次同步配置的结果（board host 上报，每个 agent 一行）
@@ -211,8 +195,9 @@ pub struct AgentProvider {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderState {
     pub agent: String,
-    /// synced 已写入 | off 不改（Board 不碰它的配置文件）| none 服务器上没给它配供应商 |
-    /// unsupported 不支持（配置文件里新加的 agent、WSL 里的）| failed 写入失败
+    /// synced 已写入 | off 不改（Board 不碰它的配置文件）|
+    /// unsupported 不支持（配置文件里新加的 agent、WSL 里的）| failed 写入失败。
+    /// `none` 是旧版 board host 报的（以前「用服务器的」、服务器上没配时）
     pub state: String,
     /// 写进去的供应商、模型、强度（synced 时；强度这个模型不支持时不写，见 `dropped`）
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -228,14 +213,12 @@ pub struct ProviderState {
     pub why: Option<String>,
 }
 
-/// 发给 board host 的供应商共用配置：索引（取完整内容用）和每个 agent 用哪个
+/// 发给 board host 的供应商共用配置：索引（取完整内容用）。每个 agent 用哪个在机器设置里（`HostAgent` 的 `run_*`）
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderWork {
     #[serde(default)]
     pub providers: Vec<ProviderIndex>,
-    #[serde(default)]
-    pub agents: Vec<AgentProvider>,
 }
 
 fn tail(v: &str) -> String {
@@ -260,10 +243,15 @@ impl Provider {
         self.endpoints.iter().any(|e| want.contains(&e.interface.as_str()))
     }
 
-    /// 和这个 agent 对得上的接口（按接口顺序）；没有时空
-    pub fn endpoint_for(&self, agent: &str) -> Option<&ProviderEndpoint> {
+    /// 和这个 agent 对得上的接口（按供应商里的顺序）
+    pub fn endpoints_for(&self, agent: &str) -> impl Iterator<Item = &ProviderEndpoint> {
         let want = protocols_of(agent);
-        self.endpoints.iter().find(|e| want.contains(&e.interface.as_str()))
+        self.endpoints.iter().filter(move |e| want.contains(&e.interface.as_str()))
+    }
+
+    /// 这个 agent 用哪个接口：机器上指定了、供应商给着、agent 也认就是它；没指定或已经对不上时用第一个对得上的；都没有时空
+    pub fn endpoint_for(&self, agent: &str, protocol: &str) -> Option<&ProviderEndpoint> {
+        self.endpoints_for(agent).find(|e| e.interface == protocol).or_else(|| self.endpoints_for(agent).next())
     }
 
     /// 内容的版本号（含密钥原文，不含版本号和元数据本身）
@@ -327,15 +315,6 @@ fn provider_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Provider> {
     Ok(p)
 }
 
-fn agent_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentProvider> {
-    let spec: String = r.get(1)?;
-    let mut a: AgentProvider = serde_json::from_str(&spec).unwrap_or_default();
-    a.agent = r.get(0)?;
-    a.updated_at = r.get(2)?;
-    a.by = r.get(3)?;
-    Ok(a)
-}
-
 impl R<'_> {
     /// 全部（含 API key 原文：只给这台机器用的令牌接口，见 [`R::host_uses_token`]；界面用 [`Provider::masked`]）
     pub fn providers(&self) -> Result<Vec<Provider>> {
@@ -344,19 +323,12 @@ impl R<'_> {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// 每个内置 agent 用哪个供应商
-    pub fn provider_agents(&self) -> Result<Vec<AgentProvider>> {
-        let mut st = self.conn.prepare("SELECT agent, spec, updated_at, by_name FROM provider_agents ORDER BY agent")?;
-        let rows = st.query_map([], agent_row)?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
-    }
-
     pub fn provider_index(&self) -> Result<Vec<ProviderIndex>> {
         Ok(self.providers()?.into_iter().map(|p| ProviderIndex { name: p.name, version: p.version }).collect())
     }
 
     pub fn provider_work(&self) -> Result<ProviderWork> {
-        Ok(ProviderWork { providers: self.provider_index()?, agents: self.provider_agents()? })
+        Ok(ProviderWork { providers: self.provider_index()? })
     }
 
     pub(crate) fn provider(&self, name: &str) -> Result<Option<Provider>> {
@@ -423,75 +395,15 @@ impl W<'_> {
         Ok(p.masked())
     }
 
-    /// 删掉一个供应商：用着它的 agent 回到「不管」；机器上单独配置成它的 agent 下次同步时写入失败（界面上提示换一个）
+    /// 删掉一个供应商：机器上指定成它的 agent 下次同步时写入失败（界面上提示换一个）
     pub fn provider_rm(&mut self, name: &str) -> Result<()> {
         if self.tx.execute("DELETE FROM providers WHERE name = ?1", [name])? == 0 {
             return Err(BoardError::new(ErrorCode::NotFound, format!("没有模型供应商「{name}」")));
-        }
-        let all = self.read().provider_agents()?;
-        for a in all.iter().filter(|a| a.provider == name) {
-            let cleared = AgentProvider { agent: a.agent.clone(), updated_at: self.now, by: a.by.clone(), ..Default::default() };
-            self.tx.execute(
-                "UPDATE provider_agents SET spec = ?2, updated_at = ?3 WHERE agent = ?1",
-                params![a.agent, serde_json::to_string(&cleared).unwrap_or_default(), self.now],
-            )?;
         }
         self.hosts_changed = true;
         self.config_changed = true;
         self.changed = true;
         Ok(())
-    }
-
-    /// 一个内置 agent 用哪个供应商、哪个模型、什么强度。供应商为空 = 不管
-    pub fn provider_agent_put(&mut self, mut a: AgentProvider, by: &str) -> Result<AgentProvider> {
-        a.agent = a.agent.trim().to_string();
-        a.provider = a.provider.trim().to_string();
-        a.model = a.model.trim().to_string();
-        a.effort = a.effort.trim().to_string();
-        if !AGENTS.iter().any(|(k, _, _)| *k == a.agent) {
-            return Err(BoardError::usage(format!("不认识的 agent「{}」：只能是 {}", a.agent, AGENTS.map(|(k, _, _)| k).join("、"))));
-        }
-        if a.provider.is_empty() {
-            a.model.clear();
-            a.effort.clear();
-        } else {
-            let p = self
-                .read()
-                .provider(&a.provider)?
-                .ok_or_else(|| BoardError::usage(format!("没有模型供应商「{}」", a.provider)))?;
-            let fits = protocols_of(&a.agent);
-            if !p.endpoints.iter().any(|e| fits.contains(&e.interface.as_str())) {
-                return Err(BoardError::usage(format!(
-                    "{} 用不了供应商 {}：它没有 {} 接口",
-                    agent_name(&a.agent),
-                    a.provider,
-                    fits.iter().map(|x| interface_name(x)).collect::<Vec<_>>().join("、")
-                )));
-            }
-            if a.model.is_empty() {
-                a.model = p.models.first().cloned().unwrap_or_default();
-            }
-            if !p.models.iter().any(|m| m == &a.model) {
-                return Err(BoardError::usage(format!("供应商 {} 里没有模型「{}」：只能是 {}", a.provider, a.model, p.models.join("、"))));
-            }
-            check_effort(&a.agent, &p, &a.model, &a.effort)?;
-        }
-        a.updated_at = self.now;
-        a.by = if by.trim().is_empty() { "人".into() } else { by.trim().into() };
-        let old = self.read().provider_agents()?.into_iter().find(|x| x.agent == a.agent);
-        if old.as_ref().is_some_and(|o| o.provider == a.provider && o.model == a.model && o.effort == a.effort) {
-            return Ok(old.expect("上面看过"));
-        }
-        self.tx.execute(
-            "INSERT INTO provider_agents (agent, spec, updated_at, by_name) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(agent) DO UPDATE SET spec = ?2, updated_at = ?3, by_name = ?4",
-            params![a.agent, serde_json::to_string(&a).unwrap_or_default(), a.updated_at, a.by],
-        )?;
-        self.hosts_changed = true;
-        self.config_changed = true;
-        self.config_by = a.by.clone();
-        self.changed = true;
-        Ok(a)
     }
 }
 
@@ -585,10 +497,11 @@ mod tests {
         assert_eq!(writable_efforts("claude", &p, "model-a"), vec!["low", "max"]);
         assert_eq!(writable_efforts("codex", &p, "model-a"), vec!["minimal", "low"]);
         assert!(writable_efforts("claude", &p, "model-b").is_empty(), "没标的不能选");
-        let set = |s: &mut Store, a: AgentProvider| s.write(2000, Origin::ui(None), |w| w.provider_agent_put(a, "octocat"));
-        assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "max".into(), ..Default::default() }).is_ok());
-        let err = set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "minimal".into(), ..Default::default() }).unwrap_err();
+        assert!(check_effort("claude", &p, "model-a", "max").is_ok());
+        assert!(check_effort("claude", &p, "model-a", "").is_ok(), "空 = 不写强度");
+        let err = check_effort("claude", &p, "model-a", "minimal").unwrap_err();
         assert!(err.message.contains("low、max"), "{}", err.message);
+        assert!(check_effort("claude", &p, "model-b", "high").unwrap_err().message.contains("不能选强度"));
         // 不认识的档位
         let bad: BTreeMap<String, Vec<String>> = [("model-a".to_string(), vec!["ultra".to_string()])].into();
         assert!(s.write(3000, Origin::ui(None), |w| w.provider_put(Provider { efforts: bad, ..provider("p1") }, "", "")).unwrap_err().message.contains("ultra"));
@@ -600,28 +513,29 @@ mod tests {
     }
 
     #[test]
-    fn agent_assignments_are_checked_and_cleared_on_delete() {
+    fn endpoint_follows_the_chosen_interface_and_falls_back_to_the_first() {
+        let ep = |i: &str, u: &str| ProviderEndpoint { interface: i.into(), url: u.into() };
+        let p = Provider { endpoints: vec![ep("openai-chat", "https://x/v1"), ep("anthropic", "https://x"), ep("openai-responses", "https://x/v1")], ..provider("p") };
+        let pick = |agent: &str, protocol: &str| p.endpoint_for(agent, protocol).map(|e| e.interface.clone());
+        // 没指定：供应商里第一个这个 agent 认的
+        assert_eq!(pick("pi", ""), Some("openai-chat".into()));
+        assert_eq!(pick("claude", ""), Some("anthropic".into()));
+        // 指定了、供应商给着、agent 也认
+        assert_eq!(pick("pi", "openai-responses"), Some("openai-responses".into()));
+        // agent 不认指定的那种：回到第一个对得上的
+        assert_eq!(pick("claude", "openai-chat"), Some("anthropic".into()));
+        // 对不上任何一种
+        let chat = Provider { endpoints: vec![ep("openai-chat", "https://x/v1")], ..provider("c") };
+        assert_eq!(chat.endpoint_for("codex", ""), None);
+        assert!(!chat.fits("codex") && chat.fits("pi"));
+    }
+
+    #[test]
+    fn removing_a_provider_twice_is_not_found() {
         let mut s = Store::open_in_memory().unwrap();
         s.write(1000, Origin::ui(None), |w| w.provider_put(provider("p1"), "", "")).unwrap();
-        s.write(1000, Origin::ui(None), |w| w.provider_put(Provider { name: "chat".into(), endpoints: vec![ProviderEndpoint { interface: "openai-chat".into(), url: "https://x".into() }], ..provider("chat") }, "", "")).unwrap();
-        let set = |s: &mut Store, a: AgentProvider| s.write(2000, Origin::ui(None), |w| w.provider_agent_put(a, "octocat"));
-        // 接口对不上
-        let err = set(&mut s, AgentProvider { agent: "codex".into(), provider: "p1".into(), ..Default::default() }).unwrap_err();
-        assert!(err.message.contains("接口"), "{}", err.message);
-        // 正常的：模型留空时用第一个
-        let out = set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), ..Default::default() }).unwrap();
-        assert_eq!((out.model.as_str(), out.effort.as_str()), ("model-a", ""));
-        // 模型不在供应商里
-        assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "nope".into(), ..Default::default() }).unwrap_err().message.contains("没有模型"));
-        // 模型没标强度：不能选
-        assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "high".into(), ..Default::default() }).unwrap_err().message.contains("不能选强度"));
-        // 不认识的内置 agent
-        assert!(set(&mut s, AgentProvider { agent: "mycli".into(), provider: "p1".into(), ..Default::default() }).unwrap_err().message.contains("不认识的 agent"));
-        // 删掉供应商：用着它的 agent 回到不管
         s.write(3000, Origin::ui(None), |w| w.provider_rm("p1")).unwrap();
-        let a = s.read(|r| r.provider_agents()).unwrap();
-        assert_eq!((a[0].provider.as_str(), a[0].model.as_str()), ("", ""));
-        assert!(s.read(|r| r.providers()).unwrap().iter().all(|p| p.name != "p1"));
+        assert!(s.read(|r| r.providers()).unwrap().is_empty());
         assert_eq!(s.write(3000, Origin::ui(None), |w| w.provider_rm("p1")).unwrap_err().code, ErrorCode::NotFound);
     }
 }

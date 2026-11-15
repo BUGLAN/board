@@ -487,10 +487,10 @@ struct SyncAgent {
     env: Env,
     prog: Option<String>,
     skill_dir: Option<String>,
-    /// `server` / `off` / `own`
+    /// `off` 不改 / `own` 指定
     mode: String,
-    /// 单独配置的供应商、模型、强度
-    own: (String, String, String),
+    /// 指定的供应商、模型、强度、接口
+    own: providersync::Own,
 }
 
 /// 一次同步要的东西（交给后台线程）
@@ -523,7 +523,7 @@ struct SyncOut {
 }
 
 /// 同步配置（在后台线程里）：skills（选了「不改」时只装 board-skills）、MCP（选了「不改」时不碰）、
-/// 每个内置 agent 的模型（用服务器的 / 不改 / 单独配置），最后读回每个 agent 配置文件里现在的模型和强度
+/// 每个内置 agent 的模型（不改 / 指定），最后读回每个 agent 配置文件里现在的模型和强度
 fn run_sync(job: SyncJob) -> SyncOut {
     let mut changes = vec![];
     // skills
@@ -619,7 +619,7 @@ fn run_sync(job: SyncJob) -> SyncOut {
                     None => unsupported.push((a.id.clone(), a.mode.clone(), format!("{}里的 agent 还不能改写配置文件", a.env.name))),
                 }
             }
-            let out = providersync::sync(&lib.providers, &lib.agents, &targets, &unsupported);
+            let out = providersync::sync(&lib.providers, &targets, &unsupported);
             changes.extend(out.changes);
             out.states
         }
@@ -2486,7 +2486,12 @@ impl Host<'_> {
                 prog,
                 skill_dir: spec.skills.first().cloned(),
                 mode: u.run_mode.clone().unwrap_or_else(|| board_core::hosts::MODE_OFF.into()),
-                own: (u.run_provider.clone().unwrap_or_default(), u.run_model.clone().unwrap_or_default(), u.run_effort.clone().unwrap_or_default()),
+                own: providersync::Own {
+                    provider: u.run_provider.clone().unwrap_or_default(),
+                    model: u.run_model.clone().unwrap_or_default(),
+                    effort: u.run_effort.clone().unwrap_or_default(),
+                    protocol: u.run_protocol.clone().unwrap_or_default(),
+                },
             });
         }
         let host_dir = self.logs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));

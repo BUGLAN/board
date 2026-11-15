@@ -1,43 +1,40 @@
 //! 模型供应商共用配置的接口（PRD §10.12「共用配置」）：
 //!
-//! - `GET /api/providers`：列表和每个内置 agent 用哪个，API key 只给末尾 4 位（界面、访问令牌都能读）；
+//! - `GET /api/providers`：列表，API key 只给末尾 4 位（界面、访问令牌都能读）；
 //!   `meta` 是内置 agent 的说明（认哪些接口、配置文件能写哪几档强度，只在 board-core 留一份）
 //! - `POST /api/providers {name, endpoints, apiKey, models, efforts}`：新增或修改（只能在登录后的界面上做）；API key 留空保留原来的值；
 //!   地址保存时规范化（Anthropic 的去掉结尾的 `/v1`），`efforts` 是每个模型支持的强度
-//! - `POST /api/providers/agents {agent, provider, model, effort}`：一个内置 agent 用哪个供应商（只能在登录后的界面上做）
-//! - `DELETE /api/providers/{名称}`：删掉（只能在界面上做）；用着它的 agent 回到「没配」，机器上单独配置成它的下次同步时报失败
-//! - `GET /api/hosts/{名字}/providers`：完整内容（含 API key 原文）和每个 agent 用哪个，只给这台机器用的访问令牌；
+//! - `DELETE /api/providers/{名称}`：删掉（只能在界面上做）；机器上指定成它的 agent 下次同步时报失败
+//! - `GET /api/hosts/{名字}/providers`：完整内容（含 API key 原文），只给这台机器用的访问令牌；
 //!   界面、其他机器的令牌都是 `NOT_LOGGED_IN`
 //! - `POST /api/providers/models {name?, endpoints, apiKey?}`：获取模型——服务端用这些地址和 API key 问供应商有哪些模型
 //!   （只能在登录后的界面上做）；API key 留空时用名称对应的供应商存着的那个。问哪个地址和写配置用同一个函数
 //!   （board-core 的 `providers::models_url`）；12 秒超时，失败时写明原因（key 不对、没有模型列表接口、连不上）
+//!
+//! 每台机器上每个 agent 用哪个供应商、模型、强度、接口在机器设置里改（`POST /api/hosts/{名字}` 的 `run`），
+//! 服务器上不再给所有机器存一组
 
 use crate::auth::{human, Caller};
 use crate::{client_of, parse, ApiError, ApiResult, AppState};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::{Extension, Json};
-use board_core::providers::{models_url, AgentMeta, AgentProvider, Provider, ProviderEndpoint};
+use board_core::providers::{models_url, AgentMeta, Provider, ProviderEndpoint};
 use board_core::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// 列表接口：打了码的供应商 + 每个内置 agent 用哪个
+/// 列表接口：打了码的供应商 + 内置 agent 的说明
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderView {
     providers: Vec<Provider>,
-    agents: Vec<AgentProvider>,
     meta: Vec<AgentMeta>,
 }
 
-fn view(providers: Vec<Provider>, agents: Vec<AgentProvider>) -> ProviderView {
-    ProviderView { providers: providers.iter().map(Provider::masked).collect(), agents, meta: board_core::providers::agent_meta() }
-}
-
 pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<ProviderView> {
-    let (providers, agents) = s.db(|st| st.read(|r| Ok((r.providers()?, r.provider_agents()?)))).await?;
-    Ok(Json(view(providers, agents)))
+    let providers = s.db(|st| st.read(|r| r.providers())).await?;
+    Ok(Json(ProviderView { providers: providers.iter().map(Provider::masked).collect(), meta: board_core::providers::agent_meta() }))
 }
 
 pub(crate) async fn put(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Provider> {
@@ -45,14 +42,6 @@ pub(crate) async fn put(State(s): State<AppState>, Extension(caller): Extension<
     let provider: Provider = parse(v)?;
     let client = client_of(&h);
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.provider_put(provider, &by, "界面"))).await?;
-    s.poke();
-    Ok(Json(out))
-}
-
-pub(crate) async fn assign(State(s): State<AppState>, Extension(caller): Extension<Caller>, Json(v): Json<Value>) -> ApiResult<AgentProvider> {
-    let by = human(&caller).map_err(ApiError)?;
-    let a: AgentProvider = parse(v)?;
-    let out = s.db(move |st| st.write(now_ms(), Origin::ui(None), |w| w.provider_agent_put(a, &by))).await?;
     s.poke();
     Ok(Json(out))
 }
@@ -70,7 +59,6 @@ pub(crate) async fn remove(State(s): State<AppState>, Extension(caller): Extensi
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostProviderView {
     providers: Vec<Provider>,
-    agents: Vec<AgentProvider>,
 }
 
 /// board host 取完整内容（含 API key 原文）：只给这台机器用的访问令牌，别的令牌（界面登录、其他机器、没绑机器的新令牌）
@@ -88,8 +76,8 @@ pub(crate) async fn for_host(State(s): State<AppState>, Extension(caller): Exten
             "API key 原文只发给这台机器用的令牌：机器不在这台机器上，或它的令牌不是你用的这个；界面上用 GET /api/providers（API key 打码）",
         )));
     }
-    let (providers, agents) = s.db(|st| st.read(|r| Ok((r.providers()?, r.provider_agents()?)))).await?;
-    Ok(Json(HostProviderView { providers, agents }))
+    let providers = s.db(|st| st.read(|r| r.providers())).await?;
+    Ok(Json(HostProviderView { providers }))
 }
 
 /* ------------------------------ 获取模型 ------------------------------ */

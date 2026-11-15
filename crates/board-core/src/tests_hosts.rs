@@ -3133,7 +3133,7 @@ fn version_order() {
     assert!(!hosts::version_lt("1.0.0", "0.9.9"));
 }
 
-/* ------------------------------ 模型：用服务器的 / 不改 / 单独配置（机器详情与配置同步重构） ------------------------------ */
+/* ------------------------------ 模型：不改 / 指定（机器详情与配置同步重构） ------------------------------ */
 
 /// 两个供应商：p1（Anthropic，model-a 标了 low、high；model-b 没标）、chat（只有 OpenAI Chat）
 fn providers(s: &mut Store) {
@@ -3173,10 +3173,9 @@ fn model_modes_default_to_off_and_are_validated() {
     let a = claude_of(&h);
     assert_eq!((a.run_mode.as_deref(), a.run_provider.as_deref()), (Some("off"), Some("@local")));
     assert!(!h.sync_skills && !h.sync_mcp, "skills、MCP 也是不改");
-    // 用服务器的
-    let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "server" })).unwrap());
-    assert_eq!((a.run_mode.as_deref(), a.run_provider.as_deref(), a.run_model.as_deref()), (Some("server"), None, None));
-    // 单独配置：模型留空用第一个；强度要是模型标了的、claude 能写的
+    // 没有「用服务器的」了
+    assert!(set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "server" })).unwrap_err().message.contains("只能是"));
+    // 指定：模型留空用第一个；强度要是模型标了的、claude 能写的
     let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1" })).unwrap());
     assert_eq!((a.run_mode.as_deref(), a.run_provider.as_deref(), a.run_model.as_deref(), a.run_effort.as_deref()), (Some("own"), Some("p1"), Some("model-a"), None));
     let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1", "model": "model-a", "effort": "high" })).unwrap());
@@ -3191,11 +3190,56 @@ fn model_modes_default_to_off_and_are_validated() {
     assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "nope" })).contains("没有模型供应商"));
     assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1", "model": "zzz" })).contains("没有模型"));
     assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "later" })).contains("只能是"));
-    assert!(bad(&mut s, serde_json::json!({ "agent": "kimi", "mode": "server" })).contains("内置"));
-    // 旧界面只带供应商：空 = 用服务器的，@local = 不改
-    assert_eq!(claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "provider": "" })).unwrap()).run_mode.as_deref(), Some("server"));
+    assert!(bad(&mut s, serde_json::json!({ "agent": "kimi", "mode": "off" })).contains("内置"));
+    // 旧界面只带供应商：空、@local = 不改
     let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "provider": "@local" })).unwrap());
-    assert_eq!((a.run_mode.as_deref(), a.run_model.as_deref()), (Some("off"), None), "改成不改：单独配置的清掉");
+    assert_eq!((a.run_mode.as_deref(), a.run_model.as_deref()), (Some("off"), None), "改成不改：指定的清掉");
+    set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1" })).unwrap();
+    assert_eq!(claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "provider": "" })).unwrap()).run_mode.as_deref(), Some("off"));
+}
+
+#[test]
+fn the_interface_can_be_chosen_when_agent_and_provider_both_have_several() {
+    let mut s = store();
+    providers(&mut s);
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents.push(dsh(true));
+    beat(&mut s, T0, &rep).unwrap();
+    let ep = |i: &str, u: &str| crate::providers::ProviderEndpoint { interface: i.into(), url: u.into() };
+    let both = crate::providers::Provider {
+        name: "both".into(),
+        endpoints: vec![ep("anthropic", "https://relay.example.com"), ep("openai-chat", "https://relay.example.com/v1")],
+        api_key: Some("sk-3".into()),
+        models: vec!["b1".into()],
+        ..Default::default()
+    };
+    s.write(T0, Origin::ui(None), |w| w.provider_put(both, "buglan", "")).unwrap();
+    let dsh_of = |h: &HostInfo| h.agents.iter().find(|a| a.id == "dsh").cloned().unwrap();
+    // 不指定：空，board host 用第一个对得上的
+    let a = dsh_of(&set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both" })).unwrap());
+    assert_eq!(a.run_protocol, None);
+    // 指定 OpenAI Chat；只改强度、模型时留着
+    let a = dsh_of(&set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both", "protocol": "openai-chat" })).unwrap());
+    assert_eq!(a.run_protocol.as_deref(), Some("openai-chat"));
+    let a = dsh_of(&set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "model": "b1", "effort": "" })).unwrap());
+    assert_eq!(a.run_protocol.as_deref(), Some("openai-chat"));
+    // 供应商没给的、agent 不认的：拒绝
+    let bad = |s: &mut Store, v: serde_json::Value| set_run(s, v).unwrap_err().message;
+    assert!(bad(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both", "protocol": "openai-responses" })).contains("接口只能是"));
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "both", "protocol": "openai-chat" })).contains("Anthropic Messages"));
+    // 换供应商：原来指定的接口清掉；空 = 回到第一个对得上的
+    let a = dsh_of(&set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "chat" })).unwrap());
+    assert_eq!((a.run_provider.as_deref(), a.run_protocol.as_deref()), (Some("chat"), None));
+    set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both", "protocol": "anthropic" })).unwrap();
+    let a = dsh_of(&set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both", "protocol": "" })).unwrap());
+    assert_eq!(a.run_protocol, None);
+    // 改成不改：清掉
+    set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both", "protocol": "openai-chat" })).unwrap();
+    let key = s.read(|r| r.host_work("mbp", T0)).unwrap().config_key;
+    set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "own", "provider": "both", "protocol": "anthropic" })).unwrap();
+    assert_ne!(s.read(|r| r.host_work("mbp", T0)).unwrap().config_key, key, "换接口要重新写");
+    let a = dsh_of(&set_run(&mut s, serde_json::json!({ "agent": "dsh", "mode": "off" })).unwrap());
+    assert_eq!((a.run_mode.as_deref(), a.run_protocol.as_deref()), (Some("off"), None));
 }
 
 #[test]
@@ -3623,9 +3667,15 @@ fn config_changes_ask_affected_hosts_to_sync_and_reports_clear_it() {
     assert_eq!(ask.by, "buglan");
     assert!(sync_of(&s, "old").ask.is_none(), "旧版 board host 不发请求");
     // 再改一个：等着的请求换成新的样子
-    s.write(T0, Origin::ui(None), |w| w.provider_agent_put(crate::providers::AgentProvider { agent: "claude".into(), provider: "p1".into(), ..Default::default() }, "buglan")).unwrap();
-    assert_eq!(sync_of(&s, "mbp").ask.unwrap().key, ask.key, "claude 不改：分配变了不影响");
-    set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "server" })).unwrap();
+    let chat = crate::providers::Provider {
+        name: "chat".into(),
+        endpoints: vec![crate::providers::ProviderEndpoint { interface: "openai-chat".into(), url: "https://api.example.com/v1".into() }],
+        models: vec!["c1".into(), "c2".into()],
+        ..Default::default()
+    };
+    s.write(T0, Origin::ui(None), |w| w.provider_put(chat, "buglan", "")).unwrap();
+    assert_eq!(sync_of(&s, "mbp").ask.unwrap().key, ask.key, "claude 不改：供应商变了不影响");
+    set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1" })).unwrap();
     let ask2 = sync_of(&s, "mbp").ask.unwrap();
     assert_ne!(ask2.key, ask.key);
     assert!(ask2.id > ask.id);
@@ -3636,7 +3686,7 @@ fn config_changes_ask_affected_hosts_to_sync_and_reports_clear_it() {
     assert_eq!(h.sync.last.as_ref().unwrap().agents.len(), 1);
     let op = &h.ops[0];
     assert_eq!(op.text, "同步配置：1 个 agent 已写入；3 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design");
-    assert_eq!(op.by, "人", "改分配的是界面上的人");
+    assert_eq!(op.by, "人", "改模型的是界面上的人");
     // 改供应商的强度：用着它的机器要重新写
     let ep = crate::providers::ProviderEndpoint { interface: "anthropic".into(), url: "https://api.example.com".into() };
     s.write(T0, Origin::ui(None), |w| w.provider_put(crate::providers::Provider { name: "p1".into(), endpoints: vec![ep], api_key: None, models: vec!["model-a".into()], ..Default::default() }, "buglan", "")).unwrap();
@@ -3655,8 +3705,8 @@ fn config_changes_ask_affected_hosts_to_sync_and_reports_clear_it() {
     assert!(s.write(T0, Origin::ui(None), |w| w.host_sync_retry("old", "buglan")).unwrap_err().message.contains("旧版"));
 }
 
-/// 升级：已有的机器保持原来的效果（skills、MCP 用服务器的；跟共用配置的 agent 用服务器的，本机自己管的不改，
-/// 单独指定了供应商的单独配置），派发时的模型、强度清掉；跑多久停取机器里最常见的；agent 模板的表删掉
+/// 升级：已有的机器保持原来的效果（skills、MCP 用服务器的；跟共用配置的 agent 指定共用配置里给它的那一组、没配的不改，
+/// 本机自己管的不改，单独指定了供应商的指定），派发时的模型、强度清掉；跑多久停取机器里最常见的；agent 模板的表删掉
 #[test]
 fn old_hosts_keep_syncing_after_upgrade_and_run_limits_become_global() {
     let dir = tempfile::tempdir().unwrap();
@@ -3679,6 +3729,8 @@ fn old_hosts_keep_syncing_after_upgrade_and_run_limits_become_global() {
                ALTER TABLE sched DROP COLUMN max_run;
                ALTER TABLE sched DROP COLUMN idle_run;
                CREATE TABLE agent_templates (id TEXT PRIMARY KEY, spec TEXT NOT NULL, version TEXT NOT NULL, updated_at INTEGER NOT NULL, by_name TEXT NOT NULL);
+               CREATE TABLE provider_agents (agent TEXT PRIMARY KEY, spec TEXT NOT NULL, updated_at INTEGER NOT NULL, by_name TEXT NOT NULL);
+               INSERT INTO provider_agents VALUES ('claude', '{"agent":"claude","provider":"p1","model":"model-a","effort":"low"}', 0, 'buglan');
                UPDATE hosts SET max_run = 60, idle_run = 15 WHERE name IN ('mbp', 'win');
                UPDATE hosts SET max_run = 240, idle_run = 30 WHERE name = 'air';
                UPDATE hosts SET run = '{"claude":{"env":"login","model":"sonnet","effort":"high"},"dsh":{"provider":"@local"},"kimi":{"model":"k2"}}' WHERE name = 'mbp';
@@ -3692,14 +3744,20 @@ fn old_hosts_keep_syncing_after_upgrade_and_run_limits_become_global() {
         assert!(h(n).sync_skills && h(n).sync_mcp, "{n}：以前都同步，记成用服务器的");
     }
     let mbp = h("mbp");
-    assert_eq!((mode(&mbp, "claude").as_str(), mode(&mbp, "dsh").as_str()), ("server", "off"));
+    assert_eq!((mode(&mbp, "claude").as_str(), mode(&mbp, "dsh").as_str()), ("own", "off"));
     let c = mbp.agents.iter().find(|x| x.id == "claude").unwrap();
-    assert_eq!((c.run_env.as_deref(), c.run_model.as_deref(), c.run_effort.as_deref()), (Some("login"), None, None), "启动环境留着，派发时的模型、强度清掉");
+    assert_eq!(
+        (c.run_env.as_deref(), c.run_provider.as_deref(), c.run_model.as_deref(), c.run_effort.as_deref()),
+        (Some("login"), Some("p1"), Some("model-a"), Some("low")),
+        "启动环境留着；跟共用配置的指定成那一组（派发时的 sonnet、high 不要了）"
+    );
     assert_eq!(mode(&mbp, "kimi").as_str(), "off", "配置文件里新加的 agent 不按供应商写");
     let win = h("win");
     let c = win.agents.iter().find(|x| x.id == "claude").unwrap();
     assert_eq!((c.run_mode.as_deref(), c.run_provider.as_deref(), c.run_model.as_deref()), (Some("own"), Some("p1"), Some("model-b")));
-    assert_eq!(mode(&win, "dsh").as_str(), "server", "没设过的跟共用配置：用服务器的");
+    assert_eq!(mode(&win, "dsh").as_str(), "off", "没设过的跟共用配置，共用配置里没给 dsh 配：不改");
+    let gone: i64 = s.conn().query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'provider_agents'", [], |r| r.get(0)).unwrap();
+    assert_eq!(gone, 0, "服务器上的分配用完就删");
     let sched = s.read(|r| r.sched(T0)).unwrap();
     assert_eq!((sched.max_run, sched.idle_run), (60, 15), "两台是 60 / 15");
     assert_eq!(h("air").max_run, 60);
@@ -3712,6 +3770,45 @@ fn old_hosts_keep_syncing_after_upgrade_and_run_limits_become_global() {
     drop(s);
     let s = Store::open(&path).unwrap();
     assert!(!s.read(|r| r.host("mbp", T0)).unwrap().sync_skills);
+}
+
+/// 去掉「用服务器的」：选了它的 agent 改成指定服务器上那一组（机器上的效果不变），服务器上没配的改成不改；
+/// 表删掉，再打开不重复
+#[test]
+fn server_mode_becomes_own_with_the_old_assignment() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v029.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        providers(&mut s);
+        let mut rep = report("mbp", "i1", vec![]);
+        rep.agents.push(dsh(true));
+        beat(&mut s, T0, &rep).unwrap();
+    }
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TABLE provider_agents (agent TEXT PRIMARY KEY, spec TEXT NOT NULL, updated_at INTEGER NOT NULL, by_name TEXT NOT NULL);
+               INSERT INTO provider_agents VALUES ('claude', '{"agent":"claude","provider":"p1","model":"model-a","effort":"high"}', 0, 'buglan');
+               INSERT INTO provider_agents VALUES ('dsh', '{"agent":"dsh","provider":"","model":"","effort":""}', 0, 'buglan');
+               UPDATE hosts SET run = '{"claude":{"mode":"server","env":"login"},"dsh":{"mode":"server"}}' WHERE name = 'mbp';"#,
+        )
+        .unwrap();
+    let s = Store::open(&path).unwrap();
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    let c = claude_of(&h);
+    assert_eq!(
+        (c.run_mode.as_deref(), c.run_provider.as_deref(), c.run_model.as_deref(), c.run_effort.as_deref(), c.run_env.as_deref()),
+        (Some("own"), Some("p1"), Some("model-a"), Some("high"), Some("login"))
+    );
+    let d = h.agents.iter().find(|a| a.id == "dsh").unwrap();
+    assert_eq!((d.run_mode.as_deref(), d.run_provider.as_deref()), (Some("off"), Some("@local")), "服务器上没给它配：不改");
+    let left: i64 = s.conn().query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'provider_agents'", [], |r| r.get(0)).unwrap();
+    assert_eq!(left, 0);
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    assert_eq!(claude_of(&s.read(|r| r.host("mbp", T0)).unwrap()).run_model.as_deref(), Some("model-a"), "再打开不变");
 }
 
 #[test]

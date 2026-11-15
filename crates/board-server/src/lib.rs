@@ -338,7 +338,6 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/mcp", get(mcp::list).post(mcp::put))
         .route("/mcp/{name}", delete(mcp::remove))
         .route("/providers", get(providers::list).post(providers::put))
-        .route("/providers/agents", post(providers::assign))
         .route("/providers/models", post(providers::models))
         .route("/providers/{name}", delete(providers::remove))
         .route("/hosts/{name}/mcp", get(mcp::for_host))
