@@ -9,6 +9,7 @@ import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
 import { PROJECT_COLORS } from '../lib/schema';
 import { placeTip } from '../lib/tooltip';
+import { staleText } from '../lib/stale';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
@@ -633,6 +634,19 @@ export function TipNote({ el, text }: { el: HTMLElement; text: string }) {
 /** 提示的宿主：一个 `hidden` 的空 div，App 里挂一份；每个提示在其中是一个 span（见 TipNote） */
 export function TipHost() {
   return <div id={TIP_HOST} hidden />;
+}
+
+/** 服务端升级之后开着旧页面：顶栏门面上留一条（提示条关掉之后还看得见，点一下刷新。default/main#368） */
+export function StaleBanner() {
+  const stale = useData(s => s.stale);
+  const server = useData(s => s.serverVersion) ?? '';
+  if (!stale) return null;
+  return (
+    <button className="stale-banner" type="button" onClick={() => location.reload()} data-tip={staleText(server)}>
+      <Icon name="update" />
+      <span>{staleText(server)}</span>
+    </button>
+  );
 }
 
 /** 一个元素 + 它的提示：提示由全站的 data-tip 浮层画，同时按上面说的补上可读的名称 */

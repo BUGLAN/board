@@ -6,6 +6,7 @@ import { CtxMenu } from './overlays/CtxMenu';
 import { ConfirmDialog, FormModal } from './overlays/Dialogs';
 import { LabelManager, LabelPicker } from './overlays/Labels';
 import { Lightbox } from './overlays/Lightbox';
+import { MigrationGuard } from './overlays/MigrationGuard';
 import { Palette } from './overlays/Palette';
 import { TextViewer } from './overlays/TextViewer';
 import { Toasts } from './overlays/Toasts';
@@ -14,6 +15,7 @@ import { TrashDialog } from './overlays/Trash';
 export function Overlays() {
   return (
     <>
+      <MigrationGuard />
       <Palette />
       <FormModal />
       <LabelManager />

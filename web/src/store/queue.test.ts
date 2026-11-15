@@ -55,6 +55,8 @@ vi.mock('../lib/api', async orig => {
         return snap;
       },
       card: async (path: string, id: number) => detail(clone(server.boards[path].cards[id])),
+      // 服务端版本（GET /api/info）：版本号空，页面不会被判成旧页面（default/main#368）
+      info: async () => ({ name: 'board', version: '', commit: '' }),
       trash: async (path: string) => {
         return clone(server.trash[path] ?? []);
       },

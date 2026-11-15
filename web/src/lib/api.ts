@@ -289,12 +289,15 @@ interface PushMessage {
   ran?: number[];
 }
 
-/** 订阅变更。返回取消订阅函数 */
-export function connect(onMessage: (m: PushMessage) => void, onStatus: (s: LiveStatus) => void) {
+/** 订阅变更。返回取消订阅函数。
+    onReopen：推送断开后重新连上时调用（第一次连上不算）：服务端可能刚升级过，界面据此查一次版本（default/main#368） */
+export function connect(onMessage: (m: PushMessage) => void, onStatus: (s: LiveStatus) => void, onReopen?: () => void) {
   let es: EventSource | null = null;
   let closed = false;
   let retry = 0;
   let timer = 0;
+  /** 连上过没有：断开后重连才算「重新连上」 */
+  let opened = false;
   const open = () => {
     if (closed) return;
     onStatus('connecting');
@@ -302,6 +305,8 @@ export function connect(onMessage: (m: PushMessage) => void, onStatus: (s: LiveS
     es.onopen = () => {
       retry = 0;
       onStatus('live');
+      if (opened) onReopen?.();
+      opened = true;
     };
     es.onmessage = e => {
       try {

@@ -11,6 +11,9 @@ import { applySilently, bindRoute, parseRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
 import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
 import { boardFlow, INBOX } from '../lib/schema';
+import { buildVersion } from '../lib/build';
+import { staleServer } from '../lib/stale';
+import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type Workspace } from '../lib/types';
 
@@ -29,6 +32,10 @@ interface DataState {
   error: string | null;
   /** 详情没取回来的原因（取回或换一张卡片时清空）；有值时详情里不再显示骨架 */
   detailError: string | null;
+  /** 服务端版本（GET /api/info）：知道之前是 null。页面打包时的版本和它不一样时，界面提示刷新（lib/stale.ts） */
+  serverVersion: string | null;
+  /** 看这个窗口要不要提示刷新（computed，跟着 serverVersion 变） */
+  stale: boolean;
   /** 正在写入的标签（乐观更新）：「白板路径#卡片」→ 标签 ID。正在加上的已经并进 board 里卡片的 labels，正在去掉的还留在里面；界面都画成 pending 态 */
   pending: Record<string, number[]>;
   /** 正在发送的评论（乐观更新）：「白板路径#卡片」→ 按发送顺序。动态底部画成「发送中」的气泡，服务端确认后换成正式评论 */
@@ -81,6 +88,8 @@ export const useData = create<DataState>(() => ({
   sending: {},
   saving: {},
   detailError: null,
+  serverVersion: null,
+  stale: false,
 }));
 
 const set = useData.setState;
@@ -1312,6 +1321,8 @@ function beforeUnload(e: BeforeUnloadEvent) {
 
 export function boot() {
   refresh();
+  // 版本检查不放在这里：桌面端自带的界面和网页端用同一套逻辑，要不要提示由 lib/stale-runner.ts 判断。
+  // 网页端启动时查一次（main.tsx 的 watchStale 只管切回标签页）；桌面端自己检查（default/main#368）
   window.addEventListener('beforeunload', beforeUnload);
   const stop = connect(
     m => {
@@ -1336,9 +1347,34 @@ export function boot() {
       // 断开时也取一次：会话过期会得到 401，界面切到登录页
       if (status === 'live' || status === 'offline') refresh();
     },
+    // 断开后重新连上：服务端可能刚升级过，查一次版本（default/main#368）
+    () => void checkServerVersion().then(v => noticeStale(buildVersion(), v)),
   );
   return () => {
     stop();
     window.removeEventListener('beforeunload', beforeUnload);
   };
+}
+
+/* ------------------------- 服务端升级之后还开着的旧页面 ------------------------- */
+
+/** 正在查版本：连点、重连、切标签页凑到一起时只发一次 */
+let versioning: Promise<string | null> | null = null;
+
+/** 取一次服务端的版本（GET /api/info）记进 store，交给 lib/stale-runner.ts 的 noticeStale 提示。
+    查不到时不改 store：拿不到版本就当不知道，不提示 */
+export function checkServerVersion(): Promise<string | null> {
+  if (versioning) return versioning;
+  versioning = api
+    .info()
+    .then(i => {
+      const v = (i?.version ?? '').trim() || null;
+      set({ serverVersion: v, stale: staleServer(buildVersion(), v) != null });
+      return v;
+    })
+    .catch(() => null)
+    .finally(() => {
+      versioning = null;
+    });
+  return versioning;
 }

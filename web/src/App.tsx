@@ -16,7 +16,7 @@ import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
 import { Topbar } from './components/Topbar';
-import { BrandMark, FloatTips, SYSTEM_NAME, TipHost } from './components/bits';
+import { BrandMark, FloatTips, StaleBanner, SYSTEM_NAME, TipHost } from './components/bits';
 import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
@@ -238,6 +238,8 @@ function BoardApp() {
       <Atmosphere />
       <div className="app" data-tab={tab} data-side={side ? 'open' : 'closed'}>
         <Topbar />
+        {/* 服务端升级之后开着旧页面：门面上一条，点一下刷新（default/main#368） */}
+        <StaleBanner />
         <ActivityBar />
         <SidePanel />
         <main className="main" id="main">
