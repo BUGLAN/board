@@ -214,11 +214,10 @@ impl Rig {
 
     fn spawn_host_env(&self, args: &[&str], desktop: bool, extra: &[(&str, &str)]) -> Child {
         let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
+        // board host 起的 agent 也在这个环境里跑 board：check、心跳的状态不能落到开发者机器的临时目录里
+        isolate(&mut c, &self.s.home);
         c.envs(extra.iter().copied());
         c.args(args)
-            .env("HOME", &self.s.home)
-            .env("USERPROFILE", &self.s.home)
-            .env("NO_COLOR", "1")
             .env("BOARD_URL", &self.s.url)
             .env("BOARD_TOKEN", &self.s.token)
             .env("BOARD_HOST_INTERVAL", "0.5")
@@ -227,9 +226,6 @@ impl Rig {
             .env("BOARD_HOST_MINUTE_MS", self.minute_ms())
             .env("BOARD_BIN", env!("CARGO_BIN_EXE_board"))
             .env("FAKE_DIR", self.fake.parent().unwrap())
-            .env_remove("BOARD")
-            .env_remove("BOARD_AS")
-            .env_remove("BOARD_CONFIG")
             .stdin(if desktop { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

@@ -106,18 +106,9 @@ fn board_with_path(path: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
 
 fn board_in(home: &Path, path: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
-    // 去掉开发者环境里的变量，免得太空或太全影响检查结果
-    cmd.args(args)
-        .env("PATH", path)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("NO_COLOR", "1")
-        .env_remove("BOARD")
-        .env_remove("BOARD_AS")
-        .env_remove("BOARD_URL")
-        .env_remove("BOARD_TOKEN")
-        .env_remove("BOARD_DB")
-        .env_remove("BOARD_CONFIG");
+    // 去掉开发者环境里的变量、换掉临时目录，免得太空或太全影响检查结果：本机会话 check 过的名字记在临时目录里，
+    // 不换的话没带 --as 的 doctor 会拿它去查（default/main#341）
+    common::isolate(&mut cmd, home).args(args).env("PATH", path);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -334,4 +325,50 @@ fn doctor_reports_config_file_source_and_env_override() {
     let r = board_in(&home, &exe_dir(), &env, &["doctor"]);
     assert!(r.out.contains("环境变量 BOARD_URL") && r.out.contains('!'), "{}", r.out);
     assert!(!r.out.contains(&s.token), "不能打印令牌原文");
+}
+
+/// 在 check 过名字、开着心跳的 agent 会话里跑测试（default/main#341、#342、#353）：会话的名字和心跳状态记在它的
+/// 临时目录里（`<临时目录>/board-heartbeat`），被测的 board 从会话继承了这个临时目录，也不能拿到会话的名字、
+/// 不能改写会话的状态文件
+#[test]
+fn doctor_ignores_name_checked_by_agent_session_running_the_tests() {
+    let s = start();
+    // 「会话」：用自己的临时目录 check --agent，名字记在那里
+    let session = tempfile::tempdir().unwrap();
+    let t = session.path().to_string_lossy().to_string();
+    let env = vec![
+        ("BOARD_URL", s.url.clone()),
+        ("BOARD_TOKEN", s.token.clone()),
+        ("TMPDIR", t.clone()),
+        ("TMP", t.clone()),
+        ("TEMP", t.clone()),
+    ];
+    let home = empty_home();
+    let r = board_in(home.path(), &exe_dir(), &env, &["check", "--agent", "claude", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let name = r.json()["name"].as_str().unwrap().to_string();
+    let states = session.path().join("board-heartbeat");
+    let saved = std::fs::read_dir(&states).unwrap().flatten().map(|e| (e.path(), std::fs::read(e.path()).unwrap())).collect::<Vec<_>>();
+    assert!(!saved.is_empty(), "会话 check 之后应该在它的临时目录里记下名字");
+
+    // 测试里的 board：临时目录是从会话继承来的，没带 --as 的 doctor 仍然跳过名字一项
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
+    cmd.env("TMPDIR", &t).env("TMP", &t).env("TEMP", &t);
+    let other = empty_home();
+    let o = common::isolate(&mut cmd, other.path())
+        .args(["doctor", "--json"])
+        .env("PATH", exe_dir())
+        .env("BOARD_URL", &s.url)
+        .env("BOARD_TOKEN", &s.token)
+        .output()
+        .unwrap();
+    let r = Run { code: o.status.code().unwrap_or(-1), out: String::from_utf8_lossy(&o.stdout).into(), err: String::from_utf8_lossy(&o.stderr).into() };
+    let v = r.json();
+    assert_eq!(check(&v, "board_as")["status"], "skip", "拿到了会话的名字 {name}：{v}");
+    assert_eq!(v["summary"]["failed"], 0, "{v}");
+
+    // 会话的状态文件原样不动
+    for (path, body) in saved {
+        assert_eq!(std::fs::read(&path).unwrap(), body, "{} 被改写了", path.display());
+    }
 }

@@ -159,7 +159,26 @@ impl Server {
     }
 }
 
-/// 去掉开发者环境里连接线上服务端的变量，免得测试写到真实白板上
+/// 被测的 board（以及经它起的进程）和开发者机器上正在跑的东西隔开，所有起 board 进程的测试都先调它，再设自己要的变量：
+/// - HOME / USERPROFILE 指向 `home`：不读写开发者的 ~/.board/config.toml；
+/// - 临时目录（TMPDIR，Windows 上 TMP / TEMP）指向 `home/tmp`：`board check` 记下的名字和后台心跳的状态在
+///   `<临时目录>/board-heartbeat` 里，不在 HOME 下。不隔开时，在 check 过、开着心跳的 agent 会话里跑测试，
+///   没带 --as 的 board 会拿到这个会话的名字，测试里的 check、heartbeat 还会改写它的状态文件、停掉它的心跳
+///   （default/main#341、#342、#353）；
+/// - 去掉继承来的所有 `BOARD*` 变量：连线上服务端的地址和令牌（免得写到真实白板上）、名字、白板、
+///   board host 给会话设的变量、`BOARD_HEARTBEAT_PID` 之类都不带进测试。
+pub fn isolate<'a>(cmd: &'a mut Command, home: &Path) -> &'a mut Command {
+    let tmp = home.join("tmp");
+    let _ = std::fs::create_dir_all(&tmp);
+    for (k, _) in std::env::vars_os() {
+        if k.to_string_lossy().starts_with("BOARD") {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.env("HOME", home).env("USERPROFILE", home).env("NO_COLOR", "1").env("TMPDIR", &tmp).env("TMP", &tmp).env("TEMP", &tmp)
+}
+
+/// 以 `home` 为 HOME 执行 board（见 [`isolate`]），再带上 env 里的变量（给了临时目录就用给的）
 pub fn board(home: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
     board_stdin(home, env, args, None)
 }
@@ -167,24 +186,7 @@ pub fn board(home: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
 /// 同上，并把 input 写进标准输入
 pub fn board_stdin(home: &Path, env: &[(&str, String)], args: &[&str], input: Option<&str>) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
-    cmd.args(args)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("NO_COLOR", "1")
-        .env_remove("BOARD")
-        .env_remove("BOARD_AS")
-        .env_remove("BOARD_AGENT")
-        .env_remove("BOARD_HOST")
-        .env_remove("BOARD_HOST_NAME")
-        .env_remove("BOARD_LOCAL")
-        .env_remove("BOARD_URL")
-        .env_remove("BOARD_TOKEN")
-        .env_remove("BOARD_DB")
-        .env_remove("BOARD_CONFIG");
-    // 名字的本机状态文件（<临时目录>/board-heartbeat）写在测试自己的目录里，不碰开发者机器上的；env 里给了就用给的
-    let tmp = home.join("tmp");
-    let _ = std::fs::create_dir_all(&tmp);
-    cmd.env("TMPDIR", &tmp).env("TMP", &tmp).env("TEMP", &tmp);
+    isolate(&mut cmd, home).args(args);
     for (k, v) in env {
         cmd.env(k, v);
     }

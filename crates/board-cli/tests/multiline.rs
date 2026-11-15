@@ -109,12 +109,9 @@ fn via_script(s: &Server, script: &Path, args: &[&str]) -> (i32, String, String)
         c.arg(script);
         c
     };
-    let o = cmd
+    let o = common::isolate(&mut cmd, &s.home)
         .args(args)
         .env("BOARD_EXE", env!("CARGO_BIN_EXE_board"))
-        .env("HOME", &s.home)
-        .env("USERPROFILE", &s.home)
-        .env("NO_COLOR", "1")
         .env("BOARD_URL", &s.url)
         .env("BOARD_TOKEN", &s.token)
         .env("BOARD_AS", ALPHA)
