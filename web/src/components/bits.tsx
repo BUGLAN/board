@@ -8,6 +8,7 @@ import { inlineCode, markdown } from '../lib/markdown';
 import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
 import { PROJECT_COLORS } from '../lib/schema';
+import { placeTip } from '../lib/tooltip';
 import type { Actor, Label } from '../lib/types';
 import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
@@ -575,23 +576,21 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
 export function InfoTip({ text, className }: { text: string; className?: string }) {
   return (
     <span className={cx('info-tip', className)} tabIndex={0} role="img" aria-label={text} data-tip={text}>
-      <Tip text={text}>
-        <Icon name="info" />
-      </Tip>
+      <Icon name="info" />
     </span>
   );
 }
 
 /* ------------------------------ 悬停提示的可读名称 ------------------------------ */
 
-/** 提示浮层（::after 画的、FloatTips 挂到 body 上的）的宿主 id：挂一份在 App 里，每个提示在里面是一个 span，
+/** 提示浮层（FloatTips 挂到 body 上的）的宿主 id：挂一份在 App 里，每个提示在里面是一个 span，
     带 data-tip 的元素用 aria-describedby 指过去。没有宿主时（单元测试单独渲染一个组件）不补可读名称，不报错 */
 export const TIP_HOST = 'board-tips';
 
 /** 按提示文字算的 id：同一段提示共用一个 span；用 `~=` 匹配，不担心前缀撞上（t1 和 t12） */
 export const tipKey = (text: string) => `t${Math.abs([...text].reduce((h, c) => (Math.imul(h, 31) + c.codePointAt(0)!) | 0, 7)).toString(36)}`;
 
-/** 提示浮层本身：::after 画的那种看不见也点不到，FloatTips 的那份也是 pointer-events: none，不占可访问树 */
+/** 提示浮层本身看不见也点不到（FloatTips 的那份是 pointer-events: none），不占可访问树 */
 const mask = (el: HTMLElement) => {
   el.setAttribute('aria-hidden', 'true');
   el.removeAttribute('role');
@@ -636,7 +635,7 @@ export function TipHost() {
   return <div id={TIP_HOST} hidden />;
 }
 
-/** 一个元素 + 它的提示：提示照旧由 data-tip 画（::after 或 FloatTips），同时按上面说的补上可读的名称 */
+/** 一个元素 + 它的提示：提示由全站的 data-tip 浮层画，同时按上面说的补上可读的名称 */
 export function Tip({ text, children }: { text: string; children: ReactElement }) {
   const ref = useRef<HTMLElement>(null);
   // 第一次渲染时子元素还没挂上、ref 是空的：挂上之后补一遍，浮层在这一遍里画出来
@@ -659,5 +658,117 @@ export function Tip({ text, children }: { text: string; children: ReactElement }
       {cloneElement(children as ReactElement<{ ref?: Ref<HTMLElement>; 'data-tip'?: string }>, { ref: set, 'data-tip': text })}
       {ref.current && createPortal(<TipNote el={ref.current} text={text} />, document.body)}
     </>
+  );
+}
+
+/** 全站的悬停提示：所有 `[data-tip]` 共用 body 上的一个浮层（App 里挂一份）。
+    - 用 Firefox / Chromium / WebKit 的 top layer（popover）画，不参与页面里的 z-index、overflow、transform 叠层；
+      不支持 popover 时退回固定的 z-index，仍然挂在 body 上
+    - 只在能悬停的设备上启用；触屏沿用原来的点击操作，不额外弹一层提示
+    - 默认放下方，`data-tip-pos` 选方向，放不下就翻到对面；`data-tip-align` 控制左右对齐，最后夹在视口里
+    - 滚动、缩放、按下、按 Esc、焦点移走时收起，不在抽屉 / 弹窗打开后残留 */
+export function FloatTips() {
+  const [tip, setTip] = useState<{ el: HTMLElement; text: string } | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const shown = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!window.matchMedia('(hover: hover)').matches) return;
+    let showT = 0;
+    const tipOf = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.<HTMLElement>('[data-tip]') ?? null;
+    const hide = () => {
+      clearTimeout(showT);
+      setTip(null);
+    };
+    const over = (e: PointerEvent) => {
+      const el = tipOf(e.target);
+      if (!el || e.buttons || document.body.classList.contains('is-dragging') || document.body.classList.contains('tile-moving')) return;
+      clearTimeout(showT);
+      if (shown.current && shown.current !== el) setTip(null);
+      // 和原来的 ::after 一样停 350ms 再出现，指针扫过不闪
+      showT = window.setTimeout(() => {
+        if (el.isConnected && el.dataset.tip) setTip({ el, text: el.dataset.tip });
+      }, 350);
+    };
+    const out = (e: PointerEvent) => {
+      const el = tipOf(e.target);
+      if (el && !el.contains(e.relatedTarget as Node | null)) hide();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') hide();
+    };
+    const focus = (e: FocusEvent) => {
+      if (shown.current && !shown.current.contains(e.target as Node)) hide();
+    };
+    document.addEventListener('pointerover', over);
+    document.addEventListener('pointerout', out);
+    document.addEventListener('pointerdown', hide, true);
+    document.addEventListener('scroll', hide, true);
+    document.addEventListener('keydown', key, true);
+    document.addEventListener('focusin', focus, true);
+    window.addEventListener('blur', hide);
+    window.addEventListener('resize', hide);
+    return () => {
+      clearTimeout(showT);
+      document.removeEventListener('pointerover', over);
+      document.removeEventListener('pointerout', out);
+      document.removeEventListener('pointerdown', hide, true);
+      document.removeEventListener('scroll', hide, true);
+      document.removeEventListener('keydown', key, true);
+      document.removeEventListener('focusin', focus, true);
+      window.removeEventListener('blur', hide);
+      window.removeEventListener('resize', hide);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!tip || !el) return;
+    shown.current = tip.el;
+    // popover 先把浮层放进浏览器的 top layer，再量尺寸；不支持时这里什么也不做
+    el.setAttribute('popover', 'manual');
+    if (typeof el.showPopover === 'function') {
+      try {
+        el.showPopover();
+      } catch {
+        /* 已经打开（换了提示内容）时 showPopover 会抛，忽略 */
+      }
+    }
+    const r = tip.el.getBoundingClientRect();
+    const at = placeTip(
+      r,
+      { width: el.offsetWidth, height: el.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+      { pos: tip.el.dataset.tipPos, align: tip.el.dataset.tipAlign },
+    );
+    el.style.left = `${at.left}px`;
+    el.style.top = `${at.top}px`;
+    el.dataset.side = at.side;
+    el.dataset.placed = 'true';
+    return () => {
+      shown.current = null;
+    };
+  }, [tip]);
+
+  // 触发器被拿掉（切页、弹窗内容换掉、卡片刷新）或提示文字变了：别留一层过时的浮层
+  useEffect(() => {
+    if (!tip) return;
+    const check = () => {
+      if (!tip.el.isConnected || !tip.el.dataset.tip) setTip(null);
+      else if (tip.el.dataset.tip !== tip.text) setTip({ el: tip.el, text: tip.el.dataset.tip });
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-tip'] });
+    return () => observer.disconnect();
+  }, [tip]);
+
+  if (!tip || !tip.el.isConnected) return null;
+  // 不写 role="tooltip"：它得配 aria-describedby 才读得到，而这里挂的时候不一定有（default/main#314），
+  // 可读名称由上面的 Tip / TipNote 补，挂的这份浮层对读屏隐藏
+  return createPortal(
+    <div ref={box} className="float-tip" data-placed="false" aria-hidden="true">
+      {tip.text}
+    </div>,
+    document.body,
   );
 }

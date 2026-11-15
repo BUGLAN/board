@@ -21,7 +21,6 @@ export function matches(c: CardT, q: string, labels: Label[]) {
     return m ? names.includes(m[1]) : hay.includes(w);
   });
 }
-
 /** 筛选框 + 侧栏选中的标签（带其中任一个） */
 export const filterActive = (q: string, sel: number[]) => !!q || sel.length > 0;
 export function cardHit(c: CardT, q: string, sel: number[], labels: Label[]) {
@@ -392,85 +391,5 @@ export function MidName({ name, className, tail = 8 }: { name: string; className
         </span>
       )}
     </span>
-  );
-}
-
-/* ---------------- 卡片、弹窗里的悬停提示 ---------------- */
-
-/** 卡片和弹窗（卡片详情、新建等 .drawer）里带 data-tip 的提示不用 ::after 画：那样会被相邻卡片、状态块、
-    弹窗底部的操作栏盖住，被列表、详情的滚动区域裁掉。改成挂在 body 上的一个浮层，放在所有卡片、弹窗之上；
-    默认放下面，下面放不下就放上面（data-tip-pos="top" 时反过来），左右夹在窗口里。只在能悬停的设备上启用（App 里挂一份） */
-const FLOAT_TIP = '.card [data-tip], .drawer [data-tip]';
-export function FloatTips() {
-  const [tip, setTip] = useState<{ el: HTMLElement; text: string } | null>(null);
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!window.matchMedia('(hover: hover)').matches) return;
-    let showT = 0;
-    const tipOf = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.<HTMLElement>(FLOAT_TIP) ?? null;
-    const hide = () => {
-      clearTimeout(showT);
-      setTip(null);
-    };
-    const over = (e: PointerEvent) => {
-      const el = tipOf(e.target);
-      if (!el || e.buttons || document.body.classList.contains('is-dragging')) return;
-      clearTimeout(showT);
-      // 和原来的 ::after 一样停 350ms 再出现，指针扫过不闪
-      showT = window.setTimeout(() => el.isConnected && el.dataset.tip && setTip({ el, text: el.dataset.tip }), 350);
-    };
-    const out = (e: PointerEvent) => {
-      const el = tipOf(e.target);
-      if (el && !el.contains(e.relatedTarget as Node | null)) hide();
-    };
-    document.addEventListener('pointerover', over);
-    document.addEventListener('pointerout', out);
-    document.addEventListener('pointerdown', hide, true);
-    document.addEventListener('scroll', hide, true);
-    window.addEventListener('blur', hide);
-    return () => {
-      clearTimeout(showT);
-      document.removeEventListener('pointerover', over);
-      document.removeEventListener('pointerout', out);
-      document.removeEventListener('pointerdown', hide, true);
-      document.removeEventListener('scroll', hide, true);
-      window.removeEventListener('blur', hide);
-    };
-  }, []);
-
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!tip || !el) return;
-    const r = tip.el.getBoundingClientRect();
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const gap = 8;
-    const clampX = (x: number) => Math.round(Math.max(gap, Math.min(window.innerWidth - w - gap, x)));
-    const clampY = (y: number) => Math.round(Math.max(gap, Math.min(window.innerHeight - h - gap, y)));
-    if (tip.el.dataset.tipPos === 'right') {
-      el.style.left = `${clampX(r.right + 10)}px`;
-      el.style.top = `${clampY(r.top + r.height / 2 - h / 2)}px`;
-      el.dataset.side = 'right';
-      return;
-    }
-    const end = tip.el.dataset.tipAlign === 'end';
-    const x = clampX(end ? r.right - w : r.left + r.width / 2 - w / 2);
-    const fitsBelow = r.bottom + gap + h <= window.innerHeight - gap;
-    const fitsAbove = r.top - gap - h >= gap;
-    const below = tip.el.dataset.tipPos === 'top' ? !fitsAbove && fitsBelow : fitsBelow || !fitsAbove;
-    const y = Math.round(below ? r.bottom + gap : r.top - gap - h);
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-    el.dataset.side = below ? 'bottom' : 'top';
-  }, [tip]);
-
-  if (!tip || !tip.el.isConnected) return null;
-  // 不写 role="tooltip"：它得配 aria-describedby 才读得到，而这里不挂的时候就没有（default/main#314），
-  // 可读名称由 bits 的 Tip / TipNote 补，挂的那份浮层对读屏隐藏
-  return createPortal(
-    <div ref={box} className="float-tip" aria-hidden="true">
-      {tip.text}
-    </div>,
-    document.body,
   );
 }

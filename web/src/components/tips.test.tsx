@@ -1,8 +1,8 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dismissToast, toast, useUI } from '../store/ui';
-import { InfoTip, Tip, TipHost } from './bits';
+import { FloatTips, InfoTip, Tip, TipHost } from './bits';
 import { Toasts } from './overlays/Toasts';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -146,5 +146,134 @@ describe('提示条（toast）的可读名称', () => {
     const btn = item.querySelector('.toast-action button')!;
     expect(btn.textContent).toBe('撤销');
     expect(item.contains(btn)).toBe(true);
+  });
+});
+
+describe('全站提示浮层（default/main#360）', () => {
+  const originalMatchMedia = window.matchMedia;
+  let width: ReturnType<typeof vi.spyOn>;
+  let height: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === '(hover: hover)',
+        media: query,
+        onchange: null,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList) as typeof window.matchMedia;
+    width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('float-tip') ? 96 : 0;
+    });
+    height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('float-tip') ? 24 : 0;
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    width.mockRestore();
+    height.mockRestore();
+    window.matchMedia = originalMatchMedia;
+    document.body.classList.remove('is-dragging', 'tile-moving');
+    document.querySelectorAll('body > button[data-tip]').forEach(el => el.remove());
+  });
+
+  const trigger = (tip = '删除这张卡') => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.dataset.tip = tip;
+    el.getBoundingClientRect = () =>
+      ({ x: 100, y: 100, top: 100, right: 140, bottom: 120, left: 100, width: 40, height: 20, toJSON: () => ({}) }) as DOMRect;
+    document.body.append(el);
+    return el;
+  };
+
+  const over = (el: HTMLElement) => {
+    act(() => {
+      el.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+      vi.advanceTimersByTime(350);
+    });
+  };
+
+  it('任意 data-tip 都挂到 body 的同一个顶层浮层里，不再受组件自身的叠层和 overflow 影响', () => {
+    act(() => root.render(<FloatTips />));
+    const btn = trigger();
+    over(btn);
+    const tip = document.querySelector('.float-tip') as HTMLElement;
+    expect(tip.parentElement).toBe(document.body);
+    expect(tip.textContent).toBe('删除这张卡');
+    expect(tip.getAttribute('aria-hidden')).toBe('true');
+    expect(tip.getAttribute('popover')).toBe('manual');
+    expect(tip.dataset.placed).toBe('true');
+    expect(tip.dataset.side).toBe('bottom');
+    expect(tip.style.left).toBe('72px');
+    expect(tip.style.top).toBe('128px');
+  });
+
+  it('靠近视口底部时翻到触发器上方', () => {
+    act(() => root.render(<FloatTips />));
+    const btn = trigger();
+    btn.getBoundingClientRect = () =>
+      ({ x: 100, y: 730, top: 730, right: 140, bottom: 750, left: 100, width: 40, height: 20, toJSON: () => ({}) }) as DOMRect;
+    over(btn);
+    const tip = document.querySelector('.float-tip') as HTMLElement;
+    expect(tip.dataset.side).toBe('top');
+    expect(tip.style.top).toBe('698px');
+  });
+
+  it('滚动、按下和 Esc 都收起，不在抽屉或弹窗打开后残留', () => {
+    act(() => root.render(<FloatTips />));
+    const btn = trigger();
+    over(btn);
+    expect(document.querySelector('.float-tip')).toBeTruthy();
+    act(() => document.dispatchEvent(new Event('scroll', { bubbles: true })));
+    expect(document.querySelector('.float-tip')).toBeNull();
+
+    over(btn);
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.querySelector('.float-tip')).toBeNull();
+  });
+
+  it('触发器被拿掉（切页、弹窗换内容）后浮层也跟着收起', async () => {
+    act(() => root.render(<FloatTips />));
+    const btn = trigger();
+    over(btn);
+    expect(document.querySelector('.float-tip')).toBeTruthy();
+    await act(async () => {
+      btn.remove();
+      await Promise.resolve();
+    });
+    expect(document.querySelector('.float-tip')).toBeNull();
+  });
+
+  it('拖动、移动磁贴时不弹提示；无 hover 的触屏保持原交互，也不启用浮层', () => {
+    act(() => root.render(<FloatTips />));
+    const btn = trigger();
+    document.body.classList.add('is-dragging');
+    over(btn);
+    expect(document.querySelector('.float-tip')).toBeNull();
+    document.body.classList.remove('is-dragging');
+
+    act(() => root.render(<div />));
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query !== '(hover: hover)',
+        media: query,
+        onchange: null,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList) as typeof window.matchMedia;
+    act(() => root.render(<FloatTips />));
+    over(btn);
+    expect(document.querySelector('.float-tip')).toBeNull();
   });
 });

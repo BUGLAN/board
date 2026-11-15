@@ -358,8 +358,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-strip-g .hp-pips i { flex: 1; min-width: 10px; height: 20px; border-radius: 3px; }
 .hp-strip-name { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hp-strip-g:hover .hp-strip-name { color: var(--text-2); }
-.hp-strip-g[data-tip]::after { left: 8px; transform: translate(0, -4px) scale(.96); }
-.hp-strip-g[data-tip]:hover::after { transform: none; }
 
 /* 机器行：左边是机器（点开详情），右边是车道 */
 .hp-racks { display: flex; flex-direction: column; gap: 10px; }

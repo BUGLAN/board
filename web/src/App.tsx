@@ -4,7 +4,6 @@
    ========================================================================== */
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { BoardSkeleton, BoardView } from './components/BoardView';
-import { FloatTips } from './components/Card';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
@@ -17,7 +16,7 @@ import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
 import { PageLoading } from './components/Skeleton';
 import { Topbar } from './components/Topbar';
-import { BrandMark, SYSTEM_NAME, TipHost } from './components/bits';
+import { BrandMark, FloatTips, SYSTEM_NAME, TipHost } from './components/bits';
 import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
