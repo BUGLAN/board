@@ -1,9 +1,12 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { api } from '../../lib/api';
 import type { HostAgent, HostInfo, Workspace } from '../../lib/types';
+import { useData } from '../../store/data';
 import { settleConfirm, useUI } from '../../store/ui';
-import { FleetActions, Rack } from './HostsPage';
+import { HostDetail, type DetailTab } from './HostDetail';
+import { FleetActions, HostsPage, Rack } from './HostsPage';
 
 // 机器页要发的请求：默认都成功，用例里换成自己的
 const mocked = vi.hoisted(() => ({
@@ -216,4 +219,88 @@ describe('全部暂停 / 全部停止', () => {
     expect(stop).toHaveBeenCalledTimes(1);
     expect(useUI.getState().toasts.at(-1)?.title).toBe('已停止所有派发，所有机器暂停接单');
   });
+});
+
+/* 界面和服务端版本不一致（服务端升级后开着的旧页面、桌面端自带的界面连别的版本的服务端）：接口少了界面以为一定有的数组。
+   线上那次是 v0.1.30 的 GET /api/providers 去掉了 agents，v0.1.29 的页面在「共用配置」里 view.agents.find 整页崩（default/main#359）。
+   这里用假的服务端返回缺字段的响应，走真实的 api（进门时补齐，lib/normalize.ts），把机器页和机器详情都画一遍 */
+describe('接口少了字段时机器页不整页崩', () => {
+  const META = [{ id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'high'] }];
+  // 一台机器：agents、dirs、cron 都没有，同步结果、自检、导入里的数组也没有
+  const RAW = {
+    id: 2,
+    name: 'old',
+    os: 'Windows 11',
+    version: '0.1.20',
+    online: true,
+    firstAt: 0,
+    beatAt: Date.now(),
+    offAt: null,
+    max: 2,
+    paused: false,
+    agent: 'claude',
+    round: false,
+    cronOn: false,
+    auto: true,
+    rules: [{ op: 'in', agent: 'claude' }],
+    workspace: { path: '~/ws' },
+    sync: { able: true, last: { key: 'k', at: 1 } },
+    selftest: { able: true, ask: null },
+    skillImport: { able: true },
+    syncSkills: true,
+    syncMcp: true,
+  };
+  const server = (providers: unknown) =>
+    vi.fn(async (url: string) => {
+      const path = String(url).split('?')[0];
+      const body: unknown =
+        path === '/api/workspace'
+          ? { rev: 1, now: Date.now(), projects: [], hosts: [RAW], dispatches: null, sched: { minute: 0 } }
+          : path === '/api/hosts'
+            ? { hosts: [RAW] }
+            : path === '/api/providers'
+              ? providers
+              : path === '/api/mcp'
+                ? [{ name: 'm', kind: 'stdio', command: 'x' }]
+                : path === '/api/info'
+                  ? { version: '0.1.30' }
+                  : null;
+      return new Response(body == null ? '' : JSON.stringify(body), { status: 200 });
+    });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useData.setState({ ws: null });
+    useUI.setState({ hostsView: 'racks' });
+  });
+
+  // v0.1.30 的供应商列表（没有 agents）、更旧的没有 providers、空响应
+  for (const [what, providers] of [
+    ['v0.1.30 的供应商列表', { providers: [], meta: META }],
+    ['供应商列表缺了 providers', { meta: META }],
+    ['供应商列表是空的', null],
+  ] as const)
+    it(`${what}：总览、对比、共用配置、调度四个视图和机器详情的三个页签都画得出来`, async () => {
+      vi.stubGlobal('fetch', server(providers));
+      const ws = await api.workspace();
+      act(() => useData.setState({ ws }));
+      const h = ws.hosts![0];
+      for (const view of ['racks', 'compare', 'shared', 'sched'] as const) {
+        act(() => useUI.setState({ hostsView: view }));
+        await act(async () => root.render(<HostsPage />));
+        await act(async () => {});
+        expect(host.querySelector('.page-hosts')).not.toBeNull();
+        if (view === 'racks') expect(host.querySelector('.hp-rack')?.textContent).toContain('old');
+        // 共用配置：模型供应商一节读完了（不是「正在读取…」，也不是读取失败）
+        if (view === 'shared') {
+          expect(host.querySelector('.sc-providers')?.textContent).toContain('还没有');
+          expect(host.querySelector('.sc-providers .lh-warn')).toBeNull();
+        }
+      }
+      for (const tab of ['overview', 'agents', 'settings'] as DetailTab[]) {
+        await act(async () => root.render(<HostDetail h={h} i={0} n={1} step={() => {}} close={() => {}} on tab={tab} setTab={() => {}} />));
+        await act(async () => {});
+        expect(host.querySelector('.drawer-body')).not.toBeNull();
+      }
+    });
 });

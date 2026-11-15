@@ -5,6 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
+import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
 import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
 
 declare global {
@@ -124,7 +125,8 @@ export const api = {
   createToken: (name: string) => req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', { name }),
   revokeToken: (id: number) => req('DELETE', `/api/tokens/${id}`),
 
-  workspace: () => req<Workspace>('GET', '/api/workspace'),
+  // 机器、派发、共用配置这些接口的数据进门时补齐缺的数组（lib/normalize.ts）：界面和服务端版本不一致时不整页崩
+  workspace: () => req<Workspace>('GET', '/api/workspace').then(normWorkspace),
   /** full：终点状态也带全部卡片（默认只带最近的几张，见 BoardSnapshot.omitted） */
   board: (path: string, full = false) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}${full ? '&full=1' : ''}`),
   card: (path: string, id: number) => req<CardDetail>('GET', `/api/card?path=${q(path)}&id=${id}`),
@@ -198,7 +200,7 @@ export const api = {
 
   /* 任务下发（board host） */
   /** 机器和排队、正在跑的派发（工作区里也有；机器页每 10 秒取一次，刷新心跳时间） */
-  hosts: () => req<{ hosts: HostInfo[]; dispatches: Dispatch[] }>('GET', '/api/hosts'),
+  hosts: () => req<{ hosts: HostInfo[]; dispatches: Dispatch[] }>('GET', '/api/hosts').then(normHosts),
   /** 修改机器设置：最多几个会话、暂停接单、默认 agent、自动接单和接单时段 */
   updateHost: (
     name: string,
@@ -235,16 +237,16 @@ export const api = {
   askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'cancel', now = false) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
   /** skills 共用库（PRD §10.12「共用配置」）：列出、上传（同名换成新版本）、删除 */
-  skills: () => req<SkillInfo[]>('GET', '/api/skills'),
+  skills: () => req<SkillInfo[]>('GET', '/api/skills').then(normSkills),
   removeSkill: (name: string) => req('DELETE', `/api/skills/${q(name)}`),
   /** 从这台机器导入 skills：board host 把选中的目录传进库 */
   importSkills: (host: string, picks: SkillImportPick[]) => req<HostInfo>('POST', `/api/hosts/${q(host)}/skills/import`, { picks }),
   /** MCP 服务器共用配置：列表（密钥只给末尾 4 位）、新增或修改（密钥留空保留原值）、删除 */
-  mcp: () => req<McpServer[]>('GET', '/api/mcp'),
+  mcp: () => req<McpServer[]>('GET', '/api/mcp').then(normMcp),
   putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),
   removeMcp: (name: string) => req('DELETE', `/api/mcp/${q(name)}`),
   /** 模型供应商共用配置：列表（API key 只给末尾 4 位）、新增或修改（留空保留原值）、删除、每个 agent 用哪个 */
-  providers: () => req<ProviderView>('GET', '/api/providers'),
+  providers: () => req<ProviderView>('GET', '/api/providers').then(normProviders),
   putProvider: (p: Provider) => req<Provider>('POST', '/api/providers', p),
   removeProvider: (name: string) => req('DELETE', `/api/providers/${q(name)}`),
   /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */
@@ -263,7 +265,7 @@ export const api = {
   updateSched: (patch: { rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[]; fallback?: string; autoUpgrade?: boolean; maxRun?: number; idleRun?: number }) =>
     req<Sched>('PATCH', '/api/sched', patch),
   /** 这台机器最近 50 个结束的派发 */
-  hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`),
+  hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`).then(normDispatches),
   /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */
   dispatch: (board: string, card: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent }),
   /** 改派一条还在排队的派发：换到 host 这台机器，host 是空的 = 交给任意机器 */
@@ -272,9 +274,9 @@ export const api = {
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
   /** 一张卡片的全部派发，新的在前（卡片详情「派发记录」） */
   cardDispatches: (board: string, card: number) =>
-    req<Dispatch[]>('GET', `/api/dispatches?board=${encodeURIComponent(board)}&card=${card}`),
+    req<Dispatch[]>('GET', `/api/dispatches?board=${encodeURIComponent(board)}&card=${card}`).then(normDispatches),
   /** 一个会话的全部派发和各自的输出：id 是会话里任一次派发；since 是上次取到的 runs，只取之后新增、改过的事件 */
-  session: (id: number, since = 0) => req<SessionView>('GET', `/api/sessions/${id}${since > 0 ? `?since=${since}` : ''}`),
+  session: (id: number, since = 0) => req<SessionView>('GET', `/api/sessions/${id}${since > 0 ? `?since=${since}` : ''}`).then(normSession),
 };
 
 export type LiveStatus = 'connecting' | 'live' | 'offline';
