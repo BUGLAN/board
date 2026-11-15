@@ -485,21 +485,22 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-cmd:hover svg { opacity: 1; }
 
 /* ---------- 派发对话框 ---------- */
-.dialog.dp-dialog { width: min(480px, 100%); text-align: left; padding: 22px 22px 18px; }
+.dialog.dp-dialog { width: min(480px, calc(100vw - 32px)); text-align: left; padding: 22px 22px 18px; }
 .dp-sub { margin-top: 2px !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dp-label { margin: 16px 0 8px; font-size: 11.5px; font-weight: 600; letter-spacing: .06em; color: var(--text-3); }
-.dp-hosts { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
+.dp-hosts { display: flex; flex-direction: column; gap: 4px; min-height: 0; max-height: min(240px, 38vh); padding-right: 10px; overflow-y: auto; }
 .dp-host {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; border-radius: var(--r-sm); text-align: left; font-size: 13px;
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 9px 10px; border-radius: var(--r-sm); text-align: left; font-size: 13px;
   box-shadow: inset 0 0 0 1px var(--line);
 }
+.dp-host > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
 .dp-host:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .dp-host.on { box-shadow: inset 0 0 0 1.5px var(--brand); background: var(--brand-soft); }
 .dp-host:disabled { opacity: .5; cursor: not-allowed; }
-.dp-host b { font-weight: 600; }
-.dp-load { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
-.dp-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; color: var(--text-3); background: var(--surface-3); }
-.dp-host em { font-style: normal; font-size: 11.5px; color: var(--warn-text); }
+.dp-host b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.dp-load { flex: none; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
+.dp-tag { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 999px; color: var(--text-3); background: var(--surface-3); }
+.dp-host em { flex: none; font-style: normal; font-size: 11.5px; white-space: nowrap; color: var(--warn-text); }
 /* 机器详情「白板与目录」每行下面的环境检查结果 */
 .hp-dir-ready { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 2px 0 0 2px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
 .hp-dir-ready-k { flex: none; }

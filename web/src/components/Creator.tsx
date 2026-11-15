@@ -21,7 +21,6 @@ interface Draft {
   labels: number[];
 }
 const DRAFT = 'creator.draft';
-const TEMPLATE = '**验收标准**\n- [ ] \n\n**相关链接**\n- ';
 
 export function Creator() {
   const { open, column: want, seq } = useUI(s => s.creator);
@@ -297,23 +296,6 @@ export function Creator() {
             <div className="d-label cr-label">
               描述 <span className="opt">选填 · Markdown</span>
               <div className="act">
-                <button
-                  className="btn sm ghost"
-                  type="button"
-                  onClick={() => {
-                    setMode('edit');
-                    const v = body;
-                    const next = v + (v && !v.endsWith('\n') ? '\n\n' : '') + TEMPLATE;
-                    setBody(next);
-                    const pos = next.indexOf('- [ ] ', v.length) + 6;
-                    requestAnimationFrame(() => {
-                      bodyRef.current?.focus();
-                      bodyRef.current?.setSelectionRange(pos, pos);
-                    });
-                  }}
-                >
-                  插入验收标准
-                </button>
                 <button
                   className="btn sm ghost"
                   type="button"

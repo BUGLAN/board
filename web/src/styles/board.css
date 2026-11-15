@@ -57,8 +57,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   display: grid; place-items: center; width: 17px; height: 17px; border-radius: var(--r-xs); flex: none;
   font-family: var(--f-mono); font-size: 11px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2);
 }
-/* 规则标签：图标 + 文字的小胶囊，放在标题下面一行（第二行），块窄也不裁掉；只有图标时是一个 18px 的圆 */
-.col-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 18px; padding: 0 14px 9px; }
+/* 规则标签：图标 + 文字的小胶囊，放在标题右侧；只有图标时是一个 18px 的圆 */
 .col-tag { display: inline-flex; align-items: center; justify-content: center; gap: 3px; flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 6px 0 5px; border-radius: 999px; font-size: 11px; color: var(--text-3); white-space: nowrap; box-shadow: inset 0 0 0 1px var(--line-2); }
 .col-tag > svg:only-child { margin: 0 1px; }
 .col-tag svg { width: 11px; height: 11px; flex: none; }

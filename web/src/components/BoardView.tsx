@@ -294,7 +294,6 @@ function SkeletonColumn({ col, index, f, count, fake }: { col: Status; index: nu
           </span>
         )}
       </header>
-      <ColRules col={col} />
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} style={{ ['--tile-ch' as string]: 2 }}>
           {Array.from({ length: n }, (_, i) =>
@@ -398,12 +397,12 @@ function rulesOf(col: Status) {
   return COL_RULES.filter(r => col[r.key]);
 }
 
-/** 标题旁的规则图标；`icons` 时只有图标（一排带文字的胶囊会把名称挤没），说清楚是哪条规则的文字在标题下面一行（ColRules） */
+/** 标题旁的规则标记；`icons` 用于骨架，和真实状态块一样只取图标，悬停时说明这条规则 */
 function ColTags({ col, icons }: { col: Status; icons?: boolean }) {
   return (
     <>
       {rulesOf(col).map(r => (
-        <Tip key={r.key} text={icons ? r.tip : ''}>
+        <Tip key={r.key} text={r.tip}>
           <span className="col-tag" data-rule={r.key} aria-label={r.name}>
             <Icon name={r.icon} />
             {icons ? null : <span className="t">{r.name}</span>}
@@ -412,12 +411,6 @@ function ColTags({ col, icons }: { col: Status; icons?: boolean }) {
       ))}
     </>
   );
-}
-
-/** 标题下面一行：图标 + 规则名称的小胶囊（可领取 / 锁定 / 错误节点 / 终点）；没有规则的状态不占这一行 */
-function ColRules({ col }: { col: Status }) {
-  if (!rulesOf(col).length) return null;
-  return <div className="col-rules"><ColTags col={col} /></div>;
 }
 
 function emptyText(s: Status, f: FlowQ) {
@@ -491,7 +484,6 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
           <span>{count}</span>
         </span>
       </header>
-      <ColRules col={col} />
       <div className="col-body">
         <div className={cx('col-list', `view-${view}`)} data-list={col.key} ref={list} style={listStyle}>
           {ids.flatMap((id, idx) => {
