@@ -1,10 +1,9 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readiness } from '../../lib/ready';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HostAgent, HostInfo, Workspace } from '../../lib/types';
 import { useUI } from '../../store/ui';
-import { Compare, ReadySection } from './Ready';
+import { Compare } from './Ready';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -46,28 +45,6 @@ const machine = (x: Partial<HostInfo> = {}): HostInfo => ({
   beatAt: Date.now(),
   offAt: null,
   ...x,
-});
-
-describe('机器详情的就绪清单', () => {
-  it('有没通过的项时默认展开，点按钮打开对应的设置', () => {
-    const go = vi.fn();
-    const h = machine({ workspace: null, dirs: [], agents: [agent('claude', { no_skill: '~/.claude/skills/board-skills' })] });
-    act(() => root.render(<ReadySection checks={readiness(h, Date.now())} go={go} i={1} />));
-    expect(host.querySelector('.hp-ready-n')!.textContent).toBe('2/4 项通过');
-    const bad = [...host.querySelectorAll('.hp-ready-list li.bad')];
-    expect(bad.map(li => li.querySelector('b')!.textContent)).toEqual(['每个项目的目录和仓库正常', 'agent 看得到 board-skills']);
-    act(() => (bad[0].querySelector('button') as HTMLButtonElement).click());
-    act(() => (bad[1].querySelector('button') as HTMLButtonElement).click());
-    expect(go.mock.calls).toEqual([['dirs'], ['agents']]);
-  });
-
-  it('全部通过时收起，点标题展开', () => {
-    act(() => root.render(<ReadySection checks={readiness(machine(), Date.now())} go={() => {}} i={1} />));
-    expect(host.querySelector('.hp-ready-n')!.textContent).toBe('4/4 项通过');
-    expect(host.querySelector('.hp-ready-list')).toBeNull();
-    act(() => (host.querySelector('.hp-fold-btn') as HTMLButtonElement).click());
-    expect(host.querySelectorAll('.hp-ready-list li.ok').length).toBe(4);
-  });
 });
 
 describe('对比视图', () => {

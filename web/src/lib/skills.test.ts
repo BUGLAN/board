@@ -1,25 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { importRows, skillRows } from './skills';
-import type { HostInfo, SkillInfo } from './types';
-
-describe('同步状态', () => {
-  const skill: SkillInfo = { name: 'notes', version: 'v2', size: 1, files: 1, updatedAt: 1, by: 'a', source: 'mbp' };
-  const host = (name: string, x: Partial<HostInfo>): HostInfo =>
-    ({ id: 1, name, online: true, agents: [{ id: 'claude', name: 'Claude Code', found: true, version: '1' }], ...x }) as HostInfo;
-  it('旧版不同步、还没报的是正在同步、已同步但版本旧的算落后', () => {
-    const rows = skillRows(
-      [
-        host('old', { skills: null }),
-        host('new', { skills: [] }),
-        host('ok', { skills: [{ skill: 'notes', agent: 'claude', env: 'login', dir: '~/.claude/skills', state: 'synced', version: 'v2' }] }),
-        host('lag', { skills: [{ skill: 'notes', agent: 'claude', env: 'login', dir: '~/.claude/skills', state: 'synced', version: 'v1' }] }),
-        host('mine', { skills: [{ skill: 'notes', agent: 'claude', env: 'login', dir: '~/.claude/skills', state: 'local', why: '本机已有同名的目录' }] }),
-      ],
-      skill,
-    );
-    expect(rows.map(r => (r.old ? 'old' : r.cells.map(c => c.state).join()))).toEqual(['old', 'pending', 'synced', 'behind', 'local']);
-  });
-});
+import { importRows } from './skills';
 
 describe('从机器导入', () => {
   it('库里没有、内容不一样、和库里一样、不能导入', () => {

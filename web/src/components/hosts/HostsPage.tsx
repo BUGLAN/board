@@ -1,4 +1,5 @@
-/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一栏一个会话，栏里是这个会话的卡）；主区可以切到多机对比、共用配置（skills 共用库） */
+/* 机器 Tab：侧栏机器列表、主区机架总览（每台机器一行：左边是机器，右边是它的会话位，一栏一个会话，栏里是这个会话的卡）；
+   主区可以切到多机对比、共用配置（skills、MCP、模型供应商）、调度（领取规则、接单时段、自动升级、跑多久停） */
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { agentMark, autoSummary, hostLoad, hostState, hostsOf, inSession, queueReason, sessionQueue, since, skillMiss, sourceOf } from '../../lib/hosts';
@@ -14,9 +15,8 @@ import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './b
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
 import { McpSection } from './Mcp';
 import { ProvidersSection } from './Providers';
-import { SchedSection } from './Sched';
+import { RunLimits, SchedSection } from './Sched';
 import { SharedConfig } from './Shared';
-import { TemplatesSection } from './Templates';
 
 export function HostsSide() {
   const ws = useData(s => s.ws);
@@ -46,6 +46,11 @@ export function HostsSide() {
           <Icon name="settings" />
           <span className="hp-side-name">共用配置</span>
           <span className="hp-side-sub">skills · MCP · 供应商</span>
+        </button>
+        <button type="button" className={cx('hp-side-row hp-side-shared', view === 'sched' && 'active')} onClick={() => setHostsView('sched')}>
+          <Icon name="timer" />
+          <span className="hp-side-name">调度</span>
+          <span className="hp-side-sub">规则 · 时段 · 会话</span>
         </button>
         {hosts.map(h => {
           const { running } = hostLoad(ws, h);
@@ -370,6 +375,7 @@ const VIEWS: [HostsView, string][] = [
   ['racks', '总览'],
   ['compare', '对比'],
   ['shared', '共用配置'],
+  ['sched', '调度'],
 ];
 
 export function HostsPage() {
@@ -378,7 +384,7 @@ export function HostsPage() {
   const now = useNow(5000);
   const hosts = ordered(hostsOf(ws));
   const server = useServerVersion();
-  // 机位总览 / 多机对比 / 共用配置，选过的记在本机（侧栏的「共用配置」也切这里）
+  // 机位总览 / 多机对比 / 共用配置 / 调度，选过的记在本机（侧栏的「共用配置」「调度」也切这里）
   const view = useUI(s => s.hostsView);
   usePollHosts(tab === 'hosts');
   return (
@@ -391,8 +397,10 @@ export function HostsPage() {
               {view === 'compare'
                 ? '每台机器一行，对比就绪的每一项和 agent 的版本、模型、启动环境；和其他机器不一致的格子标出来。'
                 : view === 'shared'
-                  ? '所有机器共用的配置：放在这里的 skills、MCP 服务器、模型供应商自动同步到每台机器的每个 agent。'
-                  : '每台机器常驻一个 board host，同时开几个会话，一个会话接着做排好的几张卡：点卡片看详情，点机器改规则。'}
+                  ? '服务器上存的配置：skills、MCP 服务器、模型供应商。机器选了「用服务器的」，board host 启动时写进 agent，这里一改就同步过去。'
+                  : view === 'sched'
+                    ? '哪些卡自动交给哪个 agent、每台机器什么时候接单、同时开几个会话、一个会话做几张、跑多久算卡住，都在这里。'
+                    : '每台机器常驻一个 board host，同时开几个会话，一个会话接着做排好的几张卡：点卡片看详情，点机器改规则。'}
             </p>
           </div>
           {hosts.length > 0 && (
@@ -415,13 +423,16 @@ export function HostsPage() {
               添加机器
             </button>
           </div>
-        ) : view === 'shared' ? (
+        ) : view === 'sched' ? (
           <>
             <SchedSection hosts={hosts} />
+            <RunLimits />
+          </>
+        ) : view === 'shared' ? (
+          <>
             <SharedConfig hosts={hosts} />
             <McpSection hosts={hosts} />
             <ProvidersSection hosts={hosts} />
-            <TemplatesSection hosts={hosts} />
           </>
         ) : view === 'compare' ? (
           <Compare hosts={hosts} ws={ws} now={now} server={server} />

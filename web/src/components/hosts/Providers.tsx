@@ -15,14 +15,14 @@ import {
   blankProvider,
   endpointLines,
   maskKey,
-  PROVIDER_AGENT_NAMES,
-  PROVIDER_AGENTS,
+  metasOf,
   PROVIDER_CELL_WORDS,
   providerCell,
   providerError,
   providersFor,
   sharedOf,
   toProviderSave,
+  writableEfforts,
   type ProviderCell,
 } from '../../lib/providers';
 import type { AgentProvider, HostInfo, Provider, ProviderView } from '../../lib/types';
@@ -53,7 +53,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
   useEffect(() => {
     if (list && saving.current.size === 0) setAgents(list.agents);
   }, [list]);
-  const view: ProviderView | null = list ? { providers: list.providers, agents } : null;
+  const view: ProviderView | null = list ? { providers: list.providers, agents, meta: list.meta } : null;
   const save = async () => {
     if (!edit || !list) return;
     const why = providerError(edit.p, list.providers.map(x => x.name), edit.editing);
@@ -74,12 +74,12 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
     }
   };
   const remove = async (p: Provider) => {
-    const names = agents.filter(a => a.provider === p.name).map(a => PROVIDER_AGENT_NAMES[a.agent] ?? a.agent);
+    const names = agents.filter(a => a.provider === p.name).map(a => metasOf(list).find(m => m.id === a.agent)?.name ?? a.agent);
     const ok = await confirm({
       title: `删掉模型供应商 ${p.name}？`,
       text: names.length
-        ? `用着它的 ${names.join('、')} 会回到「不管」；各台机器按备份恢复这些 agent 配置文件里原来的值。`
-        : '各台机器按备份恢复这个供应商写进 agent 配置文件的内容。',
+        ? `用着它的 ${names.join('、')} 会回到「没配」，之后不再写它们的配置文件；已经写进去的不恢复。机器上单独配置成它的 agent 下次同步时报失败。`
+        : '已经写进各台机器 agent 配置文件的不恢复；机器上单独配置成它的 agent 下次同步时报失败。',
       ok: '删掉',
       icon: 'trash',
       tone: 'warn',
@@ -113,8 +113,9 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
       });
     track(`agent:${id}`, done);
   };
-  const idle = view ? PROVIDER_AGENTS.filter(m => !sharedOf(view, m.id).provider) : [];
-  const old = hosts.filter(h => h.providers == null);
+  const metas = metasOf(view);
+  const idle = view ? metas.filter(m => !sharedOf(view, m.id).provider) : [];
+  const old = hosts.filter(h => !h.sync?.able);
 
   return (
     <section className="sc sc-providers">
@@ -122,8 +123,8 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
         <div>
           <h2>模型供应商</h2>
           <p>
-            给 agent 选一个供应商，每台机器的 board host 就把地址、API key、模型写进那个 agent 的用户级配置文件，agent 直接连供应商，不经过 Board。{' '}
-            <HowTip tip="第一次改写前备份 agent 配置文件里原来的值，改成「不管」或删掉供应商时恢复。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
+            给 agent 选一个供应商，机器上这个 agent 选了「用服务器的」，board host 就把地址、API key、模型、强度写进它的用户级配置文件，agent 直接连供应商，不经过 Board。{' '}
+            <HowTip tip="只改 Board 管的那几项；机器改成「不改」后之前写进去的不恢复，Board 只是不再碰它。强度不在模型支持的档位里就不写。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
           </p>
         </div>
         <div className="sc-acts">
@@ -135,15 +136,24 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
       </div>
       {err && <p className="hp-note lh-warn">取不到模型供应商配置：{err}</p>}
       {edit && (
-        <ProviderForm value={edit.p} editing={edit.editing} busy={busy === 'save'} existing={list?.providers.map(x => x.name) ?? []} onChange={p => setEdit({ ...edit, p })} onSave={() => void save()} onCancel={() => setEdit(null)} />
+        <ProviderForm
+          value={edit.p}
+          editing={edit.editing}
+          busy={busy === 'save'}
+          existing={list?.providers.map(x => x.name) ?? []}
+          meta={metasOf(list)}
+          onChange={p => setEdit({ ...edit, p })}
+          onSave={() => void save()}
+          onCancel={() => setEdit(null)}
+        />
       )}
       {!view && !err && <p className="hp-note">正在读取…</p>}
       {view && !view.providers.length && !edit && <p className="hp-note">还没有：点「添加」，或从常用供应商预填一个</p>}
       {view && view.providers.length > 0 && (
         <div className="pv-cards">
           {view.providers.map(p => {
-            const users = PROVIDER_AGENTS.filter(m => sharedOf(view, m.id).provider === p.name);
-            const addable = PROVIDER_AGENTS.filter(m => sharedOf(view, m.id).provider !== p.name && providersFor(view, m.id).some(x => x.name === p.name));
+            const users = metas.filter(m => sharedOf(view, m.id).provider === p.name);
+            const addable = metas.filter(m => sharedOf(view, m.id).provider !== p.name && providersFor(view, m.id).some(x => x.name === p.name));
             return (
               <article key={p.name} className="pv-card">
                 <header className="pv-head">
@@ -156,7 +166,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
                       type="button"
                       aria-label={`修改 ${p.name}`}
                       disabled={!!busy || !!edit}
-                      onClick={() => setEdit({ p: { ...p, apiKey: '', endpoints: p.endpoints.map(e => ({ ...e })) }, editing: true })}
+                      onClick={() => setEdit({ p: { ...p, apiKey: '', endpoints: p.endpoints.map(e => ({ ...e })), efforts: { ...(p.efforts ?? {}) } }, editing: true })}
                     >
                       <Icon name="edit" />
                     </button>
@@ -186,7 +196,11 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
                 <div className="pv-users">
                   {users.map(m => {
                     const a = sharedOf(view, m.id);
-                    const cells = hosts.map(h => ({ h, c: providerCell(h, m.id, view) })).filter(x => x.c.kind !== 'none' && x.c.kind !== 'missing' && x.c.kind !== 'old');
+                    // 这个 agent 用服务器的机器（单独配置成别的供应商的不算）和选了「不改」的
+                    const cells = hosts
+                      .map(h => ({ h, c: providerCell(h, m.id, view) }))
+                      .filter(x => x.c.kind !== 'none' && x.c.kind !== 'missing' && x.c.kind !== 'old' && (!x.c.provider || x.c.provider === p.name));
+                    const efforts = writableEfforts(m, p, a.model);
                     return (
                       <div className="pv-user" key={m.id}>
                         <span className="pv-agent">
@@ -194,20 +208,31 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
                           <b>{m.name}</b>
                         </span>
                         <span className="pv-ctl">
-                          <Select className="pv-sel" value={a.model} options={p.models.map(x => ({ value: x, label: x }))} onChange={v => saveAgent({ ...a, model: v })} aria-label={`${m.name} 用哪个模型`} />
                           <Select
-                            className="pv-sel sm"
-                            value={a.effort}
-                            options={[{ value: '', label: '强度默认' }, ...m.efforts.map(x => ({ value: x, label: `强度 ${x}` }))]}
-                            onChange={v => saveAgent({ ...a, effort: v })}
-                            aria-label={`${m.name} 的思考强度`}
+                            className="pv-sel"
+                            value={a.model}
+                            options={p.models.map(x => ({ value: x, label: x }))}
+                            onChange={v => saveAgent({ ...a, model: v, effort: writableEfforts(m, p, v).includes(a.effort) ? a.effort : '' })}
+                            aria-label={`${m.name} 用哪个模型`}
                           />
+                          <Tip text={efforts.length ? '只列这个模型支持、这个 agent 也能写的档位' : '供应商里没给这个模型标强度：不能选'}>
+                            <span>
+                              <Select
+                                className="pv-sel sm"
+                                value={efforts.includes(a.effort) ? a.effort : ''}
+                                disabled={!efforts.length}
+                                options={[{ value: '', label: '强度默认' }, ...efforts.map(x => ({ value: x, label: `强度 ${x}` }))]}
+                                onChange={v => saveAgent({ ...a, effort: v })}
+                                aria-label={`${m.name} 的思考强度`}
+                              />
+                            </span>
+                          </Tip>
                           <Sync s={agentSync[`agent:${m.id}`] as SyncState | undefined} inline />
                         </span>
                         <span className="pv-cells">
                           {cells.length ? cells.map(({ h, c }) => <CellPill key={h.id} h={h} c={c} />) : <em>没有机器要写</em>}
                         </span>
-                        <Tip text={`不再给 ${m.name} 用：配置文件恢复原来的值`}>
+                        <Tip text={`不再给 ${m.name} 用：之后不写它的配置文件（已经写进去的不恢复）`}>
                           <button
                             className="icon-btn sm pv-x"
                             type="button"
@@ -243,7 +268,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
       )}
       {view && view.providers.length > 0 && idle.length > 0 && (
         <p className="pv-idle">
-          <span className="pv-idle-k">不改配置文件</span>
+          <span className="pv-idle-k">还没配供应商</span>
           {idle.map(m => (
             <span key={m.id} className="pv-idle-a">
               <AgentIcon id={m.id} />

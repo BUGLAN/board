@@ -1,7 +1,7 @@
 /* ==========================================================================
    「共用配置」的 MCP 服务器一节（PRD §10.12「共用配置」）
    - 一个服务器一行：名称、类型、命令和参数（或地址）、同步给谁（agent 图标）、各台机器的胶囊（一台一个，合成这台机器上各 agent 的状态）、修改、删除；
-     点一行展开环境变量 / 请求头（密钥只写末尾 4 位）和「机器 × agent」的矩阵；版本太旧、不同步的机器在列表下面一句话说完
+     点一行展开环境变量 / 请求头（密钥只写末尾 4 位）；版本太旧、不按请求同步的机器在列表下面一句话说完
    - 添加 / 修改在居中弹窗里：名称、类型（本地命令 stdio：命令、参数、环境变量；远程 HTTP：地址、请求头）、同步给（所有支持的 agent / 只给哪几个）。
      值可以标成「密钥」：保存后只显示末尾 4 位，修改时留空保留原值
    - 桌面端「从本机导入」：读出这台电脑上各 agent 已经配好的，勾选后加进来（名字像密钥的值标成密钥）
@@ -22,7 +22,7 @@ import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
 import { ChipInput } from './ChipInput';
 import { FormField, FormFoot, FormModal, FormSec, FormTile } from './FormModal';
-import { HostSyncPills, HowTip, OldHostsNote, SyncMatrix } from './SyncBits';
+import { HostSyncPills, HowTip, OldHostsNote } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
 
 export function McpSection({ hosts }: { hosts: HostInfo[] }) {
@@ -116,7 +116,7 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
     }
   };
 
-  const old = hosts.filter(h => h.mcp == null);
+  const old = hosts.filter(h => !h.sync?.able);
   const startEdit = (s: McpServer) => setEdit({ s: { ...s, env: s.env.map(v => ({ ...v, value: v.secret ? '' : v.value })), headers: s.headers.map(v => ({ ...v, value: v.secret ? '' : v.value })) }, editing: true });
 
   return (
@@ -125,8 +125,8 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
         <div>
           <h2>MCP 服务器</h2>
           <p>
-            每台机器的 board host 把这里的 MCP 服务器写进 Claude Code、Codex、pi 的用户级配置（dsh 不支持）。{' '}
-            <HowTip tip="只动同步加进去的，agent 里已有同名的不覆盖。值可以标成密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host。" />
+            机器选了「用服务器的」，board host 把这里的 MCP 服务器写进 Claude Code、Codex、pi 的用户级配置（dsh 不支持）。{' '}
+            <HowTip tip="agent 里已有同名的换成这里的，原来的值存进 ~/.board/host/ 下的备份文件。值可以标成密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host。" />
           </p>
         </div>
         <div className="sc-acts">
@@ -176,7 +176,7 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
       {list && list.length > 0 && (
         <div className="sy-list sy-mcp">
           {list.map(s => {
-            const sync = mcpSync(hosts, s);
+            const sync = mcpSync(hosts, s, now);
             const on = open === s.name;
             const vars = [...s.env, ...s.headers];
             const cmd = s.kind === 'http' ? s.url : [s.command, ...s.args].join(' ');
@@ -230,7 +230,6 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
                         ))}
                       </div>
                     )}
-                    <SyncMatrix list={sync} />
                   </div>
                 )}
               </div>

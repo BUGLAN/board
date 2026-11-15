@@ -1,39 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { argsOf, blankMcp, forAgent, mcpError, mcpRows, mcpSummary, toSave } from './mcp';
-import type { HostInfo, McpServer } from './types';
+import { argsOf, blankMcp, forAgent, mcpError, toSave } from './mcp';
+import type { McpServer } from './types';
 
 const srv = (x: Partial<McpServer> = {}): McpServer => ({ ...blankMcp(), name: 'db', command: 'npx', args: ['-y', 'db-mcp'], ...x });
-const host = (name: string, x: Partial<HostInfo>): HostInfo =>
-  ({
-    id: 1,
-    name,
-    online: true,
-    agents: [
-      { id: 'claude', name: 'Claude Code', found: true, version: '1' },
-      { id: 'codex', name: 'Codex', found: true, version: '1' },
-      { id: 'dsh', name: 'dsh', found: true, version: '1' },
-    ],
-    ...x,
-  }) as HostInfo;
-
 describe('MCP 共用配置', () => {
-  it('状态：旧版不同步；该同步还没报的是正在同步；有同名没覆盖算有问题', () => {
-    const rows = mcpRows(
-      [
-        host('old', { mcp: null }),
-        host('new', { mcp: [] }),
-        host('ok', { mcp: [{ server: 'db', agent: 'claude', state: 'synced' }, { server: 'db', agent: 'codex', state: 'synced' }, { server: 'db', agent: 'dsh', state: 'unsupported' }] }),
-        host('mine', { mcp: [{ server: 'db', agent: 'claude', state: 'local', why: '已有同名' }, { server: 'db', agent: 'codex', state: 'synced' }] }),
-      ],
-      srv(),
-    );
-    expect(rows.map(r => (r.old ? 'old' : r.cells.map(c => `${c.agent}:${c.state}`).join()))).toEqual([
-      'old',
-      'claude:pending,codex:pending',
-      'claude:synced,codex:synced,dsh:unsupported',
-      'claude:local,codex:synced',
-    ]);
-    expect(mcpSummary(rows)).toEqual({ synced: 1, bad: 1, old: 1 });
+  it('同步给谁：空 = 所有支持的（claude、codex、pi），dsh 不支持', () => {
     expect(forAgent(srv(), 'pi') && !forAgent(srv(), 'dsh')).toBe(true);
     expect(forAgent(srv({ agents: ['codex'] }), 'claude')).toBe(false);
   });

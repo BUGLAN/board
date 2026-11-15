@@ -73,20 +73,19 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
     }
   }
 
-  // 有工作空间就视为有这块白板的目录（目录状态只在详情里提示，不影响接卡）；没配时派不了卡
+  // 有工作空间就视为有这块白板的目录（目录状态只在详情里提示，不影响接卡）；没配时派不了卡。
+  // 还没建、board host 第一次派来时会建好或克隆的目录不算没通过；克隆失败、不是 git 仓库的算
   const ws = h.workspace?.path?.trim() ?? '';
   // 同一个项目的几块白板是同一个目录：按目录只说一次，写项目名
   const bad = h.dirs
-    .filter(d => dirFresh(h, d) && (d.status === 'missing' || d.status === 'not_git'))
+    .filter(d => dirFresh(h, d) && (d.status === 'not_git' || (d.status === 'missing' && d.clone?.state === 'failed')))
     .filter((d, i, a) => a.findIndex(x => x.path === d.path) === i);
   const dirName = (d: HostDir) => (h.workspace?.overrides?.some(o => o.board === d.board) ? d.board : d.board.split('/')[0]);
   const dirsWhy = !ws
     ? '还没有配工作空间，派不了卡'
     : bad
         .map(d =>
-          d.status === 'not_git'
-            ? `${dirName(d)} 的目录不是 git 仓库`
-            : `${dirName(d)} 的目录不存在${d.clone && (d.clone.state === 'queued' || d.clone.state === 'running') ? '（正在克隆）' : ''}`,
+          d.status === 'not_git' ? `${dirName(d)} 的目录不是 git 仓库` : `${dirName(d)} 克隆失败：${d.clone?.message || '原因没报上来'}`,
         )
         .join('；');
   out.push({
@@ -222,17 +221,19 @@ export function compareHosts(hosts: HostInfo[], now: number, server?: string | n
     const version = of.map(a => (a ? (a.found ? a.version || '找到了' : '没找到') : null));
     const model = of.map(a => (a?.found && a.model ? a.model : null));
     const env = hosts.map((h, i) => (of[i]?.found ? envName(h, of[i]!.env) : null));
-    // 供应商共用配置写进配置文件的供应商和模型（PRD §10.12）；旧版 board host 没上报时不参与比较
+    // 同步配置写进配置文件的供应商和模型（PRD §10.12）；旧版 board host 不上报时不参与比较
     const prov = hosts.map((h, i) => {
-      if (!of[i]?.found || h.providers == null) return null;
-      const s = h.providers.find(x => x.agent === id);
+      if (!of[i]?.found || !h.sync?.able) return null;
+      if ((of[i]?.run_mode ?? 'off') === 'off') return '不改';
+      const s = h.sync.last?.agents.find(x => x.agent === id);
       if (!s) return h.online ? '还没写入' : null;
       if (s.state === 'synced') return `${s.provider || '?'} / ${s.model || '?'}`;
-      if (s.state === 'local') return '本机自己管';
+      if (s.state === 'none') return '没配';
+      if (s.state === 'off') return '不改';
       if (s.state === 'unsupported') return '不支持';
       return '失败';
     });
-    const provTip = hosts.map((h, i) => (of[i]?.found ? h.providers?.find(x => x.agent === id)?.why ?? undefined : undefined));
+    const provTip = hosts.map((h, i) => (of[i]?.found ? h.sync?.last?.agents.find(x => x.agent === id)?.why ?? undefined : undefined));
     return {
       key: `agent:${id}`,
       title: name,

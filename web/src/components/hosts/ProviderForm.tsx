@@ -4,12 +4,14 @@
    - 连接：名称（修改时不能改）、API key（密码框，可以「显示」核对；修改时留空保留原值）
    - 接口：三种各一行，开关 + 地址；关着的写「不用」；写明哪个 agent 只认它
    - 模型：选好的是胶囊（× 去掉，也能手动输入、回车加）；「获取模型」让服务端用上面的地址和 key 问供应商，列出来勾选（筛选、全选、全不选）
+   - 强度：每个选好的模型一行，点亮它支持的档位；没标的模型不能选强度，写配置时也不写
+   - Anthropic 的地址不带 /v1（Claude Code 自己接 /v1/messages）：保存时服务端去掉，「获取模型」也按去掉后的地址问
    - 底部：哪些 agent 能用它（按打开的接口算），点保存先校验，原因写在底部
    ========================================================================== */
 import { useMemo, useState } from 'react';
 import { api } from '../../lib/api';
-import { maskKey, PROVIDER_AGENTS, PROVIDER_INTERFACES, PROVIDER_PRESETS, providerError } from '../../lib/providers';
-import type { Provider } from '../../lib/types';
+import { ALL_EFFORTS, maskKey, PROVIDER_INTERFACES, PROVIDER_PRESETS, providerError } from '../../lib/providers';
+import type { AgentMeta, Provider } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { Tip } from '../bits';
 import { Icon } from '../Icon';
@@ -25,7 +27,26 @@ const VENDOR: Record<string, { mark: string; color: string }> = {
 };
 const shortOf = (id: string) => PROVIDER_INTERFACES.find(i => i.id === id)?.short ?? id;
 
-export function ProviderForm({ value: p, editing, busy, existing, onChange, onSave, onCancel }: { value: Provider; editing: boolean; busy: boolean; existing: string[]; onChange: (p: Provider) => void; onSave: () => void; onCancel: () => void }) {
+export function ProviderForm({
+  value: p,
+  editing,
+  busy,
+  existing,
+  meta,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  value: Provider;
+  editing: boolean;
+  busy: boolean;
+  existing: string[];
+  /** 内置 agent 的说明（服务端给的）：认哪些接口 */
+  meta: AgentMeta[];
+  onChange: (p: Provider) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
   const [tried, setTried] = useState(false);
   // 打开着的接口：有地址的，或者人刚打开、还没填的
   const [on, setOn] = useState<string[]>(() => p.endpoints.map(e => e.interface));
@@ -66,7 +87,7 @@ export function ProviderForm({ value: p, editing, busy, existing, onChange, onSa
             if (!why) onSave();
           }}
           agentsLabel="能用它的 agent"
-          agents={PROVIDER_AGENTS.map(a => {
+          agents={meta.map(a => {
             const ok = a.protocols.some(x => live.includes(x));
             return { id: a.id, on: ok, tip: ok ? `${a.name} 能用` : `${a.name} 要 ${a.protocols.map(shortOf).join(' / ')} 接口` };
           })}
@@ -110,7 +131,7 @@ export function ProviderForm({ value: p, editing, busy, existing, onChange, onSa
         <div className="fm-rows">
           {PROVIDER_INTERFACES.map(i => {
             const yes = on.includes(i.id);
-            const only = PROVIDER_AGENTS.filter(a => a.protocols.length === 1 && a.protocols[0] === i.id);
+            const only = meta.filter(a => a.protocols.length === 1 && a.protocols[0] === i.id);
             return (
               <div key={i.id} className={cx('fm-if', yes && 'on')}>
                 <FormSwitch on={yes} onClick={() => flip(i.id)} label={i.name} />
@@ -129,7 +150,39 @@ export function ProviderForm({ value: p, editing, busy, existing, onChange, onSa
         </div>
       </FormSec>
       <Models p={p} editing={editing} onChange={onChange} />
+      {p.models.length > 0 && <Efforts p={p} onChange={onChange} />}
     </FormModal>
+  );
+}
+
+/** 每个模型支持的强度：一行一个模型，点亮它支持的档位（从低到高）。没标的模型不能选强度，写配置时也不写 */
+function Efforts({ p, onChange }: { p: Provider; onChange: (p: Provider) => void }) {
+  const of = (m: string) => p.efforts?.[m] ?? [];
+  const flip = (m: string, e: string) => {
+    const cur = of(m);
+    const next = cur.includes(e) ? cur.filter(x => x !== e) : ALL_EFFORTS.filter(x => x === e || cur.includes(x));
+    onChange({ ...p, efforts: { ...(p.efforts ?? {}), [m]: next } });
+  };
+  return (
+    <FormSec title="强度" hint="每个模型点亮它支持的档位；没标的模型不能选强度，写 agent 配置时也不写">
+      <div className="fm-eff">
+        {p.models.map(m => (
+          <div key={m} className="fm-eff-row">
+            <code title={m}>{m}</code>
+            <span className="fm-eff-levels" role="group" aria-label={`${m} 支持的强度`}>
+              {ALL_EFFORTS.map(e => {
+                const on = of(m).includes(e);
+                return (
+                  <button key={e} type="button" role="checkbox" aria-checked={on} className={cx('fm-eff-lv', on && 'on')} onClick={() => flip(m, e)}>
+                    {e}
+                  </button>
+                );
+              })}
+            </span>
+          </div>
+        ))}
+      </div>
+    </FormSec>
   );
 }
 

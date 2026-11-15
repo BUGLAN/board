@@ -119,10 +119,10 @@ export interface DragUI {
   veto: { title: string; message: string; code: string } | null;
 }
 
-export type HostsView = 'racks' | 'compare' | 'shared';
+export type HostsView = 'racks' | 'compare' | 'shared' | 'sched';
 function initialHostsView(): HostsView {
   const v = pref.get<string>('hosts.view', 'racks');
-  return v === 'compare' || v === 'shared' ? v : 'racks';
+  return v === 'compare' || v === 'shared' || v === 'sched' ? v : 'racks';
 }
 
 interface UIState {

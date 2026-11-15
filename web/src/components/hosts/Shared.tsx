@@ -1,10 +1,10 @@
 /* ==========================================================================
    机器 Tab「共用配置」（PRD §10.12「共用配置」）：第一节是 skills 共用库
-   - 一个 skill 一行：名称、版本前 7 位、来源和更新时间（board-skills 写「随服务端版本」）、文件数和大小、各台机器的胶囊（一台一个，
-     把这台机器上各 agent 的状态合成一个，悬停看每个 agent，点了打开那台机器）、删除（board-skills 不能删）
-   - 点一行展开「机器 × agent」的矩阵；版本太旧、不同步的机器在列表下面一句话说完
+   - 一个 skill 一行：名称、版本前 7 位、来源和更新时间（board-skills 写「随服务端版本」）、文件数和大小、各台机器的胶囊（一台一个：
+     不改 / 正在写入 / 已写入 / 失败，悬停看原因，点了打开那台机器）、删除（board-skills 不能删）
+   - 机器在详情「设置」里选 skills 用服务器的还是不改；版本太旧、不按请求同步的机器在列表下面一句话说完
    - 「从机器导入」：选一台机器，列出它各 agent 目录里自己放的 skill，勾选后那台机器的 board host 把它们传进库（SkillImport.tsx）；
-     同名的换成新版本，在线的机器马上同步。命令行也能传：board skills push <目录>
+     同名的换成新版本，选了「用服务器的」机器马上同步。命令行也能传：board skills push <目录>
    删除要等服务端记下：按钮转圈、禁用直到返回（optimistic(null, …)）；同步的进展按机器上报画
    ========================================================================== */
 import { useState } from 'react';
@@ -18,7 +18,7 @@ import { confirm, toastError } from '../../store/ui';
 import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { SkillImportModal } from './SkillImport';
-import { HostSyncPills, HowTip, OldHostsNote, SyncMatrix } from './SyncBits';
+import { HostSyncPills, HowTip, OldHostsNote } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
 
 const kb = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.ceil(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
@@ -27,7 +27,6 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
   const { list: lib, err, refresh: load } = useRemoteList(() => api.skills(), ws?.hosts);
-  const [open, setOpen] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const remove = async (s: SkillInfo) => {
@@ -50,7 +49,7 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
     }
   };
 
-  const old = hosts.filter(h => h.skills == null);
+  const old = hosts.filter(h => !h.sync?.able);
 
   return (
     <section className="sc">
@@ -58,8 +57,8 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
         <div>
           <h2>skills</h2>
           <p>
-            放在这里的 skill，每台机器的 board host 会装到它找到的每个 agent 的 skill 目录。{' '}
-            <HowTip tip="装到 ~/.agents/skills、~/.claude/skills、$CODEX_HOME/skills，WSL 里的也装；本机已经有的同名 skill 不覆盖（内容一样的算已同步）。命令行：board skills push <目录>" />
+            机器选了「用服务器的」，board host 把这里的 skill 装到它找到的每个 agent 的 skill 目录；board-skills 不管选哪个都装。{' '}
+            <HowTip tip="装到 ~/.agents/skills、~/.claude/skills、$CODEX_HOME/skills，WSL 里的也装。本机有同名的、不是 Board 装的，换成库里的，旧的挪进 ~/.board/host/skills-backup/；软链接（开发中的 skill）不碰。命令行：board skills push <目录>" />
           </p>
         </div>
         <div className="sc-acts">
@@ -76,16 +75,14 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
       {lib && (
         <div className="sy-list">
           {lib.map(s => {
-            const list = skillSync(hosts, s);
-            const on = open === s.name;
+            const list = skillSync(hosts, s, now);
             return (
-              <div key={s.name} className={cx('sy-item', on && 'open')}>
+              <div key={s.name} className="sy-item">
                 <div className="sy-row">
-                  <button type="button" className="sy-toggle" aria-expanded={on} onClick={() => setOpen(on ? null : s.name)}>
-                    <Icon name="chevRight" />
+                  <span className="sy-toggle">
                     <b>{s.name}</b>
                     <code title={s.version}>{s.version.slice(0, 7)}</code>
-                  </button>
+                  </span>
                   <span className="sy-meta">
                     {s.builtin ? '随服务端版本' : `${s.source}${s.by && s.by !== s.source ? `（${s.by}）` : ''} · ${since(s.updatedAt, now)}`} · {s.files} 个文件 · {kb(s.size)}
                   </span>
@@ -107,11 +104,6 @@ export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
                     )}
                   </span>
                 </div>
-                {on && (
-                  <div className="sy-detail">
-                    <SyncMatrix list={list} />
-                  </div>
-                )}
               </div>
             );
           })}

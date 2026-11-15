@@ -43,7 +43,8 @@ describe('接单时段', () => {
 describe('机器现在接不接单', () => {
   it('按顺序给出原因：离线、没开、暂停、没有时段、时段外、满了；都没有就是空位', () => {
     expect(hostTake(host({ online: false }), 0, 600)).toMatchObject({ ok: false, why: '离线', tone: 'off' });
-    expect(hostTake(host({ auto: false }), 0, 600)).toMatchObject({ why: '没开自动接单', tone: 'off' });
+    expect(hostTake(host({ auto: false }), 0, 600)).toMatchObject({ why: '只做派给它的', tone: 'off' });
+    expect(hostTake(host({ auto: false, paused: true }), 0, 600).why).toBe('暂停接单');
     expect(hostTake(host({ paused: true }), 0, 600)).toMatchObject({ why: '暂停接单', tone: 'wait' });
     expect(hostTake(host({ windows: [] }), 0, 600)).toMatchObject({ why: '没有接单时段', tone: 'off' });
     expect(hostTake(host({ windows: [[1320, 1440], [0, 480]] }), 0, 860)).toMatchObject({ why: '时段外，22:00 开始', tone: 'wait' });
@@ -59,7 +60,7 @@ describe('机器现在接不接单', () => {
     expect(agentTake(h, 'pi', 0, 600)).toMatchObject({ ok: false, why: '没找到命令' });
     expect(agentTake(h, 'dsh', 0, 600)).toMatchObject({ ok: false, why: '连续异常退出，已暂停' });
     expect(agentTake(h, 'claude', 0, 600)).toEqual({ ok: true, why: '空位 2', tone: 'ok' });
-    expect(agentTake(host({ auto: false }), 'claude', 0, 600).why).toBe('没开自动接单');
+    expect(agentTake(host({ auto: false }), 'claude', 0, 600).why).toBe('只做派给它的');
   });
 });
 

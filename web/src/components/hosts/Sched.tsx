@@ -1,15 +1,17 @@
 /* ==========================================================================
-   机器 Tab「共用配置」第一节「调度」（PRD §10.12「调度」）：哪些卡自动交给哪个 agent 在这里定一次，所有机器共用
+   机器 Tab「调度」（PRD §10.12「调度」）：哪些卡自动交给哪个 agent 在这里定一次，所有机器共用
    - 自动领取的白板：一块白板一个胶囊，点一下参与 / 不参与（不参与的只是不被自动领取，手动派发照常）
    - 领取规则：按 agent 分卡——这个 agent 领哪些卡（规则前面的数字是全局的先后，第一条命中的生效）、由哪些机器做
      （每台一个胶囊：现在能接、要等、接不了和原因）；下面一行是兜底「其余卡片 →」
    - 机器什么时候接单：一台机器一条 24 小时的时间带，直接在上面拖出接单时段（空白处拖是新加一段，拖两头改起止，
-     拖中间平移，双击删掉，半小时一格）；右边是会话上限、一个会话几张、自动接单的开关。时间按服务器时间
+     拖中间平移，双击删掉，半小时一格；全天就是从 00 拖到 24）；右边是会话上限、一个会话几张、接单（自动领 / 只做派给它的 / 暂停）。
+     时间按服务器时间
+   - 跑多久停（RunLimits）：单次最长运行、没输出多久算卡住，所有机器一个值
    写操作都是设置项（saveSetting）：当帧生效，保存状态画在那一项旁边，失败回到原处并提示
    ========================================================================== */
 import { useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { hostLoad } from '../../lib/hosts';
+import { ACCEPT_WORDS, acceptOf, acceptPatch, hostLoad, minsWords, type Accept } from '../../lib/hosts';
 import { ALL_DAY, DAY, SNAP, agentTake, claimable, hhmm, hostTake, ruleAgents, serverMinute, tidyWins, winWords, type Win } from '../../lib/sched';
 import type { ClaimRule, HostInfo, Label, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
@@ -18,7 +20,7 @@ import { openHost } from '../../store/ui';
 import { Select, Sync, Tip, useNow, useSync } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
-import { Stepper, useSaver } from './HostModal';
+import { Stepper, useSaver } from './Saver';
 import { LabelSet } from './LabelSet';
 
 const OPS: [ClaimRule['op'], string][] = [
@@ -99,9 +101,9 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
     <section className="sc sd">
       <div className="sc-head">
         <div>
-          <h2>调度</h2>
+          <h2>领取规则</h2>
           <p>
-            哪些卡自动交给哪个 agent 在这里定一次，所有机器共用；机器在自己的接单时段里有符合规则的卡就领，几台都能接时按空位分。时间都按服务器时间
+            哪些卡自动交给哪个 agent，所有机器共用；机器在自己的接单时段里有符合规则的卡就领，几台都能接时按空位分。时间都按服务器时间
             {sched.tz ? `（${sched.tz}）` : ''}。
           </p>
         </div>
@@ -305,31 +307,26 @@ function RuleForm({ labels, agents, onAdd, onCancel }: { labels: Label[]; agents
   );
 }
 
-/** 一台机器一行：时间带、时段文字、会话上限、一个会话几张、自动接单 */
+/** 一台机器一行：时间带、时段文字、会话上限、一个会话几张、接单（自动领 / 只做派给它的 / 暂停） */
 function TimeRow({ h, ws, minute }: { h: HostInfo; ws: Workspace; minute: number }) {
   const { save, sync } = useSaver(h.name);
   const wins = h.windows ?? ALL_DAY;
   const t = hostTake(h, hostLoad(ws, h).running.length, minute);
   const words = winWords(wins);
-  const failed = ['windows', 'auto', 'max', 'perSession'].some(k => sync[k] === 'failed');
+  const failed = ['windows', 'auto', 'paused', 'max', 'perSession'].some(k => sync[k] === 'failed');
+  const accept = acceptOf(h);
   return (
-    <div className={cx('sd-line', (!h.online || !h.auto) && 'off', failed && 'hp-rollback')}>
+    <div className={cx('sd-line', (!h.online || accept !== 'auto') && 'off', failed && 'hp-rollback')}>
       <button type="button" className="sd-m-name" onClick={() => openHost(h.name)} title="打开机器详情">
         <i className={cx('sd-dot', t.tone)} />
         <b>{h.name}</b>
       </button>
-      <Track wins={wins} minute={minute} off={!h.online || !h.auto} onChange={v => save({ windows: v })} />
+      <Track wins={wins} minute={minute} off={!h.online || accept !== 'auto'} onChange={v => save({ windows: v })} />
       <span className="sd-ctl">
         <span className="sd-win-words" title={words}>
           {words}
         </span>
-        {/* 已经是全天时不再放「全天」按钮：左边的文字就是它 */}
-        {words !== '全天' && (
-          <button type="button" className="sd-all" title="改成全天接单" onClick={() => save({ windows: ALL_DAY })}>
-            全天
-          </button>
-        )}
-        <Sync s={sync.windows ?? sync.max ?? sync.perSession ?? sync.auto} inline />
+        <Sync s={sync.windows ?? sync.max ?? sync.perSession ?? sync.paused} inline />
         <Tip text="最多同时开几个会话">
           <span>
             <Stepper value={h.max} label="最多几个会话" onChange={v => save({ max: v })} />
@@ -340,11 +337,14 @@ function TimeRow({ h, ws, minute }: { h: HostInfo; ws: Workspace; minute: number
             <Stepper value={h.perSession ?? 4} label="一个会话最多做几张" onChange={v => save({ perSession: v })} />
           </span>
         </Tip>
-        <Tip text={h.auto ? '自动接单开着：点一下关掉，只做派给它的卡' : '点一下打开自动接单'}>
-          <button className={cx('switch', h.auto && 'on')} type="button" role="switch" aria-checked={!!h.auto} aria-label={`${h.name} 自动接单`} onClick={() => save({ auto: !h.auto })}>
-            <i />
-          </button>
-        </Tip>
+        {/* 「暂停接单」「自动接单」「排空」合成三态：暂停后在跑的做完就是已排空 */}
+        <Select
+          className="sd-accept"
+          value={accept}
+          options={ACCEPT_WORDS.map(([value, label]) => ({ value, label }))}
+          onChange={v => v !== accept && save(acceptPatch(v as Accept))}
+          aria-label={`${h.name} 接单`}
+        />
       </span>
       <small className={cx('sd-now', t.tone)}>{t.why}</small>
     </div>
@@ -425,5 +425,74 @@ function Track({ wins, minute, off, onChange }: { wins: Win[]; minute: number; o
       })}
       <i className="sd-nowline" style={{ left: `${(minute / DAY) * 100}%` }} />
     </div>
+  );
+}
+
+/** 单次最长运行可以选的档位（分钟，0 = 不限）。服务端只校验范围（`board-core` 的 `MAX_RUN_LIMIT`，
+    就是最高一档），选哪几档由界面决定，所以档位只在这里列一份 */
+const MAX_RUN_CHOICES = [0, 30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 660, 720];
+/** 没输出多久算卡住可以选的档位（分钟，0 = 不限）；范围是 `IDLE_RUN_LIMIT`，最高一档就是它 */
+const IDLE_RUN_CHOICES = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
+
+/** 「跑多久停」：单次最长运行、没输出多久算卡住，所有机器一个值（服务端存一份，随机器发给 board host） */
+export function RunLimits() {
+  const sched = useData(s => s.ws?.sched);
+  const { sync, track } = useSync();
+  // 旧版服务端没有这两项：不显示这一节
+  if (!sched || sched.maxRun == null || sched.idleRun == null) return null;
+  const set = (k: 'maxRun' | 'idleRun', v: number) =>
+    track(
+      k,
+      saveSetting(
+        `sched:${k}`,
+        { ws: w => ({ ...w, sched: w.sched ? { ...w.sched, [k]: v } : w.sched, hosts: w.hosts?.map(h => ({ ...h, [k]: v })) }) },
+        () => api.updateSched({ [k]: v }),
+      ),
+    );
+  return (
+    <section className="sc sd">
+      <div className="sc-head">
+        <div>
+          <h2>跑多久停</h2>
+          <p>所有机器一样。到时间按「停止」结束整个进程，派发记「超时」或「卡住」，卡片按异常退出的规则移走，评论里写原因和日志最后 20 行。</p>
+        </div>
+      </div>
+      <div className="hd-limits">
+        <div className={cx('hp-knob', sync.maxRun === 'failed' && 'hp-rollback')}>
+          <div className="hp-knob-text">
+            <b>单次最长运行</b>
+            <span>到时间就停，防止卡住的 agent 一直占着会话位</span>
+          </div>
+          <span className="hp-ctl">
+            <Sync s={sync.maxRun} />
+            <Select
+              className="hp-env-select"
+              value={String(sched.maxRun)}
+              options={MAX_RUN_CHOICES.map(n => ({ value: String(n), label: minsWords(n) }))}
+              onChange={v => set('maxRun', +v)}
+              aria-label="单次最长运行"
+            />
+          </span>
+        </div>
+        <div className={cx('hp-knob', sync.idleRun === 'failed' && 'hp-rollback')}>
+          <div className="hp-knob-text">
+            <b>没输出多久算卡住</b>
+            <Tip text="只对已经输出过内容的派发生效。内置的 agent 都用结构化输出，运行中每一步都有输出">
+              <span>已经输出过内容、之后长时间没有新输出就停</span>
+            </Tip>
+          </div>
+          <span className="hp-ctl">
+            <Sync s={sync.idleRun} />
+            <Select
+              className="hp-env-select"
+              value={String(sched.idleRun)}
+              options={IDLE_RUN_CHOICES.map(n => ({ value: String(n), label: minsWords(n) }))}
+              onChange={v => set('idleRun', +v)}
+              aria-label="没输出多久算卡住"
+            />
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }

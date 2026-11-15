@@ -5,7 +5,7 @@
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
 import type { Milestones } from './milestones';
-import type { AgentProvider, AgentTemplate, Attachment, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched } from './types';
+import type { AgentProvider, Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
 
 declare global {
   interface Window {
@@ -205,10 +205,6 @@ export const api = {
     patch: {
       max?: number;
       perSession?: number;
-      /** 单次最长运行（分钟，0 = 不限） */
-      maxRun?: number;
-      /** 多久没有输出算卡住（分钟，0 = 不限） */
-      idleRun?: number;
       rules?: ClaimRule[];
       fallback?: string;
       paused?: boolean;
@@ -216,8 +212,11 @@ export const api = {
       cronOn?: boolean;
       cron?: string[];
       env?: { agent: string; env: string };
-      /** 一个 agent 的模型、思考强度、模型供应商：不带的那一项不改，空字符串回到默认（供应商空 = 跟随共用配置） */
-      run?: { agent: string; model?: string; effort?: string; provider?: string };
+      /** 一个 agent 的模型怎么配：用服务器的 / 不改 / 单独配置（供应商、模型、强度；模型空 = 第一个，强度空 = 不写） */
+      run?: { agent: string; mode: RunMode; provider?: string; model?: string; effort?: string };
+      /** skills、MCP 用服务器的（true）还是不改（false） */
+      syncSkills?: boolean;
+      syncMcp?: boolean;
       /** 恢复一个连续异常退出、暂停了接单的 agent（写它的标识） */
       resume?: string;
       /** 参与自动接单 */
@@ -232,8 +231,8 @@ export const api = {
   /** 请那台机器的 board host 把仓库克隆到这块白板所在项目的目录（`<工作空间>/<项目>`） */
   cloneHostDir: (name: string, board: string, url: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/dirs/clone`, { board, url }),
   removeHost: (name: string, revoke = false) => req('DELETE', `/api/hosts/${q(name)}${revoke ? '?revoke=1' : ''}`),
-  /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、排空、取消请求 */
-  askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel', now = false) =>
+  /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、取消请求 */
+  askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'cancel', now = false) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
   /** skills 共用库（PRD §10.12「共用配置」）：列出、上传（同名换成新版本）、删除 */
   skills: () => req<SkillInfo[]>('GET', '/api/skills'),
@@ -251,11 +250,10 @@ export const api = {
   putProviderAgent: (a: AgentProvider) => req<AgentProvider>('POST', '/api/providers/agents', a),
   /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */
   providerModels: (body: { name?: string; endpoints: ProviderEndpoint[]; apiKey?: string | null }) => req<{ models: string[]; from: string }>('POST', '/api/providers/models', body),
-  agentTemplates: () => req<AgentTemplate[]>('GET', '/api/agent-templates'),
-  putAgentTemplate: (t: AgentTemplate) => req<AgentTemplate>('POST', '/api/agent-templates', t),
-  removeAgentTemplate: (id: string) => req('DELETE', `/api/agent-templates/${q(id)}`),
-  /** 复制机器设置到其他机器：items 是 limits、cron、rules、agent、run 里的几项 */
-  copyHost: (name: string, to: string[], items: string[]) => req<HostInfo[]>('POST', `/api/hosts/${q(name)}/copy`, { to, items }),
+  /** 同步配置写入失败后「重试」：重新下发同步请求 */
+  syncHost: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/sync`),
+  /** 列那台机器上一个文件夹的子文件夹（服务端转给它的 board host，最多等 20 秒）；空路径是最上面一层 */
+  hostLs: (name: string, path: string) => req<DirList>('POST', `/api/hosts/${q(name)}/ls`, { path }),
   /** 自检：整台机器，或只查一个 agent（PRD §10.12「自检」） */
   selfTest: (name: string, agent?: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/selftest`, agent ? { agent } : {}),
   /** 全部暂停 / 全部恢复：所有机器一起设成暂停接单（排队的派发照样排队） */
@@ -263,7 +261,8 @@ export const api = {
   /** 全部停止：停止所有正在跑的派发，同时全部暂停 */
   stopAllHosts: () => req<HostInfo[]>('POST', '/api/hosts/stop-all'),
   /** 改全局的领取规则（整个列表替换）和兜底（空字符串 = 不领）：所有机器共用 */
-  updateSched: (patch: { rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[]; fallback?: string; autoUpgrade?: boolean }) => req<Sched>('PATCH', '/api/sched', patch),
+  updateSched: (patch: { rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[]; fallback?: string; autoUpgrade?: boolean; maxRun?: number; idleRun?: number }) =>
+    req<Sched>('PATCH', '/api/sched', patch),
   /** 这台机器最近 50 个结束的派发 */
   hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`),
   /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */

@@ -476,7 +476,8 @@ export function Sync({ s, inline }: { s?: SyncState; inline?: boolean }) {
 }
 
 /** 分段控件：选中的一段下面垫一块滑动的底（设置页、机器页的视图切换） */
-export function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
+/** 分段选择：一项是 [值, 文字]，第三个是 true 时那一项不能选 */
+export function Segmented<T extends string>({ value, options, onChange }: { value: T; options: ([T, string] | [T, string, boolean])[]; onChange: (v: T) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pill, setPill] = useState({ w: 0, x: 0 });
   useLayoutEffect(() => {
@@ -491,8 +492,8 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
   }, [value]);
   return (
     <div className="segmented" role="radiogroup" ref={ref}>
-      {options.map(([v, label]) => (
-        <button key={v} type="button" role="radio" aria-checked={v === value} className={cx(v === value && 'on')} onClick={() => onChange(v)}>
+      {options.map(([v, label, off]) => (
+        <button key={v} type="button" role="radio" aria-checked={v === value} disabled={!!off && v !== value} className={cx(v === value && 'on')} onClick={() => onChange(v)}>
           {label}
         </button>
       ))}

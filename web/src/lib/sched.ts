@@ -64,8 +64,9 @@ export interface Take {
 export function hostTake(h: HostInfo, running: number, minute: number): Take {
   const wins = h.windows ?? ALL_DAY;
   if (!h.online) return { ok: false, why: '离线', tone: 'off' };
-  if (!h.auto) return { ok: false, why: '没开自动接单', tone: 'off' };
+  // 接单三态：暂停 > 只做派给它的 > 自动领
   if (h.paused) return { ok: false, why: '暂停接单', tone: 'wait' };
+  if (!h.auto) return { ok: false, why: '只做派给它的', tone: 'off' };
   if (wins.length === 0) return { ok: false, why: '没有接单时段', tone: 'off' };
   if (!inWins(wins, minute)) return { ok: false, why: `时段外，${nextStart(wins, minute)} 开始`, tone: 'wait' };
   if (running >= h.max) return { ok: false, why: `${running} 个会话在跑，已满`, tone: 'wait' };

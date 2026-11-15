@@ -1,8 +1,8 @@
-/* 机器就绪：机器详情顶部的就绪清单、机器 Tab 的对比视图、磁贴上的「还差 N 项」；检查本身在 lib/ready.ts */
+/* 机器就绪：机器 Tab 的对比视图、磁贴上的「还差 N 项」；检查本身在 lib/ready.ts */
 import { Fragment, useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { hostLoad } from '../../lib/hosts';
-import { compareHosts, type ReadyCheck, type ReadyGo } from '../../lib/ready';
+import { compareHosts, type ReadyCheck } from '../../lib/ready';
 import type { HostInfo, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { openHost } from '../../store/ui';
@@ -45,47 +45,6 @@ export function ReadyBadge({ checks }: { checks: ReadyCheck[] }) {
   );
 }
 
-/** 机器详情顶部的「就绪」：一行「N/M 项通过」，展开是清单。有没通过的项时默认展开，全部通过时默认收起；点标题切换 */
-export function ReadySection({ checks, go, i }: { checks: ReadyCheck[]; go: (to: ReadyGo) => void; i: number }) {
-  const pass = checks.filter(c => c.ok).length;
-  const all = pass === checks.length;
-  const [open, setOpen] = useState<boolean | null>(null);
-  const shown = open ?? !all;
-  return (
-    <section className="d-section hp-ready" style={{ ['--i' as string]: i }}>
-      <button type="button" className="d-label hp-fold-btn" aria-expanded={shown} onClick={() => setOpen(!shown)}>
-        <Icon name="chevDown" />
-        就绪
-        <span className={cx('hp-ready-n', all ? 'ok' : 'bad')}>
-          {pass}/{checks.length} 项通过
-        </span>
-      </button>
-      {shown && (
-        <ul className="hp-ready-list hp-fold-body">
-          {checks.map(c => (
-            <li key={c.key} className={c.ok ? 'ok' : 'bad'}>
-              <Icon name={c.ok ? 'checkCircle' : 'alert'} />
-              <div>
-                <b>{c.label}</b>
-                {!c.ok && (
-                  <span>
-                    {c.why}
-                    {c.hint && <small>{c.hint}</small>}
-                  </span>
-                )}
-              </div>
-              {!c.ok && c.go && (
-                <button type="button" className="btn sm" onClick={() => go(c.go!)}>
-                  {c.act}
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
 
 /** 对比视图：每台机器一行；列是就绪的每一项、board 版本、每个 agent 的版本 / 模型 / 启动环境。和其他机器不一致的格子标出来 */
 export function Compare({ hosts, ws, now, server }: { hosts: HostInfo[]; ws: Workspace | null; now: number; server: string | null }) {

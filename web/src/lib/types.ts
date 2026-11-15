@@ -202,34 +202,24 @@ export interface HostAgent {
   env?: string | null;
   /** 在实际用的启动环境里找到了命令、却看不到 board-skills：该装到哪里。看得到、旧版 board host 没有 */
   no_skill?: string | null;
-  /** 这个 agent 在这台机器上实际配的模型名：派发的 agent 名字（<agent 标识>-<机器名>/<模型名>）的第二段；旧版 board host 没有 */
+  /** 这个 agent 现在用的模型（board host 读它的配置文件上报）：派发名字（<agent 标识>-<机器名>/<模型名>）的第二段 */
   model?: string;
-  /** 机器设置里能选的模型和思考强度（按模板）；旧版 board host 没有：置灰、要升级 */
-  opts?: AgentOpts | null;
-  /** 机器设置里选的模型、思考强度；没选是 agent 自己的默认（不传参数） */
+  /** 这个 agent 配置文件里现在的思考强度 */
+  effort?: string;
+  /** 模型怎么配：server 用服务器的 | off 不改 | own 单独配置 */
+  run_mode?: RunMode | null;
+  /** 单独配置的供应商、模型、强度（run_mode 是 own 时） */
+  run_provider?: string | null;
   run_model?: string | null;
   run_effort?: string | null;
-  /** 机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 env 是实际用的） */
+  /** 机器设置里选的启动环境 */
   run_env?: string | null;
-  /** 机器设置里选的模型供应商：没选 = 跟随共用配置，`@local` = 本机自己管 */
-  run_provider?: string | null;
-  /** 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 [agents.*]：用的是本机的 */
-  local_override?: boolean;
   /** 这个 agent 在这台机器上连续异常退出、已经暂停接单：点「恢复」才继续 */
   tripped?: boolean;
 }
 
-/** 一个 agent 能在机器设置里选什么 */
-export interface AgentOpts {
-  /** 能选模型 */
-  model: boolean;
-  /** 「模型」下拉里列的常用模型（也可以手填） */
-  models: string[];
-  /** 支持的思考强度档位，从低到高；空表示不能选强度 */
-  efforts: string[];
-  /** 这个 agent 认哪些模型供应商接口（anthropic、openai-chat、openai-responses）；旧版 board host 没有 */
-  protocols?: string[];
-}
+/** 一个 agent 的模型怎么配：用服务器的 / 不改（Board 不碰它的配置文件）/ 单独配置 */
+export type RunMode = 'server' | 'off' | 'own';
 
 /** 一个 agent 在一个启动环境里的检查结果 */
 export interface EnvCheck {
@@ -328,9 +318,9 @@ export interface HostInfo {
   max: number;
   /** 自动领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
-  /** 单次最长运行（分钟，0 = 不限，默认 180）；旧版服务端没有 */
+  /** 单次最长运行（分钟，0 = 不限）：所有机器一个值，在「调度」里改（Sched.maxRun） */
   maxRun?: number;
-  /** 多久没有输出算卡住（分钟，0 = 不限，默认 20）；旧版服务端没有 */
+  /** 多久没有输出算卡住（分钟，0 = 不限）：同上 */
   idleRun?: number;
   /** 领取规则（全局的一份，每台机器读到的都一样；active 按这台机器算）：没有一条规则时不自动领卡 */
   rules?: ClaimRule[];
@@ -369,12 +359,12 @@ export interface HostInfo {
   token?: HostToken | null;
   /** 自检：等 board host 做的请求、最近一次的结果；旧版服务端没有 */
   selftest?: SelfTest;
-  /** skills 共用库同步到这台机器各个 agent 目录的状态；旧版 board host 不同步，为 null / 没有 */
-  skills?: SkillState[] | null;
-  /** MCP 服务器同步到这台机器各个 agent 的状态；旧版 board host 不同步，为 null / 没有 */
-  mcp?: McpState[] | null;
-  /** 模型供应商写进这台机器各个 agent 配置文件的状态；旧版 board host 不同步，为 null / 没有 */
-  providers?: ProviderState[] | null;
+  /** skills 用服务器的（库里的写进各个 agent 的 skill 目录）；否则不改（只装 board-skills） */
+  syncSkills?: boolean;
+  /** MCP 用服务器的；否则不改 */
+  syncMcp?: boolean;
+  /** 同步配置：等 board host 做的请求、最近一次的结果 */
+  sync?: ConfigSync;
   /** 从这台机器导入 skills：本机的 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有 */
   skillImport?: SkillImport;
 }
@@ -387,20 +377,43 @@ export interface McpVar {
   tail?: string | null;
 }
 
-/** 共用配置里的 agent 模板（board-core templates.rs）：字段和配置文件的 [agents.<标识>] 一样 */
-export interface AgentTemplate {
-  id: string;
+/** 同步配置（机器详情与配置同步重构）：服务器上一改就给受影响的机器下发请求，board host 写完上报 */
+export interface ConfigSync {
+  /** board host 会按请求同步、上报结果；旧版不会 */
+  able?: boolean;
+  /** 等 board host 做（或正在做）的同步 */
+  ask?: { id: number; key: string; by: string; at: number } | null;
+  /** 最近一次的结果 */
+  last?: SyncResult | null;
+}
+
+export interface SyncResult {
+  id?: number | null;
+  key: string;
+  at: number;
+  /** 每个找到的 agent 一行 */
+  agents: ProviderState[];
+  skills: { state: 'synced' | 'off' | 'failed' | ''; count: number; dirs: string[]; replaced: string[]; links: string[]; why?: string | null };
+  mcp: { state: 'synced' | 'off' | 'failed' | ''; count: number; agents: string[]; replaced: string[]; why?: string | null };
+}
+
+/** 一个文件夹（选工作空间时 board host 列出来的） */
+export interface DirEntry {
   name: string;
-  cmd: string[];
-  model: string;
-  modelArgs: string[];
-  effortArgs: string[];
-  efforts: string[];
-  /** Windows 上支持的启动环境，按默认选择的顺序；空 = 默认 */
-  win: string[];
-  version?: string;
-  updatedAt?: number;
-  by?: string;
+  path: string;
+  /** 它本身是 git 仓库 */
+  git: boolean;
+  /** 它下面一层有几个 git 仓库 */
+  repos: number;
+}
+
+export interface DirList {
+  /** 列的是哪个文件夹（~ 已经展开）；最上面一层为空 */
+  path: string;
+  /** 从最上面一层（空）到它自己的每一级 */
+  chain: string[];
+  entries: DirEntry[];
+  error?: string | null;
 }
 
 /** 共用配置里的一个 MCP 服务器（PRD §10.12「共用配置」） */
@@ -420,13 +433,6 @@ export interface McpServer {
   source?: string;
 }
 
-export interface McpState {
-  server: string;
-  agent: string;
-  state: 'synced' | 'local' | 'unsupported' | 'failed';
-  why?: string | null;
-}
-
 /* ---------------- 模型供应商（PRD §10.12「共用配置」） ---------------- */
 
 /** 一个供应商的一个接口和地址（三种接口各一个地址） */
@@ -444,6 +450,8 @@ export interface Provider {
   /** 密钥末尾 4 位 */
   tail?: string | null;
   models: string[];
+  /** 每个模型支持的思考强度（从低到高）；没标的模型不能选强度 */
+  efforts?: Record<string, string[]>;
   version?: string;
   updatedAt?: number;
   by?: string;
@@ -462,20 +470,33 @@ export interface AgentProvider {
   by?: string;
 }
 
-/** 一台机器上一个 agent 的配置文件写入状态 */
+/** 一台机器上一个 agent 这次同步配置的结果 */
 export interface ProviderState {
   agent: string;
-  state: 'synced' | 'local' | 'unsupported' | 'failed';
-  /** 写进去的供应商、模型（synced 时） */
+  /** synced 已写入 | off 不改 | none 服务器上没给它配 | unsupported 不支持 | failed 写入失败 */
+  state: 'synced' | 'off' | 'none' | 'unsupported' | 'failed';
+  /** 写进去的供应商、模型、强度（synced 时） */
   provider?: string;
   model?: string;
+  effort?: string;
+  /** 选了、但模型不支持所以没写的强度 */
+  dropped?: string;
   why?: string | null;
 }
 
-/** 列表接口：供应商（打码）和每个内置 agent 的分配 */
+/** 内置 agent 的说明（服务端 board-core 留一份）：认哪些接口、配置文件能写哪几档强度 */
+export interface AgentMeta {
+  id: string;
+  name: string;
+  protocols: string[];
+  efforts: string[];
+}
+
+/** 列表接口：供应商（打码）、每个内置 agent 的分配、内置 agent 的说明 */
 export interface ProviderView {
   providers: Provider[];
   agents: AgentProvider[];
+  meta?: AgentMeta[];
 }
 
 /** 一台机器上各 agent 的 skill 目录里、不是同步装的 skill（「从机器导入」用）；同名同内容在几个目录里的合成一项 */
@@ -521,17 +542,6 @@ export interface SkillInfo {
   source: string;
   /** board-skills：随服务端版本，不能删、不能改 */
   builtin?: boolean;
-}
-
-/** 一台机器上一个 agent 目录里一个 skill 的同步状态 */
-export interface SkillState {
-  skill: string;
-  agent: string;
-  env: string;
-  dir: string;
-  state: 'synced' | 'behind' | 'local' | 'failed';
-  version?: string | null;
-  why?: string | null;
 }
 
 /** 自检（PRD §10.12「自检」）：agent 能不能干活、每个项目的目录能不能推送、board 版本是否落后 */
@@ -609,6 +619,10 @@ export interface Sched {
   minute: number;
   /** 自动升级：服务端的版本比机器新时，机器等手上的派发做完自己升级 */
   autoUpgrade?: boolean;
+  /** 单次最长运行（分钟，0 = 不限），所有机器一样 */
+  maxRun?: number;
+  /** 没输出多久算卡住（分钟，0 = 不限），所有机器一样 */
+  idleRun?: number;
 }
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */

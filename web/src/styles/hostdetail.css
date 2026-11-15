@@ -1,0 +1,184 @@
+/* 机器详情（概况 / agent / 设置）、选工作空间的分栏视图、调度里的「跑多久停」、供应商表单里的强度
+   （机器详情与配置同步重构，原型变体 B） */
+
+/* ---------- 标题区和页签 ---------- */
+.hd-top { flex: none; display: flex; align-items: flex-end; gap: 16px; padding: 18px 22px 14px; border-bottom: 1px solid var(--line); }
+.hd-id { flex: 1; min-width: 0; }
+.hd-tabs { flex: none; padding-bottom: 1px; }
+.hd-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 22px 60px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+
+/* ---------- 概况 ---------- */
+.hd-over { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 24px; }
+.hd-right { min-width: 0; }
+.hd-right .d-activity { margin-top: 2px; }
+
+/* ---------- agent ---------- */
+.hd-abar { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.hd-abar .hp-note { flex: 1; margin: 0; }
+.hd-test { display: inline-flex; align-items: center; gap: 10px; flex: none; font-size: 12px; color: var(--text-3); }
+.hd-agents > .hp-warn-line { margin-bottom: 12px; }
+.hd-agent { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); margin-bottom: 12px; }
+.hd-agent.missing { opacity: .55; }
+.hd-agent.warn { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent); }
+.hd-agent header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
+.hd-agent header img.hp-logo, .hd-agent header > b:first-child { width: 22px; height: 22px; }
+.hd-agent header > b { font-size: 14px; }
+.hd-ver { font-size: 12px; color: var(--text-3); margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hd-ok { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 11.5px; color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hd-ok svg { width: 13px; height: 13px; }
+
+.hd-conf { display: flex; align-items: center; gap: 8px; margin: 6px 14px 0; padding: 7px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-2); background: var(--surface-3); }
+.hd-conf > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+.hd-conf > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.hd-conf.ok > svg { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hd-conf.busy > svg { animation: hd-spin 1s linear infinite; }
+.hd-conf.bad { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 22%, transparent); }
+.hd-conf.bad > svg { color: var(--warn); }
+@keyframes hd-spin { to { transform: rotate(360deg); } }
+
+.hd-why { display: flex; align-items: center; gap: 10px; margin: 6px 14px 0; padding: 8px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.hd-why span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+.hd-edit { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px 12px; align-items: start; padding: 12px 14px 14px; }
+.hd-k { padding-top: 6px; font-size: 12px; color: var(--text-3); }
+.hd-v { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.hd-v.hd-col { flex-direction: column; align-items: flex-start; gap: 6px; }
+.hd-own { display: flex; flex-wrap: wrap; gap: 6px; }
+.hd-warn { display: inline-flex; align-items: center; gap: 5px; color: var(--warn-text); }
+.hd-warn svg { width: 13px; height: 13px; }
+.hd-acts { gap: 6px; }
+
+/* ---------- 设置 ---------- */
+.hd-set section + section { margin-top: 26px; }
+.hd-set h3 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+.hd-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; font-size: 13px; color: var(--text-2); }
+.hd-go { display: inline-flex; align-items: center; gap: 2px; color: color-mix(in oklab, var(--brand), var(--ink)); }
+.hd-go svg { width: 12px; height: 12px; }
+
+.hd-sync { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); padding: 4px 14px 12px; }
+.hd-sync-old { display: flex; align-items: center; gap: 6px; margin: 8px 0 2px; color: var(--warn-text); }
+.hd-sync-old svg { width: 13px; height: 13px; color: var(--warn); }
+.hd-sw { display: flex; align-items: center; gap: 16px; padding: 10px 0; }
+.hd-sw + .hd-sw, .hd-sync-note + .hd-sw { border-top: 1px solid var(--line); }
+.hd-sw-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hd-sw-text b { font-size: 13px; font-weight: 600; }
+.hd-sw-text span { display: inline-flex; align-items: flex-start; gap: 5px; font-size: 12px; color: var(--text-3); }
+.hd-sw-text span svg { flex: none; width: 13px; height: 13px; margin-top: 1px; }
+.hd-sw-text span.t-ok svg { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hd-sw-text span.t-busy { color: var(--text-2); }
+.hd-sw-text span.t-busy svg { animation: hd-spin 1s linear infinite; }
+.hd-sw-text span.t-bad { color: var(--warn-text); }
+.hd-sw-text span.t-bad svg { color: var(--warn); }
+.hd-sync-note { display: flex; align-items: center; gap: 6px; margin: -4px 0 8px; font-size: 12px; color: var(--text-2); }
+.hd-sync-note svg { flex: none; width: 13px; height: 13px; color: var(--text-3); }
+.hd-sync-note code { font-family: var(--f-mono); font-size: 11.5px; }
+.hd-retry { margin: 0 0 6px; }
+.hd-sync-rule { margin: 6px 0 12px; font-size: 11.5px; }
+.hd-imp { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.hd-imp > .hp-note { margin: 0; }
+.hd-imp-list { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--surface-3); }
+.hd-imp-list .hp-note { margin: 0 0 6px; }
+.hd-imp-row { display: flex; align-items: center; gap: 10px; min-height: 30px; font-size: 13px; cursor: pointer; }
+.hd-imp-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 11.5px; color: var(--text-3); }
+.hd-imp-row em { flex: none; font-style: normal; font-size: 11.5px; color: var(--warn-text); }
+.hd-imp-acts { display: flex; gap: 8px; margin-top: 6px; }
+
+.hd-ws-field { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 12px; border-radius: var(--r-md); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.hd-ws-ico { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.hd-ws-ico svg { width: 17px; height: 17px; color: color-mix(in oklab, var(--warn), var(--ink) 15%); }
+.hd-ws-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hd-ws-main > code { font-family: var(--f-mono); font-size: 14px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hd-ws-main > small { font-size: 12px; color: var(--text-3); }
+.hd-ws-main > small code { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); }
+.hd-ex { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.hd-ex li { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 6px 10px; border-radius: var(--r-sm); font-size: 12.5px; background: var(--surface-3); }
+.hd-ex li svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+.hd-ex li b { flex: none; font-weight: 600; }
+.hd-ex li span { flex: 1; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.hd-ex li.bad { background: color-mix(in srgb, var(--warn) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 22%, transparent); }
+.hd-ex li.bad svg { color: var(--warn); }
+.hd-push { list-style: none; margin: 8px 0 0; padding: 0; }
+.hd-push li { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
+.hd-push li svg { flex: none; width: 14px; height: 14px; color: color-mix(in oklab, var(--ok), var(--ink)); }
+.hd-push li.bad svg { color: var(--warn); }
+.hd-push li span { color: var(--text-3); }
+.hd-push li.bad span { color: var(--warn-text); }
+
+.hd-maint { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
+.hd-mrow { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+.hd-mrow + .hd-mrow { border-top: 1px solid var(--line); }
+.hd-mrow > svg { flex: none; width: 16px; height: 16px; color: var(--text-3); }
+.hd-mrow > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.hd-mrow b { font-size: 13px; font-weight: 500; }
+.hd-mrow span { font-size: 11.5px; color: var(--text-3); }
+.hd-mrow.danger b, .hd-mrow.danger > svg { color: var(--danger-text); }
+.hd-set .hp-ask { margin-top: 10px; }
+
+/* ---------- 选工作空间：盖在弹窗上的分栏视图 ---------- */
+.hd-sheet-scrim { position: fixed; inset: 0; z-index: 140; background: rgba(8, 8, 10, .38); animation: hd-fade var(--dur-2) var(--ease-out) both; }
+.hd-sheet {
+  position: fixed; z-index: 141; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(720px, calc(100vw - 32px)); display: flex; flex-direction: column;
+  border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3); overflow: hidden;
+  animation: hd-sheet-in var(--dur-4) var(--ease-out) both;
+}
+@keyframes hd-sheet-in { from { opacity: 0; transform: translate(-50%, -48%) scale(.97); } }
+@keyframes hd-fade { from { opacity: 0; } }
+.hd-sheet-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 12px 14px 20px; }
+.hd-sheet-head > div { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.hd-sheet-head b { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.hd-sheet-head span { font-size: 12.5px; color: var(--text-3); }
+.hd-cols { display: flex; height: 300px; overflow-x: auto; overflow-y: hidden; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-2); scroll-snap-type: x proximity; }
+.hd-fcol { flex: none; width: 216px; padding: 6px; overflow-y: auto; border-right: 1px solid var(--line); scroll-snap-align: end; animation: hd-col-in var(--dur-3) var(--ease-out) both; }
+.hd-fcol-fail { width: 100%; }
+@keyframes hd-col-in { from { opacity: 0; transform: translateX(8px); } }
+.hd-item { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 8px; border-radius: var(--r-xs); text-align: left; font-size: 13px; color: var(--text); }
+.hd-item:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.hd-item > svg:first-child { flex: none; width: 15px; height: 15px; color: color-mix(in oklab, var(--warn), var(--ink) 15%); }
+.hd-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hd-item > small { flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font: 600 10.5px/18px var(--f-mono); text-align: center; color: var(--text-2); background: var(--surface-3); }
+.hd-item > svg:last-child { flex: none; width: 12px; height: 12px; color: var(--text-4); }
+.hd-item.on { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.hd-item.sel { color: #fff; background: var(--brand); }
+.hd-item.sel > svg, .hd-item.sel > small { color: #fff; }
+.hd-item.sel > small { background: rgba(255, 255, 255, .22); }
+.hd-item.git { color: var(--text-3); cursor: default; }
+.hd-item.git > svg:first-child { color: var(--text-4); }
+.hd-now { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 25%, transparent); }
+.hd-item.sel .hd-now { background: #fff; box-shadow: none; }
+.hd-fcol-wait { display: flex; flex-direction: column; gap: 14px; padding: 12px 10px; }
+.hd-fcol-wait i { height: 10px; border-radius: 4px; background: linear-gradient(90deg, var(--surface-3), color-mix(in srgb, var(--text) 10%, transparent), var(--surface-3)); background-size: 200% 100%; animation: hd-shimmer 1.2s linear infinite; }
+@keyframes hd-shimmer { to { background-position: -200% 0; } }
+.hd-fcol-empty { display: flex; align-items: center; gap: 6px; margin: 0; padding: 12px 10px; font-size: 12px; color: var(--text-3); }
+.hd-fcol-empty svg { flex: none; width: 13px; height: 13px; color: var(--warn); }
+.hd-sheet-foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px 12px 20px; }
+.hd-sheet-sel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hd-sheet-sel .input { max-width: 360px; }
+.hd-path { display: inline-flex; align-items: center; gap: 6px; font-family: var(--f-mono); font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hd-path svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+.hd-sheet-sel small { font-size: 12px; color: var(--text-3); }
+
+/* ---------- 调度：接单三态、跑多久停 ---------- */
+.sd-accept { min-width: 116px; }
+.hd-limits { display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
+
+/* ---------- 供应商表单：每个模型支持的强度 ---------- */
+.fm-eff { display: flex; flex-direction: column; gap: 6px; }
+.fm-eff-row { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: center; gap: 12px; }
+.fm-eff-row > code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12.5px; }
+.fm-eff-levels { display: flex; flex-wrap: wrap; gap: 4px; }
+.fm-eff-lv { height: 24px; padding: 0 9px; border-radius: 999px; font: 500 11.5px/24px var(--f-mono); color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1); }
+.fm-eff-lv:hover { color: var(--text); background: var(--surface-3); }
+.fm-eff-lv.on { color: color-mix(in oklab, var(--brand), var(--ink)); background: color-mix(in srgb, var(--brand) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 40%, transparent); }
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 720px) {
+  .hd-top { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px 16px 12px; }
+  .hd-body { padding: 14px 16px 48px; }
+  .hd-over { grid-template-columns: minmax(0, 1fr); }
+  .hd-abar { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .hd-edit { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .hd-k { padding-top: 6px; }
+  .hd-sw { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .fm-eff-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}

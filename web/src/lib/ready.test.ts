@@ -53,18 +53,22 @@ describe('就绪清单', () => {
     expect(failed(machine(), '0.1.19')).toEqual([]);
   });
 
-  it('目录不存在、不是 git 仓库：写明是哪个项目，同一个项目的几块白板只说一次', () => {
+  it('克隆失败、不是 git 仓库算没通过，写明是哪个项目，同一个项目的几块白板只说一次；还没建、正在克隆的不算', () => {
     const h = machine({
       dirs: [
-        { board: 'default/main', path: '~/a', status: 'missing', clone: { state: 'running', url: 'u', message: '', updatedAt: 0 } },
-        { board: 'default/docs', path: '~/a', status: 'missing' },
+        { board: 'default/main', path: '~/a', status: 'missing', clone: { state: 'failed', url: 'u', message: 'Permission denied', updatedAt: 0 } },
+        { board: 'default/docs', path: '~/a', status: 'missing', clone: { state: 'failed', url: 'u', message: 'Permission denied', updatedAt: 0 } },
         { board: 'mini/main', path: '~/b', status: 'not_git' },
+        { board: 'web/main', path: '~/d', status: 'missing' },
+        { board: 'opennote/main', path: '~/e', status: 'missing', clone: { state: 'running', url: 'u', message: '', updatedAt: 0 } },
         { board: 'x/main', path: '~/c', status: 'ok' },
       ],
     });
     const c = readiness(h, now).find(x => x.key === 'dirs')!;
     expect(c.ok).toBe(false);
-    expect(c.why).toBe('default 的目录不存在（正在克隆）；mini 的目录不是 git 仓库');
+    expect(c.why).toBe('default 克隆失败：Permission denied；mini 的目录不是 git 仓库');
+    // board host 第一次派来时会建好或克隆：不算没通过
+    expect(readiness(machine({ dirs: [{ board: 'web/main', path: '~/d', status: 'missing' }] }), now).find(x => x.key === 'dirs')!.ok).toBe(true);
     expect(c.act).toBe('去处理');
   });
 

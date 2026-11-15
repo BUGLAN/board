@@ -1,12 +1,12 @@
 /* ==========================================================================
    模型供应商共用配置（PRD §10.12「共用配置」）：界面上用到的纯函数和常量
-   - 三种接口、四个内置 agent 认哪些接口、能选哪些思考强度（和服务端 board-core/providers.rs 一致）
+   - 三种接口；内置 agent 认哪些接口、能写哪些强度从服务端取（ProviderView.meta，board-core 留一份）
    - 常用供应商的预填：真实接口地址和常用模型（API key 要自己填）
    - 一台机器上一个 agent 的写入情况（providerCell）、地址相同的接口并成一行（endpointLines）
-   - 一台机器上一个 agent 的配置文件实际写什么（effectiveProvider）：机器详情据此写摘要、过滤下拉
+   - 一台机器上一个 agent 的配置文件要写成什么（runPick）：用服务器的 / 不改 / 单独配置
    - 编辑表单：空白的一项、校验、整理成要保存的
    ========================================================================== */
-import type { AgentProvider, HostAgent, HostInfo, Provider, ProviderEndpoint, ProviderView } from './types';
+import type { AgentMeta, AgentProvider, HostAgent, HostInfo, Provider, ProviderEndpoint, ProviderView, RunMode } from './types';
 
 /** 三种接口 */
 export const PROVIDER_INTERFACES: { id: ProviderEndpoint['interface']; name: string; short: string; placeholder: string }[] = [
@@ -15,24 +15,30 @@ export const PROVIDER_INTERFACES: { id: ProviderEndpoint['interface']; name: str
   { id: 'openai-responses', name: 'OpenAI Responses', short: 'OpenAI Responses', placeholder: 'https://api.openai.com/v1' },
 ];
 
-/** 机器设置里「本机自己管」的写法（和服务端一致） */
-export const PROVIDER_LOCAL = '@local';
-
-/** 内置 agent：名称、认哪些接口、能选的思考强度（从低到高） */
-export const PROVIDER_AGENTS: { id: string; name: string; protocols: string[]; efforts: string[] }[] = [
-  { id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  // Codex 的 model_providers 走 Responses 接口（wire_api = "responses"）
-  { id: 'codex', name: 'Codex', protocols: ['openai-responses'], efforts: ['minimal', 'low', 'medium', 'high'] },
-  { id: 'pi', name: 'pi', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'dsh', name: 'DeepSeek Harness', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+/** 一台机器上一个 agent 的模型怎么配 */
+export const RUN_MODES: [RunMode, string][] = [
+  ['server', '用服务器的'],
+  ['off', '不改'],
+  ['own', '单独配置'],
 ];
 
-export const PROVIDER_AGENT_NAMES: Record<string, string> = Object.fromEntries(PROVIDER_AGENTS.map(a => [a.id, a.name]));
+/** 所有强度档位，从低到高（供应商里给模型标的只能是这几个，和服务端 ALL_EFFORTS 一致） */
+export const ALL_EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+/** 内置 agent 的说明（认哪些接口、配置文件能写哪几档强度）：服务端 board-core 留一份，`GET /api/providers` 的 meta */
+export const metasOf = (view: ProviderView | null): AgentMeta[] => view?.meta ?? [];
+export const metaOf = (view: ProviderView | null, agent: string) => metasOf(view).find(m => m.id === agent);
+
+/** 这个 agent 用这家供应商的这个模型时能写哪几档强度：模型标了的、agent 也能写的（从低到高）；没标时为空，不能选 */
+export function writableEfforts(meta: AgentMeta | undefined, p: Provider | null | undefined, model: string): string[] {
+  const marked = p?.efforts?.[model] ?? [];
+  return (meta?.efforts ?? []).filter(e => marked.includes(e));
+}
 
 export const interfaceName = (id: string) => PROVIDER_INTERFACES.find(i => i.id === id)?.short ?? id;
 
 /** 常用供应商：接口地址和常用模型（2026 年核实过的写法；API key 要自己填）。
- *  Anthropic 兼容接口的地址都不带 /v1：Claude Code 自己接 /v1/messages */
+ *  Anthropic 兼容接口的地址都不带 /v1：Claude Code 自己接 /v1/messages（保存时服务端也会去掉） */
 export const PROVIDER_PRESETS: { name: string; label: string; endpoints: ProviderEndpoint[]; models: string[] }[] = [
   {
     name: 'deepseek',
@@ -78,7 +84,7 @@ export const PROVIDER_PRESETS: { name: string; label: string; endpoints: Provide
   },
 ];
 
-export const blankProvider = (): Provider => ({ name: '', endpoints: [], apiKey: '', models: [] });
+export const blankProvider = (): Provider => ({ name: '', endpoints: [], apiKey: '', models: [], efforts: {} });
 
 export const blankAgentProvider = (agent: string): AgentProvider => ({ agent, provider: '', model: '', effort: '' });
 
@@ -110,6 +116,7 @@ export function toProviderSave(p: Provider): Provider {
     endpoints: p.endpoints.filter(e => e.url.trim()).map(e => ({ interface: e.interface, url: e.url.trim() })),
     apiKey: (p.apiKey ?? '').trim() || null,
     models: p.models,
+    efforts: Object.fromEntries(Object.entries(p.efforts ?? {}).filter(([m, l]) => p.models.includes(m) && l.length)),
     version: p.version,
   };
 }
@@ -117,35 +124,36 @@ export function toProviderSave(p: Provider): Provider {
 /* ------------------------------ 各机器的写入状态 ------------------------------ */
 
 /** 一台机器上一个 agent 的写入情况（界面上一个小胶囊）：
- *  old 旧版 board host 不同步 · missing 没找到这个 agent · local 机器设置为本机自己管 · none 没有要写的（共用配置「不管」、机器也没单独指定）·
- *  offline 该写、机器离线 · synced 写进去的就是该写的 · failed / unsupported 上报的失败、不支持（不管带没带供应商名都算）· pending 该写、还没报 */
+ *  old 旧版 board host 不按请求同步 · missing 没找到这个 agent · local 这台机器选了「不改」· none 没有要写的（服务器上没给它配）·
+ *  offline 该写、机器离线 · synced 写进去的就是该写的 · failed / unsupported 上报的失败、不支持 · pending 正在写入 */
 export type ProviderCellKind = 'synced' | 'pending' | 'local' | 'failed' | 'unsupported' | 'offline' | 'old' | 'missing' | 'none';
 export type ProviderCell = { kind: ProviderCellKind; why?: string | null; provider?: string };
 
 export const PROVIDER_CELL_WORDS: Record<ProviderCellKind, string> = {
   synced: '已写入',
   pending: '正在写入',
-  local: '本机自己管',
+  local: '不改',
   failed: '失败',
   unsupported: '不支持',
   offline: '离线',
   old: '版本太旧',
   missing: '没装',
-  none: '不改',
+  none: '不写',
 };
 
 export function providerCell(h: HostInfo, agent: string, view: ProviderView | null): ProviderCell {
-  if (h.providers == null) return { kind: 'old', why: `board ${h.version || '?'} 不同步供应商：升级这台机器的 board` };
+  if (!h.sync?.able) return { kind: 'old', why: `board ${h.version || '?'} 不按请求同步配置：升级这台机器的 board` };
   const a = h.agents.find(x => x.id === agent);
   if (!a?.found) return { kind: 'missing' };
-  if (a.run_provider === PROVIDER_LOCAL) return { kind: 'local', why: '机器详情里设置为本机自己管：不改它的配置文件' };
-  const want = a.run_provider || sharedOf(view, agent).provider;
-  if (!want) return { kind: 'none' };
-  if (!h.online) return { kind: 'offline', why: '上线后写入', provider: want };
-  const st = h.providers.find(s => s.agent === agent);
-  if (st?.state === 'synced' && st.provider === want) return { kind: 'synced', why: `${st.provider} · ${st.model}`, provider: want };
-  if (st?.state === 'failed' || st?.state === 'unsupported') return { kind: st.state, why: st.why, provider: want };
-  return { kind: 'pending', why: 'board host 收到后改写配置文件、上报', provider: want };
+  const pick = runPick(view, a);
+  if (pick.mode === 'off') return { kind: 'local', why: '这台机器选了「不改」：Board 不碰它的配置文件' };
+  if (!pick.provider) return { kind: 'none' };
+  if (!h.online) return { kind: 'offline', why: '上线后写入', provider: pick.provider };
+  if (h.sync.ask) return { kind: 'pending', why: 'board host 收到后写配置文件、上报', provider: pick.provider };
+  const st = h.sync.last?.agents.find(s => s.agent === agent);
+  if (st?.state === 'synced') return { kind: 'synced', why: [st.provider, st.model, st.effort].filter(Boolean).join(' · '), provider: pick.provider };
+  if (st?.state === 'failed' || st?.state === 'unsupported') return { kind: st.state, why: st.why, provider: pick.provider };
+  return { kind: 'pending', why: '等 board host 写入', provider: pick.provider };
 }
 
 /** 接口和地址：地址相同的接口并成一行（OpenAI Chat · OpenAI Responses → 同一个地址） */
@@ -155,38 +163,57 @@ export function endpointLines(p: Pick<Provider, 'endpoints'>) {
   return [...m.entries()].map(([url, names]) => ({ url, names }));
 }
 
-/** 共用配置里一个内置 agent 的分配（没有时是「不管」） */
+/** 共用配置里一个内置 agent 的分配（没有时是「没配」） */
 export const sharedOf = (view: ProviderView | null, agent: string): AgentProvider => view?.agents.find(a => a.agent === agent) ?? blankAgentProvider(agent);
 
-/** 给一个 agent 换供应商：模型取新供应商的第一个，强度保留；换成「不管」时都清空 */
-export const assignProvider = (a: AgentProvider, provider: string, view: ProviderView): AgentProvider => ({
-  agent: a.agent,
-  provider,
-  model: provider ? (view.providers.find(p => p.name === provider)?.models[0] ?? '') : '',
-  effort: provider ? a.effort : '',
-});
+/** 给一个 agent 换供应商：模型取新供应商的第一个，强度新模型支持就留着；换成「没配」时都清空 */
+export const assignProvider = (a: AgentProvider, provider: string, view: ProviderView): AgentProvider => {
+  const p = view.providers.find(x => x.name === provider);
+  const model = provider ? (p?.models[0] ?? '') : '';
+  const effort = provider && writableEfforts(metaOf(view, a.agent), p, model).includes(a.effort) ? a.effort : '';
+  return { agent: a.agent, provider, model, effort };
+};
 
 /* ------------------------------ 机器详情 ------------------------------ */
 
-/** 这台机器上一个 agent 的配置文件实际写什么：
- *  - mode：follow 跟随共用配置 / local 本机自己管（不改配置文件）/ own 这台机器单独指定（机器设置优先）
- *  - provider、model、effort：写进配置文件的；模型、强度跟着共用配置里给这个供应商选的，单独指定别的供应商时用它的第一个模型、强度不写
- *  - gone：设置的供应商在共用配置里没有了
- *  机器设置里的模型、强度只是派发那一次的覆盖，不算在内 */
-export function effectiveProvider(view: ProviderView | null, a: HostAgent) {
-  const shared = sharedOf(view, a.id);
-  const mode: 'follow' | 'local' | 'own' = a.run_provider === PROVIDER_LOCAL ? 'local' : a.run_provider ? 'own' : 'follow';
-  const name = mode === 'local' ? '' : mode === 'own' ? (a.run_provider ?? '') : shared.provider;
-  const provider = view?.providers.find(p => p.name === name) ?? null;
-  const same = shared.provider === name;
-  const model = provider ? (same && provider.models.includes(shared.model) ? shared.model : (provider.models[0] ?? '')) : '';
-  const effort = provider && same ? shared.effort : '';
-  return { mode, shared, name, provider, model, effort, gone: !!name && !provider };
+/** 一台机器上一个 agent 的配置文件要写成什么：
+ *  - mode：server 用服务器的 / off 不改 / own 这台机器单独配置
+ *  - provider、model、effort：要写进配置文件的；none 是用服务器的、服务器上没给它配；gone 是选的供应商已经删了
+ *  - warn：选的强度这个模型不支持（写配置时不写强度） */
+export interface RunPick {
+  mode: RunMode;
+  provider: string;
+  model: string;
+  effort: string;
+  none?: boolean;
+  gone?: boolean;
+  warn?: string;
+}
+
+export function runPick(view: ProviderView | null, a: HostAgent): RunPick {
+  const mode: RunMode = a.run_mode ?? 'off';
+  if (mode === 'off') return { mode, provider: '', model: '', effort: '' };
+  let out: RunPick;
+  if (mode === 'own') out = { mode, provider: a.run_provider ?? '', model: a.run_model ?? '', effort: a.run_effort ?? '' };
+  else {
+    const s = sharedOf(view, a.id);
+    if (!s.provider) return { mode, provider: '', model: '', effort: '', none: true };
+    out = { mode, provider: s.provider, model: s.model, effort: s.effort };
+  }
+  const p = view?.providers.find(x => x.name === out.provider);
+  if (view && out.provider && !p) out.gone = true;
+  if (p && !out.model) out.model = p.models[0] ?? '';
+  if (p && out.effort && !writableEfforts(metaOf(view, a.id), p, out.model).includes(out.effort)) out.warn = `${out.model} 不支持强度 ${out.effort}：写配置时不写强度`;
+  return out;
+}
+
+/** 一句话：「newapi-buglan · cn:deepseek-v4.1-flash · 强度 high」 */
+export function runWords(p: Pick<RunPick, 'provider' | 'model' | 'effort' | 'warn'>): string {
+  return [p.provider, p.model, p.warn ? '不写强度' : p.effort ? `强度 ${p.effort}` : '强度默认'].filter(Boolean).join(' · ');
 }
 
 /** 这个 agent 能选的供应商：接口对得上 */
 export const providersFor = (view: ProviderView | null, agent: string) => {
-  const meta = PROVIDER_AGENTS.find(a => a.id === agent);
-  const want = meta?.protocols ?? [];
+  const want = metaOf(view, agent)?.protocols ?? [];
   return (view?.providers ?? []).filter(p => p.endpoints.some(e => want.includes(e.interface)));
 };

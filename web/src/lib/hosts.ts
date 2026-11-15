@@ -219,6 +219,37 @@ export function queueReason(h: HostInfo | undefined, d?: Dispatch, block?: HostB
 /** 派发在哪台机器：「任意机器」的派发还没挑到机器时写「任意机器」 */
 export const hostWords = (d: Pick<Dispatch, 'host'>) => d.host || '任意机器';
 
+/* ------------------------------ 接单：自动领 / 只做派给它的 / 暂停 ------------------------------ */
+
+/** 接单三态：自动领 = 不暂停 + 自动接单；只做派给它的 = 不暂停 + 不自动接单；暂停（在跑的做完就是「已排空」） */
+export type Accept = 'auto' | 'manual' | 'paused';
+export const acceptOf = (h: Pick<HostInfo, 'paused' | 'auto'>): Accept => (h.paused ? 'paused' : h.auto ? 'auto' : 'manual');
+export const ACCEPT_WORDS: [Accept, string][] = [
+  ['auto', '自动领'],
+  ['manual', '只做派给它的'],
+  ['paused', '暂停'],
+];
+/** 改成某一态要存的：暂停只改暂停（自动接单留着，恢复后照旧） */
+export const acceptPatch = (v: Accept): { paused: boolean; auto?: boolean } => (v === 'paused' ? { paused: true } : { paused: false, auto: v === 'auto' });
+
+/** 接单的一行摘要：时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张 */
+export function acceptSummary(h: HostInfo, running: number): string {
+  const v = acceptOf(h);
+  if (v === 'paused') return running ? `暂停：不启动新的派发，还有 ${running} 个在跑，跑完就是「已排空」` : '暂停：已排空，可以关机或维护';
+  const cap = `最多 ${h.max} 个会话 · 一个会话 ${h.perSession ?? 4} 张`;
+  if (v === 'manual') return `只做派给它的卡 · ${cap}`;
+  return `${winWords(h.windows ?? ALL_DAY)}（服务器时间）自动领${(h.rules?.length ?? 0) === 0 ? '（还没有领取规则，不会自动领）' : ''} · ${cap}`;
+}
+
+/** 分钟数写成人看的话：3 小时、1 小时 30 分、20 分钟、不限 */
+export function minsWords(n: number): string {
+  if (n <= 0) return '不限';
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  if (h > 0 && m > 0) return `${h} 小时 ${m} 分`;
+  return h > 0 ? `${h} 小时` : `${n} 分钟`;
+}
+
 /** 自动接单的摘要（「自动接单 · 22:00–08:00」）；没开时为空，不显示占位 */
 export const autoSummary = (h: HostInfo) => (h.auto ? `自动接单 · ${winWords(h.windows ?? ALL_DAY)}` : '');
 
