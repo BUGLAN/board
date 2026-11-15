@@ -26,9 +26,7 @@ fn report(running: Vec<i64>) -> HostReport {
         asked: None,
         ask_error: None,
         selftest: false,
-        skills: None,
-        mcp: None,
-        providers: None,
+        config_sync: true,
         local_skills: None,
     }
 }

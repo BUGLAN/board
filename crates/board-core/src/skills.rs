@@ -244,6 +244,8 @@ impl W<'_> {
             params![name, version, size as i64, serde_json::to_string(&stored).unwrap_or_default(), self.now, by, source],
         )?;
         self.hosts_changed = true;
+        self.config_changed = true;
+        self.config_by = by.to_string();
         self.changed = true;
         Ok(SkillInfo { name: name.into(), version, size: size as i64, files: stored.len() as i64, updated_at: self.now, by: by.into(), source: source.into(), builtin: false })
     }
@@ -257,6 +259,7 @@ impl W<'_> {
             return Err(BoardError::new(crate::ErrorCode::NotFound, format!("库里没有 skill「{name}」")));
         }
         self.hosts_changed = true;
+        self.config_changed = true;
         self.changed = true;
         Ok(())
     }

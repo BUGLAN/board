@@ -30,7 +30,6 @@ pub mod install;
 pub mod mcp;
 pub mod providers;
 pub mod skills;
-pub mod templates;
 
 use auth::{Auth, Caller};
 use axum::{
@@ -80,9 +79,26 @@ struct Inner {
     auth: Auth,
     /// 有会话被删除（退出登录）或令牌被吊销时加一：实时推送据此检查自己的登录态还在不在
     sessions: watch::Sender<u64>,
+    /// 等 board host 回传的「列目录」请求（选工作空间用，只放内存）
+    ls: std::sync::Mutex<LsState>,
     /// 测试用：下一次 `/api/dispatches/{id}/end` 返回 502（Cargo feature `test-hooks`）
     #[cfg(feature = "test-hooks")]
     fail_end: std::sync::atomic::AtomicBool,
+}
+
+/// 等 board host 回传的「列目录」请求
+#[derive(Default)]
+struct LsState {
+    seq: i64,
+    pending: Vec<LsPending>,
+}
+
+struct LsPending {
+    id: i64,
+    host: String,
+    path: String,
+    at: std::time::Instant,
+    tx: tokio::sync::oneshot::Sender<DirList>,
 }
 
 #[derive(Clone)]
@@ -98,6 +114,8 @@ impl AppState {
         store.ensure_default(now)?;
         // 服务端重启：停机时间不计入心跳超时，否则第一次扫描就会把所有领取释放（#95）
         store.resume_after_downtime(now)?;
+        // board-skills 随服务端版本：升级后各台机器要重新写一次
+        store.write(now, Origin::system(), |w| w.request_config_sync())?;
         auth::setup(store.conn())?;
         let (tx, _) = broadcast::channel(256);
         Ok(AppState(Arc::new(Inner {
@@ -107,6 +125,7 @@ impl AppState {
             db: cfg.db.clone(),
             auth: cfg.auth.clone(),
             sessions: watch::channel(0).0,
+            ls: std::sync::Mutex::new(LsState::default()),
             #[cfg(feature = "test-hooks")]
             fail_end: std::sync::atomic::AtomicBool::new(false),
         })))
@@ -119,6 +138,39 @@ impl AppState {
     /// 有写入：马上检查 rev，把变更推给界面（不用等下一次轮询）
     pub(crate) fn poke(&self) {
         self.0.poke.notify_one();
+    }
+
+    /// 记下一个「列目录」请求，返回它的序号和等结果用的接收端
+    pub(crate) fn ls_ask(&self, host: &str, path: &str) -> (i64, tokio::sync::oneshot::Receiver<DirList>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut st = self.0.ls.lock().unwrap_or_else(|e| e.into_inner());
+        st.seq += 1;
+        let id = st.seq;
+        // 等太久没人收的（界面已经不等了）顺带清掉
+        st.pending.retain(|p| p.at.elapsed() < std::time::Duration::from_secs(60) && !p.tx.is_closed());
+        st.pending.push(LsPending { id, host: host.to_string(), path: path.to_string(), at: std::time::Instant::now(), tx });
+        (id, rx)
+    }
+
+    /// 这台机器等着列的目录（发任务时补上）
+    pub(crate) fn ls_asks(&self, host: &str) -> Vec<LsAsk> {
+        let st = self.0.ls.lock().unwrap_or_else(|e| e.into_inner());
+        st.pending.iter().filter(|p| p.host == host && !p.tx.is_closed()).map(|p| LsAsk { id: p.id, path: p.path.clone() }).collect()
+    }
+
+    /// board host 回传了结果：交给等着的界面请求
+    pub(crate) fn ls_done(&self, host: &str, id: i64, list: DirList) {
+        let mut st = self.0.ls.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = st.pending.iter().position(|p| p.id == id && p.host == host) {
+            let p = st.pending.remove(i);
+            let _ = p.tx.send(list);
+        }
+    }
+
+    /// 界面不等了：丢掉这个请求
+    pub(crate) fn ls_drop(&self, id: i64) {
+        let mut st = self.0.ls.lock().unwrap_or_else(|e| e.into_inner());
+        st.pending.retain(|p| p.id != id);
     }
 
     pub(crate) fn sessions_changed(&self) {
@@ -259,7 +311,10 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/{name}/selftested", post(hosts::selftest_done))
         .route("/hosts/{name}/skills/import", post(hosts::skills_import))
         .route("/hosts/{name}/skills/imported", post(hosts::skills_imported))
-        .route("/hosts/{name}/copy", post(hosts::copy))
+        .route("/hosts/{name}/sync", post(hosts::sync))
+        .route("/hosts/{name}/synced", post(hosts::synced))
+        .route("/hosts/{name}/ls", post(hosts::list_dir))
+        .route("/hosts/{name}/ls/{id}", post(hosts::listed))
         .route("/hosts/{name}/dirs/clone", post(hosts::clone_dir))
         .route("/hosts/{name}/beat", post(hosts::beat).layer(axum::middleware::map_response(quiet)))
         .route("/hosts/{name}/work", get(hosts::work))
@@ -286,8 +341,6 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/providers/agents", post(providers::assign))
         .route("/providers/models", post(providers::models))
         .route("/providers/{name}", delete(providers::remove))
-        .route("/agent-templates", get(templates::list).post(templates::put))
-        .route("/agent-templates/{id}", delete(templates::remove))
         .route("/hosts/{name}/mcp", get(mcp::for_host))
         .route("/hosts/{name}/providers", get(providers::for_host))
         .route("/tokens", get(auth::tokens).post(auth::new_token))

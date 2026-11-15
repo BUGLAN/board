@@ -376,7 +376,8 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
         Caller::Agent { token } => {
             // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令，读取和上传附件；
             // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）；
-            // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、上传和读取日志、上传结构化事件、订阅实时推送，board dispatch 派发和取消；
+            // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、同步配置的结果、从机器导入的结果、列目录的结果、
+            // 上传和读取日志、上传结构化事件、订阅实时推送，board dispatch 派发和取消；
             // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP / 模型供应商共用配置：读列表（打码）、board host 取原文
             // 里程碑：board versions sync 写入版本记录（PRD §10.15）
             let m = req.method().clone();
@@ -388,7 +389,9 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                     || dispatch_path(&path, "log")))
                 || (m == Method::POST
                     && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/dispatches/move" | "/releases")
-                        || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested"])
+                        || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested", "synced"])
+                        || host_path3(&path, "skills", |t| t == "imported")
+                        || host_path3(&path, "ls", |t| t.parse::<i64>().is_ok())
                         || dispatch_path(&path, "end")
                         || dispatch_path(&path, "wip")
                         || dispatch_path(&path, "log")
@@ -428,6 +431,12 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
 fn host_path(path: &str, tails: &[&str]) -> bool {
     let mut it = path.strip_prefix("/hosts/").unwrap_or_default().split('/');
     matches!((it.next(), it.next(), it.next()), (Some(n), Some(t), None) if !n.is_empty() && tails.contains(&t))
+}
+
+/// `/hosts/{名字}/<中间>/<后缀>`
+fn host_path3(path: &str, mid: &str, tail: impl Fn(&str) -> bool) -> bool {
+    let mut it = path.strip_prefix("/hosts/").unwrap_or_default().split('/');
+    matches!((it.next(), it.next(), it.next(), it.next()), (Some(n), Some(m), Some(t), None) if !n.is_empty() && m == mid && tail(t))
 }
 
 /// `/dispatches/{ID}/<后缀>`

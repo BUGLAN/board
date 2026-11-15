@@ -26,7 +26,6 @@ pub mod mcp;
 pub mod skills;
 pub mod stats;
 pub mod store;
-pub mod templates;
 
 pub use agents::{BeatBy, NameOwner, NAME_GAP_MS};
 pub use engine::{purge_trash, Cmd, TRASH_KEEP_MS};
@@ -36,12 +35,11 @@ pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
 pub use hosts::{
     AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostDirOverride, HostEnv, HostInfo, HostPatch, HostReport,
-    HostWork, HostWorkspace,
+    HostWork, HostWorkspace, ConfigSync, SyncAsk, SyncResult, SkillsSync, McpSync, LsAsk, DirEntry, DirList,
     RunPatch, SelfTest, SelfTestAsk, SelfTestItem, SessionPart, SessionView, SkillImport, SkillImportAsk, SkillImportFail, SkillImportPick, SkillImportResult, SKILL_IMPORT_STALE_MS,
 };
 pub use model::*;
 pub use runlog::RunEvent;
-pub use templates::AgentTemplate;
 pub use store::{hhmm, now_ms, valid_board, valid_dir_key, valid_key, NewBoard, Store, R, W};
 
 #[cfg(test)]

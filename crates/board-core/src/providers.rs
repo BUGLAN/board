@@ -4,16 +4,20 @@
 //! - 每个供应商：名称、接口（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三种里它提供的，每种一个地址）、
 //!   API key、模型（一行一个）。API key 只存在服务端：列表接口只给末尾 4 位（[`Provider::masked`]），
 //!   完整的值只经 board host 的令牌接口（`GET /api/hosts/{名字}/providers`，只给这台机器上报时用的令牌）下发。
+//! - 地址保存时就规范化（[`normalize_url`]）：去掉结尾的 `/`，Anthropic 的再去掉结尾的 `/v1`（Claude Code 自己会接
+//!   `/v1/messages`）。写 agent 配置文件和「获取模型」（[`models_url`]）都按规范化后的地址。
+//! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型不能选强度，写配置时也不写强度（[`writable_efforts`]）。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
 //! - 每个内置 agent（claude、codex、pi、dsh）用哪个供应商、哪个模型、什么强度：不放这里，在 [`AgentProvider`] 里；
-//!   机器详情可以改成「本机自己管」或单独指定一个供应商（存在机器设置的 `run` 里）。
-//! - 列表变了算机器有变化，在线的 board host 马上重新取任务。
+//!   每台机器上的每个 agent 选「用服务器的 / 不改 / 单独配置」（机器设置的 `run`，见 hosts.rs 的 [`crate::hosts::AgentRun`]）。
+//! - 改了算配置有变化：服务端给受影响的机器下发「同步配置」请求（hosts.rs 的 `request_config_sync`）。
 
 use crate::store::{R, W};
 use crate::{BoardError, ErrorCode, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 pub(crate) const SCHEMA: &str = r#"
 -- 模型供应商共用配置
@@ -51,7 +55,11 @@ pub const AGENTS: [(&str, &str, &[&str]); 4] = [
     ("dsh", "DeepSeek Harness", &["anthropic", "openai-chat", "openai-responses"]),
 ];
 
-/// 一个 agent 在「模型供应商」里能选的思考强度，从低到高（配置文件的写法按各自 agent 核实过）
+/// 所有档位，从低到高：供应商里给模型标的强度只能是这几个
+pub const ALL_EFFORTS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// 一个 agent 的配置文件能写的思考强度，从低到高（配置文件的写法按各自 agent 核实过）。只在这里留一份：
+/// 界面从 `GET /api/providers` 的 `meta` 取，board host 用它校验
 pub const EFFORTS: [(&str, &[&str]); 4] = [
     ("claude", &["low", "medium", "high", "xhigh", "max"]),
     ("codex", &["minimal", "low", "medium", "high"]),
@@ -59,8 +67,60 @@ pub const EFFORTS: [(&str, &[&str]); 4] = [
     ("dsh", &["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
 ];
 
-/// 机器设置里「本机自己管」的写法：不改这个 agent 的配置文件。供应商名称不会以 `@` 开头
+/// 发给旧版 board host 的「不改」：它把这个供应商名当成「本机自己管」。供应商名称不会以 `@` 开头
 pub const PROVIDER_LOCAL: &str = "@local";
+
+/// 规范化一个接口的地址：去掉首尾空白和结尾的 `/`；Anthropic 的再去掉结尾的 `/v1`
+/// （Claude Code、pi、dsh 自己会接 `/v1/messages`，地址里带着会变成 `/v1/v1/messages`，#344）
+pub fn normalize_url(interface: &str, url: &str) -> String {
+    let mut u = url.trim().trim_end_matches('/').to_string();
+    if interface == "anthropic" {
+        while let Some(rest) = u.strip_suffix("/v1") {
+            u = rest.trim_end_matches('/').to_string();
+        }
+    }
+    u
+}
+
+/// 「获取模型」问哪个地址、是不是 Anthropic 的写法（要带 `x-api-key` 和 `anthropic-version`）：
+/// OpenAI 兼容的接口优先（大多数供应商的 Anthropic 兼容地址不提供模型列表），只有 Anthropic 接口时问 `<地址>/v1/models`
+pub fn models_url(endpoints: &[ProviderEndpoint]) -> Option<(String, bool)> {
+    let url_of = |id: &str| endpoints.iter().find(|e| e.interface == id && !e.url.trim().is_empty()).map(|e| normalize_url(id, &e.url));
+    if let Some(base) = url_of("openai-chat").or_else(|| url_of("openai-responses")) {
+        return Some((format!("{base}/models"), false));
+    }
+    let base = url_of("anthropic")?;
+    Some((format!("{base}/v1/models"), true))
+}
+
+/// 一个内置 agent 的说明（界面用）：名称、认哪些接口、配置文件能写哪几档强度
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMeta {
+    pub id: String,
+    pub name: String,
+    pub protocols: Vec<String>,
+    pub efforts: Vec<String>,
+}
+
+/// 内置 agent 的说明，按 [`AGENTS`] 的顺序
+pub fn agent_meta() -> Vec<AgentMeta> {
+    AGENTS
+        .iter()
+        .map(|(id, name, p)| AgentMeta {
+            id: id.to_string(),
+            name: name.to_string(),
+            protocols: p.iter().map(|x| x.to_string()).collect(),
+            efforts: efforts_of(id).iter().map(|x| x.to_string()).collect(),
+        })
+        .collect()
+}
+
+/// 这个 agent 用这家供应商的这个模型时，配置文件能写哪几档强度：模型标了的、这个 agent 也能写的（按从低到高）。
+/// 模型没标强度时为空：不能选，也不写
+pub fn writable_efforts(agent: &str, p: &Provider, model: &str) -> Vec<String> {
+    let marked = p.efforts.get(model).cloned().unwrap_or_default();
+    efforts_of(agent).iter().filter(|e| marked.iter().any(|m| m == *e)).map(|e| e.to_string()).collect()
+}
 
 pub fn interface_name(id: &str) -> &str {
     INTERFACES.iter().find(|(k, _)| *k == id).map(|(_, n)| *n).unwrap_or(id)
@@ -105,6 +165,9 @@ pub struct Provider {
     /// 这个供应商的模型（一行一个）
     #[serde(default)]
     pub models: Vec<String>,
+    /// 每个模型支持的思考强度（按从低到高）；没标的模型不能选强度
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub efforts: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -143,18 +206,24 @@ pub struct AgentProvider {
     pub by: String,
 }
 
-/// 一台机器上一个 agent 的配置文件写入状态（board host 上报）
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 一台机器上一个 agent 这次同步配置的结果（board host 上报，每个 agent 一行）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderState {
     pub agent: String,
-    /// synced 已写入 | local 本机自己管 | unsupported 不支持 | failed 失败
+    /// synced 已写入 | off 不改（Board 不碰它的配置文件）| none 服务器上没给它配供应商 |
+    /// unsupported 不支持（配置文件里新加的 agent、WSL 里的）| failed 写入失败
     pub state: String,
-    /// 写进去的供应商、模型（synced 时）
+    /// 写进去的供应商、模型、强度（synced 时；强度这个模型不支持时不写，见 `dropped`）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
+    /// 选了、但模型不支持所以没写的强度
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dropped: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
 }
@@ -204,6 +273,7 @@ impl Provider {
             "endpoints": self.endpoints,
             "apiKey": self.api_key,
             "models": self.models,
+            "efforts": self.efforts,
         });
         Sha256::digest(body.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect()
     }
@@ -236,6 +306,11 @@ impl Provider {
         }
         for m in &self.models {
             crate::hosts::check_model(m).map_err(BoardError::usage)?;
+        }
+        for (m, list) in &self.efforts {
+            if let Some(bad) = list.iter().find(|e| !ALL_EFFORTS.contains(&e.as_str())) {
+                return Err(BoardError::usage(format!("模型 {m} 的强度「{bad}」不对：只能是 {}", ALL_EFFORTS.join("、"))));
+            }
         }
         Ok(())
     }
@@ -284,7 +359,7 @@ impl R<'_> {
         Ok(ProviderWork { providers: self.provider_index()?, agents: self.provider_agents()? })
     }
 
-    fn provider(&self, name: &str) -> Result<Option<Provider>> {
+    pub(crate) fn provider(&self, name: &str) -> Result<Option<Provider>> {
         Ok(self.conn.query_row("SELECT name, spec, version, updated_at, by_name, source FROM providers WHERE name = ?1", [name], provider_row).optional()?)
     }
 }
@@ -297,6 +372,9 @@ impl W<'_> {
             e.interface = e.interface.trim().to_string();
             e.url = e.url.trim().to_string();
         }
+        for e in &mut p.endpoints {
+            e.url = normalize_url(&e.interface, &e.url);
+        }
         let mut seen: Vec<String> = vec![];
         p.endpoints.retain(|e| {
             let keep = !seen.contains(&e.interface);
@@ -306,6 +384,20 @@ impl W<'_> {
             keep
         });
         p.models = p.models.iter().map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect();
+        // 强度：只留列表里有的模型，档位按从低到高排好、去重；空的不存
+        let models = p.models.clone();
+        p.efforts = std::mem::take(&mut p.efforts)
+            .into_iter()
+            .map(|(m, list)| (m.trim().to_string(), list))
+            .filter(|(m, _)| models.contains(m))
+            .map(|(m, list)| {
+                let list: Vec<String> = list.iter().map(|e| e.trim().to_string()).collect();
+                let mut out: Vec<String> = ALL_EFFORTS.iter().filter(|e| list.iter().any(|x| x == *e)).map(|e| e.to_string()).collect();
+                out.extend(list.into_iter().filter(|e| !e.is_empty() && !ALL_EFFORTS.contains(&e.as_str())));
+                (m, out)
+            })
+            .filter(|(_, l)| !l.is_empty())
+            .collect();
         let old = self.read().provider(&p.name)?;
         p.tail = None;
         if p.api_key.as_deref().map(str::trim).unwrap_or_default().is_empty() {
@@ -325,11 +417,13 @@ impl W<'_> {
             params![p.name, serde_json::to_string(&p).unwrap_or_default(), p.version, p.updated_at, p.by, p.source],
         )?;
         self.hosts_changed = true;
+        self.config_changed = true;
+        self.config_by = p.by.clone();
         self.changed = true;
         Ok(p.masked())
     }
 
-    /// 删掉一个供应商：用着它的 agent 回到「不管」，各台机器恢复原来的配置
+    /// 删掉一个供应商：用着它的 agent 回到「不管」；机器上单独配置成它的 agent 下次同步时写入失败（界面上提示换一个）
     pub fn provider_rm(&mut self, name: &str) -> Result<()> {
         if self.tx.execute("DELETE FROM providers WHERE name = ?1", [name])? == 0 {
             return Err(BoardError::new(ErrorCode::NotFound, format!("没有模型供应商「{name}」")));
@@ -343,6 +437,7 @@ impl W<'_> {
             )?;
         }
         self.hosts_changed = true;
+        self.config_changed = true;
         self.changed = true;
         Ok(())
     }
@@ -379,14 +474,7 @@ impl W<'_> {
             if !p.models.iter().any(|m| m == &a.model) {
                 return Err(BoardError::usage(format!("供应商 {} 里没有模型「{}」：只能是 {}", a.provider, a.model, p.models.join("、"))));
             }
-            let efforts = efforts_of(&a.agent);
-            if !a.effort.is_empty() && !efforts.contains(&a.effort.as_str()) {
-                return Err(BoardError::usage(if efforts.is_empty() {
-                    format!("{} 不能选思考强度", agent_name(&a.agent))
-                } else {
-                    format!("{} 不支持思考强度「{}」：只能是 {}", agent_name(&a.agent), a.effort, efforts.join("、"))
-                }));
-            }
+            check_effort(&a.agent, &p, &a.model, &a.effort)?;
         }
         a.updated_at = self.now;
         a.by = if by.trim().is_empty() { "人".into() } else { by.trim().into() };
@@ -400,9 +488,27 @@ impl W<'_> {
             params![a.agent, serde_json::to_string(&a).unwrap_or_default(), a.updated_at, a.by],
         )?;
         self.hosts_changed = true;
+        self.config_changed = true;
+        self.config_by = a.by.clone();
         self.changed = true;
         Ok(a)
     }
+}
+
+/// 选的强度：这个模型标了、这个 agent 的配置文件也能写（[`writable_efforts`]）；空表示不写强度
+pub(crate) fn check_effort(agent: &str, p: &Provider, model: &str, effort: &str) -> Result<()> {
+    if effort.is_empty() {
+        return Ok(());
+    }
+    let ok = writable_efforts(agent, p, model);
+    if ok.iter().any(|e| e == effort) {
+        return Ok(());
+    }
+    Err(BoardError::usage(if ok.is_empty() {
+        format!("供应商 {} 没给模型 {model} 标 {} 能写的强度：不能选强度", p.name, agent_name(agent))
+    } else {
+        format!("{} 用 {model} 时强度只能是 {}，不能是「{effort}」", agent_name(agent), ok.join("、"))
+    }))
 }
 
 #[cfg(test)]
@@ -449,6 +555,51 @@ mod tests {
     }
 
     #[test]
+    fn urls_are_normalized_and_models_url_shares_it() {
+        assert_eq!(normalize_url("anthropic", " https://relay.example.com/v1/ "), "https://relay.example.com");
+        assert_eq!(normalize_url("anthropic", "https://api.deepseek.com/anthropic"), "https://api.deepseek.com/anthropic");
+        assert_eq!(normalize_url("openai-chat", "https://api.deepseek.com/v1/"), "https://api.deepseek.com/v1", "OpenAI 的 /v1 照填的留着");
+        let ep = |i: &str, u: &str| ProviderEndpoint { interface: i.into(), url: u.into() };
+        let both = [ep("anthropic", "https://api.deepseek.com/anthropic"), ep("openai-chat", "https://api.deepseek.com/v1/")];
+        assert_eq!(models_url(&both), Some(("https://api.deepseek.com/v1/models".into(), false)));
+        assert_eq!(models_url(&[ep("openai-responses", "https://x/v1")]), Some(("https://x/v1/models".into(), false)));
+        assert_eq!(models_url(&[ep("anthropic", "https://api.anthropic.com")]), Some(("https://api.anthropic.com/v1/models".into(), true)));
+        assert_eq!(models_url(&[ep("anthropic", "https://relay/v1")]), Some(("https://relay/v1/models".into(), true)), "带 /v1 的不会问成 /v1/v1/models");
+        assert_eq!(models_url(&[ep("openai-chat", "  ")]), None);
+        // 保存时就去掉
+        let mut s = Store::open_in_memory().unwrap();
+        s.write(1000, Origin::ui(None), |w| w.provider_put(Provider { endpoints: vec![ep("anthropic", "https://relay/v1/")], ..provider("r") }, "", "")).unwrap();
+        assert_eq!(s.read(|r| r.providers()).unwrap()[0].endpoints[0].url, "https://relay");
+    }
+
+    #[test]
+    fn model_efforts_are_tidied_and_limit_what_agents_can_pick() {
+        let mut s = Store::open_in_memory().unwrap();
+        let efforts: BTreeMap<String, Vec<String>> =
+            [("model-a".to_string(), vec!["max".to_string(), "low".into(), "low".into(), "minimal".into()]), ("gone".to_string(), vec!["high".to_string()]), ("model-b".to_string(), vec![])].into();
+        let out = s.write(1000, Origin::ui(None), |w| w.provider_put(Provider { efforts, ..provider("p1") }, "", "")).unwrap();
+        // 按从低到高、去重；列表里没有的模型、空的去掉
+        assert_eq!(out.efforts, [("model-a".to_string(), vec!["minimal".to_string(), "low".into(), "max".into()])].into());
+        let p = s.read(|r| r.providers()).unwrap().remove(0);
+        // 交集：claude 写不了 minimal，codex 写不了 max
+        assert_eq!(writable_efforts("claude", &p, "model-a"), vec!["low", "max"]);
+        assert_eq!(writable_efforts("codex", &p, "model-a"), vec!["minimal", "low"]);
+        assert!(writable_efforts("claude", &p, "model-b").is_empty(), "没标的不能选");
+        let set = |s: &mut Store, a: AgentProvider| s.write(2000, Origin::ui(None), |w| w.provider_agent_put(a, "octocat"));
+        assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "max".into(), ..Default::default() }).is_ok());
+        let err = set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "minimal".into(), ..Default::default() }).unwrap_err();
+        assert!(err.message.contains("low、max"), "{}", err.message);
+        // 不认识的档位
+        let bad: BTreeMap<String, Vec<String>> = [("model-a".to_string(), vec!["ultra".to_string()])].into();
+        assert!(s.write(3000, Origin::ui(None), |w| w.provider_put(Provider { efforts: bad, ..provider("p1") }, "", "")).unwrap_err().message.contains("ultra"));
+        // 改了强度，版本跟着变（board host 要重新写）
+        let v1 = s.read(|r| r.providers()).unwrap()[0].version.clone();
+        let fewer: BTreeMap<String, Vec<String>> = [("model-a".to_string(), vec!["low".to_string()])].into();
+        let v2 = s.write(3000, Origin::ui(None), |w| w.provider_put(Provider { efforts: fewer, ..provider("p1") }, "", "")).unwrap().version;
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
     fn agent_assignments_are_checked_and_cleared_on_delete() {
         let mut s = Store::open_in_memory().unwrap();
         s.write(1000, Origin::ui(None), |w| w.provider_put(provider("p1"), "", "")).unwrap();
@@ -462,8 +613,8 @@ mod tests {
         assert_eq!((out.model.as_str(), out.effort.as_str()), ("model-a", ""));
         // 模型不在供应商里
         assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "nope".into(), ..Default::default() }).unwrap_err().message.contains("没有模型"));
-        // 强度不对
-        assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "ultra".into(), ..Default::default() }).unwrap_err().message.contains("思考强度"));
+        // 模型没标强度：不能选
+        assert!(set(&mut s, AgentProvider { agent: "claude".into(), provider: "p1".into(), model: "model-a".into(), effort: "high".into(), ..Default::default() }).unwrap_err().message.contains("不能选强度"));
         // 不认识的内置 agent
         assert!(set(&mut s, AgentProvider { agent: "mycli".into(), provider: "p1".into(), ..Default::default() }).unwrap_err().message.contains("不认识的 agent"));
         // 删掉供应商：用着它的 agent 回到不管

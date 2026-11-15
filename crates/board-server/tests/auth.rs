@@ -735,9 +735,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
         asked: None,
         ask_error: None,
         selftest: false,
-        skills: None,
-        mcp: None,
-        providers: None,
+        config_sync: true,
         local_skills: None,
     };
     board_core::Store::open(&s.db).unwrap().write(board_core::now_ms(), Origin::cli(), |w| w.host_beat(&rep, Some(host_info.id))).unwrap();

@@ -1,21 +1,23 @@
 //! 模型供应商共用配置的接口（PRD §10.12「共用配置」）：
 //!
-//! - `GET /api/providers`：列表和每个内置 agent 用哪个，API key 只给末尾 4 位（界面、访问令牌都能读）
-//! - `POST /api/providers {name, endpoints, apiKey, models}`：新增或修改（只能在登录后的界面上做）；API key 留空保留原来的值
+//! - `GET /api/providers`：列表和每个内置 agent 用哪个，API key 只给末尾 4 位（界面、访问令牌都能读）；
+//!   `meta` 是内置 agent 的说明（认哪些接口、配置文件能写哪几档强度，只在 board-core 留一份）
+//! - `POST /api/providers {name, endpoints, apiKey, models, efforts}`：新增或修改（只能在登录后的界面上做）；API key 留空保留原来的值；
+//!   地址保存时规范化（Anthropic 的去掉结尾的 `/v1`），`efforts` 是每个模型支持的强度
 //! - `POST /api/providers/agents {agent, provider, model, effort}`：一个内置 agent 用哪个供应商（只能在登录后的界面上做）
-//! - `DELETE /api/providers/{名称}`：删掉（只能在界面上做）；用着它的 agent 回到「不管」，各台机器恢复原来的配置
+//! - `DELETE /api/providers/{名称}`：删掉（只能在界面上做）；用着它的 agent 回到「没配」，机器上单独配置成它的下次同步时报失败
 //! - `GET /api/hosts/{名字}/providers`：完整内容（含 API key 原文）和每个 agent 用哪个，只给这台机器用的访问令牌；
 //!   界面、其他机器的令牌都是 `NOT_LOGGED_IN`
 //! - `POST /api/providers/models {name?, endpoints, apiKey?}`：获取模型——服务端用这些地址和 API key 问供应商有哪些模型
-//!   （只能在登录后的界面上做）；API key 留空时用名称对应的供应商存着的那个。OpenAI 兼容的接口优先（`<地址>/models`），
-//!   只有 Anthropic 接口时问 `<地址>/v1/models`；12 秒超时，失败时写明原因（key 不对、没有模型列表接口、连不上）
+//!   （只能在登录后的界面上做）；API key 留空时用名称对应的供应商存着的那个。问哪个地址和写配置用同一个函数
+//!   （board-core 的 `providers::models_url`）；12 秒超时，失败时写明原因（key 不对、没有模型列表接口、连不上）
 
 use crate::auth::{human, Caller};
 use crate::{client_of, parse, ApiError, ApiResult, AppState};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::{Extension, Json};
-use board_core::providers::{AgentProvider, Provider, ProviderEndpoint};
+use board_core::providers::{models_url, AgentMeta, AgentProvider, Provider, ProviderEndpoint};
 use board_core::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,10 +28,11 @@ use serde_json::{json, Value};
 pub(crate) struct ProviderView {
     providers: Vec<Provider>,
     agents: Vec<AgentProvider>,
+    meta: Vec<AgentMeta>,
 }
 
 fn view(providers: Vec<Provider>, agents: Vec<AgentProvider>) -> ProviderView {
-    ProviderView { providers: providers.iter().map(Provider::masked).collect(), agents }
+    ProviderView { providers: providers.iter().map(Provider::masked).collect(), agents, meta: board_core::providers::agent_meta() }
 }
 
 pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<ProviderView> {
@@ -136,16 +139,6 @@ pub(crate) async fn models(State(s): State<AppState>, Extension(caller): Extensi
     Ok(Json(out))
 }
 
-/// 问哪个地址：OpenAI 兼容的接口优先（大多数供应商的 Anthropic 兼容地址不提供模型列表），只有 Anthropic 接口时问 /v1/models
-pub(crate) fn models_url(endpoints: &[ProviderEndpoint]) -> Option<(String, bool)> {
-    let url_of = |id: &str| endpoints.iter().find(|e| e.interface == id && !e.url.trim().is_empty()).map(|e| e.url.trim().trim_end_matches('/').to_string());
-    if let Some(base) = url_of("openai-chat").or_else(|| url_of("openai-responses")) {
-        return Some((format!("{base}/models"), false));
-    }
-    let base = url_of("anthropic")?;
-    Some((if base.ends_with("/v1") { format!("{base}/models") } else { format!("{base}/v1/models") }, true))
-}
-
 /// 模型列表的几种写法：`{data: [{id}]}`（OpenAI、Anthropic）、`{models: [...]}`、直接一个数组；元素是字符串或带 id / name 的对象
 pub(crate) fn parse_models(text: &str) -> std::result::Result<Vec<String>, String> {
     let v: Value = serde_json::from_str(text).map_err(|_| "返回的不是模型列表（不是 JSON）".to_string())?;
@@ -194,20 +187,6 @@ fn fetch_models(endpoints: &[ProviderEndpoint], key: &str) -> std::result::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ep(interface: &str, url: &str) -> ProviderEndpoint {
-        ProviderEndpoint { interface: interface.into(), url: url.into() }
-    }
-
-    #[test]
-    fn models_url_prefers_openai_compatible() {
-        let both = [ep("anthropic", "https://api.deepseek.com/anthropic"), ep("openai-chat", "https://api.deepseek.com/v1/")];
-        assert_eq!(models_url(&both), Some(("https://api.deepseek.com/v1/models".into(), false)));
-        assert_eq!(models_url(&[ep("openai-responses", "https://x/v1")]), Some(("https://x/v1/models".into(), false)));
-        assert_eq!(models_url(&[ep("anthropic", "https://api.anthropic.com")]), Some(("https://api.anthropic.com/v1/models".into(), true)));
-        assert_eq!(models_url(&[ep("anthropic", "https://relay/v1")]), Some(("https://relay/v1/models".into(), true)));
-        assert_eq!(models_url(&[ep("openai-chat", "  ")]), None);
-    }
 
     #[test]
     fn parse_models_accepts_common_shapes() {

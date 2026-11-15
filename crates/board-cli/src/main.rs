@@ -17,6 +17,7 @@ mod events;
 mod heartbeat;
 mod host;
 mod logfmt;
+mod lsdir;
 mod mcpsync;
 mod providersync;
 mod redact;

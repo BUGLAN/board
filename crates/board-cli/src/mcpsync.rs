@@ -6,8 +6,10 @@
 //! - pi：改 `~/.pi/agent/mcp.json` 的 `mcpServers`
 //! - dsh 和配置文件里的 agent：不支持，状态写「不支持」
 //!
-//! 只动同步加进去的条目：加过哪些记在 `~/.board/host/mcp-sync.json`（agent → 名称 → 版本）。配置里已有同名、不是同步加的，
-//! 不覆盖，状态写「有同名，没有覆盖」；共用配置里删掉的（或不再同步给这个 agent 的），同步加的那条删掉。
+//! 机器上 MCP 选了「用服务器的」才同步（board host 启动时、收到「同步配置」请求时）；选「不改」时不碰，之前加的也不删。
+//! 同步加过哪些记在 `~/.board/host/mcp-sync.json`（agent → 名称 → 版本）。配置里已有同名、不是同步加的：
+//! 原来的值存进 `~/.board/host/mcp-backup.json`（agent → 名称 → 原来的条目），换成库里的，之后归 Board 管；
+//! 共用配置里删掉的（或不再同步给这个 agent 的），同步加的那条删掉。
 //! WSL 里的 agent：文件经 `\\wsl.localhost\…` 改，Claude Code 的命令在 WSL 里执行。
 //! 密钥只写进 agent 自己的配置，不打印、不写日志（输出里只有名称）。
 
@@ -32,10 +34,16 @@ pub struct Target {
 }
 
 /// 一次同步的结果
+#[derive(Default)]
 pub struct Synced {
     pub states: Vec<McpState>,
     pub changes: Vec<String>,
+    /// 换掉了的本机同名条目（原来的值存进了备份文件）
+    pub replaced: Vec<String>,
 }
+
+/// 原来的同名条目：agent → 名称 → 原来的值（读出来的样子）
+type Backup = BTreeMap<String, BTreeMap<String, McpServer>>;
 
 /// 一个 agent 的 MCP 配置文件：支持的 agent 才有；WSL 里的换成 Windows 上能访问的路径（取不到时 None）
 pub fn file_of(agent: &str, env: &Env) -> Option<(PathBuf, String)> {
@@ -55,11 +63,14 @@ pub fn file_of(agent: &str, env: &Env) -> Option<(PathBuf, String)> {
     Some((p, rel.to_string()))
 }
 
-/// 已有的条目名称
-fn existing(t: &Target, path: &Path) -> Vec<String> {
+/// 已有的条目
+fn existing(t: &Target, path: &Path) -> Vec<McpServer> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    let list = if t.agent == "codex" { files::read_codex(&text) } else { files::read_json(&text) };
-    list.into_iter().map(|s| s.name).collect()
+    if t.agent == "codex" {
+        files::read_codex(&text)
+    } else {
+        files::read_json(&text)
+    }
 }
 
 /// 改一个文件：读出来、改、先写临时文件再换上
@@ -118,31 +129,47 @@ fn remove(t: &Target, path: &Path, name: &str) -> Result<(), String> {
     }
 }
 
-/// 按共用配置同步这些 agent。`unsupported`：本机找到、但不能同步 MCP 的 agent（写「不支持」）；`owned_path`：同步加过哪些
-pub fn sync(lib: &[McpServer], targets: &[Target], unsupported: &[String], owned_path: &Path) -> Synced {
+/// 按共用配置同步这些 agent。`unsupported`：本机找到、但不能同步 MCP 的 agent（写「不支持」）；`owned_path`：同步加过哪些；
+/// `backup_path`：换掉的同名条目原来的值存在这里
+pub fn sync(lib: &[McpServer], targets: &[Target], unsupported: &[String], owned_path: &Path, backup_path: &Path) -> Synced {
     let mut owned: Owned = std::fs::read_to_string(owned_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut backup: Backup = std::fs::read_to_string(backup_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut backed = false;
     let mut states = vec![];
     let mut changes = vec![];
+    let mut replaced: Vec<String> = vec![];
     for t in targets {
         let want: Vec<&McpServer> = lib.iter().filter(|x| x.for_agent(&t.agent)).collect();
         let (path, shown) = (&t.file, &t.shown);
-        let names = existing(t, path);
+        let have = existing(t, path);
+        let names: Vec<String> = have.iter().map(|x| x.name.clone()).collect();
         let mine = owned.entry(t.agent.clone()).or_default();
         for srv in &want {
             let state = |state: &str, why: Option<String>| McpState { server: srv.name.clone(), agent: t.agent.clone(), state: state.into(), why };
             let has = names.contains(&srv.name);
             let ours = mine.get(&srv.name).cloned();
-            if has && ours.is_none() {
-                states.push(state("local", Some(format!("{shown} 里已有同名的条目（不是同步加的），没有覆盖"))));
-                continue;
-            }
             if has && ours.as_deref() == Some(srv.version.as_str()) {
                 states.push(state("synced", None));
                 continue;
             }
+            // 同名、不是同步加的：原来的值存进备份，再换成库里的
+            let theirs = has && ours.is_none();
+            if theirs {
+                if let Some(old) = have.iter().find(|x| x.name == srv.name) {
+                    backup.entry(t.agent.clone()).or_default().insert(srv.name.clone(), old.clone());
+                    backed = true;
+                }
+            }
             match put(t, path, srv, has) {
                 Ok(()) => {
-                    changes.push(format!("{} {} 的 MCP 服务器 {}", if has { "更新" } else { "加上" }, t.agent, srv.name));
+                    if theirs {
+                        changes.push(format!("{shown} 里已有同名的 {}（不是同步加的）：原来的存进了备份，换成共用配置里的", srv.name));
+                        if !replaced.contains(&srv.name) {
+                            replaced.push(srv.name.clone());
+                        }
+                    } else {
+                        changes.push(format!("{} {} 的 MCP 服务器 {}", if has { "更新" } else { "加上" }, t.agent, srv.name));
+                    }
                     mine.insert(srv.name.clone(), srv.version.clone());
                     states.push(state("synced", None));
                 }
@@ -173,7 +200,13 @@ pub fn sync(lib: &[McpServer], targets: &[Target], unsupported: &[String], owned
         let _ = std::fs::create_dir_all(d);
     }
     let _ = std::fs::write(owned_path, serde_json::to_string_pretty(&owned).unwrap_or_default());
-    Synced { states, changes }
+    if backed {
+        if let Some(d) = backup_path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(backup_path, serde_json::to_string_pretty(&backup).unwrap_or_default());
+    }
+    Synced { states, changes, replaced }
 }
 
 #[cfg(test)]
@@ -198,7 +231,7 @@ mod tests {
         }
     }
 
-    /// Codex、pi 直接改文件：加上、更新、删掉；用户自己的、同名不是同步加的不动。HOME 指到临时目录（只在这个测试进程里）
+    /// Codex、pi 直接改文件：加上、更新、删掉；用户自己的不动，同名不是同步加的换成共用配置里的、原来的存进备份
     #[cfg(unix)]
     #[test]
     fn codex_and_pi_files() {
@@ -208,32 +241,36 @@ mod tests {
         std::fs::write(codex_home.join("config.toml"), "model = \"m\"\n[mcp_servers.mine]\ncommand = \"mine\"\n[mcp_servers.taken]\ncommand = \"user\"\n").unwrap();
         let t = vec![Target { agent: "codex".into(), env: Env::direct(), prog: None, file: codex_home.join("config.toml"), shown: "$CODEX_HOME/config.toml".into() }];
         let owned = d.path().join("owned.json");
-        let out = sync(&[srv("db", "npx", "sk-1"), srv("taken", "x", "s")], &t, &["dsh".into()], &owned);
+        let bk = d.path().join("mcp-backup.json");
+        let out = sync(&[srv("db", "npx", "sk-1"), srv("taken", "x", "s")], &t, &["dsh".into()], &owned, &bk);
         let text = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
         assert!(text.contains("[mcp_servers.db]") && text.contains("TOKEN = \"sk-1\"") && text.contains("model = \"m\""), "{text}");
-        assert!(text.contains("[mcp_servers.taken]\ncommand = \"user\""), "同名的不覆盖：{text}");
+        assert!(!text.contains("command = \"user\"") && text.contains("[mcp_servers.taken]"), "同名的换成共用配置里的：{text}");
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&bk).unwrap()).unwrap();
+        assert_eq!(saved["codex"]["taken"]["command"], "user", "原来的值存进了备份");
+        assert_eq!(out.replaced, vec!["taken".to_string()]);
         let st = |out: &Synced, s: &str, a: &str| out.states.iter().find(|x| x.server == s && x.agent == a).map(|x| x.state.clone()).unwrap();
-        assert_eq!((st(&out, "db", "codex"), st(&out, "taken", "codex")), ("synced".into(), "local".into()));
+        assert_eq!((st(&out, "db", "codex"), st(&out, "taken", "codex")), ("synced".into(), "synced".into()));
         assert_eq!(st(&out, "db", "dsh"), "unsupported");
         assert!(out.changes.iter().all(|c| !c.contains("sk-1")), "输出里没有密钥");
         // 没变：什么都不写
-        let out = sync(&[srv("db", "npx", "sk-1"), srv("taken", "x", "s")], &t, &[], &owned);
-        assert!(out.changes.is_empty());
+        let out = sync(&[srv("db", "npx", "sk-1"), srv("taken", "x", "s")], &t, &[], &owned, &bk);
+        assert!(out.changes.is_empty() && out.replaced.is_empty(), "换过一次就归 Board 管了");
         // 更新
-        sync(&[srv("db", "npx", "sk-2")], &t, &[], &owned);
+        sync(&[srv("db", "npx", "sk-2"), srv("taken", "x", "s")], &t, &[], &owned, &bk);
         assert!(std::fs::read_to_string(codex_home.join("config.toml")).unwrap().contains("TOKEN = \"sk-2\""));
-        // 删掉：同步加的删掉，用户自己的 mine、taken 留着
-        let out = sync(&[], &t, &[], &owned);
+        // 删掉：同步加的删掉（包括换过来的 taken），用户自己的 mine 留着
+        let out = sync(&[], &t, &[], &owned, &bk);
         let text = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
-        assert!(!text.contains("[mcp_servers.db]") && text.contains("[mcp_servers.mine]") && text.contains("[mcp_servers.taken]"), "{text}");
-        assert_eq!(out.changes.len(), 1);
+        assert!(!text.contains("[mcp_servers.db]") && text.contains("[mcp_servers.mine]") && !text.contains("[mcp_servers.taken]"), "{text}");
+        assert_eq!(out.changes.len(), 2);
         // pi 的 mcp.json 一样
         let pi = d.path().join("pi").join("mcp.json");
         let t = vec![Target { agent: "pi".into(), env: Env::direct(), prog: None, file: pi.clone(), shown: "~/.pi/agent/mcp.json".into() }];
-        sync(&[srv("db", "npx", "sk-1")], &t, &[], &owned);
+        sync(&[srv("db", "npx", "sk-1")], &t, &[], &owned, &bk);
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pi).unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["db"]["env"]["TOKEN"], "sk-1");
-        sync(&[], &t, &[], &owned);
+        sync(&[], &t, &[], &owned, &bk);
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pi).unwrap()).unwrap();
         assert!(v["mcpServers"].get("db").is_none());
     }

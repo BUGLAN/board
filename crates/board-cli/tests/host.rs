@@ -150,6 +150,10 @@ impl Rig {
             ),
         )
         .unwrap();
+        // Claude Code 自己的配置文件里的模型：board host 读出来上报，派发名字的第二段用它（claude-mbp/opus-5.5）
+        let claude = s.home.join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("settings.json"), "{\"model\": \"opus-5.5\"}\n").unwrap();
         Rig { s, fake, repo, _tmp: tmp }
     }
 
@@ -395,7 +399,7 @@ fn host_runs_dispatches_end_to_end() {
     let r = rig.board(&["dispatch", "5", "--host", "nope", "--json"]);
     assert_eq!(r.error_code(), "NO_SUCH_HOST");
 
-    // 交审：持有者是 claude-mbp/opus-5.5（<agent 标识>-<机器名>/<模型名>，模型名来自内置模板的默认值），
+    // 交审：持有者是 claude-mbp/opus-5.5（<agent 标识>-<机器名>/<模型名>，模型名是 Claude Code 配置文件里现在的），
     // 日志写到 ~/.board/host/logs/，上传到服务端
     rig.mode("review");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
@@ -536,7 +540,7 @@ fn cron_session_does_several_cards() {
     assert_eq!(sessions, vec![all[0].id, all[0].id, all[0].id, all[0].id, all[4].id, all[4].id], "4 张一个进程，剩下 2 张换新进程");
     // 进程的输出记到当时正在做的那张卡的派发上
     assert!(rig.dispatch_log(all[1].id).iter().any(|l| l == &format!("交审了 #{}", all[1].card)), "{:?}", rig.dispatch_log(all[1].id));
-    assert!(activity(&rig.show(all[1].card)).iter().any(|t| t.contains("接着做（定时，这个会话的第 2 张）")));
+    assert!(activity(&rig.show(all[1].card)).iter().any(|t| t.contains("接着做（定时，这个会话的第 2 张")));
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }
@@ -932,12 +936,12 @@ fn remote_recheck_and_restart() {
     assert!(out.contains("重新检查完了") && out.contains("请求重启 board host") && out.contains("重新启动 board host"), "{out}");
 }
 
-/// 机器设置里的模型、思考强度（PRD §9.1）：不重启 board host，下一次派发就按模板把参数传给 agent，
-/// agent 名字第二段用模型，卡片动态的「派发开始」写着模型和强度
+/// 同步配置（机器详情与配置同步重构）：服务器上给 claude 配了供应商，机器选「用服务器的」——不用重启 board host，
+/// 地址（去掉 /v1）、key、模型、强度写进 Claude Code 自己的配置文件，结果上报、记进操作记录；
+/// 派发时不再传 --model / --effort，名字第二段和「派发开始」里的模型是配置文件里写进去的
 #[test]
-fn model_and_effort_reach_the_agent() {
+fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     let rig = Rig::new();
-    // claude 换成一个把参数打印出来的假脚本（内置模板的 --model / --effort 照样插在提示词前面）
     let printer = rig.fake.parent().unwrap().join("printer.sh");
     std::fs::write(&printer, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -950,25 +954,52 @@ fn model_and_effort_reach_the_agent() {
     wait_until("mbp 上线", Duration::from_secs(20), || {
         rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
     });
-    let a = rig.workspace()["hosts"][0]["agents"].as_array().unwrap().iter().find(|a| a["id"] == "claude").cloned().unwrap();
-    assert_eq!(a["opts"]["efforts"], serde_json::json!(["low", "medium", "high", "xhigh", "max"]), "{a}");
+    // 新机器默认全部「不改」：启动时写一次，claude 的配置不碰
+    let claude = |rig: &Rig| rig.workspace()["hosts"][0]["sync"]["last"]["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"] == "claude").cloned());
+    wait_until("启动时同步一次", Duration::from_secs(15), || claude(&rig).is_some_and(|c| c["state"] == "off"));
     {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();
-        let run = board_core::RunPatch { agent: "claude".into(), model: Some("sonnet".into()), effort: Some("high".into()), ..Default::default() };
-        let p = board_core::HostPatch { run: Some(run), ..Default::default() };
-        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &p)).unwrap();
+        let p = board_core::providers::Provider {
+            name: "relay".into(),
+            endpoints: vec![board_core::providers::ProviderEndpoint { interface: "anthropic".into(), url: "https://relay.example.com/v1".into() }],
+            api_key: Some("sk-test-relay".into()),
+            models: vec!["m1".into(), "m2".into()],
+            efforts: [("m2".to_string(), vec!["high".to_string()])].into(),
+            ..Default::default()
+        };
+        store
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
+                w.provider_put(p, "buglan", "")?;
+                w.provider_agent_put(board_core::providers::AgentProvider { agent: "claude".into(), provider: "relay".into(), model: "m2".into(), effort: "high".into(), ..Default::default() }, "buglan")
+            })
+            .unwrap();
     }
+    rig.set_host("mbp", serde_json::json!({ "run": { "agent": "claude", "mode": "server" } }));
+    let settings = rig.s.home.join(".claude").join("settings.json");
+    let read = || -> Value { serde_json::from_str(&std::fs::read_to_string(&settings).unwrap_or_default()).unwrap_or(Value::Null) };
+    wait_until("写进 Claude Code 的配置文件", Duration::from_secs(15), || read()["model"] == "m2");
+    let v = read();
+    assert_eq!((v["env"]["ANTHROPIC_BASE_URL"].as_str(), v["env"]["ANTHROPIC_AUTH_TOKEN"].as_str(), v["env"]["CLAUDE_CODE_EFFORT_LEVEL"].as_str()), (Some("https://relay.example.com"), Some("sk-test-relay"), Some("high")));
+    wait_until("上报结果、模型", Duration::from_secs(15), || {
+        let h = rig.workspace()["hosts"][0].clone();
+        h["sync"].get("ask").is_none()
+            && claude(&rig).is_some_and(|c| c["state"] == "synced" && c["model"] == "m2" && c["effort"] == "high")
+            && h["agents"].as_array().unwrap().iter().any(|a| a["id"] == "claude" && a["model"] == "m2")
+    });
+    let ops: Vec<String> = rig.workspace()["hosts"][0]["ops"].as_array().unwrap().iter().map(|o| o["text"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(ops.iter().any(|t| t.starts_with("同步配置：1 个 agent 已写入")), "{ops:?}");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let d = r.json()["id"].as_i64().unwrap();
     let log = log_file(&rig.s.home, d);
     wait_until("假 agent 打印参数", Duration::from_secs(15), || std::fs::read_to_string(&log).is_ok_and(|s| s.contains("args:")));
     let out = std::fs::read_to_string(&log).unwrap();
-    assert!(out.contains("args: --model sonnet --effort high /board-skills 开始执行"), "{out}");
+    assert!(out.contains("args: /board-skills 开始执行") && !out.contains("--model"), "派发时不再传模型、强度：{out}");
     let acts = activity(&rig.show(1));
-    assert!(acts.iter().any(|t| t.contains("以 claude-mbp/sonnet 领取") && t.contains("模型 sonnet，强度 high")), "{acts:?}");
+    assert!(acts.iter().any(|t| t.contains("以 claude-mbp/m2 领取") && t.contains("模型 m2，强度 high")), "{acts:?}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("sk-test-relay"), "输出里没有 key：{out}");
 }
 
 /* ------------------------------ 兜底：单次最长运行、没输出多久算卡住 ------------------------------ */
@@ -1260,15 +1291,13 @@ fn service_restarts_host_after_kill9() {
 fn skills_push_sync_update_and_remove() {
     let rig = Rig::new();
     let skills = rig.s.home.join(".claude").join("skills");
-    // B 上本来就有一个同名的 mine（不是同步装的）
+    // B 上本来就有一个同名的 mine（不是 Board 装的）
     std::fs::create_dir_all(skills.join("mine")).unwrap();
     std::fs::write(skills.join("mine").join("SKILL.md"), "local").unwrap();
     let host = rig.host("mbp");
-    let state = |rig: &Rig, skill: &str| -> Option<(String, Option<String>)> {
-        let h = rig.workspace()["hosts"][0].clone();
-        h["skills"].as_array()?.iter().find(|s| s["skill"] == skill && s["agent"] == "claude").map(|s| (s["state"].as_str().unwrap_or("").to_string(), s["version"].as_str().map(str::to_string)))
-    };
-    wait_until("board-skills 自动同步", Duration::from_secs(20), || state(&rig, "board-skills").is_some_and(|(s, _)| s == "synced"));
+    let last = |rig: &Rig| rig.workspace()["hosts"][0]["sync"]["last"]["skills"].clone();
+    // 新机器 skills 默认「不改」：只装 board-skills
+    wait_until("board-skills 自动装上", Duration::from_secs(20), || last(&rig)["state"] == "off");
     let bs = skills.join("board-skills");
     assert!(bs.join("SKILL.md").is_file() && bs.join("scripts").join("board").is_file());
     assert!(bs.join(".board-sync").is_file());
@@ -1281,40 +1310,45 @@ fn skills_push_sync_update_and_remove() {
     let own = std::fs::metadata(env!("CARGO_BIN_EXE_board")).unwrap().len();
     assert_eq!(std::fs::metadata(bs.join("bin").join(plat).join("board")).unwrap().len(), own, "bin 里是 board host 自己的 board");
 
-    // A 上 push 一个 skill
+    // A 上 push 一个 skill：B 还是「不改」，不装
     let src = rig.repo.parent().unwrap().join("notes");
     std::fs::create_dir_all(src.join("ref")).unwrap();
     std::fs::write(src.join("SKILL.md"), "# notes v1").unwrap();
     std::fs::write(src.join("ref").join("a.md"), "a").unwrap();
     let r = rig.board(&["skills", "push", src.to_str().unwrap(), "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    let v1 = r.json()["skills"][0]["version"].as_str().unwrap().to_string();
-    wait_until("B 装上 notes", Duration::from_secs(10), || state(&rig, "notes").is_some_and(|(s, v)| s == "synced" && v.as_deref() == Some(v1.as_str())));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(!skills.join("notes").exists(), "「不改」的机器不装库里的");
+    // B 改成「用服务器的」：装上
+    rig.set_host("mbp", serde_json::json!({ "syncSkills": true }));
+    wait_until("B 装上 notes", Duration::from_secs(15), || std::fs::read_to_string(skills.join("notes").join("SKILL.md")).is_ok_and(|t| t == "# notes v1"));
     assert_eq!(std::fs::read_to_string(skills.join("notes").join("ref").join("a.md")).unwrap(), "a");
+    wait_until("上报已写入", Duration::from_secs(10), || last(&rig)["state"] == "synced" && last(&rig)["count"] == 2);
     // 同名的本机目录，内容和库里一样（就是从它推的）：算已同步，不动它
     let r = rig.board(&["skills", "push", skills.join("mine").to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    wait_until("mine 内容一样算已同步", Duration::from_secs(10), || state(&rig, "mine").is_some_and(|(s, _)| s == "synced"));
-    assert!(!skills.join("mine").join(".board-sync").exists(), "本机自己的目录不加标记");
-    // 库里换成别的内容：本机的不覆盖，写明「本机有同名」
+    wait_until("mine 一样不用换", Duration::from_secs(10), || last(&rig)["count"] == 3);
+    assert!(!skills.join("mine").join(".board-sync").exists(), "本机自己的目录不动");
+    // 库里换成别的内容：本机的不是 Board 装的，挪进备份，换成库里的
     let other = rig.repo.parent().unwrap().join("other").join("mine");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join("SKILL.md"), "other").unwrap();
     let r = rig.board(&["skills", "push", other.to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    wait_until("mine 报「本机有同名」", Duration::from_secs(10), || state(&rig, "mine").is_some_and(|(s, _)| s == "local"));
-    assert_eq!(std::fs::read_to_string(skills.join("mine").join("SKILL.md")).unwrap(), "local");
+    wait_until("mine 换成库里的", Duration::from_secs(10), || std::fs::read_to_string(skills.join("mine").join("SKILL.md")).is_ok_and(|t| t == "other"));
+    wait_until("上报替换了 mine", Duration::from_secs(10), || last(&rig)["replaced"] == serde_json::json!(["mine"]));
+    let backup = rig.s.home.join(".board").join("host").join("skills-backup");
+    let saved: Vec<_> = std::fs::read_dir(&backup).unwrap().flatten().collect();
+    assert!(saved.len() == 1 && std::fs::read_to_string(saved[0].path().join("SKILL.md")).unwrap() == "local", "旧的在备份里");
     // 改了再推：更新到新版本
     std::fs::write(src.join("SKILL.md"), "# notes v2").unwrap();
     let r = rig.board(&["skills", "push", src.to_str().unwrap(), "--json"]);
-    let v2 = r.json()["skills"][0]["version"].as_str().unwrap().to_string();
-    assert_ne!(v1, v2);
-    wait_until("B 更新 notes", Duration::from_secs(10), || state(&rig, "notes").is_some_and(|(_, v)| v.as_deref() == Some(v2.as_str())));
-    assert_eq!(std::fs::read_to_string(skills.join("notes").join("SKILL.md")).unwrap(), "# notes v2");
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("B 更新 notes", Duration::from_secs(10), || std::fs::read_to_string(skills.join("notes").join("SKILL.md")).is_ok_and(|t| t == "# notes v2"));
     // ls 能看到库和本机状态
     let r = rig.board(&["skills", "ls"]);
     assert!(r.out.contains("board-skills") && r.out.contains("notes") && r.out.contains("已同步"), "{}", r.out);
-    // board-skills 不能删；rm notes：B 上同步装的删掉，本机的 mine 留着
+    // board-skills 不能删；rm notes：B 上同步装的删掉
     assert_ne!(rig.board(&["skills", "rm", "board-skills"]).code, 0);
     let r = rig.board(&["skills", "rm", "notes"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
@@ -1326,6 +1360,29 @@ fn skills_push_sync_update_and_remove() {
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("skills：装上") && out.contains("notes"), "{out}");
+}
+
+/// 选工作空间（机器详情与配置同步重构）：界面问「列目录」，服务端转给这台机器的 board host，它列出子文件夹回传——
+/// 只有文件夹、标出 git 仓库和下面有几个仓库，chain 从最上面一层（用户目录）展开到它
+#[test]
+fn list_dir_goes_through_the_real_board_host() {
+    let rig = Rig::new();
+    let base = rig.s.home.join("code");
+    for x in ["board/.git", "notes/.git", "wt/one/.git", "plain"] {
+        std::fs::create_dir_all(base.join(x)).unwrap();
+    }
+    std::fs::write(base.join("README.md"), "x").unwrap();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    let out = rig.ui_post("/api/hosts/mbp/ls", serde_json::json!({ "path": "~/code" }));
+    let names: Vec<(String, bool, i64)> = out["entries"].as_array().unwrap().iter().map(|e| (e["name"].as_str().unwrap().to_string(), e["git"] == true, e["repos"].as_i64().unwrap())).collect();
+    assert_eq!(names, vec![("board".into(), true, 0), ("notes".into(), true, 0), ("plain".into(), false, 0), ("wt".into(), false, 1)], "{out}");
+    let home = rig.s.home.canonicalize().unwrap_or(rig.s.home.clone()).display().to_string();
+    let chain: Vec<String> = out["chain"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    assert_eq!(chain.first().map(String::as_str), Some(""), "{out}");
+    assert!(chain.last().unwrap().ends_with("/code") && chain.len() == 3, "{chain:?}（home {home}）");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
 }
 
 /// 超过 5 MB 的 skill 被拒绝，并说明原因（命令行先拦，服务端也拦）
@@ -1356,7 +1413,7 @@ fn skills_push_rejects_big_skill() {
 /* ------------------------------ MCP 共用配置（#187） ------------------------------ */
 
 /// 在服务端加一个 stdio MCP 服务器（带一个密钥）：B 上 Claude Code（经 claude mcp add-json）、Codex（config.toml）、pi（mcp.json）
-/// 的用户级配置里都出现；列表接口、board host 的输出里看不到密钥原文；B 上已有同名的不覆盖；删掉后同步加的删掉、用户自己的留着。
+/// 的用户级配置里都出现；列表接口、board host 的输出里看不到密钥原文；B 上已有同名的换成共用配置里的（原来的存进备份）；删掉后同步加的删掉、用户自己的留着。
 /// 三个 agent 都是假脚本，不执行本机真实的 claude、codex、pi
 #[test]
 fn mcp_servers_sync_to_claude_codex_pi() {
@@ -1377,6 +1434,8 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     let host = rig.host("mbp");
     let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
     wait_until("mbp 上线", Duration::from_secs(20), || online(&rig));
+    // MCP 默认「不改」：改成用服务器的
+    rig.set_host("mbp", serde_json::json!({ "syncMcp": true }));
     let secret = "sk-live-0123456789abcdef";
     let put = |name: &str| {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();
@@ -1389,11 +1448,11 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     };
     put("db");
     put("shared");
-    let state = |rig: &Rig, server: &str, agent: &str| -> String {
-        let h = rig.workspace()["hosts"][0].clone();
-        h["mcp"].as_array().and_then(|a| a.iter().find(|s| s["server"] == server && s["agent"] == agent)).map(|s| s["state"].as_str().unwrap_or("").to_string()).unwrap_or_default()
-    };
-    wait_until("db 同步到三个 agent", Duration::from_secs(15), || ["claude", "codex", "pi"].iter().all(|a| state(&rig, "db", a) == "synced"));
+    let last = |rig: &Rig| rig.workspace()["hosts"][0]["sync"]["last"]["mcp"].clone();
+    wait_until("db、shared 同步到三个 agent", Duration::from_secs(15), || {
+        let m = last(&rig);
+        m["state"] == "synced" && m["count"] == 2 && m["agents"].as_array().is_some_and(|a| a.len() == 3)
+    });
     let claude: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert_eq!(claude["mcpServers"]["db"]["command"], "npx");
     assert_eq!(claude["mcpServers"]["db"]["env"]["DB_TOKEN"], secret);
@@ -1401,10 +1460,11 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     assert!(codex.contains("[mcp_servers.db]") && codex.contains(secret) && codex.contains("[mcp_servers.mine]"), "{codex}");
     let pi: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap()).unwrap();
     assert_eq!(pi["mcpServers"]["db"]["args"], serde_json::json!(["-y", "db-mcp"]));
-    // pi 上同名的 shared 是用户自己的：没覆盖，写明；其他 agent 照常加上
-    assert_eq!(pi["mcpServers"]["shared"]["command"], "user-own");
-    assert_eq!(state(&rig, "shared", "pi"), "local");
-    assert_eq!(state(&rig, "shared", "claude"), "synced");
+    // pi 上同名的 shared 是用户自己的：原来的存进备份，换成共用配置里的
+    assert_eq!(pi["mcpServers"]["shared"]["command"], "npx");
+    assert_eq!(last(&rig)["replaced"], serde_json::json!(["shared"]));
+    let saved = std::fs::read_to_string(home.join(".board").join("host").join("mcp-backup.json")).unwrap();
+    assert!(saved.contains("user-own"), "{saved}");
     // dsh 找不到命令，不报；列表接口（令牌也能读）只给末尾 4 位
     let mut res = ureq::get(format!("{}/api/mcp", rig.s.url)).header("authorization", format!("Bearer {}", rig.s.token)).call().unwrap();
     let list = res.body_mut().read_to_string().unwrap();
@@ -1424,7 +1484,7 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     let (code, body) = get_raw(&format!("{}/api/hosts/nope/mcp", rig.s.url), &rig.s.token);
     assert_eq!(code, 401, "机器不存在：{body}");
     assert!(!body.contains(secret), "{body}");
-    // 删掉 db：同步加的删掉，用户自己的 mine、shared（pi）留着
+    // 删掉 db：同步加的删掉，用户自己的 mine 留着
     {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();
         store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.mcp_rm("db")).unwrap();
@@ -1436,7 +1496,7 @@ fn mcp_servers_sync_to_claude_codex_pi() {
         !pi.contains("\"db\"") && !codex.contains("mcp_servers.db") && !claude.contains("\"db\"")
     });
     assert!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap().contains("[mcp_servers.mine]"));
-    assert!(std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap().contains("user-own"));
+    assert!(std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap().contains("\"shared\""), "换过来的 shared 还在库里");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("MCP：加上 claude 的 MCP 服务器 db"), "{out}");
@@ -1569,45 +1629,6 @@ fn raw_only_agents_report_an_empty_format() {
     assert_eq!(code, 0, "{out}");
 }
 
-
-/* ------------------------------ 共用配置的 agent 模板（#188） ------------------------------ */
-
-/// #188 验收：在共用配置里新加一个 agent 模板（命令是假脚本），在线的机器 10 秒内上报它，不用重启 board host；
-/// 本机配置文件里有同标识的 `[agents.*]` 时用本机的，上报里标「本机配置覆盖」；删掉模板后它不再出现
-#[test]
-fn shared_agent_templates_reach_online_hosts_without_restart() {
-    let rig = Rig::new();
-    let host = rig.host("mbp");
-    rig.online("mbp");
-    let fake = rig.fake.display().to_string();
-    let put = |id: &str, cmd: Vec<String>| {
-        let mut store = board_core::Store::open(&rig.s.db).unwrap();
-        let t = board_core::AgentTemplate { id: id.into(), name: format!("{id} 模板"), cmd, ..Default::default() };
-        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.template_put(t, "buglan")).unwrap();
-    };
-    let agent = |id: &str| -> Option<Value> { rig.workspace()["hosts"][0]["agents"].as_array()?.iter().find(|a| a["id"] == id).cloned() };
-    // 新加：命令是假脚本，找得到
-    put("kimi", vec![fake.clone(), "{prompt}".into()]);
-    let begun = Instant::now();
-    wait_until("mbp 上报 kimi", Duration::from_secs(10), || agent("kimi").is_some_and(|a| a["found"] == true));
-    assert!(begun.elapsed() < Duration::from_secs(10));
-    let a = agent("kimi").unwrap();
-    assert_eq!((a["name"].as_str(), a["version"].as_str()), (Some("kimi 模板"), Some("9.9.9 (fake)")));
-    assert!(a.get("local_override").is_none());
-    // 共用模板覆盖 claude，本机配置文件里也有 [agents.claude]：用本机的，标出来
-    put("claude", vec!["/board-test-no-such-command".into(), "{prompt}".into()]);
-    wait_until("claude 标出本机配置覆盖", Duration::from_secs(10), || agent("claude").is_some_and(|a| a["local_override"] == true));
-    assert_eq!(agent("claude").unwrap()["found"], true, "用的是本机配置文件里的假脚本");
-    // 删掉 kimi：不再出现
-    {
-        let mut store = board_core::Store::open(&rig.s.db).unwrap();
-        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.template_rm("kimi")).unwrap();
-    }
-    wait_until("kimi 不再上报", Duration::from_secs(10), || agent("kimi").is_none());
-    let (code, out) = stop(host);
-    assert_eq!(code, 0, "{out}");
-    assert!(out.contains("共用配置的 agent 模板：kimi"), "{out}");
-}
 
 /// 任意机器、改派（PRD §9.1）：`board dispatch <ID> --any` 不指定机器，服务端分给在线的那台，它照常开始、交审；
 /// `--move --any` 把指定机器的排队派发交给服务端挑

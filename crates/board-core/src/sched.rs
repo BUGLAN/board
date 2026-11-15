@@ -20,7 +20,9 @@ pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sched (
   id       INTEGER PRIMARY KEY CHECK (id = 1),
   rules    TEXT NOT NULL DEFAULT '[]',   -- 领取规则，有顺序：[{op, labels, agent}]
-  fallback TEXT                           -- 兜底的 agent；空表示规则没命中的卡片不领
+  fallback TEXT,                          -- 兜底的 agent；空表示规则没命中的卡片不领
+  max_run  INTEGER NOT NULL DEFAULT 180,   -- 单次最长运行（分钟，0 = 不限），所有机器一样
+  idle_run INTEGER NOT NULL DEFAULT 20     -- 多久没有输出算卡住（分钟，0 = 不限），所有机器一样
 );
 ";
 
@@ -103,10 +105,35 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
     }
+    // 跑多久停以前每台机器各设一次：并成所有机器一个值，取机器里最常见的（一样多时取先建的那台的），没有机器用默认值
+    if !has("sched", "max_run")? {
+        conn.execute_batch("ALTER TABLE sched ADD COLUMN max_run INTEGER NOT NULL DEFAULT 180")?;
+        conn.execute_batch("ALTER TABLE sched ADD COLUMN idle_run INTEGER NOT NULL DEFAULT 20")?;
+        let common = |col: &str| -> rusqlite::Result<Option<i64>> {
+            conn.query_row(&format!("SELECT {col} FROM hosts GROUP BY {col} ORDER BY COUNT(*) DESC, MIN(id) LIMIT 1"), [], |r| r.get(0)).optional()
+        };
+        if has("hosts", "max_run")? {
+            let (m, i) = (common("max_run")?, common("idle_run")?);
+            conn.execute("UPDATE sched SET max_run = COALESCE(?1, max_run), idle_run = COALESCE(?2, idle_run)", params![m, i])?;
+            // sched 还没有那一行（下面第一次迁移时建）：记下来，建行时带上
+            if conn.query_row("SELECT COUNT(*) FROM sched", [], |r| r.get::<_, i64>(0))? == 0 {
+                conn.execute(
+                    "INSERT INTO sched (id, rules, fallback, max_run, idle_run) VALUES (1, '[]', NULL, COALESCE(?1, 180), COALESCE(?2, 20))",
+                    params![m, i],
+                )?;
+                return rules_from_hosts(conn, true);
+            }
+        }
+    }
     let done: i64 = conn.query_row("SELECT COUNT(*) FROM sched", [], |r| r.get(0))?;
     if done > 0 {
         return Ok(());
     }
+    rules_from_hosts(conn, false)
+}
+
+/// 第一次：把各台机器上的领取规则并成全局的一份（`update` 时那一行已经建好，只改规则和兜底）
+fn rules_from_hosts(conn: &rusqlite::Connection, update: bool) -> rusqlite::Result<()> {
     let mut st = conn.prepare("SELECT rules, fallback FROM hosts ORDER BY id")?;
     let hosts = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut rules: Vec<ClaimRule> = vec![];
@@ -122,7 +149,11 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         }
     }
     let raw = serde_json::to_string(&rules.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
-    conn.execute("INSERT INTO sched (id, rules, fallback) VALUES (1, ?1, ?2)", params![raw, fallback])?;
+    if update {
+        conn.execute("UPDATE sched SET rules = ?1, fallback = ?2 WHERE id = 1", params![raw, fallback])?;
+    } else {
+        conn.execute("INSERT INTO sched (id, rules, fallback) VALUES (1, ?1, ?2)", params![raw, fallback])?;
+    }
     Ok(())
 }
 
@@ -146,6 +177,12 @@ pub struct Sched {
     /// 自动升级（PRD §9.1「自动升级」）：服务端的版本比机器新时，机器等手上的派发做完自己升级
     #[serde(default)]
     pub auto_upgrade: bool,
+    /// 单次最长运行（分钟，0 = 不限），所有机器一样
+    #[serde(default)]
+    pub max_run: i64,
+    /// 多久没有输出算卡住（分钟，0 = 不限），所有机器一样
+    #[serde(default)]
+    pub idle_run: i64,
 }
 
 impl R<'_> {
@@ -155,6 +192,15 @@ impl R<'_> {
         let (raw, fallback) = row.unwrap_or_else(|| ("[]".into(), None));
         let rules = serde_json::from_str::<Vec<ClaimRule>>(&raw).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect();
         Ok((rules, fallback))
+    }
+
+    /// 跑多久停：单次最长运行、没输出多久算卡住（分钟）
+    pub(crate) fn run_limits(&self) -> Result<(i64, i64)> {
+        Ok(self
+            .conn
+            .query_row("SELECT max_run, idle_run FROM sched WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .unwrap_or((crate::hosts::MAX_RUN_DEFAULT, crate::hosts::IDLE_RUN_DEFAULT)))
     }
 
     /// 自动升级开没开
@@ -185,6 +231,8 @@ impl R<'_> {
             tz: std::env::var("TZ").unwrap_or_default().trim().to_string(),
             minute: server_minute(now),
             auto_upgrade: self.auto_upgrade()?,
+            max_run: self.run_limits()?.0,
+            idle_run: self.run_limits()?.1,
         })
     }
 }
@@ -241,6 +289,26 @@ impl W<'_> {
                 }
                 self.tx.execute("INSERT INTO sched (id, fallback) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET fallback = ?1", [f])?;
             }
+        }
+        self.changed = true;
+        self.hosts_changed = true;
+        self.read().sched(self.now)
+    }
+
+    /// 跑多久停（分钟，0 = 不限）：所有机器一个值；`None` 表示不改
+    pub fn set_run_limits(&mut self, max_run: Option<i64>, idle_run: Option<i64>) -> Result<Sched> {
+        use crate::hosts::{IDLE_RUN_LIMIT, MAX_RUN_LIMIT};
+        if let Some(n) = max_run {
+            if !(0..=MAX_RUN_LIMIT).contains(&n) {
+                return Err(BoardError::usage(format!("单次最长运行要在 1 到 {MAX_RUN_LIMIT} 分钟之间，或者不限（0）")));
+            }
+            self.tx.execute("INSERT INTO sched (id, max_run) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET max_run = ?1", [n])?;
+        }
+        if let Some(n) = idle_run {
+            if !(0..=IDLE_RUN_LIMIT).contains(&n) {
+                return Err(BoardError::usage(format!("没输出多久算卡住要在 1 到 {IDLE_RUN_LIMIT} 分钟之间，或者不限（0）")));
+            }
+            self.tx.execute("INSERT INTO sched (id, idle_run) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET idle_run = ?1", [n])?;
         }
         self.changed = true;
         self.hosts_changed = true;

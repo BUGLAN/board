@@ -1014,9 +1014,7 @@ mod tests {
             asked: None,
             ask_error: None,
             selftest: true,
-            skills: None,
-            mcp: None,
-            providers: None,
+            config_sync: true,
             local_skills: None,
         };
         s.write(at, Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();

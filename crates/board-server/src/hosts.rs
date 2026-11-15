@@ -7,12 +7,16 @@
 //! - `POST /api/hosts/{名字}/pull {instance}`：自动领取的下一张；现在没有可领的、或机器不在自动接单时返回 null
 //! - `POST /api/hosts/{名字}/round`：开始一轮领取（定时到点；界面上的「现在领一轮」也是它）
 //! - `POST /api/hosts/{名字}/rename {name}`：机器改名（桌面端「设置 → 本机」保存机器名时调用）
+//! - `POST /api/hosts/{名字}/synced {instance, result}`：同步配置做完（启动时写的一次、收到请求写的一次），回报结果
+//! - `POST /api/hosts/{名字}/ls/{ID} {path, chain, entries, error?}`：列目录的结果
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
 //! - `POST /api/dispatches/{ID}/events {fmt, events}`：上传结构化事件（会话「过程」，见 board-core runlog.rs）
 //!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
 //! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、
-//! `POST /api/hosts/{名字}/copy {to, items}`（复制设置到其他机器）、`POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
+//! `POST /api/hosts/{名字}/sync`（同步配置写入失败后「重试」：重新下发同步请求）、
+//! `POST /api/hosts/{名字}/ls {path}`（列那台机器上一个文件夹的子文件夹：服务端把请求放进它的任务，等 board host 回传，最多 20 秒）、
+//! `POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
 //! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
 //! `GET /api/sessions/{派发 ID}[?since=<runs>]`（一个会话的全部派发、输出和事件；带 since 时事件只取之后新增、改过的）。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发；不带 `host` 是任意机器）、`POST /api/dispatches/move`（改派排队中的派发）、
@@ -78,17 +82,90 @@ pub(crate) async fn beat(
     tracing::Span::current().record("who", format!("{}（机器上报）", rep.name));
     let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_beat(&rep, token))).await?;
     s.poke();
-    Ok(Json(with_builtin(out)))
+    Ok(Json(finish(&s, out)))
 }
 
-/// 任务里的 skills 库补上随服务端版本的 board-skills（MCP 的索引 board-core 已经带上）
-fn with_builtin(mut w: HostWork) -> HostWork {
+/// 任务里的 skills 库补上随服务端版本的 board-skills（MCP 的索引 board-core 已经带上），再补上内存里等它列的目录
+fn finish(s: &AppState, mut w: HostWork) -> HostWork {
     w.skills = w.skills.take().map(crate::skills::index);
+    w.ls = s.ls_asks(&w.host.name);
     w
 }
 
 pub(crate) async fn work(State(s): State<AppState>, Path(name): Path<String>) -> ApiResult<HostWork> {
-    Ok(Json(with_builtin(s.db(move |st| st.read(|r| r.host_work(&name, now_ms()))).await?)))
+    let out = s.db(move |st| st.read(|r| r.host_work(&name, now_ms()))).await?;
+    Ok(Json(finish(&s, out)))
+}
+
+/* ------------------------------ 同步配置、列目录 ------------------------------ */
+
+#[derive(Deserialize)]
+pub(crate) struct SyncedBody {
+    instance: String,
+    result: SyncResult,
+}
+
+/// board host 回报一次同步配置的结果
+pub(crate) async fn synced(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+    let b: SyncedBody = parse(v)?;
+    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_synced(&name, &b.instance, b.result))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+/// 界面上「重试」：重新下发同步请求
+pub(crate) async fn sync(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>) -> ApiResult<HostInfo> {
+    let by = crate::auth::human(&caller).map_err(ApiError)?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_sync_retry(&name, &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LsBody {
+    #[serde(default)]
+    path: String,
+}
+
+/// 等 board host 回传列目录的结果最多多久
+const LS_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 界面选工作空间：列那台机器上一个文件夹的子文件夹。请求放在内存里，让它的 board host 重新取任务，等它回传
+pub(crate) async fn list_dir(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<DirList> {
+    crate::auth::human(&caller).map_err(ApiError)?;
+    let b: LsBody = parse(v)?;
+    let host = name.clone();
+    let h = s.db(move |st| st.read(|r| r.host(&host, now_ms()))).await?;
+    if !h.online {
+        return Err(ApiError(BoardError::usage(format!("{name} 离线：上线后才能看它的文件夹"))));
+    }
+    if !h.sync.able {
+        return Err(ApiError(BoardError::usage(format!("{name} 的 board 是旧版（{}），不会列文件夹：升级后再选，或者直接填路径", h.version))));
+    }
+    let (id, rx) = s.ls_ask(&name, b.path.trim());
+    s.db(|st| {
+        st.write(now_ms(), Origin::system(), |w| {
+            w.hosts_poke();
+            Ok(())
+        })
+    })
+    .await?;
+    s.poke();
+    match tokio::time::timeout(LS_WAIT, rx).await {
+        Ok(Ok(list)) => Ok(Json(list)),
+        _ => {
+            s.ls_drop(id);
+            Err(ApiError(BoardError::new(ErrorCode::Unreachable, format!("{name} 的 board host 没回话：稍后再试"))))
+        }
+    }
+}
+
+/// board host 回传列目录的结果
+pub(crate) async fn listed(State(s): State<AppState>, Path((name, id)): Path<(String, i64)>, Json(v): Json<Value>) -> ApiResult<Value> {
+    let list: DirList = parse(v)?;
+    s.ls_done(&name, id, list);
+    Ok(Json(json!({})))
 }
 
 /// `GET /api/hosts/mine`：这个令牌是哪台在线机器的 board host 用的那个（`board check --agent <标识>` 在旧服务端上
@@ -431,28 +508,7 @@ pub(crate) struct SelfTestDoneBody {
     items: Vec<SelfTestItem>,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct CopyBody {
-    /// 目标机器
-    to: Vec<String>,
-    /// 要复制的项（board-core hosts::COPY_ITEMS）
-    items: Vec<String>,
-}
-
 /// 复制机器设置到其他机器（机器详情「复制设置到…」）：只能在登录后的界面上做。返回目标机器
-pub(crate) async fn copy(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<Vec<HostInfo>> {
-    let b: CopyBody = parse(v)?;
-    let client = client_of(&h);
-    let by = match caller {
-        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
-        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
-    };
-    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_copy(&name, &b.to, &b.items, &by))).await?;
-    s.poke();
-    Ok(Json(out))
-}
-
-/// board host 做完了自检，回报结果
 pub(crate) async fn selftest_done(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
     let b: SelfTestDoneBody = parse(v)?;
     let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_selftest_done(&name, &b.instance, b.id, b.items))).await?;
@@ -529,6 +585,12 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
         /// 自动升级的开关
         #[serde(default, rename = "autoUpgrade")]
         auto_upgrade: Option<bool>,
+        /// 单次最长运行（分钟，0 = 不限），所有机器一样
+        #[serde(default, rename = "maxRun")]
+        max_run: Option<i64>,
+        /// 没输出多久算卡住（分钟，0 = 不限），所有机器一样
+        #[serde(default, rename = "idleRun")]
+        idle_run: Option<i64>,
     }
     let b: Body = parse(v)?;
     let client = client_of(&h);
@@ -537,6 +599,9 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
             st.write(now_ms(), Origin::ui(client), |w| {
                 if let Some(on) = b.auto_upgrade {
                     w.set_auto_upgrade(on)?;
+                }
+                if b.max_run.is_some() || b.idle_run.is_some() {
+                    w.set_run_limits(b.max_run, b.idle_run)?;
                 }
                 w.sched_update(b.rules.as_deref(), b.fallback.as_deref())
             })

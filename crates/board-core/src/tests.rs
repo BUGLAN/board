@@ -1867,7 +1867,6 @@ fn schema_indexes_do_not_use_migrated_columns() {
         ("moves.rs", include_str!("moves.rs")),
         ("skills.rs", include_str!("skills.rs")),
         ("mcp.rs", include_str!("mcp.rs")),
-        ("templates.rs", include_str!("templates.rs")),
     ];
     let word = |s: &str| s.trim().split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
     // 迁移补的列：(表, 列)

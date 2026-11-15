@@ -302,7 +302,6 @@ impl Store {
         conn.execute_batch(crate::moves::SCHEMA)?;
         conn.execute_batch(crate::skills::SCHEMA)?;
         conn.execute_batch(crate::mcp::SCHEMA)?;
-        conn.execute_batch(crate::templates::SCHEMA)?;
         conn.execute_batch(crate::providers::SCHEMA)?;
         conn.execute_batch(crate::card_crons::SCHEMA)?;
         crate::card_crons::migrate(&conn)?;
@@ -542,8 +541,12 @@ impl Store {
     /// 执行一组写操作：同一时刻只有一个写事务；出错则整体回滚
     pub fn write<T>(&mut self, now: i64, origin: Origin, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut w = W { tx: &tx, now, local: self.local, origin, changed: false, hosts_changed: false, dispatch_ok: false };
+        let mut w = W { tx: &tx, now, local: self.local, origin, changed: false, hosts_changed: false, config_changed: false, config_by: String::new(), dispatch_ok: false };
         let out = f(&mut w)?;
+        // 改了会写进 agent 配置的东西：给受影响的机器下发「同步配置」请求（hosts.rs）
+        if w.config_changed {
+            w.request_config_sync()?;
+        }
         let (changed, hosts) = (w.changed || w.hosts_changed, w.hosts_changed);
         if changed {
             tx.execute("UPDATE meta SET value = value + 1 WHERE key = 'rev'", [])?;
@@ -1194,6 +1197,10 @@ pub struct W<'a> {
     pub(crate) changed: bool,
     /// 机器或派发有变化（另外把 meta.hosts 加一）
     pub(crate) hosts_changed: bool,
+    /// 改了要写进 agent 配置的东西（供应商、分配、skills、MCP、机器的选择）：提交前算一遍哪些机器要同步配置
+    pub(crate) config_changed: bool,
+    /// 谁改的（同步请求和操作记录里写）；空时按来源写「人」「命令行」「服务端」
+    pub(crate) config_by: String,
     /// 正在为派发领取：卡片的排队派发不挡住这次领取（见 hosts.rs）
     pub(crate) dispatch_ok: bool,
 }

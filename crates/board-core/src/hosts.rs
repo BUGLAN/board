@@ -3,8 +3,12 @@
 //! - **机器**：每台干活的机器上常驻一个 `board host`。它每 10 秒上报一次（[`W::host_beat`]）：机器名、系统、
 //!   board 版本、本机 agent、白板与目录，以及本机正在跑的派发；连续 5 次没收到算离线。机器名正被另一个在线的
 //!   board host 使用时 `HOST_NAME_TAKEN`；同一台机器上 board host 异常退出后重启，带上上一次的标识（resume）可以接回名字。
-//! - **机器设置**（最多几个会话、暂停接单、默认 agent、定时领取、每个 agent 的启动环境）存在服务端，界面上修改，
-//!   host 通过推送实时拿到。机器第一次连上时按默认值建立；被移除后再连上来，按新机器处理。
+//! - **机器设置**（最多几个会话、暂停接单、默认 agent、接单时段、每个 agent 的启动环境和模型、skills 和 MCP 用不用服务器的）
+//!   存在服务端，界面上修改，host 通过推送实时拿到。机器第一次连上时按默认值建立（模型、skills、MCP 都是「不改」）；
+//!   被移除后再连上来，按新机器处理。
+//! - **同步配置**（见 [`ConfigSync`]）：服务器上的供应商、每个 agent 的分配、skills 库、MCP、机器上的这几个选择一改，
+//!   服务端算出每台机器要写成的样子（[`R::config_key`]），和它上次写好的不一样就下发「同步配置」请求；board host 写完上报
+//!   每个 agent 一行、skills 和 MCP 各一行，记进操作记录。board host 启动时也写一次。
 //! - **启动环境**（启动环境与桌面端需求 §二）：在哪种 shell 里启动 agent 的命令（直接启动、登录 shell、cmd、
 //!   PowerShell、Git Bash、WSL 的发行版 …）。board host 启动时发现本机有哪些，并在每个 agent 支持的环境里各检查
 //!   一次命令找不找得到；每个 agent 用哪个由机器设置决定，没设置（或设置的环境本机已经没有）时取支持顺序里第一个
@@ -17,7 +21,7 @@
 //!   以它领取卡片。领不到时这次派发结束，结果「没领到」。之后 host 每次上报时替这些名字发 agent 级心跳，直到派发结束。
 //! - **结束**（[`W::dispatch_end`]）：agent 退出后，卡片仍由这个名字持有就发 final、沿连线移到「错误」节点（没有时去需要人处理的状态）
 //!   并评论（异常退出 / 已停止 / 超时）；否则看卡片在哪：交审状态是「已交审」，其他是「做不下去」。
-//! - **兜底**：每台机器可以设「单次最长运行」和「没输出多久算卡住」（分钟，0 = 不限）。board host 到时间后按「人停止」的流程
+//! - **兜底**：「单次最长运行」和「没输出多久算卡住」（分钟，0 = 不限）所有机器一个值，存在 `sched` 表里（`sched.rs`）。board host 到时间后按「人停止」的流程
 //!   结束整个进程树，上报 `how: "timeout"` 和原因，服务端记结果「超时」、按异常退出的规则处理卡片。
 //! - **占用**：派发排队时卡片沿连线进入领取时会进的锁定状态（「进行中」），没有持有者、显示排队（[`W::reserve`]）；
 //!   开始时在那里原地领取，没开始就取消（或没领到）时回到原来的可领取状态最上面（[`W::unreserve`]）。
@@ -81,10 +85,13 @@ CREATE TABLE IF NOT EXISTS hosts (
   up_pause INTEGER NOT NULL DEFAULT 0,-- 1 = 为升级暂停了接单：升级完成或失败后恢复
   rechecked_at INTEGER,               -- 最近一次「重新检查」做完的时间
   selftest TEXT,                      -- 自检（JSON，见 SelfTest）：等 board host 做的请求和最近一次的结果；没做过时为空
-  skills   TEXT,                      -- skills 同步状态（JSON，见 SkillState）；旧版 board host 不上报，为空
-  mcp      TEXT,                      -- MCP 服务器同步状态（JSON，见 McpState）；旧版 board host 不上报，为空
-  providers TEXT,                     -- 模型供应商写进各 agent 配置文件的状态（JSON，见 ProviderState）；旧版 board host 不上报，为空
-  skill_import TEXT                   -- 从这台机器导入 skills（JSON，见 SkillImport）：本机的 skill、等 board host 做的请求、最近一次的结果
+  skills   TEXT,                      -- （不再使用：以前按 agent × skill 上报的同步状态）
+  mcp      TEXT,                      -- （不再使用：以前按 agent × 服务器上报的同步状态）
+  providers TEXT,                     -- （不再使用：以前按 agent 上报的写入状态，现在在 config_sync 里）
+  skill_import TEXT,                  -- 从这台机器导入 skills（JSON，见 SkillImport）：本机的 skill、等 board host 做的请求、最近一次的结果
+  sync_skills INTEGER NOT NULL DEFAULT 0,-- skills 用服务器的（1）还是不改（0，只装 board-skills）
+  sync_mcp INTEGER NOT NULL DEFAULT 0,-- MCP 用服务器的（1）还是不改（0）
+  config_sync TEXT                    -- 同步配置（JSON，见 ConfigSync）：等 board host 做的请求、最近一次的结果
 );
 
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
@@ -185,11 +192,86 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "kind", "TEXT NOT NULL DEFAULT ''"),
         // 开始这次派发时那块白板在这台机器上的目录（工作空间里的 `<工作空间>/<项目>`）
         ("dispatches", "path", "TEXT"),
+        ("hosts", "sync_mcp", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "config_sync", "TEXT"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
     }
+    // 配置同步改成「服务器存一份、机器上选用不用」（机器详情与配置同步重构）：已有的机器保持原来的效果——
+    // skills、MCP 以前都同步，记成「用服务器的」；每个内置 agent 以前跟共用配置的记成「用服务器的」，
+    // 本机自己管的记成「不改」，单独指定了供应商的记成「单独配置」。以前「Board 派发时」的模型、强度不再生效。
+    // 只在第一次补上 sync_skills 这一列时做；之后新建的机器默认全部「不改」
+    if !has("hosts", "sync_skills")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN sync_skills INTEGER NOT NULL DEFAULT 0")?;
+        conn.execute_batch("UPDATE hosts SET sync_skills = 1, sync_mcp = 1")?;
+        let assigned: BTreeMap<String, crate::providers::AgentProvider> = conn
+            .prepare("SELECT agent, spec FROM provider_agents")
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(a, spec)| serde_json::from_str(&spec).ok().map(|x| (a, x)))
+            .collect();
+        let models: BTreeMap<String, Vec<String>> = conn
+            .prepare("SELECT name, spec FROM providers")
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(n, spec)| serde_json::from_str::<crate::providers::Provider>(&spec).ok().map(|p| (n, p.models)))
+            .collect();
+        let rows: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, run, agents FROM hosts")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (id, raw, agents) in rows {
+            let mut run: BTreeMap<String, AgentRun> = serde_json::from_str(&raw).unwrap_or_default();
+            let agents: Vec<HostAgent> = serde_json::from_str(&agents).unwrap_or_default();
+            let mut ids: Vec<String> = agents.iter().map(|a| a.id.clone()).collect();
+            ids.extend(run.keys().cloned());
+            ids.sort();
+            ids.dedup();
+            for id in ids.into_iter().filter(|a| crate::providers::AGENTS.iter().any(|(k, _, _)| k == a)) {
+                let r = run.entry(id.clone()).or_default();
+                let old_model = r.model.take();
+                r.effort = None;
+                match r.provider.clone().as_deref() {
+                    None => r.mode = Some(MODE_SERVER.into()),
+                    Some(crate::providers::PROVIDER_LOCAL) => {
+                        r.mode = Some(MODE_OFF.into());
+                        r.provider = None;
+                    }
+                    Some(name) => {
+                        r.mode = Some(MODE_OWN.into());
+                        // 以前写进配置的是共用配置给这个供应商选的模型；没有时是第一个
+                        let list = models.get(name).cloned().unwrap_or_default();
+                        let same = assigned.get(&id).filter(|a| a.provider == name);
+                        r.model = old_model
+                            .filter(|m| list.contains(m))
+                            .or_else(|| same.map(|a| a.model.clone()).filter(|m| list.contains(m)))
+                            .or_else(|| list.first().cloned());
+                    }
+                }
+            }
+            // 不是内置 agent 的（配置文件里新加的）：只留启动环境和恢复时间
+            for (k, r) in run.iter_mut() {
+                if !crate::providers::AGENTS.iter().any(|(a, _, _)| a == k) {
+                    r.model = None;
+                    r.effort = None;
+                    r.provider = None;
+                }
+            }
+            conn.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![id, serde_json::to_string(&run).unwrap_or_default()])?;
+        }
+    }
+    // agent 模板删掉了（本机配置文件里的 [agents.<标识>] 还在）
+    conn.execute_batch("DROP TABLE IF EXISTS agent_templates")?;
     // 会话里排着的派发按会话找（session 列是后加的，索引放在补列之后）
     conn.execute_batch("CREATE INDEX IF NOT EXISTS dispatches_session ON dispatches (session, id)")?;
     // 领取规则原来是「单个标签 → agent」：换成等价的 in [标签]
@@ -237,14 +319,12 @@ pub const MAX_RUN_LIMIT: i64 = 720;
 pub const IDLE_RUN_LIMIT: i64 = 120;
 /// 领取规则最多几条
 pub const RULES_LIMIT: usize = 20;
-/// 「复制设置到…」能选的项：标识和说法
-pub const COPY_ITEMS: [(&str, &str); 5] = [
-    ("limits", "最多几个会话和一个会话最多做几张"),
-    ("cron", "自动接单和接单时段"),
-    ("rules", "领取规则（已经是所有机器共用的，不用复制）"),
-    ("agent", "默认 agent"),
-    ("run", "每个 agent 的启动环境、模型、强度"),
-];
+/// 一个 agent 的模型：用服务器的（共用配置里给这个 agent 的那组）
+pub const MODE_SERVER: &str = "server";
+/// 一个 agent 的模型：不改（Board 不碰它的配置文件）。新机器默认是它
+pub const MODE_OFF: &str = "off";
+/// 一个 agent 的模型：这台机器单独配置一组供应商、模型、强度
+pub const MODE_OWN: &str = "own";
 /// 每个派发保留的日志行数
 pub const LOG_KEEP: usize = 500;
 /// 机器多久没上报算离线：与 agent 相同，连续 5 次（50 秒）
@@ -391,35 +471,38 @@ pub struct HostAgent {
     /// 看得到、没找到命令、配置文件里的 agent（不检查）、旧版 board host 都为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_skill: Option<String>,
-    /// 这个 agent 在这台机器上实际配的模型名：派发名字的第二段（`<agent 标识>-<机器名>/<模型名>`）。
-    /// 来源是 board host 的配置文件 `[agents.<标识>] model`，内置模板有默认值；没配置、旧版 board host 为空，
-    /// 生成名字时用 agent 标识代替
+    /// 这个 agent 现在用的模型名：派发名字的第二段（`<agent 标识>-<机器名>/<模型名>`）和派发记录里的模型。
+    /// board host 上报：内置 agent 读它自己配置文件里现在的模型（同步写进去的、或人自己配的），
+    /// 配置文件里新加的 agent 用 `[agents.<标识>] model`；都没有时为空，生成名字时只写 `<agent 标识>-<机器名>`
     #[serde(default)]
     pub model: String,
-    /// 机器设置里能选的模型和思考强度（board host 按模板上报，PRD §9.1）；旧版 board host 没有这一项：界面上置灰、要升级
+    /// 这个 agent 配置文件里现在的思考强度（board host 读出来上报，写进派发记录）；没有时为空
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
+    /// 旧版 board host 上报的「派发时能选的模型和强度」：不再用，收到也不看
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opts: Option<AgentOpts>,
-    /// 服务端发出去时才有：机器设置里选的模型；没选是 agent 自己的默认（不传参数）
+    /// 服务端发出去时才有：模型怎么配——`server` 用服务器的 | `off` 不改 | `own` 单独配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_mode: Option<String>,
+    /// 服务端发出去时才有：单独配置的模型；没选时写供应商的第一个
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_model: Option<String>,
-    /// 服务端发出去时才有：机器设置里选的思考强度；没选是 agent 自己的默认
+    /// 服务端发出去时才有：单独配置的思考强度；没选时不写
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_effort: Option<String>,
     /// 服务端发出去时才有：机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 `env` 是实际用的）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_env: Option<String>,
-    /// 服务端发出去时才有：机器设置里选的模型供应商。没选 = 跟随共用配置；`@local` = 本机自己管
+    /// 服务端发出去时才有：单独配置的供应商。给旧版 board host 的写法：用服务器的时为空，不改时是 `@local`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_provider: Option<String>,
-    /// 共用配置里有这个标识的 agent 模板，但这台机器的配置文件里有同标识的 `[agents.*]`：用的是本机的那份（board host 上报）
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub local_override: bool,
     /// 服务端发出去时才有：这个 agent 在这台机器上连续异常退出、已经暂停接单（PRD §9.1「能不能接」），人点「恢复」才继续
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tripped: bool,
 }
 
-/// 一个 agent 能在机器设置里选什么（模板决定怎么传参）
+/// 旧版 board host 上报的「一个 agent 派发时能选什么」：现在模型、强度只写进配置文件，不再按次传参，收下不用
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentOpts {
     /// 能选模型（模板有传模型的参数）
@@ -479,13 +562,16 @@ pub struct AgentRun {
     /// 启动环境；没有时按默认规则选
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
-    /// 模型；没有时不传（agent 自己的默认）
+    /// 模型怎么配：`server` 用服务器的 | `own` 单独配置 | 没有或 `off` = 不改（新机器的默认）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// 单独配置的模型；没有时用供应商的第一个
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 思考强度；没有时不传
+    /// 单独配置的思考强度；没有时不写
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// 模型供应商：没有 = 跟随共用配置；`@local` = 本机自己管（不改配置文件）；其余是供应商名称
+    /// 单独配置的供应商名称
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// 人最近一次点「恢复」的时间：连续异常退出从这之后重新数（`fit.rs` 的 `agent_streak`）
@@ -984,10 +1070,10 @@ pub struct HostInfo {
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
     #[serde(default = "default_per_session")]
     pub per_session: i64,
-    /// 单次最长运行（分钟，0 = 不限，默认 180）；旧版服务端没有这一项
+    /// 单次最长运行（分钟，0 = 不限，默认 180）：所有机器一个值（`sched` 表），随机器发给 board host；旧版服务端没有这一项
     #[serde(default = "default_max_run")]
     pub max_run: i64,
-    /// 多久没有输出算卡住（分钟，0 = 不限，默认 20）；旧版服务端没有这一项
+    /// 多久没有输出算卡住（分钟，0 = 不限，默认 20）：同上
     #[serde(default = "default_idle_run")]
     pub idle_run: i64,
     /// 定时领取的领取规则（有顺序）；没有规则时定时领取不领卡、也不能开始一轮
@@ -1043,15 +1129,15 @@ pub struct HostInfo {
     /// 自检：等 board host 做的请求、最近一次的结果；旧版服务端没有这一项
     #[serde(default)]
     pub selftest: SelfTest,
-    /// skills 共用库同步到这台机器各个 agent 目录的状态；旧版 board host 不同步，为空
+    /// skills 用服务器的（库里的都写进这台机器各个 agent 的 skill 目录）；否则不改（只装 board-skills）
     #[serde(default)]
-    pub skills: Option<Vec<crate::skills::SkillState>>,
-    /// MCP 服务器同步到这台机器各个 agent 的状态；旧版 board host 不同步，为空
+    pub sync_skills: bool,
+    /// MCP 用服务器的；否则不改
     #[serde(default)]
-    pub mcp: Option<Vec<crate::mcp::McpState>>,
-    /// 模型供应商写进这台机器各个 agent 配置文件的状态；旧版 board host 不同步，为空
+    pub sync_mcp: bool,
+    /// 同步配置：等 board host 做的请求、最近一次的结果
     #[serde(default)]
-    pub providers: Option<Vec<crate::providers::ProviderState>>,
+    pub sync: ConfigSync,
     /// 从这台机器导入 skills：本机有哪些 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有这一项
     #[serde(default)]
     pub skill_import: SkillImport,
@@ -1110,6 +1196,96 @@ pub struct SkillImportResult {
 
 /// 导入请求多久没做完算作废：之后可以重新请求
 pub const SKILL_IMPORT_STALE_MS: i64 = 5 * 60_000;
+
+/// 同步配置（机器详情与配置同步重构 §三）：把服务器上的供应商、skills、MCP 按机器上的选择写进这台机器的 agent。
+/// 服务端算出这台机器要写成的样子（[`R::config_key`]），和上次写好的（`last.key`）不一样就下发请求（`ask`）；
+/// board host 启动时写一次、收到请求时写一次，写完回报（[`W::host_synced`]），结果记进操作记录
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigSync {
+    /// 这台机器的 board host 会按请求同步、上报结果；旧版不会（它按老办法自己定时同步），不给它发请求
+    #[serde(default)]
+    pub able: bool,
+    /// 等 board host 做（或正在做）的同步；做完清掉
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<SyncAsk>,
+    /// 最近一次的结果
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<SyncResult>,
+}
+
+/// 一次同步配置请求
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncAsk {
+    /// 序号：board host 做完带着它回报
+    pub id: i64,
+    /// 要写成的样子（[`R::config_key`]）
+    pub key: String,
+    pub by: String,
+    pub at: i64,
+}
+
+/// 一次同步配置的结果（board host 上报）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncResult {
+    /// 回应的请求序号；启动时自己写的那一次为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<i64>,
+    /// 写的是哪个样子（board host 取到的任务里的 `config_key`）
+    #[serde(default)]
+    pub key: String,
+    /// 服务端收到的时间
+    #[serde(default)]
+    pub at: i64,
+    /// 每个找到的 agent 一行
+    #[serde(default)]
+    pub agents: Vec<crate::providers::ProviderState>,
+    #[serde(default)]
+    pub skills: SkillsSync,
+    #[serde(default)]
+    pub mcp: McpSync,
+}
+
+/// skills 这一次同步的结果
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillsSync {
+    /// synced 库里的都写好了 | off 不改（只装了 board-skills）| failed 有没写进去的
+    #[serde(default)]
+    pub state: String,
+    /// 写进去的 skill 有几个（含 board-skills）
+    #[serde(default)]
+    pub count: i64,
+    /// 写进了哪几个 skill 目录（显示用，例如 ~/.claude/skills）
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    /// 这一次换掉了本机同名的（不是 Board 装的，旧的挪进了 ~/.board/host/skills-backup/）
+    #[serde(default)]
+    pub replaced: Vec<String>,
+    /// 本机同名的是软链接，没有覆盖
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// 没写进去的：原因
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// MCP 这一次同步的结果
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpSync {
+    /// synced 写好了 | off 不改 | failed 有没写进去的
+    #[serde(default)]
+    pub state: String,
+    /// 写进去的 MCP 服务器有几个
+    #[serde(default)]
+    pub count: i64,
+    /// 写进了哪几个 agent（名称）
+    #[serde(default)]
+    pub agents: Vec<String>,
+    /// 这一次换掉了本机同名的条目（原来的值存进了 ~/.board/host/ 下的备份文件）
+    #[serde(default)]
+    pub replaced: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
 
 /// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
 /// agent 能不能干活、每块白板的目录能不能推送，服务端补上 board 版本是否落后。结果一直保留到下一次自检
@@ -1209,6 +1385,46 @@ pub const ASK_KINDS: [&str; 5] = ["recheck", "restart", "upgrade", "drain", "can
 /// 机器详情「最近」里带几条操作记录
 pub const OPS_KEEP: i64 = 30;
 
+/// 一次同步配置写进操作记录的一句话，例如「同步配置：2 个 agent 已写入，pi 失败；6 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design」
+pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
+    let name = |id: &str| h.agents.iter().find(|a| a.id == id).map(|a| a.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_string());
+    let mut parts: Vec<String> = vec![];
+    let ok = r.agents.iter().filter(|a| a.state == "synced").count();
+    let bad: Vec<String> = r.agents.iter().filter(|a| a.state == "failed").map(|a| name(&a.agent)).collect();
+    let mut agents = vec![];
+    if ok > 0 {
+        agents.push(format!("{ok} 个 agent 已写入"));
+    }
+    if !bad.is_empty() {
+        agents.push(format!("{} 失败", bad.join("、")));
+    }
+    if agents.is_empty() {
+        agents.push("agent 的配置都不改".into());
+    }
+    parts.push(agents.join("，"));
+    let mut lib = vec![];
+    match r.skills.state.as_str() {
+        "synced" => lib.push(format!("{} 个 skill", r.skills.count)),
+        "failed" => lib.push(format!("skills 失败（{}）", r.skills.why.as_deref().unwrap_or("没写进去"))),
+        _ => lib.push("只装 board-skills".into()),
+    }
+    match r.mcp.state.as_str() {
+        "synced" => lib.push(format!("{} 个 MCP", r.mcp.count)),
+        "failed" => lib.push(format!("MCP 失败（{}）", r.mcp.why.as_deref().unwrap_or("没写进去"))),
+        _ => {}
+    }
+    let mut tail = lib.join("、");
+    if r.skills.state == "synced" || r.mcp.state == "synced" {
+        tail.push_str(" 已写入");
+    }
+    let replaced: Vec<&String> = r.skills.replaced.iter().chain(r.mcp.replaced.iter()).collect();
+    if !replaced.is_empty() {
+        tail.push_str(&format!("，替换了本机同名的 {}", replaced.iter().map(|x| x.as_str()).collect::<Vec<_>>().join("、")));
+    }
+    parts.push(tail);
+    format!("同步配置：{}", parts.join("；"))
+}
+
 /// 版本号 a 比 b 旧（x.y.z 逐段按数字比；认不出的段当 0）
 pub fn version_lt(a: &str, b: &str) -> bool {
     let parts = |v: &str| -> Vec<u64> { v.trim().trim_start_matches('v').split(['.', '-', '+']).take(3).map(|x| x.parse().unwrap_or(0)).collect() };
@@ -1268,15 +1484,9 @@ pub struct HostReport {
     /// 会做自检（PRD §10.12「自检」）；旧版 board host 不带
     #[serde(default)]
     pub selftest: bool,
-    /// skills 同步状态（PRD §10.12「共用配置」）；旧版 board host 不带，带了才更新
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skills: Option<Vec<crate::skills::SkillState>>,
-    /// MCP 服务器同步状态；旧版 board host 不带，带了才更新
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp: Option<Vec<crate::mcp::McpState>>,
-    /// 模型供应商写进各 agent 配置文件的状态；旧版 board host 不带，带了才更新
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub providers: Option<Vec<crate::providers::ProviderState>>,
+    /// 会按请求同步配置、上报结果（[`ConfigSync`]）；旧版 board host 不带
+    #[serde(default)]
+    pub config_sync: bool,
     /// 本机各 agent skill 目录里、不是同步装的 skill（「从机器导入」用）；旧版 board host 不带，带了就算会导入
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_skills: Option<Vec<crate::skills::LocalSkill>>,
@@ -1298,9 +1508,51 @@ pub struct HostWork {
     /// 模型供应商共用配置：索引（取完整内容用）和每个 agent 用哪个。旧版服务端没有这一项
     #[serde(default)]
     pub providers: Option<crate::providers::ProviderWork>,
-    /// 共用配置里的 agent 模板（全部内容）：board host 合进本机 agent；旧版服务端没有
+    /// 这台机器要写成的样子（[`R::config_key`]）：board host 同步完带着它回报，服务端据此知道写好的是哪一版
     #[serde(default)]
-    pub templates: Option<Vec<crate::templates::AgentTemplate>>,
+    pub config_key: String,
+    /// 等它列的目录（选工作空间用）：服务端放在内存里、发任务时补上，board host 列完回传（`POST /api/hosts/{名字}/ls/{ID}`）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ls: Vec<LsAsk>,
+}
+
+/// 一个「列目录」请求：空路径是最上面一层（Windows 列盘符，macOS / Linux 是用户目录）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LsAsk {
+    pub id: i64,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// 一个子文件夹
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    /// 名称（最上面一层是完整路径：`C:\`、`/Users/me`）
+    pub name: String,
+    /// 完整路径（`~` 已经展开）
+    pub path: String,
+    /// 它本身是 git 仓库（里面有 `.git`）
+    #[serde(default)]
+    pub git: bool,
+    /// 它下面一层里有几个 git 仓库
+    #[serde(default)]
+    pub repos: i64,
+}
+
+/// 列目录的结果（board host 回传）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirList {
+    /// 列的是哪个文件夹（`~` 已经展开）；最上面一层为空
+    #[serde(default)]
+    pub path: String,
+    /// 从最上面一层到它自己的每一级（第一个是空的最上面一层）：界面据此一层一列展开
+    #[serde(default)]
+    pub chain: Vec<String>,
+    #[serde(default)]
+    pub entries: Vec<DirEntry>,
+    /// 列不了：原因（不存在、没有权限）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// 界面上修改机器设置
@@ -1311,12 +1563,18 @@ pub struct HostPatch {
     pub max: Option<i64>,
     #[serde(default)]
     pub per_session: Option<i64>,
-    /// 单次最长运行（分钟，0 = 不限）
+    /// 旧界面的单次最长运行：现在所有机器一个值，改的就是全局的（`sched.rs`）
     #[serde(default)]
     pub max_run: Option<i64>,
-    /// 多久没有输出算卡住（分钟，0 = 不限）
+    /// 旧界面的没输出多久算卡住：同上
     #[serde(default)]
     pub idle_run: Option<i64>,
+    /// skills 用服务器的（true）还是不改（false）
+    #[serde(default)]
+    pub sync_skills: Option<bool>,
+    /// MCP 用服务器的（true）还是不改（false）
+    #[serde(default)]
+    pub sync_mcp: Option<bool>,
     /// 领取规则（整个列表替换）
     #[serde(default)]
     pub rules: Option<Vec<ClaimRule>>,
@@ -1342,7 +1600,7 @@ pub struct HostPatch {
     /// 一个 agent 的启动环境
     #[serde(default)]
     pub env: Option<EnvPatch>,
-    /// 一个 agent 的模型、思考强度（各自 None 表示不改，空字符串表示回到 agent 自己的默认）
+    /// 一个 agent 的模型：用服务器的 / 不改 / 单独配置（供应商、模型、强度）
     #[serde(default)]
     pub run: Option<RunPatch>,
     /// 恢复一个连续异常退出、暂停了接单的 agent（写它的标识）
@@ -1373,15 +1631,17 @@ pub struct EnvPatch {
     pub env: String,
 }
 
-/// 改一个 agent 的模型、思考强度
+/// 改一个 agent 的模型怎么配。`mode` 是 `server` / `off` / `own`；`own` 时带供应商、模型（空 = 第一个）、强度（空 = 不写）。
+/// 旧界面只带 `provider`：空字符串 = 用服务器的，`@local` = 不改，其余 = 单独配置这个供应商
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RunPatch {
     pub agent: String,
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// 模型供应商：空字符串 = 跟随共用配置，`@local` = 本机自己管，其余是供应商名称
     #[serde(default)]
     pub provider: Option<String>,
 }
@@ -1602,9 +1862,9 @@ pub(crate) struct HostRow {
     pub(crate) rechecked_at: Option<i64>,
     pub(crate) token: Option<i64>,
     pub(crate) selftest: SelfTest,
-    pub(crate) skills_raw: Option<String>,
-    pub(crate) mcp_raw: Option<String>,
-    pub(crate) providers_raw: Option<String>,
+    pub(crate) sync_skills: bool,
+    pub(crate) sync_mcp: bool,
+    pub(crate) config_sync: ConfigSync,
     pub(crate) skill_import: SkillImport,
     pub(crate) agents_raw: String,
     pub(crate) envs_raw: String,
@@ -1612,7 +1872,7 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, max_run, idle_run, selftest, skills, mcp, providers, skill_import, dirs, auto, windows, up_tried";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1657,9 +1917,9 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         rechecked_at: r.get(29)?,
         token: r.get(30)?,
         selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
-        skills_raw: r.get(34)?,
-        mcp_raw: r.get(35)?,
-        providers_raw: r.get(36)?,
+        sync_skills: r.get::<_, i64>(34)? != 0,
+        sync_mcp: r.get::<_, i64>(35)? != 0,
+        config_sync: r.get::<_, Option<String>>(36)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         skill_import: r.get::<_, Option<String>>(37)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         agents_raw,
         envs_raw,
@@ -1695,25 +1955,40 @@ impl HostRow {
                     out.no_skill = c.filter(|c| c.found).and_then(|c| c.no_skill.clone());
                 }
                 let run = self.run.get(&a.id);
-                out.run_model = run.and_then(|r| r.model.clone());
-                out.run_effort = run.and_then(|r| r.effort.clone());
                 out.run_env = run.and_then(|r| r.env.clone());
-                out.run_provider = run.and_then(|r| r.provider.clone());
+                let mode = self.mode_of(&a.id);
+                // 旧版 board host 只认 run_provider：用服务器的 = 空，不改 = @local，单独配置 = 供应商名称
+                out.run_provider = match mode {
+                    MODE_SERVER => None,
+                    MODE_OWN => run.and_then(|r| r.provider.clone()),
+                    _ => Some(crate::providers::PROVIDER_LOCAL.into()),
+                };
+                if mode == MODE_OWN {
+                    out.run_model = run.and_then(|r| r.model.clone());
+                    out.run_effort = run.and_then(|r| r.effort.clone());
+                }
+                out.run_mode = Some(mode.to_string());
                 out
             })
             .collect()
     }
+    /// 一个 agent 的模型怎么配：`server` / `own` / `off`（没设过的是 `off`）
+    pub(crate) fn mode_of(&self, agent: &str) -> &'static str {
+        match self.run.get(agent).and_then(|r| r.mode.as_deref()) {
+            Some(MODE_SERVER) => MODE_SERVER,
+            Some(MODE_OWN) => MODE_OWN,
+            _ => MODE_OFF,
+        }
+    }
     /// 生成 agent 名字时第二段（模型名）用什么，见 [`model_of`]
     fn model_for(&self, agent: &str) -> (String, bool) {
-        model_of(&self.agents, &self.run, agent)
+        model_of(&self.agents, agent)
     }
-
-    /// 开始派发时传给这个 agent 的模型、思考强度：机器设置里选了、board host 上报了这个 agent 能选（新版）才传
+    /// 开始派发时记进派发记录的模型、强度：board host 上报的、这个 agent 配置文件里现在的
     fn run_opts(&self, agent: &str) -> (Option<String>, Option<String>) {
-        let Some(opts) = self.agents.iter().find(|a| a.id == agent).and_then(|a| a.opts.as_ref()) else { return (None, None) };
-        let run = self.run.get(agent);
-        let model = run.and_then(|r| r.model.clone()).filter(|_| opts.model);
-        let effort = run.and_then(|r| r.effort.clone()).filter(|e| opts.efforts.contains(e));
+        let a = self.agents.iter().find(|a| a.id == agent);
+        let model = a.map(|a| a.model.trim().to_string()).filter(|m| !m.is_empty());
+        let effort = a.map(|a| a.effort.trim().to_string()).filter(|e| !e.is_empty());
         (model, effort)
     }
 
@@ -1797,9 +2072,9 @@ impl HostRow {
             ops: vec![],
             token: None,
             selftest: self.selftest.clone(),
-            skills: self.skills_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
-            mcp: self.mcp_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
-            providers: self.providers_raw.as_deref().and_then(|j| serde_json::from_str(j).ok()),
+            sync_skills: self.sync_skills,
+            sync_mcp: self.sync_mcp,
+            sync: self.config_sync.clone(),
             skill_import: self.skill_import.clone(),
         }
     }
@@ -1935,19 +2210,12 @@ fn card_label_names(conn: &rusqlite::Connection, b: i64, card: i64) -> Result<Ve
     Ok(out)
 }
 
-/// 生成 agent 名字时第二段（模型名）用什么，以及它是不是机器设置里选的：机器设置里选了这个 agent 的模型时用它
-/// （`set` 为真），否则用 board host 上报的（配置文件 `[agents.<标识>] model` → 内置模板默认值 → 空，空表示用 agent 标识）
-fn model_of(agents: &[HostAgent], run: &BTreeMap<String, AgentRun>, agent: &str) -> (String, bool) {
-    let reported = agents.iter().find(|a| a.id == agent).map(|a| a.model.clone()).unwrap_or_default();
-    // 机器设置里选了模型：board host 上报了这个 agent 能选（新版）才算
-    let set = agents.iter().find(|a| a.id == agent).and_then(|a| a.opts.as_ref()).is_some_and(|o| o.model);
-    let selected = run.get(agent).and_then(|r| r.model.clone()).filter(|_| set).filter(|m| check_model(m).is_ok());
-    if let Some(m) = selected {
-        return (m, true);
-    }
-    // 没在机器设置里选：用 board host 上报的（配置文件 → 内置模板默认值）。它就是名字里的模型名，算得上是「按设置来的」
-    let reported = reported.trim().to_string();
-    if !reported.is_empty() {
+/// 生成 agent 名字时第二段（模型名）用什么，以及有没有：board host 上报的这个 agent 现在用的模型
+/// （内置 agent 读它自己的配置文件，写进去的或人配的；配置文件里新加的 agent 是 `[agents.<标识>] model`）。
+/// 没有时为空，名字只写 `<agent 标识>-<机器名>`
+fn model_of(agents: &[HostAgent], agent: &str) -> (String, bool) {
+    let reported = agents.iter().find(|a| a.id == agent).map(|a| a.model.trim().to_string()).unwrap_or_default();
+    if !reported.is_empty() && check_model(&reported).is_ok() {
         return (reported, true);
     }
     (String::new(), false)
@@ -1955,13 +2223,8 @@ fn model_of(agents: &[HostAgent], run: &BTreeMap<String, AgentRun>, agent: &str)
 
 /// `board check --agent <标识>` 用：按写事务里的机器记录（[`W::agent_check_generated`] 已经按机器名或令牌找到的那台）
 /// 算这个 agent 该用的模型名
-pub(crate) fn model_for_transaction(conn: &rusqlite::Connection, h: &HostInfo, agent: &str) -> Result<(String, bool)> {
-    let run: BTreeMap<String, AgentRun> = conn
-        .query_row("SELECT run FROM hosts WHERE id = ?1", [h.id], |r| r.get::<_, String>(0))
-        .optional()?
-        .map(|raw| serde_json::from_str(&raw).unwrap_or_default())
-        .unwrap_or_default();
-    Ok(model_of(&h.agents, &run, agent))
+pub(crate) fn model_for_transaction(_conn: &rusqlite::Connection, h: &HostInfo, agent: &str) -> Result<(String, bool)> {
+    Ok(model_of(&h.agents, agent))
 }
 
 /// 按名字找一台在线的机器（带上按机器设置算好的 agent 数据）：`board check --agent <标识>` 用它。
@@ -2233,8 +2496,33 @@ impl<'a> R<'a> {
             skills: Some(self.skills()?),
             mcp: Some(self.mcp_index()?),
             providers: Some(self.provider_work()?),
-            templates: Some(self.agent_templates()?),
+            config_key: self.config_key(&h)?,
+            ls: vec![],
         })
+    }
+
+    /// 这台机器要写成的样子（[`ConfigSync`]）：board-skills 的版本（随服务端），skills、MCP 用服务器的时库里的
+    /// 名称和版本，每个找到的内置 agent 的启动环境和模型怎么配（用服务器的、单独配置时带上供应商的版本）。
+    /// 内容的哈希前 12 位；一样就不用再写
+    pub(crate) fn config_key(&self, h: &HostRow) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let skills: Vec<(String, String)> = if h.sync_skills { self.skills()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] };
+        let mcp: Vec<(String, String)> = if h.sync_mcp { self.mcp_index()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] };
+        let providers = self.providers()?;
+        let assigned = self.provider_agents()?;
+        let version = |name: &str| providers.iter().find(|p| p.name == name).map(|p| p.version.clone()).unwrap_or_default();
+        let mut agents = vec![];
+        for a in h.resolved().into_iter().filter(|a| a.found && crate::providers::AGENTS.iter().any(|(k, _, _)| *k == a.id)) {
+            let mode = h.mode_of(&a.id);
+            let (provider, model, effort) = match mode {
+                MODE_SERVER => assigned.iter().find(|x| x.agent == a.id).map(|x| (x.provider.clone(), x.model.clone(), x.effort.clone())).unwrap_or_default(),
+                MODE_OWN => (a.run_provider.clone().unwrap_or_default(), a.run_model.clone().unwrap_or_default(), a.run_effort.clone().unwrap_or_default()),
+                _ => Default::default(),
+            };
+            agents.push(json!({ "id": a.id, "env": a.env, "mode": mode, "provider": provider, "v": version(&provider), "model": model, "effort": effort }));
+        }
+        let body = json!({ "board": env!("CARGO_PKG_VERSION"), "skills": skills, "mcp": mcp, "agents": agents });
+        Ok(Sha256::digest(body.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect())
     }
 }
 
@@ -2809,6 +3097,10 @@ impl<'a> W<'a> {
                     let si = SkillImport { able: true, local: local.clone(), ..Default::default() };
                     self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&si).unwrap_or_default()])?;
                 }
+                if rep.config_sync {
+                    let cs = ConfigSync { able: true, ..Default::default() };
+                    self.tx.execute("UPDATE hosts SET config_sync = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&cs).unwrap_or_default()])?;
+                }
                 self.touch_hosts();
             }
             Some(h) => {
@@ -2917,29 +3209,16 @@ impl<'a> W<'a> {
                 }
                 self.host_acks(&h, rep)?;
                 self.auto_upgrade_host(&name)?;
-                // skills 同步状态：带了、变了才写
-                if let Some(st) = &rep.skills {
-                    let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
-                    if h.skills_raw.as_deref() != Some(raw.as_str()) {
-                        self.tx.execute("UPDATE hosts SET skills = ?2 WHERE id = ?1", params![h.id, raw])?;
-                        self.touch_hosts();
-                    }
+                // 换成了会（或不会）按请求同步配置的 board host
+                if h.config_sync.able != rep.config_sync {
+                    let cs = ConfigSync { able: rep.config_sync, ask: if rep.config_sync { h.config_sync.ask.clone() } else { None }, ..h.config_sync.clone() };
+                    self.tx.execute("UPDATE hosts SET config_sync = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&cs).unwrap_or_default()])?;
+                    self.touch_hosts();
+                    self.config_changed = true;
                 }
-                // MCP 同步状态：带了、变了才写
-                if let Some(st) = &rep.mcp {
-                    let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
-                    if h.mcp_raw.as_deref() != Some(raw.as_str()) {
-                        self.tx.execute("UPDATE hosts SET mcp = ?2 WHERE id = ?1", params![h.id, raw])?;
-                        self.touch_hosts();
-                    }
-                }
-                // 模型供应商写进各 agent 配置文件的状态：带了、变了才写
-                if let Some(st) = &rep.providers {
-                    let raw = serde_json::to_string(st).unwrap_or_else(|_| "[]".into());
-                    if h.providers_raw.as_deref() != Some(raw.as_str()) {
-                        self.tx.execute("UPDATE hosts SET providers = ?2 WHERE id = ?1", params![h.id, raw])?;
-                        self.touch_hosts();
-                    }
+                // 找到的 agent、启动环境变了：要写的地方跟着变，重新算一遍要不要同步
+                if h.agents_raw != agents || h.envs_raw != envs {
+                    self.config_changed = true;
                 }
                 // 本机的 skill（「从机器导入」）：带了、变了才写；带了就算会导入
                 if let Some(local) = &rep.local_skills {
@@ -3072,6 +3351,91 @@ impl<'a> W<'a> {
             params![host_id, OPS_KEEP],
         )?;
         Ok(())
+    }
+
+    /// 只让在线的 board host 重新取一次任务（服务端内存里有了新的「列目录」请求）
+    pub fn hosts_poke(&mut self) {
+        self.touch_hosts();
+    }
+
+    fn save_config_sync(&mut self, host_id: i64, cs: &ConfigSync) -> Result<()> {
+        self.tx.execute("UPDATE hosts SET config_sync = ?2 WHERE id = ?1", params![host_id, serde_json::to_string(cs).unwrap_or_default()])?;
+        self.touch_hosts();
+        Ok(())
+    }
+
+    /// 算一遍每台机器要写成的样子（[`R::config_key`]）：和上次写好的不一样、也没有等着的同一个请求，就下发「同步配置」请求；
+    /// 改回了上次写好的样子，就收回等着的请求。旧版 board host（不会按请求同步）不发。
+    /// 离线的机器照样记下请求：上线后（board host 启动时也会写一次）按它写。
+    /// 改了配置的写事务提交前调用（`Store::write`），服务端启动时也调用一次（board-skills 的版本随服务端）
+    pub fn request_config_sync(&mut self) -> Result<()> {
+        let by = if !self.config_by.trim().is_empty() {
+            self.config_by.trim().to_string()
+        } else {
+            match self.origin.via {
+                Via::Ui => "人".to_string(),
+                Via::Cli => "命令行".to_string(),
+                Via::System => "服务端".to_string(),
+            }
+        };
+        for h in self.read().host_rows()? {
+            if !h.config_sync.able {
+                continue;
+            }
+            let key = self.read().config_key(&h)?;
+            let done = h.config_sync.last.as_ref().is_some_and(|l| l.key == key);
+            let waiting = h.config_sync.ask.as_ref().is_some_and(|a| a.key == key);
+            if done && h.config_sync.ask.is_some() {
+                let cs = ConfigSync { ask: None, ..h.config_sync.clone() };
+                self.save_config_sync(h.id, &cs)?;
+            } else if !done && !waiting {
+                self.ask_config_sync(&h, key, &by)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ask_config_sync(&mut self, h: &HostRow, key: String, by: &str) -> Result<()> {
+        let id = h.ask_seq + 1;
+        self.tx.execute("UPDATE hosts SET ask_seq = ?2 WHERE id = ?1", params![h.id, id])?;
+        let cs = ConfigSync { ask: Some(SyncAsk { id, key, by: by.to_string(), at: self.now }), ..h.config_sync.clone() };
+        self.save_config_sync(h.id, &cs)
+    }
+
+    /// 「重试」：写入失败后重新下发同步请求（要写成的样子没变也发）
+    pub fn host_sync_retry(&mut self, name: &str, by: &str) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        if !h.config_sync.able {
+            return Err(BoardError::usage(format!("机器「{name}」的 board 是旧版（{}），不会按请求同步配置：升级后再试", h.version)));
+        }
+        let key = self.read().config_key(&h)?;
+        self.ask_config_sync(&h, key, by)?;
+        self.read().host(name, self.now)
+    }
+
+    /// board host 回报一次同步配置的结果（启动时写的那一次 `id` 为空）：存下来，回应的是等着的请求就清掉它，记一条操作记录。
+    /// 要写成的样子在它写的时候又变了（`key` 对不上）：重新下发
+    pub fn host_synced(&mut self, name: &str, instance: &str, mut res: SyncResult) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        if h.instance != instance {
+            return Err(BoardError::usage("这台机器已经换了一个 board host 进程：结果不收"));
+        }
+        res.at = self.now;
+        let text = sync_words(&h, &res);
+        let mut cs = ConfigSync { able: true, last: Some(res.clone()), ..h.config_sync.clone() };
+        if cs.ask.as_ref().is_some_and(|a| Some(a.id) == res.id || a.key == res.key) {
+            cs.ask = None;
+        }
+        self.save_config_sync(h.id, &cs)?;
+        let by = h.config_sync.ask.as_ref().filter(|a| Some(a.id) == res.id).map(|a| a.by.clone()).unwrap_or_else(|| "board host".into());
+        self.host_op(h.id, &by, &text)?;
+        // 写的时候又改了：再发一次
+        let now_key = self.read().config_key(&self.host_row(name)?.ok_or_else(|| no_such_host(name))?)?;
+        if now_key != res.key && cs.ask.is_none() {
+            let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+            self.ask_config_sync(&h, now_key, "人")?;
+        }
+        self.read().host(name, self.now)
     }
 
     /// 远程管理（PRD §9.1「远程管理」，只能在登录后的界面上做）：
@@ -3515,17 +3879,22 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET per_session = ?2 WHERE id = ?1", params![h.id, n])?;
         }
-        if let Some(n) = p.max_run {
-            if !(0..=MAX_RUN_LIMIT).contains(&n) {
-                return Err(BoardError::usage(format!("单次最长运行要在 1 到 {MAX_RUN_LIMIT} 分钟之间，或者不限（0）")));
-            }
-            self.tx.execute("UPDATE hosts SET max_run = ?2 WHERE id = ?1", params![h.id, n])?;
+        // 跑多久停现在所有机器一个值：旧界面从机器设置里改，改的就是全局的
+        if p.max_run.is_some() || p.idle_run.is_some() {
+            self.set_run_limits(p.max_run, p.idle_run)?;
         }
-        if let Some(n) = p.idle_run {
-            if !(0..=IDLE_RUN_LIMIT).contains(&n) {
-                return Err(BoardError::usage(format!("没输出多久算卡住要在 1 到 {IDLE_RUN_LIMIT} 分钟之间，或者不限（0）")));
+        self.config_by = by.to_string();
+        if let Some(on) = p.sync_skills {
+            if on != h.sync_skills {
+                self.tx.execute("UPDATE hosts SET sync_skills = ?2 WHERE id = ?1", params![h.id, on as i64])?;
+                self.config_changed = true;
             }
-            self.tx.execute("UPDATE hosts SET idle_run = ?2 WHERE id = ?1", params![h.id, n])?;
+        }
+        if let Some(on) = p.sync_mcp {
+            if on != h.sync_mcp {
+                self.tx.execute("UPDATE hosts SET sync_mcp = ?2 WHERE id = ?1", params![h.id, on as i64])?;
+                self.config_changed = true;
+            }
         }
         // 领取规则、兜底现在是全局的一份（`sched.rs`）：旧界面还从机器设置里改，改的就是全局的
         if p.rules.is_some() || p.fallback.is_some() {
@@ -3559,61 +3928,68 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE hosts SET windows = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&w).unwrap_or_default()])?;
         }
         if let Some(rp) = &p.run {
-            let a = h
-                .agents
-                .iter()
-                .find(|a| a.id == rp.agent)
-                .ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{}」", rp.agent)))?;
-            let Some(opts) = &a.opts else {
+            if !crate::providers::AGENTS.iter().any(|(k, _, _)| *k == rp.agent) {
                 return Err(BoardError::usage(format!(
-                    "机器「{name}」的 board 是旧版（{}），不能设置模型和思考强度：升级到 {} 后再设",
-                    h.version,
-                    env!("CARGO_PKG_VERSION")
+                    "只有内置的 agent（{}）能按服务器上的供应商写配置：「{}」不行",
+                    crate::providers::AGENTS.map(|(k, _, _)| k).join("、"),
+                    rp.agent
                 )));
+            }
+            // 旧界面只带供应商：空 = 用服务器的，@local = 不改，其余 = 单独配置
+            let mode = match (rp.mode.as_deref().map(str::trim), rp.provider.as_deref().map(str::trim)) {
+                (Some(m), _) => m.to_string(),
+                (None, Some("")) => MODE_SERVER.into(),
+                (None, Some(crate::providers::PROVIDER_LOCAL)) => MODE_OFF.into(),
+                (None, Some(_)) => MODE_OWN.into(),
+                (None, None) => h.mode_of(&rp.agent).to_string(),
             };
             let mut run = h.run.clone();
             let cur = run.entry(rp.agent.clone()).or_default();
-            if let Some(m) = &rp.model {
-                let m = m.trim();
-                if m.is_empty() {
-                    cur.model = None;
-                } else {
-                    if !opts.model {
-                        return Err(BoardError::usage(format!("{} 不能在机器设置里选模型", a.name)));
-                    }
-                    check_model(m).map_err(BoardError::usage)?;
-                    cur.model = Some(m.to_string());
-                }
-            }
-            if let Some(e) = &rp.effort {
-                let e = e.trim();
-                if e.is_empty() {
-                    cur.effort = None;
-                } else if !opts.efforts.iter().any(|x| x == e) {
-                    return Err(BoardError::usage(if opts.efforts.is_empty() {
-                        format!("{} 不能在机器设置里选思考强度", a.name)
-                    } else {
-                        format!("{} 不支持思考强度「{e}」：只能是 {}", a.name, opts.efforts.join("、"))
-                    }));
-                } else {
-                    cur.effort = Some(e.to_string());
-                }
-            }
-            if let Some(pv) = &rp.provider {
-                let pv = pv.trim();
-                if pv.is_empty() {
+            match mode.as_str() {
+                MODE_SERVER | MODE_OFF => {
+                    cur.mode = Some(mode.clone());
                     cur.provider = None;
-                } else if pv == crate::providers::PROVIDER_LOCAL {
-                    cur.provider = Some(crate::providers::PROVIDER_LOCAL.into());
-                } else {
-                    let known = self.read().providers()?.into_iter().any(|p| p.name == pv);
-                    if !known {
-                        return Err(BoardError::usage(format!("没有模型供应商「{pv}」")));
-                    }
-                    cur.provider = Some(pv.to_string());
+                    cur.model = None;
+                    cur.effort = None;
                 }
+                MODE_OWN => {
+                    let name = rp.provider.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).or_else(|| cur.provider.clone());
+                    let name = name.ok_or_else(|| BoardError::usage("单独配置要选一个供应商"))?;
+                    let pv = self.read().provider(&name)?.ok_or_else(|| BoardError::usage(format!("没有模型供应商「{name}」")))?;
+                    if !pv.fits(&rp.agent) {
+                        return Err(BoardError::usage(format!(
+                            "{} 用不了供应商 {name}：它没有 {} 接口",
+                            crate::providers::agent_name(&rp.agent),
+                            crate::providers::protocols_of(&rp.agent).iter().map(|x| crate::providers::interface_name(x)).collect::<Vec<_>>().join("、")
+                        )));
+                    }
+                    let same = cur.provider.as_deref() == Some(name.as_str());
+                    // 模型：带了就要在供应商里；没带时同一个供应商留着原来的，否则用第一个
+                    let model = match rp.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                        Some(m) if pv.models.iter().any(|x| x == m) => m.to_string(),
+                        Some(m) => return Err(BoardError::usage(format!("供应商 {name} 里没有模型「{m}」：只能是 {}", pv.models.join("、")))),
+                        None => cur
+                            .model
+                            .clone()
+                            .filter(|m| same && pv.models.contains(m))
+                            .or_else(|| pv.models.first().cloned())
+                            .ok_or_else(|| BoardError::usage(format!("供应商 {name} 还没有模型")))?,
+                    };
+                    let effort = match &rp.effort {
+                        Some(e) => e.trim().to_string(),
+                        None if same && cur.model.as_deref() == Some(model.as_str()) => cur.effort.clone().unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    crate::providers::check_effort(&rp.agent, &pv, &model, &effort)?;
+                    cur.mode = Some(MODE_OWN.into());
+                    cur.provider = Some(name);
+                    cur.model = Some(model);
+                    cur.effort = Some(effort).filter(|e| !e.is_empty());
+                }
+                other => return Err(BoardError::usage(format!("模型怎么配只能是 {MODE_SERVER}（用服务器的）、{MODE_OFF}（不改）、{MODE_OWN}（单独配置），不能是「{other}」"))),
             }
             self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+            self.config_changed = true;
         }
         if let Some(id) = p.resume.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
@@ -3632,72 +4008,13 @@ impl<'a> W<'a> {
             let mut run = h.run.clone();
             run.entry(e.agent.clone()).or_default().env = Some(check.env);
             self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+            // 换了启动环境：配置文件、skill 目录可能在别的地方（WSL 里），重新写一次
+            self.config_changed = true;
         }
         self.touch_hosts();
         // 暂停、恢复、会话上限、恢复 agent 都会改变谁能接：等着的「任意机器」派发重新挑一遍
         self.assign_any()?;
         self.read().host(name, self.now)
-    }
-
-    /// 复制机器设置（PRD §10.12「复制设置到…」）：把 `from` 的这几项换到每台目标机器上，没选的项不变。
-    /// 照原样复制、不按目标机器校验：目标机器上找不到的 agent、没有的启动环境、项目里没有的标签照样写进去，界面按现有规则标「不生效」。
-    /// 每台目标机器记一条操作记录
-    pub fn host_copy(&mut self, from: &str, to: &[String], items: &[String], by: &str) -> Result<Vec<HostInfo>> {
-        let src = self.host_row(from)?.ok_or_else(|| no_such_host(from))?;
-        if items.is_empty() {
-            return Err(BoardError::usage("至少选一项要复制的设置"));
-        }
-        if let Some(bad) = items.iter().find(|i| !COPY_ITEMS.iter().any(|(k, _)| k == i)) {
-            return Err(BoardError::usage(format!("不认识要复制的设置「{bad}」：只能是 {}", COPY_ITEMS.map(|(k, _)| k).join("、"))));
-        }
-        let mut targets: Vec<HostRow> = vec![];
-        for name in to {
-            if name == from {
-                return Err(BoardError::usage("不能复制到它自己"));
-            }
-            let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
-            if !targets.iter().any(|t| t.id == h.id) {
-                targets.push(h);
-            }
-        }
-        if targets.is_empty() {
-            return Err(BoardError::usage("至少选一台目标机器"));
-        }
-        let windows = serde_json::to_string(&src.windows).unwrap_or_else(|_| "[[0,1440]]".into());
-        let words: Vec<&str> = COPY_ITEMS.iter().filter(|(k, _)| items.iter().any(|i| i == k)).map(|(_, w)| *w).collect();
-        let mut out = vec![];
-        for t in &targets {
-            for item in items {
-                match item.as_str() {
-                    "limits" => {
-                        self.tx.execute("UPDATE hosts SET max = ?2, per_session = ?3 WHERE id = ?1", params![t.id, src.max, src.per_session])?;
-                    }
-                    "cron" => {
-                        self.tx.execute("UPDATE hosts SET auto = ?2, windows = ?3 WHERE id = ?1", params![t.id, src.auto as i64, windows])?;
-                    }
-                    // 领取规则是全局的一份，不用复制（旧界面还会带上这一项）
-                    "rules" => {}
-                    "agent" => {
-                        self.tx.execute("UPDATE hosts SET agent = ?2 WHERE id = ?1", params![t.id, src.agent])?;
-                    }
-                    "run" => {
-                        // 每个 agent 的启动环境、模型、强度：源机器设置过的 agent 换成它的；源机器没设置的保持目标机器原来的
-                        let mut run = t.run.clone();
-                        for (k, v) in &src.run {
-                            run.insert(k.clone(), v.clone());
-                        }
-                        self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![t.id, serde_json::to_string(&run).unwrap_or_default()])?;
-                    }
-                    _ => {}
-                }
-            }
-            self.host_op(t.id, by, &format!("复制了 {from} 的设置：{}", words.join("、")))?;
-        }
-        self.touch_hosts();
-        for t in &targets {
-            out.push(self.read().host(&t.name, self.now)?);
-        }
-        Ok(out)
     }
 
     /// 以前的「开始一轮领取」（定时到点时旧版 board host 发起，或界面上「现在领一轮」）：现在机器在接单时段里持续领卡，

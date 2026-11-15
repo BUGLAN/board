@@ -259,6 +259,8 @@ impl W<'_> {
             params![s.name, serde_json::to_string(&s).unwrap_or_default(), s.version, s.updated_at, s.by, s.source],
         )?;
         self.hosts_changed = true;
+        self.config_changed = true;
+        self.config_by = s.by.clone();
         self.changed = true;
         Ok(s.masked())
     }
@@ -268,6 +270,7 @@ impl W<'_> {
             return Err(BoardError::new(ErrorCode::NotFound, format!("没有 MCP 服务器「{name}」")));
         }
         self.hosts_changed = true;
+        self.config_changed = true;
         self.changed = true;
         Ok(())
     }

@@ -85,9 +85,6 @@ struct Builtin {
     /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
     /// 这次派发的 profile 补丁路径，都作为一个参数传入
     cmd: &'static [&'static str],
-    /// 模型名：派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段。配置文件里的 `model` 覆盖它；
-    /// 空表示这个 agent 没有默认的模型（pi、codex 里配），生成名字时服务端用 agent 标识代替
-    model: &'static str,
     /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）
     also: &'static [&'static str],
     /// 这个 agent 读用户级 skill 的目录：启动时看 `board-skills` 装没装
@@ -100,14 +97,6 @@ struct Builtin {
     /// Windows 上支持的启动环境，顺序就是默认选择的顺序（`wsl:*` 是每个 WSL 发行版）；
     /// macOS、Linux 上都是登录 shell → 直接启动（[`envs::UNIX_ORDER`]）
     win: &'static [&'static str],
-    /// 机器设置里选了模型时插到 `{prompt}` 前面的参数（`{model}` 换成模型）；空表示不能选模型
-    model_args: &'static [&'static str],
-    /// 选了思考强度时插到 `{prompt}` 前面的参数（`{effort}` 换成档位）；空表示不能选强度
-    effort_args: &'static [&'static str],
-    /// 支持的思考强度档位（按各自 `--help` 核对过），从低到高
-    efforts: &'static [&'static str],
-    /// 机器设置「模型」下拉里列的常用模型（也可以手填）
-    models: &'static [&'static str],
     /// 命令模板里打开结构化输出的参数从哪个版本起才有（`<命令> --version` 的版本号）：本机版本更低时去掉
     /// [`Builtin::json_flags`]，按原始输出运行。空表示不看版本
     json_since: &'static str,
@@ -123,7 +112,6 @@ const BUILTIN: [Builtin; 4] = [
         // --json、--permission-mode 和任务文本是 headless 的参数。--json 之后 dsh 启动器不再解析选项，
         // --patch 放在 --json 后面会被 headless 当成自己的参数，报 unknown option '--patch'
         cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--json", "--permission-mode", "danger-full-access", "{prompt}"],
-        model: "deepseek-v4.1-flash",
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
             "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
@@ -133,11 +121,6 @@ const BUILTIN: [Builtin; 4] = [
         project: &[".agents/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "cmd"],
-        // DeepSeek Harness 的 headless profile 和补丁里没有能按次设置模型、思考强度的项：不显示这两项
-        model_args: &[],
-        effort_args: &[],
-        efforts: &[],
-        models: &[],
         // 按 0.2.2-rc.1 的 dsh-headless 核实过 --json；更旧的不认这个参数，去掉它按原始输出运行
         json_since: "0.2.2",
         json_flags: &["--json"],
@@ -147,18 +130,12 @@ const BUILTIN: [Builtin; 4] = [
         name: "Claude Code",
         // -p 默认只在结束时打印结果：用事件流，运行中每一步都写进日志（logfmt.rs 转写）
         cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
-        model: "opus-5.5",
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
         // Claude Code 不读 .agents/skills
         project: &[".claude/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
-        // claude --help：--model <别名或全名>、--effort <low, medium, high, xhigh, max>
-        model_args: &["--model", "{model}"],
-        effort_args: &["--effort", "{effort}"],
-        efforts: &["low", "medium", "high", "xhigh", "max"],
-        models: &["opus", "sonnet", "haiku", "fable"],
         json_since: "",
         json_flags: &[],
     },
@@ -167,18 +144,12 @@ const BUILTIN: [Builtin; 4] = [
         name: "pi",
         // -p 只在结束时打印最终回答：--mode json 同样跑完就退出，运行中写 JSONL 事件（logfmt.rs 转写）
         cmd: &["pi", "--mode", "json", "{prompt}"],
-        model: "",
         also: &[],
         skills: &["~/.agents/skills", "~/.pi/agent/skills"],
         project: &[".agents/skills", ".pi/skills"],
         git_bash: true,
         // pi 不支持 cmd
         win: &["git-bash", "wsl:*", "pwsh", "powershell"],
-        // pi --help：--model <模式或 provider/id>、--thinking <off, minimal, low, medium, high, xhigh, max>
-        model_args: &["--model", "{model}"],
-        effort_args: &["--thinking", "{effort}"],
-        efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-        models: &[],
         json_since: "",
         json_flags: &[],
     },
@@ -187,17 +158,11 @@ const BUILTIN: [Builtin; 4] = [
         name: "Codex",
         // exec --json：运行中把事件（命令、改文件、说的话、每一轮的用量）写成 JSONL（docs/exec.md）
         cmd: &["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
-        model: "",
         also: &[],
         skills: &["$CODEX_HOME/skills"],
         project: &[".agents/skills"],
         git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
-        // codex exec：-m <模型>、-c model_reasoning_effort=<minimal|low|medium|high>（配置项按 Codex 文档；本机不执行 codex 核对）
-        model_args: &["-m", "{model}"],
-        effort_args: &["-c", "model_reasoning_effort={effort}"],
-        efforts: &["minimal", "low", "medium", "high"],
-        models: &["gpt-5-codex", "gpt-5"],
         json_since: "",
         json_flags: &[],
     },
@@ -257,8 +222,6 @@ pub const EXIT_RESTART: i32 = 75;
 pub const EXIT_UPGRADE: i32 = 76;
 /// `board update` 最长跑多久
 const UPDATE_LIMIT: Duration = Duration::from_secs(600);
-/// skills 共用库没变时多久再核对一次本机（有人手动改了、删了同步装的目录）
-const SKILLS_EVERY: Duration = Duration::from_secs(600);
 
 /// 远程管理请求处理完、退出主循环之后要做的事
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,7 +257,8 @@ pub struct Opts {
 struct Spec {
     id: String,
     name: String,
-    /// 模型名：派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段；上报给服务端
+    /// 配置文件 `[agents.<标识>] model`：内置 agent 读不到它自己配置文件里的模型时、配置文件里新加的 agent 上报它
+    /// （派发名字 `<agent 标识>-<机器名>/<模型名>` 的第二段）
     model: String,
     cmd: Vec<String>,
     /// 读用户级 skill 的目录（内置模板才有）
@@ -307,15 +271,8 @@ struct Spec {
     checks: Vec<Check>,
     /// 找到了命令、却看不到 `board-skills` 的启动环境 → 该装到哪里（启动时由 [`Spec::check_skills`] 检查一次）
     no_skill: BTreeMap<String, String>,
-    /// 选了模型、思考强度时追加的参数；能选的档位、常用模型（见 [`Builtin`]）
-    model_args: Vec<String>,
-    effort_args: Vec<String>,
-    efforts: Vec<String>,
-    models: Vec<String>,
     /// 内置模板的结构化输出参数要求的最低版本和参数（见 [`Builtin::json_since`]）；配置文件覆盖了命令时没有
     json_gate: Option<(String, Vec<String>)>,
-    /// 共用配置里有这个标识的模板，但本机配置文件里有同标识的 `[agents.*]`：用的是本机的（上报给界面标出来）
-    local_override: bool,
 }
 
 /// 版本号前面的数字：`0.2.2-rc.1` → [0, 2, 2]、`2.1.311 (Claude Code)` → [2, 1, 311]；没有数字时为空
@@ -336,28 +293,10 @@ fn older_than(have: &str, need: &str) -> bool {
     pad(&a) < pad(&b)
 }
 
-/// 启动 agent 的参数（命令模板里第一个之后的）：`{prompt}`、`{patch}` 换成提示词和补丁路径；
-/// 机器设置里选了模型、思考强度时，把对应的参数插到 `{prompt}` 那一个前面（没有 `{prompt}` 时放在最后）。
-/// 都没选时和原来完全一样
-fn agent_args(cmd: &[String], model_args: &[String], effort_args: &[String], model: Option<&str>, effort: Option<&str>, prompt: &str, patch: &str) -> Vec<String> {
-    let mut extra: Vec<String> = vec![];
-    if let Some(m) = model.filter(|_| !model_args.is_empty()) {
-        extra.extend(model_args.iter().map(|a| a.replace("{model}", m)));
-    }
-    if let Some(e) = effort.filter(|_| !effort_args.is_empty()) {
-        extra.extend(effort_args.iter().map(|a| a.replace("{effort}", e)));
-    }
-    let mut out: Vec<String> = vec![];
-    let mut placed = extra.is_empty();
-    for a in cmd.iter().skip(1) {
-        if !placed && a.contains("{prompt}") {
-            out.append(&mut extra);
-            placed = true;
-        }
-        out.push(a.replace("{prompt}", prompt).replace("{patch}", patch));
-    }
-    out.append(&mut extra);
-    out
+/// 启动 agent 的参数（命令模板里第一个之后的）：`{prompt}`、`{patch}` 换成提示词和补丁路径。
+/// 模型、强度不再按次传：同步配置写进 agent 自己的配置文件
+fn agent_args(cmd: &[String], prompt: &str, patch: &str) -> Vec<String> {
+    cmd.iter().skip(1).map(|a| a.replace("{prompt}", prompt).replace("{patch}", patch)).collect()
 }
 
 impl Spec {
@@ -374,8 +313,14 @@ impl Spec {
         }
     }
 
-    fn report(&self) -> HostAgent {
+    /// 上报的样子。`now` 是这个 agent 配置文件里现在的模型和强度（内置 agent 读得到时，见 [`providersync::current`]）；
+    /// 读不到时模型用配置文件 `[agents.<标识>] model`
+    fn report(&self, now: Option<&(String, String)>) -> HostAgent {
         let def = self.default_check();
+        let (model, effort) = match now {
+            Some((m, e)) if !m.is_empty() => (m.clone(), e.clone()),
+            _ => (self.model.clone(), String::new()),
+        };
         HostAgent {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -384,21 +329,9 @@ impl Spec {
             envs: self.checks.iter().map(|c| EnvCheck { no_skill: self.no_skill.get(&c.env).cloned(), ..c.report() }).collect(),
             env: None,
             no_skill: def.and_then(|c| self.no_skill.get(&c.env).cloned()),
-            model: self.model.clone(),
-            opts: Some(AgentOpts {
-                model: !self.model_args.is_empty(),
-                models: if self.model_args.is_empty() { vec![] } else { self.models.clone() },
-                efforts: if self.effort_args.is_empty() { vec![] } else { self.efforts.clone() },
-                // 共用配置「模型供应商」里这个 agent 能选哪些接口：内置 agent 按核实过的来，配置文件里新加的是空
-                protocols: board_core::providers::protocols_of(&self.id).iter().map(|x| x.to_string()).collect(),
-            }),
-            run_model: None,
-            run_effort: None,
-            run_env: None,
-            run_provider: None,
-            local_override: self.local_override,
-            // 连续异常退出的暂停由服务端按派发记录数出来，这里不报
-            tripped: false,
+            model,
+            effort,
+            ..Default::default()
         }
     }
 
@@ -432,7 +365,7 @@ impl Spec {
 struct Template {
     id: String,
     name: String,
-    /// 模型名（派发名字的第二段）；配置文件里的 `model` 覆盖内置模板的
+    /// 配置文件里写的模型名（派发名字的第二段，读不到 agent 配置文件里的模型时用）
     model: String,
     cmd: Vec<String>,
     /// 命令不在 PATH 里时再看的位置（只在直接启动、登录 shell 里用）
@@ -442,20 +375,12 @@ struct Template {
     git_bash: bool,
     /// 支持的启动环境，按默认选择的顺序
     order: Vec<String>,
-    model_args: Vec<String>,
-    effort_args: Vec<String>,
-    efforts: Vec<String>,
-    models: Vec<String>,
     json_gate: Option<(String, Vec<String>)>,
-    /// 来自服务端下发的模板（共用配置）
-    server: bool,
-    local_override: bool,
 }
 
-/// 内置模板、服务端下发的共用模板（共用配置「agent 模板」）、配置文件里的模板，后面的覆盖前面同标识的；
-/// 顺序：内置的在前，共用模板里新加的按标识排在后面，配置文件里新加的再按文件顺序排在后面。
-/// 本机配置文件覆盖了共用模板的，标上 `local_override`。每个 agent 在它支持、本机有的启动环境里各检查一次
-fn agent_specs(conf: &[AgentConf], server: &[AgentTemplate], envs: &[Env]) -> Result<Vec<Spec>> {
+/// 内置模板、配置文件里的模板，后面的覆盖前面同标识的；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
+/// 每个 agent 在它支持、本机有的启动环境里各检查一次
+fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let order = |win: &[&str]| if cfg!(windows) { strs(win) } else { strs(envs::UNIX_ORDER) };
     let mut out: Vec<Template> = BUILTIN
@@ -463,77 +388,16 @@ fn agent_specs(conf: &[AgentConf], server: &[AgentTemplate], envs: &[Env]) -> Re
         .map(|b| Template {
             id: b.id.to_string(),
             name: b.name.to_string(),
-            model: b.model.to_string(),
+            model: String::new(),
             cmd: strs(b.cmd),
             also: strs(b.also),
             skills: strs(b.skills),
             project: strs(b.project),
             git_bash: b.git_bash,
             order: order(b.win),
-            model_args: strs(b.model_args),
-            effort_args: strs(b.effort_args),
-            efforts: strs(b.efforts),
-            models: strs(b.models),
             json_gate: (!b.json_since.is_empty()).then(|| (b.json_since.to_string(), strs(b.json_flags))),
-            server: false,
-            local_override: false,
         })
         .collect();
-    let order_of = |win: &[String]| if cfg!(windows) { win.to_vec() } else { strs(envs::UNIX_ORDER) };
-    for t in server {
-        // 服务端校验过；旧版服务端、坏数据里不对的跳过
-        if check_agent_id(&t.id).is_err() || t.cmd.is_empty() {
-            continue;
-        }
-        match out.iter_mut().find(|x| x.id == t.id) {
-            Some(x) => {
-                if x.cmd.first() != t.cmd.first() {
-                    x.also.clear();
-                }
-                if x.cmd != t.cmd {
-                    x.json_gate = None;
-                }
-                x.cmd = t.cmd.clone();
-                if !t.name.is_empty() {
-                    x.name = t.name.clone();
-                }
-                if !t.model.is_empty() {
-                    x.model = t.model.clone();
-                }
-                if !t.model_args.is_empty() {
-                    x.model_args = t.model_args.clone();
-                }
-                if !t.effort_args.is_empty() {
-                    x.effort_args = t.effort_args.clone();
-                }
-                if !t.efforts.is_empty() {
-                    x.efforts = t.efforts.clone();
-                }
-                if !t.win.is_empty() {
-                    x.order = order_of(&t.win);
-                }
-                x.server = true;
-            }
-            None => out.push(Template {
-                id: t.id.clone(),
-                name: if t.name.is_empty() { t.id.clone() } else { t.name.clone() },
-                model: t.model.clone(),
-                cmd: t.cmd.clone(),
-                also: vec![],
-                skills: vec![],
-                project: vec![],
-                git_bash: false,
-                order: if t.win.is_empty() { order(envs::CONF_WIN_ORDER) } else { order_of(&t.win) },
-                model_args: t.model_args.clone(),
-                effort_args: t.effort_args.clone(),
-                efforts: if t.efforts.is_empty() { ["low", "medium", "high"].map(String::from).to_vec() } else { t.efforts.clone() },
-                models: vec![],
-                json_gate: None,
-                server: true,
-                local_override: false,
-            }),
-        }
-    }
     for a in conf {
         check_agent_id(&a.id).map_err(BoardError::usage)?;
         match out.iter_mut().find(|x| x.id == a.id) {
@@ -546,23 +410,12 @@ fn agent_specs(conf: &[AgentConf], server: &[AgentTemplate], envs: &[Env]) -> Re
                 if x.cmd != a.cmd {
                     x.json_gate = None;
                 }
-                // 本机配置覆盖了共用配置里的模板：以本机为准，上报时标出来
-                x.local_override = x.server;
                 x.cmd = a.cmd.clone();
                 if let Some(n) = &a.name {
                     x.name = n.clone();
                 }
                 if let Some(m) = &a.model {
                     x.model = m.clone();
-                }
-                if let Some(v) = &a.model_args {
-                    x.model_args = v.clone();
-                }
-                if let Some(v) = &a.effort_args {
-                    x.effort_args = v.clone();
-                }
-                if let Some(v) = &a.efforts {
-                    x.efforts = v.clone();
                 }
             }
             None => out.push(Template {
@@ -575,13 +428,7 @@ fn agent_specs(conf: &[AgentConf], server: &[AgentTemplate], envs: &[Env]) -> Re
                 project: vec![],
                 git_bash: false,
                 order: order(envs::CONF_WIN_ORDER),
-                model_args: a.model_args.clone().unwrap_or_default(),
-                effort_args: a.effort_args.clone().unwrap_or_default(),
-                efforts: a.efforts.clone().unwrap_or_else(|| ["low", "medium", "high"].map(String::from).to_vec()),
-                models: vec![],
                 json_gate: None,
-                server: false,
-                local_override: false,
             }),
         }
     }
@@ -611,15 +458,182 @@ fn agent_specs(conf: &[AgentConf], server: &[AgentTemplate], envs: &[Env]) -> Re
                 git_bash: t.git_bash,
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
                 no_skill: BTreeMap::new(),
-                model_args: t.model_args,
-                effort_args: t.effort_args,
-                efforts: t.efforts,
-                models: t.models,
                 json_gate: t.json_gate,
-                local_override: t.local_override,
             })
             .collect()
     }))
+}
+
+/* ------------------------------ 同步配置 ------------------------------ */
+
+/// 每个找到的内置 agent 配置文件里现在的模型和强度（启动时、重新检查后读一次；同步配置之后跟着更新）。
+/// 按默认的启动环境找配置文件，WSL 里的读不到
+fn models_now(agents: &[Spec], envs: &[Env]) -> BTreeMap<String, (String, String)> {
+    let mut out = BTreeMap::new();
+    for a in agents {
+        let Some(c) = a.default_check() else { continue };
+        let Some(env) = envs.iter().find(|e| e.id == c.env) else { continue };
+        if let Some(now) = providersync::files_of(&a.id, env).and_then(|f| providersync::current(&f)) {
+            out.insert(a.id.clone(), now);
+        }
+    }
+    out
+}
+
+/// 一个要同步的 agent（找到了的）：启动环境、Claude Code 的命令、读用户级 skill 的目录、模型怎么配
+struct SyncAgent {
+    id: String,
+    name: String,
+    env: Env,
+    prog: Option<String>,
+    skill_dir: Option<String>,
+    /// `server` / `off` / `own`
+    mode: String,
+    /// 单独配置的供应商、模型、强度
+    own: (String, String, String),
+}
+
+/// 一次同步要的东西（交给后台线程）
+struct SyncJob {
+    rm: Remote,
+    name: String,
+    exe: PathBuf,
+    /// 回应的请求序号；启动时自己写的为空
+    id: Option<i64>,
+    /// 任务里的 config_key：写的是哪个样子
+    key: String,
+    skills_on: bool,
+    mcp_on: bool,
+    /// skills 库（含 board-skills）
+    lib: Vec<board_core::skills::SkillInfo>,
+    /// 服务器上有 MCP 服务器（没有时不用取）
+    mcp_any: bool,
+    agents: Vec<SyncAgent>,
+    /// `~/.board/host`：MCP 加过哪些、备份放在这里
+    host_dir: PathBuf,
+}
+
+/// 一次同步的结果
+struct SyncOut {
+    result: SyncResult,
+    changes: Vec<String>,
+    local: Vec<board_core::skills::LocalSkill>,
+    targets: Vec<skills::Target>,
+    now: BTreeMap<String, (String, String)>,
+}
+
+/// 同步配置（在后台线程里）：skills（选了「不改」时只装 board-skills）、MCP（选了「不改」时不碰）、
+/// 每个内置 agent 的模型（用服务器的 / 不改 / 单独配置），最后读回每个 agent 配置文件里现在的模型和强度
+fn run_sync(job: SyncJob) -> SyncOut {
+    let mut changes = vec![];
+    // skills
+    let list: Vec<(String, Env, String)> = job.agents.iter().filter_map(|a| a.skill_dir.clone().map(|d| (a.id.clone(), a.env.clone(), d))).collect();
+    let (targets, bad) = skills::host_targets(list, &job.lib);
+    let backup = job.host_dir.join("skills-backup");
+    let rm = job.rm.clone();
+    let out = skills::sync(&job.lib, &targets, Some(&job.exe), skills::Opts { only_builtin: !job.skills_on, backup: &backup }, |name| rm.get(&format!("/api/skills/{name}"), &[]));
+    changes.extend(out.changes.iter().map(|c| format!("skills：{c}")));
+    let mut fails: Vec<String> = bad.iter().chain(out.states.iter()).filter(|s| s.state == "failed" || s.state == "behind").map(|s| format!("{}/{}：{}", s.dir, s.skill, s.why.as_deref().unwrap_or("没写进去"))).collect();
+    fails.dedup();
+    let written = if job.skills_on { job.lib.len() } else { job.lib.iter().filter(|s| s.name == board_core::skills::BUILTIN).count() };
+    let skills = SkillsSync {
+        state: if !fails.is_empty() { "failed" } else if job.skills_on { "synced" } else { "off" }.into(),
+        count: written as i64,
+        dirs: targets.iter().map(|t| t.shown.clone()).collect(),
+        replaced: out.replaced.clone(),
+        links: out.links.clone(),
+        why: (!fails.is_empty()).then(|| fails.join("；")),
+    };
+    let local = skills::local_skills(&targets);
+
+    // MCP
+    let mcp = if !job.mcp_on {
+        McpSync { state: "off".into(), ..Default::default() }
+    } else {
+        let lib: std::result::Result<Vec<board_core::mcp::McpServer>, String> =
+            if job.mcp_any { job.rm.get(&format!("/api/hosts/{}/mcp", job.name), &[]).map_err(|e| format!("取不到 MCP 配置：{}", e.message)) } else { Ok(vec![]) };
+        match lib {
+            Err(why) => McpSync { state: "failed".into(), why: Some(why), ..Default::default() },
+            Ok(lib) => {
+                let mut targets = vec![];
+                let mut unsupported = vec![];
+                let mut bad = vec![];
+                for a in &job.agents {
+                    if !board_core::mcp::AGENTS.contains(&a.id.as_str()) {
+                        unsupported.push(a.id.clone());
+                        continue;
+                    }
+                    match mcpsync::file_of(&a.id, &a.env) {
+                        Some((file, shown)) => targets.push(mcpsync::Target { agent: a.id.clone(), env: a.env.clone(), prog: a.prog.clone(), file, shown }),
+                        None => bad.push(format!("{}：取不到{}里的配置文件位置", a.name, a.env.name)),
+                    }
+                }
+                let out = mcpsync::sync(&lib, &targets, &unsupported, &job.host_dir.join("mcp-sync.json"), &job.host_dir.join("mcp-backup.json"));
+                changes.extend(out.changes.iter().map(|c| format!("MCP：{c}")));
+                bad.extend(out.states.iter().filter(|s| s.state == "failed").map(|s| format!("{} 的 {}：{}", s.agent, s.server, s.why.as_deref().unwrap_or("失败"))));
+                let names = |id: &str| job.agents.iter().find(|a| a.id == id).map(|a| a.name.clone()).unwrap_or_else(|| id.to_string());
+                let mut into: Vec<String> = vec![];
+                for s in out.states.iter().filter(|s| s.state == "synced") {
+                    let n = names(&s.agent);
+                    if !into.contains(&n) {
+                        into.push(n);
+                    }
+                }
+                McpSync {
+                    state: if bad.is_empty() { "synced" } else { "failed" }.into(),
+                    count: lib.len() as i64,
+                    agents: into,
+                    replaced: out.replaced,
+                    why: (!bad.is_empty()).then(|| bad.join("；")),
+                }
+            }
+        }
+    };
+
+    // 模型：每个内置 agent 按机器上的选择写
+    let builtin: Vec<&SyncAgent> = job.agents.iter().filter(|a| board_core::providers::AGENTS.iter().any(|(k, _, _)| *k == a.id)).collect();
+    let need = builtin.iter().any(|a| a.mode != board_core::hosts::MODE_OFF);
+    let lib: std::result::Result<providersync::Lib, String> =
+        if need { job.rm.get::<providersync::Lib>(&format!("/api/hosts/{}/providers", job.name), &[]).map_err(|e| format!("取不到模型供应商配置：{}", e.message)) } else { Ok(providersync::Lib::default()) };
+    let mut files: BTreeMap<String, providersync::Files> = BTreeMap::new();
+    let agents = match lib {
+        Err(why) => builtin
+            .iter()
+            .map(|a| {
+                if a.mode == board_core::hosts::MODE_OFF {
+                    board_core::providers::ProviderState { agent: a.id.clone(), state: "off".into(), ..Default::default() }
+                } else {
+                    board_core::providers::ProviderState { agent: a.id.clone(), state: "failed".into(), why: Some(why.clone()), ..Default::default() }
+                }
+            })
+            .collect(),
+        Ok(lib) => {
+            let mut targets = vec![];
+            let mut unsupported = vec![];
+            for a in &builtin {
+                match providersync::files_of(&a.id, &a.env) {
+                    Some(f) => {
+                        files.insert(a.id.clone(), f.clone());
+                        targets.push(providersync::Target { agent: a.id.clone(), mode: a.mode.clone(), own: a.own.clone(), files: f });
+                    }
+                    None => unsupported.push((a.id.clone(), a.mode.clone(), format!("{}里的 agent 还不能改写配置文件", a.env.name))),
+                }
+            }
+            let out = providersync::sync(&lib.providers, &lib.agents, &targets, &unsupported);
+            changes.extend(out.changes);
+            out.states
+        }
+    };
+    // 读回每个 agent 配置文件里现在的模型和强度（同步写进去的，或人自己配的）
+    for a in &builtin {
+        if !files.contains_key(&a.id) {
+            if let Some(f) = providersync::files_of(&a.id, &a.env) {
+                files.insert(a.id.clone(), f);
+            }
+        }
+    }
+    let now: BTreeMap<String, (String, String)> = files.iter().filter_map(|(id, f)| providersync::current(f).map(|x| (id.clone(), x))).collect();
+    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, agents, skills, mcp }, changes, local, targets, now }
 }
 
 /// board host 自己的目录：`~/.board/host`
@@ -1170,37 +1184,26 @@ struct Host<'a> {
     selftest_seen: Option<i64>,
     /// 自检启动的子进程：退出时结束它们
     selftest_pids: selftest::Pids,
-    /// skills 共用库：正在后台做的同步
-    skill_job: Option<std::thread::JoinHandle<skills::Synced>>,
-    /// 最近一次同步的结果（上报里带上；新版 board host 总是带，空表示还没同步完）
-    skill_states: Vec<board_core::skills::SkillState>,
-    /// 各 agent skill 目录里不是同步装的 skill（上报里带上，界面「从机器导入」用）和这些目录（导入时找回去）
+    /// 同步配置（机器详情与配置同步重构）：正在后台做的（回应的请求序号，启动时自己写的那一次为空）
+    sync_job: Option<(Option<i64>, std::thread::JoinHandle<SyncOut>)>,
+    /// 做完了、还没报上去的结果（连不上服务端时下一轮再报）
+    sync_out: Option<SyncResult>,
+    /// 已经做过（或正在做）的同步请求序号
+    sync_seen: Option<i64>,
+    /// 启动后写过一次了
+    sync_started: bool,
+    /// 每个内置 agent 配置文件里现在的模型和强度（上报：派发名字和派发记录用它）
+    agent_now: BTreeMap<String, (String, String)>,
+    /// 列目录：回答过的请求
+    ls_seen: Vec<i64>,
+    /// 各 agent skill 目录里不是 Board 装的 skill（上报里带上，界面「从这台机器导入」用）和这些目录（导入时找回去）
     local_skills: Vec<board_core::skills::LocalSkill>,
     skill_targets: Vec<skills::Target>,
     /// 从这台机器导入 skills：正在后台做的（请求序号）、做完还没报上去的结果、报过的序号
     import_job: Option<(i64, std::thread::JoinHandle<(Vec<String>, Vec<SkillImportFail>)>)>,
     import_out: Option<(i64, Vec<String>, Vec<SkillImportFail>)>,
     import_seen: Option<i64>,
-    /// 上一次同步时的库和目录：变了就再同步一次
-    skill_key: Option<String>,
-    skill_at: Instant,
-    /// 重新检查、重新读配置后马上再同步一次（skills 和 MCP 一起）
-    skill_force: bool,
-    /// MCP 共用配置：正在后台做的同步、最近的结果、上一次的索引和 agent、时间
-    mcp_job: Option<std::thread::JoinHandle<mcpsync::Synced>>,
-    mcp_states: Vec<board_core::mcp::McpState>,
-    mcp_key: Option<String>,
-    mcp_at: Instant,
-    mcp_force: bool,
-    /// 模型供应商共用配置：正在后台做的同步、最近的结果、上一次的索引和 agent、时间
-    provider_job: Option<std::thread::JoinHandle<providersync::Synced>>,
-    provider_states: Vec<board_core::providers::ProviderState>,
-    provider_key: Option<String>,
-    provider_at: Instant,
-    provider_force: bool,
-    /// 共用配置里的 agent 模板（服务端随任务下发）：已经合进本机 agent 的那一份
-    templates: Vec<AgentTemplate>,
-    /// 马上上报一次（共用模板变了、重新检查完 agent 之后）
+    /// 马上上报一次（重新检查完 agent、同步完配置之后）
     beat_soon: bool,
     /// 最近一次 `git fetch` 没成的项目目录：目录、原因、什么时候试的。随上报带给服务端（这台机器先不接这个项目的卡），
     /// 每 5 分钟重试一次，拉成了就去掉
@@ -1308,11 +1311,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         }
     }
     boards.sort();
-    // 共用配置里的 agent 模板随第一次取到的任务下发，到时再合进来（见 Host::apply_templates）
-    let mut agents = agent_specs(&conf.agents, &[], &envs)?;
+    let mut agents = agent_specs(&conf.agents, &envs)?;
     for a in &mut agents {
         a.check_skills(&envs, &ws_pairs(&ws, &boards, &os));
     }
+    let agent_now = models_now(&agents, &envs);
     let hd = host_dir()?;
     let pidfile = hd.join(format!("{name}.pid"));
     // 上一次在这台机器上用这个名字的 board host：进程不在了就接回它的名字
@@ -1366,27 +1369,17 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         selftest_out: None,
         selftest_seen: None,
         selftest_pids: selftest::Pids::default(),
-        skill_job: None,
-        skill_states: vec![],
+        sync_job: None,
+        sync_out: None,
+        sync_seen: None,
+        sync_started: false,
+        agent_now,
+        ls_seen: vec![],
         local_skills: vec![],
         skill_targets: vec![],
         import_job: None,
         import_out: None,
         import_seen: None,
-        skill_key: None,
-        skill_at: Instant::now(),
-        skill_force: false,
-        mcp_job: None,
-        mcp_states: vec![],
-        mcp_key: None,
-        mcp_at: Instant::now(),
-        mcp_force: false,
-        provider_job: None,
-        provider_states: vec![],
-        provider_key: None,
-        provider_at: Instant::now(),
-        provider_force: false,
-        templates: vec![],
         beat_soon: false,
         fetch_errs: vec![],
         next_wt_sweep: Instant::now(),
@@ -1848,7 +1841,7 @@ impl Host<'_> {
             resume: self.resume.clone(),
             os: self.os.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            agents: self.agents.iter().map(Spec::report).collect(),
+            agents: self.agents.iter().map(|a| a.report(self.agent_now.get(&a.id))).collect(),
             envs: self.envs.iter().map(Env::report).collect(),
             workspace: Some(self.ws.clone()),
             dirs: self.dir_reports(),
@@ -1859,9 +1852,7 @@ impl Host<'_> {
             asked: self.asked,
             ask_error: self.ask_error.clone(),
             selftest: true,
-            skills: Some(self.skill_states.clone()),
-            mcp: Some(self.mcp_states.clone()),
-            providers: Some(self.provider_states.clone()),
+            config_sync: true,
             local_skills: Some(self.local_skills.clone()),
         }
     }
@@ -1978,11 +1969,8 @@ impl Host<'_> {
     /// 重新检查（远程请求）：重新找启动环境、本机 agent（找不找得到、版本号）、board-skills，环境检查也重跑。
     /// 配置文件读不了、agent 配置不对时保留原来的 agent
     fn recheck(&mut self) {
-        self.skill_force = true;
-        self.mcp_force = true;
-        self.provider_force = true;
         self.envs = envs::discover();
-        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.templates, &self.envs)) {
+        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.envs)) {
             Ok(a) => self.agents = a,
             Err(e) => self.say(format!("{} 重新检查 agent 没成：{}（接着用原来的）", self.p.yellow("!"), e.message)),
         }
@@ -1990,6 +1978,7 @@ impl Host<'_> {
         for a in &mut self.agents {
             a.check_skills(&self.envs, &pairs);
         }
+        self.agent_now = models_now(&self.agents, &self.envs);
         self.ready_all = true;
         self.plan_readies();
         // 目录状态也重新看一遍（平时每 5 分钟看一次）：刚把目录修好、克隆好的，点「重新检查」马上就能接卡
@@ -1998,7 +1987,7 @@ impl Host<'_> {
         for x in self.fetch_errs.iter_mut() {
             x.2 = Instant::now() - DIR_CHECK_EVERY;
         }
-        let found: Vec<String> = self.agents.iter().filter(|a| a.report().found).map(|a| a.id.clone()).collect();
+        let found: Vec<String> = self.agents.iter().filter(|a| a.default_check().is_some()).map(|a| a.id.clone()).collect();
         self.say(format!(
             "{} 重新检查完了：启动环境 {} 个，找到 agent {}",
             self.p.green("✓"),
@@ -2157,48 +2146,24 @@ impl Host<'_> {
             ));
             self.runs[i].d = n;
         }
-        let templates = w.templates.clone();
+        // 列目录（界面选工作空间）：在后台列，列完回传
+        let fresh: Vec<LsAsk> = w.ls.iter().filter(|l| !self.ls_seen.contains(&l.id)).cloned().collect();
+        for l in fresh {
+            self.ls_seen.push(l.id);
+            let (rm, name) = (self.rm().clone(), self.name.clone());
+            std::thread::spawn(move || {
+                let out = crate::lsdir::list(&l.path);
+                let _ = rm.post::<serde_json::Value>(&format!("/api/hosts/{name}/ls/{}", l.id), serde_json::to_value(&out).unwrap_or_default());
+            });
+        }
+        if self.ls_seen.len() > 200 {
+            self.ls_seen.drain(..100);
+        }
         self.work = Some(w);
         self.work_at = Instant::now();
         self.hold = false;
-        if let Some(t) = templates.filter(|t| *t != self.templates) {
-            self.apply_templates(t);
-        }
         self.start_clones();
         self.plan_readies();
-    }
-
-    /// 共用配置里的 agent 模板变了：合进本机 agent（本机配置文件的同标识优先），重新检查一遍，马上上报。不用重启
-    fn apply_templates(&mut self, t: Vec<AgentTemplate>) {
-        let first = self.templates.is_empty();
-        self.templates = t;
-        match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.templates, &self.envs)) {
-            Ok(a) => self.agents = a,
-            Err(e) => {
-                self.say(format!("{} 共用配置里的 agent 模板没有用上：{}（接着用原来的）", self.p.yellow("!"), e.message));
-                return;
-            }
-        }
-        for a in &mut self.agents {
-            a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
-        }
-        self.skill_force = true;
-        self.mcp_force = true;
-        self.provider_force = true;
-        self.beat_soon = true;
-        let ids: Vec<String> = self.templates.iter().map(|t| t.id.clone()).collect();
-        let over: Vec<String> = self.agents.iter().filter(|a| a.local_override).map(|a| a.id.clone()).collect();
-        if !(first && ids.is_empty()) {
-            let mut line = format!(
-                "{} 共用配置的 agent 模板：{}",
-                self.p.green("✓"),
-                if ids.is_empty() { "（没有）".to_string() } else { ids.join("、") }
-            );
-            if !over.is_empty() {
-                line += &format!("；本机配置覆盖：{}", over.join("、"));
-            }
-            self.say(line);
-        }
     }
 
     /// 按服务端发来的检查命令决定哪些白板要（重新）跑环境检查：没跑过、命令或目录变了、目录刚有了、
@@ -2450,246 +2415,95 @@ impl Host<'_> {
         }
     }
 
-    /// skills 共用库（PRD §10.12「共用配置」）：同步做完了就记下结果（变了返回 true，马上上报）；
-    /// 没在做、库或要写的目录变了（重新检查后、超过 10 分钟）就在后台开始一次
-    fn poll_skills(&mut self) -> bool {
+    /// 同步配置（机器详情与配置同步重构 §三）：启动后写一次，取到的任务里有新的同步请求再写一次（在后台）；
+    /// 做完回报结果（回报失败下一轮再报）。返回要不要马上上报（agent 配置里的模型、本机的 skill 变了）
+    fn poll_sync(&mut self) -> bool {
         let mut changed = false;
-        if self.skill_job.as_ref().is_some_and(|h| h.is_finished()) {
-            if let Ok(out) = self.skill_job.take().expect("上面看过").join() {
-                for c in &out.changes {
-                    self.say(format!("{} skills：{c}", self.p.green("✓")));
+        if self.sync_job.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+            let (_, h) = self.sync_job.take().expect("上面看过");
+            match h.join() {
+                Ok(out) => {
+                    for c in &out.changes {
+                        self.say(format!("{} 同步配置：{c}", self.p.green("✓")));
+                    }
+                    let r = &out.result;
+                    let mut bad: Vec<String> = r.agents.iter().filter(|a| a.state == "failed").map(|a| format!("{}：{}", a.agent, a.why.as_deref().unwrap_or("失败"))).collect();
+                    if r.skills.state == "failed" {
+                        bad.push(format!("skills：{}", r.skills.why.as_deref().unwrap_or("没写进去")));
+                    }
+                    if r.mcp.state == "failed" {
+                        bad.push(format!("MCP：{}", r.mcp.why.as_deref().unwrap_or("没写进去")));
+                    }
+                    if !bad.is_empty() {
+                        self.say(format!("{} 同步配置有没写进去的：{}", self.p.yellow("!"), bad.join("；")));
+                    }
+                    changed = out.local != self.local_skills || out.now != self.agent_now;
+                    self.local_skills = out.local;
+                    self.skill_targets = out.targets;
+                    self.agent_now = out.now;
+                    // 装上、换掉了 skill：重新看一遍各 agent 看不看得到 board-skills
+                    if !out.changes.is_empty() && self.recheck_skills() {
+                        changed = true;
+                    }
+                    self.sync_out = Some(out.result);
                 }
-                let bad: Vec<String> = out
-                    .states
-                    .iter()
-                    .filter(|s| s.state == "failed" || s.state == "behind")
-                    .map(|s| format!("{}/{}：{}", s.dir, s.skill, s.why.as_deref().unwrap_or("没同步")))
-                    .collect();
-                if !bad.is_empty() && out.states != self.skill_states {
-                    self.say(format!("{} skills 没同步好：{}", self.p.yellow("!"), bad.join("；")));
-                }
-                changed = out.states != self.skill_states || out.local != self.local_skills;
-                self.skill_states = out.states;
-                self.local_skills = out.local;
-                self.skill_targets = out.targets;
-                // 装上、换掉了东西：重新看一遍各 agent 看不看得到 board-skills（界面上「缺 skill」的提醒跟着变）
-                if !out.changes.is_empty() && self.recheck_skills() {
-                    changed = true;
-                }
+                Err(_) => self.say(format!("{} 同步配置的线程出错了：下次收到同步请求再写", self.p.yellow("!"))),
             }
         }
-        if self.skill_job.is_some() {
-            return changed;
-        }
-        let Some(lib) = self.work.as_ref().and_then(|w| w.skills.clone()) else { return changed };
-        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
-        let mut list: Vec<(String, Env, String)> = vec![];
-        for spec in &self.agents {
-            let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
-            let Some(dir) = spec.skills.first() else { continue };
-            let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
-            if let Some(env) = self.envs.iter().find(|e| e.id == env_id) {
-                list.push((spec.id.clone(), env.clone(), dir.clone()));
+        if let Some(res) = self.sync_out.take() {
+            let body = json!({ "instance": self.instance, "result": res });
+            match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/synced", self.name), body) {
+                Ok(_) => {}
+                Err(e) if e.code == ErrorCode::Unreachable => self.sync_out = Some(res),
+                // 旧版服务端没有这个接口：结果不用报
+                Err(e) if e.code == ErrorCode::NotFound => {}
+                Err(e) => self.say(format!("{} 同步结果没报上去：{}", self.p.yellow("!"), e.message)),
             }
         }
-        let key = format!(
-            "{:?}|{:?}",
-            lib.iter().map(|s| (&s.name, &s.version)).collect::<Vec<_>>(),
-            list.iter().map(|(a, e, d)| (a, &e.id, d)).collect::<Vec<_>>()
-        );
-        if !self.skill_force && self.skill_key.as_deref() == Some(key.as_str()) && self.skill_at.elapsed() < SKILLS_EVERY {
+        if self.sync_job.is_some() {
             return changed;
         }
-        self.skill_force = false;
-        self.skill_key = Some(key);
-        self.skill_at = Instant::now();
-        let rm = self.rm().clone();
-        let exe = self.exe.clone();
-        self.skill_job = Some(std::thread::spawn(move || {
-            let (targets, mut bad) = skills::host_targets(list, &lib);
-            let mut out = skills::sync(&lib, &targets, Some(&exe), |name| rm.get(&format!("/api/skills/{name}"), &[]));
-            out.states.append(&mut bad);
-            // 顺带列出不是同步装的 skill（「从机器导入」）
-            out.local = skills::local_skills(&targets);
-            out.targets = targets;
-            out
-        }));
-        changed
-    }
-
-    /// MCP 共用配置（PRD §10.12「共用配置」）：同步做完了记下结果（变了返回 true，马上上报）；
-    /// 没在做、索引或找到的 agent 变了（重新检查后、超过 10 分钟）就在后台开始一次：先用令牌取完整内容（含密钥），再写各 agent 的配置
-    fn poll_mcp(&mut self) -> bool {
-        let mut changed = false;
-        if self.mcp_job.as_ref().is_some_and(|h| h.is_finished()) {
-            if let Ok(out) = self.mcp_job.take().expect("上面看过").join() {
-                for c in &out.changes {
-                    self.say(format!("{} MCP：{c}", self.p.green("✓")));
-                }
-                let bad: Vec<String> = out.states.iter().filter(|s| s.state == "failed").map(|s| format!("{} 的 {}：{}", s.agent, s.server, s.why.as_deref().unwrap_or("失败"))).collect();
-                if !bad.is_empty() && out.states != self.mcp_states {
-                    self.say(format!("{} MCP 没同步好：{}", self.p.yellow("!"), bad.join("；")));
-                }
-                changed = out.states != self.mcp_states;
-                self.mcp_states = out.states;
-            }
-        }
-        if self.mcp_job.is_some() {
+        let Some(w) = self.work.as_ref() else { return changed };
+        let ask = w.host.sync.ask.as_ref().map(|a| a.id);
+        if self.sync_started && ask.is_none_or(|id| self.sync_seen == Some(id)) {
             return changed;
         }
-        let Some(index) = self.work.as_ref().and_then(|w| w.mcp.clone()) else { return changed };
-        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
-        let mut found: Vec<(String, Env, Option<String>)> = vec![];
+        self.sync_started = true;
+        if ask.is_some() {
+            self.sync_seen = ask;
+        }
+        let used: Vec<HostAgent> = w.host.agents.clone();
+        let mut agents = vec![];
         for spec in &self.agents {
             let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
             let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
             let Some(env) = self.envs.iter().find(|e| e.id == env_id) else { continue };
             let prog = spec.checks.iter().find(|c| c.env == env_id).and_then(|c| c.prog.clone());
-            found.push((spec.id.clone(), env.clone(), prog));
+            agents.push(SyncAgent {
+                id: spec.id.clone(),
+                name: spec.name.clone(),
+                env: env.clone(),
+                prog,
+                skill_dir: spec.skills.first().cloned(),
+                mode: u.run_mode.clone().unwrap_or_else(|| board_core::hosts::MODE_OFF.into()),
+                own: (u.run_provider.clone().unwrap_or_default(), u.run_model.clone().unwrap_or_default(), u.run_effort.clone().unwrap_or_default()),
+            });
         }
-        let key = format!("{:?}|{:?}", index.iter().map(|s| (&s.name, &s.version)).collect::<Vec<_>>(), found.iter().map(|(a, e, _)| (a, &e.id)).collect::<Vec<_>>());
-        if !self.mcp_force && self.mcp_key.as_deref() == Some(key.as_str()) && self.mcp_at.elapsed() < SKILLS_EVERY {
-            return changed;
-        }
-        self.mcp_force = false;
-        self.mcp_key = Some(key);
-        self.mcp_at = Instant::now();
-        let rm = self.rm().clone();
-        let name = self.name.clone();
-        let owned = self.logs.parent().map(|d| d.join("mcp-sync.json")).unwrap_or_else(|| PathBuf::from("mcp-sync.json"));
-        let any = !index.is_empty();
-        self.mcp_job = Some(std::thread::spawn(move || {
-            // 共用配置是空的：不用取，直接按空的同步（删掉以前同步加的）
-            let lib: Vec<board_core::mcp::McpServer> = if any {
-                match rm.get(&format!("/api/hosts/{name}/mcp"), &[]) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        let mut states = vec![];
-                        for (a, _, _) in found.iter().filter(|(a, _, _)| board_core::mcp::AGENTS.contains(&a.as_str())) {
-                            for s in &index {
-                                states.push(board_core::mcp::McpState { server: s.name.clone(), agent: a.clone(), state: "failed".into(), why: Some(format!("取不到 MCP 配置：{}", e.message)) });
-                            }
-                        }
-                        return mcpsync::Synced { states, changes: vec![] };
-                    }
-                }
-            } else {
-                vec![]
-            };
-            let mut targets = vec![];
-            let mut unsupported = vec![];
-            let mut bad = vec![];
-            for (agent, env, prog) in found {
-                if !board_core::mcp::AGENTS.contains(&agent.as_str()) {
-                    unsupported.push(agent);
-                    continue;
-                }
-                match mcpsync::file_of(&agent, &env) {
-                    Some((file, shown)) => targets.push(mcpsync::Target { agent, env, prog, file, shown }),
-                    None => {
-                        for s in lib.iter().filter(|s| s.for_agent(&agent)) {
-                            bad.push(board_core::mcp::McpState { server: s.name.clone(), agent: agent.clone(), state: "failed".into(), why: Some(format!("取不到{}里的配置文件位置", env.name)) });
-                        }
-                    }
-                }
-            }
-            let mut out = mcpsync::sync(&lib, &targets, &unsupported, &owned);
-            out.states.append(&mut bad);
-            out
-        }));
-        changed
-    }
-
-    /// 模型供应商共用配置（PRD §10.12「共用配置」）：和 MCP 一样，索引、每个 agent 用哪个、机器设置里的供应商
-    /// 或本机找到的 agent 变了（重新检查后、超过 10 分钟）就在后台开始一次：用令牌取完整内容（含 API key 原文），
-    /// 再按备份/设置写各 agent 的配置文件
-    fn poll_providers(&mut self) -> bool {
-        let mut changed = false;
-        if self.provider_job.as_ref().is_some_and(|h| h.is_finished()) {
-            if let Ok(out) = self.provider_job.take().expect("上面看过").join() {
-                for c in &out.changes {
-                    self.say(format!("{} 模型供应商：{c}", self.p.green("✓")));
-                }
-                let bad: Vec<String> = out
-                    .states
-                    .iter()
-                    .filter(|s| s.state == "failed")
-                    .map(|s| format!("{}：{}", s.agent, s.why.as_deref().unwrap_or("失败")))
-                    .collect();
-                if !bad.is_empty() && out.states != self.provider_states {
-                    self.say(format!("{} 模型供应商没写进配置文件：{}", self.p.yellow("!"), bad.join("；")));
-                }
-                changed = out.states != self.provider_states;
-                self.provider_states = out.states;
-            }
-        }
-        if self.provider_job.is_some() {
-            return changed;
-        }
-        let Some(work) = self.work.as_ref().and_then(|w| w.providers.clone()) else { return changed };
-        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
-        let mut found: Vec<(String, Env, Option<String>)> = vec![];
-        for spec in &self.agents {
-            let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
-            let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
-            let Some(env) = self.envs.iter().find(|e| e.id == env_id) else { continue };
-            found.push((spec.id.clone(), env.clone(), u.run_provider.clone()));
-        }
-        let key = format!(
-            "{:?}|{:?}|{:?}",
-            work.providers.iter().map(|p| (&p.name, &p.version)).collect::<Vec<_>>(),
-            work.agents.iter().map(|a| (&a.agent, &a.provider, &a.model, &a.effort)).collect::<Vec<_>>(),
-            found.iter().map(|(a, e, r)| (a, &e.id, r)).collect::<Vec<_>>()
-        );
-        if !self.provider_force && self.provider_key.as_deref() == Some(key.as_str()) && self.provider_at.elapsed() < SKILLS_EVERY {
-            return changed;
-        }
-        self.provider_force = false;
-        self.provider_key = Some(key);
-        self.provider_at = Instant::now();
-        let rm = self.rm().clone();
-        let name = self.name.clone();
-        let dir = self.logs.parent().map(|d| d.join("agent-config")).unwrap_or_else(|| PathBuf::from("agent-config"));
-        let any = !work.providers.is_empty();
-        self.provider_job = Some(std::thread::spawn(move || {
-            // 共用配置是空的：不用取，直接按空的同步（恢复以前写的）
-            let lib = if any {
-                match rm.get::<providersync::Lib>(&format!("/api/hosts/{name}/providers"), &[]) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        let states = found
-                            .iter()
-                            .map(|(a, _, _)| board_core::providers::ProviderState {
-                                agent: a.clone(),
-                                state: "failed".into(),
-                                provider: String::new(),
-                                model: String::new(),
-                                why: Some(format!("取不到模型供应商配置：{}", e.message)),
-                            })
-                            .collect();
-                        return providersync::Synced { states, changes: vec![] };
-                    }
-                }
-            } else {
-                providersync::Lib::default()
-            };
-            let mut targets = vec![];
-            let mut unsupported = vec![];
-            for (agent, env, run_provider) in found {
-                match providersync::files_of(&agent, &env) {
-                    Some(files) => targets.push(providersync::Target { agent, run_provider, files }),
-                    None => {
-                        let why = if env.wsl().is_some() {
-                            format!("{}里的 agent 还不能改写配置文件", env.name)
-                        } else {
-                            "配置文件里新加的 agent 不支持按共用配置改写（只支持 Claude Code、Codex、pi、dsh）".to_string()
-                        };
-                        unsupported.push((agent, why));
-                    }
-                }
-            }
-            providersync::sync(&lib.providers, &lib.agents, &targets, &unsupported, &dir)
-        }));
+        let host_dir = self.logs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        let job = SyncJob {
+            rm: self.rm().clone(),
+            name: self.name.clone(),
+            exe: self.exe.clone(),
+            id: ask,
+            key: w.config_key.clone(),
+            skills_on: w.host.sync_skills,
+            mcp_on: w.host.sync_mcp,
+            lib: w.skills.clone().unwrap_or_default(),
+            mcp_any: w.mcp.as_ref().is_some_and(|m| !m.is_empty()),
+            agents,
+            host_dir,
+        };
+        self.sync_job = Some((ask, std::thread::spawn(move || run_sync(job))));
         changed
     }
 
@@ -2749,7 +2563,6 @@ impl Host<'_> {
                         self.say(format!("{} {} 没导入：{}", self.p.yellow("!"), f.name, f.why));
                     }
                     self.import_seen = Some(id);
-                    self.skill_force = true;
                 }
                 Err(e) if e.code == ErrorCode::Unreachable => self.import_out = Some((id, ok, failed)),
                 Err(e) => {
@@ -2834,10 +2647,8 @@ impl Host<'_> {
         if spec.cmd.iter().any(|a| a.contains("{patch}")) {
             write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
         }
-        let model = used.and_then(|u| u.run_model.as_deref());
-        let effort = used.and_then(|u| u.run_effort.as_deref());
         let cmd = spec.cmd_for(check);
-        let args = agent_args(&cmd, &spec.model_args, &spec.effort_args, model, effort, selftest::PROMPT, &patch.display().to_string());
+        let args = agent_args(&cmd, selftest::PROMPT, &patch.display().to_string());
         let stream = logfmt::stream_for(&spec.id, &cmd);
         let mut c = env.command(&prog, &args, Some(tmp), true);
         c.env_remove("CLAUDECODE");
@@ -2896,7 +2707,7 @@ impl Host<'_> {
         let env_name = |id: &str| self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string());
         for (i, a) in self.agents.iter().enumerate() {
             let head = if i == 0 { p.dim("agent   ") } else { "        ".into() };
-            let u = used(&a.id).unwrap_or_else(|| a.report());
+            let u = used(&a.id).unwrap_or_else(|| a.report(None));
             let env = u.env.clone().or_else(|| a.default_check().map(|c| c.env.clone()));
             let state = if u.found {
                 let v = if u.version.is_empty() { "找到了".to_string() } else { u.version.clone() };
@@ -3033,16 +2844,8 @@ impl Host<'_> {
             self.poll_selftest();
             // 从这台机器导入 skills：界面上选了就在后台传进库，做完回报
             self.poll_skill_import();
-            // skills 共用库：库变了（或重新检查后、每 10 分钟）在后台同步，结果马上上报
-            if self.poll_skills() {
-                next_beat = Instant::now();
-            }
-            // MCP 共用配置：一样在后台写进各 agent 的配置
-            if self.poll_mcp() {
-                next_beat = Instant::now();
-            }
-            // 模型供应商共用配置：写进各 agent 的配置文件
-            if self.poll_providers() {
+            // 同步配置：启动时写一次，服务器上一改（收到同步请求）再写一次，写完回报、马上上报
+            if self.poll_sync() {
                 next_beat = Instant::now();
             }
             // 远程管理：重新检查、重启、升级
@@ -3086,9 +2889,8 @@ impl Host<'_> {
     /// 桌面端通知（标准输入一行 `reload`）：「设置 → 本机」保存了配置，或者「一键安装」装好了 board-skills。
     /// 先重新看一遍 skill，再重新读配置。返回有没有变（变了马上上报）
     fn reload(&mut self) -> bool {
-        self.skill_force = true;
-        self.mcp_force = true;
-        self.provider_force = true;
+        // 桌面端「一键安装」、改了本机配置：像刚启动一样再写一次配置（board-skills 跟着装上）
+        self.sync_started = false;
         let skills = self.recheck_skills();
         // 重新读配置时把环境检查重跑一遍（可能刚装好了缺的工具）
         self.ready_all = true;
@@ -3651,7 +3453,7 @@ impl Host<'_> {
         let patch_arg = patch.display().to_string();
         // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
         let cmd = spec.cmd_for(check);
-        let args = agent_args(&cmd, &spec.model_args, &spec.effort_args, d.model.as_deref(), d.effort.as_deref(), &prompt, &patch_arg);
+        let args = agent_args(&cmd, &prompt, &patch_arg);
         let mut c = env.command(&prog, &args, Some(&run_dir), true);
         c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
@@ -4238,37 +4040,36 @@ mod tests {
         assert!(DSH_HEADLESS_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
         assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
         assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
-        // 派发名字的第二段（模型名）：dsh、claude 有默认值（dsh-win/deepseek-v4.1-flash、claude-mbp/opus-5.5 这类），
-        // pi、codex 没有默认的模型（各自配好 provider 才有）
-        assert_eq!(dsh.model, "deepseek-v4.1-flash");
-        assert_eq!(BUILTIN.iter().find(|b| b.id == "claude").unwrap().model, "opus-5.5");
-        assert!(BUILTIN.iter().find(|b| b.id == "pi").unwrap().model.is_empty());
-        assert!(BUILTIN.iter().find(|b| b.id == "codex").unwrap().model.is_empty());
+        // 派发名字的第二段（模型名）不再取内置模板的默认值：上报 agent 配置文件里现在的模型（见 providersync::current）
         // 内置 agent 全部换成找不到的命令：本机真装了 dsh、pi、codex 也不去执行它们的 --version
         // （本机执行 codex 会被 macOS 拦下、反复弹「包含恶意软件」的提示）
-        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()], ..Default::default() };
+        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
         let conf = vec![
             nope("dsh"),
             nope("claude"),
             nope("pi"),
             nope("codex"),
-            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()], ..Default::default() },
+            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
         ];
-        let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
+        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex", "mycli"]);
         let claude = specs.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.name, "Claude Code");
-        assert_eq!(claude.model, "opus-5.5", "配置文件没写 model：保留内置模板的默认值");
+        assert_eq!(claude.model, "", "配置文件没写 model：空（读 agent 自己的配置文件）");
         assert!(claude.default_check().is_none(), "换了命令就不再看内置的备用位置");
         assert_eq!(specs[4].name, "My CLI");
         assert_eq!(specs[4].model, "gpt-5");
         assert_eq!(specs[4].checks.len(), 1, "只有直接启动");
         assert!(!specs[4].misses_skill(&Env::direct(), &[]), "配置文件里的 agent 不检查 skill");
-        let r = specs[4].report();
+        let r = specs[4].report(None);
         assert_eq!((r.found, r.envs.len(), r.env, r.no_skill, r.model.as_str()), (false, 1, None, None, "gpt-5"));
-        // 配置文件里的 model 覆盖内置模板的
-        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()], ..Default::default() }];
-        let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
+        // 读得到 agent 配置文件里的模型、强度时报它们；读不到时用配置文件里的 model
+        let now = ("cn:deepseek-v4.1".to_string(), "high".to_string());
+        let r = specs[4].report(Some(&now));
+        assert_eq!((r.model.as_str(), r.effort.as_str()), ("cn:deepseek-v4.1", "high"));
+        assert!(r.opts.is_none() && r.run_mode.is_none(), "派发时能选什么不再上报");
+        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()] }];
+        let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs[0].model, "deepseek-reasoner");
     }
 
@@ -4276,54 +4077,17 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
-    /// 机器设置里的模型、思考强度怎么传给 agent（PRD §9.1）
+    /// 派发时不再按次传模型、强度：命令就是模板换掉 {prompt}、{patch}
     #[test]
-    fn model_and_effort_args() {
-        let b = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap();
-        let args = |id: &str, m: Option<&str>, e: Option<&str>| {
-            let x = b(id);
-            agent_args(&sv(x.cmd), &sv(x.model_args), &sv(x.effort_args), m, e, "P", "/tmp/patch.yml")
-        };
-        // 都没选：和原来的拼法完全一样
+    fn agent_args_only_fill_prompt_and_patch() {
         for x in &BUILTIN {
-            let old: Vec<String> = x.cmd.iter().skip(1).map(|a| a.replace("{prompt}", "P").replace("{patch}", "/tmp/patch.yml")).collect();
-            assert_eq!(args(x.id, None, None), old, "{} 没选时命令不变", x.id);
+            let want: Vec<String> = x.cmd.iter().skip(1).map(|a| a.replace("{prompt}", "P").replace("{patch}", "/tmp/patch.yml")).collect();
+            assert_eq!(agent_args(&sv(x.cmd), "P", "/tmp/patch.yml"), want, "{}", x.id);
         }
-        // Claude Code：--model、--effort 插在提示词前面
         assert_eq!(
-            args("claude", Some("sonnet"), Some("high")),
-            sv(&["-p", "--model", "sonnet", "--effort", "high", "P", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"])
+            agent_args(&sv(BUILTIN.iter().find(|b| b.id == "claude").unwrap().cmd), "P", ""),
+            sv(&["-p", "P", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"])
         );
-        // Codex：-m、-c model_reasoning_effort=…，子命令 exec 还在最前
-        assert_eq!(
-            args("codex", Some("gpt-5-codex"), Some("high")),
-            sv(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=high", "P"])
-        );
-        // pi：--model、--thinking；只选一项时只传那一项
-        assert_eq!(args("pi", Some("anthropic/claude-sonnet"), Some("xhigh")), sv(&["--mode", "json", "--model", "anthropic/claude-sonnet", "--thinking", "xhigh", "P"]));
-        assert_eq!(args("pi", None, Some("low")), sv(&["--mode", "json", "--thinking", "low", "P"]));
-        // dsh 没有这两项：选了也不传
-        assert_eq!(args("dsh", Some("x"), Some("high")), args("dsh", None, None));
-        // 模板里没有 {prompt}：放在最后
-        assert_eq!(agent_args(&sv(&["a", "b"]), &sv(&["--m", "{model}"]), &[], Some("x"), None, "P", ""), sv(&["b", "--m", "x"]));
-        // 上报能选什么：claude 能选模型和五档强度；dsh 都不能；配置文件里新加的 agent 写了 effort_args 没写 efforts 时是三档
-        let conf = vec![
-            AgentConf { id: "claude".into(), cmd: sv(&["/nope/claude", "{prompt}"]), ..Default::default() },
-            AgentConf { id: "dsh".into(), cmd: sv(&["/nope/dsh", "{prompt}"]), ..Default::default() },
-            AgentConf { id: "mycli".into(), cmd: sv(&["/nope/mycli", "{prompt}"]), effort_args: Some(sv(&["--effort={effort}"])), ..Default::default() },
-            AgentConf { id: "plain".into(), cmd: sv(&["/nope/plain", "{prompt}"]), ..Default::default() },
-        ];
-        let specs = agent_specs(&conf, &[], &[Env::direct()]).unwrap();
-        let opts = |id: &str| specs.iter().find(|s| s.id == id).unwrap().report().opts.unwrap();
-        let a = |p: &[&str]| sv(p);
-        assert_eq!(
-            opts("claude"),
-            AgentOpts { model: true, models: sv(&["opus", "sonnet", "haiku", "fable"]), efforts: sv(&["low", "medium", "high", "xhigh", "max"]), protocols: a(&["anthropic"]) }
-        );
-        // dsh 不能选模型和强度，但它是内置 agent：共用配置「模型供应商」里能给它选三种接口的供应商
-        assert_eq!(opts("dsh"), AgentOpts { protocols: a(&["anthropic", "openai-chat", "openai-responses"]), ..Default::default() });
-        assert_eq!(opts("mycli"), AgentOpts { model: false, models: vec![], efforts: sv(&["low", "medium", "high"]), protocols: vec![] });
-        assert_eq!(opts("plain"), AgentOpts::default(), "没写 model_args、effort_args 的 agent 不显示这两项");
     }
 
     #[test]
@@ -4382,7 +4146,6 @@ mod tests {
         std::fs::write(repo.join(".agents").join("skills").join(SKILL).join("SKILL.md"), "x").unwrap();
         let spec = Spec {
             json_gate: None,
-            local_override: false,
             id: "pi".into(),
             name: "pi".into(),
             model: String::new(),
@@ -4392,10 +4155,6 @@ mod tests {
             git_bash: true,
             checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
             no_skill: BTreeMap::new(),
-            model_args: vec![],
-            effort_args: vec![],
-            efforts: vec![],
-            models: vec![],
         };
         let direct = Env::direct();
         let dirs = [("default/main".into(), repo.clone())];
@@ -4405,50 +4164,20 @@ mod tests {
         // 上报给服务端：看不到的标出该装到哪里，看得到的不标
         let mut spec = spec;
         spec.check_skills(std::slice::from_ref(&direct), &[]);
-        let r = spec.report();
+        let r = spec.report(None);
         let to = r.no_skill.clone().expect("看不到 board-skills 要上报");
         assert!(to.contains("/board-test-no-such-skills/board-skills") && to.contains(".agents/skills/board-skills"), "{to}");
         assert_eq!(r.envs[0].no_skill.as_deref(), Some(to.as_str()), "每个启动环境各自上报");
         spec.check_skills(std::slice::from_ref(&direct), &dirs);
-        let r = spec.report();
+        let r = spec.report(None);
         assert_eq!((r.no_skill, r.envs[0].no_skill.clone()), (None, None), "装了的不标");
 
         // Claude Code 不读 .agents/skills：仓库里只有 .agents/skills 时仍然提醒，提醒里写 .claude/skills
         let mut claude = Spec { id: "claude".into(), project: vec![".claude/skills".into()], ..spec };
         assert!(claude.misses_skill(&direct, &dirs), "Claude Code 看不到仓库的 .agents/skills");
         claude.check_skills(std::slice::from_ref(&direct), &dirs);
-        let to = claude.report().no_skill.unwrap();
+        let to = claude.report(None).no_skill.unwrap();
         assert!(to.contains("仓库的 .claude/skills/board-skills") && !to.contains(".agents/skills"), "{to}");
-    }
-
-    /// 共用配置的 agent 模板（#188）：合在内置模板后面、本机配置文件前面；本机配置覆盖了共用模板时标出来
-    #[test]
-    fn server_templates_merge_between_builtin_and_local_config() {
-        let t = |id: &str, cmd: &[&str]| AgentTemplate { id: id.into(), cmd: cmd.iter().map(|s| s.to_string()).collect(), ..Default::default() };
-        let server = vec![
-            AgentTemplate { name: "Kimi".into(), model: "k2".into(), model_args: vec!["--model".into(), "{model}".into()], ..t("kimi", &["/nope/kimi", "{prompt}"]) },
-            t("claude", &["/nope/claude", "-p", "{prompt}"]),
-            t("pi", &["/nope/pi", "{prompt}"]),
-        ];
-        let local = vec![AgentConf { id: "pi".into(), cmd: vec!["/nope/my-pi".into(), "{prompt}".into()], ..Default::default() }];
-        let specs = agent_specs(&local, &server, &[]).unwrap();
-        let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["dsh", "claude", "pi", "codex", "kimi"], "共用模板里新加的排在内置的后面");
-        let kimi = specs.iter().find(|s| s.id == "kimi").unwrap();
-        assert_eq!((kimi.name.as_str(), kimi.model.as_str(), kimi.cmd[0].as_str()), ("Kimi", "k2", "/nope/kimi"));
-        assert!(kimi.report().opts.unwrap().model, "模板写了传模型的参数：能选模型");
-        assert_eq!(kimi.efforts, ["low", "medium", "high"]);
-        let claude = specs.iter().find(|s| s.id == "claude").unwrap();
-        assert_eq!(claude.cmd, ["/nope/claude", "-p", "{prompt}"], "共用模板覆盖内置命令");
-        assert_eq!(claude.name, "Claude Code", "没写名称时用内置的");
-        assert!(!claude.model_args.is_empty(), "没写传参方式时用内置的");
-        assert!(claude.json_gate.is_none() && !claude.report().local_override);
-        let pi = specs.iter().find(|s| s.id == "pi").unwrap();
-        assert_eq!(pi.cmd[0], "/nope/my-pi", "本机配置文件优先");
-        assert!(pi.report().local_override, "本机配置覆盖了共用模板：上报时标出来");
-        // 没有共用模板时，本机配置覆盖内置模板不算
-        let specs = agent_specs(&local, &[], &[]).unwrap();
-        assert!(!specs.iter().find(|s| s.id == "pi").unwrap().local_override);
     }
 
     /// dsh 的 --json 从 0.2.2 起才有：本机更旧的去掉它，按原始输出运行；配置文件覆盖了命令的照原样用
@@ -4457,7 +4186,7 @@ mod tests {
         assert!(older_than("0.2.1", "0.2.2") && older_than("dsh 0.1.9", "0.2.2") && older_than("0.2", "0.2.2"));
         assert!(!older_than("0.2.2-rc.1", "0.2.2") && !older_than("0.10.0", "0.2.2") && !older_than("1.0", "0.2.2"));
         assert!(!older_than("", "0.2.2") && !older_than("unknown", "0.2.2"), "看不出版本时当作够新");
-        let specs = agent_specs(&[], &[], &[]).unwrap();
+        let specs = agent_specs(&[], &[]).unwrap();
         let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
         let check = |v: &str| Check { env: "direct".into(), found: true, version: v.into(), prog: Some("dsh".into()) };
         assert!(dsh.cmd_for(&check("0.2.2-rc.1")).contains(&"--json".to_string()));
@@ -4465,7 +4194,7 @@ mod tests {
         assert!(!old.contains(&"--json".to_string()), "{old:?}");
         assert_eq!(logfmt::stream_for("dsh", &old), None, "去掉之后按原始输出处理");
         let conf = vec![AgentConf { id: "dsh".into(), cmd: vec!["dsh".into(), "--json".into(), "{prompt}".into()], ..Default::default() }];
-        let specs = agent_specs(&conf, &[], &[]).unwrap();
+        let specs = agent_specs(&conf, &[]).unwrap();
         let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
         assert!(dsh.cmd_for(&check("0.1.0")).contains(&"--json".to_string()), "配置文件写的命令照原样用");
     }

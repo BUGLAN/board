@@ -38,9 +38,7 @@ fn host_patch_accepts_workspace_from_old_and_new_clients() {
         asked: None,
         ask_error: None,
         selftest: false,
-        skills: None,
-        mcp: None,
-        providers: None,
+        config_sync: true,
         local_skills: None,
     };
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, None)).unwrap();

@@ -402,9 +402,7 @@ fn host_rename_renames_the_machine_record() {
         asked: None,
         ask_error: None,
         selftest: false,
-        skills: None,
-        mcp: None,
-        providers: None,
+        config_sync: false,
         local_skills: None,
     };
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();

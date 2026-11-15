@@ -40,9 +40,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         asked: None,
         ask_error: None,
         selftest: true,
-        skills: None,
-        mcp: None,
-        providers: None,
+        config_sync: true,
         local_skills: None,
     }
 }
@@ -1853,7 +1851,8 @@ fn session_queue_is_planned_and_shown() {
         let c = next(&mut s, t, &name).unwrap();
         assert_eq!((c.card.id, c.card.holder.as_deref()), (*want, Some(name.as_str())));
         let started = c.activity.iter().rev().find(|a| a.text.starts_with("派发开始")).unwrap();
-        assert!(started.text.ends_with(&format!("接着做（定时，这个会话的第 {} 张）", k + 2)), "{}", started.text);
+        // 派发记录里的模型是 board host 上报的、配置文件里现在的
+        assert!(started.text.ends_with(&format!("接着做（定时，这个会话的第 {} 张，模型 opus-5.5）", k + 2)), "{}", started.text);
         t += S;
     }
     let cur = s.read(|r| r.active_dispatches()).unwrap().into_iter().find(|d| d.state == "running").unwrap();
@@ -3134,68 +3133,95 @@ fn version_order() {
     assert!(!hosts::version_lt("1.0.0", "0.9.9"));
 }
 
-/* ------------------------------ 模型和思考强度（PRD §9.1） ------------------------------ */
+/* ------------------------------ 模型：用服务器的 / 不改 / 单独配置（机器详情与配置同步重构） ------------------------------ */
 
-/// 新版 board host：claude 上报能选的模型和强度
-fn report_opts(instance: &str) -> HostReport {
-    let mut r = report("mbp", instance, vec![]);
-    r.agents[0].opts = Some(AgentOpts {
-        model: true,
-        models: vec!["opus".into(), "sonnet".into()],
-        efforts: ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec(),
+/// 两个供应商：p1（Anthropic，model-a 标了 low、high；model-b 没标）、chat（只有 OpenAI Chat）
+fn providers(s: &mut Store) {
+    let ep = |i: &str| crate::providers::ProviderEndpoint { interface: i.into(), url: "https://api.example.com".into() };
+    let p1 = crate::providers::Provider {
+        name: "p1".into(),
+        endpoints: vec![ep("anthropic")],
+        api_key: Some("sk-1".into()),
+        models: vec!["model-a".into(), "model-b".into()],
+        efforts: [("model-a".to_string(), vec!["low".to_string(), "high".into()])].into(),
         ..Default::default()
-    });
-    r
+    };
+    let chat = crate::providers::Provider { name: "chat".into(), endpoints: vec![ep("openai-chat")], api_key: Some("sk-2".into()), models: vec!["c1".into()], ..Default::default() };
+    s.write(T0, Origin::ui(None), |w| {
+        w.provider_put(p1, "buglan", "")?;
+        w.provider_put(chat, "buglan", "")
+    })
+    .unwrap();
 }
 
-fn set_run(s: &mut Store, model: Option<&str>, effort: Option<&str>) -> Result<HostInfo> {
-    let run = RunPatch { agent: "claude".into(), model: model.map(str::to_string), effort: effort.map(str::to_string), ..Default::default() };
+fn set_run(s: &mut Store, v: serde_json::Value) -> Result<HostInfo> {
+    let run: RunPatch = serde_json::from_value(v).unwrap();
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { run: Some(run), ..Default::default() }))
 }
 
-#[test]
-fn model_and_effort_are_validated_and_shown() {
-    let mut s = store();
-    // 旧版 board host（不上报能选什么）：不能设
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let e = set_run(&mut s, Some("sonnet"), None).unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
-    assert!(e.message.contains("升级到"), "{}", e.message);
-    beat(&mut s, T0 + S, &report_opts("i1")).unwrap();
-    let h = set_run(&mut s, Some(" sonnet "), Some("high")).unwrap();
-    let a = h.agents.iter().find(|a| a.id == "claude").unwrap();
-    assert_eq!((a.run_model.as_deref(), a.run_effort.as_deref()), (Some("sonnet"), Some("high")));
-    // 不支持的档位、不像模型名的值：USAGE
-    assert_eq!(set_run(&mut s, None, Some("turbo")).unwrap_err().code, ErrorCode::Usage);
-    assert_eq!(set_run(&mut s, Some("son net; rm -rf"), None).unwrap_err().code, ErrorCode::Usage);
-    // 只改一项另一项不动；空字符串回到默认
-    let h = set_run(&mut s, None, Some("")).unwrap();
-    let a = h.agents.iter().find(|a| a.id == "claude").unwrap();
-    assert_eq!((a.run_model.as_deref(), a.run_effort.as_deref()), (Some("sonnet"), None));
-    // 和启动环境一起存：互不覆盖
-    let h = set_run(&mut s, Some(""), None).unwrap();
-    assert!(h.agents.iter().all(|a| a.run_model.is_none() && a.run_effort.is_none()));
+fn claude_of(h: &HostInfo) -> HostAgent {
+    h.agents.iter().find(|a| a.id == "claude").cloned().unwrap()
 }
 
 #[test]
-fn dispatch_passes_model_and_effort_and_names_after_the_model() {
+fn model_modes_default_to_off_and_are_validated() {
     let mut s = store();
-    beat(&mut s, T0, &report_opts("i1")).unwrap();
-    set_run(&mut s, Some("sonnet"), Some("high")).unwrap();
+    providers(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    // 新机器：全部不改（给旧版 board host 的写法是 @local）
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    let a = claude_of(&h);
+    assert_eq!((a.run_mode.as_deref(), a.run_provider.as_deref()), (Some("off"), Some("@local")));
+    assert!(!h.sync_skills && !h.sync_mcp, "skills、MCP 也是不改");
+    // 用服务器的
+    let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "server" })).unwrap());
+    assert_eq!((a.run_mode.as_deref(), a.run_provider.as_deref(), a.run_model.as_deref()), (Some("server"), None, None));
+    // 单独配置：模型留空用第一个；强度要是模型标了的、claude 能写的
+    let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1" })).unwrap());
+    assert_eq!((a.run_mode.as_deref(), a.run_provider.as_deref(), a.run_model.as_deref(), a.run_effort.as_deref()), (Some("own"), Some("p1"), Some("model-a"), None));
+    let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1", "model": "model-a", "effort": "high" })).unwrap());
+    assert_eq!(a.run_effort.as_deref(), Some("high"));
+    // 只改强度：供应商、模型不动
+    let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "effort": "low" })).unwrap());
+    assert_eq!((a.run_provider.as_deref(), a.run_model.as_deref(), a.run_effort.as_deref()), (Some("p1"), Some("model-a"), Some("low")));
+    let bad = |s: &mut Store, v: serde_json::Value| set_run(s, v).unwrap_err().message;
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1", "model": "model-b", "effort": "high" })).contains("不能选强度"), "model-b 没标强度");
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1", "model": "model-a", "effort": "max" })).contains("low、high"));
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "chat" })).contains("接口"), "claude 只认 Anthropic");
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "nope" })).contains("没有模型供应商"));
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "own", "provider": "p1", "model": "zzz" })).contains("没有模型"));
+    assert!(bad(&mut s, serde_json::json!({ "agent": "claude", "mode": "later" })).contains("只能是"));
+    assert!(bad(&mut s, serde_json::json!({ "agent": "kimi", "mode": "server" })).contains("内置"));
+    // 旧界面只带供应商：空 = 用服务器的，@local = 不改
+    assert_eq!(claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "provider": "" })).unwrap()).run_mode.as_deref(), Some("server"));
+    let a = claude_of(&set_run(&mut s, serde_json::json!({ "agent": "claude", "provider": "@local" })).unwrap());
+    assert_eq!((a.run_mode.as_deref(), a.run_model.as_deref()), (Some("off"), None), "改成不改：单独配置的清掉");
+}
+
+#[test]
+fn dispatch_records_the_model_the_agent_config_has() {
+    let mut s = store();
+    // board host 上报：claude 配置文件里现在是 sonnet、强度 high（同步写进去的，或人配的）
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents[0].model = "sonnet".into();
+    rep.agents[0].effort = "high".into();
+    beat(&mut s, T0, &rep).unwrap();
     let id = new_card(&mut s, T0, "A");
     let d = dispatch(&mut s, T0, id, "mbp", None).unwrap();
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     assert_eq!((d.model.as_deref(), d.effort.as_deref()), (Some("sonnet"), Some("high")));
-    assert_eq!(d.name.as_deref(), Some("claude-mbp/sonnet"), "设置了模型时名字第二段用它");
+    assert_eq!(d.name.as_deref(), Some("claude-mbp/sonnet"), "名字第二段是配置文件里的模型");
     let acts = card(&s, id).activity;
     assert!(acts.iter().any(|a| a.text.contains("派发开始") && a.text.contains("模型 sonnet，强度 high")), "{acts:?}");
     end(&mut s, T0 + 2 * S, d.id, Some(0), &[]);
-    // 都改回默认：名字、派发记录和原来一样
-    set_run(&mut s, Some(""), Some("")).unwrap();
+    // 读不到模型（没配）：名字只写 agent 标识
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents[0].model = String::new();
+    beat(&mut s, T0 + 3 * S, &rep).unwrap();
     let id2 = new_card(&mut s, T0, "B");
     let d2 = dispatch(&mut s, T0 + 3 * S, id2, "mbp", None).unwrap();
     let d2 = begin(&mut s, T0 + 3 * S, d2.id).unwrap();
-    assert_eq!((d2.model, d2.effort, d2.name.as_deref()), (None, None, Some("claude-mbp/opus-5.5")));
+    assert_eq!((d2.model, d2.effort, d2.name.as_deref()), (None, None, Some("claude-mbp/claude")));
 }
 
 /* ------------------------------ 会话页（PRD §10.8、§10.12） ------------------------------ */
@@ -3557,69 +3583,173 @@ fn crash_comment_shows_the_last_events_and_folds_the_raw_output() {
     assert!(!t.contains("日志最后"), "{t}");
 }
 
-/* ------------------------------ 复制机器设置、agent 模板（#188） ------------------------------ */
+/* ------------------------------ 同步配置（机器详情与配置同步重构 §三） ------------------------------ */
 
-#[test]
-fn copy_settings_to_other_hosts_changes_only_the_chosen_items() {
-    let mut s = store();
-    for (n, i) in [("a", "ia"), ("b", "ib"), ("c", "ic")] {
-        beat(&mut s, T0, &report(n, i, vec![])).unwrap();
-    }
-    new_card_tagged(&mut s, "x");
-    let patch = |v: serde_json::Value| -> HostPatch { serde_json::from_value(v).unwrap() };
-    s.write(T0, Origin::ui(None), |w| {
-        w.host_update("a", &patch(serde_json::json!({ "rules": [cond("in", &["deepseek"], "claude")], "fallback": "claude", "auto": true, "windows": [[540, 1080]], "max": 3 })))
-    })
-    .unwrap();
-    s.write(T0, Origin::ui(None), |w| w.host_update("b", &patch(serde_json::json!({ "max": 2 })))).unwrap();
-    let out = s
-        .write(T0 + S, Origin::ui(None), |w| w.host_copy("a", &["b".into(), "c".into()], &["rules".into(), "cron".into()], "buglan"))
-        .unwrap();
-    assert_eq!(out.len(), 2);
-    let a = s.read(|r| r.host("a", T0 + S)).unwrap();
-    for name in ["b", "c"] {
-        let h = s.read(|r| r.host(name, T0 + S)).unwrap();
-        assert_eq!(h.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect::<Vec<_>>(), a.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect::<Vec<_>>());
-        assert_eq!((h.fallback.as_deref(), h.auto, h.windows.clone()), (Some("claude"), true, vec![[540, 1080]]));
-        let ops = h.ops.clone();
-        assert!(ops.iter().any(|o| o.text.starts_with("复制了 a 的设置：自动接单和接单时段") && o.by == "buglan"), "{ops:?}");
-    }
-    // 没选的项不变
-    assert_eq!(s.read(|r| r.host("b", T0 + S)).unwrap().max, 2);
-    assert_eq!(s.read(|r| r.host("c", T0 + S)).unwrap().max, 1);
-    // 目标机器上找不到的 agent、没有的启动环境照样复制，标出不生效
-    s.write(T0, Origin::ui(None), |w| {
-        w.tx.execute("UPDATE hosts SET agent = 'kimi', run = '{\"claude\":{\"env\":\"wsl:Ubuntu\",\"model\":\"sonnet\"}}' WHERE name = 'a'", [])?;
-        Ok(())
-    })
-    .unwrap();
-    s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_copy("a", &["b".into()], &["agent".into(), "run".into()], "buglan")).unwrap();
-    let b = s.read(|r| r.host("b", T0 + 2 * S)).unwrap();
-    assert_eq!((b.agent.as_deref(), b.agent_set.as_deref()), (Some("claude"), Some("kimi")), "找不到的默认 agent 不生效，用第一个找到的");
-    let c = b.agents.iter().find(|x| x.id == "claude").unwrap();
-    assert_eq!((c.run_env.as_deref(), c.run_model.as_deref()), (Some("wsl:Ubuntu"), Some("sonnet")));
-    // 校验
-    let mut e = |from: &str, to: &[&str], items: &[&str]| {
-        s.write(T0, Origin::ui(None), |w| w.host_copy(from, &to.iter().map(|x| x.to_string()).collect::<Vec<_>>(), &items.iter().map(|x| x.to_string()).collect::<Vec<_>>(), "x")).unwrap_err().message
+fn sync_of(s: &Store, name: &str) -> ConfigSync {
+    s.read(|r| r.host(name, T0)).unwrap().sync
+}
+
+fn synced(s: &mut Store, name: &str, instance: &str, id: Option<i64>, key: &str, agents: Vec<crate::providers::ProviderState>) -> Result<HostInfo> {
+    let res = SyncResult {
+        id,
+        key: key.into(),
+        agents,
+        skills: SkillsSync { state: "synced".into(), count: 3, replaced: vec!["frontend-design".into()], ..Default::default() },
+        mcp: McpSync { state: "synced".into(), count: 2, agents: vec!["Claude Code".into()], ..Default::default() },
+        ..Default::default()
     };
-    assert!(e("a", &["a"], &["cron"]).contains("它自己"));
-    assert!(e("a", &["b"], &[]).contains("至少选一项"));
-    assert!(e("a", &[], &["cron"]).contains("至少选一台"));
-    assert!(e("a", &["b"], &["dirs"]).contains("不认识"));
-    assert!(e("a", &["nope"], &["cron"]).contains("nope"));
+    s.write(T0, Origin::cli(), |w| w.host_synced(name, instance, res))
 }
 
 #[test]
-fn agent_templates_reach_every_host_in_its_work() {
+fn config_changes_ask_affected_hosts_to_sync_and_reports_clear_it() {
+    let mut s = store();
+    providers(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let mut old = report("old", "i2", vec![]);
+    old.config_sync = false;
+    beat(&mut s, T0, &old).unwrap();
+    // board host 启动时自己写一次：带着任务里的 key 回报
+    let key = s.read(|r| r.host_work("mbp", T0)).unwrap().config_key;
+    synced(&mut s, "mbp", "i1", None, &key, vec![]).unwrap();
+    let cs = sync_of(&s, "mbp");
+    assert!(cs.ask.is_none() && cs.last.as_ref().is_some_and(|l| l.key == key));
+    // 都是不改：改供应商、skills 库不影响它
+    s.write(T0, Origin::ui(None), |w| w.skill_put("demo", &[crate::skills::SkillFile { path: "SKILL.md".into(), exec: false, data: crate::skills::b64(b"# demo") }], "buglan", "")).unwrap();
+    assert!(sync_of(&s, "mbp").ask.is_none(), "skills 不改：库变了不用同步");
+    // 机器改成 skills 用服务器的：下发请求
+    s.write(T0, Origin::ui(None), |w| w.host_update_as("mbp", &HostPatch { sync_skills: Some(true), ..Default::default() }, "buglan")).unwrap();
+    let ask = sync_of(&s, "mbp").ask.expect("要同步");
+    assert_eq!(ask.by, "buglan");
+    assert!(sync_of(&s, "old").ask.is_none(), "旧版 board host 不发请求");
+    // 再改一个：等着的请求换成新的样子
+    s.write(T0, Origin::ui(None), |w| w.provider_agent_put(crate::providers::AgentProvider { agent: "claude".into(), provider: "p1".into(), ..Default::default() }, "buglan")).unwrap();
+    assert_eq!(sync_of(&s, "mbp").ask.unwrap().key, ask.key, "claude 不改：分配变了不影响");
+    set_run(&mut s, serde_json::json!({ "agent": "claude", "mode": "server" })).unwrap();
+    let ask2 = sync_of(&s, "mbp").ask.unwrap();
+    assert_ne!(ask2.key, ask.key);
+    assert!(ask2.id > ask.id);
+    // 回报：清掉请求，记一条操作记录
+    let st = crate::providers::ProviderState { agent: "claude".into(), state: "synced".into(), provider: "p1".into(), model: "model-a".into(), ..Default::default() };
+    let h = synced(&mut s, "mbp", "i1", Some(ask2.id), &ask2.key, vec![st]).unwrap();
+    assert!(h.sync.ask.is_none());
+    assert_eq!(h.sync.last.as_ref().unwrap().agents.len(), 1);
+    let op = &h.ops[0];
+    assert_eq!(op.text, "同步配置：1 个 agent 已写入；3 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design");
+    assert_eq!(op.by, "人", "改分配的是界面上的人");
+    // 改供应商的强度：用着它的机器要重新写
+    let ep = crate::providers::ProviderEndpoint { interface: "anthropic".into(), url: "https://api.example.com".into() };
+    s.write(T0, Origin::ui(None), |w| w.provider_put(crate::providers::Provider { name: "p1".into(), endpoints: vec![ep], api_key: None, models: vec!["model-a".into()], ..Default::default() }, "buglan", "")).unwrap();
+    let ask3 = sync_of(&s, "mbp").ask.expect("供应商变了");
+    // 写的时候又改了：结果的 key 对不上，再发一次
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { sync_skills: Some(false), ..Default::default() })).unwrap();
+    let ask4 = sync_of(&s, "mbp").ask.unwrap();
+    assert_ne!(ask4.key, ask3.key);
+    let h = synced(&mut s, "mbp", "i1", Some(ask3.id), &ask3.key, vec![]).unwrap();
+    assert!(h.sync.ask.as_ref().is_some_and(|a| a.key == ask4.key), "还要按最新的再写一次");
+    // 换了进程的旧结果不收
+    assert!(synced(&mut s, "mbp", "i9", Some(ask4.id), &ask4.key, vec![]).is_err());
+    // 重试：样子没变也发
+    let h = s.write(T0, Origin::ui(None), |w| w.host_sync_retry("mbp", "buglan")).unwrap();
+    assert!(h.sync.ask.unwrap().id > ask4.id);
+    assert!(s.write(T0, Origin::ui(None), |w| w.host_sync_retry("old", "buglan")).unwrap_err().message.contains("旧版"));
+}
+
+/// 升级：已有的机器保持原来的效果（skills、MCP 用服务器的；跟共用配置的 agent 用服务器的，本机自己管的不改，
+/// 单独指定了供应商的单独配置），派发时的模型、强度清掉；跑多久停取机器里最常见的；agent 模板的表删掉
+#[test]
+fn old_hosts_keep_syncing_after_upgrade_and_run_limits_become_global() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        providers(&mut s);
+        for n in ["mbp", "win", "air"] {
+            let mut rep = report(n, &format!("i-{n}"), vec![]);
+            rep.agents.push(dsh(true));
+            rep.agents.push(HostAgent { id: "kimi".into(), name: "kimi".into(), found: true, ..Default::default() });
+            beat(&mut s, T0, &rep).unwrap();
+        }
+    }
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"ALTER TABLE hosts DROP COLUMN sync_skills;
+               ALTER TABLE sched DROP COLUMN max_run;
+               ALTER TABLE sched DROP COLUMN idle_run;
+               CREATE TABLE agent_templates (id TEXT PRIMARY KEY, spec TEXT NOT NULL, version TEXT NOT NULL, updated_at INTEGER NOT NULL, by_name TEXT NOT NULL);
+               UPDATE hosts SET max_run = 60, idle_run = 15 WHERE name IN ('mbp', 'win');
+               UPDATE hosts SET max_run = 240, idle_run = 30 WHERE name = 'air';
+               UPDATE hosts SET run = '{"claude":{"env":"login","model":"sonnet","effort":"high"},"dsh":{"provider":"@local"},"kimi":{"model":"k2"}}' WHERE name = 'mbp';
+               UPDATE hosts SET run = '{"claude":{"provider":"p1","model":"model-b"}}' WHERE name = 'win';"#,
+        )
+        .unwrap();
+    let s = Store::open(&path).unwrap();
+    let h = |n: &str| s.read(|r| r.host(n, T0)).unwrap();
+    let mode = |h: &HostInfo, a: &str| h.agents.iter().find(|x| x.id == a).and_then(|x| x.run_mode.clone()).unwrap();
+    for n in ["mbp", "win", "air"] {
+        assert!(h(n).sync_skills && h(n).sync_mcp, "{n}：以前都同步，记成用服务器的");
+    }
+    let mbp = h("mbp");
+    assert_eq!((mode(&mbp, "claude").as_str(), mode(&mbp, "dsh").as_str()), ("server", "off"));
+    let c = mbp.agents.iter().find(|x| x.id == "claude").unwrap();
+    assert_eq!((c.run_env.as_deref(), c.run_model.as_deref(), c.run_effort.as_deref()), (Some("login"), None, None), "启动环境留着，派发时的模型、强度清掉");
+    assert_eq!(mode(&mbp, "kimi").as_str(), "off", "配置文件里新加的 agent 不按供应商写");
+    let win = h("win");
+    let c = win.agents.iter().find(|x| x.id == "claude").unwrap();
+    assert_eq!((c.run_mode.as_deref(), c.run_provider.as_deref(), c.run_model.as_deref()), (Some("own"), Some("p1"), Some("model-b")));
+    assert_eq!(mode(&win, "dsh").as_str(), "server", "没设过的跟共用配置：用服务器的");
+    let sched = s.read(|r| r.sched(T0)).unwrap();
+    assert_eq!((sched.max_run, sched.idle_run), (60, 15), "两台是 60 / 15");
+    assert_eq!(h("air").max_run, 60);
+    let gone: i64 = s.conn().query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'agent_templates'", [], |r| r.get(0)).unwrap();
+    assert_eq!(gone, 0);
+    drop(s);
+    // 再打开一次不重复迁移：新设的不改
+    let mut s = Store::open(&path).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { sync_skills: Some(false), ..Default::default() })).unwrap();
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    assert!(!s.read(|r| r.host("mbp", T0)).unwrap().sync_skills);
+}
+
+#[test]
+fn sync_words_name_failures_and_off() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let hosts = s.rev().unwrap();
-    let t = AgentTemplate { id: "kimi".into(), cmd: vec!["/tmp/kimi".into(), "{prompt}".into()], ..Default::default() };
-    s.write(T0, Origin::ui(None), |w| w.template_put(t, "buglan")).unwrap();
-    assert!(s.rev().unwrap() > hosts, "改了模板算变更：在线的 board host 马上重新取任务");
+    let res = SyncResult {
+        agents: vec![
+            crate::providers::ProviderState { agent: "claude".into(), state: "synced".into(), ..Default::default() },
+            crate::providers::ProviderState { agent: "pi".into(), state: "failed".into(), why: Some("x".into()), ..Default::default() },
+            crate::providers::ProviderState { agent: "dsh".into(), state: "off".into(), ..Default::default() },
+        ],
+        skills: SkillsSync { state: "off".into(), count: 1, ..Default::default() },
+        mcp: McpSync { state: "off".into(), ..Default::default() },
+        ..Default::default()
+    };
+    let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
+    assert_eq!(h.ops[0].text, "同步配置：1 个 agent 已写入，pi 失败；只装 board-skills");
+}
+
+#[test]
+fn run_limits_are_one_value_for_every_host() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("win", "i2", vec![])).unwrap();
     let w = s.read(|r| r.host_work("mbp", T0)).unwrap();
-    let list = w.templates.unwrap();
-    assert_eq!((list.len(), list[0].id.as_str(), list[0].cmd.clone()), (1, "kimi", vec!["/tmp/kimi".to_string(), "{prompt}".to_string()]));
+    assert_eq!((w.host.max_run, w.host.idle_run), (MAX_RUN_DEFAULT, IDLE_RUN_DEFAULT));
+    let sched = s.write(T0, Origin::ui(None), |w| w.set_run_limits(Some(30), Some(5))).unwrap();
+    assert_eq!((sched.max_run, sched.idle_run), (30, 5));
+    for name in ["mbp", "win"] {
+        let w = s.read(|r| r.host_work(name, T0)).unwrap();
+        assert_eq!((w.host.max_run, w.host.idle_run), (30, 5), "{name}：board host 照旧从机器设置里读");
+    }
+    // 旧界面从机器设置里改：改的是全局的
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max_run: Some(0), ..Default::default() })).unwrap();
+    assert_eq!(s.read(|r| r.host("win", T0)).unwrap().max_run, 0);
+    assert!(s.write(T0, Origin::ui(None), |w| w.set_run_limits(Some(-1), None)).is_err());
+    assert!(s.write(T0, Origin::ui(None), |w| w.set_run_limits(None, Some(IDLE_RUN_LIMIT + 1))).is_err());
 }
 
 /* ------------------------------ 拆解「未整理」里的条目（PRD §9.1） ------------------------------ */
@@ -3870,12 +4000,13 @@ fn check_generates_name_from_host_agent_settings() {
     assert_eq!(check_gen(&mut s, T0 + S, Some("win"), "claude", Some(1)).unwrap().name, "claude-win/opus-5.5");
 }
 
-/// 机器设置里选了模型时名字第二段用它，和派发一致
+/// 名字第二段是 board host 上报的、配置文件里现在的模型，和派发一致
 #[test]
-fn check_uses_the_model_selected_in_machine_settings() {
+fn check_uses_the_model_the_agent_config_has() {
     let mut s = store();
-    beat(&mut s, T0, &report_opts("i1")).unwrap();
-    set_run(&mut s, Some("sonnet"), None).unwrap();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents[0].model = "sonnet".into();
+    beat(&mut s, T0, &rep).unwrap();
     assert_eq!(check_gen(&mut s, T0 + S, Some("mbp"), "claude", Some(1)).unwrap().name, "claude-mbp/sonnet");
 }
 

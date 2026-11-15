@@ -4,15 +4,15 @@
 //! - `board skills push <目录>…`：把本机的 skill 目录传进库里（目录名就是 skill 名，里面要有 SKILL.md），同名的覆盖成新版本
 //! - `board skills sync`：按库更新本机；本机有 board host 在跑时由它来做
 //! - `board skills rm <名称>`：从库里删掉，各台机器上同步装的那份随后被删掉
-//! - board host 启动时、库变了时（服务端推送）、重新检查后、每 10 分钟，在后台调 [`sync`]：把库里的 skill 写进本机每个
+//! - board host 启动时、收到服务端的「同步配置」请求时，在后台调 [`sync`]：把库里的 skill 写进本机每个
 //!   找到的 agent 读用户级 skill 的目录（内置模板的第一个：`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`；
-//!   WSL 里的 agent 写到 WSL 用户目录下），结果按 agent、skill 逐项上报。
+//!   WSL 里的 agent 写到 WSL 用户目录下）。机器上 skills 选了「不改」时只装 board-skills，别的不碰（之前装的也不删）。
 //!
-//! 写法：先写进同一目录下的临时目录，写完整体换上；目录里放标记文件 `.board-sync`（名称、版本）。只动带标记的：
-//! 本机已有同名、没有标记的目录（包括开发用的链接）不覆盖，状态是「本机有同名，没有覆盖」；库里删掉的、带标记的删掉。
-//! board-skills 例外：不是链接的旧拷贝（以前桌面端一键安装、解压 board-skills.zip 装的，没有标记）换成同步装的。
+//! 写法：先写进同一目录下的临时目录，写完整体换上；目录里放标记文件 `.board-sync`（名称、版本），带标记的归 Board 管、
+//! 跟着库更新，库里删掉的删掉。本机已有同名、没有标记的目录（不是 Board 装的）：挪进备份目录
+//! （`~/.board/host/skills-backup/<名称>-<时间>/`）再换上库里的，之后归 Board 管；软链接（开发中的 skill）不碰，
+//! 状态写「本机是软链接，没有覆盖」。本机自己的同名目录内容和库里的一样（例如就是从这台机器导入的）时算已同步，也不动它。
 //! board-skills 写好后把 `bin/<平台>/board` 换成 board host 自己的 board（WSL 里不放：那里用 PATH 里的 Linux 版）。
-//! 本机自己的同名目录内容和库里的一样（例如就是从这台机器导入的）时算已同步，也不动它。
 //!
 //! 从机器导入（界面「从机器导入」）：board host 每次同步后列出各目录里不是同步装的 skill（[`local_skills`]）随上报带上；
 //! 人勾了要导入的，board host 用 [`import_one`] 把那几个目录传进库（和 `board skills push` 一样），本机的目录不动。
@@ -195,19 +195,51 @@ fn install(dir: &Path, pack: &SkillPack, exe: Option<&Path>) -> std::result::Res
 }
 
 /// 一次同步的结果：每个 agent、每个 skill 的状态，以及做了哪些改动（打印用）
+#[derive(Default)]
 pub struct Synced {
     pub states: Vec<SkillState>,
     pub changes: Vec<String>,
-    /// 各目录里不是同步装的 skill（board host 在同步之后填上，「从机器导入」用）
-    pub local: Vec<LocalSkill>,
-    /// 这次同步的目录（导入时按显示的路径找回去）
-    pub targets: Vec<Target>,
+    /// 换掉了的本机同名 skill（旧的挪进了备份目录）
+    pub replaced: Vec<String>,
+    /// 本机同名的是软链接，没有覆盖
+    pub links: Vec<String>,
+}
+
+/// 同步怎么做
+pub struct Opts<'a> {
+    /// skills 选了「不改」：只装 board-skills，别的不碰（之前装的也不删）
+    pub only_builtin: bool,
+    /// 本机同名、不是 Board 装的挪到这里（`<名称>-<时间>/`）
+    pub backup: &'a Path,
+}
+
+/// 备份目录：`~/.board/host/skills-backup`
+pub fn backup_dir() -> PathBuf {
+    crate::config::board_dir().map(|d| d.join("host").join("skills-backup")).unwrap_or_else(|_| PathBuf::from("skills-backup"))
+}
+
+/// 把本机同名、不是 Board 装的挪进备份目录（`<名称>-<时间>/`）
+fn move_aside(dest: &Path, name: &str, backup: &Path) -> std::result::Result<(), String> {
+    std::fs::create_dir_all(backup).map_err(|e| format!("建不了备份目录 {}：{e}", backup.display()))?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let mut to = backup.join(format!("{name}-{stamp}"));
+    let mut n = 1;
+    while to.exists() {
+        n += 1;
+        to = backup.join(format!("{name}-{stamp}-{n}"));
+    }
+    std::fs::rename(dest, &to).map_err(|e| format!("挪不进备份目录 {}：{e}", to.display()))
 }
 
 /// 按库同步这些目录。`fetch` 取一个 skill 的内容（board host、命令行都从服务端取）；`exe` 是放进 board-skills 的 board
-pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, mut fetch: impl FnMut(&str) -> Result<SkillPack>) -> Synced {
+pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, opts: Opts, mut fetch: impl FnMut(&str) -> Result<SkillPack>) -> Synced {
     let mut states = vec![];
     let mut changes = vec![];
+    let mut replaced: Vec<String> = vec![];
+    let mut links: Vec<String> = vec![];
+    let all = lib;
+    let only: Vec<SkillInfo> = lib.iter().filter(|s| s.name == BUILTIN).cloned().collect();
+    let lib: &[SkillInfo] = if opts.only_builtin { &only } else { all };
     let mut packs: BTreeMap<String, std::result::Result<SkillPack, String>> = BTreeMap::new();
     for t in targets {
         let state = |skill: &str, state: &str, version: Option<String>, why: Option<String>| -> Vec<SkillState> {
@@ -222,27 +254,43 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, mut fetch
             }
             continue;
         }
-        let mine = synced_in(&t.dir);
-        // 库里删掉的：同步装的那份删掉
-        for name in mine.keys().filter(|n| !lib.iter().any(|s| &s.name == *n)) {
-            if std::fs::remove_dir_all(t.dir.join(name)).is_ok() {
-                changes.push(format!("删掉 {}/{name}（库里已经删了）", t.shown));
+        // 库里删掉的：同步装的那份删掉（「不改」时不碰）
+        if !opts.only_builtin {
+            let mine = synced_in(&t.dir);
+            for name in mine.keys().filter(|n| !lib.iter().any(|s| &s.name == *n)) {
+                if std::fs::remove_dir_all(t.dir.join(name)).is_ok() {
+                    changes.push(format!("删掉 {}/{name}（库里已经删了）", t.shown));
+                }
             }
         }
         for s in lib {
             let dest = t.dir.join(&s.name);
             let link = std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_symlink());
-            // board-skills 例外：不是链接的旧拷贝（以前桌面端一键安装、解压 board-skills.zip 装的，没有标记）换成同步装的
-            let adopt = s.name == BUILTIN && !link && dest.join("SKILL.md").is_file();
-            if std::fs::symlink_metadata(&dest).is_ok() && mark_of(&dest).is_none() && !adopt {
+            let mut moved = false;
+            if std::fs::symlink_metadata(&dest).is_ok() && mark_of(&dest).is_none() {
                 // 本机自己的这份和库里的内容一样（例如就是从这台机器导入的）：算已同步，不动它
-                if scan(&dest).is_ok_and(|(_, _, v)| v == s.version) {
+                if !link && scan(&dest).is_ok_and(|(_, _, v)| v == s.version) {
                     states.extend(state(&s.name, "synced", Some(s.version.clone()), None));
                     continue;
                 }
-                let what = if std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_symlink()) { "链接" } else { "目录" };
-                states.extend(state(&s.name, "local", None, Some(format!("本机已有同名的{what}（不是同步装的），没有覆盖"))));
-                continue;
+                // 软链接：开发中的 skill，不碰
+                if link {
+                    if !links.contains(&s.name) {
+                        links.push(s.name.clone());
+                    }
+                    states.extend(state(&s.name, "local", None, Some("本机是软链接，没有覆盖".into())));
+                    continue;
+                }
+                // 不是 Board 装的：挪进备份，换上库里的
+                if let Err(why) = move_aside(&dest, &s.name, opts.backup) {
+                    states.extend(state(&s.name, "failed", None, Some(format!("{why}：没有覆盖"))));
+                    continue;
+                }
+                moved = true;
+                changes.push(format!("{}/{} 不是 Board 装的：挪进了 {}", t.shown, s.name, opts.backup.display()));
+                if !replaced.contains(&s.name) {
+                    replaced.push(s.name.clone());
+                }
             }
             let had = mark_of(&dest);
             // board-skills 里的 board 要是 board host 自己的：版本一样但 bin 不是这个 board 时也重写
@@ -262,11 +310,11 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, mut fetch
                     changes.push(format!("{} {}/{} → {}", if had.is_some() { "更新" } else { "装上" }, t.shown, s.name, s.version));
                     states.extend(state(&s.name, "synced", Some(s.version.clone()), None));
                 }
-                Err(why) => states.extend(state(&s.name, if had.is_some() { "behind" } else { "failed" }, had, Some(why))),
+                Err(why) => states.extend(state(&s.name, if had.is_some() { "behind" } else { "failed" }, had, Some(if moved { format!("{why}（原来那份在备份目录里）") } else { why }))),
             }
         }
     }
-    Synced { states, changes, local: vec![], targets: vec![] }
+    Synced { states, changes, replaced, links }
 }
 
 /// 各目录里不是同步装的 skill：有 SKILL.md、没有标记文件（开发用的链接也算），board-skills 不算。
@@ -501,12 +549,13 @@ pub fn run(pos: &[String], json: bool, p: &Paint, rm: &Remote) -> Result<Output>
         }
         "sync" => {
             if host_running() {
-                let msg = "本机有 board host 在跑：同步由它来做（库一变它马上跟上，界面「机器 → 共用配置」看结果）";
+                let msg = "本机有 board host 在跑：同步由它来做（这台机器的 skills 选了「用服务器的」时库一变它就跟上，结果在界面「机器」里这台机器的设置页）";
                 return Ok(if json { Output::Json(json!({ "ok": true, "by_host": true, "message": msg })) } else { Output::Text(format!("{} {msg}\n", p.green("✓"))) });
             }
             let lib: Vec<SkillInfo> = rm.get("/api/skills", &[])?;
             let exe = std::env::current_exe().ok().filter(|e| !crate::update::bundled_with_desktop(e));
-            let out = sync(&lib, &local_targets(), exe.as_deref(), |name| rm.get(&format!("/api/skills/{name}"), &[]));
+            let backup = backup_dir();
+            let out = sync(&lib, &local_targets(), exe.as_deref(), Opts { only_builtin: false, backup: &backup }, |name| rm.get(&format!("/api/skills/{name}"), &[]));
             if json {
                 return Ok(Output::Json(json!({ "ok": true, "states": out.states, "changes": out.changes })));
             }
@@ -543,49 +592,63 @@ mod tests {
         Target { agents: agents.iter().map(|s| s.to_string()).collect(), env: "direct".into(), dir: dir.to_path_buf(), shown: dir.display().to_string(), wsl: false }
     }
 
+    /// 同步的做法：备份目录放在 `d/backup`，不是「不改」
+    fn opts(d: &Path) -> Opts<'_> {
+        Opts { only_builtin: false, backup: d }
+    }
+
     #[test]
-    fn sync_installs_updates_keeps_local_and_removes() {
+    fn sync_installs_updates_replaces_local_and_removes() {
         let d = tempfile::tempdir().unwrap();
         let claude = d.path().join("claude");
         let agents = d.path().join("agents");
+        let backup = d.path().join("backup");
         let t = vec![target(&claude, &["claude"]), target(&agents, &["dsh", "pi"])];
-        // agents 目录里本来有一个同名的、不是同步装的 notes：不覆盖
+        // agents 目录里本来有一个同名的、不是 Board 装的 notes：挪进备份，换上库里的
         std::fs::create_dir_all(agents.join("notes")).unwrap();
         std::fs::write(agents.join("notes/SKILL.md"), "mine").unwrap();
         let v1 = pack("notes", &[("SKILL.md", b"# v1"), ("ref/a.md", b"a")]);
         let mut fetched = 0;
-        let out = sync(&[v1.info.clone()], &t, None, |_| {
+        let out = sync(&[v1.info.clone()], &t, None, opts(&backup), |_| {
             fetched += 1;
             Ok(v1.clone())
         });
         assert_eq!(fetched, 1, "同一个版本只取一次");
         assert_eq!(std::fs::read_to_string(claude.join("notes/ref/a.md")).unwrap(), "a");
         assert_eq!(mark_of(&claude.join("notes")).as_deref(), Some(v1.info.version.as_str()));
-        assert_eq!(std::fs::read_to_string(agents.join("notes/SKILL.md")).unwrap(), "mine", "本机自己的不覆盖");
+        assert_eq!(std::fs::read_to_string(agents.join("notes/SKILL.md")).unwrap(), "# v1", "本机自己的换成库里的");
+        let saved: Vec<_> = std::fs::read_dir(&backup).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(saved.len() == 1 && saved[0].starts_with("notes-"), "{saved:?}");
+        assert_eq!(std::fs::read_to_string(backup.join(&saved[0]).join("SKILL.md")).unwrap(), "mine", "旧的在备份里");
+        assert_eq!(out.replaced, vec!["notes".to_string()]);
         let st = |out: &Synced, agent: &str| out.states.iter().find(|s| s.agent == agent).map(|s| s.state.clone()).unwrap();
-        assert_eq!((st(&out, "claude"), st(&out, "dsh"), st(&out, "pi")), ("synced".into(), "local".into(), "local".into()));
-        assert!(out.states.iter().find(|s| s.agent == "dsh").unwrap().why.as_deref().unwrap().contains("没有覆盖"));
+        assert_eq!((st(&out, "claude"), st(&out, "dsh"), st(&out, "pi")), ("synced".into(), "synced".into(), "synced".into()));
         // 再同步一次：已经是最新的，不取内容
-        let out = sync(&[v1.info.clone()], &t, None, |_| panic!("不该再取"));
+        let out = sync(&[v1.info.clone()], &t, None, opts(&backup), |_| panic!("不该再取"));
+        assert!(out.replaced.is_empty(), "换过一次就归 Board 管了");
         assert!(out.changes.is_empty() && st(&out, "claude") == "synced");
         // 新版本：换上，旧文件不留
         let v2 = pack("notes", &[("SKILL.md", b"# v2")]);
-        let out = sync(&[v2.info.clone()], &t, None, |_| Ok(v2.clone()));
+        let out = sync(&[v2.info.clone()], &t, None, opts(&backup), |_| Ok(v2.clone()));
         assert_eq!(std::fs::read_to_string(claude.join("notes/SKILL.md")).unwrap(), "# v2");
         assert!(!claude.join("notes/ref").exists());
-        assert_eq!(out.changes.len(), 1);
+        assert_eq!(out.changes.len(), 2);
         // 取不到内容：原来那份留着，状态「版本落后」
         let v3 = pack("notes", &[("SKILL.md", b"# v3")]);
-        let out = sync(&[v3.info.clone()], &t, None, |_| Err(BoardError::new(ErrorCode::Unreachable, "连不上")));
+        let out = sync(&[v3.info.clone()], &t, None, opts(&backup), |_| Err(BoardError::new(ErrorCode::Unreachable, "连不上")));
         assert_eq!(st(&out, "claude"), "behind");
         assert_eq!(std::fs::read_to_string(claude.join("notes/SKILL.md")).unwrap(), "# v2");
-        // 库里删掉：同步装的删掉，本机自己的留着
-        let out = sync(&[], &t, None, |_| unreachable!());
-        assert!(!claude.join("notes").exists());
-        assert!(agents.join("notes/SKILL.md").exists());
-        assert_eq!(out.changes.len(), 1);
+        // 「不改」：库里有的、Board 装过的都不删，只装 board-skills
+        let b = pack(BUILTIN, &[("SKILL.md", b"# board")]);
+        let out = sync(&[b.info.clone()], &t, None, Opts { only_builtin: true, backup: &backup }, |_| Ok(b.clone()));
+        assert!(claude.join("notes").exists() && claude.join(BUILTIN).join("SKILL.md").exists());
+        assert_eq!(out.changes.len(), 2, "两个目录各装一份 board-skills");
+        // 库里删掉：同步装的删掉
+        let out = sync(&[b.info.clone()], &t, None, opts(&backup), |_| unreachable!());
+        assert!(!claude.join("notes").exists() && !agents.join("notes").exists());
+        assert_eq!(out.changes.len(), 2);
         // 没有留下临时目录
-        assert_eq!(std::fs::read_dir(&claude).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&claude).unwrap().count(), 1);
     }
 
     /// 「从机器导入」：列出不是同步装的 skill（同名同内容的合成一项，没有 SKILL.md、同步装的、board-skills 不算），
@@ -608,7 +671,7 @@ mod tests {
         std::fs::write(claude.join(BUILTIN).join("SKILL.md"), "x").unwrap();
         // 同步装的不算
         let synced = pack("synced", &[("SKILL.md", b"# s")]);
-        sync(&[synced.info.clone()], &t[..1], None, |_| Ok(synced.clone()));
+        sync(&[synced.info.clone()], &t[..1], None, opts(&d.path().join("backup")), |_| Ok(synced.clone()));
         let list = local_skills(&t);
         assert_eq!(list.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["design", "notes"]);
         let design = &list[0];
@@ -627,21 +690,22 @@ mod tests {
         assert!(import_one(&t, "nope", &claude.display().to_string(), |_, _| unreachable!()).unwrap_err().contains("没有"));
         assert!(import_one(&t, "synced", &claude.display().to_string(), |_, _| unreachable!()).unwrap_err().contains("同步装的"));
         // 库里有了 design（就是这一份）：同步时本机自己的算已同步，不覆盖、不取内容
-        let out = sync(&[same.info.clone()], &t, None, |_| panic!("内容一样，不该取"));
+        let out = sync(&[same.info.clone()], &t, None, opts(&d.path().join("backup")), |_| panic!("内容一样，不该取"));
         assert!(out.states.iter().all(|s| s.state == "synced"), "{:?}", out.states);
         assert!(mark_of(&claude.join("design")).is_none(), "本机自己的目录不动");
     }
 
-    /// 以前一键安装、解压 zip 装的 board-skills（没有标记、不是链接）换成同步装的；别的同名目录照样不动
+    /// 以前一键安装、解压 zip 装的 board-skills（没有标记、不是链接）：挪进备份，换成同步装的
     #[test]
-    fn old_board_skills_copy_is_adopted() {
+    fn old_board_skills_copy_is_replaced() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("skills");
         std::fs::create_dir_all(dir.join(BUILTIN)).unwrap();
         std::fs::write(dir.join(BUILTIN).join("SKILL.md"), "old").unwrap();
         let b = pack(BUILTIN, &[("SKILL.md", b"# new")]);
-        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], None, |_| Ok(b.clone()));
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], None, Opts { only_builtin: true, backup: &d.path().join("backup") }, |_| Ok(b.clone()));
         assert_eq!(out.states[0].state, "synced");
+        assert_eq!(out.replaced, vec![BUILTIN.to_string()]);
         assert_eq!(std::fs::read_to_string(dir.join(BUILTIN).join("SKILL.md")).unwrap(), "# new");
     }
 
@@ -657,12 +721,15 @@ mod tests {
         let b = pack(BUILTIN, &[("SKILL.md", b"# board"), ("scripts/board", b"#!/bin/sh")]);
         let exe = d.path().join("myboard");
         std::fs::write(&exe, b"binary").unwrap();
-        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), |_| Ok(b.clone()));
+        let bk = d.path().join("backup");
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), opts(&bk), |_| Ok(b.clone()));
         assert_eq!(out.states[0].state, "local");
-        assert!(out.states[0].why.as_deref().unwrap().contains("链接"));
+        assert_eq!(out.states[0].why.as_deref(), Some("本机是软链接，没有覆盖"));
+        assert_eq!(out.links, vec![BUILTIN.to_string()]);
+        assert!(!bk.exists(), "软链接不挪");
         // 去掉链接：装上，bin/<平台>/board 是 board host 自己的
         std::fs::remove_file(dir.join(BUILTIN)).unwrap();
-        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), |_| Ok(b.clone()));
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), opts(&bk), |_| Ok(b.clone()));
         assert_eq!(out.states[0].state, "synced");
         if let Some(plat) = crate::update::platform_of(std::env::consts::OS, std::env::consts::ARCH) {
             assert_eq!(std::fs::read(dir.join(BUILTIN).join("bin").join(plat).join("board")).unwrap(), b"binary");
@@ -670,7 +737,7 @@ mod tests {
         // board 换了（board update 是改名替换，大小不同）：版本一样也重写 bin
         std::fs::write(d.path().join("new"), b"binary-v2").unwrap();
         std::fs::rename(d.path().join("new"), &exe).unwrap();
-        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), |_| Ok(b.clone()));
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), opts(&bk), |_| Ok(b.clone()));
         assert_eq!(out.changes.len(), 1);
     }
 
