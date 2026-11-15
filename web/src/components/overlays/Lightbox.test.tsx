@@ -1,8 +1,23 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Lightbox } from './Lightbox';
 import { closeImage, openImage, stepImage } from '../../store/ui';
+
+// vitest 里 CSS 的 ?raw 是空的，直接读文件（jsdom 环境里 import.meta.url 不是 file: 地址，用 __dirname）
+const css = (name: string) => readFileSync(resolve(__dirname, '../../styles', name), 'utf8');
+
+/** 样式表里某个选择器那一条规则的声明（选择器要和样式表里写的一样，只认行首独立的一条） */
+function rule(sheet: string, selector: string): string {
+  const flat = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`(^|\\n)${esc} \\{`).exec(flat);
+  expect(m, `样式表里没有 ${selector}`).not.toBeNull();
+  const open = flat.indexOf('{', m!.index + m![0].length - 1);
+  return flat.slice(open + 1, flat.indexOf('}', open)).replace(/\s+/g, ' ');
+}
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -216,3 +231,34 @@ describe('图片预览（default/main#328 切换图片时整屏闪烁）', () =>
 
 
 
+
+// 下面几条是 default/main#320 的回归测试：曾在 #328 解 rebase 冲突时被整份测试文件覆盖掉，下载按钮跟着回来了
+describe('图片预览底部条（default/main#320）', () => {
+  it('只有文件名和切换，没有下载按钮', () => {
+    act(() => root.render(<Lightbox />));
+    const bar = host.querySelector('.lb-bar')!;
+    expect(bar.querySelector('.lb-name')?.textContent).toBe(list[0].alt);
+    expect(host.querySelector('a[download]')).toBeNull();
+    expect([...bar.querySelectorAll('a, button')].map(b => b.textContent?.trim() || b.getAttribute('aria-label'))).toEqual(['上一张', '下一张']);
+  });
+});
+
+describe('预览和未整理展开行的网格约束（default/main#320，jsdom 不排版，按样式表核对）', () => {
+  it('图片按视口宽高一起缩放：网格轨道不按图片原尺寸撑开，图片宽高都不超出', () => {
+    const appCss = css('app.css');
+    expect(rule(appCss, '.lightbox')).toContain('grid-template: minmax(0, 1fr) / minmax(0, 1fr)');
+    expect(rule(appCss, '.lb-stage')).toContain('grid-template: minmax(0, 1fr) / minmax(0, 1fr)');
+    const img = rule(appCss, '.lightbox .lb-img');
+    expect(img).toContain('max-width: 100%');
+    expect(img).toContain('max-height: 100%');
+    expect(img).toContain('object-fit: contain');
+  });
+
+  it('未整理编辑区的列宽不按内容撑开（长代码块不会把按钮挤出右边）', () => {
+    const inboxCss = css('inbox.css');
+    expect(rule(inboxCss, '.ib-exp')).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(rule(inboxCss, '.ib-exp > div')).toContain('min-width: 0');
+    expect(rule(inboxCss, '.ib-edit')).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(rule(inboxCss, '.ib-editacts')).toContain('flex-wrap: wrap');
+  });
+});

@@ -81,12 +81,9 @@ export function Lightbox() {
           onAnimationEnd={shown}
         />
       </div>
-      {/* 底部条：文件名、下载，多张时右边是切换；关闭靠 Esc 或点遮罩 */}
+      {/* 底部条：文件名，多张时右边是切换；关闭靠 Esc 或点遮罩。不放下载按钮（default/main#320）：要存右键图片另存为 */}
       <div className="lb-bar" onClick={e => e.stopPropagation()}>
         <span className="lb-name">{stage.alt}</span>
-        <a className="btn sm" href={stage.src} download={stage.alt || true}>
-          下载
-        </a>
         {n > 1 && (
           <div className="lb-nav">
             <button className="icon-btn sm" type="button" aria-label="上一张" title="上一张（←）" disabled={cur.index === 0} onClick={() => stepImage(-1)}>
