@@ -1,6 +1,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { agentMark } from '../lib/hosts';
 import { AgentAvatar, Avatar, BrandMark, ColorPick, SYSTEM_NAME } from './bits';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,6 +61,15 @@ describe('按名字画 agent 头像（AgentAvatar）', () => {
     expect(el.querySelector('img')?.getAttribute('src')).toBeTruthy();
     // 是图标，不是字母
     expect(el.textContent.trim()).toBe('');
+  });
+
+  it('codex 也有自己的图标，顶上、卡片上同一套解析都画得出来', () => {
+    act(() => root.render(<AgentAvatar name="codex-win/codex" />));
+    const el = host.querySelector('.avatar.agent-logo') as HTMLElement;
+    // 图标是对应 agent 自己的（测试里 SVG 内联成 data: URL，用 MARKS 里的图标比）
+    expect(el.querySelector('img')?.getAttribute('src')).toBe(agentMark('codex').icon);
+    // 颜色沿用 MARKS 里的主色（悬停展开的胶囊底色用它）
+    expect(el.style.getPropertyValue('--c')).toBe('#10A37F');
   });
 
   it('认不出：退回字母头像（和原来一样）', () => {

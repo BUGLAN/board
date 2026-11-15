@@ -9,7 +9,7 @@ import { flowOf, timing } from '../lib/schema';
 import { agentColor, clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
-import { Avatar, BrandMark, ProjectAvatar, Tip, agent, useNow } from './bits';
+import { AgentAvatar, BrandMark, ProjectAvatar, Tip, useNow } from './bits';
 import { Icon } from './Icon';
 import { WindowControls } from './WindowControls';
 
@@ -92,7 +92,8 @@ function Presence() {
                 openCard(h.id);
               }}
             >
-              <Avatar actor={agent(a.name)} />
+              {/* 认得出 agent 标识就画它自己的图标，认不出退回字母头像（和卡片上「谁在做」同一套解析） */}
+              <AgentAvatar name={a.name} />
               <i className="pres-pulse" />
               <span className="pres-time">{!t ? '在线' : t.cur != null ? clock(t.cur) : t.beat === 'wait' ? '等待心跳' : '已结束'}</span>
             </span>

@@ -241,7 +241,8 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   display: flex; align-items: center; gap: 7px; margin-top: 10px; padding-top: 9px;
   border-top: 1px dashed var(--line-2);
 }
-.card-claim .avatar { width: 20px; height: 20px; font-size: 11px; }
+/* flex: none：换成 agent 自己的图标（.agent-logo）后也不被名字挤扁，这一行的高度和原来一样 */
+.card-claim .avatar { width: 20px; height: 20px; flex: none; font-size: 11px; }
 .claim-name { font-size: 12px; font-weight: 500; color: var(--text-2); font-family: var(--f-mono); }
 /* 持有者名字占满头像和计时胶囊之间的空间（flex-basis 0：再长也不会把胶囊挤到下一行），放不下时省略中间 */
 .card-claim .claim-name { flex: 1 1 0; }
@@ -300,7 +301,7 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .card-line-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .card.done .card-line-title { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--line-3); }
 .line-holder { display: inline-flex; align-items: center; gap: 5px; flex: none; }
-.line-holder .avatar { width: 18px; height: 18px; font-size: 11px; }
+.line-holder .avatar { width: 18px; height: 18px; flex: none; font-size: 11px; }
 .line-holder.late .beat, .line-holder.wait .beat { background: var(--warn); }
 .line-holder.ended .beat { background: var(--text-4); }
 .line-holder.ended .beat::before { animation: none; }
@@ -343,8 +344,8 @@ body.tile-moving .ct-pop, body.is-dragging .ct-pop { display: none; }
 .ct-pop-head b { color: color-mix(in oklab, var(--c), var(--ink)); font-weight: 600; }
 .ct-pop-head .run-pill { margin-left: 0; }
 .ct-pop-holder { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin-left: auto; color: var(--text-2); }
-.ct-pop-holder .avatar { flex: none; }
-.ct-pop-holder .avatar { width: 16px; height: 16px; font-size: 11px; }
+/* flex: none：换成 agent 自己的图标（.agent-logo）后也不被名字挤扁 */
+.ct-pop-holder .avatar { width: 16px; height: 16px; flex: none; font-size: 11px; }
 .ct-pop-title { font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--text); white-space: normal; word-break: break-word; }
 .ct-pop-labels .card-labels, .ct-pop-labels { display: flex; flex-wrap: wrap; gap: 4px; }
 /* 没有悬停的设备（手机、平板）不弹标题，点开看详情 */
