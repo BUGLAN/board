@@ -89,27 +89,29 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 | pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | 直接改文件：`command`、`args`、`env`，或 `url`、`headers` |
 | dsh | — | 不支持，界面上写「不支持」 |
 
-- 只动同步加进去的：加过哪些记在 `~/.board/host/mcp-sync.json`。agent 里已经有同名、不是同步加的，不覆盖，界面上写「有同名，没有覆盖」；在共用配置里删掉的，同步加的那条也删掉，自己加的不动。
+- 机器详情「设置 → skills 和 MCP」里 MCP 选了「用服务器的」才写（新机器默认「不改」：Board 不碰它的 MCP 配置，之前加的也不删）。
+- 加过哪些记在 `~/.board/host/mcp-sync.json`。agent 里已经有同名、不是同步加的：原来的值存进 `~/.board/host/mcp-backup.json`，换成共用配置里的，之后归 Board 管；在共用配置里删掉的，同步加的那条也删掉，自己加的不动。
 - 值可以标成密钥（token、API key）：只存在服务端，界面上只显示末尾 4 位，只发给 board host；会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
   - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`，只能用打码的 `GET /api/mcp`。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
 - 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
 
 ## 模型供应商：在「共用配置」里维护
 
-agent 连哪个模型供应商（地址、API key、默认模型）不用每台机器、每个 agent 一个个填：在「机器 → 共用配置 → 模型供应商」里加一次，每台机器的 board host 写进它找到的内置 agent 的用户级配置文件。agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。
+agent 连哪个模型供应商（地址、API key、模型、思考强度）不用每台机器、每个 agent 一个个填：在「机器 → 共用配置 → 模型供应商」里加一次、给每个内置 agent 选一组；每台机器上每个 agent 三选一——**用服务器的**（写这一组）/ **不改**（Board 不碰它的配置文件，新机器默认）/ **单独配置**（这台机器单独选供应商、模型、强度）——在机器详情的 agent 页里选。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。
 
 | agent | 写到哪里 | 写什么 |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；选了强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
+| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；有强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
 | Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | `model_provider`、`[model_providers.board-<供应商>]`（`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort` |
-| pi | `~/.pi/agent/models.json` 的 `providers.board-<供应商>`（`api`、`apiKey`、`baseUrl`、`models`）；`~/.pi/agent/settings.json` 的 `defaultProvider`、`defaultModel`（选了强度时还有 `defaultThinkingLevel`） | 按 pi 的 provider 格式写 |
-| dsh | `~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里一条 `board-<供应商>` 路由、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY` | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
+| pi | `~/.pi/agent/models.json` 的 `providers.board-<供应商>`（`api`、`apiKey`、`baseUrl`、`models`）；`~/.pi/agent/settings.json` 的 `defaultProvider`、`defaultModel`（有强度时还有 `defaultThinkingLevel`） | 按 pi 的 provider 格式写 |
+| dsh | `~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY` | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
 | 配置文件里新加的 agent、WSL 里的 agent | — | 不支持，界面上写「不支持」 |
 
-- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，pi、dsh 三种都认。模型只能从这家供应商的模型里选，强度只列这个 agent 支持的档位。这些都只是配置文件里的默认；机器详情「本机 agent」那一行的模型、强度仍然只是 Board 派发那一次的命令行参数，不改配置文件。
-- 只改 Board 管的那几项，文件里别的配置、注释和顺序不动；先写临时文件再整体换上；文件解析不了时整份不覆盖，上报「失败」和原因，修好文件后下一次同步再写。
-- 第一次改某个 agent 之前，把要改的这几项原来的值备份到 `~/.board/host/agent-config/<agent>.json`。改回「不管」、在机器详情选「本机自己管」、共用配置里删掉这个供应商、或者单独指定的供应商被删除时，按备份恢复原来的值（原来没有的项删掉），然后删掉备份。机器设置的优先级是「本机自己管」> 这台机器单独指定的供应商 > 共用配置里给这个 agent 分的供应商 > 不管。
-- 同步时机和 skills、MCP 一样：board host 启动、共用配置变了、重新检查或桌面端重新读配置后、没变化时每 10 分钟。已经在跑的 agent 不受影响，下一次启动读新的配置。
+- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，pi、dsh 三种都认。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
+- 写之前检查：强度不在这个模型标的档位里就不写强度（界面上提示「<模型> 不支持强度 <档>：写配置时不写强度」）；Anthropic 的地址结尾的 `/v1` 保存时就去掉（Claude Code 自己接 `/v1/messages`），「获取模型」也按去掉后的地址问。
+- 只改 Board 管的那几项，文件里别的配置、注释和顺序不动；先写临时文件再整体换上；文件解析不了时整份不覆盖，上报「写入失败」和原因，修好文件后点「重试」再写。改成「不改」时之前写进去的不恢复，Board 只是不再碰它。
+- 什么时候写：board host 启动时写一次；服务器上的配置（供应商、分配、机器上的选择）一改，服务端给受影响的在线机器下发「同步配置」请求，board host 写完上报（每个 agent 一行），记进那台机器的操作记录；离线的机器上线时写。已经在跑的 agent 不受影响，下一次启动读新的配置。
+- 派发时不按次传模型、强度：派发名字的第二段和派发记录里的模型、强度是 board host 从 agent 配置文件里读出来的（写进去的，或人自己配的）。
 - API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`），不写进日志和卡片动态。它会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
 
 ## 一个 agent 要满足什么
@@ -134,23 +136,16 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 内置模板写在 `crates/board-cli/src/host.rs` 的 `BUILTIN` 里。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（自动领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `pi-mbp/pi`），配置文件里的 `model` 可以覆盖。
 
-| 顺序 | 标识 | 名称 | 命令模板 | 默认模型 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --json --permission-mode danger-full-access {prompt}` | `deepseek-v4.1-flash` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
-| 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `opus-5.5` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
-| 3 | `pi` | pi | `pi --mode json {prompt}` | — | — | `~/.agents/skills`（也读 `~/.pi/agent/skills`） | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`） | `pi` 里配好 provider 和默认模型 |
-| 4 | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
+| 顺序 | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
+|---|---|---|---|---|---|---|---|
+| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --json --permission-mode danger-full-access {prompt}` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
+| 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
+| 3 | `pi` | pi | `pi --mode json {prompt}` | — | `~/.agents/skills`（也读 `~/.pi/agent/skills`） | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`） | `pi` 里配好 provider 和默认模型 |
+| 4 | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
-**模型和思考强度**：机器详情「本机 agent」每个 agent 下面可以选「模型」（可以手填）和「强度」，没选就是 agent 自己的默认（不传参数，命令和上表完全一样）。选了的，`board host` 按模板把参数插到 `{prompt}` 前面；设置了模型时派发名字的第二段用它（例如 `claude-mbp/sonnet`）。各模板怎么传（参数按各自 `--help` 核对；Codex 的档位按它的配置文档，本机不执行 codex）：
-
-| 标识 | 模型 | 思考强度 | 能选的强度 |
-|---|---|---|---|
-| `dsh` | — | — | 不能选（headless profile 和补丁里没有能按次设置的项） |
-| `claude` | `--model <模型>`（别名 `opus`、`sonnet`、`haiku`、`fable` 或全名） | `--effort <档位>` | `low`、`medium`、`high`、`xhigh`、`max` |
-| `pi` | `--model <模型>`（模式或 `provider/id`） | `--thinking <档位>` | `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
-| `codex` | `-m <模型>` | `-c model_reasoning_effort=<档位>` | `minimal`、`low`、`medium`、`high` |
+**模型和思考强度**：不按次传参数，命令就是上表的样子。模型、强度写进 agent 自己的配置文件（上面「模型供应商」）；派发名字的第二段是 board host 读出来的、它配置文件里现在的模型（例如 `claude-mbp/sonnet`），读不到时用配置文件 `[agents.<标识>] model`，再没有就是 agent 标识。
 
 各自的说明：
 
@@ -161,7 +156,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 ## 装 `board-skills`
 
-**跑着 `board host` 的机器不用手动装**：board host 按「机器 → 共用配置」的 skills 共用库自动同步，`board-skills` 是库里固定的一项，内容随服务端版本，服务端升级后各台机器自动换成新的；`bin/<平台>/board` 用 board host 自己的 board。它写进每个找到的 agent 读用户级 skill 的目录（`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`，WSL 里的 agent 写到 WSL 用户目录下），目录里放标记文件 `.board-sync`。已经有同名、不是同步装的（例如开发时链接到仓库的）不覆盖，界面上写「本机有同名，没有覆盖」；以前一键安装、解压 zip 装的 `board-skills` 旧拷贝会被换成同步装的。自己的其他 skill 也可以放进库里，所有机器都会装上：
+**跑着 `board host` 的机器不用手动装**：board host 按「机器 → 共用配置」的 skills 共用库自动同步，`board-skills` 是库里固定的一项，内容随服务端版本，服务端升级后各台机器自动换成新的；`bin/<平台>/board` 用 board host 自己的 board。它写进每个找到的 agent 读用户级 skill 的目录（`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`，WSL 里的 agent 写到 WSL 用户目录下），目录里放标记文件 `.board-sync`。`board-skills` 不管机器上 skills 选的是「用服务器的」还是「不改」都装。已经有同名、不是 Board 装的：挪进 `~/.board/host/skills-backup/<名称>-<时间>/` 再换上库里的；软链接（开发时链接到仓库的）不碰，界面上写「本机是软链接，没有覆盖」。自己的其他 skill 也可以放进库里，机器详情「设置 → skills 和 MCP」里 skills 选了「用服务器的」的机器都会装上：
 
 ```sh
 board skills push ~/.claude/skills/my-skill     # 传进库里（目录名就是名称，合计不超过 5 MB），同名的换成新版本
@@ -187,7 +182,7 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 
 只复制 `SKILL.md` 不够（分文件缺了，agent 读不到那部分规则）：解压 `board-skills.zip` 或链接整个目录。
 
-用 Board 桌面端让这台电脑接任务时，可以不手动装：「机器」里点开这台机器，「本机 agent」上方会写有几个 agent 看不到 `board-skills`，点「一键安装」，桌面端把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录（dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`），再让 `board host` 重新检查一遍。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
+用 Board 桌面端让这台电脑接任务时，可以不手动装：board host 启动时就会装上。看不到时，「机器」里点开这台机器，agent 页里那个 agent 的卡片上写「缺 board-skills」，点「装上」让 board host 再同步一次；桌面端「设置 → 本机」的「一键安装」把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录（dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`），board host 在跑时改成让它再同步一次。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
 
 ## 按批次接入新的 agent
 
@@ -216,13 +211,11 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 
 应该回答 `board-skills` 和 `参数`，然后退出。回答「没有这个 skill」：先按上一节装好，再问一次。
 
-这一步可以直接在界面上做：第 3 步在界面上接上之后，在「机器」里点开那台机器，「本机 agent」里这个 agent 那一行点「自检」（或者整台机器的「自检」，顺带检查每块白板的目录能不能推送）。board host 用它设置好的启动环境、模型和思考强度，在一个临时目录里问同样的这一句，界面上写结果：通过；没登录；超时；回答里没有 `board-skills`。人不用登录到那台机器上。
+这一步可以直接在界面上做：第 3 步接上之后，在「机器」里点开那台机器，agent 页里这个 agent 的卡片上点「自检这一个」（或者「全部自检」，顺带检查每个项目的目录能不能推送）。board host 用它设置好的启动环境、它配置文件里的模型和思考强度，在一个临时目录里问同样的这一句，界面上写结果：通过；没登录；超时；回答里没有 `board-skills`。人不用登录到那台机器上。
 
 ### 3. 在界面上接上
 
-在界面「机器 → 共用配置 → agent 模板」点「添加」：填标识、名称、命令模板（一行一个参数，第一行是命令，`{prompt}` 单独一行）、默认模型，要在机器设置里选模型和思考强度的再填传参的写法和能选的档位，Windows 上支持哪些启动环境（按勾选的顺序选默认的；不勾是所有启动环境）。保存后服务端随任务下发给所有 `board host`：它们重新检查本机 agent 并上报，不用重启，几秒内「机器」里每台机器的「本机 agent」都出现它（找到 / 没找到）。展开这一项能看到每台机器的情况。和内置 agent 同标识的是改它的命令：写了哪项换哪项，没写的沿用内置的；删掉后换回内置的。
-
-只想在一台机器上试，或者某台机器要用不一样的命令时，写那台机器的 `~/.board/config.toml`（`{prompt}` 单独作为一个元素）。配置文件里同标识的 `[agents.*]` 优先于共用配置里的模板，机器详情里这个 agent 标出「本机配置覆盖」：
+写那台机器的 `~/.board/config.toml`（`{prompt}` 单独作为一个元素）：
 
 ```toml
 [agents.<标识>]
@@ -231,19 +224,9 @@ cmd = ["<命令>", "<非交互参数>", "<跳过审批参数>", "{prompt}"]
 model = "<它实际用的模型名>"
 ```
 
-`model` 写进派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`，PRD §3.2）；不写时用内置模板的默认值（上表），内置模板也没有时用 agent 标识。转成小写、空白换成 `-`。
+`model` 写进派发的 agent 名字（`<agent 标识>-<机器名>/<模型名>`，PRD §3.2）：内置 agent 先用它自己配置文件里现在的模型，读不到时才用这里的；都没有时用 agent 标识。转成小写、空白换成 `-`。模型、强度不按次传参数：以前的 `model_args`、`effort_args`、`efforts` 不再用，写了也不起作用；要固定模型，直接写进 `cmd`。
 
-要在机器设置里选模型和思考强度，再写怎么传参（不写的 agent 不显示这两项）：
-
-```toml
-model_args = ["--model", "{model}"]          # {model} 换成选的模型
-effort_args = ["--effort", "{effort}"]       # {effort} 换成选的档位
-efforts = ["low", "medium", "high"]          # 能选的档位，从低到高；不写时是这三档
-```
-
-参数插在 `{prompt}` 那一个前面。覆盖内置模板时写了哪项就换哪项，没写的沿用内置的。
-
-改了配置文件后，在界面「机器」里点开这台机器，点「维护」里的「重新检查」（或重启 `board host`），启动输出和界面「机器」里应该出现它，带版本号；机器详情「本机 agent」的启动环境下拉里能看到它在每个启动环境里找没找到。同标识的 `[agents.*]` 也用来临时改内置模板（例如换参数、换路径、换模型）。
+改了配置文件后，在界面「机器」里点开这台机器，点「维护」里的「重新检查」（或重启 `board host`），启动输出和界面「机器」里应该出现它，带版本号；机器详情 agent 页里它的启动环境下拉能看到它在每个启动环境里找没找到。同标识的 `[agents.*]` 也用来临时改内置模板（例如换参数、换路径、换模型）。
 
 ### 4. 端到端验证：用本机服务端，不碰线上
 
@@ -264,14 +247,14 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 集成分支：先在白板设置里把它设成 `dev` 再派一张，通过的标志是 `origin/dev` 上多了提交（`main` 不动），交审评论里写着 `集成分支：dev`；把它清空后再派一张，回到读仓库 AGENTS.md 的规则。
 
-**每个支持的启动环境各跑一次**：在机器详情「本机 agent」里把它的启动环境依次换成每个支持的环境（Windows 上的 PowerShell、Git Bash、WSL …；macOS、Linux 上的登录 shell 和直接启动），各派一张卡，结果都要「已交审」，派发记录写的是那个环境；在 WSL 里再试一次「停止」，WSL 里的 agent 进程也要在 10 秒内结束（`wsl.exe -d <发行版> -- ps -ef` 看）。
+**每个支持的启动环境各跑一次**：在机器详情 agent 页里把它的启动环境依次换成每个支持的环境（Windows 上的 PowerShell、Git Bash、WSL …；macOS、Linux 上的登录 shell 和直接启动），各派一张卡，结果都要「已交审」，派发记录写的是那个环境；在 WSL 里再试一次「停止」，WSL 里的 agent 进程也要在 10 秒内结束（`wsl.exe -d <发行版> -- ps -ef` 看）。
 
 ### 5. 写成内置模板
 
 这一批都通过第 4 步后：
 
-- `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写），以及 `model_args`、`effort_args`、`efforts`、`models`（按它的 `--help` 核对过的传参方式、档位和常用模型；不支持的留空，界面上就不显示）。放在哪一位就是默认顺序里的哪一位。
-- 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序；`model_and_effort_args`：加上它的拼参断言。
+- `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）。要按服务器上的供应商写它的配置文件，还要在 `crates/board-core/src/providers.rs` 的 `AGENTS`、`EFFORTS` 里加上它认的接口和配置文件能写的强度档位，在 `crates/board-cli/src/providersync.rs` 里加上写配置文件、读回模型的那一段。放在哪一位就是默认顺序里的哪一位。
+- 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序。
 - 接上结构化输出（事件流 / JSON 输出）：
   - `crates/board-cli/src/logfmt.rs`：`Stream` 加一种，`stream_for` 按标识和命令里的事件流参数认出它（配置文件覆盖了命令、没带参数的按原始输出）；加它的转写（原始输出）。
   - `crates/board-cli/src/events.rs`：`Parser` 加它的解析，转成 `message`、`tool`（工具调用带 agent 给的调用标识，结果后到时同一个标识）、`error`、`result`（用量、费用有就填；没有整次汇总的，按每一步 / 每一轮的加起来，在结束时写进去）；对人没用的事件（流式片段、状态变化、思考）不记，不是 JSON 的行记成 `text`。

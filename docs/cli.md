@@ -146,7 +146,7 @@
 
 ### `board check`
 
-`--agent` 由 Board 按机器设置生成名字，`modeled` 是它有没有套用机器里的模型设置；`--as` 自己起名字时 `modeled` 为 `null`：
+`--agent` 由 Board 按这台机器生成名字，`modeled` 是名字第二段有没有用上模型（board host 上报的、这个 agent 配置文件里现在的模型；没有时第二段是 agent 标识）；`--as` 自己起名字时 `modeled` 为 `null`：
 
 ```json
 {
@@ -908,7 +908,7 @@
 
 ### `board host`
 
-`board host` 是常驻进程，没有一次性的 JSON 结果；启动后按行输出机器、环境、agent 和白板目录，之后输出每次派发和同步的进展：
+`board host` 是常驻进程，没有一次性的 JSON 结果；启动后按行输出机器、环境、agent 和白板目录，之后输出每次派发和同步配置的进展（启动时写一次，服务器上一改收到同步请求再写一次；只写供应商和模型名称，不打印 API key）：
 
 ```text
 ✓ mbp 已上线：https://board.example.com
@@ -922,6 +922,9 @@
   白板    oss/main → C:\Users\you\repo\oss
           oss/release → C:\Users\you\repo\oss
   Ctrl+C 退出（先结束本机由它启动的 agent）
+21:05:12 ✓ 同步配置：skills：装上 ~/.claude/skills/board-skills → 3c66ab9e505f
+21:07:40 ✓ 同步配置：把供应商 newapi 写进 claude（模型 claude-sonnet-5-5，强度 high）
+21:07:40 ! 同步配置有没写进去的：pi：pi：settings.json 不是 JSON：expected value at line 12 column 1
 ```
 
 `--install`、`--uninstall`、`rename <新机器名>` 也输出这类进度和结果行，没有一次性的 JSON。
@@ -1031,7 +1034,7 @@
 ```json
 {
   "by_host": true,
-  "message": "本机有 board host 在跑：同步由它来做（库一变它马上跟上，界面「机器 → 共用配置」看结果）",
+  "message": "本机有 board host 在跑：同步由它来做（这台机器的 skills 选了「用服务器的」时库一变它就跟上，结果在界面「机器」里这台机器的设置页）",
   "ok": true
 }
 ```
