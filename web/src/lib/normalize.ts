@@ -18,6 +18,7 @@ import type {
   HostAgent,
   HostDir,
   HostInfo,
+  HostRes,
   McpServer,
   Provider,
   ProviderView,
@@ -65,6 +66,14 @@ const normImport = (s: SkillImport): SkillImport => {
 };
 
 /** 一台机器 */
+/** 资源（default/main#358）：趋势缺了补成空数组；gpus、disks 不是数组时当作没有（界面写「不支持」「未上报」） */
+function normRes(r: HostRes | null | undefined): HostRes | undefined {
+  const x = obj(r);
+  if (!x) return undefined;
+  const hist = obj(x.hist);
+  return { ...x, gpus: maybe(x.gpus), disks: maybe(x.disks), hist: { cpu: list(hist?.cpu), mem: list(hist?.mem), gpu: list(hist?.gpu) } };
+}
+
 export function normHost(h: HostInfo): HostInfo {
   const ws = obj(h.workspace);
   const token = obj(h.token);
@@ -86,6 +95,7 @@ export function normHost(h: HostInfo): HostInfo {
     selftest: selftest ? { ...selftest, items: list(selftest.items) } : (selftest ?? undefined),
     sync: sync ? { ...sync, last: last ? normSync(last) : last } : (sync ?? undefined),
     skillImport: imp ? normImport(imp) : (imp ?? undefined),
+    res: normRes(h.res),
   };
 }
 

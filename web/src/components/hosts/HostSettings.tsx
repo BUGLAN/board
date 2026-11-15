@@ -1,5 +1,6 @@
 /* ==========================================================================
    机器详情「设置」页
+   0. 资源：CPU、内存、GPU、存储四块磁贴（Resources.tsx）
    1. 接单：一行摘要（时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张）+「在调度里改」
    2. skills 和 MCP：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的写一行；规则一行；「从这台机器导入 skill（N）」
    3. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
@@ -21,6 +22,7 @@ import { Icon } from '../Icon';
 import { patchHost } from './bits';
 import { FolderPick } from './FolderPick';
 import { askState } from './Manage';
+import { Resources } from './Resources';
 import type { Save } from './Saver';
 import { useRemoteList } from './useRemoteList';
 
@@ -48,6 +50,7 @@ export function HostSettings({
   const push = pushRows(h);
   return (
     <div className="hd-set">
+      <Resources h={h} now={now} server={server} behind={behind} />
       <section>
         <h3>接单</h3>
         <p className="hd-line">

@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   skill_import TEXT,                  -- 从这台机器导入 skills（JSON，见 SkillImport）：本机的 skill、等 board host 做的请求、最近一次的结果
   sync_skills INTEGER NOT NULL DEFAULT 0,-- skills 用服务器的（1）还是不改（0，只装 board-skills）
   sync_mcp INTEGER NOT NULL DEFAULT 0,-- MCP 用服务器的（1）还是不改（0）
-  config_sync TEXT                    -- 同步配置（JSON，见 ConfigSync）：等 board host 做的请求、最近一次的结果
+  config_sync TEXT,                   -- 同步配置（JSON，见 ConfigSync）：等 board host 做的请求、最近一次的结果
+  res      TEXT                       -- 资源（JSON，见 HostRes）：最近一次采样和最近几次的使用率；旧版 board host 不报，为空
 );
 
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
@@ -194,6 +195,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "path", "TEXT"),
         ("hosts", "sync_mcp", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "config_sync", "TEXT"),
+        ("hosts", "res", "TEXT"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -1189,6 +1191,9 @@ pub struct HostInfo {
     /// 从这台机器导入 skills：本机有哪些 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有这一项
     #[serde(default)]
     pub skill_import: SkillImport,
+    /// 资源（CPU、内存、GPU、磁盘）：最近一次采样和最近几次的使用率；旧版 board host 不报，没有
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub res: Option<crate::hostres::HostRes>,
 }
 
 /// 从一台机器导入 skills（PRD §10.12「共用配置」）：board host 上报本机各 agent skill 目录里、不是同步装的 skill；
@@ -1544,6 +1549,9 @@ pub struct HostReport {
     /// 本机各 agent skill 目录里、不是同步装的 skill（「从机器导入」用）；旧版 board host 不带，带了就算会导入
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_skills: Option<Vec<crate::skills::LocalSkill>>,
+    /// 资源（PRD §10.12「资源」）：后台最近一次采样；旧版 board host 不带
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub res: Option<crate::hostres::HostRes>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -1927,13 +1935,14 @@ pub(crate) struct HostRow {
     pub(crate) sync_mcp: bool,
     pub(crate) config_sync: ConfigSync,
     pub(crate) skill_import: SkillImport,
+    pub(crate) res: Option<crate::hostres::HostRes>,
     pub(crate) agents_raw: String,
     pub(crate) envs_raw: String,
     pub(crate) dirs_raw: String,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -1968,6 +1977,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         up_tried: r.get(41)?,
         up_tries: r.get(42)?,
         up_retry: r.get(43)?,
+        res: r.get::<_, Option<String>>(44)?.and_then(|j| serde_json::from_str(&j).ok()),
         round_at: r.get(12)?,
         rr: r.get(13)?,
         first_at: r.get(14)?,
@@ -2138,6 +2148,7 @@ impl HostRow {
             sync_mcp: self.sync_mcp,
             sync: self.config_sync.clone(),
             skill_import: self.skill_import.clone(),
+            res: self.res.clone(),
         }
     }
     /// 现在在自动接单：开了自动接单、没暂停接单、有领取规则，并且现在在接单时段里（按服务端的时区）
@@ -3166,6 +3177,9 @@ impl<'a> W<'a> {
                     let cs = ConfigSync { able: true, ..Default::default() };
                     self.tx.execute("UPDATE hosts SET config_sync = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&cs).unwrap_or_default()])?;
                 }
+                if let Some(res) = rep.res.clone().and_then(|r| r.received(None, now)) {
+                    self.tx.execute("UPDATE hosts SET res = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&res).unwrap_or_default()])?;
+                }
                 self.touch_hosts();
             }
             Some(h) => {
@@ -3268,6 +3282,10 @@ impl<'a> W<'a> {
                                       dirs_rev = ?10, dirs_at = ?11, dirs_by = ?12, workspace = NULLIF(?13, '') WHERE id = ?1",
                     params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs, dirs_rev, dirs_at, dirs_by, workspace],
                 )?;
+                // 资源：每次都在变，只写库、不算机器有变化（不推送）；界面开着机器详情时每 10 秒取一次机器列表。
+                // 这次没带（旧版 board host、后台采样卡住太久）：清掉，界面写「不上报」，不留着越来越旧的数据
+                let res = rep.res.clone().and_then(|r| r.received(h.res.as_ref(), now)).map(|r| serde_json::to_string(&r).unwrap_or_default());
+                self.tx.execute("UPDATE hosts SET res = ?2 WHERE id = ?1", params![h.id, res])?;
                 // 换了一个 board host 进程（重启接回）：上一个进程的那一轮领取不再继续
                 if h.instance != rep.instance && h.round_at.is_some() {
                     self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;

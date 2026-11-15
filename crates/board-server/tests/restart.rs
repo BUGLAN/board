@@ -28,6 +28,7 @@ fn report(running: Vec<i64>) -> HostReport {
         selftest: false,
         config_sync: true,
         local_skills: None,
+        res: None,
     }
 }
 

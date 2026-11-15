@@ -1210,6 +1210,8 @@ struct Host<'a> {
     fetch_errs: Vec<(PathBuf, String, Instant)>,
     /// 下一次清理没用的 worktree 的时间
     next_wt_sweep: Instant,
+    /// 资源（CPU、内存、GPU、磁盘）：后台每 10 秒采一次，上报时带上最近一次
+    res: crate::res::Sampler,
 }
 
 /// 一块白板目录的 git 状态（目录在不在、是不是 git 仓库、origin、当前分支）和看的时间。
@@ -1329,6 +1331,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let instance = format!("{:x}{:x}", now_ms(), std::process::id() as u64 * 2654435761 % 0xffff_ffff);
     let run = hd.join("run").join(&name);
     let exe = std::env::current_exe().map_err(|e| BoardError::usage(format!("找不到 board 自己的路径：{e}")))?;
+    let res = crate::res::Sampler::start(envs::expand(&ws.path));
     let mut h = Host {
         run,
         exe,
@@ -1383,6 +1386,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         beat_soon: false,
         fetch_errs: vec![],
         next_wt_sweep: Instant::now(),
+        res,
     };
     on_signals();
     // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
@@ -1835,6 +1839,7 @@ impl Host<'_> {
     }
 
     fn report(&mut self, done: bool) -> HostReport {
+        self.res.set_ws(envs::expand(&self.ws.path));
         HostReport {
             name: self.name.clone(),
             instance: self.instance.clone(),
@@ -1854,6 +1859,7 @@ impl Host<'_> {
             selftest: true,
             config_sync: true,
             local_skills: Some(self.local_skills.clone()),
+            res: self.res.latest(),
         }
     }
 

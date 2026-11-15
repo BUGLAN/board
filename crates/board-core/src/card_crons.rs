@@ -1016,6 +1016,7 @@ mod tests {
             selftest: true,
             config_sync: true,
             local_skills: None,
+            res: None,
         };
         s.write(at, Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
     }

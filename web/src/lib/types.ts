@@ -369,6 +369,44 @@ export interface HostInfo {
   sync?: ConfigSync;
   /** 从这台机器导入 skills：本机的 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有 */
   skillImport?: SkillImport;
+  /** 资源（CPU、内存、GPU、磁盘）：最近一次采样和最近几次的使用率；旧版 board host 不报，没有 */
+  res?: HostRes;
+}
+
+/** 机器资源（PRD §10.12「资源」）：board host 后台每 10 秒采一次，随上报带给服务端 */
+export interface HostRes {
+  /** 采样时间（毫秒） */
+  at: number;
+  /** 取不到时没有 */
+  cpu?: { pct: number; cores: number; load?: [number, number, number]; model?: string };
+  /** 字节 */
+  mem?: { total: number; used: number };
+  /** 取不到（系统不支持）时没有；找过、没有 GPU 时是空数组 */
+  gpus?: ResGpu[];
+  /** 工作空间所在的盘排第一；取不到时没有 */
+  disks?: ResDisk[];
+  /** 最近几次的使用率（0–100，旧的在前，最多 30 个）；gpu 是第一块 */
+  hist: { cpu: number[]; mem: number[]; gpu: number[] };
+}
+
+export interface ResGpu {
+  name: string;
+  vendor?: string;
+  /** 使用率；读不到时没有 */
+  pct?: number;
+  /** 显存（字节）；Apple 芯片和内存共用，没有 */
+  vramUsed?: number;
+  vramTotal?: number;
+}
+
+export interface ResDisk {
+  mount: string;
+  /** 卷名（macOS 的「Macintosh HD」） */
+  label?: string;
+  total: number;
+  avail: number;
+  /** 工作空间在这块盘上 */
+  ws?: boolean;
 }
 
 /** MCP 服务器的一个环境变量或请求头。列表接口里密钥的 value 是空的，tail 是末尾 4 位；保存时密钥留空表示保留原来的值 */

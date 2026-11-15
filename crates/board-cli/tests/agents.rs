@@ -109,6 +109,7 @@ fn report_win(instance: &str) -> HostReport {
         selftest: false,
         config_sync: false,
         local_skills: None,
+        res: None,
     }
 }
 

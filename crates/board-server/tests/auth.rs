@@ -737,6 +737,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
         selftest: false,
         config_sync: true,
         local_skills: None,
+        res: None,
     };
     board_core::Store::open(&s.db).unwrap().write(board_core::now_ms(), Origin::cli(), |w| w.host_beat(&rep, Some(host_info.id))).unwrap();
     let check = |token: &str, body: Value| send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &format!("Bearer {token}"))], Some(body));

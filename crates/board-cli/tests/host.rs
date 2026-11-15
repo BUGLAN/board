@@ -382,6 +382,13 @@ fn host_runs_dispatches_end_to_end() {
     assert!(agents.iter().any(|a| a["id"] == "claude" && a["found"] == true && a["version"] == "9.9.9 (fake)"), "{agents:?}");
     assert!(agents.iter().any(|a| a["id"] == "pi" && a["found"] == false), "PATH 里没有的 agent 显示为没找到");
     assert_eq!(h["agent"], "claude", "dsh 没找到时，默认 agent 是下一个找到的");
+    // 资源（PRD §9.1「资源」）：上报里带着这台机器真实的核数、内存、磁盘
+    wait_until("mbp 上报资源", Duration::from_secs(15), || !rig.workspace()["hosts"][0]["res"].is_null());
+    let res = rig.workspace()["hosts"][0]["res"].clone();
+    assert!(res["cpu"]["cores"].as_u64().unwrap_or(0) > 0, "{res}");
+    assert!(res["mem"]["total"].as_u64().unwrap_or(0) > 0, "{res}");
+    assert!(res["disks"].as_array().is_some_and(|d| !d.is_empty()), "{res}");
+    assert!(res["at"].as_i64().unwrap_or(0) > 0 && res.get("age").is_none(), "{res}");
 
     // 同名的第二个 host：HOST_NAME_TAKEN
     let mut second = rig.host("mbp");

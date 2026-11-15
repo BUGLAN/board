@@ -12,6 +12,7 @@ pub mod error;
 pub mod files;
 pub mod fit;
 pub mod flow;
+pub mod hostres;
 pub mod hosts;
 pub mod model;
 pub mod releases;
@@ -33,6 +34,7 @@ pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;
 pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
+pub use hostres::HostRes;
 pub use hosts::{
     AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostDirOverride, HostEnv, HostInfo, HostPatch, HostReport,
     HostWork, HostWorkspace, ConfigSync, SyncAsk, SyncResult, SkillsSync, McpSync, LsAsk, DirEntry, DirList,

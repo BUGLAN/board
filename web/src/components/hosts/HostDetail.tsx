@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, pushRows, todayCounts, workspaceExceptions } from '../../lib/hostDetail';
+import { fullDisks } from '../../lib/hostRes';
 import { hostLoad, resultOf, sessionGroups, since } from '../../lib/hosts';
 import type { Dispatch, HostInfo, ProviderView } from '../../lib/types';
 import { cx, durWords } from '../../lib/util';
@@ -86,6 +87,7 @@ export function HostDetail({
     workspaceExceptions(h).filter(e => e.tone === 'bad').length +
     pushRows(h).filter(r => !r.ok).length +
     (behind ? 1 : 0) +
+    fullDisks(h) +
     (h.syncSkills && last?.skills.state === 'failed' && !h.sync?.ask ? 1 : 0) +
     (h.syncMcp && last?.mcp.state === 'failed' && !h.sync?.ask ? 1 : 0);
   const today = todayCounts(recent, now);

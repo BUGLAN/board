@@ -139,6 +139,17 @@ describe('机器：必填的数组补齐', () => {
 });
 
 describe('工作区、机器列表', () => {
+  it('资源（#358）：趋势缺了补成空数组，gpus、disks 是 null 当作没有；没有资源留着没有', () => {
+    const raw = { ...full(), res: { at: 1, cpu: { pct: 5, cores: 4 }, gpus: null, disks: null, hist: { cpu: [5] } } } as unknown as HostInfo;
+    const h = normHost(raw);
+    expect(h.res?.hist).toEqual({ cpu: [5], mem: [], gpu: [] });
+    expect(h.res?.gpus).toBeUndefined();
+    expect(h.res?.disks).toBeUndefined();
+    expect(normHost(h)).toEqual(h);
+    expect(normHost({ ...full(), res: { at: 1 } } as unknown as HostInfo).res?.hist).toEqual({ cpu: [], mem: [], gpu: [] });
+    expect(normHost(full()).res).toBeUndefined();
+  });
+
   it('旧服务端没有 hosts、dispatches 时留着没有（hostsOf 给空列表）', () => {
     const ws = normWorkspace({ rev: 1, now: 0, projects: [] } as unknown as Workspace);
     expect(ws.hosts).toBeUndefined();

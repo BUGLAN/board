@@ -42,6 +42,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         selftest: true,
         config_sync: true,
         local_skills: None,
+        res: None,
     }
 }
 
@@ -936,6 +937,46 @@ fn remove_cancels_queue_stops_running_and_comes_back_as_new() {
     assert_eq!(end(&mut s, T0 + 6 * S, da.id, None, &[]).result.as_deref(), Some("stopped"));
     // 派发记录保留
     assert!(s.read(|r| r.host_recent(da.host_id, 50)).unwrap().iter().any(|x| x.id == da.id));
+}
+
+/// 资源（PRD §10.12「资源」）：存最近一次和趋势，随机器信息给界面；每次都在变，不算机器有变化；旧版 board host 没有
+#[test]
+fn host_resources_are_stored_without_bumping_rev() {
+    use crate::hostres::{ResCpu, ResDisk, ResGpu, ResMem};
+    let mut s = store();
+    let res = |cpu: u8| HostRes {
+        age: Some(2 * S),
+        cpu: Some(ResCpu { pct: cpu, cores: 12, load: Some([1.5, 1.0, 0.5]), model: "Apple M3 Pro".into() }),
+        mem: Some(ResMem { total: 32 << 30, used: 16 << 30 }),
+        gpus: Some(vec![ResGpu { name: "Apple M3 Pro".into(), vendor: "Apple".into(), pct: Some(12), ..Default::default() }]),
+        disks: Some(vec![ResDisk { mount: "/".into(), label: "Macintosh HD".into(), total: 1000, avail: 80, ws: true }]),
+        ..Default::default()
+    };
+    // 新机器第一次上报就带着
+    beat(&mut s, T0, &HostReport { res: Some(res(20)), ..report("mbp", "i1", vec![]) }).unwrap();
+    let h = host(&s, T0);
+    let r = h.res.as_ref().expect("存了资源");
+    assert_eq!(r.at, T0 - 2 * S, "采样时间按 board host 报的「过了多久」往前推");
+    assert_eq!(r.hist.cpu, vec![20]);
+    assert_eq!(r.hist.mem, vec![50]);
+    // 之后每次上报：接上趋势，不推送（机器没有别的变化）
+    let rev = s.rev().unwrap();
+    beat(&mut s, T0 + 10 * S, &HostReport { res: Some(res(40)), ..report("mbp", "i1", vec![]) }).unwrap();
+    assert_eq!(s.rev().unwrap(), rev, "资源变了不算机器有变化");
+    let h = host(&s, T0 + 10 * S);
+    assert_eq!(h.res.as_ref().unwrap().hist.cpu, vec![20, 40]);
+    assert_eq!(h.res.as_ref().unwrap().cpu.as_ref().unwrap().pct, 40);
+    // 列表里也有（界面每 10 秒取一次机器列表）
+    let list = s.read(|r| r.hosts(T0 + 10 * S)).unwrap();
+    assert_eq!(list.iter().find(|x| x.name == "mbp").unwrap().res.as_ref().unwrap().hist.gpu, vec![12, 12]);
+    // 离线后留着最后一次（界面画成离线前的数据）
+    let later = s.read(|r| r.host("mbp", T0 + 600 * S)).unwrap();
+    assert!(!later.online && later.res.is_some());
+    // 换成旧版 board host（不报资源）：清掉，界面写「不上报」
+    beat(&mut s, T0 + 20 * S, &report("mbp", "i1", vec![])).unwrap();
+    assert!(host(&s, T0 + 20 * S).res.is_none());
+    let json = serde_json::to_value(host(&s, T0 + 20 * S)).unwrap();
+    assert!(json.get("res").is_none(), "没有资源时不带这个字段");
 }
 
 #[test]

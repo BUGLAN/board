@@ -21,6 +21,7 @@ mod lsdir;
 mod mcpsync;
 mod providersync;
 mod redact;
+mod res;
 mod selftest;
 mod service;
 mod skills;
