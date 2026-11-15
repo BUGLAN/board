@@ -310,9 +310,24 @@ mod tests {
         repo: PathBuf,
     }
 
+    /// 去掉 Windows 上 `canonicalize()` 加的 `\\?\` 前缀：git 不把带前缀的路径当本地路径
+    /// （`git clone \\?\C:\…` 会报「hostname contains invalid characters」）
+    fn plain(p: &Path) -> PathBuf {
+        match p.to_string_lossy().strip_prefix(r"\\?\") {
+            Some(rest) => PathBuf::from(rest),
+            None => p.to_path_buf(),
+        }
+    }
+
+    /// 读出来的文件按换行归一：Windows 上 git 检出会把 LF 写成 CRLF
+    fn text(p: &Path) -> String {
+        std::fs::read_to_string(p).unwrap().replace("\r\n", "\n")
+    }
+
     fn rig() -> Rig {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        // 去掉 Windows 上 `canonicalize()` 加的 `\\?\` 前缀：`git clone \\?\C:\…` 会报「hostname contains invalid characters」
+        let root = plain(&tmp.path().canonicalize().unwrap());
         let origin = root.join("origin.git");
         std::fs::create_dir(&origin).unwrap();
         run(&origin, &["init", "-q", "--bare", "-b", "main"]);
@@ -342,8 +357,8 @@ mod tests {
         let a = prepare(&r.repo, "claude-mbp/opus-5.5", 1, "").unwrap();
         assert_eq!(a.cwd, r.repo.parent().unwrap().join("proj.wt").join("claude-mbp-opus-5.5"));
         assert_eq!(a.branch, "main", "没写集成分支时用远端的默认分支");
-        assert_eq!(std::fs::read_to_string(a.cwd.join("AGENTS.md")).unwrap(), "v2\n");
-        assert_eq!(std::fs::read_to_string(r.repo.join("AGENTS.md")).unwrap(), "v1\n", "主目录不动");
+        assert_eq!(text(&a.cwd.join("AGENTS.md")), "v2\n");
+        assert_eq!(text(&r.repo.join("AGENTS.md")), "v1\n", "主目录不动");
         // 依赖、编译缓存这类没被跟踪、被忽略的文件留着
         std::fs::write(a.cwd.join(".git-ignored-cache"), "x").unwrap();
         std::fs::write(a.cwd.join(".gitignore"), ".git-ignored-cache\n.gitignore\n").unwrap();
@@ -351,7 +366,7 @@ mod tests {
         let b = prepare(&r.repo, "claude-mbp/opus-5.5", 2, "main").unwrap();
         assert_eq!(b.cwd, a.cwd, "干净的 worktree 接着用");
         assert!(b.left.is_none());
-        assert_eq!(std::fs::read_to_string(b.cwd.join("AGENTS.md")).unwrap(), "v3\n");
+        assert_eq!(text(&b.cwd.join("AGENTS.md")), "v3\n");
         assert!(b.cwd.join(".git-ignored-cache").exists());
         // 锁着，原因是名字（和 board-skills 的约定一样）
         let list = git(&r.repo, &["worktree", "list", "--porcelain"], QUICK).unwrap();

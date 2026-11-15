@@ -135,8 +135,12 @@ mod tests {
         assert_eq!(out.error, None);
         let got: Vec<(String, bool, i64)> = out.entries.iter().map(|e| (e.name.clone(), e.git, e.repos)).collect();
         assert_eq!(got, vec![("board".into(), true, 0), ("board.wt".into(), false, 1), ("notes".into(), true, 0), ("plain".into(), false, 0)], "只列文件夹，隐藏的不列");
+        // 面包屑按平台的写法拼：Windows 上按 `\` 一级一级往下（见 windows_chain_and_drive_root）
+        if !cfg!(windows) {
+            let h = home.display().to_string();
+            assert_eq!(out.chain, vec![String::new(), h.clone(), format!("{h}/repo")]);
+        }
         let h = home.display().to_string();
-        assert_eq!(out.chain, vec![String::new(), h.clone(), format!("{h}/repo")]);
         // 最上面一层：用户目录，带它下面的仓库数
         let top = list_with("", &home, false);
         assert_eq!((top.entries.len(), top.entries[0].path.clone(), top.chain.clone()), (1, h.clone(), vec![String::new()]));
