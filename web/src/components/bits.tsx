@@ -2,7 +2,8 @@
 import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { openLink } from '../lib/actions';
-import { agentIdOf, agentMark } from '../lib/hosts';
+import { LOOP_STAGGER_MS, loopAgentMotion, playAgentMotion, subscribeMotion } from '../lib/agent-motion';
+import { agentIdOf, agentMark, type AgentMark } from '../lib/hosts';
 import { inlineCode, markdown } from '../lib/markdown';
 import { shell } from '../lib/platform';
 import { refsFor, refsVersion, subscribeRefs } from '../lib/xref';
@@ -104,17 +105,76 @@ export function Avatar({ actor, className }: { actor: Actor; className?: string 
 export const agent = (name: string): Actor => ({ kind: 'agent', name });
 
 /**
- * 按 agent 名字画头像（`<标识>-<机器名>/<模型名>`，见 `agentIdOf`）：认得出标识就用 agent 自己的图标（`AgentIcon`）画在位子上，
- * 认不出退回现在的字母头像（`Avatar`），名字为空时什么都不画。尺寸、圆角、描边沿用 `.avatar` 位，用到的地方按原来的写法调大小。
+ * agent 的 logo 图本身（透明底）：单色的（`mono`）用遮罩画，颜色是 --agent-ink，深浅主题都看得清；其余直接画图。
+ * 头像（AgentAvatar）和机器页里的 agent 图标（hosts/bits.tsx）共用，没有 logo 时什么都不画
  */
-export function AgentAvatar({ name, className, title }: { name: string | null | undefined; className?: string; title?: string }) {
+export function LogoArt({ mark, className, title }: { mark: AgentMark; className?: string; title?: string }) {
+  if (!mark.icon) return null;
+  if (mark.mono)
+    return (
+      <i
+        className={cx(className, 'logo-mono')}
+        role={title ? 'img' : undefined}
+        aria-label={title}
+        title={title}
+        style={{ maskImage: `url(${mark.icon})`, WebkitMaskImage: `url(${mark.icon})` }}
+      />
+    );
+  return <img className={className} src={mark.icon} alt={title ?? ''} title={title} draggable={false} />;
+}
+
+/**
+ * 按 agent 名字画头像（`<标识>-<机器名>/<模型名>`，见 `agentIdOf`）：认得出标识就在位子上画 agent 自己的 logo，
+ * 认不出退回现在的字母头像（`Avatar`），名字为空时什么都不画。
+ *
+ * logo 的规范（default/main#357，样式在 base.css 的 `.avatar.agent-logo`）：
+ * - 画 logo 本身、透明底，不套圆底、不描边、不投影；位子大小沿用各处 `.avatar` 的尺寸（顶栏 26、卡片 20、单行 18、磁贴 16、详情 38），
+ *   logo 按 `MARKS.scale`（--logo-k）缩放；单色 logo（`mono`）用遮罩画，颜色跟主题走
+ * - 动作是各自的签名动作（lib/agent-motion.ts）：hover 时做一次；`enter` 的位子出现、换人时用进场版；
+ *   `loop` 时（在线干活）每 5 秒做一次，`loopIndex` 是并排时的序号，用来错开。减弱动效时都不做
+ */
+export function AgentAvatar({
+  name,
+  className,
+  title,
+  enter,
+  loop,
+  loopIndex = 0,
+}: {
+  name: string | null | undefined;
+  className?: string;
+  title?: string;
+  enter?: boolean;
+  loop?: boolean;
+  loopIndex?: number;
+}) {
   const id = agentIdOf(name);
   const tip = title ?? name ?? '';
-  if (!id) return name ? <Avatar actor={agent(name)} className={className} /> : null;
-  const m = agentMark(id);
+  const m = id ? agentMark(id) : null;
+  const ref = useRef<HTMLSpanElement>(null);
+  const art = () => ref.current?.querySelector('.logo-art');
+  // 减弱动效的开关变了，在循环的要停下或重新开始
+  const still = useSyncExternalStore(subscribeMotion, reduceMotion, reduceMotion);
+  // 出现、换人（标识变了，位子按标识重新挂上）：进场版
+  useLayoutEffect(() => {
+    if (enter) playAgentMotion(art(), m?.motion, 'enter');
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!loop || still) return;
+    const a = loopAgentMotion(art(), m?.motion, loopIndex * LOOP_STAGGER_MS);
+    return () => a?.cancel();
+  }, [id, loop, still, loopIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!id || !m) return name ? <Avatar actor={agent(name)} className={className} /> : null;
   return m.icon ? (
-    <span className={cx('avatar', 'agent-logo', m.light && 'ring', className)} style={{ ['--c' as string]: m.color }} title={tip}>
-      <img src={m.icon} alt="" draggable={false} />
+    <span
+      key={id}
+      ref={ref}
+      className={cx('avatar', 'agent-logo', className)}
+      style={{ ['--c' as string]: m.color, ['--logo-k' as string]: m.scale ?? 1 }}
+      title={tip}
+      onMouseEnter={() => playAgentMotion(art(), m.motion, 'act')}
+    >
+      <LogoArt mark={m} className="logo-art" />
     </span>
   ) : (
     // 认识的 agent 还没有自己的图标（旧版 `MARKS`）：两个字母

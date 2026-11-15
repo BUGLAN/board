@@ -225,15 +225,25 @@ kbd, .kbd {
 /* 登录后的「人」是 GitHub 头像：图片填满圆形、按原比例裁切，不撑破各处的小尺寸头像 */
 .avatar.photo { overflow: hidden; }
 .avatar.photo img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
-/* agent 自己的图标画在头像位里：圆形底带一点它的主色，中间是图标（和头像一样的大小、圆角和投影，深色、浅色主题都看得清） */
-.avatar.agent-logo {
-  overflow: hidden;
-  background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--c) 30%, var(--surface)), color-mix(in srgb, var(--c) 12%, var(--surface)) 60%, var(--surface));
-  box-shadow: 0 0 0 2px var(--surface), 0 2px 6px -1px color-mix(in srgb, var(--c) 45%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent);
+/* agent 自己的 logo（bits.tsx AgentAvatar，default/main#357）：画 logo 本身、透明底，不套圆底、不描边、不投影。
+   位子大小沿用各处 .avatar 的尺寸（顶栏 26、卡片 20、单行 18、磁贴 16、详情 38）；--logo-k 是 logo 在位子里占的比例（MARKS.scale），
+   超出一点也不裁（overflow: visible）。签名动作用 Web Animations 播在 .logo-art 上（lib/agent-motion.ts） */
+.avatar.agent-logo { --logo-k: 1; overflow: visible; border-radius: 0; background: none; box-shadow: none; }
+/* hover 时做签名动作：浮到旁边的头像上面，跳起来不被压住 */
+.avatar.agent-logo:hover { z-index: 3; }
+.logo-art {
+  display: block; flex: none; width: calc(var(--logo-k) * 100%); height: calc(var(--logo-k) * 100%);
+  object-fit: contain; pointer-events: none;
+  /* 蹦、压扁这类动作以底边附近为支点 */
+  transform-origin: 50% 85%;
 }
-.avatar.agent-logo img { display: block; width: 70%; height: 70%; border-radius: 22%; object-fit: contain; }
-/* 白底的图标（`light`）：自己带一块底色和一圈细线，浅色主题下才看得出边 */
-.avatar.agent-logo.ring img { background: var(--surface); box-shadow: 0 0 0 1px var(--line-2); }
+/* 单色 logo（MARKS.mono，bits.tsx LogoArt）：图案当遮罩，颜色是 --agent-ink（浅色主题深灰蓝、深色主题浅灰）；
+   头像和机器页的 agent 图标共用 */
+.logo-mono {
+  display: block; background: var(--agent-ink);
+  mask-size: contain; mask-position: center; mask-repeat: no-repeat;
+  -webkit-mask-size: contain; -webkit-mask-position: center; -webkit-mask-repeat: no-repeat;
+}
 .avatar .live {
   position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%;
   background: var(--ok); box-shadow: 0 0 0 2px var(--surface);

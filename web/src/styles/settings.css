@@ -114,6 +114,12 @@
 :root[data-motion="reduced"] .logo i,
 :root[data-motion="reduced"] .card.doing::before,
 :root[data-motion="reduced"] .ie-art i { animation: none !important; }
+/* 顶栏的心跳波纹、画布上正在工作的头像原来写死了 2 秒多的时长，变量改不到，这里一起停 */
+:root[data-motion="reduced"] .pres-pulse { animation: none; opacity: .6; }
+:root[data-motion="reduced"] .cv-board.active .cvb-agents .avatar { animation: none; }
+/* agent logo 的状态（default/main#357）：不闪、不呼吸，只用颜色表示 */
+:root[data-motion="reduced"] .pres-item.is-logo.late .logo-art { animation: none; filter: grayscale(1) opacity(.7) drop-shadow(0 0 2.5px var(--warn)); }
+:root[data-motion="reduced"] .pres-item.is-logo.wait .logo-art { animation: none; opacity: .5; }
 
 /* 本机：让这台电脑接任务（桌面端） */
 .lh-warn { color: var(--warn-text); }

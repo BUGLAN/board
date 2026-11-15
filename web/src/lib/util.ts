@@ -13,7 +13,7 @@ export const BACK_KEY = isMac ? '⌘[' : 'Alt+←';
 export const FWD_KEY = isMac ? '⌘]' : 'Alt+→';
 export const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
 export const reduceMotion = () =>
-  document.documentElement.dataset.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.documentElement.dataset.motion === 'reduced' || !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 /* ---------- agent 身份色 ---------- */
 const AGENT_COLORS = ['#FF7A45', '#4DB5FF', '#3DDC97', '#FFB020', '#FF5C8A', '#9B87FF', '#2DD4BF', '#E879F9', '#84CC16'];

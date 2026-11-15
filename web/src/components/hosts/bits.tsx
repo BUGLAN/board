@@ -4,7 +4,7 @@ import { agentMark, hostState, osKind, since, type OsKind } from '../../lib/host
 import type { HostAgent, HostInfo } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
 import { hostKey, refreshHosts, type Patch } from '../../store/data';
-import { Tip } from '../bits';
+import { LogoArt, Tip } from '../bits';
 import { Icon } from '../Icon';
 
 /** Apple 品牌图标：单色跟随文字颜色，深色、浅色主题都清晰 */
@@ -54,7 +54,7 @@ export function Dot({ h, running }: { h: HostInfo; running: number }) {
 /** agent 标记：认识的 agent 用它自己的图标，其他用两个字母 */
 export function Mark({ id, title }: { id: string; title?: string }) {
   const m = agentMark(id);
-  if (m.icon) return <img className={cx('hp-mini hp-logo', m.light && 'ring')} src={m.icon} alt={title ?? id} title={title ?? id} draggable={false} />;
+  if (m.icon) return <LogoArt mark={m} className="hp-mini hp-logo" title={title ?? id} />;
   return (
     <b className="hp-mini" style={{ ['--ac' as string]: m.color }} title={title ?? id}>
       {m.short}
@@ -65,7 +65,7 @@ export function Mark({ id, title }: { id: string; title?: string }) {
 /** agent 自己的图标；不认识的 agent 用两个字母 */
 export function AgentIcon({ id }: { id: string }) {
   const m = agentMark(id);
-  return m.icon ? <img className={cx('hp-logo', m.light && 'ring')} src={m.icon} alt="" draggable={false} /> : <b style={{ ['--ac' as string]: m.color }}>{m.short}</b>;
+  return m.icon ? <LogoArt mark={m} className="hp-logo" /> : <b style={{ ['--ac' as string]: m.color }}>{m.short}</b>;
 }
 
 /** agent 胶囊：图标、名称、启动环境（「pi · Git Bash」）、版本号、「默认」 */

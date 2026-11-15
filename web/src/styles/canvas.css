@@ -106,6 +106,10 @@
 .cvb-agents .avatar { width: 20px; height: 20px; font-size: 11px; margin-right: -4px; }
 .cvb-agents em { font-style: normal; font-size: 11px; color: var(--text-3); margin-left: 10px; white-space: nowrap; }
 .cv-board.active .cvb-agents .avatar { animation: breathe 2.4s var(--ease-in-out) infinite; }
+/* agent 自己的 logo 是透明底（default/main#357）：叠在一起分不清，改成并排；圆形外圈的呼吸套在 logo 上不对，
+   正在工作时改成轮流做签名动作（Canvas.tsx 传 loop） */
+.cvb-agents .avatar.agent-logo { margin-right: 5px; }
+.cv-board.active .cvb-agents .avatar.agent-logo { animation: none; }
 .cvb-inbox { display: inline-flex; align-items: center; gap: 3px; font-family: var(--f-mono); font-size: 11px; color: color-mix(in oklab, var(--c-inbox), var(--ink)); }
 .cvb-inbox svg { width: 13px; height: 13px; }
 .cvb-open {

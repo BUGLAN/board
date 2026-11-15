@@ -863,7 +863,7 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
         </div>
       </div>
       <div className={cx('claim-card', t.beat === 'late' && 'late')} style={{ ['--ac' as string]: agentColor(c.holder) }}>
-        <AgentAvatar name={c.holder} className="lg" />
+        <AgentAvatar name={c.holder} className="lg" enter />
         <div className="claim-who">
           <b>{c.holder}</b>
           <span>

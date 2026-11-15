@@ -575,8 +575,9 @@ function BoardNode({
         <span className="cvb-agents">
           {agents.length ? (
             <>
-              {agents.map(n => (
-                <AgentAvatar key={n} name={n} />
+              {/* 正在工作：logo 轮流做签名动作（每 5 秒一次，几个错开） */}
+              {agents.map((n, i) => (
+                <AgentAvatar key={n} name={n} enter loop loopIndex={i} />
               ))}
               <em>{agents.length} 个 agent 在工作</em>
             </>

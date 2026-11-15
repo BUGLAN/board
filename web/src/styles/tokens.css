@@ -41,6 +41,7 @@
   --danger: #E0263B;
   --danger-soft: rgba(224, 38, 59, .1);
   --ok: #109A62;
+  --agent-ink: #2A2E35;  /* 单色 agent logo（dsh 的鲸鱼）的颜色：取自原图 */
   --warn: #D97A06;
   /* 警告、危险写成文字时用（浅色主题加深到对比度 ≥ 4.5:1） */
   --warn-text: #935103;
@@ -124,6 +125,7 @@
     --danger: #FF4D61;
     --danger-soft: rgba(255, 77, 97, .13);
     --ok: #3DDC97;
+    --agent-ink: #E3E5EB;
     --warn: #FFB020;
     --warn-text: #FFB020;
     --danger-text: #FF6B7C;
@@ -169,6 +171,7 @@
   --danger: #FF4D61;
   --danger-soft: rgba(255, 77, 97, .13);
   --ok: #3DDC97;
+  --agent-ink: #E3E5EB;
   --warn: #FFB020;
   --warn-text: #FFB020;
   --danger-text: #FF6B7C;

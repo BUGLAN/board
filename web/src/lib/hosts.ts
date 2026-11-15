@@ -5,28 +5,36 @@ import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
 import piIcon from '../assets/agents/pi.svg';
 import codexIcon from '../assets/agents/codex.svg';
+import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
 import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
 import { agentColor, agentGlyph } from './util';
 
-/** agent 标记：已知的几种用它们自己的图标（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
+/** agent 标记：已知的几种用它们自己的 logo（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
 export interface AgentMark {
   short: string;
   color: string;
+  /** logo 本身，透明底（头像位里直接画它，不套圆底，default/main#357） */
   icon?: string;
-  /** 图标本身是白底：加一圈细线，浅色主题下才看得出边 */
-  light?: boolean;
+  /** 单色 logo：用遮罩画，颜色跟主题走（--agent-ink），深浅主题都看得清 */
+  mono?: boolean;
+  /** logo 在头像位里占的比例（默认 1）：按各自的留白和分量调，几个放在一起看上去一样大 */
+  scale?: number;
+  /** 签名动作（lib/agent-motion.ts）：hover 时做一次，出现、换人时用进场版，在线干活时隔一会儿做一次 */
+  motion?: AgentMotion;
 }
 
 const MARKS: Record<string, AgentMark> = {
-  // Claude Code 的像素标志 Clawd（取自 Claude Code VS Code 扩展的 resources/clawd.svg，裁掉透明边后画成 64×64），不是 Claude 桌面应用的图标
-  claude: { short: 'CC', color: '#D97757', icon: claudeIcon },
-  // DeepSeek Harness 应用的图标
-  dsh: { short: 'DS', color: '#4D6BFE', icon: dshIcon, light: true },
-  // pi.dev 的 logo
-  pi: { short: 'π', color: '#E5A93F', icon: piIcon },
-  // Codex 的云形终端标志（取自 lobe-icons 的 static-svg/icons/codex.svg，和 Codex 官方应用里的一致）：单色路径，用它的主色填满
-  codex: { short: 'CX', color: '#10A37F', icon: codexIcon },
+  // Claude Code 的像素标志 Clawd（取自 Claude Code VS Code 扩展的 resources/clawd.svg，裁掉透明边后画成 64×64），不是 Claude 桌面应用的图标。
+  // 动作：像素小人蹦一下
+  claude: { short: 'CC', color: '#D97757', icon: claudeIcon, scale: 1.04, motion: 'hop' },
+  // DeepSeek Harness 应用图标里的鲸鱼：原图是白底圆角方块，抠成透明底的单色图案（256×189）。动作：摆尾往前游
+  dsh: { short: 'DS', color: '#4D6BFE', icon: dshIcon, mono: true, scale: 1.08, motion: 'swim' },
+  // pi.dev 的 logo。动作：方块压扁再弹高
+  pi: { short: 'π', color: '#E5A93F', icon: piIcon, scale: 0.92, motion: 'squash' },
+  // Codex 的云形终端标志（取自 lobe-icons 的 static-svg/icons/codex.svg，和 Codex 官方应用里的一致）：单色路径，用它的主色填满。
+  // 动作：云飘起来晃一晃
+  codex: { short: 'CX', color: '#10A37F', icon: codexIcon, scale: 0.94, motion: 'float' },
 };
 
 /** 已知的 agent 标识（`MARKS` 的键）：识别 agent 名字用 */

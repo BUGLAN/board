@@ -219,6 +219,11 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 /* 动态 */
 .timeline { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .timeline::before { content: ""; position: absolute; left: 11px; top: 10px; bottom: 10px; width: 1.5px; background: linear-gradient(var(--line-2), var(--line)); }
+/* agent 的 logo 是透明底（default/main#357）：垫一块和动态栏同色的圆底，竖线不从 logo 中间穿过去（看不出是底） */
+.timeline .avatar.agent-logo {
+  --knock: color-mix(in srgb, var(--surface-2) 55%, var(--surface));
+  border-radius: 50%; background: var(--knock); box-shadow: 0 0 0 3px var(--knock);
+}
 /* 内容列用 minmax(0, 1fr)：评论里不换行的代码块、宽表格只在自己的框里横向滚动，不把气泡撑出动态栏 */
 .tl-item { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 6px 0; }
 .tl-item.new { animation: tl-in var(--dur-4) var(--spring-soft) both; }

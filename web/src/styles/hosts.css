@@ -39,12 +39,13 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 }
 .hp-agent b { display: grid; place-items: center; min-width: 20px; height: 18px; padding: 0 4px; border-radius: 5px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
 /* agent 自己的图标（应用图标、官网 logo） */
-img.hp-logo { flex: none; display: block; width: 18px; height: 18px; border-radius: 5px; object-fit: contain; }
-img.hp-mini.hp-logo { min-width: 0; padding: 0; background: none; box-shadow: none; }
-.hp-agent img.hp-logo { margin-left: 1px; }
-.hp-agent.missing img.hp-logo { filter: grayscale(1); }
-.hp-side-runs img.hp-mini.hp-logo { width: 14px; height: 14px; border-radius: 4px; }
-img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
+.hp-logo { flex: none; display: block; width: 18px; height: 18px; border-radius: 5px; object-fit: contain; }
+.hp-mini.hp-logo { min-width: 0; padding: 0; background: none; box-shadow: none; }
+/* 单色 logo（dsh 的鲸鱼）是遮罩画的，底色就是它的颜色：不被上一条清掉，也不切圆角（尾巴尖贴着边） */
+.hp-logo.logo-mono { background: var(--agent-ink); border-radius: 0; }
+.hp-agent .hp-logo { margin-left: 1px; }
+.hp-agent.missing .hp-logo { filter: grayscale(1); }
+.hp-side-runs .hp-mini.hp-logo { width: 14px; height: 14px; border-radius: 4px; }
 .hp-agent em { font-style: normal; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .hp-agent small { font-size: 11px; font-weight: 600; color: color-mix(in oklab, var(--brand), var(--ink)); }
 .hp-agent.def { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent); }
@@ -63,7 +64,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .ha-sum { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 8px 12px; text-align: left; transition: background-color var(--dur-1); }
 .ha-sum:not(:disabled):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .ha-sum:disabled { cursor: default; opacity: 1; }
-.ha-sum > img.hp-logo { flex: none; width: 22px; height: 22px; }
+.ha-sum > .hp-logo { flex: none; width: 22px; height: 22px; }
 .ha-sum > b { flex: none; display: grid; place-items: center; min-width: 24px; height: 22px; padding: 0 4px; border-radius: 6px; font: 700 11px var(--f-mono); color: #18181A; background: var(--ac); }
 .ha-sum > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); transition: transform var(--dur-2) var(--ease-out); }
 .ha-row.open .ha-sum > svg { transform: rotate(180deg); }
@@ -78,7 +79,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .ha-line.run { font-size: 11.5px; color: var(--text-2); }
 .ha-line i { display: inline-block; width: 4.6em; font-style: normal; font-size: 11px; color: var(--text-3); }
 .ha-line em { font-style: normal; color: var(--text-3); }
-.ha-row.missing .ha-sum > img.hp-logo { filter: grayscale(1); opacity: .55; }
+.ha-row.missing .ha-sum > .hp-logo { filter: grayscale(1); opacity: .55; }
 .ha-row.missing .ha-sum > b { background: var(--text-4); }
 .ha-row.missing .ha-name b { color: var(--text-3); }
 .ha-note { margin: -4px 12px 8px 44px; }
@@ -125,7 +126,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-env-hint { font-size: 12px; color: var(--text-3); }
 .hp-env-users { display: inline-flex; gap: 3px; flex: none; margin-left: auto; }
 .hp-env-user { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
-.hp-env-user img.hp-logo { width: 15px; height: 15px; }
+.hp-env-user .hp-logo { width: 15px; height: 15px; }
 .hp-env-user > b { display: grid; place-items: center; min-width: 16px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
 .hp-beat { display: inline-flex; align-items: center; gap: 5px; }
 .hp-beat i { width: 6px; height: 6px; border-radius: 50%; background: var(--c-done); animation: hp-pulse 1.6s var(--ease-out) infinite; }
@@ -992,7 +993,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .pv-ag { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 6px; border-radius: 999px; font-size: 12px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background-color var(--dur-1), box-shadow var(--dur-1); }
 .pv-ag:hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
 .pv-ag.on { background: var(--surface-3); box-shadow: inset 0 0 0 1.5px var(--text-3); }
-.pv-ag img.hp-logo { width: 16px; height: 16px; flex: none; }
+.pv-ag .hp-logo { width: 16px; height: 16px; flex: none; }
 .pv-ag > b:first-child { flex: none; display: grid; place-items: center; min-width: 20px; height: 16px; padding: 0 3px; border-radius: 4px; font: 700 9px var(--f-mono); color: #18181A; background: var(--ac); }
 .pv-ag > b { font-weight: 500; color: var(--text); }
 .pv-ag-n { font-size: 11px; color: var(--text-3); }
@@ -1053,7 +1054,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .sy-meta { min-width: 0; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sy-cmd { min-width: 0; font: 11.5px var(--f-mono); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sy-who { display: inline-flex; align-items: center; gap: 3px; }
-.sy-who img.hp-logo { width: 15px; height: 15px; }
+.sy-who .hp-logo { width: 15px; height: 15px; }
 .sy-who > b, .sy-mx th > b { display: inline-grid; place-items: center; min-width: 18px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
 .sy-acts { display: inline-flex; justify-content: flex-end; gap: 2px; }
 .sy-detail { display: flex; flex-direction: column; gap: 10px; padding: 2px 14px 14px 32px; animation: hp-in var(--dur-3) var(--ease-out); }
@@ -1067,7 +1068,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .sy-mx { align-self: flex-start; border-collapse: collapse; font-size: 12px; }
 .sy-mx th, .sy-mx td { padding: 5px 28px 5px 0; text-align: left; white-space: nowrap; }
 .sy-mx thead th { font-weight: 500; color: var(--text-3); }
-.sy-mx thead th img.hp-logo, .sy-mx thead th > b { display: inline-grid; width: 14px; height: 14px; margin-right: 5px; vertical-align: -2px; }
+.sy-mx thead th .hp-logo, .sy-mx thead th > b { display: inline-grid; width: 14px; height: 14px; margin-right: 5px; vertical-align: -2px; }
 .sy-mx thead th > b { width: auto; }
 .sy-mx tbody tr + tr th, .sy-mx tbody tr + tr td { border-top: 1px dashed var(--line); }
 .sy-mx-host { display: inline-flex; align-items: center; font-weight: 600; color: var(--text); }
@@ -1121,7 +1122,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .fm-who > span:first-child { margin-right: 2px; }
 .fm-who-a { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--line); opacity: .35; filter: grayscale(1); transition: opacity var(--dur-2), filter var(--dur-2); }
 .fm-who-a.on { opacity: 1; filter: none; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
-.fm-who-a img.hp-logo { width: 16px; height: 16px; }
+.fm-who-a .hp-logo { width: 16px; height: 16px; }
 .fm-who-a > b, .fm-mark > b { display: grid; place-items: center; min-width: 18px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
 .fm .input { height: 34px; padding: 0 10px; font-size: 13px; }
 .fm .input.mono { font-family: var(--f-mono); font-size: 12.5px; }
@@ -1139,8 +1140,8 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .fm-mark { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; font: 700 11px var(--f-mono); color: #fff; background: var(--vc); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
 .fm-mark.plain { color: var(--text-2); background: transparent; box-shadow: inset 0 0 0 1.5px var(--line-3); }
 .fm-mark svg { width: 15px; height: 15px; }
-.fm-mark img.hp-logo { width: 18px; height: 18px; }
-.fm-tile:not(.on) .fm-mark img.hp-logo, .fm-tile:not(.on) .fm-mark > b { filter: grayscale(1); opacity: .55; }
+.fm-mark .hp-logo { width: 18px; height: 18px; }
+.fm-tile:not(.on) .fm-mark .hp-logo, .fm-tile:not(.on) .fm-mark > b { filter: grayscale(1); opacity: .55; }
 /* 字段：标签在上，说明在下 */
 .fm-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; }
 .fm-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -1222,7 +1223,7 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .si-meta { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .si-row.k-same .si-name b, .si-row.k-bad .si-name b { color: var(--text-2); }
 .si-agents { flex: none; display: inline-flex; gap: 3px; }
-.si-agents img.hp-logo { width: 15px; height: 15px; }
+.si-agents .hp-logo { width: 15px; height: 15px; }
 .si-agents > b { display: inline-grid; place-items: center; min-width: 18px; height: 15px; padding: 0 2px; border-radius: 4px; font: 700 8.5px var(--f-mono); color: #18181A; background: var(--ac); }
 .si-result { display: flex; flex-direction: column; gap: 6px; }
 .si-res { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; color: var(--text-2); }
