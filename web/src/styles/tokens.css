@@ -89,6 +89,11 @@
   --topbar-h: 60px;
   --ab-w: 54px;
   --side-w: 292px;
+  /* 内容区宽度：未整理、里程碑、大盘、机器、设置五个 Tab 共用（白板、项目是整页，不用它）。
+     页面容器统一 width: 100%; max-width: var(--page-w); margin: 0 auto，宽屏下切换 Tab 左右边界一致 */
+  --page-w: 1120px;
+  /* 设置页里卡片这一层的宽度：页面内容区是 --page-w，卡片收窄到 760px，表单、说明保持可读的行宽 */
+  --set-w: 760px;
 
   color-scheme: light;
 }

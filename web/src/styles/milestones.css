@@ -4,7 +4,8 @@
 
 .page-ms { position: relative; overflow: hidden; }
 .msp-scroll { flex: 1; min-height: 0; overflow-y: auto; }
-.msp-wrap { max-width: 1040px; margin: 0 auto; padding: 24px 28px 120px; animation: msp-in var(--dur-3) var(--ease-out); }
+/* 内容区宽度和未整理、大盘、机器、设置一致：--page-w（tokens.css） */
+.msp-wrap { width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 24px 28px 120px; animation: msp-in var(--dur-3) var(--ease-out); }
 @keyframes msp-in { from { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) { .msp-wrap { animation: none; } }
 

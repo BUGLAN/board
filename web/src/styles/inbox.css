@@ -4,7 +4,8 @@
 
 .page-inbox { position: relative; overflow: hidden; }
 .ib-scroll { flex: 1; min-height: 0; overflow-y: auto; }
-.ib-wrap { position: relative; max-width: 1100px; margin: 0 auto; padding: 28px 28px 160px; }
+/* 内容区宽度和里程碑、大盘、机器、设置一致：--page-w（tokens.css） */
+.ib-wrap { position: relative; width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 28px 28px 160px; }
 
 /* ---------------- 页头 ---------------- */
 .ib-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 6px; }

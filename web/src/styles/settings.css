@@ -3,7 +3,10 @@
    ========================================================================== */
 
 .page-settings { overflow-y: auto; scroll-behavior: auto; }
-.settings { max-width: 760px; margin: 0 auto; padding: 28px 28px 80px; }
+/* 页面容器和未整理、里程碑、大盘、机器用同一个内容区宽度（--page-w，tokens.css），宽屏下切换 Tab 左右边界一致；
+   里面的卡片再用一层窄容器（--set-w）收窄，表单和说明保持原来 760px 以内的行宽，不被拉得难读 */
+.settings { width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 28px 28px 80px; }
+.settings > * { max-width: var(--set-w); margin-left: auto; margin-right: auto; }
 .settings-hero { padding: 10px 2px 20px; animation: enter-up var(--dur-4) var(--ease-out) both; }
 .settings-hero h1 { font-family: var(--f-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
 .settings-hero p { margin-top: 4px; color: var(--text-3); font-size: 13.5px; }

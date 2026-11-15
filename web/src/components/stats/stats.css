@@ -17,7 +17,8 @@
   --sp-l0: rgba(255, 255, 255, .05); --sp-l1: #0d366b; --sp-l2: #184f95; --sp-l3: #256abf; --sp-l4: #3987e5; --sp-l5: #86b6ef;
 }
 
-.sp-page { width: 100%; max-width: 1240px; margin: 0 auto; padding: 26px 28px 100px; display: flex; flex-direction: column; gap: 14px; }
+/* 内容区宽度和未整理、里程碑、机器、设置一致：--page-w（tokens.css） */
+.sp-page { width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 26px 28px 100px; display: flex; flex-direction: column; gap: 14px; }
 
 /* ---------- 页头与时间范围 ---------- */
 .sp-head { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px 20px; margin-bottom: 4px; }

@@ -318,7 +318,8 @@ img.hp-logo.ring { box-shadow: 0 0 0 1px var(--line-2); }
 .hp-side-runs .hp-mini { min-width: 16px; height: 14px; font-size: 11px; padding: 0 3px; }
 
 /* ---------- 主区：机架总览（一行一台机器，一条车道一个任务） ---------- */
-.hp-b { max-width: 1120px; margin: 0 auto; padding: 28px 28px 100px; }
+/* 内容区宽度和未整理、里程碑、大盘、设置一致：--page-w（tokens.css） */
+.hp-b { width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 28px 28px 100px; }
 .hp-b-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin-bottom: 18px; }
 /* 窗口窄、侧栏又开着时说明文字至少留 280px，放不下就让右边的按钮换到下一行（不把文字挤成一字一行） */
 .hp-b-head > div:first-child { flex: 1 1 280px; min-width: 0; }
