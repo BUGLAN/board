@@ -1048,6 +1048,39 @@
 }
 ```
 
+### `board touched`
+
+有碰到时退出码 1（`--json` 照样输出，不是 `error`）。`base_from` 写基点是怎么认出来的（`--base …`、`开工时切到的 <提交>`、`建好 worktree 时的 <提交>`，或「没找到开工时的基点，往前查 20 个提交」）；`from` 是这次改动从哪个提交算起，`checked` 是看了几个最近的提交；`removed` / `readded` 是这次删掉了它加的、加回了它删的行数，例子最多两行：
+
+```json
+{
+  "base": "579226297a4323e0a9432b7d1647dc028a949937",
+  "base_from": "--base e4a0934^",
+  "checked": 1,
+  "commit": "d1e88c4b99b463732a5d6dcb5cf86562d955d359",
+  "from": "7f93732bfea7ed699a35021ae4c7f4cb33c85c46",
+  "mine": ["default/main#328"],
+  "summary": "碰到的别的卡：default/main#320（Lightbox.test.tsx、Lightbox.tsx、app.css）",
+  "touched": [
+    {
+      "card": "default/main#320",
+      "commits": [{ "sha": "e4a093467b6be1a1db5286a72bf6826343f9d0c3", "subject": "fix(web): 图片预览完整显示高图、去掉下载按钮，未整理展开行不再伸出右边" }],
+      "files": [
+        {
+          "path": "web/src/components/overlays/Lightbox.tsx",
+          "readded": 2,
+          "readded_samples": ["{/* 底部条：文件名、下载，多张时右边是切换；关闭靠 Esc 或点遮罩 */}", "<a className=\"btn sm\" href={stage.src} download={stage.alt || true}>"],
+          "removed": 1,
+          "removed_samples": ["{/* 底部条：文件名，多张时右边是切换；关闭靠 Esc 或点遮罩。不放下载按钮（default/main#320）：要存右键图片另存为 */}"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+没有卡片行的提交 `card` 是 `null`。
+
 ### `board versions sync`
 
 `--dry-run` 时 `added`、`already`、`created`、`missing` 为 `null`；真正写入后是数量或名称，`created` 表示这次有没有新建版本标签：

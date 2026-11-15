@@ -25,6 +25,7 @@ mod selftest;
 mod service;
 mod skills;
 mod text;
+mod touched;
 mod update;
 mod versions;
 
@@ -37,9 +38,10 @@ use std::io::IsTerminal;
 use std::time::Duration;
 use text::{pad, truncate, width};
 
-const VALUE_FLAGS: [&str; 24] = [
+const VALUE_FLAGS: [&str; 27] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
     "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project", "--workspace",
+    "--base", "--upstream", "--card",
 ];
 const BOOL_FLAGS: [&str; 17] = [
     "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--any", "--move", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
@@ -47,7 +49,7 @@ const BOOL_FLAGS: [&str; 17] = [
 ];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 28] = [
+const COMMANDS: [(&str, &str, &str); 29] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
@@ -78,6 +80,11 @@ const COMMANDS: [(&str, &str, &str); 28] = [
         ("host", "[run] [--name <机器名>] [--workspace <工作空间>] [--dir <项目>=<路径>]… [--install | --uninstall] | rename <新机器名>", "run（默认）：在这台机器上常驻接任务，每个项目的目录是 <工作空间>/<项目>（不存在时自动建好；白板设了仓库地址时自动克隆），派来的卡片在那里启动本机 agent，Ctrl+C 退出（机器名、工作空间也可写在 ~/.board/config.toml 的 [host]）；--dir 只给单独一块白板指定目录（覆盖工作空间派生的目录）；--install：按这些参数装成开机自启的服务（macOS launchd、Linux systemd 用户服务、Windows 登录时的计划任务），异常退出 10 秒后自动重启，输出写进 ~/.board/host/host.log；--uninstall：删掉服务；rename：机器改名，服务端上的记录原地改名，设置和历史派发记录保留（桌面端「设置 → 本机」保存机器名时调用）"),
         ("skills", "ls | push <目录>… | sync | rm <名称>", "skills 共用库（不用 --as、--board）：ls 列出库里的 skill 和本机各 agent 目录里的状态；push 把本机的 skill 目录（目录名就是名称，里面要有 SKILL.md，合计不超过 5 MB）传进库里，同名的换成新版本，在线的机器自动同步；sync 按库更新本机（有 board host 在跑时由它来做）；rm 从库里删掉，各台机器上同步装的那份随后删掉。board-skills 随服务端版本，不能传、不能删"),
         ("versions", "sync [<tag>…] [--project <项目>] [--dir <仓库>] [--dry-run]", "在代码仓库里从 git tag 和提交历史反推每个版本做了哪些卡片（不用 --as、--board）：v 开头的 tag 是版本，上一个 tag 之后的提交属于这个 tag，提交说明里的「卡片：<项目>/<白板>#<ID>」把提交连到卡片；这些卡片带上和 tag 同名的版本标签（没有就新建），这一版的提交记到服务端，界面「里程碑」里按版本看。--project 不写时取提交里出现最多的项目；只同步某几个 tag 时写在 sync 后面；--dry-run 只列出来不写入；反复运行结果一样"),
+        (
+            "touched",
+            "[<提交>] [--base <提交>] [--upstream <分支>] [--card <项目/白板#ID>] [--dir <仓库>]",
+            "推送前检查（只用 git，不用 --as、--board，不连服务端）：要推的提交（默认 HEAD）删掉了别的卡最近加的行、或加回了别的卡最近删的行时，按卡列出提交、文件和例子，退出码 1。「最近」= 开工时的基点（--base；不写时从本 worktree 的 reflog 认开工时所在的提交，认不出就往前 20 个提交）之后集成分支（--upstream，默认 origin/HEAD）上的提交；这次的卡（--card，不写时取提交说明里的「卡片：」）自己的提交不算。最后一行「碰到的别的卡：…」写进交审评论",
+        ),
         ("dispatch", "<ID> --host <机器名> | --any [--agent <标识>] [--move] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--any 不指定机器，由服务端在能接的机器里挑空位最多的；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--move 把还在排队的派发改派到 --host 的机器或 --any；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
@@ -305,6 +312,12 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     // 升级：只读服务端地址（不需要令牌），不需要名字和白板
     if sub == "update" {
         return update::run(a.flag("--latest"), json, p);
+    }
+
+    // 推送前检查：只用 git，不需要连接、名字和白板
+    if sub == "touched" {
+        let o = touched::Opts { commit: a.pos.get(1).map(String::as_str), base: a.value("--base"), upstream: a.value("--upstream"), card: a.value("--card"), dir: a.value("--dir") };
+        return touched::run(&o, json, p);
     }
 
     // 任务下发：board host 在前台一直运行；board host rename 不需要名字（带了也只当参数）；board dispatch 不需要名字（带了就记为发起人）
@@ -1502,7 +1515,7 @@ fn borrowed(tokens: &[String]) -> Option<String> {
     if a.flag("--help") || a.flag("-h") || a.flag("--version") || a.flag("-V") {
         return None;
     }
-    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch" | "skills" | "versions")
+    if matches!(sub, "check" | "heartbeat" | "login" | "logout" | "update" | "doctor" | "help" | "host" | "dispatch" | "skills" | "versions" | "touched")
         || (sub == "beat" && a.pos.len() == 1)
     {
         return None;

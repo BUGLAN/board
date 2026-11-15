@@ -243,7 +243,7 @@ board host --name e2e --workspace /tmp/e2e
 BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 ```
 
-通过的标准：派发结果「已交审」；`origin/main` 上多了一个提交，最后一行是 `卡片：default/main#1`；卡片动态里有 agent 的交审评论（`提交：`、`集成分支：`、`检查：` 三行）；`~/.board/host/logs/<派发 ID>.log` 里能看到它的过程。再试一次「停止」：10 秒内进程结束，卡片移到「需人工校验」。
+通过的标准：派发结果「已交审」；`origin/main` 上多了一个提交，最后一行是 `卡片：default/main#1`；卡片动态里有 agent 的交审评论（`提交：`、`集成分支：`、`检查：`、`碰到的别的卡：` 四行）；`~/.board/host/logs/<派发 ID>.log` 里能看到它的过程。再试一次「停止」：10 秒内进程结束，卡片移到「需人工校验」。
 
 集成分支：先在白板设置里把它设成 `dev` 再派一张，通过的标志是 `origin/dev` 上多了提交（`main` 不动），交审评论里写着 `集成分支：dev`；把它清空后再派一张，回到读仓库 AGENTS.md 的规则。
 
