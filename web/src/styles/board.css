@@ -481,7 +481,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .wf-settings svg { width: 14px; height: 14px; }
 .wf-settings:hover, .wf-settings.on { color: var(--text); background: var(--surface-3); }
 /* 「标签设置」在「白板设置」左边：两个按钮挨着排在末尾。工作流条窄的时候只留图标（名字在悬停提示里），不挤工作流图 */
-.wf-labels + .wf-settings { margin-left: 2px; }
+.wf-labels + .wf-settings, .wf-crons + .wf-labels { margin-left: 2px; }
 .wf-graph { container-type: inline-size; }
 @container (max-width: 900px) {
   .wf-settings { width: 30px; padding: 0; justify-content: center; }
@@ -710,6 +710,47 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-rc-empty > span { flex: 1; min-width: 200px; }
 
 /* 定时建卡（components/CardCrons.tsx）：每条一行（开关、名称、时间、放到哪、标签；下次和最近一次的结果；操作），编辑原地展开 */
+/* 定时建卡的弹窗（CardCronDialog）：和项目设置同一种单栏；这一节在弹窗里不需要上边距 */
+.cc-dialog > .cc { padding-top: 6px; }
+
+/* Agent tab「定时建卡」总览（CronOverview）：按白板分组，只读；点组头、点一行回到那块白板 */
+.co-sum { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.co-board { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); margin-bottom: 12px; overflow: hidden; }
+.co-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border: 0;
+  background: color-mix(in srgb, var(--text) 3%, transparent); color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
+}
+.co-head:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.co-head > i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.co-head > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.co-head code { font: 11.5px var(--f-mono); color: var(--text-3); white-space: nowrap; }
+.co-head .co-n { margin-left: auto; font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.co-head svg { width: 14px; height: 14px; color: var(--text-3); flex: none; }
+.co-row {
+  display: grid; grid-template-columns: 10px minmax(110px, 1.2fr) minmax(130px, 1.3fr) minmax(90px, .9fr) minmax(110px, 1fr) minmax(100px, .9fr) minmax(120px, 1.1fr);
+  align-items: center; gap: 12px; width: 100%; padding: 9px 12px; border: 0; border-top: 1px solid var(--line); background: none;
+  color: var(--text-2); font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.co-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.co-row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.co-row b { color: var(--text); font-weight: 600; }
+.co-row.off, .co-row.off b { color: var(--text-3); }
+.co-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); }
+.co-dot.on { background: var(--c-done); }
+.co-when em { margin-left: 6px; font-style: normal; font-size: 11px; color: var(--text-3); }
+.co-to.gone, .co-last.skip { color: var(--warn); }
+.co-next, .co-last { font-size: 12px; color: var(--text-3); }
+/* 窄了只留开没开、名称、时间、派给谁：放到哪、下次、上次挪到第二行 */
+@media (max-width: 900px) {
+  .co-row { grid-template-columns: 10px minmax(0, 1fr) minmax(0, 1fr); row-gap: 3px; }
+  .co-row .co-place, .co-row .co-next, .co-row .co-last { grid-column: 2 / -1; }
+  .co-row .co-to { grid-column: 2 / -1; }
+}
+@media (max-width: 760px) {
+  .co-head code { display: none; }
+  .co-sum { white-space: normal; }
+}
+
 .cc-list { display: flex; flex-direction: column; margin-bottom: 10px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
 .cc-list > * + * { border-top: 1px solid var(--line); }
 .cc-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; transition: opacity var(--dur-2); }

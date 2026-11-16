@@ -1,6 +1,8 @@
 /* ==========================================================================
-   定时建卡（PRD §4「白板设置」，白板设置里的一节）：到点按模板在这块白板上建一张卡，由机器自动领取或人派发去做，
-   也可以直接派给一台机器（例如定期让某台机器更新代码）
+   定时建卡（PRD §4「定时建卡」）：到点按模板在这块白板上建一张卡，由机器自动领取或人派发去做，
+   也可以直接派给一台机器（例如定期让某台机器更新代码）。它是白板的一张清单，不是设置：
+   - CardCronDialog：白板页自己的弹窗，入口在工作流条右端「标签设置」左边（FlowBar）；里面是 CardCronSection
+   - CronOverview：Agent tab「自动领取」组里的总览，所有白板的定时建卡按白板分组列在一处，只读；点一行回到那块白板并打开它的弹窗
    - 每条一行：开关、名称、时间（和时区）、放到哪、派给哪台机器、标签；下面一行写「下次：<时间>」和最近一次的结果
      （「11-12 09:00 建了 #263 · 派发到 mbp · Claude Code」或「11-12 09:00 跳过：上一张 #250 还没完成」）；右边「现在建一张」、编辑、删除
    - 编辑（和新建）原地展开：名称（同时是建卡标题）、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、派给机器（和 agent）、
@@ -8,17 +10,18 @@
    写操作（AGENTS.md「界面写操作」）：新建、删除、现在建一张要等服务端返回（optimistic(null, …)，按钮转圈并禁用）；
    开关是设置项（saveSetting，不锁）；改模板用乐观补丁（cardCronPatch + cardCronKey），当帧生效，失败时带着草稿重新打开
    ========================================================================== */
-import { useRef, useState, type ReactElement, type SetStateAction } from 'react';
-import { openCard } from '../lib/actions';
+import { useEffect, useRef, useState, type ReactElement, type SetStateAction } from 'react';
+import { createPortal } from 'react-dom';
+import { openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
 import { boardOf, boardTakers, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
-import { boardFlow } from '../lib/schema';
+import { boardFlow, flowOf } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
 import { cardCronKey, cardCronPatch, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
-import { confirm, openBoardSettings, openPicker, toast, toastError } from '../store/ui';
+import { closePicker, confirm, openCardCrons, openPicker, setTab, toast, toastError, useUI } from '../store/ui';
 import { DescTabs, InfoTip, LabelChip, Markdown, Segmented, Sync, Tip, useNow, useSync } from './bits';
 import { AgentChip, Dot } from './hosts/bits';
 import { Icon } from './Icon';
@@ -256,9 +259,9 @@ function agentName(h: HostInfo, agent: string | null | undefined) {
   return d ? `${d.name}（默认）` : '默认 agent';
 }
 
-/** 关掉白板设置，打开这张卡 */
+/** 关掉定时建卡的弹窗，打开这张卡 */
 function openFromSettings(id: number) {
-  openBoardSettings(null);
+  openCardCrons(null);
   setTimeout(() => openCard(id), 120);
 }
 
@@ -547,5 +550,144 @@ function HostPick({
                 : '还没有机器：在要干活的机器上运行 board host，它会出现在这里'}
       </span>
     </span>
+  );
+}
+
+/* ------------------------------ 白板页的弹窗 ------------------------------ */
+
+/** 一块白板的定时建卡：和白板设置同一种居中弹窗（手机上是底部 sheet），单栏，内容就是 CardCronSection；底部不放说明 */
+export function CardCronDialog({ path }: { path: string }) {
+  const on = useUI(s => s.cardCrons === path);
+  const cur = useCurrent();
+  // 关的时候弹窗淡出，内容留到动画结束
+  const [shown, setShown] = useState(on);
+  useEffect(() => {
+    if (on) return setShown(true);
+    const t = setTimeout(() => setShown(false), 420);
+    return () => clearTimeout(t);
+  }, [on]);
+  const close = () => openCardCrons(null);
+  useEffect(() => {
+    if (!on) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // 选择框的列表、确认框、机器详情先关自己；表单里打开的标签选择器先关它，不连弹窗一起关
+      const ui = useUI.getState();
+      if (ui.ctx || ui.confirm || ui.palette.open || ui.host) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (ui.picker) return closePicker();
+      close();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [on]);
+  return createPortal(
+    <>
+      <div className={cx('scrim', on && 'on')} onClick={close} />
+      <aside className={cx('drawer bs-modal ps-modal cc-modal', on && 'on')} role="dialog" aria-modal="true" aria-hidden={!on} aria-label="定时建卡">
+        {shown && (
+          <>
+            <header className="d-head">
+              <span className="bs-ttl">
+                <Icon name="timer" />
+                定时建卡
+              </span>
+              <span className="d-col bs-where">
+                <i />
+                {cur ? `${cur.project.name} / ${cur.board.name}` : path}
+              </span>
+              <span className="spacer" />
+              <button type="button" className="icon-btn sm" aria-label="关闭" title="关闭（Esc）" onClick={close}>
+                <Icon name="close" />
+              </button>
+            </header>
+            <div className="drawer-body">
+              <div className="d-grid ps-grid">
+                <div className="d-main ps-main cc-dialog">
+                  <CardCronSection path={path} i={0} />
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </aside>
+    </>,
+    document.body,
+  );
+}
+
+/* ------------------------------ Agent tab 的总览 ------------------------------ */
+
+/** 回到这块白板的白板页，打开它的定时建卡 */
+function goCrons(path: string) {
+  openBoard(path);
+  setTab('board');
+  openCardCrons(path);
+}
+
+/** 所有白板的定时建卡：按白板分组，只读（没有开关、编辑、删除）；新建、修改在各块白板自己的弹窗里 */
+export function CronOverview() {
+  const ws = useData(s => s.ws);
+  useNow(30_000);
+  const groups = (ws?.projects ?? []).flatMap(p => p.boards.map(b => ({ p, b, list: b.cardCrons ?? NONE }))).filter(x => x.list.length > 0);
+  const all = groups.flatMap(x => x.list);
+  return (
+    <section className="sc co">
+      <div className="sc-head">
+        <div>
+          <h2>定时建卡</h2>
+          <p>所有白板到点会建什么卡、放到哪、派给哪台机器。这里只看；新建、修改在各块白板自己的「定时建卡」里（白板页工作流条右边），点一行过去。</p>
+        </div>
+        <div className="sc-acts">
+          <span className="co-sum">
+            {all.length} 条 · 开着 {all.filter(c => c.on).length} 条 · {groups.length} 块白板
+          </span>
+        </div>
+      </div>
+      {groups.length === 0 ? (
+        <p className="hp-empty sd-empty">还没有定时建卡。在白板页工作流条右边点「定时建卡」加一条</p>
+      ) : (
+        groups.map(({ p, b, list }) => {
+          // 「放到哪」写具体的状态名：工作区里每块白板带着自己的工作流
+          const home = flowOf(b.statuses).home?.name ?? '首个可领取状态';
+          return (
+            <div key={b.path} className="co-board">
+              <button type="button" className="co-head" onClick={() => goCrons(b.path)} title="回到这块白板，打开它的定时建卡">
+                <i style={{ background: p.color }} />
+                <b>
+                  {p.name} / {b.name}
+                </b>
+                <code>{b.path}</code>
+                <span className="co-n">{list.length} 条</span>
+                <Icon name="chevRight" />
+              </button>
+              {list.map(c => {
+                const host = c.host ? hostsOf(ws).find(h => h.name === c.host) : undefined;
+                const random = c.pick === 'random' && !c.host;
+                return (
+                  <button key={c.id} type="button" className={cx('co-row', !c.on && 'off')} onClick={() => goCrons(b.path)}>
+                    <span className={cx('co-dot', c.on && 'on')} title={c.on ? '开着' : '关着：到点不建'} />
+                    <b>{c.name}</b>
+                    <span className="co-when">
+                      {describeCron(c.cron)}
+                      <em>{c.tz}</em>
+                    </span>
+                    <span className="co-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
+                    <span className={cx('co-to', c.host && !host && 'gone')}>
+                      {random ? '随机一台' : c.host ? (host ? `${c.host} · ${agentName(host, c.agent)}` : `${c.host}（已移除）`) : '不派发'}
+                    </span>
+                    <span className="co-next">{!c.on ? '关着' : c.nextAt ? `下次 ${when(c.nextAt)}` : '一年内不会到点'}</span>
+                    <span className={cx('co-last', (c.ranSkip != null || !!c.ranErr) && 'skip')}>
+                      {c.ranAt == null ? '还没到过点' : c.ranCard != null ? `${when(c.ranAt)} 建了 #${c.ranCard}${c.ranErr ? ' · 没派发出去' : ''}` : `${when(c.ranAt)} 跳过`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })
+      )}
+    </section>
   );
 }

@@ -1011,7 +1011,7 @@ async fn update_board(
     Ok(Json(json!({ "ok": true })))
 }
 
-/* ---------------- 定时建卡（PRD §4「白板设置」）：只有人能改 ---------------- */
+/* ---------------- 定时建卡（PRD §4「定时建卡」）：只有人能改 ---------------- */
 
 async fn create_card_cron(
     State(s): State<AppState>,

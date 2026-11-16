@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { cx } from '../../lib/util';
 import { Icon, type IconName } from '../Icon';
 
-export type SecId = 'providers' | 'mcp' | 'skills' | 'git' | 'rules' | 'limits' | 'access' | 'tokens';
+export type SecId = 'providers' | 'mcp' | 'skills' | 'git' | 'rules' | 'crons' | 'limits' | 'access' | 'tokens';
 
 /** 三组和顺序：共用配置 → 自动领取 → 接入（接入不常用，放最后）。模型供应商的图标不用星形，免得和 tab 图标重复 */
 export const GROUPS: { id: string; title: string; secs: { id: SecId; title: string; icon: IconName }[] }[] = [
@@ -25,6 +25,7 @@ export const GROUPS: { id: string; title: string; secs: { id: SecId; title: stri
     title: '自动领取',
     secs: [
       { id: 'rules', title: '领取规则', icon: 'claim' },
+      { id: 'crons', title: '定时建卡', icon: 'renew' },
       { id: 'limits', title: '跑多久停', icon: 'timer' },
     ],
   },

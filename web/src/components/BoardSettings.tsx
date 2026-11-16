@@ -4,7 +4,7 @@
    - 卡片顺序：「保留顺序」开关 + 每个状态的排序依据（选择框 + 方向）。预览用示例卡片演示拖动的结果（lib/orderDemo.ts）
    - 自动领取：「参与自动领取」开关（boards.auto），和 Agent → 领取规则里那排白板胶囊是同一个值
    - 状态块布局：现在的 / 保存的 / 默认三张缩略图，按钮放在各自的图下面；预览里块在「现在」和「换过去以后」之间来回移动
-   - 定时建卡（CardCrons.tsx）一节；代码仓库、环境检查、标签是项目的（ProjectSettings.tsx），末尾一行去项目设置
+   - 代码仓库、环境检查、标签是项目的（ProjectSettings.tsx），末尾一行去项目设置；定时建卡不是设置，在工作流条上单独一个入口（CardCrons.tsx）
    保存：开关和排序依据是设置项，各存各的（saveSetting）：当帧生效、不锁别的控件，保存状态画在控件旁边（Sync）；
    布局的三个操作沿用工作流的乐观更新（flowKey），保存完之前再点不发请求
    ========================================================================== */
@@ -19,7 +19,6 @@ import { cx, reduceMotion } from '../lib/util';
 import { boardAutoPatch, colCount, flowKey, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { closePicker, openBoardSettings, openProjectSettings, toast, useUI } from '../store/ui';
 import { Select, Sync, useSync } from './bits';
-import { CardCronSection } from './CardCrons';
 import { pack, withDefaults } from './BoardView';
 import { Icon } from './Icon';
 
@@ -335,7 +334,6 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                 {lay('def', '默认布局', defNow && <span className="bs-badge eq">和现在一样</span>, '每块 3 栏、一行 4 块，按工作流顺序', defNow ? '正在使用' : '复原', !defNow, doReset)}
               </div>
             </section>
-            <CardCronSection path={path} i={3} />
             {/* 代码仓库、环境检查、标签是项目的，在项目设置里；这里只留一行去处 */}
             <div className="bs-proj">
               <Icon name="folder" />

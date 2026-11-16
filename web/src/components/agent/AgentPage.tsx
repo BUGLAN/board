@@ -1,7 +1,7 @@
 /* ==========================================================================
    Agent tab（PRD §10.16）：服务器上存一份、和具体机器无关的配置，一节一页
    - 共用配置：模型供应商、MCP 服务器、skills、Git 凭据（hosts/ 下的四个区块，原样用）
-   - 自动领取：领取规则、跑多久停（hosts/Sched.tsx）
+   - 自动领取：领取规则、跑多久停（hosts/Sched.tsx），中间是所有白板定时建卡的只读总览（CardCrons.tsx 的 CronOverview）
    - 接入：接入 agent、访问令牌（Access.tsx，从设置页搬来）
    没有机器时照常能进、每一节都能看能改，页面顶部一行提示带「添加机器」
    手机上侧栏不显示：页头「组 · 节」那一行换成选择框
@@ -11,6 +11,7 @@ import { hostsOf } from '../../lib/hosts';
 import { useData } from '../../store/data';
 import { openHost, setTab, useUI } from '../../store/ui';
 import { Select } from '../bits';
+import { CronOverview } from '../CardCrons';
 import { Icon } from '../Icon';
 import { usePollHosts } from '../hosts/bits';
 import { GitCredSection } from '../hosts/GitCred';
@@ -37,6 +38,7 @@ export function AgentPage() {
     skills: <SharedConfig hosts={hosts} />,
     git: <GitCredSection hosts={hosts} />,
     rules: <ClaimRules hosts={hosts} />,
+    crons: <CronOverview />,
     limits: <RunLimits />,
     access: <AccessCard />,
     tokens: <TokensCard />,

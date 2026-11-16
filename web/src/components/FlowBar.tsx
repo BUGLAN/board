@@ -15,7 +15,7 @@ import { patchStatus, statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } fr
 import type { Status } from '../lib/types';
 import { cx, replay } from '../lib/util';
 import { flowKey, optimistic, useBusy, useData } from '../store/data';
-import { manageLabels, openBoardSettings, toastError, useUI } from '../store/ui';
+import { manageLabels, openBoardSettings, openCardCrons, toastError, useUI } from '../store/ui';
 import { Icon } from './Icon';
 
 /** 改工作流：当帧生效（给白板的状态列表叠一层补丁），被拒绝时改回来并提示 */
@@ -65,6 +65,8 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
   const addEl = useRef<HTMLElement | null>(null);
   const moved = useRef(false);
   const settings = useUI(s => s.boardSettings?.path === path);
+  const cronsOpen = useUI(s => s.cardCrons === path);
+  const crons = useData(s => s.ws?.projects.flatMap(p => p.boards).find(b => b.path === path)?.cardCrons?.length ?? 0);
 
   // 只读时没有「+ 添加状态」，不给它留位置
   const g = useMemo(() => layoutFlow(f.list, widths, readOnly ? 0 : addW), [f.list, widths, addW, readOnly]);
@@ -420,6 +422,20 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
           )}
         </div>
       </div>
+      {/* 定时建卡：白板自己的一张清单，不是设置，单独一个入口和弹窗（CardCrons.tsx 的 CardCronDialog） */}
+      {!readOnly && (
+        <button
+          type="button"
+          className={cx('wf-settings wf-crons', cronsOpen && 'on')}
+          aria-haspopup="dialog"
+          aria-label={crons ? `定时建卡（${crons} 条）` : '定时建卡'}
+          title="到点按模板在这块白板上建卡，可以直接派给一台机器"
+          onClick={() => openCardCrons(path)}
+        >
+          <Icon name="timer" />
+          <span className="t">定时建卡{crons ? ` · ${crons}` : ''}</span>
+        </button>
+      )}
       {!readOnly && (
         <button
           type="button"
@@ -436,7 +452,7 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
           type="button"
           className={cx('wf-settings', settings && 'on')}
           aria-haspopup="dialog"
-          title="这块白板自己的设置：自动领取、卡片顺序、状态块布局、定时建卡"
+          title="这块白板自己的设置：自动领取、卡片顺序、状态块布局"
           onClick={() => openBoardSettings(path)}
         >
           <Icon name="settings" />

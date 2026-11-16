@@ -20,6 +20,7 @@ import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurren
 import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
 import { Tip } from './bits';
 import { BoardSettings } from './BoardSettings';
+import { CardCronDialog } from './CardCrons';
 import { cardHit, CardView, TilePeek } from './Card';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
@@ -228,6 +229,7 @@ export function BoardView() {
         )}
         {cur && (!mobile || flowOpen) && <FlowBar key={`f${generation}`} counts={counts} path={path} f={f} />}
         {cur && <BoardSettings path={path} />}
+        {cur && <CardCronDialog path={path} />}
         {!board && f.list.length > 0 && (
           <Magnet path={path} statuses={f.list} render={s => <SkeletonColumn col={s} index={f.list.indexOf(s)} f={f} count={counts[s.key] ?? 0} />} />
         )}

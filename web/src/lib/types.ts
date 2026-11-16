@@ -93,7 +93,7 @@ export interface BoardInfo {
   auto?: boolean;
 }
 
-/** 一条定时建卡（PRD §4「白板设置」）：到点按模板在白板上建一张卡；上一张还没完成时跳过 */
+/** 一条定时建卡（PRD §4「定时建卡」）：到点按模板在白板上建一张卡；上一张还没完成时跳过 */
 export interface CardCron {
   id: number;
   /** 白板内唯一，最长 24 个字；也是建卡标题（建卡时后面加日期） */

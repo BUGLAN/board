@@ -299,7 +299,7 @@ describe('接口少了字段时机器页不整页崩', () => {
         if (view === 'racks') expect(host.querySelector('.hp-rack')?.textContent).toContain('old');
         if (view === 'sched') expect(host.querySelector('.sd-line')?.textContent).toContain('old');
       }
-      for (const sec of ['providers', 'mcp', 'skills', 'git', 'rules', 'limits'] as SecId[]) {
+      for (const sec of ['providers', 'mcp', 'skills', 'git', 'rules', 'crons', 'limits'] as SecId[]) {
         act(() => useAgentSec.setState({ sec }));
         await act(async () => root.render(<AgentPage />));
         await act(async () => {});

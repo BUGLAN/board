@@ -154,6 +154,8 @@ interface UIState {
   boardSettings: { path: string; focus?: string } | null;
   /** 打开的项目设置（居中弹窗）：项目标识 */
   projectSettings: string | null;
+  /** 打开的定时建卡（居中弹窗）：白板路径 */
+  cardCrons: string | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
   /** 打开机器详情时要直接到的页签（从供应商卡片点进来到 agent 页）；弹窗用过就清掉 */
@@ -209,6 +211,7 @@ export const useUI = create<UIState>(() => ({
   textFile: null,
   boardSettings: null,
   projectSettings: null,
+  cardCrons: null,
   host: null,
   hostTab: null,
   hostsView: initialHostsView(),
@@ -339,6 +342,8 @@ export const closeCtx = () => set({ ctx: null });
 export const openBoardSettings = (path: string | null, focus?: string) => set({ boardSettings: path ? { path, focus } : null });
 /** 打开 / 关掉（null）项目设置 */
 export const openProjectSettings = (project: string | null) => set({ projectSettings: project });
+/** 打开 / 关掉（null）一块白板的定时建卡 */
+export const openCardCrons = (path: string | null) => set({ cardCrons: path });
 
 
 /** 有弹窗或浮层打开时，全局快捷键不生效 */
@@ -346,7 +351,7 @@ export function overlayOpen() {
   const s = get();
   return !!(
     s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.textFile || s.host ||
-    s.dispatchOf != null || s.boardSettings || s.projectSettings || s.trash || s.session
+    s.dispatchOf != null || s.boardSettings || s.projectSettings || s.cardCrons || s.trash || s.session
   );
 }
 

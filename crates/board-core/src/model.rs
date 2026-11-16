@@ -477,7 +477,7 @@ pub struct BoardInfo {
     pub statuses: Vec<Status>,
     /// 正在这块白板上工作的 agent（按工作流和状态内顺序）
     pub holders: Vec<String>,
-    /// 定时建卡（PRD §4「白板设置」）。旧服务端没有这一项
+    /// 定时建卡（PRD §4「定时建卡」）。旧服务端没有这一项
     #[serde(default)]
     pub card_crons: Vec<crate::card_crons::CardCron>,
     /// 参与自动领取（PRD §9.1「自动领取」）：关掉后机器不会自动领这块白板的卡，手动派发照常。旧服务端没有这一项

@@ -175,6 +175,7 @@ describe('白板设置', () => {
     expect(secs[0]).toBe('自动领取');
     expect(secs).not.toContain('代码仓库');
     expect(secs).not.toContain('环境检查');
+    expect(secs).not.toContain('定时建卡');
   });
 
   it('「参与自动领取」开关改的是白板的 auto；关着时写手动派发照常', async () => {

@@ -79,7 +79,7 @@ const click = (el: Element | null | undefined) => act(() => (el as HTMLElement).
 const button = (text: string) => [...host.querySelectorAll('button')].find(b => b.textContent?.includes(text));
 
 describe('Agent tab 的侧栏目录', () => {
-  it('三组八节：共用配置 → 自动领取 → 接入，进 tab 落在模型供应商', async () => {
+  it('三组九节：共用配置 → 自动领取 → 接入，进 tab 落在模型供应商', async () => {
     const { fetch } = localServer();
     vi.stubGlobal('fetch', fetch);
     act(() => useUI.setState({ tab: 'agent' }));
@@ -87,8 +87,8 @@ describe('Agent tab 的侧栏目录', () => {
     act(() => useData.setState({ ws }));
     await show();
     expect([...host.querySelectorAll('.ag-nav-h')].map(h => h.textContent)).toEqual(['共用配置', '自动领取', '接入']);
-    expect(navItems()).toEqual(['模型供应商', 'MCP 服务器', 'skills', 'Git 凭据', '领取规则', '跑多久停', '接入 agent', '访问令牌']);
-    expect(GROUPS.flatMap(g => g.secs).length).toBe(8);
+    expect(navItems()).toEqual(['模型供应商', 'MCP 服务器', 'skills', 'Git 凭据', '领取规则', '定时建卡', '跑多久停', '接入 agent', '访问令牌']);
+    expect(GROUPS.flatMap(g => g.secs).length).toBe(9);
     expect(host.querySelector('.ag-nav .sn-item.on')?.textContent).toBe('模型供应商');
     expect(host.querySelector('.hp-b-head p')?.textContent).toBe('共用配置 · 模型供应商');
     expect(host.querySelectorAll('.ag-sec > *')).toHaveLength(1);
