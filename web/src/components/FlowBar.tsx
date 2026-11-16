@@ -436,7 +436,7 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
           type="button"
           className={cx('wf-settings', settings && 'on')}
           aria-haspopup="dialog"
-          title="这块白板自己的设置：卡片顺序、状态块布局"
+          title="这块白板自己的设置：自动领取、卡片顺序、状态块布局、环境检查、定时建卡"
           onClick={() => openBoardSettings(path)}
         >
           <Icon name="settings" />

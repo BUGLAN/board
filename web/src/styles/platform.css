@@ -188,6 +188,11 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .bs-modal .bs-pv-b { overflow: visible; }
   .bs-modal .bs-foot { padding: 16px 18px 0; }
   .bs-where { display: none; }
+  /* 项目设置：头部只留标题和白板数；白板设置末尾那一行的按钮换到下一行 */
+  .ps-sub { margin-left: 6px; }
+  .bs-proj { flex-wrap: wrap; margin: 6px 18px 0; }
+  .bs-proj > span { flex-basis: calc(100% - 26px); }
+  .bs-proj > .btn { margin-left: 26px; }
   .bs-rules-h { display: none; }
   .bs-rule { flex-wrap: wrap; row-gap: 6px; padding: 8px 8px 10px 12px; }
   .bs-rule-ctl { flex-basis: 100%; padding-left: 18px; }

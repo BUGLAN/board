@@ -1,7 +1,7 @@
 /* 右键 / ⋯ 下拉菜单：卡片、状态、项目、白板菜单，以及「移动到」「提示词」子菜单、选择框的选项 */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
-  copyBoardEnv, copyBoardPrompt, copyQuickPrompt, deleteBoard, deleteProject, editBoard, editProject, newBoard, openBoard, setProjectColor,
+  copyBoardEnv, copyBoardPrompt, copyQuickPrompt, deleteBoard, deleteProject, editBoard, newBoard, openBoard, setProjectColor,
 } from '../../lib/actions';
 import { moveTo, vetoFor } from '../../lib/drag';
 import { quickPrompts } from '../../lib/prompt';
@@ -9,7 +9,7 @@ import { hiddenRules, visibleLabels } from '../../lib/sidebarLabels';
 import { boardFlow, INBOX, INBOX_NAME } from '../../lib/schema';
 import { cx } from '../../lib/util';
 import { allBoards, boardMeta, colCount, useData } from '../../store/data';
-import { closeCtx, manageLabels, useUI } from '../../store/ui';
+import { closeCtx, manageLabels, openProjectSettings, useUI } from '../../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar, Tip } from '../bits';
 import { Icon } from '../Icon';
 
@@ -68,9 +68,9 @@ export function CtxMenu() {
           <Icon name="plus" />
           新建白板
         </button>
-        <button type="button" data-do="edit-project" onClick={go(() => editProject(p.key))}>
-          <Icon name="edit" />
-          编辑项目
+        <button type="button" data-do="project-settings" onClick={go(() => openProjectSettings(p.key))}>
+          <Icon name="settings" />
+          项目设置
         </button>
         <button type="button" data-do="labels" onClick={go(() => manageLabels(p.key))}>
           <Icon name="tag" />

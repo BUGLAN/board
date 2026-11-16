@@ -188,14 +188,14 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
   const pv = cfg.previewData ?? {};
   const projects = useData(s => s.ws?.projects ?? NO_PROJECTS);
   let preview: ReactNode = null;
-  if (cfg.preview === 'project' || cfg.preview === 'edit-project') {
+  if (cfg.preview === 'project') {
     preview = (
       <>
         <ProjectAvatar name={v.name || '新'} color={color} />
         <div>
           <b>{v.name || '新项目'}</b>
           <span className="mono">
-            {cfg.preview === 'project' ? `export BOARD=${v.key || '…'}/${v.boardKey || 'main'}` : `${pv.key} · ${pv.boards} 块白板`}
+            {`export BOARD=${v.key || '…'}/${v.boardKey || 'main'}`}
           </span>
         </div>
       </>

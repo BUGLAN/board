@@ -7,6 +7,7 @@ import { BoardSkeleton, BoardView } from './components/BoardView';
 import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
+import { ProjectSettings } from './components/ProjectSettings';
 import { SessionModal } from './components/hosts/Session';
 import { ReviewDesk } from './components/ReviewDesk';
 import { InboxPage } from './components/Inbox';
@@ -285,6 +286,7 @@ function BoardApp() {
       <BoardSheet />
       <CardDetail />
       <HostModal />
+      <ProjectSettings />
       <DispatchDialog />
       <SessionModal />
       <ReviewDesk />

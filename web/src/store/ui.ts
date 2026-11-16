@@ -67,7 +67,7 @@ export interface FormCfg {
   subtitle?: string;
   submit?: string;
   fields: FormField[];
-  preview?: 'project' | 'board' | 'edit-project' | 'edit-board';
+  preview?: 'project' | 'board' | 'edit-board';
   previewData?: Record<string, string>;
   /** 打开时定位到这个字段（默认第一个可编辑的） */
   focus?: string;
@@ -152,6 +152,8 @@ interface UIState {
   textFile: { url: string; name: string } | null;
   /** 打开的白板设置（居中弹窗）：白板路径；focus 是要定位到的状态（点状态块标题上的排序标记打开时） */
   boardSettings: { path: string; focus?: string } | null;
+  /** 打开的项目设置（居中弹窗）：项目标识 */
+  projectSettings: string | null;
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
   /** 打开机器详情时要直接到的页签（从供应商卡片点进来到 agent 页）；弹窗用过就清掉 */
@@ -206,6 +208,7 @@ export const useUI = create<UIState>(() => ({
   image: null,
   textFile: null,
   boardSettings: null,
+  projectSettings: null,
   host: null,
   hostTab: null,
   hostsView: initialHostsView(),
@@ -334,6 +337,8 @@ export const closeCtx = () => set({ ctx: null });
 
 /** 打开 / 关掉（null）白板设置；focus：定位到这个状态的排序依据 */
 export const openBoardSettings = (path: string | null, focus?: string) => set({ boardSettings: path ? { path, focus } : null });
+/** 打开 / 关掉（null）项目设置 */
+export const openProjectSettings = (project: string | null) => set({ projectSettings: project });
 
 
 /** 有弹窗或浮层打开时，全局快捷键不生效 */
@@ -341,7 +346,7 @@ export function overlayOpen() {
   const s = get();
   return !!(
     s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.textFile || s.host ||
-    s.dispatchOf != null || s.boardSettings || s.trash || s.session
+    s.dispatchOf != null || s.boardSettings || s.projectSettings || s.trash || s.session
   );
 }
 

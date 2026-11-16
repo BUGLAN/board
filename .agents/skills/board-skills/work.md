@@ -109,7 +109,7 @@ worktree 不在这里创建：会话里第一次处理要改代码的卡片时�
 
 | 项 | 规定 |
 |---|---|
-| 集成分支 | 按这个顺序认：白板设置里的「集成分支」（`board flow --json` 的 `branch`，不是空的时候）→ 仓库根目录 AGENTS.md / CLAUDE.md 写明的分支 → 远端的默认分支（`git symbolic-ref --short refs/remotes/origin/HEAD` 得到 `origin/<分支>`；没有输出时用 `git ls-remote --symref origin HEAD` 查）。下文以 `main` 为例。不建卡片分支 |
+| 集成分支 | 按这个顺序认：项目设置里的「集成分支」（`board flow --json` 的 `branch`，不是空的时候）→ 仓库根目录 AGENTS.md / CLAUDE.md 写明的分支 → 远端的默认分支（`git symbolic-ref --short refs/remotes/origin/HEAD` 得到 `origin/<分支>`；没有输出时用 `git ls-remote --symref origin HEAD` 查）。下文以 `main` 为例。不建卡片分支 |
 | 检查 | AGENTS.md / CLAUDE.md 里规定的推送前检查，跑全部，不只跑改到的部分。仓库没写时停下来问用户 |
 | 提交 | 每次领取压成集成分支上的一个提交。第一行按仓库的提交规范写；正文写改了什么、跑了哪些检查；最后一行是 `卡片：<项目>/<白板>#<ID>` |
 | 发版 | 由人决定，你不打 tag |

@@ -6,11 +6,12 @@ import { boardPrompt, detailPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, repoPatch, setPath, useData, type Patch } from '../store/data';
+import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
   openForm,
+  openProjectSettings,
   reveal,
   setTab,
   toast,
@@ -161,6 +162,10 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
     },
     { name: 'desc', label: '描述', hint: '选填', placeholder: '一句话说明这个项目' },
     { name: 'color', label: '颜色', type: 'color', value: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)] },
+    {
+      name: 'repo', label: '仓库地址', hint: '选填，git 远端；项目下所有白板共用，机器上克隆到 <工作空间>/<项目>。之后在项目设置里改', type: 'text',
+      maxLength: 500, placeholder: 'git@github.com:org/repo.git',
+    },
     { name: 'boardName', label: '第一块白板', value: '主白板', required: true },
     { name: 'boardKey', label: '白板标识', type: 'key', from: 'boardName', value: 'main', required: true, auto: v => slug(v) || 'main', validate: keyError },
   ];
@@ -176,6 +181,13 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
         board: { name: v.boardName, key: v.boardKey || 'main' },
       });
       const path = `${key}/${v.boardKey || 'main'}`;
+      // 仓库地址在项目建好之后存（新建项目的接口不带它）；没存上时项目照样建好，提示里能打开项目设置再填
+      const repo = v.repo?.trim();
+      if (repo) {
+        await api.updateProject(key, { repo }).catch((e: Error) =>
+          toast({ type: 'error', title: '项目已建好，仓库地址没存上', text: e.message, action: { label: '项目设置', fn: () => openProjectSettings(key) } }),
+        );
+      }
       await refresh();
       afterCreate(path);
       toast({ type: 'success', title: `已创建项目「${v.name.trim()}」`, text: `agent 用 BOARD=${path} 接入第一块白板。`, duration: 4200 });
@@ -223,45 +235,6 @@ function afterCreate(path: string) {
 }
 
 const saved = () => toast({ type: 'success', title: '已保存', duration: 1400 });
-
-/** 编辑项目：名称、描述、代码仓库（一个项目一个仓库，PRD §4）、颜色。draft 是上次没保存成功的内容 */
-export function editProject(pk: string, draft?: Record<string, string>) {
-  const p = data().ws?.projects.find(x => x.key === pk);
-  if (!p) return;
-  // 仓库地址的建议：机器上报的这个项目目录的 origin（#185 克隆也用同一个来源）
-  const origin = data().ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board.split('/')[0] === pk && d.origin)?.origin ?? '';
-  openForm({
-    title: '编辑项目',
-    submit: '保存',
-    preview: 'edit-project',
-    previewData: { key: p.key, boards: String(p.boards.length) },
-    fields: [
-      { name: 'name', label: '项目名称', value: draft?.name ?? p.name, required: true },
-      { name: 'key', label: '项目标识', hint: '创建后不能修改', type: 'key', value: p.key, readonly: true },
-      { name: 'desc', label: '描述', hint: '选填', value: draft?.desc ?? p.desc },
-      {
-        name: 'repo', label: '仓库地址', hint: '选填，git 远端；项目下所有白板共用，机器上克隆到 <工作空间>/<项目>', type: 'text',
-        maxLength: 500, placeholder: origin ? `例如 ${origin}` : 'git@github.com:org/repo.git', value: draft?.repo ?? p.repo ?? '',
-      },
-      {
-        name: 'branch', label: '集成分支', hint: '选填；留空时按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支', type: 'text',
-        maxLength: 200, placeholder: 'main', value: draft?.branch ?? p.branch ?? '',
-      },
-      { name: 'color', label: '颜色', type: 'color', value: draft?.color ?? p.color },
-    ],
-    // 乐观保存：表单当即关闭、改动当帧生效；被拒绝时改回来并提示，提示里可以带着刚才写的内容重新打开
-    onSubmit: async v => {
-      const patch = { name: v.name.trim(), desc: v.desc.trim(), color: v.color };
-      const repo = v.repo.trim();
-      const branch = v.branch.trim();
-      const repoChanged = repo !== (p.repo ?? '') || branch !== (p.branch ?? '');
-      optimistic(
-        { ...patchProject(pk, x => ({ ...x, ...patch })), ...repoPatch(pk, { repo, branch }), keys: [projectKey(pk)] },
-        () => api.updateProject(pk, repoChanged ? { ...patch, repo, branch } : patch),
-      ).then(saved, e => toastError(e, { action: { label: '重新编辑', fn: () => editProject(pk, v) } }));
-    },
-  });
-}
 
 /** 编辑白板。focus: 'readme' 时打开后定位到「说明」；draft 是上次没保存成功的内容 */
 export function editBoard(path: string, { focus, draft }: { focus?: string; draft?: Record<string, string> } = {}) {

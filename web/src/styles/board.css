@@ -644,6 +644,34 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-note { margin: 8px 2px 0; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
 .bs-foot { margin-top: auto; padding: 16px 22px 0; font-size: 11.5px; color: var(--text-3); }
 
+/* 白板设置末尾：代码仓库、标签是项目的，一行去项目设置 */
+.bs-proj {
+  display: flex; align-items: center; gap: 10px; margin: 6px 22px 0; padding: 10px 12px 10px 14px;
+  border: 1px dashed var(--line-2); border-radius: var(--r-md); font-size: 12.5px; color: var(--text-2);
+}
+.bs-proj > svg { width: 16px; height: 16px; color: var(--text-3); flex: none; }
+.bs-proj > span { flex: 1; min-width: 0; }
+.bs-proj > .btn { flex: none; }
+
+/* 项目设置（components/ProjectSettings.tsx）：和白板设置同一种弹窗，单栏 */
+.ps-modal .d-grid.ps-grid { grid-template-columns: minmax(0, 1fr); }
+.ps-modal .d-main.ps-main { width: 100%; max-width: 720px; margin: 0 auto; }
+.ps-sub { margin-left: 10px; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ps-colors { display: flex; flex-wrap: wrap; gap: 8px; }
+.ps-color {
+  width: 24px; height: 24px; border-radius: 50%; border: 0; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18); transition: transform var(--dur-1) var(--ease-out);
+}
+.ps-color:hover { transform: scale(1.1); }
+.ps-color.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+.ps-note { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+.ps-note svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+.ps-note.warn { color: var(--warn); }
+.ps-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-label { padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; color: color-mix(in oklab, var(--c), var(--ink)); background: color-mix(in srgb, var(--c) 16%, transparent); }
+.ps-none { font-size: 12.5px; color: var(--text-3); }
+.ps-labels .btn { margin-left: 4px; }
+
 /* 环境检查（components/BoardReady.tsx）：两条命令 + 能接这块白板的机器 */
 .bs-rc { display: flex; flex-direction: column; gap: 8px; }
 /* 代码仓库地址、集成分支：「用机器的 origin」按钮跟在输入框后面 */

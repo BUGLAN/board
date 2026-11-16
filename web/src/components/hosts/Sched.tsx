@@ -18,7 +18,7 @@ import { metasOf } from '../../lib/providers';
 import { ALL_DAY, DAY, SNAP, agentTake, claimable, hhmm, hostTake, ruleAgents, serverMinute, tidyWins, winWords, type Win } from '../../lib/sched';
 import type { AgentMeta, ClaimRule, HostInfo, Label, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
-import { saveSetting, useData } from '../../store/data';
+import { boardAutoPatch, saveSetting, useData } from '../../store/data';
 import { openHost } from '../../store/ui';
 import { Select, Sync, Tip, useNow, useSync } from '../bits';
 import { Icon } from '../Icon';
@@ -103,9 +103,8 @@ export function ClaimRules({ hosts }: { hosts: HostInfo[] }) {
   const toggleBoard = (path: string, on: boolean) =>
     track(
       `board:${path}`,
-      saveSetting(`sched:board:${path}`, { ws: w => ({ ...w, projects: w.projects.map(p => ({ ...p, boards: p.boards.map(b => (b.path === path ? { ...b, auto: on } : b)) })) }) }, () =>
-        api.updateBoard(path, { auto: on }),
-      ),
+      // 和白板设置里「参与自动领取」是同一个值、同一个 key：一处改了另一处跟着变，请求一个接一个发
+      saveSetting(`sched:board:${path}`, boardAutoPatch(path, on), () => api.updateBoard(path, { auto: on })),
     );
   const edit = (i: number, change: Partial<ClaimRule>) => saveRules(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
   const move = (i: number, d: number) => {

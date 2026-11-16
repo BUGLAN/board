@@ -24,7 +24,7 @@ const HOST_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct BoardData {
     pub path: String,
     pub flow: Flow,
-    /// 白板设置的代码仓库地址、集成分支（空表示没设；PRD §4）
+    /// 项目设置的代码仓库地址、集成分支（空表示没设；PRD §4）
     pub repo: String,
     pub branch: String,
     /// 按工作流和状态内顺序排列（「未整理」在最前）

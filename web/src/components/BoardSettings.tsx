@@ -2,8 +2,9 @@
    白板设置（工作流条末尾「白板设置」，或点状态块标题上的排序标记）：每块白板自己的设置，存在服务端、所有窗口和机器同步
    沿用卡片详情的居中弹窗（.scrim / .drawer / .d-*）：左边是设置，右栏是「预览」（手机上是底部 sheet，预览在上）
    - 卡片顺序：「保留顺序」开关 + 每个状态的排序依据（选择框 + 方向）。预览用示例卡片演示拖动的结果（lib/orderDemo.ts）
+   - 自动领取：「参与自动领取」开关（boards.auto），和 Agent → 领取规则里那排白板胶囊是同一个值
    - 状态块布局：现在的 / 保存的 / 默认三张缩略图，按钮放在各自的图下面；预览里块在「现在」和「换过去以后」之间来回移动
-   - 代码仓库、环境检查、定时建卡（CardCrons.tsx）各一节
+   - 环境检查、定时建卡（CardCrons.tsx）各一节；代码仓库、标签是项目的（ProjectSettings.tsx），末尾一行去项目设置
    保存：开关和排序依据是设置项，各存各的（saveSetting）：当帧生效、不锁别的控件，保存状态画在控件旁边（Sync）；
    布局的三个操作沿用工作流的乐观更新（flowKey），保存完之前再点不发请求
    ========================================================================== */
@@ -15,9 +16,9 @@ import { statusColor, viewOf } from '../lib/schema';
 import { ORDERS, orderDir, orderName, orderOf, orderOption } from '../lib/sort';
 import type { BoardSnapshot, Label, Order, Status, Tile } from '../lib/types';
 import { cx, reduceMotion } from '../lib/util';
-import { colCount, flowKey, optimistic, repoPatch, saveSetting, useBusy, useCurrent, useData } from '../store/data';
-import { closePicker, openBoardSettings, toast, useUI } from '../store/ui';
-import { InfoTip, Select, Sync, useSync } from './bits';
+import { boardAutoPatch, colCount, flowKey, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
+import { closePicker, openBoardSettings, openProjectSettings, toast, useUI } from '../store/ui';
+import { Select, Sync, useSync } from './bits';
 import { ReadyCheckSection } from './BoardReady';
 import { CardCronSection } from './CardCrons';
 import { pack, withDefaults } from './BoardView';
@@ -107,6 +108,9 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
     }, 140);
   };
 
+  // 自动领取：白板的字段（boards.auto，默认参与）；和 Agent → 领取规则里的白板胶囊同一个 key，请求一个接一个发
+  const auto = useData(s => s.ws?.projects.flatMap(p => p.boards).find(b => b.path === path)?.auto !== false);
+  const setAuto = (v: boolean) => track('auto', saveSetting(`sched:board:${path}`, boardAutoPatch(path, v), () => api.updateBoard(path, { auto: v })));
   const setKeep = (v: boolean) => {
     setPv(p => (p.mode === 'order' ? p : { mode: 'order', key: firstKey }));
     track('keep', saveSetting(`${flowKey(path)}:keep`, { board: b => ({ ...b, keepSorted: v }) }, () => api.keepSorted(path, v)));
@@ -200,6 +204,35 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
         <div className="d-grid">
           <div className="d-main">
             <section className="d-section" style={{ ['--i' as string]: 0 }}>
+              <div className="d-label">自动领取</div>
+              <div className={cx('bs-keep', auto && 'on')} onClick={() => setAuto(!auto)}>
+                <button
+                  type="button"
+                  className={cx('switch', auto && 'on')}
+                  role="switch"
+                  aria-checked={auto}
+                  aria-label="参与自动领取"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setAuto(!auto);
+                  }}
+                >
+                  <i />
+                </button>
+                <div className="bs-keep-t">
+                  <b>
+                    参与自动领取
+                    <Sync s={sync.auto} inline />
+                  </b>
+                  <span>
+                    {auto
+                      ? '开着「自动领」的机器会按领取规则领这块白板的卡。哪些卡交给哪个 agent 在「Agent → 领取规则」里。'
+                      : '机器不会自动领这块白板的卡；手动派发、board claim 照常。'}
+                  </span>
+                </div>
+              </div>
+            </section>
+            <section className="d-section" style={{ ['--i' as string]: 1 }}>
               <div className="d-label">卡片顺序</div>
               <div className={cx('bs-keep', keep && 'on')} onClick={() => setKeep(!keep)}>
                 <button
@@ -285,7 +318,7 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                 })}
               </div>
             </section>
-            <section className="d-section" style={{ ['--i' as string]: 1 }}>
+            <section className="d-section" style={{ ['--i' as string]: 2 }}>
               <div className="d-label">
                 状态块布局<span className="act">在白板上拖块标题换位置、拖右边缘改宽度</span>
               </div>
@@ -303,9 +336,25 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                 {lay('def', '默认布局', defNow && <span className="bs-badge eq">和现在一样</span>, '每块 3 栏、一行 4 块，按工作流顺序', defNow ? '正在使用' : '复原', !defNow, doReset)}
               </div>
             </section>
-            <RepoSection path={path} i={2} />
             <ReadyCheckSection path={path} i={3} />
             <CardCronSection path={path} i={4} />
+            {/* 代码仓库、标签是项目的，在项目设置里；这里只留一行去处 */}
+            <div className="bs-proj">
+              <Icon name="folder" />
+              <span>
+                代码仓库、标签是项目「{meta?.project.name ?? path.split('/')[0]}」的{(meta?.project.boards.length ?? 1) > 1 ? `，${meta!.project.boards.length} 块白板共用` : ''}。
+              </span>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  close();
+                  openProjectSettings(path.split('/')[0]);
+                }}
+              >
+                打开项目设置
+              </button>
+            </div>
             <div className="bs-foot">改动立即生效，同步到所有窗口和机器。</div>
           </div>
           <aside className="d-side bs-side" aria-label="预览">
@@ -318,112 +367,6 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
         </div>
       </div>
     </>
-  );
-}
-
-/* ------------------------------ 代码仓库 ------------------------------ */
-
-/** 代码仓库地址和集成分支（PRD §4）：设在项目上，一个项目一个仓库，项目下所有白板共用；这里改的就是项目的。
-    设置项（saveSetting），失焦或回车时保存，不锁别的控件。
-    仓库地址没设时用机器上报的这个项目目录的 origin 作建议（#185 克隆也用同一个来源） */
-export function RepoSection({ path, i }: { path: string; i: number }) {
-  const meta = useCurrent();
-  const ws = useData(s => s.ws);
-  const pk = path.split('/')[0];
-  const repo = meta?.board.repo ?? '';
-  const branch = meta?.board.branch ?? '';
-  const others = (meta?.project.boards.length ?? 1) - 1;
-  // 机器上报的 origin：这个项目的目录可能在好几台机器上，取第一台有的
-  const suggested =
-    ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board.split('/')[0] === pk && d.origin)?.origin ?? '';
-  const [draft, setDraft] = useState({ repo, branch });
-  const [editing, setEditing] = useState<'' | 'repo' | 'branch'>('');
-  const { sync, track } = useSync();
-  // 别的窗口改了：没在编辑的那一项跟着服务端
-  useEffect(() => {
-    setDraft(d => ({ repo: editing === 'repo' ? d.repo : repo, branch: editing === 'branch' ? d.branch : branch }));
-  }, [repo, branch, path]); // eslint-disable-line react-hooks/exhaustive-deps
-  // 换了一块白板：草稿跟着换（正在编辑的也换，避免把上一块的地址存到这一块）
-  useEffect(() => {
-    setDraft({ repo, branch });
-    setEditing('');
-  }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const commit = (which: 'repo' | 'branch') => {
-    setEditing('');
-    const v = draft[which].trim();
-    if (v === (which === 'repo' ? repo : branch)) return;
-    setDraft(d => ({ ...d, [which]: v }));
-    track(
-      which,
-      saveSetting(
-        which === 'repo' ? `repo:${pk}` : `branch:${pk}`,
-        repoPatch(pk, { [which]: v }),
-        () => api.updateProject(pk, which === 'repo' ? { repo: v } : { branch: v }),
-      ),
-    );
-  };
-  const field = (which: 'repo' | 'branch', label: string, hint: string, extra?: React.ReactNode) => (
-    <label className="bs-rc-row">
-      <span className="bs-rc-l">
-        {label}
-        <Sync s={sync[which]} inline />
-      </span>
-      <span className="bs-rp-input">
-        <input
-          className="input mono"
-          value={draft[which]}
-          placeholder={hint}
-          spellCheck={false}
-          autoComplete="off"
-          aria-label={which === 'repo' ? '仓库地址' : '集成分支'}
-          onFocus={() => setEditing(which)}
-          onChange={e => setDraft(d => ({ ...d, [which]: e.target.value }))}
-          onBlur={() => commit(which)}
-          onKeyDown={e => {
-            if (e.key === 'Enter') e.currentTarget.blur();
-            if (e.key === 'Escape' && editing) {
-              e.stopPropagation();
-              setDraft(d => ({ ...d, [which]: which === 'repo' ? repo : branch }));
-              setEditing('');
-              e.currentTarget.blur();
-            }
-          }}
-        />
-        {extra}
-      </span>
-    </label>
-  );
-  return (
-    <section className="d-section" style={{ ['--i' as string]: i }}>
-      <div className="d-label">
-        代码仓库
-        <InfoTip text="一个项目一个仓库：这里设的是整个项目的，项目下所有白板共用，机器上的目录是 <工作空间>/<项目>。设了仓库地址后，描述和评论里的「提交：abc1234」和 gh#12 变成链接，机器上还没有这个项目的目录时按它克隆。集成分支是 skill 推送的目标，留空按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支" />
-        <span className="bs-rp-scope">项目「{meta?.project.name ?? pk}」{others > 0 ? `的 ${others + 1} 块白板共用` : '共用'}</span>
-      </div>
-      <div className="bs-rc bs-rp">
-        {field(
-          'repo',
-          '仓库地址',
-          suggested ? `例如 ${suggested}` : 'git@github.com:org/repo.git',
-          !repo.trim() && suggested ? (
-            <button
-              type="button"
-              className="btn sm"
-              title={`用机器上报的 origin：${suggested}`}
-              onClick={() => {
-                setDraft(d => ({ ...d, repo: suggested }));
-                setEditing('');
-                track('repo', saveSetting(`repo:${pk}`, repoPatch(pk, { repo: suggested }), () => api.updateProject(pk, { repo: suggested })));
-              }}
-            >
-              用机器的 origin
-            </button>
-          ) : null,
-        )}
-        {field('branch', '集成分支', '留空按 AGENTS.md / CLAUDE.md，没写用远端默认分支')}
-      </div>
-    </section>
   );
 }
 

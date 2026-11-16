@@ -501,6 +501,14 @@ export const patchProject = (key: string, fn: (p: ProjectInfo) => ProjectInfo): 
   ws: ws => ({ ...ws, projects: ws.projects.map(p => (p.key === key ? fn(p) : p)) }),
 });
 
+/** 白板参不参与自动领取（boards.auto）：白板设置的开关、Agent → 领取规则里的白板胶囊共用；白板不在了原样返回 */
+export const boardAutoPatch = (path: string, on: boolean): Patch => ({
+  ws: ws => {
+    if (!ws.projects.some(p => p.boards.some(b => b.path === path))) return ws;
+    return { ...ws, projects: ws.projects.map(p => ({ ...p, boards: p.boards.map(b => (b.path === path ? { ...b, auto: on } : b)) })) };
+  },
+});
+
 /** 改白板的环境检查命令（所有系统 / Windows）：白板不在了原样返回 */
 export const readyCheckPatch = (path: string, change: { cmd?: string; win?: string }): Patch => ({
   ws: ws => {

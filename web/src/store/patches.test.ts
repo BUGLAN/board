@@ -429,6 +429,18 @@ describe('repoPatch（项目的仓库地址、集成分支）', () => {
   });
 });
 
+describe('boardAutoPatch（白板参不参与自动领取）', () => {
+  it('只改这块白板；重复执行结果相同；白板不在了原样返回', () => {
+    const ws = twice(D.boardAutoPatch('p/a', false).ws!, workspace());
+    const boards = ws.projects.flatMap(p => p.boards);
+    expect(boards.find(b => b.path === 'p/a')?.auto).toBe(false);
+    expect(boards.filter(b => b.path !== 'p/a').every(b => b.auto === undefined)).toBe(true);
+    expect(twice(D.boardAutoPatch('p/a', true).ws!, ws).projects.flatMap(p => p.boards).find(b => b.path === 'p/a')?.auto).toBe(true);
+    const orig = workspace();
+    expect(D.boardAutoPatch('p/nope', false).ws!(orig)).toBe(orig);
+  });
+});
+
 describe('draftCard（新建）', () => {
   const draft = (title = '新卡片') => D.draftCard({ title, body: '', labels: [], column: 'todo' });
   const start = () => D.useData.setState({ board: board() });

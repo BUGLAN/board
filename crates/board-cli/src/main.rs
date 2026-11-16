@@ -599,7 +599,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 }
                 s += &format!("{} {}{}{}\n", p.dim("·"), p.magenta(&pad(INBOX, kw)), pad(INBOX_NAME, nw), p.dim(&format!("{} 张  不属于工作流", count(INBOX))));
                 let blank = p.dim("（没设）");
-                let hint = p.dim("  # 白板设置里改；集成分支留空时按仓库的 AGENTS.md，没写用远端默认分支");
+                let hint = p.dim("  # 项目设置里改；集成分支留空时按仓库的 AGENTS.md，没写用远端默认分支");
                 s += &format!(
                     "{} {}  {} {}{}\n",
                     p.dim("仓库："),
