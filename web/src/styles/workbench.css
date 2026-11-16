@@ -133,7 +133,6 @@
 .tree-row .key { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
 .tree-row .n { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
 .tree-row.card-row { padding-left: 40px; }
-.tree-row.card-row::before { content: ""; position: absolute; left: 29px; top: 0; bottom: 0; width: 1px; background: var(--line-2); }
 .tree-row .tid { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); flex: none; min-width: 22px; }
 .tree-row .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tree-row .tt code { font-family: var(--f-mono); font-size: .9em; }
