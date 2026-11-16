@@ -5,7 +5,7 @@
      failed 写入失败 > warn 本机同名的是软链接、没覆盖 > pending 正在写入 > synced 已写入；
      离线的机器 offline（悬停写上次的结果），这台机器上没有会用它的 agent 时 none
    - 旧版 board host（不按请求同步、不上报这一行）不在这里，另写一句
-   - Git 凭据（gitSync）：一台机器一个，写「已同步 / 同步失败」
+   - Git 凭据（gitHosts、gitRow）：卡片上一台机器一行，写「已同步 · 配进了几个仓库 / 同步失败：原因 / 不同步」，旁边是开关
    ========================================================================== */
 import { since } from './hosts';
 import { forAgent } from './mcp';
@@ -53,14 +53,17 @@ export const mcpSync = (hosts: HostInfo[], s: McpServer, now = Date.now()): Host
     return pill(h, !!h.syncMcp, r?.state, r?.why, r?.agents.length ? `写进了 ${r.agents.join('、')}` : '已写入', now);
   });
 
-/** Git 凭据在各台机器上（不含旧版 board host）：已同步（配进了几个仓库）/ 同步失败（原因）/ 正在同步 / 不改 */
-export const gitSync = (hosts: HostInfo[], now = Date.now()): HostSync[] =>
-  hosts
-    .filter(h => syncAble(h) && !gitOld(h))
-    .map(h => {
-      const r = h.sync?.last?.git;
-      const ok = r?.repos.length ? `配进了 ${r.repos.length} 个仓库` : '令牌已就绪，还没有用这个主机的仓库';
-      const p = pill(h, !!h.syncGit, r?.state === 'none' ? '' : r?.state, r?.why, ok, now);
-      const word: Partial<Record<HostSyncKind, string>> = { synced: '已同步', failed: '同步失败', pending: '正在同步' };
-      return { ...p, word: word[p.kind] ?? p.word, tip: p.kind === 'off' ? '这台机器选了「不改」：用它自己的 git 凭据' : p.tip };
-    });
+/** Git 凭据卡片上列出的机器：会按请求同步、也报 Git 凭据这一行的（旧版 board host 另写一句） */
+export const gitHosts = (hosts: HostInfo[]): HostInfo[] => hosts.filter(h => syncAble(h) && !gitOld(h));
+
+/** Git 凭据卡片上一台机器一行：状态点和一句话。不同步 / 离线 / 正在同步 / 同步失败（原因）/ 已同步（配进了几个仓库） */
+export function gitRow(h: HostInfo, now = Date.now()): { kind: HostSyncKind; text: string } {
+  const r = h.sync?.last?.git;
+  if (!h.syncGit) return { kind: 'off', text: '不同步：用这台机器自己的 git 凭据' };
+  if (!h.online) return { kind: 'offline', text: r?.state === 'synced' ? `离线：上次配进了 ${r.repos.length} 个仓库，上线后同步` : '离线：上线后同步' };
+  if (h.sync?.ask) return { kind: 'pending', text: '正在同步…' };
+  if (r?.state === 'failed') return { kind: 'failed', text: `同步失败：${r.why ?? '原因没报上来'}` };
+  if (r?.state !== 'synced') return { kind: 'pending', text: '等 board host 同步…' };
+  const what = r.repos.length ? `配进了 ${r.repos.length} 个仓库` : '令牌已就绪，还没有用这个主机的仓库';
+  return { kind: 'synced', text: `已同步 · ${what} · ${since(h.sync!.last!.at, now)}` };
+}

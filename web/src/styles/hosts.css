@@ -968,7 +968,34 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sc-git { margin-top: 28px; }
 .gc-card .pv-head > svg { flex: none; width: 15px; height: 15px; color: var(--text-3); }
 .gc-card .pv-k { width: 4em; }
-.gc-card .pv-use > .pv-k { width: auto; }
+/* 卡片底下的机器：一台一行，状态 +「同步 | 不同步」 */
+.gc-hosts { padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.gc-hosts-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.gc-hosts-head .pv-k { width: auto; }
+.gc-count { font-size: 11.5px; color: var(--text-3); }
+.gc-rows { display: flex; flex-direction: column; border-radius: var(--r-sm); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.gc-row { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 8px 6px 12px; }
+.gc-row + .gc-row { border-top: 1px solid var(--line); }
+.gc-row > svg { flex: none; }
+.gc-name { flex: none; min-width: 52px; padding: 0; font-size: 13px; font-weight: 600; text-align: left; color: var(--text); }
+.gc-name:hover { text-decoration: underline; text-underline-offset: 3px; }
+.gc-row.is-off .gc-name { color: var(--text-2); }
+.gc-state { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; font-size: 12px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.gc-state.k-failed { color: var(--danger); }
+.gc-state.k-off, .gc-state.k-offline { color: var(--text-3); }
+.gc-mark { flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
+.k-synced > .gc-mark { background: var(--ok); }
+.k-failed > .gc-mark { background: var(--danger); }
+.k-pending > .gc-mark { width: 8px; height: 8px; background: none; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .9s linear infinite; }
+.k-offline > .gc-mark, .k-off > .gc-mark { background: none; box-shadow: inset 0 0 0 1.5px var(--text-4); }
+.gc-row .hp-ctl { flex: none; display: flex; align-items: center; gap: 6px; }
+.gc-note { display: flex; gap: 6px; margin: 8px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
+.gc-note svg { flex: none; width: 13px; height: 13px; margin-top: 2px; }
+@media (max-width: 640px) {
+  .gc-row { flex-wrap: wrap; }
+  .gc-state { flex-basis: 100%; order: 3; padding-left: 26px; }
+  .gc-row .hp-ctl { margin-left: auto; }
+}
 .sc-how { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-2); white-space: nowrap; cursor: help; }
 .sc-how svg { width: 13px; height: 13px; }
 /* 模型供应商（Providers.tsx）：一个供应商一张卡，上面是名称、地址、模型，底下「在用」按 agent 汇总，点开列出哪几台 */

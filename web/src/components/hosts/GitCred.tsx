@@ -2,7 +2,9 @@
    「共用配置」的 Git 凭据一节（PRD §10.12「共用配置」）：服务端存一份 https 远端的令牌，
    机器选了「用服务器的」（默认），board host 把它配进 Board 管的仓库，备代码、agent 推集成分支直接用
    - 没设时一句话 +「设置」；设了一张卡：主机、令牌末尾 4 位、谁什么时候改的、修改、删除；用户名、远端
-   - 卡片底下「机器」：一台一个胶囊（已同步 / 同步失败 / 正在同步 / 不改），悬停看原因，点了打开那台机器
+   - 卡片底下「机器」：一台一行——系统图标、机器名（点了打开那台机器）、状态（已同步 · 配进了几个仓库 / 同步失败：原因 / 不同步）、
+     「同步 | 不同步」开关。开关就是机器详情「设置」里那一项（机器设置，当帧生效、旁边转圈）；新连上的机器默认同步，
+     有人在用的电脑（例如自己的主力机）在这里关掉
    - 设置、修改在居中弹窗里（和供应商、MCP 同一种表单）；修改时令牌留空保留原来的
    - 增、改、删要等服务端（按钮转圈、禁用直到返回），删掉时确认并列出要去掉凭据的机器
    ========================================================================== */
@@ -11,15 +13,17 @@ import { api } from '../../lib/api';
 import { blankGit, gitCredError, gitDraftOf, normGitHost, type GitDraft } from '../../lib/gitcred';
 import { gitOld } from '../../lib/hostDetail';
 import { since } from '../../lib/hosts';
-import { gitSync } from '../../lib/syncPills';
+import { gitHosts, gitRow } from '../../lib/syncPills';
 import type { GitCred, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
-import { confirm, toast, toastError } from '../../store/ui';
-import { Tip, useNow } from '../bits';
+import { confirm, openHost, toast, toastError } from '../../store/ui';
+import { Segmented, Sync, Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
+import { OsGlyph } from './bits';
 import { FormField, FormFoot, FormModal, FormSec } from './FormModal';
-import { HostSyncPills, HowTip, OldHostsNote } from './SyncBits';
+import { useSaver } from './Saver';
+import { HowTip, OldHostsNote } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
 
 export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
@@ -76,8 +80,8 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
         <div>
           <h2>Git 凭据</h2>
           <p>
-            设一份 https 远端的令牌，机器选了「用服务器的」（默认），board host 把它配进 Board 管的仓库：拉代码、agent 推集成分支直接用，不用每台机器手动配。{' '}
-            <HowTip tip="只改仓库自己的 git 配置（credential.https://<主机>.helper），不碰全局配置；令牌放在 ~/.board/host/board-git-credentials，只有本人能读，不进日志和上报。机器改成「不改」或这里删掉后，配进去的会去掉。SSH 地址（git@…）的仓库不管，照旧用本机的 key。" />
+            设一份 https 远端的令牌，board host 把它配进各台机器上 Board 管的仓库：拉代码、agent 推集成分支直接用，不用每台机器手动配。新连上的机器默认同步，有人在用的电脑在卡片上逐台关掉。{' '}
+            <HowTip tip="只改仓库自己的 git 配置（credential.https://<主机>.helper），不碰全局配置；令牌放在 ~/.board/host/board-git-credentials，只有本人能读，不进日志和上报。一台机器关掉同步、或这里删掉后，配进去的会去掉。SSH 地址（git@…）的仓库不管，照旧用本机的 key。" />
           </p>
         </div>
         {!cred && view && (
@@ -100,7 +104,6 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
 }
 
 function GitCard({ cred, hosts, now, busy, editing, onEdit, onRemove }: { cred: GitCred; hosts: HostInfo[]; now: number; busy: string | null; editing: boolean; onEdit: () => void; onRemove: () => void }) {
-  const pills = gitSync(hosts, now);
   return (
     <article className="pv-card gc-card">
       <header className="pv-head">
@@ -129,13 +132,72 @@ function GitCard({ cred, hosts, now, busy, editing, onEdit, onRemove }: { cred: 
           <code>https://{cred.host}/…</code>
         </div>
       </div>
-      <div className="pv-use">
-        <span className="pv-k">机器</span>
-        <div className="pv-use-body">
-          <HostSyncPills list={pills} />
-        </div>
-      </div>
+      <GitHosts hosts={hosts} now={now} />
     </article>
+  );
+}
+
+type OnOff = 'on' | 'off';
+
+/** 卡片底下的机器：一台一行，「同步 | 不同步」就是机器详情「设置」里那个开关 */
+function GitHosts({ hosts, now }: { hosts: HostInfo[]; now: number }) {
+  const list = gitHosts(hosts);
+  const on = list.filter(h => h.syncGit).length;
+  return (
+    <div className="gc-hosts">
+      <div className="gc-hosts-head">
+        <span className="pv-k">机器</span>
+        {list.length > 0 && (
+          <span className="gc-count">
+            {on}/{list.length} 台同步
+          </span>
+        )}
+      </div>
+      {list.length ? (
+        <div className="gc-rows">
+          {list.map(h => (
+            <GitHostRow key={h.id} h={h} now={now} />
+          ))}
+        </div>
+      ) : (
+        <span className="pv-none">还没有会同步 Git 凭据的机器</span>
+      )}
+      <p className="gc-note">
+        <Icon name="info" />
+        <span>新连上的机器默认同步。有人在用的电脑（例如你自己的主力机）在这里关掉：Board 不碰它仓库的 git 配置，之前配进去的会去掉。</span>
+      </p>
+    </div>
+  );
+}
+
+function GitHostRow({ h, now }: { h: HostInfo; now: number }) {
+  const { save, sync } = useSaver(h.name);
+  const row = gitRow(h, now);
+  const v: OnOff = h.syncGit ? 'on' : 'off';
+  return (
+    <div className={cx('gc-row', !h.syncGit && 'is-off', sync.syncGit === 'failed' && 'hp-rollback')}>
+      <OsGlyph os={h.os} small />
+      <Tip text="打开这台机器">
+        <button type="button" className="gc-name" onClick={() => openHost(h.name)}>
+          {h.name}
+        </button>
+      </Tip>
+      <span className={cx('gc-state', `k-${row.kind}`)}>
+        <i className="gc-mark" aria-hidden="true" />
+        <span>{row.text}</span>
+      </span>
+      <span className="hp-ctl">
+        <Sync s={sync.syncGit} />
+        <Segmented<OnOff>
+          value={v}
+          options={[
+            ['on', '同步'],
+            ['off', '不同步'],
+          ]}
+          onChange={x => x !== v && save({ syncGit: x === 'on' })}
+        />
+      </span>
+    </div>
   );
 }
 

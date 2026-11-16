@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { blankMcp } from './mcp';
-import { gitSync, mcpSync, skillSync } from './syncPills';
+import { gitHosts, gitRow, mcpSync, skillSync } from './syncPills';
 import type { HostInfo, McpServer, SkillInfo, SyncResult } from './types';
 
 const result = (x: Partial<SyncResult> = {}): SyncResult => ({
@@ -67,20 +67,24 @@ describe('一台机器一个胶囊', () => {
   });
 });
 
-describe('Git 凭据的机器胶囊', () => {
-  it('已同步 / 同步失败 / 不改；旧版 board host 不画', () => {
-    const list = gitSync([
+describe('Git 凭据卡片上的机器', () => {
+  const failed = result({ git: { state: 'failed', host: 'github.com', repos: [], skipped: [], why: '主机不匹配' } });
+  it('一台一行：已同步写配进了几个仓库，同步失败写原因，关掉的写用自己的凭据', () => {
+    expect(gitRow(host('mbp', { syncGit: true }), 61000)).toMatchObject({ kind: 'synced', text: expect.stringMatching(/^已同步 · 配进了 1 个仓库 · /) });
+    expect(gitRow(host('win', { syncGit: true, sync: { able: true, last: failed } }))).toEqual({ kind: 'failed', text: '同步失败：主机不匹配' });
+    expect(gitRow(host('air', { syncGit: false }))).toEqual({ kind: 'off', text: '不同步：用这台机器自己的 git 凭据' });
+  });
+  it('离线、正在同步、还没同步过各有一句', () => {
+    expect(gitRow(host('mbp', { syncGit: true, online: false })).text).toBe('离线：上次配进了 1 个仓库，上线后同步');
+    expect(gitRow(host('mbp', { syncGit: true, sync: { able: true, ask: { id: 1, key: 'k', by: '人', at: 1 }, last: result() } }))).toEqual({ kind: 'pending', text: '正在同步…' });
+    expect(gitRow(host('mbp', { syncGit: true, sync: { able: true } })).text).toBe('等 board host 同步…');
+  });
+  it('旧版 board host（不按请求同步、不报 Git 凭据这一行）不列', () => {
+    const list = gitHosts([
       host('mbp', { syncGit: true }),
-      host('win', { syncGit: true, sync: { able: true, last: result({ git: { state: 'failed', host: 'github.com', repos: [], skipped: [], why: '主机不匹配' } }) } }),
-      host('air', { syncGit: false }),
       host('old', { syncGit: true, sync: { able: true, last: result({ git: { state: '', repos: [], skipped: [] } }) } }),
+      host('older', { syncGit: true, sync: { able: false } }),
     ]);
-    expect(list.map(s => [s.host.name, s.kind, s.word])).toEqual([
-      ['mbp', 'synced', '已同步'],
-      ['win', 'failed', '同步失败'],
-      ['air', 'off', '不改'],
-    ]);
-    expect(list[1].tip).toBe('主机不匹配');
-    expect(list[2].tip).toContain('自己的 git 凭据');
+    expect(list.map(h => h.name)).toEqual(['mbp']);
   });
 });
