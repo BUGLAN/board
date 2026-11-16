@@ -22,6 +22,7 @@ import { Tip } from './bits';
 import { BoardSettings } from './BoardSettings';
 import { CardCronDialog } from './CardCrons';
 import { cardHit, CardView, TilePeek } from './Card';
+import { FirstRunHint } from './FirstRun';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { Skeleton, SkeletonCard } from './Skeleton';
@@ -209,6 +210,7 @@ export function BoardView() {
           </button>
         </div>
       </div>
+      {cur && <FirstRunHint key={path} path={path} />}
       <ColTabs board={board} f={f} boardRef={boardRef} />
       {!mobile && <TilePeek />}
       <div

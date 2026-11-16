@@ -11,6 +11,7 @@ import { optimistic, useData } from '../../store/data';
 import { confirm, openHost, setHostsView, setTab, toast, toastError, useUI, type HostsView } from '../../store/ui';
 import { Segmented, Tip, Title, useNow } from '../bits';
 import { Icon } from '../Icon';
+import { FirstRunPanel } from '../FirstRun';
 import { goCard } from './Dispatch';
 import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
@@ -411,20 +412,24 @@ export function HostsPage() {
           )}
         </div>
         {hosts.length === 0 ? (
-          <div className="hp-empty-page">
-            <Icon name="host" />
-            <b>还没有机器</b>
-            <span>在要干活的机器上运行 board host，它会出现在这里；之后可以把卡片派给它，或让它按时间点自己领卡。</span>
-            <button className="btn sm brand" type="button" onClick={() => openHost('new')}>
-              添加机器
-            </button>
-          </div>
+          <>
+            <div className="hp-empty-page">
+              <Icon name="host" />
+              <b>还没有机器</b>
+              <span>在要干活的机器上运行 board host，它会出现在这里；之后可以把卡片派给它，或让它按时间点自己领卡。</span>
+              <button className="btn sm brand" type="button" onClick={() => openHost('new')}>
+                添加机器
+              </button>
+            </div>
+            <FirstRunPanel empty />
+          </>
         ) : view === 'sched' ? (
           <HostAccept hosts={hosts} />
         ) : view === 'compare' ? (
           <Compare hosts={hosts} ws={ws} now={now} server={server} />
         ) : (
           <>
+            <FirstRunPanel />
             <Fleet ws={ws} hosts={hosts} />
             <div className="hp-racks">
               {hosts.map((h, i) => (

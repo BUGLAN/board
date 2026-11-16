@@ -173,6 +173,29 @@ export interface Workspace {
   blocks?: HostBlock[];
   /** 调度的全局设置：领取规则、兜底、服务端现在的时间；旧服务端没有这个字段 */
   sched?: Sched;
+  /** 每块白板「跑第一张卡」还差什么（服务端 firstrun.rs 算好）：界面照着画清单；旧服务端没有这个字段，没有时不显示 */
+  checklist?: Checklist[];
+}
+
+/** 一块白板「跑第一张卡」的清单 */
+export interface Checklist {
+  /** `<项目>/<白板>` */
+  board: string;
+  /** 已经有卡被机器交审过：不再提示 */
+  done: boolean;
+  items: CheckItem[];
+}
+
+/** 清单的一项：host 有能接的在线机器 / agent 能干活 / repo 项目设了仓库 / push 能推送 / auto 自动领取 */
+export interface CheckItem {
+  key: string;
+  /** ok 通过 / fail 没通过 / unknown 还没确认（没自检过）/ wait 要等前面的项 */
+  state: 'ok' | 'fail' | 'unknown' | 'wait';
+  why: string;
+  /** 去哪处理：add-host、hosts、host-settings:<机器>、host-agents:<机器>、selftest:<机器>、project-repo、project-check、git、rules、accept、board-auto */
+  go?: string | null;
+  /** 只影响自动领取，不影响手动派发 */
+  auto?: boolean;
 }
 
 /** 一台机器接不了一块白板的卡 */

@@ -113,6 +113,7 @@ export function normWorkspace(ws: Workspace): Workspace {
     hosts: maybe(ws.hosts)?.map(normHost),
     dispatches: maybe(ws.dispatches),
     blocks: maybe(ws.blocks),
+    checklist: maybe(ws.checklist)?.map(c => ({ ...c, items: list(c.items) })),
     sched: sched ? { ...sched, rules: list(sched.rules).map(normRule) } : (sched ?? undefined),
   };
 }

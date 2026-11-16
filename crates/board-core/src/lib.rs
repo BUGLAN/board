@@ -10,6 +10,7 @@ pub mod cron;
 pub mod engine;
 pub mod error;
 pub mod files;
+pub mod firstrun;
 pub mod fit;
 pub mod gitcred;
 pub mod flow;

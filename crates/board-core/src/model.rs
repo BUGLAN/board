@@ -578,6 +578,9 @@ pub struct Workspace {
     /// 接不了的「机器 × 白板」和原因（`fit.rs`）：界面照着禁用、显示，不自己再算
     #[serde(default)]
     pub blocks: Vec<crate::fit::Block>,
+    /// 每块白板「跑第一张卡」还差什么（`firstrun.rs`）：界面照着画清单，不自己再算。旧版服务端没有
+    #[serde(default)]
+    pub checklist: Vec<crate::firstrun::Checklist>,
     /// 调度的全局设置：领取规则、兜底、服务端现在的时间（`sched.rs`）
     #[serde(default)]
     pub sched: crate::sched::Sched,

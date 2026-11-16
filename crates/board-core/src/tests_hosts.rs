@@ -5509,3 +5509,137 @@ fn host_preset_copies_on_first_connect_only() {
     let g = s.write(T0 + S, Origin::cli(), |w| w.host_beat(&named(report("g", "ig", vec![]), "g", "macOS 26"), Some(8))).unwrap().host;
     assert_eq!(g.ops[0].text, "上线后照 a 配：a 已经不在了，按默认设置建立");
 }
+
+/* ------------------------------ 「跑第一张卡」清单（firstrun.rs，default/main#397） ------------------------------ */
+
+/// 这块白板的清单：每项 (key, state, go)
+fn checklist(s: &Store, at: i64) -> (bool, Vec<(String, String, Option<String>)>) {
+    let all = s.read(|r| r.checklist(at)).unwrap();
+    let c = all.into_iter().find(|c| c.board == B).expect("每块白板一份");
+    (c.done, c.items.into_iter().map(|i| (i.key, i.state, i.go)).collect())
+}
+
+fn state_of(s: &Store, at: i64, key: &str) -> (String, Option<String>) {
+    checklist(s, at).1.into_iter().find(|(k, ..)| k == key).map(|(_, st, go)| (st, go)).unwrap()
+}
+
+fn why_of(s: &Store, at: i64, key: &str) -> String {
+    s.read(|r| r.checklist(at)).unwrap().into_iter().find(|c| c.board == B).unwrap().items.into_iter().find(|i| i.key == key).unwrap().why
+}
+
+#[test]
+fn checklist_without_hosts_points_to_add_host_and_waits_for_the_rest() {
+    let s = store();
+    let (done, items) = checklist(&s, T0);
+    assert!(!done);
+    let o = |s: &str| Some(s.to_string());
+    assert_eq!(
+        items,
+        vec![
+            ("host".into(), "fail".into(), o("add-host")),
+            ("agent".into(), "wait".into(), None),
+            ("repo".into(), "fail".into(), o("project-repo")),
+            ("push".into(), "wait".into(), None),
+            ("auto".into(), "fail".into(), o("rules")),
+        ]
+    );
+    let c = s.read(|r| r.checklist(T0)).unwrap();
+    assert!(c[0].items.iter().find(|i| i.key == "auto").unwrap().auto, "第 5 项标明只影响自动领取");
+    assert!(why_of(&s, T0, "auto").contains("只影响自动领取"));
+    // 工作区数据里带着
+    assert!(s.read(|r| r.workspace(T0)).unwrap().checklist.iter().any(|c| c.board == B));
+}
+
+#[test]
+fn checklist_host_item_needs_an_online_host_that_can_take_the_board() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(state_of(&s, T0, "host").0, "ok");
+    assert!(why_of(&s, T0, "host").starts_with("mbp 在线"));
+    // 离线
+    assert_eq!(state_of(&s, T0 + 120 * S, "host"), ("fail".into(), Some("hosts".into())));
+    assert!(why_of(&s, T0 + 120 * S, "host").contains("机器都不在线"));
+    // 在线但接不了：环境检查没跑完，去处是项目的环境检查
+    set_ready_check(&mut s, "cargo --version", "");
+    assert_eq!(state_of(&s, T0, "host"), ("fail".into(), Some("project-check".into())));
+    assert_eq!(why_of(&s, T0, "host"), "mbp：环境检查还没跑完");
+}
+
+#[test]
+fn checklist_agent_item_follows_skills_and_selftest() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    // 找得到、看得到 board-skills，没自检过：还没确认，去处是自检
+    assert_eq!(state_of(&s, T0, "agent"), ("unknown".into(), Some("selftest:mbp".into())));
+    // 正在自检
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    assert_eq!(state_of(&s, T0, "agent"), ("unknown".into(), None));
+    // 自检通过
+    selftest_done(&mut s, T0, "i1", ask.id, vec![item("agent", "claude", true, None)]);
+    assert_eq!(state_of(&s, T0, "agent"), ("ok".into(), None));
+    // 自检没通过：去机器详情的 agent 页
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    selftest_done(&mut s, T0, "i1", ask.id, vec![item("agent", "claude", false, Some("没登录"))]);
+    assert_eq!(state_of(&s, T0, "agent"), ("fail".into(), Some("host-agents:mbp".into())));
+    assert_eq!(why_of(&s, T0, "agent"), "mbp 上的 Claude Code 自检没通过：没登录");
+    // 看不到 board-skills
+    let mut r = report("mbp", "i1", vec![]);
+    r.agents = vec![HostAgent { no_skill: Some("~/.claude/skills".into()), ..claude(true) }];
+    beat(&mut s, T0 + S, &r).unwrap();
+    assert_eq!(state_of(&s, T0 + S, "agent").0, "fail");
+    assert!(why_of(&s, T0 + S, "agent").contains("看不到 board-skills"));
+}
+
+#[test]
+fn checklist_repo_and_push_items() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    assert_eq!(state_of(&s, T0, "repo"), ("fail".into(), Some("project-repo".into())));
+    assert_eq!(state_of(&s, T0, "push"), ("wait".into(), None), "没设仓库时推送等前一项");
+    ui(&mut s, |w| w.set_repo_branch("default", Some("git@github.com:o/r.git"), None)).unwrap();
+    assert_eq!(state_of(&s, T0, "repo").0, "ok");
+    // 没自检过：还没确认
+    assert_eq!(state_of(&s, T0, "push"), ("unknown".into(), Some("selftest:mbp".into())));
+    // 自检能推送（同一个项目的哪块白板都算）
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    selftest_done(&mut s, T0, "i1", ask.id, vec![item("git", B, true, None)]);
+    assert_eq!(state_of(&s, T0, "push"), ("ok".into(), None));
+    // 推不了：去 Git 凭据
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    selftest_done(&mut s, T0, "i1", ask.id, vec![item("git", B, false, Some("Permission denied"))]);
+    assert_eq!(state_of(&s, T0, "push"), ("fail".into(), Some("git".into())));
+    assert_eq!(why_of(&s, T0, "push"), "mbp 推不了：Permission denied");
+}
+
+#[test]
+fn checklist_auto_item_names_what_is_missing() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    // 没有规则、机器不是自动领
+    assert_eq!(state_of(&s, T0, "auto"), ("fail".into(), Some("rules".into())));
+    assert_eq!(why_of(&s, T0, "auto"), "还没有领取规则或兜底；能接的机器都不是「自动领」：只影响自动领取，手动派发照常");
+    // 只有兜底也算规则；机器还是「只做派给它的」
+    s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[]), Some("claude"))).unwrap();
+    assert_eq!(state_of(&s, T0, "auto"), ("fail".into(), Some("accept".into())));
+    assert_eq!(why_of(&s, T0, "auto"), "能接的机器都不是「自动领」：只影响自动领取，手动派发照常");
+    set_host(&mut s, HostPatch { auto: Some(true), ..Default::default() }).unwrap();
+    assert_eq!(state_of(&s, T0, "auto"), ("ok".into(), None));
+    // 白板不参与自动领取
+    s.write(T0, Origin::ui(None), |w| w.set_board_auto(B, false)).unwrap();
+    assert_eq!(state_of(&s, T0, "auto"), ("fail".into(), Some("board-auto".into())));
+}
+
+#[test]
+fn checklist_is_done_once_a_machine_submitted_a_card() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, d.id).unwrap();
+    assert!(!checklist(&s, T0 + S).0);
+    let me = Actor::agent("mbp/opus-5.5");
+    exec(&mut s, T0 + 2 * S, &me, Cmd::Beat { id: a, done: true }).unwrap();
+    exec(&mut s, T0 + 2 * S, &me, Cmd::Move { id: a, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
+    assert!(checklist(&s, T0 + 3 * S).0, "有卡被机器交审过");
+}
