@@ -2,6 +2,8 @@
 
 `board host` 在派到这台机器的卡片上启动本机的 agent（PRD §9.1）。这份文档写清楚：一个 agent 要满足什么才能接进来、已经接入了哪些、怎么按批次接入新的。
 
+是否把 agent 接入改成 ACP、现在支持到什么程度、后续怎么灰度，见 [acp.md](acp.md)。
+
 ## board host 怎么启动 agent
 
 派发开始时，`board host` 已经以 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`）领到了卡片，然后：
