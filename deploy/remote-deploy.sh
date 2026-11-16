@@ -91,10 +91,32 @@ deploy)
   echo "==> 拉取 ${target}"
   printf '%s' "$token" | docker login ghcr.io -u "$user" --password-stdin >/dev/null
   unset token
+  # GHCR 刚推完的私有镜像版本可能短时间返回 denied（例如访问权限还没同步完），网络抖动时也可能失败；
+  # 隔 10 秒重试几次，别让一次瞬时错误把部署判死。镜像确实不存在时最后会给出明确提示。
   pulled=0
-  docker pull -q "$target" && pulled=1
+  attempt=1
+  max_attempts=10
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if out=$(docker pull -q "$target" 2>&1); then
+      [ -z "$out" ] || printf '%s\n' "$out"
+      pulled=1
+      break
+    fi
+    printf '%s\n' "$out" >&2
+    case "$out" in
+      *denied*|*"manifest unknown"*|*"Service Unavailable"*|*"502"*|*"503"*|*"429"*)
+        [ "$attempt" -lt "$max_attempts" ] || break
+        echo "==> 拉取失败，10 秒后重试（${attempt}/${max_attempts}）"
+        attempt=$((attempt + 1))
+        sleep 10
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
   docker logout ghcr.io >/dev/null 2>&1 || true
-  [ $pulled = 1 ] || die "GHCR 上没有镜像 ${target}（提交号 ${commit}），线上不变"
+  [ "$pulled" = 1 ] || die "无法拉取 ${target}（提交号 ${commit}）：GHCR 拒绝访问、镜像不存在或服务暂时不可用；线上不变"
 
   prev=$(get_image)
   echo "$prev" > "$PREV_FILE"

@@ -275,6 +275,7 @@ release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 boar
 - 重启、健康检查（最多 2 分钟）或核对版本号、提交号失败：`.env` 的 `BOARD_IMAGE` 改回部署前的镜像并重启，打印最近 50 行日志，任务失败
 - 服务器不编译：只拉镜像、运行；服务器上 `docker-compose.yml` 和 `deploy/backup.sh`、`deploy/remote-deploy.sh` 由工作流拷过去
 - 拉镜像用本次任务的 `GITHUB_TOKEN`（经 stdin 传给 `docker login`），拉完立刻 `docker logout`，服务器上不留 GHCR 凭据
+- 拉取被 GHCR 拒绝（denied）、镜像还没同步完或服务暂时不可用时最多重试 10 次（每次间隔 10 秒）；仍拉不到时提示「无法拉取…」，线上不变
 - 清理：GHCR 上只保留最新 5 个版本；服务器上只留当前和上一个 `ghcr.io/buglan/board-server` 镜像
 
 ### 桌面端安装包
