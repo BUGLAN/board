@@ -223,9 +223,14 @@
 /* 状态块排序菜单 */
 /* 卡片详情「移动到」 */
 /* 选择框的选项：至少和选择框一样宽（脚本写 min-width），选项多了在自己里面滚；层级在表单弹窗（.dialog-wrap 320）之上 */
-.ctx.ctx-select { z-index: 330; min-width: 0; max-height: min(308px, calc(100vh - 32px)); overflow-y: auto; overscroll-behavior: contain; }
+.ctx.ctx-select { z-index: 330; min-width: 0; max-width: calc(100vw - 16px); max-height: min(308px, calc(100vh - 32px)); overflow-y: auto; overscroll-behavior: contain; }
 .ctx-select button[data-do] { height: 30px; gap: 12px; font-size: 12.5px; white-space: nowrap; }
-.ctx-select .sel-name { flex: 1; min-width: 0; }
+.ctx-select .sel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 手机上选项比屏幕还长（供应商 · 模型名）：换行显示全文，不在屏幕边缘截断（default/main#384） */
+@media (max-width: 760px) {
+  .ctx-select button[data-do] { height: auto; min-height: 36px; padding-top: 7px; padding-bottom: 7px; white-space: normal; }
+  .ctx-select .sel-name { overflow-wrap: anywhere; }
+}
 .ctx-select button.on { font-weight: 600; color: color-mix(in oklab, var(--brand), var(--ink)); }
 .ctx-select button.on svg { width: 14px; height: 14px; color: currentColor; }
 .ctx.ctx-move { width: 240px; }

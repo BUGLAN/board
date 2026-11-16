@@ -1,11 +1,14 @@
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../lib/api';
 import type { HostAgent, HostInfo, Workspace } from '../../lib/types';
 import { useData } from '../../store/data';
-import { settleConfirm, useUI } from '../../store/ui';
+import { openHost, settleConfirm, useUI } from '../../store/ui';
 import { HostDetail, type DetailTab } from './HostDetail';
+import { HostModal } from './HostModal';
 import { FleetActions, HostsPage, Rack } from './HostsPage';
 
 // 机器页要发的请求：默认都成功，用例里换成自己的
@@ -303,4 +306,66 @@ describe('接口少了字段时机器页不整页崩', () => {
         expect(host.querySelector('.drawer-body')).not.toBeNull();
       }
     });
+});
+
+/* 手机适配（default/main#384）：机器 tab 的四个视图和机器详情三个页签从 360px 起不出横向滚动条。
+   浏览器宽度 jsdom 量不出来，这里直接盯样式表：手机上必须有一条 ≤760px 的规则管住这些块 */
+// 样式表按本测试文件的位置取（vitest 里 import.meta.url 是运行时路径，不是源文件）
+const css = (name: string) => readFileSync(new URL(`../../styles/${name}`, pathToFileURL(__filename)), 'utf8');
+/** 样式表里最后一条「整屏手机」那段（断点和仓库其它页面一致：760px） */
+const phoneBlock = (text: string, at: number) => text.slice(text.indexOf('@media (max-width: 760px)', at));
+describe('手机适配的样式还在（机器 tab、机器详情）', () => {
+  it('机器页只纵向滚动，页头、视图切换、磁贴、对比、共用配置、调度都有手机规则', () => {
+    const hosts = css('hosts.css');
+    expect(hosts).toMatch(/\.page-hosts \{[^}]*overflow-x: hidden/);
+    const at = hosts.indexOf('机器 Tab 的四个视图、机器详情弹窗从 360px 起逐页适配');
+    expect(at).toBeGreaterThan(0);
+    const mobile = phoneBlock(hosts, at);
+    for (const sel of ['.hp-b-acts .segmented', '.hp-sess-grid', '.hp-cmp', '.sy-row', '.pv-line', '.sd-row', '.sd-cond .input.sel', '.hp-ctl > .hp-sync']) expect(mobile).toContain(sel);
+    // 弹窗里的表格自己横向滚动：滚动框的宽度不算内容宽度（否则页面被撑宽）
+    expect(hosts).toMatch(/\.hp-cmp-box \{[^}]*min-width: 0/);
+  });
+
+  it('机器详情：页签不挤、概况一列、下拉和按钮不超出屏幕', () => {
+    const detail = css('hostdetail.css');
+    const at = detail.indexOf('机器详情三个页签从 360px 起能完整看');
+    expect(at).toBeGreaterThan(0);
+    const mobile = phoneBlock(detail, at);
+    for (const sel of ['.hd-tabs', '.hd-over', '.hd-v .hp-ctl', '.hd-ws-field', '.hd-sheet']) expect(mobile).toContain(sel);
+  });
+
+  it('以前撑宽机器详情的长路径、长选项都在自己的框里换行', () => {
+    const detail = css('hostdetail.css');
+    // 机器详情只纵向滚动：以前设置页的长路径把它撑宽、能横滑，切页签后三页都被裁掉左边
+    expect(detail).toMatch(/\.hd-body \{[^}]*overflow-x: hidden/);
+    // 「每个项目一个目录：<工作空间>\<项目>」这串路径没有空格，要能在中间断行
+    expect(detail).toMatch(/\.hd-ws-main > small \{[^}]*overflow-wrap: anywhere/);
+    // 选择框的选项列表（供应商 · 模型名很长）不比屏幕宽
+    expect(css('canvas.css')).toMatch(/\.ctx\.ctx-select \{[^}]*max-width: calc\(100vw - 16px\)/);
+  });
+});
+
+describe('机器详情开着时背景页面不滚动', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useData.setState({ ws: null });
+  });
+
+  it('打开时锁住 html、body 的滚动，关掉后放回原来的值', async () => {
+    // 弹窗会轮询机器、取最近的派发和供应商：请求都挂着不回，只看滚动锁
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+    document.body.style.overflow = 'auto';
+    act(() => useData.setState({ ws: ws([machine([agent('dsh')])]) }));
+    await act(async () => root.render(<HostModal />));
+    expect(document.documentElement.style.overflow).toBe('');
+
+    await act(async () => openHost('win2'));
+    expect(document.documentElement.style.overflow).toBe('hidden');
+    expect(document.body.style.overflow).toBe('hidden');
+
+    await act(async () => openHost(null));
+    expect(document.documentElement.style.overflow).toBe('');
+    expect(document.body.style.overflow).toBe('auto');
+    document.body.style.overflow = '';
+  });
 });

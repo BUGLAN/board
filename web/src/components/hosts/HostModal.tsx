@@ -1,5 +1,5 @@
 /* 机器详情：居中弹窗（概况 / agent / 设置，见 HostDetail.tsx）；添加机器 */
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { hostNameError, hostsOf, installCommand } from '../../lib/hosts';
@@ -46,6 +46,23 @@ export function HostModal() {
     if (next) openHost(next.name);
   };
   usePollHosts(on);
+  // 机器详情开着时锁住背景页面：手机上滑到头不会带着后面的页面一起滚（default/main#384）。
+  // .app 自己是 100dvh 的网格、里面的 .main 才是滚动的那一层，固定 body 不解决问题，所以锁的是 overflow。
+  // 只加 overflow 的话滚动位置会保留，页面不会跳；关掉（和卸载）时把原来的值放回去
+  useLayoutEffect(() => {
+    if (!on) return;
+    const root = document.documentElement;
+    const body = document.body;
+    const prev = { root: root.style.overflow, body: body.style.overflow, x: root.style.overscrollBehavior };
+    root.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    root.style.overscrollBehavior = 'none';
+    return () => {
+      root.style.overflow = prev.root;
+      body.style.overflow = prev.body;
+      root.style.overscrollBehavior = prev.x;
+    };
+  }, [on]);
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {

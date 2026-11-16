@@ -85,9 +85,9 @@ export function Compare({ hosts, ws, now, server }: { hosts: HostInfo[]; ws: Wor
             {hosts.map((h, r) => (
               <tr key={h.id} className={cx(!h.online && 'off')}>
                 <th scope="row" className="hp-cmp-host">
-                  <button type="button" onClick={() => openHost(h.name)} title={`打开 ${h.name} 的详情`}>
+                  <button type="button" onClick={() => openHost(h.name)} title={`${h.name}：打开这台机器的详情`}>
                     <Dot h={h} running={hostLoad(ws, h).running.length} />
-                    {h.name}
+                    <span className="hp-cmp-name">{h.name}</span>
                   </button>
                 </th>
                 {groups.map(g => (

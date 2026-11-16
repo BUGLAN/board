@@ -108,7 +108,7 @@ function GitCard({ cred, hosts, now, busy, editing, onEdit, onRemove }: { cred: 
     <article className="pv-card gc-card">
       <header className="pv-head">
         <Icon name="key" />
-        <b className="pv-name">{cred.host}</b>
+        <b className="pv-name" title={cred.host}>{cred.host}</b>
         <span className="sc-fixed">{cred.tail ? `令牌 ••••${cred.tail}` : '没填令牌'}</span>
         <span className="pv-upd">{cred.updatedAt ? `${cred.by ? `${cred.by} ` : ''}${since(cred.updatedAt, now)}更新` : ''}</span>
         <Tip text="修改主机、用户名、令牌">

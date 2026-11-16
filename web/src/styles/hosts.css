@@ -2,7 +2,8 @@
    机器（board host）：侧栏、机位总览、机器详情弹窗、派发对话框、卡片上的派发状态
    ========================================================================== */
 
-.page-hosts { overflow-y: auto; position: relative; }
+/* 页面只纵向滚动：手机上一个过宽的块（对比表除外，它有自己的横向滚动框）不能把整页撑出横向滚动条（default/main#384） */
+.page-hosts { overflow-y: auto; overflow-x: hidden; position: relative; }
 .page-hosts > .hp-b { width: 100%; }
 
 /* ---------- 小部件 ---------- */
@@ -160,7 +161,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-run-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .hp-run-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; }
 .hp-run-board { margin-left: auto; flex: none; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
-.hp-run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; padding-left: 28px; font-size: 12px; color: var(--text-3); }
+.hp-run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; padding-left: 28px; font-size: 12px; color: var(--text-3); min-width: 0; }
+.hp-run-meta .hp-mono { min-width: 0; overflow-wrap: anywhere; }
 /* 会话里排着的卡片：挂在会话正在跑的那一行下面，虚线隔开，按排好的顺序 */
 .hp-run-rest { margin: 8px 0 0 28px; padding: 6px 0 0; list-style: none; border-top: 1px dashed var(--line-2); }
 .hp-run-rest li { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; font-size: 12.5px; color: var(--text-2); }
@@ -176,7 +178,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-crule > svg { width: 13px; height: 13px; color: var(--text-3); flex: none; }
 .hp-crule-label { display: inline-flex; align-items: center; gap: 4px; min-width: 72px; font-size: 13px; font-weight: 500; }
 .hp-crule-label svg { width: 12px; height: 12px; color: var(--text-3); }
-.hp-crule .input { width: auto; height: 30px; padding: 0 8px; font-size: 12.5px; }
+.hp-crule .input { width: auto; min-width: 0; max-width: 100%; height: 30px; padding: 0 8px; font-size: 12.5px; }
 .hp-crule-op { flex: none; }
 /* 规则里的标签：和卡片详情的标签一行一样（胶囊 + 标签按钮），不画成输入框 */
 .hp-lset { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 30px; max-width: 100%; }
@@ -320,7 +322,9 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 
 /* ---------- 主区：机架总览（一行一台机器，一条车道一个任务） ---------- */
 /* 内容区宽度和未整理、里程碑、大盘、设置一致：--page-w（tokens.css） */
-.hp-b { width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 28px 28px 100px; }
+.hp-b { width: 100%; max-width: var(--page-w); min-width: 0; margin: 0 auto; padding: 28px 28px 100px; }
+/* 一列的内容不会把这一列撑得比屏幕宽：机器名、路径、命令这类长串各自省略或换行 */
+.hp-b > * { min-width: 0; }
 .hp-b-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin-bottom: 18px; }
 /* 窗口窄、侧栏又开着时说明文字至少留 280px，放不下就让右边的按钮换到下一行（不把文字挤成一字一行） */
 .hp-b-head > div:first-child { flex: 1 1 280px; min-width: 0; }
@@ -360,9 +364,9 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-strip-g:hover .hp-strip-name { color: var(--text-2); }
 
 /* 机器行：左边是机器（点开详情），右边是车道 */
-.hp-racks { display: flex; flex-direction: column; gap: 10px; }
+.hp-racks { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .hp-rack {
-  display: grid; grid-template-columns: 296px minmax(0, 1fr); border-radius: var(--r-lg); overflow: hidden; cursor: pointer;
+  display: grid; grid-template-columns: 296px minmax(0, 1fr); min-width: 0; border-radius: var(--r-lg); overflow: hidden; cursor: pointer;
   background: color-mix(in srgb, var(--surface) 85%, transparent); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
   transition: box-shadow var(--dur-2);
 }
@@ -475,12 +479,14 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-hist > div { min-width: 0; }
 .hp-hist b { display: block; font-size: 13px; font-weight: 500; line-height: 1.45; }
 .hp-hist span { display: block; margin-top: 2px; font-size: 11.5px; color: var(--text-3); }
+/* 标题里带 `代码` 时 Title 把文字拆成几个 span：它们是标题的一部分，照标题排，不能被上一条拆成一段一行 */
+.hp-hist b span:not(.hp-cid) { display: inline; margin: 0; font-size: inherit; color: inherit; }
 .hp-hist em { font-style: normal; font-weight: 600; color: color-mix(in oklab, var(--c), var(--ink)); }
 .hp-cmd {
-  display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--r-sm); text-align: left;
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--r-sm); text-align: left;
   background: var(--term-bg); color: var(--term-text);
 }
-.hp-cmd code { flex: 1; min-width: 0; font: 12px/1.6 var(--f-mono); white-space: pre-wrap; word-break: break-all; }
+.hp-cmd code { flex: 1; min-width: 0; font: 12px/1.6 var(--f-mono); white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
 .hp-cmd svg { width: 14px; height: 14px; flex: none; opacity: .6; }
 .hp-cmd:hover svg { opacity: 1; }
 
@@ -725,12 +731,13 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 @media (prefers-reduced-motion: reduce) { .hp-flash { animation: none; } }
 :root[data-motion="reduced"] .hp-flash { animation: none; }
 
-/* 多机对比：一台机器一行；横向放不下时表格自己横向滚动，第一列（机器名）固定在左边 */
+/* 多机对比：一台机器一行；横向放不下时表格自己横向滚动，第一列（机器名）固定在左边。
+   滚动框的宽度是这一列的 100%，不算表格的内容宽度：否则页面（一列 flex）会被表格撑宽、整页横向滚动（default/main#384） */
 .hp-cmp-box {
-  border-radius: var(--r-lg); overflow: hidden;
+  min-width: 0; border-radius: var(--r-lg); overflow: hidden;
   background: color-mix(in srgb, var(--surface) 85%, transparent); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
 }
-.hp-cmp-scroll { overflow-x: auto; }
+.hp-cmp-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
 .hp-cmp { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
 .hp-cmp th, .hp-cmp td { padding: 0 12px; height: 38px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
 .hp-cmp thead th { height: 30px; font-size: 11.5px; font-weight: 500; color: var(--text-3); background: var(--surface-2); }
@@ -744,6 +751,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-cmp-host { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
 .hp-cmp thead .hp-cmp-host { z-index: 2; vertical-align: bottom; padding-bottom: 8px; background: var(--surface-2); }
 .hp-cmp-host button { display: inline-flex; align-items: center; gap: 8px; max-width: 200px; min-height: 28px; padding: 0 6px; margin: 0 -6px; border-radius: var(--r-xs); font-family: var(--f-display); font-size: 13.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+/* 机器名太长时末尾省略（按钮的 title 里有全名）：省略号只对文字生效，名字单独包一层 */
+.hp-cmp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hp-cmp-host button:hover { background: var(--surface-3); }
 .hp-cmp-host button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .hp-cmp tbody tr.off .hp-cmp-host button { color: var(--text-3); }
@@ -840,7 +849,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 @media (prefers-reduced-motion: reduce) { .ss-tobottom { transition: none; } }
 
 /* 卡片详情「派发记录」 */
-.dh-list { display: flex; flex-direction: column; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.dh-list { display: flex; flex-direction: column; min-width: 0; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
 .dh-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; width: 100%; padding: 8px 12px; text-align: left; font-size: 12.5px; color: var(--text-2); }
 .dh-row + .dh-row { border-top: 1px solid var(--line); }
 .dh-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
@@ -916,7 +925,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-side-shared { margin-bottom: 6px; }
 .hp-side-shared > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
 .sc { max-width: 980px; }
-.sc-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
+.sc-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; min-width: 0; }
 .sc-head > div:first-child { flex: 1; min-width: 0; }
 .sc-head h2 { font-family: var(--f-display); font-size: 17px; font-weight: 700; margin: 0 0 4px; }
 .sc-head p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
@@ -955,17 +964,22 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sc-empty { margin: 0; padding: 10px 14px; border-top: 1px solid var(--line); }
 @media (max-width: 760px) {
   .sc-head { flex-direction: column; }
+  .sc-acts { flex-wrap: wrap; width: 100%; }
   .sc-row { flex-wrap: wrap; }
-  .sc-meta { flex-basis: 100%; order: 3; padding-left: 34px; white-space: normal; }
+  .sc-meta { flex-basis: 100%; order: 3; padding-left: 34px; white-space: normal; overflow-wrap: anywhere; }
   .sc-hosts { padding-left: 12px; }
   .sc-host { flex-direction: column; gap: 4px; }
   .sc-host-name { width: auto; }
 }
+/* skills 的「从机器导入」弹窗里一排机器磁贴：窄屏两列，最长的机器名也不撑宽弹窗 */
+.si-host .fm-tile { min-width: 0; }
+.si-host .fm-tile b, .si-host .fm-tile small { min-width: 0; }
 /* 共用配置：MCP 服务器一节 */
 .sc-mcp { margin-top: 28px; }
 .sc-providers, .sc-tpl { margin-top: 28px; }
 /* Git 凭据：一张卡，键名短 */
 .sc-git { margin-top: 28px; }
+.gc-card { min-width: 0; }
 .gc-card .pv-head > svg { flex: none; width: 15px; height: 15px; color: var(--text-3); }
 .gc-card .pv-k { width: 4em; }
 /* 卡片底下的机器：一台一行，状态 +「同步 | 不同步」 */
@@ -999,9 +1013,9 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sc-how { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-2); white-space: nowrap; cursor: help; }
 .sc-how svg { width: 13px; height: 13px; }
 /* 模型供应商（Providers.tsx）：一个供应商一张卡，上面是名称、地址、模型，底下「在用」按 agent 汇总，点开列出哪几台 */
-.pv-cards { display: flex; flex-direction: column; gap: 12px; }
-.pv-card { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
-.pv-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 4px 14px; }
+.pv-cards { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pv-card { min-width: 0; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.pv-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; padding: 10px 10px 4px 14px; }
 .pv-name { font-size: 14px; font-weight: 650; }
 .pv-upd { margin-left: auto; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
 .pv-kv { display: flex; flex-direction: column; gap: 3px; padding: 2px 14px 10px; }
@@ -1070,6 +1084,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sy-none { font-style: normal; font-size: 12px; color: var(--text-3); }
 .sy-list { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
 .sy-item + .sy-item { border-top: 1px solid var(--line); }
+.sy-item { min-width: 0; }
 .sy-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(0, 1.3fr) minmax(0, 1.7fr) 60px; align-items: center; gap: 12px; min-height: 46px; padding: 6px 10px 6px 6px; }
 .sy-mcp .sy-row { grid-template-columns: minmax(130px, .9fr) minmax(0, 1.4fr) auto minmax(0, 1.5fr) 60px; }
 .sy-toggle { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px; border-radius: var(--r-sm); text-align: left; }
@@ -1269,12 +1284,29 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   .fm-var { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto 26px; }
   .fm-eq { display: none; }
   .fm-picker-list { grid-template-columns: minmax(0, 1fr); }
+  /* 弹窗占满屏幕宽度的一半以上时外面那圈留白没有用，给内容（手机就是整个屏幕） */
+  .fm-wrap { padding: 0; }
+  .fm { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+  .fm-head { padding: 14px 10px 10px 16px; }
+  .fm-body { padding: 0 8px 6px 16px; }
+  .fm-foot { flex-wrap: wrap; padding: 12px 12px 14px 16px; }
+  .fm-tile { padding: 8px; gap: 8px; }
+  /* 小节标题和后面的说明：放不下时说明换到下一行，不把标题挤成一字一行 */
+  .fm-sec h4 > span { flex-wrap: wrap; row-gap: 2px; }
 }
 @media (max-width: 760px) {
   .pv-line { flex-direction: column; gap: 0; }
+  .pv-k { width: auto; }
   .pv-use { flex-direction: column; gap: 6px; }
   .pv-mr { grid-template-columns: 8px auto minmax(0, 1fr); }
   .pv-mr code, .pv-mr .pv-if, .pv-mr-e, .pv-mr-go { display: none; }
+  /* 卡片头（供应商、Git 凭据）：第一行名称（太长末尾省略）+ 修改、删掉；第二行 key 和更新时间。
+     不然名字一长，修改、删掉就被挤到下一行，单独掉在左边 */
+  .pv-head { row-gap: 2px; }
+  .pv-head > .pv-name { flex: 1 1 0; }
+  .pv-head::after { content: ""; order: 1; flex-basis: 100%; }
+  .pv-head > .sc-fixed, .pv-upd { order: 2; }
+  .pv-upd { margin-left: 0; }
 }
 .sc-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sc-presets .hp-note { margin: 0 0 0 4px; }
@@ -1377,7 +1409,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-board-sub { font-size: 11px; font-weight: 400; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- 共用配置「调度」（Sched.tsx）：自动领取的白板、按 agent 分卡的领取规则、每台机器的接单时间带 ---------- */
-.sd { margin-bottom: 28px; }
+.sd { margin-bottom: 28px; min-width: 0; }
 .sd-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 22px 0 8px; font-size: 13px; font-weight: 650; }
 .sd-h small { font-size: 12px; font-weight: 400; color: var(--text-3); }
 .sd-k { flex: none; font-size: 12px; color: var(--text-3); white-space: nowrap; }
@@ -1396,7 +1428,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sd-form > svg { width: 13px; height: 13px; color: var(--text-4); }
 .sd-op.input.sel, .sd-form .sd-op { flex: none; width: 132px; }
 .sd-agent-pick.input.sel { flex: none; width: 190px; }
-.sd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
+.sd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; }
 .sd-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); min-width: 0; }
 .sd-card header { display: flex; align-items: center; gap: 8px; }
 .sd-card header img, .sd-card header .hp-aicon { width: 18px; height: 18px; }
@@ -1427,11 +1459,11 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sd-axis, .sd-line { display: grid; grid-template-columns: 110px minmax(200px, 1fr) 440px; align-items: center; column-gap: 14px; }
 .sd-ticks { position: relative; height: 18px; }
 .sd-ticks i { position: absolute; top: 2px; transform: translateX(-50%); font: 400 10.5px var(--f-mono); font-style: normal; color: var(--text-3); }
-.sd-line { padding: 9px 0 4px; row-gap: 3px; }
+.sd-line { padding: 9px 0 4px; row-gap: 3px; min-width: 0; }
 .sd-line + .sd-line { border-top: 1px dashed var(--line); }
 .sd-line > small { grid-column: 2 / 4; }
 .sd-m-name { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; text-align: left; }
-.sd-m-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.sd-m-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .sd-m-name:hover b { text-decoration: underline; }
 .sd-line.off .sd-m-name b { color: var(--text-3); }
 .sd-track {
@@ -1469,4 +1501,104 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   .sd-line > small { grid-column: 1; }
   .sd-ctl { flex-wrap: wrap; }
   .sd-cards { grid-template-columns: 1fr; }
+  .sd-form { align-items: stretch; }
+  .sd-form .sd-op, .sd-form .sd-agent-pick { flex: 1 1 132px; width: auto; }
+}
+
+/* ==========================================================================
+   手机（≤760px）：机器 Tab 的四个视图、机器详情弹窗从 360px 起逐页适配（default/main#384）
+   桌面（≥1024px）的布局和密度不动：这里只改窄屏，断点和仓库其它页面一致
+   ========================================================================== */
+@media (max-width: 760px) {
+  /* ---- 主区：页头、视图切换、操作按钮 ---- */
+  .hp-b { padding: 16px 12px calc(84px + env(safe-area-inset-bottom)); }
+  .hp-b-head { gap: 10px; margin-bottom: 14px; align-items: flex-start; }
+  /* 页头和视图切换 / 全部暂停 / 添加机器各占一行：不挤在一起，也不撑出横向滚动条 */
+  .hp-b-head > div:first-child { flex: 1 1 100%; }
+  .hp-b-head h1 { font-size: 23px; }
+  .hp-b-head p { font-size: 13px; line-height: 1.55; }
+  .hp-b-acts { width: 100%; flex-wrap: wrap; gap: 8px; justify-content: flex-start; }
+  /* 四个视图一个按钮一行会占掉两行：分段控件占满一行、四个按钮平分；下面一行放操作按钮 */
+  .hp-b-acts .segmented { flex: 1 1 100%; display: flex; }
+  .hp-b-acts .segmented button { flex: 1 1 0; min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; }
+  .hp-b-acts .btn { height: 32px; }
+
+  /* ---- 总览：顶部三个数、会话位条 ---- */
+  .hp-stats > div { padding: 10px 8px 9px; gap: 3px; }
+  .hp-stats dt { font-size: 11px; }
+  .hp-stats dd { font-size: 20px; }
+  .hp-stats dd small { font-size: 12px; }
+  .hp-strip { padding: 6px 8px; }
+  .hp-strip-g { padding: 5px 6px; }
+
+  /* ---- 总览：机器磁贴 + 会话车道 ---- */
+  .hp-racks { gap: 8px; }
+  .hp-rack-id { padding: 12px 12px 13px; gap: 9px; }
+  .hp-rack-name b { font-size: 15.5px; }
+  .hp-rack-state { flex-wrap: wrap; gap: 6px 8px; }
+  .hp-lanes { padding: 10px; gap: 8px; }
+  .hp-sess-sum { flex-wrap: wrap; gap: 4px 8px; }
+  .hp-sess-grid, .hp-sess-grid[data-n="2"], .hp-sess-grid[data-n="3"], .hp-sess-grid[data-n="4"] { grid-template-columns: minmax(0, 1fr); }
+  .hp-lane { padding: 0 10px 0 12px; min-height: 36px; }
+  .hp-lane.queued { flex-wrap: wrap; row-gap: 2px; padding: 6px 10px; }
+  .hp-lane.queued .hp-lane-wait { flex-basis: 100%; white-space: normal; }
+
+  /* ---- 对比：表格自己横向滚动，页面不跟着滚；机器名那一列窄一点 ---- */
+  .hp-cmp { font-size: 12px; }
+  .hp-cmp th, .hp-cmp td { padding: 0 9px; height: 36px; }
+  .hp-cmp-host { max-width: 42vw; }
+  .hp-cmp-host button { max-width: 38vw; font-size: 12.5px; gap: 6px; }
+  .hp-cmp-legend { gap: 4px 12px; padding: 8px 12px; font-size: 11px; }
+
+  /* ---- 共用配置：skills、MCP、供应商、Git 凭据 ---- */
+  .sc { max-width: none; }
+  .sc-head { gap: 8px; margin-bottom: 10px; }
+  .sc-head h2 { font-size: 16px; }
+  .sc-head p { font-size: 12.5px; line-height: 1.6; }
+  .sc-acts { gap: 8px; }
+  .sc-row { padding: 8px 8px 8px 4px; gap: 6px; }
+  .sy-row, .sy-mcp .sy-row { padding: 8px 8px 8px 4px; row-gap: 3px; }
+  .sy-toggle { padding: 4px 6px; }
+  .sy-toggle b { max-width: 45vw; }
+  .sy-detail { padding-left: 10px; padding-right: 8px; }
+  .pv-head { padding: 10px 8px 4px 12px; }
+  .pv-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pv-kv { padding: 2px 12px 10px; }
+  .pv-line code { word-break: break-all; }
+  .pv-use { padding: 10px 12px 12px; }
+  .pv-models code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .gc-hosts { padding: 10px 12px 12px; }
+
+  /* ---- 调度：领取规则、时间带、跑多久停 ---- */
+  .sd-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .sd-row > .sd-k { padding-top: 0; }
+  .sd-card { padding: 10px 12px; }
+  .sd-card header { flex-wrap: wrap; gap: 6px; }
+  .sd-sum { margin-left: 0; flex-basis: 100%; }
+  .sd-cond .input.sel { flex: 1 1 100%; width: auto; min-width: 0; }
+  .sd-cond-acts { margin-left: 0; }
+  .sd-time { padding: 8px 10px 10px; }
+  .sd-track { height: 26px; }
+  .sd-ctl > .sd-win-words { flex-basis: 100%; }
+  .sd-up { flex-wrap: wrap; }
+  .hp-knob, .hp-block-head { gap: 12px; align-items: flex-start; }
+  .hp-knob { flex-wrap: wrap; }
+  .hp-knob-text { flex: 1 1 100%; }
+  .hp-knob .hp-ctl { flex: 1 1 100%; }
+  .input.hp-env-select { flex: 1 1 200px; width: auto; }
+  /* 控件旁的保存状态（.hp-sync）桌面画在控件左边；手机上控件换到了行首，左边就是屏幕边缘，改排在控件右边 */
+  .hp-ctl > .hp-sync:not(.in) { position: static; order: 1; flex: none; margin: 0; }
+  /* 工作空间、领取规则、自动升级旁的保存状态：父元素不是定位元素，画到了屏幕左边外面，手机上排进这一行的末尾
+     （排在前面会把按钮往右顶一格）；接单时段那一行的也挪到末尾 */
+  :is(.hd-ws-field, .sc-acts, .sd-up) > .hp-sync:not(.in) { position: static; order: 1; flex: none; margin: 0; }
+  .sd-ctl > .hp-sync.in { order: 1; }
+
+  /* ---- 侧栏的「共用配置」「调度」两行：副标题窄屏放不下，只留名称 ---- */
+  .hp-side-row.hp-side-shared { grid-template-columns: 14px minmax(0, 1fr) auto; }
+  .hp-side-row.hp-side-shared .hp-side-sub { display: none; }
+}
+
+/* 手机上的会话弹窗（components/hosts/Session.tsx）：占满屏幕，卡片列表在上、过程在下 */
+@media (max-width: 760px) {
+  .drawer.ss-modal { --modal-w: 100%; }
 }

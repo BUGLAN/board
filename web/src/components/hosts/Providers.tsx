@@ -169,7 +169,7 @@ function ProviderCard({
   return (
     <article className="pv-card">
       <header className="pv-head">
-        <b className="pv-name">{p.name}</b>
+        <b className="pv-name" title={p.name}>{p.name}</b>
         <span className="sc-fixed">{p.tail ? maskKey(p) : '没填 key'}</span>
         <span className="pv-upd">{p.updatedAt ? `${since(p.updatedAt, now)}更新` : ''}</span>
         <Tip text="修改地址、key、模型">

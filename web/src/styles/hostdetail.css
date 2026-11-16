@@ -2,10 +2,13 @@
    （机器详情与配置同步重构，原型变体 B） */
 
 /* ---------- 标题区和页签 ---------- */
-.hd-top { flex: none; display: flex; align-items: flex-end; gap: 16px; padding: 18px 22px 14px; border-bottom: 1px solid var(--line); }
+.hd-top { flex: none; display: flex; align-items: flex-end; gap: 16px; min-width: 0; padding: 18px 22px 14px; border-bottom: 1px solid var(--line); }
 .hd-id { flex: 1; min-width: 0; }
-.hd-tabs { flex: none; padding-bottom: 1px; }
-.hd-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 22px 60px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+.hd-tabs { flex: none; min-width: 0; padding-bottom: 1px; }
+/* 只纵向滚动（default/main#384）：以前长路径把这一层撑宽后能横滑，滑过再切页签，三页都带着偏移、左边被裁掉。
+   内容本身都在自己的框里换行或省略，这里再兜一层，不让它横向滚动 */
+.hd-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 18px 22px 60px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+.hd-body > *, .hd-over > * { min-width: 0; }
 
 /* ---------- 概况 ---------- */
 .hd-over { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 24px; }
@@ -14,22 +17,22 @@
 
 /* ---------- agent ---------- */
 .hd-abar { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
-.hd-abar .hp-note { flex: 1; margin: 0; }
+.hd-abar .hp-note { flex: 1; min-width: 0; margin: 0; }
 .hd-test { display: inline-flex; align-items: center; gap: 10px; flex: none; font-size: 12px; color: var(--text-3); }
 .hd-agents > .hp-warn-line { margin-bottom: 12px; }
-.hd-agent { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); margin-bottom: 12px; }
+.hd-agent { min-width: 0; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); margin-bottom: 12px; }
 .hd-agent.missing { opacity: .55; }
 .hd-agent.warn { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent); }
-.hd-agent header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
+.hd-agent header { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; padding: 12px 14px 4px; }
 .hd-agent header .hp-logo, .hd-agent header > b:first-child { width: 22px; height: 22px; }
-.hd-agent header > b { font-size: 14px; }
+.hd-agent header > b { font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hd-ver { font-size: 12px; color: var(--text-3); margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hd-ok { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 11.5px; color: color-mix(in oklab, var(--ok), var(--ink)); }
 .hd-ok svg { width: 13px; height: 13px; }
 
-.hd-conf { display: flex; align-items: center; gap: 8px; margin: 6px 14px 0; padding: 7px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-2); background: var(--surface-3); }
+.hd-conf { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; margin: 6px 14px 0; padding: 7px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-2); background: var(--surface-3); }
 .hd-conf > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
-.hd-conf > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.hd-conf > span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 .hd-conf.ok > svg { color: color-mix(in oklab, var(--ok), var(--ink)); }
 .hd-conf.busy > svg { animation: hd-spin 1s linear infinite; }
 .hd-conf.bad { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 22%, transparent); }
@@ -40,8 +43,8 @@
 .hd-manage-cmd { display: flex; align-items: center; gap: 8px; margin: 0 14px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
 .hd-manage-cmd code { flex: 1; min-width: 0; overflow: auto; white-space: nowrap; font-size: 12px; color: var(--text-2); }
 
-.hd-why { display: flex; align-items: center; gap: 10px; margin: 6px 14px 0; padding: 8px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 8%, transparent); }
-.hd-why span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.hd-why { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 6px 14px 0; padding: 8px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.hd-why span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 
 .hd-edit { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px 12px; align-items: start; padding: 12px 14px 14px; }
 .hd-k { padding-top: 6px; font-size: 12px; color: var(--text-3); }
@@ -92,7 +95,8 @@
 .hd-ws-ico svg { width: 17px; height: 17px; color: color-mix(in oklab, var(--warn), var(--ink) 15%); }
 .hd-ws-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .hd-ws-main > code { font-family: var(--f-mono); font-size: 14px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hd-ws-main > small { font-size: 12px; color: var(--text-3); }
+/* 「每个项目一个目录：<工作空间>\<项目>」里的路径没有空格，放不下时在路径中间断行，不撑宽弹窗 */
+.hd-ws-main > small { font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
 .hd-ws-main > small code { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); }
 .hd-ex { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .hd-ex li { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 6px 10px; border-radius: var(--r-sm); font-size: 12.5px; background: var(--surface-3); }
@@ -226,4 +230,63 @@
 }
 @media (max-width: 360px) {
   .hd-tiles { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- 手机（≤760px）：机器详情三个页签从 360px 起能完整看（default/main#384） ---------- */
+@media (max-width: 760px) {
+  .hd-top { padding: 12px 16px 10px; }
+  /* 页签占满一行，三个页签平分：不换行、不横向溢出 */
+  .hd-tabs { display: flex; width: 100%; }
+  .hd-tabs .segmented { flex: 1 1 auto; flex-wrap: nowrap; display: flex; }
+  .hd-tabs .segmented button { flex: 1 1 0; min-width: 0; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; }
+  /* 机器名太长时换行；系统、board 版本、心跳排得紧一点 */
+  .hp-m-title { font-size: 20px; word-break: break-word; }
+  .hp-m-meta { gap: 2px 10px; font-size: 12px; }
+
+  /* 概况：一列；正在跑的派发行和排队的行换行，不超出屏幕 */
+  .hd-over { gap: 18px; }
+  .hd-right .d-activity { padding: 0; }
+  .hp-hist { padding: 9px 4px; margin: 0 -2px; }
+  .hp-hist span { overflow-wrap: anywhere; }
+
+  /* agent 页：字段名在上、控件在下，各块的左右留白收窄 */
+  .hd-test { flex-wrap: wrap; }
+  .hd-agent header { padding: 12px 12px 4px; }
+  .hd-conf, .hd-why { margin-left: 12px; margin-right: 12px; }
+  .hd-edit { grid-template-columns: minmax(0, 1fr); padding: 10px 12px 12px; gap: 3px; }
+  .hd-k { padding-top: 6px; font-size: 11.5px; color: var(--text-3); }
+  .hd-v { gap: 8px; }
+  /* 下拉、输入框不超出屏幕：宽度照桌面（最宽 230px，长选项在框里省略），模型和强度一行放不下时强度换到下一行 */
+  .hd-v .hp-ctl { flex-wrap: wrap; max-width: 100%; }
+  .hd-v .hp-ctl > * { min-width: 0; max-width: 100%; }
+  /* 启动环境、模型的保存状态画在字段名那一行的最右边：排在下拉后面的话，一行放不下就单独多占一行 */
+  .hd-v.hd-col { position: relative; }
+  .hd-v.hd-col > .hp-ctl { position: static; }
+  .hd-v.hd-col > .hp-ctl > .hp-sync:not(.in) { position: absolute; top: -20px; right: 0; margin: 0; }
+  .hd-v.hd-acts .ha-hint { flex-basis: 100%; }
+
+  /* 设置页：开关、导入、工作空间换行排，维护行照桌面一行（说明文字在自己那一栏里换行） */
+  .hd-set section + section { margin-top: 22px; }
+  .hd-sync { padding: 4px 12px 12px; }
+  .hd-sw, .hd-sync-note { flex-wrap: wrap; }
+  .hd-imp { gap: 8px; }
+  .hd-imp-row { flex-wrap: wrap; row-gap: 2px; }
+  .hd-imp-row span { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
+  /* 工作空间：图标和路径一行，「更改…」换到下一行、和路径对齐 */
+  .hd-ws-field { flex-wrap: wrap; row-gap: 8px; }
+  .hd-ws-main { flex: 1 1 calc(100% - 46px); }
+  .hd-ws-main > code { font-size: 13px; }
+  .hd-ws-field > .btn { margin-left: 46px; }
+  .hd-ex li { flex-wrap: wrap; row-gap: 4px; }
+  .hd-ex li span { flex-basis: 100%; }
+  .hd-mrow { padding: 10px 12px; }
+  .hp-ask > span { flex-basis: 100%; }
+  .hp-ask .btn { flex: 1 1 auto; justify-content: center; }
+
+  /* 选工作空间的分栏视图：手机上占满宽度，列可以横滑 */
+  .hd-sheet { width: 100%; max-height: calc(100dvh - 24px); }
+  .hd-cols { height: min(300px, 45dvh); }
+  .hd-sheet-foot { flex-wrap: wrap; }
+  .hd-sheet-sel { flex-basis: 100%; }
+  .hd-sheet-sel .input { max-width: none; }
 }
