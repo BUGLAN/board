@@ -230,7 +230,7 @@
 .pj-av {
   --pc: var(--brand);
   display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: var(--r-sm);
-  font-family: var(--f-display); font-size: 13px; font-weight: 700; color: #fff;
+  font-family: var(--f-display); font-size: 13px; font-weight: 700; line-height: 1; color: #fff;
   background: linear-gradient(135deg, color-mix(in srgb, var(--pc) 75%, #fff), var(--pc) 60%, color-mix(in srgb, var(--pc) 75%, #000));
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18), 0 3px 8px -3px color-mix(in srgb, var(--pc) 70%, transparent);
   transition: background var(--dur-3);

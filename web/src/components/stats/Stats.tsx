@@ -512,7 +512,7 @@ function CompareTable({ s, rows, unit }: { s: Stats; rows: Row[]; unit: string }
             <th className="num" title="现在在交审状态的张数">
               待复盘
             </th>
-            <th>这段时间完成</th>
+            <th className="num">这段时间完成</th>
             <th className="num">交付周期 · 中位</th>
             <th className="num">一次通过率</th>
             <th className="num">返工</th>
@@ -526,7 +526,7 @@ function CompareTable({ s, rows, unit }: { s: Stats; rows: Row[]; unit: string }
                 <td>
                   <span className="sp-cmp-name">
                     {r.avatar}
-                    <span>
+                    <span className="sp-cmp-meta">
                       <b>{r.title}</b>
                       <small>{r.sub}</small>
                     </span>
@@ -534,7 +534,7 @@ function CompareTable({ s, rows, unit }: { s: Stats; rows: Row[]; unit: string }
                 </td>
                 <td className="num">{b?.todo ?? '—'}</td>
                 <td className={cx('num', (b?.review ?? 0) > 0 && 'strong')}>{b?.review ?? '—'}</td>
-                <td>
+                <td className="num">
                   <span className="sp-cmp-done">
                     <b>{b?.done ?? '—'}</b>
                     {b && <Spark data={b.series.map((v, i) => ({ t: s.series[i]?.t ?? i, v }))} fmt={v => String(v)} label="完成" bucket={s.bucket} height={22} />}
@@ -595,7 +595,7 @@ function ProjectOverview({ s }: { s: Stats }) {
   );
 }
 
-function AllOverview({ s }: { s: Stats }) {
+export function AllOverview({ s }: { s: Stats }) {
   const ws = useData(st => st.ws);
   const set = useSP(st => st.set);
   const cur = useCurrent();

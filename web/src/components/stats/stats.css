@@ -362,14 +362,15 @@
 .sp-cmp-row { cursor: pointer; }
 .sp-cmp-row:hover td { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .sp-cmp-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.sp-cmp-name > span { display: flex; flex-direction: column; min-width: 0; }
+.sp-cmp-meta { display: flex; flex-direction: column; min-width: 0; }
 .sp-cmp-name b { font-size: 13.5px; font-weight: 600; }
 .sp-cmp-name small { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
 .sp-cmp-av { width: 28px; height: 28px; font-size: 13px; border-radius: 8px; flex: none; }
 .sp-cmp-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.sp-cmp .num { text-align: center; }
 .sp-cmp td.strong { font-weight: 700; color: var(--warn); }
-.sp-cmp-done { display: grid; grid-template-columns: 36px minmax(80px, 1fr); align-items: center; gap: 8px; }
-.sp-cmp-done b { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sp-cmp-done { display: flex; flex-direction: column; align-items: center; width: 124px; gap: 2px; }
+.sp-cmp-done b { text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sp-tag { margin-right: 8px; padding: 1px 6px; border-radius: var(--r-xs); font: 500 11px var(--f-mono); color: var(--text-2); background: var(--surface-3); }
 
 /* ---------- 取数中、表格窄屏横向滚动 ---------- */
