@@ -63,7 +63,7 @@ export function CardDispatchLine({ card }: { card: number }) {
   if (!d || d.state !== 'queued') return null;
   return (
     <div className="card-dispatch" title={`派发于 ${hhmm(d.createdAt)}（${sourceOf(d)}）`}>
-      <Icon name="dispatch" />
+      <Mark id={d.agent} title={d.agentLabel} />
       <span>
         排队 → {hostWords(d)} · {d.agentLabel}
         <em>（{queueReason(h, d, block)}）</em>
