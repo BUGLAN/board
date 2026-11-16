@@ -983,7 +983,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sc-git { margin-top: 28px; }
 .gc-card { min-width: 0; }
 .gc-card .pv-head > svg { flex: none; width: 15px; height: 15px; color: var(--text-3); }
-.gc-card .pv-k { width: 4em; }
+.gc-card .pv-k { width: 6.5em; }
 /* 卡片底下的机器：一台一行，状态 +「同步 | 不同步」 */
 .gc-hosts { padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .gc-hosts-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }

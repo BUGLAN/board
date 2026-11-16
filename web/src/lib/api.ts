@@ -274,7 +274,7 @@ export const api = {
   /** Git 凭据（共用配置）：令牌只有末尾 4 位；没设时 null */
   git: () => req<{ cred: GitCred | null }>('GET', '/api/git').then(r => ({ cred: r?.cred ?? null })),
   /** 设置或修改：令牌留空保留原来的 */
-  putGit: (c: { host: string; username: string; token: string }) => req<GitCred>('POST', '/api/git', c),
+  putGit: (c: { host: string; username: string; token: string; commitName: string; commitEmail: string }) => req<GitCred>('POST', '/api/git', c),
   removeGit: () => req('DELETE', '/api/git'),
   syncHost: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/sync`),
   /** 照另一台机器配：dry 只列出要变哪些，确认后再不带 dry 调一次写进去 */

@@ -553,6 +553,10 @@ export interface HostCopy {
 export interface GitCred {
   host: string;
   username: string;
+  /** 提交作者的用户名（用户级 git 配置的 user.name） */
+  commitName?: string;
+  /** 提交作者的邮箱（用户级 git 配置的 user.email） */
+  commitEmail?: string;
   /** 保存时填；列表里没有 */
   token?: string | null;
   tail?: string | null;

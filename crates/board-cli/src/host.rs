@@ -432,7 +432,7 @@ fn append_path_line(rc: &Path, dir: &Path, fish: bool, allow_duplicate: bool) ->
 }
 
 /// 这条 PATH 里 `dir` 有没有出现、并且在 `before` 前面（`before` 为空时只要求出现）
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 fn path_has_dir_before(path: &str, dir: &Path, before: Option<&Path>) -> bool {
     let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
     let Some(at) = dirs.iter().position(|p| p == dir) else { return false };
@@ -4974,10 +4974,14 @@ mod tests {
         assert!(append_path_line(&rc, dir, false, true).unwrap());
         assert_eq!(std::fs::read_to_string(&rc).unwrap().matches("export PATH=\"/Users/me/.local/bin:$PATH\"").count(), 2);
 
-        let path = "/usr/local/node-v22/bin:/Users/me/.local/bin:/usr/bin";
-        assert!(!path_has_dir_before(path, dir, Some(Path::new("/usr/local/node-v22/bin"))));
-        assert!(path_has_dir_before("/Users/me/.local/bin:/usr/local/node-v22/bin:/usr/bin", dir, Some(Path::new("/usr/local/node-v22/bin"))));
-        assert!(path_has_dir_before("/usr/bin:/Users/me/.local/bin", dir, None));
+        // PATH 的冒号分隔是 Unix 语义；Windows 上 split_paths 用分号，不能拿这串 Unix 路径做断言
+        #[cfg(unix)]
+        {
+            let path = "/usr/local/node-v22/bin:/Users/me/.local/bin:/usr/bin";
+            assert!(!path_has_dir_before(path, dir, Some(Path::new("/usr/local/node-v22/bin"))));
+            assert!(path_has_dir_before("/Users/me/.local/bin:/usr/local/node-v22/bin:/usr/bin", dir, Some(Path::new("/usr/local/node-v22/bin"))));
+            assert!(path_has_dir_before("/usr/bin:/Users/me/.local/bin", dir, None));
+        }
     }
 
     /// 加进 PATH 的是 npm 的 --prefix 下面的 bin：装完直接从那里找命令

@@ -1,7 +1,8 @@
 //! board host 这一侧的 Git 凭据同步（PRD §10.16「共用配置」，服务端见 board-core 的 `gitcred`）：
 //! 服务端设了一份 https 远端的令牌、这台机器选了「用服务器的」，就把它写进这台机器的用户级 git 配置，
 //! 之后新建、克隆的仓库只要远端是同一个 https 主机就自动生效，board host 备代码（`git fetch`、`git clone`）
-//! 和 agent 推集成分支时直接用，不用每台机器手动配 credential helper。
+//! 和 agent 推集成分支时直接用，不用每台机器手动配 credential helper。凭据里填了提交身份时，同一套同步
+//! 还写 `user.name` / `user.email`，新建提交的作者、提交者就不再用系统账号和主机名兜底。
 //!
 //! - **令牌放哪**：`~/.board/host/board-git-credentials`，git 自带的 `credential-store` 的格式（一行
 //!   `https://<用户名>:<令牌>@<主机>`），只有本人能读写（0600）。git 配置里只写 helper 的命令，不写令牌；
@@ -24,20 +25,32 @@ use std::time::Duration;
 
 /// 令牌文件名（helper 的命令里带着它，据此认出哪些配置项是 Board 写的）
 const FILE: &str = "board-git-credentials";
-/// 记录：用的是哪个主机、旧版按仓库配过哪些仓库（只为了升级后清掉）
+/// 记录：用的是哪个主机、旧版按仓库配过哪些仓库（只为了升级后清掉），以及 Board 写过的提交身份和原来的值
 const RECORD: &str = "git-sync.json";
 const QUICK: Duration = Duration::from_secs(10);
 
 /// 同步（后台线程）和开始派发前补配（主线程）都会改记录，一次只让一个做
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// 配的是哪个主机、旧版按仓库配过哪些仓库；主机为空表示现在没在用
+/// 配的是哪个主机、旧版按仓库配过哪些仓库、Board 写过的提交身份；主机为空表示凭据现在没在用
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Record {
     #[serde(default)]
     host: String,
     #[serde(default)]
     repos: Vec<String>,
+    /// Board 最后写进用户级 git 配置的 `user.name`；空表示 Board 没写过
+    #[serde(default)]
+    commit_name: String,
+    /// Board 最后写进用户级 git 配置的 `user.email`；空表示 Board 没写过
+    #[serde(default)]
+    commit_email: String,
+    /// 第一次由 Board 覆盖前，用户级配置里的 `user.name`（可能有多条，也可能没有）
+    #[serde(default)]
+    name_before: Vec<String>,
+    /// 第一次由 Board 覆盖前，用户级配置里的 `user.email`（可能有多条，也可能没有）
+    #[serde(default)]
+    email_before: Vec<String>,
 }
 
 fn load(dir: &Path) -> Record {
@@ -45,7 +58,7 @@ fn load(dir: &Path) -> Record {
 }
 
 fn save(dir: &Path, r: &Record) {
-    if r.host.is_empty() && r.repos.is_empty() {
+    if r.host.is_empty() && r.repos.is_empty() && r.commit_name.is_empty() && r.commit_email.is_empty() {
         let _ = std::fs::remove_file(dir.join(RECORD));
     } else {
         let _ = std::fs::write(dir.join(RECORD), serde_json::to_string_pretty(r).unwrap_or_default());
@@ -169,6 +182,51 @@ fn configure(base: &Path, scope: Scope<'_>, host: &str, file: &Path) -> Result<b
     set_values(base, scope, &k, &now, &want)
 }
 
+fn same_value(now: &[String], want: &str) -> bool {
+    now.len() == 1 && now[0] == want
+}
+
+/// 写一项提交身份。已经是要的值就不动；用户自己改过时，把用户改的值记成新的原值，之后关掉同步也不会覆盖它。
+fn apply_identity(base: &Path, scope: Scope<'_>, key: &str, want: &str, written: &mut String, before: &mut Vec<String>) -> Result<bool, String> {
+    let now = values(base, scope, key);
+    if same_value(&now, want) {
+        return Ok(false);
+    }
+    let backup = if !written.is_empty() && same_value(&now, written) {
+        before.clone()
+    } else {
+        now.clone()
+    };
+    set_values(base, scope, key, &now, &[want.to_string()])?;
+    *written = want.to_string();
+    *before = backup;
+    Ok(true)
+}
+
+/// 只在配置里还是 Board 写的值时恢复原值；用户后来自己改过就保留用户的。
+fn restore_identity_value(base: &Path, scope: Scope<'_>, key: &str, written: &mut String, before: &mut Vec<String>) -> Result<bool, String> {
+    if written.is_empty() {
+        return Ok(false);
+    }
+    let now = values(base, scope, key);
+    let changed = if same_value(&now, written) { set_values(base, scope, key, &now, before)? } else { false };
+    written.clear();
+    before.clear();
+    Ok(changed)
+}
+
+/// 同步（或恢复）用户级 git 配置里的提交身份
+fn configure_identity(base: &Path, scope: Scope<'_>, rec: &mut Record, name: &str, email: &str) -> Result<bool, String> {
+    if name.is_empty() || email.is_empty() {
+        let name_changed = restore_identity_value(base, scope, "user.name", &mut rec.commit_name, &mut rec.name_before)?;
+        let email_changed = restore_identity_value(base, scope, "user.email", &mut rec.commit_email, &mut rec.email_before)?;
+        return Ok(name_changed || email_changed);
+    }
+    let name_changed = apply_identity(base, scope, "user.name", name, &mut rec.commit_name, &mut rec.name_before)?;
+    let email_changed = apply_identity(base, scope, "user.email", email, &mut rec.commit_email, &mut rec.email_before)?;
+    Ok(name_changed || email_changed)
+}
+
 /// 从用户级（或测试用的本地配置、文件）里去掉 Board 写的（用户自己写的留着）；仓库不在了就算了
 fn unconfigure(base: &Path, scope: Scope<'_>, host: &str) -> Result<bool, String> {
     if host.is_empty() || matches!(scope, Scope::Local) && !base.is_dir() {
@@ -190,7 +248,7 @@ pub struct Out {
     pub changes: Vec<String>,
 }
 
-/// 去掉 Board 写在用户级配置里的那一项、旧版按仓库配过的项（记录里和这一次的仓库），再删掉令牌文件
+/// 去掉 Board 写在用户级配置里的那一项、旧版按仓库配过的项（记录里和这一次的仓库），恢复 Board 写过的提交身份，再删掉令牌文件
 fn clean(dir: &Path, scope: Scope<'_>, rec: &Record, repos: &[PathBuf], changes: &mut Vec<String>) {
     if let Ok(true) = unconfigure(dir, scope, &rec.host) {
         changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{}）", rec.host));
@@ -208,7 +266,17 @@ fn clean(dir: &Path, scope: Scope<'_>, rec: &Record, repos: &[PathBuf], changes:
         let _ = std::fs::remove_file(dir.join(FILE));
         changes.push("Git 凭据：删掉了本机的令牌文件".into());
     }
-    save(dir, &Record::default());
+    let mut left = rec.clone();
+    left.host.clear();
+    left.repos.clear();
+    match configure_identity(dir, scope, &mut left, "", "") {
+        Ok(true) => changes.push("Git 提交身份：恢复了用户级 git 配置里原来的 user.name / user.email".into()),
+        Ok(false) => {}
+        Err(e) => {
+            changes.push(format!("Git 提交身份：没恢复原来的 user.name / user.email：{e}"));
+        }
+    }
+    save(dir, &left);
 }
 
 /// 同步：`on` 是机器上选了「用服务器的」，`cred` 是服务端的（没设时 None），`repos` 是 Board 管的仓库（只用来清旧版按仓库配的项），
@@ -220,7 +288,7 @@ pub fn sync(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path) -> 
 /// 同 [`sync`]，配置写在哪由 `scope` 决定（测试用单独的文件）
 fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scope: Scope<'_>) -> Out {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rec = load(dir);
+    let mut rec = load(dir);
     let mut changes = vec![];
     let token = cred.and_then(|c| c.token.as_deref()).map(str::trim).filter(|t| !t.is_empty());
     let (Some(c), Some(token), true) = (cred, token, on) else {
@@ -253,15 +321,34 @@ fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scop
             changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项", shown(r)));
         }
     }
-    let (state, why) = match configure(dir, scope, &c.host, &file) {
+    let mut errors = vec![];
+    match configure(dir, scope, &c.host, &file) {
         Ok(true) => {
             changes.push(format!("Git 凭据：写进了用户级 git 配置（{}）", c.host));
-            ("synced".to_string(), None)
         }
-        Ok(false) => ("synced".to_string(), None),
-        Err(e) => ("failed".to_string(), Some(format!("git 配置没写进去：{e}"))),
+        Ok(false) => {}
+        Err(e) => errors.push(format!("git 配置没写进去：{e}")),
+    }
+    let mut configured = false;
+    match configure_identity(dir, scope, &mut rec, &c.commit_name, &c.commit_email) {
+        Ok(changed) => configured |= changed,
+        Err(e) => errors.push(format!("Git 提交身份没写进去：{e}")),
+    }
+    if configured {
+        if c.commit_name.is_empty() {
+            changes.push("Git 提交身份：恢复了用户级 git 配置里原来的 user.name / user.email".into());
+        } else {
+            changes.push(format!("Git 提交身份：写进了用户级 git 配置（{} <{}>）", c.commit_name, c.commit_email));
+        }
+    }
+    rec.host = c.host.clone();
+    rec.repos.clear();
+    save(dir, &rec);
+    let (state, why) = if errors.is_empty() {
+        ("synced".to_string(), None)
+    } else {
+        ("failed".to_string(), Some(errors.join("；")))
     };
-    save(dir, &Record { host: c.host.clone(), repos: vec![] });
     let sync = GitSync {
         state,
         count: 1,
@@ -272,15 +359,20 @@ fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scop
 }
 
 /// 开始派发前、克隆完之后：在用服务端的凭据，就确认用户级配置里那一项还在（已经配好时不动）。
-/// 全局配置按主机生效，不再按仓库补配；返回写进去的那一句（打印用）
+/// 全局配置按主机生效，不再按仓库补配；只补凭据 helper，不碰提交身份（用户可能自己改过）。
+/// 返回写进去的那一句（打印用）
 pub fn ensure(_repo: &Path, dir: &Path) -> Option<String> {
+    ensure_at(dir, Scope::Global)
+}
+
+fn ensure_at(dir: &Path, scope: Scope<'_>) -> Option<String> {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let rec = load(dir);
     let file = dir.join(FILE);
     if rec.host.is_empty() || !file.exists() {
         return None;
     }
-    let changed = configure(dir, Scope::Global, &rec.host, &file).ok()?;
+    let changed = configure(dir, scope, &rec.host, &file).ok()?;
     changed.then(|| format!("Git 凭据：写进了用户级 git 配置（{}）", rec.host))
 }
 
@@ -317,6 +409,10 @@ mod tests {
 
     fn cred(host: &str, token: &str) -> GitCred {
         GitCred { host: host.into(), username: "octo cat".into(), token: Some(token.into()), ..Default::default() }
+    }
+
+    fn ident(host: &str, token: &str, name: &str, email: &str) -> GitCred {
+        GitCred { commit_name: name.into(), commit_email: email.into(), ..cred(host, token) }
     }
 
     /// 测试用的用户级配置文件（不碰跑测试的人自己的 `~/.gitconfig`）
@@ -381,19 +477,24 @@ mod tests {
         // 用户自己为同一主机写的 helper 留着，排在前面
         let mine = "store --file '/tmp/board-test-user-credentials'";
         cfg_git(&cfg, &["--add", k, mine]);
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        cfg_git(&cfg, &["--add", "user.email", "alice@example.com"]);
         // 旧版按仓库配过的：记录里有，这次同步要去掉
         let old = helper(&host_dir.join(FILE));
         for v in ["", old.as_str()] {
             git(&gh, &["config", "--local", "--add", k, v]);
         }
-        std::fs::write(host_dir.join(RECORD), serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&gh)] }).unwrap()).unwrap();
+        std::fs::write(host_dir.join(RECORD), serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&gh)], ..Default::default() }).unwrap()).unwrap();
 
-        let out = sync_at(true, Some(&cred("github.com", "tok/en")), &repos, &host_dir, Scope::File(&cfg));
+        let c = ident("github.com", "tok/en", "BUGLAN", "1831353087@qq.com");
+        let out = sync_at(true, Some(&c), &repos, &host_dir, Scope::File(&cfg));
         assert_eq!(out.sync.state, "synced", "{:?}", out.sync.why);
         assert_eq!(out.sync.detail.host, "github.com");
         assert_eq!(out.sync.detail.repos, Vec::<String>::new(), "不再按仓库报数量");
         assert_eq!(out.sync.count, 1);
         assert_eq!(cfg_values(&cfg, k), vec![String::new(), mine.to_string(), helper(&host_dir.join(FILE))]);
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["1831353087@qq.com"]);
         assert!(values(&gh, Scope::Local, k).is_empty(), "旧版按仓库配的已经去掉");
         assert!(values(&ssh, Scope::Local, k).is_empty() && values(&lab, Scope::Local, k).is_empty());
         let text = std::fs::read_to_string(host_dir.join(FILE)).unwrap();
@@ -415,7 +516,7 @@ mod tests {
         assert!(fill(&lab2, &cfg, "gitlab.com").is_none(), "别的 https 主机不配");
 
         // 再同步一次：没有变化
-        let again = sync_at(true, Some(&cred("github.com", "tok/en")), &repos[..1], &host_dir, Scope::File(&cfg));
+        let again = sync_at(true, Some(&c), &repos[..1], &host_dir, Scope::File(&cfg));
         assert_eq!(again.sync.state, "synced");
         assert!(again.changes.is_empty(), "{:?}", again.changes);
 
@@ -423,13 +524,77 @@ mod tests {
         assert_eq!(clone_args("https://github.com/me/new.git", &host_dir).len(), 4);
         assert!(clone_args("https://gitlab.com/me/new.git", &host_dir).is_empty());
 
-        // 关掉：去掉 Board 写的、用户自己的留着，令牌文件删掉，旧记录也清掉
-        let off = sync_at(false, Some(&cred("github.com", "tok/en")), &repos[..1], &host_dir, Scope::File(&cfg));
+        // 用户后来自己改了用户名：关掉时只恢复邮箱，用户名保留用户改的
+        cfg_git(&cfg, &["user.name", "alice-local"]);
+        // 关掉：去掉 Board 写的、用户自己的留着，提交身份只恢复还是 Board 写的项，令牌文件删掉，旧记录也清掉
+        let off = sync_at(false, Some(&c), &repos[..1], &host_dir, Scope::File(&cfg));
         assert_eq!(off.sync.state, "off");
         assert_eq!(cfg_values(&cfg, k), vec![mine.to_string()]);
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice-local"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
         assert!(!host_dir.join(FILE).exists() && !host_dir.join(RECORD).exists());
         assert!(clone_args("https://github.com/me/new.git", &host_dir).is_empty());
         assert!(fill(&later, &cfg, "github.com").is_none(), "关掉后新仓库也用不到了");
+    }
+
+    #[test]
+    fn empty_commit_identity_keeps_existing_global_identity() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        cfg_git(&cfg, &["--add", "user.email", "alice@example.com"]);
+
+        let on = sync_at(true, Some(&cred("github.com", "tok")), &[], &host_dir, Scope::File(&cfg));
+        assert_eq!(on.sync.state, "synced");
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
+        sync_at(false, Some(&cred("github.com", "tok")), &[], &host_dir, Scope::File(&cfg));
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
+    }
+
+    #[test]
+    fn commit_identity_is_cleared_or_restored_when_sync_turns_off() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        let c = ident("github.com", "tok", "BUGLAN", "1831353087@qq.com");
+
+        sync_at(true, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["1831353087@qq.com"]);
+        sync_at(false, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        assert!(cfg_values(&cfg, "user.name").is_empty() && cfg_values(&cfg, "user.email").is_empty(), "原来没有就清掉");
+
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        sync_at(true, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        sync_at(false, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"], "用户原来的名字恢复");
+        assert!(cfg_values(&cfg, "user.email").is_empty());
+    }
+
+    #[test]
+    fn ensure_only_restores_helper_and_keeps_user_changed_identity() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        let k = "credential.https://github.com.helper";
+        let c = ident("github.com", "tok", "BUGLAN", "1831353087@qq.com");
+        sync_at(true, Some(&c), &[], &host_dir, Scope::File(&cfg));
+
+        cfg_git(&cfg, &["--unset-all", k]);
+        cfg_git(&cfg, &["user.name", "alice"]);
+        cfg_git(&cfg, &["user.email", "alice@example.com"]);
+        assert_eq!(ensure_at(&host_dir, Scope::File(&cfg)).as_deref(), Some("Git 凭据：写进了用户级 git 配置（github.com）"));
+        assert_eq!(cfg_values(&cfg, k), vec![String::new(), helper(&host_dir.join(FILE))]);
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"], "派发前不覆盖用户改过的提交身份");
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
+        assert!(ensure_at(&host_dir, Scope::File(&cfg)).is_none(), "配好之后不再重复写");
     }
 
     #[test]

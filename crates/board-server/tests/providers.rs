@@ -132,19 +132,22 @@ fn git_credential_is_masked_and_only_the_host_token_reads_it() {
     let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &headers, None);
     assert_eq!((r.status, &r.body["cred"]), (200, &Value::Null), "{}", r.text);
 
-    let r = send("POST", &format!("{}/api/git", s.url), &[UI], Some(json!({ "host": "https://GitHub.com/", "username": "buglan", "token": "ghp_secret1234" })));
+    let r = send("POST", &format!("{}/api/git", s.url), &[UI], Some(json!({ "host": "https://GitHub.com/", "username": "buglan", "token": "ghp_secret1234", "commitName": "BUGLAN", "commitEmail": "1831353087@qq.com" })));
     assert_eq!(r.status, 200, "{}", r.text);
     assert_eq!((r.body["host"].as_str(), r.body["tail"].as_str()), (Some("github.com"), Some("1234")));
+    assert_eq!((r.body["commitName"].as_str(), r.body["commitEmail"].as_str()), (Some("BUGLAN"), Some("1831353087@qq.com")));
     assert!(!r.text.contains("ghp_secret"), "{}", r.text);
     // 界面、访问令牌读列表：打码
     for h in [&[UI][..], &headers[..]] {
         let r = send("GET", &format!("{}/api/git", s.url), h, None);
         assert_eq!(r.body["cred"]["tail"], json!("1234"), "{}", r.text);
+        assert_eq!((r.body["cred"]["commitName"].as_str(), r.body["cred"]["commitEmail"].as_str()), (Some("BUGLAN"), Some("1831353087@qq.com")));
         assert!(!r.text.contains("ghp_secret"), "{}", r.text);
     }
     // 这台机器的令牌拿到原文；界面、别的令牌不行
     let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &headers, None);
     assert_eq!(r.body["cred"]["token"], json!("ghp_secret1234"), "{}", r.text);
+    assert_eq!((r.body["cred"]["commitName"].as_str(), r.body["cred"]["commitEmail"].as_str()), (Some("BUGLAN"), Some("1831353087@qq.com")));
     let other_bearer = format!("Bearer {other}");
     let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &[("authorization", other_bearer.as_str())], None);
     assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
@@ -155,6 +158,10 @@ fn git_credential_is_masked_and_only_the_host_token_reads_it() {
     assert_eq!(r.code(), "NOT_LOGGED_IN", "{}", r.text);
     let r = send("DELETE", &format!("{}/api/git", s.url), &headers, None);
     assert_eq!(r.code(), "NOT_LOGGED_IN", "{}", r.text);
+    // 提交用户名、邮箱只填一个：界面和服务端都拒绝
+    let r = send("POST", &format!("{}/api/git", s.url), &[UI], Some(json!({ "host": "github.com", "username": "buglan", "token": "ghp_secret1234", "commitName": "BUGLAN" })));
+    assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
+    assert!(r.body["error"]["message"].as_str().is_some_and(|m| m.contains("一起填")), "{}", r.text);
     // 界面上删掉
     let r = send("DELETE", &format!("{}/api/git", s.url), &[UI], None);
     assert_eq!(r.status, 200, "{}", r.text);

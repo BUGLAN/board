@@ -1,7 +1,8 @@
 //! Git 凭据共用配置（PRD §10.16「共用配置」）：服务端存一份 https 远端的令牌，各台机器的 board host 按设置
 //! 配进 Board 管的仓库，board host 备代码、agent 推集成分支时直接用。
 //!
-//! - 一份：主机（`github.com` 这样的主机名，可以带端口）、用户名、令牌。只管 https 远端；SSH 地址（`git@…`）不管。
+//! - 一份：主机（`github.com` 这样的主机名，可以带端口）、用户名、令牌，以及可选的提交身份（`user.name` / `user.email`）。
+//!   只管 https 远端；SSH 地址（`git@…`）不管。
 //! - 令牌只存在服务端：列表接口只给末尾 4 位（[`GitCred::masked`]），完整的值只经 board host 的令牌接口
 //!   （`GET /api/hosts/{名字}/git`，只给这台机器上报时用的令牌）下发。
 //! - 版本号是全部内容（含令牌）的哈希前 12 位：令牌改了也会重新同步，哈希不泄露原文。
@@ -40,6 +41,12 @@ pub struct GitCred {
     /// 令牌的末尾 4 位（只在列表接口里有）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail: Option<String>,
+    /// 提交作者的用户名（用户级 git 配置的 `user.name`）；和提交邮箱都填或都空
+    #[serde(default)]
+    pub commit_name: String,
+    /// 提交作者的邮箱（用户级 git 配置的 `user.email`）；和提交用户名都填或都空
+    #[serde(default)]
+    pub commit_email: String,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -98,7 +105,13 @@ impl GitCred {
 
     /// 内容的版本号（含令牌原文，不含版本号和元数据本身）
     pub fn content_version(&self) -> String {
-        let body = serde_json::json!({ "host": self.host, "username": self.username, "token": self.token });
+        let body = serde_json::json!({
+            "host": self.host,
+            "username": self.username,
+            "token": self.token,
+            "commitName": self.commit_name,
+            "commitEmail": self.commit_email,
+        });
         Sha256::digest(body.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect()
     }
 
@@ -124,6 +137,18 @@ impl GitCred {
         }
         if token.chars().any(|c| c.is_whitespace() || c.is_control()) {
             return Err(BoardError::usage("令牌里不能有空格、换行"));
+        }
+        if self.commit_name.is_empty() != self.commit_email.is_empty() {
+            return Err(BoardError::usage("提交用户名和提交邮箱要一起填，或都留空"));
+        }
+        if self.commit_name.chars().any(|c| c.is_control()) {
+            return Err(BoardError::usage("提交用户名里不能有换行"));
+        }
+        if !self.commit_email.is_empty() {
+            let (name, domain) = self.commit_email.split_once('@').unwrap_or_default();
+            if name.is_empty() || domain.is_empty() || domain.contains('@') || self.commit_email.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err(BoardError::usage("提交邮箱要填邮箱地址，例如 name@example.com"));
+            }
         }
         Ok(())
     }
@@ -157,6 +182,8 @@ impl W<'_> {
         c.host = normalize_host(&c.host);
         c.username = c.username.trim().to_string();
         c.token = c.token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        c.commit_name = c.commit_name.trim().to_string();
+        c.commit_email = c.commit_email.trim().to_string();
         c.tail = None;
         let old = self.read().git_cred()?;
         if c.token.is_none() {

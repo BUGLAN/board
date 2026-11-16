@@ -1,11 +1,11 @@
 /* ==========================================================================
    「共用配置」的 Git 凭据一节（PRD §10.16「共用配置」）：服务端存一份 https 远端的令牌，
    机器选了「用服务器的」，board host 把它写进用户级 git 配置（按凭据的主机全局生效），备代码、agent 推集成分支直接用
-   - 没设时一句话 +「设置」；设了一张卡：主机、令牌末尾 4 位、谁什么时候改的、修改、删除；用户名、远端
+   - 没设时一句话 +「设置」；设了一张卡：主机、令牌末尾 4 位、谁什么时候改的、修改、删除；用户名、提交用户名、提交邮箱、远端
    - 卡片底下「机器」：一台一行——系统图标、机器名（点了打开那台机器）、状态（已同步 · 令牌已就绪，按主机全局生效 / 同步失败：原因 / 不同步）、
      「同步 | 不同步」开关。开关就是机器详情「设置」里那一项（机器设置，当帧生效、旁边转圈）；新连上的机器默认不同步，
      需要的话在这里打开
-   - 设置、修改在居中弹窗里（和供应商、MCP 同一种表单）；修改时令牌留空保留原来的
+   - 设置、修改在居中弹窗里（和供应商、MCP 同一种表单）；修改时令牌留空保留原来的；提交用户名、邮箱可选但必须成对填写
    - 增、改、删要等服务端（按钮转圈、禁用直到返回），删掉时确认并列出要去掉凭据的机器
    ========================================================================== */
 import { useState } from 'react';
@@ -41,10 +41,10 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
     setBusy('save');
     try {
       const d = edit.d;
-      const out = await optimistic(null, () => api.putGit({ host: normGitHost(d.host), username: d.username.trim(), token: d.token.trim() }));
+      const out = await optimistic(null, () => api.putGit({ host: normGitHost(d.host), username: d.username.trim(), token: d.token.trim(), commitName: d.commitName.trim(), commitEmail: d.commitEmail.trim() }));
       setEdit(null);
       await load();
-      toast({ type: 'success', title: `已保存 ${out.host} 的 Git 凭据`, text: '用服务器的机器马上写进用户级 git 配置，按主机全局生效', duration: 2200 });
+      toast({ type: 'success', title: `已保存 ${out.host} 的 Git 凭据`, text: '用服务器的机器马上写进用户级 git 配置，令牌和提交身份都按全局生效', duration: 2200 });
     } catch (e) {
       toastError(e);
     } finally {
@@ -57,7 +57,7 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
     const ok = await confirm({
       title: `删掉 ${cred.host} 的 Git 凭据？`,
       text: users.length
-        ? `${users.join('、')} 用着它：board host 会从用户级 git 配置里去掉它、删掉本机的令牌文件，之后用各自本机的 git 凭据推送。`
+        ? `${users.join('、')} 用着它：board host 会从用户级 git 配置里去掉它、恢复 Board 写过的提交身份、删掉本机的令牌文件，之后用各自本机的 Git 配置推送。`
         : '没有机器用着它。',
       ok: '删掉',
       icon: 'trash',
@@ -83,7 +83,7 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
           <h2>Git 凭据</h2>
           <p>
             设一份 https 远端的令牌，board host 把它写进各台机器的用户级 git 配置：之后新建、克隆的仓库只要远端是同一个 https 主机就能直接用，拉代码、agent 推集成分支不用每台机器手动配。新连上的机器默认不同步，需要的话在卡片上逐台打开。{' '}
-            <HowTip tip="只改用户级 git 配置里的 credential.https://<主机>.helper 一项（新克隆的仓库自动生效），不碰别的主机、别的 helper，也不整份覆盖 ~/.gitconfig；令牌放在 ~/.board/host/board-git-credentials，只有本人能读，不进日志和上报。一台机器关掉同步、或这里删掉后，这一项会去掉。SSH 地址（git@…）的仓库不管，照旧用本机的 key。" />
+            <HowTip tip="只改用户级 git 配置里的 credential.https://<主机>.helper，以及填了提交身份时的 user.name / user.email（新克隆的仓库自动生效），不碰别的主机、别的 helper，也不整份覆盖 ~/.gitconfig；令牌放在 ~/.board/host/board-git-credentials，只有本人能读，不进日志和上报。一台机器关掉同步、或这里删掉后，Board 写的项会去掉；提交身份只恢复 Board 覆盖前的值，用户后来自己改的保留。SSH 地址（git@…）的仓库不管，照旧用本机的 key。" />
           </p>
         </div>
         {!cred && view && (
@@ -97,7 +97,7 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
       </div>
       {err && <p className="hp-note lh-warn">取不到 Git 凭据：{err}</p>}
       {!view && !err && <p className="hp-note">正在读取…</p>}
-      {view && !cred && <p className="hp-note">还没有：点「设置」，填主机、用户名和令牌</p>}
+      {view && !cred && <p className="hp-note">还没有：点「设置」，填主机、用户名、令牌和可选的提交身份</p>}
       {cred && <GitCard cred={cred} hosts={hosts} now={now} busy={busy} editing={!!edit} onEdit={() => setEdit({ d: gitDraftOf(cred), editing: true })} onRemove={() => void remove()} />}
       {edit && <GitForm value={edit.d} editing={edit.editing} tail={cred?.tail ?? null} busy={busy === 'save'} onChange={d => setEdit({ ...edit, d })} onSave={() => void save()} onCancel={() => setEdit(null)} />}
       {view && <OldHostsNote hosts={old} what=" Git 凭据" />}
@@ -113,7 +113,7 @@ function GitCard({ cred, hosts, now, busy, editing, onEdit, onRemove }: { cred: 
         <b className="pv-name" title={cred.host}>{cred.host}</b>
         <span className="sc-fixed">{cred.tail ? `令牌 ••••${cred.tail}` : '没填令牌'}</span>
         <span className="pv-upd">{cred.updatedAt ? `${cred.by ? `${cred.by} ` : ''}${since(cred.updatedAt, now)}更新` : ''}</span>
-        <Tip text="修改主机、用户名、令牌">
+        <Tip text="修改主机、用户名、令牌、提交身份">
           <button className="icon-btn sm" type="button" aria-label="修改 Git 凭据" disabled={!!busy || editing} onClick={onEdit}>
             <Icon name="edit" />
           </button>
@@ -129,6 +129,18 @@ function GitCard({ cred, hosts, now, busy, editing, onEdit, onRemove }: { cred: 
           <span className="pv-k">用户名</span>
           <code>{cred.username}</code>
         </div>
+        {cred.commitName && cred.commitEmail && (
+          <>
+            <div className="pv-line">
+              <span className="pv-k">提交用户名</span>
+              <code>{cred.commitName}</code>
+            </div>
+            <div className="pv-line">
+              <span className="pv-k">提交邮箱</span>
+              <code>{cred.commitEmail}</code>
+            </div>
+          </>
+        )}
         <div className="pv-line">
           <span className="pv-k">用于</span>
           <code>https://{cred.host}/…</code>
@@ -166,7 +178,7 @@ function GitHosts({ hosts, now }: { hosts: HostInfo[]; now: number }) {
       )}
       <p className="gc-note">
         <Icon name="info" />
-        <span>新连上的机器默认不同步，需要的话在这里打开。Board 只碰同步的机器上用户级 git 配置里凭据主机的那一项，关掉后这一项会去掉。</span>
+        <span>新连上的机器默认不同步，需要的话在这里打开。Board 只碰同步的机器上用户级 git 配置里凭据主机的那一项和它写过的提交身份，关掉后恢复原值。</span>
       </p>
     </div>
   );
@@ -248,6 +260,16 @@ function GitForm({
           </FormField>
           <FormField label="用户名" hint="令牌所属的账号">
             <input className="input mono" value={d.username} placeholder="octocat" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...d, username: e.target.value })} />
+          </FormField>
+        </div>
+      </FormSec>
+      <FormSec title="提交身份" hint="可选；Board 同步到用户级 git 配置的 user.name / user.email，两个都填或都空">
+        <div className="fm-fields">
+          <FormField label="提交用户名" hint="新建提交的作者名，例如 BUGLAN">
+            <input className="input mono" value={d.commitName} placeholder="BUGLAN" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...d, commitName: e.target.value })} />
+          </FormField>
+          <FormField label="提交邮箱" hint="新建提交的作者邮箱，例如 name@example.com">
+            <input className="input mono" value={d.commitEmail} placeholder="name@example.com" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...d, commitEmail: e.target.value })} />
           </FormField>
         </div>
       </FormSec>
