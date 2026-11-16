@@ -40,7 +40,7 @@ fn managed(version: &str, latest: &str, state: &str) -> HostAgent {
     }
 }
 
-/// 一台机器的上报：工作空间 `/tmp`（每块白板的目录是 `/tmp/<项目>/<白板>`），`dirs` 是它派生、检查过的白板目录。
+/// 一台机器的上报：工作空间 `/tmp`（每个项目的目录是 `/tmp/<项目>`，项目下的白板共用），`dirs` 是它派生、检查过的白板目录。
 /// 旧版 board host（只报白板与目录、没有 workspace）用 [`legacy_report`]
 fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
     HostReport {
@@ -424,6 +424,19 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
     let clone = w.host.dirs[0].clone.as_ref().unwrap();
     assert_eq!(clone.state, "failed");
     assert!(clone.message.contains("Permission denied"));
+
+    // 没配工作空间：报错写项目的目录 `<工作空间>/<项目>`，不是整个白板路径
+    let mut s3 = store();
+    let mut bare = report("bare", "i1", vec![]);
+    bare.workspace = None;
+    bare.dirs = vec![];
+    beat(&mut s3, T0, &bare).unwrap();
+    let e = s3
+        .write(T0 + S, Origin::ui(None), |w| w.host_clone_request("bare", B, "git@github.com:buglan/board.git", "buglan"))
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("default 项目的目录是 <工作空间>/default"), "{}", e.message);
+    assert!(!e.message.contains(B), "{}", e.message);
 }
 
 #[test]

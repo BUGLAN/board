@@ -4410,7 +4410,10 @@ impl<'a> W<'a> {
         }
         let ws = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
         let Some(d0) = host_board_dir(ws.as_ref(), board, &h.os) else {
-            return Err(BoardError::usage(format!("机器「{name}」没有配置工作空间：先配好工作空间，白板的目录是 <工作空间>/{board}")));
+            let project = board.split_once('/').map_or(board, |(p, _)| p);
+            return Err(BoardError::usage(format!(
+                "机器「{name}」还没有配工作空间：先在机器详情里填上，{project} 项目的目录是 <工作空间>/{project}"
+            )));
         };
         let mut dirs = derived_dirs(&h.dirs, ws.as_ref(), &h.os);
         let d = dirs
