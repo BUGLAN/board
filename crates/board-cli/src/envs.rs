@@ -428,8 +428,10 @@ pub struct Check {
     pub env: String,
     pub found: bool,
     pub version: String,
-    /// 在这个环境里执行的命令：一般就是模板里的命令名（由环境去找）；在「PATH 里没有时再看」的位置找到时是那个绝对路径
+    /// 在这个环境里执行用的命令：一般就是模板里的命令名；在「PATH 里没有时再看」的位置找到时是绝对路径
     pub prog: Option<String>,
+    /// 实际找到的命令路径：判断安装方式用（cmd 里的 `.cmd` 执行时仍要用命令名，不能用带引号的绝对路径）
+    pub path: Option<String>,
 }
 
 impl Check {
@@ -440,12 +442,12 @@ impl Check {
 
 /// 在 env 里找 cmd（命令模板的第一个元素），找到了再取版本号。also：PATH 里没有时再看的位置（只在 direct、login 里用）
 pub fn probe(env: &Env, cmd: &str, also: &[String]) -> Check {
-    let prog = locate(env, cmd, also);
-    let version = prog.as_deref().map(|p| version_in(env, p)).unwrap_or_default();
-    Check { env: env.id.clone(), found: prog.is_some(), version, prog }
+    let hit = locate(env, cmd, also);
+    let version = hit.as_ref().map(|(prog, _)| version_in(env, prog)).unwrap_or_default();
+    Check { env: env.id.clone(), found: hit.is_some(), version, prog: hit.as_ref().map(|(p, _)| p.clone()), path: hit.map(|(_, path)| path) }
 }
 
-fn locate(env: &Env, cmd: &str, also: &[String]) -> Option<String> {
+fn locate(env: &Env, cmd: &str, also: &[String]) -> Option<(String, String)> {
     let fallback = || {
         if matches!(env.kind, Kind::Direct | Kind::Login) {
             also.iter().map(|p| expand(p)).find(|p| is_exe(p)).map(|p| p.display().to_string())
@@ -456,9 +458,9 @@ fn locate(env: &Env, cmd: &str, also: &[String]) -> Option<String> {
     let p = expand(cmd);
     let has_dir = p.components().count() > 1;
     match &env.kind {
-        Kind::Direct => which(cmd).map(|p| p.display().to_string()).or_else(fallback),
+        Kind::Direct => which(cmd).map(|p| p.display().to_string()).or_else(fallback).map(|path| (path.clone(), path)),
         // 写了绝对路径的 Windows 命令：直接看文件在不在（where.exe 不认路径）
-        Kind::Cmd | Kind::PowerShell | Kind::Pwsh if has_dir => is_exe(&p).then(|| p.display().to_string()),
+        Kind::Cmd | Kind::PowerShell | Kind::Pwsh if has_dir => is_exe(&p).then(|| p.display().to_string()).map(|path| (path.clone(), path)),
         Kind::Wsl(_) if has_dir && !cmd.starts_with('/') => None,
         _ => {
             let arg = if has_dir { p.display().to_string() } else { cmd.to_string() };
@@ -476,7 +478,10 @@ fn locate(env: &Env, cmd: &str, also: &[String]) -> Option<String> {
                     .filter(|l| l.starts_with('/') && !(env.wsl().is_some() && l.starts_with("/mnt/")))
                     .map(str::to_string)
             };
-            hit.map(|_| arg).or_else(fallback)
+            match hit {
+                Some(path) => Some((arg, path)),
+                None => fallback().map(|path| (path.clone(), path)),
+            }
         }
     }
 }
@@ -890,7 +895,9 @@ mod tests {
         let sh = Env::new(Kind::Login, PathBuf::from("/bin/sh"));
         let c = probe(&sh, "sh", &[]);
         assert!(c.found, "登录 shell 里找得到 sh");
-        assert_eq!(c.prog.as_deref(), Some("sh"));
+        assert_eq!(c.prog.as_deref(), Some("sh"), "执行仍用命令名");
+        let found = c.path.expect("安装方式判断要拿到实际路径");
+        assert!(found.starts_with('/') && Path::new(&found).is_file(), "登录 shell 也要报实际路径：{found}");
         assert!(!probe(&sh, "board-no-such-agent", &[]).found);
         // PATH 里没有时再看的位置
         let c = probe(&sh, "board-no-such-agent", &["/bin/sh".into()]);

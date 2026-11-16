@@ -115,15 +115,16 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "dsh",
         name: "DeepSeek Harness",
-        package: "@deepseek-ai/dsh-headless",
+        package: "@deepseek-ai/dsh",
         tag: "next",
-        install: "npm install -g @deepseek-ai/dsh-headless@next",
+        install: "npm install -g @deepseek-ai/dsh@next",
         // 参数分两段：--profile、--patch 是 dsh 启动器的参数，必须放在应用参数前面；
         // --json、--permission-mode 和任务文本是 headless 的参数。--json 之后 dsh 启动器不再解析选项，
         // --patch 放在 --json 后面会被 headless 当成自己的参数，报 unknown option '--patch'
         cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--json", "--permission-mode", "danger-full-access", "{prompt}"],
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
+            "~/.local/bin/dsh",
             "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
             "~/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
         ],
@@ -160,7 +161,7 @@ const BUILTIN: [Builtin; 4] = [
         install: "npm install -g @mariozechner/pi-coding-agent@latest",
         // -p 只在结束时打印最终回答：--mode json 同样跑完就退出，运行中写 JSONL 事件（logfmt.rs 转写）
         cmd: &["pi", "--mode", "json", "{prompt}"],
-        also: &[],
+        also: &["~/.local/bin/pi"],
         skills: &["~/.agents/skills", "~/.pi/agent/skills"],
         project: &[".agents/skills", ".pi/skills"],
         git_bash: true,
@@ -177,7 +178,7 @@ const BUILTIN: [Builtin; 4] = [
         install: "npm install -g @openai/codex@latest",
         // exec --json：运行中把事件（命令、改文件、说的话、每一轮的用量）写成 JSONL（docs/exec.md）
         cmd: &["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
-        also: &[],
+        also: &["~/.local/bin/codex"],
         skills: &["$CODEX_HOME/skills"],
         project: &[".agents/skills"],
         git_bash: false,
@@ -380,14 +381,113 @@ fn agent_args(cmd: &[String], prompt: &str, patch: &str) -> Vec<String> {
     cmd.iter().skip(1).map(|a| a.replace("{prompt}", prompt).replace("{patch}", patch)).collect()
 }
 
-/// 命令的实际路径（解析软链接），统一成 `/` 分隔、小写，用来判断安装方式
-fn real_path(prog: Option<&str>) -> String {
+/// 命令的实际路径（解析软链接），统一成 `/` 分隔；保留大小写，执行命令时用
+fn resolved_path(prog: Option<&str>) -> String {
     let Some(p) = prog.map(expand) else { return String::new() };
-    p.canonicalize()
-        .unwrap_or(p)
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase()
+    p.canonicalize().unwrap_or(p).to_string_lossy().replace('\\', "/")
+}
+
+/// 命令的实际路径统一成小写，用来判断安装方式（macOS、Windows 的路径不区分大小写）
+fn real_path(prog: Option<&str>) -> String {
+    resolved_path(prog).to_ascii_lowercase()
+}
+
+/// npm 全局安装的 prefix：Unix 在 `<prefix>/lib/node_modules`，Windows 在 `<prefix>/node_modules`
+fn npm_global_prefix(path: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    ["/lib/node_modules/", "/node_modules/"].iter().find_map(|marker| {
+        let prefix = path.split_once(marker)?.0;
+        (!prefix.is_empty()).then(|| prefix.to_string())
+    })
+}
+
+/// 没安装时界面上的命令。Unix 不往 `/usr/local` 这类需要管理员的目录写，装进用户目录；
+/// board host 也会在 `~/.local/bin` 找命令，所以复制这条命令单独执行也能用
+fn install_command(b: &Builtin) -> String {
+    #[cfg(unix)]
+    if let Some(rest) = b.install.strip_prefix("npm install -g ") {
+        return format!("npm install -g --prefix ~/.local {rest}");
+    }
+    b.install.to_string()
+}
+
+/// board host 实际执行的安装命令：Unix 上 npm 装到 `~/.local`，不需要 sudo
+fn install_plan(b: &Builtin) -> std::result::Result<(String, Vec<String>), String> {
+    let mut it = b.install.split_whitespace();
+    let program = it.next().ok_or_else(|| "没有安装命令".to_string())?;
+    let mut args: Vec<String> = it.map(str::to_string).collect();
+    #[cfg(unix)]
+    if program == "npm" {
+        if let Some(i) = args.iter().position(|a| a == "-g") {
+            args.splice(i + 1..i + 1, ["--prefix".to_string(), expand("~/.local").display().to_string()]);
+        }
+    }
+    Ok((program.to_string(), args))
+}
+
+/// npm 更新参数：沿实际安装的 prefix 更新，不能改用 npm 当前的全局配置（两者可能不一样）
+fn npm_update_args(prefix: Option<&str>, package: &str, target: &str) -> Vec<String> {
+    let mut args = vec!["install".to_string(), "-g".to_string()];
+    if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
+        args.push("--prefix".to_string());
+        args.push(prefix.to_string());
+    }
+    args.push(format!("{package}@{}", if target.is_empty() { "latest" } else { target }));
+    args
+}
+
+/// Unix 上 npm 要求 prefix 下面的 `lib` 已经存在；用户目录第一次安装时先建好
+#[cfg(unix)]
+fn prepare_npm_install(program: &str, args: &[String]) -> std::result::Result<(), String> {
+    if program != "npm" {
+        return Ok(());
+    }
+    let Some(i) = args.iter().position(|a| a == "--prefix") else { return Ok(()) };
+    let Some(prefix) = args.get(i + 1) else { return Err("npm 安装参数里缺 --prefix 的目录".into()) };
+    std::fs::create_dir_all(Path::new(prefix).join("lib")).map_err(|e| format!("没法创建 npm 用户目录 {prefix}/lib：{e}"))
+}
+
+#[cfg(not(unix))]
+fn prepare_npm_install(_program: &str, _args: &[String]) -> std::result::Result<(), String> {
+    Ok(())
+}
+
+/// 当前用户能不能写 npm 的全局目录；目录还不存在时看最近一个已有的上级目录
+#[cfg(unix)]
+fn writable_dir(path: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut path = path.to_path_buf();
+    while !path.exists() {
+        if !path.pop() {
+            return false;
+        }
+    }
+    if !path.is_dir() {
+        return false;
+    }
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else { return false };
+    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+}
+
+/// 安装/更新子进程失败时，优先说清真正的原因；npm 最后一行通常只是日志路径
+fn agent_job_error(code: i32, tail: &[String]) -> String {
+    if let Some(eacces) = tail.iter().rev().find(|line| line.contains("EACCES") || line.to_ascii_lowercase().contains("permission denied")) {
+        return format!("退出码 {code}：没有权限写 npm 全局目录（{eacces}）；请改用用户目录安装，或在有权限的终端里手动升级");
+    }
+    let detail = tail
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| {
+            !line.is_empty()
+                && !line.starts_with("A complete log of this run can be found in:")
+                && !line.starts_with("The operation was rejected by your operating system")
+                && !line.contains("npm/_logs/")
+        })
+        .unwrap_or("没有输出");
+    format!("退出码 {code}：{detail}")
 }
 
 fn brew_formula(path: &str) -> Option<String> {
@@ -427,18 +527,18 @@ impl Spec {
         let Some(c) = check else {
             m.method = "missing".into();
             m.method_label = "没安装".into();
-            m.install_command = b.install.into();
+            m.install_command = install_command(b);
             m.installable = true;
             return m;
         };
         if !c.found {
             m.method = "missing".into();
             m.method_label = "没安装".into();
-            m.install_command = b.install.into();
+            m.install_command = install_command(b);
             m.installable = true;
             return m;
         }
-        let path = real_path(c.prog.as_deref());
+        let path = real_path(c.path.as_deref().or(c.prog.as_deref()));
         m.update_available = !self.latest.is_empty() && manage_older(&c.version, &self.latest);
         if path.contains(".app/contents/") {
             m.method = "app".into();
@@ -2150,7 +2250,10 @@ impl Host<'_> {
         let install = ask.kind == "agent-install";
         let target = ask.to.clone().unwrap_or_default();
         let name = self.agents[i].name.clone();
-        let plan = self.agent_command(&self.agents[i], &target, install);
+        let plan = self.agent_command(&self.agents[i], &target, install).and_then(|(env, program, args)| {
+            prepare_npm_install(&program, &args)?;
+            Ok((env, program, args))
+        });
         let (env, program, args) = match plan {
             Ok(x) => x,
             Err(why) => {
@@ -2228,15 +2331,28 @@ impl Host<'_> {
             return Err("配置文件覆盖了这个 agent 的启动命令：不代装、不代升".into());
         }
         if install {
-            let mut it = b.install.split_whitespace();
-            let prog = it.next().ok_or_else(|| "没有安装命令".to_string())?;
-            return Ok((env, prog.to_string(), it.map(str::to_string).collect()));
+            let (program, args) = install_plan(b)?;
+            return Ok((env, program, args));
         }
         let m = spec.manage_for(check);
         match m.method.as_str() {
-            "npm-global" => Ok((env, "npm".into(), vec!["install".into(), "-g".into(), format!("{}@{}", b.package, if target.is_empty() { "latest" } else { target })])),
+            "npm-global" => {
+                let path = resolved_path(check.and_then(|c| c.path.as_deref().or(c.prog.as_deref())));
+                let prefix = npm_global_prefix(&path);
+                #[cfg(unix)]
+                if let Some(prefix) = prefix.as_deref() {
+                    if !writable_dir(&Path::new(prefix).join("lib").join("node_modules")) {
+                        let target = if target.is_empty() { "latest" } else { target };
+                        return Err(format!(
+                            "npm 全局目录 {prefix} 当前用户不可写：请在终端用管理员权限升级，或重装到用户目录（npm install -g --prefix ~/.local {}@{target}）",
+                            b.package
+                        ));
+                    }
+                }
+                Ok((env, "npm".into(), npm_update_args(prefix.as_deref(), b.package, target)))
+            }
             "brew" => {
-                let path = real_path(check.and_then(|c| c.prog.as_deref()));
+                let path = real_path(check.and_then(|c| c.path.as_deref().or(c.prog.as_deref())));
                 let formula = brew_formula(&path).ok_or_else(|| "看不出 Homebrew 的 formula 名".to_string())?;
                 Ok((env, "brew".into(), vec!["upgrade".into(), formula]))
             }
@@ -2333,11 +2449,11 @@ impl Host<'_> {
         }
         let job = self.agent_job.take().expect("上面取过");
         let mut job = job;
-        let tail = tail_lines(&job.log, 5, None);
+        let tail = tail_lines(&job.log, 20, None);
         let detail = tail.last().cloned().unwrap_or_default();
         let out = match status {
             Some(s) if s.success() => Ok(()),
-            Some(s) => Err(format!("退出码 {}：{}", s.code().unwrap_or(-1), detail)),
+            Some(s) => Err(agent_job_error(s.code().unwrap_or(-1), &tail)),
             None => {
                 kill_tree(job.child.id(), true);
                 let _ = job.child.kill();
@@ -4577,6 +4693,8 @@ mod tests {
         }
         // dsh 的一次性派发要带禁用 goal 的 profile 补丁；其他 agent 不带
         let dsh = BUILTIN.iter().find(|b| b.id == "dsh").unwrap();
+        assert_eq!(dsh.package, "@deepseek-ai/dsh", "装带 dsh 可执行文件的 CLI 包，不是没有 bin 的 headless 运行库");
+        assert!(dsh.also.contains(&"~/.local/bin/dsh"), "装进用户目录后即使 PATH 还没刷新也找得到");
         assert_eq!(dsh.cmd.iter().filter(|a| a.contains("{patch}")).count(), 1, "dsh 的模板里要有一个 {{patch}}");
         let patch_at = dsh.cmd.iter().position(|a| *a == "--patch").expect("dsh 的模板里要有 --patch");
         let json_at = dsh.cmd.iter().position(|a| *a == "--json").expect("dsh 的模板里要有 --json");
@@ -4697,7 +4815,7 @@ mod tests {
             skills: vec!["/board-test-no-such-skills".into()],
             project: vec![".agents/skills".into(), ".pi/skills".into()],
             git_bash: true,
-            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
+            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()), path: Some("pi".into()) }],
             no_skill: BTreeMap::new(),
             builtin: None,
             managed: false,
@@ -4738,7 +4856,7 @@ mod tests {
         assert!(!older_than("", "0.2.2") && !older_than("unknown", "0.2.2"), "看不出版本时当作够新");
         let specs = agent_specs(&[], &[]).unwrap();
         let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
-        let check = |v: &str| Check { env: "direct".into(), found: true, version: v.into(), prog: Some("dsh".into()) };
+        let check = |v: &str| Check { env: "direct".into(), found: true, version: v.into(), prog: Some("dsh".into()), path: Some("dsh".into()) };
         assert!(dsh.cmd_for(&check("0.2.2-rc.1")).contains(&"--json".to_string()));
         let old = dsh.cmd_for(&check("0.2.0"));
         assert!(!old.contains(&"--json".to_string()), "{old:?}");
@@ -4767,13 +4885,61 @@ mod tests {
         assert!(npm_latest("not json").unwrap_err().contains("JSON"));
     }
 
+    /// npm 全局安装的 prefix 要从实际路径反推；更新必须沿这个目录，不能改用 npm 现在的全局配置
+    #[test]
+    fn npm_global_prefix_and_update_args_follow_the_installed_copy() {
+        assert_eq!(npm_global_prefix("/usr/local/node-v22/lib/node_modules/@openai/codex/bin/codex.js").as_deref(), Some("/usr/local/node-v22"));
+        assert_eq!(npm_global_prefix("/Users/me/.local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js").as_deref(), Some("/Users/me/.local"));
+        assert_eq!(
+            npm_global_prefix(r"C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js").as_deref(),
+            Some("C:/Users/me/AppData/Roaming/npm")
+        );
+        assert_eq!(
+            npm_update_args(Some("/Users/me/.local"), "@openai/codex", "0.169.0"),
+            ["install", "-g", "--prefix", "/Users/me/.local", "@openai/codex@0.169.0"]
+        );
+        assert_eq!(npm_update_args(None, "@openai/codex", ""), ["install", "-g", "@openai/codex@latest"]);
+    }
+
+    /// Unix 上缺少的 agent 装进用户目录，不需要管理员权限；界面上的复制命令和实际执行一致
+    #[cfg(unix)]
+    #[test]
+    fn agent_install_uses_the_user_npm_prefix_on_unix() {
+        let b = BUILTIN.iter().find(|b| b.id == "dsh").unwrap();
+        let (program, args) = install_plan(b).unwrap();
+        assert_eq!(program, "npm");
+        let prefix = expand("~/.local").display().to_string();
+        assert!(args.windows(2).any(|w| w == ["--prefix", prefix.as_str()]), "{args:?}");
+        assert!(install_command(b).contains("npm install -g --prefix ~/.local @deepseek-ai/dsh@next"));
+
+        // npm 在 Unix 上要求 prefix/lib 先存在：第一次装进 ~/.local 时由 board host 建好
+        let dir = tempfile::tempdir().unwrap();
+        let args = vec!["install".into(), "-g".into(), "--prefix".into(), dir.path().display().to_string()];
+        prepare_npm_install("npm", &args).unwrap();
+        assert!(dir.path().join("lib").is_dir());
+    }
+
+    /// npm 权限失败时不要把最后一行的日志路径当成原因：说清 EACCES 和怎么办
+    #[test]
+    fn agent_job_error_explains_permission_failures() {
+        let tail = vec![
+            "npm error code EACCES".into(),
+            "npm error path /usr/local/node-v22/lib/node_modules/@deepseek-ai".into(),
+            "npm error The operation was rejected by your operating system.".into(),
+            "npm error A complete log of this run can be found in: /Users/me/.npm/_logs/debug-0.log".into(),
+        ];
+        let why = agent_job_error(243, &tail);
+        assert!(why.contains("没有权限写 npm 全局目录") && why.contains("EACCES"), "{why}");
+        assert!(!why.contains("npm/_logs/"), "日志路径不是原因：{why}");
+    }
+
     /// 安装方式按命令实际路径判断：npm 全局 / Homebrew / 官方脚本 / 桌面 app / 配置覆盖 / WSL
     #[test]
     fn agent_install_methods_are_detected_from_the_real_command() {
         let mut spec = managed_spec("claude", BUILTIN.iter().find(|b| b.id == "claude").unwrap());
         spec.latest = "2.1.325".into();
         spec.checked_at = 42;
-        let check = |env: &str, path: &str| Check { env: env.into(), found: true, version: "2.1.300 (Claude Code)".into(), prog: Some(path.into()) };
+        let check = |env: &str, path: &str| Check { env: env.into(), found: true, version: "2.1.300 (Claude Code)".into(), prog: Some(path.into()), path: Some(path.into()) };
         let npm = spec.manage_for(Some(&check("direct", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js")));
         assert_eq!((npm.method.as_str(), npm.method_label.as_str(), npm.updatable), ("npm-global", "npm 全局", true));
         assert!(npm.update_available);
