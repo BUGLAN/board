@@ -16,6 +16,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { dispatchesOf, hostsOf, resultOf, sessionSlots, sourceOf } from '../../lib/hosts';
+import { dismissScrollbars, scrollSilently } from '../../lib/scrollbars';
 import { groupEvents, groupKind, groupWords, mergeSession, resultText, runningTool, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
 import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
 import { cx, durWords, hhmm, isMobile, reduceMotion } from '../../lib/util';
@@ -56,6 +57,10 @@ function SessionShell({ req, on }: { req: SessionReq; on: boolean }) {
   const close = () => openSession(null);
   const drawer = useRef<HTMLElement>(null);
   const [sheetY, setSheetY] = useState<number | null>(null);
+  // 打开会话弹窗时把下面的滚动条撤掉（它在卡片详情上面，滚动条层又比弹窗高）
+  useLayoutEffect(() => {
+    if (on) dismissScrollbars();
+  }, [on]);
   // Esc 先关会话（它在卡片详情、机器详情上面）
   useEffect(() => {
     if (!on) return;
@@ -228,11 +233,11 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
     const place = () => {
       const seg = card != null ? el.querySelector<HTMLElement>(`[data-card="${card}"]`) : null;
       if (seg && seg !== el.querySelector('section.ss-seg:last-of-type')) {
-        sc.scrollTop = seg.offsetTop - el.offsetTop - 8;
+        scrollSilently(sc, () => (sc.scrollTop = seg.offsetTop - el.offsetTop - 8));
         follow(false);
         return;
       }
-      sc.scrollTop = sc.scrollHeight;
+      scrollSilently(sc, () => (sc.scrollTop = sc.scrollHeight));
     };
     if (!view) {
       if (slots.length) place();
@@ -244,7 +249,7 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
       place();
       return;
     }
-    if (stick.current) sc.scrollTop = sc.scrollHeight;
+    if (stick.current) scrollSilently(sc, () => (sc.scrollTop = sc.scrollHeight));
     // 不跟随时内容变长了：还在底部的话（例如本来就差一点）照常认作到底
     else if (!chasing.current) setAway(!atBottom(sc));
   }, [view, total, card, mode, slots.length]); // eslint-disable-line react-hooks/exhaustive-deps

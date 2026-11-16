@@ -4,6 +4,8 @@
 //   可以拖，点轨道空白处翻一页。滚动条隐藏时鼠标靠近边缘不出现、不响应
 // 不用给组件包任何东西：在 document 上监听 scroll（捕获）和 pointermove，按需给滚动元素建一条。
 // 不想要滚动条的区域加 data-scrollbar="none"。
+// 程序化滚动（打开弹窗时定位到底部等）用 scrollSilently：静默期里不画，用户一动就恢复；
+// 弹窗（.drawer.on）打开时，下面白板列等区域的滚动条不画。
 
 type Axis = 'y' | 'x';
 
@@ -35,9 +37,12 @@ const EDGE = 16;
 const TRACK = 12;
 const PAD = 3;
 const MIN_THUMB = 28;
+const SILENT_MS = 1200;
 
 const bars = new Map<Element, Bar>();
 const lastPos = new WeakMap<Element, { top: number; left: number }>();
+/** 程序化滚动的静默期：期间的 scroll 事件只更新位置，不画滚动条（Element → 结束定时器） */
+const quiet = new Map<Element, number>();
 let layer: HTMLDivElement | null = null;
 let raf = 0;
 let installed = false;
@@ -52,6 +57,39 @@ function canScroll(el: Element, axis: Axis): boolean {
   if (el === scroller()) return true;
   const o = getComputedStyle(el)[axis === 'y' ? 'overflowY' : 'overflowX'];
   return o === 'auto' || o === 'scroll' || o === 'overlay';
+}
+
+/** 程序化滚动（打开弹窗时的初始定位等）：这段时间里的 scroll 事件不算用户滚动。
+    用户一动滚轮 / 触控板 / 键盘 / 指针就提前结束静默，照常显示滚动条 */
+export function scrollSilently(el: Element | null | undefined, fn: () => void, ms = SILENT_MS) {
+  if (!el) {
+    fn();
+    return;
+  }
+  const prev = quiet.get(el);
+  if (prev) clearTimeout(prev);
+  quiet.set(
+    el,
+    window.setTimeout(() => quiet.delete(el), ms),
+  );
+  fn();
+}
+
+/** 打开浮层时：把下面（白板列等）正显示着的滚动条立刻撤掉。
+    滚动条层是 body 上单独的一层，z-index 比弹窗高，不撤掉会画在弹窗上面 */
+export function dismissScrollbars() {
+  for (const bar of Array.from(bars.values())) drop(bar);
+}
+
+function stopQuiet() {
+  for (const t of quiet.values()) clearTimeout(t);
+  quiet.clear();
+}
+
+/** 最上层打开着的弹窗：滚动条层在它上面，下面别的区域不该再画 */
+function openDrawer(): Element | null {
+  const all = document.querySelectorAll('.drawer.on');
+  return all[all.length - 1] ?? null;
 }
 
 function optedOut(el: Element): boolean {
@@ -191,8 +229,13 @@ function wake() {
 
 function frame(now: number) {
   raf = 0;
+  const modal = openDrawer();
   for (const bar of bars.values()) {
     const { el, root, y, x } = bar;
+    if (modal && !modal.contains(el)) {
+      drop(bar);
+      continue;
+    }
     const on = (r: Rail) => r.scrolling || r.near || r.drag;
     if (!el.isConnected) {
       drop(bar);
@@ -290,6 +333,9 @@ function onScroll(e: Event) {
   const top = el.scrollTop;
   const left = el.scrollLeft;
   lastPos.set(el, { top, left });
+  if (quiet.has(el)) return;
+  const modal = openDrawer();
+  if (modal && !modal.contains(el)) return;
   const dy = !prev || prev.top !== top;
   const dx = !prev || prev.left !== left;
   const sy = dy && canScroll(el, 'y');
@@ -374,6 +420,10 @@ export function installScrollbars() {
   installed = true;
   document.addEventListener('scroll', onScroll, { capture: true, passive: true });
   document.addEventListener('pointermove', onPointerMove, { passive: true });
+  document.addEventListener('wheel', stopQuiet, { capture: true, passive: true });
+  document.addEventListener('touchstart', stopQuiet, { capture: true, passive: true });
+  document.addEventListener('pointerdown', stopQuiet, { capture: true, passive: true });
+  document.addEventListener('keydown', stopQuiet, { capture: true });
   document.documentElement.addEventListener('pointerleave', clearNear);
   window.addEventListener('blur', clearNear);
 }

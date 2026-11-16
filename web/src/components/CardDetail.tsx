@@ -9,6 +9,7 @@ import { cardDispatch } from '../lib/hosts';
 import { detailPrompt } from '../lib/prompt';
 import { api, ApiError } from '../lib/api';
 import { cardUrl } from '../lib/route';
+import { dismissScrollbars, scrollSilently } from '../lib/scrollbars';
 import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
@@ -56,6 +57,11 @@ export function CardDetail() {
 
   useEffect(() => {
     if (!on) setSheetY(null);
+  }, [on]);
+
+  // 打开详情时把白板上正显示着的滚动条撤掉：滚动条层在白板之上，会画在弹窗上面
+  useLayoutEffect(() => {
+    if (on) dismissScrollbars();
   }, [on]);
 
   // 手机：下拉关闭
@@ -112,6 +118,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   const board = useData(s => s.board);
   const now = useNow(1000);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
   const locked = !!c.holder;
   const f = boardFlow(board);
   // 这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
@@ -126,6 +133,14 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
     if (!on) return;
     const t = setTimeout(() => bodyRef.current?.querySelector<HTMLElement>('[data-act="close"]')?.focus({ preventScroll: true }), 60);
     return () => clearTimeout(t);
+  }, [on]);
+
+  // 打开时左栏回到顶部（和右栏定位到最新一样是程序化滚动，不该冒出滚动条）
+  useLayoutEffect(() => {
+    if (!on) return;
+    scrollSilently(mainRef.current, () => {
+      if (mainRef.current) mainRef.current.scrollTop = 0;
+    });
   }, [on]);
 
   const step = (d: number) => {
@@ -331,7 +346,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
           </button>
         </Tip>
       </div>      <div className="d-grid">
-        <div className="d-main">
+        <div className="d-main" ref={mainRef}>
           <section className="d-section" style={{ ['--i' as string]: 0 }}>
             <TitleEditor card={c} locked={locked} busy={saving} />
             <div className="d-meta">
@@ -1001,7 +1016,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   useLayoutEffect(() => {
     const sc = scroller.current;
     if (!sc || !n) return;
-    if (shown.current == null) sc.scrollTop = sc.scrollHeight;
+    if (shown.current == null) scrollSilently(sc, () => (sc.scrollTop = sc.scrollHeight));
     else if (n > shown.current && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 160) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
     shown.current = n;
   }, [n]);
