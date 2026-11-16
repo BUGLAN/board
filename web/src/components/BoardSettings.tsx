@@ -1,9 +1,9 @@
 /* ==========================================================================
    白板设置（工作流条末尾「白板设置」，或点状态块标题上的排序标记）：每块白板自己的设置，存在服务端、所有窗口和机器同步
    沿用卡片详情的居中弹窗（.scrim / .drawer / .d-*）：左边是设置，右栏是「预览」（手机上是底部 sheet，预览在上）
-   - 卡片顺序：「保留顺序」开关 + 每个状态的排序依据（选择框 + 方向）。预览用示例卡片演示拖动的结果（lib/orderDemo.ts）
-   - 自动领取：「参与自动领取」开关（boards.auto），和 Agent → 领取规则里那排白板胶囊是同一个值
    - 状态块布局：现在的 / 保存的 / 默认三张缩略图，按钮放在各自的图下面；预览里块在「现在」和「换过去以后」之间来回移动
+   - 自动领取：「参与自动领取」开关（boards.auto），和 Agent → 领取规则里那排白板胶囊是同一个值
+   - 卡片顺序：「保留顺序」开关 + 每个状态的排序依据（选择框 + 方向）。预览用示例卡片演示拖动的结果（lib/orderDemo.ts）
    - 代码仓库、环境检查、标签是项目的（ProjectSettings.tsx），末尾一行去项目设置；定时建卡不是设置，在工作流条上单独一个入口（CardCrons.tsx）
    保存：开关和排序依据是设置项，各存各的（saveSetting）：当帧生效、不锁别的控件，保存状态画在控件旁边（Sync）；
    布局的三个操作沿用工作流的乐观更新（flowKey），保存完之前再点不发请求
@@ -202,6 +202,24 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
         <div className="d-grid">
           <div className="d-main">
             <section className="d-section" style={{ ['--i' as string]: 0 }}>
+              <div className="d-label">
+                状态块布局<span className="act">在白板上拖块标题换位置、拖右边缘改宽度</span>
+              </div>
+              <div className="bs-lays">
+                {lay('current', '现在的布局', <span className="bs-badge live">白板上</span>, '白板上现在的样子', savedNow ? '已保存' : '保存为白板布局', !savedNow, doSave)}
+                {lay(
+                  'saved',
+                  '保存的布局',
+                  saved ? savedNow && <span className="bs-badge eq">和现在一样</span> : <span className="bs-badge">没有</span>,
+                  '上次「保存为白板布局」时的样子',
+                  savedNow ? '正在使用' : '应用',
+                  !!saved && !savedNow,
+                  () => void doApply(),
+                )}
+                {lay('def', '默认布局', defNow && <span className="bs-badge eq">和现在一样</span>, '每块 3 栏、一行 4 块，按工作流顺序', defNow ? '正在使用' : '复原', !defNow, doReset)}
+              </div>
+            </section>
+            <section className="d-section" style={{ ['--i' as string]: 1 }}>
               <div className="d-label">自动领取</div>
               <div className={cx('bs-keep', auto && 'on')} onClick={() => setAuto(!auto)}>
                 <button
@@ -230,7 +248,7 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                 </div>
               </div>
             </section>
-            <section className="d-section" style={{ ['--i' as string]: 1 }}>
+            <section className="d-section" style={{ ['--i' as string]: 2 }}>
               <div className="d-label">卡片顺序</div>
               <div className={cx('bs-keep', keep && 'on')} onClick={() => setKeep(!keep)}>
                 <button
@@ -314,24 +332,6 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                     </div>
                   );
                 })}
-              </div>
-            </section>
-            <section className="d-section" style={{ ['--i' as string]: 2 }}>
-              <div className="d-label">
-                状态块布局<span className="act">在白板上拖块标题换位置、拖右边缘改宽度</span>
-              </div>
-              <div className="bs-lays">
-                {lay('current', '现在的布局', <span className="bs-badge live">白板上</span>, '白板上现在的样子', savedNow ? '已保存' : '保存为白板布局', !savedNow, doSave)}
-                {lay(
-                  'saved',
-                  '保存的布局',
-                  saved ? savedNow && <span className="bs-badge eq">和现在一样</span> : <span className="bs-badge">没有</span>,
-                  '上次「保存为白板布局」时的样子',
-                  savedNow ? '正在使用' : '应用',
-                  !!saved && !savedNow,
-                  () => void doApply(),
-                )}
-                {lay('def', '默认布局', defNow && <span className="bs-badge eq">和现在一样</span>, '每块 3 栏、一行 4 块，按工作流顺序', defNow ? '正在使用' : '复原', !defNow, doReset)}
               </div>
             </section>
             {/* 代码仓库、环境检查、标签是项目的，在项目设置里；这里只留一行去处 */}

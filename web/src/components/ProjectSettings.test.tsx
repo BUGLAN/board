@@ -1,5 +1,5 @@
 /* 项目设置（default/main#395）：三节；每一项失焦保存、Esc 只取消这一次输入；仓库没设时的警告和「用机器的 origin」；
-   管理标签叠在上面时 Esc 先关它。白板设置：没有代码仓库一节，最上面「参与自动领取」，末尾一行去项目设置 */
+   管理标签叠在上面时 Esc 先关它。白板设置：没有代码仓库一节，最上面「状态块布局」，末尾一行去项目设置 */
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -169,10 +169,10 @@ describe('白板设置', () => {
     return document.querySelector<HTMLElement>('.bs-modal:not(.ps-modal)')!;
   }
 
-  it('没有「代码仓库」「环境检查」两节；最上面是「自动领取」', async () => {
+  it('没有「代码仓库」「环境检查」两节；最上面是「状态块布局」', async () => {
     const m = await openBoard();
     const secs = [...m.querySelectorAll('.d-label')].map(l => l.firstChild?.textContent?.trim());
-    expect(secs[0]).toBe('自动领取');
+    expect(secs.slice(0, 3)).toEqual(['状态块布局', '自动领取', '卡片顺序']);
     expect(secs).not.toContain('代码仓库');
     expect(secs).not.toContain('环境检查');
     expect(secs).not.toContain('定时建卡');
