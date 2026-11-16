@@ -440,11 +440,48 @@ impl Check {
     }
 }
 
-/// 在 env 里找 cmd（命令模板的第一个元素），找到了再取版本号。also：PATH 里没有时再看的位置（只在 direct、login 里用）
+/// 在 env 里找 cmd（命令模板的第一个元素），找到了再取版本号。also：PATH 里没有时再看的位置（只在 direct、login 里用）；
+/// 第一项是 board host 装进用户目录的位置，PATH 里还有一个旧版本时比较版本号，用较新的那个
 pub fn probe(env: &Env, cmd: &str, also: &[String]) -> Check {
-    let hit = locate(env, cmd, also);
-    let version = hit.as_ref().map(|(prog, _)| version_in(env, prog)).unwrap_or_default();
+    let hit = locate(env, cmd, &[]);
+    let local = local_copy(env, also.first());
+    let (hit, version) = match (hit, local) {
+        (Some((prog, path)), Some(local)) => {
+            let old = version_in(env, &prog);
+            let new = version_in(env, &local);
+            if newer_version(&old, &new) { (Some((local.clone(), local)), new) } else { (Some((prog, path)), old) }
+        }
+        (Some((prog, path)), None) => {
+            let version = version_in(env, &prog);
+            (Some((prog, path)), version)
+        }
+        (None, Some(local)) => {
+            let version = version_in(env, &local);
+            (Some((local.clone(), local)), version)
+        }
+        (None, None) => match locate(env, cmd, also) {
+            Some((prog, path)) => {
+                let version = version_in(env, &prog);
+                (Some((prog, path)), version)
+            }
+            None => (None, String::new()),
+        },
+    };
     Check { env: env.id.clone(), found: hit.is_some(), version, prog: hit.as_ref().map(|(p, _)| p.clone()), path: hit.map(|(_, path)| path) }
+}
+
+/// PATH 里没有时再看的位置里，第一个存在的用户目录安装（只在 direct、login 里用）
+fn local_copy(env: &Env, first: Option<&String>) -> Option<String> {
+    if !matches!(env.kind, Kind::Direct | Kind::Login) {
+        return None;
+    }
+    let path = expand(first?);
+    is_exe(&path).then(|| path.display().to_string())
+}
+
+/// 用户目录里的版本比 PATH 里的新；看不出版本时不换，免得把能用的命令换掉
+fn newer_version(old: &str, new: &str) -> bool {
+    !new.trim().is_empty() && (old.trim().is_empty() || board_core::hosts::version_lt(old, new))
 }
 
 fn locate(env: &Env, cmd: &str, also: &[String]) -> Option<(String, String)> {
@@ -855,6 +892,16 @@ mod tests {
         // 发行版的 bashrc 打的 sudo 提示也算噪声（#232）：版本号不能显示成它
         let out = "To run a command as administrator (user \"root\"), use \"sudo <command>\".\nSee \"man sudo_root\" for details.\n\n9.9.9 (fake)\n";
         assert_eq!(first_line(out).as_deref(), Some("9.9.9 (fake)"));
+    }
+
+    /// PATH 里是系统装的旧版、用户目录里有 board host 刚升级的新版时用新版；看不出版本时不换
+    #[test]
+    fn a_newer_user_copy_replaces_the_old_path_command() {
+        assert!(newer_version("2.1.323 (Claude Code)", "2.1.325"));
+        assert!(!newer_version("2.1.325", "2.1.323"));
+        assert!(!newer_version("2.1.325", "2.1.325"));
+        assert!(newer_version("", "1.2.3"), "PATH 里的版本读不到时用能读到的用户目录版本");
+        assert!(!newer_version("1.2.3", ""), "用户目录里的版本读不到时不换掉能用的命令");
     }
 
     /// WSL 里停止用的脚本：结束整个进程组（这里在本机的 bash 上试）

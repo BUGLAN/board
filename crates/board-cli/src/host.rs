@@ -160,9 +160,20 @@ struct AgentJob {
     target: String,
     /// 装进用户目录时，装完要写进登录 shell PATH 的命令目录（`<prefix>/bin`）
     bin_dir: Option<PathBuf>,
+    /// 用户目录版本要盖住的旧命令目录（npm 全局 prefix 下的 `bin`）：PATH 里它在前面时把用户目录挪到前面
+    shadow_dir: Option<PathBuf>,
     child: Child,
     started: Instant,
     log: PathBuf,
+}
+
+/// 一次 agent 安装/更新怎么执行：环境、命令、参数，以及完成后要不要调整登录 shell 的 PATH
+struct AgentPlan {
+    env: Env,
+    program: String,
+    args: Vec<String>,
+    bin_dir: Option<PathBuf>,
+    shadow_dir: Option<PathBuf>,
 }
 
 /// 由桌面端在后台运行（`BOARD_HOST_STDIN=1`）
@@ -358,6 +369,11 @@ fn npm_bin_dir(program: &str, args: &[String]) -> Option<PathBuf> {
     args.get(i + 1).map(|p| Path::new(p).join("bin"))
 }
 
+/// 命令目录在用户目录下：装完要写进登录 shell 的 PATH；系统目录由系统管理，不去改
+fn under_home(dir: &Path) -> bool {
+    dir.starts_with(expand("~"))
+}
+
 /// 登录 shell 的配置文件：zsh 读 `~/.zshrc`，bash 登录读 `~/.bash_profile`（没有时 `~/.bash_login`、`~/.profile`），
 /// fish 读 `~/.config/fish/config.fish`，其他用 `~/.profile`。返回 (文件, 是不是 fish)
 #[cfg(any(unix, test))]
@@ -391,16 +407,17 @@ fn path_line(dir: &Path, fish: bool) -> String {
     }
 }
 
-/// 把目录写进 shell 配置的 PATH；同一行已经在文件里时不重复追加。返回是否写了
+/// 把目录写进 shell 配置的 PATH；同一行已经在文件里时不重复追加（`allow_duplicate` 时除外：
+/// PATH 里已有这个目录、但被前面的目录盖住时，要在文件末尾再放一次，结束时的 PATH 才会以它开头）。返回是否写了
 #[cfg(any(unix, test))]
-fn append_path_line(rc: &Path, dir: &Path, fish: bool) -> std::io::Result<bool> {
+fn append_path_line(rc: &Path, dir: &Path, fish: bool, allow_duplicate: bool) -> std::io::Result<bool> {
     let line = path_line(dir, fish);
     let old = match std::fs::read_to_string(rc) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    if old.lines().any(|l| l.trim() == line) {
+    if !allow_duplicate && old.lines().any(|l| l.trim() == line) {
         return Ok(false);
     }
     if let Some(d) = rc.parent() {
@@ -414,6 +431,17 @@ fn append_path_line(rc: &Path, dir: &Path, fish: bool) -> std::io::Result<bool> 
     Ok(true)
 }
 
+/// 这条 PATH 里 `dir` 有没有出现、并且在 `before` 前面（`before` 为空时只要求出现）
+#[cfg(any(unix, test))]
+fn path_has_dir_before(path: &str, dir: &Path, before: Option<&Path>) -> bool {
+    let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
+    let Some(at) = dirs.iter().position(|p| p == dir) else { return false };
+    match before.and_then(|b| dirs.iter().position(|p| p == b)) {
+        Some(before_at) => at <= before_at,
+        None => true,
+    }
+}
+
 /// 登录 shell 读启动脚本之后的 PATH（不借任何回退位置）
 #[cfg(unix)]
 fn login_path(env: &Env) -> Option<String> {
@@ -423,19 +451,21 @@ fn login_path(env: &Env) -> Option<String> {
     out.ok.then_some(path)
 }
 
-/// 把用户目录的命令目录写进登录 shell 的 PATH（只在登录 shell 的 PATH 里没有时）。
+/// 把用户目录的命令目录写进登录 shell 的 PATH（只在登录 shell 的 PATH 里没有、或它在 `shadow` 后面时）。
 /// board host 自己会去 `~/.local/bin` 找命令，但用户新开终端也要能直接敲命令。
 #[cfg(unix)]
-fn ensure_login_path(env: &Env, dir: &Path) -> std::io::Result<bool> {
-    if login_path(env).is_some_and(|path| std::env::split_paths(&path).any(|p| p.as_path() == dir)) {
+fn ensure_login_path(env: &Env, dir: &Path, shadow: Option<&Path>) -> std::io::Result<bool> {
+    let current = login_path(env);
+    if current.as_deref().is_some_and(|path| path_has_dir_before(path, dir, shadow)) {
         return Ok(false);
     }
+    let present = current.as_deref().is_some_and(|path| std::env::split_paths(path).any(|p| p.as_path() == dir));
     let (rc, fish) = login_rc(env);
-    append_path_line(&rc, dir, fish)
+    append_path_line(&rc, dir, fish, present)
 }
 
 #[cfg(not(unix))]
-fn ensure_login_path(_env: &Env, _dir: &Path) -> std::io::Result<bool> {
+fn ensure_login_path(_env: &Env, _dir: &Path, _shadow: Option<&Path>) -> std::io::Result<bool> {
     Ok(false)
 }
 
@@ -2234,11 +2264,11 @@ impl Host<'_> {
         let install = ask.kind == "agent-install";
         let target = ask.to.clone().unwrap_or_default();
         let name = self.agents[i].name.clone();
-        let plan = self.agent_command(&self.agents[i], &target, install).and_then(|(env, program, args)| {
-            prepare_npm_install(&program, &args)?;
-            Ok((env, program, args))
+        let plan = self.agent_command(&self.agents[i], &target, install).and_then(|plan| {
+            prepare_npm_install(&plan.program, &plan.args)?;
+            Ok(plan)
         });
-        let (env, program, args) = match plan {
+        let AgentPlan { env, program, args, bin_dir, shadow_dir } = match plan {
             Ok(x) => x,
             Err(why) => {
                 self.agents[i].manage_state = "failed".into();
@@ -2248,7 +2278,6 @@ impl Host<'_> {
                 return (true, false);
             }
         };
-        let bin_dir = if install { npm_bin_dir(&program, &args) } else { None };
         self.agents[i].manage_state = "running".into();
         self.agents[i].manage_error.clear();
         self.ask_error = None;
@@ -2280,7 +2309,7 @@ impl Host<'_> {
                     program,
                     args.join(" ")
                 ));
-                self.agent_job = Some(AgentJob { ask: ask.id, agent: id.into(), name, target, bin_dir, child, started: Instant::now(), log });
+                self.agent_job = Some(AgentJob { ask: ask.id, agent: id.into(), name, target, bin_dir, shadow_dir, child, started: Instant::now(), log });
                 (false, false)
             }
             Err(e) => {
@@ -2294,7 +2323,7 @@ impl Host<'_> {
     }
 
     /// 实际安装/更新命令：按这个 agent 现在用的启动环境、实际命令路径判断安装方式
-    fn agent_command(&self, spec: &Spec, target: &str, install: bool) -> std::result::Result<(Env, String, Vec<String>), String> {
+    fn agent_command(&self, spec: &Spec, target: &str, install: bool) -> std::result::Result<AgentPlan, String> {
         let check = spec.default_check();
         let env_id = self
             .work
@@ -2317,33 +2346,42 @@ impl Host<'_> {
         }
         if install {
             let (program, args) = install_plan(b)?;
-            return Ok((env, program, args));
+            let bin_dir = npm_bin_dir(&program, &args).filter(|d| under_home(d));
+            return Ok(AgentPlan { env, program, args, bin_dir, shadow_dir: None });
         }
         let m = spec.manage_for(check);
         match m.method.as_str() {
             "npm-global" => {
                 let path = resolved_path(check.and_then(|c| c.path.as_deref().or(c.prog.as_deref())));
                 let prefix = npm_global_prefix(&path);
+                let shadow_dir = prefix.as_deref().map(|p| Path::new(p).join("bin"));
+                let mut update_prefix = prefix;
                 #[cfg(unix)]
-                if let Some(prefix) = prefix.as_deref() {
+                if let Some(prefix) = update_prefix.as_deref() {
                     if !writable_dir(&Path::new(prefix).join("lib").join("node_modules")) {
-                        let target = if target.is_empty() { "latest" } else { target };
-                        return Err(format!(
-                            "npm 全局目录 {prefix} 当前用户不可写：请在终端用管理员权限升级，或重装到用户目录（npm install -g --prefix ~/.local {}@{target}）",
-                            b.package
-                        ));
+                        let user = expand("~/.local");
+                        if !writable_dir(&user.join("lib").join("node_modules")) {
+                            return Err(format!(
+                                "npm 全局目录 {prefix} 和用户目录 {} 当前用户都不能写：请在有权限的终端里升级",
+                                user.display()
+                            ));
+                        }
+                        // 系统目录的旧版本不动；新版本装到用户目录，board host 和新终端都优先用它
+                        update_prefix = Some(user.to_string_lossy().into_owned());
                     }
                 }
-                Ok((env, "npm".into(), npm_update_args(prefix.as_deref(), b.package, target)))
+                let args = npm_update_args(update_prefix.as_deref(), b.package, target);
+                let bin_dir = npm_bin_dir("npm", &args).filter(|d| under_home(d));
+                Ok(AgentPlan { env, program: "npm".into(), args, bin_dir, shadow_dir })
             }
             "brew" => {
                 let path = real_path(check.and_then(|c| c.path.as_deref().or(c.prog.as_deref())));
                 let formula = brew_formula(&path).ok_or_else(|| "看不出 Homebrew 的 formula 名".to_string())?;
-                Ok((env, "brew".into(), vec!["upgrade".into(), formula]))
+                Ok(AgentPlan { env, program: "brew".into(), args: vec!["upgrade".into(), formula], bin_dir: None, shadow_dir: None })
             }
             "script" => {
                 let prog = check.and_then(|c| c.prog.clone()).unwrap_or_else(|| spec.cmd.first().cloned().unwrap_or_default());
-                Ok((env, prog, vec!["update".into()]))
+                Ok(AgentPlan { env, program: prog, args: vec!["update".into()], bin_dir: None, shadow_dir: None })
             }
             _ => Err(if m.reason.trim().is_empty() { "这个 agent 不能由 board host 更新".into() } else { m.reason }),
         }
@@ -2450,7 +2488,7 @@ impl Host<'_> {
             Ok(()) => {
                 if let Some(dir) = job.bin_dir.as_deref() {
                     if let Some(env) = self.envs.iter().find(|e| e.id == "login") {
-                        match ensure_login_path(env, dir) {
+                        match ensure_login_path(env, dir, job.shadow_dir.as_deref()) {
                             Ok(true) => self.say(format!(
                                 "{} 已把 {} 写进登录 shell 的 PATH（新开终端或 source 后生效）",
                                 self.p.green("✓"),
@@ -4924,13 +4962,22 @@ mod tests {
         let rc = d.path().join(".zshrc");
         std::fs::write(&rc, "export FOO=1").unwrap();
         let dir = Path::new("/Users/me/.local/bin");
-        assert!(append_path_line(&rc, dir, false).unwrap());
+        assert!(append_path_line(&rc, dir, false, false).unwrap());
         let text = std::fs::read_to_string(&rc).unwrap();
         assert_eq!(text, "export FOO=1\nexport PATH=\"/Users/me/.local/bin:$PATH\"\n");
-        assert!(!append_path_line(&rc, dir, false).unwrap(), "同一行只追加一次");
+        assert!(!append_path_line(&rc, dir, false, false).unwrap(), "同一行只追加一次");
         assert_eq!(std::fs::read_to_string(&rc).unwrap(), text);
-        assert!(append_path_line(&rc, dir, true).unwrap(), "fish 的写法不同，算另一行");
+        assert!(append_path_line(&rc, dir, true, false).unwrap(), "fish 的写法不同，算另一行");
         assert!(std::fs::read_to_string(&rc).unwrap().contains("fish_add_path \"/Users/me/.local/bin\""));
+
+        // 目录已经在 PATH 里但被前面的系统目录盖住：同一行还要再放到文件末尾一次，之后才会排在前面
+        assert!(append_path_line(&rc, dir, false, true).unwrap());
+        assert_eq!(std::fs::read_to_string(&rc).unwrap().matches("export PATH=\"/Users/me/.local/bin:$PATH\"").count(), 2);
+
+        let path = "/usr/local/node-v22/bin:/Users/me/.local/bin:/usr/bin";
+        assert!(!path_has_dir_before(path, dir, Some(Path::new("/usr/local/node-v22/bin"))));
+        assert!(path_has_dir_before("/Users/me/.local/bin:/usr/local/node-v22/bin:/usr/bin", dir, Some(Path::new("/usr/local/node-v22/bin"))));
+        assert!(path_has_dir_before("/usr/bin:/Users/me/.local/bin", dir, None));
     }
 
     /// 加进 PATH 的是 npm 的 --prefix 下面的 bin：装完直接从那里找命令

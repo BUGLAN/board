@@ -29,7 +29,8 @@ pub struct AgentDef {
     /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
     /// 这次派发的 profile 补丁路径，都作为一个参数传入
     pub cmd: &'static [&'static str],
-    /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）
+    /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）。第一项是 board host 装进用户目录的位置：
+    /// PATH 里还有旧版本时比较版本号，用较新的那个
     pub also: &'static [&'static str],
     /// 读用户级 skill 的目录（第一个是装 board-skills、同步 skills 的地方）：启动时看 `board-skills` 装没装
     pub skills: &'static [&'static str],
