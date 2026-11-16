@@ -12,6 +12,10 @@
 //! - `POST /api/dispatches/{ID}/end`、`POST /api/dispatches/{ID}/log`：派发结束、上传日志
 //! - `POST /api/dispatches/{ID}/events {fmt, events}`：上传结构化事件（会话「过程」，见 board-core runlog.rs）
 //!
+//! 用令牌调用时，机器得归这个令牌（它上报时用的就是这个令牌），派发得在这样的机器上，否则 NO_SUCH_HOST / NOT_FOUND
+//! （board-core 的 `R::host_owned_by`、`R::dispatch_owned_by`，和写操作在同一个事务里查）；上报本身不能接管绑着别的
+//! 有效令牌的机器（`W::host_beat`）。登录的界面、本机模式不受限。
+//!
 //! 界面（登录）：`GET /api/hosts`、`PATCH|DELETE /api/hosts/{名字}`（`DELETE …?revoke=1` 同时吊销它用的令牌）、
 //! `POST /api/hosts/{名字}/ask {kind, now}`（远程管理：重新检查、重启、升级、排空、取消）、
 //! `POST /api/hosts/{名字}/sync`（同步配置写入失败后「重试」：重新下发同步请求）、
@@ -92,8 +96,16 @@ fn finish(s: &AppState, mut w: HostWork) -> HostWork {
     w
 }
 
-pub(crate) async fn work(State(s): State<AppState>, Path(name): Path<String>) -> ApiResult<HostWork> {
-    let out = s.db(move |st| st.read(|r| r.host_work(&name, now_ms()))).await?;
+pub(crate) async fn work(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(name): Path<String>) -> ApiResult<HostWork> {
+    let token = token_of(&caller);
+    let out = s
+        .db(move |st| {
+            st.read(|r| {
+                r.host_owned_by(&name, token)?;
+                r.host_work(&name, now_ms())
+            })
+        })
+        .await?;
     Ok(Json(finish(&s, out)))
 }
 
@@ -106,9 +118,17 @@ pub(crate) struct SyncedBody {
 }
 
 /// board host 回报一次同步配置的结果
-pub(crate) async fn synced(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+pub(crate) async fn synced(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
     let b: SyncedBody = parse(v)?;
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_synced(&name, &b.instance, b.result))).await?;
+    let token = token_of(&caller);
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().host_owned_by(&name, token)?;
+                w.host_synced(&name, &b.instance, b.result)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -162,8 +182,11 @@ pub(crate) async fn list_dir(State(s): State<AppState>, Extension(caller): Exten
 }
 
 /// board host 回传列目录的结果
-pub(crate) async fn listed(State(s): State<AppState>, Path((name, id)): Path<(String, i64)>, Json(v): Json<Value>) -> ApiResult<Value> {
+pub(crate) async fn listed(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path((name, id)): Path<(String, i64)>, Json(v): Json<Value>) -> ApiResult<Value> {
     let list: DirList = parse(v)?;
+    let token = token_of(&caller);
+    let host = name.clone();
+    s.db(move |st| st.read(|r| r.host_owned_by(&host, token))).await?;
     s.ls_done(&name, id, list);
     Ok(Json(json!({})))
 }
@@ -192,7 +215,14 @@ pub(crate) async fn begin(
     let b: BeginBody = parse(v)?;
     let id = b.id.ok_or_else(|| BoardError::usage("缺少 id"))?;
     let token = token_of(&caller);
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_begin(&name, &b.instance, id, token))).await?;
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().host_owned_by_proc(&name, &b.instance, token)?;
+                w.dispatch_begin(&name, &b.instance, id, token)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -205,14 +235,29 @@ pub(crate) async fn pull(
 ) -> ApiResult<Option<Dispatch>> {
     let b: BeginBody = parse(v)?;
     let token = token_of(&caller);
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_pull(&name, &b.instance, token))).await?;
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().host_owned_by_proc(&name, &b.instance, token)?;
+                w.dispatch_pull(&name, &b.instance, token)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
 
 pub(crate) async fn round(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>) -> ApiResult<HostInfo> {
     let origin = origin_of(&caller, &h);
-    let out = s.db(move |st| st.write(now_ms(), origin, |w| w.host_round(&name))).await?;
+    let token = token_of(&caller);
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), origin, |w| {
+                w.read().host_owned_by(&name, token)?;
+                w.host_round(&name)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -238,22 +283,27 @@ fn exit() -> EndHow {
     EndHow::Exit
 }
 
-pub(crate) async fn end(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> Response {
+pub(crate) async fn end(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(id): Path<i64>, Json(v): Json<Value>) -> Response {
     // 集成测试用：模拟「服务端已经收到、响应丢了」之前的失败响应
     #[cfg(feature = "test-hooks")]
     if s.take_fail_end() {
         return (StatusCode::BAD_GATEWAY, "bad gateway").into_response();
     }
-    match end_inner(s, id, v).await {
+    match end_inner(s, token_of(&caller), id, v).await {
         Ok(j) => j.into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-async fn end_inner(s: AppState, id: i64, v: Value) -> ApiResult<Dispatch> {
+async fn end_inner(s: AppState, token: Option<i64>, id: i64, v: Value) -> ApiResult<Dispatch> {
     let b: EndBody = parse(v)?;
     let out = s
-        .db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_end_with(id, b.exit_code, &b.tail, &b.events, b.how, b.why.as_deref())))
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().dispatch_owned_by(id, token)?;
+                w.dispatch_end_with(id, b.exit_code, &b.tail, &b.events, b.how, b.why.as_deref())
+            })
+        })
         .await?;
     s.poke();
     Ok(Json(out))
@@ -261,7 +311,7 @@ async fn end_inner(s: AppState, id: i64, v: Value) -> ApiResult<Dispatch> {
 
 /// `POST /api/dispatches/{ID}/wip {branch, how, changes, tail}`：board host 在派发结束时把没推的改动保存成了 wip 分支，
 /// 在卡片上评论（半成品交接，PRD §9.1）
-pub(crate) async fn wip(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
+pub(crate) async fn wip(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
     #[derive(Deserialize)]
     struct Body {
         branch: String,
@@ -273,7 +323,14 @@ pub(crate) async fn wip(State(s): State<AppState>, Path(id): Path<i64>, Json(v):
         tail: Vec<String>,
     }
     let b: Body = parse(v)?;
-    s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_wip(id, &b.branch, &b.how, &b.changes, &b.tail))).await?;
+    let token = token_of(&caller);
+    s.db(move |st| {
+        st.write(now_ms(), Origin::cli(), |w| {
+            w.read().dispatch_owned_by(id, token)?;
+            w.dispatch_wip(id, &b.branch, &b.how, &b.changes, &b.tail)
+        })
+    })
+    .await?;
     s.poke();
     Ok(Json(json!({ "ok": true })))
 }
@@ -284,9 +341,16 @@ pub(crate) struct LogBody {
     lines: Vec<String>,
 }
 
-pub(crate) async fn append_log(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
+pub(crate) async fn append_log(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
     let b: LogBody = parse(v)?;
-    s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_log_append(id, &b.lines))).await?;
+    let token = token_of(&caller);
+    s.db(move |st| {
+        st.write(now_ms(), Origin::cli(), |w| {
+            w.read().dispatch_owned_by(id, token)?;
+            w.dispatch_log_append(id, &b.lines)
+        })
+    })
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -302,20 +366,36 @@ pub(crate) struct EventsBody {
 /// 一次最多收多少条（host 每 2 秒传一次，正常远到不了）
 const EVENTS_BATCH: usize = 2000;
 
-pub(crate) async fn append_events(State(s): State<AppState>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
+pub(crate) async fn append_events(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(id): Path<i64>, Json(v): Json<Value>) -> ApiResult<Value> {
     let mut b: EventsBody = parse(v)?;
     if b.events.len() > EVENTS_BATCH {
         b.events.drain(..b.events.len() - EVENTS_BATCH);
     }
-    let n = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.dispatch_events_append(id, b.fmt.as_deref(), &b.events))).await?;
+    let token = token_of(&caller);
+    let n = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().dispatch_owned_by(id, token)?;
+                w.dispatch_events_append(id, b.fmt.as_deref(), &b.events)
+            })
+        })
+        .await?;
     if n > 0 {
         s.poke();
     }
     Ok(Json(json!({ "ok": true })))
 }
 
-pub(crate) async fn log(State(s): State<AppState>, Path(id): Path<i64>) -> ApiResult<Value> {
-    let lines = s.db(move |st| st.read(|r| r.dispatch_log(id))).await?;
+pub(crate) async fn log(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(id): Path<i64>) -> ApiResult<Value> {
+    let token = token_of(&caller);
+    let lines = s
+        .db(move |st| {
+            st.read(|r| {
+                r.dispatch_owned_by(id, token)?;
+                r.dispatch_log(id)
+            })
+        })
+        .await?;
     Ok(Json(json!({ "lines": lines })))
 }
 
@@ -509,9 +589,17 @@ pub(crate) struct SelfTestDoneBody {
 }
 
 /// 复制机器设置到其他机器（机器详情「复制设置到…」）：只能在登录后的界面上做。返回目标机器
-pub(crate) async fn selftest_done(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+pub(crate) async fn selftest_done(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
     let b: SelfTestDoneBody = parse(v)?;
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_selftest_done(&name, &b.instance, b.id, b.items))).await?;
+    let token = token_of(&caller);
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().host_owned_by(&name, token)?;
+                w.host_selftest_done(&name, &b.instance, b.id, b.items)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -552,9 +640,17 @@ pub(crate) struct SkillImportedBody {
 }
 
 /// board host 做完了导入，回报结果
-pub(crate) async fn skills_imported(State(s): State<AppState>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+pub(crate) async fn skills_imported(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
     let b: SkillImportedBody = parse(v)?;
-    let out = s.db(move |st| st.write(now_ms(), Origin::cli(), |w| w.host_skill_imported(&name, &b.instance, b.id, b.ok, b.failed))).await?;
+    let token = token_of(&caller);
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), Origin::cli(), |w| {
+                w.read().host_owned_by(&name, token)?;
+                w.host_skill_imported(&name, &b.instance, b.id, b.ok, b.failed)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }
@@ -637,7 +733,15 @@ pub(crate) async fn rename(
 ) -> ApiResult<HostInfo> {
     let b: RenameBody = parse(v)?;
     let origin = origin_of(&caller, &h);
-    let out = s.db(move |st| st.write(now_ms(), origin, |w| w.host_rename(&name, &b.name))).await?;
+    let token = token_of(&caller);
+    let out = s
+        .db(move |st| {
+            st.write(now_ms(), origin, |w| {
+                w.read().host_owned_by(&name, token)?;
+                w.host_rename(&name, &b.name)
+            })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }

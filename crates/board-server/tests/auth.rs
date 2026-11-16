@@ -342,6 +342,102 @@ fn tokens_are_for_cli_only() {
     assert_eq!((r.status, r.code().as_str()), (401, "INVALID_TOKEN"));
 }
 
+/// board host、派发的接口只认机器上报时用的令牌（卡片 #379）：别的令牌读不到它的任务、领不了一轮、改不了名、
+/// 回报不了结果，结束、写不了它的派发；离线后也上报接管不了它（接管后就能读走只发给它的密钥）。界面（人）不受影响
+#[test]
+fn host_and_dispatch_routes_only_take_that_hosts_token() {
+    let s = local_mode();
+    let (ta, tb) = (new_token(&s.db, "a 的令牌"), new_token(&s.db, "b 的令牌"));
+    let (ba, bb) = (format!("Bearer {ta}"), format!("Bearer {tb}"));
+    let a = [("authorization", ba.as_str())];
+    let b = [("authorization", bb.as_str())];
+    let url = |p: &str| format!("{}/api{p}", s.url);
+    let report = |inst: &str| {
+        json!({
+            "name": "host-a", "instance": inst, "os": "macOS 15.4", "version": env!("CARGO_PKG_VERSION"),
+            "agents": [{ "id": "claude", "name": "Claude Code", "version": "2.4.1", "found": true }],
+            "workspace": { "path": "/tmp/ws" },
+            "dirs": [{ "board": "default/main", "path": "/tmp/ws/default" }],
+        })
+    };
+    let r = send("POST", &url("/hosts/host-a/beat"), &a, Some(report("a1")));
+    assert_eq!(r.status, 200, "{}", r.text);
+    // 派一张卡给 host-a，它的 board host 开始
+    let card = send("POST", &url("/cmd"), &[UI], Some(json!({ "board": "default/main", "op": "new", "title": "派给 host-a" })));
+    assert_eq!(card.status, 200, "{}", card.text);
+    let d = send("POST", &url("/dispatches"), &[UI], Some(json!({ "board": "default/main", "card": card.body["id"], "host": "host-a" })));
+    assert_eq!(d.status, 200, "{}", d.text);
+    let d = d.body["id"].as_i64().unwrap();
+    let r = send("POST", &url("/hosts/host-a/begin"), &a, Some(json!({ "instance": "a1", "id": d })));
+    assert_eq!(r.status, 200, "{}", r.text);
+
+    // 令牌 B：知道机器名、进程标识、派发 ID 也不行，机器的接口像不存在一样（NO_SUCH_HOST），派发的是 NOT_FOUND
+    for (m, p, body) in [
+        ("GET", "/hosts/host-a/work".to_string(), None),
+        ("POST", "/hosts/host-a/round".to_string(), Some(json!({}))),
+        ("POST", "/hosts/host-a/rename".to_string(), Some(json!({ "name": "host-a-renamed" }))),
+        ("POST", "/hosts/host-a/begin".to_string(), Some(json!({ "instance": "a1", "id": d }))),
+        ("POST", "/hosts/host-a/pull".to_string(), Some(json!({ "instance": "a1" }))),
+        ("POST", "/hosts/host-a/synced".to_string(), Some(json!({ "instance": "a1", "result": {} }))),
+        ("POST", "/hosts/host-a/selftested".to_string(), Some(json!({ "instance": "a1", "id": 1 }))),
+        ("POST", "/hosts/host-a/skills/imported".to_string(), Some(json!({ "instance": "a1", "id": 1 }))),
+        ("POST", "/hosts/host-a/ls/1".to_string(), Some(json!({}))),
+    ] {
+        let r = send(m, &url(&p), &b, body);
+        assert_eq!((r.status, r.code().as_str()), (404, "NO_SUCH_HOST"), "{m} {p}: {}", r.text);
+    }
+    for (m, p, body) in [
+        ("POST", format!("/dispatches/{d}/end"), Some(json!({ "exitCode": 0 }))),
+        ("POST", format!("/dispatches/{d}/wip"), Some(json!({ "branch": "wip/main/1" }))),
+        ("POST", format!("/dispatches/{d}/log"), Some(json!({ "lines": ["伪造的日志"] }))),
+        ("GET", format!("/dispatches/{d}/log"), None),
+        ("POST", format!("/dispatches/{d}/events"), Some(json!({ "events": [] }))),
+    ] {
+        let r = send(m, &url(&p), &b, body);
+        assert_eq!((r.status, r.code().as_str()), (404, "NOT_FOUND"), "{m} {p}: {}", r.text);
+    }
+    // 上面都没生效：机器名没改，派发还在跑，日志里没有伪造的那行
+    let w = send("GET", &url("/hosts/host-a/work"), &a, None);
+    assert_eq!(w.status, 200, "{}", w.text);
+    assert_eq!(w.body["host"]["name"], "host-a");
+    assert_eq!(w.body["running"][0]["id"], json!(d), "{}", w.text);
+    let log = send("GET", &url(&format!("/dispatches/{d}/log")), &a, None);
+    assert!(!log.text.contains("伪造"), "{}", log.text);
+
+    // 令牌 B 冒充 host-a 上报：在线时不行；host-a 下线后也不行，令牌和密钥原文仍只给 A
+    let r = send("POST", &url("/hosts/host-a/beat"), &b, Some(report("b1")));
+    assert_eq!((r.status, r.code().as_str()), (409, "HOST_NAME_TAKEN"), "{}", r.text);
+    let mut bye = report("a1");
+    bye["final"] = json!(true);
+    assert_eq!(send("POST", &url("/hosts/host-a/beat"), &a, Some(bye)).status, 200);
+    let r = send("POST", &url("/hosts/host-a/beat"), &b, Some(report("b1")));
+    assert_eq!((r.status, r.code().as_str()), (409, "HOST_NAME_TAKEN"), "{}", r.text);
+    assert!(r.body["error"]["message"].as_str().unwrap().contains("a 的令牌"), "{}", r.text);
+    let r = send("GET", &url("/hosts/host-a/mcp"), &b, None);
+    assert_eq!(r.code(), "NOT_LOGGED_IN", "{}", r.text);
+
+    // A 自己照常：重新上线、写日志、结束派发
+    let mut back = report("a2");
+    back["resume"] = json!("a1");
+    assert_eq!(send("POST", &url("/hosts/host-a/beat"), &a, Some(back)).status, 200);
+    assert_eq!(send("GET", &url("/hosts/host-a/mcp"), &a, None).status, 200);
+    assert_eq!(send("POST", &url(&format!("/dispatches/{d}/log")), &a, Some(json!({ "lines": ["真的日志"] }))).status, 200);
+    let log = send("GET", &url(&format!("/dispatches/{d}/log")), &a, None);
+    assert!(log.text.contains("真的日志"), "{}", log.text);
+    let r = send("POST", &url(&format!("/dispatches/{d}/end")), &a, Some(json!({ "exitCode": 0 })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(send("POST", &url("/hosts/host-a/round"), &a, Some(json!({}))).status, 200);
+
+    // 界面（人）不受影响：取任务、领一轮、读日志、改名
+    assert_eq!(send("GET", &url("/hosts/host-a/work"), &[UI], None).status, 200);
+    assert_eq!(send("POST", &url("/hosts/host-a/round"), &[UI], Some(json!({}))).status, 200);
+    assert_eq!(send("GET", &url(&format!("/dispatches/{d}/log")), &[UI], None).status, 200);
+    let r = send("POST", &url("/hosts/host-a/rename"), &[UI], Some(json!({ "name": "host-a2" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    // 改名后 A 用新名字照常
+    assert_eq!(send("GET", &url("/hosts/host-a2/work"), &a, None).status, 200);
+}
+
 #[test]
 fn server_side_token_command_works() {
     let s = github("buglan");

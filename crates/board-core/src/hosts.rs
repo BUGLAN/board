@@ -2342,6 +2342,15 @@ fn no_such_host(name: &str) -> BoardError {
         .with_detail(json!({ "host": name }))
 }
 
+/// 令牌调用 board host 的接口，机器不存在或不归这个令牌（见 [`R::host_owned_by`]）
+fn not_owned_host(name: &str) -> BoardError {
+    BoardError::new(
+        ErrorCode::NoSuchHost,
+        format!("机器「{name}」不存在，或不归这个访问令牌：只有这台机器的 board host（用它上报时的令牌）能调用，人在界面上操作"),
+    )
+    .with_detail(json!({ "host": name }))
+}
+
 impl<'a> R<'a> {
     pub(crate) fn host_row(&self, name: &str) -> Result<Option<HostRow>> {
         Ok(self.conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE name = ?1"), [name], host_row).optional()?)
@@ -2362,6 +2371,66 @@ impl<'a> R<'a> {
     pub fn host(&self, name: &str, now: i64) -> Result<HostInfo> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         self.host_info(&h, now)
+    }
+
+    /// board host 按名字找自己的机器记录。名字找不到时，再按这个进程的标识找：机器刚被改名
+    /// （桌面端「设置 → 本机」保存机器名，先在服务端改名、再写配置文件），正在跑的 board host
+    /// 读到新配置之前还在用旧名字上报、取任务，认回改名后的那条记录，不新建第二台机器。
+    /// 标识每次启动随机生成，只有这个进程自己知道，别的机器借不到
+    pub(crate) fn host_of_proc(&self, name: &str, instance: &str) -> Result<Option<HostRow>> {
+        if let Some(h) = self.host_row(name)? {
+            return Ok(Some(h));
+        }
+        if instance.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(self.conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE instance = ?1"), [instance], host_row).optional()?)
+    }
+
+    /// 令牌调用 board host 的接口（取任务、开始派发、回报结果、领一轮、改名……；上报的规则见 [`W::host_beat`]）时，
+    /// 机器得归这个令牌：它最后一次上报用的就是这个令牌（上报时绑定）。`token` 为空（登录的界面、本机模式）不查。
+    /// 机器不存在、不归这个令牌都是 NO_SUCH_HOST：别的令牌既动不了它，也不会因此多知道什么
+    pub fn host_owned_by(&self, name: &str, token: Option<i64>) -> Result<()> {
+        self.host_owned_by_proc(name, "", token)
+    }
+
+    /// 同 [`R::host_owned_by`]，`instance` 是 board host 进程的标识：机器刚改名、它还在用旧名字时按标识认回
+    /// 改名后的记录（见 [`R::host_of_proc`]）
+    pub fn host_owned_by_proc(&self, name: &str, instance: &str, token: Option<i64>) -> Result<()> {
+        let Some(t) = token else { return Ok(()) };
+        match self.host_of_proc(name, instance)? {
+            Some(h) if h.token == Some(t) => Ok(()),
+            _ => Err(not_owned_host(name)),
+        }
+    }
+
+    /// 令牌调用派发的接口（结束、存 wip、读写日志、传事件）时，派发得在这个令牌的机器上。机器按派发记录里的
+    /// 机器名找（机器被移除、再连上来之后，原来在跑的派发照样能结束，同 [`R::host_work`]），找不到时按机器 ID。
+    /// `token` 为空（登录的界面、本机模式）不查。派发不存在、不在这个令牌的机器上都是 NOT_FOUND
+    pub fn dispatch_owned_by(&self, id: i64, token: Option<i64>) -> Result<()> {
+        let Some(t) = token else { return Ok(()) };
+        let row: Option<(String, i64)> =
+            self.conn.query_row("SELECT host, host_id FROM dispatches WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        let owner = match row {
+            None => None,
+            Some((name, host_id)) => match self.host_row(&name)? {
+                Some(h) => h.token,
+                None => self.conn.query_row("SELECT token FROM hosts WHERE id = ?1", [host_id], |r| r.get::<_, Option<i64>>(0)).optional()?.flatten(),
+            },
+        };
+        if owner == Some(t) {
+            return Ok(());
+        }
+        Err(BoardError::new(ErrorCode::NotFound, format!("派发 #{id} 不存在，或不在这个访问令牌的机器上")))
+    }
+
+    /// 访问令牌还在（没被吊销）时返回它的名称。没有令牌表（只用 board-core 的库，不经过服务端）时当作不在
+    fn live_token_name(&self, id: i64) -> Result<Option<String>> {
+        let has: bool = self.conn.query_row("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'auth_tokens'", [], |r| r.get(0))?;
+        if !has {
+            return Ok(None);
+        }
+        Ok(self.conn.query_row("SELECT name FROM auth_tokens WHERE id = ?1", [id], |r| r.get(0)).optional()?)
     }
 
     /// 这台机器用的是不是这个令牌：board host 每 10 秒上报一次，最后一次上报用的令牌就是它现在的令牌。
@@ -2666,18 +2735,9 @@ impl<'a> W<'a> {
         self.read().host_row(name)
     }
 
-    /// board host 按名字找自己的机器记录。名字找不到时，再按这个进程的标识找：机器刚被改名
-    /// （桌面端「设置 → 本机」保存机器名，先在服务端改名、再写配置文件），正在跑的 board host
-    /// 读到新配置之前还在用旧名字上报、取任务，认回改名后的那条记录，不新建第二台机器。
-    /// 标识每次启动随机生成，只有这个进程自己知道，别的机器借不到
+    /// 见 [`R::host_of_proc`]
     fn host_of_proc(&self, name: &str, instance: &str) -> Result<Option<HostRow>> {
-        if let Some(h) = self.host_row(name)? {
-            return Ok(Some(h));
-        }
-        if instance.trim().is_empty() {
-            return Ok(None);
-        }
-        Ok(self.tx.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE instance = ?1"), [instance], host_row).optional()?)
+        self.read().host_of_proc(name, instance)
     }
 
     fn drow(&self, id: i64) -> Result<DRow> {
@@ -3111,6 +3171,9 @@ impl<'a> W<'a> {
     /// board host 的上报（每 10 秒；启动时第一次）：建立或更新机器，替在跑的派发发心跳，返回它的任务。
     ///
     /// - 机器名正被另一个在线的 board host 使用（标识不同，也不是 resume 接回）时 `HOST_NAME_TAKEN`
+    /// - 令牌绑定：机器记下这次上报用的令牌（`token`，人和本机模式为空），之后令牌能调用的 board host 接口只认它
+    ///   （[`R::host_owned_by`]）。已有的机器绑着另一个还没吊销的令牌时，别的令牌不能上报（在线、离线、resume 都一样）：
+    ///   `HOST_NAME_TAKEN`，免得别的令牌接管这台机器、再读走只发给它的密钥。原来的令牌被吊销了、或还没绑过令牌时可以换绑
     /// - 被移除过的机器再连上来，按新机器建立设置
     /// - 在跑的派发：本机有进程的，替它的名字发 agent 级心跳（维持名字在线和卡片的持有）；本机没有进程的
     ///   （board host 重启后接回），按「agent 退出，卡片仍由这个名字持有」处理，结果「异常退出」
@@ -3152,6 +3215,21 @@ impl<'a> W<'a> {
         let envs = serde_json::to_string(&rep.envs).unwrap_or_else(|_| "[]".into());
         // 改名后还用旧名字上报：认回改名后的记录（见 host_of_proc），下面都用记录里的名字
         let found = self.host_of_proc(&rep.name, &rep.instance)?;
+        // 绑着另一个还在的令牌：不让接管（见上面「令牌绑定」）
+        if let (Some(h), Some(t)) = (found.as_ref(), token) {
+            if let Some(old) = h.token.filter(|o| *o != t) {
+                if let Some(tn) = self.read().live_token_name(old)? {
+                    return Err(BoardError::new(
+                        ErrorCode::HostNameTaken,
+                        format!(
+                            "机器名「{}」绑定的是另一个访问令牌「{tn}」：换一个 --name；或在界面「设置 → Agent 接入」吊销那个令牌、或在「机器」里移除这台机器后再连",
+                            h.name
+                        ),
+                    )
+                    .with_detail(json!({ "host": h.name })));
+                }
+            }
+        }
         let name = found.as_ref().map_or_else(|| rep.name.clone(), |h| h.name.clone());
         match found {
             None => {

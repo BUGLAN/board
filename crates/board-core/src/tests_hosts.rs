@@ -3174,6 +3174,78 @@ fn only_the_token_a_live_host_reports_may_take_secrets() {
     assert!(!own(&s, "mbp", 1, T0 + 2 * S + 60 * S));
 }
 
+/// 令牌绑定机器（卡片 #379）：board host 的接口只认这台机器上报时用的令牌；派发的接口只认派发所在机器的令牌；
+/// 绑着另一个还没吊销的令牌时，别的令牌上报不能接管（离线、resume 也一样），原来的令牌吊销后才能换绑
+#[test]
+fn host_and_dispatch_calls_need_the_token_the_host_reports_with() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| {
+        w.tx.execute_batch(
+            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
+             INSERT INTO auth_tokens VALUES (1, 'mbp 的令牌', 'h1', 'bd_1', 0, NULL), (2, 'win 的令牌', 'h2', 'bd_2', 0, NULL);",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let owned = |s: &Store, token: Option<i64>| s.read(|r| r.host_owned_by("mbp", token));
+    owned(&s, Some(1)).unwrap();
+    // 界面、本机模式（没有令牌）不查
+    owned(&s, None).unwrap();
+    // 别的令牌：和机器不存在一样
+    assert_eq!(owned(&s, Some(2)).unwrap_err().code, ErrorCode::NoSuchHost);
+    assert_eq!(s.read(|r| r.host_owned_by("nope", Some(1))).unwrap_err().code, ErrorCode::NoSuchHost);
+
+    // 派发：在 mbp 上的派发只有 mbp 的令牌能结束、写日志
+    let id = new_card(&mut s, T0, "派给 mbp 的卡");
+    let d = dispatch(&mut s, T0, id, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, d.id).unwrap();
+    let d_owned = |s: &Store, id: i64, token: Option<i64>| s.read(|r| r.dispatch_owned_by(id, token));
+    d_owned(&s, d.id, Some(1)).unwrap();
+    d_owned(&s, d.id, None).unwrap();
+    assert_eq!(d_owned(&s, d.id, Some(2)).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(d_owned(&s, 999, Some(1)).unwrap_err().code, ErrorCode::NotFound);
+
+    // 令牌 2 冒充 mbp 上报：在线时、离线后、带 resume 都不行，mbp 仍绑着令牌 1
+    let other = |s: &mut Store, at: i64, rep: &HostReport| s.write(at, Origin::cli(), |w| w.host_beat(rep, Some(2)));
+    let e = other(&mut s, T0 + 2 * S, &report("mbp", "x1", vec![])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::HostNameTaken);
+    assert!(e.message.contains("mbp 的令牌"), "{}", e.message);
+    let mut off = report("mbp", "i1", vec![]);
+    off.done = true;
+    beat(&mut s, T0 + 3 * S, &off).unwrap();
+    assert!(!host(&s, T0 + 4 * S).online);
+    let e = other(&mut s, T0 + 5 * S, &report("mbp", "x1", vec![])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::HostNameTaken);
+    let mut resume = report("mbp", "x2", vec![]);
+    resume.resume = Some("i1".into());
+    assert_eq!(other(&mut s, T0 + 5 * S, &resume).unwrap_err().code, ErrorCode::HostNameTaken);
+    // 带着 mbp 的进程标识、用别的名字上报（改名后认回的那条路）也不行
+    assert_eq!(other(&mut s, T0 + 5 * S, &report("mbp2", "i1", vec![])).unwrap_err().code, ErrorCode::HostNameTaken);
+    // final 也不能替它下线
+    beat(&mut s, T0 + 6 * S, &report("mbp", "i1", vec![])).unwrap();
+    let mut bye = report("mbp", "x1", vec![]);
+    bye.done = true;
+    assert_eq!(other(&mut s, T0 + 7 * S, &bye).unwrap_err().code, ErrorCode::HostNameTaken);
+    assert!(host(&s, T0 + 7 * S).online);
+    owned(&s, Some(1)).unwrap();
+    assert_eq!(owned(&s, Some(2)).unwrap_err().code, ErrorCode::NoSuchHost);
+
+    // 令牌 1 被吊销后（换了令牌重装这台机器）：令牌 2 可以换绑，之后只认令牌 2
+    s.write(T0, Origin::ui(None), |w| Ok(w.tx.execute("DELETE FROM auth_tokens WHERE id = 1", [])?)).unwrap();
+    other(&mut s, T0 + 60 * S, &report("mbp", "x3", vec![])).unwrap();
+    owned(&s, Some(2)).unwrap();
+    assert_eq!(owned(&s, Some(1)).unwrap_err().code, ErrorCode::NoSuchHost);
+    d_owned(&s, d.id, Some(2)).unwrap();
+    // 没绑过令牌的机器（本机模式上报的）：令牌上报时绑上
+    s.write(T0, Origin::cli(), |w| w.host_beat(&report("old", "o1", vec![]), None)).unwrap();
+    assert_eq!(s.read(|r| r.host_owned_by("old", Some(2))).unwrap_err().code, ErrorCode::NoSuchHost);
+    let mut again = report("old", "o1", vec![]);
+    again.resume = Some("o1".into());
+    other(&mut s, T0 + S, &again).unwrap();
+    s.read(|r| r.host_owned_by("old", Some(2))).unwrap();
+}
+
 #[test]
 fn host_token_is_shown_and_can_be_revoked_on_remove() {
     let mut s = store();
