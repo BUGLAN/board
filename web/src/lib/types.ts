@@ -764,6 +764,17 @@ export interface ClaimRule {
   missing?: string[];
 }
 
+/** 一个 agent 的「由这些机器做」（服务端算）：当前选中的机器，以及默认 / 空选状态 */
+export interface SchedPick {
+  agent: string;
+  /** 当前选中的机器 id（默认全选时也是现在装了它的全部机器） */
+  hosts: number[];
+  /** 一台都没选：这个 agent 不自动领卡 */
+  none?: boolean;
+  /** 没设置过（或已经清掉排除）：所有装了它的机器都参与，之后新装的也默认参与 */
+  unset?: boolean;
+}
+
 /** 调度的全局设置（随工作区数据下发） */
 export interface Sched {
   /** 领取规则，有顺序：第一条命中的生效 */
@@ -781,6 +792,8 @@ export interface Sched {
   maxRun?: number;
   /** 没输出多久算卡住（分钟，0 = 不限），所有机器一样 */
   idleRun?: number;
+  /** 每个 agent 由哪些机器做（没有这一项的 agent 所有装了它的机器都参与） */
+  picks?: SchedPick[];
 }
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */

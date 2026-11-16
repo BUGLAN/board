@@ -2164,6 +2164,8 @@ pub(crate) struct HostRow {
     pub(crate) idle_run: i64,
     pub(crate) rules: Vec<ClaimRule>,
     pub(crate) fallback: Option<String>,
+    /// 每个 agent 明确不参与的机器 id（`sched.picks`）
+    pub(crate) picks: crate::sched::Picks,
     pub(crate) paused: bool,
     pub(crate) agent: Option<String>,
     /// 参与自动接单（`sched.rs`）
@@ -2201,7 +2203,7 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT picks FROM sched WHERE id = 1), '{}') AS sched_picks";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -2229,6 +2231,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         idle_run: r.get(32)?,
         rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>(20)?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
         fallback: r.get(21)?,
+        picks: crate::sched::parse_picks(&r.get::<_, String>("sched_picks")?),
         paused: r.get::<_, i64>(8)? != 0,
         agent: r.get(9)?,
         auto: r.get::<_, i64>(39)? != 0,
@@ -2362,6 +2365,11 @@ impl HostRow {
     fn has_rules(&self) -> bool {
         !self.rules.is_empty()
     }
+    /// 这台机器上按「由哪些机器做」挑卡片的规则：勾了这台机器的 agent 才接它的卡。
+    /// 给回来的 `Routes` 要拿着不放（它借用规则里的名字）
+    fn routes<'r>(&'r self, rules: &'r Rules) -> Routes<'r> {
+        Routes { inner: rules, picks: &self.picks, host: self.id }
+    }
     /// 默认 agent：设置过且找到了就是它，否则第一个找到的
     pub(crate) fn default_agent(&self) -> Option<HostAgent> {
         let all = self.resolved();
@@ -2471,6 +2479,37 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
     })
 }
 
+/// 一台机器上看得见的 agent + 明确不参与它的机器（拿到的 agent 名按它自己的生命周期借出去，和 `Rules` 一样长）
+struct Routes<'a> {
+    inner: &'a Rules,
+    picks: &'a crate::sched::Picks,
+    host: i64,
+}
+
+impl<'a> Routes<'a> {
+    /// 这台机器参不参与这个 agent 的自动领取：不在排除列表里就参与（默认参与）
+    fn takes(&self, agent: &str) -> bool {
+        self.picks.get(agent).is_none_or(|off| !off.contains(&self.host))
+    }
+
+    /// 这道命中规则交给这个 agent；这台机器被排除了时不交
+    fn agent(&self, agent: &'a str) -> Option<&'a str> {
+        self.takes(agent).then_some(agent)
+    }
+
+    /// 一张卡片交给哪个 agent（和 [`Rules::route`] 一样算上兜底，兜底的 agent 也看「由哪些机器做」）
+    fn route(&self, labels: &[String]) -> Option<&'a str> {
+        if self.inner.matches_any(labels) {
+            return self.inner.agent_for(labels).and_then(|a| self.agent(a));
+        }
+        self.inner
+            .fallback
+            .as_ref()
+            .filter(|(_, ok)| *ok)
+            .and_then(|(a, _)| self.takes(a).then_some(a.as_str()))
+    }
+}
+
 /// 一条解析后的领取规则
 struct Cond {
     op: String,
@@ -2523,6 +2562,7 @@ impl Rules {
         None
     }
     /// 同上，算上兜底
+    #[allow(dead_code)]
     fn route(&self, labels: &[String]) -> Option<&str> {
         if self.matches_any(labels) {
             return self.agent_for(labels);
@@ -3226,6 +3266,14 @@ impl<'a> W<'a> {
         // 按排好的顺序以同一个名字领取；领不到的记「没领到」，接着取再下一张
         for id in queue {
             let q = self.drow(id)?;
+            // 开会话之后人被从「由这些机器做」里点掉了：这张也不再交给它，取消排队、卡片回到可领取状态
+            if h.picks.get(&q.agent).is_some_and(|off| off.contains(&h.id)) {
+                self.close_row(&q, "canceled", None)?;
+                let back = self.unreserve(q.board, q.card, &Actor::system())?;
+                let text = format!("派发取消：{}不再由这台机器自动接（{}）{back}", q.agent_label, Self::dispatch_words(&q));
+                self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
+                continue;
+            }
             let q = DRow { name: Some(name.to_string()), env: d.env.clone(), env_name: d.env_name.clone(), model: d.model.clone(), effort: d.effort.clone(), ..q };
             self.dispatch_ok = true;
             let claimed = self.exec(&board, &actor, Cmd::Claim { id: Some(q.card) });
@@ -3298,6 +3346,10 @@ impl<'a> W<'a> {
             if x.id == h.id || !x.online(self.now) || !x.auto_active(self.now) || x.restarting() || !x.has_agent(agent) {
                 continue;
             }
+            // 这个 agent 的「由这些机器做」里明确排除了它：它不领这个 agent 的卡，也就不是能分摊的机器
+            if x.picks.get(agent).is_some_and(|off| off.contains(&x.id)) {
+                continue;
+            }
             if self.sessions_on(&x)? >= x.max || self.read().board_unfit(&x, board)?.is_some() || self.read().agent_tripped(&x, agent)? {
                 continue;
             }
@@ -3306,14 +3358,14 @@ impl<'a> W<'a> {
         Ok(n)
     }
 
-    fn plan_session(&mut self, h: &HostRow, rules: &Rules, first: &Dispatch, board: &BoardRef, flow: &Flow, skip: &[i64]) -> Result<()> {
+    fn plan_session(&mut self, h: &HostRow, rules: &Routes<'_>, first: &Dispatch, board: &BoardRef, flow: &Flow, skip: &[i64]) -> Result<()> {
         let want = (h.per_session.max(1) - 1) as usize;
         if want == 0 {
             return Ok(());
         }
         let mut skip = skip.to_vec();
         skip.push(first.card);
-        let rule_labels = rules.labels();
+        let rule_labels = rules.inner.labels();
         let mine: Vec<String> = card_label_names(self.tx, board.id, first.card)?.into_iter().filter(|l| !rule_labels.contains(l)).collect();
         let urgent = self.priority_cards(board.id)?;
         // （不带优先标签，共同标签数取反，规则 1 的顺序，卡片）
@@ -4676,6 +4728,7 @@ impl<'a> W<'a> {
         }
         self.tx.execute("DELETE FROM hosts WHERE id = ?1", [h.id])?;
         self.tx.execute("DELETE FROM host_ops WHERE host_id = ?1", [h.id])?;
+        self.read().drop_host_picks(h.id)?;
         self.touch_hosts();
         self.assign_any()?;
         Ok(revoked)
@@ -5406,7 +5459,9 @@ impl<'a> W<'a> {
         if h.restarting() || self.sessions_on(&h)? >= h.max {
             return Ok(None);
         }
-        let Some(rules) = h.claim_rules() else { return Ok(None) };
+        // 规则按这台机器筛过：「由这些机器做」里明确排除了这台机器的 agent，它的卡这台机器不领
+        let cached = h.claim_rules();
+        let Some(rules) = cached.as_ref().map(|r| h.routes(r)) else { return Ok(None) };
         // 这一段接单从什么时候开始（进入接单时段后第一次来领时记下）
         let since = match h.round_at {
             Some(t) => t,

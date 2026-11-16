@@ -287,9 +287,19 @@ export const api = {
   pauseAllHosts: (paused: boolean) => req<HostInfo[]>('POST', '/api/hosts/pause-all', { paused }),
   /** 全部停止：停止所有正在跑的派发，同时全部暂停 */
   stopAllHosts: () => req<HostInfo[]>('POST', '/api/hosts/stop-all'),
-  /** 改全局的领取规则（整个列表替换）和兜底（空字符串 = 不领）：所有机器共用 */
-  updateSched: (patch: { rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[]; fallback?: string; autoUpgrade?: boolean; maxRun?: number; idleRun?: number }) =>
-    req<Sched>('PATCH', '/api/sched', patch),
+  /** 改全局的领取规则（整个列表替换）和兜底（空字符串 = 不领）：所有机器共用。
+      另带 `agent` + `add` / `remove`（勾上 / 取消的机器 id）或 `all`（回到所有装了它的机器都参与）：改这个 agent「由这些机器做」 */
+  updateSched: (patch: {
+    rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[];
+    fallback?: string;
+    autoUpgrade?: boolean;
+    maxRun?: number;
+    idleRun?: number;
+    agent?: string;
+    add?: number[];
+    remove?: number[];
+    all?: boolean;
+  }) => req<Sched>('PATCH', '/api/sched', patch),
   /** 这台机器最近 50 个结束的派发 */
   hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`).then(normDispatches),
   /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */

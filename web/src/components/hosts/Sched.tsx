@@ -15,10 +15,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { ACCEPT_WORDS, acceptOf, acceptPatch, hostLoad, minsWords, type Accept } from '../../lib/hosts';
 import { metasOf } from '../../lib/providers';
-import { ALL_DAY, DAY, SNAP, agentTake, claimable, hhmm, hostTake, ruleAgents, serverMinute, tidyWins, winWords, type Win } from '../../lib/sched';
+import { ALL_DAY, DAY, SNAP, agentTake, claimable, hhmm, hostTake, pickState, ruleAgents, serverMinute, tidyWins, togglePick, winWords, type Win } from '../../lib/sched';
 import type { AgentMeta, ClaimRule, HostInfo, Label, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
-import { boardAutoPatch, saveSetting, useData } from '../../store/data';
+import { boardAutoPatch, saveSetting, schedPickPatch, useData } from '../../store/data';
 import { openHost } from '../../store/ui';
 import { Select, Sync, Tip, useNow, useSync } from '../bits';
 import { Icon } from '../Icon';
@@ -107,6 +107,13 @@ export function ClaimRules({ hosts }: { hosts: HostInfo[] }) {
       saveSetting(`sched:board:${path}`, boardAutoPatch(path, on), () => api.updateBoard(path, { auto: on })),
     );
   const edit = (i: number, change: Partial<ClaimRule>) => saveRules(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
+  // 「由这些机器做」：勾上 / 取消一台机器（按 agent 一组存），或者回到「所有装了它的机器都参与」。
+  // 设置项：当帧生效，保存状态画在胶囊旁边，失败回到原处
+  const savePick = (agent: string, on: number[], req: { add?: number[]; remove?: number[]; all?: boolean }) =>
+    track(
+      `pick:${agent}`,
+      saveSetting(`sched:pick:${agent}`, schedPickPatch(agent, on, req.all), () => api.updateSched({ agent, ...req })),
+    );
   const move = (i: number, d: number) => {
     const next = [...rules];
     const [r] = next.splice(i, 1);
@@ -174,13 +181,16 @@ export function ClaimRules({ hosts }: { hosts: HostInfo[] }) {
           {cards.map(a => {
             const mine = rules.map((r, i) => ({ r, i })).filter(x => x.r.agent === a);
             const has = hosts.filter(h => h.agents.some(x => x.id === a));
-            const able = has.filter(h => agentTake(h, a, hostLoad(ws, h).running.length, minute).ok).length;
+            const pick = pickState(ws, a, has.map(h => h.id));
+            const able = has.filter(h => pick.on.includes(h.id) && agentTake(h, a, hostLoad(ws, h).running.length, minute).ok).length;
             return (
               <article key={a} className="sd-card">
                 <header>
                   <AgentIcon id={a} />
                   <b>{agentName(a)}</b>
-                  <span className={cx('sd-sum', able === 0 && 'bad')}>{has.length === 0 ? '没有机器上有它' : able ? `${able} 台现在能接` : '现在没有机器能接'}</span>
+                  <span className={cx('sd-sum', able === 0 && 'bad')}>
+                    {has.length === 0 ? '没有机器上有它' : pick.none ? '一台机器都没选：不自动领卡' : able ? `${able} 台现在能接` : '现在没有机器能接'}
+                  </span>
                 </header>
                 <div className="sd-row">
                   <span className="sd-k">领这些卡</span>
@@ -224,16 +234,39 @@ export function ClaimRules({ hosts }: { hosts: HostInfo[] }) {
                     {has.length === 0 && <em className="sd-none">没有机器上有 {agentName(a)}：这些规则不生效</em>}
                     {has.map(h => {
                       const t = agentTake(h, a, hostLoad(ws, h).running.length, minute);
+                      const on = pick.on.includes(h.id);
+                      const pickTip = on ? `${h.name}：点一下不再由这台机器做${agentName(a)}的卡（手动派发照常）` : `${h.name}：点一下由这台机器做${agentName(a)}的卡`;
                       return (
-                        <Tip key={h.id} text={`${h.name}：${t.why}`}>
-                          <button type="button" className={cx('sd-mp', t.tone)} onClick={() => openHost(h.name)}>
-                            <i />
-                            {h.name}
-                            {t.tone !== 'off' && <small>{t.ok ? t.why : t.why.split('，')[0]}</small>}
-                          </button>
+                        <Tip key={h.id} text={`${h.name}：${t.why}${'　'}${pickTip}`}>
+                          <span className={cx('sd-mp-wrap', on && 'on')}>
+                            <button
+                              type="button"
+                              className={cx('sd-mp', 'pick', on ? t.tone : 'unpicked', sync[`pick:${a}`] === 'failed' && 'hp-rollback')}
+                              aria-pressed={on}
+                              onClick={() => {
+                                const next = togglePick(pick, h.id);
+                                savePick(a, next, next.includes(h.id) ? { add: [h.id] } : { remove: [h.id] });
+                              }}
+                            >
+                              <i />
+                              {on && <Icon name="check" />}
+                              {h.name}
+                              <small>{t.ok ? t.why : t.why.split('，')[0]}</small>
+                            </button>
+                            <button type="button" className="sd-mp-open" aria-label={`打开机器 ${h.name}`} onClick={() => openHost(h.name)}>
+                              <Icon name="chevRight" />
+                            </button>
+                          </span>
                         </Tip>
                       );
                     })}
+                    {has.length > 0 && pick.none && <em className="sd-none sd-pick-none">一台都没选：{agentName(a)} 不自动领卡</em>}
+                    {has.length > 0 && !pick.none && !pick.unset && pick.on.length < has.length && (
+                      <button type="button" className="sd-pick-all" onClick={() => savePick(a, has.map(h => h.id), { all: true })}>
+                        全部参与
+                      </button>
+                    )}
+                    <Sync s={sync[`pick:${a}`]} inline />
                   </div>
                 </div>
               </article>

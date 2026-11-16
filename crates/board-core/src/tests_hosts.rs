@@ -2299,6 +2299,197 @@ fn rules_agent_must_exist_and_missing_agent_disables_rule() {
     assert_eq!(dispatch(&mut s, T0 + 3 * S, d, "mbp", Some("claude")).unwrap().agent, "claude");
 }
 
+/// 两台都装了 claude、dsh 的机器：`mbp`（i1）和 `desk`（j1）；`desk` 的 id 是 2
+fn rep_mbp() -> HostReport {
+    report_cd("i1")
+}
+
+fn rep_desk() -> HostReport {
+    let mut r = report("desk", "j1", vec![]);
+    r.agents = vec![claude(true), dsh(true)];
+    r
+}
+
+/// 改过名的 mbp（同一个进程 i1）
+fn rep_win() -> HostReport {
+    let mut r = report_cd("i1");
+    r.name = "win".into();
+    r
+}
+
+fn two_hosts(s: &mut Store) {
+    beat(s, T0, &rep_mbp()).unwrap();
+    beat(s, T0, &rep_desk()).unwrap();
+    for name in ["mbp", "desk"] {
+        s.write(T0, Origin::ui(None), |w| w.host_update(name, &HostPatch { max: Some(4), per_session: Some(1), auto: Some(true), ..Default::default() }))
+            .unwrap();
+    }
+}
+
+/// 每台机器来领一次，返回它领到的卡片（`report` 是它的心跳：每台机器一个进程标识，来领卡也要带着）
+fn pull2(s: &mut Store, at: i64, rep: &HostReport) -> Option<i64> {
+    beat(s, at, rep).unwrap();
+    s.write(at, Origin::cli(), |w| w.dispatch_pull(&rep.name, &rep.instance, Some(1))).unwrap().map(|d| d.card)
+}
+
+#[test]
+fn pick_off_machine_does_not_auto_claim_that_agent() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let lc = label(&mut s, "claude");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    // 没设置过：两台都参与（和以前一样），第一台照常领
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    assert_eq!(pull2(&mut s, T0 + S, &rep_mbp()), Some(c));
+    let d = s.read(|r| r.active_dispatches()).unwrap();
+    assert_eq!(d.len(), 1);
+    // 勾掉 mbp（只留 desk 一台）：mbp 不领 claude 的卡
+    let mbp = host(&s, T0).id;
+    let sc = s.write(T0 + 2 * S, Origin::ui(None), |w| w.sched_pick("claude", &[desk], &[mbp], false)).unwrap();
+    assert_eq!(sc.picks.iter().find(|p| p.agent == "claude").map(|p| (p.hosts.clone(), p.none, p.unset)), Some((vec![desk], false, false)));
+    let c2 = new_card(&mut s, T0 + 2 * S, "C2");
+    tag(&mut s, c2, lc);
+    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_mbp()), None, "没勾的机器有空位也不领");
+}
+
+#[test]
+fn pick_none_means_agent_never_auto_claims() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let lc = label(&mut s, "claude");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    // 两台都取消：一台都没勾，两台都不领（换新的进程标识也一样），卡片留在待办；手动派发照常
+    let ids: Vec<i64> = s.read(|r| r.hosts(T0)).unwrap().iter().map(|h| h.id).collect();
+    let sc = s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("claude", &[], &ids, false)).unwrap();
+    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
+    assert!(p.none && p.hosts.is_empty() && !p.unset, "{p:?}");
+    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_mbp()), None);
+    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_desk()), None);
+    assert_eq!(card(&s, c).card.column, "todo");
+    assert_eq!(dispatch(&mut s, T0 + 3 * S, c, "mbp", Some("claude")).unwrap().agent, "claude");
+    // 恢复全选（所有装了它的机器）：先取消手动派发（卡片回到待办）
+    s.write(T0 + 4 * S, Origin::ui(None), |w| w.sched_pick("claude", &[], &[], true)).unwrap();
+    let sc = s.read(|r| r.sched(T0 + 4 * S)).unwrap();
+    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
+    let ids: Vec<i64> = s.read(|r| r.hosts(T0)).unwrap().iter().map(|h| h.id).collect();
+    assert!(p.unset && !p.none && p.hosts.len() == ids.len(), "{p:?}");
+    let back = s.read(|r| r.active_dispatches()).unwrap();
+    for d in back {
+        s.write(T0 + 5 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "不要了")).unwrap();
+    }
+    // 这一段接单里 mbp 先跳过它（手动派发过又取消）：换新的一段接单后照常领
+    s.write(T0 + 6 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
+    s.write(T0 + 6 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(false), ..Default::default() })).unwrap();
+    assert_eq!(pull2(&mut s, T0 + 7 * S, &rep_mbp()), Some(c), "新的一段接单照常领");
+}
+
+#[test]
+fn picks_are_per_agent_and_survive_rename() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let lc = label(&mut s, "claude");
+    let ld = label(&mut s, "deepseek");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    let d = new_card(&mut s, T0, "D");
+    tag(&mut s, d, ld);
+    rules(&mut s, &[("claude", "claude"), ("deepseek", "dsh")], None).unwrap();
+    // 只勾掉 claude 在 mbp 上的参与：dsh 的卡不变
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    let mbp = s.read(|r| r.host("mbp", T0)).unwrap().id;
+    s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("claude", &[desk], &[mbp], false)).unwrap();
+    // 改名：存的是机器 id，选择不受影响
+    s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("mbp", "win")).unwrap();
+    let sc = s.read(|r| r.sched(T0 + 2 * S)).unwrap();
+    assert_eq!(sc.picks.iter().find(|p| p.agent == "claude").unwrap().hosts, vec![desk]);
+    let pd = sc.picks.iter().find(|p| p.agent == "dsh").unwrap();
+    assert!(pd.unset && pd.hosts.contains(&mbp) && pd.hosts.contains(&desk), "dsh 没设置过 = 全都参与");
+    // 改名后还是那台机器：win 不领 claude 的卡（claude 的卡留给勾着的 desk），dsh 的卡它自己领走
+    let first = pull2(&mut s, T0 + 3 * S, &rep_win());
+    assert_ne!(first, Some(c), "win（原来的 mbp）不领 claude 的卡");
+    assert_eq!(first, Some(d), "它照常领自己参与的 dsh 卡");
+    assert_eq!(pull2(&mut s, T0 + 4 * S, &rep_desk()), Some(c));
+    // 规则整个保存（界面改标签）：没带 hosts 时保留原来的选择
+    let next = vec![rule("claude", "claude"), rule("deepseek", "dsh")];
+    s.write(T0 + 5 * S, Origin::ui(None), |w| w.sched_update(Some(&next), None)).unwrap();
+    let sc = s.read(|r| r.sched(T0 + 5 * S)).unwrap();
+    assert_eq!(sc.picks.iter().find(|p| p.agent == "claude").unwrap().hosts, vec![desk], "整个列表替换时选择不丢");
+}
+
+#[test]
+fn removed_or_new_host_and_agent() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let lc = label(&mut s, "claude");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    let mbp = s.read(|r| r.host("mbp", T0)).unwrap().id;
+    // 勾掉的 mbp 仍然不参与；移除勾着的 desk 不会把 mbp 重新选回来
+    s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("claude", &[desk], &[mbp], false)).unwrap();
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_remove("desk", &Actor::human(), "buglan")).unwrap();
+    let sc = s.read(|r| r.sched(T0 + 2 * S)).unwrap();
+    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
+    assert!(p.hosts.is_empty() && p.none && !p.unset, "{p:?}");
+    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_mbp()), None, "被排除的 mbp 没因为另一台被移除而恢复");
+    // 移除被排除的 mbp：排除列表清空；之后新装 claude 的机器默认参与
+    s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "buglan")).unwrap();
+    let sc = s.read(|r| r.sched(T0 + 4 * S)).unwrap();
+    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
+    assert!(p.hosts.is_empty() && p.unset, "排除列表清完 = 默认全选");
+    let mut air = report("air", "k1", vec![]);
+    air.agents = vec![claude(true)];
+    beat(&mut s, T0 + 5 * S, &air).unwrap();
+    s.write(T0 + 5 * S, Origin::ui(None), |w| w.host_update("air", &HostPatch { auto: Some(true), max: Some(1), ..Default::default() })).unwrap();
+    assert_eq!(pull2(&mut s, T0 + 6 * S, &air), Some(c), "后装上这个 agent 的机器默认参与");
+}
+
+/// 只有兜底、没有规则行的 agent 也能单独勾机器；没勾的机器不领规则没命中的卡片
+#[test]
+fn fallback_only_agent_can_pick_machines() {
+    let mut s = store();
+    two_hosts(&mut s);
+    label(&mut s, "claude");
+    let other = new_card(&mut s, T0, "其余");
+    rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    let mbp = host(&s, T0).id;
+    let sc = s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("dsh", &[], &[mbp], false)).unwrap();
+    let p = sc.picks.iter().find(|p| p.agent == "dsh").unwrap();
+    assert_eq!((p.hosts.clone(), p.none, p.unset), (vec![desk], false, false));
+    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_mbp()), None, "兜底 agent 在 mbp 上被勾掉");
+    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_desk()), Some(other), "desk 仍然接兜底卡片");
+}
+
+/// 会话中途把机器从「由这些机器做」里点掉：board next 不再把排着的卡交给它，卡片释放给别的机器
+#[test]
+fn next_stops_when_machine_is_unpicked_mid_session() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let lc = label(&mut s, "claude");
+    let first = new_card(&mut s, T0, "第一张");
+    tag(&mut s, first, lc);
+    let second = new_card(&mut s, T0, "第二张");
+    tag(&mut s, second, lc);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { per_session: Some(2), ..Default::default() })).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    let d = pull(&mut s, T0 + 2 * S).unwrap();
+    assert_eq!(d.card, first);
+    let name = d.name.unwrap();
+    let mbp = host(&s, T0).id;
+    s.write(T0 + 3 * S, Origin::ui(None), |w| w.sched_pick("claude", &[], &[mbp], false)).unwrap();
+    submit(&mut s, T0 + 3 * S, &name, first);
+    assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
+    assert_eq!(card(&s, second).card.column, "todo", "排着的那张已经放回待办");
+    assert_eq!(pull2(&mut s, T0 + 5 * S, &rep_desk()), Some(second), "仍然勾着的 desk 接着领");
+}
+
 /// 会话里 board next 只领按规则属于这个会话的 agent 的卡片；规则用到的标签不算共同标签
 #[test]
 fn next_follows_rules() {

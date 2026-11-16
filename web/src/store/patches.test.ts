@@ -451,6 +451,40 @@ describe('boardAutoPatch（白板参不参与自动领取）', () => {
   });
 });
 
+describe('schedPickPatch（由这些机器做）', () => {
+  const ws = () =>
+    workspace({
+      sched: {
+        rules: [
+          { op: 'in', labels: ['bug'], agent: 'claude' },
+          { op: 'in', labels: ['ui'], agent: 'dsh' },
+        ],
+        minute: 0,
+        picks: [{ agent: 'dsh', hosts: [1], unset: false }],
+      },
+    } as Partial<Workspace>);
+  it('只改这个 agent 的 picks，别的 agent 和规则不动；重复执行结果相同', () => {
+    const orig = ws();
+    const w = twice(D.schedPickPatch('claude', [2]).ws!, orig);
+    expect(w.sched!.rules).toBe(orig.sched!.rules);
+    expect(w.sched!.picks).toEqual([
+      { agent: 'dsh', hosts: [1], unset: false },
+      { agent: 'claude', hosts: [2], none: false, unset: false },
+    ]);
+    const off = twice(D.schedPickPatch('claude', []).ws!, w);
+    expect(off.sched!.picks!.find(p => p.agent === 'claude')).toEqual({ agent: 'claude', hosts: [], none: true, unset: false });
+    // 回到「全都参与」
+    const a = twice(D.schedPickPatch('claude', [1, 2], true).ws!, off);
+    expect(a.sched!.picks!.find(p => p.agent === 'claude')).toEqual({ agent: 'claude', hosts: [1, 2], none: false, unset: true });
+  });
+  it('只有兜底的 agent 也能改；没有 sched 时原样返回', () => {
+    const orig = ws();
+    expect(D.schedPickPatch('pi', [1]).ws!(orig).sched!.picks!.find(p => p.agent === 'pi')).toEqual({ agent: 'pi', hosts: [1], none: false, unset: false });
+    const bare = workspace();
+    expect(D.schedPickPatch('claude', [1]).ws!(bare)).toBe(bare);
+  });
+});
+
 describe('draftCard（新建）', () => {
   const draft = (title = '新卡片') => D.draftCard({ title, body: '', labels: [], column: 'todo' });
   const start = () => D.useData.setState({ board: board() });

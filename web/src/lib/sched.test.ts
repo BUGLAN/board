@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { agentTake, claimable, hhmm, hostTake, inWins, nextStart, ruleAgents, serverMinute, tidyWins, winWords, type Win } from './sched';
-import type { BoardInfo, ClaimRule, HostAgent, HostInfo } from './types';
+import { agentTake, claimable, hhmm, hostTake, inWins, nextStart, pickState, ruleAgents, serverMinute, tidyWins, togglePick, winWords, type Win } from './sched';
+import type { BoardInfo, ClaimRule, HostAgent, HostInfo, SchedPick } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
 const host = (x: Partial<HostInfo> = {}): HostInfo =>
@@ -75,5 +75,27 @@ describe('规则和白板', () => {
   it('白板上现在能领的卡片数：只数可领取状态', () => {
     const b = { statuses: [{ key: 'todo', claim: true }, { key: 'rework', claim: true }, { key: 'doing', claim: false }], counts: { todo: 3, rework: 1, doing: 5, inbox: 9 } } as unknown as BoardInfo;
     expect(claimable(b)).toBe(4);
+  });
+});
+
+describe('由这些机器做（default/main#406）', () => {
+  const ws = (picks?: SchedPick[]) => ({ sched: { rules: [], minute: 0, picks } });
+  it('没设置过、旧版服务端没有这一项：所有装了它的机器都参与', () => {
+    expect(pickState(ws(), 'claude', [1, 2])).toEqual({ on: [1, 2], none: false, unset: true });
+    expect(pickState(ws([{ agent: 'claude', hosts: [1, 2], unset: true }]), 'claude', [1, 2])).toEqual({ on: [1, 2], none: false, unset: true });
+    expect(pickState(null, 'claude', [7])).toEqual({ on: [7], none: false, unset: true });
+  });
+  it('选了哪几台就只有哪几台；一台都没选时是 none', () => {
+    expect(pickState(ws([{ agent: 'claude', hosts: [2] }]), 'claude', [1, 2])).toEqual({ on: [2], none: false, unset: false });
+    expect(pickState(ws([{ agent: 'claude', hosts: [], none: true }]), 'claude', [1, 2])).toEqual({ on: [], none: true, unset: false });
+    // 别的 agent 的选择不影响它
+    expect(pickState(ws([{ agent: 'dsh', hosts: [1] }]), 'claude', [1, 2]).unset).toBe(true);
+  });
+  it('点一下切换：选中的取消，没选中的勾上（重复点回到原样）', () => {
+    const st = pickState(ws([{ agent: 'claude', hosts: [1] }]), 'claude', [1, 2]);
+    const off = togglePick(st, 1);
+    expect(off).toEqual([]);
+    const back = togglePick({ ...st, on: off, none: false }, 1);
+    expect(back).toEqual([1]);
   });
 });

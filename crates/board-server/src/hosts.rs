@@ -725,6 +725,15 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
         /// 没输出多久算卡住（分钟，0 = 不限），所有机器一样
         #[serde(default, rename = "idleRun")]
         idle_run: Option<i64>,
+        /// 某个 agent「由这些机器做」：勾上的、取消的机器 id，`all` 回到所有装了它的机器都参与
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        add: Option<Vec<i64>>,
+        #[serde(default)]
+        remove: Option<Vec<i64>>,
+        #[serde(default)]
+        all: Option<bool>,
     }
     let b: Body = parse(v)?;
     let client = client_of(&h);
@@ -736,6 +745,11 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
                 }
                 if b.max_run.is_some() || b.idle_run.is_some() {
                     w.set_run_limits(b.max_run, b.idle_run)?;
+                }
+                if let Some(agent) = &b.agent {
+                    if b.add.is_some() || b.remove.is_some() || b.all.is_some() {
+                        w.sched_pick(agent, b.add.as_deref().unwrap_or_default(), b.remove.as_deref().unwrap_or_default(), b.all.unwrap_or(false))?;
+                    }
                 }
                 w.sched_update(b.rules.as_deref(), b.fallback.as_deref())
             })

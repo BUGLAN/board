@@ -1456,6 +1456,21 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sd-mp.ok i, .sd-dot.ok { background: var(--ok); }
 .sd-mp.wait i, .sd-dot.wait { background: var(--warn); }
 .sd-mp.off { color: var(--text-3); }
+/* 「由这些机器做」的勾选（default/main#406）：选中是强调色的底和勾，取消是灰的，照样写状态和原因；右边小按钮打开机器详情 */
+.sd-mp-wrap { display: inline-flex; align-items: center; border-radius: 999px; }
+.sd-mp.pick { cursor: pointer; }
+.sd-mp.pick svg { width: 11px; height: 11px; flex: none; }
+.sd-mp.pick.unpicked { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-2); }
+.sd-mp.pick.unpicked > i { background: var(--text-4); }
+.sd-mp.pick.unpicked small { color: var(--text-3); }
+.sd-mp.pick.unpicked:hover { background: var(--surface-3); }
+.sd-mp-wrap.on .sd-mp.pick { font-weight: 600; }
+.sd-mp-open { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: -2px; border-radius: 50%; color: var(--text-4); }
+.sd-mp-open:hover { color: var(--text-2); background: var(--surface-2); }
+.sd-mp-open svg { width: 11px; height: 11px; }
+.sd-pick-none { font-style: normal; font-size: 11.5px; color: var(--warn); }
+.sd-pick-all { font-size: 11.5px; color: var(--text-3); text-decoration: underline; }
+.sd-pick-all:hover { color: var(--text-1); }
 /* 时间带：刻度一行和每台机器一行用同样的三列，时间带才对得上刻度 */
 .sd-time { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); padding: 8px 14px 12px; }
 .sd-axis, .sd-line { display: grid; grid-template-columns: 110px minmax(200px, 1fr) 440px; align-items: center; column-gap: 14px; }

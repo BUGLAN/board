@@ -15,7 +15,7 @@ import { buildVersion } from '../lib/build';
 import { staleServer } from '../lib/stale';
 import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
-import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type ReadyCheck, type Workspace } from '../lib/types';
+import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type ReadyCheck, type SchedPick, type Workspace } from '../lib/types';
 
 interface DataState {
   ws: Workspace | null;
@@ -506,6 +506,19 @@ export const boardAutoPatch = (path: string, on: boolean): Patch => ({
   ws: ws => {
     if (!ws.projects.some(p => p.boards.some(b => b.path === path))) return ws;
     return { ...ws, projects: ws.projects.map(p => ({ ...p, boards: p.boards.map(b => (b.path === path ? { ...b, auto: on } : b)) })) };
+  },
+});
+
+/** 一个 agent「由哪些机器做」（领取规则里按 agent 一组的勾选）：`on` 是点完以后当前选中的机器，
+    只改 `sched.picks` 里这个 agent 那一项；`all` 是回到「所有装了它的机器都参与」 */
+export const schedPickPatch = (agent: string, on: number[], all = false): Patch => ({
+  ws: ws => {
+    const s = ws.sched;
+    if (!s) return ws;
+    const hosts = [...new Set(on)].sort((a, b) => a - b);
+    const next: SchedPick = { agent, hosts, none: !all && hosts.length === 0, unset: all };
+    const picks = [...(s.picks ?? []).filter(p => p.agent !== agent), next];
+    return { ...ws, sched: { ...s, picks } };
   },
 });
 
