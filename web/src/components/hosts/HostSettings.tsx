@@ -23,6 +23,7 @@ import { Segmented, Select, Sync, Tip, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { patchHost } from './bits';
 import { FolderPick } from './FolderPick';
+import { LocalHostPanel } from './LocalHost';
 import { askState } from './Manage';
 import { Resources } from './Resources';
 import type { Save } from './Saver';
@@ -51,6 +52,7 @@ export function HostSettings({
   const push = pushRows(h);
   return (
     <div className="hd-set">
+      <LocalHostPanel h={h} />
       <Resources h={h} now={now} server={server} behind={behind} />
       <section>
         <h3>接单</h3>

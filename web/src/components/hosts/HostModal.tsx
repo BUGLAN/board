@@ -3,14 +3,15 @@ import { useEffect, useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import { hostNameError, hostsOf, installCommand } from '../../lib/hosts';
-import { isWindows, shell } from '../../lib/platform';
+import { canHost, isWindows } from '../../lib/platform';
 import { copyText, cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
-import { openHost, setTab, toast, toastError, useUI } from '../../store/ui';
+import { openHost, toast, toastError, useUI } from '../../store/ui';
 import { Segmented, Select, Tip } from '../bits';
 import { Icon } from '../Icon';
 import { usePollHosts } from './bits';
 import { HostDetail, type DetailTab } from './HostDetail';
+import { LocalHostAdd } from './LocalHost';
 
 export function HostModal() {
   const sel = useUI(s => s.host);
@@ -117,21 +118,11 @@ function AddHostBody({ close }: { close: () => void }) {
             </div>
           </section>
           <section className="d-section">
-            <div className="d-label">装了桌面端的电脑</div>
-            <p className="hp-note">在「设置 → 本机」打开「让这台电脑接任务」，填好机器名和工作空间。桌面端在后台运行 board host，关掉窗口也继续接任务，退出桌面端时结束。</p>
-            {shell === 'desktop' && (
-              <button
-                className="btn sm"
-                type="button"
-                onClick={() => {
-                  close();
-                  setTab('settings');
-                  setTimeout(() => document.getElementById('set-host')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
-                }}
-              >
-                <Icon name="monitor" />
-                打开「设置 → 本机」
-              </button>
+            <div className="d-label">{canHost ? '这台电脑' : '装了桌面端的电脑'}</div>
+            {canHost ? (
+              <LocalHostAdd close={close} />
+            ) : (
+              <p className="hp-note">在那台电脑的 Board 桌面端里打开「机器 → 添加机器」，在「这台电脑」填好机器名和工作空间，点「开始接任务」；访问令牌自动建好。</p>
             )}
           </section>
           <CliInstall />

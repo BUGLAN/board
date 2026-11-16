@@ -298,3 +298,16 @@
   .hd-sheet-sel { flex-basis: 100%; }
   .hd-sheet-sel .input { max-width: none; }
 }
+
+/* ---------- 这台电脑（LocalHost.tsx）：添加机器里的「这台电脑」、本机的机器详情最上面一节 ---------- */
+.lh-add { display: flex; flex-direction: column; gap: 8px; }
+.lh-add .hp-note code { font-family: var(--f-mono); }
+.lh-add-go { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.lh-panel .lh-log { margin: 8px 0 0; }
+.lh-name-ctl { flex: none; display: flex; align-items: center; gap: 6px; }
+.lh-name-ctl .lh-name { width: 160px; height: 28px; }
+@media (max-width: 760px) {
+  .lh-name-row { flex-wrap: wrap; row-gap: 8px; }
+  .lh-name-ctl { flex: 1 1 100%; margin-left: 28px; }
+  .lh-name-ctl .lh-name { flex: 1; width: auto; min-width: 0; }
+}

@@ -1,13 +1,12 @@
 /* 设置页的分节导航（侧栏）和滚动定位。单独成文件：侧栏常驻，设置页本身按需加载 */
 import { create } from 'zustand';
-import { canHost, canUpdate } from '../lib/platform';
+import { canUpdate } from '../lib/platform';
 import { cx, reduceMotion, replay } from '../lib/util';
 import { Icon, type IconName } from './Icon';
 
 export const SECTIONS: { id: string; title: string; icon: IconName }[] = [
   { id: 'account', title: '账号', icon: 'user' },
   { id: 'appearance', title: '外观', icon: 'sun' },
-  ...(canHost ? [{ id: 'host', title: '本机', icon: 'host' as IconName }] : []),
   ...(canUpdate ? [{ id: 'update', title: '桌面端更新', icon: 'renew' as IconName }] : []),
   { id: 'shortcuts', title: '快捷键', icon: 'keyboard' },
 ];

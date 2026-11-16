@@ -60,7 +60,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 机器重启（系统更新、断电）后，要在有人登录、打开程序之前就自己上线，不然派给它的卡只会排队，自动领取也白设。
 
-- **装了桌面端的电脑**：「设置 → 本机」打开「让这台电脑接任务」时会一起打开「开机时自动启动」。之后登录系统时桌面端在后台启动，不弹窗口，只显示托盘 / Dock 图标，照常接任务。不想要时单独关掉这个开关。
+- **装了桌面端的电脑**：在「机器 → 添加机器 → 这台电脑」点「开始接任务」时会一起打开「开机时自动启动」（配置文件里还没有令牌时自动以机器名建一个）。之后登录系统时桌面端在后台启动，不弹窗口，只显示托盘 / Dock 图标，照常接任务。不想要时在这台电脑的机器详情「设置」最上面单独关掉这个开关。
 - **只有命令行的机器**：「添加机器」生成的那一行已经带了这一步。手动装：
 
   ```sh
@@ -200,7 +200,7 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 
 只复制 `SKILL.md` 不够（分文件缺了，agent 读不到那部分规则）：解压 `board-skills.zip` 或链接整个目录。
 
-用 Board 桌面端让这台电脑接任务时，可以不手动装：board host 启动时就会装上。看不到时，「机器」里点开这台机器，agent 页里那个 agent 的卡片上写「缺 board-skills」，点「装上」让 board host 再同步一次；桌面端「设置 → 本机」的「一键安装」把 skill（带桌面端自带的 `board`）写进这些 agent 读 skill 的用户级目录（dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`），board host 在跑时改成让它再同步一次。已经是有效链接的不动。WSL 里的 agent、别的机器、网页端没有这个按钮，仍按上面手动装。
+用 Board 桌面端让这台电脑接任务时，可以不手动装：board host 启动时就会装上。看不到时，「机器」里点开这台机器，agent 页里那个 agent 的卡片上写「缺 board-skills」，点「装上」让 board host 再同步一次（它把 skill 写进这些 agent 读 skill 的用户级目录：dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`；已经是有效链接的不动）。WSL 里的 agent 仍按上面手动装。
 
 ## 按批次接入新的 agent
 
@@ -300,7 +300,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 原始输出里是一行一行的 JSON，「过程」里写只能看原始输出 | 配置文件里给别的标识的 agent 用了 JSON 输出：`board host` 只解析内置的 Claude Code（`claude`）、pi（`pi`）、Codex（`codex`）、dsh（`dsh`）四个标识，而且命令里要带事件流参数；换回文本输出，或者按「写成内置模板」接上它的解析 |
 | dsh 的「过程」里只能看原始输出 | 本机的 dsh 比 0.2.2 旧，没有 `--json`：升级 DeepSeek Harness |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |
-| 桌面端「本机」打开后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |
+| 桌面端「这台电脑」开始接任务后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |
 | 从设置了 `BOARD_TOKEN` 的终端或 agent 会话里启动桌面端，打开「让这台电脑接任务」后 board host 以 `INVALID_TOKEN` 停止 | 旧版桌面端把启动环境里的 `BOARD_URL`、`BOARD_TOKEN`（还有 `BOARD_CONFIG`、`BOARD_AS`、`BOARD`）继承给了后台的 board host，环境变量优先于配置文件，令牌是别的服务端的。新版启动 board host 和改机器名时都去掉这些变量，只用配置文件；升级桌面端 |
 | Windows 上 `npm run desktop:dev` 报 `failed to remove file ... target\debug\board.exe`（os error 5：拒绝访问） | 上次开发启动的 `board-desktop.exe` / `board host` 还在从 `target\debug\board.exe` 运行，锁住了文件。新版 `scripts/build-sidecar.mjs` 会在 dev 构建前自动结束本仓库这两个进程；如果还失败，先从托盘退出 Board，再运行 `npm run desktop:dev` |
 | 卡片动态里 agent 又 check 了一个新名字、领取失败 | 用的 `board-skills` 是旧版（没有「由 board host 启动的会话」一节），更新 skill |

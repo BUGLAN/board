@@ -52,7 +52,7 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
           short: '在线',
           ok: false,
           why: `离线，最近一次在线是${since(h.offAt ?? h.beatAt, now)}`,
-          hint: '在那台机器上启动 board host，或在它的桌面端「设置 → 本机」打开「让这台电脑接任务」',
+          hint: '在那台机器上启动 board host，或在它的桌面端「机器 → 添加机器 → 这台电脑」开始接任务',
         },
   );
 
