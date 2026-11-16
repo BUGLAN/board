@@ -7,6 +7,7 @@
 import { flushSync } from 'react-dom';
 import { openCard } from './actions';
 import * as flip from './flip';
+import { gridTracks } from './masonry';
 import { boardFlow, INBOX, type FlowQ } from './schema';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
@@ -344,10 +345,7 @@ function zoneAt(cols: HTMLElement[], x: number, y: number, cur: ColumnKey | unde
 function insertIndex(list: HTMLElement | null, items: HTMLElement[], x: number, y: number, phHeight: number): number {
   if (!list || !items.length) return 0;
   const cs = getComputedStyle(list);
-  const gap = parseFloat(cs.columnGap) || 0;
-  const tracks = cs.gridTemplateColumns.split(/\s+/).map(parseFloat).filter(n => n > 0);
-  const w = tracks[0] ?? list.clientWidth;
-  const T = Math.max(1, tracks.length);
+  const { T, w, gap } = gridTracks(list, cs);
   const lr = list.getBoundingClientRect();
   const left0 = lr.left + list.clientLeft + (parseFloat(cs.paddingLeft) || 0);
   const top0 = lr.top + list.clientTop + (parseFloat(cs.paddingTop) || 0);

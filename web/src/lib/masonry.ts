@@ -78,14 +78,26 @@ export function pack(entries: Entry[], T: number): Place[] {
   return out;
 }
 
+/** 计算样式里的 grid-template-columns（每栏一个 px 值）→ 显式栏的宽度。
+    卡片的 grid-column 是按上一次的栏数写的：列表变窄（拖窄状态块、窗口变窄、宽度过渡）后，
+    排在后面几栏的卡片超出 auto-fill 排出的栏，网格为它们生成隐式栏，计算样式把隐式栏也列出来。
+    照着它数栏，栏数就停在旧值，卡片一直排在状态块外面（default/main#387）。
+    CSS 里 .col-list 的 grid-auto-columns 是 0：隐式栏宽 0，这里只留宽度大于 0 的栏 */
+export function explicitTracks(template: string): number[] {
+  return template.split(/\s+/).map(parseFloat).filter(n => n > 0);
+}
+
+/** 列表现在的栏数 T、每栏宽 w、栏间距 gap（摆放和拖动插入位置都按它算） */
+export function gridTracks(list: HTMLElement, cs: CSSStyleDeclaration = getComputedStyle(list)) {
+  const gap = parseFloat(cs.columnGap) || 0;
+  const tracks = explicitTracks(cs.gridTemplateColumns);
+  return { T: Math.max(1, tracks.length), w: tracks[0] ?? list.clientWidth, gap };
+}
+
 function apply(list: HTMLElement, after?: (list: HTMLElement) => void) {
   // 所在页面被隐藏（切到别的 Tab，display: none）时量不到高度：保持原样，切回来不用重排、不跳
   if (!list.offsetParent) return;
-  const cs = getComputedStyle(list);
-  const gap = parseFloat(cs.columnGap) || 0;
-  const tracks = cs.gridTemplateColumns.split(/\s+/).map(parseFloat).filter(n => n > 0);
-  const T = Math.max(1, tracks.length);
-  const w = tracks[0] ?? list.clientWidth;
+  const { T, w, gap } = gridTracks(list);
   const min = Math.ceil((MIN_BLOCK + gap) / (w + gap));
   const items = [...list.children] as HTMLElement[];
   // 先全部读，再全部写，只触发一次重排

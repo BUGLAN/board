@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pack, type Entry } from './masonry';
+import { explicitTracks, pack, type Entry } from './masonry';
 import { placeAt } from './drag';
 
 const item = (rows: number): Entry => ({ kind: 'item', rows });
@@ -59,5 +59,19 @@ describe('pack', () => {
     const out = pack([item(80), head(), item(40), item(90), foot(), item(30), item(30), head(), item(20), item(20), foot(), item(50)], 3);
     const starts = [0, 1, 5, 6, 7, 11].map(i => out[i].row);
     expect([...starts].sort((a, b) => a - b)).toEqual(starts);
+  });
+});
+
+describe('explicitTracks', () => {
+  it('只数显式栏：块变窄后旧位置撑出的隐式栏（grid-auto-columns: 0，宽 0）不算，default/main#387', () => {
+    // 块从 17 栏拖窄到 11 栏：计算样式列出 11 个显式栏 + 6 个隐式栏
+    const template = [...Array(11).fill('38.3984px'), ...Array(6).fill('0px')].join(' ');
+    expect(explicitTracks(template)).toHaveLength(11);
+    expect(explicitTracks(template)[0]).toBeCloseTo(38.3984);
+  });
+
+  it('没有隐式栏时原样返回；none（还没排版）时为空，由调用方按 1 栏处理', () => {
+    expect(explicitTracks('220px 280.5px')).toEqual([220, 280.5]);
+    expect(explicitTracks('none')).toEqual([]);
   });
 });
