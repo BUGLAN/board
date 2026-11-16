@@ -112,10 +112,27 @@ fn synced_in(dir: &Path) -> BTreeMap<String, String> {
     out
 }
 
+/// 目录链接：Windows 的 junction 也是 reparse point。新版 std 会把它算进 `is_symlink`，
+/// 但只认 symlink tag 的实现不一定；这里再按文件属性兜一层，开发中的 skill 一律不覆盖。
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// 同步装的 skill 目录（不是链接、有标记文件）的版本
 fn mark_of(dir: &Path) -> Option<String> {
     let meta = std::fs::symlink_metadata(dir).ok()?;
-    if meta.file_type().is_symlink() || !meta.is_dir() {
+    if is_link(&meta) || !meta.is_dir() {
         return None;
     }
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(MARK)).ok()?).ok()?;
@@ -172,25 +189,60 @@ fn install(dir: &Path, pack: &SkillPack, exe: Option<&Path>) -> std::result::Res
         }
         let mark = json!({ "name": name, "version": pack.info.version, "at": now_ms(), "by": "board skills（共用库同步装的，改动会被下一次同步换掉）" });
         std::fs::write(tmp.join(MARK), serde_json::to_string_pretty(&mark).unwrap_or_default()).map_err(|e| format!("写不了标记文件：{e}"))?;
-        let dest = dir.join(name);
-        if std::fs::symlink_metadata(&dest).is_ok() {
-            let old = dir.join(format!(".{name}.old-{pid}"));
-            let _ = std::fs::remove_dir_all(&old);
-            std::fs::rename(&dest, &old).map_err(|e| format!("换不下旧版本：{e}"))?;
-            if let Err(e) = std::fs::rename(&tmp, &dest) {
-                let _ = std::fs::rename(&old, &dest);
-                return Err(format!("换不上新版本：{e}"));
-            }
-            let _ = std::fs::remove_dir_all(&old);
-        } else {
-            std::fs::rename(&tmp, &dest).map_err(|e| format!("换不上新版本：{e}"))?;
-        }
-        Ok(())
+        replace_dir(dir, name, &tmp)
     })();
     if res.is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
     res
+}
+
+/// 整目录换上。Windows 上杀毒/索引服务可能短暂占住刚写出的文件，此时 `rename` 会是
+/// 「拒绝访问」；等一会儿再试，避免第一次同步失败、用户再点一次才成功。
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        #[cfg(test)]
+        let wait = std::time::Duration::from_millis(20);
+        #[cfg(not(test))]
+        let wait = std::time::Duration::from_millis(100);
+        const TRIES: usize = 20;
+        for n in 0..TRIES {
+            match std::fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && n + 1 < TRIES => std::thread::sleep(wait),
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("最后一轮已经返回")
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+}
+
+/// 把 `tmp` 换成 `dir/name`。已有旧目录时先挪到同目录的隐藏名字；新目录换不上就挪回来，
+/// 回滚也失败时把旧版本留在哪里写进错误，不能悄悄丢掉。
+fn replace_dir(dir: &Path, name: &str, tmp: &Path) -> std::result::Result<(), String> {
+    let dest = dir.join(name);
+    if std::fs::symlink_metadata(&dest).is_err() {
+        return rename_with_retry(tmp, &dest).map_err(|e| format!("换不上新版本：{e}"));
+    }
+
+    let old = dir.join(format!(".{name}.old-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&old);
+    std::fs::rename(&dest, &old).map_err(|e| format!("换不下旧版本：{e}"))?;
+    match rename_with_retry(tmp, &dest) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(&old);
+            Ok(())
+        }
+        Err(e) => match std::fs::rename(&old, &dest) {
+            Ok(()) => Err(format!("换不上新版本：{e}")),
+            Err(back) => Err(format!("换不上新版本：{e}；旧版本也还原不了：{back}，旧版本留在 {}", old.display())),
+        },
+    }
 }
 
 /// 一次同步的结果：每个 agent、每个 skill 的状态，以及做了哪些改动（打印用）
@@ -264,7 +316,7 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, opts: Opt
         }
         for s in lib {
             let dest = t.dir.join(&s.name);
-            let link = std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_symlink());
+            let link = std::fs::symlink_metadata(&dest).is_ok_and(|m| is_link(&m));
             let mut moved = false;
             if std::fs::symlink_metadata(&dest).is_ok() && mark_of(&dest).is_none() {
                 // 本机自己的这份和库里的内容一样（例如就是从这台机器导入的）：算已同步，不动它
@@ -596,6 +648,23 @@ mod tests {
         Opts { only_builtin: false, backup: d }
     }
 
+    #[cfg(windows)]
+    struct Junction(std::path::PathBuf);
+
+    #[cfg(windows)]
+    impl Drop for Junction {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    #[cfg(windows)]
+    fn junction(target: &Path, link: &Path) -> Junction {
+        let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+        assert!(out.status.success(), "mklink /J 失败：{}", String::from_utf8_lossy(&out.stderr));
+        Junction(link.to_path_buf())
+    }
+
     #[test]
     fn sync_installs_updates_replaces_local_and_removes() {
         let d = tempfile::tempdir().unwrap();
@@ -738,6 +807,78 @@ mod tests {
         std::fs::rename(d.path().join("new"), &exe).unwrap();
         let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], Some(&exe), opts(&bk), |_| Ok(b.clone()));
         assert_eq!(out.changes.len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_are_left_alone_and_board_skills_gets_own_board() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = d.path().join("dev-board-skills");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), "# dev").unwrap();
+        std::fs::write(src.join(MARK), r#"{ "name": "board-skills", "version": "dev" }"#).unwrap();
+        let dest = dir.join(BUILTIN);
+        let link = junction(&src, &dest);
+        assert!(is_link(&std::fs::symlink_metadata(&dest).unwrap()));
+        assert_eq!(mark_of(&dest), None, "junction 不算 Board 装的目录");
+
+        let b = pack(BUILTIN, &[("SKILL.md", b"# board")]);
+        let bk = d.path().join("backup");
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], None, opts(&bk), |_| Ok(b.clone()));
+        assert_eq!(out.states[0].state, "local");
+        assert_eq!(out.states[0].why.as_deref(), Some("本机是软链接，没有覆盖"));
+        assert_eq!(out.links, vec![BUILTIN.to_string()]);
+        assert!(!bk.exists(), "junction 不挪");
+        assert_eq!(std::fs::read_to_string(src.join("SKILL.md")).unwrap(), "# dev");
+
+        drop(link);
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], None, opts(&bk), |_| Ok(b.clone()));
+        assert_eq!(out.states[0].state, "synced");
+        assert_eq!(std::fs::read_to_string(dir.join(BUILTIN).join("SKILL.md")).unwrap(), "# board");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replace_dir_retries_locks_and_rolls_back() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join(BUILTIN);
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "old").unwrap();
+        let tmp = dir.join(".new");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("SKILL.md"), "new").unwrap();
+
+        // 新目录里的文件被短暂占住时，换目录要在同一次同步里等到它释放。
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(tmp.join("SKILL.md")).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(lock);
+        });
+        let out = replace_dir(&dir, BUILTIN, &tmp);
+        release.join().unwrap();
+        assert!(out.is_ok(), "{out:?}");
+        assert_eq!(std::fs::read_to_string(dest.join("SKILL.md")).unwrap(), "new");
+
+        // 一直占着：报错并把旧目录原样放回去，释放后第二次同步仍能成功。
+        std::fs::remove_file(dest.join("SKILL.md")).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "old-again").unwrap();
+        let tmp2 = dir.join(".new-2");
+        std::fs::create_dir_all(&tmp2).unwrap();
+        std::fs::write(tmp2.join("SKILL.md"), "new-again").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(tmp2.join("SKILL.md")).unwrap();
+        let out = replace_dir(&dir, BUILTIN, &tmp2);
+        assert!(out.unwrap_err().contains("换不上新版本"));
+        assert_eq!(std::fs::read_to_string(dest.join("SKILL.md")).unwrap(), "old-again");
+        assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with(&format!(".{BUILTIN}.old-"))));
+        drop(lock);
+        replace_dir(&dir, BUILTIN, &tmp2).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("SKILL.md")).unwrap(), "new-again");
     }
 
     #[test]
