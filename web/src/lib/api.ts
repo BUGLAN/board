@@ -225,6 +225,8 @@ export const api = {
       resume?: string;
       /** 参与自动接单 */
       auto?: boolean;
+      /** 内置 agent 自动更新（默认关） */
+      agentAuto?: boolean;
       /** 接单时段（整个替换）：一天里的几段 [起, 止)，分钟 */
       windows?: [number, number][];
       /** 工作空间（整个替换）：每个项目的目录是 `<工作空间>/<项目>`；空路径表示不配 */
@@ -238,6 +240,9 @@ export const api = {
   /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、取消请求 */
   askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'cancel', now = false) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),
+  /** 安装或更新这台机器上的一个内置 agent：board host 按实际安装方式执行，不占会话位 */
+  askAgent: (name: string, kind: 'agent-install' | 'agent-update', agent: string, to?: string) =>
+    req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, agent, to: to || null }),
   /** skills 共用库（PRD §10.12「共用配置」）：列出、上传（同名换成新版本）、删除 */
   skills: () => req<SkillInfo[]>('GET', '/api/skills').then(normSkills),
   removeSkill: (name: string) => req('DELETE', `/api/skills/${q(name)}`),

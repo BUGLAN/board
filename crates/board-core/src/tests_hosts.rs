@@ -21,6 +21,25 @@ fn dsh(found: bool) -> HostAgent {
     HostAgent { id: "dsh".into(), name: "DeepSeek Harness".into(), version: if found { "1.0".into() } else { String::new() }, found, model: "deepseek-v4.1-flash".into(), ..Default::default() }
 }
 
+fn managed(version: &str, latest: &str, state: &str) -> HostAgent {
+    HostAgent {
+        id: "claude".into(),
+        name: "Claude Code".into(),
+        version: version.into(),
+        found: true,
+        manage: Some(AgentManage {
+            method: "npm-global".into(),
+            method_label: "npm 全局".into(),
+            latest_version: latest.into(),
+            update_available: crate::hosts::version_lt(version, latest),
+            updatable: true,
+            state: state.into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 /// 一台机器的上报：工作空间 `/tmp`（每块白板的目录是 `/tmp/<项目>/<白板>`），`dirs` 是它派生、检查过的白板目录。
 /// 旧版 board host（只报白板与目录、没有 workspace）用 [`legacy_report`]
 fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
@@ -1329,7 +1348,7 @@ fn env(id: &str, name: &str) -> HostEnv {
 }
 
 fn check(env: &str, found: bool, version: &str) -> EnvCheck {
-    EnvCheck { env: env.into(), found, version: version.into(), no_skill: None }
+    EnvCheck { env: env.into(), found, version: version.into(), no_skill: None, manage: None }
 }
 
 /// 一台 Windows 机器：cmd、PowerShell 7、Git Bash、WSL（Ubuntu）。pi 不支持 cmd；WSL 里没装 pi
@@ -3156,6 +3175,79 @@ fn drain_pauses_and_resuming_ends_it() {
 }
 
 #[test]
+fn agent_update_is_handed_to_the_host_and_failure_can_retry() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents[0] = managed("2.1.300", "2.1.325", "");
+    beat(&mut s, T0, &rep).unwrap();
+
+    let h = s.write(T0 + S, Origin::ui(None), |w| w.host_agent_ask("mbp", "agent-update", "claude", Some("2.1.325"), "octocat")).unwrap();
+    let ask = h.ask.clone().unwrap();
+    assert_eq!((ask.kind.as_str(), ask.agent.as_deref(), ask.to.as_deref()), ("agent-update", Some("claude"), Some("2.1.325")));
+    assert_eq!(h.ops[0].text, "请求更新 Claude Code 到 2.1.325");
+
+    // board host 开始处理：请求清掉，之后上报失败原因；状态留在卡片上，人可以重试
+    let w = acked(&mut s, T0 + 2 * S, "i1", ask.id);
+    assert!(w.host.ask.is_none());
+    let mut bad = rep.clone();
+    bad.agents[0] = managed("2.1.300", "2.1.325", "failed");
+    bad.agents[0].manage.as_mut().unwrap().error = "npm 退出码 1".into();
+    bad.ask_error = Some("更新 Claude Code 失败：npm 退出码 1".into());
+    let w = beat(&mut s, T0 + 3 * S, &bad).unwrap();
+    assert!(w.host.ops[0].text.contains("npm 退出码 1"), "{:?}", w.host.ops);
+    let retry = s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_agent_ask("mbp", "agent-update", "claude", Some("2.1.325"), "octocat")).unwrap();
+    let retry = retry.ask.unwrap();
+    assert_eq!(retry.agent.as_deref(), Some("claude"));
+    acked(&mut s, T0 + 5 * S, "i1", retry.id);
+
+    // 本机还在跑同一个安装/更新：不再接新的请求
+    let mut busy = report("mbp", "i1", vec![]);
+    busy.agents[0] = managed("2.1.300", "2.1.325", "running");
+    beat(&mut s, T0 + 6 * S, &busy).unwrap();
+    assert!(s.write(T0 + 6 * S, Origin::ui(None), |w| w.host_agent_ask("mbp", "agent-update", "claude", None, "octocat")).unwrap_err().message.contains("正在更新"));
+
+    // 不支持代管、已经是最新、离线：都不发请求
+    let mut cfg = report("mbp", "i1", vec![]);
+    cfg.agents[0].manage = Some(AgentManage { method: "config".into(), reason: "配置文件".into(), latest_version: "2.1.325".into(), ..Default::default() });
+    beat(&mut s, T0 + 7 * S, &cfg).unwrap();
+    assert!(s.write(T0 + 8 * S, Origin::ui(None), |w| w.host_agent_ask("mbp", "agent-update", "claude", None, "octocat")).unwrap_err().message.contains("配置文件"));
+}
+
+#[test]
+fn agent_auto_update_waits_for_no_running_dispatch_and_does_not_loop_after_failure() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents[0] = managed("2.1.300", "2.1.325", "");
+    beat(&mut s, T0, &rep).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { agent_auto: Some(true), ..Default::default() })).unwrap();
+
+    // 有派发（哪怕是刚结束、本机还报着的）时不自动更新
+    let w = beat(&mut s, T0 + S, &HostReport { running: vec![999], ..rep.clone() }).unwrap();
+    assert!(w.host.ask.is_none());
+
+    // 没在跑了：发自动更新请求，操作记录写明「自动更新」
+    let w = beat(&mut s, T0 + 2 * S, &rep).unwrap();
+    let ask = w.host.ask.clone().unwrap();
+    assert_eq!((ask.kind.as_str(), ask.by.as_str(), ask.agent.as_deref()), ("agent-update", "自动更新", Some("claude")));
+    assert_eq!(w.host.ops[0].text, "自动更新 Claude Code 到 2.1.325");
+    acked(&mut s, T0 + 3 * S, "i1", ask.id);
+
+    // 失败后状态是 failed：不每一轮都重试；人点重试仍然可以
+    let mut bad = rep.clone();
+    bad.agents[0] = managed("2.1.300", "2.1.325", "failed");
+    bad.ask_error = Some("更新 Claude Code 失败：网络".into());
+    let w = beat(&mut s, T0 + 4 * S, &bad).unwrap();
+    assert!(w.host.ask.is_none());
+    let again = beat(&mut s, T0 + 5 * S, &bad).unwrap();
+    assert!(again.host.ask.is_none());
+
+    // 关掉开关：有新版本也不自动更新
+    s.write(T0 + 6 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { agent_auto: Some(false), ..Default::default() })).unwrap();
+    let w = beat(&mut s, T0 + 7 * S, &rep).unwrap();
+    assert!(w.host.ask.is_none());
+}
+
+#[test]
 fn only_the_token_a_live_host_reports_may_take_secrets() {
     // board host 的令牌接口（GET /api/hosts/{名字}/mcp）只给这台机器上报时用的令牌：
     // 别的令牌、机器不存在、离线之后都拿不到密钥原文（卡片 #236）
@@ -3280,6 +3372,8 @@ fn host_token_is_shown_and_can_be_revoked_on_remove() {
 fn version_order() {
     assert!(hosts::version_lt("0.1.9", "0.1.19"));
     assert!(hosts::version_lt("v0.1.19", "0.2.0"));
+    assert!(hosts::version_lt("2.1.300 (Claude Code)", "2.1.325"));
+    assert!(hosts::version_lt("0.2.2-rc.3", "0.2.2"));
     assert!(!hosts::version_lt("0.1.19", "0.1.19"));
     assert!(!hosts::version_lt("1.0.0", "0.9.9"));
 }

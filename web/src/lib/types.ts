@@ -218,6 +218,33 @@ export interface HostAgent {
   run_env?: string | null;
   /** 这个 agent 在这台机器上连续异常退出、已经暂停接单：点「恢复」才继续 */
   tripped?: boolean;
+  /** 安装方式、最新版本、更新状态（内置 agent 才有；旧版 board host 没有） */
+  manage?: AgentManage | null;
+}
+
+/** 一个内置 agent 在这台机器上的安装和更新状态 */
+export interface AgentManage {
+  /** npm-global | brew | script | app | config | wsl | unknown | missing */
+  method: string;
+  /** 界面上显示的安装方式 */
+  method_label: string;
+  /** 没找到时给的安装命令 */
+  install_command?: string;
+  /** npm 上查到的最新版本 */
+  latest_version?: string;
+  /** 最近一次版本检查的时间 */
+  checked_at?: number;
+  /** 有新版本 */
+  update_available?: boolean;
+  /** 能由 board host 安装 / 升级 */
+  installable?: boolean;
+  updatable?: boolean;
+  /** 不能代管的原因 */
+  reason?: string;
+  /** 空 = 空闲；running = 正在安装/更新；failed = 上一次失败 */
+  state?: 'running' | 'failed' | '';
+  /** 上一次失败的原因 */
+  error?: string;
 }
 
 /** 一个 agent 的模型怎么配：不改（Board 不碰它的配置文件）/ 指定（这台机器上用哪个供应商、模型、强度、接口） */
@@ -230,6 +257,8 @@ export interface EnvCheck {
   version: string;
   /** 找到了命令、却看不到 board-skills：该装到哪里 */
   no_skill?: string | null;
+  /** 这个启动环境里的安装方式、最新版本和更新状态 */
+  manage?: AgentManage | null;
 }
 
 /** 启动环境：board host 在哪种 shell 里启动 agent（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL …） */
@@ -332,6 +361,8 @@ export interface HostInfo {
   /** 有规则、没设兜底时：可领取、没有匹配任何规则的卡片数 */
   unmatched?: number;
   paused: boolean;
+  /** 内置 agent 自动更新（默认关）：有新版本且没有在跑的派发时按实际安装方式更新；旧服务端没有这一项 */
+  agentAuto?: boolean;
   /** 默认 agent（设置过且找到了就是它，否则第一个找到的） */
   agent: string | null;
   /** 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效 */
@@ -622,13 +653,15 @@ export interface SelfTestItem {
 /** 远程管理请求 */
 export interface HostAsk {
   id: number;
-  kind: 'recheck' | 'restart' | 'upgrade';
+  kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel' | 'agent-install' | 'agent-update';
   by: string;
   at: number;
   /** 升级：目标版本 */
   to?: string | null;
   /** 升级：不等在跑的派发结束 */
   now?: boolean;
+  /** agent-install / agent-update：哪个 agent */
+  agent?: string | null;
 }
 
 export interface HostOp {

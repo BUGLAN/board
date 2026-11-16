@@ -54,7 +54,7 @@ pub const ALL_EFFORTS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "
 /// 界面从 `GET /api/providers` 的 `meta` 取，board host 用它校验
 pub const EFFORTS: [(&str, &[&str]); 4] = [
     ("claude", &["low", "medium", "high", "xhigh", "max"]),
-    ("codex", &["minimal", "low", "medium", "high"]),
+    ("codex", &["minimal", "low", "medium", "high", "xhigh", "max"]),
     ("pi", &["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
     ("dsh", &["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
 ];
@@ -493,11 +493,12 @@ mod tests {
         // 按从低到高、去重；列表里没有的模型、空的去掉
         assert_eq!(out.efforts, [("model-a".to_string(), vec!["minimal".to_string(), "low".into(), "max".into()])].into());
         let p = s.read(|r| r.providers()).unwrap().remove(0);
-        // 交集：claude 写不了 minimal，codex 写不了 max
+        // 交集：claude 写不了 minimal，codex 能写 minimal、max
         assert_eq!(writable_efforts("claude", &p, "model-a"), vec!["low", "max"]);
-        assert_eq!(writable_efforts("codex", &p, "model-a"), vec!["minimal", "low"]);
+        assert_eq!(writable_efforts("codex", &p, "model-a"), vec!["minimal", "low", "max"]);
         assert!(writable_efforts("claude", &p, "model-b").is_empty(), "没标的不能选");
         assert!(check_effort("claude", &p, "model-a", "max").is_ok());
+        assert!(check_effort("codex", &p, "model-a", "max").is_ok());
         assert!(check_effort("claude", &p, "model-a", "").is_ok(), "空 = 不写强度");
         let err = check_effort("claude", &p, "model-a", "minimal").unwrap_err();
         assert!(err.message.contains("low、max"), "{}", err.message);

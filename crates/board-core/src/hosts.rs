@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   ask_seq  INTEGER NOT NULL DEFAULT 0,-- 请求的序号（board host 处理完带着它回报）
   drain_at INTEGER,                   -- 排空开始的时间（暂停接单，等在跑的派发结束）；不在排空时为空
   up_pause INTEGER NOT NULL DEFAULT 0,-- 1 = 为升级暂停了接单：升级完成或失败后恢复
+  agent_auto INTEGER NOT NULL DEFAULT 0,-- 1 = 内置 agent 有新版本且没有在跑的派发时自动更新
   rechecked_at INTEGER,               -- 最近一次「重新检查」做完的时间
   selftest TEXT,                      -- 自检（JSON，见 SelfTest）：等 board host 做的请求和最近一次的结果；没做过时为空
   skills   TEXT,                      -- （不再使用：以前按 agent × skill 上报的同步状态）
@@ -173,6 +174,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "session", "INTEGER"),
         ("hosts", "ask", "TEXT"),
         ("hosts", "ask_seq", "INTEGER NOT NULL DEFAULT 0"),
+        ("hosts", "agent_auto", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "drain_at", "INTEGER"),
         ("hosts", "up_pause", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "rechecked_at", "INTEGER"),
@@ -561,6 +563,47 @@ pub struct HostAgent {
     /// 服务端发出去时才有：这个 agent 在这台机器上连续异常退出、已经暂停接单（PRD §9.1「能不能接」），人点「恢复」才继续
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tripped: bool,
+    /// 安装、版本检查和更新状态（board host 上报；内置 agent 才有）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manage: Option<AgentManage>,
+}
+
+/// 一个内置 agent 在这台机器上的安装与更新状态（PRD §9.1「agent」）。
+///
+/// board host 每天查一次 npm 上各内置 agent 的最新版本（不在 10 秒心跳里查），再按本机命令的实际路径判断
+/// 安装方式。配置文件里新加的 agent、被配置覆盖了命令的 agent 和在 WSL 里跑的 agent 不代装、不代升。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentManage {
+    /// npm-global | brew | script | app | config | wsl | unknown | missing
+    pub method: String,
+    /// 界面上显示的安装方式：npm 全局、Homebrew、官方安装脚本、桌面 app、配置文件……
+    pub method_label: String,
+    /// 没找到时给的安装命令；找到时为空
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub install_command: String,
+    /// npm 上查到的最新版本
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub latest_version: String,
+    /// 最近一次版本检查的时间
+    #[serde(default)]
+    pub checked_at: i64,
+    /// 有新版本
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub update_available: bool,
+    /// 能由 board host 安装 / 更新
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub installable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub updatable: bool,
+    /// 不代装、不代升的原因；能管时为空
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    /// 空 = 空闲 | running 正在安装/更新 | failed 上一次失败
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub state: String,
+    /// 上一次失败的原因
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
 }
 
 /// 旧版 board host 上报的「一个 agent 派发时能选什么」：现在模型、强度只写进配置文件，不再按次传参，收下不用
@@ -603,6 +646,9 @@ pub struct EnvCheck {
     /// 找到了命令、却看不到 `board-skills` 时，写该装到哪里；其余情况（含旧版 board host）为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_skill: Option<String>,
+    /// 这个启动环境里的安装方式、最新版本和更新状态
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manage: Option<AgentManage>,
 }
 
 /// 启动环境：board host 在哪种 shell 里启动 agent 的命令（启动环境与桌面端需求 §二）
@@ -1154,6 +1200,9 @@ pub struct HostInfo {
     pub unmatched: i64,
     /// 暂停接单
     pub paused: bool,
+    /// 内置 agent 自动更新（默认关）：有新版本且没有在跑的派发时按实际安装方式更新
+    #[serde(default)]
+    pub agent_auto: bool,
     /// 默认 agent：设置过且找到了就是它，否则是本机 agent 里第一个找到的；都没找到时为空
     pub agent: Option<String>,
     /// 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效，用的是 `agent`
@@ -1448,6 +1497,9 @@ pub struct HostAsk {
     /// 升级：不等在跑的派发结束（它们已经按「人停止」结束）
     #[serde(default)]
     pub now: bool,
+    /// agent-install / agent-update：哪个内置 agent
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// 机器的一条操作记录（谁、什么时间、做了什么）
@@ -1473,7 +1525,7 @@ pub struct HostToken {
 }
 
 /// 远程管理的请求种类
-pub const ASK_KINDS: [&str; 5] = ["recheck", "restart", "upgrade", "drain", "cancel"];
+pub const ASK_KINDS: [&str; 7] = ["recheck", "restart", "upgrade", "drain", "cancel", "agent-install", "agent-update"];
 /// 机器详情「最近」里带几条操作记录
 pub const OPS_KEEP: i64 = 30;
 /// 自动升级临时失败（发版包还没出来、下载不了、网络不通）后隔多久再试：10 分钟
@@ -1528,13 +1580,52 @@ pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
     format!("同步配置：{}", parts.join("；"))
 }
 
-/// 版本号 a 比 b 旧（x.y.z 逐段按数字比；认不出的段当 0）
+/// 版本号 a 比 b 旧（SemVer 的常见写法：`v` 前缀、`x.y.z`、`-rc.1` 预发布、`+build` 后缀）。
+/// agent 的 `--version` 前面可能带产品名（`codex-cli 0.169.0`），先找第一段数字。
 pub fn version_lt(a: &str, b: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> { v.trim().trim_start_matches('v').split(['.', '-', '+']).take(3).map(|x| x.parse().unwrap_or(0)).collect() };
-    let (mut x, mut y) = (parts(a), parts(b));
+    fn parse(v: &str) -> Option<(Vec<u64>, Option<Vec<String>>)> {
+        let s = v.trim();
+        let start = s.find(|c: char| c.is_ascii_digit())?;
+        let s = &s[start..];
+        // 版本号后面可能跟着产品名（`2.1.300 (Claude Code)`）：只取到第一段不属于版本号的字符
+        let end = s.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))).unwrap_or(s.len());
+        let s = s[..end].split('+').next().unwrap_or_default();
+        let (core, pre) = s.split_once('-').map_or((s, None), |(c, p)| (c, Some(p)));
+        let nums: Vec<u64> = core.split('.').take(3).map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        if nums.is_empty() {
+            return None;
+        }
+        let mut nums = nums;
+        nums.resize(3, 0);
+        let pre = pre
+            .filter(|p| !p.is_empty())
+            .map(|p| p.split('.').map(|x| x.to_ascii_lowercase()).collect::<Vec<_>>());
+        Some((nums, pre))
+    }
+    let (Some((mut x, xp)), Some((mut y, yp))) = (parse(a), parse(b)) else { return false };
     x.resize(3, 0);
     y.resize(3, 0);
-    x < y
+    if x != y {
+        return x < y;
+    }
+    // 有预发布标记的比同一个正式版本旧；两段预发布按数字、字符串逐段比
+    match (xp, yp) {
+        (Some(p), Some(q)) => {
+            for (u, v) in p.iter().zip(q.iter()) {
+                match (u.parse::<u64>(), v.parse::<u64>()) {
+                    (Ok(a), Ok(b)) if a != b => return a < b,
+                    (Ok(_), Ok(_)) => {}
+                    (Ok(_), Err(_)) => return true,
+                    (Err(_), Ok(_)) => return false,
+                    (Err(_), Err(_)) if u != v => return u < v,
+                    _ => {}
+                }
+            }
+            p.len() < q.len()
+        }
+        (Some(_), None) => true,
+        _ => false,
+    }
 }
 
 fn default_max_run() -> i64 {
@@ -1709,6 +1800,9 @@ pub struct HostPatch {
     /// 接单时段（整个列表替换）：一天里的几段 `[起, 止)`，分钟
     #[serde(default)]
     pub windows: Option<Vec<crate::sched::Window>>,
+    /// 内置 agent 自动更新（默认关）
+    #[serde(default)]
+    pub agent_auto: Option<bool>,
     /// 一个 agent 的启动环境
     #[serde(default)]
     pub env: Option<EnvPatch>,
@@ -1978,6 +2072,7 @@ pub(crate) struct HostRow {
     pub(crate) ask_seq: i64,
     pub(crate) drain_at: Option<i64>,
     pub(crate) up_pause: bool,
+    pub(crate) agent_auto: bool,
     pub(crate) rechecked_at: Option<i64>,
     pub(crate) token: Option<i64>,
     pub(crate) selftest: SelfTest,
@@ -1993,7 +2088,7 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -2038,6 +2133,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         ask_seq: r.get(26)?,
         drain_at: r.get(27)?,
         up_pause: r.get::<_, i64>(28)? != 0,
+        agent_auto: r.get::<_, i64>(46)? != 0,
         rechecked_at: r.get(29)?,
         token: r.get(30)?,
         selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
@@ -2078,6 +2174,9 @@ impl HostRow {
                     out.version = c.map(|c| c.version.clone()).unwrap_or_default();
                     out.env = c.map(|c| c.env.clone());
                     out.no_skill = c.filter(|c| c.found).and_then(|c| c.no_skill.clone());
+                    if let Some(m) = c.and_then(|c| c.manage.clone()) {
+                        out.manage = Some(m);
+                    }
                 }
                 let run = self.run.get(&a.id);
                 out.run_env = run.and_then(|r| r.env.clone());
@@ -2179,6 +2278,7 @@ impl HostRow {
             fallback_active: self.fallback.as_deref().is_some_and(|a| self.has_agent(a)),
             unmatched: 0,
             paused: self.paused,
+            agent_auto: self.agent_auto,
             agent: self.default_agent().map(|a| a.id.clone()),
             agent_set: self.agent.clone().filter(|a| !self.has_agent(a)),
             cron_on: false,
@@ -3436,6 +3536,7 @@ impl<'a> W<'a> {
                 }
                 self.host_acks(&h, rep)?;
                 self.auto_upgrade_host(&name)?;
+                self.auto_update_agents(&name, rep)?;
                 // 换成了会（或不会）按请求同步配置的 board host
                 if h.config_sync.able != rep.config_sync {
                     let cs = ConfigSync { able: rep.config_sync, ask: if rep.config_sync { h.config_sync.ask.clone() } else { None }, ..h.config_sync.clone() };
@@ -3525,6 +3626,14 @@ impl<'a> W<'a> {
                         self.host_op(h.id, sys, "重新检查完了：启动环境、本机 agent、board-skills 已重新上报")?;
                     }
                     "restart" => self.host_op(h.id, sys, "正在重启 board host")?,
+                    "agent-install" => {
+                        let name = ask.agent.as_deref().and_then(|id| h.agents.iter().find(|a| a.id == id)).map(|a| a.name.as_str()).unwrap_or("agent");
+                        self.host_op(h.id, sys, &format!("开始安装 {name}"))?;
+                    }
+                    "agent-update" => {
+                        let name = ask.agent.as_deref().and_then(|id| h.agents.iter().find(|a| a.id == id)).map(|a| a.name.as_str()).unwrap_or("agent");
+                        self.host_op(h.id, sys, &format!("开始更新 {name}{}", ask.to.as_deref().filter(|s| !s.is_empty()).map(|v| format!(" 到 {v}")).unwrap_or_default()))?;
+                    }
                     _ => self.host_op(h.id, sys, &format!("开始升级到 {}", ask.to.as_deref().unwrap_or("服务端的版本")))?,
                 }
                 self.touch_hosts();
@@ -3579,6 +3688,33 @@ impl<'a> W<'a> {
         self.tx.execute("UPDATE hosts SET up_tried = ?2, up_tries = ?3, up_retry = NULL WHERE id = ?1", params![h.id, server, tries])?;
         let by = if tries == 1 { "自动升级".to_string() } else { format!("自动升级（第 {tries} 次）") };
         self.host_ask(name, "upgrade", false, &by)?;
+        Ok(())
+    }
+
+    /// agent 自动更新（PRD §9.1「agent」）：开关开着、没有在跑的派发、内置 agent 报了新版本且能按实际安装方式升级，
+    /// 就替它发一次和界面上「更新」相同的请求。失败后 board host 把状态记成 failed，不会每隔 10 秒反复重试；
+    /// 人点「重试」仍然可以再发。
+    fn auto_update_agents(&mut self, name: &str, rep: &HostReport) -> Result<()> {
+        let Some(h) = self.host_row(name)? else { return Ok(()) };
+        if !h.agent_auto || h.ask.is_some() || !rep.running.is_empty() {
+            return Ok(());
+        }
+        // 用按机器设置解析后的启动环境，不按 board host 的默认环境：实际用哪个环境，就更新那里的 agent
+        let agents = h.resolved();
+        let pick = agents.iter().find(|a| {
+            a.found
+                && a.manage.as_ref().is_some_and(|m| {
+                    m.update_available
+                        && m.updatable
+                        && m.state != "running"
+                        && m.state != "failed"
+                        && !m.latest_version.trim().is_empty()
+                        && version_lt(&a.version, &m.latest_version)
+                })
+        });
+        let Some(a) = pick else { return Ok(()) };
+        let to = a.manage.as_ref().map(|m| m.latest_version.as_str()).unwrap_or_default();
+        self.host_agent_ask(name, "agent-update", &a.id, Some(to), "自动更新")?;
         Ok(())
     }
 
@@ -3733,7 +3869,7 @@ impl<'a> W<'a> {
             return Err(BoardError::usage(format!("机器「{name}」离线：等它上线再{what}")));
         }
         let server = env!("CARGO_PKG_VERSION");
-        let mut ask = HostAsk { id: h.ask_seq + 1, kind: kind.into(), by: by.into(), at: self.now, to: None, now: false };
+        let mut ask = HostAsk { id: h.ask_seq + 1, kind: kind.into(), by: by.into(), at: self.now, to: None, now: false, agent: None };
         let text = match kind {
             "recheck" => "请求重新检查".to_string(),
             "restart" => {
@@ -3783,6 +3919,71 @@ impl<'a> W<'a> {
                 self.touch_hosts();
                 return self.read().host(name, self.now);
             }
+        };
+        self.tx.execute(
+            "UPDATE hosts SET ask = ?2, ask_seq = ?3 WHERE id = ?1",
+            params![h.id, serde_json::to_string(&ask).unwrap_or_default(), ask.id],
+        )?;
+        self.host_op(h.id, by, &text)?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
+    }
+
+    /// 安装或更新这台机器上的一个内置 agent（PRD §9.1「agent」）。不暂停接单，也不影响正在跑的派发；
+    /// board host 按命令实际所在的位置识别安装方式，装完自己重新检查并上报版本。
+    pub fn host_agent_ask(&mut self, name: &str, kind: &str, agent: &str, to: Option<&str>, by: &str) -> Result<HostInfo> {
+        if !matches!(kind, "agent-install" | "agent-update") {
+            return Err(BoardError::usage(format!("agent 操作只能是 agent-install 或 agent-update，不能是「{kind}」")));
+        }
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        if !h.online(self.now) {
+            return Err(BoardError::usage(format!("机器「{name}」离线：等它上线再{}", if kind == "agent-install" { "安装" } else { "更新" })));
+        }
+        if let Some(a) = &h.ask {
+            let what = if a.kind == "agent-install" { "安装" } else { "更新" };
+            return Err(BoardError::usage(format!("机器「{name}」正在处理另一个请求（{what}）：等它完成再试")));
+        }
+        let a = h.resolved().into_iter().find(|a| a.id == agent).ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{agent}」")))?;
+        let m = a.manage.clone().unwrap_or_default();
+        if m.state == "running" {
+            return Err(BoardError::usage(format!("{} 正在{}：等它完成再试", a.name, if kind == "agent-install" { "安装" } else { "更新" })));
+        }
+        if kind == "agent-install" {
+            if a.found {
+                return Err(BoardError::usage(format!("{} 已经装好了", a.name)));
+            }
+            if !m.installable {
+                return Err(BoardError::usage(if m.reason.trim().is_empty() { "这个 agent 不能由 board host 安装".into() } else { m.reason.clone() }));
+            }
+        } else {
+            if !a.found {
+                return Err(BoardError::usage(format!("{} 还没装：先安装", a.name)));
+            }
+            if !m.updatable {
+                return Err(BoardError::usage(if m.reason.trim().is_empty() { "这个 agent 不能由 board host 更新".into() } else { m.reason.clone() }));
+            }
+        }
+        let to = to.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).or_else(|| Some(m.latest_version.clone()).filter(|s| !s.is_empty()));
+        if to.is_none() {
+            return Err(BoardError::usage(format!("还不知道 {} 的最新版本：等下一次版本检查后重试", a.name)));
+        }
+        let by = if by.trim().is_empty() { "人" } else { by.trim() };
+        let ask = HostAsk {
+            id: h.ask_seq + 1,
+            kind: kind.into(),
+            by: by.into(),
+            at: self.now,
+            to: to.clone(),
+            now: false,
+            agent: Some(agent.into()),
+        };
+        let target = to.as_deref().unwrap_or("");
+        let text = if by.starts_with("自动更新") {
+            format!("自动更新 {} 到 {target}", a.name)
+        } else if kind == "agent-install" {
+            format!("请求安装 {}{}", a.name, if target.is_empty() { String::new() } else { format!(" {target}") })
+        } else {
+            format!("请求更新 {} 到 {target}", a.name)
         };
         self.tx.execute(
             "UPDATE hosts SET ask = ?2, ask_seq = ?3 WHERE id = ?1",
@@ -4175,6 +4376,9 @@ impl<'a> W<'a> {
         // 领取规则、兜底现在是全局的一份（`sched.rs`）：旧界面还从机器设置里改，改的就是全局的
         if p.rules.is_some() || p.fallback.is_some() {
             self.sched_update(p.rules.as_deref(), p.fallback.as_deref())?;
+        }
+        if let Some(on) = p.agent_auto {
+            self.tx.execute("UPDATE hosts SET agent_auto = ?2 WHERE id = ?1", params![h.id, on as i64])?;
         }
         if let Some(paused) = p.paused {
             self.tx.execute("UPDATE hosts SET paused = ?2 WHERE id = ?1", params![h.id, paused as i64])?;

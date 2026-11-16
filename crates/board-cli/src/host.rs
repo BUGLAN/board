@@ -83,6 +83,12 @@ use std::time::{Duration, Instant};
 struct Builtin {
     id: &'static str,
     name: &'static str,
+    /// npm 包名（查最新版本、npm 全局安装时用）
+    package: &'static str,
+    /// npm dist-tag：dsh 的 headless 包 alpha/next 比 latest 新
+    tag: &'static str,
+    /// 没找到时给用户的安装命令；board host 也按这条命令在本机执行
+    install: &'static str,
     /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
     /// 这次派发的 profile 补丁路径，都作为一个参数传入
     cmd: &'static [&'static str],
@@ -109,6 +115,9 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "dsh",
         name: "DeepSeek Harness",
+        package: "@deepseek-ai/dsh-headless",
+        tag: "next",
+        install: "npm install -g @deepseek-ai/dsh-headless@next",
         // 参数分两段：--profile、--patch 是 dsh 启动器的参数，必须放在应用参数前面；
         // --json、--permission-mode 和任务文本是 headless 的参数。--json 之后 dsh 启动器不再解析选项，
         // --patch 放在 --json 后面会被 headless 当成自己的参数，报 unknown option '--patch'
@@ -129,6 +138,9 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "claude",
         name: "Claude Code",
+        package: "@anthropic-ai/claude-code",
+        tag: "latest",
+        install: "npm install -g @anthropic-ai/claude-code@latest",
         // -p 默认只在结束时打印结果：用事件流，运行中每一步都写进日志（logfmt.rs 转写）
         cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
@@ -143,6 +155,9 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "pi",
         name: "pi",
+        package: "@mariozechner/pi-coding-agent",
+        tag: "latest",
+        install: "npm install -g @mariozechner/pi-coding-agent@latest",
         // -p 只在结束时打印最终回答：--mode json 同样跑完就退出，运行中写 JSONL 事件（logfmt.rs 转写）
         cmd: &["pi", "--mode", "json", "{prompt}"],
         also: &[],
@@ -157,6 +172,9 @@ const BUILTIN: [Builtin; 4] = [
     Builtin {
         id: "codex",
         name: "Codex",
+        package: "@openai/codex",
+        tag: "latest",
+        install: "npm install -g @openai/codex@latest",
         // exec --json：运行中把事件（命令、改文件、说的话、每一轮的用量）写成 JSONL（docs/exec.md）
         cmd: &["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
         also: &[],
@@ -204,6 +222,11 @@ const LOG_CLEAN_EVERY: Duration = Duration::from_secs(24 * 3600);
 const LOG_CHUNK: u64 = 4 * 1024 * 1024;
 /// 白板目录的 git 状态（origin、当前分支）多久重新看一次：机器心跳 10 秒一次，不能每次都跑 git 子进程
 const DIR_CHECK_EVERY: Duration = Duration::from_secs(300);
+/// 内置 agent 的版本多久查一次：不在 10 秒心跳里查；打开机器详情看到的是最近一次的结果
+const AGENT_CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
+const AGENT_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+/// 安装/更新一个 agent 最多跑多久
+const AGENT_JOB_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 /// 「一分钟」有多长：`BOARD_HOST_MINUTE_MS`（毫秒，只给测试用），默认 60 秒。
 /// 兜底设置（单次最长运行、没输出多久算卡住）的最小档是分钟，测试里用它把分钟缩短
@@ -231,6 +254,17 @@ enum After {
     Restart,
     /// 桌面端运行：退出，交给桌面端升级
     DesktopUpgrade,
+}
+
+/// 一次正在跑的 agent 安装/更新（后台子进程，不占派发会话位）
+struct AgentJob {
+    ask: i64,
+    agent: String,
+    name: String,
+    target: String,
+    child: Child,
+    started: Instant,
+    log: PathBuf,
 }
 
 /// 由桌面端在后台运行（`BOARD_HOST_STDIN=1`）
@@ -274,6 +308,16 @@ struct Spec {
     no_skill: BTreeMap<String, String>,
     /// 内置模板的结构化输出参数要求的最低版本和参数（见 [`Builtin::json_since`]）；配置文件覆盖了命令时没有
     json_gate: Option<(String, Vec<String>)>,
+    /// 这个内置 agent 的模板；配置文件里新加的为空
+    builtin: Option<&'static Builtin>,
+    /// 能不能由 board host 代装、代升（配置文件覆盖了内置命令时为 false）
+    managed: bool,
+    /// npm 上查到的最新版本、检查时间；没查到时为空
+    latest: String,
+    checked_at: i64,
+    /// 正在安装/更新，或上一次失败
+    manage_state: String,
+    manage_error: String,
 }
 
 /// 版本号前面的数字：`0.2.2-rc.1` → [0, 2, 2]、`2.1.311 (Claude Code)` → [2, 1, 311]；没有数字时为空
@@ -294,13 +338,133 @@ fn older_than(have: &str, need: &str) -> bool {
     pad(&a) < pad(&b)
 }
 
+/// agent 最新版本比较（含 `-rc.1` 这类预发布）：和 board 自己的版本规则一致
+fn manage_older(have: &str, need: &str) -> bool {
+    board_core::hosts::version_lt(have, need)
+}
+
+/// npm registry 的 `/<包>/<dist-tag>` 返回里取 `version`
+fn npm_latest(json: &str) -> std::result::Result<String, String> {
+    let v: Value = serde_json::from_str(json).map_err(|e| format!("版本信息不是 JSON：{e}"))?;
+    let version = v.get("version").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    version.map(str::to_string).ok_or_else(|| "版本信息里没有 version".into())
+}
+
+/// 查一个 npm 包的最新版本（每天一次，超时 15 秒；不影响机器心跳）
+fn fetch_npm_latest(package: &str, tag: &str) -> std::result::Result<String, String> {
+    let base = std::env::var("BOARD_AGENT_REGISTRY").unwrap_or_else(|_| "https://registry.npmjs.org".into());
+    let url = format!("{}/{}/{}", base.trim_end_matches('/'), package.replace('/', "%2f"), tag);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(AGENT_CHECK_TIMEOUT))
+        .http_status_as_error(false)
+        .user_agent(concat!("board-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    let mut res = agent.get(&url).call().map_err(|e| format!("连不上 {url}：{e}"))?;
+    let status = res.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(format!("查 {url} 返回 HTTP {status}"));
+    }
+    let body = res
+        .body_mut()
+        .with_config()
+        .limit(256 * 1024)
+        .read_to_string()
+        .map_err(|e| format!("读 {url} 失败：{e}"))?;
+    npm_latest(&body)
+}
+
 /// 启动 agent 的参数（命令模板里第一个之后的）：`{prompt}`、`{patch}` 换成提示词和补丁路径。
 /// 模型、强度不再按次传：同步配置写进 agent 自己的配置文件
 fn agent_args(cmd: &[String], prompt: &str, patch: &str) -> Vec<String> {
     cmd.iter().skip(1).map(|a| a.replace("{prompt}", prompt).replace("{patch}", patch)).collect()
 }
 
+/// 命令的实际路径（解析软链接），统一成 `/` 分隔、小写，用来判断安装方式
+fn real_path(prog: Option<&str>) -> String {
+    let Some(p) = prog.map(expand) else { return String::new() };
+    p.canonicalize()
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn brew_formula(path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    parts.iter().position(|x| *x == "cellar").and_then(|i| parts.get(i + 1)).map(|s| s.to_string()).filter(|s| !s.is_empty())
+}
+
 impl Spec {
+    /// 这个启动环境里的安装方式、最新版本和能否代管。配置文件里新加/覆盖了命令的不代管；WSL 也不代管。
+    fn manage_for(&self, check: Option<&Check>) -> AgentManage {
+        let Some(b) = self.builtin.filter(|_| self.managed) else {
+            return AgentManage {
+                method: "config".into(),
+                method_label: "配置文件".into(),
+                reason: "这个 agent 来自配置文件（或改了内置命令）：Board 只显示版本，不代装、不代升".into(),
+                latest_version: self.latest.clone(),
+                checked_at: self.checked_at,
+                state: self.manage_state.clone(),
+                error: self.manage_error.clone(),
+                ..Default::default()
+            };
+        };
+        let mut m = AgentManage {
+            latest_version: self.latest.clone(),
+            checked_at: self.checked_at,
+            state: self.manage_state.clone(),
+            error: self.manage_error.clone(),
+            ..Default::default()
+        };
+        if check.is_some_and(|c| c.env.starts_with("wsl:")) {
+            m.method = "wsl".into();
+            m.method_label = "WSL".into();
+            m.reason = "WSL 里的 agent 由发行版自己管理：Board 只显示版本，不代装、不代升".into();
+            m.update_available = check.is_some_and(|c| c.found && !self.latest.is_empty() && manage_older(&c.version, &self.latest));
+            return m;
+        }
+        let Some(c) = check else {
+            m.method = "missing".into();
+            m.method_label = "没安装".into();
+            m.install_command = b.install.into();
+            m.installable = true;
+            return m;
+        };
+        if !c.found {
+            m.method = "missing".into();
+            m.method_label = "没安装".into();
+            m.install_command = b.install.into();
+            m.installable = true;
+            return m;
+        }
+        let path = real_path(c.prog.as_deref());
+        m.update_available = !self.latest.is_empty() && manage_older(&c.version, &self.latest);
+        if path.contains(".app/contents/") {
+            m.method = "app".into();
+            m.method_label = "桌面 app 自带".into();
+            m.reason = "命令行随桌面 app 安装：在 app 里更新，Board 不单独升级".into();
+        } else if path.contains("/node_modules/") || path.contains("/.npm-global/") || path.contains("/npm/") {
+            m.method = "npm-global".into();
+            m.method_label = "npm 全局".into();
+            m.updatable = true;
+        } else if let Some(f) = brew_formula(&path) {
+            m.method = "brew".into();
+            m.method_label = format!("Homebrew（{f}）");
+            m.updatable = true;
+        } else if path.contains("/.local/bin/") || path.contains("/.local/share/") || path.contains("/.codex/bin/") {
+            m.method = "script".into();
+            m.method_label = "官方安装脚本".into();
+            // Claude Code 的官方安装脚本自带 update；其他脚本装的仍用 npm 包升级
+            m.updatable = true;
+        } else {
+            m.method = "unknown".into();
+            m.method_label = "其他方式".into();
+            m.reason = "看不出是哪种常见安装方式：请在那台机器上手动升级".into();
+        }
+        m
+    }
+
     /// 默认的启动环境：按顺序第一个找到命令的
     fn default_check(&self) -> Option<&Check> {
         self.checks.iter().find(|c| c.found)
@@ -322,16 +486,22 @@ impl Spec {
             Some((m, e)) if !m.is_empty() => (m.clone(), e.clone()),
             _ => (self.model.clone(), String::new()),
         };
+        let manage = def.or_else(|| self.checks.first()).map(|c| self.manage_for(Some(c)));
         HostAgent {
             id: self.id.clone(),
             name: self.name.clone(),
             version: def.map(|c| c.version.clone()).unwrap_or_default(),
             found: def.is_some(),
-            envs: self.checks.iter().map(|c| EnvCheck { no_skill: self.no_skill.get(&c.env).cloned(), ..c.report() }).collect(),
+            envs: self
+                .checks
+                .iter()
+                .map(|c| EnvCheck { no_skill: self.no_skill.get(&c.env).cloned(), manage: Some(self.manage_for(Some(c))), ..c.report() })
+                .collect(),
             env: None,
             no_skill: def.and_then(|c| self.no_skill.get(&c.env).cloned()),
             model,
             effort,
+            manage,
             ..Default::default()
         }
     }
@@ -377,6 +547,8 @@ struct Template {
     /// 支持的启动环境，按默认选择的顺序
     order: Vec<String>,
     json_gate: Option<(String, Vec<String>)>,
+    builtin: Option<&'static Builtin>,
+    managed: bool,
 }
 
 /// 内置模板、配置文件里的模板，后面的覆盖前面同标识的；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
@@ -389,6 +561,8 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
         .map(|b| Template {
             id: b.id.to_string(),
             name: b.name.to_string(),
+            builtin: Some(b),
+            managed: true,
             model: String::new(),
             cmd: strs(b.cmd),
             also: strs(b.also),
@@ -418,10 +592,14 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 if let Some(m) = &a.model {
                     x.model = m.clone();
                 }
+                // 人改了内置 agent 的启动命令：Board 不再按内置安装方式代装、代升
+                x.managed = false;
             }
             None => out.push(Template {
                 id: a.id.clone(),
                 name: a.name.clone().unwrap_or_else(|| a.id.clone()),
+                builtin: None,
+                managed: false,
                 model: a.model.clone().unwrap_or_default(),
                 cmd: a.cmd.clone(),
                 also: vec![],
@@ -460,6 +638,12 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
                 no_skill: BTreeMap::new(),
                 json_gate: t.json_gate,
+                builtin: t.builtin,
+                managed: t.managed,
+                latest: String::new(),
+                checked_at: 0,
+                manage_state: String::new(),
+                manage_error: String::new(),
             })
             .collect()
     }))
@@ -1212,6 +1396,11 @@ struct Host<'a> {
     conf_seen: (Option<String>, Option<String>, Option<i64>),
     /// 正在后台做的自检（请求序号、线程）
     selftest: Option<(i64, std::thread::JoinHandle<Vec<SelfTestItem>>)>,
+    /// 后台查各内置 agent 最新版本（每天一次，不在心跳里查）
+    agent_latest: Option<std::thread::JoinHandle<Vec<(String, std::result::Result<String, String>)>>>,
+    next_agent_check: Instant,
+    /// 正在后台安装/更新一个 agent
+    agent_job: Option<AgentJob>,
     /// 做完了、还没回报成功的自检结果（连不上服务端时下一轮再报）
     selftest_out: Option<(i64, Vec<SelfTestItem>)>,
     /// 已经做完并回报的自检请求：取到的任务里还是它时不再做
@@ -1406,6 +1595,9 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         selftest_out: None,
         selftest_seen: None,
         selftest_pids: selftest::Pids::default(),
+        agent_latest: None,
+        next_agent_check: Instant::now(),
+        agent_job: None,
         sync_job: None,
         sync_out: None,
         sync_seen: None,
@@ -1909,7 +2101,7 @@ impl Host<'_> {
     ///   再重启自己；升级时桌面端运行的交给桌面端，命令行运行的执行 `board update`，装好后用新版本重启
     fn handle_ask(&mut self) -> (bool, bool) {
         let Some(ask) = self.work.as_ref().and_then(|w| w.host.ask.clone()) else { return (false, false) };
-        if self.asked == Some(ask.id) || self.updating.is_some() {
+        if self.asked == Some(ask.id) || self.updating.is_some() || self.agent_job.is_some() {
             return (false, false);
         }
         match ask.kind.as_str() {
@@ -1933,7 +2125,112 @@ impl Host<'_> {
                 }
                 self.ask_started(&ask)
             }
+            "agent-install" | "agent-update" => self.begin_agent_ask(&ask),
             _ => (false, false),
+        }
+    }
+
+    fn begin_agent_ask(&mut self, ask: &HostAsk) -> (bool, bool) {
+        let Some(id) = ask.agent.as_deref() else { return (false, false) };
+        let Some(i) = self.agents.iter().position(|a| a.id == id) else { return (false, false) };
+        let install = ask.kind == "agent-install";
+        let target = ask.to.clone().unwrap_or_default();
+        let name = self.agents[i].name.clone();
+        let plan = self.agent_command(&self.agents[i], &target, install);
+        let (env, program, args) = match plan {
+            Ok(x) => x,
+            Err(why) => {
+                self.agents[i].manage_state = "failed".into();
+                self.agents[i].manage_error = why.clone();
+                self.ask_error = Some(format!("{} {} 失败：{why}", if install { "安装" } else { "更新" }, name));
+                self.asked = Some(ask.id);
+                return (true, false);
+            }
+        };
+        self.agents[i].manage_state = "running".into();
+        self.agents[i].manage_error.clear();
+        self.ask_error = None;
+        self.asked = Some(ask.id);
+        // 先让服务端清掉请求；界面从 HostAgent.manage.state 看忙碌状态
+        match self.beat(false) {
+            Ok(w) => self.set_work(w),
+            Err(_) => {
+                self.agents[i].manage_state.clear();
+                self.asked = None;
+                return (false, false);
+            }
+        }
+        let _ = std::fs::create_dir_all(&self.logs);
+        let log = self.logs.join(format!("agent-{}-{}.log", ask.id, id));
+        let started = create_log(&log).and_then(|(out, err)| {
+            let mut c = env.command(&program, &args, None, false);
+            c.stdin(Stdio::null()).stdout(out).stderr(err);
+            envs::detach(&mut c);
+            c.spawn()
+        });
+        match started {
+            Ok(child) => {
+                self.say(format!(
+                    "{} {}{}：{} {}",
+                    self.p.yellow("↑"),
+                    if install { "安装" } else { "更新" },
+                    name,
+                    program,
+                    args.join(" ")
+                ));
+                self.agent_job = Some(AgentJob { ask: ask.id, agent: id.into(), name, target, child, started: Instant::now(), log });
+                (false, false)
+            }
+            Err(e) => {
+                let why = format!("没法运行 {program}：{e}");
+                self.agents[i].manage_state = "failed".into();
+                self.agents[i].manage_error = why.clone();
+                self.ask_error = Some(format!("{} {} 失败：{why}", if install { "安装" } else { "更新" }, self.agents[i].name));
+                (true, false)
+            }
+        }
+    }
+
+    /// 实际安装/更新命令：按这个 agent 现在用的启动环境、实际命令路径判断安装方式
+    fn agent_command(&self, spec: &Spec, target: &str, install: bool) -> std::result::Result<(Env, String, Vec<String>), String> {
+        let check = spec.default_check();
+        let env_id = self
+            .work
+            .as_ref()
+            .and_then(|w| w.host.agents.iter().find(|a| a.id == spec.id))
+            .and_then(|a| a.env.clone())
+            .or_else(|| check.map(|c| c.env.clone()));
+        let env = env_id
+            .as_deref()
+            .and_then(|id| self.envs.iter().find(|e| e.id == id))
+            .cloned()
+            .or_else(|| self.envs.first().cloned())
+            .ok_or_else(|| "找不到可用的启动环境".to_string())?;
+        if env.wsl().is_some() {
+            return Err("WSL 里的 agent 不代装、不代升".into());
+        }
+        let b = spec.builtin.ok_or_else(|| "配置文件里的 agent 不代装、不代升".to_string())?;
+        if !spec.managed {
+            return Err("配置文件覆盖了这个 agent 的启动命令：不代装、不代升".into());
+        }
+        if install {
+            let mut it = b.install.split_whitespace();
+            let prog = it.next().ok_or_else(|| "没有安装命令".to_string())?;
+            return Ok((env, prog.to_string(), it.map(str::to_string).collect()));
+        }
+        let m = spec.manage_for(check);
+        match m.method.as_str() {
+            "npm-global" => Ok((env, "npm".into(), vec!["install".into(), "-g".into(), format!("{}@{}", b.package, if target.is_empty() { "latest" } else { target })])),
+            "brew" => {
+                let path = real_path(check.and_then(|c| c.prog.as_deref()));
+                let formula = brew_formula(&path).ok_or_else(|| "看不出 Homebrew 的 formula 名".to_string())?;
+                Ok((env, "brew".into(), vec!["upgrade".into(), formula]))
+            }
+            "script" => {
+                let prog = check.and_then(|c| c.prog.clone()).unwrap_or_else(|| spec.cmd.first().cloned().unwrap_or_default());
+                Ok((env, prog, vec!["update".into()]))
+            }
+            _ => Err(if m.reason.trim().is_empty() { "这个 agent 不能由 board host 更新".into() } else { m.reason }),
         }
     }
 
@@ -2013,9 +2310,103 @@ impl Host<'_> {
         self.ask_error = Some(format!("升级失败：{why}"));
     }
 
+    /// agent 的安装/更新子进程跑完了没有。成功就重新检查版本并清掉忙碌状态；失败把原因留在卡片上，可以重试。
+    fn poll_agent_job(&mut self) -> bool {
+        let Some(job) = self.agent_job.as_mut() else { return false };
+        let status = job.child.try_wait().ok().flatten();
+        if status.is_none() && job.started.elapsed() < AGENT_JOB_LIMIT {
+            return false;
+        }
+        let job = self.agent_job.take().expect("上面取过");
+        let mut job = job;
+        let tail = tail_lines(&job.log, 5, None);
+        let detail = tail.last().cloned().unwrap_or_default();
+        let out = match status {
+            Some(s) if s.success() => Ok(()),
+            Some(s) => Err(format!("退出码 {}：{}", s.code().unwrap_or(-1), detail)),
+            None => {
+                kill_tree(job.child.id(), true);
+                let _ = job.child.kill();
+                let _ = job.child.wait();
+                Err(format!("超过 {} 分钟没跑完，已结束", AGENT_JOB_LIMIT.as_secs() / 60))
+            }
+        };
+        match out {
+            Ok(()) => {
+                self.recheck();
+                let now = self.agents.iter().find(|a| a.id == job.agent).and_then(|a| a.default_check()).map(|c| c.version.clone()).unwrap_or_default();
+                if !job.target.is_empty() && manage_older(&now, &job.target) {
+                    let why = format!("安装/更新命令成功，但版本还是 {}（目标 {}）；可能需要重开终端或检查 PATH", if now.is_empty() { "未知" } else { &now }, job.target);
+                    if let Some(a) = self.agents.iter_mut().find(|a| a.id == job.agent) {
+                        a.manage_state = "failed".into();
+                        a.manage_error = why.clone();
+                    }
+                    let msg = format!("更新 {} 失败：{why}", job.name);
+                    self.say(format!("{} {msg}", self.p.red("✗")));
+                    self.ask_error = Some(msg);
+                } else {
+                    self.say(format!(
+                        "{} {} 更新好了{}（请求 #{}，目标 {}，现在是 {}）",
+                        self.p.green("✓"),
+                        job.name,
+                        if detail.is_empty() { String::new() } else { format!("：{detail}") },
+                        job.ask,
+                        job.target,
+                        now
+                    ));
+                }
+            }
+            Err(why) => {
+                if let Some(a) = self.agents.iter_mut().find(|a| a.id == job.agent) {
+                    a.manage_state = "failed".into();
+                    a.manage_error = why.clone();
+                }
+                let msg = format!("更新 {} 失败：{why}", job.name);
+                self.say(format!("{} {msg}", self.p.red("✗")));
+                self.ask_error = Some(msg);
+            }
+        }
+        self.beat_soon = true;
+        true
+    }
+
+    /// 到点就在后台查内置 agent 的最新版本（每天一次）。网络慢、失败都不影响心跳。
+    fn poll_agent_latest(&mut self) -> bool {
+        if self.agent_latest.as_ref().is_some_and(|j| j.is_finished()) {
+            let done = self.agent_latest.take().expect("上面取过").join().unwrap_or_default();
+            let at = now_ms();
+            for (id, r) in done {
+                if let Some(a) = self.agents.iter_mut().find(|a| a.id == id) {
+                    a.checked_at = at;
+                    if let Ok(v) = r {
+                        a.latest = v;
+                    }
+                }
+            }
+            return true;
+        }
+        if self.agent_latest.is_some() || Instant::now() < self.next_agent_check {
+            return false;
+        }
+        let want: Vec<(String, &'static str, &'static str)> = self
+            .agents
+            .iter()
+            .filter_map(|a| a.builtin.filter(|_| a.managed).map(|b| (a.id.clone(), b.package, b.tag)))
+            .collect();
+        self.next_agent_check = Instant::now() + AGENT_CHECK_EVERY;
+        if want.is_empty() {
+            return false;
+        }
+        self.agent_latest = Some(std::thread::spawn(move || {
+            want.into_iter().map(|(id, pkg, tag)| (id, fetch_npm_latest(pkg, tag))).collect()
+        }));
+        false
+    }
+
     /// 重新检查（远程请求）：重新找启动环境、本机 agent（找不找得到、版本号）、board-skills，环境检查也重跑。
     /// 配置文件读不了、agent 配置不对时保留原来的 agent
     fn recheck(&mut self) {
+        let latest: BTreeMap<String, (String, i64)> = self.agents.iter().map(|a| (a.id.clone(), (a.latest.clone(), a.checked_at))).collect();
         self.envs = envs::discover();
         match config::File::load().and_then(|f| f.host()).and_then(|c| agent_specs(&c.agents, &self.envs)) {
             Ok(a) => self.agents = a,
@@ -2024,6 +2415,10 @@ impl Host<'_> {
         let pairs = ws_pairs(&self.ws, &self.boards, &self.os);
         for a in &mut self.agents {
             a.check_skills(&self.envs, &pairs);
+            if let Some((v, at)) = latest.get(&a.id) {
+                a.latest = v.clone();
+                a.checked_at = *at;
+            }
         }
         self.agent_now = models_now(&self.agents, &self.envs);
         self.ready_all = true;
@@ -2912,6 +3307,13 @@ impl Host<'_> {
             }
             // 自检：界面上点了就在后台做，做完回报
             self.poll_selftest();
+            // agent 版本每天在后台查一次；安装/更新在后台跑，不占会话位
+            if self.poll_agent_latest() {
+                next_beat = Instant::now();
+            }
+            if self.poll_agent_job() {
+                next_beat = Instant::now();
+            }
             // 从这台机器导入 skills：界面上选了就在后台传进库，做完回报
             self.poll_skill_import();
             // 同步配置：启动时写一次，服务器上一改（收到同步请求）再写一次，写完回报、马上上报
@@ -3759,6 +4161,11 @@ impl Host<'_> {
         for r in self.readies.iter_mut() {
             r.kill();
         }
+        if let Some(mut job) = self.agent_job.take() {
+            kill_tree(job.child.id(), true);
+            let _ = job.child.kill();
+            let _ = job.child.wait();
+        }
         // 自检启动的 agent、git：一起结束（结果不再回报，请求过期后可以重新自检）
         for pid in self.selftest_pids.lock().map(|p| p.clone()).unwrap_or_default() {
             kill_tree(pid, true);
@@ -3806,6 +4213,27 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn managed_spec(id: &str, b: &'static Builtin) -> Spec {
+        Spec {
+            id: id.into(),
+            name: b.name.into(),
+            model: String::new(),
+            cmd: b.cmd.iter().map(|s| s.to_string()).collect(),
+            skills: vec![],
+            project: vec![],
+            git_bash: false,
+            checks: vec![],
+            no_skill: BTreeMap::new(),
+            json_gate: None,
+            builtin: Some(b),
+            managed: true,
+            latest: String::new(),
+            checked_at: 0,
+            manage_state: String::new(),
+            manage_error: String::new(),
+        }
+    }
 
     /// 派发的配置文件：服务端地址、令牌，以及带给 agent 的 `BOARD_*`（`[agent_env]`），agent 从里面补回来
     #[test]
@@ -4229,6 +4657,12 @@ mod tests {
             git_bash: true,
             checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()) }],
             no_skill: BTreeMap::new(),
+            builtin: None,
+            managed: false,
+            latest: String::new(),
+            checked_at: 0,
+            manage_state: String::new(),
+            manage_error: String::new(),
         };
         let direct = Env::direct();
         let dirs = [("default/main".into(), repo.clone())];
@@ -4271,6 +4705,55 @@ mod tests {
         let specs = agent_specs(&conf, &[]).unwrap();
         let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
         assert!(dsh.cmd_for(&check("0.1.0")).contains(&"--json".to_string()), "配置文件写的命令照原样用");
+    }
+
+    /// agent 的版本比较要认预发布：0.2.2-rc.1 < 0.2.2-rc.3 < 0.2.2
+    #[test]
+    fn agent_versions_compare_prereleases() {
+        assert!(manage_older("0.2.2-rc.1", "0.2.2-rc.3"));
+        assert!(manage_older("0.2.2-rc.3", "0.2.2"));
+        assert!(manage_older("codex-cli 0.168.0", "0.169.0"));
+        assert!(!manage_older("0.2.2", "0.2.2-rc.3"));
+        assert!(!manage_older("0.169.0", "0.169.0+build.2"));
+    }
+
+    /// npm registry 的返回只取 version，缺字段、坏 JSON 都报原因
+    #[test]
+    fn npm_latest_reads_version() {
+        assert_eq!(npm_latest(r#"{"version":"1.2.3"}"#).unwrap(), "1.2.3");
+        assert!(npm_latest(r#"{"name":"x"}"#).unwrap_err().contains("version"));
+        assert!(npm_latest("not json").unwrap_err().contains("JSON"));
+    }
+
+    /// 安装方式按命令实际路径判断：npm 全局 / Homebrew / 官方脚本 / 桌面 app / 配置覆盖 / WSL
+    #[test]
+    fn agent_install_methods_are_detected_from_the_real_command() {
+        let mut spec = managed_spec("claude", BUILTIN.iter().find(|b| b.id == "claude").unwrap());
+        spec.latest = "2.1.325".into();
+        spec.checked_at = 42;
+        let check = |env: &str, path: &str| Check { env: env.into(), found: true, version: "2.1.300 (Claude Code)".into(), prog: Some(path.into()) };
+        let npm = spec.manage_for(Some(&check("direct", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js")));
+        assert_eq!((npm.method.as_str(), npm.method_label.as_str(), npm.updatable), ("npm-global", "npm 全局", true));
+        assert!(npm.update_available);
+        let brew = spec.manage_for(Some(&check("direct", "/opt/homebrew/Cellar/claude-code/2.1.300/bin/claude")));
+        assert_eq!(brew.method, "brew");
+        assert!(brew.method_label.contains("claude-code"));
+        let script = spec.manage_for(Some(&check("direct", "/Users/me/.local/bin/claude")));
+        assert_eq!(script.method, "script");
+        assert!(script.updatable);
+        let app = spec.manage_for(Some(&check("direct", "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh")));
+        assert_eq!(app.method, "app");
+        assert!(!app.updatable && app.reason.contains("桌面 app"));
+        let wsl = spec.manage_for(Some(&check("wsl:Ubuntu", "/home/me/.local/bin/claude")));
+        assert_eq!(wsl.method, "wsl");
+        assert!(!wsl.updatable);
+        let missing = spec.manage_for(None);
+        assert_eq!(missing.method, "missing");
+        assert!(missing.installable && missing.install_command.contains("npm install -g"));
+        spec.managed = false;
+        let cfg = spec.manage_for(Some(&check("direct", "/usr/local/bin/claude")));
+        assert_eq!(cfg.method, "config");
+        assert!(cfg.reason.contains("配置文件"));
     }
 
     /// 结构化事件：按行解析、脱敏，异常退出评论里的最后几个事件把工具调用和结果合成一条

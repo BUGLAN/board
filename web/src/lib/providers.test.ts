@@ -4,7 +4,7 @@ import type { AgentMeta, HostAgent, HostInfo, Provider, ProviderView, SyncResult
 
 const META: AgentMeta[] = [
   { id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'codex', name: 'Codex', protocols: ['openai-responses'], efforts: ['minimal', 'low', 'medium', 'high'] },
+  { id: 'codex', name: 'Codex', protocols: ['openai-responses'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'pi', name: 'pi', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
 ];
 const prov = (x: Partial<Provider> = {}): Provider => ({
@@ -25,8 +25,8 @@ describe('模型供应商共用配置', () => {
   it('能写的强度：模型标了的、agent 也能写的；没标的不能选', () => {
     const p = prov();
     expect(writableEfforts(META[0], p, 'deepseek-reasoner')).toEqual(['low', 'high', 'max']);
-    // codex 写不了 max
-    expect(writableEfforts(META[1], p, 'deepseek-reasoner')).toEqual(['low', 'high']);
+    expect(writableEfforts(META[1], p, 'deepseek-reasoner')).toEqual(['low', 'high', 'max']);
+    expect(writableEfforts(META[1], p, 'deepseek-reasoner')).toContain('max');
     expect(writableEfforts(META[0], p, 'deepseek-chat')).toEqual([]);
     expect(writableEfforts(undefined, p, 'deepseek-reasoner')).toEqual([]);
   });

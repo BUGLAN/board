@@ -14,9 +14,9 @@ import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
 import { envName, selftestBusy, since } from '../../lib/hosts';
 import { interfaceName, metaOf, protocolChoices, providersFor, runPick, writableEfforts } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { copyText, cx } from '../../lib/util';
 import { optimistic } from '../../store/data';
-import { toastError } from '../../store/ui';
+import { toast, toastError } from '../../store/ui';
 import { Select, Sync, Tip, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
@@ -109,6 +109,7 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
             </span>
           ))}
       </header>
+      <ManageAgent h={h} a={a} now={now} ask={ask} />
       {a.found && meta && (
         <div className={cx('hd-conf', line.tone)}>
           <Icon name={line.tone === 'ok' ? 'checkCircle' : line.tone === 'bad' ? 'alert' : line.tone === 'busy' ? 'renew' : 'info'} />
@@ -155,6 +156,68 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
       )}
       {a.found && <Editor h={h} a={a} view={view} save={save} sync={sync} def={def} testing={testing} ask={ask} />}
     </article>
+  );
+}
+
+/** agent 的安装方式、最新版本、安装/更新按钮。失败的留在卡片上，可以重试。 */
+function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: number; ask: ReturnType<typeof useAsk> }) {
+  const m = a.manage;
+  if (!m) return null;
+  const queued = h.ask?.agent === a.id;
+  const running = m.state === 'running' || queued;
+  const key = `agent:${a.id}`;
+  const disabled = !!ask.busy || !h.online || running;
+  const install = () => void ask.run(key, () => api.askAgent(h.name, 'agent-install', a.id, m.latest_version));
+  const update = () => void ask.run(key, () => api.askAgent(h.name, 'agent-update', a.id, m.latest_version));
+  const copy = async () => {
+    if (!m.install_command) return;
+    const ok = await copyText(m.install_command);
+    toast({ type: ok ? 'success' : 'error', title: ok ? '已复制安装命令' : '复制失败' });
+  };
+  return (
+    <div className={cx('hd-manage', m.state === 'failed' && 'hp-rollback')}>
+      <div className="hd-conf muted">
+        <Icon name={m.update_available ? 'download' : 'info'} />
+        <span>
+          安装方式：{m.method_label || '未知'}
+          {m.latest_version ? ` · 最新 ${m.latest_version}` : ''}
+          {m.checked_at ? ` · 检查于 ${since(m.checked_at, now)}` : ''}
+        </span>
+        {running && <span className="ha-hint">正在{a.found ? '更新' : '安装'}…</span>}
+        {!running && m.update_available && m.updatable && (
+          <button className={cx('btn sm', ask.busy === key && 'is-busy')} type="button" disabled={disabled} onClick={update}>
+            <Icon name="download" />
+            更新到 {m.latest_version}
+          </button>
+        )}
+      </div>
+      {!a.found && m.install_command && (
+        <div className="hd-manage-cmd">
+          <code>{m.install_command}</code>
+          <button className="btn sm ghost" type="button" onClick={() => void copy()}>
+            <Icon name="copy" />
+            复制
+          </button>
+          {m.installable && !running && (
+            <button className={cx('btn sm brand', ask.busy === key && 'is-busy')} type="button" disabled={disabled} onClick={install}>
+              <Icon name="download" />
+              安装
+            </button>
+          )}
+        </div>
+      )}
+      {m.reason && !running && <p className="hp-note">{m.reason}</p>}
+      {m.error && !running && (
+        <div className="hd-why">
+          <span>上一次失败：{m.error}</span>
+          {m.updatable && m.latest_version && (
+            <button className={cx('btn sm', ask.busy === key && 'is-busy')} type="button" disabled={disabled} onClick={update}>
+              重试
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

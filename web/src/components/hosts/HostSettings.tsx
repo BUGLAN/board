@@ -2,9 +2,10 @@
    机器详情「设置」页
    0. 资源：CPU、内存、GPU、存储四块磁贴（Resources.tsx）
    1. 接单：一行摘要（时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张）+「在调度里改」
-   2. skills、MCP、Git 凭据：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
-   3. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
-   4. 维护：重新检查、升级到 x.y.z（落后时才有）、重启 board host、令牌、移除这台机器
+   2. agent 更新：自动更新开关
+   3. skills、MCP、Git 凭据：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
+   4. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
+   5. 维护：重新检查、升级到 x.y.z（落后时才有）、重启 board host、令牌、移除这台机器
    开关、工作空间是设置项（当帧生效，旁边转圈）；导入、维护、移除要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
 import { useEffect, useState } from 'react';
@@ -69,6 +70,23 @@ export function HostSettings({
         </p>
       </section>
       <section>
+        <h3>agent 更新</h3>
+        <div className="hd-sw">
+          <div className="hd-sw-text">
+            <b>自动更新 agent</b>
+            <span className="t-muted">默认关。开着时，board host 发现有新版本、并且这台机器没有在跑的派发，就按它实际的安装方式更新；安装方式不支持的只在 agent 页提示。</span>
+          </div>
+          <span className="hp-ctl">
+            <Sync s={sync.agentAuto} />
+            <Segmented<AutoMode>
+              value={h.agentAuto ? 'on' : 'off'}
+              options={AUTO_MODES}
+              onChange={v => v !== (h.agentAuto ? 'on' : 'off') && save({ agentAuto: v === 'on' })}
+            />
+          </span>
+        </div>
+      </section>
+      <section>
         <h3>skills、MCP 和 Git 凭据</h3>
         <SyncBlock h={h} save={save} sync={sync} now={now} />
       </section>
@@ -98,6 +116,11 @@ export function HostSettings({
 /* ------------------------------ skills、MCP 和 Git 凭据 ------------------------------ */
 
 type Mode = 'server' | 'off';
+type AutoMode = 'on' | 'off';
+const AUTO_MODES: [AutoMode, string][] = [
+  ['off', '关闭'],
+  ['on', '自动更新'],
+];
 const MODES: [Mode, string][] = [
   ['server', '用服务器的'],
   ['off', '不改'],

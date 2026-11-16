@@ -528,11 +528,17 @@ pub(crate) async fn remove(
 
 #[derive(Deserialize)]
 pub(crate) struct AskBody {
-    /// recheck | restart | upgrade | drain | cancel
+    /// recheck | restart | upgrade | drain | cancel | agent-install | agent-update
     kind: String,
     /// 升级：不等在跑的派发结束
     #[serde(default)]
     now: bool,
+    /// agent-install / agent-update：哪个 agent
+    #[serde(default)]
+    agent: Option<String>,
+    /// agent-install / agent-update：目标版本
+    #[serde(default)]
+    to: Option<String>,
 }
 
 /// 远程管理一台机器（重新检查、重启、升级、排空、取消请求）。只能在登录后的界面上做，访问令牌调用时 NOT_LOGGED_IN
@@ -549,7 +555,14 @@ pub(crate) async fn ask(
         Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
         Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
     };
-    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_ask(&name, &b.kind, b.now, &by))).await?;
+    let out = s.db(move |st| {
+        st.write(now_ms(), Origin::ui(client), |w| match (&*b.kind, b.agent.as_deref()) {
+            ("agent-install" | "agent-update", Some(agent)) => w.host_agent_ask(&name, &b.kind, agent, b.to.as_deref(), &by),
+            ("agent-install" | "agent-update", None) => Err(board_core::BoardError::usage("agent 操作要写是哪个 agent")),
+            _ => w.host_ask(&name, &b.kind, b.now, &by),
+        })
+    })
+    .await?;
     s.poke();
     Ok(Json(out))
 }

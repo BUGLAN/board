@@ -163,6 +163,15 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 - **pi**：`-p` 只在结束时把最终回答写到标准输出，跑的过程中日志一直是空的。模板改用 `--mode json`：同样跑完就退出，运行中把会话事件写成 JSONL（pi 文档 `docs/json.md`），`board host` 转写后上传，同时解析成事件；流式片段（`message_update`）不显示，只显示说完的话、工具调用和结果、重试、压缩上下文、结束。pi 没有整次运行的汇总：用量按每条消息报的加起来，在 `agent_settled` 时记进结束事件。pi 本身不做权限审批。`/board-skills …` 和 `/skill:board-skills …` 两种写法都会加载 skill。Windows 上 pi 用 Git Bash 执行命令，默认的启动环境就是 Git Bash；在 PowerShell 里启动时，`board host` 会从 `PATH` 里的 `git` 找到 Git 安装目录（`<Git>\bin\git.exe`、`<Git>\cmd\git.exe`、`<Git>\mingw64\bin\git.exe` 三种布局都认），把它下面的 `bin` 放到 pi 的 `PATH` 前面，所以 Git 不在 `C:\Program Files\Git` 也能用；找不到 Git Bash 时在 `~/.pi/agent/settings.json` 里设置 `shellPath`。pi 不支持 cmd。
 - **Codex**：`codex exec` 做完一个任务就退出；`--dangerously-bypass-approvals-and-sandbox` 不审批、不开沙箱（`board-skills` 要 `git push`、访问服务端）。模板带 `--json`：运行中把事件写成 JSONL（文档 `docs/exec.md`：`thread.started`、`turn.completed`（带这一轮的 tokens）、`turn.failed`、`item.started` / `item.completed` 里的 `agent_message`、`command_execution`、`file_change`、`mcp_tool_call`、`web_search`、`todo_list`、`error`）；命令显示成 `shell`，去掉外面的 `bash -lc '…'`。Codex 不报费用。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
 
+## 安装和更新 agent
+
+机器详情「agent」页会显示每个内置 agent 的版本、安装方式（npm 全局、Homebrew、官方安装脚本、桌面 app 自带或配置文件）和有没有新版本。board host 每天在后台查一次 npm 上的最新版本，不把网络请求放进 10 秒心跳；打开机器详情看到的是最近一次检查的结果。
+
+- 没找到的内置 agent 给出安装命令，可以复制到那台机器执行，也可以在界面点「安装」由 board host 执行。四个内置 agent 的 npm 包分别是 `@deepseek-ai/dsh-headless`（用 `next` 标签）、`@anthropic-ai/claude-code`、`@mariozechner/pi-coding-agent`、`@openai/codex`。
+- 找到的按命令实际路径识别安装方式：npm 全局用 `npm install -g <包>@<版本>`，Homebrew 用 `brew upgrade <formula>`，官方安装脚本用命令自己的 `update`，桌面 app 自带的随 app 更新。装完 board host 自动重新检查并上报新版本；失败原因留在卡片上，可以重试。更新在后台子进程里跑，不占会话位，不影响正在跑的派发。
+- 机器设置「agent 更新 → 自动更新 agent」默认关。开着时，board host 发现有新版本、这台机器没有在跑的派发，就按上面同一套方式更新，机器操作记录里写「自动更新 <agent> 到 <版本>」；失败后把卡片标成失败，等人重试，不会每 10 秒反复重试。
+- 配置文件里新加的 agent、改了内置 agent 启动命令的，以及 WSL 里的 agent 只显示版本和原因，不代装、不代升。
+
 ## 装 `board-skills`
 
 **跑着 `board host` 的机器不用手动装**：board host 按「机器 → 共用配置」的 skills 共用库自动同步，`board-skills` 是库里固定的一项，内容随服务端版本，服务端升级后各台机器自动换成新的；`bin/<平台>/board` 用 board host 自己的 board。它写进每个找到的 agent 读用户级 skill 的目录（`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`，WSL 里的 agent 写到 WSL 用户目录下），目录里放标记文件 `.board-sync`。`board-skills` 不管机器上 skills 选的是「用服务器的」还是「不改」都装。已经有同名、不是 Board 装的：挪进 `~/.board/host/skills-backup/<名称>-<时间>/` 再换上库里的；软链接（开发时链接到仓库的）不碰，界面上写「本机是软链接，没有覆盖」。自己的其他 skill 也可以放进库里，机器详情「设置 → skills 和 MCP」里 skills 选了「用服务器的」的机器都会装上：
