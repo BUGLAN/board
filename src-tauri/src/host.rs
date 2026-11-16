@@ -329,21 +329,101 @@ pub fn watch(app: AppHandle) {
 /// 失败时带上原因重新启动 board host，它上报后服务端恢复接单
 async fn upgrade(app: AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
-    let done: Result<(), String> = async {
-        let updater = app.updater().map_err(|e| format!("更新器没有配置好：{e}"))?;
-        let update = updater.check().await.map_err(|e| format!("检查更新失败：{e}"))?.ok_or("没有找到比现在新的桌面端版本")?;
-        let version = update.version.clone();
-        update.download_and_install(|_, _| {}, || {}).await.map_err(|e| format!("下载或安装 {version} 失败：{e}"))?;
-        Ok(())
-    }
+    let done = install_with_host_paused(
+        pause_for_update(&app),
+        async {
+            let updater = app.updater().map_err(|e| format!("更新器没有配置好：{e}"))?;
+            let update = updater.check().await.map_err(|e| format!("检查更新失败：{e}"))?.ok_or("没有找到比现在新的桌面端版本")?;
+            let version = update.version.clone();
+            update.download_and_install(|_, _| {}, || {}).await.map_err(|e| format!("下载或安装 {version} 失败：{e}"))?;
+            Ok(())
+        },
+        // board host 就是按退出码 76 退出去升级的：安装失败时一定要把它拉回来，即使 pause 时它已经不在
+        |e| restart_after_failed_update(&app, &format!("升级失败：{e}")),
+        true,
+    )
     .await;
     match done {
         // Windows 上安装器已经关掉外壳、装完会把新版拉起来；macOS / Linux 重启换成新版本。重启后 board host 照常启动
         Ok(()) => app.restart(),
+        // 失败时 install_with_host_paused 已经重新启动 board host 并带上原因
+        Err(_) => {}
+    }
+}
+
+/// 升级前停掉 board host 的结果：手动更新失败时按 `was_running` 决定要不要把它拉回来
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PausedHost {
+    /// 停之前它正在跑
+    pub was_running: bool,
+}
+
+/// 下载安装之前停掉桌面端启动的 board host。
+///
+/// Windows 上安装器要替换安装目录里的 `board.exe`，桌面端调用更新器后直接退出（`download_and_install`
+/// 在 Windows 上装好后 `std::process::exit(0)`），来不及走 `RunEvent::Exit` 里的 [`stop`]，board host
+/// 继续运行并锁着 `board.exe`，安装器就报「Error opening file for writing」（#389）。
+/// 其他平台不用停：升级在这之后才退出 / 重启，`RunEvent::Exit` 里会正常停掉。
+///
+/// 停不下来时返回错误，调用方不要开始安装（新旧两个 board host 会重名）。
+pub async fn pause_for_update<R: Runtime>(app: &AppHandle<R>) -> Result<PausedHost, String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(PausedHost { was_running: false });
+    }
+    let a = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let was_running = running(&a);
+        pause_host(was_running, || stop(&a, STOP_WAIT))
+    })
+    .await
+    .map_err(|e| format!("停 board host 时出错：{e}"))?
+}
+
+/// 按升级前 board host 在不在跑来停它：不在跑就什么也不做；停不下来时把错误传出去，调用方不要开始安装。
+/// 单独写出来是为了能测「只停正在跑的那个、停失败就不安装」这层判断（[`stop`] 本身要 AppHandle）
+fn pause_host(was_running: bool, stop: impl FnOnce() -> Result<(), String>) -> Result<PausedHost, String> {
+    if was_running {
+        stop()?;
+    }
+    Ok(PausedHost { was_running })
+}
+
+/// board host 正被这个桌面端管着、并且还在跑
+fn running<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let state = app.state::<HostProc>();
+    let Ok(mut g) = state.0.lock() else { return false };
+    matches!(g.as_mut().map(|r| r.child.try_wait()), Some(Ok(None)))
+}
+
+/// 升级失败：带上原因重新启动 board host，机器回到线上，原因由它上报给服务端（服务端恢复接单）。
+/// 手动更新只在升级前它在跑时调用；远程升级是它自己按退出码 76 退出去升级的，失败时一定要拉回来。
+pub fn restart_after_failed_update<R: Runtime>(app: &AppHandle<R>, reason: &str) {
+    if let Err(e) = start_with(app, Some(reason)) {
+        eprintln!("升级失败（{reason}），重新启动 board host 也失败：{e}");
+    }
+}
+
+/// 升级安装的先后：先停 board host，停不下来就不安装；安装失败时把它拉回来（`recover`）。
+/// `always_restart` 用于远程升级：board host 已经按退出码 76 退出，失败时一定要重新启动。
+/// 顺序和恢复写成这里的一份，手动更新和远程升级走同一条路，单元测试也测这一份。
+pub(crate) async fn install_with_host_paused<F, R>(
+    pause: impl std::future::Future<Output = Result<PausedHost, String>>,
+    install: F,
+    recover: R,
+    always_restart: bool,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = Result<(), String>>,
+    R: FnOnce(&str),
+{
+    let paused = pause.await?;
+    match install.await {
+        Ok(()) => Ok(()),
         Err(e) => {
-            if let Err(e2) = start_with(&app, Some(&format!("升级失败：{e}"))) {
-                eprintln!("升级失败（{e}），重新启动 board host 也失败：{e2}");
+            if always_restart || paused.was_running {
+                recover(&e);
             }
+            Err(e)
         }
     }
 }
@@ -612,6 +692,126 @@ pub async fn pick_folder(app: AppHandle, start: String) -> Result<Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试里的 future 都是立即就绪的：poll 一次拿结果，不需要真正的执行器
+    fn now<F: std::future::Future>(f: F) -> F::Output {
+        use std::pin::pin;
+        use std::sync::Arc;
+        use std::task::{Context, Poll, Wake, Waker};
+        struct Noop;
+        impl Wake for Noop {
+            fn wake(self: Arc<Self>) {}
+        }
+        let waker = Waker::from(Arc::new(Noop));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = pin!(f);
+        match f.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => v,
+            Poll::Pending => panic!("测试里的 future 应当立即就绪"),
+        }
+    }
+
+    /// 升级前只停正在跑的 board host；没在跑不动它；停不下来时不返回，调用方不能开始安装
+    #[test]
+    fn update_pauses_only_a_running_host() {
+        use std::cell::Cell;
+
+        let stopped = Cell::new(false);
+        let paused = pause_host(false, || {
+            stopped.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(paused, PausedHost { was_running: false });
+        assert!(!stopped.get(), "没在跑时不该调 stop");
+
+        let stopped = Cell::new(false);
+        let paused = pause_host(true, || {
+            stopped.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(paused, PausedHost { was_running: true });
+        assert!(stopped.get());
+
+        let err = pause_host(true, || Err("board host 40 秒内没有退出".into())).unwrap_err();
+        assert!(err.contains("没有退出"), "{err}");
+    }
+
+    /// 升级安装：先停 board host，停不下来就不安装；安装失败时把失败原因交给恢复（重启 board host）
+    #[test]
+    fn update_pauses_host_then_installs_and_recovers_on_failure() {
+        use std::cell::RefCell;
+
+        // 顺序：先停再装；失败后重启，原因原样交给恢复
+        let events = RefCell::new(Vec::new());
+        let err = now(install_with_host_paused(
+            std::future::ready(Ok(PausedHost { was_running: true })),
+            async {
+                events.borrow_mut().push("install".to_string());
+                Err::<(), String>("下载失败".into())
+            },
+            |e| events.borrow_mut().push(format!("restart：{e}")),
+            false,
+        ))
+        .unwrap_err();
+        assert_eq!(err, "下载失败");
+        assert_eq!(*events.borrow(), ["install", "restart：下载失败"]);
+
+        // 停不下来：不安装、也不重启（board host 还在，界面重试即可）
+        let events = RefCell::new(Vec::new());
+        let err = now(install_with_host_paused(
+            std::future::ready(Err::<PausedHost, _>("board host 40 秒内没有退出".into())),
+            async {
+                events.borrow_mut().push("install".to_string());
+                Ok(())
+            },
+            |_| events.borrow_mut().push("restart".to_string()),
+            false,
+        ))
+        .unwrap_err();
+        assert!(err.contains("没有退出"), "{err}");
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    }
+
+    /// 安装失败后要不要重启：手动更新只在升级前 board host 在跑时重启；远程升级是它自己退出去的，总要重启
+    #[test]
+    fn update_restarts_only_when_needed() {
+        use std::cell::Cell;
+
+        let cases = [
+            // (升级前在跑, 远程升级, 期望重启)
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ];
+        for (was_running, remote, want) in cases {
+            let restarted = Cell::new(false);
+            let result = now(install_with_host_paused(
+                std::future::ready(Ok(PausedHost { was_running })),
+                async { Err::<(), String>("安装失败".into()) },
+                |_| restarted.set(true),
+                remote,
+            ));
+            assert!(result.is_err());
+            assert_eq!(restarted.get(), want, "was_running={was_running} remote={remote}");
+        }
+    }
+
+    /// 安装成功：不重启（Windows 上安装器会拉起新版本，其他平台由调用方重启外壳）
+    #[test]
+    fn successful_update_does_not_restart_host() {
+        let restarted = std::cell::Cell::new(false);
+        now(install_with_host_paused(
+            std::future::ready(Ok(PausedHost { was_running: true })),
+            async { Ok::<(), String>(()) },
+            |_| restarted.set(true),
+            false,
+        ))
+        .unwrap();
+        assert!(!restarted.get());
+    }
 
     /// 停 board host：等它真的退出；到时间还没退出就交回来（不能接着启动新的）
     #[cfg(unix)]

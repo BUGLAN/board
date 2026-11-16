@@ -96,31 +96,43 @@ pub async fn update_check(app: AppHandle) -> Result<Checked, String> {
 }
 
 /// 下载并安装检查到的那个版本（`version` 是 update_check 返回的），进展走 `update://progress` 事件。
-/// 失败不留下任何改动：当前运行的版本继续用，可以重新检查后再试
+/// 失败不留下任何改动：当前运行的版本继续用，可以重新检查后再试。
+/// Windows 上下载安装之前先停掉桌面端启动的 board host：安装器要替换安装目录里的 board.exe，
+/// board host 还开着就会锁住它，报「Error opening file for writing」（#389）。停不下来就不安装。
 #[tauri::command]
 pub async fn update_install(app: AppHandle, version: String) -> Result<Installed, String> {
     let update = take(&app.state::<Pending>().0, &version)?;
     let total = Mutex::new(None::<u64>);
     let (mut sent, mut reported) = (0u64, 0u64);
     let handle = app.clone();
-    update
-        .download_and_install(
-            |chunk, length| {
-                sent += chunk as u64;
-                if length.is_some() {
-                    *total.lock().unwrap() = length;
-                }
-                let all = *total.lock().unwrap();
-                if !should_report(reported, sent, all) {
-                    return;
-                }
-                reported = sent;
-                let _ = handle.emit("update://progress", Progress { downloaded: sent, total: all });
-            },
-            || {},
-        )
-        .await
-        .map_err(|e| format!("下载或安装 {version} 失败：{e}"))?;
+    let v = version.clone();
+    crate::host::install_with_host_paused(
+        crate::host::pause_for_update(&app),
+        async move {
+            update
+                .download_and_install(
+                    |chunk, length| {
+                        sent += chunk as u64;
+                        if length.is_some() {
+                            *total.lock().unwrap() = length;
+                        }
+                        let all = *total.lock().unwrap();
+                        if !should_report(reported, sent, all) {
+                            return;
+                        }
+                        reported = sent;
+                        let _ = handle.emit("update://progress", Progress { downloaded: sent, total: all });
+                    },
+                    || {},
+                )
+                .await
+                .map_err(|e| format!("下载或安装 {v} 失败：{e}"))
+        },
+        // 安装没成：升级前 board host 在跑的话把它拉回来（带上原因，服务端恢复接单）
+        |e| crate::host::restart_after_failed_update(&app, &format!("升级失败：{e}")),
+        false,
+    )
+    .await?;
     Ok(installed(version))
 }
 
