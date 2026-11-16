@@ -5065,15 +5065,24 @@ fn git_credential_is_masked_versioned_and_synced_to_hosts_that_use_it() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     beat(&mut s, T0, &report("win", "i2", vec![])).unwrap();
-    // 新机器默认用服务器的；服务端没设时版本是空的
+    // 新机器默认不改；服务端没设时版本是空的，配置里也不带 Git（改了凭据不会让不改的机器同步）
     let h = s.read(|r| r.host("mbp", T0)).unwrap();
-    assert!(h.sync_git, "Git 凭据默认用服务器的");
+    assert!(!h.sync_git, "Git 凭据新机器默认不改");
     assert_eq!(s.read(|r| r.host_work("mbp", T0)).unwrap().git.as_deref(), Some(""));
-    let key = s.read(|r| r.host_work("mbp", T0)).unwrap().config_key;
-    synced(&mut s, "mbp", "i1", None, &key, vec![]).unwrap();
+    // mbp 在界面上打开：记一条操作记录，下发一次同步（服务端没设时版本是空的）
+    let h = s.write(T0, Origin::ui(None), |w| w.host_update_as("mbp", &HostPatch { sync_git: Some(true), ..Default::default() }, "buglan")).unwrap();
+    assert!(h.sync_git);
+    assert!(h.ops.iter().any(|o| o.text.contains("Git 凭据改成用服务器的")), "{:?}", h.ops);
+    let on_ask = sync_of(&s, "mbp").ask.expect("开关变了要同步");
+    synced(&mut s, "mbp", "i1", Some(on_ask.id), &on_ask.key, vec![]).unwrap();
+    assert_eq!(s.read(|r| r.host_work("mbp", T0)).unwrap().git.as_deref(), Some(""));
     let key_win = s.read(|r| r.host_work("win", T0)).unwrap().config_key;
     synced(&mut s, "win", "i2", None, &key_win, vec![]).unwrap();
-    // win 改成不改：记一条操作记录
+    // win 打开又改成不改：两次都记一条操作记录，各下发一次同步（关掉时去掉之前配的）
+    let h = s.write(T0, Origin::ui(None), |w| w.host_update_as("win", &HostPatch { sync_git: Some(true), ..Default::default() }, "buglan")).unwrap();
+    assert!(h.ops.iter().any(|o| o.text.contains("Git 凭据改成用服务器的")), "{:?}", h.ops);
+    let win_on = sync_of(&s, "win").ask.expect("打开时同步");
+    synced(&mut s, "win", "i2", Some(win_on.id), &win_on.key, vec![]).unwrap();
     let h = s.write(T0, Origin::ui(None), |w| w.host_update_as("win", &HostPatch { sync_git: Some(false), ..Default::default() }, "buglan")).unwrap();
     assert!(!h.sync_git);
     assert!(h.ops.iter().any(|o| o.text.contains("Git 凭据改成不改")), "{:?}", h.ops);
@@ -5139,6 +5148,47 @@ fn existing_hosts_get_the_git_switch_on_after_upgrade() {
         beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
         s.conn().execute_batch("ALTER TABLE hosts DROP COLUMN sync_git").unwrap();
     }
+    let mut s = Store::open(&path).unwrap();
+    assert!(s.read(|r| r.host("mbp", T0)).unwrap().sync_git, "升级前已有的机器保持原来的效果：用服务器的");
+    // 升级之后新连上的机器默认不改；再打开一次不重复补，已有的机器还是原来的值
+    beat(&mut s, T0, &report("win", "i2", vec![])).unwrap();
+    assert!(!s.read(|r| r.host("win", T0)).unwrap().sync_git, "升级之后的新机器默认不改");
+    drop(s);
     let s = Store::open(&path).unwrap();
-    assert!(s.read(|r| r.host("mbp", T0)).unwrap().sync_git, "已有的机器也默认用服务器的");
+    assert!(s.read(|r| r.host("mbp", T0)).unwrap().sync_git);
+    assert!(!s.read(|r| r.host("win", T0)).unwrap().sync_git);
+}
+
+#[test]
+fn new_hosts_on_a_0_1_34_database_default_to_no_git_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old-default.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        // 模拟 0.1.34 的库：#386 迁移时用 ALTER 补的列，表上的默认值是 1
+        s.conn().execute_batch("ALTER TABLE hosts DROP COLUMN sync_git").unwrap();
+        s.conn().execute_batch("ALTER TABLE hosts ADD COLUMN sync_git INTEGER NOT NULL DEFAULT 1").unwrap();
+    }
+    let mut s = Store::open(&path).unwrap();
+    assert!(s.read(|r| r.host("mbp", T0)).unwrap().sync_git, "已有的机器还是用服务器的");
+    beat(&mut s, T0, &report("win", "i2", vec![])).unwrap();
+    assert!(!s.read(|r| r.host("win", T0)).unwrap().sync_git, "升级后新连上的机器默认不改，不取表上的旧默认值");
+}
+
+#[test]
+fn existing_hosts_keep_their_git_switch_values_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keep.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report("on", "i1", vec![])).unwrap();
+        beat(&mut s, T0, &report("off", "i2", vec![])).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.host_update_as("on", &HostPatch { sync_git: Some(true), ..Default::default() }, "buglan")).unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    assert!(s.read(|r| r.host("on", T0)).unwrap().sync_git, "开着的还是开着");
+    assert!(!s.read(|r| r.host("off", T0)).unwrap().sync_git, "关着的还是关着");
 }

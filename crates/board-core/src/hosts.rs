@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   skill_import TEXT,                  -- 从这台机器导入 skills（JSON，见 SkillImport）：本机的 skill、等 board host 做的请求、最近一次的结果
   sync_skills INTEGER NOT NULL DEFAULT 0,-- skills 用服务器的（1）还是不改（0，只装 board-skills）
   sync_mcp INTEGER NOT NULL DEFAULT 0,-- MCP 用服务器的（1）还是不改（0）
-  sync_git INTEGER NOT NULL DEFAULT 1,-- Git 凭据用服务器的（1，新机器默认）还是不改（0）
+  sync_git INTEGER NOT NULL DEFAULT 0,-- Git 凭据用服务器的（1）还是不改（0，新机器默认）
   config_sync TEXT,                   -- 同步配置（JSON，见 ConfigSync）：等 board host 做的请求、最近一次的结果
   res      TEXT                       -- 资源（JSON，见 HostRes）：最近一次采样和最近几次的使用率；旧版 board host 不报，为空
 );
@@ -199,12 +199,17 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "sync_mcp", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "config_sync", "TEXT"),
         ("hosts", "res", "TEXT"),
-        // Git 凭据（gitcred.rs）：已有的机器也默认用服务器的，和新机器一样（只改 Board 管的仓库的本地 git 配置）
-        ("hosts", "sync_git", "INTEGER NOT NULL DEFAULT 1"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
+    }
+    // Git 凭据（gitcred.rs）：新机器默认不同步——只改 Board 管的仓库的本地 git 配置，要人去界面打开。
+    // 第一次补上这一列时，已有的机器保持当时的效果（#386 起默认用服务器的），和 skills、MCP 的迁移一样；
+    // 之后新建的机器在 INSERT 里显式写 0（0.1.34 的库里这一列是 ALTER 补的，表上的默认值还是 1）
+    if !has("hosts", "sync_git")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN sync_git INTEGER NOT NULL DEFAULT 0")?;
+        conn.execute_batch("UPDATE hosts SET sync_git = 1")?;
     }
     // 配置同步改成「服务器存一份、机器上选用不用」（机器详情与配置同步重构）：已有的机器保持原来的效果——
     // skills、MCP 以前都同步，记成「用服务器的」；每个内置 agent 以前跟共用配置的记成「用服务器的」，
@@ -3405,8 +3410,10 @@ impl<'a> W<'a> {
                     serde_json::to_string(&w).unwrap_or_else(|_| "{\"path\":\"\"}".into())
                 }).unwrap_or_default();
                 self.tx.execute(
-                    "INSERT INTO hosts (name, token, instance, os, version, agents, workspace, dirs, dirs_rev, dirs_at, dirs_by, envs, first_at, beat_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULLIF(?7, ''), ?8, 1, ?9, '本机', ?10, ?9, ?9)",
+                    // sync_git 显式写 0：新机器默认不改。老库的这一列是 #386 迁移时 ALTER 加的，表上的默认值还是 1，
+                    // 改 CREATE TABLE 不会改已经存在的表，所以不能靠列默认值
+                    "INSERT INTO hosts (name, token, instance, os, version, agents, workspace, dirs, dirs_rev, dirs_at, dirs_by, envs, first_at, beat_at, sync_git)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULLIF(?7, ''), ?8, 1, ?9, '本机', ?10, ?9, ?9, 0)",
                     params![rep.name, token, rep.instance, rep.os, rep.version, agents, workspace, dirs, now, envs],
                 )?;
                 if rep.selftest {
