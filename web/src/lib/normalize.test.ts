@@ -40,6 +40,7 @@ const full = (): HostInfo =>
         agents: [{ agent: 'claude', state: 'synced', provider: 'p1', model: 'm1' }],
         skills: { state: 'synced', count: 1, dirs: ['~/.claude/skills'], replaced: [], links: [] },
         mcp: { state: 'off', count: 0, agents: [], replaced: [] },
+        git: { state: 'synced', host: 'github.com', repos: ['/w/board'], skipped: [] },
       },
     },
     skillImport: { able: true, local: [{ name: 's', version: 'v', files: 1, size: 1, agents: ['claude'], dirs: ['~/.claude/skills'] }], last: { id: 1, at: 1, by: '人', ok: ['s'], failed: [] } },
@@ -99,6 +100,8 @@ describe('机器：必填的数组补齐', () => {
     expect(h.sync?.last?.agents).toEqual([]);
     expect(h.sync?.last?.skills).toMatchObject({ state: '', count: 0, dirs: [], replaced: [], links: [] });
     expect(h.sync?.last?.mcp).toMatchObject({ state: '', count: 0, agents: [], replaced: [] });
+    // 旧版 board host 不报 Git 凭据：补成空的一行
+    expect(h.sync?.last?.git).toEqual({ state: '', repos: [], skipped: [] });
     expect(h.skillImport?.local[0]).toMatchObject({ agents: [], dirs: [] });
     expect(h.skillImport?.last).toMatchObject({ ok: [], failed: [] });
     const b = normHost(bare());

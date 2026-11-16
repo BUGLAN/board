@@ -14,6 +14,7 @@ mod config;
 mod doctor;
 mod envs;
 mod events;
+mod gitsync;
 mod heartbeat;
 mod host;
 mod logfmt;

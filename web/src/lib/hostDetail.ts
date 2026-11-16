@@ -3,12 +3,13 @@
    - 一个 agent 正不正常（agentHealth）：没找到、看不到 board-skills、配置没写进去、自检没过；页签上的数字按它数
    - 一个 agent 的配置写进去没有（configLine）：已写入 / 正在写入 / 不改 / 机器离线 / 写入失败
    - skills、MCP 各一行（skillsLine、mcpLine）：用服务器的写了几个、写进了哪里；不改时写 Board 不碰
+   - Git 凭据一行（gitLine）：已同步（配进了几个仓库）/ 同步失败（原因）/ 服务端没设；不改时用本机自己的
    - 工作空间只列例外（workspaceExceptions）：--dir 单独指定的、克隆失败的、不是 git 仓库的；还没建的项目并进一行（laterProjects）
    - 今天交审几张、异常退出几次（todayCounts）
    ========================================================================== */
 import { dirFresh, since, skillMiss } from './hosts';
 import { runPick, runWords, type RunPick } from './providers';
-import type { Dispatch, HostAgent, HostInfo, ProviderView } from './types';
+import type { Dispatch, GitCred, HostAgent, HostInfo, ProviderView } from './types';
 
 /* ------------------------------ agent ------------------------------ */
 
@@ -94,6 +95,24 @@ export function mcpLine(h: HostInfo, names: string[] | null, now: number): SyncL
   const list = names?.length ? `（${names.join('、')}）` : '';
   const where = r.agents.length ? `已写进 ${r.agents.join('、')}` : '已写入（这台机器上没有会用它们的 agent）';
   return { tone: 'ok', text: `库里的 ${r.count} 个 MCP${list}${where} · ${since(h.sync!.last!.at, now)}` };
+}
+
+/** board host 是旧版、不报 Git 凭据：最近一次同步的结果里没有这一行 */
+export const gitOld = (h: HostInfo) => !!h.sync?.able && !!h.sync.last && !h.sync.last.git.state;
+
+/** Git 凭据一行：`cred` 是服务端的（取到之前 undefined，没设时 null） */
+export function gitLine(h: HostInfo, cred: GitCred | null | undefined, now: number): SyncLine {
+  if (!h.syncGit) return { tone: 'muted', text: '用这台机器自己的 git 凭据，Board 不碰' };
+  const r = h.sync?.last?.git;
+  if (h.sync?.ask && h.online) return { tone: 'busy', text: '正在同步：配进 Board 管的仓库…' };
+  if (!h.online && h.sync?.ask) return { tone: 'muted', text: '机器离线：上线后同步' };
+  if (cred === null || r?.state === 'none') return { tone: 'muted', text: '服务端还没设 Git 凭据：在「共用配置」里设' };
+  if (gitOld(h)) return { tone: 'muted', text: `board ${h.version || '?'} 是旧版：升级后才用服务端的 Git 凭据` };
+  if (!r || r.state === 'off' || !r.state) return { tone: 'busy', text: '等 board host 同步…' };
+  if (r.state === 'failed') return { tone: 'bad', text: `同步失败：${r.why ?? '原因没报上来'}` };
+  const n = r.repos.length;
+  const head = n ? `已同步：${r.host} 的令牌配进了 ${n} 个仓库` : `已同步：令牌已就绪，还没有远端是 ${r.host} 的仓库`;
+  return { tone: 'ok', text: `${head} · ${since(h.sync!.last!.at, now)}` };
 }
 
 /* ------------------------------ 工作空间 ------------------------------ */

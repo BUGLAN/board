@@ -365,6 +365,8 @@ export interface HostInfo {
   syncSkills?: boolean;
   /** MCP 用服务器的；否则不改 */
   syncMcp?: boolean;
+  /** Git 凭据用服务器的（配进 Board 管的仓库）；否则不改。旧版服务端没有 */
+  syncGit?: boolean;
   /** 同步配置：等 board host 做的请求、最近一次的结果 */
   sync?: ConfigSync;
   /** 从这台机器导入 skills：本机的 skill、等 board host 做的请求、最近一次的结果；旧版服务端没有 */
@@ -435,6 +437,32 @@ export interface SyncResult {
   agents: ProviderState[];
   skills: { state: 'synced' | 'off' | 'failed' | ''; count: number; dirs: string[]; replaced: string[]; links: string[]; why?: string | null };
   mcp: { state: 'synced' | 'off' | 'failed' | ''; count: number; agents: string[]; replaced: string[]; why?: string | null };
+  /** Git 凭据：synced 配好了 / off 不改 / none 服务端没设 / failed 没配上；旧版 board host 不报（空） */
+  git: GitSync;
+}
+
+export interface GitSync {
+  state: 'synced' | 'off' | 'none' | 'failed' | '';
+  /** 凭据的主机 */
+  host?: string;
+  /** 配好的仓库（目录） */
+  repos: string[];
+  /** 没配的仓库：「目录：原因」（远端是 SSH） */
+  skipped: string[];
+  why?: string | null;
+}
+
+/** 服务端的 Git 凭据（共用配置）：令牌只有末尾 4 位 */
+export interface GitCred {
+  host: string;
+  username: string;
+  /** 保存时填；列表里没有 */
+  token?: string | null;
+  tail?: string | null;
+  version?: string;
+  updatedAt?: number;
+  by?: string;
+  source?: string;
 }
 
 /** 一个文件夹（选工作空间时 board host 列出来的） */

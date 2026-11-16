@@ -964,6 +964,11 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 /* 共用配置：MCP 服务器一节 */
 .sc-mcp { margin-top: 28px; }
 .sc-providers, .sc-tpl { margin-top: 28px; }
+/* Git 凭据：一张卡，键名短 */
+.sc-git { margin-top: 28px; }
+.gc-card .pv-head > svg { flex: none; width: 15px; height: 15px; color: var(--text-3); }
+.gc-card .pv-k { width: 4em; }
+.gc-card .pv-use > .pv-k { width: auto; }
 .sc-how { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-2); white-space: nowrap; cursor: help; }
 .sc-how svg { width: 13px; height: 13px; }
 /* 模型供应商（Providers.tsx）：一个供应商一张卡，上面是名称、地址、模型，底下「在用」按 agent 汇总，点开列出哪几台 */

@@ -14,6 +14,7 @@ import { goCard } from './Dispatch';
 import { Beat, Dot, Mark, OsGlyph, StatePill, lastSeen, usePollHosts } from './bits';
 import { Compare, ReadyBadge, useServerVersion } from './Ready';
 import { McpSection } from './Mcp';
+import { GitCredSection } from './GitCred';
 import { ProvidersSection } from './Providers';
 import { RunLimits, SchedSection } from './Sched';
 import { SharedConfig } from './Shared';
@@ -397,7 +398,7 @@ export function HostsPage() {
               {view === 'compare'
                 ? '每台机器一行，对比就绪的每一项和 agent 的版本、模型、启动环境；和其他机器不一致的格子标出来。'
                 : view === 'shared'
-                  ? '服务器上存的配置：skills、MCP 服务器、模型供应商。skills、MCP 机器选了「用服务器的」、模型在机器上指定了供应商，board host 就写进 agent，这里一改就同步过去。'
+                  ? '服务器上存的配置：skills、MCP 服务器、模型供应商、Git 凭据。skills、MCP、Git 凭据机器选了「用服务器的」、模型在机器上指定了供应商，board host 就写进 agent 和仓库，这里一改就同步过去。'
                   : view === 'sched'
                     ? '哪些卡自动交给哪个 agent、每台机器什么时候接单、同时开几个会话、一个会话做几张、跑多久算卡住，都在这里。'
                     : '每台机器常驻一个 board host，同时开几个会话，一个会话接着做排好的几张卡：点卡片看详情，点机器改规则。'}
@@ -433,6 +434,7 @@ export function HostsPage() {
             <SharedConfig hosts={hosts} />
             <McpSection hosts={hosts} />
             <ProvidersSection hosts={hosts} />
+            <GitCredSection hosts={hosts} />
           </>
         ) : view === 'compare' ? (
           <Compare hosts={hosts} ws={ws} now={now} server={server} />

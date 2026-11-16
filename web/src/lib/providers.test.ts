@@ -17,7 +17,7 @@ const prov = (x: Partial<Provider> = {}): Provider => ({
   ...x,
 });
 const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', run_mode: 'own', run_provider: 'deepseek', run_model: 'deepseek-chat', ...x });
-const last = (agents: SyncResult['agents']): SyncResult => ({ key: 'k', at: 1, agents, skills: { state: 'off', count: 1, dirs: [], replaced: [], links: [] }, mcp: { state: 'off', count: 0, agents: [], replaced: [] } });
+const last = (agents: SyncResult['agents']): SyncResult => ({ key: 'k', at: 1, agents, skills: { state: 'off', count: 1, dirs: [], replaced: [], links: [] }, mcp: { state: 'off', count: 0, agents: [], replaced: [] }, git: { state: 'off', repos: [], skipped: [] } });
 const host = (x: Partial<HostInfo> = {}): HostInfo =>
   ({ id: 1, name: 'h', online: true, version: '0.2.0', agents: [claude(), { id: 'codex', name: 'Codex', found: true, version: '1', run_mode: 'own', run_provider: '' }], sync: { able: true }, ...x }) as HostInfo;
 

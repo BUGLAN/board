@@ -89,7 +89,8 @@ export function HostDetail({
     (behind ? 1 : 0) +
     fullDisks(h) +
     (h.syncSkills && last?.skills.state === 'failed' && !h.sync?.ask ? 1 : 0) +
-    (h.syncMcp && last?.mcp.state === 'failed' && !h.sync?.ask ? 1 : 0);
+    (h.syncMcp && last?.mcp.state === 'failed' && !h.sync?.ask ? 1 : 0) +
+    (h.syncGit && last?.git.state === 'failed' && !h.sync?.ask ? 1 : 0);
   const today = todayCounts(recent, now);
 
   return (

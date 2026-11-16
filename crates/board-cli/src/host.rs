@@ -60,6 +60,7 @@ use crate::config::{self, AgentConf};
 use crate::envs::{self, expand, kill_tree, Check, Env};
 use crate::heartbeat::{Proc, Procs};
 use crate::events;
+use crate::gitsync;
 use crate::logfmt::{self, Stream};
 use crate::redact;
 use crate::selftest;
@@ -511,6 +512,19 @@ struct SyncJob {
     agents: Vec<SyncAgent>,
     /// `~/.board/host`：MCP 加过哪些、备份放在这里
     host_dir: PathBuf,
+    /// Git 凭据用服务器的
+    git_on: bool,
+    /// 服务端 Git 凭据的版本（没设时空的）；旧版服务端没有这一项（None）：Git 凭据整项不碰
+    git: Option<String>,
+    /// Board 管的仓库：工作空间里每个项目的目录
+    repos: Vec<PathBuf>,
+}
+
+/// `GET /api/hosts/{名字}/git` 的返回
+#[derive(serde::Deserialize, Default)]
+struct GitView {
+    #[serde(default)]
+    cred: Option<board_core::gitcred::GitCred>,
 }
 
 /// 一次同步的结果
@@ -633,7 +647,27 @@ fn run_sync(job: SyncJob) -> SyncOut {
         }
     }
     let now: BTreeMap<String, (String, String)> = files.iter().filter_map(|(id, f)| providersync::current(f).map(|x| (id.clone(), x))).collect();
-    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, agents, skills, mcp }, changes, local, targets, now }
+
+    // Git 凭据：用服务器的、服务端设了才取原文；取不到时不动之前配好的（多半是一时连不上）
+    let git = match job.git.as_deref() {
+        None => board_core::GitSync::default(),
+        Some(v) => {
+            let cred = if job.git_on && !v.is_empty() {
+                job.rm.get::<GitView>(&format!("/api/hosts/{}/git", job.name), &[]).map(|g| g.cred).map_err(|e| format!("取不到 Git 凭据：{}", e.message))
+            } else {
+                Ok(None)
+            };
+            match cred {
+                Err(why) => board_core::GitSync { state: "failed".into(), why: Some(why), ..Default::default() },
+                Ok(c) => {
+                    let out = gitsync::sync(job.git_on, c.as_ref(), &job.repos, &job.host_dir);
+                    changes.extend(out.changes);
+                    out.sync
+                }
+            }
+        }
+    };
+    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, agents, skills, mcp, git }, changes, local, targets, now }
 }
 
 /// board host 自己的目录：`~/.board/host`
@@ -1610,8 +1644,10 @@ fn bootstrap_dirs(
             Some(url) => {
                 let safe: String = board.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
                 let log = logs.join(format!("clone-{safe}.log"));
+                let host_dir = logs.parent().map(Path::to_path_buf).unwrap_or_default();
                 let spawn = create_log(&log).and_then(|(out, err)| {
                     Command::new("git")
+                        .args(gitsync::clone_args(url, &host_dir))
                         .args(["clone", "--", url])
                         .arg(&dir)
                         .env("GIT_TERMINAL_PROMPT", "0")
@@ -1622,7 +1658,10 @@ fn bootstrap_dirs(
                 });
                 let at = Instant::now();
                 match spawn {
-                    Ok(s) if s.success() => checks.push(DirCheck { path: dir, status: "ok", origin: Some(url.to_string()), branch: None, at }),
+                    Ok(s) if s.success() => {
+                        let _ = gitsync::ensure(&dir, &host_dir);
+                        checks.push(DirCheck { path: dir, status: "ok", origin: Some(url.to_string()), branch: None, at })
+                    }
                     Ok(s) => {
                         let why = clone_tail(&log).unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", s.code()));
                         fail(format!("{url} 克隆到 {} 失败：{why}", dir.display()));
@@ -2394,6 +2433,7 @@ impl Host<'_> {
             }
         }
         let child = Command::new("git")
+            .args(gitsync::clone_args(url, &self.host_dir()))
             .args(["clone", "--", url])
             .arg(&dir)
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -2502,7 +2542,7 @@ impl Host<'_> {
                 },
             });
         }
-        let host_dir = self.logs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        let host_dir = self.host_dir();
         let job = SyncJob {
             rm: self.rm().clone(),
             name: self.name.clone(),
@@ -2515,9 +2555,23 @@ impl Host<'_> {
             mcp_any: w.mcp.as_ref().is_some_and(|m| !m.is_empty()),
             agents,
             host_dir,
+            git_on: w.host.sync_git,
+            git: w.git.clone(),
+            // 同一个项目的几块白板是同一个目录：一个目录只配一次
+            repos: {
+                let mut r: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
+                r.sort();
+                r.dedup();
+                r
+            },
         };
         self.sync_job = Some((ask, std::thread::spawn(move || run_sync(job))));
         changed
+    }
+
+    /// board host 自己的目录（`~/.board/host`，日志目录的上一级）：同步配置的备份、Git 凭据放在这里
+    fn host_dir(&self) -> PathBuf {
+        self.logs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
     }
 
     /// 自检（PRD §10.12「自检」）：取到的任务里有新的请求就在后台线程里做；做完回报，回报失败下一轮再报
@@ -2704,6 +2758,9 @@ impl Host<'_> {
         }
         // 刚克隆完的白板：删掉旧的目录状态，下一次上报马上重新看
         let paths: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().filter(|(b, _)| done.contains(b)).map(|(_, p)| p).collect();
+        for p in &paths {
+            let _ = gitsync::ensure(p, &self.host_dir());
+        }
         self.dir_checks.retain(|c| !paths.contains(&c.path));
     }
 
@@ -3403,6 +3460,10 @@ impl Host<'_> {
         let Some(dir) = dispatch_dir(d, &self.ws, &self.os) else { return Ok(None) };
         if !crate::code::is_repo(&dir) || !crate::code::has_origin(&dir) {
             return Ok(None);
+        }
+        // 服务端的 Git 凭据：同步之后才克隆、才有的仓库在这里补配上，拉代码和 agent 推送都用它
+        if let Some(line) = gitsync::ensure(&dir, &self.host_dir()) {
+            self.say(format!("{} {line}", self.p.green("✓")));
         }
         let name = d.name.clone().unwrap_or_default();
         match crate::code::prepare(&dir, &name, d.id, &d.branch) {

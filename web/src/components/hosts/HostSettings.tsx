@@ -2,14 +2,14 @@
    机器详情「设置」页
    0. 资源：CPU、内存、GPU、存储四块磁贴（Resources.tsx）
    1. 接单：一行摘要（时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张）+「在调度里改」
-   2. skills 和 MCP：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的写一行；规则一行；「从这台机器导入 skill（N）」
+   2. skills、MCP、Git 凭据：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
    3. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
    4. 维护：重新检查、升级到 x.y.z（落后时才有）、重启 board host、令牌、移除这台机器
    开关、工作空间是设置项（当帧生效，旁边转圈）；导入、维护、移除要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
-import { laterProjects, mcpLine, pushRows, sepOf, skillsLine, workspaceExceptions, type LineTone, type WsException } from '../../lib/hostDetail';
+import { gitLine, laterProjects, mcpLine, pushRows, sepOf, skillsLine, workspaceExceptions, type LineTone, type WsException } from '../../lib/hostDetail';
 import { acceptSummary, isLocalHost, since } from '../../lib/hosts';
 import { localHost, pickFolder, shell } from '../../lib/platform';
 import { importRows } from '../../lib/skills';
@@ -69,7 +69,7 @@ export function HostSettings({
         </p>
       </section>
       <section>
-        <h3>skills 和 MCP</h3>
+        <h3>skills、MCP 和 Git 凭据</h3>
         <SyncBlock h={h} save={save} sync={sync} now={now} />
       </section>
       <section>
@@ -95,7 +95,7 @@ export function HostSettings({
   );
 }
 
-/* ------------------------------ skills 和 MCP ------------------------------ */
+/* ------------------------------ skills、MCP 和 Git 凭据 ------------------------------ */
 
 type Mode = 'server' | 'off';
 const MODES: [Mode, string][] = [
@@ -110,6 +110,9 @@ function SyncBlock({ h, save, sync, now }: { h: HostInfo; save: Save; sync: Sync
   const { list: mcp } = useRemoteList<McpServer[]>(() => api.mcp(), ws?.hosts);
   const skills = skillsLine(h, lib?.length ?? null, now);
   const mcps = mcpLine(h, mcp?.map(m => m.name) ?? null, now);
+  const { list: git } = useRemoteList(() => api.git(), ws?.hosts);
+  const gits = gitLine(h, git ? git.cred : undefined, now);
+  const skipped = h.sync?.last?.git.skipped ?? [];
   const r = h.sync?.last?.skills;
   const busy = !!h.sync?.ask;
   const old = !h.sync?.able;
@@ -169,7 +172,26 @@ function SyncBlock({ h, save, sync, now }: { h: HostInfo; save: Save; sync: Sync
           </span>
         </p>
       )}
-      {(skills.tone === 'bad' || mcps.tone === 'bad') && <RetrySync h={h} />}
+      <div className={cx('hd-sw', sync.syncGit === 'failed' && 'hp-rollback')}>
+        <div className="hd-sw-text">
+          <b>Git 凭据</b>
+          <span className={cx(`t-${gits.tone}`)}>
+            <Icon name={LINE_ICON[gits.tone]} />
+            {gits.text}
+          </span>
+        </div>
+        <span className="hp-ctl">
+          <Sync s={sync.syncGit} />
+          <Segmented<Mode> value={h.syncGit ? 'server' : 'off'} options={MODES} onChange={v => v !== (h.syncGit ? 'server' : 'off') && save({ syncGit: v === 'server' })} />
+        </span>
+      </div>
+      {h.syncGit && !busy && skipped.length > 0 && (
+        <p className="hd-sync-note">
+          <Icon name="info" />
+          <span>没配的仓库：{skipped.join('；')}</span>
+        </p>
+      )}
+      {(skills.tone === 'bad' || mcps.tone === 'bad' || gits.tone === 'bad') && <RetrySync h={h} />}
       <p className="hp-note hd-sync-rule">board-skills 不管选哪个都装：没有它派来的卡做不了。本机有同名的、不是 Board 装的，换成库里的，旧的挪进备份；软链接（开发中的 skill）不碰。</p>
       <SkillImportInline h={h} lib={lib} />
     </div>

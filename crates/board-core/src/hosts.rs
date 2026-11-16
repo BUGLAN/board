@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   skill_import TEXT,                  -- 从这台机器导入 skills（JSON，见 SkillImport）：本机的 skill、等 board host 做的请求、最近一次的结果
   sync_skills INTEGER NOT NULL DEFAULT 0,-- skills 用服务器的（1）还是不改（0，只装 board-skills）
   sync_mcp INTEGER NOT NULL DEFAULT 0,-- MCP 用服务器的（1）还是不改（0）
+  sync_git INTEGER NOT NULL DEFAULT 1,-- Git 凭据用服务器的（1，新机器默认）还是不改（0）
   config_sync TEXT,                   -- 同步配置（JSON，见 ConfigSync）：等 board host 做的请求、最近一次的结果
   res      TEXT                       -- 资源（JSON，见 HostRes）：最近一次采样和最近几次的使用率；旧版 board host 不报，为空
 );
@@ -196,6 +197,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "sync_mcp", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "config_sync", "TEXT"),
         ("hosts", "res", "TEXT"),
+        // Git 凭据（gitcred.rs）：已有的机器也默认用服务器的，和新机器一样（只改 Board 管的仓库的本地 git 配置）
+        ("hosts", "sync_git", "INTEGER NOT NULL DEFAULT 1"),
     ] {
         if !has(table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
@@ -1196,6 +1199,9 @@ pub struct HostInfo {
     /// MCP 用服务器的；否则不改
     #[serde(default)]
     pub sync_mcp: bool,
+    /// Git 凭据用服务器的（配进 Board 管的仓库）；否则不改。旧版服务端没有这一项
+    #[serde(default)]
+    pub sync_git: bool,
     /// 同步配置：等 board host 做的请求、最近一次的结果
     #[serde(default)]
     pub sync: ConfigSync,
@@ -1307,6 +1313,28 @@ pub struct SyncResult {
     pub skills: SkillsSync,
     #[serde(default)]
     pub mcp: McpSync,
+    /// Git 凭据；旧版 board host 不报（`state` 为空）
+    #[serde(default)]
+    pub git: GitSync,
+}
+
+/// Git 凭据这一次同步的结果
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitSync {
+    /// synced 配好了 | off 不改（之前配进去的已经去掉）| none 服务端没设 | failed 没配上（令牌为空、主机不匹配、git 出错）
+    #[serde(default)]
+    pub state: String,
+    /// 凭据的主机
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
+    /// 配好的仓库（目录）
+    #[serde(default)]
+    pub repos: Vec<String>,
+    /// 没配的仓库：「目录：原因」（远端是 SSH、没有 origin）
+    #[serde(default)]
+    pub skipped: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// skills 这一次同步的结果
@@ -1492,6 +1520,11 @@ pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
         tail.push_str(&format!("，替换了本机同名的 {}", replaced.iter().map(|x| x.as_str()).collect::<Vec<_>>().join("、")));
     }
     parts.push(tail);
+    match r.git.state.as_str() {
+        "synced" => parts.push(format!("Git 凭据（{}）已配进 {} 个仓库", r.git.host, r.git.repos.len())),
+        "failed" => parts.push(format!("Git 凭据失败（{}）", r.git.why.as_deref().unwrap_or("没配上"))),
+        _ => {}
+    }
     format!("同步配置：{}", parts.join("；"))
 }
 
@@ -1581,6 +1614,9 @@ pub struct HostWork {
     /// 模型供应商共用配置：索引（取完整内容用）；每个 agent 用哪个在 `host.agents` 的 `run_*` 里。旧版服务端没有这一项
     #[serde(default)]
     pub providers: Option<crate::providers::ProviderWork>,
+    /// Git 凭据的版本号（变了 board host 用令牌接口取完整内容）；服务端没设时是空的。旧版服务端没有这一项
+    #[serde(default)]
+    pub git: Option<String>,
     /// 这台机器要写成的样子（[`R::config_key`]）：board host 同步完带着它回报，服务端据此知道写好的是哪一版
     #[serde(default)]
     pub config_key: String,
@@ -1648,6 +1684,9 @@ pub struct HostPatch {
     /// MCP 用服务器的（true）还是不改（false）
     #[serde(default)]
     pub sync_mcp: Option<bool>,
+    /// Git 凭据用服务器的（true）还是不改（false）
+    #[serde(default)]
+    pub sync_git: Option<bool>,
     /// 领取规则（整个列表替换）
     #[serde(default)]
     pub rules: Option<Vec<ClaimRule>>,
@@ -1944,6 +1983,7 @@ pub(crate) struct HostRow {
     pub(crate) selftest: SelfTest,
     pub(crate) sync_skills: bool,
     pub(crate) sync_mcp: bool,
+    pub(crate) sync_git: bool,
     pub(crate) config_sync: ConfigSync,
     pub(crate) skill_import: SkillImport,
     pub(crate) res: Option<crate::hostres::HostRes>,
@@ -1953,7 +1993,7 @@ pub(crate) struct HostRow {
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -2003,6 +2043,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         sync_skills: r.get::<_, i64>(34)? != 0,
         sync_mcp: r.get::<_, i64>(35)? != 0,
+        sync_git: r.get::<_, i64>(45)? != 0,
         config_sync: r.get::<_, Option<String>>(36)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         skill_import: r.get::<_, Option<String>>(37)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         agents_raw,
@@ -2157,6 +2198,7 @@ impl HostRow {
             selftest: self.selftest.clone(),
             sync_skills: self.sync_skills,
             sync_mcp: self.sync_mcp,
+            sync_git: self.sync_git,
             sync: self.config_sync.clone(),
             skill_import: self.skill_import.clone(),
             res: self.res.clone(),
@@ -2659,13 +2701,14 @@ impl<'a> R<'a> {
             skills: Some(self.skills()?),
             mcp: Some(self.mcp_index()?),
             providers: Some(self.provider_work()?),
+            git: Some(self.git_version()?),
             config_key: self.config_key(&h)?,
             ls: vec![],
         })
     }
 
     /// 这台机器要写成的样子（[`ConfigSync`]）：board-skills 的版本（随服务端），skills、MCP 用服务器的时库里的
-    /// 名称和版本，每个找到的内置 agent 的启动环境和模型怎么配（指定时带上供应商的版本和接口）。
+    /// 名称和版本，每个找到的内置 agent 的启动环境和模型怎么配（指定时带上供应商的版本和接口），Git 凭据用服务器的时它的版本。
     /// 内容的哈希前 12 位；一样就不用再写
     pub(crate) fn config_key(&self, h: &HostRow) -> Result<String> {
         use sha2::{Digest, Sha256};
@@ -2687,7 +2730,9 @@ impl<'a> R<'a> {
             };
             agents.push(json!({ "id": a.id, "env": a.env, "mode": mode, "provider": provider, "v": version(&provider), "model": model, "effort": effort, "protocol": protocol }));
         }
-        let body = json!({ "board": env!("CARGO_PKG_VERSION"), "skills": skills, "mcp": mcp, "agents": agents });
+        // Git 凭据：用服务器的时带上它的版本（没设时空的：之前配进去的要去掉）；不改时整项不带
+        let git = if h.sync_git { Some(self.git_version()?) } else { None };
+        let body = json!({ "board": env!("CARGO_PKG_VERSION"), "skills": skills, "mcp": mcp, "agents": agents, "git": git });
         Ok(Sha256::digest(body.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect())
     }
 }
@@ -3569,6 +3614,14 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 服务端的 Git 凭据改了、删了：用服务器的机器各记一条操作记录（不含令牌原文）
+    pub(crate) fn git_ops(&mut self, by: &str, text: &str) -> Result<()> {
+        for h in self.read().host_rows()?.into_iter().filter(|h| h.sync_git) {
+            self.host_op(h.id, by, text)?;
+        }
+        Ok(())
+    }
+
     /// 只让在线的 board host 重新取一次任务（服务端内存里有了新的「列目录」请求）
     pub fn hosts_poke(&mut self) {
         self.touch_hosts();
@@ -4109,6 +4162,13 @@ impl<'a> W<'a> {
         if let Some(on) = p.sync_mcp {
             if on != h.sync_mcp {
                 self.tx.execute("UPDATE hosts SET sync_mcp = ?2 WHERE id = ?1", params![h.id, on as i64])?;
+                self.config_changed = true;
+            }
+        }
+        if let Some(on) = p.sync_git {
+            if on != h.sync_git {
+                self.tx.execute("UPDATE hosts SET sync_git = ?2 WHERE id = ?1", params![h.id, on as i64])?;
+                self.host_op(h.id, by, if on { "Git 凭据改成用服务器的" } else { "Git 凭据改成不改：去掉之前配进仓库的" })?;
                 self.config_changed = true;
             }
         }

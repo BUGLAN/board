@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { acceptOf, acceptPatch, acceptSummary } from './hosts';
-import { agentHealth, configLine, laterProjects, mcpLine, skillsLine, todayCounts, workspaceExceptions } from './hostDetail';
+import { agentHealth, configLine, gitLine, laterProjects, mcpLine, skillsLine, todayCounts, workspaceExceptions } from './hostDetail';
 import type { Dispatch, HostAgent, HostInfo, ProviderView, SyncResult } from './types';
 
 const view: ProviderView = {
@@ -13,6 +13,7 @@ const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   agents: [{ agent: 'claude', state: 'synced', provider: 'p1', model: 'm1', effort: 'high' }],
   skills: { state: 'synced', count: 6, dirs: [], replaced: [], links: [] },
   mcp: { state: 'synced', count: 2, agents: ['Claude Code', 'Codex'], replaced: [] },
+  git: { state: 'synced', host: 'github.com', repos: ['/w/board'], skipped: [] },
   ...x,
 });
 const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', run_mode: 'own', run_provider: 'p1', run_model: 'm1', run_effort: 'high', ...x });
@@ -92,5 +93,24 @@ describe('机器详情', () => {
     const now = new Date(2026, 10, 15, 12).getTime();
     const y = new Date(2026, 10, 14, 23).getTime();
     expect(todayCounts([d('review', now - 1000), d('review', y), d('crashed', now - 5000)], now)).toEqual({ review: 1, crashed: 1 });
+  });
+});
+
+describe('Git 凭据一行', () => {
+  const cred = { host: 'github.com', username: 'buglan', tail: '1234' };
+  const git = (g: Partial<SyncResult['git']>) => result({ git: { state: 'synced', host: 'github.com', repos: [], skipped: [], ...g } });
+  it('不改：用本机自己的', () => {
+    expect(gitLine(host({ syncGit: false }), cred, 2000)).toMatchObject({ tone: 'muted', text: '用这台机器自己的 git 凭据，Board 不碰' });
+  });
+  it('已同步：配进了几个仓库；没有用这个主机的仓库也写明', () => {
+    expect(gitLine(host({ syncGit: true }), cred, 61000)).toMatchObject({ tone: 'ok', text: expect.stringMatching(/^已同步：github.com 的令牌配进了 1 个仓库 · /) });
+    expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({}) } }), cred, 2000).text).toMatch(/^已同步：令牌已就绪，还没有远端是 github.com 的仓库/);
+  });
+  it('同步失败写原因；正在同步、离线、服务端没设、旧版各有一句', () => {
+    expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({ state: 'failed', why: '主机不匹配：/w/x（远端是 gitlab.com）' }) } }), cred, 2000)).toEqual({ tone: 'bad', text: '同步失败：主机不匹配：/w/x（远端是 gitlab.com）' });
+    expect(gitLine(host({ syncGit: true, sync: { able: true, ask: { id: 1, key: 'k2', by: '人', at: 1 }, last: result() } }), cred, 2000).tone).toBe('busy');
+    expect(gitLine(host({ syncGit: true, online: false, sync: { able: true, ask: { id: 1, key: 'k2', by: '人', at: 1 }, last: result() } }), cred, 2000).text).toBe('机器离线：上线后同步');
+    expect(gitLine(host({ syncGit: true }), null, 2000).text).toBe('服务端还没设 Git 凭据：在「共用配置」里设');
+    expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({ state: '' }) } }), cred, 2000).text).toBe('board 0.2.0 是旧版：升级后才用服务端的 Git 凭据');
   });
 });

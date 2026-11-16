@@ -6,7 +6,7 @@
    ========================================================================== */
 import type { Milestones } from './milestones';
 import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
-import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
 
 declare global {
   interface Window {
@@ -219,6 +219,8 @@ export const api = {
       /** skills、MCP 用服务器的（true）还是不改（false） */
       syncSkills?: boolean;
       syncMcp?: boolean;
+      /** Git 凭据用服务器的（true）还是不改（false） */
+      syncGit?: boolean;
       /** 恢复一个连续异常退出、暂停了接单的 agent（写它的标识） */
       resume?: string;
       /** 参与自动接单 */
@@ -252,6 +254,11 @@ export const api = {
   /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */
   providerModels: (body: { name?: string; endpoints: ProviderEndpoint[]; apiKey?: string | null }) => req<{ models: string[]; from: string }>('POST', '/api/providers/models', body),
   /** 同步配置写入失败后「重试」：重新下发同步请求 */
+  /** Git 凭据（共用配置）：令牌只有末尾 4 位；没设时 null */
+  git: () => req<{ cred: GitCred | null }>('GET', '/api/git').then(r => ({ cred: r?.cred ?? null })),
+  /** 设置或修改：令牌留空保留原来的 */
+  putGit: (c: { host: string; username: string; token: string }) => req<GitCred>('POST', '/api/git', c),
+  removeGit: () => req('DELETE', '/api/git'),
   syncHost: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/sync`),
   /** 列那台机器上一个文件夹的子文件夹（服务端转给它的 board host，最多等 20 秒）；空路径是最上面一层 */
   hostLs: (name: string, path: string) => req<DirList>('POST', `/api/hosts/${q(name)}/ls`, { path }),

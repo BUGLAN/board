@@ -48,11 +48,13 @@ const normRule = (r: ClaimRule): ClaimRule => ({ ...r, labels: list(r.labels), m
 const normSync = (r: SyncResult): SyncResult => {
   const s = obj(r.skills);
   const m = obj(r.mcp);
+  const g = obj(r.git);
   return {
     ...r,
     agents: list(r.agents),
     skills: { state: '', count: 0, ...s, dirs: list(s?.dirs), replaced: list(s?.replaced), links: list(s?.links) },
     mcp: { state: '', count: 0, ...m, agents: list(m?.agents), replaced: list(m?.replaced) },
+    git: { state: '', ...g, repos: list(g?.repos), skipped: list(g?.skipped) },
   };
 };
 

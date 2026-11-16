@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { blankMcp } from './mcp';
-import { mcpSync, skillSync } from './syncPills';
+import { gitSync, mcpSync, skillSync } from './syncPills';
 import type { HostInfo, McpServer, SkillInfo, SyncResult } from './types';
 
 const result = (x: Partial<SyncResult> = {}): SyncResult => ({
@@ -9,6 +9,7 @@ const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   agents: [],
   skills: { state: 'synced', count: 3, dirs: ['~/.claude/skills'], replaced: [], links: [] },
   mcp: { state: 'synced', count: 1, agents: ['Claude Code'], replaced: [] },
+  git: { state: 'synced', host: 'github.com', repos: ['/w/board'], skipped: [] },
   ...x,
 });
 const host = (name: string, x: Partial<HostInfo> = {}): HostInfo =>
@@ -63,5 +64,23 @@ describe('一台机器一个胶囊', () => {
     expect(y.tip).toContain('Claude Code');
     const [z] = mcpSync([host('h', { syncMcp: false })], { ...s, agents: [] }, 2000);
     expect(z.kind).toBe('off');
+  });
+});
+
+describe('Git 凭据的机器胶囊', () => {
+  it('已同步 / 同步失败 / 不改；旧版 board host 不画', () => {
+    const list = gitSync([
+      host('mbp', { syncGit: true }),
+      host('win', { syncGit: true, sync: { able: true, last: result({ git: { state: 'failed', host: 'github.com', repos: [], skipped: [], why: '主机不匹配' } }) } }),
+      host('air', { syncGit: false }),
+      host('old', { syncGit: true, sync: { able: true, last: result({ git: { state: '', repos: [], skipped: [] } }) } }),
+    ]);
+    expect(list.map(s => [s.host.name, s.kind, s.word])).toEqual([
+      ['mbp', 'synced', '已同步'],
+      ['win', 'failed', '同步失败'],
+      ['air', 'off', '不改'],
+    ]);
+    expect(list[1].tip).toBe('主机不匹配');
+    expect(list[2].tip).toContain('自己的 git 凭据');
   });
 });

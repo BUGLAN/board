@@ -303,6 +303,7 @@ impl Store {
         conn.execute_batch(crate::skills::SCHEMA)?;
         conn.execute_batch(crate::mcp::SCHEMA)?;
         conn.execute_batch(crate::providers::SCHEMA)?;
+        conn.execute_batch(crate::gitcred::SCHEMA)?;
         conn.execute_batch(crate::card_crons::SCHEMA)?;
         crate::card_crons::migrate(&conn)?;
         // 调度：领取规则挪成全局的一份，机器加自动接单和接单时段，白板加参不参与（要在 hosts、boards 都建好之后）

@@ -4959,3 +4959,92 @@ fn auto_upgrade_does_not_retry_hosts_that_cannot_update_themselves() {
         assert!(h.ask.is_none() && !h.paused, "第 {k} 个 10 分钟：不再自动试");
     }
 }
+
+/* ------------------------------ Git 凭据（gitcred.rs） ------------------------------ */
+
+fn git_cred(host: &str, token: Option<&str>) -> crate::gitcred::GitCred {
+    crate::gitcred::GitCred { host: host.into(), username: "buglan".into(), token: token.map(str::to_string), ..Default::default() }
+}
+
+#[test]
+fn git_credential_is_masked_versioned_and_synced_to_hosts_that_use_it() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("win", "i2", vec![])).unwrap();
+    // 新机器默认用服务器的；服务端没设时版本是空的
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    assert!(h.sync_git, "Git 凭据默认用服务器的");
+    assert_eq!(s.read(|r| r.host_work("mbp", T0)).unwrap().git.as_deref(), Some(""));
+    let key = s.read(|r| r.host_work("mbp", T0)).unwrap().config_key;
+    synced(&mut s, "mbp", "i1", None, &key, vec![]).unwrap();
+    let key_win = s.read(|r| r.host_work("win", T0)).unwrap().config_key;
+    synced(&mut s, "win", "i2", None, &key_win, vec![]).unwrap();
+    // win 改成不改：记一条操作记录
+    let h = s.write(T0, Origin::ui(None), |w| w.host_update_as("win", &HostPatch { sync_git: Some(false), ..Default::default() }, "buglan")).unwrap();
+    assert!(!h.sync_git);
+    assert!(h.ops.iter().any(|o| o.text.contains("Git 凭据改成不改")), "{:?}", h.ops);
+    let win_ask = sync_of(&s, "win").ask.expect("开关变了要同步（去掉之前配的）");
+    synced(&mut s, "win", "i2", Some(win_ask.id), &win_ask.key, vec![]).unwrap();
+
+    // 设置：主机规范化、只回末尾 4 位；没有令牌、主机写成 SSH 的拒绝
+    assert!(s.write(T0, Origin::ui(None), |w| w.git_cred_put(git_cred("github.com", None), "buglan", "")).unwrap_err().message.contains("令牌"));
+    assert!(s.write(T0, Origin::ui(None), |w| w.git_cred_put(git_cred("git@github.com:me/x.git", Some("t")), "buglan", "")).unwrap_err().message.contains("SSH"));
+    assert!(s.write(T0, Origin::ui(None), |w| w.git_cred_put(crate::gitcred::GitCred { username: " ".into(), ..git_cred("github.com", Some("t")) }, "buglan", "")).unwrap_err().message.contains("用户名"));
+    let out = s.write(T0, Origin::ui(None), |w| w.git_cred_put(git_cred(" https://GitHub.com/ ", Some("ghp_abcd1234")), "buglan", "")).unwrap();
+    assert_eq!((out.host.as_str(), out.token.as_deref(), out.tail.as_deref()), ("github.com", None, Some("1234")));
+    let full = s.read(|r| r.git_cred()).unwrap().unwrap();
+    assert_eq!(full.token.as_deref(), Some("ghp_abcd1234"));
+    assert!(!full.version.contains("ghp"));
+    // 用服务器的机器：下发同步请求，操作记录里有谁改的、主机、末尾 4 位，没有原文
+    let ask = sync_of(&s, "mbp").ask.expect("凭据变了要同步");
+    assert_eq!(ask.by, "buglan");
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    let op = h.ops.iter().find(|o| o.text.contains("Git 凭据")).expect("留痕");
+    assert_eq!((op.by.as_str(), op.text.as_str()), ("buglan", "设置了服务端的 Git 凭据：github.com · 用户 buglan · 令牌末尾 1234"));
+    assert!(sync_of(&s, "win").ask.is_none(), "不改的机器不受影响");
+    assert!(!s.read(|r| r.host("win", T0)).unwrap().ops.iter().any(|o| o.text.contains("服务端的 Git 凭据")));
+    assert_eq!(s.read(|r| r.host_work("mbp", T0)).unwrap().git, Some(full.version.clone()));
+
+    // 回报：同步结果里带 Git 这一行，记进操作记录
+    let res = SyncResult {
+        id: Some(ask.id),
+        key: ask.key.clone(),
+        git: GitSync { state: "synced".into(), host: "github.com".into(), repos: vec!["/w/board".into()], ..Default::default() },
+        ..Default::default()
+    };
+    let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
+    assert!(h.ops[0].text.ends_with("；Git 凭据（github.com）已配进 1 个仓库"), "{}", h.ops[0].text);
+    let res = SyncResult { key: ask.key.clone(), git: GitSync { state: "failed".into(), why: Some("主机不匹配".into()), ..Default::default() }, ..Default::default() };
+    let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
+    assert!(h.ops[0].text.ends_with("；Git 凭据失败（主机不匹配）"), "{}", h.ops[0].text);
+
+    // 令牌留空：保留原来的，内容没变不算改
+    let same = s.write(T0, Origin::ui(None), |w| w.git_cred_put(git_cred("github.com", None), "buglan", "")).unwrap();
+    assert_eq!(same.version, full.version);
+    assert!(sync_of(&s, "mbp").ask.is_none());
+    // 只换令牌：版本变了，再同步
+    let v2 = s.write(T0, Origin::ui(None), |w| w.git_cred_put(git_cred("github.com", Some("ghp_new")), "buglan", "")).unwrap().version;
+    assert_ne!(v2, full.version);
+    assert!(sync_of(&s, "mbp").ask.is_some());
+    assert!(s.read(|r| r.host("mbp", T0)).unwrap().ops.iter().any(|o| o.text.starts_with("改了服务端的 Git 凭据")));
+    // 删掉：记一条，用服务器的机器再同步（去掉之前配的）；再删报没有
+    s.write(T0, Origin::ui(None), |w| w.git_cred_rm("buglan")).unwrap();
+    assert!(s.read(|r| r.git_cred()).unwrap().is_none());
+    assert_eq!(s.read(|r| r.host_work("mbp", T0)).unwrap().git.as_deref(), Some(""));
+    assert!(s.read(|r| r.host("mbp", T0)).unwrap().ops.iter().any(|o| o.text.starts_with("删掉了服务端的 Git 凭据")));
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.git_cred_rm("buglan")).unwrap_err().code, ErrorCode::NotFound);
+}
+
+#[test]
+fn existing_hosts_get_the_git_switch_on_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        s.conn().execute_batch("ALTER TABLE hosts DROP COLUMN sync_git").unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    assert!(s.read(|r| r.host("mbp", T0)).unwrap().sync_git, "已有的机器也默认用服务器的");
+}

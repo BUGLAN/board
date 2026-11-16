@@ -113,3 +113,51 @@ fn host_token_can_read_provider_config() {
     assert_eq!(r.status, 200, "{}", r.text);
     assert!(r.body["providers"].is_array(), "{}", r.text);
 }
+
+/// Git 凭据（PRD §10.12「共用配置」）：界面上设，列表只给末尾 4 位；原文只发给这台机器的令牌，
+/// 界面、别的令牌拿不到；访问令牌改不了
+#[test]
+fn git_credential_is_masked_and_only_the_host_token_reads_it() {
+    let s = Server::start(Auth::Local);
+    let store = board_core::Store::open(&s.db).unwrap();
+    let tok = board_server::auth::create_token(store.conn(), "win 的令牌", board_core::now_ms()).unwrap().1;
+    let other = board_server::auth::create_token(store.conn(), "别的令牌", board_core::now_ms()).unwrap().1;
+    let bearer = format!("Bearer {tok}");
+    let headers = [("authorization", bearer.as_str())];
+    let r = send("POST", &format!("{}/api/hosts/win/beat", s.url), &headers, Some(json!({ "name": "win", "instance": "i1" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    // 没设时：cred 是 null，取原文也是 null
+    let r = send("GET", &format!("{}/api/git", s.url), &[UI], None);
+    assert_eq!(r.body["cred"], Value::Null, "{}", r.text);
+    let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &headers, None);
+    assert_eq!((r.status, &r.body["cred"]), (200, &Value::Null), "{}", r.text);
+
+    let r = send("POST", &format!("{}/api/git", s.url), &[UI], Some(json!({ "host": "https://GitHub.com/", "username": "buglan", "token": "ghp_secret1234" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!((r.body["host"].as_str(), r.body["tail"].as_str()), (Some("github.com"), Some("1234")));
+    assert!(!r.text.contains("ghp_secret"), "{}", r.text);
+    // 界面、访问令牌读列表：打码
+    for h in [&[UI][..], &headers[..]] {
+        let r = send("GET", &format!("{}/api/git", s.url), h, None);
+        assert_eq!(r.body["cred"]["tail"], json!("1234"), "{}", r.text);
+        assert!(!r.text.contains("ghp_secret"), "{}", r.text);
+    }
+    // 这台机器的令牌拿到原文；界面、别的令牌不行
+    let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &headers, None);
+    assert_eq!(r.body["cred"]["token"], json!("ghp_secret1234"), "{}", r.text);
+    let other_bearer = format!("Bearer {other}");
+    let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &[("authorization", other_bearer.as_str())], None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+    let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &[UI], None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+    // 访问令牌改不了、删不了
+    let r = send("POST", &format!("{}/api/git", s.url), &headers, Some(json!({ "host": "github.com", "username": "x", "token": "y" })));
+    assert_eq!(r.code(), "NOT_LOGGED_IN", "{}", r.text);
+    let r = send("DELETE", &format!("{}/api/git", s.url), &headers, None);
+    assert_eq!(r.code(), "NOT_LOGGED_IN", "{}", r.text);
+    // 界面上删掉
+    let r = send("DELETE", &format!("{}/api/git", s.url), &[UI], None);
+    assert_eq!(r.status, 200, "{}", r.text);
+    let r = send("GET", &format!("{}/api/git", s.url), &[UI], None);
+    assert_eq!(r.body["cred"], Value::Null, "{}", r.text);
+}

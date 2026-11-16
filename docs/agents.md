@@ -114,6 +114,15 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 - 派发时不按次传模型、强度：派发名字的第二段和派发记录里的模型、强度是 board host 从 agent 配置文件里读出来的（写进去的，或人自己配的）。
 - API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`），不写进日志和卡片动态。它会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
 
+
+## Git 凭据：在「共用配置」里设一次
+
+机器推不动代码（`could not read Username for 'https://github.com'`）多半是那台机器没配 git 的 https 令牌。不用每台机器配一次：在「机器 → 共用配置 → Git 凭据」填主机（例如 `github.com`）、用户名、令牌（要有推送权限，GitHub 的 fine-grained 令牌给 Contents 读写），每台机器的 board host 把它配进 Board 管的仓库（工作空间里每个项目的目录）：
+
+- 只改仓库自己的 git 配置：`credential.https://<主机>.helper` 先是一个空值、再是 `store --file '~/.board/host/board-git-credentials'`。全局配置（`~/.gitconfig`、Git Credential Manager、钥匙串）不碰，只是在这些仓库里不再用它们。
+- 令牌放在 `~/.board/host/board-git-credentials`，只有本人能读；board 的输出、日志里没有它。
+- 机器详情「设置 → skills、MCP 和 Git 凭据」里每台机器一个开关，默认「用服务器的」；改成「不改」或在共用配置里删掉，board host 去掉配进去的、删掉令牌文件，之后用这台机器自己的凭据。
+- 只管 https 远端。远端是 SSH（`git@…`）的仓库照旧用本机的 key；远端是别的主机的，机器详情里写「同步失败：主机不匹配」。
 ## 一个 agent 要满足什么
 
 接入前逐条验证（「本机验证」一节有命令）：
