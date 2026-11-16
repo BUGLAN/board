@@ -47,7 +47,7 @@ pub struct Status {
     pub name: String,
     /// 不填时用的机器名
     pub default_name: String,
-    /// 工作空间（`[host] workspace`）：每块白板的目录是 `<工作空间>/<项目>/<白板>`；空表示还没配
+    /// 工作空间（`[host] workspace`）：每个项目的目录是 `<工作空间>/<项目>`（项目下的白板共用）；空表示还没配
     pub workspace: String,
     /// board host 最近的输出
     pub log: Vec<String>,
@@ -675,7 +675,7 @@ pub async fn host_autostart(on: bool) -> Result<bool, String> {
 pub async fn pick_folder(app: AppHandle, start: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     tauri::async_runtime::spawn_blocking(move || {
-        let mut dlg = app.dialog().file().set_title("选择工作空间（每块白板的目录是 <工作空间>/<项目>/<白板>）");
+        let mut dlg = app.dialog().file().set_title("选择工作空间（每个项目的目录是 <工作空间>/<项目>）");
         let start = config::expand(start.trim());
         if start.is_dir() {
             dlg = dlg.set_directory(start);

@@ -416,7 +416,7 @@ export function HostsPage() {
             <div className="hp-empty-page">
               <Icon name="host" />
               <b>还没有机器</b>
-              <span>在要干活的机器上运行 board host，它会出现在这里；之后可以把卡片派给它，或让它按时间点自己领卡。</span>
+              <span>在要干活的机器上运行 board host，它会出现在这里；之后可以把卡片派给它，或让它在接单时段里自动领符合规则的卡。</span>
               <button className="btn sm brand" type="button" onClick={() => openHost('new')}>
                 添加机器
               </button>
