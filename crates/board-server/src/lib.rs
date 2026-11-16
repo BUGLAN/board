@@ -764,32 +764,32 @@ struct UploadQuery {
     agent: Option<String>,
 }
 
-/// `POST /api/files?board=<白板>&card=<ID>&name=<文件名>`：请求体就是文件内容
+/// `POST /api/files?board=<白板>&card=<ID>&name=<文件名>`：请求体就是文件内容。
+/// 名字在线、定位白板、查卡片、记一条都在同一个写事务里，`rev` 加一（别的窗口据此刷新）
 async fn upload(
     State(s): State<AppState>,
     Extension(caller): Extension<Caller>,
+    h: HeaderMap,
     Query(q): Query<UploadQuery>,
     body: axum::body::Bytes,
 ) -> ApiResult<Attachment> {
-    let actor = match caller {
-        Caller::Human { .. } => Actor::human(),
+    let (actor, origin) = match caller {
+        Caller::Human { .. } => (Actor::human(), Origin::ui(client_of(&h))),
         Caller::Agent { token } => {
             let name = agent_name(q.agent.as_deref())?;
             tracing::Span::current().record("who", format!("{name}（令牌#{token}）"));
-            Actor::agent(name)
+            (Actor::agent(name), Origin::cli())
         }
     };
     let out = s
         .db(move |st| {
-            let now = now_ms();
-            let b = st.read(|r| {
+            st.attach_with(now_ms(), origin, q.card, &actor, &q.name, &body, |w| {
                 // 严格模式（PRD §3）：agent 的名字必须在线
                 if actor.is_agent() {
-                    r.require_online(&actor.name, now)?;
+                    w.read().require_online(&actor.name, w.now())?;
                 }
-                r.resolve(&q.board)
-            })?;
-            st.attach(now, &b, q.card, &actor, &q.name, &body)
+                w.resolve(&q.board)
+            })
         })
         .await?;
     Ok(Json(out))

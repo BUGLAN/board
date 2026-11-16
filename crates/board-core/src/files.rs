@@ -6,9 +6,10 @@
 //! - 界面新建卡片时先上传、后建卡片：这时附件还没有卡片（`card` 为空），新建、编辑描述、评论时
 //!   文字里引用到的 `/api/files/<id>` 归到这张卡片；24 小时后仍没有卡片、也没被白板说明引用的附件被清理
 //! - 删除卡片（或白板、项目）时附件记录一起删除，不再被引用的文件由 [`Store::gc_files`] 清理
+//! - 上传走写事务（[`Store::attach_with`]）：定位白板、查卡片、写文件、记一条，`meta.rev` 加一，别的窗口据此刷新
 
 use crate::error::{BoardError, ErrorCode, Result};
-use crate::model::{Actor, ActorKind, BoardRef};
+use crate::model::{Actor, ActorKind, BoardRef, Origin};
 use crate::store::{Store, W};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -171,6 +172,23 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// 把内容存进附件目录（以 SHA-256 命名，已有就不再写），返回 SHA-256
+fn save(dir: &Path, bytes: &[u8]) -> Result<String> {
+    let sha = hex(&Sha256::digest(bytes));
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(&sha);
+    if !path.exists() {
+        let tmp = dir.join(format!(".tmp-{sha}-{}", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, &path)?;
+    }
+    Ok(sha)
+}
+
 /// 文字里引用到的附件 id（`/api/files/<id>`）
 fn referenced_ids(text: &str) -> Vec<i64> {
     let mut out = vec![];
@@ -219,42 +237,50 @@ impl Store {
         self.files_dir().ok_or_else(|| BoardError::usage("这个数据库不支持附件"))
     }
 
-    /// 上传附件。`card` 为空时先不归到卡片（界面新建卡片时）
+    /// 上传附件。`card` 为空时先不归到卡片（界面新建卡片时）。来源按上传者算（人是界面，agent 是命令行）；
+    /// 服务端用 [`Store::attach_with`]，白板在写事务里定位
     pub fn attach(&mut self, now: i64, board: &BoardRef, card: Option<i64>, by: &Actor, name: &str, bytes: &[u8]) -> Result<Attachment> {
+        let origin = if by.is_human() { Origin::ui(None) } else { Origin::cli() };
+        self.attach_with(now, origin, card, by, name, bytes, |_| Ok(board.clone()))
+    }
+
+    /// 上传附件，整个在一个写事务里：`board` 定位白板（调用方要的检查也放在这里，例如 agent 名字在线），
+    /// 卡片还在才写文件、记一条，`meta.rev` 加一。文件先写、记录后写：记录没写成只会留下没有记录的文件，之后被清理
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_with(
+        &mut self,
+        now: i64,
+        origin: Origin,
+        card: Option<i64>,
+        by: &Actor,
+        name: &str,
+        bytes: &[u8],
+        board: impl FnOnce(&W) -> Result<BoardRef>,
+    ) -> Result<Attachment> {
         let (name, mime, _) = check(name, bytes)?;
-        if let Some(id) = card {
-            let n: i64 = self.conn().query_row(
-                "SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL",
-                params![board.id, id],
-                |r| r.get(0),
-            )?;
-            if n == 0 {
-                return Err(BoardError::new(ErrorCode::NotFound, format!("卡片 #{id} 不存在")));
-            }
-        }
-        // 先写文件再写记录：中途失败只会留下没有记录的文件，之后被清理
-        let sha = hex(&Sha256::digest(bytes));
         let dir = self.files()?.to_path_buf();
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(&sha);
-        if !path.exists() {
-            let tmp = dir.join(format!(".tmp-{sha}-{}", std::process::id()));
-            {
-                let mut f = std::fs::File::create(&tmp)?;
-                f.write_all(bytes)?;
-                f.sync_all()?;
+        self.write(now, origin, |w| {
+            let b = board(w)?;
+            if let Some(id) = card {
+                let n: i64 = w.tx.query_row(
+                    "SELECT COUNT(*) FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL",
+                    params![b.id, id],
+                    |r| r.get(0),
+                )?;
+                if n == 0 {
+                    return Err(BoardError::new(ErrorCode::NotFound, format!("卡片 #{id} 不存在")));
+                }
             }
-            std::fs::rename(&tmp, &path)?;
-        }
-        self.conn().execute(
-            "INSERT INTO attachments (board, card, name, mime, size, sha256, created_at, created_by_kind, created_by_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![board.id, card, name, mime, bytes.len() as i64, sha, now, by.kind.as_str(), by.name],
-        )?;
-        let id = self.conn().last_insert_rowid();
-        Ok(self
-            .conn()
-            .query_row(&format!("SELECT {COLS} FROM attachments WHERE id = ?1"), [id], row)?)
+            let sha = save(&dir, bytes)?;
+            w.tx.execute(
+                "INSERT INTO attachments (board, card, name, mime, size, sha256, created_at, created_by_kind, created_by_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![b.id, card, name, mime, bytes.len() as i64, sha, now, by.kind.as_str(), by.name],
+            )?;
+            let id = w.tx.last_insert_rowid();
+            w.changed = true;
+            Ok(w.tx.query_row(&format!("SELECT {COLS} FROM attachments WHERE id = ?1"), [id], row)?)
+        })
     }
 
     /// 读取附件：记录、所属白板 id、文件路径

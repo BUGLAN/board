@@ -734,6 +734,52 @@ fn attachments_need_login_and_work_for_agents() {
 
 /// agent 名字（PRD §3）：check 查重与占用是原子的；工作区快照带在线 agent 和它持有的卡片；
 /// 只更新心跳时间的心跳不改 rev（不推送），上线、下线改 rev
+/// 上传附件走写事务（卡片 #380）：`rev` 加一，开着的其他窗口据此刷新；卡片不存在时 NOT_FOUND，rev 不变、不留记录；
+/// agent 的名字不在线时也一样被拒、rev 不变
+#[test]
+fn upload_bumps_rev_and_rejects_without_side_effects() {
+    let s = local_mode();
+    let rev = || send("GET", &format!("{}/api/workspace", s.url), &[], None).body["rev"].as_i64().unwrap();
+    let c = send("POST", &format!("{}/api/cmd", s.url), &[UI], Some(json!({ "board": "default/main", "op": "new", "title": "要传附件" })));
+    let id = c.body["id"].as_i64().unwrap();
+    let attachments = || send("GET", &format!("{}/api/card?path=default/main&id={id}", s.url), &[], None).body["attachments"].as_array().unwrap().len();
+    let r0 = rev();
+    // 推送：开着的窗口（订阅实时推送）收到新的 rev
+    let res = agent().get(format!("{}/api/stream", s.url)).call().unwrap();
+    let mut lines = std::io::BufReader::new(res.into_body().into_reader());
+    let mut next_rev = || {
+        use std::io::BufRead;
+        let mut l = String::new();
+        loop {
+            l.clear();
+            lines.read_line(&mut l).unwrap();
+            if let Some(d) = l.strip_prefix("data:") {
+                return serde_json::from_str::<Value>(d.trim()).unwrap()["rev"].as_i64().unwrap();
+            }
+        }
+    };
+    assert_eq!(next_rev(), r0, "第一帧是现在的 rev");
+    let r = upload(&format!("{}/api/files?board=default/main&card={id}&name=a.txt", s.url), &[UI], b"hello");
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(rev(), r0 + 1);
+    assert_eq!(next_rev(), r0 + 1, "其他窗口收到刷新");
+    assert_eq!(attachments(), 1);
+    // 同样的内容再传一次：照样各记一条
+    let r = upload(&format!("{}/api/files?board=default/main&card={id}&name=b.txt", s.url), &[UI], b"hello");
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!((rev(), attachments()), (r0 + 2, 2));
+    // 卡片不存在：NOT_FOUND，rev 不变
+    let r = upload(&format!("{}/api/files?board=default/main&card=999&name=c.txt", s.url), &[UI], b"nope");
+    assert_eq!((r.status, r.code().as_str()), (404, "NOT_FOUND"), "{}", r.text);
+    assert_eq!(rev(), r0 + 2);
+    // agent 名字不在线：NAME_OFFLINE，rev 不变、不留记录
+    let tok = new_token(&s.db, "t");
+    let bearer = format!("Bearer {tok}");
+    let r = upload(&format!("{}/api/files?board=default/main&card={id}&name=d.txt&as={NAME}", s.url), &[("authorization", &bearer)], b"x");
+    assert_eq!(r.code(), "NAME_OFFLINE", "{}", r.text);
+    assert_eq!((rev(), attachments()), (r0 + 2, 2));
+}
+
 #[test]
 fn agent_names_check_beat_and_online_list() {
     let s = github("buglan");

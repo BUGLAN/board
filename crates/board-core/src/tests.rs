@@ -1275,6 +1275,42 @@ fn attachments_upload_bind_delete_and_gc() {
     assert_eq!(files::copy_new(&files, &backup).unwrap(), 0);
 }
 
+/// 上传附件走写事务（卡片 #380）：记一条就把 rev 加一；卡片不存在时 rev 不变、不留记录也不写文件
+#[test]
+fn attaching_bumps_rev_and_a_missing_card_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let id = exec(&mut s, B, &human(), T0, new("要传附件")).unwrap().card.id;
+    let count = |s: &Store| s.conn().query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get::<_, i64>(0)).unwrap();
+    let files = || std::fs::read_dir(dir.path().join("files")).map(|d| d.count()).unwrap_or(0);
+
+    let r0 = s.rev().unwrap();
+    s.attach(T0, &b, Some(id), &alpha(), "run.log", b"ok\n").unwrap();
+    assert_eq!(s.rev().unwrap(), r0 + 1);
+    // 先不归到卡片的（新建弹窗里先传）也算有变化
+    s.attach(T0, &b, None, &human(), "a.png", PNG).unwrap();
+    assert_eq!(s.rev().unwrap(), r0 + 2);
+    // 同样的内容再传：各记一条，文件只存一份
+    s.attach(T0, &b, Some(id), &alpha(), "again.log", b"ok\n").unwrap();
+    assert_eq!((s.rev().unwrap(), count(&s), files()), (r0 + 3, 3, 2));
+
+    // 卡片不存在、已删除：NOT_FOUND，rev、记录、文件都不变
+    let gone = exec(&mut s, B, &human(), T0, new("要删的")).unwrap().card.id;
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: gone }).unwrap();
+    let r1 = s.rev().unwrap();
+    for card in [99, gone] {
+        let e = s.attach(T0, &b, Some(card), &alpha(), "new.txt", b"new content").unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+    }
+    assert_eq!((s.rev().unwrap(), count(&s), files()), (r1, 3, 2));
+    // 定位白板失败（调用方的检查不过）：同样什么都不留
+    let e = s.attach_with(T0, Origin::cli(), Some(id), &alpha(), "x.txt", b"x", |_| Err(BoardError::code(ErrorCode::NameOffline))).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameOffline);
+    assert_eq!((s.rev().unwrap(), count(&s), files()), (r1, 3, 2));
+}
+
 #[test]
 fn in_memory_store_has_no_attachments() {
     let mut s = store();
