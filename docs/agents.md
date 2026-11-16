@@ -169,7 +169,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 机器详情「agent」页会显示每个内置 agent 的版本、安装方式（npm 全局、Homebrew、官方安装脚本、桌面 app 自带或配置文件）和有没有新版本。board host 每天在后台查一次 npm 上的最新版本，不把网络请求放进 10 秒心跳；打开机器详情看到的是最近一次检查的结果。
 
-- 没找到的内置 agent 给出安装命令，可以复制到那台机器执行，也可以在界面点「安装」由 board host 执行。macOS、Linux 上 npm 包装进 `~/.local`（`npm install -g --prefix ~/.local …`），不需要管理员权限；board host 也会在 `~/.local/bin` 找命令。四个内置 agent 的 npm 包分别是 `@deepseek-ai/dsh`（用 `next` 标签）、`@anthropic-ai/claude-code`、`@mariozechner/pi-coding-agent`、`@openai/codex`。
+- 没找到的内置 agent 给出安装命令，可以复制到那台机器执行，也可以在界面点「安装」由 board host 执行。macOS、Linux 上 npm 包装进 `~/.local`（`npm install -g --prefix ~/.local …`），不需要管理员权限；board host 也会在 `~/.local/bin` 找命令。首次装进用户目录后把 `~/.local/bin` 写进登录 shell 的配置（zsh 的 `~/.zshrc`、bash 的 profile、fish 的 `config.fish`，只追加一次），新开终端也能直接敲命令。四个内置 agent 的 npm 包分别是 `@deepseek-ai/dsh`（用 `next` 标签）、`@anthropic-ai/claude-code`、`@mariozechner/pi-coding-agent`、`@openai/codex`。
 - 找到的按命令实际路径识别安装方式：npm 全局沿实际安装目录用 `npm install -g --prefix <prefix> <包>@<版本>`，Homebrew 用 `brew upgrade <formula>`，官方安装脚本用命令自己的 `update`，桌面 app 自带的随 app 更新。npm 全局目录当前用户写不了时，卡片上写清原因和手动升级命令，不再只报 npm 的日志路径。装完 board host 自动重新检查并上报新版本；失败原因留在卡片上，可以重试。更新在后台子进程里跑，不占会话位，不影响正在跑的派发。
 - 机器设置「agent 更新 → 自动更新 agent」默认关。开着时，board host 发现有新版本、这台机器没有在跑的派发，就按上面同一套方式更新，机器操作记录里写「自动更新 <agent> 到 <版本>」；失败后把卡片标成失败，等人重试，不会每 10 秒反复重试。
 - 配置文件里新加的 agent、改了内置 agent 启动命令的，以及 WSL 里的 agent 只显示版本和原因，不代装、不代升。

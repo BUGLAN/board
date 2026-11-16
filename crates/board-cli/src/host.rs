@@ -158,6 +158,8 @@ struct AgentJob {
     agent: String,
     name: String,
     target: String,
+    /// 装进用户目录时，装完要写进登录 shell PATH 的命令目录（`<prefix>/bin`）
+    bin_dir: Option<PathBuf>,
     child: Child,
     started: Instant,
     log: PathBuf,
@@ -345,6 +347,96 @@ fn prepare_npm_install(program: &str, args: &[String]) -> std::result::Result<()
 #[cfg(not(unix))]
 fn prepare_npm_install(_program: &str, _args: &[String]) -> std::result::Result<(), String> {
     Ok(())
+}
+
+/// npm 装到 `--prefix <目录>` 时命令放在 `<目录>/bin`（用来把用户目录加进登录 shell 的 PATH）
+fn npm_bin_dir(program: &str, args: &[String]) -> Option<PathBuf> {
+    if program != "npm" {
+        return None;
+    }
+    let i = args.iter().position(|a| a == "--prefix")?;
+    args.get(i + 1).map(|p| Path::new(p).join("bin"))
+}
+
+/// 登录 shell 的配置文件：zsh 读 `~/.zshrc`，bash 登录读 `~/.bash_profile`（没有时 `~/.bash_login`、`~/.profile`），
+/// fish 读 `~/.config/fish/config.fish`，其他用 `~/.profile`。返回 (文件, 是不是 fish)
+#[cfg(any(unix, test))]
+fn login_rc(env: &Env) -> (PathBuf, bool) {
+    let shell = env.prog.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
+    if shell.contains("zsh") {
+        (expand("~/.zshrc"), false)
+    } else if shell.contains("bash") {
+        (bash_rc(&expand("~")), false)
+    } else if shell.contains("fish") {
+        (expand("~/.config/fish/config.fish"), true)
+    } else {
+        (expand("~/.profile"), false)
+    }
+}
+
+/// bash 登录 shell 读 `~/.bash_profile`、`~/.bash_login`、`~/.profile` 里第一个存在的，都没有时写 `~/.bash_profile`
+#[cfg(any(unix, test))]
+fn bash_rc(home: &Path) -> PathBuf {
+    [".bash_profile", ".bash_login", ".profile"].iter().map(|n| home.join(*n)).find(|p| p.is_file()).unwrap_or_else(|| home.join(".bash_profile"))
+}
+
+/// 写进 shell 配置的那一行
+#[cfg(any(unix, test))]
+fn path_line(dir: &Path, fish: bool) -> String {
+    let dir = dir.display().to_string().replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`");
+    if fish {
+        format!("fish_add_path \"{dir}\"")
+    } else {
+        format!("export PATH=\"{dir}:$PATH\"")
+    }
+}
+
+/// 把目录写进 shell 配置的 PATH；同一行已经在文件里时不重复追加。返回是否写了
+#[cfg(any(unix, test))]
+fn append_path_line(rc: &Path, dir: &Path, fish: bool) -> std::io::Result<bool> {
+    let line = path_line(dir, fish);
+    let old = match std::fs::read_to_string(rc) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    if old.lines().any(|l| l.trim() == line) {
+        return Ok(false);
+    }
+    if let Some(d) = rc.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(rc)?;
+    if !old.is_empty() && !old.ends_with('\n') {
+        writeln!(f)?;
+    }
+    writeln!(f, "{line}")?;
+    Ok(true)
+}
+
+/// 登录 shell 读启动脚本之后的 PATH（不借任何回退位置）
+#[cfg(unix)]
+fn login_path(env: &Env) -> Option<String> {
+    let args = ["-c".to_string(), "printf __BOARD_PATH__%s \"$PATH\"".to_string()];
+    let out = envs::run_out(env.command("/bin/sh", &args, None, false), Duration::from_secs(15))?;
+    let path = out.stdout.rsplit_once("__BOARD_PATH__").map(|(_, p)| p.trim().to_string()).unwrap_or_default();
+    out.ok.then_some(path)
+}
+
+/// 把用户目录的命令目录写进登录 shell 的 PATH（只在登录 shell 的 PATH 里没有时）。
+/// board host 自己会去 `~/.local/bin` 找命令，但用户新开终端也要能直接敲命令。
+#[cfg(unix)]
+fn ensure_login_path(env: &Env, dir: &Path) -> std::io::Result<bool> {
+    if login_path(env).is_some_and(|path| std::env::split_paths(&path).any(|p| p.as_path() == dir)) {
+        return Ok(false);
+    }
+    let (rc, fish) = login_rc(env);
+    append_path_line(&rc, dir, fish)
+}
+
+#[cfg(not(unix))]
+fn ensure_login_path(_env: &Env, _dir: &Path) -> std::io::Result<bool> {
+    Ok(false)
 }
 
 /// 当前用户能不能写 npm 的全局目录；目录还不存在时看最近一个已有的上级目录
@@ -2156,6 +2248,7 @@ impl Host<'_> {
                 return (true, false);
             }
         };
+        let bin_dir = if install { npm_bin_dir(&program, &args) } else { None };
         self.agents[i].manage_state = "running".into();
         self.agents[i].manage_error.clear();
         self.ask_error = None;
@@ -2187,7 +2280,7 @@ impl Host<'_> {
                     program,
                     args.join(" ")
                 ));
-                self.agent_job = Some(AgentJob { ask: ask.id, agent: id.into(), name, target, child, started: Instant::now(), log });
+                self.agent_job = Some(AgentJob { ask: ask.id, agent: id.into(), name, target, bin_dir, child, started: Instant::now(), log });
                 (false, false)
             }
             Err(e) => {
@@ -2355,6 +2448,19 @@ impl Host<'_> {
         };
         match out {
             Ok(()) => {
+                if let Some(dir) = job.bin_dir.as_deref() {
+                    if let Some(env) = self.envs.iter().find(|e| e.id == "login") {
+                        match ensure_login_path(env, dir) {
+                            Ok(true) => self.say(format!(
+                                "{} 已把 {} 写进登录 shell 的 PATH（新开终端或 source 后生效）",
+                                self.p.green("✓"),
+                                dir.display()
+                            )),
+                            Ok(false) => {}
+                            Err(e) => self.say(format!("{} 没能把 {} 写进登录 shell 的 PATH：{e}", self.p.yellow("!"), dir.display())),
+                        }
+                    }
+                }
                 self.recheck();
                 let now = self.agents.iter().find(|a| a.id == job.agent).and_then(|a| a.default_check()).map(|c| c.version.clone()).unwrap_or_default();
                 if !job.target.is_empty() && manage_older(&now, &job.target) {
@@ -4809,6 +4915,59 @@ mod tests {
         let args = vec!["install".into(), "-g".into(), "--prefix".into(), dir.path().display().to_string()];
         prepare_npm_install("npm", &args).unwrap();
         assert!(dir.path().join("lib").is_dir());
+    }
+
+    /// 装进用户目录后把它的 bin 目录写进 shell 配置，新开终端也能直接敲命令；重复安装不重复追加
+    #[test]
+    fn user_prefix_adds_the_bin_dir_to_shell_path_once() {
+        let d = tempfile::tempdir().unwrap();
+        let rc = d.path().join(".zshrc");
+        std::fs::write(&rc, "export FOO=1").unwrap();
+        let dir = Path::new("/Users/me/.local/bin");
+        assert!(append_path_line(&rc, dir, false).unwrap());
+        let text = std::fs::read_to_string(&rc).unwrap();
+        assert_eq!(text, "export FOO=1\nexport PATH=\"/Users/me/.local/bin:$PATH\"\n");
+        assert!(!append_path_line(&rc, dir, false).unwrap(), "同一行只追加一次");
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), text);
+        assert!(append_path_line(&rc, dir, true).unwrap(), "fish 的写法不同，算另一行");
+        assert!(std::fs::read_to_string(&rc).unwrap().contains("fish_add_path \"/Users/me/.local/bin\""));
+    }
+
+    /// 加进 PATH 的是 npm 的 --prefix 下面的 bin：装完直接从那里找命令
+    #[test]
+    fn npm_bin_dir_follows_the_install_prefix() {
+        let args = ["install", "-g", "--prefix", "/Users/me/.local", "@deepseek-ai/dsh@next"].map(str::to_string);
+        assert_eq!(npm_bin_dir("npm", &args), Some(Path::new("/Users/me/.local").join("bin")));
+        assert_eq!(npm_bin_dir("brew", &args), None);
+        let update = ["install", "-g", "@openai/codex@latest"].map(str::to_string);
+        assert_eq!(npm_bin_dir("npm", &update), None, "沿已有 prefix 的更新不用再改 PATH");
+    }
+
+    /// 登录 shell 的 PATH 是读启动脚本之后的那份；能据此判断用户目录在不在里面
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_is_readable() {
+        let env = Env { id: "login".into(), name: "登录 shell".into(), kind: envs::Kind::Login, prog: PathBuf::from("/bin/sh") };
+        let path = login_path(&env).expect("登录 shell 能打印 PATH");
+        assert!(std::env::split_paths(&path).any(|p| p.as_path() == Path::new("/bin")), "{path}");
+        assert!(!path.contains("__BOARD_PATH__"), "标记不能留在结果里：{path}");
+    }
+
+    /// 按用户实际用的 shell 选配置文件；bash 登录 shell 读的是 profile，不是 .bashrc
+    #[cfg(unix)]
+    #[test]
+    fn shell_rc_follows_the_login_shell() {
+        let env = |p: &str| Env { id: "login".into(), name: String::new(), kind: envs::Kind::Login, prog: PathBuf::from(p) };
+        assert!(login_rc(&env("/bin/zsh")).0.ends_with(".zshrc"));
+        assert!(login_rc(&env("/usr/local/bin/fish")).0.ends_with("config.fish"));
+
+        // bash 登录 shell 按 .bash_profile → .bash_login → .profile 的顺序读第一个存在的
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(bash_rc(d.path()), d.path().join(".bash_profile"));
+        std::fs::write(d.path().join(".profile"), "").unwrap();
+        assert_eq!(bash_rc(d.path()), d.path().join(".profile"));
+        std::fs::write(d.path().join(".bash_login"), "").unwrap();
+        assert_eq!(bash_rc(d.path()), d.path().join(".bash_login"));
     }
 
     /// npm 权限失败时不要把最后一行的日志路径当成原因：说清 EACCES 和怎么办
