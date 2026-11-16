@@ -1267,7 +1267,7 @@ pub struct HostInfo {
     pub res: Option<crate::hostres::HostRes>,
 }
 
-/// 从一台机器导入 skills（PRD §10.12「共用配置」）：board host 上报本机各 agent skill 目录里、不是同步装的 skill；
+/// 从一台机器导入 skills（PRD §10.16「共用配置」）：board host 上报本机各 agent skill 目录里、不是同步装的 skill；
 /// 人在界面上勾了要导入的，board host 把这几个目录传进共用库（和 `board skills push` 一样），再回报结果
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillImport {
@@ -3372,7 +3372,7 @@ impl<'a> W<'a> {
                     return Err(BoardError::new(
                         ErrorCode::HostNameTaken,
                         format!(
-                            "机器名「{}」绑定的是另一个访问令牌「{tn}」：换一个 --name；或在界面「设置 → Agent 接入」吊销那个令牌、或在「机器」里移除这台机器后再连",
+                            "机器名「{}」绑定的是另一个访问令牌「{tn}」：换一个 --name；或在界面「Agent → 访问令牌」吊销那个令牌、或在「机器」里移除这台机器后再连",
                             h.name
                         ),
                     )
@@ -4044,7 +4044,7 @@ impl<'a> W<'a> {
         self.read().host(name, self.now)
     }
 
-    /// 从这台机器导入 skills（PRD §10.12「共用配置」，只能在登录后的界面上做）：记下要导入的（名称 + 所在目录），
+    /// 从这台机器导入 skills（PRD §10.16「共用配置」，只能在登录后的界面上做）：记下要导入的（名称 + 所在目录），
     /// board host 取到任务时把这几个目录传进共用库。要机器在线、board host 会导入；同一台机器同时只做一次
     /// （上一次超过 [`SKILL_IMPORT_STALE_MS`] 还没做完的算作废）；只能选它上报的、没写原因的，board-skills 不能导入
     pub fn host_skill_import(&mut self, name: &str, picks: Vec<SkillImportPick>, by: &str) -> Result<HostInfo> {

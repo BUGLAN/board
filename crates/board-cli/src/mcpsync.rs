@@ -1,4 +1,4 @@
-//! MCP 服务器共用配置在本机这一侧（PRD §10.12「共用配置」）：board host 把服务端的 MCP 服务器写进本机 agent 的用户级配置。
+//! MCP 服务器共用配置在本机这一侧（PRD §10.16「共用配置」）：board host 把服务端的 MCP 服务器写进本机 agent 的用户级配置。
 //!
 //! - Claude Code：`claude mcp add-json --scope user <名称> <JSON>`、`claude mcp remove --scope user <名称>`（在它的启动环境里执行；
 //!   `~/.claude.json` 它自己经常改写，只读它判断已有哪些）

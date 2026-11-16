@@ -1,4 +1,4 @@
-//! 「共用配置 → MCP 服务器」的「从本机导入」（PRD §10.12「共用配置」）：读出这台电脑上各个 agent 已经配好的 MCP 服务器，
+//! 「Agent → MCP 服务器」的「从本机导入」（PRD §10.16「共用配置」）：读出这台电脑上各个 agent 已经配好的 MCP 服务器，
 //! 页面上勾选后加进共用列表。读的是用户级配置（和 board host 同步写的是同一处）：
 //! Claude Code `~/.claude.json` 顶层 `mcpServers`、Codex `$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `mcp_servers`、
 //! pi `~/.pi/agent/mcp.json` 的 `mcpServers`。名字像密钥的环境变量、请求头（TOKEN、KEY、SECRET、Authorization……）标成密钥，值一起带上。

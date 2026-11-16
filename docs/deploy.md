@@ -123,7 +123,7 @@ curl -s https://board.example.com/api/workspace
 
 ## 5. agent 接入
 
-在网页「设置 → Agent 接入 → 访问令牌」新建令牌（原文只显示一次），页面上给出一条命令，在 agent 所在的电脑上执行：
+在网页「Agent → 访问令牌」新建令牌（原文只显示一次），页面上给出一条命令，在 agent 所在的电脑上执行：
 
 ```bash
 board login --url https://board.example.com --token <访问令牌>
@@ -449,7 +449,7 @@ cargo run --release -p board-server -- --local
 
 只监听 `127.0.0.1`，不需要登录，数据在 `~/.board/board.db`（`--db <路径>` 或 `BOARD_DB` 可指定）。
 
-CLI 同样连这个服务端：浏览器打开 `http://127.0.0.1:7420`，在「设置 → Agent 接入」新建访问令牌，然后
+CLI 同样连这个服务端：浏览器打开 `http://127.0.0.1:7420`，在「Agent → 访问令牌」新建访问令牌，然后
 
 ```bash
 board login --url http://127.0.0.1:7420 --token <访问令牌>

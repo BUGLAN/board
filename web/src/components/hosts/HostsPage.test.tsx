@@ -7,6 +7,8 @@ import { api } from '../../lib/api';
 import type { HostAgent, HostInfo, Workspace } from '../../lib/types';
 import { useData } from '../../store/data';
 import { openHost, settleConfirm, useUI } from '../../store/ui';
+import { AgentPage } from '../agent/AgentPage';
+import { useAgentSec, type SecId } from '../agent/AgentNav';
 import { HostDetail, type DetailTab } from './HostDetail';
 import { HostModal } from './HostModal';
 import { FleetActions, HostsPage, Rack } from './HostsPage';
@@ -226,7 +228,7 @@ describe('全部暂停 / 全部停止', () => {
 
 /* 界面和服务端版本不一致（服务端升级后开着的旧页面、桌面端自带的界面连别的版本的服务端）：接口少了界面以为一定有的数组。
    线上那次是 v0.1.30 的 GET /api/providers 去掉了 agents，v0.1.29 的页面在「共用配置」里 view.agents.find 整页崩（default/main#359）。
-   这里用假的服务端返回缺字段的响应，走真实的 api（进门时补齐，lib/normalize.ts），把机器页和机器详情都画一遍 */
+   这里用假的服务端返回缺字段的响应，走真实的 api（进门时补齐，lib/normalize.ts），把机器页、Agent tab 的各节和机器详情都画一遍 */
 describe('接口少了字段时机器页不整页崩', () => {
   const META = [{ id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'high'] }];
   // 一台机器：agents、dirs、cron 都没有，同步结果、自检、导入里的数组也没有
@@ -275,6 +277,7 @@ describe('接口少了字段时机器页不整页崩', () => {
     vi.unstubAllGlobals();
     useData.setState({ ws: null });
     useUI.setState({ hostsView: 'racks' });
+    useAgentSec.setState({ sec: 'providers' });
   });
 
   // v0.1.30 的供应商列表（没有 agents）、更旧的没有 providers、空响应
@@ -283,19 +286,26 @@ describe('接口少了字段时机器页不整页崩', () => {
     ['供应商列表缺了 providers', { meta: META }],
     ['供应商列表是空的', null],
   ] as const)
-    it(`${what}：总览、对比、共用配置、调度四个视图和机器详情的三个页签都画得出来`, async () => {
+    it(`${what}：机器页三个视图、Agent tab 的共用配置和自动领取、机器详情的三个页签都画得出来`, async () => {
       vi.stubGlobal('fetch', server(providers));
       const ws = await api.workspace();
       act(() => useData.setState({ ws }));
       const h = ws.hosts![0];
-      for (const view of ['racks', 'compare', 'shared', 'sched'] as const) {
+      for (const view of ['racks', 'compare', 'sched'] as const) {
         act(() => useUI.setState({ hostsView: view }));
         await act(async () => root.render(<HostsPage />));
         await act(async () => {});
         expect(host.querySelector('.page-hosts')).not.toBeNull();
         if (view === 'racks') expect(host.querySelector('.hp-rack')?.textContent).toContain('old');
-        // 共用配置：模型供应商一节读完了（不是「正在读取…」，也不是读取失败）
-        if (view === 'shared') {
+        if (view === 'sched') expect(host.querySelector('.sd-line')?.textContent).toContain('old');
+      }
+      for (const sec of ['providers', 'mcp', 'skills', 'git', 'rules', 'limits'] as SecId[]) {
+        act(() => useAgentSec.setState({ sec }));
+        await act(async () => root.render(<AgentPage />));
+        await act(async () => {});
+        expect(host.querySelector('.page-agent')).not.toBeNull();
+        // 模型供应商一节读完了（不是「正在读取…」，也不是读取失败）
+        if (sec === 'providers') {
           expect(host.querySelector('.sc-providers')?.textContent).toContain('还没有');
           expect(host.querySelector('.sc-providers .lh-warn')).toBeNull();
         }
@@ -309,18 +319,26 @@ describe('接口少了字段时机器页不整页崩', () => {
 
   /* 保存状态（.hp-sync，不是 inline 的）绝对定位在 .hp-ctl 左边：父元素不是 .hp-ctl 时定位落到页面或弹窗上，
      画到可视区外面，改设置时看不到保存中、已保存（default/main#391：工作空间、领取规则、自动升级） */
-  it('四个视图和机器详情三个页签里，控件旁的保存状态都在 .hp-ctl 里', async () => {
+  it('机器页三个视图、Agent tab 各节和机器详情三个页签里，控件旁的保存状态都在 .hp-ctl 里', async () => {
     vi.stubGlobal('fetch', server({ providers: [], meta: META }));
     const ws = await api.workspace();
     act(() => useData.setState({ ws }));
     const loose = () => [...host.querySelectorAll('.hp-sync:not(.in)')].filter(s => !s.parentElement?.classList.contains('hp-ctl')).map(s => s.parentElement?.className);
-    for (const view of ['racks', 'compare', 'shared', 'sched'] as const) {
+    for (const view of ['racks', 'compare', 'sched'] as const) {
       act(() => useUI.setState({ hostsView: view }));
       await act(async () => root.render(<HostsPage />));
       await act(async () => {});
       expect(loose()).toEqual([]);
-      // 调度里领取规则、自动升级各一个
-      if (view === 'sched') expect(host.querySelectorAll('.sc-acts .hp-ctl > .hp-sync, .sd-up .hp-ctl > .hp-sync')).toHaveLength(2);
+      // 接单里自动升级一个
+      if (view === 'sched') expect(host.querySelectorAll('.sd-up .hp-ctl > .hp-sync')).toHaveLength(1);
+    }
+    for (const sec of ['providers', 'mcp', 'skills', 'git', 'rules', 'limits'] as SecId[]) {
+      act(() => useAgentSec.setState({ sec }));
+      await act(async () => root.render(<AgentPage />));
+      await act(async () => {});
+      expect(loose()).toEqual([]);
+      // 领取规则：「加一条规则」旁边一个
+      if (sec === 'rules') expect(host.querySelectorAll('.sc-acts .hp-ctl > .hp-sync')).toHaveLength(1);
     }
     for (const tab of ['overview', 'agents', 'settings'] as DetailTab[]) {
       await act(async () => root.render(<HostDetail h={ws.hosts![0]} i={0} n={1} step={() => {}} close={() => {}} on tab={tab} setTab={() => {}} />));
@@ -331,17 +349,18 @@ describe('接口少了字段时机器页不整页崩', () => {
   });
 });
 
-/* 手机适配（default/main#384）：机器 tab 的四个视图和机器详情三个页签从 360px 起不出横向滚动条。
+/* 手机适配（default/main#384）：机器 tab 的三个视图、Agent tab 和机器详情三个页签从 360px 起不出横向滚动条。
    浏览器宽度 jsdom 量不出来，这里直接盯样式表：手机上必须有一条 ≤760px 的规则管住这些块 */
 // 样式表按本测试文件的位置取（vitest 里 import.meta.url 是运行时路径，不是源文件）
 const css = (name: string) => readFileSync(new URL(`../../styles/${name}`, pathToFileURL(__filename)), 'utf8');
 /** 样式表里最后一条「整屏手机」那段（断点和仓库其它页面一致：760px） */
 const phoneBlock = (text: string, at: number) => text.slice(text.indexOf('@media (max-width: 760px)', at));
 describe('手机适配的样式还在（机器 tab、机器详情）', () => {
-  it('机器页只纵向滚动，页头、视图切换、磁贴、对比、共用配置、调度都有手机规则', () => {
+  it('机器页、Agent tab 只纵向滚动，页头、视图切换、磁贴、对比、共用配置、领取规则和接单都有手机规则', () => {
     const hosts = css('hosts.css');
     expect(hosts).toMatch(/\.page-hosts \{[^}]*overflow-x: hidden/);
-    const at = hosts.indexOf('机器 Tab 的四个视图、机器详情弹窗从 360px 起逐页适配');
+    expect(css('settings.css')).toMatch(/\.page-agent \{[^}]*overflow-x: hidden/);
+    const at = hosts.indexOf('机器 Tab 的三个视图、Agent tab、机器详情弹窗从 360px 起逐页适配');
     expect(at).toBeGreaterThan(0);
     const mobile = phoneBlock(hosts, at);
     for (const sel of ['.hp-b-acts .segmented', '.hp-sess-grid', '.hp-cmp', '.sy-row', '.pv-line', '.sd-row', '.sd-cond .input.sel', '.hp-ctl > .hp-sync']) expect(mobile).toContain(sel);

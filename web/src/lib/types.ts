@@ -349,7 +349,7 @@ export interface HostInfo {
   max: number;
   /** 自动领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
-  /** 单次最长运行（分钟，0 = 不限）：所有机器一个值，在「调度」里改（Sched.maxRun） */
+  /** 单次最长运行（分钟，0 = 不限）：所有机器一个值，在 Agent tab「跑多久停」里改（Sched.maxRun） */
   maxRun?: number;
   /** 多久没有输出算卡住（分钟，0 = 不限）：同上 */
   idleRun?: number;
@@ -515,7 +515,7 @@ export interface DirList {
   error?: string | null;
 }
 
-/** 共用配置里的一个 MCP 服务器（PRD §10.12「共用配置」） */
+/** 共用配置里的一个 MCP 服务器（PRD §10.16「共用配置」） */
 export interface McpServer {
   name: string;
   kind: 'stdio' | 'http';
@@ -532,7 +532,7 @@ export interface McpServer {
   source?: string;
 }
 
-/* ---------------- 模型供应商（PRD §10.12「共用配置」） ---------------- */
+/* ---------------- 模型供应商（PRD §10.16「共用配置」） ---------------- */
 
 /** 一个供应商的一个接口和地址（三种接口各一个地址） */
 export interface ProviderEndpoint {
@@ -604,7 +604,7 @@ export interface SkillImportPick {
   dir: string;
 }
 
-/** 从一台机器导入 skills（PRD §10.12「共用配置」） */
+/** 从一台机器导入 skills（PRD §10.16「共用配置」） */
 export interface SkillImport {
   /** 这台机器的 board host 会上报、会导入；旧版不会 */
   able: boolean;
@@ -615,7 +615,7 @@ export interface SkillImport {
   last?: { id: number; at: number; by: string; ok: string[]; failed: { name: string; why: string }[] } | null;
 }
 
-/** skills 共用库里的一个 skill（PRD §10.12「共用配置」） */
+/** skills 共用库里的一个 skill（PRD §10.16「共用配置」） */
 export interface SkillInfo {
   name: string;
   /** 内容的哈希（12 位） */

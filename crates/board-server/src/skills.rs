@@ -1,4 +1,4 @@
-//! skills 共用库的接口（PRD §10.12「共用配置」、§9「board skills」）：
+//! skills 共用库的接口（PRD §10.16「共用配置」、§9「board skills」）：
 //!
 //! - `GET /api/skills`：库里的 skill（不带内容），第一项是随服务端版本的 board-skills
 //! - `GET /api/skills/{名称}`：连同内容（board host、`board skills sync` 下载用）

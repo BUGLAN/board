@@ -1,6 +1,6 @@
 //! 命令行和桌面端共用的配置文件 `~/.board/config.toml`（Windows：`%USERPROFILE%\.board\config.toml`，PRD §9）。
 //!
-//! - `url`（服务端地址）和 `token`（访问令牌）：`board login` / `logout`、桌面端「Agent 接入」的一键写入。
+//! - `url`（服务端地址）和 `token`（访问令牌）：`board login` / `logout`、桌面端「Agent → 访问令牌」的一键写入。
 //! - `[host]`（机器名、白板与目录）和 `[agents.<标识>]`（agent 命令模板）：`board host` 读，桌面端「设置 → 本机」写 `[host]`。
 //! - 环境变量 `BOARD_CONFIG` 指定另一个配置文件代替 `~/.board/config.toml`（board host 启动 agent 时用它传连接）。
 //! - 写只有一个入口 [`update`]：加锁 → 读 → 改 → 写临时文件 → 改名。CLI 和桌面端同时写（例如保存本机设置的同时 `board login`）

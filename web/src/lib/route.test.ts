@@ -12,6 +12,8 @@ describe('parseRoute', () => {
   it('其他 Tab 带 ?tab=，也带着白板', () => {
     expect(parseRoute('/default/main', '?tab=inbox')).toEqual({ path: 'default/main', card: null, tab: 'inbox' });
     expect(parseRoute('/default/main/3', '?tab=stats')).toEqual({ path: 'default/main', card: 3, tab: 'stats' });
+    // Agent tab：刷新后还在
+    expect(parseRoute('/default/main', '?tab=agent')).toEqual({ path: 'default/main', card: null, tab: 'agent' });
   });
 
   it('根路径、认不出的 Tab：没有白板', () => {

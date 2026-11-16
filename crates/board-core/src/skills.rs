@@ -1,4 +1,4 @@
-//! skills 共用库（PRD §10.12「共用配置」、§9「board skills」）：服务端存一份 skill，各台机器的 board host 同步到本机 agent 读 skill 的目录。
+//! skills 共用库（PRD §10.16「共用配置」、§9「board skills」）：服务端存一份 skill，各台机器的 board host 同步到本机 agent 读 skill 的目录。
 //!
 //! - 每个 skill 是一个目录：`SKILL.md` 加上它带的文件，合计最大 [`MAX_BYTES`]。传输时每个文件一项：相对路径、可不可执行、base64 内容。
 //! - 版本号是内容的哈希（[`pack_version`]：按路径排序后对路径、可执行位、内容做 SHA-256，取前 12 位），同样的内容各处算出来一样。

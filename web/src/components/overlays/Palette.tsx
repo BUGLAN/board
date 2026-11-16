@@ -22,6 +22,7 @@ const TAB_ITEM: Record<Tab, { title: string; icon: IconName }> = {
   stats: { title: '大盘', icon: 'chart' },
   projects: { title: '项目总览（画布）', icon: 'folder' },
   hosts: { title: '机器（board host）', icon: 'host' },
+  agent: { title: 'Agent（接入、共用配置、自动领取）', icon: 'terminal' },
   settings: { title: '设置', icon: 'sun' },
 };
 

@@ -237,7 +237,7 @@ function CliInstall() {
             <p className="hp-note lh-warn">{err}</p>
           )}
           <p className="hp-note">
-            令牌「{token.name}」的原文只在这里显示这一次，关掉弹窗后看不到了；不再用这台机器时在「设置 → Agent 接入」吊销它。
+            令牌「{token.name}」的原文只在这里显示这一次，关掉弹窗后看不到了；不再用这台机器时在「Agent → 访问令牌」吊销它。
             {os === 'windows' ? '在 PowerShell 里执行。' : '在终端里执行（装到 ~/.local/bin）。'}执行完几分钟内，这台机器会出现在列表里并在线。
           </p>
           <p className="hp-note">

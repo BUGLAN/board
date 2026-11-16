@@ -1,19 +1,22 @@
 /* ==========================================================================
-   机器 Tab「调度」（PRD §10.12「调度」）：哪些卡自动交给哪个 agent 在这里定一次，所有机器共用
-   - 自动领取的白板：一块白板一个胶囊，点一下参与 / 不参与（不参与的只是不被自动领取，手动派发照常）
-   - 领取规则：按 agent 分卡——这个 agent 领哪些卡（规则前面的数字是全局的先后，第一条命中的生效）、由哪些机器做
-     （每台一个胶囊：现在能接、要等、接不了和原因）；下面一行是兜底「其余卡片 →」
-   - 机器什么时候接单：一台机器一条 24 小时的时间带，直接在上面拖出接单时段（空白处拖是新加一段，拖两头改起止，
+   自动领取（PRD §9.1「自动领取」）：哪些卡自动交给哪个 agent 定一次，所有机器共用
+   - ClaimRules（Agent tab「领取规则」，PRD §10.16）：
+     - 自动领取的白板：一块白板一个胶囊，点一下参与 / 不参与（不参与的只是不被自动领取，手动派发照常）
+     - 领取规则：按 agent 分卡——这个 agent 领哪些卡（规则前面的数字是全局的先后，第一条命中的生效）、由哪些机器做
+       （每台一个胶囊：现在能接、要等、接不了和原因）；下面一行是兜底「其余卡片 →」
+     - 交给哪个 agent：机器上找到了的 agent；没有机器（或哪台都没找到）时列内置的 agent（GET /api/providers 的 meta），规则照样能加
+   - HostAccept（机器 Tab「接单」，PRD §10.12）：一台机器一条 24 小时的时间带，直接在上面拖出接单时段（空白处拖是新加一段，拖两头改起止，
      拖中间平移，双击删掉，半小时一格；全天就是从 00 拖到 24）；右边是会话上限、一个会话几张、接单（自动领 / 只做派给它的 / 暂停）。
-     时间按服务器时间
-   - 跑多久停（RunLimits）：单次最长运行、没输出多久算卡住，所有机器一个值
+     时间按服务器时间。最下面是所有机器的「自动升级 board」
+   - RunLimits（Agent tab「跑多久停」）：单次最长运行、没输出多久算卡住，所有机器一个值
    写操作都是设置项（saveSetting）：当帧生效，保存状态画在那一项旁边，失败回到原处并提示
    ========================================================================== */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { ACCEPT_WORDS, acceptOf, acceptPatch, hostLoad, minsWords, type Accept } from '../../lib/hosts';
+import { metasOf } from '../../lib/providers';
 import { ALL_DAY, DAY, SNAP, agentTake, claimable, hhmm, hostTake, ruleAgents, serverMinute, tidyWins, winWords, type Win } from '../../lib/sched';
-import type { ClaimRule, HostInfo, Label, Workspace } from '../../lib/types';
+import type { AgentMeta, ClaimRule, HostInfo, Label, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { saveSetting, useData } from '../../store/data';
 import { openHost } from '../../store/ui';
@@ -36,7 +39,26 @@ const OP_OPTIONS = OPS.map(([value, label]) => ({ value, label }));
 const needsLabels = (op: ClaimRule['op']) => op !== 'none';
 const plain = (r: ClaimRule) => ({ op: r.op, labels: needsLabels(r.op) ? r.labels : [], agent: r.agent });
 
-export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
+/** 没有机器上报 agent 时拿内置 agent 的说明（GET /api/providers 的 meta）：领取规则照样能选 agent。
+    取不到（旧服务端、断网）时是空的，「加一条规则」仍然不能点 */
+function useBuiltinAgents(need: boolean): AgentMeta[] {
+  const [meta, setMeta] = useState<AgentMeta[]>([]);
+  useEffect(() => {
+    if (!need) return;
+    let alive = true;
+    api
+      .providers()
+      .then(v => alive && setMeta(metasOf(v)))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [need]);
+  return need ? meta : [];
+}
+
+/** 领取规则（Agent tab）：自动领取的白板、按 agent 分卡的规则、兜底 */
+export function ClaimRules({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(30_000);
   const { sync, track } = useSync();
@@ -50,6 +72,9 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
       .filter(l => !seen.has(l.name.toLowerCase()) && !!seen.add(l.name.toLowerCase()))
       .map((l, i) => ({ ...l, id: i + 1 }));
   }, [ws?.projects]);
+  // 至少在一台机器上找得到命令的 agent；一个都没有时用内置的 agent
+  const found = hosts.flatMap(h => h.agents.filter(a => a.found)).filter((a, i, all) => all.findIndex(b => b.id === a.id) === i);
+  const builtin = useBuiltinAgents(found.length === 0);
   // 标签选择器勾一个存一个：连着勾时回调可能来自上一帧，改的要是最新一份规则
   const latest = useRef<ClaimRule[]>([]);
   // 旧版服务端没有这一项：不显示这一节
@@ -58,10 +83,9 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
   latest.current = rules;
   const minute = serverMinute(ws, now);
   const fallback = sched.fallback ?? '';
-  // 至少在一台机器上找得到命令的 agent
-  const found = hosts.flatMap(h => h.agents.filter(a => a.found)).filter((a, i, all) => all.findIndex(b => b.id === a.id) === i);
-  const agentName = (id: string) => hosts.flatMap(h => h.agents).find(a => a.id === id)?.name ?? id;
-  const agentOptions = found.map(a => ({ value: a.id, label: a.name }));
+  const pickable = found.length ? found : builtin;
+  const agentName = (id: string) => hosts.flatMap(h => h.agents).find(a => a.id === id)?.name ?? builtin.find(a => a.id === id)?.name ?? id;
+  const agentOptions = pickable.map(a => ({ value: a.id, label: a.name }));
   const boards = ws.projects.flatMap(p => p.boards);
 
   const saveRules = (next: ClaimRule[]) => {
@@ -83,11 +107,6 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
         api.updateBoard(path, { auto: on }),
       ),
     );
-  const setAutoUpgrade = (on: boolean) =>
-    track(
-      'upgrade',
-      saveSetting('sched:upgrade', { ws: w => (w.sched ? { ...w, sched: { ...w.sched, autoUpgrade: on } } : w) }, () => api.updateSched({ autoUpgrade: on })),
-    );
   const edit = (i: number, change: Partial<ClaimRule>) => saveRules(latest.current.map((x, j) => (j === i ? { ...x, ...change, missing: change.labels ? [] : x.missing } : x)));
   const move = (i: number, d: number) => {
     const next = [...rules];
@@ -104,14 +123,14 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
           <h2>领取规则</h2>
           <p>
             哪些卡自动交给哪个 agent，所有机器共用；机器在自己的接单时段里有符合规则的卡就领，几台都能接时按空位分。时间都按服务器时间
-            {sched.tz ? `（${sched.tz}）` : ''}。
+            {sched.tz ? `（${sched.tz}）` : ''}。每台机器什么时候接单、开几个会话在「机器 → 接单」里。
           </p>
         </div>
         <div className="sc-acts">
           {/* 保存状态贴在按钮左边：和其他设置项一样包在 .hp-ctl 里，不然定位落到页面上、画到可视区外面（default/main#391） */}
           <span className="hp-ctl">
             <Sync s={sync.rules} />
-            <button className="btn sm" type="button" disabled={adding || found.length === 0} onClick={() => setAdding(true)}>
+            <button className="btn sm" type="button" disabled={adding || agentOptions.length === 0} onClick={() => setAdding(true)}>
               <Icon name="plus" />
               加一条规则
             </button>
@@ -149,7 +168,7 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
 
       {cards.length === 0 && !adding ? (
         <p className="hp-empty sd-empty">
-          {found.length === 0 ? '还没有机器上报 agent：先在要干活的机器上运行 board host。' : '还没有领取规则：机器不会自动领卡，只做派给它的。点「加一条规则」开始。'}
+          {agentOptions.length === 0 ? '还没有机器上报 agent：先在要干活的机器上运行 board host。' : '还没有领取规则：机器不会自动领卡，只做派给它的。点「加一条规则」开始。'}
         </p>
       ) : (
         <div className={cx('sd-cards', sync.rules === 'failed' && 'hp-rollback')}>
@@ -230,14 +249,33 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
           <Select
             className="sd-fallback"
             value={fallback}
-            options={[{ value: '', label: '不领' }, ...(fallback && !found.some(a => a.id === fallback) ? [{ value: fallback, label: `${agentName(fallback)}（找不到）` }] : []), ...agentOptions]}
+            options={[{ value: '', label: '不领' }, ...(fallback && !pickable.some(a => a.id === fallback) ? [{ value: fallback, label: `${agentName(fallback)}（找不到）` }] : []), ...agentOptions]}
             aria-label="规则都没命中的卡片由哪个 agent 做"
             onChange={saveFallback}
           />
           <Sync s={sync.fallback} inline />
         </p>
       )}
+    </section>
+  );
+}
 
+/** 接单（机器 Tab）：每台机器的接单时段、会话数、一个会话几张、接单三态，和所有机器的自动升级 */
+export function HostAccept({ hosts }: { hosts: HostInfo[] }) {
+  const ws = useData(s => s.ws);
+  const now = useNow(30_000);
+  const { sync, track } = useSync();
+  const sched = ws?.sched;
+  // 旧版服务端没有这一项：不显示这一节
+  if (!ws || !sched) return null;
+  const minute = serverMinute(ws, now);
+  const setAutoUpgrade = (on: boolean) =>
+    track(
+      'upgrade',
+      saveSetting('sched:upgrade', { ws: w => (w.sched ? { ...w, sched: { ...w.sched, autoUpgrade: on } } : w) }, () => api.updateSched({ autoUpgrade: on })),
+    );
+  return (
+    <section className="sc sd">
       <h3 className="sd-h">
         机器什么时候接单 <small>服务器时间 {hhmm(minute)} · 在时间带上拖出时段：空白处拖是新加一段，拖两头改起止，拖中间平移，双击删掉</small>
       </h3>

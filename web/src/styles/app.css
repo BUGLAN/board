@@ -27,7 +27,7 @@
 /* 新建弹窗「等价的 CLI」：保留连续空格，和真正执行的命令一致 */
 .cr-cli { white-space: pre-wrap; }
 
-/* 设置 · Agent 接入：skill 调用不是 shell 命令，不显示 $ */
+/* Agent → 接入 agent：skill 调用不是 shell 命令，不显示 $ */
 .code-line.plain code::before { content: none; }
 .set-card .set-p kbd { font-size: 11px; }
 
@@ -61,7 +61,7 @@
 .login-retry { margin-left: 4px; padding: 0; color: var(--text-2); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-3); }
 .login-retry:hover { color: var(--text); text-decoration-color: currentColor; }
 
-/* 设置 · 账号与访问令牌 */
+/* 设置 · 账号；Agent → 访问令牌 */
 .acct-avatar { width: 34px; height: 34px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--line-2); }
 .set-sub { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; font-size: 13.5px; font-weight: 600; }
 .set-sub svg { width: 15px; height: 15px; color: var(--text-3); }

@@ -280,7 +280,7 @@ function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a:
           <span className="hd-v hd-col">
             <span className="hp-ctl">
               <Sync s={sync[`run:${a.id}`]} />
-              <Tip text={!fits.length && off ? '服务器上还没有接口对得上的供应商：先在「共用配置 → 模型供应商」里加一个' : ''}>
+              <Tip text={!fits.length && off ? '服务器上还没有接口对得上的供应商：先在「Agent → 模型供应商」里加一个' : ''}>
                 <span>
                   <Select
                     className="ha-sel wide"

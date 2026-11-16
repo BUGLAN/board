@@ -287,6 +287,14 @@ export const StatsIcon24 = () => (
   </svg>
 );
 
+/** Agent：一大一小两颗四角星（2026-11-16 在四角星、光标、对话气泡里选的；机器人头被否） */
+export const AgentIcon24 = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+    <path d="M10.5 5.5c.7 4.6 2.9 6.8 7.5 7.5c-4.6.7-6.8 2.9-7.5 7.5c-.7-4.6-2.9-6.8-7.5-7.5c4.6-.7 6.8-2.9 7.5-7.5Z" />
+    <path d="M18.5 2.8c.25 1.6 1.1 2.45 2.7 2.7c-1.6.25-2.45 1.1-2.7 2.7c-.25-1.6-1.1-2.45-2.7-2.7c1.6-.25 2.45-1.1 2.7-2.7Z" />
+  </svg>
+);
+
 /** 机器（board host）：两层服务器 */
 export const HostsIcon24 = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">

@@ -1,5 +1,5 @@
 /* 小部件：头像、环形倒计时、标签、项目头像、Markdown、卡片标题、倒计时 hook */
-import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type Ref } from 'react';
+import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { openLink } from '../lib/actions';
 import { LOOP_STAGGER_MS, loopAgentMotion, playAgentMotion, subscribeMotion } from '../lib/agent-motion';
@@ -548,6 +548,17 @@ export function Sync({ s, inline }: { s?: SyncState; inline?: boolean }) {
     </span>
   );
 }
+
+/** 设置页、Agent tab 里的一行设置：左边名称和说明，右边控件（.set-row） */
+export const SetRow = ({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) => (
+  <div className="set-row">
+    <div className="set-label">
+      <b>{label}</b>
+      {hint && <span>{hint}</span>}
+    </div>
+    <div className="set-control">{children}</div>
+  </div>
+);
 
 /** 分段控件：选中的一段下面垫一块滑动的底（设置页、机器页的视图切换） */
 /** 分段选择：一项是 [值, 文字]，第三个是 true 时那一项不能选 */

@@ -243,7 +243,7 @@ export const api = {
   /** 安装或更新这台机器上的一个内置 agent：board host 按实际安装方式执行，不占会话位 */
   askAgent: (name: string, kind: 'agent-install' | 'agent-update', agent: string, to?: string) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, agent, to: to || null }),
-  /** skills 共用库（PRD §10.12「共用配置」）：列出、上传（同名换成新版本）、删除 */
+  /** skills 共用库（PRD §10.16「共用配置」）：列出、上传（同名换成新版本）、删除 */
   skills: () => req<SkillInfo[]>('GET', '/api/skills').then(normSkills),
   removeSkill: (name: string) => req('DELETE', `/api/skills/${q(name)}`),
   /** 从这台机器导入 skills：board host 把选中的目录传进库 */

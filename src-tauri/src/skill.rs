@@ -8,7 +8,7 @@
 //! - 先写到旁边的临时目录，写完再整体换上去：装到一半失败不会留下半个 skill。已经有的是链接（开发时
 //!   `ln -sfn` 到仓库）并且看得到 `SKILL.md` 就不动。
 //! - board host 在跑时不自己写：通知它（标准输入一行 `reload`）马上按 skills 共用库同步一次（board-skills 跟着服务端版本，
-//!   PRD §10.12「共用配置」），它重新检查并上报，界面上的提醒随之消失。board host 没在跑时才由桌面端直接写。
+//!   PRD §10.16「共用配置」），它重新检查并上报，界面上的提醒随之消失。board host 没在跑时才由桌面端直接写。
 
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;

@@ -133,7 +133,7 @@ impl ErrorCode {
             ErrorCode::ForbiddenColumn => "不允许这样移动：锁定状态只能领取进入，终点和「未整理」只归人管，错误节点只有人能移出，agent 只能沿连线移动",
             ErrorCode::Usage => "命令格式或参数不正确",
             ErrorCode::NotLoggedIn => "未登录：网页端请先用 GitHub 登录；命令行运行 board login",
-            ErrorCode::InvalidToken => "访问令牌无效或已吊销：在界面「设置 → Agent 接入」里新建令牌",
+            ErrorCode::InvalidToken => "访问令牌无效或已吊销：在界面「Agent → 访问令牌」里新建令牌",
             ErrorCode::Unreachable => "连不上 Board 服务端",
             ErrorCode::NameTaken => "名字正被在线 agent 使用：加一个和本会话相关的后缀（例如任务名或分支名）再 check",
             ErrorCode::NameOffline => "名字不在线：没有 check，或心跳中断超过 50 秒，先 board check --as <名字>",

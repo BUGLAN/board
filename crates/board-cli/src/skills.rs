@@ -1,4 +1,4 @@
-//! skills 共用库在本机这一侧（PRD §9「board skills」、§10.12「共用配置」）：
+//! skills 共用库在本机这一侧（PRD §9「board skills」、§10.16「共用配置」）：
 //!
 //! - `board skills ls`：库里的 skill，以及这台机器上每个 agent skill 目录里的状态
 //! - `board skills push <目录>…`：把本机的 skill 目录传进库里（目录名就是 skill 名，里面要有 SKILL.md），同名的覆盖成新版本

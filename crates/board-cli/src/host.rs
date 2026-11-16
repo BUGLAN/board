@@ -3006,7 +3006,7 @@ impl Host<'_> {
         self.start_selftest(&ask);
     }
 
-    /// 从这台机器导入 skills（PRD §10.12「共用配置」）：取到的任务里有新的请求就在后台把选中的目录传进库；
+    /// 从这台机器导入 skills（PRD §10.16「共用配置」）：取到的任务里有新的请求就在后台把选中的目录传进库；
     /// 做完回报结果（回报失败下一轮再报），再同步一次（库里多了它们，本机这份内容一样就算已同步）
     fn poll_skill_import(&mut self) {
         if self.import_job.as_ref().is_some_and(|(_, h)| h.is_finished()) {

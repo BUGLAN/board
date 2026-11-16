@@ -18,6 +18,7 @@
 | 里程碑 Tab | `Milestones.tsx` | 版本切换、进度图、卡片清单、未发版/没有版本的空状态 |
 | 大盘 Tab | `StatsTab.tsx`、`stats/Stats.tsx`、`stats/charts.tsx` | 指标可读性、图表图例/颜色、时间范围、表格与移动端 |
 | 机器 Tab | `Hosts.tsx`、`hosts/HostsPage.tsx`、`hosts/HostModal.tsx`、`hosts/Session.tsx`、`hosts/Manage.tsx`、`hosts/Ready.tsx` | 机器状态、会话位、排队、自检、远程操作、空状态 |
+| Agent Tab | `agent/AgentPage.tsx`、`agent/AgentNav.tsx`、`agent/Access.tsx`、`hosts/Providers.tsx`、`hosts/Mcp.tsx`、`hosts/Shared.tsx`、`hosts/GitCred.tsx`、`hosts/Sched.tsx` | 一节一页、没有机器时的提示、共用配置、领取规则、令牌、窄屏 |
 | 设置 Tab | `Settings.tsx`、`SettingsNav.tsx` | 目录导航、表单保存状态、危险操作、令牌/密钥、桌面端专有项、窄屏堆叠 |
 | 卡片详情 / 新建 / 复盘台 | `CardDetail.tsx`、`Creator.tsx`、`ReviewDesk.tsx`、`TaskBody.tsx` | 信息层级、编辑/阅读、评论、附件、通过/打回、弹窗与手机 sheet |
 | 登录 / 连接服务端 / 启动页 | `Login.tsx`、Tauri `splash.rs` | 单一主操作、错误原因、加载与超时、桌面端登录接力 |

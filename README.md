@@ -88,7 +88,7 @@ skill 自带 `board`：发版附件里的 `board-skills.zip` 解压后，`bin/` 
 node scripts/build-skill-bin.mjs --host   # 只编本机平台；不带 --host 时本机能交叉编译的平台都编
 ```
 
-人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「设置 → Agent 接入」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH）。
+人自己在终端里用时：桌面端安装包也自带 `board`（Windows 安装版装好就有，便携版把解压目录加进 PATH；macOS 在「Agent → 接入 agent」里复制一条命令，把 `board` 所在目录写进 shell 的 PATH）。
 
 不装桌面端的机器（例如只有命令行的 Linux 服务器）用服务端提供的安装脚本，装的版本和服务端一致：
 
@@ -120,7 +120,7 @@ mkdir -p .claude/skills && ln -s ../../.agents/skills/board-skills .claude/skill
 
 **3. 连接白板**
 
-在「设置 → Agent 接入」新建访问令牌（原文只显示一次），页面上会给出这一条命令：
+在「Agent → 访问令牌」新建访问令牌（原文只显示一次），页面上会给出这一条命令：
 
 ```bash
 board login --url https://board.example.com --token bd_xxx
@@ -132,7 +132,7 @@ board login --url https://board.example.com --token bd_xxx
 
 - 环境变量 `BOARD_URL`、`BOARD_TOKEN` 仍然有效，并且优先于配置文件；以前写进 shell 配置文件的 `export` 建议删掉。
 - 两处都没有时命令被拒绝（`NOT_LOGGED_IN`），提示运行 `board login`。`board logout` 删掉令牌、保留地址。
-- 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「设置 → Agent 接入」新建。
+- 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「Agent → 访问令牌」新建。
 
 agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。会话开始时 `board check --agent <标识>`（pi、claude、codex、dsh）占用名字：名字由 Board 按这台机器的设置生成，和派发一致，是 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`，有在线会话时加 `-1`、`-2`），记在本机，之后不用再带 `--as`；这台机器没跑 board host 时退回 `<标识>/<标识>`。也可以自己起名字：`board check --as <名字>`，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`claude/opus-5.5-login`，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
 

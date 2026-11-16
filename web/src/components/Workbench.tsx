@@ -18,9 +18,10 @@ import { ActorAvatar, AgentAvatar, LabelLock, LabelPriority, ProjectAvatar, SYST
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
 import { InboxSideParts } from './Inbox';
-import { BoardIcon24, HostsIcon24, Icon, InboxIcon24, MilestonesIcon24, ProjectsIcon24, SettingsIcon24, StatsIcon24 } from './Icon';
+import { AgentIcon24, BoardIcon24, HostsIcon24, Icon, InboxIcon24, MilestonesIcon24, ProjectsIcon24, SettingsIcon24, StatsIcon24 } from './Icon';
 import { MilestonesSideParts, setMsFilter, useMsCount, useMsFilter } from './Milestones';
 import { SettingsNav } from './SettingsNav';
+import { AgentNav } from './agent/AgentNav';
 import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
 import { visibleInbox } from '../lib/split';
@@ -33,6 +34,7 @@ const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
   stats: { label: '大盘', tip: '大盘 · 白板和项目的统计', icon: <StatsIcon24 /> },
   projects: { label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
   hosts: { label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
+  agent: { label: 'Agent', tip: 'Agent · 接入、共用配置、自动领取', icon: <AgentIcon24 /> },
   settings: { label: '设置', tip: '设置', icon: <SettingsIcon24 /> },
 };
 
@@ -128,6 +130,12 @@ export function SidePanel() {
         <MilestonesSide />
         <StatsSide />
         <HostsSide />
+        <section className="side-view" data-view="agent">
+          <header className="side-head">
+            <span className="side-title">Agent</span>
+          </header>
+          <AgentNav />
+        </section>
         <section className="side-view" data-view="settings">
           <header className="side-head">
             <span className="side-title">设置</span>

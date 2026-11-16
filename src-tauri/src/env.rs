@@ -1,4 +1,4 @@
-//! 「Agent 接入」里新建令牌后，一键把服务端地址和令牌写进 board 命令行的配置文件 `~/.board/config.toml`
+//! 「Agent → 访问令牌」里新建令牌后，一键把服务端地址和令牌写进 board 命令行的配置文件 `~/.board/config.toml`
 //! （Windows：`%USERPROFILE%\.board\config.toml`），效果和 `board login --url <地址> --token <令牌>` 相同。
 //!
 //! - 服务端地址用外壳自己打开的地址（不由页面传入）；页面只传令牌，必须是 `bd_` 加十六进制

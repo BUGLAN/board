@@ -920,7 +920,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-st-btn.is-busy > svg { display: none; }
 
 /* ==========================================================================
-   机器 Tab「共用配置」（components/hosts/Shared.tsx）：skills 共用库和各机器的同步状态
+   Agent tab「共用配置」（components/hosts/Shared.tsx 等）：skills 共用库和各机器的同步状态
    ========================================================================== */
 .hp-side-shared { margin-bottom: 6px; }
 .hp-side-shared > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
@@ -1410,7 +1410,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-dir-main .hp-board { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .hp-board-sub { font-size: 11px; font-weight: 400; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---------- 共用配置「调度」（Sched.tsx）：自动领取的白板、按 agent 分卡的领取规则、每台机器的接单时间带 ---------- */
+/* ---------- 自动领取（Sched.tsx）：Agent tab 的自动领取的白板、按 agent 分卡的领取规则；机器 Tab 接单里每台机器的时间带 ---------- */
 .sd { margin-bottom: 28px; min-width: 0; }
 .sd-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 22px 0 8px; font-size: 13px; font-weight: 650; }
 .sd-h small { font-size: 12px; font-weight: 400; color: var(--text-3); }
@@ -1509,7 +1509,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 }
 
 /* ==========================================================================
-   手机（≤760px）：机器 Tab 的四个视图、机器详情弹窗从 360px 起逐页适配（default/main#384）
+   手机（≤760px）：机器 Tab 的三个视图、Agent tab、机器详情弹窗从 360px 起逐页适配（default/main#384）
    桌面（≥1024px）的布局和密度不动：这里只改窄屏，断点和仓库其它页面一致
    ========================================================================== */
 @media (max-width: 760px) {
@@ -1553,7 +1553,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   .hp-cmp-host button { max-width: 38vw; font-size: 12.5px; gap: 6px; }
   .hp-cmp-legend { gap: 4px 12px; padding: 8px 12px; font-size: 11px; }
 
-  /* ---- 共用配置：skills、MCP、供应商、Git 凭据 ---- */
+  /* ---- Agent tab 共用配置：skills、MCP、供应商、Git 凭据 ---- */
   .sc { max-width: none; }
   .sc-head { gap: 8px; margin-bottom: 10px; }
   .sc-head h2 { font-size: 16px; }
@@ -1572,7 +1572,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   .pv-models code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .gc-hosts { padding: 10px 12px 12px; }
 
-  /* ---- 调度：领取规则、时间带、跑多久停 ---- */
+  /* ---- Agent tab 领取规则、跑多久停；机器 Tab 接单的时间带 ---- */
   .sd-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .sd-row > .sd-k { padding-top: 0; }
   .sd-card { padding: 10px 12px; }
@@ -1595,7 +1595,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   :is(.sc-acts, .sd-up) > .hp-ctl { margin-left: 0; }
   .sd-ctl > .hp-sync.in { order: 1; }
 
-  /* ---- 侧栏的「共用配置」「调度」两行：副标题窄屏放不下，只留名称 ---- */
+  /* ---- 侧栏的「接单」「共用配置、领取规则」两行：副标题窄屏放不下，只留名称 ---- */
   .hp-side-row.hp-side-shared { grid-template-columns: 14px minmax(0, 1fr) auto; }
   .hp-side-row.hp-side-shared .hp-side-sub { display: none; }
 }

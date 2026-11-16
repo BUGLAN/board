@@ -185,7 +185,7 @@ impl ProbeError {
     fn next_step(&self) -> &'static str {
         match self {
             ProbeError::Unreachable(_) => "确认服务端地址和端口、服务端是否在运行、网络或代理是否正常",
-            ProbeError::InvalidToken => "令牌写错或已被吊销：在界面「设置 → Agent 接入」新建一个，再 board login --token <令牌>",
+            ProbeError::InvalidToken => "令牌写错或已被吊销：在界面「Agent → 访问令牌」新建一个，再 board login --token <令牌>",
             _ => "确认服务端是这次部署的版本；可以先在浏览器打开 <服务端地址>/api/health 看看",
         }
     }
@@ -398,7 +398,7 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
         }
     }
 
-    let login = "board login --url <服务端地址>（令牌在界面「设置 → Agent 接入」新建）";
+    let login = "board login --url <服务端地址>（令牌在界面「Agent → 访问令牌」新建）";
     let file = config::shown();
 
     // 3. 服务端地址：有没有、格式对不对、来自哪里；环境变量和配置文件都有时 warn
@@ -471,7 +471,7 @@ pub fn diagnose(input: &Input, probe: &dyn Probe) -> Report {
             "board_token",
             "访问令牌",
             format!("没有配置：环境变量 BOARD_TOKEN 和 {file} 里都没有"),
-            format!("board login --url {u}（令牌在界面「设置 → Agent 接入」新建；命令不会回显令牌）"),
+            format!("board login --url {u}（令牌在界面「Agent → 访问令牌」新建；命令不会回显令牌）"),
         )),
         (Some(u), Some((t, src))) if health.is_some() => {
             let from = config::origin(src, "BOARD_TOKEN");
@@ -772,7 +772,7 @@ mod tests {
         let c = check(&report, "board_token");
         assert_eq!(c.status, Status::Fail);
         assert!(c.detail.contains("令牌"), "{}", c.detail);
-        assert!(c.next.as_deref().unwrap_or_default().contains("Agent 接入"));
+        assert!(c.next.as_deref().unwrap_or_default().contains("Agent → 访问令牌"));
         assert!(!serde_json::to_string(&report.to_json()).unwrap().contains("bd_secret_token"));
     }
 

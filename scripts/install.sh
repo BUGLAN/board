@@ -179,7 +179,7 @@ ensure_path "$dir"
 # ---------------------------------------------------------------- 登录、接任务
 
 if [ -n "$token" ]; then
-  "$bin" login --url "$BOARD_SERVER" --token "$token" || die "登录 $BOARD_SERVER 失败：令牌在界面「设置 → Agent 接入」新建"
+  "$bin" login --url "$BOARD_SERVER" --token "$token" || die "登录 $BOARD_SERVER 失败：令牌在界面「Agent → 访问令牌」新建"
 fi
 
 if [ -n "$name" ] || [ -n "$workspace" ] || [ -n "$dirs" ]; then
@@ -204,5 +204,5 @@ EOF
   fi
 elif [ -z "$token" ]; then
   say ""
-  say "下一步：在界面「设置 → Agent 接入」新建令牌，然后 board login --url $BOARD_SERVER --token <令牌>"
+  say "下一步：在界面「Agent → 访问令牌」新建令牌，然后 board login --url $BOARD_SERVER --token <令牌>"
 fi

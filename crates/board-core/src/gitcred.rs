@@ -1,4 +1,4 @@
-//! Git 凭据共用配置（PRD §10.12「共用配置」）：服务端存一份 https 远端的令牌，各台机器的 board host 按设置
+//! Git 凭据共用配置（PRD §10.16「共用配置」）：服务端存一份 https 远端的令牌，各台机器的 board host 按设置
 //! 配进 Board 管的仓库，board host 备代码、agent 推集成分支时直接用。
 //!
 //! - 一份：主机（`github.com` 这样的主机名，可以带端口）、用户名、令牌。只管 https 远端；SSH 地址（`git@…`）不管。
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS git_cred (
 );
 "#;
 
-/// Git 凭据（PRD §10.12「共用配置」）
+/// Git 凭据（PRD §10.16「共用配置」）
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitCred {

@@ -351,7 +351,7 @@ fn requires_login() {
         let r = s.raw(&who, &args);
         assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_LOGGED_IN"), "{args:?}");
         let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
-        assert!(msg.contains("board login") && msg.contains("设置 → Agent 接入"), "{msg}");
+        assert!(msg.contains("board login") && msg.contains("Agent → 访问令牌"), "{msg}");
     }
     let r = s.raw(&who, &["ls"]);
     assert_eq!(r.code, 1);
@@ -369,12 +369,12 @@ fn requires_login() {
     let r = s.raw(&env, &["ls", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_LOGGED_IN"));
     let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
-    assert!(msg.contains("board login") && msg.contains("设置 → Agent 接入"), "{msg}");
+    assert!(msg.contains("board login") && msg.contains("Agent → 访问令牌"), "{msg}");
 
     // help 照常可用，并说明怎么配置
     let r = s.raw(&[], &["help"]);
     assert_eq!(r.code, 0);
-    assert!(r.out.contains("board login") && r.out.contains("设置 → Agent 接入") && !r.out.contains("本地数据库"), "{}", r.out);
+    assert!(r.out.contains("board login") && r.out.contains("Agent → 访问令牌") && !r.out.contains("本地数据库"), "{}", r.out);
 
     assert!(!s.home.join(".board").exists(), "不应该在 HOME 下创建 ~/.board");
 }

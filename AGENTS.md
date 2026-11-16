@@ -25,7 +25,7 @@ npm test                      # 即 cargo test && cargo test -p board-desktop &&
 
 - 服务端：`unset BOARD_URL BOARD_TOKEN && cargo run -p board-server -- --local --demo --db .dev/dev.db`。本机模式只监听 `127.0.0.1:7420`；`--demo` 在空库时写入示例项目；数据库放在不进 git 的 `.dev/`，不要用 `~/.board/board.db`。
 - 界面：另开一个终端 `npm run dev:web`，开发服务器在 `127.0.0.1:1420`，`/api`、`/auth` 转发到 `BOARD_API`（默认 `http://127.0.0.1:7420`）。
-- CLI 连本地服务端：先在「设置 → Agent 接入」新建令牌，然后在同一条命令里覆盖可能指向线上的环境变量：
+- CLI 连本地服务端：先在「Agent → 访问令牌」新建令牌，然后在同一条命令里覆盖可能指向线上的环境变量：
 
   ```sh
   BOARD_URL=http://127.0.0.1:7420 BOARD_TOKEN=<令牌> board ls --as <名字> --board default/main

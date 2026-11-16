@@ -86,8 +86,8 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | `NOT_HOLDER` | 卡片被别人持有；`board hold`：领取已经失效，不推集成分支，改推 wip 分支（见 work.md「推送」第 5 步） |
 | `FORBIDDEN_COLUMN` | 不沿连线移动；直接移进锁定状态；移入、移出终点状态或「未整理」；移出错误节点；从没有连到锁定状态的可领取状态领取 |
 | `EMPTY_TITLE` / `USAGE` | 标题为空 / 命令或参数不对（例如不存在的状态或标签、空评论） |
-| `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「设置 → Agent 接入」新建） |
-| `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「设置 → Agent 接入」新建一个，再 `board login --token <令牌>` |
+| `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「Agent → 访问令牌」新建） |
+| `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「Agent → 访问令牌」新建一个，再 `board login --token <令牌>` |
 | `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里）；`board hold` 返回它时已经等过 5 分钟，按 work.md「推送」第 5 步改推 wip 分支 |
 | `DISPATCHED` | 卡片已经派发给一台机器、正在排队（在「进行中」这类锁定状态里，没有持有者）：跳过这张，不要领、不要移动 |
 | `SESSION_DONE` | `board next`：这个会话不再接着做（排着的做完了、手动派发、有人停止、暂停接单、没有领取规则）：结束会话 |

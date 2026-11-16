@@ -29,15 +29,18 @@ import {
   closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, TAB_ORDER, toast, useUI, type Tab,
 } from './store/ui';
 
-/* 项目画布、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
+/* 项目画布、Agent、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
    只在当前 Tab 挂载，不随数据刷新在后台渲染。启动后空闲时预取，切过去不用等 */
 const loadCanvas = () => import('./components/Canvas');
 const loadSettings = () => import('./components/Settings');
+const loadAgent = () => import('./components/agent/AgentPage');
 const CanvasPage = lazy(() => loadCanvas().then(m => ({ default: m.CanvasPage })));
 const SettingsPage = lazy(() => loadSettings().then(m => ({ default: m.SettingsPage })));
+const AgentPage = lazy(() => loadAgent().then(m => ({ default: m.AgentPage })));
 const prefetch = () => {
   void loadCanvas();
   void loadSettings();
+  void loadAgent();
   void import('./components/hosts/HostsPage');
   void import('./components/stats/Stats');
 };
@@ -49,8 +52,8 @@ const OP_LABEL: Record<string, string> = {
   timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发', merge: '合并',
 };
 
-const PAGE: Record<Tab, 'board' | 'canvas' | 'stats' | 'hosts' | 'inbox' | 'milestones' | 'settings'> = {
-  board: 'board', inbox: 'inbox', milestones: 'milestones', projects: 'canvas', stats: 'stats', hosts: 'hosts', settings: 'settings',
+const PAGE: Record<Tab, 'board' | 'canvas' | 'stats' | 'hosts' | 'inbox' | 'milestones' | 'agent' | 'settings'> = {
+  board: 'board', inbox: 'inbox', milestones: 'milestones', projects: 'canvas', stats: 'stats', hosts: 'hosts', agent: 'agent', settings: 'settings',
 };
 
 /** 侧栏收起 / 展开时主内容跟着平移（只动 transform，不逐帧改宽度）：
@@ -190,7 +193,7 @@ function BoardApp() {
         setSide(!useUI.getState().side);
         return;
       }
-      if (mod && ['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) {
+      if (mod && ['1', '2', '3', '4', '5', '6', '7', '8'].includes(e.key)) {
         e.preventDefault();
         setTab(TAB_ORDER[Number(e.key) - 1]);
         return;
@@ -259,6 +262,13 @@ function BoardApp() {
               </Page>
               <Page show={page === 'stats'}>{page === 'stats' && <StatsPage />}</Page>
               <Page show={page === 'hosts'}>{page === 'hosts' && <HostsPage />}</Page>
+              <Page show={page === 'agent'}>
+                {page === 'agent' && (
+                  <Lazy name="settings">
+                    <AgentPage />
+                  </Lazy>
+                )}
+              </Page>
               <Page show={page === 'inbox'}>{page === 'inbox' && <InboxPage />}</Page>
               <Page show={page === 'milestones'}>{page === 'milestones' && <MilestonesPage />}</Page>
               <Page show={page === 'settings'}>

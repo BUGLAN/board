@@ -7,7 +7,7 @@
 //!   交回窗口，见 [`login`]。会话 Cookie 保存在 webview 里，所有窗口共用
 //! - 顶栏即标题栏，按住顶栏空白处拖动窗口：
 //!   macOS 交通灯叠在顶栏左侧；Windows 去掉系统标题栏和菜单栏，最小化 / 最大化 / 关闭由界面画在顶栏右侧
-//! - 设置页新建令牌后，可以一键把服务端地址和令牌写进 board 命令行的配置文件 `~/.board/config.toml`，见 [`env`]
+//! - 「Agent → 访问令牌」新建令牌后，可以一键把服务端地址和令牌写进 board 命令行的配置文件 `~/.board/config.toml`，见 [`env`]
 //! - 新建窗口（⌘⇧N / Ctrl+Shift+N）：每个窗口可以打开不同的白板。macOS 在「文件」菜单里；Windows 没有菜单栏，
 //!   由界面响应快捷键，命令面板里也有
 //! - 窗口先打开本地启动页，连得上服务端再跳到线上页面；窗口底色跟随网页端的主题，慢网、断网都不白屏，见 [`splash`]
@@ -16,7 +16,7 @@
 //! - 检查更新：设置页手动检查、启动后自动检查一次，确认后下载、验签、安装，见 [`update`]
 //! - 「设置 → 本机」里 agent 看不到 board-skills 时一键安装到它读 skill 的目录，见 [`skill`]
 //! - 「设置 → 本机」的「开机时自动启动」：登录系统时带 `--autostart` 在后台启动，接任务时不弹窗口，见 [`autostart`]
-//! - 「机器 → 共用配置 → MCP 服务器」的「从本机导入」：读出这台电脑上各 agent 已经配好的 MCP 服务器，见 [`mcp`]
+//! - 「Agent → MCP 服务器」的「从本机导入」：读出这台电脑上各 agent 已经配好的 MCP 服务器，见 [`mcp`]
 
 mod autostart;
 mod env;
@@ -211,7 +211,7 @@ async fn new_window(app: AppHandle) -> Result<(), String> {
     open_window(&app).map_err(|e| e.to_string())
 }
 
-/// 设置页新建令牌后「一键写入配置文件」：服务端地址用外壳打开的地址，令牌由页面传入（见 [`env`]）。
+/// 「Agent → 访问令牌」新建令牌后「一键写入配置文件」：服务端地址用外壳打开的地址，令牌由页面传入（见 [`env`]）。
 /// 命令名沿用 set_board_env，新旧页面和外壳都能互相调用
 #[tauri::command]
 async fn set_board_env(app: AppHandle, token: String) -> Result<env::Written, String> {

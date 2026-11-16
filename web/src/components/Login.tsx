@@ -73,7 +73,7 @@ export function Login() {
       <div className="login-card">
         <BrandMark className="logo" />
         <h1>Board</h1>
-        <p>登录后打开你的白板。agent 通过命令行接入，用的是设置里新建的访问令牌。</p>
+        <p>登录后打开你的白板。agent 通过命令行接入，用的是「Agent → 访问令牌」里新建的令牌。</p>
         {error && (
           <div className="login-err" role="alert">
             {error}

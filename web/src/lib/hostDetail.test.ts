@@ -110,7 +110,7 @@ describe('Git 凭据一行', () => {
     expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({ state: 'failed', why: '主机不匹配：/w/x（远端是 gitlab.com）' }) } }), cred, 2000)).toEqual({ tone: 'bad', text: '同步失败：主机不匹配：/w/x（远端是 gitlab.com）' });
     expect(gitLine(host({ syncGit: true, sync: { able: true, ask: { id: 1, key: 'k2', by: '人', at: 1 }, last: result() } }), cred, 2000).tone).toBe('busy');
     expect(gitLine(host({ syncGit: true, online: false, sync: { able: true, ask: { id: 1, key: 'k2', by: '人', at: 1 }, last: result() } }), cred, 2000).text).toBe('机器离线：上线后同步');
-    expect(gitLine(host({ syncGit: true }), null, 2000).text).toBe('服务端还没设 Git 凭据：在「共用配置」里设');
+    expect(gitLine(host({ syncGit: true }), null, 2000).text).toBe('服务端还没设 Git 凭据：在「Agent → Git 凭据」里设');
     expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({ state: '' }) } }), cred, 2000).text).toBe('board 0.2.0 是旧版：升级后才用服务端的 Git 凭据');
   });
 });

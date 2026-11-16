@@ -93,7 +93,7 @@ export function timing(c: Card, now: number, online?: ReadonlySet<string> | null
 export const PROJECT_COLORS = ['#FF6A33', '#4DB5FF', '#3DDC97', '#B98CFF', '#FFB020', '#FF5C8A', '#2DD4BF', '#94A3B8'];
 export const LABEL_COLORS = ['#F43F5E', '#F97316', '#EAB308', '#22C55E', '#14B8A6', '#3B82F6', '#8B5CF6', '#EC4899', '#64748B'];
 
-/** 错误码与默认原因（设置页 · Agent 接入） */
+/** 错误码与默认原因（Agent → 接入 agent） */
 export const ERRORS: [ErrorCode, string][] = [
   ['NO_IDENTITY', 'CLI 没有提供 agent 名字：先 board check --agent <标识>（名字由 Board 生成，记在本机，之后不用再带 --as），或者 board check --as <名字> 自己起名字'],
   ['NO_BOARD', 'CLI 没有指定白板：使用 --board <项目>/<白板> 或设置环境变量 BOARD'],

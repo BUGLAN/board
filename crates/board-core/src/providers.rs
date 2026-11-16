@@ -1,4 +1,4 @@
-//! 模型供应商共用配置（PRD §10.12「共用配置」）：服务端存供应商的地址、API key、模型，各台机器的 board host 按设置改写本机 agent 的配置文件。
+//! 模型供应商共用配置（PRD §10.16「共用配置」）：服务端存供应商的地址、API key、模型，各台机器的 board host 按设置改写本机 agent 的配置文件。
 //!
 //! 和 MCP 共用配置（[`crate::mcp`]）是同一套做法：
 //! - 每个供应商：名称、接口（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三种里它提供的，每种一个地址）、
@@ -141,7 +141,7 @@ pub struct ProviderEndpoint {
     pub url: String,
 }
 
-/// 一个模型供应商（PRD §10.12「共用配置」）
+/// 一个模型供应商（PRD §10.16「共用配置」）
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provider {

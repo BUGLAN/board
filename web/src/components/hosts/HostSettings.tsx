@@ -1,7 +1,7 @@
 /* ==========================================================================
    机器详情「设置」页
    0. 资源：CPU、内存、GPU、存储四块磁贴（Resources.tsx）
-   1. 接单：一行摘要（时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张）+「在调度里改」
+   1. 接单：一行摘要（时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张）+「在接单里改」（机器 Tab 的「接单」视图）
    2. agent 更新：自动更新开关
    3. skills、MCP、Git 凭据：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
    4. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
@@ -17,7 +17,7 @@ import { importRows } from '../../lib/skills';
 import type { HostInfo, McpServer, SkillImportPick, SkillInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { hostKey, optimistic, useData } from '../../store/data';
-import { confirm, confirmCheck, setHostsView, toast, toastError } from '../../store/ui';
+import { confirm, confirmCheck, setHostsView, setTab, toast, toastError } from '../../store/ui';
 import { Segmented, Sync, Tip, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { patchHost } from './bits';
@@ -60,11 +60,13 @@ export function HostSettings({
             type="button"
             className="hp-link hd-go"
             onClick={() => {
+              // 从 Agent tab 的机器胶囊点进来时也回到机器页
+              setTab('hosts');
               setHostsView('sched');
               close();
             }}
           >
-            在调度里改
+            在接单里改
             <Icon name="chevRight" />
           </button>
         </p>

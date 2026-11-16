@@ -12,7 +12,7 @@ export interface ImageRef {
   src: string;
   alt: string;
 }
-export type Tab = 'board' | 'projects' | 'inbox' | 'milestones' | 'stats' | 'hosts' | 'settings';
+export type Tab = 'board' | 'projects' | 'inbox' | 'milestones' | 'stats' | 'hosts' | 'agent' | 'settings';
 
 export interface Toast {
   id: number;
@@ -119,10 +119,11 @@ export interface DragUI {
   veto: { title: string; message: string; code: string } | null;
 }
 
-export type HostsView = 'racks' | 'compare' | 'shared' | 'sched';
+/** 机器页的三个视图：总览 / 对比 / 接单（sched）。共用配置、领取规则在 Agent tab；以前记住的「共用配置」回到总览 */
+export type HostsView = 'racks' | 'compare' | 'sched';
 function initialHostsView(): HostsView {
   const v = pref.get<string>('hosts.view', 'racks');
-  return v === 'compare' || v === 'shared' || v === 'sched' ? v : 'racks';
+  return v === 'compare' || v === 'sched' ? v : 'racks';
 }
 
 interface UIState {
@@ -170,8 +171,8 @@ interface UIState {
   boardSheet: boolean;
 }
 
-/** 活动栏从上到下的顺序，也是数字快捷键 ⌘/Ctrl 1~7 的顺序（设置固定在活动栏底部） */
-export const TAB_ORDER: Tab[] = ['board', 'inbox', 'milestones', 'stats', 'projects', 'hosts', 'settings'];
+/** 活动栏从上到下的顺序，也是数字快捷键 ⌘/Ctrl 1~8 的顺序（设置固定在活动栏底部） */
+export const TAB_ORDER: Tab[] = ['board', 'inbox', 'milestones', 'stats', 'projects', 'hosts', 'agent', 'settings'];
 export const isTab = (t: unknown): t is Tab => TAB_ORDER.includes(t as Tab);
 const initialTab = (): Tab => {
   const q = new URLSearchParams(location.search).get('tab');

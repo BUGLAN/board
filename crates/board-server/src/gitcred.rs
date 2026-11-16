@@ -1,4 +1,4 @@
-//! Git 凭据共用配置的接口（PRD §10.12「共用配置」，board-core 的 `gitcred`）：
+//! Git 凭据共用配置的接口（PRD §10.16「共用配置」，board-core 的 `gitcred`）：
 //!
 //! - `GET /api/git`：`{cred}`，令牌只给末尾 4 位；没设时 `cred` 是 null（界面、访问令牌都能读）
 //! - `POST /api/git {host, username, token}`：设置或修改（只能在登录后的界面上做）；令牌留空保留原来的值

@@ -211,7 +211,7 @@ fn doctor_reports_invalid_and_revoked_token() {
     assert_eq!(c["ok"], false);
     assert_eq!(c["status"], "fail");
     assert!(c["detail"].as_str().unwrap_or_default().contains("令牌"), "{c}");
-    assert!(c["next"].as_str().unwrap_or_default().contains("Agent 接入"), "{c}");
+    assert!(c["next"].as_str().unwrap_or_default().contains("Agent → 访问令牌"), "{c}");
     assert!(!r.out.contains("bd_nope"), "令牌原文（哪怕是错的）也不该出现");
 
     // 令牌被吊销

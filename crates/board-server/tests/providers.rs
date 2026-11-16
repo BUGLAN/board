@@ -1,4 +1,4 @@
-//! 模型供应商的「获取模型」（PRD §10.12「共用配置」）：服务端用填的地址和 API key 问供应商有哪些模型。
+//! 模型供应商的「获取模型」（PRD §10.16「共用配置」）：服务端用填的地址和 API key 问供应商有哪些模型。
 //!
 //! 起一个模拟的供应商（OpenAI 兼容的 /v1/models 要 Bearer key，Anthropic 的 /v1/models 要 x-api-key），
 //! 再起一个本机模式的 board-server，从界面的接口去问。
@@ -89,7 +89,7 @@ fn fetch_models_uses_stored_key_when_editing() {
 }
 
 /// board host 用自己的令牌取供应商原文：`GET /api/hosts/{名字}/providers` 要放行给 agent 令牌，
-/// 别的令牌拿不到；`GET /api/providers` 的列表（API key 打码）访问令牌能读（PRD §10.12「共用配置」）
+/// 别的令牌拿不到；`GET /api/providers` 的列表（API key 打码）访问令牌能读（PRD §10.16「共用配置」）
 #[test]
 fn host_token_can_read_provider_config() {
     let s = Server::start(Auth::Local);
@@ -114,7 +114,7 @@ fn host_token_can_read_provider_config() {
     assert!(r.body["providers"].is_array(), "{}", r.text);
 }
 
-/// Git 凭据（PRD §10.12「共用配置」）：界面上设，列表只给末尾 4 位；原文只发给这台机器的令牌，
+/// Git 凭据（PRD §10.16「共用配置」）：界面上设，列表只给末尾 4 位；原文只发给这台机器的令牌，
 /// 界面、别的令牌拿不到；访问令牌改不了
 #[test]
 fn git_credential_is_masked_and_only_the_host_token_reads_it() {

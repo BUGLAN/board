@@ -242,18 +242,21 @@ impl R<'_> {
 impl W<'_> {
     /// 改领取规则（整个列表替换）和兜底（空字符串表示取消兜底）；`None` 表示不改。
     /// 新加或改过的规则：标签要在某个项目里有，agent 要至少在一台机器上找得到；原样保留的规则不拦（标签之后被删了、
-    /// agent 之后找不到了照样存着，界面上标出来）
+    /// agent 之后找不到了照样存着，界面上标出来）。
+    /// 还没有哪台机器上报找得到的 agent 时（没接机器，先在 Agent tab 配好规则），内置的 agent 都能选，和界面的下拉一致；
+    /// 这样存下的规则在有机器上报它之前不生效
     pub fn sched_update(&mut self, rules: Option<&[ClaimRule]>, fallback: Option<&str>) -> Result<Sched> {
         let (old, old_fallback) = self.read().sched_rules()?;
         let hosts = self.read().host_rows()?;
-        let found = |agent: &str| hosts.iter().any(|h| h.has_agent(agent));
         let all: Vec<String> = {
             let mut v: Vec<String> = hosts.iter().flat_map(|h| h.resolved().into_iter().filter(|a| a.found).map(|a| a.id)).collect();
             v.sort();
             v.dedup();
             v
         };
-        let options = if all.is_empty() { "（还没有机器上报 agent）".to_string() } else { all.join("、") };
+        let builtin: Vec<&str> = crate::providers::AGENTS.iter().map(|(id, _, _)| *id).collect();
+        let found = |agent: &str| if all.is_empty() { builtin.contains(&agent) } else { hosts.iter().any(|h| h.has_agent(agent)) };
+        let options = if all.is_empty() { format!("{}（还没有机器上报 agent，先选内置的）", builtin.join("、")) } else { all.join("、") };
         if let Some(rules) = rules {
             if rules.len() > RULES_LIMIT {
                 return Err(BoardError::usage(format!("领取规则最多 {RULES_LIMIT} 条")));

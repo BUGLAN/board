@@ -103,7 +103,7 @@ if (-not (($env:Path -split ';') -contains $dir)) { $env:Path = "$dir;$env:Path"
 
 if ($Token) {
   & $bin login --url $BoardServer --token $Token
-  if ($LASTEXITCODE -ne 0) { Fail "登录 $BoardServer 失败：令牌在界面「设置 → Agent 接入」新建" }
+  if ($LASTEXITCODE -ne 0) { Fail "登录 $BoardServer 失败：令牌在界面「Agent → 访问令牌」新建" }
 }
 
 if ($Name -or $Workspace -or $Dir.Count) {
@@ -123,5 +123,5 @@ if ($Name -or $Workspace -or $Dir.Count) {
   }
 } elseif (-not $Token) {
   Write-Host ''
-  Write-Host "下一步：在界面「设置 → Agent 接入」新建令牌，然后 board login --url $BoardServer --token <令牌>"
+  Write-Host "下一步：在界面「Agent → 访问令牌」新建令牌，然后 board login --url $BoardServer --token <令牌>"
 }

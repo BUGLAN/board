@@ -200,25 +200,59 @@
   .lh-dir .input.sel { width: 100%; }
 }
 
-/* 手机窄屏：标签和控件上下堆叠，分段控件、令牌、本机目录等不把页面撑出横向滚动 */
+/* 手机窄屏：标签和控件上下堆叠，分段控件、令牌、本机目录等不把页面撑出横向滚动（Agent tab 里从设置页搬去的两张卡同样） */
 @media (max-width: 480px) {
   .page-settings .settings { padding: 10px 10px 60px; }
-  .page-settings .set-card { padding: 14px 14px 6px; }
-  .page-settings .set-row { flex-direction: column; align-items: stretch; gap: 8px; }
-  .page-settings .set-control { width: 100%; min-width: 0; }
+  :is(.page-settings, .page-agent) .set-card { padding: 14px 14px 6px; }
+  :is(.page-settings, .page-agent) .set-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  :is(.page-settings, .page-agent) .set-control { width: 100%; min-width: 0; }
   .page-settings .segmented { display: flex; width: 100%; }
   .page-settings .segmented button { flex: 1 1 auto; padding: 0 6px; }
   /* 账号行保留头像、名字、按钮同一行；按钮放不下时换到下一行 */
   .page-settings #set-account .set-row { flex-direction: row; align-items: center; flex-wrap: wrap; }
   .page-settings #set-account .set-control { width: auto; margin-left: auto; }
-  .page-settings .token-new { flex-wrap: wrap; }
-  .page-settings .token-new .input { flex: 1 1 160px; }
-  .page-settings .token-list li { flex-wrap: wrap; }
-  .page-settings .token-list li .btn { margin-left: auto; }
+  :is(.page-settings, .page-agent) .token-new { flex-wrap: wrap; }
+  :is(.page-settings, .page-agent) .token-new .input { flex: 1 1 160px; }
+  :is(.page-settings, .page-agent) .token-list li { flex-wrap: wrap; }
+  :is(.page-settings, .page-agent) .token-list li .btn { margin-left: auto; }
   .page-settings .lh-dir input.input { flex: 1 1 140px; }
   .page-settings .lh-actions { flex-wrap: wrap; }
-  .page-settings .err-grid { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
-  .page-settings .err-grid code { overflow-wrap: anywhere; }
-  .page-settings .set-p code { overflow-wrap: anywhere; }
+  :is(.page-settings, .page-agent) .err-grid { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  :is(.page-settings, .page-agent) .err-grid code { overflow-wrap: anywhere; }
+  :is(.page-settings, .page-agent) .set-p code { overflow-wrap: anywhere; }
 }
 
+/* ==========================================================================
+   Agent tab（components/agent/，PRD §10.16）：一节一页，侧栏目录分三组
+   页面和机器页同一个内容区（.hp-b，hosts.css）；从设置页搬来的「接入 agent」「访问令牌」两张卡和共用配置的区块一样宽
+   ========================================================================== */
+.page-agent { overflow-y: auto; overflow-x: hidden; position: relative; }
+.page-agent > .hp-b { width: 100%; }
+.ag-b .set-card { max-width: 980px; margin: 0 0 14px; }
+/* 没有机器时页面顶部的一行提示 */
+.ag-nohost {
+  display: flex; align-items: center; gap: 10px; max-width: 980px; margin: 0 0 18px; padding: 10px 12px 10px 14px;
+  border: 1px dashed var(--line-2); border-radius: var(--r-md); font-size: 12.5px; color: var(--text-2);
+}
+.ag-nohost > svg { width: 16px; height: 16px; color: var(--text-3); flex: none; }
+.ag-nohost > span { flex: 1; min-width: 0; }
+.ag-nohost > .btn { flex: none; }
+
+/* 侧栏目录：组名是小标题，节带图标 */
+.ag-nav { gap: 0; }
+.ag-nav-g { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.ag-nav-h { padding: 6px 10px 4px; font: 600 11px var(--f-mono); letter-spacing: .06em; color: var(--text-3); }
+.ag-nav .sn-item { width: 100%; border: 0; background: none; text-align: left; cursor: pointer; font-family: inherit; }
+.ag-nav .sn-item.on { background: var(--surface); }
+.ag-nav .sn-item > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 页头「组 · 节」：桌面是一行字；手机上没有侧栏，换成选择框 */
+.input.sel.ag-pick { display: none; }
+
+@media (max-width: 760px) {
+  .ag-where { display: none; }
+  .input.sel.ag-pick { display: flex; width: 100%; margin-top: 8px; }
+  /* 提示一行放不下：按钮换到下一行 */
+  .ag-nohost { flex-wrap: wrap; }
+  .ag-nohost > span { flex-basis: calc(100% - 26px); }
+  .ag-nohost > .btn { margin-left: 26px; }
+}

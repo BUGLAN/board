@@ -1,4 +1,4 @@
-//! MCP 服务器共用配置（PRD §10.12「共用配置」）：服务端存一份 MCP 服务器列表，各台机器的 board host 写进本机 agent 的用户级配置。
+//! MCP 服务器共用配置（PRD §10.16「共用配置」）：服务端存一份 MCP 服务器列表，各台机器的 board host 写进本机 agent 的用户级配置。
 //!
 //! - 每一项：名称、类型（本地命令 stdio：命令、参数、环境变量；远程 HTTP：地址、请求头）、同步给哪些 agent（空 = 所有支持 MCP 的内置 agent）。
 //! - 环境变量、请求头的值可以标成「密钥」：只存在服务端；列表接口只给末尾 4 位（[`McpServer::masked`]），完整的值只经
@@ -350,7 +350,7 @@ mod tests {
     }
 }
 
-/// 各 agent 的 MCP 配置文件（PRD §10.12「共用配置」）：读出已有的条目（判断同名、桌面端「从本机导入」），改写 Codex、pi 的文件。
+/// 各 agent 的 MCP 配置文件（PRD §10.16「共用配置」）：读出已有的条目（判断同名、桌面端「从本机导入」），改写 Codex、pi 的文件。
 /// Claude Code 的 `~/.claude.json` 它自己经常改写，只读不写：写用 `claude mcp add-json / remove --scope user`（board-cli）。
 /// - Claude Code：`~/.claude.json` 顶层 `mcpServers`：`{command, args, env}` 或 `{type: "http", url, headers}`
 /// - Codex：`$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `[mcp_servers.<名称>]`：`command`、`args`、`env` 或 `url`、`http_headers`

@@ -2392,6 +2392,26 @@ fn rules_are_global_and_validated_against_all_hosts() {
     assert!(s.read(|r| r.host("win", T0)).unwrap().rules.is_empty());
 }
 
+/// 还没有机器（或哪台都没上报找得到的 agent）时：领取规则能选内置的 agent，存下来但不生效；有机器上报之后照旧只认找得到的
+#[test]
+fn rules_accept_builtin_agents_before_any_host() {
+    let mut s = store();
+    label(&mut s, "bug");
+    let set = |s: &mut Store, rules: Vec<ClaimRule>, fb: Option<&str>| s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&rules), fb));
+    let out = set(&mut s, vec![cond("in", &["bug"], "claude")], Some("codex")).unwrap();
+    assert_eq!((out.rules[0].agent.as_str(), out.rules[0].active), ("claude", false));
+    assert_eq!((out.fallback.as_deref(), out.fallback_active), (Some("codex"), false));
+    // 不是内置的 agent 照样拒绝，原因里列出能选的
+    let err = set(&mut s, vec![cond("in", &["bug"], "nope")], None).unwrap_err().message;
+    assert!(err.contains("没有机器上找得到 agent「nope」") && err.contains("claude、codex、pi、dsh"), "{err}");
+    // 有机器上报了 agent：规则对它生效；新加的只能选找得到的（dsh 不在这台机器上）
+    let mut win = report("win", "w1", vec![]);
+    win.agents = vec![dsh(false), claude(true)];
+    beat(&mut s, T0, &win).unwrap();
+    assert!(s.read(|r| r.sched(T0)).unwrap().rules[0].active);
+    assert!(set(&mut s, vec![cond("in", &["bug"], "claude"), cond("none", &[], "dsh")], None).unwrap_err().message.contains("没有机器上找得到 agent「dsh」"));
+}
+
 /* ---------------- 领取规则的条件：in / all / not_in / equal / only / none ---------------- */
 
 fn set_conds(s: &mut Store, list: Vec<ClaimRule>, fallback: Option<&str>) -> Result<HostInfo> {

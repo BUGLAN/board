@@ -1034,7 +1034,7 @@ fn login(a: &Args, json: bool, p: &Paint) -> Result<Output> {
         Some(t) => t.trim().to_string(),
         None => {
             if std::io::stdin().is_terminal() {
-                eprint!("粘贴访问令牌（在界面「设置 → Agent 接入」新建）后回车：");
+                eprint!("粘贴访问令牌（在界面「Agent → 访问令牌」新建）后回车：");
             }
             let mut line = String::new();
             std::io::stdin().read_line(&mut line).map_err(|e| BoardError::usage(format!("读不到令牌：{e}")))?;
@@ -1392,7 +1392,7 @@ fn help(p: &Paint) -> String {
         ),
         format!("  {}--board <项目>/<白板>，或前缀 BOARD=<项目>/<白板>", p.dim("白板：")),
         format!(
-            "  {}board login --url <服务端地址> --token <令牌>，写进 {}（令牌在界面「设置 → Agent 接入」新建）；环境变量 BOARD_URL/BOARD_TOKEN 优先",
+            "  {}board login --url <服务端地址> --token <令牌>，写进 {}（令牌在界面「Agent → 访问令牌」新建）；环境变量 BOARD_URL/BOARD_TOKEN 优先",
             p.dim("连接："),
             config::shown()
         ),

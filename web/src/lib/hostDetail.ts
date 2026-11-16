@@ -106,7 +106,7 @@ export function gitLine(h: HostInfo, cred: GitCred | null | undefined, now: numb
   const r = h.sync?.last?.git;
   if (h.sync?.ask && h.online) return { tone: 'busy', text: '正在同步：配进 Board 管的仓库…' };
   if (!h.online && h.sync?.ask) return { tone: 'muted', text: '机器离线：上线后同步' };
-  if (cred === null || r?.state === 'none') return { tone: 'muted', text: '服务端还没设 Git 凭据：在「共用配置」里设' };
+  if (cred === null || r?.state === 'none') return { tone: 'muted', text: '服务端还没设 Git 凭据：在「Agent → Git 凭据」里设' };
   if (gitOld(h)) return { tone: 'muted', text: `board ${h.version || '?'} 是旧版：升级后才用服务端的 Git 凭据` };
   if (!r || r.state === 'off' || !r.state) return { tone: 'busy', text: '等 board host 同步…' };
   if (r.state === 'failed') return { tone: 'bad', text: `同步失败：${r.why ?? '原因没报上来'}` };

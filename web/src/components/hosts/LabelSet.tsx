@@ -1,4 +1,4 @@
-/* 一条领取规则里的标签（PRD §9.1「领取规则」）：从机器详情挪出来，「调度」里用 */
+/* 一条领取规则里的标签（PRD §9.1「领取规则」）：从机器详情挪出来，Agent tab「领取规则」里用 */
 import type { Label } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';

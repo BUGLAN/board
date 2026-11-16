@@ -13,7 +13,7 @@ use std::time::Duration;
 pub use crate::config::env;
 
 /// 还没登录时的提示
-const LOGIN_HINT: &str = "运行 board login --url <服务端地址> --token <令牌>（令牌在界面「设置 → Agent 接入」新建）";
+const LOGIN_HINT: &str = "运行 board login --url <服务端地址> --token <令牌>（令牌在界面「Agent → 访问令牌」新建）";
 
 /// 普通命令的请求超时：一个请求最多等 30 秒
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -55,7 +55,7 @@ impl Backend {
         let Some((token, _)) = conn.token else {
             return Err(BoardError::new(
                 ErrorCode::NotLoggedIn,
-                format!("有服务端地址（{url}）但没有访问令牌：运行 board login（令牌在界面「设置 → Agent 接入」新建）"),
+                format!("有服务端地址（{url}）但没有访问令牌：运行 board login（令牌在界面「Agent → 访问令牌」新建）"),
             ));
         };
         Ok(Backend(Remote::with_timeout(&url, &token, timeout).map_err(|e| {

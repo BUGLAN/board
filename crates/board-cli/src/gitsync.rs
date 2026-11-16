@@ -1,4 +1,4 @@
-//! board host 这一侧的 Git 凭据同步（PRD §10.12「共用配置」，服务端见 board-core 的 `gitcred`）：
+//! board host 这一侧的 Git 凭据同步（PRD §10.16「共用配置」，服务端见 board-core 的 `gitcred`）：
 //! 服务端设了一份 https 远端的令牌、这台机器选了「用服务器的」，就把它配进 Board 管的仓库（工作空间里每个项目的目录），
 //! board host 备代码（`git fetch`、`git clone`）和 agent 推集成分支时直接用，不用每台机器手动配 credential helper。
 //!

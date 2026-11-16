@@ -78,9 +78,9 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
   Linux 上 systemd 用户服务默认只在这个用户登录后运行；要开机后没人登录也运行，执行一次 `loginctl enable-linger $USER`（可能要 sudo），`--install` 发现没开时会提示。服务只读 `~/.board/config.toml` 里的服务端地址和令牌，不带 shell 里的 `BOARD_URL`、`BOARD_TOKEN`：先 `board login`。
 
-## MCP 服务器：在「共用配置」里维护
+## MCP 服务器：在「Agent → MCP 服务器」里维护
 
-卡片要用到的工具（浏览器、数据库、内部文档这类 MCP 服务器）不用每台机器、每个 agent 一个个配：在「机器 → 共用配置 → MCP 服务器」里加一次，每台机器的 board host 写进它找到的 agent 的用户级配置：
+卡片要用到的工具（浏览器、数据库、内部文档这类 MCP 服务器）不用每台机器、每个 agent 一个个配：在「Agent → MCP 服务器」里加一次，每台机器的 board host 写进它找到的 agent 的用户级配置：
 
 | agent | 写到哪里 | 怎么写 |
 |---|---|---|
@@ -95,9 +95,9 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
   - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`，只能用打码的 `GET /api/mcp`。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
 - 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
 
-## 模型供应商：在「共用配置」里维护
+## 模型供应商：在「Agent → 模型供应商」里维护
 
-供应商（地址、API key、模型、每个模型支持的思考强度）在「机器 → 共用配置 → 模型供应商」里加一次，各台机器共用；每台机器上每个内置 agent 在机器详情的 agent 页里选一个——**不改**（Board 不碰它的配置文件，新机器默认）或者「<供应商> · <模型>」，再选强度；agent 认几种接口、供应商也给了几种时（例如 pi 用一个同时给了 Anthropic 和 OpenAI Chat 的中转站），还可以指定用哪种接口，不指定时用供应商里第一个对得上的。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。供应商卡片底下按 agent 汇总哪几台机器在用它，点进去就是那台机器的 agent 页。
+供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用；每台机器上每个内置 agent 在机器详情的 agent 页里选一个——**不改**（Board 不碰它的配置文件，新机器默认）或者「<供应商> · <模型>」，再选强度；agent 认几种接口、供应商也给了几种时（例如 pi 用一个同时给了 Anthropic 和 OpenAI Chat 的中转站），还可以指定用哪种接口，不指定时用供应商里第一个对得上的。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。供应商卡片底下按 agent 汇总哪几台机器在用它，点进去就是那台机器的 agent 页。
 
 | agent | 写到哪里 | 写什么 |
 |---|---|---|
@@ -115,13 +115,13 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 - API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`），不写进日志和卡片动态。它会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
 
 
-## Git 凭据：在「共用配置」里设一次
+## Git 凭据：在「Agent → Git 凭据」里设一次
 
-机器推不动代码（`could not read Username for 'https://github.com'`）多半是那台机器没配 git 的 https 令牌。不用每台机器配一次：在「机器 → 共用配置 → Git 凭据」填主机（例如 `github.com`）、用户名、令牌（要有推送权限，GitHub 的 fine-grained 令牌给 Contents 读写），打开了同步的机器的 board host 把它配进 Board 管的仓库（工作空间里每个项目的目录）：
+机器推不动代码（`could not read Username for 'https://github.com'`）多半是那台机器没配 git 的 https 令牌。不用每台机器配一次：在「Agent → Git 凭据」填主机（例如 `github.com`）、用户名、令牌（要有推送权限，GitHub 的 fine-grained 令牌给 Contents 读写），打开了同步的机器的 board host 把它配进 Board 管的仓库（工作空间里每个项目的目录）：
 
 - 只改仓库自己的 git 配置：`credential.https://<主机>.helper` 先是一个空值、再是 `store --file '~/.board/host/board-git-credentials'`。全局配置（`~/.gitconfig`、Git Credential Manager、钥匙串）不碰，只是在这些仓库里不再用它们。
 - 令牌放在 `~/.board/host/board-git-credentials`，只有本人能读；board 的输出、日志里没有它。
-- 机器详情「设置 → skills、MCP 和 Git 凭据」里每台机器一个开关，新连上的机器默认「不改」（Board 不碰它仓库的 git 配置，需要时在机器详情或「共用配置 → Git 凭据」卡片上打开）；改成「不改」或在共用配置里删掉，board host 去掉配进去的、删掉令牌文件，之后用这台机器自己的凭据。
+- 机器详情「设置 → skills、MCP 和 Git 凭据」里每台机器一个开关，新连上的机器默认「不改」（Board 不碰它仓库的 git 配置，需要时在机器详情或「Agent → Git 凭据」卡片上打开）；改成「不改」或在共用配置里删掉，board host 去掉配进去的、删掉令牌文件，之后用这台机器自己的凭据。
 - 只管 https 远端。远端是 SSH（`git@…`）的仓库照旧用本机的 key；远端是别的主机的，机器详情里写「同步失败：主机不匹配」。
 ## 一个 agent 要满足什么
 
@@ -174,7 +174,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 ## 装 `board-skills`
 
-**跑着 `board host` 的机器不用手动装**：board host 按「机器 → 共用配置」的 skills 共用库自动同步，`board-skills` 是库里固定的一项，内容随服务端版本，服务端升级后各台机器自动换成新的；`bin/<平台>/board` 用 board host 自己的 board。它写进每个找到的 agent 读用户级 skill 的目录（`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`，WSL 里的 agent 写到 WSL 用户目录下），目录里放标记文件 `.board-sync`。`board-skills` 不管机器上 skills 选的是「用服务器的」还是「不改」都装。已经有同名、不是 Board 装的：挪进 `~/.board/host/skills-backup/<名称>-<时间>/` 再换上库里的；软链接（开发时链接到仓库的）不碰，界面上写「本机是软链接，没有覆盖」。自己的其他 skill 也可以放进库里，机器详情「设置 → skills 和 MCP」里 skills 选了「用服务器的」的机器都会装上：
+**跑着 `board host` 的机器不用手动装**：board host 按「Agent → skills」的 skills 共用库自动同步，`board-skills` 是库里固定的一项，内容随服务端版本，服务端升级后各台机器自动换成新的；`bin/<平台>/board` 用 board host 自己的 board。它写进每个找到的 agent 读用户级 skill 的目录（`~/.agents/skills`、`~/.claude/skills`、`$CODEX_HOME/skills`，WSL 里的 agent 写到 WSL 用户目录下），目录里放标记文件 `.board-sync`。`board-skills` 不管机器上 skills 选的是「用服务器的」还是「不改」都装。已经有同名、不是 Board 装的：挪进 `~/.board/host/skills-backup/<名称>-<时间>/` 再换上库里的；软链接（开发时链接到仓库的）不碰，界面上写「本机是软链接，没有覆盖」。自己的其他 skill 也可以放进库里，机器详情「设置 → skills 和 MCP」里 skills 选了「用服务器的」的机器都会装上：
 
 ```sh
 board skills push ~/.claude/skills/my-skill     # 传进库里（目录名就是名称，合计不超过 5 MB），同名的换成新版本
