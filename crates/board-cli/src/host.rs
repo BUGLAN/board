@@ -53,7 +53,7 @@
 //! - 远程管理（PRD §9.1）：任务里带着界面上发来的请求。「重新检查」重新找启动环境、agent、skill 后马上上报；「重启」「升级」等本机
 //!   没有在跑的 agent 后先回报「开始处理」，再让机器离线、重新启动自己（macOS、Linux 原地 exec；Windows 桌面端退出码 75）。
 //!   升级时命令行运行的执行 `board update` 后用新版本重启，桌面端运行的退出码 76 交给桌面端升级；失败的原因下一次上报带给服务端。
-//! - 白板的环境检查（PRD §9.1）：按服务端发来的命令在白板目录里跑，见 [`ReadyRun`]。
+//! - 环境检查（PRD §9.1）：按服务端发来的命令在白板目录里跑；同一个目录（同一个项目的几块白板）同一条命令只跑一次，见 [`ReadyRun`]。
 
 use crate::backend::{Backend, Remote};
 use crate::config::{self, AgentConf};
@@ -1447,10 +1447,11 @@ struct DirCheck {
     at: Instant,
 }
 
-/// 一块白板的环境检查（PRD §9.1「环境检查」）：在白板目录里跑白板设置的那条命令，退出码 0 算通过。
-/// 启动时、重新读配置时、每天一次、白板的检查命令（或目录）改了之后各跑一次，最长 2 分钟
+/// 一次环境检查（PRD §9.1「环境检查」）：在项目目录里跑项目设置的那条命令，退出码 0 算通过；同一个目录同一条命令的几块白板共用结果。
+/// 启动时、重新读配置时、每天一次、项目的检查命令（或目录）改了之后各跑一次，最长 2 分钟
 struct ReadyRun {
-    board: String,
+    /// 用这一次结果的白板：同一个目录（同一个项目）的几块白板、命令一样时一起算，只跑一次
+    boards: Vec<String>,
     cmd: String,
     dir: PathBuf,
     /// 正在跑的进程和开始的时间
@@ -1464,6 +1465,19 @@ struct ReadyRun {
 
 /// 环境检查每天重跑一次
 const READY_EVERY_MS: i64 = 24 * 3600 * 1000;
+
+/// 要跑的环境检查按（命令、目录）分组：同一个项目的几块白板目录一样、命令一样（环境检查是项目的，PRD §9.1），
+/// 只跑一次，结果算给这几块白板。`--dir` 给某块白板单独指了目录的，按它自己的目录另跑。顺序按第一次出现
+fn ready_groups(dirs: impl IntoIterator<Item = (String, String, PathBuf)>) -> Vec<(Vec<String>, String, PathBuf)> {
+    let mut out: Vec<(Vec<String>, String, PathBuf)> = vec![];
+    for (board, cmd, dir) in dirs {
+        match out.iter_mut().find(|(_, c, p)| *c == cmd && *p == dir) {
+            Some((boards, ..)) => boards.push(board),
+            None => out.push((vec![board], cmd, dir)),
+        }
+    }
+    out
+}
 
 impl ReadyRun {
     /// 结束正在跑的检查（连同它起的子进程）
@@ -2519,7 +2533,7 @@ impl Host<'_> {
                     checked_at: Some(checked_at),
                     clone,
                     check: None,
-                    ready: self.readies.iter().find(|r| r.board == *board).and_then(|r| r.last.clone()),
+                    ready: self.readies.iter().find(|r| r.boards.contains(board)).and_then(|r| r.last.clone()),
                     reported: true,
                     fetch_error: self.fetch_errs.iter().find(|(p, ..)| *p == path).map(|(_, e, _)| e.clone()),
                 }
@@ -2608,43 +2622,47 @@ impl Host<'_> {
         self.plan_readies();
     }
 
-    /// 按服务端发来的检查命令决定哪些白板要（重新）跑环境检查：没跑过、命令或目录变了、目录刚有了、
-    /// 上次跑完超过一天、启动或重新读配置之后。白板不再检查（或这台机器不再有它的目录）时停掉、丢掉结果
+    /// 按服务端发来的检查命令决定哪些要（重新）跑环境检查：没跑过、命令或目录变了、目录刚有了、
+    /// 上次跑完超过一天、启动或重新读配置之后。同一个目录同一条命令只跑一次（[`ready_groups`]）；
+    /// 不再检查（或这台机器不再有那个目录）的停掉、丢掉结果
     fn plan_readies(&mut self) {
         let Some(w) = &self.work else { return };
-        let want: Vec<(String, String, PathBuf)> = w
-            .host
-            .dirs
-            .iter()
-            .filter_map(|d| {
-                let cmd = d.check.clone()?;
-                let dir = ws_dir(&self.ws, &d.board, &self.os)?;
-                Some((d.board.clone(), cmd, dir))
-            })
-            .collect();
-        for r in self.readies.iter_mut().filter(|r| !want.iter().any(|(b, ..)| *b == r.board)) {
+        let want = ready_groups(w.host.dirs.iter().filter_map(|d| {
+            let cmd = d.check.clone()?;
+            let dir = ws_dir(&self.ws, &d.board, &self.os)?;
+            Some((d.board.clone(), cmd, dir))
+        }));
+        let wanted = |r: &ReadyRun| want.iter().any(|(_, c, p)| *c == r.cmd && *p == r.dir);
+        for r in self.readies.iter_mut().filter(|r| !wanted(r)) {
             r.kill();
         }
-        self.readies.retain(|r| want.iter().any(|(b, ..)| *b == r.board));
+        self.readies.retain(wanted);
         let all = std::mem::take(&mut self.ready_all);
         let now = now_ms();
-        for (board, cmd, dir) in want {
-            let due = match self.readies.iter().find(|r| r.board == board) {
+        for (boards, cmd, dir) in want {
+            let due = match self.readies.iter_mut().find(|r| r.cmd == cmd && r.dir == dir) {
                 None => true,
-                Some(r) if r.cmd != cmd || r.dir != dir => true,
-                Some(r) if r.child.is_some() => false,
-                Some(r) if r.missing && dir.is_dir() => true,
-                Some(r) => all || r.last.as_ref().is_none_or(|l| now - l.at >= READY_EVERY_MS),
+                Some(r) => {
+                    // 项目下新建了白板、删了白板：跟着换，结果照用
+                    r.boards = boards.clone();
+                    if r.child.is_some() {
+                        false
+                    } else if r.missing && dir.is_dir() {
+                        true
+                    } else {
+                        all || r.last.as_ref().is_none_or(|l| now - l.at >= READY_EVERY_MS)
+                    }
+                }
             };
             if due {
-                self.start_ready(&board, &cmd, &dir);
+                self.start_ready(&boards, &cmd, &dir);
             }
         }
     }
 
-    /// 开始跑一块白板的环境检查（同一块白板还在跑的先结束）。目录不存在时直接记为没通过
-    fn start_ready(&mut self, board: &str, cmd: &str, dir: &Path) {
-        let last = match self.readies.iter_mut().position(|r| r.board == board) {
+    /// 开始跑一次环境检查（同一个目录、同一条命令还在跑的先结束）。目录不存在时直接记为没通过
+    fn start_ready(&mut self, boards: &[String], cmd: &str, dir: &Path) {
+        let last = match self.readies.iter_mut().position(|r| r.cmd == cmd && r.dir == dir) {
             Some(i) => {
                 let mut old = self.readies.remove(i);
                 old.kill();
@@ -2653,10 +2671,12 @@ impl Host<'_> {
             None => None,
         };
         let _ = std::fs::create_dir_all(&self.logs);
-        let safe: String = board.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+        // 日志按第一块白板起名（和以前一样是 ready-<项目>-<白板>.log）
+        let first = boards.first().map(String::as_str).unwrap_or("");
+        let safe: String = first.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
         let log = self.logs.join(format!("ready-{safe}.log"));
         restrict_log(&log);
-        let mut r = ReadyRun { board: board.into(), cmd: cmd.into(), dir: dir.to_path_buf(), child: None, log, last, missing: false };
+        let mut r = ReadyRun { boards: boards.to_vec(), cmd: cmd.into(), dir: dir.to_path_buf(), child: None, log, last, missing: false };
         let fail = |r: &mut ReadyRun, why: String| {
             r.last = Some(DirReady { cmd: r.cmd.clone(), ok: false, code: None, tail: vec![why], at: now_ms() });
         };
@@ -2679,7 +2699,7 @@ impl Host<'_> {
             }
         }
         if r.child.is_some() {
-            self.say(format!("{} {}  {}", self.p.dim("…"), self.p.cyan(board), self.p.dim(&format!("环境检查：{cmd}"))));
+            self.say(format!("{} {}  {}", self.p.dim("…"), self.p.cyan(&r.boards.join("、")), self.p.dim(&format!("环境检查：{cmd}"))));
         } else {
             self.ready_said(&r);
         }
@@ -2722,13 +2742,13 @@ impl Host<'_> {
     fn ready_said(&self, r: &ReadyRun) {
         let Some(l) = &r.last else { return };
         if l.ok {
-            self.say(format!("{} {}  环境检查通过", self.p.green("✓"), self.p.cyan(&r.board)));
+            self.say(format!("{} {}  环境检查通过", self.p.green("✓"), self.p.cyan(&r.boards.join("、"))));
         } else {
             let last = l.tail.iter().rev().find(|x| !x.trim().is_empty()).cloned().unwrap_or_else(|| format!("退出码 {:?}", l.code));
             self.say(format!(
                 "{} {}  环境检查没通过：{}  {}",
                 self.p.red("✗"),
-                self.p.cyan(&r.board),
+                self.p.cyan(&r.boards.join("、")),
                 last,
                 self.p.dim("这台机器不接这块白板的卡，装好之后重新检查")
             ));
@@ -4429,6 +4449,28 @@ mod tests {
 
     /// 卡片 #232：环境检查在 `$SHELL -l -i -c` 里跑，CI 上没有终端，bash 往 stderr 打作业控制提示、退出时打 `logout`。
     /// 这些不能进上报的 tail（不然界面显示「环境检查没通过：logout」）。真正的错误要留着
+    #[test]
+    fn ready_checks_run_once_per_project_dir_and_command() {
+        let d = |b: &str, cmd: &str, dir: &str| (b.to_string(), cmd.to_string(), PathBuf::from(dir));
+        let groups = ready_groups(vec![
+            d("oss/main", "cargo --version", "/ws/oss"),
+            d("docs/main", "npm -v", "/ws/docs"),
+            d("oss/release", "cargo --version", "/ws/oss"),
+            // `--dir` 单独指了目录：按它自己的目录另跑
+            d("oss/old", "cargo --version", "/legacy/oss-old"),
+        ]);
+        let got: Vec<(Vec<&str>, &str)> = groups.iter().map(|(b, c, _)| (b.iter().map(String::as_str).collect(), c.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (vec!["oss/main", "oss/release"], "cargo --version"),
+                (vec!["docs/main"], "npm -v"),
+                (vec!["oss/old"], "cargo --version"),
+            ],
+            "同一个项目目录同一条命令只跑一次"
+        );
+    }
+
     #[test]
     fn ready_tail_skips_login_shell_noise() {
         let dir = tempfile::tempdir().unwrap();

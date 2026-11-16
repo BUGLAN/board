@@ -1,17 +1,18 @@
 /* ==========================================================================
-   白板的环境检查（PRD §9.1「环境检查」，白板设置里的一节）
+   项目的环境检查（PRD §9.1「环境检查」，项目设置里的一节；项目下所有白板共用一份）
    - 检查命令：所有系统一条，Windows 可以单独写一条（cmd 里执行）。设置项（saveSetting）：失焦或回车时保存，
-     不锁别的控件，保存状态画在输入框旁边
-   - 能接这块白板的机器：配了工作空间的每台机器一行（有工作空间就视为有这块白板的目录；在线、检查结果、
-     上次检查时间、那块白板派生的目录），点一行打开机器详情。一台都没有时写提醒，并给出去机器「工作空间」的入口；
-     大盘总览里同样的提醒用 NoHostsNote
+     Esc 取消这一次输入，不锁别的控件，保存状态画在输入框旁边
+   - 能接这个项目的机器：配了工作空间的每台机器一行（有工作空间就视为有这个项目的目录 <工作空间>/<项目>；在线、系统、
+     检查结果、上次检查时间、目录，没通过时输出的最后一行），点一行打开机器详情。一台都没有时写提醒，并给出去机器
+     「工作空间」的入口；大盘总览里同样的提醒用 NoHostsNote
    ========================================================================== */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
-import { boardHosts, boardOf, hostLoad, hostsOf, osKind, since, type Readiness } from '../lib/hosts';
+import { boardHosts, hostLoad, hostsOf, osKind, since, type Readiness } from '../lib/hosts';
+import type { ProjectInfo } from '../lib/types';
 import { cx } from '../lib/util';
-import { readyCheckPatch, saveSetting, useData } from '../store/data';
-import { openBoardSettings, openHost } from '../store/ui';
+import { projectReadyCheck, readyCheckPatch, saveSetting, useData } from '../store/data';
+import { openBoardSettings, openHost, openProjectSettings } from '../store/ui';
 import { InfoTip, Sync, useNow, useSync } from './bits';
 import { Dot } from './hosts/bits';
 import { Icon } from './Icon';
@@ -22,17 +23,22 @@ const LABEL: Record<Readiness['key'], string> = { none: '不检查', ok: '通过
 function goDirs() {
   const first = hostsOf(useData.getState().ws)[0];
   openBoardSettings(null);
+  openProjectSettings(null);
   openHost(first ? first.name : 'new');
 }
 
-export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
+export function ReadyCheckSection({ p, i }: { p: ProjectInfo; i: number }) {
   const ws = useData(s => s.ws);
-  const rc = boardOf(ws, path)?.readyCheck;
-  const rows = boardHosts(ws, path);
+  const pk = p.key;
+  const rc = projectReadyCheck(p);
+  // 同一个项目的白板在一台机器上是同一个目录、同一条命令：按第一块白板列
+  const rows = p.boards[0] ? boardHosts(ws, p.boards[0].path) : [];
   const now = useNow(30_000);
   const { sync, track } = useSync();
   const [draft, setDraft] = useState({ cmd: rc?.cmd ?? '', win: rc?.win ?? '' });
   const [editing, setEditing] = useState<'' | 'cmd' | 'win'>('');
+  // Esc 之后的失焦不保存（失焦时草稿还是这一次输入的值）
+  const cancelled = useRef(false);
   // 别的窗口改了：没在编辑的那一项跟着服务端
   useEffect(() => {
     setDraft(d => ({ cmd: editing === 'cmd' ? d.cmd : rc?.cmd ?? '', win: editing === 'win' ? d.win : rc?.win ?? '' }));
@@ -40,13 +46,18 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
 
   const commit = (which: 'cmd' | 'win') => {
     setEditing('');
+    if (cancelled.current) {
+      cancelled.current = false;
+      setDraft(d => ({ ...d, [which]: rc?.[which] ?? '' }));
+      return;
+    }
     const v = draft[which].trim();
     if (v === (rc?.[which] ?? '')) return;
     setDraft(d => ({ ...d, [which]: v }));
     track(
       which,
-      saveSetting(`ready:${path}:${which}`, readyCheckPatch(path, { [which]: v }), () =>
-        api.updateBoard(path, which === 'cmd' ? { readyCheck: v } : { readyCheckWin: v }),
+      saveSetting(`ready:${pk}:${which}`, readyCheckPatch(pk, { [which]: v }), () =>
+        api.updateProject(pk, which === 'cmd' ? { readyCheck: v } : { readyCheckWin: v }),
       ),
     );
   };
@@ -70,8 +81,7 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
           if (e.key === 'Enter') e.currentTarget.blur();
           if (e.key === 'Escape' && editing) {
             e.stopPropagation();
-            setDraft(d => ({ ...d, [which]: rc?.[which] ?? '' }));
-            setEditing('');
+            cancelled.current = true;
             e.currentTarget.blur();
           }
         }}
@@ -79,11 +89,13 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
     </label>
   );
   const on = !!(rc?.cmd.trim() || rc?.win.trim());
+  const fit = rows.filter(r => !r.block && (r.ready.key === 'none' || r.ready.key === 'ok')).length;
   return (
     <section className="d-section" style={{ ['--i' as string]: i }}>
       <div className="d-label">
         环境检查
-        <InfoTip text="没通过的机器不接这块白板的卡。在每台机器上这块白板的目录里执行（macOS、Linux 在登录 shell 里，Windows 在 cmd 里），退出码 0 算通过，最长 2 分钟；board host 启动、重新读配置、每天一次、命令改了之后各跑一次。留空不检查" />
+        <InfoTip text="没通过的机器不接这个项目的卡。在每台机器上这个项目的目录里执行（macOS、Linux 在登录 shell 里，Windows 在 cmd 里），退出码 0 算通过，最长 2 分钟；board host 启动、重新读配置、每天一次、命令改了之后各跑一次。留空不检查" />
+        <span className="bs-rp-scope">{p.boards.length} 块白板共用</span>
       </div>
       <div className="bs-rc">
         {field('cmd', '所有系统', '例如 cargo --version && node --version')}
@@ -91,13 +103,13 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
       </div>
 
       <div className="d-label bs-rc-hosts">
-        能接这块白板的机器<span className="act">{rows.length ? `${rows.filter(r => r.ready.key === 'none' || r.ready.key === 'ok').length}/${rows.length} 台能接` : ''}</span>
+        能接这个项目的机器<span className="act">{rows.length ? `${fit}/${rows.length} 台能接` : ''}</span>
       </div>
       {rows.length === 0 ? (
         <div className="bs-rc-empty" role="status">
           <Icon name="alert" />
           <span>
-            还没有机器能接这块白板的卡：不会被自动领取，也派发不了。给机器配上工作空间（白板的目录是 &lt;工作空间&gt;/{path}）就能接。
+            还没有机器能接这个项目的卡：不会被自动领取，也派发不了。给机器配上工作空间（这个项目的目录是 &lt;工作空间&gt;/{pk}）就能接。
           </span>
           <button type="button" className="btn sm" onClick={goDirs}>
             去设置工作空间
@@ -105,7 +117,7 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
         </div>
       ) : (
         <div className="bs-rc-list">
-          {rows.map(({ h, d, ready }) => (
+          {rows.map(({ h, d, ready, block }) => (
             <button key={h.id} type="button" className={cx('bs-rc-host', ready.key)} onClick={() => openHost(h.name)} aria-label={`打开机器 ${h.name}`}>
               <Dot h={h} running={hostLoad(ws, h).running.length} />
               <b>{h.name}</b>
@@ -118,6 +130,7 @@ export function ReadyCheckSection({ path, i }: { path: string; i: number }) {
               </span>
               {ready.key === 'failed' && <span className="bs-rc-why mono">{ready.last}</span>}
               {ready.key === 'pending' && <span className="bs-rc-why">等 board host 跑完；旧版 board host 不会检查，先升级 board</span>}
+              {block && ready.key !== 'failed' && ready.key !== 'pending' && <span className="bs-rc-why">{block.why}</span>}
             </button>
           ))}
         </div>

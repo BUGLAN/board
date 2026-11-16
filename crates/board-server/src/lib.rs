@@ -949,6 +949,10 @@ async fn update_project(
         if p.repo.is_some() || p.branch.is_some() {
             w.set_repo_branch(&key, p.repo.as_deref(), p.branch.as_deref())?;
         }
+        // 环境检查是项目的（PRD §9.1），项目下所有白板共用；谁能改、长度上限和以前在白板上时一样
+        if p.ready_check.is_some() || p.ready_check_win.is_some() {
+            w.set_ready_check(&key, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
+        }
         Ok(())
     })
     .await?;
@@ -991,6 +995,7 @@ async fn update_board(
     let path = format!("{project}/{board}");
     write(&s, &h, move |w| {
         w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())?;
+        // 环境检查设在项目上：旧界面在白板设置里改时写到白板所在的项目
         if p.ready_check.is_some() || p.ready_check_win.is_some() {
             w.set_ready_check(&path, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
         }

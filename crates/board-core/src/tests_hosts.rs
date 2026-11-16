@@ -2887,6 +2887,81 @@ fn old_database_boards_get_no_ready_check() {
     assert!(ws.projects[0].boards[0].ready_check.is_empty());
 }
 
+/// 环境检查是项目的：项目下每块白板读到同一份，机器上每块白板的目录拿到同一条命令；旧界面按白板改，改的是它所在的项目
+#[test]
+fn ready_check_belongs_to_the_project_and_all_its_boards_share_it() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let ws = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects[0].clone();
+    // 按项目设
+    s.write(T0, Origin::ui(None), |w| w.set_ready_check("default", Some("cargo --version"), Some(""))).unwrap();
+    let p = ws(&s);
+    assert_eq!(p.ready_check, ReadyCheck { cmd: "cargo --version".into(), win: String::new() });
+    assert!(p.boards.iter().all(|b| b.ready_check == p.ready_check), "{:?}", p.boards);
+    let checks: Vec<_> = host(&s, T0).dirs.iter().map(|d| (d.board.clone(), d.check.clone())).collect();
+    assert!(checks.len() >= 2 && checks.iter().all(|(_, c)| c.as_deref() == Some("cargo --version")), "{checks:?}");
+    // 旧界面在白板设置里改：落到项目上，另一块白板读到同一个值
+    s.write(T0, Origin::ui(None), |w| w.set_ready_check("default/docs", Some("node --version"), None)).unwrap();
+    let p = ws(&s);
+    assert_eq!(p.ready_check.cmd, "node --version");
+    assert_eq!(p.boards.iter().find(|b| b.path == B).unwrap().ready_check.cmd, "node --version");
+    // 清空两项：都不检查
+    s.write(T0, Origin::ui(None), |w| w.set_ready_check("default", Some(""), Some(""))).unwrap();
+    assert!(ws(&s).ready_check.is_empty() && host(&s, T0).dirs.iter().all(|d| d.check.is_none()));
+    // 不存在的项目、白板
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.set_ready_check("nope", Some(""), None)).unwrap_err().code, ErrorCode::BoardNotFound);
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.set_ready_check("default/nope", Some(""), None)).unwrap_err().code, ErrorCode::BoardNotFound);
+}
+
+/// 升级：环境检查从白板挪到项目，项目取它下面第一块设了的白板的那一对命令（按白板顺序；两条里有一条不为空就算设了）
+#[test]
+fn old_database_moves_board_ready_check_to_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        s.write(T0, Origin::ui(None), |w| {
+            w.create_board("default", "文档", "docs", "", None)?;
+            w.create_project("两块都设了", "two", "", None, None, NewBoard { name: "主线".into(), key: "main".into(), desc: String::new(), pos: None })?;
+            w.create_board("two", "文档", "docs", "", None)?;
+            w.create_project("都没设", "none", "", None, None, NewBoard { name: "主线".into(), key: "main".into(), desc: String::new(), pos: None })?;
+            w.create_project("只设了 Windows", "pair", "", None, None, NewBoard { name: "主线".into(), key: "main".into(), desc: String::new(), pos: None })?;
+            w.create_board("pair", "文档", "docs", "", None)
+        })
+        .unwrap();
+    }
+    {
+        // 升级前：环境检查设在白板上
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "ALTER TABLE projects DROP COLUMN ready_check; ALTER TABLE projects DROP COLUMN ready_check_win;
+             UPDATE boards SET ready_check = 'cargo --version' WHERE project = 'default' AND key = 'docs';
+             UPDATE boards SET ready_check = 'make check', ready_check_win = 'make.cmd check' WHERE project = 'two' AND key = 'main';
+             UPDATE boards SET ready_check = 'npm -v' WHERE project = 'two' AND key = 'docs';
+             UPDATE boards SET ready_check_win = 'where cargo' WHERE project = 'pair' AND key = 'main';
+             UPDATE boards SET ready_check = 'cargo --version' WHERE project = 'pair' AND key = 'docs';",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    let check = |k: &str| ws.projects.iter().find(|p| p.key == k).unwrap().ready_check.clone();
+    let rc = |cmd: &str, win: &str| ReadyCheck { cmd: cmd.into(), win: win.into() };
+    assert_eq!(check("default"), rc("cargo --version", ""), "第一块没设、第二块设了：取第二块的");
+    assert_eq!(check("two"), rc("make check", "make.cmd check"), "都设了且不一样：取第一块的");
+    assert_eq!(check("none"), rc("", ""), "都没设：不检查");
+    assert_eq!(check("pair"), rc("", "where cargo"), "一对命令一起取：第一块只设了 Windows 也算设了");
+    for p in &ws.projects {
+        assert!(p.boards.iter().all(|b| b.ready_check == p.ready_check), "{}: 白板上带的是项目的", p.key);
+    }
+    drop(s);
+    // 再打开一次不重复迁移（项目上已经有这两列）
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.read(|r| r.workspace(T0)).unwrap().projects[0].ready_check, rc("cargo --version", ""));
+}
+
 /* ------------------------------ 代码仓库地址、集成分支（PRD §4） ------------------------------ */
 
 fn ui<T>(s: &mut Store, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {

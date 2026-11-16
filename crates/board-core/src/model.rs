@@ -458,7 +458,8 @@ pub struct BoardInfo {
     /// 白板说明（Markdown，可以为空）
     #[serde(default)]
     pub readme: String,
-    /// 环境检查：机器要先在这块白板的目录里跑通它，才接这块白板的卡（PRD §9.1「环境检查」）。旧服务端没有这一项
+    /// 所在项目的环境检查：机器要先在这块白板的目录（就是项目的目录）里跑通它，才接这块白板的卡（PRD §9.1「环境检查」）。
+    /// 设在项目上（[`ProjectInfo::ready_check`]），这里带一份给旧界面、旧 board host 读。旧服务端没有这一项
     #[serde(default)]
     pub ready_check: ReadyCheck,
     /// 所在项目的代码仓库地址（git 远端，例如 `git@github.com:o/r.git`）；空表示没设。旧服务端没有这一项。
@@ -488,7 +489,7 @@ fn yes() -> bool {
     true
 }
 
-/// 白板的环境检查命令（PRD §9.1「环境检查」）：一行命令，在机器上这块白板的目录里执行，退出码 0 算通过。
+/// 项目的环境检查命令（PRD §9.1「环境检查」）：一行命令，在机器上这个项目的目录里执行，退出码 0 算通过。
 /// 都为空时不检查；Windows 写了 `win` 就用它（cmd 里执行），没写用 `cmd`
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyCheck {
@@ -545,6 +546,9 @@ pub struct ProjectInfo {
     /// 集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
     #[serde(default)]
     pub branch: String,
+    /// 环境检查，项目下所有白板共用（PRD §9.1「环境检查」）。旧服务端没有这一项（那时设在白板上）
+    #[serde(default)]
+    pub ready_check: ReadyCheck,
     pub boards: Vec<BoardInfo>,
 }
 

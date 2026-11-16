@@ -2686,11 +2686,13 @@ impl<'a> R<'a> {
         Ok(Some(HostToken { id, name, hint, last_used_at, shared }))
     }
 
-    /// 白板的环境检查命令
+    /// 白板的环境检查命令：是它所在项目的（项目下所有白板共用一份）
     pub(crate) fn ready_check(&self, board: i64) -> Result<ReadyCheck> {
-        Ok(self.conn.query_row("SELECT ready_check, ready_check_win FROM boards WHERE id = ?1", [board], |r| {
-            Ok(ReadyCheck { cmd: r.get(0)?, win: r.get(1)? })
-        })?)
+        Ok(self.conn.query_row(
+            "SELECT p.ready_check, p.ready_check_win FROM boards b JOIN projects p ON p.key = b.project WHERE b.id = ?1",
+            [board],
+            |r| Ok(ReadyCheck { cmd: r.get(0)?, win: r.get(1)? }),
+        )?)
     }
 
     /// 这台机器有目录的白板所在项目里的标签名（小写）。工作空间能放任意白板，规则里用哪块白板的标签就在哪块生效

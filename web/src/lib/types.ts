@@ -75,7 +75,7 @@ export interface BoardInfo {
   desc: string;
   /** 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改 */
   readme?: string;
-  /** 环境检查：机器先在这块白板的目录里跑通它，才接这块白板的卡；都为空时不检查。旧服务端没有这一项 */
+  /** 所在项目的环境检查（设在项目上，这里带一份）：机器先在这块白板的目录里跑通它，才接这块白板的卡；都为空时不检查。旧服务端没有这一项 */
   readyCheck?: ReadyCheck;
   /** 所在项目的代码仓库地址（git 远端，例如 git@github.com:o/r.git）；空表示没设。仓库设在项目上，这里带一份。旧服务端没有这一项 */
   repo?: string;
@@ -154,6 +154,8 @@ export interface ProjectInfo {
   repo?: string;
   /** 集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
   branch?: string;
+  /** 环境检查，项目下所有白板共用（PRD §9.1）。旧服务端没有这一项（那时设在白板上） */
+  readyCheck?: ReadyCheck;
   boards: BoardInfo[];
 }
 

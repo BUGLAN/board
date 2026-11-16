@@ -15,7 +15,7 @@ import { buildVersion } from '../lib/build';
 import { staleServer } from '../lib/stale';
 import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
-import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type Workspace } from '../lib/types';
+import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type ReadyCheck, type Workspace } from '../lib/types';
 
 interface DataState {
   ws: Workspace | null;
@@ -509,20 +509,24 @@ export const boardAutoPatch = (path: string, on: boolean): Patch => ({
   },
 });
 
-/** 改白板的环境检查命令（所有系统 / Windows）：白板不在了原样返回 */
-export const readyCheckPatch = (path: string, change: { cmd?: string; win?: string }): Patch => ({
+/** 改项目的环境检查命令（所有系统 / Windows，PRD §9.1，项目下所有白板共用）：项目和它下面每块白板一起改；项目不在了原样返回 */
+export const readyCheckPatch = (pk: string, change: { cmd?: string; win?: string }): Patch => ({
   ws: ws => {
-    if (!ws.projects.some(p => p.boards.some(b => b.path === path))) return ws;
+    if (!ws.projects.some(p => p.key === pk)) return ws;
     return {
       ...ws,
-      projects: ws.projects.map(p =>
-        p.boards.some(b => b.path === path)
-          ? { ...p, boards: p.boards.map(b => (b.path === path ? { ...b, readyCheck: { cmd: '', win: '', ...b.readyCheck, ...change } } : b)) }
-          : p,
-      ),
+      projects: ws.projects.map(p => {
+        if (p.key !== pk) return p;
+        const readyCheck = { cmd: '', win: '', ...projectReadyCheck(p), ...change };
+        return { ...p, readyCheck, boards: p.boards.map(b => ({ ...b, readyCheck })) };
+      }),
     };
   },
 });
+
+/** 项目的环境检查：新服务端在项目上；旧服务端只在白板上（取第一块设了的，和服务端升级时一样） */
+export const projectReadyCheck = (p: ProjectInfo): ReadyCheck | undefined =>
+  p.readyCheck ?? p.boards.map(b => b.readyCheck).find(r => !!(r?.cmd.trim() || r?.win.trim()));
 
 /** 改项目的代码仓库地址和集成分支（PRD §4，一个项目一个仓库）：项目、它下面每块白板、当前白板（在这个项目里时）的快照一起改；
  *  项目不在了原样返回 */
