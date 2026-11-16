@@ -1372,34 +1372,34 @@ pub struct SyncResult {
     pub git: GitSync,
 }
 
-/// Git 凭据这一次同步的结果
+/// 同步到机器的一类配置这一次的结果（skills、MCP、Git 凭据形状一样，见 [`SyncKind`]）：共同的部分是状态、数量、原因
+/// （时间在外层 [`SyncResult::at`]），各自多出来的项是明细 `D`。JSON 里明细和共同的部分平铺在同一层，字段名和拆开之前一样：
+/// 旧版 board host 的上报照样能读，新版的上报旧服务端也照样能读（多出来的字段不认就丢掉）
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GitSync {
-    /// synced 配好了 | off 不改（之前配进去的已经去掉）| none 服务端没设 | failed 没配上（令牌为空、主机不匹配、git 出错）
+pub struct SyncPart<D> {
+    /// synced 写好了 | off 不改 | none 服务端没设 | failed 有没写进去的；旧版 board host 不报的那一类为空
     #[serde(default)]
     pub state: String,
-    /// 凭据的主机
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub host: String,
-    /// 配好的仓库（目录）
-    #[serde(default)]
-    pub repos: Vec<String>,
-    /// 没配的仓库：「目录：原因」（远端是 SSH、没有 origin）
-    #[serde(default)]
-    pub skipped: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
-}
-
-/// skills 这一次同步的结果
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillsSync {
-    /// synced 库里的都写好了 | off 不改（只装了 board-skills）| failed 有没写进去的
-    #[serde(default)]
-    pub state: String,
-    /// 写进去的 skill 有几个（含 board-skills）
+    /// 写进去几个：skill（含 board-skills）、MCP 服务器、配好的仓库（Git 凭据；旧版 board host 不报，按 `repos` 数）
     #[serde(default)]
     pub count: i64,
+    /// 没写进去的原因
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    #[serde(flatten)]
+    pub detail: D,
+}
+
+/// skills 这一次同步的结果。synced 库里的都写好了 | off 不改（只装了 board-skills）| failed 有没写进去的
+pub type SkillsSync = SyncPart<SkillsDetail>;
+/// MCP 这一次同步的结果。synced 写好了 | off 不改 | failed 有没写进去的
+pub type McpSync = SyncPart<McpDetail>;
+/// Git 凭据这一次同步的结果。synced 配好了 | off 不改（之前配进去的已经去掉）| none 服务端没设 | failed 没配上（令牌为空、主机不匹配、git 出错）
+pub type GitSync = SyncPart<GitDetail>;
+
+/// skills 同步的明细
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillsDetail {
     /// 写进了哪几个 skill 目录（显示用，例如 ~/.claude/skills）
     #[serde(default)]
     pub dirs: Vec<String>,
@@ -1409,29 +1409,117 @@ pub struct SkillsSync {
     /// 本机同名的是软链接，没有覆盖
     #[serde(default)]
     pub links: Vec<String>,
-    /// 没写进去的：原因
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
 }
 
-/// MCP 这一次同步的结果
+/// MCP 同步的明细
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpSync {
-    /// synced 写好了 | off 不改 | failed 有没写进去的
-    #[serde(default)]
-    pub state: String,
-    /// 写进去的 MCP 服务器有几个
-    #[serde(default)]
-    pub count: i64,
+pub struct McpDetail {
     /// 写进了哪几个 agent（名称）
     #[serde(default)]
     pub agents: Vec<String>,
     /// 这一次换掉了本机同名的条目（原来的值存进了 ~/.board/host/ 下的备份文件）
     #[serde(default)]
     pub replaced: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
 }
+
+/// Git 凭据同步的明细
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDetail {
+    /// 凭据的主机
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
+    /// 配好的仓库（目录）
+    #[serde(default)]
+    pub repos: Vec<String>,
+    /// 没配的仓库：「目录：原因」（远端是 SSH、没有 origin）
+    #[serde(default)]
+    pub skipped: Vec<String>,
+}
+
+/// 同步到机器的一类配置（skills、MCP、Git 凭据）。形状都一样：服务端一份 → 每台机器一个开关（用服务器的 / 不改，`hosts` 表的一列）
+/// → 一次同步一行结果（[`SyncPart`]）→ 界面上每台机器一个胶囊。操作记录里那句话（[`sync_words`]）、要写成的样子（[`R::config_key`]）、
+/// 改开关（[`W::host_update_as`]）都按 [`SYNC_KINDS`] 遍历，不逐个写。
+/// 加一类：这里登记一项、[`SyncResult`] 加一行、`hosts` 表加一列开关、界面的 `web/src/lib/syncKinds.ts` 登记同一个标识；
+/// 它自己的存储、下发接口、board host 里怎么写、共用配置里的区块另做
+pub(crate) struct SyncKind {
+    /// 标识：[`SyncResult`] 里那一行的字段名，也是 `config_key` 里的键
+    pub key: &'static str,
+    /// 名称（操作记录里失败那一句的开头）
+    pub name: &'static str,
+    /// `hosts` 表里这台机器的开关那一列（1 用服务器的，0 不改）
+    pub col: &'static str,
+    /// 这台机器的开关
+    pub on: fn(&HostRow) -> bool,
+    /// 界面上改开关（[`HostPatch`] 里的那一项）
+    pub patch: fn(&HostPatch) -> Option<bool>,
+    /// 改开关时另记的一条操作记录（改成用服务器的 / 改成不改）；空的不另记，同步完的结果照样记
+    pub op: Option<(&'static str, &'static str)>,
+    /// 一次同步的结果里它那一行：状态、原因
+    pub part: fn(&SyncResult) -> (&str, Option<&str>),
+    /// 操作记录里写好了怎么说。写进 agent 目录的库（`lib`）只写数量，末尾的「已写入」并在一起写
+    pub done: fn(&SyncResult) -> String,
+    /// 没写好、上报里没有原因时怎么说
+    pub fail: &'static str,
+    /// 别的状态（不改、还没报）时怎么说；空的不写
+    pub idle: Option<&'static str>,
+    /// 写进 agent 目录的库（skills、MCP）：操作记录里并成一段（「6 个 skill、2 个 MCP 已写入，替换了本机同名的 …」）
+    pub lib: bool,
+    /// 这一次换掉了本机同名的（`lib` 那一段末尾写）
+    pub replaced: fn(&SyncResult) -> &[String],
+    /// 要写成的样子里这一类（[`R::config_key`]）：开关开着时库里的名称和版本（Git 凭据是它的版本）
+    pub want: fn(&R, bool) -> Result<serde_json::Value>,
+}
+
+/// 同步到机器的几类配置，按界面上的顺序
+pub(crate) const SYNC_KINDS: [SyncKind; 3] = [
+    SyncKind {
+        key: "skills",
+        name: "skills",
+        col: "sync_skills",
+        on: |h| h.sync_skills,
+        patch: |p| p.sync_skills,
+        op: None,
+        part: |r| (&r.skills.state, r.skills.why.as_deref()),
+        done: |r| format!("{} 个 skill", r.skills.count),
+        fail: "没写进去",
+        idle: Some("只装 board-skills"),
+        lib: true,
+        replaced: |r| &r.skills.detail.replaced,
+        // 不改时库里的一个都不写（board-skills 随服务端版本，已经在 `board` 那一项里）
+        want: |r, on| Ok(json!(if on { r.skills()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] })),
+    },
+    SyncKind {
+        key: "mcp",
+        name: "MCP",
+        col: "sync_mcp",
+        on: |h| h.sync_mcp,
+        patch: |p| p.sync_mcp,
+        op: None,
+        part: |r| (&r.mcp.state, r.mcp.why.as_deref()),
+        done: |r| format!("{} 个 MCP", r.mcp.count),
+        fail: "没写进去",
+        idle: None,
+        lib: true,
+        replaced: |r| &r.mcp.detail.replaced,
+        want: |r, on| Ok(json!(if on { r.mcp_index()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] })),
+    },
+    SyncKind {
+        key: "git",
+        name: "Git 凭据",
+        col: "sync_git",
+        on: |h| h.sync_git,
+        patch: |p| p.sync_git,
+        op: Some(("Git 凭据改成用服务器的", "Git 凭据改成不改：去掉之前配进仓库的")),
+        part: |r| (&r.git.state, r.git.why.as_deref()),
+        done: |r| format!("Git 凭据（{}）已配进 {} 个仓库", r.git.detail.host, r.git.detail.repos.len()),
+        fail: "没配上",
+        idle: None,
+        lib: false,
+        replaced: |_| &[],
+        // 用服务器的时带上它的版本（没设时空的：之前配进去的要去掉）；不改时为空
+        want: |r, on| Ok(if on { json!(r.git_version()?) } else { serde_json::Value::Null }),
+    },
+];
 
 /// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
 /// agent 能不能干活、每块白板的目录能不能推送，服务端补上 board 版本是否落后。结果一直保留到下一次自检
@@ -1557,31 +1645,34 @@ pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
         agents.push("agent 的配置都不改".into());
     }
     parts.push(agents.join("，"));
-    let mut lib = vec![];
-    match r.skills.state.as_str() {
-        "synced" => lib.push(format!("{} 个 skill", r.skills.count)),
-        "failed" => lib.push(format!("skills 失败（{}）", r.skills.why.as_deref().unwrap_or("没写进去"))),
-        _ => lib.push("只装 board-skills".into()),
-    }
-    match r.mcp.state.as_str() {
-        "synced" => lib.push(format!("{} 个 MCP", r.mcp.count)),
-        "failed" => lib.push(format!("MCP 失败（{}）", r.mcp.why.as_deref().unwrap_or("没写进去"))),
-        _ => {}
+    // 写进 agent 目录的库（skills、MCP）并成一段，别的（Git 凭据）各自一段
+    let (mut lib, mut own, mut done, mut replaced) = (vec![], vec![], false, vec![]);
+    for k in &SYNC_KINDS {
+        let (state, why) = (k.part)(r);
+        // 名称是英文结尾的和「失败」之间空一格：「MCP 失败」「Git 凭据失败」
+        let gap = if k.name.ends_with(|c: char| c.is_ascii_alphanumeric()) { " " } else { "" };
+        let words = match state {
+            "synced" => Some((k.done)(r)),
+            "failed" => Some(format!("{}{gap}失败（{}）", k.name, why.unwrap_or(k.fail))),
+            _ => k.idle.map(String::from),
+        };
+        if k.lib {
+            lib.extend(words);
+            done |= state == "synced";
+            replaced.extend((k.replaced)(r).iter().map(String::as_str));
+        } else {
+            own.extend(words);
+        }
     }
     let mut tail = lib.join("、");
-    if r.skills.state == "synced" || r.mcp.state == "synced" {
+    if done {
         tail.push_str(" 已写入");
     }
-    let replaced: Vec<&String> = r.skills.replaced.iter().chain(r.mcp.replaced.iter()).collect();
     if !replaced.is_empty() {
-        tail.push_str(&format!("，替换了本机同名的 {}", replaced.iter().map(|x| x.as_str()).collect::<Vec<_>>().join("、")));
+        tail.push_str(&format!("，替换了本机同名的 {}", replaced.join("、")));
     }
     parts.push(tail);
-    match r.git.state.as_str() {
-        "synced" => parts.push(format!("Git 凭据（{}）已配进 {} 个仓库", r.git.host, r.git.repos.len())),
-        "failed" => parts.push(format!("Git 凭据失败（{}）", r.git.why.as_deref().unwrap_or("没配上"))),
-        _ => {}
-    }
+    parts.extend(own);
     format!("同步配置：{}", parts.join("；"))
 }
 
@@ -2819,8 +2910,6 @@ impl<'a> R<'a> {
     /// 内容的哈希前 12 位；一样就不用再写
     pub(crate) fn config_key(&self, h: &HostRow) -> Result<String> {
         use sha2::{Digest, Sha256};
-        let skills: Vec<(String, String)> = if h.sync_skills { self.skills()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] };
-        let mcp: Vec<(String, String)> = if h.sync_mcp { self.mcp_index()?.into_iter().map(|s| (s.name, s.version)).collect() } else { vec![] };
         let providers = self.providers()?;
         let version = |name: &str| providers.iter().find(|p| p.name == name).map(|p| p.version.clone()).unwrap_or_default();
         let mut agents = vec![];
@@ -2837,9 +2926,10 @@ impl<'a> R<'a> {
             };
             agents.push(json!({ "id": a.id, "env": a.env, "mode": mode, "provider": provider, "v": version(&provider), "model": model, "effort": effort, "protocol": protocol }));
         }
-        // Git 凭据：用服务器的时带上它的版本（没设时空的：之前配进去的要去掉）；不改时整项不带
-        let git = if h.sync_git { Some(self.git_version()?) } else { None };
-        let body = json!({ "board": env!("CARGO_PKG_VERSION"), "skills": skills, "mcp": mcp, "agents": agents, "git": git });
+        let mut body = json!({ "board": env!("CARGO_PKG_VERSION"), "agents": agents });
+        for k in &SYNC_KINDS {
+            body[k.key] = (k.want)(self, (k.on)(h))?;
+        }
         Ok(Sha256::digest(body.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect())
     }
 }
@@ -4363,22 +4453,14 @@ impl<'a> W<'a> {
             self.set_run_limits(p.max_run, p.idle_run)?;
         }
         self.config_by = by.to_string();
-        if let Some(on) = p.sync_skills {
-            if on != h.sync_skills {
-                self.tx.execute("UPDATE hosts SET sync_skills = ?2 WHERE id = ?1", params![h.id, on as i64])?;
-                self.config_changed = true;
-            }
-        }
-        if let Some(on) = p.sync_mcp {
-            if on != h.sync_mcp {
-                self.tx.execute("UPDATE hosts SET sync_mcp = ?2 WHERE id = ?1", params![h.id, on as i64])?;
-                self.config_changed = true;
-            }
-        }
-        if let Some(on) = p.sync_git {
-            if on != h.sync_git {
-                self.tx.execute("UPDATE hosts SET sync_git = ?2 WHERE id = ?1", params![h.id, on as i64])?;
-                self.host_op(h.id, by, if on { "Git 凭据改成用服务器的" } else { "Git 凭据改成不改：去掉之前配进仓库的" })?;
+        // skills、MCP、Git 凭据的开关（用服务器的 / 不改）：变了就重新算要写成的样子、下发同步请求
+        for k in &SYNC_KINDS {
+            let Some(on) = (k.patch)(p) else { continue };
+            if on != (k.on)(&h) {
+                self.tx.execute(&format!("UPDATE hosts SET {} = ?2 WHERE id = ?1", k.col), params![h.id, on as i64])?;
+                if let Some((yes, no)) = k.op {
+                    self.host_op(h.id, by, if on { yes } else { no })?;
+                }
                 self.config_changed = true;
             }
         }

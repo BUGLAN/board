@@ -837,10 +837,8 @@ fn run_sync(job: SyncJob) -> SyncOut {
     let skills = SkillsSync {
         state: if !fails.is_empty() { "failed" } else if job.skills_on { "synced" } else { "off" }.into(),
         count: written as i64,
-        dirs: targets.iter().map(|t| t.shown.clone()).collect(),
-        replaced: out.replaced.clone(),
-        links: out.links.clone(),
         why: (!fails.is_empty()).then(|| fails.join("；")),
+        detail: board_core::SkillsDetail { dirs: targets.iter().map(|t| t.shown.clone()).collect(), replaced: out.replaced.clone(), links: out.links.clone() },
     };
     let local = skills::local_skills(&targets);
 
@@ -880,9 +878,8 @@ fn run_sync(job: SyncJob) -> SyncOut {
                 McpSync {
                     state: if bad.is_empty() { "synced" } else { "failed" }.into(),
                     count: lib.len() as i64,
-                    agents: into,
-                    replaced: out.replaced,
                     why: (!bad.is_empty()).then(|| bad.join("；")),
+                    detail: board_core::McpDetail { agents: into, replaced: out.replaced },
                 }
             }
         }

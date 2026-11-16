@@ -3978,8 +3978,8 @@ fn synced(s: &mut Store, name: &str, instance: &str, id: Option<i64>, key: &str,
         id,
         key: key.into(),
         agents,
-        skills: SkillsSync { state: "synced".into(), count: 3, replaced: vec!["frontend-design".into()], ..Default::default() },
-        mcp: McpSync { state: "synced".into(), count: 2, agents: vec!["Claude Code".into()], ..Default::default() },
+        skills: SkillsSync { state: "synced".into(), count: 3, detail: SkillsDetail { replaced: vec!["frontend-design".into()], ..Default::default() }, ..Default::default() },
+        mcp: McpSync { state: "synced".into(), count: 2, detail: McpDetail { agents: vec!["Claude Code".into()], ..Default::default() }, ..Default::default() },
         ..Default::default()
     };
     s.write(T0, Origin::cli(), |w| w.host_synced(name, instance, res))
@@ -4167,6 +4167,50 @@ fn sync_words_name_failures_and_off() {
     };
     let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
     assert_eq!(h.ops[0].text, "同步配置：1 个 agent 已写入，pi 失败；只装 board-skills");
+
+    // 三类都失败：各自的说法，Git 凭据单独一段；没报原因时用各自的默认说法
+    let res = SyncResult {
+        skills: SkillsSync { state: "failed".into(), why: Some("没有权限".into()), ..Default::default() },
+        mcp: McpSync { state: "failed".into(), ..Default::default() },
+        git: GitSync { state: "failed".into(), ..Default::default() },
+        ..Default::default()
+    };
+    let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
+    assert_eq!(h.ops[0].text, "同步配置：agent 的配置都不改；skills 失败（没有权限）、MCP 失败（没写进去）；Git 凭据失败（没配上）");
+
+    // MCP 换掉了本机同名的、skills 不改：替换的照样写在库那一段末尾；Git 凭据服务端没设时不写
+    let res = SyncResult {
+        skills: SkillsSync { state: "off".into(), count: 1, ..Default::default() },
+        mcp: McpSync { state: "synced".into(), count: 2, detail: McpDetail { replaced: vec!["github".into()], ..Default::default() }, ..Default::default() },
+        git: GitSync { state: "none".into(), ..Default::default() },
+        ..Default::default()
+    };
+    let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
+    assert_eq!(h.ops[0].text, "同步配置：agent 的配置都不改；只装 board-skills、2 个 MCP 已写入，替换了本机同名的 github");
+}
+
+#[test]
+fn sync_result_json_keeps_field_names() {
+    // 旧版 board host 的上报：skills、MCP 的字段平铺在一层，没有 Git 凭据这一行
+    let old = r#"{"key":"k","agents":[],
+        "skills":{"state":"synced","count":3,"dirs":["~/.claude/skills"],"replaced":["design"],"links":["dev"]},
+        "mcp":{"state":"failed","count":1,"agents":["Claude Code"],"replaced":[],"why":"x"}}"#;
+    let r: SyncResult = serde_json::from_str(old).unwrap();
+    assert_eq!((r.skills.state.as_str(), r.skills.count), ("synced", 3));
+    assert_eq!(r.skills.detail, SkillsDetail { dirs: vec!["~/.claude/skills".into()], replaced: vec!["design".into()], links: vec!["dev".into()] });
+    assert_eq!((r.mcp.state.as_str(), r.mcp.why.as_deref()), ("failed", Some("x")));
+    assert_eq!(r.mcp.detail.agents, vec!["Claude Code".to_string()]);
+    assert_eq!(r.git, GitSync::default(), "旧版不报 Git 凭据：状态是空的");
+    // 拆开之前的 board host 报的 Git 凭据没有数量：按 0 读，明细照样在
+    let g: GitSync = serde_json::from_str(r#"{"state":"synced","host":"github.com","repos":["/w/b"],"skipped":[]}"#).unwrap();
+    assert_eq!((g.count, g.detail.host.as_str(), g.detail.repos.len()), (0, "github.com", 1));
+
+    // 新版的上报：明细和共同的部分平铺在同一层，字段名和拆开之前一样（旧服务端按原来的结构读）
+    let git = GitSync { state: "synced".into(), count: 1, why: None, detail: GitDetail { host: "github.com".into(), repos: vec!["/w/b".into()], skipped: vec![] } };
+    let v = serde_json::to_value(SyncResult { git, ..r }).unwrap();
+    assert_eq!(v["skills"], serde_json::json!({ "state": "synced", "count": 3, "dirs": ["~/.claude/skills"], "replaced": ["design"], "links": ["dev"] }));
+    assert_eq!(v["mcp"], serde_json::json!({ "state": "failed", "count": 1, "agents": ["Claude Code"], "replaced": [], "why": "x" }));
+    assert_eq!(v["git"], serde_json::json!({ "state": "synced", "count": 1, "host": "github.com", "repos": ["/w/b"], "skipped": [] }));
 }
 
 #[test]
@@ -5207,7 +5251,7 @@ fn git_credential_is_masked_versioned_and_synced_to_hosts_that_use_it() {
     let res = SyncResult {
         id: Some(ask.id),
         key: ask.key.clone(),
-        git: GitSync { state: "synced".into(), host: "github.com".into(), repos: vec!["/w/board".into()], ..Default::default() },
+        git: GitSync { state: "synced".into(), count: 1, detail: GitDetail { host: "github.com".into(), repos: vec!["/w/board".into()], ..Default::default() }, ..Default::default() },
         ..Default::default()
     };
     let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blankMcp } from './mcp';
-import { gitHosts, gitRow, mcpSync, skillSync } from './syncPills';
+import { syncKind } from './syncKinds';
+import { mcpSync, skillSync, syncHosts, syncRow } from './syncPills';
 import type { HostInfo, McpServer, SkillInfo, SyncResult } from './types';
 
 const result = (x: Partial<SyncResult> = {}): SyncResult => ({
@@ -68,6 +69,8 @@ describe('一台机器一个胶囊', () => {
 });
 
 describe('Git 凭据卡片上的机器', () => {
+  const GIT = syncKind('git');
+  const gitRow = (h: HostInfo, now?: number) => syncRow(GIT, h, now);
   const failed = result({ git: { state: 'failed', host: 'github.com', repos: [], skipped: [], why: '主机不匹配' } });
   it('一台一行：已同步写配进了几个仓库，同步失败写原因，关掉的写用自己的凭据', () => {
     expect(gitRow(host('mbp', { syncGit: true }), 61000)).toMatchObject({ kind: 'synced', text: expect.stringMatching(/^已同步 · 配进了 1 个仓库 · /) });
@@ -80,7 +83,7 @@ describe('Git 凭据卡片上的机器', () => {
     expect(gitRow(host('mbp', { syncGit: true, sync: { able: true } })).text).toBe('等 board host 同步…');
   });
   it('旧版 board host（不按请求同步、不报 Git 凭据这一行）不列', () => {
-    const list = gitHosts([
+    const list = syncHosts(GIT, [
       host('mbp', { syncGit: true }),
       host('old', { syncGit: true, sync: { able: true, last: result({ git: { state: '', repos: [], skipped: [] } }) } }),
       host('older', { syncGit: true, sync: { able: false } }),

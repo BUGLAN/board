@@ -2,14 +2,15 @@
    机器详情（机器详情与配置同步重构）：界面上用到的纯函数
    - 一个 agent 正不正常（agentHealth）：没找到、看不到 board-skills、配置没写进去、自检没过；页签上的数字按它数
    - 一个 agent 的配置写进去没有（configLine）：已写入 / 正在写入 / 不改 / 机器离线 / 写入失败
-   - skills、MCP 各一行（skillsLine、mcpLine）：用服务器的写了几个、写进了哪里；不改时写 Board 不碰
-   - Git 凭据一行（gitLine）：已同步（配进了几个仓库）/ 同步失败（原因）/ 服务端没设；不改时用本机自己的
+   - skills、MCP、Git 凭据各一行（syncLine，按 syncKinds.ts 登记的种类取文案）：用服务器的写了几个、写进了哪里 / 正在写入 /
+     写入失败；不改时写 Board 不碰。下面的补充（syncNotes）：换掉了本机同名的、软链接没覆盖、没配的仓库
    - 工作空间只列例外（workspaceExceptions）：--dir 单独指定的、克隆失败的、不是 git 仓库的；还没建的项目并进一行（laterProjects）
    - 今天交审几张、异常退出几次（todayCounts）
    ========================================================================== */
 import { dirFresh, since, skillMiss } from './hosts';
 import { runPick, runWords, type RunPick } from './providers';
-import type { Dispatch, GitCred, HostAgent, HostInfo, ProviderView } from './types';
+import { syncOld, type SyncKind, type SyncLib, type SyncNote } from './syncKinds';
+import type { Dispatch, HostAgent, HostInfo, ProviderView } from './types';
 
 /* ------------------------------ agent ------------------------------ */
 
@@ -64,55 +65,35 @@ export function configLine(h: HostInfo, a: HostAgent, view: ProviderView | null,
   return { tone: 'ok', text: `已写入 ${words} · ${since(h.sync.last!.at, now)}` };
 }
 
-/* ------------------------------ skills 和 MCP ------------------------------ */
+/* ------------------------------ skills、MCP、Git 凭据 ------------------------------ */
 
 export interface SyncLine {
   tone: LineTone;
   text: string;
 }
 
-/** skills 一行：用服务器的写了几个、写进了哪里 / 正在写入 / 写入失败；不改时只装 board-skills */
-export function skillsLine(h: HostInfo, lib: number | null, now: number): SyncLine {
-  if (!h.syncSkills) return { tone: 'muted', text: '只装 board-skills，其余不碰' };
-  const r = h.sync?.last?.skills;
-  const n = lib ?? r?.count ?? 0;
-  if (h.sync?.ask && h.online) return { tone: 'busy', text: `正在写入库里的 ${n} 个 skill…` };
-  if (!h.online && h.sync?.ask) return { tone: 'muted', text: `机器离线：上线后写入库里的 ${n} 个 skill` };
-  if (!r || r.state === 'off' || !r.state) return { tone: 'busy', text: '等 board host 写入…' };
-  if (r.state === 'failed') return { tone: 'bad', text: `写入失败：${r.why ?? '原因没报上来'}` };
-  return { tone: 'ok', text: `库里的 ${r.count} 个 skill 已写进这台机器各个 agent 的 skill 目录 · ${since(h.sync!.last!.at, now)}` };
+/** 同步到机器的一类配置在这台机器上一行（按登记的种类取文案，见 syncKinds.ts）：
+    不改 / 正在写入 / 机器离线 / 服务端没设 / board host 是旧版 / 等 board host / 写入失败（原因）/ 已写入 · 多久前。
+    `lib` 是服务端的那一份（取到之前 null）：正在写入时写库里的几个，Git 凭据看服务端设了没有 */
+export function syncLine(k: SyncKind, h: HostInfo, lib: SyncLib | null, now: number): SyncLine {
+  const w = k.line;
+  if (!h[k.flag]) return { tone: 'muted', text: w.off };
+  const last = h.sync?.last;
+  const r = last?.[k.key];
+  const n = lib?.names.length ?? r?.count ?? 0;
+  if (h.sync?.ask && h.online) return { tone: 'busy', text: w.busy(n) };
+  if (!h.online && h.sync?.ask) return { tone: 'muted', text: w.offline(n) };
+  if (w.none && (lib?.none || r?.state === 'none')) return { tone: 'muted', text: w.none };
+  if (w.old && syncOld(k, h)) return { tone: 'muted', text: `board ${h.version || '?'} 是旧版：${w.old}` };
+  if (!last || !r || r.state === 'off' || !r.state) return { tone: 'busy', text: w.wait };
+  if (r.state === 'failed') return { tone: 'bad', text: `${w.failed}：${r.why ?? '原因没报上来'}` };
+  return { tone: 'ok', text: `${w.ok(last, lib)} · ${since(last.at, now)}` };
 }
 
-/** MCP 一行：写进了哪几个 agent */
-export function mcpLine(h: HostInfo, names: string[] | null, now: number): SyncLine {
-  if (!h.syncMcp) return { tone: 'muted', text: 'Board 不碰这台机器上的 MCP 配置' };
-  const r = h.sync?.last?.mcp;
-  const n = names?.length ?? r?.count ?? 0;
-  if (h.sync?.ask && h.online) return { tone: 'busy', text: `正在写入 ${n} 个 MCP…` };
-  if (!h.online && h.sync?.ask) return { tone: 'muted', text: `机器离线：上线后写入 ${n} 个 MCP` };
-  if (!r || r.state === 'off' || !r.state) return { tone: 'busy', text: '等 board host 写入…' };
-  if (r.state === 'failed') return { tone: 'bad', text: `写入失败：${r.why ?? '原因没报上来'}` };
-  const list = names?.length ? `（${names.join('、')}）` : '';
-  const where = r.agents.length ? `已写进 ${r.agents.join('、')}` : '已写入（这台机器上没有会用它们的 agent）';
-  return { tone: 'ok', text: `库里的 ${r.count} 个 MCP${list}${where} · ${since(h.sync!.last!.at, now)}` };
-}
-
-/** board host 是旧版、不报 Git 凭据：最近一次同步的结果里没有这一行 */
-export const gitOld = (h: HostInfo) => !!h.sync?.able && !!h.sync.last && !h.sync.last.git.state;
-
-/** Git 凭据一行：`cred` 是服务端的（取到之前 undefined，没设时 null） */
-export function gitLine(h: HostInfo, cred: GitCred | null | undefined, now: number): SyncLine {
-  if (!h.syncGit) return { tone: 'muted', text: '用这台机器自己的 git 凭据，Board 不碰' };
-  const r = h.sync?.last?.git;
-  if (h.sync?.ask && h.online) return { tone: 'busy', text: '正在同步：配进 Board 管的仓库…' };
-  if (!h.online && h.sync?.ask) return { tone: 'muted', text: '机器离线：上线后同步' };
-  if (cred === null || r?.state === 'none') return { tone: 'muted', text: '服务端还没设 Git 凭据：在「Agent → Git 凭据」里设' };
-  if (gitOld(h)) return { tone: 'muted', text: `board ${h.version || '?'} 是旧版：升级后才用服务端的 Git 凭据` };
-  if (!r || r.state === 'off' || !r.state) return { tone: 'busy', text: '等 board host 同步…' };
-  if (r.state === 'failed') return { tone: 'bad', text: `同步失败：${r.why ?? '原因没报上来'}` };
-  const n = r.repos.length;
-  const head = n ? `已同步：${r.host} 的令牌配进了 ${n} 个仓库` : `已同步：令牌已就绪，还没有远端是 ${r.host} 的仓库`;
-  return { tone: 'ok', text: `${head} · ${since(h.sync!.last!.at, now)}` };
+/** 那一行下面的补充（换掉了本机同名的、软链接没覆盖、没配的仓库）：开关开着、没有在写的时候才有 */
+export function syncNotes(k: SyncKind, h: HostInfo): SyncNote[] {
+  const last = h.sync?.last;
+  return h[k.flag] && !h.sync?.ask && last ? k.notes(last) : [];
 }
 
 /* ------------------------------ 工作空间 ------------------------------ */

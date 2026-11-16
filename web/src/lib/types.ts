@@ -468,22 +468,50 @@ export interface SyncResult {
   at: number;
   /** 每个找到的 agent 一行 */
   agents: ProviderState[];
-  skills: { state: 'synced' | 'off' | 'failed' | ''; count: number; dirs: string[]; replaced: string[]; links: string[]; why?: string | null };
-  mcp: { state: 'synced' | 'off' | 'failed' | ''; count: number; agents: string[]; replaced: string[]; why?: string | null };
+  /** skills：synced 库里的都写好了 / off 不改（只装了 board-skills）/ failed 有没写进去的 */
+  skills: SkillsSync;
+  /** MCP：synced 写好了 / off 不改 / failed 有没写进去的 */
+  mcp: McpSync;
   /** Git 凭据：synced 配好了 / off 不改 / none 服务端没设 / failed 没配上；旧版 board host 不报（空） */
   git: GitSync;
 }
 
-export interface GitSync {
+/** 同步到机器的一类配置这一次的结果（skills、MCP、Git 凭据形状一样，见 syncKinds.ts）：
+    共同的部分是状态、数量、原因（时间在外层），各自多出来的明细和它们平铺在同一层 */
+export type SyncPart<D> = {
   state: 'synced' | 'off' | 'none' | 'failed' | '';
+  /** 写进去几个：skill、MCP 服务器、配好的仓库（Git 凭据；旧版 board host 不报） */
+  count?: number;
+  /** 没写进去的原因 */
+  why?: string | null;
+} & D;
+
+export type SkillsSync = SyncPart<{
+  count: number;
+  /** 写进了哪几个 skill 目录（例如 ~/.claude/skills） */
+  dirs: string[];
+  /** 这一次换掉了本机同名的 */
+  replaced: string[];
+  /** 本机同名的是软链接，没有覆盖 */
+  links: string[];
+}>;
+
+export type McpSync = SyncPart<{
+  count: number;
+  /** 写进了哪几个 agent（名称） */
+  agents: string[];
+  /** 这一次换掉了本机同名的条目 */
+  replaced: string[];
+}>;
+
+export type GitSync = SyncPart<{
   /** 凭据的主机 */
   host?: string;
   /** 配好的仓库（目录） */
   repos: string[];
   /** 没配的仓库：「目录：原因」（远端是 SSH） */
   skipped: string[];
-  why?: string | null;
-}
+}>;
 
 /** 服务端的 Git 凭据（共用配置）：令牌只有末尾 4 位 */
 export interface GitCred {

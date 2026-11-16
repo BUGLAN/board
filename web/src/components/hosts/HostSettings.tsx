@@ -3,18 +3,19 @@
    0. 资源：CPU、内存、GPU、存储四块磁贴（Resources.tsx）
    1. 接单：一行摘要（时段、自动领 / 只做派给它的 / 暂停、最多几个会话、一个会话几张）+「在接单里改」（机器 Tab 的「接单」视图）
    2. agent 更新：自动更新开关
-   3. skills、MCP、Git 凭据：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
+   3. skills、MCP、Git 凭据（按 syncKinds.ts 登记的种类一类一行）：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
    4. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
    5. 维护：重新检查、升级到 x.y.z（落后时才有）、重启 board host、令牌、移除这台机器
    开关、工作空间是设置项（当帧生效，旁边转圈）；导入、维护、移除要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { api } from '../../lib/api';
-import { gitLine, laterProjects, mcpLine, pushRows, sepOf, skillsLine, workspaceExceptions, type LineTone, type WsException } from '../../lib/hostDetail';
+import { laterProjects, pushRows, sepOf, syncLine, syncNotes, workspaceExceptions, type LineTone, type WsException } from '../../lib/hostDetail';
 import { acceptSummary, isLocalHost, since } from '../../lib/hosts';
 import { localHost, pickFolder, shell } from '../../lib/platform';
 import { importRows } from '../../lib/skills';
-import type { HostInfo, McpServer, SkillImportPick, SkillInfo } from '../../lib/types';
+import { flagPatch, SYNC_KINDS, type SyncLibs } from '../../lib/syncKinds';
+import type { HostInfo, SkillImportPick, SkillInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { hostKey, optimistic, useData } from '../../store/data';
 import { confirm, confirmCheck, setHostsView, setTab, toast, toastError } from '../../store/ui';
@@ -25,7 +26,6 @@ import { FolderPick } from './FolderPick';
 import { askState } from './Manage';
 import { Resources } from './Resources';
 import type { Save } from './Saver';
-import { useRemoteList } from './useRemoteList';
 
 type SyncMap = Record<string, SyncState | undefined>;
 
@@ -129,17 +129,23 @@ const MODES: [Mode, string][] = [
 ];
 const LINE_ICON: Record<LineTone, Parameters<typeof Icon>[0]['name']> = { ok: 'checkCircle', busy: 'renew', bad: 'alert', muted: 'info' };
 
+/** 每类同步在服务端的那一份（按登记的种类取）：机器有变化时跟着重新取；取不到的那一类留着上一次的 */
+function useSyncLibs(hosts: HostInfo[] | undefined): Partial<SyncLibs> {
+  const [libs, setLibs] = useState<Partial<SyncLibs>>({});
+  useEffect(() => {
+    for (const k of SYNC_KINDS)
+      k.load().then(
+        part => setLibs(m => ({ ...m, ...part })),
+        () => {},
+      );
+  }, [hosts]);
+  return libs;
+}
+
 function SyncBlock({ h, save, sync, now }: { h: HostInfo; save: Save; sync: SyncMap; now: number }) {
   const ws = useData(s => s.ws);
-  const { list: lib } = useRemoteList<SkillInfo[]>(() => api.skills(), ws?.hosts);
-  const { list: mcp } = useRemoteList<McpServer[]>(() => api.mcp(), ws?.hosts);
-  const skills = skillsLine(h, lib?.length ?? null, now);
-  const mcps = mcpLine(h, mcp?.map(m => m.name) ?? null, now);
-  const { list: git } = useRemoteList(() => api.git(), ws?.hosts);
-  const gits = gitLine(h, git ? git.cred : undefined, now);
-  const skipped = h.sync?.last?.git.skipped ?? [];
-  const r = h.sync?.last?.skills;
-  const busy = !!h.sync?.ask;
+  const libs = useSyncLibs(ws?.hosts);
+  const rows = SYNC_KINDS.map(k => ({ k, line: syncLine(k, h, k.lib(libs), now), notes: syncNotes(k, h) }));
   const old = !h.sync?.able;
   return (
     <div className="hd-sync">
@@ -149,76 +155,36 @@ function SyncBlock({ h, save, sync, now }: { h: HostInfo; save: Save; sync: Sync
           board {h.version || '?'} 是旧版：按老办法同步，开关升级后才生效
         </p>
       )}
-      <div className={cx('hd-sw', sync.syncSkills === 'failed' && 'hp-rollback')}>
-        <div className="hd-sw-text">
-          <b>skills</b>
-          <span className={cx(`t-${skills.tone}`)}>
-            <Icon name={LINE_ICON[skills.tone]} />
-            {skills.text}
-          </span>
-        </div>
-        <span className="hp-ctl">
-          <Sync s={sync.syncSkills} />
-          <Segmented<Mode> value={h.syncSkills ? 'server' : 'off'} options={MODES} onChange={v => v !== (h.syncSkills ? 'server' : 'off') && save({ syncSkills: v === 'server' })} />
-        </span>
-      </div>
-      {h.syncSkills && !busy && !!r?.replaced.length && (
-        <p className="hd-sync-note">
-          <Icon name="info" />
-          <span>
-            替换了本机同名的 {r.replaced.join('、')}：旧的挪进了 <code>~/.board/host/skills-backup/</code>
-          </span>
-        </p>
-      )}
-      {h.syncSkills && !busy && !!r?.links.length && (
-        <p className="hd-sync-note">
-          <Icon name="info" />
-          <span>本机的 {r.links.join('、')} 是软链接，没有覆盖</span>
-        </p>
-      )}
-      <div className={cx('hd-sw', sync.syncMcp === 'failed' && 'hp-rollback')}>
-        <div className="hd-sw-text">
-          <b>MCP</b>
-          <span className={cx(`t-${mcps.tone}`)}>
-            <Icon name={LINE_ICON[mcps.tone]} />
-            {mcps.text}
-          </span>
-        </div>
-        <span className="hp-ctl">
-          <Sync s={sync.syncMcp} />
-          <Segmented<Mode> value={h.syncMcp ? 'server' : 'off'} options={MODES} onChange={v => v !== (h.syncMcp ? 'server' : 'off') && save({ syncMcp: v === 'server' })} />
-        </span>
-      </div>
-      {h.syncMcp && !busy && !!h.sync?.last?.mcp.replaced.length && (
-        <p className="hd-sync-note">
-          <Icon name="info" />
-          <span>
-            换掉了本机同名的 {h.sync.last.mcp.replaced.join('、')}：原来的值存进了 <code>~/.board/host/</code> 下的备份文件
-          </span>
-        </p>
-      )}
-      <div className={cx('hd-sw', sync.syncGit === 'failed' && 'hp-rollback')}>
-        <div className="hd-sw-text">
-          <b>Git 凭据</b>
-          <span className={cx(`t-${gits.tone}`)}>
-            <Icon name={LINE_ICON[gits.tone]} />
-            {gits.text}
-          </span>
-        </div>
-        <span className="hp-ctl">
-          <Sync s={sync.syncGit} />
-          <Segmented<Mode> value={h.syncGit ? 'server' : 'off'} options={MODES} onChange={v => v !== (h.syncGit ? 'server' : 'off') && save({ syncGit: v === 'server' })} />
-        </span>
-      </div>
-      {h.syncGit && !busy && skipped.length > 0 && (
-        <p className="hd-sync-note">
-          <Icon name="info" />
-          <span>没配的仓库：{skipped.join('；')}</span>
-        </p>
-      )}
-      {(skills.tone === 'bad' || mcps.tone === 'bad' || gits.tone === 'bad') && <RetrySync h={h} />}
+      {rows.map(({ k, line, notes }) => (
+        <Fragment key={k.key}>
+          <div className={cx('hd-sw', sync[k.flag] === 'failed' && 'hp-rollback')}>
+            <div className="hd-sw-text">
+              <b>{k.name}</b>
+              <span className={cx(`t-${line.tone}`)}>
+                <Icon name={LINE_ICON[line.tone]} />
+                {line.text}
+              </span>
+            </div>
+            <span className="hp-ctl">
+              <Sync s={sync[k.flag]} />
+              <Segmented<Mode> value={h[k.flag] ? 'server' : 'off'} options={MODES} onChange={v => v !== (h[k.flag] ? 'server' : 'off') && save(flagPatch(k, v === 'server'))} />
+            </span>
+          </div>
+          {notes.map(n => (
+            <p key={n.text} className="hd-sync-note">
+              <Icon name="info" />
+              <span>
+                {n.text}
+                {n.code && <code>{n.code}</code>}
+                {n.tail}
+              </span>
+            </p>
+          ))}
+        </Fragment>
+      ))}
+      {rows.some(r => r.line.tone === 'bad') && <RetrySync h={h} />}
       <p className="hp-note hd-sync-rule">board-skills 不管选哪个都装：没有它派来的卡做不了。本机有同名的、不是 Board 装的，换成库里的，旧的挪进备份；软链接（开发中的 skill）不碰。</p>
-      <SkillImportInline h={h} lib={lib} />
+      <SkillImportInline h={h} lib={libs.skills ?? null} />
     </div>
   );
 }

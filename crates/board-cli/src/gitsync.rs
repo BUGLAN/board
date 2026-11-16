@@ -14,7 +14,7 @@
 //! - 只管 https 远端：远端是 SSH（`git@…`）、主机和凭据的不一样时不配；主机不一样算没配上（同步失败，写明是哪几个仓库）。
 
 use board_core::gitcred::{https_host, GitCred};
-use board_core::GitSync;
+use board_core::{GitDetail, GitSync};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -201,14 +201,14 @@ pub fn sync(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path) -> 
         let sync = match (on, cred) {
             (false, _) => GitSync { state: "off".into(), ..Default::default() },
             (true, None) => GitSync { state: "none".into(), ..Default::default() },
-            (true, Some(c)) => GitSync { state: "failed".into(), host: c.host.clone(), why: Some("服务端的 Git 凭据没有令牌".into()), ..Default::default() },
+            (true, Some(c)) => GitSync { state: "failed".into(), why: Some("服务端的 Git 凭据没有令牌".into()), detail: GitDetail { host: c.host.clone(), ..Default::default() }, ..Default::default() },
         };
         return Out { sync, changes };
     };
     let file = dir.join(FILE);
     if let Err(e) = write_file(&file, c, token) {
         clean(dir, &rec, repos, &mut changes);
-        return Out { sync: GitSync { state: "failed".into(), host: c.host.clone(), why: Some(format!("写不了 {}：{e}", shown(&file))), ..Default::default() }, changes };
+        return Out { sync: GitSync { state: "failed".into(), why: Some(format!("写不了 {}：{e}", shown(&file))), detail: GitDetail { host: c.host.clone(), ..Default::default() }, ..Default::default() }, changes };
     }
     // 主机换了：先把旧主机的那一项去掉
     if !rec.host.is_empty() && rec.host != c.host {
@@ -252,10 +252,9 @@ pub fn sync(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path) -> 
     }
     let sync = GitSync {
         state: if why.is_empty() { "synced" } else { "failed" }.into(),
-        host: c.host.clone(),
-        repos: ok,
-        skipped,
+        count: ok.len() as i64,
         why: (!why.is_empty()).then(|| why.join("；")),
+        detail: GitDetail { host: c.host.clone(), repos: ok, skipped },
     };
     Out { sync, changes }
 }
@@ -339,8 +338,8 @@ mod tests {
         let out = sync(true, Some(&cred("github.com", "tok/en")), &repos, &host_dir);
         assert_eq!(out.sync.state, "failed", "gitlab 的仓库主机不匹配");
         assert!(out.sync.why.as_deref().unwrap().contains("gitlab.com"), "{:?}", out.sync.why);
-        assert_eq!(out.sync.repos, vec![shown(&gh)]);
-        assert_eq!(out.sync.skipped.len(), 1, "SSH 的不配");
+        assert_eq!(out.sync.detail.repos, vec![shown(&gh)]);
+        assert_eq!(out.sync.detail.skipped.len(), 1, "SSH 的不配");
         let k = "credential.https://github.com.helper";
         assert_eq!(values(&gh, k), vec!["mine".to_string(), String::new(), helper(&host_dir.join(FILE))]);
         assert!(values(&ssh, k).is_empty() && values(&lab, k).is_empty());

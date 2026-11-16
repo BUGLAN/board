@@ -11,9 +11,9 @@
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { blankGit, gitCredError, gitDraftOf, normGitHost, type GitDraft } from '../../lib/gitcred';
-import { gitOld } from '../../lib/hostDetail';
 import { since } from '../../lib/hosts';
-import { gitHosts, gitRow } from '../../lib/syncPills';
+import { syncKind, syncOld } from '../../lib/syncKinds';
+import { syncHosts, syncRow } from '../../lib/syncPills';
 import type { GitCred, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
@@ -25,6 +25,8 @@ import { FormField, FormFoot, FormModal, FormSec } from './FormModal';
 import { useSaver } from './Saver';
 import { HowTip, OldHostsNote } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
+
+const GIT = syncKind('git');
 
 export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
@@ -72,7 +74,7 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
       setBusy(null);
     }
   };
-  const old = hosts.filter(h => !h.sync?.able || gitOld(h));
+  const old = hosts.filter(h => !h.sync?.able || syncOld(GIT, h));
 
   return (
     <section className="sc sc-git">
@@ -141,7 +143,7 @@ type OnOff = 'on' | 'off';
 
 /** 卡片底下的机器：一台一行，「同步 | 不同步」就是机器详情「设置」里那个开关 */
 function GitHosts({ hosts, now }: { hosts: HostInfo[]; now: number }) {
-  const list = gitHosts(hosts);
+  const list = syncHosts(GIT, hosts);
   const on = list.filter(h => h.syncGit).length;
   return (
     <div className="gc-hosts">
@@ -172,7 +174,7 @@ function GitHosts({ hosts, now }: { hosts: HostInfo[]; now: number }) {
 
 function GitHostRow({ h, now }: { h: HostInfo; now: number }) {
   const { save, sync } = useSaver(h.name);
-  const row = gitRow(h, now);
+  const row = syncRow(GIT, h, now);
   const v: OnOff = h.syncGit ? 'on' : 'off';
   return (
     <div className={cx('gc-row', !h.syncGit && 'is-off', sync.syncGit === 'failed' && 'hp-rollback')}>

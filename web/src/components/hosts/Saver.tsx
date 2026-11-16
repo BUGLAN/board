@@ -1,6 +1,7 @@
 /* 机器设置的保存（机器详情、调度共用）：每一项各存各的（store 的 saveSetting），步进器 */
 import { useEffect, useRef } from 'react';
 import { api } from '../../lib/api';
+import { SYNC_KINDS } from '../../lib/syncKinds';
 import type { HostAgent, HostInfo } from '../../lib/types';
 import { hostKey, saveSetting } from '../../store/data';
 import { useSync } from '../bits';
@@ -42,8 +43,8 @@ const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
   return a;
 };
 
-/** 改了会写进 agent 配置的（每个 agent 的模型、启动环境、skills / MCP 的开关）：当帧画成「正在写入」，服务端下发同步请求后以它为准 */
-const touchesConfig = (p: HostPatch) => !!(p.run || p.env || p.syncSkills !== undefined || p.syncMcp !== undefined || p.syncGit !== undefined);
+/** 改了会写进 agent 配置的（每个 agent 的模型、启动环境、同步到机器的几类配置的开关）：当帧画成「正在写入」，服务端下发同步请求后以它为准 */
+const touchesConfig = (p: HostPatch) => !!(p.run || p.env || SYNC_KINDS.some(k => p[k.flag] !== undefined));
 const syncing = (x: HostInfo): HostInfo['sync'] => (x.sync?.able ? { ...x.sync, ask: x.sync.ask ?? { id: 0, key: '', by: '', at: Date.now() } } : x.sync);
 
 /** 步进器连点：停手这么久才发请求，只发最后的值 */
