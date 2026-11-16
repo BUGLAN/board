@@ -94,6 +94,8 @@
 .hd-ws-ico { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .hd-ws-ico svg { width: 17px; height: 17px; color: color-mix(in oklab, var(--warn), var(--ink) 15%); }
 .hd-ws-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 「更改…」左边画保存状态（.hp-sync，控件左边 8–24px）：留够 24px，不压到路径 */
+.hd-ws-field > .hp-ctl { margin-left: 12px; }
 .hd-ws-main > code { font-family: var(--f-mono); font-size: 14px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 「每个项目一个目录：<工作空间>\<项目>」里的路径没有空格，放不下时在路径中间断行，不撑宽弹窗 */
 .hd-ws-main > small { font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
@@ -276,7 +278,7 @@
   .hd-ws-field { flex-wrap: wrap; row-gap: 8px; }
   .hd-ws-main { flex: 1 1 calc(100% - 46px); }
   .hd-ws-main > code { font-size: 13px; }
-  .hd-ws-field > .btn { margin-left: 46px; }
+  .hd-ws-field > .hp-ctl { margin-left: 46px; }
   .hd-ex li { flex-wrap: wrap; row-gap: 4px; }
   .hd-ex li span { flex-basis: 100%; }
   .hd-mrow { padding: 10px 12px; }

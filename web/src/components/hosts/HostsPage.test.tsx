@@ -306,6 +306,29 @@ describe('接口少了字段时机器页不整页崩', () => {
         expect(host.querySelector('.drawer-body')).not.toBeNull();
       }
     });
+
+  /* 保存状态（.hp-sync，不是 inline 的）绝对定位在 .hp-ctl 左边：父元素不是 .hp-ctl 时定位落到页面或弹窗上，
+     画到可视区外面，改设置时看不到保存中、已保存（default/main#391：工作空间、领取规则、自动升级） */
+  it('四个视图和机器详情三个页签里，控件旁的保存状态都在 .hp-ctl 里', async () => {
+    vi.stubGlobal('fetch', server({ providers: [], meta: META }));
+    const ws = await api.workspace();
+    act(() => useData.setState({ ws }));
+    const loose = () => [...host.querySelectorAll('.hp-sync:not(.in)')].filter(s => !s.parentElement?.classList.contains('hp-ctl')).map(s => s.parentElement?.className);
+    for (const view of ['racks', 'compare', 'shared', 'sched'] as const) {
+      act(() => useUI.setState({ hostsView: view }));
+      await act(async () => root.render(<HostsPage />));
+      await act(async () => {});
+      expect(loose()).toEqual([]);
+      // 调度里领取规则、自动升级各一个
+      if (view === 'sched') expect(host.querySelectorAll('.sc-acts .hp-ctl > .hp-sync, .sd-up .hp-ctl > .hp-sync')).toHaveLength(2);
+    }
+    for (const tab of ['overview', 'agents', 'settings'] as DetailTab[]) {
+      await act(async () => root.render(<HostDetail h={ws.hosts![0]} i={0} n={1} step={() => {}} close={() => {}} on tab={tab} setTab={() => {}} />));
+      await act(async () => {});
+      expect(loose()).toEqual([]);
+      if (tab === 'settings') expect(host.querySelector('.hd-ws-field .hp-ctl > .hp-sync')).not.toBeNull();
+    }
+  });
 });
 
 /* 手机适配（default/main#384）：机器 tab 的四个视图和机器详情三个页签从 360px 起不出横向滚动条。

@@ -931,6 +931,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sc-head p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
 .sc-head code { font: 11.5px var(--f-mono); color: var(--text-2); }
 .sc-acts { display: flex; gap: 8px; flex: none; }
+/* 领取规则的「加一条规则」、自动升级的开关：保存状态画在控件左边 8–24px（.hp-sync），左边留够 24px，不压到说明文字 */
+.sc-acts > .hp-ctl { margin-left: 8px; }
 .sc-list { display: flex; flex-direction: column; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
 .sc-item { border-top: 1px solid var(--line); }
 .sc-item:first-child { border-top: 0; }
@@ -1490,6 +1492,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .sd-all:hover { background: var(--surface-2); }
 .sd-up { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
 .sd-up > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sd-up > .hp-ctl { margin-left: 12px; }
 .sd-up b { font-size: 13.5px; font-weight: 600; }
 .sd-up span { font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
 .sd-now { font-size: 12px; color: var(--text-3); }
@@ -1588,9 +1591,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   .input.hp-env-select { flex: 1 1 200px; width: auto; }
   /* 控件旁的保存状态（.hp-sync）桌面画在控件左边；手机上控件换到了行首，左边就是屏幕边缘，改排在控件右边 */
   .hp-ctl > .hp-sync:not(.in) { position: static; order: 1; flex: none; margin: 0; }
-  /* 工作空间、领取规则、自动升级旁的保存状态：父元素不是定位元素，画到了屏幕左边外面，手机上排进这一行的末尾
-     （排在前面会把按钮往右顶一格）；接单时段那一行的也挪到末尾 */
-  :is(.hd-ws-field, .sc-acts, .sd-up) > .hp-sync:not(.in) { position: static; order: 1; flex: none; margin: 0; }
+  /* 上一条把图标排进了控件后面，桌面为它留的左边距不要了；接单时段那一行的保存状态也挪到末尾 */
+  :is(.sc-acts, .sd-up) > .hp-ctl { margin-left: 0; }
   .sd-ctl > .hp-sync.in { order: 1; }
 
   /* ---- 侧栏的「共用配置」「调度」两行：副标题窄屏放不下，只留名称 ---- */

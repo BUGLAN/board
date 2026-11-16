@@ -402,10 +402,13 @@ function WorkspaceBlock({ h, save, sync }: { h: HostInfo; save: Save; sync?: Syn
             {later.length > 0 && `。${later.join('、')} 还没有，第一次派来时建好或克隆`}
           </small>
         </div>
-        <Sync s={sync} />
-        <button type="button" className="btn sm" onClick={() => void change()}>
-          更改…
-        </button>
+        {/* 保存状态贴在「更改…」左边：包在 .hp-ctl 里，不然定位落到弹窗上、画到可视区外面（default/main#391） */}
+        <span className="hp-ctl">
+          <Sync s={sync} />
+          <button type="button" className="btn sm" onClick={() => void change()}>
+            更改…
+          </button>
+        </span>
       </div>
       {picking && (
         <FolderPick

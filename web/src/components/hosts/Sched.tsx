@@ -108,11 +108,14 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
           </p>
         </div>
         <div className="sc-acts">
-          <Sync s={sync.rules} />
-          <button className="btn sm" type="button" disabled={adding || found.length === 0} onClick={() => setAdding(true)}>
-            <Icon name="plus" />
-            加一条规则
-          </button>
+          {/* 保存状态贴在按钮左边：和其他设置项一样包在 .hp-ctl 里，不然定位落到页面上、画到可视区外面（default/main#391） */}
+          <span className="hp-ctl">
+            <Sync s={sync.rules} />
+            <button className="btn sm" type="button" disabled={adding || found.length === 0} onClick={() => setAdding(true)}>
+              <Icon name="plus" />
+              加一条规则
+            </button>
+          </span>
         </div>
       </div>
 
@@ -267,17 +270,19 @@ export function SchedSection({ hosts }: { hosts: HostInfo[] }) {
             服务端升级之后，每台机器等手上的派发做完，自己升级到同一个版本再接着接单，不用逐台点「升级」。升级没成的恢复接单、在机器的操作记录里写明；发版包还没出来这类临时失败每隔 10 分钟再试，同一个版本最多 5 次。
           </span>
         </div>
-        <Sync s={sync.upgrade} />
-        <button
-          className={cx('switch', sched.autoUpgrade && 'on')}
-          type="button"
-          role="switch"
-          aria-checked={!!sched.autoUpgrade}
-          aria-label="自动升级 board"
-          onClick={() => setAutoUpgrade(!sched.autoUpgrade)}
-        >
-          <i />
-        </button>
+        <span className="hp-ctl">
+          <Sync s={sync.upgrade} />
+          <button
+            className={cx('switch', sched.autoUpgrade && 'on')}
+            type="button"
+            role="switch"
+            aria-checked={!!sched.autoUpgrade}
+            aria-label="自动升级 board"
+            onClick={() => setAutoUpgrade(!sched.autoUpgrade)}
+          >
+            <i />
+          </button>
+        </span>
       </div>
     </section>
   );
