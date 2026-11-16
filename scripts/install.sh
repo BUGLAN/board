@@ -13,6 +13,9 @@
 #   4. 带 --name / --workspace / --dir：带 --service 时装成系统服务、开机自动接任务（board host --install），否则给出前台运行的命令
 #
 # 环境变量 BOARD_DOWNLOAD 换下载地址（镜像，或本机目录，测试用）。
+#
+# 变量后面紧跟中文、全角标点时写成 ${VAR}：macOS 的 /bin/sh（bash 3.2）在 UTF-8 下会把后面的字节算进变量名，
+# set -u 下直接报 unbound variable（服务端的单元测试会查）。
 set -eu
 
 BOARD_VERSION='@BOARD_VERSION@'
@@ -147,26 +150,26 @@ esac
 platform=$(host_platform) || die "发版附件里没有这个平台（$(uname -s) $(uname -m)）的 board：用 cargo install 从源码装"
 archive="board-$platform.tar.gz"
 dir="${BOARD_INSTALL_DIR:-$HOME/.local/bin}"
-say "→ 安装 board $BOARD_VERSION（$platform）到 $dir"
+say "→ 安装 board ${BOARD_VERSION}（${platform}）到 $dir"
 
 tmp=$(mktemp -d 2>/dev/null || mktemp -d -t board)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 fetch board-sha256.txt "$tmp/board-sha256.txt"
 fetch "$archive" "$tmp/$archive"
 want=$(sum_in "$tmp/board-sha256.txt" "$archive")
-[ -n "$want" ] || die "校验文件里没有 $archive，没有安装"
+[ -n "$want" ] || die "校验文件里没有 ${archive}，没有安装"
 got=$(sha256_of "$tmp/$archive")
-[ "$got" = "$want" ] || die "$archive 的 SHA-256 对不上（应为 $want，下载到的是 $got）：下载不完整或被改过，没有安装，现有的 board 没动"
+[ "$got" = "$want" ] || die "$archive 的 SHA-256 对不上（应为 ${want}，下载到的是 ${got}）：下载不完整或被改过，没有安装，现有的 board 没动"
 
 mkdir -p "$tmp/x"
 tar -xzf "$tmp/$archive" -C "$tmp/x" || die "解压 $archive 失败"
 [ -f "$tmp/x/board" ] || die "压缩包里没有 board"
 chmod 755 "$tmp/x/board"
 v=$("$tmp/x/board" --version 2>/dev/null || true)
-[ "$v" = "board $BOARD_VERSION" ] || die "下载到的 board 版本不对（${v:-运行不了}，应为 $BOARD_VERSION），没有安装"
+[ "$v" = "board $BOARD_VERSION" ] || die "下载到的 board 版本不对（${v:-运行不了}，应为 ${BOARD_VERSION}），没有安装"
 
 mkdir -p "$dir" || die "建不了目录 $dir"
-cp "$tmp/x/board" "$dir/.board.new.$$" || die "写不了 $dir：换一个目录（BOARD_INSTALL_DIR=<目录>）或用有权限的用户运行"
+cp "$tmp/x/board" "$dir/.board.new.$$" || die "写不了 ${dir}：换一个目录（BOARD_INSTALL_DIR=<目录>）或用有权限的用户运行"
 chmod 755 "$dir/.board.new.$$"
 mv -f "$dir/.board.new.$$" "$dir/board"
 bin="$dir/board"

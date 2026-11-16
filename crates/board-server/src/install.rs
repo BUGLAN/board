@@ -132,6 +132,29 @@ mod tests {
         assert!(String::from_utf8_lossy(&out.stderr).contains("没有经过服务端"));
     }
 
+    /// 变量名后面紧跟全角标点、中文时要写成 `${VAR}`：macOS 的 /bin/sh（bash 3.2）在 UTF-8 下会把后面那个字节
+    /// 算进变量名，`set -u` 下直接报 unbound variable，脚本在第一句提示就退出（卡片 #378）
+    #[test]
+    fn install_sh_braces_vars_before_non_ascii() {
+        for (i, line) in SH.lines().enumerate() {
+            let b = line.as_bytes();
+            let mut k = 0;
+            while k < b.len() {
+                if b[k] == b'$' && b.get(k + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') {
+                    let mut e = k + 1;
+                    while e < b.len() && (b[e].is_ascii_alphanumeric() || b[e] == b'_') {
+                        e += 1;
+                    }
+                    let var = &line[k + 1..e];
+                    assert!(e == b.len() || b[e].is_ascii(), "install.sh 第 {} 行的 ${var} 后面紧跟非 ASCII 字符，写成 ${{{var}}}：{line}", i + 1);
+                    k = e;
+                } else {
+                    k += 1;
+                }
+            }
+        }
+    }
+
     /// 校验文件对不上：中止，现有的 board 不动（同上面：脚本只支持 darwin、linux）
     #[cfg(unix)]
     #[test]
@@ -158,6 +181,8 @@ mod tests {
         std::fs::write(&f, script).unwrap();
         let out = Command::new("sh")
             .arg(&f)
+            // UTF-8 下跑：macOS 的 /bin/sh（bash 3.2）这时才会把变量后面的全角字符算进变量名（卡片 #378）
+            .env("LC_ALL", "en_US.UTF-8")
             .env("BOARD_DOWNLOAD", &assets)
             .env("BOARD_INSTALL_DIR", &bin)
             .env("HOME", d.path())
