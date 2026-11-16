@@ -132,11 +132,10 @@ mod tests {
         assert!(String::from_utf8_lossy(&out.stderr).contains("没有经过服务端"));
     }
 
-    /// 变量名后面紧跟全角标点、中文时要写成 `${VAR}`：macOS 的 /bin/sh（bash 3.2）在 UTF-8 下会把后面那个字节
-    /// 算进变量名，`set -u` 下直接报 unbound variable，脚本在第一句提示就退出（卡片 #378）
-    #[test]
-    fn install_sh_braces_vars_before_non_ascii() {
-        for (i, line) in SH.lines().enumerate() {
+    /// 脚本里后面紧跟非 ASCII 字符的 `$VAR`：(行号, 变量名)
+    fn vars_before_non_ascii(text: &str) -> Vec<(usize, String)> {
+        let mut bad = vec![];
+        for (i, line) in text.lines().enumerate() {
             let b = line.as_bytes();
             let mut k = 0;
             while k < b.len() {
@@ -145,14 +144,62 @@ mod tests {
                     while e < b.len() && (b[e].is_ascii_alphanumeric() || b[e] == b'_') {
                         e += 1;
                     }
-                    let var = &line[k + 1..e];
-                    assert!(e == b.len() || b[e].is_ascii(), "install.sh 第 {} 行的 ${var} 后面紧跟非 ASCII 字符，写成 ${{{var}}}：{line}", i + 1);
+                    if e < b.len() && !b[e].is_ascii() {
+                        bad.push((i + 1, line[k + 1..e].to_string()));
+                    }
                     k = e;
                 } else {
                     k += 1;
                 }
             }
         }
+        bad
+    }
+
+    /// shell 脚本：`.sh` 结尾，或第一行是 sh、bash 这类的 shebang（skill 的 `scripts/board` 没有扩展名）
+    fn is_shell_script(path: &str, data: &[u8]) -> bool {
+        if path.ends_with(".sh") {
+            return true;
+        }
+        let Some(first) = data.strip_prefix(b"#!") else { return false };
+        let first = String::from_utf8_lossy(first.split(|c| *c == b'\n').next().unwrap_or_default());
+        let mut words = first.split_whitespace();
+        let mut prog = words.next().unwrap_or_default().rsplit('/').next().unwrap_or_default();
+        if prog == "env" {
+            prog = words.find(|w| !w.starts_with('-')).unwrap_or_default();
+        }
+        ["sh", "bash", "dash", "ksh", "zsh"].contains(&prog)
+    }
+
+    /// 变量名后面紧跟全角标点、中文时要写成 `${VAR}`：macOS 的 /bin/sh（bash 3.2）在 UTF-8 下会把后面那个字节
+    /// 算进变量名，`set -u` 下直接报 unbound variable，脚本在第一句提示就退出（卡片 #378）。
+    /// 查 git 跟踪的所有 shell 脚本：install.sh、deploy/ 下的部署脚本、skill 的脚本（卡片 #383）
+    #[test]
+    fn shell_scripts_brace_vars_before_non_ascii() {
+        assert_eq!(vars_before_non_ascii("a $X（b）${Y}（c）$Z d $W"), vec![(1, "X".to_string())]);
+        assert!(is_shell_script("x/board", b"#!/usr/bin/env bash\n") && is_shell_script("deploy/a.sh", b""));
+        assert!(!is_shell_script("scripts/a.mjs", b"#!/usr/bin/env node\n") && !is_shell_script("a.png", b"\x89PNG"));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let out = std::process::Command::new("git").arg("-C").arg(&root).args(["ls-files", "-z"]).output().expect("要用 git 列出仓库里的文件");
+        assert!(out.status.success(), "git ls-files 失败：{}", String::from_utf8_lossy(&out.stderr));
+        let mut scripts = vec![];
+        let mut bad = vec![];
+        for rel in String::from_utf8_lossy(&out.stdout).split('\0').filter(|s| !s.is_empty()) {
+            // 删了还没提交的文件读不到，跳过
+            let Ok(data) = std::fs::read(root.join(rel)) else { continue };
+            if !is_shell_script(rel, &data) {
+                continue;
+            }
+            for (n, var) in vars_before_non_ascii(&String::from_utf8_lossy(&data)) {
+                bad.push(format!("{rel} 第 {n} 行的 ${var} 后面紧跟非 ASCII 字符，写成 ${{{var}}}"));
+            }
+            scripts.push(rel.to_string());
+        }
+        for must in ["scripts/install.sh", "deploy/backup.sh", "deploy/build-linux.sh", ".agents/skills/board-skills/scripts/board"] {
+            assert!(scripts.iter().any(|s| s == must), "没查到 {must}，查了：{scripts:?}");
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
     /// 校验文件对不上：中止，现有的 board 不动（同上面：脚本只支持 darwin、linux）

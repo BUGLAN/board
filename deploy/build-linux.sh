@@ -10,7 +10,7 @@ skip_web=false
 for arg in "$@"; do
   case "$arg" in
     --skip-web) skip_web=true ;;
-    *) echo "未知参数：$arg（可用：--skip-web）" >&2; exit 2 ;;
+    *) echo "未知参数：${arg}（可用：--skip-web）" >&2; exit 2 ;;
   esac
 done
 if [ "$skip_web" = false ]; then

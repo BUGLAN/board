@@ -42,17 +42,17 @@ sync_remote() {
         rclone:*)
             target=${remote#rclone:}
             command -v rclone >/dev/null 2>&1 || fail "找不到 rclone，无法同步到 $remote"
-            rclone copy "data/backups/$name" "$target/" || fail "rclone 同步数据库失败（$remote）"
+            rclone copy "data/backups/$name" "$target/" || fail "rclone 同步数据库失败（${remote}）"
             if [ -d data/backups/files ]; then
-                rclone copy "data/backups/files" "$target/files" || fail "rclone 同步附件失败（$remote）"
+                rclone copy "data/backups/files" "$target/files" || fail "rclone 同步附件失败（${remote}）"
             fi
             ;;
         *:*)
             # 带冒号的目标按 rsync 远端处理（本地路径不要带冒号）
             command -v rsync >/dev/null 2>&1 || fail "找不到 rsync，无法同步到 $remote"
-            rsync -a "data/backups/$name" "$remote/" || fail "rsync 同步数据库失败（$remote）"
+            rsync -a "data/backups/$name" "$remote/" || fail "rsync 同步数据库失败（${remote}）"
             if [ -d data/backups/files ]; then
-                rsync -a "data/backups/files/" "$remote/files/" || fail "rsync 同步附件失败（$remote）"
+                rsync -a "data/backups/files/" "$remote/files/" || fail "rsync 同步附件失败（${remote}）"
             fi
             ;;
         *)
