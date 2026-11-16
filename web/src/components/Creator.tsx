@@ -7,6 +7,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { openCard } from '../lib/actions';
 import { stillUploading, useAttach } from '../lib/attach';
+import { addPrompt, insertPromptText, listPrompts, removePrompt, savePrompts, updatePrompt, type Prompt } from '../lib/prompts';
 import { boardFlow } from '../lib/schema';
 import { accel, autosize, cx, pref, replay } from '../lib/util';
 import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
@@ -37,12 +38,20 @@ export function Creator() {
   const [mode, setMode] = useState<'edit' | 'preview'>('edit');
   const [restored, setRestored] = useState(false);
   const [error, setError] = useState('');
+  // 快捷提示词：浮层、本机存的列表、正在新建 / 编辑的那条、等待确认删除的 id
+  const [promptsOpen, setPromptsOpen] = useState(false);
+  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [promptEdit, setPromptEdit] = useState<{ id: string | null; title: string; text: string } | null>(null);
+  const [promptDelete, setPromptDelete] = useState<string | null>(null);
+  const [promptError, setPromptError] = useState('');
   const [keep, setKeep] = useState(() => pref.get('creator.keep', false));
   // 本次已创建：还没确认的 id 是负数（临时卡片），确认后换成真正的 ID
   const [created, setCreated] = useState<{ key: number; id: number; title: string; column: 'todo' | 'inbox' }[]>([]);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const root = useRef<HTMLElement>(null);
+  const promptBox = useRef<HTMLDivElement>(null);
+  const promptBtn = useRef<HTMLButtonElement>(null);
   const state = useRef({ title, body, column, labels });
   state.current = { title, body, column, labels };
   // 附件：还没有卡片，先上传，新建时按描述里的引用归到卡片
@@ -63,6 +72,10 @@ export function Creator() {
     setCreated([]);
     setMode('edit');
     setError('');
+    setPromptsOpen(false);
+    setPromptEdit(null);
+    setPromptDelete(null);
+    setPromptError('');
     requestAnimationFrame(() => {
       const t = titleRef.current;
       if (!t) return;
@@ -88,6 +101,86 @@ export function Creator() {
     window.addEventListener('beforeunload', unload);
     return () => window.removeEventListener('beforeunload', unload);
   }, []);
+
+  // 提示词浮层：点外面关掉（点按钮本身不算，按钮的点击会自己切换）
+  useEffect(() => {
+    if (!promptsOpen) return;
+    const down = (e: MouseEvent) => {
+      if (promptBox.current?.contains(e.target as Node)) return;
+      setPromptsOpen(false);
+      setPromptEdit(null);
+      setPromptDelete(null);
+      setPromptError('');
+    };
+    document.addEventListener('mousedown', down, true);
+    return () => document.removeEventListener('mousedown', down, true);
+  }, [promptsOpen]);
+
+  const closePrompts = (restore = false) => {
+    setPromptsOpen(false);
+    setPromptEdit(null);
+    setPromptDelete(null);
+    setPromptError('');
+    if (restore) promptBtn.current?.focus();
+  };
+
+  const togglePrompts = () => {
+    if (promptsOpen) return closePrompts();
+    setPrompts(listPrompts());
+    setPromptEdit(null);
+    setPromptDelete(null);
+    setPromptError('');
+    setPromptsOpen(true);
+  };
+
+  /** 点一条：文本框有焦点时插在光标 / 选中处，没焦点时追加到末尾（和附件插入不同，不额外加换行） */
+  const insertPrompt = (p: Prompt) => {
+    const ta = bodyRef.current;
+    const active = !!ta && document.activeElement === ta;
+    const next = insertPromptText(body, active ? ta!.selectionStart : null, active ? ta!.selectionEnd : null, p.text);
+    setBody(next.value);
+    setMode('edit');
+    requestAnimationFrame(() => {
+      const el = bodyRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+      autosize(el);
+    });
+  };
+
+  const startPromptNew = () => {
+    setPromptEdit({ id: null, title: '', text: '' });
+    setPromptDelete(null);
+    setPromptError('');
+  };
+
+  const startPromptEdit = (p: Prompt) => {
+    setPromptEdit({ id: p.id, title: p.title, text: p.text });
+    setPromptDelete(null);
+    setPromptError('');
+  };
+
+  const savePrompt = () => {
+    if (!promptEdit) return;
+    const title = promptEdit.title.trim();
+    const text = promptEdit.text;
+    if (!title) return setPromptError('标题是必填的');
+    if (!text.trim()) return setPromptError('内容是必填的');
+    const next = promptEdit.id ? updatePrompt(prompts, promptEdit.id, title, text) : addPrompt(prompts, title, text);
+    savePrompts(next);
+    setPrompts(next);
+    setPromptEdit(null);
+    setPromptError('');
+    requestAnimationFrame(() => promptBtn.current?.focus());
+  };
+
+  const deletePrompt = (id: string) => {
+    const next = removePrompt(prompts, id);
+    savePrompts(next);
+    setPrompts(next);
+    setPromptDelete(null);
+  };
 
   /** 乐观新建：当帧关闭（连续新建时清空）、临时卡片出现在目标状态最下面；服务端确认后换成真正的卡片。
       失败时临时卡片消失，内容存回草稿，提示里可以一键恢复 */
@@ -168,6 +261,15 @@ export function Creator() {
     if (!open) return;
     const key = (e: KeyboardEvent) => {
       if (useUI.getState().picker || useUI.getState().labelsOf) return;
+      // 提示词浮层开着时，Esc 只关它，Ctrl/⌘ ↵ 也不在背后把卡片建出去
+      if (promptsOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          closePrompts(true);
+        }
+        return;
+      }
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         e.stopPropagation();
@@ -185,6 +287,10 @@ export function Creator() {
 
   const q = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
   const short = body.trim().length > 40 ? body.trim().slice(0, 40) + '…' : body.trim();
+  const promptSummary = (s: string) => {
+    const one = s.replace(/\s+/g, ' ').trim();
+    return one.length > 72 ? one.slice(0, 72) + '…' : one;
+  };
   const projectLabels = cur?.project.labels ?? [];
 
   return (
@@ -296,6 +402,157 @@ export function Creator() {
             <div className="d-label cr-label">
               描述 <span className="opt">选填 · Markdown</span>
               <div className="act">
+                <div className="cr-prompts" ref={promptBox}>
+                  <button
+                    ref={promptBtn}
+                    className="btn sm ghost"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-expanded={promptsOpen}
+                    aria-controls="cr-prompt-pop"
+                    title="快捷提示词：保存常用片段，点一下插入到描述"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={togglePrompts}
+                  >
+                    <Icon name="prompt" />
+                    快捷提示词
+                  </button>
+                  {promptsOpen && (
+                    <div className="cr-prompt-pop" id="cr-prompt-pop" role="dialog" aria-label="快捷提示词">
+                      <div className="cr-prompt-head">
+                        <b>快捷提示词</b>
+                        <span className="spacer" />
+                        {!promptEdit && (
+                          <button className="btn sm ghost" type="button" onClick={startPromptNew}>
+                            <Icon name="plus" />
+                            新建
+                          </button>
+                        )}
+                        <button className="icon-btn" type="button" aria-label="关闭快捷提示词" onClick={() => closePrompts(true)}>
+                          <Icon name="close" />
+                        </button>
+                      </div>
+                      {promptEdit ? (
+                        <div
+                          className="cr-prompt-form"
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                              e.preventDefault();
+                              savePrompt();
+                            }
+                          }}
+                        >
+                          <input
+                            className="input"
+                            autoFocus
+                            maxLength={60}
+                            aria-label="提示词标题"
+                            placeholder="标题，例如：等发版"
+                            value={promptEdit.title}
+                            onChange={e => {
+                              setPromptEdit(v => (v ? { ...v, title: e.target.value } : v));
+                              setPromptError('');
+                            }}
+                          />
+                          <textarea
+                            className="textarea"
+                            rows={4}
+                            aria-label="提示词内容"
+                            placeholder="内容，可多行；点这条时原样插入描述"
+                            value={promptEdit.text}
+                            onChange={e => {
+                              setPromptEdit(v => (v ? { ...v, text: e.target.value } : v));
+                              setPromptError('');
+                            }}
+                          />
+                          {promptError && (
+                            <div className="cr-prompt-error" role="alert">
+                              {promptError}
+                            </div>
+                          )}
+                          <div className="cr-prompt-form-act">
+                            <button
+                              className="btn sm"
+                              type="button"
+                              onClick={() => {
+                                setPromptEdit(null);
+                                setPromptError('');
+                              }}
+                            >
+                              取消
+                            </button>
+                            <button
+                              className="btn sm brand"
+                              type="button"
+                              disabled={!promptEdit.title.trim() || !promptEdit.text.trim()}
+                              onClick={savePrompt}
+                            >
+                              保存
+                            </button>
+                          </div>
+                        </div>
+                      ) : prompts.length === 0 ? (
+                        <div className="cr-prompt-empty">
+                          <p>还没有快捷提示词。把常写的片段存下来，下次点一下就能插入。</p>
+                          <button className="btn sm" type="button" onClick={startPromptNew}>
+                            <Icon name="plus" />
+                            新建提示词
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="cr-prompt-list">
+                          {prompts.map(p => (
+                            <div className="cr-prompt-row" key={p.id}>
+                              <button
+                                className="cr-prompt-insert"
+                                type="button"
+                                onMouseDown={e => e.preventDefault()}
+                                onClick={() => insertPrompt(p)}
+                                title={`插入「${p.title}」`}
+                              >
+                                <b>{p.title}</b>
+                                <span>{promptSummary(p.text)}</span>
+                              </button>
+                              {promptDelete === p.id ? (
+                                <span className="cr-prompt-del">
+                                  <span>删除？</span>
+                                  <button className="btn sm danger" type="button" onClick={() => deletePrompt(p.id)}>
+                                    删除
+                                  </button>
+                                  <button className="btn sm ghost" type="button" onClick={() => setPromptDelete(null)}>
+                                    取消
+                                  </button>
+                                </span>
+                              ) : (
+                                <span className="cr-prompt-tools">
+                                  <button
+                                    className="icon-btn"
+                                    type="button"
+                                    aria-label={`编辑提示词「${p.title}」`}
+                                    title="编辑"
+                                    onClick={() => startPromptEdit(p)}
+                                  >
+                                    <Icon name="edit" />
+                                  </button>
+                                  <button
+                                    className="icon-btn"
+                                    type="button"
+                                    aria-label={`删除提示词「${p.title}」`}
+                                    title="删除"
+                                    onClick={() => setPromptDelete(p.id)}
+                                  >
+                                    <Icon name="trash" />
+                                  </button>
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="cr-prompt-foot">点一条插入到描述光标处</div>
+                    </div>
+                  )}
+                </div>
                 <button
                   className="btn sm ghost"
                   type="button"

@@ -460,9 +460,50 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .cr-error { margin-top: 4px; font-size: 12px; color: var(--danger-text); animation: enter-up var(--dur-3) var(--ease-out); }
 .cr-keys { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 6px 0 16px; font-size: 11px; color: var(--text-3); }
 .cr-keys kbd { height: 17px; min-width: 17px; font-size: 11px; }
-.cr-label { flex: none; }
+.cr-label { position: relative; flex: none; }
 .cr-label .opt { font-size: 11px; font-weight: 400; color: var(--text-3); letter-spacing: 0; text-transform: none; }
 .cr-label .act { display: flex; align-items: center; gap: 6px; }
+/* 描述标签行里的快捷提示词（default/main#413）：按钮在附件左边，浮层从按钮下方展开 */
+.cr-prompts { display: inline-flex; }
+.cr-prompt-pop {
+  position: absolute; z-index: 30; top: calc(100% + 8px); right: 0;
+  width: min(340px, 100%); max-height: min(62vh, 440px);
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border-radius: var(--r-md); background: var(--glass-strong);
+  backdrop-filter: blur(24px) saturate(1.35); -webkit-backdrop-filter: blur(24px) saturate(1.35);
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
+  animation: enter-up var(--dur-3) var(--ease-out) both;
+}
+.cr-prompt-head { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 2px; font-size: 12px; color: var(--text-2); }
+.cr-prompt-head b { font-size: 12px; font-weight: 600; }
+.cr-prompt-head .spacer { flex: 1; }
+.cr-prompt-head .icon-btn { width: 26px; height: 26px; }
+.cr-prompt-list { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; margin: 0 -2px; padding: 0 2px; }
+.cr-prompt-row { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--r-sm); transition: background-color var(--dur-1); }
+.cr-prompt-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.cr-prompt-insert { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: var(--r-sm); text-align: left; }
+.cr-prompt-insert b { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cr-prompt-insert span { font-size: 11.5px; line-height: 1.45; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cr-prompt-insert:hover b { color: color-mix(in oklab, var(--brand), var(--ink)); }
+.cr-prompt-tools { display: inline-flex; align-items: center; opacity: .55; transition: opacity var(--dur-1); }
+.cr-prompt-row:hover .cr-prompt-tools, .cr-prompt-tools:focus-within { opacity: 1; }
+.cr-prompt-tools .icon-btn { width: 26px; height: 26px; }
+.cr-prompt-del { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--danger-text); white-space: nowrap; }
+.cr-prompt-del .btn { padding: 0 7px; }
+.cr-prompt-form { display: flex; flex-direction: column; gap: 7px; }
+.cr-prompt-form .input { padding: 7px 9px; font-size: 12.5px; }
+.cr-prompt-form .textarea { min-height: 80px; padding: 8px 9px; font-size: 12.5px; line-height: 1.55; }
+.cr-prompt-form-act { display: flex; justify-content: flex-end; gap: 6px; }
+.cr-prompt-error { font-size: 11.5px; color: var(--danger-text); }
+.cr-prompt-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px; font-size: 12px; color: var(--text-3); line-height: 1.55; }
+.cr-prompt-empty .btn { align-self: flex-start; }
+.cr-prompt-foot { padding: 7px 4px 0; border-top: 1px solid var(--line); font-size: 10.5px; color: var(--text-3); }
+@media (max-width: 520px) {
+  .cr-label { flex-wrap: wrap; row-gap: 6px; }
+  .cr-label > .act { flex: 1 0 100%; margin-left: 0; justify-content: flex-end; }
+  .cr-prompt-pop { width: 100%; }
+  .cr-prompt-insert span { display: -webkit-box; white-space: normal; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+}
 .cr-desc { flex: 1; min-height: 160px; display: flex; }
 .cr-desc .textarea, .cr-preview {
   flex: 1; min-height: 0; height: auto; border-radius: var(--r-sm); padding: 14px 16px;
