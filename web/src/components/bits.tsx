@@ -195,7 +195,11 @@ export function AgentAvatar({
  * 名字为空（理论上不会有）时用 `fallback` 兜底，和 `Avatar` 一样总会画一个位子
  */
 export function ActorAvatar({ actor, className, fallback = '?' }: { actor: Actor; className?: string; fallback?: string }) {
-  return actor.kind === 'agent' ? <AgentAvatar name={actor.name || fallback} className={className} /> : <Avatar actor={actor} className={className} />;
+  return actor.kind === 'agent' ? (
+    <AgentAvatar name={actor.name || fallback} agentId={actor.agent} className={className} />
+  ) : (
+    <Avatar actor={actor} className={className} />
+  );
 }
 
 /** 仅人可打的标签在名称前带一把小锁 */

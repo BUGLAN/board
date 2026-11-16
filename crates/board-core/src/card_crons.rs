@@ -552,7 +552,7 @@ impl<'a> W<'a> {
             }
         }
         let body = self.copy_files(board.id, &c.body)?;
-        let actor = Actor { kind: ActorKind::System, name: CARD_CRON_ACTOR.into() };
+        let actor = Actor { kind: ActorKind::System, name: CARD_CRON_ACTOR.into(), agent: None };
         let inbox = c.place == INBOX;
         let column = if inbox { Some(INBOX.to_string()) } else { None };
         let d = self.exec(board, &actor, Cmd::New { title: dated(&c.name, &tz, at), body: Some(body), column, top: false, labels, from: None })?;

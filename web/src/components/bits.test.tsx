@@ -190,6 +190,19 @@ describe('按身份画头像（ActorAvatar）：动态、列表里 agent 也用�
     expect(el.querySelector('img')?.getAttribute('src')).toBe(agentMark('claude').icon);
   });
 
+  it('服务端带的 agent 让新格式名字也画图标；没有时仍退回字母头像', () => {
+    act(() =>
+      root.render(<ActorAvatar actor={{ kind: 'agent', name: 'win2/group-4.1fzzz-max', agent: 'codex' }} />),
+    );
+    let el = host.querySelector('.avatar.agent-logo') as HTMLElement;
+    expect(el.querySelector('img')?.getAttribute('src')).toBe(agentMark('codex').icon);
+
+    act(() => root.render(<ActorAvatar actor={{ kind: 'agent', name: 'win2/group-4.1fzzz-max' }} />));
+    el = host.querySelector('.avatar') as HTMLElement;
+    expect(el.classList.contains('agent-logo')).toBe(false);
+    expect(el.textContent).toBe('W');
+  });
+
   it('agent 认不出时退回字母头像，大小还是原来的位子', () => {
     act(() => root.render(<ActorAvatar actor={{ kind: 'agent', name: 'alpha' }} className="ib-av" />));
     const el = host.querySelector('.avatar.ib-av') as HTMLElement;

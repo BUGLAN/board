@@ -333,17 +333,20 @@ pub fn check_agent_name(name: &str) -> Result<(), String> {
 pub struct Actor {
     pub kind: ActorKind,
     pub name: String,
+    /// 跑在哪个 agent 里：从名字表按 `name` 带出来，界面画头像用。没有记录、旧数据或旧服务端没有这个字段时为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 impl Actor {
     pub fn human() -> Self {
-        Actor { kind: ActorKind::Human, name: String::new() }
+        Actor { kind: ActorKind::Human, name: String::new(), agent: None }
     }
     pub fn agent(name: impl Into<String>) -> Self {
-        Actor { kind: ActorKind::Agent, name: name.into() }
+        Actor { kind: ActorKind::Agent, name: name.into(), agent: None }
     }
     pub fn system() -> Self {
-        Actor { kind: ActorKind::System, name: String::new() }
+        Actor { kind: ActorKind::System, name: String::new(), agent: None }
     }
     pub fn is_agent(&self) -> bool {
         self.kind == ActorKind::Agent

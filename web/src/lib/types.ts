@@ -48,6 +48,8 @@ export type ActorKind = 'human' | 'agent' | 'system';
 export interface Actor {
   kind: ActorKind;
   name: string;
+  /** 跑在哪个 agent 里；旧服务端、旧数据没有时为空，界面按旧格式从名字解析 */
+  agent?: string;
 }
 
 export interface Pos {

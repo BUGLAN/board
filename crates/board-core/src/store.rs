@@ -671,7 +671,11 @@ pub struct R<'a> {
 }
 
 fn row_actor(kind: String, name: String) -> Actor {
-    Actor { kind: ActorKind::parse(&kind), name }
+    Actor { kind: ActorKind::parse(&kind), name, agent: None }
+}
+
+fn row_actor_with_agent(kind: String, name: String, agent: Option<String>) -> Actor {
+    Actor { kind: ActorKind::parse(&kind), name, agent }
 }
 
 impl<'a> R<'a> {
@@ -903,7 +907,8 @@ impl<'a> R<'a> {
     fn card_detail(&self, board: &BoardRef, card: Card) -> Result<CardDetail> {
         let id = card.id;
         let mut st = self.conn.prepare(
-            "SELECT id, at, actor_kind, actor_name, kind, action, text, edited_at FROM activity
+            "SELECT id, at, actor_kind, actor_name, (SELECT a.agent FROM agents a WHERE a.name = activity.actor_name),
+                    kind, action, text, edited_at FROM activity
              WHERE board = ?1 AND card = ?2 ORDER BY id",
         )?;
         let activity = st
@@ -911,11 +916,11 @@ impl<'a> R<'a> {
                 Ok(Activity {
                     id: r.get(0)?,
                     at: r.get(1)?,
-                    actor: row_actor(r.get(2)?, r.get(3)?),
-                    kind: r.get(4)?,
-                    action: r.get(5)?,
-                    text: r.get(6)?,
-                    edited_at: r.get(7)?,
+                    actor: row_actor_with_agent(r.get(2)?, r.get(3)?, r.get(4)?),
+                    kind: r.get(5)?,
+                    action: r.get(6)?,
+                    text: r.get(7)?,
+                    edited_at: r.get(8)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1188,7 +1193,8 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
 
 fn events_query(conn: &Connection, tail: &str, p: impl rusqlite::Params) -> Result<Vec<Event>> {
     let sql = format!(
-        "SELECT e.id, b.project || '/' || b.key, e.card, e.title, e.at, e.actor_kind, e.actor_name, e.op, e.text, e.via, e.client
+        "SELECT e.id, b.project || '/' || b.key, e.card, e.title, e.at, e.actor_kind, e.actor_name,
+                (SELECT a.agent FROM agents a WHERE a.name = e.actor_name), e.op, e.text, e.via, e.client
          FROM events e JOIN boards b ON b.id = e.board {tail}"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1199,11 +1205,11 @@ fn events_query(conn: &Connection, tail: &str, p: impl rusqlite::Params) -> Resu
             card_id: r.get(2)?,
             title: r.get(3)?,
             at: r.get(4)?,
-            actor: row_actor(r.get(5)?, r.get(6)?),
-            op: r.get(7)?,
-            text: r.get(8)?,
-            via: Via::parse(&r.get::<_, String>(9)?),
-            client: r.get(10)?,
+            actor: row_actor_with_agent(r.get(5)?, r.get(6)?, r.get(7)?),
+            op: r.get(8)?,
+            text: r.get(9)?,
+            via: Via::parse(&r.get::<_, String>(10)?),
+            client: r.get(11)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

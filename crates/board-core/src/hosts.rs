@@ -2457,7 +2457,7 @@ fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
         env: r.get(20)?,
         env_name: r.get(21)?,
         source: r.get(9)?,
-        by: Actor { kind: ActorKind::parse(&r.get::<_, String>(10)?), name: r.get(11)? },
+        by: Actor { kind: ActorKind::parse(&r.get::<_, String>(10)?), name: r.get(11)?, agent: None },
         state: r.get(12)?,
         result: r.get(13)?,
         created_at: r.get(14)?,

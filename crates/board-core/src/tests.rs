@@ -1430,6 +1430,22 @@ fn events_page_before_out_of_range() {
     assert!(s.read(|r| r.events_page(&b, Some(0), 3)).unwrap().is_empty());
 }
 
+#[test]
+fn event_and_activity_actors_include_agent_id_even_offline() {
+    let mut s = store();
+    let name = "win2/group-4.1fzzz-max";
+    s.write(T0, Origin::cli(), |w| w.agent_check_with_agent(Some("codex"), name, Some(1), NameOwner::Anyone)).unwrap();
+    let c = exec(&mut s, B, &Actor::agent(name), T0 + 1, new("一")).unwrap().card;
+    s.write(T0 + 2 * SEC, Origin::cli(), |w| w.agent_beat(name, true)).unwrap();
+    assert!(s.read(|r| r.require_online(name, T0 + 3 * SEC)).is_err(), "用例要在名字离线后读");
+
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let event = s.read(|r| r.events_page(&b, None, 100)).unwrap().into_iter().find(|e| e.actor.name == name).unwrap();
+    assert_eq!(event.actor.agent.as_deref(), Some("codex"));
+    let activity = card(&s, B, c.id).activity.into_iter().find(|a| a.actor.name == name).unwrap();
+    assert_eq!(activity.actor.agent.as_deref(), Some("codex"));
+}
+
 /* ------------------------------ 标签顺序（#58） ------------------------------ */
 
 fn label_names(s: &Store, project: &str) -> Vec<String> {

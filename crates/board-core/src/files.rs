@@ -164,7 +164,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {
         size: r.get(4)?,
         image,
         created_at: r.get(5)?,
-        created_by: Actor { kind: ActorKind::parse(&r.get::<_, String>(6)?), name: r.get(7)? },
+        created_by: Actor { kind: ActorKind::parse(&r.get::<_, String>(6)?), name: r.get(7)?, agent: None },
     })
 }
 
