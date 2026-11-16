@@ -421,7 +421,7 @@ export interface HostInfo {
   syncSkills?: boolean;
   /** MCP 用服务器的；否则不改 */
   syncMcp?: boolean;
-  /** Git 凭据用服务器的（配进 Board 管的仓库）；否则不改。旧版服务端没有 */
+  /** Git 凭据用服务器的（写进用户级 git 配置，按主机全局生效）；否则不改。旧版服务端没有 */
   syncGit?: boolean;
   /** 同步配置：等 board host 做的请求、最近一次的结果 */
   sync?: ConfigSync;
@@ -503,7 +503,7 @@ export interface SyncResult {
     共同的部分是状态、数量、原因（时间在外层），各自多出来的明细和它们平铺在同一层 */
 export type SyncPart<D> = {
   state: 'synced' | 'off' | 'none' | 'failed' | '';
-  /** 写进去几个：skill、MCP 服务器、配好的仓库（Git 凭据；旧版 board host 不报） */
+  /** 写进去几个：skill、MCP 服务器、配好的主机（Git 凭据；旧版 board host 不报） */
   count?: number;
   /** 没写进去的原因 */
   why?: string | null;
@@ -530,9 +530,9 @@ export type McpSync = SyncPart<{
 export type GitSync = SyncPart<{
   /** 凭据的主机 */
   host?: string;
-  /** 配好的仓库（目录） */
+  /** 配好的仓库（目录）；按主机全局配置之后为空，旧版 board host 才报 */
   repos: string[];
-  /** 没配的仓库：「目录：原因」（远端是 SSH） */
+  /** 没配的仓库：「目录：原因」（远端是 SSH）；按主机全局配置之后为空 */
   skipped: string[];
 }>;
 

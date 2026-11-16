@@ -2,7 +2,7 @@
 //!
 //! - `GET /api/git`：`{cred}`，令牌只给末尾 4 位；没设时 `cred` 是 null（界面、访问令牌都能读）
 //! - `POST /api/git {host, username, token}`：设置或修改（只能在登录后的界面上做）；令牌留空保留原来的值
-//! - `DELETE /api/git`：删掉（只能在界面上做）；用服务器的机器下次同步时去掉之前配进仓库的
+//! - `DELETE /api/git`：删掉（只能在界面上做）；用服务器的机器下次同步时去掉之前写进用户级 git 配置的
 //! - `GET /api/hosts/{名字}/git`：`{cred}`，含令牌原文，只给这台机器用的访问令牌；界面、其他机器的令牌都是 `NOT_LOGGED_IN`
 
 use crate::auth::{human, Caller};

@@ -10,7 +10,7 @@ const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   agents: [],
   skills: { state: 'synced', count: 3, dirs: ['~/.claude/skills'], replaced: [], links: [] },
   mcp: { state: 'synced', count: 1, agents: ['Claude Code'], replaced: [] },
-  git: { state: 'synced', host: 'github.com', repos: ['/w/board'], skipped: [] },
+  git: { state: 'synced', host: 'github.com', repos: [], skipped: [] },
   ...x,
 });
 const host = (name: string, x: Partial<HostInfo> = {}): HostInfo =>
@@ -72,13 +72,13 @@ describe('Git 凭据卡片上的机器', () => {
   const GIT = syncKind('git');
   const gitRow = (h: HostInfo, now?: number) => syncRow(GIT, h, now);
   const failed = result({ git: { state: 'failed', host: 'github.com', repos: [], skipped: [], why: '主机不匹配' } });
-  it('一台一行：已同步写配进了几个仓库，同步失败写原因，关掉的写用自己的凭据', () => {
-    expect(gitRow(host('mbp', { syncGit: true }), 61000)).toMatchObject({ kind: 'synced', text: expect.stringMatching(/^已同步 · 配进了 1 个仓库 · /) });
+  it('一台一行：已同步写按主机全局生效，同步失败写原因，关掉的写用自己的凭据', () => {
+    expect(gitRow(host('mbp', { syncGit: true }), 61000)).toMatchObject({ kind: 'synced', text: expect.stringMatching(/^已同步 · github\.com 的令牌已就绪，按主机全局生效 · /) });
     expect(gitRow(host('win', { syncGit: true, sync: { able: true, last: failed } }))).toEqual({ kind: 'failed', text: '同步失败：主机不匹配' });
     expect(gitRow(host('air', { syncGit: false }))).toEqual({ kind: 'off', text: '不同步：用这台机器自己的 git 凭据' });
   });
   it('离线、正在同步、还没同步过各有一句', () => {
-    expect(gitRow(host('mbp', { syncGit: true, online: false })).text).toBe('离线：上次配进了 1 个仓库，上线后同步');
+    expect(gitRow(host('mbp', { syncGit: true, online: false })).text).toBe('离线：上线后同步');
     expect(gitRow(host('mbp', { syncGit: true, sync: { able: true, ask: { id: 1, key: 'k', by: '人', at: 1 }, last: result() } }))).toEqual({ kind: 'pending', text: '正在同步…' });
     expect(gitRow(host('mbp', { syncGit: true, sync: { able: true } })).text).toBe('等 board host 同步…');
   });

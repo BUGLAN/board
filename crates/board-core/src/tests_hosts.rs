@@ -5251,14 +5251,14 @@ fn git_credential_is_masked_versioned_and_synced_to_hosts_that_use_it() {
     let res = SyncResult {
         id: Some(ask.id),
         key: ask.key.clone(),
-        git: GitSync { state: "synced".into(), count: 1, detail: GitDetail { host: "github.com".into(), repos: vec!["/w/board".into()], ..Default::default() }, ..Default::default() },
+        git: GitSync { state: "synced".into(), count: 1, detail: GitDetail { host: "github.com".into(), ..Default::default() }, ..Default::default() },
         ..Default::default()
     };
     let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
-    assert!(h.ops[0].text.ends_with("；Git 凭据（github.com）已配进 1 个仓库"), "{}", h.ops[0].text);
-    let res = SyncResult { key: ask.key.clone(), git: GitSync { state: "failed".into(), why: Some("主机不匹配".into()), ..Default::default() }, ..Default::default() };
+    assert!(h.ops[0].text.ends_with("；Git 凭据（github.com）已按主机全局生效"), "{}", h.ops[0].text);
+    let res = SyncResult { key: ask.key.clone(), git: GitSync { state: "failed".into(), why: Some("git 配置没写进去".into()), ..Default::default() }, ..Default::default() };
     let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
-    assert!(h.ops[0].text.ends_with("；Git 凭据失败（主机不匹配）"), "{}", h.ops[0].text);
+    assert!(h.ops[0].text.ends_with("；Git 凭据失败（git 配置没写进去）"), "{}", h.ops[0].text);
 
     // 令牌留空：保留原来的，内容没变不算改
     let same = s.write(T0, Origin::ui(None), |w| w.git_cred_put(git_cred("github.com", None), "buglan", "")).unwrap();

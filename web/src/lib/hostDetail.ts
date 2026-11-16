@@ -3,7 +3,7 @@
    - 一个 agent 正不正常（agentHealth）：没找到、看不到 board-skills、配置没写进去、自检没过；页签上的数字按它数
    - 一个 agent 的配置写进去没有（configLine）：已写入 / 正在写入 / 不改 / 机器离线 / 写入失败
    - skills、MCP、Git 凭据各一行（syncLine，按 syncKinds.ts 登记的种类取文案）：用服务器的写了几个、写进了哪里 / 正在写入 /
-     写入失败；不改时写 Board 不碰。下面的补充（syncNotes）：换掉了本机同名的、软链接没覆盖、没配的仓库
+    写入失败；不改时写 Board 不碰。下面的补充（syncNotes）：换掉了本机同名的、软链接没覆盖、旧版按仓库同步时没配的仓库
    - 工作空间只列例外（workspaceExceptions）：--dir 单独指定的、克隆失败的、不是 git 仓库的；还没建的项目并进一行（laterProjects）
    - 今天交审几张、异常退出几次（todayCounts）
    ========================================================================== */
@@ -90,7 +90,7 @@ export function syncLine(k: SyncKind, h: HostInfo, lib: SyncLib | null, now: num
   return { tone: 'ok', text: `${w.ok(last, lib)} · ${since(last.at, now)}` };
 }
 
-/** 那一行下面的补充（换掉了本机同名的、软链接没覆盖、没配的仓库）：开关开着、没有在写的时候才有 */
+/** 那一行下面的补充（换掉了本机同名的、软链接没覆盖、旧版按仓库同步时没配的仓库）：开关开着、没有在写的时候才有 */
 export function syncNotes(k: SyncKind, h: HostInfo): SyncNote[] {
   const last = h.sync?.last;
   return h[k.flag] && !h.sync?.ask && last ? k.notes(last) : [];

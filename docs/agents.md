@@ -117,12 +117,12 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 ## Git 凭据：在「Agent → Git 凭据」里设一次
 
-机器推不动代码（`could not read Username for 'https://github.com'`）多半是那台机器没配 git 的 https 令牌。不用每台机器配一次：在「Agent → Git 凭据」填主机（例如 `github.com`）、用户名、令牌（要有推送权限，GitHub 的 fine-grained 令牌给 Contents 读写），打开了同步的机器的 board host 把它配进 Board 管的仓库（工作空间里每个项目的目录）：
+机器推不动代码（`could not read Username for 'https://github.com'`）多半是那台机器没配 git 的 https 令牌。不用每台机器配一次：在「Agent → Git 凭据」填主机（例如 `github.com`）、用户名、令牌（要有推送权限，GitHub 的 fine-grained 令牌给 Contents 读写），打开了同步的机器的 board host 把它写进这台机器的用户级 git 配置，按凭据的主机全局生效：
 
-- 只改仓库自己的 git 配置：`credential.https://<主机>.helper` 先是一个空值、再是 `store --file '~/.board/host/board-git-credentials'`。全局配置（`~/.gitconfig`、Git Credential Manager、钥匙串）不碰，只是在这些仓库里不再用它们。
+- 只加、改用户级 git 配置（`~/.gitconfig`）里的 `credential.https://<主机>.helper`：先是一个空值（清掉系统里别的 helper），再留用户自己为同一主机写的 helper，最后是 `store --file '~/.board/host/board-git-credentials'`。其它主机、其它 helper 和文件里的其它配置都不动，不整份覆盖。之后新建、克隆的仓库只要远端是同一个 https 主机就直接生效，不用再点一次同步。
 - 令牌放在 `~/.board/host/board-git-credentials`，只有本人能读；board 的输出、日志里没有它。
-- 机器详情「设置 → skills、MCP 和 Git 凭据」里每台机器一个开关，新连上的机器默认「不改」（Board 不碰它仓库的 git 配置，需要时在机器详情或「Agent → Git 凭据」卡片上打开）；改成「不改」或在共用配置里删掉，board host 去掉配进去的、删掉令牌文件，之后用这台机器自己的凭据。
-- 只管 https 远端。远端是 SSH（`git@…`）的仓库照旧用本机的 key；远端是别的主机的，机器详情里写「同步失败：主机不匹配」。
+- 机器详情「设置 → skills、MCP 和 Git 凭据」里每台机器一个开关，新连上的机器默认「不改」（Board 不碰它的用户级 git 配置，需要时在机器详情或「Agent → Git 凭据」卡片上打开）；改成「不改」或在共用配置里删掉，board host 去掉这一项、清掉旧版按仓库配过的、删掉令牌文件，之后用这台机器自己的凭据。
+- 只管 https 远端。远端是 SSH（`git@…`）的仓库照旧用本机的 key；别的 https 主机不受影响。
 ## 一个 agent 要满足什么
 
 接入前逐条验证（「本机验证」一节有命令）：

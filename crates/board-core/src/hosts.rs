@@ -1262,7 +1262,7 @@ pub struct HostInfo {
     /// MCP 用服务器的；否则不改
     #[serde(default)]
     pub sync_mcp: bool,
-    /// Git 凭据用服务器的（配进 Board 管的仓库）；否则不改。旧版服务端没有这一项
+    /// Git 凭据用服务器的（写进这台机器的用户级 git 配置，按主机全局生效）；否则不改。旧版服务端没有这一项
     #[serde(default)]
     pub sync_git: bool,
     /// 同步配置：等 board host 做的请求、最近一次的结果
@@ -1389,7 +1389,7 @@ pub struct SyncPart<D> {
     /// synced 写好了 | off 不改 | none 服务端没设 | failed 有没写进去的；旧版 board host 不报的那一类为空
     #[serde(default)]
     pub state: String,
-    /// 写进去几个：skill（含 board-skills）、MCP 服务器、配好的仓库（Git 凭据；旧版 board host 不报，按 `repos` 数）
+    /// 写进去几个：skill（含 board-skills）、MCP 服务器、配好的主机（Git 凭据；旧版 board host 不报，按 `repos` 数）
     #[serde(default)]
     pub count: i64,
     /// 没写进去的原因
@@ -1403,7 +1403,7 @@ pub struct SyncPart<D> {
 pub type SkillsSync = SyncPart<SkillsDetail>;
 /// MCP 这一次同步的结果。synced 写好了 | off 不改 | failed 有没写进去的
 pub type McpSync = SyncPart<McpDetail>;
-/// Git 凭据这一次同步的结果。synced 配好了 | off 不改（之前配进去的已经去掉）| none 服务端没设 | failed 没配上（令牌为空、主机不匹配、git 出错）
+/// Git 凭据这一次同步的结果。synced 配好了 | off 不改（之前写进去的已经去掉）| none 服务端没设 | failed 没配上（令牌为空、git 配置写不进去）
 pub type GitSync = SyncPart<GitDetail>;
 
 /// skills 同步的明细
@@ -1437,10 +1437,10 @@ pub struct GitDetail {
     /// 凭据的主机
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
-    /// 配好的仓库（目录）
+    /// 配好的仓库（目录）；按主机全局配置之后为空，旧版 board host 才报
     #[serde(default)]
     pub repos: Vec<String>,
-    /// 没配的仓库：「目录：原因」（远端是 SSH、没有 origin）
+    /// 没配的仓库：「目录：原因」（远端是 SSH、没有 origin）；按主机全局配置之后为空
     #[serde(default)]
     pub skipped: Vec<String>,
 }
@@ -1518,9 +1518,17 @@ pub(crate) const SYNC_KINDS: [SyncKind; 3] = [
         col: "sync_git",
         on: |h| h.sync_git,
         patch: |p| p.sync_git,
-        op: Some(("Git 凭据改成用服务器的", "Git 凭据改成不改：去掉之前配进仓库的")),
+        op: Some(("Git 凭据改成用服务器的", "Git 凭据改成不改：去掉之前写进用户级 git 配置的")),
         part: |r| (&r.git.state, r.git.why.as_deref()),
-        done: |r| format!("Git 凭据（{}）已配进 {} 个仓库", r.git.detail.host, r.git.detail.repos.len()),
+        done: |r| {
+            if !r.git.detail.repos.is_empty() {
+                format!("Git 凭据（{}）已配进 {} 个仓库", r.git.detail.host, r.git.detail.repos.len())
+            } else if r.git.detail.host.is_empty() {
+                "Git 凭据已按主机全局生效".into()
+            } else {
+                format!("Git 凭据（{}）已按主机全局生效", r.git.detail.host)
+            }
+        },
         fail: "没配上",
         idle: None,
         lib: false,

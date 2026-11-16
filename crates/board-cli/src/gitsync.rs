@@ -1,17 +1,19 @@
 //! board host 这一侧的 Git 凭据同步（PRD §10.16「共用配置」，服务端见 board-core 的 `gitcred`）：
-//! 服务端设了一份 https 远端的令牌、这台机器选了「用服务器的」，就把它配进 Board 管的仓库（工作空间里每个项目的目录），
-//! board host 备代码（`git fetch`、`git clone`）和 agent 推集成分支时直接用，不用每台机器手动配 credential helper。
+//! 服务端设了一份 https 远端的令牌、这台机器选了「用服务器的」，就把它写进这台机器的用户级 git 配置，
+//! 之后新建、克隆的仓库只要远端是同一个 https 主机就自动生效，board host 备代码（`git fetch`、`git clone`）
+//! 和 agent 推集成分支时直接用，不用每台机器手动配 credential helper。
 //!
 //! - **令牌放哪**：`~/.board/host/board-git-credentials`，git 自带的 `credential-store` 的格式（一行
 //!   `https://<用户名>:<令牌>@<主机>`），只有本人能读写（0600）。git 配置里只写 helper 的命令，不写令牌；
 //!   board 的输出、日志、上报里也没有令牌，只有主机和用户名。
-//! - **配进哪**：每个仓库的本地配置（`git config --local`，同一个仓库的 worktree 共用），只配凭据的那个主机：
-//!   `credential.https://<主机>.helper` 先写一个空值（清掉系统、全局配置里的 helper，免得 Git Credential Manager 弹窗、
-//!   钥匙串里旧的令牌抢先），再写 `store --file '<上面的文件>'`。用户的全局 `credential.helper` 不碰。
-//! - **还原**：选了「不改」、服务端删了凭据时，去掉配进去的这两项（仓库里用户自己写的同名项留着）、删掉文件；
-//!   配过哪些仓库记在 `~/.board/host/git-sync.json`，工作空间换了、项目不在了也能找回去。
-//! - **之后才有的仓库**：同步之后才克隆、才建的仓库，克隆时用 `git -c` 带上同样的 helper，开始派发前（[`ensure`]）补配。
-//! - 只管 https 远端：远端是 SSH（`git@…`）、主机和凭据的不一样时不配；主机不一样算没配上（同步失败，写明是哪几个仓库）。
+//! - **配进哪**：用户级配置（`git config --global`），只配凭据的那个主机：`credential.https://<主机>.helper`
+//!   先写一个空值（清掉系统里别的 helper，免得 Git Credential Manager 弹窗、钥匙串里旧的令牌抢先），
+//!   留用户自己为同一主机写的同名项，最后写 `store --file '<上面的文件>'`；其它主机、其它 helper 不碰。
+//! - **还原**：选了「不改」、服务端删了凭据时，去掉 Board 写的这一项（用户自己写的留着）、删掉文件；
+//!   旧版按仓库配过的项从 `~/.board/host/git-sync.json` 里的记录找回去，一并清掉。
+//! - **之后才有的仓库**：全局配置按主机生效，新建、克隆的仓库不用再补配；克隆时仍用 `git -c` 带上同样的 helper，
+//!   开始派发前（[`ensure`]）再确认一次全局项还在。
+//! - 只管 https 远端：远端是 SSH（`git@…`）的仓库不用这一项，照旧用本机的 key；别的 https 主机不受影响。
 
 use board_core::gitcred::{https_host, GitCred};
 use board_core::{GitDetail, GitSync};
@@ -22,14 +24,14 @@ use std::time::Duration;
 
 /// 令牌文件名（helper 的命令里带着它，据此认出哪些配置项是 Board 写的）
 const FILE: &str = "board-git-credentials";
-/// 配过哪些仓库
+/// 记录：用的是哪个主机、旧版按仓库配过哪些仓库（只为了升级后清掉）
 const RECORD: &str = "git-sync.json";
 const QUICK: Duration = Duration::from_secs(10);
 
 /// 同步（后台线程）和开始派发前补配（主线程）都会改记录，一次只让一个做
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// 配过哪些仓库、配的是哪个主机；主机为空表示现在没在用
+/// 配的是哪个主机、旧版按仓库配过哪些仓库；主机为空表示现在没在用
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Record {
     #[serde(default)]
@@ -52,6 +54,31 @@ fn save(dir: &Path, r: &Record) {
 
 fn key(host: &str) -> String {
     format!("credential.https://{host}.helper")
+}
+
+/// 配置写在哪：生产用用户级（`--global`）；测试用单独的文件或仓库本地配置，不碰跑测试的人自己的 `~/.gitconfig`
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum Scope<'a> {
+    Global,
+    File(&'a Path),
+    Local,
+}
+
+/// 读、写这项配置：`base` 是跑 git 用的目录（用户级用 `~/.board/host`，本地配置用仓库）
+fn with_config(base: &Path, scope: Scope<'_>, args: &[&str]) -> Result<String, String> {
+    let mut all: Vec<String> = vec!["config".into()];
+    match scope {
+        Scope::Global => all.push("--global".into()),
+        Scope::File(p) => {
+            all.push("--file".into());
+            all.push(p.to_string_lossy().into_owned());
+        }
+        Scope::Local => all.push("--local".into()),
+    }
+    all.extend(args.iter().map(|a| (*a).to_string()));
+    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    crate::code::git(base, &refs, QUICK)
 }
 
 /// helper 的命令：`store --file '<文件>'`。git 用 sh 跑它（Windows 上是 Git 自带的 sh），路径换成 `/`、用单引号括起来
@@ -104,9 +131,9 @@ fn write_file(path: &Path, c: &GitCred, token: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 仓库本地配置里这一项的所有值（按顺序；空值也算一个）
-fn values(repo: &Path, k: &str) -> Vec<String> {
-    match crate::code::git(repo, &["config", "--local", "--null", "--get-all", k], QUICK) {
+/// 这项配置的所有值（按顺序；空值也算一个）
+fn values(base: &Path, scope: Scope<'_>, k: &str) -> Vec<String> {
+    match with_config(base, scope, &["--null", "--get-all", k]) {
         Ok(out) => {
             let mut v: Vec<String> = out.split('\0').map(str::to_string).collect();
             if v.last().is_some_and(String::is_empty) {
@@ -119,46 +146,38 @@ fn values(repo: &Path, k: &str) -> Vec<String> {
 }
 
 /// 把这一项改成 `want`（按顺序）；已经是了就不动
-fn set_values(repo: &Path, k: &str, now: &[String], want: &[String]) -> Result<bool, String> {
+fn set_values(base: &Path, scope: Scope<'_>, k: &str, now: &[String], want: &[String]) -> Result<bool, String> {
     if now == want {
         return Ok(false);
     }
     if !now.is_empty() {
-        crate::code::git(repo, &["config", "--local", "--unset-all", k], QUICK)?;
+        with_config(base, scope, &["--unset-all", k])?;
     }
     for v in want {
-        crate::code::git(repo, &["config", "--local", "--add", k, v], QUICK)?;
+        with_config(base, scope, &["--add", k, v])?;
     }
     Ok(true)
 }
 
-/// 配进一个仓库：用户自己写的同名项留在前面，后面接 Board 的空值和 helper
-fn configure(repo: &Path, host: &str, file: &Path) -> Result<bool, String> {
+/// 配进用户级（或测试用的文件）：先写空值清掉系统里别的 helper，再留用户自己写的同名项，最后是 Board 的 helper
+fn configure(base: &Path, scope: Scope<'_>, host: &str, file: &Path) -> Result<bool, String> {
     let k = key(host);
-    let now = values(repo, &k);
-    let mut want: Vec<String> = now.iter().filter(|v| !ours(v)).cloned().collect();
-    want.push(String::new());
+    let now = values(base, scope, &k);
+    let mut want: Vec<String> = vec![String::new()];
+    want.extend(now.iter().filter(|v| !ours(v)).cloned());
     want.push(helper(file));
-    set_values(repo, &k, &now, &want)
+    set_values(base, scope, &k, &now, &want)
 }
 
-/// 从一个仓库里去掉 Board 写的（用户自己写的留着）；仓库不在了、不是仓库了就算了
-fn unconfigure(repo: &Path, host: &str) -> Result<bool, String> {
-    if host.is_empty() || !repo.is_dir() {
+/// 从用户级（或测试用的本地配置、文件）里去掉 Board 写的（用户自己写的留着）；仓库不在了就算了
+fn unconfigure(base: &Path, scope: Scope<'_>, host: &str) -> Result<bool, String> {
+    if host.is_empty() || matches!(scope, Scope::Local) && !base.is_dir() {
         return Ok(false);
     }
     let k = key(host);
-    let now = values(repo, &k);
+    let now = values(base, scope, &k);
     let keep: Vec<String> = now.iter().filter(|v| !ours(v)).cloned().collect();
-    set_values(repo, &k, &now, &keep)
-}
-
-/// 仓库的 `origin`；不是仓库、没有 origin 时 None
-fn origin(repo: &Path) -> Option<String> {
-    if !repo.is_dir() {
-        return None;
-    }
-    crate::code::git(repo, &["remote", "get-url", "origin"], QUICK).ok().filter(|u| !u.is_empty())
+    set_values(base, scope, &k, &now, &keep)
 }
 
 fn shown(p: &Path) -> String {
@@ -171,15 +190,18 @@ pub struct Out {
     pub changes: Vec<String>,
 }
 
-/// 去掉记录里所有仓库（加上这一次的仓库）里 Board 写的、删掉令牌文件
-fn clean(dir: &Path, rec: &Record, repos: &[PathBuf], changes: &mut Vec<String>) {
+/// 去掉 Board 写在用户级配置里的那一项、旧版按仓库配过的项（记录里和这一次的仓库），再删掉令牌文件
+fn clean(dir: &Path, scope: Scope<'_>, rec: &Record, repos: &[PathBuf], changes: &mut Vec<String>) {
+    if let Ok(true) = unconfigure(dir, scope, &rec.host) {
+        changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{}）", rec.host));
+    }
     let mut all: Vec<PathBuf> = rec.repos.iter().map(PathBuf::from).collect();
     all.extend(repos.iter().cloned());
     all.sort();
     all.dedup();
     for r in &all {
-        if let Ok(true) = unconfigure(r, &rec.host) {
-            changes.push(format!("Git 凭据：从 {} 里去掉了（{}）", shown(r), rec.host));
+        if let Ok(true) = unconfigure(r, Scope::Local, &rec.host) {
+            changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项（{}）", shown(r), rec.host));
         }
     }
     if dir.join(FILE).exists() {
@@ -189,15 +211,20 @@ fn clean(dir: &Path, rec: &Record, repos: &[PathBuf], changes: &mut Vec<String>)
     save(dir, &Record::default());
 }
 
-/// 同步：`on` 是机器上选了「用服务器的」，`cred` 是服务端的（没设时 None），`repos` 是 Board 管的仓库（工作空间里每个项目的目录），
+/// 同步：`on` 是机器上选了「用服务器的」，`cred` 是服务端的（没设时 None），`repos` 是 Board 管的仓库（只用来清旧版按仓库配的项），
 /// `dir` 是 `~/.board/host`
 pub fn sync(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path) -> Out {
+    sync_at(on, cred, repos, dir, Scope::Global)
+}
+
+/// 同 [`sync`]，配置写在哪由 `scope` 决定（测试用单独的文件）
+fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scope: Scope<'_>) -> Out {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let rec = load(dir);
     let mut changes = vec![];
     let token = cred.and_then(|c| c.token.as_deref()).map(str::trim).filter(|t| !t.is_empty());
     let (Some(c), Some(token), true) = (cred, token, on) else {
-        clean(dir, &rec, repos, &mut changes);
+        clean(dir, scope, &rec, repos, &mut changes);
         let sync = match (on, cred) {
             (false, _) => GitSync { state: "off".into(), ..Default::default() },
             (true, None) => GitSync { state: "none".into(), ..Default::default() },
@@ -207,77 +234,54 @@ pub fn sync(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path) -> 
     };
     let file = dir.join(FILE);
     if let Err(e) = write_file(&file, c, token) {
-        clean(dir, &rec, repos, &mut changes);
+        clean(dir, scope, &rec, repos, &mut changes);
         return Out { sync: GitSync { state: "failed".into(), why: Some(format!("写不了 {}：{e}", shown(&file))), detail: GitDetail { host: c.host.clone(), ..Default::default() }, ..Default::default() }, changes };
     }
     // 主机换了：先把旧主机的那一项去掉
     if !rec.host.is_empty() && rec.host != c.host {
-        for r in &rec.repos {
-            let _ = unconfigure(Path::new(r), &rec.host);
+        if let Ok(true) = unconfigure(dir, scope, &rec.host) {
+            changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{}）", rec.host));
         }
     }
-    let mut ok: Vec<String> = vec![];
-    let mut skipped: Vec<String> = vec![];
-    let mut mismatch: Vec<String> = vec![];
-    let mut errs: Vec<String> = vec![];
-    for r in repos {
-        let Some(url) = origin(r) else { continue };
-        match https_host(&url) {
-            Some(h) if h == c.host => match configure(r, &c.host, &file) {
-                Ok(changed) => {
-                    if changed {
-                        changes.push(format!("Git 凭据：配进了 {}（{}）", shown(r), c.host));
-                    }
-                    ok.push(shown(r));
-                }
-                Err(e) => errs.push(format!("{}：{e}", shown(r))),
-            },
-            Some(h) => mismatch.push(format!("{}（远端是 {h}）", shown(r))),
-            None => skipped.push(format!("{}：远端不是 https 地址，用本机自己的凭据", shown(r))),
+    // 旧版按仓库配过的项（记录里的，加上这次看到的仓库）：去掉，用户自己的留着
+    let mut old: Vec<PathBuf> = rec.repos.iter().map(PathBuf::from).collect();
+    old.extend(repos.iter().cloned());
+    old.sort();
+    old.dedup();
+    for r in &old {
+        if let Ok(true) = unconfigure(r, Scope::Local, &rec.host) {
+            changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项", shown(r)));
         }
     }
-    // 记录里有、这次没配的（远端换了、项目不在了）：去掉
-    for r in rec.repos.iter().filter(|r| !ok.contains(r)) {
-        if let Ok(true) = unconfigure(Path::new(r), &c.host) {
-            changes.push(format!("Git 凭据：从 {r} 里去掉了"));
+    let (state, why) = match configure(dir, scope, &c.host, &file) {
+        Ok(true) => {
+            changes.push(format!("Git 凭据：写进了用户级 git 配置（{}）", c.host));
+            ("synced".to_string(), None)
         }
-    }
-    save(dir, &Record { host: c.host.clone(), repos: ok.clone() });
-    let mut why = vec![];
-    if !mismatch.is_empty() {
-        why.push(format!("主机不匹配：{} 和凭据的 {} 不一样", mismatch.join("、"), c.host));
-    }
-    if !errs.is_empty() {
-        why.push(format!("git 配置没写进去：{}", errs.join("；")));
-    }
+        Ok(false) => ("synced".to_string(), None),
+        Err(e) => ("failed".to_string(), Some(format!("git 配置没写进去：{e}"))),
+    };
+    save(dir, &Record { host: c.host.clone(), repos: vec![] });
     let sync = GitSync {
-        state: if why.is_empty() { "synced" } else { "failed" }.into(),
-        count: ok.len() as i64,
-        why: (!why.is_empty()).then(|| why.join("；")),
-        detail: GitDetail { host: c.host.clone(), repos: ok, skipped },
+        state,
+        count: 1,
+        why,
+        detail: GitDetail { host: c.host.clone(), ..Default::default() },
     };
     Out { sync, changes }
 }
 
-/// 开始派发前、克隆完之后：在用服务端的凭据、这个仓库的远端是凭据的主机，就补配上（已经配好时不动）。
-/// 返回配上的那一句（打印用）
-pub fn ensure(repo: &Path, dir: &Path) -> Option<String> {
+/// 开始派发前、克隆完之后：在用服务端的凭据，就确认用户级配置里那一项还在（已经配好时不动）。
+/// 全局配置按主机生效，不再按仓库补配；返回写进去的那一句（打印用）
+pub fn ensure(_repo: &Path, dir: &Path) -> Option<String> {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut rec = load(dir);
+    let rec = load(dir);
     let file = dir.join(FILE);
     if rec.host.is_empty() || !file.exists() {
         return None;
     }
-    if https_host(&origin(repo)?).as_deref() != Some(rec.host.as_str()) {
-        return None;
-    }
-    let changed = configure(repo, &rec.host, &file).ok()?;
-    let s = shown(repo);
-    if !rec.repos.contains(&s) {
-        rec.repos.push(s.clone());
-        save(dir, &rec);
-    }
-    changed.then(|| format!("Git 凭据：配进了 {s}（{}）", rec.host))
+    let changed = configure(dir, Scope::Global, &rec.host, &file).ok()?;
+    changed.then(|| format!("Git 凭据：写进了用户级 git 配置（{}）", rec.host))
 }
 
 /// `git clone` 前面加的参数：在用服务端的凭据、地址是凭据的主机时，用 `-c` 带上同样的 helper（克隆出来之后再 [`ensure`]）
@@ -315,6 +319,46 @@ mod tests {
         GitCred { host: host.into(), username: "octo cat".into(), token: Some(token.into()), ..Default::default() }
     }
 
+    /// 测试用的用户级配置文件（不碰跑测试的人自己的 `~/.gitconfig`）
+    fn cfg_git(cfg: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").arg("config").arg("--file").arg(cfg).args(args).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        assert!(out.status.success(), "git config --file {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn cfg_values(cfg: &Path, k: &str) -> Vec<String> {
+        let out = Command::new("git").arg("config").arg("--file").arg(cfg).args(["--null", "--get-all", k]).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        if !out.status.success() {
+            return vec![];
+        }
+        let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout).split('\0').map(str::to_string).collect();
+        if v.last().is_some_and(String::is_empty) {
+            v.pop();
+        }
+        v
+    }
+
+    /// 在这个仓库里 `credential fill`：用测试的用户级配置文件，拿到凭据时返回输出的全文
+    fn fill(repo: &Path, cfg: &Path, host: &str) -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["credential", "fill"])
+            .env("GIT_CONFIG_GLOBAL", cfg)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                use std::io::Write;
+                c.stdin.take().unwrap().write_all(format!("protocol=https\nhost={host}\n\n").as_bytes())?;
+                c.wait_with_output()
+            })
+            .unwrap();
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
     #[test]
     fn helper_quotes_windows_paths_and_spots_its_own_values() {
         assert_eq!(helper(Path::new(r"C:\Users\it's me\.board\host\board-git-credentials")), r"store --file 'C:/Users/it'\''s me/.board/host/board-git-credentials'");
@@ -324,25 +368,34 @@ mod tests {
     }
 
     #[test]
-    fn configures_matching_repos_reports_mismatch_and_cleans_up() {
+    fn writes_user_global_config_for_new_repos_and_cleans_old_repo_entries() {
         let t = tempfile::tempdir().unwrap();
         let host_dir = t.path().join("host");
         std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
         let gh = repo(t.path(), "gh", "https://github.com/me/board.git");
         let ssh = repo(t.path(), "ssh", "git@github.com:me/x.git");
         let lab = repo(t.path(), "lab", "https://gitlab.com/me/y.git");
-        // 用户自己在仓库里写了一个同名的：留着，排在前面
-        git(&gh, &["config", "--local", "--add", "credential.https://github.com.helper", "mine"]);
         let repos = vec![gh.clone(), ssh.clone(), lab.clone(), t.path().join("missing")];
-
-        let out = sync(true, Some(&cred("github.com", "tok/en")), &repos, &host_dir);
-        assert_eq!(out.sync.state, "failed", "gitlab 的仓库主机不匹配");
-        assert!(out.sync.why.as_deref().unwrap().contains("gitlab.com"), "{:?}", out.sync.why);
-        assert_eq!(out.sync.detail.repos, vec![shown(&gh)]);
-        assert_eq!(out.sync.detail.skipped.len(), 1, "SSH 的不配");
         let k = "credential.https://github.com.helper";
-        assert_eq!(values(&gh, k), vec!["mine".to_string(), String::new(), helper(&host_dir.join(FILE))]);
-        assert!(values(&ssh, k).is_empty() && values(&lab, k).is_empty());
+        // 用户自己为同一主机写的 helper 留着，排在前面
+        let mine = "store --file '/tmp/board-test-user-credentials'";
+        cfg_git(&cfg, &["--add", k, mine]);
+        // 旧版按仓库配过的：记录里有，这次同步要去掉
+        let old = helper(&host_dir.join(FILE));
+        for v in ["", old.as_str()] {
+            git(&gh, &["config", "--local", "--add", k, v]);
+        }
+        std::fs::write(host_dir.join(RECORD), serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&gh)] }).unwrap()).unwrap();
+
+        let out = sync_at(true, Some(&cred("github.com", "tok/en")), &repos, &host_dir, Scope::File(&cfg));
+        assert_eq!(out.sync.state, "synced", "{:?}", out.sync.why);
+        assert_eq!(out.sync.detail.host, "github.com");
+        assert_eq!(out.sync.detail.repos, Vec::<String>::new(), "不再按仓库报数量");
+        assert_eq!(out.sync.count, 1);
+        assert_eq!(cfg_values(&cfg, k), vec![String::new(), mine.to_string(), helper(&host_dir.join(FILE))]);
+        assert!(values(&gh, Scope::Local, k).is_empty(), "旧版按仓库配的已经去掉");
+        assert!(values(&ssh, Scope::Local, k).is_empty() && values(&lab, Scope::Local, k).is_empty());
         let text = std::fs::read_to_string(host_dir.join(FILE)).unwrap();
         assert_eq!(text, "https://octo%20cat:tok%2Fen@github.com\n");
         #[cfg(unix)]
@@ -354,62 +407,46 @@ mod tests {
         assert!(!out.changes.join("\n").contains("tok"), "{:?}", out.changes);
         assert!(!serde_json::to_string(&out.sync).unwrap().contains("tok/en"));
 
-        // git 真的用它：credential fill 拿到的是服务端的用户名和令牌
-        let fill = Command::new("git")
-            .arg("-C")
-            .arg(&gh)
-            .args(["credential", "fill"])
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut c| {
-                use std::io::Write;
-                c.stdin.take().unwrap().write_all(b"protocol=https\nhost=github.com\n\n")?;
-                c.wait_with_output()
-            })
-            .unwrap();
-        let got = String::from_utf8_lossy(&fill.stdout);
+        // 同步之后才建的仓库也自动用它；别的 https 主机不受影响
+        let later = repo(t.path(), "later", "https://github.com/me/later.git");
+        let got = fill(&later, &cfg, "github.com").expect("新仓库直接用全局凭据");
         assert!(got.contains("username=octo cat") && got.contains("password=tok/en"), "{got}");
+        let lab2 = repo(t.path(), "lab2", "https://gitlab.com/me/z.git");
+        assert!(fill(&lab2, &cfg, "gitlab.com").is_none(), "别的 https 主机不配");
 
         // 再同步一次：没有变化
-        let again = sync(true, Some(&cred("github.com", "tok/en")), &repos[..1], &host_dir);
+        let again = sync_at(true, Some(&cred("github.com", "tok/en")), &repos[..1], &host_dir, Scope::File(&cfg));
         assert_eq!(again.sync.state, "synced");
         assert!(again.changes.is_empty(), "{:?}", again.changes);
 
-        // 之后克隆、新建的仓库：克隆参数带上 helper，ensure 补配
+        // 克隆参数照样带上 helper（全局配置还没写时也能用）
         assert_eq!(clone_args("https://github.com/me/new.git", &host_dir).len(), 4);
         assert!(clone_args("https://gitlab.com/me/new.git", &host_dir).is_empty());
-        let later = repo(t.path(), "later", "https://github.com/me/later.git");
-        assert!(ensure(&later, &host_dir).is_some());
-        assert!(ensure(&later, &host_dir).is_none(), "已经配好时不动");
-        assert!(ensure(&lab, &host_dir).is_none());
 
-        // 关掉：去掉 Board 写的、用户自己的留着，令牌文件删掉，记录里后来补配的也去掉
-        let off = sync(false, Some(&cred("github.com", "tok/en")), &repos[..1], &host_dir);
+        // 关掉：去掉 Board 写的、用户自己的留着，令牌文件删掉，旧记录也清掉
+        let off = sync_at(false, Some(&cred("github.com", "tok/en")), &repos[..1], &host_dir, Scope::File(&cfg));
         assert_eq!(off.sync.state, "off");
-        assert_eq!(values(&gh, k), vec!["mine".to_string()]);
-        assert!(values(&later, k).is_empty());
+        assert_eq!(cfg_values(&cfg, k), vec![mine.to_string()]);
         assert!(!host_dir.join(FILE).exists() && !host_dir.join(RECORD).exists());
         assert!(clone_args("https://github.com/me/new.git", &host_dir).is_empty());
-        assert!(ensure(&later, &host_dir).is_none());
+        assert!(fill(&later, &cfg, "github.com").is_none(), "关掉后新仓库也用不到了");
     }
 
     #[test]
     fn missing_token_or_credential_is_reported_not_silent() {
         let t = tempfile::tempdir().unwrap();
-        let gh = repo(t.path(), "gh", "https://github.com/me/board.git");
-        let none = sync(true, None, std::slice::from_ref(&gh), t.path());
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        let none = sync_at(true, None, &[], &host_dir, Scope::File(&cfg));
         assert_eq!(none.sync.state, "none");
-        let empty = sync(true, Some(&cred("github.com", " ")), std::slice::from_ref(&gh), t.path());
+        let empty = sync_at(true, Some(&cred("github.com", " ")), &[], &host_dir, Scope::File(&cfg));
         assert_eq!((empty.sync.state.as_str(), empty.sync.why.as_deref()), ("failed", Some("服务端的 Git 凭据没有令牌")));
         // 主机换了：旧主机的那一项去掉，配上新的
-        sync(true, Some(&cred("github.com", "a")), std::slice::from_ref(&gh), t.path());
-        git(&gh, &["remote", "set-url", "origin", "https://git.example.com:8443/me/board.git"]);
-        let moved = sync(true, Some(&cred("git.example.com:8443", "b")), std::slice::from_ref(&gh), t.path());
+        sync_at(true, Some(&cred("github.com", "a")), &[], &host_dir, Scope::File(&cfg));
+        let moved = sync_at(true, Some(&cred("git.example.com:8443", "b")), &[], &host_dir, Scope::File(&cfg));
         assert_eq!(moved.sync.state, "synced", "{:?}", moved.sync.why);
-        assert!(values(&gh, "credential.https://github.com.helper").is_empty());
-        assert_eq!(values(&gh, "credential.https://git.example.com:8443.helper").len(), 2);
+        assert!(cfg_values(&cfg, "credential.https://github.com.helper").is_empty());
+        assert_eq!(cfg_values(&cfg, "credential.https://git.example.com:8443.helper").len(), 2);
     }
 }

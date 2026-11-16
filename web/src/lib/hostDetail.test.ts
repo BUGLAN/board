@@ -14,7 +14,7 @@ const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   agents: [{ agent: 'claude', state: 'synced', provider: 'p1', model: 'm1', effort: 'high' }],
   skills: { state: 'synced', count: 6, dirs: [], replaced: [], links: [] },
   mcp: { state: 'synced', count: 2, agents: ['Claude Code', 'Codex'], replaced: [] },
-  git: { state: 'synced', host: 'github.com', repos: ['/w/board'], skipped: [] },
+  git: { state: 'synced', host: 'github.com', repos: [], skipped: [] },
   ...x,
 });
 const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', run_mode: 'own', run_provider: 'p1', run_model: 'm1', run_effort: 'high', ...x });
@@ -110,9 +110,9 @@ describe('Git 凭据一行', () => {
   it('不改：用本机自己的', () => {
     expect(gitLine(host({ syncGit: false }), cred, 2000)).toMatchObject({ tone: 'muted', text: '用这台机器自己的 git 凭据，Board 不碰' });
   });
-  it('已同步：配进了几个仓库；没有用这个主机的仓库也写明', () => {
-    expect(gitLine(host({ syncGit: true }), cred, 61000)).toMatchObject({ tone: 'ok', text: expect.stringMatching(/^已同步：github.com 的令牌配进了 1 个仓库 · /) });
-    expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({}) } }), cred, 2000).text).toMatch(/^已同步：令牌已就绪，还没有远端是 github.com 的仓库/);
+  it('已同步：按主机全局生效', () => {
+    expect(gitLine(host({ syncGit: true }), cred, 61000)).toMatchObject({ tone: 'ok', text: expect.stringMatching(/^已同步：github.com 的令牌已就绪，按主机全局生效 · /) });
+    expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({}) } }), cred, 2000).text).toMatch(/^已同步：github.com 的令牌已就绪，按主机全局生效/);
   });
   it('同步失败写原因；正在同步、离线、服务端没设、旧版各有一句', () => {
     expect(gitLine(host({ syncGit: true, sync: { able: true, last: git({ state: 'failed', why: '主机不匹配：/w/x（远端是 gitlab.com）' }) } }), cred, 2000)).toEqual({ tone: 'bad', text: '同步失败：主机不匹配：/w/x（远端是 gitlab.com）' });
@@ -138,7 +138,7 @@ describe('skills、MCP、Git 凭据：同一个函数按种类取文案', () => 
     ['正在写入', k => host({ [k.flag]: true, sync: { able: true, ask, last: result() } }), {
       skills: ['busy', '正在写入库里的 4 个 skill…'],
       mcp: ['busy', '正在写入 4 个 MCP…'],
-      git: ['busy', '正在同步：配进 Board 管的仓库…'],
+      git: ['busy', '正在同步：写进用户级 git 配置…'],
     }],
     ['机器离线', k => host({ [k.flag]: true, online: false, sync: { able: true, ask, last: result() } }), {
       skills: ['muted', '机器离线：上线后写入库里的 4 个 skill'],
@@ -158,7 +158,7 @@ describe('skills、MCP、Git 凭据：同一个函数按种类取文案', () => 
     ['已写入', k => host({ [k.flag]: true }), {
       skills: ['ok', '库里的 6 个 skill 已写进这台机器各个 agent 的 skill 目录 · 1 分钟前'],
       mcp: ['ok', '库里的 2 个 MCP（s0、s1、s2、s3）已写进 Claude Code、Codex · 1 分钟前'],
-      git: ['ok', '已同步：github.com 的令牌配进了 1 个仓库 · 1 分钟前'],
+      git: ['ok', '已同步：github.com 的令牌已就绪，按主机全局生效 · 1 分钟前'],
     }],
   ];
   for (const [state, make, want] of cases)
@@ -181,7 +181,7 @@ describe('skills、MCP、Git 凭据：同一个函数按种类取文案', () => 
     const h = host({ syncGit: true, sync: { able: true, last } });
     expect(syncNotes(SKILLS, h)).toEqual([{ text: '替换了本机同名的 design：旧的挪进了 ', code: '~/.board/host/skills-backup/' }, { text: '本机的 dev 是软链接，没有覆盖' }]);
     expect(syncNotes(MCP, h)).toEqual([{ text: '换掉了本机同名的 github：原来的值存进了 ', code: '~/.board/host/', tail: ' 下的备份文件' }]);
-    expect(syncNotes(GIT, h)).toEqual([{ text: '没配的仓库：/w/x：远端不是 https 地址，用本机自己的凭据' }]);
+    expect(syncNotes(GIT, h)).toEqual([{ text: '旧版按仓库同步时没配的仓库：/w/x：远端不是 https 地址，用本机自己的凭据' }]);
     expect(syncNotes(GIT, host({ syncGit: false, sync: { able: true, last } }))).toEqual([]);
     expect(syncNotes(SKILLS, host({ sync: { able: true, ask, last } }))).toEqual([]);
     expect(syncNotes(MCP, host())).toEqual([]);

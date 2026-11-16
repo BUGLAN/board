@@ -1,8 +1,8 @@
 /* ==========================================================================
    「共用配置」的 Git 凭据一节（PRD §10.16「共用配置」）：服务端存一份 https 远端的令牌，
-   机器选了「用服务器的」，board host 把它配进 Board 管的仓库，备代码、agent 推集成分支直接用
+   机器选了「用服务器的」，board host 把它写进用户级 git 配置（按凭据的主机全局生效），备代码、agent 推集成分支直接用
    - 没设时一句话 +「设置」；设了一张卡：主机、令牌末尾 4 位、谁什么时候改的、修改、删除；用户名、远端
-   - 卡片底下「机器」：一台一行——系统图标、机器名（点了打开那台机器）、状态（已同步 · 配进了几个仓库 / 同步失败：原因 / 不同步）、
+   - 卡片底下「机器」：一台一行——系统图标、机器名（点了打开那台机器）、状态（已同步 · 令牌已就绪，按主机全局生效 / 同步失败：原因 / 不同步）、
      「同步 | 不同步」开关。开关就是机器详情「设置」里那一项（机器设置，当帧生效、旁边转圈）；新连上的机器默认不同步，
      需要的话在这里打开
    - 设置、修改在居中弹窗里（和供应商、MCP 同一种表单）；修改时令牌留空保留原来的
@@ -44,7 +44,7 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
       const out = await optimistic(null, () => api.putGit({ host: normGitHost(d.host), username: d.username.trim(), token: d.token.trim() }));
       setEdit(null);
       await load();
-      toast({ type: 'success', title: `已保存 ${out.host} 的 Git 凭据`, text: '用服务器的机器马上配进 Board 管的仓库', duration: 2200 });
+      toast({ type: 'success', title: `已保存 ${out.host} 的 Git 凭据`, text: '用服务器的机器马上写进用户级 git 配置，按主机全局生效', duration: 2200 });
     } catch (e) {
       toastError(e);
     } finally {
@@ -57,7 +57,7 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
     const ok = await confirm({
       title: `删掉 ${cred.host} 的 Git 凭据？`,
       text: users.length
-        ? `${users.join('、')} 用着它：board host 会从仓库里去掉它、删掉本机的令牌文件，之后用各自本机的 git 凭据推送。`
+        ? `${users.join('、')} 用着它：board host 会从用户级 git 配置里去掉它、删掉本机的令牌文件，之后用各自本机的 git 凭据推送。`
         : '没有机器用着它。',
       ok: '删掉',
       icon: 'trash',
@@ -82,8 +82,8 @@ export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
         <div>
           <h2>Git 凭据</h2>
           <p>
-            设一份 https 远端的令牌，board host 把它配进各台机器上 Board 管的仓库：拉代码、agent 推集成分支直接用，不用每台机器手动配。新连上的机器默认不同步，需要的话在卡片上逐台打开。{' '}
-            <HowTip tip="只改仓库自己的 git 配置（credential.https://<主机>.helper），不碰全局配置；令牌放在 ~/.board/host/board-git-credentials，只有本人能读，不进日志和上报。一台机器关掉同步、或这里删掉后，配进去的会去掉。SSH 地址（git@…）的仓库不管，照旧用本机的 key。" />
+            设一份 https 远端的令牌，board host 把它写进各台机器的用户级 git 配置：之后新建、克隆的仓库只要远端是同一个 https 主机就能直接用，拉代码、agent 推集成分支不用每台机器手动配。新连上的机器默认不同步，需要的话在卡片上逐台打开。{' '}
+            <HowTip tip="只改用户级 git 配置里的 credential.https://<主机>.helper 一项（新克隆的仓库自动生效），不碰别的主机、别的 helper，也不整份覆盖 ~/.gitconfig；令牌放在 ~/.board/host/board-git-credentials，只有本人能读，不进日志和上报。一台机器关掉同步、或这里删掉后，这一项会去掉。SSH 地址（git@…）的仓库不管，照旧用本机的 key。" />
           </p>
         </div>
         {!cred && view && (
@@ -166,7 +166,7 @@ function GitHosts({ hosts, now }: { hosts: HostInfo[]; now: number }) {
       )}
       <p className="gc-note">
         <Icon name="info" />
-        <span>新连上的机器默认不同步，需要的话在这里打开。Board 不碰不同步的机器的仓库 git 配置，之前配进去的会去掉。</span>
+        <span>新连上的机器默认不同步，需要的话在这里打开。Board 只碰同步的机器上用户级 git 配置里凭据主机的那一项，关掉后这一项会去掉。</span>
       </p>
     </div>
   );
@@ -237,7 +237,7 @@ function GitForm({
             setTried(true);
             if (!why) onSave();
           }}
-          note="保存后用服务器的机器马上配进仓库"
+          note="保存后用服务器的机器马上写进用户级 git 配置"
         />
       }
     >
