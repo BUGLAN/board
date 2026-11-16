@@ -1268,13 +1268,16 @@ fn service_restarts_host_after_kill9() {
     // 10 秒内（这里 0.5 秒）重新启动，以新进程上线（带上一次的标识接回名字）
     wait_until("被 kill -9 后重新上线", Duration::from_secs(15), || field(2).is_some_and(|i| i != before) && online(&rig));
     let log = rig.s.home.join(".board").join("host").join("host.log");
+    // board host 拿到心跳响应之后才打印「已上线」，守护进程再把它转写进 host.log：服务端看到上线、pid 文件换了实例标识时，
+    // 这一行可能还没落盘，读一次就断言会偶发失败（v0.1.35 的 deploy 就这么挂的）。等它出现，超时和上面等上线一样
+    wait_until("host.log 里出现「mbp 已上线」", Duration::from_secs(15), || std::fs::read_to_string(&log).is_ok_and(|t| t.contains("mbp 已上线")));
     let text = std::fs::read_to_string(&log).unwrap();
     assert!(text.contains("启动 board host（第 1 次") && text.contains("异常退出（被信号 9 结束）") && text.contains("启动 board host（第 2 次"), "{text}");
-    assert!(text.contains("mbp 已上线"), "board host 的输出写进 host.log：{text}");
     // 停止服务：board host 收尾（机器离线），守护进程退出码 0
     let (code, out) = stop(sup);
     assert_eq!(code, 0, "{out}");
     wait_until("mbp 离线", Duration::from_secs(10), || !online(&rig));
+    // 「收到停止信号」「守护进程退出」是守护进程自己写的，stop 等到它退出才返回，读的时候已经在日志里
     let text = std::fs::read_to_string(&log).unwrap();
     assert!(text.contains("收到停止信号") && text.contains("守护进程退出"), "{text}");
     assert!(!rig.s.home.join(".board").join("host").join("service.pid").exists());
