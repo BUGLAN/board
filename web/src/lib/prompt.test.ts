@@ -12,10 +12,6 @@ describe('复制为提示词（PRD §10.9）', () => {
     expect(detailPrompt('default/main', { id: 5, column: 'inbox' })).toBe(splitPrompt('default/main', 5));
     expect(detailPrompt('default/main', { id: 5, column: 'todo' })).toBe(cardPrompt('default/main', 5));
   });
-  it('判过够细、人点了「强制拆解」：句子写明强制（default/main#306）', () => {
-    expect(splitPrompt('default/main', 5, { force: true })).toBe('/board-skills 强制拆解 default项目之中的main白板中的#5需求');
-    expect(detailPrompt('default/main', { id: 5, column: 'inbox' }, true)).toBe(splitPrompt('default/main', 5, { force: true }));
-  });
 });
 
 describe('快捷提示词里的拆解：先判粒度（default/main#306）', () => {

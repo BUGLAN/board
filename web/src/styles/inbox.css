@@ -323,34 +323,45 @@
 .ib-split-note > svg { flex: none; width: 15px; height: 15px; color: var(--c-doing); }
 .ib-split-note b { font-weight: 600; color: var(--text); }
 .ib-split-note .spacer { flex: 1; }
-/* 拆解组（default/main#285）：原条目不单独占一行，拆出的卡成组；组头「拆自 #ID 标题」，点开看原条目的描述，左边一道竖线连着组里的卡 */
+/* 拆解组（default/main#285，树形缩进）：原条目是组里第一行，后面「拆成 N 张」，点开看它的描述；
+   拆出的卡缩进一级，树线从原条目的勾选框连下来，每张一个拐角。拐角画在行自己身上（行的父元素要一直是 .ib-brows，整理动效靠它认组里的行） */
 .ib-rows > .ib-bundle + *, .ib-rows > * + .ib-bundle { box-shadow: inset 0 1px 0 var(--line); }
-.ib-bundle { position: relative; background: color-mix(in srgb, var(--c-inbox) 3.5%, transparent); }
-.ib-bundle:first-child { border-top-left-radius: var(--r-md); border-top-right-radius: var(--r-md); }
-.ib-bundle:last-child { border-bottom-left-radius: var(--r-md); border-bottom-right-radius: var(--r-md); }
-.ib-bh { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 14px; }
+.ib-bundle { position: relative; --ib-tree: color-mix(in srgb, var(--c-inbox) 60%, transparent); --ib-tree-x: 22.25px; }
+.ib-bh { position: relative; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 14px; }
+/* 树线的起点：原条目勾选框下面 */
+.ib-bh::after { content: ''; position: absolute; left: var(--ib-tree-x); top: 34px; bottom: 0; border-left: 1.5px solid var(--ib-tree); pointer-events: none; }
 .ib-bh-main {
-  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 40px; padding: 0; text-align: left;
-  font-size: 12.5px; color: var(--text-2); border-radius: var(--r-sm);
+  display: grid; grid-template-columns: 34px 20px minmax(0, max-content) auto; justify-content: start; align-items: center; gap: 10px;
+  flex: 1; min-width: 0; height: 48px; padding: 0; text-align: left; border-radius: var(--r-sm);
 }
 .ib-bh-main:focus-visible { outline-offset: -2px; }
-.ib-bh-k { flex: none; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: color-mix(in oklab, var(--c-inbox), var(--ink)); }
-.ib-bh-main b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
-.ib-bh-main .ib-gh-n { flex: none; font-size: 11px; color: var(--text-3); }
+.ib-bh-main b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; color: var(--text); }
 .ib-bh-main:hover b { text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
-.ib-bundle.open .ib-bh .ib-chev { transform: rotate(180deg); }
+.ib-bh-n {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px 0 6px; border-radius: 999px; white-space: nowrap;
+  font-size: 11px; font-weight: 600; color: color-mix(in oklab, var(--c-inbox), var(--ink)); background: color-mix(in srgb, var(--c-inbox) 13%, transparent);
+}
+/* 「合并」图标倒过来当「拆」 */
+.ib-bh-n svg { flex: none; width: 13px; height: 13px; transform: rotate(180deg); }
+.ib-bh-n em { font-style: normal; font-weight: 500; opacity: .75; }
+.ib-bh-tog { flex: none; margin-right: -5px; }
+.ib-bh-tog .ib-chev { width: 14px; height: 14px; transition: transform var(--dur-2) var(--ease-out); }
+.ib-bundle.open .ib-bh-tog .ib-chev { transform: rotate(180deg); }
 .ib-undo-split { flex: none; }
-.ib-bdesc { display: grid; gap: 10px; padding: 2px 22px 14px 46px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+.ib-bdesc { position: relative; display: grid; gap: 10px; padding: 0 22px 14px 74px; animation: enter-up var(--dur-3) var(--ease-out) backwards; }
+.ib-bdesc::before { content: ''; position: absolute; left: var(--ib-tree-x); top: 0; bottom: 0; border-left: 1.5px solid var(--ib-tree); pointer-events: none; }
 .ib-bdesc .desc-view { max-height: 320px; overflow: auto; font-size: 13px; }
 .ib-bdesc .spacer { flex: 1; }
-.ib-brows { position: relative; }
-.ib-brows::before {
-  content: ''; position: absolute; z-index: 1; left: 6px; top: 6px; bottom: 10px; width: 2px; border-radius: 2px;
-  background: color-mix(in srgb, var(--c-inbox) 45%, transparent); pointer-events: none;
+.ib-brows { position: relative; padding-left: 30px; }
+/* 每张拆出的卡一个拐角：从竖线拐到它的勾选框前面；不是最后一张时竖线接着往下 */
+.ib-brows > .ib-row::before {
+  content: ''; position: absolute; z-index: 1; left: calc(var(--ib-tree-x) - 30px); top: 0; width: 13px; height: 24px; pointer-events: none;
+  border-left: 1.5px solid var(--ib-tree); border-bottom: 1.5px solid var(--ib-tree); border-bottom-left-radius: 8px;
 }
-.ib-brows > .ib-row:first-child { box-shadow: inset 0 1px 0 var(--line); }
-.ib-brows > .ib-row:first-child, .ib-brows > .ib-row:first-child .ib-line { border-top-left-radius: 0; border-top-right-radius: 0; }
-.ib-bundle:not(:last-child) .ib-brows > .ib-row:last-child, .ib-bundle:not(:last-child) .ib-brows > .ib-row:last-child .ib-line { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.ib-brows > .ib-row:not(:last-child)::after { content: ''; position: absolute; left: calc(var(--ib-tree-x) - 30px); top: 0; bottom: 0; border-left: 1.5px solid var(--ib-tree); pointer-events: none; }
+.ib-brows > .ib-row:first-child { box-shadow: none; }
+.ib-bundle .ib-brows > .ib-row, .ib-bundle .ib-brows > .ib-row .ib-line { border-radius: var(--r-sm); }
+.ib-bundle:last-child .ib-brows > .ib-row:last-child:not(.open), .ib-bundle:last-child .ib-brows > .ib-row:last-child:not(.open) .ib-line { border-bottom-right-radius: var(--r-md); }
 
 /* ---------------- 窄屏 ---------------- */
 @media (max-width: 980px) {
@@ -373,9 +384,19 @@
   .ib-t b { max-width: 100%; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .ib-t > span { max-width: 100%; }
   .ib-edit { padding: 6px 14px 16px; }
+  /* 窄屏：组头标题可以折两行、「撤销拆解」只留图标；组里的卡勾选框和标题顶部对齐，拐角落在第一行 */
+  .ib-bundle { --ib-tree-x: 20.25px; }
   .ib-bh { padding: 0 12px; }
-  .ib-bh-main .ib-id { display: none; }
-  .ib-bdesc { padding: 2px 14px 14px; }
+  .ib-bh::after { top: calc(50% + 11px); }
+  .ib-bh-main { grid-template-columns: minmax(0, max-content) auto; height: auto; min-height: 52px; padding: 8px 0; }
+  .ib-bh-main b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .ib-bh-main .ib-id, .ib-bh-main .ib-av, .ib-bh-tog, .ib-undo-t { display: none; }
+  .ib-undo-split { padding: 0 8px; }
+  .ib-undo-split svg { margin: 0; }
+  .ib-bdesc { padding: 0 14px 14px 40px; }
+  .ib-brows > .ib-row .ib-line { align-items: start; }
+  .ib-brows > .ib-row .ib-line > .ib-check { margin-top: 1px; }
+  .ib-brows > .ib-row::before { height: 18px; }
   .ib-gh-hint { display: none; }
   .ib-bulk { bottom: 14px; max-width: calc(100% - 20px); padding-left: 12px; }
   .ib-bulk .ib-bl { display: none; }

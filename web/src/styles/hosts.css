@@ -515,9 +515,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .dp-host:disabled em { color: var(--text-3); }
 .dp-note { margin-top: 10px !important; font-size: 12px !important; color: var(--warn-text) !important; }
 .dp-note.dp-split { margin-top: 2px !important; color: var(--text-3) !important; line-height: 1.6; }
-/* 粒度预检（default/main#306）：这一条够细、不用拆；强制拆解时也在这里提醒一句 */
-.dp-note.dp-size { margin-top: 6px !important; color: var(--text-2) !important; line-height: 1.6; }
-.dp-note.dp-size b { color: var(--text); }
 .dp-empty { margin-top: 14px; }
 .dp-empty .btn { margin-top: 10px; }
 

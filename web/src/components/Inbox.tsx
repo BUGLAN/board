@@ -7,15 +7,14 @@
      整理走、删掉后自动到下一条），切换入口和分组放在一起，记住上次用的
    侧栏（Workbench 的 InboxSide）：记一条未整理、筛选、来源、放了多久
    写操作都走 store/data 的乐观更新：当帧生效，行在原位播离场，其余的行用弹簧补间补位
-   - 拆解（PRD §10.5、§9.1）：展开的一行「派给 agent 拆解」；正在拆解的标「拆解中 · 机器 · agent」，展开后可以停止。
-     拆出卡之后原条目不再单独占一行：拆出的卡成组，组头写「拆自 #ID 标题」，展开看原条目的描述，
-     拆出的卡都还在未整理里时可以「撤销拆解」（拆出的卡进回收站，原条目回来）；整理走了之后原条目一直隐藏（lib/split）
+   - 拆解（PRD §10.5、§9.1）：展开的一行「拆解」；正在拆解的标「拆解中 · 机器 · agent」，展开后可以停止。
+     拆出卡之后成组（树形缩进）：原条目是组里第一行、后面写「拆成 N 张」，点开看它的描述；拆出的卡缩进一级、树线连着原条目。
+     拆出的卡都还在未整理里时可以「撤销拆解」（拆出的卡进回收站，原条目回来）；全都整理走了之后原条目一直隐藏（lib/split）
    ========================================================================== */
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { openCard, triage, untriage } from '../lib/actions';
-import { judge } from '../lib/granularity';
 import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
 import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
@@ -718,7 +717,8 @@ function SplitMarks({ card: c, inBundle }: { card: Card; inBundle?: boolean }) {
   );
 }
 
-/** 拆解组：组头「拆自 #ID 标题」（点开看原条目的描述）、勾选整组、撤销拆解；下面是拆出的、还在未整理里的卡 */
+/** 拆解组（树形缩进）：原条目是组里的第一行（编号、记下的人、标题，后面「拆成 N 张」），点它展开原条目的描述；
+    拆出的、还在未整理里的卡缩进一级，树线从原条目的勾选框连下来。组的勾选框勾这些卡，能撤销时有「撤销拆解」 */
 function SplitBundle({
   parent: p, cards, checked, open, now, labels, all, home, onCheck,
 }: { parent: Card; cards: Card[]; checked: number[]; open: number | null; now: number; labels: Label[]; all: Card[]; home: string; onCheck: (id: number, shift: boolean) => void }) {
@@ -727,29 +727,35 @@ function SplitBundle({
   const undoable = useData(s => canUndoSplit(s.board?.cards, p.id));
   const busy = useData(s => [p.id, ...cards.map(c => c.id)].some(id => !!s.saving[cardKey(s.path, id)]));
   const board = useData(s => s.board);
+  // 一共拆出了几张（白板上的，不含回收站里的）：有的已经整理走了，组里只剩还在未整理的
+  const total = useData(s => kidsOf(s.board?.cards).get(p.id)?.length ?? 0);
   const ids = cards.filter(c => !isDraft(c.id)).map(c => c.id);
   const allOn = ids.length > 0 && ids.every(id => checked.includes(id));
   const some = !allOn && ids.some(id => checked.includes(id));
+  const gone = total - cards.length;
   return (
     <div className={cx('ib-bundle', exp && 'open')} data-split={p.id}>
       <div className="ib-bh">
         <Check
           on={allOn}
           some={some}
-          label={allOn ? `取消勾选拆自 #${p.id} 的这组` : `勾选拆自 #${p.id} 的这组`}
+          label={allOn ? `取消勾选从 #${p.id} 拆出的卡` : `勾选从 #${p.id} 拆出的卡`}
           onToggle={() => {
             const cur = useInbox.getState().checked;
             setInbox({ checked: allOn ? cur.filter(c => !ids.includes(c)) : [...new Set([...cur, ...ids])] });
           }}
         />
-        <button type="button" className="ib-bh-main" aria-expanded={exp} onClick={() => setExp(!exp)}>
-          <span className="ib-bh-k">拆自</span>
+        <button type="button" className="ib-bh-main" aria-expanded={exp} aria-label={`#${p.id} ${p.title}：${exp ? '收起' : '展开'}原条目`} onClick={() => setExp(!exp)}>
           <span className="ib-id mono">#{p.id}</span>
+          <ActorAvatar actor={p.createdBy} className="ib-av" />
           <b>
             <Title text={p.title} />
           </b>
-          <span className="ib-gh-n mono">{cards.length}</span>
-          <Icon name="chevDown" className="ib-chev" />
+          <span className="ib-bh-n">
+            <Icon name="merge" />
+            拆成 {Math.max(total, cards.length)} 张
+            {gone > 0 && <em>，{gone} 张已整理走</em>}
+          </span>
         </button>
         {d && <SplittingMark d={d} />}
         {undoable && (
@@ -757,15 +763,19 @@ function SplitBundle({
             <button
               type="button"
               className="btn sm ghost ib-undo-split"
+              aria-label="撤销拆解"
               disabled={busy || !!d}
               data-tip-pos="top"
               onClick={() => void undoSplit(p)}
             >
               <Icon name="replay" />
-              撤销拆解
+              <span className="ib-undo-t">撤销拆解</span>
             </button>
           </Tip>
         )}
+        <button type="button" className="icon-btn sm ib-bh-tog" aria-expanded={exp} aria-label={exp ? '收起原条目' : '展开原条目'} onClick={() => setExp(!exp)}>
+          <Icon name="chevDown" className="ib-chev" />
+        </button>
       </div>
       {exp && (
         <div className="ib-bdesc">
@@ -926,9 +936,6 @@ const Row = memo(function Row({
 function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number; all: Card[]; home: string; saving: boolean }) {
   const [pick, setPick] = useState<DOMRect | null>(null);
   const d = useData(s => cardDispatch(s.ws, s.path, c.id));
-  // 粒度预检（default/main#306）：已经拆出来的子项不再判；偏小的不拆，要拆需点「强制拆解」
-  const verdict = c.splitFrom == null ? judge(c.title, c.body) : null;
-  const small = verdict?.size === 'small' ? verdict : null;
   return (
     <div className="ib-edit">
       {d && <SplitNote d={d} />}
@@ -967,22 +974,12 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
         </button>
         <Tip
           text={
-            d
-              ? '已经派出去了：在上面取消或停止'
-              : small
-                ? `任务粒度合适，不用拆（${small.why}）；点「强制拆解」仍可派给 agent 再切`
-                : '派给一台机器上的 agent 拆成几张卡，拆出的卡记到未整理，这一条并进拆出的那组里'
+            d ? '已经派出去了：在上面取消或停止' : '派给一台机器上的 agent 拆成几张能直接做的卡（够小的整理成一张），记到未整理、挂在这一条下面'
           }
         >
-          <button
-            className="btn sm"
-            type="button"
-            disabled={saving || !!d}
-            data-tip-pos="top"
-            onClick={() => openDispatch(c.id, { force: !!small })}
-          >
+          <button className="btn sm" type="button" disabled={saving || !!d} data-tip-pos="top" onClick={() => openDispatch(c.id)}>
             <Icon name="dispatch" />
-            {small ? '强制拆解' : '派给 agent 拆解'}
+            拆解
           </button>
         </Tip>
         <button

@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { judge } from '../../lib/granularity';
 import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
@@ -187,20 +186,17 @@ export function DispatchDialog() {
   const last = useRef(req);
   if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
-  const { card, force, move } = last.current;
-  return <DispatchBody key={`${card}-${force}-${move ?? ''}`} card={card} force={force} move={move} on={on && req != null} />;
+  const { card, move } = last.current;
+  return <DispatchBody key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
 }
 
-/** force：粒度预检判偏小，人点了「强制拆解」仍要拆（default/main#306） */
-function DispatchBody({ card, force, move, on }: { card: number; force: boolean; move?: number; on: boolean }) {
+function DispatchBody({ card, move, on }: { card: number; move?: number; on: boolean }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
   const entry = useData(s => s.board?.cards[card]);
   const title = entry?.title ?? '';
   // 「未整理」里的条目：派给 agent 拆解
   const split = entry?.column === 'inbox';
-  // 粒度预检说这一条已经够细（已经拆出来的子项不再判）
-  const small = split && !force && entry?.splitFrom == null ? judge(entry.title, entry.body) : null;
   const hosts = hostsOf(ws);
   // 接不了这块白板的机器不能选（PRD §9.1「能不能接」）：没有工作空间、目录不对、环境检查没通过。
   // 原因是服务端给的（工作区数据里的 blocks），这里不自己再判断
@@ -269,23 +265,10 @@ function DispatchBody({ card, force, move, on }: { card: number; force: boolean;
 
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
-      <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `派给 agent 拆解 #${card}` : `派发 #${card}`}>
-        <h3>{move != null ? `改派 #${card}` : split ? `${force ? '强制' : ''}派给 agent 拆解 #${card}` : `派发 #${card}`}</h3>
+      <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `拆解 #${card}` : `派发 #${card}`}>
+        <h3>{move != null ? `改派 #${card}` : split ? `拆解 #${card}` : `派发 #${card}`}</h3>
         <p className="dp-sub">{title}</p>
-        {split && <p className="dp-note dp-split">agent 读这一条，把它拆成几张卡记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
-        {/* 粒度预检（default/main#306）：够细的一条先别拆，说清楚为什么；强制拆解时提醒 agent 只切真的有先后依赖的部分 */}
-        {(small || (split && force)) && (
-          <p className="dp-note dp-size" role="status">
-            {small ? (
-              <>
-                <b>任务粒度合适，不用拆</b>
-                （{small.why}）：这一条自己就能做完、单独复盘。点「强制拆解」仍可派给 agent，提示词里会告诉它只在真的有先后依赖时才切。
-              </>
-            ) : (
-              <>强制拆解：这条预检判过够细，agent 会再判一遍，只在真的有先后依赖时才切；能整个做就保留原样、不建卡。</>
-            )}
-          </p>
-        )}
+        {split && <p className="dp-note dp-split">派给一台机器上的 agent：它读这一条，拆成几张能直接做的卡（够小的整理成一张）记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
         {hosts.length === 0 ? (
           <div className="dp-empty">
             <p>还没有机器。在要干活的机器上运行 board host，它会出现在这里。</p>
@@ -402,7 +385,7 @@ function DispatchBody({ card, force, move, on }: { card: number; force: boolean;
           </button>
           <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={sending || (any ? takers.length === 0 : !h || !agent || !usable(h))} aria-busy={sending || undefined} onClick={submit}>
             <Icon name="dispatch" />
-            {move != null ? '改派' : split ? (force ? '强制拆解' : '派给 agent 拆解') : '派发'}
+            {move != null ? '改派' : split ? '拆解' : '派发'}
           </button>
         </div>
       </div>
