@@ -239,6 +239,7 @@ export function BoardView() {
           <Magnet
             path={path}
             statuses={f.list}
+            frozen={!!drag}
             render={(s, h) => {
               const i = f.list.indexOf(s);
               return (
@@ -671,17 +672,21 @@ export function useMobile() {
   return m;
 }
 
-function Magnet({
-  path, statuses, render,
+export function Magnet({
+  path, statuses, frozen = false, render,
 }: {
   path: string;
   statuses: Status[];
+  /** 卡片拖动期间冻结块的尺寸测量：占位跨块移动会改变列高，重排又会让落点来回变（default/main#419） */
+  frozen?: boolean;
   render: (s: Status, h: { onMove: (e: React.PointerEvent) => void; resizer: ReactNode }) => ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const mobile = useMobile();
   const [width, setWidth] = useState(1000);
   const [heights, setHeights] = useState<Record<string, number>>({});
+  const frozenRef = useRef(frozen);
+  frozenRef.current = frozen;
   // 拖动中的预览 / 刚保存、等服务端确认的布局
   const [live, setLive] = useState<Record<string, Tile> | null>(null);
   const [drag, setDrag] = useState<{ key: string; left: number; top: number; mode: 'move' | 'size' } | null>(null);
@@ -698,7 +703,7 @@ function Magnet({
   useLayoutEffect(() => {
     const el = ref.current!;
     const measure = () => {
-      if (el.clientWidth) setWidth(el.clientWidth);
+      if (el.clientWidth && !frozenRef.current) setWidth(el.clientWidth);
     };
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -707,6 +712,7 @@ function Magnet({
   }, []);
   useLayoutEffect(() => {
     const ro = new ResizeObserver(es => {
+      if (frozenRef.current) return;
       setHeights(h => {
         let n = h;
         for (const e of es) {
@@ -723,6 +729,25 @@ function Magnet({
     for (const k of keys) if (els.current[k]) ro.observe(els.current[k]!);
     return () => ro.disconnect();
   }, [keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 拖动中尺寸变化被跳过，ResizeObserver 结束后不会再把它们送进来：松手后统一补测一次。
+  // 宽高都一起补，Windows 上滚动条出现 / 消失会改宽，同样不能让它在拖动中参与排布。
+  useLayoutEffect(() => {
+    if (frozen) return;
+    const el = ref.current;
+    if (!el) return;
+    if (el.clientWidth) setWidth(el.clientWidth);
+    setHeights(h => {
+      let n = h;
+      for (const k of keys) {
+        const e = els.current[k];
+        if (!e) continue;
+        const v = e.offsetHeight;
+        if (!v && !e.offsetParent) continue;
+        if (n[k] !== v) n = { ...n, [k]: v };
+      }
+      return n;
+    });
+  }, [frozen, keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 松手：把每块的 y 对齐到实际位置后保存，下次拖动从这里排先后 */
   const commit = (all: Record<string, Tile>) => {
