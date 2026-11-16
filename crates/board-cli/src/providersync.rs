@@ -74,7 +74,7 @@ pub struct Lib {
 /// 一个 agent 的配置文件位置；WSL 里的 agent（返回 None）和配置文件里新加的 agent 不支持
 pub fn files_of(agent: &str, env: &Env) -> Option<Files> {
     // WSL 里改文件要经 \\wsl.localhost\…，这一版先不做
-    if env.wsl().is_some() || !providers::AGENTS.iter().any(|(k, _, _)| *k == agent) {
+    if env.wsl().is_some() || !board_core::agentdef::is_builtin(agent) {
         return None;
     }
     Some(match agent {

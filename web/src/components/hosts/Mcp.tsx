@@ -10,7 +10,8 @@
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { since } from '../../lib/hosts';
-import { blankMcp, maskOf, MCP_AGENT_NAMES, MCP_AGENTS, mcpError, toSave } from '../../lib/mcp';
+import { useAgentMeta } from '../../lib/agentMeta';
+import { blankMcp, maskOf, mcpError, toSave } from '../../lib/mcp';
 import { mcpSync } from '../../lib/syncPills';
 import { localMcp, shell } from '../../lib/platform';
 import type { HostInfo, McpServer, McpVar } from '../../lib/types';
@@ -25,7 +26,15 @@ import { FormField, FormFoot, FormModal, FormSec, FormTile } from './FormModal';
 import { HostSyncPills, HowTip, OldHostsNote } from './SyncBits';
 import { useRemoteList } from './useRemoteList';
 
+/** 支持 MCP 同步的内置 agent、不支持的，和它们的名称（内置 agent 的说明，agentMeta.ts；取到服务端的就换上） */
+function useMcpAgents() {
+  const list = useAgentMeta(x => x.list);
+  const nameOf = (id: string) => list.find(m => m.id === id)?.name ?? id;
+  return { mcp: list.filter(m => m.mcp).map(m => m.id), off: list.filter(m => !m.mcp).map(m => m.id), nameOf };
+}
+
 export function McpSection({ hosts }: { hosts: HostInfo[] }) {
+  const { mcp, nameOf } = useMcpAgents();
   const ws = useData(s => s.ws);
   const now = useNow(10000);
   const { list, err, refresh: load } = useRemoteList(() => api.mcp(), ws?.hosts);
@@ -191,9 +200,9 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
                   <code className="sy-cmd" title={cmd}>
                     {cmd}
                   </code>
-                  <Tip text={s.agents.length ? `只同步给 ${s.agents.map(a => MCP_AGENT_NAMES[a] ?? a).join('、')}` : '同步给所有支持的 agent（Claude Code、Codex、pi）'}>
+                  <Tip text={s.agents.length ? `只同步给 ${s.agents.map(nameOf).join('、')}` : `同步给所有支持的 agent（${mcp.map(nameOf).join('、')}）`}>
                     <span className="sy-who">
-                      {(s.agents.length ? s.agents : [...MCP_AGENTS]).map(a => (
+                      {(s.agents.length ? s.agents : mcp).map(a => (
                         <AgentIcon key={a} id={a} />
                       ))}
                     </span>
@@ -251,11 +260,12 @@ function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel
   const setVars = (vs: McpVar[]) => onChange({ ...s, [field]: vs });
   const why = mcpError(s, existing, editing);
   // 同步给：空 = 所有支持的；全选了也存成空
-  const sel: string[] = s.agents.length ? s.agents : [...MCP_AGENTS];
+  const { mcp, off, nameOf } = useMcpAgents();
+  const sel: string[] = s.agents.length ? s.agents : mcp;
   const flip = (a: string) => {
     const next = sel.includes(a) ? sel.filter(x => x !== a) : [...sel, a];
     if (!next.length) return;
-    onChange({ ...s, agents: next.length === MCP_AGENTS.length ? [] : MCP_AGENTS.filter(x => next.includes(x)) });
+    onChange({ ...s, agents: next.length === mcp.length ? [] : mcp.filter(x => next.includes(x)) });
   };
   return (
     <FormModal
@@ -272,7 +282,7 @@ function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel
             if (!why) onSave();
           }}
           agentsLabel="会写进"
-          agents={[...MCP_AGENTS.map(a => ({ id: a, on: sel.includes(a), tip: sel.includes(a) ? `写进 ${MCP_AGENT_NAMES[a]} 的用户级配置` : `不给 ${MCP_AGENT_NAMES[a]}` })), { id: 'dsh', on: false, tip: 'DeepSeek Harness 不支持 MCP 同步' }]}
+          agents={[...mcp.map(a => ({ id: a, on: sel.includes(a), tip: sel.includes(a) ? `写进 ${nameOf(a)} 的用户级配置` : `不给 ${nameOf(a)}` })), ...off.map(a => ({ id: a, on: false, tip: `${nameOf(a)} 不支持 MCP 同步` }))]}
         />
       }
     >
@@ -356,10 +366,10 @@ function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel
           <p className="fm-empty">没有：点右边「加一个」</p>
         )}
       </FormSec>
-      <FormSec title="同步给" hint="都选上 = 所有支持的 agent（dsh 不支持）">
+      <FormSec title="同步给" hint={`都选上 = 所有支持的 agent${off.length ? `（${off.join('、')} 不支持）` : ''}`}>
         <div className="fm-tiles three">
-          {MCP_AGENTS.map(a => (
-            <FormTile key={a} on={sel.includes(a)} mark={<AgentIcon id={a} />} title={MCP_AGENT_NAMES[a]} desc={sel.includes(a) ? '写进它的用户级配置' : '不给它'} onClick={() => flip(a)} />
+          {mcp.map(a => (
+            <FormTile key={a} on={sel.includes(a)} mark={<AgentIcon id={a} />} title={nameOf(a)} desc={sel.includes(a) ? '写进它的用户级配置' : '不给它'} onClick={() => flip(a)} />
           ))}
         </div>
       </FormSec>

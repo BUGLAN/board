@@ -258,7 +258,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             ids.extend(run.keys().cloned());
             ids.sort();
             ids.dedup();
-            for id in ids.into_iter().filter(|a| crate::providers::AGENTS.iter().any(|(k, _, _)| k == a)) {
+            for id in ids.into_iter().filter(|a| crate::agentdef::is_builtin(a)) {
                 let r = run.entry(id.clone()).or_default();
                 let old_model = r.model.take();
                 r.effort = None;
@@ -282,7 +282,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             }
             // 不是内置 agent 的（配置文件里新加的）：只留启动环境和恢复时间
             for (k, r) in run.iter_mut() {
-                if !crate::providers::AGENTS.iter().any(|(a, _, _)| a == k) {
+                if !crate::agentdef::is_builtin(k) {
                     r.model = None;
                     r.effort = None;
                     r.provider = None;
@@ -2922,7 +2922,7 @@ impl<'a> R<'a> {
         let providers = self.providers()?;
         let version = |name: &str| providers.iter().find(|p| p.name == name).map(|p| p.version.clone()).unwrap_or_default();
         let mut agents = vec![];
-        for a in h.resolved().into_iter().filter(|a| a.found && crate::providers::AGENTS.iter().any(|(k, _, _)| *k == a.id)) {
+        for a in h.resolved().into_iter().filter(|a| a.found && crate::agentdef::is_builtin(&a.id)) {
             let mode = h.mode_of(&a.id);
             let (provider, model, effort, protocol) = match mode {
                 MODE_OWN => (
@@ -4510,10 +4510,10 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE hosts SET windows = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&w).unwrap_or_default()])?;
         }
         if let Some(rp) = &p.run {
-            if !crate::providers::AGENTS.iter().any(|(k, _, _)| *k == rp.agent) {
+            if !crate::agentdef::is_builtin(&rp.agent) {
                 return Err(BoardError::usage(format!(
                     "只有内置的 agent（{}）能按服务器上的供应商写配置：「{}」不行",
-                    crate::providers::AGENTS.map(|(k, _, _)| k).join("、"),
+                    crate::agentdef::ids().collect::<Vec<_>>().join("、"),
                     rp.agent
                 )));
             }

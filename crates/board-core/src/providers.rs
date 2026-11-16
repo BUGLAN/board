@@ -38,26 +38,8 @@ pub const INTERFACES: [(&str, &str); 3] = [
     ("openai-responses", "OpenAI Responses"),
 ];
 
-/// 内置 agent：标识、名称、认哪些接口
-pub const AGENTS: [(&str, &str, &[&str]); 4] = [
-    ("claude", "Claude Code", &["anthropic"]),
-    // Codex 的 model_providers 走 Responses 接口（wire_api = "responses"）
-    ("codex", "Codex", &["openai-responses"]),
-    ("pi", "pi", &["anthropic", "openai-chat", "openai-responses"]),
-    ("dsh", "DeepSeek Harness", &["anthropic", "openai-chat", "openai-responses"]),
-];
-
 /// 所有档位，从低到高：供应商里给模型标的强度只能是这几个
 pub const ALL_EFFORTS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-/// 一个 agent 的配置文件能写的思考强度，从低到高（配置文件的写法按各自 agent 核实过）。只在这里留一份：
-/// 界面从 `GET /api/providers` 的 `meta` 取，board host 用它校验
-pub const EFFORTS: [(&str, &[&str]); 4] = [
-    ("claude", &["low", "medium", "high", "xhigh", "max"]),
-    ("codex", &["minimal", "low", "medium", "high", "xhigh", "max"]),
-    ("pi", &["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
-    ("dsh", &["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
-];
 
 /// 发给旧版 board host 的「不改」：它把这个供应商名当成「本机自己管」。供应商名称不会以 `@` 开头
 pub const PROVIDER_LOCAL: &str = "@local";
@@ -85,24 +67,35 @@ pub fn models_url(endpoints: &[ProviderEndpoint]) -> Option<(String, bool)> {
     Some((format!("{base}/v1/models"), true))
 }
 
-/// 一个内置 agent 的说明（界面用）：名称、认哪些接口、配置文件能写哪几档强度
+/// 一个内置 agent 的说明（界面用，随 `GET /api/providers` 下发）：名称、认哪些接口、配置文件能写哪几档强度、
+/// 读用户级 skill 的目录、支不支持 MCP 同步、主色。都来自 [`crate::agentdef`]；旧版服务端只有前四项
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMeta {
     pub id: String,
     pub name: String,
     pub protocols: Vec<String>,
     pub efforts: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub mcp: bool,
+    #[serde(default)]
+    pub color: String,
 }
 
-/// 内置 agent 的说明，按 [`AGENTS`] 的顺序
+/// 内置 agent 的说明，按默认 agent 的顺序
 pub fn agent_meta() -> Vec<AgentMeta> {
-    AGENTS
+    let strs = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    crate::agentdef::AGENT_DEFS
         .iter()
-        .map(|(id, name, p)| AgentMeta {
-            id: id.to_string(),
-            name: name.to_string(),
-            protocols: p.iter().map(|x| x.to_string()).collect(),
-            efforts: efforts_of(id).iter().map(|x| x.to_string()).collect(),
+        .map(|d| AgentMeta {
+            id: d.id.to_string(),
+            name: d.name.to_string(),
+            protocols: strs(d.protocols),
+            efforts: strs(d.efforts),
+            skills: strs(d.skills),
+            mcp: d.mcp.is_some(),
+            color: d.color.to_string(),
         })
         .collect()
 }
@@ -119,17 +112,17 @@ pub fn interface_name(id: &str) -> &str {
 }
 
 pub fn agent_name(id: &str) -> &str {
-    AGENTS.iter().find(|(k, _, _)| *k == id).map(|(_, n, _)| *n).unwrap_or(id)
+    crate::agentdef::find(id).map_or(id, |d| d.name)
 }
 
 /// 这个 agent 认哪些接口；配置文件里新加的 agent 不在这里（`[]`）
 pub fn protocols_of(agent: &str) -> &'static [&'static str] {
-    AGENTS.iter().find(|(k, _, _)| *k == agent).map(|(_, _, p)| *p).unwrap_or(&[])
+    crate::agentdef::find(agent).map_or(&[], |d| d.protocols)
 }
 
-/// 这个 agent 能选的思考强度
+/// 这个 agent 的配置文件能写的思考强度（从低到高）
 pub fn efforts_of(agent: &str) -> &'static [&'static str] {
-    EFFORTS.iter().find(|(k, _)| *k == agent).map(|(_, e)| *e).unwrap_or(&[])
+    crate::agentdef::find(agent).map_or(&[], |d| d.efforts)
 }
 
 /// 供应商的一个接口和它的地址

@@ -79,114 +79,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// 内置的 agent 模板（接入方法见 docs/agents.md）。配置文件里同标识的 `[agents.<标识>]` 覆盖它
-struct Builtin {
-    id: &'static str,
-    name: &'static str,
-    /// npm 包名（查最新版本、npm 全局安装时用）
-    package: &'static str,
-    /// npm dist-tag：dsh 的 headless 包 alpha/next 比 latest 新
-    tag: &'static str,
-    /// 没找到时给用户的安装命令；board host 也按这条命令在本机执行
-    install: &'static str,
-    /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
-    /// 这次派发的 profile 补丁路径，都作为一个参数传入
-    cmd: &'static [&'static str],
-    /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）
-    also: &'static [&'static str],
-    /// 这个 agent 读用户级 skill 的目录：启动时看 `board-skills` 装没装
-    skills: &'static [&'static str],
-    /// 这个 agent 在工作目录（仓库根目录）里读 skill 的相对目录：放在这里也算装好
-    project: &'static [&'static str],
-    /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面：pi 从 PATH 找 `bash.exe`，
-    /// Git 装在非 `%ProgramFiles%` 位置时（例如 D:\Git）才能不落到 WSL 的 bash
-    git_bash: bool,
-    /// Windows 上支持的启动环境，顺序就是默认选择的顺序（`wsl:*` 是每个 WSL 发行版）；
-    /// macOS、Linux 上都是登录 shell → 直接启动（[`envs::UNIX_ORDER`]）
-    win: &'static [&'static str],
-    /// 命令模板里打开结构化输出的参数从哪个版本起才有（`<命令> --version` 的版本号）：本机版本更低时去掉
-    /// [`Builtin::json_flags`]，按原始输出运行。空表示不看版本
-    json_since: &'static str,
-    json_flags: &'static [&'static str],
-}
-
-/// 顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
-const BUILTIN: [Builtin; 4] = [
-    Builtin {
-        id: "dsh",
-        name: "DeepSeek Harness",
-        package: "@deepseek-ai/dsh",
-        tag: "next",
-        install: "npm install -g @deepseek-ai/dsh@next",
-        // 参数分两段：--profile、--patch 是 dsh 启动器的参数，必须放在应用参数前面；
-        // --json、--permission-mode 和任务文本是 headless 的参数。--json 之后 dsh 启动器不再解析选项，
-        // --patch 放在 --json 后面会被 headless 当成自己的参数，报 unknown option '--patch'
-        cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--json", "--permission-mode", "danger-full-access", "{prompt}"],
-        // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
-        also: &[
-            "~/.local/bin/dsh",
-            "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
-            "~/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
-        ],
-        skills: &["~/.agents/skills"],
-        project: &[".agents/skills"],
-        git_bash: false,
-        win: &["pwsh", "powershell", "cmd"],
-        // 按 0.2.2-rc.1 的 dsh-headless 核实过 --json；更旧的不认这个参数，去掉它按原始输出运行
-        json_since: "0.2.2",
-        json_flags: &["--json"],
-    },
-    Builtin {
-        id: "claude",
-        name: "Claude Code",
-        package: "@anthropic-ai/claude-code",
-        tag: "latest",
-        install: "npm install -g @anthropic-ai/claude-code@latest",
-        // -p 默认只在结束时打印结果：用事件流，运行中每一步都写进日志（logfmt.rs 转写）
-        cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
-        also: &["~/.local/bin/claude", "~/.claude/local/claude"],
-        skills: &["~/.claude/skills"],
-        // Claude Code 不读 .agents/skills
-        project: &[".claude/skills"],
-        git_bash: false,
-        win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
-        json_since: "",
-        json_flags: &[],
-    },
-    Builtin {
-        id: "pi",
-        name: "pi",
-        package: "@mariozechner/pi-coding-agent",
-        tag: "latest",
-        install: "npm install -g @mariozechner/pi-coding-agent@latest",
-        // -p 只在结束时打印最终回答：--mode json 同样跑完就退出，运行中写 JSONL 事件（logfmt.rs 转写）
-        cmd: &["pi", "--mode", "json", "{prompt}"],
-        also: &["~/.local/bin/pi"],
-        skills: &["~/.agents/skills", "~/.pi/agent/skills"],
-        project: &[".agents/skills", ".pi/skills"],
-        git_bash: true,
-        // pi 不支持 cmd
-        win: &["git-bash", "wsl:*", "pwsh", "powershell"],
-        json_since: "",
-        json_flags: &[],
-    },
-    Builtin {
-        id: "codex",
-        name: "Codex",
-        package: "@openai/codex",
-        tag: "latest",
-        install: "npm install -g @openai/codex@latest",
-        // exec --json：运行中把事件（命令、改文件、说的话、每一轮的用量）写成 JSONL（docs/exec.md）
-        cmd: &["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
-        also: &["~/.local/bin/codex"],
-        skills: &["$CODEX_HOME/skills"],
-        project: &[".agents/skills"],
-        git_bash: false,
-        win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
-        json_since: "",
-        json_flags: &[],
-    },
-];
+// 内置的 agent 模板：描述只在 board-core 的 `agentdef.rs` 里定义一份（接入方法见 docs/agents.md）。
+// 配置文件里同标识的 `[agents.<标识>]` 覆盖它；顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
+use board_core::agentdef::{AgentDef as Builtin, AGENT_DEFS as BUILTIN};
 
 /// dsh 一次性派发时写给它的 profile 补丁：headless profile 默认仍挂着 goal 工具和
 /// goal-round-driver，任务完成后会自动续轮，进程退出时把被终止的续轮当成最后一轮
@@ -307,7 +202,7 @@ struct Spec {
     checks: Vec<Check>,
     /// 找到了命令、却看不到 `board-skills` 的启动环境 → 该装到哪里（启动时由 [`Spec::check_skills`] 检查一次）
     no_skill: BTreeMap<String, String>,
-    /// 内置模板的结构化输出参数要求的最低版本和参数（见 [`Builtin::json_since`]）；配置文件覆盖了命令时没有
+    /// 内置模板的结构化输出参数要求的最低版本和参数（见 `AgentDef::json_since`）；配置文件覆盖了命令时没有
     json_gate: Option<(String, Vec<String>)>,
     /// 这个内置 agent 的模板；配置文件里新加的为空
     builtin: Option<&'static Builtin>,
@@ -855,7 +750,7 @@ fn run_sync(job: SyncJob) -> SyncOut {
                 let mut unsupported = vec![];
                 let mut bad = vec![];
                 for a in &job.agents {
-                    if !board_core::mcp::AGENTS.contains(&a.id.as_str()) {
+                    if !board_core::mcp::agents().contains(&a.id.as_str()) {
                         unsupported.push(a.id.clone());
                         continue;
                     }
@@ -886,7 +781,7 @@ fn run_sync(job: SyncJob) -> SyncOut {
     };
 
     // 模型：每个内置 agent 按机器上的选择写
-    let builtin: Vec<&SyncAgent> = job.agents.iter().filter(|a| board_core::providers::AGENTS.iter().any(|(k, _, _)| *k == a.id)).collect();
+    let builtin: Vec<&SyncAgent> = job.agents.iter().filter(|a| board_core::agentdef::is_builtin(&a.id)).collect();
     let need = builtin.iter().any(|a| a.mode != board_core::hosts::MODE_OFF);
     let lib: std::result::Result<providersync::Lib, String> =
         if need { job.rm.get::<providersync::Lib>(&format!("/api/hosts/{}/providers", job.name), &[]).map_err(|e| format!("取不到模型供应商配置：{}", e.message)) } else { Ok(providersync::Lib::default()) };

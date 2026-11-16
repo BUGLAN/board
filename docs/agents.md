@@ -143,7 +143,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 ## 已经接入的（内置模板）
 
-内置模板写在 `crates/board-cli/src/host.rs` 的 `BUILTIN` 里。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（自动领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<机器名>/<模型名>-<强度>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `mbp/pi`），配置文件里的 `model` 可以覆盖。
+内置模板写在 `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS` 里（board host、服务端、桌面端、界面都从这一处读）。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（自动领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<机器名>/<模型名>-<强度>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `mbp/pi`），配置文件里的 `model` 可以覆盖。
 
 | 顺序 | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
 |---|---|---|---|---|---|---|---|
@@ -271,14 +271,16 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 这一批都通过第 4 步后：
 
-- `crates/board-cli/src/host.rs` 的 `BUILTIN`：加上 `id`、`name`、`cmd`、`also`（常见安装位置）、`skills`（读用户级 skill 的目录）、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）。要按服务器上的供应商写它的配置文件，还要在 `crates/board-core/src/providers.rs` 的 `AGENTS`、`EFFORTS` 里加上它认的接口和配置文件能写的强度档位，在 `crates/board-cli/src/providersync.rs` 里加上写配置文件、读回模型的那一段。放在哪一位就是默认顺序里的哪一位。
-- 同一个文件里的测试 `builtin_order_and_overrides`：改期望的顺序。
+- `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`：加一条，内置 agent 的描述只在这里写一份——`id`、`name`、npm 包和 dist-tag、`install`（安装命令）、`cmd`（命令模板）、`also`（常见安装位置）、`skills`（读用户级 skill 的目录，第一个是装 board-skills、同步 skills 的地方）、`project`（仓库里读 skill 的目录）、`git_bash`、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）、`protocols`（认哪些供应商接口）、`efforts`（配置文件能写的强度档位，从低到高）、`mcp`（支持 MCP 同步时它的 MCP 配置文件；不支持写 `None`）、`color`（界面上的主色）。放在哪一位就是默认顺序里的哪一位。board host 的内置模板、供应商的接口和强度（界面从 `GET /api/providers` 的 `meta` 拿）、MCP 同步名单、`board skills` 和桌面端「一键安装」的 skill 目录、桌面端「从本机导入 MCP」都从这里读，不用再改别处的名单。界面里只有 `web/src/lib/agentMeta.ts` 的兜底（连旧服务端、取到之前用）要跟着加一条。
+- 要按服务器上的供应商写它的配置文件：在 `crates/board-cli/src/providersync.rs` 里加上写配置文件、读回模型的那一段（`files_of`、`apply_*`）。
+- 标了 `mcp`：在 `crates/board-cli/src/mcpsync.rs` 的 `implemented`、`put`、`remove` 里加上它的写法（`every_mcp_agent_in_the_description_has_a_writer` 会检查）。
+- 测试：`agentdef.rs` 的 `every_builtin_agent_is_well_formed`（标识合法、接口和强度认得）、`crates/board-cli/src/host.rs` 的 `builtin_order_and_overrides`（改期望的顺序）。
 - 接上结构化输出（事件流 / JSON 输出）：
   - `crates/board-cli/src/logfmt.rs`：`Stream` 加一种，`stream_for` 按标识和命令里的事件流参数认出它（配置文件覆盖了命令、没带参数的按原始输出）；加它的转写（原始输出）。
   - `crates/board-cli/src/events.rs`：`Parser` 加它的解析，转成 `message`、`tool`（工具调用带 agent 给的调用标识，结果后到时同一个标识）、`error`、`result`（用量、费用有就填；没有整次汇总的，按每一步 / 每一轮的加起来，在结束时写进去）；对人没用的事件（流式片段、状态变化、思考）不记，不是 JSON 的行记成 `text`。
   - 按它文档里的事件格式写一份样例放进 `crates/board-cli/tests/fixtures/`，`logfmt.rs`、`events.rs` 各加单元测试（转写出的行、事件的种类和条数）。测试不执行真实的 agent。
-  - 打开事件流的参数在某个版本之后才有的，在 `BUILTIN` 里写 `json_since`、`json_flags`：本机版本更旧时去掉这些参数。
-- 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用，并配一个主色（并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
+  - 打开事件流的参数在某个版本之后才有的，在 `AGENT_DEFS` 里写 `json_since`、`json_flags`：本机版本更旧时去掉这些参数。
+- 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用（主色在 `agentdef.rs` 的 `color`，并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
 - `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表。
 - 跑完 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`；需要在别的机器上试时请人发版。
 

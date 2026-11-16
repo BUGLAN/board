@@ -21,10 +21,12 @@ fn home() -> Option<PathBuf> {
 /// 本机各 agent 的 MCP 服务器（跳过同步加的）
 pub fn local() -> Vec<Found> {
     let Some(h) = home() else { return vec![] };
-    let codex = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| h.join(".codex"));
+    let codex = std::env::var("CODEX_HOME").ok();
     let owned: serde_json::Value = std::fs::read_to_string(h.join(".board/host/mcp-sync.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let mut out = vec![];
-    for (agent, path) in [("claude", h.join(".claude.json")), ("codex", codex.join("config.toml")), ("pi", h.join(".pi/agent/mcp.json"))] {
+    // 支持 MCP 同步的内置 agent 和它们的配置文件：board-core `agentdef.rs` 里标的
+    let files = board_core::agentdef::AGENT_DEFS.iter().filter_map(|d| Some((d.id, board_core::agentdef::expand_home(d.mcp?, &h, codex.as_deref()))));
+    for (agent, path) in files {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let list = if agent == "codex" { files::read_codex(&text) } else { files::read_json(&text) };
         for s in list {

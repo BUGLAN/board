@@ -4,6 +4,7 @@
    - 没登录或会话过期：任何请求返回 401，交给 onUnauthorized（界面切到登录页）
    - 实时：SSE /api/stream，任何一处写入（其他窗口、CLI、超时释放）都会推送 { rev, events }
    ========================================================================== */
+import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
 import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
 import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode, HostCopy } from './types';
@@ -257,7 +258,14 @@ export const api = {
   putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),
   removeMcp: (name: string) => req('DELETE', `/api/mcp/${q(name)}`),
   /** 模型供应商共用配置：列表（API key 只给末尾 4 位）、新增或修改（留空保留原值）、删除、每个 agent 用哪个 */
-  providers: () => req<ProviderView>('GET', '/api/providers').then(normProviders),
+  /** 顺带换上内置 agent 的说明（agentMeta.ts） */
+  providers: () =>
+    req<ProviderView>('GET', '/api/providers')
+      .then(normProviders)
+      .then(v => {
+        setAgentMeta(v.meta);
+        return v;
+      }),
   putProvider: (p: Provider) => req<Provider>('POST', '/api/providers', p),
   removeProvider: (name: string) => req('DELETE', `/api/providers/${q(name)}`),
   /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */

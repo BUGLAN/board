@@ -2,13 +2,11 @@
    MCP 服务器共用配置（PRD §10.16「共用配置」）：界面上用到的纯函数
    - 编辑表单：空白的一项、把表单整理成要保存的（参数一行一个、密钥留空保留原值）、校验（和服务端一致）
    ========================================================================== */
+import { mcpAgents } from './agentMeta';
 import type { McpServer, McpVar } from './types';
 
-/** 支持同步 MCP 的内置 agent（和服务端一致） */
-export const MCP_AGENTS = ['claude', 'codex', 'pi'] as const;
-export const MCP_AGENT_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', pi: 'pi' };
-
-export const forAgent = (s: Pick<McpServer, 'agents'>, agent: string) => (s.agents.length ? s.agents.includes(agent) : (MCP_AGENTS as readonly string[]).includes(agent));
+/** 这个 MCP 服务器同步给这个 agent：选了的；没选（空）= 所有支持 MCP 的内置 agent（agentMeta.ts） */
+export const forAgent = (s: Pick<McpServer, 'agents'>, agent: string) => (s.agents.length ? s.agents.includes(agent) : mcpAgents().includes(agent));
 
 export const blankMcp = (): McpServer => ({ name: '', kind: 'stdio', command: '', args: [], env: [], url: '', headers: [], agents: [] });
 

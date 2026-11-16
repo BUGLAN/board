@@ -130,7 +130,7 @@ export function normProviders(v: ProviderView | null): ProviderView {
   return {
     ...v,
     providers: list(v?.providers).map(normProvider),
-    meta: maybe(v?.meta)?.map(m => ({ ...m, protocols: list(m.protocols), efforts: list(m.efforts) })),
+    meta: maybe(v?.meta)?.map(m => ({ ...m, protocols: list(m.protocols), efforts: list(m.efforts), skills: maybe(m.skills) ?? undefined })),
   };
 }
 

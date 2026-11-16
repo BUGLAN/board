@@ -84,7 +84,7 @@ fn windows_words(w: &[Window]) -> String {
 
 /// agent 的名称：内置的用固定名称，别的用机器上报的
 fn agent_label(hs: [&HostRow; 2], id: &str) -> String {
-    if crate::providers::AGENTS.iter().any(|(k, _, _)| *k == id) {
+    if crate::agentdef::is_builtin(id) {
         return crate::providers::agent_name(id).to_string();
     }
     hs.iter().flat_map(|h| h.agents.iter()).find(|a| a.id == id).map(|a| a.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_string())
@@ -138,7 +138,7 @@ fn plan(r: &R, t: &HostRow, s: &HostRow) -> Result<Plan> {
         let found = t.has_agent(id);
         let mut stored = false;
         // 模型（只有内置 agent 能按服务器上的供应商写）
-        if crate::providers::AGENTS.iter().any(|(k, _, _)| *k == id) {
+        if crate::agentdef::is_builtin(id) {
             let (from, to) = (model_words(t, id), model_words(s, id));
             if from != to {
                 let want = model_of(s, id);

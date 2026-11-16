@@ -14,7 +14,7 @@
 //! 密钥只写进 agent 自己的配置，不打印、不写日志（输出里只有名称）。
 
 use crate::envs::{self, Env};
-use board_core::mcp::{files, McpServer, McpState, AGENTS};
+use board_core::mcp::{files, McpServer, McpState};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -45,14 +45,17 @@ pub struct Synced {
 /// 原来的同名条目：agent → 名称 → 原来的值（读出来的样子）
 type Backup = BTreeMap<String, BTreeMap<String, McpServer>>;
 
-/// 一个 agent 的 MCP 配置文件：支持的 agent 才有；WSL 里的换成 Windows 上能访问的路径（取不到时 None）
+/// 下面按 agent 写配置文件的实现（[`put`]、[`remove`]）认得的 agent：`agentdef.rs` 里标了支持 MCP 的都要在这里
+pub fn implemented(agent: &str) -> bool {
+    matches!(agent, "claude" | "codex" | "pi")
+}
+
+/// 一个 agent 的 MCP 配置文件（`agentdef.rs` 里标的）：支持的 agent 才有；WSL 里的换成 Windows 上能访问的路径（取不到时 None）
 pub fn file_of(agent: &str, env: &Env) -> Option<(PathBuf, String)> {
-    let rel = match agent {
-        "claude" => "~/.claude.json",
-        "codex" => "$CODEX_HOME/config.toml",
-        "pi" => "~/.pi/agent/mcp.json",
-        _ => return None,
-    };
+    let rel = board_core::agentdef::find(agent)?.mcp?;
+    if !implemented(agent) {
+        return None;
+    }
     let p = if env.wsl().is_some() {
         // wsl_unc 认目录：取上一级再接文件名
         let (dir, name) = rel.rsplit_once('/').unwrap_or((rel, ""));
@@ -111,13 +114,14 @@ fn put(t: &Target, path: &Path, srv: &McpServer, replace: bool) -> Result<(), St
     match t.agent.as_str() {
         "codex" => rewrite(path, |x| files::codex_upsert(x, srv)),
         "pi" => rewrite(path, |x| files::pi_upsert(x, srv)),
-        _ => {
+        "claude" => {
             if replace {
                 let _ = claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), srv.name.clone()]);
             }
             let json = files::json_entry(srv, true).to_string();
             claude(t, &[s("mcp"), s("add-json"), s("--scope"), s("user"), srv.name.clone(), json])
         }
+        other => Err(format!("{other} 还没有写 MCP 配置的实现")),
     }
 }
 
@@ -125,7 +129,8 @@ fn remove(t: &Target, path: &Path, name: &str) -> Result<(), String> {
     match t.agent.as_str() {
         "codex" => rewrite(path, |x| files::codex_remove(x, name)),
         "pi" => rewrite(path, |x| files::pi_remove(x, name)),
-        _ => claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), s(name)]),
+        "claude" => claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), s(name)]),
+        other => Err(format!("{other} 还没有写 MCP 配置的实现")),
     }
 }
 
@@ -193,7 +198,7 @@ pub fn sync(lib: &[McpServer], targets: &[Target], unsupported: &[String], owned
     }
     for a in unsupported {
         for srv in lib.iter().filter(|x| x.agents.is_empty()) {
-            states.push(McpState { server: srv.name.clone(), agent: a.clone(), state: "unsupported".into(), why: Some(format!("{a} 还不能同步 MCP（支持 {}）", AGENTS.join("、"))) });
+            states.push(McpState { server: srv.name.clone(), agent: a.clone(), state: "unsupported".into(), why: Some(format!("{a} 还不能同步 MCP（支持 {}）", board_core::mcp::agents().join("、"))) });
         }
     }
     if let Some(d) = owned_path.parent() {
@@ -233,6 +238,22 @@ mod tests {
 
     /// Codex、pi 直接改文件：加上、更新、删掉；用户自己的不动，同名不是同步加的换成共用配置里的、原来的存进备份
     #[cfg(unix)]
+    /// `agentdef.rs` 里标了支持 MCP 的 agent，这里都有写配置文件的实现、找得到配置文件；没标的都没有
+    #[test]
+    fn every_mcp_agent_in_the_description_has_a_writer() {
+        for d in &board_core::agentdef::AGENT_DEFS {
+            let file = file_of(d.id, &Env::direct());
+            match d.mcp {
+                Some(shown) => {
+                    assert!(implemented(d.id), "{} 标了支持 MCP，但 mcpsync 里没有它的写法", d.id);
+                    assert_eq!(file.map(|(_, s)| s).as_deref(), Some(shown), "{}", d.id);
+                }
+                None => assert!(file.is_none(), "{} 没标 MCP", d.id),
+            }
+        }
+        assert!(file_of("nope", &Env::direct()).is_none());
+    }
+
     #[test]
     fn codex_and_pi_files() {
         let d = tempfile::tempdir().unwrap();

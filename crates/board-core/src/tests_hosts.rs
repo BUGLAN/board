@@ -2403,7 +2403,7 @@ fn rules_accept_builtin_agents_before_any_host() {
     assert_eq!((out.fallback.as_deref(), out.fallback_active), (Some("codex"), false));
     // 不是内置的 agent 照样拒绝，原因里列出能选的
     let err = set(&mut s, vec![cond("in", &["bug"], "nope")], None).unwrap_err().message;
-    assert!(err.contains("没有机器上找得到 agent「nope」") && err.contains("claude、codex、pi、dsh"), "{err}");
+    assert!(err.contains("没有机器上找得到 agent「nope」") && err.contains("dsh、claude、pi、codex"), "{err}");
     // 有机器上报了 agent：规则对它生效；新加的只能选找得到的（dsh 不在这台机器上）
     let mut win = report("win", "w1", vec![]);
     win.agents = vec![dsh(false), claude(true)];

@@ -8,6 +8,7 @@ import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
 import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
+import { metaColor, skillHome } from './agentMeta';
 import { agentColor, agentGlyph } from './util';
 
 /** agent 标记：已知的几种用它们自己的 logo（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
@@ -24,24 +25,27 @@ export interface AgentMark {
   motion?: AgentMotion;
 }
 
-const MARKS: Record<string, AgentMark> = {
+/** 认识的 agent 怎么画：两个字母、logo、动作。主色不在这里：用内置 agent 的说明里的（agentMeta.ts） */
+const MARKS: Record<string, Omit<AgentMark, 'color'>> = {
   // Claude Code 的像素标志 Clawd（取自 Claude Code VS Code 扩展的 resources/clawd.svg，裁掉透明边后画成 64×64），不是 Claude 桌面应用的图标。
   // 动作：像素小人蹦一下
-  claude: { short: 'CC', color: '#D97757', icon: claudeIcon, scale: 1.04, motion: 'hop' },
+  claude: { short: 'CC', icon: claudeIcon, scale: 1.04, motion: 'hop' },
   // DeepSeek Harness 应用图标里的鲸鱼：原图是白底圆角方块，抠成透明底的单色图案（256×189）。动作：摆尾往前游
-  dsh: { short: 'DS', color: '#4D6BFE', icon: dshIcon, mono: true, scale: 1.08, motion: 'swim' },
+  dsh: { short: 'DS', icon: dshIcon, mono: true, scale: 1.08, motion: 'swim' },
   // pi.dev 的 logo。动作：方块压扁再弹高
-  pi: { short: 'π', color: '#E5A93F', icon: piIcon, scale: 0.92, motion: 'squash' },
+  pi: { short: 'π', icon: piIcon, scale: 0.92, motion: 'squash' },
   // Codex 的云形终端标志（取自 lobe-icons 的 static-svg/icons/codex.svg，和 Codex 官方应用里的一致）：单色路径，用它的主色填满。
   // 动作：云飘起来晃一晃
-  codex: { short: 'CX', color: '#10A37F', icon: codexIcon, scale: 0.94, motion: 'float' },
+  codex: { short: 'CX', icon: codexIcon, scale: 0.94, motion: 'float' },
 };
 
 /** 已知的 agent 标识（`MARKS` 的键）：识别 agent 名字用 */
 export const AGENT_IDS: readonly string[] = Object.keys(MARKS);
 
 export function agentMark(id: string): AgentMark {
-  return MARKS[id] ?? { short: id.slice(0, 2).toUpperCase(), color: agentColor(id) };
+  const m = MARKS[id];
+  const color = metaColor(id) ?? agentColor(id);
+  return m ? { ...m, color } : { short: id.slice(0, 2).toUpperCase(), color };
 }
 
 /**
@@ -338,19 +342,11 @@ export function skillMiss(h: HostInfo, a: HostAgent): string | null {
   return `${a.name}${env ? ` 在${env}里` : ''}看不到 board-skills：派给它的卡片会做不成，先装到 ${a.no_skill}（见 docs/agents.md）`;
 }
 
-/** 桌面端能一键安装 board-skills 的 agent → 它读用户级 skill 的目录（和 board host 内置模板、src-tauri/src/skill.rs 一致） */
-const SKILL_HOME: Record<string, string> = {
-  dsh: '~/.agents/skills',
-  pi: '~/.agents/skills',
-  claude: '~/.claude/skills',
-  codex: '$CODEX_HOME/skills',
-};
-
 /** 看不到 board-skills 的 agent 分两组：桌面端能一键装的（在本机、不在 WSL 里、是认识的 agent），和只能手动装的 */
 export function skillGaps(h: HostInfo) {
   const missing = h.agents.filter(a => skillMiss(h, a));
-  const auto = missing.filter(a => SKILL_HOME[a.id] && !a.env?.startsWith('wsl:'));
-  const dirs = [...new Set(auto.map(a => SKILL_HOME[a.id]))];
+  const auto = missing.filter(a => skillHome(a.id) && !a.env?.startsWith('wsl:'));
+  const dirs = [...new Set(auto.map(a => skillHome(a.id)!))];
   const manual = missing.filter(a => !auto.includes(a));
   return { missing, auto, manual, dirs, places: places(missing), manualPlaces: places(manual) };
 }

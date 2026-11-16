@@ -45,7 +45,7 @@ pub(crate) fn legacy_agent_id(name: &str) -> Option<String> {
     if head.is_empty() {
         return None;
     }
-    let mut ids: Vec<&str> = crate::providers::AGENTS.iter().map(|(id, _, _)| *id).collect();
+    let mut ids: Vec<&str> = crate::agentdef::ids().collect();
     ids.sort_by_key(|id| std::cmp::Reverse(id.len()));
     ids.into_iter().find(|id| head == *id || head.starts_with(&format!("{id}-"))).map(str::to_string)
 }

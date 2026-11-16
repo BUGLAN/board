@@ -254,7 +254,7 @@ impl W<'_> {
             v.dedup();
             v
         };
-        let builtin: Vec<&str> = crate::providers::AGENTS.iter().map(|(id, _, _)| *id).collect();
+        let builtin: Vec<&str> = crate::agentdef::ids().collect();
         let found = |agent: &str| if all.is_empty() { builtin.contains(&agent) } else { hosts.iter().any(|h| h.has_agent(agent)) };
         let options = if all.is_empty() { format!("{}（还没有机器上报 agent，先选内置的）", builtin.join("、")) } else { all.join("、") };
         if let Some(rules) = rules {

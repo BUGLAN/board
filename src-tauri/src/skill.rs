@@ -55,17 +55,9 @@ fn platform_dir() -> Option<&'static str> {
     })
 }
 
-/// agent 读用户级 skill 的目录（board host 内置模板的 `skills` 第一项）；不认识的 agent 返回 None（界面不给按钮）
+/// agent 读用户级 skill 的目录（board-core `agentdef.rs` 里这个 agent 的第一个 skill 目录）；不认识的 agent 返回 None（界面不给按钮）
 pub fn user_dir(agent: &str, home: &Path, codex_home: Option<&str>) -> Option<PathBuf> {
-    match agent {
-        "dsh" | "pi" => Some(home.join(".agents").join("skills")),
-        "claude" => Some(home.join(".claude").join("skills")),
-        "codex" => Some(match codex_home.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(c) => PathBuf::from(c).join("skills"),
-            None => home.join(".codex").join("skills"),
-        }),
-        _ => None,
-    }
+    board_core::agentdef::user_skill_dir(agent).map(|d| board_core::agentdef::expand_home(d, home, codex_home))
 }
 
 /// 把 skill 装到 `root/board-skills`，返回装到的目录。`cli` 是要放进 `bin/<平台>/` 的 board 命令行

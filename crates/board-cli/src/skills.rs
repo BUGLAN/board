@@ -58,10 +58,9 @@ pub fn merge(list: Vec<(String, String, PathBuf, String, bool)>) -> Vec<Target> 
 /// 不在 board host 里时（`board skills ls / sync`）：内置模板里每个 agent 的第一个用户级 skill 目录，上一级目录在的
 /// （装了这个 agent 才有 ~/.claude、~/.codex 这些）
 pub fn local_targets() -> Vec<Target> {
-    let list = [("dsh", "~/.agents/skills"), ("pi", "~/.agents/skills"), ("claude", "~/.claude/skills"), ("codex", "$CODEX_HOME/skills")];
+    let list = board_core::agentdef::AGENT_DEFS.iter().filter_map(|d| Some((d.id, *d.skills.first()?)));
     merge(
-        list.iter()
-            .map(|(a, d)| (a.to_string(), "direct".to_string(), crate::envs::expand(d), d.to_string(), false))
+        list.map(|(a, d)| (a.to_string(), "direct".to_string(), crate::envs::expand(d), d.to_string(), false))
             .filter(|(_, _, p, _, _)| p.parent().is_some_and(Path::is_dir))
             .collect(),
     )

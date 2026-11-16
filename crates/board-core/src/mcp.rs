@@ -24,8 +24,10 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 );
 "#;
 
-/// 支持写 MCP 的内置 agent（默认同步给它们）
-pub const AGENTS: [&str; 3] = ["claude", "codex", "pi"];
+/// 支持写 MCP 的内置 agent（默认同步给它们）：`agentdef.rs` 里标了 MCP 配置文件的
+pub fn agents() -> Vec<&'static str> {
+    crate::agentdef::mcp_agents()
+}
 
 /// 一个环境变量或请求头
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +60,7 @@ pub struct McpServer {
     pub url: String,
     #[serde(default)]
     pub headers: Vec<McpVar>,
-    /// 同步给哪些 agent；空 = 所有支持的（[`AGENTS`]）
+    /// 同步给哪些 agent；空 = 所有支持的（[`agents`]）
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
@@ -121,7 +123,7 @@ impl McpServer {
     /// 这个 agent 要不要同步
     pub fn for_agent(&self, agent: &str) -> bool {
         if self.agents.is_empty() {
-            AGENTS.contains(&agent)
+            agents().contains(&agent)
         } else {
             self.agents.iter().any(|a| a == agent)
         }
@@ -166,8 +168,8 @@ impl McpServer {
             }
         }
         for a in &self.agents {
-            if !AGENTS.contains(&a.as_str()) {
-                return Err(BoardError::usage(format!("{a} 不支持同步 MCP：只能选 {}", AGENTS.join("、"))));
+            if !agents().contains(&a.as_str()) {
+                return Err(BoardError::usage(format!("{a} 不支持同步 MCP：只能选 {}", agents().join("、"))));
             }
         }
         Ok(())

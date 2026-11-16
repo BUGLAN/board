@@ -641,6 +641,12 @@ export interface AgentMeta {
   name: string;
   protocols: string[];
   efforts: string[];
+  /** 读用户级 skill 的目录（第一个是装 board-skills 的地方）；旧版服务端没有 */
+  skills?: string[];
+  /** 支持 MCP 同步；旧版服务端没有 */
+  mcp?: boolean;
+  /** 界面上的主色；旧版服务端没有 */
+  color?: string;
 }
 
 /** 列表接口：供应商（打码）、内置 agent 的说明 */
