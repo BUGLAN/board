@@ -5,13 +5,13 @@
    2. agent 更新：自动更新开关
    3. skills、MCP、Git 凭据（按 syncKinds.ts 登记的种类一类一行）：各一个开关（用服务器的 / 不改）、旁边一行结果；替换了本机同名的、远端不是 https 的仓库写一行；规则一行；「从这台机器导入 skill（N）」
    4. 工作空间：路径字段 +「更改…」（分栏选文件夹，本机在桌面端里弹系统的选择框）；只列例外；每个项目「能推送」
-   5. 维护：重新检查、升级到 x.y.z（落后时才有）、重启 board host、令牌、移除这台机器
+   5. 维护：照另一台机器配（选一台，先列出要变的、确认后一次复制）、重新检查、升级到 x.y.z（落后时才有）、重启 board host、令牌、移除这台机器
    开关、工作空间是设置项（当帧生效，旁边转圈）；导入、维护、移除要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
 import { Fragment, useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { laterProjects, pushRows, sepOf, syncLine, syncNotes, workspaceExceptions, type LineTone, type WsException } from '../../lib/hostDetail';
-import { acceptSummary, isLocalHost, since } from '../../lib/hosts';
+import { acceptSummary, hostsOf, isLocalHost, since } from '../../lib/hosts';
 import { localHost, pickFolder, shell } from '../../lib/platform';
 import { importRows } from '../../lib/skills';
 import { flagPatch, SYNC_KINDS, type SyncLibs } from '../../lib/syncKinds';
@@ -19,7 +19,7 @@ import type { HostInfo, SkillImportPick, SkillInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { hostKey, optimistic, useData } from '../../store/data';
 import { confirm, confirmCheck, setHostsView, setTab, toast, toastError } from '../../store/ui';
-import { Segmented, Sync, Tip, type SyncState } from '../bits';
+import { Segmented, Select, Sync, Tip, type SyncState } from '../bits';
 import { Icon } from '../Icon';
 import { patchHost } from './bits';
 import { FolderPick } from './FolderPick';
@@ -286,6 +286,63 @@ function SkillImportInline({ h, lib }: { h: HostInfo; lib: SkillInfo[] | null })
   );
 }
 
+/* ------------------------------ 照另一台机器配 ------------------------------ */
+
+/** 照另一台机器配（hostcopy.rs）：选一台，先问服务端要变哪些（从什么变成什么），确认后一次写进去。
+    只复制这一次，之后两台各改各的；工作空间、机器名、接单方式不动。要等服务端：按钮转圈、禁用直到返回 */
+function CopyFrom({ h }: { h: HostInfo }) {
+  const ws = useData(s => s.ws);
+  const others = hostsOf(ws).filter(x => x.name !== h.name);
+  const [from, setFrom] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!others.length) return null;
+  const src = others.some(x => x.name === from) ? from : others[0].name;
+  const go = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const plan = await optimistic(null, () => api.copyHost(h.name, src, true));
+      if (!plan.changes.length) {
+        toast({ type: 'info', title: `已经和 ${src} 一样`, text: plan.notes.length ? plan.notes.join('\n') : '没有要改的项' });
+        return;
+      }
+      const yes = await confirm({
+        title: `照 ${src} 配 ${h.name}？`,
+        text: [
+          ...plan.changes.map(c => `${c.label}：${c.from} → ${c.to}`),
+          ...plan.notes,
+          '只复制这一次，之后两台各改各的；工作空间、机器名、接单方式不动。',
+        ].join('\n'),
+        ok: '照着配',
+        icon: 'host',
+        tone: 'warn',
+      });
+      if (!yes) return;
+      const out = await optimistic(null, () => api.copyHost(h.name, src, false));
+      toast({ type: 'success', title: `已照 ${src} 配 ${h.name}`, text: out.changes.length ? `改了 ${out.changes.map(c => c.label).join('、')}` : '已经一样，没有改' });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="hd-mrow hd-copy">
+      <Icon name="copy" />
+      <div>
+        <b>照另一台机器配</b>
+        <span>一次复制模型、同步开关、会话数、接单时段；之后两台各改各的</span>
+      </div>
+      <span className="hd-copy-ctl">
+        <Select value={src} options={others.map(x => ({ value: x.name, label: x.name }))} onChange={setFrom} disabled={busy} aria-label="照哪台机器配" />
+        <button className={cx('btn sm', busy && 'is-busy')} type="button" disabled={busy} onClick={() => void go()}>
+          对比…
+        </button>
+      </span>
+    </div>
+  );
+}
+
 /* ------------------------------ 工作空间 ------------------------------ */
 
 function WorkspaceBlock({ h, save, sync }: { h: HostInfo; save: Save; sync?: SyncState }) {
@@ -499,6 +556,7 @@ function Maintenance({ h, server, behind, running, close }: { h: HostInfo; serve
   return (
     <>
       <div className="hd-maint">
+        <CopyFrom h={h} />
         {row('recheck', 'renew', '重新检查', h.recheckedAt ? `重新找启动环境、agent、board-skills · 上次 ${since(h.recheckedAt, Date.now())}` : '重新找启动环境、agent、board-skills', {
           label: '检查',
           run: () => void send('recheck', false, `已通知 ${h.name} 重新检查`),

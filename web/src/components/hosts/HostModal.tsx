@@ -7,7 +7,7 @@ import { isWindows, shell } from '../../lib/platform';
 import { copyText, cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { openHost, setTab, toast, toastError, useUI } from '../../store/ui';
-import { Segmented, Tip } from '../bits';
+import { Segmented, Select, Tip } from '../bits';
 import { Icon } from '../Icon';
 import { usePollHosts } from './bits';
 import { HostDetail, type DetailTab } from './HostDetail';
@@ -144,7 +144,9 @@ function AddHostBody({ close }: { close: () => void }) {
 /**
  * 只有命令行的机器：填机器名和工作空间，「生成命令」时以机器名新建一个访问令牌，给出一行命令——
  * 在新机器上执行就依次安装 board、board login、board host --install（装成服务，开机自动接任务）。
- * 令牌原文只在这里显示这一次；生成之后再改机器名、工作空间，命令跟着变，令牌不变
+ * 令牌原文只在这里显示这一次；生成之后再改机器名、工作空间，命令跟着变，令牌不变。
+ * 「上线后照着配」选了一台已有的机器：记在这个令牌上，新机器第一次上线时照那台当时的设置配（模型、同步开关、会话数、接单时段；
+ * 工作空间、接单方式不复制）；生成之后不能再改
  */
 function CliInstall() {
   // 就是这个页面的服务端地址（网页端、桌面端都一样，不写死地址）
@@ -152,7 +154,10 @@ function CliInstall() {
   const [os, setOs] = useState<'unix' | 'windows'>(isWindows ? 'windows' : 'unix');
   const [name, setName] = useState('');
   const [workspace, setWorkspace] = useState('');
-  const [token, setToken] = useState<{ raw: string; name: string } | null>(null);
+  const [copyFrom, setCopyFrom] = useState('');
+  const others = hostsOf(useData(s => s.ws));
+  const src = others.some(x => x.name === copyFrom) ? copyFrom : '';
+  const [token, setToken] = useState<{ raw: string; name: string; from: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const nameErr = hostNameError(name);
   const wsErr = !workspace.trim() ? '先填工作空间：每个项目的目录是 <工作空间>/<项目>' : null;
@@ -165,8 +170,8 @@ function CliInstall() {
     if (err || busy) return;
     setBusy(true);
     try {
-      const r = await optimistic(null, () => api.createToken(name));
-      setToken({ raw: r.token, name: r.info.name });
+      const r = await optimistic(null, () => api.createToken(name, src || undefined));
+      setToken({ raw: r.token, name: r.info.name, from: src });
     } catch (e) {
       toastError(e);
     } finally {
@@ -215,6 +220,23 @@ function CliInstall() {
           一台机器只填这一个目录：每个项目的目录是 <code>{workspace.trim() ? `${workspace.trim().replace(/[\\/]+$/, '')}/${'<项目>'}` : '<工作空间>/<项目>'}</code>
           ，项目下的几块白板共用它；还没有时 board host 自动建好（项目设了仓库地址时自动克隆）。之后新加的项目也一样，不用再到这台机器上配。
         </p>
+        {others.length > 0 && (
+          <div className="hp-add-row">
+            <span className="hp-add-k">照着配</span>
+            <Select
+              value={token ? token.from : src}
+              options={[{ value: '', label: '不用：按默认设置' }, ...others.map(x => ({ value: x.name, label: `上线后照 ${x.name} 配` }))]}
+              onChange={setCopyFrom}
+              disabled={!!token}
+              aria-label="上线后照哪台机器配"
+            />
+          </div>
+        )}
+        {(token ? token.from : src) && (
+          <p className="hp-note hp-add-note">
+            第一次上线时照 {token ? token.from : src} 当时的设置配：每个 agent 的模型、skills / MCP / Git 凭据的同步开关、会话数、接单时段；工作空间、接单方式（新机器先「只做派给它的」）不复制，之后两台各改各的。
+          </p>
+        )}
       </div>
       {!token ? (
         <div className="hp-add-go">

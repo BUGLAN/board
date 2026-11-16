@@ -513,6 +513,17 @@ export type GitSync = SyncPart<{
   skipped: string[];
 }>;
 
+/** 照另一台机器配（机器详情「维护」、添加机器的「上线后照 <机器> 配」）：预览时 done 为 false */
+export interface HostCopy {
+  from: string;
+  to: string;
+  /** 要变的项（没有变化的不列）；空 = 已经一样 */
+  changes: { key: string; label: string; from: string; to: string }[];
+  /** 没照着改、要说一声的：系统不同启动环境没复制、这台机器上还没找到的 agent */
+  notes: string[];
+  done: boolean;
+}
+
 /** 服务端的 Git 凭据（共用配置）：令牌只有末尾 4 位 */
 export interface GitCred {
   host: string;

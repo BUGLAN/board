@@ -6,7 +6,7 @@
    ========================================================================== */
 import type { Milestones } from './milestones';
 import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
-import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode } from './types';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode, HostCopy } from './types';
 
 declare global {
   interface Window {
@@ -122,7 +122,8 @@ export const api = {
   info: () => req<ServerInfo>('GET', '/api/info'),
   logout: () => req('POST', '/api/auth/logout'),
   tokens: () => req<TokenInfo[]>('GET', '/api/tokens'),
-  createToken: (name: string) => req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', { name }),
+  /** copyFrom：添加机器时选了「上线后照 <机器> 配」，用这个令牌的机器第一次上线时照它配 */
+  createToken: (name: string, copyFrom?: string) => req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', copyFrom ? { name, copyFrom } : { name }),
   revokeToken: (id: number) => req('DELETE', `/api/tokens/${id}`),
 
   // 机器、派发、共用配置这些接口的数据进门时补齐缺的数组（lib/normalize.ts）：界面和服务端版本不一致时不整页崩
@@ -268,6 +269,8 @@ export const api = {
   putGit: (c: { host: string; username: string; token: string }) => req<GitCred>('POST', '/api/git', c),
   removeGit: () => req('DELETE', '/api/git'),
   syncHost: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/sync`),
+  /** 照另一台机器配：dry 只列出要变哪些，确认后再不带 dry 调一次写进去 */
+  copyHost: (name: string, from: string, dry: boolean) => req<HostCopy>('POST', `/api/hosts/${q(name)}/copy`, { from, dry }),
   /** 列那台机器上一个文件夹的子文件夹（服务端转给它的 board host，最多等 20 秒）；空路径是最上面一层 */
   hostLs: (name: string, path: string) => req<DirList>('POST', `/api/hosts/${q(name)}/ls`, { path }),
   /** 自检：整台机器，或只查一个 agent（PRD §10.12「自检」） */

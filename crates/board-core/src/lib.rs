@@ -13,6 +13,7 @@ pub mod files;
 pub mod fit;
 pub mod gitcred;
 pub mod flow;
+pub mod hostcopy;
 pub mod hostres;
 pub mod hosts;
 pub mod model;

@@ -97,6 +97,15 @@ CREATE TABLE IF NOT EXISTS hosts (
   res      TEXT                       -- 资源（JSON，见 HostRes）：最近一次采样和最近几次的使用率；旧版 board host 不报，为空
 );
 
+-- 添加机器时选了「上线后照 <机器> 配」（hostcopy.rs）：按生成命令时新建的访问令牌记下来源机器，
+-- 用这个令牌的机器第一次上线时照它配，用过就删；吊销令牌时一起删
+CREATE TABLE IF NOT EXISTS host_presets (
+  token INTEGER PRIMARY KEY,         -- 访问令牌 ID
+  src   TEXT NOT NULL,               -- 来源机器名
+  by    TEXT NOT NULL,               -- 谁加的
+  at    INTEGER NOT NULL
+);
+
 -- 机器的操作记录（远程管理：重新检查、升级、重启、排空……），机器详情「最近」里和派发一起显示；移除机器时一起删
 CREATE TABLE IF NOT EXISTS host_ops (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2312,7 +2321,7 @@ impl HostRow {
     }
 
     /// 启动环境的名称
-    fn env_name(&self, id: &str) -> String {
+    pub(crate) fn env_name(&self, id: &str) -> String {
         self.envs.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| id.to_string())
     }
     /// 这台机器上找得到这个 agent
@@ -2575,7 +2584,7 @@ pub(crate) fn host_by_token(conn: &rusqlite::Connection, token: i64, now: i64) -
     Ok(h.filter(|h| h.online(now)).map(|h| h.info(now)))
 }
 
-fn no_such_host(name: &str) -> BoardError {
+pub(crate) fn no_such_host(name: &str) -> BoardError {
     BoardError::new(ErrorCode::NoSuchHost, format!("机器「{name}」不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器"))
         .with_detail(json!({ "host": name }))
 }
@@ -3035,7 +3044,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    fn touch_hosts(&mut self) {
+    pub(crate) fn touch_hosts(&mut self) {
         self.hosts_changed = true;
         self.changed = true;
     }
@@ -3523,6 +3532,8 @@ impl<'a> W<'a> {
                 if let Some(res) = rep.res.clone().and_then(|r| r.received(None, now)) {
                     self.tx.execute("UPDATE hosts SET res = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&res).unwrap_or_default()])?;
                 }
+                // 添加机器时选了「上线后照 <机器> 配」（hostcopy.rs）：照来源机器现在的设置配
+                self.host_preset_apply(&rep.name, token)?;
                 self.touch_hosts();
             }
             Some(h) => {
@@ -3840,7 +3851,7 @@ impl<'a> W<'a> {
     }
 
     /// 记一条机器的操作（最近的 OPS_KEEP 条以外的删掉）
-    fn host_op(&mut self, host_id: i64, by: &str, text: &str) -> Result<()> {
+    pub(crate) fn host_op(&mut self, host_id: i64, by: &str, text: &str) -> Result<()> {
         self.tx.execute("INSERT INTO host_ops (host_id, at, by_name, text) VALUES (?1, ?2, ?3, ?4)", params![host_id, self.now, by, text])?;
         self.tx.execute(
             "DELETE FROM host_ops WHERE host_id = ?1 AND id NOT IN (SELECT id FROM host_ops WHERE host_id = ?1 ORDER BY id DESC LIMIT ?2)",
@@ -5841,7 +5852,7 @@ fn found_list(h: &HostRow) -> String {
 impl HostRow {
     /// 改 agent 的启动环境前校验（启动环境与桌面端需求 §五）：这台 board host 上报了启动环境、有这个 agent、
     /// 本机有这个环境、agent 支持它、在里面找得到命令。不满足时 USAGE，写明原因
-    fn env_check(&self, agent: &str, env: &str) -> Result<EnvCheck> {
+    pub(crate) fn env_check(&self, agent: &str, env: &str) -> Result<EnvCheck> {
         let name = &self.name;
         if self.envs.is_empty() {
             return Err(BoardError::usage(format!("机器「{name}」上的 board host 是旧版，不上报启动环境：升级后再设置")));

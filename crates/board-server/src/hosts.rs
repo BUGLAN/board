@@ -133,6 +133,31 @@ pub(crate) async fn synced(State(s): State<AppState>, Extension(caller): Extensi
     Ok(Json(out))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct CopyBody {
+    from: String,
+    #[serde(default)]
+    dry: bool,
+}
+
+/// 照另一台机器配（hostcopy.rs）：`dry` 只列出要变哪些，确认后再不带 `dry` 调一次写进去。只能在登录后的界面上做
+pub(crate) async fn copy(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    Json(v): Json<Value>,
+) -> ApiResult<board_core::hostcopy::HostCopy> {
+    let by = crate::auth::human(&caller).map_err(ApiError)?;
+    let b: CopyBody = parse(v)?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_copy(&name, &b.from, &by, b.dry))).await?;
+    if out.done {
+        s.poke();
+    }
+    Ok(Json(out))
+}
+
 /// 界面上「重试」：重新下发同步请求
 pub(crate) async fn sync(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>) -> ApiResult<HostInfo> {
     let by = crate::auth::human(&caller).map_err(ApiError)?;
@@ -601,7 +626,7 @@ pub(crate) struct SelfTestDoneBody {
     items: Vec<SelfTestItem>,
 }
 
-/// 复制机器设置到其他机器（机器详情「复制设置到…」）：只能在登录后的界面上做。返回目标机器
+/// board host 回报一次自检的结果（只收这台机器的令牌）
 pub(crate) async fn selftest_done(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
     let b: SelfTestDoneBody = parse(v)?;
     let token = token_of(&caller);

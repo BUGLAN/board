@@ -120,7 +120,10 @@
 .hd-mrow > svg { flex: none; width: 16px; height: 16px; color: var(--text-3); }
 .hd-mrow > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .hd-mrow b { font-size: 13px; font-weight: 500; }
-.hd-mrow span { font-size: 11.5px; color: var(--text-3); }
+.hd-mrow > div > span { font-size: 11.5px; color: var(--text-3); }
+/* 照另一台机器配：选机器 +「对比…」 */
+.hd-copy-ctl { flex: none; display: flex; align-items: center; gap: 6px; }
+.hd-copy-ctl .sel { min-width: 120px; max-width: 200px; height: 28px; font-size: 12.5px; }
 .hd-mrow.danger b, .hd-mrow.danger > svg { color: var(--danger-text); }
 .hd-set .hp-ask { margin-top: 10px; }
 
@@ -282,6 +285,9 @@
   .hd-ex li { flex-wrap: wrap; row-gap: 4px; }
   .hd-ex li span { flex-basis: 100%; }
   .hd-mrow { padding: 10px 12px; }
+  .hd-copy { flex-wrap: wrap; row-gap: 8px; }
+  .hd-copy-ctl { flex: 1 1 100%; margin-left: 28px; }
+  .hd-copy-ctl .sel { flex: 1; max-width: none; }
   .hp-ask > span { flex-basis: 100%; }
   .hp-ask .btn { flex: 1 1 auto; justify-content: center; }
 

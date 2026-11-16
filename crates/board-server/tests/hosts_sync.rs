@@ -84,3 +84,49 @@ fn sync_retry_asks_again_and_the_report_clears_it() {
     let w = send("GET", &format!("{}/api/hosts/mbp/work", s.url), &[UI], None);
     assert_eq!((w.body["host"]["maxRun"].clone(), w.body["host"]["idleRun"].clone()), (json!(60), json!(10)));
 }
+
+/// 照另一台机器配（default/main#398）：只能在登录后的界面上做；先预览再确认；添加机器时生成的令牌可以带「上线后照 <机器> 配」
+#[test]
+fn copy_settings_from_another_host_is_ui_only_and_presets_ride_on_the_new_token() {
+    let s = Server::start(Auth::Local);
+    for (n, i) in [("a", "ia"), ("b", "ib")] {
+        let r = send("POST", &format!("{}/api/hosts/{n}/beat", s.url), &[UI], Some(report(n, i, true)));
+        assert_eq!(r.status, 200, "{}", r.text);
+    }
+    let r = send("PATCH", &format!("{}/api/hosts/a", s.url), &[UI], Some(json!({ "syncMcp": true, "max": 3 })));
+    assert_eq!(r.status, 200, "{}", r.text);
+
+    // 访问令牌调不了
+    let store = board_core::Store::open(&s.db).unwrap();
+    let tok = board_server::auth::create_token(store.conn(), "b 的令牌", board_core::now_ms()).unwrap().1;
+    let bearer = format!("Bearer {tok}");
+    let r = send("POST", &format!("{}/api/hosts/b/copy", s.url), &[("authorization", bearer.as_str())], Some(json!({ "from": "a", "dry": true })));
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+
+    // 界面：先预览（不写），再确认
+    let r = send("POST", &format!("{}/api/hosts/b/copy", s.url), &[UI], Some(json!({ "from": "a", "dry": true })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["done"], json!(false));
+    let labels: Vec<&str> = r.body["changes"].as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, vec!["MCP", "最多几个会话"]);
+    assert_eq!(r.body["changes"][1], json!({ "key": "max", "label": "最多几个会话", "from": "1", "to": "3" }));
+    let r = send("POST", &format!("{}/api/hosts/b/copy", s.url), &[UI], Some(json!({ "from": "a" })));
+    assert_eq!(r.body["done"], json!(true), "{}", r.text);
+    let hosts = send("GET", &format!("{}/api/hosts", s.url), &[UI], None);
+    let b = hosts.body["hosts"].as_array().unwrap().iter().find(|h| h["name"] == "b").unwrap().clone();
+    assert_eq!((b["max"].as_i64(), b["syncMcp"].as_bool()), (Some(3), Some(true)));
+    assert_eq!(b["ops"][0]["text"], json!("照 a 配：改了 MCP、最多几个会话"));
+    assert!(b["sync"]["ask"].is_object(), "{b}");
+
+    // 添加机器：生成命令时带「上线后照 a 配」；来源机器不在时不建令牌
+    let r = send("POST", &format!("{}/api/tokens", s.url), &[UI], Some(json!({ "name": "c", "copyFrom": "nope" })));
+    assert_eq!(r.code(), "NO_SUCH_HOST", "{}", r.text);
+    let r = send("POST", &format!("{}/api/tokens", s.url), &[UI], Some(json!({ "name": "c", "copyFrom": "a" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    let raw = r.body["token"].as_str().unwrap().to_string();
+    let bearer = format!("Bearer {raw}");
+    let w = send("POST", &format!("{}/api/hosts/c/beat", s.url), &[("authorization", bearer.as_str())], Some(report("c", "ic", true)));
+    assert_eq!(w.status, 200, "{}", w.text);
+    assert_eq!((w.body["host"]["max"].as_i64(), w.body["host"]["syncMcp"].as_bool()), (Some(3), Some(true)), "{}", w.text);
+    assert_eq!(w.body["host"]["ops"][0]["text"], json!("上线后照 a 配：改了 MCP、最多几个会话"));
+}

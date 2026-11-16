@@ -184,6 +184,8 @@ pub fn revoke_token(conn: &Connection, id: i64) -> Result<()> {
     if conn.execute("DELETE FROM auth_tokens WHERE id = ?1", [id])? == 0 {
         return Err(BoardError::usage(format!("令牌 #{id} 不存在")));
     }
+    // 「上线后照 <机器> 配」跟着令牌走：令牌没了就不再用
+    conn.execute("DELETE FROM host_presets WHERE token = ?1", [id])?;
     Ok(())
 }
 
@@ -722,12 +724,29 @@ pub(crate) async fn tokens(State(s): State<AppState>) -> std::result::Result<Jso
 #[derive(Deserialize)]
 pub(crate) struct NewToken {
     name: String,
+    /// 添加机器时选了「上线后照 <机器> 配」：用这个令牌的机器第一次上线时照它配（hostcopy.rs）
+    #[serde(default, rename = "copyFrom")]
+    copy_from: Option<String>,
 }
 
-pub(crate) async fn new_token(State(s): State<AppState>, Json(v): Json<Value>) -> std::result::Result<Json<Value>, ApiError> {
+pub(crate) async fn new_token(State(s): State<AppState>, Extension(caller): Extension<Caller>, Json(v): Json<Value>) -> std::result::Result<Json<Value>, ApiError> {
     let b: NewToken = crate::parse(v)?;
+    let by = human(&caller).map_err(ApiError)?;
     let now = board_core::now_ms();
-    let (info, raw) = s.db(move |st| create_token(st.conn(), &b.name, now)).await?;
+    let from = b.copy_from.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    let (info, raw) = s
+        .db(move |st| {
+            // 来源机器先查：不在时不建令牌
+            if let Some(f) = &from {
+                st.read(|r| r.host(f, now))?;
+            }
+            let (info, raw) = create_token(st.conn(), &b.name, now)?;
+            if let Some(f) = &from {
+                st.write(now, board_core::Origin::ui(None), |w| w.host_preset(info.id, f, &by))?;
+            }
+            Ok((info, raw))
+        })
+        .await?;
     Ok(Json(json!({ "token": raw, "info": info })))
 }
 

@@ -314,6 +314,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/{name}/skills/import", post(hosts::skills_import))
         .route("/hosts/{name}/skills/imported", post(hosts::skills_imported))
         .route("/hosts/{name}/sync", post(hosts::sync))
+        .route("/hosts/{name}/copy", post(hosts::copy))
         .route("/hosts/{name}/synced", post(hosts::synced))
         .route("/hosts/{name}/ls", post(hosts::list_dir))
         .route("/hosts/{name}/ls/{id}", post(hosts::listed))

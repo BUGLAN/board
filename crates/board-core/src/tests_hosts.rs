@@ -5331,3 +5331,181 @@ fn existing_hosts_keep_their_git_switch_values_after_upgrade() {
     assert!(s.read(|r| r.host("on", T0)).unwrap().sync_git, "开着的还是开着");
     assert!(!s.read(|r| r.host("off", T0)).unwrap().sync_git, "关着的还是关着");
 }
+
+/* ------------------------------ 照另一台机器配（hostcopy.rs，default/main#398） ------------------------------ */
+
+fn named(mut r: HostReport, name: &str, os: &str) -> HostReport {
+    r.name = name.into();
+    r.os = os.into();
+    r.config_sync = true;
+    r
+}
+
+fn update(s: &mut Store, name: &str, p: HostPatch) -> HostInfo {
+    s.write(T0, Origin::ui(None), |w| w.host_update(name, &p)).unwrap()
+}
+
+fn copy(s: &mut Store, to: &str, from: &str, dry: bool) -> Result<crate::hostcopy::HostCopy> {
+    s.write(T0, Origin::ui(None), |w| w.host_copy(to, from, "buglan", dry))
+}
+
+fn run(agent: &str, provider: &str, model: &str, effort: &str) -> RunPatch {
+    serde_json::from_value(serde_json::json!({ "agent": agent, "mode": "own", "provider": provider, "model": model, "effort": effort })).unwrap()
+}
+
+#[test]
+fn host_copy_previews_then_copies_once_and_leaves_workspace_name_and_accept_mode() {
+    let mut s = store();
+    providers(&mut s);
+    beat(&mut s, T0, &named(report("a", "ia", vec![]), "a", "macOS 15.4")).unwrap();
+    let mut b = named(report("b", "ib", vec![]), "b", "macOS 26");
+    b.workspace = Some(HostWorkspace { path: "/w/b".into(), ..Default::default() });
+    beat(&mut s, T0, &b).unwrap();
+    // A：claude 指定 p1、MCP 开、最多 3 个会话、一个会话 2 张、9 点到 18 点接单、自动更新 agent、自动领
+    update(
+        &mut s,
+        "a",
+        HostPatch {
+            run: Some(run("claude", "p1", "model-a", "high")),
+            sync_mcp: Some(true),
+            max: Some(3),
+            per_session: Some(2),
+            windows: Some(vec![[540, 1080]]),
+            agent_auto: Some(true),
+            auto: Some(true),
+            ..Default::default()
+        },
+    );
+
+    // 预览：逐项列出从什么变成什么，没有变化的不列；不写
+    let dry = copy(&mut s, "b", "a", true).unwrap();
+    assert!(!dry.done);
+    let rows: Vec<(&str, &str, &str)> = dry.changes.iter().map(|c| (c.label.as_str(), c.from.as_str(), c.to.as_str())).collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("Claude Code 的模型", "不改", "p1 · model-a · 强度 high"),
+            ("MCP", "不改", "用服务器的"),
+            ("自动更新 agent", "关闭", "自动更新"),
+            ("最多几个会话", "1", "3"),
+            ("一个会话几张", "4", "2"),
+            ("接单时段", "全天", "09:00–18:00"),
+        ]
+    );
+    assert!(dry.notes.is_empty(), "{:?}", dry.notes);
+    assert_eq!(s.read(|r| r.host("b", T0)).unwrap().max, 1, "预览不写");
+
+    // 确认：一次写进去，B 收到同步请求，记一条操作记录
+    let done = copy(&mut s, "b", "a", false).unwrap();
+    assert!(done.done);
+    let hb = s.read(|r| r.host("b", T0)).unwrap();
+    let c = claude_of(&hb);
+    assert_eq!((c.run_mode.as_deref(), c.run_provider.as_deref(), c.run_model.as_deref(), c.run_effort.as_deref()), (Some("own"), Some("p1"), Some("model-a"), Some("high")));
+    assert!(hb.sync_mcp && !hb.sync_skills && !hb.sync_git);
+    assert_eq!((hb.max, hb.per_session, hb.windows.clone(), hb.agent_auto), (3, 2, vec![[540, 1080]], true));
+    // 不复制：工作空间、机器名、接单三态
+    assert_eq!(hb.name, "b");
+    assert_eq!(hb.workspace.as_ref().map(|w| w.path.as_str()), Some("/w/b"));
+    assert!(!hb.auto && !hb.paused, "还是「只做派给它的」");
+    assert!(hb.sync.ask.is_some(), "改了会写进 agent 配置的：下发同步请求");
+    assert_eq!(hb.ops[0].by, "buglan");
+    assert_eq!(hb.ops[0].text, "照 a 配：改了 Claude Code 的模型、MCP、自动更新 agent、最多几个会话、一个会话几张、接单时段");
+    // 之后各改各的：再预览就是已经一样；A 再改不影响 B
+    assert!(copy(&mut s, "b", "a", true).unwrap().changes.is_empty());
+    update(&mut s, "a", HostPatch { max: Some(5), ..Default::default() });
+    assert_eq!(s.read(|r| r.host("b", T0)).unwrap().max, 3);
+    // 已经一样时确认也不写、不记
+    let n = s.read(|r| r.host("b", T0)).unwrap().ops.len();
+    update(&mut s, "a", HostPatch { max: Some(3), ..Default::default() });
+    assert!(!copy(&mut s, "b", "a", false).unwrap().done);
+    assert_eq!(s.read(|r| r.host("b", T0)).unwrap().ops.len(), n);
+
+    assert_eq!(copy(&mut s, "b", "b", true).unwrap_err().code, ErrorCode::Usage, "不能照自己配");
+    assert_eq!(copy(&mut s, "b", "nope", true).unwrap_err().code, ErrorCode::NoSuchHost);
+}
+
+#[test]
+fn host_copy_keeps_env_when_the_systems_differ_or_the_target_cannot_use_it() {
+    let mut s = store();
+    beat(&mut s, T0, &named(win_report("ia"), "a", "Windows 11")).unwrap();
+    beat(&mut s, T0, &named(win_report("ib"), "b", "Windows 10")).unwrap();
+    beat(&mut s, T0, &named(win_report("ic"), "c", "macOS 26")).unwrap();
+    // A：pi 在 PowerShell 7 里启动
+    update(&mut s, "a", HostPatch { env: Some(EnvPatch { agent: "pi".into(), env: "pwsh".into() }), ..Default::default() });
+
+    // 同一种系统、B 上 pi 在 PowerShell 7 里找得到：复制
+    let b = copy(&mut s, "b", "a", false).unwrap();
+    assert_eq!(b.changes.iter().map(|c| (c.label.as_str(), c.from.as_str(), c.to.as_str())).collect::<Vec<_>>(), vec![("pi 的启动环境", "默认", "PowerShell 7")]);
+    let pi = s.read(|r| r.host("b", T0)).unwrap().agents.into_iter().find(|a| a.id == "pi").unwrap();
+    assert_eq!(pi.env.as_deref(), Some("pwsh"));
+
+    // A 是 Windows、C 是 macOS：启动环境不复制，写明
+    let c = copy(&mut s, "c", "a", true).unwrap();
+    assert!(c.changes.is_empty(), "{:?}", c.changes);
+    assert_eq!(c.notes, vec!["启动环境没复制：a 是 Windows、c 是 macOS，两边的启动环境不通用（pi）".to_string()]);
+
+    // 同一种系统，但这台机器上在那个环境里找不到：保持原来的，写明原因
+    let mut d = named(win_report("id"), "d", "Windows 11");
+    d.agents.retain(|a| a.id == "claude");
+    d.agents.push(HostAgent { id: "pi".into(), name: "pi".into(), version: "1.5.0".into(), found: true, envs: vec![check("git-bash", true, "1.5.0"), check("pwsh", false, "")], ..Default::default() });
+    beat(&mut s, T0, &d).unwrap();
+    let d = copy(&mut s, "d", "a", true).unwrap();
+    assert!(d.changes.is_empty());
+    assert_eq!(d.notes.len(), 1);
+    assert!(d.notes[0].starts_with("pi 的启动环境没复制：") && d.notes[0].contains("没找到"), "{:?}", d.notes);
+}
+
+#[test]
+fn host_copy_stores_settings_for_agents_the_target_has_not_found_yet() {
+    let mut s = store();
+    providers(&mut s);
+    let mut a = named(report("a", "ia", vec![]), "a", "macOS 15.4");
+    a.agents.push(dsh(true));
+    beat(&mut s, T0, &a).unwrap();
+    beat(&mut s, T0, &named(report("b", "ib", vec![]), "b", "macOS 15.4")).unwrap();
+    update(&mut s, "a", HostPatch { run: Some(run("dsh", "p1", "model-a", "low")), agent: Some("dsh".into()), ..Default::default() });
+
+    let out = copy(&mut s, "b", "a", false).unwrap();
+    assert_eq!(out.changes.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["DeepSeek Harness 的模型"]);
+    assert_eq!(
+        out.notes,
+        vec!["这台机器上还没找到 DeepSeek Harness：它的设置先存下，装上并重新检查后生效".to_string(), "默认 agent 没改：这台机器上还没找到 DeepSeek Harness".to_string()]
+    );
+    // B 装上 dsh、重新检查（上报里有它）：用的是复制来的设置
+    let mut b = named(report("b", "ib", vec![]), "b", "macOS 15.4");
+    b.agents.push(dsh(true));
+    let h = beat(&mut s, T0 + S, &b).unwrap().host;
+    let d = h.agents.iter().find(|x| x.id == "dsh").unwrap();
+    assert_eq!((d.run_mode.as_deref(), d.run_provider.as_deref(), d.run_model.as_deref(), d.run_effort.as_deref()), (Some("own"), Some("p1"), Some("model-a"), Some("low")));
+}
+
+#[test]
+fn host_preset_copies_on_first_connect_only() {
+    let mut s = store();
+    providers(&mut s);
+    beat(&mut s, T0, &named(report("a", "ia", vec![]), "a", "macOS 15.4")).unwrap();
+    update(&mut s, "a", HostPatch { run: Some(run("claude", "p1", "model-a", "high")), sync_skills: Some(true), max: Some(2), auto: Some(true), ..Default::default() });
+    // 添加机器时选了「上线后照 a 配」：记在新建的令牌（7）上
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.host_preset(7, "nope", "buglan")).unwrap_err().code, ErrorCode::NoSuchHost);
+    s.write(T0, Origin::ui(None), |w| w.host_preset(7, "a", "buglan")).unwrap();
+
+    // 用这个令牌的机器第一次上线：照 a 现在的设置配（接单三态、工作空间不复制）
+    let h = s.write(T0 + S, Origin::cli(), |w| w.host_beat(&named(report("n", "in", vec![]), "n", "macOS 26"), Some(7))).unwrap().host;
+    assert_eq!(claude_of(&h).run_provider.as_deref(), Some("p1"));
+    assert!(h.sync_skills && h.max == 2 && !h.auto);
+    assert_eq!(h.workspace.as_ref().map(|w| w.path.as_str()), Some("/tmp"));
+    assert_eq!(h.ops[0].by, "buglan");
+    assert_eq!(h.ops[0].text, "上线后照 a 配：改了 Claude Code 的模型、skills、最多几个会话");
+    // 同步请求在这次写完时下发（board host 下一次取任务时拿到）
+    assert!(s.read(|r| r.host("n", T0 + S)).unwrap().sync.ask.is_some(), "照着配完下发同步请求");
+    // 用过就删：同一个令牌再连上来一台新机器，按默认设置
+    let m = s.write(T0 + S, Origin::cli(), |w| w.host_beat(&named(report("m", "im", vec![]), "m", "macOS 26"), Some(7))).unwrap().host;
+    assert_eq!((m.max, m.sync_skills), (1, false));
+    assert!(m.ops.is_empty(), "{:?}", m.ops);
+
+    // 来源机器到上线时已经不在了：按默认设置建立，记一条
+    s.write(T0, Origin::ui(None), |w| w.host_preset(8, "a", "buglan")).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_remove("a", &Actor::human(), "buglan")).unwrap();
+    let g = s.write(T0 + S, Origin::cli(), |w| w.host_beat(&named(report("g", "ig", vec![]), "g", "macOS 26"), Some(8))).unwrap().host;
+    assert_eq!(g.ops[0].text, "上线后照 a 配：a 已经不在了，按默认设置建立");
+}
