@@ -9,6 +9,7 @@ use crate::model::*;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 const SCHEMA: &str = r#"
@@ -249,8 +250,8 @@ pub(crate) fn split_path(raw: &str) -> (&str, Option<&str>) {
 
 pub struct Store {
     conn: Connection,
-    /// 附件目录（数据库旁边的 files/）；内存数据库没有
-    files: Option<PathBuf>,
+    /// 附件文件（数据库旁边的 files/）；内存数据库没有。服务端另拿一份在 Store 锁外用（[`crate::files::FileStore`]）
+    files: Option<Arc<crate::files::FileStore>>,
     /// 以本机模式运行（服务端 `--local`）：本机来的请求没有访问令牌，`GET /api/hosts/mine` 按本机认机器
     local: bool,
 }
@@ -537,7 +538,7 @@ impl Store {
         crate::moves::backfill(&conn)?;
         // 服务端以 --local 启动时 BOARD_LOCAL=1（见 board-server）：本机来的请求没有令牌，按本机认机器
         let local = std::env::var("BOARD_LOCAL").ok().is_some_and(|v| v == "1" || v == "true");
-        Ok(Store { conn, files, local })
+        Ok(Store { conn, files: files.map(|d| Arc::new(crate::files::FileStore::new(d))), local })
     }
 
     /// 工作区为空时建立默认项目（整个工作区至少保留一块白板）
@@ -658,7 +659,12 @@ impl Store {
 
     /// 附件目录；内存数据库没有
     pub fn files_dir(&self) -> Option<&Path> {
-        self.files.as_deref()
+        self.files.as_deref().map(crate::files::FileStore::dir)
+    }
+
+    /// 附件文件存储；内存数据库没有。服务端在 Store 锁外用它落盘、清理（[`crate::files::FileStore`]）
+    pub fn file_store(&self) -> Option<Arc<crate::files::FileStore>> {
+        self.files.clone()
     }
 }
 

@@ -20,6 +20,8 @@ toml_edit = { version = "0.25", optional = true }
 
 [features]
 config = ["dep:toml_edit"]
+# 只给测试用：FileStore 的落盘钩子（模拟慢盘），board-server 的 test-hooks 带上它
+test-hooks = []
 
 [dev-dependencies]
 tempfile = "3"

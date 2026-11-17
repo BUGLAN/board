@@ -287,6 +287,49 @@ fn attach_and_download_files() {
     assert!(s.run(ALPHA, &["files", "2"]).out.contains("#2 没有附件"));
 }
 
+/// 附件落盘不拿全局 Store 锁（卡片 default/main#426）：一个上传卡在落盘时，心跳、评论、建卡照常完成；放行后上传成功
+#[test]
+fn slow_upload_does_not_block_heartbeat_or_writes() {
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::{Duration, Instant};
+    let s = start();
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("slow.log");
+    std::fs::write(&log, "slow\n").unwrap();
+    s.run(ALPHA, &["new", "要传附件"]);
+
+    // 落盘钩子：通知「走到落盘了」，然后一直等到放行（最多 60 秒）
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let (entered_tx, go_rx) = (Mutex::new(entered_tx), Mutex::new(go_rx));
+    let files = s.state.file_store().unwrap();
+    files.set_put_hook(Some(Arc::new(move |_| {
+        let _ = entered_tx.lock().unwrap().send(());
+        let _ = go_rx.lock().unwrap().recv_timeout(Duration::from_secs(60));
+    })));
+    let mut env = s.env();
+    env.push(("BOARD_AS", ALPHA.into()));
+    env.push(("BOARD", "default".into()));
+    let (home, path) = (s.home.clone(), log.to_str().unwrap().to_string());
+    let up = std::thread::spawn(move || common::board(&home, &env, &["attach", "1", &path, "--json"]));
+    entered_rx.recv_timeout(Duration::from_secs(30)).expect("上传没走到落盘");
+
+    // 上传还卡在落盘：心跳、评论、建卡都不用等它
+    let t = Instant::now();
+    for args in [vec!["beat", "--json"], vec!["comment", "1", "上传还卡着", "--json"], vec!["new", "第二张", "--json"]] {
+        let r = s.run(ALPHA, &args);
+        assert_eq!(r.code, 0, "{args:?}：{}{}", r.out, r.err);
+    }
+    assert!(t.elapsed() < Duration::from_secs(20), "被上传挡住了：{:?}", t.elapsed());
+    assert!(!up.is_finished(), "上传应该还卡在落盘");
+
+    go_tx.send(()).unwrap();
+    let r = up.join().unwrap();
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["attachments"][0]["name"], "slow.log");
+    files.set_put_hook(None);
+}
+
 /// board new 带图片、文件（卡片 default/main#148）：按参数顺序接在描述后面，建卡时归到这张卡片；有一个不行就什么都不做
 #[test]
 fn new_with_images_and_files() {

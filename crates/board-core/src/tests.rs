@@ -1311,6 +1311,158 @@ fn attaching_bumps_rev_and_a_missing_card_leaves_nothing() {
     assert_eq!((s.rev().unwrap(), count(&s), files()), (r1, 3, 2));
 }
 
+/// 把附件目录里所有文件的修改时间调早：清理只删超过 1 小时没改过的
+fn age_files(dir: &std::path::Path) {
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    for e in std::fs::read_dir(dir).unwrap() {
+        std::fs::File::options().write(true).open(e.unwrap().path()).unwrap().set_modified(old).unwrap();
+    }
+}
+
+/// 上传分两层（卡片 #426）：先落盘再进写事务。落盘之后卡片被删了：写事务回滚，不记、rev 不变，
+/// 只留下没有记录的文件，预约释放后由清理收走
+#[test]
+fn upload_record_after_card_is_gone_leaves_only_an_orphan_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let id = exec(&mut s, B, &human(), T0, new("要传附件")).unwrap().card.id;
+    let files = s.file_store().unwrap();
+    let count = |s: &Store| s.conn().query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get::<_, i64>(0)).unwrap();
+
+    let board = |r: &R| r.resolve(B);
+    assert_eq!(s.attach_check(Some(id), board).unwrap().id, b.id);
+    let put = files.put(b"late\n").unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id }).unwrap();
+    let r0 = s.rev().unwrap();
+    let stored = files::Stored { name: "late.log".into(), mime: "text/plain; charset=utf-8", size: 5, sha: put.sha().to_string() };
+    let e = s.attach_record(T0, Origin::cli(), Some(id), &alpha(), &stored, |w| w.resolve(B)).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+    assert_eq!((s.rev().unwrap(), count(&s)), (r0, 0));
+    let path = files.path(put.sha());
+    assert_eq!(std::fs::read(&path).unwrap(), b"late\n", "文件已经落盘，留着");
+
+    // 预约还在：再旧也不删；释放之后才被清理
+    age_files(files.dir());
+    assert_eq!(s.gc_files(T0).unwrap(), (0, 0));
+    assert!(path.exists());
+    drop(put);
+    assert_eq!(s.gc_files(T0).unwrap(), (0, 1));
+    assert!(!path.exists());
+
+    // 检查一步就不过（卡片已删）：不落盘
+    assert_eq!(s.attach_check(Some(id), board).unwrap_err().code, ErrorCode::NotFound);
+}
+
+/// 清理的记录删除走写事务（卡片 #426）：删了记录 rev 加一，没删就不变
+#[test]
+fn gc_deletes_records_in_a_write_and_bumps_rev() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let a = s.attach(T0, &b, None, &human(), "o.txt", b"orphan").unwrap();
+
+    let r0 = s.rev().unwrap();
+    let (rows, used) = s.gc_records(T0 + 3600 * 1000).unwrap();
+    assert_eq!((rows, s.rev().unwrap()), (0, r0), "还没过 24 小时：不删、rev 不变");
+    assert_eq!(used.len(), 1);
+    let (rows, used) = s.gc_records(T0 + 25 * 3600 * 1000).unwrap();
+    assert_eq!((rows, s.rev().unwrap()), (1, r0 + 1));
+    assert!(used.is_empty());
+    assert!(s.attachment(a.id).unwrap().is_none());
+}
+
+/// 删文件在 Store 锁外（卡片 #426）：清理拿的引用快照过时了（扫目录之后又有记录指向这个文件），
+/// 删之前再查一次数据库，不删；正在上传（拿着预约）的也不删
+#[test]
+fn gc_rechecks_references_and_skips_reserved_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let files = s.file_store().unwrap();
+    let a = s.attach(T0, &b, None, &human(), "a.png", PNG).unwrap();
+    let path = s.attachment(a.id).unwrap().unwrap().2;
+    let png_sha = path.file_name().unwrap().to_string_lossy().to_string();
+    age_files(files.dir());
+
+    // 快照里还没有它（空集合），数据库里有：不删
+    let stale = std::collections::HashSet::new();
+    assert_eq!(files.collect(&stale, |c| s.files_in_use(c)).unwrap(), 0);
+    assert!(path.exists());
+
+    // 正在上传：快照、数据库里都没有，但有预约，不删，而且不去查数据库
+    let put = files.put(b"uploading").unwrap();
+    age_files(files.dir());
+    let asked = std::cell::Cell::new(false);
+    let n = files
+        .collect(&[png_sha.clone()].into_iter().collect(), |c| {
+            asked.set(true);
+            s.files_in_use(c)
+        })
+        .unwrap();
+    assert_eq!((n, asked.get()), (0, false));
+    assert!(files.path(put.sha()).exists());
+    drop(put);
+    assert_eq!(files.collect(&[png_sha.clone()].into_iter().collect(), |c| s.files_in_use(c)).unwrap(), 1);
+    assert!(path.exists(), "有记录的还在");
+}
+
+/// 清理正在删一个文件时，同样内容的上传等它删完再落盘：上传完文件在，不会被删掉
+#[test]
+fn put_waits_while_gc_is_deleting_the_same_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = std::sync::Arc::new(files::FileStore::new(dir.path().join("files")));
+    let sha = files.put(b"again").unwrap().sha().to_string();
+    age_files(files.dir());
+    let mut upload = None;
+    let n = files
+        .collect(&Default::default(), |c| {
+            assert_eq!(c, std::slice::from_ref(&sha));
+            let f = files.clone();
+            let h = std::thread::spawn(move || {
+                let put = f.put(b"again").unwrap();
+                f.path(put.sha()).exists()
+            });
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            assert!(!h.is_finished(), "上传应该等清理删完");
+            upload = Some(h);
+            Ok(Default::default())
+        })
+        .unwrap();
+    assert_eq!(n, 1);
+    assert!(upload.unwrap().join().unwrap(), "删完之后重新落盘");
+    assert!(files.path(&sha).exists());
+}
+
+/// 同样的内容同时上传（不再被 Store 锁排成一个一个）：各写各的临时文件，都成功，文件内容完整，预约都释放
+#[test]
+fn concurrent_puts_of_the_same_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = std::sync::Arc::new(files::FileStore::new(dir.path().join("files")));
+    let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let shas: Vec<String> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let (files, body) = (&files, &body);
+                sc.spawn(move || {
+                    let put = files.put(body).unwrap();
+                    put.sha().to_string()
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert!(shas.windows(2).all(|w| w[0] == w[1]));
+    assert_eq!(std::fs::read(files.path(&shas[0])).unwrap(), body);
+    assert_eq!(std::fs::read_dir(files.dir()).unwrap().count(), 1, "临时文件都改名或清掉了");
+    // 预约都释放了：旧了就能清掉
+    age_files(files.dir());
+    assert_eq!(files.collect(&Default::default(), |_| Ok(Default::default())).unwrap(), 1);
+}
+
 #[test]
 fn in_memory_store_has_no_attachments() {
     let mut s = store();

@@ -44,6 +44,7 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Extension, Json, Router,
 };
+use board_core::files::FileStore;
 use board_core::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -75,6 +76,8 @@ pub struct Config {
 
 struct Inner {
     store: Mutex<Store>,
+    /// 附件文件（和 Store 里的是同一份）：上传落盘、清理删文件在 Store 锁外用它（卡片 #426）
+    files: Option<Arc<FileStore>>,
     tx: broadcast::Sender<Arc<str>>,
     poke: Notify,
     db: PathBuf,
@@ -120,8 +123,10 @@ impl AppState {
         store.write(now, Origin::system(), |w| w.request_config_sync())?;
         auth::setup(store.conn())?;
         let (tx, _) = broadcast::channel(256);
+        let files = store.file_store();
         Ok(AppState(Arc::new(Inner {
             store: Mutex::new(store),
+            files,
             tx,
             poke: Notify::new(),
             db: cfg.db.clone(),
@@ -135,6 +140,28 @@ impl AppState {
 
     pub fn auth(&self) -> &Auth {
         &self.0.auth
+    }
+
+    /// 附件文件存储（测试里用它装落盘钩子）
+    pub fn file_store(&self) -> Option<Arc<FileStore>> {
+        self.0.files.clone()
+    }
+
+    /// 清理附件：写事务里删过期的记录（`rev` 加一），再在 Store 锁外扫目录、删不再被引用的文件。
+    /// 删之前短暂拿一下 Store 锁再查一次引用（[`FileStore::collect`]）。返回 (记录数, 文件数)
+    pub(crate) async fn gc_files(&self) -> Result<(usize, usize)> {
+        let (rows, used) = self.db(|st| st.gc_records(now_ms())).await?;
+        if rows > 0 {
+            self.poke();
+        }
+        let Some(files) = self.0.files.clone() else { return Ok((rows, 0)) };
+        let inner = self.0.clone();
+        let removed = tokio::task::spawn_blocking(move || {
+            files.collect(&used, |shas| inner.store.lock().unwrap_or_else(|e| e.into_inner()).files_in_use(shas))
+        })
+        .await
+        .map_err(|e| BoardError::new(ErrorCode::Internal, e.to_string()))??;
+        Ok((rows, removed))
     }
 
     /// 有写入：马上检查 rev，把变更推给界面（不用等下一次轮询）
@@ -454,7 +481,7 @@ fn spawn_background(state: AppState) {
                     Ok(_) => {}
                     Err(e) => tracing::warn!("清理派发事件失败：{e}"),
                 }
-                match s.db(|st| st.gc_files(now_ms())).await {
+                match s.gc_files().await {
                     Ok((r, f)) if r + f > 0 => tracing::info!("清理附件：{r} 条记录，{f} 个文件"),
                     Ok(_) => {}
                     Err(e) => tracing::warn!("清理附件失败：{e}"),
@@ -770,7 +797,8 @@ struct UploadQuery {
 }
 
 /// `POST /api/files?board=<白板>&card=<ID>&name=<文件名>`：请求体就是文件内容。
-/// 名字在线、定位白板、查卡片、记一条都在同一个写事务里，`rev` 加一（别的窗口据此刷新）
+/// 分三步，落盘不拿全局 Store 锁（卡片 #426）：只读检查名字在线、白板、卡片 → 锁外落盘（拿着预约）→
+/// 写事务里重新检查、记一条，`rev` 加一（别的窗口据此刷新），记完才释放预约（请求中途断开也一样）
 async fn upload(
     State(s): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -786,15 +814,37 @@ async fn upload(
             (Actor::agent(name), Origin::cli())
         }
     };
+    let (name, mime, _) = board_core::files::check(&q.name, &body)?;
+    let files = s.0.files.clone().ok_or_else(|| BoardError::usage("这个数据库不支持附件"))?;
+    // 1. 只读、很快：名字不在线、白板或卡片不在的上传不落盘
+    let (board, card, who) = (q.board.clone(), q.card, actor.clone());
+    s.db(move |st| {
+        st.attach_check(card, |r| {
+            // 严格模式（PRD §3）：agent 的名字必须在线
+            if who.is_agent() {
+                r.require_online(&who.name, now_ms())?;
+            }
+            r.resolve(&board)
+        })
+    })
+    .await?;
+    // 2. 锁外落盘：慢盘、大文件只挡这一个请求，不挡心跳和别的写
+    let size = body.len() as i64;
+    let put = tokio::task::spawn_blocking(move || files.put(&body))
+        .await
+        .map_err(|e| BoardError::new(ErrorCode::Internal, e.to_string()))??;
+    // 3. 写事务里重新检查（期间卡片可能被删、名字可能掉线），记一条；预约跟着进来，记完才释放
+    let stored = board_core::files::Stored { name, mime, size, sha: put.sha().to_string() };
     let out = s
         .db(move |st| {
-            st.attach_with(now_ms(), origin, q.card, &actor, &q.name, &body, |w| {
-                // 严格模式（PRD §3）：agent 的名字必须在线
+            let out = st.attach_record(now_ms(), origin, q.card, &actor, &stored, |w| {
                 if actor.is_agent() {
                     w.read().require_online(&actor.name, w.now())?;
                 }
                 w.resolve(&q.board)
-            })
+            });
+            drop(put);
+            out
         })
         .await?;
     Ok(Json(out))

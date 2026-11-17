@@ -28,8 +28,8 @@ serde_urlencoded = "0.7"
 ureq = { version = "3", features = ["json"] }
 
 [features]
-# 只给集成测试用：让 /api/dispatches/{id}/end 临时返回 502，验证 board host 的重试
-test-hooks = []
+# 只给集成测试用：让 /api/dispatches/{id}/end 临时返回 502，验证 board host 的重试；附件落盘钩子（模拟慢盘）
+test-hooks = ["board-core/test-hooks"]
 
 [dev-dependencies]
 tempfile = "3"
