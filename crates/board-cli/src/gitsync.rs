@@ -15,6 +15,9 @@
 //! - **之后才有的仓库**：全局配置按主机生效，新建、克隆的仓库不用再补配；克隆时仍用 `git -c` 带上同样的 helper，
 //!   开始派发前（[`ensure`]）再确认一次全局项还在。
 //! - 只管 https 远端：远端是 SSH（`git@…`）的仓库不用这一项，照旧用本机的 key；别的 https 主机不受影响。
+//! - **失败不丢恢复信息**（卡片 #427）：git 配置只通过 [`ConfigBackend`] 读写，读分清「没有这一项」和「读失败」，
+//!   读失败就不写；改一整项、中途失败时写回原值。记录先写后改（write-ahead）：改配置之前先把「要写什么、原来是什么」
+//!   原子地存进记录，改不成再退回去；关掉时逐项恢复，恢复成一项清一项，失败的留着下次再试，都报 `failed`。
 
 use board_core::gitcred::{https_host, GitCred};
 use board_core::{GitDetail, GitSync};
@@ -53,45 +56,161 @@ struct Record {
     email_before: Vec<String>,
 }
 
-fn load(dir: &Path) -> Record {
-    std::fs::read_to_string(dir.join(RECORD)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+/// 读记录。没有记录文件是空记录；有但读不了、解析不了时报错——不能当成空记录，Board 写过什么、原来是什么全靠它
+fn load(dir: &Path) -> Result<Record, String> {
+    let path = dir.join(RECORD);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("记录 {} 坏了（{e}），Board 改过的 git 配置靠它恢复，先修好或删掉它", shown(&path))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Record::default()),
+        Err(e) => Err(format!("读不了记录 {}：{e}", shown(&path))),
+    }
 }
 
-fn save(dir: &Path, r: &Record) {
+/// 存记录：先写临时文件、`sync_all`，再改名换上（中途崩溃也不会留下半截的记录）；记录空了就删掉文件
+fn save(dir: &Path, r: &Record) -> Result<(), String> {
+    use std::io::Write;
+    let path = dir.join(RECORD);
+    let fail = |e: std::io::Error| format!("记录 {} 没存上：{e}", shown(&path));
     if r.host.is_empty() && r.repos.is_empty() && r.commit_name.is_empty() && r.commit_email.is_empty() {
-        let _ = std::fs::remove_file(dir.join(RECORD));
-    } else {
-        let _ = std::fs::write(dir.join(RECORD), serde_json::to_string_pretty(r).unwrap_or_default());
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(fail(e)),
+            _ => Ok(()),
+        };
     }
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    let tmp = dir.join(format!("{RECORD}.tmp"));
+    let out = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(serde_json::to_string_pretty(r).unwrap_or_default().as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, &path)
+    })();
+    if let Err(e) = out {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(fail(e));
+    }
+    Ok(())
 }
 
 fn key(host: &str) -> String {
     format!("credential.https://{host}.helper")
 }
 
-/// 配置写在哪：生产用用户级（`--global`）；测试用单独的文件或仓库本地配置，不碰跑测试的人自己的 `~/.gitconfig`
-#[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))]
-enum Scope<'a> {
+/* ------------------------------ git 配置 ------------------------------ */
+
+/// git 配置的读写。同步逻辑只通过它碰配置；生产用 git 命令（[`GitConfig`]），测试换成能注入失败的实现
+trait ConfigBackend {
+    /// 这一项的所有值（按顺序，空值也算一个）。没有这一项时 `Ok(None)`；读失败（超时、配置文件坏了、git 不在）时 `Err`，
+    /// 不能当成没有——不然会在原来的值后面再追加一份、或把原值记成空的
+    fn read(&self, key: &str) -> Result<Option<Vec<String>>, String>;
+    /// 把这一项整个换成 `values`（空的就去掉这一项）。中途失败时尽量写回原来的值，再返回错误
+    fn replace(&self, key: &str, values: &[String]) -> Result<(), String>;
+}
+
+/// 配置写在哪：生产用用户级（`--global`），旧版按仓库配的在仓库本地；测试用单独的文件，不碰跑测试的人自己的 `~/.gitconfig`
+#[derive(Clone)]
+enum Scope {
     Global,
-    File(&'a Path),
+    #[cfg_attr(not(test), allow(dead_code))]
+    File(PathBuf),
     Local,
 }
 
-/// 读、写这项配置：`base` 是跑 git 用的目录（用户级用 `~/.board/host`，本地配置用仓库）
-fn with_config(base: &Path, scope: Scope<'_>, args: &[&str]) -> Result<String, String> {
-    let mut all: Vec<String> = vec!["config".into()];
-    match scope {
-        Scope::Global => all.push("--global".into()),
-        Scope::File(p) => {
-            all.push("--file".into());
-            all.push(p.to_string_lossy().into_owned());
-        }
-        Scope::Local => all.push("--local".into()),
+/// 用 `git config` 读写：`base` 是跑 git 用的目录（用户级用 `~/.board/host`，本地配置用仓库）
+struct GitConfig {
+    base: PathBuf,
+    scope: Scope,
+}
+
+impl GitConfig {
+    fn global(dir: &Path) -> GitConfig {
+        GitConfig { base: dir.to_path_buf(), scope: Scope::Global }
     }
-    all.extend(args.iter().map(|a| (*a).to_string()));
-    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
-    crate::code::git(base, &refs, QUICK)
+
+    fn local(repo: &Path) -> GitConfig {
+        GitConfig { base: repo.to_path_buf(), scope: Scope::Local }
+    }
+
+    #[cfg(test)]
+    fn file(dir: &Path, file: &Path) -> GitConfig {
+        GitConfig { base: dir.to_path_buf(), scope: Scope::File(file.to_path_buf()) }
+    }
+
+    fn run(&self, args: &[&str]) -> Result<std::process::Output, String> {
+        let mut all: Vec<String> = vec!["config".into()];
+        match &self.scope {
+            Scope::Global => all.push("--global".into()),
+            Scope::File(p) => {
+                all.push("--file".into());
+                all.push(p.to_string_lossy().into_owned());
+            }
+            Scope::Local => all.push("--local".into()),
+        }
+        all.extend(args.iter().map(|a| (*a).to_string()));
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        crate::code::git_output(&self.base, &refs, QUICK)
+    }
+
+    fn set(&self, args: &[&str]) -> Result<(), String> {
+        let out = self.run(args)?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(crate::code::git_error(&out))
+        }
+    }
+
+    /// 写成 `values`：一条用 `--replace-all` 一次换掉（git 自己原子地改文件），多条再逐个 `--add`；空的就 `--unset-all`
+    fn write(&self, k: &str, values: &[String]) -> Result<(), String> {
+        let Some((first, rest)) = values.split_first() else {
+            let out = self.run(&["--unset-all", k])?;
+            // 退出码 5：本来就没有这一项
+            return if out.status.success() || out.status.code() == Some(5) { Ok(()) } else { Err(crate::code::git_error(&out)) };
+        };
+        self.set(&["--replace-all", k, first])?;
+        for v in rest {
+            self.set(&["--add", k, v])?;
+        }
+        Ok(())
+    }
+}
+
+impl ConfigBackend for GitConfig {
+    fn read(&self, k: &str) -> Result<Option<Vec<String>>, String> {
+        let out = self.run(&["--null", "--get-all", k])?;
+        if out.status.success() {
+            let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout).split('\0').map(str::to_string).collect();
+            if v.last().is_some_and(String::is_empty) {
+                v.pop();
+            }
+            return Ok(Some(v));
+        }
+        // 退出码 1、没有报错：这一项不存在。别的（配置文件坏了是 128 之类）都算读失败
+        if out.status.code() == Some(1) && String::from_utf8_lossy(&out.stderr).trim().is_empty() {
+            return Ok(None);
+        }
+        Err(crate::code::git_error(&out))
+    }
+
+    fn replace(&self, k: &str, values: &[String]) -> Result<(), String> {
+        let before = self.read(k)?.unwrap_or_default();
+        replace_or_restore(&before, values, |v| self.write(k, v))
+    }
+}
+
+/// 把 `before` 换成 `want`；`write` 中途失败时用它把 `before` 写回去，再返回原来的错误
+fn replace_or_restore(before: &[String], want: &[String], write: impl Fn(&[String]) -> Result<(), String>) -> Result<(), String> {
+    if before == want {
+        return Ok(());
+    }
+    if let Err(e) = write(want) {
+        return Err(match write(before) {
+            Ok(()) => e,
+            Err(back) => format!("{e}；写回原来的值也失败：{back}"),
+        });
+    }
+    Ok(())
 }
 
 /// helper 的命令：`store --file '<文件>'`。git 用 sh 跑它（Windows 上是 Git 自带的 sh），路径换成 `/`、用单引号括起来
@@ -144,98 +263,127 @@ fn write_file(path: &Path, c: &GitCred, token: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 这项配置的所有值（按顺序；空值也算一个）
-fn values(base: &Path, scope: Scope<'_>, k: &str) -> Vec<String> {
-    match with_config(base, scope, &["--null", "--get-all", k]) {
-        Ok(out) => {
-            let mut v: Vec<String> = out.split('\0').map(str::to_string).collect();
-            if v.last().is_some_and(String::is_empty) {
-                v.pop();
-            }
-            v
-        }
-        Err(_) => vec![],
-    }
-}
-
-/// 把这一项改成 `want`（按顺序）；已经是了就不动
-fn set_values(base: &Path, scope: Scope<'_>, k: &str, now: &[String], want: &[String]) -> Result<bool, String> {
-    if now == want {
-        return Ok(false);
-    }
-    if !now.is_empty() {
-        with_config(base, scope, &["--unset-all", k])?;
-    }
-    for v in want {
-        with_config(base, scope, &["--add", k, v])?;
-    }
-    Ok(true)
-}
-
 /// 配进用户级（或测试用的文件）：先写空值清掉系统里别的 helper，再留用户自己写的同名项，最后是 Board 的 helper
-fn configure(base: &Path, scope: Scope<'_>, host: &str, file: &Path) -> Result<bool, String> {
+fn configure(cfg: &dyn ConfigBackend, host: &str, file: &Path) -> Result<bool, String> {
     let k = key(host);
-    let now = values(base, scope, &k);
+    let now = cfg.read(&k)?.unwrap_or_default();
     let mut want: Vec<String> = vec![String::new()];
     want.extend(now.iter().filter(|v| !ours(v)).cloned());
     want.push(helper(file));
-    set_values(base, scope, &k, &now, &want)
+    if now == want {
+        return Ok(false);
+    }
+    cfg.replace(&k, &want)?;
+    Ok(true)
+}
+
+/// 去掉 Board 写的那一项（用户自己写的留着）
+fn unconfigure(cfg: &dyn ConfigBackend, host: &str) -> Result<bool, String> {
+    if host.is_empty() {
+        return Ok(false);
+    }
+    let k = key(host);
+    let Some(now) = cfg.read(&k)? else { return Ok(false) };
+    let keep: Vec<String> = now.iter().filter(|v| !ours(v)).cloned().collect();
+    if keep == now {
+        return Ok(false);
+    }
+    cfg.replace(&k, &keep)?;
+    Ok(true)
 }
 
 fn same_value(now: &[String], want: &str) -> bool {
     now.len() == 1 && now[0] == want
 }
 
+/// 提交身份的一项：配置里的键，记录里 Board 写的值、原来的值
+#[derive(Clone, Copy)]
+enum Ident {
+    Name,
+    Email,
+}
+
+impl Ident {
+    fn key(self) -> &'static str {
+        match self {
+            Ident::Name => "user.name",
+            Ident::Email => "user.email",
+        }
+    }
+
+    fn slot(self, rec: &mut Record) -> (&mut String, &mut Vec<String>) {
+        match self {
+            Ident::Name => (&mut rec.commit_name, &mut rec.name_before),
+            Ident::Email => (&mut rec.commit_email, &mut rec.email_before),
+        }
+    }
+}
+
 /// 写一项提交身份。已经是要的值就不动；用户自己改过时，把用户改的值记成新的原值，之后关掉同步也不会覆盖它。
-fn apply_identity(base: &Path, scope: Scope<'_>, key: &str, want: &str, written: &mut String, before: &mut Vec<String>) -> Result<bool, String> {
-    let now = values(base, scope, key);
+/// 先把「要写什么、原来是什么」存进记录再改配置：记录存不上就不改；配置改不成就把记录退回去
+fn apply_identity(cfg: &dyn ConfigBackend, dir: &Path, rec: &mut Record, which: Ident, want: &str) -> Result<bool, String> {
+    let now = cfg.read(which.key())?.unwrap_or_default();
     if same_value(&now, want) {
         return Ok(false);
     }
-    let backup = if !written.is_empty() && same_value(&now, written) {
-        before.clone()
-    } else {
-        now.clone()
-    };
-    set_values(base, scope, key, &now, &[want.to_string()])?;
-    *written = want.to_string();
-    *before = backup;
+    let prev = rec.clone();
+    {
+        let (written, before) = which.slot(rec);
+        // 配置里还是 Board 上次写的值：原值不变；否则（第一次写，或用户改过）现在的值就是原值
+        if written.is_empty() || !same_value(&now, written) {
+            *before = now;
+        }
+        *written = want.to_string();
+    }
+    if let Err(e) = save(dir, rec) {
+        *rec = prev;
+        return Err(e);
+    }
+    if let Err(e) = cfg.replace(which.key(), &[want.to_string()]) {
+        // 配置没改成（一条值是 git 一次原子地改）：记录退回去。退不回也不要紧，配置里不是 Board 写的值，恢复时当成用户的
+        *rec = prev;
+        let _ = save(dir, rec);
+        return Err(e);
+    }
     Ok(true)
 }
 
-/// 只在配置里还是 Board 写的值时恢复原值；用户后来自己改过就保留用户的。
-fn restore_identity_value(base: &Path, scope: Scope<'_>, key: &str, written: &mut String, before: &mut Vec<String>) -> Result<bool, String> {
+/// 只在配置里还是 Board 写的值时恢复原值；用户后来自己改过就保留用户的。读失败、恢复失败时记录不动，下次再试
+fn restore_identity(cfg: &dyn ConfigBackend, dir: &Path, rec: &mut Record, which: Ident) -> Result<bool, String> {
+    let (written, before) = which.slot(rec);
     if written.is_empty() {
         return Ok(false);
     }
-    let now = values(base, scope, key);
-    let changed = if same_value(&now, written) { set_values(base, scope, key, &now, before)? } else { false };
-    written.clear();
-    before.clear();
+    let (written, before) = (written.clone(), before.clone());
+    let now = cfg.read(which.key())?.unwrap_or_default();
+    let changed = same_value(&now, &written) && now != before;
+    if changed {
+        cfg.replace(which.key(), &before)?;
+    }
+    let (w, b) = which.slot(rec);
+    w.clear();
+    b.clear();
+    save(dir, rec)?;
     Ok(changed)
 }
 
-/// 同步（或恢复）用户级 git 配置里的提交身份
-fn configure_identity(base: &Path, scope: Scope<'_>, rec: &mut Record, name: &str, email: &str) -> Result<bool, String> {
-    if name.is_empty() || email.is_empty() {
-        let name_changed = restore_identity_value(base, scope, "user.name", &mut rec.commit_name, &mut rec.name_before)?;
-        let email_changed = restore_identity_value(base, scope, "user.email", &mut rec.commit_email, &mut rec.email_before)?;
-        return Ok(name_changed || email_changed);
+/// 同步（或恢复）提交身份：`name`、`email` 都有就写，否则恢复 Board 写过的。两项各做各的，一项失败不影响另一项。
+/// 返回有没有改过配置，和失败的原因
+fn configure_identity(cfg: &dyn ConfigBackend, dir: &Path, rec: &mut Record, name: &str, email: &str) -> (bool, Vec<String>) {
+    let mut changed = false;
+    let mut errors = vec![];
+    for (which, want) in [(Ident::Name, name), (Ident::Email, email)] {
+        let out = if name.is_empty() || email.is_empty() {
+            restore_identity(cfg, dir, rec, which)
+        } else {
+            apply_identity(cfg, dir, rec, which, want)
+        };
+        match out {
+            Ok(c) => changed |= c,
+            Err(e) => errors.push(format!("{}：{e}", which.key())),
+        }
     }
-    let name_changed = apply_identity(base, scope, "user.name", name, &mut rec.commit_name, &mut rec.name_before)?;
-    let email_changed = apply_identity(base, scope, "user.email", email, &mut rec.commit_email, &mut rec.email_before)?;
-    Ok(name_changed || email_changed)
-}
-
-/// 从用户级（或测试用的本地配置、文件）里去掉 Board 写的（用户自己写的留着）；仓库不在了就算了
-fn unconfigure(base: &Path, scope: Scope<'_>, host: &str) -> Result<bool, String> {
-    if host.is_empty() || matches!(scope, Scope::Local) && !base.is_dir() {
-        return Ok(false);
-    }
-    let k = key(host);
-    let now = values(base, scope, &k);
-    let keep: Vec<String> = now.iter().filter(|v| !ours(v)).cloned().collect();
-    set_values(base, scope, &k, &now, &keep)
+    (changed, errors)
 }
 
 fn shown(p: &Path) -> String {
@@ -248,92 +396,150 @@ pub struct Out {
     pub changes: Vec<String>,
 }
 
-/// 去掉 Board 写在用户级配置里的那一项、旧版按仓库配过的项（记录里和这一次的仓库），恢复 Board 写过的提交身份，再删掉令牌文件
-fn clean(dir: &Path, scope: Scope<'_>, rec: &Record, repos: &[PathBuf], changes: &mut Vec<String>) {
-    if let Ok(true) = unconfigure(dir, scope, &rec.host) {
-        changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{}）", rec.host));
-    }
-    let mut all: Vec<PathBuf> = rec.repos.iter().map(PathBuf::from).collect();
+fn failed(why: String, host: &str) -> GitSync {
+    GitSync { state: "failed".into(), why: Some(why), detail: GitDetail { host: host.to_string(), ..Default::default() }, ..Default::default() }
+}
+
+/// 去掉旧版按仓库配过的项（记录里的和这一次的仓库），返回没去掉的（留在记录里下次再试）；仓库不在了就算了
+fn clean_repos(recorded: &[String], repos: &[PathBuf], host: &str, changes: &mut Vec<String>, errors: &mut Vec<String>) -> Vec<String> {
+    let mut all: Vec<PathBuf> = recorded.iter().map(PathBuf::from).collect();
     all.extend(repos.iter().cloned());
     all.sort();
     all.dedup();
+    let mut left = vec![];
     for r in &all {
-        if let Ok(true) = unconfigure(r, Scope::Local, &rec.host) {
-            changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项（{}）", shown(r), rec.host));
+        if host.is_empty() || !r.is_dir() {
+            continue;
+        }
+        match unconfigure(&GitConfig::local(r), host) {
+            Ok(true) => changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项（{host}）", shown(r))),
+            Ok(false) => {}
+            Err(e) => {
+                errors.push(format!("{} 里旧版按仓库配的项：{e}", shown(r)));
+                left.push(shown(r));
+            }
         }
     }
-    if dir.join(FILE).exists() {
-        let _ = std::fs::remove_file(dir.join(FILE));
-        changes.push("Git 凭据：删掉了本机的令牌文件".into());
-    }
-    let mut left = rec.clone();
-    left.host.clear();
-    left.repos.clear();
-    match configure_identity(dir, scope, &mut left, "", "") {
-        Ok(true) => changes.push("Git 提交身份：恢复了用户级 git 配置里原来的 user.name / user.email".into()),
-        Ok(false) => {}
+    left
+}
+
+/// 去掉 Board 写在用户级配置里的那一项、旧版按仓库配过的项，恢复 Board 写过的提交身份，再删掉令牌文件。
+/// 一步一步来，哪一步没做成就把它要的记录留着（主机、仓库、提交身份），下次同步再试；最后存记录
+fn clean(dir: &Path, cfg: &dyn ConfigBackend, rec: &mut Record, repos: &[PathBuf], changes: &mut Vec<String>) -> Result<(), String> {
+    let mut errors = vec![];
+    let host = rec.host.clone();
+    let global = match unconfigure(cfg, &host) {
+        Ok(changed) => {
+            if changed {
+                changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{host}）"));
+            }
+            true
+        }
         Err(e) => {
-            changes.push(format!("Git 提交身份：没恢复原来的 user.name / user.email：{e}"));
+            errors.push(format!("用户级 git 配置里的 {host}：{e}"));
+            false
+        }
+    };
+    let left = clean_repos(&rec.repos, repos, &host, changes, &mut errors);
+    // 令牌文件：helper 去掉了才删。反过来 helper 还在、文件没了，git 会一直找不到凭据
+    let file = dir.join(FILE);
+    let mut file_gone = !file.exists();
+    if global && !file_gone {
+        match std::fs::remove_file(&file) {
+            Ok(()) => {
+                file_gone = true;
+                changes.push("Git 凭据：删掉了本机的令牌文件".into());
+            }
+            Err(e) => errors.push(format!("删不掉 {}：{e}", shown(&file))),
         }
     }
-    save(dir, &left);
+    // 都清干净了才忘掉主机：没清完的下次还要按它找
+    if global && file_gone && left.is_empty() {
+        rec.host.clear();
+    }
+    rec.repos = left;
+    let (restored, errs) = configure_identity(cfg, dir, rec, "", "");
+    if restored {
+        changes.push("Git 提交身份：恢复了用户级 git 配置里原来的 user.name / user.email".into());
+    }
+    errors.extend(errs.into_iter().map(|e| format!("提交身份没恢复（{e}）")));
+    if let Err(e) = save(dir, rec) {
+        errors.push(e);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
 }
 
 /// 同步：`on` 是机器上选了「用服务器的」，`cred` 是服务端的（没设时 None），`repos` 是 Board 管的仓库（只用来清旧版按仓库配的项），
 /// `dir` 是 `~/.board/host`
 pub fn sync(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path) -> Out {
-    sync_at(on, cred, repos, dir, Scope::Global)
+    sync_with(on, cred, repos, dir, &GitConfig::global(dir))
 }
 
-/// 同 [`sync`]，配置写在哪由 `scope` 决定（测试用单独的文件）
-fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scope: Scope<'_>) -> Out {
+/// 同 [`sync`]，用户级配置通过 `cfg` 读写（测试用单独的文件、注入失败）
+fn sync_with(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, cfg: &dyn ConfigBackend) -> Out {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut rec = load(dir);
     let mut changes = vec![];
+    let cred_host = cred.map(|c| c.host.as_str()).unwrap_or_default();
+    // 记录读不了：什么都不改，不然恢复信息就丢了
+    let mut rec = match load(dir) {
+        Ok(r) => r,
+        Err(e) => return Out { sync: failed(e, cred_host), changes },
+    };
     let token = cred.and_then(|c| c.token.as_deref()).map(str::trim).filter(|t| !t.is_empty());
     let (Some(c), Some(token), true) = (cred, token, on) else {
-        clean(dir, scope, &rec, repos, &mut changes);
-        let sync = match (on, cred) {
-            (false, _) => GitSync { state: "off".into(), ..Default::default() },
-            (true, None) => GitSync { state: "none".into(), ..Default::default() },
-            (true, Some(c)) => GitSync { state: "failed".into(), why: Some("服务端的 Git 凭据没有令牌".into()), detail: GitDetail { host: c.host.clone(), ..Default::default() }, ..Default::default() },
+        let host = rec.host.clone();
+        let cleaned = clean(dir, cfg, &mut rec, repos, &mut changes);
+        let sync = match (on, cred, cleaned) {
+            (true, Some(c), cleaned) => {
+                let mut why = "服务端的 Git 凭据没有令牌".to_string();
+                if let Err(e) = cleaned {
+                    why.push_str(&format!("；Board 写过的 git 配置没清理完：{e}"));
+                }
+                failed(why, &c.host)
+            }
+            (_, _, Err(e)) => failed(format!("Board 写过的 git 配置没清理完：{e}"), &host),
+            (false, _, Ok(())) => GitSync { state: "off".into(), ..Default::default() },
+            (true, None, Ok(())) => GitSync { state: "none".into(), ..Default::default() },
         };
         return Out { sync, changes };
     };
+    let mut errors = vec![];
+    // 主机换了：先把旧主机的那一项去掉，再换令牌文件；没去掉就停在这里（旧主机照旧能用），记录里留着旧主机，下次再试
+    let old = rec.host.clone();
+    if !old.is_empty() && old != c.host {
+        match unconfigure(cfg, &old) {
+            Ok(true) => changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{old}）")),
+            Ok(false) => {}
+            Err(e) => return Out { sync: failed(format!("旧主机 {old} 的 git 配置没去掉：{e}"), &c.host), changes },
+        }
+    }
+    // 旧版按仓库配过的项（记录里的，加上这次看到的仓库）：去掉，用户自己的留着；没去掉的留在记录里
+    let left = clean_repos(&rec.repos, repos, &old, &mut changes, &mut errors);
     let file = dir.join(FILE);
     if let Err(e) = write_file(&file, c, token) {
-        clean(dir, scope, &rec, repos, &mut changes);
-        return Out { sync: GitSync { state: "failed".into(), why: Some(format!("写不了 {}：{e}", shown(&file))), detail: GitDetail { host: c.host.clone(), ..Default::default() }, ..Default::default() }, changes };
-    }
-    // 主机换了：先把旧主机的那一项去掉
-    if !rec.host.is_empty() && rec.host != c.host {
-        if let Ok(true) = unconfigure(dir, scope, &rec.host) {
-            changes.push(format!("Git 凭据：从用户级 git 配置里去掉了（{}）", rec.host));
+        let mut why = format!("写不了 {}：{e}", shown(&file));
+        if let Err(e) = clean(dir, cfg, &mut rec, repos, &mut changes) {
+            why.push_str(&format!("；Board 写过的 git 配置没清理完：{e}"));
         }
+        return Out { sync: failed(why, &c.host), changes };
     }
-    // 旧版按仓库配过的项（记录里的，加上这次看到的仓库）：去掉，用户自己的留着
-    let mut old: Vec<PathBuf> = rec.repos.iter().map(PathBuf::from).collect();
-    old.extend(repos.iter().cloned());
-    old.sort();
-    old.dedup();
-    for r in &old {
-        if let Ok(true) = unconfigure(r, Scope::Local, &rec.host) {
-            changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项", shown(r)));
-        }
+    // 先把这次用的主机记下来再改配置：中途失败、崩溃，之后清理也知道去哪个主机清
+    rec.host = c.host.clone();
+    rec.repos = left;
+    if let Err(e) = save(dir, &rec) {
+        return Out { sync: failed(e, &c.host), changes };
     }
-    let mut errors = vec![];
-    match configure(dir, scope, &c.host, &file) {
-        Ok(true) => {
-            changes.push(format!("Git 凭据：写进了用户级 git 配置（{}）", c.host));
-        }
+    match configure(cfg, &c.host, &file) {
+        Ok(true) => changes.push(format!("Git 凭据：写进了用户级 git 配置（{}）", c.host)),
         Ok(false) => {}
         Err(e) => errors.push(format!("git 配置没写进去：{e}")),
     }
-    let mut configured = false;
-    match configure_identity(dir, scope, &mut rec, &c.commit_name, &c.commit_email) {
-        Ok(changed) => configured |= changed,
-        Err(e) => errors.push(format!("Git 提交身份没写进去：{e}")),
-    }
+    let (configured, errs) = configure_identity(cfg, dir, &mut rec, &c.commit_name, &c.commit_email);
+    errors.extend(errs.into_iter().map(|e| format!("Git 提交身份没写进去（{e}）")));
     if configured {
         if c.commit_name.is_empty() {
             changes.push("Git 提交身份：恢复了用户级 git 配置里原来的 user.name / user.email".into());
@@ -341,19 +547,10 @@ fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scop
             changes.push(format!("Git 提交身份：写进了用户级 git 配置（{} <{}>）", c.commit_name, c.commit_email));
         }
     }
-    rec.host = c.host.clone();
-    rec.repos.clear();
-    save(dir, &rec);
-    let (state, why) = if errors.is_empty() {
-        ("synced".to_string(), None)
+    let sync = if errors.is_empty() {
+        GitSync { state: "synced".into(), count: 1, why: None, detail: GitDetail { host: c.host.clone(), ..Default::default() } }
     } else {
-        ("failed".to_string(), Some(errors.join("；")))
-    };
-    let sync = GitSync {
-        state,
-        count: 1,
-        why,
-        detail: GitDetail { host: c.host.clone(), ..Default::default() },
+        GitSync { count: 1, ..failed(errors.join("；"), &c.host) }
     };
     Out { sync, changes }
 }
@@ -362,24 +559,24 @@ fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, scop
 /// 全局配置按主机生效，不再按仓库补配；只补凭据 helper，不碰提交身份（用户可能自己改过）。
 /// 返回写进去的那一句（打印用）
 pub fn ensure(_repo: &Path, dir: &Path) -> Option<String> {
-    ensure_at(dir, Scope::Global)
+    ensure_with(dir, &GitConfig::global(dir))
 }
 
-fn ensure_at(dir: &Path, scope: Scope<'_>) -> Option<String> {
+fn ensure_with(dir: &Path, cfg: &dyn ConfigBackend) -> Option<String> {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rec = load(dir);
+    let rec = load(dir).ok()?;
     let file = dir.join(FILE);
     if rec.host.is_empty() || !file.exists() {
         return None;
     }
-    let changed = configure(dir, scope, &rec.host, &file).ok()?;
+    let changed = configure(cfg, &rec.host, &file).ok()?;
     changed.then(|| format!("Git 凭据：写进了用户级 git 配置（{}）", rec.host))
 }
 
 /// `git clone` 前面加的参数：在用服务端的凭据、地址是凭据的主机时，用 `-c` 带上同样的 helper（克隆出来之后再 [`ensure`]）
 pub fn clone_args(url: &str, dir: &Path) -> Vec<String> {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rec = load(dir);
+    let Ok(rec) = load(dir) else { return vec![] };
     let file = dir.join(FILE);
     if rec.host.is_empty() || !file.exists() || https_host(url).as_deref() != Some(rec.host.as_str()) {
         return vec![];
@@ -391,7 +588,58 @@ pub fn clone_args(url: &str, dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::process::Command;
+
+    /// 用测试的配置文件同步（不碰跑测试的人自己的 `~/.gitconfig`）
+    fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, cfg: &Path) -> Out {
+        sync_with(on, cred, repos, dir, &GitConfig::file(dir, cfg))
+    }
+
+    fn ensure_at(dir: &Path, cfg: &Path) -> Option<String> {
+        ensure_with(dir, &GitConfig::file(dir, cfg))
+    }
+
+    /// 仓库本地配置里这一项的值
+    fn local_values(repo: &Path, k: &str) -> Vec<String> {
+        GitConfig::local(repo).read(k).unwrap().unwrap_or_default()
+    }
+
+    /// 包一层真实的配置文件：指定的键读或写时失败（模拟 git 超时、配置文件坏了、写不进去）
+    struct Faulty {
+        inner: GitConfig,
+        bad_read: RefCell<Vec<&'static str>>,
+        bad_write: RefCell<Vec<&'static str>>,
+    }
+
+    impl Faulty {
+        fn new(dir: &Path, cfg: &Path) -> Faulty {
+            Faulty { inner: GitConfig::file(dir, cfg), bad_read: RefCell::default(), bad_write: RefCell::default() }
+        }
+        fn heal(&self) {
+            self.bad_read.borrow_mut().clear();
+            self.bad_write.borrow_mut().clear();
+        }
+    }
+
+    impl ConfigBackend for Faulty {
+        fn read(&self, k: &str) -> Result<Option<Vec<String>>, String> {
+            if self.bad_read.borrow().contains(&k) {
+                return Err("模拟：读配置超时".into());
+            }
+            self.inner.read(k)
+        }
+        fn replace(&self, k: &str, values: &[String]) -> Result<(), String> {
+            if self.bad_write.borrow().contains(&k) {
+                return Err("模拟：写不进去".into());
+            }
+            self.inner.replace(k, values)
+        }
+    }
+
+    fn record(dir: &Path) -> Record {
+        load(dir).unwrap()
+    }
 
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
@@ -487,7 +735,7 @@ mod tests {
         std::fs::write(host_dir.join(RECORD), serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&gh)], ..Default::default() }).unwrap()).unwrap();
 
         let c = ident("github.com", "tok/en", "BUGLAN", "1831353087@qq.com");
-        let out = sync_at(true, Some(&c), &repos, &host_dir, Scope::File(&cfg));
+        let out = sync_at(true, Some(&c), &repos, &host_dir, &cfg);
         assert_eq!(out.sync.state, "synced", "{:?}", out.sync.why);
         assert_eq!(out.sync.detail.host, "github.com");
         assert_eq!(out.sync.detail.repos, Vec::<String>::new(), "不再按仓库报数量");
@@ -495,8 +743,8 @@ mod tests {
         assert_eq!(cfg_values(&cfg, k), vec![String::new(), mine.to_string(), helper(&host_dir.join(FILE))]);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
         assert_eq!(cfg_values(&cfg, "user.email"), vec!["1831353087@qq.com"]);
-        assert!(values(&gh, Scope::Local, k).is_empty(), "旧版按仓库配的已经去掉");
-        assert!(values(&ssh, Scope::Local, k).is_empty() && values(&lab, Scope::Local, k).is_empty());
+        assert!(local_values(&gh, k).is_empty(), "旧版按仓库配的已经去掉");
+        assert!(local_values(&ssh, k).is_empty() && local_values(&lab, k).is_empty());
         let text = std::fs::read_to_string(host_dir.join(FILE)).unwrap();
         assert_eq!(text, "https://octo%20cat:tok%2Fen@github.com\n");
         #[cfg(unix)]
@@ -516,7 +764,7 @@ mod tests {
         assert!(fill(&lab2, &cfg, "gitlab.com").is_none(), "别的 https 主机不配");
 
         // 再同步一次：没有变化
-        let again = sync_at(true, Some(&c), &repos[..1], &host_dir, Scope::File(&cfg));
+        let again = sync_at(true, Some(&c), &repos[..1], &host_dir, &cfg);
         assert_eq!(again.sync.state, "synced");
         assert!(again.changes.is_empty(), "{:?}", again.changes);
 
@@ -527,7 +775,7 @@ mod tests {
         // 用户后来自己改了用户名：关掉时只恢复邮箱，用户名保留用户改的
         cfg_git(&cfg, &["user.name", "alice-local"]);
         // 关掉：去掉 Board 写的、用户自己的留着，提交身份只恢复还是 Board 写的项，令牌文件删掉，旧记录也清掉
-        let off = sync_at(false, Some(&c), &repos[..1], &host_dir, Scope::File(&cfg));
+        let off = sync_at(false, Some(&c), &repos[..1], &host_dir, &cfg);
         assert_eq!(off.sync.state, "off");
         assert_eq!(cfg_values(&cfg, k), vec![mine.to_string()]);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice-local"]);
@@ -546,11 +794,11 @@ mod tests {
         cfg_git(&cfg, &["--add", "user.name", "alice"]);
         cfg_git(&cfg, &["--add", "user.email", "alice@example.com"]);
 
-        let on = sync_at(true, Some(&cred("github.com", "tok")), &[], &host_dir, Scope::File(&cfg));
+        let on = sync_at(true, Some(&cred("github.com", "tok")), &[], &host_dir, &cfg);
         assert_eq!(on.sync.state, "synced");
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
         assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
-        sync_at(false, Some(&cred("github.com", "tok")), &[], &host_dir, Scope::File(&cfg));
+        sync_at(false, Some(&cred("github.com", "tok")), &[], &host_dir, &cfg);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
         assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
     }
@@ -563,16 +811,16 @@ mod tests {
         let cfg = host_dir.join("gitconfig");
         let c = ident("github.com", "tok", "BUGLAN", "1831353087@qq.com");
 
-        sync_at(true, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        sync_at(true, Some(&c), &[], &host_dir, &cfg);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
         assert_eq!(cfg_values(&cfg, "user.email"), vec!["1831353087@qq.com"]);
-        sync_at(false, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        sync_at(false, Some(&c), &[], &host_dir, &cfg);
         assert!(cfg_values(&cfg, "user.name").is_empty() && cfg_values(&cfg, "user.email").is_empty(), "原来没有就清掉");
 
         cfg_git(&cfg, &["--add", "user.name", "alice"]);
-        sync_at(true, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        sync_at(true, Some(&c), &[], &host_dir, &cfg);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
-        sync_at(false, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        sync_at(false, Some(&c), &[], &host_dir, &cfg);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"], "用户原来的名字恢复");
         assert!(cfg_values(&cfg, "user.email").is_empty());
     }
@@ -585,16 +833,16 @@ mod tests {
         let cfg = host_dir.join("gitconfig");
         let k = "credential.https://github.com.helper";
         let c = ident("github.com", "tok", "BUGLAN", "1831353087@qq.com");
-        sync_at(true, Some(&c), &[], &host_dir, Scope::File(&cfg));
+        sync_at(true, Some(&c), &[], &host_dir, &cfg);
 
         cfg_git(&cfg, &["--unset-all", k]);
         cfg_git(&cfg, &["user.name", "alice"]);
         cfg_git(&cfg, &["user.email", "alice@example.com"]);
-        assert_eq!(ensure_at(&host_dir, Scope::File(&cfg)).as_deref(), Some("Git 凭据：写进了用户级 git 配置（github.com）"));
+        assert_eq!(ensure_at(&host_dir, &cfg).as_deref(), Some("Git 凭据：写进了用户级 git 配置（github.com）"));
         assert_eq!(cfg_values(&cfg, k), vec![String::new(), helper(&host_dir.join(FILE))]);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"], "派发前不覆盖用户改过的提交身份");
         assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
-        assert!(ensure_at(&host_dir, Scope::File(&cfg)).is_none(), "配好之后不再重复写");
+        assert!(ensure_at(&host_dir, &cfg).is_none(), "配好之后不再重复写");
     }
 
     #[test]
@@ -603,15 +851,207 @@ mod tests {
         let host_dir = t.path().join("host");
         std::fs::create_dir_all(&host_dir).unwrap();
         let cfg = host_dir.join("gitconfig");
-        let none = sync_at(true, None, &[], &host_dir, Scope::File(&cfg));
+        let none = sync_at(true, None, &[], &host_dir, &cfg);
         assert_eq!(none.sync.state, "none");
-        let empty = sync_at(true, Some(&cred("github.com", " ")), &[], &host_dir, Scope::File(&cfg));
+        let empty = sync_at(true, Some(&cred("github.com", " ")), &[], &host_dir, &cfg);
         assert_eq!((empty.sync.state.as_str(), empty.sync.why.as_deref()), ("failed", Some("服务端的 Git 凭据没有令牌")));
         // 主机换了：旧主机的那一项去掉，配上新的
-        sync_at(true, Some(&cred("github.com", "a")), &[], &host_dir, Scope::File(&cfg));
-        let moved = sync_at(true, Some(&cred("git.example.com:8443", "b")), &[], &host_dir, Scope::File(&cfg));
+        sync_at(true, Some(&cred("github.com", "a")), &[], &host_dir, &cfg);
+        let moved = sync_at(true, Some(&cred("git.example.com:8443", "b")), &[], &host_dir, &cfg);
         assert_eq!(moved.sync.state, "synced", "{:?}", moved.sync.why);
         assert!(cfg_values(&cfg, "credential.https://github.com.helper").is_empty());
         assert_eq!(cfg_values(&cfg, "credential.https://git.example.com:8443.helper").len(), 2);
+    }
+
+    /// 读配置：没有这一项是 `None`；配置文件坏了是读失败，不当成没有，也不写（卡片 #427）
+    #[test]
+    fn read_tells_missing_from_failed() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = t.path().join("gitconfig");
+        let g = GitConfig::file(t.path(), &cfg);
+        assert_eq!(g.read("user.name").unwrap(), None, "文件都没有：没有这一项");
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        assert_eq!(g.read("user.name").unwrap(), Some(vec!["alice".to_string()]));
+        assert_eq!(g.read("user.email").unwrap(), None);
+        g.replace("user.name", &[]).unwrap();
+        assert_eq!(g.read("user.name").unwrap(), None);
+        g.replace("user.name", &[]).unwrap();
+
+        std::fs::write(&cfg, "[user\n\tname = alice\n").unwrap();
+        assert!(g.read("user.name").is_err(), "配置文件坏了：读失败");
+        assert!(g.replace("user.name", &["BUGLAN".to_string()]).is_err());
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "[user\n\tname = alice\n", "读失败就不写");
+    }
+
+    /// 换一整项中途失败：写回原来的值，再报原来的错
+    #[test]
+    fn replace_restores_old_values_when_a_write_fails_midway() {
+        let state = RefCell::new(vec!["".to_string(), "mine".to_string()]);
+        let before = state.borrow().clone();
+        let want = vec!["".to_string(), "mine".to_string(), "board".to_string()];
+        // 模拟 git：先整项换成第一个值，再逐个追加；要写的值里有 "board" 时，追加它失败
+        let write = |v: &[String]| -> Result<(), String> {
+            let mut st = state.borrow_mut();
+            st.clear();
+            for x in v {
+                if x == "board" {
+                    return Err("写到一半失败".into());
+                }
+                st.push(x.clone());
+            }
+            Ok(())
+        };
+        assert_eq!(replace_or_restore(&before, &want, write).unwrap_err(), "写到一半失败");
+        assert_eq!(*state.borrow(), before, "原来的值写回去了");
+        let fail_all = |_: &[String]| -> Result<(), String> { Err("坏了".into()) };
+        assert_eq!(replace_or_restore(&before, &want, fail_all).unwrap_err(), "坏了；写回原来的值也失败：坏了");
+        assert!(replace_or_restore(&before, &before, fail_all).is_ok(), "已经是了就不写");
+    }
+
+    /// 第一次同步时读 user.name 失败：不写这一项、不把原值记成空，报 failed；好了之后再同步、关掉能恢复 alice（卡片 #427）
+    #[test]
+    fn first_sync_read_failure_keeps_original_identity() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        cfg_git(&cfg, &["--add", "user.email", "alice@example.com"]);
+        let c = ident("github.com", "tok", "BUGLAN", "b@example.com");
+        let f = Faulty::new(&host_dir, &cfg);
+
+        f.bad_read.borrow_mut().push("user.name");
+        let out = sync_with(true, Some(&c), &[], &host_dir, &f);
+        assert_eq!(out.sync.state, "failed");
+        assert!(out.sync.why.as_deref().unwrap().contains("user.name"), "{:?}", out.sync.why);
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"], "没写、也没多出一条");
+        let r = record(&host_dir);
+        assert!(r.commit_name.is_empty() && r.name_before.is_empty(), "{r:?}");
+        assert_eq!((r.commit_email.as_str(), r.email_before.clone()), ("b@example.com", vec!["alice@example.com".to_string()]), "另一项照常写");
+
+        f.heal();
+        assert_eq!(sync_with(true, Some(&c), &[], &host_dir, &f).sync.state, "synced");
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        assert_eq!(record(&host_dir).name_before, vec!["alice"]);
+        assert_eq!(sync_with(false, Some(&c), &[], &host_dir, &f).sync.state, "off");
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
+    }
+
+    /// 关掉时读失败：Board 写的值和原值都留在记录里，报 failed；下次能正常恢复（卡片 #427）
+    #[test]
+    fn restore_read_failure_keeps_the_record_for_retry() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        let c = ident("github.com", "tok", "BUGLAN", "b@example.com");
+        let f = Faulty::new(&host_dir, &cfg);
+        assert_eq!(sync_with(true, Some(&c), &[], &host_dir, &f).sync.state, "synced");
+
+        f.bad_read.borrow_mut().push("user.name");
+        let off = sync_with(false, Some(&c), &[], &host_dir, &f);
+        assert_eq!(off.sync.state, "failed", "清理没做完不能报 off");
+        assert!(off.sync.why.as_deref().unwrap().contains("user.name"), "{:?}", off.sync.why);
+        let r = record(&host_dir);
+        assert_eq!((r.commit_name.as_str(), r.name_before.clone()), ("BUGLAN", vec!["alice".to_string()]));
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        assert!(cfg_values(&cfg, "user.email").is_empty(), "另一项照常恢复（原来没有）");
+
+        f.heal();
+        assert_eq!(sync_with(false, Some(&c), &[], &host_dir, &f).sync.state, "off");
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
+        assert!(!host_dir.join(RECORD).exists());
+    }
+
+    /// 一项写成功、另一项写失败：失败的那项配置和记录都不动，成功的那项有记录，关掉时能恢复（卡片 #427）
+    #[test]
+    fn one_identity_field_failing_leaves_a_recoverable_record() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        cfg_git(&cfg, &["--add", "user.email", "alice@example.com"]);
+        let c = ident("github.com", "tok", "BUGLAN", "b@example.com");
+        let f = Faulty::new(&host_dir, &cfg);
+
+        f.bad_write.borrow_mut().push("user.email");
+        let out = sync_with(true, Some(&c), &[], &host_dir, &f);
+        assert_eq!(out.sync.state, "failed");
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"], "没被改成空");
+        let r = record(&host_dir);
+        assert_eq!((r.commit_name.as_str(), r.name_before.clone()), ("BUGLAN", vec!["alice".to_string()]));
+        assert!(r.commit_email.is_empty() && r.email_before.is_empty(), "写失败的那项记录退回去了：{r:?}");
+
+        f.heal();
+        assert_eq!(sync_with(false, Some(&c), &[], &host_dir, &f).sync.state, "off");
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["alice@example.com"]);
+    }
+
+    /// 记录存不上（这里让临时文件的位置被一个目录占着）、记录坏了：不改任何配置，报 failed（卡片 #427）
+    #[test]
+    fn record_save_or_load_failure_changes_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        cfg_git(&cfg, &["--add", "user.name", "alice"]);
+        let c = ident("github.com", "tok", "BUGLAN", "b@example.com");
+        let blocker = host_dir.join(format!("{RECORD}.tmp"));
+        std::fs::create_dir_all(blocker.join("x")).unwrap();
+
+        let out = sync_at(true, Some(&c), &[], &host_dir, &cfg);
+        assert_eq!(out.sync.state, "failed");
+        assert!(out.sync.why.as_deref().unwrap().contains("没存上"), "{:?}", out.sync.why);
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["alice"]);
+        assert!(cfg_values(&cfg, "credential.https://github.com.helper").is_empty(), "凭据也没写");
+        std::fs::remove_dir_all(&blocker).unwrap();
+        assert_eq!(sync_at(true, Some(&c), &[], &host_dir, &cfg).sync.state, "synced");
+
+        // 记录坏了：不当成空记录，什么都不改（关掉也不动），等人修好
+        std::fs::write(host_dir.join(RECORD), "{ 半截").unwrap();
+        let off = sync_at(false, Some(&c), &[], &host_dir, &cfg);
+        assert_eq!(off.sync.state, "failed");
+        assert!(off.sync.why.as_deref().unwrap().contains("坏了"), "{:?}", off.sync.why);
+        assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
+        assert!(host_dir.join(FILE).exists());
+        assert!(ensure_at(&host_dir, &cfg).is_none() && clone_args("https://github.com/me/x.git", &host_dir).is_empty());
+    }
+
+    /// 关掉时去不掉凭据那一项：令牌文件、主机、提交身份的记录都留着，报 failed；好了之后再关能清干净（卡片 #427）
+    #[test]
+    fn unconfigure_failure_keeps_token_file_and_host() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        let k = "credential.https://github.com.helper";
+        let c = ident("github.com", "tok", "BUGLAN", "b@example.com");
+        let f = Faulty::new(&host_dir, &cfg);
+        assert_eq!(sync_with(true, Some(&c), &[], &host_dir, &f).sync.state, "synced");
+
+        f.bad_read.borrow_mut().push(k);
+        let off = sync_with(false, Some(&c), &[], &host_dir, &f);
+        assert_eq!(off.sync.state, "failed");
+        assert_eq!(off.sync.detail.host, "github.com");
+        assert!(off.sync.why.as_deref().unwrap().contains("github.com"), "{:?}", off.sync.why);
+        assert!(host_dir.join(FILE).exists(), "helper 还在，令牌文件不能删");
+        assert_eq!(record(&host_dir).host, "github.com");
+        assert_eq!(cfg_values(&cfg, k).len(), 2);
+        assert!(cfg_values(&cfg, "user.name").is_empty(), "提交身份照常恢复（原来没有）");
+
+        // 主机换了、旧主机去不掉：停下来，记录里还是旧主机
+        let moved = sync_with(true, Some(&ident("git.example.com", "t2", "BUGLAN", "b@example.com")), &[], &host_dir, &f);
+        assert_eq!(moved.sync.state, "failed");
+        assert_eq!(record(&host_dir).host, "github.com");
+        assert!(std::fs::read_to_string(host_dir.join(FILE)).unwrap().ends_with("@github.com\n"), "令牌文件还是旧主机的，旧主机照旧能用");
+
+        f.heal();
+        assert_eq!(sync_with(false, Some(&c), &[], &host_dir, &f).sync.state, "off");
+        assert!(cfg_values(&cfg, k).is_empty() && !host_dir.join(FILE).exists() && !host_dir.join(RECORD).exists());
     }
 }

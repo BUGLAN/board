@@ -125,6 +125,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 - 填了提交身份时，同一套同步还会写 `user.name` / `user.email`，新建提交的作者、提交者就用这两个值，不再落成系统账号和 `用户名@主机名.local`。
 - 令牌放在 `~/.board/host/board-git-credentials`，只有本人能读；board 的输出、日志里没有它。
 - 机器详情「设置 → skills、MCP 和 Git 凭据」里每台机器一个开关，新连上的机器默认「不改」（Board 不碰它的用户级 git 配置，需要时在机器详情或「Agent → Git 凭据」卡片上打开）；改成「不改」或在共用配置里删掉，board host 去掉这一项、清掉旧版按仓库配过的、删掉令牌文件，并把 Board 写过的提交身份恢复成覆盖前的值。用户后来自己改过的 `user.name` / `user.email` 不会被覆盖。
+- 中途出错（git 配置读不出来、记录存不上、清理没做完）时机器详情里这一行显示同步失败和原因，Board 不会把你原来的 `user.name` / `user.email` 当成空的，也不会删掉还被 helper 指着的令牌文件，下次同步再试。恢复信息记在 `~/.board/host/git-sync.json`，这个文件坏了时 Board 什么都不改，修好或删掉它再同步。
 - 只管 https 远端。远端是 SSH（`git@…`）的仓库照旧用本机的 key；别的 https 主机不受影响。
 ## 一个 agent 要满足什么
 

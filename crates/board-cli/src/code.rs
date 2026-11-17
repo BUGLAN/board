@@ -29,6 +29,16 @@ const MARK: &str = "board-used";
 
 /// 在 `dir` 里跑一条 git 命令，最多等 `limit`。成功返回标准输出（去掉首尾空白）；失败返回标准错误的最后一行
 pub fn git(dir: &Path, args: &[&str], limit: Duration) -> Result<String, String> {
+    let out = git_output(dir, args, limit)?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    }
+    Err(git_error(&out))
+}
+
+/// 同 [`git`]，但不管退出码，原样返回输出：要按退出码区分结果时用（例如 `git config --get-all` 退出码 1 是这一项不存在）。
+/// 没法运行 git、超时时返回错误
+pub fn git_output(dir: &Path, args: &[&str], limit: Duration) -> Result<std::process::Output, String> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -52,13 +62,14 @@ pub fn git(dir: &Path, args: &[&str], limit: Duration) -> Result<String, String>
             Err(e) => return Err(format!("等 git 结束时出错：{e}")),
         }
     }
-    let out = child.wait_with_output().map_err(|e| format!("读不到 git 的输出：{e}"))?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
-    }
+    child.wait_with_output().map_err(|e| format!("读不到 git 的输出：{e}"))
+}
+
+/// git 失败时的原因：标准错误的最后一行（最多 300 个字符），没有时写「git 失败」
+pub fn git_error(out: &std::process::Output) -> String {
     let err = String::from_utf8_lossy(&out.stderr);
     let last = err.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("git 失败").to_string();
-    Err(last.chars().take(300).collect())
+    last.chars().take(300).collect()
 }
 
 const QUICK: Duration = Duration::from_secs(10);
