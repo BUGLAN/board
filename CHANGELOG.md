@@ -2,6 +2,33 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.40 · 2026-11-17
+
+### 新功能
+
+- **host**：board acp 改用 ACP v2，会话安静且卡片已交才结束；dsh 保持 v1 + 续轮（0a5b919）
+
+### 修复
+
+- **host**：启动环境里没有 Node.js（npx）时，Claude Code、Codex 记成不可用并写明缺什么（b4c428d）
+- **host**：Windows 上找到 npm 的垫片时，传给适配器的是 npm 包里真正的 .exe（cd3c3af）
+- **host**：PowerShell 启动环境里 npx、npm 改用 .cmd，不再执行 Node.js 自带的 .ps1（4774cf1）
+- **host**：npx 跑适配器时关掉 npm 的更新、fund、audit 提示，不再混进派发日志（273ec03）
+- **host**：派发里结束这一轮不再直接收尾：Claude Code 关掉后台任务，卡片还在手里时续轮（0b95337）
+- **cli**：board host 拒绝未知子命令（f7f0aa4）
+- **cli**：host 集成测试结束时回收 board host 进程（70bf833）
+- **web**：命令面板搜索结果按更新时间倒序（5d5ca7a）
+- **core**：心跳结束时不再写正常退出（03ed08e）
+- **host**：读取 Codex ACP 的终端输出和退出码（cde6c10）
+
+### 重构
+
+- 删除环境检查功能（7f522e0）
+
+### 文档
+
+- docs/agents.md 供应商表里 dsh 改成写 acp profile（70b8192）
+
 ## v0.1.39 · 2026-11-17
 
 ### 新功能
