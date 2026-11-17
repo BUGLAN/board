@@ -10,8 +10,8 @@
 //!
 //! 写法：先写进同一目录下的临时目录，写完整体换上；目录里放标记文件 `.board-sync`（名称、版本），带标记的归 Board 管、
 //! 跟着库更新，库里删掉的删掉。本机已有同名、没有标记的目录（不是 Board 装的）：挪进备份目录
-//! （`~/.board/host/skills-backup/<名称>-<时间>/`）再换上库里的，之后归 Board 管；软链接（开发中的 skill）不碰，
-//! 状态写「本机是软链接，没有覆盖」。本机自己的同名目录内容和库里的一样（例如就是从这台机器导入的）时算已同步，也不动它。
+//! （`~/.board/host/skills-backup/<名称>-<时间>/`）再换上库里的，之后归 Board 管；软链接（开发中的 skill，Windows 上还有目录
+//! junction）不碰，状态写「本机是软链接，没有覆盖」。本机自己的同名目录内容和库里的一样（例如就是从这台机器导入的）时算已同步，也不动它。
 //! board-skills 写好后把 `bin/<平台>/board` 换成 board host 自己的 board（WSL 里不放：那里用 PATH 里的 Linux 版）。
 //!
 //! 从机器导入（界面「从机器导入」）：board host 每次同步后列出各目录里不是同步装的 skill（[`local_skills`]）随上报带上；
@@ -115,11 +115,31 @@ fn synced_in(dir: &Path) -> BTreeMap<String, String> {
 /// 同步装的 skill 目录（不是链接、有标记文件）的版本
 fn mark_of(dir: &Path) -> Option<String> {
     let meta = std::fs::symlink_metadata(dir).ok()?;
-    if meta.file_type().is_symlink() || !meta.is_dir() {
+    if is_link(&meta) || !meta.is_dir() {
         return None;
     }
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(MARK)).ok()?).ok()?;
     v["version"].as_str().map(str::to_string)
+}
+
+/// 本机自己的 skill 目录不覆盖：Unix 软链接、Windows 的软链接和目录 junction 都算链接。
+/// Windows 的 junction 是一个 reparse point，但 `FileType::is_symlink()` 不认它，只看它会被当成普通目录挪走。
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn is_link_path(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| is_link(&meta))
 }
 
 /// 一个 skill 在一个目录里的状态（不联网，`ls` 用）：synced | behind | local | missing
@@ -135,13 +155,51 @@ pub fn local_state(dir: &Path, skill: &SkillInfo) -> (&'static str, Option<Strin
     }
 }
 
-/// 写一个 skill：先写进临时目录，写完整体换上
-fn install(dir: &Path, pack: &SkillPack, exe: Option<&Path>) -> std::result::Result<(), String> {
+/// 把已有的 skill 挪到备份目录（名称带时间，不覆盖之前的备份），返回实际的备份路径
+fn backup_path(backup: &Path, name: &str) -> std::result::Result<PathBuf, String> {
+    std::fs::create_dir_all(backup).map_err(|e| format!("建不了备份目录 {}：{e}", backup.display()))?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let mut to = backup.join(format!("{name}-{stamp}"));
+    let mut n = 1;
+    while to.exists() {
+        n += 1;
+        to = backup.join(format!("{name}-{stamp}-{n}"));
+    }
+    Ok(to)
+}
+
+/// 用临时目录换掉 `dest`。`old` 是旧目录暂时放的位置：换上失败时挪回去，成功之后由调用方决定留不留。
+fn swap_in(dest: &Path, tmp: &Path, old: &Path) -> std::result::Result<(), String> {
+    std::fs::rename(dest, old).map_err(|e| format!("换不下旧版本：{e}"))?;
+    if let Err(e) = std::fs::rename(tmp, dest) {
+        let restore = std::fs::rename(old, dest);
+        return Err(match restore {
+            Ok(()) => format!("换不上新版本：{e}"),
+            Err(restore) => format!("换不上新版本：{e}；旧版本回滚失败，现在在 {}：{restore}", old.display()),
+        });
+    }
+    Ok(())
+}
+
+fn remove_path(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !is_link(&meta) => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(_) => {}
+    }
+}
+
+/// 写一个 skill：先写进临时目录，写完整体换上。`backup` 给了且原来已有一个同名目录时，旧目录原样留在备份目录里。
+fn install(dir: &Path, pack: &SkillPack, exe: Option<&Path>, backup: Option<&Path>) -> std::result::Result<Option<PathBuf>, String> {
     let name = &pack.info.name;
     let pid = std::process::id();
     let tmp = dir.join(format!(".{name}.sync-{pid}"));
     let _ = std::fs::remove_dir_all(&tmp);
-    let res = (|| -> std::result::Result<(), String> {
+    let res = (|| -> std::result::Result<Option<PathBuf>, String> {
         for f in &pack.files {
             skills::check_path(&f.path).map_err(|e| e.message)?;
             let p = tmp.join(&f.path);
@@ -174,18 +232,20 @@ fn install(dir: &Path, pack: &SkillPack, exe: Option<&Path>) -> std::result::Res
         std::fs::write(tmp.join(MARK), serde_json::to_string_pretty(&mark).unwrap_or_default()).map_err(|e| format!("写不了标记文件：{e}"))?;
         let dest = dir.join(name);
         if std::fs::symlink_metadata(&dest).is_ok() {
-            let old = dir.join(format!(".{name}.old-{pid}"));
-            let _ = std::fs::remove_dir_all(&old);
-            std::fs::rename(&dest, &old).map_err(|e| format!("换不下旧版本：{e}"))?;
-            if let Err(e) = std::fs::rename(&tmp, &dest) {
-                let _ = std::fs::rename(&old, &dest);
-                return Err(format!("换不上新版本：{e}"));
+            let (old, keep) = match backup {
+                Some(b) => (backup_path(b, name)?, true),
+                None => (dir.join(format!(".{name}.old-{pid}")), false),
+            };
+            remove_path(&old);
+            swap_in(&dest, &tmp, &old)?;
+            if keep {
+                return Ok(Some(old));
             }
-            let _ = std::fs::remove_dir_all(&old);
+            remove_path(&old);
         } else {
             std::fs::rename(&tmp, &dest).map_err(|e| format!("换不上新版本：{e}"))?;
         }
-        Ok(())
+        Ok(None)
     })();
     if res.is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -215,19 +275,6 @@ pub struct Opts<'a> {
 /// 备份目录：`~/.board/host/skills-backup`
 pub fn backup_dir() -> PathBuf {
     crate::config::board_dir().map(|d| d.join("host").join("skills-backup")).unwrap_or_else(|_| PathBuf::from("skills-backup"))
-}
-
-/// 把本机同名、不是 Board 装的挪进备份目录（`<名称>-<时间>/`）
-fn move_aside(dest: &Path, name: &str, backup: &Path) -> std::result::Result<(), String> {
-    std::fs::create_dir_all(backup).map_err(|e| format!("建不了备份目录 {}：{e}", backup.display()))?;
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let mut to = backup.join(format!("{name}-{stamp}"));
-    let mut n = 1;
-    while to.exists() {
-        n += 1;
-        to = backup.join(format!("{name}-{stamp}-{n}"));
-    }
-    std::fs::rename(dest, &to).map_err(|e| format!("挪不进备份目录 {}：{e}", to.display()))
 }
 
 /// 按库同步这些目录。`fetch` 取一个 skill 的内容（board host、命令行都从服务端取）；`exe` 是放进 board-skills 的 board
@@ -264,8 +311,8 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, opts: Opt
         }
         for s in lib {
             let dest = t.dir.join(&s.name);
-            let link = std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_symlink());
-            let mut moved = false;
+            let link = is_link_path(&dest);
+            let mut local = false;
             if std::fs::symlink_metadata(&dest).is_ok() && mark_of(&dest).is_none() {
                 // 本机自己的这份和库里的内容一样（例如就是从这台机器导入的）：算已同步，不动它
                 if !link && scan(&dest).is_ok_and(|(_, _, v)| v == s.version) {
@@ -280,16 +327,8 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, opts: Opt
                     states.extend(state(&s.name, "local", None, Some("本机是软链接，没有覆盖".into())));
                     continue;
                 }
-                // 不是 Board 装的：挪进备份，换上库里的
-                if let Err(why) = move_aside(&dest, &s.name, opts.backup) {
-                    states.extend(state(&s.name, "failed", None, Some(format!("{why}：没有覆盖"))));
-                    continue;
-                }
-                moved = true;
-                changes.push(format!("{}/{} 不是 Board 装的：挪进了 {}", t.shown, s.name, opts.backup.display()));
-                if !replaced.contains(&s.name) {
-                    replaced.push(s.name.clone());
-                }
+                // 不是 Board 装的：先取到新版本、写好临时目录，换上成功后才把旧目录留在备份里
+                local = true;
             }
             let had = mark_of(&dest);
             // board-skills 里的 board 要是 board host 自己的：版本一样但 bin 不是这个 board 时也重写
@@ -300,16 +339,22 @@ pub fn sync(lib: &[SkillInfo], targets: &[Target], exe: Option<&Path>, opts: Opt
             }
             let pack = packs.entry(s.name.clone()).or_insert_with(|| fetch(&s.name).map_err(|e| e.message));
             let res = match pack {
-                Ok(p) if p.info.version == s.version => install(&t.dir, p, if t.wsl { None } else { exe }),
+                Ok(p) if p.info.version == s.version => install(&t.dir, p, if t.wsl { None } else { exe }, local.then_some(opts.backup)),
                 Ok(p) => Err(format!("取到的版本 {} 和库里的 {} 对不上（刚改过？下一次同步会跟上）", p.info.version, s.version)),
                 Err(e) => Err(format!("取不到内容：{e}")),
             };
             match res {
-                Ok(()) => {
+                Ok(saved) => {
+                    if let Some(old) = saved {
+                        changes.push(format!("{}/{} 不是 Board 装的：挪进了 {}", t.shown, s.name, old.display()));
+                        if !replaced.contains(&s.name) {
+                            replaced.push(s.name.clone());
+                        }
+                    }
                     changes.push(format!("{} {}/{} → {}", if had.is_some() { "更新" } else { "装上" }, t.shown, s.name, s.version));
                     states.extend(state(&s.name, "synced", Some(s.version.clone()), None));
                 }
-                Err(why) => states.extend(state(&s.name, if had.is_some() { "behind" } else { "failed" }, had, Some(if moved { format!("{why}（原来那份在备份目录里）") } else { why }))),
+                Err(why) => states.extend(state(&s.name, if had.is_some() { "behind" } else { "failed" }, had, Some(why))),
             }
         }
     }
@@ -706,6 +751,72 @@ mod tests {
         assert_eq!(out.states[0].state, "synced");
         assert_eq!(out.replaced, vec![BUILTIN.to_string()]);
         assert_eq!(std::fs::read_to_string(dir.join(BUILTIN).join("SKILL.md")).unwrap(), "# new");
+    }
+
+    /// 本机自己的目录第一次没取到内容：原样留着，下一次同步再换；不会出现「再点一次就好」
+    #[test]
+    fn local_skill_stays_when_fetch_fails_and_can_retry() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("skills");
+        let dest = dir.join("notes");
+        let backup = d.path().join("backup");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "mine").unwrap();
+        let notes = pack("notes", &[("SKILL.md", b"# from server")]);
+        let out = sync(&[notes.info.clone()], &[target(&dir, &["claude"])], None, opts(&backup), |_| {
+            Err(BoardError::new(ErrorCode::Unreachable, "连不上"))
+        });
+        assert_eq!(out.states[0].state, "failed");
+        assert_eq!(std::fs::read_to_string(dest.join("SKILL.md")).unwrap(), "mine");
+        assert!(!backup.exists(), "没换成之前不能挪走本机目录");
+
+        let out = sync(&[notes.info.clone()], &[target(&dir, &["claude"])], None, opts(&backup), |_| Ok(notes.clone()));
+        assert_eq!(out.states[0].state, "synced");
+        assert_eq!(std::fs::read_to_string(dest.join("SKILL.md")).unwrap(), "# from server");
+        assert_eq!(out.replaced, vec!["notes".to_string()]);
+        let saved = std::fs::read_dir(&backup).unwrap().next().unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(saved.path().join("SKILL.md")).unwrap(), "mine");
+    }
+
+    /// 换上失败时旧目录要挪回原处，不能只在隐藏的 .old 目录里等下一次同步
+    #[test]
+    fn failed_swap_restores_old_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let dest = d.path().join("notes");
+        let old = d.path().join("notes-old");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "mine").unwrap();
+        let err = swap_in(&dest, &d.path().join("missing"), &old).unwrap_err();
+        assert!(err.contains("换不上新版本"), "{err}");
+        assert_eq!(std::fs::read_to_string(dest.join("SKILL.md")).unwrap(), "mine");
+        assert!(!old.exists());
+    }
+
+    /// Windows 的目录 junction 不是 `FileType::is_symlink()`，但同样不能被当成普通目录换掉
+    #[cfg(windows)]
+    #[test]
+    fn windows_junctions_are_left_alone() {
+        use std::process::Command;
+
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("skills");
+        let src = d.path().join("dev-board-skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), "dev").unwrap();
+        let link = dir.join(BUILTIN);
+        let made = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&src).status().unwrap();
+        assert!(made.success(), "mklink /J 失败");
+        assert!(is_link_path(&link));
+
+        let b = pack(BUILTIN, &[("SKILL.md", b"# from server")]);
+        let backup = d.path().join("backup");
+        let out = sync(&[b.info.clone()], &[target(&dir, &["claude"])], None, opts(&backup), |_| Ok(b.clone()));
+        assert_eq!(out.states[0].state, "local");
+        assert_eq!(out.states[0].why.as_deref(), Some("本机是软链接，没有覆盖"));
+        assert_eq!(out.links, vec![BUILTIN.to_string()]);
+        assert!(!backup.exists(), "junction 不挪");
+        assert_eq!(std::fs::read_to_string(src.join("SKILL.md")).unwrap(), "dev");
     }
 
     #[cfg(unix)]
