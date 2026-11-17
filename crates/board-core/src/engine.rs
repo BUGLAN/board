@@ -471,7 +471,7 @@ impl<'a> W<'a> {
                         if let Some(m) = mine {
                             return Err(already(m));
                         }
-                        // 规则 1：按工作流顺序，第一个有卡片、并且连到锁定状态的可领取状态；有排队派发的卡片跳过
+                        // 规则 1：按工作流顺序，第一个有卡片、并且连到锁定状态的可领取状态；有排队或在跑的派发的卡片跳过
                         match self.next_claimable(b, &flow, &[])? {
                             Some(f) => f,
                             None => {
@@ -534,6 +534,14 @@ impl<'a> W<'a> {
                                     format!("#{id} 已经派发给机器 {host}，正在排队：等它开始，或请人先取消派发"),
                                 )
                                 .with_detail(json!({ "host": host })));
+                            }
+                            // 还有在跑的派发（人强制释放后旧 agent 还没退出）：等它结束再领，免得两个 agent 做同一张（#428）
+                            if let Some(d) = self.read().card_dispatch(board, id)?.filter(|d| d.state == "running") {
+                                return Err(BoardError::new(
+                                    ErrorCode::Dispatched,
+                                    format!("#{id} 在机器 {} 上的派发还在跑（{}）：等它结束再领", d.host, d.agent_label),
+                                )
+                                .with_detail(json!({ "host": d.host })));
                             }
                         }
                         (id, r.col)

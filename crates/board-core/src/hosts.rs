@@ -3132,8 +3132,9 @@ impl<'a> W<'a> {
     }
 
     /// 排队的派发没开始就结束了（取消、没领到、会话结束、移除机器）：卡片还在排队时进的锁定状态里、没有人持有时，
-    /// 回到原来的可领取状态最上面（和释放一样，PRD §8 规则 7）；已经在可领取状态里的（例如锁定状态被删掉时被移了回去）
-    /// 只清掉记录。返回写进动态的后半句（没有移动时为空）
+    /// 回到原来的可领取状态最上面（和释放一样，PRD §8 规则 7）；已经不在锁定状态里的（在可领取状态里——例如锁定状态被删掉时
+    /// 被移了回去，或在错误节点、需要人处理的状态、「未整理」里）只清掉记录、不挪它：错误节点只有人能移出（#428）。
+    /// 返回写进动态的后半句（没有移动时为空）
     fn unreserve(&mut self, b: i64, card: i64, by: &Actor) -> Result<String> {
         let row: Option<(String, Option<String>, Option<String>)> = self
             .tx
@@ -3150,7 +3151,7 @@ impl<'a> W<'a> {
             return Ok(String::new());
         }
         self.tx.execute("UPDATE cards SET claimed_from = NULL WHERE board = ?1 AND id = ?2", params![b, card])?;
-        if col == INBOX || flow.is_claim(&col) {
+        if col == INBOX || !flow.is_lock(&col) {
             return Ok(String::new());
         }
         let dest = flow.back_to(from.as_deref()).clone();
@@ -3173,7 +3174,7 @@ impl<'a> W<'a> {
     }
 
     /// 按规则 1 找下一张可领取的卡片：在连到锁定状态的可领取状态里（按工作流顺序，状态内从上到下），
-    /// 没有排队派发的卡片中，带优先标签的先领；都不带时取最前面那张。
+    /// 没有排队或在跑的派发的卡片中，带优先标签的先领；都不带时取最前面那张。
     /// `skip` 是调用方额外要跳过的卡片（定时领取传这一轮已经派发过的卡片）。
     pub(crate) fn next_claimable(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Option<(i64, String)>> {
         let list = self.claimable_order(b, flow, skip)?;
@@ -3181,10 +3182,13 @@ impl<'a> W<'a> {
         Ok(list.iter().find(|(id, _)| urgent.contains(id)).or(list.first()).cloned())
     }
 
-    /// 可领取的卡片，按规则 1 的顺序（连到锁定状态的可领取状态按工作流顺序、状态内从上到下），
-    /// 去掉有排队派发的和 `skip` 里的；第二项是所在状态
+    /// 可领取的卡片，按规则 1 的顺序（连到锁定状态的可领取状态按工作流顺序、状态内从上到下；错误节点、锁定、终点、
+    /// 「未整理」都不算），去掉有排队或在跑的派发的和 `skip` 里的；第二项是所在状态。
+    /// 在跑的也要去掉（#428）：人强制释放后卡片已经回到可领取状态，旧派发的 agent 还没退出，这时再领就是两个 agent 做同一张，
+    /// 自动领取会一轮接一轮地重派。等旧派发结束（停下、或机器掉线后被收掉）再领
     fn claimable_order(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Vec<(i64, String)>> {
-        let mut taken: Vec<i64> = self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state = 'queued'", [b], |r| r.get(0))?;
+        let mut taken: Vec<i64> =
+            self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state IN ('queued', 'running')", [b], |r| r.get(0))?;
         taken.extend_from_slice(skip);
         let mut out = vec![];
         for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {

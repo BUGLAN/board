@@ -5868,3 +5868,88 @@ fn checklist_is_done_once_a_machine_submitted_a_card() {
     end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
     assert!(checklist(&s, T0 + 3 * S).0, "有卡被机器交审过");
 }
+
+/// 人强制释放后旧派发还在跑（#428，现场 #414）：卡片回到可领取状态，但两台机器的自动领取、不带 ID 的领取都不会再领它，
+/// 带 ID 领取报 DISPATCHED，不会出现第二个派发；旧派发结束（已停止）后，这台机器这一段接单里不再领它，别的机器按规则照常领一次
+#[test]
+fn force_release_does_not_redispatch_while_the_old_dispatch_runs() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("mac", "i2", vec![])).unwrap();
+    lead_round(&mut s);
+    // mbp 留出第二个会话位：后面领不到是因为卡片有在跑的派发，不是因为没空位
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(2), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mac", &HostPatch { auto: Some(true), ..Default::default() })).unwrap();
+    let a = new_card_tagged(&mut s, "A");
+    for h in ["mbp", "mac"] {
+        s.write(T0 + S, Origin::ui(None), |w| w.host_round(h)).unwrap();
+    }
+    let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
+    assert_eq!((d.card, d.state.as_str()), (a, "running"));
+
+    // 人强制释放：卡片回到待办最上面，旧派发只是请求了停止，还在跑
+    exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Release { id: a }).unwrap();
+    assert_eq!((card(&s, a).card.column.as_str(), card(&s, a).card.holder.clone()), ("todo", None));
+    let old = get(&s, d.id);
+    assert_eq!((old.state.as_str(), old.stop_by.is_some()), ("running", true));
+
+    // 旧派发结束之前：两台机器都不再派它，agent 也领不到
+    for (h, i) in [("mbp", "i1"), ("mac", "i2")] {
+        assert!(s.write(T0 + 4 * S, Origin::cli(), |w| w.dispatch_pull(h, i, None)).unwrap().is_none(), "{h} 不该重派");
+    }
+    let beta = Actor::agent("beta/x");
+    assert_eq!(exec(&mut s, T0 + 5 * S, &beta, Cmd::Claim { id: None }).unwrap_err().code, ErrorCode::EmptyTodo);
+    let e = exec(&mut s, T0 + 5 * S, &beta, Cmd::Claim { id: Some(a) }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Dispatched, "{}", e.message);
+    assert!(e.message.contains("还在跑"), "{}", e.message);
+    let all = |s: &Store| s.read(|r| r.card_dispatches(&r.resolve(B)?, a)).unwrap();
+    assert_eq!(all(&s).len(), 1, "没有第二个派发");
+
+    // 旧派发结束（已停止）：mbp 这一段接单里不再领它；mac 照常领，只领一次
+    let ended = end(&mut s, T0 + 6 * S, d.id, None, &[]);
+    assert_eq!(ended.result.as_deref(), Some("stopped"));
+    assert!(s.write(T0 + 7 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "mbp 这一段接单里不再领被停下的卡");
+    let again = s.write(T0 + 7 * S, Origin::cli(), |w| w.dispatch_pull("mac", "i2", None)).unwrap().expect("旧派发结束后别的机器按规则领");
+    assert_eq!((again.card, again.host.as_str()), (a, "mac"));
+    assert_eq!(all(&s).len(), 2);
+}
+
+/// 错误节点里的卡片（#428）：带着命中领取规则的标签，自动领取、不带 ID 的领取都不领，带 ID 领取 NOT_IN_TODO；agent 也移不出来
+#[test]
+fn error_status_cards_are_never_claimed_even_with_matching_labels() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    let a = new_card_tagged(&mut s, "A");
+    let mv = |id: i64, to: &str| Cmd::Move { id, column: to.into(), top: false, index: None, order: None, before: None, after: None };
+    exec(&mut s, T0, &Actor::human(), mv(a, &key)).unwrap();
+    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "错误节点里的卡片不被自动领取");
+    let beta = Actor::agent("beta/x");
+    assert_eq!(exec(&mut s, T0 + 3 * S, &beta, Cmd::Claim { id: None }).unwrap_err().code, ErrorCode::EmptyTodo);
+    assert_eq!(exec(&mut s, T0 + 3 * S, &beta, Cmd::Claim { id: Some(a) }).unwrap_err().code, ErrorCode::NotInTodo);
+    assert_eq!(exec(&mut s, T0 + 3 * S, &beta, mv(a, "todo")).unwrap_err().code, ErrorCode::ForbiddenColumn, "错误节点只有人能移出");
+    assert_eq!(card(&s, a).card.column, key);
+    // 人移回待办后照常领
+    exec(&mut s, T0 + 4 * S, &Actor::human(), mv(a, "todo")).unwrap();
+    assert_eq!(s.write(T0 + 5 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().map(|d| d.card), Some(a));
+}
+
+/// 排队的派发被取消时，卡片已经不在它排队的锁定状态里（这里直接把它放进错误节点）：只清掉记录，不把它挪回可领取状态（#428）
+#[test]
+fn canceling_a_queue_never_moves_a_card_out_of_the_error_status() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let (a, b) = (new_card(&mut s, T0, "A"), new_card(&mut s, T0, "B"));
+    let first = dispatch(&mut s, T0, a, "mbp", None).unwrap();
+    begin(&mut s, T0 + S, first.id).unwrap();
+    // 最多 1 个会话：第二张排队，进了「进行中」，记着原来的「待办」
+    let queued = dispatch(&mut s, T0 + 2 * S, b, "mbp", None).unwrap();
+    assert_eq!((queued.state.as_str(), card(&s, b).card.column.as_str()), ("queued", "doing"));
+    s.conn().execute("UPDATE cards SET col = ?1 WHERE id = ?2", rusqlite::params![key, b]).unwrap();
+    s.write(T0 + 3 * S, Origin::ui(None), |w| w.dispatch_cancel(queued.id, &Actor::human(), "buglan")).unwrap();
+    assert_eq!(card(&s, b).card.column, key, "错误节点只有人能移出");
+    assert_eq!(card(&s, b).card.claimed_from, None);
+}
