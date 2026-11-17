@@ -9,8 +9,9 @@
 //! - 工具：`tool_call` → 调用，`tool_call_update` 到了 completed / failed → 结果，两条带着同一个 `call`（`toolCallId`），
 //!   上传前同一批里合成一条，跨批的由服务端合并。参数只留摘要，结果留前 [`OUT_LINES`] 行、最多 [`OUT_MAX`] 个字符；
 //!   `_meta` 或 `rawOutput` 里有退出码时记下。
-//! - `result`：prompt 的回应（`stopReason`）。回应里带了 `usage`（输入 / 输出 tokens）时记下；费用取最后一次
-//!   `usage_update` 里的 `cost`（累计值）。
+//! - `result`：prompt 的回应（`stopReason`）。回应里带了 `usage`（这一轮的输入 / 输出 tokens）时记下；费用取最后一次
+//!   `usage_update` 里的 `cost`（整个会话的累计值）减去前面几轮已经记过的：续轮（#454）时一个会话有好几条 `result`，
+//!   界面把它们加起来，每条只记这一轮花的。
 //! - 出错的回应 → `error`。
 
 use crate::logfmt::{self, clip, s, Stream};
@@ -24,15 +25,16 @@ const OUT_LINES: usize = 20;
 /// 工具结果最多多少个字符
 const OUT_MAX: usize = 1500;
 
-/// 一个派发的解析器：费用要记住最后一次 `usage_update`
+/// 一个派发的解析器：费用要记住最后一次 `usage_update`，以及前面几轮的 `result` 已经记了多少
 pub(crate) struct Parser {
     kind: Stream,
     cost: Option<f64>,
+    billed: f64,
 }
 
 impl Parser {
     pub(crate) fn new(kind: Stream) -> Parser {
-        Parser { kind, cost: None }
+        Parser { kind, cost: None, billed: 0.0 }
     }
 
     /// 一行输出 → 0 到多条事件。`at` 是读到这一行的时间（毫秒）
@@ -82,13 +84,19 @@ impl Parser {
         let r = &v["result"];
         let Some(reason) = r["stopReason"].as_str() else { return vec![] };
         let u = &r["usage"];
+        // usage_update 的费用是会话累计的：这一轮只记比上一条 result 多出来的
+        let cost = self.cost.take().map(|total| {
+            let this = (total - self.billed).max(0.0);
+            self.billed = self.billed.max(total);
+            this
+        });
         vec![RunEvent {
             kind: "result".into(),
             ok: Some(reason == "end_turn"),
             text: some_text(logfmt::stop_words(reason)),
             tokens_in: u["inputTokens"].as_i64(),
             tokens_out: u["outputTokens"].as_i64(),
-            cost: self.cost.take(),
+            cost,
             ..Default::default()
         }]
     }
@@ -167,6 +175,23 @@ mod tests {
         let r = &evs[8];
         assert_eq!((r.ok, r.tokens_in, r.tokens_out, r.cost, r.text.as_deref()), (Some(true), Some(31000), Some(2000), Some(0.42), None));
         assert_eq!(evs[9].text.as_deref(), Some("[claude-code:unrecognized_model] {\"model\":\"x\"}"));
+    }
+
+    /// 续轮（#454）：一个会话几条 result，usage_update 的费用是累计值；每条只记这一轮的，加起来是整个会话的
+    #[test]
+    fn each_turn_records_only_its_own_cost() {
+        let mut p = Parser::new(Stream::Acp);
+        let usage = |c: f64| format!(r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"usage_update","used":10,"size":100,"cost":{{"amount":{c},"currency":"USD"}}}}}}}}"#);
+        let end = |id: i64| format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"stopReason":"end_turn","usage":{{"inputTokens":100,"outputTokens":10}}}}}}"#);
+        assert!(p.feed(&usage(0.42), 1).is_empty());
+        let first = p.feed(&end(2), 2);
+        assert_eq!((first[0].cost, first[0].tokens_in), (Some(0.42), Some(100)));
+        p.feed(&usage(0.5), 3);
+        let second = p.feed(&end(3), 4);
+        assert!((second[0].cost.unwrap() - 0.08).abs() < 1e-9, "{:?}", second[0].cost);
+        assert_eq!(second[0].tokens_in, Some(100), "tokens 是这一轮的，照原样记");
+        // 这一轮没有新的 usage_update：不记费用
+        assert_eq!(p.feed(&end(4), 5)[0].cost, None);
     }
 
     #[test]

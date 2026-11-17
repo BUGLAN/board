@@ -76,6 +76,16 @@ case "$(cat "$FAKE_DIR/mode")" in
     env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
     echo "交审了"
     end ;;
+  nudge)
+    # 卡片 #454：第一轮没交审就结束这一轮（像 Claude Code 把长命令放到后台、结束这一轮等通知）；board acp 查到卡片还在
+    # 这个名字手里，在同一个会话里续一轮：读下一条 prompt，这一轮交审
+    echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
+    read -r l
+    pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
+    echo "续轮：$(printf '%s\n' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')"
+    env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
+    echo "交审了"
+    end ;;
   session)
     # 定时领取的会话：交审后 board next 接着做，直到 SESSION_DONE
     while :; do
@@ -503,6 +513,7 @@ fn host_runs_dispatches_end_to_end() {
     assert!(rig.dispatch_log(d1).iter().any(|l| l == "交审了"));
     assert!(local.contains("config: ok"), "BOARD_CONFIG 指向这次派发的配置文件：{local}");
     assert!(local.contains("exe: ok"), "BOARD_EXE 是 board 自己的路径：{local}");
+    assert!(!local.contains("续轮"), "交审之后才结束这一轮：不续（#454）：{local}");
     let run = rig.s.home.join(".board").join("host").join("run").join("mbp");
     assert!(!run.join(format!("{d1}.toml")).exists(), "派发结束后删掉它的配置文件");
 
@@ -539,6 +550,27 @@ fn host_runs_dispatches_end_to_end() {
 }
 
 /// 未整理里的条目派给 agent 拆解（PRD §9.1）：不领取、不移动；按建出的子卡数记「已拆解」「不用拆」，退出码非 0 记「异常退出」
+/// 卡片 #454：agent 结束这一轮时卡片还在它手里（没交审、没交给人），board host 给做卡的派发带 `--extra-turns`，
+/// board acp 查到名字还持有卡片，在同一个会话里续一轮；续的这一轮交审，派发结果「已交审」
+#[test]
+fn a_turn_that_ends_with_the_card_still_held_is_continued() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "做卡"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("nudge");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d1 = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 交审", Duration::from_secs(20), || ended(&rig.show(1), "已交审"));
+    let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
+    assert!(local.contains("↻ 第 1 次续轮（最多 3 次）：default/main#1 还由 mbp/opus-5.5 持有"), "{local}");
+    assert!(local.contains("续轮：这一轮结束了，但你还持有 default/main#1「做卡」"), "续轮的提示词发到同一个会话：{local}");
+    assert!(!local.contains("第 2 次续轮"), "交审之后不再续：{local}");
+    assert!(rig.dispatch_log(d1).iter().any(|l| l == "交审了"));
+    stop(host);
+}
+
 #[test]
 fn host_splits_inbox_entries() {
     let rig = Rig::new();

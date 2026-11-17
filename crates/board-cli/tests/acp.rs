@@ -1,7 +1,9 @@
 //! `board acp`（board host 和 agent 之间讲 ACP 的那一层）：用一个假的 ACP agent（sh 脚本，按顺序读请求、回固定的帧）
-//! 走一遍完整的一轮、被取消、agent 提前退出。不执行真实的 agent。
+//! 走一遍完整的一轮、被取消、agent 提前退出；续轮（#454）连一个真的服务端，看名字还持有没持有卡片。不执行真实的 agent。
 #![cfg(unix)]
 
+mod common;
+use common::{isolate, start, Server};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -86,16 +88,22 @@ read l; exit 0
 #[test]
 fn sigterm_cancels_the_turn() {
     let d = tempfile::tempdir().unwrap();
-    // prompt 之后一直不结束，收到 session/cancel 才回 cancelled
+    // prompt 之后一直不结束，收到 session/cancel 才回 cancelled；收到 prompt 时在工作目录里留个记号（prompted）
     let script = r#"read l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
 read l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
-read l; echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'
+read l; echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'; touch prompted
 read l; echo "got: $l" >&2; echo '{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}'
 read l; exit 0
 "#;
     let c = bridge(d.path(), script);
-    // 等它发了 prompt（日志里有 working 之前不会有取消可发）
-    std::thread::sleep(Duration::from_millis(800));
+    // 等它发了 prompt 再停（之前没有可取消的）。不用固定的等待：机器忙时（同一批测试在起服务端）board acp 起得慢，
+    // 信号处理还没装好就收到 SIGTERM 会直接被结束
+    let mark = d.path().join("prompted");
+    let until = Instant::now() + Duration::from_secs(15);
+    while !mark.exists() {
+        assert!(Instant::now() < until, "15 秒内 agent 没收到 prompt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     unsafe {
         libc::kill(c.id() as i32, libc::SIGTERM);
     }
@@ -134,4 +142,88 @@ read l; exit 0
         .unwrap();
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("启动"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// 续轮用的假 agent：答完握手，之后每条 prompt 都以 end_turn 结束这一轮，收到的 prompt 打到标准错误（`prompt <id>: <帧>`）。
+/// 请求 id 是环境变量 HAND_OVER 的那一轮里先像 board-skills 那样交审 #1（final、移到待审核），再结束这一轮
+const TURNS: &str = r#"read l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
+read l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+n=2
+while read -r l; do
+  echo "prompt $n: $l" >&2
+  if [ "$n" = "$HAND_OVER" ]; then "$BOARD_BIN" beat 1 --final >/dev/null && "$BOARD_BIN" move 1 review >/dev/null && echo "交审了" >&2; fi
+  echo "{\"jsonrpc\":\"2.0\",\"id\":$n,\"result\":{\"stopReason\":\"end_turn\"}}"
+  n=$((n+1))
+done
+"#;
+
+/// 服务端上名字 who 持有 default/main#1（check、新建、领取）
+fn holder(who: &str) -> Server {
+    let s = start();
+    assert_eq!(s.run(who, &["new", "做卡"]).code, 0);
+    let r = s.run(who, &["claim", "1"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    s
+}
+
+/// 像 board host 那样启动 `board acp`：连接、名字、白板在环境变量里（续轮靠它们查名字还持有没持有卡片），
+/// HOME 和临时目录和 check 时一样（假 agent 交审时用得上 check 的会话）
+fn turns(s: &Server, dir: &Path, who: &str, extra: &[&str], env: &[(&str, &str)]) -> std::process::Child {
+    let fake = write(dir, "turns.sh", TURNS);
+    let prompt = write(dir, "prompt.txt", "/board-skills 开始执行 default项目之中的main白板中的#1任务");
+    let d = dir.display().to_string();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
+    isolate(&mut c, &s.home);
+    c.args(["acp", "--env", "direct", "--cwd", &d, "--prompt-file", &prompt]).args(extra).args(["--", "sh", &fake]);
+    c.env("BOARD_URL", &s.url).env("BOARD_TOKEN", &s.token).env("BOARD_AS", who).env("BOARD", "default/main").env("BOARD_BIN", env!("CARGO_BIN_EXE_board"));
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+}
+
+/// 卡片 #454：这一轮结束时名字还持有卡片（没交审、没交给人）→ 在同一个会话里续一轮；续的这一轮交审了 → 收尾
+#[test]
+fn a_turn_that_ends_while_holding_the_card_is_continued() {
+    let s = holder("acp/fake");
+    let d = tempfile::tempdir().unwrap();
+    let c = turns(&s, d.path(), "acp/fake", &["--extra-turns", "3"], &[("HAND_OVER", "3")]);
+    let (code, out, err) = finish(c, Duration::from_secs(30));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("↻ 第 1 次续轮（最多 3 次）：default/main#1 还由 acp/fake 持有"), "{err}");
+    let again = err.lines().find(|l| l.starts_with("prompt 3: ")).unwrap_or_else(|| panic!("{err}"));
+    assert!(again.contains("session/prompt") && again.contains(r#""sessionId":"s1""#), "同一个会话：{again}");
+    assert!(again.contains("default/main#1「做卡」") && again.contains("第 1 次续轮，最多 3 次"), "{again}");
+    assert!(err.contains("交审了") && !err.contains("prompt 4: ") && !err.contains("第 2 次续轮"), "交审之后不再续：{err}");
+    // 续轮发出去的提示词也是日志里的一帧
+    assert_eq!(out.lines().filter(|l| l.contains(r#""method":"session/prompt""#)).count(), 2, "{out}");
+    assert_eq!(s.run("acp/fake", &["show", "1", "--json"]).json()["column"], "review");
+}
+
+/// 续到上限还持有：不再续，写明续了几轮，照常以 0 退出（board host 按卡片还在它手里记成异常退出）
+#[test]
+fn turns_stop_at_the_limit() {
+    let s = holder("acp/fake");
+    let d = tempfile::tempdir().unwrap();
+    let (code, out, err) = finish(turns(&s, d.path(), "acp/fake", &["--extra-turns", "2"], &[]), Duration::from_secs(30));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("第 1 次续轮") && err.contains("第 2 次续轮") && !err.contains("第 3 次续轮"), "{err}");
+    assert!(err.contains("prompt 4: ") && !err.contains("prompt 5: "), "第一轮加续的两轮：{err}");
+    assert!(err.contains("✗ 续了 2 轮，default/main#1 还由 acp/fake 持有：不再续，收尾"), "{err}");
+}
+
+/// 不带 --extra-turns（拆解、自检）不查也不续；连不上服务端、没有名字时不续，照旧收尾
+#[test]
+fn no_turns_without_the_flag_or_an_answer() {
+    let s = holder("acp/fake");
+    let d = tempfile::tempdir().unwrap();
+    let (code, _out, err) = finish(turns(&s, d.path(), "acp/fake", &[], &[]), Duration::from_secs(20));
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("prompt 3: ") && !err.contains("续轮") && !err.contains("查不到"), "{err}");
+    let (code, _out, err) = finish(turns(&s, d.path(), "acp/fake", &["--extra-turns", "3"], &[("BOARD_URL", "http://127.0.0.1:9")]), Duration::from_secs(30));
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("✗ 查不到 acp/fake 还持有没持有卡片") && !err.contains("prompt 3: "), "{err}");
+    let (code, _out, err) = finish(turns(&s, d.path(), "acp/fake", &["--extra-turns", "3"], &[("BOARD_AS", "")]), Duration::from_secs(20));
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("没有 BOARD_AS、BOARD") && !err.contains("prompt 3: "), "{err}");
 }

@@ -9,7 +9,12 @@
 //! 3. 带了 `--set <选项>=<值>` 并且 agent 的会话配置里有这一项、这个值时切过去（dsh 的 `reasoning_effort`）；
 //!    带了 `--mode` 并且 agent 公布了这个模式时切过去（Claude Code 的 `bypassPermissions`、Codex 的 `agent-full-access`）。
 //! 4. `session/prompt`：一条文本，就是派发的提示词（`--prompt-file`，不放进命令行）。
-//! 5. 收到 prompt 的响应就收尾：关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
+//! 5. 续轮（#454）：这一轮正常结束（`end_turn`），并且带了 `--extra-turns <次数>`（board host 只给做卡的派发带）时，先看这次
+//!    派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`，连接和 board 命令一样）。还持有，
+//!    就是卡片既没交审、也没交给人：在同一个会话里再发一条提示词续一轮（写明还持有哪张、按 board-skills 做完或交给人），
+//!    最多续这么多轮，每次在标准错误写一行。不持有、查不到就收尾。agent 结束这一轮的原因各种各样（把长命令放到后台等通知、
+//!    停下来问人、做到一半就总结），派发里没有人接话，不续的话结束这一轮就等于结束会话。
+//! 6. 收尾：关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
 //!
 //! 期间 agent 发来的请求：`session/request_permission` 自动允许（和以前跳过审批的参数同一个口径，Board 没有人工审批）；
 //! 别的（`fs/*`、`terminal/*` 这些没声明的能力）回 `-32601`。收到 SIGTERM、SIGINT（人点停止、board host 退出）时发
@@ -20,8 +25,9 @@
 //! 攒着的片段最多 2 秒落一次，日志不会因为 agent 在说一大段话就长时间不动（「没输出多久算卡住」看日志）。
 //! agent 的标准错误直接进日志；`board acp` 自己的提示写标准错误（`✗ …`）。
 //!
-//! 退出码：`end_turn` 0；被取消 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败、协议错误 2；
-//! prompt 还没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。
+//! 退出码：`end_turn` 0（续满了卡片还在手里也是 0，board host 按卡片还由它持有记成异常退出）；被取消 130；
+//! `max_tokens`、`max_turn_requests`、`refusal` 3；握手失败、协议错误 2；prompt 还没结束 agent 就退出了：agent 的退出码
+//! （它是 0 时记 1）。
 
 use crate::envs::Env;
 use serde_json::{json, Value};
@@ -48,9 +54,12 @@ pub const EXIT_PROTOCOL: i32 = 2;
 pub const EXIT_LIMIT: i32 = 3;
 pub const EXIT_CANCELLED: i32 = 130;
 
+/// 做卡的派发最多续几轮（board host 传 `--extra-turns`）
+pub const EXTRA_TURNS: u32 = 3;
+
 static TERM: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> --prompt-file <文件> [--mode <模式>] [--set <选项>=<值>]… -- <ACP 入口命令> [参数…]";
+const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> --prompt-file <文件> [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] -- <ACP 入口命令> [参数…]";
 
 /// 命令行
 #[derive(Debug, PartialEq)]
@@ -62,6 +71,8 @@ pub(crate) struct Opts {
     pub mode: Option<String>,
     /// 会话开始后要切的配置（`--set reasoning_effort=high`）
     pub sets: Vec<(String, String)>,
+    /// 这一轮结束时名字还持有卡片，最多再续几轮（`--extra-turns`，0 = 不续）
+    pub extra_turns: u32,
     pub prog: String,
     pub args: Vec<String>,
 }
@@ -74,7 +85,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     let mut i = 0;
     while i < head.len() {
         let k = head[i].as_str();
-        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--mode" | "--set") {
+        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--mode" | "--set" | "--extra-turns") {
             return Err(format!("不认识的参数 {k}。{USAGE}"));
         }
         let v = head.get(i + 1).ok_or_else(|| format!("{k} 后面要有值。{USAGE}"))?;
@@ -88,6 +99,10 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     }
     let need = |k: &str| m.get(k).cloned().ok_or_else(|| format!("缺 {k}。{USAGE}"));
     let prog = tail.first().cloned().ok_or(USAGE)?;
+    let extra_turns = match m.get("--extra-turns") {
+        Some(v) => v.trim().parse::<u32>().map_err(|_| format!("--extra-turns 要写次数（0、1、2 …）：{v}"))?,
+        None => 0,
+    };
     Ok(Opts {
         env: need("--env")?,
         env_prog: m.get("--env-prog").cloned().unwrap_or_default(),
@@ -95,6 +110,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         prompt_file: PathBuf::from(need("--prompt-file")?),
         mode: m.get("--mode").cloned().filter(|x| !x.trim().is_empty()),
         sets,
+        extra_turns,
         prog,
         args: tail[1..].to_vec(),
     })
@@ -198,9 +214,23 @@ impl Client {
     }
 
     fn prompt(&mut self) -> Vec<Value> {
+        let text = self.prompt.clone();
+        self.send_prompt(&text)
+    }
+
+    /// 续轮：这一轮结束了、卡片还没做完时，在同一个会话里再发一条 prompt，回到「进行中」（取消照样有效）
+    pub(crate) fn again(&mut self, text: &str) -> Vec<Value> {
+        if self.session.is_none() || self.outcome.is_none() {
+            return vec![];
+        }
+        self.outcome = None;
+        self.send_prompt(text)
+    }
+
+    fn send_prompt(&mut self, text: &str) -> Vec<Value> {
         let Some(s) = self.session.clone() else { return vec![] };
         self.prompting = true;
-        let params = json!({ "sessionId": s, "prompt": [{ "type": "text", "text": self.prompt }] });
+        let params = json!({ "sessionId": s, "prompt": [{ "type": "text", "text": text }] });
         vec![self.request("session/prompt", params, Pending::Prompt)]
     }
 
@@ -487,6 +517,8 @@ fn run(o: &Opts) -> i32 {
     let mut merger = Merger::default();
     send(&mut stdin, client.start());
     let started = Instant::now();
+    // 已经续了几轮（见 follow_up）
+    let mut turns: u32 = 0;
     let mut cancel_at: Option<Instant> = None;
     // agent 进程已经退出的时间：它留下的子进程可能还拿着标准输出，读不到 EOF；退出后再收一会儿剩下的输出就收尾
     let mut gone_at: Option<Instant> = None;
@@ -540,7 +572,14 @@ fn run(o: &Opts) -> i32 {
                     None => {}
                 }
                 if client.outcome.is_some() {
-                    break;
+                    // 这一轮结束了：卡片还在这个名字手里，就在同一个会话里续一轮（#454）
+                    match follow_up(o, &client, turns, stdin.is_some()) {
+                        Some(text) => {
+                            turns += 1;
+                            send(&mut stdin, client.again(&text));
+                        }
+                        None => break,
+                    }
                 }
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -567,6 +606,55 @@ fn run(o: &Opts) -> i32 {
             if code == 0 { 1 } else { code }
         }
     }
+}
+
+/// 这一轮正常结束（`end_turn`）之后要不要续一轮：带了 `--extra-turns`、这次派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上
+/// 还持有卡片时，返回续轮的提示词，并在标准错误写一行（进日志，「过程」里看得到）。`done` 是已经续了几轮，
+/// `alive` 是 agent 的标准输入还写得进去
+fn follow_up(o: &Opts, client: &Client, done: u32, alive: bool) -> Option<String> {
+    let ended = client.outcome.as_ref() == Some(&Outcome::Stopped("end_turn".into()));
+    if o.extra_turns == 0 || !ended || !alive || TERM.load(Ordering::SeqCst) {
+        return None;
+    }
+    let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let (Some(name), Some(board)) = (var("BOARD_AS"), var("BOARD")) else {
+        eprintln!("✗ 环境变量里没有 BOARD_AS、BOARD：不知道这次派发的名字和白板，不续轮");
+        return None;
+    };
+    match held(&name, &board) {
+        Ok(None) => None,
+        Ok(Some((id, title))) if done < o.extra_turns => {
+            let n = done + 1;
+            eprintln!("↻ 第 {n} 次续轮（最多 {} 次）：{board}#{id} 还由 {name} 持有，没交审，也没交给人", o.extra_turns);
+            Some(nudge(&board, id, &title, n, o.extra_turns))
+        }
+        Ok(Some((id, _))) => {
+            eprintln!("✗ 续了 {done} 轮，{board}#{id} 还由 {name} 持有：不再续，收尾");
+            None
+        }
+        Err(e) => {
+            eprintln!("✗ 查不到 {name} 还持有没持有卡片（{e}）：不续轮，收尾");
+            None
+        }
+    }
+}
+
+/// 这个名字在这块白板上持有的卡片（编号、标题）：`GET /api/agents` 列出在线的名字和它们持有的卡片。
+/// 连接和 board 命令一样（board host 给的 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_CONFIG`），请求最多等 10 秒
+fn held(name: &str, board: &str) -> Result<Option<(i64, String)>, String> {
+    let b = crate::backend::Backend::open_host().map_err(|e| e.message)?;
+    let agents: Vec<board_core::AgentInfo> = b.remote().get("/api/agents", &[]).map_err(|e| e.message)?;
+    let card = agents.into_iter().filter(|a| a.name == name).flat_map(|a| a.cards).find(|c| c.board == board);
+    Ok(card.map(|c| (c.card.id, c.card.title)))
+}
+
+/// 续轮的提示词：还持有哪张、为什么要接着做、做不下去怎么办
+fn nudge(board: &str, id: i64, title: &str, n: u32, max: u32) -> String {
+    format!(
+        "这一轮结束了，但你还持有 {board}#{id}「{title}」：没交审，也没交给人。这次派发没有人回答问题，结束这一轮就是结束会话，\
+         卡片会记成异常退出。不要停下来等人确认：按 board-skills 接着做完、交审；做不下去就按「做不下去」交给人。\
+         长命令在前台跑完，不要放到后台再结束这一轮。（第 {n} 次续轮，最多 {max} 次）"
+    )
 }
 
 /// 等 agent 退出，最多 limit；到时还在就结束它（整棵进程树交给 board host 收尾）
@@ -605,6 +693,42 @@ mod tests {
         assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p"])).is_err(), "没有 --");
         assert!(parse(&s(&["--env", "direct", "--prompt-file", "/p", "--", "x"])).unwrap_err().contains("--cwd"));
         assert!(parse(&s(&["--nope", "1", "--", "x"])).is_err());
+        // 续轮：board host 只给做卡的派发带；不带是 0（不续）
+        assert_eq!(o.extra_turns, 0);
+        let o = parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--extra-turns", "3", "--", "x"])).unwrap();
+        assert_eq!((o.extra_turns, o.prog.as_str()), (3, "x"));
+        assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--extra-turns", "many", "--", "x"])).unwrap_err().contains("--extra-turns"));
+    }
+
+    /// 续轮（#454）：这一轮结束后在同一个会话里再发一条 prompt，回到「进行中」，取消照样有效
+    #[test]
+    fn again_sends_another_prompt_in_the_same_session() {
+        let mut c = Client::new("/w", "p", None);
+        assert!(c.again("x").is_empty(), "还没有会话：不发");
+        c.start();
+        c.on_frame(&reply(0, json!({})));
+        let f = c.on_frame(&reply(1, json!({ "sessionId": "s" })));
+        assert_eq!((f[0]["method"].as_str(), f[0]["id"].as_i64()), (Some("session/prompt"), Some(2)));
+        assert!(c.again("x").is_empty(), "这一轮还没结束：不发");
+        c.on_frame(&reply(2, json!({ "stopReason": "end_turn" })));
+        assert_eq!(c.outcome, Some(Outcome::Stopped("end_turn".into())));
+        let f = c.again("还持有 #7：接着做完");
+        assert_eq!((f[0]["method"].as_str(), f[0]["id"].as_i64()), (Some("session/prompt"), Some(3)));
+        assert_eq!(f[0]["params"], json!({ "sessionId": "s", "prompt": [{ "type": "text", "text": "还持有 #7：接着做完" }] }));
+        assert_eq!(c.outcome, None, "续的这一轮在进行中");
+        assert!(!c.handshaking());
+        assert_eq!(c.cancel()[0]["method"], "session/cancel");
+        // 续的这一轮结束：照常记结果
+        c.on_frame(&reply(3, json!({ "stopReason": "end_turn" })));
+        assert_eq!(c.outcome, Some(Outcome::Stopped("end_turn".into())));
+    }
+
+    #[test]
+    fn the_nudge_says_which_card_and_what_to_do() {
+        let t = nudge("default/main", 454, "ACP 续轮", 1, 3);
+        assert!(t.contains("default/main#454「ACP 续轮」"), "{t}");
+        assert!(t.contains("按 board-skills 接着做完") && t.contains("做不下去"), "{t}");
+        assert!(t.contains("不要放到后台") && t.ends_with("（第 1 次续轮，最多 3 次）"), "{t}");
     }
 
     fn reply(id: i64, result: Value) -> Value {

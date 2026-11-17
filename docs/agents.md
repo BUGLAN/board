@@ -19,7 +19,8 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
    - Client 的 `fs`、`terminal` 能力都不声明（agent 自己在 worktree 里读写、执行），`mcpServers` 传空（MCP 照旧由 Board 写进 agent 自己的配置，见下面「MCP 服务器」）。
    - 不问权限：agent 公布了不问权限的模式就切过去（Claude Code 的 `bypassPermissions`、Codex 的 `agent-full-access`）；`session/request_permission` 一律自动选「总是允许」（没有就「允许这一次」），Board 没有人工审批。dsh 用环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批。
    - agent 配置文件里有思考强度时（见下面「模型供应商」），会话配置里有 `reasoning_effort` 这一项就切过去（dsh 的 ACP 只能这样定强度）。
-   - 收到 prompt 的回应就收尾：关掉 agent 的标准输入，最多等 5 秒，还不退就结束它。agent 进程自己退出了也收尾（它留下的子进程拿着输出也不等）。
+   - **续轮**（#454）：派发里没有人接话，agent 结束这一轮就等于结束会话。所以做卡的派发（`board host` 带 `--extra-turns 3`；拆解、自检不带）这一轮以 `end_turn` 结束时，`board acp` 先查这次派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`）：还持有，就是卡片既没交审、也没交给人（agent 把长命令放到后台等通知、停下来问人、做到一半就总结），在同一个会话里再发一条提示词续一轮，写明还持有哪张、按 board-skills 做完或交给人，最多续 3 轮，每次在日志里写一行「↻ 第 n 次续轮」；不持有、查不到就收尾。续满了还持有，写一行「✗ 续了 3 轮…」后照常收尾，`board host` 按卡片还在它手里记成异常退出。
+   - 收尾：关掉 agent 的标准输入，最多等 5 秒，还不退就结束它。agent 进程自己退出了也收尾（它留下的子进程拿着输出也不等）。
    - 退出码：`end_turn` 0；被取消 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败（例如没登录）、协议错误 2；这一轮没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。原因写进日志。
    - 人点「停止」、`board host` 退出时它收到 SIGTERM：发 `session/cancel`，最多等 5 秒（之后照下面第 6 步结束进程树）。
 
@@ -145,7 +146,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 | 3 | **找得到 `board-skills`**：从某个 skill 目录加载它，提示词以 `/board-skills` 开头时照着它做 | 不认识这句话，什么也不做就退出 → 异常退出（退出码常常是 0） |
 | 4 | **在这台机器上已经登录 / 配好模型**（API key、OAuth、provider） | 一启动就报错退出 |
 | 5 | 它执行的命令能拿到 `BOARD_URL`、`BOARD_AS`、`BOARD`、`BOARD_CONFIG`、`BOARD_EXE` 这几个环境变量（`BOARD_TOKEN` 被去掉没关系） | `board` 连错服务端、找不到名字或白板 |
-| 6 | **运行中**用 `session/update` 报进度（说的话、工具调用和结果），这一轮做完用 `stopReason: end_turn` 回应 prompt | 「过程」里看不出它在干活还是卡住了；不回应 prompt 就退出算异常退出 |
+| 6 | **运行中**用 `session/update` 报进度（说的话、工具调用和结果），这一轮做完（卡片交审或交给人）才用 `stopReason: end_turn` 回应 prompt；长命令在这一轮里跑完，不放到后台、结束这一轮等通知（Claude Code 用 `acp_env` 关掉了后台任务） | 「过程」里看不出它在干活还是卡住了；不回应 prompt 就退出算异常退出；卡片还在手里就结束这一轮会被续一轮（最多 3 轮），续满了算异常退出 |
 | 7 | 收到 `session/cancel` 会结束这一轮；标准输入关闭（EOF）或收到 SIGTERM 会退出 | 停止要等 10 秒后强制结束 |
 | 8 | `<命令> --version` 第一行是版本号（用适配器的，是 agent 自己的命令） | 界面上只显示「找到了」（不影响使用） |
 | 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，ACP 入口在里面能做完一张卡（用适配器的，`npx` 也要找得到）。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
@@ -171,7 +172,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 各自的说明：
 
 - **dsh**：用它自带的 acp profile（`@deepseek-ai/dsh-acp-app`，0.2.2 起；本机 `dsh --version` 更旧时不启动，提示升级）。`--patch {patch}` 是 board host 每次派发写的补丁（`crates/board-cli/src/dsh-acp.patch.yml`），关掉 `goal-round-driver`、`tool-goal`、`command-goal`：acp profile 也挂着 goal，模型一旦 `create_goal`，这一轮结束后会自动续轮，prompt 迟迟不结束。环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批（默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用）。会话用的提供方和模型是 acp profile 里 `acp` 这一项配置的（`~/.dsh/profiles/acp/cordis.patch.yml`；默认 `deepseek-official` 的 `deepseek-v4-flash`），强度在会话里用 `reasoning_effort` 切；以前给 headless profile 配的模型不会自动带过来。dsh 不报 tokens 和费用。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
-- **Claude Code**：适配器 `claude-agent-acp`（Claude Agent SDK）。会话开始后切到 `bypassPermissions` 模式；root 用户下没有这个模式，权限请求照样自动允许。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报要先登录，从自己的终端或桌面端运行就好。
+- **Claude Code**：适配器 `claude-agent-acp`（Claude Agent SDK）。会话开始后切到 `bypassPermissions` 模式；root 用户下没有这个模式，权限请求照样自动允许。环境变量 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 关掉后台任务：Bash 工具没有 `run_in_background`，长命令（`npm test` 这类）只能在前台跑完，不会放到后台、结束这一轮等通知——派发里结束这一轮就是结束会话，后台命令会跟着被收掉（#454）；`BASH_DEFAULT_TIMEOUT_MS=1200000`、`BASH_MAX_TIMEOUT_MS=3600000` 把前台命令的默认超时从 2 分钟调到 20 分钟、上限从 10 分钟调到 60 分钟（新 worktree 第一次编译、Windows 上慢也够）。前台跑长命令时适配器每隔一会儿发一帧进度（`tool_call_update`），日志一直在长，不会被「没输出多久算卡住」停掉。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报要先登录，从自己的终端或桌面端运行就好。
 - **Codex**：适配器 `codex-acp`（Codex App Server）。环境变量 `INITIAL_AGENT_MODE=agent-full-access`，会话开始后也切到这个模式：不审批、不开沙箱。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
 
 ## 安装和更新 agent

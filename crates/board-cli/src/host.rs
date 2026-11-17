@@ -30,7 +30,8 @@
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 服务端说这台机器正在自动接单时（机器信息里的 `round`：开了自动接单、在接单时段里；旧版服务端是「正在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 用 ACP 启动：board host 启动 `board acp`（acp.rs），它在启动环境里执行 agent 的 ACP 入口（`AgentDef::acp`），
-//!   握手、发提示词、自动允许权限请求。`board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600）：
+//!   握手、发提示词、自动允许权限请求；做卡的派发带 `--extra-turns`：这一轮结束时名字还持有卡片就在同一会话里续一轮
+//!   （最多 3 轮，#454），拆解、自检不续。`board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600）：
 //!   一行一帧 ACP 消息。每 5 秒上传新增的行（最多最后 500 行），「原始输出」用转写后的一行一行（见 logfmt.rs）。
 //! - 同一份日志逐行解析成结构化事件（agent 说的话、工具调用、出错、结束时的用量，见 events.rs），每 2 秒上传一次新增的，
 //!   界面「会话」的「过程」按它画；会话换到下一张卡后，事件记到当时在做的那张卡上。上传、写评论之前脱敏（令牌和常见格式的密钥换成
@@ -3319,13 +3320,15 @@ impl Host<'_> {
         check.prog.as_ref().ok_or_else(|| format!("在{}里没找到 {} 的命令 {cmd0}", env.name, spec.name))?;
         let prompt_file = tmp.join(format!("prompt-{}.txt", spec.id));
         std::fs::write(&prompt_file, selftest::PROMPT).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
-        let c = self.acp_command(spec, check, &env, tmp, &prompt_file)?;
+        // 自检不领卡：不续轮
+        let c = self.acp_command(spec, check, &env, tmp, &prompt_file, 0)?;
         Ok((c, Some(Stream::Acp)))
     }
 
     /// 启动 `board acp` 的命令（acp.rs）：在 check 的启动环境里、dir 目录里跑这个 agent 的 ACP 入口，提示词在 prompt_file。
-    /// 派发和自检都用它；标准输出、错误和 BOARD_* 环境变量由调用方接上
-    fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path) -> std::result::Result<Command, String> {
+    /// 派发和自检都用它；标准输出、错误和 BOARD_* 环境变量由调用方接上。extra_turns：这一轮结束时名字还持有卡片，
+    /// 最多再续几轮（0 = 不续）
+    fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path, extra_turns: u32) -> std::result::Result<Command, String> {
         if let Some(since) = spec.builtin.map(|b| b.acp_since).filter(|s| !s.is_empty()) {
             if older_than(&check.version, since) {
                 return Err(format!("{} 的版本太旧（{}）：它的 ACP 从 {since} 起才有，先升级", spec.name, check.version.trim()));
@@ -3345,6 +3348,10 @@ impl Host<'_> {
         // agent 配置文件里现在的思考强度：会话配置里有 reasoning_effort 这一项时切过去（dsh 的 ACP 只能这样定强度）
         if let Some((_, effort)) = self.agent_now.get(&spec.id).filter(|(_, e)| !e.trim().is_empty()) {
             c.arg("--set").arg(format!("reasoning_effort={}", effort.trim()));
+        }
+        // 结束这一轮就是结束会话：卡片还在手里时续一轮（#454）
+        if extra_turns > 0 {
+            c.arg("--extra-turns").arg(extra_turns.to_string());
         }
         c.arg("--").arg(&prog).args(&args).current_dir(dir);
         let vars = spec.acp_vars(check);
@@ -4158,7 +4165,9 @@ impl Host<'_> {
         let prompt_file = self.run.join(format!("{}.prompt", d.id));
         let _ = std::fs::create_dir_all(&self.run);
         std::fs::write(&prompt_file, &prompt).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
-        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file).inspect_err(|_| {
+        // 拆解不领卡：不续轮；做卡的这一轮结束时卡片还在手里就续（#454）
+        let turns = if d.kind == board_core::hosts::KIND_SPLIT { 0 } else { crate::acp::EXTRA_TURNS };
+        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns).inspect_err(|_| {
             let _ = std::fs::remove_file(&prompt_file);
         })?;
         let log = self.logs.join(format!("{}.log", d.id));
@@ -4824,8 +4833,16 @@ mod tests {
         let claude = get("claude");
         let (p, a) = claude.entry(&check("claude", "/Users/me/.local/bin/claude"), "").unwrap();
         assert_eq!((p.as_str(), a.len()), ("npx", 2));
-        assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), vec![("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string())]);
-        assert!(claude.acp_vars(&check("claude", r"C:\npm\claude.cmd")).is_empty(), "Windows 的 .cmd 脚本适配器执行不了：用它自带的");
+        // 关掉后台任务、调长前台超时（#454：结束这一轮就是结束会话，长命令不能放到后台等通知）
+        let bg = vec![
+            ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS".to_string(), "1".to_string()),
+            ("BASH_DEFAULT_TIMEOUT_MS".to_string(), "1200000".to_string()),
+            ("BASH_MAX_TIMEOUT_MS".to_string(), "3600000".to_string()),
+        ];
+        let mut with_bin = bg.clone();
+        with_bin.push(("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string()));
+        assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), with_bin);
+        assert_eq!(claude.acp_vars(&check("claude", r"C:\npm\claude.cmd")), bg, "Windows 的 .cmd 脚本适配器执行不了：不传路径，用它自带的");
         let codex = get("codex");
         let vars = codex.acp_vars(&check("codex", "/opt/homebrew/bin/codex"));
         assert!(vars.contains(&("CODEX_PATH".to_string(), "/opt/homebrew/bin/codex".to_string())) && vars.iter().any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "agent-full-access"), "{vars:?}");
