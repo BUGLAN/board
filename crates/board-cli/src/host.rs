@@ -600,15 +600,15 @@ impl Spec {
         Ok((prog, it.collect()))
     }
 
-    /// 传给 ACP 入口的环境变量：适配器用哪个 agent（找到的路径），加上内置描述里另外的。
-    /// Windows 上找到的是 `.cmd`、`.ps1` 这类脚本时不传路径：适配器直接执行不了它，退回用自己带的 agent
+    /// 传给 ACP 入口的环境变量：适配器用哪个 agent（找到的路径，见 [`adapter_bin`]），加上内置描述里另外的
     fn acp_vars(&self, check: &Check) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = self.acp_env.clone();
         if !self.acp_bin_env.is_empty() {
             let path = check.path.clone().or_else(|| check.prog.clone()).unwrap_or_default();
-            let script = [".cmd", ".bat", ".ps1"].iter().any(|x| path.to_ascii_lowercase().ends_with(x));
-            if !path.is_empty() && !script {
-                out.push((self.acp_bin_env.clone(), path));
+            let windows = cfg!(windows) && !check.env.starts_with("wsl:");
+            let npm_exe = self.builtin.map(|b| b.npm_exe).unwrap_or_default();
+            if let Some(bin) = adapter_bin(&path, windows, npm_exe) {
+                out.push((self.acp_bin_env.clone(), bin));
             }
         }
         out
@@ -693,6 +693,58 @@ struct Template {
 /// 配置文件里的命令是以前一次性命令的写法（带 `{prompt}`）
 fn legacy_cmd(cmd: &[String]) -> bool {
     cmd.iter().any(|a| a.contains("{prompt}"))
+}
+
+/// 告诉适配器用哪个 agent 时传的路径（`CLAUDE_CODE_EXECUTABLE`、`CODEX_PATH`）。`windows`：agent 在 Windows 上跑（不在 WSL 里）。
+///
+/// Windows 上 `PATH` 里找到的常常是 npm 给全局命令生成的垫片：无扩展名的 sh 脚本（Git Bash 的 `command -v` 找到它）、
+/// `.cmd`、`.ps1`。适配器直接 spawn 它们会失败（Claude Code 的适配器用 `execFile`，报 `spawn … ENOENT`，#456），
+/// 所以按内置描述的 `npm_exe` 在 npm 的全局前缀（垫片所在的目录）里找包里真正的程序传过去：还是机器上这一份，
+/// 版本和机器详情里的一样。找不到时不传，适配器用它自带的那份。`.exe` 和别的系统上的路径原样传
+fn adapter_bin(path: &str, windows: bool, npm_exe: &[&str]) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    if !windows || path.to_ascii_lowercase().ends_with(".exe") {
+        return Some(path.to_string());
+    }
+    let prefix = Path::new(path).parent()?;
+    npm_exe.iter().find_map(|rel| glob_file(prefix, rel).filter(|p| is_pe(p))).map(|p| p.display().to_string())
+}
+
+/// `rel` 按 `/` 分段接在 `dir` 后面；含 `*` 的一段匹配那一层里名字对得上的（`*` 前后的部分）。返回第一个存在的文件
+fn glob_file(dir: &Path, rel: &str) -> Option<PathBuf> {
+    let mut at = vec![dir.to_path_buf()];
+    for seg in rel.split('/') {
+        at = match seg.split_once('*') {
+            None => at.into_iter().map(|d| d.join(seg)).collect(),
+            Some((head, tail)) => at
+                .into_iter()
+                .flat_map(|d| {
+                    let mut hit: Vec<PathBuf> = std::fs::read_dir(&d)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .filter(|e| {
+                            let n = e.file_name().to_string_lossy().into_owned();
+                            n.len() >= head.len() + tail.len() && n.starts_with(head) && n.ends_with(tail)
+                        })
+                        .map(|e| e.path())
+                        .collect();
+                    hit.sort();
+                    hit
+                })
+                .collect(),
+        };
+    }
+    at.into_iter().find(|p| p.is_file())
+}
+
+/// Windows 的可执行文件（PE）以 `MZ` 开头。Claude Code 的 npm 包里 `bin/claude.exe` 起初是一段 sh 占位脚本，
+/// postinstall 换成原生程序；没换（`--ignore-scripts`、没装上平台包）时不算
+fn is_pe(p: &Path) -> bool {
+    let mut head = [0u8; 2];
+    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && &head == b"MZ"
 }
 
 /// npx 跑适配器时给 npm 的设置：不查 npm 自己有没有新版本、不打 fund / audit 的提示。这些提示打在标准错误上，
@@ -4629,7 +4681,6 @@ mod tests {
         assert_eq!((p.as_str(), a.len()), ("npx", 2));
         // 后台任务不关（#461：v2 下 board acp 等后台跑完），只告诉适配器 claude 在哪
         assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), vec![("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string())]);
-        assert!(claude.acp_vars(&check("claude", r"C:\npm\claude.cmd")).is_empty(), "Windows 的 .cmd 脚本适配器执行不了：用它自带的");
         let codex = get("codex");
         let vars = codex.acp_vars(&check("codex", "/opt/homebrew/bin/codex"));
         assert!(vars.contains(&("CODEX_PATH".to_string(), "/opt/homebrew/bin/codex".to_string())) && vars.iter().any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "agent-full-access"), "{vars:?}");
@@ -4649,6 +4700,42 @@ mod tests {
         let specs = agent_specs(&[AgentConf { id: "mine".into(), cmd: sv(&["mine", "{prompt}"]), ..Default::default() }], &[]).unwrap();
         let err = specs.iter().find(|s| s.id == "mine").unwrap().entry(&check("mine", "mine"), "").unwrap_err();
         assert!(err.contains("旧写法") && err.contains("ACP"), "{err}");
+    }
+
+    /// Windows 上 npm 的垫片（无扩展名的 sh 脚本、.cmd、.ps1）不直接传给适配器：换成 npm 包里真正的 .exe，找不到就不传（#456）
+    #[test]
+    fn adapter_gets_the_real_exe_behind_npm_shims() {
+        let d = tempfile::tempdir().unwrap();
+        let npm = d.path().join("npm");
+        let def = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap().npm_exe;
+        let shim = |name: &str| npm.join(name).display().to_string();
+        let put = |rel: &str, body: &[u8]| {
+            let p = npm.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        let pe = b"MZ\x90\x00\x03";
+        // Claude Code：postinstall 没跑时 bin/claude.exe 还是占位的 sh 脚本，不算
+        let exe = put("node_modules/@anthropic-ai/claude-code/bin/claude.exe", b"#!/bin/sh\necho not installed >&2\n");
+        assert_eq!(adapter_bin(&shim("claude"), true, def("claude")), None);
+        std::fs::write(&exe, pe).unwrap();
+        for s in ["claude", "claude.cmd", "claude.ps1", "CLAUDE.CMD"] {
+            assert_eq!(adapter_bin(&shim(s), true, def("claude")).map(PathBuf::from), Some(exe.clone()), "{s}");
+        }
+        // 原生安装的 .exe、不在 Windows 上（含 WSL 里）的路径原样传
+        assert_eq!(adapter_bin(r"C:\Users\me\.local\bin\claude.exe", true, def("claude")).as_deref(), Some(r"C:\Users\me\.local\bin\claude.exe"));
+        assert_eq!(adapter_bin("/home/me/.npm-global/bin/claude", false, def("claude")).as_deref(), Some("/home/me/.npm-global/bin/claude"));
+        // 找不到 npm 包（别处的垫片、没写位置的 agent）：不传，适配器用它自带的
+        assert_eq!(adapter_bin(&d.path().join("other").join("claude.cmd").display().to_string(), true, def("claude")), None);
+        assert_eq!(adapter_bin(&shim("claude"), true, &[]), None);
+        assert_eq!(adapter_bin("", false, def("claude")), None);
+        // Codex：原生程序在平台包里，平台包在 @openai/codex 自己的 node_modules 里，或者被提到上一层
+        assert_eq!(adapter_bin(&shim("codex"), true, def("codex")), None);
+        let hoisted = put("node_modules/@openai/codex-win32-arm64/vendor/aarch64-pc-windows-msvc/bin/codex.exe", pe);
+        assert_eq!(adapter_bin(&shim("codex"), true, def("codex")).map(PathBuf::from), Some(hoisted));
+        let nested = put("node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe", pe);
+        assert_eq!(adapter_bin(&shim("codex.cmd"), true, def("codex")).map(PathBuf::from), Some(nested), "两处都有时先用 @openai/codex 自己带的");
     }
 
     /// npx 跑适配器：npm 不打更新、fund、audit 的提示（#459），缓存放在 board host 的目录里；WSL 里经 WSLENV 传进去

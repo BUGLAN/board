@@ -36,6 +36,10 @@ pub struct AgentDef {
     /// 告诉适配器用哪个 agent 的环境变量，值是 board host 找到的 agent 路径（适配器就用机器上装的、Board 管着升级的那份，
     /// 不用它自带的）。ACP 入口就是 agent 自己时为空
     pub acp_bin_env: &'static str,
+    /// Windows 上 npm 全局装的这个 agent，包里真正的程序（`.exe`）在哪：相对 npm 的全局前缀（`PATH` 里找到的垫片所在的
+    /// 目录），`/` 分段，`*` 匹配一段里的其余部分。找到的是 npm 的垫片（无扩展名的 sh 脚本、`.cmd`、`.ps1`，适配器执行不了）
+    /// 时按这些位置找，传给适配器的是它（#456）；都找不到就不传，适配器用它自带的那份
+    pub npm_exe: &'static [&'static str],
     /// 另外传给 ACP 入口的环境变量
     pub acp_env: &'static [(&'static str, &'static str)],
     /// 会话开始后切到的模式（不问权限）；agent 没公布这个模式时不切，权限请求照样自动允许。空表示不切
@@ -74,6 +78,7 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         // dsh 自带 ACP：acp profile（`@deepseek-ai/dsh-acp-app`，0.2.2-rc.1 起）。--patch 关掉 goal 的自动续轮
         acp: &["{bin}", "--profile", "acp", "--patch", "{patch}"],
         acp_bin_env: "",
+        npm_exe: &[],
         // 不开沙箱、不审批（和以前 headless 的 --permission-mode danger-full-access 一样）：acp profile 按这个环境变量定
         acp_env: &[("DSH_PERMISSION_MODE", "danger-full-access")],
         // 没有可切的模式；权限请求自动允许
@@ -103,6 +108,8 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         // ACP 组织维护的适配器（Claude Agent SDK）；CLAUDE_CODE_EXECUTABLE 指向机器上的 claude
         acp: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.107.3"],
         acp_bin_env: "CLAUDE_CODE_EXECUTABLE",
+        // npm 包的 bin 是 bin/claude.exe：postinstall 把平台包里的原生程序换上去（2.1.326 核对过，包里没有 cli.js）
+        npm_exe: &["node_modules/@anthropic-ai/claude-code/bin/claude.exe"],
         // 后台任务照常用：走 ACP v2，idle 时报 background，board acp 等后台跑完、Claude Code 自己接着做（#461）
         acp_env: &[],
         acp_mode: "bypassPermissions",
@@ -127,6 +134,12 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         // ACP 组织维护的适配器（Codex App Server）；CODEX_PATH 指向机器上的 codex
         acp: &["npx", "-y", "@agentclientprotocol/codex-acp@2.7.0"],
         acp_bin_env: "CODEX_PATH",
+        // npm 包的 bin 是 bin/codex.js（node 再启动原生程序）；原生程序在平台包 @openai/codex-win32-<架构> 的 vendor/<目标>/bin 里，
+        // 平台包装在 @openai/codex 自己的 node_modules 里，或者被 npm 提到上一层
+        npm_exe: &[
+            "node_modules/@openai/codex/node_modules/@openai/codex-win32-*/vendor/*/bin/codex.exe",
+            "node_modules/@openai/codex-win32-*/vendor/*/bin/codex.exe",
+        ],
         acp_env: &[("INITIAL_AGENT_MODE", "agent-full-access")],
         acp_mode: "agent-full-access",
         acp_since: "",
@@ -205,6 +218,11 @@ mod tests {
             if d.acp[0] == "npx" {
                 assert!(d.acp.iter().any(|a| a.rfind('@').is_some_and(|i| i > 0)), "{}：适配器要固定版本", d.id);
                 assert!(!d.acp_bin_env.is_empty(), "{}：要告诉适配器用机器上的 agent", d.id);
+                // Windows 上 npm 的垫片适配器执行不了：要写明包里真正的程序在哪（#456）
+                assert!(!d.npm_exe.is_empty(), "{}：Windows 上要能找到 npm 包里的 .exe", d.id);
+                for p in d.npm_exe {
+                    assert!(p.starts_with("node_modules/") && p.ends_with(".exe") && !p.contains('\\'), "{}：{p}", d.id);
+                }
             } else {
                 assert_eq!(d.acp[0], "{bin}", "{}：不用适配器时入口就是 agent 自己", d.id);
             }

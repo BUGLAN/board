@@ -429,8 +429,8 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   | 标识 | 名称 | agent 命令 | ACP 入口 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） |
   |---|---|---|---|---|---|---|
   | `dsh` | DeepSeek Harness | `dsh` | `{bin} --profile acp --patch {patch}`（dsh 自带，0.2.2 起；本机更旧时不启动、提示升级）；环境变量 `DSH_PERMISSION_MODE=danger-full-access` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
-  | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3`；`CLAUDE_CODE_EXECUTABLE` 是找到的 `claude`；会话切到 `bypassPermissions`；走 ACP v2 | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
-  | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0`；`CODEX_PATH` 是找到的 `codex`；`INITIAL_AGENT_MODE=agent-full-access`，会话也切到这个模式 | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
+  | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3`；`CLAUDE_CODE_EXECUTABLE` 是找到的 `claude`（Windows 上找到 npm 的垫片时换成包里的 `bin/claude.exe`，找不到不传）；会话切到 `bypassPermissions`；走 ACP v2 | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
+  | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0`；`CODEX_PATH` 是找到的 `codex`（Windows 上找到 npm 的垫片时换成平台包里的 `codex.exe`，找不到不传）；`INITIAL_AGENT_MODE=agent-full-access`，会话也切到这个模式 | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
   | 配置文件里新加的 | | `cmd` 的第一个 | `cmd` | | | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct` |
 
   macOS、Linux 上所有 agent 都是 `login` → `direct`。`wsl:*` 按 `wsl.exe -l -q` 的顺序展开。
