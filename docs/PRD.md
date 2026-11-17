@@ -338,7 +338,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 | `url` | 服务端地址，例如 `https://board.example.com`；本机模式的服务端填它的本机地址，例如 `http://127.0.0.1:7420` |
 | `token` | 访问令牌，在界面「Agent → 访问令牌」新建 |
 | `[host]` | `board host` 的机器名 `name`、工作空间 `workspace`（升级前的 `dirs` 照样读）、本机日志保留天数 `log_days`（§9.1） |
-| `[agents.<标识>]` | `board host` 的 agent 命令模板 `cmd`（§9.1） |
+| `[agents.<标识>]` | `board host` 的 agent：ACP 入口命令 `cmd`、名称、模型（§9.1） |
 
 - 配置文件所在目录权限 0700，文件权限 0600。以后固定的配置也写在这个文件里；agent 名字（`BOARD_AS`）和白板（`BOARD`）不写进这个文件。
 - 环境变量 `BOARD_CONFIG` 指定另一个配置文件代替 `~/.board/config.toml`（`board host` 启动 agent 时用它传连接，§9.1）。
@@ -416,7 +416,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
   | 标识 | 名称 | 系统 | 怎么发现 | 怎么启动 agent |
   |---|---|---|---|---|
-  | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令模板，不经过 shell |
+  | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令，不经过 shell |
   | `login` | 登录 shell | macOS、Linux | `$SHELL`，没有时 passwd 里的登录 shell，再没有 `/bin/sh` | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
   | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号；命令名是普通名字（字母、数字、`.`、`-`、`_`）时不加引号，含路径、空格等字符时才加（加了引号的 `.cmd` 拿到的 `%~dp0` 是当前目录，脚本里拼的相对路径会找错——DeepSeek Harness 的 `dsh.cmd` 就是这样，退出码 9009） |
   | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"`，参数里的 `'` 写成 `''` |
@@ -427,14 +427,14 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
   - 提示词作为独立参数传入，不拼进 shell 命令文本（cmd 除外：加双引号拼进命令行）。启动环境的退出码就是 agent 的退出码。
   - 登录 shell 和 WSL 用交互式（`-i`），这样写在 `~/.zshrc`、`~/.bashrc` 里的 `PATH` 也生效；agent 进程脱离终端（`setsid`）。shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：启动 agent 前用 `board host` 的值再设一遍。
   - WSL：目录用 `--cd` 传 Windows 目录，由 `wsl.exe` 换成 `/mnt/…`；环境变量经 `WSLENV` 传入，`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（WSL 里用 `board-skills` 自带的 Linux 版 `board`）。
-- 本机 agent：启动时按内置模板和配置文件里的 `[agents.*]`（后面的覆盖前面同标识的），在每个 agent 支持、本机有的每个启动环境里检查一次：执行 `command -v <命令>`（cmd、PowerShell 用 `where.exe`；WSL 里 `/mnt/` 下的 Windows 程序不算）看找不找得到，找到了再执行 `<命令> --version` 取第一行作为版本号；上报每个 agent 在每个环境里「找到 + 版本号」或「没找到」。内置模板「`PATH` 里没有时再看」的位置只在 `direct`、`login` 里用。找到了、但在它用的启动环境里（用户级 skill 目录，WSL 里看 WSL 用户目录下的；或每块白板目录里的 `.agents/skills`、`.claude/skills`）看不到 `board-skills` 时，启动时在终端提醒一行（写明装到哪里），并在上报里给这个 agent 在这个环境里标上「看不到 `board-skills`」和装到哪里；在启动、重新读配置、远程「重新检查」时检查（见下面「远程管理」），装好后在界面上点「重新检查」就会更新。配置文件里同标识的模板覆盖内置模板（写了哪项换哪项；支持的启动环境不变）。上报里每个 agent 带上它配置文件里现在的模型和强度（内置 agent 读它自己的配置文件，见下面「同步配置」；配置文件里新加的 agent 用 `[agents.<标识>] model`）：派发名字的第二段用模型名，有强度时接在后面；派发记录里也记模型、强度。没有模型时名字第二段用 agent 标识。派发时不按次传模型、强度参数。`{prompt}` 换成提示词；`{patch}` 换成 board host 为这次派发写的 profile 补丁路径（目前只有 dsh 模板用）。接入其他 agent 的方法见 `docs/agents.md`。
+- 本机 agent：启动时按内置模板和配置文件里的 `[agents.*]`（后面的覆盖前面同标识的），在每个 agent 支持、本机有的每个启动环境里检查一次：执行 `command -v <agent 命令>`（cmd、PowerShell 用 `where.exe`；WSL 里 `/mnt/` 下的 Windows 程序不算）看找不找得到，找到了再执行 `<命令> --version` 取第一行作为版本号；上报每个 agent 在每个环境里「找到 + 版本号」或「没找到」。内置模板「`PATH` 里没有时再看」的位置只在 `direct`、`login` 里用。找到了、但在它用的启动环境里（用户级 skill 目录，WSL 里看 WSL 用户目录下的；或每块白板目录里的 `.agents/skills`、`.claude/skills`）看不到 `board-skills` 时，启动时在终端提醒一行（写明装到哪里），并在上报里给这个 agent 在这个环境里标上「看不到 `board-skills`」和装到哪里；在启动、重新读配置、远程「重新检查」时检查（见下面「远程管理」），装好后在界面上点「重新检查」就会更新。配置文件里同标识的 `cmd` 换掉内置模板的 ACP 入口（第一个是 `npx` 或用了 `{bin}` 时照旧找内置的 agent 命令；否则第一个就是要找的命令，Board 不再代装、代升；支持的启动环境不变）；带 `{prompt}` 的旧写法覆盖内置模板时不用，配置文件里新加的 agent 这样写时派发报错说明。上报里每个 agent 带上它配置文件里现在的模型和强度（内置 agent 读它自己的配置文件，见下面「同步配置」；配置文件里新加的 agent 用 `[agents.<标识>] model`）：派发名字的第二段用模型名，有强度时接在后面；派发记录里也记模型、强度。没有模型时名字第二段用 agent 标识。派发时不按次传模型、强度参数。ACP 入口里 `{bin}` 换成找到的 agent 命令；`{patch}` 换成 board host 为这次派发写的 profile 补丁路径（目前只有 dsh 用）。接入其他 agent 的方法见 `docs/agents.md`。
 
-  | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） |
-  |---|---|---|---|---|---|
-  | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --json --permission-mode danger-full-access {prompt}` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
-  | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
-  | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
-  | 配置文件里新加的 | | | | | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct` |
+  | 标识 | 名称 | agent 命令 | ACP 入口 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） |
+  |---|---|---|---|---|---|---|
+  | `dsh` | DeepSeek Harness | `dsh` | `{bin} --profile acp --patch {patch}`（dsh 自带，0.2.2 起；本机更旧时不启动、提示升级）；环境变量 `DSH_PERMISSION_MODE=danger-full-access` | macOS 的 `DeepSeek Harness.app` 里自带的 `dsh` | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` |
+  | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3`；`CLAUDE_CODE_EXECUTABLE` 是找到的 `claude`；会话切到 `bypassPermissions` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
+  | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0`；`CODEX_PATH` 是找到的 `codex`；`INITIAL_AGENT_MODE=agent-full-access`，会话也切到这个模式 | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` |
+  | 配置文件里新加的 | | `cmd` 的第一个 | `cmd` | | | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct` |
 
   macOS、Linux 上所有 agent 都是 `login` → `direct`。`wsl:*` 按 `wsl.exe -l -q` 的顺序展开。
 
@@ -467,7 +467,7 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 |---|---|---|
 | 最多几个会话 | 1 | 1–8，超出范围拒绝（`USAGE`）。同一时间最多开几个 agent 会话（一个会话 = 一个 agent 进程），达到上限后新的会话在服务端排队。手动派发的一张卡也算一个会话；自动领取的会话里排着的卡片由同一个进程用 `board next` 接着做，不占额外的会话位 |
 | 单次最长运行 | 3 小时 | **所有机器一个值**，服务端存一份（在「Agent → 跑多久停」里改，随机器设置发给每台 board host；升级时取原来各台机器里最常见的值）。30 分钟到 12 小时，或者不限（0）。界面从预设档位里选（不限、30、60、90、120、180、240、300、360、480、600、660、720 分钟，档位不连续）；接口接受 0–720 的整数分钟，超出范围拒绝（`USAGE`）。从 agent 进程启动算起；到时间后 `board host` 按「人停止」的流程结束整个进程树，派发结果「超时」（见下面「结束」）。界面上改，`board host` 下一次上报（每 10 秒）就拿到最新值，不用重启；改了之后正在跑的派发也按新值算，改小到已经超过的时间时下一次检查就停 |
-| 没输出多久算卡住 | 20 分钟 | **所有机器一个值**，同上。5 到 120 分钟，或者不限（0）。界面从预设档位里选（不限、5、10、15、20、30、45、60、75、90、105、120 分钟，档位不连续）；接口接受 0–120 的整数分钟，超出范围拒绝（`USAGE`）。只对已经输出过内容的派发生效：agent 的标准输出和标准错误写进日志文件，日志在这么久里一行都没变长就按「人停止」的流程结束它，派发结果「超时」。一行都还没输出过的派发不算（内置的 Claude Code 模板带 `--output-format stream-json --verbose`，运行中逐步有输出；只有在配置里改写命令、又没带事件流参数时，`-p` 才要到结束才有输出）。同样不用重启 |
+| 没输出多久算卡住 | 20 分钟 | **所有机器一个值**，同上。5 到 120 分钟，或者不限（0）。界面从预设档位里选（不限、5、10、15、20、30、45、60、75、90、105、120 分钟，档位不连续）；接口接受 0–120 的整数分钟，超出范围拒绝（`USAGE`）。派发的日志（`board acp` 写的 ACP 帧和标准错误，见 §9.1「派发」）在这么久里一行都没变长就按「人停止」的流程结束它，派发结果「超时」。同样不用重启 |
 | 一个会话最多做几张 | 4 | 1–8，超出范围拒绝（`USAGE`）。只对自动领取启动的会话生效：开会话时一次排好最多这么多张卡，agent 做完一张用 `board next` 接着做排着的下一张，排完就退出；设为 1 时一个会话只做一张，有几个空位就同时开几个会话。现在还有别的机器也能接这些卡时按机器分摊（下面「自动领取」第 2 步）。改了只影响之后新开的会话。手动派发的会话只做指定的那一张；人手动跑 `/board-skills` 的会话不受限制 |
 | 暂停接单 | 关 | 打开后不启动新的派发（手动派发照样排队），已经在跑的不受影响；在跑的做完就是「已排空」。界面上和「自动接单」合成**接单三态**（「机器 → 接单」里每台机器一个下拉）：自动领 = 不暂停 + 自动接单；只做派给它的 = 不暂停 + 不自动接单；暂停 = 暂停（自动接单留着，恢复后照旧）。以前的「排空」并进暂停 |
 | 默认 agent | 本机 agent 里第一个找到的，顺序是 dsh、claude、codex，然后是配置文件里新加的 | 手动派发时预先选中它 |
@@ -621,10 +621,10 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 
 1. 生成 agent 名字（§3.2），check 这个名字，再以它领取卡片。领取失败（卡片已被领走、已不在可领取状态）时这次派发结束，结果「没领到」，不启动 agent。
 2. 领到后，`board host` 以这个名字发心跳（每 10 秒），直到派发结束。
-3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 Claude Code（Git Bash）以 mbp/opus-5.5 领取（手动）」）：提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`，后面再带一句 board host 身份提示（`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`，卡片已由它领取，不要 check、claim、心跳，不要创建 goal；交审或交给人之后执行 `board next --json`，领到卡片就接着做，返回 `SESSION_DONE` 就结束）；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
-4. agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`。内置模板都用 agent 的结构化输出（事件流，JSONL）启动：Claude Code `--output-format stream-json --verbose`、Codex `exec --json`、dsh `--json`（dsh 从 0.2.2 起才有这个参数，本机版本更旧时不加）；配置文件覆盖了命令的 agent 用配置文件写的命令，不加参数。本机日志文件里存原样的输出，`board host` 拿它做两件事：
-   - 原始输出：每 5 秒上传新增的行（一次最多最后 500 行），服务端每个派发保留最后 500 行。是转写后的一行一行（agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、`✗ 出错`、`■ 结束 · 用时 · 轮数 · 费用`；流式片段、状态变化不显示；不是 JSON 的行原样保留；每行最长 400 个字符）。没有事件流的 agent 原样上传。登录 shell 自己打的启动、退出提示（作业控制提示、`logout`、发行版 bashrc 的 sudo 提示）不是 agent 的输出，不上传（#232）。
-   - 结构化事件：逐行解析成统一的事件——`message`（agent 说的话，Markdown）、`tool`（工具名、参数摘要、结果摘要、退出码或是否出错）、`error`（出错信息）、`result`（结束时的结果文字、用时、输入 / 输出 tokens、费用，agent 输出里有才记）；解析不了的行记成 `text`，原样保留。每 2 秒上传一次新增的事件（`POST /api/dispatches/<ID>/events`，带上这个 agent 的输出格式；没有事件流的 agent 只报格式为空）。工具调用和它的结果分两次上传时服务端合成一条。服务端按派发保存：每个派发最多 2000 条（多出来的删最早的，记下删了几条），单条超过 4 KB 截断并标明；派发结束 30 天后只留 `result` 和最后 50 条。有新事件时实时推送带上这些派发，会话页打开着就增量取、马上追加。
+3. 在这块白板对应的目录里、按这个 agent 的启动环境启动 agent（用的启动环境写进派发记录，卡片动态里写明，例如「派发开始：mbp 上的 Claude Code（Git Bash）以 mbp/opus-5.5 领取（手动）」），用 ACP（Agent Client Protocol v1）驱动它：board host 启动 `board acp`，由它在启动环境里执行 ACP 入口，`initialize`（不声明 `fs`、`terminal` 能力）、`session/new`（工作目录是这个目录，`mcpServers` 为空），agent 公布了不问权限的模式就切过去，agent 配置文件里有思考强度、会话配置里有 `reasoning_effort` 时也切过去，再把提示词作为 `session/prompt` 发过去；`session/request_permission` 一律自动允许（选「总是允许」，没有就「允许这一次」）；收到 prompt 的回应就关掉 agent 的标准输入、最多等 5 秒，agent 进程自己退出了也收尾；收到 SIGTERM 时发 `session/cancel`、最多等 5 秒。`board acp` 的退出码：`end_turn` 0，被取消 130，`max_tokens`、`max_turn_requests`、`refusal` 3，握手失败或协议错误 2，这一轮没结束 agent 就退出了是 agent 的退出码（是 0 时记 1）。用适配器的 agent 用 `npx -y` 固定版本运行，npm 缓存是 `~/.board/host/npm-cache`（WSL 里用它自己的）。提示词是 `/board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务`，后面再带一句 board host 身份提示（`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`，卡片已由它领取，不要 check、claim、心跳，不要创建 goal；交审或交给人之后执行 `board next --json`，领到卡片就接着做，返回 `SESSION_DONE` 就结束）；环境变量带上 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS=<名字>`、`BOARD_HOST=<机器名>`、`BOARD=<项目>/<白板>`，以及 `BOARD_CONFIG`：这次派发自己的配置文件（地址和令牌，0600，派发结束时删除），给不把名字像密钥的环境变量传给命令的 agent 用；`BOARD_EXE`：`board` 自己的路径，`board-skills` 的 `scripts/board` 优先用它，版本和 `board host` 一致。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有时，不再 check、不再领取、不启动也不停止心跳，其余步骤不变。
+4. `board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`：一行一帧 ACP 消息（它发出去的请求、agent 的回应和 `session/update` 通知；连续的消息片段合成一行，最多 2 秒落一次），加上 agent 和 `board acp` 写到标准错误的提示。`board host` 拿它做两件事：
+   - 原始输出：每 5 秒上传新增的行（一次最多最后 500 行），服务端每个派发保留最后 500 行。是转写后的一行一行（agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、`✗ 出错`、`■ 结束`（不是正常结束时写原因）；思考只写第一行；握手、命令列表、模式和配置的变化、用量不显示；不是 JSON 的行原样保留；每行最长 400 个字符）。登录 shell 自己打的启动、退出提示（作业控制提示、`logout`、发行版 bashrc 的 sudo 提示）不是 agent 的输出，不上传（#232）。
+   - 结构化事件：逐行解析成统一的事件——`message`（`agent_message_chunk` 说的话，Markdown；`plan` 写成任务列表）、`tool`（`tool_call` / `tool_call_update`：工具名按 `kind` 取 shell、read、edit 这类短词，认不出时用标题；参数摘要、结果摘要、是否出错，有退出码时记下）、`error`（出错的回应）、`result`（prompt 的回应：是否正常结束、不是正常结束时的原因、输入 / 输出 tokens（回应里有才记）、费用（最后一次 `usage_update` 的累计值））；不是 JSON 的行记成 `text`，原样保留。每 2 秒上传一次新增的事件（`POST /api/dispatches/<ID>/events`，带上输出格式 `acp`）。工具调用和它的结果分两次上传时服务端合成一条。服务端按派发保存：每个派发最多 2000 条（多出来的删最早的，记下删了几条），单条超过 4 KB 截断并标明；派发结束 30 天后只留 `result` 和最后 50 条。有新事件时实时推送带上这些派发，会话页打开着就增量取、马上追加。
 
    会话里换到下一张后，进程的原始输出和事件都记到当时正在做的那张卡的派发上。上传到服务端、写进异常退出评论之前脱敏：当前令牌、这次派发注入的 `BOARD_TOKEN` 等密钥值，以及常见格式的密钥（`sk-…`、`ghp_…`、`github_pat_…`、`xox…-`、`AKIA…`、`-----BEGIN … PRIVATE KEY-----` 整段、`Authorization: Bearer …`）都换成 `<已隐藏>`；本机日志保留原文，文件权限 0600。单个本机日志超过 50 MB 时只留开头 1 MB 和最后 10 MB（中间一行省略说明）；结束超过 30 天的本机日志在 `board host` 启动时和之后每天删一次，天数用 `[host] log_days` 改。
 
@@ -1059,7 +1059,7 @@ agent 交审以后，人逐张复盘：看交审评论、对照验收标准，�
     |---|---|---|
     | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；选了强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
     | Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex`） | `model_provider`、`[model_providers.board-<供应商>]`（`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort` |
-    | dsh | `~/.dsh/profiles/headless/cordis.patch.yml`、`~/.dsh/.env` | `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`），`agent-default-model` 指向它；key 写进 `.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`（名称转大写，`-`、`.` 换成 `_`） |
+    | dsh | `~/.dsh/profiles/acp/cordis.patch.yml`、`~/.dsh/.env` | `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`），`agent-default-model` 和 `acp`（ACP 会话用的提供方和模型）指向它；dsh 新建 profile 时文件里的空数组 `[]` 去掉；key 写进 `.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`（名称转大写，`-`、`.` 换成 `_`） |
 
     只改 Board 管的那几项，别的配置、注释和顺序不动；先写临时文件再整体换上；解析不了时整份不覆盖，状态写「写入失败」和原因。写之前检查：强度不在这个模型标的档位里（或这个 agent 写不了）就不写强度，结果里记下没写的那一档；地址按规范化后的写。从「指定」改成「不改」时之前写进去的不恢复，Board 只是不再碰它。结果每个 agent 一行随同步配置的结果上报（已写入 <供应商 · 模型 · 强度> / 不改 / 不支持 / 写入失败及原因）。写完读回每个 agent 配置文件里现在的模型和强度随上报带上：派发名字的第二段和派发记录里的模型、强度用它。API key 会以原文写进 agent 自己的配置文件（agent 要用），这些文件仍然只该自己能读。
   - 模型供应商的界面：标题「模型供应商」、一句说明（供应商在这里加、改；每台机器上每个 agent 用哪个供应商、哪个模型，在机器详情的 agent 页里选；board host 写进 agent 自己的用户级配置文件，agent 直接连供应商），后面「怎么生效」悬停看只改 Board 管的那几项、改成「不改」不恢复、强度不支持就不写、key 只存在服务端，右边「添加」。一个供应商一张卡：上面是名称、`••••<末尾 4 位>`（没填 key 时写「没填 key」）、更新时间、修改、删除，下面列接口和地址（地址相同的几个接口并成一行）和模型（每个模型后面小字写标了的强度，三档以上写成「low–max」）。卡片底下「在用」只读，按 agent 汇总（agent 会越来越多，不能一台机器一个 agent 一枚，也不能一个 agent 一列）：指定了这个供应商的 agent 一个一枚，写图标、名称、「N 台」和一个状态点，状态点取这几台里最该看的（失败 > 正在写入 > 离线 > 已写入，失败的那枚整枚标红），悬停看每台的状态；点一枚在下面展开哪几台，一台一行：机器名、模型、用哪种接口、强度（「强度默认」/「不写强度」）、写入状态（已写入 / 正在写入 / 离线 / 失败、不支持写原因），点一行打开那台机器的详情、直接到 agent 页去改；再点一次收起。没有机器用它时写「没有机器在用：在机器详情的 agent 页里选它」。没找到这个 agent 的机器、选了「不改」的不算在里面。有 board 版本太旧、不同步供应商的机器时所有卡片下面再写一句「<机器>（<版本>）… 的 board 版本太旧，不写入供应商：升级后自动写入」，机器名点了打开那台机器。删除二次确认，列出指定了它的机器和 agent（「<机器> 的 <agent>」），写明它们下次同步时报失败、要在机器详情里换一个，已经写进去的不恢复。添加、修改在居中弹窗里（esc、点遮罩关闭；弹窗固定高度 720px，窗口矮时是窗口高减 48px，标题和底部一行不动，中间正文滚动，正文和「获取模型」的列表一直显示细滚动条——全局的浮层滚动条只在滚动时出现，看不出能滚），从上到下分几段：「从常用的开始」（只在添加时）是 DeepSeek、Kimi、智谱 GLM、OpenAI、Anthropic 五块磁贴（色块、名称、提供的接口）和「自定义」，点了填好核实过的接口地址和常用模型，key 要自己填；「连接」是名称（修改时不能改，下面写规则）和 API key（密码框，可以「显示」核对；修改时显示 `••••<末尾 4 位>（不改就留空）`）；「接口」三种各一行：开关、名称（写哪个 agent 只认它）、地址，关着的写「不用」；「模型」是选好的模型胶囊（× 去掉，也能在后面手动输入、回车加），标题右边「获取模型」：服务端用上面的地址和 key 去问，列出来勾选（筛选、全选、全不选，写一共几个、选了几个、从哪个地址取到的），失败时写原因；「强度」每个选好的模型一行，点亮它支持的档位；底部左边写哪些 agent 能用它（按打开的接口亮起），右边取消 / 保存。点保存时先在界面上校验（名称、至少一个接口、地址、key、至少一个模型，和服务端一致），不对时底部写原因、弹窗留着；保存时按钮转圈、禁用直到返回。
@@ -1367,12 +1367,12 @@ MCP 服务器共用配置（§10.16「共用配置」）：
 会话的结构化过程（§9.1「执行」、§10.12「会话」）：
 
 171. 派给 Claude Code 的卡正在跑时，会话页在 5 秒内出现它的第一条消息和工具调用，不用等它结束；工具的结果出来后同一行变成成功或失败。
-172. Claude Code、Codex、dsh 的解析器各有单元测试，样例输出按各自的事件格式写成测试文件，事件的种类和条数都对；测试不执行真实的 agent。
+172. ACP 帧的转写和解析有单元测试，样例按 ACP v1 的格式写成测试文件，事件的种类和条数都对；`board acp` 用假的 ACP agent 测完整的一轮、取消、agent 提前退出；测试不执行真实的 agent。
 173. 派发结束后，会话头部显示 tokens 和费用（agent 输出里有时）。
 174. 异常退出的评论里能看出 agent 最后在做什么（工具名和结果摘要），不再是空白；原始输出最后 20 行折叠在后面。
 175. 一个派发超过 2000 条事件时，只留最新的 2000 条并说明删了几条；单条超过 4 KB 时截断并标明。
 176. 「原始输出」的内容和以前的日志一致。
-177. 配置文件里新加的 agent（没有结构化输出）：「过程」里写明只能看原始输出。
+177. 配置文件里新加的 agent 还是以前的写法（`cmd` 里带 `{prompt}`）时，派发失败并写明要改成 ACP 入口命令；同标识覆盖内置模板时不用它，照内置的 ACP 入口跑。
 
 机器详情与同步配置（§9.1「机器设置」「同步配置」、§10.12「机器详情」）：
 
@@ -1433,7 +1433,7 @@ MCP 服务器共用配置（§10.16「共用配置」）：
 204. 添加时点「DeepSeek」「Kimi」「智谱」「OpenAI」「Anthropic」能预填核实过的接口地址和常用模型，key 留空、保存时提示要填；名称重复、没有接口、地址不是 `http://` / `https://`、没有模型时保存不了，提示原因、表单留着。
 205. 机器上给 Codex 指定一个只有 OpenAI Chat 的供应商被拒绝（`USAGE`，写明它只有 Responses 接口；界面的下拉里本来就不列）；模型不在供应商里、强度不是这个模型标了的档位、接口不是这个 agent 认且供应商给了的，同样被拒绝。之后把这个模型的强度标记去掉：机器详情上写「<模型> 不支持强度 high：写配置时不写强度」，下一次写配置时不写强度。
 206. 界面、`GET /api/providers`、日志、卡片动态、`board host` 的输出里都没有 API key 原文，只有 `••••<末尾 4 位>`；`GET /api/hosts/{名字}/providers` 用别的机器的令牌、登录的界面、没绑机器的令牌都拿到 `NOT_LOGGED_IN`。修改时 key 留空保留原值。
-207. 在 B 上把某个 agent 改成「不改」：之后服务器上怎么改供应商它的配置文件都不动，之前写进去的也不恢复，界面上写「不改：Board 不碰它的配置文件」；再选回一个模型后只写 B 上选的那组。dsh 用一个同时给了 Anthropic、OpenAI Chat 的供应商时多一个「接口」下拉，选 OpenAI Chat 后 `~/.dsh/profiles/headless/cordis.patch.yml` 里 Board 那条路由的 `api` 是 `openai-completions`、`baseURL` 是 OpenAI Chat 的地址；Claude Code 只认 Anthropic，不出现这个下拉。
+207. 在 B 上把某个 agent 改成「不改」：之后服务器上怎么改供应商它的配置文件都不动，之前写进去的也不恢复，界面上写「不改：Board 不碰它的配置文件」；再选回一个模型后只写 B 上选的那组。dsh 用一个同时给了 Anthropic、OpenAI Chat 的供应商时多一个「接口」下拉，选 OpenAI Chat 后 `~/.dsh/profiles/acp/cordis.patch.yml` 里 Board 那条路由的 `api` 是 `openai-completions`、`baseURL` 是 OpenAI Chat 的地址；Claude Code 只认 Anthropic，不出现这个下拉。
 208. 删掉一个用着的供应商：确认框列出指定了它的机器和 agent，已经写进去的不恢复；这些 agent 下次同步时写「写入失败：服务器上没有供应商…」，机器详情写「供应商 <名称> 在服务器上已经删了：换一个」。
 209. 先把某个 agent 的配置文件改成解析不了的内容（例如半截 JSON）：这一项上报「写入失败」和原因，文件原样不动；改回合法内容后点「重试」写进去。
 210. 配置文件里的 agent、WSL 里的 agent 写「不支持」，不改文件。

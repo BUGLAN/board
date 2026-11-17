@@ -1,0 +1,11 @@
+# board host 派发 dsh 时的 profile 补丁（`dsh --profile acp --patch <这个文件>`）。
+#
+# dsh 的 acp profile 基于 dsh-base，仍然挂着 goal 工具和 goal-round-driver：模型一旦调用
+# create_goal，这一轮结束后 goal-round-driver 会自动注入下一轮，prompt 迟迟不结束。
+# board host 的派发是一次性任务，不需要 goal，所以这里关掉这三项。
+- id: goal-round-driver
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: command-goal
+  disabled: true

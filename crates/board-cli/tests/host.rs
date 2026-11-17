@@ -1,5 +1,7 @@
 //! `board host` / `board dispatch` 端到端（任务下发需求 §十二）：起一个服务端，在后台跑真的 board host，
 //! 「agent」是一个 shell 脚本（按 mode 文件决定交审、崩溃还是一直睡），用配置文件的 `[agents.claude]` 换掉内置模板。
+//! board host 经 `board acp` 用 ACP 驱动它：脚本先答 initialize、session/new，从 session/prompt 里取出提示词，
+//! 之后照旧按提示词做事；说的话直接打到标准输出（不是协议帧，日志里原样记成文字）。
 #![cfg(unix)]
 
 mod common;
@@ -11,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const FAKE: &str = r#"#!/bin/sh
-# 假 agent：$1 是提示词；按 $FAKE_DIR/mode 决定做什么
+# 假 agent：讲 ACP（board acp 启动它，不带参数）；按 $FAKE_DIR/mode 决定做什么
 if [ "$1" = "--version" ]; then echo "9.9.9 (fake)"; exit 0; fi
 # claude mcp add-json --scope user <名称> <JSON> / claude mcp remove --scope user <名称>：改 ~/.claude.json 的 mcpServers
 if [ "$1" = "mcp" ]; then
@@ -29,10 +31,19 @@ json.dump(d, open(p, "w"))
 ' "$@"
   exit $?
 fi
+# ACP 握手：答 initialize、session/new；session/prompt 里的提示词当成 $1，下面照旧按它做事
+read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-agent","version":"9.9.9"}}}'
+read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+read -r l
+pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
+set -- "$(printf '%s\n' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')"
+# 这一轮正常结束：回 prompt 的响应（board acp 拿到 end_turn 以 0 退出）
+end() { echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"; exit 0; }
+upd() { echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":$1}}"; }
 # 自检问的那一句：答出 skill 的名字；mode 是 nologin 时像没登录的 Claude Code 那样报错退出
 case "$1" in *不要执行任何命令*)
   if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = "nologin" ]; then echo "Not logged in · Please run /login"; exit 1; fi
-  printf 'board-skills\n参数\n'; exit 0 ;;
+  printf 'board-skills\n参数\n'; end ;;
 esac
 # 一行都不输出（Claude Code -p 运行中就是这样）：不该按「没输出多久算卡住」停止。放在前面，下面几行也不打
 if [ "$(cat "$FAKE_DIR/mode")" = "quiet" ]; then
@@ -55,21 +66,21 @@ case "$(cat "$FAKE_DIR/mode")" in
     env -u BOARD_TOKEN "$BOARD_BIN" new "拆出的二" --inbox --from "$need" >/dev/null || exit 9
     env -u BOARD_TOKEN "$BOARD_BIN" comment "$need" "拆成了两张" >/dev/null
     echo "拆完了 #$need"
-    exit 0 ;;
+    end ;;
   split0)
     echo "没拆出来 #$need"
-    exit 0 ;;
+    end ;;
   review)
     # 像 dsh 那样拿不到名字像密钥的环境变量：令牌只能从 BOARD_CONFIG 指向的文件里读
     env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
     echo "交审了"
-    exit 0 ;;
+    end ;;
   session)
     # 定时领取的会话：交审后 board next 接着做，直到 SESSION_DONE
     while :; do
       env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
       echo "交审了 #$id"
-      out=$(env -u BOARD_TOKEN "$BOARD_BIN" next --json) || { echo "会话结束"; exit 0; }
+      out=$(env -u BOARD_TOKEN "$BOARD_BIN" next --json) || { echo "会话结束"; end; }
       id=$(echo "$out" | sed -n 's/^  "id": \([0-9]*\),*$/\1/p' | head -1)
       # 真的 agent 做一张要几分钟；这里等一下，让 board host 先换到新的派发再写下一张的输出
       sleep 1
@@ -100,15 +111,16 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo $$ > "$FAKE_DIR/agent.pid"
     exec sleep 60 ;;
   stream)
-    # 像 Claude Code 的 stream-json 那样一行一个事件：先说一句话、调一个工具，等测试写 go 文件再出结果、异常退出
-    echo '{"type":"system","subtype":"init","cwd":"/repo","model":"m","claude_code_version":"9.9.9"}'
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"先领卡，再跑测试。"}]},"parent_tool_use_id":null}'
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]},"parent_tool_use_id":null}'
+    # ACP 的 session/update：先说一句话、调一个工具，等测试写 go 文件再出结果；这一轮因为输出长度到了上限结束（退出码 3）
+    upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"先领卡，"}}'
+    upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"再跑测试。"}}'
+    upd '{"sessionUpdate":"tool_call","toolCallId":"t1","kind":"execute","title":"cargo test","status":"pending","rawInput":{"command":"cargo test"}}'
     touch "$FAKE_DIR/streamed"
     i=0; while [ ! -f "$FAKE_DIR/go" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"test failed","is_error":true}]},"parent_tool_use_id":null}'
-    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":5000,"num_turns":2,"total_cost_usd":0.5,"usage":{"input_tokens":100,"output_tokens":10},"errors":["测试没过"]}'
-    exit 4 ;;
+    upd '{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"failed","rawOutput":{"output":"test failed","exit_code":101}}'
+    upd '{"sessionUpdate":"usage_update","used":5000,"size":200000,"cost":{"amount":0.5,"currency":"USD"}}'
+    echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"max_tokens\",\"usage\":{\"inputTokens\":100,\"outputTokens\":10}}}"
+    read -r l; exit 0 ;;
   chatty)
     # 输出一行就再也不输出：到「没输出多久算卡住」的时间该被停止
     echo "working"
@@ -145,7 +157,7 @@ impl Rig {
             format!(
                 // 机器上真装了 dsh、codex 也不用它们：都换成找不到的命令（默认 agent 就是 claude）。
                 // 不换的话启动时会真的执行它们的 --version（codex 要一两秒，机器忙时更久），同名第二个 host 来不及在时限内退出
-                "[agents.dsh]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.codex]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
+                "[agents.dsh]\ncmd = [\"board-test-no-such-command\"]\n\n[agents.claude]\ncmd = [\"{}\"]\n\n[agents.codex]\ncmd = [\"board-test-no-such-command\"]\n",
                 fake.display()
             ),
         )
@@ -915,7 +927,7 @@ fn remote_recheck_and_restart() {
     // 在这台机器上配一个新的 agent，再从界面请求重新检查：10 秒内出现，带版本号
     let conf = rig.s.home.join(".board").join("config.toml");
     let mut text = std::fs::read_to_string(&conf).unwrap();
-    text += &format!("\n[agents.newbie]\nname = \"Newbie\"\ncmd = [\"{}\", \"{{prompt}}\"]\n", rig.fake.display());
+    text += &format!("\n[agents.newbie]\nname = \"Newbie\"\ncmd = [\"{}\"]\n", rig.fake.display());
     std::fs::write(&conf, text).unwrap();
     ask("recheck");
     wait_until("新 agent 出现", Duration::from_secs(10), || has_agent(&rig, "newbie"));
@@ -941,12 +953,13 @@ fn remote_recheck_and_restart() {
 
 /// 同步配置（机器详情与配置同步重构）：服务器上加了供应商，机器上给 claude 指定它——不用重启 board host，
 /// 地址（去掉 /v1）、key、模型、强度写进 Claude Code 自己的配置文件，结果上报、记进操作记录；
-/// 派发时不再传 --model / --effort，名字第二段和「派发开始」里的模型是配置文件里写进去的
+/// 派发时不再传 --model / --effort（ACP 入口不带参数，提示词走 session/prompt），名字第二段和「派发开始」里的模型是配置文件里写进去的
 #[test]
 fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     let rig = Rig::new();
     let printer = rig.fake.parent().unwrap().join("printer.sh");
-    std::fs::write(&printer, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
+    // 打印参数，再照常讲 ACP（交给假 agent）
+    std::fs::write(&printer, format!("#!/bin/sh\necho \"args: $*\"\nexec \"{}\" \"$@\"\n", rig.fake.display())).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&printer, std::fs::Permissions::from_mode(0o755)).unwrap();
     let conf = rig.s.home.join(".board").join("config.toml");
@@ -992,7 +1005,8 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     let log = log_file(&rig.s.home, d);
     wait_until("假 agent 打印参数", Duration::from_secs(15), || std::fs::read_to_string(&log).is_ok_and(|s| s.contains("args:")));
     let out = std::fs::read_to_string(&log).unwrap();
-    assert!(out.contains("args: /board-skills 开始执行") && !out.contains("--model"), "派发时不再传模型、强度：{out}");
+    assert!(out.lines().any(|l| l.trim_end() == "args:"), "ACP 入口不带参数：{out}");
+    assert!(out.contains("\"method\":\"session/prompt\"") && out.contains("/board-skills 开始执行") && !out.contains("--model"), "提示词走 session/prompt，不传模型、强度：{out}");
     let acts = activity(&rig.show(1));
     assert!(acts.iter().any(|t| t.contains("以 mbp/m2-high 领取") && t.contains("模型 m2，强度 high")), "{acts:?}");
     let (code, out) = stop(host);
@@ -1066,7 +1080,7 @@ fn max_run_stops_agent_and_records_timeout() {
 
 /// #198 验收 2：输出过内容后长时间没有输出的假 agent 到时间被停止；一行都没输出过的（Claude Code -p）不受影响
 #[test]
-fn idle_run_stops_only_after_output() {
+fn idle_run_stops_agents_that_go_quiet() {
     let rig = Rig::new();
     for t in ["一", "二"] {
         assert_eq!(rig.board(&["new", t]).code, 0);
@@ -1084,18 +1098,16 @@ fn idle_run_stops_only_after_output() {
     wait_until("#1 超时", Duration::from_secs(40), || ended(&rig.show(1), "超时"));
     assert!(activity(&rig.show(1)).iter().any(|t| t.contains("5 分钟没有任何输出，board host 停止了它")));
     assert!(!running(chatty));
-    // 二：一行都不输出 → 不按这条算，接着跑
+    // 二：握手之后一句都不说 → 也算（日志里有 board acp 写的握手），一样被停止
     std::fs::remove_file(rig.fake.parent().unwrap().join("agent.pid")).unwrap();
     rig.mode("quiet");
     assert_eq!(rig.board(&["dispatch", "2", "--host", "mbp"]).code, 0);
     wait_until("#2 开始", Duration::from_secs(15), || rig.show(2)["holder"] == "mbp/opus-5.5");
     let quiet = rig.pid("agent.pid");
-    std::thread::sleep(Duration::from_secs(12));
-    assert!(running(quiet), "一行都没输出过的派发不受「没输出多久算卡住」影响");
-    assert_eq!(rig.show(2)["column"], "doing");
+    wait_until("#2 超时", Duration::from_secs(40), || ended(&rig.show(2), "超时"));
+    assert!(!running(quiet));
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
-    assert!(ended(&rig.show(2), "已停止"));
 }
 
 impl Rig {
@@ -1505,22 +1517,12 @@ fn mcp_servers_sync_to_claude_and_codex() {
 
 /* ------------------------------ 结构化事件（会话「过程」，#184） ------------------------------ */
 
-/// #184 验收：内置模板用结构化输出时，正在跑的派发 5 秒内在会话里看得到第一条消息和工具调用，不用等它结束；
+/// #184 验收：正在跑的派发 5 秒内在会话里看得到第一条消息和工具调用（ACP 的 session/update），不用等它结束；
 /// 有新事件时推送带上派发 ID；工具结果后到时合进同一条；结束后有用量；异常退出的评论里写最后几个事件、原始输出折叠在后面；
 /// 「原始输出」照旧是转写后的一行一行
 #[test]
 fn structured_events_reach_the_session_while_running() {
     let rig = Rig::new();
-    // Claude Code 带上事件流参数（假 agent 只看第一个参数）：board host 按 Claude Code 的格式解析
-    let conf = rig.s.home.join(".board").join("config.toml");
-    let text = std::fs::read_to_string(&conf).unwrap();
-    let fake = rig.fake.display().to_string();
-    let text = text.replace(
-        &format!("cmd = [\"{fake}\", \"{{prompt}}\"]"),
-        &format!("cmd = [\"{fake}\", \"{{prompt}}\", \"--output-format\", \"stream-json\", \"--verbose\"]"),
-    );
-    assert!(text.contains("stream-json"), "{text}");
-    std::fs::write(&conf, text).unwrap();
     assert_eq!(rig.board(&["new", "一"]).code, 0);
     let host = rig.host("mbp");
     rig.online("mbp");
@@ -1556,14 +1558,14 @@ fn structured_events_reach_the_session_while_running() {
     assert!(begun.elapsed() < Duration::from_secs(5));
     let v = session("");
     let part = &v["parts"][0];
-    assert_eq!(part["fmt"], "claude");
+    assert_eq!(part["fmt"], "acp");
     // 登录 shell 自己打的提示（作业控制、sudo 提示）不是 agent 的输出：不进会话的过程（#232）
     let texts: Vec<&str> = part["events"].as_array().unwrap().iter().filter_map(|e| e["text"].as_str()).collect();
     assert!(texts.iter().all(|t| !t.contains("no job control") && !t.contains("sudo")), "{part}");
     assert!(part["events"][0]["kind"] == "text" && part["events"][0]["text"].as_str().unwrap().starts_with("prompt: "), "{part}");
     let evs = structured(&v);
     assert_eq!((evs[0]["kind"].as_str(), evs[0]["text"].as_str()), (Some("message"), Some("先领卡，再跑测试。")));
-    assert_eq!((evs[1]["kind"].as_str(), evs[1]["tool"].as_str(), evs[1]["args"].as_str()), (Some("tool"), Some("Bash"), Some("cargo test")));
+    assert_eq!((evs[1]["kind"].as_str(), evs[1]["tool"].as_str(), evs[1]["args"].as_str()), (Some("tool"), Some("shell"), Some("cargo test")));
     assert!(evs[1]["ok"].is_null(), "还没有结果：{evs:?}");
     assert!(evs[1].get("call").is_none(), "调用标识不给界面");
     let runs = v["runs"].as_i64().unwrap();
@@ -1587,26 +1589,27 @@ fn structured_events_reach_the_session_while_running() {
     let inc = session(&format!("?since={runs}"));
     let evs = inc["parts"][0]["events"].as_array().unwrap().clone();
     assert_eq!(evs.iter().map(|e| e["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["tool", "result"], "增量：改过的工具调用和新的结果：{evs:?}");
-    assert_eq!((evs[0]["ok"].as_bool(), evs[0]["out"].as_str()), (Some(false), Some("test failed")));
+    assert_eq!((evs[0]["ok"].as_bool(), evs[0]["out"].as_str(), evs[0]["code"].as_i64()), (Some(false), Some("test failed"), Some(101)));
     assert_eq!((evs[1]["ok"].as_bool(), evs[1]["cost"].as_f64(), evs[1]["tokensIn"].as_i64(), evs[1]["tokensOut"].as_i64()), (Some(false), Some(0.5), Some(100), Some(10)));
     assert_eq!(structured(&session("")).len(), 3, "工具结果合进同一条");
     // 评论：最后几个事件，原始输出折叠
     let c = activity(&rig.show(1));
-    let comment = c.iter().find(|t| t.contains("agent 异常退出（退出码 4）")).unwrap_or_else(|| panic!("{c:?}"));
-    assert!(comment.contains("个事件：") && comment.contains("▸ Bash  cargo test  ✗ test failed"), "{comment}");
-    assert!(comment.contains("agent：先领卡，再跑测试。") && comment.contains("■ 结束 · 出错：测试没过"), "{comment}");
+    let comment = c.iter().find(|t| t.contains("agent 异常退出（退出码 3）")).unwrap_or_else(|| panic!("{c:?}"));
+    assert!(comment.contains("个事件：") && comment.contains("▸ shell  cargo test  ✗ test failed"), "{comment}");
+    assert!(comment.contains("agent：先领卡，再跑测试。") && comment.contains("■ 结束 · 出错：输出长度到了上限"), "{comment}");
     assert!(comment.contains("<details><summary>原始输出最后"), "{comment}");
     // 原始输出照旧是转写后的一行一行
     let log = rig.dispatch_log(d);
-    assert!(log.iter().any(|l| l == "▸ Bash  cargo test"), "{log:?}");
+    assert!(log.iter().any(|l| l == "▸ shell  cargo test"), "{log:?}");
     assert!(log.iter().any(|l| l == "  ✗ test failed"), "{log:?}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }
 
-/// 只有原始输出的 agent（配置文件里换掉了命令）：格式报成空字符串，没有事件，评论照旧写「日志最后 N 行」
+/// agent 握手之后没说一句 ACP 的话就崩了：格式照样是 acp，打到输出里的文字记成 text 事件，
+/// 评论里写退出码和最后几行
 #[test]
-fn raw_only_agents_report_an_empty_format() {
+fn agents_that_crash_without_acp_output_still_get_a_comment() {
     let rig = Rig::new();
     assert_eq!(rig.board(&["new", "一"]).code, 0);
     let host = rig.host("mbp");
@@ -1615,11 +1618,12 @@ fn raw_only_agents_report_an_empty_format() {
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
     let d = r.json()["id"].as_i64().unwrap();
     wait_until("#1 异常退出", Duration::from_secs(15), || ended(&rig.show(1), "异常退出"));
-    wait_until("格式报上来", Duration::from_secs(5), || rig.ui_get(&format!("/api/sessions/{d}"))["parts"][0]["fmt"] == "");
+    wait_until("格式报上来", Duration::from_secs(5), || rig.ui_get(&format!("/api/sessions/{d}"))["parts"][0]["fmt"] == "acp");
     let v = rig.ui_get(&format!("/api/sessions/{d}"));
-    assert!(v["parts"][0]["events"].as_array().unwrap().is_empty());
+    let texts: Vec<&str> = v["parts"][0]["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "text").filter_map(|e| e["text"].as_str()).collect();
+    assert!(texts.contains(&"boom") && texts.iter().any(|t| t.contains("这一轮结束之前就退出了")), "{texts:?}");
     let c = activity(&rig.show(1));
-    assert!(c.iter().any(|t| t.contains("日志最后") && t.contains("boom") && !t.contains("<details>")), "{c:?}");
+    assert!(c.iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "{c:?}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }

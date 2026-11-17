@@ -2,17 +2,26 @@
 
 `board host` 在派到这台机器的卡片上启动本机的 agent（PRD §9.1）。这份文档写清楚：一个 agent 要满足什么才能接进来、已经接入了哪些、怎么按批次接入新的。
 
-是否把 agent 接入改成 ACP、现在支持到什么程度、后续怎么灰度，见 [acp.md](acp.md)。
+board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什么换、ACP 的规范和生态调研见 [acp.md](acp.md)。
 
 ## board host 怎么启动 agent
 
 派发开始时，`board host` 已经以 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`）领到了卡片，然后：
 
-1. 在这块白板所在项目的目录（这台设备的工作空间里的 `<工作空间>/<项目>`，一个项目一个仓库，项目下的白板共用；`--dir <项目>=<路径>` 可以单独指定某个项目；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里执行它的**命令模板**。模板里的 `{prompt}` 换成一行提示词，作为**一个参数**传入，不拼进 shell 命令文本：
+1. 在这块白板所在项目的目录（这台设备的工作空间里的 `<工作空间>/<项目>`，一个项目一个仓库，项目下的白板共用；`--dir <项目>=<路径>` 可以单独指定某个项目；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里，用 **ACP**（Agent Client Protocol v1）启动它：`board host` 启动 `board acp`（board 自己的一个子命令，`crates/board-cli/src/acp.rs`），由它在启动环境里执行这个 agent 的 **ACP 入口**，完成 `initialize`、`session/new`（工作目录就是这个目录），再把一行提示词作为 `session/prompt` 发过去（提示词放在 `~/.board/host/run/<机器名>/<派发 ID>.prompt`，不放进命令行）：
 
    ```
    /board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务
    ```
+
+   `board acp` 的做法：
+
+   - Client 的 `fs`、`terminal` 能力都不声明（agent 自己在 worktree 里读写、执行），`mcpServers` 传空（MCP 照旧由 Board 写进 agent 自己的配置，见下面「MCP 服务器」）。
+   - 不问权限：agent 公布了不问权限的模式就切过去（Claude Code 的 `bypassPermissions`、Codex 的 `agent-full-access`）；`session/request_permission` 一律自动选「总是允许」（没有就「允许这一次」），Board 没有人工审批。dsh 用环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批。
+   - agent 配置文件里有思考强度时（见下面「模型供应商」），会话配置里有 `reasoning_effort` 这一项就切过去（dsh 的 ACP 只能这样定强度）。
+   - 收到 prompt 的回应就收尾：关掉 agent 的标准输入，最多等 5 秒，还不退就结束它。agent 进程自己退出了也收尾（它留下的子进程拿着输出也不等）。
+   - 退出码：`end_turn` 0；被取消 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败（例如没登录）、协议错误 2；这一轮没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。原因写进日志。
+   - 人点「停止」、`board host` 退出时它收到 SIGTERM：发 `session/cancel`，最多等 5 秒（之后照下面第 6 步结束进程树）。
 
    启动环境是「在哪种 shell 里启动」，按机器、按 agent 在机器详情里选（PRD §9.1）：
 
@@ -34,18 +43,18 @@
    经过 shell 启动时，shell 的启动脚本里设了 `BOARD_URL`、`BOARD_TOKEN` 也不影响：包装脚本在 `exec` 之前用 `board host` 的值（`BOARD_HOST_URL`、`BOARD_HOST_TOKEN`）再设一遍。WSL 里的变量经 `WSLENV` 传进去：`BOARD_CONFIG` 换成 WSL 路径，不传 `BOARD_EXE`（Windows 的 `board.exe` 在 WSL 里用不了，用 skill 自带的 Linux 版 `board`）。
 
    为什么还要 `BOARD_CONFIG`：有的 agent 不把名字像密钥的环境变量传给它执行的命令。dsh 会去掉名字里带 `KEY`、`PASSWORD`、`SECRET`、`TOKEN` 的变量，`BOARD_TOKEN` 到不了 `board`，`board` 就会拿 `~/.board/config.toml` 里别的令牌去连，得到 `INVALID_TOKEN`。`board` 读 `BOARD_CONFIG` 指向的文件代替 `~/.board/config.toml`，这个变量名不像密钥，能传过去。
-3. 标准输入是空的，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`。内置模板都用 agent 的结构化输出（事件流，JSONL）运行，本机的日志文件里是原样的事件，`board host` 拿它做两件事：
+3. `board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`：一行一帧 ACP 消息（JSON-RPC：它发出去的请求、agent 的回应和 `session/update` 通知；连续的消息片段合成一行，最多 2 秒落一次），加上 agent 和 `board acp` 写到标准错误的提示。`board host` 拿它做两件事：
 
-   - **原始输出**：每 5 秒上传新增的行（最多最后 500 行），是 `board host` 转写后的一行一行（`crates/board-cli/src/logfmt.rs`）：agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、出错的 `✗ …`、结束时的 `■ 结束 · 用时 · 轮数 · 费用`。不是 JSON 的行（标准错误里的提示）原样保留。界面「会话」切到「原始输出」看它。
-   - **过程**（结构化事件，`crates/board-cli/src/events.rs`，定义在 `crates/board-core/src/runlog.rs`）：每一行解析成统一的事件——`message`（agent 说的话，Markdown）、`tool`（工具名、参数摘要、结果摘要、成功或失败、退出码）、`error`（出错、接口重试）、`result`（结束：结果文字、用时、输入 / 输出 tokens、费用，agent 输出里有才记）；解析不了的行记成 `text`，原样保留。每 2 秒上传一次新增的（`POST /api/dispatches/<ID>/events {fmt, events}`），服务端按派发存（每个派发最多 2000 条，单条超过 4 KB 截断；派发结束 30 天后只留 `result` 和最后 50 条），有新事件时推送，会话页打开着就实时追加。工具调用和结果分成两条传、带着同一个调用标识，服务端合成一条。会话换到下一张卡后，事件记到当时在做的那张卡上。界面「会话」默认显示它。
+   - **原始输出**：每 5 秒上传新增的行（最多最后 500 行），是 `board host` 转写后的一行一行（`crates/board-cli/src/logfmt.rs`）：agent 说的话、`▸ 工具 参数`、`↳ 结果第一行（共 N 行）`、出错的 `✗ …`、结束时的 `■ 结束`（不是正常结束时写原因）。不是 JSON 的行（标准错误里的提示）原样保留。界面「会话」切到「原始输出」看它。
+   - **过程**（结构化事件，`crates/board-cli/src/events.rs`，定义在 `crates/board-core/src/runlog.rs`）：每一帧解析成统一的事件——`message`（`agent_message_chunk` 说的话，Markdown；`plan` 写成任务列表）、`tool`（`tool_call` / `tool_call_update`：工具名按 `kind` 取 shell、read、edit 这类短词，认不出时用标题；参数摘要、结果摘要、成功或失败，`rawOutput` 里有退出码时记下）、`error`（出错的回应）、`result`（prompt 的回应：是否正常结束、输入 / 输出 tokens、费用，有才记）；思考、握手、命令列表、模式和配置的变化不记；不是 JSON 的行记成 `text`，原样保留。每 2 秒上传一次新增的（`POST /api/dispatches/<ID>/events {fmt, events}`），服务端按派发存（每个派发最多 2000 条，单条超过 4 KB 截断；派发结束 30 天后只留 `result` 和最后 50 条），有新事件时推送，会话页打开着就实时追加。工具调用和结果分成两条传、带着同一个调用标识，服务端合成一条。会话换到下一张卡后，事件记到当时在做的那张卡上。界面「会话」默认显示它。
 
-   配置文件里覆盖了命令、又没带事件流参数的，或者配置文件里新加的 agent：只有原始输出，`board host` 上报格式为空，「过程」里写明这个 agent 只能看原始输出。
+   所有 agent 都是同一种格式（上报 `fmt: "acp"`）：输入 / 输出 tokens 是 prompt 回应里带的（agent 给了才有），费用是最后一次 `usage_update` 里的累计值。
 
    上传前脱敏（`crates/board-cli/src/redact.rs`）：agent 执行 `env`、打印配置文件、报错时带出请求头，令牌和其他密钥不能跟着上传到服务端（任何登录的人都能看到界面上的输出，异常退出时评论里还带最后几个事件和最后 20 行）。`board host` 在向服务端发原始输出、事件，写异常退出评论之前，把这些换成 `<已隐藏>`：当前令牌的原文、这次派发注入的 `BOARD_TOKEN`、`BOARD_HOST_TOKEN`，以及常见格式的密钥（`sk-…`、`ghp_…`、`github_pat_…`、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----` 块、`Authorization: Bearer …` 的凭据）。本机的日志文件保留原文。普通的十六进制提交号不会被误伤。
 
    本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
 4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。手动启动的会话不用自己拼名字：`board check --agent <标识>` 由 Board 按这台机器的设置生成同样的名字（§3.2）。
-5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面；只有原始输出的 agent 照旧写「日志最后 20 行」。
+5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面。
 6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
 
 ## 在一台新机器上装 `board`、接任务
@@ -131,15 +140,15 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 | # | 要求 | 不满足会怎样 |
 |---|---|---|
-| 1 | **非交互模式**：命令行带一个任务，做完就退出，不等输入 | 一直挂着，占着并发位 |
-| 2 | **不问权限**：能读写仓库、执行命令、访问网络（`git push`、`board`），没有审批弹窗；用这个 agent 自己的「跳过审批 / 关沙箱」参数 | 卡在审批上，或者命令被拒，做不下去 |
+| 1 | **讲 ACP**（Agent Client Protocol v1，标准输入、输出上的 JSON-RPC）：自己支持（dsh 的 `--profile acp`），或者有维护中的 ACP 适配器（Claude Code 的 `claude-agent-acp`、Codex 的 `codex-acp`，见 [ACP 官方 agent 列表](https://agentclientprotocol.com/get-started/agents)） | 接不进来：board host 只用 ACP 启动 agent |
+| 2 | **不问权限**：能读写仓库、执行命令、访问网络（`git push`、`board`），不开沙箱。agent 公布了不问权限的模式（写进 `acp_mode`）、或用环境变量关掉审批和沙箱（写进 `acp_env`）；ACP 的权限请求 board acp 会自动允许 | 命令被沙箱拒绝，做不下去 |
 | 3 | **找得到 `board-skills`**：从某个 skill 目录加载它，提示词以 `/board-skills` 开头时照着它做 | 不认识这句话，什么也不做就退出 → 异常退出（退出码常常是 0） |
 | 4 | **在这台机器上已经登录 / 配好模型**（API key、OAuth、provider） | 一启动就报错退出 |
 | 5 | 它执行的命令能拿到 `BOARD_URL`、`BOARD_AS`、`BOARD`、`BOARD_CONFIG`、`BOARD_EXE` 这几个环境变量（`BOARD_TOKEN` 被去掉没关系） | `board` 连错服务端、找不到名字或白板 |
-| 6 | **运行中**把进度写到标准输出，最好是结构化的事件流（JSON 输出模式）。用事件流的，在 `events.rs` 里加解析、`logfmt.rs` 里加转写（见「写成内置模板」） | 只在结束时打印结果的：跑的过程中输出一直是空的，看不出它在干活还是卡住了；不是事件流的：「过程」里只能看原始输出，没有用量（不影响结果） |
-| 7 | 收到 SIGTERM 会退出 | 停止要等 10 秒后强制结束 |
-| 8 | `<命令> --version` 第一行是版本号 | 界面上只显示「找到了」（不影响使用） |
-| 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，非交互命令在里面能做完一张卡。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
+| 6 | **运行中**用 `session/update` 报进度（说的话、工具调用和结果），这一轮做完用 `stopReason: end_turn` 回应 prompt | 「过程」里看不出它在干活还是卡住了；不回应 prompt 就退出算异常退出 |
+| 7 | 收到 `session/cancel` 会结束这一轮；标准输入关闭（EOF）或收到 SIGTERM 会退出 | 停止要等 10 秒后强制结束 |
+| 8 | `<命令> --version` 第一行是版本号（用适配器的，是 agent 自己的命令） | 界面上只显示「找到了」（不影响使用） |
+| 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，ACP 入口在里面能做完一张卡（用适配器的，`npx` 也要找得到）。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
 
 agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<机器名>/<模型名>-<强度>` 不超过 48 个字符）。它也是 skill 生成名字时 `board check --agent <标识>` 的参数（手动启动的会话按它取机器设置里的模型）；内置模板的标识见下表。
 
@@ -147,21 +156,23 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 内置模板写在 `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS` 里（board host、服务端、桌面端、界面都从这一处读）。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（自动领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<机器名>/<模型名>-<强度>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `mbp/codex`），配置文件里的 `model` 可以覆盖。
 
-| 顺序 | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
-|---|---|---|---|---|---|---|---|
-| 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --json --permission-mode danger-full-access {prompt}` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
-| 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
-| 3 | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
+| 顺序 | 标识 | 名称 | agent 命令 | ACP 入口 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `dsh` | DeepSeek Harness | `dsh` | `{bin} --profile acp --patch {patch}`（自带，0.2.2 起） | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 的 acp profile 里配好模型（或在 Board 里指定供应商） |
+| 2 | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login`；装了 Node.js（`npx`） |
+| 3 | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login`；装了 Node.js（`npx`） |
+
+「agent 命令」是在每个启动环境里找的命令：取版本号、判断安装方式、安装和更新都按它。「ACP 入口」是 `board acp` 执行的命令：`{bin}` 换成找到的 agent 命令，`{patch}` 换成这次派发的 profile 补丁。agent 自己不讲 ACP 的用 ACP 组织维护的适配器，`npx -y` 固定版本运行：不用另外安装，升级跟着 Board 发版；npm 缓存放在 `~/.board/host/npm-cache`（WSL 里用它自己的），第一次派发要下载适配器。适配器用机器上找到的 agent（Claude Code 经 `CLAUDE_CODE_EXECUTABLE`、Codex 经 `CODEX_PATH` 告诉它），所以机器详情里的版本就是实际在跑的版本；Windows 上找到的是 `.cmd` 这类脚本时不传，适配器用它自带的那份。
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
-**模型和思考强度**：不按次传参数，命令就是上表的样子。模型、强度写进 agent 自己的配置文件（上面「模型供应商」）；派发名字的第二段是 board host 读出来的、它配置文件里现在的模型（例如 `mbp/sonnet-high`；强度也读出来接在后面），读不到时用配置文件 `[agents.<标识>] model`，再没有就是 agent 标识。
+**模型和思考强度**：不按次传参数。模型、强度写进 agent 自己的配置文件（上面「模型供应商」）；派发名字的第二段是 board host 读出来的、它配置文件里现在的模型（例如 `mbp/sonnet-high`；强度也读出来接在后面），读不到时用配置文件 `[agents.<标识>] model`，再没有就是 agent 标识。
 
 各自的说明：
 
-- **dsh**：`headless` 档案做完一个任务就退出。模板带 `--json`：运行中把事件写成 JSONL 到标准输出（`session`、`status`（每一步结束时带用量）、`thinking`、`text`、`tool_call`、`tool_result`、`final`、`error`，按 0.2.2 的 `@deepseek-ai/dsh-headless` 核实过），诊断照旧写标准错误；不带时最终回答写标准输出、推理写标准错误。`--json` 从 0.2.2 起才有：本机 `dsh --version` 更旧时 `board host` 去掉它，按原始输出运行（「过程」里只能看原始输出）。dsh 不报费用。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。dsh 的 headless profile 默认还挂着 goal 工具和 goal-round-driver：模型一旦 `create_goal`，任务结束后会自动续一轮，进程退出时把被终止的续轮当成最后一轮（aborted/disposed），退出码变成 1。`board host` 每次 dsh 派发会写一份禁用 `goal-round-driver`、`tool-goal`、`command-goal` 的 profile 补丁，通过 `--patch {patch}` 传入（见 `crates/board-cli/src/dsh-headless.patch.yml`）。`--patch` 是 dsh 启动器的参数，必须放在 headless 的应用参数 `--json` 前面；放到后面会被 headless 当成自己的参数，报 `unknown option '--patch'`。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
-- **Claude Code**：`-p` 默认（文本输出）只在结束时打印结果，跑的过程中日志一直是空的。所以模板加了 `--output-format stream-json --verbose`（stream-json 要求带 `--verbose`）：每条消息、每次工具调用和结果都写一行 JSON，`board host` 转写后上传原始输出，同时解析成事件；最后一条 `result` 带用时、轮数、tokens（输入算上缓存的读写）和费用。子 agent（Task 工具）里的事件在「过程」里缩进显示。启动时标准错误里可能有一行 `[claude-code:unrecognized_model] {…}`（模型名不在它认识的列表里），不影响运行，原样留在日志里。配置文件里用 `[agents.claude] cmd` 覆盖了命令、又没带这两个参数的，日志照旧只在结束时才有内容。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报「Not logged in」，从自己的终端或桌面端运行就好。
-- **Codex**：`codex exec` 做完一个任务就退出；`--dangerously-bypass-approvals-and-sandbox` 不审批、不开沙箱（`board-skills` 要 `git push`、访问服务端）。模板带 `--json`：运行中把事件写成 JSONL（文档 `docs/exec.md`：`thread.started`、`turn.completed`（带这一轮的 tokens）、`turn.failed`、`item.started` / `item.completed` 里的 `agent_message`、`command_execution`、`file_change`、`mcp_tool_call`、`web_search`、`todo_list`、`error`）；命令显示成 `shell`，去掉外面的 `bash -lc '…'`。Codex 不报费用。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
+- **dsh**：用它自带的 acp profile（`@deepseek-ai/dsh-acp-app`，0.2.2 起；本机 `dsh --version` 更旧时不启动，提示升级）。`--patch {patch}` 是 board host 每次派发写的补丁（`crates/board-cli/src/dsh-acp.patch.yml`），关掉 `goal-round-driver`、`tool-goal`、`command-goal`：acp profile 也挂着 goal，模型一旦 `create_goal`，这一轮结束后会自动续轮，prompt 迟迟不结束。环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批（默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用）。会话用的提供方和模型是 acp profile 里 `acp` 这一项配置的（`~/.dsh/profiles/acp/cordis.patch.yml`；默认 `deepseek-official` 的 `deepseek-v4-flash`），强度在会话里用 `reasoning_effort` 切；以前给 headless profile 配的模型不会自动带过来。dsh 不报 tokens 和费用。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
+- **Claude Code**：适配器 `claude-agent-acp`（Claude Agent SDK）。会话开始后切到 `bypassPermissions` 模式；root 用户下没有这个模式，权限请求照样自动允许。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报要先登录，从自己的终端或桌面端运行就好。
+- **Codex**：适配器 `codex-acp`（Codex App Server）。环境变量 `INITIAL_AGENT_MODE=agent-full-access`，会话开始后也切到这个模式：不审批、不开沙箱。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
 
 ## 安装和更新 agent
 
@@ -211,21 +222,24 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 | 项 | 怎么找 |
 |---|---|
 | 标识、名称 | 标识用它的命令名（小写），名称用它自己的产品名 |
-| 非交互命令 | `--help` 里找「print / exec / headless / run」之类：带一个任务、做完退出 |
-| 跳过审批 | `--help` 里找「approval / permission / sandbox / yolo / dangerously」之类 |
+| ACP 入口 | 它的文档里「ACP」「Agent Client Protocol」「Zed」一节，或 [ACP 官方 agent 列表](https://agentclientprotocol.com/get-started/agents)、[Registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)：自带的启动参数（例如 `--acp`、`--profile acp`），或者维护中的适配器（npm 包名、固定一个版本）；适配器用哪个环境变量指定 agent 本体 |
+| 不问权限 | ACP 会话公布的模式里有没有不审批的（`session/new` 回应的 `modes`、`configOptions`）；没有时看它用什么环境变量关掉沙箱和审批 |
 | skill 目录 | 它的文档里「skills」一节；常见是 `~/.agents/skills` 或它自己的 `~/.<名字>/skills` |
 | 登录 / 模型 | 它的文档；记下第一次用要做什么 |
 | 安装位置 | `command -v <命令>`；装成 app 的再看 app 里有没有自带的命令行（macOS 在 `*.app/Contents/` 下找） |
 | 版本 | `<命令> --version` |
-| 日志特点 | 过程是写标准输出、标准错误，还是只在最后打印；只在最后打印的，找它的事件流 / JSON 输出参数（`stream-json`、`--mode json`、`--json` 之类） |
+| 用量 | prompt 的回应里带不带 `usage`、`usage_update` 里带不带 `cost`（「过程」里的 tokens、费用） |
 
 ### 2. 本机验证：不碰白板
 
-在任意目录里，用第 1 步的非交互命令问它一句，确认它找得到 `board-skills`、不问权限、问完就退出：
+在任意目录里，用 `board acp` 和第 1 步的 ACP 入口问它一句，确认它讲得通 ACP、找得到 `board-skills`、不问权限、问完就结束：
 
 ```sh
-<非交互命令> "/board-skills 不要执行任何命令。只回答两行：第一行是你加载的 skill 的 name，第二行是它 SKILL.md 里第一个二级标题。"
+echo "/board-skills 不要执行任何命令。只回答两行：第一行是你加载的 skill 的 name，第二行是它 SKILL.md 里第一个二级标题。" > /tmp/q.txt
+board acp --env direct --cwd /tmp --prompt-file /tmp/q.txt [--mode <不问权限的模式>] -- <ACP 入口命令> [参数…]
 ```
+
+标准输出是一行一帧的 ACP 消息，最后一帧是 `"stopReason":"end_turn"`，退出码 0；它说的话在 `agent_message_chunk` 里。
 
 应该回答 `board-skills` 和 `参数`，然后退出。回答「没有这个 skill」：先按上一节装好，再问一次。
 
@@ -233,14 +247,16 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 
 ### 3. 在界面上接上
 
-写那台机器的 `~/.board/config.toml`（`{prompt}` 单独作为一个元素）：
+写那台机器的 `~/.board/config.toml`，`cmd` 是 ACP 入口命令（提示词走 `session/prompt`，命令里不写 `{prompt}`）：
 
 ```toml
 [agents.<标识>]
 name = "<名称>"
-cmd = ["<命令>", "<非交互参数>", "<跳过审批参数>", "{prompt}"]
+cmd = ["<ACP 入口命令>", "<参数>"]
 model = "<它实际用的模型名>"
 ```
+
+`cmd` 的第一个是在每个启动环境里找的命令（取版本号也用它）。以前一次性命令的写法（带 `{prompt}`）已经不能用：新加的 agent 这样写时派发报错说明；同标识覆盖内置模板时不用它，照内置的 ACP 入口跑。覆盖内置模板时第一个是 `npx`（换适配器的版本）或用了 `{bin}` 时，照旧找内置的 agent 命令并交给适配器；否则第一个就是要找的命令，Board 不再代装、代升它。
 
 `model` 写进派发的 agent 名字（`<机器名>/<模型名>-<强度>`，PRD §3.2）：内置 agent 先用它自己配置文件里现在的模型，读不到时才用这里的；都没有时用 agent 标识。转成小写、空白换成 `-`。模型、强度不按次传参数：以前的 `model_args`、`effort_args`、`efforts` 不再用，写了也不起作用；要固定模型，直接写进 `cmd`。
 
@@ -271,15 +287,11 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 这一批都通过第 4 步后：
 
-- `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`：加一条，内置 agent 的描述只在这里写一份——`id`、`name`、npm 包和 dist-tag、`install`（安装命令）、`cmd`（命令模板）、`also`（常见安装位置）、`skills`（读用户级 skill 的目录，第一个是装 board-skills、同步 skills 的地方）、`project`（仓库里读 skill 的目录）、`git_bash`、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）、`protocols`（认哪些供应商接口）、`efforts`（配置文件能写的强度档位，从低到高）、`mcp`（支持 MCP 同步时它的 MCP 配置文件；不支持写 `None`）、`color`（界面上的主色）。放在哪一位就是默认顺序里的哪一位。board host 的内置模板、供应商的接口和强度（界面从 `GET /api/providers` 的 `meta` 拿）、MCP 同步名单、`board skills` 和桌面端「一键安装」的 skill 目录、桌面端「从本机导入 MCP」都从这里读，不用再改别处的名单。界面里只有 `web/src/lib/agentMeta.ts` 的兜底（连旧服务端、取到之前用）要跟着加一条。
+- `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`：加一条，内置 agent 的描述只在这里写一份——`id`、`name`、npm 包和 dist-tag、`install`（安装命令）、`bin`（agent 命令）、`acp`（ACP 入口，自带 ACP 的写 `{bin} …`，用适配器的写 `npx -y <包>@<版本>`）、`acp_bin_env`（告诉适配器 agent 在哪的环境变量）、`acp_env`、`acp_mode`（不问权限的环境变量、模式）、`acp_since`（自带 ACP 从哪个版本起）、`also`（常见安装位置）、`skills`（读用户级 skill 的目录，第一个是装 board-skills、同步 skills 的地方）、`project`（仓库里读 skill 的目录）、`git_bash`、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）、`protocols`（认哪些供应商接口）、`efforts`（配置文件能写的强度档位，从低到高）、`mcp`（支持 MCP 同步时它的 MCP 配置文件；不支持写 `None`）、`color`（界面上的主色）。放在哪一位就是默认顺序里的哪一位。board host 的内置模板、供应商的接口和强度（界面从 `GET /api/providers` 的 `meta` 拿）、MCP 同步名单、`board skills` 和桌面端「一键安装」的 skill 目录、桌面端「从本机导入 MCP」都从这里读，不用再改别处的名单。界面里只有 `web/src/lib/agentMeta.ts` 的兜底（连旧服务端、取到之前用）要跟着加一条。
 - 要按服务器上的供应商写它的配置文件：在 `crates/board-cli/src/providersync.rs` 里加上写配置文件、读回模型的那一段（`files_of`、`apply_*`）。
 - 标了 `mcp`：在 `crates/board-cli/src/mcpsync.rs` 的 `implemented`、`put`、`remove` 里加上它的写法（`every_mcp_agent_in_the_description_has_a_writer` 会检查）。
 - 测试：`agentdef.rs` 的 `every_builtin_agent_is_well_formed`（标识合法、接口和强度认得）、`crates/board-cli/src/host.rs` 的 `builtin_order_and_overrides`（改期望的顺序）。
-- 接上结构化输出（事件流 / JSON 输出）：
-  - `crates/board-cli/src/logfmt.rs`：`Stream` 加一种，`stream_for` 按标识和命令里的事件流参数认出它（配置文件覆盖了命令、没带参数的按原始输出）；加它的转写（原始输出）。
-  - `crates/board-cli/src/events.rs`：`Parser` 加它的解析，转成 `message`、`tool`（工具调用带 agent 给的调用标识，结果后到时同一个标识）、`error`、`result`（用量、费用有就填；没有整次汇总的，按每一步 / 每一轮的加起来，在结束时写进去）；对人没用的事件（流式片段、状态变化、思考）不记，不是 JSON 的行记成 `text`。
-  - 按它文档里的事件格式写一份样例放进 `crates/board-cli/tests/fixtures/`，`logfmt.rs`、`events.rs` 各加单元测试（转写出的行、事件的种类和条数）。测试不执行真实的 agent。
-  - 打开事件流的参数在某个版本之后才有的，在 `AGENT_DEFS` 里写 `json_since`、`json_flags`：本机版本更旧时去掉这些参数。
+- 不用按 agent 写日志解析：ACP 的转写（`logfmt.rs`）、事件（`events.rs`）所有 agent 共用。它的帧里有现在没认出的写法（工具的 `kind`、`rawOutput` 的字段）时，在那里补上，按它的真实输出补一份样例进 `crates/board-cli/tests/fixtures/`。
 - 界面上的图标：用它自己的图标（应用图标或官网 logo），放进 `web/src/assets/agents/<标识>.png`（裁掉透明边，64×64）或 `.svg`，在 `web/src/lib/hosts.ts` 的 `MARKS` 里引用（主色在 `agentdef.rs` 的 `color`，并发位顶边用）；白底的图标标 `light: true`。没有图标时显示标识的前两个字母。
 - `docs/PRD.md` §9.1 的内置模板表，和本文「已经接入的」表。
 - 跑完 `npm test`，提交 `feat(cli): board host 内置 <agent> 模板`；需要在别的机器上试时请人发版。
@@ -291,15 +303,15 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 现象 | 多半是 |
 |---|---|
 | 派发结果「异常退出（退出码 0）」，日志里 agent 说不认识 `/board-skills` | 没装 `board-skills`，或链接指向的目录不存在 |
-| 日志第一行就是登录错误（例如「Not logged in」） | 这台机器上的 agent 还没登录 |
+| 日志里是「agent 要求先登录」「Authentication required」「Not logged in」 | 这台机器上的 agent 还没登录（Claude Code 的登录在系统钥匙串里：从别的 agent 会话、沙箱里启动的 board host 读不到） |
 | 「机器」里这个 agent 显示「没找到」 | 在它用的启动环境里找不到命令：看机器详情的启动环境下拉，换一个找得到的环境；或者在那个环境的启动脚本（`~/.zshrc`、`~/.bashrc`、PowerShell 的 `$PROFILE`）里把它加进 `PATH`；在配置文件里写绝对路径也行 |
 | WSL 里显示「没找到」，可 WSL 的终端里能运行 | 装在 `/mnt/` 下的是 Windows 程序，不算；在 WSL 里另装一份 Linux 版 |
 | 在 WSL 里派发，日志里 `board` 报找不到命令或连不上 | WSL 里没装 `board-skills`（它自带 Linux 版 `board`），或者 WSL 里的 skill 太旧 |
 | 日志开头有 `bash: cannot set terminal process group`、`no job control` | 交互式 shell 没有终端时的提示，不影响 |
-| 一直在跑、日志不动 | agent 在等审批或输入：模板里少了跳过审批的参数，或者它的非交互模式不是这个 |
-| 一直在跑、日志是空的（或者 Claude Code 只有一行 `[claude-code:unrecognized_model]`），结束时才突然出现结果 | agent 用的是只在结束时打印的模式：旧版 `board host` 的内置模板（Claude Code 的 `-p`），或者配置文件里覆盖的命令没带事件流参数。升级 `board host`，或者按上表的模板在 `[agents.<标识>] cmd` 里补上参数 |
-| 原始输出里是一行一行的 JSON，「过程」里写只能看原始输出 | 配置文件里给别的标识的 agent 用了 JSON 输出：`board host` 只解析内置的 Claude Code（`claude`）、Codex（`codex`）、dsh（`dsh`）三个标识，而且命令里要带事件流参数；换回文本输出，或者按「写成内置模板」接上它的解析 |
-| dsh 的「过程」里只能看原始输出 | 本机的 dsh 比 0.2.2 旧，没有 `--json`：升级 DeepSeek Harness |
+| 一直在跑、日志不动 | agent 卡在一个很长的工具调用里，或者在等审批：ACP 的权限请求 board acp 会自动允许，看它是不是在等别的输入（例如 MCP 服务器的登录）；到「没输出多久算卡住」的时间 board host 会停止它 |
+| 日志第一行之后就停在 `initialize`，最后报「agent … 秒内没有完成握手」 | ACP 入口没起来：用适配器的看日志里 `npx` 的报错（下载不了、没装 Node.js）；dsh 看是不是太旧（没有 acp profile） |
+| 日志里是 `npm error code EEXIST`、`EACCES` | 用户的 npm 缓存权限坏了（以前用 sudo 跑过 npm）：board host 给 npx 用自己的缓存 `~/.board/host/npm-cache`，升级 board；自己执行 npx 时按 npm 的提示修 `~/.npm` 的属主 |
+| 派发报「配置文件里 [agents.<标识>] cmd 是旧写法」 | 配置文件里新加的 agent 还是以前一次性命令的写法（带 `{prompt}`）：改成 ACP 入口命令，见「在界面上接上」 |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |
 | 桌面端「这台电脑」开始接任务后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |
 | 从设置了 `BOARD_TOKEN` 的终端或 agent 会话里启动桌面端，打开「让这台电脑接任务」后 board host 以 `INVALID_TOKEN` 停止 | 旧版桌面端把启动环境里的 `BOARD_URL`、`BOARD_TOKEN`（还有 `BOARD_CONFIG`、`BOARD_AS`、`BOARD`）继承给了后台的 board host，环境变量优先于配置文件，令牌是别的服务端的。新版启动 board host 和改机器名时都去掉这些变量，只用配置文件；升级桌面端 |

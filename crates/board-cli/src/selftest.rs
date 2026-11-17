@@ -306,13 +306,15 @@ mod tests {
         // 回显的提示词里也有 board-skills，不算
         let (pass, why, _) = judge_agent(&ok, &sv(&[PROMPT, "我没有找到这个 skill"]));
         assert!(!pass && why.unwrap().contains("回答里没有 board-skills"));
-        // Claude Code 的 thinking_tokens 事件：uuid 以 401 开头，转写后不该当成没有登录
+        // ACP 的帧：会话标识以 401 开头、发出去的提示词里也有 board-skills，转写后都不该影响结论
         let raw = [
-            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":247,"estimated_tokens_delta":1,"session_id":"5ae182c3-42b3-4513-ac68-d25bae593b47","uuid":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00"}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"board-skills\n参数"}]},"parent_tool_use_id":null,"session_id":"s1","uuid":"u1"}"#,
+            r#"{"id":3,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"text":"/board-skills 不要执行任何命令。","type":"text"}],"sessionId":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00"}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00","update":{"sessionUpdate":"usage_update","used":1,"size":2}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"board-skills\n参数"}}}}"#,
         ]
         .join("\n");
-        let lines = logfmt::render(Some(Stream::Claude), raw.lines().map(str::to_string).collect());
+        let lines = logfmt::render(Some(Stream::Acp), raw.lines().map(str::to_string).collect());
+        assert_eq!(lines, sv(&["board-skills", "参数"]));
         let (pass, why, _) = judge_agent(&ok, &lines);
         assert!(pass, "{why:?}");
         // 已经答出 board-skills：日志里顺带的 401 重试不影响结论

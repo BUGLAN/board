@@ -1,7 +1,7 @@
 //! 命令行的配置文件 `~/.board/config.toml`（Windows：`%USERPROFILE%\.board\config.toml`，PRD §9）。
 //!
 //! - `url`（服务端地址）和 `token`（访问令牌），由 `board login` 写入、`board logout` 删掉令牌。
-//! - `[host]`（机器名、白板与目录）和 `[agents.<标识>]`（agent 命令模板），给 `board host` 用；
+//! - `[host]`（机器名、白板与目录）和 `[agents.<标识>]`（agent 的 ACP 入口命令），给 `board host` 用；
 //!   桌面端「设置 → 本机」也写这两节。agent 名字（`BOARD_AS`）和白板（`BOARD`）不写进这个文件。
 //! - 读取顺序：环境变量 `BOARD_URL` / `BOARD_TOKEN` 优先，配置文件其次（两项分别看）。
 //! - 环境变量 `BOARD_CONFIG` 指定另一个配置文件代替 `~/.board/config.toml`：board host 启动 agent 时用它传连接——

@@ -928,6 +928,10 @@
 
 `--install`、`--uninstall`、`rename <新机器名>` 也输出这类进度和结果行，没有一次性的 JSON。
 
+### `board acp`
+
+`board host` 启动 agent 用的那一层，不在 `board help` 里：`board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> --prompt-file <文件> [--mode <模式>] [--set <选项>=<值>]… -- <ACP 入口命令> [参数…]`。它在启动环境里执行 ACP 入口，走完 `initialize`、`session/new`、切模式和配置、`session/prompt`，标准输出是一行一帧的 ACP 消息（派发日志），退出码见 `docs/agents.md`「board host 怎么启动 agent」。接入新 agent 时可以直接用它在本机试（同上「本机验证」）。
+
 ### `board dispatch`
 
 派发成功时返回这次派发的记录；`state` 是 `queued`、`running` 或 `done`，`result` 是结束原因（`review`、`stuck`、`crashed`、`stopped`、`canceled` 等）：

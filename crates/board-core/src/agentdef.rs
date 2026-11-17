@@ -3,14 +3,15 @@
 //! 以前同一个事实拆在几处：名称在 board host 的内置模板、`providers.rs`、界面的两份名单里；读 skill 的目录在 board host、
 //! `board skills`、桌面端、界面各写一份；支持 MCP 同步的名单在服务端、board host、桌面端、界面各一份。现在都从这里读：
 //!
-//! - board host 的内置模板（命令、安装、查找位置、skill 目录、Windows 启动环境、结构化输出参数）
+//! - board host 的内置模板（命令、ACP 入口、安装、查找位置、skill 目录、Windows 启动环境）
 //! - 认哪些供应商接口、配置文件能写哪几档强度（`providers.rs`，随 `GET /api/providers` 的 `meta` 给界面）
 //! - 支不支持 MCP 同步、MCP 配置文件在哪（`mcp.rs`、board host 的 `mcpsync.rs`、桌面端「从本机导入」）
 //! - 读用户级 skill 的目录（`board skills`、桌面端「一键安装」、界面）
 //! - 界面上的主色（图标、动作这些画法留在界面里）
 //!
-//! 按 agent 写代码的只有两段，不在这里：怎么改它的配置文件（`providersync.rs`、`mcpsync.rs`）、怎么解析它的事件流
-//! （`logfmt.rs`、`events.rs`）。加一个 agent：这里加一条，再看那两段要不要加它的写法（docs/agents.md「写成内置模板」）。
+//! board host 用 ACP 驱动所有 agent（`board acp`，见 board-cli 的 acp.rs），日志和「过程」只解析一套 ACP，不按 agent 分。
+//! 按 agent 写代码的只剩怎么改它的配置文件（`providersync.rs`、`mcpsync.rs`）。加一个 agent：这里加一条，
+//! 再看那两处要不要加它的写法（docs/agents.md「写成内置模板」）。
 
 use std::path::{Path, PathBuf};
 
@@ -26,9 +27,21 @@ pub struct AgentDef {
     pub tag: &'static str,
     /// 没找到时给用户的安装命令；board host 也按这条命令在本机执行
     pub install: &'static str,
-    /// 命令模板：非交互地做完一个任务就退出，不问权限；`{prompt}` 换成提示词、`{patch}` 换成
-    /// 这次派发的 profile 补丁路径，都作为一个参数传入
-    pub cmd: &'static [&'static str],
+    /// agent 自己的命令：找命令、取版本号、判断安装方式、显示版本用
+    pub bin: &'static str,
+    /// ACP 入口：`board acp` 在这次派发的启动环境里执行的命令，讲 ACP（标准输入、输出）。`{bin}` 换成找到的 agent 命令，
+    /// `{patch}` 换成这次派发的 profile 补丁路径。agent 自己不讲 ACP 的，用 ACP 组织维护的适配器，`npx -y` 固定版本运行：
+    /// 不用另外安装，升级跟着 Board 发版
+    pub acp: &'static [&'static str],
+    /// 告诉适配器用哪个 agent 的环境变量，值是 board host 找到的 agent 路径（适配器就用机器上装的、Board 管着升级的那份，
+    /// 不用它自带的）。ACP 入口就是 agent 自己时为空
+    pub acp_bin_env: &'static str,
+    /// 另外传给 ACP 入口的环境变量
+    pub acp_env: &'static [(&'static str, &'static str)],
+    /// 会话开始后切到的模式（不问权限）；agent 没公布这个模式时不切，权限请求照样自动允许。空表示不切
+    pub acp_mode: &'static str,
+    /// agent 自己的 ACP 从哪个版本起才有（`<命令> --version` 的版本号）：本机版本更旧时不启动，提示升级。空表示不看版本
+    pub acp_since: &'static str,
     /// 命令不在 PATH 里时再看这些位置（`~` 是用户目录）。第一项是 board host 装进用户目录的位置：
     /// PATH 里还有旧版本时比较版本号，用较新的那个
     pub also: &'static [&'static str],
@@ -39,10 +52,6 @@ pub struct AgentDef {
     /// Windows 上支持的启动环境，顺序就是默认选择的顺序（`wsl:*` 是每个 WSL 发行版）；
     /// macOS、Linux 上都是登录 shell → 直接启动
     pub win: &'static [&'static str],
-    /// 命令模板里打开结构化输出的参数从哪个版本起才有（`<命令> --version` 的版本号）：本机版本更低时去掉
-    /// `json_flags`，按原始输出运行。空表示不看版本
-    pub json_since: &'static str,
-    pub json_flags: &'static [&'static str],
     /// 认哪些供应商接口（[`crate::providers::INTERFACES`] 里的标识）
     pub protocols: &'static [&'static str],
     /// 配置文件能写的思考强度，从低到高（配置文件的写法按各自 agent 核实过；[`crate::providers::ALL_EFFORTS`] 里的）
@@ -61,10 +70,15 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         package: "@deepseek-ai/dsh",
         tag: "next",
         install: "npm install -g @deepseek-ai/dsh@next",
-        // 参数分两段：--profile、--patch 是 dsh 启动器的参数，必须放在应用参数前面；
-        // --json、--permission-mode 和任务文本是 headless 的参数。--json 之后 dsh 启动器不再解析选项，
-        // --patch 放在 --json 后面会被 headless 当成自己的参数，报 unknown option '--patch'
-        cmd: &["dsh", "--profile", "headless", "--patch", "{patch}", "--json", "--permission-mode", "danger-full-access", "{prompt}"],
+        bin: "dsh",
+        // dsh 自带 ACP：acp profile（`@deepseek-ai/dsh-acp-app`，0.2.2-rc.1 起）。--patch 关掉 goal 的自动续轮
+        acp: &["{bin}", "--profile", "acp", "--patch", "{patch}"],
+        acp_bin_env: "",
+        // 不开沙箱、不审批（和以前 headless 的 --permission-mode danger-full-access 一样）：acp profile 按这个环境变量定
+        acp_env: &[("DSH_PERMISSION_MODE", "danger-full-access")],
+        // 没有可切的模式；权限请求自动允许
+        acp_mode: "",
+        acp_since: "0.2.2",
         // 桌面端没在「设置」里装命令行时，用 app 里自带的启动脚本
         also: &[
             "~/.local/bin/dsh",
@@ -74,9 +88,6 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         skills: &["~/.agents/skills"],
         project: &[".agents/skills"],
         win: &["pwsh", "powershell", "cmd"],
-        // 按 0.2.2-rc.1 的 dsh-headless 核实过 --json；更旧的不认这个参数，去掉它按原始输出运行
-        json_since: "0.2.2",
-        json_flags: &["--json"],
         protocols: &["anthropic", "openai-chat", "openai-responses"],
         efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
         mcp: None,
@@ -88,15 +99,18 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         package: "@anthropic-ai/claude-code",
         tag: "latest",
         install: "npm install -g @anthropic-ai/claude-code@latest",
-        // -p 默认只在结束时打印结果：用事件流，运行中每一步都写进日志（logfmt.rs 转写）
-        cmd: &["claude", "-p", "{prompt}", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
+        bin: "claude",
+        // ACP 组织维护的适配器（Claude Agent SDK）；CLAUDE_CODE_EXECUTABLE 指向机器上的 claude
+        acp: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.107.3"],
+        acp_bin_env: "CLAUDE_CODE_EXECUTABLE",
+        acp_env: &[],
+        acp_mode: "bypassPermissions",
+        acp_since: "",
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],
         skills: &["~/.claude/skills"],
         // Claude Code 不读 .agents/skills
         project: &[".claude/skills"],
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
-        json_since: "",
-        json_flags: &[],
         protocols: &["anthropic"],
         efforts: &["low", "medium", "high", "xhigh", "max"],
         mcp: Some("~/.claude.json"),
@@ -108,14 +122,17 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         package: "@openai/codex",
         tag: "latest",
         install: "npm install -g @openai/codex@latest",
-        // exec --json：运行中把事件（命令、改文件、说的话、每一轮的用量）写成 JSONL（docs/exec.md）
-        cmd: &["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
+        bin: "codex",
+        // ACP 组织维护的适配器（Codex App Server）；CODEX_PATH 指向机器上的 codex
+        acp: &["npx", "-y", "@agentclientprotocol/codex-acp@2.7.0"],
+        acp_bin_env: "CODEX_PATH",
+        acp_env: &[("INITIAL_AGENT_MODE", "agent-full-access")],
+        acp_mode: "agent-full-access",
+        acp_since: "",
         also: &["~/.local/bin/codex"],
         skills: &["$CODEX_HOME/skills"],
         project: &[".agents/skills"],
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
-        json_since: "",
-        json_flags: &[],
         // Codex 的 model_providers 走 Responses 接口（wire_api = "responses"）
         protocols: &["openai-responses"],
         efforts: &["minimal", "low", "medium", "high", "xhigh", "max"],
@@ -181,8 +198,15 @@ mod tests {
             crate::hosts::check_agent_id(d.id).unwrap_or_else(|e| panic!("{}：{e}", d.id));
             assert!(!seen.contains(&d.id), "{} 写了两次", d.id);
             seen.push(d.id);
-            assert!(!d.name.is_empty() && !d.cmd.is_empty() && !d.install.is_empty(), "{}", d.id);
-            assert!(d.cmd.contains(&"{prompt}"), "{}：命令里要有 {{prompt}}", d.id);
+            assert!(!d.name.is_empty() && !d.bin.is_empty() && !d.acp.is_empty() && !d.install.is_empty(), "{}", d.id);
+            assert!(!d.acp.iter().any(|a| a.contains("{prompt}")), "{}：提示词走 session/prompt，ACP 入口里不带 {{prompt}}", d.id);
+            // 用适配器的要固定版本（npx -y <包>@<版本>），升级跟着 Board 发版
+            if d.acp[0] == "npx" {
+                assert!(d.acp.iter().any(|a| a.rfind('@').is_some_and(|i| i > 0)), "{}：适配器要固定版本", d.id);
+                assert!(!d.acp_bin_env.is_empty(), "{}：要告诉适配器用机器上的 agent", d.id);
+            } else {
+                assert_eq!(d.acp[0], "{bin}", "{}：不用适配器时入口就是 agent 自己", d.id);
+            }
             assert!(!d.protocols.is_empty(), "{}", d.id);
             for p in d.protocols {
                 assert!(crate::providers::INTERFACES.iter().any(|(k, _)| k == p), "{} 的接口 {p} 不认识", d.id);

@@ -2,7 +2,7 @@
 //!
 //! | 标识 | 名称 | 系统 | 怎么发现 | 怎么启动 agent |
 //! |---|---|---|---|---|
-//! | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令模板，不经过 shell |
+//! | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令，不经过 shell |
 //! | `login` | 登录 shell | macOS、Linux | `$SHELL`，没有时 passwd 里的登录 shell，再没有 `/bin/sh` | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
 //! | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号；命令名是普通名字时不加，否则 `.cmd` 里的 `%~dp0` 会变成当前目录 |
 //! | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
@@ -58,6 +58,23 @@ pub const CONF_WIN_ORDER: &[&str] = &["pwsh", "powershell", "git-bash", "wsl:*",
 impl Env {
     pub fn direct() -> Env {
         Env { id: "direct".into(), name: "直接启动".into(), kind: Kind::Direct, prog: PathBuf::new() }
+    }
+
+    /// 按上报时的标识和程序还原一个启动环境（`board acp` 用：board host 把派发用的环境传给它）。
+    /// 认不出的标识当直接启动
+    pub fn from_parts(id: &str, prog: &str) -> Env {
+        let kind = match id {
+            "login" => Kind::Login,
+            "cmd" => Kind::Cmd,
+            "powershell" => Kind::PowerShell,
+            "pwsh" => Kind::Pwsh,
+            "git-bash" => Kind::GitBash,
+            _ => match id.strip_prefix("wsl:") {
+                Some(d) if !d.is_empty() => Kind::Wsl(d.to_string()),
+                _ => return Env::direct(),
+            },
+        };
+        Env::new(kind, PathBuf::from(prog))
     }
 
     fn new(kind: Kind, prog: PathBuf) -> Env {
@@ -287,19 +304,24 @@ fn raw(c: &mut Command, line: &str) {
     }
 }
 
-/// WSL 里要传的环境变量（WSLENV）：`/u` 只从 Windows 传进 WSL，`/p` 再把路径换成 WSL 路径。不传 BOARD_EXE
-pub fn wslenv(old: Option<&str>) -> String {
-    let ours = "BOARD_URL/u:BOARD_TOKEN/u:BOARD_HOST_URL/u:BOARD_HOST_TOKEN/u:BOARD_AS/u:BOARD_HOST/u:BOARD/u:BOARD_CONFIG/pu:BOARD_PIDFILE/pu";
+/// WSL 里要传的环境变量（WSLENV）：`/u` 只从 Windows 传进 WSL，`/p` 再把路径换成 WSL 路径。不传 BOARD_EXE。
+/// extra：另外要传的（`名字/u` 这样写好的，例如 ACP 适配器要的 `CLAUDE_CODE_EXECUTABLE/u`）
+pub fn wslenv(old: Option<&str>, extra: &[String]) -> String {
+    let mut ours = "BOARD_URL/u:BOARD_TOKEN/u:BOARD_HOST_URL/u:BOARD_HOST_TOKEN/u:BOARD_AS/u:BOARD_HOST/u:BOARD/u:BOARD_CONFIG/pu:BOARD_PIDFILE/pu".to_string();
+    let names: Vec<&str> = extra.iter().map(|x| x.split('/').next().unwrap_or_default()).collect();
+    for x in extra {
+        ours = format!("{ours}:{x}");
+    }
     let keep: Vec<&str> = old
         .unwrap_or_default()
         .split(':')
         .filter(|x| !x.is_empty())
         .filter(|x| {
             let name = x.split('/').next().unwrap_or_default();
-            !name.starts_with("BOARD")
+            !name.starts_with("BOARD") && !names.contains(&name)
         })
         .collect();
-    if keep.is_empty() { ours.to_string() } else { format!("{}:{ours}", keep.join(":")) }
+    if keep.is_empty() { ours } else { format!("{}:{ours}", keep.join(":")) }
 }
 
 /// 在 bash 里结束一个进程组：`bash -c KILL_GROUP <组长进程号> <TERM|KILL>`；组已经没了时退回只结束这个进程
@@ -440,7 +462,7 @@ impl Check {
     }
 }
 
-/// 在 env 里找 cmd（命令模板的第一个元素），找到了再取版本号。also：PATH 里没有时再看的位置（只在 direct、login 里用）；
+/// 在 env 里找 cmd（agent 命令），找到了再取版本号。also：PATH 里没有时再看的位置（只在 direct、login 里用）；
 /// 第一项是 board host 装进用户目录的位置，PATH 里还有一个旧版本时比较版本号，用较新的那个
 pub fn probe(env: &Env, cmd: &str, also: &[String]) -> Check {
     let hit = locate(env, cmd, &[]);
@@ -853,11 +875,14 @@ mod tests {
 
     #[test]
     fn wslenv_passes_board_vars_but_not_exe() {
-        let w = wslenv(Some("FOO/p:BOARD_EXE"));
+        let w = wslenv(Some("FOO/p:BOARD_EXE"), &[]);
         assert!(w.starts_with("FOO/p:"), "{w}");
         assert!(w.contains("BOARD_CONFIG/pu") && w.contains("BOARD_AS/u") && w.contains("BOARD_PIDFILE/pu"));
         assert!(!w.contains("BOARD_EXE"), "WSL 里用 skill 自带的 Linux 版 board");
-        assert!(!wslenv(None).starts_with(':'));
+        assert!(!wslenv(None, &[]).starts_with(':'));
+        // ACP 适配器要的变量也传进去；原来 WSLENV 里同名的不再重复
+        let w = wslenv(Some("CODEX_PATH/p:FOO/p"), &["CODEX_PATH/u".to_string()]);
+        assert!(w.ends_with(":CODEX_PATH/u") && w.starts_with("FOO/p:") && w.matches("CODEX_PATH").count() == 1, "{w}");
     }
 
     #[test]

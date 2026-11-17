@@ -7,8 +7,10 @@
 //! - Codex：`$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `model_provider`、`[model_providers.board-<供应商>]`
 //!   （`name`、`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort`，
 //!   保留别的配置、注释和顺序
-//! - dsh：`~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里加一条 `board-<供应商>` 路由（标了强度的模型按
-//!   DSH 的「档位: 线上写法」对象写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`
+//! - dsh：board host 用它的 acp profile 启动它，写 `~/.dsh/profiles/acp/cordis.patch.yml`：`llm-pi-ai` 里加一条
+//!   `board-<供应商>` 路由（标了强度的模型按 DSH 的「档位: 线上写法」对象写上 `reasoningEfforts`），`agent-default-model`
+//!   和 `acp`（ACP 会话用的提供方和模型）指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`。强度没有地方写进
+//!   acp 的配置：派发时 `board acp` 按 `agent-default-model` 里的强度用 `reasoning_effort` 会话选项切过去
 //! - 配置文件里新加的 agent、WSL 里的 agent：不支持，状态写「不支持」
 //!
 //! 写之前检查：强度不在这个模型标的档位里（或这个 agent 写不了）就不写强度，结果里记下没写的那一档（`dropped`）；
@@ -77,7 +79,7 @@ pub fn files_of(agent: &str, env: &Env) -> Option<Files> {
     Some(match agent {
         "claude" => Files::Claude { settings: envs::expand("~/.claude/settings.json") },
         "codex" => Files::Codex { config: envs::expand("$CODEX_HOME/config.toml") },
-        _ => Files::Dsh { patch: envs::expand("~/.dsh/profiles/headless/cordis.patch.yml"), env: envs::expand("~/.dsh/.env") },
+        _ => Files::Dsh { patch: envs::expand("~/.dsh/profiles/acp/cordis.patch.yml"), env: envs::expand("~/.dsh/.env") },
     })
 }
 
@@ -311,8 +313,8 @@ fn dsh_strip_routes(lines: &mut Vec<String>) {
 }
 
 /// `agent-default-model` 的 `config` 下面把 `key` 设成 `val`（None = 删掉）；没有 config 时先补一个
-fn dsh_set_default(lines: &mut Vec<String>, key: &str, val: Option<String>) {
-    let Some((s, e)) = yaml_entry(lines, "agent-default-model") else { return };
+fn dsh_set(lines: &mut Vec<String>, item: &str, key: &str, val: Option<String>) {
+    let Some((s, e)) = yaml_entry(lines, item) else { return };
     let ci = match yaml_child(lines, s, e, "config", indent_of(&lines[s]) + 2) {
         Some((i, _)) => i,
         None => {
@@ -323,7 +325,7 @@ fn dsh_set_default(lines: &mut Vec<String>, key: &str, val: Option<String>) {
             e
         }
     };
-    let Some((_, e2)) = yaml_entry(lines, "agent-default-model") else { return };
+    let Some((_, e2)) = yaml_entry(lines, item) else { return };
     let cind = indent_of(&lines[ci]) + 2;
     match (yaml_child(lines, ci, e2, key, cind), val) {
         (Some((i, j)), Some(v)) => {
@@ -435,7 +437,8 @@ fn apply_codex(config: &Path, p: &Provider, endpoint: &providers::ProviderEndpoi
 fn apply_dsh(patch: &Path, env_file: &Path, p: &Provider, endpoint: &providers::ProviderEndpoint, model: &str, effort: &str, key: &str) -> Result<bool, String> {
     let text = read(patch);
     let env_text = read(env_file);
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    // dsh 新建 profile 时补丁文件里只有一个空数组 `[]`：要往里加条目，先去掉它
+    let mut lines: Vec<String> = text.lines().filter(|l| l.trim() != "[]").map(str::to_string).collect();
     let env_key = format!("BOARD_PROVIDER_{}_API_KEY", p.name.to_uppercase().replace(['-', '.'], "_"));
 
     dsh_strip_routes(&mut lines);
@@ -500,9 +503,17 @@ fn apply_dsh(patch: &Path, env_file: &Path, p: &Provider, endpoint: &providers::
         lines.push("  config:".into());
         lines.push("    provider:".into());
     }
-    dsh_set_default(&mut lines, "reasoningEffort", (!effort.is_empty()).then(|| effort.to_string()));
-    dsh_set_default(&mut lines, "model", Some(yaml_str(model)));
-    dsh_set_default(&mut lines, "provider", Some(route));
+    dsh_set(&mut lines, "agent-default-model", "reasoningEffort", (!effort.is_empty()).then(|| effort.to_string()));
+    dsh_set(&mut lines, "agent-default-model", "model", Some(yaml_str(model)));
+    dsh_set(&mut lines, "agent-default-model", "provider", Some(route.clone()));
+    // acp profile 每个会话用 `acp` 这一项配置的提供方和模型（不看 agent-default-model）
+    if yaml_entry(&lines, "acp").is_none() {
+        lines.push("- id: acp # board".into());
+        lines.push("  config:".into());
+        lines.push("    provider:".into());
+    }
+    dsh_set(&mut lines, "acp", "model", Some(yaml_str(model)));
+    dsh_set(&mut lines, "acp", "provider", Some(route));
 
     // .env 里 BOARD_PROVIDER_ 开头的都是 Board 写的：换供应商时别的清掉，只留这一个
     let mut env_out = env_text.clone();
@@ -648,6 +659,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (patch, env) = (d.path().join("cordis.patch.yml"), d.path().join(".env"));
         std::fs::write(&env, "OTHER=1\nBOARD_PROVIDER_OLD_API_KEY=sk-old\n").unwrap();
+        // dsh 新建的 acp profile：补丁文件里只有注释和一个空数组
+        std::fs::write(&patch, "# Your patch layer for this dsh profile\n[]\n").unwrap();
         let files = Files::Dsh { patch: patch.clone(), env: env.clone() };
         let mut p = provider("new-api");
         p.efforts.insert("model-b".into(), vec!["off".into(), "low".into(), "high".into(), "max".into()]);
@@ -663,6 +676,8 @@ mod tests {
         );
         assert!(!text.contains("- id: \"model-a\"\n            reasoningEfforts"), "没标的不写：{text}");
         assert!(text.contains("reasoningEffort: max") && text.contains("model: \"model-b\""), "{text}");
+        assert!(!text.lines().any(|l| l.trim() == "[]"), "空数组去掉了，条目接在注释后面：{text}");
+        assert!(text.contains("- id: acp # board\n  config:\n    model: \"model-b\"\n    provider: board-new-api"), "ACP 会话用的提供方和模型：{text}");
         let e = std::fs::read_to_string(&env).unwrap();
         assert!(e.contains("OTHER=1") && e.contains("BOARD_PROVIDER_NEW_API_API_KEY=sk-secret-1234") && !e.contains("sk-old"), "{e}");
         assert_eq!(current(&files), Some(("model-b".into(), "max".into())));

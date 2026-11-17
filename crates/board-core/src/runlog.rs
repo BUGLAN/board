@@ -1,7 +1,6 @@
 //! agent 运行过程的结构化事件（卡片 default/main#184，PRD §9.1「执行」）。
 //!
-//! `board host` 用各个 agent 的结构化输出（Claude Code 的 `stream-json`、Codex 的 `exec --json`、
-//! dsh 的 `--json`）启动它，逐行解析成统一的事件，每 2 秒上传一次；服务端按派发保存，界面「会话」的「过程」按它画：
+//! `board host` 用 ACP 启动 agent（`board acp`），把日志里一行一帧的 ACP 消息解析成统一的事件，每 2 秒上传一次；服务端按派发保存，界面「会话」的「过程」按它画：
 //!
 //! | kind | 是什么 | 用到的字段 |
 //! |---|---|---|

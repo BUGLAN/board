@@ -29,12 +29,11 @@
 //!   `board` 照样能从 `BOARD_CONFIG` 拿到令牌。还有 `BOARD_EXE`（board 自己的路径）：skill 的 `scripts/board`
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 服务端说这台机器正在自动接单时（机器信息里的 `round`：开了自动接单、在接单时段里；旧版服务端是「正在领一轮」），有空位就向服务端要下一张（定时领取）。
-//! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600），每 5 秒上传新增的行（最多最后 500 行）。
-//!   内置模板都用 agent 的结构化输出（Claude Code `--output-format stream-json --verbose`、
-//!   Codex `exec --json`、dsh `--json`），本机日志文件里存原样的事件，上传的「原始输出」用转写后的一行一行（见 logfmt.rs）。
-//! - 同一份输出逐行解析成结构化事件（agent 说的话、工具调用、出错、结束时的用量，见 events.rs），每 2 秒上传一次新增的，
-//!   界面「会话」的「过程」按它画；会话换到下一张卡后，事件记到当时在做的那张卡上。配置文件覆盖了命令、又没带事件流
-//!   参数的，或者配置文件里新加的 agent，只报格式为空（界面只能看原始输出）。上传、写评论之前脱敏（令牌和常见格式的密钥换成
+//! - agent 用 ACP 启动：board host 启动 `board acp`（acp.rs），它在启动环境里执行 agent 的 ACP 入口（`AgentDef::acp`），
+//!   握手、发提示词、自动允许权限请求。`board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600）：
+//!   一行一帧 ACP 消息。每 5 秒上传新增的行（最多最后 500 行），「原始输出」用转写后的一行一行（见 logfmt.rs）。
+//! - 同一份日志逐行解析成结构化事件（agent 说的话、工具调用、出错、结束时的用量，见 events.rs），每 2 秒上传一次新增的，
+//!   界面「会话」的「过程」按它画；会话换到下一张卡后，事件记到当时在做的那张卡上。上传、写评论之前脱敏（令牌和常见格式的密钥换成
 //!   `<已隐藏>`，见 redact.rs），本机日志保留原文。单个日志超过 50 MB 只留开头 1 MB 和最后 10 MB；
 //!   结束超过 30 天（`[host] log_days`）的日志在启动时和之后每天删一次。
 //! - agent 退出后上报退出码、最后 10 个事件的文字和原始输出最后 20 行，服务端据此记下结果（已交审 / 做不下去 / 异常退出 /
@@ -83,10 +82,9 @@ use std::time::{Duration, Instant};
 // 配置文件里同标识的 `[agents.<标识>]` 覆盖它；顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
 use board_core::agentdef::{AgentDef as Builtin, AGENT_DEFS as BUILTIN};
 
-/// dsh 一次性派发时写给它的 profile 补丁：headless profile 默认仍挂着 goal 工具和
-/// goal-round-driver，任务完成后会自动续轮，进程退出时把被终止的续轮当成最后一轮
-/// （aborted/disposed），退出码变成 1。派发是一次性任务，关掉 goal 工具和续轮。
-const DSH_HEADLESS_PATCH: &str = include_str!("dsh-headless.patch.yml");
+/// dsh 派发时写给它的 profile 补丁（`--profile acp --patch`）：acp profile 也挂着 goal 工具和
+/// goal-round-driver，这一轮做完后会自动续轮，prompt 迟迟不结束。派发是一次性任务，关掉 goal 工具和续轮。
+const DSH_PATCH: &str = include_str!("dsh-acp.patch.yml");
 
 /// agent 用的 skill
 const SKILL: &str = "board-skills";
@@ -204,7 +202,16 @@ struct Spec {
     /// 配置文件 `[agents.<标识>] model`：内置 agent 读不到它自己配置文件里的模型时、配置文件里新加的 agent 上报它
     /// （派发名字 `<机器名>/<模型名>-<强度>` 的第二段）
     model: String,
-    cmd: Vec<String>,
+    /// agent 自己的命令：在每个启动环境里找它、取版本号（内置的是 `AgentDef::bin`，配置文件里新加的是 ACP 入口的第一个）
+    bin: String,
+    /// ACP 入口：`board acp` 在启动环境里执行的命令（`{bin}`、`{patch}` 见 `AgentDef::acp`）
+    acp: Vec<String>,
+    /// 告诉适配器用哪个 agent 的环境变量、另外的环境变量、会话开始后切到的模式（见 `AgentDef`）
+    acp_bin_env: String,
+    acp_env: Vec<(String, String)>,
+    acp_mode: String,
+    /// 配置文件里写的是旧格式（命令里带 `{prompt}`，以前一次性命令的写法）：不能用，派发时报错说明
+    legacy: bool,
     /// 读用户级 skill 的目录（内置模板才有）
     skills: Vec<String>,
     /// 在仓库目录里读 skill 的相对目录（内置模板才有）
@@ -213,8 +220,6 @@ struct Spec {
     checks: Vec<Check>,
     /// 找到了命令、却看不到 `board-skills` 的启动环境 → 该装到哪里（启动时由 [`Spec::check_skills`] 检查一次）
     no_skill: BTreeMap<String, String>,
-    /// 内置模板的结构化输出参数要求的最低版本和参数（见 `AgentDef::json_since`）；配置文件覆盖了命令时没有
-    json_gate: Option<(String, Vec<String>)>,
     /// 这个内置 agent 的模板；配置文件里新加的为空
     builtin: Option<&'static Builtin>,
     /// 能不能由 board host 代装、代升（配置文件覆盖了内置命令时为 false）
@@ -281,11 +286,6 @@ fn fetch_npm_latest(package: &str, tag: &str) -> std::result::Result<String, Str
     npm_latest(&body)
 }
 
-/// 启动 agent 的参数（命令模板里第一个之后的）：`{prompt}`、`{patch}` 换成提示词和补丁路径。
-/// 模型、强度不再按次传：同步配置写进 agent 自己的配置文件
-fn agent_args(cmd: &[String], prompt: &str, patch: &str) -> Vec<String> {
-    cmd.iter().skip(1).map(|a| a.replace("{prompt}", prompt).replace("{patch}", patch)).collect()
-}
 
 /// 命令的实际路径（解析软链接），统一成 `/` 分隔；保留大小写，执行命令时用
 fn resolved_path(prog: Option<&str>) -> String {
@@ -585,12 +585,32 @@ impl Spec {
         self.checks.iter().find(|c| c.found)
     }
 
-    /// 在这个启动环境里用的命令模板：内置模板的结构化输出参数要求更新的版本、本机的又更旧时去掉它们
-    fn cmd_for(&self, check: &Check) -> Vec<String> {
-        match &self.json_gate {
-            Some((since, flags)) if older_than(&check.version, since) => self.cmd.iter().filter(|a| !flags.contains(a)).cloned().collect(),
-            _ => self.cmd.clone(),
+    /// 在这个启动环境里的 ACP 入口：（程序、参数）。`{bin}` 换成找到的 agent 命令，`{patch}` 换成补丁路径
+    fn entry(&self, check: &Check, patch: &str) -> std::result::Result<(String, Vec<String>), String> {
+        if self.legacy {
+            return Err(format!(
+                "配置文件里 [agents.{}] cmd 是旧写法（带 {{prompt}}）：board host 现在用 ACP 启动 agent，cmd 要写成 ACP 入口命令（不带 {{prompt}}），见 docs/agents.md",
+                self.id
+            ));
         }
+        let bin = check.prog.clone().unwrap_or_else(|| self.bin.clone());
+        let mut it = self.acp.iter().map(|a| a.replace("{bin}", &bin).replace("{patch}", patch));
+        let prog = it.next().filter(|p| !p.trim().is_empty()).ok_or_else(|| format!("{} 没有 ACP 入口命令", self.name))?;
+        Ok((prog, it.collect()))
+    }
+
+    /// 传给 ACP 入口的环境变量：适配器用哪个 agent（找到的路径），加上内置描述里另外的。
+    /// Windows 上找到的是 `.cmd`、`.ps1` 这类脚本时不传路径：适配器直接执行不了它，退回用自己带的 agent
+    fn acp_vars(&self, check: &Check) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self.acp_env.clone();
+        if !self.acp_bin_env.is_empty() {
+            let path = check.path.clone().or_else(|| check.prog.clone()).unwrap_or_default();
+            let script = [".cmd", ".bat", ".ps1"].iter().any(|x| path.to_ascii_lowercase().ends_with(x));
+            if !path.is_empty() && !script {
+                out.push((self.acp_bin_env.clone(), path));
+            }
+        }
+        out
     }
 
     /// 上报的样子。`now` 是这个 agent 配置文件里现在的模型和强度（内置 agent 读得到时，见 [`providersync::current`]）；
@@ -653,19 +673,31 @@ struct Template {
     name: String,
     /// 配置文件里写的模型名（派发名字的第二段，读不到 agent 配置文件里的模型时用）
     model: String,
-    cmd: Vec<String>,
+    bin: String,
+    acp: Vec<String>,
+    acp_bin_env: String,
+    acp_env: Vec<(String, String)>,
+    acp_mode: String,
+    legacy: bool,
     /// 命令不在 PATH 里时再看的位置（只在直接启动、登录 shell 里用）
     also: Vec<String>,
     skills: Vec<String>,
     project: Vec<String>,
     /// 支持的启动环境，按默认选择的顺序
     order: Vec<String>,
-    json_gate: Option<(String, Vec<String>)>,
     builtin: Option<&'static Builtin>,
     managed: bool,
 }
 
+/// 配置文件里的命令是以前一次性命令的写法（带 `{prompt}`）
+fn legacy_cmd(cmd: &[String]) -> bool {
+    cmd.iter().any(|a| a.contains("{prompt}"))
+}
+
 /// 内置模板、配置文件里的模板，后面的覆盖前面同标识的；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
+/// 配置文件里的 `cmd` 是 ACP 入口命令。同标识覆盖内置模板时：第一个是 `npx` 或用了 `{bin}`（换适配器的版本、参数）时
+/// 照旧找内置的 agent 命令、交给适配器；否则第一个就是要找的命令（自己装的 ACP 入口），Board 不再代装、代升它。
+/// 以前的写法（带 `{prompt}` 的一次性命令）覆盖内置模板时不用，照内置的跑；新加的 agent 是这种写法时派发报错说明。
 /// 每个 agent 在它支持、本机有的启动环境里各检查一次
 fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -678,35 +710,39 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             builtin: Some(b),
             managed: true,
             model: String::new(),
-            cmd: strs(b.cmd),
+            bin: b.bin.to_string(),
+            acp: strs(b.acp),
+            acp_bin_env: b.acp_bin_env.to_string(),
+            acp_env: b.acp_env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            acp_mode: b.acp_mode.to_string(),
+            legacy: false,
             also: strs(b.also),
             skills: strs(b.skills),
             project: strs(b.project),
             order: order(b.win),
-            json_gate: (!b.json_since.is_empty()).then(|| (b.json_since.to_string(), strs(b.json_flags))),
         })
         .collect();
     for a in conf {
         check_agent_id(&a.id).map_err(BoardError::usage)?;
         match out.iter_mut().find(|x| x.id == a.id) {
             Some(x) => {
-                // 换了命令：内置的备用位置不再适用
-                if x.cmd.first() != a.cmd.first() {
-                    x.also.clear();
+                // 只有以前一次性命令的写法：不用它，照内置的 ACP 入口跑
+                if !legacy_cmd(&a.cmd) {
+                    x.acp = a.cmd.clone();
+                    let first = a.cmd.first().cloned().unwrap_or_default();
+                    if first != "npx" && !a.cmd.iter().any(|c| c.contains("{bin}")) {
+                        x.bin = first;
+                        x.acp_bin_env.clear();
+                        x.also.clear();
+                        x.managed = false;
+                    }
                 }
-                // 命令是配置文件写的：照原样用，不再按版本增删参数
-                if x.cmd != a.cmd {
-                    x.json_gate = None;
-                }
-                x.cmd = a.cmd.clone();
                 if let Some(n) = &a.name {
                     x.name = n.clone();
                 }
                 if let Some(m) = &a.model {
                     x.model = m.clone();
                 }
-                // 人改了内置 agent 的启动命令：Board 不再按内置安装方式代装、代升
-                x.managed = false;
             }
             None => out.push(Template {
                 id: a.id.clone(),
@@ -714,12 +750,16 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 builtin: None,
                 managed: false,
                 model: a.model.clone().unwrap_or_default(),
-                cmd: a.cmd.clone(),
+                bin: a.cmd.first().cloned().unwrap_or_default(),
+                acp: a.cmd.clone(),
+                acp_bin_env: String::new(),
+                acp_env: vec![],
+                acp_mode: String::new(),
+                legacy: legacy_cmd(&a.cmd),
                 also: vec![],
                 skills: vec![],
                 project: vec![],
                 order: order(envs::CONF_WIN_ORDER),
-                json_gate: None,
             }),
         }
     }
@@ -731,7 +771,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 let checks: Vec<_> = envs::supported(&t.order, envs)
                     .into_iter()
                     .map(|e| {
-                        let (cmd, also) = (t.cmd.first().cloned().unwrap_or_default(), t.also.clone());
+                        let (cmd, also) = (t.bin.clone(), t.also.clone());
                         s.spawn(move || envs::probe(e, &cmd, &also))
                     })
                     .collect();
@@ -743,12 +783,16 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 id: t.id,
                 name: t.name,
                 model: t.model,
-                cmd: t.cmd,
+                bin: t.bin,
+                acp: t.acp,
+                acp_bin_env: t.acp_bin_env,
+                acp_env: t.acp_env,
+                acp_mode: t.acp_mode,
+                legacy: t.legacy,
                 skills: t.skills,
                 project: t.project,
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
                 no_skill: BTreeMap::new(),
-                json_gate: t.json_gate,
                 builtin: t.builtin,
                 managed: t.managed,
                 latest: String::new(),
@@ -974,7 +1018,7 @@ fn write_dsh_patch(path: &Path) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(path, DSH_HEADLESS_PATCH)
+    std::fs::write(path, DSH_PATCH)
 }
 
 /// 写一个只给这次派发用的配置文件：服务端地址和令牌，只有自己能读（0600）。
@@ -1141,6 +1185,8 @@ impl Run {
 
     fn cleanup(&self) {
         let _ = std::fs::remove_file(&self.conf);
+        // 提示词文件（`<派发 ID>.prompt`，和配置文件放在一起）
+        let _ = std::fs::remove_file(self.conf.with_extension("prompt"));
         let _ = std::fs::remove_file(&self.procfile);
         if let Some(p) = &self.pidfile {
             let _ = std::fs::remove_file(p);
@@ -2374,7 +2420,7 @@ impl Host<'_> {
                 Ok(AgentPlan { env, program: "brew".into(), args: vec!["upgrade".into(), formula], bin_dir: None, shadow_dir: None })
             }
             "script" => {
-                let prog = check.and_then(|c| c.prog.clone()).unwrap_or_else(|| spec.cmd.first().cloned().unwrap_or_default());
+                let prog = check.and_then(|c| c.prog.clone()).unwrap_or_else(|| spec.bin.clone());
                 Ok(AgentPlan { env, program: prog, args: vec!["update".into()], bin_dir: None, shadow_dir: None })
             }
             _ => Err(if m.reason.trim().is_empty() { "这个 agent 不能由 board host 更新".into() } else { m.reason }),
@@ -3263,24 +3309,60 @@ impl Host<'_> {
 
     /// 自检时启动一个 agent 的命令：和派发一样的启动环境、模型、思考强度，工作目录是临时目录
     fn selftest_command(&self, spec: &Spec, used: Option<&HostAgent>, tmp: &Path) -> std::result::Result<(Command, Option<Stream>), String> {
-        let cmd0 = spec.cmd.first().cloned().unwrap_or_default();
+        let cmd0 = spec.bin.clone();
         let check = used
             .and_then(|u| u.env.as_deref())
             .and_then(|e| spec.checks.iter().find(|c| c.env == e))
             .or_else(|| spec.default_check())
             .ok_or_else(|| format!("本机没找到 {} 的命令 {cmd0}", spec.name))?;
         let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
-        let prog = check.prog.clone().ok_or_else(|| format!("在{}里没找到 {} 的命令 {cmd0}", env.name, spec.name))?;
-        let patch = self.run.join("dsh-headless.patch.yml");
-        if spec.cmd.iter().any(|a| a.contains("{patch}")) {
+        check.prog.as_ref().ok_or_else(|| format!("在{}里没找到 {} 的命令 {cmd0}", env.name, spec.name))?;
+        let prompt_file = tmp.join(format!("prompt-{}.txt", spec.id));
+        std::fs::write(&prompt_file, selftest::PROMPT).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
+        let c = self.acp_command(spec, check, &env, tmp, &prompt_file)?;
+        Ok((c, Some(Stream::Acp)))
+    }
+
+    /// 启动 `board acp` 的命令（acp.rs）：在 check 的启动环境里、dir 目录里跑这个 agent 的 ACP 入口，提示词在 prompt_file。
+    /// 派发和自检都用它；标准输出、错误和 BOARD_* 环境变量由调用方接上
+    fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path) -> std::result::Result<Command, String> {
+        if let Some(since) = spec.builtin.map(|b| b.acp_since).filter(|s| !s.is_empty()) {
+            if older_than(&check.version, since) {
+                return Err(format!("{} 的版本太旧（{}）：它的 ACP 从 {since} 起才有，先升级", spec.name, check.version.trim()));
+            }
+        }
+        // dsh 的 acp profile 也挂着 goal：带一份关掉自动续轮的补丁，见 DSH_PATCH
+        let patch = self.run.join("dsh-acp.patch.yml");
+        if spec.acp.iter().any(|a| a.contains("{patch}")) {
             write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
         }
-        let cmd = spec.cmd_for(check);
-        let args = agent_args(&cmd, selftest::PROMPT, &patch.display().to_string());
-        let stream = logfmt::stream_for(&spec.id, &cmd);
-        let mut c = env.command(&prog, &args, Some(tmp), true);
+        let (prog, args) = spec.entry(check, &patch.display().to_string())?;
+        let mut c = Command::new(&self.exe);
+        c.arg("acp").arg("--env").arg(&env.id).arg("--env-prog").arg(&env.prog).arg("--cwd").arg(dir).arg("--prompt-file").arg(prompt_file);
+        if !spec.acp_mode.is_empty() {
+            c.arg("--mode").arg(&spec.acp_mode);
+        }
+        // agent 配置文件里现在的思考强度：会话配置里有 reasoning_effort 这一项时切过去（dsh 的 ACP 只能这样定强度）
+        if let Some((_, effort)) = self.agent_now.get(&spec.id).filter(|(_, e)| !e.trim().is_empty()) {
+            c.arg("--set").arg(format!("reasoning_effort={}", effort.trim()));
+        }
+        c.arg("--").arg(&prog).args(&args).current_dir(dir);
+        let vars = spec.acp_vars(check);
+        for (k, v) in &vars {
+            c.env(k, v);
+        }
+        // 适配器用 npx 跑：npm 缓存放在 board host 自己的目录里，不受用户 ~/.npm 权限出错的影响（WSL 里用它自己的）
+        if prog == "npx" && env.wsl().is_none() {
+            c.env("npm_config_cache", self.host_dir().join("npm-cache"));
+        }
+        // WSL：环境变量经 WSLENV 传进去（BOARD_CONFIG、BOARD_PIDFILE 换成 WSL 路径，不传 BOARD_EXE；适配器要的原样传）
+        if env.wsl().is_some() {
+            let extra: Vec<String> = vars.iter().map(|(k, _)| format!("{k}/u")).collect();
+            c.env("WSLENV", envs::wslenv(std::env::var("WSLENV").ok().as_deref(), &extra));
+        }
+        // 在 Claude Code 的会话里运行 board host 时，别让 agent 以为自己是嵌套会话
         c.env_remove("CLAUDECODE");
-        Ok((c, stream))
+        Ok(c)
     }
 
     fn poll_clones(&mut self) {
@@ -4053,7 +4135,7 @@ impl Host<'_> {
     /// 在派发记录写的启动环境里启动 agent。旧版服务端不写启动环境、或写的环境本机已经没有：按本机的默认（第一个找到的）
     fn spawn(&self, d: &Dispatch, code: Option<&crate::code::Ready>) -> std::result::Result<Run, String> {
         let spec = self.agents.iter().find(|a| a.id == d.agent).ok_or_else(|| format!("本机没有 agent「{}」", d.agent))?;
-        let cmd0 = spec.cmd.first().cloned().unwrap_or_default();
+        let cmd0 = spec.bin.clone();
         let check = d
             .env
             .as_deref()
@@ -4072,21 +4154,17 @@ impl Host<'_> {
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
         let prompt = dispatch_prompt(d, project, board, &name, &self.name, code.map(|c| c.branch.as_str()));
-        // dsh 的一次性派发要带一份禁用 goal 的 profile 补丁，见 DSH_HEADLESS_PATCH
-        let patch = self.run.join("dsh-headless.patch.yml");
-        let uses_patch = spec.cmd.iter().any(|a| a.contains("{patch}"));
-        if uses_patch {
-            write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
-        }
+        // 提示词放进文件交给 board acp（作为 session/prompt 发出去），不放进命令行
+        let prompt_file = self.run.join(format!("{}.prompt", d.id));
+        let _ = std::fs::create_dir_all(&self.run);
+        std::fs::write(&prompt_file, &prompt).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
+        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file).inspect_err(|_| {
+            let _ = std::fs::remove_file(&prompt_file);
+        })?;
         let log = self.logs.join(format!("{}.log", d.id));
         let (out, err) = create_log(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;
         let conf = self.run.join(format!("{}.toml", d.id));
         write_run_config(&conf, self.rm().url(), self.rm().token(), &self.agent_env(d, &name, &conf)).map_err(|e| e.message)?;
-        let patch_arg = patch.display().to_string();
-        // 机器设置里选了模型、思考强度（服务端写进了派发记录）就按模板传给 agent
-        let cmd = spec.cmd_for(check);
-        let args = agent_args(&cmd, &prompt, &patch_arg);
-        let mut c = env.command(&prog, &args, Some(&run_dir), true);
         c.env("BOARD_URL", self.rm().url())
             .env("BOARD_TOKEN", self.rm().token())
             .env("BOARD_AS", &name)
@@ -4098,29 +4176,28 @@ impl Host<'_> {
             .env("BOARD_HOST_TOKEN", self.rm().token())
             // skill 自带的 scripts/board 看到它就用 host 自己的 board：版本和 host 一致（skill 里打包的 board 可能更旧）
             .env("BOARD_EXE", &self.exe)
-            // 在 Claude Code 的会话里运行 board host 时，别让 agent 以为自己是嵌套会话
-            .env_remove("CLAUDECODE")
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
-        // WSL：环境变量经 WSLENV 传进去（BOARD_CONFIG 换成 WSL 路径，不传 BOARD_EXE），agent 的进程号写进 BOARD_PIDFILE
+        // WSL：agent 的进程号写进 BOARD_PIDFILE（环境变量经 WSLENV 传进去，见 acp_command）
         let mut pidfile = None;
         if env.wsl().is_some() {
             let pf = self.run.join(format!("{}.pid", d.id));
             let _ = std::fs::remove_file(&pf);
-            c.env("BOARD_PIDFILE", &pf).env("WSLENV", envs::wslenv(std::env::var("WSLENV").ok().as_deref()));
+            c.env("BOARD_PIDFILE", &pf);
             pidfile = Some(pf);
         }
         envs::detach(&mut c);
         let child = c.spawn().map_err(|e| {
             let _ = std::fs::remove_file(&conf);
-            format!("在{}里启动 {prog} 失败：{e}", env.name)
+            let _ = std::fs::remove_file(&prompt_file);
+            format!("在{}里启动 {prog}（board acp）失败：{e}", env.name)
         })?;
         // 记下 agent 的进程号和启动时间：这个 host 没走完退出流程时，同名重启后据此结束它
         let procfile = self.run.join(format!("{}.proc", d.id));
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
-        let fmt = logfmt::stream_for(&spec.id, &cmd);
+        let fmt = Some(Stream::Acp);
         let now = Instant::now();
         Ok(Run {
             d: d.clone(),
@@ -4364,12 +4441,16 @@ mod tests {
             id: id.into(),
             name: b.name.into(),
             model: String::new(),
-            cmd: b.cmd.iter().map(|s| s.to_string()).collect(),
+            bin: b.bin.into(),
+            acp: b.acp.iter().map(|s| s.to_string()).collect(),
+            acp_bin_env: b.acp_bin_env.into(),
+            acp_env: vec![],
+            acp_mode: b.acp_mode.into(),
+            legacy: false,
             skills: vec![],
             project: vec![],
             checks: vec![],
             no_skill: BTreeMap::new(),
-            json_gate: None,
             builtin: Some(b),
             managed: true,
             latest: String::new(),
@@ -4643,44 +4724,35 @@ mod tests {
         assert_eq!(tail_lines(&f, 2, None), vec!["two", "thr"]);
     }
 
-    /// 卡片 #211、#184：内置模板都用结构化输出启动（Claude Code 的 -p 只在结束时打印结果；Codex、dsh 的 JSON 里
-    /// 才有工具调用和用量）。上传和异常退出评论里的「日志最后 20 行」是转写后的一行一行；本机日志文件里还是原样的事件
+    /// 卡片 #211、#184：日志里是 board acp 写的 ACP 帧。上传和异常退出评论里的「日志最后 20 行」是转写后的一行一行；
+    /// 本机日志文件里还是原样的帧
     #[test]
-    fn quiet_agents_stream_progress_into_the_log() {
-        let cmd = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap().cmd.join(" ");
-        assert!(cmd("claude").contains("-p {prompt}") && cmd("claude").ends_with("--output-format stream-json --verbose"), "{}", cmd("claude"));
-        assert_eq!(cmd("codex"), "codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}");
-        assert!(cmd("dsh").starts_with("dsh --profile headless --patch {patch} --json "), "{}", cmd("dsh"));
-        // 每个内置模板都认得出事件流
-        for b in &BUILTIN {
-            let c: Vec<String> = b.cmd.iter().map(|s| s.to_string()).collect();
-            assert!(logfmt::stream_for(b.id, &c).is_some(), "{} 的内置模板要用结构化输出", b.id);
-        }
-
+    fn acp_logs_are_rendered_for_upload() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("7.log");
         let ev = |v: serde_json::Value| v.to_string() + "\n";
+        let upd = |u: serde_json::Value| ev(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s", "update": u } }));
         let mut raw = String::from("[claude-code:unrecognized_model] {\"model\":\"x\"}\n");
-        raw += &ev(json!({ "type": "system", "subtype": "init", "model": "opus", "cwd": "/repo", "claude_code_version": "2.1.311" }));
-        raw += &ev(json!({ "type": "stream_event", "event": {}, "parent_tool_use_id": null }));
-        raw += &ev(json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "git status" } }] }, "parent_tool_use_id": null }));
+        raw += &ev(json!({ "jsonrpc": "2.0", "id": 0, "result": { "protocolVersion": 1, "agentInfo": { "name": "claude-agent-acp", "title": "Claude Agent", "version": "0.107.3" } } }));
+        raw += &upd(json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }));
+        raw += &upd(json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "kind": "execute", "title": "git status", "rawInput": { "command": "git status" } }));
         // 工具结果整段在一行里（这里 1 MB）：转写后只剩一行
         let big = "x".repeat(1024 * 1024);
-        raw += &ev(json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": format!("On branch main\n{big}") }] }, "parent_tool_use_id": null }));
+        raw += &upd(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed", "rawOutput": { "output": format!("On branch main\n{big}") } }));
         std::fs::write(&f, &raw).unwrap();
         let (lines, at) = new_lines(&f, 0, false);
         assert_eq!(at, raw.len() as u64, "一行很长也整行读到");
-        let up = upload_lines(lines, Some(Stream::Claude));
+        let up = upload_lines(lines, Some(Stream::Acp));
         assert_eq!(
             up,
             vec![
                 "[claude-code:unrecognized_model] {\"model\":\"x\"}",
-                "● 开始 · Claude Code 2.1.311 · opus · /repo",
-                "▸ Bash  git status",
+                "● 开始 · Claude Agent 0.107.3",
+                "▸ shell  git status",
                 "  ↳ On branch main  （共 2 行）",
             ]
         );
-        assert_eq!(tail_lines(&f, 2, Some(Stream::Claude)), vec!["▸ Bash  git status", "  ↳ On branch main  （共 2 行）"]);
+        assert_eq!(tail_lines(&f, 2, Some(Stream::Acp)), vec!["▸ shell  git status", "  ↳ On branch main  （共 2 行）"]);
         // 不转写的 agent 原样上传，最多最后 500 行
         let many: Vec<String> = (0..800).map(|i| format!("line {i}")).collect();
         let up = upload_lines(many, None);
@@ -4693,29 +4765,25 @@ mod tests {
         assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "codex"]);
         for b in &BUILTIN {
             check_agent_id(b.id).unwrap();
-            assert_eq!(b.cmd.iter().filter(|a| a.contains("{prompt}")).count(), 1, "{} 的模板里要有一个 {{prompt}}", b.id);
             assert!(!b.win.contains(&"direct"), "内置模板在 Windows 上都经过 shell 启动");
         }
-        // dsh 的一次性派发要带禁用 goal 的 profile 补丁；其他 agent 不带
+        // dsh 用自带的 acp profile，带禁用 goal 的 profile 补丁；其他 agent 不带
         let dsh = BUILTIN.iter().find(|b| b.id == "dsh").unwrap();
         assert_eq!(dsh.package, "@deepseek-ai/dsh", "装带 dsh 可执行文件的 CLI 包，不是没有 bin 的 headless 运行库");
         assert!(dsh.also.contains(&"~/.local/bin/dsh"), "装进用户目录后即使 PATH 还没刷新也找得到");
-        assert_eq!(dsh.cmd.iter().filter(|a| a.contains("{patch}")).count(), 1, "dsh 的模板里要有一个 {{patch}}");
-        let patch_at = dsh.cmd.iter().position(|a| *a == "--patch").expect("dsh 的模板里要有 --patch");
-        let json_at = dsh.cmd.iter().position(|a| *a == "--json").expect("dsh 的模板里要有 --json");
-        assert!(patch_at < json_at, "dsh 的 --patch 是启动器参数，要放在 --json（应用参数）前面：{:?}", dsh.cmd);
-        assert!(DSH_HEADLESS_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
-        assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
-        assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
+        assert_eq!(dsh.acp, &["{bin}", "--profile", "acp", "--patch", "{patch}"]);
+        assert!(DSH_PATCH.contains("goal-round-driver"), "补丁要关掉 goal-round-driver");
+        assert!(DSH_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
+        assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.acp.iter().any(|a| a.contains("{patch}"))));
         // 派发名字的第二段（模型名）不再取内置模板的默认值：上报 agent 配置文件里现在的模型（见 providersync::current）
         // 内置 agent 全部换成找不到的命令：本机真装了 dsh、codex 也不去执行它们的 --version
         // （本机执行 codex 会被 macOS 拦下、反复弹「包含恶意软件」的提示）
-        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
+        let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}")] };
         let conf = vec![
             nope("dsh"),
             nope("claude"),
             nope("codex"),
-            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
+            AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "--acp".into()] },
         ];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "codex", "mycli"]);
@@ -4734,7 +4802,7 @@ mod tests {
         let r = specs[3].report(Some(&now));
         assert_eq!((r.model.as_str(), r.effort.as_str()), ("cn:deepseek-v4.1", "high"));
         assert!(r.opts.is_none() && r.run_mode.is_none(), "派发时能选什么不再上报");
-        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()] }];
+        let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into()] }];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
         assert_eq!(specs[0].model, "deepseek-reasoner");
     }
@@ -4743,17 +4811,40 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
-    /// 派发时不再按次传模型、强度：命令就是模板换掉 {prompt}、{patch}
+    /// ACP 入口：`{bin}` 换成找到的 agent 命令、`{patch}` 换成补丁路径；适配器拿到找到的 agent 路径
     #[test]
-    fn agent_args_only_fill_prompt_and_patch() {
-        for x in &BUILTIN {
-            let want: Vec<String> = x.cmd.iter().skip(1).map(|a| a.replace("{prompt}", "P").replace("{patch}", "/tmp/patch.yml")).collect();
-            assert_eq!(agent_args(&sv(x.cmd), "P", "/tmp/patch.yml"), want, "{}", x.id);
-        }
-        assert_eq!(
-            agent_args(&sv(BUILTIN.iter().find(|b| b.id == "claude").unwrap().cmd), "P", ""),
-            sv(&["-p", "P", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"])
-        );
+    fn acp_entry_fills_bin_and_patch() {
+        let specs = agent_specs(&[], &[]).unwrap();
+        let get = |id: &str| specs.iter().find(|s| s.id == id).unwrap();
+        let check = |prog: &str, path: &str| Check { env: "login".into(), found: true, version: "0.2.2-rc.3".into(), prog: Some(prog.into()), path: Some(path.into()) };
+        let (p, a) = get("dsh").entry(&check("/Applications/x/dsh", "/Applications/x/dsh"), "/tmp/patch.yml").unwrap();
+        assert_eq!((p.as_str(), a), ("/Applications/x/dsh", sv(&["--profile", "acp", "--patch", "/tmp/patch.yml"])));
+        let vars = get("dsh").acp_vars(&check("dsh", "/usr/local/bin/dsh"));
+        assert_eq!(vars, vec![("DSH_PERMISSION_MODE".to_string(), "danger-full-access".to_string())], "入口就是 dsh 自己：不传路径，只关沙箱和审批");
+        let claude = get("claude");
+        let (p, a) = claude.entry(&check("claude", "/Users/me/.local/bin/claude"), "").unwrap();
+        assert_eq!((p.as_str(), a.len()), ("npx", 2));
+        assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), vec![("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string())]);
+        assert!(claude.acp_vars(&check("claude", r"C:\npm\claude.cmd")).is_empty(), "Windows 的 .cmd 脚本适配器执行不了：用它自带的");
+        let codex = get("codex");
+        let vars = codex.acp_vars(&check("codex", "/opt/homebrew/bin/codex"));
+        assert!(vars.contains(&("CODEX_PATH".to_string(), "/opt/homebrew/bin/codex".to_string())) && vars.iter().any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "agent-full-access"), "{vars:?}");
+        assert_eq!((claude.acp_mode.as_str(), codex.acp_mode.as_str()), ("bypassPermissions", "agent-full-access"));
+        // 配置文件覆盖：npx 换版本时照旧找 claude；换成自己的入口时找它自己；以前的一次性写法不用
+        let conf = |cmd: &[&str]| vec![AgentConf { id: "claude".into(), cmd: sv(cmd), ..Default::default() }];
+        let specs = agent_specs(&conf(&["npx", "-y", "@agentclientprotocol/claude-agent-acp@9.9.9"]), &[]).unwrap();
+        let c = specs.iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!((c.bin.as_str(), c.acp_bin_env.as_str(), c.managed, c.acp[2].as_str()), ("claude", "CLAUDE_CODE_EXECUTABLE", true, "@agentclientprotocol/claude-agent-acp@9.9.9"));
+        let specs = agent_specs(&conf(&["/opt/my-acp", "--stdio"]), &[]).unwrap();
+        let c = specs.iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!((c.bin.as_str(), c.acp_bin_env.as_str(), c.managed), ("/opt/my-acp", "", false));
+        let specs = agent_specs(&conf(&["claude", "-p", "{prompt}"]), &[]).unwrap();
+        let c = specs.iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!((c.acp[0].as_str(), c.legacy), ("npx", false), "以前的写法覆盖内置模板时不用，照内置的跑");
+        // 配置文件里新加的 agent 是以前的写法：派发时报错说明
+        let specs = agent_specs(&[AgentConf { id: "mine".into(), cmd: sv(&["mine", "{prompt}"]), ..Default::default() }], &[]).unwrap();
+        let err = specs.iter().find(|s| s.id == "mine").unwrap().entry(&check("mine", "mine"), "").unwrap_err();
+        assert!(err.contains("旧写法") && err.contains("ACP"), "{err}");
     }
 
     #[test]
@@ -4811,11 +4902,15 @@ mod tests {
         std::fs::create_dir_all(repo.join(".agents").join("skills").join(SKILL)).unwrap();
         std::fs::write(repo.join(".agents").join("skills").join(SKILL).join("SKILL.md"), "x").unwrap();
         let spec = Spec {
-            json_gate: None,
             id: "codex".into(),
             name: "Codex".into(),
             model: String::new(),
-            cmd: vec!["codex".into()],
+            bin: "codex".into(),
+            acp: vec!["codex-acp".into()],
+            acp_bin_env: String::new(),
+            acp_env: vec![],
+            acp_mode: String::new(),
+            legacy: false,
             skills: vec!["/board-test-no-such-skills".into()],
             project: vec![".agents/skills".into()],
             checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("codex".into()), path: Some("codex".into()) }],
@@ -4851,23 +4946,15 @@ mod tests {
         assert!(to.contains("仓库的 .claude/skills/board-skills") && !to.contains(".agents/skills"), "{to}");
     }
 
-    /// dsh 的 --json 从 0.2.2 起才有：本机更旧的去掉它，按原始输出运行；配置文件覆盖了命令的照原样用
+    /// dsh 的 acp profile 从 0.2.2 起才有：本机更旧时不启动，提示升级
     #[test]
-    fn json_flag_is_dropped_for_old_dsh() {
+    fn old_dsh_has_no_acp() {
         assert!(older_than("0.2.1", "0.2.2") && older_than("dsh 0.1.9", "0.2.2") && older_than("0.2", "0.2.2"));
         assert!(!older_than("0.2.2-rc.1", "0.2.2") && !older_than("0.10.0", "0.2.2") && !older_than("1.0", "0.2.2"));
         assert!(!older_than("", "0.2.2") && !older_than("unknown", "0.2.2"), "看不出版本时当作够新");
-        let specs = agent_specs(&[], &[]).unwrap();
-        let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
-        let check = |v: &str| Check { env: "direct".into(), found: true, version: v.into(), prog: Some("dsh".into()), path: Some("dsh".into()) };
-        assert!(dsh.cmd_for(&check("0.2.2-rc.1")).contains(&"--json".to_string()));
-        let old = dsh.cmd_for(&check("0.2.0"));
-        assert!(!old.contains(&"--json".to_string()), "{old:?}");
-        assert_eq!(logfmt::stream_for("dsh", &old), None, "去掉之后按原始输出处理");
-        let conf = vec![AgentConf { id: "dsh".into(), cmd: vec!["dsh".into(), "--json".into(), "{prompt}".into()], ..Default::default() }];
-        let specs = agent_specs(&conf, &[]).unwrap();
-        let dsh = specs.iter().find(|s| s.id == "dsh").unwrap();
-        assert!(dsh.cmd_for(&check("0.1.0")).contains(&"--json".to_string()), "配置文件写的命令照原样用");
+        let dsh = BUILTIN.iter().find(|b| b.id == "dsh").unwrap();
+        assert_eq!(dsh.acp_since, "0.2.2");
+        assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| b.acp_since.is_empty()));
     }
 
     /// agent 的版本比较要认预发布：0.2.2-rc.1 < 0.2.2-rc.3 < 0.2.2
@@ -5038,25 +5125,25 @@ mod tests {
     fn events_are_read_from_the_log_and_redacted() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("9.log");
-        let ev = |v: serde_json::Value| v.to_string() + "\n";
+        let upd = |u: serde_json::Value| json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s", "update": u } }).to_string() + "\n";
         let mut raw = String::from("warning: something\n");
-        raw += &ev(json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": "令牌是 sekrit-token-123" }] }, "parent_tool_use_id": null }));
-        raw += &ev(json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "cargo test" } }] }, "parent_tool_use_id": null }));
+        raw += &upd(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "令牌是 sekrit-token-123" } }));
+        raw += &upd(json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "kind": "execute", "title": "cargo test", "rawInput": { "command": "cargo test" } }));
         std::fs::write(&log, &raw).unwrap();
-        let mut r = test_run(&log, Some(Stream::Claude));
+        let mut r = test_run(&log, Some(Stream::Acp));
         read_events(&mut r, false, &["sekrit-token-123"]);
         assert_eq!(r.ev_read, raw.len() as u64);
         assert_eq!(r.ev_queue.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["text", "message", "tool"]);
         assert_eq!(r.ev_queue[1].text.as_deref(), Some("令牌是 <已隐藏>"));
         // 结果后到：最后几个事件里合进同一条；最后一行没有换行，last 时也读
-        let more = ev(json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "test failed", "is_error": true }] }, "parent_tool_use_id": null }));
+        let more = upd(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed", "rawOutput": { "output": "test failed" } }));
         std::fs::write(&log, raw.clone() + more.trim_end()).unwrap();
         read_events(&mut r, false, &[]);
         assert_eq!(r.ev_queue.len(), 3, "不完整的一行先不读");
         read_events(&mut r, true, &[]);
         assert_eq!(r.ev_queue.len(), 4);
         let lines = recent_lines(&r);
-        assert_eq!(lines.last().unwrap(), "▸ Bash  cargo test  ✗ test failed");
+        assert_eq!(lines.last().unwrap(), "▸ shell  cargo test  ✗ test failed");
         assert_eq!(lines.len(), 3);
         // 只有原始输出的 agent：只挪位置，不出事件
         let mut r = test_run(&log, None);

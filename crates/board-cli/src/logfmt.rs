@@ -1,33 +1,26 @@
 //! 派发日志的转写（卡片 default/main#211）。
 //!
-//! Claude Code 的 `-p` 只在结束时把最终回答写到标准输出，运行中日志一直是空的，人看不出 agent 在干什么。
-//! 内置模板因此改用事件流：Claude Code `--output-format stream-json --verbose`，运行中每一步都写
-//! 一行 JSON（JSONL）。本机的日志文件 `~/.board/host/logs/<派发 ID>.log` 里存原样的事件；上传到服务端（界面「日志」）和
-//! 异常退出评论里的「日志最后 20 行」之前，用这里的函数转成一行一行能读的内容：
+//! board host 通过 `board acp`（acp.rs）用 ACP 驱动 agent，本机日志文件 `~/.board/host/logs/<派发 ID>.log` 里是一行一帧的
+//! ACP 消息（JSON-RPC）：`board acp` 发出去的请求、agent 的回应和 `session/update` 通知，还有 agent、`board acp` 写到标准错误
+//! 的提示。上传到服务端（界面「原始输出」）和异常退出评论里的「日志最后 20 行」之前，用这里的函数转成一行一行能读的内容：
 //!
 //! ```text
-//! ● 开始 · Claude Code 2.1.311 · claude-opus-5-5 · /Users/me/repo/board
+//! ● 开始 · Claude Agent 0.107.3
+//! （思考）用户要我执行 #211，先看卡片。 …
 //! 先领卡，再看代码。
-//! ▸ Bash  board show 211 --json
-//!   ↳ {"activity": [  （共 120 行）
-//! ▸ Edit  crates/board-cli/src/host.rs
+//! ▸ shell  board show 211 --json
+//!   ↳ {"id":211}
+//! ▸ edit  crates/board-cli/src/host.rs
 //!   ✗ String to replace not found in file.
-//! ■ 结束 · 成功 · 用时 16 分 57 秒 · 42 轮 · $3.12
+//! ■ 结束
 //! ```
 //!
-//! - 不是 JSON 的行（标准错误里的提示、shell 的警告，例如 `[claude-code:unrecognized_model] …`）原样保留；
-//!   配置文件里把命令换回文本输出的，整份日志都原样保留。
-//! - 认得出、但对人没用的事件（流式片段、状态变化、钩子）不显示。
+//! - 不是 JSON 的行（标准错误里的提示）原样保留。
+//! - 握手、命令列表、模式和配置的变化、用量这些对人没用的帧不显示。
 //! - 每一行最长 [`LINE_MAX`] 个字符，一段话最多 [`TEXT_LINES`] 行，工具结果只写第一行和总行数。
 //!
-//! 事件格式的出处：Claude Code 是 Claude Agent SDK 的 `SDKMessage`（`sdk.d.ts`：`system`/`init`、`assistant`、
-//! `user` 里的 `tool_result`、`result`、`system`/`api_retry` …）；
-//! Codex 是 `codex exec --json` 的 JSONL（文档 `docs/exec.md`：`thread.started`、`turn.completed`/`failed`、
-//! `item.started`/`completed` 里的 `agent_message`、`command_execution`、`file_change`、`mcp_tool_call` …）；
-//! dsh 是 `dsh --profile headless --json` 的运行事件（0.2.2 的 `@deepseek-ai/dsh-headless` json-stream：`session`、
-//! `status`、`thinking`、`text`、`tool_call`、`tool_result`、`final`、`error`）。
-//!
-//! 同一份输出还由 events.rs 解析成结构化事件（会话「过程」，卡片 #184）；这里的转写是「原始输出」看到的内容。
+//! 帧的格式按 ACP v1 的 schema（<https://agentclientprotocol.com/protocol/v1/prompt-turn>、`tool-calls`、`agent-plan`）。
+//! 同一份日志还由 events.rs 解析成结构化事件（会话「过程」，卡片 #184）；这里的转写是「原始输出」看到的内容。
 
 use serde_json::Value;
 
@@ -38,38 +31,19 @@ const TEXT_LINES: usize = 40;
 /// 工具参数、结果摘要最长多少个字符
 const BRIEF: usize = 160;
 
-/// 哪一种事件流
+/// 日志的格式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stream {
-    /// Claude Code `--output-format stream-json --verbose`
-    Claude,
-    /// Codex `exec --json`
-    Codex,
-    /// dsh `--profile headless --json`
-    Dsh,
+    /// `board acp` 写的 ACP 帧
+    Acp,
 }
 
 impl Stream {
     /// 报给服务端的格式名（派发的 `fmt`）
     pub(crate) fn key(self) -> &'static str {
         match self {
-            Stream::Claude => "claude",
-            Stream::Codex => "codex",
-            Stream::Dsh => "dsh",
+            Stream::Acp => "acp",
         }
-    }
-}
-
-/// 这个 agent 的输出是哪种事件流：看 agent 标识，以及命令（模板展开前后都行）里有没有打开事件流的参数。
-/// 配置文件覆盖了命令、又没带这些参数的，按原始输出处理（不转写、没有结构化事件）；配置文件里新加的 agent 都没有
-pub(crate) fn stream_for(agent: &str, cmd: &[String]) -> Option<Stream> {
-    let has = |a: &str| cmd.iter().any(|x| x == a);
-    let pair = |a: &str, b: &str| cmd.windows(2).any(|w| w[0] == a && w[1] == b) || has(&format!("{a}={b}"));
-    match agent {
-        "claude" if pair("--output-format", "stream-json") => Some(Stream::Claude),
-        "codex" if has("--json") || has("--experimental-json") => Some(Stream::Codex),
-        "dsh" if has("--json") => Some(Stream::Dsh),
-        _ => None,
     }
 }
 
@@ -82,9 +56,7 @@ pub(crate) fn render(kind: Option<Stream>, raw: Vec<String>) -> Vec<String> {
         let v = if t.starts_with('{') { serde_json::from_str::<Value>(t).ok().filter(Value::is_object) } else { None };
         match v {
             Some(v) => match kind {
-                Stream::Claude => claude(&v, &mut out),
-                Stream::Codex => codex(&v, &mut out),
-                Stream::Dsh => dsh(&v, &mut out),
+                Stream::Acp => acp(&v, &mut out),
             },
             None => out.push(line),
         }
@@ -92,301 +64,209 @@ pub(crate) fn render(kind: Option<Stream>, raw: Vec<String>) -> Vec<String> {
     out.into_iter().map(|l| clip(&l, LINE_MAX)).collect()
 }
 
-/* ------------------------------ Claude Code ------------------------------ */
+/* ------------------------------ ACP ------------------------------ */
 
-fn claude(v: &Value, out: &mut Vec<String>) {
-    // 子 agent（Task 工具）里的事件：缩进一格，和主线分开
-    let sub = !v["parent_tool_use_id"].is_null();
-    let pad = if sub { "  ┆ " } else { "" };
-    let mut push = |s: String| out.push(format!("{pad}{s}"));
-    match (s(&v["type"]), s(&v["subtype"])) {
-        ("system", "init") => {
-            let ver = s(&v["claude_code_version"]);
-            let mut head = "● 开始 · Claude Code".to_string();
-            if !ver.is_empty() {
-                head += &format!(" {ver}");
-            }
-            for x in [s(&v["model"]), s(&v["cwd"])] {
-                if !x.is_empty() {
-                    head += &format!(" · {x}");
+fn acp(v: &Value, out: &mut Vec<String>) {
+    let mut push = |x: String| out.push(x);
+    if let Some(e) = error_of(v) {
+        push(format!("✗ 出错：{}", clip(&e, BRIEF)));
+        return;
+    }
+    if let Some(u) = update_of(v) {
+        match s(&u["sessionUpdate"]) {
+            "agent_message_chunk" => text(&content_text(&u["content"]), &mut push),
+            "agent_thought_chunk" => thinking(&content_text(&u["content"]), &mut push),
+            "tool_call" => {
+                let (name, arg) = tool_of(u);
+                push(if arg.is_empty() { format!("▸ {name}") } else { format!("▸ {name}  {arg}") });
+                if let Some(ok) = finished(u) {
+                    push(result_line(&tool_output(u), !ok));
                 }
             }
-            push(head);
-        }
-        ("system", "api_retry") => {
-            let mut t = format!("↻ 接口重试 第 {}/{} 次", n(&v["attempt"]), n(&v["max_retries"]));
-            let why = [s(&v["error"]).to_string(), v["error_status"].as_i64().map(|c| c.to_string()).unwrap_or_default()]
-                .into_iter()
-                .filter(|x| !x.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !why.is_empty() {
-                t += &format!("：{why}");
-            }
-            push(t);
-        }
-        ("system", "compact_boundary") => {
-            let m = &v["compact_metadata"];
-            let how = if s(&m["trigger"]) == "manual" { "手动" } else { "自动" };
-            push(format!("● 压缩上下文（{how}，压缩前 {} tokens）", n(&m["pre_tokens"])));
-        }
-        ("system", "task_started") => push(format!("▸ 子任务  {}", brief(s(&v["description"])))),
-        ("assistant", _) => {
-            if let Some(e) = v["error"].as_str() {
-                push(format!("✗ 出错：{e}"));
-            }
-            for c in arr(&v["message"]["content"]) {
-                match s(&c["type"]) {
-                    "text" => text(s(&c["text"]), &mut push),
-                    "thinking" => thinking(s(&c["thinking"]), &mut push),
-                    "tool_use" => push(tool_line(s(&c["name"]), &c["input"])),
-                    _ => {}
+            "tool_call_update" => {
+                if let Some(ok) = finished(u) {
+                    push(result_line(&tool_output(u), !ok));
                 }
             }
+            "plan" => push(format!("● {}", plan_brief(u))),
+            _ => {}
         }
-        ("user", _) => {
-            // 提示词、skill 内容这些人写的文字不显示，只显示工具结果
-            for c in arr(&v["message"]["content"]) {
-                if s(&c["type"]) == "tool_result" {
-                    push(result_line(&tool_result_text(&c["content"]), c["is_error"].as_bool() == Some(true), None));
-                }
-            }
-        }
-        ("result", sub_type) => {
-            let ok = sub_type == "success" && v["is_error"].as_bool() != Some(true);
-            let mut t = format!("■ 结束 · {}", if ok { "成功".to_string() } else { format!("出错（{sub_type}）") });
-            if let Some(ms) = v["duration_ms"].as_i64() {
-                t += &format!(" · 用时 {}", dur(ms));
-            }
-            if let Some(k) = v["num_turns"].as_i64() {
-                t += &format!(" · {k} 轮");
-            }
-            if let Some(c) = v["total_cost_usd"].as_f64() {
-                t += &format!(" · ${c:.2}");
-            }
-            push(t);
-            text(s(&v["result"]), &mut push);
-            for e in arr(&v["errors"]) {
-                if let Some(e) = e.as_str() {
-                    push(format!("✗ {}", clip(e, BRIEF)));
-                }
-            }
+        return;
+    }
+    match s(&v["method"]) {
+        "session/set_mode" => push(format!("● 切换到 {} 模式", s(&v["params"]["modeId"]))),
+        "session/set_config_option" => {
+            let (id, val) = (s(&v["params"]["configId"]), s(&v["params"]["value"]));
+            push(if id == "mode" { format!("● 切换到 {val} 模式") } else { format!("● 设置 {id}：{val}") });
         }
         _ => {}
     }
+    let r = &v["result"];
+    if let Some(info) = r.get("agentInfo").filter(|x| x.is_object()) {
+        let name = [s(&info["title"]), s(&info["name"])].into_iter().find(|x| !x.is_empty()).unwrap_or("agent");
+        let mut head = format!("● 开始 · {name}");
+        if !s(&info["version"]).is_empty() {
+            head += &format!(" {}", s(&info["version"]));
+        }
+        push(head);
+    }
+    if let Some(reason) = r["stopReason"].as_str() {
+        let words = stop_words(reason);
+        push(if words.is_empty() { "■ 结束".to_string() } else { format!("■ 结束 · {words}") });
+    }
 }
 
-/// tool_result 的 content：字符串，或 `[{type: text, text}]`。Claude Code 把工具的报错包在 `<tool_use_error>` 里，去掉这层
-pub(crate) fn tool_result_text(c: &Value) -> String {
-    let t = match c {
-        Value::String(x) => x.clone(),
-        Value::Array(xs) => xs.iter().filter(|x| s(&x["type"]) == "text").map(|x| s(&x["text"])).collect::<Vec<_>>().join("\n"),
+/// `session/update` 通知里的 update
+pub(crate) fn update_of(v: &Value) -> Option<&Value> {
+    (v["method"].as_str() == Some("session/update")).then(|| &v["params"]["update"]).filter(|u| u.is_object())
+}
+
+/// 回应里的错误（文字）
+pub(crate) fn error_of(v: &Value) -> Option<String> {
+    let e = v.get("error").filter(|e| e.is_object())?;
+    let msg = s(&e["message"]);
+    let data = e["data"].as_str().or_else(|| e["data"]["message"].as_str()).unwrap_or_default();
+    Some(match (msg.is_empty(), data.is_empty() || data == msg) {
+        (false, true) => msg.to_string(),
+        (false, false) => format!("{msg}（{data}）"),
+        (true, false) => data.to_string(),
+        (true, true) => "出错了".into(),
+    })
+}
+
+/// 结束原因的说法（`end_turn` 是正常结束，没有说法）
+pub(crate) fn stop_words(reason: &str) -> &str {
+    match reason {
+        "end_turn" => "",
+        "cancelled" => "已停止",
+        "max_tokens" => "输出长度到了上限",
+        "max_turn_requests" => "轮数到了上限",
+        "refusal" => "模型拒绝继续",
+        r => r,
+    }
+}
+
+/// 内容块里的文字（只认 text）
+pub(crate) fn content_text(c: &Value) -> String {
+    match s(&c["type"]) {
+        "text" => s(&c["text"]).to_string(),
+        "resource_link" => s(&c["uri"]).to_string(),
         _ => String::new(),
+    }
+}
+
+/// 工具调用的（名称、参数摘要）。名称按 `kind` 取一个短词（shell、read、edit …），认不出时用标题；
+/// 参数先看 `rawInput` 里最能说明在干什么的那一项（命令、文件、搜索词），没有时用标题、再没有用第一个位置
+pub(crate) fn tool_of(u: &Value) -> (String, String) {
+    let title = s(&u["title"]).trim().trim_matches('`').trim();
+    let short = match s(&u["kind"]) {
+        "execute" => "shell",
+        "read" => "read",
+        "edit" => "edit",
+        "delete" => "delete",
+        "move" => "move",
+        "search" => "search",
+        "fetch" => "fetch",
+        "think" => "think",
+        "switch_mode" => "mode",
+        _ => "",
     };
-    t.replace("<tool_use_error>", "").replace("</tool_use_error>", "")
+    let raw = &u["rawInput"];
+    let from_raw = if raw.is_object() { tool_arg(raw) } else { String::new() };
+    let from_raw = if from_raw.starts_with('{') || from_raw.starts_with('[') { String::new() } else { from_raw };
+    let place = u["locations"].as_array().and_then(|l| l.first()).map(|l| s(&l["path"]).to_string()).unwrap_or_default();
+    if short.is_empty() {
+        let name = if title.is_empty() { "工具".to_string() } else { brief(title) };
+        return (name, from_raw);
+    }
+    let arg = [from_raw, brief(title), brief(&place)].into_iter().find(|x| !x.is_empty()).unwrap_or_default();
+    (short.to_string(), arg)
 }
 
-/* ------------------------------ Codex ------------------------------ */
-
-fn codex(v: &Value, out: &mut Vec<String>) {
-    let mut push = |x: String| out.push(x);
-    let item = &v["item"];
-    match (s(&v["type"]), s(&item["type"])) {
-        ("thread.started", _) => push("● 开始 · Codex".into()),
-        ("item.started", "command_execution") => push(tool_line("shell", &json_str(&codex_command(s(&item["command"]))))),
-        ("item.started", "mcp_tool_call") => push(tool_line(&codex_mcp_name(item), &item["arguments"])),
-        ("item.completed", "command_execution") => {
-            let code = item["exit_code"].as_i64();
-            let err = s(&item["status"]) != "completed" || code.is_some_and(|c| c != 0);
-            let mut line = result_line(s(&item["aggregated_output"]), err, None);
-            if let Some(c) = code.filter(|c| *c != 0) {
-                line += &format!("（退出码 {c}）");
-            }
-            push(line);
-        }
-        ("item.completed", "mcp_tool_call") => {
-            let err = s(&item["status"]) == "failed";
-            let body = if err { codex_mcp_error(item) } else { json_text(&item["result"]) };
-            push(result_line(&body, err, None));
-        }
-        ("item.completed", "file_change") => {
-            push(tool_line("apply_patch", &json_str(&codex_changes(item))));
-            push(result_line("", s(&item["status"]) == "failed", None).replace("（没有输出）", "完成"));
-        }
-        ("item.completed", "web_search") => push(tool_line("web_search", &json_str(s(&item["query"])))),
-        ("item.completed", "todo_list") => push(tool_line("todo", &json_str(&codex_todos(item)))),
-        ("item.completed", "agent_message") => text(s(&item["text"]), &mut push),
-        ("item.completed", "reasoning") => thinking(s(&item["text"]), &mut push),
-        ("item.completed", "error") => push(format!("✗ {}", clip(s(&item["message"]), BRIEF))),
-        ("turn.completed", _) => {
-            let u = &v["usage"];
-            let mut t = "■ 结束".to_string();
-            if let (Some(i), Some(o)) = (u["input_tokens"].as_i64(), u["output_tokens"].as_i64()) {
-                t += &format!(" · 输入 {i} tokens · 输出 {o} tokens");
-            }
-            push(t);
-        }
-        ("turn.failed", _) => push(format!("✗ 出错：{}", clip(s(&v["error"]["message"]), BRIEF))),
-        ("error", _) => push(format!("✗ {}", clip(s(&v["message"]), BRIEF))),
-        _ => {}
+/// 工具做完了没有：completed → 成功，failed → 失败；还在跑时 None
+pub(crate) fn finished(u: &Value) -> Option<bool> {
+    match s(&u["status"]) {
+        "completed" => Some(true),
+        "failed" => Some(false),
+        _ => None,
     }
 }
 
-/// Codex 的命令写成 `bash -lc '<命令>'`：只留里面的命令
-pub(crate) fn codex_command(cmd: &str) -> String {
-    let c = cmd.trim();
-    for p in ["bash -lc ", "/bin/bash -lc ", "zsh -lc ", "/bin/zsh -lc ", "sh -c "] {
-        if let Some(rest) = c.strip_prefix(p) {
-            let rest = rest.trim();
-            let inner = rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')).or_else(|| rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')));
-            return inner.unwrap_or(rest).to_string();
+/// 工具的结果文字：`content` 里的文字（去掉包着的 ``` ），改了的文件写「改了 <路径>」；都没有时看 `rawOutput`
+pub(crate) fn tool_output(u: &Value) -> String {
+    let mut parts = vec![];
+    for c in arr(&u["content"]) {
+        match s(&c["type"]) {
+            "content" => {
+                let t = content_text(&c["content"]);
+                if !t.trim().is_empty() {
+                    parts.push(unfence(&t));
+                }
+            }
+            "diff" => parts.push(format!("改了 {}", s(&c["path"]))),
+            _ => {}
         }
     }
-    c.to_string()
+    if !parts.is_empty() {
+        return parts.join("\n");
+    }
+    let r = &u["rawOutput"];
+    match r {
+        Value::String(x) => x.clone(),
+        Value::Object(_) => ["formatted_output", "aggregated_output", "output", "stdout", "stderr", "result", "error", "message"]
+            .iter()
+            .find_map(|k| r[*k].as_str().filter(|x| !x.trim().is_empty()))
+            .unwrap_or_default()
+            .to_string(),
+        Value::Null => String::new(),
+        _ => r.to_string(),
+    }
 }
 
-pub(crate) fn codex_mcp_name(item: &Value) -> String {
-    let (server, tool) = (s(&item["server"]), s(&item["tool"]));
-    if server.is_empty() {
-        tool.to_string()
+/// 工具的退出码（`rawOutput` 里有时）
+pub(crate) fn tool_code(u: &Value) -> Option<i64> {
+    let r = &u["rawOutput"];
+    r["exit_code"].as_i64().or_else(|| r["exitCode"].as_i64())
+}
+
+/// 去掉整段包着的 ```（Claude Code 的命令输出这样写）
+fn unfence(t: &str) -> String {
+    let t = t.trim();
+    let Some(rest) = t.strip_prefix("```") else { return t.to_string() };
+    let body = rest.split_once('\n').map(|(_, b)| b).unwrap_or_default();
+    body.trim_end().strip_suffix("```").unwrap_or(body).trim_matches('\n').to_string()
+}
+
+/// 计划一句话：「计划 3 项 · 正在做：改代码」
+pub(crate) fn plan_brief(u: &Value) -> String {
+    let items = arr(&u["entries"]);
+    let now = items.iter().find(|e| s(&e["status"]) == "in_progress").map(|e| s(&e["content"])).unwrap_or_default();
+    let done = items.iter().filter(|e| s(&e["status"]) == "completed").count();
+    if now.is_empty() {
+        format!("计划 {} 项 · 完成 {done} 项", items.len())
     } else {
-        format!("{server}/{tool}")
+        format!("计划 {} 项 · 正在做：{}", items.len(), brief(now))
     }
 }
 
-pub(crate) fn codex_mcp_error(item: &Value) -> String {
-    match &item["error"] {
-        Value::String(x) => x.clone(),
-        e => s(&e["message"]).to_string(),
-    }
-}
-
-/// file_change 的文件：「改了 2 个文件：a.rs、b.rs」
-pub(crate) fn codex_changes(item: &Value) -> String {
-    let files: Vec<&str> = arr(&item["changes"]).iter().map(|c| s(&c["path"])).filter(|p| !p.is_empty()).collect();
-    match files.len() {
-        0 => "改了文件".into(),
-        1 => files[0].to_string(),
-        n => format!("改了 {n} 个文件：{}", files.join("、")),
-    }
-}
-
-/// todo_list：「3 项 · 完成 1 项」
-pub(crate) fn codex_todos(item: &Value) -> String {
-    let items = arr(&item["items"]);
-    let done = items.iter().filter(|t| t["completed"].as_bool() == Some(true)).count();
-    format!("{} 项 · 完成 {done} 项", items.len())
-}
-
-/// MCP 结果这类结构：取里面的文字（`content: [{type: text, text}]`），没有时写紧凑的 JSON
-pub(crate) fn json_text(v: &Value) -> String {
-    match v {
-        Value::Null => String::new(),
-        Value::String(x) => x.clone(),
-        _ => {
-            let t = tool_result_text(&v["content"]);
-            if t.is_empty() {
-                v.to_string()
-            } else {
-                t
-            }
-        }
-    }
-}
-
-/// 一个字符串参数，当成「命令」交给 tool_line 显示
-fn json_str(x: &str) -> Value {
-    serde_json::json!({ "command": x })
-}
-
-/* ------------------------------ dsh ------------------------------ */
-
-fn dsh(v: &Value, out: &mut Vec<String>) {
-    let mut push = |x: String| out.push(x);
-    match s(&v["type"]) {
-        "session" => {
-            let mut head = "● 开始 · dsh".to_string();
-            if !s(&v["cwd"]).is_empty() {
-                head += &format!(" · {}", s(&v["cwd"]));
-            }
-            push(head);
-        }
-        "thinking" => thinking(s(&v["text"]), &mut push),
-        "text" => text(s(&v["text"]), &mut push),
-        "tool_call" => push(tool_line(s(&v["tool"]), &dsh_input(&v["input"]))),
-        "tool_result" => {
-            let err = s(&v["status"]) == "error";
-            let mut body = s(&v["result"]).to_string();
-            if body.trim().is_empty() {
-                body = dsh_error(&v["error"]);
-            }
-            push(result_line(&body, err, None));
-        }
-        "status" if s(&v["phase"]) == "turn_end" => {
-            if s(&v["reason"]["kind"]) == "error" {
-                push(format!("✗ 出错：{}", clip(&dsh_error(&v["reason"]["error"]), BRIEF)));
-            }
-        }
-        "final" => {
-            let how = match s(&v["reason"]["kind"]) {
-                "" | "completed" => "成功",
-                "error" => "出错",
-                "aborted" | "cancelled" => "已中止",
-                k => k,
-            };
-            push(format!("■ 结束 · {how}"));
-            text(s(&v["text"]), &mut push);
-        }
-        "error" => push(format!("✗ {}", clip(s(&v["message"]), BRIEF))),
-        _ => {}
-    }
-}
-
-/// dsh 的工具参数：一般是对象；解析不了的原样是字符串
-pub(crate) fn dsh_input(v: &Value) -> Value {
-    match v {
-        Value::String(x) => json_str(x),
-        _ => v.clone(),
-    }
-}
-
-/// dsh 的结构化错误：`{code, message}` 或字符串
-pub(crate) fn dsh_error(e: &Value) -> String {
-    match e {
-        Value::String(x) => x.clone(),
-        Value::Null => String::new(),
-        _ => {
-            let (code, msg) = (s(&e["code"]), s(&e["message"]));
-            match (code.is_empty(), msg.is_empty()) {
-                (false, false) => format!("{code}: {msg}"),
-                (true, false) => msg.to_string(),
-                (false, true) => code.to_string(),
-                _ => e.to_string(),
-            }
-        }
-    }
+/// 计划写成 Markdown 任务列表（「过程」里一条 message）
+pub(crate) fn plan_markdown(u: &Value) -> String {
+    arr(&u["entries"])
+        .iter()
+        .map(|e| {
+            let mark = if s(&e["status"]) == "completed" { "x" } else { " " };
+            let now = if s(&e["status"]) == "in_progress" { "（正在做）" } else { "" };
+            format!("- [{mark}] {}{now}", s(&e["content"]))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /* ------------------------------ 共用 ------------------------------ */
 
-/// 一次工具调用：`▸ Bash  git status`
-fn tool_line(name: &str, input: &Value) -> String {
-    let arg = tool_arg(name, input);
-    if arg.is_empty() {
-        format!("▸ {name}")
-    } else {
-        format!("▸ {name}  {arg}")
-    }
-}
-
 /// 工具参数的摘要：命令、文件、搜索词这些最能说明在干什么的那一项；都没有时写紧凑的 JSON
-pub(crate) fn tool_arg(name: &str, input: &Value) -> String {
-    if name == "TodoWrite" {
-        let todos = arr(&input["todos"]);
-        let now = todos.iter().find(|t| s(&t["status"]) == "in_progress").map(|t| s(&t["content"])).unwrap_or_default();
-        return if now.is_empty() { format!("{} 项", todos.len()) } else { format!("{} 项 · 正在做：{}", todos.len(), brief(now)) };
-    }
-    for k in ["command", "file_path", "pattern", "path", "url", "query", "description", "skill", "prompt"] {
+pub(crate) fn tool_arg(input: &Value) -> String {
+    for k in ["command", "cmd", "file_path", "path", "pattern", "url", "query", "description", "skill", "prompt"] {
         if let Some(x) = input[k].as_str().filter(|x| !x.trim().is_empty()) {
             let mut a = brief(x);
             // 搜索带上范围
@@ -405,18 +285,11 @@ pub(crate) fn tool_arg(name: &str, input: &Value) -> String {
     }
 }
 
-/// 工具结果：`  ↳ 第一行  （共 N 行 · 3.2 秒）`；出错时 `  ✗ …`
-fn result_line(body: &str, err: bool, ms: Option<i64>) -> String {
+/// 工具结果：`  ↳ 第一行  （共 N 行）`；出错时 `  ✗ …`
+fn result_line(body: &str, err: bool) -> String {
     let lines: Vec<&str> = body.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
     let first = lines.first().map(|l| brief(l.trim())).unwrap_or_else(|| if err { "出错".into() } else { "（没有输出）".into() });
-    let mut more = vec![];
-    if lines.len() > 1 {
-        more.push(format!("共 {} 行", lines.len()));
-    }
-    if let Some(ms) = ms.filter(|ms| *ms >= 1000) {
-        more.push(format!("{:.1} 秒", ms as f64 / 1000.0));
-    }
-    let tail = if more.is_empty() { String::new() } else { format!("  （{}）", more.join(" · ")) };
+    let tail = if lines.len() > 1 { format!("  （共 {} 行）", lines.len()) } else { String::new() };
     format!("  {} {first}{tail}", if err { "✗" } else { "↳" })
 }
 
@@ -464,25 +337,8 @@ pub(crate) fn clip(x: &str, max: usize) -> String {
     }
 }
 
-/// 用时：12 秒、3 分 5 秒、1 小时 2 分
-fn dur(ms: i64) -> String {
-    let t = ms.max(0) / 1000;
-    let (h, m, sec) = (t / 3600, (t % 3600) / 60, t % 60);
-    if h > 0 {
-        format!("{h} 小时 {m} 分")
-    } else if m > 0 {
-        format!("{m} 分 {sec} 秒")
-    } else {
-        format!("{sec} 秒")
-    }
-}
-
 pub(crate) fn s(v: &Value) -> &str {
     v.as_str().unwrap_or_default()
-}
-
-pub(crate) fn n(v: &Value) -> String {
-    v.as_i64().map(|x| x.to_string()).unwrap_or_else(|| "?".into())
 }
 
 pub(crate) fn arr(v: &Value) -> &[Value] {
@@ -497,134 +353,73 @@ mod tests {
         text.lines().map(str::to_string).collect()
     }
 
-    /// Claude Code `--output-format stream-json --verbose` 的一次运行（按 SDKMessage 的格式写的样例）
-    const CLAUDE: &str = include_str!("../tests/fixtures/claude-stream.jsonl");
+    /// `board acp` 写的一次运行（按 ACP v1 的 schema 写的样例，带上了 board acp 自己发的请求）
+    const ACP: &str = include_str!("../tests/fixtures/acp-session.jsonl");
 
     #[test]
-    fn claude_stream_becomes_readable_lines() {
-        let out = render(Some(Stream::Claude), lines(CLAUDE));
+    fn acp_frames_become_readable_lines() {
+        let out = render(Some(Stream::Acp), lines(ACP));
         let want = vec![
-            "[claude-code:unrecognized_model] {\"model\":\"group/4.1f-routing-group[1m]\",\"query_source\":\"sdk\"}",
-            "● 开始 · Claude Code 2.1.311 · claude-opus-5-5 · /Users/me/repo/board",
-            "（思考）先领卡，再看代码 …",
-            "先领卡、读描述。",
-            "▸ Bash  board show 211 --json",
-            "  ↳ {  （共 3 行）",
-            "▸ Read  crates/board-cli/src/host.rs",
-            "  ↳ 1\t//! `board host`  （共 2 行）",
-            "▸ TodoWrite  2 项 · 正在做：排查日志",
-            "  ↳ Todos have been modified successfully.",
-            "▸ Edit  crates/board-cli/src/host.rs",
+            "● 开始 · Claude Agent 0.107.3",
+            "● 切换到 bypassPermissions 模式",
+            "（思考）用户要我执行 #211，先看卡片。 …",
+            "先领卡，再看代码。",
+            "▸ shell  board show 211 --json",
+            "  ↳ {\"id\":211}",
+            "▸ edit  crates/board-cli/src/host.rs",
             "  ✗ String to replace not found in file.",
-            "▸ Grep  stream-json  （crates）",
-            "  ↳ No matches found",
-            "▸ Bash  cargo test -p board-cli \\ …",
-            "  ↳ test result: ok. 3 passed  （共 2 行）",
-            "▸ 子任务  查 sysinfo 的接口",
-            "  ┆ ▸ Read  sysinfo/src/lib.rs",
-            "↻ 接口重试 第 1/10 次：rate_limit 429",
-            "● 压缩上下文（自动，压缩前 160000 tokens）",
-            "✗ 出错：max_output_tokens",
-            "■ 结束 · 成功 · 用时 16 分 57 秒 · 42 轮 · $3.12",
-            "删掉了状态块右边缘悬浮时出现的竖条。",
-            "提交：a5ea001",
-            "■ 结束 · 出错（error_max_turns） · 用时 5 秒 · 3 轮",
-            "✗ Reached maximum number of turns",
-        ];
-        assert_eq!(out, want);
-    }
-
-    /// Codex `exec --json` 的一次运行（按 docs/exec.md 的事件格式写的样例）
-    const CODEX: &str = include_str!("../tests/fixtures/codex-events.jsonl");
-    /// dsh `--profile headless --json` 的一次运行（按 0.2.2 的 json-stream 写的样例）
-    const DSH: &str = include_str!("../tests/fixtures/dsh-events.jsonl");
-
-    #[test]
-    fn codex_events_become_readable_lines() {
-        let out = render(Some(Stream::Codex), lines(CODEX));
-        let want = vec![
-            "Reading prompt from stdin...",
-            "● 开始 · Codex",
-            "（思考）**Reading the card** …",
-            "▸ shell  board show 184 --json",
-            "  ↳ {  （共 3 行）",
-            "先读卡片。",
+            "● 计划 3 项 · 正在做：改代码",
             "▸ shell  cargo test",
-            "  ✗ error[E0425]: cannot find value `x`（退出码 101）",
-            "▸ apply_patch  改了 2 个文件：crates/board-cli/src/host.rs、docs/agents.md",
-            "  ↳ 完成",
-            "▸ docs/search  exec json",
-            "  ↳ found 2 pages",
-            "▸ web_search  codex exec json events",
-            "▸ todo  2 项 · 完成 2 项",
-            "✗ command timed out",
-            "改好了，已推到 main。",
+            "  ✗ error[E0425]: cannot find value `x`  （共 2 行）",
+            "▸ edit  Write docs/agents.md",
+            "  ↳ 改了 docs/agents.md",
+            "✗ 出错：Internal error（rate limited）",
+            "改完了。",
             "提交：a5ea001",
-            "■ 结束 · 输入 24763 tokens · 输出 122 tokens",
-            "✗ 出错：stream disconnected before completion",
-            "✗ Reconnecting... 1/5",
+            "■ 结束",
+            "[claude-code:unrecognized_model] {\"model\":\"x\"}",
         ];
         assert_eq!(out, want);
     }
 
     #[test]
-    fn dsh_events_become_readable_lines() {
-        let out = render(Some(Stream::Dsh), lines(DSH));
-        let want = vec![
-            "dsh: skipping profile bundle \"dsh-ops\": Error: dsh: cannot resolve profile bundle \"dsh-ops\"",
-            "● 开始 · dsh · /Users/me/repo/board",
-            "（思考）先领卡 …",
-            "先读卡片。",
-            "▸ bash  board show 184 --json",
-            "  ↳ {\"id\":184}",
-            "▸ read_file  crates/board-cli/src/host.rs",
-            "  ✗ ENOENT: no such file",
-            "▸ bash  not json",
-            "  ↳ ok",
-            "■ 结束 · 成功",
-            "改好了。",
-            "提交：a5ea001",
-            "✗ 出错：provider_error: 429 rate limited",
-            "■ 结束 · 出错",
-            "✗ unknown option '--bogus'",
-        ];
-        assert_eq!(out, want);
+    fn stop_reasons_and_unknown_tools() {
+        let end = |r: &str| render(Some(Stream::Acp), vec![serde_json::json!({ "jsonrpc": "2.0", "id": 3, "result": { "stopReason": r } }).to_string()]);
+        assert_eq!(end("cancelled"), ["■ 结束 · 已停止"]);
+        assert_eq!(end("max_tokens"), ["■ 结束 · 输出长度到了上限"]);
+        let set = |id: &str, v: &str| render(Some(Stream::Acp), vec![serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_config_option", "params": { "sessionId": "s", "configId": id, "value": v } }).to_string()]);
+        assert_eq!(set("mode", "bypassPermissions"), ["● 切换到 bypassPermissions 模式"]);
+        assert_eq!(set("reasoning_effort", "high"), ["● 设置 reasoning_effort：high"]);
+        // 认不出 kind 的工具：名称用标题，参数看 rawInput
+        let u = serde_json::json!({ "toolCallId": "x", "title": "mcp__db__query", "kind": "other", "rawInput": { "query": "select 1" } });
+        assert_eq!(tool_of(&u), ("mcp__db__query".to_string(), "select 1".to_string()));
+        let u = serde_json::json!({ "toolCallId": "x" });
+        assert_eq!(tool_of(&u), ("工具".to_string(), String::new()));
+        assert_eq!(tool_code(&serde_json::json!({ "rawOutput": { "exitCode": 2 } })), Some(2));
+        assert_eq!(unfence("```sh\nls\na\n```"), "ls\na");
+        assert_eq!(unfence("plain"), "plain");
     }
 
     #[test]
-    fn event_streams_are_recognized_from_the_command() {
-        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(stream_for("claude", &v(&["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose"])), Some(Stream::Claude));
-        assert_eq!(stream_for("claude", &v(&["claude", "-p", "{prompt}"])), None, "配置文件换回文本输出");
-        assert_eq!(stream_for("codex", &v(&["codex", "exec", "--json", "{prompt}"])), Some(Stream::Codex));
-        assert_eq!(stream_for("dsh", &v(&["dsh", "--profile", "headless", "--json", "{prompt}"])), Some(Stream::Dsh));
-        assert_eq!(stream_for("dsh", &v(&["dsh", "--profile", "headless", "{prompt}"])), None);
-        assert_eq!(stream_for("my-agent", &v(&["x", "--json"])), None, "配置文件里新加的 agent 只有原始输出");
-    }
-
-    #[test]
-    fn other_agents_and_text_lines_stay_as_they_are() {
-        let raw = lines("dsh: reasoning:\n{\"type\":\"system\",\"subtype\":\"init\"}\nplain");
-        assert_eq!(render(None, raw.clone()), raw, "没有事件流的 agent（配置文件里的）不转写");
-        // 配置文件把 Claude Code 换回文本输出：结果是普通文字，原样保留；坏掉的 JSON、JSON 数组也原样保留
-        let txt = lines("删掉了竖条。\n{\"type\": \"assistant\", \"message\": \n[1, 2]");
-        assert_eq!(render(Some(Stream::Claude), txt.clone()), txt);
+    fn text_lines_stay_as_they_are() {
+        let raw = lines("Error: not logged in\n✗ agent 在这一轮结束之前就退出了（退出码 1）\n[1, 2]\n{broken");
+        assert_eq!(render(Some(Stream::Acp), raw.clone()), raw);
+        assert_eq!(render(None, raw.clone()), raw);
     }
 
     #[test]
     fn long_lines_and_long_text_are_clipped() {
+        let msg = |t: &str| serde_json::json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s", "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } } } }).to_string();
         let long = "字".repeat(LINE_MAX + 50);
-        let ev = serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": long }] }, "parent_tool_use_id": null });
-        let out = render(Some(Stream::Claude), vec![ev.to_string()]);
+        let out = render(Some(Stream::Acp), vec![msg(&long)]);
         assert_eq!(out[0].chars().count(), LINE_MAX);
         assert!(out[0].ends_with('…'));
         let many: String = (0..60).map(|i| format!("第 {i} 行\n")).collect();
-        let ev = serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": many }] }, "parent_tool_use_id": null });
-        let out = render(Some(Stream::Claude), vec![ev.to_string()]);
+        let out = render(Some(Stream::Acp), vec![msg(&many)]);
         assert_eq!(out.len(), TEXT_LINES + 1);
         assert_eq!(out.last().unwrap(), "…（还有 20 行）");
         // 非 JSON 的长行同样截断
-        let out = render(Some(Stream::Codex), vec!["x".repeat(LINE_MAX * 2)]);
+        let out = render(Some(Stream::Acp), vec!["x".repeat(LINE_MAX * 2)]);
         assert_eq!(out[0].chars().count(), LINE_MAX);
     }
 }

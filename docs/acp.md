@@ -4,6 +4,10 @@
 > 范围：调研 ACP 的规范、生态和 Board 现有接入方式，给出结论与后续任务；本文不改代码。
 >
 > 2026-11-17 补记：pi 已经不再是内置 agent（内置只剩 dsh、claude、codex），下文里 pi 的部分只作为当时的调研记录保留。
+>
+> 2026-11-17 已切换：人决定不走下文「部分换」的路线，board host 只用 ACP 启动 agent，旧的「命令模板 + 各家 JSONL」删掉了。
+> dsh 用它自带的 `--profile acp`（下文写它没有 ACP 是当时没查到），Claude Code、Codex 用 ACP 组织维护的适配器（`npx -y` 固定版本）。
+> 现在怎么做见 [agents.md](agents.md)「board host 怎么启动 agent」「已经接入的」；下文是当时的调研，结论和路线不再适用。
 
 ## 结论
 

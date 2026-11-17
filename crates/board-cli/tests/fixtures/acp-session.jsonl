@@ -1,0 +1,25 @@
+{"id":0,"jsonrpc":"2.0","method":"initialize","params":{"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"board","title":"Board","version":"0.1.38"},"protocolVersion":1}}
+{"id":0,"jsonrpc":"2.0","result":{"agentCapabilities":{"loadSession":true},"agentInfo":{"name":"@agentclientprotocol/claude-agent-acp","title":"Claude Agent","version":"0.107.3"},"authMethods":[],"protocolVersion":1}}
+{"id":1,"jsonrpc":"2.0","method":"session/new","params":{"cwd":"/Users/me/repo/board","mcpServers":[]}}
+{"id":1,"jsonrpc":"2.0","result":{"modes":{"availableModes":[{"id":"default","name":"Default"},{"id":"bypassPermissions","name":"Bypass Permissions"}],"currentModeId":"default"},"sessionId":"s1"}}
+{"id":2,"jsonrpc":"2.0","method":"session/set_mode","params":{"modeId":"bypassPermissions","sessionId":"s1"}}
+{"id":2,"jsonrpc":"2.0","result":{}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"availableCommands":[],"sessionUpdate":"available_commands_update"}}}
+{"id":3,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"text":"/board-skills 开始执行 default项目之中的main白板中的#211任务","type":"text"}],"sessionId":"s1"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"content":{"text":"用户要我执行 #211，先看卡片。\n再决定怎么改。","type":"text"},"sessionUpdate":"agent_thought_chunk"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"content":{"text":"先领卡，再看代码。","type":"text"},"sessionUpdate":"agent_message_chunk"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"execute","rawInput":{"command":"board show 211 --json","description":"看卡片"},"sessionUpdate":"tool_call","status":"pending","title":"`board show 211 --json`","toolCallId":"t1"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"content":[{"content":{"text":"```\n{\"id\":211}\n```","type":"text"},"type":"content"}],"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"t1"}}}
+{"id":"perm-1","jsonrpc":"2.0","method":"session/request_permission","params":{"options":[{"kind":"allow_always","name":"Always Allow","optionId":"allow_always"},{"kind":"allow_once","name":"Allow","optionId":"allow"},{"kind":"reject_once","name":"Reject","optionId":"reject"}],"sessionId":"s1","toolCall":{"title":"Edit host.rs","toolCallId":"t2"}}}
+{"id":"perm-1","jsonrpc":"2.0","result":{"outcome":{"optionId":"allow_always","outcome":"selected"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"edit","locations":[{"path":"/Users/me/repo/board/crates/board-cli/src/host.rs"}],"rawInput":{"file_path":"crates/board-cli/src/host.rs","new_string":"b","old_string":"a"},"sessionUpdate":"tool_call","status":"in_progress","title":"Edit `crates/board-cli/src/host.rs`","toolCallId":"t2"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"content":[{"content":{"text":"String to replace not found in file.","type":"text"},"type":"content"}],"sessionUpdate":"tool_call_update","status":"failed","toolCallId":"t2"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"entries":[{"content":"领卡","priority":"high","status":"completed"},{"content":"改代码","priority":"high","status":"in_progress"},{"content":"交审","priority":"medium","status":"pending"}],"sessionUpdate":"plan"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"execute","rawInput":{"command":["bash","-lc","cargo test"]},"sessionUpdate":"tool_call","status":"pending","title":"cargo test","toolCallId":"t3"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"rawOutput":{"exit_code":101,"formatted_output":"error[E0425]: cannot find value `x`\nerror: could not compile","stdout":""},"sessionUpdate":"tool_call_update","status":"failed","toolCallId":"t3"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"edit","locations":[{"path":"docs/agents.md"}],"sessionUpdate":"tool_call","status":"completed","title":"Write docs/agents.md","toolCallId":"t4","content":[{"type":"diff","path":"docs/agents.md","oldText":"a","newText":"b"}]}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"cost":{"amount":0.42,"currency":"USD"},"sessionUpdate":"usage_update","size":200000,"used":53000}}}
+{"id":9,"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error","data":"rate limited"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"content":{"text":"改完了。\n\n提交：a5ea001","type":"text"},"sessionUpdate":"agent_message_chunk"}}}
+{"id":3,"jsonrpc":"2.0","result":{"stopReason":"end_turn","usage":{"inputTokens":31000,"outputTokens":2000,"totalTokens":33000}}}
+[claude-code:unrecognized_model] {"model":"x"}

@@ -8,6 +8,7 @@
 //! 环境变量 `BOARD_URL`、`BOARD_TOKEN` 优先；没有配置时直接报错。见 backend.rs、config.rs。
 //! 任务下发：`board host` 在这台机器上常驻接派发（host.rs），`board dispatch` 把卡片派给一台机器。
 
+mod acp;
 mod backend;
 mod code;
 mod config;
@@ -93,6 +94,10 @@ const COMMANDS: [(&str, &str, &str); 29] = [
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // board host 启动 agent 用的 ACP 那一层（acp.rs）：`--` 之后是 agent 的命令，不按 board 的参数解析
+    if args.first().map(String::as_str) == Some("acp") {
+        std::process::exit(acp::main(&args[1..]));
+    }
     // 在 board host 启动的会话里（BOARD_AGENT_ENV，skill 的包装脚本设的）：有的 agent 不把它该有的 BOARD_* 传给命令，
     // 从这次派发的配置文件 [agent_env] 补上，名字、白板、连接都用得到（见 config::from_agent_env）
     if env("BOARD_AGENT_ENV").is_some() {
