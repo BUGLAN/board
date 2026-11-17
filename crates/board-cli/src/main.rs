@@ -329,6 +329,22 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
 
     // 任务下发：board host 在前台一直运行；board host rename 不需要名字（带了也只当参数）；board dispatch 不需要名字（带了就记为发起人）
     if sub == "host" {
+        // 只认 board host、board host run、board host rename <新机器名>。以前 board host ls 会直接常驻，
+        // 不小心敲错也会启动一个 host，还能和服务里的那个抢名字
+        let usage = "用法：board host [run] [--name <机器名>] [--workspace <工作空间>] [--dir <项目>=<路径>]… [--install | --uninstall]，或 board host rename <新机器名>";
+        match a.pos.get(1).map(String::as_str) {
+            None | Some("run") => {
+                if let Some(extra) = a.pos.get(2) {
+                    return Err(BoardError::usage(format!("多余的位置参数「{extra}」，{usage}")));
+                }
+            }
+            Some("rename") => {
+                if let Some(extra) = a.pos.get(3) {
+                    return Err(BoardError::usage(format!("多余的位置参数「{extra}」，{usage}")));
+                }
+            }
+            Some(s) => return Err(BoardError::usage(format!("未知子命令「{s}」，{usage}"))),
+        }
         if a.pos.get(1).map(String::as_str) == Some("rename") {
             let to = a
                 .pos
@@ -1784,6 +1800,30 @@ mod tests {
         match run(&["host".into(), "rename".into()], &p) {
             Err(e) => assert!(e.message.contains("用法"), "{}", e.message),
             Ok(_) => panic!("缺新名字时应当报用法错"),
+        }
+    }
+
+    /// `board host` 后面只认 run 和 rename：敲错子命令时不能启动 host
+    #[test]
+    fn host_rejects_unknown_subcommands() {
+        let p = Paint { on: false };
+        for arg in ["ls", "foo"] {
+            match run(&["host".into(), arg.into()], &p) {
+                Err(e) => {
+                    assert_eq!(e.code, ErrorCode::Usage, "{}", e.message);
+                    assert!(e.message.contains(&format!("未知子命令「{arg}」")), "{}", e.message);
+                    assert!(e.message.contains("用法"), "{}", e.message);
+                }
+                Ok(_) => panic!("board host {arg} 不能启动 host"),
+            }
+        }
+        // run 后面多写的位置参数也不猜意思
+        match run(&["host".into(), "run".into(), "extra".into()], &p) {
+            Err(e) => {
+                assert_eq!(e.code, ErrorCode::Usage, "{}", e.message);
+                assert!(e.message.contains("多余的位置参数「extra」"), "{}", e.message);
+            }
+            Ok(_) => panic!("board host run extra 不能启动 host"),
         }
     }
 }
