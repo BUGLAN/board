@@ -531,39 +531,25 @@ fn hold_confirms_the_claim_before_pushing() {
 fn hold_waits_for_the_server() {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     let s = start();
     s.run(ALPHA, &["new", "a"]);
     assert_eq!(s.run(ALPHA, &["claim", "1"]).code, 0);
-    // 一个先没人监听、1 秒后才开始转发到服务端的端口：模拟服务端停了一会儿又恢复
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // 先占住端口并断开连接，1 秒后才开始转发到服务端：模拟服务端停了一会儿又恢复。
+    // 不能只 bind 一下再释放端口：并行测试可能马上把这个临时端口拿去起服务端，hold 会收到它的
+    // INVALID_TOKEN 而不是 UNREACHABLE（v0.1.40 的 tag 构建在 CI 上因此偶发失败）。
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     let target = s.url.trim_start_matches("http://").to_string();
-    let env = |url: String| {
-        vec![
-            ("BOARD_URL", url),
-            ("BOARD_TOKEN", s.token.clone()),
-            ("BOARD_AS", ALPHA.to_string()),
-            ("BOARD", "default".to_string()),
-            ("BOARD_HOLD_INTERVAL", "0.2".to_string()),
-        ]
-    };
-    // 一直连不上：等满 --wait 就 UNREACHABLE，写明改推 wip 分支。
-    // Windows 上连接被拒绝要 ~2 秒才返回，--wait 1 时第一次还没回来就等满了，不会打印重试提示：多等几秒
-    let wait = if cfg!(windows) { 6 } else { 1 };
-    let begun = std::time::Instant::now();
-    let r = s.raw(&env(format!("http://127.0.0.1:{port}")), &["hold", "1", "--wait", &wait.to_string(), "--json"]);
-    assert_eq!((r.code, r.error_code().as_str()), (1, "UNREACHABLE"), "{}{}", r.out, r.err);
-    assert!(r.json()["error"]["message"].as_str().unwrap().contains("wip 分支"));
-    assert!(begun.elapsed() < std::time::Duration::from_secs(15));
-    assert!(r.err.contains("连不上服务端"), "重试时在标准错误里提示：{}", r.err);
-    // 停了一会儿又恢复：等到恢复后确认成功
-    let home = s.home.clone();
-    let e = env(format!("http://127.0.0.1:{port}"));
-    let cli = std::thread::spawn(move || common::board(&home, &e, &["hold", "1", "--wait", "20", "--json"]));
-    // 等第一次确认确实失败了再开始转发（Windows 上连接被拒绝要 ~2 秒才返回，太快接上就看不到重试提示）
-    std::thread::sleep(std::time::Duration::from_secs(if cfg!(windows) { 4 } else { 1 }));
-    let l = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let up = Arc::new(AtomicBool::new(false));
+    let upstream = up.clone();
     std::thread::spawn(move || {
-        for c in l.incoming().flatten() {
+        for c in listener.incoming().flatten() {
+            if !upstream.load(Ordering::SeqCst) {
+                drop(c);
+                continue;
+            }
             let t = target.clone();
             std::thread::spawn(move || {
                 let Ok(up) = TcpStream::connect(&t) else { return };
@@ -588,6 +574,31 @@ fn hold_waits_for_the_server() {
             });
         }
     });
+    let env = |url: String| {
+        vec![
+            ("BOARD_URL", url),
+            ("BOARD_TOKEN", s.token.clone()),
+            ("BOARD_AS", ALPHA.to_string()),
+            ("BOARD", "default".to_string()),
+            ("BOARD_HOLD_INTERVAL", "0.2".to_string()),
+        ]
+    };
+    // 一直连不上：等满 --wait 就 UNREACHABLE，写明改推 wip 分支。
+    // Windows 上连接被拒绝要 ~2 秒才返回，--wait 1 时第一次还没回来就等满了，不会打印重试提示：多等几秒
+    let wait = if cfg!(windows) { 6 } else { 1 };
+    let begun = std::time::Instant::now();
+    let r = s.raw(&env(format!("http://127.0.0.1:{port}")), &["hold", "1", "--wait", &wait.to_string(), "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "UNREACHABLE"), "{}{}", r.out, r.err);
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("wip 分支"));
+    assert!(begun.elapsed() < std::time::Duration::from_secs(15));
+    assert!(r.err.contains("连不上服务端"), "重试时在标准错误里提示：{}", r.err);
+    // 停了一会儿又恢复：等到恢复后确认成功
+    let home = s.home.clone();
+    let e = env(format!("http://127.0.0.1:{port}"));
+    let cli = std::thread::spawn(move || common::board(&home, &e, &["hold", "1", "--wait", "20", "--json"]));
+    // 等第一次确认确实失败了再开始转发（Windows 上连接被拒绝要 ~2 秒才返回，太快接上就看不到重试提示）
+    std::thread::sleep(std::time::Duration::from_secs(if cfg!(windows) { 4 } else { 1 }));
+    up.store(true, Ordering::SeqCst);
     let r = cli.join().unwrap();
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert_eq!(r.json()["ok"].as_bool(), Some(true));
