@@ -44,13 +44,15 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   content: ""; position: absolute; left: 18px; right: 18px; top: 0; height: 2px; border-radius: 0 0 var(--r-hair) var(--r-hair);
   background: linear-gradient(90deg, transparent, var(--c), transparent); opacity: .7;
 }
-/* 网格：序号、圆点、名称、规则标签、排序标记、复盘/处理、数量各占一列；只有名称可以被压窄。
-   规则标签（可领取 / 锁定 / 错误节点 / 终点）按内容定宽，不会被名称挤成一条竖线（before: min-width: 0 的 flex 子项会被压到 0，default/main#312） */
+/* 单行：名称占剩下的宽度，序号、圆点、规则标签、排序标记、复盘/处理、数量都按内容定宽。
+   以前用 6 列 grid 装最多 7 个元素，规则标签、排序和按钮同时出现时数量会被挤到下一行（default/main#462）。
+   规则标签（可领取 / 锁定 / 错误节点 / 终点）也不参与压缩，不会被名称挤成一条竖线（default/main#312） */
 .col-head {
-  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   padding: 12px 12px 8px 14px; flex: none; min-width: 0;
   cursor: grab; user-select: none; -webkit-user-select: none;
 }
+.col-head > * { flex-shrink: 0; }
 /* 顺序号与圆点挨着（两列之间不要 gap） */
 .col-head > .col-i { margin-right: -2px; }
 .col-i {
@@ -68,14 +70,12 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-tag[data-rule="final"] { color: color-mix(in oklab, var(--c-done), var(--text-3)); }
 .col { container-type: inline-size; }
 
-/* 窄的块（1200px 宽、每块 3 栏）：序号让位给名称 */
-@container (max-width: 260px) { .col-head .col-i { display: none; } }
 .col-dot { width: 8px; height: 8px; border-radius: var(--r-hair); background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 18%, transparent); }
 .col:has(.card.doing) .col-dot { border-radius: 50%; animation: breathe 2.4s var(--ease-in-out) infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 0%, transparent); } }
-.col-name { font-family: var(--f-display); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.col-name { flex: 1 1 3.2em; font-family: var(--f-display); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3.2em; }
 .col-count {
-  grid-column: -2 / -1; justify-self: end; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
+  flex: none; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
   border-radius: 999px; font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; color: var(--text-2);
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2);
   overflow: hidden;
@@ -95,9 +95,17 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-order svg { width: 12px; height: 12px; flex: none; }
 .col-order i { font-style: normal; }
 .col-order .ts { display: none; }
-/* 窄的块：名称至少留三个字，先换成简称 */
-.col-head:has(.col-order) .col-name { min-width: 3.2em; }
-@container (max-width: 260px) { .col-order svg, .col-order .t { display: none; } .col-order .ts { display: inline; } }
+/* 块变窄时按优先级收起次要信息：序号、规则标签、排序标记、复盘/处理、数量。
+   每次只让出足够下一个元素留下的宽度，状态名最后仍保留约三个字；序号让位后排序先用简称。 */
+@container (max-width: 380px) {
+  .col-head .col-i { display: none; }
+  .col-order svg, .col-order .t { display: none; }
+  .col-order .ts { display: inline; }
+}
+@container (max-width: 320px) { .col-head .col-tag { display: none; } }
+@container (max-width: 280px) { .col-head .col-order { display: none; } }
+@container (max-width: 250px) { .col-head .col-desk { display: none; } }
+@container (max-width: 180px) { .col-head .col-count { display: none; } }
 @keyframes count-roll { from { transform: translateY(var(--roll, 100%)); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes count-pop { 40% { transform: scale(1.18); } }
 @media (pointer: coarse) { .col-order { min-width: 32px; min-height: 32px; } }
@@ -880,7 +888,7 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
    框从组头画到组尾（--fh 由 BoardView 的 sessionFrames 在瀑布流排完后量），卡片照常是列表的直接子元素。
    框画在块的格子边上（不往外伸，免得和并排的卡片、组挤在一起），组里的卡片左右往里缩，和框留出间距 */
 .sess-head {
-  position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; height: 26px; padding: 0 8px;
+  position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; height: 22px; padding: 0 8px;
   font-family: var(--f-ui, inherit); font-size: 11.5px; color: var(--text-3); white-space: nowrap;
 }
 .sess-head > * { position: relative; z-index: 1; }
@@ -890,18 +898,19 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .sess-head b { font-weight: 600; color: var(--text-2); }
 .sess-head em { margin-left: auto; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: normal; font-size: 11px; }
 .sess-head::before {
-  content: ''; position: absolute; z-index: 0; left: 0; right: 0; top: 0; height: max(26px, calc(var(--fh, 26px) - 1px));
+  content: ''; position: absolute; z-index: 0; left: 0; right: 0; top: 0; height: max(22px, calc(var(--fh, 22px) - 1px));
   border-radius: calc(var(--r-md) + 4px); pointer-events: none;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-doing) 42%, var(--line));
   background: color-mix(in srgb, var(--c-doing) 4%, transparent);
 }
 .sess-head.wait svg { color: var(--text-3); }
 .sess-head.wait::before { box-shadow: inset 0 0 0 1px var(--line-2); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
-.sess-foot { height: 6px; }
+.sess-foot { height: 4px; }
 .card.in-sess { margin-inline: 6px; }
 .card.v-line.in-sess { margin-inline: 5px; }
-.view-tile .sess-head { height: 22px; padding: 0 6px; font-size: 11px; }
-.view-tile .sess-head::before { border-radius: calc(var(--r-xs) + 4px); }
+.sess-head + .card.in-sess { margin-top: -4px; }
+.view-tile .sess-head { height: 20px; padding: 0 6px; font-size: 11px; }
+.view-tile .sess-head::before { height: max(20px, calc(var(--fh, 20px) - 1px)); border-radius: calc(var(--r-xs) + 4px); }
 .card.v-tile.in-sess { margin-inline: 3px; }
 
 /* 代码仓库设在项目上：标题右边写「项目「X」的 N 块白板共用」 */
