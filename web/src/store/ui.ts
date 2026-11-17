@@ -117,6 +117,8 @@ export interface DragUI {
   over: ColumnKey | null;
   valid: boolean;
   veto: { title: string; message: string; code: string } | null;
+  /** 已经松手、幽灵正飞向落点：状态块不再冻结尺寸，和幽灵同时补间到落位后的位置（default/main#419） */
+  dropping?: boolean;
 }
 
 /** 机器页的三个视图：总览 / 对比 / 接单（sched）。共用配置、领取规则在 Agent tab；以前记住的「共用配置」回到总览 */

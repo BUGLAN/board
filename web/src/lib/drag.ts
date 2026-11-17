@@ -465,7 +465,7 @@ function finish(cancelled: boolean) {
       toastError(err);
     });
   } else if (!settle) {
-    flushSync(() => setDrag({ ...useUI.getState().drag!, col: s.fromCol, index: s.fromIndex, valid: true, veto: null, over: null }));
+    flushSync(() => setDrag({ ...useUI.getState().drag!, col: s.fromCol, index: s.fromIndex, valid: true, veto: null, over: null, dropping: true }));
     if (!cancelled && veto && target) {
       toastError({ code: veto.code, message: veto.message });
       rejectColumn(target.col);
@@ -474,11 +474,16 @@ function finish(cancelled: boolean) {
   // settle：不发请求、不落补丁——占位留在落点，幽灵落位后清掉预览（下面 onfinish 里 setDrag(null)），
   // 卡片从落点补间回排序位置，同块其他卡片同步让位后再让回去，顺序不变
 
+  // 松手当帧解冻状态块的尺寸（拖动中冻结着，见 BoardView 的 Magnet）：块按落位后的尺寸重排，和幽灵飞回同时补间。
+  // 以前等幽灵落下才解冻，落位那一帧要补测、重画一遍，块和白板高度再挪一次，拖进状态块时明显一顿（default/main#419）
+  const now = useUI.getState().drag;
+  if (now && !now.dropping) flushSync(() => setDrag({ ...now, dropping: true }));
+
   // 幽灵飞回占位处。占位是按目标块的卡片形态画的（卡片 / 单行 / 磁贴，列宽也可能不同）：
-  // 幽灵一路变成占位的尺寸、圆角、阴影，形态不同时幽灵里的内容先淡出、落位后真卡片的内容再淡入，松手到落位连成一段，不跳变
+  // 幽灵一路变成占位的尺寸、圆角、阴影；形态不同时幽灵里的内容先淡出，占位接着显出真卡片、幽灵淡出，两者交叉过渡，松手到落位连成一段，不跳变
   const ghost = s.ghost!;
   const ph = cardEl(s.id);
-  const dest = ph?.getBoundingClientRect();
+  const dest = ph ? settledRect(ph) : undefined;
   const motion = !reduceMotion();
   const w0 = ghost.offsetWidth;
   const h0 = ghost.offsetHeight;
@@ -501,7 +506,15 @@ function finish(cancelled: boolean) {
     ghost.style.setProperty('transition', `box-shadow ${duration}ms cubic-bezier(.2,.9,.3,1)`);
     requestAnimationFrame(() => ghost.style.setProperty('box-shadow', cs.boxShadow, 'important'));
     if (reshape)
-      for (const n of ghost.children) (n as HTMLElement).animate([{ opacity: 1 }, { opacity: 0 }], { duration: duration * 0.45, easing: 'ease-out', fill: 'forwards' });
+      for (const n of ghost.children) (n as HTMLElement).animate([{ opacity: 1 }, { opacity: 0 }], { duration: duration * 0.3, easing: 'ease-out', fill: 'forwards' });
+  }
+  // 形态变了、要落进目标块（例如卡片拖进「已完成」的磁贴）：幽灵里的内容淡完，占位就显出真卡片（data-landing，见 board.css），
+  // 幽灵在后半程淡出，真卡片从它下面透出来。以前幽灵内容淡完后是一块空框，要等落位、再等真卡片淡入，中间像卡住了一下
+  const landing = commit && morph && reshape ? ph : null;
+  let reveal = 0;
+  if (landing) {
+    reveal = window.setTimeout(() => landing.setAttribute('data-landing', ''), duration * 0.25);
+    ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: duration * 0.5, delay: duration * 0.25, easing: 'ease-out', fill: 'forwards' });
   }
   const anim = ghost.animate(keyframes, {
     duration,
@@ -522,18 +535,36 @@ function finish(cancelled: boolean) {
     // BoardView 渲染后 play() 把卡片和让位的卡片从落点补间回排序位置，顺序不变
     setDrag(null);
     ghost.remove();
+    // 清掉预览的那次渲染在这之后、绘制之前（微任务）：去掉标记不会让占位闪回斜纹；留着的话下次拖这张卡，占位一开始就是显出的样子
+    if (landing) {
+      clearTimeout(reveal);
+      landing.removeAttribute('data-landing');
+    }
     if (commit && !failed && motion) {
       requestAnimationFrame(() => {
         const el = cardEl(id);
         if (!el) return;
-        // 形态变了：真卡片的内容接着幽灵淡出的内容淡入；没变、也没有在移向最终位置：轻轻弹一下
-        if (reshape) for (const n of el.children) (n as HTMLElement).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
+        // 形态变了：真卡片的内容接着幽灵淡出的内容淡入（落进目标块时飞行中已经显出来了，不再淡入）；
+        // 没变、也没有在移向最终位置：轻轻弹一下
+        if (reshape && !landing) for (const n of el.children) (n as HTMLElement).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
         else if (!morph && !el.getAnimations().length) el.animate([{ transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.34,1.56,.64,1)' });
       });
     }
   };
   justDroppedAt = performance.now();
   cleanup(true);
+}
+
+/** 元素在所在状态块补间结束后的位置。松手当帧状态块刚解冻、开始从冻结时的位置补间到新位置（.tile 的 transform 过渡），
+    getBoundingClientRect 量到的还是补间的起点：加上块的位移（行内写的目标 translate − 现在的 transform）才是幽灵该落的地方 */
+export function settledRect(el: HTMLElement): DOMRect {
+  const r = el.getBoundingClientRect();
+  const tile = el.closest<HTMLElement>('[data-tile]');
+  const to = tile && /translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\s*\)/.exec(tile.style.transform);
+  if (!tile || !to) return r;
+  const m = /matrix\(([^)]*)\)/.exec(getComputedStyle(tile).transform);
+  const [x, y] = m ? m[1].split(',').slice(4).map(parseFloat) : [0, 0];
+  return new DOMRect(r.left + (parseFloat(to[1]) - (x || 0)), r.top + (parseFloat(to[2]) - (y || 0)), r.width, r.height);
 }
 
 /** 状态块里看到的顺序（BoardView 设置）：同一会话的卡挨着放（lib/sessionGroups）时，和优先级顺序不一样 */

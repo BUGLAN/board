@@ -87,4 +87,25 @@ describe('Magnet 拖动时冻结尺寸（default/main#419）', () => {
     act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
     expect(magnet.style.height).toBe('304px');
   });
+
+  it('自己重排时交给状态块的拖动、调宽入口不变：状态块（memo）不用跟着重画卡片', () => {
+    const column = tile('done');
+    const seen: unknown[] = [];
+    const render = (_: Status, h: unknown) => {
+      seen.push(h);
+      return <i />;
+    };
+
+    act(() => root.render(<Magnet path="test/main" statuses={[column]} render={render} />));
+    const done = host.querySelector<HTMLElement>('[data-tile="done"]')!;
+    const height = vi.spyOn(done, 'offsetHeight', 'get').mockReturnValue(100);
+    const watcher = FakeResizeObserver.all.find(ro => ro.observed.has(done))!;
+    act(() => watcher.fire([done]));
+    height.mockReturnValue(260);
+    act(() => watcher.fire([done]));
+
+    expect(host.querySelector<HTMLElement>('.magnet')!.style.height).toBe('264px');
+    expect(seen.length).toBeGreaterThan(2);
+    expect(new Set(seen).size).toBe(1);
+  });
 });

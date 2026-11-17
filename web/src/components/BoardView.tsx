@@ -5,7 +5,7 @@
    - 卡片位置变化用 FLIP 补间；新卡片弹入；通过 CLI 或其他窗口做的修改：卡片闪光 + 角标说明是谁做的
    - 手机：状态块上下排列，顶部有状态切换条
    ========================================================================== */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { useMasonry } from '../lib/masonry';
 import { groupRuns, sessionOrder, type SessGroup } from '../lib/sessionGroups';
 import { setShownCols } from '../lib/drag';
@@ -239,7 +239,7 @@ export function BoardView() {
           <Magnet
             path={path}
             statuses={f.list}
-            frozen={!!drag}
+            frozen={!!drag && !drag.dropping}
             render={(s, h) => {
               const i = f.list.indexOf(s);
               return (
@@ -247,7 +247,7 @@ export function BoardView() {
                   col={s}
                   index={i}
                   f={f}
-                  ids={cols?.[s.key] ?? []}
+                  ids={cols?.[s.key] ?? NO_IDS}
                   board={board}
                   labels={labels}
                   filter={filter}
@@ -427,7 +427,9 @@ function emptyText(s: Status, f: FlowQ) {
   return '把卡片拖到这里';
 }
 
-function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, role }: ColumnProps) {
+/** memo：磁吸布局自己重排（量到块高度变化、拖动 / 调宽状态块）时 props 都没变，不重画块里的卡片。
+    卡片拖动松手时块要补测尺寸再排一次，以前这一遍把所有卡片又画了一次，落位那一帧明显卡（default/main#419） */
+const Column = memo(function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, role }: ColumnProps) {
   const count = colCount(board, col.key);
   const earlier = omittedIn(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
@@ -533,7 +535,7 @@ function Column({ col, index, f, ids, board, labels, filter, detailId, drag, fla
       {resizer}
     </section>
   );
-}
+});
 
 /** 提示可能为空（不是磁贴时不加提示）：为空时原样返回元素，不套 <Tip> */
 function TipOr({ text, children }: { text?: string; children: ReactElement }) {
@@ -677,7 +679,8 @@ export function Magnet({
 }: {
   path: string;
   statuses: Status[];
-  /** 卡片拖动期间冻结块的尺寸测量：占位跨块移动会改变列高，重排又会让落点来回变（default/main#419） */
+  /** 卡片拖动期间（指针还按着）冻结块的尺寸测量：占位跨块移动会改变列高，重排又会让落点来回变（default/main#419）。
+      松手当帧就解冻（DragUI.dropping），块和飞回的幽灵同时补间到位，不等幽灵落下再整块挪一次 */
   frozen?: boolean;
   render: (s: Status, h: { onMove: (e: React.PointerEvent) => void; resizer: ReactNode }) => ReactNode;
 }) {
@@ -729,7 +732,7 @@ export function Magnet({
     for (const k of keys) if (els.current[k]) ro.observe(els.current[k]!);
     return () => ro.disconnect();
   }, [keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  // 拖动中尺寸变化被跳过，ResizeObserver 结束后不会再把它们送进来：松手后统一补测一次。
+  // 拖动中尺寸变化被跳过，ResizeObserver 之后不会再把它们送进来：解冻时（松手当帧）统一补测一次。
   // 宽高都一起补，Windows 上滚动条出现 / 消失会改宽，同样不能让它在拖动中参与排布。
   useLayoutEffect(() => {
     if (frozen) return;
@@ -749,8 +752,13 @@ export function Magnet({
     });
   }, [frozen, keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 拖动、调宽的入口交给状态块时是固定的函数（见下面的 handles），按下时从这里读最新的布局
+  const latest = useRef({ pos, tiles, heights, col, mobile, keys, path });
+  latest.current = { pos, tiles, heights, col, mobile, keys, path };
+
   /** 松手：把每块的 y 对齐到实际位置后保存，下次拖动从这里排先后 */
   const commit = (all: Record<string, Tile>) => {
+    const { keys, heights, path } = latest.current;
     const p = pack(keys, all, heights);
     const next = Object.fromEntries(keys.map(k => [k, { ...all[k], y: p[k].top }]));
     setLive(next);
@@ -761,7 +769,8 @@ export function Magnet({
       .finally(() => setLive(null));
   };
 
-  const onMove = (k: string) => (e: React.PointerEvent) => {
+  const onMove = (k: string, e: React.PointerEvent) => {
+    const { pos, tiles, heights, col, mobile, keys } = latest.current;
     if (mobile || e.button !== 0 || (e.target as HTMLElement).closest('button, input, .card')) return;
     e.preventDefault();
     const p = pos[k];
@@ -797,7 +806,8 @@ export function Magnet({
     addEventListener('pointerup', up);
   };
 
-  const onSize = (k: string) => (e: React.PointerEvent) => {
+  const onSize = (k: string, e: React.PointerEvent) => {
+    const { pos, tiles, col, keys } = latest.current;
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -825,6 +835,23 @@ export function Magnet({
     addEventListener('pointermove', mv);
     addEventListener('pointerup', up);
   };
+
+  // 每块一份、只在状态或手机 / 桌面切换时换：状态块（memo）的 props 不因磁吸布局重排而变
+  const handlers = useRef({ onMove, onSize });
+  handlers.current = { onMove, onSize };
+  const handles = useMemo(
+    () =>
+      Object.fromEntries(
+        keys.map(k => [
+          k,
+          {
+            onMove: (e: React.PointerEvent) => handlers.current.onMove(k, e),
+            resizer: mobile ? null : <span className="tile-resize" title="拖动调整宽度" onPointerDown={e => handlers.current.onSize(k, e)} />,
+          },
+        ]),
+      ),
+    [keys.join(), mobile], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   const moving = drag?.mode === 'move' ? drag : null;
   return (
@@ -859,10 +886,7 @@ export function Magnet({
                   }
             }
           >
-            {render(s, {
-              onMove: onMove(s.key),
-              resizer: mobile ? null : <span className="tile-resize" title="拖动调整宽度" onPointerDown={onSize(s.key)} />,
-            })}
+            {render(s, handles[s.key])}
           </div>
         );
       })}
@@ -891,6 +915,7 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
 }
 
 const NO_GROUPS: Record<number, SessGroup> = {};
+const NO_IDS: number[] = [];
 
 /** 一组的开头：和整块一样宽（lib/masonry 按块摆），写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */
 function SessionHead({ g, n, gk }: { g: SessGroup; n: number; gk: string }) {

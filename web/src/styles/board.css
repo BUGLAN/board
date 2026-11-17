@@ -390,15 +390,16 @@ body.tile-moving .ct-pop, body.is-dragging .ct-pop { display: none; }
   100% { opacity: 1; transform: none; filter: none; }
 }
 
-/* 拖拽：占位与幽灵 */
-.card.is-placeholder {
+/* 拖拽：占位与幽灵。data-landing：松手后幽灵快落下时占位显出真卡片，和淡出的幽灵交叉过渡（lib/drag.ts finish） */
+.card.is-placeholder { transform: none !important; }
+.card.is-placeholder:not([data-landing]) {
   background: color-mix(in srgb, var(--c) 6%, transparent) !important;
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 40%, transparent) !important;
-  transform: none !important;
 }
-.card.is-placeholder > * { visibility: hidden; }
-.card.is-placeholder::before, .card.is-placeholder::after { display: none; }
-.card.is-placeholder { background-image: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--c) 8%, transparent) 0 6px, transparent 6px 12px) !important; }
+.card.is-placeholder:not([data-landing]) > * { visibility: hidden; }
+.card.is-placeholder:not([data-landing])::before, .card.is-placeholder:not([data-landing])::after { display: none; }
+.card.is-placeholder:not([data-landing]) { background-image: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--c) 8%, transparent) 0 6px, transparent 6px 12px) !important; }
+.card.is-placeholder[data-landing] > * { animation: lb-in .16s ease-out; }
 
 .drag-ghost {
   position: fixed; left: 0; top: 0; z-index: 400; margin: 0; pointer-events: none;
