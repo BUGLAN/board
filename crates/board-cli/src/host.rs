@@ -695,6 +695,28 @@ fn legacy_cmd(cmd: &[String]) -> bool {
     cmd.iter().any(|a| a.contains("{prompt}"))
 }
 
+/// npx 跑适配器时给 npm 的设置：不查 npm 自己有没有新版本、不打 fund / audit 的提示。这些提示打在标准错误上，
+/// 会混进派发日志，挤掉异常退出评论里的「最后 N 个事件」（#459）
+const NPX_QUIET: &[(&str, &str)] = &[("npm_config_update_notifier", "false"), ("npm_config_fund", "false"), ("npm_config_audit", "false")];
+
+/// `board acp` 要带的环境变量：适配器要的（[`Spec::acp_vars`]）；入口是 npx 时加上 [`NPX_QUIET`]，npm 缓存放在
+/// board host 自己的目录里（npm_cache，不受用户 ~/.npm 权限出错的影响；WSL 里用它自己的）。
+/// WSL 里这些都经 WSLENV 传进去（BOARD_CONFIG、BOARD_PIDFILE 换成 WSL 路径，不传 BOARD_EXE；这些原样传）
+fn launch_env(mut vars: Vec<(String, String)>, prog: &str, wsl: bool, npm_cache: &Path) -> Vec<(String, std::ffi::OsString)> {
+    let npx = prog == "npx";
+    if npx {
+        vars.extend(NPX_QUIET.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    }
+    let mut out: Vec<(String, std::ffi::OsString)> = vars.iter().map(|(k, v)| (k.clone(), v.into())).collect();
+    if wsl {
+        let extra: Vec<String> = vars.iter().map(|(k, _)| format!("{k}/u")).collect();
+        out.push(("WSLENV".into(), envs::wslenv(std::env::var("WSLENV").ok().as_deref(), &extra).into()));
+    } else if npx {
+        out.push(("npm_config_cache".into(), npm_cache.into()));
+    }
+    out
+}
+
 /// 内置模板、配置文件里的模板，后面的覆盖前面同标识的；顺序：内置的在前，配置文件里新加的按文件顺序排在后面。
 /// 配置文件里的 `cmd` 是 ACP 入口命令。同标识覆盖内置模板时：第一个是 `npx` 或用了 `{bin}`（换适配器的版本、参数）时
 /// 照旧找内置的 agent 命令、交给适配器；否则第一个就是要找的命令（自己装的 ACP 入口），Board 不再代装、代升它。
@@ -3167,18 +3189,8 @@ impl Host<'_> {
             c.arg("--extra-turns").arg(extra_turns.to_string());
         }
         c.arg("--").arg(&prog).args(&args).current_dir(dir);
-        let vars = spec.acp_vars(check);
-        for (k, v) in &vars {
+        for (k, v) in launch_env(spec.acp_vars(check), &prog, env.wsl().is_some(), &self.host_dir().join("npm-cache")) {
             c.env(k, v);
-        }
-        // 适配器用 npx 跑：npm 缓存放在 board host 自己的目录里，不受用户 ~/.npm 权限出错的影响（WSL 里用它自己的）
-        if prog == "npx" && env.wsl().is_none() {
-            c.env("npm_config_cache", self.host_dir().join("npm-cache"));
-        }
-        // WSL：环境变量经 WSLENV 传进去（BOARD_CONFIG、BOARD_PIDFILE 换成 WSL 路径，不传 BOARD_EXE；适配器要的原样传）
-        if env.wsl().is_some() {
-            let extra: Vec<String> = vars.iter().map(|(k, _)| format!("{k}/u")).collect();
-            c.env("WSLENV", envs::wslenv(std::env::var("WSLENV").ok().as_deref(), &extra));
         }
         // 在 Claude Code 的会话里运行 board host 时，别让 agent 以为自己是嵌套会话
         c.env_remove("CLAUDECODE");
@@ -4637,6 +4649,27 @@ mod tests {
         let specs = agent_specs(&[AgentConf { id: "mine".into(), cmd: sv(&["mine", "{prompt}"]), ..Default::default() }], &[]).unwrap();
         let err = specs.iter().find(|s| s.id == "mine").unwrap().entry(&check("mine", "mine"), "").unwrap_err();
         assert!(err.contains("旧写法") && err.contains("ACP"), "{err}");
+    }
+
+    /// npx 跑适配器：npm 不打更新、fund、audit 的提示（#459），缓存放在 board host 的目录里；WSL 里经 WSLENV 传进去
+    #[test]
+    fn npx_entry_keeps_npm_quiet() {
+        let cache = Path::new("/h/npm-cache");
+        let get = |v: &[(String, std::ffi::OsString)], k: &str| v.iter().find(|(x, _)| x == k).map(|(_, v)| v.to_string_lossy().into_owned());
+        let path = || vec![("CODEX_PATH".to_string(), "/bin/codex".to_string())];
+        let out = launch_env(path(), "npx", false, cache);
+        for k in ["npm_config_update_notifier", "npm_config_fund", "npm_config_audit"] {
+            assert_eq!(get(&out, k).as_deref(), Some("false"), "{k}");
+        }
+        assert_eq!((get(&out, "npm_config_cache").as_deref(), get(&out, "CODEX_PATH").as_deref()), (Some("/h/npm-cache"), Some("/bin/codex")));
+        assert!(get(&out, "WSLENV").is_none());
+        let out = launch_env(path(), "npx", true, cache);
+        let w = get(&out, "WSLENV").unwrap();
+        assert!(w.contains("npm_config_update_notifier/u") && w.contains("npm_config_fund/u") && w.contains("CODEX_PATH/u"), "{w}");
+        assert_eq!((get(&out, "npm_config_update_notifier").as_deref(), get(&out, "npm_config_cache")), (Some("false"), None), "WSL 里的 npm 用它自己的缓存");
+        // 入口不是 npx（dsh 自己讲 ACP）：只带适配器要的
+        let out = launch_env(vec![("DSH_PERMISSION_MODE".into(), "danger-full-access".into())], "dsh", false, cache);
+        assert_eq!(out.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["DSH_PERMISSION_MODE"]);
     }
 
     #[test]
