@@ -8,6 +8,7 @@ mod common;
 use common::*;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -198,33 +199,33 @@ impl Rig {
         dir
     }
 
-    fn host(&self, name: &str) -> Child {
+    fn host(&self, name: &str) -> HostChild {
         self.ws_ready();
         let ws = format!("--workspace={}", self.ws().display());
         self.host_with(&["host", "--name", name, &ws])
     }
 
-    fn host_with(&self, args: &[&str]) -> Child {
+    fn host_with(&self, args: &[&str]) -> HostChild {
         self.spawn_host(args, false)
     }
 
     /// `board host --service …`（守护进程）：board host 异常退出后重启的等待缩短到 0.5 秒
-    fn service(&self, name: &str) -> Child {
+    fn service(&self, name: &str) -> HostChild {
         self.ws_ready();
         let ws = format!("--workspace={}", self.ws().display());
         self.spawn_host_env(&["host", "--service", "--name", name, &ws], false, &[("BOARD_HOST_RESTART_MS", "500")])
     }
 
     /// 像桌面端那样运行：`BOARD_HOST_STDIN=1`，标准输入接管道（写一行 reload 通知重新读配置，关掉就退出）
-    fn host_desktop(&self) -> Child {
+    fn host_desktop(&self) -> HostChild {
         self.spawn_host(&["host"], true)
     }
 
-    fn spawn_host(&self, args: &[&str], desktop: bool) -> Child {
+    fn spawn_host(&self, args: &[&str], desktop: bool) -> HostChild {
         self.spawn_host_env(args, desktop, &[])
     }
 
-    fn spawn_host_env(&self, args: &[&str], desktop: bool, extra: &[(&str, &str)]) -> Child {
+    fn spawn_host_env(&self, args: &[&str], desktop: bool, extra: &[(&str, &str)]) -> HostChild {
         let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
         // board host 起的 agent 也在这个环境里跑 board：check、心跳的状态不能落到开发者机器的临时目录里
         isolate(&mut c, &self.s.home);
@@ -244,7 +245,7 @@ impl Rig {
         if desktop {
             c.env("BOARD_HOST_STDIN", "1");
         }
-        c.spawn().unwrap()
+        HostChild { child: c.spawn().unwrap() }
     }
 
     /// 以 `test/maker` 执行（新建卡片、领取等）
@@ -334,7 +335,78 @@ fn ended(card: &Value, result: &str) -> bool {
     activity(card).iter().any(|t| t.starts_with(&format!("派发结束：{result}")))
 }
 
-fn stop(mut c: Child) -> (i32, String) {
+/// 测试起的 board host：断言失败、提前 return 时没人调 `stop()`，Drop 负责结束它和它起的进程树。
+/// 正常路径仍然走 `stop()`（先 SIGTERM、等退出、读输出），行为不变
+struct HostChild {
+    child: Child,
+}
+
+impl Deref for HostChild {
+    type Target = Child;
+
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl DerefMut for HostChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+impl Drop for HostChild {
+    fn drop(&mut self) {
+        // 已经正常停过（`stop`、`wait_out`、或 host 自己退出）：不用再管
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return;
+        }
+        let pid = self.child.id();
+        unsafe {
+            libc_kill(pid as i32, 15);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                _ => break,
+            }
+        }
+        // SIGTERM 之后还没退出：连进程树一起 SIGKILL。先结束子进程，host 才不会再启动新的
+        kill_descendants(pid, 9);
+        unsafe {
+            libc_kill(pid as i32, 9);
+        }
+        let _ = self.child.wait();
+    }
+}
+
+/// 结束 pid 的所有后代（不含 pid 自己）。agent 用 setsid 自成一组，不能靠结束 host 的进程组覆盖；
+/// 按父子关系逐个结束，顺序从深到浅
+fn kill_descendants(pid: u32, sig: i32) {
+    let Ok(mut sys) = sysinfo::System::new() else { return };
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut roots = vec![sysinfo::Pid::from_u32(pid)];
+    let mut descendants = Vec::new();
+    while !roots.is_empty() {
+        let mut next = Vec::new();
+        for (p, proc) in sys.processes() {
+            if proc.parent().is_some_and(|parent| roots.contains(&parent)) {
+                next.push(*p);
+            }
+        }
+        descendants.extend(next.iter().copied());
+        roots = next;
+    }
+    for p in descendants.into_iter().rev() {
+        unsafe {
+            libc_kill(p.as_u32() as i32, sig);
+        }
+    }
+}
+
+fn stop(mut c: HostChild) -> (i32, String) {
     unsafe {
         libc_kill(c.id() as i32, 15);
     }
@@ -683,6 +755,58 @@ fn closed_stdout_does_not_leave_agents() {
     assert!(ended(&rig.show(1), "已停止"), "{:?}", activity(&rig.show(1)));
     assert!(!running(agent), "agent 要被结束");
     assert!(rig.workspace()["hosts"][0]["online"] == false);
+}
+
+/// 卡片 #436：测试断言失败、提前 return 时没人调 `stop()`，Drop 要结束已经启动的 board host 和它的进程树
+#[test]
+fn failed_test_ends_the_host_and_its_agent() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("sleep");
+    rig.dispatch_running(1);
+    let host_pid = host.id() as i32;
+    let agent = rig.pid("agent.pid");
+    assert!(running(host_pid) && running(agent));
+
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _host = host;
+        panic!("模拟测试断言失败");
+    }));
+    assert!(failed.is_err());
+    wait_until("留下的 board host 和 agent 都被结束", Duration::from_secs(15), || {
+        !running(host_pid) && !running(agent)
+    });
+}
+
+/// Drop 的兜底：SIGTERM 之后还在的进程要连它的子进程一起 SIGKILL
+#[test]
+fn drop_kills_a_tree_that_ignores_sigterm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pidfile = tmp.path().join("child.pid");
+    let mut c = Command::new("sh");
+    c.args(["-c", "trap '' TERM; sleep 60 & echo $! > \"$PIDFILE\"; wait"])
+        .env("PIDFILE", &pidfile)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let host = HostChild { child: c.spawn().unwrap() };
+    let pid = host.id() as i32;
+    let child = wait_pid(&pidfile);
+    assert!(running(pid) && running(child), "SIGTERM 之前都在跑");
+
+    let begun = Instant::now();
+    drop(host);
+    assert!(begun.elapsed() >= Duration::from_secs(2), "SIGTERM 被忽略了，等到时限才 SIGKILL");
+    wait_until("整棵进程树被结束", Duration::from_secs(5), || !running(pid) && !running(child));
+}
+
+fn wait_pid(path: &Path) -> i32 {
+    wait_until("子进程号写好", Duration::from_secs(5), || {
+        std::fs::read_to_string(path).is_ok_and(|s| s.trim().parse::<i32>().is_ok())
+    });
+    std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
 }
 
 /// host 被 kill -9 后同名重启：上一个进程留下的 agent 在启动后被结束
