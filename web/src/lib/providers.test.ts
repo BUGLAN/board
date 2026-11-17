@@ -5,7 +5,7 @@ import type { AgentMeta, HostAgent, HostInfo, Provider, ProviderView, SyncResult
 const META: AgentMeta[] = [
   { id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'codex', name: 'Codex', protocols: ['openai-responses'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'pi', name: 'pi', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'dsh', name: 'DeepSeek Harness', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
 ];
 const prov = (x: Partial<Provider> = {}): Provider => ({
   name: 'deepseek',
@@ -74,7 +74,7 @@ describe('模型供应商共用配置', () => {
     // 供应商下拉只列接口对得上的（按服务端给的说明）
     expect(providersFor(view, 'claude').map(p => p.name)).toEqual(['deepseek']);
     expect(providersFor(view, 'codex').map(p => p.name)).toEqual(['other']);
-    expect(providersFor(view, 'pi').map(p => p.name)).toEqual(['deepseek', 'other']);
+    expect(providersFor(view, 'dsh').map(p => p.name)).toEqual(['deepseek', 'other']);
   });
 
   it('地址相同的接口并成一行', () => {
@@ -101,11 +101,11 @@ describe('模型供应商共用配置', () => {
       ],
     });
     const view: ProviderView = { providers: [multi], meta: META };
-    expect(protocolChoices(view, 'pi', 'relay').map(e => e.interface)).toEqual(['openai-chat', 'anthropic', 'openai-responses']);
+    expect(protocolChoices(view, 'dsh', 'relay').map(e => e.interface)).toEqual(['openai-chat', 'anthropic', 'openai-responses']);
     expect(protocolChoices(view, 'claude', 'relay').map(e => e.interface)).toEqual(['anthropic']);
-    const pi = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'pi', name: 'pi', found: true, version: '1', run_mode: 'own', run_provider: 'relay', ...x });
-    expect(runPick(view, pi()).ep).toEqual({ interface: 'openai-chat', url: 'https://r/v1' });
-    expect(runPick(view, pi({ run_protocol: 'anthropic' })).ep).toEqual({ interface: 'anthropic', url: 'https://r' });
+    const dsh = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'dsh', name: 'DeepSeek Harness', found: true, version: '1', run_mode: 'own', run_provider: 'relay', ...x });
+    expect(runPick(view, dsh()).ep).toEqual({ interface: 'openai-chat', url: 'https://r/v1' });
+    expect(runPick(view, dsh({ run_protocol: 'anthropic' })).ep).toEqual({ interface: 'anthropic', url: 'https://r' });
     // 指定的那种这个 agent 不认：回到第一个对得上的
     expect(runPick(view, claude({ run_provider: 'relay', run_protocol: 'openai-chat' })).ep?.interface).toBe('anthropic');
   });

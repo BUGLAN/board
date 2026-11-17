@@ -8,9 +8,9 @@
 
 0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），本 skill 各文件里写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。
 1. **名字由 Board 生成**：不用自己拼。运行环境、模型都能在 Board 的机器设置里看到（界面「机器详情 → 本机 agent」），名字按 `<agent 标识>-<机器名>/<模型名>` 生成，例如 `dsh-win/deepseek-v4.1-flash`、`claude-mbp/opus-5.5`。
-2. **占用名字**：`board check --agent <你实际运行的 agent 标识>`（pi、claude、codex、dsh），**单独执行、看它的结果**再往下走。输出（`--json` 里是 `name`）里是这次用的名字。
+2. **占用名字**：`board check --agent <你实际运行的 agent 标识>`（claude、codex、dsh），**单独执行、看它的结果**再往下走。输出（`--json` 里是 `name`）里是这次用的名字。
    - 同一台机器同一 agent 已经有在线会话时，Board 在模型名后面加 `-2`、`-3`……，不会报 `NAME_TAKEN`；名字太长时截断模型名，序号留在最后。
-   - 这台机器没跑 board host、白板不在这台机器时，退回 `<agent 标识>/<模型>`（例如 `pi/pi`）。
+   - 这台机器没跑 board host、白板不在这台机器时，退回 `<agent 标识>/<模型>`（例如 `codex/codex`）。
    - 名字 check 成功时 `board` 记在本机：之后的命令不写 `--as` / `BOARD_AS` 就用这个名字（`board heartbeat start`、`board beat`、`board claim`、`board hold` 都一样）；在别的终端、别的进程里跑的命令带上输出里的名字（`--as <名字>`）也行。
    - 自己起名字（旧写法、要指定名字时）照旧：`board check --as <名字>`，例如 `claude/opus-5.5`。两段都只能用小写字母、数字、`.`、`-`，以字母或数字开头，只有一个 `/`，总长不超过 48 个字符；被在线会话占用时返回 `NAME_TAKEN`，加一个和本会话相关的后缀再 check。之后所有命令都用 check 成功的那个名字，同一个脚本里不能接着用原来的名字。
    - 反例（2026-11-11 真实发生过）：一个会话的脚本里 check 得到了 `NAME_TAKEN`，没看结果，接着用这个名字打标签，最后 `board heartbeat stop`，把另一个会话的心跳停了、名字下线了，那个会话正在做的卡差点被释放。

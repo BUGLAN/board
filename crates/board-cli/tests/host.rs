@@ -143,9 +143,9 @@ impl Rig {
         std::fs::write(
             conf.join("config.toml"),
             format!(
-                // 机器上真装了 dsh、pi、codex 也不用它们：都换成找不到的命令（默认 agent 就是 claude）。
+                // 机器上真装了 dsh、codex 也不用它们：都换成找不到的命令（默认 agent 就是 claude）。
                 // 不换的话启动时会真的执行它们的 --version（codex 要一两秒，机器忙时更久），同名第二个 host 来不及在时限内退出
-                "[agents.dsh]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.codex]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
+                "[agents.dsh]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n\n[agents.claude]\ncmd = [\"{}\", \"{{prompt}}\"]\n\n[agents.codex]\ncmd = [\"board-test-no-such-command\", \"{{prompt}}\"]\n",
                 fake.display()
             ),
         )
@@ -380,7 +380,7 @@ fn host_runs_dispatches_end_to_end() {
     assert_eq!(h["max"], 1);
     let agents = h["agents"].as_array().unwrap();
     assert!(agents.iter().any(|a| a["id"] == "claude" && a["found"] == true && a["version"] == "9.9.9 (fake)"), "{agents:?}");
-    assert!(agents.iter().any(|a| a["id"] == "pi" && a["found"] == false), "PATH 里没有的 agent 显示为没找到");
+    assert!(agents.iter().any(|a| a["id"] == "codex" && a["found"] == false), "PATH 里没有的 agent 显示为没找到");
     assert_eq!(h["agent"], "claude", "dsh 没找到时，默认 agent 是下一个找到的");
     // 资源（PRD §9.1「资源」）：上报里带着这台机器真实的核数、内存、磁盘
     wait_until("mbp 上报资源", Duration::from_secs(15), || !rig.workspace()["hosts"][0]["res"].is_null());
@@ -397,7 +397,7 @@ fn host_runs_dispatches_end_to_end() {
     assert!(out.contains("HOST_NAME_TAKEN"), "{out}");
 
     // 校验
-    let r = rig.board(&["dispatch", "5", "--host", "mbp", "--agent", "pi", "--json"]);
+    let r = rig.board(&["dispatch", "5", "--host", "mbp", "--agent", "codex", "--json"]);
     assert_eq!(r.error_code(), "AGENT_NOT_ON_HOST");
     let r = rig.board(&["dispatch", "5", "--host", "nope", "--json"]);
     assert_eq!(r.error_code(), "NO_SUCH_HOST");
@@ -1225,7 +1225,7 @@ fn selftest_checks_agent_git_and_version() {
     assert_eq!(item(&h, "version")["ok"], true, "{h}");
     assert!(item(&h, "agent")["at"].as_i64().unwrap() > 0);
     let agents: Vec<&Value> = h["selftest"]["items"].as_array().unwrap().iter().filter(|i| i["kind"] == "agent").collect();
-    assert_eq!(agents.len(), 1, "找不到命令的 dsh、pi、codex 不查：{h}");
+    assert_eq!(agents.len(), 1, "找不到命令的 dsh、codex 不查：{h}");
 
     // 没登录、origin 指向不存在的地址
     rig.mode("nologin");
@@ -1413,25 +1413,22 @@ fn skills_push_rejects_big_skill() {
 
 /* ------------------------------ MCP 共用配置（#187） ------------------------------ */
 
-/// 在服务端加一个 stdio MCP 服务器（带一个密钥）：B 上 Claude Code（经 claude mcp add-json）、Codex（config.toml）、pi（mcp.json）
+/// 在服务端加一个 stdio MCP 服务器（带一个密钥）：B 上 Claude Code（经 claude mcp add-json）、Codex（config.toml）
 /// 的用户级配置里都出现；列表接口、board host 的输出里看不到密钥原文；B 上已有同名的换成共用配置里的（原来的存进备份）；删掉后同步加的删掉、用户自己的留着。
-/// 三个 agent 都是假脚本，不执行本机真实的 claude、codex、pi
+/// 两个 agent 都是假脚本，不执行本机真实的 claude、codex
 #[test]
-fn mcp_servers_sync_to_claude_codex_pi() {
+fn mcp_servers_sync_to_claude_and_codex() {
     let rig = Rig::new();
     let home = rig.s.home.clone();
-    // codex、pi 也换成假脚本（找得到命令才同步）；dsh 仍是不存在的命令
+    // codex 也换成假脚本（找得到命令才同步）；dsh 仍是不存在的命令
     let conf = home.join(".board").join("config.toml");
     let fake = rig.fake.display().to_string();
     let text = std::fs::read_to_string(&conf).unwrap();
-    let text = text.replace("[agents.pi]\nname = \"pi\"\ncmd = [\"board-test-no-such-command\"", &format!("[agents.pi]\nname = \"pi\"\ncmd = [\"{fake}\""));
     let text = text.replace("[agents.codex]\ncmd = [\"board-test-no-such-command\"", &format!("[agents.codex]\ncmd = [\"{fake}\""));
     std::fs::write(&conf, text).unwrap();
-    // B 上 pi 本来就有一个同名的 shared（用户自己加的），Codex 有一个用户自己的 mine
-    std::fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
-    std::fs::write(home.join(".pi/agent/mcp.json"), r#"{"mcpServers":{"shared":{"command":"user-own"}}}"#).unwrap();
+    // B 上 Codex 本来就有一个同名的 shared 和一个 mine（都是用户自己加的）
     std::fs::create_dir_all(home.join(".codex")).unwrap();
-    std::fs::write(home.join(".codex/config.toml"), "[mcp_servers.mine]\ncommand = \"mine\"\n").unwrap();
+    std::fs::write(home.join(".codex/config.toml"), "[mcp_servers.mine]\ncommand = \"mine\"\n\n[mcp_servers.shared]\ncommand = \"user-own\"\n").unwrap();
     let host = rig.host("mbp");
     let online = |rig: &Rig| rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true));
     wait_until("mbp 上线", Duration::from_secs(20), || online(&rig));
@@ -1450,19 +1447,17 @@ fn mcp_servers_sync_to_claude_codex_pi() {
     put("db");
     put("shared");
     let last = |rig: &Rig| rig.workspace()["hosts"][0]["sync"]["last"]["mcp"].clone();
-    wait_until("db、shared 同步到三个 agent", Duration::from_secs(15), || {
+    wait_until("db、shared 同步到两个 agent", Duration::from_secs(15), || {
         let m = last(&rig);
-        m["state"] == "synced" && m["count"] == 2 && m["agents"].as_array().is_some_and(|a| a.len() == 3)
+        m["state"] == "synced" && m["count"] == 2 && m["agents"].as_array().is_some_and(|a| a.len() == 2)
     });
     let claude: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert_eq!(claude["mcpServers"]["db"]["command"], "npx");
     assert_eq!(claude["mcpServers"]["db"]["env"]["DB_TOKEN"], secret);
     let codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert!(codex.contains("[mcp_servers.db]") && codex.contains(secret) && codex.contains("[mcp_servers.mine]"), "{codex}");
-    let pi: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap()).unwrap();
-    assert_eq!(pi["mcpServers"]["db"]["args"], serde_json::json!(["-y", "db-mcp"]));
-    // pi 上同名的 shared 是用户自己的：原来的存进备份，换成共用配置里的
-    assert_eq!(pi["mcpServers"]["shared"]["command"], "npx");
+    // Codex 上同名的 shared 是用户自己的：原来的存进备份，换成共用配置里的
+    assert!(codex.contains("[mcp_servers.shared]") && !codex.contains("user-own"), "{codex}");
     assert_eq!(last(&rig)["replaced"], serde_json::json!(["shared"]));
     let saved = std::fs::read_to_string(home.join(".board").join("host").join("mcp-backup.json")).unwrap();
     assert!(saved.contains("user-own"), "{saved}");
@@ -1490,14 +1485,13 @@ fn mcp_servers_sync_to_claude_codex_pi() {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();
         store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.mcp_rm("db")).unwrap();
     }
-    wait_until("db 从三个 agent 删掉", Duration::from_secs(15), || {
-        let pi = std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap_or_default();
+    wait_until("db 从两个 agent 删掉", Duration::from_secs(15), || {
         let codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap_or_default();
         let claude = std::fs::read_to_string(home.join(".claude.json")).unwrap_or_default();
-        !pi.contains("\"db\"") && !codex.contains("mcp_servers.db") && !claude.contains("\"db\"")
+        !codex.contains("mcp_servers.db") && !claude.contains("\"db\"")
     });
-    assert!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap().contains("[mcp_servers.mine]"));
-    assert!(std::fs::read_to_string(home.join(".pi/agent/mcp.json")).unwrap().contains("\"shared\""), "换过来的 shared 还在库里");
+    let codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    assert!(codex.contains("[mcp_servers.mine]") && codex.contains("[mcp_servers.shared]"), "用户自己的 mine 留着，换过来的 shared 还在库里：{codex}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("MCP：加上 claude 的 MCP 服务器 db"), "{out}");

@@ -6,8 +6,8 @@
 //!
 //! - 工具调用和结果分成两条事件，带着同一个 `call`（agent 给的调用标识），上传前同一批里合成一条，跨批的由服务端合并。
 //! - 参数只留摘要（命令、文件、搜索词，见 logfmt `tool_arg`）；结果留前 [`OUT_LINES`] 行、最多 [`OUT_MAX`] 个字符。
-//! - `result`：Claude Code 的 `result` 带用时、轮数、tokens、费用；pi、Codex、dsh 没有汇总，按每条消息 / 每一步 / 每一轮
-//!   报的用量加起来，在结束时（pi `agent_settled`、Codex `turn.completed`、dsh `final`）写进 `result`。
+//! - `result`：Claude Code 的 `result` 带用时、轮数、tokens、费用；Codex、dsh 没有汇总，按每一轮 / 每一步
+//!   报的用量加起来，在结束时（Codex `turn.completed`、dsh `final`）写进 `result`。
 
 use crate::logfmt::{self, arr, clip, s, Stream};
 use board_core::runlog::RunEvent;
@@ -20,7 +20,7 @@ const OUT_LINES: usize = 20;
 /// 工具结果最多多少个字符
 const OUT_MAX: usize = 1500;
 
-/// 一个派发的解析器：pi、Codex、dsh 的用量要跨行累加
+/// 一个派发的解析器：Codex、dsh 的用量要跨行累加
 pub(crate) struct Parser {
     kind: Stream,
     tokens_in: Option<i64>,
@@ -43,7 +43,6 @@ impl Parser {
         let mut out = match v {
             Some(v) => match self.kind {
                 Stream::Claude => claude(&v),
-                Stream::Pi => self.pi(&v),
                 Stream::Codex => self.codex(&v),
                 Stream::Dsh => self.dsh(&v),
             },
@@ -78,64 +77,6 @@ impl Parser {
             cost: self.cost.take(),
             ..Default::default()
         }
-    }
-
-    /* ------------------------------ pi ------------------------------ */
-
-    fn pi(&mut self, v: &Value) -> Vec<RunEvent> {
-        let mut out = vec![];
-        match s(&v["type"]) {
-            "message_end" => {
-                let m = &v["message"];
-                if s(&m["role"]) != "assistant" {
-                    return out;
-                }
-                // 每条消息的用量：input + cacheRead + cacheWrite 算输入
-                let u = &m["usage"];
-                let input = u["input"].as_i64().map(|i| i + u["cacheRead"].as_i64().unwrap_or(0) + u["cacheWrite"].as_i64().unwrap_or(0));
-                self.add_usage(input, u["output"].as_i64(), u["cost"]["total"].as_f64());
-                for c in arr(&m["content"]) {
-                    if s(&c["type"]) == "text" {
-                        out.extend(message(s(&c["text"])));
-                    }
-                }
-                match s(&m["stopReason"]) {
-                    "error" => out.push(RunEvent::text("error", clip(s(&m["errorMessage"]), TEXT_MAX))),
-                    "aborted" => out.push(RunEvent::text("error", "已中止")),
-                    _ => {}
-                }
-            }
-            "tool_execution_start" => out.push(call(s(&v["toolCallId"]), s(&v["toolName"]), &v["args"])),
-            "tool_execution_end" => {
-                let r = &v["result"];
-                let body = match &r["content"] {
-                    Value::Array(_) => logfmt::tool_result_text(&r["content"]),
-                    Value::String(x) => x.clone(),
-                    _ => String::new(),
-                };
-                let mut e = done(s(&v["toolCallId"]), &body, v["isError"].as_bool() != Some(true));
-                e.tool = some_text(s(&v["toolName"]));
-                e.ms = v["durationMs"].as_i64();
-                out.push(e);
-            }
-            "auto_retry_start" => {
-                let mut t = format!("重试 第 {}/{} 次", logfmt::n(&v["attempt"]), logfmt::n(&v["maxAttempts"]));
-                if !s(&v["errorMessage"]).is_empty() {
-                    t += &format!("：{}", s(&v["errorMessage"]));
-                }
-                out.push(RunEvent::text("error", clip(&t, TEXT_MAX)));
-            }
-            "auto_retry_end" if v["success"].as_bool() == Some(false) => {
-                out.push(RunEvent::text("error", clip(&format!("重试失败：{}", s(&v["finalError"])), TEXT_MAX)))
-            }
-            "compaction_start" => out.push(RunEvent::text("text", format!("● 压缩上下文（{}）", s(&v["reason"])))),
-            "compaction_end" if !s(&v["errorMessage"]).is_empty() => {
-                out.push(RunEvent::text("error", clip(&format!("压缩失败：{}", s(&v["errorMessage"])), TEXT_MAX)))
-            }
-            "agent_settled" => out.push(self.result(v["aborted"].as_bool() != Some(true), if v["aborted"].as_bool() == Some(true) { "已中止" } else { "" })),
-            _ => {}
-        }
-        out
     }
 
     /* ------------------------------ Codex ------------------------------ */
@@ -372,7 +313,6 @@ mod tests {
     }
 
     const CLAUDE: &str = include_str!("../tests/fixtures/claude-stream.jsonl");
-    const PI: &str = include_str!("../tests/fixtures/pi-events.jsonl");
     const CODEX: &str = include_str!("../tests/fixtures/codex-events.jsonl");
     const DSH: &str = include_str!("../tests/fixtures/dsh-events.jsonl");
 
@@ -406,21 +346,6 @@ mod tests {
         assert_eq!(r.text.as_deref(), Some("删掉了状态块右边缘悬浮时出现的竖条。\n\n提交：a5ea001"));
         let r = &evs[13];
         assert_eq!((r.ok, r.text.as_deref()), (Some(false), Some("Reached maximum number of turns")));
-    }
-
-    #[test]
-    fn pi_events_become_events() {
-        let evs = parse(Stream::Pi, PI);
-        assert_eq!(kinds(&evs), ["message", "tool", "tool", "tool", "error", "error", "text", "error", "result", "result"], "{evs:#?}");
-        let bash = &evs[1];
-        assert_eq!((bash.tool.as_deref(), bash.args.as_deref(), bash.out.as_deref(), bash.ok, bash.ms), (Some("bash"), Some("board show 178 --json"), Some("{\"id\":178}"), Some(true), Some(1234)));
-        assert_eq!(evs[3].ok, Some(false));
-        assert_eq!(evs[4].text.as_deref(), Some("重试 第 1/3 次：529 overloaded"));
-        assert_eq!(evs[7].text.as_deref(), Some("provider error"));
-        // 用量按每条消息累加（样例里第一条消息报了用量）
-        let r = &evs[8];
-        assert_eq!((r.ok, r.tokens_in, r.tokens_out, r.cost), (Some(true), Some(150), Some(20), Some(0.0123)));
-        assert_eq!((evs[9].ok, evs[9].text.as_deref(), evs[9].tokens_in), (Some(false), Some("已中止"), None), "用量只算一次");
     }
 
     #[test]

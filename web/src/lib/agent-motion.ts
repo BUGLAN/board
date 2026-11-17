@@ -1,16 +1,16 @@
 /* ==========================================================================
    agent logo 的签名动作（default/main#357）
    每个认得出的 agent 一个自己的动作，体现 logo 本身：claude 的像素小人蹦一下、dsh 的鲸鱼摆尾游、
-   codex 的云飘起来晃一晃、pi 的方块压扁再弹高。用在三处（AgentAvatar）：
+   codex 的云飘起来晃一晃。用在三处（AgentAvatar）：
    - hover：做一次（ACT）
-   - 出现、换人：同一个动作的进场版（ENTER）——小人从上面掉下来、鲸鱼从左边游进来、云飘下来、方块从扁的一条弹起来
+   - 出现、换人：同一个动作的进场版（ENTER）——小人从上面掉下来、鲸鱼从左边游进来、云飘下来
    - 在线干活（顶栏心跳正常、画布上正在工作的白板）：每 LOOP_MS 做一次 ACT，几个错开（loopFrames）
    都用 Web Animations 播在 logo 图上（.logo-art），不占 CSS 的 animation，和状态的滤镜动画（掉线变灰等）互不干扰。
    「设置 → 外观 → 动效 = 减弱」或系统要求减少动态效果时一个都不播，在播的循环也停下（subscribeMotion）。
    ========================================================================== */
 import { reduceMotion } from './util';
 
-export type AgentMotion = 'hop' | 'swim' | 'float' | 'squash';
+export type AgentMotion = 'hop' | 'swim' | 'float';
 
 /** hover 时做一次的动作：都从原样开始、回到原样结束 */
 export const ACT: Record<AgentMotion, Keyframe[]> = {
@@ -38,14 +38,6 @@ export const ACT: Record<AgentMotion, Keyframe[]> = {
     { transform: 'translateY(-22%) rotate(9deg)', offset: 0.62 },
     { transform: 'none' },
   ],
-  // 压扁再弹高
-  squash: [
-    { transform: 'none' },
-    { transform: 'scale(1.24, .66)', offset: 0.2 },
-    { transform: 'translateY(-34%) scale(.86, 1.2)', offset: 0.45 },
-    { transform: 'scale(1.08, .92)', offset: 0.7 },
-    { transform: 'none' },
-  ],
 };
 
 /** 出现、换人时的进场版：从看不见开始，落到原样 */
@@ -68,13 +60,6 @@ export const ENTER: Record<AgentMotion, Keyframe[]> = {
   float: [
     { opacity: 0, transform: 'translateY(-45%) rotate(-10deg)' },
     { opacity: 1, transform: 'translateY(6%) rotate(5deg)', offset: 0.6 },
-    { transform: 'none' },
-  ],
-  // 从扁的一条弹成方块
-  squash: [
-    { opacity: 0, transform: 'scale(1.3, 0)' },
-    { opacity: 1, transform: 'scale(.9, 1.18)', offset: 0.5 },
-    { transform: 'scale(1.05, .95)', offset: 0.75 },
     { transform: 'none' },
   ],
 };

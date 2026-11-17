@@ -49,7 +49,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         resume: None,
         os: "macOS 15.4".into(),
         version: "0.1.1".into(),
-        agents: vec![claude(true), HostAgent { id: "pi".into(), name: "pi".into(), version: String::new(), found: false, ..Default::default() }],
+        agents: vec![claude(true), HostAgent { id: "mycli".into(), name: "mycli".into(), version: String::new(), found: false, ..Default::default() }],
         envs: vec![],
         workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
         dirs: vec![HostDir { board: B.into(), path: "/tmp/default".into(), ..Default::default() }],
@@ -132,7 +132,7 @@ fn host_registers_with_defaults_and_name_is_exclusive() {
     assert!(!h.paused);
     assert_eq!(h.agent.as_deref(), Some("claude"), "默认 agent 是第一个找到的");
     assert!(!h.cron_on && h.cron.is_empty());
-    assert!(h.agents.iter().any(|a| a.id == "pi" && !a.found), "没找到的 agent 也上报");
+    assert!(h.agents.iter().any(|a| a.id == "mycli" && !a.found), "没找到的 agent 也上报");
     // 同名的第二个 host（另一个进程）：HOST_NAME_TAKEN
     let e = beat(&mut s, T0 + S, &report("mbp", "i2", vec![])).unwrap_err();
     assert_eq!(e.code, ErrorCode::HostNameTaken);
@@ -451,7 +451,7 @@ fn dispatch_validation_follows_the_table() {
     // 机器不存在
     assert_eq!(dispatch(&mut s, T0, a, "nope", None).unwrap_err().code, ErrorCode::NoSuchHost);
     // agent 没找到 / 没有这种 agent
-    assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap_err().code, ErrorCode::AgentNotOnHost);
+    assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("mycli")).unwrap_err().code, ErrorCode::AgentNotOnHost);
     assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("codex")).unwrap_err().code, ErrorCode::AgentNotOnHost);
     // 有工作空间的机器就视为有这块白板的目录：没在它上面见到的白板也派得出去
     s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
@@ -521,11 +521,11 @@ fn dispatch_agent_name_format() {
     assert_eq!(hosts::dispatch_agent_name("dsh", "win", "opus-5.5", "high", 1), "win/opus-5.5-high-1");
     assert_eq!(hosts::dispatch_agent_name("dsh", "win", "opus-5.5", "", 0), "win/opus-5.5");
     assert_eq!(hosts::dispatch_agent_name("dsh", "win", "deepseek-v4.1-flash", "medium", 2), "win/deepseek-v4.1-flash-medium-2");
-    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", "", 2), "mbp/pi-2");
+    assert_eq!(hosts::dispatch_agent_name("mycli", "mbp", "", "", 2), "mbp/mycli-2");
     // 模型名转成小写、空白和非法字符换成 -；没有模型时（旧版 board host、没配置）用 agent 标识
     assert_eq!(hosts::dispatch_agent_name("claude", "mbp", "Opus 5.5", "HIGH", 0), "mbp/opus-5.5-high");
     assert_eq!(hosts::dispatch_agent_name("dsh", "win", "  DeepSeek V4.1 Flash ", "  ", 0), "win/deepseek-v4.1-flash");
-    assert_eq!(hosts::dispatch_agent_name("pi", "mbp", "", "", 0), "mbp/pi");
+    assert_eq!(hosts::dispatch_agent_name("mycli", "mbp", "", "", 0), "mbp/mycli");
     assert_eq!(hosts::dispatch_agent_name("codex", "mbp", "---", "", 0), "mbp/codex");
     // 名字都能通过 board check 的格式校验；长机器名、长标识、多位的序号也一样（序号只在并发时加，
     // 最多「最多几个会话」（≤8）个，实际是个位数；模型名放不下时截断）
@@ -557,7 +557,7 @@ fn legacy_names_map_to_agent_ids() {
     use crate::agents::legacy_agent_id;
     assert_eq!(legacy_agent_id("dsh-win/deepseek-v4.1-flash").as_deref(), Some("dsh"));
     assert_eq!(legacy_agent_id("claude-mbp/opus-5.5").as_deref(), Some("claude"));
-    assert_eq!(legacy_agent_id("pi/pi").as_deref(), Some("pi"));
+    assert_eq!(legacy_agent_id("pi/pi"), None, "已经不内置的 agent（pi）认不出");
     assert_eq!(legacy_agent_id("Claude/opus").as_deref(), Some("claude"));
     assert_eq!(legacy_agent_id("win/opus-5.5-high"), None);
     assert_eq!(legacy_agent_id("my-dsh/1"), None);
@@ -828,7 +828,7 @@ fn capacity_and_pause_keep_dispatches_queued() {
     // 设置校验
     let e = s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(9), ..Default::default() })).unwrap_err();
     assert_eq!(e.code, ErrorCode::Usage);
-    let e = s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { agent: Some("pi".into()), ..Default::default() })).unwrap_err();
+    let e = s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { agent: Some("mycli".into()), ..Default::default() })).unwrap_err();
     assert_eq!(e.code, ErrorCode::AgentNotOnHost);
     // 自动接单和接单时段：时段排好、挨着的并成一段；旧界面的「定时领取」开关当成自动接单的开关，时间表不再存
     assert!(!host(&s, T0).auto, "新机器默认不自动接单");
@@ -1364,14 +1364,14 @@ fn check(env: &str, found: bool, version: &str) -> EnvCheck {
     EnvCheck { env: env.into(), found, version: version.into(), no_skill: None, manage: None }
 }
 
-/// 一台 Windows 机器：cmd、PowerShell 7、Git Bash、WSL（Ubuntu）。pi 不支持 cmd；WSL 里没装 pi
+/// 一台 Windows 机器：cmd、PowerShell 7、Git Bash、WSL（Ubuntu）。mycli 不支持 cmd；WSL 里没装 mycli
 fn win_report(instance: &str) -> HostReport {
     let mut r = report("mbp", instance, vec![]);
     r.envs = vec![env("cmd", "cmd"), env("pwsh", "PowerShell 7"), env("git-bash", "Git Bash"), env("wsl:Ubuntu", "WSL（Ubuntu）")];
     r.agents = vec![
         HostAgent {
-            id: "pi".into(),
-            name: "pi".into(),
+            id: "mycli".into(),
+            name: "mycli".into(),
             version: "1.5.0".into(),
             found: true,
             envs: vec![check("git-bash", true, "1.5.0"), check("wsl:Ubuntu", false, ""), check("pwsh", true, "1.5.0")],
@@ -1406,18 +1406,18 @@ fn env_defaults_to_first_found_in_supported_order() {
     let mut s = store();
     let h = beat(&mut s, T0, &win_report("i1")).unwrap().host;
     assert_eq!(h.envs.len(), 4);
-    let pi = h.agents.iter().find(|a| a.id == "pi").unwrap();
-    assert_eq!((pi.env.as_deref(), pi.found, pi.version.as_str()), (Some("git-bash"), true, "1.5.0"));
+    let mycli = h.agents.iter().find(|a| a.id == "mycli").unwrap();
+    assert_eq!((mycli.env.as_deref(), mycli.found, mycli.version.as_str()), (Some("git-bash"), true, "1.5.0"));
     let claude = h.agents.iter().find(|a| a.id == "claude").unwrap();
     assert_eq!((claude.env.as_deref(), claude.found, claude.version.as_str()), (Some("wsl:Ubuntu"), true, "2.5.0"), "按顺序跳过没找到的");
     // 派发记录写启动环境，动态里写明
     let a = new_card(&mut s, T0, "A");
-    let d = dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap();
+    let d = dispatch(&mut s, T0, a, "mbp", Some("mycli")).unwrap();
     assert_eq!(d.env, None, "排队时还没定");
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     assert_eq!((d.env.as_deref(), d.env_name.as_deref()), (Some("git-bash"), Some("Git Bash")));
     let acts: Vec<String> = card(&s, a).activity.into_iter().map(|x| x.text).collect();
-    assert!(acts.iter().any(|t| t.starts_with("派发开始：mbp 上的 pi（Git Bash）以 mbp/pi 领取")), "{acts:?}");
+    assert!(acts.iter().any(|t| t.starts_with("派发开始：mbp 上的 mycli（Git Bash）以 mbp/mycli 领取")), "{acts:?}");
 }
 
 #[test]
@@ -1425,15 +1425,15 @@ fn missing_skill_follows_the_env_in_use() {
     let mut s = store();
     // Git Bash 里看不到 board-skills，PowerShell 7 里看得到
     let mut r = win_report("i1");
-    let pi = r.agents.iter_mut().find(|a| a.id == "pi").unwrap();
-    pi.no_skill = Some("~/.agents/skills/board-skills".into());
-    pi.envs[0].no_skill = Some("~/.agents/skills/board-skills".into());
+    let mycli = r.agents.iter_mut().find(|a| a.id == "mycli").unwrap();
+    mycli.no_skill = Some("~/.agents/skills/board-skills".into());
+    mycli.envs[0].no_skill = Some("~/.agents/skills/board-skills".into());
     let h = beat(&mut s, T0, &r).unwrap().host;
     let get = |h: &HostInfo, id: &str| h.agents.iter().find(|a| a.id == id).unwrap().no_skill.clone();
-    assert_eq!(get(&h, "pi").as_deref(), Some("~/.agents/skills/board-skills"), "默认用 Git Bash：提醒");
+    assert_eq!(get(&h, "mycli").as_deref(), Some("~/.agents/skills/board-skills"), "默认用 Git Bash：提醒");
     assert_eq!(get(&h, "claude"), None, "装了的不标");
-    let h = set_env(&mut s, "pi", "pwsh").unwrap();
-    assert_eq!(get(&h, "pi"), None, "换到看得到的启动环境：不提醒");
+    let h = set_env(&mut s, "mycli", "pwsh").unwrap();
+    assert_eq!(get(&h, "mycli"), None, "换到看得到的启动环境：不提醒");
     // 旧版 board host 不上报这一项（也不上报启动环境）：不提醒
     let json = r#"{"name":"old","instance":"o1","agents":[{"id":"claude","name":"Claude Code","version":"2.4.1","found":true}]}"#;
     let old: HostReport = serde_json::from_str(json).unwrap();
@@ -1446,17 +1446,17 @@ fn env_setting_is_validated_and_used_at_start() {
     let mut s = store();
     beat(&mut s, T0, &win_report("i1")).unwrap();
     // 不支持、本机没有、没找到：USAGE
-    assert_eq!(set_env(&mut s, "pi", "cmd").unwrap_err().code, ErrorCode::Usage, "pi 不支持 cmd");
-    assert_eq!(set_env(&mut s, "pi", "powershell").unwrap_err().code, ErrorCode::Usage, "本机没有 Windows PowerShell");
-    let e = set_env(&mut s, "pi", "wsl:Ubuntu").unwrap_err();
+    assert_eq!(set_env(&mut s, "mycli", "cmd").unwrap_err().code, ErrorCode::Usage, "mycli 不支持 cmd");
+    assert_eq!(set_env(&mut s, "mycli", "powershell").unwrap_err().code, ErrorCode::Usage, "本机没有 Windows PowerShell");
+    let e = set_env(&mut s, "mycli", "wsl:Ubuntu").unwrap_err();
     assert_eq!(e.code, ErrorCode::Usage);
     assert!(e.message.contains("WSL（Ubuntu）") && e.message.contains("没找到"), "{}", e.message);
     assert_eq!(set_env(&mut s, "nope", "pwsh").unwrap_err().code, ErrorCode::Usage);
     // 改成 PowerShell 7：下一次派发就用它
-    let h = set_env(&mut s, "pi", "pwsh").unwrap();
-    assert_eq!(h.agents.iter().find(|a| a.id == "pi").unwrap().env.as_deref(), Some("pwsh"));
+    let h = set_env(&mut s, "mycli", "pwsh").unwrap();
+    assert_eq!(h.agents.iter().find(|a| a.id == "mycli").unwrap().env.as_deref(), Some("pwsh"));
     let a = new_card(&mut s, T0, "A");
-    let d = dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap();
+    let d = dispatch(&mut s, T0, a, "mbp", Some("mycli")).unwrap();
     assert_eq!(begin(&mut s, T0 + S, d.id).unwrap().env.as_deref(), Some("pwsh"));
     // 设置的环境本机已经没有了（卸载了 PowerShell 7）：按默认规则选
     let mut r = win_report("i1");
@@ -1465,7 +1465,7 @@ fn env_setting_is_validated_and_used_at_start() {
         a.envs.retain(|c| c.env != "pwsh");
     }
     let h = beat(&mut s, T0 + 2 * S, &r).unwrap().host;
-    assert_eq!(h.agents.iter().find(|a| a.id == "pi").unwrap().env.as_deref(), Some("git-bash"));
+    assert_eq!(h.agents.iter().find(|a| a.id == "mycli").unwrap().env.as_deref(), Some("git-bash"));
 }
 
 #[test]
@@ -1483,8 +1483,8 @@ fn agent_not_found_in_set_env_is_not_on_host() {
     let e = dispatch(&mut s, T0 + S, a, "mbp", Some("claude")).unwrap_err();
     assert_eq!(e.code, ErrorCode::AgentNotOnHost);
     assert!(e.message.contains("WSL（Ubuntu）"), "{}", e.message);
-    // 默认 agent 也跟着变：pi
-    assert_eq!(h.agent.as_deref(), Some("pi"));
+    // 默认 agent 也跟着变：mycli
+    assert_eq!(h.agent.as_deref(), Some("mycli"));
 }
 
 #[test]
@@ -2279,9 +2279,9 @@ fn rules_count_unmatched_cards() {
 fn rules_agent_must_exist_and_missing_agent_disables_rule() {
     let mut s = store();
     beat(&mut s, T0, &report_cd("i1")).unwrap();
-    // 这台机器上没有 pi：拒绝
-    assert_eq!(rules(&mut s, &[("claude", "pi")], None).unwrap_err().code, ErrorCode::Usage);
-    assert_eq!(rules(&mut s, &[], Some("pi")).unwrap_err().code, ErrorCode::Usage);
+    // 这台机器上没有 mycli：拒绝
+    assert_eq!(rules(&mut s, &[("claude", "mycli")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(rules(&mut s, &[], Some("mycli")).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(rules(&mut s, &[("a", "claude"), ("A", "dsh")], None).unwrap_err().code, ErrorCode::Usage, "同一个标签写两次");
     let ld = label(&mut s, "deepseek");
     let d = new_card(&mut s, T0, "D");
@@ -2589,7 +2589,7 @@ fn rules_are_global_and_validated_against_all_hosts() {
     assert!(!active(&s, "mbp") && active(&s, "win"));
     // 没有哪个项目有的标签、没有机器找得到的 agent 拒绝
     assert!(set(&mut s, vec![cond("in", &["没有的"], "dsh")], None).unwrap_err().message.contains("没有哪个项目里有标签"));
-    assert!(set(&mut s, vec![cond("in", &["定时"], "pi")], None).unwrap_err().message.contains("没有机器上找得到"));
+    assert!(set(&mut s, vec![cond("in", &["定时"], "mycli")], None).unwrap_err().message.contains("没有机器上找得到"));
     // 旧界面从机器设置里改规则：改的是全局这一份
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![]), ..Default::default() })).unwrap();
     assert!(s.read(|r| r.sched(T0)).unwrap().rules.is_empty());
@@ -2607,7 +2607,7 @@ fn rules_accept_builtin_agents_before_any_host() {
     assert_eq!((out.fallback.as_deref(), out.fallback_active), (Some("codex"), false));
     // 不是内置的 agent 照样拒绝，原因里列出能选的
     let err = set(&mut s, vec![cond("in", &["bug"], "nope")], None).unwrap_err().message;
-    assert!(err.contains("没有机器上找得到 agent「nope」") && err.contains("dsh、claude、pi、codex"), "{err}");
+    assert!(err.contains("没有机器上找得到 agent「nope」") && err.contains("dsh、claude、codex"), "{err}");
     // 有机器上报了 agent：规则对它生效；新加的只能选找得到的（dsh 不在这台机器上）
     let mut win = report("win", "w1", vec![]);
     win.agents = vec![dsh(false), claude(true)];
@@ -2727,7 +2727,7 @@ fn rule_conditions_are_validated() {
     assert_eq!(set_conds(&mut s, vec![cond("only", &[], "claude")], None).unwrap_err().code, ErrorCode::Usage);
     assert!(set_conds(&mut s, vec![cond("none", &[], "claude")], None).is_ok());
     assert_eq!(set_conds(&mut s, vec![cond("in", &["没有"], "claude")], None).unwrap_err().code, ErrorCode::Usage);
-    assert_eq!(set_conds(&mut s, vec![cond("in", &["claude"], "pi")], None).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(set_conds(&mut s, vec![cond("in", &["claude"], "mycli")], None).unwrap_err().code, ErrorCode::Usage);
     // 标签之后被删：规则原样保留，界面上标出缺的标签
     let h = set_conds(&mut s, vec![cond("in", &["claude"], "claude")], None).unwrap();
     assert!(h.rules[0].missing.is_empty() && h.rules[0].active);
@@ -3984,7 +3984,7 @@ fn selftest_request_runs_once_and_results_replace_previous() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     // 只能检查找得到的 agent
-    assert_eq!(selftest(&mut s, T0, Some("pi")).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(selftest(&mut s, T0, Some("mycli")).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(selftest(&mut s, T0, Some("codex")).unwrap_err().code, ErrorCode::Usage);
     let h = selftest(&mut s, T0 + S, None).unwrap();
     let ask = h.selftest.ask.clone().expect("记下请求");
@@ -4362,7 +4362,7 @@ fn sync_words_name_failures_and_off() {
     let res = SyncResult {
         agents: vec![
             crate::providers::ProviderState { agent: "claude".into(), state: "synced".into(), ..Default::default() },
-            crate::providers::ProviderState { agent: "pi".into(), state: "failed".into(), why: Some("x".into()), ..Default::default() },
+            crate::providers::ProviderState { agent: "mycli".into(), state: "failed".into(), why: Some("x".into()), ..Default::default() },
             crate::providers::ProviderState { agent: "dsh".into(), state: "off".into(), ..Default::default() },
         ],
         skills: SkillsSync { state: "off".into(), count: 1, ..Default::default() },
@@ -4370,7 +4370,7 @@ fn sync_words_name_failures_and_off() {
         ..Default::default()
     };
     let h = s.write(T0, Origin::cli(), |w| w.host_synced("mbp", "i1", res)).unwrap();
-    assert_eq!(h.ops[0].text, "同步配置：1 个 agent 已写入，pi 失败；只装 board-skills");
+    assert_eq!(h.ops[0].text, "同步配置：1 个 agent 已写入，mycli 失败；只装 board-skills");
 
     // 三类都失败：各自的说法，Git 凭据单独一段；没报原因时用各自的默认说法
     let res = SyncResult {
@@ -4588,7 +4588,7 @@ fn split_dispatch_checks_host_and_cron_never_takes_inbox() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let a = inbox_card(&mut s, T0, &Actor::human(), "需求", None).unwrap().card.id;
     assert_eq!(dispatch(&mut s, T0, a, "nope", None).unwrap_err().code, ErrorCode::NoSuchHost);
-    assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("pi")).unwrap_err().code, ErrorCode::AgentNotOnHost);
+    assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("mycli")).unwrap_err().code, ErrorCode::AgentNotOnHost);
     // 人把排队中的条目整理进工作流：拆解自动取消
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
     exec(&mut s, T0 + S, &Actor::human(), Cmd::Move { id: a, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
@@ -4674,9 +4674,9 @@ fn check_generates_name_from_host_agent_settings() {
     let mut rep = report("win", "i1", vec![]);
     rep.agents.push(HostAgent { id: "dsh".into(), name: "DeepSeek Harness".into(), version: "1.0".into(), found: true, ..Default::default() });
     beat(&mut s, T0, &rep).unwrap();
-    // pi 没配模型：win/pi
-    let info = check_gen(&mut s, T0 + S, Some("win"), "pi", Some(1)).unwrap();
-    assert_eq!(info.name, "win/pi");
+    // mycli 没配模型：win/mycli
+    let info = check_gen(&mut s, T0 + S, Some("win"), "mycli", Some(1)).unwrap();
+    assert_eq!(info.name, "win/mycli");
     assert_eq!(info.modeled, Some(false), "没配模型：第二段是 agent 标识，不是模型");
     check_agent_name(&info.name).unwrap();
     // dsh 没有模型（board host 没上报）：同样退回 agent 标识
@@ -4725,8 +4725,8 @@ fn check_generated_name_adds_sequence_instead_of_name_taken() {
 #[test]
 fn check_falls_back_to_agent_slash_model_without_host() {
     let mut s = store();
-    let info = check_gen(&mut s, T0, Some("nope"), "pi", Some(1)).unwrap();
-    assert_eq!(info.name, "pi/pi");
+    let info = check_gen(&mut s, T0, Some("nope"), "mycli", Some(1)).unwrap();
+    assert_eq!(info.name, "mycli/mycli");
     assert_eq!(info.modeled, Some(false));
     check_agent_name(&info.name).unwrap();
     // 不带机器名、令牌也不是任何机器的：一样退回
@@ -4997,9 +4997,9 @@ fn any_host_dispatch_needs_some_host_that_could_take_it() {
     assert_eq!(any(&mut s, T0, a, None).unwrap_err().code, ErrorCode::NoSuchHost);
     beat(&mut s, T0, &report_as("mbp", "i1", vec![])).unwrap();
     // 指定的 agent 没找到命令
-    let e = any(&mut s, T0, a, Some("pi")).unwrap_err();
+    let e = any(&mut s, T0, a, Some("mycli")).unwrap_err();
     assert_eq!(e.code, ErrorCode::AgentNotOnHost);
-    assert!(e.message.contains("mbp") && e.message.contains("pi"), "{}", e.message);
+    assert!(e.message.contains("mbp") && e.message.contains("mycli"), "{}", e.message);
     // 环境检查没过：写明是哪台、为什么
     set_ready_check(&mut s, "cargo --version", "");
     let e = any(&mut s, T0, a, None).unwrap_err();
@@ -5655,29 +5655,29 @@ fn host_copy_keeps_env_when_the_systems_differ_or_the_target_cannot_use_it() {
     beat(&mut s, T0, &named(win_report("ia"), "a", "Windows 11")).unwrap();
     beat(&mut s, T0, &named(win_report("ib"), "b", "Windows 10")).unwrap();
     beat(&mut s, T0, &named(win_report("ic"), "c", "macOS 26")).unwrap();
-    // A：pi 在 PowerShell 7 里启动
-    update(&mut s, "a", HostPatch { env: Some(EnvPatch { agent: "pi".into(), env: "pwsh".into() }), ..Default::default() });
+    // A：mycli 在 PowerShell 7 里启动
+    update(&mut s, "a", HostPatch { env: Some(EnvPatch { agent: "mycli".into(), env: "pwsh".into() }), ..Default::default() });
 
-    // 同一种系统、B 上 pi 在 PowerShell 7 里找得到：复制
+    // 同一种系统、B 上 mycli 在 PowerShell 7 里找得到：复制
     let b = copy(&mut s, "b", "a", false).unwrap();
-    assert_eq!(b.changes.iter().map(|c| (c.label.as_str(), c.from.as_str(), c.to.as_str())).collect::<Vec<_>>(), vec![("pi 的启动环境", "默认", "PowerShell 7")]);
-    let pi = s.read(|r| r.host("b", T0)).unwrap().agents.into_iter().find(|a| a.id == "pi").unwrap();
-    assert_eq!(pi.env.as_deref(), Some("pwsh"));
+    assert_eq!(b.changes.iter().map(|c| (c.label.as_str(), c.from.as_str(), c.to.as_str())).collect::<Vec<_>>(), vec![("mycli 的启动环境", "默认", "PowerShell 7")]);
+    let mycli = s.read(|r| r.host("b", T0)).unwrap().agents.into_iter().find(|a| a.id == "mycli").unwrap();
+    assert_eq!(mycli.env.as_deref(), Some("pwsh"));
 
     // A 是 Windows、C 是 macOS：启动环境不复制，写明
     let c = copy(&mut s, "c", "a", true).unwrap();
     assert!(c.changes.is_empty(), "{:?}", c.changes);
-    assert_eq!(c.notes, vec!["启动环境没复制：a 是 Windows、c 是 macOS，两边的启动环境不通用（pi）".to_string()]);
+    assert_eq!(c.notes, vec!["启动环境没复制：a 是 Windows、c 是 macOS，两边的启动环境不通用（mycli）".to_string()]);
 
     // 同一种系统，但这台机器上在那个环境里找不到：保持原来的，写明原因
     let mut d = named(win_report("id"), "d", "Windows 11");
     d.agents.retain(|a| a.id == "claude");
-    d.agents.push(HostAgent { id: "pi".into(), name: "pi".into(), version: "1.5.0".into(), found: true, envs: vec![check("git-bash", true, "1.5.0"), check("pwsh", false, "")], ..Default::default() });
+    d.agents.push(HostAgent { id: "mycli".into(), name: "mycli".into(), version: "1.5.0".into(), found: true, envs: vec![check("git-bash", true, "1.5.0"), check("pwsh", false, "")], ..Default::default() });
     beat(&mut s, T0, &d).unwrap();
     let d = copy(&mut s, "d", "a", true).unwrap();
     assert!(d.changes.is_empty());
     assert_eq!(d.notes.len(), 1);
-    assert!(d.notes[0].starts_with("pi 的启动环境没复制：") && d.notes[0].contains("没找到"), "{:?}", d.notes);
+    assert!(d.notes[0].starts_with("mycli 的启动环境没复制：") && d.notes[0].contains("没找到"), "{:?}", d.notes);
 }
 
 #[test]

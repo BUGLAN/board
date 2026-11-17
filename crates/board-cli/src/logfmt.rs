@@ -1,7 +1,7 @@
 //! 派发日志的转写（卡片 default/main#211）。
 //!
-//! Claude Code 的 `-p`、pi 的 `-p` 都只在结束时把最终回答写到标准输出，运行中日志一直是空的，人看不出 agent 在干什么。
-//! 内置模板因此改用它们的事件流：Claude Code `--output-format stream-json --verbose`、pi `--mode json`，运行中每一步都写
+//! Claude Code 的 `-p` 只在结束时把最终回答写到标准输出，运行中日志一直是空的，人看不出 agent 在干什么。
+//! 内置模板因此改用事件流：Claude Code `--output-format stream-json --verbose`，运行中每一步都写
 //! 一行 JSON（JSONL）。本机的日志文件 `~/.board/host/logs/<派发 ID>.log` 里存原样的事件；上传到服务端（界面「日志」）和
 //! 异常退出评论里的「日志最后 20 行」之前，用这里的函数转成一行一行能读的内容：
 //!
@@ -21,8 +21,7 @@
 //! - 每一行最长 [`LINE_MAX`] 个字符，一段话最多 [`TEXT_LINES`] 行，工具结果只写第一行和总行数。
 //!
 //! 事件格式的出处：Claude Code 是 Claude Agent SDK 的 `SDKMessage`（`sdk.d.ts`：`system`/`init`、`assistant`、
-//! `user` 里的 `tool_result`、`result`、`system`/`api_retry` …）；pi 是它文档的 `docs/json.md`、`docs/message-types.md`
-//! （`session`、`message_end`、`tool_execution_start`/`end`、`auto_retry_*`、`compaction_*`、`agent_settled` …）；
+//! `user` 里的 `tool_result`、`result`、`system`/`api_retry` …）；
 //! Codex 是 `codex exec --json` 的 JSONL（文档 `docs/exec.md`：`thread.started`、`turn.completed`/`failed`、
 //! `item.started`/`completed` 里的 `agent_message`、`command_execution`、`file_change`、`mcp_tool_call` …）；
 //! dsh 是 `dsh --profile headless --json` 的运行事件（0.2.2 的 `@deepseek-ai/dsh-headless` json-stream：`session`、
@@ -44,8 +43,6 @@ const BRIEF: usize = 160;
 pub(crate) enum Stream {
     /// Claude Code `--output-format stream-json --verbose`
     Claude,
-    /// pi `--mode json`
-    Pi,
     /// Codex `exec --json`
     Codex,
     /// dsh `--profile headless --json`
@@ -57,7 +54,6 @@ impl Stream {
     pub(crate) fn key(self) -> &'static str {
         match self {
             Stream::Claude => "claude",
-            Stream::Pi => "pi",
             Stream::Codex => "codex",
             Stream::Dsh => "dsh",
         }
@@ -71,7 +67,6 @@ pub(crate) fn stream_for(agent: &str, cmd: &[String]) -> Option<Stream> {
     let pair = |a: &str, b: &str| cmd.windows(2).any(|w| w[0] == a && w[1] == b) || has(&format!("{a}={b}"));
     match agent {
         "claude" if pair("--output-format", "stream-json") => Some(Stream::Claude),
-        "pi" if pair("--mode", "json") => Some(Stream::Pi),
         "codex" if has("--json") || has("--experimental-json") => Some(Stream::Codex),
         "dsh" if has("--json") => Some(Stream::Dsh),
         _ => None,
@@ -88,7 +83,6 @@ pub(crate) fn render(kind: Option<Stream>, raw: Vec<String>) -> Vec<String> {
         match v {
             Some(v) => match kind {
                 Stream::Claude => claude(&v, &mut out),
-                Stream::Pi => pi(&v, &mut out),
                 Stream::Codex => codex(&v, &mut out),
                 Stream::Dsh => dsh(&v, &mut out),
             },
@@ -190,62 +184,6 @@ pub(crate) fn tool_result_text(c: &Value) -> String {
         _ => String::new(),
     };
     t.replace("<tool_use_error>", "").replace("</tool_use_error>", "")
-}
-
-/* ------------------------------ pi ------------------------------ */
-
-fn pi(v: &Value, out: &mut Vec<String>) {
-    let mut push = |x: String| out.push(x);
-    match s(&v["type"]) {
-        "session" => {
-            let mut head = "● 开始 · pi".to_string();
-            if !s(&v["cwd"]).is_empty() {
-                head += &format!(" · {}", s(&v["cwd"]));
-            }
-            push(head);
-        }
-        "message_end" => {
-            let m = &v["message"];
-            if s(&m["role"]) != "assistant" {
-                return;
-            }
-            for c in arr(&m["content"]) {
-                match s(&c["type"]) {
-                    "text" => text(s(&c["text"]), &mut push),
-                    "thinking" => thinking(s(&c["thinking"]), &mut push),
-                    // 工具调用看 tool_execution_start（带参数，执行前就写）
-                    _ => {}
-                }
-            }
-            match s(&m["stopReason"]) {
-                "error" => push(format!("✗ 出错：{}", clip(s(&m["errorMessage"]), BRIEF))),
-                "aborted" => push("✗ 已中止".into()),
-                _ => {}
-            }
-        }
-        "tool_execution_start" => push(tool_line(s(&v["toolName"]), &v["args"])),
-        "tool_execution_end" => {
-            let r = &v["result"];
-            let body = match &r["content"] {
-                Value::Array(_) => tool_result_text(&r["content"]),
-                Value::String(x) => x.clone(),
-                _ => String::new(),
-            };
-            push(result_line(&body, v["isError"].as_bool() == Some(true), v["durationMs"].as_i64()));
-        }
-        "auto_retry_start" => {
-            let mut t = format!("↻ 重试 第 {}/{} 次", n(&v["attempt"]), n(&v["maxAttempts"]));
-            if !s(&v["errorMessage"]).is_empty() {
-                t += &format!("：{}", clip(s(&v["errorMessage"]), BRIEF));
-            }
-            push(t);
-        }
-        "auto_retry_end" if v["success"].as_bool() == Some(false) => push(format!("✗ 重试失败：{}", clip(s(&v["finalError"]), BRIEF))),
-        "compaction_start" => push(format!("● 压缩上下文（{}）", s(&v["reason"]))),
-        "compaction_end" if !s(&v["errorMessage"]).is_empty() => push(format!("✗ 压缩失败：{}", clip(s(&v["errorMessage"]), BRIEF))),
-        "agent_settled" => push(if v["aborted"].as_bool() == Some(true) { "■ 结束 · 已中止".into() } else { "■ 结束".into() }),
-        _ => {}
-    }
 }
 
 /* ------------------------------ Codex ------------------------------ */
@@ -561,8 +499,6 @@ mod tests {
 
     /// Claude Code `--output-format stream-json --verbose` 的一次运行（按 SDKMessage 的格式写的样例）
     const CLAUDE: &str = include_str!("../tests/fixtures/claude-stream.jsonl");
-    /// pi `--mode json` 的一次运行（按 docs/json.md 的格式写的样例）
-    const PI: &str = include_str!("../tests/fixtures/pi-events.jsonl");
 
     #[test]
     fn claude_stream_becomes_readable_lines() {
@@ -594,29 +530,6 @@ mod tests {
             "提交：a5ea001",
             "■ 结束 · 出错（error_max_turns） · 用时 5 秒 · 3 轮",
             "✗ Reached maximum number of turns",
-        ];
-        assert_eq!(out, want);
-    }
-
-    #[test]
-    fn pi_events_become_readable_lines() {
-        let out = render(Some(Stream::Pi), lines(PI));
-        let want = vec![
-            "● 开始 · pi · /home/me/repo/board",
-            "（思考）用户要我执行 #178 …",
-            "先读卡片。",
-            "▸ bash  board show 178 --json",
-            "  ↳ {\"id\":178}  （1.2 秒）",
-            "▸ read  web/src/components/stats/Overview.tsx",
-            "  ↳ import { useState } from 'react';  （共 2 行）",
-            "▸ edit  web/src/components/stats/Overview.tsx",
-            "  ✗ Could not find the exact text",
-            "↻ 重试 第 1/3 次：529 overloaded",
-            "✗ 重试失败：529 overloaded",
-            "● 压缩上下文（threshold）",
-            "✗ 出错：provider error",
-            "■ 结束",
-            "■ 结束 · 已中止",
         ];
         assert_eq!(out, want);
     }
@@ -683,9 +596,6 @@ mod tests {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(stream_for("claude", &v(&["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose"])), Some(Stream::Claude));
         assert_eq!(stream_for("claude", &v(&["claude", "-p", "{prompt}"])), None, "配置文件换回文本输出");
-        assert_eq!(stream_for("pi", &v(&["pi", "--mode", "json", "{prompt}"])), Some(Stream::Pi));
-        assert_eq!(stream_for("pi", &v(&["pi", "--mode=json", "{prompt}"])), Some(Stream::Pi));
-        assert_eq!(stream_for("pi", &v(&["pi", "-p", "{prompt}"])), None);
         assert_eq!(stream_for("codex", &v(&["codex", "exec", "--json", "{prompt}"])), Some(Stream::Codex));
         assert_eq!(stream_for("dsh", &v(&["dsh", "--profile", "headless", "--json", "{prompt}"])), Some(Stream::Dsh));
         assert_eq!(stream_for("dsh", &v(&["dsh", "--profile", "headless", "{prompt}"])), None);
@@ -714,7 +624,7 @@ mod tests {
         assert_eq!(out.len(), TEXT_LINES + 1);
         assert_eq!(out.last().unwrap(), "…（还有 20 行）");
         // 非 JSON 的长行同样截断
-        let out = render(Some(Stream::Pi), vec!["x".repeat(LINE_MAX * 2)]);
+        let out = render(Some(Stream::Codex), vec!["x".repeat(LINE_MAX * 2)]);
         assert_eq!(out[0].chars().count(), LINE_MAX);
     }
 }

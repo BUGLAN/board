@@ -29,7 +29,7 @@ pub(crate) const SCHEMA: &str = r#"
 -- agent 名字（PRD §3）：只增不删。在线 = off_at 为空，并且最近一次心跳在 50 秒以内
 CREATE TABLE IF NOT EXISTS agents (
   name       TEXT PRIMARY KEY,
-  agent      TEXT,             -- 跑在哪个 agent 里（claude、dsh、pi …）：名字里不再带标识，界面画图标用它
+  agent      TEXT,             -- 跑在哪个 agent 里（claude、dsh、codex …）：名字里不再带标识，界面画图标用它
   checked_at INTEGER NOT NULL, -- 首次 check 的时间
   beat_at    INTEGER NOT NULL, -- 最近一次心跳（check 也算一次）
   token      INTEGER,          -- 最近一次 check 用的访问令牌 ID

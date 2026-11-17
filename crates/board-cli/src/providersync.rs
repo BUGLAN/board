@@ -7,8 +7,6 @@
 //! - Codex：`$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `model_provider`、`[model_providers.board-<供应商>]`
 //!   （`name`、`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort`，
 //!   保留别的配置、注释和顺序
-//! - pi：`~/.pi/agent/models.json` 的 `providers.board-<供应商>`（`api`、`apiKey`、`baseUrl`、`models`）和
-//!   `~/.pi/agent/settings.json` 的 `defaultProvider`、`defaultModel`（有强度时还有 `defaultThinkingLevel`）
 //! - dsh：`~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里加一条 `board-<供应商>` 路由（标了强度的模型按
 //!   DSH 的「档位: 线上写法」对象写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`
 //! - 配置文件里新加的 agent、WSL 里的 agent：不支持，状态写「不支持」
@@ -31,7 +29,6 @@ use std::path::{Path, PathBuf};
 pub enum Files {
     Claude { settings: PathBuf },
     Codex { config: PathBuf },
-    Pi { settings: PathBuf, models: PathBuf },
     Dsh { patch: PathBuf, env: PathBuf },
 }
 
@@ -80,7 +77,6 @@ pub fn files_of(agent: &str, env: &Env) -> Option<Files> {
     Some(match agent {
         "claude" => Files::Claude { settings: envs::expand("~/.claude/settings.json") },
         "codex" => Files::Codex { config: envs::expand("$CODEX_HOME/config.toml") },
-        "pi" => Files::Pi { settings: envs::expand("~/.pi/agent/settings.json"), models: envs::expand("~/.pi/agent/models.json") },
         _ => Files::Dsh { patch: envs::expand("~/.dsh/profiles/headless/cordis.patch.yml"), env: envs::expand("~/.dsh/.env") },
     })
 }
@@ -144,10 +140,6 @@ pub fn current(files: &Files) -> Option<(String, String)> {
         Files::Codex { config } => {
             let doc: toml_edit::DocumentMut = read(config).parse().ok()?;
             (codex_top(&doc, "model").unwrap_or_default(), codex_top(&doc, "model_reasoning_effort").unwrap_or_default())
-        }
-        Files::Pi { settings, .. } => {
-            let v: Value = serde_json::from_str(&read(settings)).ok()?;
-            (s(v.get("defaultModel")), s(v.get("defaultThinkingLevel")))
         }
         Files::Dsh { patch, .. } => {
             let lines: Vec<String> = read(patch).lines().map(str::to_string).collect();
@@ -257,8 +249,8 @@ fn codex_strip_tables(doc: &mut toml_edit::DocumentMut) {
     }
 }
 
-
-fn pi_api(interface: &str) -> &'static str {
+/// dsh 的 `llm-pi-ai` 路由里接口的写法（它用的 pi-ai 库的名字）
+fn pi_ai_api(interface: &str) -> &'static str {
     match interface {
         "anthropic" => "anthropic-messages",
         "openai-responses" => "openai-responses",
@@ -438,58 +430,6 @@ fn apply_codex(config: &Path, p: &Provider, endpoint: &providers::ProviderEndpoi
     Ok(true)
 }
 
-/* ------------------------------ pi ------------------------------ */
-
-fn apply_pi(settings: &Path, models: &Path, p: &Provider, endpoint: &providers::ProviderEndpoint, model: &str, effort: &str, key: &str) -> Result<bool, String> {
-    let models_text = read(models);
-    let mut mv = parse_json(&models_text, "models.json")?;
-    let settings_text = read(settings);
-    let mut sv = parse_json(&settings_text, "settings.json")?;
-    let provider_key = format!("board-{}", p.name);
-    // 供应商换了名字：删掉以前 Board 写的那一项
-    if let Some(t) = mv.get_mut("providers").and_then(Value::as_object_mut) {
-        let ours: Vec<String> = t.keys().filter(|k| k.starts_with("board-")).cloned().collect();
-        for k in ours {
-            t.remove(&k);
-        }
-    }
-    set_path(
-        &mut mv,
-        &["providers", &provider_key],
-        json!({
-            "api": pi_api(&endpoint.interface),
-            "apiKey": key,
-            "baseUrl": endpoint.url,
-            "models": p.models.iter().map(|m| json!({ "id": m })).collect::<Vec<_>>(),
-        }),
-    );
-    let keys: [(&str, Option<String>); 3] = [
-        ("defaultProvider", Some(provider_key.clone())),
-        ("defaultModel", Some(model.to_string())),
-        ("defaultThinkingLevel", (!effort.is_empty()).then(|| effort.to_string())),
-    ];
-    for (k, val) in keys {
-        match val {
-            Some(x) => set_path(&mut sv, &[k], Value::String(x)),
-            None => {
-                remove_path(&mut sv, &[k]);
-            }
-        }
-    }
-    let models_out = json_text(&mv);
-    let settings_out = json_text(&sv);
-    let mut changed = false;
-    if models_out != models_text {
-        write(models, &models_out)?;
-        changed = true;
-    }
-    if settings_out != settings_text {
-        write(settings, &settings_out)?;
-        changed = true;
-    }
-    Ok(changed)
-}
-
 /* ------------------------------ dsh ------------------------------ */
 
 fn apply_dsh(patch: &Path, env_file: &Path, p: &Provider, endpoint: &providers::ProviderEndpoint, model: &str, effort: &str, key: &str) -> Result<bool, String> {
@@ -531,7 +471,7 @@ fn apply_dsh(patch: &Path, env_file: &Path, p: &Provider, endpoint: &providers::
         format!("{}{}:", " ".repeat(pind), route),
         format!("{}displayName: {}", " ".repeat(pind + 2), yaml_str(&p.name)),
         format!("{}apiKeyEnv: {env_key}", " ".repeat(pind + 2)),
-        format!("{}api: {}", " ".repeat(pind + 2), pi_api(&endpoint.interface)),
+        format!("{}api: {}", " ".repeat(pind + 2), pi_ai_api(&endpoint.interface)),
         format!("{}baseURL: {}", " ".repeat(pind + 2), yaml_str(&endpoint.url)),
         format!("{}models:", " ".repeat(pind + 2)),
     ];
@@ -593,7 +533,6 @@ fn apply(agent: &str, files: &Files, p: &Provider, endpoint: &providers::Provide
     match files {
         Files::Claude { settings } => apply_claude(settings, endpoint, model, effort, key),
         Files::Codex { config } => apply_codex(config, p, endpoint, model, effort, key),
-        Files::Pi { settings, models } => apply_pi(settings, models, p, endpoint, model, effort, key),
         Files::Dsh { patch, env } => apply_dsh(patch, env, p, endpoint, model, effort, key),
     }
     .map_err(|e| format!("{}：{e}", providers::agent_name(agent)))
@@ -705,32 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn pi_writes_models_and_settings() {
-        let d = tempfile::tempdir().unwrap();
-        let (settings, models) = (d.path().join("settings.json"), d.path().join("models.json"));
-        std::fs::write(&settings, "{\"theme\": \"dark\"}").unwrap();
-        let files = Files::Pi { settings: settings.clone(), models: models.clone() };
-        let out = sync(&[provider("p")], &[target("pi", ("p", "model-b", "max"), files.clone())], &[]);
-        assert_eq!(out.states[0].state, "synced");
-        let (s, m) = (read_json(&settings), read_json(&models));
-        assert_eq!((s["defaultProvider"].as_str(), s["defaultModel"].as_str(), s["defaultThinkingLevel"].as_str(), s["theme"].as_str()), (Some("board-p"), Some("model-b"), Some("max"), Some("dark")));
-        assert_eq!(m["providers"]["board-p"]["api"], "anthropic-messages", "没选接口：供应商里第一个 pi 认的");
-        assert_eq!(m["providers"]["board-p"]["baseUrl"], "https://api.example.com");
-        assert_eq!(current(&files), Some(("model-b".into(), "max".into())));
-        // 指定接口：按它的地址和写法
-        let mut t = target("pi", ("p", "model-b", "max"), files.clone());
-        t.own.protocol = "openai-chat".into();
-        assert_eq!(sync(&[provider("p")], &[t.clone()], &[]).states[0].state, "synced");
-        let m = read_json(&models);
-        assert_eq!((m["providers"]["board-p"]["api"].as_str(), m["providers"]["board-p"]["baseUrl"].as_str()), (Some("openai-completions"), Some("https://api.example.com/v1")));
-        // 指定的接口供应商不给了：回到第一个对得上的
-        let mut only = provider("p");
-        only.endpoints.retain(|e| e.interface == "anthropic");
-        assert_eq!(sync(&[only], &[t], &[]).states[0].state, "synced");
-        assert_eq!(read_json(&models)["providers"]["board-p"]["api"], "anthropic-messages");
-    }
-
-    #[test]
     fn dsh_writes_route_with_reasoning_efforts_and_env() {
         let d = tempfile::tempdir().unwrap();
         let (patch, env) = (d.path().join("cordis.patch.yml"), d.path().join(".env"));
@@ -760,7 +673,7 @@ mod tests {
 
     #[test]
     fn unsupported_agents_report_off_or_unsupported() {
-        let out = sync(&[], &[], &[("dsh".into(), "own".into(), "WSL 里的 agent 还不能改写配置文件".into()), ("pi".into(), "off".into(), String::new())]);
+        let out = sync(&[], &[], &[("dsh".into(), "own".into(), "WSL 里的 agent 还不能改写配置文件".into()), ("codex".into(), "off".into(), String::new())]);
         assert_eq!((out.states[0].state.as_str(), out.states[1].state.as_str()), ("unsupported", "off"));
     }
 }

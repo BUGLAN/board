@@ -140,12 +140,12 @@ describe('agent logo 的签名动作（AgentAvatar，default/main#357）', () =>
   });
 
   it('loop：在线干活时一直循环，按序号错开；不干活了、卸掉时停下', () => {
-    act(() => root.render(<AgentAvatar name="pi/pi" loop loopIndex={2} />));
+    act(() => root.render(<AgentAvatar name="codex/codex" loop loopIndex={2} />));
     expect(played).toHaveLength(1);
     expect(played[0].opts).toMatchObject({ iterations: Infinity, delay: 2 * LOOP_STAGGER_MS });
-    act(() => root.render(<AgentAvatar name="pi/pi" loop={false} loopIndex={2} />));
+    act(() => root.render(<AgentAvatar name="codex/codex" loop={false} loopIndex={2} />));
     expect(played[0].anim.cancel).toHaveBeenCalled();
-    act(() => root.render(<AgentAvatar name="pi/pi" loop />));
+    act(() => root.render(<AgentAvatar name="codex/codex" loop />));
     act(() => root.unmount());
     expect(played[1].anim.cancel).toHaveBeenCalled();
     root = createRoot(host);
@@ -153,7 +153,7 @@ describe('agent logo 的签名动作（AgentAvatar，default/main#357）', () =>
 
   it('减弱动效：不 hover、不进场、不循环；在设置里关掉减弱后循环接着开始', async () => {
     document.documentElement.dataset.motion = 'reduced';
-    act(() => root.render(<AgentAvatar name="pi/pi" enter loop />));
+    act(() => root.render(<AgentAvatar name="codex/codex" enter loop />));
     const el = host.querySelector('.avatar.agent-logo') as HTMLElement;
     act(() => el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
     expect(played).toHaveLength(0);

@@ -36,9 +36,6 @@ pub struct AgentDef {
     pub skills: &'static [&'static str],
     /// 在工作目录（仓库根目录）里读 skill 的相对目录：放在这里也算装好
     pub project: &'static [&'static str],
-    /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面：pi 从 PATH 找 `bash.exe`，
-    /// Git 装在非 `%ProgramFiles%` 位置时（例如 D:\Git）才能不落到 WSL 的 bash
-    pub git_bash: bool,
     /// Windows 上支持的启动环境，顺序就是默认选择的顺序（`wsl:*` 是每个 WSL 发行版）；
     /// macOS、Linux 上都是登录 shell → 直接启动
     pub win: &'static [&'static str],
@@ -57,7 +54,7 @@ pub struct AgentDef {
 }
 
 /// 内置 agent，顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
-pub static AGENT_DEFS: [AgentDef; 4] = [
+pub static AGENT_DEFS: [AgentDef; 3] = [
     AgentDef {
         id: "dsh",
         name: "DeepSeek Harness",
@@ -76,7 +73,6 @@ pub static AGENT_DEFS: [AgentDef; 4] = [
         ],
         skills: &["~/.agents/skills"],
         project: &[".agents/skills"],
-        git_bash: false,
         win: &["pwsh", "powershell", "cmd"],
         // 按 0.2.2-rc.1 的 dsh-headless 核实过 --json；更旧的不认这个参数，去掉它按原始输出运行
         json_since: "0.2.2",
@@ -98,7 +94,6 @@ pub static AGENT_DEFS: [AgentDef; 4] = [
         skills: &["~/.claude/skills"],
         // Claude Code 不读 .agents/skills
         project: &[".claude/skills"],
-        git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
         json_since: "",
         json_flags: &[],
@@ -106,27 +101,6 @@ pub static AGENT_DEFS: [AgentDef; 4] = [
         efforts: &["low", "medium", "high", "xhigh", "max"],
         mcp: Some("~/.claude.json"),
         color: "#D97757",
-    },
-    AgentDef {
-        id: "pi",
-        name: "pi",
-        package: "@mariozechner/pi-coding-agent",
-        tag: "latest",
-        install: "npm install -g @mariozechner/pi-coding-agent@latest",
-        // -p 只在结束时打印最终回答：--mode json 同样跑完就退出，运行中写 JSONL 事件（logfmt.rs 转写）
-        cmd: &["pi", "--mode", "json", "{prompt}"],
-        also: &["~/.local/bin/pi"],
-        skills: &["~/.agents/skills", "~/.pi/agent/skills"],
-        project: &[".agents/skills", ".pi/skills"],
-        git_bash: true,
-        // pi 不支持 cmd
-        win: &["git-bash", "wsl:*", "pwsh", "powershell"],
-        json_since: "",
-        json_flags: &[],
-        protocols: &["anthropic", "openai-chat", "openai-responses"],
-        efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-        mcp: Some("~/.pi/agent/mcp.json"),
-        color: "#E5A93F",
     },
     AgentDef {
         id: "codex",
@@ -139,7 +113,6 @@ pub static AGENT_DEFS: [AgentDef; 4] = [
         also: &["~/.local/bin/codex"],
         skills: &["$CODEX_HOME/skills"],
         project: &[".agents/skills"],
-        git_bash: false,
         win: &["pwsh", "powershell", "git-bash", "wsl:*", "cmd"],
         json_since: "",
         json_flags: &[],
@@ -220,8 +193,8 @@ mod tests {
             assert!(!d.skills.is_empty() && !d.win.is_empty(), "{}", d.id);
             assert!(d.color.starts_with('#') && d.color.len() == 7, "{}", d.id);
         }
-        assert_eq!(ids().collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex"], "默认 agent 的顺序");
-        assert_eq!(mcp_agents(), vec!["claude", "pi", "codex"]);
+        assert_eq!(ids().collect::<Vec<_>>(), vec!["dsh", "claude", "codex"], "默认 agent 的顺序");
+        assert_eq!(mcp_agents(), vec!["claude", "codex"]);
         // 随 GET /api/providers 给界面的说明：每条都从这里来
         let meta = crate::providers::agent_meta();
         assert_eq!(meta.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ids().collect::<Vec<_>>());
@@ -230,7 +203,7 @@ mod tests {
         assert!(!meta[0].mcp, "dsh 不支持 MCP");
         assert_eq!(crate::providers::efforts_of("claude"), &["low", "medium", "high", "xhigh", "max"]);
         assert_eq!(crate::providers::protocols_of("codex"), &["openai-responses"]);
-        assert_eq!(crate::providers::agent_name("pi"), "pi");
+        assert_eq!(crate::providers::agent_name("codex"), "Codex");
         assert!(crate::providers::protocols_of("nope").is_empty());
     }
 
@@ -242,7 +215,7 @@ mod tests {
         assert_eq!(expand_home("$CODEX_HOME/skills", h, Some(" ")), PathBuf::from("/home/me/.codex/skills"), "空的当没设");
         assert_eq!(expand_home("$CODEX_HOME/config.toml", h, Some("/c")), PathBuf::from("/c/config.toml"));
         assert_eq!(expand_home("/abs/x", h, None), PathBuf::from("/abs/x"));
-        assert_eq!(user_skill_dir("pi"), Some("~/.agents/skills"));
+        assert_eq!(user_skill_dir("dsh"), Some("~/.agents/skills"));
         assert_eq!(user_skill_dir("nope"), None);
     }
 }

@@ -10,7 +10,7 @@
 //!   机器记录原地改名（桌面端已经改过的不再改），改名失败就接着用原来的名字。桌面端「一键安装 board-skills」装好后也发一行
 //!   `reload`：先重新看一遍每个 agent 的 skill，看得到了马上上报，界面上的提醒随之消失。
 //! - 启动时找本机的启动环境（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL 的发行版 …，见 envs.rs），
-//!   再找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、pi、codex），在每个 agent 支持、
+//!   再找本机 agent：配置文件里的 `[agents.*]` 加上内置模板（[`BUILTIN`]：dsh、claude、codex），在每个 agent 支持、
 //!   本机有的启动环境里各检查一次命令找不找得到（内置模板在直接启动、登录 shell 里还会看几个常见的安装位置）、取版本号
 //!   （`<命令> --version` 的第一行）；找不到的也上报，标为「没找到」。内置模板的顺序就是默认 agent 的顺序：本机找到的第一个
 //!   是默认。每个 agent 用哪个启动环境由机器设置决定（服务端写进派发记录）。找到了、但在它用的环境里看不到 `board-skills`
@@ -30,7 +30,7 @@
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 服务端说这台机器正在自动接单时（机器信息里的 `round`：开了自动接单、在接单时段里；旧版服务端是「正在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600），每 5 秒上传新增的行（最多最后 500 行）。
-//!   内置模板都用 agent 的结构化输出（Claude Code `--output-format stream-json --verbose`、pi `--mode json`、
+//!   内置模板都用 agent 的结构化输出（Claude Code `--output-format stream-json --verbose`、
 //!   Codex `exec --json`、dsh `--json`），本机日志文件里存原样的事件，上传的「原始输出」用转写后的一行一行（见 logfmt.rs）。
 //! - 同一份输出逐行解析成结构化事件（agent 说的话、工具调用、出错、结束时的用量，见 events.rs），每 2 秒上传一次新增的，
 //!   界面「会话」的「过程」按它画；会话换到下一张卡后，事件记到当时在做的那张卡上。配置文件覆盖了命令、又没带事件流
@@ -113,7 +113,7 @@ const LOG_TAIL: u64 = 10 * 1024 * 1024;
 const LOG_DAYS: i64 = 30;
 /// 多久看一次要不要清理本机日志（启动时一次，之后每天一次）
 const LOG_CLEAN_EVERY: Duration = Duration::from_secs(24 * 3600);
-/// 一次最多读多少字节的新日志（多出来的只留最后这些）。Claude Code、pi 的事件流一行可能很长（工具结果整段在里面），
+/// 一次最多读多少字节的新日志（多出来的只留最后这些）。Claude Code 的事件流一行可能很长（工具结果整段在里面），
 /// 转写后只剩一两行，所以读得多一些
 const LOG_CHUNK: u64 = 4 * 1024 * 1024;
 /// 白板目录的 git 状态（origin、当前分支）多久重新看一次：机器心跳 10 秒一次，不能每次都跑 git 子进程
@@ -209,8 +209,6 @@ struct Spec {
     skills: Vec<String>,
     /// 在仓库目录里读 skill 的相对目录（内置模板才有）
     project: Vec<String>,
-    /// Windows 上启动时把 Git Bash 的目录放到 PATH 前面
-    git_bash: bool,
     /// 在它支持、本机有的每个启动环境里的检查结果，按默认选择的顺序
     checks: Vec<Check>,
     /// 找到了命令、却看不到 `board-skills` 的启动环境 → 该装到哪里（启动时由 [`Spec::check_skills`] 检查一次）
@@ -660,7 +658,6 @@ struct Template {
     also: Vec<String>,
     skills: Vec<String>,
     project: Vec<String>,
-    git_bash: bool,
     /// 支持的启动环境，按默认选择的顺序
     order: Vec<String>,
     json_gate: Option<(String, Vec<String>)>,
@@ -685,7 +682,6 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             also: strs(b.also),
             skills: strs(b.skills),
             project: strs(b.project),
-            git_bash: b.git_bash,
             order: order(b.win),
             json_gate: (!b.json_since.is_empty()).then(|| (b.json_since.to_string(), strs(b.json_flags))),
         })
@@ -722,7 +718,6 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 also: vec![],
                 skills: vec![],
                 project: vec![],
-                git_bash: false,
                 order: order(envs::CONF_WIN_ORDER),
                 json_gate: None,
             }),
@@ -751,7 +746,6 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 cmd: t.cmd,
                 skills: t.skills,
                 project: t.project,
-                git_bash: t.git_bash,
                 checks: checks.into_iter().filter_map(|j| j.join().ok()).collect(),
                 no_skill: BTreeMap::new(),
                 json_gate: t.json_gate,
@@ -3286,16 +3280,6 @@ impl Host<'_> {
         let stream = logfmt::stream_for(&spec.id, &cmd);
         let mut c = env.command(&prog, &args, Some(tmp), true);
         c.env_remove("CLAUDECODE");
-        if cfg!(windows) && spec.git_bash && env.wsl().is_none() {
-            if let Some(bin) = envs::git_bash_dir() {
-                let old = std::env::var_os("PATH").unwrap_or_default();
-                let mut parts: Vec<std::ffi::OsString> = vec![bin.into_os_string()];
-                parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
-                if let Ok(path) = std::env::join_paths(parts) {
-                    c.env("PATH", path);
-                }
-            }
-        }
         Ok((c, stream))
     }
 
@@ -4127,17 +4111,6 @@ impl Host<'_> {
             c.env("BOARD_PIDFILE", &pf).env("WSLENV", envs::wslenv(std::env::var("WSLENV").ok().as_deref()));
             pidfile = Some(pf);
         }
-        // pi 在 Windows 上从 PATH 找 bash.exe；把 Git Bash 放到最前，免得落到没启用的 WSL bash
-        if cfg!(windows) && spec.git_bash && env.wsl().is_none() {
-            if let Some(bin) = envs::git_bash_dir() {
-                let old = std::env::var_os("PATH").unwrap_or_default();
-                let mut parts: Vec<std::ffi::OsString> = vec![bin.into_os_string()];
-                parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
-                if let Ok(path) = std::env::join_paths(parts) {
-                    c.env("PATH", path);
-                }
-            }
-        }
         envs::detach(&mut c);
         let child = c.spawn().map_err(|e| {
             let _ = std::fs::remove_file(&conf);
@@ -4394,7 +4367,6 @@ mod tests {
             cmd: b.cmd.iter().map(|s| s.to_string()).collect(),
             skills: vec![],
             project: vec![],
-            git_bash: false,
             checks: vec![],
             no_skill: BTreeMap::new(),
             json_gate: None,
@@ -4671,13 +4643,12 @@ mod tests {
         assert_eq!(tail_lines(&f, 2, None), vec!["two", "thr"]);
     }
 
-    /// 卡片 #211、#184：内置模板都用结构化输出启动（Claude Code、pi 的 -p 只在结束时打印结果；Codex、dsh 的 JSON 里
+    /// 卡片 #211、#184：内置模板都用结构化输出启动（Claude Code 的 -p 只在结束时打印结果；Codex、dsh 的 JSON 里
     /// 才有工具调用和用量）。上传和异常退出评论里的「日志最后 20 行」是转写后的一行一行；本机日志文件里还是原样的事件
     #[test]
     fn quiet_agents_stream_progress_into_the_log() {
         let cmd = |id: &str| BUILTIN.iter().find(|b| b.id == id).unwrap().cmd.join(" ");
         assert!(cmd("claude").contains("-p {prompt}") && cmd("claude").ends_with("--output-format stream-json --verbose"), "{}", cmd("claude"));
-        assert_eq!(cmd("pi"), "pi --mode json {prompt}", "pi 的 -p 只写最终回答，--mode json 才有过程");
         assert_eq!(cmd("codex"), "codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}");
         assert!(cmd("dsh").starts_with("dsh --profile headless --patch {patch} --json "), "{}", cmd("dsh"));
         // 每个内置模板都认得出事件流
@@ -4719,9 +4690,7 @@ mod tests {
     #[test]
     fn builtin_order_and_overrides() {
         // 内置顺序就是默认顺序：dsh 第一
-        assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex"]);
-        assert!(BUILTIN.iter().find(|b| b.id == "pi").unwrap().git_bash, "pi 在 Windows 上要先找 Git Bash");
-        assert!(!BUILTIN.iter().find(|b| b.id == "pi").unwrap().win.contains(&"cmd"), "pi 不支持 cmd");
+        assert_eq!(BUILTIN.iter().map(|b| b.id).collect::<Vec<_>>(), vec!["dsh", "claude", "codex"]);
         for b in &BUILTIN {
             check_agent_id(b.id).unwrap();
             assert_eq!(b.cmd.iter().filter(|a| a.contains("{prompt}")).count(), 1, "{} 的模板里要有一个 {{prompt}}", b.id);
@@ -4739,31 +4708,30 @@ mod tests {
         assert!(DSH_HEADLESS_PATCH.contains("tool-goal"), "补丁要关掉 goal 工具");
         assert!(BUILTIN.iter().filter(|b| b.id != "dsh").all(|b| !b.cmd.iter().any(|a| a.contains("{patch}"))));
         // 派发名字的第二段（模型名）不再取内置模板的默认值：上报 agent 配置文件里现在的模型（见 providersync::current）
-        // 内置 agent 全部换成找不到的命令：本机真装了 dsh、pi、codex 也不去执行它们的 --version
+        // 内置 agent 全部换成找不到的命令：本机真装了 dsh、codex 也不去执行它们的 --version
         // （本机执行 codex 会被 macOS 拦下、反复弹「包含恶意软件」的提示）
         let nope = |id: &str| AgentConf { id: id.into(), name: None, model: None, cmd: vec![format!("/nope/{id}"), "{prompt}".into()] };
         let conf = vec![
             nope("dsh"),
             nope("claude"),
-            nope("pi"),
             nope("codex"),
             AgentConf { id: "mycli".into(), name: Some("My CLI".into()), model: Some("gpt-5".into()), cmd: vec!["/nope/mycli".into(), "{prompt}".into()] },
         ];
         let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
-        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "pi", "codex", "mycli"]);
+        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["dsh", "claude", "codex", "mycli"]);
         let claude = specs.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.name, "Claude Code");
         assert_eq!(claude.model, "", "配置文件没写 model：空（读 agent 自己的配置文件）");
         assert!(claude.default_check().is_none(), "换了命令就不再看内置的备用位置");
-        assert_eq!(specs[4].name, "My CLI");
-        assert_eq!(specs[4].model, "gpt-5");
-        assert_eq!(specs[4].checks.len(), 1, "只有直接启动");
-        assert!(!specs[4].misses_skill(&Env::direct(), &[]), "配置文件里的 agent 不检查 skill");
-        let r = specs[4].report(None);
+        assert_eq!(specs[3].name, "My CLI");
+        assert_eq!(specs[3].model, "gpt-5");
+        assert_eq!(specs[3].checks.len(), 1, "只有直接启动");
+        assert!(!specs[3].misses_skill(&Env::direct(), &[]), "配置文件里的 agent 不检查 skill");
+        let r = specs[3].report(None);
         assert_eq!((r.found, r.envs.len(), r.env, r.no_skill, r.model.as_str()), (false, 1, None, None, "gpt-5"));
         // 读得到 agent 配置文件里的模型、强度时报它们；读不到时用配置文件里的 model
         let now = ("cn:deepseek-v4.1".to_string(), "high".to_string());
-        let r = specs[4].report(Some(&now));
+        let r = specs[3].report(Some(&now));
         assert_eq!((r.model.as_str(), r.effort.as_str()), ("cn:deepseek-v4.1", "high"));
         assert!(r.opts.is_none() && r.run_mode.is_none(), "派发时能选什么不再上报");
         let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into(), "{prompt}".into()] }];
@@ -4844,14 +4812,13 @@ mod tests {
         std::fs::write(repo.join(".agents").join("skills").join(SKILL).join("SKILL.md"), "x").unwrap();
         let spec = Spec {
             json_gate: None,
-            id: "pi".into(),
-            name: "pi".into(),
+            id: "codex".into(),
+            name: "Codex".into(),
             model: String::new(),
-            cmd: vec!["pi".into()],
+            cmd: vec!["codex".into()],
             skills: vec!["/board-test-no-such-skills".into()],
-            project: vec![".agents/skills".into(), ".pi/skills".into()],
-            git_bash: true,
-            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("pi".into()), path: Some("pi".into()) }],
+            project: vec![".agents/skills".into()],
+            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("codex".into()), path: Some("codex".into()) }],
             no_skill: BTreeMap::new(),
             builtin: None,
             managed: false,

@@ -381,7 +381,7 @@ pub(crate) async fn append_log(State(s): State<AppState>, Extension(caller): Ext
 
 #[derive(Deserialize)]
 pub(crate) struct EventsBody {
-    /// agent 的输出格式（claude、codex、pi、dsh）；空字符串 = 只有原始输出
+    /// agent 的输出格式（claude、codex、dsh）；空字符串 = 只有原始输出
     #[serde(default)]
     fmt: Option<String>,
     #[serde(default)]

@@ -9,11 +9,10 @@ afterEach(() => useAgentMeta.setState({ list: initial }));
 
 describe('内置 agent 的说明', () => {
   it('取到服务端之前用兜底：MCP 名单、名称、skill 目录、主色和以前一样', () => {
-    expect(mcpAgents()).toEqual(['claude', 'pi', 'codex']);
+    expect(mcpAgents()).toEqual(['claude', 'codex']);
     expect(builtinName('dsh')).toBe('DeepSeek Harness');
     expect(builtinName('nope')).toBe('nope');
-    expect([skillHome('dsh'), skillHome('pi'), skillHome('claude'), skillHome('codex'), skillHome('nope')]).toEqual([
-      '~/.agents/skills',
+    expect([skillHome('dsh'), skillHome('claude'), skillHome('codex'), skillHome('nope')]).toEqual([
       '~/.agents/skills',
       '~/.claude/skills',
       '$CODEX_HOME/skills',
@@ -22,7 +21,7 @@ describe('内置 agent 的说明', () => {
     expect(agentMark('claude').color).toBe('#D97757');
     expect(agentMark('codex')).toMatchObject({ short: 'CX', color: '#10A37F' });
     expect(syncAgentName(null, 'codex')).toBe('Codex');
-    expect(forAgent(blankMcp(), 'pi') && !forAgent(blankMcp(), 'dsh')).toBe(true);
+    expect(forAgent(blankMcp(), 'codex') && !forAgent(blankMcp(), 'dsh')).toBe(true);
   });
 
   it('旧服务端的 meta 只有名称、接口、强度：其余用兜底', () => {

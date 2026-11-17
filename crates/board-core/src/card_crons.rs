@@ -963,7 +963,7 @@ mod tests {
         assert_eq!(n, 0, "白板删掉了，定时建卡也没了");
     }
 
-    /// 一台机器上报：有 claude（找到了）和 pi（没找到）；`dirs` 非空时配了工作空间（`/tmp`），为空时没配
+    /// 一台机器上报：有 claude（找到了）和 mycli（没找到）；`dirs` 非空时配了工作空间（`/tmp`），为空时没配
     fn host_up(s: &mut Store, name: &str, dirs: &[&str]) {
         host_report(s, name, dirs, &DirReady::default(), 0, T0);
     }
@@ -1001,7 +1001,7 @@ mod tests {
             resume: None,
             os: "macOS".into(),
             version: "0.1.24".into(),
-            agents: vec![agent("claude", "Claude Code", true), agent("pi", "pi", false)],
+            agents: vec![agent("claude", "Claude Code", true), agent("mycli", "mycli", false)],
             envs: vec![],
             workspace: (!dirs.is_empty()).then(|| HostWorkspace { path: "/tmp".into(), ..Default::default() }),
             dirs: dirs
@@ -1095,8 +1095,8 @@ mod tests {
         assert!(usage(create(&mut s, CardCronPatch { agent: Some("codex".into()), ..on("mbp") })).contains("没有 agent「codex」"));
         assert!(usage(create(&mut s, CardCronPatch { place: Some(INBOX.into()), ..on("mbp") })).contains("不派发"));
         // 没找到命令的 agent 也能先选上（到点时再看）
-        let c = create(&mut s, CardCronPatch { agent: Some("pi".into()), ..on("mbp") }).unwrap();
-        assert_eq!((c.host.as_deref(), c.agent.as_deref()), (Some("mbp"), Some("pi")));
+        let c = create(&mut s, CardCronPatch { agent: Some("mycli".into()), ..on("mbp") }).unwrap();
+        assert_eq!((c.host.as_deref(), c.agent.as_deref()), (Some("mbp"), Some("mycli")));
         // 换成随机：机器清掉、agent 跟着清（到点按挑中那台的默认 agent）；再换回指定的机器要重新选
         let c = update(&mut s, c.id, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..Default::default() }).unwrap();
         assert_eq!((c.pick.as_str(), c.host.as_deref(), c.agent), (PICK_RANDOM, None, None));
@@ -1154,11 +1154,11 @@ mod tests {
             w.exec(&b, &Actor::human(), Cmd::Delete { id })
         })
         .unwrap();
-        update(&mut s, c.id, CardCronPatch { agent: Some("pi".into()), ..Default::default() }).unwrap();
+        update(&mut s, c.id, CardCronPatch { agent: Some("mycli".into()), ..Default::default() }).unwrap();
         let r = s.write(t1 + 2 * MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
         let id2 = r.ran_card.expect("派不出去也建卡");
         let err = r.ran_err.expect("记下原因");
-        assert!(err.contains("pi"), "{err}");
+        assert!(err.contains("mycli"), "{err}");
         assert_eq!(r.ran_to, None);
         assert_eq!(*cols(&s)["todo"].last().unwrap(), id2, "留在待办");
         let none = s

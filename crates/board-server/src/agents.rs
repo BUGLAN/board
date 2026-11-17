@@ -27,7 +27,7 @@ pub(crate) struct CheckBody {
     /// 新版 CLI：要一个会话标识（旧版 CLI 不带，名字没有标识，规则和以前一样）
     #[serde(default)]
     session: bool,
-    /// 不带名字时：会话所在的 agent 标识（pi、claude、codex、dsh …），名字由服务端按机器设置生成
+    /// 不带名字时：会话所在的 agent 标识（claude、codex、dsh …），名字由服务端按机器设置生成
     #[serde(default)]
     agent: String,
     /// 不带名字时：本机配置的机器名（`~/.board/config.toml` 的 `[host] name`）；不带时按令牌认机器

@@ -88,7 +88,6 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 |---|---|---|
 | Claude Code | `~/.claude.json` 顶层 `mcpServers`（user scope） | 在它的启动环境里执行 `claude mcp add-json --scope user <名称> '<JSON>'`，改之前先 `claude mcp remove --scope user <名称>` |
 | Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `[mcp_servers.<名称>]` | 直接改文件：`command`、`args`、`env`，或 `url`、`http_headers` |
-| pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | 直接改文件：`command`、`args`、`env`，或 `url`、`headers` |
 | dsh | — | 不支持，界面上写「不支持」 |
 
 - 机器详情「设置 → skills 和 MCP」里 MCP 选了「用服务器的」才写（新机器默认「不改」：Board 不碰它的 MCP 配置，之前加的也不删）。
@@ -99,17 +98,16 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 ## 模型供应商：在「Agent → 模型供应商」里维护
 
-供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用；每台机器上每个内置 agent 在机器详情的 agent 页里选一个——**不改**（Board 不碰它的配置文件，新机器默认）或者「<供应商> · <模型>」，再选强度；agent 认几种接口、供应商也给了几种时（例如 pi 用一个同时给了 Anthropic 和 OpenAI Chat 的中转站），还可以指定用哪种接口，不指定时用供应商里第一个对得上的。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。供应商卡片底下按 agent 汇总哪几台机器在用它，点进去就是那台机器的 agent 页。
+供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用；每台机器上每个内置 agent 在机器详情的 agent 页里选一个——**不改**（Board 不碰它的配置文件，新机器默认）或者「<供应商> · <模型>」，再选强度；agent 认几种接口、供应商也给了几种时（例如 dsh 用一个同时给了 Anthropic 和 OpenAI Chat 的中转站），还可以指定用哪种接口，不指定时用供应商里第一个对得上的。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。供应商卡片底下按 agent 汇总哪几台机器在用它，点进去就是那台机器的 agent 页。
 
 | agent | 写到哪里 | 写什么 |
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；有强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
 | Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | `model_provider`、`[model_providers.board-<供应商>]`（`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort` |
-| pi | `~/.pi/agent/models.json` 的 `providers.board-<供应商>`（`api`、`apiKey`、`baseUrl`、`models`）；`~/.pi/agent/settings.json` 的 `defaultProvider`、`defaultModel`（有强度时还有 `defaultThinkingLevel`） | 按 pi 的 provider 格式写 |
 | dsh | `~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY` | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
 | 配置文件里新加的 agent、WSL 里的 agent | — | 不支持，界面上写「不支持」 |
 
-- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，pi、dsh 三种都认（用哪种可以在机器上指定，pi 的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
+- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，dsh 三种都认（用哪种可以在机器上指定，dsh 路由的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
 - 写之前检查：强度不在这个模型标的档位里就不写强度（界面上提示「<模型> 不支持强度 <档>：写配置时不写强度」）；Anthropic 的地址结尾的 `/v1` 保存时就去掉（Claude Code 自己接 `/v1/messages`），「获取模型」也按去掉后的地址问。
 - 只改 Board 管的那几项，文件里别的配置、注释和顺序不动；先写临时文件再整体换上；文件解析不了时整份不覆盖，上报「写入失败」和原因，修好文件后点「重试」再写。改成「不改」时之前写进去的不恢复，Board 只是不再碰它。
 - 什么时候写：board host 启动时写一次；服务器上的供应商、机器上的选择一改，服务端给受影响的在线机器下发「同步配置」请求，board host 写完上报（每个 agent 一行），记进那台机器的操作记录；离线的机器上线时写。已经在跑的 agent 不受影响，下一次启动读新的配置。
@@ -141,20 +139,19 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 | 6 | **运行中**把进度写到标准输出，最好是结构化的事件流（JSON 输出模式）。用事件流的，在 `events.rs` 里加解析、`logfmt.rs` 里加转写（见「写成内置模板」） | 只在结束时打印结果的：跑的过程中输出一直是空的，看不出它在干活还是卡住了；不是事件流的：「过程」里只能看原始输出，没有用量（不影响结果） |
 | 7 | 收到 SIGTERM 会退出 | 停止要等 10 秒后强制结束 |
 | 8 | `<命令> --version` 第一行是版本号 | 界面上只显示「找到了」（不影响使用） |
-| 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，非交互命令在里面能做完一张卡。Windows 上不支持的环境（例如 pi 不支持 cmd）不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
+| 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，非交互命令在里面能做完一张卡。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
 
 agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<机器名>/<模型名>-<强度>` 不超过 48 个字符）。它也是 skill 生成名字时 `board check --agent <标识>` 的参数（手动启动的会话按它取机器设置里的模型）；内置模板的标识见下表。
 
 ## 已经接入的（内置模板）
 
-内置模板写在 `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS` 里（board host、服务端、桌面端、界面都从这一处读）。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（自动领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<机器名>/<模型名>-<强度>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `mbp/pi`），配置文件里的 `model` 可以覆盖。
+内置模板写在 `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS` 里（board host、服务端、桌面端、界面都从这一处读）。**顺序就是默认 agent 的顺序**：本机找到的第一个是这台机器的默认 agent（自动领取用它，手动派发时预先选中它），机器详情里可以改。「支持的启动环境」的顺序就是默认选择的顺序；macOS、Linux 上都是登录 shell → 直接启动。「`PATH` 里没有时再看」的位置只在直接启动、登录 shell 里用。「默认模型」是派发的 agent 名字（`<机器名>/<模型名>-<强度>`）的第二段；`—` 表示这个 agent 没有默认的模型，名字的第二段用 agent 标识（例如 `mbp/codex`），配置文件里的 `model` 可以覆盖。
 
 | 顺序 | 标识 | 名称 | 命令模板 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
 |---|---|---|---|---|---|---|---|
 | 1 | `dsh` | DeepSeek Harness | `dsh --profile headless --patch {patch} --json --permission-mode danger-full-access {prompt}` | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 里配好模型 |
 | 2 | `claude` | Claude Code | `claude -p {prompt} --dangerously-skip-permissions --output-format stream-json --verbose` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login` |
-| 3 | `pi` | pi | `pi --mode json {prompt}` | — | `~/.agents/skills`（也读 `~/.pi/agent/skills`） | `git-bash` → `wsl:*` → `pwsh` → `powershell`（不支持 `cmd`） | `pi` 里配好 provider 和默认模型 |
-| 4 | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
+| 3 | `codex` | Codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox {prompt}` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login` |
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
@@ -164,14 +161,13 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 - **dsh**：`headless` 档案做完一个任务就退出。模板带 `--json`：运行中把事件写成 JSONL 到标准输出（`session`、`status`（每一步结束时带用量）、`thinking`、`text`、`tool_call`、`tool_result`、`final`、`error`，按 0.2.2 的 `@deepseek-ai/dsh-headless` 核实过），诊断照旧写标准错误；不带时最终回答写标准输出、推理写标准错误。`--json` 从 0.2.2 起才有：本机 `dsh --version` 更旧时 `board host` 去掉它，按原始输出运行（「过程」里只能看原始输出）。dsh 不报费用。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。`--permission-mode danger-full-access` 关掉沙箱、不审批；默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用。dsh 的 headless profile 默认还挂着 goal 工具和 goal-round-driver：模型一旦 `create_goal`，任务结束后会自动续一轮，进程退出时把被终止的续轮当成最后一轮（aborted/disposed），退出码变成 1。`board host` 每次 dsh 派发会写一份禁用 `goal-round-driver`、`tool-goal`、`command-goal` 的 profile 补丁，通过 `--patch {patch}` 传入（见 `crates/board-cli/src/dsh-headless.patch.yml`）。`--patch` 是 dsh 启动器的参数，必须放在 headless 的应用参数 `--json` 前面；放到后面会被 headless 当成自己的参数，报 `unknown option '--patch'`。启动时的「skipping profile bundle "dsh-ops"」是 dsh 自己的提示，不影响。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
 - **Claude Code**：`-p` 默认（文本输出）只在结束时打印结果，跑的过程中日志一直是空的。所以模板加了 `--output-format stream-json --verbose`（stream-json 要求带 `--verbose`）：每条消息、每次工具调用和结果都写一行 JSON，`board host` 转写后上传原始输出，同时解析成事件；最后一条 `result` 带用时、轮数、tokens（输入算上缓存的读写）和费用。子 agent（Task 工具）里的事件在「过程」里缩进显示。启动时标准错误里可能有一行 `[claude-code:unrecognized_model] {…}`（模型名不在它认识的列表里），不影响运行，原样留在日志里。配置文件里用 `[agents.claude] cmd` 覆盖了命令、又没带这两个参数的，日志照旧只在结束时才有内容。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报「Not logged in」，从自己的终端或桌面端运行就好。
-- **pi**：`-p` 只在结束时把最终回答写到标准输出，跑的过程中日志一直是空的。模板改用 `--mode json`：同样跑完就退出，运行中把会话事件写成 JSONL（pi 文档 `docs/json.md`），`board host` 转写后上传，同时解析成事件；流式片段（`message_update`）不显示，只显示说完的话、工具调用和结果、重试、压缩上下文、结束。pi 没有整次运行的汇总：用量按每条消息报的加起来，在 `agent_settled` 时记进结束事件。pi 本身不做权限审批。`/board-skills …` 和 `/skill:board-skills …` 两种写法都会加载 skill。Windows 上 pi 用 Git Bash 执行命令，默认的启动环境就是 Git Bash；在 PowerShell 里启动时，`board host` 会从 `PATH` 里的 `git` 找到 Git 安装目录（`<Git>\bin\git.exe`、`<Git>\cmd\git.exe`、`<Git>\mingw64\bin\git.exe` 三种布局都认），把它下面的 `bin` 放到 pi 的 `PATH` 前面，所以 Git 不在 `C:\Program Files\Git` 也能用；找不到 Git Bash 时在 `~/.pi/agent/settings.json` 里设置 `shellPath`。pi 不支持 cmd。
 - **Codex**：`codex exec` 做完一个任务就退出；`--dangerously-bypass-approvals-and-sandbox` 不审批、不开沙箱（`board-skills` 要 `git push`、访问服务端）。模板带 `--json`：运行中把事件写成 JSONL（文档 `docs/exec.md`：`thread.started`、`turn.completed`（带这一轮的 tokens）、`turn.failed`、`item.started` / `item.completed` 里的 `agent_message`、`command_execution`、`file_change`、`mcp_tool_call`、`web_search`、`todo_list`、`error`）；命令显示成 `shell`，去掉外面的 `bash -lc '…'`。Codex 不报费用。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
 
 ## 安装和更新 agent
 
 机器详情「agent」页会显示每个内置 agent 的版本、安装方式（npm 全局、Homebrew、官方安装脚本、桌面 app 自带或配置文件）和有没有新版本。board host 每天在后台查一次 npm 上的最新版本，不把网络请求放进 10 秒心跳；打开机器详情看到的是最近一次检查的结果。
 
-- 没找到的内置 agent 给出安装命令，可以复制到那台机器执行，也可以在界面点「安装」由 board host 执行。macOS、Linux 上 npm 包装进 `~/.local`（`npm install -g --prefix ~/.local …`），不需要管理员权限；board host 也会在 `~/.local/bin` 找命令。首次装进用户目录后把 `~/.local/bin` 写进登录 shell 的配置（zsh 的 `~/.zshrc`、bash 的 profile、fish 的 `config.fish`，只追加一次），新开终端也能直接敲命令。四个内置 agent 的 npm 包分别是 `@deepseek-ai/dsh`（用 `next` 标签）、`@anthropic-ai/claude-code`、`@mariozechner/pi-coding-agent`、`@openai/codex`。
+- 没找到的内置 agent 给出安装命令，可以复制到那台机器执行，也可以在界面点「安装」由 board host 执行。macOS、Linux 上 npm 包装进 `~/.local`（`npm install -g --prefix ~/.local …`），不需要管理员权限；board host 也会在 `~/.local/bin` 找命令。首次装进用户目录后把 `~/.local/bin` 写进登录 shell 的配置（zsh 的 `~/.zshrc`、bash 的 profile、fish 的 `config.fish`，只追加一次），新开终端也能直接敲命令。三个内置 agent 的 npm 包分别是 `@deepseek-ai/dsh`（用 `next` 标签）、`@anthropic-ai/claude-code`、`@openai/codex`。
 - 找到的按命令实际路径识别安装方式：npm 全局沿实际安装目录用 `npm install -g --prefix <prefix> <包>@<版本>`，Homebrew 用 `brew upgrade <formula>`，官方安装脚本用命令自己的 `update`，桌面 app 自带的随 app 更新。npm 全局目录当前用户写不了时（例如以前用管理员权限装进了 `/usr/local`），直接把目标版本装到 `~/.local`，并把 `~/.local/bin` 放到登录 shell 的 PATH 前面；系统目录里的旧版本不动，board host 和用户新开终端都用较新的用户目录版本，不需要 sudo。装完 board host 自动重新检查并上报新版本；失败原因留在卡片上，可以重试。更新在后台子进程里跑，不占会话位，不影响正在跑的派发。
 - 机器设置「agent 更新 → 自动更新 agent」默认关。开着时，board host 发现有新版本、这台机器没有在跑的派发，就按上面同一套方式更新，机器操作记录里写「自动更新 <agent> 到 <版本>」；失败后把卡片标成失败，等人重试，不会每 10 秒反复重试。
 - 配置文件里新加的 agent、改了内置 agent 启动命令的，以及 WSL 里的 agent 只显示版本和原因，不代装、不代升。
@@ -188,11 +184,11 @@ board skills rm my-skill                        # 从库里删掉，各台机器
 
 下面是不跑 board host 时手动装的办法。
 
-agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，agent 也会读工作目录（仓库根目录）里的 skill：dsh、pi 读 `.agents/skills`（pi 还读 `.pi/skills`），Claude Code 只读 `.claude/skills`、不读 `.agents/skills`。所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍；给 Claude Code 用时再在仓库里建一个 `.claude/skills/board-skills` 链接指向它。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
+agent 在哪个目录找 skill，就把 `board-skills` 放到哪里（上表「读 skill 的目录」）。除了用户级目录，agent 也会读工作目录（仓库根目录）里的 skill：dsh、Codex 读 `.agents/skills`，Claude Code 只读 `.claude/skills`、不读 `.agents/skills`。所以把 skill 放在仓库的 `.agents/skills/board-skills` 也可以，不用每台机器再装一遍；给 Claude Code 用时再在仓库里建一个 `.claude/skills/board-skills` 链接指向它。推荐解压发版附件 `board-skills.zip`（带各平台的 `board`）；在 Board 仓库里开发时用链接：
 
 ```sh
 mkdir -p ~/.agents/skills ~/.claude/skills
-ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.agents/skills/board-skills   # dsh、pi 等
+ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.agents/skills/board-skills   # dsh 等
 ln -sfn "<Board 仓库>/.agents/skills/board-skills" ~/.claude/skills/board-skills   # Claude Code
 ```
 
@@ -204,7 +200,7 @@ ls ~/.agents/skills/board-skills/{SKILL,work,plan,host,reference}.md
 
 只复制 `SKILL.md` 不够（分文件缺了，agent 读不到那部分规则）：解压 `board-skills.zip` 或链接整个目录。
 
-用 Board 桌面端让这台电脑接任务时，可以不手动装：board host 启动时就会装上。看不到时，「机器」里点开这台机器，agent 页里那个 agent 的卡片上写「缺 board-skills」，点「装上」让 board host 再同步一次（它把 skill 写进这些 agent 读 skill 的用户级目录：dsh、pi 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`；已经是有效链接的不动）。WSL 里的 agent 仍按上面手动装。
+用 Board 桌面端让这台电脑接任务时，可以不手动装：board host 启动时就会装上。看不到时，「机器」里点开这台机器，agent 页里那个 agent 的卡片上写「缺 board-skills」，点「装上」让 board host 再同步一次（它把 skill 写进这些 agent 读 skill 的用户级目录：dsh 是 `~/.agents/skills`，Claude Code 是 `~/.claude/skills`，Codex 是 `$CODEX_HOME/skills`；已经是有效链接的不动）。WSL 里的 agent 仍按上面手动装。
 
 ## 按批次接入新的 agent
 
@@ -296,14 +292,13 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 |---|---|
 | 派发结果「异常退出（退出码 0）」，日志里 agent 说不认识 `/board-skills` | 没装 `board-skills`，或链接指向的目录不存在 |
 | 日志第一行就是登录错误（例如「Not logged in」） | 这台机器上的 agent 还没登录 |
-| pi 的日志说 bash 工具完全不可用，错误里有 `HCS_E_SERVICE_NOT_AVAILABLE` | Windows 上 pi 落到了 WSL 的 `bash.exe`：装 Git for Windows，或在 `~/.pi/agent/settings.json` 里设置 `shellPath`；`board host` 会把 PATH 里那套 Git 的 Git Bash 放到 pi 前面 |
 | 「机器」里这个 agent 显示「没找到」 | 在它用的启动环境里找不到命令：看机器详情的启动环境下拉，换一个找得到的环境；或者在那个环境的启动脚本（`~/.zshrc`、`~/.bashrc`、PowerShell 的 `$PROFILE`）里把它加进 `PATH`；在配置文件里写绝对路径也行 |
 | WSL 里显示「没找到」，可 WSL 的终端里能运行 | 装在 `/mnt/` 下的是 Windows 程序，不算；在 WSL 里另装一份 Linux 版 |
 | 在 WSL 里派发，日志里 `board` 报找不到命令或连不上 | WSL 里没装 `board-skills`（它自带 Linux 版 `board`），或者 WSL 里的 skill 太旧 |
 | 日志开头有 `bash: cannot set terminal process group`、`no job control` | 交互式 shell 没有终端时的提示，不影响 |
 | 一直在跑、日志不动 | agent 在等审批或输入：模板里少了跳过审批的参数，或者它的非交互模式不是这个 |
-| 一直在跑、日志是空的（或者 Claude Code 只有一行 `[claude-code:unrecognized_model]`），结束时才突然出现结果 | agent 用的是只在结束时打印的模式：旧版 `board host` 的内置模板（Claude Code、pi 的 `-p`），或者配置文件里覆盖的命令没带事件流参数。升级 `board host`，或者按上表的模板在 `[agents.<标识>] cmd` 里补上参数 |
-| 原始输出里是一行一行的 JSON，「过程」里写只能看原始输出 | 配置文件里给别的标识的 agent 用了 JSON 输出：`board host` 只解析内置的 Claude Code（`claude`）、pi（`pi`）、Codex（`codex`）、dsh（`dsh`）四个标识，而且命令里要带事件流参数；换回文本输出，或者按「写成内置模板」接上它的解析 |
+| 一直在跑、日志是空的（或者 Claude Code 只有一行 `[claude-code:unrecognized_model]`），结束时才突然出现结果 | agent 用的是只在结束时打印的模式：旧版 `board host` 的内置模板（Claude Code 的 `-p`），或者配置文件里覆盖的命令没带事件流参数。升级 `board host`，或者按上表的模板在 `[agents.<标识>] cmd` 里补上参数 |
+| 原始输出里是一行一行的 JSON，「过程」里写只能看原始输出 | 配置文件里给别的标识的 agent 用了 JSON 输出：`board host` 只解析内置的 Claude Code（`claude`）、Codex（`codex`）、dsh（`dsh`）三个标识，而且命令里要带事件流参数；换回文本输出，或者按「写成内置模板」接上它的解析 |
 | dsh 的「过程」里只能看原始输出 | 本机的 dsh 比 0.2.2 旧，没有 `--json`：升级 DeepSeek Harness |
 | 日志里 `board` 报 `INVALID_TOKEN`，或者连到了别的服务端 | agent 没把 `BOARD_CONFIG` 传给它执行的命令（或者它的 shell 启动脚本里又设了 `BOARD_URL`、`BOARD_TOKEN`）：在它的设置里放行这几个变量。也可能是 skill 太旧：旧版 `scripts/board` 不认 `BOARD_EXE`，用的是 skill 里打包的旧 `board`，更新 skill |
 | 桌面端「这台电脑」开始接任务后马上停了，输出里是「未知命令「host」」 | 桌面端旁边的 `board` 是旧版：重新编译它（`node scripts/build-sidecar.mjs --debug`，`npm run desktop:dev` 会先做这一步） |

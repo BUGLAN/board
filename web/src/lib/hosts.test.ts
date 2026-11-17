@@ -28,15 +28,14 @@ describe('skillGaps（看不到 board-skills 的 agent 分组）', () => {
     const h = host([
       agent('claude', { env: 'pwsh', no_skill: '~/.claude/skills/board-skills' }),
       agent('dsh', { env: 'pwsh', no_skill: '~/.agents/skills/board-skills' }),
-      agent('pi', { env: 'pwsh', no_skill: '~/.agents/skills/board-skills' }),
       agent('codex', { env: 'wsl:Ubuntu', no_skill: 'WSL（Ubuntu）里的 $CODEX_HOME/skills/board-skills' }),
       agent('mine', { no_skill: '~/.mine/skills/board-skills' }),
       agent('ok'),
       agent('gone', { found: false, no_skill: '~/.x' }),
     ]);
     const g = skillGaps(h);
-    expect(g.missing.map(a => a.id)).toEqual(['claude', 'dsh', 'pi', 'codex', 'mine']);
-    expect(g.auto.map(a => a.id)).toEqual(['claude', 'dsh', 'pi']);
+    expect(g.missing.map(a => a.id)).toEqual(['claude', 'dsh', 'codex', 'mine']);
+    expect(g.auto.map(a => a.id)).toEqual(['claude', 'dsh']);
     expect(g.manual.map(a => a.id)).toEqual(['codex', 'mine']);
     expect(g.dirs).toEqual(['~/.claude/skills', '~/.agents/skills']);
     expect(g.manualPlaces).toEqual(['WSL（Ubuntu）里的 $CODEX_HOME/skills/board-skills', '~/.mine/skills/board-skills']);
@@ -272,7 +271,7 @@ describe('添加机器：一行安装命令', () => {
 
 describe('自检', () => {
   const now = 1_800_000_000_000;
-  const h = (x: Partial<HostInfo> = {}): HostInfo => ({ ...host([agent('claude'), agent('pi', { name: 'pi' })]), online: true, ...x }) as HostInfo;
+  const h = (x: Partial<HostInfo> = {}): HostInfo => ({ ...host([agent('claude'), agent('codex', { name: 'Codex' })]), online: true, ...x }) as HostInfo;
   it('没有请求时没有状态；正在做、等上线、过期分别写明', () => {
     expect(selftestState(h({ selftest: { items: [] } }), now)).toBeNull();
     const ask = { id: 3, by: 'octocat', at: now - 10_000 };
@@ -291,12 +290,12 @@ describe('自检', () => {
           items: [
             { kind: 'version', key: 'board', ok: false, why: 'board 0.1.1 落后于服务端 0.1.19', at: now },
             { kind: 'git', key: 'default/main', ok: true, at: now },
-            { kind: 'agent', key: 'pi', ok: false, why: '没有登录：Not logged in', at: now },
+            { kind: 'agent', key: 'codex', ok: false, why: '没有登录：Not logged in', at: now },
           ],
         },
       }),
     );
-    expect(rows.map(r => r.label)).toEqual(['pi', 'default/main 的仓库', 'board 版本']);
+    expect(rows.map(r => r.label)).toEqual(['Codex', 'default/main 的仓库', 'board 版本']);
   });
 });
 
@@ -334,8 +333,8 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
     expect(agentIdOf('dsh-win-2.lan/deepseek-v4.1-flash-4')).toBe('dsh');
   });
 
-  it('没有机器名、只有 `<标识>/<模型名>`（pi/pi）', () => {
-    expect(agentIdOf('pi/pi')).toBe('pi');
+  it('没有机器名、只有 `<标识>/<模型名>`（codex/codex）', () => {
+    expect(agentIdOf('codex/codex')).toBe('codex');
     expect(agentIdOf('dsh/anything')).toBe('dsh');
   });
 
@@ -343,6 +342,7 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
     expect(agentIdOf('alpha')).toBeNull();
     expect(agentIdOf('我的助手')).toBeNull();
     expect(agentIdOf('my-dsh/1')).toBeNull();
+    expect(agentIdOf('pi/pi')).toBeNull(); // pi 已经不是内置 agent
     expect(agentIdOf('')).toBeNull();
     expect(agentIdOf(null)).toBeNull();
     expect(agentIdOf(undefined)).toBeNull();
@@ -358,7 +358,7 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
   it('服务端带了 agent 标识时优先用它：新名字 <机器名>/<模型名>-<强度> 里没有标识也画得出来', () => {
     expect(agentIdFor('win/opus-5.5-high', 'claude')).toBe('claude');
     expect(agentIdFor('win/opus-5.5-high', null)).toBeNull();
-    expect(agentIdFor('dsh-win/deepseek-v4.1-flash', 'pi')).toBe('pi');
+    expect(agentIdFor('dsh-win/deepseek-v4.1-flash', 'codex')).toBe('codex');
     const mark = agentMarkOf('win/opus-5.5-high', 'claude');
     expect(mark.icon).toBe(agentMark('claude').icon);
     expect(mark.color).toBe(agentMark('claude').color);
@@ -368,7 +368,6 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
     const dsh = agentMark('dsh');
     expect(agentMarkOf('dsh-win/deepseek-v4.1-flash').icon).toBe(dsh.icon);
     expect(agentMarkOf('dsh-win/deepseek-v4.1-flash').color).toBe(dsh.color);
-    expect(agentMarkOf('pi/pi').icon).toBe(agentMark('pi').icon);
     // Codex 现在有自己的图标
     expect(agentMark('codex').icon).toBeTruthy();
     expect(agentMarkOf('codex-win/codex').icon).toBe(agentMark('codex').icon);
@@ -384,7 +383,7 @@ describe('按 agent 名字认出标识（agentIdOf）', () => {
 
 describe('能不能接（服务端算好，界面照着用）', () => {
   const mac = { ...host([agent('claude')]), workspace: { path: '/w' } } as HostInfo;
-  const win = { ...host([agent('claude', { tripped: true }), agent('pi', { found: false, env: 'pwsh' })]), id: 2, name: 'win', workspace: { path: 'D:\\w' } } as HostInfo;
+  const win = { ...host([agent('claude', { tripped: true }), agent('codex', { found: false, env: 'pwsh' })]), id: 2, name: 'win', workspace: { path: 'D:\\w' } } as HostInfo;
   const ws = (blocks?: Workspace['blocks']): Workspace => ({ rev: 1, now: 0, projects: [], hosts: [mac, win], blocks });
 
   it('blockOf：按机器和白板找原因；别的白板、旧版服务端（没有这一项）都当能接', () => {

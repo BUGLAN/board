@@ -698,10 +698,8 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
     None
 }
 
-/// Windows 上从 PATH 里的 git 推出 Git Bash 的目录（`<Git>\bin`）。
-/// pi 只认 `%ProgramFiles%\Git\bin\bash.exe`，Git 装在 D 盘这类位置时会回落到 PATH 里的
-/// `bash.exe`——那常常是 `C:\Windows\System32\bash.exe`（WSL），WSL 没启用时 pi 的命令都跑不了。
-pub fn git_bash_dir() -> Option<PathBuf> {
+/// Windows 上从 PATH 里的 git 推出 Git Bash 的目录（`<Git>\bin`）：Git 不在 `%ProgramFiles%` 下（例如装在 D 盘）时靠它找 Git Bash
+fn git_bash_dir() -> Option<PathBuf> {
     if !cfg!(windows) {
         return None;
     }
@@ -775,31 +773,31 @@ mod tests {
     #[test]
     fn wraps_commands_per_env() {
         let login = Env::new(Kind::Login, PathBuf::from("/bin/zsh"));
-        let c = login.command("pi", &s(&["-p", PROMPT]), None, true);
+        let c = login.command("claude", &s(&["-p", PROMPT]), None, true);
         assert_eq!(c.get_program(), "/bin/zsh");
         let a = args(&c);
         assert_eq!(&a[..3], &["-l", "-i", "-c"]);
         assert!(a[3].ends_with(r#"exec "$0" "$@""#) && a[3].contains("BOARD_HOST_URL"), "{}", a[3]);
-        assert_eq!(&a[4..], &["pi", "-p", PROMPT], "提示词是独立参数");
+        assert_eq!(&a[4..], &["claude", "-p", PROMPT], "提示词是独立参数");
         // 检查版本号时不覆盖连接
-        assert_eq!(args(&login.command("pi", &s(&["--version"]), None, false))[3], r#"exec "$0" "$@""#);
+        assert_eq!(args(&login.command("claude", &s(&["--version"]), None, false))[3], r#"exec "$0" "$@""#);
 
         let wsl = Env::new(Kind::Wsl("Ubuntu".into()), PathBuf::from(r"C:\Windows\System32\wsl.exe"));
         assert_eq!((wsl.id.as_str(), wsl.name.as_str()), ("wsl:Ubuntu", "WSL（Ubuntu）"));
-        let a = args(&wsl.command("pi", &s(&["-p", PROMPT]), Some(Path::new(r"D:\repo\board")), true));
+        let a = args(&wsl.command("claude", &s(&["-p", PROMPT]), Some(Path::new(r"D:\repo\board")), true));
         assert_eq!(&a[..9], &["-d", "Ubuntu", "--cd", r"D:\repo\board", "--exec", "setsid", "-w", "bash", "-l"]);
         assert!(a[11].starts_with(r#"[ -n "$BOARD_PIDFILE" ] && echo $$"#), "{}", a[11]);
-        assert_eq!(&a[12..], &["pi", "-p", PROMPT]);
+        assert_eq!(&a[12..], &["claude", "-p", PROMPT]);
         assert_eq!(wsl.report().path, "Ubuntu", "WSL 写发行版名");
 
         let git = Env::new(Kind::GitBash, PathBuf::from(r"D:\Git\bin\bash.exe"));
-        let a = args(&git.command("pi", &s(&["-p", PROMPT]), None, true));
+        let a = args(&git.command("claude", &s(&["-p", PROMPT]), None, true));
         assert_eq!(&a[..2], &["-l", "-c"]);
-        assert_eq!(&a[3..], &["pi", "-p", PROMPT]);
+        assert_eq!(&a[3..], &["claude", "-p", PROMPT]);
 
         let direct = Env::direct();
-        let c = direct.command("/usr/local/bin/pi", &s(&["-p", PROMPT]), None, true);
-        assert_eq!(c.get_program(), "/usr/local/bin/pi");
+        let c = direct.command("/usr/local/bin/claude", &s(&["-p", PROMPT]), None, true);
+        assert_eq!(c.get_program(), "/usr/local/bin/claude");
         assert_eq!(args(&c), &["-p", PROMPT]);
     }
 
@@ -816,10 +814,10 @@ mod tests {
 
     #[test]
     fn powershell_and_cmd_quoting() {
-        let script = ps_script("pi", &s(&["-p", "it's"]), false);
-        assert!(script.contains("& 'pi' '-p' 'it''s'; "), "{script}");
+        let script = ps_script("claude", &s(&["-p", "it's"]), false);
+        assert!(script.contains("& 'claude' '-p' 'it''s'; "), "{script}");
         assert!(script.ends_with("exit $LASTEXITCODE"), "退出码就是 agent 的");
-        assert!(ps_script("pi", &[], true).contains("$env:BOARD_URL = $env:BOARD_HOST_URL"));
+        assert!(ps_script("claude", &[], true).contains("$env:BOARD_URL = $env:BOARD_HOST_URL"));
         assert_eq!(cmd_line("dsh", &s(&["--profile", "headless", PROMPT])), format!("/d /s /c \"dsh \"--profile\" \"headless\" \"{PROMPT}\"\""));
         // 命令名是普通名字时不加引号：加了引号的 .cmd 拿到的 %~dp0 是当前目录，脚本里拼的相对路径会找错
         assert_eq!(cmd_line(r"C:\Program Files\dsh.cmd", &s(&["--version"])), r#"/d /s /c ""C:\Program Files\dsh.cmd" "--version"""#);
@@ -880,9 +878,9 @@ mod tests {
             Env::new(Kind::Wsl("Debian".into()), PathBuf::from("wsl.exe")),
             Env::direct(),
         ];
-        let pi = s(&["git-bash", "wsl:*", "pwsh", "powershell"]);
-        let ids: Vec<&str> = supported(&pi, &envs).iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["git-bash", "wsl:Ubuntu", "wsl:Debian", "pwsh"], "pi 不支持 cmd；本机没有的跳过");
+        let order = s(&["git-bash", "wsl:*", "pwsh", "powershell"]);
+        let ids: Vec<&str> = supported(&order, &envs).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["git-bash", "wsl:Ubuntu", "wsl:Debian", "pwsh"], "不在顺序里的（cmd）不选；本机没有的跳过");
     }
 
     #[test]

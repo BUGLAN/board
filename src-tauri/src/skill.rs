@@ -175,7 +175,6 @@ mod tests {
         let h = Path::new("/h");
         assert_eq!(user_dir("claude", h, None), Some(h.join(".claude/skills")));
         assert_eq!(user_dir("dsh", h, None), Some(h.join(".agents/skills")));
-        assert_eq!(user_dir("pi", h, None), Some(h.join(".agents/skills")));
         assert_eq!(user_dir("codex", h, None), Some(h.join(".codex/skills")));
         assert_eq!(user_dir("codex", h, Some("/c")), Some(PathBuf::from("/c/skills")));
         assert_eq!(user_dir("codex", h, Some("  ")), Some(h.join(".codex/skills")), "空的 CODEX_HOME 当没设");

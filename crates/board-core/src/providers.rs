@@ -8,7 +8,7 @@
 //!   `/v1/messages`）。写 agent 配置文件和「获取模型」（[`models_url`]）都按规范化后的地址。
 //! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型不能选强度，写配置时也不写强度（[`writable_efforts`]）。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
-//! - 每个内置 agent（claude、codex、pi、dsh）用哪个供应商、哪个模型、什么强度、哪种接口：在每台机器上选「不改 / 指定」
+//! - 每个内置 agent（claude、codex、dsh）用哪个供应商、哪个模型、什么强度、哪种接口：在每台机器上选「不改 / 指定」
 //!   （机器设置的 `run`，见 hosts.rs 的 [`crate::hosts::AgentRun`]）；服务器上不再存一份给所有机器跟的。
 //! - 改了算配置有变化：服务端给受影响的机器下发「同步配置」请求（hosts.rs 的 `request_config_sync`）。
 
@@ -45,7 +45,7 @@ pub const ALL_EFFORTS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "
 pub const PROVIDER_LOCAL: &str = "@local";
 
 /// 规范化一个接口的地址：去掉首尾空白和结尾的 `/`；Anthropic 的再去掉结尾的 `/v1`
-/// （Claude Code、pi、dsh 自己会接 `/v1/messages`，地址里带着会变成 `/v1/v1/messages`，#344）
+/// （Claude Code、dsh 自己会接 `/v1/messages`，地址里带着会变成 `/v1/v1/messages`，#344）
 pub fn normalize_url(interface: &str, url: &str) -> String {
     let mut u = url.trim().trim_end_matches('/').to_string();
     if interface == "anthropic" {
@@ -512,16 +512,16 @@ mod tests {
         let p = Provider { endpoints: vec![ep("openai-chat", "https://x/v1"), ep("anthropic", "https://x"), ep("openai-responses", "https://x/v1")], ..provider("p") };
         let pick = |agent: &str, protocol: &str| p.endpoint_for(agent, protocol).map(|e| e.interface.clone());
         // 没指定：供应商里第一个这个 agent 认的
-        assert_eq!(pick("pi", ""), Some("openai-chat".into()));
+        assert_eq!(pick("dsh", ""), Some("openai-chat".into()));
         assert_eq!(pick("claude", ""), Some("anthropic".into()));
         // 指定了、供应商给着、agent 也认
-        assert_eq!(pick("pi", "openai-responses"), Some("openai-responses".into()));
+        assert_eq!(pick("dsh", "openai-responses"), Some("openai-responses".into()));
         // agent 不认指定的那种：回到第一个对得上的
         assert_eq!(pick("claude", "openai-chat"), Some("anthropic".into()));
         // 对不上任何一种
         let chat = Provider { endpoints: vec![ep("openai-chat", "https://x/v1")], ..provider("c") };
         assert_eq!(chat.endpoint_for("codex", ""), None);
-        assert!(!chat.fits("codex") && chat.fits("pi"));
+        assert!(!chat.fits("codex") && chat.fits("dsh"));
     }
 
     #[test]

@@ -916,7 +916,6 @@
   环境    cmd、Windows PowerShell、PowerShell 7、Git Bash、WSL（Ubuntu-24.04）、直接启动
   agent   dsh DeepSeek Harness  0.2.2-rc.1 · PowerShell 7（默认）
           claude Claude Code  2.1.322 (Claude Code) · PowerShell 7
-          pi pi  1.5.2 · Git Bash
           codex Codex  codex-cli 0.167.1 · PowerShell 7
   工作空间C:\Users\you\repo
   白板    oss/main → C:\Users\you\repo\oss
@@ -924,7 +923,7 @@
   Ctrl+C 退出（先结束本机由它启动的 agent）
 21:05:12 ✓ 同步配置：skills：装上 ~/.claude/skills/board-skills → 3c66ab9e505f
 21:07:40 ✓ 同步配置：把供应商 newapi 写进 claude（模型 claude-sonnet-5-5，强度 high）
-21:07:40 ! 同步配置有没写进去的：pi：pi：settings.json 不是 JSON：expected value at line 12 column 1
+21:07:40 ! 同步配置有没写进去的：codex：Codex：config.toml 解析不了：expected `.`, `=` at line 12 column 1
 ```
 
 `--install`、`--uninstall`、`rename <新机器名>` 也输出这类进度和结果行，没有一次性的 JSON。

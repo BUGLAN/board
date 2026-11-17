@@ -91,7 +91,7 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
         return;
       }
       if (!found.length) {
-        toast({ type: 'info', title: '这台电脑上没找到 MCP 服务器', text: '看的是 Claude Code、Codex、pi 的用户级配置' });
+        toast({ type: 'info', title: '这台电脑上没找到 MCP 服务器', text: '看的是 Claude Code、Codex 的用户级配置' });
         return;
       }
       const have = new Set(list?.map(x => x.name));
@@ -134,7 +134,7 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
         <div>
           <h2>MCP 服务器</h2>
           <p>
-            机器选了「用服务器的」，board host 把这里的 MCP 服务器写进 Claude Code、Codex、pi 的用户级配置（dsh 不支持）。{' '}
+            机器选了「用服务器的」，board host 把这里的 MCP 服务器写进 Claude Code、Codex 的用户级配置（dsh 不支持）。{' '}
             <HowTip tip="agent 里已有同名的换成这里的，原来的值存进 ~/.board/host/ 下的备份文件。值可以标成密钥：只存在服务端，界面上只显示末尾 4 位，完整值只发给 board host。" />
           </p>
         </div>
@@ -252,7 +252,7 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
 }
 
 /** 添加 / 修改：居中弹窗，和模型供应商的表单同一种样子——类型（两块磁贴）、连接（名称；本地命令是命令 + 参数胶囊 + 整条命令的预览，远程 HTTP 是地址）、
- *  环境变量 / 请求头（名字 = 值，「密钥」开关）、同步给（Claude Code、Codex、pi 各一块，全选 = 所有支持的）；底部写会写进哪些 agent。点保存先在界面上校验 */
+ *  环境变量 / 请求头（名字 = 值，「密钥」开关）、同步给（Claude Code、Codex 各一块，全选 = 所有支持的）；底部写会写进哪些 agent。点保存先在界面上校验 */
 function McpForm({ value: s, editing, busy, existing, onChange, onSave, onCancel }: { value: McpServer; editing: boolean; busy: boolean; existing: string[]; onChange: (s: McpServer) => void; onSave: () => void; onCancel: () => void }) {
   const [tried, setTried] = useState(false);
   const field = s.kind === 'stdio' ? 'env' : 'headers';

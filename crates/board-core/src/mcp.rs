@@ -91,7 +91,7 @@ pub struct McpState {
     pub why: Option<String>,
 }
 
-/// 名称：字母、数字、`_`、`-`，以字母或数字开头，最长 64 个字符（pi 只认这些字符）
+/// 名称：字母、数字、`_`、`-`，以字母或数字开头，最长 64 个字符
 pub fn check_name(name: &str) -> Result<()> {
     let ok = !name.is_empty()
         && name.len() <= 64
@@ -346,17 +346,16 @@ mod tests {
         let out = put(&mut s, http).unwrap();
         assert!(out.command.is_empty() && out.env.is_empty(), "http 不留 stdio 的字段");
         assert_eq!(out.headers[0].tail.as_deref(), Some(" abc"));
-        assert!(out.for_agent("claude") && out.for_agent("pi") && !out.for_agent("dsh"));
+        assert!(out.for_agent("claude") && out.for_agent("codex") && !out.for_agent("dsh"));
         let only = McpServer { agents: vec!["codex".into()], ..stdio(vec![]) };
         assert!(only.for_agent("codex") && !only.for_agent("claude"));
     }
 }
 
-/// 各 agent 的 MCP 配置文件（PRD §10.16「共用配置」）：读出已有的条目（判断同名、桌面端「从本机导入」），改写 Codex、pi 的文件。
+/// 各 agent 的 MCP 配置文件（PRD §10.16「共用配置」）：读出已有的条目（判断同名、桌面端「从本机导入」），改写 Codex 的文件。
 /// Claude Code 的 `~/.claude.json` 它自己经常改写，只读不写：写用 `claude mcp add-json / remove --scope user`（board-cli）。
 /// - Claude Code：`~/.claude.json` 顶层 `mcpServers`：`{command, args, env}` 或 `{type: "http", url, headers}`
 /// - Codex：`$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `[mcp_servers.<名称>]`：`command`、`args`、`env` 或 `url`、`http_headers`
-/// - pi：`~/.pi/agent/mcp.json` 的 `mcpServers`：`{command, args, env}` 或 `{url, headers}`
 #[cfg(feature = "config")]
 pub mod files {
     use super::{McpServer, McpVar};
@@ -395,7 +394,7 @@ pub mod files {
         }
     }
 
-    /// JSON 的 `mcpServers`（Claude Code、pi 一样的写法）；认不出的（sse、ws）跳过
+    /// Claude Code 的 JSON `mcpServers`；认不出的（sse、ws）跳过
     fn read_json_servers(v: &Value) -> Vec<McpServer> {
         let Some(m) = v.get("mcpServers").and_then(Value::as_object) else { return vec![] };
         let mut out = vec![];
@@ -421,7 +420,7 @@ pub mod files {
         out
     }
 
-    /// Claude Code 的 `~/.claude.json`、pi 的 `~/.pi/agent/mcp.json`：已有的条目
+    /// Claude Code 的 `~/.claude.json`：已有的条目
     pub fn read_json(text: &str) -> Vec<McpServer> {
         serde_json::from_str::<Value>(text).map(|v| read_json_servers(&v)).unwrap_or_default()
     }
@@ -460,49 +459,21 @@ pub mod files {
         Value::Object(vs.iter().map(|v| (v.key.clone(), Value::String(v.value.clone().unwrap_or_default()))).collect())
     }
 
-    /// Claude Code、pi 的一项（`claude mcp add-json` 的 JSON、`mcp.json` 里的值）
-    pub fn json_entry(s: &McpServer, typed: bool) -> Value {
+    /// Claude Code 的一项（`claude mcp add-json` 的 JSON，带 `type`）
+    pub fn json_entry(s: &McpServer) -> Value {
         if s.kind == "http" {
-            let mut v = json!({ "url": s.url });
-            if typed {
-                v["type"] = json!("http");
-            }
+            let mut v = json!({ "type": "http", "url": s.url });
             if !s.headers.is_empty() {
                 v["headers"] = obj(&s.headers);
             }
             v
         } else {
-            let mut v = json!({ "command": s.command, "args": s.args });
-            if typed {
-                v["type"] = json!("stdio");
-            }
+            let mut v = json!({ "type": "stdio", "command": s.command, "args": s.args });
             if !s.env.is_empty() {
                 v["env"] = obj(&s.env);
             }
             v
         }
-    }
-
-    /// pi 的 `mcp.json`：加上或换掉一项，保留别的
-    pub fn pi_upsert(text: &str, s: &McpServer) -> Result<String> {
-        let mut v: Value = if text.trim().is_empty() { json!({}) } else { serde_json::from_str(text).map_err(|e| BoardError::usage(format!("mcp.json 不是 JSON：{e}")))? };
-        if !v.is_object() {
-            return Err(BoardError::usage("mcp.json 不是 JSON 对象"));
-        }
-        if !v.get("mcpServers").is_some_and(Value::is_object) {
-            v["mcpServers"] = json!({});
-        }
-        v["mcpServers"][&s.name] = json_entry(s, false);
-        Ok(serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
-    }
-
-    /// pi 的 `mcp.json`：删掉一项
-    pub fn pi_remove(text: &str, name: &str) -> Result<String> {
-        let mut v: Value = serde_json::from_str(text).map_err(|e| BoardError::usage(format!("mcp.json 不是 JSON：{e}")))?;
-        if let Some(m) = v.get_mut("mcpServers").and_then(Value::as_object_mut) {
-            m.remove(name);
-        }
-        Ok(serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
     }
 
     /// Codex 的 `config.toml`：加上或换掉 `[mcp_servers.<名称>]`，保留文件里的其他配置和注释
@@ -594,18 +565,9 @@ pub mod files {
             let got = read_json(text);
             assert_eq!(got.iter().map(|s| (s.name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [("mine", "stdio"), ("remote", "http")]);
             assert!(got[1].headers[0].secret);
-            let out = pi_upsert(text, &server("stdio")).unwrap();
-            let v: Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v["theme"], "dark");
-            assert_eq!(v["mcpServers"]["db"], json!({ "command": "npx", "args": ["-y", "db-mcp"], "env": { "DB_TOKEN": "sk-1" } }));
-            assert_eq!(v["mcpServers"]["mine"]["command"], "x");
-            let out = pi_remove(&out, "db").unwrap();
-            assert!(serde_json::from_str::<Value>(&out).unwrap()["mcpServers"].get("db").is_none());
-            assert!(pi_upsert("", &server("http")).unwrap().contains("\"url\": \"https://example.com/mcp\""));
             // Claude Code 的 add-json 带 type
-            assert_eq!(json_entry(&server("http"), true)["type"], "http");
-            assert_eq!(json_entry(&server("stdio"), true)["type"], "stdio");
-            assert!(pi_upsert("[1]", &server("stdio")).is_err());
+            assert_eq!(json_entry(&server("http")), json!({ "type": "http", "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer t0k3n" } }));
+            assert_eq!(json_entry(&server("stdio")), json!({ "type": "stdio", "command": "npx", "args": ["-y", "db-mcp"], "env": { "DB_TOKEN": "sk-1" } }));
         }
     }
 }

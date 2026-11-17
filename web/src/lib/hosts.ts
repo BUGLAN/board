@@ -3,7 +3,6 @@
    ========================================================================== */
 import claudeIcon from '../assets/agents/claude.png';
 import dshIcon from '../assets/agents/dsh.png';
-import piIcon from '../assets/agents/pi.svg';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
@@ -32,8 +31,6 @@ const MARKS: Record<string, Omit<AgentMark, 'color'>> = {
   claude: { short: 'CC', icon: claudeIcon, scale: 1.04, motion: 'hop' },
   // DeepSeek Harness 应用图标里的鲸鱼：原图是白底圆角方块，抠成透明底的单色图案（256×189）。动作：摆尾往前游
   dsh: { short: 'DS', icon: dshIcon, mono: true, scale: 1.08, motion: 'swim' },
-  // pi.dev 的 logo。动作：方块压扁再弹高
-  pi: { short: 'π', icon: piIcon, scale: 0.92, motion: 'squash' },
   // Codex 的云形终端标志（取自 lobe-icons 的 static-svg/icons/codex.svg，和 Codex 官方应用里的一致）：单色路径，用它的主色填满。
   // 动作：云飘起来晃一晃
   codex: { short: 'CX', icon: codexIcon, scale: 0.94, motion: 'float' },
@@ -53,7 +50,7 @@ export function agentMark(id: string): AgentMark {
  * 服务端不传标识时靠它认出是哪个 agent、画它自己的图标。认不出返回 null（调用方退回字母头像）。
  *
  * 只看第一个 `/` 之前的部分（模型名不影响）：第一段是 `<标识>-<机器名>`，机器名里允许 `.`、`-`，
- * 标识在第一个 `-` 之前；`pi/pi` 这样没有机器名的就是标识本身。拿不准时按已知标识表反过来匹配：
+ * 标识在第一个 `-` 之前；`codex/codex` 这样没有机器名的就是标识本身。拿不准时按已知标识表反过来匹配：
  * 这一部分以某个已知标识开头、紧跟 `-` 或整体就是它，就认作这个标识（`claude-mac-2` → `claude`）。
  */
 export function agentIdOf(name: string | null | undefined): string | null {

@@ -68,7 +68,7 @@ export function AgentIcon({ id }: { id: string }) {
   return m.icon ? <LogoArt mark={m} className="hp-logo" /> : <b style={{ ['--ac' as string]: m.color }}>{m.short}</b>;
 }
 
-/** agent 胶囊：图标、名称、启动环境（「pi · Git Bash」）、版本号、「默认」 */
+/** agent 胶囊：图标、名称、启动环境（「Codex · Git Bash」）、版本号、「默认」 */
 export function AgentChip({ a, def, env, skill }: { a: HostAgent; def?: boolean; env?: string | null; skill?: string | null }) {
   const m = agentMark(a.id);
   return (

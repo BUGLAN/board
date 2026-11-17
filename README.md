@@ -134,7 +134,7 @@ board login --url https://board.example.com --token bd_xxx
 - 两处都没有时命令被拒绝（`NOT_LOGGED_IN`），提示运行 `board login`。`board logout` 删掉令牌、保留地址。
 - 在自己电脑上用本机模式的服务端时，`--url` 填它的地址（例如 `http://127.0.0.1:7420`），令牌同样在它的「Agent → 访问令牌」新建。
 
-agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。会话开始时 `board check --agent <标识>`（pi、claude、codex、dsh）占用名字：名字由 Board 按这台机器的设置生成，和派发一致，是 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`，有在线会话时加 `-1`、`-2`），记在本机，之后不用再带 `--as`；这台机器没跑 board host 时退回 `<标识>/<标识>`。也可以自己起名字：`board check --as <名字>`，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`claude/opus-5.5-login`，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
+agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以给多个不同名字的 agent 使用。会话开始时 `board check --agent <标识>`（claude、codex、dsh）占用名字：名字由 Board 按这台机器的设置生成，和派发一致，是 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`，有在线会话时加 `-1`、`-2`），记在本机，之后不用再带 `--as`；这台机器没跑 board host 时退回 `<标识>/<标识>`。也可以自己起名字：`board check --as <名字>`，格式是 `<运行环境>/<模型>`，需要时加后缀，例如 `claude/opus-5.5`、`claude/opus-5.5-login`，名字正被在线会话使用时得到 `NAME_TAKEN`。没 check 或心跳中断超过 50 秒的名字执行卡片命令，得到 `NAME_OFFLINE`。这些 skill 都会自动处理。
 
 然后给 agent 发一句话：
 
@@ -165,7 +165,7 @@ board new "标题" --body "描述" # 新建卡片；--inbox 记到「未整理�
 board new "标题" --body-file body.md   # 多行描述写进文件（Windows 的 board.cmd 只能这样传多行）；comment 用 --comment-file
 board new "标题" --body "描述" --image 1.png --file run.log  # 截图、日志随卡片一起建，图片直接显示在描述里
 board attach 2 shot.png --comment "截图"  # 上传附件
-board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每个项目的目录是 <工作空间>/<项目>（项目下的白板共用），没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、pi、Codex，其他 agent 见 docs/agents.md
+board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每个项目的目录是 <工作空间>/<项目>（项目下的白板共用），没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、Codex，其他 agent 见 docs/agents.md
 board host --install --name mbp --workspace ~/repo   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
 board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有机器的 board host 自动装到各 agent 的 skill 目录；ls / rm / sync
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止

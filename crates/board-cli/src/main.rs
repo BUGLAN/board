@@ -59,7 +59,7 @@ const COMMANDS: [(&str, &str, &str); 29] = [
         (
             "check",
             "[--agent <标识>] [--as <名字>]",
-            "会话开始时占用名字。--agent <标识>（pi、claude、codex、dsh …）：名字由 Board 按这台机器（[host] name 或令牌认出的机器）、这个 agent 的设置生成，例如 win/opus-5.5-high，已有在线会话时加 -1、-2，查不到机器时用 <标识>/<标识>；占到的名字记在本机，之后不写 --as 的命令都用它。--as <名字>（或 BOARD_AS）照旧：自己起名字，被在线 agent 占用时 NAME_TAKEN",
+            "会话开始时占用名字。--agent <标识>（claude、codex、dsh …）：名字由 Board 按这台机器（[host] name 或令牌认出的机器）、这个 agent 的设置生成，例如 win/opus-5.5-high，已有在线会话时加 -1、-2，查不到机器时用 <标识>/<标识>；占到的名字记在本机，之后不写 --as 的命令都用它。--as <名字>（或 BOARD_AS）照旧：自己起名字，被在线 agent 占用时 NAME_TAKEN",
         ),
         ("heartbeat", "start | stop [--force] | final <ID>", "start：check 之后启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回；stop：停掉后台心跳再发 final，名字立刻离线；名字是本机另一个还在运行的 agent 进程 check 的时，start、stop 都拒绝（NAME_TAKEN），--force 清理本机残留时用；final <ID>：结束这张卡片这一次的计时"),
         ("beat", "[<ID>] [--final] [--force]", "不带 ID：agent 级心跳，维持名字在线和持有的卡片；--final 名字立刻离线（带着 check 时拿到的会话标识，名字属于别的会话时 NAME_TAKEN）。带 ID：这张卡片的心跳；--final 结束这一次计时。一般用 board heartbeat"),

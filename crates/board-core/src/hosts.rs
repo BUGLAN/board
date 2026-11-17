@@ -473,7 +473,7 @@ pub fn dispatch_agent_name(agent: &str, host: &str, model: &str, effort: &str, s
     format!("{first}/{seg}{suffix}")
 }
 
-/// 没有机器（没跑 board host、白板不在这台机器）时的 agent 名字：`<agent 标识>/<模型名>`，例如 `pi/pi`、`dsh/deepseek-v4.1-flash`。
+/// 没有机器（没跑 board host、白板不在这台机器）时的 agent 名字：`<agent 标识>/<模型名>`，例如 `codex/codex`、`dsh/deepseek-v4.1-flash`。
 /// 规则同 [`dispatch_agent_name`] 的第二段（转成名字能用的样子，放不下时截断），`modeled` 说明第二段是不是真的模型名
 pub fn plain_agent_name(agent: &str, model: &str) -> (String, bool) {
     let room = AGENT_NAME_MAX.saturating_sub(agent.chars().count() + 1).max(1);
@@ -525,7 +525,7 @@ pub fn parse_hhmm(raw: &str) -> Option<String> {
 /// 换成按机器设置实际用的启动环境（`env`）里的结果。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostAgent {
-    /// 标识：claude、dsh、pi …
+    /// 标识：claude、dsh、codex …
     pub id: String,
     /// 名称：Claude Code …
     pub name: String,
@@ -1645,7 +1645,7 @@ pub const AUTO_UPGRADE_TRIES: i64 = 5;
 /// board host 报的升级失败原因里带这句：机器上的 board 太旧、不会自己升级（没有 `board update`），自动升级不再重试
 pub const NO_SELF_UPDATE: &str = "没有 board update";
 
-/// 一次同步配置写进操作记录的一句话，例如「同步配置：2 个 agent 已写入，pi 失败；6 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design」
+/// 一次同步配置写进操作记录的一句话，例如「同步配置：2 个 agent 已写入，codex 失败；6 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design」
 pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
     let name = |id: &str| h.agents.iter().find(|a| a.id == id).map(|a| a.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_string());
     let mut parts: Vec<String> = vec![];
@@ -2076,7 +2076,7 @@ pub struct SessionPart {
     #[serde(flatten)]
     pub dispatch: Dispatch,
     pub log: Vec<String>,
-    /// agent 的输出格式：`claude`、`codex`、`pi`、`dsh`；空字符串 = 这个 agent 只有原始输出；没有 = board host 没报（旧版，或还没开始）
+    /// agent 的输出格式：`claude`、`codex`、`dsh`；空字符串 = 这个 agent 只有原始输出；没有 = board host 没报（旧版，或还没开始）
     #[serde(default)]
     pub fmt: Option<String>,
     /// 事件（按先后）；增量取（`since`）时只有那之后新增、改过的
@@ -3467,7 +3467,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 动态里的「mbp · Claude Code · mbp/opus-5.5，手动」；有启动环境时「mbp · pi · Git Bash · mbp/pi，手动」
+    /// 动态里的「mbp · Claude Code · mbp/opus-5.5，手动」；有启动环境时「mbp · Codex · Git Bash · mbp/gpt-5，手动」
     fn dispatch_words(d: &DRow) -> String {
         // 「任意机器」的派发还没挑到机器
         let host = if d.host.is_empty() { "任意机器" } else { d.host.as_str() };

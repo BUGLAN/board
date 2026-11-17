@@ -3,7 +3,6 @@
 //! - Claude Code：`claude mcp add-json --scope user <名称> <JSON>`、`claude mcp remove --scope user <名称>`（在它的启动环境里执行；
 //!   `~/.claude.json` 它自己经常改写，只读它判断已有哪些）
 //! - Codex：改 `$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `[mcp_servers.<名称>]`，保留别的配置和注释
-//! - pi：改 `~/.pi/agent/mcp.json` 的 `mcpServers`
 //! - dsh 和配置文件里的 agent：不支持，状态写「不支持」
 //!
 //! 机器上 MCP 选了「用服务器的」才同步（board host 启动时、收到「同步配置」请求时）；选「不改」时不碰，之前加的也不删。
@@ -47,7 +46,7 @@ type Backup = BTreeMap<String, BTreeMap<String, McpServer>>;
 
 /// 下面按 agent 写配置文件的实现（[`put`]、[`remove`]）认得的 agent：`agentdef.rs` 里标了支持 MCP 的都要在这里
 pub fn implemented(agent: &str) -> bool {
-    matches!(agent, "claude" | "codex" | "pi")
+    matches!(agent, "claude" | "codex")
 }
 
 /// 一个 agent 的 MCP 配置文件（`agentdef.rs` 里标的）：支持的 agent 才有；WSL 里的换成 Windows 上能访问的路径（取不到时 None）
@@ -113,12 +112,11 @@ fn s(v: &str) -> String {
 fn put(t: &Target, path: &Path, srv: &McpServer, replace: bool) -> Result<(), String> {
     match t.agent.as_str() {
         "codex" => rewrite(path, |x| files::codex_upsert(x, srv)),
-        "pi" => rewrite(path, |x| files::pi_upsert(x, srv)),
         "claude" => {
             if replace {
                 let _ = claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), srv.name.clone()]);
             }
-            let json = files::json_entry(srv, true).to_string();
+            let json = files::json_entry(srv).to_string();
             claude(t, &[s("mcp"), s("add-json"), s("--scope"), s("user"), srv.name.clone(), json])
         }
         other => Err(format!("{other} 还没有写 MCP 配置的实现")),
@@ -128,7 +126,6 @@ fn put(t: &Target, path: &Path, srv: &McpServer, replace: bool) -> Result<(), St
 fn remove(t: &Target, path: &Path, name: &str) -> Result<(), String> {
     match t.agent.as_str() {
         "codex" => rewrite(path, |x| files::codex_remove(x, name)),
-        "pi" => rewrite(path, |x| files::pi_remove(x, name)),
         "claude" => claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), s(name)]),
         other => Err(format!("{other} 还没有写 MCP 配置的实现")),
     }
@@ -236,7 +233,7 @@ mod tests {
         }
     }
 
-    /// Codex、pi 直接改文件：加上、更新、删掉；用户自己的不动，同名不是同步加的换成共用配置里的、原来的存进备份
+    /// Codex 直接改文件：加上、更新、删掉；用户自己的不动，同名不是同步加的换成共用配置里的、原来的存进备份
     #[cfg(unix)]
     /// `agentdef.rs` 里标了支持 MCP 的 agent，这里都有写配置文件的实现、找得到配置文件；没标的都没有
     #[test]
@@ -285,14 +282,5 @@ mod tests {
         let text = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
         assert!(!text.contains("[mcp_servers.db]") && text.contains("[mcp_servers.mine]") && !text.contains("[mcp_servers.taken]"), "{text}");
         assert_eq!(out.changes.len(), 2);
-        // pi 的 mcp.json 一样
-        let pi = d.path().join("pi").join("mcp.json");
-        let t = vec![Target { agent: "pi".into(), env: Env::direct(), prog: None, file: pi.clone(), shown: "~/.pi/agent/mcp.json".into() }];
-        sync(&[srv("db", "npx", "sk-1")], &t, &[], &owned, &bk);
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pi).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["db"]["env"]["TOKEN"], "sk-1");
-        sync(&[], &t, &[], &owned, &bk);
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pi).unwrap()).unwrap();
-        assert!(v["mcpServers"].get("db").is_none());
     }
 }

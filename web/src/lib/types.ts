@@ -215,7 +215,7 @@ export interface HostBlock {
 
 /** 本机 agent：board host 启动时按配置文件和内置模板找到的（没找到的也上报） */
 export interface HostAgent {
-  /** 标识：claude、dsh、pi … */
+  /** 标识：claude、dsh、codex … */
   id: string;
   /** 名称：Claude Code … */
   name: string;
@@ -594,7 +594,7 @@ export interface McpServer {
   env: McpVar[];
   url: string;
   headers: McpVar[];
-  /** 同步给哪些 agent；空 = 所有支持的（claude、codex、pi） */
+  /** 同步给哪些 agent；空 = 所有支持的（claude、codex） */
   agents: string[];
   version?: string;
   updatedAt?: number;
@@ -847,7 +847,7 @@ export interface Dispatch {
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */
 export interface AgentInfo {
   name: string;
-  /** 这个会话跑在哪个 agent 里（claude、dsh、pi …）：名字里不再带标识，画图标用它 */
+  /** 这个会话跑在哪个 agent 里（claude、dsh、codex …）：名字里不再带标识，画图标用它 */
   agent?: string | null;
   /** 首次 check 的时间 */
   checkedAt: number;
@@ -892,7 +892,7 @@ export interface SessionView {
   /** 这个会话的派发，按先后；每张带它的输出（最后 500 行）和结构化事件 */
   parts: (Dispatch & {
     log: string[];
-    /** agent 的输出格式：claude、codex、pi、dsh；'' = 只有原始输出；没有 = board host 没报（旧版，或还没开始） */
+    /** agent 的输出格式：claude、codex、dsh；'' = 只有原始输出；没有 = board host 没报（旧版，或还没开始） */
     fmt?: string | null;
     /** 事件（按先后）；带 since 取时只有之后新增、改过的 */
     events: RunEvent[];

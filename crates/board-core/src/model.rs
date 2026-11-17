@@ -594,7 +594,7 @@ pub struct Workspace {
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
     pub name: String,
-    /// 这个名字跑在哪个 agent 里（claude、dsh、pi …）：名字本身不再带 agent 标识，界面靠它画图标。
+    /// 这个名字跑在哪个 agent 里（claude、dsh、codex …）：名字本身不再带 agent 标识，界面靠它画图标。
     /// 旧格式（`<agent 标识>-<机器名>/<模型名>`）解析不出、`--as` 自己起的名字里也没有时为空，界面退回字母头像
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,

@@ -479,7 +479,7 @@ describe('schedPickPatch（由这些机器做）', () => {
   });
   it('只有兜底的 agent 也能改；没有 sched 时原样返回', () => {
     const orig = ws();
-    expect(D.schedPickPatch('pi', [1]).ws!(orig).sched!.picks!.find(p => p.agent === 'pi')).toEqual({ agent: 'pi', hosts: [1], none: false, unset: false });
+    expect(D.schedPickPatch('mine', [1]).ws!(orig).sched!.picks!.find(p => p.agent === 'mine')).toEqual({ agent: 'mine', hosts: [1], none: false, unset: false });
     const bare = workspace();
     expect(D.schedPickPatch('claude', [1]).ws!(bare)).toBe(bare);
   });

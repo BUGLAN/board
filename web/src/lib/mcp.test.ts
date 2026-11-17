@@ -4,8 +4,8 @@ import type { McpServer } from './types';
 
 const srv = (x: Partial<McpServer> = {}): McpServer => ({ ...blankMcp(), name: 'db', command: 'npx', args: ['-y', 'db-mcp'], ...x });
 describe('MCP 共用配置', () => {
-  it('同步给谁：空 = 所有支持的（claude、codex、pi），dsh 不支持', () => {
-    expect(forAgent(srv(), 'pi') && !forAgent(srv(), 'dsh')).toBe(true);
+  it('同步给谁：空 = 所有支持的（claude、codex），dsh 不支持', () => {
+    expect(forAgent(srv(), 'codex') && !forAgent(srv(), 'dsh')).toBe(true);
     expect(forAgent(srv({ agents: ['codex'] }), 'claude')).toBe(false);
   });
   it('校验和保存：密钥留空保留原值、新密钥必须填、参数一行一个', () => {

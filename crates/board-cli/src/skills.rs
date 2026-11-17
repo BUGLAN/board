@@ -647,7 +647,7 @@ mod tests {
         let claude = d.path().join("claude");
         let agents = d.path().join("agents");
         let backup = d.path().join("backup");
-        let t = vec![target(&claude, &["claude"]), target(&agents, &["dsh", "pi"])];
+        let t = vec![target(&claude, &["claude"]), target(&agents, &["dsh", "mycli"])];
         // agents 目录里本来有一个同名的、不是 Board 装的 notes：挪进备份，换上库里的
         std::fs::create_dir_all(agents.join("notes")).unwrap();
         std::fs::write(agents.join("notes/SKILL.md"), "mine").unwrap();
@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(backup.join(&saved[0]).join("SKILL.md")).unwrap(), "mine", "旧的在备份里");
         assert_eq!(out.replaced, vec!["notes".to_string()]);
         let st = |out: &Synced, agent: &str| out.states.iter().find(|s| s.agent == agent).map(|s| s.state.clone()).unwrap();
-        assert_eq!((st(&out, "claude"), st(&out, "dsh"), st(&out, "pi")), ("synced".into(), "synced".into(), "synced".into()));
+        assert_eq!((st(&out, "claude"), st(&out, "dsh"), st(&out, "mycli")), ("synced".into(), "synced".into(), "synced".into()));
         // 再同步一次：已经是最新的，不取内容
         let out = sync(&[v1.info.clone()], &t, None, opts(&backup), |_| panic!("不该再取"));
         assert!(out.replaced.is_empty(), "换过一次就归 Board 管了");
@@ -702,7 +702,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let claude = d.path().join("claude");
         let agents = d.path().join("agents");
-        let t = vec![target(&claude, &["claude"]), target(&agents, &["dsh", "pi"])];
+        let t = vec![target(&claude, &["claude"]), target(&agents, &["dsh", "mycli"])];
         for dir in [&claude, &agents] {
             std::fs::create_dir_all(dir.join("design/ref")).unwrap();
             std::fs::write(dir.join("design/SKILL.md"), "# design").unwrap();
@@ -719,7 +719,7 @@ mod tests {
         let list = local_skills(&t);
         assert_eq!(list.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["design", "notes"]);
         let design = &list[0];
-        assert_eq!((design.files, design.agents.clone(), design.dirs.len()), (2, vec!["claude".to_string(), "dsh".into(), "pi".into()], 2));
+        assert_eq!((design.files, design.agents.clone(), design.dirs.len()), (2, vec!["claude".to_string(), "dsh".into(), "mycli".into()], 2));
         // 版本和库里的算法一样
         let same = pack("design", &[("SKILL.md", b"# design"), ("ref/a.md", b"a")]);
         assert_eq!(design.version, same.info.version);

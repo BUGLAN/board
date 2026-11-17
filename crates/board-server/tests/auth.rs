@@ -869,7 +869,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
         resume: None,
         os: "Windows 11".into(),
         version: "0.1.24".into(),
-        agents: vec![claude, agent("pi", "")],
+        agents: vec![claude, agent("dsh", "")],
         envs: vec![],
         workspace: Some(HostWorkspace { path: "C:\\repo".into(), ..Default::default() }),
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
@@ -892,16 +892,16 @@ fn agent_check_generates_the_name_from_machine_settings() {
     assert!(r.body["session"].is_string());
     let r = check(&agent_token, json!({ "agent": "claude", "host": "win", "session": true }));
     assert_eq!(r.body["name"], "win/opus-5.5-high-1", "{:?}", r.body);
-    // 没配模型：win/pi
-    assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "win" })).body["name"], "win/pi");
+    // 没配模型：win/dsh
+    assert_eq!(check(&agent_token, json!({ "agent": "dsh", "host": "win" })).body["name"], "win/dsh");
     // 不带机器名、令牌不是任何机器的：退回 <标识>/<标识>
     let r = check(&agent_token, json!({ "agent": "codex" }));
     assert_eq!((r.status, r.body["name"].as_str(), r.body["modeled"].as_bool()), (200, Some("codex/codex"), Some(false)));
-    // 令牌是 win 的 board host 上报用的：认得出这台机器（win/pi 已经被上一个会话占了，加序号）
-    assert_eq!(check(&host_token, json!({ "agent": "pi", "session": true })).body["name"], "win/pi-1");
+    // 令牌是 win 的 board host 上报用的：认得出这台机器（win/dsh 已经被上一个会话占了，加序号）
+    assert_eq!(check(&host_token, json!({ "agent": "dsh", "session": true })).body["name"], "win/dsh-1");
     // 机器名不合法：USAGE；agent 标识不合法：USAGE
-    assert_eq!(check(&agent_token, json!({ "agent": "pi", "host": "Win 1" })).code().as_str(), "USAGE");
-    assert_eq!(check(&agent_token, json!({ "agent": "Pi Code", "host": "win" })).code().as_str(), "USAGE");
+    assert_eq!(check(&agent_token, json!({ "agent": "dsh", "host": "Win 1" })).code().as_str(), "USAGE");
+    assert_eq!(check(&agent_token, json!({ "agent": "Deep Seek", "host": "win" })).code().as_str(), "USAGE");
     // GET /api/hosts/mine：令牌是它的机器（登录的界面没有）
     let mine = send("GET", &format!("{}/api/hosts/mine", s.url), &[("authorization", &format!("Bearer {host_token}"))], None);
     assert_eq!((mine.status, mine.body["name"].as_str()), (200, Some("win")));

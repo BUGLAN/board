@@ -88,7 +88,7 @@ fn agent_beat_keeps_held_cards_and_final_goes_offline() {
 
 use board_core::{HostAgent, HostDir, HostReport};
 
-/// 这台机器（win）上找得到 claude（模型 opus-5.5）、dsh（模型 deepseek-v4.1-flash）、pi（没配模型）
+/// 这台机器（win）上找得到 claude（模型 opus-5.5）、dsh（模型 deepseek-v4.1-flash）、codex（没配模型）
 fn report_win(instance: &str) -> HostReport {
     let agent = |id: &str, model: &str| HostAgent { id: id.into(), name: id.into(), version: "1.0".into(), found: true, model: model.into(), ..Default::default() };
     HostReport {
@@ -97,7 +97,7 @@ fn report_win(instance: &str) -> HostReport {
         resume: None,
         os: "Windows 11".into(),
         version: "0.1.24".into(),
-        agents: vec![agent("claude", "opus-5.5"), agent("dsh", "deepseek-v4.1-flash"), agent("pi", "")],
+        agents: vec![agent("claude", "opus-5.5"), agent("dsh", "deepseek-v4.1-flash"), agent("codex", "")],
         envs: vec![],
         workspace: Some(board_core::HostWorkspace { path: "C:\\repo".into(), ..Default::default() }),
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
@@ -136,8 +136,8 @@ fn check_agent_gets_the_name_board_generates_and_remembers_it() {
     let r = board(&s.home, &env, &["check", "--agent", "claude", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert_eq!(r.json()["name"], "win/opus-5.5-1");
-    // pi 没配模型：win/pi
-    assert_eq!(board(&s.home, &env, &["check", "--agent", "pi", "--json"]).json()["name"], "win/pi");
+    // codex 没配模型：win/codex
+    assert_eq!(board(&s.home, &env, &["check", "--agent", "codex", "--json"]).json()["name"], "win/codex");
     // 不带 --as 的命令用 check 记下的名字（最近的那个）：持有、心跳、评论都对得上
     let mut no_as = env.clone();
     no_as.push(("BOARD", "default".into()));
@@ -148,18 +148,18 @@ fn check_agent_gets_the_name_board_generates_and_remembers_it() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert_eq!(r.json()["cards"][0]["id"], 1);
     let c = board(&s.home, &no_as, &["show", "1", "--json"]).json();
-    assert_eq!(c["holder"], "win/pi");
+    assert_eq!(c["holder"], "win/codex");
     // 带了 --as 的照旧：自己起名字，被占用时 NAME_TAKEN，不加序号
-    assert_eq!(board(&s.home, &env, &["check", "--as", "win/pi", "--json"]).error_code(), "NAME_TAKEN");
+    assert_eq!(board(&s.home, &env, &["check", "--as", "win/codex", "--json"]).error_code(), "NAME_TAKEN");
 }
 
 #[test]
 fn check_agent_without_a_host_falls_back_to_agent_slash_model() {
     let s = start();
     // 没有机器上报、机器名也不存在：退回 <标识>/<标识>
-    let r = board(&s.home, &s.env(), &["check", "--agent", "pi", "--json"]);
+    let r = board(&s.home, &s.env(), &["check", "--agent", "dsh", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert_eq!(r.json()["name"], "pi/pi");
+    assert_eq!(r.json()["name"], "dsh/dsh");
     assert_eq!(r.json()["modeled"], false);
     // 机器名不存在时也是（不报 NO_SUCH_HOST）
     let mut env = s.env();

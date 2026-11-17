@@ -11,7 +11,6 @@ import type { AgentMeta } from './types';
 const FALLBACK: Required<AgentMeta>[] = [
   { id: 'dsh', name: 'DeepSeek Harness', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], skills: ['~/.agents/skills'], mcp: false, color: '#4D6BFE' },
   { id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'], skills: ['~/.claude/skills'], mcp: true, color: '#D97757' },
-  { id: 'pi', name: 'pi', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], skills: ['~/.agents/skills', '~/.pi/agent/skills'], mcp: true, color: '#E5A93F' },
   { id: 'codex', name: 'Codex', protocols: ['openai-responses'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], skills: ['$CODEX_HOME/skills'], mcp: true, color: '#10A37F' },
 ];
 
