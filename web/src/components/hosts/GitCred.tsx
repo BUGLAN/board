@@ -143,7 +143,8 @@ function GitCard({ cred, hosts, now, busy, editing, onEdit, onRemove }: { cred: 
         )}
         <div className="pv-line">
           <span className="pv-k">用于</span>
-          <code>https://{cred.host}/…</code>
+          <code>https://{cred.host}</code>
+          <span className="gc-scope">（该主机下所有仓库）</span>
         </div>
       </div>
       <GitHosts hosts={hosts} now={now} />

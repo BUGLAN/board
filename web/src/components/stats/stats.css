@@ -369,7 +369,7 @@
 .sp-cmp-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .sp-cmp .num { text-align: center; }
 .sp-cmp td.strong { font-weight: 700; color: var(--warn); }
-.sp-cmp-done { display: flex; flex-direction: column; align-items: center; width: 124px; gap: 2px; }
+.sp-cmp-done { display: inline-flex; vertical-align: middle; flex-direction: column; align-items: center; width: 124px; gap: 2px; }
 .sp-cmp-done b { text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sp-tag { margin-right: 8px; padding: 1px 6px; border-radius: var(--r-xs); font: 500 11px var(--f-mono); color: var(--text-2); background: var(--surface-3); }
 
