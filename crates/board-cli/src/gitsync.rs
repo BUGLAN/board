@@ -400,7 +400,15 @@ fn failed(why: String, host: &str) -> GitSync {
     GitSync { state: "failed".into(), why: Some(why), detail: GitDetail { host: host.to_string(), ..Default::default() }, ..Default::default() }
 }
 
-/// 去掉旧版按仓库配过的项（记录里的和这一次的仓库），返回没去掉的（留在记录里下次再试）；仓库不在了就算了
+/// 目录是不是 git 仓库的工作区：不是（空目录、普通目录）返回 false；git 跑不起来、超时返回错误，
+/// 不能当成不是——记录要留着下次再清
+fn is_work_tree(dir: &Path) -> Result<bool, String> {
+    let out = crate::code::git_output(dir, &["rev-parse", "--is-inside-work-tree"], QUICK)?;
+    Ok(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true")
+}
+
+/// 去掉旧版按仓库配过的项（记录里的和这一次的仓库），返回没去掉的（留在记录里下次再试）；
+/// 仓库不在了、还不是 git 仓库（项目没设仓库地址时 board host 建的空目录）就算了——没有本地配置可清
 fn clean_repos(recorded: &[String], repos: &[PathBuf], host: &str, changes: &mut Vec<String>, errors: &mut Vec<String>) -> Vec<String> {
     let mut all: Vec<PathBuf> = recorded.iter().map(PathBuf::from).collect();
     all.extend(repos.iter().cloned());
@@ -410,6 +418,15 @@ fn clean_repos(recorded: &[String], repos: &[PathBuf], host: &str, changes: &mut
     for r in &all {
         if host.is_empty() || !r.is_dir() {
             continue;
+        }
+        match is_work_tree(r) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                errors.push(format!("{} 里旧版按仓库配的项：{e}", shown(r)));
+                left.push(shown(r));
+                continue;
+            }
         }
         match unconfigure(&GitConfig::local(r), host) {
             Ok(true) => changes.push(format!("Git 凭据：从 {} 里去掉了旧版按仓库配的项（{host}）", shown(r))),
@@ -783,6 +800,29 @@ mod tests {
         assert!(!host_dir.join(FILE).exists() && !host_dir.join(RECORD).exists());
         assert!(clone_args("https://github.com/me/new.git", &host_dir).is_empty());
         assert!(fill(&later, &cfg, "github.com").is_none(), "关掉后新仓库也用不到了");
+    }
+
+    #[test]
+    fn empty_project_dirs_do_not_fail_legacy_cleanup() {
+        let t = tempfile::tempdir().unwrap();
+        let host_dir = t.path().join("host");
+        std::fs::create_dir_all(&host_dir).unwrap();
+        let cfg = host_dir.join("gitconfig");
+        // 项目没设仓库地址时 board host 只建一个空目录；同步不该拿它当旧版配过的仓库去清
+        let empty = t.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(
+            host_dir.join(RECORD),
+            serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&empty)], ..Default::default() }).unwrap(),
+        )
+        .unwrap();
+
+        let out = sync_at(true, Some(&cred("github.com", "tok")), &[empty.clone()], &host_dir, &cfg);
+        assert_eq!(out.sync.state, "synced", "{:?}", out.sync.why);
+        assert!(!out.changes.iter().any(|c| c.contains("旧版按仓库")), "{:?}", out.changes);
+        let saved = record(&host_dir);
+        assert_eq!(saved.host, "github.com");
+        assert!(saved.repos.is_empty(), "不是 git 仓库的空目录不用记着清：{:?}", saved.repos);
     }
 
     #[test]
