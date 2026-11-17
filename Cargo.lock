@@ -351,6 +351,7 @@ dependencies = [
 name = "board-cli"
 version = "0.1.39"
 dependencies = [
+ "base64 0.23.1",
  "board-core",
  "board-server",
  "chrono",

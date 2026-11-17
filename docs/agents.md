@@ -8,7 +8,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
 派发开始时，`board host` 已经以 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`）领到了卡片，然后：
 
-1. 在这块白板所在项目的目录（这台设备的工作空间里的 `<工作空间>/<项目>`，一个项目一个仓库，项目下的白板共用；`--dir <项目>=<路径>` 可以单独指定某个项目；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里，用 **ACP**（Agent Client Protocol v1）启动它：`board host` 启动 `board acp`（board 自己的一个子命令，`crates/board-cli/src/acp.rs`），由它在启动环境里执行这个 agent 的 **ACP 入口**，完成 `initialize`、`session/new`（工作目录就是这个目录），再把一行提示词作为 `session/prompt` 发过去（提示词放在 `~/.board/host/run/<机器名>/<派发 ID>.prompt`，不放进命令行）：
+1. 在这块白板所在项目的目录（这台设备的工作空间里的 `<工作空间>/<项目>`，一个项目一个仓库，项目下的白板共用；`--dir <项目>=<路径>` 可以单独指定某个项目；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里，用 **ACP**（Agent Client Protocol）启动它：`board host` 启动 `board acp`（board 自己的一个子命令，`crates/board-cli/src/acp.rs`），由它在启动环境里执行这个 agent 的 **ACP 入口**，完成 `initialize`、`session/new`（工作目录就是这个目录），再把一行提示词作为 `session/prompt` 发过去（提示词放在 `~/.board/host/run/<机器名>/<派发 ID>.prompt`，不放进命令行）。握手时要 **v2**（[草案](https://agentclientprotocol.com/rfds/v2/prompt.md)），按 ACP 的版本协商走：Claude Code、Codex 的适配器回 2，dsh 只会 v1、回 1（#461）：
 
    ```
    /board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务
@@ -16,12 +16,16 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
    `board acp` 的做法：
 
-   - Client 的 `fs`、`terminal` 能力都不声明（agent 自己在 worktree 里读写、执行），`mcpServers` 传空（MCP 照旧由 Board 写进 agent 自己的配置，见下面「MCP 服务器」）。
+   - `initialize` 同时带 v2（`info`、`capabilities`）和 v1（`clientInfo`、`clientCapabilities`）的字段，只会 v1 的 agent 照样认得。Client 能力都不声明（agent 自己在 worktree 里读写、执行），`mcpServers` 传空（MCP 照旧由 Board 写进 agent 自己的配置，见下面「MCP 服务器」）。
    - 不问权限：agent 公布了不问权限的模式就切过去（Claude Code 的 `bypassPermissions`、Codex 的 `agent-full-access`）；`session/request_permission` 一律自动选「总是允许」（没有就「允许这一次」），Board 没有人工审批。dsh 用环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批。
    - agent 配置文件里有思考强度时（见下面「模型供应商」），会话配置里有 `reasoning_effort` 这一项就切过去（dsh 的 ACP 只能这样定强度）。
-   - **续轮**（#454）：派发里没有人接话，agent 结束这一轮就等于结束会话。所以做卡的派发（`board host` 带 `--extra-turns 3`；拆解、自检不带）这一轮以 `end_turn` 结束时，`board acp` 先查这次派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`）：还持有，就是卡片既没交审、也没交给人（agent 把长命令放到后台等通知、停下来问人、做到一半就总结），在同一个会话里再发一条提示词续一轮，写明还持有哪张、按 board-skills 做完或交给人，最多续 3 轮，每次在日志里写一行「↻ 第 n 次续轮」；不持有、查不到就收尾。续满了还持有，写一行「✗ 续了 3 轮…」后照常收尾，`board host` 按卡片还在它手里记成异常退出。
-   - 收尾：关掉 agent 的标准输入，最多等 5 秒，还不退就结束它。agent 进程自己退出了也收尾（它留下的子进程拿着输出也不等）。
-   - 退出码：`end_turn` 0；被取消 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败（例如没登录）、协议错误 2；这一轮没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。原因写进日志。
+   - **这一轮的结束**：v1 的 `session/prompt` 回应跨整轮、带 `stopReason`。v2 的回应只表示提示词收下了，进展看 `state_update`：`running`、`requires_action` 是在干活，`idle` 带 `stopReason` 是这一轮做完了；[`idle` 不等于什么都没在跑](https://agentclientprotocol.com/rfds/v2/background-work.md)，后台还有命令、任务时 `idle` 带着 `background` 列表，后台跑完 agent 可以不等提示词自己再开一轮（又报 `running`）。
+   - **这一轮做完以后**（#454、#461）：先等它稳定下来——最后一帧之后安静 2 秒、最多 10 秒（v1 收迟到的更新，v2 是规范要的宽限期）。做卡的派发（`board host` 带 `--extra-turns 3`；拆解、自检不带，做完就收尾）再查这次派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`）：
+     - 不持有（交审了、交给人了）、查不到：收尾。
+     - 还持有，v2 的 `background` 不空：不收也不续，日志里写一行「⋯ 等后台」，等 agent 跑完自己接着做；每 30 秒再查一次卡片。
+     - 还持有，后台为空或 agent 不报（v1 的 dsh、不报后台的 Codex，或者 agent 停下来问人、做到一半就总结）：在同一个会话里再发一条提示词续一轮，写明还持有哪张、后台命令在这一轮里等它跑完、按 board-skills 做完或交给人，最多续 3 轮，每次在日志里写一行「↻ 第 n 次续轮」。续满了还持有，写一行「✗ 续了 3 轮…」后照常收尾，`board host` 按卡片还在它手里记成异常退出。
+   - 收尾：v2 先发 `session/close`，再关掉 agent 的标准输入，最多等 5 秒，还不退就结束它。agent 进程自己退出了也收尾（它留下的子进程拿着输出也不等）。
+   - 退出码：`end_turn` 0；被取消、收到 SIGTERM 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败（例如没登录）、协议错误、v2 这一轮出错（`stopReason: error`）2；这一轮没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。原因写进日志。
    - 人点「停止」、`board host` 退出时它收到 SIGTERM：发 `session/cancel`，最多等 5 秒（之后照下面第 6 步结束进程树）。
 
    启动环境是「在哪种 shell 里启动」，按机器、按 agent 在机器详情里选（PRD §9.1）：
@@ -146,7 +150,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 | 3 | **找得到 `board-skills`**：从某个 skill 目录加载它，提示词以 `/board-skills` 开头时照着它做 | 不认识这句话，什么也不做就退出 → 异常退出（退出码常常是 0） |
 | 4 | **在这台机器上已经登录 / 配好模型**（API key、OAuth、provider） | 一启动就报错退出 |
 | 5 | 它执行的命令能拿到 `BOARD_URL`、`BOARD_AS`、`BOARD`、`BOARD_CONFIG`、`BOARD_EXE` 这几个环境变量（`BOARD_TOKEN` 被去掉没关系） | `board` 连错服务端、找不到名字或白板 |
-| 6 | **运行中**用 `session/update` 报进度（说的话、工具调用和结果），这一轮做完（卡片交审或交给人）才用 `stopReason: end_turn` 回应 prompt；长命令在这一轮里跑完，不放到后台、结束这一轮等通知（Claude Code 用 `acp_env` 关掉了后台任务） | 「过程」里看不出它在干活还是卡住了；不回应 prompt 就退出算异常退出；卡片还在手里就结束这一轮会被续一轮（最多 3 轮），续满了算异常退出 |
+| 6 | **运行中**用 `session/update` 报进度（说的话、工具调用和结果）；v1 这一轮做完用 `stopReason` 回应 prompt，v2 报带 `stopReason` 的 `idle`。用后台命令时：v2 在 `idle` 上报 `background`、跑完自己接着做；只会 v1 的，后台命令在这一轮里等它跑完再结束这一轮 | 「过程」里看不出它在干活还是卡住了；这一轮没结束就退出算异常退出；卡片还在手里、后台也没东西在跑就结束这一轮会被续一轮（最多 3 轮），续满了算异常退出 |
 | 7 | 收到 `session/cancel` 会结束这一轮；标准输入关闭（EOF）或收到 SIGTERM 会退出 | 停止要等 10 秒后强制结束 |
 | 8 | `<命令> --version` 第一行是版本号（用适配器的，是 agent 自己的命令） | 界面上只显示「找到了」（不影响使用） |
 | 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，ACP 入口在里面能做完一张卡（用适配器的，`npx` 也要找得到）。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
@@ -171,10 +175,9 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 各自的说明：
 
-- **dsh**：用它自带的 acp profile（`@deepseek-ai/dsh-acp-app`，0.2.2 起；本机 `dsh --version` 更旧时不启动，提示升级）。`--patch {patch}` 是 board host 每次派发写的补丁（`crates/board-cli/src/dsh-acp.patch.yml`），关掉 `goal-round-driver`、`tool-goal`、`command-goal`：acp profile 也挂着 goal，模型一旦 `create_goal`，这一轮结束后会自动续轮，prompt 迟迟不结束。环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批（默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用）。会话用的提供方和模型是 acp profile 里 `acp` 这一项配置的（`~/.dsh/profiles/acp/cordis.patch.yml`；默认 `deepseek-official` 的 `deepseek-v4-flash`），强度在会话里用 `reasoning_effort` 切；以前给 headless profile 配的模型不会自动带过来。dsh 不报 tokens 和费用。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。
-- **Claude Code**：适配器 `claude-agent-acp`（Claude Agent SDK）。会话开始后切到 `bypassPermissions` 模式；root 用户下没有这个模式，权限请求照样自动允许。环境变量 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 关掉后台任务：Bash 工具没有 `run_in_background`，长命令（`npm test` 这类）只能在前台跑完，不会放到后台、结束这一轮等通知——派发里结束这一轮就是结束会话，后台命令会跟着被收掉（#454）；`BASH_DEFAULT_TIMEOUT_MS=1200000`、`BASH_MAX_TIMEOUT_MS=3600000` 把前台命令的默认超时从 2 分钟调到 20 分钟、上限从 10 分钟调到 60 分钟（新 worktree 第一次编译、Windows 上慢也够）。前台跑长命令时适配器每隔一会儿发一帧进度（`tool_call_update`），日志一直在长，不会被「没输出多久算卡住」停掉。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报要先登录，从自己的终端或桌面端运行就好。
-- **Codex**：适配器 `codex-acp`（Codex App Server）。环境变量 `INITIAL_AGENT_MODE=agent-full-access`，会话开始后也切到这个模式：不审批、不开沙箱。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
-
+- **dsh**：用它自带的 acp profile（`@deepseek-ai/dsh-acp-app`，0.2.2 起；本机 `dsh --version` 更旧时不启动，提示升级）。`--patch {patch}` 是 board host 每次派发写的补丁（`crates/board-cli/src/dsh-acp.patch.yml`），关掉 `goal-round-driver`、`tool-goal`、`command-goal`：acp profile 也挂着 goal，模型一旦 `create_goal`，这一轮结束后会自动续轮，prompt 迟迟不结束。环境变量 `DSH_PERMISSION_MODE=danger-full-access` 关掉沙箱和审批（默认的 `workspace-write` 只能写当前目录，`board-skills` 要在仓库旁边建 worktree、`git push`，不够用）。会话用的提供方和模型是 acp profile 里 `acp` 这一项配置的（`~/.dsh/profiles/acp/cordis.patch.yml`；默认 `deepseek-official` 的 `deepseek-v4-flash`），强度在会话里用 `reasoning_effort` 切；以前给 headless profile 配的模型不会自动带过来。dsh 不报 tokens 和费用。它执行命令时去掉名字像密钥的环境变量（见上文 `BOARD_CONFIG`）。DeepSeek Harness 的「设置」里可以把命令行装到 `/usr/local/bin/dsh`；没装也能用，`board host` 会用 app 里自带的那个。dsh 只会 ACP v1：它也有后台任务（前台命令跑满 2 分钟自动转到后台，跑完唤醒 agent），但 v1 报不出来，`board acp` 看不到，靠续轮的提示词让它在这一轮里等后台跑完（#461）。
+- **Claude Code**：适配器 `claude-agent-acp`（Claude Agent SDK），走 ACP v2。会话开始后切到 `bypassPermissions` 模式；root 用户下没有这个模式，权限请求照样自动允许。后台任务照常用：Claude Code 把长命令（`npm test` 这类）放到后台、先结束这一轮时，`idle` 带着 `background`，`board acp` 等它跑完、Claude Code 自己接着做（#461）。命令的输出在终端里（`terminal_output_chunk`、跑完时带完整输出的 `terminal_update`），日志边跑边长。登录信息在系统钥匙串里：从别的 agent 会话、沙箱里启动的 `board host` 可能读不到，会报要先登录，从自己的终端或桌面端运行就好。
+- **Codex**：适配器 `codex-acp`（Codex App Server），走 ACP v2（报 `running` / `idle`，不报 `background`；Codex 的后台终端跑完不会自己再开一轮，它在这一轮里轮询，结束这一轮时卡片还在手里就续轮）。环境变量 `INITIAL_AGENT_MODE=agent-full-access`，会话开始后也切到这个模式：不审批、不开沙箱。skill 读 `$CODEX_HOME/skills`，默认 `~/.codex/skills`。
 ## 安装和更新 agent
 
 机器详情「agent」页会显示每个内置 agent 的版本、安装方式（npm 全局、Homebrew、官方安装脚本、桌面 app 自带或配置文件）和有没有新版本。board host 每天在后台查一次 npm 上的最新版本，不把网络请求放进 10 秒心跳；打开机器详情看到的是最近一次检查的结果。

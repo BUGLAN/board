@@ -167,9 +167,14 @@ fn holder(who: &str) -> Server {
 }
 
 /// 像 board host 那样启动 `board acp`：连接、名字、白板在环境变量里（续轮靠它们查名字还持有没持有卡片），
-/// HOME 和临时目录和 check 时一样（假 agent 交审时用得上 check 的会话）
+/// HOME 和临时目录和 check 时一样（假 agent 交审时用得上 check 的会话）。agent 是只会 v1 的 TURNS
 fn turns(s: &Server, dir: &Path, who: &str, extra: &[&str], env: &[(&str, &str)]) -> std::process::Child {
-    let fake = write(dir, "turns.sh", TURNS);
+    turns_with(s, dir, who, TURNS, extra, env)
+}
+
+/// 同 turns，agent 换成 script
+fn turns_with(s: &Server, dir: &Path, who: &str, script: &str, extra: &[&str], env: &[(&str, &str)]) -> std::process::Child {
+    let fake = write(dir, "turns.sh", script);
     let prompt = write(dir, "prompt.txt", "/board-skills 开始执行 default项目之中的main白板中的#1任务");
     let d = dir.display().to_string();
     let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
@@ -226,4 +231,102 @@ fn no_turns_without_the_flag_or_an_answer() {
     let (code, _out, err) = finish(turns(&s, d.path(), "acp/fake", &["--extra-turns", "3"], &[("BOARD_AS", "")]), Duration::from_secs(20));
     assert_eq!(code, 0, "{err}");
     assert!(err.contains("没有 BOARD_AS、BOARD") && !err.contains("prompt 3: "), "{err}");
+}
+
+/// 讲 ACP v2 的假 agent（#461）：握手回 protocolVersion 2；prompt 的回应只带 messageId，这一轮的进展用 state_update 报。
+/// 收到的 prompt 打到标准错误（`prompt <第几条>: <帧>`），session/close 打成 `close: <帧>`。按 MODE：
+/// - `bg`：第一轮 idle 时后台还有一个终端在跑（background 不空），4 秒后后台跑完，自己又报 running（不等 prompt）、
+///   交审 #1、再 idle
+/// - `err`：这一轮出错（stopReason error）
+/// - 其他：每条 prompt 都 idle、后台为空；第 HAND_OVER 条 prompt 的那一轮里先交审 #1
+const V2: &str = r#"read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":2,"info":{"name":"fake-v2","version":"1"},"capabilities":{}}}'
+read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+st() { echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"state_update\",$1}}}"; }
+hand_over() { "$BOARD_BIN" beat 1 --final >/dev/null && "$BOARD_BIN" move 1 review >/dev/null && echo "交审了" >&2; }
+n=0
+while read -r l; do
+  case "$l" in
+    *'"session/close"'*) echo "close: $l" >&2; continue ;;
+    *'"session/prompt"'*) ;;
+    *) continue ;;
+  esac
+  n=$((n+1))
+  pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  echo "prompt $n: $l" >&2
+  echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"messageId\":\"m$n\"}}"
+  st '"state":"running"'
+  if [ "$MODE" = bg ] && [ $n = 1 ]; then
+    st '"state":"idle","stopReason":"end_turn","background":[{"type":"terminal","terminalId":"bg"}]'
+    sleep 4
+    st '"state":"running","background":[]'
+    hand_over
+    st '"state":"idle","stopReason":"end_turn","background":[]'
+  elif [ "$MODE" = err ]; then
+    st '"state":"idle","stopReason":"error","error":{"code":-32603,"message":"rate limited"}'
+  else
+    [ "$n" = "$HAND_OVER" ] && hand_over
+    st '"state":"idle","stopReason":"end_turn","background":[]'
+  fi
+done
+"#;
+
+/// 卡片 #461：v2 的 agent 这一轮做完时后台还有东西在跑（idle 带着 background）→ 不续轮、不收尾，等它跑完；
+/// agent 自己又开一轮、交审、idle → 收尾。收尾时发 session/close
+#[test]
+fn v2_waits_for_background_work_instead_of_nudging() {
+    let s = holder("acp/fake");
+    let d = tempfile::tempdir().unwrap();
+    let c = turns_with(&s, d.path(), "acp/fake", V2, &["--extra-turns", "3"], &[("MODE", "bg")]);
+    let (code, out, err) = finish(c, Duration::from_secs(40));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("⋯ 等后台：default/main#1 还由 acp/fake 持有，后台还有 1 项在跑"), "{err}");
+    assert!(err.contains("prompt 1: ") && !err.contains("prompt 2: ") && !err.contains("续轮"), "后台在跑：不续轮：{err}");
+    assert!(err.contains("交审了") && err.contains("close: ") && err.contains(r#""sessionId":"s1""#), "收尾发 session/close：{err}");
+    assert_eq!(s.run("acp/fake", &["show", "1", "--json"]).json()["column"], "review");
+}
+
+/// v2：这一轮做完、后台为空，卡片还在手里 → 同一会话续轮；续的这一轮交审 → 收尾。这一轮出错 → 退出码 2
+#[test]
+fn v2_nudges_when_quiet_and_reports_errors() {
+    let s = holder("acp/fake");
+    let d = tempfile::tempdir().unwrap();
+    let c = turns_with(&s, d.path(), "acp/fake", V2, &["--extra-turns", "3"], &[("HAND_OVER", "2")]);
+    let (code, out, err) = finish(c, Duration::from_secs(40));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("↻ 第 1 次续轮（最多 3 次）：default/main#1 还由 acp/fake 持有") && !err.contains("等后台"), "{err}");
+    let again = err.lines().find(|l| l.starts_with("prompt 2: ")).unwrap_or_else(|| panic!("{err}"));
+    assert!(again.contains("default/main#1「做卡」") && again.contains(r#""sessionId":"s1""#), "{again}");
+    assert!(err.contains("交审了") && !err.contains("prompt 3: "), "{err}");
+    let d = tempfile::tempdir().unwrap();
+    let (code, _out, err) = finish(turns_with(&s, d.path(), "acp/fake", V2, &["--extra-turns", "3"], &[("MODE", "err")]), Duration::from_secs(30));
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("✗ 这一轮出错：rate limited") && !err.contains("续轮"), "出错不续轮：{err}");
+}
+
+/// v2：干活时收到 SIGTERM → session/cancel，agent 以 cancelled 回到 idle → 退出码 130
+#[test]
+fn v2_sigterm_cancels_the_work() {
+    let d = tempfile::tempdir().unwrap();
+    // prompt 之后一直在干活，收到 session/cancel 才回 idle（cancelled）；收到 prompt 时在工作目录里留个记号
+    let script = r#"read l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":2,"info":{"name":"fake-v2"},"capabilities":{}}}'
+read l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+read l; echo '{"jsonrpc":"2.0","id":2,"result":{"messageId":"m1"}}'
+echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"running"}}}'; touch prompted
+read l; echo "got: $l" >&2
+echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"idle","stopReason":"cancelled"}}}'
+read l; exit 0
+"#;
+    let c = bridge(d.path(), script);
+    let mark = d.path().join("prompted");
+    let until = Instant::now() + Duration::from_secs(15);
+    while !mark.exists() {
+        assert!(Instant::now() < until, "15 秒内 agent 没收到 prompt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unsafe {
+        libc::kill(c.id() as i32, libc::SIGTERM);
+    }
+    let (code, out, err) = finish(c, Duration::from_secs(15));
+    assert_eq!(code, 130, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("got: ") && err.contains("session/cancel"), "{err}");
 }

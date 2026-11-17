@@ -9,14 +9,19 @@
 //! - 工具：`tool_call` → 调用，`tool_call_update` 到了 completed / failed → 结果，两条带着同一个 `call`（`toolCallId`），
 //!   上传前同一批里合成一条，跨批的由服务端合并。参数只留摘要，结果留前 [`OUT_LINES`] 行、最多 [`OUT_MAX`] 个字符；
 //!   `_meta` 或 `rawOutput` 里有退出码时记下。
-//! - `result`：prompt 的回应（`stopReason`）。回应里带了 `usage`（这一轮的输入 / 输出 tokens）时记下；费用取最后一次
-//!   `usage_update` 里的 `cost`（整个会话的累计值）减去前面几轮已经记过的：续轮（#454）时一个会话有好几条 `result`，
-//!   界面把它们加起来，每条只记这一轮花的。
-//! - 出错的回应 → `error`。
+//! - `result`：这一轮的结束——v1 是 prompt 的回应（`stopReason`），v2 是带 `stopReason` 的 `idle`（`state_update`）。
+//!   带了 `usage`（这一轮的输入 / 输出 tokens）时记下；费用取最后一次 `usage_update` 里的 `cost`（整个会话的累计值）减去
+//!   前面几轮已经记过的：续轮（#454）、v2 的 agent 自己接着做时一个会话有好几条 `result`，界面把它们加起来，每条只记这一轮花的。
+//! - 出错的回应、v2 出错结束的 `idle` → `error`。
+//!
+//! v2（#461，Claude Code、Codex）：工具调用只有 `tool_call_update`，每次只带改了的字段，用 [`logfmt::Calls`] 并起来，
+//! 带着参数的那一帧记调用；命令的输出、退出码在它引用的终端里（`terminal_output_chunk` 的片段、跑完时 `terminal_update`
+//! 的完整 `output` 和 `exitStatus`），工具调用结束时没有文字就用终端的；计划是 `plan_update`。
 
 use crate::logfmt::{self, clip, s, Stream};
 use board_core::runlog::RunEvent;
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// agent 说的一段话最多多少个字符（服务端单条 4 KB 截断，这里先收一些）
 const TEXT_MAX: usize = 3000;
@@ -24,17 +29,23 @@ const TEXT_MAX: usize = 3000;
 const OUT_LINES: usize = 20;
 /// 工具结果最多多少个字符
 const OUT_MAX: usize = 1500;
+/// v2 终端的输出最多留多少个字节（摘要只用前 OUT_LINES 行）
+const TERM_KEEP: usize = 16 * 1024;
 
-/// 一个派发的解析器：费用要记住最后一次 `usage_update`，以及前面几轮的 `result` 已经记了多少
+/// 一个派发的解析器：费用要记住最后一次 `usage_update`，以及前面几轮的 `result` 已经记了多少；
+/// v2 还要记住工具调用的字段和终端的输出
 pub(crate) struct Parser {
     kind: Stream,
     cost: Option<f64>,
     billed: f64,
+    calls: logfmt::Calls,
+    /// v2 终端：输出（解码后最多 TERM_KEEP 个字节）、退出码
+    terms: HashMap<String, (String, Option<i64>)>,
 }
 
 impl Parser {
     pub(crate) fn new(kind: Stream) -> Parser {
-        Parser { kind, cost: None, billed: 0.0 }
+        Parser { kind, cost: None, billed: 0.0, calls: logfmt::Calls::default(), terms: HashMap::new() }
     }
 
     /// 一行输出 → 0 到多条事件。`at` 是读到这一行的时间（毫秒）
@@ -65,13 +76,42 @@ impl Parser {
             return match s(&u["sessionUpdate"]) {
                 "agent_message_chunk" => message(&logfmt::content_text(&u["content"])).into_iter().collect(),
                 "plan" => message(&logfmt::plan_markdown(u)).into_iter().collect(),
-                "tool_call" => {
-                    let (name, arg) = logfmt::tool_of(u);
-                    let mut out = vec![RunEvent { kind: "tool".into(), call: some_text(id), tool: Some(name), args: some_text(&arg), ..Default::default() }];
-                    out.extend(tool_done(u, id));
+                "plan_update" => message(&logfmt::plan_markdown(&u["plan"])).into_iter().collect(),
+                "tool_call" | "tool_call_update" => {
+                    let call = self.calls.merge(u);
+                    let mut out = vec![];
+                    if self.calls.starts(u, &call) {
+                        let (name, arg) = logfmt::tool_of(&call);
+                        out.push(RunEvent { kind: "tool".into(), call: some_text(id), tool: Some(name), args: some_text(&arg), ..Default::default() });
+                    }
+                    out.extend(self.tool_done(u, id, &call));
                     out
                 }
-                "tool_call_update" => tool_done(u, id).into_iter().collect(),
+                "terminal_update" => {
+                    let t = self.terms.entry(s(&u["terminalId"]).to_string()).or_default();
+                    if let Some(data) = u["output"]["data"].as_str() {
+                        t.0 = keep(logfmt::terminal_text(data));
+                    }
+                    if let Some(c) = logfmt::terminal_code(u) {
+                        t.1 = Some(c);
+                    }
+                    vec![]
+                }
+                "terminal_output_chunk" => {
+                    let t = self.terms.entry(s(&u["terminalId"]).to_string()).or_default();
+                    if t.0.len() < TERM_KEEP {
+                        t.0 = keep(t.0.clone() + &logfmt::terminal_text(s(&u["data"])));
+                    }
+                    vec![]
+                }
+                "state_update" if s(&u["state"]) == "idle" => match u["stopReason"].as_str() {
+                    Some("error") => {
+                        let why = logfmt::error_of(u).unwrap_or_else(|| "出错了".into());
+                        vec![RunEvent::text("error", clip(&why, TEXT_MAX)), self.result("error", &u["usage"], Some("出错"))]
+                    }
+                    Some(reason) => vec![self.result(reason, &u["usage"], None)],
+                    None => vec![],
+                },
                 "usage_update" => {
                     if let Some(c) = u["cost"]["amount"].as_f64() {
                         self.cost = Some(c);
@@ -83,31 +123,56 @@ impl Parser {
         }
         let r = &v["result"];
         let Some(reason) = r["stopReason"].as_str() else { return vec![] };
-        let u = &r["usage"];
+        vec![self.result(reason, &r["usage"], None)]
+    }
+
+    /// 这一轮结束的事件。`text` 不给时用结束原因的说法
+    fn result(&mut self, reason: &str, usage: &Value, text: Option<&str>) -> RunEvent {
         // usage_update 的费用是会话累计的：这一轮只记比上一条 result 多出来的
         let cost = self.cost.take().map(|total| {
             let this = (total - self.billed).max(0.0);
             self.billed = self.billed.max(total);
             this
         });
-        vec![RunEvent {
+        RunEvent {
             kind: "result".into(),
             ok: Some(reason == "end_turn"),
-            text: some_text(logfmt::stop_words(reason)),
-            tokens_in: u["inputTokens"].as_i64(),
-            tokens_out: u["outputTokens"].as_i64(),
+            text: some_text(text.unwrap_or(logfmt::stop_words(reason))),
+            tokens_in: usage["inputTokens"].as_i64(),
+            tokens_out: usage["outputTokens"].as_i64(),
             cost,
             ..Default::default()
-        }]
+        }
+    }
+
+    /// 工具做完了（completed / failed）时的结果事件。v2 命令的输出、退出码在它引用的终端里（终端名不写时和调用同名）
+    fn tool_done(&self, u: &Value, id: &str, call: &Value) -> Option<RunEvent> {
+        let ok = logfmt::finished(u)?;
+        let mut body = logfmt::tool_output(u);
+        let mut code = logfmt::tool_code(u);
+        let term = logfmt::terminal_of(call).unwrap_or_else(|| id.to_string());
+        if let Some((out, c)) = self.terms.get(&term) {
+            if body.trim().is_empty() {
+                body = out.clone();
+            }
+            code = code.or(*c);
+        }
+        let mut e = done(id, &body, ok);
+        e.code = code;
+        Some(e)
     }
 }
 
-/// 工具做完了（completed / failed）时的结果事件
-fn tool_done(u: &Value, id: &str) -> Option<RunEvent> {
-    let ok = logfmt::finished(u)?;
-    let mut e = done(id, &logfmt::tool_output(u), ok);
-    e.code = logfmt::tool_code(u);
-    Some(e)
+/// 终端输出只留前 TERM_KEEP 个字节（按字符边界截）
+fn keep(mut t: String) -> String {
+    if t.len() > TERM_KEEP {
+        let mut end = TERM_KEEP;
+        while !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        t.truncate(end);
+    }
+    t
 }
 
 /* ------------------------------ 共用 ------------------------------ */
@@ -155,6 +220,48 @@ mod tests {
 
     const ACP: &str = include_str!("../tests/fixtures/acp-session.jsonl");
     const CODEX_TERMINAL: &str = include_str!("../tests/fixtures/codex-terminal.jsonl");
+    /// ACP v2 的一个会话（照 claude-agent-acp 0.107.3 的帧写的）：工具调用分几帧打补丁，命令的输出、退出码在终端里，
+    /// 这一轮在 idle 结束、带着 tokens；后台跑完 agent 自己又开了一轮
+    const ACP_V2: &str = include_str!("../tests/fixtures/acp-v2-session.jsonl");
+
+    /// v2（#461）：消息、工具（参数在第二帧、输出和退出码从终端来）、计划、两轮的结束（tokens、按轮算的费用）
+    #[test]
+    fn acp_v2_frames_become_events() {
+        let evs = parse(ACP_V2);
+        assert_eq!(kinds(&evs), ["message", "tool", "message", "result", "message", "result"], "{evs:#?}");
+        assert_eq!(evs[0].text.as_deref(), Some("先跑测试。"));
+        let t = &evs[1];
+        assert_eq!((t.tool.as_deref(), t.args.as_deref(), t.ok, t.code), (Some("shell"), Some("npm test"), Some(false), Some(1)), "{t:#?}");
+        assert_eq!(t.out.as_deref(), Some("line1\nline2\nFAIL src/a.test.ts"), "输出是终端最后的完整输出，\\r\\n 换成 \\n");
+        assert_eq!(evs[2].text.as_deref(), Some("- [x] 跑测试\n- [ ] 交审（正在做）"));
+        let first = &evs[3];
+        assert_eq!((first.ok, first.tokens_in, first.tokens_out, first.cost), (Some(true), Some(1200), Some(80), Some(0.3)));
+        assert_eq!(evs[4].text.as_deref(), Some("后台跑完了，交审。"), "agent 自己接着做的那一轮");
+        let second = &evs[5];
+        assert_eq!((second.ok, second.tokens_in, second.tokens_out), (Some(true), Some(300), Some(20)));
+        assert!((second.cost.unwrap() - 0.2).abs() < 1e-9, "费用按轮算：{:?}", second.cost);
+    }
+
+    /// v2：出错结束的 idle 记一条 error 和一条失败的 result；只有终端片段、没有完整输出时用片段
+    #[test]
+    fn acp_v2_errors_and_streamed_output() {
+        let mut p = Parser::new(Stream::Acp);
+        let upd = |u: &str| format!(r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{u}}}}}"#);
+        let mut evs = vec![];
+        evs.extend(p.feed(&upd(r#"{"sessionUpdate":"tool_call_update","toolCallId":"t9","kind":"execute","title":"ls","rawInput":{"command":"ls"},"content":[{"type":"terminal","terminalId":"t9"}]}"#), 1));
+        evs.extend(p.feed(&upd(r#"{"sessionUpdate":"terminal_output_chunk","terminalId":"t9","data":"YQ0K"}"#), 2));
+        evs.extend(p.feed(&upd(r#"{"sessionUpdate":"terminal_output_chunk","terminalId":"t9","data":"Yg0K"}"#), 3));
+        evs.extend(p.feed(&upd(r#"{"sessionUpdate":"tool_call_update","toolCallId":"t9","status":"completed"}"#), 4));
+        evs.extend(p.feed(&upd(r#"{"sessionUpdate":"state_update","state":"idle","stopReason":"error","error":{"code":-32603,"message":"rate limited"}}"#), 5));
+        let evs = merge_calls(evs);
+        assert_eq!(kinds(&evs), ["tool", "error", "result"], "{evs:#?}");
+        assert_eq!((evs[0].args.as_deref(), evs[0].out.as_deref(), evs[0].ok), (Some("ls"), Some("a\nb"), Some(true)));
+        assert_eq!(evs[1].text.as_deref(), Some("rate limited"));
+        assert_eq!((evs[2].ok, evs[2].text.as_deref()), (Some(false), Some("出错")));
+        // 后台重报的 idle（不带 stopReason）、running：不记
+        assert!(p.feed(&upd(r#"{"sessionUpdate":"state_update","state":"idle","background":[]}"#), 6).is_empty());
+        assert!(p.feed(&upd(r#"{"sessionUpdate":"state_update","state":"running"}"#), 7).is_empty());
+    }
 
     #[test]
     fn acp_frames_become_events() {

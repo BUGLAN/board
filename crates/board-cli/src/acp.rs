@@ -1,20 +1,28 @@
-//! `board acp`：board host 和 agent 之间的一层，讲 ACP（Agent Client Protocol v1，<https://agentclientprotocol.com>）。
+//! `board acp`：board host 和 agent 之间的一层，讲 ACP（Agent Client Protocol，<https://agentclientprotocol.com>）。
+//! 握手时要 v2（草案），agent 只会 v1 时按 v1 走（ACP 的版本协商：agent 回它能讲的最新版本）：Claude Code
+//! （`claude-agent-acp`）、Codex（`codex-acp`）回 2，dsh 回 1（#461）。
 //!
 //! board host 一个派发启动一个 `board acp`（进程模型、停止、超时、日志都和以前一样按「一个派发一个进程、输出进日志文件」），
 //! 它在这次派发的启动环境里拉起 agent 的 ACP 入口（dsh 自带的 `dsh --profile acp`、Claude Code 的
 //! `claude-agent-acp`、Codex 的 `codex-acp`），走一遍：
 //!
-//! 1. `initialize`：协议版本 1；Client 的 `fs`、`terminal` 能力都不声明（agent 自己在 worktree 里读写、执行）。
+//! 1. `initialize`：要协议版本 2，同时带上 v1、v2 两套字段（v2 的 `info`、`capabilities`，v1 的 `clientInfo`、
+//!    `clientCapabilities`），只会 v1 的 agent 照样认得。不声明 Client 能力（agent 自己在 worktree 里读写、执行）。
 //! 2. `session/new`：工作目录是派发的目录，`mcpServers` 为空（MCP 由 Board 写进各 agent 自己的配置文件）。
 //! 3. 带了 `--set <选项>=<值>` 并且 agent 的会话配置里有这一项、这个值时切过去（dsh 的 `reasoning_effort`）；
 //!    带了 `--mode` 并且 agent 公布了这个模式时切过去（Claude Code 的 `bypassPermissions`、Codex 的 `agent-full-access`）。
-//! 4. `session/prompt`：一条文本，就是派发的提示词（`--prompt-file`，不放进命令行）。
-//! 5. 续轮（#454）：这一轮正常结束（`end_turn`），并且带了 `--extra-turns <次数>`（board host 只给做卡的派发带）时，先看这次
-//!    派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`，连接和 board 命令一样）。还持有，
-//!    就是卡片既没交审、也没交给人：在同一个会话里再发一条提示词续一轮（写明还持有哪张、按 board-skills 做完或交给人），
-//!    最多续这么多轮，每次在标准错误写一行。不持有、查不到就收尾。agent 结束这一轮的原因各种各样（把长命令放到后台等通知、
-//!    停下来问人、做到一半就总结），派发里没有人接话，不续的话结束这一轮就等于结束会话。
-//! 6. 收尾：关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
+//!    v2 的配置项用 `configId`、切的时候带 `type: "id"`，模式只在配置项里（没有 `session/set_mode`）。
+//! 4. `session/prompt`：一条文本，就是派发的提示词（`--prompt-file`，不放进命令行）。v1 的回应跨整轮，带 `stopReason`；
+//!    v2 的回应只表示收下了（`messageId`），这一轮的进展看 `state_update`：`running` / `requires_action` 是在干活，
+//!    `idle` 带 `stopReason` 是这一轮做完了；agent 也可以不等提示词自己再开一轮（例如处理跑完的后台任务），那时又报 `running`。
+//! 5. 这一轮做完以后（#454、#461）：先等它稳定下来——最后一帧之后安静 2 秒，最多等 10 秒（v1 收迟到的更新，v2 是规范要的
+//!    宽限期：后台任务跑完可能紧接着开下一轮）。带了 `--extra-turns <次数>`（board host 只给做卡的派发带）时，再看这次派发的
+//!    名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`，连接和 board 命令一样）：
+//!    - 不持有（交审了、交给人了）、查不到：收尾。
+//!    - 还持有，v2 报的 `background` 不空（后台还有命令、任务在跑）：不收也不续，等 agent 跑完自己接着做；每 30 秒再查一次卡片。
+//!    - 还持有，后台为空或 agent 不报（v1、Codex）：在同一个会话里再发一条提示词续一轮（写明还持有哪张、后台命令在这一轮里
+//!      等它跑完、按 board-skills 做完或交给人），最多续这么多轮，每次在标准错误写一行；续满了收尾。
+//! 6. 收尾：v2 先发 `session/close`，再关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
 //!
 //! 期间 agent 发来的请求：`session/request_permission` 自动允许（和以前跳过审批的参数同一个口径，Board 没有人工审批）；
 //! 别的（`fs/*`、`terminal/*` 这些没声明的能力）回 `-32601`。收到 SIGTERM、SIGINT（人点停止、board host 退出）时发
@@ -25,9 +33,9 @@
 //! 攒着的片段最多 2 秒落一次，日志不会因为 agent 在说一大段话就长时间不动（「没输出多久算卡住」看日志）。
 //! agent 的标准错误直接进日志；`board acp` 自己的提示写标准错误（`✗ …`）。
 //!
-//! 退出码：`end_turn` 0（续满了卡片还在手里也是 0，board host 按卡片还由它持有记成异常退出）；被取消 130；
-//! `max_tokens`、`max_turn_requests`、`refusal` 3；握手失败、协议错误 2；prompt 还没结束 agent 就退出了：agent 的退出码
-//! （它是 0 时记 1）。
+//! 退出码：`end_turn` 0（续满了卡片还在手里也是 0，board host 按卡片还由它持有记成异常退出）；被取消、收到 SIGTERM 130；
+//! `max_tokens`、`max_turn_requests`、`refusal` 3；握手失败、协议错误、v2 这一轮出错（`stopReason: error`）2；
+//! 这一轮还没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。
 
 use crate::envs::Env;
 use serde_json::{json, Value};
@@ -39,14 +47,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// 协议大版本
-const PROTOCOL: i64 = 1;
+/// 握手时要的协议大版本：ACP v2（草案）。agent 只会 v1 时回 1，按 v1 走
+const PROTOCOL: i64 = 2;
 /// 握手（initialize、session/new、切模式）多久没回应算失败：agent 第一次启动可能要装依赖、读配置，给足时间
 const HANDSHAKE: Duration = Duration::from_secs(180);
 /// 取消后等 agent 回 `cancelled`、收尾时等 agent 退出各最多多久
 const GRACE: Duration = Duration::from_secs(5);
 /// 攒着的消息片段最多多久落一次日志
 const CHUNK_FLUSH: Duration = Duration::from_secs(2);
+/// 这一轮做完以后，最后一帧之后安静多久算稳定下来（v1 收迟到的更新，v2 的宽限期），以及最多等多久
+const SETTLE_QUIET: Duration = Duration::from_secs(2);
+const SETTLE_MAX: Duration = Duration::from_secs(10);
+/// v2：卡片还在手里、后台还在跑时，隔多久再查一次卡片
+const RECHECK: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(200);
 
 pub const EXIT_OK: i32 = 0;
@@ -125,14 +138,22 @@ enum Pending {
     New,
     Mode,
     Prompt,
+    Close,
+}
+
+/// 协商到的协议版本
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Proto {
+    V1,
+    V2,
 }
 
 /// 这一次运行怎么结束的
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Outcome {
-    /// prompt 的响应：`stopReason`
+    /// 这一轮做完了：v1 是 prompt 的回应，v2 是 `idle` 的 `stopReason`
     Stopped(String),
-    /// 握手、prompt 出错（原因）
+    /// 握手、prompt 出错，v2 这一轮出错（原因）
     Failed(String),
 }
 
@@ -147,9 +168,14 @@ pub(crate) struct Client {
     sets: Vec<(String, String)>,
     /// session/new 之后、prompt 之前要发的配置请求（一个一个发）
     queue: Vec<(&'static str, Value)>,
+    /// 这一轮怎么结束的；还在干活（v2 报了 `running`）时为空
     pub outcome: Option<Outcome>,
     /// 已经发了 session/prompt（之后才算「进行中」，取消才有意义）
     prompting: bool,
+    /// 握手协商到的版本（握手完成前当 v1）
+    pub proto: Proto,
+    /// v2：最近一次报的后台工作有几项；`None` 是 agent 不报（不知道有没有），不是没有
+    pub background: Option<usize>,
 }
 
 impl Client {
@@ -165,6 +191,8 @@ impl Client {
             queue: vec![],
             outcome: None,
             prompting: false,
+            proto: Proto::V1,
+            background: None,
         }
     }
 
@@ -190,14 +218,28 @@ impl Client {
         json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
     }
 
-    /// 握手的第一帧
+    /// 握手的第一帧：要 v2，同时带上 v1 的两个字段，只会 v1 的 agent（dsh）照样认得、回 `protocolVersion: 1`
     pub(crate) fn start(&mut self) -> Vec<Value> {
+        let info = json!({ "name": "board", "title": "Board", "version": env!("CARGO_PKG_VERSION") });
         let params = json!({
             "protocolVersion": PROTOCOL,
+            "info": info,
+            "capabilities": {},
+            "clientInfo": info,
             "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
-            "clientInfo": { "name": "board", "title": "Board", "version": env!("CARGO_PKG_VERSION") },
         });
         vec![self.request("initialize", params, Pending::Init)]
+    }
+
+    /// 收尾：v2 发 `session/close`（停掉会话里还在跑的工作，包括后台的），不等回应；v1 不发
+    pub(crate) fn close(&mut self) -> Vec<Value> {
+        match (&self.session, self.proto) {
+            (Some(s), Proto::V2) => {
+                let params = json!({ "sessionId": s });
+                vec![self.request("session/close", params, Pending::Close)]
+            }
+            _ => vec![],
+        }
     }
 
     /// 还在握手（没发 prompt、也没结束）
@@ -240,8 +282,13 @@ impl Client {
         match (v.get("method").and_then(Value::as_str), id) {
             // agent 发来的请求
             (Some(method), Some(id)) => vec![answer(method, id, &v["params"])],
-            // 通知：只记日志
-            (Some(_), None) => vec![],
+            // 通知：记日志；v2 的 `state_update` 还决定这一轮在不在干活
+            (Some(method), None) => {
+                if method == "session/update" && self.proto == Proto::V2 {
+                    self.on_update(&v["params"]);
+                }
+                vec![]
+            }
             // 回应
             (None, Some(id)) => match id.as_i64().and_then(|i| self.pending.remove(&i)) {
                 Some(what) => self.on_response(what, v),
@@ -258,6 +305,8 @@ impl Client {
             match what {
                 // 切不了模式、配置不影响干活：接着发下一个，最后发 prompt（权限请求还会自动允许）
                 Pending::Mode => return self.step(),
+                // 收尾时发的，不等也不管
+                Pending::Close => {}
                 Pending::Init => self.outcome = Some(Outcome::Failed(format!("initialize 失败：{msg}"))),
                 Pending::New if e["code"].as_i64() == Some(-32000) => self.outcome = Some(Outcome::Failed(format!("agent 要求先登录：{msg}"))),
                 Pending::New => self.outcome = Some(Outcome::Failed(format!("session/new 失败：{msg}"))),
@@ -267,6 +316,8 @@ impl Client {
         }
         match what {
             Pending::Init => {
+                // 版本协商：agent 回它能讲的、不高于我们要的最新版本
+                self.proto = if r["protocolVersion"].as_i64().unwrap_or(1) >= 2 { Proto::V2 } else { Proto::V1 };
                 let params = json!({ "cwd": self.cwd, "mcpServers": [] });
                 vec![self.request("session/new", params, Pending::New)]
             }
@@ -276,17 +327,43 @@ impl Client {
                     return vec![];
                 };
                 self.session = Some(s.to_string());
-                let mut queue: Vec<(&'static str, Value)> = self.sets.iter().filter_map(|(id, v)| config_set(r, s, id, v)).collect();
-                queue.extend(self.mode.clone().and_then(|m| mode_switch(r, s, &m)));
+                let proto = self.proto;
+                let mut queue: Vec<(&'static str, Value)> = self.sets.iter().filter_map(|(id, v)| config_set(r, s, id, v, proto)).collect();
+                queue.extend(self.mode.clone().and_then(|m| mode_switch(r, s, &m, proto)));
                 self.queue = queue;
                 self.step()
             }
             Pending::Mode => self.step(),
+            Pending::Close => vec![],
+            // v1 的回应跨整轮，带着这一轮的结束原因；v2 的回应只表示提示词收下了，这一轮的结束看 `state_update`
+            Pending::Prompt if self.proto == Proto::V2 => vec![],
             Pending::Prompt => {
                 let reason = r["stopReason"].as_str().unwrap_or("end_turn").to_string();
                 self.outcome = Some(Outcome::Stopped(reason));
                 vec![]
             }
+        }
+    }
+
+    /// v2 的 `session/update`：这个会话的 `state_update` 决定这一轮在不在干活（子会话的、别的更新只记日志）。
+    /// `running`、`requires_action` 和认不出的状态都算在干活（规范：认不出的状态不能当 `idle`）；`idle` 带 `stopReason`
+    /// 是这一轮做完了，不带的是 agent 重报一次（例如后台列表变了），不算新的结束
+    fn on_update(&mut self, params: &Value) {
+        let u = &params["update"];
+        if u["sessionUpdate"].as_str() != Some("state_update") || params["sessionId"].as_str() != self.session.as_deref() {
+            return;
+        }
+        self.background = u["background"].as_array().map(Vec::len);
+        if !self.prompting {
+            return;
+        }
+        match u["state"].as_str() {
+            Some("idle") => match u["stopReason"].as_str() {
+                Some("error") => self.outcome = Some(Outcome::Failed(format!("这一轮出错：{}", error_text(&u["error"])))),
+                Some(reason) => self.outcome = Some(Outcome::Stopped(reason.to_string())),
+                None => {}
+            },
+            _ => self.outcome = None,
         }
     }
 }
@@ -313,27 +390,39 @@ fn permission(params: &Value) -> Value {
 }
 
 /// 按 session/new 的回应决定怎么切到 mode：会话配置里有「模式」这一项、且有这个值时用 `session/set_config_option`；
-/// 否则公布的模式里有它时用 `session/set_mode`；都没有时不切
-fn mode_switch(r: &Value, session: &str, mode: &str) -> Option<(&'static str, Value)> {
+/// 否则（只有 v1）公布的模式里有它时用 `session/set_mode`；都没有时不切
+fn mode_switch(r: &Value, session: &str, mode: &str, proto: Proto) -> Option<(&'static str, Value)> {
     for o in r["configOptions"].as_array().into_iter().flatten() {
-        let is_mode = o["id"].as_str() == Some("mode") || o["category"].as_str() == Some("mode");
+        let is_mode = option_id(o) == Some("mode") || o["category"].as_str() == Some("mode");
         if is_mode && option_values(&o["options"]).iter().any(|v| v == mode) {
-            let id = o["id"].as_str().unwrap_or("mode");
-            return Some(("session/set_config_option", json!({ "sessionId": session, "configId": id, "value": mode })));
+            return Some(("session/set_config_option", set_option(session, option_id(o).unwrap_or("mode"), mode, proto)));
         }
     }
     let modes = r["modes"]["availableModes"].as_array().into_iter().flatten();
-    if modes.into_iter().any(|m| m["id"].as_str() == Some(mode)) {
+    if proto == Proto::V1 && modes.into_iter().any(|m| m["id"].as_str() == Some(mode)) {
         return Some(("session/set_mode", json!({ "sessionId": session, "modeId": mode })));
     }
     None
 }
 
 /// 会话配置里有 id 这一项、而且有这个值时：`session/set_config_option`
-fn config_set(r: &Value, session: &str, id: &str, value: &str) -> Option<(&'static str, Value)> {
-    let o = r["configOptions"].as_array()?.iter().find(|o| o["id"].as_str() == Some(id))?;
+fn config_set(r: &Value, session: &str, id: &str, value: &str, proto: Proto) -> Option<(&'static str, Value)> {
+    let o = r["configOptions"].as_array()?.iter().find(|o| option_id(o) == Some(id))?;
     let offered = option_values(&o["options"]).iter().any(|v| v == value);
-    offered.then(|| ("session/set_config_option", json!({ "sessionId": session, "configId": id, "value": value })))
+    offered.then(|| ("session/set_config_option", set_option(session, id, value, proto)))
+}
+
+/// 配置项的标识：v2 叫 `configId`，v1 叫 `id`
+fn option_id(o: &Value) -> Option<&str> {
+    o["configId"].as_str().or_else(|| o["id"].as_str())
+}
+
+/// `session/set_config_option` 的参数：v2 要写明值的类型（下拉选项是 `id`）
+fn set_option(session: &str, id: &str, value: &str, proto: Proto) -> Value {
+    match proto {
+        Proto::V1 => json!({ "sessionId": session, "configId": id, "value": value }),
+        Proto::V2 => json!({ "sessionId": session, "configId": id, "type": "id", "value": value }),
+    }
 }
 
 /// 选项的值：`[{value, name}]`，也可能分组 `[{group, options: [...]}]`
@@ -517,8 +606,12 @@ fn run(o: &Opts) -> i32 {
     let mut merger = Merger::default();
     send(&mut stdin, client.start());
     let started = Instant::now();
-    // 已经续了几轮（见 follow_up）
+    // 已经续了几轮（见 decide）
     let mut turns: u32 = 0;
+    // 这一轮做完以后走到了哪一步（见 Phase）
+    let mut phase = Phase::Working;
+    // 最近一次收到 agent 输出的时间：这一轮做完以后，安静多久算稳定下来
+    let mut last_frame = Instant::now();
     let mut cancel_at: Option<Instant> = None;
     // agent 进程已经退出的时间：它留下的子进程可能还拿着标准输出，读不到 EOF；退出后再收一会儿剩下的输出就收尾
     let mut gone_at: Option<Instant> = None;
@@ -552,6 +645,7 @@ fn run(o: &Opts) -> i32 {
         }
         match rx.recv_timeout(TICK) {
             Ok(Some(line)) => {
+                last_frame = Instant::now();
                 let t = line.trim();
                 let v = if t.starts_with('{') { serde_json::from_str::<Value>(t).ok().filter(Value::is_object) } else { None };
                 match v {
@@ -571,35 +665,39 @@ fn run(o: &Opts) -> i32 {
                     }
                     None => {}
                 }
-                if client.outcome.is_some() {
-                    // 这一轮结束了：卡片还在这个名字手里，就在同一个会话里续一轮（#454）
-                    match follow_up(o, &client, turns, stdin.is_some()) {
-                        Some(text) => {
-                            turns += 1;
-                            send(&mut stdin, client.again(&text));
-                        }
-                        None => break,
-                    }
-                }
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // 正在停：等 agent 回 `cancelled`（或者到 GRACE）
+        if cancel_at.is_some() {
+            if client.outcome.is_some() {
+                break;
+            }
+            continue;
+        }
+        match next_step(o, &mut client, &mut phase, &mut turns, last_frame, stdin.is_some()) {
+            Step::Stay => {}
+            Step::Finish => break,
+            Step::Send(frames) => send(&mut stdin, frames),
         }
     }
     if let Some(l) = merger.flush() {
         log(&l);
     }
-    // 收尾：关掉 agent 的标准输入（ACP 的 agent 读到 EOF 就退出），等一会儿，还不退就结束它
+    // 收尾：v2 先关会话（停掉还在跑的，包括后台的），再关掉 agent 的标准输入（ACP 的 agent 读到 EOF 就退出），
+    // 等一会儿，还不退就结束它
+    send(&mut stdin, client.close());
     drop(stdin);
     let status = wait(&mut child, GRACE);
     match &client.outcome {
-        Some(o) => {
-            if let Outcome::Failed(why) = o {
-                eprintln!("✗ {why}");
-            }
-            exit_for(o)
+        Some(Outcome::Failed(why)) => {
+            eprintln!("✗ {why}");
+            EXIT_PROTOCOL
         }
-        None if TERM.load(Ordering::SeqCst) => EXIT_CANCELLED,
+        // 人点停止、board host 退出：不管 agent 停在哪一步
+        _ if TERM.load(Ordering::SeqCst) => EXIT_CANCELLED,
+        Some(o) => exit_for(o),
         None => {
             let code = status.and_then(|s| s.code()).unwrap_or(1);
             eprintln!("✗ agent 在这一轮结束之前就退出了（退出码 {code}）");
@@ -608,35 +706,104 @@ fn run(o: &Opts) -> i32 {
     }
 }
 
-/// 这一轮正常结束（`end_turn`）之后要不要续一轮：带了 `--extra-turns`、这次派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上
-/// 还持有卡片时，返回续轮的提示词，并在标准错误写一行（进日志，「过程」里看得到）。`done` 是已经续了几轮，
+/// 这一轮做完以后走到了哪一步
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Phase {
+    /// 等这一轮做完：v1 是 prompt 的回应，v2 是带 `stopReason` 的 `idle`
+    Working,
+    /// 做完了，等它稳定下来：最后一帧之后安静 SETTLE_QUIET，从这个时间算最多 SETTLE_MAX
+    Settling(Instant),
+    /// v2：卡片还在手里、后台还在跑：等 agent 跑完自己接着做；到这个时间再查一次卡片
+    Waiting(Instant),
+}
+
+/// 这一轮的进展之后要做的
+#[derive(Debug, PartialEq)]
+enum Step {
+    Stay,
+    Finish,
+    /// 发给 agent（续轮的 prompt）
+    Send(Vec<Value>),
+}
+
+/// 每收一帧、每过一个 TICK 看一次这一轮走到哪了（见模块说明第 5 步）。`last_frame` 是最近一次收到 agent 输出的时间，
 /// `alive` 是 agent 的标准输入还写得进去
-fn follow_up(o: &Opts, client: &Client, done: u32, alive: bool) -> Option<String> {
-    let ended = client.outcome.as_ref() == Some(&Outcome::Stopped("end_turn".into()));
-    if o.extra_turns == 0 || !ended || !alive || TERM.load(Ordering::SeqCst) {
-        return None;
+fn next_step(o: &Opts, client: &mut Client, phase: &mut Phase, turns: &mut u32, last_frame: Instant, alive: bool) -> Step {
+    match *phase {
+        Phase::Working => {
+            let Some(out) = &client.outcome else { return Step::Stay };
+            // 出错、被取消、到了上限，或者不续轮的派发（拆解、自检）：收尾
+            if *out != Outcome::Stopped("end_turn".into()) || o.extra_turns == 0 {
+                return Step::Finish;
+            }
+            *phase = Phase::Settling(Instant::now());
+            Step::Stay
+        }
+        Phase::Settling(since) => {
+            // v2：agent 又报了 `running`，自己接着做了
+            if client.outcome.is_none() {
+                *phase = Phase::Working;
+                return Step::Stay;
+            }
+            if last_frame.elapsed() < SETTLE_QUIET && since.elapsed() < SETTLE_MAX {
+                return Step::Stay;
+            }
+            decide(o, client, phase, turns, alive, false)
+        }
+        Phase::Waiting(at) => {
+            if client.outcome.is_none() {
+                *phase = Phase::Working;
+                return Step::Stay;
+            }
+            // 后台跑完了（agent 重报了一次 `idle`，后台为空或不再报）：稳定下来再看
+            if client.background.unwrap_or(0) == 0 {
+                *phase = Phase::Settling(Instant::now());
+                return Step::Stay;
+            }
+            if Instant::now() < at {
+                return Step::Stay;
+            }
+            decide(o, client, phase, turns, alive, true)
+        }
+    }
+}
+
+/// 这一轮做完、稳定下来以后：这次派发的名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有卡片吗？不持有、查不到就收尾；
+/// 还持有时，v2 后台还有东西在跑就接着等，否则在同一个会话里续一轮（续满了收尾）。每个决定在标准错误写一行
+/// （进日志，「过程」里看得到）；`waiting` 是已经在等后台，再查一次时不重复写
+fn decide(o: &Opts, client: &mut Client, phase: &mut Phase, turns: &mut u32, alive: bool, waiting: bool) -> Step {
+    if !alive || TERM.load(Ordering::SeqCst) {
+        return Step::Finish;
     }
     let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let (Some(name), Some(board)) = (var("BOARD_AS"), var("BOARD")) else {
         eprintln!("✗ 环境变量里没有 BOARD_AS、BOARD：不知道这次派发的名字和白板，不续轮");
-        return None;
+        return Step::Finish;
     };
-    match held(&name, &board) {
-        Ok(None) => None,
-        Ok(Some((id, title))) if done < o.extra_turns => {
-            let n = done + 1;
-            eprintln!("↻ 第 {n} 次续轮（最多 {} 次）：{board}#{id} 还由 {name} 持有，没交审，也没交给人", o.extra_turns);
-            Some(nudge(&board, id, &title, n, o.extra_turns))
-        }
-        Ok(Some((id, _))) => {
-            eprintln!("✗ 续了 {done} 轮，{board}#{id} 还由 {name} 持有：不再续，收尾");
-            None
-        }
+    let (id, title) = match held(&name, &board) {
+        Ok(Some(card)) => card,
+        Ok(None) => return Step::Finish,
         Err(e) => {
             eprintln!("✗ 查不到 {name} 还持有没持有卡片（{e}）：不续轮，收尾");
-            None
+            return Step::Finish;
         }
+    };
+    let running = if client.proto == Proto::V2 { client.background.unwrap_or(0) } else { 0 };
+    if running > 0 {
+        if !waiting {
+            eprintln!("⋯ 等后台：{board}#{id} 还由 {name} 持有，后台还有 {running} 项在跑，等 agent 跑完自己接着做");
+        }
+        *phase = Phase::Waiting(Instant::now() + RECHECK);
+        return Step::Stay;
     }
+    if *turns >= o.extra_turns {
+        eprintln!("✗ 续了 {turns} 轮，{board}#{id} 还由 {name} 持有：不再续，收尾");
+        return Step::Finish;
+    }
+    *turns += 1;
+    eprintln!("↻ 第 {turns} 次续轮（最多 {} 次）：{board}#{id} 还由 {name} 持有，没交审，也没交给人", o.extra_turns);
+    *phase = Phase::Working;
+    Step::Send(client.again(&nudge(&board, id, &title, *turns, o.extra_turns)))
 }
 
 /// 这个名字在这块白板上持有的卡片（编号、标题）：`GET /api/agents` 列出在线的名字和它们持有的卡片。
@@ -648,12 +815,12 @@ fn held(name: &str, board: &str) -> Result<Option<(i64, String)>, String> {
     Ok(card.map(|c| (c.card.id, c.card.title)))
 }
 
-/// 续轮的提示词：还持有哪张、为什么要接着做、做不下去怎么办
+/// 续轮的提示词：还持有哪张、为什么要接着做、后台命令怎么办、做不下去怎么办
 fn nudge(board: &str, id: i64, title: &str, n: u32, max: u32) -> String {
     format!(
-        "这一轮结束了，但你还持有 {board}#{id}「{title}」：没交审，也没交给人。这次派发没有人回答问题，结束这一轮就是结束会话，\
-         卡片会记成异常退出。不要停下来等人确认：按 board-skills 接着做完、交审；做不下去就按「做不下去」交给人。\
-         长命令在前台跑完，不要放到后台再结束这一轮。（第 {n} 次续轮，最多 {max} 次）"
+        "这一轮结束了，但你还持有 {board}#{id}「{title}」：没交审，也没交给人。这次派发没有人回答问题，不交的话卡片会记成异常退出。\
+         不要停下来等人确认：按 board-skills 接着做完、交审；做不下去就按「做不下去」交给人。\
+         后台命令还没跑完的话，就在这一轮里用工具等它跑完，不要结束这一轮去等通知。（第 {n} 次续轮，最多 {max} 次）"
     )
 }
 
@@ -728,21 +895,24 @@ mod tests {
         let t = nudge("default/main", 454, "ACP 续轮", 1, 3);
         assert!(t.contains("default/main#454「ACP 续轮」"), "{t}");
         assert!(t.contains("按 board-skills 接着做完") && t.contains("做不下去"), "{t}");
-        assert!(t.contains("不要放到后台") && t.ends_with("（第 1 次续轮，最多 3 次）"), "{t}");
+        assert!(t.contains("在这一轮里用工具等它跑完") && t.ends_with("（第 1 次续轮，最多 3 次）"), "{t}");
     }
 
     fn reply(id: i64, result: Value) -> Value {
         json!({ "jsonrpc": "2.0", "id": id, "result": result })
     }
 
-    /// 走一遍：initialize → session/new → 切模式 → prompt → end_turn
+    /// 走一遍 v1（agent 只会 v1，例如 dsh）：initialize → session/new → 切模式 → prompt → end_turn
     #[test]
     fn handshake_mode_and_prompt() {
         let mut c = Client::new("/w", "/board-skills 开始执行", Some("bypassPermissions"));
         let f = c.start();
-        assert_eq!((f[0]["method"].as_str(), f[0]["id"].as_i64(), f[0]["params"]["protocolVersion"].as_i64()), (Some("initialize"), Some(0), Some(1)));
-        assert_eq!(f[0]["params"]["clientCapabilities"]["terminal"], false);
+        // 要 v2，同时带上 v1 的字段：只会 v1 的 agent 照样认得
+        assert_eq!((f[0]["method"].as_str(), f[0]["id"].as_i64(), f[0]["params"]["protocolVersion"].as_i64()), (Some("initialize"), Some(0), Some(2)));
+        assert_eq!((f[0]["params"]["info"]["name"].as_str(), f[0]["params"]["clientInfo"]["name"].as_str()), (Some("board"), Some("board")));
+        assert_eq!((&f[0]["params"]["capabilities"], &f[0]["params"]["clientCapabilities"]["terminal"]), (&json!({}), &json!(false)));
         let f = c.on_frame(&reply(0, json!({ "protocolVersion": 1, "agentCapabilities": {} })));
+        assert_eq!(c.proto, Proto::V1, "agent 回 1：按 v1 走");
         assert_eq!((f[0]["method"].as_str(), f[0]["params"]["cwd"].as_str()), (Some("session/new"), Some("/w")));
         assert_eq!(f[0]["params"]["mcpServers"], json!([]));
         assert!(c.handshaking());
@@ -761,6 +931,112 @@ mod tests {
         assert!(c.on_frame(&reply(3, json!({ "stopReason": "end_turn" }))).is_empty());
         assert_eq!(c.outcome, Some(Outcome::Stopped("end_turn".into())));
         assert_eq!(exit_for(c.outcome.as_ref().unwrap()), 0);
+        assert!(c.close().is_empty(), "v1 收尾不发 session/close：关标准输入就行");
+    }
+
+    fn state(session: &str, update: Value) -> Value {
+        let mut u = update;
+        u["sessionUpdate"] = json!("state_update");
+        json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": u } })
+    }
+
+    /// 走一遍 v2（Claude Code、Codex）：配置项用 configId、切的时候带 type；prompt 的回应只是收下了，
+    /// 这一轮的进展看 state_update；后台列表跟着记；收尾发 session/close
+    #[test]
+    fn v2_turns_follow_state_updates() {
+        let mut c = Client::new("/w", "/board-skills 开始执行", Some("bypassPermissions"));
+        c.start();
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 2, "info": { "name": "claude-agent-acp" }, "capabilities": {} })));
+        assert_eq!((c.proto, f[0]["method"].as_str()), (Proto::V2, Some("session/new")));
+        let opts = json!([{ "configId": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "auto", "options": [{ "value": "auto", "name": "Auto" }, { "value": "bypassPermissions", "name": "Bypass" }] }]);
+        let f = c.on_frame(&reply(1, json!({ "sessionId": "s1", "configOptions": opts })));
+        assert_eq!(f[0]["params"], json!({ "sessionId": "s1", "configId": "mode", "type": "id", "value": "bypassPermissions" }));
+        // 还没发 prompt：会话开始时报的状态不算这一轮
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "end_turn" })));
+        assert_eq!(c.outcome, None);
+        let f = c.on_frame(&reply(2, json!({ "configOptions": opts })));
+        assert_eq!(f[0]["method"], "session/prompt");
+        assert!(c.on_frame(&reply(3, json!({ "messageId": "m1" }))).is_empty());
+        assert_eq!(c.outcome, None, "v2 的 prompt 回应只是收下了");
+        c.on_frame(&state("s1", json!({ "state": "running" })));
+        assert_eq!(c.outcome, None);
+        assert_eq!(c.cancel()[0]["method"], "session/cancel", "在干活：取消有效");
+        // 别的会话（子 agent）的状态不算
+        c.on_frame(&state("child", json!({ "state": "idle", "stopReason": "end_turn" })));
+        assert_eq!(c.outcome, None);
+        // 这一轮做完了，后台还有一个终端在跑
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "end_turn", "background": [{ "type": "terminal", "terminalId": "t1" }], "usage": { "inputTokens": 5 } })));
+        assert_eq!((c.outcome.clone(), c.background), (Some(Outcome::Stopped("end_turn".into())), Some(1)));
+        // 后台跑完：agent 重报一次 idle（不带 stopReason），不是新的结束；结束原因照旧
+        c.on_frame(&state("s1", json!({ "state": "idle", "background": [] })));
+        assert_eq!((c.outcome.clone(), c.background), (Some(Outcome::Stopped("end_turn".into())), Some(0)));
+        // agent 自己接着做（处理跑完的后台任务）：又在干活
+        c.on_frame(&state("s1", json!({ "state": "running", "background": [] })));
+        assert_eq!(c.outcome, None);
+        // 认不出的状态也算在干活
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "end_turn" })));
+        c.on_frame(&state("s1", json!({ "state": "_compacting" })));
+        assert_eq!(c.outcome, None);
+        // 这一轮出错：退出码 2，原因写明
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "error", "error": { "code": -32603, "message": "rate limited" } })));
+        assert_eq!(c.outcome, Some(Outcome::Failed("这一轮出错：rate limited".into())));
+        assert_eq!(exit_for(c.outcome.as_ref().unwrap()), 2);
+        // 不报后台：None（不知道），不是 0
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "end_turn" })));
+        assert_eq!(c.background, None);
+        let f = c.close();
+        assert_eq!((f[0]["method"].as_str(), &f[0]["params"]), (Some("session/close"), &json!({ "sessionId": "s1" })));
+    }
+
+    fn opts(extra_turns: u32) -> Opts {
+        let mut o = parse(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--", "x"].map(String::from)).unwrap();
+        o.extra_turns = extra_turns;
+        o
+    }
+
+    /// 这一轮做完以后的几步（不用查卡片的部分；查卡片在 tests/acp.rs 里连真的服务端测）
+    #[test]
+    fn steps_after_a_turn() {
+        let ended = || {
+            let mut c = Client::new("/w", "p", None);
+            c.outcome = Some(Outcome::Stopped("end_turn".into()));
+            c
+        };
+        let (mut turns, quiet) = (0, Instant::now() - SETTLE_QUIET);
+        // 还在干活：等
+        let mut c = Client::new("/w", "p", None);
+        let mut phase = Phase::Working;
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, quiet, true), Step::Stay);
+        // 不续轮的派发（拆解、自检）、别的结束原因：做完就收尾
+        assert_eq!(next_step(&opts(0), &mut ended(), &mut phase, &mut turns, quiet, true), Step::Finish);
+        let mut c = Client::new("/w", "p", None);
+        c.outcome = Some(Outcome::Stopped("max_tokens".into()));
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, quiet, true), Step::Finish);
+        // 做卡的：先等它稳定下来
+        let mut c = ended();
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, quiet, true), Step::Stay);
+        assert!(matches!(phase, Phase::Settling(_)));
+        // 刚收到过输出：还没稳定，接着等
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, Instant::now(), true), Step::Stay);
+        assert!(matches!(phase, Phase::Settling(_)));
+        // v2：稳定之前 agent 又报了 running，自己接着做了：回到等这一轮
+        c.outcome = None;
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, Instant::now(), true), Step::Stay);
+        assert_eq!(phase, Phase::Working);
+        // 在等后台：后台跑完（后台为空）就重新等它稳定；agent 自己接着做就回到等这一轮
+        let mut c = ended();
+        c.background = Some(0);
+        let mut phase = Phase::Waiting(Instant::now() + RECHECK);
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, quiet, true), Step::Stay);
+        assert!(matches!(phase, Phase::Settling(_)));
+        c.background = Some(1);
+        let mut phase = Phase::Waiting(Instant::now() + RECHECK);
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, quiet, true), Step::Stay, "还没到再查的时间");
+        assert!(matches!(phase, Phase::Waiting(_)));
+        c.outcome = None;
+        assert_eq!(next_step(&opts(3), &mut c, &mut phase, &mut turns, quiet, true), Step::Stay);
+        assert_eq!(phase, Phase::Working);
+        assert_eq!(turns, 0);
     }
 
     /// --set：会话配置里有这一项、这个值时先切它，再切模式，最后 prompt；没有的跳过
@@ -784,11 +1060,14 @@ mod tests {
     #[test]
     fn mode_falls_back_to_set_mode_or_skips() {
         let r = json!({ "sessionId": "s", "modes": { "currentModeId": "auto", "availableModes": [{ "id": "read-only" }, { "id": "agent-full-access" }] } });
-        assert_eq!(mode_switch(&r, "s", "agent-full-access"), Some(("session/set_mode", json!({ "sessionId": "s", "modeId": "agent-full-access" }))));
-        assert_eq!(mode_switch(&r, "s", "bypassPermissions"), None, "没公布这个模式：不切");
-        // 分组的选项也认得
+        assert_eq!(mode_switch(&r, "s", "agent-full-access", Proto::V1), Some(("session/set_mode", json!({ "sessionId": "s", "modeId": "agent-full-access" }))));
+        assert_eq!(mode_switch(&r, "s", "bypassPermissions", Proto::V1), None, "没公布这个模式：不切");
+        assert_eq!(mode_switch(&r, "s", "agent-full-access", Proto::V2), None, "v2 没有 session/set_mode：只看配置项");
+        // 分组的选项也认得；v2 的配置项叫 configId
         let r = json!({ "configOptions": [{ "id": "perm", "category": "mode", "options": [{ "group": "g", "options": [{ "value": "yolo" }] }] }] });
-        assert_eq!(mode_switch(&r, "s", "yolo").map(|x| x.1["configId"].clone()), Some(json!("perm")));
+        assert_eq!(mode_switch(&r, "s", "yolo", Proto::V1).map(|x| x.1["configId"].clone()), Some(json!("perm")));
+        let r2 = json!({ "configOptions": [{ "configId": "perm", "category": "mode", "options": [{ "value": "yolo" }] }] });
+        assert_eq!(mode_switch(&r2, "s", "yolo", Proto::V2).map(|x| x.1), Some(json!({ "sessionId": "s", "configId": "perm", "type": "id", "value": "yolo" })));
         // 没要模式：session/new 之后直接 prompt
         let mut c = Client::new("/w", "p", None);
         c.start();

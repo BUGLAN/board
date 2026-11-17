@@ -103,10 +103,8 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         // ACP 组织维护的适配器（Claude Agent SDK）；CLAUDE_CODE_EXECUTABLE 指向机器上的 claude
         acp: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.107.3"],
         acp_bin_env: "CLAUDE_CODE_EXECUTABLE",
-        // 结束这一轮就是结束会话（#454）：关掉后台任务，Bash 工具没有 run_in_background，长命令只能在前台跑完，
-        // 不会放到后台、结束这一轮等通知；前台超时调长：默认 2 分钟 → 20 分钟，上限 10 分钟 → 60 分钟
-        // （新 worktree 第一次编译 board-desktop、Windows 上慢也够）
-        acp_env: &[("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1"), ("BASH_DEFAULT_TIMEOUT_MS", "1200000"), ("BASH_MAX_TIMEOUT_MS", "3600000")],
+        // 后台任务照常用：走 ACP v2，idle 时报 background，board acp 等后台跑完、Claude Code 自己接着做（#461）
+        acp_env: &[],
         acp_mode: "bypassPermissions",
         acp_since: "",
         also: &["~/.local/bin/claude", "~/.claude/local/claude"],

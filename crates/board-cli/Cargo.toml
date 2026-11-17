@@ -10,6 +10,8 @@ name = "board"
 path = "src/main.rs"
 
 [dependencies]
+# ACP v2 的终端输出是 base64（logfmt.rs、events.rs 解码）
+base64 = "0.23"
 board-core = { workspace = true, features = ["config"] }
 chrono.workspace = true
 serde.workspace = true

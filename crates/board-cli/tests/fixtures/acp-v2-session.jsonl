@@ -1,0 +1,24 @@
+{"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": 2, "info": {"name": "board", "title": "Board", "version": "0.1.40"}, "capabilities": {}, "clientInfo": {"name": "board", "title": "Board", "version": "0.1.40"}, "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}}}
+{"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 2, "info": {"name": "@agentclientprotocol/claude-agent-acp", "title": "Claude Agent", "version": "0.107.3"}, "capabilities": {}}}
+{"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": "/w", "mcpServers": []}}
+{"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s1", "configOptions": [{"configId": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "auto", "options": [{"value": "auto", "name": "Auto"}, {"value": "bypassPermissions", "name": "Bypass"}]}]}}
+{"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option", "params": {"sessionId": "s1", "configId": "mode", "type": "id", "value": "bypassPermissions"}}
+{"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {"sessionId": "s1", "prompt": [{"type": "text", "text": "/board-skills 开始执行 default项目之中的main白板中的#461任务"}]}}
+{"jsonrpc": "2.0", "id": 3, "result": {"messageId": "u1"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "running"}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk", "messageId": "a1", "content": {"type": "text", "text": "先跑测试。"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "toolu_1", "title": "Terminal", "kind": "execute", "status": "pending", "rawInput": {}, "content": [{"type": "terminal", "terminalId": "toolu_1"}]}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "toolu_1", "title": "npm test", "rawInput": {"command": "npm test", "description": "Run the tests"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "terminal_update", "terminalId": "toolu_1", "command": "npm test"}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "terminal_output_chunk", "terminalId": "toolu_1", "data": "bGluZTENCg=="}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "terminal_update", "terminalId": "toolu_1", "output": {"data": "bGluZTENCmxpbmUyDQpGQUlMIHNyYy9hLnRlc3QudHMNCg=="}, "exitStatus": {"exitCode": 1}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "toolu_1", "status": "failed"}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "plan_update", "plan": {"type": "items", "planId": "checklist", "entries": [{"content": "跑测试", "status": "completed", "priority": "medium"}, {"content": "交审", "status": "in_progress", "priority": "medium"}]}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "usage_update", "used": 5000, "size": 200000, "cost": {"amount": 0.3, "currency": "USD"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "idle", "stopReason": "end_turn", "usage": {"inputTokens": 1200, "outputTokens": 80, "cachedReadTokens": 0, "cachedWriteTokens": 0, "totalTokens": 1280}, "background": [{"type": "terminal", "terminalId": "toolu_bg"}]}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "idle", "background": []}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "running", "background": []}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk", "messageId": "a2", "content": {"type": "text", "text": "后台跑完了，交审。"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "usage_update", "used": 6000, "size": 200000, "cost": {"amount": 0.5, "currency": "USD"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "idle", "stopReason": "end_turn", "usage": {"inputTokens": 300, "outputTokens": 20, "totalTokens": 320}, "background": []}}}
+{"jsonrpc": "2.0", "id": 4, "method": "session/close", "params": {"sessionId": "s1"}}

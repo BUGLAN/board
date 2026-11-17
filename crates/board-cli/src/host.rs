@@ -30,8 +30,9 @@
 //!   看到它就用它，免得 skill 里打包的旧版 board 不认识这些变量。
 //! - 服务端说这台机器正在自动接单时（机器信息里的 `round`：开了自动接单、在接单时段里；旧版服务端是「正在领一轮」），有空位就向服务端要下一张（定时领取）。
 //! - agent 用 ACP 启动：board host 启动 `board acp`（acp.rs），它在启动环境里执行 agent 的 ACP 入口（`AgentDef::acp`），
-//!   握手、发提示词、自动允许权限请求；做卡的派发带 `--extra-turns`：这一轮结束时名字还持有卡片就在同一会话里续一轮
-//!   （最多 3 轮，#454），拆解、自检不续。`board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600）：
+//!   握手（要 ACP v2，只会 v1 的 agent 按 v1）、发提示词、自动允许权限请求；做卡的派发带 `--extra-turns`：这一轮做完、
+//!   名字还持有卡片时，v2 后台还在跑就等 agent 自己接着做，否则在同一会话里续一轮（最多 3 轮，#454、#461），拆解、自检不续。
+//!   `board acp` 的标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`（0600）：
 //!   一行一帧 ACP 消息。每 5 秒上传新增的行（最多最后 500 行），「原始输出」用转写后的一行一行（见 logfmt.rs）。
 //! - 同一份日志逐行解析成结构化事件（agent 说的话、工具调用、出错、结束时的用量，见 events.rs），每 2 秒上传一次新增的，
 //!   界面「会话」的「过程」按它画；会话换到下一张卡后，事件记到当时在做的那张卡上。上传、写评论之前脱敏（令牌和常见格式的密钥换成
@@ -4614,16 +4615,9 @@ mod tests {
         let claude = get("claude");
         let (p, a) = claude.entry(&check("claude", "/Users/me/.local/bin/claude"), "").unwrap();
         assert_eq!((p.as_str(), a.len()), ("npx", 2));
-        // 关掉后台任务、调长前台超时（#454：结束这一轮就是结束会话，长命令不能放到后台等通知）
-        let bg = vec![
-            ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS".to_string(), "1".to_string()),
-            ("BASH_DEFAULT_TIMEOUT_MS".to_string(), "1200000".to_string()),
-            ("BASH_MAX_TIMEOUT_MS".to_string(), "3600000".to_string()),
-        ];
-        let mut with_bin = bg.clone();
-        with_bin.push(("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string()));
-        assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), with_bin);
-        assert_eq!(claude.acp_vars(&check("claude", r"C:\npm\claude.cmd")), bg, "Windows 的 .cmd 脚本适配器执行不了：不传路径，用它自带的");
+        // 后台任务不关（#461：v2 下 board acp 等后台跑完），只告诉适配器 claude 在哪
+        assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), vec![("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string())]);
+        assert!(claude.acp_vars(&check("claude", r"C:\npm\claude.cmd")).is_empty(), "Windows 的 .cmd 脚本适配器执行不了：用它自带的");
         let codex = get("codex");
         let vars = codex.acp_vars(&check("codex", "/opt/homebrew/bin/codex"));
         assert!(vars.contains(&("CODEX_PATH".to_string(), "/opt/homebrew/bin/codex".to_string())) && vars.iter().any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "agent-full-access"), "{vars:?}");

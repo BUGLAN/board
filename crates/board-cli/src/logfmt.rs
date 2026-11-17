@@ -19,10 +19,19 @@
 //! - 握手、命令列表、模式和配置的变化、用量这些对人没用的帧不显示。
 //! - 每一行最长 [`LINE_MAX`] 个字符，一段话最多 [`TEXT_LINES`] 行，工具结果只写第一行和总行数。
 //!
-//! 帧的格式按 ACP v1 的 schema（<https://agentclientprotocol.com/protocol/v1/prompt-turn>、`tool-calls`、`agent-plan`）。
+//! 帧的格式按 ACP v1 的 schema（<https://agentclientprotocol.com/protocol/v1/prompt-turn>、`tool-calls`、`agent-plan`）和
+//! v2 草案（#461，Claude Code、Codex 走 v2）。v2 的不同：
+//! - 没有单独的 `tool_call`，开始和后来的变化都是 `tool_call_update`，每次只带改了的字段（`kind`、`title` 往往只在第一帧，
+//!   命令这类参数 `rawInput` 在后面的帧）。一次转写里记下每个调用的这些字段（[`Calls`]），带着参数的那一帧写「▸」。
+//! - 命令的输出在终端里：`terminal_output_chunk` 是边跑边来的片段（不逐条写），跑完时 `terminal_update` 带着完整的
+//!   `output`（base64）和 `exitStatus`，写成一行摘要；工具调用只引用这个终端，结束时没有文字就不再写一行。
+//! - 这一轮的结束在 `state_update`：`idle` 带 `stopReason` 写「■ 结束」，出错的先写原因。计划是 `plan_update`。
+//!
 //! 同一份日志还由 events.rs 解析成结构化事件（会话「过程」，卡片 #184）；这里的转写是「原始输出」看到的内容。
 
-use serde_json::Value;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 
 /// 一行最长多少个字符（多出来的截掉，末尾写 …）
 pub(crate) const LINE_MAX: usize = 400;
@@ -51,12 +60,13 @@ impl Stream {
 pub(crate) fn render(kind: Option<Stream>, raw: Vec<String>) -> Vec<String> {
     let Some(kind) = kind else { return raw };
     let mut out = vec![];
+    let mut calls = Calls::default();
     for line in raw {
         let t = line.trim();
         let v = if t.starts_with('{') { serde_json::from_str::<Value>(t).ok().filter(Value::is_object) } else { None };
         match v {
             Some(v) => match kind {
-                Stream::Acp => acp(&v, &mut out),
+                Stream::Acp => acp(&v, &mut calls, &mut out),
             },
             None => out.push(line),
         }
@@ -66,7 +76,7 @@ pub(crate) fn render(kind: Option<Stream>, raw: Vec<String>) -> Vec<String> {
 
 /* ------------------------------ ACP ------------------------------ */
 
-fn acp(v: &Value, out: &mut Vec<String>) {
+fn acp(v: &Value, calls: &mut Calls, out: &mut Vec<String>) {
     let mut push = |x: String| out.push(x);
     if let Some(e) = error_of(v) {
         push(format!("✗ 出错：{}", clip(&e, BRIEF)));
@@ -76,19 +86,40 @@ fn acp(v: &Value, out: &mut Vec<String>) {
         match s(&u["sessionUpdate"]) {
             "agent_message_chunk" => text(&content_text(&u["content"]), &mut push),
             "agent_thought_chunk" => thinking(&content_text(&u["content"]), &mut push),
-            "tool_call" => {
-                let (name, arg) = tool_of(u);
-                push(if arg.is_empty() { format!("▸ {name}") } else { format!("▸ {name}  {arg}") });
+            "tool_call" | "tool_call_update" => {
+                let call = calls.merge(u);
+                if calls.starts(u, &call) {
+                    let (name, arg) = tool_of(&call);
+                    push(if arg.is_empty() { format!("▸ {name}") } else { format!("▸ {name}  {arg}") });
+                }
                 if let Some(ok) = finished(u) {
-                    push(result_line(&tool_output(u), !ok));
+                    let body = tool_output(u);
+                    // v2：命令的输出、退出码在终端里，跑完时已经写过一行（terminal_update），这里没有文字就不再写
+                    if !(body.trim().is_empty() && refs_terminal(&call)) {
+                        push(result_line(&body, !ok));
+                    }
                 }
             }
-            "tool_call_update" => {
-                if let Some(ok) = finished(u) {
-                    push(result_line(&tool_output(u), !ok));
+            "terminal_update" => {
+                let code = terminal_code(u);
+                let failed = code.is_some_and(|c| c != 0);
+                let mark = code.filter(|c| *c != 0).map(|c| format!("（退出码 {c}）")).unwrap_or_default();
+                match u["output"]["data"].as_str() {
+                    Some(data) => push(result_line(&terminal_text(data), failed) + &mark),
+                    None if failed => push(format!("  ✗ 退出码 {}", code.unwrap_or_default())),
+                    None => {}
                 }
             }
+            "state_update" if s(&u["state"]) == "idle" => match u["stopReason"].as_str() {
+                Some("error") => {
+                    push(format!("✗ 出错：{}", clip(&error_of(u).unwrap_or_else(|| "出错了".into()), BRIEF)));
+                    push("■ 结束 · 出错".into());
+                }
+                Some(reason) => push(end_line(reason)),
+                None => {}
+            },
             "plan" => push(format!("● {}", plan_brief(u))),
+            "plan_update" if !arr(&u["plan"]["entries"]).is_empty() => push(format!("● {}", plan_brief(&u["plan"]))),
             _ => {}
         }
         return;
@@ -102,7 +133,9 @@ fn acp(v: &Value, out: &mut Vec<String>) {
         _ => {}
     }
     let r = &v["result"];
-    if let Some(info) = r.get("agentInfo").filter(|x| x.is_object()) {
+    // initialize 的回应：v1 是 agentInfo，v2 是 info
+    let info = r.get("agentInfo").filter(|x| x.is_object()).or_else(|| r.get("info").filter(|x| x.is_object() && r.get("protocolVersion").is_some()));
+    if let Some(info) = info {
         let name = [s(&info["title"]), s(&info["name"])].into_iter().find(|x| !x.is_empty()).unwrap_or("agent");
         let mut head = format!("● 开始 · {name}");
         if !s(&info["version"]).is_empty() {
@@ -111,9 +144,79 @@ fn acp(v: &Value, out: &mut Vec<String>) {
         push(head);
     }
     if let Some(reason) = r["stopReason"].as_str() {
-        let words = stop_words(reason);
-        push(if words.is_empty() { "■ 结束".to_string() } else { format!("■ 结束 · {words}") });
+        push(end_line(reason));
     }
+}
+
+/// 「■ 结束」，不是正常结束时带上说法
+fn end_line(reason: &str) -> String {
+    let words = stop_words(reason);
+    if words.is_empty() { "■ 结束".to_string() } else { format!("■ 结束 · {words}") }
+}
+
+/// 工具调用记下的字段：v2 的更新只带改了的字段，名称（`kind`）、标题、位置、参数、内容并起来才完整（v1 的
+/// `tool_call` 第一帧就全）。也记下哪些调用已经写过开始（「▸」或事件），同一个调用只写一次
+#[derive(Default)]
+pub(crate) struct Calls {
+    fields: HashMap<String, Value>,
+    started: HashSet<String>,
+}
+
+impl Calls {
+    /// 把这一帧带的字段并进这个调用记下的，返回并起来的（只含 kind、title、locations、rawInput、content）
+    pub(crate) fn merge(&mut self, u: &Value) -> Value {
+        let entry = self.fields.entry(s(&u["toolCallId"]).to_string()).or_insert_with(|| json!({}));
+        for k in ["kind", "title", "locations", "rawInput", "content"] {
+            if let Some(x) = u.get(k).filter(|x| !x.is_null()) {
+                entry[k] = x.clone();
+            }
+        }
+        entry.clone()
+    }
+
+    /// 这一帧该不该写这个调用的开始：v1 的 `tool_call`；v2 的第一次带上参数（`rawInput`）；参数一直没来、调用就结束了的，
+    /// 结束时补上（认得出是什么工具时）。每个调用只返回一次 true
+    pub(crate) fn starts(&mut self, u: &Value, call: &Value) -> bool {
+        let id = s(&u["toolCallId"]);
+        if self.started.contains(id) {
+            return false;
+        }
+        let input = match &call["rawInput"] {
+            Value::Object(m) => !m.is_empty(),
+            Value::String(x) => !x.trim().is_empty(),
+            _ => false,
+        };
+        let known = !s(&call["title"]).is_empty() || !s(&call["kind"]).is_empty();
+        let start = s(&u["sessionUpdate"]) == "tool_call" || input || (finished(u).is_some() && known);
+        if start {
+            self.started.insert(id.to_string());
+        }
+        start
+    }
+}
+
+/// 工具调用的内容里引用了终端（v2：命令的输出在终端里）
+pub(crate) fn refs_terminal(call: &Value) -> bool {
+    arr(&call["content"]).iter().any(|c| s(&c["type"]) == "terminal")
+}
+
+/// 工具调用引用的终端（v2）
+pub(crate) fn terminal_of(call: &Value) -> Option<String> {
+    arr(&call["content"]).iter().find(|c| s(&c["type"]) == "terminal").map(|c| s(&c["terminalId"]).to_string()).filter(|x| !x.is_empty())
+}
+
+/// v2 终端的退出码（`exitStatus.exitCode`；被信号结束时没有）
+pub(crate) fn terminal_code(u: &Value) -> Option<i64> {
+    u["exitStatus"]["exitCode"].as_i64()
+}
+
+/// v2 终端的数据：base64 编码的字节，像终端那样换行是 \r\n；解不开时原样当文字
+pub(crate) fn terminal_text(data: &str) -> String {
+    let text = match STANDARD.decode(data.trim()) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(_) => data.to_string(),
+    };
+    text.replace("\r\n", "\n")
 }
 
 /// `session/update` 通知里的 update
@@ -386,6 +489,32 @@ mod tests {
             "[claude-code:unrecognized_model] {\"model\":\"x\"}",
         ];
         assert_eq!(out, want);
+    }
+
+    const ACP_V2: &str = include_str!("../tests/fixtures/acp-v2-session.jsonl");
+
+    /// v2（#461）：工具调用的名称在第一帧、命令在第二帧，并起来写一行「▸」；终端跑完时的完整输出写一行摘要
+    /// （带退出码），工具调用结束时没有文字不再写；idle 带 stopReason 写「■ 结束」，重报的 idle、running 不写
+    #[test]
+    fn acp_v2_frames_become_readable_lines() {
+        let out = render(Some(Stream::Acp), lines(ACP_V2));
+        let want = vec![
+            "● 开始 · Claude Agent 0.107.3",
+            "● 切换到 bypassPermissions 模式",
+            "先跑测试。",
+            "▸ shell  npm test",
+            "  ✗ line1  （共 3 行）（退出码 1）",
+            "● 计划 2 项 · 正在做：交审",
+            "■ 结束",
+            "后台跑完了，交审。",
+            "■ 结束",
+        ];
+        assert_eq!(out, want);
+        // 出错结束：先写原因
+        let err = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"idle","stopReason":"error","error":{"code":-32603,"message":"rate limited"}}}}"#;
+        assert_eq!(render(Some(Stream::Acp), lines(err)), ["✗ 出错：rate limited", "■ 结束 · 出错"]);
+        // 终端解不开 base64 时原样当文字
+        assert_eq!(terminal_text("not base64!"), "not base64!");
     }
 
     #[test]
