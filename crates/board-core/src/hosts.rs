@@ -544,6 +544,10 @@ pub struct HostAgent {
     /// 看得到、没找到命令、配置文件里的 agent（不检查）、旧版 board host 都为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_skill: Option<String>,
+    /// 实际用的启动环境里找到了命令、却缺 ACP 入口另外要的命令（例如「Node.js（npx）」，见 [`EnvCheck::missing`]）：
+    /// 这时 `found` 是 false，派发、自动领取、自检都不用它（#458）。board host 上报时是第一个这样的启动环境里的
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
     /// 这个 agent 现在用的模型名：派发名字的第二段（`<机器名>/<模型名>-<强度>`）和派发记录里的模型。
     /// board host 上报：内置 agent 读它自己配置文件里现在的模型（同步写进去的、或人自己配的），
     /// 配置文件里新加的 agent 用 `[agents.<标识>] model`；都没有时为空，生成名字时只写 `<机器名>/<agent 标识>`
@@ -663,6 +667,10 @@ pub struct EnvCheck {
     /// 这个启动环境里的安装方式、最新版本和更新状态
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manage: Option<AgentManage>,
+    /// 找到了 agent 命令、却缺 ACP 入口另外要的命令时，缺的是什么（例如「Node.js（npx）」，内置描述的 `needs`）。
+    /// 这时 `found` 是 false：旧版服务端、界面不认这一项也照样当不可用；`version` 仍是 agent 的版本（#458）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
 }
 
 /// 启动环境：board host 在哪种 shell 里启动 agent 的命令（启动环境与桌面端需求 §二）
@@ -2182,14 +2190,17 @@ impl HostRow {
         self.off_at.is_none() && self.beat_at + HOST_GAP_MS > now
     }
     /// 一个 agent 实际用的启动环境（启动环境与桌面端需求 §2.4）：设置过、本机还有（在它支持的环境里）就用它，
-    /// 找没找到都按它算；否则按支持的顺序取第一个找到命令的。都找不到时为空。
+    /// 找没找到都按它算；否则按支持的顺序取第一个找到命令的。都找不到时取第一个装了 agent、只缺 Node.js（npx）这类
+    /// 命令的（还是用不了，界面上写缺什么，#458），再没有为空。
     /// 旧版 board host 不上报启动环境：返回 None，找没找到按它上报的
     fn pick<'h>(&self, a: &'h HostAgent) -> Option<&'h EnvCheck> {
         if self.envs.is_empty() {
             return None;
         }
         let set = self.run.get(&a.id).and_then(|r| r.env.as_deref());
-        set.and_then(|e| a.envs.iter().find(|c| c.env == e)).or_else(|| a.envs.iter().find(|c| c.found))
+        set.and_then(|e| a.envs.iter().find(|c| c.env == e))
+            .or_else(|| a.envs.iter().find(|c| c.found))
+            .or_else(|| a.envs.iter().find(|c| c.missing.is_some()))
     }
     /// 本机 agent，`found`、`version`、`env` 换成实际用的启动环境里的结果
     pub(crate) fn resolved(&self) -> Vec<HostAgent> {
@@ -2203,6 +2214,7 @@ impl HostRow {
                     out.version = c.map(|c| c.version.clone()).unwrap_or_default();
                     out.env = c.map(|c| c.env.clone());
                     out.no_skill = c.filter(|c| c.found).and_then(|c| c.no_skill.clone());
+                    out.missing = c.and_then(|c| c.missing.clone());
                     if let Some(m) = c.and_then(|c| c.manage.clone()) {
                         out.manage = Some(m);
                     }
@@ -4766,6 +4778,11 @@ impl<'a> W<'a> {
                 BoardError::new(
                     ErrorCode::AgentNotOnHost,
                     match missing {
+                        // 装了 agent、缺 ACP 入口要的命令（Node.js）：说缺什么（#458）
+                        Some(a) if a.missing.is_some() => {
+                            let place = a.env.as_deref().map(|e| format!("在{}里", h.env_name(e))).unwrap_or_default();
+                            format!("机器「{host}」上{place}缺 {}：agent「{id}」跑不起来，先装上", a.missing.as_deref().unwrap_or_default())
+                        }
                         Some(a) => match &a.env {
                             Some(e) => format!("机器「{host}」上在{}里没找到 agent「{id}」的命令", h.env_name(e)),
                             None => format!("机器「{host}」上没找到 agent「{id}」的命令"),

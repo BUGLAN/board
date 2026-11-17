@@ -16,7 +16,7 @@ import { openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { boardOf, boardTakers, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
+import { agentWhy, boardOf, boardTakers, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
 import { boardFlow, flowOf } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
 import { cx } from '../lib/util';
@@ -521,7 +521,7 @@ function HostPick({
             默认 agent{def ? `（${def.name}）` : ''}
           </button>
           {h.agents.map(a => (
-            <TipOr key={a.id} text={a.found ? undefined : a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令'}>
+            <TipOr key={a.id} text={a.found ? undefined : agentWhy(h, a)}>
               <button
                 type="button"
                 role="radio"

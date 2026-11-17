@@ -57,6 +57,7 @@ describe('机器详情', () => {
 
   it('agent 正不正常：没找到、缺 board-skills、配置没写进去、自检没过', () => {
     expect(agentHealth(host(), claude({ found: false })).ok).toBe(false);
+    expect(agentHealth(host(), claude({ found: false, missing: 'Node.js（npx）' })).chip).toBe('缺 Node.js（npx）');
     expect(agentHealth(host(), claude({ no_skill: '~/.claude/skills' })).chip).toBe('缺 board-skills');
     const failed = host({ sync: { able: true, last: result({ agents: [{ agent: 'claude', state: 'failed', why: 'x' }] }) } });
     expect(agentHealth(failed, claude()).chip).toBe('配置没写进去');

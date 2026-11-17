@@ -77,7 +77,7 @@ export function hostTake(h: HostInfo, running: number, minute: number): Take {
 export function agentTake(h: HostInfo, agent: string, running: number, minute: number): Take {
   const a: HostAgent | undefined = h.agents.find(x => x.id === agent);
   if (!a) return { ok: false, why: '没有这个 agent', tone: 'off' };
-  if (!a.found) return { ok: false, why: '没找到命令', tone: 'off' };
+  if (!a.found) return { ok: false, why: a.missing ? `缺 ${a.missing}` : '没找到命令', tone: 'off' };
   if (a.tripped) return { ok: false, why: '连续异常退出，已暂停', tone: 'off' };
   const t = hostTake(h, running, minute);
   return t.ok ? { ...t, why: `空位 ${h.max - running}` } : t;

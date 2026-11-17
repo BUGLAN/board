@@ -124,9 +124,15 @@ impl R<'_> {
                 if h.selftest.ask.is_some() && testing.is_none() {
                     testing = Some(h.name.clone());
                 }
-                let found: Vec<_> = h.resolved().into_iter().filter(|a| a.found).collect();
+                let all = h.resolved();
+                let found: Vec<_> = all.iter().filter(|a| a.found).cloned().collect();
                 if found.is_empty() && bad.is_none() {
-                    bad = Some((format!("{} 上没找到 agent：装上并登录后点「重新检查」", h.name), h.name.clone()));
+                    // 装了 agent、只是缺 ACP 入口要的命令（Node.js）：说缺什么，别让人去重装 agent（#458）
+                    let why = match all.iter().find_map(|a| a.missing.as_ref().map(|m| (a, m))) {
+                        Some((a, m)) => format!("{} 上的 {} 缺 {m}：装上后点「重新检查」", h.name, a.name),
+                        None => format!("{} 上没找到 agent：装上并登录后点「重新检查」", h.name),
+                    };
+                    bad = Some((why, h.name.clone()));
                 }
                 for a in found {
                     if let Some(where_) = &a.no_skill {

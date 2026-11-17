@@ -29,6 +29,8 @@ export interface AgentHealth {
 
 /** 一个 agent：找到了、看得到 board-skills、配置写进去了、自检能回话 */
 export function agentHealth(h: HostInfo, a: HostAgent): AgentHealth {
+  // 装了、缺 Node.js（npx）：#458
+  if (!a.found && a.missing) return { ok: false, chip: `缺 ${a.missing}` };
   if (!a.found) return { ok: false, chip: '这台机器上没找到' };
   const t = h.selftest?.items.find(i => i.kind === 'agent' && i.key === a.id);
   if (skillMiss(h, a)) return { ok: false, chip: '缺 board-skills', why: '看不到 board-skills：派给它的卡会做不成', act: 'sync', actLabel: '装上' };

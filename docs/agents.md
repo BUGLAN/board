@@ -153,7 +153,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 | 6 | **运行中**用 `session/update` 报进度（说的话、工具调用和结果）；v1 这一轮做完用 `stopReason` 回应 prompt，v2 报带 `stopReason` 的 `idle`。用后台命令时：v2 在 `idle` 上报 `background`、跑完自己接着做；只会 v1 的，后台命令在这一轮里等它跑完再结束这一轮 | 「过程」里看不出它在干活还是卡住了；这一轮没结束就退出算异常退出；卡片还在手里、后台也没东西在跑就结束这一轮会被续一轮（最多 3 轮），续满了算异常退出 |
 | 7 | 收到 `session/cancel` 会结束这一轮；标准输入关闭（EOF）或收到 SIGTERM 会退出 | 停止要等 10 秒后强制结束 |
 | 8 | `<命令> --version` 第一行是版本号（用适配器的，是 agent 自己的命令） | 界面上只显示「找到了」（不影响使用） |
-| 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，ACP 入口在里面能做完一张卡（用适配器的，`npx` 也要找得到）。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」，或派过去异常退出 |
+| 9 | **在它支持的启动环境里能跑**：在每个支持的环境里 `command -v <命令>`（cmd、PowerShell 里 `where.exe <命令>`）找得到，ACP 入口在里面能做完一张卡（用适配器的，`npx` 也要找得到）。Windows 上不支持的环境不写进模板 | 这个环境里显示「没找到」或「缺 Node.js（npx）」，或派过去异常退出 |
 
 agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 个字符（名字 `<机器名>/<模型名>-<强度>` 不超过 48 个字符）。它也是 skill 生成名字时 `board check --agent <标识>` 的参数（手动启动的会话按它取机器设置里的模型）；内置模板的标识见下表。
 
@@ -167,7 +167,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 | 2 | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login`；装了 Node.js（`npx`） |
 | 3 | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login`；装了 Node.js（`npx`） |
 
-「agent 命令」是在每个启动环境里找的命令：取版本号、判断安装方式、安装和更新都按它。「ACP 入口」是 `board acp` 执行的命令：`{bin}` 换成找到的 agent 命令，`{patch}` 换成这次派发的 profile 补丁。agent 自己不讲 ACP 的用 ACP 组织维护的适配器，`npx -y` 固定版本运行：不用另外安装，升级跟着 Board 发版；npm 缓存放在 `~/.board/host/npm-cache`（WSL 里用它自己的），第一次派发要下载适配器；npm 的更新、fund、audit 提示关掉（`npm_config_update_notifier` 等设成 `false`），不混进派发日志。适配器用机器上找到的 agent（Claude Code 经 `CLAUDE_CODE_EXECUTABLE`、Codex 经 `CODEX_PATH` 告诉它），所以机器详情里的版本就是实际在跑的版本；Windows 上找到的是 npm 给全局命令生成的垫片（无扩展名的 sh 脚本、`.cmd`、`.ps1`，适配器执行不了）时，改传 npm 包里真正的程序：Claude Code 是 `<npm 前缀>\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，Codex 是平台包 `@openai/codex-win32-<架构>` 里的 `vendor\<目标>\bin\codex.exe`；找不到时不传，适配器用它自带的那份（版本可能和机器详情里写的不一样）。
+「agent 命令」是在每个启动环境里找的命令：取版本号、判断安装方式、安装和更新都按它。「ACP 入口」是 `board acp` 执行的命令：`{bin}` 换成找到的 agent 命令，`{patch}` 换成这次派发的 profile 补丁。agent 自己不讲 ACP 的用 ACP 组织维护的适配器，`npx -y` 固定版本运行：不用另外安装，升级跟着 Board 发版；npm 缓存放在 `~/.board/host/npm-cache`（WSL 里用它自己的），启动环境里还要找得到 `npx`：board host 找 agent 命令时顺带找它，找不到就把这个环境里的 agent 当成不可用、显示「缺 Node.js（npx）」；第一次派发要下载适配器；npm 的更新、fund、audit 提示关掉（`npm_config_update_notifier` 等设成 `false`），不混进派发日志。适配器用机器上找到的 agent（Claude Code 经 `CLAUDE_CODE_EXECUTABLE`、Codex 经 `CODEX_PATH` 告诉它），所以机器详情里的版本就是实际在跑的版本；Windows 上找到的是 npm 给全局命令生成的垫片（无扩展名的 sh 脚本、`.cmd`、`.ps1`，适配器执行不了）时，改传 npm 包里真正的程序：Claude Code 是 `<npm 前缀>\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，Codex 是平台包 `@openai/codex-win32-<架构>` 里的 `vendor\<目标>\bin\codex.exe`；找不到时不传，适配器用它自带的那份（版本可能和机器详情里写的不一样）。
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
@@ -309,6 +309,7 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 派发结果「异常退出（退出码 0）」，日志里 agent 说不认识 `/board-skills` | 没装 `board-skills`，或链接指向的目录不存在 |
 | 日志里是「agent 要求先登录」「Authentication required」「Not logged in」 | 这台机器上的 agent 还没登录（Claude Code 的登录在系统钥匙串里：从别的 agent 会话、沙箱里启动的 board host 读不到） |
 | 「机器」里这个 agent 显示「没找到」 | 在它用的启动环境里找不到命令：看机器详情的启动环境下拉，换一个找得到的环境；或者在那个环境的启动脚本（`~/.zshrc`、`~/.bashrc`、PowerShell 的 `$PROFILE`）里把它加进 `PATH`；在配置文件里写绝对路径也行 |
+| 「机器」里这个 agent 显示「缺 Node.js（npx）」 | agent 装好了，但这个启动环境里找不到 `npx`：Claude Code、Codex 的 ACP 适配器要用它跑。装上 Node.js（或把它加进这个环境的 `PATH`），再在机器详情「设置」里点「重新检查」；也可以换一个找得到 `npx` 的启动环境 |
 | WSL 里显示「没找到」，可 WSL 的终端里能运行 | 装在 `/mnt/` 下的是 Windows 程序，不算；在 WSL 里另装一份 Linux 版 |
 | 在 WSL 里派发，日志里 `board` 报找不到命令或连不上 | WSL 里没装 `board-skills`（它自带 Linux 版 `board`），或者 WSL 里的 skill 太旧 |
 | 日志开头有 `bash: cannot set terminal process group`、`no job control` | 交互式 shell 没有终端时的提示，不影响 |

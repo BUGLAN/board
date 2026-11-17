@@ -158,8 +158,12 @@ export const blockOf = (ws: Workspace | null, host: string, path: string): HostB
 /** 能派给这个 agent：找到了命令，也没有因为连续异常退出暂停接单 */
 export const agentUsable = (a: HostAgent) => a.found && !a.tripped;
 
+/** 没找到时的那几个字：装了 agent、启动环境里缺 ACP 入口要的命令时是「缺 Node.js（npx）」（#458），否则「没找到」 */
+export const missWord = (a: { missing?: string | null }) => (a.missing ? `缺 ${a.missing}` : '没找到');
+
 /** agent 用不了的原因（派发对话框里的提示）；能用时为空 */
 export function agentWhy(h: HostInfo, a: HostAgent): string {
+  if (!a.found && a.missing) return `${a.env ? `在${envName(h, a.env)}里` : ''}缺 ${a.missing}：装上后在机器详情「设置」里点「重新检查」`;
   if (!a.found) return a.env ? `在${envName(h, a.env)}里没找到命令` : '这台机器上没找到命令';
   if (a.tripped) return '连续 3 次异常退出，已经暂停接单：修好后在机器详情里点「恢复」';
   return '';

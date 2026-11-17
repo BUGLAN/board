@@ -40,6 +40,9 @@ pub struct AgentDef {
     /// 目录），`/` 分段，`*` 匹配一段里的其余部分。找到的是 npm 的垫片（无扩展名的 sh 脚本、`.cmd`、`.ps1`，适配器执行不了）
     /// 时按这些位置找，传给适配器的是它（#456）；都找不到就不传，适配器用它自带的那份
     pub npm_exe: &'static [&'static str],
+    /// ACP 入口另外要的命令，和缺了时怎么称呼它（例如 `("npx", "Node.js（npx）")`）：board host 在每个启动环境里找 agent 命令时
+    /// 也找它们，缺了就把这个环境里的 agent 当成不可用（#458）
+    pub needs: &'static [(&'static str, &'static str)],
     /// 另外传给 ACP 入口的环境变量
     pub acp_env: &'static [(&'static str, &'static str)],
     /// 会话开始后切到的模式（不问权限）；agent 没公布这个模式时不切，权限请求照样自动允许。空表示不切
@@ -66,6 +69,9 @@ pub struct AgentDef {
     pub color: &'static str,
 }
 
+/// 用 `npx -y` 跑适配器的 agent 另外要 Node.js：启动环境里没有 npx 时 agent 装了也跑不起来
+pub const NEEDS_NPX: &[(&str, &str)] = &[("npx", "Node.js（npx）")];
+
 /// 内置 agent，顺序就是默认 agent 的顺序：本机找到的第一个是默认（机器设置里可以改）
 pub static AGENT_DEFS: [AgentDef; 3] = [
     AgentDef {
@@ -79,6 +85,7 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         acp: &["{bin}", "--profile", "acp", "--patch", "{patch}"],
         acp_bin_env: "",
         npm_exe: &[],
+        needs: &[],
         // 不开沙箱、不审批（和以前 headless 的 --permission-mode danger-full-access 一样）：acp profile 按这个环境变量定
         acp_env: &[("DSH_PERMISSION_MODE", "danger-full-access")],
         // 没有可切的模式；权限请求自动允许
@@ -110,6 +117,7 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         acp_bin_env: "CLAUDE_CODE_EXECUTABLE",
         // npm 包的 bin 是 bin/claude.exe：postinstall 把平台包里的原生程序换上去（2.1.326 核对过，包里没有 cli.js）
         npm_exe: &["node_modules/@anthropic-ai/claude-code/bin/claude.exe"],
+        needs: NEEDS_NPX,
         // 后台任务照常用：走 ACP v2，idle 时报 background，board acp 等后台跑完、Claude Code 自己接着做（#461）
         acp_env: &[],
         acp_mode: "bypassPermissions",
@@ -140,6 +148,7 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
             "node_modules/@openai/codex/node_modules/@openai/codex-win32-*/vendor/*/bin/codex.exe",
             "node_modules/@openai/codex-win32-*/vendor/*/bin/codex.exe",
         ],
+        needs: NEEDS_NPX,
         acp_env: &[("INITIAL_AGENT_MODE", "agent-full-access")],
         acp_mode: "agent-full-access",
         acp_since: "",
@@ -223,6 +232,8 @@ mod tests {
                 for p in d.npm_exe {
                     assert!(p.starts_with("node_modules/") && p.ends_with(".exe") && !p.contains('\\'), "{}：{p}", d.id);
                 }
+                // 没有 npx 就跑不起来：探测时要一起找（#458）
+                assert!(d.needs.iter().any(|(c, _)| *c == "npx"), "{}：入口是 npx，要写进 needs", d.id);
             } else {
                 assert_eq!(d.acp[0], "{bin}", "{}：不用适配器时入口就是 agent 自己", d.id);
             }

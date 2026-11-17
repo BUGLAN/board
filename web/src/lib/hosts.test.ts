@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, missWord, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -374,6 +374,14 @@ describe('能不能接（服务端算好，界面照着用）', () => {
     expect(agentWhy(win, win.agents[0])).toContain('暂停接单');
     expect(agentWhy(win, win.agents[1])).toBe('在PowerShell 7里没找到命令');
     expect(agentWhy(mac, mac.agents[0])).toBe('');
+  });
+
+  it('装了 agent、启动环境里缺 Node.js（npx）：用不了，原因写缺什么、怎么办（#458）', () => {
+    const a = agent('claude', { found: false, env: 'pwsh', version: '2.1.326', missing: 'Node.js（npx）' });
+    expect(agentUsable(a)).toBe(false);
+    expect(agentWhy(win, a)).toBe('在PowerShell 7里缺 Node.js（npx）：装上后在机器详情「设置」里点「重新检查」');
+    expect(missWord(a)).toBe('缺 Node.js（npx）');
+    expect(missWord({ missing: null })).toBe('没找到');
   });
 
   it('boardTakers：接得了这块白板、又有能用的 agent 的机器；boardHosts 每行带上接不了的原因', () => {

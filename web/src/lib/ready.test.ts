@@ -94,6 +94,8 @@ describe('就绪清单', () => {
   it('没找到能用的 agent：默认 agent 这一项没通过', () => {
     expect(failed(machine({ agent: null, agents: [agent('claude', { found: false })] }))).toEqual(['agent']);
     expect(readiness(machine({ agent: null, agents: [] }), now).find(x => x.key === 'agent')!.why).toBe('board host 没有上报 agent');
+    // 装了 agent、缺 Node.js（npx）：说缺什么（#458）
+    expect(readiness(machine({ agent: null, agents: [agent('claude', { found: false, missing: 'Node.js（npx）' })] }), now).find(x => x.key === 'agent')!.why).toBe('claude 装了，但缺 Node.js（npx）');
   });
 
   it('版本号比较', () => {

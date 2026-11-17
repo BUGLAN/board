@@ -58,6 +58,7 @@ describe('机器现在接不接单', () => {
     const h = host({ agents: [agent('claude'), agent('mine', { found: false }), agent('dsh', { tripped: true })] });
     expect(agentTake(h, 'codex', 0, 600)).toMatchObject({ ok: false, why: '没有这个 agent' });
     expect(agentTake(h, 'mine', 0, 600)).toMatchObject({ ok: false, why: '没找到命令' });
+    expect(agentTake(host({ agents: [agent('claude', { found: false, missing: 'Node.js（npx）' })] }), 'claude', 0, 600)).toMatchObject({ ok: false, why: '缺 Node.js（npx）' });
     expect(agentTake(h, 'dsh', 0, 600)).toMatchObject({ ok: false, why: '连续异常退出，已暂停' });
     expect(agentTake(h, 'claude', 0, 600)).toEqual({ ok: true, why: '空位 2', tone: 'ok' });
     expect(agentTake(host({ auto: false }), 'claude', 0, 600).why).toBe('只做派给它的');

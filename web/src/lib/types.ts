@@ -219,6 +219,8 @@ export interface HostAgent {
   env?: string | null;
   /** 在实际用的启动环境里找到了命令、却看不到 board-skills：该装到哪里。看得到、旧版 board host 没有 */
   no_skill?: string | null;
+  /** 实际用的启动环境里装了 agent、却缺 ACP 入口要的命令（例如「Node.js（npx）」）：这时 found 是 false（#458） */
+  missing?: string | null;
   /** 这个 agent 现在用的模型（board host 读它的配置文件上报）：派发名字（<机器名>/<模型名>-<强度>）的第二段 */
   model?: string;
   /** 这个 agent 配置文件里现在的思考强度 */
@@ -276,6 +278,8 @@ export interface EnvCheck {
   no_skill?: string | null;
   /** 这个启动环境里的安装方式、最新版本和更新状态 */
   manage?: AgentManage | null;
+  /** 装了 agent、却缺 ACP 入口要的命令（例如「Node.js（npx）」）：这时 found 是 false（#458） */
+  missing?: string | null;
 }
 
 /** 启动环境：board host 在哪种 shell 里启动 agent（直接启动、登录 shell、cmd、PowerShell、Git Bash、WSL …） */

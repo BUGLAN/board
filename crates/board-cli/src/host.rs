@@ -547,6 +547,13 @@ impl Spec {
             m.installable = true;
             return m;
         };
+        // 装了 agent、缺 ACP 入口要的命令（Node.js）：不是没安装，别让人去重装 agent（#458）
+        if let Some(what) = &c.missing {
+            m.method = "needs".into();
+            m.method_label = format!("缺 {what}");
+            m.reason = format!("找到了 {}，但这个启动环境里没有 {what}（ACP 入口要用它）：装上后在「设置」里点「重新检查」", self.name);
+            return m;
+        }
         if !c.found {
             m.method = "missing".into();
             m.method_label = "没安装".into();
@@ -618,16 +625,19 @@ impl Spec {
     /// 读不到时模型用配置文件 `[agents.<标识>] model`
     fn report(&self, now: Option<&(String, String)>) -> HostAgent {
         let def = self.default_check();
+        // 哪个环境都用不了、其中有装了 agent 只是缺 Node.js 的：按它报（版本、缺什么、管理方式），不报成没安装（#458）
+        let short = def.is_none().then(|| self.checks.iter().find(|c| c.missing.is_some())).flatten();
         let (model, effort) = match now {
             Some((m, e)) if !m.is_empty() => (m.clone(), e.clone()),
             _ => (self.model.clone(), String::new()),
         };
-        let manage = def.or_else(|| self.checks.first()).map(|c| self.manage_for(Some(c)));
+        let manage = def.or(short).or_else(|| self.checks.first()).map(|c| self.manage_for(Some(c)));
         HostAgent {
             id: self.id.clone(),
             name: self.name.clone(),
-            version: def.map(|c| c.version.clone()).unwrap_or_default(),
+            version: def.or(short).map(|c| c.version.clone()).unwrap_or_default(),
             found: def.is_some(),
+            missing: short.and_then(|c| c.missing.clone()),
             envs: self
                 .checks
                 .iter()
@@ -682,6 +692,8 @@ struct Template {
     legacy: bool,
     /// 命令不在 PATH 里时再看的位置（只在直接启动、登录 shell 里用）
     also: Vec<String>,
+    /// ACP 入口另外要的命令和缺了时的称呼（内置描述的 `needs`，例如 npx）：每个启动环境里一起找，缺了这个环境就不可用（#458）
+    needs: Vec<(String, String)>,
     skills: Vec<String>,
     project: Vec<String>,
     /// 支持的启动环境，按默认选择的顺序
@@ -792,6 +804,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
             acp_mode: b.acp_mode.to_string(),
             legacy: false,
             also: strs(b.also),
+            needs: b.needs.iter().map(|(c, w)| (c.to_string(), w.to_string())).collect(),
             skills: strs(b.skills),
             project: strs(b.project),
             order: order(b.win),
@@ -809,6 +822,7 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                         x.bin = first;
                         x.acp_bin_env.clear();
                         x.also.clear();
+                        x.needs.clear();
                         x.managed = false;
                     }
                 }
@@ -832,6 +846,8 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 acp_mode: String::new(),
                 legacy: legacy_cmd(&a.cmd),
                 also: vec![],
+                // 新加的 agent 找的就是入口的第一个命令（是 npx 时找的就是 npx）
+                needs: vec![],
                 skills: vec![],
                 project: vec![],
                 order: order(envs::CONF_WIN_ORDER),
@@ -846,8 +862,8 @@ fn agent_specs(conf: &[AgentConf], envs: &[Env]) -> Result<Vec<Spec>> {
                 let checks: Vec<_> = envs::supported(&t.order, envs)
                     .into_iter()
                     .map(|e| {
-                        let (cmd, also) = (t.bin.clone(), t.also.clone());
-                        s.spawn(move || envs::probe(e, &cmd, &also))
+                        let (cmd, also, needs) = (t.bin.clone(), t.also.clone(), t.needs.clone());
+                        s.spawn(move || envs::probe(e, &cmd, &also).needs(&needs, |c| envs::has(e, c)))
                     })
                     .collect();
                 (t, checks)
@@ -3205,6 +3221,9 @@ impl Host<'_> {
             .ok_or_else(|| format!("本机没找到 {} 的命令 {cmd0}", spec.name))?;
         let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
         check.prog.as_ref().ok_or_else(|| format!("在{}里没找到 {} 的命令 {cmd0}", env.name, spec.name))?;
+        if let Some(m) = &check.missing {
+            return Err(format!("在{}里缺 {m}：{} 跑不起来，先装上", env.name, spec.name));
+        }
         let prompt_file = tmp.join(format!("prompt-{}.txt", spec.id));
         std::fs::write(&prompt_file, selftest::PROMPT).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
         // 自检不领卡：不续轮
@@ -3300,6 +3319,10 @@ impl Host<'_> {
                 let v = if u.version.is_empty() { "找到了".to_string() } else { u.version.clone() };
                 let e = env.as_deref().map(|e| p.dim(&format!(" · {}", env_name(e)))).unwrap_or_default();
                 format!("{v}{e}{}", if def.as_deref() == Some(&a.id) { p.yellow("（默认）") } else { String::new() })
+            } else if let Some(m) = &u.missing {
+                // 装了、缺 Node.js（npx）：#458
+                let place = env.as_deref().map(|e| format!("在{}里", env_name(e))).unwrap_or_default();
+                p.red(&format!("{}{place}缺 {m}", if u.version.is_empty() { String::new() } else { format!("{} · ", u.version) }))
             } else if let Some(e) = env.as_deref().filter(|_| a.default_check().is_some()) {
                 p.red(&format!("在{}里没找到", env_name(e)))
             } else {
@@ -4022,6 +4045,10 @@ impl Host<'_> {
             .ok_or_else(|| format!("本机没找到 agent「{}」的命令 {cmd0}", d.agent))?;
         let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
         let prog = check.prog.clone().ok_or_else(|| format!("在{}里没找到 agent「{}」的命令 {cmd0}", env.name, d.agent))?;
+        // 服务端不会派给缺 Node.js 的环境；旧版服务端照旧派过来时在这里拦住，说清缺什么（#458）
+        if let Some(m) = &check.missing {
+            return Err(format!("在{}里缺 {m}：agent「{}」跑不起来，先装上", env.name, d.agent));
+        }
         let dir = dispatch_dir(d, &self.ws, &self.os).ok_or_else(|| format!("本机还没有白板 {} 的目录：先配好工作空间", d.board))?;
         if !dir.is_dir() {
             // 目录还没建好（服务端没有这块白板的目录）：按工作空间建一个空的，agent 在里面做
@@ -4671,7 +4698,7 @@ mod tests {
     fn acp_entry_fills_bin_and_patch() {
         let specs = agent_specs(&[], &[]).unwrap();
         let get = |id: &str| specs.iter().find(|s| s.id == id).unwrap();
-        let check = |prog: &str, path: &str| Check { env: "login".into(), found: true, version: "0.2.2-rc.3".into(), prog: Some(prog.into()), path: Some(path.into()) };
+        let check = |prog: &str, path: &str| Check { env: "login".into(), found: true, version: "0.2.2-rc.3".into(), prog: Some(prog.into()), path: Some(path.into()), missing: None };
         let (p, a) = get("dsh").entry(&check("/Applications/x/dsh", "/Applications/x/dsh"), "/tmp/patch.yml").unwrap();
         assert_eq!((p.as_str(), a), ("/Applications/x/dsh", sv(&["--profile", "acp", "--patch", "/tmp/patch.yml"])));
         let vars = get("dsh").acp_vars(&check("dsh", "/usr/local/bin/dsh"));
@@ -4700,6 +4727,36 @@ mod tests {
         let specs = agent_specs(&[AgentConf { id: "mine".into(), cmd: sv(&["mine", "{prompt}"]), ..Default::default() }], &[]).unwrap();
         let err = specs.iter().find(|s| s.id == "mine").unwrap().entry(&check("mine", "mine"), "").unwrap_err();
         assert!(err.contains("旧写法") && err.contains("ACP"), "{err}");
+    }
+
+    /// 找到了 claude、启动环境里没有 npx：这个环境记成不可用、写明缺 Node.js，版本照报，不当成「没安装」（#458）
+    #[test]
+    fn agent_without_npx_is_reported_as_missing_node() {
+        let claude = BUILTIN.iter().find(|b| b.id == "claude").unwrap();
+        let needs: Vec<(String, String)> = claude.needs.iter().map(|(c, w)| (c.to_string(), w.to_string())).collect();
+        let found = || Check {
+            env: "login".into(),
+            found: true,
+            version: "2.1.326 (Claude Code)".into(),
+            prog: Some("claude".into()),
+            path: Some("/Users/me/.local/bin/claude".into()),
+            missing: None,
+        };
+        let c = found().needs(&needs, |_| false);
+        assert_eq!((c.found, c.missing.as_deref()), (false, Some("Node.js（npx）")));
+        assert!(found().needs(&needs, |cmd| cmd == "npx").found, "有 npx 时不变");
+        let gone = Check { found: false, ..found() }.needs(&needs, |_| false);
+        assert_eq!((gone.found, gone.missing), (false, None), "agent 本身没找到：照旧是没找到，不说缺 Node.js");
+        assert!(found().needs(&[], |_| false).found, "不要别的命令的 agent（dsh）不受影响");
+        // 上报：版本照写、写明缺什么；管理方式不是「没安装」，没有安装按钮
+        let mut spec = managed_spec("claude", claude);
+        spec.checks = vec![c];
+        let r = spec.report(None);
+        assert_eq!((r.found, r.missing.as_deref(), r.version.as_str()), (false, Some("Node.js（npx）"), "2.1.326 (Claude Code)"));
+        assert_eq!((r.envs[0].found, r.envs[0].missing.as_deref()), (false, Some("Node.js（npx）")));
+        let m = r.manage.unwrap();
+        assert_eq!((m.method.as_str(), m.installable, m.install_command.as_str()), ("needs", false, ""));
+        assert!(m.method_label.contains("Node.js") && m.reason.contains("重新检查"), "{m:?}");
     }
 
     /// Windows 上 npm 的垫片（无扩展名的 sh 脚本、.cmd、.ps1）不直接传给适配器：换成 npm 包里真正的 .exe，找不到就不传（#456）
@@ -4825,7 +4882,7 @@ mod tests {
             legacy: false,
             skills: vec!["/board-test-no-such-skills".into()],
             project: vec![".agents/skills".into()],
-            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("codex".into()), path: Some("codex".into()) }],
+            checks: vec![Check { env: "direct".into(), found: true, version: String::new(), prog: Some("codex".into()), path: Some("codex".into()), missing: None }],
             no_skill: BTreeMap::new(),
             builtin: None,
             managed: false,
@@ -5007,7 +5064,7 @@ mod tests {
         let mut spec = managed_spec("claude", BUILTIN.iter().find(|b| b.id == "claude").unwrap());
         spec.latest = "2.1.325".into();
         spec.checked_at = 42;
-        let check = |env: &str, path: &str| Check { env: env.into(), found: true, version: "2.1.300 (Claude Code)".into(), prog: Some(path.into()), path: Some(path.into()) };
+        let check = |env: &str, path: &str| Check { env: env.into(), found: true, version: "2.1.300 (Claude Code)".into(), prog: Some(path.into()), path: Some(path.into()), missing: None };
         let npm = spec.manage_for(Some(&check("direct", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js")));
         assert_eq!((npm.method.as_str(), npm.method_label.as_str(), npm.updatable), ("npm-global", "npm 全局", true));
         assert!(npm.update_available);

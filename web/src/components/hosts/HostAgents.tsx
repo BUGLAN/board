@@ -11,7 +11,7 @@
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
-import { envName, selftestBusy, since } from '../../lib/hosts';
+import { envName, missWord, selftestBusy, since } from '../../lib/hosts';
 import { interfaceName, metaOf, protocolChoices, providersFor, runPick, writableEfforts } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
 import { copyText, cx } from '../../lib/util';
@@ -95,7 +95,7 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
         <AgentIcon id={a.id} />
         <b>{a.name}</b>
         {def && <span className="ha-def">默认</span>}
-        <span className="hd-ver">{a.found ? a.version || '找到了' : '这台机器上没找到'}</span>
+        <span className="hd-ver">{a.found ? a.version || '找到了' : a.missing ? [a.version, missWord(a)].filter(Boolean).join(' · ') : '这台机器上没找到'}</span>
         {a.found &&
           (hr.ok ? (
             <span className="hd-ok">
@@ -174,6 +174,13 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
     const ok = await copyText(m.install_command);
     toast({ type: ok ? 'success' : 'error', title: ok ? '已复制安装命令' : '复制失败' });
   };
+  // 装了 agent、缺 ACP 入口要的命令（Node.js）：不是安装方式的事，单独一行说缺什么、怎么办（#458）
+  if (m.method === 'needs')
+    return (
+      <div className="hd-why">
+        <span>{m.reason || `缺 ${a.missing ?? ''}`}</span>
+      </div>
+    );
   return (
     <div className={cx('hd-manage', m.state === 'failed' && 'hp-rollback')}>
       <div className="hd-conf muted">
@@ -258,7 +265,7 @@ function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a:
             <Select
               className="ha-sel wide"
               value={a.env ?? ''}
-              options={a.envs.map(c => ({ value: c.env, label: `${name(c.env)} · ${c.found ? c.version || '找到了' : '没找到'}`, disabled: !c.found }))}
+              options={a.envs.map(c => ({ value: c.env, label: `${name(c.env)} · ${c.found ? c.version || '找到了' : missWord(c)}`, disabled: !c.found }))}
               onChange={v => save({ env: { agent: a.id, env: v } })}
               aria-label={`${a.name} 的启动环境`}
             />

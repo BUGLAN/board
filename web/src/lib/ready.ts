@@ -3,7 +3,7 @@
  * 每一项的数据来自做它的那张卡；那张卡还没做的项先不列（不显示、也不算进 N/M）：
  *   开机自启或已装成服务（#190）、skills / MCP / 环境变量同步（#186、#187、#200）、agent 自检（#191）、
  *   每个 agent 的思考强度（#182）。做了的卡在这里加一项、在对比视图里加一列。 */
-import { dirFresh, envName, osKind, since, skillGaps } from './hosts';
+import { dirFresh, envName, missWord, osKind, since, skillGaps } from './hosts';
 import type { HostDir, HostInfo } from './types';
 
 export type ReadyKey = 'online' | 'version' | 'dirs' | 'skills' | 'agent';
@@ -110,13 +110,15 @@ export function readiness(h: HostInfo, now: number, server?: string | null): Rea
   });
 
   const def = h.agent ? h.agents.find(a => a.id === h.agent) : undefined;
+  // 装了 agent、只是缺 Node.js（npx）：说缺什么，别让人去重装（#458）
+  const short = h.agents.find(a => !a.found && a.missing);
   out.push({
     key: 'agent',
     label: '有能用的默认 agent',
     short: '默认 agent',
     ok: !!def?.found,
     ...(!def?.found && {
-      why: h.agents.length ? '本机没找到能用的 agent' : 'board host 没有上报 agent',
+      why: !h.agents.length ? 'board host 没有上报 agent' : short ? `${short.name} 装了，但缺 ${short.missing}` : '本机没找到能用的 agent',
       go: 'agents' as const,
       act: '看本机 agent',
     }),
@@ -218,7 +220,7 @@ export function compareHosts(hosts: HostInfo[], now: number, server?: string | n
   const agents = ids.map(({ id, name }): CmpGroup => {
     const of = hosts.map(h => h.agents.find(a => a.id === id));
     // 没上报这个 agent 的机器（旧版 board host）不参与比较；上报了但没找到算「没装」，和装了的不一致
-    const version = of.map(a => (a ? (a.found ? a.version || '找到了' : '没找到') : null));
+    const version = of.map(a => (a ? (a.found ? a.version || '找到了' : missWord(a)) : null));
     const model = of.map(a => (a?.found && a.model ? a.model : null));
     const env = hosts.map((h, i) => (of[i]?.found ? envName(h, of[i]!.env) : null));
     // 同步配置写进配置文件的供应商和模型（PRD §10.12）；旧版 board host 不上报时不参与比较

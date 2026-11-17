@@ -433,21 +433,41 @@ pub fn supported<'e>(order: &[String], envs: &'e [Env]) -> Vec<&'e Env> {
 /* ------------------------------ 找命令 ------------------------------ */
 
 /// 一个 agent 在一个启动环境里的检查结果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Check {
     pub env: String,
+    /// 能用：找到了 agent 命令，ACP 入口另外要的命令（[`Check::needs`]）也都在
     pub found: bool,
     pub version: String,
     /// 在这个环境里执行用的命令：一般就是模板里的命令名；在「PATH 里没有时再看」的位置找到时是绝对路径
     pub prog: Option<String>,
     /// 实际找到的命令路径：判断安装方式用（cmd 里的 `.cmd` 执行时仍要用命令名，不能用带引号的绝对路径）
     pub path: Option<String>,
+    /// 找到了 agent 命令、却缺 ACP 入口另外要的命令时，缺的是什么（例如「Node.js（npx）」）。这时 `found` 是 false（#458）
+    pub missing: Option<String>,
 }
 
 impl Check {
     pub fn report(&self) -> EnvCheck {
-        EnvCheck { env: self.env.clone(), found: self.found, version: self.version.clone(), no_skill: None, manage: None }
+        EnvCheck { env: self.env.clone(), found: self.found, version: self.version.clone(), missing: self.missing.clone(), ..Default::default() }
     }
+
+    /// 找到了 agent 命令时，再在 env 里找 ACP 入口另外要的命令（`needs`：命令，缺了时怎么称呼它）；
+    /// 缺一个就把这个环境记成不可用，写明缺什么。`has`：在 env 里找得到这个命令（测试里换成假的）
+    pub fn needs(mut self, needs: &[(String, String)], has: impl Fn(&str) -> bool) -> Check {
+        if self.found {
+            if let Some((_, what)) = needs.iter().find(|(cmd, _)| !has(cmd)) {
+                self.found = false;
+                self.missing = Some(what.clone());
+            }
+        }
+        self
+    }
+}
+
+/// 在 env 里找得到 cmd（`command -v` / `where.exe`，不取版本号）：ACP 入口另外要的命令（npx）用
+pub fn has(env: &Env, cmd: &str) -> bool {
+    locate(env, cmd, &[]).is_some()
 }
 
 /// 在 env 里找 cmd（agent 命令），找到了再取版本号。also：PATH 里没有时再看的位置（只在 direct、login 里用）；
@@ -477,7 +497,7 @@ pub fn probe(env: &Env, cmd: &str, also: &[String]) -> Check {
             None => (None, String::new()),
         },
     };
-    Check { env: env.id.clone(), found: hit.is_some(), version, prog: hit.as_ref().map(|(p, _)| p.clone()), path: hit.map(|(_, path)| path) }
+    Check { env: env.id.clone(), found: hit.is_some(), version, prog: hit.as_ref().map(|(p, _)| p.clone()), path: hit.map(|(_, path)| path), missing: None }
 }
 
 /// PATH 里没有时再看的位置里，第一个存在的用户目录安装（只在 direct、login 里用）

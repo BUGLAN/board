@@ -1,6 +1,6 @@
 /* 机器页共用的小部件：系统图标、状态、agent 标记、心跳；轮询机器列表；改机器设置的补丁 */
 import { useEffect, type ReactNode } from 'react';
-import { agentMark, hostState, osKind, since, type OsKind } from '../../lib/hosts';
+import { agentMark, hostState, missWord, osKind, since, type OsKind } from '../../lib/hosts';
 import type { HostAgent, HostInfo } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
 import { hostKey, refreshHosts, type Patch } from '../../store/data';
@@ -76,7 +76,7 @@ export function AgentChip({ a, def, env, skill }: { a: HostAgent; def?: boolean;
       <AgentIcon id={a.id} />
       {a.name}
       {env && <i className="hp-agent-env">· {env}</i>}
-      <em>{a.found ? a.version || '找到了' : '没找到'}</em>
+      <em>{a.found ? a.version || '找到了' : missWord(a)}</em>
       {def && <small>默认</small>}
       {skill && (
         <Tip text={skill}>

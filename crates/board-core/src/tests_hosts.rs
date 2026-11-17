@@ -1361,7 +1361,7 @@ fn env(id: &str, name: &str) -> HostEnv {
 }
 
 fn check(env: &str, found: bool, version: &str) -> EnvCheck {
-    EnvCheck { env: env.into(), found, version: version.into(), no_skill: None, manage: None }
+    EnvCheck { env: env.into(), found, version: version.into(), ..Default::default() }
 }
 
 /// 一台 Windows 机器：cmd、PowerShell 7、Git Bash、WSL（Ubuntu）。mycli 不支持 cmd；WSL 里没装 mycli
@@ -1485,6 +1485,35 @@ fn agent_not_found_in_set_env_is_not_on_host() {
     assert!(e.message.contains("WSL（Ubuntu）"), "{}", e.message);
     // 默认 agent 也跟着变：mycli
     assert_eq!(h.agent.as_deref(), Some("mycli"));
+}
+
+/// 装了 agent、启动环境里缺 Node.js（npx）：board host 报成没找到并写明缺什么；没设启动环境时用找得到的那个环境，
+/// 设了的照设的算、派发报错写明缺什么（#458）
+#[test]
+fn agent_missing_node_is_not_usable_and_says_why() {
+    let mut s = store();
+    let mut r = win_report("i1");
+    let no_node = || EnvCheck { missing: Some("Node.js（npx）".into()), ..check("pwsh", false, "2.4.0") };
+    // 哪个环境都用不了：按缺 Node.js 的那个报，界面写缺什么，不写「没找到」
+    r.agents[1].envs = vec![check("git-bash", false, ""), no_node()];
+    let c = claude_of(&beat(&mut s, T0, &r).unwrap().host);
+    assert_eq!((c.env.as_deref(), c.found, c.missing.as_deref(), c.version.as_str()), (Some("pwsh"), false, Some("Node.js（npx）"), "2.4.0"));
+    r.agents[1].envs = vec![no_node(), check("git-bash", true, "2.4.0")];
+    let h = beat(&mut s, T0, &r).unwrap().host;
+    let c = claude_of(&h);
+    assert_eq!((c.env.as_deref(), c.found, c.missing.as_deref()), (Some("git-bash"), true, None), "没设启动环境：用找得到的 Git Bash");
+    // 选了 PowerShell 7 之后，那里的 Node.js 没了（升级、卸载）：照选的算
+    r.agents[1].envs = vec![check("pwsh", true, "2.4.0"), check("git-bash", true, "2.4.0")];
+    beat(&mut s, T0, &r).unwrap();
+    set_env(&mut s, "claude", "pwsh").unwrap();
+    r.agents[1].envs = vec![no_node(), check("git-bash", true, "2.4.0")];
+    let h = beat(&mut s, T0 + S, &r).unwrap().host;
+    let c = claude_of(&h);
+    assert_eq!((c.env.as_deref(), c.found, c.missing.as_deref(), c.version.as_str()), (Some("pwsh"), false, Some("Node.js（npx）"), "2.4.0"));
+    let a = new_card(&mut s, T0, "A");
+    let e = dispatch(&mut s, T0 + S, a, "mbp", Some("claude")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::AgentNotOnHost);
+    assert!(e.message.contains("在PowerShell 7里缺 Node.js（npx）"), "{}", e.message);
 }
 
 #[test]
@@ -5600,6 +5629,11 @@ fn checklist_agent_item_follows_skills_and_selftest() {
     beat(&mut s, T0 + S, &r).unwrap();
     assert_eq!(state_of(&s, T0 + S, "agent").0, "fail");
     assert!(why_of(&s, T0 + S, "agent").contains("看不到 board-skills"));
+    // 装了 agent、缺 Node.js（npx）：说缺什么，不让人去重装 agent（#458）
+    r.agents = vec![HostAgent { missing: Some("Node.js（npx）".into()), version: "2.4.1".into(), ..claude(false) }];
+    beat(&mut s, T0 + 2 * S, &r).unwrap();
+    assert_eq!(state_of(&s, T0 + 2 * S, "agent").0, "fail");
+    assert_eq!(why_of(&s, T0 + 2 * S, "agent"), "mbp 上的 Claude Code 缺 Node.js（npx）：装上后点「重新检查」");
 }
 
 #[test]
