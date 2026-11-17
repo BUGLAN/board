@@ -192,7 +192,8 @@ pub(crate) fn finished(u: &Value) -> Option<bool> {
     }
 }
 
-/// 工具的结果文字：`content` 里的文字（去掉包着的 ``` ），改了的文件写「改了 <路径>」；都没有时看 `rawOutput`
+/// 工具的结果文字：`content` 里的文字（去掉包着的 ``` ），改了的文件写「改了 <路径>」；Codex 的终端输出在
+/// `_meta.terminal_output_delta`；都没有时看 `rawOutput`
 pub(crate) fn tool_output(u: &Value) -> String {
     let mut parts = vec![];
     for c in arr(&u["content"]) {
@@ -210,6 +211,9 @@ pub(crate) fn tool_output(u: &Value) -> String {
     if !parts.is_empty() {
         return parts.join("\n");
     }
+    if let Some(x) = u["_meta"]["terminal_output_delta"]["data"].as_str().filter(|x| !x.is_empty()) {
+        return x.to_string();
+    }
     let r = &u["rawOutput"];
     match r {
         Value::String(x) => x.clone(),
@@ -223,10 +227,11 @@ pub(crate) fn tool_output(u: &Value) -> String {
     }
 }
 
-/// 工具的退出码（`rawOutput` 里有时）
+/// 工具的退出码：Codex 的终端在 `_meta.terminal_exit`，其他 agent 在 `rawOutput` 里
 pub(crate) fn tool_code(u: &Value) -> Option<i64> {
+    let t = &u["_meta"]["terminal_exit"];
     let r = &u["rawOutput"];
-    r["exit_code"].as_i64().or_else(|| r["exitCode"].as_i64())
+    t["exit_code"].as_i64().or_else(|| t["exitCode"].as_i64()).or_else(|| r["exit_code"].as_i64()).or_else(|| r["exitCode"].as_i64())
 }
 
 /// 去掉整段包着的 ```（Claude Code 的命令输出这样写）
@@ -355,6 +360,7 @@ mod tests {
 
     /// `board acp` 写的一次运行（按 ACP v1 的 schema 写的样例，带上了 board acp 自己发的请求）
     const ACP: &str = include_str!("../tests/fixtures/acp-session.jsonl");
+    const CODEX_TERMINAL: &str = include_str!("../tests/fixtures/codex-terminal.jsonl");
 
     #[test]
     fn acp_frames_become_readable_lines() {
@@ -398,6 +404,16 @@ mod tests {
         assert_eq!(tool_code(&serde_json::json!({ "rawOutput": { "exitCode": 2 } })), Some(2));
         assert_eq!(unfence("```sh\nls\na\n```"), "ls\na");
         assert_eq!(unfence("plain"), "plain");
+    }
+
+    #[test]
+    fn codex_terminal_output_and_exit_code_are_read_from_meta() {
+        let out = render(Some(Stream::Acp), lines(CODEX_TERMINAL));
+        assert_eq!(out, ["▸ shell  sh -c \"exit 7\"", "  ✗ oops"]);
+        let u: Value = serde_json::from_str(CODEX_TERMINAL.lines().nth(1).unwrap()).unwrap();
+        let u = &u["params"]["update"];
+        assert_eq!(tool_output(u), "oops\n");
+        assert_eq!(tool_code(u), Some(7));
     }
 
     #[test]

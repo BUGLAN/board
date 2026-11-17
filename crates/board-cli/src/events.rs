@@ -8,7 +8,7 @@
 //! - 消息：`agent_message_chunk`（`board acp` 已经把连续的片段合成一帧）→ `message`；`plan` 写成 Markdown 任务列表的 `message`。
 //! - 工具：`tool_call` → 调用，`tool_call_update` 到了 completed / failed → 结果，两条带着同一个 `call`（`toolCallId`），
 //!   上传前同一批里合成一条，跨批的由服务端合并。参数只留摘要，结果留前 [`OUT_LINES`] 行、最多 [`OUT_MAX`] 个字符；
-//!   `rawOutput` 里有退出码时记下。
+//!   `_meta` 或 `rawOutput` 里有退出码时记下。
 //! - `result`：prompt 的回应（`stopReason`）。回应里带了 `usage`（输入 / 输出 tokens）时记下；费用取最后一次
 //!   `usage_update` 里的 `cost`（累计值）。
 //! - 出错的回应 → `error`。
@@ -146,6 +146,7 @@ mod tests {
     }
 
     const ACP: &str = include_str!("../tests/fixtures/acp-session.jsonl");
+    const CODEX_TERMINAL: &str = include_str!("../tests/fixtures/codex-terminal.jsonl");
 
     #[test]
     fn acp_frames_become_events() {
@@ -175,6 +176,16 @@ mod tests {
         assert_eq!((e[0].kind.as_str(), e[0].ok, e[0].text.as_deref(), e[0].at), ("result", Some(false), Some("已停止"), 5));
         assert!(p.feed(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#, 1).is_empty(), "board acp 自己发的请求不记");
         assert!(p.feed("   ", 1).is_empty());
+    }
+
+    #[test]
+    fn codex_terminal_tool_keeps_output_and_exit_code() {
+        let evs = parse(CODEX_TERMINAL);
+        assert_eq!(kinds(&evs), ["tool"]);
+        assert_eq!(
+            (evs[0].tool.as_deref(), evs[0].args.as_deref(), evs[0].out.as_deref(), evs[0].ok, evs[0].code),
+            (Some("shell"), Some("sh -c \"exit 7\""), Some("oops"), Some(false), Some(7))
+        );
     }
 
     #[test]
