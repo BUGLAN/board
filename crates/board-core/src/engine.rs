@@ -255,8 +255,8 @@ impl<'a> W<'a> {
                         )))
                     }
                 };
+                // 仅人可打的标签 agent 建卡时可以带上（PRD §6）：什么时候带由 board-skills 约束，只在人要求时带
                 self.check_labels(board, &labels)?;
-                self.check_human_only(actor, &labels)?;
                 self.tx.execute("UPDATE boards SET seq = seq + 1 WHERE id = ?1", [b])?;
                 let id: i64 = self.tx.query_row("SELECT seq FROM boards WHERE id = ?1", [b], |r| r.get(0))?;
                 self.tx.execute(
@@ -600,7 +600,7 @@ impl<'a> W<'a> {
             }
 
             /* ---------------- 标签 ----------------
-               任何状态都可以，包括别人持有的卡片；不续期（PRD §6）。仅人可打的标签 agent 不能加、去 */
+               任何状态都可以，包括别人持有的卡片；不续期（PRD §6）。仅人可打的标签 agent 不能给已有卡片加、去 */
             Cmd::Label { id, add, remove } => {
                 self.row(b, id)?;
                 self.check_labels(board, &add)?;
@@ -1255,7 +1255,7 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 仅人可打的标签只有人能加、去：agent 碰到时拒绝（USAGE），原因里写明标签名
+    /// 仅人可打的标签只有人能给已有卡片加、去：agent 碰到时拒绝（USAGE），原因里写明标签名（agent 建卡时可以带上，不走这里）
     fn check_human_only(&self, actor: &Actor, ids: &[i64]) -> Result<()> {
         if !actor.is_agent() {
             return Ok(());
@@ -1264,7 +1264,7 @@ impl<'a> W<'a> {
             let (name, human_only): (String, bool) =
                 self.tx.query_row("SELECT name, human_only FROM labels WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             if human_only {
-                return Err(BoardError::usage(format!("标签「{name}」只有人能打（仅人可打），agent 不能加、去")));
+                return Err(BoardError::usage(format!("标签「{name}」只有人能打（仅人可打）：agent 不能给已有卡片加、去，只能在建卡时按人的要求带上")));
             }
         }
         Ok(())

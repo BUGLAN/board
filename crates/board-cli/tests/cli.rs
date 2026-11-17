@@ -157,7 +157,7 @@ fn ac23_24_labels() {
     assert!(r.json()["labels"].as_array().unwrap().is_empty());
 }
 
-/// 仅人可打的标签：board labels 能区分；agent 加、去被拒绝（USAGE），原因里说明只有人能打
+/// 仅人可打的标签：board labels 能区分；agent 给已有卡片加、去被拒绝（USAGE），原因里说明只有人能打、建卡时可以带上
 #[test]
 fn human_only_labels() {
     let s = start();
@@ -171,12 +171,17 @@ fn human_only_labels() {
     assert!(r.out.contains("仅人可打") && r.out.contains("agent 可打"), "{}", r.out);
     let r = s.run(ALPHA, &["label", "1", "+人定", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
-    assert!(r.json()["error"]["message"].as_str().unwrap().contains("只有人能打"));
+    let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(msg.contains("只有人能打") && msg.contains("建卡时"), "{msg}");
+    // 建卡时带上的（#422）：之后同样不能去
+    let id = s.run(ALPHA, &["new", "b", "--label", "人定", "--json"]).json()["id"].as_i64().unwrap().to_string();
+    let r = s.run(ALPHA, &["label", &id, "-人定", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
     let r = s.run(ALPHA, &["label", "1", "+bug", "--json"]);
     assert_eq!(r.code, 0, "{}", r.out);
 }
 
-/// board new --label：可以写多次、不区分大小写、重复只算一次；不存在、仅人可打的拒绝且不建卡；能和 --inbox、--top 一起用
+/// board new --label：可以写多次、不区分大小写、重复只算一次；不存在的拒绝且不建卡；仅人可打的也能带上（#422）；能和 --inbox、--top、--from 一起用
 #[test]
 fn new_with_labels() {
     let s = start();
@@ -193,9 +198,15 @@ fn new_with_labels() {
     let r = s.run(ALPHA, &["new", "z", "--label", "不存在的标签", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
     assert!(r.json()["error"]["message"].as_str().unwrap().contains("功能"), "原因里列出可用的标签");
-    let r = s.run(ALPHA, &["new", "z", "--label", "人定", "--json"]);
-    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
     assert_eq!(count(), before, "没有多出卡片");
+    // 仅人可打的标签：建卡时可以带上（什么时候带由 board-skills 约束），和 --inbox、--from 一起也行
+    let r = s.run(ALPHA, &["new", "z", "--label", "人定", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["labels"], serde_json::json!(["人定"]));
+    let from = r.json()["id"].as_i64().unwrap().to_string();
+    let r = s.run(ALPHA, &["new", "拆出来的", "--inbox", "--from", &from, "--label", "人定", "--label", "UI", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!((r.json()["column"].as_str(), r.json()["labels"].clone()), (Some("inbox"), serde_json::json!(["UI", "人定"])));
     // 和 --inbox、--top 一起用
     let r = s.run(ALPHA, &["new", "收件", "--inbox", "--label", "UI", "--json"]);
     assert_eq!((r.json()["column"].as_str(), r.json()["labels"].clone()), (Some("inbox"), serde_json::json!(["UI"])));

@@ -68,14 +68,14 @@ const COMMANDS: [(&str, &str, &str); 29] = [
         ("ls", "[--column <状态>] [--search <文字>] [--label <标签>]", "列出卡片"),
         ("search", "\"<文字>\" [--limit <条数>]", "跨所有白板搜卡片（不用 --board）：文字搜标题、描述、评论，也认 #ID、项目/白板#ID、label:标签；输出白板路径、ID、状态、标题"),
         ("show", "<ID>", "显示卡片的全部字段和动态"),
-        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--image <图片>]… [--file <文件>]… [--top] [--inbox] [--label <标签>]… [--from <ID>]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签；多行描述用 --body-file（- 读标准输入）；--image、--file 可以写多次，按顺序附在描述后面（图片直接显示，文件是下载链接）；--from 记下拆自同一块白板上的哪张卡（回收站里的也行，不存在时 NOT_FOUND）"),
+        ("new", "\"<标题>\" [--body \"<描述>\" | --body-file <文件>] [--image <图片>]… [--file <文件>]… [--top] [--inbox] [--label <标签>]… [--from <ID>]", "在首个可领取状态新建卡片；--inbox 记到「未整理」最下面；--label 可以写多次，带上项目里已有的标签（仅人可打的也能带，只在人要求时带）；多行描述用 --body-file（- 读标准输入）；--image、--file 可以写多次，按顺序附在描述后面（图片直接显示，文件是下载链接）；--from 记下拆自同一块白板上的哪张卡（回收站里的也行，不存在时 NOT_FOUND）"),
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\" | --body-file <文件>]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
         ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领这个会话排着的下一张；排着的做完了、不再接着做时返回 SESSION_DONE"),
         ("hold", "<ID> [--wait <秒>]", "推集成分支前确认领取仍有效：这张卡仍由你持有、在锁定状态，否则 NOT_HOLDER（不要推集成分支，改推 wip 分支）；连不上服务端时每 30 秒重试，最多等 --wait 秒（默认 300），还连不上就 UNREACHABLE"),
         ("comment", "<ID> \"<内容>\" | <ID> --comment-file <文件>", "追加评论；多行内容用 --comment-file（- 读标准输入）"),
-        ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能加、去"),
+        ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能给已有卡片加、去（建卡时可以带上）"),
         ("labels", "", "列出项目的标签、类型（agent 可打 / 仅人可打）、是否优先，以及每个标签被多少张卡片使用"),
         ("attach", "<ID> <文件>… [--comment \"<说明>\" | --comment-file <文件>]", "上传附件（图片、日志等），连同说明作为一条评论"),
         ("files", "<ID> [--out <目录>]", "把卡片的附件下载到本地（默认临时目录），列出路径"),
@@ -642,16 +642,14 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             let title = a.pos[1..].join(" ");
             let inbox = a.flag("--inbox");
             let top = a.flag("--top") && !inbox;
-            // --label 可以写多次，按名称匹配（不区分大小写），同一个只算一次；不存在、仅人可打的都在新建前拒绝
+            // --label 可以写多次，按名称匹配（不区分大小写），同一个只算一次；不存在的在新建前拒绝。
+            // 仅人可打的标签建卡时可以带上（PRD §6），什么时候带由 board-skills 约束：只在人要求时带
             let mut with: Vec<i64> = vec![];
             for n in a.all("--label") {
                 let id = find_label(&n)?;
                 if !with.contains(&id) {
                     with.push(id);
                 }
-            }
-            if let Some(l) = labels.iter().find(|l| l.human_only && with.contains(&l.id)) {
-                return Err(BoardError::usage(format!("标签「{}」只有人能打（仅人可打），agent 建卡时不能带上", l.name)));
             }
             let mut body = text_arg(&a, "--body", "--body-file")?;
             // --image / --file：先在本地全部检查一遍（不存在、类型不支持、超过 10 MB 都在上传前拒绝，不建卡），
@@ -814,9 +812,9 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     add.push(find_label(o.strip_prefix('+').unwrap_or(o))?);
                 }
             }
-            // 仅人可打的标签只有人能在界面上加、去；服务端同样会拒绝，这里先拦下，省一次请求
+            // 仅人可打的标签只有人能给已有卡片加、去；服务端同样会拒绝，这里先拦下，省一次请求
             if let Some(l) = labels.iter().find(|l| l.human_only && (add.contains(&l.id) || remove.contains(&l.id))) {
-                return Err(BoardError::usage(format!("标签「{}」只有人能打（仅人可打），agent 不能加、去", l.name)));
+                return Err(BoardError::usage(format!("标签「{}」只有人能打（仅人可打）：agent 不能给已有卡片加、去，只能在建卡时按人的要求带上", l.name)));
             }
             let d = exec(Cmd::Label { id, add, remove })?;
             if json {

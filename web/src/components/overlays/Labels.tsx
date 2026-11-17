@@ -156,7 +156,7 @@ export function LabelPicker() {
 /* 一个标签一行（default/main：管理标签横向滚动条）：名称输入本身画成标签胶囊（所见即所得，不另放预览），
    「仅人可打」「优先」是两个图标开关，卡片数只写数字；隐藏的标签收进列表底部一组，默认收起 */
 
-const HUMAN_TIP = (on: boolean) => (on ? '仅人可打：agent 不能加、去这个标签；点一下改成 agent 可打' : 'agent 可打：人和 agent 都能打；点一下改成仅人可打');
+const HUMAN_TIP = (on: boolean) => (on ? '仅人可打：agent 不能给已有卡片加、去这个标签，只能在建卡时按人的要求带上；点一下改成 agent 可打' : 'agent 可打：人和 agent 都能打；点一下改成仅人可打');
 const PRIO_TIP = (on: boolean) => (on ? '优先：带这个标签的卡片先被领取；点一下取消' : '点一下设为优先：带这个标签的卡片先被领取');
 
 /** 图标开关：仅人可打 / 优先 */

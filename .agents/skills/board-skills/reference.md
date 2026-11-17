@@ -63,7 +63,7 @@ board next --json                         # 只在 board host 启动的会话里
 board touched [--base <提交>]             # 推送前查这次提交有没有删掉别的卡最近加的行、加回别的卡最近删的行（只用 git）；有就退出码 1，最后一行写进交审评论
 board hold <ID>                           # 推集成分支前确认领取仍有效；NOT_HOLDER 时改推 wip 分支；连不上时每 30 秒重试、最多等 5 分钟
 board move <ID> <状态标识或名称> [--top]
-board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些；「仅人可打」的标签不能加、去
+board label <ID> +<标签> -<标签>         # 标签必须已在项目里存在，先 board labels 看有哪些；「仅人可打」的标签不能加、去（建卡时按 plan.md「拆解和新建」第 4 步可以带）
 board labels
 board boards                              # 列出所有白板
 board files <ID> [--out <目录>]           # 下载卡片的附件到本地，列出路径

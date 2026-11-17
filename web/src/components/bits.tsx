@@ -220,7 +220,7 @@ export const LabelPriority = ({ label }: { label: Pick<Label, 'priority'> }) =>
 
 /** 标签胶囊的悬停提示：优先、仅人可打 */
 const labelTip = (label: Pick<Label, 'humanOnly' | 'priority'>) =>
-  [label.priority && '优先：带这个标签的卡片先被领取', label.humanOnly && '仅人可打：agent 不能加、去这个标签'].filter(Boolean).join('\n') || undefined;
+  [label.priority && '优先：带这个标签的卡片先被领取', label.humanOnly && '仅人可打：agent 不能给已有卡片加、去这个标签，只能在建卡时按人的要求带上'].filter(Boolean).join('\n') || undefined;
 
 export function LabelChip({
   label,

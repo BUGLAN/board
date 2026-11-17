@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS labels (
   name    TEXT NOT NULL,
   color   TEXT NOT NULL,
   sort    INTEGER NOT NULL DEFAULT 0,
-  -- 1 = 仅人可打：只有人能在界面上给卡片加、去这个标签；0 = agent 可打（人和 agent 都能打）
+  -- 1 = 仅人可打：只有人能在界面上给已有卡片加、去这个标签（agent 建卡时可以带上）；0 = agent 可打（人和 agent 都能打）
   human_only INTEGER NOT NULL DEFAULT 0,
   -- 1 = 优先：不带 ID 领取（和定时领取）时，带这个标签的卡片先被领取（PRD §8 规则 1）
   priority   INTEGER NOT NULL DEFAULT 0

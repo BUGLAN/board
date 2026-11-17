@@ -64,7 +64,7 @@ export interface Label {
   name: string;
   color: string;
   uses: number;
-  /** 仅人可打：只有人能在界面上给卡片加、去；agent 加、去时被拒绝。旧服务端没有这个字段，按 agent 可打 */
+  /** 仅人可打：只有人能在界面上给已有卡片加、去，agent 加、去时被拒绝；agent 建卡时可以带上。旧服务端没有这个字段，按 agent 可打 */
   humanOnly?: boolean;
   /** 优先：不带 ID 领取（和自动领取）时，带这个标签的卡片先被领取 */
   priority?: boolean;

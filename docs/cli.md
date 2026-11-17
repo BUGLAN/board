@@ -768,7 +768,7 @@
 
 ### `board labels`
 
-项目里所有标签；`human_only` 是仅人可打，`priority` 是优先标签，`cards` 是被多少张卡片使用：
+项目里所有标签；`human_only` 是仅人可打（agent 不能给已有卡片加、去，建卡时可以用 `--label` 带上），`priority` 是优先标签，`cards` 是被多少张卡片使用：
 
 ```json
 [

@@ -576,10 +576,14 @@ fn human_only_labels() {
     assert!(e.message.contains("人定") && e.message.contains("只有人能打"), "{}", e.message);
     // agent 可打的标签照常
     exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![any.id], remove: vec![] }).unwrap();
-    // agent 新建时带上：拒绝
-    let e = exec(&mut s, B, &beta(), T0, Cmd::New { title: "b".into(), body: None, column: None, top: false, labels: vec![mine.id], from: None })
-        .unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
+    // agent 新建时带上：可以（#422，什么时候带由 board-skills 约束）；之后对这张卡加、去仍被拒绝
+    let b = exec(&mut s, B, &beta(), T0, Cmd::New { title: "b".into(), body: None, column: None, top: false, labels: vec![mine.id], from: None })
+        .unwrap()
+        .card
+        .id;
+    assert!(card(&s, B, b).card.labels.contains(&mine.id));
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, Cmd::Label { id: b, add: vec![], remove: vec![mine.id] })), ErrorCode::Usage);
+    assert!(card(&s, B, b).card.labels.contains(&mine.id));
 
     // 人：任意状态、任意持有者的卡片都能加、去
     let c = exec(&mut s, B, &human(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] }).unwrap();
