@@ -1,6 +1,7 @@
 /* 命令面板的跨白板搜索结果：高亮什么、哪些放到「其他白板」一组 */
 import { describe, expect, it } from 'vitest';
-import { highlightQuery, otherHits } from './search';
+import { card } from '../../test/fixtures';
+import { highlightQuery, otherHits, searchBoardCards } from './search';
 import type { SearchHit } from './types';
 
 const hit = (board: string, id: number, title = '标题'): SearchHit => ({
@@ -45,5 +46,32 @@ describe('otherHits（其他白板）', () => {
 
   it('都在当前白板时为空', () => {
     expect(otherHits([hit('default/main', 2)], 'default/main')).toEqual([]);
+  });
+});
+
+describe('searchBoardCards（当前白板卡片）', () => {
+  it('按最近更新倒序，同一时间按编号倒序', () => {
+    const cards = [
+      card(1, { title: '界面', updatedAt: 10 }),
+      card(2, { title: '界面', updatedAt: 30 }),
+      card(3, { title: '界面', updatedAt: 20 }),
+      card(4, { title: '界面', updatedAt: 30 }),
+    ];
+    expect(searchBoardCards(cards, '界面').map(c => c.id)).toEqual([4, 2, 3, 1]);
+  });
+
+  it('标题、描述、编号都能搜到，未整理和已完成一视同仁，最多 12 条', () => {
+    const cards = [
+      card(20, { title: '界面', column: 'inbox', updatedAt: 200 }),
+      card(19, { title: '界面', column: 'done', updatedAt: 190 }),
+      ...Array.from({ length: 11 }, (_, i) => card(30 + i, { title: '界面', updatedAt: 180 - i })),
+      card(99, { title: '别的', body: '界面', updatedAt: 1 }),
+      card(100, { title: '别的', updatedAt: 999 }),
+    ];
+    const out = searchBoardCards(cards, '界面');
+    expect(out).toHaveLength(12);
+    expect(out.map(c => c.id)).toEqual([20, 19, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
+    expect(searchBoardCards(cards, '#20').map(c => c.id)).toEqual([20]);
+    expect(searchBoardCards(cards, '别的').map(c => c.id)).toEqual([100, 99]);
   });
 });

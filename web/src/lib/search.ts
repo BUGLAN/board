@@ -1,7 +1,19 @@
 /* ==========================================================================
    命令面板里跨白板搜卡片：高亮什么、哪些结果放到「其他白板」一组
    ========================================================================== */
-import type { SearchHit } from './types';
+import type { Card, SearchHit } from './types';
+
+/**
+ * 当前白板「卡片」一组：按编号或标题、描述匹配，按最近更新倒序排列。
+ * 同一时间再按编号倒序，最多 12 条（和工作流状态、未整理所在的位置无关）。
+ */
+export function searchBoardCards(cards: Card[], q: string): Card[] {
+  const ql = q.trim().toLowerCase().replace(/^#/, '');
+  return cards
+    .filter(c => String(c.id) === ql || c.title.toLowerCase().includes(ql) || c.body.toLowerCase().includes(ql))
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id)
+    .slice(0, 12);
+}
 
 /**
  * 高亮用的文字：`#12`、`oss/main#3`、`label:bug` 这些定位写法没有可高亮的正文（它们靠编号、标签找卡片），

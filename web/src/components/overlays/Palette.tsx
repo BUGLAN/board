@@ -6,7 +6,7 @@ import { canNewWindow, cycleTheme, getTheme, newWindow } from '../../lib/platfor
 import { hostLoad, hostState, hostsOf } from '../../lib/hosts';
 import { quickPrompts } from '../../lib/prompt';
 import { boardFlow, INBOX } from '../../lib/schema';
-import { highlightQuery, otherHits } from '../../lib/search';
+import { highlightQuery, otherHits, searchBoardCards } from '../../lib/search';
 import type { Card, SearchHit } from '../../lib/types';
 import { accel, cx } from '../../lib/util';
 import { allBoards, loadFull, useData } from '../../store/data';
@@ -121,10 +121,7 @@ export function Palette() {
     const all = board ? [INBOX, ...f.list.map(s => s.key)].flatMap(col => (board.cols[col] ?? []).map(id => board.cards[id])).filter(Boolean) : [];
     let cards: Card[];
     if (!query) cards = [...all].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
-    else {
-      const ql = query.toLowerCase().replace(/^#/, '');
-      cards = all.filter(c => String(c.id) === ql || c.title.toLowerCase().includes(ql) || c.body.toLowerCase().includes(ql)).slice(0, 12);
-    }
+    else cards = searchBoardCards(all, query);
     for (const c of cards)
       out.push({
         id: `card-${c.id}`, group: query ? '卡片' : '最近更新', title: c.title, card: c, color: f.color(c.column), q: query.replace(/^#/, ''),
