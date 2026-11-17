@@ -2,6 +2,17 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.39 · 2026-11-17
+
+### 新功能
+
+- **不兼容** **host**：agent 接入切换到 ACP（26beea1）
+- **不兼容** **agents**：移除内置 pi agent，内置只留 dsh、Claude Code、Codex（804093a）
+
+### 修复
+
+- **cli**：Git 凭据同步跳过非 git 仓库的空项目目录（4e005b0）
+
 ## v0.1.38 · 2026-11-16
 
 ### 修复
