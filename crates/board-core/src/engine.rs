@@ -654,7 +654,7 @@ impl<'a> W<'a> {
                         self.count_beat(b, id)?;
                         if let Some((n, ms)) = self.close_run(b, id, self.now, "final")? {
                             self.tx.execute("UPDATE cards SET beat_at = ?1, final_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
-                            self.track(b, id, actor, "beat", &format!("结束了心跳，正常退出，第 {n} 次耗时 {}", dur_words(ms)))?;
+                            self.track(b, id, actor, "beat", &format!("结束了心跳，第 {n} 次耗时 {}", dur_words(ms)))?;
                         }
                     }
                     return self.read().card(board, id);

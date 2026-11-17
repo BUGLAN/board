@@ -222,7 +222,7 @@ fn heartbeat_lost_without_server_sweep() {
 }
 
 #[test]
-fn heartbeat_final_is_normal_exit() {
+fn heartbeat_final_ends_heartbeat_without_exit_status() {
     let mut s = store();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
     exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
@@ -231,7 +231,8 @@ fn heartbeat_final_is_normal_exit() {
     let c = exec(&mut s, B, &alpha(), end, beat(1, true)).unwrap();
     assert_eq!(c.card.holder.as_deref(), Some("alpha"), "final 不释放领取");
     assert_eq!((c.card.run_started_at, c.card.work_ms, c.card.runs_lost), (None, 3 * MIN + 4 * SEC, 0));
-    assert!(c.activity.iter().any(|a| a.action == "beat" && a.text.contains("正常退出，第 1 次耗时 3 分 4 秒")));
+    assert!(c.activity.iter().any(|a| a.action == "beat" && a.text.contains("结束了心跳，第 1 次耗时 3 分 4 秒")));
+    assert!(!c.activity.iter().any(|a| a.text.contains("正常退出")), "final 只知道心跳结束，不知道 agent 的退出码");
     // 心跳次数：T0+1s 起每 10 秒一次到 3 分（19 次）+ final
     assert_eq!(c.card.beats, 20);
     // final 之后 50 秒内要交审或放回
