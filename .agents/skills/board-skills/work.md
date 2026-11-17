@@ -148,7 +148,18 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 
 在自己的 worktree 里：
 
-1. 先查这张卡是不是已经有提交进了集成分支：
+**每张卡都在最新的集成分支上开工**：第一次卡、同一会话用 `board next` 接到的下一张、从 wip 分支接着做的卡都一样，改代码前都要重新做下面这套同步。不要因为上一张刚推完、`HEAD` 看着新，或 board host 启动时拉过一次就跳过。下文以 `main` 为例，实际用 `board flow --json` 里的集成分支。
+
+1. **先保护现场**：`git fetch origin` 之后检查 worktree 是否干净：
+
+   ```sh
+   git status --porcelain
+   git branch -r --contains HEAD
+   ```
+
+   `git status --porcelain` 没有输出，并且 `git branch -r --contains HEAD` 至少有一行（没有没推到远端的提交），才算干净。不干净时先按下面「worktree 不干净时」处理；在改动保存到远端之前，不 switch、不 rebase、不 reset。
+
+2. **查这张卡是不是已经有提交进了集成分支**：
 
    ```sh
    git fetch origin
@@ -157,13 +168,39 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 
    有的话先看提交和卡片动态：
    - 动态里还没有这个提交的「提交：」行：上一个 agent 推完、还没来得及交审就中断了。不重做，确认提交满足卡片后直接按「交审」处理。
-   - 卡片交审过，又被人拖回可领取状态（复盘打回）：按动态里人的意见，接着在集成分支上修（第 3 步），再提交一次，同样带 `卡片：<项目>/<白板>#<ID>`。不改写已经推上去的提交；评论要求回滚时，`git revert --no-commit <sha>` 后按「提交」的格式提交，作为这一次的提交。
-2. 卡片动态里有 `未完成的改动：wip/...`（上一个 agent 做不下去、推送前发现领取已经失效，或者它中途退出、board host 替它把没推的改动保存下来时留下的），就从那条分支接着做：`git fetch origin && git switch --detach origin/wip/main/21`。分支名照评论里写的（board host 保存的有时带机器名，例如 `wip/main/21-win`）。board host 的那条评论里还写了上一个 agent 怎么结束的、留下了哪些文件、最后做了什么：先看这些和 `git diff origin/main...HEAD`，弄清做到哪了再接着做，不要从头重做。
-3. 否则 `git fetch origin && git switch --detach origin/main`。
+   - 卡片交审过，又被人拖回可领取状态（复盘打回）：先按第 4 步切到最新集成分支，再按动态里人的意见接着修，然后提交一次，同样带 `卡片：<项目>/<白板>#<ID>`。不改写已经推上去的提交；评论要求回滚时，`git revert --no-commit <sha>` 后按「提交」的格式提交，作为这一次的提交。
+3. **卡片动态里有 `未完成的改动：wip/...` 时，从那条分支接着做，并先同步到最新集成分支**：
 
-**每张卡都在最新的 `origin/main` 上开工**：上面三种情况都要先 `git fetch origin` 再切，即使上一张卡刚推完、HEAD 看着就是最新的也一样；不在已有的旧 HEAD、别的分支上直接改。在旧代码上开工，rebase 时就会和别的卡刚推的改动冲突，解错了会悄悄撤回别人的改动（#328 带回了 #320 删掉的下载按钮）。推送前的 `board touched` 按这一次切换认开工时的基点。
+   ```sh
+   git switch --detach origin/wip/main/21
+   git rebase origin/main
+   ```
 
-切换之前 worktree 必须是干净的：没有未提交的改动，也没有没推到远端的提交。不干净说明上一张卡没收尾，先按「做不下去」把它推到那张卡的 wip 分支，并在那张卡上评论。
+   分支名照评论里写的（board host 保存的有时带机器名，例如 `wip/main/21-win`）。冲突按「推送」第 1 步的规则解，保留上游和半成品两边的改动；解不了就按「做不下去」交给人，不要猜。不要直接编辑落在旧提交上的代码：先 rebase，落后多少都一样。board host 的那条评论里还写了上一个 agent 怎么结束的、留下了哪些文件、最后做了什么：先看这些和 `git diff origin/main...HEAD`，弄清做到哪了再接着做，不要从头重做。
+4. **否则切到最新的集成分支**：`git switch --detach origin/main`。
+
+需要改代码时，切好后（第 3、4 步）确认基点确实包含最新的集成分支（切到 `origin/main` 时两者相等）：
+
+```sh
+git merge-base --is-ancestor origin/main HEAD
+```
+
+退出码不是 0 就回到第 1 步重新同步。在旧代码上开工，rebase 时就会和别的卡刚推的改动冲突，解错了会悄悄撤回别人的改动（#328 带回了 #320 删掉的下载按钮）。推送前的 `board touched` 按这一次切换认开工时的基点。
+
+**worktree 不干净时**：
+
+- 先判断是不是上一张卡没收尾的改动。是的话按「做不下去」第 1 步把它提交、推到 `wip/<白板标识>/<上一张卡 ID>`，并在那张卡上评论 `未完成的改动：<分支>`；不要把上一张卡的改动带进当前卡。
+- 如果就是这张卡从 wip 分支接着做的改动，保存回它自己的 wip 分支（分支已存在时加 `--force-with-lease`），再按第 3 步同步，不要把本卡半成品当无关改动另存。
+- 分不清属于哪张卡、或确认与本卡无关时，不要用 `git stash` 后丢掉，不要 `git reset --hard`、`git checkout -- .`、`git clean`。把现场完整保存成一个远端快照；有未提交的改动时：
+
+  ```sh
+  git add -A
+  git commit -m "chore: 保存开工前的未收尾改动"
+  git push origin "HEAD:refs/heads/wip/main/<当前卡 ID>-presync-$(git rev-parse --short HEAD)"
+  ```
+
+  没有未提交的改动、只有没推到远端的提交时，省掉 `git add` 和 `git commit`，直接推 `HEAD`。推完用 `git branch -r --contains HEAD` 确认快照分支已在远端，再在当前卡上评论「开工前发现与本卡无关的未收尾改动，未带入本卡，已保存到 <分支>」。
+- 保存失败（`git commit` 或 `git push` 失败）就停在这一步，按「做不下去」在当前卡上说明，现场原样保留；不能为了换分支把这些改动删掉或覆盖掉。
 
 ### 推送
 
