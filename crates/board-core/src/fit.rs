@@ -4,14 +4,14 @@
 //! 和界面（工作区数据里的 `blocks`）以前各写各的，条件互相对不上；现在都问这里：
 //!
 //! - [`R::board_unfit`]：机器 × 白板。还没有配工作空间、项目设了仓库但目录不对（不存在、不是 git 仓库、`origin` 不是
-//!   项目的仓库、拉不到最新代码）、环境检查没通过或还没跑完时接不了，返回原因 [`Unfit`]。
+//!   项目的仓库、拉不到最新代码）时接不了，返回原因 [`Unfit`]。
 //! - [`R::agent_tripped`]：机器 × agent。这个 agent 在这台机器上连续 [`TRIP_AFTER`] 次异常退出后暂停接单，
 //!   人在机器详情里点「恢复」才继续。
 //! - [`R::blocks`]：所有接不了的「机器 × 白板」，随工作区数据发给界面，界面只照着显示，不自己再算一遍。
 //!
 //! 「现在会不会马上开始」（离线、暂停接单、没有空位）不在这里：那只决定排不排队，不决定能不能派。
 
-use crate::hosts::{derive_dir, readiness, workspace_of, HostRow, Readiness};
+use crate::hosts::{derive_dir, workspace_of, HostRow};
 use crate::{BoardError, BoardRef, ErrorCode, Result, R};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -33,18 +33,11 @@ pub enum Unfit {
     WrongRepo { path: String, origin: Option<String>, repo: String },
     /// 目录是项目的仓库，但这台机器最近一次 `git fetch origin` 没成（没权限、网络不通）：拉不到最新代码
     FetchFailed { path: String, why: String },
-    /// 环境检查没通过：输出的最后一行
-    CheckFailed(String),
-    /// 环境检查还没跑完（旧版 board host 不会检查）
-    CheckPending,
 }
 
 impl Unfit {
     pub fn code(&self) -> ErrorCode {
-        match self {
-            Unfit::CheckFailed(_) | Unfit::CheckPending => ErrorCode::BoardNotReady,
-            _ => ErrorCode::BoardNotOnHost,
-        }
+        ErrorCode::BoardNotOnHost
     }
 
     /// 界面上写在机器旁边的一句
@@ -57,8 +50,6 @@ impl Unfit {
             Unfit::WrongRepo { path, origin: Some(o), repo } => format!("{path} 的 origin 是 {o}，不是项目的仓库 {repo}"),
             Unfit::WrongRepo { path, origin: None, repo } => format!("{path} 没有 origin，项目的仓库是 {repo}"),
             Unfit::FetchFailed { path, why } => format!("{path} 拉不到最新代码：{why}"),
-            Unfit::CheckFailed(last) => format!("环境检查没通过：{last}"),
-            Unfit::CheckPending => "环境检查还没跑完".into(),
         }
     }
 
@@ -71,8 +62,6 @@ impl Unfit {
             Unfit::DirNotGit { .. } => format!("机器「{host}」上 {}：把它换成项目仓库的克隆", self.short()),
             Unfit::WrongRepo { .. } => format!("机器「{host}」上 {}：改项目设置里的仓库地址，或把那台机器的目录换成项目的仓库", self.short()),
             Unfit::FetchFailed { .. } => format!("机器「{host}」上 {}：检查那台机器访问仓库的权限和网络，它每 5 分钟重试一次，也可以在机器详情里点「重新检查」", self.short()),
-            Unfit::CheckFailed(last) => format!("机器「{host}」上 {path} 的环境检查没通过：{last}"),
-            Unfit::CheckPending => format!("机器「{host}」还没跑完 {path} 的环境检查：等它跑完再派（旧版 board host 不会检查，要先升级 board）"),
         };
         BoardError::new(self.code(), text).with_detail(json!({ "host": host, "board": path }))
     }
@@ -85,7 +74,7 @@ pub struct Block {
     pub host: String,
     /// `<项目>/<白板>`
     pub board: String,
-    /// 手动派发会得到的错误码：`BOARD_NOT_ON_HOST`、`BOARD_NOT_READY`
+    /// 手动派发会得到的错误码：`BOARD_NOT_ON_HOST`
     pub code: String,
     /// 原因，一句话
     pub why: String,
@@ -129,7 +118,7 @@ pub fn pick_host(list: &[Candidate]) -> Option<&Candidate> {
 }
 
 impl R<'_> {
-    /// 这台机器接不了这块白板的卡时返回原因；能接时为 None。先看工作空间，再看目录，最后看环境检查
+    /// 这台机器接不了这块白板的卡时返回原因；能接时为 None。先看工作空间，再看目录
     pub(crate) fn board_unfit(&self, h: &HostRow, board: &BoardRef) -> Result<Option<Unfit>> {
         let path = board.path();
         let ws = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
@@ -167,12 +156,7 @@ impl R<'_> {
                 }
             }
         }
-        let cmd = self.ready_check(board.id)?.for_os(&h.os);
-        Ok(match readiness(cmd.as_deref(), own.and_then(|d| d.ready.as_ref())) {
-            Readiness::Failed(last) => Some(Unfit::CheckFailed(last)),
-            Readiness::Pending => Some(Unfit::CheckPending),
-            Readiness::NoCheck | Readiness::Passed => None,
-        })
+        Ok(None)
     }
 
     /// 这个 agent 在这台机器上最近连续异常退出了几次（最多数到 [`TRIP_AFTER`] + 1）。只看真的跑过 agent 的派发：

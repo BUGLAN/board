@@ -2146,6 +2146,35 @@ fn old_db_without_trash_columns_opens_and_migrates() {
     assert_eq!(s.read(|r| r.trash(&b)).unwrap().len(), 1);
 }
 
+/// 环境检查删除后，旧库里的那几列还在：服务端照样启动、读工作区，也不会再把它们发出去。
+#[test]
+fn old_db_with_ready_check_columns_opens_and_ignores_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old-ready.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        exec(&mut s, B, &human(), T0, new("旧卡")).unwrap();
+    }
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE projects ADD COLUMN ready_check TEXT NOT NULL DEFAULT '';
+             ALTER TABLE projects ADD COLUMN ready_check_win TEXT NOT NULL DEFAULT '';
+             ALTER TABLE boards ADD COLUMN ready_check TEXT NOT NULL DEFAULT '';
+             ALTER TABLE boards ADD COLUMN ready_check_win TEXT NOT NULL DEFAULT '';
+             UPDATE projects SET ready_check = 'exit 1';
+             UPDATE boards SET ready_check = 'exit 1';",
+        )
+        .unwrap();
+    let s = Store::open(&path).expect("带旧环境检查列的库要能打开");
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    assert_eq!(ws.projects[0].boards.len(), 1);
+    assert_eq!(ws.projects[0].name, "默认项目");
+    assert!(!serde_json::to_string(&ws).unwrap().contains("readyCheck"));
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![1]);
+}
+
 #[test]
 fn trash_delete_hides_restore_and_never_reuses_ids() {
     let dir = tempfile::tempdir().unwrap();

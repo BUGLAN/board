@@ -152,14 +152,14 @@ export const api = {
   }) => req<{ key: string }>('POST', '/api/projects', p),
   updateProject: (
     key: string,
-    patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; repo?: string; branch?: string; readyCheck?: string; readyCheckWin?: string },
+    patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; repo?: string; branch?: string },
   ) =>
     req('PATCH', `/api/projects/${q(key)}`, patch),
   deleteProject: (key: string) => req('DELETE', `/api/projects/${q(key)}`),
 
   createBoard: (b: { project: string; name: string; key: string; desc?: string; pos?: Pos }) =>
     req<{ path: string }>('POST', '/api/boards', b),
-  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; readyCheck?: string; readyCheckWin?: string; repo?: string; branch?: string; auto?: boolean }) =>
+  updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; repo?: string; branch?: string; auto?: boolean }) =>
     req('PATCH', `/api/boards/${path}`, patch),
   /** 定时建卡（PRD §4）：只有人能改 */
   createCardCron: (path: string, c: CardCronInput) => req<CardCron>('POST', `/api/card-crons/${path}`, c),

@@ -355,29 +355,6 @@ describe('项目与标签', () => {
   });
 });
 
-describe('readyCheckPatch（项目的环境检查）', () => {
-  it('改的是项目：项目和它下面每块白板一起改，重复执行结果相同；没写过时补上另一项的空值；项目不在了原样返回', () => {
-    const ws = twice(D.readyCheckPatch('p', { cmd: 'cargo --version' }).ws!, workspace());
-    const p = ws.projects[0];
-    expect(p.readyCheck).toEqual({ cmd: 'cargo --version', win: '' });
-    expect(p.boards.every(b => b.readyCheck?.cmd === 'cargo --version' && b.readyCheck.win === '')).toBe(true);
-    expect(ws.projects[1].readyCheck).toBeUndefined();
-    const both = twice(D.readyCheckPatch('p', { win: 'where cargo' }).ws!, ws);
-    expect(both.projects[0].readyCheck).toEqual({ cmd: 'cargo --version', win: 'where cargo' });
-    expect(both.projects[0].boards[1].readyCheck).toEqual({ cmd: 'cargo --version', win: 'where cargo' });
-    const orig = workspace();
-    expect(D.readyCheckPatch('nope', { cmd: 'x' }).ws!(orig)).toBe(orig);
-  });
-
-  it('旧服务端只在白板上有：从第一块设了的白板接着改', () => {
-    const old = workspace();
-    old.projects[0].boards[1].readyCheck = { cmd: 'npm -v', win: '' };
-    expect(D.projectReadyCheck(old.projects[0])).toEqual({ cmd: 'npm -v', win: '' });
-    const ws = D.readyCheckPatch('p', { win: 'where npm' }).ws!(old);
-    expect(ws.projects[0].readyCheck).toEqual({ cmd: 'npm -v', win: 'where npm' });
-  });
-});
-
 describe('cardCronPatch（白板的定时建卡）', () => {
   const cron = { id: 7, name: '清理死代码', title: '清理死代码', body: '', labels: [], place: 'home' as const, cron: '0 9 * * 1', tz: 'Asia/Shanghai', on: true, nextAt: 123, createdAt: 0, updatedAt: 0 };
   const withCron = () => {

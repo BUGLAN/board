@@ -949,11 +949,6 @@ struct PatchBody {
     /// 白板说明（Markdown）
     #[serde(default)]
     readme: Option<String>,
-    /// 白板的环境检查：所有系统 / 只给 Windows 的一行命令（空字符串表示不检查）
-    #[serde(default, rename = "readyCheck")]
-    ready_check: Option<String>,
-    #[serde(default, rename = "readyCheckWin")]
-    ready_check_win: Option<String>,
     /// 这块白板参不参与自动领取（PRD §9.1「自动领取」）
     #[serde(default)]
     auto: Option<bool>,
@@ -1000,10 +995,6 @@ async fn update_project(
         if p.repo.is_some() || p.branch.is_some() {
             w.set_repo_branch(&key, p.repo.as_deref(), p.branch.as_deref())?;
         }
-        // 环境检查是项目的（PRD §9.1），项目下所有白板共用；谁能改、长度上限和以前在白板上时一样
-        if p.ready_check.is_some() || p.ready_check_win.is_some() {
-            w.set_ready_check(&key, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
-        }
         Ok(())
     })
     .await?;
@@ -1046,10 +1037,6 @@ async fn update_board(
     let path = format!("{project}/{board}");
     write(&s, &h, move |w| {
         w.update_board(&path, p.name.as_deref(), p.desc.as_deref(), p.readme.as_deref())?;
-        // 环境检查设在项目上：旧界面在白板设置里改时写到白板所在的项目
-        if p.ready_check.is_some() || p.ready_check_win.is_some() {
-            w.set_ready_check(&path, p.ready_check.as_deref(), p.ready_check_win.as_deref())?;
-        }
         if let Some(on) = p.auto {
             w.set_board_auto(&path, on)?;
         }

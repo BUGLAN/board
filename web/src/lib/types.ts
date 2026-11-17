@@ -77,8 +77,6 @@ export interface BoardInfo {
   desc: string;
   /** 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改 */
   readme?: string;
-  /** 所在项目的环境检查（设在项目上，这里带一份）：机器先在这块白板的目录里跑通它，才接这块白板的卡；都为空时不检查。旧服务端没有这一项 */
-  readyCheck?: ReadyCheck;
   /** 所在项目的代码仓库地址（git 远端，例如 git@github.com:o/r.git）；空表示没设。仓库设在项目上，这里带一份。旧服务端没有这一项 */
   repo?: string;
   /** 所在项目的集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
@@ -136,12 +134,6 @@ export interface CardCron {
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
 export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent' | 'pick'>>;
 
-/** 白板的环境检查命令：一行，退出码 0 算通过。`win` 只给 Windows（cmd 里执行），空表示和 `cmd` 一样 */
-export interface ReadyCheck {
-  cmd: string;
-  win: string;
-}
-
 export interface ProjectInfo {
   key: string;
   name: string;
@@ -156,8 +148,6 @@ export interface ProjectInfo {
   repo?: string;
   /** 集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
   branch?: string;
-  /** 环境检查，项目下所有白板共用（PRD §9.1）。旧服务端没有这一项（那时设在白板上） */
-  readyCheck?: ReadyCheck;
   boards: BoardInfo[];
 }
 
@@ -205,7 +195,7 @@ export interface HostBlock {
   host: string;
   /** `<项目>/<白板>` */
   board: string;
-  /** 手动派发会得到的错误码：BOARD_NOT_ON_HOST、BOARD_NOT_READY */
+  /** 手动派发会得到的错误码：BOARD_NOT_ON_HOST */
   code: string;
   /** 原因，一句话 */
   why: string;
@@ -325,24 +315,8 @@ export interface HostDir {
   checkedAt?: number | null;
   /** 目录不存在时的克隆状态 */
   clone?: HostClone | null;
-  /** 服务端算好的：这块白板要这台机器跑的环境检查命令（按系统选好）；白板不检查时没有 */
-  check?: string | null;
-  /** board host 最近一次跑环境检查的结果；旧版 board host 没有 */
-  ready?: DirReady | null;
   /** board host 上报过这块白板的目录状态 */
   reported?: boolean;
-}
-
-/** 一台机器在一块白板的目录里跑环境检查的结果 */
-export interface DirReady {
-  /** 跑的是哪条命令：命令改了之后旧结果不算 */
-  cmd: string;
-  ok: boolean;
-  code?: number | null;
-  /** 输出的最后 20 行 */
-  tail: string[];
-  /** 跑完的时间 */
-  at: number;
 }
 
 export interface HostClone {
@@ -1072,7 +1046,6 @@ export type ErrorCode =
   | 'NO_SUCH_HOST'
   | 'AGENT_NOT_ON_HOST'
   | 'BOARD_NOT_ON_HOST'
-  | 'BOARD_NOT_READY'
   | 'DISPATCHED'
   | 'SESSION_DONE'
   | 'INTERNAL'

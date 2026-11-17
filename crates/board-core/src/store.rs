@@ -30,10 +30,7 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at  INTEGER NOT NULL,
   -- 代码仓库地址（git 远端）和集成分支（PRD §4）：一个项目一个仓库，项目下所有白板共用；都为空时按原来的规则
   repo        TEXT NOT NULL DEFAULT '',
-  branch      TEXT NOT NULL DEFAULT '',
-  -- 环境检查（PRD §9.1）：所有系统 / 只给 Windows 的一行命令，项目下所有白板共用（白板的目录就是项目的目录）；都为空时不检查
-  ready_check     TEXT NOT NULL DEFAULT '',
-  ready_check_win TEXT NOT NULL DEFAULT ''
+  branch      TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS boards (
@@ -55,9 +52,6 @@ CREATE TABLE IF NOT EXISTS boards (
   keep_sorted INTEGER NOT NULL DEFAULT 0,
   -- 白板说明（Markdown，可以为空）：大盘白板概览里不显示，只在「编辑白板」里改
   readme      TEXT NOT NULL DEFAULT '',
-  -- 不再读写（环境检查改到项目上，见 projects.ready_check / ready_check_win）；保留这两列，免得给旧库做删列迁移
-  ready_check     TEXT NOT NULL DEFAULT '',
-  ready_check_win TEXT NOT NULL DEFAULT '',
   -- 不再读写（仓库地址和集成分支改到项目上，见 projects.repo / branch）；保留这两列，免得给旧库做删列迁移
   repo        TEXT NOT NULL DEFAULT '',
   branch      TEXT NOT NULL DEFAULT '',
@@ -433,15 +427,6 @@ impl Store {
         if !has_readme {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN readme TEXT NOT NULL DEFAULT ''")?;
         }
-        // 旧数据库的白板没有环境检查：不检查，和原来一样
-        let has_check: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'ready_check'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_check {
-            conn.execute_batch(
-                "ALTER TABLE boards ADD COLUMN ready_check TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE boards ADD COLUMN ready_check_win TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
         // 旧数据库的白板没有代码仓库地址和集成分支：都留空，按原来的规则（AGENTS.md / 远端默认分支）
         let has_repo: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'repo'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -474,23 +459,6 @@ impl Store {
                                     ORDER BY b.sort, b.created_at, b.key LIMIT 1), ''),
                    branch = COALESCE((SELECT b.branch FROM boards b WHERE b.project = projects.key AND b.branch != ''
                                       ORDER BY b.sort, b.created_at, b.key LIMIT 1), '');",
-            )?;
-        }
-        // 环境检查从白板挪到项目上（白板的目录就是项目的目录，同一个仓库）：项目取它下面第一块设了的白板的那一对命令
-        // （按白板顺序，两条里有一条不为空就算设了，所有系统和 Windows 一起取），几块白板设得不一样的由人自己改项目设置
-        let has_proj_check: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'ready_check'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_proj_check {
-            conn.execute_batch(
-                "ALTER TABLE projects ADD COLUMN ready_check TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE projects ADD COLUMN ready_check_win TEXT NOT NULL DEFAULT '';
-                 UPDATE projects SET
-                   ready_check = COALESCE((SELECT b.ready_check FROM boards b WHERE b.project = projects.key
-                                             AND (b.ready_check != '' OR b.ready_check_win != '')
-                                           ORDER BY b.sort, b.created_at, b.key LIMIT 1), ''),
-                   ready_check_win = COALESCE((SELECT b.ready_check_win FROM boards b WHERE b.project = projects.key
-                                                 AND (b.ready_check != '' OR b.ready_check_win != '')
-                                               ORDER BY b.sort, b.created_at, b.key LIMIT 1), '');",
             )?;
         }
         // 旧数据库的项目没有隐藏的标签规则：NULL 按默认（`^v\d`，版本标签）处理（default/main#324）
@@ -699,7 +667,7 @@ impl<'a> R<'a> {
         let mut projects: Vec<ProjectInfo> = Vec::new();
         {
             let mut st = conn.prepare(
-                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch, ready_check, ready_check_win
+                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch
                  FROM projects ORDER BY sort, created_at, key",
             )?;
             let rows = st.query_map([], |r| {
@@ -717,7 +685,6 @@ impl<'a> R<'a> {
                         .unwrap_or_else(crate::model::default_hidden_labels),
                     repo: r.get(8)?,
                     branch: r.get(9)?,
-                    ready_check: ReadyCheck { cmd: r.get(10)?, win: r.get(11)? },
                     boards: vec![],
                 })
             })?;
@@ -742,8 +709,7 @@ impl<'a> R<'a> {
                         desc: r.get(3)?,
                         readme: r.get(8)?,
                         auto: r.get::<_, i64>(9)? != 0,
-                        // 仓库、环境检查是项目的：白板上带一份，旧客户端、旧 board host、CLI 照样从白板上读
-                        ready_check: p.ready_check.clone(),
+                        // 仓库是项目的：白板上带一份给只看白板的地方用
                         repo: p.repo.clone(),
                         branch: p.branch.clone(),
                         pos: Pos { x: r.get(4)?, y: r.get(5)? },
@@ -1443,37 +1409,6 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE boards SET description = ?1 WHERE id = ?2", params![d.trim(), b.id])?;
         }
         self.changed = true;
-        Ok(())
-    }
-
-    /// 项目的环境检查（PRD §9.1，项目下所有白板共用）：一行命令，最长 500 个字符；None 表示这一项不改，空字符串表示不检查。
-    /// `path` 是项目标识，或者项目下任一块白板（`<项目>/<白板>`，旧界面在白板设置里改：改的是它所在的项目）
-    pub fn set_ready_check(&mut self, path: &str, cmd: Option<&str>, win: Option<&str>) -> Result<()> {
-        let project = if path.contains('/') {
-            self.resolve_exact(path)?.project
-        } else {
-            self.project_exists(path)?;
-            path.to_string()
-        };
-        let clean = |t: &str| -> Result<String> {
-            let t = t.trim();
-            if t.contains('\n') || t.contains('\r') {
-                return Err(BoardError::usage("环境检查只能写一行：几条命令用 && 连起来"));
-            }
-            if t.chars().count() > READY_CHECK_MAX {
-                return Err(BoardError::usage(format!("环境检查最长 {READY_CHECK_MAX} 个字符")));
-            }
-            Ok(t.to_string())
-        };
-        if let Some(t) = cmd {
-            self.tx.execute("UPDATE projects SET ready_check = ?1 WHERE key = ?2", params![clean(t)?, project])?;
-        }
-        if let Some(t) = win {
-            self.tx.execute("UPDATE projects SET ready_check_win = ?1 WHERE key = ?2", params![clean(t)?, project])?;
-        }
-        self.changed = true;
-        // 机器拿到的检查命令变了：board host 收到推送后马上重新检查
-        self.hosts_changed = true;
         Ok(())
     }
 

@@ -673,7 +673,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .ps-none { font-size: 12.5px; color: var(--text-3); }
 .ps-labels .btn { margin-left: 4px; }
 
-/* 环境检查（components/BoardReady.tsx）：两条命令 + 能接这块白板的机器 */
+/* 设置里的一行（label + 输入框）：项目设置的项目字段、定时建卡弹窗共用 */
 .bs-rc { display: flex; flex-direction: column; gap: 8px; }
 /* 代码仓库地址、集成分支：「用机器的 origin」按钮跟在输入框后面 */
 .bs-rp-input { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -685,23 +685,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-rc-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 10px; }
 .bs-rc-l { display: flex; align-items: center; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .bs-rc-row .input { height: 32px; font-size: 12.5px; }
-.bs-rc-hosts { margin-top: 18px; }
-.bs-rc-list { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
-.bs-rc-host {
-  display: grid; grid-template-columns: auto auto auto auto auto 1fr; align-items: center; column-gap: 8px; row-gap: 3px;
-  width: 100%; padding: 9px 12px; text-align: left; font-size: 12.5px; color: var(--text); transition: background-color var(--dur-2);
-}
-.bs-rc-host + .bs-rc-host { border-top: 1px solid var(--line); }
-.bs-rc-host:hover { background: var(--surface-2); }
-.bs-rc-host b { font-weight: 600; white-space: nowrap; }
-.bs-rc-on, .bs-rc-os, .bs-rc-at { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
-.bs-rc-st { padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 18px; white-space: nowrap; color: var(--text-3); background: var(--surface-3); }
-.bs-rc-st.ok { color: color-mix(in oklab, var(--ok), var(--ink)); background: color-mix(in srgb, var(--ok) 14%, transparent); }
-.bs-rc-st.failed { color: var(--danger-text); background: var(--danger-soft); }
-.bs-rc-st.pending { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.bs-rc-dir { grid-column: 2 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-3); }
-.bs-rc-why { grid-column: 2 / -1; min-width: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
-.bs-rc-host.failed .bs-rc-why { color: var(--danger-text); }
 .bs-rc-empty {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 10px 12px; border-radius: var(--r-md);
   font-size: 12.5px; line-height: 1.5; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 10%, transparent);
@@ -922,4 +905,3 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .card.v-tile.in-sess { margin-inline: 3px; }
 
 /* 代码仓库设在项目上：标题右边写「项目「X」的 N 块白板共用」 */
-.bs-rp-scope { margin-left: auto; font-size: 11.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

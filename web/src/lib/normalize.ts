@@ -16,7 +16,6 @@ import type {
   ClaimRule,
   Dispatch,
   HostAgent,
-  HostDir,
   HostInfo,
   HostRes,
   McpServer,
@@ -37,11 +36,6 @@ const maybe = <T>(v: T[] | null | undefined): T[] | undefined => (Array.isArray(
 const obj = <T extends object>(v: T | null | undefined): T | null | undefined => (v && typeof v === 'object' ? v : v === null ? null : undefined);
 
 const normAgent = (a: HostAgent): HostAgent => ({ ...a, envs: maybe(a.envs) });
-
-const normDir = (d: HostDir): HostDir => {
-  const r = obj(d.ready);
-  return { ...d, ready: r ? { ...r, tail: list(r.tail) } : r };
-};
 
 const normRule = (r: ClaimRule): ClaimRule => ({ ...r, labels: list(r.labels), missing: maybe(r.missing) });
 
@@ -88,7 +82,7 @@ export function normHost(h: HostInfo): HostInfo {
     agents: list(h.agents).map(normAgent),
     envs: maybe(h.envs),
     workspace: ws ? { ...ws, overrides: maybe(ws.overrides) } : ws,
-    dirs: list(h.dirs).map(normDir),
+    dirs: list(h.dirs),
     rules: maybe(h.rules)?.map(normRule),
     cron: list(h.cron),
     windows: maybe(h.windows),

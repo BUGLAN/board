@@ -2929,107 +2929,11 @@ fn host_cannot_beat_or_final_another_sessions_name() {
     s.read(|r| r.require_online(&name, T0 + 2 * S)).expect("board host 能给自己派发的名字发心跳");
 }
 
-/* ------------------------------ 环境检查（PRD §9.1） ------------------------------ */
+/* ------------------------------ 登录 shell 的提示 ------------------------------ */
 
-fn set_ready_check(s: &mut Store, cmd: &str, win: &str) {
-    s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some(cmd), Some(win))).unwrap();
-}
-
-/// board host 上报 default/main 的环境检查结果
-fn ready_report(instance: &str, cmd: &str, ok: bool, tail: &[&str]) -> HostReport {
-    let mut rep = report("mbp", instance, vec![]);
-    rep.dirs[0].ready = Some(hosts::DirReady {
-        cmd: cmd.into(),
-        ok,
-        code: Some(if ok { 0 } else { 127 }),
-        tail: tail.iter().map(|x| x.to_string()).collect(),
-        at: T0,
-    });
-    rep
-}
-
+/// 卡片 #232：登录 shell 自己打的作业控制提示、`logout`、sudo 提示不是输出；真正的错误要留着
 #[test]
-fn ready_check_is_sent_per_os_and_validated() {
-    let mut s = store();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    assert_eq!(host(&s, T0).dirs[0].check, None, "没写检查命令：不检查");
-    set_ready_check(&mut s, "  cargo --version  ", "where cargo");
-    let ws = s.read(|r| r.workspace(T0)).unwrap();
-    let b = ws.projects[0].boards.iter().find(|b| b.path == B).unwrap();
-    assert_eq!(b.ready_check, ReadyCheck { cmd: "cargo --version".into(), win: "where cargo".into() }, "去掉首尾空白");
-    assert_eq!(host(&s, T0).dirs[0].check.as_deref(), Some("cargo --version"), "macOS 跑「所有系统」那条");
-    let mut w = report("win", "w1", vec![]);
-    w.os = "Windows 11 Pro".into();
-    beat(&mut s, T0, &w).unwrap();
-    assert_eq!(s.read(|r| r.host("win", T0)).unwrap().dirs[0].check.as_deref(), Some("where cargo"), "Windows 写了单独的就用它");
-    set_ready_check(&mut s, "cargo --version", "");
-    assert_eq!(s.read(|r| r.host("win", T0)).unwrap().dirs[0].check.as_deref(), Some("cargo --version"), "Windows 没单独写时和所有系统一样");
-    // 只能一行、有长度上限
-    let e = s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some("a\nb"), None)).unwrap_err();
-    assert_eq!(e.code, ErrorCode::Usage);
-    let long = "x".repeat(READY_CHECK_MAX + 1);
-    assert_eq!(s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some(&long), None)).unwrap_err().code, ErrorCode::Usage);
-    // 检查命令不存进机器的目录设置
-    let raw: String = s.read(|r| Ok(r.conn.query_row("SELECT dirs FROM hosts WHERE name = 'mbp'", [], |x| x.get(0))?)).unwrap();
-    assert!(!raw.contains("\"check\""), "{raw}");
-}
-
-#[test]
-fn manual_dispatch_needs_a_passed_ready_check() {
-    let mut s = store();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let id = new_card(&mut s, T0, "A");
-    set_ready_check(&mut s, "cargo --version", "");
-    // 还没检查（旧版 board host 不上报）：不能派
-    let e = dispatch(&mut s, T0, id, "mbp", None).unwrap_err();
-    assert_eq!(e.code, ErrorCode::BoardNotReady);
-    assert!(e.message.contains("还没跑完"), "{}", e.message);
-    // 没通过：写明输出的最后一行
-    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &["zsh:1: command not found: cargo", ""])).unwrap();
-    let d = &host(&s, T0 + S).dirs[0];
-    assert_eq!(hosts::readiness(d.check.as_deref(), d.ready.as_ref()), hosts::Readiness::Failed("zsh:1: command not found: cargo".into()));
-    let e = dispatch(&mut s, T0 + S, id, "mbp", None).unwrap_err();
-    assert_eq!(e.code, ErrorCode::BoardNotReady);
-    assert!(e.message.contains("command not found: cargo"), "{}", e.message);
-    // 后来的心跳不带结果（旧版）：保留上一次的
-    beat(&mut s, T0 + 2 * S, &report("mbp", "i1", vec![])).unwrap();
-    assert!(host(&s, T0 + 2 * S).dirs[0].ready.is_some());
-    // 装好、重新检查通过之后恢复
-    beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["cargo 1.91.0"])).unwrap();
-    let d = dispatch(&mut s, T0 + 3 * S, id, "mbp", None).unwrap();
-    // 命令改了：旧结果不算，等重新检查；已经在排队的派发不受影响
-    set_ready_check(&mut s, "cargo --version && node --version", "");
-    assert_eq!(get(&s, d.id).state, "queued");
-    let id2 = new_card(&mut s, T0, "B");
-    assert_eq!(dispatch(&mut s, T0 + 4 * S, id2, "mbp", None).unwrap_err().code, ErrorCode::BoardNotReady);
-    // 去掉检查命令：和原来一样
-    set_ready_check(&mut s, "", "");
-    dispatch(&mut s, T0 + 5 * S, id2, "mbp", None).unwrap();
-}
-
-/// 卡片 #232：环境检查在登录 shell 里跑，bash 没有终端时会打作业控制提示、退出时打 `logout`。
-/// 这些不是命令的输出：上报时去掉，失败原因取真正的错误；zsh 的 `command not found` 这类真错误要留着
-#[test]
-fn ready_tail_drops_login_shell_noise_but_keeps_real_errors() {
-    let mut s = store();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    set_ready_check(&mut s, "cargo --version", "");
-    let noise = ["bash: cannot set terminal process group (-1): Inappropriate ioctl for device", "bash: no job control in this shell"];
-    let with_noise: Vec<&str> = noise.iter().copied().chain(["zsh:1: command not found: cargo"]).chain(["logout"]).collect();
-    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &with_noise)).unwrap();
-    // 上报的 tail 里没有噪声，真正的错误还在
-    let d = &host(&s, T0 + S).dirs[0];
-    let tail = &d.ready.as_ref().unwrap().tail;
-    assert_eq!(tail, &["zsh:1: command not found: cargo"], "{tail:?}");
-    assert_eq!(hosts::readiness(d.check.as_deref(), d.ready.as_ref()), hosts::Readiness::Failed("zsh:1: command not found: cargo".into()));
-    // 只有噪声、没有真正的输出：不拿噪声当失败原因
-    beat(&mut s, T0 + 2 * S, &ready_report("i1", "cargo --version", false, &["bash: no job control in this shell", "logout"])).unwrap();
-    let d = host(&s, T0 + 2 * S).dirs[0].clone();
-    assert_eq!(hosts::readiness(d.check.as_deref(), d.ready.as_ref()), hosts::Readiness::Failed("退出码 127".into()));
-    // 通过时 tail 里的噪声也去掉
-    beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["bash: no job control in this shell", "cargo 1.91.0", "logout"])).unwrap();
-    assert_eq!(host(&s, T0 + 3 * S).dirs[0].ready.as_ref().unwrap().tail, ["cargo 1.91.0"]);
-    // 噪声的形状：只认固定的几行，普通输出、真正的错误不算
+fn login_shell_noise_is_recognized() {
     for line in [
         "logout",
         " bash: no job control in this shell ",
@@ -3048,122 +2952,12 @@ fn ready_tail_drops_login_shell_noise_but_keeps_real_errors() {
         "missing ok.txt",
         "checking",
         "stty -a failed",
-        // 不是这两句固定形状的都不算：检查命令自己打的同类文字要留着
+        // 不是这两句固定形状的都不算：命令自己打的同类文字要留着
         "To run a command as administrator",
         "See \"man sudo_root\" for details",
     ] {
         assert!(!hosts::shell_noise(line), "{line}");
     }
-}
-
-#[test]
-fn cron_skips_boards_that_failed_the_ready_check() {
-    let mut s = store();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    lead_round(&mut s);
-    let id = new_card_tagged(&mut s, "A");
-    set_ready_check(&mut s, "cargo --version", "");
-    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &["command not found: cargo"])).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
-    assert!(pull(&mut s, T0 + 2 * S).is_none(), "没通过的白板不领");
-    assert_eq!(card(&s, id).card.column, "todo");
-    // 通过之后下一轮照常领
-    beat(&mut s, T0 + 3 * S, &ready_report("i1", "cargo --version", true, &["cargo 1.91.0"])).unwrap();
-    s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
-    let d = pull(&mut s, T0 + 4 * S).unwrap();
-    assert_eq!((d.card, d.state.as_str()), (id, "running"));
-}
-
-#[test]
-fn old_database_boards_get_no_ready_check() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("b.db");
-    {
-        let mut s = Store::open(&path).unwrap();
-        s.ensure_default(T0).unwrap();
-    }
-    {
-        let c = rusqlite::Connection::open(&path).unwrap();
-        c.execute_batch("ALTER TABLE boards DROP COLUMN ready_check; ALTER TABLE boards DROP COLUMN ready_check_win").unwrap();
-    }
-    let s = Store::open(&path).unwrap();
-    let ws = s.read(|r| r.workspace(T0)).unwrap();
-    assert!(ws.projects[0].boards[0].ready_check.is_empty());
-}
-
-/// 环境检查是项目的：项目下每块白板读到同一份，机器上每块白板的目录拿到同一条命令；旧界面按白板改，改的是它所在的项目
-#[test]
-fn ready_check_belongs_to_the_project_and_all_its_boards_share_it() {
-    let mut s = store();
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let ws = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects[0].clone();
-    // 按项目设
-    s.write(T0, Origin::ui(None), |w| w.set_ready_check("default", Some("cargo --version"), Some(""))).unwrap();
-    let p = ws(&s);
-    assert_eq!(p.ready_check, ReadyCheck { cmd: "cargo --version".into(), win: String::new() });
-    assert!(p.boards.iter().all(|b| b.ready_check == p.ready_check), "{:?}", p.boards);
-    let checks: Vec<_> = host(&s, T0).dirs.iter().map(|d| (d.board.clone(), d.check.clone())).collect();
-    assert!(checks.len() >= 2 && checks.iter().all(|(_, c)| c.as_deref() == Some("cargo --version")), "{checks:?}");
-    // 旧界面在白板设置里改：落到项目上，另一块白板读到同一个值
-    s.write(T0, Origin::ui(None), |w| w.set_ready_check("default/docs", Some("node --version"), None)).unwrap();
-    let p = ws(&s);
-    assert_eq!(p.ready_check.cmd, "node --version");
-    assert_eq!(p.boards.iter().find(|b| b.path == B).unwrap().ready_check.cmd, "node --version");
-    // 清空两项：都不检查
-    s.write(T0, Origin::ui(None), |w| w.set_ready_check("default", Some(""), Some(""))).unwrap();
-    assert!(ws(&s).ready_check.is_empty() && host(&s, T0).dirs.iter().all(|d| d.check.is_none()));
-    // 不存在的项目、白板
-    assert_eq!(s.write(T0, Origin::ui(None), |w| w.set_ready_check("nope", Some(""), None)).unwrap_err().code, ErrorCode::BoardNotFound);
-    assert_eq!(s.write(T0, Origin::ui(None), |w| w.set_ready_check("default/nope", Some(""), None)).unwrap_err().code, ErrorCode::BoardNotFound);
-}
-
-/// 升级：环境检查从白板挪到项目，项目取它下面第一块设了的白板的那一对命令（按白板顺序；两条里有一条不为空就算设了）
-#[test]
-fn old_database_moves_board_ready_check_to_the_project() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("b.db");
-    {
-        let mut s = Store::open(&path).unwrap();
-        s.ensure_default(T0).unwrap();
-        s.write(T0, Origin::ui(None), |w| {
-            w.create_board("default", "文档", "docs", "", None)?;
-            w.create_project("两块都设了", "two", "", None, None, NewBoard { name: "主线".into(), key: "main".into(), desc: String::new(), pos: None })?;
-            w.create_board("two", "文档", "docs", "", None)?;
-            w.create_project("都没设", "none", "", None, None, NewBoard { name: "主线".into(), key: "main".into(), desc: String::new(), pos: None })?;
-            w.create_project("只设了 Windows", "pair", "", None, None, NewBoard { name: "主线".into(), key: "main".into(), desc: String::new(), pos: None })?;
-            w.create_board("pair", "文档", "docs", "", None)
-        })
-        .unwrap();
-    }
-    {
-        // 升级前：环境检查设在白板上
-        let c = rusqlite::Connection::open(&path).unwrap();
-        c.execute_batch(
-            "ALTER TABLE projects DROP COLUMN ready_check; ALTER TABLE projects DROP COLUMN ready_check_win;
-             UPDATE boards SET ready_check = 'cargo --version' WHERE project = 'default' AND key = 'docs';
-             UPDATE boards SET ready_check = 'make check', ready_check_win = 'make.cmd check' WHERE project = 'two' AND key = 'main';
-             UPDATE boards SET ready_check = 'npm -v' WHERE project = 'two' AND key = 'docs';
-             UPDATE boards SET ready_check_win = 'where cargo' WHERE project = 'pair' AND key = 'main';
-             UPDATE boards SET ready_check = 'cargo --version' WHERE project = 'pair' AND key = 'docs';",
-        )
-        .unwrap();
-    }
-    let s = Store::open(&path).unwrap();
-    let ws = s.read(|r| r.workspace(T0)).unwrap();
-    let check = |k: &str| ws.projects.iter().find(|p| p.key == k).unwrap().ready_check.clone();
-    let rc = |cmd: &str, win: &str| ReadyCheck { cmd: cmd.into(), win: win.into() };
-    assert_eq!(check("default"), rc("cargo --version", ""), "第一块没设、第二块设了：取第二块的");
-    assert_eq!(check("two"), rc("make check", "make.cmd check"), "都设了且不一样：取第一块的");
-    assert_eq!(check("none"), rc("", ""), "都没设：不检查");
-    assert_eq!(check("pair"), rc("", "where cargo"), "一对命令一起取：第一块只设了 Windows 也算设了");
-    for p in &ws.projects {
-        assert!(p.boards.iter().all(|b| b.ready_check == p.ready_check), "{}: 白板上带的是项目的", p.key);
-    }
-    drop(s);
-    // 再打开一次不重复迁移（项目上已经有这两列）
-    let s = Store::open(&path).unwrap();
-    assert_eq!(s.read(|r| r.workspace(T0)).unwrap().projects[0].ready_check, rc("cargo --version", ""));
 }
 
 /* ------------------------------ 代码仓库地址、集成分支（PRD §4） ------------------------------ */
@@ -4821,19 +4615,25 @@ fn project_repo_must_be_cloned_right_before_the_host_takes_its_cards() {
     assert_eq!((d.card, d.state.as_str()), (id, "running"));
 }
 
-/// 环境检查没通过、没有工作空间也从同一个判断出来，错误码和手动派发的一致
+/// 没有工作空间、目录不对从同一个判断出来，错误码和手动派发的一致
 #[test]
 fn blocks_list_every_host_board_pair_that_cannot_take_cards() {
     let mut s = store();
-    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    assert!(blocks(&s).is_empty());
-    set_ready_check(&mut s, "cargo --version", "");
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.workspace = None;
+    rep.dirs.clear();
+    beat(&mut s, T0, &rep).unwrap();
     let ws = s.read(|r| r.workspace(T0)).unwrap();
     assert_eq!(ws.blocks.len(), 1);
-    assert_eq!((ws.blocks[0].code.as_str(), ws.blocks[0].why.as_str()), ("BOARD_NOT_READY", "环境检查还没跑完"));
-    beat(&mut s, T0 + S, &ready_report("i1", "cargo --version", false, &["command not found: cargo"])).unwrap();
-    assert_eq!(s.read(|r| r.blocks()).unwrap()[0].why, "环境检查没通过：command not found: cargo");
-    beat(&mut s, T0 + 2 * S, &ready_report("i1", "cargo --version", true, &["cargo 1.91.0"])).unwrap();
+    assert_eq!((ws.blocks[0].code.as_str(), ws.blocks[0].why.as_str()), ("BOARD_NOT_ON_HOST", "还没有配工作空间"));
+    s.write(T0, Origin::ui(None), |w| {
+        w.create_board("default", "文档", "docs", "", None)
+    })
+    .unwrap();
+    let ws = s.read(|r| r.workspace(T0)).unwrap();
+    assert_eq!(ws.blocks.len(), 2);
+    assert!(ws.blocks.iter().all(|b| b.code == "BOARD_NOT_ON_HOST" && b.why == "还没有配工作空间"));
+    beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
     assert!(blocks(&s).is_empty());
 }
 
@@ -5000,12 +4800,6 @@ fn any_host_dispatch_needs_some_host_that_could_take_it() {
     let e = any(&mut s, T0, a, Some("mycli")).unwrap_err();
     assert_eq!(e.code, ErrorCode::AgentNotOnHost);
     assert!(e.message.contains("mbp") && e.message.contains("mycli"), "{}", e.message);
-    // 环境检查没过：写明是哪台、为什么
-    set_ready_check(&mut s, "cargo --version", "");
-    let e = any(&mut s, T0, a, None).unwrap_err();
-    assert_eq!(e.code, ErrorCode::BoardNotOnHost);
-    assert!(e.message.contains("mbp（环境检查还没跑完）"), "{}", e.message);
-    set_ready_check(&mut s, "", "");
     // 机器离线也能派：看的是能不能接，不看在不在线
     s.sweep(T0 + hosts::HOST_GAP_MS + S).unwrap();
     let d = any(&mut s, T0 + hosts::HOST_GAP_MS + 2 * S, a, Some("claude")).unwrap();
@@ -5119,8 +4913,8 @@ fn auto_claim_follows_the_board_switch_and_sees_new_boards() {
     assert_eq!((d.board.as_str(), d.card), ("default/docs", c));
 }
 
-/// default/main#330：机器上报之后才建的白板、项目，随下一次的任务一起发给它（带派生的目录和环境检查命令），
-/// 它不用重启就能建目录、克隆、跑检查；没有工作空间路径的旧机器不派生
+/// default/main#330：机器上报之后才建的白板、项目，随下一次的任务一起发给它（带派生的目录），
+/// 它不用重启就能建目录、克隆；没有工作空间路径的旧机器不派生
 #[test]
 fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
     let mut s = store();
@@ -5128,12 +4922,11 @@ fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
     assert_eq!(host(&s, T0).dirs.iter().map(|d| d.board.as_str()).collect::<Vec<_>>(), vec![B]);
     ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
     s.write(T0, Origin::ui(None), |w| w.create_project("新项目", "newp", "", None, None, NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None })).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.set_ready_check("newp/main", Some("cargo --version"), None)).unwrap();
     let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
-    let got: Vec<(String, String, Option<String>)> = w.host.dirs.iter().map(|d| (d.board.clone(), d.path.clone(), d.check.clone())).collect();
-    assert!(got.contains(&("default/docs".into(), "/tmp/default".into(), None)), "{got:?}");
-    assert!(got.contains(&("newp/main".into(), "/tmp/newp".into(), Some("cargo --version".into()))), "{got:?}");
-    // 机器照着跑完检查、报上来：这块白板能派了
+    let got: Vec<(String, String)> = w.host.dirs.iter().map(|d| (d.board.clone(), d.path.clone())).collect();
+    assert!(got.contains(&("default/docs".into(), "/tmp/default".into())), "{got:?}");
+    assert!(got.contains(&("newp/main".into(), "/tmp/newp".into())), "{got:?}");
+    // 新项目有工作空间里的目录：这块白板能派了
     let id = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("newp/main")?;
@@ -5148,16 +4941,7 @@ fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
             w.dispatch_create(&b, id, "mbp", None, &Actor::human())
         })
     };
-    assert_eq!(put(&mut s, T0 + S).unwrap_err().code, ErrorCode::BoardNotReady);
-    let mut rep = report("mbp", "i1", vec![]);
-    rep.dirs.push(HostDir {
-        board: "newp/main".into(),
-        path: "/tmp/newp".into(),
-        ready: Some(hosts::DirReady { cmd: "cargo --version".into(), ok: true, code: Some(0), tail: vec![], at: T0 }),
-        ..Default::default()
-    });
-    beat(&mut s, T0 + 2 * S, &rep).unwrap();
-    assert_eq!(put(&mut s, T0 + 2 * S).unwrap().state, "queued");
+    assert_eq!(put(&mut s, T0 + S).unwrap().state, "queued");
     // 旧版 board host（没有工作空间路径）：不替它派生
     let mut s = store();
     beat(&mut s, T0, &legacy_report("old", "o1")).unwrap();
@@ -5784,10 +5568,13 @@ fn checklist_host_item_needs_an_online_host_that_can_take_the_board() {
     // 离线
     assert_eq!(state_of(&s, T0 + 120 * S, "host"), ("fail".into(), Some("hosts".into())));
     assert!(why_of(&s, T0 + 120 * S, "host").contains("机器都不在线"));
-    // 在线但接不了：环境检查没跑完，去处是项目的环境检查
-    set_ready_check(&mut s, "cargo --version", "");
-    assert_eq!(state_of(&s, T0, "host"), ("fail".into(), Some("project-check".into())));
-    assert_eq!(why_of(&s, T0, "host"), "mbp：环境检查还没跑完");
+    // 在线但接不了：没有工作空间，去处是机器详情
+    s.write(T0, Origin::ui(None), |w| {
+        w.host_update("mbp", &HostPatch { workspace: Some(HostWorkspace::default()), ..Default::default() })
+    })
+    .unwrap();
+    assert_eq!(state_of(&s, T0, "host"), ("fail".into(), Some("host-settings:mbp".into())));
+    assert_eq!(why_of(&s, T0, "host"), "mbp：还没有配工作空间");
 }
 
 #[test]

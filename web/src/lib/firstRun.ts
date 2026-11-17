@@ -42,8 +42,6 @@ export function goOf(go: string | null | undefined): Go | null {
       return { kind: 'selftest', label: '自检', host };
     case 'project-repo':
       return { kind: 'project', label: '项目设置' };
-    case 'project-check':
-      return { kind: 'project', label: '环境检查' };
     case 'git':
       return { kind: 'git', label: 'Git 凭据' };
     case 'rules':

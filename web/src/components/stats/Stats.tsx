@@ -17,7 +17,7 @@ import { agentColor, cx } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
 import { openReview } from '../../store/ui';
 import { ProjectAvatar } from '../bits';
-import { NoHostsNote } from '../BoardReady';
+import { NoHostsNote } from '../NoHosts';
 import { Icon, StatsIcon24 } from '../Icon';
 import { CalHeat, HeatLegend, HourHeat, PairBars, Spark, TrendBars, fmtDay, useWidth } from './charts';
 import { HINT, LEAD_BINS, METRICS, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, type Metric } from './format';

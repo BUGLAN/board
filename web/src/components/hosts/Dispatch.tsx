@@ -198,7 +198,7 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
   // 「未整理」里的条目：派给 agent 拆解
   const split = entry?.column === 'inbox';
   const hosts = hostsOf(ws);
-  // 接不了这块白板的机器不能选（PRD §9.1「能不能接」）：没有工作空间、目录不对、环境检查没通过。
+  // 接不了这块白板的机器不能选（PRD §9.1「能不能接」）：没有工作空间、目录不对。
   // 原因是服务端给的（工作区数据里的 blocks），这里不自己再判断
   const block = (h: HostInfo) => blockOf(ws, h.name, path);
   const usable = (h: HostInfo) => !block(h);

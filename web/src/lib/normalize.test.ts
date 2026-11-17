@@ -16,7 +16,7 @@ const full = (): HostInfo =>
     agents: [{ id: 'claude', name: 'Claude Code', version: '2.4.1', found: true, envs: [{ env: 'login', found: true, version: '2.4.1' }], run_mode: 'own', run_provider: 'p1' }],
     envs: [{ id: 'login', name: '登录 shell', path: '/bin/zsh' }],
     workspace: { path: '~/ws', overrides: [{ board: 'oss', path: '~/oss' }] },
-    dirs: [{ board: 'oss/main', path: '~/oss', status: 'ok', ready: { cmd: 'make check', ok: false, code: 1, tail: ['boom'], at: 1 } }],
+    dirs: [{ board: 'oss/main', path: '~/oss', status: 'ok' }],
     max: 2,
     rules: [{ op: 'in', labels: ['bug'], agent: 'claude', missing: ['bug'] }],
     paused: false,
@@ -55,7 +55,7 @@ const skewed = (): HostInfo =>
     version: '0.1.20',
     agents: [{ id: 'claude', name: 'Claude Code', version: '2.4.1', found: true, envs: null }],
     workspace: { path: '~/ws', overrides: null },
-    dirs: [{ board: 'oss/main', path: '~/oss', ready: { cmd: 'make check', ok: false, at: 1 } }],
+    dirs: [{ board: 'oss/main', path: '~/oss' }],
     max: 1,
     rules: [{ op: 'in', labels: null, agent: 'claude' }],
     paused: false,
@@ -94,7 +94,6 @@ describe('机器：必填的数组补齐', () => {
   it('缺了、是 null 的必填数组补成空数组；同步结果里缺的 skills、mcp 补成空的', () => {
     const h = normHost(skewed());
     expect(h.cron).toEqual([]);
-    expect(h.dirs[0].ready?.tail).toEqual([]);
     expect(h.rules?.[0].labels).toEqual([]);
     expect(h.selftest?.items).toEqual([]);
     expect(h.sync?.last?.agents).toEqual([]);

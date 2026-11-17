@@ -466,7 +466,7 @@ function HostPick({
             inbox
               ? undefined
               : !can.length
-                ? '没有能接这块白板的机器：要配了工作空间、目录和环境检查正常，并且有找到了命令的 agent'
+                ? '没有能接这块白板的机器：要配了工作空间、目录正常，并且有找到了命令的 agent'
                 : `到点在这 ${can.length} 台里挑一台在线、没暂停接单的（现在 ${live.length} 台）`
           }
         >

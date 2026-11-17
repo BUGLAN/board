@@ -28,7 +28,6 @@ describe('跑第一张卡清单', () => {
     expect(goOf('selftest:mbp')).toEqual({ kind: 'selftest', label: '自检', host: 'mbp' });
     expect(goOf('host-agents:a:b')).toEqual({ kind: 'host', label: 'a:b 的 agent', host: 'a:b', tab: 'agents' });
     expect(goOf('host-settings:win')).toMatchObject({ kind: 'host', tab: 'settings', host: 'win' });
-    expect(goOf('project-check')).toEqual({ kind: 'project', label: '环境检查' });
     expect(goOf('add-host')?.label).toBe('添加机器');
     expect(goOf('accept')?.label).toBe('接单');
     expect(goOf('nope')).toBeNull();

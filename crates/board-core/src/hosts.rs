@@ -755,12 +755,6 @@ pub struct HostDir {
     /// 目录不存在时，在这台机器上克隆的状态
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone: Option<HostClone>,
-    /// 服务端发出去时才有：这块白板的环境检查命令（按这台机器的系统选好）；白板没写检查命令时为空。不存进数据库
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub check: Option<String>,
-    /// board host 最近一次跑环境检查的结果；旧版 board host 不上报
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ready: Option<DirReady>,
     /// board host 上报过这块白板的目录状态、还没被这台机器上报过的替换（server 发出时才有）
     #[serde(default, skip_serializing_if = "is_false")]
     pub reported: bool,
@@ -806,30 +800,7 @@ pub struct WorkspaceBoard {
     pub path: PathBuf,
 }
 
-/// 一台机器在一块白板的目录里跑环境检查的结果（PRD §9.1「环境检查」）
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DirReady {
-    /// 跑的是哪条命令：白板的检查命令改了之后，旧结果不算
-    pub cmd: String,
-    /// 退出码为 0
-    pub ok: bool,
-    /// 退出码；超时被结束、没能运行时为空
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<i64>,
-    /// 输出（标准输出和标准错误）的最后 20 行
-    #[serde(default)]
-    pub tail: Vec<String>,
-    /// 跑完的时间
-    pub at: i64,
-}
-
-/// 环境检查保留的输出行数
-pub const READY_TAIL: usize = 20;
-/// 环境检查最长跑多久，超过就结束它、算没通过
-pub const READY_LIMIT_MS: i64 = 120_000;
-
-/// 登录 shell 自己打的启动、退出提示，不是命令的输出：白板的环境检查、派发的 agent 都在 `$SHELL -l -i -c` 里跑，
+/// 登录 shell 自己打的启动、退出提示，不是命令的输出：派发的 agent 在 `$SHELL -l -i -c` 里跑，
 /// 没有终端（CI、桌面端、`setsid`）时 bash 会打作业控制提示，退出时再打一行 `logout`，发行版的
 /// `/etc/bash.bashrc` 还会打几句 sudo 提示。上报和判断结果之前去掉这些行，否则失败原因会显示成 `logout`。
 /// 只认这几种固定形状：`zsh:1: command not found: cargo` 这类真正的错误要留着（它就是派发被拒的原因）
@@ -843,59 +814,6 @@ pub fn shell_noise(line: &str) -> bool {
         // Ubuntu/Debian 的 /etc/bash.bashrc：没有 ~/.sudo_as_admin_successful 时打的 sudo 提示
         || (l.starts_with("To run a command as administrator") && l.ends_with("use \"sudo <command>\"."))
         || l == "See \"man sudo_root\" for details."
-}
-
-/// 一台机器上一块白板能不能接卡（环境检查）
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Readiness {
-    /// 白板没写检查命令：照常接卡
-    NoCheck,
-    Passed,
-    /// 没通过：输出的最后一行（没有输出时写退出码）
-    Failed(String),
-    /// 还没检查，或者命令改了之后还没跑完；旧版 board host 一直是这样
-    Pending,
-}
-
-impl Readiness {
-    /// 接这块白板的卡
-    pub fn ok(&self) -> bool {
-        matches!(self, Readiness::NoCheck | Readiness::Passed)
-    }
-}
-
-/// 按检查命令和 board host 上报的结果判断（cmd 为空表示白板不检查）
-pub fn readiness(cmd: Option<&str>, ready: Option<&DirReady>) -> Readiness {
-    let Some(cmd) = cmd else { return Readiness::NoCheck };
-    match ready {
-        Some(r) if r.cmd == cmd => {
-            if r.ok {
-                Readiness::Passed
-            } else {
-                let last = r.tail.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty() && !shell_noise(l));
-                Readiness::Failed(match (last, r.code) {
-                    (Some(l), _) => l.to_string(),
-                    (None, Some(c)) => format!("退出码 {c}"),
-                    (None, None) => "没有输出".into(),
-                })
-            }
-        }
-        _ => Readiness::Pending,
-    }
-}
-
-/// 上报的检查结果：去掉登录 shell 自己的提示，最多留最后 20 行，每行最长 500 个字符
-fn clean_ready(r: &DirReady) -> DirReady {
-    let mut tail: Vec<&String> = r.tail.iter().filter(|l| !shell_noise(l)).collect();
-    let skip = tail.len().saturating_sub(READY_TAIL);
-    tail.drain(..skip);
-    DirReady {
-        cmd: r.cmd.clone(),
-        ok: r.ok,
-        code: r.code,
-        tail: tail.iter().map(|l| l.chars().take(500).collect()).collect(),
-        at: r.at,
-    }
 }
 
 /// 在 board host 那台机器上克隆一块白板的目录
@@ -1046,7 +964,6 @@ fn derived_dirs(stored: &[HostDir], ws: Option<&HostWorkspace>, os: &str) -> Vec
                 d.branch = old.branch.clone().filter(|_| same);
                 d.checked_at = old.checked_at.filter(|_| same);
                 d.clone = old.clone.clone();
-                d.ready = old.ready.clone();
                 d.reported = old.reported;
                 out.push(d);
             }
@@ -1075,10 +992,6 @@ fn merge_dir_checks(settings: &mut [HostDir], checks: &[HostDir]) {
             s.origin = r.origin.clone();
             s.branch = r.branch.clone();
             s.checked_at = r.checked_at;
-        }
-        // 环境检查的结果：旧版 board host 不上报，保留原值
-        if let Some(ready) = &r.ready {
-            s.ready = Some(clean_ready(ready));
         }
         // 远程发起的克隆以服务端为准；board host 只上报 running / done / failed 覆盖排队状态
         if let Some(run) = &r.clone {
@@ -2766,7 +2679,7 @@ impl<'a> R<'a> {
         info.ops = self.host_ops(h.id)?;
         info.token = self.host_token(h, now)?;
         // 服务端上的每块白板都列出来（default/main#330）：机器只上报它已经知道的白板，运行中新建的白板、项目
-        // 不在它报过的里面——这里按工作空间派生好目录一起发下去，board host 拿到就建目录、克隆、跑环境检查，不用重启。
+        // 不在它报过的里面——这里按工作空间派生好目录一起发下去，board host 拿到就建目录、克隆，不用重启。
         // 没有工作空间路径的机器（旧版 board host 逐块配的目录）不派生
         if let Some(ws) = info.workspace.clone().filter(|w| !w.path.trim().is_empty()) {
             let mut st = self.conn.prepare("SELECT b.project || '/' || b.key FROM boards b JOIN projects p ON p.key = b.project ORDER BY p.sort, p.created_at, p.key, b.sort, b.created_at, b.key")?;
@@ -2779,13 +2692,6 @@ impl<'a> R<'a> {
                     info.dirs.push(d);
                 }
             }
-        }
-        // 每块白板的环境检查命令（按这台机器的系统选好）：board host 照着跑，界面照着判断结果算不算数
-        for d in info.dirs.iter_mut() {
-            d.check = match self.resolve(&d.board) {
-                Ok(b) => self.ready_check(b.id)?.for_os(&h.os),
-                Err(_) => None,
-            };
         }
         // 规则里这台机器有目录的项目里都没有的标签：界面上标出来
         let known = self.host_labels(h)?;
@@ -2832,15 +2738,6 @@ impl<'a> R<'a> {
         let mut st = self.conn.prepare("SELECT name FROM hosts WHERE token = ?1 AND id != ?2 AND off_at IS NULL AND beat_at + ?4 > ?3 ORDER BY name")?;
         let shared = st.query_map(params![id, h.id, now, HOST_GAP_MS], |r| r.get(0))?.collect::<std::result::Result<Vec<String>, _>>()?;
         Ok(Some(HostToken { id, name, hint, last_used_at, shared }))
-    }
-
-    /// 白板的环境检查命令：是它所在项目的（项目下所有白板共用一份）
-    pub(crate) fn ready_check(&self, board: i64) -> Result<ReadyCheck> {
-        Ok(self.conn.query_row(
-            "SELECT p.ready_check, p.ready_check_win FROM boards b JOIN projects p ON p.key = b.project WHERE b.id = ?1",
-            [board],
-            |r| Ok(ReadyCheck { cmd: r.get(0)?, win: r.get(1)? }),
-        )?)
     }
 
     /// 这台机器有目录的白板所在项目里的标签名（小写）。工作空间能放任意白板，规则里用哪块白板的标签就在哪块生效
@@ -3649,8 +3546,8 @@ impl<'a> W<'a> {
                     }
                     changed_settings = true;
                 }
-                // 存着每块白板的目录：board host 报的检查结果合进来；新露出来的白板记下它的目录（路径由工作空间派生，
-                // 检查结果按白板取）。旧版 board host 上报的白板标识也存着，工作空间为空时照样能派卡
+                // 存着每块白板的目录：board host 报的目录状态合进来；新露出来的白板记下它的目录（路径由工作空间派生）。
+                // 旧版 board host 上报的白板标识也存着，工作空间为空时照样能派卡
                 let mut dirs = h.dirs.clone();
                 merge_dir_checks(&mut dirs, &rep.dirs);
                 if let Some(rw) = reported.as_ref().filter(|rw| !rw.path.is_empty()) {
@@ -3662,7 +3559,7 @@ impl<'a> W<'a> {
                             dirs.push(HostDir { reported: true, ..d });
                         }
                     }
-                    // 刚露出来的白板：这次上报里带着的目录状态、环境检查结果马上合进来，不等下一次上报
+                    // 刚露出来的白板：这次上报里带着的目录状态马上合进来，不等下一次上报
                     merge_dir_checks(&mut dirs, &rep.dirs);
                 }
                 // 报上来的目录：不在存着的主体里的（`--dir` 覆盖的、旧版 board host 的白板标识）补上；工作空间派生得出
@@ -3673,8 +3570,6 @@ impl<'a> W<'a> {
                     }
                     let mut d = r.clone();
                     d.reported = true;
-                    d.check = None;
-                    d.ready = r.ready.as_ref().map(clean_ready);
                     dirs.push(d);
                 }
                 let mut dirs_rev = h.dirs_rev;
@@ -4825,7 +4720,7 @@ impl<'a> W<'a> {
         let split = self.dispatch_card_check(board, card)?;
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         let a = self.dispatch_agent(&h, agent)?;
-        // 这台机器接不了这块白板的卡：没有工作空间、目录不对、环境检查没通过（`fit.rs`）
+        // 这台机器接不了这块白板的卡：没有工作空间、目录不对（`fit.rs`）
         if let Some(u) = self.read().board_unfit(&h, board)? {
             return Err(u.error(host, board));
         }
@@ -5488,7 +5383,7 @@ impl<'a> W<'a> {
         for k in 0..n {
             let i = (h.rr.max(0) as usize + k) % n;
             let Ok(board) = self.resolve(&boards[i]) else { continue };
-            // 这台机器接不了的白板（目录不对、环境检查没通过或还没检查）跳过
+            // 这台机器接不了的白板（目录不对）跳过
             if self.read().board_unfit(&h, &board)?.is_some() {
                 continue;
             }

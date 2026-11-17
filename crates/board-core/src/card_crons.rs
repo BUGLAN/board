@@ -13,7 +13,7 @@
 //! - **派给机器**：选了一台（[`PICK_HOST`]）时，建出卡后马上派发到那台机器（和手动派发一样排队、占用卡片，来源记「定时建卡」，
 //!   机器离线、暂停接单时排队等它）；选了随机（[`PICK_RANDOM`]）时，到点在能接这块白板、在线、没暂停接单的机器里随机挑一台
 //!   （候选见 [`W::cron_host_candidates`]；都不在线时卡照样建，评论写明原因）。
-//!   派不出去（机器被移除、没有这块白板的目录、环境检查没通过、agent 没找到……）时卡片留在首个可领取状态，
+//!   派不出去（机器被移除、没有这块白板的目录、agent 没找到……）时卡片留在首个可领取状态，
 //!   评论写明原因，这一次的结果也记下原因。只能和「放到首个可领取状态」一起用。机器改名时跟着改（hosts.rs `host_rename`）。
 //! - 「现在建一张」（[`W::card_cron_run`]）：立即按这条建一张，同样受跳过规则约束。
 //! - 删除白板时它的定时建卡一起删除（外键级联）。
@@ -638,7 +638,7 @@ impl<'a> W<'a> {
             if live && (!h.online(self.now) || h.paused) {
                 continue;
             }
-            // 和派发本身用同一个判断（`fit.rs`）：没有工作空间、目录不对、环境检查没通过的机器派不过去，不当候选
+            // 和派发本身用同一个判断（`fit.rs`）：没有工作空间、目录不对的机器派不过去，不当候选
             if self.read().board_unfit(&h, board)?.is_some() {
                 continue;
             }
@@ -685,8 +685,8 @@ impl<'a> W<'a> {
         }
         let machines = all.join("、");
         match &agent {
-            Some(a) => format!("没有能接 {path}、又有 agent「{a}」的机器（要配了工作空间、环境检查通过，那个 agent 也要找到了命令）：机器 {machines}"),
-            None => format!("没有能接 {path} 的机器（要配了工作空间、环境检查通过，默认 agent 也要找到了）：机器 {machines}"),
+            Some(a) => format!("没有能接 {path}、又有 agent「{a}」的机器（要配了工作空间、目录正常，那个 agent 也要找到了命令）：机器 {machines}"),
+            None => format!("没有能接 {path} 的机器（要配了工作空间、目录正常，默认 agent 也要找到了）：机器 {machines}"),
         }
     }
 
@@ -768,7 +768,6 @@ impl<'a> W<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hosts::DirReady;
 
     use crate::{HostAgent, HostDir, HostReport, HostWorkspace, Origin, Store};
 
@@ -965,7 +964,7 @@ mod tests {
 
     /// 一台机器上报：有 claude（找到了）和 mycli（没找到）；`dirs` 非空时配了工作空间（`/tmp`），为空时没配
     fn host_up(s: &mut Store, name: &str, dirs: &[&str]) {
-        host_report(s, name, dirs, &DirReady::default(), 0, T0);
+        host_report(s, name, dirs, 0, T0);
     }
 
     /// 随机派发这条到点跑一次（建了卡随即删掉，免得挡住下一次），返回挑到的机器名
@@ -985,15 +984,15 @@ mod tests {
         (1..=40)
             .map(|i| {
                 for h in live {
-                    host_report(s, h, &[B], &DirReady::default(), 0, at + i * MIN);
+                    host_report(s, h, &[B], 0, at + i * MIN);
                 }
                 run_once(s, at + i * MIN, cron)
             })
             .collect()
     }
 
-    /// 一台机器在 `at` 上报。`ready` 是它上报的环境检查结果（`cmd` 为空表示没报过，白板设了检查命令时是「还没检查」）
-    fn host_report(s: &mut Store, name: &str, dirs: &[&str], ready: &DirReady, rev: i64, at: i64) {
+    /// 一台机器在 `at` 上报
+    fn host_report(s: &mut Store, name: &str, dirs: &[&str], rev: i64, at: i64) {
         let agent = |id: &str, label: &str, found: bool| HostAgent { id: id.into(), name: label.into(), found, model: "m".into(), ..Default::default() };
         let rep = HostReport {
             name: name.into(),
@@ -1006,7 +1005,7 @@ mod tests {
             workspace: (!dirs.is_empty()).then(|| HostWorkspace { path: "/tmp".into(), ..Default::default() }),
             dirs: dirs
                 .iter()
-                .map(|b| HostDir { board: b.to_string(), path: format!("/tmp/{b}"), ready: (!ready.cmd.is_empty()).then(|| ready.clone()), ..Default::default() })
+                .map(|b| HostDir { board: b.to_string(), path: format!("/tmp/{b}"), ..Default::default() })
                 .collect(),
             dirs_rev: rev,
             running: vec![],
@@ -1192,7 +1191,7 @@ mod tests {
         assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), place: Some(INBOX.into()), ..patch("x3", "0 9 * * *") })).contains(INBOX_NAME));
         // 到点：派给能接的那台（它在线）
         let t1 = T0 + MIN;
-        host_report(&mut s, "mbp", &[B], &DirReady::default(), 0, t1);
+        host_report(&mut s, "mbp", &[B], 0, t1);
         assert_eq!(due(&mut s, t1), 1);
         let r = list(&s, t1).into_iter().find(|x| x.id == c.id).unwrap();
         assert_eq!((r.ran_to.as_deref(), r.ran_err.as_deref()), (Some("mbp · Claude Code"), None));
@@ -1220,7 +1219,7 @@ mod tests {
         let t4 = t3 + 100 * MIN;
         s.write(t4, Origin::ui(None), |w| w.host_update_as("mini", &crate::HostPatch { paused: Some(true), ..Default::default() }, "人").map(|_| ()))
             .unwrap();
-        host_report(&mut s, "mini", &[B], &DirReady::default(), 0, t4 + MIN);
+        host_report(&mut s, "mini", &[B], 0, t4 + MIN);
         let h = s.read(|r| r.hosts(t4 + MIN)).unwrap().into_iter().find(|h| h.name == "mini").unwrap();
         assert!(h.paused && h.online, "暂停接单、在线：{h:?}");
         assert_eq!(pick(&mut s, t4, c.id, &["mbp", "mini"]), ["mbp"].map(String::from).into_iter().collect(), "暂停接单的机器不挑");
@@ -1255,44 +1254,4 @@ mod tests {
         assert!(card(&s, id).activity.last().unwrap().text.contains("这次没有派发出去"), "评论写明没派发出去");
     }
 
-    /// 随机派发这次改的几处：还没检查完、没通过检查的机器不算能接；白板没设检查命令的照常接；
-    /// 一台能接的都没有时卡照样建、评论写明原因，不往上抛（这一分钟别的定时建卡不受牵连）
-    #[test]
-    fn random_pick_skips_hosts_that_cannot_take_the_board() {
-        let mut s = store();
-        host_up(&mut s, "mbp", &[B]);
-        host_report(&mut s, "win", &[B], &DirReady::default(), 0, T0);
-        let failed = DirReady { cmd: "cargo test".into(), ok: false, code: Some(1), tail: vec!["boom".into()], at: T0 };
-        host_report(&mut s, "mini", &[B], &failed, 0, T0);
-        let names = |s: &Store| s.read(|r| r.hosts(T0)).unwrap().into_iter().map(|h| h.name).collect::<Vec<_>>();
-        assert_eq!(names(&s), ["mbp", "mini", "win"], "三台都在");
-        // 白板没设检查命令：三台都能接
-        let c = create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..patch("更新代码", "* * * * *") }).unwrap();
-        // 白板设了检查命令：mbp 没上报结果（还没检查）、mini 没通过，都不算能接；只有 win 通过
-        s.write(T0, Origin::ui(None), |w| w.set_ready_check(B, Some("cargo test"), None)).unwrap();
-        let e = create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..patch("再加一条", "0 9 * * *") }).unwrap_err();
-        assert_eq!(e.code, ErrorCode::Usage);
-        assert!(e.message.contains("没有能接"), "还没检查、没通过的都不算能接：{}", e.message);
-        let rev = 1;
-        // 到点时 win 在线（刚上报过）
-        host_report(&mut s, "win", &[B], &DirReady { cmd: "cargo test".into(), ok: true, code: Some(0), tail: vec![], at: T0 }, rev, T0 + MIN);
-        let r = s.write(T0 + MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
-        assert_eq!(r.ran_to.as_ref().map(|t| t.split(" · ").next().unwrap()), Some("win"), "{:?} {:?}", r.ran_to, r.ran_err);
-        assert!(r.ran_card.is_some());
-        // 机器全被移除了：到点照样建卡，评论写明没能派发，这一次的结果也记下原因（不往上抛）
-        let prev = r.ran_card.expect("上一张建了");
-        s.write(T0, Origin::ui(None), |w| w.host_remove("win", &Actor::human(), "人")).unwrap();
-        s.write(T0, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "人")).unwrap();
-        s.write(T0, Origin::ui(None), |w| w.host_remove("mini", &Actor::human(), "人")).unwrap();
-        s.write(T0, Origin::ui(None), |w| {
-            let b = w.resolve(B)?;
-            w.exec(&b, &Actor::human(), Cmd::Delete { id: prev })
-        })
-        .unwrap();
-        let r = s.write(T0 + 2 * MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
-        assert_eq!(r.ran_to, None);
-        assert!(r.ran_err.as_deref().unwrap_or_default().contains("还没有机器"), "{:?}", r.ran_err);
-        let id = r.ran_card.expect("照样建卡");
-        assert!(card(&s, id).activity.last().unwrap().text.contains("这次没有派发出去"), "评论写明没派发出去");
-    }
 }

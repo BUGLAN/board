@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, hostWords, canPickDir, checkFor, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, dirReadiness, readyOk, readyWhy, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -128,50 +128,24 @@ describe('会话里排着的派发', () => {
   });
 });
 
-describe('环境检查（readiness）', () => {
-  const rc = { cmd: 'cargo --version', win: 'where cargo' };
-  const dir = (ready?: { cmd: string; ok: boolean; tail?: string[]; code?: number }) => ({ board: 'p/a', path: '~/a', ready: ready && { tail: [], at: 5, ...ready } });
-
-  it('按系统选命令：Windows 写了单独的就用它，否则和所有系统一样；都空时不检查', () => {
-    expect(checkFor(rc, 'macOS 15.4')).toBe('cargo --version');
-    expect(checkFor(rc, 'Windows 11 Pro')).toBe('where cargo');
-    expect(checkFor({ cmd: 'cargo --version', win: ' ' }, 'Windows 11')).toBe('cargo --version');
-    expect(checkFor({ cmd: '', win: '' }, 'macOS')).toBeNull();
-    expect(checkFor(undefined, 'macOS')).toBeNull();
-  });
-
-  it('通过 / 没通过（输出最后一行）/ 还没检查（命令改了、旧版 board host）/ 不检查', () => {
-    const h = host([]);
-    expect(dirReadiness(undefined, h, dir())).toEqual({ key: 'none' });
-    expect(dirReadiness(rc, h, dir())).toEqual({ key: 'pending' });
-    expect(dirReadiness(rc, h, dir({ cmd: 'node --version', ok: true }))).toEqual({ key: 'pending' });
-    expect(dirReadiness(rc, h, dir({ cmd: 'cargo --version', ok: true }))).toEqual({ key: 'ok', at: 5 });
-    const bad = dirReadiness(rc, h, dir({ cmd: 'cargo --version', ok: false, tail: ['zsh: command not found: cargo', ''] }));
-    expect(bad).toEqual({ key: 'failed', last: 'zsh: command not found: cargo', at: 5 });
-    expect(dirReadiness(rc, h, dir({ cmd: 'cargo --version', ok: false, code: 2 }))).toMatchObject({ last: '退出码 2' });
-    expect(readyOk({ key: 'none' }) && readyOk({ key: 'ok', at: 1 })).toBe(true);
-    expect(readyOk(bad) || readyOk({ key: 'pending' })).toBe(false);
-    expect(readyWhy(bad)).toBe('环境检查没通过：zsh: command not found: cargo');
-  });
-
-  it('boardHosts：配了工作空间的机器都算有这块白板的目录（目录由工作空间派生），带检查结果', () => {
+describe('目录（boardHosts、dirFresh、hostDirFor）', () => {
+  it('boardHosts：配了工作空间的机器都算有这块白板的目录（目录由工作空间派生）', () => {
     const ws = {
-      projects: [{ key: 'p', boards: [{ path: 'p/a', readyCheck: rc }] }],
+      projects: [{ key: 'p', boards: [{ path: 'p/a' }] }],
       hosts: [
-        { ...host([]), name: 'mac', workspace: { path: '~/repo' }, dirs: [dir({ cmd: 'cargo --version', ok: true })] },
-        // 工作空间里有这块白板、还没上报状态：算「还没检查」
+        { ...host([]), name: 'mac', workspace: { path: '~/repo' }, dirs: [{ board: 'p/a', path: '~/a' }] },
         { ...host([]), id: 2, name: 'win', os: 'Windows 11', workspace: { path: 'C:\\repo' }, dirs: [] },
         { ...host([]), id: 3, name: 'none', workspace: null, dirs: [] },
       ],
     } as unknown as Workspace;
-    expect(boardHosts(ws, 'p/a').map(x => [x.h.name, x.ready.key, x.d.path])).toEqual([
-      ['mac', 'ok', '~/a'],
-      ['win', 'pending', 'C:\\repo\\p'],
+    expect(boardHosts(ws, 'p/a').map(x => [x.h.name, x.d.path])).toEqual([
+      ['mac', '~/a'],
+      ['win', 'C:\\repo\\p'],
     ]);
-    // 配了工作空间的机器都有任意白板的目录（所在项目的 <工作空间>/<项目>）；白板没写检查命令时不检查
-    expect(boardHosts(ws, 'p/b').map(x => [x.h.name, x.ready.key, x.d.path])).toEqual([
-      ['mac', 'none', '~/repo/p'],
-      ['win', 'none', 'C:\\repo\\p'],
+    // 配了工作空间的机器都有任意白板的目录（所在项目的 <工作空间>/<项目>）
+    expect(boardHosts(ws, 'p/b').map(x => [x.h.name, x.d.path])).toEqual([
+      ['mac', '~/repo/p'],
+      ['win', 'C:\\repo\\p'],
     ]);
   });
 
@@ -387,8 +361,8 @@ describe('能不能接（服务端算好，界面照着用）', () => {
   const ws = (blocks?: Workspace['blocks']): Workspace => ({ rev: 1, now: 0, projects: [], hosts: [mac, win], blocks });
 
   it('blockOf：按机器和白板找原因；别的白板、旧版服务端（没有这一项）都当能接', () => {
-    const w = ws([{ host: 'mac', board: 'a/main', code: 'BOARD_NOT_READY', why: '环境检查没通过：cargo 没装' }]);
-    expect(blockOf(w, 'mac', 'a/main')?.why).toBe('环境检查没通过：cargo 没装');
+    const w = ws([{ host: 'mac', board: 'a/main', code: 'BOARD_NOT_ON_HOST', why: '/w/a 不是 git 仓库' }]);
+    expect(blockOf(w, 'mac', 'a/main')?.why).toBe('/w/a 不是 git 仓库');
     expect(blockOf(w, 'mac', 'a/docs')).toBeUndefined();
     expect(blockOf(w, 'win', 'a/main')).toBeUndefined();
     expect(blockOf(ws(), 'mac', 'a/main')).toBeUndefined();

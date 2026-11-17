@@ -3,7 +3,7 @@
 //! 前提分散在机器、agent、项目设置、Git 凭据、领取规则几处，以前没有一处告诉人还差什么。服务端按白板算一份清单，
 //! 随工作区数据（`checklist`）下发，界面只照着画（和 `fit.rs` 的 `blocks` 一样），每项带一个去处：
 //!
-//! 1. `host`：有在线、能接这块白板的机器（配了工作空间、目录对、环境检查过了，见 [`R::board_unfit`]）
+//! 1. `host`：有在线、能接这块白板的机器（配了工作空间、目录对，见 [`R::board_unfit`]）
 //! 2. `agent`：其中至少一台上有找得到命令、看得到 board-skills、最近一次自检通过的 agent（没自检过算「还没确认」）
 //! 3. `repo`：这个项目设了仓库地址（没设也能派发，只是机器上是空目录、agent 推不了代码）
 //! 4. `push`：其中至少一台对这个项目的目录自检「能推送」（同上，没自检过算「还没确认」）
@@ -37,7 +37,7 @@ pub struct CheckItem {
     /// 一句话：通过时写凭什么，没通过时写差什么
     pub why: String,
     /// 去哪处理（界面按它给按钮）：`add-host`、`hosts`、`host-settings:<机器>`、`host-agents:<机器>`、`selftest:<机器>`、
-    /// `project-repo`、`project-check`、`git`、`rules`、`accept`、`board-auto`；通过时、要等前面的项时为空
+    /// `project-repo`、`git`、`rules`、`accept`、`board-auto`；通过时、要等前面的项时为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub go: Option<String>,
     /// 只影响自动领取，不影响手动派发
@@ -47,14 +47,6 @@ pub struct CheckItem {
 
 fn item(key: &str, state: &str, why: impl Into<String>, go: Option<String>) -> CheckItem {
     CheckItem { key: key.into(), state: state.into(), why: why.into(), go, auto: false }
-}
-
-/// 机器接不了这块白板时去哪处理：环境检查在项目设置里，别的（工作空间、目录）在机器详情的设置页
-fn unfit_go(u: &Unfit, host: &str) -> String {
-    match u {
-        Unfit::CheckFailed(_) | Unfit::CheckPending => "project-check".into(),
-        _ => format!("host-settings:{host}"),
-    }
 }
 
 impl R<'_> {
@@ -114,7 +106,7 @@ impl R<'_> {
         } else if fits.is_empty() {
             let (h, u) = first_unfit.expect("在线的机器都接不了");
             let more = if online.len() > 1 { format!("（在线的 {} 台都接不了）", online.len()) } else { String::new() };
-            item("host", "fail", format!("{}：{}{more}", h.name, u.short()), Some(unfit_go(&u, &h.name)))
+            item("host", "fail", format!("{}：{}{more}", h.name, u.short()), Some(format!("host-settings:{}", h.name)))
         } else {
             let names: Vec<&str> = fits.iter().map(|h| h.name.as_str()).collect();
             item("host", "ok", format!("{} 在线，能接这块白板", names.join("、")), None)

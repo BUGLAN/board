@@ -74,10 +74,10 @@ async function open(ws: Workspace = workspace()) {
 }
 
 describe('项目设置', () => {
-  it('四节：基本信息、代码仓库、环境检查、标签；头部写项目名和几块白板', async () => {
+  it('三节：基本信息、代码仓库、标签；头部写项目名和几块白板', async () => {
     await open();
     expect(dialog().classList.contains('on')).toBe(true);
-    expect(labels()).toEqual(['基本信息', '代码仓库', '环境检查', '能接这个项目的机器', '标签']);
+    expect(labels()).toEqual(['基本信息', '代码仓库', '标签']);
     expect(dialog().querySelector('.d-head')?.textContent).toContain('2 块白板：a、b');
     expect(input('标识').readOnly).toBe(true);
     // 标签一节：列出项目的标签
@@ -125,29 +125,6 @@ describe('项目设置', () => {
     expect(input('仓库地址').value).toBe('git@github.com:o/p.git');
   });
 
-  it('环境检查是项目的：写「N 块白板共用」，回车保存到项目；Esc 只取消这一次输入', async () => {
-    const ws = workspace();
-    ws.projects[0].readyCheck = { cmd: 'cargo --version', win: '' };
-    await open(ws);
-    expect(dialog().querySelector('.bs-rp-scope')?.textContent).toBe('2 块白板共用');
-    const cmd = input('环境检查：所有系统');
-    expect(cmd.value).toBe('cargo --version');
-    type(cmd, '写了一半');
-    key(cmd, 'Escape');
-    expect(cmd.value).toBe('cargo --version');
-    expect(sent).toEqual([]);
-    type(cmd, 'cargo --version && node --version');
-    key(cmd, 'Enter');
-    blur(cmd);
-    await act(async () => {});
-    expect(sent).toContainEqual({ method: 'PATCH', path: '/api/projects/p', body: { readyCheck: 'cargo --version && node --version' } });
-  });
-
-  it('没有机器能接这个项目：写提醒和项目的目录', async () => {
-    await open();
-    expect(dialog().querySelector('.bs-rc-empty')?.textContent).toContain('<工作空间>/p');
-  });
-
   it('「管理标签」叠在上面：Esc 不关项目设置', async () => {
     await open();
     const btn = [...dialog().querySelectorAll('button')].find(b => b.textContent?.includes('管理标签'))!;
@@ -169,12 +146,11 @@ describe('白板设置', () => {
     return document.querySelector<HTMLElement>('.bs-modal:not(.ps-modal)')!;
   }
 
-  it('没有「代码仓库」「环境检查」两节；最上面是「状态块布局」', async () => {
+  it('没有「代码仓库」一节；最上面是「状态块布局」', async () => {
     const m = await openBoard();
     const secs = [...m.querySelectorAll('.d-label')].map(l => l.firstChild?.textContent?.trim());
     expect(secs.slice(0, 3)).toEqual(['状态块布局', '自动领取', '卡片顺序']);
     expect(secs).not.toContain('代码仓库');
-    expect(secs).not.toContain('环境检查');
     expect(secs).not.toContain('定时建卡');
   });
 
@@ -189,7 +165,7 @@ describe('白板设置', () => {
 
   it('末尾一行「打开项目设置」：关掉白板设置，打开这个项目的设置', async () => {
     const m = await openBoard();
-    expect(m.querySelector('.bs-proj')?.textContent).toContain('代码仓库、环境检查、标签是项目「P」的，2 块白板共用');
+    expect(m.querySelector('.bs-proj')?.textContent).toContain('代码仓库、标签是项目「P」的，2 块白板共用');
     const btn = [...m.querySelectorAll('.bs-proj button')][0] as HTMLButtonElement;
     act(() => btn.click());
     expect(useUI.getState().boardSettings).toBe(null);

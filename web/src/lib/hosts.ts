@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, ReadyCheck, SelfTestItem, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestItem, Workspace } from './types';
 import { metaColor, skillHome } from './agentMeta';
 import { agentColor, agentGlyph } from './util';
 
@@ -122,38 +122,6 @@ export function hostState(h: HostInfo, running: number): { key: HostState; label
 export type OsKind = 'mac' | 'win' | 'linux';
 export const osKind = (os: string): OsKind => (/mac|darwin|os x/i.test(os) ? 'mac' : /windows/i.test(os) ? 'win' : 'linux');
 
-/* ---------- 环境检查（PRD §9.1）：没通过的机器不接这块白板的卡 ---------- */
-
-/** 这台机器（按它的系统）要跑的检查命令；白板不检查时为空。和服务端 ReadyCheck::for_os 一致 */
-export function checkFor(rc: ReadyCheck | undefined, os: string): string | null {
-  if (!rc) return null;
-  const pick = osKind(os) === 'win' && rc.win.trim() ? rc.win : rc.cmd;
-  return pick.trim() || null;
-}
-
-export type Readiness = { key: 'none' } | { key: 'ok'; at: number } | { key: 'failed'; last: string; at: number } | { key: 'pending' };
-
-/** 一台机器上一块白板的环境检查：不检查 / 通过 / 没通过（输出最后一行） / 还没检查（命令改了之后还没跑完、旧版 board host） */
-export function dirReadiness(rc: ReadyCheck | undefined, h: HostInfo, d: HostDir | undefined): Readiness {
-  const cmd = checkFor(rc, h.os);
-  if (!cmd) return { key: 'none' };
-  const r = d?.ready;
-  if (!r || r.cmd !== cmd) return { key: 'pending' };
-  if (r.ok) return { key: 'ok', at: r.at };
-  const last = [...r.tail].reverse().find(l => l.trim())?.trim() ?? (r.code != null ? `退出码 ${r.code}` : '没有输出');
-  return { key: 'failed', last, at: r.at };
-}
-
-/** 接这块白板的卡 */
-export const readyOk = (r: Readiness) => r.key === 'none' || r.key === 'ok';
-
-/** 环境检查没通过时的说明（派发对话框里写在那台机器旁边） */
-export function readyWhy(r: Readiness): string {
-  if (r.key === 'failed') return `环境检查没通过：${r.last}`;
-  if (r.key === 'pending') return '环境检查还没跑完';
-  return '';
-}
-
 /** 一块白板的设置（工作区里找） */
 export const boardOf = (ws: Workspace | null, path: string): BoardInfo | undefined =>
   ws?.projects.flatMap(p => p.boards).find(b => b.path === path);
@@ -182,7 +150,7 @@ export function workspacePath(workspace: string, board: string, os: string): str
   return base + sep + board.trim().split('/')[0];
 }
 
-/** 这台机器接不了这块白板的卡时的原因。服务端算好放在工作区数据里（fit.rs：没有工作空间、目录不对、环境检查没通过），
+/** 这台机器接不了这块白板的卡时的原因。服务端算好放在工作区数据里（fit.rs：没有工作空间、目录不对），
     界面只照着禁用、显示，不自己再判断一遍；旧版服务端没有这一项时一律当能接，由派发时服务端拒绝 */
 export const blockOf = (ws: Workspace | null, host: string, path: string): HostBlock | undefined =>
   ws?.blocks?.find(b => b.host === host && b.board === path);
@@ -197,12 +165,11 @@ export function agentWhy(h: HostInfo, a: HostAgent): string {
   return '';
 }
 
-/** 配了工作空间的每台机器，带它在这块白板上的目录、环境检查结果，和接不了时的原因（`block`） */
+/** 配了工作空间的每台机器，带它在这块白板上的目录，和接不了时的原因（`block`） */
 export function boardHosts(ws: Workspace | null, path: string) {
-  const rc = boardOf(ws, path)?.readyCheck;
   return hostsOf(ws).flatMap(h => {
     const d = hostDirFor(h, path);
-    return d ? [{ h, d, ready: dirReadiness(rc, h, d), block: blockOf(ws, h.name, path) }] : [];
+    return d ? [{ h, d, block: blockOf(ws, h.name, path) }] : [];
   });
 }
 
@@ -223,7 +190,7 @@ export const inSession = (d: Dispatch) => d.state === 'queued' && d.session != n
 export function queueReason(h: HostInfo | undefined, d?: Dispatch, block?: HostBlock): string {
   if (d && inSession(d)) return `会话第 ${d.seq ?? '?'}/${d.total ?? '?'} 张`;
   if (d?.any && !d.host) return '等一台能接的机器';
-  // 排上之后这台机器接不了这块白板了（目录坏了、拉不到最新代码、环境检查没过）：写明原因，人可以改派
+  // 排上之后这台机器接不了这块白板了（目录坏了、拉不到最新代码）：写明原因，人可以改派
   if (block) return `这台机器现在接不了：${block.why}`;
   if (!h) return '机器已移除';
   if (!h.online) return '等机器上线';

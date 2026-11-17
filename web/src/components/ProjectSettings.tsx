@@ -3,7 +3,6 @@
    和白板设置同一种居中弹窗（.scrim / .drawer / .d-*，手机上是底部 sheet），单栏：
    - 基本信息：名称（必填）、标识（只读）、描述、颜色（和新建项目同一组颜色）
    - 代码仓库：仓库地址、集成分支（一个项目一个仓库，项目下所有白板共用）；没设时一行警告，有机器报过 origin 时可以一键用它
-   - 环境检查（BoardReady.tsx）：两条命令，下面列能接这个项目的机器
    - 标签：项目的标签，「管理标签」叠在上面打开
    每一项都是设置项（saveSetting）：失焦或回车保存，Esc 取消这一次输入，保存状态画在那一项旁边，不整块禁用；名称清空时回到原值
    ========================================================================== */
@@ -16,7 +15,6 @@ import { cx } from '../lib/util';
 import { patchProject, repoPatch, saveSetting, useData } from '../store/data';
 import { manageLabels, openProjectSettings, useUI } from '../store/ui';
 import { InfoTip, Sync, useSync } from './bits';
-import { ReadyCheckSection } from './BoardReady';
 import { Icon } from './Icon';
 
 export function ProjectSettings() {
@@ -231,9 +229,7 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
               )}
             </section>
 
-            <ReadyCheckSection p={p} i={2} />
-
-            <section className="d-section" style={{ ['--i' as string]: 3 }}>
+            <section className="d-section" style={{ ['--i' as string]: 2 }}>
               <div className="d-label">
                 标签
                 <span className="act">{p.labels.length} 个 · 项目下所有白板共用</span>

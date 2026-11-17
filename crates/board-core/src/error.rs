@@ -39,8 +39,6 @@ pub enum ErrorCode {
     AgentNotOnHost,
     /// 机器没有这块白板的目录
     BoardNotOnHost,
-    /// 机器上这块白板的环境检查没通过（或还没检查）
-    BoardNotReady,
     /// 卡片有排队中的派发：别的 agent 不能领取
     Dispatched,
     /// board next：这个会话不再接着做下一张（做满了、手动派发、暂停接单、没有可领取的卡片……）
@@ -52,7 +50,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 26] = [
+    pub const ALL: [ErrorCode; 25] = [
         ErrorCode::NoIdentity,
         ErrorCode::NoBoard,
         ErrorCode::BoardNotFound,
@@ -75,7 +73,6 @@ impl ErrorCode {
         ErrorCode::NoSuchHost,
         ErrorCode::AgentNotOnHost,
         ErrorCode::BoardNotOnHost,
-        ErrorCode::BoardNotReady,
         ErrorCode::Dispatched,
         ErrorCode::SessionDone,
         ErrorCode::InTrash,
@@ -105,7 +102,6 @@ impl ErrorCode {
             ErrorCode::NoSuchHost => "NO_SUCH_HOST",
             ErrorCode::AgentNotOnHost => "AGENT_NOT_ON_HOST",
             ErrorCode::BoardNotOnHost => "BOARD_NOT_ON_HOST",
-            ErrorCode::BoardNotReady => "BOARD_NOT_READY",
             ErrorCode::Dispatched => "DISPATCHED",
             ErrorCode::SessionDone => "SESSION_DONE",
             ErrorCode::InTrash => "IN_TRASH",
@@ -143,7 +139,6 @@ impl ErrorCode {
             ErrorCode::NoSuchHost => "机器不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器",
             ErrorCode::AgentNotOnHost => "这台机器上没有这种 agent，或没找到它的命令",
             ErrorCode::BoardNotOnHost => "这台机器还没有配工作空间：在机器详情里填一个，或 board host 启动时用 --workspace <路径> 加上",
-            ErrorCode::BoardNotReady => "这台机器上这块白板的环境检查没通过（或还没检查）：装好缺的工具后重新检查",
             ErrorCode::Dispatched => "卡片已经派发给一台机器，在锁定状态里排队（或排在一个会话里）：别的 agent 不能领取、移动它，等它开始，或先取消派发",
             ErrorCode::SessionDone => "这个会话不再接着做下一张：结束会话",
             ErrorCode::InTrash => "卡片在回收站里：先恢复，才能编辑、移动或评论",

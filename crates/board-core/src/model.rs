@@ -461,10 +461,6 @@ pub struct BoardInfo {
     /// 白板说明（Markdown，可以为空）
     #[serde(default)]
     pub readme: String,
-    /// 所在项目的环境检查：机器要先在这块白板的目录（就是项目的目录）里跑通它，才接这块白板的卡（PRD §9.1「环境检查」）。
-    /// 设在项目上（[`ProjectInfo::ready_check`]），这里带一份给旧界面、旧 board host 读。旧服务端没有这一项
-    #[serde(default)]
-    pub ready_check: ReadyCheck,
     /// 所在项目的代码仓库地址（git 远端，例如 `git@github.com:o/r.git`）；空表示没设。旧服务端没有这一项。
     /// 仓库设在项目上（[`ProjectInfo::repo`]），这里带一份给只看白板的地方用（PRD §4）
     #[serde(default)]
@@ -492,41 +488,10 @@ fn yes() -> bool {
     true
 }
 
-/// 项目的环境检查命令（PRD §9.1「环境检查」）：一行命令，在机器上这个项目的目录里执行，退出码 0 算通过。
-/// 都为空时不检查；Windows 写了 `win` 就用它（cmd 里执行），没写用 `cmd`
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadyCheck {
-    /// 所有系统（macOS、Linux 在登录 shell 里执行，Windows 没单独写时在 cmd 里执行）
-    #[serde(default)]
-    pub cmd: String,
-    /// 只给 Windows（cmd 里执行）；空表示和 `cmd` 一样
-    #[serde(default)]
-    pub win: String,
-}
-
-/// 环境检查命令最长多少个字符
-pub const READY_CHECK_MAX: usize = 500;
-
 /// 仓库地址最长多少个字符
 pub const REPO_MAX: usize = 500;
 /// 集成分支名最长多少个字符（git 的分支名实际上限远大于这个数）
 pub const BRANCH_MAX: usize = 200;
-
-impl ReadyCheck {
-    /// 这台机器（按它上报的系统）要跑的命令；不检查时为 None
-    pub fn for_os(&self, os: &str) -> Option<String> {
-        let win = os.to_lowercase().contains("windows");
-        let pick = if win && !self.win.trim().is_empty() { &self.win } else { &self.cmd };
-        let t = pick.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    }
-    /// 两条命令都空：这块白板不检查。服务端和 CLI 都只用 [`Self::for_os`]（它已经对空命令返回 None），
-    /// 界面上用前端自己的判断，所以只在测试里用
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.cmd.trim().is_empty() && self.win.trim().is_empty()
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -549,9 +514,6 @@ pub struct ProjectInfo {
     /// 集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
     #[serde(default)]
     pub branch: String,
-    /// 环境检查，项目下所有白板共用（PRD §9.1「环境检查」）。旧服务端没有这一项（那时设在白板上）
-    #[serde(default)]
-    pub ready_check: ReadyCheck,
     pub boards: Vec<BoardInfo>,
 }
 
