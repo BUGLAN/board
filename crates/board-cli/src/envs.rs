@@ -5,7 +5,7 @@
 //! | `direct` | 直接启动 | 所有 | 总有 | 直接执行命令，不经过 shell |
 //! | `login` | 登录 shell | macOS、Linux | `$SHELL`，没有时 passwd 里的登录 shell，再没有 `/bin/sh` | `$SHELL -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
 //! | `cmd` | cmd | Windows | `%ComSpec%` | `cmd.exe /d /s /c "<命令> <参数>…"`，每个参数加双引号；命令名是普通名字时不加，否则 `.cmd` 里的 `%~dp0` 会变成当前目录 |
-//! | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"` |
+//! | `powershell` | Windows PowerShell | Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | `powershell.exe -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command "& '<命令>' '<参数>' …; exit $LASTEXITCODE"`（`npx`、`npm` 写成 `.cmd`，见 [`ps_prog`]） |
 //! | `pwsh` | PowerShell 7 | Windows | `PATH` 里的 `pwsh.exe`，或 `%ProgramFiles%\PowerShell\7\pwsh.exe` | 同上，换成 `pwsh.exe` |
 //! | `git-bash` | Git Bash | Windows | `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`，再看 `PATH` 里 `git` 所在目录往上三层的 `bin`（见 [`git_bash_beside`]） | `bash.exe -l -c 'exec "$0" "$@"' <命令> <参数>…` |
 //! | `wsl:<发行版>` | WSL（<发行版>） | Windows | `wsl.exe -l -q` 列出的每个发行版 | `wsl.exe -d <发行版> --cd <目录> --exec setsid -w bash -l -i -c 'exec "$0" "$@"' <命令> <参数>…` |
@@ -233,7 +233,22 @@ pub fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// PowerShell 的包装脚本：`& '<命令>' '<参数>' …; exit $LASTEXITCODE`。输出按 UTF-8，派发时先覆盖连接
+/// PowerShell 里要换成 `.cmd` 来执行的命令（Windows）。Node.js 自带的 `npx.ps1`、`npm.ps1` 在 `-Command` 方式下
+/// 从 `$MyInvocation.Line`（也就是整行包装脚本）里截自己的参数再 `Invoke-Expression`，截出来的不是它的参数，
+/// 直接报错退出（#455）；PowerShell 找命令时同目录的 `.ps1` 优先，所以要写明 `.cmd`
+const PS_VIA_CMD: &[&str] = &["npx", "npm"];
+
+/// 在 PowerShell 里执行时写的命令名：[`PS_VIA_CMD`] 里的换成 `<命令>.cmd`，其余原样
+pub fn ps_prog(prog: &str) -> String {
+    if PS_VIA_CMD.iter().any(|c| c.eq_ignore_ascii_case(prog)) {
+        format!("{prog}.cmd")
+    } else {
+        prog.to_string()
+    }
+}
+
+/// PowerShell 的包装脚本：`& '<命令>' '<参数>' …; exit $LASTEXITCODE`。输出按 UTF-8，派发时先覆盖连接；
+/// 命令名经 [`ps_prog`]（`npx`、`npm` 用 `.cmd`）
 pub fn ps_script(prog: &str, args: &[String], run: bool) -> String {
     let mut s = String::new();
     if run {
@@ -241,7 +256,7 @@ pub fn ps_script(prog: &str, args: &[String], run: bool) -> String {
         s += "if ($env:BOARD_HOST_URL) { $env:BOARD_URL = $env:BOARD_HOST_URL; $env:BOARD_TOKEN = $env:BOARD_HOST_TOKEN }; ";
     }
     s += "$LASTEXITCODE = $null; & ";
-    s += &ps_quote(prog);
+    s += &ps_quote(&ps_prog(prog));
     for a in args {
         s.push(' ');
         s += &ps_quote(a);
@@ -808,6 +823,47 @@ mod tests {
         assert_eq!(cmd_line("dsh", &[]), r#"/d /s /c "dsh""#);
         // 普通名字以外的一律加引号（空格、路径、cmd 的语法字符）
         assert_eq!(cmd_line(r"\tools\a&b.cmd", &[]), r#"/d /s /c ""\tools\a&b.cmd"""#);
+    }
+
+    /// PowerShell 里 npx、npm 写成 `.cmd`：Node.js 自带的 `.ps1` 从整行包装脚本里截参数，截错了直接报错（#455）
+    #[test]
+    fn powershell_runs_npx_and_npm_as_cmd() {
+        let script = ps_script("npx", &s(&["-y", "@agentclientprotocol/codex-acp@2.7.0"]), true);
+        assert!(script.contains("& 'npx.cmd' '-y' '@agentclientprotocol/codex-acp@2.7.0'; "), "{script}");
+        assert!(ps_script("npm", &s(&["install", "-g", "@openai/codex@latest"]), false).contains("& 'npm.cmd' 'install' "));
+        assert_eq!((ps_prog("NPX").as_str(), ps_prog("claude").as_str(), ps_prog("npx.cmd").as_str()), ("NPX.cmd", "claude", "npx.cmd"));
+        // 写了路径的不动：那是人自己指定的
+        assert_eq!(ps_prog(r"C:\tools\npx"), r"C:\tools\npx");
+        // 别的启动环境不经过它：cmd 按 PATHEXT 找（不认 .ps1），sh 类执行 npm 的 sh 垫片
+        assert_eq!(cmd_line("npx", &[]), r#"/d /s /c "npx""#);
+    }
+
+    /// 同一目录里有会报错的 `npx.ps1` 和正常的 `npx.cmd`（Node.js 装好后就是这样）：两种 PowerShell 都执行到 `.cmd`（#455）
+    #[cfg(windows)]
+    #[test]
+    fn powershell_skips_npx_ps1() {
+        let dir = std::env::temp_dir().join(format!("board-ps-npx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("npx.ps1"), "Write-Output 'ran npx.ps1'\r\nexit 7\r\n").unwrap();
+        std::fs::write(dir.join("npx.cmd"), "@echo off\r\necho ran npx.cmd [%1] [%2]\r\n").unwrap();
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let mut parts: Vec<std::ffi::OsString> = vec![dir.clone().into_os_string()];
+        parts.extend(std::env::split_paths(&old).map(|p| p.into_os_string()));
+        let path = std::env::join_paths(parts).unwrap();
+        let windows_ps = std::env::var_os("SystemRoot")
+            .map(|r| PathBuf::from(r).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
+            .filter(|p| p.is_file());
+        let shells: Vec<(Kind, PathBuf)> =
+            [which("pwsh").map(|p| (Kind::Pwsh, p)), windows_ps.map(|p| (Kind::PowerShell, p))].into_iter().flatten().collect();
+        assert!(!shells.is_empty(), "这台 Windows 上没有 PowerShell");
+        for (kind, prog) in shells {
+            let mut c = Env::new(kind.clone(), prog).command("npx", &s(&["-y", "pkg@1.0.0"]), None, true);
+            c.env("PATH", &path);
+            let out = run_out(c, Duration::from_secs(60)).expect("PowerShell 能跑");
+            assert!(out.ok, "{kind:?}：{}{}", out.stdout, out.stderr);
+            assert!(out.stdout.contains("ran npx.cmd [-y] [pkg@1.0.0]") && !out.stdout.contains("npx.ps1"), "{kind:?}：{}", out.stdout);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `.cmd` 批处理靠 `%~dp0` 找自己旁边的文件：命令名不加引号时 `%~dp0` 才是命令真正所在的目录，
