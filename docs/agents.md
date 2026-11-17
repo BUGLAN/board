@@ -118,7 +118,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；有强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
 | Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | `model_provider`、`[model_providers.board-<供应商>]`（`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort` |
-| dsh | `~/.dsh/profiles/headless/cordis.patch.yml` 的 `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`）、`agent-default-model` 指向它；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY` | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
+| dsh | `~/.dsh/profiles/acp/cordis.patch.yml`（board host 用 dsh 的 acp profile 启动它）的 `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`），`agent-default-model` 和 `acp`（ACP 会话用的提供方和模型）都指向它；dsh 新建 profile 时文件里的空数组 `[]` 去掉；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`（名称转大写，`-`、`.` 换成 `_`） | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
 | 配置文件里新加的 agent、WSL 里的 agent | — | 不支持，界面上写「不支持」 |
 
 - 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，dsh 三种都认（用哪种可以在机器上指定，dsh 路由的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
