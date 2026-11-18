@@ -1,15 +1,15 @@
 # 部署 Board 服务端
 
-下文用 `https://board.example.com` 举例，换成自己的域名。自动部署用到的服务器地址和目录不写进仓库，只存在 GitHub 的 Secret `DEPLOY_HOST` 和 Variable `DEPLOY_DIR` 里。结构：
+下文用 `https://board.example.com` 举例，换成自己的域名。当前生产方式是局域网机器 + Cloudflare Tunnel，服务端直接用 launchd 运行编译好的二进制（见「局域网机器直接部署（不用 Docker）」）；下面也保留了 Docker 部署的步骤作为备选。
 
 ```
 浏览器 / 桌面端 ─┐
-board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ cloudflared（服务器上的系统服务）─ HTTP ─▶ board-server（Docker，127.0.0.1:7420）
-                ┘                                                                              └─ ./data/board.db
+board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ cloudflared（服务器上的系统服务）─ HTTP ─▶ board-server（直接运行，127.0.0.1:7420）
+                ┘                                                                              └─ <服务器目录>/data/board.db
 ```
 
 - HTTPS 证书在 Cloudflare 那边，服务器不用开 80/443。
-- 小内存服务器上不编译：推 tag 后由 GitHub Actions 交叉编译、打镜像推到 GHCR，服务器只拉镜像运行（见「自动部署」）；首次部署时在本机交叉编译好再上传，服务器上只打运行镜像（`BOARD_BUILD=prebuilt`，见第 2 节）。
+- GitHub Actions 只负责测试和构建 Release 产物、不部署；服务端由局域网机器上的发版卡片执行服务机部署目录里的 `release-lan.sh`，在本机编译后把二进制复制到 `<服务器目录>`。
 
 - 网页端：浏览器打开 `https://board.example.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board login --url <服务端地址> --token <访问令牌>` 写进 `~/.board/config.toml`（也可以用环境变量 `BOARD_URL`、`BOARD_TOKEN`，优先于配置文件）。
@@ -214,7 +214,7 @@ docker compose start board
 
 ## 7. 升级
 
-发版由人决定：推 `vX.Y.Z` tag 才构建、部署线上服务端（见下文「自动部署」）；推 `main` 只跑测试，不部署。版本号规则见 [AGENTS.md](../AGENTS.md)「发版」：x 只由人决定；y 是重构或大升级；z 是修复和比较小的新功能。第一个 tag 是 `v0.1.0`。
+发版由人决定：推 `vX.Y.Z` tag 只构建 Release 产物，不部署；服务端发版由局域网机器上的 Board「发版」卡片执行服务机部署目录里的 `release-lan.sh`（见「局域网机器直接部署」）。版本号规则见 [AGENTS.md](../AGENTS.md)「发版」：x 只由人决定；y 是重构或大升级；z 是修复和比较小的新功能。第一个 tag 是 `v0.1.0`。
 
 在 `main` 分支或分离 HEAD 上、工作区干净时执行（不用先手动 `git pull`）：
 
@@ -233,27 +233,24 @@ npm run release -- 0.1.1 --push      # 发版并推送
 6. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
 7. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因
 
-tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不部署。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，部署成功后一起附到 GitHub Release（见「自动部署」「桌面端安装包」）。
+tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不发版。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，和 Release 一起附上（见「CI：测试与发版构建」「桌面端安装包」）。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
-## 自动部署
+## CI：测试与发版构建
+
+GitHub Actions 只负责测试和构建 Release 产物，**不再部署服务端**。服务端由局域网机器上的 Board「发版」卡片执行服务机部署目录里的 `release-lan.sh`：拉最新 `main`、`npm run release -- <版本号> --push`，再把 `board-server` 构建产物复制到 `<服务器目录>` 并重启 launchd。
 
 `.github/workflows/deploy.yml`：
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等 33 个用例）。不构建镜像、不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
-| 推 `v*` tag | build → deploy；skill、desktop（和它们同时跑）→ release，见下图 |
-| 在 `main` 上手动运行，填 7 位提交号 | 回滚，见下文「回滚」 |
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等 33 个用例）。不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
+| 推 `v*` tag | version（核对 tag、Cargo.toml、CHANGELOG.md）→ test；skill、desktop（和它们同时跑）→ release，见下图 |
 
 ```
-build（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的版本号和 CHANGELOG.md → npm ci → 构建界面 → cargo test
-                                     → deploy/build-linux.sh --skip-web 交叉编译 → prebuilt 镜像
-                                     → 推到 GHCR：ghcr.io/buglan/board-server:<7 位提交号> 和 :latest
-deploy（SSH 到服务器，deploy/remote-deploy.sh）：备份 → 拉镜像 → .env 的 BOARD_IMAGE 改成新镜像
-                                     → docker compose up -d --no-build → 等健康检查
-                                     → 核对线上 /api/health：version 是 tag 的版本号，commit 是 tag 指向的提交
+version（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的 workspace.package.version 和 CHANGELOG.md
+test（GitHub 托管的 ubuntu-latest）：npm ci → cargo test → 界面类型检查/单测（tag 上也跑一遍再打包）
 heartbeat-windows（GitHub 托管的 windows-latest，推 main 时）：board-cli 的 heartbeat / agents / multiline 测试，
                                      以及 cargo test -p board-desktop（桌面端的单元测试；不需要先编安装包自带的 board：
                                      src-tauri/build.rs 在 src-tauri/binaries 里没有 sidecar 时按不带 sidecar 构建）
@@ -264,19 +261,14 @@ desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑
                                      macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe、.msi 和免安装便携 .zip
                                      → 收齐更新包和签名（updater/<平台键>/）→ 生成这个平台的更新清单
 release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip、桌面端安装包、更新包和 latest.json
-         （部署成功、skill 打包成功、两个平台的安装包和更新清单都构建成功后）
+         （version、test、skill 和两个平台的安装包/更新清单都构建成功后）
 ```
 
-- tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：build 第一步失败，不推镜像、不部署
-- 桌面端安装包任一平台构建失败：不建 Release（不留缺附件的 Release），服务端照常构建、部署；修好后再发一个版本
+- tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：version 任务失败，不打包、不建 Release
+- 桌面端安装包任一平台构建失败：不建 Release（不留缺附件的 Release），修好后再发一个版本
 - PR、其他分支不触发
-- 同一时间只有一次部署，后来的排队
-- `cargo test` 失败时不推镜像、不部署
-- 重启、健康检查（最多 2 分钟）或核对版本号、提交号失败：`.env` 的 `BOARD_IMAGE` 改回部署前的镜像并重启，打印最近 50 行日志，任务失败
-- 服务器不编译：只拉镜像、运行；服务器上 `docker-compose.yml` 和 `deploy/backup.sh`、`deploy/remote-deploy.sh` 由工作流拷过去
-- 拉镜像用本次任务的 `GITHUB_TOKEN`（经 stdin 传给 `docker login`），拉完立刻 `docker logout`，服务器上不留 GHCR 凭据
-- 拉取被 GHCR 拒绝（denied）、镜像还没同步完或服务暂时不可用时最多重试 10 次（每次间隔 10 秒）；仍拉不到时提示「无法拉取…」，线上不变
-- 清理：GHCR 上只保留最新 5 个版本；服务器上只留当前和上一个 `ghcr.io/buglan/board-server` 镜像
+- 同一时间只有一次发版构建，后来的排队
+- 服务端部署不在 CI 里：由 Board 发版卡片执行服务机部署目录里的 `release-lan.sh`（见「局域网机器直接部署」）
 
 ### 桌面端安装包
 
@@ -393,43 +385,28 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 ### 一次性配置
 
-1. 生成部署专用的 SSH 密钥（只给 Actions 用），公钥加到服务器上部署用户的 `authorized_keys`：
+服务端不需要 GitHub Actions 的 SSH 密钥、`DEPLOY_HOST` 或 GHCR 凭据。GitHub 仓库只需 Variable `DEPLOY_URL`（桌面端默认服务端地址，例如 `https://board.buglan.com`）。
 
-   ```bash
-   ssh-keygen -t ed25519 -N '' -C board-deploy -f board-deploy
-   ssh-copy-id -i board-deploy.pub <用户>@<服务器>
-   ssh-keyscan -t ed25519 <服务器>      # 输出填到 DEPLOY_KNOWN_HOSTS
-   ```
-
-2. GitHub 仓库 Settings → Secrets and variables → Actions：
-
-   | 类型 | 名称 | 值 |
-   |---|---|---|
-   | Secret | `DEPLOY_SSH_KEY` | 上面的私钥 `board-deploy` 的内容 |
-   | Secret | `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan` 的输出（SSH 严格校验主机密钥） |
-   | Secret | `DEPLOY_HOST` | `用户@服务器`（存成 Secret，Actions 日志里显示为 `***`） |
-   | Variable | `DEPLOY_DIR` | 服务器上的仓库目录 |
-   | Variable | `DEPLOY_URL` | `https://board.example.com` |
-
-3. 服务器 `.env` 里不用加 `BOARD_IMAGE`：第一次自动部署时会加上。
+服务器目录按「局域网机器直接部署（不用 Docker）」准备：`<服务器目录>` 下放 `.env`、`data`、`bin`、`run-board-server.sh`，并装好 `com.buglan.board-server` LaunchDaemon。
 
 ### 看部署结果
 
-- GitHub 仓库 Actions → deploy：每一步的输出；失败时 deploy 任务最后打印了容器最近 50 行日志
-- 线上版本：`curl -s https://board.example.com/api/health` 的 `version`、`commit`
-- 服务器上正在运行的镜像：`.env` 的 `BOARD_IMAGE`
+- 服务状态：`launchctl print system/com.buglan.board-server`
+- 服务日志：`tail -f <服务器目录>/data/board.log`
+- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `version`、`commit`
+- 当前二进制：`<服务器目录>/bin/board-server`
 
 ### 回滚
 
-Actions → deploy → Run workflow（分支选 `main`），`commit` 填要回到的 7 位提交号（某个 tag 的提交号：`git rev-parse --short=7 v0.3.0`）：跳过构建，直接部署 GHCR 上已有的 `board-server:<提交号>` 镜像，部署后只核对提交号。GHCR 只保留最新 5 个版本，更早的提交号会报「GHCR 上没有镜像」，线上不变。
+服务端二进制每次部署都会被覆盖。要回到某个 tag：在开发仓库 `git checkout vX.Y.Z`，运行服务机部署目录里的 `deploy-lan.sh --no-pull --skip-web`，脚本会从该提交构建并替换服务器二进制；恢复后在开发仓库切回 `main`。
 
 ## 8. 日志
 
 ```bash
-docker compose logs -f board
+tail -f <服务器目录>/data/board.log
 ```
 
-每个请求一行：方法、路径（不含查询参数）、状态码、耗时、是谁（GitHub 账号，或 `claude/opus-5.5（令牌#3）`）。令牌和 Cookie 不写进日志。成功的心跳（`/api/agents/beat`、`/api/hosts/<机器>/beat`）和日志上传（`POST /api/dispatches/<ID>/log`）默认只记 DEBUG，不会刷掉有用的行；排查时用 `RUST_LOG=debug` 打开。日志文件按 10 MB 轮转，保留 5 个（`docker-compose.yml` 的 `logging`）。
+每个请求一行：方法、路径（不含查询参数）、状态码、耗时、是谁（GitHub 账号，或 `claude/opus-5.5（令牌#3）`）。令牌和 Cookie 不写进日志。成功的心跳（`/api/agents/beat`、`/api/hosts/<机器>/beat`）和日志上传（`POST /api/dispatches/<ID>/log`）默认只记 DEBUG，不会刷掉有用的行；排查时用 `RUST_LOG=debug` 打开。用 Docker 部署时日志按 10 MB 轮转、保留 5 个（`docker-compose.yml` 的 `logging`）；直接运行二进制时由 launchd 写到上面的 `board.log`。
 
 ### 线上出问题怎么查
 
@@ -438,6 +415,33 @@ docker compose logs -f board
 3. 确认线上版本：`curl -s https://board.example.com/api/health`，核对返回的 `version` 和 `commit` 与部署记录、tag 的提交号一致。
 4. 从客户端检查：`board doctor` 看服务端地址、令牌和名字；带白板再跑一次 `board doctor --as <名字> --board <项目>/<白板>`。
 5. 日志按 10 MB 轮转、保留 5 个；旧记录被挤掉时用 `--since` 缩小时间范围，或先看宿主机上的备份和监控。
+
+## 局域网机器直接部署（不用 Docker）
+
+不想用 Docker 和 GitHub Actions 部署时，可以直接在局域网机器上构建二进制运行。部署脚本只放在服务机的部署目录里（`deploy-lan.sh`），支持 macOS（已验证）。开发仓库只放代码，服务器运行环境单独放在 `<服务器目录>`：
+
+```
+<开发仓库>      开发仓库：拉代码、构建
+<服务器目录>    服务器环境：
+  bin/board-server              编译产物
+  data/board.db                 数据库和附件
+  data/board.log                日志
+  .env                          GitHub 登录配置
+  run-board-server.sh           LaunchDaemon 入口
+```
+
+```bash
+<服务器目录>/deploy/deploy-lan.sh              # 拉最新 main、构建界面和 board-server、部署并重启
+<服务器目录>/deploy/deploy-lan.sh --no-pull    # 不拉代码，用当前工作区构建
+<服务器目录>/deploy/deploy-lan.sh --skip-web   # 界面没改时跳过前端构建（快）
+```
+
+- 第一次运行没有 Node 时会下载 Node 到 `~/.local/node-v22.19.0-darwin-x64`，不装系统目录；之后复用。
+- 构建产物是开发仓库的 `target/release/board-server`，脚本会复制到服务器目录的 `bin/board-server`；界面在编译时从 `web/dist` 嵌进二进制。
+- 机器上装了 `com.buglan.board-server` 的 LaunchDaemon 时，脚本替换服务器目录里的二进制后杀掉进程，launchd 会按 KeepAlive 自动用新二进制拉起；没有 LaunchDaemon 时由脚本自己停旧进程、启动新进程。
+- 服务器目录的 `.env` 由 `run-board-server.sh` 读取，按 GitHub 登录模式监听 `0.0.0.0:7420`（`BOARD_HOST`、`BOARD_PORT` 可改）；没有 `.env` 时才用 `--local --demo`。
+- 发版：在 Board 建一张「发版」卡（正文可写版本号，例如 `0.1.41`；不写就按上一版 z+1），派到这台 Mac。卡片里的 agent 在开发仓库运行 `<服务器目录>/deploy/release-lan.sh [版本号]`：它执行 `npm run release -- <版本号> --push`（CI 只测试和构建 Release，不部署），然后自动调用 `deploy-lan.sh` 把 `board-server` 装到服务器目录并重启。
+- 从 Windows 触发用 部署目录里的 `deploy-lan.ps1`（默认 `<用户>@<服务器>`、`<开发仓库>`，可用参数改）。
 
 ## 本机模式
 

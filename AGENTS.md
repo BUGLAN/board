@@ -79,4 +79,4 @@ npm test                      # 即 cargo test && cargo test -p board-desktop &&
 2. 里面有重构或大升级（`refactor` 提交、标了「不兼容」的提交，或者你判断算大升级的）：停下来，列出这些提交，问人升 y 还是 z。没有就升 z。
 3. `npm run release -- <版本号> --push`：改版本号（Cargo.toml、Cargo.lock、package.json、package-lock.json、web/package.json、web/package-lock.json、tauri.conf.json）、从上一个 tag 之后的每个提交生成 `CHANGELOG.md` 里这一版的一节，提交「chore: 发版 vX.Y.Z」、打 tag，再推 `main` 和 tag。推 tag 之前顺带运行 `board versions sync vX.Y.Z`：按提交末行的「卡片：…」给这一版的卡片打上版本标签，界面「里程碑」里按版本看（没装 `board`、没登录、线上服务端还不认这个接口时只提示一句，部署完成后在仓库里补跑同一条命令）。
 
-推 `main` 只跑测试；推 tag 才构建镜像、部署线上服务端，部署成功后用 `CHANGELOG.md` 里这一版的一节建 GitHub Release（见 `docs/deploy.md`「升级」「自动部署」）。tag 推出去后不改、不删、不挪，发错了就再发一个版本。
+推 `main` 只跑测试；推 tag 只构建 Release（桌面端安装包、skill 等），不部署。服务端的发版由 Board 上派到服务机的卡片执行：在服务机的开发仓库运行服务机部署目录里的 `release-lan.sh <版本号>`，它执行上面的 `npm run release -- <版本号> --push`，然后把 `board-server` 构建产物复制到服务机的部署目录并重启 LaunchDaemon（见 `docs/deploy.md`「升级」「局域网机器直接部署」）。tag 推出去后不改、不删、不挪，发错了就再发一个版本。
