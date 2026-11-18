@@ -1685,7 +1685,18 @@ struct DirCheck {
     status: &'static str,
     origin: Option<String>,
     branch: Option<String>,
+    /// 看的时间：到没到时间重新看按它算
     at: Instant,
+    /// 同一次看的系统时间（毫秒），原样上报成 checkedAt。不能每次心跳用 `now_ms() - at.elapsed()` 现算：
+    /// 两个时钟各自取整，结果在相邻两毫秒之间来回跳，服务端当成机器有变化，给所有界面推送、让它们重取白板（default/main#469）
+    checked_at: i64,
+}
+
+impl DirCheck {
+    /// 刚看完的结果
+    fn new(path: PathBuf, status: &'static str, origin: Option<String>, branch: Option<String>) -> Self {
+        DirCheck { path, status, origin, branch, at: Instant::now(), checked_at: now_ms() }
+    }
 }
 
 struct CloneRun {
@@ -2058,11 +2069,10 @@ fn bootstrap_dirs(
                         .stderr(err)
                         .status()
                 });
-                let at = Instant::now();
                 match spawn {
                     Ok(s) if s.success() => {
                         let _ = gitsync::ensure(&dir, &host_dir);
-                        checks.push(DirCheck { path: dir, status: "ok", origin: Some(url.to_string()), branch: None, at })
+                        checks.push(DirCheck::new(dir, "ok", Some(url.to_string()), None))
                     }
                     Ok(s) => {
                         let why = clone_tail(&log).unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", s.code()));
@@ -2717,15 +2727,10 @@ impl Host<'_> {
                 continue;
             }
             let (status, origin, branch) = check_git_dir(&dir);
-            let at = Instant::now();
+            let fresh = DirCheck::new(dir.clone(), status, origin, branch);
             match self.dir_checks.iter_mut().find(|c| c.path == dir) {
-                Some(c) => {
-                    c.status = status;
-                    c.origin = origin;
-                    c.branch = branch;
-                    c.at = at;
-                }
-                None => self.dir_checks.push(DirCheck { path: dir, status, origin, branch, at }),
+                Some(c) => *c = fresh,
+                None => self.dir_checks.push(fresh),
             }
         }
     }
@@ -2747,7 +2752,7 @@ impl Host<'_> {
                     Some(c) => (c.status, c.origin.clone(), c.branch.clone()),
                     None => ("missing", None, None),
                 };
-                let checked_at = c.map(|c| now_ms() - c.at.elapsed().as_millis() as i64).unwrap_or_else(now_ms);
+                let checked_at = c.map_or_else(now_ms, |c| c.checked_at);
                 let clone = self.clones.iter().rev().find(|c| c.board == *board).map(|c| HostClone {
                     state: c.state.clone(),
                     url: c.url.clone(),
@@ -4824,30 +4829,36 @@ mod tests {
     }
 
     /// 目录状态缓存：刚看过的沿用，隔 DIR_CHECK_EVERY 才重新跑 git 子进程（心跳 10 秒一次，不能每次都跑）；
-    /// 目录变了（或克隆完）就丢掉旧结果。上报的 checkedAt 是真正跑 git 的那一次的时间
+    /// 目录变了（或克隆完）就丢掉旧结果。上报的 checkedAt 是真正跑 git 的那一次的时间，两次重新看之间一直是同一个数
+    /// （以前每次心跳现算，会差 1 毫秒，服务端当成机器有变化、给所有界面推送，default/main#469）
     #[test]
     fn dir_checks_are_cached_between_beats() {
         let t = tempfile::tempdir().unwrap();
         let repo = plain(&t.path().canonicalize().unwrap());
         git(&repo, &["init", "-q", "-b", "main"]);
-        let taken = |checks: &[DirCheck]| checks.iter().find(|c| c.path == repo).map(|c| (c.status, c.at));
+        let taken = |checks: &[DirCheck]| checks.iter().find(|c| c.path == repo).map(|c| (c.status, c.at, c.checked_at));
         // 还没有结果：当成不存在（不会跑 git 以外的东西，也不会让上报出错）
         assert!(Host::dir_check_due(&[], &repo));
         let mut checks = vec![];
         let (status, origin, branch) = check_git_dir(&repo);
         assert_eq!(status, "ok");
-        checks.push(DirCheck { path: repo.clone(), status, origin, branch, at: Instant::now() });
+        let before = now_ms();
+        checks.push(DirCheck::new(repo.clone(), status, origin, branch));
         let first = taken(&checks).unwrap();
+        assert!(first.2 >= before && first.2 <= now_ms());
         // 刚看过：不到时间，不再跑 git；结果和看的时间都不变
+        std::thread::sleep(Duration::from_millis(3));
         assert!(!Host::dir_check_due(&checks, &repo));
         assert_eq!(taken(&checks).unwrap().1, first.1);
+        assert_eq!(taken(&checks).unwrap().2, first.2);
         // 到时间了：重新看，看的时间换新的
         checks[0].at = Instant::now() - DIR_CHECK_EVERY;
         assert!(Host::dir_check_due(&checks, &repo));
         let (status, origin, branch) = check_git_dir(&repo);
-        checks[0] = DirCheck { path: repo.clone(), status, origin, branch, at: Instant::now() };
+        checks[0] = DirCheck::new(repo.clone(), status, origin, branch);
         assert_eq!(taken(&checks).unwrap().0, "ok");
         assert!(taken(&checks).unwrap().1 > first.1);
+        assert!(taken(&checks).unwrap().2 > first.2);
         // 目录没了：到时间之后看到「不存在」
         std::fs::remove_dir_all(&repo).unwrap();
         checks[0].at = Instant::now() - DIR_CHECK_EVERY;
