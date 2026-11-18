@@ -5,7 +5,8 @@
    所以起始行单调不减，阅读顺序仍是从左到右、从上到下（与 board ls 的优先级一致）。
    块（data-block 开头、data-block-end 结尾，例如同一会话的卡，default/main#319）：
    整块当成一个矩形摆，只占它的卡片需要的几栏（至少 MIN_BLOCK 宽，不超过总栏数），
-   块里的卡片在这几栏里照样瀑布流，块的下沿取最低的那栏，块旁边可以并排别的卡片或块。
+   块里的卡片在这几栏里照样瀑布流，块的下沿取最低的那栏，块旁边可以并排别的卡片或块；
+   块里的卡一行就排得下时拉成一样高（取最高的那张），并排的卡上下沿都对齐（default/main#462）。
    间距读列表的 column-gap（CSS 里由 --gap 统一给出）。
    ========================================================================== */
 import { useLayoutEffect, type RefObject } from 'react';
@@ -24,6 +25,8 @@ export interface Place {
   col: number;
   cols: number;
   rows: number;
+  /** 块里排成一行的卡：被拉到和这一行最高的那张一样高（rows 已经是拉高后的） */
+  even?: boolean;
 }
 
 /** 在 bottom（每栏已占到第几行）上按网格游标放一个 k 栏宽、h 行高的矩形：
@@ -64,13 +67,18 @@ export function pack(entries: Entry[], T: number): Place[] {
     const inner = new Array<number>(k).fill(e.rows);
     const ic = { row: e.rows, col: 0 };
     const rel: { row: number; col: number }[] = [];
-    for (let j = i + 1; j < end; j++) rel.push(fit(inner, 1, entries[j].rows, ic));
+    // 一行排得下、高度又不一样：每张都按最高的那张占行，上下沿对齐（本来一样高的不动，单行、磁贴一般就是）
+    const rs = entries.slice(i + 1, end).map(x => x.rows);
+    const even = n > 1 && n <= k && Math.min(...rs) !== Math.max(...rs) ? Math.max(...rs) : 0;
+    for (let j = i + 1; j < end; j++) rel.push(fit(inner, 1, even || entries[j].rows, ic));
     const footRows = foot >= 0 ? entries[foot].rows : 0;
     const h = Math.max(...inner) + footRows;
     const at = fit(bottom, k, h, cur);
     out[i] = { row: at.row, col: at.col, cols: k, rows: e.rows };
     rel.forEach((r, j) => {
-      out[i + 1 + j] = { row: at.row + r.row, col: at.col + r.col, cols: 1, rows: entries[i + 1 + j].rows };
+      out[i + 1 + j] = even
+        ? { row: at.row + r.row, col: at.col + r.col, cols: 1, rows: even, even: true }
+        : { row: at.row + r.row, col: at.col + r.col, cols: 1, rows: entries[i + 1 + j].rows };
     });
     if (foot >= 0) out[foot] = { row: at.row + h - footRows, col: at.col, cols: k, rows: footRows };
     i = foot >= 0 ? foot : end - 1;
@@ -94,20 +102,31 @@ export function gridTracks(list: HTMLElement, cs: CSSStyleDeclaration = getCompu
   return { T: Math.max(1, tracks.length), w: tracks[0] ?? list.clientWidth, gap };
 }
 
+/** 一项占几行：高度 + 间距。块的开头再加上它的 margin-bottom：CSS 给组头负的 margin-bottom，
+    组头和块里第一行卡片之间就比卡片间距近，第一行的卡片一起上移、上沿对齐。
+    以前用 `.sess-head + .card` 的负 margin-top，只挪了组里第一张，同一行的其他卡低一截（default/main#462） */
+export function measure(el: HTMLElement, gap: number, min: number): Entry {
+  const h = el.offsetHeight;
+  const rows = (extra = 0) => (h ? Math.max(1, Math.round(h + gap + extra)) : 1);
+  if (el.hasAttribute('data-block-end')) return { kind: 'foot', rows: rows() };
+  if (el.hasAttribute('data-block')) return { kind: 'head', rows: rows(parseFloat(getComputedStyle(el).marginBottom) || 0), min };
+  return { kind: 'item', rows: rows() };
+}
+
 function apply(list: HTMLElement, after?: (list: HTMLElement) => void) {
   // 所在页面被隐藏（切到别的 Tab，display: none）时量不到高度：保持原样，切回来不用重排、不跳
   if (!list.offsetParent) return;
   const { T, w, gap } = gridTracks(list);
   const min = Math.ceil((MIN_BLOCK + gap) / (w + gap));
   const items = [...list.children] as HTMLElement[];
-  // 先全部读，再全部写，只触发一次重排
-  const entries: Entry[] = items.map(el => {
-    const h = el.offsetHeight;
-    const rows = h ? Math.max(1, Math.round(h + gap)) : 1;
-    if (el.hasAttribute('data-block-end')) return { kind: 'foot', rows };
-    if (el.hasAttribute('data-block')) return { kind: 'head', rows, min };
-    return { kind: 'item', rows };
-  });
+  // 上一次拉齐时写的 min-height 先去掉，量卡片本来的高度（不然拉高过的卡再也缩不回去）
+  for (const el of items) {
+    if (!el.hasAttribute('data-even')) continue;
+    el.style.minHeight = '';
+    el.removeAttribute('data-even');
+  }
+  // 先全部读，再全部写，只触发一次重排（有拉齐过的卡时多一次：先去掉 min-height 再量）
+  const entries: Entry[] = items.map(el => measure(el, gap, min));
   const places = pack(entries, T);
   items.forEach((el, i) => {
     const p = places[i];
@@ -115,6 +134,11 @@ function apply(list: HTMLElement, after?: (list: HTMLElement) => void) {
     const row = `${p.row + 1} / span ${p.rows}`;
     if (el.style.gridColumn !== col) el.style.gridColumn = col;
     if (el.style.gridRow !== row) el.style.gridRow = row;
+    if (p.even) {
+      // offsetHeight 四舍五入成整数，最高那张实际可能多出不到 0.5px：补上，整行一样高（多出的落在下面的间距里）
+      el.style.minHeight = `${p.rows - gap + 0.5}px`;
+      el.setAttribute('data-even', '');
+    }
   });
   after?.(list);
 }

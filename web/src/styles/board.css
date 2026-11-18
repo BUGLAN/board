@@ -908,7 +908,8 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .sess-foot { height: 4px; }
 .card.in-sess { margin-inline: 6px; }
 .card.v-line.in-sess { margin-inline: 5px; }
-.sess-head + .card.in-sess { margin-top: -4px; }
+/* 组头和第一行卡片之间比卡片间距近 4px：masonry 把组头的 margin-bottom 算进它占的行数，第一行的卡一起上移、上沿对齐（default/main#462） */
+.sess-head { margin-bottom: -4px; }
 .view-tile .sess-head { height: 20px; padding: 0 6px; font-size: 11px; }
 .view-tile .sess-head::before { height: max(20px, calc(var(--fh, 20px) - 1px)); border-radius: calc(var(--r-xs) + 4px); }
 .card.v-tile.in-sess { margin-inline: 3px; }

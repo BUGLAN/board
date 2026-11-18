@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { explicitTracks, pack, type Entry } from './masonry';
+import { describe, expect, it, vi } from 'vitest';
+import { explicitTracks, measure, pack, type Entry } from './masonry';
 import { placeAt } from './drag';
 
 const item = (rows: number): Entry => ({ kind: 'item', rows });
@@ -62,6 +62,24 @@ describe('pack', () => {
   });
 });
 
+describe('pack：块里一行排得下的卡一样高', () => {
+  it('同一行的卡按最高的那张占行，上下沿对齐；块的下沿跟着最高的那张，default/main#462', () => {
+    const out = pack([head(26), item(150), item(130), foot(12)], 3);
+    expect(out[1]).toMatchObject({ row: 26, rows: 150, even: true });
+    expect(out[2]).toMatchObject({ row: 26, rows: 150, even: true });
+    expect(out[3].row).toBe(176);
+  });
+
+  it('排成多行（卡比栏多）、只有一张、本来就一样高时不拉高', () => {
+    const many = pack([head(26), item(150), item(130), item(90), foot(12)], 2);
+    expect(many.slice(1, 4).map(p => [p.rows, p.even])).toEqual([[150, undefined], [130, undefined], [90, undefined]]);
+    const one = pack([head(26), item(150), foot(12)], 2);
+    expect(one[1].even).toBeUndefined();
+    const same = pack([head(26), item(41), item(41), foot(12)], 3);
+    expect([same[1].even, same[2].even]).toEqual([undefined, undefined]);
+  });
+});
+
 describe('explicitTracks', () => {
   it('只数显式栏：块变窄后旧位置撑出的隐式栏（grid-auto-columns: 0，宽 0）不算，default/main#387', () => {
     // 块从 17 栏拖窄到 11 栏：计算样式列出 11 个显式栏 + 6 个隐式栏
@@ -73,5 +91,30 @@ describe('explicitTracks', () => {
   it('没有隐式栏时原样返回；none（还没排版）时为空，由调用方按 1 栏处理', () => {
     expect(explicitTracks('220px 280.5px')).toEqual([220, 280.5]);
     expect(explicitTracks('none')).toEqual([]);
+  });
+});
+
+describe('measure', () => {
+  const el = (h: number, attr?: string, marginBottom?: string) => {
+    const e = document.createElement('div');
+    if (attr) e.setAttribute(attr, '');
+    if (marginBottom) e.style.marginBottom = marginBottom;
+    vi.spyOn(e, 'offsetHeight', 'get').mockReturnValue(h);
+    return e;
+  };
+
+  it('卡片、组尾按高度 + 间距占行；量不到高度时占 1 行', () => {
+    expect(measure(el(100), 8, 2)).toEqual({ kind: 'item', rows: 108 });
+    expect(measure(el(4, 'data-block-end'), 8, 2)).toEqual({ kind: 'foot', rows: 12 });
+    expect(measure(el(0), 8, 2)).toEqual({ kind: 'item', rows: 1 });
+  });
+
+  it('组头的负 margin-bottom 算进行数：块里第一行的卡一起上移、上沿对齐，default/main#462', () => {
+    expect(measure(el(22, 'data-block', '-4px'), 8, 2)).toEqual({ kind: 'head', rows: 26, min: 2 });
+    expect(measure(el(22, 'data-block'), 8, 2)).toEqual({ kind: 'head', rows: 30, min: 2 });
+    // 第一行两张卡起始行相同
+    const out = pack([measure(el(22, 'data-block', '-4px'), 8, 2), item(100), item(80), foot(12)], 2);
+    expect(out[1].row).toBe(26);
+    expect(out[2].row).toBe(26);
   });
 });
