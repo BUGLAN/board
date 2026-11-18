@@ -21,6 +21,8 @@ const server = vi.hoisted(() => ({
   hosts: null as null | ((r: { hosts: []; dispatches: [] }) => void),
   /** 推送：boot() 之后由用例调用 */
   push: null as null | ((m: { rev: number; events: BoardEvent[] }) => void),
+  /** 推送的连接状态：boot() 之后由用例调用 */
+  status: null as null | ((s: 'connecting' | 'live' | 'offline') => void),
   /** 各接口被调用的次数 */
   n: { workspace: 0, board: 0 },
   /** 回收站（GET /api/trash）：白板路径 → 删掉的卡片 */
@@ -36,8 +38,9 @@ vi.mock('../lib/api', async orig => {
   const clone = <T,>(x: T): T => structuredClone(x);
   return {
     ...real,
-    connect: (onMessage: (m: { rev: number; events: BoardEvent[] }) => void) => {
+    connect: (onMessage: (m: { rev: number; events: BoardEvent[] }) => void, onStatus: (s: 'connecting' | 'live' | 'offline') => void) => {
       server.push = onMessage;
+      server.status = onStatus;
       return () => {};
     },
     api: {
@@ -541,6 +544,27 @@ describe('推送与刷新', () => {
     D.boot();
     await settle();
     server.n = { workspace: 0, board: 0 };
+  });
+
+  it('第一次连上推送不再全量取一遍；第一条推送的 rev 不比已经取到的新就不取（default/main#469）', async () => {
+    server.status!('connecting');
+    server.status!('live');
+    server.push!({ rev: server.ws.rev, events: [] });
+    await settle();
+    expect(server.n).toEqual({ workspace: 0, board: 0 });
+  });
+
+  it('断开后重新连上：取一遍，补上断开期间的变化', async () => {
+    server.status!('live');
+    await settle();
+    server.status!('offline');
+    await settle();
+    const n = server.n.board;
+    serverEdit('p/a', 2, { title: '断开时改的' });
+    server.status!('live');
+    await settle();
+    expect(server.n.board).toBe(n + 1);
+    expect(title(2)).toBe('断开时改的');
   });
 
   it('写操作返回后的刷新进行中，推送带来的新 rev 不再多加载一轮', async () => {

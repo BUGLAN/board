@@ -1330,6 +1330,8 @@ export function boot() {
   // 版本检查不放在这里：桌面端自带的界面和网页端用同一套逻辑，要不要提示由 lib/stale-runner.ts 判断。
   // 网页端启动时查一次（main.tsx 的 watchStale 只管切回标签页）；桌面端自己检查（default/main#368）
   window.addEventListener('beforeunload', beforeUnload);
+  /** 推送连上过没有：第一次连上不用再全量取一遍 */
+  let opened = false;
   const stop = connect(
     m => {
       const all = m.events || [];
@@ -1350,8 +1352,10 @@ export function boot() {
     },
     status => {
       set({ status });
-      // 断开时也取一次：会话过期会得到 401，界面切到登录页
-      if (status === 'live' || status === 'offline') refresh();
+      // 断开时也取一次：会话过期会得到 401，界面切到登录页。重新连上时取一次，补上断开期间的变化。
+      // 第一次连上不取：上面刚取过，连上后的第一条推送带着服务端当前的 rev，比已经取到的新才按 rev 再取（default/main#469）
+      if (status === 'offline' || (status === 'live' && opened)) refresh();
+      if (status === 'live') opened = true;
     },
     // 断开后重新连上：服务端可能刚升级过，查一次版本（default/main#368）
     () => void checkServerVersion().then(v => noticeStale(buildVersion(), v)),
