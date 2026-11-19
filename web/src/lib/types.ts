@@ -207,6 +207,8 @@ export interface HostBlock {
 export interface HostAgent {
   /** 标识：claude、dsh、codex … */
   id: string;
+  /** 配置文件里新加的 agent（不是内置的）；旧版 board host 不报 */
+  custom?: boolean;
   /** 名称：Claude Code … */
   name: string;
   /** `<命令> --version` 的第一行（在实际用的启动环境里） */

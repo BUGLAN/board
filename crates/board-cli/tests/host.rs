@@ -1054,6 +1054,10 @@ fn remote_recheck_and_restart() {
     let h = rig.workspace()["hosts"][0].clone();
     assert!(h["ask"].is_null(), "{h}");
     assert!(h["recheckedAt"].is_i64(), "{h}");
+    // 配置文件里新加的 agent 上报时带 custom（服务端据此不把同名的当成已经移除的内置 agent 丢掉，#484）；内置的不带
+    let agents = h["agents"].as_array().unwrap();
+    assert!(agents.iter().any(|a| a["id"] == "newbie" && a["custom"] == true), "{h}");
+    assert!(agents.iter().filter(|a| a["id"] != "newbie").all(|a| a.get("custom").is_none()), "{h}");
     // 重启：先离线（final），再以新进程上线；进程号不变（原地换进程）。新进程的标识写在 pid 文件里：
     // 看它换了（离线到上线可能快得轮询看不到）
     let pid = host.id();

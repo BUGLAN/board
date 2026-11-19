@@ -6,7 +6,7 @@
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::*;
-use crate::store::{Store, R, W};
+use crate::store::{R, W};
 
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;

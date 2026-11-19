@@ -174,6 +174,16 @@ pub fn is_builtin(id: &str) -> bool {
     find(id).is_some()
 }
 
+/// 已经移除的内置 agent（pi 在 v0.1.39 移除）：旧版 board host 还按自己的内置模板上报它们，服务端收到就丢掉，
+/// 存着的机器数据在启动时清掉（default/main#484）。配置文件里显式写了 `[agents.<标识>]` 的
+/// （上报里 `custom` 为 true）是自定义 agent，照常用
+pub const REMOVED_IDS: &[&str] = &["pi"];
+
+/// 这一项是已经移除的内置 agent（不是配置文件里新加的同名 agent）
+pub fn is_removed(id: &str, custom: bool) -> bool {
+    !custom && REMOVED_IDS.contains(&id)
+}
+
 /// 内置 agent 的标识，按默认 agent 的顺序
 pub fn ids() -> impl Iterator<Item = &'static str> {
     AGENT_DEFS.iter().map(|d| d.id)

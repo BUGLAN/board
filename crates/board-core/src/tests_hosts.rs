@@ -582,6 +582,108 @@ fn old_agent_names_get_agent_id_on_upgrade() {
     assert_eq!(s.read(|r| r.agent("win/opus-5.5-high")).unwrap().unwrap().agent, None);
 }
 
+/* ------------------------------ 已经移除的内置 agent（#484） ------------------------------ */
+
+fn pi(custom: bool) -> HostAgent {
+    HostAgent { id: "pi".into(), name: "pi".into(), version: "1.5.0".into(), found: true, custom, ..Default::default() }
+}
+
+fn run_keys(s: &Store, host: &str) -> Vec<String> {
+    let raw: String = s.conn().query_row("SELECT run FROM hosts WHERE name = ?1", [host], |r| r.get(0)).unwrap();
+    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).unwrap().keys().cloned().collect()
+}
+
+/// 旧版 board host 还上报 pi（没有 custom）：服务端丢掉，机器信息、取到的任务里都没有，运行设置里的 pi 也删掉；
+/// 新版 board host 上报配置文件里显式写的 [agents.pi]（custom）照常显示
+#[test]
+fn removed_builtin_agent_is_dropped_but_custom_one_stays() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    s.conn().execute("UPDATE hosts SET run = '{\"pi\":{\"env\":\"login\"},\"claude\":{\"env\":\"login\"}}' WHERE name = 'mbp'", []).unwrap();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents.push(pi(false));
+    let w = beat(&mut s, T0 + S, &rep).unwrap();
+    assert!(!w.host.agents.iter().any(|a| a.id == "pi"), "{:?}", w.host.agents.iter().map(|a| &a.id).collect::<Vec<_>>());
+    assert!(!s.read(|r| r.host("mbp", T0 + S)).unwrap().agents.iter().any(|a| a.id == "pi"));
+    assert_eq!(run_keys(&s, "mbp"), vec!["claude".to_string()], "运行设置里的 pi 删掉，别的留着");
+    // 自定义的同名 agent：留着
+    rep.agents.pop();
+    rep.agents.push(pi(true));
+    let w = beat(&mut s, T0 + 2 * S, &rep).unwrap();
+    assert!(w.host.agents.iter().any(|a| a.id == "pi" && a.custom && a.found));
+    let v = serde_json::to_value(&w.host.agents).unwrap();
+    assert!(v.as_array().unwrap().iter().any(|a| a["id"] == "pi" && a["custom"] == true));
+    assert!(v.as_array().unwrap().iter().all(|a| a["id"] == "pi" || a.get("custom").is_none()), "内置的不带 custom：{v}");
+}
+
+/// 升级后第一次启动：存着的机器上报、运行设置、默认 agent 里的 pi 清掉，没人用的「仅人可打」pi 标签删掉；
+/// 自定义的 pi、有卡片用着的标签、别的标签不动；只做一次（之后人自己建的 pi 标签不会被删）
+#[test]
+fn removed_builtin_agent_leftovers_are_cleaned_once_on_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    let reopen = |path: &std::path::Path, reset: bool| {
+        if reset {
+            rusqlite::Connection::open(path).unwrap().execute("DELETE FROM meta WHERE key = 'removed_agents'", []).unwrap();
+        }
+        Store::open(path).unwrap()
+    };
+    let (card, board) = {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+        let mut b = report("win", "i2", vec![]);
+        b.agents.push(pi(true));
+        beat(&mut s, T0, &b).unwrap();
+        // 旧数据：mbp 上报里有内置的 pi（没有 custom），运行设置、默认 agent 都是它
+        let mut agents: Vec<serde_json::Value> = serde_json::from_str(&s.conn().query_row("SELECT agents FROM hosts WHERE name = 'mbp'", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        agents.push(serde_json::json!({ "id": "pi", "name": "pi", "version": "1.5.0", "found": true }));
+        s.conn()
+            .execute(
+                "UPDATE hosts SET agents = ?1, run = '{\"pi\":{\"env\":\"login\"},\"claude\":{\"env\":\"login\"}}', agent = 'pi' WHERE name = 'mbp'",
+                [serde_json::to_string(&agents).unwrap()],
+            )
+            .unwrap();
+        s.conn().execute("UPDATE hosts SET run = '{\"pi\":{\"env\":\"login\"}}', agent = 'pi' WHERE name = 'win'", []).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.create_label("default", "pi", None, true)).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, true)).unwrap();
+        let card = new_card(&mut s, T0, "用着 pi 标签");
+        let board: i64 = s.conn().query_row("SELECT board FROM cards WHERE id = ?1", [card], |r| r.get(0)).unwrap();
+        (card, board)
+    };
+    let labels = |s: &Store| -> Vec<String> {
+        s.conn().prepare("SELECT name FROM labels ORDER BY name").unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().map(|x| x.unwrap()).collect()
+    };
+    let pi_label = |s: &Store| -> i64 { s.conn().query_row("SELECT id FROM labels WHERE name = 'pi'", [], |r| r.get(0)).unwrap() };
+    // 有卡片用着 pi 标签：标签留着
+    {
+        let s = Store::open(&path).unwrap();
+        s.conn().execute("INSERT INTO card_labels (board, card, label) VALUES (?1, ?2, ?3)", rusqlite::params![board, card, pi_label(&s)]).unwrap();
+    }
+    let s = reopen(&path, true);
+    assert!(labels(&s).contains(&"pi".to_string()), "有卡片用着的不删");
+    let mbp = s.read(|r| r.host("mbp", T0)).unwrap();
+    assert!(!mbp.agents.iter().any(|a| a.id == "pi"));
+    assert_eq!(run_keys(&s, "mbp"), vec!["claude".to_string()]);
+    let agent: Option<String> = s.conn().query_row("SELECT agent FROM hosts WHERE name = 'mbp'", [], |r| r.get(0)).unwrap();
+    assert_eq!(agent, None, "默认 agent 回到本机第一个找到的");
+    // win 上的 pi 是自定义的：上报、运行设置、默认 agent 都不动
+    let win = s.read(|r| r.host("win", T0)).unwrap();
+    assert!(win.agents.iter().any(|a| a.id == "pi" && a.custom));
+    assert_eq!(run_keys(&s, "win"), vec!["pi".to_string()]);
+    let agent: Option<String> = s.conn().query_row("SELECT agent FROM hosts WHERE name = 'win'", [], |r| r.get(0)).unwrap();
+    assert_eq!(agent.as_deref(), Some("pi"));
+    // 没卡片用了：再升级一次（清掉标记）时删掉；别的「仅人可打」标签不动
+    s.conn().execute("DELETE FROM card_labels", []).unwrap();
+    drop(s);
+    let s = reopen(&path, false);
+    assert!(labels(&s).contains(&"pi".to_string()), "做过一次就不再做");
+    drop(s);
+    let s = reopen(&path, true);
+    let names = labels(&s);
+    assert!(!names.contains(&"pi".to_string()) && names.contains(&"急".to_string()), "{names:?}");
+}
+
 /// 同一台机器同一 agent、模型有多个并发派发时名字仍唯一（加序号）；上一个会话离线后名字复用；
 /// `board next` 接着做的会话用同一个名字；agent 自己用 skills 的名字不受影响
 #[test]

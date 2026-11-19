@@ -648,6 +648,8 @@ impl Spec {
             model,
             effort,
             manage,
+            // 配置文件里新加的（不是内置的）：服务端据此不把它当成已经移除的内置 agent 丢掉（#484）
+            custom: self.builtin.is_none(),
             ..Default::default()
         }
     }

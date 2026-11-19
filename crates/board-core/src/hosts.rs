@@ -163,6 +163,51 @@ CREATE INDEX IF NOT EXISTS dispatch_events_rev ON dispatch_events (rev);
 "#;
 
 /// 旧数据库补上启动环境的几列
+/// 已经移除的内置 agent（pi，见 [`crate::agentdef::REMOVED_IDS`]）留在库里的东西，升级后第一次启动时清一次（#484）：
+/// - 每台机器存着的上报（hosts.agents）里没有 custom 标记的那一项（旧数据都没有标记，按内置算）；自定义的同名 agent 留着
+/// - 运行设置（hosts.run）里的那一项、默认 agent 设成它的（回到「本机第一个找到的」）——这台机器上有自定义的同名 agent 时不动
+/// - 项目里名字就是它、「仅人可打」、没有任何卡片用着的标签（以前给它建的）；别的标签不动
+/// 做过一次记在 meta 的 removed_agents 里，之后人自己再建同名的标签不会被删
+fn drop_removed_agents(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let done: i64 = conn.query_row("SELECT COALESCE((SELECT value FROM meta WHERE key = 'removed_agents'), 0)", [], |r| r.get(0))?;
+    if done >= 1 {
+        return Ok(());
+    }
+    let rows: Vec<(i64, String, String, Option<String>)> = conn
+        .prepare("SELECT id, agents, run, agent FROM hosts")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, agents_raw, run_raw, agent) in rows {
+        let Ok(mut agents) = serde_json::from_str::<Vec<serde_json::Value>>(&agents_raw) else { continue };
+        let removed = |a: &serde_json::Value| {
+            crate::agentdef::is_removed(a["id"].as_str().unwrap_or_default(), a["custom"].as_bool().unwrap_or(false))
+        };
+        let n = agents.len();
+        agents.retain(|a| !removed(a));
+        if agents.len() != n {
+            conn.execute("UPDATE hosts SET agents = ?2 WHERE id = ?1", params![id, serde_json::to_string(&agents).unwrap_or_default()])?;
+        }
+        let kept = |k: &str| agents.iter().any(|a| a["id"].as_str() == Some(k));
+        let mut run: BTreeMap<String, serde_json::Value> = serde_json::from_str(&run_raw).unwrap_or_default();
+        let before = run.len();
+        run.retain(|k, _| !crate::agentdef::REMOVED_IDS.contains(&k.as_str()) || kept(k));
+        if run.len() != before {
+            conn.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![id, serde_json::to_string(&run).unwrap_or_default()])?;
+        }
+        if agent.as_deref().is_some_and(|a| crate::agentdef::REMOVED_IDS.contains(&a) && !kept(a)) {
+            conn.execute("UPDATE hosts SET agent = NULL WHERE id = ?1", [id])?;
+        }
+    }
+    for name in crate::agentdef::REMOVED_IDS {
+        conn.execute(
+            "DELETE FROM labels WHERE name = ?1 AND human_only = 1 AND NOT EXISTS (SELECT 1 FROM card_labels cl WHERE cl.label = labels.id)",
+            [name],
+        )?;
+    }
+    conn.execute("INSERT INTO meta (key, value) VALUES ('removed_agents', 1) ON CONFLICT(key) DO UPDATE SET value = 1", [])?;
+    Ok(())
+}
+
 pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
         conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get::<_, i64>(0))
@@ -348,6 +393,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute("UPDATE hosts SET rules = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).unwrap_or_default()])?;
         }
     }
+    drop_removed_agents(conn)?;
     // 定时领取原来是 HH:MM 时间点：换成等价的 cron 表达式（「M H * * *」），不丢已有配置
     let rows: Vec<(i64, String)> = conn
         .prepare("SELECT id, cron FROM hosts")?
@@ -584,6 +630,10 @@ pub struct HostAgent {
     /// 安装、版本检查和更新状态（board host 上报；内置 agent 才有）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manage: Option<AgentManage>,
+    /// 配置文件里新加的 agent（`[agents.<标识>]`，不是内置的）：board host 上报。旧版 board host 不报，按内置处理——
+    /// 已经移除的内置 agent（[`crate::agentdef::REMOVED_IDS`]）这时被丢掉，自定义的同名 agent 不受影响（#484）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub custom: bool,
 }
 
 /// 一个内置 agent 在这台机器上的安装与更新状态（PRD §9.1「agent」）。
@@ -3437,6 +3487,15 @@ impl<'a> W<'a> {
     ///   （board host 重启后接回），按「agent 退出，卡片仍由这个名字持有」处理，结果「异常退出」
     /// - `final`：board host 退出，机器马上离线
     pub fn host_beat(&mut self, rep: &HostReport, token: Option<i64>) -> Result<HostWork> {
+        // 旧版 board host 还上报已经移除的内置 agent（pi）：丢掉，机器详情、派发对话框里都不出现（#484）
+        let cleaned;
+        let had_removed = rep.agents.iter().any(|a| crate::agentdef::is_removed(&a.id, a.custom));
+        let rep = if had_removed {
+            cleaned = HostReport { agents: rep.agents.iter().filter(|a| !crate::agentdef::is_removed(&a.id, a.custom)).cloned().collect(), ..rep.clone() };
+            &cleaned
+        } else {
+            rep
+        };
         check_host_name(&rep.name).map_err(BoardError::usage)?;
         if rep.instance.trim().is_empty() {
             return Err(BoardError::usage("缺少 instance"));
@@ -3721,9 +3780,26 @@ impl<'a> W<'a> {
                 self.tx.execute("UPDATE hosts SET round_at = NULL WHERE id = ?1", [h.id])?;
             }
         }
+        if had_removed {
+            if let Some(h) = self.host_row(&name)? {
+                self.drop_removed_run(h.id, &rep.agents)?;
+            }
+        }
         // 这台机器上线了、空出位置了：等着的「任意机器」派发挑一遍机器，分给它的随这次的任务一起发回去
         self.assign_any()?;
         self.read().host_work(&name, now)
+    }
+
+    /// 机器的运行设置（hosts.run）里去掉已经移除的内置 agent 那一项；这台机器上有同名的自定义 agent 时留着（#484）
+    fn drop_removed_run(&mut self, id: i64, agents: &[HostAgent]) -> Result<()> {
+        let raw: String = self.tx.query_row("SELECT run FROM hosts WHERE id = ?1", [id], |r| r.get(0))?;
+        let mut run: BTreeMap<String, serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let before = run.len();
+        run.retain(|k, _| !crate::agentdef::REMOVED_IDS.contains(&k.as_str()) || agents.iter().any(|a| &a.id == k));
+        if run.len() != before {
+            self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![id, serde_json::to_string(&run).unwrap_or_default()])?;
+        }
+        Ok(())
     }
 
     /// board host 对远程管理请求的回报（在上报里）：
