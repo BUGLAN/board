@@ -676,6 +676,12 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .ps-note { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
 .ps-note svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
 .ps-note.warn { color: var(--warn); }
+/* 项目目录（#488）：每台机器上这个项目实际的目录 */
+.ps-paths { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--text-3); }
+.ps-paths li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ps-path-host { flex: none; color: var(--text-2); }
+.ps-paths code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.ps-path-tag { flex: none; font-size: 11px; color: var(--text-3); }
 .ps-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ps-label { padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; color: color-mix(in oklab, var(--c), var(--ink)); background: color-mix(in srgb, var(--c) 16%, transparent); }
 .ps-none { font-size: 12.5px; color: var(--text-3); }

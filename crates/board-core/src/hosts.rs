@@ -774,6 +774,10 @@ pub struct HostWorkspace {
     /// `--dir <项目>=<路径>` 单独覆盖的项目目录（旧写法 `--dir <项目>/<白板>=<路径>` 只覆盖那一块白板，兼容保留）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<HostDirOverride>,
+    /// 项目设置里填了「项目目录」的项目：项目标识 → 目录名，目录是 `<工作空间>/<目录名>`；没填的用项目标识（PRD §4，#488）。
+    /// 不存进机器的数据：服务端读机器时按项目表填上，发给界面和 board host；旧版 board host 不认，照旧按项目标识
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<String, String>,
 }
 
 /// `--dir` 单独覆盖的一个项目（或旧写法的一块白板）的目录
@@ -829,23 +833,37 @@ fn is_false(b: &bool) -> bool {
 /// 项目下的几块白板共用这一个目录。路径分隔符按那台机器的系统选（Windows 用 `\`，其余用 `/`），工作空间末尾的分隔符去掉；
 /// 工作空间为空、`board` 不是 `<项目>/<白板>` 时返回 None
 pub fn board_dir(workspace: &str, board: &str, os: &str) -> Option<String> {
-    let base = workspace.trim().trim_end_matches(['/', '\\']);
     let (project, name) = board.split_once('/')?;
-    if base.is_empty() || project.is_empty() || name.is_empty() {
+    if name.is_empty() {
+        return None;
+    }
+    project_dir(workspace, project, os)
+}
+
+/// 工作空间里的一个目录 `<工作空间>/<目录名>`：分隔符按那台机器的系统选，工作空间末尾的分隔符去掉；工作空间、目录名为空时返回 None
+pub fn project_dir(workspace: &str, dir: &str, os: &str) -> Option<String> {
+    let base = workspace.trim().trim_end_matches(['/', '\\']);
+    if base.is_empty() || dir.is_empty() {
         return None;
     }
     let sep = if os.to_lowercase().contains("windows") { "\\" } else { "/" };
-    Some(format!("{base}{sep}{project}"))
+    Some(format!("{base}{sep}{dir}"))
 }
 
 /// 派生一块白板的目录：`--dir` 覆盖了的用覆盖的路径（`fixed`；先看只管这一块白板的旧写法，再看它所在的项目），
-/// 否则由工作空间派生成 `<工作空间>/<项目>`（工作空间为空时返回 None）
+/// 否则由工作空间派生成 `<工作空间>/<项目目录>`——项目设置里填了「项目目录」用它，没填用项目标识（#488）。
+/// 工作空间为空、`board` 不是 `<项目>/<白板>` 时返回 None
 pub fn derive_dir(ws: &HostWorkspace, board: &str, os: &str) -> Option<HostDir> {
     let project = board.split_once('/').map(|(p, _)| p);
     if let Some(o) = ws.overrides.iter().find(|o| o.board == board).or_else(|| ws.overrides.iter().find(|o| Some(o.board.as_str()) == project)) {
         return Some(HostDir { board: board.to_string(), path: o.path.clone(), fixed: true, ..Default::default() });
     }
-    let path = board_dir(&ws.path, board, os)?;
+    let (project, name) = board.split_once('/')?;
+    if project.is_empty() || name.is_empty() {
+        return None;
+    }
+    let dir = ws.projects.get(project).map(|d| d.trim()).filter(|d| !d.is_empty()).unwrap_or(project);
+    let path = project_dir(&ws.path, dir, os)?;
     Some(HostDir { board: board.to_string(), path, ..Default::default() })
 }
 
@@ -894,7 +912,8 @@ pub struct HostClone {
 
 /// 工作空间的设置路径：去掉首尾空白（`~` 不展开，和配置里写的一样）。没有路径、都是空白时为空
 fn clean_workspace(w: &HostWorkspace) -> HostWorkspace {
-    let mut out = HostWorkspace { path: w.path.trim().to_string(), created: w.created, overrides: vec![] };
+    // 项目目录（projects）不存：读的时候按项目表填
+    let mut out = HostWorkspace { path: w.path.trim().to_string(), created: w.created, ..Default::default() };
     for o in &w.overrides {
         let (board, path) = (o.board.trim().to_string(), o.path.trim().to_string());
         if board.is_empty() || path.is_empty() || out.overrides.iter().any(|x| x.board == board) {
@@ -961,7 +980,7 @@ fn exported_workspace(dirs: &[HostDir]) -> Option<HostWorkspace> {
             overrides.push(HostDirOverride { board: d.board.trim().to_string(), path: d.path.trim().to_string() });
         }
     }
-    base.map(|path| HostWorkspace { path, created: false, overrides })
+    base.map(|path| HostWorkspace { path, created: false, overrides, ..Default::default() })
 }
 
 /// 这台机器的工作空间：新数据读 `workspace` 列；还没有时（升级前的机器）用旧的「白板与目录」导出，
@@ -978,7 +997,7 @@ pub(crate) fn workspace_of(stored: Option<&str>, dirs: &[HostDir]) -> Option<Hos
     exported_workspace(dirs).or_else(|| {
         dirs.iter()
             .find(|d| !d.fixed && !d.path.trim().is_empty())
-            .map(|d| HostWorkspace { path: d.path.trim().to_string(), created: false, overrides: vec![] })
+            .map(|d| HostWorkspace { path: d.path.trim().to_string(), ..Default::default() })
     })
 }
 
@@ -2205,10 +2224,12 @@ pub(crate) struct HostRow {
     pub(crate) agents_raw: String,
     pub(crate) envs_raw: String,
     pub(crate) dirs_raw: String,
+    /// 项目设置里填了「项目目录」的项目（项目标识 → 目录名，#488）：派生目录用，见 [`HostRow::workspace`]
+    pub(crate) proj_dirs: BTreeMap<String, String>,
 }
 
 const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT picks FROM sched WHERE id = 1), '{}') AS sched_picks";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT picks FROM sched WHERE id = 1), '{}') AS sched_picks, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -2223,6 +2244,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         os: r.get(3)?,
         version: r.get(4)?,
         agents: serde_json::from_str(&agents_raw).unwrap_or_default(),
+        proj_dirs: serde_json::from_str(&r.get::<_, String>("proj_dirs")?).unwrap_or_default(),
         envs: serde_json::from_str(&envs_raw).unwrap_or_default(),
         run: serde_json::from_str(&run).unwrap_or_default(),
         workspace_raw,
@@ -2385,8 +2407,15 @@ impl HostRow {
         let found = |id: &str| all.iter().find(|a| a.id == id && a.found).cloned();
         self.agent.as_deref().and_then(found).or_else(|| all.iter().find(|a| a.found).cloned())
     }
+    /// 这台机器的工作空间（[`workspace_of`]），带上项目设置里的项目目录：派生目录、发给界面和 board host 都用它（#488）
+    pub(crate) fn workspace(&self) -> Option<HostWorkspace> {
+        workspace_of(self.workspace_raw.as_deref(), &self.dirs).map(|mut w| {
+            w.projects = self.proj_dirs.clone();
+            w
+        })
+    }
     fn info(&self, now: i64) -> HostInfo {
-        let workspace = workspace_of(self.workspace_raw.as_deref(), &self.dirs);
+        let workspace = self.workspace();
         HostInfo {
             id: self.id,
             name: self.name.clone(),
@@ -3279,7 +3308,7 @@ impl<'a> W<'a> {
                 Ok(_) => {
                     // 接着做的这一张记下这次的目录（和第一张开始时的算法一样）
                     if q.path.is_none() {
-                        let ws = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
+                        let ws = h.workspace();
                         let path = host_board_dir(ws.as_ref(), &board.path(), &h.os).map(|x| x.path);
                         if path.is_some() {
                             self.tx.execute("UPDATE dispatches SET path = ?2 WHERE id = ?1", params![q.id, path])?;
@@ -3513,7 +3542,7 @@ impl<'a> W<'a> {
         // 旧版 board host 的 `board` 一列是白板标识（不是 `<项目>/<白板>`）：没配工作空间的机器按老办法用它。
         // 服务端按工作空间配好了的（新版）不认白板标识，存着的旧数据也不改
         let old = rep.workspace.is_none()
-            && known.as_ref().is_none_or(|h| h.workspace_raw.is_none() || workspace_of(h.workspace_raw.as_deref(), &h.dirs).is_none_or(|w| w.path.is_empty()));
+            && known.as_ref().is_none_or(|h| h.workspace_raw.is_none() || h.workspace().is_none_or(|w| w.path.is_empty()));
         for d in &rep.dirs {
             let legacy = old && !crate::valid_board(d.board.trim());
             if !legacy && !crate::valid_board(d.board.trim()) {
@@ -3570,6 +3599,7 @@ impl<'a> W<'a> {
                         created: false,
                         // 这几块在盘上已经摆着（旧版 `--dir` 固定）：不算只给界面上改
                         overrides: dirs.iter().map(|d| HostDirOverride { board: d.board.clone(), path: d.path.clone() }).collect(),
+                        ..Default::default()
                     });
                 }
                 let dirs = serde_json::to_string(&dirs).unwrap_or_else(|_| "[]".into());
@@ -3654,8 +3684,18 @@ impl<'a> W<'a> {
                 // 存着每块白板的目录：board host 报的目录状态合进来；新露出来的白板记下它的目录（路径由工作空间派生）。
                 // 旧版 board host 上报的白板标识也存着，工作空间为空时照样能派卡
                 let mut dirs = h.dirs.clone();
+                // 存着的路径按现在的工作空间和项目目录重新派生：项目设置里改了项目目录（#488），board host 按新路径报上来的
+                // 检查结果才合得上；路径变了的，旧路径的检查结果、克隆状态不再算数
+                if let Some(ws) = workspace.as_ref().map(|w| HostWorkspace { projects: h.proj_dirs.clone(), ..w.clone() }) {
+                    for d in dirs.iter_mut() {
+                        if let Some(x) = derive_dir(&ws, &d.board, &rep.os).filter(|x| x.path != d.path) {
+                            *d = HostDir { board: d.board.clone(), path: x.path, fixed: x.fixed, ..Default::default() };
+                        }
+                    }
+                }
                 merge_dir_checks(&mut dirs, &rep.dirs);
-                if let Some(rw) = reported.as_ref().filter(|rw| !rw.path.is_empty()) {
+                if let Some(rw) = reported.as_ref().filter(|rw| !rw.path.is_empty()).map(|w| HostWorkspace { projects: h.proj_dirs.clone(), ..w.clone() }) {
+                    let rw = &rw;
                     for r in &rep.dirs {
                         if dirs.iter().any(|d| d.board == r.board) {
                             continue;
@@ -4358,7 +4398,7 @@ impl<'a> W<'a> {
                 }
             }
             // 按本机 agent 的顺序、再 git、再版本
-            let dirs = derived_dirs(&h.dirs, workspace_of(h.workspace_raw.as_deref(), &h.dirs).as_ref(), &h.os);
+            let dirs = derived_dirs(&h.dirs, h.workspace().as_ref(), &h.os);
             let order = |i: &SelfTestItem| -> (usize, usize) {
                 match i.kind.as_str() {
                     "agent" => (0, h.agents.iter().position(|a| a.id == i.key).unwrap_or(usize::MAX)),
@@ -4392,7 +4432,7 @@ impl<'a> W<'a> {
     /// 原样保留，其他白板由工作空间派生；路径只去掉首尾空白，`~` 由 board host 展开
     fn host_set_workspace(&mut self, name: &str, raw: &HostWorkspace, by: &str) -> Result<()> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
-        let stored = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
+        let stored = h.workspace();
         let mut next = clean_workspace(raw);
         // 本机 `--dir` 启动的白板由启动参数决定，界面上改不了：提交里没带上时替它补回去；
         // 不配工作空间（路径留空）时一块都不留
@@ -4433,7 +4473,9 @@ impl<'a> W<'a> {
             return Ok(());
         }
         // 已经摆着的老白板（升级前逐块配的、board host 报过的）跟着换成工作空间派生的路径
-        let dirs = derived_dirs(&derived_dirs(&h.dirs, stored.as_ref(), &h.os), Some(&next), &h.os);
+        // 派生时带上项目目录（#488）；存的 next 不带
+        let with_projects = HostWorkspace { projects: h.proj_dirs.clone(), ..next.clone() };
+        let dirs = derived_dirs(&derived_dirs(&h.dirs, stored.as_ref(), &h.os), Some(&with_projects), &h.os);
         if same_workspace(stored.as_ref(), Some(&next)) && derived_dirs(&h.dirs, stored.as_ref(), &h.os).iter().map(|d| &d.board).eq(dirs.iter().map(|d| &d.board)) {
             return Ok(());
         }
@@ -4474,7 +4516,7 @@ impl<'a> W<'a> {
             self.resolve(&board)?;
             seen.push(board);
         }
-        let cur = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
+        let cur = h.workspace();
         let fixed: Vec<HostDirOverride> = cur.iter().flat_map(|w| w.overrides.iter().cloned()).collect();
         if raw.is_empty() {
             return self.host_set_workspace(name, &HostWorkspace { overrides: fixed, ..Default::default() }, by);
@@ -4497,7 +4539,7 @@ impl<'a> W<'a> {
         if url.is_empty() {
             return Err(BoardError::usage("先填仓库地址"));
         }
-        let ws = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
+        let ws = h.workspace();
         let Some(d0) = host_board_dir(ws.as_ref(), board, &h.os) else {
             let project = board.split_once('/').map_or(board, |(p, _)| p);
             return Err(BoardError::usage(format!(
@@ -4837,7 +4879,7 @@ impl<'a> W<'a> {
     pub(crate) fn dispatch_target_check(&self, board: &BoardRef, host: &str, agent: Option<&str>) -> Result<()> {
         let h = self.host_row(host)?.ok_or_else(|| BoardError::usage(format!("没有叫「{host}」的机器：界面「机器」里能看到所有机器")))?;
         // 有工作空间的机器就视为有这块白板的目录（目录状态只在机器详情里提示，不再拒绝派发）
-        if workspace_of(h.workspace_raw.as_deref(), &h.dirs).is_none() && !h.dirs.iter().any(|d| d.board == board.path()) {
+        if h.workspace().is_none() && !h.dirs.iter().any(|d| d.board == board.path()) {
             return Err(BoardError::usage(format!(
                 "机器「{host}」还没有配工作空间：先在机器详情里填上，{} 项目的目录是 <工作空间>/{}",
                 board.project, board.project
@@ -5459,7 +5501,7 @@ impl<'a> W<'a> {
         match claimed {
             Ok(_) => {
                 // 记下这一次在哪个目录里做（`<工作空间>/<项目>`）：之后机器换了工作空间，这台机器还按这里找仓库
-                let workspace = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
+                let workspace = h.workspace();
                 let path = workspace.as_ref().and_then(|w| derive_dir(w, &board.path(), &h.os)).map(|x| x.path);
                 self.tx.execute(
                     "UPDATE dispatches SET state = 'running', started_at = ?2, session = ?1, path = COALESCE(?3, path) WHERE id = ?1",

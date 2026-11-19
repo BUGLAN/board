@@ -8,7 +8,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
 派发开始时，`board host` 已经以 `<机器名>/<模型名>-<推理强度>`（例如 `win/deepseek-v4.1-flash-high`）领到了卡片，然后：
 
-1. 在这块白板所在项目的目录（这台设备的工作空间里的 `<工作空间>/<项目>`，一个项目一个仓库，项目下的白板共用；`--dir <项目>=<路径>` 可以单独指定某个项目；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里，用 **ACP**（Agent Client Protocol）启动它：`board host` 启动 `board acp`（board 自己的一个子命令，`crates/board-cli/src/acp.rs`），由它在启动环境里执行这个 agent 的 **ACP 入口**，完成 `initialize`、`session/new`（工作目录就是这个目录），再把一行提示词作为 `session/prompt` 发过去（提示词放在 `~/.board/host/run/<机器名>/<派发 ID>.prompt`，不放进命令行）。握手时要 **v2**（[草案](https://agentclientprotocol.com/rfds/v2/prompt.md)），按 ACP 的版本协商走：Claude Code、Codex 的适配器回 2，dsh 只会 v1、回 1（#461）：
+1. 在这块白板所在项目的目录（这台设备的工作空间里的 `<工作空间>/<项目目录>`（项目设置里的项目目录，留空用项目标识），一个项目一个仓库，项目下的白板共用；`--dir <项目>=<路径>` 可以单独指定某个项目；派发开始时记下这个路径）里、在这个 agent 的**启动环境**里，用 **ACP**（Agent Client Protocol）启动它：`board host` 启动 `board acp`（board 自己的一个子命令，`crates/board-cli/src/acp.rs`），由它在启动环境里执行这个 agent 的 **ACP 入口**，完成 `initialize`、`session/new`（工作目录就是这个目录），再把一行提示词作为 `session/prompt` 发过去（提示词放在 `~/.board/host/run/<机器名>/<派发 ID>.prompt`，不放进命令行）。握手时要 **v2**（[草案](https://agentclientprotocol.com/rfds/v2/prompt.md)），按 ACP 的版本协商走：Claude Code、Codex 的适配器回 2，dsh 只会 v1、回 1（#461）：
 
    ```
    /board-skills 开始执行 <项目>项目之中的<白板>白板中的#<ID>任务
@@ -64,7 +64,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
 ## 在一台新机器上装 `board`、接任务
 
-只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行命令：填机器名和工作空间（每个项目的目录是 `<工作空间>/<项目>`，项目下的白板共用），界面以机器名新建一个访问令牌，给出
+只有命令行的机器（服务器、devbox）用界面「机器 → 添加机器」生成的那一行命令：填机器名和工作空间（每个项目的目录是 `<工作空间>/<项目目录>`，项目目录留空用项目标识，项目下的白板共用），界面以机器名新建一个访问令牌，给出
 
 ```sh
 curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --workspace <工作空间> --service

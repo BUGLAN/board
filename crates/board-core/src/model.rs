@@ -514,6 +514,9 @@ pub struct ProjectInfo {
     /// 集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
     #[serde(default)]
     pub branch: String,
+    /// 项目目录：每台机器上这个项目的目录是 `<工作空间>/<项目目录>`；空表示用项目标识（PRD §4，#488）。旧服务端没有这一项
+    #[serde(default)]
+    pub dir: String,
     pub boards: Vec<BoardInfo>,
 }
 

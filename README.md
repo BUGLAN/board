@@ -165,7 +165,7 @@ board new "标题" --body "描述" # 新建卡片；--inbox 记到「未整理�
 board new "标题" --body-file body.md   # 多行描述写进文件（Windows 的 board.cmd 只能这样传多行）；comment 用 --comment-file
 board new "标题" --body "描述" --image 1.png --file run.log  # 截图、日志随卡片一起建，图片直接显示在描述里
 board attach 2 shot.png --comment "截图"  # 上传附件
-board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每个项目的目录是 <工作空间>/<项目>（项目下的白板共用），没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、Codex，其他 agent 见 docs/agents.md
+board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每个项目的目录是 <工作空间>/<项目目录>（项目设置里填，留空用项目标识；项目下的白板共用），没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、Codex，其他 agent 见 docs/agents.md
 board host --install --name mbp --workspace ~/repo   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
 board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有机器的 board host 自动装到各 agent 的 skill 目录；ls / rm / sync
 board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止

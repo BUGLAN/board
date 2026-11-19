@@ -148,11 +148,13 @@ export const api = {
     desc?: string;
     color?: string;
     pos?: Pos;
+    /** 项目目录（#488）：留空用项目标识 */
+    dir?: string;
     board: { name: string; key: string; desc?: string };
   }) => req<{ key: string }>('POST', '/api/projects', p),
   updateProject: (
     key: string,
-    patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; repo?: string; branch?: string },
+    patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; repo?: string; branch?: string; dir?: string },
   ) =>
     req('PATCH', `/api/projects/${q(key)}`, patch),
   deleteProject: (key: string) => req('DELETE', `/api/projects/${q(key)}`),

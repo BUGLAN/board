@@ -125,6 +125,23 @@ describe('项目设置', () => {
     expect(input('仓库地址').value).toBe('git@github.com:o/p.git');
   });
 
+  it('项目目录（#488）：留空时占位写项目标识；填了失焦保存；不是一个目录名的不发请求；列出各机器上的实际目录', async () => {
+    const h = { name: 'mbp', dirs: [{ board: 'p/a', path: '/ws/board' }, { board: 'q/x', path: '/ws/q' }] } as unknown as HostInfo;
+    await open(workspace({ hosts: [h] }));
+    const el = input('项目目录');
+    expect(el.value).toBe('');
+    expect(el.placeholder).toContain('p');
+    expect([...dialog().querySelectorAll('.ps-paths li')].map(l => l.textContent)).toEqual(['mbp/ws/board']);
+    type(el, '../x');
+    blur(el);
+    await act(async () => {});
+    expect(sent).toEqual([]);
+    type(input('项目目录'), ' board ');
+    blur(input('项目目录'));
+    await act(async () => {});
+    expect(sent).toContainEqual({ method: 'PATCH', path: '/api/projects/p', body: { dir: 'board' } });
+  });
+
   it('「管理标签」叠在上面：Esc 不关项目设置', async () => {
     await open();
     const btn = [...dialog().querySelectorAll('button')].find(b => b.textContent?.includes('管理标签'))!;

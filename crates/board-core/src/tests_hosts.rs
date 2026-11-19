@@ -261,6 +261,7 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
         path: "/tmp".into(),
         created: false,
         overrides: vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }],
+        ..Default::default()
     });
     beat(&mut s, T0, &rep).unwrap();
     let h = host(&s, T0);
@@ -283,6 +284,7 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
                     path: "/tmp".into(),
                     created: false,
                     overrides: vec![HostDirOverride { board: "default/other".into(), path: "/tmp/other".into() }],
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -302,6 +304,7 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
                         path: "/tmp/new".into(),
                         created: false,
                         overrides: vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }],
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
@@ -332,6 +335,95 @@ fn board_dir_uses_the_machines_separator() {
     assert_eq!(hosts::board_dir("/repo", "nope", "macOS").as_deref(), None);
 }
 
+/// 项目目录（#488）：项目设置里填了的用 `<工作空间>/<项目目录>`，没填（或空白）用项目标识；`--dir` 覆盖的优先；分隔符按机器
+#[test]
+fn derive_dir_uses_the_project_dir() {
+    let ws = |projects: &[(&str, &str)]| HostWorkspace {
+        path: "/repo".into(),
+        projects: projects.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        ..Default::default()
+    };
+    let path = |w: &HostWorkspace, board: &str, os: &str| hosts::derive_dir(w, board, os).map(|d| d.path);
+    assert_eq!(path(&ws(&[]), "default/main", "macOS").as_deref(), Some("/repo/default"), "没填：项目标识");
+    assert_eq!(path(&ws(&[("default", "board")]), "default/main", "macOS").as_deref(), Some("/repo/board"));
+    assert_eq!(path(&ws(&[("default", "board")]), "default/other", "macOS").as_deref(), Some("/repo/board"), "项目下的白板共用");
+    assert_eq!(path(&ws(&[("default", "board")]), "site/main", "macOS").as_deref(), Some("/repo/site"), "别的项目不受影响");
+    assert_eq!(path(&ws(&[("default", "  ")]), "default/main", "macOS").as_deref(), Some("/repo/default"), "空白当没填");
+    let win = HostWorkspace { path: "C:\\work\\".into(), ..ws(&[("default", "board")]) };
+    assert_eq!(path(&win, "default/main", "Windows 11 Pro").as_deref(), Some("C:\\work\\board"));
+    // `--dir` 覆盖的优先
+    let fixed = HostWorkspace { overrides: vec![HostDirOverride { board: "default".into(), path: "/elsewhere".into() }], ..ws(&[("default", "board")]) };
+    let d = hosts::derive_dir(&fixed, "default/main", "macOS").unwrap();
+    assert_eq!((d.path.as_str(), d.fixed), ("/elsewhere", true));
+    assert_eq!(path(&ws(&[("default", "board")]), "nope", "macOS"), None);
+    assert_eq!(hosts::project_dir("", "board", "macOS"), None);
+}
+
+/// 项目目录只能是一个合法的目录名
+#[test]
+fn project_dir_must_be_one_directory_name() {
+    for ok in ["", "  ", "board", "my.repo-2", "仓库"] {
+        assert!(crate::store::check_project_dir(ok).is_ok(), "{ok}");
+    }
+    assert_eq!(crate::store::check_project_dir("  board ").unwrap(), "board");
+    for bad in ["a/b", "a\\b", ".", "..", "C:", "C:\\repo", "~repo", "a|b", "a?b", "a*", "a<b", "a\"b", "repo.", "a\u{1}b", &"x".repeat(65)] {
+        let e = crate::store::check_project_dir(bad).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage, "{bad}");
+    }
+}
+
+/// 项目设置里改项目目录（#488）：工作区里带上，机器的目录跟着派生（旧路径的检查结果不再算），
+/// 发给 board host 的工作空间带上项目目录、存着的不带；board host 按新路径报上来的检查结果合得上；
+/// 不同项目不能用同一个目录；清空回到项目标识
+#[test]
+fn project_dir_moves_the_machines_directory() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.dirs[0].status = Some("not_git".into());
+    rep.dirs[0].checked_at = Some(T0);
+    beat(&mut s, T0, &rep).unwrap();
+    let h = s.read(|r| r.host("mbp", T0)).unwrap();
+    assert_eq!((h.dirs[0].path.as_str(), h.dirs[0].status.as_deref()), ("/tmp/default", Some("not_git")));
+
+    let ui = |s: &mut Store, f: &dyn Fn(&mut W) -> Result<()>| s.write(T0 + S, Origin::ui(None), |w| f(w));
+    ui(&mut s, &|w| w.set_project_dir("default", " board ")).unwrap();
+    let wsp = s.read(|r| r.workspace(T0 + S)).unwrap();
+    assert_eq!(wsp.projects.iter().find(|p| p.key == "default").unwrap().dir, "board");
+    let h = s.read(|r| r.host("mbp", T0 + S)).unwrap();
+    assert_eq!(h.dirs[0].path, "/tmp/board", "按项目目录派生");
+    assert_eq!(h.dirs[0].status, None, "旧路径的检查结果不算");
+    assert_eq!(h.workspace.as_ref().unwrap().projects.get("default").map(String::as_str), Some("board"));
+    let w = s.read(|r| r.host_work("mbp", T0 + S)).unwrap();
+    assert_eq!(w.host.workspace.as_ref().unwrap().projects.get("default").map(String::as_str), Some("board"), "board host 拿得到");
+    // board host 按新目录检查后报上来：合得上；存着的工作空间里没有项目目录
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.workspace.as_mut().unwrap().projects = w.host.workspace.as_ref().unwrap().projects.clone();
+    rep.dirs = vec![HostDir { board: B.into(), path: "/tmp/board".into(), status: Some("ok".into()), origin: Some("https://github.com/o/board.git".into()), checked_at: Some(T0 + 2 * S), ..Default::default() }];
+    let w = beat(&mut s, T0 + 2 * S, &rep).unwrap();
+    assert_eq!((w.host.dirs[0].path.as_str(), w.host.dirs[0].status.as_deref()), ("/tmp/board", Some("ok")));
+    let raw: String = s.conn().query_row("SELECT workspace FROM hosts WHERE name = 'mbp'", [], |r| r.get(0)).unwrap();
+    assert!(!raw.contains("projects"), "{raw}");
+    // 白板路径、BOARD 不受影响
+    assert_eq!(s.read(|r| r.resolve(B)).unwrap().path(), B);
+
+    // 不同项目不能用同一个目录；项目标识也不能和别的项目填的目录重名
+    ui(&mut s, &|w| w.create_project("站点", "site", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None }).map(|_| ())).unwrap();
+    let e = ui(&mut s, &|w| w.set_project_dir("site", "Board")).unwrap_err();
+    assert!(e.message.contains("default"), "{}", e.message);
+    let e = ui(&mut s, &|w| w.set_project_dir("default", "site")).unwrap_err();
+    assert!(e.message.contains("site"), "{}", e.message);
+    ui(&mut s, &|w| w.create_project("板", "board", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None }).map(|_| ())).unwrap();
+    let e = ui(&mut s, &|w| w.set_project_dir("board", "")).unwrap_err();
+    assert!(e.message.contains("default"), "{}", e.message);
+    // 非法的不改
+    assert_eq!(ui(&mut s, &|w| w.set_project_dir("default", "../x")).unwrap_err().code, ErrorCode::Usage);
+    // 清空：回到项目标识（填成项目标识本身也一样）
+    ui(&mut s, &|w| w.set_project_dir("default", "default")).unwrap();
+    let wsp = s.read(|r| r.workspace(T0 + S)).unwrap();
+    assert_eq!(wsp.projects.iter().find(|p| p.key == "default").unwrap().dir, "");
+    assert_eq!(s.read(|r| r.host("mbp", T0 + S)).unwrap().dirs[0].path, "/tmp/default");
+}
+
 #[test]
 fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
     let mut s = store();
@@ -343,6 +435,7 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
         path: "/tmp".into(),
         created: false,
         overrides: vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }],
+        ..Default::default()
     });
     rep.dirs = vec![HostDir {
         board: B.into(),
@@ -372,6 +465,7 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
                         path: "/repo".into(),
                         created: false,
                         overrides: vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }],
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
@@ -3244,6 +3338,7 @@ fn dir_override_can_cover_a_whole_project() {
                 path: "/legacy/b-old".into(),
             },
         ],
+        ..Default::default()
     };
     let dir = |b: &str| hosts::derive_dir(&ws, b, "Linux").map(|d| (d.path, d.fixed));
     // `--dir a=<路径>`：项目 a 的所有白板都用它

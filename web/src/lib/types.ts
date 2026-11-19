@@ -148,6 +148,8 @@ export interface ProjectInfo {
   repo?: string;
   /** 集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
   branch?: string;
+  /** 项目目录：每台机器上是 <工作空间>/<项目目录>；空表示用项目标识（lib/projectDir，#488）。旧服务端没有这一项 */
+  dir?: string;
   boards: BoardInfo[];
 }
 

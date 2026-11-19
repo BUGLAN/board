@@ -912,20 +912,26 @@ struct NewProjectBody {
     color: Option<String>,
     #[serde(default)]
     pos: Option<Pos>,
+    /// 项目目录（#488）：每台机器上是 `<工作空间>/<项目目录>`；不给、空的用项目标识
+    #[serde(default)]
+    dir: String,
     board: NewBoardBody,
 }
 
 async fn create_project(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Value> {
     let b: NewProjectBody = parse(v)?;
     let key = write(&s, &h, move |w| {
-        w.create_project(
+        let key = w.create_project(
             &b.name,
             &b.key,
             &b.desc,
             b.color.as_deref(),
             b.pos,
             NewBoard { name: b.board.name, key: b.board.key, desc: b.board.desc, pos: b.board.pos },
-        )
+        )?;
+        // 不填也查一遍：项目标识不能和别的项目填的目录重名
+        w.set_project_dir(&key, &b.dir)?;
+        Ok(key)
     })
     .await?;
     Ok(Json(json!({ "key": key })))
@@ -950,6 +956,9 @@ struct PatchBody {
     repo: Option<String>,
     #[serde(default)]
     branch: Option<String>,
+    /// 项目目录（空字符串表示清空，回到用项目标识，#488）
+    #[serde(default)]
+    dir: Option<String>,
     #[serde(default)]
     project: Option<String>,
     /// 标签：仅人可打
@@ -971,8 +980,8 @@ async fn update_project(
     Json(v): Json<Value>,
 ) -> ApiResult<Value> {
     let p: PatchBody = parse(v)?;
-    // 代码仓库地址和集成分支（一个项目一个仓库）决定 agent 往哪推、机器往哪克隆：只有人能改（PRD §4）
-    if (p.repo.is_some() || p.branch.is_some()) && matches!(caller, Caller::Agent { .. }) {
+    // 代码仓库地址、集成分支（一个项目一个仓库）和项目目录决定 agent 往哪推、机器往哪克隆：只有人能改（PRD §4）
+    if (p.repo.is_some() || p.branch.is_some() || p.dir.is_some()) && matches!(caller, Caller::Agent { .. }) {
         return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn)));
     }
     write(&s, &h, move |w| {
@@ -987,6 +996,9 @@ async fn update_project(
         )?;
         if p.repo.is_some() || p.branch.is_some() {
             w.set_repo_branch(&key, p.repo.as_deref(), p.branch.as_deref())?;
+        }
+        if let Some(d) = p.dir.as_deref() {
+            w.set_project_dir(&key, d)?;
         }
         Ok(())
     })

@@ -11,7 +11,7 @@
 //!
 //! 「现在会不会马上开始」（离线、暂停接单、没有空位）不在这里：那只决定排不排队，不决定能不能派。
 
-use crate::hosts::{derive_dir, workspace_of, HostRow};
+use crate::hosts::{derive_dir, HostRow};
 use crate::{BoardError, BoardRef, ErrorCode, Result, R};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -121,7 +121,7 @@ impl R<'_> {
     /// 这台机器接不了这块白板的卡时返回原因；能接时为 None。先看工作空间，再看目录
     pub(crate) fn board_unfit(&self, h: &HostRow, board: &BoardRef) -> Result<Option<Unfit>> {
         let path = board.path();
-        let ws = workspace_of(h.workspace_raw.as_deref(), &h.dirs);
+        let ws = h.workspace();
         let own = h.dirs.iter().find(|d| d.board == path);
         if ws.is_none() && own.is_none() {
             return Ok(Some(Unfit::NoWorkspace));

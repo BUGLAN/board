@@ -13,6 +13,7 @@ import { PROJECT_COLORS } from '../lib/schema';
 import type { ProjectInfo } from '../lib/types';
 import { cx } from '../lib/util';
 import { patchProject, repoPatch, saveSetting, useData } from '../store/data';
+import { projectDirError } from '../lib/projectDir';
 import { manageLabels, openProjectSettings, useUI } from '../store/ui';
 import { InfoTip, Sync, useSync } from './bits';
 import { Icon } from './Icon';
@@ -146,6 +147,18 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
     saveSetting(`${which}:${pk}`, repoPatch(pk, { [which]: v }), () => api.updateProject(pk, which === 'repo' ? { repo: v } : { branch: v }));
   // 机器上报的这个项目目录的 origin（#185 克隆也用同一个来源）：仓库地址没设时作建议
   const suggested = ws?.hosts?.flatMap(h => h.dirs ?? []).find(d => d.board.split('/')[0] === pk && d.origin)?.origin ?? '';
+  // 项目目录（#488）：先在界面上查一遍（不是一个目录名、和别的项目重名），服务端再查
+  const saveDir = (v: string) => {
+    const why = projectDirError(v, pk, ws?.projects ?? []);
+    // 旁边的保存状态画成失败、提示里写原因（useSync），输入的内容留在框里
+    if (why) return Promise.reject(new Error(`项目目录没改：${why}`));
+    return saveSetting(`dir:${pk}`, patchProject(pk, x => ({ ...x, dir: v })), () => api.updateProject(pk, { dir: v }));
+  };
+  // 每台机器上这个项目实际的目录（服务端按工作空间、项目目录派生；--dir 覆盖的照写）
+  const paths = (ws?.hosts ?? []).flatMap(h => {
+    const d = (h.dirs ?? []).find(x => x.board.split('/')[0] === pk);
+    return d ? [{ host: h.name, path: d.path, fixed: d.fixed }] : [];
+  });
 
   return (
     <>
@@ -201,7 +214,7 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
             <section className="d-section" style={{ ['--i' as string]: 1 }}>
               <div className="d-label">
                 代码仓库
-                <InfoTip text="一个项目一个仓库，项目下所有白板共用，机器上的目录是 <工作空间>/<项目>。设了仓库地址后，描述和评论里的「提交：abc1234」和 gh#12 变成链接，机器上还没有这个项目的目录时按它克隆。集成分支是 agent 推送的目标，留空按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支" />
+                <InfoTip text="一个项目一个仓库，项目下所有白板共用，机器上的目录是 <工作空间>/<项目目录>（项目目录留空用项目标识）。设了仓库地址后，描述和评论里的「提交：abc1234」和 gh#12 变成链接，机器上还没有这个项目的目录时按它克隆。集成分支是 agent 推送的目标，留空按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支" />
               </div>
               <div className="bs-rc bs-rp">
                 <Field
@@ -220,7 +233,26 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
                   }
                 />
                 <Field label="集成分支" value={p.branch ?? ''} mono placeholder="留空按 AGENTS.md / CLAUDE.md，没写用远端默认分支" onSave={v => saveRepo('branch', v)} />
+                <Field
+                  label="项目目录"
+                  value={p.dir ?? ''}
+                  mono
+                  placeholder={`留空用项目标识 ${pk}`}
+                  hint="每台机器上这个项目的目录是 <工作空间>/<项目目录>。改了之后机器按新目录检查、克隆，旧目录不动"
+                  onSave={saveDir}
+                />
               </div>
+              {paths.length > 0 && (
+                <ul className="ps-paths" aria-label="各机器上的目录">
+                  {paths.map(x => (
+                    <li key={x.host}>
+                      <span className="ps-path-host">{x.host}</span>
+                      <code className="mono">{x.path}</code>
+                      {x.fixed && <span className="ps-path-tag">--dir 固定</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
               {!repo.trim() && (
                 <p className="ps-note warn" role="status">
                   <Icon name="alert" />

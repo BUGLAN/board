@@ -1729,7 +1729,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let from_cmd = workspace_arg(opts.workspace.as_deref()).is_some() || !cmd_overrides.is_empty();
     let raw_ws = workspace_arg(opts.workspace.as_deref()).or_else(|| workspace_arg(conf.workspace.as_deref()));
     let raw_overrides = if from_cmd { cmd_overrides } else { conf.dirs.clone() };
-    let ws = to_workspace(raw_ws.as_deref(), &raw_overrides)?;
+    let mut ws = to_workspace(raw_ws.as_deref(), &raw_overrides)?;
     let follow_dirs = !from_cmd;
     let log_days = conf.log_days.unwrap_or(LOG_DAYS);
     let os = sysinfo::System::long_os_version()
@@ -1742,7 +1742,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let mut boards = ws_boards(&ws, &os);
     // 服务端上摆着的白板：所在项目在工作空间里还没有目录的，先按 `<工作空间>/<项目>` 建好（项目设了仓库地址的 `git clone`）
     let server: Vec<(String, Option<String>)> = match be.workspace() {
-        Ok(w) => w.projects.iter().flat_map(|p| p.boards.iter().map(|b| (b.path.clone(), Some(b.repo.clone()).filter(|r| !r.trim().is_empty())))).collect(),
+        Ok(w) => {
+            // 项目设置里的项目目录（#488）：先按它摆，免得在 `<工作空间>/<项目标识>` 白建一份
+            ws.projects = project_dirs(&w);
+            w.projects.iter().flat_map(|p| p.boards.iter().map(|b| (b.path.clone(), Some(b.repo.clone()).filter(|r| !r.trim().is_empty())))).collect()
+        }
         Err(e) => {
             let _ = writeln!(std::io::stdout(), "{} 取不到服务端上的白板：{}（工作空间里还没有目录的白板派来时再建）", p.yellow("!"), e.message);
             vec![]
@@ -2005,7 +2009,7 @@ fn to_workspace(raw: Option<&str>, overrides: &[(String, String)]) -> Result<Hos
         }
         None => String::new(),
     };
-    Ok(HostWorkspace { path, created: false, overrides: out })
+    Ok(HostWorkspace { path, created: false, overrides: out, ..Default::default() })
 }
 
 /// 服务端把工作空间写回本机配置；保留 `[host]` 里的机器名和文件里的其他项、注释
@@ -2015,6 +2019,11 @@ fn save_host_workspace(ws: &str) -> Result<()> {
         c.set_host(name.as_deref(), Some(ws))?;
         Ok(((), true))
     })
+}
+
+/// 项目设置里填了项目目录的项目：项目标识 → 目录名（#488；旧服务端没有这一项，都用项目标识）
+fn project_dirs(w: &Workspace) -> std::collections::BTreeMap<String, String> {
+    w.projects.iter().filter(|p| !p.dir.trim().is_empty()).map(|p| (p.key.clone(), p.dir.trim().to_string())).collect()
 }
 
 /// 把服务端上摆着的项目在盘上摆好：每个项目的目录是 `<工作空间>/<项目>`，项目下的几块白板共用它。已经有的不动；
@@ -2862,6 +2871,7 @@ impl Host<'_> {
     /// （工作空间里的白板按新的工作空间派生目录）。`--workspace` / `--dir` 启动时这一项不跟，服务端也不会让它改
     fn sync_server_dirs(&mut self, h: &HostInfo) {
         self.dirs_rev = h.dirs_rev;
+        self.sync_project_dirs(h);
         let Some(ws) = h.workspace.as_ref().filter(|w| !w.path.trim().is_empty()) else { return };
         // `--dir` 覆盖的那几块以本机启动参数为准
         let mut want = ws.clone();
@@ -2885,7 +2895,7 @@ impl Host<'_> {
                 }
                 boards.sort();
                 boards.dedup();
-                self.ws = want.clone();
+                self.ws = HostWorkspace { projects: self.ws.projects.clone(), ..want.clone() };
                 self.boards = boards;
                 for a in &mut self.agents {
                     a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
@@ -2894,6 +2904,56 @@ impl Host<'_> {
                 self.conf_seen.1 = Some(want.path);
             }
             Err(e) => self.say(format!("{} 服务端改的工作空间没有写进配置：{}", self.p.yellow("!"), e.message)),
+        }
+    }
+
+    /// 项目设置里的项目目录（#488）：以服务端为准（`--workspace` / `--dir` 启动时也跟），变了就按新目录重新摆一遍：
+    /// 新目录不存在时照常建好或克隆，旧目录不动。旧服务端不发这一项，都用项目标识
+    fn sync_project_dirs(&mut self, h: &HostInfo) {
+        let Some(projects) = h.workspace.as_ref().map(|w| w.projects.clone()) else { return };
+        if projects == self.ws.projects {
+            return;
+        }
+        let before = self.ws.projects.clone();
+        self.ws.projects = projects;
+        let moved: Vec<String> = self
+            .boards
+            .iter()
+            .filter(|b| {
+                let p = b.split_once('/').map(|(p, _)| p).unwrap_or_default();
+                before.get(p) != self.ws.projects.get(p)
+            })
+            .cloned()
+            .collect();
+        if moved.is_empty() {
+            return;
+        }
+        let server: Vec<(String, Option<String>)> = match self.rm().get::<Workspace>("/api/workspace", &[]) {
+            Ok(v) => v
+                .projects
+                .iter()
+                .flat_map(|p| p.boards.iter().map(|b| (b.path.clone(), Some(b.repo.clone()).filter(|r| !r.trim().is_empty()))))
+                .filter(|(b, _)| moved.contains(b))
+                .collect(),
+            Err(_) => moved.iter().map(|b| (b.clone(), None)).collect(),
+        };
+        let ws = self.ws.clone();
+        let failed = bootstrap_dirs(&ws, &server, &mut self.dir_checks, &mut self.clones, &self.os, &self.logs);
+        for (board, why) in &failed {
+            self.say(format!("{} 工作空间里 {}：{why}", self.p.yellow("!"), if board.is_empty() { "（工作空间）".to_string() } else { board.clone() }));
+        }
+        for a in &mut self.agents {
+            a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
+        }
+        let mut seen: Vec<String> = vec![];
+        for b in &moved {
+            if let Some(d) = ws_dir(&self.ws, b, &self.os) {
+                let line = d.display().to_string();
+                if !seen.contains(&line) {
+                    self.say(format!("{} 项目目录改了：{} → {line}", self.p.green("✓"), b.split_once('/').map(|(p, _)| p).unwrap_or(b)));
+                    seen.push(line);
+                }
+            }
         }
     }
 
@@ -3583,7 +3643,8 @@ impl Host<'_> {
             // `[host] workspace`，加上 `[host] dirs`（旧写法：单独给某几块白板指定目录）
             match to_workspace(conf.workspace.as_deref(), &conf.dirs) {
                 Ok(ws) if !same_ws(&ws, &self.ws) => {
-                    self.ws = ws;
+                    // 项目目录（#488）来自服务端，不在配置文件里：留着
+                    self.ws = HostWorkspace { projects: self.ws.projects.clone(), ..ws };
                     // 服务端上的白板照旧（目录跟着新的工作空间派生），加上新写的 `--dir` 白板
                     for b in ws_boards(&self.ws, &self.os) {
                         if !self.boards.contains(&b) {

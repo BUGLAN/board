@@ -4,6 +4,7 @@
 import { api } from './api';
 import { boardPrompt, detailPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
+import { projectDirError } from './projectDir';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
 import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
@@ -163,8 +164,13 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
     { name: 'desc', label: '描述', hint: '选填', placeholder: '一句话说明这个项目' },
     { name: 'color', label: '颜色', type: 'color', value: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)] },
     {
-      name: 'repo', label: '仓库地址', hint: '选填，git 远端；项目下所有白板共用，机器上克隆到 <工作空间>/<项目>。之后在项目设置里改', type: 'text',
+      name: 'repo', label: '仓库地址', hint: '选填，git 远端；项目下所有白板共用，机器上克隆到 <工作空间>/<项目目录>。之后在项目设置里改', type: 'text',
       maxLength: 500, placeholder: 'git@github.com:org/repo.git',
+    },
+    {
+      name: 'dir', label: '项目目录', hint: '选填，每台机器上这个项目的目录是 <工作空间>/<项目目录>；留空用项目标识。本地仓库已经叫别的名字（例如 board）时填它', type: 'text',
+      maxLength: 64, placeholder: '留空用项目标识',
+      validate: (d, v) => projectDirError(d, v.key ?? '', useData.getState().ws?.projects ?? []),
     },
     { name: 'boardName', label: '第一块白板', value: '主白板', required: true },
     { name: 'boardKey', label: '白板标识', type: 'key', from: 'boardName', value: 'main', required: true, auto: v => slug(v) || 'main', validate: keyError },
@@ -177,7 +183,7 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
     fields,
     onSubmit: async v => {
       const { key } = await api.createProject({
-        name: v.name, key: v.key, desc: v.desc, color: v.color, pos,
+        name: v.name, key: v.key, desc: v.desc, color: v.color, pos, dir: v.dir?.trim() || undefined,
         board: { name: v.boardName, key: v.boardKey || 'main' },
       });
       const path = `${key}/${v.boardKey || 'main'}`;

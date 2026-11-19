@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at  INTEGER NOT NULL,
   -- 代码仓库地址（git 远端）和集成分支（PRD §4）：一个项目一个仓库，项目下所有白板共用；都为空时按原来的规则
   repo        TEXT NOT NULL DEFAULT '',
-  branch      TEXT NOT NULL DEFAULT ''
+  branch      TEXT NOT NULL DEFAULT '',
+  -- 项目目录（PRD §4，#488）：每台机器上是 `<工作空间>/<项目目录>`；空表示用项目标识
+  dir         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS boards (
@@ -461,6 +463,11 @@ impl Store {
                                       ORDER BY b.sort, b.created_at, b.key LIMIT 1), '');",
             )?;
         }
+        // 旧数据库的项目没有项目目录：都用项目标识（#488）
+        let has_dir: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'dir'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_dir {
+            conn.execute_batch("ALTER TABLE projects ADD COLUMN dir TEXT NOT NULL DEFAULT ''")?;
+        }
         // 旧数据库的项目没有隐藏的标签规则：NULL 按默认（`^v\d`，版本标签）处理（default/main#324）
         let has_hidden: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'hidden_labels'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -667,7 +674,7 @@ impl<'a> R<'a> {
         let mut projects: Vec<ProjectInfo> = Vec::new();
         {
             let mut st = conn.prepare(
-                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch
+                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch, dir
                  FROM projects ORDER BY sort, created_at, key",
             )?;
             let rows = st.query_map([], |r| {
@@ -685,6 +692,7 @@ impl<'a> R<'a> {
                         .unwrap_or_else(crate::model::default_hidden_labels),
                     repo: r.get(8)?,
                     branch: r.get(9)?,
+                    dir: r.get(10)?,
                     boards: vec![],
                 })
             })?;
@@ -1445,6 +1453,41 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 项目目录（PRD §4，#488）：每台机器上这个项目的目录是 `<工作空间>/<项目目录>`；空字符串清空（回到用项目标识）。
+    /// 只能是一个合法的目录名（见 [`check_project_dir`]），不同项目不能用同一个目录（也不能是别的项目的标识）。
+    /// 改了之后在线的 board host 下一次取任务就按新目录检查；旧目录不动
+    pub fn set_project_dir(&mut self, project: &str, dir: &str) -> Result<()> {
+        self.project_exists(project)?;
+        let dir = check_project_dir(dir)?;
+        // 和这个项目的标识一样等于没填
+        let dir = if dir == project { String::new() } else { dir };
+        // 实际用的目录（没填用项目标识）不能和别的项目实际用的重名（不分大小写：macOS、Windows 上是同一个目录）
+        let used = if dir.is_empty() { project } else { dir.as_str() };
+        let taken: Option<String> = self
+            .tx
+            .query_row(
+                "SELECT key FROM projects WHERE key != ?1 AND (CASE WHEN dir != '' THEN dir ELSE key END) = ?2 COLLATE NOCASE",
+                params![project, used],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(other) = taken {
+            return Err(BoardError::usage(if dir.is_empty() {
+                format!("项目「{other}」的目录就叫「{used}」：这个项目要填一个别的项目目录")
+            } else {
+                format!("项目目录「{used}」已经是项目「{other}」的目录：每个项目一个目录")
+            }));
+        }
+        let old: String = self.tx.query_row("SELECT dir FROM projects WHERE key = ?1", [project], |r| r.get(0))?;
+        if old != dir {
+            self.tx.execute("UPDATE projects SET dir = ?1 WHERE key = ?2", params![dir, project])?;
+            // 机器的目录跟着变：在线的 board host 马上重新取任务
+            self.touch_hosts();
+        }
+        self.changed = true;
+        Ok(())
+    }
+
     pub fn delete_board(&mut self, path: &str) -> Result<()> {
         let b = self.resolve_exact(path)?;
         if self.board_count()? <= 1 {
@@ -1649,6 +1692,41 @@ pub struct ProjectPatch<'a> {
     pub color: Option<&'a str>,
     /// 隐藏标签的整组规则（正则，名称匹配任一条的标签在日常列表里不显示，default/main#324）
     pub hidden_labels: Option<&'a [String]>,
+}
+
+/// 项目目录最长几个字符
+pub const PROJECT_DIR_MAX: usize = 64;
+
+/// 项目目录（#488）：去掉首尾空白；空的表示用项目标识。只能是一个目录名——不能有 `/`、`\`，不能是 `.`、`..`，
+/// 不能带盘符（`C:`）或以 `~` 开头，不能有 Windows 不允许的字符和控制字符，不能以空格或 `.` 结尾
+pub fn check_project_dir(dir: &str) -> Result<String> {
+    let d = dir.trim();
+    if d.is_empty() {
+        return Ok(String::new());
+    }
+    let bad = |why: &str| Err(BoardError::usage(format!("项目目录「{d}」不对：{why}")));
+    if d.chars().count() > PROJECT_DIR_MAX {
+        return bad(&format!("最长 {PROJECT_DIR_MAX} 个字符"));
+    }
+    if d.contains('/') || d.contains('\\') {
+        return bad("只能写一个目录名，不能写路径（不能有 / 或 \\），目录在每台机器的工作空间里");
+    }
+    if d == "." || d == ".." {
+        return bad("不能是 . 或 ..");
+    }
+    if d.contains(':') {
+        return bad("不能有 :（也不能带盘符）");
+    }
+    if d.starts_with('~') {
+        return bad("不能以 ~ 开头");
+    }
+    if let Some(c) = d.chars().find(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '|' | '?' | '*')) {
+        return bad(&format!("不能有 {}", if c.is_control() { "控制字符".to_string() } else { c.to_string() }));
+    }
+    if d.ends_with('.') {
+        return bad("不能以 . 结尾（Windows 上用不了）");
+    }
+    Ok(d.to_string())
 }
 
 /// 隐藏标签的规则：去掉首尾空白、空行和重复的；最多 HIDDEN_LABELS_MAX 条、每条不超过 HIDDEN_LABEL_LEN 个字符。
