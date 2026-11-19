@@ -1,10 +1,15 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listPrompts, savePrompts } from '../lib/prompts';
-import { useData } from '../store/data';
+import { exec, useData } from '../store/data';
 import { useUI } from '../store/ui';
 import { Creator } from './Creator';
+
+vi.mock('../store/data', async importOriginal => {
+  const actual = await importOriginal<typeof import('../store/data')>();
+  return { ...actual, exec: vi.fn() };
+});
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +28,13 @@ const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
 
 beforeEach(() => {
   localStorage.clear();
+  vi.mocked(exec).mockReset();
+  if (!Element.prototype.animate) {
+    Object.defineProperty(Element.prototype, 'animate', {
+      configurable: true,
+      value: () => ({ cancel() {}, finished: Promise.resolve() }),
+    });
+  }
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -64,7 +76,7 @@ beforeEach(() => {
       pending: {},
     } as never,
   );
-  useUI.setState({ creator: { open: true, column: 'todo', seq: 1 }, picker: null, labelsOf: null, tab: 'board' });
+  useUI.setState({ creator: { open: true, column: 'todo', seq: 1 }, picker: null, labelsOf: null, tab: 'board', toasts: [] });
 });
 
 afterEach(() => {
@@ -144,5 +156,85 @@ describe('新建卡片里的快捷提示词（default/main#413）', () => {
     act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
     expect(host.querySelector('.cr-prompt-pop')).toBeNull();
     expect(host.querySelector('.creator')!.classList.contains('on')).toBe(true);
+  });
+});
+
+describe('连续新建时保存失败草稿（default/main#513）', () => {
+  it('当前表单为空时，失败内容仍写入草稿，并可从提示恢复', async () => {
+    localStorage.setItem('board.creator.keep', 'true');
+    let reject!: (err: unknown) => void;
+    vi.mocked(exec).mockReturnValue(
+      new Promise<never>((_, rej) => {
+        reject = rej;
+      }),
+    );
+    act(() => root.render(<Creator />));
+
+    const title = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="标题"]')!;
+    const body = host.querySelector<HTMLTextAreaElement>('.cr-desc textarea')!;
+    type(title, '空表单 A');
+    type(body, '失败内容');
+    act(() => host.querySelector<HTMLButtonElement>('.cr-submit')!.click());
+
+    await act(async () => {
+      reject(new Error('服务端拒绝'));
+      await Promise.resolve();
+    });
+
+    expect(JSON.parse(localStorage.getItem('board.creator.draft')!)).toMatchObject({ title: '空表单 A', body: '失败内容' });
+    const toast = useUI.getState().toasts.find(t => t.type === 'error')!;
+    act(() => toast.action!.fn());
+    await act(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 80));
+    });
+    expect(title.value).toBe('空表单 A');
+    expect(body.value).toBe('失败内容');
+  });
+
+  it('A 还在保存时输入 B，A 失败后 B 不变；恢复 A 后仍能切回 B', async () => {
+    localStorage.setItem('board.creator.keep', 'true');
+    let reject!: (err: unknown) => void;
+    const request = new Promise<never>((_, rej) => {
+      reject = rej;
+    });
+    vi.mocked(exec).mockReturnValue(request);
+    act(() => root.render(<Creator />));
+
+    const title = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="标题"]')!;
+    const body = host.querySelector<HTMLTextAreaElement>('.cr-desc textarea')!;
+    act(() => host.querySelector<HTMLElement>('[data-col="inbox"]')!.click());
+    type(title, 'A 标题');
+    type(body, 'A 描述');
+    act(() => host.querySelector<HTMLButtonElement>('.cr-submit')!.click());
+
+    expect(title.value).toBe('');
+    act(() => host.querySelector<HTMLElement>('[data-col="todo"]')!.click());
+    type(title, 'B 标题');
+    type(body, 'B 描述');
+
+    await act(async () => {
+      reject(Object.assign(new Error('断网了'), { code: 'NETWORK' }));
+      await Promise.resolve();
+    });
+
+    expect(title.value).toBe('B 标题');
+    expect(body.value).toBe('B 描述');
+    expect(host.querySelector('.dest.on')!.getAttribute('data-col')).toBe('todo');
+    expect(localStorage.getItem('board.creator.draft')).toBeNull();
+    const toast = useUI.getState().toasts.find(t => t.type === 'error')!;
+    expect(toast.text).toContain('当前输入没有改动');
+    expect(toast.action?.label).toBe('恢复失败草稿');
+
+    act(() => toast.action!.fn());
+    expect(title.value).toBe('A 标题');
+    expect(body.value).toBe('A 描述');
+    expect(host.querySelector('.dest.on')!.getAttribute('data-col')).toBe('inbox');
+    expect(JSON.parse(localStorage.getItem('board.creator.draft')!)).toMatchObject({ title: 'B 标题', body: 'B 描述' });
+    expect(host.querySelector('.cr-failed')!.textContent).toContain('B 标题');
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="恢复另存的草稿"]')!.click());
+    expect(title.value).toBe('B 标题');
+    expect(body.value).toBe('B 描述');
+    expect(host.querySelector('.dest.on')!.getAttribute('data-col')).toBe('todo');
   });
 });

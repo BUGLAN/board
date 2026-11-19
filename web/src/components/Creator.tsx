@@ -21,7 +21,22 @@ interface Draft {
   column: 'todo' | 'inbox';
   labels: number[];
 }
+interface FailedDraft extends Draft {
+  key: string;
+}
+interface FailedQueue {
+  v: 1;
+  items: FailedDraft[];
+}
 const DRAFT = 'creator.draft';
+const FAILED = 'creator.failedDrafts';
+const hasDraft = (d: Draft) => !!(d.title.trim() || d.body.trim());
+const readFailed = (): FailedDraft[] => {
+  const q = pref.get<FailedQueue | null>(FAILED, null);
+  return q?.v === 1 && Array.isArray(q.items) ? q.items : [];
+};
+let failedSeq = 0;
+const makeFailedDraft = (d: Draft): FailedDraft => ({ ...d, key: `${Date.now().toString(36)}-${++failedSeq}` });
 
 export function Creator() {
   const { open, column: want, seq } = useUI(s => s.creator);
@@ -45,6 +60,10 @@ export function Creator() {
   const [promptDelete, setPromptDelete] = useState<string | null>(null);
   const [promptError, setPromptError] = useState('');
   const [keep, setKeep] = useState(() => pref.get('creator.keep', false));
+  const [failed, setFailed] = useState<FailedDraft[]>(readFailed);
+  const failedRef = useRef(failed);
+  const pending = useRef(new Map<number, Draft>());
+  const pendingRestore = useRef<Draft | null>(null);
   // 本次已创建：还没确认的 id 是负数（临时卡片），确认后换成真正的 ID
   const [created, setCreated] = useState<{ key: number; id: number; title: string; column: 'todo' | 'inbox' }[]>([]);
   const titleRef = useRef<HTMLTextAreaElement>(null);
@@ -57,11 +76,31 @@ export function Creator() {
   // 附件：还没有卡片，先上传，新建时按描述里的引用归到卡片
   const attach = useAttach({ board: path, card: null, setValue: setBody, textarea: bodyRef });
 
+  const writeFailed = (next: FailedDraft[]) => {
+    const items = next.slice(-8);
+    failedRef.current = items;
+    setFailed(items);
+    pref.set(FAILED, items.length ? ({ v: 1, items } satisfies FailedQueue) : null);
+  };
+
+  const restoreFailed = (d: FailedDraft) => {
+    const current = state.current;
+    const next = failedRef.current.filter(x => x.key !== d.key);
+    if (hasDraft(current)) {
+      next.push(makeFailedDraft(current));
+      pref.set(DRAFT, current);
+    }
+    writeFailed(next);
+    pendingRestore.current = d;
+    openCreator(d.column);
+  };
+
   // 打开：恢复草稿
   useEffect(() => {
     if (!open) return;
     closeDetail();
-    const d = pref.get<Draft | null>(DRAFT, null);
+    const d = pendingRestore.current ?? pref.get<Draft | null>(DRAFT, null);
+    pendingRestore.current = null;
     const has = !!d && !!(d.title || d.body);
     const valid = new Set((cur?.project.labels ?? []).map(l => l.id));
     setColumn(want);
@@ -195,6 +234,7 @@ export function Creator() {
     const draft: Draft = { title, body, column, labels };
     const home = f.home?.key ?? 'todo';
     const temp = draftCard({ title, body, labels, column: column === 'inbox' ? 'inbox' : home });
+    pending.current.set(temp.id, draft);
     const done = exec({ op: 'new', column: column === 'inbox' ? 'inbox' : undefined, title, body, labels }, temp.patch, c => temp.settle(c.id));
     pref.set(DRAFT, null);
     setRestored(false);
@@ -218,6 +258,7 @@ export function Creator() {
     }
     done.then(
       c => {
+        pending.current.delete(temp.id);
         setCreated(list => list.map(x => (x.id === temp.id ? { ...x, id: c.id } : x)));
         // 记到「未整理」而人不在未整理页：确认后告诉他记到了哪里
         if (!keep && column === 'inbox' && tab !== 'inbox')
@@ -235,11 +276,20 @@ export function Creator() {
           });
       },
       e => {
+        const entry = makeFailedDraft(pending.current.get(temp.id) ?? draft);
+        pending.current.delete(temp.id);
         setCreated(list => list.filter(x => x.id !== temp.id));
         // 内容存回草稿（弹窗关着、或者已经清空时），下次打开自动恢复
         const open = useUI.getState().creator.open;
         const free = !open || !(state.current.title.trim() || state.current.body.trim());
-        if (!free) return void toastError(e);
+        if (!free) {
+          writeFailed([...failedRef.current, entry]);
+          return void toastError(e, {
+            text: `「${draft.title.trim()}」没有建成：${(e as Error).message}。这份内容已另外保存，当前输入没有改动`,
+            action: { label: '恢复失败草稿', fn: () => restoreFailed(entry) },
+            duration: 8000,
+          });
+        }
         pref.set(DRAFT, draft);
         toastError(e, {
           text: `「${draft.title.trim()}」没有建成：${(e as Error).message}。内容已存为草稿`,
@@ -347,6 +397,14 @@ export function Creator() {
                 }}
               >
                 清空
+              </button>
+            </span>
+          )}
+          {failed.length > 0 && (
+            <span className="cr-draft cr-failed" title={failed.map(d => d.title.trim() || d.body.trim()).join('\n')}>
+              {failed.length === 1 ? `另存了「${(failed[0].title.trim() || failed[0].body.trim()).slice(0, 18)}」` : `另存了 ${failed.length} 份草稿`}
+              <button type="button" aria-label="恢复另存的草稿" onClick={() => restoreFailed(failed[failed.length - 1])}>
+                恢复
               </button>
             </span>
           )}
