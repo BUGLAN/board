@@ -80,13 +80,66 @@ try {
 
   New-Item -ItemType Directory -Force $dir | Out-Null
   $bin = Join-Path $dir 'board.exe'
-  # 正在运行的 board.exe 不能覆盖、但能改名：先挪开，再放新的
-  if (Test-Path -LiteralPath $bin) {
-    $old = Join-Path $dir 'board.old.exe'
-    Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $bin -Destination $old -Force
+  $old = Join-Path $dir 'board.old.exe'
+  $staged = Join-Path $dir ("board.new." + $PID + ".exe")
+
+  # 先完整复制到安装目录里的临时名；只有长度核对通过后才替换 board.exe。
+  try {
+    if (Test-Path -LiteralPath $staged) {
+      Remove-Item -LiteralPath $staged -Force
+    }
+    Copy-Item -LiteralPath $new -Destination $staged
+    if ((Get-Item -LiteralPath $staged).Length -ne (Get-Item -LiteralPath $new).Length) {
+      throw '临时文件和下载到的 board.exe 长度不一致'
+    }
+  } catch {
+    Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+    throw "写安装目录的临时文件失败：$($_.Exception.Message)。现有的 board 没动"
   }
-  Move-Item -LiteralPath $new -Destination $bin -Force
+
+  $hadOld = Test-Path -LiteralPath $bin
+  $backedUp = $false
+  try {
+    # 正在运行的 board.exe 不能覆盖、但能改名：先挪开，再放新的
+    if ($hadOld) {
+      if (Test-Path -LiteralPath $old) {
+        Remove-Item -LiteralPath $old -Force
+      }
+      Move-Item -LiteralPath $bin -Destination $old -Force
+      $backedUp = $true
+    }
+    Move-Item -LiteralPath $staged -Destination $bin -Force
+  } catch {
+    $reason = $_.Exception.Message
+    # Move-Item 可能已经完成了改名却仍报错；按磁盘上的实际状态判断要不要回滚。
+    if (-not $backedUp -and -not (Test-Path -LiteralPath $bin) -and (Test-Path -LiteralPath $old)) {
+      $backedUp = $true
+    }
+    $restored = $false
+    $rollbackReason = $null
+    if ($backedUp) {
+      try {
+        if (Test-Path -LiteralPath $bin) {
+          Remove-Item -LiteralPath $bin -Force
+        }
+        Move-Item -LiteralPath $old -Destination $bin -Force
+        $restored = $true
+      } catch {
+        $rollbackReason = $_.Exception.Message
+      }
+    } elseif (-not $hadOld -and (Test-Path -LiteralPath $bin)) {
+      Remove-Item -LiteralPath $bin -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+
+    if ($backedUp -and -not $restored) {
+      throw "替换 $bin 失败：$reason；回滚也失败：$rollbackReason。旧版本保存在 $old，请把它改名为 board.exe；新版本临时文件已清理"
+    }
+    if ($backedUp) {
+      throw "替换 $bin 失败：$reason；已恢复旧版本（$bin），临时文件已清理"
+    }
+    throw "替换 $bin 失败：$reason；现有的 board 没动，临时文件已清理"
+  }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
