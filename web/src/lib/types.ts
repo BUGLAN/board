@@ -1103,7 +1103,7 @@ export type Cmd =
   | { op: 'delete_comment'; id: number; activity: number }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }
-  /** 删除卡片：移进回收站，30 天内可以恢复（规则 10） */
+  /** 删除卡片：移进回收站，一直可以恢复，只有人永久删除才真的删掉（规则 10） */
   | { op: 'delete'; id: number }
   /** 从回收站恢复（仅人） */
   | { op: 'restore'; id: number }

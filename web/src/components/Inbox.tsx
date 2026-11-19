@@ -30,6 +30,9 @@ import { CardLabels, DescEditor, TitleEditor } from './CardDetail';
 import { Icon } from './Icon';
 import { Skeleton } from './Skeleton';
 import { TrashPage } from './Trash';
+import { Check, RowsSkeleton } from './ibRows';
+
+export { Check };
 import { cancel } from './hosts/Dispatch';
 import { ancestors, leaveOne, placeSlots, playLeave, triageToastDelay, type LeaveRow } from './triageMotion';
 
@@ -267,12 +270,12 @@ async function doDelete(ids: number[], cards: Card[]) {
     ok.length === 1
       ? {
           title: `删除 #${ok[0]}？`,
-          text: `「${one?.title ?? ''}」会移进回收站（侧栏「回收站」），30 天内可以恢复；永久删除前评论和附件都还在。`,
+          text: `「${one?.title ?? ''}」会移进回收站（「未整理 → 回收站」），随时可以恢复；永久删除前评论和附件都还在。`,
           ok: '删除',
         }
       : {
           title: `删除 ${ok.length} 条？`,
-          text: `${ok.map(i => `#${i}`).join('、')} 会移进回收站，30 天内可以恢复；永久删除前评论和附件都还在。`,
+          text: `${ok.map(i => `#${i}`).join('、')} 会移进回收站（「未整理 → 回收站」），随时可以恢复；永久删除前评论和附件都还在。`,
           ok: `删除 ${ok.length} 条`,
         },
   );
@@ -415,9 +418,11 @@ export function InboxPage() {
     return () => document.removeEventListener('keydown', key);
   }, [flat]);
 
+  // 回收站的批量条挂到页面根上（和「未整理」的一样贴着视口底部），不跟着列表滚走
+  const [pageEl, setPageEl] = useState<HTMLDivElement | null>(null);
   const count = all?.length ?? null;
   return (
-    <div className="page page-inbox">
+    <div className="page page-inbox" ref={setPageEl}>
       <div className="ib-scroll">
         <div className="ib-wrap" ref={wrap}>
           <header className="ib-head">
@@ -455,6 +460,7 @@ export function InboxPage() {
             </div>}
           </header>
           {later && <p className="ib-later-sub">暂时不处理的条目收在这里，不算在「未整理」的条数里。左滑一条放回「未整理」，回到原来的位置。</p>}
+          {page === 'trash' && <p className="ib-later-sub">删除的卡片放在这里，一直留着、不会自动清理：可以恢复到原来的状态；在这里点「永久删除」才会连同附件一起删掉。</p>}
 
           {/* 手机上没有侧栏：筛选和「记一条」放在页头下面 */}
           <div className="ib-mtools">
@@ -474,7 +480,7 @@ export function InboxPage() {
           {/* 快照还没到：按工作区里的计数放骨架行；计数是 0 就什么都不放 */}
           {plain && !list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
           {later && <LaterPage cards={laterCards} labels={labels} project={cur?.project.key ?? ''} path={path} />}
-          {page === 'trash' && path && <TrashPage path={path} />}
+          {page === 'trash' && path && <TrashPage path={path} bulkHost={pageEl} />}
           {plain && view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
           {plain && view === 'list' && groups.map(g => (
             <GroupSection
@@ -546,26 +552,6 @@ export function InboxPage() {
   );
 }
 
-function RowsSkeleton({ n }: { n: number }) {
-  return (
-    <div className="ib-grp" aria-busy="true">
-      <div className="ib-gh">
-        <Skeleton w={48} h={10} />
-      </div>
-      <div className="ib-rows">
-        {Array.from({ length: n }, (_, i) => (
-          <div key={i} className="ib-line sk">
-            <Skeleton w={16} h={16} r={5} />
-            <Skeleton w={28} h={10} />
-            <Skeleton w={20} h={20} r={999} />
-            <Skeleton w={['48%', '62%', '36%', '54%'][i % 4]} h={11} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function GroupSection({
   g, checked, open, now, labels, all, home, onCheck,
 }: { g: GroupOf; checked: number[]; open: number | null; now: number; labels: Label[]; all: Card[]; home: string; onCheck: (id: number, shift: boolean) => void }) {
@@ -599,34 +585,6 @@ function GroupSection({
         )}
       </div>
     </section>
-  );
-}
-
-/** 勾选框：自己画的方块（选中打勾、部分选中一道横线），点的时候弹一下。
-    一个按钮就是一个勾选框（读屏报出名称和勾没勾），空格、回车切换，按住 Shift 连选；
-    「全选」和各行的勾选一起按 aria-checked / aria-label 报出来（default/main#315） */
-export function Check({ on, some, label, onToggle }: { on: boolean; some?: boolean; label: string; onToggle: (shift: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={some ? 'mixed' : on}
-      aria-label={label}
-      className={cx('ib-check', on && 'on', some && 'some')}
-      onClick={e => {
-        e.stopPropagation();
-        onToggle(e.shiftKey);
-      }}
-      onKeyDown={e => {
-        // 回车照常触发 click；空格默认会滚页面，这里自己切换
-        if (e.key !== ' ') return;
-        e.preventDefault();
-        e.stopPropagation();
-        onToggle(e.shiftKey);
-      }}
-    >
-      <i />
-    </button>
   );
 }
 

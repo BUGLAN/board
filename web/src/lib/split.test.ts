@@ -1,7 +1,7 @@
 /* 「未整理」里的拆解组（default/main#285）：原条目拆出卡之后隐藏，拆出的卡成组，可以撤销拆解 */
 import { describe, expect, it, vi } from 'vitest';
 import { card, snapshot } from '../../test/fixtures';
-import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, laterGroups, unitsOf, visibleInbox } from './split';
+import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, laterGroups, timeGroups, unitsOf, visibleInbox } from './split';
 import type { Card } from './types';
 
 // 1 是原条目，拆成 3、4；2 是别的一条；5 是从待办里的 9 拆出来的
@@ -117,5 +117,21 @@ describe('稍后再做（default/main#303）', () => {
     ]);
     expect(laterGroups([cs[2]], now).map(g => g.label)).toEqual(['更早收起']);
     expect(laterGroups([], now)).toEqual([]);
+  });
+
+  it('timeGroups：回收站按删除时间分组，组名跟着动作，组内保持传入的顺序（#486）', () => {
+    const now = new Date(2026, 10, 18, 15, 0).getTime();
+    const at = (d: number, h = 12) => new Date(2026, 10, 18 - d, h, 0).getTime();
+    const ts = [
+      { id: 7, deletedAt: at(0, 14) },
+      { id: 5, deletedAt: at(0, 8) },
+      { id: 3, deletedAt: at(3) },
+      { id: 2, deletedAt: at(30) },
+    ];
+    expect(timeGroups(ts, t => t.deletedAt, now, '删除').map(g => [g.label, g.rows.map(t => t.id)])).toEqual([
+      ['今天删除', [7, 5]],
+      ['这一周删除', [3]],
+      ['更早删除', [2]],
+    ]);
   });
 });

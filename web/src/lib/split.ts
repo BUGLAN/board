@@ -82,17 +82,22 @@ export function canUndoSplit(cards: Record<number, Card> | undefined, parent: nu
   return kids.length > 0 && kids.every(id => cards?.[id]?.column === INBOX);
 }
 
-/** 「稍后再做」按收起时间分组：今天（本地零点以后）、这一周（7 天内）、更早；组内顺序同 laterEntries，空组不出现 */
-export type LaterGroup = { key: 'today' | 'week' | 'older'; label: string; rows: Card[] };
-export function laterGroups(cards: Card[], now: number): LaterGroup[] {
+/** 按时间分组：今天（本地零点以后）、这一周（7 天内）、更早；组名是「今天<动作>」这样，组内保持传入的顺序，空组不出现。
+    「稍后再做」按收起时间（laterGroups），回收站按删除时间（default/main#486） */
+export type TimeGroup<T> = { key: 'today' | 'week' | 'older'; label: string; rows: T[] };
+export function timeGroups<T>(items: T[], at: (t: T) => number, now: number, verb: string): TimeGroup<T>[] {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
-  const keyOf = (t: number): LaterGroup['key'] => (t >= start.getTime() ? 'today' : now - t < 7 * 86400e3 ? 'week' : 'older');
-  const groups: LaterGroup[] = [
-    { key: 'today', label: '今天收起', rows: [] },
-    { key: 'week', label: '这一周收起', rows: [] },
-    { key: 'older', label: '更早收起', rows: [] },
+  const keyOf = (t: number): TimeGroup<T>['key'] => (t >= start.getTime() ? 'today' : now - t < 7 * 86400e3 ? 'week' : 'older');
+  const groups: TimeGroup<T>[] = [
+    { key: 'today', label: `今天${verb}`, rows: [] },
+    { key: 'week', label: `这一周${verb}`, rows: [] },
+    { key: 'older', label: `更早${verb}`, rows: [] },
   ];
-  for (const c of cards) groups.find(g => g.key === keyOf(c.laterAt ?? 0))!.rows.push(c);
+  for (const it of items) groups.find(g => g.key === keyOf(at(it)))!.rows.push(it);
   return groups.filter(g => g.rows.length);
 }
+
+/** 「稍后再做」按收起时间分组；组内顺序同 laterEntries */
+export type LaterGroup = TimeGroup<Card>;
+export const laterGroups = (cards: Card[], now: number): LaterGroup[] => timeGroups(cards, c => c.laterAt ?? 0, now, '收起');

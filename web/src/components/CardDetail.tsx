@@ -378,7 +378,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
               onClick={async () => {
                 const yes = await confirm({
                   title: `删除 #${c.id}？`,
-                  text: `「${c.title}」会移进回收站（侧栏「回收站」），30 天内可以恢复；永久删除前评论和附件都还在。`,
+                  text: `「${c.title}」会移进回收站（「未整理 → 回收站」），随时可以恢复；永久删除前评论和附件都还在。`,
                   ok: '删除',
                 });
                 if (!yes) return;
