@@ -81,6 +81,9 @@ mod tests {
     // 下面两个用例真的跑一遍 install.sh（需要 sh）
     #[cfg(unix)]
     use std::process::Command;
+    // Windows 上真的跑一遍 install.ps1（需要 Windows PowerShell）
+    #[cfg(windows)]
+    use std::process::Command;
 
     #[test]
     fn placeholders_are_filled_and_unsafe_values_refused() {
@@ -238,5 +241,84 @@ mod tests {
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("SHA-256 对不上"), "{}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(std::fs::read_to_string(bin.join("board")).unwrap(), "old");
+    }
+
+    /// 替换 board.exe 失败时恢复旧版本、清掉临时文件，并说明恢复位置
+    #[cfg(windows)]
+    #[test]
+    fn install_ps1_rolls_back_failed_binary_replacement() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let script = root.join("install.ps1");
+        let harness = root.join("test.ps1");
+        let rendered = render(PS1, "9.9.9", "http://127.0.0.1:1", "unused").unwrap();
+        // Windows PowerShell 5.1 按 ANSI 读没有 BOM 的 UTF-8 脚本，测试文件里补上 BOM
+        std::fs::write(&script, format!("\u{feff}{rendered}")).unwrap();
+        let harness_script = r#"$ErrorActionPreference = 'Stop'
+$root = $env:BOARD_INSTALL_TEST_ROOT
+$assets = Join-Path $root 'assets'
+$binDir = Join-Path $root 'bin'
+New-Item -ItemType Directory -Force $assets | Out-Null
+New-Item -ItemType Directory -Force $binDir | Out-Null
+
+$fake = Join-Path $root 'fake-board.exe'
+Add-Type -TypeDefinition 'public class Program { public static void Main(string[] args) { System.Console.WriteLine("board 9.9.9"); } }' -OutputAssembly $fake -OutputType ConsoleApplication
+$stage = Join-Path $root 'archive'
+New-Item -ItemType Directory -Force $stage | Out-Null
+Copy-Item -LiteralPath $fake -Destination (Join-Path $stage 'board.exe')
+$zip = Join-Path $assets 'board-windows-x64.zip'
+Compress-Archive -LiteralPath (Join-Path $stage 'board.exe') -DestinationPath $zip -Force
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+Set-Content -LiteralPath (Join-Path $assets 'board-sha256.txt') -Value "$hash  board-windows-x64.zip" -Encoding Ascii
+Set-Content -LiteralPath (Join-Path $binDir 'board.exe') -Value 'old' -NoNewline -Encoding Ascii
+
+$env:BOARD_DOWNLOAD = $assets
+$env:BOARD_INSTALL_DIR = $binDir
+$env:PROCESSOR_ARCHITECTURE = 'AMD64'
+Remove-Item Env:PROCESSOR_ARCHITEW6432 -ErrorAction SilentlyContinue
+
+function Move-Item {
+  param([string]$LiteralPath, [string]$Destination, [switch]$Force)
+  if ($Destination -eq (Join-Path $env:BOARD_INSTALL_DIR 'board.exe') -and (Split-Path -Leaf $LiteralPath) -like 'board.new.*.exe') {
+    throw '模拟替换 board.exe 失败'
+  }
+  Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
+}
+
+$failed = $false
+$message = ''
+try {
+  . $env:BOARD_INSTALL_TEST_SCRIPT
+} catch {
+  $failed = $true
+  $message = $_.Exception.Message
+}
+if (-not $failed) { throw '安装脚本没有按预期失败' }
+if (-not (Test-Path -LiteralPath (Join-Path $binDir 'board.exe'))) { throw '替换失败后 board.exe 不存在' }
+if ((Get-Content -Raw -LiteralPath (Join-Path $binDir 'board.exe')) -ne 'old') { throw '替换失败后 board.exe 不是旧版本' }
+if (Test-Path -LiteralPath (Join-Path $binDir 'board.old.exe')) { throw '回滚后还留着 board.old.exe' }
+if (Get-ChildItem -LiteralPath $binDir -Filter 'board.new.*.exe') { throw '回滚后没有清理临时文件' }
+if ($message -notmatch '已恢复旧版本') { throw "错误信息没有说明已回滚：$message" }
+Write-Host 'PASS'
+"#;
+        // 同理，Windows PowerShell 5.1 需要 BOM 才能正确读取用例里的中文
+        std::fs::write(&harness, format!("\u{feff}{harness_script}")).unwrap();
+
+        let out = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&harness)
+            .env("BOARD_INSTALL_TEST_ROOT", root)
+            .env("BOARD_INSTALL_TEST_SCRIPT", &script)
+            // 从 PowerShell 7 的测试进程启动 Windows PowerShell 时，继承的 PSModulePath 可能找不到系统自带模块
+            .env("PSModulePath", r"C:\Program Files\WindowsPowerShell\Modules;C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "安装脚本回滚测试失败\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("PASS"));
     }
 }
