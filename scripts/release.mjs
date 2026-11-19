@@ -10,9 +10,9 @@
       （连同各自的 package-lock.json）、src-tauri/tauri.conf.json
    5. 把第 3 步生成的这一节写到 CHANGELOG.md 最上面
    6. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
-   7. --push：推 main，再推 tag（推 tag 触发部署，见 docs/deploy.md「自动部署」）；不带时只打印推送命令。
+   7. --push：推 main，再推 tag（推 tag 只触发 GitHub Release 构建，不部署服务端；服务端部署由服务机的 release-lan.sh 调 deploy-lan.sh 完成，见 docs/deploy.md「升级」）；不带时只打印推送命令。
       推 main 被拒（发版途中别人推了 main）：撤掉这次的发版提交和 tag，重新拉到最新再发一次；第二次还被拒才停下
-   8. 推 tag 之前（线上服务端还没开始重启）运行 board versions sync vX.Y.Z：按 git 历史给这一版的卡片打上版本标签（PRD §10.15）。
+   8. 推 tag 之前运行 board versions sync vX.Y.Z：按 git 历史给这一版的卡片打上版本标签（PRD §10.15）。
       只是方便：没装 board、没登录、服务端还不认这个接口时只提示一句，不影响发版
 
    --dry-run：只打印这一版的 changelog（按 origin/main 列，和真正发出去的一致），不改文件、不提交、不打 tag、不动工作区
@@ -237,7 +237,7 @@ console.log(`已提交「chore: 发版 ${tag}」并打了 tag ${tag}（上一个
 
 const cmds = [`git push origin HEAD:${BRANCH}`, `git push origin ${tag}`];
 if (!push) {
-  console.log(`\n确认无误后推送（推 tag 会部署线上服务端）：\n  ${cmds.join('\n  ')}`);
+  console.log(`\n确认无误后推送（推 tag 只触发 Release 构建，服务端部署请用 release-lan.sh）：\n  ${cmds.join('\n  ')}`);
   process.exit(0);
 }
 const base = git('rev-parse', 'HEAD~1');
@@ -271,6 +271,6 @@ try {
   git('push', 'origin', tag);
 } catch (e) {
   console.error(String(e.stderr || e.message).trim());
-  fail(`${BRANCH} 已推送，但 tag ${tag} 没推上去（没推 tag 就不会部署）。重试：git push origin ${tag}`);
+  fail(`${BRANCH} 已推送，但 tag ${tag} 没推上去（没推 tag 就不会构建 Release）。重试：git push origin ${tag}`);
 }
-console.log(`已推送 ${BRANCH} 和 ${tag}，部署见 GitHub Actions → deploy。`);
+console.log(`已推送 ${BRANCH} 和 ${tag}，服务端部署请运行 release-lan.sh（它会调用 deploy-lan.sh）。`);
