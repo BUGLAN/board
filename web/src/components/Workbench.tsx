@@ -25,6 +25,7 @@ import { AgentNav } from './agent/AgentNav';
 import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
 import { visibleInbox } from '../lib/split';
+import { SideSelect } from './BoardSelect';
 
 /** 每个标签的名称、提示和图标；顺序由 store/ui 的 TAB_ORDER 决定（和数字快捷键一致），设置固定在底部 */
 const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
@@ -200,9 +201,11 @@ const OP: Record<string, string> = {
 };
 
 /** n 为 'loading'：数量还不知道，计数位置放骨架，标题不跳 */
-function Section({ id, title, n, closed, onToggle, children }: { id: string; title: string; n?: number | 'loading'; closed: boolean; onToggle: (id: string) => void; children: ReactNode }) {
+/** action：标题行右边的按钮（和标题的展开按钮并排，不嵌在里面） */
+function Section({ id, title, n, closed, onToggle, children, action }: { id: string; title: string; n?: number | 'loading'; closed: boolean; onToggle: (id: string) => void; children: ReactNode; action?: ReactNode }) {
   return (
-    <section className={cx('tree-sec', closed && 'closed')} data-sec={id}>
+    <section className={cx('tree-sec', closed && 'closed', !!action && 'has-act')} data-sec={id}>
+      {action && <span className="tree-act">{action}</span>}
       <button className="tree-head" type="button" onClick={() => onToggle(id)}>
         <svg className="chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d="m6 8 4 4 4-4" />
@@ -616,7 +619,7 @@ function BoardSide() {
       </header>
       <SideFilter value={filter} onChange={setFilter} placeholder="筛选卡片：标题、描述、#ID、agent" />
       <div className="side-scroll">
-        <Section id="labels" title="标签" n={cur ? shown.length : 'loading'} closed={closed.has('labels')} onToggle={toggle}>
+        <Section id="labels" title="标签" n={cur ? shown.length : 'loading'} closed={closed.has('labels')} onToggle={toggle} action={cur && <SideSelect />}>
           {cur && (board || !shown.length) ? (
             <LabelBlock project={cur.project.key} all={labels} rules={rules} used={used} />
           ) : (

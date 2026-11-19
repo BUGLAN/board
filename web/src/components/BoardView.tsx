@@ -27,6 +27,8 @@ import { FirstRunHint } from './FirstRun';
 import { FlowBar } from './FlowBar';
 import { Icon } from './Icon';
 import { Skeleton, SkeletonCard } from './Skeleton';
+import { BoardBulkBar, ColSelect } from './BoardSelect';
+import { clearSelect } from '../lib/boardSelect';
 
 /** 拖拽预览：被拖的卡片放到预览位置 */
 export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
@@ -110,6 +112,8 @@ export function BoardView() {
     [board, cur?.board.counts],
   );
   const path = cur?.board.path ?? '';
+  // 批量打标签的选择只属于这一块白板：换白板、离开白板页时退出
+  useEffect(() => clearSelect, [path]);
   // 「下一张」按优先级顺序（不受排序影响），去掉正在拖的卡片再算
   const prio = board?.cols ?? null;
   // 有排队派发的卡片不会被不带 ID 的 board claim 领走
@@ -276,6 +280,7 @@ export function BoardView() {
           />
         )}
       </div>
+      <BoardBulkBar />
     </div>
   );
 }
@@ -495,6 +500,7 @@ const Column = memo(function Column({ col, index, f, ids, board, labels, filter,
             </button>
           </Tip>
         )}
+        <ColSelect ids={ids} board={board} labels={labels} />
         <span className="col-count" aria-label="卡片数量" ref={badge}>
           <span>{count}</span>
         </span>

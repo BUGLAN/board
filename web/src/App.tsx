@@ -22,6 +22,7 @@ import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
+import { installBoardSelect } from './lib/boardSelect';
 import { parseRoute } from './lib/route';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
 import { checkAuth, useAuth } from './store/auth';
@@ -143,6 +144,7 @@ function BoardApp() {
   }, []);
   useSideSlide(side);
   useEffect(() => installCardInteractions(), []);
+  useEffect(() => installBoardSelect(), []);
 
   // 通过 CLI、其他窗口或心跳中断释放的修改：卡片短暂高亮，并标出是谁做的
   useEffect(

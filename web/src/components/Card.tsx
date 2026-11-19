@@ -10,6 +10,8 @@ import { AgentAvatar, LabelChips, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
 import { agentMark, cardDispatch } from '../lib/hosts';
+import { useBoardSel } from '../lib/boardSelect';
+import { CardCheck } from './BoardSelect';
 
 /** 筛选框：空格分隔的词都要命中；label:名称 只看标签 */
 export function matches(c: CardT, q: string, labels: Label[]) {
@@ -79,6 +81,9 @@ export const CardView = memo(function CardView({
   // 本窗口新建的临时卡片用轻的入场（card-add：只淡入，不缩放、不模糊、不回弹），别处来的新卡片照旧 card-in
   const [enter, setEnter] = useState<'' | 'in' | 'add'>(entering ? (draft ? 'add' : 'in') : '');
   const shape: StatusView = view ?? (final && !doing ? 'line' : 'card');
+  // 批量打标签的选择里（lib/boardSelect）：前面画勾选圈，点卡片是勾选
+  const selecting = useBoardSel(s => s.on) && !draft;
+  const picked = useBoardSel(s => s.ids.includes(c.id));
 
   useLayoutEffect(() => {
     if (flash) replay(ref.current, 'flash');
@@ -112,8 +117,11 @@ export const CardView = memo(function CardView({
         placeholder && 'is-placeholder',
         saving && 'saving',
         draft && 'draft',
+        selecting && 'selecting',
+        selecting && picked && 'picked',
       )}
       aria-busy={saving || undefined}
+      aria-pressed={selecting ? picked : undefined}
       // 整张卡就是「打开详情」的按钮：Enter / 空格打开（lib/drag.ts），拖动换状态（pointerdown）
       role="button"
       tabIndex={0}
@@ -127,13 +135,16 @@ export const CardView = memo(function CardView({
     >
       {shape === 'tile' ? (
         <>
+          {selecting && <CardCheck on={picked} />}
           <span className="ct-id">{no}</span>
           {doing && <i className={cx('ct-beat', t.beat)} />}
           {/* 标题、标签在整块白板共用的悬浮卡里（TilePeek） */}
         </>
       ) : shape === 'line' ? (
         <div className="card-line">
-          {final && !doing ? (
+          {selecting ? (
+            <CardCheck on={picked} />
+          ) : final && !doing ? (
             <span className="done-check">
               <Icon name="check" />
             </span>
@@ -154,6 +165,7 @@ export const CardView = memo(function CardView({
       ) : (
         <>
           <div className="card-row">
+            {selecting && <CardCheck on={picked} />}
             <span className="card-id">#{no}</span>
             {next && <span className="card-next">下一张</span>}
             <span className="card-flags">
