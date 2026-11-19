@@ -7,7 +7,7 @@
    ========================================================================== */
 import { api } from './api';
 import type { Card, Status, TrashCard } from './types';
-import { exec, removeCard, restoreCard, serverNow, useData } from '../store/data';
+import { collectBatch, exec, removeCard, restoreCard, serverNow, useData, type BatchResult } from '../store/data';
 import { toast, toastError } from '../store/ui';
 
 /* ------------------------------ 取回收站 ------------------------------ */
@@ -98,12 +98,12 @@ export function restorePos(t: TrashCard | null, column: string, list: number[] |
   return Math.min(Math.max(0, t.pos), n);
 }
 
-/** 恢复几张卡片：先取回收站里的原位，当帧放回白板上，再让服务端恢复。返回成功的张数 */
-export async function restoreMany(path: string, ids: number[]): Promise<number> {
+/** 恢复几张卡片：先取回收站里的原位，当帧放回白板上，再让服务端恢复。返回实际成功、失败的 ID */
+export async function restoreMany(path: string, ids: number[]): Promise<BatchResult> {
   const results = await Promise.allSettled(ids.map(id => restoreOne(path, id)));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
-  return results.filter(r => r.status === 'fulfilled').length;
+  const result = collectBatch(ids, results);
+  if (result.failed[0]) toastError(result.failed[0].error);
+  return result;
 }
 
 async function restoreOne(path: string, id: number) {
@@ -117,10 +117,10 @@ async function restoreOne(path: string, id: number) {
   await exec({ op: 'restore', id }, restoreCard({ id, column, pos, movedAt: serverNow(), card }));
 }
 
-/** 撤销删除：全成功时一句「已恢复」 */
+/** 撤销删除：按实际恢复成功的 ID 提示一句「已恢复」 */
 export async function undoDelete(path: string, ids: number[]): Promise<void> {
-  const n = await restoreMany(path, ids);
-  if (n && n === ids.length) toast({ type: 'success', title: ids.length === 1 ? `已恢复 #${ids[0]}` : `已恢复 ${n} 张卡片`, duration: 2200 });
+  const result = await restoreMany(path, ids);
+  if (result.ok.length) toast({ type: 'success', title: result.ok.length === 1 ? `已恢复 #${result.ok[0]}` : `已恢复 ${result.ok.length} 张卡片`, duration: 2200 });
 }
 
 /** 回收站里恢复之后：一句话归位（原来在锁定状态的，回到了当初领取它的可领取状态） */
@@ -136,12 +136,11 @@ export function restoredToast(ids: number[], path: string): void {
 
 /* ------------------------------ 永久删除 ------------------------------ */
 
-/** 从回收站永久删除：附件、评论一起删，不能恢复。全成功时提示。返回是不是全都删掉了 */
-export async function purgeCards(ids: number[]): Promise<boolean> {
+/** 从回收站永久删除：附件、评论一起删，不能恢复。提示只按实际成功、失败的 ID 更新 */
+export async function purgeCards(ids: number[]): Promise<BatchResult> {
   const results = await Promise.allSettled(ids.map(id => exec({ op: 'purge', id })));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  const n = results.filter(r => r.status === 'fulfilled').length;
-  if (bad) toastError(bad.reason);
-  if (n) toast({ type: 'success', title: n === 1 ? `已永久删除 #${ids[0]}` : `已永久删除 ${n} 张卡片`, duration: 2400 });
-  return !bad;
+  const result = collectBatch(ids, results);
+  if (result.failed[0]) toastError(result.failed[0].error);
+  if (result.ok.length) toast({ type: 'success', title: result.ok.length === 1 ? `已永久删除 #${result.ok[0]}` : `已永久删除 ${result.ok.length} 张卡片`, duration: 2400 });
+  return result;
 }

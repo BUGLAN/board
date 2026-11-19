@@ -14,7 +14,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
-import { openCard, triage, untriage } from '../lib/actions';
+import { openCard, triage, triageMany, untriage } from '../lib/actions';
 import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
 import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
@@ -22,7 +22,7 @@ import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
-import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, movePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData } from '../store/data';
+import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData, type BatchResult } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { ActorAvatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
 import { matches } from './Card';
@@ -220,61 +220,95 @@ function focusAfter(e: { detail: number; currentTarget: HTMLElement }) {
   requestAnimationFrame(() => to?.querySelector<HTMLElement>('.ib-line')?.focus({ preventScroll: true }));
 }
 
-async function doTriage(ids: number[], how?: LeaveRow['how']) {
+function failExit(result: BatchResult) {
+  result.failed.forEach(({ id }) => {
+    exits.delete(id);
+    pressed.delete(id);
+  });
+}
+
+/** 批量操作后的勾选：成功的去掉，失败的保留（只在发起时选中的那些里加回来） */
+export function keepBatchSelection(requested: number[], checked: number[], result: BatchResult): number[] {
+  const next = new Set(checked.filter(id => !result.ok.includes(id)));
+  result.failed.forEach(f => requested.includes(f.id) && next.add(f.id));
+  return [...next];
+}
+
+/** 提交后只留下失败项的选择；成功项已经从列表里移走 */
+function keepFailed(result: BatchResult, selected: Set<number>) {
+  const st = useInbox.getState();
+  setInbox({ checked: keepBatchSelection([...selected], st.checked, result) });
+}
+
+export async function doTriage(ids: number[], how?: LeaveRow['how']): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
+  if (!ok.length) return { ok: [], failed: [] };
+  const selected = new Set(useInbox.getState().checked);
   // 逐条看：卡片由逐条视图换下一张，这里补「去了白板」的那一下（先量好位置，移走后就没了）
   if (useInbox.getState().view === 'one') {
     if (ok.length === 1) leaveOne(document.querySelector<HTMLElement>('.page-inbox .ib-one-card'), ok[0], useData.getState().board?.cards[ok[0]]?.title ?? '');
   } else if (how && !reduceMotion()) ok.forEach(id => pressed.set(id, how));
-  if (ok.length === 1) {
-    exits.set(ok[0], 'triage');
-    return triage(ok[0], { toastDelay: triageToastDelay() });
-  }
-  const home = boardFlow(useData.getState().board).home;
-  const to = home?.key ?? 'todo';
   ok.forEach(id => exits.set(id, 'triage'));
-  const all = Promise.allSettled(ok.map(id => exec({ op: 'move', id, column: to }, movePatch(id, to))));
-  // 当帧移走；提示等离场做完再出来。撤销等这几次移动都确认后，把成功的放回「未整理」
-  const undo = () => void all.then(rs => untriage(ok.filter((_, i) => rs[i].status === 'fulfilled')));
-  const show = () => toast({ type: 'success', title: `${ok.length} 条已整理到「${home?.name ?? '待办'}」`, text: ok.map(i => `#${i}`).join('、'), action: { label: '撤销', fn: undo } });
-  const delay = triageToastDelay();
-  if (delay > 0) setTimeout(show, delay);
-  else show();
-  const bad = (await all).find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
+  const home = boardFlow(useData.getState().board).home;
+  const result = ok.length === 1 ? await triage(ok[0]) : await triageMany(ok);
+  failExit(result);
+  keepFailed(result, selected);
+  // 当帧移走；提示等离场做完再出来。撤销只放回实际成功的那些
+  if (result.ok.length) {
+    const show = () =>
+      toast({
+        type: 'success',
+        title: result.ok.length === 1 ? `#${result.ok[0]} 已整理到「${home?.name ?? '待办'}」` : `${result.ok.length} 条已整理到「${home?.name ?? '待办'}」`,
+        text: result.ok.length === 1 ? undefined : result.ok.map(i => `#${i}`).join('、'),
+        action: { label: '撤销', fn: () => void untriage(result.ok) },
+      });
+    const delay = triageToastDelay();
+    if (delay > 0) setTimeout(show, delay);
+    else show();
+  }
+  if (result.failed[0]) toastError(result.failed[0].error);
+  return result;
 }
 
 /** 收到「稍后再做」（default/main#303）：当帧从列表里消失，提示里可以「撤销」；失败的回到原处并提示 */
-async function doLater(ids: number[], gone = false) {
+export async function doLater(ids: number[], gone = false): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
-  if (!ok.length) return;
-  const st = useInbox.getState();
-  setInbox({ checked: st.checked.filter(c => !ok.includes(c)), open: st.open != null && ok.includes(st.open) ? null : st.open });
+  if (!ok.length) return { ok: [], failed: [] };
+  const selected = new Set(useInbox.getState().checked);
   ok.forEach(id => exits.set(id, gone ? 'gone' : 'later'));
-  const done = setLater(ok, true);
-  toast({
-    type: 'success',
-    title: ok.length === 1 ? `#${ok[0]} 已移到「稍后再做」` : `${ok.length} 条已移到「稍后再做」`,
-    text: '在标题旁的「稍后再做」里查看，左滑放回',
-    action: { label: '撤销', fn: () => void setLater(ok, false).then(errs => errs.length && toastError(errs[0])) },
-  });
-  const errs = await done;
-  if (errs.length) toastError(errs[0]);
+  const result = await setLater(ok, true);
+  failExit(result);
+  keepFailed(result, selected);
+  const st = useInbox.getState();
+  if (st.open != null && result.ok.includes(st.open)) setInbox({ open: null });
+  if (result.ok.length) {
+    toast({
+      type: 'success',
+      title: result.ok.length === 1 ? `#${result.ok[0]} 已移到「稍后再做」` : `${result.ok.length} 条已移到「稍后再做」`,
+      text: '在标题旁的「稍后再做」里查看，左滑放回',
+      action: { label: '撤销', fn: () => void setLater(result.ok, false).then(r => r.failed[0] && toastError(r.failed[0].error)) },
+    });
+  }
+  if (result.failed[0]) toastError(result.failed[0].error);
+  return result;
 }
 
 /** 从「稍后再做」放回「未整理」：回到原来的位置，标签、描述、评论都不动；当帧离开这一页，提示里可以「撤销」 */
-async function doUnlater(ids: number[], gone = false) {
+export async function doUnlater(ids: number[], gone = false): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
-  if (!ok.length) return;
+  if (!ok.length) return { ok: [], failed: [] };
   ok.forEach(id => exits.set(id, gone ? 'gone' : 'back'));
-  const done = setLater(ok, false);
-  toast({
-    type: 'success',
-    title: ok.length === 1 ? `#${ok[0]} 已放回「未整理」` : `${ok.length} 条已放回「未整理」`,
-    action: { label: '撤销', fn: () => void setLater(ok, true).then(errs => errs.length && toastError(errs[0])) },
-  });
-  const errs = await done;
-  if (errs.length) toastError(errs[0]);
+  const result = await setLater(ok, false);
+  failExit(result);
+  if (result.ok.length) {
+    toast({
+      type: 'success',
+      title: result.ok.length === 1 ? `#${result.ok[0]} 已放回「未整理」` : `${result.ok.length} 条已放回「未整理」`,
+      action: { label: '撤销', fn: () => void setLater(result.ok, true).then(r => r.failed[0] && toastError(r.failed[0].error)) },
+    });
+  }
+  if (result.failed[0]) toastError(result.failed[0].error);
+  return result;
 }
 
 async function doDelete(ids: number[], cards: Card[]) {
@@ -1198,11 +1232,7 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
       <button
         type="button"
         className="btn sm brand"
-        onClick={() => {
-          const ids = checked;
-          setInbox({ checked: [] });
-          void doTriage(ids);
-        }}
+        onClick={() => void doTriage(checked)}
       >
         整理到「{home}」
       </button>
@@ -1764,6 +1794,7 @@ function LaterPage({ cards, labels, project, path, bulkHost }: { cards: Card[] |
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
   const wrap = useRef<HTMLDivElement>(null);
   const present = useMemo(() => new Set((cards ?? []).map(c => renderKey(c.id))), [cards]);
+  const settle = (requested: number[], result: BatchResult) => setChecked(cur => keepBatchSelection(requested, cur, result));
   useRowMotion(wrap, present, path, 'lt');
   // 放回、删掉、别的窗口改了：不在这一页的从勾选里去掉
   useEffect(() => setChecked(cs => (cs.some(id => !cards?.some(c => c.id === id)) ? cs.filter(id => cards?.some(c => c.id === id)) : cs)), [cards]);
@@ -1817,7 +1848,7 @@ function LaterPage({ cards, labels, project, path, bulkHost }: { cards: Card[] |
             </div>
             <div className="ib-rows">
               {g.rows.map(c => (
-                <LaterRow key={renderKey(c.id)} card={c} labels={labels} project={project} now={now} checked={checked.includes(c.id)} onCheck={check} />
+                <LaterRow key={renderKey(c.id)} card={c} labels={labels} project={project} now={now} checked={checked.includes(c.id)} onCheck={check} onResult={settle} />
               ))}
             </div>
           </section>
@@ -1843,18 +1874,42 @@ function LaterPage({ cards, labels, project, path, bulkHost }: { cards: Card[] |
       )}
       {/* 批量条挂在页面根上（和「未整理」「回收站」一样贴着视口底部），不跟着列表滚走（default/main#492） */}
       {(() => {
-        const bar = <LaterBulk checked={checked} cards={cards} project={project} onClear={() => setChecked([])} />;
+        const bar = (
+          <LaterBulk
+            checked={checked}
+            cards={cards}
+            project={project}
+            onClear={() => setChecked([])}
+            onResult={settle}
+          />
+        );
         return bulkHost ? createPortal(bar, bulkHost) : bar;
       })()}
     </div>
   );
 }
 
-function LaterRow({ card: c, labels, project, now, checked, onCheck }: { card: Card; labels: Label[]; project: string; now: number; checked: boolean; onCheck: (id: number, shift: boolean) => void }) {
+function LaterRow({
+  card: c,
+  labels,
+  project,
+  now,
+  checked,
+  onCheck,
+  onResult,
+}: {
+  card: Card;
+  labels: Label[];
+  project: string;
+  now: number;
+  checked: boolean;
+  onCheck: (id: number, shift: boolean) => void;
+  onResult: (requested: number[], result: BatchResult) => void;
+}) {
   const saving = useCardBusy(c.id);
   const pending = useData(s => s.pending[`${s.path}#${c.id}`]);
   // 往左滑：直接放回「未整理」
-  const sw = useSwipe(-1, !saving, () => void doUnlater([c.id], true));
+  const sw = useSwipe(-1, !saving, () => void doUnlater([c.id], true).then(result => onResult([c.id], result)));
   const text = snippet(c.body);
   return (
     <div data-lt={renderKey(c.id)} className={cx('ib-row', checked && 'checked', saving && 'saving', sw.state && `swipe-${sw.state}`)}>
@@ -1961,7 +2016,19 @@ function LaterRow({ card: c, labels, project, now, checked, onCheck }: { card: C
 }
 
 /** 「稍后再做」勾选后的批量条：标签、删除、放回「未整理」 */
-function LaterBulk({ checked, cards, project, onClear }: { checked: number[]; cards: Card[]; project: string; onClear: () => void }) {
+function LaterBulk({
+  checked,
+  cards,
+  project,
+  onClear,
+  onResult,
+}: {
+  checked: number[];
+  cards: Card[];
+  project: string;
+  onClear: () => void;
+  onResult: (requested: number[], result: BatchResult) => void;
+}) {
   const n = checked.length;
   const bulkLabels = (rect: DOMRect) => {
     const ids = checked;
@@ -2000,8 +2067,7 @@ function LaterBulk({ checked, cards, project, onClear }: { checked: number[]; ca
         className="btn sm brand"
         onClick={() => {
           const ids = checked;
-          onClear();
-          void doUnlater(ids);
+          void doUnlater(ids).then(result => onResult(ids, result));
         }}
       >
         放回「未整理」

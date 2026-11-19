@@ -79,9 +79,9 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
     if (!targets.length || busy) return;
     setBusy(true);
     try {
-      const n = await restoreMany(path, targets);
-      if (n) restoredToast(targets.slice(0, n), path);
-      drop(targets);
+      const result = await restoreMany(path, targets);
+      if (result.ok.length) restoredToast(result.ok, path);
+      drop(result.ok);
     } finally {
       setBusy(false);
     }
@@ -106,8 +106,8 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
     if (!yes) return;
     setBusy(true);
     try {
-      await purgeCards(targets);
-      drop(targets);
+      const result = await purgeCards(targets);
+      drop(result.ok);
     } finally {
       setBusy(false);
     }
