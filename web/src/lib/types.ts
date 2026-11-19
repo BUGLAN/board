@@ -688,9 +688,19 @@ export interface SkillInfo {
 export interface SelfTest {
   /** 这台机器的 board host 会做自检；旧版不会（按钮置灰、要升级） */
   able?: boolean;
-  /** 等 board host 做（或正在做）的自检 */
-  ask?: { id: number; agent?: string | null; by: string; at: number } | null;
+  /** 等 board host 做（或正在做）的自检，按请求的先后：几个 agent 的单查可以同时在，整台机器的请求和它们互斥 */
+  asks: SelfTestAsk[];
+  /** 最早的一个请求（给旧版 board host；界面看 asks） */
+  ask?: SelfTestAsk | null;
   items: SelfTestItem[];
+}
+
+export interface SelfTestAsk {
+  id: number;
+  /** 只查这个 agent；空是整台机器 */
+  agent?: string | null;
+  by: string;
+  at: number;
 }
 
 export interface SelfTestItem {

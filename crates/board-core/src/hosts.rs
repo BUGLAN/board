@@ -1462,16 +1462,50 @@ pub(crate) const SYNC_KINDS: [SyncKind; 3] = [
 /// 自检（PRD §10.12「自检」）：人在机器详情点「自检」（整台机器，或「本机 agent」的某一行），board host 在后台检查
 /// agent 能不能干活、每块白板的目录能不能推送，服务端补上 board 版本是否落后。结果一直保留到下一次自检
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SelfTestWire", into = "SelfTestWire")]
 pub struct SelfTest {
     /// 这台机器的 board host 会做自检（上报里带 `selftest: true`）；旧版不会，界面上置灰、要升级
-    #[serde(default)]
     pub able: bool,
-    /// 等 board host 做（或正在做）的自检；做完清掉
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask: Option<SelfTestAsk>,
+    /// 等 board host 做（或正在做）的自检，按请求的先后；做完一个清掉一个。
+    /// 可以同时有几个「只查一个 agent」的请求（每个 agent 一个），整台机器的请求和它们互斥
+    pub asks: Vec<SelfTestAsk>,
     /// 最近的结果：agent（按本机 agent 的顺序）、git（按白板）、版本
-    #[serde(default)]
     pub items: Vec<SelfTestItem>,
+}
+
+/// [`SelfTest`] 存进数据库、发给界面和 board host 的样子：除了 `asks`，还带最早的一个请求 `ask`，
+/// 给只认一个请求的旧版 board host（0.1.40 及之前）：它一次做一个，做完回报后下一个顶上来。
+/// 读的时候没有 `asks`（旧数据、旧服务端）就把 `ask` 当成唯一的请求
+#[derive(Serialize, Deserialize)]
+struct SelfTestWire {
+    #[serde(default)]
+    able: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    asks: Vec<SelfTestAsk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ask: Option<SelfTestAsk>,
+    #[serde(default)]
+    items: Vec<SelfTestItem>,
+}
+
+impl From<SelfTestWire> for SelfTest {
+    fn from(w: SelfTestWire) -> Self {
+        let asks = if w.asks.is_empty() { w.ask.into_iter().collect() } else { w.asks };
+        SelfTest { able: w.able, asks, items: w.items }
+    }
+}
+
+impl From<SelfTest> for SelfTestWire {
+    fn from(s: SelfTest) -> Self {
+        SelfTestWire { able: s.able, ask: s.asks.first().cloned(), asks: s.asks, items: s.items }
+    }
+}
+
+impl SelfTest {
+    /// 还没过期（[`SELFTEST_STALE_MS`] 内请求的）的自检请求
+    pub fn live(&self, now: i64) -> impl Iterator<Item = &SelfTestAsk> {
+        self.asks.iter().filter(move |a| a.at + SELFTEST_STALE_MS > now)
+    }
 }
 
 /// 一次自检请求
@@ -4077,7 +4111,9 @@ impl<'a> W<'a> {
 
     /// 自检（PRD §10.12「自检」，只能在登录后的界面上做）：记下请求，board host 取到任务时在后台做。
     /// `agent` 给了就只检查这个 agent（「本机 agent」那一行的按钮），否则整台机器（每个找得到的 agent、每块白板的目录）。
-    /// 要机器在线；同一台机器同时只做一次（上一次超过 [`SELFTEST_STALE_MS`] 还没做完的算作废）。不占会话位，不影响在跑的派发
+    /// 要机器在线。同一台机器可以同时查几个不同的 agent（同一个 agent 同时只做一次）；整台机器的自检和它们互斥：
+    /// 有没做完的请求时不能整台自检，整台自检没做完时也不能单查。超过 [`SELFTEST_STALE_MS`] 还没做完的算作废。
+    /// 不占会话位，不影响在跑的派发
     pub fn host_selftest(&mut self, name: &str, agent: Option<&str>, by: &str) -> Result<HostInfo> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         if !h.online(self.now) {
@@ -4090,12 +4126,24 @@ impl<'a> W<'a> {
                 env!("CARGO_PKG_VERSION")
             )));
         }
-        if let Some(a) = &h.selftest.ask {
-            if a.at + SELFTEST_STALE_MS > self.now {
-                return Err(BoardError::usage(format!("机器「{name}」正在自检（{} 请求的）：等它做完再来", a.by)));
-            }
-        }
         let agent = agent.map(str::trim).filter(|a| !a.is_empty());
+        let agent_name = |id: &str| h.agents.iter().find(|a| a.id == id).map(|a| a.name.clone()).unwrap_or_else(|| id.to_string());
+        let live: Vec<&SelfTestAsk> = h.selftest.live(self.now).collect();
+        if let Some(a) = live.iter().find(|a| a.agent.is_none()) {
+            return Err(BoardError::usage(format!("机器「{name}」正在整台自检（{} 请求的）：等它做完再来", a.by)));
+        }
+        match agent {
+            None if !live.is_empty() => {
+                let who: Vec<String> = live.iter().filter_map(|a| a.agent.as_deref()).map(agent_name).collect();
+                return Err(BoardError::usage(format!("机器「{name}」正在自检 {}：等它们做完再整台自检", who.join("、"))));
+            }
+            Some(id) => {
+                if let Some(a) = live.iter().find(|a| a.agent.as_deref() == Some(id)) {
+                    return Err(BoardError::usage(format!("机器「{name}」正在自检 {}（{} 请求的）：等它做完再来", agent_name(id), a.by)));
+                }
+            }
+            None => {}
+        }
         let label = match agent {
             Some(id) => {
                 let a = h.resolved().into_iter().find(|a| a.id == id).ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{id}」")))?;
@@ -4108,7 +4156,9 @@ impl<'a> W<'a> {
         };
         let by = if by.trim().is_empty() { "人" } else { by.trim() };
         let mut st = h.selftest.clone();
-        st.ask = Some(SelfTestAsk { id: h.ask_seq + 1, agent: agent.map(str::to_string), by: by.into(), at: self.now });
+        // 过期没做完的请求丢掉（board host 那边作废了），新请求接在后面
+        st.asks.retain(|a| a.at + SELFTEST_STALE_MS > self.now);
+        st.asks.push(SelfTestAsk { id: h.ask_seq + 1, agent: agent.map(str::to_string), by: by.into(), at: self.now });
         self.tx.execute(
             "UPDATE hosts SET selftest = ?2, ask_seq = ?3 WHERE id = ?1",
             params![h.id, serde_json::to_string(&st).unwrap_or_default(), h.ask_seq + 1],
@@ -4192,11 +4242,11 @@ impl<'a> W<'a> {
         self.read().host(name, self.now)
     }
 
-    /// board host 做完了自检：换掉这次检查到的项（整台机器时全部换掉，只查一个 agent 时只换它那一项），
-    /// 补上 board 版本是否落后于服务端，清掉请求，记一条操作。序号对不上（被新的请求换掉、或是别的 board host 进程）时不记
+    /// board host 做完了自检：换掉这次检查到的项（整台机器时全部换掉，只查一个 agent 时只换它那一项，别的 agent 的结果不动），
+    /// 补上 board 版本是否落后于服务端，清掉这个请求（同时在做的别的请求留着），记一条操作。序号对不上（被新的请求换掉、或是别的 board host 进程）时不记
     pub fn host_selftest_done(&mut self, name: &str, instance: &str, id: i64, items: Vec<SelfTestItem>) -> Result<HostInfo> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
-        let Some(ask) = h.selftest.ask.clone().filter(|a| a.id == id && h.instance == instance) else {
+        let Some(ask) = h.selftest.asks.iter().find(|a| a.id == id && h.instance == instance).cloned() else {
             return self.read().host(name, self.now);
         };
         let server = env!("CARGO_PKG_VERSION");
@@ -4221,7 +4271,7 @@ impl<'a> W<'a> {
             at: self.now,
         });
         let mut st = h.selftest.clone();
-        st.ask = None;
+        st.asks.retain(|a| a.id != id);
         if ask.agent.is_none() {
             st.items = fresh.clone();
         } else {

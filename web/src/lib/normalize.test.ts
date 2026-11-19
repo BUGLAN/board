@@ -31,7 +31,7 @@ const full = (): HostInfo =>
     offAt: null,
     ops: [{ at: 1, by: '人', text: '改了' }],
     token: { id: 1, name: 't', hint: 'abcd', lastUsedAt: null, shared: ['win'] },
-    selftest: { able: true, items: [{ kind: 'agent', key: 'claude', ok: true, at: 1 }] },
+    selftest: { able: true, asks: [], items: [{ kind: 'agent', key: 'claude', ok: true, at: 1 }] },
     sync: {
       able: true,
       last: {
@@ -96,6 +96,10 @@ describe('机器：必填的数组补齐', () => {
     expect(h.cron).toEqual([]);
     expect(h.rules?.[0].labels).toEqual([]);
     expect(h.selftest?.items).toEqual([]);
+    expect(h.selftest?.asks).toEqual([]);
+    // 旧服务端只有一个 ask：当成唯一的请求
+    const ask = { id: 2, agent: 'claude', by: '人', at: 1 };
+    expect(normHost({ ...skewed(), selftest: { ask } } as unknown as HostInfo).selftest?.asks).toEqual([ask]);
     expect(h.sync?.last?.agents).toEqual([]);
     expect(h.sync?.last?.skills).toMatchObject({ state: '', count: 0, dirs: [], replaced: [], links: [] });
     expect(h.sync?.last?.mcp).toMatchObject({ state: '', count: 0, agents: [], replaced: [] });

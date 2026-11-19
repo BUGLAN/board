@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, missWord, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestRows, selftestState, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, missWord, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestRows, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -247,20 +247,44 @@ describe('自检', () => {
   const now = 1_800_000_000_000;
   const h = (x: Partial<HostInfo> = {}): HostInfo => ({ ...host([agent('claude'), agent('codex', { name: 'Codex' })]), online: true, ...x }) as HostInfo;
   it('没有请求时没有状态；正在做、等上线、过期分别写明', () => {
-    expect(selftestState(h({ selftest: { items: [] } }), now)).toBeNull();
+    expect(selftestState(h({ selftest: { asks: [], items: [] } }), now)).toBeNull();
     const ask = { id: 3, by: 'octocat', at: now - 10_000 };
-    expect(selftestState(h({ selftest: { ask, items: [] } }), now)).toMatchObject({ tone: 'busy' });
-    expect(selftestBusy(h({ selftest: { ask, items: [] } }), now)).toBe(true);
-    expect(selftestState(h({ selftest: { ask: { ...ask, agent: 'claude' }, items: [] } }), now)?.text).toContain('自检 claude');
-    expect(selftestState(h({ online: false, selftest: { ask, items: [] } }), now)).toMatchObject({ tone: 'warn', text: '等机器上线后自检' });
+    expect(selftestState(h({ selftest: { asks: [ask], items: [] } }), now)).toMatchObject({ tone: 'busy', agents: [] });
+    expect(selftestBusy(h({ selftest: { asks: [ask], items: [] } }), now)).toBe(true);
+    expect(selftestState(h({ selftest: { asks: [{ ...ask, agent: 'claude' }], items: [] } }), now)?.text).toContain('自检 claude');
+    expect(selftestState(h({ online: false, selftest: { asks: [ask], items: [] } }), now)).toMatchObject({ tone: 'warn', text: '等机器上线后自检' });
     const old = { ...ask, at: now - SELFTEST_STALE_MS };
-    expect(selftestState(h({ selftest: { ask: old, items: [] } }), now)?.text).toContain('没做完');
-    expect(selftestBusy(h({ selftest: { ask: old, items: [] } }), now)).toBe(false);
+    expect(selftestState(h({ selftest: { asks: [old], items: [] } }), now)?.text).toContain('没做完');
+    expect(selftestBusy(h({ selftest: { asks: [old], items: [] } }), now)).toBe(false);
+  });
+  it('几个 agent 同时自检（#487）：按 agent 判断忙不忙，状态里列出在查的几个', () => {
+    const asks = [
+      { id: 4, agent: 'claude', by: 'octocat', at: now - 5_000 },
+      { id: 5, agent: 'codex', by: 'octocat', at: now - 1_000 },
+    ];
+    const x = h({ selftest: { asks, items: [] } });
+    expect(selftestBusy(x, now, 'claude')).toBe(true);
+    expect(selftestBusy(x, now, 'codex')).toBe(true);
+    expect(selftestBusy(x, now, 'dsh')).toBe(false);
+    expect(selftestBusy(x, now)).toBe(true);
+    expect(selftestWhole(x, now)).toBe(false);
+    expect(selftestState(x, now)).toMatchObject({ tone: 'busy', agents: ['claude', 'codex'] });
+    expect(selftestState(x, now)?.text).toContain('自检 claude、Codex');
+    expect(selftestLive(x, now).map(a => a.id)).toEqual([4, 5]);
+    // 整台机器在查：每个 agent 都不能单查
+    const whole = h({ selftest: { asks: [{ id: 6, by: 'octocat', at: now }], items: [] } });
+    expect(selftestBusy(whole, now, 'dsh')).toBe(true);
+    expect(selftestWhole(whole, now)).toBe(true);
+    // 过期的不算
+    const stale = h({ selftest: { asks: [{ ...asks[0], at: now - SELFTEST_STALE_MS }, asks[1]], items: [] } });
+    expect(selftestBusy(stale, now, 'claude')).toBe(false);
+    expect(selftestState(stale, now)?.agents).toEqual(['codex']);
   });
   it('结果按 agent、仓库、版本排，名称可读', () => {
     const rows = selftestRows(
       h({
         selftest: {
+          asks: [],
           items: [
             { kind: 'version', key: 'board', ok: false, why: 'board 0.1.1 落后于服务端 0.1.19', at: now },
             { kind: 'git', key: 'default/main', ok: true, at: now },

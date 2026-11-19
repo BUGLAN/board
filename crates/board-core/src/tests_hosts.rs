@@ -3810,18 +3810,19 @@ fn selftest_request_runs_once_and_results_replace_previous() {
     assert_eq!(selftest(&mut s, T0, Some("mycli")).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(selftest(&mut s, T0, Some("codex")).unwrap_err().code, ErrorCode::Usage);
     let h = selftest(&mut s, T0 + S, None).unwrap();
-    let ask = h.selftest.ask.clone().expect("记下请求");
+    let ask = h.selftest.asks.first().cloned().expect("记下请求");
     assert_eq!((ask.agent.as_deref(), ask.by.as_str()), (None, "octocat"));
     // 取任务时 board host 能看到请求
     let w = s.read(|r| r.host_work("mbp", T0 + 2 * S)).unwrap();
-    assert_eq!(w.host.selftest.ask.as_ref().map(|a| a.id), Some(ask.id));
-    // 同一台机器同时只做一次
-    assert_eq!(selftest(&mut s, T0 + 2 * S, Some("claude")).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(w.host.selftest.asks.iter().map(|a| a.id).collect::<Vec<_>>(), vec![ask.id]);
+    // 整台机器的自检没做完时不能再单查一个 agent
+    let e = selftest(&mut s, T0 + 2 * S, Some("claude")).unwrap_err();
+    assert!(e.message.contains("正在整台自检"), "{}", e.message);
     // 别的进程、序号对不上的回报不算
     let h = selftest_done(&mut s, T0 + 3 * S, "i2", ask.id, vec![item("agent", "claude", true, None)]);
-    assert!(h.selftest.ask.is_some() && h.selftest.items.is_empty());
+    assert!(h.selftest.asks.len() == 1 && h.selftest.items.is_empty());
     let h = selftest_done(&mut s, T0 + 3 * S, "i1", ask.id + 5, vec![item("agent", "claude", true, None)]);
-    assert!(h.selftest.ask.is_some());
+    assert_eq!(h.selftest.asks.len(), 1);
     // 做完：agent、git 两项 + 服务端补上版本（0.1.1 落后于服务端）
     let h = selftest_done(
         &mut s,
@@ -3830,7 +3831,7 @@ fn selftest_request_runs_once_and_results_replace_previous() {
         ask.id,
         vec![item("agent", "claude", true, None), item("git", B, false, Some("没有推送权限")), item("bogus", "x", true, None)],
     );
-    assert!(h.selftest.ask.is_none());
+    assert!(h.selftest.asks.is_empty());
     let kinds: Vec<(&str, bool)> = h.selftest.items.iter().map(|i| (i.kind.as_str(), i.ok)).collect();
     assert_eq!(kinds, vec![("agent", true), ("git", false), ("version", false)]);
     assert!(h.selftest.items.iter().all(|i| i.at == T0 + 4 * S), "检查时间是服务端收到的时间");
@@ -3838,7 +3839,7 @@ fn selftest_request_runs_once_and_results_replace_previous() {
     assert!(v.why.as_deref().unwrap().contains("0.1.1") && v.why.as_deref().unwrap().contains(env!("CARGO_PKG_VERSION")));
     assert!(h.ops.iter().any(|o| o.text.contains("没通过") && o.text.contains(B)), "{:?}", h.ops);
     // 只查一个 agent：只换它那一项，git 的结果保留到下一次整机自检
-    let ask = selftest(&mut s, T0 + 5 * S, Some("claude")).unwrap().selftest.ask.unwrap();
+    let ask = selftest(&mut s, T0 + 5 * S, Some("claude")).unwrap().selftest.asks[0].clone();
     assert_eq!(ask.agent.as_deref(), Some("claude"));
     let h = selftest_done(&mut s, T0 + 6 * S, "i1", ask.id, vec![item("agent", "claude", false, Some("没有登录")), item("git", B, true, None)]);
     let got: Vec<(&str, bool, i64)> = h.selftest.items.iter().map(|i| (i.kind.as_str(), i.ok, i.at)).collect();
@@ -3849,11 +3850,12 @@ fn selftest_request_runs_once_and_results_replace_previous() {
 fn selftest_needs_online_host_and_stale_request_can_be_replaced() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
-    let first = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    let first = selftest(&mut s, T0, None).unwrap().selftest.asks[0].clone();
     // 一直没做完（board host 卡住、重启丢了）：超过期限后可以重新请求
     beat(&mut s, T0 + hosts::SELFTEST_STALE_MS, &report("mbp", "i1", vec![])).unwrap();
-    let again = selftest(&mut s, T0 + hosts::SELFTEST_STALE_MS + S, None).unwrap().selftest.ask.unwrap();
-    assert!(again.id > first.id);
+    let again = selftest(&mut s, T0 + hosts::SELFTEST_STALE_MS + S, None).unwrap().selftest;
+    assert_eq!(again.asks.len(), 1, "过期的请求换掉了：{:?}", again.asks);
+    assert!(again.asks[0].id > first.id);
     // 离线的机器不能自检
     s.sweep(T0 + hosts::SELFTEST_STALE_MS + 120 * S).unwrap();
     assert_eq!(selftest(&mut s, T0 + hosts::SELFTEST_STALE_MS + 121 * S, None).unwrap_err().code, ErrorCode::Usage);
@@ -3865,6 +3867,65 @@ fn selftest_needs_online_host_and_stale_request_can_be_replaced() {
     let e = selftest(&mut s, t + S, None).unwrap_err();
     assert!(e.message.contains("还不会自检"), "{}", e.message);
     assert!(beat(&mut s, t + 2 * S, &report("mbp", "i9", vec![])).unwrap().host.selftest.able);
+}
+
+/// 同一台机器同时查几个不同的 agent（default/main#487）：请求都记下，结果各自回来只换各自那一项；
+/// 同一个 agent 不能重复请求；有单查没做完时不能整台自检；旧版 board host 看到的 `ask` 是最早的一个
+#[test]
+fn selftest_agents_run_concurrently() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.agents.push(HostAgent { id: "codex".into(), name: "Codex".into(), ..claude(true) });
+    beat(&mut s, T0, &rep).unwrap();
+    // 先整台做一次：两个 agent、git 都有结果
+    let all = selftest(&mut s, T0, None).unwrap().selftest.asks[0].id;
+    selftest_done(&mut s, T0 + S, "i1", all, vec![item("agent", "claude", true, None), item("agent", "codex", true, None), item("git", B, true, None)]);
+
+    let a = selftest(&mut s, T0 + 2 * S, Some("claude")).unwrap().selftest.asks[0].clone();
+    let h = selftest(&mut s, T0 + 3 * S, Some("codex")).unwrap();
+    let ids: Vec<(i64, Option<&str>)> = h.selftest.asks.iter().map(|x| (x.id, x.agent.as_deref())).collect();
+    assert_eq!(ids.len(), 2, "两个请求同时在：{ids:?}");
+    let b = h.selftest.asks[1].clone();
+    assert_eq!((a.agent.as_deref(), b.agent.as_deref()), (Some("claude"), Some("codex")));
+    // 同一个 agent 正在自检：拒绝
+    let e = selftest(&mut s, T0 + 4 * S, Some("claude")).unwrap_err();
+    assert!(e.message.contains("正在自检 Claude Code"), "{}", e.message);
+    // 有单查没做完：不能整台自检，写明在查哪几个
+    let e = selftest(&mut s, T0 + 4 * S, None).unwrap_err();
+    assert!(e.message.contains("Claude Code、Codex"), "{}", e.message);
+    // 发给 board host、界面的 JSON：asks 两个，ask 是最早的那个（旧版 board host 一次做一个）
+    let v = serde_json::to_value(&h.selftest).unwrap();
+    assert_eq!(v["asks"].as_array().map(Vec::len), Some(2));
+    assert_eq!(v["ask"]["id"], a.id);
+    // 后请求的先做完：只换 codex 那一项，claude、git 的旧结果留着，claude 的请求还在
+    let h = selftest_done(&mut s, T0 + 5 * S, "i1", b.id, vec![item("agent", "codex", false, Some("没有登录"))]);
+    assert_eq!(h.selftest.asks.iter().map(|x| x.id).collect::<Vec<_>>(), vec![a.id]);
+    let got = |h: &HostInfo| -> Vec<(String, String, bool, i64)> { h.selftest.items.iter().map(|i| (i.kind.clone(), i.key.clone(), i.ok, i.at)).collect() };
+    let row = |k: &str, key: &str, ok: bool, at: i64| (k.to_string(), key.to_string(), ok, at);
+    assert_eq!(
+        got(&h),
+        vec![row("agent", "claude", true, T0 + S), row("agent", "codex", false, T0 + 5 * S), row("git", B, true, T0 + S), row("version", "board", false, T0 + 5 * S)]
+    );
+    let h = selftest_done(&mut s, T0 + 6 * S, "i1", a.id, vec![item("agent", "claude", false, Some("额度用完"))]);
+    assert!(h.selftest.asks.is_empty());
+    assert_eq!(
+        got(&h),
+        vec![row("agent", "claude", false, T0 + 6 * S), row("agent", "codex", false, T0 + 5 * S), row("git", B, true, T0 + S), row("version", "board", false, T0 + 6 * S)]
+    );
+    // 都做完了：又能整台自检
+    assert!(selftest(&mut s, T0 + 7 * S, None).is_ok());
+}
+
+/// 旧数据（只有一个 `ask`）读出来是一个请求；没有请求时 JSON 里不带 asks、ask
+#[test]
+fn selftest_reads_old_single_ask() {
+    let st: hosts::SelfTest = serde_json::from_value(serde_json::json!({ "able": true, "ask": { "id": 7, "agent": "claude", "by": "octocat", "at": 1 }, "items": [] })).unwrap();
+    assert_eq!(st.asks.iter().map(|a| (a.id, a.agent.as_deref())).collect::<Vec<_>>(), vec![(7, Some("claude"))]);
+    let v = serde_json::to_value(hosts::SelfTest { able: true, ..Default::default() }).unwrap();
+    assert!(v.get("asks").is_none() && v.get("ask").is_none(), "{v}");
+    // 往返一次还是同样的请求（存进数据库再读出来不会变成两个）
+    let back: hosts::SelfTest = serde_json::from_value(serde_json::to_value(&st).unwrap()).unwrap();
+    assert_eq!(back, st);
 }
 
 /* ------------------------------ 结构化事件（runlog.rs，#184） ------------------------------ */
@@ -5613,13 +5674,13 @@ fn checklist_agent_item_follows_skills_and_selftest() {
     // 找得到、看得到 board-skills，没自检过：还没确认，去处是自检
     assert_eq!(state_of(&s, T0, "agent"), ("unknown".into(), Some("selftest:mbp".into())));
     // 正在自检
-    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.asks[0].clone();
     assert_eq!(state_of(&s, T0, "agent"), ("unknown".into(), None));
     // 自检通过
     selftest_done(&mut s, T0, "i1", ask.id, vec![item("agent", "claude", true, None)]);
     assert_eq!(state_of(&s, T0, "agent"), ("ok".into(), None));
     // 自检没通过：去机器详情的 agent 页
-    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.asks[0].clone();
     selftest_done(&mut s, T0, "i1", ask.id, vec![item("agent", "claude", false, Some("没登录"))]);
     assert_eq!(state_of(&s, T0, "agent"), ("fail".into(), Some("host-agents:mbp".into())));
     assert_eq!(why_of(&s, T0, "agent"), "mbp 上的 Claude Code 自检没通过：没登录");
@@ -5647,11 +5708,11 @@ fn checklist_repo_and_push_items() {
     // 没自检过：还没确认
     assert_eq!(state_of(&s, T0, "push"), ("unknown".into(), Some("selftest:mbp".into())));
     // 自检能推送（同一个项目的哪块白板都算）
-    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.asks[0].clone();
     selftest_done(&mut s, T0, "i1", ask.id, vec![item("git", B, true, None)]);
     assert_eq!(state_of(&s, T0, "push"), ("ok".into(), None));
     // 推不了：去 Git 凭据
-    let ask = selftest(&mut s, T0, None).unwrap().selftest.ask.unwrap();
+    let ask = selftest(&mut s, T0, None).unwrap().selftest.asks[0].clone();
     selftest_done(&mut s, T0, "i1", ask.id, vec![item("git", B, false, Some("Permission denied"))]);
     assert_eq!(state_of(&s, T0, "push"), ("fail".into(), Some("git".into())));
     assert_eq!(why_of(&s, T0, "push"), "mbp 推不了：Permission denied");

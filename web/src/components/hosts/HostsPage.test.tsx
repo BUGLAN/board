@@ -250,7 +250,7 @@ describe('接口少了字段时机器页不整页崩', () => {
     rules: [{ op: 'in', agent: 'claude' }],
     workspace: { path: '~/ws' },
     sync: { able: true, last: { key: 'k', at: 1 } },
-    selftest: { able: true, ask: null },
+    selftest: { able: true, asks: [] },
     skillImport: { able: true },
     syncSkills: true,
     syncMcp: true,

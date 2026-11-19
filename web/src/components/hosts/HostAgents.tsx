@@ -8,10 +8,10 @@
    - 没找到的 agent 卡片置灰，写「这台机器上没找到」
    写操作：模型、启动环境、默认 agent 是设置项（当帧生效，旁边转圈）；自检、重试要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
-import { envName, missWord, selftestBusy, since } from '../../lib/hosts';
+import { envName, missWord, selftestBusy, selftestLive, selftestState, selftestWhole, since } from '../../lib/hosts';
 import { interfaceName, metaOf, protocolChoices, providersFor, runPick, writableEfforts } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
 import { copyText, cx } from '../../lib/util';
@@ -24,44 +24,54 @@ import type { Save } from './Saver';
 
 type SyncMap = Record<string, SyncState | undefined>;
 
-/** 只等服务端的按钮（自检、重试）：转圈、禁用直到返回 */
+/** 只等服务端的按钮（自检、重试）：转圈、禁用直到返回。按 key 记：几个 agent 的「自检这一个」可以同时点（#487） */
 function useAsk() {
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  // 同一帧连点两下时 state 还没更新：用 ref 挡住同一个 key 的第二次
+  const live = useRef(new Set<string>());
   const run = async (key: string, f: () => Promise<unknown>) => {
-    if (busy) return;
-    setBusy(key);
+    if (live.current.has(key)) return;
+    live.current.add(key);
+    setBusy(new Set(live.current));
     try {
       await optimistic(null, f);
     } catch (e) {
       toastError(e);
     } finally {
-      setBusy(null);
+      live.current.delete(key);
+      setBusy(new Set(live.current));
     }
   };
-  return { busy, run };
+  return { any: busy.size > 0, is: (key: string) => busy.has(key), run };
 }
 
 export function HostAgents({ h, view, save, sync, now }: { h: HostInfo; view: ProviderView | null; save: Save; sync: SyncMap; now: number }) {
   const ask = useAsk();
   const tested = lastTest(h);
   const testing = selftestBusy(h, now);
+  const whole = selftestWhole(h, now);
+  const state = selftestState(h, now);
   const offline = !h.online;
   return (
     <div className="hd-agents">
       <div className="hd-abar">
         <span className="hp-note">写进这台机器上 agent 自己的配置文件：board host 启动时写一次，服务器上一改就同步。有人在用的电脑选「不改」，Board 就不碰它。</span>
         <span className="hd-test">
-          {tested > 0 && <span>自检 {since(tested, now)}</span>}
+          {state?.tone === 'busy' && state.agents.length > 0 ? (
+            <span>正在自检 {state.agents.map(id => h.agents.find(x => x.id === id)?.name ?? id).join('、')}</span>
+          ) : (
+            tested > 0 && <span>自检 {since(tested, now)}</span>
+          )}
           <Tip text={offline ? '机器离线' : h.selftest?.able === false ? `board ${h.version} 不会自检：升级后再试` : '问每个 agent 一句、检查每个项目能不能推送；会消耗 agent 的额度'}>
             <span>
               <button
-                className={cx('btn sm', (ask.busy === 'all' || (testing && !h.selftest?.ask?.agent)) && 'is-busy')}
+                className={cx('btn sm', (ask.is('all') || whole) && 'is-busy')}
                 type="button"
-                disabled={!!ask.busy || testing || offline || h.selftest?.able === false}
+                disabled={ask.any || testing || offline || h.selftest?.able === false}
                 onClick={() => void ask.run('all', () => api.selfTest(h.name))}
               >
                 <Icon name="check" />
-                {testing && !h.selftest?.ask?.agent ? '正在自检' : '全部自检'}
+                {whole ? '正在自检' : '全部自检'}
               </button>
             </span>
           </Tip>
@@ -87,7 +97,9 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
   const def = a.id === h.agent;
   const pick = runPick(view, a);
   const line = configLine(h, a, view, now, pick);
-  const testing = selftestBusy(h, now) && (!h.selftest?.ask?.agent || h.selftest.ask.agent === a.id);
+  // 正在查这个 agent（转圈）；整台机器在查时也不能单查它（禁用）。别的 agent 在查不影响它（#487）
+  const mine = ask.is(`one:${a.id}`) || ask.is(`test:${a.id}`) || selftestLive(h, now).some(x => x.agent === a.id);
+  const testing = mine || ask.is('all') || selftestBusy(h, now, a.id);
   const failed = [`env:${a.id}`, `run:${a.id}`, `resume:${a.id}`].some(k => sync[k] === 'failed');
   return (
     <article className={cx('hd-agent', !a.found && 'missing', a.found && !hr.ok && 'warn', failed && 'hp-rollback')}>
@@ -115,7 +127,7 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
           <Icon name={line.tone === 'ok' ? 'checkCircle' : line.tone === 'bad' ? 'alert' : line.tone === 'busy' ? 'renew' : 'info'} />
           <span>{line.text}</span>
           {line.retry && (
-            <button className={cx('btn sm', ask.busy === `sync:${a.id}` && 'is-busy')} type="button" disabled={!!ask.busy || !h.online} onClick={() => void ask.run(`sync:${a.id}`, () => api.syncHost(h.name))}>
+            <button className={cx('btn sm', ask.is(`sync:${a.id}`) && 'is-busy')} type="button" disabled={ask.any || !h.online} onClick={() => void ask.run(`sync:${a.id}`, () => api.syncHost(h.name))}>
               重试
             </button>
           )}
@@ -129,15 +141,15 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
         <div className="hd-why">
           <span>{hr.why}</span>
           {hr.act === 'sync' ? (
-            <button className={cx('btn sm', ask.busy === `fix:${a.id}` && 'is-busy')} type="button" disabled={!!ask.busy || !h.online} onClick={() => void ask.run(`fix:${a.id}`, () => api.syncHost(h.name))}>
+            <button className={cx('btn sm', ask.is(`fix:${a.id}`) && 'is-busy')} type="button" disabled={ask.any || !h.online} onClick={() => void ask.run(`fix:${a.id}`, () => api.syncHost(h.name))}>
               {hr.actLabel}
             </button>
           ) : (
             hr.act === 'selftest' && (
               <button
-                className={cx('btn sm', (ask.busy === `test:${a.id}` || testing) && 'is-busy')}
+                className={cx('btn sm', mine && 'is-busy')}
                 type="button"
-                disabled={!!ask.busy || testing || !h.online}
+                disabled={testing || !h.online}
                 onClick={() => void ask.run(`test:${a.id}`, () => api.selfTest(h.name, a.id))}
               >
                 {hr.actLabel}
@@ -154,7 +166,7 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
           </button>
         </div>
       )}
-      {a.found && <Editor h={h} a={a} view={view} save={save} sync={sync} def={def} testing={testing} ask={ask} />}
+      {a.found && <Editor h={h} a={a} view={view} save={save} sync={sync} def={def} testing={testing} mine={mine} ask={ask} />}
     </article>
   );
 }
@@ -166,7 +178,7 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
   const queued = h.ask?.agent === a.id;
   const running = m.state === 'running' || queued;
   const key = `agent:${a.id}`;
-  const disabled = !!ask.busy || !h.online || running;
+  const disabled = ask.any || !h.online || running;
   const install = () => void ask.run(key, () => api.askAgent(h.name, 'agent-install', a.id, m.latest_version));
   const update = () => void ask.run(key, () => api.askAgent(h.name, 'agent-update', a.id, m.latest_version));
   const copy = async () => {
@@ -192,7 +204,7 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
         </span>
         {running && <span className="ha-hint">正在{a.found ? '更新' : '安装'}…</span>}
         {!running && m.update_available && m.updatable && (
-          <button className={cx('btn sm', ask.busy === key && 'is-busy')} type="button" disabled={disabled} onClick={update}>
+          <button className={cx('btn sm', ask.is(key) && 'is-busy')} type="button" disabled={disabled} onClick={update}>
             <Icon name="download" />
             更新到 {m.latest_version}
           </button>
@@ -206,7 +218,7 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
             复制
           </button>
           {m.installable && !running && (
-            <button className={cx('btn sm brand', ask.busy === key && 'is-busy')} type="button" disabled={disabled} onClick={install}>
+            <button className={cx('btn sm brand', ask.is(key) && 'is-busy')} type="button" disabled={disabled} onClick={install}>
               <Icon name="download" />
               安装
             </button>
@@ -218,7 +230,7 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
         <div className="hd-why">
           <span>上一次失败：{m.error}</span>
           {m.updatable && m.latest_version && (
-            <button className={cx('btn sm', ask.busy === key && 'is-busy')} type="button" disabled={disabled} onClick={update}>
+            <button className={cx('btn sm', ask.is(key) && 'is-busy')} type="button" disabled={disabled} onClick={update}>
               重试
             </button>
           )}
@@ -232,7 +244,29 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
 const pickValue = (provider: string, model: string) => `${provider}\u0001${model}`;
 
 /** 一个 agent 的控件：启动环境、模型（不改 / 供应商 · 模型，接口、强度）、设为默认、自检这一个 */
-function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a: HostAgent; view: ProviderView | null; save: Save; sync: SyncMap; def: boolean; testing: boolean; ask: ReturnType<typeof useAsk> }) {
+function Editor({
+  h,
+  a,
+  view,
+  save,
+  sync,
+  def,
+  testing,
+  mine,
+  ask,
+}: {
+  h: HostInfo;
+  a: HostAgent;
+  view: ProviderView | null;
+  save: Save;
+  sync: SyncMap;
+  def: boolean;
+  /** 不能单查它：它或整台机器正在自检 */
+  testing: boolean;
+  /** 正在查它（转圈） */
+  mine: boolean;
+  ask: ReturnType<typeof useAsk>;
+}) {
   const meta = metaOf(view, a.id);
   const p = runPick(view, a);
   const off = p.mode === 'off';
@@ -355,9 +389,9 @@ function Editor({ h, a, view, save, sync, def, testing, ask }: { h: HostInfo; a:
           </span>
         )}
         <button
-          className={cx('btn sm ghost', (ask.busy === `one:${a.id}` || (testing && h.selftest?.ask?.agent === a.id)) && 'is-busy')}
+          className={cx('btn sm ghost', mine && 'is-busy')}
           type="button"
-          disabled={!!ask.busy || testing || !h.online || h.selftest?.able === false}
+          disabled={testing || !h.online || h.selftest?.able === false}
           onClick={() => void ask.run(`one:${a.id}`, () => api.selfTest(h.name, a.id))}
         >
           <Icon name="check" />

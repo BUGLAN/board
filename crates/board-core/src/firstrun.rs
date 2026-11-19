@@ -121,7 +121,7 @@ impl R<'_> {
             let mut testing = None;
             let mut bad: Option<(String, String)> = None;
             for h in &fits {
-                if h.selftest.ask.is_some() && testing.is_none() {
+                if !h.selftest.asks.is_empty() && testing.is_none() {
                     testing = Some(h.name.clone());
                 }
                 let all = h.resolved();
@@ -187,7 +187,7 @@ impl R<'_> {
                     good.get_or_insert_with(|| format!("{} 能推送", h.name));
                 } else if let Some(t) = tests.first() {
                     bad.get_or_insert_with(|| format!("{} 推不了：{}", h.name, t.why.as_deref().unwrap_or("没通过")));
-                } else if h.selftest.ask.is_some() {
+                } else if h.selftest.asks.iter().any(|a| a.agent.is_none()) {
                     untested.get_or_insert_with(|| (format!("{} 正在自检…", h.name), None));
                 } else {
                     untested.get_or_insert_with(|| (format!("{} 还没自检能不能推送", h.name), Some(format!("selftest:{}", h.name))));

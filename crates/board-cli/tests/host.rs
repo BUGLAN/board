@@ -44,6 +44,11 @@ upd() { echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"s
 # 自检问的那一句：答出 skill 的名字；mode 是 nologin 时像没登录的 Claude Code 那样报错退出
 case "$1" in *不要执行任何命令*)
   if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = "nologin" ]; then echo "Not logged in · Please run /login"; exit 1; fi
+  # pair：等另一个自检也开始了才回答（最多 20 秒），测几个 agent 的自检同时做
+  if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = "pair" ]; then
+    : > "$FAKE_DIR/selftest.$$"
+    n=0; while [ "$(ls "$FAKE_DIR" | grep -c '^selftest\.')" -lt 2 ] && [ $n -lt 200 ]; do sleep 0.1; n=$((n+1)); done
+  fi
   printf 'board-skills\n参数\n'; end ;;
 esac
 # 一行都不输出（Claude Code -p 运行中就是这样）：不该按「没输出多久算卡住」停止。放在前面，下面几行也不打
@@ -1333,7 +1338,7 @@ fn selftest_checks_agent_git_and_version() {
     };
     let done = |rig: &Rig| {
         let h = rig.workspace()["hosts"][0].clone();
-        (h["selftest"]["ask"].is_null() && h["selftest"]["items"].as_array().is_some_and(|i| !i.is_empty())).then_some(h)
+        (h["selftest"]["asks"].is_null() && h["selftest"]["items"].as_array().is_some_and(|i| !i.is_empty())).then_some(h)
     };
     let item = |h: &Value, kind: &str| h["selftest"]["items"].as_array().unwrap().iter().find(|i| i["kind"] == kind).cloned().unwrap_or(Value::Null);
     ask(None);
@@ -1536,6 +1541,57 @@ fn skills_push_rejects_big_skill() {
     let mut res = res;
     let body = res.body_mut().read_to_string().unwrap();
     assert!(body.contains("超过 5 MB"), "{body}");
+}
+
+/// default/main#487：两个 agent 的「自检这一个」同时做。假 agent 在 pair 模式下要等另一个自检也开始了才回答（最多 20 秒）：
+/// 一个接一个做的话第一个要等满 20 秒，同时做几秒内两个都做完；结果各自只换自己那一项
+#[test]
+fn selftest_agents_run_concurrently() {
+    let rig = Rig::new();
+    // codex 也换成假脚本（找得到命令才能自检）
+    let conf = rig.s.home.join(".board").join("config.toml");
+    let fake = rig.fake.display().to_string();
+    let text = std::fs::read_to_string(&conf).unwrap();
+    std::fs::write(&conf, text.replace("[agents.codex]\ncmd = [\"board-test-no-such-command\"", &format!("[agents.codex]\ncmd = [\"{fake}\""))).unwrap();
+    rig.mode("pair");
+    let host = rig.host("mbp");
+    let ready = |rig: &Rig| {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| {
+            h.iter().any(|x| {
+                x["name"] == "mbp" && x["online"] == true && x["agents"].as_array().is_some_and(|a| a.iter().filter(|a| a["found"] == true).count() == 2)
+            })
+        })
+    };
+    wait_until("mbp 上线、两个 agent 都找到", Duration::from_secs(20), || ready(&rig));
+    let ask = |agent: &str| {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_selftest("mbp", Some(agent), "octocat")).unwrap()
+    };
+    ask("claude");
+    let h = ask("codex");
+    assert_eq!(h.selftest.asks.len(), 2, "两个请求同时在：{:?}", h.selftest.asks);
+    let begun = Instant::now();
+    let done = |rig: &Rig| {
+        let h = rig.workspace()["hosts"][0].clone();
+        let agents = h["selftest"]["items"].as_array().map(|i| i.iter().filter(|i| i["kind"] == "agent" && i["ok"] == true).count()).unwrap_or(0);
+        (h["selftest"]["asks"].is_null() && agents == 2).then_some(h)
+    };
+    while done(&rig).is_none() && begun.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let Some(h) = done(&rig) else {
+        let ws = rig.workspace();
+        let (_, out) = stop(host);
+        panic!("两个自检没在 15 秒内一起做完（一个接一个做时第一个要等 20 秒）：{}\n{out}", ws["hosts"][0]["selftest"]);
+    };
+    let keys: Vec<&str> = h["selftest"]["items"].as_array().unwrap().iter().filter(|i| i["kind"] == "agent").map(|i| i["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, vec!["claude", "codex"], "{h}");
+    assert!(!h["selftest"]["items"].as_array().unwrap().iter().any(|i| i["kind"] == "git"), "单查 agent 不查 git：{h}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    // 两个都开始了才有一个做完
+    let first_done = out.find("自检做完").expect(&out);
+    assert_eq!(out[..first_done].matches("请求自检").count(), 2, "{out}");
 }
 
 /* ------------------------------ MCP 共用配置（#187） ------------------------------ */

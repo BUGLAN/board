@@ -88,7 +88,8 @@ export function normHost(h: HostInfo): HostInfo {
     windows: maybe(h.windows),
     ops: maybe(h.ops),
     token: token ? { ...token, shared: maybe(token.shared) } : token,
-    selftest: selftest ? { ...selftest, items: list(selftest.items) } : (selftest ?? undefined),
+    // 旧服务端只有一个 ask：当成唯一的请求
+    selftest: selftest ? { ...selftest, asks: selftest.asks ? list(selftest.asks) : selftest.ask ? [selftest.ask] : [], items: list(selftest.items) } : (selftest ?? undefined),
     sync: sync ? { ...sync, last: last ? normSync(last) : last } : (sync ?? undefined),
     skillImport: imp ? normImport(imp) : (imp ?? undefined),
     res: normRes(h.res),

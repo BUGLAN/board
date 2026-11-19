@@ -63,7 +63,7 @@ describe('机器详情', () => {
     expect(agentHealth(failed, claude()).chip).toBe('配置没写进去');
     // 不改的 agent 不算
     expect(agentHealth(failed, claude({ run_mode: 'off' })).ok).toBe(true);
-    const tested = host({ selftest: { items: [{ kind: 'agent', key: 'claude', ok: false, why: '不支持强度 max', at: 5 }] } });
+    const tested = host({ selftest: { asks: [], items: [{ kind: 'agent', key: 'claude', ok: false, why: '不支持强度 max', at: 5 }] } });
     expect(agentHealth(tested, claude())).toMatchObject({ ok: false, chip: '自检没过', act: 'selftest', why: '自检没通过：不支持强度 max' });
     expect(agentHealth(host(), claude())).toMatchObject({ ok: true });
   });

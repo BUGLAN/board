@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestItem, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, SelfTestItem, Workspace } from './types';
 import { metaColor, skillHome } from './agentMeta';
 import { agentColor, agentGlyph } from './util';
 
@@ -370,19 +370,35 @@ export function installCommand(o: { origin: string; token: string; name: string;
 /** 自检请求多久没做完算作废（和服务端 SELFTEST_STALE_MS 一致）：之后可以重新自检 */
 export const SELFTEST_STALE_MS = 15 * 60 * 1000;
 
-/** 自检现在的状态：正在做（谁、什么时候请求的、只查哪个 agent）、等机器上线、过期没做完；没有请求时为 null */
-export function selftestState(h: HostInfo, now: number): { tone: 'busy' | 'warn'; text: string; agent: string | null } | null {
-  const a = h.selftest?.ask;
-  if (!a) return null;
-  const who = a.agent ? (h.agents.find(x => x.id === a.agent)?.name ?? a.agent) : null;
-  const what = who ? `自检 ${who}` : '自检';
-  if (now - a.at >= SELFTEST_STALE_MS) return { tone: 'warn', text: `${what}没做完（${since(a.at, now)}请求的）：可以重新自检`, agent: a.agent ?? null };
-  if (!h.online) return { tone: 'warn', text: `等机器上线后${what}`, agent: a.agent ?? null };
-  return { tone: 'busy', text: `正在${what}：${who ? '问它一句' : '问每个 agent 一句、检查每块白板能不能推送'}，最长 3 分钟`, agent: a.agent ?? null };
+/** 还没过期的自检请求（正在做或等着做） */
+export const selftestLive = (h: HostInfo, now: number): SelfTestAsk[] => (h.selftest?.asks ?? []).filter(a => now - a.at < SELFTEST_STALE_MS);
+
+/** 自检现在的状态：正在做（整台机器，或同时在查的几个 agent）、等机器上线、过期没做完；没有请求时为 null。
+ *  agents：在查的 agent 标识，整台机器时为空 */
+export function selftestState(h: HostInfo, now: number): { tone: 'busy' | 'warn'; text: string; agents: string[] } | null {
+  const asks = h.selftest?.asks ?? [];
+  if (asks.length === 0) return null;
+  const name = (id: string) => h.agents.find(x => x.id === id)?.name ?? id;
+  const live = selftestLive(h, now);
+  if (live.length === 0) {
+    const a = asks[asks.length - 1];
+    const what = a.agent ? `自检 ${name(a.agent)}` : '自检';
+    return { tone: 'warn', text: `${what}没做完（${since(a.at, now)}请求的）：可以重新自检`, agents: a.agent ? [a.agent] : [] };
+  }
+  const agents = live.flatMap(a => (a.agent ? [a.agent] : []));
+  const whole = live.some(a => !a.agent);
+  const what = whole ? '自检' : `自检 ${agents.map(name).join('、')}`;
+  if (!h.online) return { tone: 'warn', text: `等机器上线后${what}`, agents: whole ? [] : agents };
+  const how = whole ? '问每个 agent 一句、检查每块白板能不能推送' : agents.length > 1 ? '各问一句' : '问它一句';
+  return { tone: 'busy', text: `正在${what}：${how}，最长 3 分钟`, agents: whole ? [] : agents };
 }
 
-/** 正在做自检（没过期）：这时不能再请求 */
-export const selftestBusy = (h: HostInfo, now: number) => !!h.selftest?.ask && now - h.selftest.ask.at < SELFTEST_STALE_MS;
+/** 正在做自检（没过期）。不给 agent：有任何请求（这时不能整台自检）；给了：整台机器或这个 agent 正在查（这时不能再单查它，别的 agent 照样能查） */
+export const selftestBusy = (h: HostInfo, now: number, agent?: string) =>
+  selftestLive(h, now).some(a => agent === undefined || !a.agent || a.agent === agent);
+
+/** 整台机器的自检正在做（没过期） */
+export const selftestWhole = (h: HostInfo, now: number) => selftestLive(h, now).some(a => !a.agent);
 
 /** 自检结果一行一行：名称（agent 名、「<白板> 的仓库」、「board 版本」），按 agent、git、版本排 */
 export function selftestRows(h: HostInfo): (SelfTestItem & { label: string })[] {

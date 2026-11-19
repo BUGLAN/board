@@ -71,7 +71,7 @@ use crate::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, HostAsk, LOG_KEEP};
 use board_core::*;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -1635,17 +1635,17 @@ struct Host<'a> {
     follow_dirs: bool,
     /// 上一次读到的配置文件 `[host]`（机器名、工作空间、日志保留天数）：没变就不重新校验
     conf_seen: (Option<String>, Option<String>, Option<i64>),
-    /// 正在后台做的自检（请求序号、线程）
-    selftest: Option<(i64, std::thread::JoinHandle<Vec<SelfTestItem>>)>,
+    /// 正在后台做的自检：请求序号 → 线程（几个 agent 的单查可以同时做）
+    selftest: HashMap<i64, std::thread::JoinHandle<Vec<SelfTestItem>>>,
     /// 后台查各内置 agent 最新版本（每天一次，不在心跳里查）
     agent_latest: Option<std::thread::JoinHandle<Vec<(String, std::result::Result<String, String>)>>>,
     next_agent_check: Instant,
     /// 正在后台安装/更新一个 agent
     agent_job: Option<AgentJob>,
     /// 做完了、还没回报成功的自检结果（连不上服务端时下一轮再报）
-    selftest_out: Option<(i64, Vec<SelfTestItem>)>,
-    /// 已经做完并回报的自检请求：取到的任务里还是它时不再做
-    selftest_seen: Option<i64>,
+    selftest_out: Vec<(i64, Vec<SelfTestItem>)>,
+    /// 已经做完并回报的自检请求：取到的任务里还有它时不再做；服务端清掉之后从这里去掉
+    selftest_seen: HashSet<i64>,
     /// 自检启动的子进程：退出时结束它们
     selftest_pids: selftest::Pids,
     /// 同步配置（机器详情与配置同步重构）：正在后台做的（回应的请求序号，启动时自己写的那一次为空）
@@ -1812,9 +1812,9 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         follow_name,
         follow_dirs,
         conf_seen: (conf.name.clone(), conf.workspace.clone(), conf.log_days),
-        selftest: None,
-        selftest_out: None,
-        selftest_seen: None,
+        selftest: HashMap::new(),
+        selftest_out: vec![],
+        selftest_seen: HashSet::new(),
         selftest_pids: selftest::Pids::default(),
         agent_latest: None,
         next_agent_check: Instant::now(),
@@ -3090,14 +3090,17 @@ impl Host<'_> {
         self.logs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
     }
 
-    /// 自检（PRD §10.12「自检」）：取到的任务里有新的请求就在后台线程里做；做完回报，回报失败下一轮再报
+    /// 自检（PRD §10.12「自检」）：取到的任务里每个新的请求都开一个后台线程做（几个 agent 的单查同时做）；
+    /// 做完一个回报一个，回报失败下一轮再报
     fn poll_selftest(&mut self) {
-        if self.selftest.as_ref().is_some_and(|(_, h)| h.is_finished()) {
-            let (id, h) = self.selftest.take().expect("上面看过");
+        let done: Vec<i64> = self.selftest.iter().filter(|(_, h)| h.is_finished()).map(|(id, _)| *id).collect();
+        for id in done {
+            let h = self.selftest.remove(&id).expect("上面看过");
             let items = h.join().unwrap_or_default();
-            self.selftest_out = Some((id, items));
+            self.selftest_out.push((id, items));
         }
-        if let Some((id, items)) = self.selftest_out.take() {
+        let mut outs = std::mem::take(&mut self.selftest_out).into_iter();
+        while let Some((id, items)) = outs.next() {
             let body = json!({ "instance": self.instance, "id": id, "items": items });
             match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/selftested", self.name), body) {
                 Ok(_) => {
@@ -3108,23 +3111,28 @@ impl Host<'_> {
                         let why: Vec<String> = bad.iter().map(|i| format!("{}：{}", i.key, i.why.as_deref().unwrap_or("没通过"))).collect();
                         self.say(format!("{} 自检做完：{} 项没通过（{}）", self.p.yellow("!"), bad.len(), why.join("；")));
                     }
-                    self.selftest_seen = Some(id);
+                    self.selftest_seen.insert(id);
                 }
-                Err(e) if e.code == ErrorCode::Unreachable => self.selftest_out = Some((id, items)),
+                Err(e) if e.code == ErrorCode::Unreachable => {
+                    // 连不上：这个和后面的都留到下一轮再报
+                    self.selftest_out.push((id, items));
+                    self.selftest_out.extend(outs.by_ref());
+                }
                 Err(e) => {
                     self.say(format!("{} 自检结果没报上去：{}", self.p.yellow("!"), e.message));
-                    self.selftest_seen = Some(id);
+                    self.selftest_seen.insert(id);
                 }
             }
         }
-        if self.selftest.is_some() || self.selftest_out.is_some() {
-            return;
+        let Some(asks) = self.work.as_ref().map(|w| w.host.selftest.asks.clone()) else { return };
+        // 服务端已经清掉的请求不用再记
+        self.selftest_seen.retain(|id| asks.iter().any(|a| a.id == *id));
+        for ask in asks {
+            if self.selftest.contains_key(&ask.id) || self.selftest_seen.contains(&ask.id) || self.selftest_out.iter().any(|(id, _)| *id == ask.id) {
+                continue;
+            }
+            self.start_selftest(&ask);
         }
-        let Some(ask) = self.work.as_ref().and_then(|w| w.host.selftest.ask.clone()) else { return };
-        if self.selftest_seen == Some(ask.id) {
-            return;
-        }
-        self.start_selftest(&ask);
     }
 
     /// 从这台机器导入 skills（PRD §10.16「共用配置」）：取到的任务里有新的请求就在后台把选中的目录传进库；
@@ -3185,7 +3193,8 @@ impl Host<'_> {
     fn start_selftest(&mut self, ask: &board_core::SelfTestAsk) {
         let what = ask.agent.as_deref().map(|a| format!(" {a}")).unwrap_or_default();
         self.say(format!("{} {} 请求自检{what}", self.p.cyan("◇"), ask.by));
-        let tmp = std::env::temp_dir().join(format!("board-selftest-{}", self.name));
+        // 每个请求一个目录（整台机器是 all，单查是 agent 标识）：同时做的几个互不覆盖日志、提示词
+        let tmp = std::env::temp_dir().join(format!("board-selftest-{}", self.name)).join(ask.agent.as_deref().unwrap_or("all"));
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::create_dir_all(&tmp);
         let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
@@ -3213,7 +3222,7 @@ impl Host<'_> {
         };
         let pids = self.selftest_pids.clone();
         let h = std::thread::spawn(move || selftest::run(agents, gits, tmp, pids));
-        self.selftest = Some((ask.id, h));
+        self.selftest.insert(ask.id, h);
     }
 
     /// 自检时启动一个 agent 的命令：和派发一样的启动环境、模型、思考强度，工作目录是临时目录
