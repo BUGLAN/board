@@ -135,9 +135,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         }
     }
     // 跑多久停以前每台机器各设一次：并成所有机器一个值，取机器里最常见的（一样多时取先建的那台的），没有机器用默认值
-    if !has("sched", "max_run")? {
-        conn.execute_batch("ALTER TABLE sched ADD COLUMN max_run INTEGER NOT NULL DEFAULT 180")?;
-        conn.execute_batch("ALTER TABLE sched ADD COLUMN idle_run INTEGER NOT NULL DEFAULT 20")?;
+    // 逐列补（旧版只加了 max_run 就断掉的库也补上 idle_run，#509）；补上了哪一列都按第一次迁移处理
+    if !crate::store::add_cols(conn, "sched", &[("max_run", "INTEGER NOT NULL DEFAULT 180"), ("idle_run", "INTEGER NOT NULL DEFAULT 20")])?.is_empty() {
         let common = |col: &str| -> rusqlite::Result<Option<i64>> {
             conn.query_row(&format!("SELECT {col} FROM hosts GROUP BY {col} ORDER BY COUNT(*) DESC, MIN(id) LIMIT 1"), [], |r| r.get(0)).optional()
         };

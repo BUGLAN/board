@@ -82,7 +82,9 @@ pub(crate) fn backfill(conn: &Connection) -> Result<()> {
     if done >= BACKFILL_VERSION {
         return Ok(());
     }
-    let tx = conn.unchecked_transaction()?;
+    // 打开数据库时在迁移的大事务里跑（store.rs）：不再自己开事务；单独调用（测试）时自己开一个
+    let own = conn.is_autocommit().then(|| conn.unchecked_transaction()).transpose()?;
+    let tx: &Connection = own.as_deref().unwrap_or(conn);
     let any: i64 = tx.query_row("SELECT COUNT(*) FROM moves", [], |r| r.get(0))?;
     if any == 0 {
         // 每块白板现在的状态：名称 → key
@@ -138,7 +140,9 @@ pub(crate) fn backfill(conn: &Connection) -> Result<()> {
         }
     }
     tx.execute("INSERT INTO meta (key, value) VALUES ('moves', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1", [BACKFILL_VERSION])?;
-    tx.commit()?;
+    if let Some(own) = own {
+        own.commit()?;
+    }
     Ok(())
 }
 

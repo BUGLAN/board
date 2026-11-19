@@ -2088,6 +2088,16 @@ fn schema_indexes_do_not_use_migrated_columns() {
             }
         }
     }
+    // 逐列补的写法：add_cols(conn, "<表>", &[("<列>", "<定义>"), …])
+    for (_, text) in sources.iter().chain([("sched.rs", include_str!("sched.rs"))].iter()) {
+        for part in text.split("add_cols(").skip(1) {
+            let Some(table) = part.split('"').nth(1) else { continue };
+            let list = part.split(")]").next().unwrap_or("");
+            for item in list.split("(\"").skip(1) {
+                added.insert((table.to_string(), word(item)));
+            }
+        }
+    }
     assert!(added.contains(&("cards".to_string(), "deleted_at".to_string())), "应该认出迁移补的列：{added:?}");
     let mut checked = 0;
     for (name, text) in sources {
@@ -2550,4 +2560,99 @@ fn old_cards_are_not_later() {
     rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE cards DROP COLUMN later_at").unwrap();
     let s = Store::open(&path).unwrap();
     assert!(snapshot(&s, B, T0).cards.values().all(|c| c.later_at.is_none()));
+}
+
+/// 迁移不是原子时留下的半升级库（#509）：旧版同一批加 repo、branch，只加了 repo 就断掉——下次打开逐列补上 branch，
+/// 项目、白板上已经设的仓库地址不动；sched 只有 max_run 没有 idle_run 时同样补上
+#[test]
+fn half_migrated_columns_are_completed_without_touching_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("half.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "UPDATE projects SET repo = 'https://example.com/r.git', branch = 'dev';
+             UPDATE boards SET repo = 'https://example.com/b.git';
+             ALTER TABLE projects DROP COLUMN branch;
+             ALTER TABLE boards DROP COLUMN branch;
+             ALTER TABLE sched DROP COLUMN idle_run;",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let (repo, branch): (String, String) = s.conn().query_row("SELECT repo, branch FROM projects WHERE key = 'default'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((repo.as_str(), branch.as_str()), ("https://example.com/r.git", ""), "补上 branch，仓库地址保留（白板上没有 branch 可回填）");
+    let (brepo, bbranch): (String, String) = s.conn().query_row("SELECT repo, branch FROM boards LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((brepo.as_str(), bbranch.as_str()), ("https://example.com/b.git", ""));
+    let idle: i64 = s.conn().query_row("SELECT idle_run FROM sched", [], |r| r.get(0)).unwrap();
+    assert_eq!(idle, 20);
+}
+
+/// 旧版「加列 + 回填」只加了列、没来得及回填就断掉（#509）：没有步骤标记的库下次打开补上还是 NULL 的，
+/// 已经有值的不覆盖，没看过的「未整理」条目照旧没看过；补过一次就记下标记，不再重复
+#[test]
+fn backfill_left_undone_by_an_old_crash_runs_once_on_next_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fill.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        exec(&mut s, B, &human(), T0, new("待办里的")).unwrap();
+        exec(&mut s, B, &human(), T0, new("已经看过的")).unwrap();
+        exec(&mut s, B, &alpha(), T0, Cmd::New { title: "未整理".into(), body: None, column: Some("inbox".into()), top: false, labels: vec![], from: None }).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "UPDATE cards SET moved_at = NULL, seen_at = NULL WHERE id IN (1, 3);
+             UPDATE cards SET seen_at = 42 WHERE id = 2;
+             DELETE FROM meta WHERE key LIKE 'step:%';",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let get = |id: i64| -> (Option<i64>, Option<i64>) { s.conn().query_row("SELECT moved_at, seen_at FROM cards WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap() };
+    assert_eq!(get(1), (Some(T0), Some(T0)), "补上了");
+    assert_eq!(get(2).1, Some(42), "已经有值的不覆盖");
+    assert_eq!(get(3), (Some(T0), None), "agent 记的未整理条目还是没看过");
+    let steps: i64 = s.conn().query_row("SELECT COUNT(*) FROM meta WHERE key IN ('step:moved_at', 'step:seen_at')", [], |r| r.get(0)).unwrap();
+    assert_eq!(steps, 2);
+    drop(s);
+    // 记了标记：之后变回 NULL 的（例如新的未整理条目）不会被再补
+    rusqlite::Connection::open(&path).unwrap().execute_batch("UPDATE cards SET seen_at = NULL WHERE id = 1").unwrap();
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.conn().query_row("SELECT seen_at FROM cards WHERE id = 1", [], |r| r.get::<_, Option<i64>>(0)).unwrap(), None);
+}
+
+/// 迁移中途失败（#509）：整个回滚，数据库还是升级前的样子，打开报错写明原因；下一次打开从头再来、升级完整
+#[test]
+fn a_failed_migration_rolls_back_and_the_next_open_finishes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fail.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    let cols = |p: &std::path::Path| -> Vec<String> {
+        let c = rusqlite::Connection::open(p).unwrap();
+        let mut st = c.prepare("SELECT name FROM pragma_table_info('boards')").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+    };
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE boards DROP COLUMN branch; ALTER TABLE boards DROP COLUMN readme;").unwrap();
+    for at in ["boards", "end"] {
+        crate::store::FAIL_AT.with(|f| f.set(Some(at)));
+        let e = Store::open(&path).err().expect("迁移失败时打不开");
+        crate::store::FAIL_AT.with(|f| f.set(None));
+        assert!(e.message.contains("已经回滚") && e.message.contains(at), "{}", e.message);
+        let now = cols(&path);
+        assert!(!now.contains(&"branch".to_string()) && !now.contains(&"readme".to_string()), "回滚了：{at} 之前补的列也不在 {now:?}");
+    }
+    let s = Store::open(&path).unwrap();
+    drop(s);
+    let now = cols(&path);
+    assert!(now.contains(&"branch".to_string()) && now.contains(&"readme".to_string()), "{now:?}");
 }

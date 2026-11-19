@@ -291,24 +291,44 @@ impl Store {
         Store::setup(Connection::open_in_memory()?, None)
     }
 
+    /// 打开时建表、升级旧库（#509）：整个迁移在一个 `BEGIN IMMEDIATE` 事务里，全部成功才提交；中途出错（断电、被 kill、
+    /// 磁盘错误）整个回滚，数据库还是升级前的样子，返回写明原因的错误（服务端据此不启动），下一次打开从头再来。
+    /// 每一步「加列」逐列检查、缺哪列补哪列；「加列 + 回填」只回填这次补上的列，不覆盖已有数据；
+    /// 回填 NULL 的几步另记步骤标记（`meta` 的 `step:<名称>`），旧版中途断掉、列加了没回填的库下次打开补上
     fn setup(conn: Connection, files: Option<PathBuf>) -> Result<Store> {
+        // foreign_keys、journal_mode 在事务里改不了：先设好
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        match Store::migrate(&conn) {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(BoardError::new(e.code, format!("数据库升级失败，已经回滚（数据库没有改动）：{}", e.message)));
+            }
+        }
+        // 服务端以 --local 启动时 BOARD_LOCAL=1（见 board-server）：本机来的请求没有令牌，按本机认机器
+        let local = std::env::var("BOARD_LOCAL").ok().is_some_and(|v| v == "1" || v == "true");
+        Ok(Store { conn, files: files.map(|d| Arc::new(crate::files::FileStore::new(d))), local })
+    }
+
+    /// 建表和全部迁移（在 [`Store::setup`] 的事务里）
+    fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::files::SCHEMA)?;
         conn.execute_batch(crate::agents::SCHEMA)?;
-        crate::agents::migrate(&conn)?;
+        crate::agents::migrate(conn)?;
         conn.execute_batch(crate::hosts::SCHEMA)?;
-        crate::hosts::migrate(&conn)?;
+        crate::hosts::migrate(conn)?;
         conn.execute_batch(crate::moves::SCHEMA)?;
         conn.execute_batch(crate::skills::SCHEMA)?;
         conn.execute_batch(crate::mcp::SCHEMA)?;
         conn.execute_batch(crate::providers::SCHEMA)?;
         conn.execute_batch(crate::gitcred::SCHEMA)?;
         conn.execute_batch(crate::card_crons::SCHEMA)?;
-        crate::card_crons::migrate(&conn)?;
+        crate::card_crons::migrate(conn)?;
         // 调度：领取规则挪成全局的一份，机器加自动接单和接单时段，白板加参不参与（要在 hosts、boards 都建好之后）
         conn.execute_batch(crate::sched::SCHEMA)?;
-        crate::sched::migrate(&conn)?;
+        crate::sched::migrate(conn)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -369,60 +389,41 @@ impl Store {
         if !has_saved {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN saved_layout TEXT")?;
         }
-        let has_keep: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'keep_order'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_keep {
-            conn.execute_batch("ALTER TABLE boards ADD COLUMN keep_order INTEGER NOT NULL DEFAULT 1")?;
-        }
+        add_cols(conn, "boards", &[("keep_order", "INTEGER NOT NULL DEFAULT 1")])?;
         // 「保存顺序」换成「保留顺序」：原来关着保存顺序（同一块里不能拖动排序）的白板打开保留顺序（顺序不让拖动改），其余关着（拖到哪就在哪，和原来一样）
-        let has_sorted: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'keep_sorted'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_sorted {
-            conn.execute_batch(
-                "ALTER TABLE boards ADD COLUMN keep_sorted INTEGER NOT NULL DEFAULT 0;
-                 UPDATE boards SET keep_sorted = 1 WHERE keep_order = 0;",
-            )?;
+        if !add_cols(conn, "boards", &[("keep_sorted", "INTEGER NOT NULL DEFAULT 0")])?.is_empty() {
+            conn.execute_batch("UPDATE boards SET keep_sorted = 1 WHERE keep_order = 0")?;
         }
         // 旧数据库的状态没有排序依据：都按移入时间
-        let has_order: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'order_by'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_order {
-            conn.execute_batch("ALTER TABLE statuses ADD COLUMN order_by TEXT; ALTER TABLE statuses ADD COLUMN order_desc INTEGER NOT NULL DEFAULT 0;")?;
-        }
+        add_cols(conn, "statuses", &[("order_by", "TEXT"), ("order_desc", "INTEGER NOT NULL DEFAULT 0")])?;
         // 旧数据库的卡片不记移入时间：按最后一次换状态的动态补，没有就用新建时间
-        let has_moved: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'moved_at'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_moved {
-            conn.execute_batch(
-                "ALTER TABLE cards ADD COLUMN moved_at INTEGER;
-                 UPDATE cards SET moved_at = COALESCE(
+        // 只补还是 NULL 的：旧版加了列、没来得及回填就断掉的库，下次打开也补上（步骤标记见 setup）
+        let fresh = !add_cols(conn, "cards", &[("moved_at", "INTEGER")])?.is_empty();
+        step(conn, "moved_at", fresh, |c| {
+            c.execute_batch(
+                "UPDATE cards SET moved_at = COALESCE(
                    (SELECT MAX(a.at) FROM activity a WHERE a.board = cards.board AND a.card = cards.id
                       AND a.action IN ('create', 'move', 'claim', 'release', 'lost', 'timeout')),
-                   created_at);",
-            )?;
-        }
+                   created_at)
+                 WHERE moved_at IS NULL",
+            )
+        })?;
         // 旧数据库的卡片没有回收站：都在正常状态里（不是已删除）
-        let has_trash: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'deleted_at'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_trash {
-            conn.execute_batch(
-                "ALTER TABLE cards ADD COLUMN deleted_at INTEGER;
-                 ALTER TABLE cards ADD COLUMN deleted_by_kind TEXT;
-                 ALTER TABLE cards ADD COLUMN deleted_by_name TEXT;
-                 ALTER TABLE cards ADD COLUMN del_col TEXT;
-                 ALTER TABLE cards ADD COLUMN del_pos INTEGER;
-                 ALTER TABLE cards ADD COLUMN del_from TEXT;
-                 ALTER TABLE cards ADD COLUMN del_held INTEGER;",
-            )?;
-        }
+        add_cols(
+            conn,
+            "cards",
+            &[
+                ("deleted_at", "INTEGER"),
+                ("deleted_by_kind", "TEXT"),
+                ("deleted_by_name", "TEXT"),
+                ("del_col", "TEXT"),
+                ("del_pos", "INTEGER"),
+                ("del_from", "TEXT"),
+                ("del_held", "INTEGER"),
+            ],
+        )?;
         // 回收站的索引：新库、旧库都在补完列之后建（放进 SCHEMA 会先于补列执行，旧库打开就报 no such column）
         conn.execute_batch("CREATE INDEX IF NOT EXISTS cards_trash ON cards (board, deleted_at)")?;
-        // 旧数据库的回收站不记删除前的领取来源
-        let has_del_from: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'del_from'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_del_from {
-            conn.execute_batch("ALTER TABLE cards ADD COLUMN del_from TEXT; ALTER TABLE cards ADD COLUMN del_held INTEGER;")?;
-        }
         // 旧数据库的白板没有说明
         let has_readme: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'readme'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -430,38 +431,24 @@ impl Store {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN readme TEXT NOT NULL DEFAULT ''")?;
         }
         // 旧数据库的白板没有代码仓库地址和集成分支：都留空，按原来的规则（AGENTS.md / 远端默认分支）
-        let has_repo: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('boards') WHERE name = 'repo'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_repo {
-            conn.execute_batch(
-                "ALTER TABLE boards ADD COLUMN repo TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE boards ADD COLUMN branch TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
+        add_cols(conn, "boards", &[("repo", "TEXT NOT NULL DEFAULT ''"), ("branch", "TEXT NOT NULL DEFAULT ''")])?;
+        #[cfg(test)]
+        fail_point("boards")?;
         // 旧数据库不记「未整理」的条目有没有被人看过：已经不在「未整理」里的都算看过（那次整理就是看过），
         // 还在「未整理」里的算没看过——和升级前一样，没有点；之后有人打开时照常标成看过
-        let has_seen: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'seen_at'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_seen {
-            conn.execute_batch(
-                "ALTER TABLE cards ADD COLUMN seen_at INTEGER;
-                 UPDATE cards SET seen_at = COALESCE(moved_at, created_at) WHERE col != 'inbox' OR created_by_kind = 'human';",
-            )?;
-        }
+        // 同 moved_at：只补还是 NULL 的，没看过的「未整理」条目（agent 建的、还在「未整理」）不动
+        let fresh = !add_cols(conn, "cards", &[("seen_at", "INTEGER")])?.is_empty();
+        step(conn, "seen_at", fresh, |c| {
+            c.execute_batch("UPDATE cards SET seen_at = COALESCE(moved_at, created_at) WHERE seen_at IS NULL AND (col != 'inbox' OR created_by_kind = 'human')")
+        })?;
         // 仓库地址和集成分支从白板挪到项目上（一个项目一个仓库）：项目取它下面第一块设了的白板的值（按白板顺序），
         // 几块白板设得不一样的由人自己改项目设置
-        let has_proj_repo: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'repo'", [], |r| r.get::<_, i64>(0))? > 0;
-        if !has_proj_repo {
-            conn.execute_batch(
-                "ALTER TABLE projects ADD COLUMN repo TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE projects ADD COLUMN branch TEXT NOT NULL DEFAULT '';
-                 UPDATE projects SET
-                   repo = COALESCE((SELECT b.repo FROM boards b WHERE b.project = projects.key AND b.repo != ''
-                                    ORDER BY b.sort, b.created_at, b.key LIMIT 1), ''),
-                   branch = COALESCE((SELECT b.branch FROM boards b WHERE b.project = projects.key AND b.branch != ''
-                                      ORDER BY b.sort, b.created_at, b.key LIMIT 1), '');",
-            )?;
+        // 只回填这次补上的那一列：有 repo、没 branch 的半升级库只补 branch，项目上已经设的仓库地址不动
+        for col in add_cols(conn, "projects", &[("repo", "TEXT NOT NULL DEFAULT ''"), ("branch", "TEXT NOT NULL DEFAULT ''")])? {
+            conn.execute_batch(&format!(
+                "UPDATE projects SET {col} = COALESCE((SELECT b.{col} FROM boards b WHERE b.project = projects.key AND b.{col} != ''
+                                                       ORDER BY b.sort, b.created_at, b.key LIMIT 1), '')"
+            ))?;
         }
         // 旧数据库的项目没有项目目录：都用项目标识（#488）
         let has_dir: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'dir'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -507,13 +494,13 @@ impl Store {
             .query_map([], |r| r.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         for b in missing {
-            insert_default_flow(&conn, b)?;
+            insert_default_flow(conn, b)?;
         }
         // 旧数据库没有流转记录：从动态回填（只跑一次）
-        crate::moves::backfill(&conn)?;
-        // 服务端以 --local 启动时 BOARD_LOCAL=1（见 board-server）：本机来的请求没有令牌，按本机认机器
-        let local = std::env::var("BOARD_LOCAL").ok().is_some_and(|v| v == "1" || v == "true");
-        Ok(Store { conn, files: files.map(|d| Arc::new(crate::files::FileStore::new(d))), local })
+        crate::moves::backfill(conn)?;
+        #[cfg(test)]
+        fail_point("end")?;
+        Ok(())
     }
 
     /// 工作区为空时建立默认项目（整个工作区至少保留一块白板）
@@ -1058,6 +1045,47 @@ pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
         s.to = order.iter().filter(|k| edges.iter().any(|(a, b)| a == &s.key && b == *k)).cloned().collect();
     }
     Ok(Flow(v))
+}
+
+/// 给 `table` 补上 `cols` 里缺的列（逐列检查：旧版同一批加几列、只加了一部分就断掉的库也补齐），返回这次补上的列名
+pub(crate) fn add_cols<'a>(conn: &Connection, table: &str, cols: &[(&'a str, &str)]) -> rusqlite::Result<Vec<&'a str>> {
+    let mut added = vec![];
+    for (col, def) in cols {
+        let has: bool =
+            conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get::<_, i64>(0))? > 0;
+        if !has {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
+            added.push(*col);
+        }
+    }
+    Ok(added)
+}
+
+/// 回填步骤：`meta` 里没有 `step:<name>`（旧版没做完、或者还没做过），或者这次刚补上那一列（`fresh`）时执行 `f`，
+/// 再记下标记（和 `f` 在同一个事务里，见 [`Store::setup`]）
+pub(crate) fn step(conn: &Connection, name: &str, fresh: bool, f: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> rusqlite::Result<()> {
+    let key = format!("step:{name}");
+    let done: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = ?1", [&key], |r| r.get::<_, i64>(0))? > 0;
+    if done && !fresh {
+        return Ok(());
+    }
+    f(conn)?;
+    conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES (?1, 1)", [&key])?;
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 测试用：迁移走到这个检查点时失败（模拟中途断掉）
+    pub(crate) static FAIL_AT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn fail_point(at: &str) -> Result<()> {
+    if FAIL_AT.with(|f| f.get()) == Some(at) {
+        return Err(BoardError::new(crate::ErrorCode::Internal, format!("模拟迁移在 {at} 失败")));
+    }
+    Ok(())
 }
 
 pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
