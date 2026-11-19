@@ -85,6 +85,9 @@ struct Inner {
     auth: Auth,
     /// 有会话被删除（退出登录）或令牌被吊销时加一：实时推送据此检查自己的登录态还在不在
     sessions: watch::Sender<u64>,
+    /// 实时推送多久查一次自己的会话 / 令牌还在不在（毫秒，#510）：会话自然过期、另一个进程（`board-server token revoke`）
+    /// 吊销令牌都不会触发 `sessions`，靠它在这个间隔内断开
+    stream_check: std::sync::atomic::AtomicU64,
     /// 等 board host 回传的「列目录」请求（选工作空间用，只放内存）
     ls: std::sync::Mutex<LsState>,
     /// 测试用：下一次 `/api/dispatches/{id}/end` 返回 502（Cargo feature `test-hooks`）
@@ -133,6 +136,7 @@ impl AppState {
             db: cfg.db.clone(),
             auth: cfg.auth.clone(),
             sessions: watch::channel(0).0,
+            stream_check: std::sync::atomic::AtomicU64::new(STREAM_CHECK.as_millis() as u64),
             ls: std::sync::Mutex::new(LsState::default()),
             #[cfg(feature = "test-hooks")]
             fail_end: std::sync::atomic::AtomicBool::new(false),
@@ -141,6 +145,11 @@ impl AppState {
 
     pub fn auth(&self) -> &Auth {
         &self.0.auth
+    }
+
+    /// 改实时推送检查登录态的间隔（默认 [`STREAM_CHECK`]；测试里缩短）。只影响之后打开的推送
+    pub fn set_stream_check(&self, every: Duration) {
+        self.0.stream_check.store(every.as_millis().max(1) as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 附件文件存储（测试里用它装落盘钩子）
@@ -1306,6 +1315,9 @@ async fn flow_edges(
 
 /* ------------------------------ 实时推送 ------------------------------ */
 
+/// 实时推送每隔多久查一次自己的会话 / 令牌还在不在（#510）
+pub const STREAM_CHECK: Duration = Duration::from_secs(20);
+
 async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>) -> impl IntoResponse {
     let rx = s.0.tx.subscribe();
     let (rev, hosts) = s.db(|st| Ok((st.rev()?, st.hosts_rev()?))).await.unwrap_or((0, 0));
@@ -1315,10 +1327,16 @@ async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>)
         Caller::Agent { token } => (None, Some(token)),
     };
     let watch = s.0.sessions.subscribe();
-    let rest = futures_util::stream::unfold((rx, watch, s, session, token), |(mut rx, mut watch, s, session, token)| async move {
+    let every = Duration::from_millis(s.0.stream_check.load(std::sync::atomic::Ordering::Relaxed));
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let rest = futures_util::stream::unfold((rx, watch, tick, s, session, token), |(mut rx, mut watch, mut tick, s, session, token)| async move {
         loop {
             let watching = session.is_some() || token.is_some();
-            tokio::select! {
+            // 有人退出登录、吊销令牌（`watch` 马上通知），或者到了定时检查（会话自然过期、别的进程吊销了令牌）：
+            // 自己的会话 / 令牌没了就断开（重连时会得到 401，回到登录页）
+            // 定时检查先轮到时，排着的推送还在 `rx` 里，检查完（还在）下一圈照样发出去，不会丢
+            let check = tokio::select! {
                 r = rx.recv() => {
                     let ev = match r {
                         Ok(msg) => SseEvent::default().data(&*msg),
@@ -1326,23 +1344,26 @@ async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>)
                         Err(broadcast::error::RecvError::Lagged(_)) => SseEvent::default().data(json!({ "rev": -1, "hosts": -1, "events": [] }).to_string()),
                         Err(broadcast::error::RecvError::Closed) => return None,
                     };
-                    return Some((Ok::<_, Infallible>(ev), (rx, watch, s, session, token)));
+                    return Some((Ok::<_, Infallible>(ev), (rx, watch, tick, s, session, token)));
                 }
-                // 有人退出登录或吊销令牌：自己的会话 / 令牌没了就断开（重连时会得到 401，回到登录页）
                 changed = watch.changed(), if watching => {
                     if changed.is_err() {
                         return None;
                     }
-                    let alive = if let Some(h) = session.clone() {
-                        s.db(move |st| auth::session_alive(st.conn(), &h, now_ms())).await.unwrap_or(false)
-                    } else if let Some(t) = token {
-                        s.db(move |st| auth::token_alive(st.conn(), t)).await.unwrap_or(false)
-                    } else {
-                        true
-                    };
-                    if !alive {
-                        return None;
-                    }
+                    true
+                }
+                _ = tick.tick(), if watching => true,
+            };
+            if check {
+                let alive = if let Some(h) = session.clone() {
+                    s.db(move |st| auth::session_alive(st.conn(), &h, now_ms())).await.unwrap_or(false)
+                } else if let Some(t) = token {
+                    s.db(move |st| auth::token_alive(st.conn(), t)).await.unwrap_or(false)
+                } else {
+                    true
+                };
+                if !alive {
+                    return None;
                 }
             }
         }

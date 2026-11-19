@@ -63,6 +63,22 @@ fn github(user: &str) -> Server {
     }))
 }
 
+/// 同 [`github`]，实时推送每 `check` 查一次登录态（默认 20 秒，测试里缩短）
+fn github_checking(user: &str, check: std::time::Duration) -> Server {
+    let gh = mock_github();
+    Server::start_with(
+        Auth::GitHub(GitHub {
+            client_id: "cid".into(),
+            client_secret: "secret".into(),
+            user: user.into(),
+            public_url: "http://board.test".into(),
+            oauth_url: gh.clone(),
+            api_url: gh,
+        }),
+        |st| st.set_stream_check(check),
+    )
+}
+
 fn local_mode() -> Server {
     Server::start(Auth::Local)
 }
@@ -647,6 +663,61 @@ fn logout_closes_that_sessions_stream() {
     // 重新连接被拒绝
     let r = send("GET", &format!("{}/api/stream", s.url), &[("cookie", &a)], None);
     assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"));
+}
+
+/// 实时推送定时查登录态（#510）：另一个进程（`board-server token revoke`）吊销的令牌、自然过期的会话不会通知运行中的
+/// 服务端，推送在下一次定时检查时断开、之后收不到事件；别的令牌、没过期的会话不受影响
+#[test]
+fn streams_close_when_token_is_revoked_elsewhere_or_session_expires() {
+    use std::time::Duration;
+    let s = github_checking("buglan", Duration::from_millis(300));
+    let (gone, kept) = (new_token(&s.db, "要吊销的"), new_token(&s.db, "留着的"));
+    let gone_id: i64 = {
+        let store = board_core::Store::open(&s.db).unwrap();
+        auth::list_tokens(store.conn()).unwrap().into_iter().find(|t| t.name == "要吊销的").unwrap().id
+    };
+    let (a, b) = (session(&s), session(&s));
+    let sg = open_token_stream(&s.url, &gone);
+    let sk = open_token_stream(&s.url, &kept);
+    let sa = open_stream(&s.url, &a);
+    let sb = open_stream(&s.url, &b);
+    for x in [&sg, &sk, &sa, &sb] {
+        x.wait_ready();
+    }
+    // 另一个进程吊销令牌：服务端没收到通知
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_board-server"))
+        .args(["token", "revoke", &gone_id.to_string(), "--db"])
+        .arg(&s.db)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    sg.closed.recv_timeout(Duration::from_secs(5)).expect("命令行吊销的令牌：推送应当在下一次定时检查时断开");
+    // 会话 a 自然过期（把它的过期时间调到过去；b 不动）
+    {
+        let store = board_core::Store::open(&s.db).unwrap();
+        let mut all: Vec<(String, i64)> = store
+            .conn()
+            .prepare("SELECT hash, created_at FROM auth_sessions ORDER BY created_at, rowid")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect();
+        assert_eq!(all.len(), 2);
+        let (first, _) = all.remove(0);
+        store.conn().execute("UPDATE auth_sessions SET expires_at = 0 WHERE hash = ?1", [&first]).unwrap();
+    }
+    sa.closed.recv_timeout(Duration::from_secs(5)).expect("过期的会话：推送应当断开");
+    // 留着的令牌、没过期的会话：照常
+    assert!(sk.closed.recv_timeout(Duration::from_millis(1200)).is_err(), "另一个令牌的推送不受影响");
+    assert!(sb.closed.try_recv().is_err(), "没过期的会话不受影响");
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", &b)], None);
+    assert_eq!(r.status, 200);
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", &a)], None);
+    assert_eq!(r.status, 401);
+    let bearer = format!("Bearer {gone}");
+    let r = send("GET", &format!("{}/api/stream", s.url), &[("authorization", &bearer)], None);
+    assert_eq!((r.status, r.code().as_str()), (401, "INVALID_TOKEN"));
 }
 
 /// 桌面端登录：在浏览器里走 GitHub 登录，返回浏览器最后被送到的地址（本机回环地址）

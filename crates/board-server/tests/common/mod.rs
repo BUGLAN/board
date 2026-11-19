@@ -17,10 +17,16 @@ pub struct Server {
 impl Server {
     /// 建库、起服务端；`auth` 决定要不要登录（本机模式下请求就是「人」）
     pub fn start(auth: Auth) -> Server {
+        Server::start_with(auth, |_| {})
+    }
+
+    /// 同 [`Server::start`]，起服务之前先调整一下状态（例如缩短实时推送检查登录态的间隔）
+    pub fn start_with(auth: Auth, tweak: impl FnOnce(&AppState)) -> Server {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("b.db");
         let cfg = Config { db: db.clone(), demo: false, serve_web: false, auth };
         let state = AppState::open(&cfg).unwrap();
+        tweak(&state);
         let l = bind(([127, 0, 0, 1], 0).into()).unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
         serve_in_thread(state, cfg, l);
