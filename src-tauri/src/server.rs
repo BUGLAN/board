@@ -6,7 +6,8 @@
 //! - 地址先补全（`localhost:7420` → `http://localhost:7420`），只支持 http / https；本机地址（localhost、127.x、
 //!   [::1]）和公网域名都可以
 //! - 填写、切换之前先请求 `<地址>/api/health`，返回 `{"ok":true}` 才认作 Board 服务端，通过了才写进配置文件
-//! - 窗口只给「当前这个地址」开放本机命令（见 lib.rs 的 `allow_configured_url`）：换了地址，旧地址的页面就调不到本机命令
+//! - 窗口只给「当前这个地址」开放本机命令（见 lib.rs 的 `allow_configured_url`）：换了地址，旧地址的能力撤不掉，
+//!   命令入口的 `ensure_caller` 再按当前页面拒绝旧地址
 //! - 换地址会关掉所有窗口，按新地址重新打开（本机在跑 board host 时由人先确认，再按新地址重启它）；
 //!   地址来自环境变量 `BOARD_URL` 时环境变量改不了：只写配置文件，提示重新打开桌面端才生效
 
@@ -14,7 +15,7 @@ use board_core::config;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, Runtime, Url};
+use tauri::{AppHandle, Manager, Runtime, Url, WebviewWindow};
 
 /// 构建时注入的默认地址（`BOARD_DEFAULT_URL`，`build.rs` 读它公开给这里）；没有注入时是空
 pub const DEFAULT_URL: &str = env!("BOARD_DEFAULT_URL");
@@ -171,7 +172,8 @@ fn checked(url: &Url, from: &str, version: String) -> Checked {
 
 /// 「设置 → 账号 · 切换服务端」显示当前连的是哪个地址
 #[tauri::command]
-pub async fn server_current<R: Runtime>(app: AppHandle<R>) -> Checked {
+pub async fn server_current<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>) -> Result<Checked, String> {
+    crate::ensure_caller(&app, &window, false)?;
     let (url, from) = {
         let st = app.state::<Current>();
         let cur = st.0.lock().ok().and_then(|g| g.clone());
@@ -187,7 +189,7 @@ pub async fn server_current<R: Runtime>(app: AppHandle<R>) -> Checked {
         (cur, from)
     };
     let Some(url) = url else {
-        return Checked { url: String::new(), version: String::new(), from: from.into(), configured: false, target: config::shown(), local: false };
+        return Ok(Checked { url: String::new(), version: String::new(), from: from.into(), configured: false, target: config::shown(), local: false });
     };
     // 版本号拿不到不影响显示：只显示地址
     let version = tauri::async_runtime::spawn_blocking({
@@ -196,20 +198,22 @@ pub async fn server_current<R: Runtime>(app: AppHandle<R>) -> Checked {
     })
     .await
     .unwrap_or_default();
-    checked(&url, from, version)
+    Ok(checked(&url, from, version))
 }
 
 /// 启动页探测当前服务端连不连得上（见 [`crate::splash`]）。由外壳请求：启动页（`boardsplash`）请求服务端是跨源请求，
 /// 服务端不发 CORS 头，webview 里的普通 fetch 拿不到回应，连得上的服务端也会被当成连不上
 #[tauri::command]
-pub async fn server_probe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+pub async fn server_probe<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>) -> Result<(), String> {
+    crate::ensure_caller(&app, &window, true)?;
     let url = app.state::<Current>().0.lock().ok().and_then(|g| g.clone()).ok_or("还没有连接服务端")?;
     tauri::async_runtime::spawn_blocking(move || reachable(&url)).await.map_err(|e| e.to_string())?
 }
 
 /// 校验一个地址是不是 Board 服务端（只校验，不保存、不切换）：返回它的版本号
 #[tauri::command]
-pub async fn server_check(raw: String) -> Result<Checked, String> {
+pub async fn server_check<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>, raw: String) -> Result<Checked, String> {
+    crate::ensure_caller(&app, &window, true)?;
     let url = normalize(&raw)?;
     let from = if env_url().is_some() { "env" } else { "input" };
     let version = tauri::async_runtime::spawn_blocking({
@@ -252,7 +256,8 @@ pub fn switch_to(app: &AppHandle, url: Url) -> Result<(), String> {
 /// - 地址来自环境变量 `BOARD_URL`：环境变量改不了，和配置文件里写的不一样时只写配置文件，提示重启后生效
 /// - 本机在跑 board host：先停掉（它读的是配置文件），重新打开后按新地址再启动（见 lib.rs 的启动流程）
 #[tauri::command]
-pub async fn server_connect(app: AppHandle, raw: String) -> Result<Connected, String> {
+pub async fn server_connect(app: AppHandle, window: WebviewWindow, raw: String) -> Result<Connected, String> {
+    crate::ensure_caller(&app, &window, true)?;
     let url = normalize(&raw)?;
     let new = origin(&url);
     let cur = app.state::<Current>().0.lock().ok().and_then(|g| g.clone());

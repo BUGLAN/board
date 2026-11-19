@@ -30,13 +30,42 @@ mod update;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-use tauri::{AppHandle, Manager, Theme, Url, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Runtime, Theme, Url, WebviewWindow, WebviewWindowBuilder};
 
 static WINDOWS: AtomicUsize = AtomicUsize::new(0);
 
 /// 当前打开的服务端（见 [`server`]）；还没连服务端时是 None，窗口打开本地启动页（「连接服务端」页）
-fn board_url(app: &AppHandle) -> Option<Url> {
+fn board_url<R: Runtime>(app: &AppHandle<R>) -> Option<Url> {
     app.state::<server::Current>().0.lock().ok().and_then(|g| g.clone())
+}
+
+/// 本机命令的调用页面能不能用：内置启动页按 `splash_ok` 放行，其他页面必须和当前连接的服务端同源。
+///
+/// Tauri 的能力按地址累积，换服务端后旧地址的能力撤不掉（#514）：窗口再导航回旧地址时 ACL 仍然放行，
+/// 所以每个命令入口都要再用这里按「当前页面」校验一次，不依赖能力能被撤销。
+fn caller_allowed(caller: &Url, current: Option<&Url>, splash_ok: bool) -> bool {
+    if splash_ok && splash::is_splash(caller) {
+        return true;
+    }
+    current.is_some_and(|cur| caller.origin() == cur.origin())
+}
+
+/// 命令入口的调用方检查（见 [`caller_allowed`]）：不通过时直接返回错误，调用方不能有别的副作用。
+/// `splash_ok` 只给启动页本来就要用的命令：窗口按钮、探测、校验和连接服务端。
+fn ensure_caller<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, splash_ok: bool) -> Result<(), String> {
+    let caller = window.url().map_err(|e| format!("取不到页面地址：{e}"))?;
+    let current = board_url(app);
+    if caller_allowed(&caller, current.as_ref(), splash_ok) {
+        return Ok(());
+    }
+    Err(match current {
+        Some(cur) => format!(
+            "这个页面（{}）不是当前连接的服务端（{}），本机命令已拒绝：把窗口重新打开到当前服务端后再试",
+            caller.origin().ascii_serialization(),
+            cur.origin().ascii_serialization()
+        ),
+        None => "还没有连接服务端，本机命令已拒绝".into(),
+    })
 }
 
 /// 桌面端自带的 board 命令行：externalBin 把它放在可执行文件旁边
@@ -192,6 +221,7 @@ mod custom_titlebar {
 /// 在系统默认浏览器里用 GitHub 登录，返回一次性登录码（页面拿它打开 /auth/desktop 换取会话）
 #[tauri::command]
 async fn desktop_login(window: WebviewWindow, app: AppHandle) -> Result<String, login::LoginError> {
+    ensure_caller(&app, &window, false).map_err(login::LoginError::denied)?;
     let url = board_url(&app).ok_or_else(|| login::LoginError::not_connected())?;
     let res = tauri::async_runtime::spawn_blocking(move || login::run(&url))
         .await
@@ -207,14 +237,16 @@ async fn desktop_login(window: WebviewWindow, app: AppHandle) -> Result<String, 
 /// 新建窗口（Windows 没有菜单栏，由页面的快捷键和命令面板调用）。
 /// 必须是异步命令：Windows 上在同步命令里创建窗口会卡死
 #[tauri::command]
-async fn new_window(app: AppHandle) -> Result<(), String> {
+async fn new_window(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    ensure_caller(&app, &window, false)?;
     open_window(&app).map_err(|e| e.to_string())
 }
 
 /// 「Agent → 访问令牌」新建令牌后「一键写入配置文件」：服务端地址用外壳打开的地址，令牌由页面传入（见 [`env`]）。
 /// 命令名沿用 set_board_env，新旧页面和外壳都能互相调用
 #[tauri::command]
-async fn set_board_env(app: AppHandle, token: String) -> Result<env::Written, String> {
+async fn set_board_env(app: AppHandle, window: WebviewWindow, token: String) -> Result<env::Written, String> {
+    ensure_caller(&app, &window, false)?;
     let url = board_url(&app).ok_or("还没有连接服务端")?;
     let url = env::origin_of(&url)?;
     tauri::async_runtime::spawn_blocking(move || env::write(&url, token.trim()))
@@ -224,24 +256,26 @@ async fn set_board_env(app: AppHandle, token: String) -> Result<env::Written, St
 
 /// 网页端应用主题时告诉外壳（auto / light / dark）：下次启动页和窗口底色按它来
 #[tauri::command]
-fn remember_theme(app: AppHandle, theme: String) -> Result<(), String> {
+fn remember_theme(app: AppHandle, window: WebviewWindow, theme: String) -> Result<(), String> {
+    ensure_caller(&app, &window, false)?;
     let t = splash::Theme::parse(&theme).ok_or_else(|| format!("未知的主题「{theme}」"))?;
     splash::save_theme(&app, t)
 }
 
 /// 页面已经画好窗口按钮（只在 Windows 上有意义）
 #[tauri::command]
-fn window_ready(window: WebviewWindow) {
+fn window_ready(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    ensure_caller(&app, &window, true)?;
     #[cfg(target_os = "windows")]
     custom_titlebar::ready(&window);
-    #[cfg(not(target_os = "windows"))]
-    let _ = window;
+    Ok(())
 }
 
 /// capabilities/default.json 只放行启动页。当前打开的服务端——构建时注入的默认地址（BOARD_DEFAULT_URL）、
 /// 配置文件里的地址、BOARD_URL、人填的地址、开发时的 localhost:1420——在启动、换地址时按这个来源另外放行同一份命令，
 /// 不放行整个 localhost：窗口导航到本机别的端口上的页面时调不了本机命令。
-/// 换了地址就是新开窗口，按新地址重新调用这里——旧地址的页面从此调不到本机命令
+/// 换了地址就是新开窗口，按新地址重新调用这里；能力按地址累积、旧地址的放行撤不掉，旧地址的页面由命令入口的
+/// [`ensure_caller`] 按当前页面再拒绝一次
 pub(crate) fn allow_configured_url(app: &AppHandle) -> tauri::Result<()> {
     if let Some(url) = board_url(app) {
         app.add_capability(configured_capability(&url))?;
@@ -520,6 +554,109 @@ mod acl_tests {
                     .is_none(),
                 "换了地址，旧地址的页面就调不到本机命令"
             );
+        }
+    }
+
+    #[cfg(any(windows, target_os = "android"))]
+    fn splash_page() -> Url {
+        "http://boardsplash.localhost/".parse().unwrap()
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
+    fn splash_page() -> Url {
+        "boardsplash://localhost/".parse().unwrap()
+    }
+
+    /// 先连 A、再切到 B：B 的页面（含别的路径）可以调本机命令，A 的页面不行，协议、端口不同也不算同一个来源。
+    /// 启动页只对原本就要用它的命令放行（窗口按钮、探测、连接服务端），别的网站一律拒绝（#514）
+    #[test]
+    fn only_the_current_server_page_can_call_local_commands() {
+        let a: Url = "https://a.example.com".parse().unwrap();
+        let b: Url = "https://b.example.com".parse().unwrap();
+        let a_page: Url = "https://a.example.com/cards/1?x=1".parse().unwrap();
+        let b_page: Url = "https://b.example.com/cards/2".parse().unwrap();
+
+        assert!(caller_allowed(&b_page, Some(&b), false), "当前服务端的页面应该可以");
+        assert!(!caller_allowed(&a_page, Some(&b), false), "切到 B 之后旧地址 A 的页面必须被拒绝");
+        assert!(caller_allowed(&a_page, Some(&a), false));
+
+        let b_http: Url = "http://b.example.com".parse().unwrap();
+        assert!(!caller_allowed(&b_page, Some(&b_http), false), "换了协议不算同一个来源");
+        let b_port: Url = "https://b.example.com:8443".parse().unwrap();
+        assert!(!caller_allowed(&b_page, Some(&b_port), false), "换了端口不算同一个来源");
+
+        // 还没连服务端（「连接服务端」页）：只有启动页能调它本来要用的命令
+        assert!(!caller_allowed(&b_page, None, true));
+        assert!(caller_allowed(&splash_page(), None, true));
+        // 启动页不能调只给线上页面的命令；别的网站对它也调不了
+        assert!(!caller_allowed(&splash_page(), Some(&b), false));
+        let evil: Url = "https://evil.example.com/".parse().unwrap();
+        assert!(!caller_allowed(&evil, Some(&b), true));
+    }
+
+    /// Tauri 的能力按地址累积，先放行 A、再放行 B 之后 A 仍然能通过 ACL（`add_capability` 只增不减）。
+    /// 所以换服务端后必须由命令入口的 [`caller_allowed`] 拒绝 A，不能指望 ACL 把旧地址撤掉（#514）
+    #[test]
+    fn acl_keeps_the_old_origin_so_commands_must_check_the_page() {
+        use std::collections::BTreeMap;
+        use tauri::ipc::{Origin, RuntimeAuthority};
+        use tauri::utils::acl::{
+            APP_ACL_KEY,
+            manifest::Manifest,
+            resolved::Resolved,
+        };
+        use tauri::utils::platform::Target;
+
+        let manifests = include_str!(concat!(env!("OUT_DIR"), "/acl-manifests.json"));
+        let acl = || -> BTreeMap<String, Manifest> { serde_json::from_str(manifests).unwrap() };
+        assert!(acl().contains_key(APP_ACL_KEY), "构建产里的 ACL 应该带上本应用自己的命令");
+        let mut authority = RuntimeAuthority::new(acl(), Resolved::resolve(&acl(), BTreeMap::new(), Target::current()).unwrap());
+
+        let a: Url = "https://a.example.com".parse().unwrap();
+        let b: Url = "https://b.example.com".parse().unwrap();
+        authority.add_capability(configured_capability(&a)).unwrap();
+        authority.add_capability(configured_capability(&b)).unwrap();
+
+        for (name, url) in [("A", &a), ("B", &b)] {
+            assert!(
+                authority.resolve_access("host_status", "board-0", "board-0", &Origin::Remote { url: url.clone() }).is_some(),
+                "{name} 的能力在 ACL 里仍然存在（这是能力累积的行为，命令入口必须自己按当前页面拒绝旧地址）"
+            );
+        }
+        // 命令入口的第二道检查：ACL 都放行时，只有当前地址 B 的页面可以通过
+        assert!(caller_allowed(&b.join("/board").unwrap(), Some(&b), false));
+        assert!(!caller_allowed(&a.join("/board").unwrap(), Some(&b), false));
+    }
+
+    /// 每个页面命令的入口都要先过 [`ensure_caller`]：新加命令漏掉时这个用例会失败，
+    /// 不会因为 ACL 碰巧放行（或旧地址的能力还在）就悄悄开放本机命令（#514）
+    #[test]
+    fn every_page_command_checks_the_caller_origin() {
+        for (name, text) in [
+            ("lib.rs", include_str!("lib.rs")),
+            ("server.rs", include_str!("server.rs")),
+            ("host.rs", include_str!("host.rs")),
+            ("mcp.rs", include_str!("mcp.rs")),
+            ("skill.rs", include_str!("skill.rs")),
+            ("update.rs", include_str!("update.rs")),
+        ] {
+            let mut rest = text;
+            let mut count = 0;
+            // 用换行包住属性，免得把这段源码里的字符串字面量也当成命令
+            while let Some(i) = rest.find("\n#[tauri::command]\n") {
+                let after = &rest[i + "\n#[tauri::command]\n".len()..];
+                let Some(brace) = after.find('{') else { panic!("{name} 里的命令没有函数体") };
+                let body = &after[brace + 1..];
+                let Some(end) = body.find("\n}") else { panic!("{name} 里的命令没有结尾") };
+                assert!(
+                    body[..end].contains("ensure_caller"),
+                    "{name} 里有命令入口没校验调用页面：{}",
+                    after.lines().take(2).collect::<Vec<_>>().join(" ")
+                );
+                count += 1;
+                rest = &body[end + 2..];
+            }
+            assert!(count > 0, "{name} 里应该找得到页面命令");
         }
     }
 }

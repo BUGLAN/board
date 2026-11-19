@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// 检查到的、还没装的更新（同一时间只留一个：页面同一时间只处理一次）
@@ -88,7 +88,8 @@ fn describe(current: &str, update: Option<Update>) -> Checked {
 
 /// 检查更新；失败时返回给人看的错误（网络、清单不合法、没配地址）
 #[tauri::command]
-pub async fn update_check(app: AppHandle) -> Result<Checked, String> {
+pub async fn update_check(app: AppHandle, window: WebviewWindow) -> Result<Checked, String> {
+    crate::ensure_caller(&app, &window, false)?;
     let current = app.package_info().version.to_string();
     let updater = app.updater().map_err(|e| format!("更新器没有配置好：{e}"))?;
     let update = updater.check().await.map_err(|e| format!("检查更新失败：{e}"))?;
@@ -100,7 +101,8 @@ pub async fn update_check(app: AppHandle) -> Result<Checked, String> {
 /// Windows 上下载安装之前先停掉桌面端启动的 board host：安装器要替换安装目录里的 board.exe，
 /// board host 还开着就会锁住它，报「Error opening file for writing」（#389）。停不下来就不安装。
 #[tauri::command]
-pub async fn update_install(app: AppHandle, version: String) -> Result<Installed, String> {
+pub async fn update_install(app: AppHandle, window: WebviewWindow, version: String) -> Result<Installed, String> {
+    crate::ensure_caller(&app, &window, false)?;
     let update = take(&app.state::<Pending>().0, &version)?;
     let total = Mutex::new(None::<u64>);
     let (mut sent, mut reported) = (0u64, 0u64);
@@ -138,8 +140,10 @@ pub async fn update_install(app: AppHandle, version: String) -> Result<Installed
 
 /// macOS / Linux：安装完重启桌面端，换成新版本。Windows 上安装器已经把外壳关掉并拉起新版，用不到
 #[tauri::command]
-pub fn update_restart(app: AppHandle) {
+pub fn update_restart(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    crate::ensure_caller(&app, &window, false)?;
     app.restart();
+    Ok(())
 }
 
 /// 这一块下载完该不该报一次进度：按 1% 报，小文件也能看到进展，又不会把事件刷爆。
