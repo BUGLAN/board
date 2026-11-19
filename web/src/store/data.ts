@@ -891,12 +891,19 @@ function pump(): Promise<void> {
 
 /** 这个窗口里取过全量的白板：之后的刷新都带上 full（收起只在界面上截断，不再回到省略的快照，见 lib/earlier） */
 const fullPaths = new Set<string>();
+/** 正在取全量、还没成功的白板：请求先带上 full，快照不再带 omitted 后才挪进 fullPaths；失败就删掉，下次点「更早的」重新试（#511） */
+const fullWanted = new Set<string>();
+/** 同一块白板同时只发一次全量：并发的展开、筛选、搜索共用这一次的结果 */
+const fullLoads = new Map<string, Promise<boolean>>();
+
+const hasOmitted = (b: BoardSnapshot | null | undefined) => !!b && Object.values(b.omitted ?? {}).some(n => n > 0);
 
 /** 终点状态「更早的 N 张」展开着的（键是 lib/earlier 的 earlierKey）：这个窗口里记着，切白板再回来照旧；刷新页面后都收起（#485） */
 export const useEarlier = create<{ open: Record<string, boolean> }>(() => ({ open: {} }));
 
-/** 展开 / 收起一个终点状态的更早卡片。展开时取一次全量（已经是全量时不请求）；收起只改界面上的截断，不丢数据、不请求 */
-export function setEarlier(path: string, col: string, on: boolean): Promise<void> {
+/** 展开 / 收起一个终点状态的更早卡片。展开时取一次全量（已经是全量时不请求）；
+    失败时收回展开状态、按钮可以再点；收起只改界面上的截断，不丢数据、不请求 */
+export async function setEarlier(path: string, col: string, on: boolean): Promise<boolean> {
   const key = earlierKey(path, col);
   useEarlier.setState(s => {
     const open = { ...s.open };
@@ -904,7 +911,17 @@ export function setEarlier(path: string, col: string, on: boolean): Promise<void
     else delete open[key];
     return { open };
   });
-  return on ? loadFull() : Promise.resolve();
+  if (!on) return true;
+  const ok = await loadFull();
+  if (!ok) {
+    useEarlier.setState(s => {
+      if (!s.open[key]) return {};
+      const open = { ...s.open };
+      delete open[key];
+      return { open };
+    });
+  }
+  return ok;
 }
 
 /** 快照里这个状态被省略的（更早的）张数 */
@@ -912,12 +929,27 @@ export const omittedIn = (b: BoardSnapshot | null | undefined, col: string) => b
 /** 这个状态的卡片总数（含快照里省略的） */
 export const colCount = (b: BoardSnapshot, col: string) => (b.cols[col]?.length ?? 0) + omittedIn(b, col);
 
-/** 取当前白板的全量快照（终点状态更早的卡片）：点「更早的 M 张」、筛选、搜索、排序时。已经是全量时什么也不做 */
-export function loadFull(): Promise<void> {
+/** 取当前白板的全量快照（终点状态更早的卡片）：点「更早的 M 张」、筛选、搜索、排序时。已经是全量时什么也不做。
+    返回这次之后这块白板是不是全量：失败时撤掉标记、展开状态由 setEarlier 收回，再点一次会重新请求（#511） */
+export function loadFull(): Promise<boolean> {
   const { path, board } = get();
-  if (fullPaths.has(path) || (board?.path === path && !Object.values(board.omitted ?? {}).some(Boolean))) return Promise.resolve();
-  fullPaths.add(path);
-  return refresh();
+  if (fullPaths.has(path) || (board?.path === path && !hasOmitted(board))) return Promise.resolve(true);
+  const running = fullLoads.get(path);
+  if (running) return running;
+  const p = (async () => {
+    fullWanted.add(path);
+    try {
+      await refresh();
+    } catch {
+      // pump() 自己接住加载错误；这里只关心全量有没有取回来
+    }
+    if (fullPaths.has(path)) return true;
+    fullWanted.delete(path);
+    toast({ type: 'error', title: '更早的卡片没有加载出来', text: get().error || '连不上 Board 服务，稍后再试' });
+    return false;
+  })().finally(() => fullLoads.delete(path));
+  fullLoads.set(path, p);
+  return p;
 }
 
 async function load() {
@@ -952,24 +984,35 @@ async function load() {
     base.detail = null;
     render({ detailId });
   }
+  const wantFull = fullPaths.has(path) || fullWanted.has(path);
   const [wsNow, got, rawDetail] = await Promise.all([
     ws ?? api.workspace(),
     // 并行取时白板可能刚被删掉：先接住错误，看工作区再决定
-    api.board(path, fullPaths.has(path)).catch((e: unknown) => ({ failed: e })),
+    api.board(path, wantFull).catch((e: unknown) => ({ failed: e })),
     // 卡片不在了（NOT_FOUND）记为 gone：详情要关掉。不在快照里的卡片（终点状态更早的）不能靠快照判断
     detailId != null ? api.card(path, detailId).catch(e => (e instanceof ApiError && e.code === 'NOT_FOUND' ? ('gone' as const) : null)) : Promise.resolve(null),
-  ]);
+  ]).catch((e: unknown) => {
+    // 这一轮没取回来：全量标记不能留下，否则之后每次都请求 full、而且点「更早的」永远等不到结果
+    if (wantFull) fullWanted.delete(path);
+    throw e;
+  });
   ws = wsNow;
   if (!allBoards(ws).some(b => b.path === path)) {
     // 当前白板在这期间不在了：记下新的工作区，下一轮按它换白板
+    if (wantFull) fullWanted.delete(path);
     base.ws = share(base.ws, ws);
     again = true;
     return;
   }
-  if ('failed' in got) throw got.failed;
+  if ('failed' in got) {
+    if (wantFull) fullWanted.delete(path);
+    throw got.failed;
+  }
   const fetched = got;
   const st = get();
   if (st.path !== path) {
+    // 加载期间换了白板：这份快照不用了，全量等切回来再取
+    if (wantFull) fullWanted.delete(path);
     again = true;
     return;
   }
@@ -980,6 +1023,11 @@ async function load() {
   const gone = rawDetail === 'gone' && detailId != null && st.detailId === detailId && !fetched.cards[detailId];
   const detail = rawDetail && rawDetail !== 'gone' && share(base.detail?.id === rawDetail.id ? base.detail : details.get(`${path}#${rawDetail.id}`), rawDetail);
   snapshots.set(board.path, board);
+  // 全量真的取回来了（快照不再带 omitted）才算数：失败的尝试不留下「已取全量」，再点「更早的」会重新请求
+  if (wantFull && !hasOmitted(board)) {
+    fullWanted.delete(board.path);
+    fullPaths.add(board.path);
+  }
   if (detail) details.set(`${path}#${detail.id}`, detail);
   base.ws = share(base.ws, ws);
   base.board = board;

@@ -590,6 +590,7 @@ function EarlierButton({ more, view, path, col }: { more: Earlier; view: StatusV
           try {
             await setEarlier(path, col, true);
           } catch (e) {
+            // loadFull 自己接住加载错误并提示；这里只兜底意外错误，别让展开状态卡住
             void setEarlier(path, col, false);
             toastError(e);
           } finally {
