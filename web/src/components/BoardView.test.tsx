@@ -2,7 +2,9 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Status } from '../lib/types';
-import { Magnet } from './BoardView';
+import { clearSelect, startSelect, toggleCard, useBoardSel } from '../lib/boardSelect';
+import { useUI } from '../store/ui';
+import { Magnet, useBoardSelectionScope } from './BoardView';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -62,6 +64,45 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   globalThis.ResizeObserver = original;
+});
+
+function SelectionScope({ path }: { path: string }) {
+  useBoardSelectionScope(path);
+  return null;
+}
+
+describe('白板批量选择的生命周期（default/main#516）', () => {
+  beforeEach(() => {
+    useUI.setState({ tab: 'board' });
+    clearSelect();
+  });
+
+  it('首次渲染和白板内重绘不清空；换白板时清空', () => {
+    act(() => {
+      startSelect();
+      toggleCard(4);
+    });
+    act(() => root.render(<SelectionScope path="p/a" />));
+    expect(useBoardSel.getState()).toMatchObject({ on: true, ids: [4] });
+
+    act(() => root.render(<SelectionScope path="p/a" />));
+    expect(useBoardSel.getState()).toMatchObject({ on: true, ids: [4] });
+
+    act(() => root.render(<SelectionScope path="p/b" />));
+    expect(useBoardSel.getState()).toEqual({ on: false, ids: [], anchor: null });
+  });
+
+  it('离开白板 Tab 时清空', () => {
+    act(() => root.render(<SelectionScope path="p/a" />));
+    act(() => {
+      startSelect();
+      toggleCard(4);
+    });
+    expect(useBoardSel.getState()).toMatchObject({ on: true, ids: [4] });
+
+    act(() => useUI.setState({ tab: 'inbox' }));
+    expect(useBoardSel.getState()).toEqual({ on: false, ids: [], anchor: null });
+  });
 });
 
 describe('Magnet 拖动卡片时的尺寸（default/main#419、#502）', () => {

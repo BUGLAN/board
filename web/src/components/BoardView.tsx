@@ -39,6 +39,15 @@ export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
   return out;
 }
 
+/** 批量选择只属于当前白板 Tab：换白板、离开白板页、组件卸载时退出 */
+export function useBoardSelectionScope(path: string) {
+  const tab = useUI(s => s.tab);
+  useEffect(() => clearSelect, [path]);
+  useEffect(() => {
+    if (tab !== 'board') clearSelect();
+  }, [tab]);
+}
+
 /** 记录每块白板已经出现过的卡片：首次出现的弹入 */
 export function useEntering(board: BoardSnapshot | null, generation: number) {
   const seen = useRef<{ gen: number; ids: Set<number>; fresh: boolean }>({ gen: -1, ids: new Set(), fresh: true });
@@ -112,8 +121,7 @@ export function BoardView() {
     [board, cur?.board.counts],
   );
   const path = cur?.board.path ?? '';
-  // 批量打标签的选择只属于这一块白板：换白板、离开白板页时退出
-  useEffect(() => clearSelect, [path]);
+  useBoardSelectionScope(path);
   // 「下一张」按优先级顺序（不受排序影响），去掉正在拖的卡片再算
   const prio = board?.cols ?? null;
   // 有排队派发的卡片不会被不带 ID 的 board claim 领走
