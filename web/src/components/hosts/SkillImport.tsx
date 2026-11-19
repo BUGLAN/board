@@ -35,12 +35,18 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
   const first = hosts.find(h => hostNote(h).ok && h.skillImport!.local.length) ?? hosts.find(h => hostNote(h).ok) ?? null;
   const [name, setName] = useState<string | null>(first?.name ?? null);
   const [picked, setPicked] = useState<SkillImportPick[]>([]);
+  const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   /** 发出去的请求：等这台机器做完（结果里的序号对上） */
   const [sent, setSent] = useState<{ host: string; id: number } | null>(null);
   const h = hosts.find(x => x.name === (sent?.host ?? name)) ?? null;
-  const rows = useMemo(() => (h?.skillImport ? importRows(h.skillImport.local, lib) : []), [h, lib]);
-  useEffect(() => setPicked([]), [name]);
+  const allRows = useMemo(() => (h?.skillImport ? importRows(h.skillImport.local, lib) : []), [h, lib]);
+  const q = query.trim().toLowerCase();
+  const rows = q ? allRows.filter(r => r.skill.name.toLowerCase().includes(q)) : allRows;
+  useEffect(() => {
+    setPicked([]);
+    setQuery('');
+  }, [name]);
   const last = h?.skillImport?.last;
   const done = !!sent && last?.id === sent.id;
   const waiting = !!sent && !done;
@@ -59,6 +65,14 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
     }
   };
   const can = rows.filter(r => r.kind === 'new' || r.kind === 'differs');
+  const canNames = new Set(can.map(r => r.skill.name));
+  const allCan = can.length > 0 && can.every(r => has(r.skill.name));
+  const toggleAll = () =>
+    setPicked(list => {
+      if (allCan) return list.filter(p => !canNames.has(p.name));
+      const have = new Set(list.map(p => p.name));
+      return [...list, ...can.filter(r => !have.has(r.skill.name)).map(r => ({ name: r.skill.name, dir: r.skill.dirs[0] }))];
+    });
   return (
     <FormModal
       title="从机器导入 skills"
@@ -101,11 +115,11 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
       {h && (
         <FormSec
           title={sent ? `${h.name} ${done ? '导入完成' : '正在导入'}` : `${h.name} 上的 skill`}
-          hint={sent ? undefined : h.skillImport?.able ? `${rows.length} 个` : undefined}
+          hint={sent ? undefined : h.skillImport?.able ? (q ? `${rows.length} / ${allRows.length} 个` : `${allRows.length} 个`) : undefined}
           act={
             !sent && can.length > 0 ? (
-              <button type="button" className="act hp-link" onClick={() => setPicked(picked.length === can.length ? [] : can.map(r => ({ name: r.skill.name, dir: r.skill.dirs[0] })))}>
-                {picked.length === can.length ? '全不选' : '全选能导入的'}
+              <button type="button" className="act hp-link" onClick={toggleAll}>
+                {allCan ? '全不选' : '全选能导入的'}
               </button>
             ) : undefined
           }
@@ -121,47 +135,57 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
               ))}
               {waiting && h.skillImport?.ask && <p className="fm-empty">{since(h.skillImport.ask.at, now)}请求的：board host 每 10 秒取一次任务，取到就开始</p>}
             </div>
-          ) : !rows.length ? (
+          ) : !allRows.length ? (
             <p className="fm-empty">这台机器的各 agent 目录里没有自己放的 skill：都是从库里同步装的，或者还没装 skill</p>
           ) : (
-            <div className="si-list">
-              {rows.map(r => {
-                const ok = r.kind === 'new' || r.kind === 'differs';
-                const on = has(r.skill.name) && picked.find(p => p.name === r.skill.name)?.dir === r.skill.dirs[0];
-                return (
-                  <button
-                    key={`${r.skill.name}:${r.skill.version}:${r.skill.dirs[0]}`}
-                    type="button"
-                    role="checkbox"
-                    aria-checked={on}
-                    disabled={!ok}
-                    className={cx('si-row', on && 'on', `k-${r.kind}`)}
-                    onClick={() => flip(r.skill.name, r.skill.dirs[0])}
-                  >
-                    <span className={cx('fm-check', on && 'on')}>{on && <Icon name="check" />}</span>
-                    <span className="si-main">
-                      <span className="si-name">
-                        <b>{r.skill.name}</b>
-                        {r.skill.version && <code>{r.skill.version.slice(0, 7)}</code>}
-                        <Tip text={r.note}>
-                          <em className={cx('si-kind', `k-${r.kind}`)}>{KIND_WORDS[r.kind]}</em>
-                        </Tip>
-                      </span>
-                      <span className="si-meta">
-                        {r.kind === 'bad' || r.kind === 'differs' ? `${r.note} · ` : ''}
-                        {r.skill.dirs.join('、')}
-                        {r.skill.files ? ` · ${r.skill.files} 个文件 · ${kb(r.skill.size)}` : ''}
-                      </span>
-                    </span>
-                    <span className="si-agents">
-                      {r.skill.agents.map(a => (
-                        <AgentIcon key={a} id={a} />
-                      ))}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            <>
+              <label className="si-search">
+                <Icon name="search" />
+                <input value={query} placeholder="搜索 skill…" spellCheck={false} autoComplete="off" aria-label="搜索 skill" onChange={e => setQuery(e.target.value)} />
+              </label>
+              {!rows.length ? (
+                <p className="fm-empty si-empty">没有匹配的 skill</p>
+              ) : (
+                <div className="si-list">
+                  {rows.map(r => {
+                    const ok = r.kind === 'new' || r.kind === 'differs';
+                    const on = has(r.skill.name) && picked.find(p => p.name === r.skill.name)?.dir === r.skill.dirs[0];
+                    return (
+                      <button
+                        key={`${r.skill.name}:${r.skill.version}:${r.skill.dirs[0]}`}
+                        type="button"
+                        role="checkbox"
+                        aria-checked={on}
+                        disabled={!ok}
+                        className={cx('si-row', on && 'on', `k-${r.kind}`)}
+                        onClick={() => flip(r.skill.name, r.skill.dirs[0])}
+                      >
+                        <span className={cx('fm-check', on && 'on')}>{on && <Icon name="check" />}</span>
+                        <span className="si-main">
+                          <span className="si-name">
+                            <b>{r.skill.name}</b>
+                            {r.skill.version && <code>{r.skill.version.slice(0, 7)}</code>}
+                            <Tip text={r.note}>
+                              <em className={cx('si-kind', `k-${r.kind}`)}>{KIND_WORDS[r.kind]}</em>
+                            </Tip>
+                          </span>
+                          <span className="si-meta">
+                            {r.kind === 'bad' || r.kind === 'differs' ? `${r.note} · ` : ''}
+                            {r.skill.dirs.join('、')}
+                            {r.skill.files ? ` · ${r.skill.files} 个文件 · ${kb(r.skill.size)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-agents">
+                          {r.skill.agents.map(a => (
+                            <AgentIcon key={a} id={a} />
+                          ))}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </FormSec>
       )}
