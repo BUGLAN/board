@@ -15,6 +15,7 @@ import { buildVersion } from '../lib/build';
 import { staleServer } from '../lib/stale';
 import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
+import { earlierKey } from '../lib/earlier';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type SchedPick, type Workspace } from '../lib/types';
 
 interface DataState {
@@ -875,8 +876,23 @@ function pump(): Promise<void> {
 
 /* ------------------------------ 终点状态的更早卡片 ------------------------------ */
 
-/** 这个窗口里取过全量的白板：之后的刷新都带上 full（展开过的不再收起） */
+/** 这个窗口里取过全量的白板：之后的刷新都带上 full（收起只在界面上截断，不再回到省略的快照，见 lib/earlier） */
 const fullPaths = new Set<string>();
+
+/** 终点状态「更早的 N 张」展开着的（键是 lib/earlier 的 earlierKey）：这个窗口里记着，切白板再回来照旧；刷新页面后都收起（#485） */
+export const useEarlier = create<{ open: Record<string, boolean> }>(() => ({ open: {} }));
+
+/** 展开 / 收起一个终点状态的更早卡片。展开时取一次全量（已经是全量时不请求）；收起只改界面上的截断，不丢数据、不请求 */
+export function setEarlier(path: string, col: string, on: boolean): Promise<void> {
+  const key = earlierKey(path, col);
+  useEarlier.setState(s => {
+    const open = { ...s.open };
+    if (on) open[key] = true;
+    else delete open[key];
+    return { open };
+  });
+  return on ? loadFull() : Promise.resolve();
+}
 
 /** 快照里这个状态被省略的（更早的）张数 */
 export const omittedIn = (b: BoardSnapshot | null | undefined, col: string) => b?.omitted?.[col] ?? 0;

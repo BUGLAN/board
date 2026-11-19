@@ -16,7 +16,8 @@ import { statusRoles } from '../lib/review';
 import { orderDir, orderName, orderOf, orderOption, shownCols } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
-import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, useCurrent, useData } from '../store/data';
+import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, setEarlier, useCurrent, useData, useEarlier } from '../store/data';
+import { collapseCols, FINAL_RECENT, type Earlier } from '../lib/earlier';
 import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
 import { Tip } from './bits';
 import { BoardSettings } from './BoardSettings';
@@ -78,7 +79,13 @@ export function BoardView() {
   const mobile = useMobile();
   const [flowOpen, setFlowOpen] = useState(false);
   // 保留顺序开着时每块按自己的排序依据显示（只改显示顺序）；拖拽预览的位置是「看到的顺序」里的位置
-  const shown0 = useMemo(() => (board ? shownCols(board, labels, serverNow()) : null), [board, labels]);
+  const shown1 = useMemo(() => (board ? shownCols(board, labels, serverNow()) : null), [board, labels]);
+  const labelSel = useUI(s => s.labelSel);
+  // 终点状态的「更早的 N 张」：没展开的只显示最近移入的几张（取过全量也一样，lib/earlier）；筛选时都显示
+  const earlierOpen = useEarlier(s => s.open);
+  const filteringAny = !!filter || labelSel.length > 0;
+  const cut = useMemo(() => (board && shown1 ? collapseCols(board, shown1, earlierOpen, filteringAny) : null), [board, shown1, earlierOpen, filteringAny]);
+  const shown0 = cut?.cols ?? null;
   // 同一会话的卡挨着放、框在一起（lib/sessionGroups）：拖拽预览、落点都按这个看到的顺序算
   const dispatches = useData(s => s.ws?.dispatches);
   const boardPath = board?.path ?? '';
@@ -143,7 +150,6 @@ export function BoardView() {
     return () => clearTimeout(t);
   }, [reject]);
 
-  const labelSel = useUI(s => s.labelSel);
   // 终点状态默认只带最近移入的几张：筛选时、保留顺序开着且这块不按移入时间排时取全量，免得找不到、排不到更早的卡片
   //（按移入时间排时，最近移入的几张本来就在一头，不用取）
   const truncated = !!board && Object.values(board.omitted ?? {}).some(Boolean);
@@ -262,6 +268,7 @@ export function BoardView() {
                   sorted={!!board.keepSorted}
                   groups={grouped?.groups ?? NO_GROUPS}
                   path={path}
+                  more={cut?.more[s.key]}
                   role={roles.review.has(s.key) ? 'review' : roles.human.has(s.key) ? 'human' : undefined}
                 />
               );
@@ -388,6 +395,8 @@ interface ColumnProps {
   /** 同一会话的卡成组（lib/sessionGroups）：按卡片编号查 */
   groups: Record<number, SessGroup>;
   path: string;
+  /** 终点状态末尾那一格：「更早的 N 张」或展开后的「收起」（lib/earlier） */
+  more?: Earlier;
 }
 
 /** 状态的规则：可领取 / 锁定 / 错误节点 / 终点（互斥：错误节点和另外三个不同时打开）。只有图标时（标题旁）按顺序取这几个 */
@@ -429,9 +438,8 @@ function emptyText(s: Status, f: FlowQ) {
 
 /** memo：磁吸布局自己重排（量到块高度变化、拖动 / 调宽状态块）时 props 都没变，不重画块里的卡片。
     卡片拖动松手时块要补测尺寸再排一次，以前这一遍把所有卡片又画了一次，落位那一帧明显卡（default/main#419） */
-const Column = memo(function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, role }: ColumnProps) {
+const Column = memo(function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, more, role }: ColumnProps) {
   const count = colCount(board, col.key);
-  const earlier = omittedIn(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
   const list = useRef<HTMLDivElement>(null);
   useMasonry(list, sessionFrames);
@@ -524,7 +532,7 @@ const Column = memo(function Column({ col, index, f, ids, board, labels, filter,
               end && <i key={`sf:${end.g.key}`} className="sess-foot" data-deco="" data-block-end="" data-g={`${end.g.key}@${end.start}`} aria-hidden="true" />,
             ].filter(Boolean);
           })}
-          {earlier > 0 && <EarlierButton n={earlier} view={view} />}
+          {more && <EarlierButton more={more} view={view} path={path} col={col.key} />}
         </div>
         <div className="col-empty">
           <Icon name={col.claim ? 'inbox' : col.lock ? 'claim' : col.final ? 'sparkle' : 'move'} />
@@ -542,9 +550,10 @@ function TipOr({ text, children }: { text?: string; children: ReactElement }) {
   return text ? <Tip text={text}>{children}</Tip> : children;
 }
 
-/** 终点状态只带了最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态一样大（磁贴里写成 +M）；
-    点开取全量（这个窗口里这块白板之后都带全量）。拖拽算落点时不算它（data-earlier） */
-function EarlierButton({ n, view }: { n: number; view: StatusView }) {
+/** 终点状态只显示最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态一样大（磁贴里写成 +M）；
+    点开取全量（这个窗口里这块白板之后都带全量）、显示全部，同一格变成「收起」；收起只在界面上截断，不重新请求（#485）。
+    拖拽算落点时不算它（data-earlier） */
+function EarlierButton({ more, view, path, col }: { more: Earlier; view: StatusView; path: string; col: string }) {
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   // 卡片、单行的高度随内容和密度变：和前面一张一样高（在父组件的瀑布流排版之前量）；磁贴是定高
@@ -555,20 +564,27 @@ function EarlierButton({ n, view }: { n: number; view: StatusView }) {
     const h = view !== 'tile' && prev ? getComputedStyle(prev).height : '';
     if (el.style.height !== h) el.style.height = h;
   });
+  // 点了展开、全量还没回来：还按「更早的 N 张」画，转圈
+  const loading = busy || (more.open && more.n > 0);
+  const fold = more.open && more.n === 0;
+  const label = fold ? `收起，只看最近的 ${FINAL_RECENT} 张` : `显示更早的 ${more.n} 张`;
   return (
-    <TipOr text={view === 'tile' ? `更早的 ${n} 张` : undefined}>
+    <TipOr text={view === 'tile' ? (fold ? '收起' : `更早的 ${more.n} 张`) : undefined}>
       <button
         ref={ref}
         type="button"
         data-earlier=""
-        className={cx('col-earlier', `v-${view}`, busy && 'is-busy')}
-        disabled={busy}
-        aria-label={`显示更早的 ${n} 张`}
+        className={cx('col-earlier', `v-${view}`, fold && 'is-open', loading && 'is-busy')}
+        disabled={loading}
+        aria-label={label}
+        aria-expanded={fold}
         onClick={async () => {
+          if (fold) return void setEarlier(path, col, false);
           setBusy(true);
           try {
-            await loadFull();
+            await setEarlier(path, col, true);
           } catch (e) {
+            void setEarlier(path, col, false);
             toastError(e);
           } finally {
             setBusy(false);
@@ -576,11 +592,16 @@ function EarlierButton({ n, view }: { n: number; view: StatusView }) {
         }}
       >
         {view === 'tile' ? (
-          `+${n}`
+          fold ? <Icon name="chevUp" /> : `+${more.n}`
+        ) : fold ? (
+          <>
+            <Icon name="chevUp" />
+            收起
+          </>
         ) : (
           <>
             <Icon name="more" />
-            更早的 {n} 张
+            更早的 {more.n} 张
           </>
         )}
       </button>
