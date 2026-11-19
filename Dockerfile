@@ -43,7 +43,7 @@ ENV BOARD_DB=/data/board.db \
     RUST_LOG=info
 EXPOSE 7420
 VOLUME /data
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["board-server", "healthcheck"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["board-server", "healthcheck", "--expect-mode", "github"]
 ENTRYPOINT ["board-server"]
 
 # ---- 用本机编译好的可执行文件 ----

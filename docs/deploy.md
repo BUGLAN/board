@@ -86,7 +86,7 @@ docker compose up -d --build
 curl -s http://127.0.0.1:7420/api/health
 ```
 
-返回 `{"ok":true}` 即正常。容器自带健康检查（`board-server healthcheck`），`docker compose ps` 里能看到状态。
+返回里 `ok:true`、`mode:"github"`、`ui:true` 才是线上正常。容器自带健康检查（`board-server healthcheck`），它还会请求 `/`，确认返回的是 Board 的界面 HTML；`docker compose ps` 里能看到状态。
 
 ## 4. Cloudflare Tunnel
 
@@ -234,6 +234,8 @@ npm run release -- 0.1.1 --push      # 发版并推送
 7. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因
 
 tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不发版。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，和 Release 一起附上（见「CI：测试与发版构建」「桌面端安装包」）。
+
+发布构建有两条硬门禁：`crates/board-server/build.rs` 在 `release` 构建找不到 `web/dist/index.html` 时直接失败；`deploy/build-linux.sh`（包括 `--skip-web`）也会先检查同一文件。必须先 `npm run build:web`，再编译 `board-server`。线上服务端只允许 GitHub 登录模式：缺少 `BOARD_PUBLIC_URL`、`BOARD_GITHUB_CLIENT_ID`、`BOARD_GITHUB_CLIENT_SECRET` 或 `BOARD_GITHUB_USER` 时拒绝启动；`--local` 只用于本机，不能和 `BOARD_PUBLIC_URL` 一起使用。
 
 桌面端依赖服务端的新接口时，先部署服务端，再发桌面端。数据库结构在启动时自动补齐。
 
@@ -387,7 +389,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 服务端不需要 GitHub Actions 的 SSH 密钥、`DEPLOY_HOST` 或 GHCR 凭据。GitHub 仓库只需 Variable `DEPLOY_URL`（桌面端默认服务端地址，例如 `https://board.buglan.com`）。
 
-服务器目录按「局域网机器直接部署（不用 Docker）」准备：`<服务器目录>` 下放 `.env`、`data`、`bin`、`run-board-server.sh`，并装好 `com.buglan.board-server` LaunchDaemon。
+服务器目录按「局域网机器直接部署（不用 Docker）」准备：`<服务器目录>` 下放 `.env`、`data`、`bin`、`run-board-server.sh`、`deploy/`，并装好 `com.buglan.board-server` LaunchDaemon。仓库 `deploy/run-board-server.sh` 要复制成服务器目录根部的 `run-board-server.sh`（LaunchDaemon 的入口），`deploy/verify-server.sh` 放到服务器目录的 `deploy/`；前者没有 `.env` 时直接失败，不会退回本机模式。
 
 ### 看部署结果
 
@@ -427,7 +429,10 @@ tail -f <服务器目录>/data/board.log
   data/board.db                 数据库和附件
   data/board.log                日志
   .env                          GitHub 登录配置
-  run-board-server.sh           LaunchDaemon 入口
+  run-board-server.sh           LaunchDaemon 入口（仓库 deploy/run-board-server.sh 的副本）
+  deploy/verify-server.sh       部署后的模式/版本/界面验收
+  deploy/deploy-lan.sh          构建、安装、重启和验收
+  deploy/release-lan.sh         发版后调用 deploy-lan.sh
 ```
 
 ```bash
@@ -437,9 +442,10 @@ tail -f <服务器目录>/data/board.log
 ```
 
 - 第一次运行没有 Node 时会下载 Node 到 `~/.local/node-v22.19.0-darwin-x64`，不装系统目录；之后复用。
-- 构建产物是开发仓库的 `target/release/board-server`，脚本会复制到服务器目录的 `bin/board-server`；界面在编译时从 `web/dist` 嵌进二进制。
+- 构建产物是开发仓库的 `target/release/board-server`，脚本会复制到服务器目录的 `bin/board-server`；界面在编译时从 `web/dist` 嵌进二进制。`--skip-web` 只跳过重复的前端构建，`web/dist/index.html` 不存在时仍然直接失败；`deploy/build-linux.sh` 也有同样的检查。
 - 机器上装了 `com.buglan.board-server` 的 LaunchDaemon 时，脚本替换服务器目录里的二进制后杀掉进程，launchd 会按 KeepAlive 自动用新二进制拉起；没有 LaunchDaemon 时由脚本自己停旧进程、启动新进程。
-- 服务器目录的 `.env` 由 `run-board-server.sh` 读取，按 GitHub 登录模式监听 `0.0.0.0:7420`（`BOARD_HOST`、`BOARD_PORT` 可改）；没有 `.env` 时才用 `--local --demo`。
+- 服务器目录的 `.env` 由根部的 `run-board-server.sh`（来自仓库 `deploy/run-board-server.sh`）读取，按 GitHub 登录模式监听 `0.0.0.0:7420`（`BOARD_HOST`、`BOARD_PORT` 可改）。没有 `.env` 或缺少 GitHub 登录配置时脚本直接失败，**不会**用 `--local --demo` 顶上；本机模式只由人显式运行 `cargo run -p board-server -- --local`。
+- 重启后必须运行 `deploy/verify-server.sh <版本> <7 位提交号>`：它同时核对 `/api/health` 的 `mode:github`、`version`、`commit` 和 `/` 的 Board HTML。任一项失败时部署脚本要恢复上一份二进制并重启；没有可恢复的二进制时明确标记部署失败，不能把这次部署算成功。
 - 发版：在 Board 建一张「发版」卡（正文可写版本号，例如 `0.1.41`；不写就按上一版 z+1），派到这台 Mac。卡片里的 agent 在开发仓库运行 `<服务器目录>/deploy/release-lan.sh [版本号]`：它执行 `npm run release -- <版本号> --push`（CI 只测试和构建 Release，不部署），然后自动调用 `deploy-lan.sh` 把 `board-server` 装到服务器目录并重启。
 - 从 Windows 触发用 部署目录里的 `deploy-lan.ps1`（默认 `<用户>@<服务器>`、`<开发仓库>`，可用参数改）。
 
@@ -448,10 +454,10 @@ tail -f <服务器目录>/data/board.log
 不部署、只在自己电脑上用时：
 
 ```bash
-cargo run --release -p board-server -- --local
+cargo run -p board-server -- --local
 ```
 
-只监听 `127.0.0.1`，不需要登录，数据在 `~/.board/board.db`（`--db <路径>` 或 `BOARD_DB` 可指定）。
+只监听 `127.0.0.1`，不需要登录，数据在 `~/.board/board.db`（`--db <路径>` 或 `BOARD_DB` 可指定）。本机模式可以与 Vite 开发服务器一起用；如果要跑 release 版本，先 `npm run build:web`，否则发布构建会拒绝生成没有界面的服务端。
 
 CLI 同样连这个服务端：浏览器打开 `http://127.0.0.1:7420`，在「Agent → 访问令牌」新建访问令牌，然后
 

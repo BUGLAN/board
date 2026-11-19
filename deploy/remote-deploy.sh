@@ -4,7 +4,7 @@
 #
 #   deploy <提交号> <GitHub 用户名>   stdin 传入 GHCR 令牌（只用来拉这一次镜像，拉完 docker logout）
 #       检查 .env → 备份 → 拉镜像 → 记下当前 BOARD_IMAGE 并改成新镜像 → docker compose up -d --no-build
-#       → 等容器健康检查（最多 2 分钟）；重启或健康检查失败时自动切回原来的镜像
+#       → 等容器健康检查（最多 2 分钟）→ 核对 GitHub 模式、提交号和首页 HTML；任何一步失败时自动切回原来的镜像
 #   rollback                          切回 deploy 时记下的镜像（核对线上提交号失败时由工作流调用）
 #   cleanup                           只留当前和上一个 GHCR 镜像，再 docker image prune -f
 #   set-image <镜像>                   只改 .env 的 BOARD_IMAGE（手动部署时先改回 board-server:latest，再 docker compose up -d --no-build）
@@ -133,6 +133,15 @@ deploy)
   if ! wait_healthy; then
     restore
     die "健康检查没通过，已切回 ${prev}"
+  fi
+
+  echo "==> 核对登录模式、版本、提交号和界面"
+  if ! docker compose exec -T board board-server healthcheck \
+    --expect-mode github --expect-commit "$commit" --wait 30 </dev/null; then
+    echo "✗ 部署后验收没通过：线上的模式、版本或首页 HTML 不对" >&2
+    docker compose logs --tail 50 board || true
+    restore
+    die "已切回 ${prev}"
   fi
   ;;
 

@@ -4,7 +4,8 @@
 //! board-server [--host 127.0.0.1] [--port 7420] [--db <路径>] [--demo] [--local]
 //! board-server token new <名字> [--machine <机器名>] | token ls | token revoke <ID>
 //! board-server backup <目标文件>
-//! board-server healthcheck
+//! board-server healthcheck [--url <地址>] [--expect-mode local|github]
+//!                          [--expect-version <版本>] [--expect-commit <提交号>] [--wait <秒>]
 //! ```
 //!
 //! 线上用 GitHub 登录，配置见 USAGE 里的环境变量；`--local` 是本机模式：只监听本机地址，不需要登录。
@@ -23,7 +24,9 @@ const USAGE: &str = "用法：
   board-server token ls               列出访问令牌
   board-server token revoke <ID>      吊销访问令牌
   board-server backup <目标文件>      把数据库在线备份到一个新文件；附件补到它旁边的 files/
-  board-server healthcheck            检查本机服务是否正常（容器健康检查用）
+  board-server healthcheck [--url <地址>] [--expect-mode local|github]
+                           [--expect-version <版本>] [--expect-commit <提交号>] [--wait <秒>]
+                                      检查 /api/health 的模式、版本和首页 HTML；--wait 在部署重启时重试
 
 参数：
   --host   监听地址，默认 $BOARD_HOST 或 127.0.0.1
@@ -56,6 +59,12 @@ struct Opts {
     local: bool,
     /// `token new --machine <机器名>`：机器令牌绑定的机器名（#507）
     machine: Option<String>,
+    /// healthcheck 的地址和期望值；部署后用来区分「旧进程」「本机模式」「没有界面」
+    url: Option<String>,
+    expect_mode: Option<String>,
+    expect_version: Option<String>,
+    expect_commit: Option<String>,
+    wait: u64,
     rest: Vec<String>,
 }
 
@@ -67,6 +76,11 @@ fn parse(args: &[String]) -> Opts {
         demo: false,
         local: false,
         machine: None,
+        url: None,
+        expect_mode: None,
+        expect_version: None,
+        expect_commit: None,
+        wait: 0,
         rest: vec![],
     };
     let mut i = 0;
@@ -87,6 +101,26 @@ fn parse(args: &[String]) -> Opts {
             }
             "--machine" => {
                 o.machine = Some(next(i));
+                i += 1;
+            }
+            "--url" => {
+                o.url = Some(next(i));
+                i += 1;
+            }
+            "--expect-mode" => {
+                o.expect_mode = Some(next(i));
+                i += 1;
+            }
+            "--expect-version" => {
+                o.expect_version = Some(next(i));
+                i += 1;
+            }
+            "--expect-commit" => {
+                o.expect_commit = Some(next(i));
+                i += 1;
+            }
+            "--wait" => {
+                o.wait = next(i).parse().unwrap_or_else(|_| fail("--wait 需要秒数"));
                 i += 1;
             }
             "--demo" => o.demo = true,
@@ -158,6 +192,9 @@ fn run(o: Opts) {
         .or_else(|| env("BOARD_HOST").map(|h| h.parse().unwrap_or_else(|_| fail("BOARD_HOST 需要一个 IP 地址"))))
         .unwrap_or(default_host);
     let auth = if o.local {
+        if env("BOARD_PUBLIC_URL").is_some() {
+            fail("本机模式（--local）不能和 BOARD_PUBLIC_URL 一起使用；线上请配置 GitHub 登录，不要退回本机模式");
+        }
         if !host.is_loopback() {
             fail("本机模式（--local）只能监听 127.0.0.1 或 ::1；要在网络上提供服务，请配置 GitHub 登录");
         }
@@ -167,6 +204,12 @@ fn run(o: Opts) {
     } else {
         Auth::GitHub(github_from_env())
     };
+    if !matches!(&auth, Auth::Local) && !board_server::web_embedded() {
+        fail(
+            "发布版本没有把界面编译进来（缺少 web/dist/index.html）。先在仓库根目录执行 npm run build:web，\
+             再重新编译 board-server；本机开发请用 --local 配 Vite，不要这样部署线上",
+        );
+    }
 
     let cfg = Config { db: o.db.clone(), demo: o.demo, serve_web: true, auth: auth.clone() };
     let state = AppState::open(&cfg).unwrap_or_else(|e| fail(&format!("打开数据库失败：{e}")));
@@ -286,17 +329,27 @@ fn backup(o: &Opts) {
 }
 
 fn healthcheck(o: &Opts) {
-    let url = format!("http://127.0.0.1:{}/api/health", o.port);
-    let agent: ureq::Agent =
-        ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(3))).build().into();
-    match agent.get(&url).call() {
-        Ok(r) if r.status().is_success() => println!("ok"),
-        Ok(r) => {
-            eprintln!("{url} 返回 {}", r.status());
-            std::process::exit(1);
+    let base = o.url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}", o.port));
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        fail("--url 需要以 http:// 或 https:// 开头");
+    }
+    if let Some(mode) = &o.expect_mode {
+        if mode != "local" && mode != "github" {
+            fail("--expect-mode 只能是 local 或 github");
         }
-        Err(e) => {
-            eprintln!("{url} 连接失败：{e}");
+    }
+    let expect = board_server::healthcheck::Expect {
+        mode: o.expect_mode.clone(),
+        version: o.expect_version.clone(),
+        commit: o.expect_commit.clone(),
+    };
+    match board_server::healthcheck::wait(&base, &expect, o.wait) {
+        Ok(r) => println!("ok：{} 模式，版本 {}，提交 {}，界面 HTML 正常", r.mode, r.version, r.commit),
+        Err(errors) => {
+            eprintln!("健康检查失败（{base}）：");
+            for e in errors {
+                eprintln!("✗ {e}");
+            }
             std::process::exit(1);
         }
     }

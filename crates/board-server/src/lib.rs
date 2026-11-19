@@ -27,6 +27,7 @@
 pub mod agents;
 pub mod auth;
 pub mod gitcred;
+pub mod healthcheck;
 pub mod hosts;
 pub mod install;
 pub mod mcp;
@@ -63,6 +64,12 @@ use tower_http::trace::TraceLayer;
 #[folder = "../../web/dist"]
 #[allow_missing = true]
 struct WebAssets;
+
+/// 发布版本是否把界面（`web/dist/index.html`）编译了进来。`/api/health` 和启动检查用它，
+/// 避免部署一个能启动、但每个页面都报「界面还没有构建」的服务端。
+pub fn web_embedded() -> bool {
+    WebAssets::get("index.html").is_some()
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -547,9 +554,14 @@ async fn info(State(s): State<AppState>) -> Json<Value> {
     Json(json!({ "name": "board", "version": VERSION, "commit": COMMIT, "db": s.0.db.display().to_string() }))
 }
 
-/// `GET /api/health`：不需要登录。带上版本和提交号，部署后用来核对线上是不是这次的版本（GitHub Actions 部署）
-async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "version": VERSION, "commit": COMMIT }))
+/// `GET /api/health`：不需要登录。带上版本、提交号、登录模式和界面是否已经编译进来，
+/// 部署后用来核对线上是不是这次的版本、有没有错误地跑成本机模式（`--local`）。
+async fn health(State(s): State<AppState>) -> Json<Value> {
+    let mode = match s.auth() {
+        Auth::Local => "local",
+        Auth::GitHub(_) => "github",
+    };
+    Json(json!({ "ok": true, "version": VERSION, "commit": COMMIT, "mode": mode, "ui": web_embedded() }))
 }
 
 async fn workspace(State(s): State<AppState>) -> ApiResult<Workspace> {
