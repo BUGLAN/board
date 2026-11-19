@@ -4783,11 +4783,22 @@ mod tests {
         let claude = get("claude");
         let (p, a) = claude.entry(&check("claude", "/Users/me/.local/bin/claude"), "").unwrap();
         assert_eq!((p.as_str(), a.len()), ("npx", 2));
-        // 后台任务不关（#461：v2 下 board acp 等后台跑完），只告诉适配器 claude 在哪
-        assert_eq!(claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude")), vec![("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string())]);
+        // 后台任务不关（#461：v2 下 board acp 等后台跑完），只告诉适配器 claude 在哪。
+        // Windows 上这两个是别的系统的路径（不是 .exe，父目录也不在）：不交给适配器，它用自带的那份（#491）；
+        // Windows 上真的找到 npm 包里的程序时照样传，见 acp_vars_finds_the_npm_exe_on_windows
+        let claude_vars = claude.acp_vars(&check("claude", "/Users/me/.local/bin/claude"));
+        if cfg!(windows) {
+            assert!(claude_vars.is_empty(), "{claude_vars:?}");
+        } else {
+            assert_eq!(claude_vars, vec![("CLAUDE_CODE_EXECUTABLE".to_string(), "/Users/me/.local/bin/claude".to_string())]);
+        }
         let codex = get("codex");
         let vars = codex.acp_vars(&check("codex", "/opt/homebrew/bin/codex"));
-        assert!(vars.contains(&("CODEX_PATH".to_string(), "/opt/homebrew/bin/codex".to_string())) && vars.iter().any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "agent-full-access"), "{vars:?}");
+        if cfg!(windows) {
+            assert_eq!(vars, vec![("INITIAL_AGENT_MODE".to_string(), "agent-full-access".to_string())], "mac 路径在 Windows 上不交给适配器");
+        } else {
+            assert!(vars.contains(&("CODEX_PATH".to_string(), "/opt/homebrew/bin/codex".to_string())) && vars.iter().any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "agent-full-access"), "{vars:?}");
+        }
         assert_eq!((claude.acp_mode.as_str(), codex.acp_mode.as_str()), ("bypassPermissions", "agent-full-access"));
         // 配置文件覆盖：npx 换版本时照旧找 claude；换成自己的入口时找它自己；以前的一次性写法不用
         let conf = |cmd: &[&str]| vec![AgentConf { id: "claude".into(), cmd: sv(cmd), ..Default::default() }];
@@ -4870,6 +4881,37 @@ mod tests {
         assert_eq!(adapter_bin(&shim("codex"), true, def("codex")).map(PathBuf::from), Some(hoisted));
         let nested = put("node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe", pe);
         assert_eq!(adapter_bin(&shim("codex.cmd"), true, def("codex")).map(PathBuf::from), Some(nested), "两处都有时先用 @openai/codex 自己带的");
+    }
+
+    /// Windows 上 `acp_vars` 走的是「找 npm 垫片背后的 .exe」这条（#491）：找到就传真实程序，找不到就不传
+    #[cfg(windows)]
+    #[test]
+    fn acp_vars_finds_the_npm_exe_on_windows() {
+        let d = tempfile::tempdir().unwrap();
+        let npm = d.path().join("npm");
+        std::fs::create_dir_all(&npm).unwrap();
+        let shim = npm.join("claude.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        let exe = npm.join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"MZ\x90\x00\x03").unwrap();
+        let specs = agent_specs(&[], &[]).unwrap();
+        let claude = specs.iter().find(|s| s.id == "claude").unwrap();
+        let check = Check {
+            env: "login".into(),
+            found: true,
+            version: "2.1.326".into(),
+            prog: Some("claude".into()),
+            path: Some(shim.display().to_string()),
+            missing: None,
+        };
+        let npm_exe = BUILTIN.iter().find(|b| b.id == "claude").unwrap().npm_exe;
+        let found = adapter_bin(&check.path.clone().unwrap(), true, npm_exe).expect("找到包里的真实程序");
+        assert_eq!(PathBuf::from(&found), exe.clone());
+        assert_eq!(claude.acp_vars(&check), vec![("CLAUDE_CODE_EXECUTABLE".to_string(), found)]);
+        // 垫片在、但包里还没有真正的程序（postinstall 没跑）：不传，适配器用它自带的
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        assert!(claude.acp_vars(&check).is_empty(), "{:?}", claude.acp_vars(&check));
     }
 
     /// npx 跑适配器：npm 不打更新、fund、audit 的提示（#459），缓存放在 board host 的目录里；WSL 里经 WSLENV 传进去
