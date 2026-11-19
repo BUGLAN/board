@@ -135,13 +135,21 @@
 .presence .pres-item:hover .pres-time { max-width: 80px; opacity: 1; margin-left: 7px; }
 .presence .pres-item.late:hover .pres-time { color: var(--warn-text); }
 .presence .pres-item:hover .pres-pulse { opacity: 0; animation: none; }
-/* 认得出的 agent 画的是 logo 本身（.is-logo，透明底，default/main#357）：并排不叠、不画圆形外圈和波纹，状态画在 logo 上——
+/* 认得出的 agent 画的是 logo 本身（.is-logo，透明底，default/main#357）：不画圆形外圈和波纹，状态画在 logo 上——
    心跳正常：每 5 秒做一次签名动作（Topbar.tsx 传 loop）；掉线：变灰，琥珀色的光快闪；等待心跳：半透明、慢慢呼吸；已结束：灰色不动；
-   在线没持卡：原样 */
-.presence .pres-item.is-logo { margin-left: 4px; padding: 3px; }
-.presence:hover .pres-item.is-logo { translate: none; }
+   在线没持卡：原样。
+   横向层叠（default/main#495）：右边的盖在左边的上面（DOM 顺序），相邻处靠沿 logo 轮廓的底色描边分开，不套圆底；
+   悬停时整组向左展开到不相叠，被悬停的那个提到最上层（.pres-item:hover 的 z-index），耗时胶囊完整露出 */
+.presence .pres-item.is-logo { margin-left: -9px; padding: 3px; }
+.presence .pres-item.is-logo:first-child { margin-left: 0; }
+.presence:hover .pres-item.is-logo { translate: calc(var(--k, 0) * -10px) 0; }
 .presence .pres-item.is-logo:hover { padding-right: 10px; }
-.presence .pres-item.is-logo .avatar { box-shadow: none; }
+.presence .pres-item.is-logo .avatar {
+  box-shadow: none;
+  /* 四个方向各错开 1.5px 的底色投影 = 跟着 logo 透明轮廓走的一圈描边 */
+  filter: drop-shadow(1.5px 0 0 var(--surface)) drop-shadow(-1.5px 0 0 var(--surface)) drop-shadow(0 1.5px 0 var(--surface)) drop-shadow(0 -1.5px 0 var(--surface));
+}
+.presence .pres-item.is-logo:hover .avatar { filter: none; }
 .presence .pres-item.is-logo .pres-pulse { display: none; }
 .pres-item.is-logo.late .logo-art { filter: grayscale(1) opacity(.6); animation: logo-late 1.2s var(--ease-in-out) infinite; }
 .pres-item.is-logo.wait .logo-art { animation: logo-wait 2.4s var(--ease-in-out) infinite; }
