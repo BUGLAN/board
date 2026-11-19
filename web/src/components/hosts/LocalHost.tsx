@@ -152,10 +152,11 @@ export function LocalHostAdd({ close }: { close: () => void }) {
     if (!yes) return;
     setBusy(true);
     try {
-      // 配置文件里没有服务端地址和令牌：以机器名新建一个访问令牌写进去（「一键写入」同一条路）；有就直接用
+      // 配置文件里没有服务端地址和令牌、或者这是一台还没登记过的新机器：以机器名新建一个绑定这个机器名的
+      // 机器令牌写进去（「一键写入」同一条路）。普通访问令牌登记不了新机器（#507）；已经登记过的机器直接用原来的令牌
       let made = '';
-      if (!st.loggedIn) {
-        const r = await optimistic(null, () => api.createToken(me));
+      if (!st.loggedIn || !hostsOf(ws).some(h => h.name === me)) {
+        const r = await optimistic(null, () => api.createToken(me, { host: me }));
         await setBoardEnv(r.token);
         made = r.info.name;
       }

@@ -201,7 +201,7 @@ fn copy_settings_from_another_host_is_ui_only_and_presets_ride_on_the_new_token(
     // 添加机器：生成命令时带「上线后照 a 配」；来源机器不在时不建令牌
     let r = send("POST", &format!("{}/api/tokens", s.url), &[UI], Some(json!({ "name": "c", "copyFrom": "nope" })));
     assert_eq!(r.code(), "NO_SUCH_HOST", "{}", r.text);
-    let r = send("POST", &format!("{}/api/tokens", s.url), &[UI], Some(json!({ "name": "c", "copyFrom": "a" })));
+    let r = send("POST", &format!("{}/api/tokens", s.url), &[UI], Some(json!({ "name": "c", "copyFrom": "a", "host": "c" })));
     assert_eq!(r.status, 200, "{}", r.text);
     let raw = r.body["token"].as_str().unwrap().to_string();
     let bearer = format!("Bearer {raw}");

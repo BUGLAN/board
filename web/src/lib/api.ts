@@ -124,7 +124,9 @@ export const api = {
   logout: () => req('POST', '/api/auth/logout'),
   tokens: () => req<TokenInfo[]>('GET', '/api/tokens'),
   /** copyFrom：添加机器时选了「上线后照 <机器> 配」，用这个令牌的机器第一次上线时照它配 */
-  createToken: (name: string, copyFrom?: string) => req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', copyFrom ? { name, copyFrom } : { name }),
+  /** host：添加机器时绑定的机器名（机器令牌，只有它能登记这台新机器，#507）；「新建访问令牌」不填 */
+  createToken: (name: string, opts: { copyFrom?: string; host?: string } = {}) =>
+    req<{ token: string; info: TokenInfo }>('POST', '/api/tokens', { name, ...(opts.copyFrom ? { copyFrom: opts.copyFrom } : {}), ...(opts.host ? { host: opts.host } : {}) }),
   revokeToken: (id: number) => req('DELETE', `/api/tokens/${id}`),
 
   // 机器、派发、共用配置这些接口的数据进门时补齐缺的数组（lib/normalize.ts）：界面和服务端版本不一致时不整页崩

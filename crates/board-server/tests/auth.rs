@@ -72,6 +72,12 @@ fn new_token(db: &Path, name: &str) -> String {
     auth::create_token(store.conn(), name, board_core::now_ms()).unwrap().1
 }
 
+/// 「添加机器」新建的机器令牌：绑定机器名 `host`，只有它能登记这台新机器（#507）
+fn new_host_token(db: &Path, name: &str, host: &str) -> String {
+    let store = board_core::Store::open(db).unwrap();
+    auth::create_token_for(store.conn(), name, Some(host), board_core::now_ms()).unwrap().1
+}
+
 /// 走一遍 GitHub 登录，返回会话 Cookie
 fn login(s: &Server, as_user: &str) -> Res {
     let r = send("GET", &format!("{}/auth/github", s.url), &[], None);
@@ -349,7 +355,7 @@ fn tokens_are_for_cli_only() {
 #[test]
 fn host_and_dispatch_routes_only_take_that_hosts_token() {
     let s = local_mode();
-    let (ta, tb) = (new_token(&s.db, "a 的令牌"), new_token(&s.db, "b 的令牌"));
+    let (ta, tb) = (new_host_token(&s.db, "a 的令牌", "host-a"), new_token(&s.db, "b 的令牌"));
     let (ba, bb) = (format!("Bearer {ta}"), format!("Bearer {tb}"));
     let a = [("authorization", ba.as_str())];
     let b = [("authorization", bb.as_str())];
@@ -438,6 +444,86 @@ fn host_and_dispatch_routes_only_take_that_hosts_token() {
     assert_eq!(r.status, 200, "{}", r.text);
     // 改名后 A 用新名字照常
     assert_eq!(send("GET", &url("/hosts/host-a2/work"), &a, None).status, 200);
+}
+
+/// 登记新机器只认「添加机器」新建的机器令牌（#507）：普通访问令牌用一个没人用过的名字上报，不建机器、读不到
+/// MCP / 供应商 / Git 的原文；机器令牌名字一致才能登记，A 的令牌读不了 B 的
+#[test]
+fn only_machine_tokens_register_new_hosts() {
+    let s = local_mode();
+    let url = |p: &str| format!("{}/api{p}", s.url);
+    let report = |name: &str, inst: &str| json!({ "name": name, "instance": inst, "os": "macOS 15.4", "version": env!("CARGO_PKG_VERSION") });
+    let plain = format!("Bearer {}", new_token(&s.db, "ci"));
+    let plain = [("authorization", plain.as_str())];
+
+    // 普通访问令牌自注册：409，不建机器，密钥接口照旧拒绝
+    let r = send("POST", &url("/hosts/rnd-7f3a/beat"), &plain, Some(report("rnd-7f3a", "x1")));
+    assert_eq!((r.status, r.code().as_str()), (409, "HOST_NAME_TAKEN"), "{}", r.text);
+    assert!(r.body["error"]["message"].as_str().unwrap().contains("机器 → 添加机器"), "{}", r.text);
+    let hosts = send("GET", &url("/hosts"), &[UI], None);
+    assert_eq!(hosts.body["hosts"].as_array().map(Vec::len), Some(0), "{}", hosts.text);
+    for p in ["mcp", "providers", "git"] {
+        let r = send("GET", &url(&format!("/hosts/rnd-7f3a/{p}")), &plain, None);
+        assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{p}: {}", r.text);
+    }
+
+    // 界面「添加机器」：新建绑定机器名的令牌，列表里看得到绑定的名字
+    let r = send("POST", &url("/tokens"), &[UI], Some(json!({ "name": "devbox", "host": "devbox" })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["info"]["host"], "devbox");
+    let dev = format!("Bearer {}", r.body["token"].as_str().unwrap());
+    let dev = [("authorization", dev.as_str())];
+    let r = send("POST", &url("/tokens"), &[UI], Some(json!({ "name": "坏名字", "host": "Bad Name" })));
+    assert_eq!(r.code(), "USAGE", "{}", r.text);
+    // 名字不一致：拒绝；一致：登记，能取自己的配置
+    let r = send("POST", &url("/hosts/devbox-x/beat"), &dev, Some(report("devbox-x", "d1")));
+    assert_eq!((r.status, r.code().as_str()), (409, "HOST_NAME_TAKEN"), "{}", r.text);
+    let r = send("POST", &url("/hosts/devbox/beat"), &dev, Some(report("devbox", "d1")));
+    assert_eq!(r.status, 200, "{}", r.text);
+    for p in ["mcp", "providers", "git"] {
+        assert_eq!(send("GET", &url(&format!("/hosts/devbox/{p}")), &dev, None).status, 200, "{p}");
+    }
+    // A 的令牌读不了 B 的密钥
+    let other = format!("Bearer {}", new_host_token(&s.db, "other", "other"));
+    let other = [("authorization", other.as_str())];
+    assert_eq!(send("POST", &url("/hosts/other/beat"), &other, Some(report("other", "o1"))).status, 200);
+    for p in ["mcp", "providers", "git"] {
+        let r = send("GET", &url(&format!("/hosts/other/{p}")), &dev, None);
+        assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{p}: {}", r.text);
+    }
+    let list = send("GET", &url("/tokens"), &[UI], None);
+    let by_name = |n: &str| list.body.as_array().unwrap().iter().find(|t| t["name"] == n).unwrap()["host"].clone();
+    assert_eq!((by_name("ci"), by_name("devbox")), (Value::Null, json!("devbox")));
+}
+
+/// 升级前的数据库：令牌表没有 host 列，启动时补上；已有的令牌都是普通访问令牌，已经绑着它们的机器照常上报（#507）
+#[test]
+fn old_token_table_gets_host_column_and_bound_hosts_keep_working() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("old.db");
+    let mut store = board_core::Store::open(&db).unwrap();
+    store
+        .conn()
+        .execute_batch(
+            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
+             INSERT INTO auth_tokens (name, hash, hint, created_at) VALUES ('mbp 的旧令牌', 'h', 'bd_1', 0);",
+        )
+        .unwrap();
+    // 升级前用这个令牌连上来的 mbp（旧版服务端不查绑定）
+    let rep = |name: &str| serde_json::from_value::<board_core::HostReport>(json!({ "name": name, "instance": format!("{name}-1") })).unwrap();
+    store.conn().execute("ALTER TABLE auth_tokens RENAME TO t_old", []).unwrap();
+    store.write(board_core::now_ms(), board_core::Origin::cli(), |w| w.host_beat(&rep("mbp"), Some(1))).unwrap();
+    store.conn().execute("ALTER TABLE t_old RENAME TO auth_tokens", []).unwrap();
+
+    auth::setup(store.conn()).unwrap();
+    auth::setup(store.conn()).unwrap();
+    let list = auth::list_tokens(store.conn()).unwrap();
+    assert_eq!((list.len(), list[0].name.as_str(), list[0].host.as_deref()), (1, "mbp 的旧令牌", None));
+    let now = board_core::now_ms();
+    store.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep("mbp"), Some(1))).unwrap();
+    assert!(store.read(|r| r.host_uses_token("mbp", 1, now)).unwrap());
+    let e = store.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep("new-one"), Some(1))).unwrap_err();
+    assert_eq!(e.code, board_core::ErrorCode::HostNameTaken);
 }
 
 #[test]
@@ -860,7 +946,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
     // 这台机器的 board host 用的令牌：上报时带上它的 ID
     let (host_info, host_token) = {
         let store = board_core::Store::open(&s.db).unwrap();
-        auth::create_token(store.conn(), "win2", board_core::now_ms()).unwrap()
+        auth::create_token_for(store.conn(), "win2", Some("win"), board_core::now_ms()).unwrap()
     };
     let agent = |id: &str, model: &str| HostAgent { id: id.into(), name: id.into(), version: "1.0".into(), found: true, model: model.into(), ..Default::default() };
     let mut claude = agent("claude", "opus-5.5");

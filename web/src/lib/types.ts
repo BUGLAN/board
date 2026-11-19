@@ -1083,6 +1083,8 @@ export interface TokenInfo {
   hint: string;
   createdAt: number;
   lastUsedAt: number | null;
+  /** 机器令牌绑定的机器名（「添加机器」新建的）：只有它能登记这台新机器；普通访问令牌为空（#507） */
+  host?: string | null;
 }
 
 /** 服务端版本信息（GET /api/info）：部署后用来核对线上是不是新版 */

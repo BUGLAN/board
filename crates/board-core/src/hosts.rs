@@ -2678,6 +2678,11 @@ pub(crate) fn host_by_token(conn: &rusqlite::Connection, token: i64, now: i64) -
     Ok(h.filter(|h| h.online(now)).map(|h| h.info(now)))
 }
 
+/// 令牌表有没有 `host` 列（机器令牌绑定的机器名，#507；服务端启动时加上）
+fn token_host_column(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('auth_tokens') WHERE name = 'host'", [], |r| r.get(0))?)
+}
+
 pub(crate) fn no_such_host(name: &str) -> BoardError {
     BoardError::new(ErrorCode::NoSuchHost, format!("机器「{name}」不存在：在那台机器上运行 board host，界面「机器」里能看到所有机器"))
         .with_detail(json!({ "host": name }))
@@ -2772,6 +2777,31 @@ impl<'a> R<'a> {
             return Ok(None);
         }
         Ok(self.conn.query_row("SELECT name FROM auth_tokens WHERE id = ?1", [id], |r| r.get(0)).optional()?)
+    }
+
+    /// 这个令牌能不能登记（新建或换绑）机器 `name`（#507）：只有界面「添加机器」新建的令牌绑定了机器名
+    /// （`auth_tokens.host`），名字完全一致才行；普通访问令牌、绑定了别的名字的令牌都不行（`HOST_NAME_TAKEN`，
+    /// 旧版 board host 遇到它会退出、不会反复重报）。没有令牌表（只用 board-core 的库，不经过服务端）时不限
+    pub(crate) fn token_may_register(&self, id: i64, name: &str) -> Result<()> {
+        let has: bool = self.conn.query_row("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'auth_tokens'", [], |r| r.get(0))?;
+        if !has {
+            return Ok(());
+        }
+        let sql = if token_host_column(self.conn)? { "SELECT name, host FROM auth_tokens WHERE id = ?1" } else { "SELECT name, NULL FROM auth_tokens WHERE id = ?1" };
+        let bound: Option<(String, Option<String>)> = self.conn.query_row(sql, [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        let (tn, host) = bound.unwrap_or_default();
+        if host.as_deref() == Some(name) {
+            return Ok(());
+        }
+        let why = match host {
+            Some(h) => format!("访问令牌「{tn}」是给机器「{h}」的，不能登记机器「{name}」"),
+            None => format!("访问令牌「{tn}」是普通访问令牌，不能登记新机器「{name}」"),
+        };
+        Err(BoardError::new(
+            ErrorCode::HostNameTaken,
+            format!("{why}：在界面「机器 → 添加机器」填机器名「{name}」生成命令（会新建绑定这个机器名的令牌），用那条命令在这台机器上重新登录、运行 board host"),
+        )
+        .with_detail(json!({ "host": name })))
     }
 
     /// 这台机器用的是不是这个令牌：board host 每 10 秒上报一次，最后一次上报用的令牌就是它现在的令牌。
@@ -3576,19 +3606,31 @@ impl<'a> W<'a> {
         let envs = serde_json::to_string(&rep.envs).unwrap_or_else(|_| "[]".into());
         // 改名后还用旧名字上报：认回改名后的记录（见 host_of_proc），下面都用记录里的名字
         let found = self.host_of_proc(&rep.name, &rep.instance)?;
-        // 绑着另一个还在的令牌：不让接管（见上面「令牌绑定」）
-        if let (Some(h), Some(t)) = (found.as_ref(), token) {
-            if let Some(old) = h.token.filter(|o| *o != t) {
-                if let Some(tn) = self.read().live_token_name(old)? {
-                    return Err(BoardError::new(
-                        ErrorCode::HostNameTaken,
-                        format!(
-                            "机器名「{}」绑定的是另一个访问令牌「{tn}」：换一个 --name；或在界面「Agent → 访问令牌」吊销那个令牌、或在「机器」里移除这台机器后再连",
-                            h.name
-                        ),
-                    )
-                    .with_detail(json!({ "host": h.name })));
+        if let Some(t) = token {
+            match found.as_ref() {
+                // 机器就绑着这个令牌：照常上报
+                Some(h) if h.token == Some(t) => {}
+                Some(h) => {
+                    // 绑着另一个还在的令牌：不让接管（见上面「令牌绑定」）
+                    if let Some(old) = h.token {
+                        if let Some(tn) = self.read().live_token_name(old)? {
+                            return Err(BoardError::new(
+                                ErrorCode::HostNameTaken,
+                                format!(
+                                    "机器名「{}」绑定的是另一个访问令牌「{tn}」：换一个 --name；或在界面「Agent → 访问令牌」吊销那个令牌、或在「机器」里移除这台机器，再用「机器 → 添加机器」生成的命令连上来",
+                                    h.name
+                                ),
+                            )
+                            .with_detail(json!({ "host": h.name })));
+                        }
+                    }
+                    // 原来的令牌吊销了、或还没绑过令牌：换绑也算登记，同新机器（#507）
+                    self.read().token_may_register(t, &h.name)?;
                 }
+                // 新机器：只有「添加机器」新建的、绑定了这个机器名的令牌能登记（#507）。
+                // 结束上报（`final`）照旧按机器不存在处理
+                None if !rep.done => self.read().token_may_register(t, &rep.name)?,
+                None => {}
             }
         }
         let name = found.as_ref().map_or_else(|| rep.name.clone(), |h| h.name.clone());
@@ -4877,6 +4919,12 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE dispatches SET host = ?2 WHERE host_id = ?1", params![h.id, to])?;
             // 定时建卡按机器名派发：跟着改名
             self.tx.execute("UPDATE card_crons SET host = ?2 WHERE host = ?1", params![h.name, to])?;
+            // 机器令牌绑定的名字也跟着改：移除后再连上来照样能登记（#507）
+            if let Some(t) = h.token {
+                if token_host_column(&self.tx)? {
+                    self.tx.execute("UPDATE auth_tokens SET host = ?2 WHERE id = ?1 AND host = ?3", params![t, to, h.name])?;
+                }
+            }
             self.touch_hosts();
         }
         self.read().host(to, self.now)

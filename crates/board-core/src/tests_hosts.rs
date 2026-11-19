@@ -3596,8 +3596,9 @@ fn host_and_dispatch_calls_need_the_token_the_host_reports_with() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| {
         w.tx.execute_batch(
-            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
-             INSERT INTO auth_tokens VALUES (1, 'mbp 的令牌', 'h1', 'bd_1', 0, NULL), (2, 'win 的令牌', 'h2', 'bd_2', 0, NULL);",
+            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, host TEXT);
+             INSERT INTO auth_tokens VALUES (1, 'mbp 的令牌', 'h1', 'bd_1', 0, NULL, 'mbp'), (2, 'win 的令牌', 'h2', 'bd_2', 0, NULL, 'win'),
+               (3, '重装 mbp 的令牌', 'h3', 'bd_3', 0, NULL, 'mbp'), (4, 'old 的令牌', 'h4', 'bd_4', 0, NULL, 'old');",
         )?;
         Ok(())
     })
@@ -3646,19 +3647,79 @@ fn host_and_dispatch_calls_need_the_token_the_host_reports_with() {
     owned(&s, Some(1)).unwrap();
     assert_eq!(owned(&s, Some(2)).unwrap_err().code, ErrorCode::NoSuchHost);
 
-    // 令牌 1 被吊销后（换了令牌重装这台机器）：令牌 2 可以换绑，之后只认令牌 2
+    // 令牌 1 被吊销后（换了令牌重装这台机器）：换绑也算登记（#507），给 win 的令牌 2 不行，
+    // 「添加机器」给 mbp 新建的令牌 3 可以，之后只认令牌 3
     s.write(T0, Origin::ui(None), |w| Ok(w.tx.execute("DELETE FROM auth_tokens WHERE id = 1", [])?)).unwrap();
-    other(&mut s, T0 + 60 * S, &report("mbp", "x3", vec![])).unwrap();
-    owned(&s, Some(2)).unwrap();
+    let e = other(&mut s, T0 + 60 * S, &report("mbp", "x3", vec![])).unwrap_err();
+    assert_eq!(e.code, ErrorCode::HostNameTaken);
+    assert!(e.message.contains("添加机器"), "{}", e.message);
+    s.write(T0 + 60 * S, Origin::cli(), |w| w.host_beat(&report("mbp", "x3", vec![]), Some(3))).unwrap();
+    owned(&s, Some(3)).unwrap();
     assert_eq!(owned(&s, Some(1)).unwrap_err().code, ErrorCode::NoSuchHost);
-    d_owned(&s, d.id, Some(2)).unwrap();
-    // 没绑过令牌的机器（本机模式上报的）：令牌上报时绑上
+    assert_eq!(owned(&s, Some(2)).unwrap_err().code, ErrorCode::NoSuchHost);
+    d_owned(&s, d.id, Some(3)).unwrap();
+    // 没绑过令牌的机器（本机模式上报的）：同样只有绑定它名字的令牌能绑上
     s.write(T0, Origin::cli(), |w| w.host_beat(&report("old", "o1", vec![]), None)).unwrap();
     assert_eq!(s.read(|r| r.host_owned_by("old", Some(2))).unwrap_err().code, ErrorCode::NoSuchHost);
     let mut again = report("old", "o1", vec![]);
     again.resume = Some("o1".into());
-    other(&mut s, T0 + S, &again).unwrap();
-    s.read(|r| r.host_owned_by("old", Some(2))).unwrap();
+    assert_eq!(other(&mut s, T0 + S, &again).unwrap_err().code, ErrorCode::HostNameTaken);
+    s.write(T0 + S, Origin::cli(), |w| w.host_beat(&again, Some(4))).unwrap();
+    s.read(|r| r.host_owned_by("old", Some(4))).unwrap();
+}
+
+/// 登记新机器（#507）：普通访问令牌、绑定了别的机器名的令牌都不能用一个没人用过的名字自注册（不建记录，
+/// 之后也读不到只发给机器的密钥）；「添加机器」新建的、绑定这个名字的机器令牌可以。已经绑着普通令牌的机器
+/// （升级前连上来的）照常上报；改名后机器令牌绑定的名字跟着改，移除后再连上来照样能登记
+#[test]
+fn only_a_machine_token_registers_a_new_host() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| {
+        w.tx.execute_batch(
+            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, host TEXT);
+             INSERT INTO auth_tokens VALUES (1, 'ci', 'h1', 'bd_1', 0, NULL, NULL), (2, 'devbox', 'h2', 'bd_2', 0, NULL, 'devbox'), (3, 'mbp', 'h3', 'bd_3', 0, NULL, 'mbp');",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let up = |s: &mut Store, at: i64, name: &str, inst: &str, t: i64| s.write(at, Origin::cli(), |w| w.host_beat(&report(name, inst, vec![]), Some(t)));
+    let count = |s: &Store| s.read(|r| Ok(r.conn.query_row("SELECT COUNT(*) FROM hosts", [], |x| x.get::<_, i64>(0))?)).unwrap();
+
+    // 普通访问令牌：随便一个名字自注册不行，不建记录，也读不到密钥
+    let e = up(&mut s, T0, "evil-1", "e1", 1).unwrap_err();
+    assert_eq!(e.code, ErrorCode::HostNameTaken);
+    assert!(e.message.contains("普通访问令牌") && e.message.contains("机器 → 添加机器"), "{}", e.message);
+    assert_eq!(count(&s), 0);
+    assert!(!s.read(|r| r.host_uses_token("evil-1", 1, T0)).unwrap());
+    // 绑定了别的名字的机器令牌：不行
+    let e = up(&mut s, T0, "evil-2", "e2", 2).unwrap_err();
+    assert_eq!(e.code, ErrorCode::HostNameTaken);
+    assert!(e.message.contains("devbox"), "{}", e.message);
+    assert_eq!(count(&s), 0);
+    // 结束上报：照旧是机器不存在
+    let mut bye = report("evil-3", "e3", vec![]);
+    bye.done = true;
+    assert_eq!(s.write(T0, Origin::cli(), |w| w.host_beat(&bye, Some(1))).unwrap_err().code, ErrorCode::NoSuchHost);
+
+    // 名字一致的机器令牌：登记，之后能取自己的配置；A 的令牌读不了 B
+    up(&mut s, T0, "devbox", "d1", 2).unwrap();
+    up(&mut s, T0, "mbp", "m1", 3).unwrap();
+    assert!(s.read(|r| r.host_uses_token("devbox", 2, T0)).unwrap());
+    assert!(!s.read(|r| r.host_uses_token("mbp", 2, T0)).unwrap());
+    assert!(!s.read(|r| r.host_uses_token("devbox", 3, T0)).unwrap());
+
+    // 升级前用普通令牌连上来的机器（已经绑着令牌 1）：照常上报
+    s.write(T0, Origin::ui(None), |w| Ok(w.tx.execute("UPDATE hosts SET token = 1 WHERE name = 'mbp'", [])?)).unwrap();
+    up(&mut s, T0 + S, "mbp", "m1", 1).unwrap();
+    assert!(s.read(|r| r.host_uses_token("mbp", 1, T0 + S)).unwrap());
+
+    // 改名：机器令牌绑定的名字跟着改；移除后用新名字再连上来照样能登记，旧名字不行
+    s.write(T0 + S, Origin::ui(None), |w| w.host_rename("devbox", "devbox2")).unwrap();
+    let bound: Option<String> = s.read(|r| Ok(r.conn.query_row("SELECT host FROM auth_tokens WHERE id = 2", [], |x| x.get(0))?)).unwrap();
+    assert_eq!(bound.as_deref(), Some("devbox2"));
+    s.write(T0 + S, Origin::ui(None), |w| w.host_remove("devbox2", &Actor::human(), "人")).unwrap();
+    assert_eq!(up(&mut s, T0 + 2 * S, "devbox", "d2", 2).unwrap_err().code, ErrorCode::HostNameTaken);
+    up(&mut s, T0 + 2 * S, "devbox2", "d2", 2).unwrap();
 }
 
 #[test]
@@ -3666,8 +3727,8 @@ fn host_token_is_shown_and_can_be_revoked_on_remove() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| {
         w.tx.execute_batch(
-            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
-             INSERT INTO auth_tokens VALUES (1, 'win2 的令牌', 'h1', 'brd_ab12', 0, 123);",
+            "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, host TEXT);
+             INSERT INTO auth_tokens VALUES (1, 'win2 的令牌', 'h1', 'brd_ab12', 0, 123, 'mbp'), (2, 'win 的令牌', 'h2', 'brd_cd34', 0, NULL, 'win');",
         )?;
         Ok(())
     })
@@ -3675,7 +3736,9 @@ fn host_token_is_shown_and_can_be_revoked_on_remove() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let t = host(&s, T0).token.unwrap();
     assert_eq!((t.id, t.name.as_str(), t.hint.as_str(), t.last_used_at), (1, "win2 的令牌", "brd_ab12", Some(123)));
-    // 另一台在线的机器也用这个令牌：不能一起吊销
+    // 另一台在线的机器也用这个令牌（升级前两台共用一个普通令牌连上来的）：不能一起吊销
+    s.write(T0, Origin::cli(), |w| w.host_beat(&report("win", "w1", vec![]), Some(2))).unwrap();
+    s.write(T0, Origin::ui(None), |w| Ok(w.tx.execute("UPDATE hosts SET token = 1 WHERE name = 'win'", [])?)).unwrap();
     beat(&mut s, T0, &report("win", "w1", vec![])).unwrap();
     assert_eq!(host(&s, T0).token.unwrap().shared, vec!["win".to_string()]);
     let e = s.write(T0, Origin::ui(None), |w| w.host_remove_revoke("mbp", &Actor::human(), "人", true)).unwrap_err();
@@ -3686,7 +3749,7 @@ fn host_token_is_shown_and_can_be_revoked_on_remove() {
     beat(&mut s, T0 + 61 * S, &report("mbp", "i1", vec![])).unwrap();
     let revoked = s.write(T0 + 61 * S, Origin::ui(None), |w| w.host_remove_revoke("mbp", &Actor::human(), "人", true)).unwrap();
     assert_eq!(revoked, Some(1));
-    let left: i64 = s.read(|r| Ok(r.conn.query_row("SELECT COUNT(*) FROM auth_tokens", [], |x| x.get(0))?)).unwrap();
+    let left: i64 = s.read(|r| Ok(r.conn.query_row("SELECT COUNT(*) FROM auth_tokens WHERE id = 1", [], |x| x.get(0))?)).unwrap();
     assert_eq!(left, 0);
     assert!(s.read(|r| r.host("mbp", T0)).is_err());
 }

@@ -121,12 +121,19 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   hash         TEXT NOT NULL UNIQUE,
   hint         TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
-  last_used_at INTEGER
+  last_used_at INTEGER,
+  -- 机器令牌：界面「添加机器」新建时绑定的机器名，只有它能登记这台新机器（#507）。普通访问令牌为空
+  host         TEXT
 );
 "#;
 
 pub fn setup(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
+    // 旧库的令牌表没有 host 列：补上，已有的令牌都是普通访问令牌
+    let has_host: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('auth_tokens') WHERE name = 'host'", [], |r| r.get(0))?;
+    if !has_host {
+        conn.execute_batch("ALTER TABLE auth_tokens ADD COLUMN host TEXT")?;
+    }
     Ok(())
 }
 
@@ -153,28 +160,39 @@ pub struct TokenInfo {
     pub hint: String,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
+    /// 机器令牌绑定的机器名（「添加机器」新建的）：只有它能登记这台新机器；普通访问令牌为空（#507）
+    pub host: Option<String>,
 }
 
-/// 新建访问令牌。返回令牌信息和令牌原文（只在这里出现一次）
+/// 新建普通访问令牌（命令行、agent 用；不能登记新机器）。返回令牌信息和令牌原文（只在这里出现一次）
 pub fn create_token(conn: &Connection, name: &str, now: i64) -> Result<(TokenInfo, String)> {
+    create_token_for(conn, name, None, now)
+}
+
+/// 新建访问令牌；`host` 不为空时是机器令牌：绑定这个机器名，board host 用它第一次上报时才能登记这台机器（#507）
+pub fn create_token_for(conn: &Connection, name: &str, host: Option<&str>, now: i64) -> Result<(TokenInfo, String)> {
     let name: String = name.trim().chars().take(40).collect();
     if name.is_empty() {
         return Err(BoardError::usage("令牌名称不能为空"));
     }
+    let host = host.map(str::trim).filter(|h| !h.is_empty()).map(str::to_string);
+    if let Some(h) = &host {
+        board_core::hosts::check_host_name(h).map_err(BoardError::usage)?;
+    }
     let raw = format!("{TOKEN_PREFIX}{}", random_hex(24));
     let hint = format!("{}…", &raw[..TOKEN_PREFIX.len() + 6]);
     conn.execute(
-        "INSERT INTO auth_tokens (name, hash, hint, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![name, hash(&raw), hint, now],
+        "INSERT INTO auth_tokens (name, hash, hint, created_at, host) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![name, hash(&raw), hint, now, host],
     )?;
     let id = conn.last_insert_rowid();
-    Ok((TokenInfo { id, name, hint, created_at: now, last_used_at: None }, raw))
+    Ok((TokenInfo { id, name, hint, created_at: now, last_used_at: None, host }, raw))
 }
 
 pub fn list_tokens(conn: &Connection) -> Result<Vec<TokenInfo>> {
-    let mut st = conn.prepare("SELECT id, name, hint, created_at, last_used_at FROM auth_tokens ORDER BY id")?;
+    let mut st = conn.prepare("SELECT id, name, hint, created_at, last_used_at, host FROM auth_tokens ORDER BY id")?;
     let rows = st.query_map([], |r| {
-        Ok(TokenInfo { id: r.get(0)?, name: r.get(1)?, hint: r.get(2)?, created_at: r.get(3)?, last_used_at: r.get(4)? })
+        Ok(TokenInfo { id: r.get(0)?, name: r.get(1)?, hint: r.get(2)?, created_at: r.get(3)?, last_used_at: r.get(4)?, host: r.get(5)? })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
@@ -727,6 +745,9 @@ pub(crate) struct NewToken {
     /// 添加机器时选了「上线后照 <机器> 配」：用这个令牌的机器第一次上线时照它配（hostcopy.rs）
     #[serde(default, rename = "copyFrom")]
     copy_from: Option<String>,
+    /// 添加机器：令牌绑定的机器名，只有它能登记这台新机器（#507）。「新建访问令牌」不填
+    #[serde(default)]
+    host: Option<String>,
 }
 
 pub(crate) async fn new_token(State(s): State<AppState>, Extension(caller): Extension<Caller>, Json(v): Json<Value>) -> std::result::Result<Json<Value>, ApiError> {
@@ -740,7 +761,7 @@ pub(crate) async fn new_token(State(s): State<AppState>, Extension(caller): Exte
             if let Some(f) = &from {
                 st.read(|r| r.host(f, now))?;
             }
-            let (info, raw) = create_token(st.conn(), &b.name, now)?;
+            let (info, raw) = create_token_for(st.conn(), &b.name, b.host.as_deref(), now)?;
             if let Some(f) = &from {
                 st.write(now, board_core::Origin::ui(None), |w| w.host_preset(info.id, f, &by))?;
             }

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! board-server [--host 127.0.0.1] [--port 7420] [--db <路径>] [--demo] [--local]
-//! board-server token new <名字> | token ls | token revoke <ID>
+//! board-server token new <名字> [--machine <机器名>] | token ls | token revoke <ID>
 //! board-server backup <目标文件>
 //! board-server healthcheck
 //! ```
@@ -17,7 +17,9 @@ use std::path::PathBuf;
 
 const USAGE: &str = "用法：
   board-server [--host 127.0.0.1] [--port 7420] [--db <路径>] [--demo] [--local]
-  board-server token new <名字>       新建 agent 访问令牌（原文只显示这一次）
+  board-server token new <名字> [--machine <机器名>]
+                                      新建 agent 访问令牌（原文只显示这一次）；--machine 是机器令牌：
+                                      只有它能让那台机器的 board host 第一次连上来（登记新机器）
   board-server token ls               列出访问令牌
   board-server token revoke <ID>      吊销访问令牌
   board-server backup <目标文件>      把数据库在线备份到一个新文件；附件补到它旁边的 files/
@@ -52,6 +54,8 @@ struct Opts {
     db: PathBuf,
     demo: bool,
     local: bool,
+    /// `token new --machine <机器名>`：机器令牌绑定的机器名（#507）
+    machine: Option<String>,
     rest: Vec<String>,
 }
 
@@ -62,6 +66,7 @@ fn parse(args: &[String]) -> Opts {
         db: Store::default_path(),
         demo: false,
         local: false,
+        machine: None,
         rest: vec![],
     };
     let mut i = 0;
@@ -78,6 +83,10 @@ fn parse(args: &[String]) -> Opts {
             }
             "--db" => {
                 o.db = PathBuf::from(next(i));
+                i += 1;
+            }
+            "--machine" => {
+                o.machine = Some(next(i));
                 i += 1;
             }
             "--demo" => o.demo = true,
@@ -216,8 +225,8 @@ fn token(o: &Opts) {
     match o.rest.get(1).map(String::as_str) {
         Some("new") => {
             let name = o.rest[2..].join(" ");
-            let (info, raw) = auth::create_token(conn, &name, board_core::now_ms()).unwrap_or_else(|e| fail(&e.message));
-            println!("已新建令牌 #{} {}：", info.id, info.name);
+            let (info, raw) = auth::create_token_for(conn, &name, o.machine.as_deref(), board_core::now_ms()).unwrap_or_else(|e| fail(&e.message));
+            println!("已新建令牌 #{} {}{}：", info.id, info.name, info.host.as_deref().map(|h| format!("（机器令牌：{h}）")).unwrap_or_default());
             println!("{raw}");
             println!("这是唯一一次显示原文。agent 使用：export BOARD_TOKEN={raw}");
         }

@@ -117,7 +117,7 @@ fn report_win(instance: &str) -> HostReport {
 fn register_win(s: &Server) -> String {
     use board_core::{now_ms, Origin};
     let mut store = board_core::Store::open(&s.db).unwrap();
-    let (info, token) = board_server::auth::create_token(store.conn(), "win2", now_ms()).unwrap();
+    let (info, token) = board_server::auth::create_token_for(store.conn(), "win2", Some("win"), now_ms()).unwrap();
     store.write(now_ms(), Origin::cli(), |w| w.host_beat(&report_win("i1"), Some(info.id))).unwrap();
     token
 }

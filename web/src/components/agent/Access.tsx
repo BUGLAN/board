@@ -223,7 +223,8 @@ function Tokens() {
             <div className="token-main">
               <b>{t.name}</b>
               <span>
-                <code>{t.hint}</code> · 创建于 {ago(t.createdAt, now)} · {t.lastUsedAt ? `最近使用 ${ago(t.lastUsedAt, now)}` : '还没用过'}
+                <code>{t.hint}</code>
+                {t.host ? ` · 机器 ${t.host} 的令牌` : ''} · 创建于 {ago(t.createdAt, now)} · {t.lastUsedAt ? `最近使用 ${ago(t.lastUsedAt, now)}` : '还没用过'}
               </span>
             </div>
             <button type="button" className="btn sm danger" onClick={() => revoke(t)}>
@@ -363,7 +364,7 @@ export function TokensCard() {
       </h2>
       <p className="set-p">
         agent 用 <code>board</code> 命令行连接这个服务端时，用访问令牌认证；<code>--as</code> / <code>BOARD_AS</code> 是 agent 的名字，会话开始时用{' '}
-        <code>board check</code> 占用，同一时间一个名字只属于一个在线会话。不用的令牌随时吊销。
+        <code>board check</code> 占用，同一时间一个名字只属于一个在线会话。不用的令牌随时吊销。这里新建的令牌不能登记新机器：机器用「机器 → 添加机器」生成的命令连上来。
       </p>
       <div className="code-block">
         <Code cmd={`board login --url ${location.origin} --token <访问令牌>`} note="令牌在下面新建" />

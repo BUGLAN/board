@@ -182,7 +182,16 @@ impl Rig {
         let claude = s.home.join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
         std::fs::write(claude.join("settings.json"), "{\"model\": \"opus-5.5\"}\n").unwrap();
-        Rig { s, fake, repo, _tmp: tmp }
+        let rig = Rig { s, fake, repo, _tmp: tmp };
+        // board host 用的令牌是「添加机器」给 mbp 建的机器令牌：只有它能登记新机器（#507）
+        rig.bind("mbp");
+        rig
+    }
+
+    /// 把 board host 用的令牌绑定到机器名 `name`（像「添加机器」给这台机器新建的机器令牌）
+    fn bind(&self, name: &str) {
+        let store = board_core::Store::open(&self.s.db).unwrap();
+        store.conn().execute("UPDATE auth_tokens SET host = ?1", [name]).unwrap();
     }
 
     fn mode(&self, m: &str) {
@@ -1272,6 +1281,8 @@ fn pause_all_and_stop_all_from_ui() {
     }
     let a = rig.host("mbp");
     rig.online("mbp");
+    // 两台机器共用一个令牌（升级前那样）：mbp 已经绑着它照常上报，再把它绑到 desk 让 desk 登记（#507）
+    rig.bind("desk");
     let b = rig.host("desk");
     rig.online("desk");
     rig.mode("sleep");

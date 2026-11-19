@@ -472,6 +472,8 @@ fn host_rename_renames_the_machine_record() {
         local_skills: None,
         res: None,
     };
+    // 令牌是「添加机器」给 mbp 建的机器令牌：只有它能登记新机器（#507）
+    st.conn().execute("UPDATE auth_tokens SET host = 'mbp' WHERE id = 1", []).unwrap();
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
     // 机器名写在配置文件 [host] 里（和桌面端保存的一样）
     let cfg = s.home.join(".board");
@@ -488,7 +490,10 @@ fn host_rename_renames_the_machine_record() {
     // 新名字被另一台在线机器占用：HOST_NAME_TAKEN
     rep.name = "desk".into();
     rep.instance = "j1".into();
-    st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
+    // 另一台机器（不用这个令牌：机器令牌已经跟着改名绑到了 win，#507）
+    let bound: String = st.conn().query_row("SELECT host FROM auth_tokens WHERE id = 1", [], |x| x.get(0)).unwrap();
+    assert_eq!(bound, "win");
+    st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, None)).unwrap();
     std::fs::write(cfg.join("config.toml"), format!("url = \"{}\"\ntoken = \"{}\"\n\n[host]\nname = \"win\"\n", s.url, s.token)).unwrap();
     let r = s.raw(&s.env(), &["host", "rename", "desk", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "HOST_NAME_TAKEN"), "{}{}", r.out, r.err);

@@ -2,7 +2,8 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LocalHost } from '../../lib/platform';
-import type { HostInfo } from '../../lib/types';
+import type { HostInfo, Workspace } from '../../lib/types';
+import { useData } from '../../store/data';
 import { settleConfirm, useUI } from '../../store/ui';
 import { LocalHostAdd, LocalHostPanel } from './LocalHost';
 
@@ -36,9 +37,9 @@ vi.mock('../../lib/api', async orig => {
     ...real,
     api: {
       ...real.api,
-      createToken: async (name: string) => {
-        calls.push(`createToken:${name}`);
-        return { token: 'raw-token', info: { id: 9, name, hint: 'raw', createdAt: 0, lastUsedAt: null } };
+      createToken: async (name: string, opts: { host?: string } = {}) => {
+        calls.push(`createToken:${name}:${opts.host ?? ''}`);
+        return { token: 'raw-token', info: { id: 9, name, hint: 'raw', createdAt: 0, lastUsedAt: null, host: opts.host ?? null } };
       },
     },
   };
@@ -104,14 +105,21 @@ async function start(st: LocalHost) {
 }
 
 describe('添加机器 → 这台电脑', () => {
-  it('配置文件里没有令牌：以机器名新建一个、写进配置文件，再开始接任务', async () => {
+  it('配置文件里没有令牌：以机器名新建一个绑定这个机器名的机器令牌、写进配置文件，再开始接任务', async () => {
     await start(local());
-    expect(calls).toEqual(['createToken:mbp', 'setBoardEnv:raw-token', 'enable:true::~/repo']);
+    expect(calls).toEqual(['createToken:mbp:mbp', 'setBoardEnv:raw-token', 'enable:true::~/repo']);
   });
 
-  it('已经有能用的令牌：不再新建', async () => {
+  it('已经有令牌、这台机器也登记过：不再新建', async () => {
+    useData.setState({ ws: { hosts: [{ name: 'mbp', online: false }] } as unknown as Workspace });
     await start(local({ loggedIn: true }));
     expect(calls).toEqual(['enable:true::~/repo']);
+    useData.setState({ ws: null });
+  });
+
+  it('已经有令牌、但这是一台新机器：普通访问令牌登记不了（#507），新建机器令牌写进配置文件', async () => {
+    await start(local({ loggedIn: true }));
+    expect(calls).toEqual(['createToken:mbp:mbp', 'setBoardEnv:raw-token', 'enable:true::~/repo']);
   });
 
   it('取消确认：什么都不做', async () => {

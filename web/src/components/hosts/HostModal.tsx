@@ -135,7 +135,8 @@ function AddHostBody({ close }: { close: () => void }) {
 /**
  * 只有命令行的机器：填机器名和工作空间，「生成命令」时以机器名新建一个访问令牌，给出一行命令——
  * 在新机器上执行就依次安装 board、board login、board host --install（装成服务，开机自动接任务）。
- * 令牌原文只在这里显示这一次；生成之后再改机器名、工作空间，命令跟着变，令牌不变。
+ * 令牌绑定这个机器名（机器令牌，只有它能登记这台新机器，#507），所以生成之后机器名不能再改；工作空间、系统还能改，命令跟着变。
+ * 令牌原文只在这里显示这一次。
  * 「上线后照着配」选了一台已有的机器：记在这个令牌上，新机器第一次上线时照那台当时的设置配（模型、同步开关、会话数、接单时段；
  * 工作空间、接单方式不复制）；生成之后不能再改
  */
@@ -161,7 +162,7 @@ function CliInstall() {
     if (err || busy) return;
     setBusy(true);
     try {
-      const r = await optimistic(null, () => api.createToken(name, src || undefined));
+      const r = await optimistic(null, () => api.createToken(name, { copyFrom: src || undefined, host: name }));
       setToken({ raw: r.token, name: r.info.name, from: src });
     } catch (e) {
       toastError(e);
@@ -193,6 +194,7 @@ function CliInstall() {
             placeholder="devbox"
             spellCheck={false}
             autoComplete="off"
+            disabled={!!token}
             onChange={e => setName(e.target.value.toLowerCase().trim())}
           />
         </label>
@@ -235,7 +237,7 @@ function CliInstall() {
             <Icon name="key" />
             生成命令
           </button>
-          <span className="hp-note">{err ?? `会新建一个名为「${name}」的访问令牌，命令里带着它`}</span>
+          <span className="hp-note">{err ?? `会新建一个名为「${name}」、只能登记这台机器的访问令牌，命令里带着它`}</span>
         </div>
       ) : (
         <>
