@@ -226,13 +226,17 @@ function Section({ id, title, n, closed, onToggle, children, action }: { id: str
     项目的隐藏规则命中的标签（默认是版本标签 v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts，default/main#324）。
     新建要等服务端分配 ID：回车当帧在末尾画一个「保存中」的胶囊（输入的名称、服务端会给的默认色，沿用 .lb.pending 的呼吸 + 扫光），
     确认后换成真标签；失败时拿掉，名称回到输入框（default/main#503）。它不是标签对象，筛选、拖动、选择器都碰不到它 */
-function LabelBlock({ project, all, rules, used }: { project: string; all: Label[]; rules: string[]; used: Record<number, number> }) {
+export function LabelBlock({ project, all, rules, used }: { project: string; all: Label[]; rules: string[]; used: Record<number, number> }) {
   const sel = useUI(s => s.labelSel);
   const labels = useMemo(() => sidebarLabels(all, sel, rules), [all, sel, rules]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<{ name: string; color: string } | null>(null);
   const [editing, setEditing] = useState(false);
+  // 请求还没回来时又回车：状态更新要等下一帧，这里同步挡住同一帧里的第二次提交
+  const creating = useRef(false);
+  // 新建状态变了、DOM 更新把焦点挤掉时，下一次布局后还给输入框
+  const keepFocus = useRef(false);
   const field = useRef<HTMLDivElement>(null);
   // 真标签随刷新到了（和 optimistic 返回可能不在同一次渲染）：当帧就不再画「保存中」的胶囊，不会两个并排；
   // 真胶囊从半透明淡到正常，接着「保存中」的样子，不一下跳亮
@@ -246,6 +250,13 @@ function LabelBlock({ project, all, rules, used }: { project: string; all: Label
         ?.animate([{ opacity: 0.6 }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
   }, [landed]);
   const input = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    if (!keepFocus.current || !editing) return;
+    const el = input.current;
+    if (!el || document.activeElement === el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [busy, pending, editing]);
   const edit = () => {
     setEditing(true);
     const el = input.current;
@@ -255,21 +266,25 @@ function LabelBlock({ project, all, rules, used }: { project: string; all: Label
   };
   const create = async () => {
     const n = name.trim();
-    if (!n || busy) return;
-    // 新标签要等服务端分配 ID：当帧画出「保存中」的胶囊、清空输入框；保存完之前输入框只读，不会重复新建。
+    if (!n || busy || creating.current) return;
+    // 新标签要等服务端分配 ID：当帧画出「保存中」的胶囊、清空输入框，但输入框保持可编辑，
+    // 可以接着输入下一个名称；保存完之前 busy 只挡住回车重复提交。
     // 颜色和服务端不指定颜色时一样：色板里按项目已有标签数轮下一个
+    creating.current = true;
+    keepFocus.current = document.activeElement === input.current;
     setBusy(true);
     setPending({ name: n, color: LABEL_COLORS[all.length % LABEL_COLORS.length] });
     setName('');
     try {
       await optimistic(null, () => api.createLabel(project, n));
     } catch (e) {
-      // 人输入的名称不能丢：拿掉胶囊，名称回到输入框
+      // 人输入的名称不能丢：拿掉胶囊，名称回到输入框；请求期间已经输入的下一个名称不覆盖
       setPending(null);
-      setName(n);
+      setName(cur => cur || n);
       toastError(e);
       replay(input.current, 'invalid');
     } finally {
+      creating.current = false;
       setBusy(false);
     }
   };
@@ -348,8 +363,6 @@ function LabelBlock({ project, all, rules, used }: { project: string; all: Label
           spellCheck={false}
           autoComplete="off"
           aria-label="新标签"
-          readOnly={busy}
-          aria-busy={busy || undefined}
           // 键盘 Tab 进来也算进入编辑态；鼠标单击不到它（不在编辑态时 pointer-events: none）
           onFocus={() => setEditing(true)}
           onBlur={() => setEditing(false)}
