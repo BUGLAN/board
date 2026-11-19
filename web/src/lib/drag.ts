@@ -91,6 +91,8 @@ interface St {
   /** 被拖卡片的高度（占位的高度） */
   h: number;
   scrolling: boolean;
+  /** 开始拖动时拍下的状态块位置：拖动中只按它判定落在哪一块（见 snapZones） */
+  zones: Zone[];
   target: { col: ColumnKey; index: number } | null;
   valid: boolean;
   veto: Veto | null;
@@ -104,6 +106,29 @@ const cardEl = (id: number) => document.querySelector<HTMLElement>(`[data-flip="
 const listEl = (col: string) => document.querySelector<HTMLElement>(`[data-list="${col}"]`);
 const zones = () =>
   [...document.querySelectorAll<HTMLElement>('[data-drop]')].filter(z => z.offsetParent !== null && z.getBoundingClientRect().width > 40);
+
+/** 落点判定用的状态块位置 */
+export interface Zone {
+  key: string;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  /** 块所在的滚动区域（白板 .flow-scroll；侧栏「未整理」没有）和拍快照时的 scrollTop：自动滚动后按滚过的距离平移 */
+  scroller: HTMLElement | null;
+  scroll0: number;
+}
+
+/** 开始拖动时拍下各状态块的位置，拖动中落点只按它判定（default/main#502）。
+    拖动中块的高度照常随占位变（目标块撑开、下面的块让开，见 BoardView 的 Magnet）；如果按当时的画面判定，
+    占位进块 → 块变高 → 下面的块挪开 → 指针下换了一块 → 占位又挪走，来回抖（#419）。快照只随滚动平移，结果只由指针决定 */
+export function snapZones(els: HTMLElement[] = zones()): Zone[] {
+  return els.map(el => {
+    const r = el.getBoundingClientRect();
+    const scroller = el.closest<HTMLElement>('.flow-scroll');
+    return { key: el.dataset.drop!, left: r.left, top: r.top, right: r.right, bottom: r.bottom, scroller, scroll0: scroller?.scrollTop ?? 0 };
+  });
+}
 
 export function installCardInteractions() {
   const cardOf = (e: Event) => (e.target as HTMLElement).closest?.<HTMLElement>('[data-drop] .card');
@@ -183,7 +208,7 @@ function onDown(e: PointerEvent) {
     fromCol: list.dataset.list as ColumnKey,
     fromIndex: [...list.children].filter(n => !n.hasAttribute('data-deco')).indexOf(card),
     started: false, rot: 0, vx: 0, lastX: e.clientX, lastT: performance.now(),
-    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, target: null, valid: true, veto: null,
+    offX: 0, offY: 0, h: card.offsetHeight, scrolling: false, zones: [], target: null, valid: true, veto: null,
   };
   if (e.pointerType !== 'mouse') {
     st.timer = window.setTimeout(() => {
@@ -222,6 +247,7 @@ function start() {
   const card = useData.getState().board?.cards[s.id];
   if (!card) return cleanup();
   s.started = true;
+  s.zones = snapZones();
   const r = s.card.getBoundingClientRect();
   s.offX = s.x0 - r.left;
   s.offY = s.y0 - r.top;
@@ -260,8 +286,7 @@ function frame() {
 /** 找到指针下的列与插入位置，并按规则预判 */
 function locate() {
   const s = st!;
-  const col = zoneAt(zones(), s.x, s.y, s.target?.col);
-  const key = (col?.dataset.drop ?? s.target?.col ?? s.fromCol) as ColumnKey;
+  const key = (zoneAt(s.zones, s.x, s.y, s.target?.col) ?? s.target?.col ?? s.fromCol) as ColumnKey;
   const list = listEl(key);
   // 「更早的 M 张」那一格（data-earlier）、会话组的组头组尾（data-deco）不是卡片，不算落点
   const items = list
@@ -313,29 +338,32 @@ function locate() {
     指针在分界附近抖一下，就在「锁定」和「可放入」之间来回切，锁的提示一闪一闪。现在：
     - 指针在块里面：就是这一块；
     - 在空隙里：取离指针最近的一块；
-    - 迟滞：当前这块（cur）还在范围里、别的块只近不到 HYSTERESIS 像素时，保持当前这块，指针在分界上抖动不会来回切 */
+    - 迟滞：当前这块（cur）还在范围里、别的块只近不到 HYSTERESIS 像素时，保持当前这块，指针在分界上抖动不会来回切
+    块的位置用开始拖动时的快照（snapZones），不量当时的画面 */
 const HYSTERESIS = 6;
-function zoneAt(cols: HTMLElement[], x: number, y: number, cur: ColumnKey | undefined): HTMLElement | undefined {
-  let best: HTMLElement | undefined;
+export function zoneAt(cols: Zone[], x: number, y: number, cur: ColumnKey | undefined): string | undefined {
+  let best: string | undefined;
   let bestD = Infinity;
-  let curEl: HTMLElement | undefined;
+  let curKey: string | undefined;
   let curD = Infinity;
   for (const c of cols) {
-    const r = c.getBoundingClientRect();
-    const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
-    const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+    const off = c.scroller ? c.scroller.scrollTop - c.scroll0 : 0;
+    const top = c.top - off;
+    const bottom = c.bottom - off;
+    const dx = x < c.left ? c.left - x : x > c.right ? x - c.right : 0;
+    const dy = y < top ? top - y : y > bottom ? y - bottom : 0;
     if (dx > 4 || dy > 40) continue;
     const d = Math.hypot(dx, dy);
     if (d < bestD) {
-      best = c;
+      best = c.key;
       bestD = d;
     }
-    if (c.dataset.drop === cur) {
-      curEl = c;
+    if (c.key === cur) {
+      curKey = c.key;
       curD = d;
     }
   }
-  return curEl && curD - bestD < HYSTERESIS ? curEl : best;
+  return curKey && curD - bestD < HYSTERESIS ? curKey : best;
 }
 
 /** 插入位置。卡片是瀑布流（lib/masonry.ts），占位一挪，别的卡片换竖列、换高度。
@@ -474,7 +502,7 @@ function finish(cancelled: boolean) {
   // settle：不发请求、不落补丁——占位留在落点，幽灵落位后清掉预览（下面 onfinish 里 setDrag(null)），
   // 卡片从落点补间回排序位置，同块其他卡片同步让位后再让回去，顺序不变
 
-  // 松手当帧解冻状态块的尺寸（拖动中冻结着，见 BoardView 的 Magnet）：块按落位后的尺寸重排，和幽灵飞回同时补间。
+  // 松手当帧解冻白板宽度的测量（拖动中冻结着，见 BoardView 的 Magnet；块高度拖动中照常跟着占位变）：块按落位后的尺寸重排，和幽灵飞回同时补间。
   // 以前等幽灵落下才解冻，落位那一帧要补测、重画一遍，块和白板高度再挪一次，拖进状态块时明显一顿（default/main#419）
   const now = useUI.getState().drag;
   if (now && !now.dropping) flushSync(() => setDrag({ ...now, dropping: true }));

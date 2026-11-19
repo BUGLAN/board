@@ -706,8 +706,10 @@ export function Magnet({
 }: {
   path: string;
   statuses: Status[];
-  /** 卡片拖动期间（指针还按着）冻结块的尺寸测量：占位跨块移动会改变列高，重排又会让落点来回变（default/main#419）。
-      松手当帧就解冻（DragUI.dropping），块和飞回的幽灵同时补间到位，不等幽灵落下再整块挪一次 */
+  /** 卡片拖动期间（指针还按着）冻结白板宽度的测量（Windows 上滚动条随块变高出现 / 消失会改宽，整块重排）。
+      块的高度照常跟着占位变：目标块随占位撑开、下面的块跟着让开（default/main#502）。
+      落点判定读开始拖动时拍下的块位置（drag.ts 的 snapZones），块挪动不会让落点来回变（#419 的反馈环）。
+      松手当帧就解冻（DragUI.dropping），宽度补测一次 */
   frozen?: boolean;
   render: (s: Status, h: { onMove: (e: React.PointerEvent) => void; resizer: ReactNode }) => ReactNode;
 }) {
@@ -742,7 +744,6 @@ export function Magnet({
   }, []);
   useLayoutEffect(() => {
     const ro = new ResizeObserver(es => {
-      if (frozenRef.current) return;
       setHeights(h => {
         let n = h;
         for (const e of es) {
@@ -759,8 +760,7 @@ export function Magnet({
     for (const k of keys) if (els.current[k]) ro.observe(els.current[k]!);
     return () => ro.disconnect();
   }, [keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  // 拖动中尺寸变化被跳过，ResizeObserver 之后不会再把它们送进来：解冻时（松手当帧）统一补测一次。
-  // 宽高都一起补，Windows 上滚动条出现 / 消失会改宽，同样不能让它在拖动中参与排布。
+  // 拖动中宽度变化被跳过，ResizeObserver 之后不会再把它送进来：解冻时（松手当帧）统一补测一次；高度顺带对一遍。
   useLayoutEffect(() => {
     if (frozen) return;
     const el = ref.current;

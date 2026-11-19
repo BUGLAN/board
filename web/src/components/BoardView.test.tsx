@@ -64,28 +64,47 @@ afterEach(() => {
   globalThis.ResizeObserver = original;
 });
 
-describe('Magnet 拖动时冻结尺寸（default/main#419）', () => {
-  it('块高度在拖动中反复变化也不重排，松手后按最终尺寸补测一次', () => {
-    const column = tile('done');
+describe('Magnet 拖动卡片时的尺寸（default/main#419、#502）', () => {
+  it('块高度在拖动中跟着占位变：目标块撑开，下面的块让开', () => {
+    const top: Status = { ...tile('review'), layout: { x: 0, w: 3, y: 0 } };
+    const below: Status = { ...tile('check'), layout: { x: 0, w: 3, y: 1 } };
 
+    act(() => root.render(<Magnet path="test/main" statuses={[top, below]} frozen={false} render={() => <i />} />));
+    const magnet = host.querySelector<HTMLElement>('.magnet')!;
+    const a = host.querySelector<HTMLElement>('[data-tile="review"]')!;
+    const b = host.querySelector<HTMLElement>('[data-tile="check"]')!;
+    const ha = vi.spyOn(a, 'offsetHeight', 'get').mockReturnValue(100);
+    vi.spyOn(b, 'offsetHeight', 'get').mockReturnValue(50);
+    const watcher = FakeResizeObserver.all.find(ro => ro.observed.has(a))!;
+    act(() => watcher.fire([a, b]));
+    expect(magnet.style.height).toBe('166px');
+    const y0 = b.style.transform;
+
+    // 拖动中占位进了上面那块：它撑开，下面那块跟着下移
+    act(() => root.render(<Magnet path="test/main" statuses={[top, below]} frozen render={() => <i />} />));
+    ha.mockReturnValue(300);
+    act(() => watcher.fire([a]));
+    expect(magnet.style.height).toBe('366px');
+    expect(b.style.transform).not.toBe(y0);
+  });
+
+  it('白板宽度在拖动中不变（滚动条出现 / 消失不重排），松手后补测', () => {
+    const column = tile('done');
     act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
     const magnet = host.querySelector<HTMLElement>('.magnet')!;
+    const width = vi.spyOn(magnet, 'clientWidth', 'get').mockReturnValue(1000);
+    const outer = FakeResizeObserver.all.find(ro => ro.observed.has(magnet))!;
+    act(() => outer.fire([magnet]));
     const done = host.querySelector<HTMLElement>('[data-tile="done"]')!;
-    const height = vi.spyOn(done, 'offsetHeight', 'get').mockReturnValue(100);
-    const watcher = FakeResizeObserver.all.find(ro => ro.observed.has(done))!;
-
-    act(() => watcher.fire([done]));
-    expect(magnet.style.height).toBe('104px');
+    const w0 = done.style.width;
 
     act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen render={() => <i />} />));
-    height.mockReturnValue(500);
-    act(() => watcher.fire([done]));
-    height.mockReturnValue(300);
-    act(() => watcher.fire([done]));
-    expect(magnet.style.height).toBe('104px');
+    width.mockReturnValue(600);
+    act(() => outer.fire([magnet]));
+    expect(done.style.width).toBe(w0);
 
     act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
-    expect(magnet.style.height).toBe('304px');
+    expect(done.style.width).not.toBe(w0);
   });
 
   it('自己重排时交给状态块的拖动、调宽入口不变：状态块（memo）不用跟着重画卡片', () => {
