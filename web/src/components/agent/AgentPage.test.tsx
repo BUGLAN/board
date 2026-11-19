@@ -173,6 +173,39 @@ describe('设置 tab', () => {
   });
 });
 
+describe('安装 skill 命令（#518）', () => {
+  it('Windows：用 PowerShell 创建目录联接，目标已存在时不覆盖，路径用 %USERPROFILE%', async () => {
+    const writes: string[] = [];
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: async (t: string) => void writes.push(t) } });
+    const { SkillInstallation } = await import('./Access');
+    await act(async () => root.render(<SkillInstallation windows />));
+    const cmd = host.querySelector('.code-line code')?.textContent ?? '';
+    const hint = host.querySelector('.set-row .set-label span')?.textContent ?? '';
+    expect(cmd).toContain('New-Item -ItemType Junction');
+    expect(cmd).toContain('Test-Path -LiteralPath $dst');
+    expect(cmd).toContain('throw "目标已存在，未覆盖：$dst"');
+    expect(cmd).not.toContain('ln -s');
+    expect(hint).toContain('%USERPROFILE%\\.agents\\skills\\board-skills');
+    expect(hint).toContain('%USERPROFILE%\\.claude\\skills\\board-skills');
+    expect(hint).not.toContain('~/.agents');
+    expect(host.querySelector('.code-line')?.classList.contains('ps')).toBe(true);
+    await act(async () => host.querySelector<HTMLButtonElement>('.code-line button.copy')!.click());
+    expect(writes).toEqual([cmd]);
+  });
+
+  it('macOS / Linux：保留原来的软链接命令和 ~ 路径', async () => {
+    const { SkillInstallation } = await import('./Access');
+    await act(async () => root.render(<SkillInstallation windows={false} />));
+    const cmd = host.querySelector('.code-line code')?.textContent ?? '';
+    const hint = host.querySelector('.set-row .set-label span')?.textContent ?? '';
+    expect(cmd).toBe('ln -s "$PWD/.agents/skills/board-skills" ~/.agents/skills/board-skills');
+    expect(hint).toContain('~/.agents/skills/board-skills/');
+    expect(hint).toContain('~/.claude/skills/board-skills/');
+    expect(hint).not.toContain('%USERPROFILE%');
+    expect(host.querySelector('.code-line')?.classList.contains('ps')).toBe(false);
+  });
+});
+
 describe('复制按钮（#519）', () => {
   it('接入 agent 页每个复制按钮的名称都不一样，写明复制的是哪条；复制成功有 toast', async () => {
     const { fetch } = localServer();
