@@ -8,8 +8,6 @@ use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::*;
 use crate::store::{Store, R, W};
 
-/// 回收站保留多久：删除后 30 天内可以恢复（PRD §8 规则 10、§10.3）
-pub const TRASH_KEEP_MS: i64 = 30 * 24 * 3600 * 1000;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
@@ -107,7 +105,7 @@ pub enum Cmd {
     Release {
         id: i64,
     },
-    /// 删除（仅人）：移进回收站，30 天内可以恢复（规则 10）
+    /// 删除（仅人）：移进回收站，一直可以恢复，不会自动清理（规则 10）
     Delete {
         id: i64,
     },
@@ -179,38 +177,6 @@ impl R<'_> {
     /// 回收站里的一张卡片的详情（不在回收站里时为 None）
     pub fn trash_of(&self, board: &BoardRef, id: i64) -> Result<Option<CardDetail>> {
         Ok(self.trash(board)?.into_iter().find(|t| t.card.id == id).map(TrashCard::into_detail))
-    }
-}
-
-/// 回收站里删除超过 30 天的卡片永久删除（附件一起删）。附件记录随卡片级联删除，不再被引用的文件由 [`Store::gc_files`] 清理
-pub fn purge_trash(store: &mut Store, now: i64) -> Result<usize> {
-    if store.conn().query_row("SELECT COUNT(*) FROM cards WHERE deleted_at IS NOT NULL AND deleted_at < ?1", [now - TRASH_KEEP_MS], |r| {
-        r.get::<_, i64>(0)
-    })? == 0
-    {
-        return Ok(0);
-    }
-    store.write(now, Origin::system(), |w| w.purge_trash(now - TRASH_KEEP_MS))
-}
-
-impl W<'_> {
-    /// 回收站最多留 TRASH_MAX 张：多出来的按删除时间先清掉最早的（附件由 gc_files 清理）
-    fn trim_trash(&mut self, b: i64, keep: i64) -> Result<()> {
-        let extra: Vec<i64> = self.collect(
-            "SELECT id FROM cards WHERE board = ?1 AND deleted_at IS NOT NULL AND id != ?2
-             ORDER BY deleted_at DESC, id DESC LIMIT -1 OFFSET ?3",
-            params![b, keep, TRASH_MAX - 1],
-            |r| r.get(0),
-        )?;
-        for id in extra {
-            self.tx.execute("DELETE FROM cards WHERE board = ?1 AND id = ?2", params![b, id])?;
-        }
-        Ok(())
-    }
-
-    /// 删除时间早于 older_than 的回收站卡片永久删除（附件记录一起删，不再被引用的文件由 gc_files 清理）。返回删掉的张数
-    pub fn purge_trash(&mut self, older_than: i64) -> Result<usize> {
-        Ok(self.tx.execute("DELETE FROM cards WHERE deleted_at IS NOT NULL AND deleted_at < ?1", [older_than])?)
     }
 }
 
@@ -701,7 +667,7 @@ impl<'a> W<'a> {
 
             /* ---------------- 删除（仅人，规则 10） ----------------
                移进回收站：卡片从白板、claim、搜索、大盘里消失（这些查询都排除 deleted_at 非空的卡片），
-               动态、评论、附件都还在，30 天内可以恢复（规则 10、§10.3 回收站） */
+               动态、评论、附件都还在，一直可以恢复，只有人永久删除（Purge）才真的删掉（规则 10、§10.5 回收站） */
             Cmd::Delete { id } => {
                 if !actor.is_human() {
                     return Err(BoardError::usage("删除只能在界面上做"));
@@ -743,7 +709,6 @@ impl<'a> W<'a> {
                     ],
                 )?;
                 self.event(b, id, &detail.card.title, actor, "delete", &format!("{} 删除", actor.display()))?;
-                self.trim_trash(b, id)?;
                 return Ok(detail);
             }
 

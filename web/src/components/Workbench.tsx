@@ -13,7 +13,7 @@ import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, timing } from '../lib/schema';
 import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
 import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
-import { confirm, openCreator, openCtx, openTrash, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
+import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { ActorAvatar, AgentAvatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, useMeName, useNow } from './bits';
 import { useMobile } from './BoardView';
 import { HostsSide } from './Hosts';
@@ -711,24 +711,7 @@ function BoardSide() {
           )}
         </Section>
       </div>
-      <TrashEntry path={cur?.board.path} />
     </section>
-  );
-}
-
-/** 侧栏底部「回收站 · N」（PRD §10.3）：这块白板删掉的卡片；点开是回收站弹窗 */
-function TrashEntry({ path }: { path?: string }) {
-  const count = useData(s => (s.board?.path === s.path ? s.board.trash ?? 0 : null));
-  if (!path) return null;
-  const n = count ?? 0;
-  return (
-    <Tip text={n ? '删除的卡片，30 天内可以恢复' : '还没有删掉的卡片'}>
-      <button className={cx('trash-entry', n > 0 && 'has')} type="button" disabled={!count && n === 0} data-tip-pos="top" onClick={() => openTrash(path)}>
-        <Icon name="trash" />
-        <span className="trash-entry-name">回收站</span>
-        <span className="trash-entry-n mono">{n}</span>
-      </button>
-    </Tip>
   );
 }
 

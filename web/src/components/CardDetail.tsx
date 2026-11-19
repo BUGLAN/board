@@ -818,7 +818,7 @@ async function openSplitRef(id: number) {
       return;
     }
     const trash = await api.trash(path).catch(() => []);
-    if (trash.some(t => t.id === id)) toast({ type: 'info', title: `#${id} 在回收站里`, text: '在侧栏「回收站」里可以恢复它' });
+    if (trash.some(t => t.id === id)) toast({ type: 'info', title: `#${id} 在回收站里`, text: '在「未整理 → 回收站」里可以恢复它' });
     else toast({ type: 'info', title: `#${id} 不存在`, text: '已经永久删除了' });
   }
 }

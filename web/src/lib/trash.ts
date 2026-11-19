@@ -1,5 +1,5 @@
 /* ==========================================================================
-   回收站（PRD §8 规则 10、§10.3）：删除的卡片移进回收站，30 天内可以恢复
+   回收站（PRD §8 规则 10、§10.5）：删除的卡片移进回收站，一直可以恢复，只有人点「永久删除」才真的删掉
    - 删除、恢复、永久删除都走 store/data 的 exec：补丁当帧生效，失败时撤回并提示
    - 删除后弹出的提示里可以「撤销」（= 从回收站恢复）
    - 回收站里的内容按需取（GET /api/trash），取回来按白板路径和 rev 缓存一份：
@@ -63,7 +63,7 @@ export async function deleteCards(ids: number[], { silent = false, titles = {} }
     toast({
       type: 'success',
       title: done.length === 1 ? `已删除 #${done[0].id}` : `已删除 ${done.length} 张卡片`,
-      text: done.length === 1 ? `「${done[0].title}」在回收站里，30 天内可以恢复` : `${done.map(d => `#${d.id}`).join('、')} 在回收站里，30 天内可以恢复`,
+      text: done.length === 1 ? `「${done[0].title}」在「未整理 → 回收站」里，可以恢复` : `${done.map(d => `#${d.id}`).join('、')} 在「未整理 → 回收站」里，可以恢复`,
       action: { label: '撤销', fn: () => void undoDelete(path, done.map(d => d.id)) },
       duration: 6000,
     });

@@ -2351,8 +2351,10 @@ fn run(s: &mut Store, f: impl FnOnce(&mut W) -> Result<()>) {
     s.write(T0 + 500, Origin::ui(None), |w| f(w)).unwrap();
 }
 
+/// 回收站不自动清理（default/main#486）：删掉的卡片、附件一年后还在，附件清理也不动它们；
+/// 只有人「永久删除」后卡片、动态、附件记录才删掉，文件由附件清理去掉。张数也不设上限
 #[test]
-fn trash_purges_after_30_days_with_attachments() {
+fn trash_is_kept_until_purged_by_human() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     s.ensure_default(T0).unwrap();
@@ -2361,38 +2363,44 @@ fn trash_purges_after_30_days_with_attachments() {
     exec(&mut s, B, &human(), T0, new("要清的")).unwrap();
     let a = s.attach(T0, &b, Some(1), &human(), "log.txt", b"old").unwrap();
     exec(&mut s, B, &human(), T0, Cmd::Delete { id: 1 }).unwrap();
-    assert_eq!(s.attachment(a.id).unwrap().unwrap().0.card_id, Some(1), "在回收站里附件还在");
-
-    // 不到 30 天：不删
-    assert_eq!(purge_trash(&mut s, T0 + 29 * DAY).unwrap(), 0);
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    let age = || {
+        for e in std::fs::read_dir(&files).unwrap() {
+            std::fs::File::options().write(true).open(e.unwrap().path()).unwrap().set_modified(old).unwrap();
+        }
+    };
+    // 一年后：卡片、附件都还在，附件清理不删被回收站卡片引用的文件
+    age();
+    let (_, removed) = s.gc_files(T0 + 365 * DAY).unwrap();
+    assert_eq!(removed, 0, "回收站卡片的附件不清理");
     assert_eq!(s.read(|r| r.trash(&b)).unwrap().len(), 1);
-    // 超过 30 天：卡片、动态、附件记录一起删，文件由附件清理去掉
-    assert_eq!(purge_trash(&mut s, T0 + 31 * DAY).unwrap(), 1);
+    assert_eq!(s.attachment(a.id).unwrap().unwrap().0.card_id, Some(1), "在回收站里附件还在");
+    // agent 不能永久删除；人永久删除后卡片、附件记录一起删，文件由附件清理去掉
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0 + 365 * DAY, Cmd::Purge { id: 1 })), ErrorCode::Usage);
+    exec(&mut s, B, &human(), T0 + 365 * DAY, Cmd::Purge { id: 1 }).unwrap();
     assert!(s.read(|r| r.trash(&b)).unwrap().is_empty());
     assert!(s.attachment(a.id).unwrap().is_none());
-    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-    for e in std::fs::read_dir(&files).unwrap() {
-        std::fs::File::options().write(true).open(e.unwrap().path()).unwrap().set_modified(old).unwrap();
-    }
-    let (_, removed) = s.gc_files(T0 + 31 * DAY).unwrap();
+    age();
+    let (_, removed) = s.gc_files(T0 + 365 * DAY).unwrap();
     assert_eq!(removed, 1, "附件文件也删掉了");
     // 编号不复用
-    assert_eq!(exec(&mut s, B, &human(), T0 + 32 * DAY, new("新的")).unwrap().card.id, 2);
+    assert_eq!(exec(&mut s, B, &human(), T0 + 366 * DAY, new("新的")).unwrap().card.id, 2);
 }
 
 #[test]
-fn trash_keeps_at_most_the_limit() {
+fn trash_has_no_size_limit() {
     let mut s = store();
-    for i in 0..(TRASH_MAX + 2) {
+    let n = 1002;
+    for i in 0..n {
         exec(&mut s, B, &human(), T0 + i * SEC, new("x")).unwrap();
     }
-    for i in 1..=(TRASH_MAX + 2) {
+    for i in 1..=n {
         exec(&mut s, B, &human(), T0 + 10 * HOUR + i * SEC, Cmd::Delete { id: i }).unwrap();
     }
     let b = s.read(|r| r.resolve(B)).unwrap();
     let t = s.read(|r| r.trash(&b)).unwrap();
-    assert_eq!(t.len() as i64, TRASH_MAX);
-    assert_eq!(t[0].card.id, 3, "最早的几张先清掉");
+    assert_eq!(t.len() as i64, n, "删得再多也都留着");
+    assert_eq!(t[0].card.id, 1);
 }
 
 /// 复盘台的「打回」「回复并放回」（#194）：评论和移动在一个命令、一个写事务里，要么都发生，要么都不发生

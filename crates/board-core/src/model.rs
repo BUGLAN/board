@@ -666,8 +666,6 @@ pub struct CardDetail {
     pub split_into: Vec<i64>,
 }
 
-/// 回收站里的张数上限：超出时按删除时间先清掉最早的（PRD §8 规则 10）
-pub const TRASH_MAX: i64 = 1000;
 
 /// 回收站里的一张卡片（PRD §8 规则 10）：字段与卡片相同，另外记下删除的时间、谁删的、删除前在哪个状态、排在第几位
 #[derive(Debug, Clone, Serialize, Deserialize)]

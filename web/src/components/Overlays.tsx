@@ -10,7 +10,6 @@ import { MigrationGuard } from './overlays/MigrationGuard';
 import { Palette } from './overlays/Palette';
 import { TextViewer } from './overlays/TextViewer';
 import { Toasts } from './overlays/Toasts';
-import { TrashDialog } from './overlays/Trash';
 
 export function Overlays() {
   return (
@@ -20,7 +19,6 @@ export function Overlays() {
       <FormModal />
       <LabelManager />
       <ConfirmDialog />
-      <TrashDialog />
       <CtxMenu />
       <LabelPicker />
       <Lightbox />

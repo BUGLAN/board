@@ -439,8 +439,8 @@ pub fn serve_in_thread(state: AppState, cfg: Config, listener: std::net::TcpList
 }
 
 fn spawn_background(state: AppState) {
-    // 规则 7：每秒释放一次到期的领取；每 10 分钟清理一次附件（没归到卡片的、不再被引用的文件），
-    // 并把回收站里删了超过 30 天的卡片永久删除（附件一起删，文件由紧接着的附件清理去掉）
+    // 规则 7：每秒释放一次到期的领取；每 10 分钟清理一次附件（没归到卡片的、不再被引用的文件）。
+    // 回收站里的卡片不自动删，附件也还被它们引用着
     let s = state.clone();
     tokio::spawn(async move {
         let mut tick: u64 = 0;
@@ -467,14 +467,7 @@ fn spawn_background(state: AppState) {
             }
             tick += 1;
             if tick % 600 == 0 {
-                match s.db(|st| board_core::purge_trash(st, now_ms())).await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("回收站清理：永久删除了 {n} 张卡片");
-                        s.0.poke.notify_one();
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("回收站清理失败：{e}"),
-                }
+                // 回收站不自动清理（default/main#486）：只有人「永久删除」才真的删掉卡片
                 // 结束超过 30 天的派发只留结果事件和最后 50 条
                 match s.db(|st| st.write(now_ms(), Origin::system(), |w| w.prune_run_events())).await {
                     Ok(n) if n > 0 => tracing::info!("清理派发事件：删了 {n} 条"),

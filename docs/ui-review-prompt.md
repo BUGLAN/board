@@ -12,8 +12,8 @@
 | 区域 / Tab | 主要组件 | 审查重点 |
 |---|---|---|
 | 顶栏、项目/白板切换器、命令面板 | `Topbar.tsx`、`Workbench.tsx`、`overlays/Palette.tsx` | 导航是否清楚、切换是否顺手、搜索/命令面板是否可发现、在线 agent 是否可理解 |
-| 白板 Tab | `BoardView.tsx`、`FlowBar.tsx`、`Card.tsx`、`BoardSettings.tsx`、`overlays/Trash.tsx` | 状态块、工作流图、拖拽、卡片形态、筛选、回收站、大板与手机布局 |
-| 未整理 Tab | `Inbox.tsx` | 条目分组、未读/已读、展开编辑、合并、批量操作、拆解状态、长内容 |
+| 白板 Tab | `BoardView.tsx`、`FlowBar.tsx`、`Card.tsx`、`BoardSettings.tsx` | 状态块、工作流图、拖拽、卡片形态、筛选、大板与手机布局 |
+| 未整理 Tab | `Inbox.tsx`、`Trash.tsx` | 条目分组、未读/已读、展开编辑、合并、批量操作、拆解状态、长内容、稍后再做、回收站 |
 | 项目 Tab | `Canvas.tsx` | 无限画布、节点拖动/缩放、项目树、空白画布引导 |
 | 里程碑 Tab | `Milestones.tsx` | 版本切换、进度图、卡片清单、未发版/没有版本的空状态 |
 | 大盘 Tab | `StatsTab.tsx`、`stats/Stats.tsx`、`stats/charts.tsx` | 指标可读性、图表图例/颜色、时间范围、表格与移动端 |

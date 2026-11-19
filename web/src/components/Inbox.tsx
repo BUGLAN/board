@@ -29,6 +29,7 @@ import { matches } from './Card';
 import { CardLabels, DescEditor, TitleEditor } from './CardDetail';
 import { Icon } from './Icon';
 import { Skeleton } from './Skeleton';
+import { TrashPage } from './Trash';
 import { cancel } from './hosts/Dispatch';
 import { ancestors, leaveOne, placeSlots, playLeave, triageToastDelay, type LeaveRow } from './triageMotion';
 
@@ -53,15 +54,16 @@ interface InboxUI {
   view: View;
   /** 逐条视图里显示的那一条 */
   focus: number | null;
-  /** 看「稍后再做」里收起的条目（default/main#303） */
-  later: boolean;
+  /** 标题上选的哪一页：未整理、稍后再做（default/main#303）、回收站（default/main#486） */
+  page: Page;
 }
+type Page = 'inbox' | 'later' | 'trash';
 const GROUPS: Group[] = ['time', 'source', 'label'];
 const savedGroup = pref.get<Group>('inboxGroup', 'time');
 const savedView = pref.get<View>('inboxView', 'list');
 export const useInbox = create<InboxUI>(() => ({
   src: null, group: GROUPS.includes(savedGroup) ? savedGroup : 'time', checked: [], open: null, merge: null,
-  view: savedView === 'one' ? 'one' : 'list', focus: null, later: false,
+  view: savedView === 'one' ? 'one' : 'list', focus: null, page: 'inbox',
 }));
 const setInbox = (p: Partial<InboxUI>) => useInbox.setState(p);
 const setGroup = (group: Group) => {
@@ -343,7 +345,10 @@ export function InboxPage() {
   const checked = useInbox(s => s.checked);
   const open = useInbox(s => s.open);
   const merge = useInbox(s => s.merge);
-  const later = useInbox(s => s.later);
+  const page = useInbox(s => s.page);
+  const later = page === 'later';
+  // 只有「未整理」这一页放列表 / 逐条、分组、批量条
+  const plain = page === 'inbox';
   const laterCards = useMemo(() => (board ? laterEntries(board) : null), [board]);
   const filter = useUI(s => s.filter);
   const src = useInbox(s => s.src);
@@ -361,7 +366,7 @@ export function InboxPage() {
   const newCount = useMemo(() => (all ?? []).filter(c => entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length, [all, path, sent]);
 
   // 换白板：勾选、展开、来源筛选清空
-  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null, focus: null, later: false }), [path]);
+  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null, focus: null, page: 'inbox' }), [path]);
   // 已经不在「未整理」里的条目从勾选里去掉（整理走了、别的窗口删了）
   useEffect(() => {
     if (!all) return;
@@ -396,7 +401,7 @@ export function InboxPage() {
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null || useInbox.getState().merge) return;
       const st = useInbox.getState();
-      if (st.view === 'one' || st.later) return;
+      if (st.view === 'one' || st.page !== 'inbox') return;
       if (e.key === 'Escape' && (st.checked.length || st.open != null)) {
         e.preventDefault();
         setInbox(st.checked.length ? { checked: [] } : { open: null });
@@ -417,9 +422,9 @@ export function InboxPage() {
         <div className="ib-wrap" ref={wrap}>
           <header className="ib-head">
             <div>
-              <TitleTabs later={later} count={count} laterN={laterCards?.length ?? null} />
+              <TitleTabs page={page} count={count} laterN={laterCards?.length ?? null} trashN={board?.path === path ? (board.trash ?? 0) : null} />
               {/* agent 新记下、人还没看过的条数；没有时不占地方 */}
-              {!later && all && newCount > 0 && (
+              {plain && all && newCount > 0 && (
                 <div className="ib-newline">
                   <span className="ib-new mono">{newCount} 条新的</span>
                   <button type="button" className="ib-link ib-markall" onClick={() => void doMarkAll(setSent)}>
@@ -428,8 +433,8 @@ export function InboxPage() {
                 </div>
               )}
             </div>
-            {/* 列表 / 逐条、分组只管「未整理」：看「稍后再做」时不放 */}
-            {!later && <div className="ib-modes">
+            {/* 列表 / 逐条、分组只管「未整理」：看「稍后再做」「回收站」时不放 */}
+            {plain && <div className="ib-modes">
               <DescTabs
                 mode={view}
                 setMode={m => setView(m as View)}
@@ -467,10 +472,11 @@ export function InboxPage() {
           </div>
 
           {/* 快照还没到：按工作区里的计数放骨架行；计数是 0 就什么都不放 */}
-          {!later && !list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
+          {plain && !list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
           {later && <LaterPage cards={laterCards} labels={labels} project={cur?.project.key ?? ''} path={path} />}
-          {!later && view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
-          {!later && view === 'list' && groups.map(g => (
+          {page === 'trash' && path && <TrashPage path={path} />}
+          {plain && view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
+          {plain && view === 'list' && groups.map(g => (
             <GroupSection
               key={`${group}-${g.key}`}
               g={g}
@@ -483,7 +489,7 @@ export function InboxPage() {
               onCheck={check}
             />
           ))}
-          {!later && list && !list.length && (
+          {plain && list && !list.length && (
             <div className="ib-empty">
               {all?.length ? (
                 <>
@@ -517,7 +523,7 @@ export function InboxPage() {
               )}
             </div>
           )}
-          {!later && (filter || src) && list && list.length > 0 && (
+          {plain && (filter || src) && list && list.length > 0 && (
             <p className="ib-filtered">
               筛选后 {list.length} / {all?.length} 条 ·{' '}
               <button
@@ -534,7 +540,7 @@ export function InboxPage() {
           )}
         </div>
       </div>
-      {!later && view === 'list' && <BulkBar checked={checked} cards={all ?? []} home={home} />}
+      {plain && view === 'list' && <BulkBar checked={checked} cards={all ?? []} home={home} />}
       {merge && <MergeSheet key={`${merge.ids.join(',')}`} req={merge} />}
     </div>
   );
@@ -1738,18 +1744,22 @@ function SwipeHint({ dir, label, icon }: { dir: SwipeDir; label: string; icon: '
   );
 }
 
-/** 页头的大标题就是切换：「未整理」和「稍后再做」并排，正在看的那个是大字，另一个灰色小一号 */
-function TitleTabs({ later, count, laterN }: { later: boolean; count: number | null; laterN: number | null }) {
-  const pick = (l: boolean) => l !== later && setInbox({ later: l, checked: [], open: null });
+/** 页头的大标题就是切换：「未整理」「稍后再做」「回收站」并排，正在看的那个是大字，另外两个灰色小一号 */
+function TitleTabs({ page, count, laterN, trashN }: { page: Page; count: number | null; laterN: number | null; trashN: number | null }) {
+  const pick = (p: Page) => p !== page && setInbox({ page: p, checked: [], open: null });
   return (
-    <h1 className="ib-title" role="tablist" aria-label="未整理 / 稍后再做">
-      <button type="button" role="tab" aria-selected={!later} className={cx(!later && 'on')} onClick={() => pick(false)}>
+    <h1 className="ib-title" role="tablist" aria-label="未整理 / 稍后再做 / 回收站">
+      <button type="button" role="tab" aria-selected={page === 'inbox'} className={cx(page === 'inbox' && 'on')} onClick={() => pick('inbox')}>
         未整理
         {count != null && <span className="ib-total mono">{count}</span>}
       </button>
-      <button type="button" role="tab" aria-selected={later} className={cx('ib-title-later', later && 'on')} onClick={() => pick(true)}>
+      <button type="button" role="tab" aria-selected={page === 'later'} className={cx('ib-title-later', page === 'later' && 'on')} onClick={() => pick('later')}>
         稍后再做
         {!!laterN && <span className="ib-later-n mono">{laterN}</span>}
+      </button>
+      <button type="button" role="tab" aria-selected={page === 'trash'} className={cx('ib-title-later', page === 'trash' && 'on')} onClick={() => pick('trash')}>
+        回收站
+        {!!trashN && <span className="ib-later-n mono">{trashN}</span>}
       </button>
     </h1>
   );

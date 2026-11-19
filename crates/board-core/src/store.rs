@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS cards (
   split_from      INTEGER,
   -- 「稍后再做」（default/main#303）：人把「未整理」里的这一条收起来的时间；NULL = 没收起。离开「未整理」时清掉
   later_at        INTEGER,
-  -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，30 天后由 purge_trash 永久删除
+  -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，一直留着，只有人「永久删除」（Cmd::Purge）才真的删掉
   deleted_at      INTEGER,
   -- 回收站里：谁删的
   deleted_by_kind TEXT,
