@@ -15,7 +15,7 @@
 
 use board_core::config;
 use board_core::hosts::{check_host_name, host_name_from};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
