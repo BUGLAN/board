@@ -1,7 +1,10 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Check } from './Inbox';
+import { card } from '../../test/fixtures';
+import { unitsOf } from '../lib/split';
+import type { Label } from '../lib/types';
+import { Check, groupsOf } from './Inbox';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -79,5 +82,57 @@ describe('未整理的勾选框（default/main#315）', () => {
     act(() => box().click());
     expect(onToggle).toHaveBeenCalledTimes(1);
     expect(onRow).not.toHaveBeenCalled();
+  });
+});
+
+describe('未整理的倒序（default/main#497）', () => {
+  const DAY = 86400000;
+  const now = new Date(2026, 10, 19, 12).getTime();
+  const lb = (id: number, name: string): Label => ({ id, name, color: '#888', uses: 0 });
+  const labels = [lb(1, 'bug'), lb(2, 'UI')];
+  // 已经按新到旧排好（useInboxCards 的顺序）：今天两条、这一周一条、放了两周以上两条；8、7 拆自隐藏的 6，算一个条目
+  const list = [
+    card(9, { createdAt: now - 1000, labels: [2] }),
+    card(8, { createdAt: now - 2000, splitFrom: 6 }),
+    card(7, { createdAt: now - 3000, splitFrom: 6 }),
+    card(5, { createdAt: now - 3 * DAY, labels: [1], createdBy: { kind: 'agent', name: 'a/x' } }),
+    card(4, { createdAt: now - 20 * DAY, labels: [2] }),
+    card(3, { createdAt: now - 30 * DAY, labels: [1] }),
+  ];
+  const units = () => unitsOf(list, { 6: card(6, { createdAt: now - 4000 }) });
+  const ids = (gs: ReturnType<typeof groupsOf>) => gs.map(g => [g.key, g.rows.map(c => c.id)]);
+
+  it('默认（正序）不变：从新到旧', () => {
+    expect(ids(groupsOf(units(), 'time', now, labels))).toEqual([
+      ['today', [9, 8, 7]],
+      ['week', [5]],
+      ['stale', [4, 3]],
+    ]);
+  });
+
+  it('按时间倒序：组的顺序和组里的条目都倒过来，拆解组整组挪、组里的卡照旧', () => {
+    expect(ids(groupsOf(units(), 'time', now, labels, true))).toEqual([
+      ['stale', [3, 4]],
+      ['week', [5]],
+      ['today', [8, 7, 9]],
+    ]);
+  });
+
+  it('按标签 / 按来源倒序：组的顺序按原规则，只倒组里的条目', () => {
+    expect(ids(groupsOf(units(), 'label', now, labels, true))).toEqual([
+      ['l1', [3, 5]],
+      ['l2', [4, 9]],
+      ['none', [8, 7]],
+    ]);
+    const src = groupsOf(units(), 'source', now, labels, true);
+    expect(src.map(g => g.key)).toEqual(groupsOf(units(), 'source', now, labels).map(g => g.key));
+    expect(src.find(g => g.key.startsWith('human'))?.rows.map(c => c.id)).toEqual([3, 4, 8, 7, 9]);
+  });
+
+  it('重复算结果相同，不改动传进来的条目', () => {
+    const us = units();
+    const before = us.map(u => (u.kind === 'one' ? u.card.id : u.cards.map(c => c.id)));
+    expect(ids(groupsOf(us, 'time', now, labels, true))).toEqual(ids(groupsOf(us, 'time', now, labels, true)));
+    expect(us.map(u => (u.kind === 'one' ? u.card.id : u.cards.map(c => c.id)))).toEqual(before);
   });
 });

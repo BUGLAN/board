@@ -59,6 +59,8 @@ interface InboxUI {
   focus: number | null;
   /** 标题上选的哪一页：未整理、稍后再做（default/main#303）、回收站（default/main#486） */
   page: Page;
+  /** 倒序：从旧到新（default/main#497）；只管界面顺序，记住上次的选择 */
+  reverse: boolean;
 }
 type Page = 'inbox' | 'later' | 'trash';
 const GROUPS: Group[] = ['time', 'source', 'label'];
@@ -66,12 +68,16 @@ const savedGroup = pref.get<Group>('inboxGroup', 'time');
 const savedView = pref.get<View>('inboxView', 'list');
 export const useInbox = create<InboxUI>(() => ({
   src: null, group: GROUPS.includes(savedGroup) ? savedGroup : 'time', checked: [], open: null, merge: null,
-  view: savedView === 'one' ? 'one' : 'list', focus: null, page: 'inbox',
+  view: savedView === 'one' ? 'one' : 'list', focus: null, page: 'inbox', reverse: pref.get<boolean>('inboxReverse', false) === true,
 }));
 const setInbox = (p: Partial<InboxUI>) => useInbox.setState(p);
 const setGroup = (group: Group) => {
   setInbox({ group });
   pref.set('inboxGroup', group);
+};
+const setReverse = (reverse: boolean) => {
+  setInbox({ reverse });
+  pref.set('inboxReverse', reverse);
 };
 const setView = (view: View) => {
   // 逐条视图里没有勾选：切过去时清掉，免得批量条挂在那儿
@@ -110,8 +116,17 @@ interface GroupOf {
 
 const groupOf = (key: string, label: string, units: Unit[], stale?: boolean): GroupOf => ({ key, label, stale, units, rows: units.flatMap(unitCards) });
 
-/** 分组：拆自同一条的一组按组里最新的那张算（时间、来源、标签都是） */
-function groupsOf(units: Unit[], group: Group, now: number, labels: Label[]): GroupOf[] {
+/** 分组：拆自同一条的一组按组里最新的那张算（时间、来源、标签都是）。
+    reverse（倒序，从旧到新，default/main#497）：组里的条目倒过来；按时间分组时组的顺序也倒过来（放了两周以上在最前），
+    按来源 / 标签时组本身的顺序不变。拆自同一条的一组算一个条目，组里的卡照旧 */
+export function groupsOf(units: Unit[], group: Group, now: number, labels: Label[], reverse = false): GroupOf[] {
+  const gs = groupsBy(units, group, now, labels);
+  if (!reverse) return gs;
+  const flipped = gs.map(g => groupOf(g.key, g.label, [...g.units].reverse(), g.stale));
+  return group === 'time' ? flipped.reverse() : flipped;
+}
+
+function groupsBy(units: Unit[], group: Group, now: number, labels: Label[]): GroupOf[] {
   if (group === 'time')
     return BUCKETS.map(k => groupOf(k, BUCKET_NAME[k], units.filter(u => bucketOf(unitRep(u).createdAt, now) === k), k === 'stale')).filter(g => g.rows.length);
   if (group === 'source') {
@@ -360,7 +375,8 @@ export function InboxPage() {
   const home = boardFlow(board).home?.name ?? '待办';
   const wrap = useRef<HTMLDivElement>(null);
   const lastCheck = useRef<number | null>(null);
-  const groups = useMemo(() => (list ? groupsOf(unitsOf(list, parents), group, now, labels) : []), [list, parents, group, now, labels]);
+  const reverse = useInbox(s => s.reverse);
+  const groups = useMemo(() => (list ? groupsOf(unitsOf(list, parents), group, now, labels, reverse) : []), [list, parents, group, now, labels, reverse]);
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
   const present = useMemo(() => new Set((all ?? []).map(c => renderKey(c.id))), [all]);
   useRowMotion(wrap, present, path);
@@ -457,6 +473,18 @@ export function InboxPage() {
                   ['label', '按标签'],
                 ]}
               />
+              {/* 排序方向（default/main#497）：只有图标，倒序时图标转半圈、品牌色 */}
+              <button
+                type="button"
+                className={cx('icon-btn sm ib-sort', reverse && 'on')}
+                aria-pressed={reverse}
+                aria-label={reverse ? '倒序：从旧到新，点一下改回从新到旧' : '正序：从新到旧，点一下改成从旧到新'}
+                data-tip={reverse ? '倒序：从旧到新' : '正序：从新到旧'}
+                data-tip-align="end"
+                onClick={() => setReverse(!reverse)}
+              >
+                <Icon name="sort" />
+              </button>
             </div>}
           </header>
           {later && <p className="ib-later-sub">暂时不处理的条目收在这里，不算在「未整理」的条数里。左滑一条放回「未整理」，回到原来的位置。</p>}

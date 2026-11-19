@@ -13,6 +13,11 @@
 .ib-head h1 { display: flex; align-items: center; gap: 10px; font-family: var(--f-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
 .ib-head .desc-tabs { flex: none; }
 .ib-modes { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+/* 排序方向（default/main#497）：「按标签」右边最右的图标；倒序时转半圈、品牌色（.icon-btn.on） */
+.ib-sort svg { transition: transform var(--dur-2) var(--ease-out); }
+.ib-sort.on svg { transform: rotate(180deg); }
+:root[data-motion="reduced"] .ib-sort svg { transition: none; }
+@media (prefers-reduced-motion: reduce) { .ib-sort svg { transition: none; } }
 
 /* ---------------- 逐条视图（default/main#286）：一次一条的完整内容，左右切换 ---------------- */
 .ib-one { margin-top: 14px; }
