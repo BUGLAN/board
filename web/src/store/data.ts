@@ -210,6 +210,24 @@ export async function optimistic<T>(patch: Patch | null, req: () => Promise<T>):
   }
 }
 
+/** 批量写操作的结果：成功、失败的 ID 各一份；提示、选择和离场动画都只按这个结果更新 */
+export interface BatchResult {
+  ok: number[];
+  failed: { id: number; error: unknown }[];
+}
+
+/** 把 Promise.allSettled 的结果按请求顺序配回 ID */
+export function collectBatch(ids: number[], results: readonly PromiseSettledResult<unknown>[]): BatchResult {
+  const ok: number[] = [];
+  const failed: BatchResult['failed'] = [];
+  results.forEach((r, i) => {
+    const id = ids[i];
+    if (r.status === 'fulfilled') ok.push(id);
+    else failed.push({ id, error: r.reason });
+  });
+  return { ok, failed };
+}
+
 /** 叠上补丁，直到 done 结束再撤掉（done 成功时应已刷新过）。用于先发请求、稍后才确定本地效果的操作（拖拽松手的飞回动画结束后才落位） */
 export function hold<T>(patch: Patch, done: Promise<T>): Promise<T> {
   const l = push(patch);
@@ -642,10 +660,11 @@ export function laterPatch(ids: number[], on: boolean): Patch {
   };
 }
 
-/** 收起 / 放回几条：每条一个请求，按发起顺序排队；失败的只撤自己那一条，返回失败的原因（全成功为空） */
-export async function setLater(ids: number[], on: boolean): Promise<unknown[]> {
-  const rs = await Promise.allSettled(ids.filter(id => !isDraft(id)).map(id => exec({ op: 'later', id, on }, laterPatch([id], on))));
-  return rs.filter((r): r is PromiseRejectedResult => r.status === 'rejected').map(r => r.reason);
+/** 收起 / 放回几条：每条一个请求，按发起顺序排队；失败的只撤自己那一条。提示和选择只按实际成功、失败的 ID 更新 */
+export async function setLater(ids: number[], on: boolean): Promise<BatchResult> {
+  const ok = ids.filter(id => !isDraft(id));
+  const rs = await Promise.allSettled(ok.map(id => exec({ op: 'later', id, on }, laterPatch([id], on))));
+  return collectBatch(ok, rs);
 }
 
 /* ------------------------------ 「未整理」的新条目 ------------------------------ */

@@ -7,7 +7,7 @@ import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import { projectDirError } from './projectDir';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type Patch } from '../store/data';
+import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, collectBatch, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type BatchResult, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -77,32 +77,23 @@ export function cardFwd() {
   if (id != null) setTimeout(() => reveal(data().detailId ?? id), 60);
 }
 
-/** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理并提示）。
-    桌面的白板页上，落位后定位到它；在「未整理」页、手机上当帧提示一下，可以撤销（放回「未整理」最下面；
-    还没保存完就点撤销：等这次移动确认后再放回去）。
-    toastDelay：提示晚一点出来（未整理页等行的离场动作做完，免得和动画叠在一起） */
-export async function triage(id: number, { toastDelay = 0 }: { toastDelay?: number } = {}) {
-  if (isDraft(id)) return;
+/** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理）。返回实际成功 / 失败的 ID；
+    提示和离场动画由调用方按结果更新。桌面的白板页上，落位后定位到它 */
+export async function triage(id: number): Promise<BatchResult> {
+  if (isDraft(id)) return { ok: [], failed: [] };
+  const result = await triageMany([id]);
+  if (result.ok.length && useUI.getState().tab === 'board' && !isMobile()) setTimeout(() => reveal(id), 60);
+  return result;
+}
+
+/** 批量整理到首个可领取状态最下面：每一张一个请求，按发起顺序排队；返回实际成功、失败的 ID */
+export async function triageMany(ids: number[]): Promise<BatchResult> {
+  const ok = ids.filter(id => !isDraft(id));
+  if (!ok.length) return { ok: [], failed: [] };
   const start = boardFlow(useData.getState().board).home;
   const to = start?.key ?? 'todo';
-  const done = exec({ op: 'move', id, column: to }, movePatch(id, to));
-  const onBoard = useUI.getState().tab === 'board' && !isMobile();
-  const show = () =>
-    toast({
-      type: 'success',
-      title: `#${id} 已整理到「${start?.name ?? '待办'}」最下面`,
-      action: { label: '撤销', fn: () => void done.then(() => untriage([id]), () => undefined) },
-    });
-  if (!onBoard) {
-    if (toastDelay > 0) setTimeout(show, toastDelay);
-    else show();
-  }
-  try {
-    await done;
-    if (onBoard) setTimeout(() => reveal(id), 60);
-  } catch (e) {
-    toastError(e);
-  }
+  const results = await Promise.allSettled(ok.map(id => exec({ op: 'move', id, column: to }, movePatch(id, to))));
+  return collectBatch(ok, results);
 }
 
 /** 撤销整理：放回「未整理」最下面（只有人能移入，界面上就是人） */
