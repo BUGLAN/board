@@ -12,6 +12,7 @@ import { SessionModal } from './components/hosts/Session';
 import { ReviewDesk } from './components/ReviewDesk';
 import { InboxPage } from './components/Inbox';
 import { MilestonesPage } from './components/Milestones';
+import { SkipLink } from './components/SkipLink';
 import { StatsPage } from './components/StatsTab';
 import { Login } from './components/Login';
 import { Overlays } from './components/Overlays';
@@ -241,6 +242,7 @@ function BoardApp() {
   const page = PAGE[tab];
   return (
     <>
+      <SkipLink />
       <Atmosphere />
       <div className="app" data-tab={tab} data-side={side ? 'open' : 'closed'}>
         <Topbar />
@@ -248,7 +250,8 @@ function BoardApp() {
         <StaleBanner />
         <ActivityBar />
         <SidePanel />
-        <main className="main" id="main">
+        {/* tabIndex -1：「跳到主内容」能把焦点放进来（Tab 顺序不变） */}
+        <main className="main" id="main" tabIndex={-1}>
           {/* 工作区还没到：白板页用骨架占位；出错时显示错误（数据层会自动重试） */}
           {!ws && (page === 'board' && !error ? <BoardSkeleton /> : <Loading error={error} />)}
           {ws && (

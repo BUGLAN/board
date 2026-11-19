@@ -79,6 +79,15 @@ a { color: inherit; }
 :focus-visible { outline: 2px solid color-mix(in srgb, var(--brand) 70%, transparent); outline-offset: 2px; border-radius: var(--r-xs); }
 /* 自带焦点样式的输入框不再叠加 outline */
 input:focus-visible, textarea:focus-visible { outline: none; }
+/* 「跳到主内容」（#523）：平时视觉上隐藏（读屏仍能读到），聚焦时出现在左上角最上层；深浅色都用 surface 底 + 正文色 */
+.skip-link {
+  position: fixed; top: 8px; left: 8px; z-index: 10000; padding: 8px 14px; border-radius: var(--r-sm);
+  font-size: 13px; font-weight: 600; color: var(--text); background: var(--surface); box-shadow: var(--shadow-3), inset 0 0 0 1px var(--line);
+  text-decoration: none;
+}
+.skip-link:not(:focus) { width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; box-shadow: none; }
+/* 跳进来之后不给整个主区域画焦点框 */
+.main:focus { outline: none; }
 
 /* ---- 按钮 ---- */
 .btn {
