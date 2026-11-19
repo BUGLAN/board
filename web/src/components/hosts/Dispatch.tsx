@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
+import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, dispatchRoute, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
 import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
@@ -197,6 +197,9 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
   const title = entry?.title ?? '';
   // 「未整理」里的条目：派给 agent 拆解
   const split = entry?.column === 'inbox';
+  // 不在可领取状态（待审核、错误节点……）：排队时一步移进锁定状态（#498），这里写明会从哪里移出
+  const statuses = useData(s => s.board?.statuses);
+  const route = entry && statuses && move == null ? dispatchRoute(statuses, entry.column, entry.holder) : null;
   const hosts = hostsOf(ws);
   // 接不了这块白板的机器不能选（PRD §9.1「能不能接」）：没有工作空间、目录不对。
   // 原因是服务端给的（工作区数据里的 blocks），这里不自己再判断
@@ -268,6 +271,11 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
       <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `拆解 #${card}` : `派发 #${card}`}>
         <h3>{move != null ? `改派 #${card}` : split ? `拆解 #${card}` : `派发 #${card}`}</h3>
         <p className="dp-sub">{title}</p>
+        {route?.from && route.into && (
+          <p className="dp-note dp-split">
+            会从「{route.from.name}」移出，直接在「{route.into.name}」排队，不经过可领取状态；排队时取消派发，回到「{route.from.name}」。
+          </p>
+        )}
         {split && <p className="dp-note dp-split">派给一台机器上的 agent：它读这一条，拆成几张能直接做的卡（够小的整理成一张）记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
         {hosts.length === 0 ? (
           <div className="dp-empty">

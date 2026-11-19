@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, SelfTestItem, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, SelfTestItem, Status, Workspace } from './types';
 import { metaColor, skillHome } from './agentMeta';
 import { agentColor, agentGlyph } from './util';
 
@@ -409,4 +409,36 @@ export function selftestRows(h: HostInfo): (SelfTestItem & { label: string })[] 
       ...i,
       label: i.kind === 'agent' ? (h.agents.find(a => a.id === i.key)?.name ?? i.key) : i.kind === 'git' ? `${i.key} 的仓库` : 'board 版本',
     }));
+}
+
+/** 一张卡怎么派发（和服务端 `dispatch_card_check`、`reserve` 一致，#498） */
+export interface DispatchRoute {
+  /** 在「未整理」里：派给 agent 拆解，不领取、不移动 */
+  split: boolean;
+  /** 人从可领取状态以外（待审核、错误节点、终点……）派发：卡片现在的状态；排队时取消派发回到这里 */
+  from: Status | null;
+  /** 排队时进的锁定状态（拆解时为空） */
+  into: Status | null;
+}
+
+/**
+ * 界面上（人）能不能派发这张卡、怎么派：「未整理」里是拆解；可领取状态照常进它连到的锁定状态；
+ * 别的状态一步进首个连到锁定状态的可领取状态领取时会进的那个，中间不在可领取状态里停留（停一下就可能被自动领取领走）。
+ * 锁定状态里、被持有的卡片不能派，返回 null
+ */
+export function dispatchRoute(statuses: Status[], column: string, holder?: string | null): DispatchRoute | null {
+  if (column === 'inbox') return { split: true, from: null, into: null };
+  const get = (k: string) => statuses.find(s => s.key === k);
+  const target = (k: string) => statuses.find(s => s.lock && !!get(k)?.to.includes(s.key)) ?? null;
+  const cur = get(column);
+  if (!cur || cur.lock || holder) return null;
+  if (cur.claim) {
+    const into = target(column);
+    return into ? { split: false, from: null, into } : null;
+  }
+  for (const s of statuses) {
+    const into = s.claim ? target(s.key) : null;
+    if (into) return { split: false, from: cur, into };
+  }
+  return null;
 }

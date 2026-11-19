@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, missWord, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestRows, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
-import type { Dispatch, HostAgent, HostInfo, Workspace } from './types';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestRows, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import type { Dispatch, HostAgent, HostInfo, Status, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
 const host = (agents: HostAgent[]): HostInfo => ({
@@ -433,5 +433,35 @@ describe('任意机器的派发', () => {
     expect(hostWords(got)).toBe('mac');
     expect(queueReason(host([]), got)).toBe('等空位');
     expect(queueReason(undefined, d({ host: 'gone', hostId: 9 }))).toBe('机器已移除');
+  });
+});
+
+describe('dispatchRoute（#498：人从任意没被领取的状态派发）', () => {
+  const st = (key: string, name: string, to: string[], o: Partial<Status> = {}): Status => ({ key, name, color: 'todo', claim: false, lock: false, final: false, layout: null, to, ...o });
+  const flow: Status[] = [
+    st('todo', '待办', ['doing'], { claim: true }),
+    st('doing', '进行中', ['review', 's2'], { lock: true }),
+    st('review', '待审核', ['s1', 'done']),
+    st('s1', '返工', ['doing', 'review'], { claim: true }),
+    st('done', '已完成', [], { final: true }),
+    st('s2', '错误', [], { error: true }),
+  ];
+
+  it('可领取状态照常进它连到的锁定状态', () => {
+    expect(dispatchRoute(flow, 'todo')).toMatchObject({ split: false, from: null, into: { key: 'doing' } });
+    expect(dispatchRoute(flow, 's1')).toMatchObject({ from: null, into: { key: 'doing' } });
+  });
+
+  it('别的状态一步进锁定状态，记着从哪里来', () => {
+    for (const k of ['review', 'done', 's2']) {
+      expect(dispatchRoute(flow, k)).toMatchObject({ split: false, from: { key: k }, into: { key: 'doing' } });
+    }
+  });
+
+  it('未整理是拆解；锁定状态、被持有的不能派', () => {
+    expect(dispatchRoute(flow, 'inbox')).toEqual({ split: true, from: null, into: null });
+    expect(dispatchRoute(flow, 'doing')).toBeNull();
+    expect(dispatchRoute(flow, 'review', 'claude/x')).toBeNull();
+    expect(dispatchRoute(flow, 'gone')).toBeNull();
   });
 });

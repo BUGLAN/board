@@ -539,9 +539,13 @@ fn dispatch_validation_follows_the_table() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let a = new_card(&mut s, T0, "A");
     let b = new_card(&mut s, T0, "B");
-    // 不在可领取状态
+    // 不在可领取状态：agent 不能派发（人可以，见 humans_dispatch_from_any_unlocked_status_in_one_step）
     exec(&mut s, T0, &Actor::human(), Cmd::Move { id: b, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
-    assert_eq!(dispatch(&mut s, T0, b, "mbp", None).unwrap_err().code, ErrorCode::NotInTodo);
+    let by_agent = s.write(T0, Origin::cli(), |w| {
+        let r = w.resolve(B)?;
+        w.dispatch_create(&r, b, "mbp", None, &Actor::agent("beta/x"))
+    });
+    assert_eq!(by_agent.unwrap_err().code, ErrorCode::NotInTodo);
     // 机器不存在
     assert_eq!(dispatch(&mut s, T0, a, "nope", None).unwrap_err().code, ErrorCode::NoSuchHost);
     // agent 没找到 / 没有这种 agent
@@ -6013,6 +6017,63 @@ fn error_status_cards_are_never_claimed_even_with_matching_labels() {
     // 人移回待办后照常领
     exec(&mut s, T0 + 4 * S, &Actor::human(), mv(a, "todo")).unwrap();
     assert_eq!(s.write(T0 + 5 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().map(|d| d.card), Some(a));
+}
+
+/// 人从可领取状态以外派发（#498）：错误节点、待审核、终点里的卡片一步进锁定状态排队，不经过可领取状态，
+/// 带着命中领取规则的标签也不会先被自动领走；动态写明从哪里派的；排队时取消回到派发前的状态。
+/// agent 照旧只能从可领取状态派发；锁定状态里、被持有的卡片照旧拒绝
+#[test]
+fn humans_dispatch_from_any_unlocked_status_in_one_step() {
+    let mut s = store();
+    let key = add_error_status(&mut s);
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    let mv = |id: i64, to: &str| Cmd::Move { id, column: to.into(), top: false, index: None, order: None, before: None, after: None };
+    let a = new_card_tagged(&mut s, "A");
+    exec(&mut s, T0, &Actor::human(), mv(a, &key)).unwrap();
+    // agent 不能从错误节点派发
+    let by_agent = s.write(T0, Origin::cli(), |w| {
+        let r = w.resolve(B)?;
+        w.dispatch_create(&r, a, "mbp", None, &Actor::agent("beta/x"))
+    });
+    assert_eq!(by_agent.unwrap_err().code, ErrorCode::NotInTodo);
+    assert_eq!(card(&s, a).card.column, key);
+    // 人派发：直接进「进行中」排队，claimed_from 记着错误节点
+    let d = dispatch(&mut s, T0 + S, a, "mbp", None).unwrap();
+    let c = card(&s, a);
+    assert_eq!((d.state.as_str(), c.card.column.as_str(), c.card.holder.as_deref()), ("queued", "doing", None));
+    assert_eq!(c.card.claimed_from.as_deref(), Some(key.as_str()));
+    let at = c.activity.iter().rposition(|x| x.action == "dispatch").unwrap();
+    let text = &c.activity[at].text;
+    assert!(text.starts_with("从「搁置」派发到 mbp · ") && text.ends_with("在「进行中」排队"), "{text}");
+    assert!(!c.activity[at..].iter().any(|x| x.text.contains("「待办」")), "中间不经过可领取状态");
+    // 排队时取消：回到错误节点最上面，不回待办（回去了带标签的卡会被马上自动领走）
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "buglan")).unwrap();
+    let c = card(&s, a);
+    assert_eq!((c.card.column.as_str(), c.card.claimed_from.as_deref()), (key.as_str(), None));
+    assert!(c.activity.iter().any(|x| x.text.contains("卡片回到「搁置」最上面")), "{:?}", c.activity.iter().map(|x| &x.text).collect::<Vec<_>>());
+    s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(s.write(T0 + 3 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "回到错误节点后不被自动领取");
+    // 终点里的卡片派给任意机器：同样一步进「进行中」，开始后照常领取
+    let e = new_card(&mut s, T0, "E");
+    exec(&mut s, T0, &Actor::human(), mv(e, "done")).unwrap();
+    let de = s
+        .write(T0 + 4 * S, Origin::ui(None), |w| {
+            let r = w.resolve(B)?;
+            w.dispatch_create_any(&r, e, None, &Actor::human())
+        })
+        .unwrap();
+    assert_eq!(card(&s, e).card.column, "doing");
+    assert!(card(&s, e).activity.iter().any(|x| x.text.starts_with("从「已完成」派发到任意机器")));
+    begin(&mut s, T0 + 5 * S, de.id).unwrap();
+    let c = card(&s, e);
+    assert_eq!((c.card.column.as_str(), c.card.holder.is_some()), ("doing", true));
+    // 锁定状态里被持有的卡片：人也不能派发
+    let f = new_card(&mut s, T0, "F");
+    exec(&mut s, T0 + 6 * S, &Actor::agent("beta/x"), Cmd::Claim { id: Some(f) }).unwrap();
+    let err = dispatch(&mut s, T0 + 6 * S, f, "mbp", None).unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotInTodo);
+    assert!(err.message.contains("正在被领取"), "{}", err.message);
 }
 
 /// 排队的派发被取消时，卡片已经不在它排队的锁定状态里（这里直接把它放进错误节点）：只清掉记录，不把它挪回可领取状态（#428）

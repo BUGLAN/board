@@ -2065,6 +2065,14 @@ pub const ANY_AGENT_LABEL: &str = "机器的默认 agent";
 /// 派发的类型：拆解「未整理」里的条目（PRD §9.1）
 pub const KIND_SPLIT: &str = "split";
 
+/// 派发前看卡片的结果（`dispatch_card_check`）
+struct CardCheck {
+    /// 卡片在「未整理」：派给 agent 拆解
+    split: bool,
+    /// 人从可领取状态以外派发：卡片现在所在的状态（排队时一步移进锁定状态，取消时回这里）
+    from: Option<String>,
+}
+
 /// 派发的来源：定时建卡建出卡后按这一条的设置派给指定的机器（PRD §4「定时建卡」）。
 /// 和手动派发一样排队、占用卡片，只做这一张；动态里写「定时建卡」
 pub const SOURCE_SCHEDULE: &str = "schedule";
@@ -3131,9 +3139,10 @@ impl<'a> W<'a> {
             .optional()?)
     }
 
-    /// 派发排队：卡片沿连线进入领取时会进的锁定状态（排在那一块最下面），没有持有者，`claimed_from` 记下原来的可领取状态。
+    /// 派发排队：卡片沿连线进入领取时会进的锁定状态（排在那一块最下面），没有持有者，`claimed_from` 记下原来的状态。
     /// 排队的卡片别人领不到，留在可领取状态里看起来像「谁都能领」（PRD §9.1「占用」）。
-    /// 卡片不在可领取状态、被持有、或者那个状态没有连到锁定状态时不动。返回进入的状态名称（写进动态）
+    /// 人从可领取状态以外（待审核、错误节点……）派发时一步进 [`Self::dispatch_entry`] 的锁定状态，中间不经过可领取状态。
+    /// 卡片在「未整理」、锁定状态、被持有、或者那个状态没有连到锁定状态时不动。返回进入的状态名称（写进动态）
     fn reserve(&mut self, b: i64, card: i64, by: &Actor) -> Result<Option<String>> {
         let row: Option<(String, Option<String>)> = self
             .tx
@@ -3143,10 +3152,15 @@ impl<'a> W<'a> {
             .optional()?;
         let Some((col, None)) = row else { return Ok(None) };
         let flow = flow_of(self.tx, b)?;
-        if !flow.is_claim(&col) {
-            return Ok(None);
-        }
-        let Some(dest) = flow.claim_target(&col).cloned() else { return Ok(None) };
+        let dest = if flow.is_claim(&col) {
+            flow.claim_target(&col).cloned()
+        } else if col != INBOX && !flow.is_lock(&col) {
+            // 人从别的状态派发（dispatch_card_check 已经认过）：直接进锁定状态，claimed_from 记原来的状态，取消时回那里
+            Self::dispatch_entry(&flow).map(|(_, t)| t.clone())
+        } else {
+            None
+        };
+        let Some(dest) = dest else { return Ok(None) };
         self.place(b, card, Some(&col), &dest.key, At::Bottom)?;
         self.tx.execute("UPDATE cards SET claimed_from = ?1 WHERE board = ?2 AND id = ?3", params![col, b, card])?;
         self.log_move(b, card, "dispatch", &col, &dest.key, by, &flow)?;
@@ -3176,7 +3190,8 @@ impl<'a> W<'a> {
         if col == INBOX || !flow.is_lock(&col) {
             return Ok(String::new());
         }
-        let dest = flow.back_to(from.as_deref()).clone();
+        // 回到派发前的状态：可领取状态，或人派发时所在的别的状态（错误节点、待审核……）；那个状态没了时回首个可领取状态
+        let dest = from.as_deref().and_then(|k| flow.get(k)).filter(|s| !s.lock).unwrap_or_else(|| flow.home()).clone();
         self.place(b, card, Some(&col), &dest.key, At::Top)?;
         self.log_move(b, card, "dispatch", &col, &dest.key, by, &flow)?;
         Ok(format!("，卡片回到「{}」最上面", dest.name))
@@ -4897,23 +4912,28 @@ impl<'a> W<'a> {
 
     /// 派发一张卡（手动派发、定时建卡共用）：source 是 manual 或 [`SOURCE_SCHEDULE`]
     pub(crate) fn dispatch_create_from(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor, source: &str) -> Result<Dispatch> {
-        let split = self.dispatch_card_check(board, card)?;
+        let check = self.dispatch_card_check(board, card, by)?;
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         let a = self.dispatch_agent(&h, agent)?;
         // 这台机器接不了这块白板的卡：没有工作空间、目录不对（`fit.rs`）
         if let Some(u) = self.read().board_unfit(&h, board)? {
             return Err(u.error(host, board));
         }
-        let kind = if split { KIND_SPLIT } else { "" };
-        self.insert_dispatch(board.id, card, &h, &a.id, &a.name, source, by, kind)
+        let kind = if check.split { KIND_SPLIT } else { "" };
+        self.insert_dispatch(board.id, card, &h, &a.id, &a.name, source, by, kind, check.from.as_deref())
     }
 
-    /// 派发前看卡片：存在、没有排队或在跑的派发、在可领取状态或「未整理」。返回这是不是拆解（卡片在「未整理」）
-    fn dispatch_card_check(&self, board: &BoardRef, card: i64) -> Result<bool> {
+    /// 派发前看卡片：存在、没有排队或在跑的派发、在可领取状态或「未整理」。人派发时也可以在别的状态（待审核、错误节点、
+    /// 终点……），只要不在锁定状态、没人持有：排队时一步移进锁定状态，不在可领取状态里停留（停一下就可能被自动领取领走）
+    fn dispatch_card_check(&self, board: &BoardRef, card: i64, by: &Actor) -> Result<CardCheck> {
         let flow = flow_of(self.tx, board.id)?;
-        let col: Option<String> =
-            self.tx.query_row("SELECT col FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0)).optional()?;
-        let col = col.ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("卡片 #{card} 不存在")))?;
+        let row: Option<(String, Option<String>)> = self
+            .tx
+            .query_row("SELECT col, holder FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        let (col, holder) = row.ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("卡片 #{card} 不存在")))?;
         // 先看派发：排队的卡片已经在锁定状态里，报「已经派发」比「不在可领取状态」清楚
         if let Some(d) = self.read().card_dispatch(board, card)? {
             let what = if d.state == "queued" { "排队" } else { "在跑" };
@@ -4925,14 +4945,32 @@ impl<'a> W<'a> {
         }
         // 「未整理」里的条目：派给 agent 拆解（不领取、不移动）
         let split = col == INBOX;
-        if !split && !flow.is_claim(&col) {
-            let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
-            return Err(BoardError::new(
-                ErrorCode::NotInTodo,
-                format!("#{card} 在「{}」，不在可领取的状态{}，不能派发（「{INBOX_NAME}」里的条目可以派给 agent 拆解）", flow.name(&col), names.join("")),
-            ));
+        if split || flow.is_claim(&col) {
+            return Ok(CardCheck { split, from: None });
         }
-        Ok(split)
+        let human = by.kind == ActorKind::Human;
+        if human && !flow.is_lock(&col) && holder.is_none() && Self::dispatch_entry(&flow).is_some() {
+            return Ok(CardCheck { split: false, from: Some(col) });
+        }
+        let names: Vec<String> = flow.0.iter().filter(|s| s.claim).map(|s| format!("「{}」", s.name)).collect();
+        let why = if flow.is_lock(&col) || holder.is_some() {
+            format!("#{card} 在「{}」，正在被领取，不能派发", flow.name(&col))
+        } else {
+            format!("#{card} 在「{}」，不在可领取的状态{}，不能派发（「{INBOX_NAME}」里的条目可以派给 agent 拆解）", flow.name(&col), names.join(""))
+        };
+        Err(BoardError::new(ErrorCode::NotInTodo, why))
+    }
+
+    /// 人从可领取状态以外派发时，卡片进哪个锁定状态排队：首个连到锁定状态的可领取状态领取时会进的那个。没有时为空（不能这样派发）
+    fn dispatch_entry(flow: &Flow) -> Option<(&Status, &Status)> {
+        flow.0.iter().filter(|s| s.claim).find_map(|s| flow.claim_target(&s.key).map(|t| (s, t)))
+    }
+
+    /// 动态里写「从「X」」：人从可领取状态以外派发时
+    fn from_words(&self, b: i64, from: Option<&str>) -> Result<String> {
+        let Some(k) = from else { return Ok(String::new()) };
+        let flow = flow_of(self.tx, b)?;
+        Ok(format!("从「{}」", flow.name(k)))
     }
 
     /// 这次派发在这台机器上用哪个 agent：指定了就要找得到命令，没指定用机器的默认 agent；
@@ -4981,7 +5019,7 @@ impl<'a> W<'a> {
     /// 记一条排队的派发。手动派发、定时建卡派发（source 是 manual、schedule）的卡片进入领取时会进的锁定状态排队
     /// （[`W::reserve`]）；定时领取（cron）的第一张马上开始，不经过排队；拆解（kind 是 split）不动卡片
     #[allow(clippy::too_many_arguments)]
-    fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, kind: &str) -> Result<Dispatch> {
+    fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, kind: &str, from: Option<&str>) -> Result<Dispatch> {
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, kind)
@@ -5000,7 +5038,7 @@ impl<'a> W<'a> {
         } else {
             format!("，{at}排队")
         };
-        let what = if split { format!("派给 {} · {} 拆解", h.name, label) } else { format!("派发到 {} · {}", h.name, label) };
+        let what = if split { format!("派给 {} · {} 拆解", h.name, label) } else { format!("{}派发到 {} · {}", self.from_words(b, from)?, h.name, label) };
         self.track(b, card, by, "dispatch", &format!("{what}（{}）{wait}", source_words(source)))?;
         self.touch_hosts();
         self.read().dispatch(id)
@@ -5012,7 +5050,8 @@ impl<'a> W<'a> {
     /// 开始的就排着，等有机器上线、恢复接单、空出位置。agent 为空时用挑中那台的默认 agent。
     /// 一台能接这块白板的机器都没有（看的是能不能接，不看在不在线）时拒绝
     pub fn dispatch_create_any(&mut self, board: &BoardRef, card: i64, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
-        let split = self.dispatch_card_check(board, card)?;
+        let check = self.dispatch_card_check(board, card, by)?;
+        let split = check.split;
         let agent = agent.map(str::trim).filter(|s| !s.is_empty());
         let label = self.any_target(board, agent)?;
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0))?;
@@ -5024,7 +5063,7 @@ impl<'a> W<'a> {
         let id = self.tx.last_insert_rowid();
         let into = if split { None } else { self.reserve(board.id, card, by)? };
         let at = into.map(|n| format!("，在「{n}」排队")).unwrap_or_else(|| "，排队".into());
-        let what = if split { format!("派给任意机器 · {label} 拆解") } else { format!("派发到任意机器 · {label}") };
+        let what = if split { format!("派给任意机器 · {label} 拆解") } else { format!("{}派发到任意机器 · {label}", self.from_words(board.id, check.from.as_deref())?) };
         self.track(board.id, card, by, "dispatch", &format!("{what}（手动）{at}，等服务端挑一台能接的机器"))?;
         self.touch_hosts();
         self.assign_any()?;
@@ -5612,7 +5651,7 @@ impl<'a> W<'a> {
             }
             let Some((card, agent)) = hit else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
-            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system(), "")?;
+            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system(), "", None)?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
                 // 开会话时把这个会话要做的卡片一次排好：先把一个会话排满，再开下一个

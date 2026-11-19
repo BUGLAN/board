@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cardBack, cardFwd, copyCardPrompt, openLink, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
-import { cardDispatch } from '../lib/hosts';
+import { cardDispatch, dispatchRoute } from '../lib/hosts';
 import { detailPrompt } from '../lib/prompt';
 import { api, ApiError } from '../lib/api';
 import { cardUrl } from '../lib/route';
@@ -121,6 +121,8 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
   const mainRef = useRef<HTMLDivElement>(null);
   const locked = !!c.holder;
   const f = boardFlow(board);
+  // 人能从任意没被领取的状态派发（#498）：不在可领取状态的一步进锁定状态排队
+  const route = dispatchRoute(f.list, c.column, c.holder);
   // 这张卡片有还没确认的修改时，头部显示「保存中」，对它的修改都禁用，保存完再改
   const saving = useCardBusy(c.id);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, c.id));
@@ -397,15 +399,17 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
                   ? '已经派发过了：在上面取消派发或停止'
                   : c.column === 'inbox'
                     ? '派给一台机器上的 agent 拆成几张能直接做的卡（够小的整理成一张），记到未整理、挂在这条下面'
-                    : !f.list.find(s => s.key === c.column)?.claim
-                      ? '只有可领取状态里的卡片能派发'
-                      : '派给一台机器上的 agent'
+                    : !route
+                      ? '正在被领取的卡片不能派发'
+                      : route.from
+                        ? `派给一台机器上的 agent：从「${route.from.name}」直接进「${route.into?.name}」排队，不经过可领取状态`
+                        : '派给一台机器上的 agent'
               }
             >
               <button
                 className="btn sm d-move"
                 type="button"
-                disabled={saving || (c.column !== 'inbox' && !f.list.find(s => s.key === c.column)?.claim) || !!dispatched}
+                disabled={saving || !route || !!dispatched}
                 onClick={() => openDispatch(c.id)}
               >
                 <Icon name="dispatch" />
