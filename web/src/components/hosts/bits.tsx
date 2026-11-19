@@ -74,7 +74,7 @@ export function AgentChip({ a, def, env, skill }: { a: HostAgent; def?: boolean;
   return (
     <span className={cx('hp-agent', !a.found && 'missing', def && 'def', skill && 'noskill')} style={{ ['--ac' as string]: m.color }}>
       <AgentIcon id={a.id} />
-      {a.name}
+      <span className="hp-agent-name">{a.name}</span>
       {env && <i className="hp-agent-env">· {env}</i>}
       <em>{a.found ? a.version || '找到了' : missWord(a)}</em>
       {def && <small>默认</small>}

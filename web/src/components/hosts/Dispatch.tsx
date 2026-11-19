@@ -351,18 +351,18 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
               <>
                 <div className="dp-label">agent</div>
                 <div className="hp-agents">
-                  <button type="button" className={cx('hp-agent-btn', agent === '' && 'on')} onClick={() => setAgent('')}>
-                    <span className="hp-agent">机器的默认 agent</span>
-                  </button>
+                  {/* 怎么挑机器的说明不再常驻一行，悬浮 / 聚焦「机器的默认 agent」时提示（default/main#496） */}
+                  <Tip text={`服务端在能接这块白板的 ${takers.length} 台机器里挑空位最多的一台，一样多时轮流；现在都没有空位就排着，分到的机器离线、暂停接单时自动换一台。`}>
+                    <button type="button" className={cx('hp-agent-btn', agent === '' && 'on')} onClick={() => setAgent('')}>
+                      <span className="hp-agent dp-agent-def">机器的默认 agent</span>
+                    </button>
+                  </Tip>
                   {anyAgents.map(a => (
                     <button key={a.id} type="button" className={cx('hp-agent-btn', agent === a.id && 'on')} onClick={() => setAgent(a.id)}>
                       <AgentChip a={a} />
                     </button>
                   ))}
                 </div>
-                <p className="dp-note">
-                  服务端在能接这块白板的 {takers.length} 台机器里挑空位最多的一台，一样多时轮流；现在都没有空位就排着，分到的机器离线、暂停接单时自动换一台。
-                </p>
               </>
             )}
             {h && (
