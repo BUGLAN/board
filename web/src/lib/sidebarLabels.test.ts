@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_HIDDEN, HIDDEN_LEN, HIDDEN_MAX, hiddenBy, hiddenRules, ruleError, sidebarLabels, visibleLabels } from './sidebarLabels';
+import { DEFAULT_HIDDEN, HIDDEN_LEN, HIDDEN_MAX, hiddenBy, hiddenRules, promptLabels, ruleError, sidebarLabels, visibleLabels } from './sidebarLabels';
 import type { Label } from './types';
 
 const label = (id: number, name: string): Label => ({ id, name, color: '#888', uses: 0 });
@@ -69,5 +69,19 @@ describe('隐藏规则（default/main#324）', () => {
     expect(ruleError(' ^v\\d ', DEFAULT_HIDDEN)).toMatch('已经有');
     expect(ruleError('^z', Array.from({ length: HIDDEN_MAX }, (_, i) => `^x${i}`))).toMatch(`${HIDDEN_MAX}`);
     expect(ruleError('(')).toMatch('不是有效的正则');
+  });
+});
+
+describe('带标签的提示词可选的标签（右键菜单、命令面板，default/main#503）', () => {
+  const all = ['claude', 'v0.1.21', 'v0.1.24', '定时'].map((n, i) => label(i + 1, n));
+
+  it('按项目的隐藏规则去掉隐藏标签，其余按原顺序', () => {
+    expect(names(promptLabels({ labels: all }))).toEqual(['claude', '定时']);
+    expect(names(promptLabels({ labels: all, hiddenLabels: ['^定'] }))).toEqual(['claude', 'v0.1.21', 'v0.1.24']);
+    expect(promptLabels({ labels: all, hiddenLabels: [] })).toBe(all);
+  });
+
+  it('没有项目时为空', () => {
+    expect(promptLabels(undefined)).toEqual([]);
   });
 });

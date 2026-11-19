@@ -65,6 +65,8 @@
 .lb-pick { height: 24px; max-width: 100%; padding: 0 8px; font-size: 12px; cursor: pointer; transition: background-color var(--dur-1), color var(--dur-1), box-shadow var(--dur-1), transform var(--dur-1) var(--ease-out); }
 .lb-pick:hover { background: color-mix(in srgb, var(--lc) 22%, transparent); }
 .lb-pick:active { transform: scale(.96); }
+/* 侧栏新建标签、等服务端确认时的胶囊（Workbench.tsx LabelBlock）：不能点、不能拖 */
+.lb-pick.pending { cursor: default; pointer-events: none; }
 .lb-pick em { font-style: normal; font-family: var(--f-mono); font-size: 11px; opacity: .6; margin-left: 2px; }
 .lb-pick.on { color: #fff; background: var(--lc); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--lc) 70%, transparent); }
 .lb-pick.on em { opacity: .85; }

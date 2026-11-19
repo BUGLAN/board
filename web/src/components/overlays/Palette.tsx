@@ -7,6 +7,7 @@ import { hostLoad, hostState, hostsOf } from '../../lib/hosts';
 import { quickPrompts } from '../../lib/prompt';
 import { boardFlow, INBOX } from '../../lib/schema';
 import { highlightQuery, otherHits, searchBoardCards } from '../../lib/search';
+import { promptLabels } from '../../lib/sidebarLabels';
 import type { Card, SearchHit } from '../../lib/types';
 import { accel, cx } from '../../lib/util';
 import { allBoards, loadFull, useData } from '../../store/data';
@@ -154,9 +155,10 @@ export function Palette() {
       ...quickPrompts(path, f.claimables.map(s => s.name)).map(q => ({
         id: `quick-${q.id}`, group: '提示词', title: `复制提示词：${q.title}`, sub: q.text, icon: 'prompt' as IconName, run: () => copyQuickPrompt(q),
       })),
-      // 带标签的提示词：每个可领取状态 × 每个标签各一条，只在搜索时出现，免得空面板被刷屏
+      // 带标签的提示词：每个可领取状态 × 每个标签各一条，只在搜索时出现，免得空面板被刷屏。
+      // 项目隐藏规则命中的标签（版本标签 v0.1.24 这类）不列，和提示词菜单一致（default/main#324、#503）
       ...(query
-        ? (ws?.projects.find(p => p.key === path.split('/')[0])?.labels ?? []).flatMap(l =>
+        ? promptLabels(ws?.projects.find(p => p.key === path.split('/')[0])).flatMap(l =>
             quickPrompts(path, f.claimables.map(s => s.name), l.name)
               .filter(q => q.kind === 'label')
               .map(q => ({

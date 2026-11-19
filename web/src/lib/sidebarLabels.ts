@@ -73,3 +73,7 @@ export function visibleLabels(labels: Label[], rules: string[], keep: readonly n
 export function sidebarLabels(labels: Label[], sel: number[] = [], rules: string[] = DEFAULT_HIDDEN): Label[] {
   return visibleLabels(labels, rules, sel);
 }
+
+/** 给 agent 的「带标签的提示词」可选的标签（右键菜单、命令面板）：项目里没被隐藏的标签，按原顺序 */
+export const promptLabels = (project: Pick<ProjectInfo, 'labels' | 'hiddenLabels'> | null | undefined): Label[] =>
+  visibleLabels(project?.labels ?? [], hiddenRules(project));

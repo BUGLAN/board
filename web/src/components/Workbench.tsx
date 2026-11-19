@@ -10,8 +10,8 @@ import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { hiddenRules, sidebarLabels } from '../lib/sidebarLabels';
 import type { BoardEvent, Card, Label } from '../lib/types';
-import { boardFlow, flowOf, timing } from '../lib/schema';
-import { clock, cx, ago, agentInk, pref, replay } from '../lib/util';
+import { boardFlow, flowOf, LABEL_COLORS, timing } from '../lib/schema';
+import { clock, cx, ago, agentInk, pref, reduceMotion, replay } from '../lib/util';
 import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { ActorAvatar, AgentAvatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, useMeName, useNow } from './bits';
@@ -223,13 +223,28 @@ function Section({ id, title, n, closed, onToggle, children, action }: { id: str
 /** 标签：整块就是输入框。平时看着只是一排胶囊；双击胶囊以外的空白处进入编辑态，光标跟在最后一个胶囊后面，
     输入名称回车新建；Esc 或点到区块外退出。单击空白不做任何事；单击胶囊筛选、点 × 删除、拖胶囊到卡片都不进入编辑态。
     胶囊可以拖到卡片上，给卡片加上这个标签（lib/labelDrag.ts）。
-    项目的隐藏规则命中的标签（默认是版本标签 v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts，default/main#324） */
+    项目的隐藏规则命中的标签（默认是版本标签 v0.1.24 这类）平时不列，正选中筛选的仍然列出（lib/sidebarLabels.ts，default/main#324）。
+    新建要等服务端分配 ID：回车当帧在末尾画一个「保存中」的胶囊（输入的名称、服务端会给的默认色，沿用 .lb.pending 的呼吸 + 扫光），
+    确认后换成真标签；失败时拿掉，名称回到输入框（default/main#503）。它不是标签对象，筛选、拖动、选择器都碰不到它 */
 function LabelBlock({ project, all, rules, used }: { project: string; all: Label[]; rules: string[]; used: Record<number, number> }) {
   const sel = useUI(s => s.labelSel);
   const labels = useMemo(() => sidebarLabels(all, sel, rules), [all, sel, rules]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<{ name: string; color: string } | null>(null);
   const [editing, setEditing] = useState(false);
+  const field = useRef<HTMLDivElement>(null);
+  // 真标签随刷新到了（和 optimistic 返回可能不在同一次渲染）：当帧就不再画「保存中」的胶囊，不会两个并排；
+  // 真胶囊从半透明淡到正常，接着「保存中」的样子，不一下跳亮
+  const landed = pending ? all.find(l => l.name === pending.name) : undefined;
+  useLayoutEffect(() => {
+    if (!landed) return;
+    setPending(null);
+    if (!reduceMotion())
+      field.current
+        ?.querySelector<HTMLElement>(`[data-label="${landed.id}"] .lb-pick`)
+        ?.animate([{ opacity: 0.6 }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
+  }, [landed]);
   const input = useRef<HTMLInputElement>(null);
   const edit = () => {
     setEditing(true);
@@ -241,12 +256,17 @@ function LabelBlock({ project, all, rules, used }: { project: string; all: Label
   const create = async () => {
     const n = name.trim();
     if (!n || busy) return;
-    // 新标签要等服务端分配 ID：输入框进行中（只读、转圈），不会重复新建
+    // 新标签要等服务端分配 ID：当帧画出「保存中」的胶囊、清空输入框；保存完之前输入框只读，不会重复新建。
+    // 颜色和服务端不指定颜色时一样：色板里按项目已有标签数轮下一个
     setBusy(true);
+    setPending({ name: n, color: LABEL_COLORS[all.length % LABEL_COLORS.length] });
+    setName('');
     try {
       await optimistic(null, () => api.createLabel(project, n));
-      setName('');
     } catch (e) {
+      // 人输入的名称不能丢：拿掉胶囊，名称回到输入框
+      setPending(null);
+      setName(n);
       toastError(e);
       replay(input.current, 'invalid');
     } finally {
@@ -267,6 +287,7 @@ function LabelBlock({ project, all, rules, used }: { project: string; all: Label
   return (
     <div className="lb-block">
       <div
+        ref={field}
         className={cx('lb-field', editing && 'editing')}
         onMouseDown={e => {
           // 胶囊、× 照常；空白处单击什么也不做：不聚焦、不选中文字，编辑中也不让输入框失焦
@@ -310,6 +331,14 @@ function LabelBlock({ project, all, rules, used }: { project: string; all: Label
             </button>
           </span>
         ))}
+        {pending && !landed && (
+          <span className="lb-item">
+            <span className="lb lb-pick pending" style={{ ['--lc' as string]: pending.color }} aria-busy="true" title="正在新建…">
+              {pending.name}
+              <em>0</em>
+            </span>
+          </span>
+        )}
         <input
           ref={input}
           className={cx('lb-input', busy && 'busy')}
