@@ -21,20 +21,30 @@ function Code({ cmd, note, plain, ps }: { cmd: string; note?: string; plain?: bo
     <div className={cx('code-line', plain && 'plain', ps && 'ps')}>
       <code>{cmd}</code>
       {note && <span>{note}</span>}
-      <CopyBtn text={cmd} />
+      <CopyBtn text={cmd} label={note} />
     </div>
   );
 }
 
-function CopyBtn({ text }: { text: string }) {
+/** 复制按钮的可访问名称（#519）：`复制：<说明>`；没有说明时用命令本身（太长截断），令牌原文换成「<令牌>」 */
+export function copyLabel(text: string, label?: string): string {
+  const what = label?.trim() || text.replace(/\bbd_[0-9a-zA-Z]+/g, '<令牌>').replace(/\s+/g, ' ').trim();
+  const short = [...what].length > 48 ? `${[...what].slice(0, 47).join('')}…` : what;
+  return `复制：${short}`;
+}
+
+function CopyBtn({ text, label }: { text: string; label?: string }) {
   const [done, setDone] = useState(false);
   return (
     <button
       type="button"
       className={cx('copy', done && 'done')}
-      aria-label="复制"
+      aria-label={copyLabel(text, label)}
       onClick={async () => {
-        await copyText(text);
+        const ok = await copyText(text);
+        // 复制结果用 toast 告诉屏幕阅读器（toast 区是 aria-live），图标同时换成勾
+        toast({ type: ok ? 'success' : 'error', title: ok ? '已复制' : '没能写入剪贴板', duration: 1800 });
+        if (!ok) return;
         setDone(true);
         setTimeout(() => setDone(false), 1400);
       }}
@@ -61,7 +71,7 @@ function LabelPrompt({ path, status, names }: { path: string; status: string; na
         onChange={setPick}
         aria-label={`「${status}」里按哪个标签`}
       />
-      <CopyBtn text={q.text} />
+      <CopyBtn text={q.text} label={`「${status}」里带「${label}」标签的任务`} />
     </div>
   );
 }

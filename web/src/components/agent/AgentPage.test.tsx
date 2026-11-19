@@ -172,3 +172,34 @@ describe('设置 tab', () => {
     expect(ids[ids.length - 1]).toBe('shortcuts');
   });
 });
+
+describe('复制按钮（#519）', () => {
+  it('接入 agent 页每个复制按钮的名称都不一样，写明复制的是哪条；复制成功有 toast', async () => {
+    const { fetch } = localServer();
+    vi.stubGlobal('fetch', fetch);
+    const writes: string[] = [];
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: async (t: string) => void writes.push(t) } });
+    const ws = await api.workspace();
+    act(() => useData.setState({ ws }));
+    act(() => useAgentSec.setState({ sec: 'access' }));
+    await show();
+    const btns = [...host.querySelectorAll<HTMLButtonElement>('#ag-access button.copy')];
+    const names = btns.map(b => b.getAttribute('aria-label') ?? '');
+    expect(btns.length).toBeGreaterThan(5);
+    expect(names.every(n => n.startsWith('复制：') && n.length > 3)).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain('复制：处理一张卡片');
+    // 点一个：复制的是那一行的命令，toast 告诉屏幕阅读器
+    const line = btns[0].closest('.code-line')!.querySelector('code')!.textContent;
+    await act(async () => btns[0].click());
+    expect(writes).toEqual([line]);
+    expect(useUI.getState().toasts.at(-1)?.title).toBe('已复制');
+  });
+
+  it('访问令牌页：命令里的令牌原文不出现在按钮名称里', async () => {
+    const { copyLabel } = await import('./Access');
+    expect(copyLabel('board login --url https://b.test --token bd_0123456789abcdef0123')).toBe('复制：board login --url https://b.test --token <令牌>');
+    expect(copyLabel('x', '处理一张卡片')).toBe('复制：处理一张卡片');
+    expect([...copyLabel('a'.repeat(100))].length).toBe('复制：'.length + 48);
+  });
+});

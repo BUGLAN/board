@@ -157,6 +157,7 @@ function CliInstall() {
   const cmd = token && !err ? installCommand({ origin, token: token.raw, name, workspace, os }) : null;
   const copy = async (t: string) => {
     if (await copyText(t)) toast({ type: 'success', title: '已复制', text: '在新机器的终端里粘贴执行', duration: 1800 });
+    else toast({ type: 'error', title: '没能写入剪贴板', text: '选中命令手动复制', duration: 2400 });
   };
   const generate = async () => {
     if (err || busy) return;
@@ -243,7 +244,7 @@ function CliInstall() {
         <>
           {cmd ? (
             <Tip text="复制">
-              <button type="button" className="hp-cmd" onClick={() => copy(cmd)}>
+              <button type="button" className="hp-cmd" aria-label="复制安装命令" onClick={() => copy(cmd)}>
                 <code>{cmd}</code>
                 <Icon name="copy" />
               </button>
