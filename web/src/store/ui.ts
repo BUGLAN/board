@@ -88,8 +88,8 @@ export type ConfirmIcon = 'trash' | 'tag' | 'reset' | 'logout' | 'key' | 'unlock
 
 export interface CtxReq {
   /** prompts：白板页头的「提示词」菜单，id 是白板路径；
-      move：卡片详情底部的「移动到」，id 是卡片编号；select：选择框的选项 */
-  kind: 'project' | 'board' | 'prompts' | 'move' | 'select';
+      move：卡片详情底部的「移动到」，id 是卡片编号；bulk-move：白板批量条的「移动到」（移动选中的卡片，id 不用）；select：选择框的选项 */
+  kind: 'project' | 'board' | 'prompts' | 'move' | 'bulk-move' | 'select';
   id: string;
   x: number;
   y: number;

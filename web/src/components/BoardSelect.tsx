@@ -1,10 +1,11 @@
 /* 白板勾选卡片、批量打标签的界面（lib/boardSelect）：侧栏「批量」按钮、块标题的勾选框、底部批量条、卡片上的勾选圈 */
-import { blockState, bulkLabel, clearSelect, selectIds, startSelect, toggleBlock, useBoardSel } from '../lib/boardSelect';
-import { INBOX } from '../lib/schema';
+import { Fragment } from 'react';
+import { blockState, bulkLabel, bulkMove, clearSelect, moveTargets, selectIds, startSelect, toggleBlock, useBoardSel } from '../lib/boardSelect';
+import { boardFlow, INBOX } from '../lib/schema';
 import type { BoardSnapshot, Label } from '../lib/types';
 import { cx } from '../lib/util';
 import { useCurrent, useData } from '../store/data';
-import { openPicker, setBoardSheet, toast, useUI } from '../store/ui';
+import { closeCtx, openCtx, openPicker, setBoardSheet, toast, useUI } from '../store/ui';
 import { Tip } from './bits';
 import { cardHit, filterActive } from './Card';
 import { Icon } from './Icon';
@@ -132,9 +133,22 @@ export function BoardBulkBar() {
         <Icon name="checkCircle" />
         <span className="ib-bl">{filterActive(filter.trim(), sel) ? '全选筛出的' : '全选'}</span>
       </button>
-      <button type="button" className="btn sm brand" data-label-picker disabled={!n} onClick={e => pickLabels(e.currentTarget.getBoundingClientRect())}>
+      <button type="button" className="btn sm ghost" data-label-picker disabled={!n} onClick={e => pickLabels(e.currentTarget.getBoundingClientRect())}>
         <Icon name="tag" />
-        打标签
+        <span className="ib-bl">打标签</span>
+      </button>
+      <button
+        type="button"
+        className="btn sm ghost bulk-move-btn"
+        aria-haspopup="menu"
+        disabled={!n}
+        onClick={e => {
+          if (useUI.getState().ctx?.kind === 'bulk-move') return closeCtx();
+          openCtx({ kind: 'bulk-move', id: '', x: 0, y: 0, anchor: e.currentTarget.getBoundingClientRect() });
+        }}
+      >
+        <Icon name="move" />
+        <span className="ib-bl">移动到</span>
       </button>
       <Tip text="退出选择 · esc">
         <button type="button" className="icon-btn sm" aria-label="退出选择" data-tip-pos="top" onClick={clearSelect}>
@@ -144,3 +158,54 @@ export function BoardBulkBar() {
     </div>
   );
 }
+
+/** 批量条「移动到」的菜单（在 CtxMenu 里画）：本白板的每个状态和「未整理」，写能移几张、跳过几张；锁定状态整行不能选 */
+export function BulkMoveMenu({ go }: { go: (fn: () => void) => () => void }) {
+  const board = useData(s => s.board);
+  const raw = useBoardSel(s => s.ids);
+  if (!board) return null;
+  const ids = raw.filter(id => board.cards[id] && board.cards[id].column !== INBOX);
+  const targets = moveTargets(board, ids);
+  return (
+    <>
+      <div className="ctx-title">
+        <Icon name="move" />
+        <b>把 {ids.length} 张移动到</b>
+      </div>
+      {targets.map(t => {
+        const inbox = t.key === INBOX;
+        const skip = [t.here && `${t.here} 张已在这里`, t.held && `${t.held} 张被持有`].filter(Boolean).join(' · ');
+        const off = !t.ids.length;
+        const why = t.locked ?? (t.here === ids.length ? '都已经在这里' : off ? '选中的都被 agent 持有' : '');
+        return (
+          <Fragment key={t.key}>
+            {inbox && <div className="ctx-sep" />}
+            <button
+              type="button"
+              data-do={`move-${t.key}`}
+              className={cx('mv-item', off && 'vetoed')}
+              aria-disabled={off}
+              title={t.locked ? `「${t.name}」已锁定：卡片只能由 agent 通过 board claim 领取进入` : skip ? `跳过：${skip}` : undefined}
+              onClick={off ? undefined : go(() => void bulkMove(t))}
+            >
+              <i className="mv-dot" style={{ background: inbox ? 'var(--c-inbox)' : statusDot(board, t.key) }} />
+              <span className="mv-name">{t.name}</span>
+              {off ? (
+                <span className="mv-note">
+                  {t.locked && <Icon name="lock" />}
+                  {why}
+                </span>
+              ) : (
+                <span className="mv-note">
+                  <b className="mono">{t.ids.length}</b> 张{skip && <span className="mv-skip"> · 跳过 {t.here + t.held}</span>}
+                </span>
+              )}
+            </button>
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+const statusDot = (board: BoardSnapshot, key: string) => boardFlow(board).color(key);

@@ -12,6 +12,7 @@ import { allBoards, boardMeta, colCount, useData } from '../../store/data';
 import { closeCtx, manageLabels, openProjectSettings, useUI } from '../../store/ui';
 import { ColorRow, LabelChip, ProjectAvatar, Tip } from '../bits';
 import { Icon } from '../Icon';
+import { BulkMoveMenu } from '../BoardSelect';
 
 export function CtxMenu() {
   const req = useUI(s => s.ctx);
@@ -40,7 +41,7 @@ export function CtxMenu() {
 
   useEffect(() => {
     if (!req) return;
-    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn, .d-move, .sel') && closeCtx();
+    const down = (e: PointerEvent) => !(e.target as HTMLElement).closest('.ctx, .prompts-btn, .col-sort-btn, .d-move, .bulk-move-btn, .sel') && closeCtx();
     document.addEventListener('pointerdown', down);
     window.addEventListener('resize', closeCtx);
     return () => {
@@ -88,6 +89,8 @@ export function CtxMenu() {
     body = <PromptsMenu path={req.id} go={go} />;
   } else if (req.kind === 'move') {
     body = <MoveMenu id={Number(req.id)} go={go} />;
+  } else if (req.kind === 'bulk-move') {
+    body = <BulkMoveMenu go={go} />;
   } else if (req.kind === 'select') {
     body = (req.items ?? []).map(o => (
       <button key={o.value} type="button" role="option" aria-selected={o.value === req.value} data-do={`pick-${o.value}`} className={cx(o.value === req.value && 'on')} disabled={o.disabled} onClick={go(() => req.pick?.(o.value))}>
@@ -133,7 +136,7 @@ export function CtxMenu() {
   }
   return (
     <div
-      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', req.kind === 'move' && 'ctx-move', req.kind === 'select' && 'ctx-select', pos && 'on')}
+      className={cx('ctx', req.kind === 'prompts' && 'ctx-prompts', (req.kind === 'move' || req.kind === 'bulk-move') && 'ctx-move', req.kind === 'select' && 'ctx-select', pos && 'on')}
       ref={ref}
       role={req.kind === 'select' ? 'listbox' : 'menu'}
       style={{ ...(pos ?? { left: -9999, top: -9999 }), ...(req.kind === 'select' && req.anchor ? { minWidth: req.anchor.width } : null) }}

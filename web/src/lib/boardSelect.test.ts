@@ -4,21 +4,28 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const addLabel = vi.fn<(id: number, label: number) => Promise<boolean>>();
 const removeLabel = vi.fn<(id: number, label: number) => Promise<boolean>>();
 const toastError = vi.fn();
+const toast = vi.fn();
+const exec = vi.fn<(cmd: { op: string; id: number; column: string }, patch: unknown) => Promise<unknown>>();
 vi.mock('../store/data', () => ({
   addLabel: (id: number, l: number) => addLabel(id, l),
   removeLabel: (id: number, l: number) => removeLabel(id, l),
+  exec: (cmd: { op: string; id: number; column: string }, patch: unknown) => exec(cmd, patch),
+  movePatch: (id: number, to: string) => ({ move: [id, to] }),
   useData: { getState: () => ({ detailId: null }) },
 }));
-vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e) }));
-vi.mock('./drag', () => ({ justDropped: () => false }));
+vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e), toast: (t: unknown) => toast(t) }));
 
-const { blockState, bulkLabel, clearSelect, rangeIds, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } = await import('./boardSelect');
+const { FLOW, snapshot } = await import('../../test/fixtures');
+const { blockState, bulkLabel, bulkMove, clearSelect, moveTargets, rangeIds, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
+  await import('./boardSelect');
 
 beforeEach(() => {
   clearSelect();
   addLabel.mockReset();
   removeLabel.mockReset();
   toastError.mockReset();
+  toast.mockReset();
+  exec.mockReset();
 });
 
 describe('rangeIds（Shift 连选）', () => {
@@ -117,5 +124,65 @@ describe('bulkLabel（批量加 / 去一个标签）', () => {
     expect(await bulkLabel([1, 2, 3], 7, true)).toBe(2);
     expect(toastError).toHaveBeenCalledTimes(1);
     expect(toastError).toHaveBeenCalledWith(err);
+  });
+});
+
+describe('moveTargets（「移动到」菜单的每一行）', () => {
+  // todo: 1 2 · doing: 3（beta 持有）· review: 4 · done: 5 · 未整理: 9
+  const b = () =>
+    snapshot('p/b', { todo: [1, 2], doing: [3], review: [4], done: [5], rework: [], inbox: [9] }, [{ id: 3, holder: 'beta' }]);
+  const row = (key: string, ids: number[]) => moveTargets(b(), ids).find(t => t.key === key)!;
+
+  it('列出工作流的每个状态，最后是「未整理」', () => {
+    expect(moveTargets(b(), [1]).map(t => t.key)).toEqual([...FLOW.map(s => s.key), 'inbox']);
+    expect(row('inbox', [1]).name).toBe('未整理');
+  });
+
+  it('已经在目标状态里的跳过、记进 here；能移的按白板上的顺序', () => {
+    expect(row('review', [4, 2, 1])).toMatchObject({ ids: [1, 2], here: 1, held: 0, locked: null });
+  });
+
+  it('被 agent 持有的跳过、记进 held', () => {
+    expect(row('done', [3, 1])).toMatchObject({ ids: [1], here: 0, held: 1 });
+  });
+
+  it('锁定状态（只能领取进入）整行不能选，写明原因', () => {
+    const t = row('doing', [1, 2]);
+    expect(t.ids).toEqual([]);
+    expect(t.locked).toBe('只能由 agent 领取进入');
+  });
+
+  it('「未整理」不算锁定：人可以放回去', () => {
+    expect(row('inbox', [1, 4])).toMatchObject({ ids: [1, 4], locked: null });
+  });
+});
+
+describe('bulkMove（批量移动）', () => {
+  const t = { key: 'review', name: '待审核', ids: [1, 2], here: 1, held: 1, locked: null };
+
+  it('每张都走 move 命令和 movePatch（排到末尾），提示移了几张、跳过的写明', async () => {
+    exec.mockResolvedValue({});
+    expect(await bulkMove(t)).toBe(2);
+    expect(exec.mock.calls).toEqual([
+      [{ op: 'move', id: 1, column: 'review' }, { move: [1, 'review'] }],
+      [{ op: 'move', id: 2, column: 'review' }, { move: [2, 'review'] }],
+    ]);
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: '2 张移到了「待审核」', text: '跳过：1 张本来就在这里，1 张被 agent 持有' }));
+  });
+
+  it('有一张被拒：其余照样移，提示一次错误', async () => {
+    const err = new Error('NOT_HOLDER');
+    exec.mockImplementation(async cmd => {
+      if (cmd.id === 2) throw err;
+      return {};
+    });
+    expect(await bulkMove({ ...t, here: 0, held: 0 })).toBe(1);
+    expect(toastError).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: '1 张移到了「待审核」', text: undefined }));
+  });
+
+  it('没有能移的：不发请求', async () => {
+    expect(await bulkMove({ ...t, ids: [] })).toBe(0);
+    expect(exec).not.toHaveBeenCalled();
   });
 });
