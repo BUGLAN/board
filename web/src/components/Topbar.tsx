@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newBoard, openBoard, openCard } from '../lib/actions';
 import { startWindowDrag, toggleMaximize } from '../lib/platform';
-import { flowOf, timing } from '../lib/schema';
+import { cardTotal, flowOf, timing } from '../lib/schema';
 import { agentIdFor, agentMarkOf } from '../lib/hosts';
 import { clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
@@ -147,6 +147,16 @@ function ProjectSwitch() {
   );
 }
 
+/** 切换器里的一项统计：小图标 + 数字，含义写在悬停提示里 */
+function PjStat({ icon, n, tip }: { icon: 'inbox' | 'todo' | 'cards'; n: number; tip: (n: number) => string }) {
+  return (
+    <span className="pj-stat" title={tip(n)}>
+      <Icon name={icon} />
+      {n}
+    </span>
+  );
+}
+
 function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
@@ -223,7 +233,6 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
       </div>
       <div className="pj-head">
         <span>项目 / 白板</span>
-        <span>进行中 · 待办</span>
       </div>
       <div className="pj-list" role="listbox">
         {groups.length === 0 && <div className="pj-empty">没有匹配的白板</div>}
@@ -233,6 +242,9 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
               <ProjectAvatar name={p.name} color={p.color} className="sm" />
               <b>{p.name}</b>
               <span className="mono">{p.key}</span>
+              <span className="pj-sum">
+                <PjStat icon="cards" n={p.boards.reduce((n, b) => n + cardTotal(b.counts), 0)} tip={n => `共 ${n} 张卡片`} />
+              </span>
             </div>
             {bs.map(b => {
               const idx = i++;
@@ -255,13 +267,17 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
                     <span className="mono">{b.path}</span>
                   </span>
                   <span className="pj-stats">
-                    {b.holders.length > 0 && (
-                      <span className="pj-live" title={`${[...new Set(b.holders)].join('、')} 正在工作`}>
-                        <i />
-                        {b.holders.length}
-                      </span>
-                    )}
-                    <span title="可领取状态里的卡片数">{flowOf(b.statuses).ready(b.counts)}</span>
+                    <span className="pj-cell">
+                      {b.holders.length > 0 && (
+                        <span className="pj-live" title={`${[...new Set(b.holders)].join('、')} 正在工作`}>
+                          <i />
+                          {b.holders.length}
+                        </span>
+                      )}
+                    </span>
+                    <PjStat icon="inbox" n={b.counts.inbox ?? 0} tip={n => `未整理 ${n} 张`} />
+                    <PjStat icon="todo" n={flowOf(b.statuses).ready(b.counts)} tip={n => `待办 ${n} 张（可领取状态里的卡片）`} />
+                    <PjStat icon="cards" n={cardTotal(b.counts)} tip={n => `共 ${n} 张卡片（含未整理）`} />
                   </span>
                   <span className="pj-check">{current && <Icon name="check" />}</span>
                 </button>

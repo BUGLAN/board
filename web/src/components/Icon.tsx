@@ -153,6 +153,15 @@ const P: Record<string, ReactNode> = {
       <path d="M7 17.5h6" />
     </>
   ),
+  /** 待办（可领取状态）：空心圆，同状态点「还没开始」 */
+  todo: <circle cx="10" cy="10" r="5.6" />,
+  /** 卡片总数：两张叠起来的卡片 */
+  cards: (
+    <>
+      <rect x="3.5" y="7" width="10.5" height="9.5" rx="2" />
+      <path d="M6.5 4h8a2 2 0 0 1 2 2v7" />
+    </>
+  ),
   inbox: (
     <>
       <path d="M3 11.5h4l1 2h4l1-2h4" />

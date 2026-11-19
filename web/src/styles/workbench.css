@@ -263,7 +263,13 @@
 .pj-main { min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
 .pj-main b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
 .pj-main > span { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pj-stats { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
+.pj-stats { display: flex; align-items: center; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
+/* 正在工作、未整理、待办、共：每项定宽右对齐，各行的同一项上下对齐；正在工作没有时留空位 */
+.pj-stats > * { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 34px; white-space: nowrap; }
+.pj-stat { gap: 3px; }
+.pj-stat svg { width: 12px; height: 12px; flex: none; }
+.pj-sum { margin-left: auto; padding-right: 24px; font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
+.pj-sum .pj-stat { display: inline-flex; align-items: center; }
 .pj-live { display: inline-flex; align-items: center; gap: 4px; color: color-mix(in oklab, var(--c-doing), var(--ink)); }
 .pj-live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: breathe 2.4s var(--ease-in-out) infinite; }
 .pj-check { color: var(--brand); }
