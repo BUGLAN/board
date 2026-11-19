@@ -88,6 +88,12 @@ pub fn url() -> WebviewUrl {
     }
 }
 
+/// 是不是内置启动页（加载页 / 连接服务端页）。Windows 走 `http://boardsplash.localhost/`，
+/// macOS / Linux 走自定义协议 `boardsplash://localhost/`
+pub fn is_splash(url: &Url) -> bool {
+    url.scheme() == SCHEME || (url.scheme() == "http" && url.host_str() == Some("boardsplash.localhost"))
+}
+
 /// 自定义协议的响应：任何路径都返回启动页；`target` 为 None 时是「连接服务端」页
 pub fn respond<R: Runtime>(app: &AppHandle<R>, target: Option<&Url>) -> Response<Vec<u8>> {
     let theme = load_theme(app);
@@ -520,6 +526,16 @@ mod tests {
         }
         assert_eq!(Theme::parse(" dark\n"), Some(Theme::Dark));
         assert_eq!(Theme::parse("blue"), None);
+    }
+
+    /// 启动页识别要同时认 Windows 的 http://boardsplash.localhost 和别的平台的自定义协议；
+    /// 普通本地页面（开发服务器）不能当成启动页
+    #[test]
+    fn splash_origin_is_recognized() {
+        assert!(is_splash(&"http://boardsplash.localhost/".parse().unwrap()));
+        assert!(is_splash(&"boardsplash://localhost/".parse().unwrap()));
+        assert!(!is_splash(&"http://localhost:1420/".parse().unwrap()));
+        assert!(!is_splash(&"https://board.example.com/".parse().unwrap()));
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
 const FLAG_FILE: &str = "host.json";
 const TRAY_ID: &str = "board-host";
@@ -549,8 +549,9 @@ pub fn tray(app: &AppHandle, on: bool) {
 
 /// 「设置 → 本机」的现状
 #[tauri::command]
-pub async fn host_status(app: AppHandle) -> Status {
-    tauri::async_runtime::spawn_blocking(move || status(&app)).await.unwrap_or_else(|_| Status {
+pub async fn host_status(app: AppHandle, window: WebviewWindow) -> Result<Status, String> {
+    crate::ensure_caller(&app, &window, false)?;
+    Ok(tauri::async_runtime::spawn_blocking(move || status(&app)).await.unwrap_or_else(|_| Status {
         enabled: false,
         running: false,
         exit: None,
@@ -561,7 +562,7 @@ pub async fn host_status(app: AppHandle) -> Status {
         logged_in: false,
         cli: false,
         autostart: false,
-    })
+    }))
 }
 
 /// 生效的机器名：配置里没写（空）时用本机主机名——和 board host 启动时的算法一致
@@ -606,7 +607,8 @@ fn rename_host(new_name: &str) -> Result<(), (String, String)> {
 /// 在 board host 读到新配置之前，它用旧名字的上报由服务端按进程标识认回改名后的记录，不会新建一台机器。
 /// 确认（机器名、白板与目录、免审批运行的风险）由页面用应用内的确认框做完再调用这里
 #[tauri::command]
-pub async fn host_save(app: AppHandle, name: String, workspace: String) -> Result<(), String> {
+pub async fn host_save(app: AppHandle, window: WebviewWindow, name: String, workspace: String) -> Result<(), String> {
+    crate::ensure_caller(&app, &window, false)?;
     tauri::async_runtime::spawn_blocking(move || {
         let name = name.trim();
         check_conf(name, &workspace)?;
@@ -634,7 +636,8 @@ pub async fn host_save(app: AppHandle, name: String, workspace: String) -> Resul
 /// 打开 / 关掉「让这台电脑接任务」。打开时连同页面上的机器名、白板与目录一起传来（人在应用内的
 /// 确认框里看过、确认过），先校验再写进配置，然后启动 board host；关掉不用确认
 #[tauri::command]
-pub async fn host_enable(app: AppHandle, on: bool, name: String, workspace: String) -> Result<(), String> {
+pub async fn host_enable(app: AppHandle, window: WebviewWindow, on: bool, name: String, workspace: String) -> Result<(), String> {
+    crate::ensure_caller(&app, &window, false)?;
     tauri::async_runtime::spawn_blocking(move || {
         if on {
             check_conf(name.trim(), &workspace)?;
@@ -660,7 +663,8 @@ pub async fn host_enable(app: AppHandle, on: bool, name: String, workspace: Stri
 
 /// 打开 / 关掉「开机时自动启动」（登录系统时在后台启动桌面端，见 autostart.rs）
 #[tauri::command]
-pub async fn host_autostart(on: bool) -> Result<bool, String> {
+pub async fn host_autostart(app: AppHandle, window: WebviewWindow, on: bool) -> Result<bool, String> {
+    crate::ensure_caller(&app, &window, false)?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::autostart::set(on)?;
         Ok(crate::autostart::enabled())
@@ -672,7 +676,8 @@ pub async fn host_autostart(on: bool) -> Result<bool, String> {
 /// 「工作空间」选择文件夹：弹系统的文件夹选择框，从现在的路径开始（存在时，`~` 按家目录展开）。
 /// 返回选中的目录；取消时返回 None。只取路径、不写配置：保存仍走 host_save（改了要让页面确认）
 #[tauri::command]
-pub async fn pick_folder(app: AppHandle, start: String) -> Result<Option<String>, String> {
+pub async fn pick_folder(app: AppHandle, window: WebviewWindow, start: String) -> Result<Option<String>, String> {
+    crate::ensure_caller(&app, &window, false)?;
     use tauri_plugin_dialog::DialogExt;
     tauri::async_runtime::spawn_blocking(move || {
         let mut dlg = app.dialog().file().set_title("选择工作空间（每个项目的目录是 <工作空间>/<项目>）");

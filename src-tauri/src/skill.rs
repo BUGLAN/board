@@ -11,7 +11,7 @@
 //!   PRD §10.16「共用配置」），它重新检查并上报，界面上的提醒随之消失。board host 没在跑时才由桌面端直接写。
 
 use std::path::{Path, PathBuf};
-use tauri::AppHandle;
+use tauri::{AppHandle, WebviewWindow};
 
 const SKILL: &str = "board-skills";
 
@@ -137,7 +137,8 @@ fn remove_link(p: &Path) -> std::io::Result<()> {
 /// 页面调用：给这几个 agent 装 board-skills（同一个目录只装一次），返回装到的目录。
 /// 装好后通知在跑的 board host 重新检查
 #[tauri::command]
-pub async fn skill_install(app: AppHandle, agents: Vec<String>) -> Result<Vec<String>, String> {
+pub async fn skill_install(app: AppHandle, window: WebviewWindow, agents: Vec<String>) -> Result<Vec<String>, String> {
+    crate::ensure_caller(&app, &window, false)?;
     let home = board_core::config::home().ok_or("找不到用户目录")?;
     let codex = std::env::var("CODEX_HOME").ok();
     let mut roots: Vec<PathBuf> = Vec::new();

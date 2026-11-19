@@ -7,6 +7,7 @@
 use board_core::mcp::{files, McpServer};
 use serde::Serialize;
 use std::path::PathBuf;
+use tauri::{AppHandle, WebviewWindow};
 
 #[derive(Debug, Serialize)]
 pub struct Found {
@@ -41,6 +42,7 @@ pub fn local() -> Vec<Found> {
 
 /// 页面调用：本机 agent 已经配好的 MCP 服务器
 #[tauri::command]
-pub async fn mcp_local() -> Vec<Found> {
-    tauri::async_runtime::spawn_blocking(local).await.unwrap_or_default()
+pub async fn mcp_local(app: AppHandle, window: WebviewWindow) -> Result<Vec<Found>, String> {
+    crate::ensure_caller(&app, &window, false)?;
+    Ok(tauri::async_runtime::spawn_blocking(local).await.unwrap_or_default())
 }

@@ -45,6 +45,11 @@ impl LoginError {
     pub fn not_connected() -> Self {
         LoginError::new("no_server", Some("还没有连接服务端：重开窗口，在「连接服务端」页填地址".into()))
     }
+
+    /// 调用页面不是当前连接的服务端（换过服务端后回到旧地址的页面，见 lib.rs 的 ensure_caller）
+    pub fn denied(message: String) -> Self {
+        LoginError::new("origin", Some(message))
+    }
 }
 
 impl From<std::io::Error> for LoginError {
