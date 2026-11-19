@@ -21,7 +21,7 @@
 //! 照旧在项目目录里启动。
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 
 /// `git fetch` 最多等多久：board host 每 10 秒上报一次、50 秒没上报算掉线，拉取不能把它拖到掉线
@@ -47,11 +47,10 @@ pub fn git(dir: &Path, args: &[&str], limit: Duration) -> Result<String, String>
 /// 同 [`git`]，但不管退出码，原样返回输出：要按退出码区分结果时用（例如 `git config --get-all` 退出码 1 是这一项不存在）。
 /// 没法运行 git、超时时返回错误
 pub fn git_output(dir: &Path, args: &[&str], limit: Duration) -> Result<std::process::Output, String> {
-    let mut child = Command::new("git")
+    let mut child = crate::gitcmd::command()
         .arg("-C")
         .arg(dir)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -434,7 +433,7 @@ mod tests {
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git")
+        let ok = crate::gitcmd::command()
             .arg("-C")
             .arg(dir)
             .args(args)

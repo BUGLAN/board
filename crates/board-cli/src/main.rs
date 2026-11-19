@@ -16,6 +16,7 @@ mod doctor;
 mod envs;
 mod events;
 mod gitsync;
+mod gitcmd;
 mod heartbeat;
 mod host;
 mod logfmt;
@@ -93,6 +94,10 @@ const COMMANDS: [(&str, &str, &str); 29] = [
 ];
 
 fn main() {
+    // git 的 askpass 会不带参数启动这个程序；立即失败，不能进入正常命令解析或打开任何界面
+    if gitcmd::is_askpass() {
+        std::process::exit(1);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     // board host 启动 agent 用的 ACP 那一层（acp.rs）：`--` 之后是 agent 的命令，不按 board 的参数解析
     if args.first().map(String::as_str) == Some("acp") {

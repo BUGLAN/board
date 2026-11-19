@@ -13,7 +13,6 @@ use board_core::releases::{is_version_name, version_cmp, ReleaseCommit, SyncResu
 use board_core::*;
 use serde_json::json;
 use std::collections::HashMap;
-use std::process::Command;
 
 /// 提交说明里连到卡片的那一行：「卡片：项目/白板#ID」（冒号全角半角都认）
 pub(crate) fn card_refs(body: &str) -> Vec<(String, String, i64)> {
@@ -47,7 +46,7 @@ struct Raw {
 }
 
 fn git(dir: Option<&str>, args: &[&str]) -> Result<String> {
-    let mut c = Command::new("git");
+    let mut c = crate::gitcmd::command();
     if let Some(d) = dir {
         c.arg("-C").arg(d);
     }

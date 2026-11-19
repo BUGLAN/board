@@ -606,8 +606,6 @@ pub fn clone_args(url: &str, dir: &Path) -> Vec<String> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::process::Command;
-
     /// 用测试的配置文件同步（不碰跑测试的人自己的 `~/.gitconfig`）
     fn sync_at(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, cfg: &Path) -> Out {
         sync_with(on, cred, repos, dir, &GitConfig::file(dir, cfg))
@@ -658,17 +656,24 @@ mod tests {
         load(dir).unwrap()
     }
 
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+    fn git(cfg: &Path, dir: &Path, args: &[&str]) -> String {
+        let out = crate::gitcmd::command()
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", cfg)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    fn repo(root: &Path, name: &str, url: &str) -> PathBuf {
+    fn repo(root: &Path, cfg: &Path, name: &str, url: &str) -> PathBuf {
         let d = root.join(name);
         std::fs::create_dir_all(&d).unwrap();
-        git(&d, &["init", "-q"]);
-        git(&d, &["remote", "add", "origin", url]);
+        git(cfg, &d, &["init", "-q"]);
+        git(cfg, &d, &["remote", "add", "origin", url]);
         d
     }
 
@@ -682,13 +687,14 @@ mod tests {
 
     /// 测试用的用户级配置文件（不碰跑测试的人自己的 `~/.gitconfig`）
     fn cfg_git(cfg: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").arg("config").arg("--file").arg(cfg).args(args).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        let out = crate::gitcmd::command().arg("config").arg("--file").arg(cfg).args(args).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
         assert!(out.status.success(), "git config --file {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     fn cfg_values(cfg: &Path, k: &str) -> Vec<String> {
-        let out = Command::new("git").arg("config").arg("--file").arg(cfg).args(["--null", "--get-all", k]).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        let out =
+            crate::gitcmd::command().arg("config").arg("--file").arg(cfg).args(["--null", "--get-all", k]).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
         if !out.status.success() {
             return vec![];
         }
@@ -701,13 +707,12 @@ mod tests {
 
     /// 在这个仓库里 `credential fill`：用测试的用户级配置文件，拿到凭据时返回输出的全文
     fn fill(repo: &Path, cfg: &Path, host: &str) -> Option<String> {
-        let out = Command::new("git")
+        let out = crate::gitcmd::command()
             .arg("-C")
             .arg(repo)
             .args(["credential", "fill"])
             .env("GIT_CONFIG_GLOBAL", cfg)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -734,9 +739,9 @@ mod tests {
         let host_dir = t.path().join("host");
         std::fs::create_dir_all(&host_dir).unwrap();
         let cfg = host_dir.join("gitconfig");
-        let gh = repo(t.path(), "gh", "https://github.com/me/board.git");
-        let ssh = repo(t.path(), "ssh", "git@github.com:me/x.git");
-        let lab = repo(t.path(), "lab", "https://gitlab.com/me/y.git");
+        let gh = repo(t.path(), &cfg, "gh", "https://github.com/me/board.git");
+        let ssh = repo(t.path(), &cfg, "ssh", "git@github.com:me/x.git");
+        let lab = repo(t.path(), &cfg, "lab", "https://gitlab.com/me/y.git");
         let repos = vec![gh.clone(), ssh.clone(), lab.clone(), t.path().join("missing")];
         let k = "credential.https://github.com.helper";
         // 用户自己为同一主机写的 helper 留着，排在前面
@@ -747,7 +752,7 @@ mod tests {
         // 旧版按仓库配过的：记录里有，这次同步要去掉
         let old = helper(&host_dir.join(FILE));
         for v in ["", old.as_str()] {
-            git(&gh, &["config", "--local", "--add", k, v]);
+            git(&cfg, &gh, &["config", "--local", "--add", k, v]);
         }
         std::fs::write(host_dir.join(RECORD), serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&gh)], ..Default::default() }).unwrap()).unwrap();
 
@@ -774,10 +779,10 @@ mod tests {
         assert!(!serde_json::to_string(&out.sync).unwrap().contains("tok/en"));
 
         // 同步之后才建的仓库也自动用它；别的 https 主机不受影响
-        let later = repo(t.path(), "later", "https://github.com/me/later.git");
+        let later = repo(t.path(), &cfg, "later", "https://github.com/me/later.git");
         let got = fill(&later, &cfg, "github.com").expect("新仓库直接用全局凭据");
         assert!(got.contains("username=octo cat") && got.contains("password=tok/en"), "{got}");
-        let lab2 = repo(t.path(), "lab2", "https://gitlab.com/me/z.git");
+        let lab2 = repo(t.path(), &cfg, "lab2", "https://gitlab.com/me/z.git");
         assert!(fill(&lab2, &cfg, "gitlab.com").is_none(), "别的 https 主机不配");
 
         // 再同步一次：没有变化

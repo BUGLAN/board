@@ -2070,11 +2070,10 @@ fn bootstrap_dirs(
                 let log = logs.join(format!("clone-{safe}.log"));
                 let host_dir = logs.parent().map(Path::to_path_buf).unwrap_or_default();
                 let spawn = create_log(&log).and_then(|(out, err)| {
-                    Command::new("git")
+                    crate::gitcmd::command()
                         .args(gitsync::clone_args(url, &host_dir))
                         .args(["clone", "--", url])
                         .arg(&dir)
-                        .env("GIT_TERMINAL_PROMPT", "0")
                         .stdin(Stdio::null())
                         .stdout(out)
                         .stderr(err)
@@ -2119,7 +2118,7 @@ fn dispatch_dir(d: &board_core::Dispatch, ws: &HostWorkspace, os: &str) -> Optio
 }
 
 fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).output().ok()?;
+    let out = crate::gitcmd::command().arg("-C").arg(dir).args(args).stdin(Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -3010,11 +3009,10 @@ impl Host<'_> {
                 return;
             }
         }
-        let child = Command::new("git")
+        let child = crate::gitcmd::command()
             .args(gitsync::clone_args(url, &self.host_dir()))
             .args(["clone", "--", url])
             .arg(&dir)
-            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err)
@@ -4485,7 +4483,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git")
+        let ok = crate::gitcmd::command()
             .arg("-C")
             .arg(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
