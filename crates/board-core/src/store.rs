@@ -277,13 +277,24 @@ impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir)?;
+                if let Err(e) = crate::private::create_dir_all(dir) {
+                    if !dir.is_dir() {
+                        return Err(e.into());
+                    }
+                    crate::private::warn(dir, &e);
+                }
+                harden_parent(dir);
             }
+        }
+        drop(crate::private::open_rw(path)?);
+        if let Err(e) = crate::private::set_file(path) {
+            crate::private::warn(path, &e);
         }
         let conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        harden_database_files(path);
         Store::setup(conn, Some(crate::files::dir_for(path)))
     }
 
@@ -629,6 +640,43 @@ impl Store {
         self.files.clone()
     }
 }
+
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn harden_database_files(path: &Path) {
+    for file in [path.to_path_buf(), sidecar(path, "-wal"), sidecar(path, "-shm"), sidecar(path, "-journal")] {
+        if let Err(e) = crate::private::set_file(&file) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                crate::private::warn(&file, &e);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn harden_parent(dir: &Path) {
+    let resolved = match std::fs::canonicalize(dir) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::private::warn(dir, &e);
+            return;
+        }
+    };
+    let temp = std::fs::canonicalize(std::env::temp_dir()).ok();
+    if resolved.parent().is_none() || temp.as_deref() == Some(resolved.as_path()) {
+        return;
+    }
+    if let Err(e) = crate::private::set_dir(dir) {
+        crate::private::warn(dir, &e);
+    }
+}
+
+#[cfg(not(unix))]
+fn harden_parent(_: &Path) {}
 
 /* ============================== 读 ============================== */
 
@@ -1775,4 +1823,73 @@ pub fn check_hidden_labels(rules: &[String]) -> Result<Vec<String>> {
         return Err(BoardError::usage(format!("隐藏规则最多 {HIDDEN_LABELS_MAX} 条")));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::*;
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_directory_and_sidecars_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("board");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let db = dir.join("board.db");
+
+        let mut first = Store::open(&db).unwrap();
+        first
+            .write(1, Origin::system(), |w| {
+                w.tx.execute("INSERT INTO meta (key, value) VALUES ('permission-test', 1)", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&db), 0o600);
+
+        let wal = sidecar(&db, "-wal");
+        let shm = sidecar(&db, "-shm");
+        assert!(wal.is_file() && shm.is_file(), "WAL 模式应生成 -wal 和 -shm");
+        for file in [&db, &wal, &shm] {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _second = Store::open(&db).unwrap();
+        assert_eq!(mode(&dir), 0o700, "已有目录要收紧");
+        assert_eq!(mode(&db), 0o600, "已有数据库要收紧");
+        assert_eq!(mode(&wal), 0o600, "已有 WAL 要收紧");
+        assert_eq!(mode(&shm), 0o600, "已有 SHM 要收紧");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_symlink_is_not_followed_or_chmodded() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target.db");
+        std::fs::write(&target, b"not a database").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let link = tmp.path().join("board.db");
+        symlink(&target, &link).unwrap();
+
+        let err = match Store::open(&link) {
+            Ok(_) => panic!("不能顺着数据库符号链接打开"),
+            Err(e) => e,
+        };
+        assert!(err.message.contains("不是普通文件"), "{err}");
+        assert_eq!(mode(&target), 0o644, "不能顺着数据库符号链接改目标的权限");
+    }
 }

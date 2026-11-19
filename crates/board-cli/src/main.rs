@@ -881,19 +881,39 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         "files" => {
             let id = a.id(sub)?;
             let d = be.card(&path, id)?;
-            let dir = match a.value("--out") {
-                Some(o) => std::path::PathBuf::from(o),
-                None => std::env::temp_dir().join("board-files").join(format!("{}-{id}", path.replace('/', "-"))),
-            };
+            let out = a.value("--out");
+            let mut dir = out.map(std::path::PathBuf::from);
+            let mut temp = None;
             let mut saved = vec![];
             if !d.attachments.is_empty() {
-                std::fs::create_dir_all(&dir).map_err(|e| BoardError::usage(format!("无法创建目录 {}：{e}", dir.display())))?;
-            }
-            for f in &d.attachments {
-                let bytes = be.download(f)?;
-                let to = dir.join(format!("{}-{}", f.id, f.name));
-                std::fs::write(&to, bytes).map_err(|e| BoardError::usage(format!("写入 {} 失败：{e}", to.display())))?;
-                saved.push((f, to));
+                if out.is_none() {
+                    let t = tempfile::Builder::new()
+                        .prefix("board-files-")
+                        .tempdir_in(std::env::temp_dir())
+                        .map_err(|e| BoardError::usage(format!("无法创建临时目录：{e}")))?;
+                    board_core::private::set_dir(t.path())
+                        .map_err(|e| BoardError::usage(format!("无法收紧目录 {} 的权限：{e}", t.path().display())))?;
+                    dir = Some(t.path().to_path_buf());
+                    temp = Some(t);
+                }
+                let dir = dir.as_ref().unwrap();
+                if out.is_some() {
+                    std::fs::create_dir_all(dir).map_err(|e| BoardError::usage(format!("无法创建目录 {}：{e}", dir.display())))?;
+                }
+                for f in &d.attachments {
+                    let bytes = be.download(f)?;
+                    let to = dir.join(format!("{}-{}", f.id, f.name));
+                    let written = if out.is_some() {
+                        std::fs::write(&to, bytes)
+                    } else {
+                        board_core::private::write_new(&to, &bytes)
+                    };
+                    written.map_err(|e| BoardError::usage(format!("写入 {} 失败：{e}", to.display())))?;
+                    saved.push((f, to));
+                }
+                if let Some(t) = temp {
+                    let _ = t.keep();
+                }
             }
             if json {
                 Output::Json(Value::Array(
@@ -909,7 +929,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             } else if saved.is_empty() {
                 Output::Text(format!("{}\n", p.dim(&format!("#{id} 没有附件"))))
             } else {
-                let mut s = format!("{} 已下载 {} 个附件到 {}\n", p.green("✓"), saved.len(), dir.display());
+                let mut s = format!("{} 已下载 {} 个附件到 {}\n", p.green("✓"), saved.len(), dir.as_ref().unwrap().display());
                 for (f, to) in &saved {
                     s += &format!("  {}  {}\n", to.display(), p.dim(&human_size(f.size)));
                 }

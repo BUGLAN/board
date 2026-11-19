@@ -117,8 +117,15 @@ fn token_and_backup_do_not_touch_heartbeats() {
     let out = Command::new(exe).arg("token").arg("ls").arg("--db").arg(&db).output().unwrap();
     assert!(out.status.success(), "token ls 失败：{}", String::from_utf8_lossy(&out.stderr));
     // board-server backup：在线备份，不改心跳
-    let dest = dir.path().join("copy.db");
+    let dest = dir.path().join("backup").join("copy.db");
     let out = Command::new(exe).arg("backup").arg(&dest).arg("--db").arg(&db).output().unwrap();
     assert!(out.status.success(), "backup 失败：{}", String::from_utf8_lossy(&out.stderr));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dest.parent().unwrap()), 0o700, "新建的备份目录");
+        assert_eq!(mode(&dest), 0o600, "备份数据库");
+    }
     assert_eq!(beats(&db), before, "token ls / backup 不能改动心跳时间");
 }

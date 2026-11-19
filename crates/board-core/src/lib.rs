@@ -19,6 +19,7 @@ pub mod hostcopy;
 pub mod hostres;
 pub mod hosts;
 pub mod model;
+pub mod private;
 pub mod releases;
 pub mod moves;
 pub mod providers;

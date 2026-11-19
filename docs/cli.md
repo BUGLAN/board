@@ -897,12 +897,14 @@
     "image": false,
     "mime": "text/plain; charset=utf-8",
     "name": "run.log",
-    "path": "/tmp/board-files/1-run.log",
+    "path": "/tmp/board-files-7Hk2mQ/1-run.log",
     "size": 35,
     "url": "/api/files/1"
   }
 ]
 ```
+
+默认下载到系统临时目录下随机命名的私有目录（Unix 上目录 0700、文件 0600），不会沿用可预测的固定路径；`--out` 仍保存到指定的目录。
 
 ## 机器与派发
 

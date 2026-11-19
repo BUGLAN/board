@@ -297,6 +297,32 @@ fn attach_and_download_files() {
     assert_eq!(std::fs::read(out.join("2-run.log")).unwrap(), b"ok\n");
     assert!(out.join("1-截图.png").exists());
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let tmp = s.home.join("tmp");
+        let predictable = tmp.join("board-files").join("default-main-1");
+        let sentinel = tmp.join("sentinel");
+        std::fs::create_dir_all(&sentinel).unwrap();
+        std::fs::create_dir_all(predictable.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&sentinel, &predictable).unwrap();
+
+        let r = s.run(ALPHA, &["files", "1", "--json"]);
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        let first = r.json()[0]["path"].as_str().unwrap().to_string();
+        let first_dir = std::path::Path::new(&first).parent().unwrap();
+        assert_ne!(first_dir, predictable, "默认下载目录不能沿用可预测路径");
+        assert!(std::fs::read_dir(&sentinel).unwrap().next().is_none(), "不能顺着预置符号链接写入");
+        assert_eq!(mode(first_dir), 0o700);
+        assert_eq!(mode(std::path::Path::new(&first)), 0o600);
+
+        let r = s.run(ALPHA, &["files", "1", "--json"]);
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        let second = r.json()[0]["path"].as_str().unwrap().to_string();
+        assert_ne!(std::path::Path::new(&first).parent(), std::path::Path::new(&second).parent(), "每次使用新的随机目录");
+    }
+
     // 错误：不支持的类型、文件不存在、卡片不存在、没有附件
     let svg = dir.path().join("x.svg");
     std::fs::write(&svg, "<svg/>").unwrap();

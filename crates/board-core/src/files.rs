@@ -199,7 +199,9 @@ pub fn copy_new(src: &Path, dst: &Path) -> std::io::Result<usize> {
     if !src.is_dir() {
         return Ok(0);
     }
-    std::fs::create_dir_all(dst)?;
+    reject_symlink(dst)?;
+    crate::private::create_dir_all(dst)?;
+    crate::private::set_dir(dst)?;
     let mut n = 0;
     for e in std::fs::read_dir(src)? {
         let e = e?;
@@ -207,11 +209,37 @@ pub fn copy_new(src: &Path, dst: &Path) -> std::io::Result<usize> {
         if !e.file_type()?.is_file() || name.to_string_lossy().starts_with('.') {
             continue;
         }
+        let from = e.path();
         let to = dst.join(&name);
-        if !to.exists() {
-            std::fs::copy(e.path(), &to)?;
-            n += 1;
+        match std::fs::symlink_metadata(&to) {
+            Ok(m) if !m.file_type().is_file() => {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} 不是普通文件，拒绝覆盖", to.display())));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut input = std::fs::File::open(&from)?;
+                let mut output = match crate::private::create_new(&to) {
+                    Ok(f) => f,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let m = std::fs::symlink_metadata(&to)?;
+                        if !m.file_type().is_file() {
+                            return Err(e);
+                        }
+                        crate::private::set_file(&to)?;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
+                if let Err(e) = std::io::copy(&mut input, &mut output) {
+                    drop(output);
+                    let _ = std::fs::remove_file(&to);
+                    return Err(e);
+                }
+                n += 1;
+            }
+            Err(e) => return Err(e),
         }
+        crate::private::set_file(&to)?;
     }
     Ok(n)
 }
@@ -219,6 +247,17 @@ pub fn copy_new(src: &Path, dst: &Path) -> std::io::Result<usize> {
 /// 数据库旁边的附件目录
 pub fn dir_for(db: &Path) -> PathBuf {
     db.parent().map(|d| d.join("files")).unwrap_or_else(|| PathBuf::from("files"))
+}
+
+fn reject_symlink(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} 是符号链接，拒绝写入", path.display())))
+        }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /* ------------------------------ 文件 ------------------------------ */
@@ -277,6 +316,17 @@ impl Drop for Put {
 
 impl FileStore {
     pub fn new(dir: PathBuf) -> FileStore {
+        match reject_symlink(&dir) {
+            Ok(()) => {
+                if let Err(e) = crate::private::create_dir_all(&dir) {
+                    crate::private::warn(&dir, &e);
+                }
+                if let Err(e) = crate::private::set_dir(&dir) {
+                    crate::private::warn(&dir, &e);
+                }
+            }
+            Err(e) => eprintln!("警告：附件目录 {} 不可用：{e}", dir.display()),
+        }
         FileStore {
             dir,
             pending: Mutex::new(Pending::default()),
@@ -341,15 +391,25 @@ impl FileStore {
 
     /// 原子写：先写临时文件、`sync_all`，再改名成 SHA；已经有了就不写（内容相同）
     fn write(&self, sha: &str, bytes: &[u8]) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        reject_symlink(&self.dir)?;
+        crate::private::create_dir_all(&self.dir)?;
+        crate::private::set_dir(&self.dir)?;
         let path = self.path(sha);
-        if path.exists() {
-            return Ok(());
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if !m.file_type().is_file() => {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} 不是普通文件，拒绝覆盖", path.display())).into());
+            }
+            Ok(_) => {
+                crate::private::set_file(&path)?;
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
         let tmp = self.dir.join(format!(".tmp-{sha}-{}-{n}", std::process::id()));
         let out = (|| {
-            let mut f = std::fs::File::create(&tmp)?;
+            let mut f = crate::private::create_new(&tmp)?;
             f.write_all(bytes)?;
             f.sync_all()?;
             drop(f);
@@ -358,10 +418,12 @@ impl FileStore {
         if let Err(e) = out {
             let _ = std::fs::remove_file(&tmp);
             // 同样的内容另一个上传先写好了（Windows 上目标被打开时改名会失败）：内容一样，算成功
-            if !path.exists() {
-                return Err(e.into());
+            match std::fs::symlink_metadata(&path) {
+                Ok(m) if m.file_type().is_file() => {}
+                _ => return Err(e.into()),
             }
         }
+        crate::private::set_file(&path)?;
         Ok(())
     }
 
@@ -616,6 +678,12 @@ impl W<'_> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
     #[test]
     fn kinds_and_names() {
         assert_eq!(kind_of("a.PNG"), Some(("image/png", true)));
@@ -640,5 +708,53 @@ mod tests {
         assert!(!magic_ok("image/png", b"<html>"));
         assert!(magic_ok("image/webp", b"RIFF\0\0\0\0WEBPVP8 "));
         assert!(magic_ok("text/plain; charset=utf-8", b"anything"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachments_and_backup_copies_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let files_dir = tmp.path().join("files");
+        std::fs::create_dir(&files_dir).unwrap();
+        std::fs::set_permissions(&files_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let files = Arc::new(FileStore::new(files_dir));
+        let put = files.put(b"attachment").unwrap();
+        let stored = files.path(put.sha());
+        assert_eq!(mode(files.dir()), 0o700, "已有附件目录要收紧");
+        assert_eq!(mode(&stored), 0o600);
+
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        let old = src.join("old.log");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let dst = tmp.path().join("backup");
+        assert_eq!(copy_new(&src, &dst).unwrap(), 1);
+        assert_eq!(mode(&dst), 0o700);
+        assert_eq!(mode(&dst.join("old.log")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_copy_rejects_a_symlink_instead_of_following_it() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("same.log"), b"new").unwrap();
+        let dst = tmp.path().join("backup");
+        std::fs::create_dir(&dst).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::write(&outside, b"untouched").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&outside, dst.join("same.log")).unwrap();
+
+        assert_eq!(copy_new(&src, &dst).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+        assert_eq!(mode(&outside), 0o644);
     }
 }

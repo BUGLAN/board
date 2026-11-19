@@ -248,7 +248,7 @@ fn token(o: &Opts) {
     }
 }
 
-/// 用 `VACUUM INTO` 得到一份一致的快照，服务运行时也可以执行
+/// 用 SQLite 在线备份得到一份一致的快照，服务运行时也可以执行
 fn backup(o: &Opts) {
     let Some(dest) = o.rest.get(1) else { fail("backup 需要目标文件路径") };
     let dest = PathBuf::from(dest);
@@ -256,12 +256,26 @@ fn backup(o: &Opts) {
         fail(&format!("{} 已存在，请换一个文件名", dest.display()));
     }
     if let Some(dir) = dest.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("无法创建目录 {}：{e}", dir.display())));
+        board_core::private::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("无法创建目录 {}：{e}", dir.display())));
     }
     let conn = rusqlite::Connection::open(&o.db).unwrap_or_else(|e| fail(&format!("打开数据库失败：{e}")));
     let _ = conn.busy_timeout(std::time::Duration::from_secs(30));
-    conn.execute("VACUUM INTO ?1", [dest.to_string_lossy()])
-        .unwrap_or_else(|e| fail(&format!("备份失败：{e}")));
+    drop(board_core::private::create_new(&dest).unwrap_or_else(|e| fail(&format!("无法创建备份 {}：{e}", dest.display()))));
+    let mut target = rusqlite::Connection::open(&dest).unwrap_or_else(|e| {
+        let _ = std::fs::remove_file(&dest);
+        fail(&format!("打开备份 {} 失败：{e}", dest.display()))
+    });
+    let copied = match rusqlite::backup::Backup::new(&conn, &mut target) {
+        Ok(backup) => backup.run_to_completion(100, std::time::Duration::from_millis(10), None).map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    drop(target);
+    drop(conn);
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&dest);
+        fail(&format!("备份失败：{e}"));
+    }
+    board_core::private::set_file(&dest).unwrap_or_else(|e| fail(&format!("无法收紧备份 {} 的权限：{e}", dest.display())));
     println!("已备份到 {}", dest.display());
     // 附件：备份旁边的 files/ 里补上还没有的文件（文件按内容命名、不会改动，所有备份共用一份）
     let (src, dst) = (board_core::files::dir_for(&o.db), board_core::files::dir_for(&dest));
