@@ -4083,7 +4083,8 @@ impl Host<'_> {
         if let Some(line) = gitsync::ensure(&dir, &self.host_dir()) {
             self.say(format!("{} {line}", self.p.green("✓")));
         }
-        let name = d.name.clone().unwrap_or_default();
+        // 没有会话名（旧版、异常的服务端）：不准备、不删任何目录，这张派发直接结束（#508）
+        let name = d.name.clone().filter(|n| !n.trim().is_empty()).ok_or_else(|| "派发没有会话名，没有启动 agent：服务端可能太旧，先升级服务端".to_string())?;
         match crate::code::prepare(&dir, &name, d.id, &d.branch) {
             Ok(r) => {
                 if self.fetch_errs.iter().any(|(p, ..)| *p == dir) {
@@ -4099,6 +4100,14 @@ impl Host<'_> {
                         r.cwd.display()
                     )),
                     None => {}
+                }
+                if let Some((dir, why)) = &r.kept {
+                    self.say(format!(
+                        "{} {} 像是残留的 worktree 目录，但{why}：没有删它，确认没用后手动删；这次在 {} 里做",
+                        self.p.yellow("!"),
+                        dir.display(),
+                        r.cwd.display()
+                    ));
                 }
                 if let Some((left, what)) = &r.left {
                     self.say(format!(
@@ -4255,9 +4264,13 @@ impl Host<'_> {
                 continue;
             }
             for (wt, kept) in crate::code::sweep(&repo, &in_use, crate::code::WT_UNUSED, std::time::SystemTime::now()) {
+                use crate::code::Swept;
                 match kept {
-                    None => self.say(format!("{} 清理了 24 小时没用的 worktree {}", self.p.dim("·"), wt.display())),
-                    Some(what) => self.say(format!("{} worktree {} 超过 24 小时没用，但有没推到远端的改动（{what}），留着", self.p.yellow("!"), wt.display())),
+                    Swept::Removed => self.say(format!("{} 清理了 24 小时没用的 worktree {}", self.p.dim("·"), wt.display())),
+                    Swept::Unpushed(what) => self.say(format!("{} worktree {} 超过 24 小时没用，但有没推到远端的改动（{what}），留着", self.p.yellow("!"), wt.display())),
+                    Swept::NoOwner(why) => {
+                        self.say(format!("{} worktree {} 超过 24 小时没用，但{why}：不自动删，确认没用后手动删", self.p.yellow("!"), wt.display()))
+                    }
                 }
             }
         }

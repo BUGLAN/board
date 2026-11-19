@@ -1905,7 +1905,12 @@ fn host_fetches_and_starts_the_agent_in_a_fresh_worktree() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let d1 = r.json()["id"].as_i64().unwrap();
     wait_until("#1 交审", Duration::from_secs(20), || ended(&rig.show(1), "已交审"));
-    let wt = rig.ws().join("default.wt").join("mbp-opus-5.5");
+    // 目录名：名字的 / 换成 -，再加名字的 SHA-256 前 8 位（code.rs 的 dir_name，#508）
+    let hash: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(b"mbp/opus-5.5").iter().take(4).map(|b| format!("{b:02x}")).collect()
+    };
+    let wt = rig.ws().join("default.wt").join(format!("mbp-opus-5.5-{hash}"));
     assert_eq!(std::fs::read_to_string(wt.join("AGENTS.md")).unwrap(), "v2\n", "worktree 停在刚拉下来的提交上");
     assert_eq!(std::fs::read_to_string(proj.join("AGENTS.md")).unwrap(), "v1\n", "项目主目录不动");
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
