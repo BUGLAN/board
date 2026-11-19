@@ -479,7 +479,7 @@ export function InboxPage() {
 
           {/* 快照还没到：按工作区里的计数放骨架行；计数是 0 就什么都不放 */}
           {plain && !list && (cur?.board.counts[INBOX] ?? 3) > 0 && <RowsSkeleton n={Math.min(cur?.board.counts[INBOX] ?? 3, 5)} />}
-          {later && <LaterPage cards={laterCards} labels={labels} project={cur?.project.key ?? ''} path={path} />}
+          {later && <LaterPage cards={laterCards} labels={labels} project={cur?.project.key ?? ''} path={path} bulkHost={pageEl} />}
           {page === 'trash' && path && <TrashPage path={path} bulkHost={pageEl} />}
           {plain && view === 'one' && list && list.length > 0 && <OneView groups={groups} now={now} all={all ?? []} home={home} />}
           {plain && view === 'list' && groups.map(g => (
@@ -1725,7 +1725,7 @@ function TitleTabs({ page, count, laterN, trashN }: { page: Page; count: number 
 
 /** 「稍后再做」页：按收起时间分组（最近收起的在前），行和「未整理」同一个样子；
     左滑放回、点开看详情，可以勾选后批量放回、打标签、删除；侧栏的筛选也管这一页 */
-function LaterPage({ cards, labels, project, path }: { cards: Card[] | null; labels: Label[]; project: string; path: string }) {
+function LaterPage({ cards, labels, project, path, bulkHost }: { cards: Card[] | null; labels: Label[]; project: string; path: string; bulkHost?: HTMLElement | null }) {
   const now = useNow(60000);
   const filter = useUI(s => s.filter);
   const q = filter.trim().toLowerCase();
@@ -1813,7 +1813,11 @@ function LaterPage({ cards, labels, project, path }: { cards: Card[] | null; lab
           </button>
         </div>
       )}
-      <LaterBulk checked={checked} cards={cards} project={project} onClear={() => setChecked([])} />
+      {/* 批量条挂在页面根上（和「未整理」「回收站」一样贴着视口底部），不跟着列表滚走（default/main#492） */}
+      {(() => {
+        const bar = <LaterBulk checked={checked} cards={cards} project={project} onClear={() => setChecked([])} />;
+        return bulkHost ? createPortal(bar, bulkHost) : bar;
+      })()}
     </div>
   );
 }
