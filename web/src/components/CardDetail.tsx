@@ -845,8 +845,12 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
             className="btn sm primary"
             type="button"
             onClick={async () => {
-              await triage(c.id);
-              toast({ type: 'success', title: `#${c.id} 已整理到「${start}」`, text: `放在「${start}」最下面，可以拖动调整优先级。`, duration: 2400 });
+              const result = await triage(c.id);
+              if (result.failed[0]) {
+                toastError(result.failed[0].error);
+                return;
+              }
+              if (result.ok.length) toast({ type: 'success', title: `#${c.id} 已整理到「${start}」`, text: `放在「${start}」最下面，可以拖动调整优先级。`, duration: 2400 });
             }}
           >
             整理到{start}

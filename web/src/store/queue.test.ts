@@ -493,6 +493,41 @@ describe('删除、恢复（回收站）', () => {
   });
 });
 
+describe('稍后再做的批量结果（default/main#512）', () => {
+  it('全部成功：返回每一条的 ID', async () => {
+    const r = D.setLater([1, 2], true);
+    await settle();
+    server.calls[0].ok();
+    await settle();
+    server.calls[1].ok();
+    expect(await r).toEqual({ ok: [1, 2], failed: [] });
+  });
+
+  it('部分失败：返回成功的 #2 和失败的 #1', async () => {
+    const r = D.setLater([1, 2], true);
+    await settle();
+    server.calls[0].fail('INTERNAL');
+    await settle();
+    server.calls[1].ok();
+    expect(await r).toEqual({ ok: [2], failed: [{ id: 1, error: expect.objectContaining({ code: 'INTERNAL' }) }] });
+  });
+
+  it('全部失败：没有成功项', async () => {
+    const r = D.setLater([1, 2], true);
+    await settle();
+    server.calls[0].fail('INTERNAL');
+    await settle();
+    server.calls[1].fail('INTERNAL');
+    expect(await r).toEqual({
+      ok: [],
+      failed: [
+        { id: 1, error: expect.objectContaining({ code: 'INTERNAL' }) },
+        { id: 2, error: expect.objectContaining({ code: 'INTERNAL' }) },
+      ],
+    });
+  });
+});
+
 describe('标签', () => {
   const labels = (id: number) => D.useData.getState().board!.cards[id].labels;
   const pending = (id: number) => D.useData.getState().pending[`p/a#${id}`] ?? [];
