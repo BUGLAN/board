@@ -56,6 +56,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{broadcast, watch, Notify};
+use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 #[derive(rust_embed::RustEmbed)]
@@ -378,7 +379,10 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/tokens/{id}", delete(auth::revoke))
         .route("/health", get(health))
         .fallback(|| async { ApiError(BoardError::usage("未知的接口")) })
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::guard));
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::guard))
+        // 响应压缩（gzip / br，按请求的 Accept-Encoding）：白板快照、工作区这类 JSON 几百 KB，压缩后小很多（default/main#504）。
+        // 只压 /api：界面的静态文件照原样返回。默认规则跳过 SSE（/api/stream 的推送不被缓冲）、图片和很小的响应
+        .layer(CompressionLayer::new());
 
     let mut app = Router::new()
         .nest("/api", api)

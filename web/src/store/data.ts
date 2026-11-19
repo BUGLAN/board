@@ -777,9 +777,20 @@ let wantWs = 0;
 /** 当前白板、工作区分别加载到的 rev（rev 是全局的） */
 let boardRev = 0;
 let wsRev = 0;
+/** 下一轮是切换白板引起的：推送连着时工作区一直是新的（别的白板的变化由推送 → loadWs 取），只取白板，不再重取工作区（default/main#504）。
+    别的原因要的一轮（写操作返回、重连、手动刷新）清掉它，照常一起取 */
+let boardOnly = false;
 
 export function refresh(): Promise<void> {
   again = true;
+  boardOnly = false;
+  return pump();
+}
+
+/** 切换白板后的加载：见 boardOnly */
+function refreshBoard(): Promise<void> {
+  again = true;
+  boardOnly = true;
   return pump();
 }
 
@@ -805,6 +816,7 @@ function releaseWaiters(round: number) {
 function afterWrite(): Promise<void> {
   const need = roundsStarted + 1;
   again = true;
+  boardOnly = false;
   const p = new Promise<void>(done => roundWaiters.push({ need, done }));
   void pump();
   return p;
@@ -815,6 +827,7 @@ function afterWrite(): Promise<void> {
 function afterRev(rev: number): Promise<void> {
   if (boardRev >= rev) return Promise.resolve();
   wantBoard = Math.max(wantBoard, rev);
+  boardOnly = false;
   const need = roundsStarted + 1;
   const p = new Promise<void>(done => roundWaiters.push({ need, ok: () => boardRev >= rev, done }));
   void pump();
@@ -911,10 +924,15 @@ async function load() {
   // 先让出一个微任务：同步调用方（applyRoute：先 setPath 再记 pendingCard）把这一轮要用的状态设完
   await Promise.resolve();
   let path = get().path;
+  const lite = boardOnly;
+  boardOnly = false;
   // 当前白板在上一次取到的工作区里：工作区、白板、卡片三个一起取（一轮一个往返，#174）。
   // 不在（第一次加载、白板被删了）：先取工作区、换白板，再取白板（两个往返，和以前一样）
   const known = !!base.ws && allBoards(base.ws).some(b => b.path === path);
-  let ws: Workspace | null = null;
+  // 切换到工作区里已有的白板、推送连着、没有写操作在等这一轮：工作区用手上的，只取白板（#504）。
+  // 推送断着时工作区可能漏了变化，照常一起取
+  const wsKept = lite && known && get().status === 'live' && !roundWaiters.length ? base.ws : null;
+  let ws: Workspace | null = wsKept;
   if (!known) {
     ws = await api.workspace();
     const paths = allBoards(ws).map(b => b.path);
@@ -970,7 +988,8 @@ async function load() {
   // 三个并行取时工作区可能比白板新：当前白板按白板自己的 rev 记（落后的那部分等推送再取，不会漏）
   boardRev = known ? board.rev : Math.max(ws.rev, board.rev);
   wsRev = ws.rev;
-  render({ rev: boardRev, offset: ws.now - Date.now(), ...(gone ? { detailId: null } : {}) });
+  // 工作区用的是手上的那份时，它的 now 是当时的服务端时间，不拿来校时钟
+  render({ rev: boardRev, ...(ws !== wsKept ? { offset: ws.now - Date.now() } : {}), ...(gone ? { detailId: null } : {}) });
   // 地址栏和现在打开的保持一致：记着的白板不在了、换了白板之后地址跟着改（后退、前进时由 applySilently 挡住）
   syncUrl();
 }
@@ -1082,7 +1101,7 @@ function switchTo(path: string, opts: { open?: number | null } = {}) {
 export function setPath(path: string) {
   if (path === get().path && get().board) return;
   switchTo(path);
-  return refresh();
+  return refreshBoard();
 }
 
 /** 打开另一块白板上的卡片：只算一条地址（`/<项目>/<白板>/<ID>`），后退直接回到打开之前那张
@@ -1092,7 +1111,7 @@ export async function switchToCard(path: string, id: number) {
   switchTo(path, { open: id });
   // 详情和白板一起取：详情有缓存时先显示它，不闪骨架
   const shown = openDetail(id);
-  await refresh();
+  await refreshBoard();
   await shown;
 }
 

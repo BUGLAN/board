@@ -684,3 +684,59 @@ describe('share（结构共享）', () => {
     expect(D.share(null, { a: 1 })).toEqual({ a: 1 });
   });
 });
+
+describe('切换白板只取白板（default/main#504）', () => {
+  beforeEach(async () => {
+    D.boot();
+    await settle();
+  });
+
+  it('推送连着：切到工作区里已有的白板只取白板快照，不再取工作区；切回来同样', async () => {
+    server.status!('live');
+    await settle();
+    server.n = { workspace: 0, board: 0 };
+    await D.setPath('p/b');
+    expect(server.n).toEqual({ workspace: 0, board: 1 });
+    expect(D.useData.getState().board!.path).toBe('p/b');
+    expect(D.useData.getState().board!.cards[1].title).toBe('B 白板的卡片');
+    await D.setPath('p/a');
+    expect(server.n).toEqual({ workspace: 0, board: 2 });
+    expect(D.useData.getState().board!.path).toBe('p/a');
+  });
+
+  it('推送断着：工作区可能漏了变化，照常一起取', async () => {
+    server.status!('offline');
+    await settle();
+    server.n = { workspace: 0, board: 0 };
+    await D.setPath('p/b');
+    expect(server.n).toEqual({ workspace: 1, board: 1 });
+  });
+
+  it('切换后别的原因要的刷新（写操作返回、手动刷新）照常取工作区', async () => {
+    server.status!('live');
+    await settle();
+    await D.setPath('p/b');
+    server.n = { workspace: 0, board: 0 };
+    await D.refresh();
+    expect(server.n).toEqual({ workspace: 1, board: 1 });
+  });
+
+  it('切换那一轮之前推送说工作区变了：只取白板之后再补取一次工作区', async () => {
+    server.status!('live');
+    await settle();
+    let open!: () => void;
+    server.gate = new Promise(r => (open = r));
+    server.n = { workspace: 0, board: 0 };
+    const p = D.setPath('p/b');
+    await settle();
+    // 切换那一轮还在取白板时，推送说别的白板变了
+    const rev = serverEdit('p/a', 1, { title: '别处改的' });
+    server.push!({ rev, events: [event('p/a')] });
+    open();
+    server.gate = null;
+    await p;
+    await settle();
+    expect(server.n.workspace).toBe(1);
+    expect(D.useData.getState().board!.path).toBe('p/b');
+  });
+});
