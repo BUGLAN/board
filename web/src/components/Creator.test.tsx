@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listPrompts, savePrompts } from '../lib/prompts';
 import { exec, useData } from '../store/data';
 import { useUI } from '../store/ui';
-import { Creator } from './Creator';
+import { Creator, creatorCli } from './Creator';
 
 vi.mock('../store/data', async importOriginal => {
   const actual = await importOriginal<typeof import('../store/data')>();
@@ -236,5 +236,33 @@ describe('连续新建时保存失败草稿（default/main#513）', () => {
     expect(title.value).toBe('B 标题');
     expect(body.value).toBe('B 描述');
     expect(host.querySelector('.dest.on')!.getAttribute('data-col')).toBe('todo');
+  });
+});
+
+describe('「等价的 CLI」复制按钮（#522）', () => {
+  it('一键复制整条命令，随标题、描述、目标实时更新；复制后图标变勾、弹提示', async () => {
+    const writes: string[] = [];
+    vi.stubGlobal('navigator', { ...navigator, userAgent: 'Mac', clipboard: { writeText: async (t: string) => void writes.push(t) } });
+    act(() => root.render(<Creator />));
+    const btn = () => host.querySelector<HTMLButtonElement>('.cr-cli .cr-cli-copy')!;
+    expect(btn().getAttribute('aria-label')).toBe('复制等价的 CLI 命令');
+    await act(async () => btn().click());
+    expect(writes.at(-1)).toBe("board new '<标题>' --board default/main");
+    type(host.querySelector<HTMLInputElement>('.cr-title, input[placeholder^="标题"], textarea[placeholder^="标题"]')!, "修 bug：别把 $HOME 展开");
+    type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="验收标准"]')!, '第一行\n第二行，描述超过四十个字也要完整复制过去，不能只复制界面上显示的那一段开头');
+    act(() => host.querySelector<HTMLElement>('[data-col="inbox"]')!.click());
+    await act(async () => btn().click());
+    expect(writes.at(-1)).toBe(
+      "board new '修 bug：别把 $HOME 展开' --body '第一行\n第二行，描述超过四十个字也要完整复制过去，不能只复制界面上显示的那一段开头' --inbox --board default/main",
+    );
+    expect(btn().classList.contains('done')).toBe(true);
+    expect(useUI.getState().toasts.at(-1)?.title).toBe('已复制命令');
+    vi.unstubAllGlobals();
+  });
+
+  it('引号：macOS / Linux 用单引号（$ 和反引号不展开），PowerShell 用两个单引号转义', () => {
+    const o = { title: "it's `x`", body: '', inbox: false, labels: ['bug', "a'b"], path: 'p/b' };
+    expect(creatorCli({ ...o, ps: false })).toBe("board new 'it'\\''s `x`' --label 'bug' --label 'a'\\''b' --board p/b");
+    expect(creatorCli({ ...o, ps: true })).toBe("board new 'it''s `x`' --label 'bug' --label 'a''b' --board p/b");
   });
 });

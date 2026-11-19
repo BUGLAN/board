@@ -537,7 +537,16 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .dest.on .dest-check::after { transform: rotate(-45deg) translate(1px, -1px) scale(1); }
 .dest:has(input:focus-visible) { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
 
-.cr-cli { padding: 10px 12px; border-radius: var(--r-sm); font-size: 11.5px; line-height: 1.6; color: var(--term-text); background: var(--term-bg); word-break: break-all; }
+.cr-cli { position: relative; padding: 10px 40px 10px 12px; border-radius: var(--r-sm); font-size: 11.5px; line-height: 1.6; color: var(--term-text); background: var(--term-bg); word-break: break-all; }
+/* 复制按钮（#522）：贴在代码块右上角，命令换行时也不挡字（右边留了位置） */
+.cr-cli-copy {
+  position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: var(--r-sm); display: grid; place-items: center;
+  color: var(--term-dim); transition: background-color var(--dur-2), color var(--dur-2);
+}
+.cr-cli-copy:hover { background: rgba(255, 255, 255, .08); color: #fff; }
+.cr-cli-copy.done { color: #3DDC97; }
+.cr-cli-copy svg { width: 14px; height: 14px; }
+@media (pointer: coarse) { .cr-cli-copy { width: 32px; height: 32px; top: 3px; right: 3px; } }
 .cr-cli .cmd { color: #9BE3B7; }
 .cr-cli .dim { color: var(--term-dim); font-family: var(--f-sans); }
 

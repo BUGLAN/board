@@ -9,7 +9,8 @@ import { openCard } from '../lib/actions';
 import { stillUploading, useAttach } from '../lib/attach';
 import { addPrompt, insertPromptText, listPrompts, removePrompt, savePrompts, updatePrompt, type Prompt } from '../lib/prompts';
 import { boardFlow } from '../lib/schema';
-import { accel, autosize, cx, pref, replay } from '../lib/util';
+import { isWindows } from '../lib/platform';
+import { accel, autosize, copyText, cx, pref, replay } from '../lib/util';
 import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
 import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
 import { DescTabs, LabelChip, Markdown, Tip, Title } from './bits';
@@ -342,6 +343,9 @@ export function Creator() {
     return one.length > 72 ? one.slice(0, 72) + '…' : one;
   };
   const projectLabels = cur?.project.labels ?? [];
+  const labelNames = labels.map(id => projectLabels.find(l => l.id === id)?.name).filter((n): n is string => !!n);
+  // 复制用的整条命令（#522）：描述不截断，引号按这台电脑的终端写
+  const cliText = creatorCli({ title: title.trim(), body: body.trim(), inbox: column === 'inbox', labels: labelNames, path: path ?? '', ps: isWindows });
 
   return (
     <>
@@ -724,12 +728,9 @@ export function Creator() {
                 <span className="cmd">board</span> new {q(title.trim() || '<标题>')}
                 {short ? ` --body ${q(short)}` : ''}
                 {column === 'inbox' ? ' --inbox' : ''}
-                {labels
-                  .map(id => projectLabels.find(l => l.id === id)?.name)
-                  .filter(Boolean)
-                  .map(n => ` --label ${q(n!)}`)
-                  .join('')}{' '}
+                {labelNames.map(n => ` --label ${q(n)}`).join('')}{' '}
                 <span className="dim">--board</span> {path}
+                <CopyCli text={cliText} />
               </div>
             </div>
             {created.length > 0 && (
@@ -797,5 +798,43 @@ export function Creator() {
       </div>
     </aside>
     </>
+  );
+}
+
+/** 「等价的 CLI」整条命令（#522）：复制到终端就能执行。描述完整带上（界面上只显示前 40 个字），
+ * macOS / Linux 用单引号（不展开 $、反引号，换行原样保留），Windows 用 PowerShell 的单引号 */
+export function creatorCli(o: { title: string; body: string; inbox: boolean; labels: string[]; path: string; ps: boolean }): string {
+  const q = (s: string) => (o.ps ? `'${s.replace(/'/g, "''")}'` : `'${s.replace(/'/g, `'\\''`)}'`);
+  return [
+    'board new',
+    q(o.title || '<标题>'),
+    o.body ? `--body ${q(o.body)}` : '',
+    o.inbox ? '--inbox' : '',
+    ...o.labels.map(n => `--label ${q(n)}`),
+    `--board ${o.path}`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** 「等价的 CLI」右上角的复制按钮：复制当前这条命令，成功后图标变勾并弹提示（toast 区是 aria-live） */
+function CopyCli({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className={cx('cr-cli-copy', done && 'done')}
+      aria-label="复制等价的 CLI 命令"
+      title="复制命令"
+      onClick={async () => {
+        const ok = await copyText(text);
+        toast({ type: ok ? 'success' : 'error', title: ok ? '已复制命令' : '没能写入剪贴板', duration: 1800 });
+        if (!ok) return;
+        setDone(true);
+        setTimeout(() => setDone(false), 1400);
+      }}
+    >
+      <Icon name={done ? 'check' : 'copy'} />
+    </button>
   );
 }
