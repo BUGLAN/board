@@ -12,6 +12,10 @@ export function accel(key: string, shift = false): string {
 export const BACK_KEY = isMac ? '⌘[' : 'Alt+←';
 export const FWD_KEY = isMac ? '⌘]' : 'Alt+→';
 export const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
+/** 主要靠触屏用的设备：手机宽度，或者主指针是手指（pointer: coarse）。这类设备通常没有实体键盘，不提示快捷键 */
+export const touchFirst = () => isMobile() || !!window.matchMedia?.('(pointer: coarse)').matches;
+/** 评论框的占位文字（#520）：触屏设备只写「写评论…」，桌面写当前平台的发送快捷键 */
+export const commentPlaceholder = (touch = touchFirst()) => (touch ? '写评论…' : `写评论…  ${accel('↵')} 发送`);
 export const reduceMotion = () =>
   document.documentElement.dataset.motion === 'reduced' || !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 

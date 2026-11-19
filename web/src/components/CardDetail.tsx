@@ -13,7 +13,7 @@ import { dismissScrollbars, scrollSilently } from '../lib/scrollbars';
 import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, copyText, cx, dateTime, FWD_KEY, hhmm, isMobile, replay, since } from '../lib/util';
+import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, commentPlaceholder, copyText, cx, dateTime, FWD_KEY, hhmm, isMobile, replay, since } from '../lib/util';
 import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { isTextFile } from '../lib/textFile';
@@ -1109,7 +1109,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
-            placeholder={`写评论…  ${accel('↵')} 发送`}
+            placeholder={commentPlaceholder()}
             aria-label="评论"
             value={text}
             onChange={e => setText(e.target.value)}
