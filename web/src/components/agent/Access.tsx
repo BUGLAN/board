@@ -95,6 +95,36 @@ function CopySkill() {
   );
 }
 
+/** 「安装 skill」的说明和命令：Windows 用目录联接，其他平台保持原来的软链接 */
+export function skillInstall(windows = isWindows) {
+  if (windows) {
+    return {
+      hint: String.raw`skill 是 %USERPROFILE%\.agents\skills\board-skills\ 整个目录（Claude Code 放在 %USERPROFILE%\.claude\skills\board-skills\）：入口 SKILL.md、按场景的 work.md、plan.md、host.md、reference.md，自带的 board 在 scripts/、bin/ 里。只复制 SKILL.md 不够，解压发版附件 board-skills.zip，或用下面的命令链接整个目录`,
+      cmd: String.raw`$src = Join-Path (Get-Location).Path '.agents\skills\board-skills'; $dst = Join-Path $env:USERPROFILE '.agents\skills\board-skills'; if (Test-Path -LiteralPath $dst) { throw "目标已存在，未覆盖：$dst" }; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) -ErrorAction Stop | Out-Null; New-Item -ItemType Junction -Path $dst -Target $src -ErrorAction Stop | Out-Null; "已链接：$dst -> $src"`,
+      note: '在 Board 仓库里执行：创建目录联接；目标已存在时不会覆盖',
+    };
+  }
+  return {
+    hint: 'skill 是 ~/.agents/skills/board-skills/ 整个目录（Claude Code 放在 ~/.claude/skills/board-skills/）：入口 SKILL.md、按场景的 work.md、plan.md、host.md、reference.md，自带的 board 在 scripts/、bin/ 里。只复制 SKILL.md 不够，解压发版附件 board-skills.zip，或用下面的命令链接整个目录',
+    cmd: 'ln -s "$PWD/.agents/skills/board-skills" ~/.agents/skills/board-skills',
+    note: '在 Board 仓库里执行：链接到 skills 目录',
+  };
+}
+
+export function SkillInstallation({ windows = isWindows }: { windows?: boolean }) {
+  const install = skillInstall(windows);
+  return (
+    <>
+      <Row label="安装 skill" hint={install.hint}>
+        <CopySkill />
+      </Row>
+      <div className="code-block">
+        <Code ps={windows} cmd={install.cmd} note={install.note} />
+      </div>
+    </>
+  );
+}
+
 /** 新建令牌后给出的那一条命令：校验令牌后把服务端地址和令牌写进 ~/.board/config.toml（各平台相同） */
 const loginCommand = (url: string, token: string) => `board login --url ${url} --token ${token}`;
 
@@ -291,15 +321,7 @@ export function AccessCard() {
           <LabelPrompt key={s.key} path={path} status={s.name} names={flow.claimables.map(x => x.name)} />
         ))}
       </div>
-      <Row
-        label="安装 skill"
-        hint="skill 是 ~/.agents/skills/board-skills/ 整个目录（Claude Code 放在 ~/.claude/skills/board-skills/）：入口 SKILL.md、按场景的 work.md、plan.md、host.md、reference.md，自带的 board 在 scripts/、bin/ 里。只复制 SKILL.md 不够，解压发版附件 board-skills.zip，或用下面的命令链接整个目录"
-      >
-        <CopySkill />
-      </Row>
-      <div className="code-block">
-        <Code cmd={'ln -s "$PWD/.agents/skills/board-skills" ~/.agents/skills/board-skills'} note="在 Board 仓库里执行：链接到 skills 目录" />
-      </div>
+      <SkillInstallation />
       <h3 className="set-sub">
         <Icon name="terminal" />
         安装 board 命令行
