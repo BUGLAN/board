@@ -4090,6 +4090,16 @@ impl Host<'_> {
                     self.fetch_errs.retain(|(p, ..)| *p != dir);
                     self.beat_soon = true;
                 }
+                match &r.stale {
+                    Some((dir, None)) => self.say(format!("{} 删掉了残留的 worktree 目录 {}（git 已经不登记它），重新建好", self.p.dim("·"), dir.display())),
+                    Some((dir, Some(e))) => self.say(format!(
+                        "{} 残留的 worktree 目录 {} 删不掉（{e}）：这次在 {} 里做，下次用到这个名字时再删",
+                        self.p.yellow("!"),
+                        dir.display(),
+                        r.cwd.display()
+                    )),
+                    None => {}
+                }
                 if let Some((left, what)) = &r.left {
                     self.say(format!(
                         "{} {} 里有上一次没推到远端的改动（{what}），没有动它：这次在 {} 里做",

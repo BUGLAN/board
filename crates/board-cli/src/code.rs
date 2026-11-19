@@ -8,6 +8,8 @@
 //! - **worktree**（[`prepare`]）：位置和 `board-skills` 的约定一样，`<仓库目录名>.wt/<名字，/ 换成 ->`，锁的原因写名字。
 //!   已经有、而且干净（没有没提交的文件、提交都在远端）就接着用，切到最新的集成分支——依赖、编译缓存都还在；
 //!   里面有没推的改动就不动它，这次另开一个（名字后面加派发 ID），免得冲掉上一次的半成品。
+//!   目录在、git 却不登记它（[`leftover`]：`git worktree remove` 删到一半，Windows 上文件被占用、路径太长时常见）：
+//!   那一次的任务已经结束了，直接删掉重建；删不掉时这次另开一个，agent 照常启动。
 //! - **清理**（[`sweep`]）：board host 备的 worktree 记着最近一次用的时间；超过 24 小时没用、又是干净的就删掉。
 //!   有没推改动的留着。人手动跑 `/board-skills` 的会话自己建的 worktree 没有这个记号，不碰。
 //!
@@ -172,6 +174,8 @@ pub struct Ready {
     pub branch: String,
     /// 原来的 worktree 里有没推的改动、这次另开了一个时，写原来那个在哪、留着什么
     pub left: Option<(PathBuf, String)>,
+    /// 碰到了残留目录（git 不再登记的 worktree）：在哪；删掉了时第二项为空，删不掉（这次另开了一个）时写原因
+    pub stale: Option<(PathBuf, Option<String>)>,
 }
 
 /// 准备失败
@@ -183,6 +187,24 @@ pub enum Fail {
     Other(String),
 }
 
+/// `dir` 是这个仓库留下的残留 worktree：git 已经不登记它，里面的 `.git` 文件指向本仓库的 `.git/worktrees/…`，
+/// 或者 `.git` 文件已经没了（`git worktree remove` 删工作区删到一半时，登记照样删掉，目录留着）。
+/// `.git` 是目录（一个完整的克隆）或指向别的仓库时不是
+fn leftover(repo: &Path, dir: &Path) -> bool {
+    let dotgit = dir.join(".git");
+    let Ok(meta) = std::fs::symlink_metadata(&dotgit) else { return true };
+    if !meta.is_file() {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(&dotgit) else { return false };
+    let Some(gitdir) = text.lines().find_map(|l| l.strip_prefix("gitdir:")).map(str::trim) else { return false };
+    // 相对路径（worktree.useRelativePaths）相对 worktree 目录；绝对路径 join 之后就是它自己
+    let gitdir = dir.join(gitdir);
+    let Ok(common) = git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"], QUICK) else { return false };
+    // <common>/worktrees/<id>：比 `.git` 这一级（一定还在，能规范化），worktrees/<id> 可能已经删了
+    gitdir.parent().and_then(Path::parent).is_some_and(|p| same_path(p, Path::new(&common)))
+}
+
 /// 拉最新，备好名字是 `name` 的会话的 worktree，停在最新的集成分支上。`id` 是派发 ID（另开 worktree 时用它起名）
 pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str) -> Result<Ready, Fail> {
     fetch(repo).map_err(Fail::Fetch)?;
@@ -191,18 +213,32 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str) -> Result<Re
     let first = worktree_path(repo, name).ok_or_else(|| Fail::Other("找不到主仓库目录".into()))?;
     let known = worktrees(repo);
     let registered = |p: &Path| known.iter().any(|k| same_path(k, p));
+    let base = first.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let another = first.with_file_name(format!("{base}-{id}"));
     let mut target = first.clone();
     let mut left = None;
-    if target.exists() {
-        if !registered(&target) {
+    let mut stale = None;
+    if target.exists() && !registered(&target) {
+        if !leftover(repo, &target) {
             return Err(Fail::Other(format!("{} 已经存在，但不是这个仓库的 worktree：挪走或删掉它", target.display())));
         }
+        // 残留目录：那一次的任务已经结束，不管里面剩下什么，删掉重建；删不掉（文件被占用）就这次另开一个
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => stale = Some((target.clone(), None)),
+            Err(e) => {
+                stale = Some((target.clone(), Some(e.to_string())));
+                target = another.clone();
+            }
+        }
+        // 清掉可能还留着的登记（gitdir 指向已经没了的目录）
+        let _ = git(repo, &["worktree", "prune"], QUICK);
+    }
+    if target.exists() {
         match unpushed(&target) {
             // 上一次留着没推的改动：不动它，这次另开一个
             Some(what) => {
-                let base = first.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 left = Some((target.clone(), what));
-                target = first.with_file_name(format!("{base}-{id}"));
+                target = another.clone();
             }
             None => {
                 git(&target, &["checkout", "--quiet", "--detach", &tip], WT_LIMIT).map_err(|e| Fail::Other(format!("{} 切不到 {tip}：{e}", target.display())))?;
@@ -218,7 +254,7 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str) -> Result<Re
             .map_err(|e| Fail::Other(format!("建不了 worktree {path}：{e}")))?;
     }
     touch(&target);
-    Ok(Ready { cwd: target, branch, left })
+    Ok(Ready { cwd: target, branch, left, stale })
 }
 
 /// 保存下来的半成品
@@ -395,6 +431,80 @@ mod tests {
         assert_eq!(b.left.as_ref().map(|(p, w)| (p.clone(), w.as_str())), Some((a.cwd.clone(), "1 个文件没提交")));
         assert_eq!(std::fs::read_to_string(a.cwd.join("half.txt")).unwrap(), "做到一半");
         assert!(unpushed(&b.cwd).is_none());
+    }
+
+    /// 模拟 `git worktree remove` 删到一半：登记（`.git/worktrees/<id>`）没了，目录和里面剩下的文件还在
+    fn half_removed(wt: &Path) {
+        let admin = git(wt, &["rev-parse", "--absolute-git-dir"], QUICK).unwrap();
+        std::fs::remove_dir_all(admin).unwrap();
+    }
+
+    /// 残留目录（git 不再登记的 worktree）：不管里面剩下什么，删掉重建，agent 照常启动；`.git` 文件也没了时一样
+    #[test]
+    fn prepare_deletes_a_leftover_worktree_dir_and_rebuilds_it() {
+        let r = rig();
+        let a = prepare(&r.repo, "win/codex", 1, "").unwrap();
+        std::fs::create_dir_all(a.cwd.join("node_modules/pkg")).unwrap();
+        std::fs::write(a.cwd.join("node_modules/pkg/a.node"), "x").unwrap();
+        std::fs::write(a.cwd.join("half.txt"), "失败那次留下的").unwrap();
+        std::fs::remove_file(a.cwd.join("AGENTS.md")).unwrap();
+        half_removed(&a.cwd);
+        assert!(!worktrees(&r.repo).iter().any(|w| same_path(w, &a.cwd)), "git 已经不登记它");
+        assert!(leftover(&r.repo, &a.cwd));
+        push(&r, "v2\n");
+        let b = prepare(&r.repo, "win/codex", 2, "").unwrap();
+        assert_eq!(b.cwd, a.cwd, "删掉之后在原来的位置重建");
+        assert_eq!(b.stale, Some((a.cwd.clone(), None)));
+        assert!(b.left.is_none());
+        assert!(worktrees(&r.repo).iter().any(|w| same_path(w, &b.cwd)), "重新登记上了");
+        assert_eq!(text(&b.cwd.join("AGENTS.md")), "v2\n", "停在最新的集成分支上");
+        assert!(!b.cwd.join("half.txt").exists() && !b.cwd.join("node_modules").exists(), "残留的内容不留");
+        // 删到 `.git` 文件也没了
+        std::fs::write(b.cwd.join("half.txt"), "x").unwrap();
+        half_removed(&b.cwd);
+        std::fs::remove_file(b.cwd.join(".git")).unwrap();
+        let c = prepare(&r.repo, "win/codex", 3, "").unwrap();
+        assert_eq!((c.cwd.clone(), c.stale.clone()), (b.cwd.clone(), Some((b.cwd.clone(), None))));
+        assert!(unpushed(&c.cwd).is_none());
+        // 下一次就是普通的接着用
+        assert_eq!(prepare(&r.repo, "win/codex", 4, "").unwrap().stale, None);
+    }
+
+    /// 同名目录不是这个仓库的 worktree（自己就是一个仓库、或指向别的仓库）：不碰，照旧报错
+    #[test]
+    fn prepare_keeps_a_dir_that_is_not_a_leftover_of_this_repo() {
+        let r = rig();
+        let dir = worktree_path(&r.repo, "a/b").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        run(&dir, &["init", "-q"]);
+        assert!(!leftover(&r.repo, &dir));
+        assert!(matches!(prepare(&r.repo, "a/b", 1, "").unwrap_err(), Fail::Other(e) if e.contains("不是这个仓库的 worktree")));
+        assert!(dir.join(".git").is_dir(), "没被删");
+        // 指向别的仓库的 worktree
+        let other = worktree_path(&r.repo, "c/d").unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join(".git"), format!("gitdir: {}\n", r.up.join(".git/worktrees/x").display())).unwrap();
+        assert!(!leftover(&r.repo, &other));
+    }
+
+    /// 残留目录删不掉（Windows 上文件被占用；这里用只读目录模拟）：这次另开一个，agent 照常启动，写明原因
+    #[cfg(unix)]
+    #[test]
+    fn prepare_opens_another_worktree_when_a_leftover_cannot_be_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = rig();
+        let a = prepare(&r.repo, "win/codex", 1, "").unwrap();
+        let locked = a.cwd.join("node_modules");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("a.node"), "x").unwrap();
+        half_removed(&a.cwd);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let b = prepare(&r.repo, "win/codex", 9, "");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let b = b.unwrap();
+        assert_eq!(b.cwd, a.cwd.with_file_name("win-codex-9"));
+        assert!(matches!(&b.stale, Some((p, Some(_))) if *p == a.cwd), "{:?}", b.stale);
+        assert!(worktrees(&r.repo).iter().any(|w| same_path(w, &b.cwd)));
     }
 
     /// 拉不到（远端没了）和别的失败分开报；集成分支在远端没有时写明
