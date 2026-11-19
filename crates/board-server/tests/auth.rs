@@ -171,6 +171,8 @@ fn unauthenticated_requests_are_rejected() {
     assert_eq!(r.body["ok"], true);
     assert_eq!(r.body["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(r.body["commit"], board_server::COMMIT);
+    assert_eq!(r.body["mode"], "github");
+    assert!(r.body["ui"].is_boolean());
     assert!(!board_server::COMMIT.is_empty());
 }
 
@@ -556,6 +558,9 @@ fn local_mode_needs_no_login_but_only_local_hosts() {
     let r = send("GET", &format!("{}/api/workspace", s.url), &[], None);
     assert_eq!(r.status, 200);
     assert_eq!(send("GET", &format!("{}/api/me", s.url), &[], None).body["mode"], "local");
+    let health = send("GET", &format!("{}/api/health", s.url), &[], None);
+    assert_eq!(health.status, 200);
+    assert_eq!(health.body["mode"], "local");
     // 其他网页借 DNS 重绑定访问：Host 不是本机
     let r = send("GET", &format!("{}/api/workspace", s.url), &[("host", "evil.example.com")], None);
     assert_eq!(r.status, 400);

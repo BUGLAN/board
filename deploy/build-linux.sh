@@ -16,6 +16,10 @@ done
 if [ "$skip_web" = false ]; then
   npm run build:web
 fi
+if [ ! -s web/dist/index.html ]; then
+  echo "发布构建缺少 web/dist/index.html：先运行 npm run build:web。--skip-web 只能跳过重复构建，不能跳过界面产物检查" >&2
+  exit 1
+fi
 cargo zigbuild --release --locked --target x86_64-unknown-linux-musl -p board-server
 mkdir -p deploy/bin
 cp target/x86_64-unknown-linux-musl/release/board-server deploy/bin/board-server

@@ -68,6 +68,17 @@ fn git(args: &[&str]) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-changed=../../web/dist");
     println!("cargo:rerun-if-env-changed=BOARD_COMMIT");
+    // 本机开发用 Vite 提供界面，debug 构建不要求 web/dist；发布版本会把界面临时打包进二进制，
+    // 没有 index.html 时必须在这里停住，不能让一个能启动、但所有页面都报「界面还没有构建」的服务端流出去。
+    let index = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/dist/index.html");
+    println!("cargo:rerun-if-changed={}", index.display());
+    let index_ready = index.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+    if std::env::var("PROFILE").ok().as_deref() == Some("release") && !index_ready {
+        panic!(
+            "发布构建缺少 web/dist/index.html。先在仓库根目录执行 npm run build:web，再编译 board-server；\
+             不要在发布构建里使用 --skip-web，除非确认界面已经构建过"
+        );
+    }
     let commit = match std::env::var("BOARD_COMMIT").ok().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.trim().to_string(),
         None => {
