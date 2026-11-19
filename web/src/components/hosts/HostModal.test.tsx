@@ -1,4 +1,6 @@
 /* 添加机器 → 只有命令行的机器（#519）：安装命令的复制按钮有自己的名称（不把带令牌的整条命令当名称），复制后有提示 */
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -68,5 +70,22 @@ describe('添加机器的安装命令', () => {
     expect(writes.length).toBe(1);
     expect(writes[0]).toContain(RAW);
     expect(useUI.getState().toasts.at(-1)?.title).toBe('已复制');
+  });
+});
+
+const css = (name: string) => readFileSync(new URL(`../../styles/${name}`, pathToFileURL(__filename)), 'utf8');
+
+describe('长命令不在中间断行（#521）', () => {
+  it('安装命令、接入 agent 页的 shell 命令都不断行、放不下时横向滚动；提示词句子照常换行', () => {
+    const cmd = css('hosts.css').match(/\.hp-cmd code \{[^}]*\}/)![0];
+    expect(cmd).toMatch(/white-space: pre;/);
+    expect(cmd).toMatch(/overflow-x: auto/);
+    expect(cmd).not.toMatch(/break-all|anywhere/);
+    const line = css('settings.css').match(/\.code-line:not\(\.plain\) code \{[^}]*\}/)![0];
+    expect(line).toMatch(/white-space: pre;/);
+    expect(line).toMatch(/overflow-x: auto/);
+    expect(line).toMatch(/overflow-wrap: normal/);
+    expect(css('settings.css')).toMatch(/\.code-line\.plain code \{ overflow-wrap: break-word; \}/);
+    expect(css('app.css')).not.toMatch(/\.token-fresh \.code-line code \{[^}]*anywhere/);
   });
 });

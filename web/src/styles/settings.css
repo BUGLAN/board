@@ -63,10 +63,17 @@
 .code-block { border-radius: var(--r-md); overflow: hidden; background: var(--term-bg); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); margin-bottom: 12px; }
 .code-line { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; font-family: var(--f-mono); font-size: 12.5px; color: var(--term-text); }
 .code-line code { min-width: 0; overflow-wrap: anywhere; }
+/* shell 命令不断行（#521）：在 token、路径、参数名中间折开容易看错，放不下时在自己的框里横向滚动；复制按钮、说明留在右边 */
+.code-line:not(.plain) code {
+  flex: 1 1 auto; white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto;
+  padding: 2px 0; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .25) transparent;
+}
+/* skill 调用、快捷提示词是句子：照常换行，但只在放不下的长词里才断 */
+.code-line.plain code { overflow-wrap: break-word; }
 .code-line + .code-line { border-top: 1px solid rgba(255, 255, 255, .05); }
 .code-line code::before { content: "$ "; color: var(--term-dim); }
 .code-line.ps code::before { content: "PS> "; }
-.code-line span { margin-left: auto; font-family: var(--f-sans); font-size: 11.5px; color: var(--term-dim); white-space: nowrap; }
+.code-line span { flex: none; margin-left: auto; font-family: var(--f-sans); font-size: 11.5px; color: var(--term-dim); white-space: nowrap; }
 .code-line .copy { width: 26px; height: 26px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--term-dim); transition: background-color var(--dur-2), color var(--dur-2); }
 .code-line .copy:hover { background: rgba(255, 255, 255, .08); color: #fff; }
 .code-line .copy.done { color: #3DDC97; }

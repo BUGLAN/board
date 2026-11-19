@@ -486,7 +486,11 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--r-sm); text-align: left;
   background: var(--term-bg); color: var(--term-text);
 }
-.hp-cmd code { flex: 1; min-width: 0; font: 12px/1.6 var(--f-mono); white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+/* 一行命令不断行（#521）：令牌、路径、参数名从中间折开容易看错，放不下时横向滚动，整条照样一键复制 */
+.hp-cmd code {
+  flex: 1; min-width: 0; font: 12px/1.6 var(--f-mono); white-space: pre; overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .25) transparent;
+}
 .hp-cmd svg { width: 14px; height: 14px; flex: none; opacity: .6; }
 .hp-cmd:hover svg { opacity: 1; }
 
