@@ -22,7 +22,6 @@ use crate::{Output, Paint};
 use board_core::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::process::Command;
 
 /// 找不到开工时的基点时往前查几个提交
 pub const FALLBACK_COMMITS: usize = 20;
@@ -42,7 +41,7 @@ pub struct Opts<'a> {
 }
 
 fn git(dir: Option<&str>, args: &[&str]) -> Result<String> {
-    let mut c = Command::new("git");
+    let mut c = crate::gitcmd::command();
     if let Some(d) = dir {
         c.arg("-C").arg(d);
     }
@@ -56,7 +55,7 @@ fn git(dir: Option<&str>, args: &[&str]) -> Result<String> {
 
 /// a 是不是 b 的祖先（或就是 b）
 fn is_ancestor(dir: Option<&str>, a: &str, b: &str) -> bool {
-    let mut c = Command::new("git");
+    let mut c = crate::gitcmd::command();
     if let Some(d) = dir {
         c.arg("-C").arg(d);
     }

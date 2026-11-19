@@ -213,8 +213,8 @@ pub fn git_why(output: &str) -> String {
 }
 
 fn git(dir: &Path, args: &[&str], log: &Path, limit: Duration, pids: &Pids) -> (Outcome, String) {
-    let mut c = Command::new("git");
-    c.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C").env("LANG", "C");
+    let mut c = crate::gitcmd::command();
+    c.arg("-C").arg(dir).args(args).env("LC_ALL", "C").env("LANG", "C");
     let out = run_limited(c, log, limit, pids);
     let text = std::fs::read_to_string(log).unwrap_or_default();
     (out, text)
@@ -363,7 +363,7 @@ mod tests {
     /// 真的 git：本地裸仓库当 origin 能推送；origin 指向不存在的地址时失败；远端不会出现 board-selftest 分支
     #[test]
     fn git_check_with_local_remotes() {
-        if Command::new("git").arg("--version").output().is_err() {
+        if crate::gitcmd::command().arg("--version").output().is_err() {
             return;
         }
         // 用 shell 串起几条 git：Windows 上没有 sh，这台机器上也就跑不了这个用例
@@ -377,7 +377,7 @@ mod tests {
         let good = check_git(&GitJob { board: "a/b".into(), dir: root.join("work") }, root, &pids);
         assert!(good.ok, "{good:?}");
         assert!(good.detail.unwrap().contains("origin.git"));
-        let refs = Command::new("git").args(["-C", root.join("origin.git").to_str().unwrap(), "for-each-ref"]).output().unwrap();
+        let refs = crate::gitcmd::command().args(["-C", root.join("origin.git").to_str().unwrap(), "for-each-ref"]).output().unwrap();
         assert!(!String::from_utf8_lossy(&refs.stdout).contains("board-selftest"), "dry-run 不会真的推上去");
         // origin 改成不存在的地址
         sh(root, "cd work && git remote set-url origin /nope/missing.git");
