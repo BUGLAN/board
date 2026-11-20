@@ -5,13 +5,17 @@
      写入状态一行（已写入 / 正在写入 / 不改 / 机器离线 / 写入失败 + 重试）、原因一行（+ 再试一次）、
      启动环境（每项带版本，没找到的置灰）、模型（一个下拉：不改 / 供应商 · 模型；agent 认几种接口、供应商也给了几种时多一个接口；强度）、
      下面一句写用哪种接口连哪个地址；设为默认、自检这一个
+   - 缺 board-skills：在桌面端里看的就是这台电脑、agent 能自动装（认识它的 skill 目录、不在 WSL 里）时，按钮是「一键安装」
+     （board host 按共用配置同步时是「立即同步」），走桌面端的 installSkill（src-tauri/src/skill.rs）；其余照旧「装上」，让 board host 同步
    - 没找到的 agent 卡片置灰，写「这台机器上没找到」
    写操作：模型、启动环境、默认 agent 是设置项（当帧生效，旁边转圈）；自检、重试要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
-import { envName, missWord, selftestBusy, selftestLive, selftestState, selftestWhole, since } from '../../lib/hosts';
+import { skillHome } from '../../lib/agentMeta';
+import { envName, isLocalHost, missWord, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps } from '../../lib/hosts';
+import { installSkill, localHost, shell } from '../../lib/platform';
 import { interfaceName, metaOf, protocolChoices, providersFor, runPick, writableEfforts } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
 import { copyText, cx } from '../../lib/util';
@@ -45,8 +49,41 @@ function useAsk() {
   return { any: busy.size > 0, is: (key: string) => busy.has(key), run };
 }
 
+/** 桌面端一键安装 board-skills（#563）：只给这台电脑（桌面端跑的 board host 就是这台机器）上能自动装的 agent。
+    返回能装的 agent 判断和安装动作；旧版桌面端不支持时记下来，之后不再给按钮 */
+function useSkillInstall(h: HostInfo, ask: ReturnType<typeof useAsk>) {
+  const [local, setLocal] = useState(false);
+  const [noSupport, setNoSupport] = useState(false);
+  useEffect(() => {
+    if (shell !== 'desktop') return;
+    let alive = true;
+    void localHost().then(x => alive && setLocal(isLocalHost(h, x)));
+    return () => {
+      alive = false;
+    };
+  }, [h]); // eslint-disable-line react-hooks/exhaustive-deps
+  const auto = new Set(skillGaps(h).auto.map(a => a.id));
+  const can = (a: HostAgent) => shell === 'desktop' && local && !noSupport && auto.has(a.id);
+  // board host 按共用配置同步 skills：桌面端只是通知它马上同步一次
+  const syncing = !!h.sync?.able;
+  const install = (a: HostAgent) =>
+    void ask.run(`skill:${a.id}`, async () => {
+      try {
+        const paths = await installSkill([a.id]);
+        toast({ type: 'success', title: syncing ? '已让 board host 马上同步 board-skills' : 'board-skills 已装好', text: `${a.name}：${paths.join('、')}` });
+      } catch (e) {
+        if (e === 'unsupported') {
+          setNoSupport(true);
+          toast({ type: 'info', title: '这个版本的桌面端不能一键安装', text: '先更新桌面端，或按 docs/agents.md 手动安装' });
+        } else toast({ type: 'error', title: '没装上 board-skills', text: String(e) });
+      }
+    });
+  return { can, install, label: syncing ? '立即同步' : '一键安装' };
+}
+
 export function HostAgents({ h, view, save, sync, now }: { h: HostInfo; view: ProviderView | null; save: Save; sync: SyncMap; now: number }) {
   const ask = useAsk();
+  const skill = useSkillInstall(h, ask);
   const tested = lastTest(h);
   const testing = selftestBusy(h, now);
   const whole = selftestWhole(h, now);
@@ -84,14 +121,32 @@ export function HostAgents({ h, view, save, sync, now }: { h: HostInfo; view: Pr
         </p>
       )}
       {h.agents.map(a => (
-        <AgentCard key={a.id} h={h} a={a} view={view} save={save} sync={sync} now={now} ask={ask} />
+        <AgentCard key={a.id} h={h} a={a} view={view} save={save} sync={sync} now={now} ask={ask} skill={skill} />
       ))}
       {h.agents.length === 0 && <p className="hp-note">board host 没有上报 agent</p>}
     </div>
   );
 }
 
-function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostAgent; view: ProviderView | null; save: Save; sync: SyncMap; now: number; ask: ReturnType<typeof useAsk> }) {
+function AgentCard({
+  h,
+  a,
+  view,
+  save,
+  sync,
+  now,
+  ask,
+  skill,
+}: {
+  h: HostInfo;
+  a: HostAgent;
+  view: ProviderView | null;
+  save: Save;
+  sync: SyncMap;
+  now: number;
+  ask: ReturnType<typeof useAsk>;
+  skill: ReturnType<typeof useSkillInstall>;
+}) {
   const hr = agentHealth(h, a);
   const meta = metaOf(view, a.id);
   const def = a.id === h.agent;
@@ -140,7 +195,14 @@ function AgentCard({ h, a, view, save, sync, now, ask }: { h: HostInfo; a: HostA
       {a.found && hr.why && (
         <div className="hd-why">
           <span>{hr.why}</span>
-          {hr.act === 'sync' ? (
+          {hr.act === 'sync' && skill.can(a) ? (
+            <Tip text={`装到 ${skillHome(a.id) ?? ''}（这台电脑）`}>
+              <button className={cx('btn sm brand', ask.is(`skill:${a.id}`) && 'is-busy')} type="button" disabled={ask.any} onClick={() => skill.install(a)}>
+                <Icon name="download" />
+                {skill.label}
+              </button>
+            </Tip>
+          ) : hr.act === 'sync' ? (
             <button className={cx('btn sm', ask.is(`fix:${a.id}`) && 'is-busy')} type="button" disabled={ask.any || !h.online} onClick={() => void ask.run(`fix:${a.id}`, () => api.syncHost(h.name))}>
               {hr.actLabel}
             </button>
