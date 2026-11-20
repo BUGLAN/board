@@ -4885,6 +4885,21 @@ fn check_falls_back_to_agent_slash_model_without_host() {
     assert_eq!(check_gen(&mut s, later, Some("win"), "claude", Some(1)).unwrap().name, "claude/claude");
 }
 
+/// 没有机器（没跑 board host）时也不报 NAME_TAKEN：<标识>/<标识> 被在线会话占用时加 -1、-2（default/main#539）；
+/// 前面的会话下线后，新会话又能拿到不带序号的名字
+#[test]
+fn check_generated_without_a_host_adds_sequence_too() {
+    let mut s = store();
+    let names: Vec<String> = (0..3).map(|_| check_gen(&mut s, T0 + S, None, "claude", None).unwrap().name).collect();
+    assert_eq!(names, vec!["claude/claude", "claude/claude-1", "claude/claude-2"]);
+    for n in &names {
+        check_agent_name(n).unwrap();
+    }
+    // 第一个会话下线
+    s.write(T0 + 2 * S, Origin::cli(), |w| w.agent_beat_by("claude/claude", true, crate::agents::BeatBy::Cli(Some("s1")))).unwrap();
+    assert_eq!(check_gen(&mut s, T0 + 3 * S, None, "claude", None).unwrap().name, "claude/claude");
+}
+
 /// 没带机器名时按令牌认机器：令牌是它的 board host 上报用的那个
 #[test]
 fn check_finds_the_host_by_token() {

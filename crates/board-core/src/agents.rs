@@ -286,13 +286,14 @@ impl<'a> W<'a> {
             Some(h) => crate::hosts::named_host(self.tx, h, now)?,
             None => token.and_then(|t| crate::hosts::host_by_token(self.tx, t, now).transpose()).transpose()?,
         };
-        // 名字：<机器名>/<模型名>-<强度>；没有机器时退回 <agent 标识>/<模型>（模型也取不到时是 <agent 标识>/<agent 标识>）
+        // 名字：<机器名>/<模型名>-<强度>；没有机器时退回 <agent 标识>/<agent 标识>。被在线会话占用时都在末尾加 -1、-2 …
+        // （同一个 free_agent_name：没有机器名、模型时第一段、第二段都是 agent 标识）
         let (name, modeled) = match found {
             Some(m) => {
                 let (model, effort, set) = crate::hosts::name_opts_for_transaction(self.tx, &m, agent)?;
                 (self.free_agent_name(agent, &m.name, &model, &effort)?, set)
             }
-            None => crate::hosts::plain_agent_name(agent, ""),
+            None => (self.free_agent_name(agent, "", "", "")?, false),
         };
         let mut info = self.agent_check_with_agent(Some(agent), &name, token, owner)?;
         // 名字里的模型和这台机器、这个 agent 的设置对不上（机器改名了、模型不是这个）：之后按设置里的修正

@@ -79,7 +79,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 **名字由 Board 生成**（`board check --agent <标识>`）：机器名、agent、模型在 Board 的机器设置里都有（§9.1），名字不用 agent 自己拼。规则和 `board host` 派发时一样（同一个函数）：`<机器名>/<模型名>-<推理强度>`，例如 `win/opus-5.5-high`、`mbp/opus-5.5`（没有强度时省略）。
 
-- `<agent 标识>` 由会话给出（`board check --agent <标识>`，claude、codex、dsh …），按 §9.1 的 agent 标识校验；名字本身不再带它，只用来按机器设置查模型、强度，并记在名字表的 `agent` 列里（返回的 `agent` 字段、卡片持有者的 `holderAgent` 用它）。机器名取本机 `~/.board/config.toml` 的 `[host] name`（桌面端「添加机器 → 这台电脑」、机器详情里改名，或 `board host --name` 写的）；没写时服务端按令牌认：令牌是哪台在线机器的 board host 最近一次上报用的。两者都认不出（没跑 board host、白板不在这台机器）时退回 `<agent 标识>/<模型>`，模型也取不到时是 `<agent 标识>/<agent 标识>`。
+- `<agent 标识>` 由会话给出（`board check --agent <标识>`，claude、codex、dsh …），按 §9.1 的 agent 标识校验；名字本身不再带它，只用来按机器设置查模型、强度，并记在名字表的 `agent` 列里（返回的 `agent` 字段、卡片持有者的 `holderAgent` 用它）。机器名取本机 `~/.board/config.toml` 的 `[host] name`（桌面端「添加机器 → 这台电脑」、机器详情里改名，或 `board host --name` 写的）；没写时服务端按令牌认：令牌是哪台在线机器的 board host 最近一次上报用的。两者都认不出（没跑 board host、白板不在这台机器）时退回 `<agent 标识>/<agent 标识>`（例如 `claude/claude`）；被在线会话占用时同样在末尾加 `-1`、`-2`……，不报 `NAME_TAKEN`（下一条）。
 - 模型名按这个顺序取：机器设置里选的模型 → `board host` 上报的 `model`（`[agents.<标识>] model`，内置模板有默认值）→ agent 标识。推理强度取 board host 上报的 `effort`（机器设置里选的强度写进配置文件后也会上报）；没有强度时名字里省略。
 - 不带序号的这个名字空闲时直接用；同一台机器同一模型同一强度已经有在线会话时，末尾加 `-1`、`-2`……（例如 `win/opus-5.5-high-1`），不报 `NAME_TAKEN`；名字太长时先截断模型名（连同强度），序号留在最后，总长不超过 48。只有在线的名字算占用，上一个会话离线后名字可以复用。
 - 返回里 `name` 是生成的名字，`agent` 是这个名字跑在哪个 agent 里（界面画图标用），`modeled` 说明名字的第二段是不是这个 agent 配的模型。`board` 把名字记在本机；之后不写 `--as` / `BOARD_AS` 的命令都用它。本机配置的机器名变了（改了机器名、换了模型）时，下一次按配置重新 check、换成新名字。
