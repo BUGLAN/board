@@ -1,5 +1,5 @@
 /* ==========================================================================
-   同步到机器的几类配置（skills、MCP、Git 凭据）：一处登记（服务端同一份登记是 crates/board-core/src/hosts.rs 的 SYNC_KINDS）
+   同步到机器的几类配置（skills、MCP、Git 凭据）：一处登记（服务端同一份登记是 crates/board-core/src/hosts/sync.rs 的 SYNC_KINDS）
    形状都一样：服务端一份 → 每台机器一个开关（用服务器的 / 不改）→ 一次同步一行结果（状态、数量、原因，加上各自的明细）→ 每台机器一个胶囊
    - 机器详情「设置」页一类一行（hostDetail 的 syncLine、syncNotes，HostSettings 的 SyncBlock），共用配置里每台机器的胶囊和
      Git 凭据卡片上的一行（syncPills），改开关时当帧画成「正在写入」（Saver 的 touchesConfig）都按这里遍历

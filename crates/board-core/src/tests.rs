@@ -2102,7 +2102,7 @@ fn schema_indexes_do_not_use_migrated_columns() {
         ("store.rs", include_str!("store.rs")),
         ("files.rs", include_str!("files.rs")),
         ("agents.rs", include_str!("agents.rs")),
-        ("hosts.rs", include_str!("hosts.rs")),
+        ("hosts/mod.rs", include_str!("hosts/mod.rs")),
         ("moves.rs", include_str!("moves.rs")),
         ("skills.rs", include_str!("skills.rs")),
         ("mcp.rs", include_str!("mcp.rs")),

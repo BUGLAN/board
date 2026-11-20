@@ -2,7 +2,7 @@
 //!
 //! - **领取规则**（`sched` 表，只有一行）：有顺序的「条件 → agent」和一条兜底。以前每台机器各存一份
 //!   （`hosts.rules`、`hosts.fallback`），几台机器要靠「复制设置」保持一致；现在读机器记录时直接带上这一份
-//!   （`hosts.rs` 的 `HOST_COLS`），按规则挑卡片的代码不用分机器的还是全局的。
+//!   （`hosts/read.rs` 的 `HOST_COLS`），按规则挑卡片的代码不用分机器的还是全局的。
 //! - **白板参不参与**（`boards.auto`，默认参与）：不参与的白板不会被自动领取，手动派发照常。
 //! - **由哪些机器做**（`sched.picks`，按 agent 记）：界面「领取规则 → 由这些机器做」里勾掉的机器不自动领这个 agent
 //!   的卡（即使它有空的会话位），别的 agent、别的机器不受影响；手动派发、`board claim` 照常。存的是明确排除的机器，
@@ -122,7 +122,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "auto", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "windows", "TEXT NOT NULL DEFAULT '[[0,1440]]'"),
         ("boards", "auto", "INTEGER NOT NULL DEFAULT 1"),
-        // 自动升级：全局开关，和每台机器已经替它试过升级到哪个版本、试了几次、什么时候再试（hosts.rs auto_upgrade_host）
+        // 自动升级：全局开关，和每台机器已经替它试过升级到哪个版本、试了几次、什么时候再试（hosts/manage.rs auto_upgrade_host）
         ("sched", "auto_upgrade", "INTEGER NOT NULL DEFAULT 0"),
         // 「由这些机器做」：每个 agent 明确不参与的机器 id（JSON）
         ("sched", "picks", "TEXT NOT NULL DEFAULT '{}'"),

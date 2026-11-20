@@ -98,9 +98,9 @@ SSE 断了 / 漏了一条
 
 代码：
 
-- `crates/board-cli/src/host.rs:2073`：完整 `HostReport` 的组成。
-- `crates/board-cli/src/host.rs:3221`：SSE 订阅；`3245`：主循环；`3282`：beat；`3293`：`/work` 兜底。
-- `crates/board-core/src/hosts.rs:379`：`HOST_GAP_MS`；`3326`：`host_beat`；`5667`：机器掉线扫描。
+- `crates/board-cli/src/host/mod.rs` 的 `report`：完整 `HostReport` 的组成。
+- `crates/board-cli/src/host/mod.rs`：`subscribe` 是 SSE 订阅，`main_loop` 是主循环（beat、`/work` 兜底都在里面）。
+- `crates/board-core/src/hosts/mod.rs`：`HOST_GAP_MS`；`hosts/report.rs`：`host_beat`、机器掉线扫描（`sweep_hosts`）。
 - `crates/board-server/src/lib.rs:1257`：SSE；`1302`：15 秒 keep-alive 和 `X-Accel-Buffering`。
 - `crates/board-cli/src/backend.rs:296`：SSE 客户端读超时和重连行为。
 - `crates/board-core/src/store.rs:542`：单写事务；`crates/board-core/src/engine.rs:1177`：卡片心跳写入。

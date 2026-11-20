@@ -538,7 +538,7 @@ impl Store {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut w = W { tx: &tx, now, local: self.local, origin, changed: false, hosts_changed: false, config_changed: false, config_by: String::new(), dispatch_ok: false };
         let out = f(&mut w)?;
-        // 改了会写进 agent 配置的东西：给受影响的机器下发「同步配置」请求（hosts.rs）
+        // 改了会写进 agent 配置的东西：给受影响的机器下发「同步配置」请求（hosts/sync.rs）
         if w.config_changed {
             w.request_config_sync()?;
         }
@@ -597,7 +597,7 @@ impl Store {
     }
 
     /// 规则 7：扫描所有白板，释放心跳中断的领取；心跳中断超过 50 秒的名字标为离线（PRD §3）；
-    /// 心跳中断超过 50 秒的机器标为离线，名字已经离线的在跑派发结束（机器掉线，见 hosts.rs）。
+    /// 心跳中断超过 50 秒的机器标为离线，名字已经离线的在跑派发结束（机器掉线，见 hosts/report.rs）。
     /// 返回释放的张数加上离线的名字、机器个数和结束的派发个数
     pub fn sweep(&mut self, now: i64) -> Result<usize> {
         let gap = BEAT_MS * BEAT_MISSES;
@@ -1305,7 +1305,7 @@ pub struct W<'a> {
     pub(crate) config_changed: bool,
     /// 谁改的（同步请求和操作记录里写）；空时按来源写「人」「命令行」「服务端」
     pub(crate) config_by: String,
-    /// 正在为派发领取：卡片的排队派发不挡住这次领取（见 hosts.rs）
+    /// 正在为派发领取：卡片的排队派发不挡住这次领取（见 hosts/run.rs）
     pub(crate) dispatch_ok: bool,
 }
 

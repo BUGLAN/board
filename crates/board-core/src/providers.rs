@@ -9,8 +9,8 @@
 //! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型不能选强度，写配置时也不写强度（[`writable_efforts`]）。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
 //! - 每个内置 agent（claude、codex、dsh）用哪个供应商、哪个模型、什么强度、哪种接口：在每台机器上选「不改 / 指定」
-//!   （机器设置的 `run`，见 hosts.rs 的 [`crate::hosts::AgentRun`]）；服务器上不再存一份给所有机器跟的。
-//! - 改了算配置有变化：服务端给受影响的机器下发「同步配置」请求（hosts.rs 的 `request_config_sync`）。
+//!   （机器设置的 `run`，见 hosts/model.rs 的 [`crate::hosts::AgentRun`]）；服务器上不再存一份给所有机器跟的。
+//! - 改了算配置有变化：服务端给受影响的机器下发「同步配置」请求（hosts/sync.rs 的 `request_config_sync`）。
 
 use crate::store::{R, W};
 use crate::{BoardError, ErrorCode, Result};

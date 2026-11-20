@@ -1,6 +1,6 @@
 //! 「这台机器能不能接这块白板的卡」只在这里判断（PRD §9.1「能不能接」）。
 //!
-//! 手动派发（`hosts.rs` 的 `dispatch_create_from`）、定时领取（`dispatch_pull`）、定时建卡挑机器（`card_crons.rs`）
+//! 手动派发（`hosts/dispatch.rs` 的 `dispatch_create_from`）、定时领取（`dispatch_pull`）、定时建卡挑机器（`card_crons.rs`）
 //! 和界面（工作区数据里的 `blocks`）以前各写各的，条件互相对不上；现在都问这里：
 //!
 //! - [`R::board_unfit`]：机器 × 白板。还没有配工作空间、项目设了仓库但目录不对（不存在、不是 git 仓库、`origin` 不是
