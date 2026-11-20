@@ -329,7 +329,8 @@ impl<'a> Routes<'a> {
         self.takes(agent).then_some(agent)
     }
 
-    /// 一张卡片交给哪个 agent（和 [`Rules::route`] 一样算上兜底，兜底的 agent 也看「由哪些机器做」）
+    /// 一张卡片交给哪个 agent：有规则命中时按 [`Rules::agent_for`]（第一条命中的规则生效才交）；
+    /// 一条都没命中时交给兜底的 agent（要找得到）。交出去的 agent 都看这台机器是否被排除在它的自动领取之外
     pub(super) fn route(&self, labels: &[String]) -> Option<&'a str> {
         if self.inner.matches_any(labels) {
             return self.inner.agent_for(labels).and_then(|a| self.agent(a));
@@ -392,14 +393,6 @@ impl Rules {
             return Some(&hit.agent);
         }
         None
-    }
-    /// 同上，算上兜底
-    #[allow(dead_code)]
-    pub(super) fn route(&self, labels: &[String]) -> Option<&str> {
-        if self.matches_any(labels) {
-            return self.agent_for(labels);
-        }
-        self.fallback.as_ref().filter(|(_, ok)| *ok).map(|(a, _)| a.as_str())
     }
     /// 有一条规则命中（不管生效没有）
     pub(super) fn matches_any(&self, labels: &[String]) -> bool {

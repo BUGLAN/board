@@ -306,15 +306,6 @@ pub fn derive_dir(ws: &HostWorkspace, board: &str, os: &str) -> Option<HostDir> 
     Some(HostDir { board: board.to_string(), path, ..Default::default() })
 }
 
-/// 工作空间里摆着的一块白板：项目标识、白板标识、它的目录（要新建的目录；`--dir` 覆盖了的不算）
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceBoard {
-    /// `<项目>/<白板>`
-    pub board: String,
-    /// `<工作空间>/<项目>` 的实际路径
-    pub path: PathBuf,
-}
-
 /// 登录 shell 自己打的启动、退出提示，不是命令的输出：派发的 agent 在 `$SHELL -l -i -c` 里跑，
 /// 没有终端（CI、桌面端、`setsid`）时 bash 会打作业控制提示，退出时再打一行 `logout`，发行版的
 /// `/etc/bash.bashrc` 还会打几句 sudo 提示。上报和判断结果之前去掉这些行，否则失败原因会显示成 `logout`。

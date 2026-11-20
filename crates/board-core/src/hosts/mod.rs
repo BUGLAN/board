@@ -50,7 +50,6 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 mod dispatch;
 mod manage;

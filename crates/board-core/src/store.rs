@@ -637,11 +637,6 @@ impl Store {
         &self.conn
     }
 
-    /// 附件目录；内存数据库没有
-    pub fn files_dir(&self) -> Option<&Path> {
-        self.files.as_deref().map(crate::files::FileStore::dir)
-    }
-
     /// 附件文件存储；内存数据库没有。服务端在 Store 锁外用它落盘、清理（[`crate::files::FileStore`]）
     pub fn file_store(&self) -> Option<Arc<crate::files::FileStore>> {
         self.files.clone()
