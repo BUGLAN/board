@@ -191,10 +191,12 @@ fn remote_attachments() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert!(r.out.contains("已下载 1 个附件"), "{}", r.out);
     assert_eq!(std::fs::read(out.join("1-shot.png")).unwrap(), std::fs::read(&png).unwrap());
-    // 服务端的拒绝原样还原
+    // 不支持的类型在本地就拒绝（和服务端同一份规则，default/main#562）；服务端的拒绝原样还原
     let txt = dir.path().join("x.exe");
     std::fs::write(&txt, "MZ").unwrap();
     let r = s.run("test/alpha", &["attach", "1", txt.to_str().unwrap(), "--json"]);
     assert_eq!(r.error_code(), "USAGE");
+    let r = s.run("test/alpha", &["attach", "9", png.to_str().unwrap(), "--json"]);
+    assert_eq!(r.error_code(), "NOT_FOUND");
     assert!(!s.home.join(".board").exists(), "不应该创建 ~/.board");
 }

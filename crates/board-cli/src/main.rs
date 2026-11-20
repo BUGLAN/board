@@ -734,11 +734,18 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             if paths.is_empty() {
                 return Err(BoardError::usage("用法：board attach <ID> <文件>… [--comment \"<说明>\"]"));
             }
-            let mut done: Vec<Attachment> = vec![];
+            // 先全部读出来、按服务端的规则检查（类型、大小、内容和扩展名对得上）：有一个不行就什么也不上传，
+            // 免得前面的已经挂到卡片上、后面的才被拒绝，留下没有评论引用的附件（default/main#562）
+            let mut blobs = vec![];
             for f in paths {
                 let bytes = std::fs::read(f).map_err(|e| BoardError::usage(format!("读不到文件 {f}：{e}")))?;
                 let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
-                done.push(be.attach(&path, id, &actor, &name, &bytes)?);
+                let (name, _, _) = board_core::files::check(&name, &bytes).map_err(|e| BoardError::usage(format!("{f}：{}", e.message)))?;
+                blobs.push((name, bytes));
+            }
+            let mut done: Vec<Attachment> = vec![];
+            for (name, bytes) in &blobs {
+                done.push(be.attach(&path, id, &actor, name, bytes)?);
             }
             // 附件放进一条评论里，界面的动态里就能看到（图片直接显示）
             let mut text = text_arg(&a, "--comment", "--comment-file")?.map(|s| s.trim().to_string()).unwrap_or_default();

@@ -329,6 +329,16 @@ fn attach_and_download_files() {
     std::fs::write(&svg, "<svg/>").unwrap();
     let r = s.run(ALPHA, &["attach", "1", svg.to_str().unwrap(), "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+    // 几个文件里有一个不行（内容和扩展名对不上）：在本地就拒绝，排在前面的也不上传（default/main#562）
+    let before = s.run(ALPHA, &["show", "1", "--json"]).json()["attachments"].as_array().unwrap().len();
+    let bad = dir.path().join("bad.png");
+    std::fs::write(&bad, "png\n").unwrap();
+    let r = s.run(ALPHA, &["attach", "1", log.to_str().unwrap(), bad.to_str().unwrap(), "--comment", "日志和截图", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("bad.png 的内容和扩展名对不上"), "{}", r.out);
+    let c = s.run(ALPHA, &["show", "1", "--json"]).json();
+    assert_eq!(c["attachments"].as_array().unwrap().len(), before, "一个也不上传：{c}");
+    assert!(!c["activity"].as_array().unwrap().iter().any(|a| a["text"].as_str().is_some_and(|t| t.starts_with("日志和截图"))), "不评论：{c}");
     let r = s.run(ALPHA, &["attach", "1", "nope.png", "--json"]);
     assert_eq!(r.error_code(), "USAGE");
     let r = s.run(ALPHA, &["attach", "9", png.to_str().unwrap(), "--json"]);
