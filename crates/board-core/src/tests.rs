@@ -294,6 +294,51 @@ fn heartbeat_final_then_idle_is_released() {
     assert!(c.activity.iter().any(|a| a.text.contains("结束心跳后 50 秒内没有交审或放回")));
 }
 
+/// 领取后第一次心跳之前就 final（board heartbeat final）、或者没有目标状态的 giveup：同样记下 final。
+/// 之后的 agent 级心跳不给它开始计时，50 秒后照常释放；final 之后照常能在 50 秒内移到交审状态
+#[test]
+fn final_before_the_first_beat_still_ends_the_claim() {
+    let mut s = store();
+    let me = Actor::agent("test/alpha");
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, new("二")).unwrap();
+    exec(&mut s, B, &human(), T0, new("三")).unwrap();
+    s.write(T0, Origin::cli(), |w| w.agent_check_with_agent(None, &me.name, None, NameOwner::Anyone)).unwrap();
+    // 一：领取后 1 秒就 final，然后 agent 级心跳照常到达
+    exec(&mut s, B, &me, T0, claim(Some(1))).unwrap();
+    let c = exec(&mut s, B, &me, T0 + SEC, beat(1, true)).unwrap();
+    assert_eq!((c.card.runs, c.card.run_started_at), (0, None));
+    assert!(!c.activity.iter().any(|a| a.text.contains("结束了心跳")), "没有计时，不记「结束了心跳」");
+    for k in 1..=6 {
+        s.write(T0 + k * 10 * SEC, Origin::cli(), |w| w.agent_beat(&me.name, false).map(|_| ())).unwrap();
+    }
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.runs, c.card.run_started_at), (0, None), "agent 级心跳不给 final 过的卡开始计时");
+    assert!(!c.activity.iter().any(|a| a.text.contains("开始第 1 次")));
+    assert_eq!(s.sweep(T0 + 51 * SEC).unwrap(), 1);
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.holder, c.card.column.as_str(), c.card.runs_lost), (None, "todo", 0));
+    assert!(c.activity.iter().any(|a| a.text.contains("结束心跳后 50 秒内没有交审或放回")));
+
+    // 二：没有交审状态时的 giveup（只评论、结束计时）在第一次心跳之前：同样到期释放
+    s.write(T0 + 2 * MIN, Origin::cli(), |w| w.agent_check_with_agent(None, &me.name, None, NameOwner::Anyone)).unwrap();
+    exec(&mut s, B, &me, T0 + 2 * MIN, claim(Some(2))).unwrap();
+    let c = s.write(T0 + 2 * MIN + SEC, Origin::cli(), |w| {
+        let b = w.resolve(B)?;
+        w.exec(&b, &me, Cmd::Beat { id: 2, done: true })
+    });
+    assert!(c.is_ok());
+    s.write(T0 + 2 * MIN + 20 * SEC, Origin::cli(), |w| w.agent_beat(&me.name, false).map(|_| ())).unwrap();
+    assert_eq!(s.sweep(T0 + 2 * MIN + 52 * SEC).unwrap(), 1);
+    assert_eq!(card(&s, B, 2).card.holder, None);
+
+    // 三：领取 → 立刻 final → 50 秒内移到交审状态：照常成功
+    exec(&mut s, B, &me, T0 + 5 * MIN, claim(Some(3))).unwrap();
+    exec(&mut s, B, &me, T0 + 5 * MIN, beat(3, true)).unwrap();
+    let c = exec(&mut s, B, &me, T0 + 5 * MIN + 30 * SEC, mv(3, "review")).unwrap();
+    assert_eq!((c.card.column.as_str(), c.card.holder), ("review", None));
+}
+
 #[test]
 fn runs_accumulate_across_claims() {
     let mut s = store();

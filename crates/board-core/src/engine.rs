@@ -632,9 +632,20 @@ impl<'a> W<'a> {
                 if done {
                     if is_holder(&r) {
                         self.count_beat(b, id)?;
-                        if let Some((n, ms)) = self.close_run(b, id, self.now, "final")? {
-                            self.tx.execute("UPDATE cards SET beat_at = ?1, final_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
-                            self.track(b, id, actor, "beat", &format!("结束了心跳，第 {n} 次耗时 {}", dur_words(ms)))?;
+                        match self.close_run(b, id, self.now, "final")? {
+                            Some((n, ms)) => {
+                                self.tx.execute("UPDATE cards SET beat_at = ?1, final_at = ?1 WHERE board = ?2 AND id = ?3", params![self.now, b, id])?;
+                                self.track(b, id, actor, "beat", &format!("结束了心跳，第 {n} 次耗时 {}", dur_words(ms)))?;
+                            }
+                            // 还没开始计时（领取后第一次心跳之前就 final、giveup）：同样记下 final，不算一次、不记动态。
+                            // 之后的 agent 级心跳不再给这张卡开始计时，50 秒后照常释放（不然卡片会一直被持有）
+                            None => {
+                                let n = self.tx.execute(
+                                    "UPDATE cards SET beat_at = ?1, final_at = ?1 WHERE board = ?2 AND id = ?3 AND final_at IS NULL",
+                                    params![self.now, b, id],
+                                )?;
+                                self.changed |= n > 0;
+                            }
                         }
                     }
                     return self.read().card(board, id);
