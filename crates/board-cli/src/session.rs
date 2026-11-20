@@ -63,6 +63,8 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
     let follows = hosted || heartbeat::follows(name);
     let review = v.flow.review_after(&d.card.column);
     let over = v.flow.giveup_after(&d.card.column);
+    // 两级锁定的白板：这一级连不到交审状态，先移到下一个锁定状态再交审（default/main#542）
+    let next_lock = v.flow.next_lock(&d.card.column);
     let (repo, branch) = (&v.repo, &v.branch);
     Ok(render(&v, origin, p, |fmt| {
         if json {
@@ -71,6 +73,7 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
             out["session"] = json!({ "name": name, "started": fresh, "resumed": resumed, "follows": follows });
             out["review"] = role(review);
             out["giveup"] = role(over);
+            out["next_lock"] = role(next_lock);
             out["repo"] = json!(repo);
             out["branch"] = json!(branch);
             out["files"] = Value::Array(saved.iter().map(|(f, to)| saved_json(f, to)).collect());
@@ -103,7 +106,8 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
                 fmt.show(&d)
             );
 
-            s += &format!("{}  board submit {cid} --comment-file <文件>  {}\n", p.dim("交审      "), to(review, "这块白板没有交审状态：用 board giveup"));
+            let no_review = v.flow.next_lock_hint(cid, &d.card.column).unwrap_or_else(|| "这块白板没有交审状态：用 board giveup".into());
+            s += &format!("{}  board submit {cid} --comment-file <文件>  {}\n", p.dim("交审      "), to(review, &no_review));
             s += &format!(
                 "{}  board giveup {cid} --comment-file <文件>  {}\n",
                 p.dim("做不下去  "),
@@ -364,14 +368,7 @@ fn hand_over(
     }
     let target = if giveup { flow.giveup_after(&cur.column) } else { flow.review_after(&cur.column) }.map(|s| s.key.clone());
     if !giveup && target.is_none() {
-        return Err(BoardError::new(
-            ErrorCode::ForbiddenColumn,
-            format!(
-                "#{id} 在「{}」，没有连到交审状态，能去：{}。这块白板还没有标出交审状态：请人在状态设置里给等人复盘的那个状态打开「交审状态」（都没打开时按名称认，名称里带「审核」「review」这类词）；这一次先用 board giveup {id} 交给人，评论里写明已经做完、推到了哪个提交",
-                flow.name(&cur.column),
-                flow.outs(&cur.column)
-            ),
-        ));
+        return Err(BoardError::new(ErrorCode::ForbiddenColumn, flow.no_review_reason(id, &cur.column)));
     }
     exec(Cmd::Comment { id, text })?;
     let d = exec(Cmd::Beat { id, done: true })?;

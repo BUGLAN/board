@@ -273,6 +273,37 @@ impl Flow {
     pub fn giveup_after(&self, from: &str) -> Option<&Status> {
         self.error_after(from).or_else(|| self.human_after(from))
     }
+    /// 从锁定状态 from 沿连线能去的下一个锁定状态（按工作流顺序第一个）。两级锁定的白板（进行中 → 测试中 → 待审核）上，
+    /// 刚领到的卡连不到交审状态：持有者先 `board move` 到这里，再交审（default/main#542）
+    pub fn next_lock(&self, from: &str) -> Option<&Status> {
+        if !self.is_lock(from) {
+            return None;
+        }
+        self.0.iter().find(|s| s.lock && s.key != from && self.has_edge(from, &s.key))
+    }
+    /// 交审前先移到下一个锁定状态的提示：「下一步是锁定状态「测试中」：先 board move 1 测试中，到那里再交审」。
+    /// 只在 from 认不出交审状态、又连着下一个锁定状态时有
+    pub fn next_lock_hint(&self, id: i64, from: &str) -> Option<String> {
+        if self.review_after(from).is_some() {
+            return None;
+        }
+        let s = self.next_lock(from)?;
+        // 命令里写名称；名称带空白时写标识，复制出去的命令不会断开
+        let arg = if s.name.trim().is_empty() || s.name.contains(char::is_whitespace) { &s.key } else { &s.name };
+        Some(format!("下一步是锁定状态「{}」：先 board move {id} {arg}，到那里再交审", s.name))
+    }
+    /// `board submit` 从 from 认不出交审状态时的拒绝原因（`FORBIDDEN_COLUMN`）：连着下一个锁定状态时先移过去；
+    /// 真的没有交审状态时请人标出来、这一次先 giveup
+    pub fn no_review_reason(&self, id: i64, from: &str) -> String {
+        match self.next_lock_hint(id, from) {
+            Some(hint) => format!("#{id} 在「{}」，{hint}", self.name(from)),
+            None => format!(
+                "#{id} 在「{}」，没有连到交审状态，能去：{}。这块白板还没有标出交审状态：请人在状态设置里给等人复盘的那个状态打开「交审状态」（都没打开时按名称认，名称里带「审核」「review」这类词）；这一次先用 board giveup {id} 交给人，评论里写明已经做完、推到了哪个提交",
+                self.name(from),
+                self.outs(from)
+            ),
+        }
+    }
     /// 从锁定状态 from 连出去、名称里带 words 的状态里按工作流顺序排在最前面的一个（错误节点不算）
     fn after(&self, from: &str, words: &[&str]) -> Option<&Status> {
         let s = self.get(from)?;

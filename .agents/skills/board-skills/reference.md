@@ -19,7 +19,7 @@
 
 `board flow` 还列出这块白板所在项目的**代码仓库**（`repo`）和**集成分支**（`branch`，空表示按仓库的 AGENTS.md / CLAUDE.md），见 work.md「代码」。
 
-**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态看状态设置里的「交审状态」开关（`board flow` 的规则写「交审」，`--json` 里 `"review": true`），一块白板上都没打开时看名称里的「审核」这类关键词；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，50 秒后卡片回到领取前的状态，这时停下来告诉用户。没有交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`，改用 `board giveup`。
+**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态看状态设置里的「交审状态」开关（`board flow` 的规则写「交审」，`--json` 里 `"review": true`），一块白板上都没打开时看名称里的「审核」这类关键词；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，50 秒后卡片回到领取前的状态，这时停下来告诉用户。卡片所在的锁定状态连不到交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`：连着下一个锁定状态时（两级锁定，`board start --json` 的 `next_lock`）先 `board move` 过去再交审；真的没有交审状态时改用 `board giveup`。
 
 - 代码仓库是当前工作目录所在的仓库；卡片描述指定了别的位置时以描述为准。
 - 得到 `NOT_LOGGED_IN`、`INVALID_TOKEN`、`UNREACHABLE` 时停下来告诉用户（见文末错误码），不要反复重试。
@@ -27,7 +27,7 @@
 ## 常用命令
 
 ```sh
-board start [<ID>] --agent <标识> --json  # 开始做一张卡：占用名字、启动后台心跳（已经有了就接着用）、领取、下载附件，返回卡片和交审 / 做不下去去哪、仓库、集成分支
+board start [<ID>] --agent <标识> --json  # 开始做一张卡：占用名字、启动后台心跳（已经有了就接着用）、领取、下载附件，返回卡片和交审 / 做不下去去哪、下一个锁定状态（next_lock）、仓库、集成分支
 board submit <ID> --comment-file <文件> [<截图>…] [--no-code]   # 交审：上传附件、评论、结束计时、移到交审状态，一步做完；改了代码的卡片评论里要有固定的四行
 board giveup <ID> --comment-file <文件> [<日志>…]               # 做不下去：上传附件、评论原因、结束计时、移到错误节点（没有时移到需要人处理的状态）
 board flow                                # 工作流：状态的顺序、标识、名称、规则；以及白板所在项目的仓库、集成分支
@@ -70,7 +70,7 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | `NOT_IN_TODO` | 卡片不在可领取状态，也不是你持有的 |
 | `ALREADY_HOLDING` | 你已经持有另一张卡片 |
 | `NOT_HOLDER` | 卡片被别人持有；`board land`、`board hold`：领取已经失效，不推集成分支，改推 wip 分支（见 work.md「推送」第 3 步） |
-| `FORBIDDEN_COLUMN` | 不沿连线移动；直接移进锁定状态；移入、移出终点状态或「未整理」；移出错误节点；从没有连到锁定状态的可领取状态领取 |
+| `FORBIDDEN_COLUMN` | 不沿连线移动；直接移进锁定状态；移入、移出终点状态或「未整理」；移出错误节点；从没有连到锁定状态的可领取状态领取；`board submit` 时卡片所在状态连不到交审状态（按原因做：先 `board move` 到下一个锁定状态，或改用 `board giveup`） |
 | `EMPTY_TITLE` / `USAGE` | 标题为空 / 命令或参数不对（例如不存在的状态或标签、空评论；`board submit` 的交审评论缺固定的四行，原因里写明缺哪几行） |
 | `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「Agent → 访问令牌」新建） |
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「Agent → 访问令牌」新建一个，再 `board login --token <令牌>` |

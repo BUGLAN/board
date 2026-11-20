@@ -2937,6 +2937,46 @@ fn submit_without_review_status_changes_nothing() {
     assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("doing", Some("alpha")));
     assert!(c.card.run_started_at.is_some(), "没有 final");
     assert!(c.activity.iter().all(|a| a.action != "comment"));
+    // 一级锁定、真的没有交审状态：没有下一个锁定状态，照旧建议 giveup
+    assert!(flow(&s).next_lock("doing").is_none());
+    assert!(!e.message.contains("board move"), "{}", e.message);
+}
+
+/// 两级锁定（进行中 → 测试中 → 待审核）：刚领到的卡在「进行中」，连不到交审状态。board submit 拒绝时提示先
+/// board move 到下一个锁定状态，不建议 giveup；移过去再交审成功（default/main#542）
+#[test]
+fn submit_from_first_of_two_locks_points_to_next_lock() {
+    let mut s = store();
+    // 默认工作流（一级锁定）：没有下一个锁定状态
+    assert!(flow(&s).next_lock("doing").is_none());
+    assert!(flow(&s).next_lock_hint(1, "doing").is_none());
+    let t = ui(&mut s, |w| w.create_status(B, "测试中", None)).unwrap();
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { lock: Some(true), ..Default::default() })).unwrap();
+    let add = [("doing".to_string(), t.key.clone()), (t.key.clone(), "review".into()), (t.key.clone(), "check".into())];
+    ui(&mut s, |w| w.update_edges(B, &add, &[("doing".into(), "review".into()), ("doing".into(), "check".into())])).unwrap();
+    let f = flow(&s);
+    assert_eq!(f.next_lock("doing").map(|x| x.key.as_str()), Some(t.key.as_str()));
+    assert!(f.next_lock(&t.key).is_none(), "第二级连出去没有锁定状态");
+    assert!(f.next_lock("todo").is_none(), "不是锁定状态");
+    assert!(f.next_lock_hint(1, &t.key).is_none(), "第二级连得到交审状态：不用提示");
+
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let e = exec(&mut s, B, &alpha(), T0 + SEC, submit(1, "做完了")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::ForbiddenColumn);
+    assert_eq!(e.message, "#1 在「进行中」，下一步是锁定状态「测试中」：先 board move 1 测试中，到那里再交审");
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("doing", Some("alpha")));
+    assert!(c.activity.iter().all(|a| a.action != "comment"), "被拒绝时评论不留下");
+
+    exec(&mut s, B, &alpha(), T0 + 2 * SEC, mv(1, &t.key)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 3 * SEC, submit(1, "做完了")).unwrap();
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("review", None));
+
+    // 名称带空白：命令里写标识，复制出去不会断开
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { name: Some("测试 中".into()), ..Default::default() })).unwrap();
+    let hint = flow(&s).next_lock_hint(2, "doing").unwrap();
+    assert!(hint.contains(&format!("先 board move 2 {}，", t.key)), "{hint}");
 }
 
 /// 做不下去：先去错误节点，没有时去需要人处理的状态；两个都没有时只评论、结束计时，50 秒后回到领取前的状态

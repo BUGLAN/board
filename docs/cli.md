@@ -627,6 +627,7 @@ board start --json                       # 之后：接着用名字和心跳；�
   "session": { "name": "claude-mbp/opus-5.5", "started": true, "resumed": false, "follows": true },
   "review": { "key": "review", "name": "待审核" },
   "giveup": { "key": "check", "name": "需人工校验" },
+  "next_lock": null,
   "repo": "https://github.com/o/r.git",
   "branch": "main",
   "files": [
@@ -647,6 +648,7 @@ board start --json                       # 之后：接着用名字和心跳；�
 
 - `session.started`：这一次是不是新占用的名字；`session.resumed`：卡片本来就由你持有（上次没做完的），没有重新领取；`session.follows`：后台心跳跟着调用它的 agent 进程（进程不在了心跳就停）。认不出 agent 进程时（祖先进程全是 shell、容器里 agent 是 1 号进程、`BOARD_HEARTBEAT_PID` 指向的进程不在）为 `false`，文字输出多一行提醒：心跳会一直跑到 `board heartbeat stop`，这台机器上同时只能开一个这样的会话；这时同一个会话里再 `board start` 不用重带 `--agent`（本机只有一条这样的记录时接着用它）。
 - `review`、`giveup`：`board submit`、`board giveup` 会把卡片移到哪个状态；白板上没有对应的状态时为 `null`。
+- `next_lock`：卡片所在的锁定状态连着的下一个锁定状态（`key`、`name`，按工作流顺序第一个），没有时为 `null`。两级锁定的白板（进行中 → 测试中 → 待审核）上刚领到的卡 `review` 为空、`next_lock` 是「测试中」：先 `board move 13 测试中`，到那里再交审；文字输出的「交审」一行也这样写。
 - `files`：附件已经下载到 `path`；`--out <目录>` 指定放哪，不写时是只有自己能读的临时目录。
 - 会话里第一次用、又没带 `--agent`（或 `--as`）时是 `USAGE`；没有可领的卡片时 `EMPTY_TODO`。
 - 先占名字、启动心跳，再领取：领取失败（`EMPTY_TODO`、`NOT_FOUND`、`NOT_IN_TODO`、`ALREADY_HOLDING`）时名字已经在线、后台心跳已经在跑，不再领卡时 `board heartbeat stop`。报错里写着用的名字：`--json` 是 `error.detail.session`，文字输出在这一次新占用名字时多一行「名字 <名字> 已占用，后台心跳在跑；不再领卡时 board heartbeat stop」：
@@ -676,7 +678,7 @@ board submit 13 --comment-file review.md shot.png check.log
 
 `--json` 返回移动后的整张卡片，另有 `moved`（是否移走了）和 `uploaded`（这次上传的附件）。
 
-- 只有持有者能交审（`NOT_HOLDER`）；评论不能为空（`USAGE`）；白板没有交审状态时 `FORBIDDEN_COLUMN`，改用 `board giveup`。
+- 只有持有者能交审（`NOT_HOLDER`）；评论不能为空（`USAGE`）；卡片所在的状态连不到交审状态时 `FORBIDDEN_COLUMN`：连着下一个锁定状态时原因写「#13 在「进行中」，下一步是锁定状态「测试中」：先 board move 13 测试中，到那里再交审」；白板真的没有交审状态时原因建议改用 `board giveup`。
 - 项目设了代码仓库时，评论里要有 `提交`、`集成分支`、`检查`、`碰到的别的卡` 四行，键后接全角或半角冒号，键和冒号之间允许空白。这张卡没改代码（调研、整理）时加 `--no-code`。
 - 行首允许空白、引用符号 `>`、标题符号 `#`、列表符号 `-` / `*`、数字加 `.` / `)`；键两边可加成对的 `**` 或反引号，也支持整行行内代码。例如 `**提交**：abc1234`、`> 集成分支：main`、`1. 检查 ：npm test 通过` 都算。写在句子中间的 `这次的提交：abc`、不同的键 `提交号：abc` 不算。
 - 冒号后的值去掉两端空白、`*`、反引号后必须有实际内容，不能整段都是 `<…>` 占位（如 `<sha>`）。缺行时报 `缺这几行：…`，有行但值为空或保留占位时报 `这几行没填：…`；两类问题会分别列出，返回 `USAGE`，附件不上传、卡片不动。

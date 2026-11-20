@@ -237,6 +237,8 @@ fn board_start_checks_beats_and_claims_in_one_command() {
     assert_eq!((c["id"].as_i64(), c["column"].as_str(), c["holder"].as_str()), (Some(1), Some("doing"), Some(name.as_str())));
     // 交审、做不下去去哪：不用自己从工作流里认
     assert_eq!((c["review"]["key"].as_str(), c["giveup"]["key"].as_str()), (Some("review"), Some("check")));
+    // 默认工作流只有一级锁定：没有下一个锁定状态
+    assert!(c.get("next_lock").is_some_and(|v| v.is_null()), "{c}");
     assert!(c["repo"].is_string() && c["branch"].is_string());
     // 附件已经下载到本地
     let files = c["files"].as_array().unwrap();
@@ -260,6 +262,60 @@ fn board_start_checks_beats_and_claims_in_one_command() {
     // 没有可领的了
     assert_eq!(run(&["giveup", "2", "--comment", "卡住了"]).code, 0);
     assert_eq!(run(&["start", "--json"]).error_code(), "EMPTY_TODO");
+
+    assert_eq!(run(&["heartbeat", "stop"]).code, 0);
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+}
+
+/// 两级锁定的白板（待办 → 进行中 → 测试中 → 待审核）：刚领到的卡在「进行中」，连不到交审状态。
+/// board start 的 next_lock 指向「测试中」、「交审」一行写先 board move；board submit 的报错同样写、不建议 giveup；
+/// 移过去再交审成功（default/main#542）
+#[test]
+fn board_start_on_two_lock_flow_points_to_next_lock() {
+    let s = start();
+    let mut agent = fake_agent();
+    let e = Env::new(&s, &agent);
+    let run = |args: &[&str]| board(&s.home, &e.vars, args);
+    {
+        let mut store = board_core::Store::open(&s.db).unwrap();
+        store
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
+                let t = w.create_status("default/main", "测试中", None)?;
+                w.update_status("default/main", &t.key, board_core::StatusPatch { lock: Some(true), ..Default::default() })?;
+                let k = t.key.as_str();
+                let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+                w.update_edges("default/main", &[pair("doing", k), pair(k, "review"), pair(k, "check")], &[pair("doing", "review"), pair("doing", "check")])
+            })
+            .unwrap();
+    }
+    let maker = e.vars.iter().filter(|(k, _)| *k != "BOARD_AS" && *k != "BOARD_HEARTBEAT_PID").cloned().chain([("BOARD_AS", "test/maker".to_string())]).collect::<Vec<_>>();
+    assert_eq!(board(&s.home, &maker, &["check", "--as", "test/maker"]).code, 0);
+    assert_eq!(board(&s.home, &maker, &["new", "一"]).code, 0);
+
+    let r = run(&["start", "1", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!(c["column"], "doing");
+    assert!(c["review"].is_null() && c["giveup"].is_null(), "{c}");
+    assert_eq!(c["next_lock"], serde_json::json!({ "key": "s1", "name": "测试中" }));
+    // 文字输出：「交审」一行写先移过去，不再写「这块白板没有交审状态」
+    let r = run(&["start", "1"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let line = r.out.lines().find(|l| l.contains("board submit 1")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(line.contains("下一步是锁定状态「测试中」：先 board move 1 测试中，到那里再交审"), "{line}");
+    assert!(!r.out.contains("没有交审状态"), "{}", r.out);
+
+    // 在第一级交审：拒绝，提示先 move，不建议 giveup
+    let r = run(&["submit", "1", "--comment", "做完", "--no-code", "--json"]);
+    assert_eq!(r.error_code(), "FORBIDDEN_COLUMN", "{}{}", r.out, r.err);
+    let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(msg.contains("先 board move 1 测试中") && !msg.contains("giveup"), "{msg}");
+    // 移到第二级再交审
+    assert_eq!(run(&["move", "1", "测试中"]).code, 0);
+    let r = run(&["submit", "1", "--comment", "做完", "--no-code", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["column"], "review");
 
     assert_eq!(run(&["heartbeat", "stop"]).code, 0);
     agent.kill().unwrap();

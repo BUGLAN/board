@@ -404,8 +404,8 @@ CLI 只通过服务端读写白板，规则在服务端执行。服务端地址�
 | `board edit <ID> [--title "<标题>"] [--body "<描述>" \| --body-file <文件>]` | 修改标题或描述 |
 | `board move <ID> <状态> [--top]` | 把卡片移到指定状态（标识或名称）；只能沿连线移动（§8 规则 12） |
 | `board claim [<ID>]` | 领取。不带 ID 时按 §8 规则 1 选卡片。返回卡片的全部字段和动态 |
-| `board start [<ID>] [--agent <标识>] [--out <目录>]` | 开始做一张卡，一条命令做完会话开始和领取：这个会话（调用它的 agent 进程）还没有在线的名字时先占用名字（`--agent <标识>` 由 Board 生成，或 `--as <名字>`，规则同 `board check`）并启动后台心跳，已经有了就接着用、不再带 `--agent`；领取（不带 ID 时按 §8 规则 1 选卡片；卡片已经由这个名字持有时接着做）；把附件下载到本地（`--out` 指定目录，不写时是只有自己能读的临时目录）。返回卡片的全部字段和动态，另外有 `session`（`name`、`started` 这次是不是新占用的名字、`resumed` 是不是接着做）、`review` 和 `giveup`（交审、做不下去时卡片会去的状态，各有 `key`、`name`，没有时为空）、`repo`、`branch`（项目的代码仓库和集成分支）、`files`（下载好的附件，带 `path`）。`board host` 启动的会话里（环境里有 `BOARD_HOST`）不占名字、不启动心跳、不领取：只读卡片和附件，要带 ID，卡片不归 `BOARD_AS` 持有时 `NOT_HOLDER` |
-| `board submit <ID> [<文件>…] --comment "<交审评论>" \| --comment-file <文件> [--no-code]` | 交审，只有持有者能做（否则 `NOT_HOLDER`）：上传附件，和交审评论放在同一条评论里；结束这张卡片这一次的计时；把卡片移到交审状态（卡片所在的锁定状态连出去的、名称里带「审核」之类关键词的状态）。评论、结束计时、移动在服务端的一次写入里做完，任何一步被拒绝都不留下前面的。没有交审状态时 `FORBIDDEN_COLUMN`。项目设了代码仓库时，评论里要有以「提交：」「集成分支：」「检查：」「碰到的别的卡：」开头的四行，缺了 `USAGE`、写明缺哪几行、不上传也不评论；这张卡没改代码时加 `--no-code` 不查 |
+| `board start [<ID>] [--agent <标识>] [--out <目录>]` | 开始做一张卡，一条命令做完会话开始和领取：这个会话（调用它的 agent 进程）还没有在线的名字时先占用名字（`--agent <标识>` 由 Board 生成，或 `--as <名字>`，规则同 `board check`）并启动后台心跳，已经有了就接着用、不再带 `--agent`；领取（不带 ID 时按 §8 规则 1 选卡片；卡片已经由这个名字持有时接着做）；把附件下载到本地（`--out` 指定目录，不写时是只有自己能读的临时目录）。返回卡片的全部字段和动态，另外有 `session`（`name`、`started` 这次是不是新占用的名字、`resumed` 是不是接着做）、`review` 和 `giveup`（交审、做不下去时卡片会去的状态，各有 `key`、`name`，没有时为空）、`next_lock`（卡片所在的锁定状态连着的下一个锁定状态，`key`、`name`，没有时为空；两级锁定的白板上 `review` 为空时先 `board move` 到它再交审，文字输出的「交审」一行也这样写）、`repo`、`branch`（项目的代码仓库和集成分支）、`files`（下载好的附件，带 `path`）。`board host` 启动的会话里（环境里有 `BOARD_HOST`）不占名字、不启动心跳、不领取：只读卡片和附件，要带 ID，卡片不归 `BOARD_AS` 持有时 `NOT_HOLDER` |
+| `board submit <ID> [<文件>…] --comment "<交审评论>" \| --comment-file <文件> [--no-code]` | 交审，只有持有者能做（否则 `NOT_HOLDER`）：上传附件，和交审评论放在同一条评论里；结束这张卡片这一次的计时；把卡片移到交审状态（卡片所在的锁定状态连出去的、名称里带「审核」之类关键词的状态）。评论、结束计时、移动在服务端的一次写入里做完，任何一步被拒绝都不留下前面的。连不到交审状态时 `FORBIDDEN_COLUMN`：连着下一个锁定状态时原因写「#1 在「进行中」，下一步是锁定状态「测试中」：先 board move 1 测试中，到那里再交审」，不建议 giveup；真的没有交审状态时原因建议 `board giveup`。项目设了代码仓库时，评论里要有以「提交：」「集成分支：」「检查：」「碰到的别的卡：」开头的四行，缺了 `USAGE`、写明缺哪几行、不上传也不评论；这张卡没改代码时加 `--no-code` 不查 |
 | `board giveup <ID> [<文件>…] --comment "<原因>" \| --comment-file <文件>` | 做不下去、交给人，只有持有者能做：上传附件和原因放在同一条评论里，结束这一次的计时，把卡片移到错误节点（没有时移到需要人处理的状态），同样在一次写入里做完。两种状态都没有时只评论、结束计时，输出里写明：50 秒后领取释放，卡片回到领取前的状态 |
 | `board next` | 只在 `board host` 启动的会话里用（环境里有 `BOARD_HOST`，名字是这次会话生成的），否则 `USAGE`：结算上一张、领这个会话排着的下一张接着做（§9.1「会话接着做」），返回内容和 `board claim` 一样；不再接着做时 `SESSION_DONE` |
 | `board base <ID> [--branch <分支>] [--dir <仓库>]` | 开工（skill「代码 → 开工」）：卡片要由这个名字持有；建好或接着用会话的 worktree，有没推的改动时不切换、退出码 1；切到最新的集成分支，评论里有 `未完成的改动：wip/…` 时切到那条分支并 rebase；输出 worktree、基点和下一步（见上文） |
@@ -1575,10 +1575,10 @@ Agent Tab（§10.16）：
 
 开始、交审、做不下去各一条命令（§9）：
 
-284. 一个新会话里 α 执行 `board start 1 --agent claude --json`：名字由 Board 生成并上线、后台心跳启动，#1 进入「进行中」、持有者是这个名字；返回里 `session.started` 为 true，`review.key` 是 `review`、`giveup.key` 是 `check`，带附件的卡片 `files` 里每个文件的 `path` 都在本机。不带 `--agent` 也没有名字时 `USAGE`。
+284. 一个新会话里 α 执行 `board start 1 --agent claude --json`：名字由 Board 生成并上线、后台心跳启动，#1 进入「进行中」、持有者是这个名字；返回里 `session.started` 为 true，`review.key` 是 `review`、`giveup.key` 是 `check`、`next_lock` 为空，带附件的卡片 `files` 里每个文件的 `path` 都在本机。不带 `--agent` 也没有名字时 `USAGE`。
 285. 同一个会话里交审 #1 后执行 `board start`（不带 ID、不带 `--agent`）：接着用同一个名字和后台心跳，领到「待办」最上面的一张；没有可领的时 `EMPTY_TODO`。对已经由自己持有的卡片再 `board start <ID>`：不重新领取，`session.resumed` 为 true。
 286. `board host` 启动的会话里 `board start <ID>` 不占名字、不启动心跳、不领取；卡片不归 `BOARD_AS` 持有时 `NOT_HOLDER`，卡片留在原处。
-287. α 持有 #1，执行 `board submit 1 shot.png --comment-file r.md`：动态里依次是一条评论（说明在前、附件在后）、结束心跳、移到「待审核」，#1 没有持有者，这一次不算异常退出。不是持有者 `NOT_HOLDER`；没写评论 `USAGE`；白板没有交审状态 `FORBIDDEN_COLUMN`，评论和 final 都不留下，卡片还归 α。
+287. α 持有 #1，执行 `board submit 1 shot.png --comment-file r.md`：动态里依次是一条评论（说明在前、附件在后）、结束心跳、移到「待审核」，#1 没有持有者，这一次不算异常退出。不是持有者 `NOT_HOLDER`；没写评论 `USAGE`；白板没有交审状态 `FORBIDDEN_COLUMN`，原因建议 `board giveup`，评论和 final 都不留下，卡片还归 α。两级锁定的白板（进行中 → 测试中 → 待审核，「进行中」不连「待审核」）：`board start 1 --json` 的 `next_lock` 是「测试中」，在「进行中」交审 `FORBIDDEN_COLUMN`、原因写先 `board move 1 测试中`；移过去再交审，#1 到「待审核」。
 288. 项目设了代码仓库：交审评论缺「检查：」「碰到的别的卡：」两行时 `USAGE`，原因里列出这两行，卡片不动、附件不上传；四行齐了成功；加 `--no-code` 时不查。
 289. α 持有 #2，执行 `board giveup 2 --comment "需要确认…"`：有错误节点时 #2 到错误节点，没有时到「需人工校验」；两种状态都没有时 #2 留在「进行中」、这一次计时结束，50 秒后回到「待办」最上面。
 290. 新版 `board` 连不认 `submit`、`giveup` 的旧服务端：命令行自己按评论、final、移动三步做，结果一样。skill 的入口脚本遇到没有 `start`、`submit`、`giveup` 的旧版 `board` 时不执行，提示升级。

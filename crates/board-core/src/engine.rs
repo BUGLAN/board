@@ -1057,14 +1057,7 @@ impl<'a> W<'a> {
         let flow = self.read().flow(board)?;
         let target = if giveup { flow.giveup_after(&r.col) } else { flow.review_after(&r.col) }.map(|s| s.key.clone());
         if !giveup && target.is_none() {
-            return Err(BoardError::new(
-                ErrorCode::ForbiddenColumn,
-                format!(
-                    "#{id} 在「{}」，没有连到交审状态，能去：{}。这块白板还没有标出交审状态：请人在状态设置里给等人复盘的那个状态打开「交审状态」（都没打开时按名称认，名称里带「审核」「review」这类词）；这一次先用 board giveup {id} 交给人，评论里写明已经做完、推到了哪个提交",
-                    flow.name(&r.col),
-                    flow.outs(&r.col)
-                ),
-            ));
+            return Err(BoardError::new(ErrorCode::ForbiddenColumn, flow.no_review_reason(id, &r.col)));
         }
         self.exec(board, actor, Cmd::Comment { id, text })?;
         let d = self.exec(board, actor, Cmd::Beat { id, done: true })?;
