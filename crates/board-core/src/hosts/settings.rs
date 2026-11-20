@@ -539,7 +539,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE card_crons SET host = ?2 WHERE host = ?1", params![h.name, to])?;
             // 机器令牌绑定的名字也跟着改：移除后再连上来照样能登记（#507）
             if let Some(t) = h.token {
-                if token_host_column(&self.tx)? {
+                if token_host_column(self.tx)? {
                     self.tx.execute("UPDATE auth_tokens SET host = ?2 WHERE id = ?1 AND host = ?3", params![t, to, h.name])?;
                 }
             }

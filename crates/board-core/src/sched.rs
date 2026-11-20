@@ -419,7 +419,7 @@ impl W<'_> {
             }
         }
         if !all && add.is_empty() && remove.is_empty() {
-            return Ok(self.read().sched(self.now)?);
+            return self.read().sched(self.now);
         }
         let eligible: Vec<i64> = hosts.iter().filter(|h| h.has_agent(agent)).map(|h| h.id).collect();
         let mut picks = self.read().sched_picks()?;

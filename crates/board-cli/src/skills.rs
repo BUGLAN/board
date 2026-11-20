@@ -125,17 +125,17 @@ fn mark_of(dir: &Path) -> Option<String> {
 /// 本机自己的 skill 目录不覆盖：Unix 软链接、Windows 的软链接和目录 junction 都算链接。
 /// Windows 的 junction 是一个 reparse point，但 `FileType::is_symlink()` 不认它，只看它会被当成普通目录挪走。
 fn is_link(meta: &std::fs::Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_type().is_symlink() {
+            return true;
+        }
         return meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     }
     #[cfg(not(windows))]
-    false
+    meta.file_type().is_symlink()
 }
 
 fn is_link_path(path: &Path) -> bool {

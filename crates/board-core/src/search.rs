@@ -185,7 +185,7 @@ impl R<'_> {
             2 * n + 2
         );
         let mut st = self.conn.prepare(&sql)?;
-        let rows = st.query_map(params_from_iter(params.into_iter()), |r| {
+        let rows = st.query_map(params_from_iter(params), |r| {
             let (matched, score) = if r.get::<_, i64>(7)? != 0 {
                 ("title", 100)
             } else if r.get::<_, i64>(8)? != 0 {
@@ -204,7 +204,7 @@ impl R<'_> {
     /// 执行一条完整的查询
     fn rows(&self, sql: &str, params: Vec<&dyn ToSql>) -> Result<Vec<SearchHit>> {
         let mut st = self.conn.prepare(sql)?;
-        let rows = st.query_map(params_from_iter(params.into_iter()), |r| Ok(hit(base(r)?, "", 0)))?;
+        let rows = st.query_map(params_from_iter(params), |r| Ok(hit(base(r)?, "", 0)))?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 }

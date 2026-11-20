@@ -510,7 +510,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             every,
             |left| eprintln!("{} 连不上服务端，{} 秒后再确认 #{id} 的领取（还能等 {} 秒）", p.yellow("!"), every.as_secs_f64().round(), left.as_secs()),
         )?;
-        hold_check(id, &flow.name(&card.column), flow.is_lock(&card.column), card.holder.as_deref(), &name)?;
+        hold_check(id, flow.name(&card.column), flow.is_lock(&card.column), card.holder.as_deref(), &name)?;
         return Ok(if json {
             Output::Json(json!({ "ok": true, "board": path, "id": id, "column": card.column, "holder": name }))
         } else {

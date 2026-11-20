@@ -56,7 +56,6 @@ fn bearer_rest(s: &str, from: usize) -> Option<usize> {
     let after = after.strip_prefix(':')?;
     let after = after.trim_start_matches([' ', '\t']);
     let lower = after.to_ascii_lowercase();
-    let after = &after[..];
     if !lower.starts_with("bearer") {
         return None;
     }
