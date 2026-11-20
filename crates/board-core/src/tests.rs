@@ -2686,3 +2686,103 @@ fn a_failed_migration_rolls_back_and_the_next_open_finishes_it() {
     let now = cols(&path);
     assert!(now.contains(&"branch".to_string()) && now.contains(&"readme".to_string()), "{now:?}");
 }
+
+/* ---------------- 批量打标签（default/main#531） ---------------- */
+
+fn label_batch(s: &mut Store, who: &Actor, ids: &[i64], add: &[i64], remove: &[i64]) -> Result<LabelBatch> {
+    let origin = if who.is_human() { Origin::ui(None) } else { Origin::cli() };
+    s.write(T0, origin, |w| {
+        let b = w.resolve(B)?;
+        w.label_batch(&b, who, ids, add, remove)
+    })
+}
+fn label_acts(s: &Store, id: i64) -> usize {
+    card(s, B, id).activity.iter().filter(|a| a.action == "label").count()
+}
+
+/// 一次写事务打完，rev 只加一次；已经带着 / 本来没有的不算改动、不记动态；重复执行结果相同
+#[test]
+fn label_batch_all_in_one_write() {
+    let mut s = store();
+    let bug = ui(&mut s, |w| w.create_label("default", "bug", None, false)).unwrap();
+    for i in 0..100 {
+        exec(&mut s, B, &human(), T0, new(&format!("卡{i}"))).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Label { id: 3, add: vec![bug.id], remove: vec![] }).unwrap();
+    let ids: Vec<i64> = (1..=100).collect();
+
+    let rev = s.rev().unwrap();
+    let r = label_batch(&mut s, &human(), &ids, &[bug.id], &[]).unwrap();
+    assert_eq!(s.rev().unwrap(), rev + 1, "一次批量写入只让 rev 加一");
+    assert_eq!(r.changed.len(), 99, "#3 本来就有，不算");
+    assert!(!r.changed.contains(&3) && r.failed.is_empty());
+    assert!(ids.iter().all(|id| card(&s, B, *id).card.labels == vec![bug.id]));
+    assert_eq!(label_acts(&s, 3), 1, "本来就有的不重复记动态");
+    assert_eq!(label_acts(&s, 50), 1);
+
+    // 重复执行：什么也不变，rev 不动
+    let rev = s.rev().unwrap();
+    let r = label_batch(&mut s, &human(), &ids, &[bug.id], &[]).unwrap();
+    assert!(r.changed.is_empty() && r.failed.is_empty());
+    assert_eq!(s.rev().unwrap(), rev);
+    assert_eq!(label_acts(&s, 50), 1);
+
+    // 去掉：同样一次；重复的 id 只算一次
+    let mut twice = ids.clone();
+    twice.extend([1, 2]);
+    let r = label_batch(&mut s, &human(), &twice, &[], &[bug.id]).unwrap();
+    assert_eq!(r.changed, ids);
+    assert!(ids.iter().all(|id| card(&s, B, *id).card.labels.is_empty()));
+    assert_eq!(label_acts(&s, 1), 2);
+}
+
+/// 一张不存在、一张在回收站里：记进 failed，其他照常
+#[test]
+fn label_batch_partial_failure() {
+    let mut s = store();
+    let bug = ui(&mut s, |w| w.create_label("default", "bug", None, false)).unwrap();
+    for t in ["一", "二", "三"] {
+        exec(&mut s, B, &human(), T0, new(t)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 2 }).unwrap();
+    let r = label_batch(&mut s, &human(), &[1, 2, 3, 99], &[bug.id], &[]).unwrap();
+    assert_eq!(r.changed, vec![1, 3]);
+    let failed: Vec<(i64, ErrorCode)> = r.failed.iter().map(|f| (f.id, f.code)).collect();
+    assert_eq!(failed, vec![(2, ErrorCode::InTrash), (99, ErrorCode::NotFound)]);
+    assert!(r.failed[1].message.contains("#99"), "{}", r.failed[1].message);
+    assert_eq!(card(&s, B, 1).card.labels, vec![bug.id]);
+    assert_eq!(card(&s, B, 3).card.labels, vec![bug.id]);
+}
+
+/// 整批拒绝、什么也不改：超过上限、标签不在项目里、agent 调用
+#[test]
+fn label_batch_rejections() {
+    let mut s = store();
+    let bug = ui(&mut s, |w| w.create_label("default", "bug", None, false)).unwrap();
+    let mine = ui(&mut s, |w| w.create_label("default", "人定", None, true)).unwrap();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+
+    let many: Vec<i64> = (1..=(LABEL_BATCH_MAX as i64 + 1)).collect();
+    let e = label_batch(&mut s, &human(), &many, &[bug.id], &[]).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("500"), "{}", e.message);
+    // 正好上限：可以（不存在的记进 failed）
+    let r = label_batch(&mut s, &human(), &many[..LABEL_BATCH_MAX], &[bug.id], &[]).unwrap();
+    assert_eq!((r.changed.len(), r.failed.len()), (1, LABEL_BATCH_MAX - 1));
+
+    let rev = s.rev().unwrap();
+    assert_eq!(label_batch(&mut s, &human(), &[1], &[999], &[]).unwrap_err().code, ErrorCode::Usage);
+    // agent 不能用批量接口（仅人可打的、普通的都一样），单卡命令照旧
+    assert_eq!(label_batch(&mut s, &alpha(), &[1], &[bug.id], &[]).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(label_batch(&mut s, &alpha(), &[1], &[], &[mine.id]).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(s.rev().unwrap(), rev);
+    assert_eq!(card(&s, B, 1).card.labels, vec![bug.id]);
+
+    // 仅人可打：人可以批量加、去
+    let r = label_batch(&mut s, &human(), &[1], &[mine.id], &[]).unwrap();
+    assert_eq!(r.changed, vec![1]);
+    assert!(card(&s, B, 1).card.labels.contains(&mine.id));
+    let r = label_batch(&mut s, &human(), &[1], &[], &[mine.id]).unwrap();
+    assert_eq!(r.changed, vec![1]);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] })), ErrorCode::Usage);
+}

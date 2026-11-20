@@ -9,7 +9,7 @@ use crate::model::*;
 use crate::store::{R, W};
 
 use rusqlite::{params, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// 对一张卡片的操作。界面通过 HTTP 发送同样的 JSON（`{"op": "move", ...}`）
@@ -140,6 +140,23 @@ pub enum Cmd {
         id: i64,
         on: bool,
     },
+}
+
+/// 批量打标签一次最多的卡片数
+pub const LABEL_BATCH_MAX: usize = 500;
+
+/// 批量打标签的结果：标签真的变了的卡片（已经带着 / 本来没有的不算），和失败的卡片
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LabelBatch {
+    pub changed: Vec<i64>,
+    pub failed: Vec<LabelFail>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelFail {
+    pub id: i64,
+    pub code: ErrorCode,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -577,31 +594,8 @@ impl<'a> W<'a> {
                任何状态都可以，包括别人持有的卡片；不续期（PRD §6）。仅人可打的标签 agent 不能给已有卡片加、去 */
             Cmd::Label { id, add, remove } => {
                 self.row(b, id)?;
-                self.check_labels(board, &add)?;
-                self.check_labels(board, &remove)?;
-                self.check_human_only(actor, &add)?;
-                self.check_human_only(actor, &remove)?;
-                let current: Vec<i64> = self.collect(
-                    "SELECT label FROM card_labels WHERE board = ?1 AND card = ?2",
-                    params![b, id],
-                    |r| r.get(0),
-                )?;
-                let added: Vec<i64> = dedup(&add).into_iter().filter(|l| !current.contains(l) && !remove.contains(l)).collect();
-                let removed: Vec<i64> = dedup(&remove).into_iter().filter(|l| current.contains(l)).collect();
-                for l in &added {
-                    self.tx.execute("INSERT INTO card_labels (board, card, label) VALUES (?1, ?2, ?3)", params![b, id, l])?;
-                }
-                for l in &removed {
-                    self.tx.execute("DELETE FROM card_labels WHERE board = ?1 AND card = ?2 AND label = ?3", params![b, id, l])?;
-                }
-                if !added.is_empty() {
-                    let names = self.label_names(&added)?;
-                    self.track(b, id, actor, "label", &format!("添加了标签 {names}"))?;
-                }
-                if !removed.is_empty() {
-                    let names = self.label_names(&removed)?;
-                    self.track(b, id, actor, "label", &format!("移除了标签 {names}"))?;
-                }
+                self.check_label_change(board, actor, &add, &remove)?;
+                self.apply_labels(b, id, actor, &add, &remove)?;
                 id
             }
 
@@ -912,6 +906,41 @@ impl<'a> W<'a> {
             }
         };
         self.read().card(board, id)
+    }
+
+    /// 批量加、去标签（仅人，界面批量条；default/main#531）：在调用方的一个写事务里逐张执行和 [`Cmd::Label`] 同一套规则，
+    /// 有改动时 rev 只加一次。标签只检查一次，不合法时整批拒绝；某张卡片不存在、在回收站里，记进 failed，其他照常。
+    /// 重复执行结果相同：已经带着 / 本来没有的不算改动，也不记动态
+    pub fn label_batch(&mut self, board: &BoardRef, actor: &Actor, ids: &[i64], add: &[i64], remove: &[i64]) -> Result<LabelBatch> {
+        if !actor.is_human() {
+            return Err(BoardError::usage("批量打标签只能在界面上做：agent 用 board label 一张张打"));
+        }
+        let ids = dedup(ids);
+        if ids.len() > LABEL_BATCH_MAX {
+            return Err(BoardError::usage(format!("一次最多给 {LABEL_BATCH_MAX} 张卡片打标签，这次选了 {} 张", ids.len())));
+        }
+        self.sweep_board(board.id)?;
+        self.check_label_change(board, actor, add, remove)?;
+        let mut out = LabelBatch::default();
+        for id in ids {
+            match self.row(board.id, id) {
+                Err(e) if e.code == ErrorCode::NotFound => {
+                    let e = if self.read().in_trash(board, id)? {
+                        BoardError::new(ErrorCode::InTrash, format!("#{id} 在回收站里：先恢复，才能打标签"))
+                    } else {
+                        e
+                    };
+                    out.failed.push(LabelFail { id, code: e.code, message: e.message });
+                }
+                Err(e) => return Err(e),
+                Ok(_) => {
+                    if self.apply_labels(board.id, id, actor, add, remove)? {
+                        out.changed.push(id);
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// 规则 7：从领取或最近一次心跳算起，连续 5 次（50 秒）没收到心跳，领取释放，卡片回到领取它时所在的可领取状态最上面
@@ -1241,6 +1270,39 @@ impl<'a> W<'a> {
             }
         }
         Ok(())
+    }
+
+    /// 加、去标签之前的检查：单卡 [`Cmd::Label`] 和批量 [`W::label_batch`] 共用。
+    /// 标签要属于白板所在的项目；仅人可打的标签 agent 不能加、去
+    fn check_label_change(&self, board: &BoardRef, actor: &Actor, add: &[i64], remove: &[i64]) -> Result<()> {
+        self.check_labels(board, add)?;
+        self.check_labels(board, remove)?;
+        self.check_human_only(actor, add)?;
+        self.check_human_only(actor, remove)
+    }
+
+    /// 给一张（已确认存在的）卡片加、去标签，记动态。已经带着的不再加、本来没有的不用去，都不记动态；
+    /// 同时出现在 add 和 remove 里的按去掉算。返回这张卡片的标签有没有真的变
+    fn apply_labels(&mut self, b: i64, id: i64, actor: &Actor, add: &[i64], remove: &[i64]) -> Result<bool> {
+        let current: Vec<i64> =
+            self.collect("SELECT label FROM card_labels WHERE board = ?1 AND card = ?2", params![b, id], |r| r.get(0))?;
+        let added: Vec<i64> = dedup(add).into_iter().filter(|l| !current.contains(l) && !remove.contains(l)).collect();
+        let removed: Vec<i64> = dedup(remove).into_iter().filter(|l| current.contains(l)).collect();
+        for l in &added {
+            self.tx.execute("INSERT INTO card_labels (board, card, label) VALUES (?1, ?2, ?3)", params![b, id, l])?;
+        }
+        for l in &removed {
+            self.tx.execute("DELETE FROM card_labels WHERE board = ?1 AND card = ?2 AND label = ?3", params![b, id, l])?;
+        }
+        if !added.is_empty() {
+            let names = self.label_names(&added)?;
+            self.track(b, id, actor, "label", &format!("添加了标签 {names}"))?;
+        }
+        if !removed.is_empty() {
+            let names = self.label_names(&removed)?;
+            self.track(b, id, actor, "label", &format!("移除了标签 {names}"))?;
+        }
+        Ok(!added.is_empty() || !removed.is_empty())
     }
 
     fn label_names(&self, ids: &[i64]) -> Result<String> {

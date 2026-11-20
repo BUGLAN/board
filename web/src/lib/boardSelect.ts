@@ -4,14 +4,15 @@
    - 选择里：点卡片（或聚焦后 Enter / 空格）勾选、再点取消；Shift 在同一个状态块里连选；
      块标题上的勾选框选上 / 取消这一块（有筛选时只算筛出的）
    - 底部批量条（components/BoardSelect）：全选（筛出的）、打标签、移动到、取消；esc、换白板时退出
-   - 写入走 store/data 的 addLabel / removeLabel / exec(move)：乐观更新，当帧生效；一张失败只撤那一张
+   - 打标签走 store/data 的 labelCards（一次 POST /api/labels/batch，「未整理」「稍后再做」的批量条也用 bulkLabel）；
+     移动走 exec(move)：乐观更新，当帧生效；一张失败只撤那一张
    - 移动到：同一块白板的状态（和「未整理」），规则同拖动（lib/drag vetoFor）：锁定状态不能移入，被持有的跳过
    ========================================================================== */
 import { create } from 'zustand';
 import { justDropped, vetoFor } from './drag';
 import { boardFlow, INBOX, INBOX_NAME } from './schema';
 import type { BoardSnapshot, Card, ColumnKey } from './types';
-import { addLabel, exec, movePatch, removeLabel, useData } from '../store/data';
+import { exec, labelCards, movePatch, useData, type LabelBatchResult } from '../store/data';
 import { overlayOpen, toast, toastError } from '../store/ui';
 
 interface SelState {
@@ -62,12 +63,17 @@ export function toggleBlock(ids: number[]) {
   set(s => (blockState(ids, s.ids) === 'all' ? { ids: s.ids.filter(id => !ids.includes(id)) } : { on: true, ids: union(s.ids, ids) }));
 }
 
-/** 批量加 / 去一个标签：返回真的改了几张（本来就有 / 本来就没有的不算）；失败的提示第一个错误 */
-export async function bulkLabel(ids: number[], label: number, add: boolean) {
-  const results = await Promise.allSettled(ids.map(id => (add ? addLabel(id, label) : removeLabel(id, label))));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
-  return results.filter(r => r.status === 'fulfilled' && r.value).length;
+/** 批量加 / 去一个标签（白板、「未整理」、「稍后再做」的批量条共用）：一次请求（store/data labelCards）。
+    失败只提示一次（第一个错误）；整个请求失败时所有卡片都算失败。勾选不动，由调用方决定 */
+export async function bulkLabel(ids: number[], label: number, add: boolean): Promise<LabelBatchResult> {
+  try {
+    const r = await labelCards(ids, label, add);
+    if (r.failed[0]) toastError(r.failed[0].error);
+    return r;
+  } catch (e) {
+    toastError(e);
+    return { changed: [], skipped: [], failed: ids.map(id => ({ id, error: e })) };
+  }
 }
 
 /** 「移动到」菜单的一行：能移过去的卡片（按白板上的顺序）、跳过的，和整行不能选的原因 */

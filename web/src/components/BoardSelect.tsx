@@ -100,10 +100,11 @@ export function BoardBulkBar() {
       project: cur.project.key,
       selected: labels.filter(l => ids.every(id => cards[id]?.labels.includes(l.id))).map(l => l.id),
       onToggle: async (lid, add) => {
-        const k = await bulkLabel(ids, lid, add);
+        const r = await bulkLabel(ids, lid, add);
         // 标签可能是在选择器里刚新建的：从最新的工作区里取名称
         const name = useData.getState().ws?.projects.find(p => p.key === cur.project.key)?.labels.find(l => l.id === lid)?.name ?? '';
-        const skip = n - k;
+        const k = r.changed.length;
+        const skip = r.skipped.length;
         if (k > 0 || skip > 0)
           toast({
             type: 'success',

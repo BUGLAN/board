@@ -15,6 +15,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type React
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { openCard, triage, triageMany, untriage } from '../lib/actions';
+import { bulkLabel } from '../lib/boardSelect';
 import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
 import { canUndoSplit, kidsOf, hiddenEntries, omittedKids, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
@@ -1200,9 +1201,7 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
       project: cur.project.key,
       selected: common,
       onToggle: async (lid, on) => {
-        const results = await Promise.allSettled(ids.map(id => (on ? addLabel(id, lid) : removeLabel(id, lid))));
-        const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-        if (bad) toastError(bad.reason);
+        await bulkLabel(ids, lid, on);
       },
     });
   };
@@ -2039,9 +2038,7 @@ function LaterBulk({
       project,
       selected: common,
       onToggle: async (lid, on) => {
-        const results = await Promise.allSettled(ids.map(id => (on ? addLabel(id, lid) : removeLabel(id, lid))));
-        const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-        if (bad) toastError(bad.reason);
+        await bulkLabel(ids, lid, on);
       },
     });
   };

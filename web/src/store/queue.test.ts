@@ -18,6 +18,15 @@ const server = vi.hoisted(() => ({
   boards: {} as Record<string, BoardSnapshot>,
   calls: [] as Call[],
   other: [] as { name: string; ok: () => void; fail: () => void }[],
+  /** 批量打标签（POST /api/labels/batch） */
+  batches: [] as {
+    board: string;
+    ids: number[];
+    add: number[];
+    remove: number[];
+    ok: (r: { changed: number[]; failed: { id: number; code: string; message: string }[]; rev: number }) => void;
+    fail: () => void;
+  }[],
   hosts: null as null | ((r: { hosts: []; dispatches: [] }) => void),
   /** 推送：boot() 之后由用例调用 */
   push: null as null | ((m: { rev: number; events: BoardEvent[] }) => void),
@@ -73,6 +82,10 @@ vi.mock('../lib/api', async orig => {
             fail: (code = 'INTERNAL') => rej(new real.ApiError(code as never, '失败了')),
           });
         }),
+      labelBatch: (board: string, ids: number[], add: number[], remove: number[]) =>
+        new Promise((res, rej) => {
+          server.batches.push({ board, ids, add, remove, ok: res, fail: () => rej(new real.ApiError('NETWORK', '断网了')) });
+        }),
       reorderLabels: () =>
         new Promise<void>((res, rej) => {
           server.other.push({ name: 'reorderLabels', ok: () => res(), fail: () => rej(new real.ApiError('INTERNAL', '失败了')) });
@@ -107,6 +120,7 @@ beforeEach(async () => {
   };
   server.calls = [];
   server.other = [];
+  server.batches = [];
   server.hosts = null;
   server.push = null;
   server.n = { workspace: 0, board: 0 };
@@ -571,6 +585,89 @@ describe('标签', () => {
     await expect(r).rejects.toMatchObject({ code: 'INTERNAL' });
     expect(labels(1)).toEqual([7]);
     expect(pending(1)).toEqual([]);
+  });
+});
+
+describe('批量打标签（default/main#531）', () => {
+  const labels = (id: number) => D.useData.getState().board!.cards[id].labels;
+  const pending = (id: number) => D.useData.getState().pending[`p/a#${id}`] ?? [];
+
+  it('一次请求打完：当帧画上、本来就有的跳过；成功后只刷新一次', async () => {
+    serverEdit('p/a', 2, { labels: [7] });
+    await D.refresh();
+    const r = D.labelCards([1, 2, 3], 7, true);
+    expect([labels(1), labels(2), labels(3)]).toEqual([[7], [7], [7]]);
+    expect([pending(1), pending(2), pending(3)]).toEqual([[7], [], [7]]);
+    await settle();
+    expect(server.calls).toEqual([]);
+    expect(server.batches.map(b => [b.board, b.ids, b.add, b.remove])).toEqual([['p/a', [1, 3], [7], []]]);
+    const n = server.n.board;
+    serverEdit('p/a', 1, { labels: [7] });
+    const rev = serverEdit('p/a', 3, { labels: [7] });
+    server.batches[0].ok({ changed: [1, 3], failed: [], rev });
+    expect(await r).toEqual({ changed: [1, 3], skipped: [2], failed: [] });
+    expect(server.n.board - n).toBe(1);
+    expect([labels(1), labels(3)]).toEqual([[7], [7]]);
+    expect([pending(1), pending(3)]).toEqual([[], []]);
+  });
+
+  it('推送比响应先到、已经取到写完后的 rev：不再多取一轮', async () => {
+    D.boot();
+    await settle();
+    const r = D.labelCards([1], 7, true);
+    await settle();
+    const rev = serverEdit('p/a', 1, { labels: [7] });
+    server.push!({ rev, events: [event('p/a', 1)] });
+    await settle();
+    const n = server.n.board;
+    server.batches[0].ok({ changed: [1], failed: [], rev });
+    await r;
+    expect(server.n.board).toBe(n);
+    expect(labels(1)).toEqual([7]);
+  });
+
+  it('部分失败：一返回就只撤失败的那张，其余的等刷新；错误带着服务端的错误码', async () => {
+    const r = D.labelCards([1, 2, 3], 7, true);
+    await settle();
+    let open!: () => void;
+    server.gate = new Promise(res => (open = res));
+    serverEdit('p/a', 1, { labels: [7] });
+    const rev = serverEdit('p/a', 3, { labels: [7] });
+    server.batches[0].ok({ changed: [1, 3], failed: [{ id: 2, code: 'NOT_FOUND', message: '卡片 #2 不存在' }], rev });
+    await settle();
+    // 刷新还停在半路：失败的已经恢复原样，成功的还画着
+    expect([labels(1), labels(2), labels(3)]).toEqual([[7], [], [7]]);
+    expect([pending(1), pending(2), pending(3)]).toEqual([[7], [], [7]]);
+    server.gate = null;
+    open();
+    const out = await r;
+    expect(out.changed).toEqual([1, 3]);
+    expect(out.failed).toEqual([{ id: 2, error: expect.objectContaining({ code: 'NOT_FOUND' }) }]);
+    expect([labels(1), labels(2), labels(3)]).toEqual([[7], [], [7]]);
+  });
+
+  it('去标签：保存期间标签留着画成 pending；整个请求失败时全部恢复原样并抛出', async () => {
+    serverEdit('p/a', 1, { labels: [7] });
+    serverEdit('p/a', 2, { labels: [7] });
+    await D.refresh();
+    const r = D.labelCards([1, 2, 3], 7, false);
+    expect([labels(1), labels(2)]).toEqual([[7], [7]]);
+    expect([pending(1), pending(2)]).toEqual([[7], [7]]);
+    await settle();
+    expect(server.batches[0].ids).toEqual([1, 2]);
+    expect(server.batches[0].remove).toEqual([7]);
+    server.batches[0].fail();
+    await expect(r).rejects.toMatchObject({ code: 'NETWORK' });
+    expect([labels(1), labels(2)]).toEqual([[7], [7]]);
+    expect([pending(1), pending(2)]).toEqual([[], []]);
+  });
+
+  it('全部本来就有：不发请求', async () => {
+    serverEdit('p/a', 1, { labels: [7] });
+    await D.refresh();
+    expect(await D.labelCards([1], 7, true)).toEqual({ changed: [], skipped: [1], failed: [] });
+    await settle();
+    expect(server.batches).toEqual([]);
   });
 });
 

@@ -34,7 +34,7 @@ pub mod stats;
 pub mod store;
 
 pub use agents::{BeatBy, NameOwner, NAME_GAP_MS};
-pub use engine::Cmd;
+pub use engine::{Cmd, LabelBatch, LabelFail, LABEL_BATCH_MAX};
 pub use error::{BoardError, ErrorCode, Result};
 pub use files::Attachment;
 pub use flow::StatusPatch;

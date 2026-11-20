@@ -1,14 +1,13 @@
 /* 白板勾选卡片、批量打标签（PRD §10.3「批量打标签」）：连选、整块勾选、批量写入 */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const addLabel = vi.fn<(id: number, label: number) => Promise<boolean>>();
-const removeLabel = vi.fn<(id: number, label: number) => Promise<boolean>>();
+type LabelBatch = { changed: number[]; skipped: number[]; failed: { id: number; error: unknown }[] };
+const labelCards = vi.fn<(ids: number[], label: number, add: boolean) => Promise<LabelBatch>>();
 const toastError = vi.fn();
 const toast = vi.fn();
 const exec = vi.fn<(cmd: { op: string; id: number; column: string }, patch: unknown) => Promise<unknown>>();
 vi.mock('../store/data', () => ({
-  addLabel: (id: number, l: number) => addLabel(id, l),
-  removeLabel: (id: number, l: number) => removeLabel(id, l),
+  labelCards: (ids: number[], l: number, add: boolean) => labelCards(ids, l, add),
   exec: (cmd: { op: string; id: number; column: string }, patch: unknown) => exec(cmd, patch),
   movePatch: (id: number, to: string) => ({ move: [id, to] }),
   useData: { getState: () => ({ detailId: null }) },
@@ -21,8 +20,7 @@ const { blockState, bulkLabel, bulkMove, clearSelect, moveTargets, rangeIds, sel
 
 beforeEach(() => {
   clearSelect();
-  addLabel.mockReset();
-  removeLabel.mockReset();
+  labelCards.mockReset();
   toastError.mockReset();
   toast.mockReset();
   exec.mockReset();
@@ -102,28 +100,31 @@ describe('块标题的勾选框', () => {
 });
 
 describe('bulkLabel（批量加 / 去一个标签）', () => {
-  it('每张都走 addLabel；本来就有的不算进改了几张', async () => {
-    addLabel.mockImplementation(async id => id !== 2);
-    expect(await bulkLabel([1, 2, 3], 7, true)).toBe(2);
-    expect(addLabel.mock.calls).toEqual([[1, 7], [2, 7], [3, 7]]);
-    expect(removeLabel).not.toHaveBeenCalled();
+  it('整批交给 labelCards 一次写完：加、去都是同一个调用', async () => {
+    labelCards.mockResolvedValue({ changed: [1, 3], skipped: [2], failed: [] });
+    expect(await bulkLabel([1, 2, 3], 7, true)).toEqual({ changed: [1, 3], skipped: [2], failed: [] });
+    expect(labelCards.mock.calls).toEqual([[[1, 2, 3], 7, true]]);
+    labelCards.mockResolvedValue({ changed: [4, 5], skipped: [], failed: [] });
+    await bulkLabel([4, 5], 7, false);
+    expect(labelCards.mock.calls[1]).toEqual([[4, 5], 7, false]);
+    expect(toastError).not.toHaveBeenCalled();
   });
 
-  it('去标签走 removeLabel', async () => {
-    removeLabel.mockResolvedValue(true);
-    expect(await bulkLabel([4, 5], 7, false)).toBe(2);
-    expect(removeLabel.mock.calls).toEqual([[4, 7], [5, 7]]);
-  });
-
-  it('有一张失败：其余照样写，提示一次错误', async () => {
-    const err = new Error('BUSY');
-    addLabel.mockImplementation(async id => {
-      if (id === 2) throw err;
-      return true;
-    });
-    expect(await bulkLabel([1, 2, 3], 7, true)).toBe(2);
+  it('有几张失败：只提示一次（第一个错误）', async () => {
+    const a = new Error('NOT_FOUND');
+    labelCards.mockResolvedValue({ changed: [1], skipped: [], failed: [{ id: 2, error: a }, { id: 3, error: new Error('IN_TRASH') }] });
+    const r = await bulkLabel([1, 2, 3], 7, true);
+    expect(r.failed.map(f => f.id)).toEqual([2, 3]);
     expect(toastError).toHaveBeenCalledTimes(1);
-    expect(toastError).toHaveBeenCalledWith(err);
+    expect(toastError).toHaveBeenCalledWith(a);
+  });
+
+  it('整个请求失败：提示一次，每张都算失败、不算改了或跳过', async () => {
+    const err = new Error('NETWORK');
+    labelCards.mockRejectedValue(err);
+    const r = await bulkLabel([1, 2], 7, true);
+    expect(r).toEqual({ changed: [], skipped: [], failed: [{ id: 1, error: err }, { id: 2, error: err }] });
+    expect(toastError).toHaveBeenCalledTimes(1);
   });
 });
 

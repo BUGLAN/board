@@ -187,6 +187,9 @@ export const api = {
     req('PATCH', `/api/labels/${id}`, { project, ...patch }),
   /** 标签顺序：ids 依次排在前面，没列出的按原顺序排在后面 */
   reorderLabels: (project: string, ids: number[]) => req('PUT', '/api/labels/order', { project, ids }),
+  /** 批量加、去标签（仅人，界面批量条；default/main#531）：一次请求、一个写事务。返回标签真的变了的卡片、失败的卡片和写完后的 rev */
+  labelBatch: (board: string, ids: number[], add: number[], remove: number[]) =>
+    req<{ changed: number[]; failed: { id: number; code: ErrorCode; message: string }[]; rev: number }>('POST', '/api/labels/batch', { board, ids, add, remove }),
   deleteLabel: (project: string, id: number) => req('DELETE', `/api/labels/${q(project)}/${id}`),
 
   layout: (kind: 'project' | 'board', id: string, pos: Pos) => req('PUT', '/api/layout', { kind, id, x: pos.x, y: pos.y }),

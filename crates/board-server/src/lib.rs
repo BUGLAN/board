@@ -15,7 +15,7 @@
 //! - `/api/mcp`：MCP 服务器共用配置（列表打码、增删改只在界面上做；`/api/hosts/{名字}/mcp` 给 board host 原文，只给这台机器上报时用的令牌；`mcp`）
 //! - `/api/providers`：模型供应商共用配置（列表打码、增删改只在界面上做；`/api/hosts/{名字}/providers` 给 board host 原文，只给这台机器上报时用的令牌；`providers`）
 //! - `/api/git`：Git 凭据共用配置（同上：令牌打码、改只在界面上做；`/api/hosts/{名字}/git` 给 board host 原文；`gitcred`）
-//! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`）/ 画布位置的增删改
+//! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`、批量打标签 `POST /api/labels/batch`）/ 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/layout/saved`、`…/layout/apply`（白板设置：保存、应用布局）、`…/order`（白板设置：保存顺序）、`…/{状态}`（修改、删除）
 //! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
 //! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, hosts, events}`；
@@ -47,7 +47,7 @@ use axum::{
 };
 use board_core::files::FileStore;
 use board_core::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     convert::Infallible,
@@ -332,6 +332,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/boards/{project}/{board}", patch(update_board).delete(delete_board))
         .route("/labels", post(create_label))
         .route("/labels/order", put(reorder_labels))
+        .route("/labels/batch", post(label_batch))
         .route("/labels/{id}", patch(update_label))
         .route("/labels/{project}/{id}", delete(delete_label))
         .route("/layout", put(layout))
@@ -1155,6 +1156,44 @@ async fn update_label(State(s): State<AppState>, h: HeaderMap, Path(id): Path<i6
 async fn delete_label(State(s): State<AppState>, h: HeaderMap, Path((project, id)): Path<(String, i64)>) -> ApiResult<Value> {
     write(&s, &h, move |w| w.delete_label(&project, id)).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct LabelBatchBody {
+    board: String,
+    ids: Vec<i64>,
+    #[serde(default)]
+    add: Vec<i64>,
+    #[serde(default)]
+    remove: Vec<i64>,
+}
+
+/// `POST /api/labels/batch`：界面批量条一次给多张卡片加、去标签（default/main#531）。
+///
+/// 只有人能用（访问令牌访问不到，规则引擎也只认人），agent 走单卡的 `board label`。规则和单卡标签命令相同；一个写事务、rev 只加一次。
+/// 返回 `{ changed, failed, rev }`：标签真的变了的卡片，失败的卡片（不存在、在回收站里，不影响其他卡片），
+/// 和写完后的 rev（界面等加载到这个 rev 就算刷新完，不用再多取一轮）
+async fn label_batch(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<LabelBatchOut> {
+    let p: LabelBatchBody = parse(v)?;
+    let client = client_of(&h);
+    let out = s
+        .db(move |st| {
+            let batch = st.write(now_ms(), Origin::ui(client), |w| {
+                let b = w.resolve(&p.board)?;
+                w.label_batch(&b, &Actor::human(), &p.ids, &p.add, &p.remove)
+            })?;
+            Ok(LabelBatchOut { batch, rev: st.rev()? })
+        })
+        .await?;
+    s.0.poke.notify_one();
+    Ok(Json(out))
+}
+
+#[derive(Serialize)]
+struct LabelBatchOut {
+    #[serde(flatten)]
+    batch: board_core::LabelBatch,
+    rev: i64,
 }
 
 #[derive(Deserialize)]

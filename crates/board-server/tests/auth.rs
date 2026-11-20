@@ -291,6 +291,9 @@ fn tokens_are_for_cli_only() {
     assert_eq!(r.status, 200, "{:?}", r.body);
     let r = send("GET", &format!("{}/api/agents", s.url), &a, None);
     assert_eq!(r.body[0]["name"], NAME);
+    // 批量打标签只给界面用（default/main#531）：agent 走单卡 board label
+    let r = send("POST", &format!("{}/api/labels/batch", s.url), &a, Some(json!({ "board": "default", "ids": [1], "add": [] })));
+    assert_eq!(r.code().as_str(), "NOT_LOGGED_IN", "{:?}", r.body);
     // 规则仍由规则引擎判定：agent 不能删除、不能强制释放
     let r = send("POST", &format!("{}/api/cmd", s.url), &a, Some(json!({ "board": "default", "as": NAME, "op": "delete", "id": 1 })));
     assert_eq!(r.code().as_str(), "USAGE");

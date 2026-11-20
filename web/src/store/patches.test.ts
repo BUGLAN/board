@@ -599,3 +599,24 @@ describe('seenPatch / 新条目', () => {
     expect(D.newEntryCount('p/a', later, null)).toBe(2);
   });
 });
+
+describe('labelAddPatch（批量加标签，default/main#531）', () => {
+  it('这几张都画上标签，已经有的不重复加；重复执行结果不变；不画「保存中」', () => {
+    const b0 = board();
+    b0.cards[2] = { ...b0.cards[2], labels: [7] };
+    const p = D.labelAddPatch([1, 2, 4], 7);
+    const b = twice(p.board!, b0);
+    expect([1, 2, 3, 4].map(id => b.cards[id].labels)).toEqual([[7], [7], [], [7]]);
+    expect(b.cards[2]).toBe(b0.cards[2]);
+    expect(p.cards).toBeUndefined();
+  });
+
+  it('卡片不在了：原样返回；详情只改选中的那张', () => {
+    const b0 = board();
+    expect(D.labelAddPatch([99], 7).board!(b0)).toEqual(b0);
+    const p = D.labelAddPatch([1], 7);
+    expect(twice(p.detail!, detail(card(1))).labels).toEqual([7]);
+    const other = detail(card(5));
+    expect(p.detail!(other)).toBe(other);
+  });
+});

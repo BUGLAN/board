@@ -1123,14 +1123,83 @@ export async function removeLabel(id: number, labelId: number): Promise<boolean>
 }
 
 function setPending(k: string, labelId: number, on: boolean) {
+  setPendingAll([k], labelId, on);
+}
+
+/** 几张卡片的同一个标签一起进出 pending：一次 store 更新 */
+function setPendingAll(keys: string[], labelId: number, on: boolean) {
+  if (!keys.length) return;
   set(s => {
-    const ls = (s.pending[k] ?? []).filter(l => l !== labelId);
-    if (on) ls.push(labelId);
     const pending = { ...s.pending };
-    if (ls.length) pending[k] = ls;
-    else delete pending[k];
+    for (const k of keys) {
+      const ls = (pending[k] ?? []).filter(l => l !== labelId);
+      if (on) ls.push(labelId);
+      if (ls.length) pending[k] = ls;
+      else delete pending[k];
+    }
     return { pending };
   });
+}
+
+/** 批量加 / 去一个标签的结果：标签真的变了的、跳过的（加时本来就有、去时本来就没有，或正在加去这个标签）、失败的 */
+export interface LabelBatchResult {
+  changed: number[];
+  skipped: number[];
+  failed: BatchResult['failed'];
+}
+
+/** 加标签的补丁：这几张卡片画上这个标签（已经有的原样返回）。去标签不改数据，只画 pending（同 removeLabel） */
+export function labelAddPatch(ids: number[], labelId: number): Patch {
+  const on = new Set(ids);
+  const plus = <T extends { labels: number[] }>(c: T): T => (c.labels.includes(labelId) ? c : { ...c, labels: [...c.labels, labelId] });
+  return {
+    board: b => ids.reduce((x, id) => withCard(x, id, plus), b),
+    detail: d => (on.has(d.id) ? plus(d) : d),
+  };
+}
+
+/** 批量加 / 去一个标签（白板、「未整理」、「稍后再做」的批量条共用；default/main#531）：只发一个 POST /api/labels/batch。
+    - 已经有（加）/ 本来没有（去）、正在加去这个标签的卡片跳过，不发；还有别的修改在保存的卡片算失败（BUSY）
+    - 当帧：要加的卡片画上这个标签，要加、去的都画成 pending（和单张的 addLabel / removeLabel 一样，不画「保存中」）
+    - 返回后：失败的卡片马上恢复原样；其余的等加载到写完后的 rev（一次刷新）再去掉 pending
+    - 整个请求失败（断网、标签刚被删）：全部恢复原样，抛出错误 */
+export async function labelCards(ids: number[], labelId: number, add: boolean): Promise<LabelBatchResult> {
+  const { board, path, pending } = get();
+  const out: LabelBatchResult = { changed: [], skipped: [], failed: [] };
+  const todo: number[] = [];
+  for (const id of [...new Set(ids)]) {
+    const c = board?.cards[id];
+    if ((c && c.labels.includes(labelId) === add) || pending[pkey(path, id)]?.includes(labelId)) out.skipped.push(id);
+    else if (cardBusy(id)) out.failed.push({ id, error: new ApiError('BUSY', '上一次修改还在保存，保存完再改') });
+    else todo.push(id);
+  }
+  if (!todo.length) return out;
+  const keys = (list: number[]) => list.map(id => pkey(path, id));
+  setPendingAll(keys(todo), labelId, true);
+  let l = push(add ? labelAddPatch(todo, labelId) : {});
+  try {
+    const r = await queue(() => api.labelBatch(path, todo, add ? [labelId] : [], add ? [] : [labelId]));
+    const bad = new Set(r.failed.map(f => f.id));
+    out.changed = r.changed;
+    // 服务端说没变的（刚被别处加上 / 去掉）也算跳过
+    out.skipped.push(...todo.filter(id => !bad.has(id) && !r.changed.includes(id)));
+    out.failed.push(...r.failed.map(f => ({ id: f.id, error: new ApiError(f.code, f.message) })));
+    if (bad.size) {
+      // 只撤失败的那几张：补丁换成不含它们的一层（位置不变，不影响之后叠上的操作）
+      const keep = todo.filter(id => !bad.has(id));
+      const next: Layer = { ...(add ? labelAddPatch(keep, labelId) : {}), path: l.path };
+      layers = layers.map(x => (x === l ? next : x));
+      l = next;
+      render();
+      setPendingAll(keys([...bad]), labelId, false);
+    }
+    // 等加载到写完后的 rev（推送先到、已经在取的那一轮也算）：只刷新一次
+    await (typeof r.rev === 'number' ? afterRev(r.rev) : afterWrite());
+    return out;
+  } finally {
+    drop(l);
+    setPendingAll(keys(todo), labelId, false);
+  }
 }
 
 /* ------------------------------ 标签顺序：乐观更新 ------------------------------ */

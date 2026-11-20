@@ -94,3 +94,35 @@ fn label_order_rejects_illegal_ids_and_keeps_order() {
     let r = send("PUT", &format!("{}/api/labels/order", s.url), &[common::UI], Some(json!({ "project": "nope", "ids": [] })));
     assert_eq!((r.status, r.code().as_str()), (404, "BOARD_NOT_FOUND"), "{}", r.text);
 }
+
+/// 批量打标签（default/main#531）：`POST /api/labels/batch` 一次请求打完，返回改了哪些、哪些失败
+#[test]
+fn label_batch_in_one_request() {
+    let s = local();
+    let bug = label(&s, "default", "bug");
+    for t in ["一", "二", "三"] {
+        let r = send("POST", &format!("{}/api/cmd", s.url), &[common::UI], Some(json!({ "board": "default/main", "op": "new", "title": t })));
+        assert_eq!(r.status, 200, "{}", r.text);
+    }
+    let rev = || send("GET", &format!("{}/api/workspace", s.url), &[], None).body["rev"].as_i64().unwrap();
+    let batch = |body: serde_json::Value| send("POST", &format!("{}/api/labels/batch", s.url), &[common::UI], Some(body));
+
+    let before = rev();
+    let r = batch(json!({ "board": "default/main", "ids": [1, 2, 3, 99], "add": [bug] }));
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["changed"], json!([1, 2, 3]));
+    assert_eq!(r.body["failed"][0]["id"], 99);
+    assert_eq!(r.body["failed"][0]["code"], "NOT_FOUND");
+    assert_eq!(rev(), before + 1);
+    assert_eq!(r.body["rev"], before + 1, "返回写完后的 rev");
+    let b = send("GET", &format!("{}/api/board?path=default/main", s.url), &[], None);
+    for id in ["1", "2", "3"] {
+        assert_eq!(b.body["cards"][id]["labels"], json!([bug]), "{id}");
+    }
+    // 重复执行：没有改动
+    let r = batch(json!({ "board": "default/main", "ids": [1, 2, 3], "add": [bug] }));
+    assert_eq!(r.body["changed"], json!([]));
+    // 标签不在项目里：整批拒绝
+    let r = batch(json!({ "board": "default/main", "ids": [1], "remove": [9999] }));
+    assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
+}
