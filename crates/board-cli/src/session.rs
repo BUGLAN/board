@@ -139,11 +139,27 @@ pub(crate) fn submit_cmd(c: &Ctx, be: &mut Backend) -> Result<Output> {
     };
     // 改了代码的卡片：交审评论最后固定四行，复盘的人靠它们找提交、看检查（项目设了代码仓库才查）
     if !giveup && !a.flag("--no-code") {
-        let missing = missing_review_lines(&text);
-        if !missing.is_empty() && !be.board(raw, Want::Brief, false)?.repo.is_empty() {
+        let (missing, empty) = missing_review_lines(&text);
+        if !(missing.is_empty() && empty.is_empty())
+            && !be.board(raw, Want::Brief, false)?.repo.is_empty()
+        {
+            let reasons = [("缺这几行", missing), ("这几行没填", empty)]
+                .into_iter()
+                .filter(|(_, lines)| !lines.is_empty())
+                .map(|(reason, lines)| {
+                    format!(
+                        "{reason}：{}",
+                        lines
+                            .iter()
+                            .map(|key| format!("「{key}：」"))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("；");
             return Err(BoardError::usage(format!(
-                "交审评论缺这几行：{}。改了代码的卡片，评论最后要有「提交：<sha>」「集成分支：<分支>」「检查：<结果>」「碰到的别的卡：<board touched 的最后一行>」四行；这张卡没改代码时加 --no-code",
-                missing.iter().map(|m| format!("「{m}：」")).collect::<Vec<_>>().join("")
+                "交审评论{reasons}。改了代码的卡片，评论最后要有「提交：<sha>」「集成分支：<分支>」「检查：<结果>」「碰到的别的卡：<board touched 的最后一行>」四行；各行要填写实际内容，不能保留 <…> 占位；这张卡没改代码时加 --no-code"
             )));
         }
     }
@@ -263,16 +279,62 @@ pub(crate) fn start_session(a: &Args, be: &mut Backend) -> Result<(String, bool)
     Ok((name, true))
 }
 
-/// 交审评论里固定的四行（work.md「处理一张卡片」第 5 步）缺了哪几行。一行以「提交：」这样开头才算，冒号全角、半角都行
-fn missing_review_lines(text: &str) -> Vec<&'static str> {
+/// 交审评论固定的四行：分别返回缺少的键、写了键却没填内容的行；允许 Markdown 行首和成对的键格式。
+fn missing_review_lines(text: &str) -> (Vec<&'static str>, Vec<&'static str>) {
     const LINES: [&str; 4] = ["提交", "集成分支", "检查", "碰到的别的卡"];
-    let has = |key: &str| {
-        text.lines().any(|l| {
-            let l = l.trim().trim_start_matches(['-', '*', ' ']);
-            l.strip_prefix(key).is_some_and(|rest| rest.starts_with('：') || rest.starts_with(':'))
-        })
-    };
-    LINES.into_iter().filter(|k| !has(k)).collect()
+    let mut filled = [None; 4];
+    for line in text.lines() {
+        let Some((mut key, value)) = line.split_once(['：', ':']) else {
+            continue;
+        };
+        key = key.trim();
+        loop {
+            if let Some(inner) = key
+                .strip_prefix("**")
+                .and_then(|s| s.strip_suffix("**"))
+                .or_else(|| key.strip_prefix('`').and_then(|s| s.strip_suffix('`')))
+            {
+                key = inner.trim();
+                continue;
+            }
+            if key.starts_with(['>', '#', '-', '*']) {
+                key = key[1..].trim_start();
+                continue;
+            }
+            let rest = key.trim_start_matches(|c: char| c.is_ascii_digit());
+            if rest.len() < key.len() {
+                if let Some(rest) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {
+                    key = rest.trim_start();
+                    continue;
+                }
+            }
+            // 整行的行内代码（例如 `提交：abc`）：右侧反引号在 value 里。
+            if let Some(rest) = key
+                .strip_prefix('`')
+                .filter(|_| line.trim_end().ends_with('`'))
+            {
+                key = rest.trim_start();
+                continue;
+            }
+            break;
+        }
+        if let Some(i) = LINES.iter().position(|k| *k == key) {
+            let value = value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '`'));
+            let valid = !value.is_empty() && !(value.starts_with('<') && value.ends_with('>'));
+            filled[i] = Some(filled[i].unwrap_or(false) || valid);
+        }
+    }
+    let missing = LINES
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, key)| filled[i].is_none().then_some(key))
+        .collect();
+    let empty = LINES
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, key)| (filled[i] == Some(false)).then_some(key))
+        .collect();
+    (missing, empty)
 }
 
 /// `board submit` / `board giveup`：服务端一条命令做完评论、final、移动。旧服务端不认这两条命令
@@ -546,10 +608,80 @@ mod tests {
     #[test]
     fn review_lines_are_checked_by_line_start() {
         let ok = "改了登录页的校验。\n\n提交：abc1234\n集成分支：main\n- 检查: npm test 通过\n碰到的别的卡：无";
-        assert!(missing_review_lines(ok).is_empty());
-        assert_eq!(missing_review_lines("做完了"), vec!["提交", "集成分支", "检查", "碰到的别的卡"]);
-        assert_eq!(missing_review_lines("提交：abc\n集成分支：main\n检查：过了"), vec!["碰到的别的卡"]);
-        assert_eq!(missing_review_lines("这次的提交：abc，检查：过了\n集成分支：main\n碰到的别的卡：无"), vec!["提交", "检查"]);
+        assert_eq!(missing_review_lines(ok), (vec![], vec![]));
+        assert_eq!(
+            missing_review_lines("做完了"),
+            (vec!["提交", "集成分支", "检查", "碰到的别的卡"], vec![])
+        );
+        assert_eq!(
+            missing_review_lines("提交：abc\n集成分支：main\n检查：过了"),
+            (vec!["碰到的别的卡"], vec![])
+        );
+        assert_eq!(
+            missing_review_lines("这次的提交：abc，检查：过了\n集成分支：main\n碰到的别的卡：无"),
+            (vec!["提交", "检查"], vec![])
+        );
+    }
+
+    #[test]
+    fn review_lines_accept_markdown_formats() {
+        for template in [
+            "**{}**：{}",
+            "> {}：{}",
+            "1. {}：{}",
+            "1) {}：{}",
+            "### {}：{}",
+            "`{}：{}`",
+            "{} ：{}",
+            "`{}` : {}",
+            "> 2) - **{}** ： `{}`",
+        ] {
+            let text = [
+                ("提交", "abc1234"),
+                ("集成分支", "main"),
+                ("检查", "npm test 通过"),
+                ("碰到的别的卡", "无"),
+            ]
+            .map(|(key, value)| template.replacen("{}", key, 1).replacen("{}", value, 1))
+            .join("\n");
+            assert_eq!(missing_review_lines(&text), (vec![], vec![]), "{text}");
+        }
+    }
+
+    #[test]
+    fn review_lines_reject_empty_values_and_placeholders() {
+        for value in [
+            "",
+            "   ",
+            "**",
+            " ` ** ` ",
+            "<sha>",
+            "**<待填写>**",
+            "`<检查结果>`",
+        ] {
+            let text = ["提交", "集成分支", "检查", "碰到的别的卡"]
+                .map(|key| format!("{key}：{value}"))
+                .join("\n");
+            assert_eq!(
+                missing_review_lines(&text),
+                (vec![], vec!["提交", "集成分支", "检查", "碰到的别的卡"]),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_lines_distinguish_missing_empty_and_filled_duplicates() {
+        assert_eq!(
+            missing_review_lines("提交号：abc"),
+            (vec!["提交", "集成分支", "检查", "碰到的别的卡"], vec![])
+        );
+        assert_eq!(
+            missing_review_lines("提交：<sha>\n检查：通过"),
+            (vec!["集成分支", "碰到的别的卡"], vec!["提交"])
+        );
+        let text = "提交：<sha>\n提交：abc\n集成分支：main\n检查：通过\n检查：\n碰到的别的卡：无";
+        assert_eq!(missing_review_lines(text), (vec![], vec![]));
     }
 
     /// board submit / giveup 连旧服务端（不认这两条命令）：拆成评论、final、移动三步，规则和新服务端一样

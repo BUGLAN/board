@@ -736,7 +736,48 @@ fn submit_and_giveup_in_one_command() {
     let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
     assert!(msg.contains("「检查：」「碰到的别的卡：」") && !msg.contains("缺这几行：「提交：」") && msg.contains("--no-code"), "{msg}");
     assert_eq!(s.run(ALPHA, &["show", "2", "--json"]).json()["column"], "doing");
-    let full = "改了登录页\n\n提交：abc1234\n集成分支：main\n检查：npm test 通过\n碰到的别的卡：无";
+    // 有键却没填和真正缺行分别报错；校验先于附件上传和交审写入。
+    let before = s.run(ALPHA, &["show", "2", "--json"]).json();
+    for (comment, expected) in [
+        (
+            "提交：\n集成分支：\n检查：\n碰到的别的卡：",
+            "这几行没填：「提交：」「集成分支：」「检查：」「碰到的别的卡：」",
+        ),
+        (
+            "提交：<sha>\n集成分支：<分支>\n检查：<结果>\n碰到的别的卡：<board touched 的最后一行>",
+            "这几行没填：「提交：」「集成分支：」「检查：」「碰到的别的卡：」",
+        ),
+        (
+            "提交：<sha>\n检查：通过",
+            "缺这几行：「集成分支：」「碰到的别的卡：」；这几行没填：「提交：」",
+        ),
+    ] {
+        let r = s.run(
+            ALPHA,
+            &[
+                "submit",
+                "2",
+                log.to_str().unwrap(),
+                "--comment",
+                comment,
+                "--json",
+            ],
+        );
+        assert_eq!(
+            (r.code, r.error_code().as_str()),
+            (1, "USAGE"),
+            "{}{}",
+            r.out,
+            r.err
+        );
+        let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+        assert!(msg.contains(expected), "{msg}");
+        let after = s.run(ALPHA, &["show", "2", "--json"]).json();
+        for key in ["column", "holder", "attachments", "activity"] {
+            assert_eq!(before[key], after[key], "校验失败不应改变 {key}");
+        }
+    }
+    let full = "改了登录页\n\n**提交**：abc1234\n> 集成分支：main\n1. 检查 ：npm test 通过\n`碰到的别的卡：无`";
     let r = s.run(ALPHA, &["submit", "2", "--comment", full]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert!(r.out.contains("已交审") && r.out.contains("待审核"), "{}", r.out);
