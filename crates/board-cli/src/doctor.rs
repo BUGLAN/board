@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crate::config::{self, env, Source};
 use crate::text::{pad, width};
-use crate::{Output, Paint};
+use crate::output::{Output, Paint};
 
 /// 命令名；PATH 检查找的就是它
 const EXE_NAME: &str = "board";

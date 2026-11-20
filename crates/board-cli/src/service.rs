@@ -13,7 +13,7 @@
 //!   装之前检查配置文件里有。
 
 use crate::config;
-use crate::{Output, Paint};
+use crate::output::{Output, Paint};
 use board_core::service::{self as svc, LAUNCHD_HOST, RESTART_SECS, SYSTEMD_HOST, WINDOWS_TASK};
 use board_core::*;
 use serde_json::json;

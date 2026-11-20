@@ -9,7 +9,8 @@
 //!   环境变量 `BOARD_DOWNLOAD` 换成别的地址或本机目录（镜像、测试用），和安装脚本一样。
 
 use crate::doctor::{HttpProbe, Probe, ProbeError};
-use crate::{config, Output, Paint};
+use crate::config;
+use crate::output::{Output, Paint};
 use board_core::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

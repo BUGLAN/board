@@ -8,7 +8,7 @@
 //!   同一个版本可以反复同步，结果一样；只同步某几个 tag 时写在 sync 后面。
 
 use crate::backend::Remote;
-use crate::{Output, Paint};
+use crate::output::{Output, Paint};
 use board_core::releases::{is_version_name, version_cmp, ReleaseCommit, SyncResult};
 use board_core::*;
 use serde_json::json;

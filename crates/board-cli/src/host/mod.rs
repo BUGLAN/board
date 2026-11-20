@@ -71,7 +71,7 @@ use crate::selftest;
 use crate::mcpsync;
 use crate::providersync;
 use crate::skills;
-use crate::{Output, Paint};
+use crate::output::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, HostAsk, LOG_KEEP};
 use board_core::*;
 use serde_json::{json, Value};

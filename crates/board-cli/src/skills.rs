@@ -18,7 +18,7 @@
 //! 人勾了要导入的，board host 用 [`import_one`] 把那几个目录传进库（和 `board skills push` 一样），本机的目录不动。
 
 use crate::backend::Remote;
-use crate::{Output, Paint};
+use crate::output::{Output, Paint};
 use board_core::skills::{self, LocalSkill, SkillFile, SkillInfo, SkillPack, SkillState, BUILTIN, MARK, MAX_BYTES};
 use board_core::*;
 use serde_json::json;

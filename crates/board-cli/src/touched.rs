@@ -18,7 +18,7 @@
 //! 同一个功能接着改（上一张卡刚加、这一张有意改掉）也会列出来，由人一眼判断。
 
 use crate::versions::card_refs;
-use crate::{Output, Paint};
+use crate::output::{Output, Paint};
 use board_core::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
