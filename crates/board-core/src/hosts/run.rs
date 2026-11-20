@@ -258,7 +258,7 @@ impl<'a> W<'a> {
         if holder.as_deref() == Some(name) {
             return Err(BoardError::new(
                 ErrorCode::AlreadyHolding,
-                format!("#{} 还由你持有：先交审（board heartbeat final，再沿连线移到交审状态）或交给人处理，再 board next", d.card),
+                format!("#{0} 还由你持有：先 board submit {0}（做不下去 board giveup {0}），再 board next", d.card),
             ));
         }
         let h = self.host_row(&d.host)?;

@@ -2037,8 +2037,10 @@ fn next_refuses_when_session_should_end() {
     let d = dispatch(&mut s, T0, 1, "mbp", None).unwrap();
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     let name = d.name.clone().unwrap();
-    // 上一张还由这个名字持有：ALREADY_HOLDING
-    assert_eq!(next(&mut s, T0 + S, &name).unwrap_err().code, ErrorCode::AlreadyHolding);
+    // 上一张还由这个名字持有：ALREADY_HOLDING，提示用 board submit / giveup 交出去（default/main#557）
+    let e = next(&mut s, T0 + S, &name).unwrap_err();
+    assert_eq!(e.code, ErrorCode::AlreadyHolding);
+    assert_eq!(e.message, "#1 还由你持有：先 board submit 1（做不下去 board giveup 1），再 board next");
     submit(&mut s, T0 + 2 * S, &name, 1);
     assert_eq!(next(&mut s, T0 + 2 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
     end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
