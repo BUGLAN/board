@@ -4,7 +4,7 @@
 
 ## 由 board host 启动的会话
 
-Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以它生成的名字（`<机器名>/<模型名>-<推理强度>`，例如 `win/opus-5.5-high`；没有机器信息时退回 `<agent>/<模型>` 或 `<agent>/<agent>`）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；机器可识别时在线重名会在末尾加 `-1`、`-2`……；心跳由 board host 替你发。
+Board 可以把卡片派给一台机器：那台机器上的 `board host` 先以它生成的名字（`<机器名>/<模型名>-<推理强度>`，例如 `win/opus-5.5-high`；没设模型时第二段是 agent 标识，例如 `mbp/codex`；在线重名时末尾加 `-1`、`-2`……）check、领取卡片，再启动你，提示词就是「开始执行 X项目之中的Y白板中的#Z任务」那一行；心跳由 board host 替你发。
 
 **怎么认**：环境变量里有 `BOARD_HOST`（机器名），并且 `board start <ID> --json` 返回的 `holder` 是 `BOARD_AS`（`session.resumed` 为 true）。这时：
 

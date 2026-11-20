@@ -7,9 +7,9 @@
 每个会话开始时做一次（处理卡片、白板、一句话需求之前）。由 board host 启动的会话只做第 0、2、3 步（见 host.md）：
 
 0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），本 skill 各文件里写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。它说这个 `board`「是旧版，没有 start / submit / giveup / land / base」或「运行不了」时，同样停下来把这句话告诉用户，不要改用别的命令拼出同样的步骤。
-1. **名字和心跳**：处理卡片的会话第一次 `board start <ID> --agent <你实际运行的 agent 标识>`（claude、codex、dsh）时，Board 按机器、模型和推理强度生成名字，例如 `win/opus-5.5-high`；机器信息不可用时退回 `<agent>/<模型>`，模型也不可用时用 `<agent>/<agent>`。机器可识别时，已有在线会话会让新名字在末尾加 `-1`、`-2`……。名字记在本机，后台心跳随之启动（跟随你的进程，维持名字在线和你持有的卡片），输出里写着名字（`--json` 里是 `session.name`）；之后的命令不用再带 `--agent`、`--as`。输出说「没找到 agent 进程」（`session.follows` 为 false）时，心跳会一直跑到 `board heartbeat stop`：会话结束时一定要执行。
+1. **名字和心跳**：处理卡片的会话第一次 `board start <ID> --agent <你实际运行的 agent 标识>`（claude、codex、dsh）时，Board 按这台机器的设置生成名字：`<机器名>/<模型名>-<推理强度>`（例如 `win/opus-5.5-high`），机器上没给这个 agent 设模型时第二段是 agent 标识（`mbp/codex`），认不出机器时是 `<agent>/<agent>`（`claude/claude`）；名字被别的在线会话用着时在末尾加 `-1`、`-2`……。名字记在本机，后台心跳随之启动（跟随你的进程，维持名字在线和你持有的卡片），输出里写着名字（`--json` 里是 `session.name`）；之后的命令不用再带 `--agent`、`--as`。输出说「没找到 agent 进程」（`session.follows` 为 false）时，心跳会一直跑到 `board heartbeat stop`：会话结束时一定要执行。
    - 不领卡的会话（只建卡、拆解、整理）：`board check --agent <标识>`，**单独执行、看结果**，成功后 `board heartbeat start`（整个会话一次）。
-   - 遇到 `NAME_TAKEN`（显式指定的名字正被占用，或机器信息不可用时退回的名字已被占用），给名字加上和本会话相关的后缀并用 `--as <名字>` 重新开始；输出里有用了别人名字的提醒（`--json` 里是 `warning`）时，换成自己成功占用的名字。
+   - `--as` 自己起的名字得到 `NAME_TAKEN`（正被另一个在线会话用着）：加一个和本会话相关的后缀重新来；输出里有用了别人名字的提醒（`--json` 里是 `warning`）时，换成自己成功占用的名字。之后所有命令都用成功的那个。
 2. **之后每条命令带白板**（名字不写时用记在本机的那个）：`--board <项目>/<白板>`，或前缀 `BOARD=<项目>/<白板>`；想明确写名字时也带 `--as <名字>` 或前缀 `BOARD_AS=<名字>`，例如：
 
    ```sh
