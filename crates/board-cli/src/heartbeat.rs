@@ -318,9 +318,12 @@ pub fn checked_with(name: &str, session: Option<String>, agent_id: Option<String
     write_state(&State { name: name.to_string(), session, agent: agent_process().map(|a| a.arg()), heartbeat: None, agent_id, host })
 }
 
-/// 本机记下的、agent 标识相同的其他名字（不是 name）：名字由 Board 生成时换过名字留下的，删掉
+/// 本机记下的、agent 标识相同的其他名字（不是 name）：名字由 Board 生成时换过名字留下的，删掉。
+/// 只删这个 agent 进程自己以前 check 的、或者 check 它的会话已经不在了的；本机另一个还活着的会话的不动——
+/// 删了它的状态文件，它的后台心跳会跟着退出，50 秒后名字离线、卡片被释放（default/main#538）
 fn drop_stale(name: &str, agent_id: Option<&str>) {
     let Some(id) = agent_id else { return };
+    let me = agent_process();
     let Ok(dir) = dir() else { return };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
@@ -332,22 +335,52 @@ fn drop_stale(name: &str, agent_id: Option<&str>) {
             continue;
         }
         let Some(st) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<State>(&t).ok()) else { continue };
-        if st.agent_id.as_deref() == Some(id) {
+        if st.agent_id.as_deref() == Some(id) && !other_live_session(&st, me) {
             let _ = std::fs::remove_file(&path);
         }
     }
 }
 
-/// 最近一次 `board check --agent <标识>` 记下的名字（不是本机另一个还活着的 agent 进程的）：
-/// 之后没带 `--as` / `BOARD_AS` 的心跳、beat、claim、hold 等命令用它。同时有几个时取最近 check 的那个。
+/// 记录是本机另一个还活着的会话的：check 它的 agent 进程还在、不是 me；或者没记 agent 进程（认不出进程的会话）、
+/// 它的后台心跳还在跑，而 me 认得出（认不出进程的会话同时只能开一个，见 board start 的提醒，两边都认不出时当成同一个）
+fn other_live_session(st: &State, me: Option<Proc>) -> bool {
+    match st.agent() {
+        Some(_) => foreign(st, me).is_some(),
+        None => me.is_some() && st.heartbeat().is_some_and(|h| Procs::new().is_some_and(|mut ps| ps.alive(h))),
+    }
+}
+
+/// 状态文件最近一次写入的时间（毫秒）：同时有几个名字时取最近 check 的
+fn written_at(name: &str) -> i64 {
+    state_file(name).ok().and_then(|f| std::fs::metadata(f).ok()).and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// 没带 `--as` / `BOARD_AS` 的心跳、beat、claim、hold、comment、submit 等命令用的名字：
+/// - 先找这个 agent 进程自己 check 的（`--agent` 生成的、`--as` 起的都算），同时有几个时取最近 check 的。
+///   本机开着几个会话时，各用各的名字（default/main#538）；
+/// - 没有（认不出 agent 进程、这个进程没 check 过）：退回最近一次 `board check --agent <标识>` 记下的名字。
+///
 /// 本机配置里的机器名变了（桌面端「设置 → 本机」改了名字）时按它重新 check 一遍、换成新名字
 pub fn current_name() -> Option<String> {
+    let me = agent_process();
+    let all = states();
+    if let Some(m) = me {
+        let own = all
+            .iter()
+            .filter(|st| st.agent().is_some_and(|a| a.pid == m.pid && (a.start == 0 || m.start == 0 || a.start == m.start)))
+            .max_by_key(|st| written_at(&st.name))
+            .cloned();
+        if let Some(st) = own {
+            let name = st.name.clone();
+            return Some(if st.agent_id.is_some() { refreshed(st).unwrap_or(name) } else { name });
+        }
+    }
     let mut best: Option<(i64, State)> = None;
-    for st in states() {
+    for st in all {
         if st.agent_id.is_none() {
             continue;
         }
-        let at = state_file(&st.name).ok().and_then(|f| std::fs::metadata(f).ok()).and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+        let at = written_at(&st.name);
         if best.as_ref().is_none_or(|(b, _)| at >= *b) {
             best = Some((at, st));
         }

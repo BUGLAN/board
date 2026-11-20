@@ -348,6 +348,84 @@ fn board_start_without_a_known_agent_process_warns_and_continues() {
     assert_eq!(board(&s.home, &[vars.clone(), vec![("BOARD_AS", name.clone())]].concat(), &["heartbeat", "stop"]).code, 0);
 }
 
+/// 同一台机器（同一个临时目录）开几个会话：各自 board start --agent claude，互不删状态文件、互不停心跳；
+/// 不带 --as 的命令各用各的名字；--as 起的名字，同一个 agent 进程之后的命令也用它；
+/// 同一个 agent 进程换了名字，旧名字的记录照旧清掉（default/main#538）
+#[test]
+fn sessions_on_one_machine_keep_their_own_names() {
+    let s = start();
+    let (mut a, mut b, mut c) = (fake_agent(), fake_agent(), fake_agent());
+    let e = Env::new(&s, &a);
+    let vars = |agent: &Child| -> Vec<(&'static str, String)> {
+        e.vars.iter().filter(|(k, _)| *k != "BOARD_AS" && *k != "BOARD_HEARTBEAT_PID").cloned().chain([("BOARD_HEARTBEAT_PID", agent.id().to_string())]).collect()
+    };
+    let (va, vb, vc) = (vars(&a), vars(&b), vars(&c));
+    let maker: Vec<(&str, String)> = vec![("BOARD_URL", s.url.clone()), ("BOARD_TOKEN", s.token.clone()), ("BOARD", "default".into()), ("BOARD_AS", "test/maker".into())];
+    assert_eq!(board(&s.home, &maker, &["check", "--as", "test/maker"]).code, 0);
+    for t in ["一", "二", "三"] {
+        assert_eq!(board(&s.home, &maker, &["new", t]).code, 0);
+    }
+    let name_of = |v: &[(&str, String)], args: &[&str]| -> String {
+        let r = board(&s.home, v, args);
+        assert_eq!(r.code, 0, "{args:?}：{}{}", r.out, r.err);
+        r.json()["session"]["name"].as_str().unwrap().to_string()
+    };
+    let na = name_of(&va, &["start", "1", "--agent", "claude", "--json"]);
+    let nb = name_of(&vb, &["start", "2", "--agent", "claude", "--json"]);
+    assert_ne!(na, nb);
+    let file = |n: &str| e.tmp.path().join("board-heartbeat").join(format!("{}.json", n.replace('/', "_")));
+    let loop_of = |n: &str| -> u32 {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file(n)).unwrap_or_else(|_| panic!("{n} 的状态文件没了"))).unwrap();
+        v["heartbeat"].as_str().and_then(|h| h.split(':').next()).and_then(|p| p.parse().ok()).unwrap_or_else(|| panic!("{n} 没有后台心跳：{v}"))
+    };
+    // B 开始之后 A 的状态文件、后台心跳都还在
+    let (la, lb) = (loop_of(&na), loop_of(&nb));
+    assert!(alive(la) && alive(lb));
+
+    // 不带 --as：各用各的名字，没有「另一个 agent 进程」的提醒
+    let r = board(&s.home, &va, &["comment", "1", "A 的进展"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!r.err.contains("另一个 agent 进程"), "{}", r.err);
+    let acts = board(&s.home, &va, &["show", "1", "--json"]).json()["activity"].clone();
+    let last = acts.as_array().unwrap().iter().rev().find(|x| x["type"] == "comment").unwrap().clone();
+    assert_eq!(last["actor"].as_str(), Some(na.as_str()), "{last}");
+    for (v, id) in [(&va, "1"), (&vb, "2")] {
+        let r = board(&s.home, v, &["hold", id]);
+        assert_eq!(r.code, 0, "hold {id}：{}{}", r.out, r.err);
+    }
+    // 过几次心跳两个名字都还在线
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(online(&s, &na) && online(&s, &nb));
+    assert!(alive(la) && alive(lb));
+    let r = board(&s.home, &va, &["submit", "1", "--comment", "做完了"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+
+    // --as 起的名字：同一个 agent 进程之后不带 --as 的命令也用它
+    assert_eq!(name_of(&vc, &["start", "3", "--as", "claude/x", "--json"]), "claude/x");
+    let r = board(&s.home, &vc, &["comment", "3", "C 的进展", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let r = board(&s.home, &vc, &["submit", "3", "--comment", "做完了"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+
+    // 同一个 agent 进程（A）换了名字（这里是旧名字还在线时重新 check，拿到带序号的新名字）：
+    // A 旧名字的记录清掉，B 的不动、B 的心跳还在
+    let r = board(&s.home, &va, &["check", "--agent", "claude", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let renamed = r.json()["name"].as_str().unwrap().to_string();
+    assert!(renamed != na && renamed != nb, "{renamed}");
+    assert!(!file(&na).exists(), "A 旧名字 {na} 的记录要清掉");
+    assert!(file(&renamed).exists() && file(&nb).exists());
+    assert!(alive(lb), "B 的心跳还在");
+
+    for (v, n) in [(&va, renamed.as_str()), (&vb, nb.as_str()), (&vc, "claude/x")] {
+        let _ = board(&s.home, &[v.clone(), vec![("BOARD_AS", n.to_string())]].concat(), &["heartbeat", "stop"]);
+    }
+    for p in [&mut a, &mut b, &mut c] {
+        p.kill().unwrap();
+        p.wait().unwrap();
+    }
+}
+
 /// board host 启动的会话里（环境里有 BOARD_HOST）：board start 不占名字、不启动心跳，用 BOARD_AS；卡片已经领好就接着做
 #[test]
 fn board_start_in_a_host_session_only_reads() {
