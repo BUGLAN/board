@@ -58,6 +58,9 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
     let v = be.view(raw, &d, c.labels())?;
     let (dir, saved) = save_files(be, &d, a.value("--out"))?;
     let fresh = started.as_ref().is_some_and(|(_, fresh)| *fresh);
+    // 后台心跳跟着 agent 进程：认不出进程时它会一直跑到 heartbeat stop（board host 启动的会话心跳由 board host 发，不用管）
+    let hosted = env("BOARD_HOST").is_some();
+    let follows = hosted || heartbeat::follows(name);
     let review = v.flow.review_after(&d.card.column);
     let over = v.flow.giveup_after(&d.card.column);
     let (repo, branch) = (&v.repo, &v.branch);
@@ -65,7 +68,7 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
         if json {
             let role = |s: Option<&Status>| s.map(|s| json!({ "key": s.key, "name": s.name })).unwrap_or(Value::Null);
             let mut out = fmt.full(&d);
-            out["session"] = json!({ "name": name, "started": fresh, "resumed": resumed });
+            out["session"] = json!({ "name": name, "started": fresh, "resumed": resumed, "follows": follows });
             out["review"] = role(review);
             out["giveup"] = role(over);
             out["repo"] = json!(repo);
@@ -75,15 +78,20 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
         } else {
             let cid = d.card.id;
             let to = |s: Option<&Status>, none: &str| s.map(|s| format!("→ {}（{}）", s.name, s.key)).unwrap_or_else(|| none.to_string());
+            let warn = if fresh && !follows {
+                format!("\n{}", p.yellow("没找到 agent 进程：后台心跳会一直跑到 board heartbeat stop，会话结束时一定要执行；这台机器上同时只能开一个这样的会话"))
+            } else {
+                String::new()
+            };
             let mut s = format!(
-                "{} {}  {}\n{}\n\n{}\n",
+                "{} {}  {}\n{}{warn}\n\n{}\n",
                 p.green("✓"),
                 p.bold(if resumed { "接着做" } else { "已领取" }),
                 p.dim(&format!(
                     "在「{}」；名字 {}（{}）",
                     v.flow.name(&d.card.column),
                     name,
-                    if env("BOARD_HOST").is_some() {
+                    if hosted {
                         "心跳由 board host 发"
                     } else if fresh {
                         "刚占用，后台心跳已启动"
@@ -94,6 +102,7 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
                 p.yellow("后台心跳会维持这张卡片，干多久都不会被释放；做完用 board submit，做不下去用 board giveup"),
                 fmt.show(&d)
             );
+
             s += &format!("{}  board submit {cid} --comment-file <文件>  {}\n", p.dim("交审      "), to(review, "这块白板没有交审状态：用 board giveup"));
             s += &format!(
                 "{}  board giveup {cid} --comment-file <文件>  {}\n",

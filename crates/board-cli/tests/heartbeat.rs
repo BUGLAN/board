@@ -232,6 +232,8 @@ fn board_start_checks_beats_and_claims_in_one_command() {
     let name = c["session"]["name"].as_str().unwrap().to_string();
     assert!(name.starts_with("claude"), "{name}");
     assert_eq!((c["session"]["started"].as_bool(), c["session"]["resumed"].as_bool()), (Some(true), Some(false)));
+    // 认得出 agent 进程：心跳跟着它，没有提醒
+    assert_eq!(c["session"]["follows"], true);
     assert_eq!((c["id"].as_i64(), c["column"].as_str(), c["holder"].as_str()), (Some(1), Some("doing"), Some(name.as_str())));
     // 交审、做不下去去哪：不用自己从工作流里认
     assert_eq!((c["review"]["key"].as_str(), c["giveup"]["key"].as_str()), (Some("review"), Some("check")));
@@ -253,6 +255,7 @@ fn board_start_checks_beats_and_claims_in_one_command() {
     let r = run(&["start"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert!(r.out.contains("已领取") && r.out.contains(&name) && r.out.contains("接着用") && r.out.contains("board submit 2"), "{}", r.out);
+    assert!(!r.out.contains("没找到 agent 进程"), "{}", r.out);
     wait_until("第二张开始计时", Duration::from_secs(10), || beats(&s, &s.home, &vars, "2") >= 2);
     // 没有可领的了
     assert_eq!(run(&["giveup", "2", "--comment", "卡住了"]).code, 0);
@@ -298,6 +301,51 @@ fn board_start_failure_keeps_the_session_and_says_so() {
     assert!(!online(&s, &name), "stop 之后名字离线");
     agent.kill().unwrap();
     agent.wait().unwrap();
+}
+
+/// 认不出 agent 进程（BOARD_HEARTBEAT_PID 指向不存在的进程，等同于祖先全是 shell）：board start 提醒心跳会一直跑到 stop、
+/// --json 里 session.follows 为 false；同一个会话里再 start 不用重带 --agent（本机只有这一条没记 agent 进程的记录）
+#[test]
+fn board_start_without_a_known_agent_process_warns_and_continues() {
+    let s = start();
+    let e = Env::new(&s, &fake_agent());
+    let vars: Vec<(&str, String)> = e
+        .vars
+        .iter()
+        .filter(|(k, _)| *k != "BOARD_AS" && *k != "BOARD_HEARTBEAT_PID")
+        .cloned()
+        .chain([("BOARD_HEARTBEAT_PID", "999999".to_string())])
+        .collect();
+    let run = |args: &[&str]| board(&s.home, &vars, args);
+    assert_eq!(board(&s.home, &[("BOARD_URL", s.url.clone()), ("BOARD_TOKEN", s.token.clone()), ("BOARD", "default".into()), ("BOARD_AS", "test/maker".into())], &["check", "--as", "test/maker"]).code, 0);
+    for t in ["一", "二"] {
+        assert_eq!(board(&s.home, &[("BOARD_URL", s.url.clone()), ("BOARD_TOKEN", s.token.clone()), ("BOARD", "default".into()), ("BOARD_AS", "test/maker".into())], &["new", t]).code, 0);
+    }
+
+    let r = run(&["start", "1", "--agent", "dsh"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("没找到 agent 进程") && r.out.contains("board heartbeat stop"), "{}", r.out);
+
+    // 没带 --agent：接着用这个名字和心跳
+    let r = run(&["start", "1", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let session = r.json()["session"].clone();
+    assert_eq!((session["started"].as_bool(), session["resumed"].as_bool(), session["follows"].as_bool()), (Some(false), Some(true), Some(false)), "{session}");
+    let name = session["name"].as_str().unwrap().to_string();
+    assert!(name.starts_with("dsh"), "{name}");
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(e.tmp.path().join("board-heartbeat").join(format!("{}.json", name.replace('/', "_")))).unwrap()).unwrap();
+    assert!(state["agent"].is_null(), "{state}");
+
+    // 本机有两条这样的记录时分不清是哪个会话的：照旧要 --agent
+    let other = board(&s.home, &vars, &["check", "--as", "test/other"]);
+    assert_eq!(other.code, 0, "{}{}", other.out, other.err);
+    assert_eq!(board(&s.home, &[vars.clone(), vec![("BOARD_AS", "test/other".into())]].concat(), &["heartbeat", "start"]).code, 0);
+    let r = run(&["start", "2", "--json"]);
+    assert_eq!(r.error_code(), "USAGE", "{}{}", r.out, r.err);
+
+    assert_eq!(board(&s.home, &[vars.clone(), vec![("BOARD_AS", "test/other".into())]].concat(), &["heartbeat", "stop"]).code, 0);
+    assert_eq!(board(&s.home, &[vars.clone(), vec![("BOARD_AS", name.clone())]].concat(), &["heartbeat", "stop"]).code, 0);
 }
 
 /// board host 启动的会话里（环境里有 BOARD_HOST）：board start 不占名字、不启动心跳，用 BOARD_AS；卡片已经领好就接着做

@@ -359,10 +359,27 @@ pub fn current_name() -> Option<String> {
 }
 
 /// 这个 agent 进程已经 check 过、后台心跳还在跑的名字（`board start` 用：同一个会话里做下一张卡时接着用，
-/// 不再 check、不再启动心跳）。认不出 agent 进程时（没有祖先进程可跟随），只认没记 agent 进程、标识相同的那个
+/// 不再 check、不再启动心跳）。认不出 agent 进程时（没有祖先进程可跟随），只认没记 agent 进程的：
+/// 带了 `--agent` 时要标识相同；没带时本机只有一条这样的记录才接着用（几条时分不清是哪个会话的）
 pub fn live_name(agent_id: Option<&str>) -> Option<String> {
     let me = agent_process();
-    states().into_iter().find(|st| mine_and_beating(st, me) && (me.is_some() || (agent_id.is_some() && st.agent_id.as_deref() == agent_id))).map(|st| st.name)
+    let mut live = states().into_iter().filter(|st| mine_and_beating(st, me));
+    if me.is_some() {
+        return live.next().map(|st| st.name);
+    }
+    match agent_id {
+        Some(id) => live.find(|st| st.agent_id.as_deref() == Some(id)).map(|st| st.name),
+        None => {
+            let all: Vec<State> = live.collect();
+            (all.len() == 1).then(|| all[0].name.clone())
+        }
+    }
+}
+
+/// 名字的后台心跳跟着一个 agent 进程（那个进程不在了心跳就停）：check 时认出了 agent 进程。
+/// 认不出时心跳会一直跑到 `board heartbeat stop`
+pub fn follows(name: &str) -> bool {
+    read_state(name).is_some_and(|st| st.agent.is_some())
 }
 
 /// 名字 name 是这个 agent 进程 check 的，后台心跳还在跑

@@ -618,7 +618,7 @@ board start --json                       # 之后：接着用名字和心跳；�
 
 ```json
 {
-  "session": { "name": "claude-mbp/opus-5.5", "started": true, "resumed": false },
+  "session": { "name": "claude-mbp/opus-5.5", "started": true, "resumed": false, "follows": true },
   "review": { "key": "review", "name": "待审核" },
   "giveup": { "key": "check", "name": "需人工校验" },
   "repo": "https://github.com/o/r.git",
@@ -639,7 +639,7 @@ board start --json                       # 之后：接着用名字和心跳；�
 }
 ```
 
-- `session.started`：这一次是不是新占用的名字；`session.resumed`：卡片本来就由你持有（上次没做完的），没有重新领取。
+- `session.started`：这一次是不是新占用的名字；`session.resumed`：卡片本来就由你持有（上次没做完的），没有重新领取；`session.follows`：后台心跳跟着调用它的 agent 进程（进程不在了心跳就停）。认不出 agent 进程时（祖先进程全是 shell、容器里 agent 是 1 号进程、`BOARD_HEARTBEAT_PID` 指向的进程不在）为 `false`，文字输出多一行提醒：心跳会一直跑到 `board heartbeat stop`，这台机器上同时只能开一个这样的会话；这时同一个会话里再 `board start` 不用重带 `--agent`（本机只有一条这样的记录时接着用它）。
 - `review`、`giveup`：`board submit`、`board giveup` 会把卡片移到哪个状态；白板上没有对应的状态时为 `null`。
 - `files`：附件已经下载到 `path`；`--out <目录>` 指定放哪，不写时是只有自己能读的临时目录。
 - 会话里第一次用、又没带 `--agent`（或 `--as`）时是 `USAGE`；没有可领的卡片时 `EMPTY_TODO`。
