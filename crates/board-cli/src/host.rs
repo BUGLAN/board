@@ -120,8 +120,9 @@ const DIR_CHECK_EVERY: Duration = Duration::from_secs(300);
 /// 内置 agent 的版本多久查一次：不在 10 秒心跳里查；打开机器详情看到的是最近一次的结果
 const AGENT_CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
 const AGENT_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
-/// 安装/更新一个 agent 最多跑多久
-const AGENT_JOB_LIMIT: Duration = Duration::from_secs(10 * 60);
+/// 安装/更新一个 agent 最多跑多久（配置文件 `[host] agent_job_minutes` 可以改）。npm 多平台包很大
+/// （Codex 单个平台包就四百多 MB），慢网络下 10 分钟不够；npm 先装进临时目录，超时也不动旧版本
+const AGENT_JOB_LIMIT: Duration = Duration::from_secs(30 * 60);
 
 /// 「一分钟」有多长：`BOARD_HOST_MINUTE_MS`（毫秒，只给测试用），默认 60 秒。
 /// 兜底设置（单次最长运行、没输出多久算卡住）的最小档是分钟，测试里用它把分钟缩短
@@ -161,8 +162,12 @@ struct AgentJob {
     bin_dir: Option<PathBuf>,
     /// 用户目录版本要盖住的旧命令目录（npm 全局 prefix 下的 `bin`）：PATH 里它在前面时把用户目录挪到前面
     shadow_dir: Option<PathBuf>,
+    /// npm 先装进的临时 prefix：成功后换进真正的 prefix，失败、超时只删它，旧版本不动
+    stage: Option<Stage>,
     child: Child,
     started: Instant,
+    /// 最多跑多久（`[host] agent_job_minutes`，默认 [`AGENT_JOB_LIMIT`]）
+    limit: Duration,
     log: PathBuf,
 }
 
@@ -173,6 +178,20 @@ struct AgentPlan {
     args: Vec<String>,
     bin_dir: Option<PathBuf>,
     shadow_dir: Option<PathBuf>,
+    stage: Option<Stage>,
+}
+
+/// npm 装进 `--prefix <目录>` 时，先装进这个目录里的临时 prefix，装好了再换进去（#536）。
+/// npm 在 reify 开头就把旧包和 `bin` 里的软链挪成隐藏文件，被中途结束（超时）时不会挪回来，
+/// 旧命令就没了；先装到别处，旧版本在成功之前一直能用，失败、超时只删临时目录
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stage {
+    /// 临时 prefix：放在真正的 prefix 里面，同一个文件系统，换进去只是改名
+    dir: PathBuf,
+    /// 真正的 prefix
+    prefix: PathBuf,
+    /// npm 包名（`@openai/codex`）
+    package: String,
 }
 
 /// 由桌面端在后台运行（`BOARD_HOST_STDIN=1`）
@@ -366,6 +385,134 @@ fn npm_bin_dir(program: &str, args: &[String]) -> Option<PathBuf> {
     }
     let i = args.iter().position(|a| a == "--prefix")?;
     args.get(i + 1).map(|p| Path::new(p).join("bin"))
+}
+
+/// npm 装进 `--prefix <目录>` 时改成先装进 `<目录>/.board-stage-<agent>`：返回改好的参数和要换进去的 [`Stage`]。
+/// 没写 `--prefix`（沿 npm 当前的全局配置）时不知道装到哪，照原样装
+fn stage_npm(program: &str, mut args: Vec<String>, package: &str, agent: &str) -> (Vec<String>, Option<Stage>) {
+    if program != "npm" || package.is_empty() {
+        return (args, None);
+    }
+    let Some(i) = args.iter().position(|a| a == "--prefix") else { return (args, None) };
+    let Some(prefix) = args.get(i + 1).map(PathBuf::from) else { return (args, None) };
+    let dir = prefix.join(format!(".board-stage-{agent}"));
+    args[i + 1] = dir.display().to_string();
+    (args, Some(Stage { dir, prefix, package: package.to_string() }))
+}
+
+/// 找到过的命令路径现在不在了（绝对路径、跟着软链找不到文件）
+fn path_gone(path: &str) -> bool {
+    let p = Path::new(path);
+    p.is_absolute() && !p.exists()
+}
+
+/// npm 全局包在 prefix 下的目录：Unix 是 `<prefix>/lib/node_modules/<包>`，Windows 是 `<prefix>/node_modules/<包>`
+fn npm_pkg_dir(prefix: &Path, package: &str, windows: bool) -> PathBuf {
+    let base = if windows { prefix.join("node_modules") } else { prefix.join("lib").join("node_modules") };
+    package.split('/').fold(base, |p, part| p.join(part))
+}
+
+/// npm 全局命令放在哪：Unix 是 `<prefix>/bin`，Windows 直接在 prefix 下（`codex.cmd`、`codex.ps1`…）
+fn npm_cmd_dir(prefix: &Path, windows: bool) -> PathBuf {
+    if windows {
+        prefix.to_path_buf()
+    } else {
+        prefix.join("bin")
+    }
+}
+
+/// 删掉目录（不存在不算错）
+fn remove_tree(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+impl Stage {
+    /// 开始前：删掉上一次（host 被结束、崩溃）留下的临时目录，建好 npm 要的 `lib`
+    fn reset(&self, windows: bool) -> std::result::Result<(), String> {
+        remove_tree(&self.dir).map_err(|e| format!("删不掉上次留下的临时目录 {}：{e}", self.dir.display()))?;
+        let need = if windows { self.dir.clone() } else { self.dir.join("lib") };
+        std::fs::create_dir_all(&need).map_err(|e| format!("没法创建临时目录 {}：{e}", need.display()))
+    }
+
+    /// 失败、超时：只删临时目录，真正的 prefix 里的旧版本原样留着
+    fn discard(&self) {
+        let _ = remove_tree(&self.dir);
+    }
+
+    /// 装好了：把包换进真正的 prefix（旧包先改名备份，换不进去就改回来），再把命令挪过去，最后删掉备份和临时目录
+    fn commit(&self, windows: bool) -> std::result::Result<(), String> {
+        let fresh = npm_pkg_dir(&self.dir, &self.package, windows);
+        if !fresh.join("package.json").is_file() {
+            self.discard();
+            return Err(format!("npm 报告成功，但临时目录里没有装好的 {}：旧版本没动", self.package));
+        }
+        let target = npm_pkg_dir(&self.prefix, &self.package, windows);
+        let parent = target.parent().map(Path::to_path_buf).unwrap_or_else(|| self.prefix.clone());
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let backup = parent.join(format!(".{name}-board-old"));
+        let swap = || -> std::result::Result<bool, String> {
+            std::fs::create_dir_all(&parent).map_err(|e| format!("没法创建 {}：{e}", parent.display()))?;
+            remove_tree(&backup).map_err(|e| format!("删不掉上次留下的备份 {}：{e}", backup.display()))?;
+            let had_old = target.symlink_metadata().is_ok();
+            if had_old {
+                std::fs::rename(&target, &backup).map_err(|e| format!("没法把旧版本挪开（可能正在运行）：{e}"))?;
+            }
+            if let Err(e) = std::fs::rename(&fresh, &target) {
+                if had_old {
+                    let _ = std::fs::rename(&backup, &target);
+                }
+                return Err(format!("没法把新版本换进 {}：{e}", target.display()));
+            }
+            Ok(had_old)
+        };
+        let had_old = match swap() {
+            Ok(x) => x,
+            Err(why) => {
+                self.discard();
+                return Err(format!("{why}；旧版本没动"));
+            }
+        };
+        let moved = self.move_cmds(windows);
+        if had_old {
+            let _ = remove_tree(&backup);
+        }
+        self.discard();
+        moved
+    }
+
+    /// 把临时 prefix 里的命令（npm 建的软链、Windows 的 `.cmd` / `.ps1`）挪进真正的 prefix，同名的直接替换。
+    /// npm 的软链是相对路径（`../lib/node_modules/<包>/…`），挪过去照样指向换进去的包；指到临时目录的绝对路径改指真正的 prefix
+    fn move_cmds(&self, windows: bool) -> std::result::Result<(), String> {
+        let from = npm_cmd_dir(&self.dir, windows);
+        let to = npm_cmd_dir(&self.prefix, windows);
+        let Ok(entries) = std::fs::read_dir(&from) else { return Ok(()) };
+        std::fs::create_dir_all(&to).map_err(|e| format!("没法创建 {}：{e}", to.display()))?;
+        for e in entries.flatten() {
+            let Ok(meta) = e.path().symlink_metadata() else { continue };
+            if meta.is_dir() {
+                continue;
+            }
+            let dest = to.join(e.file_name());
+            #[cfg(unix)]
+            if meta.file_type().is_symlink() {
+                if let Ok(link) = std::fs::read_link(e.path()) {
+                    if let Ok(rest) = link.strip_prefix(&self.dir) {
+                        let tmp = to.join(format!(".{}-board-new", e.file_name().to_string_lossy()));
+                        let _ = std::fs::remove_file(&tmp);
+                        std::os::unix::fs::symlink(self.prefix.join(rest), &tmp)
+                            .and_then(|_| std::fs::rename(&tmp, &dest))
+                            .map_err(|err| format!("没法建命令 {}：{err}", dest.display()))?;
+                        continue;
+                    }
+                }
+            }
+            std::fs::rename(e.path(), &dest).map_err(|err| format!("没法把命令放进 {}：{err}", dest.display()))?;
+        }
+        Ok(())
+    }
 }
 
 /// 命令目录在用户目录下：装完要写进登录 shell 的 PATH；系统目录由系统管理，不去改
@@ -2367,10 +2514,13 @@ impl Host<'_> {
         let target = ask.to.clone().unwrap_or_default();
         let name = self.agents[i].name.clone();
         let plan = self.agent_command(&self.agents[i], &target, install).and_then(|plan| {
+            if let Some(stage) = &plan.stage {
+                stage.reset(cfg!(windows))?;
+            }
             prepare_npm_install(&plan.program, &plan.args)?;
             Ok(plan)
         });
-        let AgentPlan { env, program, args, bin_dir, shadow_dir } = match plan {
+        let AgentPlan { env, program, args, bin_dir, shadow_dir, stage } = match plan {
             Ok(x) => x,
             Err(why) => {
                 self.agents[i].manage_state = "failed".into();
@@ -2403,6 +2553,11 @@ impl Host<'_> {
         });
         match started {
             Ok(child) => {
+                let limit = config::File::load()
+                    .and_then(|f| f.host())
+                    .ok()
+                    .and_then(|c| c.agent_job_minutes)
+                    .map_or(AGENT_JOB_LIMIT, |m| Duration::from_secs(m as u64 * 60));
                 self.say(format!(
                     "{} {}{}：{} {}",
                     self.p.yellow("↑"),
@@ -2411,10 +2566,14 @@ impl Host<'_> {
                     program,
                     args.join(" ")
                 ));
-                self.agent_job = Some(AgentJob { ask: ask.id, agent: id.into(), name, target, bin_dir, shadow_dir, child, started: Instant::now(), log });
+                self.agent_job =
+                    Some(AgentJob { ask: ask.id, agent: id.into(), name, target, bin_dir, shadow_dir, stage, child, started: Instant::now(), limit, log });
                 (false, false)
             }
             Err(e) => {
+                if let Some(stage) = &stage {
+                    stage.discard();
+                }
                 let why = format!("没法运行 {program}：{e}");
                 self.agents[i].manage_state = "failed".into();
                 self.agents[i].manage_error = why.clone();
@@ -2449,7 +2608,8 @@ impl Host<'_> {
         if install {
             let (program, args) = install_plan(b)?;
             let bin_dir = npm_bin_dir(&program, &args).filter(|d| under_home(d));
-            return Ok(AgentPlan { env, program, args, bin_dir, shadow_dir: None });
+            let (args, stage) = stage_npm(&program, args, b.package, &spec.id);
+            return Ok(AgentPlan { env, program, args, bin_dir, shadow_dir: None, stage });
         }
         let m = spec.manage_for(check);
         match m.method.as_str() {
@@ -2474,16 +2634,17 @@ impl Host<'_> {
                 }
                 let args = npm_update_args(update_prefix.as_deref(), b.package, target);
                 let bin_dir = npm_bin_dir("npm", &args).filter(|d| under_home(d));
-                Ok(AgentPlan { env, program: "npm".into(), args, bin_dir, shadow_dir })
+                let (args, stage) = stage_npm("npm", args, b.package, &spec.id);
+                Ok(AgentPlan { env, program: "npm".into(), args, bin_dir, shadow_dir, stage })
             }
             "brew" => {
                 let path = real_path(check.and_then(|c| c.path.as_deref().or(c.prog.as_deref())));
                 let formula = brew_formula(&path).ok_or_else(|| "看不出 Homebrew 的 formula 名".to_string())?;
-                Ok(AgentPlan { env, program: "brew".into(), args: vec!["upgrade".into(), formula], bin_dir: None, shadow_dir: None })
+                Ok(AgentPlan { env, program: "brew".into(), args: vec!["upgrade".into(), formula], bin_dir: None, shadow_dir: None, stage: None })
             }
             "script" => {
                 let prog = check.and_then(|c| c.prog.clone()).unwrap_or_else(|| spec.bin.clone());
-                Ok(AgentPlan { env, program: prog, args: vec!["update".into()], bin_dir: None, shadow_dir: None })
+                Ok(AgentPlan { env, program: prog, args: vec!["update".into()], bin_dir: None, shadow_dir: None, stage: None })
             }
             _ => Err(if m.reason.trim().is_empty() { "这个 agent 不能由 board host 更新".into() } else { m.reason }),
         }
@@ -2569,7 +2730,7 @@ impl Host<'_> {
     fn poll_agent_job(&mut self) -> bool {
         let Some(job) = self.agent_job.as_mut() else { return false };
         let status = job.child.try_wait().ok().flatten();
-        if status.is_none() && job.started.elapsed() < AGENT_JOB_LIMIT {
+        if status.is_none() && job.started.elapsed() < job.limit {
             return false;
         }
         let job = self.agent_job.take().expect("上面取过");
@@ -2577,15 +2738,25 @@ impl Host<'_> {
         let tail = tail_lines(&job.log, 20, None);
         let detail = tail.last().cloned().unwrap_or_default();
         let out = match status {
-            Some(s) if s.success() => Ok(()),
+            // 先装进临时 prefix 的：换进真正的 prefix 才算装好
+            Some(s) if s.success() => job.stage.as_ref().map_or(Ok(()), |stage| stage.commit(cfg!(windows))),
             Some(s) => Err(agent_job_error(s.code().unwrap_or(-1), &tail)),
             None => {
                 kill_tree(job.child.id(), true);
                 let _ = job.child.kill();
                 let _ = job.child.wait();
-                Err(format!("超过 {} 分钟没跑完，已结束", AGENT_JOB_LIMIT.as_secs() / 60))
+                let kept = if job.stage.is_some() { "；旧版本没动" } else { "" };
+                Err(format!(
+                    "超过 {} 分钟没跑完，已结束{kept}（时限用配置文件 [host] agent_job_minutes 改）",
+                    job.limit.as_secs() / 60
+                ))
             }
         };
+        if out.is_err() {
+            if let Some(stage) = &job.stage {
+                stage.discard();
+            }
+        }
         match out {
             Ok(()) => {
                 if let Some(dir) = job.bin_dir.as_deref() {
@@ -2625,6 +2796,8 @@ impl Host<'_> {
                 }
             }
             Err(why) => {
+                // 失败也重新找一遍命令：不在原处了（被 npm 挪走、装了一半）的不再拿缓存里的路径去派发
+                self.recheck();
                 if let Some(a) = self.agents.iter_mut().find(|a| a.id == job.agent) {
                     a.manage_state = "failed".into();
                     a.manage_error = why.clone();
@@ -2669,6 +2842,17 @@ impl Host<'_> {
             want.into_iter().map(|(id, pkg, tag)| (id, fetch_npm_latest(pkg, tag))).collect()
         }));
         false
+    }
+
+    /// 这个 agent 找到的命令有不在原处的（软链断了、文件被删）：重新检查一次，马上上报
+    fn recheck_if_gone(&mut self, agent: &str) {
+        let Some(spec) = self.agents.iter().find(|a| a.id == agent) else { return };
+        let Some(gone) = spec.checks.iter().find_map(|c| c.path.as_deref().filter(|p| c.found && !c.env.starts_with("wsl:") && path_gone(p))) else {
+            return;
+        };
+        self.say(format!("{} {} 的命令 {gone} 不在了：重新检查本机 agent", self.p.yellow("!"), spec.name));
+        self.recheck();
+        self.beat_soon = true;
     }
 
     /// 重新检查（远程请求）：重新找启动环境、本机 agent（找不找得到、版本号）、board-skills。
@@ -4021,6 +4205,8 @@ impl Host<'_> {
             w.running.push(d.clone());
             w.queued.retain(|x| x.id != d.id);
         }
+        // 缓存里的命令路径不在了（升级失败被 npm 挪走、被人删了）：先重新找一遍，不拿失效的路径去启动（#536）
+        self.recheck_if_gone(&d.agent);
         // 派发前更新代码：拉最新、备好这个会话的 worktree（PRD §9.1「派发前更新代码」）；没成就不启动 agent
         let started = self.prepare(&d).and_then(|code| self.spawn(&d, code.as_ref()));
         match started {
@@ -4389,6 +4575,9 @@ impl Host<'_> {
             kill_tree(job.child.id(), true);
             let _ = job.child.kill();
             let _ = job.child.wait();
+            if let Some(stage) = &job.stage {
+                stage.discard();
+            }
         }
         // 自检启动的 agent、git：一起结束（结果不再回报，请求过期后可以重新自检）
         for pid in self.selftest_pids.lock().map(|p| p.clone()).unwrap_or_default() {
@@ -5161,6 +5350,106 @@ mod tests {
         assert_eq!(npm_bin_dir("brew", &args), None);
         let update = ["install", "-g", "@openai/codex@latest"].map(str::to_string);
         assert_eq!(npm_bin_dir("npm", &update), None, "沿已有 prefix 的更新不用再改 PATH");
+    }
+
+    /// 写了 --prefix 的 npm 安装/更新先装进 prefix 里的临时目录；没写 prefix、不是 npm 的照原样（#536）
+    #[test]
+    fn npm_jobs_install_into_a_stage_first() {
+        let args = npm_update_args(Some("/Users/me/.local"), "@openai/codex", "0.171.0");
+        let (staged, stage) = stage_npm("npm", args, "@openai/codex", "codex");
+        let stage = stage.expect("写了 --prefix");
+        assert_eq!(stage.prefix, Path::new("/Users/me/.local"));
+        assert_eq!(stage.dir, Path::new("/Users/me/.local").join(".board-stage-codex"));
+        assert_eq!(staged, ["install", "-g", "--prefix", &stage.dir.display().to_string(), "@openai/codex@0.171.0"]);
+        let plain = npm_update_args(None, "@openai/codex", "");
+        assert_eq!(stage_npm("npm", plain.clone(), "@openai/codex", "codex"), (plain.clone(), None));
+        assert_eq!(stage_npm("brew", plain.clone(), "@openai/codex", "codex").1, None);
+        assert_eq!(npm_pkg_dir(Path::new("/p"), "@openai/codex", false), Path::new("/p/lib/node_modules/@openai/codex"));
+        assert_eq!(npm_pkg_dir(Path::new("/p"), "@openai/codex", true), Path::new("/p/node_modules/@openai/codex"));
+    }
+
+    /// 在 prefix 里摆一个 npm 全局包：包目录（带 package.json 和一个文件）+ bin 里的相对软链
+    #[cfg(unix)]
+    fn fake_npm_pkg(prefix: &Path, version: &str) {
+        let pkg = npm_pkg_dir(prefix, "@openai/codex", false);
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        std::fs::write(pkg.join("package.json"), format!("{{\"version\":\"{version}\"}}")).unwrap();
+        std::fs::write(pkg.join("bin/codex.js"), version).unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::os::unix::fs::symlink("../lib/node_modules/@openai/codex/bin/codex.js", prefix.join("bin/codex")).unwrap();
+    }
+
+    /// 装好了：新包换进真正的 prefix，命令照样能用、指向新版本；备份和临时目录都删掉
+    #[cfg(unix)]
+    #[test]
+    fn stage_commit_swaps_in_the_new_version() {
+        let d = tempfile::tempdir().unwrap();
+        let prefix = d.path().join(".local");
+        fake_npm_pkg(&prefix, "0.170.0");
+        let (_, stage) = stage_npm("npm", npm_update_args(Some(&prefix.display().to_string()), "@openai/codex", ""), "@openai/codex", "codex");
+        let stage = stage.unwrap();
+        stage.reset(false).unwrap();
+        assert!(stage.dir.join("lib").is_dir(), "npm 要求 prefix 下有 lib");
+        fake_npm_pkg(&stage.dir, "0.171.0");
+        // 再放一个指到临时目录的绝对路径软链：挪过去改指真正的 prefix
+        std::os::unix::fs::symlink(npm_pkg_dir(&stage.dir, "@openai/codex", false).join("bin/codex.js"), stage.dir.join("bin/codex-abs")).unwrap();
+        stage.commit(false).unwrap();
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/codex")).unwrap(), "0.171.0");
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/codex-abs")).unwrap(), "0.171.0");
+        assert!(std::fs::read_link(prefix.join("bin/codex-abs")).unwrap().starts_with(&prefix));
+        assert!(!stage.dir.exists(), "临时目录删掉");
+        let scope = prefix.join("lib/node_modules/@openai");
+        let left: Vec<_> = std::fs::read_dir(&scope).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["codex"], "旧版本的备份删掉");
+        // 第一次装（prefix 里还没有这个包）也一样
+        let fresh = d.path().join("fresh");
+        let (_, stage) = stage_npm("npm", npm_update_args(Some(&fresh.display().to_string()), "@openai/codex", ""), "@openai/codex", "codex");
+        let stage = stage.unwrap();
+        stage.reset(false).unwrap();
+        fake_npm_pkg(&stage.dir, "0.171.0");
+        stage.commit(false).unwrap();
+        assert_eq!(std::fs::read_to_string(fresh.join("bin/codex")).unwrap(), "0.171.0");
+    }
+
+    /// 超时、失败、装了一半（npm 报成功但包不完整）：只删临时目录，旧命令原样能用
+    #[cfg(unix)]
+    #[test]
+    fn stage_failure_keeps_the_old_version() {
+        let d = tempfile::tempdir().unwrap();
+        let prefix = d.path().join(".local");
+        fake_npm_pkg(&prefix, "0.170.0");
+        let (_, stage) = stage_npm("npm", npm_update_args(Some(&prefix.display().to_string()), "@openai/codex", ""), "@openai/codex", "codex");
+        let stage = stage.unwrap();
+        // 上次 host 被结束留下的临时目录：开始前清掉
+        std::fs::create_dir_all(stage.dir.join("junk")).unwrap();
+        stage.reset(false).unwrap();
+        assert!(!stage.dir.join("junk").exists());
+        // npm 装了一半就被结束：包目录在，package.json 没有
+        let half = npm_pkg_dir(&stage.dir, "@openai/codex", false);
+        std::fs::create_dir_all(&half).unwrap();
+        let err = stage.commit(false).unwrap_err();
+        assert!(err.contains("旧版本没动"), "{err}");
+        assert!(!stage.dir.exists());
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/codex")).unwrap(), "0.170.0");
+        // 超时、退出码不是 0：discard 只删临时目录
+        stage.reset(false).unwrap();
+        fake_npm_pkg(&stage.dir, "0.171.0");
+        stage.discard();
+        assert!(!stage.dir.exists());
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/codex")).unwrap(), "0.170.0");
+    }
+
+    /// 找到过的命令现在不在了（软链断了）才算失效；相对的命令名（靠 PATH 找）不算
+    #[cfg(unix)]
+    #[test]
+    fn path_gone_follows_broken_links() {
+        let d = tempfile::tempdir().unwrap();
+        let link = d.path().join("codex");
+        std::os::unix::fs::symlink(d.path().join("missing.js"), &link).unwrap();
+        assert!(path_gone(&link.display().to_string()));
+        std::fs::write(d.path().join("missing.js"), "").unwrap();
+        assert!(!path_gone(&link.display().to_string()));
+        assert!(!path_gone("codex"));
     }
 
     /// 登录 shell 的 PATH 是读启动脚本之后的那份；能据此判断用户目录在不在里面

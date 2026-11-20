@@ -173,6 +173,7 @@ fn backup_bad(path: &Path) -> std::io::Result<PathBuf> {
 /// workspace = "~/repo"          # 每个项目的目录是 <工作空间>/<项目>，项目下的白板共用
 /// dirs = { "default/main" = "~/repo/board" }   # 旧写法：逐块配；启动时换成对应的 workspace
 /// log_days = 30
+/// agent_job_minutes = 30       # 安装/更新一个 agent 最多跑多少分钟
 ///
 /// [agents.claude]
 /// cmd = ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.107.3"]   # ACP 入口命令（换适配器版本）
@@ -187,6 +188,8 @@ pub struct HostConf {
     pub dirs: Vec<(String, String)>,
     /// 本机派发日志保留几天（`~/.board/host/logs` 里结束超过这么多天的删掉）；不写时用默认值
     pub log_days: Option<i64>,
+    /// 安装/更新一个 agent 最多跑多少分钟（npm 多平台包很大，慢网络下 10 分钟不够）；不写时用默认值
+    pub agent_job_minutes: Option<i64>,
     pub agents: Vec<AgentConf>,
 }
 
@@ -226,6 +229,13 @@ impl Config {
                     return Err(bad("host.log_days（至少 1 天）"));
                 }
                 c.log_days = Some(n);
+            }
+            if let Some(n) = t.get("agent_job_minutes") {
+                let n = n.as_integer().ok_or_else(|| bad("host.agent_job_minutes（要写成整数）"))?;
+                if n < 1 {
+                    return Err(bad("host.agent_job_minutes（至少 1 分钟）"));
+                }
+                c.agent_job_minutes = Some(n);
             }
         }
         if let Some(a) = self.doc.get("agents") {
@@ -457,6 +467,14 @@ mod tests {
         }
         std::fs::write(&g, "[host]\nlog_days = \"30\"\n").unwrap();
         assert!(Config::load_from(&g).unwrap().host().is_err(), "要写成整数");
+        // 安装/更新 agent 的时限：不写时 None，写了要是不小于 1 的整数
+        std::fs::write(&g, "[host]\nagent_job_minutes = 45\n").unwrap();
+        assert_eq!(Config::load_from(&g).unwrap().host().unwrap().agent_job_minutes, Some(45));
+        assert_eq!(Config::load_from(&f).unwrap().host().unwrap().agent_job_minutes, None);
+        for bad in ["[host]\nagent_job_minutes = 0\n", "[host]\nagent_job_minutes = \"30\"\n"] {
+            std::fs::write(&g, bad).unwrap();
+            assert!(Config::load_from(&g).unwrap().host().is_err(), "{bad}");
+        }
     }
 
     #[test]
