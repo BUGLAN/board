@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS statuses (
   lock  INTEGER NOT NULL DEFAULT 0,
   final INTEGER NOT NULL DEFAULT 0,
   error INTEGER NOT NULL DEFAULT 0,
+  review INTEGER NOT NULL DEFAULT 0, -- 交审状态（状态设置里的开关）
   view  TEXT,
   -- 保留顺序开着时的排序依据 moved | id | updated | labels | work，空表示按移入时间；order_desc = 1 倒序
   order_by   TEXT,
@@ -381,6 +382,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'error'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_error {
             conn.execute_batch("ALTER TABLE statuses ADD COLUMN error INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // 旧数据库的状态没有「交审状态」开关：都不打开，按名称里的关键词认（见 Flow::review_after）
+        let has_review: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('statuses') WHERE name = 'review'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_review {
+            conn.execute_batch("ALTER TABLE statuses ADD COLUMN review INTEGER NOT NULL DEFAULT 0")?;
         }
         // 旧数据库的标签没有类型：都算 agent 可打
         let has_human_only: bool =
@@ -1096,7 +1103,7 @@ const COL_ORDER: &str = "CASE WHEN c.col = 'inbox' THEN -1 ELSE \
 
 pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
     let mut st = conn.prepare_cached(
-        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view, error, order_by, order_desc FROM statuses WHERE board = ?1 ORDER BY sort, key",
+        "SELECT key, name, color, claim, lock, final, lx, lw, ly, view, error, order_by, order_desc, review FROM statuses WHERE board = ?1 ORDER BY sort, key",
     )?;
     let v = st
         .query_map([board], |r| {
@@ -1112,6 +1119,7 @@ pub(crate) fn flow_of(conn: &Connection, board: i64) -> Result<Flow> {
                 lock: r.get::<_, i64>(4)? != 0,
                 fin,
                 err: r.get::<_, i64>(10)? != 0,
+                review: r.get::<_, i64>(13)? != 0,
                 view: view.as_deref().and_then(CardView::parse).unwrap_or(CardView::default_for(fin)),
                 order: Order { by: order_by.as_deref().and_then(OrderBy::parse).unwrap_or_default(), desc: r.get::<_, i64>(12)? != 0 },
                 layout: match (lx, lw, ly) {
@@ -1182,8 +1190,9 @@ fn fail_point(at: &str) -> Result<()> {
 pub(crate) fn insert_default_flow(conn: &Connection, board: i64) -> Result<()> {
     for (i, (key, name, color, claim, lock, fin)) in DEFAULT_FLOW.iter().enumerate() {
         conn.execute(
-            "INSERT INTO statuses (board, key, name, color, sort, claim, lock, final) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![board, key, name, color, i as i64, *claim as i64, *lock as i64, *fin as i64],
+            "INSERT INTO statuses (board, key, name, color, sort, claim, lock, final, review) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            // 默认工作流的「待审核」是交审状态
+            params![board, key, name, color, i as i64, *claim as i64, *lock as i64, *fin as i64, (*key == "review") as i64],
         )?;
     }
     for (a, b) in DEFAULT_EDGES {

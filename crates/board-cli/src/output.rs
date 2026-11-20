@@ -297,6 +297,9 @@ pub(crate) fn rule_of(st: &Status) -> String {
     if st.err {
         rules.push("错误节点");
     }
+    if st.review {
+        rules.push("交审");
+    }
     rules.join(" · ")
 }
 

@@ -279,6 +279,7 @@
       "key": "todo",
       "lock": false,
       "name": "待办",
+      "review": false,
       "to": ["doing"]
     },
     {
@@ -289,6 +290,7 @@
       "key": "doing",
       "lock": true,
       "name": "进行中",
+      "review": false,
       "to": ["review", "check"]
     },
     {
@@ -299,6 +301,7 @@
       "key": "review",
       "lock": false,
       "name": "待审核",
+      "review": true,
       "to": ["done", "rework"]
     },
     {
@@ -309,6 +312,7 @@
       "key": "done",
       "lock": false,
       "name": "已完成",
+      "review": false,
       "to": []
     },
     {
@@ -319,6 +323,7 @@
       "key": "rework",
       "lock": false,
       "name": "返工",
+      "review": false,
       "to": ["doing"]
     },
     {
@@ -329,6 +334,7 @@
       "key": "check",
       "lock": false,
       "name": "需人工校验",
+      "review": false,
       "to": ["todo"]
     }
   ]

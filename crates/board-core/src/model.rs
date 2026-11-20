@@ -134,6 +134,10 @@ pub struct Status {
     /// （不可领取，配了定时领取也不会被下一轮重新领走）
     #[serde(default, rename = "error")]
     pub err: bool,
+    /// 交审状态：`board submit` 把做完的卡片移到这里（从锁定状态连过来的）。人在状态设置里打开；
+    /// 只有不是可领取、锁定、终点、错误节点的状态能打开。一块白板上都没打开时按名称里的关键词认（旧白板不用改设置）
+    #[serde(default)]
+    pub review: bool,
     /// 卡片形态；没有设置过时按 CardView::default_for 取
     #[serde(default)]
     pub view: CardView,
@@ -234,9 +238,9 @@ impl Flow {
         v.push(format!("{INBOX_NAME}（{INBOX}）"));
         v.join("、")
     }
-    /// 交审状态：锁定状态连出去、名称里带「审核」之类关键词的状态（与 board-skills「认出角色」的规则相同）
+    /// 交审状态：状态设置里打开了「交审状态」的，或者锁定状态连出去、名称里带「审核」之类关键词的状态
     pub fn is_review(&self, key: &str) -> bool {
-        self.role_of(key, &REVIEW_WORDS)
+        self.get(key).is_some_and(|s| s.review && plain(s)) || self.role_of(key, &REVIEW_WORDS)
     }
     /// 需要人处理的状态：锁定状态连出去、名称里带「人工」之类关键词的状态
     pub fn is_human(&self, key: &str) -> bool {
@@ -260,8 +264,10 @@ impl Flow {
         s.to.iter().filter_map(|k| self.get(k)).find(|t| t.err)
     }
     /// 从锁定状态 from 沿连线能去的交审状态（按工作流顺序第一个）：`board submit` 把卡片移到这里
+    /// 先看连出去的、打开了「交审状态」开关的；一个都没有时按名称里的关键词（还没设置过开关的旧白板）
     pub fn review_after(&self, from: &str) -> Option<&Status> {
-        self.after(from, &REVIEW_WORDS)
+        let s = self.get(from)?;
+        s.to.iter().filter_map(|k| self.get(k)).find(|t| t.review && plain(t)).or_else(|| self.after(from, &REVIEW_WORDS))
     }
     /// 做不下去时从锁定状态 from 去哪：先错误节点，没有时是需要人处理的状态（`board giveup`，和派发异常退出时一样）
     pub fn giveup_after(&self, from: &str) -> Option<&Status> {
@@ -282,6 +288,11 @@ impl Flow {
 const REVIEW_WORDS: [&str; 4] = ["审核", "审查", "评审", "review"];
 /// 需要人处理的状态名称里的关键词（board-skills「认出角色」：等人处理的状态）
 const HUMAN_WORDS: [&str; 7] = ["人工", "人处理", "人确认", "需人", "check", "manual", "human"];
+
+/// 不是可领取、锁定、终点、错误节点的状态：只有这样的状态能当交审状态、需要人处理的状态
+fn plain(s: &Status) -> bool {
+    !s.claim && !s.lock && !s.fin && !s.err
+}
 
 fn words_in(s: &Status, words: &[&str]) -> bool {
     let (name, key) = (s.name.to_lowercase(), s.key.to_lowercase());

@@ -2868,6 +2868,60 @@ fn submit_comments_finals_and_moves_to_review() {
     assert_eq!(card(&s, B, 1).card.column, "review");
 }
 
+/// 交审状态看状态设置里的开关（default/main#541）：名字不带关键词的「待复盘」打开开关后，board submit 把卡移过去；
+/// 默认工作流的「待审核」新建时就打开；一块白板上都没打开时按名称里的关键词认（旧白板）
+#[test]
+fn review_status_follows_the_switch_then_falls_back_to_names() {
+    let mut s = store();
+    let flow = |s: &Store| s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    assert!(flow(&s).get("review").unwrap().review, "默认工作流的「待审核」是交审状态");
+    // 进行中 → 待复盘 → 已完成，去掉 进行中 → 待审核
+    let t = ui(&mut s, |w| w.create_status(B, "待复盘", None)).unwrap();
+    ui(&mut s, |w| w.update_edges(B, &[("doing".into(), t.key.clone()), (t.key.clone(), "done".into())], &[("doing".into(), "review".into())])).unwrap();
+    assert!(flow(&s).review_after("doing").is_none(), "没打开开关、名字也不带关键词：认不出");
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { review: Some(true), ..Default::default() })).unwrap();
+    let f = flow(&s);
+    assert_eq!(f.review_after("doing").map(|x| x.key.as_str()), Some(t.key.as_str()));
+    assert!(f.is_review(&t.key));
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + SEC, submit(1, "做完了")).unwrap();
+    assert_eq!((c.card.column.as_str(), c.card.holder), (t.key.as_str(), None));
+
+    // 开关和名称都在时先看开关：连回 进行中 → 待审核，但「待审核」关掉开关，「待复盘」开着
+    ui(&mut s, |w| w.update_edges(B, &[("doing".into(), "review".into())], &[])).unwrap();
+    ui(&mut s, |w| w.update_status(B, "review", StatusPatch { review: Some(false), ..Default::default() })).unwrap();
+    assert_eq!(flow(&s).review_after("doing").map(|x| x.key.clone()), Some(t.key.clone()));
+    // 都没打开（旧白板）：按名称里的关键词
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { review: Some(false), ..Default::default() })).unwrap();
+    assert_eq!(flow(&s).review_after("doing").map(|x| x.key.as_str()), Some("review"));
+}
+
+/// 交审状态的开关只能开在不是可领取、锁定、终点、错误节点的状态上；打开那几项之一时同时关掉它
+#[test]
+fn review_switch_only_on_plain_statuses() {
+    let mut s = store();
+    let on = StatusPatch { review: Some(true), ..Default::default() };
+    for key in ["todo", "doing", "done"] {
+        let e = ui(&mut s, |w| w.update_status(B, key, on.clone())).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage, "{key}");
+        assert!(e.message.contains("交审状态"), "{}", e.message);
+    }
+    let t = ui(&mut s, |w| w.create_status(B, "错误", None)).unwrap();
+    ui(&mut s, |w| w.update_status(B, &t.key, StatusPatch { err: Some(true), ..Default::default() })).unwrap();
+    assert_eq!(ui(&mut s, |w| w.update_status(B, &t.key, on.clone())).unwrap_err().code, ErrorCode::Usage);
+    // 同一次把锁定关掉、交审打开：可以
+    let u = ui(&mut s, |w| w.create_status(B, "测试中", None)).unwrap();
+    ui(&mut s, |w| w.update_status(B, &u.key, StatusPatch { lock: Some(true), ..Default::default() })).unwrap();
+    ui(&mut s, |w| w.update_status(B, &u.key, StatusPatch { lock: Some(false), review: Some(true), ..Default::default() })).unwrap();
+    let flow = |s: &Store| s.read(|r| r.flow(&r.resolve(B)?)).unwrap();
+    assert!(flow(&s).get(&u.key).unwrap().review);
+    // 打开终点：交审一起关掉
+    ui(&mut s, |w| w.update_status(B, &u.key, StatusPatch { fin: Some(true), ..Default::default() })).unwrap();
+    let st = flow(&s).get(&u.key).unwrap().clone();
+    assert!(st.fin && !st.review);
+}
+
 /// 白板没有交审状态：拒绝，评论和 final 都不留下，卡片还归持有者
 #[test]
 fn submit_without_review_status_changes_nothing() {

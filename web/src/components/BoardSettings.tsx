@@ -28,7 +28,7 @@ type Pv = { mode: 'order'; key: string } | { mode: 'layout'; which: Which };
 const sameLayout = (a: Record<string, Tile>, b: Record<string, Tile>) =>
   Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([k, t]) => b[k] && b[k].x === t.x && b[k].w === t.w && b[k].y === t.y);
 
-const FLAG = (s: Status) => (s.claim ? '可领取' : s.lock ? '锁定' : s.final ? '终点' : s.error ? '错误节点' : '');
+const FLAG = (s: Status) => (s.claim ? '可领取' : s.lock ? '锁定' : s.final ? '终点' : s.error ? '错误节点' : s.review ? '交审' : '');
 
 export function BoardSettings({ path }: { path: string }) {
   const req = useUI(s => s.boardSettings);

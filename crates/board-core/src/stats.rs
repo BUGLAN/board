@@ -362,9 +362,10 @@ impl Roles {
             if s.lock {
                 r.lock.insert(k.clone());
             }
-            if s.err || flow.is_human(&s.key) {
+            // 打开了「交审状态」开关的算交审，名字里带「人工」也不算需要人处理
+            if s.err || (flow.is_human(&s.key) && !s.review) {
                 r.human.insert(k);
-            } else if from_lock && !s.claim && !s.fin && !s.lock {
+            } else if (from_lock || s.review) && !s.claim && !s.fin && !s.lock {
                 r.review.insert(k);
             }
         }

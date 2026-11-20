@@ -62,11 +62,12 @@ export function flowOf(statuses: Status[] | undefined | null) {
   };
 }
 
-/** 状态设置的修改先画到界面上：和服务端一样，错误节点与可领取、锁定、终点互斥，打开一边关掉另一边 */
+/** 状态设置的修改先画到界面上：和服务端一样，错误节点与可领取、锁定、终点互斥，打开一边关掉另一边；
+ *  交审状态只能开在这四项都关着的状态上（界面上那时开关不能点），打开这四项之一时同时关掉它 */
 export function patchStatus(s: Status, p: Partial<Status>): Status {
   const next = { ...s, ...p };
-  if (p.error) return { ...next, claim: false, lock: false, final: false };
-  if (p.claim || p.lock || p.final) return { ...next, error: false };
+  if (p.error) return { ...next, claim: false, lock: false, final: false, review: false };
+  if (p.claim || p.lock || p.final) return { ...next, error: false, review: false };
   return next;
 }
 export type FlowQ = ReturnType<typeof flowOf>;

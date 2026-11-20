@@ -35,6 +35,8 @@ export interface Status {
   final: boolean;
   /** 错误节点：agent 异常退出、做不下去时沿连线移到这里，只有人能移出；和可领取、锁定、终点互斥（旧服务端没有） */
   error?: boolean;
+  /** 交审状态（状态设置里的开关）：board submit 把做完的卡移到这里。旧服务端没有这个字段 */
+  review?: boolean;
   /** 卡片形态；服务端没设置过时按规则给出（终点用磁贴，其他用卡片） */
   view?: StatusView;
   /** 白板设置「保留顺序」开着时这块按什么排（lib/sort.ts）；旧服务端没有（按移入时间，新移入的在最后） */

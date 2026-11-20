@@ -294,6 +294,11 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
                     <Icon name="alert" />
                   </span>
                 )}
+                {s.review && (
+                  <span className="wf-glyph" title="交审状态：board submit 把做完的卡片移到这里，等人复盘">
+                    <Icon name="flag" />
+                  </span>
+                )}
                 {warn && (
                   <span className="wf-glyph warn" title="没有连到锁定状态：agent 不能从这里领取">
                     <Icon name="alert" />
@@ -608,6 +613,13 @@ function StatusMenu({
           'agent 异常退出、做不下去时沿连线移到这里，不会再被领走；只有人能移出。打开时关掉上面三项',
           () => patch({ error: !s.error }),
           lastClaim ? '最后一个可领取的状态不能设为错误节点' : undefined,
+        )}
+        {sw(
+          !!s.review,
+          '交审状态',
+          'board submit 把做完的卡片移到这里（从锁定状态连过来），等人复盘。都没打开时按名称认（带「审核」这类词）',
+          () => patch({ review: !s.review }),
+          !s.review && (s.claim || s.lock || s.final || s.error) ? '可领取、锁定、终点、错误节点不能设为交审状态' : undefined,
         )}
       </div>
       <div className="wf-menu-foot">

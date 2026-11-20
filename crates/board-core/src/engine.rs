@@ -1060,7 +1060,7 @@ impl<'a> W<'a> {
             return Err(BoardError::new(
                 ErrorCode::ForbiddenColumn,
                 format!(
-                    "#{id} 在「{}」，没有连到交审状态（名称里带「审核」的状态），能去：{}。要交给人处理用 board giveup {id}",
+                    "#{id} 在「{}」，没有连到交审状态，能去：{}。这块白板还没有标出交审状态：请人在状态设置里给等人复盘的那个状态打开「交审状态」（都没打开时按名称认，名称里带「审核」「review」这类词）；这一次先用 board giveup {id} 交给人，评论里写明已经做完、推到了哪个提交",
                     flow.name(&r.col),
                     flow.outs(&r.col)
                 ),

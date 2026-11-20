@@ -27,8 +27,9 @@ export function statusRoles(statuses: Status[] | null | undefined): { review: Se
   for (const s of list) {
     const fromLock = list.some(l => l.lock && l.to.includes(s.key));
     const plain = !s.claim && !s.lock && !s.final && !s.error;
-    if (s.error || (plain && fromLock && has(s, HUMAN_WORDS))) human.add(s.key);
-    else if (plain && fromLock) review.add(s.key);
+    // 打开了「交审状态」开关的算交审，名字里带「人工」也不算需要人处理
+    if (s.error || (plain && fromLock && !s.review && has(s, HUMAN_WORDS))) human.add(s.key);
+    else if (plain && (fromLock || s.review)) review.add(s.key);
   }
   return { review, human };
 }

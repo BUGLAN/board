@@ -26,6 +26,9 @@ pub struct StatusPatch {
     /// 错误节点：打开时同时关掉可领取、锁定、终点；打开这三个之一时同时关掉错误节点
     #[serde(default, rename = "error")]
     pub err: Option<bool>,
+    /// 交审状态：只能开在不是可领取、锁定、终点、错误节点的状态上；打开那几个之一时同时关掉它
+    #[serde(default)]
+    pub review: Option<bool>,
     /// 卡片形态：只影响界面显示
     #[serde(default)]
     pub view: Option<CardView>,
@@ -93,6 +96,7 @@ impl<'a> W<'a> {
             lock: false,
             fin: false,
             err: false,
+            review: false,
             view: CardView::default_for(false),
             order: Order::default(),
             layout: None,
@@ -115,6 +119,16 @@ impl<'a> W<'a> {
             p.fin = p.fin.or(s.fin.then_some(false));
         } else if other_on && s.err && p.err.is_none() {
             p.err = Some(false);
+        }
+        // 交审状态只能是普通状态（不是可领取、锁定、终点、错误节点）：打开它时这几项（改完之后）都要是关着的；
+        // 打开那几项之一时同时关掉交审状态
+        if p.review == Some(true) {
+            let after = |patch: Option<bool>, cur: bool| patch.unwrap_or(cur);
+            if after(p.claim, s.claim) || after(p.lock, s.lock) || after(p.fin, s.fin) || after(p.err, s.err) {
+                return Err(BoardError::usage("只有不是可领取、锁定、终点、错误节点的状态能设为交审状态"));
+            }
+        } else if s.review && p.review.is_none() && [p.claim, p.lock, p.fin, p.err].contains(&Some(true)) {
+            p.review = Some(false);
         }
         if let Some(n) = &p.name {
             let n = self.status_name(&flow, n, Some(key))?;
@@ -150,6 +164,9 @@ impl<'a> W<'a> {
         }
         if let Some(e) = p.err {
             self.tx.execute("UPDATE statuses SET error = ?1 WHERE board = ?2 AND key = ?3", params![e as i64, b.id, key])?;
+        }
+        if let Some(r) = p.review {
+            self.tx.execute("UPDATE statuses SET review = ?1 WHERE board = ?2 AND key = ?3", params![r as i64, b.id, key])?;
         }
         if let Some(v) = p.view {
             self.tx.execute("UPDATE statuses SET view = ?1 WHERE board = ?2 AND key = ?3", params![v.as_str(), b.id, key])?;

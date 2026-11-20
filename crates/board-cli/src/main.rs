@@ -573,7 +573,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     "branch": branch,
                     "statuses": flow.0
                         .iter()
-                        .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "error": st.err, "to": st.to, "cards": count(&st.key) }))
+                        .map(|st| json!({ "key": st.key, "name": st.name, "claim": st.claim, "lock": st.lock, "final": st.fin, "error": st.err, "review": st.review, "to": st.to, "cards": count(&st.key) }))
                         .collect::<Vec<_>>(),
                 }))
             } else {

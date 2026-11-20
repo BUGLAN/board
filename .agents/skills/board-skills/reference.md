@@ -19,7 +19,7 @@
 
 `board flow` 还列出这块白板所在项目的**代码仓库**（`repo`）和**集成分支**（`branch`，空表示按仓库的 AGENTS.md / CLAUDE.md），见 work.md「代码」。
 
-**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态是锁定状态连出去、名称里带「审核」这类关键词的状态；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，50 秒后卡片回到领取前的状态，这时停下来告诉用户。没有交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`，改用 `board giveup`。
+**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态看状态设置里的「交审状态」开关（`board flow` 的规则写「交审」，`--json` 里 `"review": true`），一块白板上都没打开时看名称里的「审核」这类关键词；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，50 秒后卡片回到领取前的状态，这时停下来告诉用户。没有交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`，改用 `board giveup`。
 
 - 代码仓库是当前工作目录所在的仓库；卡片描述指定了别的位置时以描述为准。
 - 得到 `NOT_LOGGED_IN`、`INVALID_TOKEN`、`UNREACHABLE` 时停下来告诉用户（见文末错误码），不要反复重试。

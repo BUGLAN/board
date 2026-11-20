@@ -185,6 +185,16 @@ describe('patchStatus（状态设置先画到界面上）', () => {
     expect(s).toMatchObject({ error: true, claim: false, lock: false, final: false });
     expect(patchStatus(status('done', { final: true }), { error: true })).toMatchObject({ error: true, final: false });
   });
+  it('交审状态：打开时只改它自己；打开可领取、锁定、终点、错误节点之一时关掉它；重复执行结果相同', () => {
+    const plain = status('s1');
+    const on = patchStatus(plain, { review: true });
+    expect(on).toMatchObject({ review: true, claim: false, lock: false, final: false });
+    expect(patchStatus(on, { review: true })).toEqual(on);
+    for (const p of [{ claim: true }, { lock: true }, { final: true }, { error: true }]) {
+      expect(patchStatus(on, p)).toMatchObject({ ...p, review: false });
+    }
+    expect(patchStatus(on, { name: '待复盘' })).toMatchObject({ name: '待复盘', review: true });
+  });
   it('打开可领取、锁定、终点之一时关掉错误节点', () => {
     for (const p of [{ claim: true }, { lock: true }, { final: true }]) {
       expect(patchStatus(status('s2', { error: true }), p)).toMatchObject({ ...p, error: false });
