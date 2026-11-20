@@ -725,6 +725,11 @@ pub struct BoardSnapshot {
     /// 取全量（full）或没有省略时为空；旧服务端没有这个字段
     #[serde(default)]
     pub omitted: BTreeMap<String, usize>,
+    /// 拆出的卡被上面的省略挡在快照外的原条目：原条目 ID → 省略掉的拆出卡张数（不含回收站里的）。
+    /// 界面靠快照里的「拆自」认原条目拆过没有（未整理里隐藏、能不能撤销拆解），拆出的卡全在被省略的终点状态里时
+    /// 就认不出，要看这里（default/main#534）。取全量或没有省略时为空；旧服务端没有这个字段
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub split_omitted: BTreeMap<i64, usize>,
     /// 最近的事件（新的在后）
     pub log: Vec<Event>,
     /// 白板设置里「保存布局」存下的布局（只含现在还在的状态）；没保存过为空。旧服务端没有这个字段

@@ -1016,6 +1016,9 @@ export interface BoardSnapshot {
   cards: Record<string, Card>;
   /** 终点状态默认只带最近移入的几张：状态 → 省略的（更早的）张数。取全量时、旧服务端没有 */
   omitted?: Record<string, number>;
+  /** 拆出的卡被上面的省略挡在快照外的原条目：原条目 ID → 省略掉的拆出卡张数（不含回收站里的）。
+      没有省略、取全量时、旧服务端没有（default/main#534） */
+  splitOmitted?: Record<string, number>;
   log: BoardEvent[];
   /** 白板设置里「保存布局」存下的布局（只含现在还在的状态）；没保存过为空。旧服务端没有 */
   savedLayout?: Record<string, Tile> | null;

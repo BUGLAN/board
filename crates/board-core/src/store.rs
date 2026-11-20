@@ -840,6 +840,22 @@ impl<'a> R<'a> {
                 }
             }
         }
+        // 被省略的卡里有「拆自」的：记到原条目上，界面照样认得出它拆过（default/main#534）
+        let mut split_omitted = BTreeMap::new();
+        if !skip.is_empty() {
+            let skipped: std::collections::HashSet<i64> = skip.iter().copied().collect();
+            let mut st = self.conn.prepare_cached(
+                "SELECT id, split_from FROM cards
+                 WHERE board = ?1 AND deleted_at IS NULL AND split_from IS NOT NULL AND split_from <> id",
+            )?;
+            let rows = st.query_map([board.id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                let (id, from) = row?;
+                if skipped.contains(&id) {
+                    *split_omitted.entry(from).or_insert(0) += 1;
+                }
+            }
+        }
         let mut cards = BTreeMap::new();
         for c in cards_query(self.conn, board.id, None, &skip)? {
             cols.entry(c.column.clone()).or_default().push(c.id);
@@ -873,6 +889,7 @@ impl<'a> R<'a> {
             cols,
             cards,
             omitted,
+            split_omitted,
             log,
             saved_layout,
             keep_sorted,

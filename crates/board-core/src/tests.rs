@@ -1835,6 +1835,36 @@ fn final_snapshot_keeps_only_recent_cards() {
     assert_eq!(all.cards.len() as i64, n + 3);
 }
 
+/// 拆出的卡都被终点状态的省略挡在快照外时，快照照样告诉界面原条目拆过（split_omitted），界面才不会把它又列回未整理；
+/// 进了回收站的拆出卡不算；full 时没有省略，这一项为空（default/main#534）
+#[test]
+fn final_snapshot_reports_split_kids_it_omitted() {
+    let mut s = store();
+    let inbox = |title: &str, from: Option<i64>| Cmd::New { title: title.into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from };
+    let a = exec(&mut s, B, &human(), T0, inbox("原条目", None)).unwrap().card.id;
+    let x = exec(&mut s, B, &human(), T0 + 1, inbox("拆出的一", Some(a))).unwrap().card.id;
+    let y = exec(&mut s, B, &human(), T0 + 1, inbox("拆出的二", Some(a))).unwrap().card.id;
+    let z = exec(&mut s, B, &human(), T0 + 1, inbox("拆出的三", Some(a))).unwrap().card.id;
+    for id in [x, y, z] {
+        exec(&mut s, B, &human(), T0 + 2, mv(id, "todo")).unwrap();
+        exec(&mut s, B, &human(), T0 + 2, mv(id, "done")).unwrap();
+    }
+    exec(&mut s, B, &human(), T0 + 3, Cmd::Delete { id: z }).unwrap();
+    let part = |s: &Store| s.read(|r| { let b = r.resolve(B)?; r.board_snapshot(&b, T0, false) }).unwrap();
+    assert!(part(&s).split_omitted.is_empty(), "拆出的卡还在快照里：不用另报");
+    // 后来完成的卡把拆出的两张挤出快照
+    for i in 0..FINAL_RECENT as i64 {
+        let id = exec(&mut s, B, &human(), T0 + 10 + i, new(&format!("完成 {i}"))).unwrap().card.id;
+        exec(&mut s, B, &human(), T0 + 10 + i, mv(id, "done")).unwrap();
+    }
+    let snap = part(&s);
+    assert!(!snap.cards.contains_key(&x) && !snap.cards.contains_key(&y));
+    assert_eq!(snap.cols[INBOX], vec![a], "原条目还在未整理");
+    assert_eq!(snap.split_omitted.get(&a), Some(&2), "回收站里的 #{z} 不算");
+    assert_eq!(snap.split_omitted.len(), 1);
+    assert!(snapshot(&s, B, T0).split_omitted.is_empty(), "全量没有省略");
+}
+
 /// 「最近」按最后一次移入算，不按 pos：人把新完成的放在最上面时，留下的是最上面这些（不是最下面的老卡片）；
 /// 留下的卡片按 pos 排，省略的可以夹在中间。拖进这种状态时按看到的相邻卡片（before / after）定位
 #[test]

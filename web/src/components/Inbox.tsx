@@ -17,7 +17,7 @@ import { create } from 'zustand';
 import { openCard, triage, triageMany, untriage } from '../lib/actions';
 import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
-import { canUndoSplit, kidsOf, hiddenEntries, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
+import { canUndoSplit, kidsOf, hiddenEntries, omittedKids, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
 import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
@@ -159,7 +159,7 @@ function useInboxCards() {
   const { all, parents } = useMemo(() => {
     if (!board) return { all: null, parents: NO_PARENTS };
     const inbox = board.cols[INBOX] ?? [];
-    const hidden = hiddenEntries(board.cards, inbox);
+    const hidden = hiddenEntries(board.cards, inbox, board.splitOmitted);
     const parents: Record<number, Card> = {};
     for (const id of hidden) if (board.cards[id]) parents[id] = board.cards[id];
     const all = inbox
@@ -669,7 +669,7 @@ function Age({ card: c, now }: { card: Card; now: number }) {
 async function undoSplit(parent: Card) {
   const s = useData.getState();
   const cards = s.board?.cards;
-  if (!canUndoSplit(cards, parent.id)) return;
+  if (!canUndoSplit(cards, parent.id, s.board?.splitOmitted)) return;
   const kids = (kidsOf(cards).get(parent.id) ?? []).filter(id => !isDraft(id));
   const path = s.path;
   kids.forEach(id => exits.set(id, 'delete'));
@@ -750,11 +750,11 @@ function SplitBundle({
 }: { parent: Card; cards: Card[]; checked: number[]; open: number | null; now: number; labels: Label[]; all: Card[]; home: string; onCheck: (id: number, shift: boolean) => void }) {
   const [exp, setExp] = useState(false);
   const d = useData(s => cardDispatch(s.ws, s.path, p.id));
-  const undoable = useData(s => canUndoSplit(s.board?.cards, p.id));
+  const undoable = useData(s => canUndoSplit(s.board?.cards, p.id, s.board?.splitOmitted));
   const busy = useData(s => [p.id, ...cards.map(c => c.id)].some(id => !!s.saving[cardKey(s.path, id)]));
   const board = useData(s => s.board);
-  // 一共拆出了几张（白板上的，不含回收站里的）：有的已经整理走了，组里只剩还在未整理的
-  const total = useData(s => kidsOf(s.board?.cards).get(p.id)?.length ?? 0);
+  // 一共拆出了几张（白板上的，含快照省略的，不含回收站里的）：有的已经整理走了，组里只剩还在未整理的
+  const total = useData(s => (kidsOf(s.board?.cards).get(p.id)?.length ?? 0) + omittedKids(s.board?.splitOmitted, p.id));
   const ids = cards.filter(c => !isDraft(c.id)).map(c => c.id);
   const allOn = ids.length > 0 && ids.every(id => checked.includes(id));
   const some = !allOn && ids.some(id => checked.includes(id));

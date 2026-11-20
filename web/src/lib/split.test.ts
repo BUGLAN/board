@@ -1,7 +1,7 @@
 /* 「未整理」里的拆解组（default/main#285）：原条目拆出卡之后隐藏，拆出的卡成组，可以撤销拆解 */
 import { describe, expect, it, vi } from 'vitest';
 import { card, snapshot } from '../../test/fixtures';
-import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, laterGroups, timeGroups, unitsOf, visibleInbox } from './split';
+import { canUndoSplit, hiddenEntries, kidsOf, laterEntries, omittedKids, laterGroups, timeGroups, unitsOf, visibleInbox } from './split';
 import type { Card } from './types';
 
 // 1 是原条目，拆成 3、4；2 是别的一条；5 是从待办里的 9 拆出来的
@@ -57,6 +57,17 @@ describe('unitsOf（成组）', () => {
     expect(units.map(u => (u.kind === 'one' ? u.card.id : `${u.parent.id}:${u.cards.map(c => c.id).join(',')}`))).toEqual([5, '1:4,3', 2]);
   });
 
+  it('拆出的卡都被快照省略了（整理到终点状态、挤出最近几张）：原条目照样隐藏、计数不算它（default/main#534）', () => {
+    // 2 拆出的卡都在已完成里、被快照省略：快照里认不出，只有 splitOmitted 记着
+    const b = { ...board(), splitOmitted: { 2: 1 } };
+    expect([...hiddenEntries(b.cards, b.cols.inbox, b.splitOmitted)]).toEqual([1, 2]);
+    expect(visibleInbox(b).map(c => c.id)).toEqual([3, 4, 5]);
+    expect(omittedKids(b.splitOmitted, 2)).toBe(1);
+    expect(omittedKids(undefined, 2), '旧服务端没有这个字段').toBe(0);
+    // 旧服务端：按原来的办法，只看快照里的卡
+    expect(visibleInbox(board()).map(c => c.id)).toEqual([2, 3, 4, 5]);
+  });
+
   it('筛选后组里只剩一张也成组', () => {
     const b = board();
     const units = unitsOf([b.cards[3]], { 1: b.cards[1] });
@@ -70,6 +81,11 @@ describe('canUndoSplit（能不能撤销拆解）', () => {
     const b = board();
     b.cards[4] = { ...b.cards[4], column: 'todo' };
     expect(canUndoSplit(b.cards, 1), '有一张整理走了').toBe(false);
+  });
+
+  it('还有拆出的卡被快照省略（在终点状态里）：不能撤销，免得只删掉看得见的几张', () => {
+    expect(canUndoSplit(board().cards, 1, { 1: 1 })).toBe(false);
+    expect(canUndoSplit(board().cards, 1, { 9: 1 }), '别的原条目的不相干').toBe(true);
   });
 
   it('没拆过、拆出的卡都不在了：不能撤销', () => {
