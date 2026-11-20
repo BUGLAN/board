@@ -2,6 +2,51 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.46 · 2026-11-21
+
+### 新功能
+
+- 交审状态用状态设置里的开关认，不只看名称关键词（525a65a）
+- **cli**：读写一张卡的命令只发一个请求（返回里带上工作流）（194ecfb）
+- **cli**：board base，把开工（worktree、同步到最新集成分支、接着做 wip）合成一条命令（c861f69）
+- **cli**：board land，把推送（压提交、touched、hold、push、删 wip 分支）合成一条命令（31864eb）
+- **cli**：board start / submit / giveup，把会话开始、交审、做不下去各合成一条命令（8c0d2ff）
+- **web**：手机上可以把 Board 添加到主屏幕（c6ce573）
+
+### 修复
+
+- **cli**：board submit / giveup 被拒绝时附件不再留在卡片上（4223bde）
+- 两级锁定的白板上 board start / submit 提示先移到下一个锁定状态再交审（6f8dfed）
+- **cli**：避免旧流程提示误导 agent 交审并防止版本输出粘连（498aa34）
+- **cli**：修复交审四行校验的空值漏判和 Markdown 误判（f2ed9c8）
+- **cli**：同一台机器上几个会话的名字按 agent 进程认，后开的会话不再停掉先开会话的心跳（6538951）
+- **core**：没有 board host 的机器上，第二个会话 board start --agent 也自动加序号（17935e7）
+- **core**：第一次心跳之前 final / giveup 也结束这次领取，之后的心跳不再开始计时（cfc6ff6）
+- **cli**：认不出 agent 进程时 board start 提醒心跳不会自己停，再 start 不用重带 --agent（adcf169）
+- **skill**：入口脚本旧版检查认参数后面的命令、跑不起来时不说是旧版、board.cmd 区分大小写（787c0c0）
+- **cli**：升级 agent 先装进临时目录，超时失败不再把旧命令移走（8036b25）
+
+### 性能
+
+- **test**：测试总耗时减半，去掉重复和过严的用例（c587fe4）
+- **cli**：每条命令只取用得到的数据，不再先拉整块白板和整个工作区（ad9764e）
+
+### 重构
+
+- **cli**：main.rs 拆出 args.rs、output.rs、session.rs（3fdd990）
+- **cli**：host.rs 按职责拆成 host/ 目录（abbefb5）
+- **core**：hosts.rs 按职责拆成 hosts/ 目录（38bfa56）
+
+### 文档
+
+- **skill**：名字格式和 NAME_TAKEN 按 #539 之后的行为改正（d800d82）
+- **skill**：board-skills 瘦身，发版挪到 release.md，删两个心跳脚本（5533d52）
+- **skill**：「开始做待办里的所有任务」先挑卡再 board start，不再先 check 和启动心跳（aeab9ae）
+
+### 其他
+
+- **cli**：skill 里的命令和参数对着命令表核对；board start 失败时说明名字已占用（762a539）
+
 ## v0.1.45 · 2026-11-19
 
 ### 新功能
