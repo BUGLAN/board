@@ -213,6 +213,17 @@ struct Hit {
 }
 
 pub fn run(o: &Opts, json: bool, p: &Paint) -> Result<Output> {
+    check(o, json, p).map(|r| r.out)
+}
+
+/// 查的结果：退出码（碰到了别的卡是 1）、最后一行「碰到的别的卡：…」、要打印的内容
+pub(crate) struct Report {
+    pub(crate) code: i32,
+    pub(crate) summary: String,
+    pub(crate) out: Output,
+}
+
+pub(crate) fn check(o: &Opts, json: bool, p: &Paint) -> Result<Report> {
     let dir = o.dir;
     let commit = o.commit.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("HEAD");
     let c = rev(dir, commit)?;
@@ -395,7 +406,7 @@ pub fn run(o: &Opts, json: bool, p: &Paint) -> Result<Output> {
             "touched": list,
             "summary": summary,
         });
-        return Ok(Output::Exit(code, Box::new(Output::Json(v))));
+        return Ok(Report { code, summary, out: Output::Exit(code, Box::new(Output::Json(v))) });
     }
 
     let mut s = String::new();
@@ -431,7 +442,7 @@ pub fn run(o: &Opts, json: bool, p: &Paint) -> Result<Output> {
         s.push_str("\n逐条确认：有意改的，在交审评论「碰到的别的卡」一行写明为什么；不是有意的（rebase 解冲突时取了自己那一版），把它的改动找回来，重新跑检查再推。\n");
     }
     s.push_str(&format!("\n{summary}\n"));
-    Ok(Output::Exit(code, Box::new(Output::Text(s))))
+    Ok(Report { code, summary, out: Output::Exit(code, Box::new(Output::Text(s))) })
 }
 
 #[cfg(test)]

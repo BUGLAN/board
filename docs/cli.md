@@ -704,6 +704,48 @@ board giveup 13 --comment "检查不过：cargo test 里 hosts_sync 超时，本
 }
 ```
 
+### `board land`
+
+推送成功时 `pushed` 为 `true`，`review_lines` 是交审评论最后的四行（照抄），`wip_deleted` 是推上去之后删掉的、接着做的 wip 分支（没有时为空）：
+
+```json
+{
+  "branch": "main",
+  "checked": "npm test 通过",
+  "commit": "31a6ba4",
+  "pushed": true,
+  "review_lines": "提交：31a6ba4\n集成分支：main\n检查：npm test 通过\n碰到的别的卡：无",
+  "touched": "碰到的别的卡：无",
+  "wip_deleted": "wip/main/13",
+  "wip_kept": null
+}
+```
+
+碰到别的卡、推送被拒时退出码 1（`--json` 照样输出，不是 `error`），`pushed` 为 `false`，`reason` 是 `touched` 或 `rejected`，`hint` 写下一步怎么做；碰到别的卡时 `report` 是 `board touched --json` 的完整输出。本地压好的提交（`commit`）留着：
+
+```json
+{
+  "branch": "main",
+  "commit": "7c1e2a9",
+  "detail": "[rejected] (fetch first)",
+  "hint": "推送被拒（[rejected] (fetch first)）：多半是别人先推了。本地压好的提交 7c1e2a9 还在：git fetch origin、git rebase origin/main、在 rebase 之后的代码上重新跑检查，再 board land 13。不要 --force",
+  "pushed": false,
+  "reason": "rejected"
+}
+```
+
+工作区有没提交的文件、HEAD 不在最新的集成分支之上、相对集成分支没有改动时是 `USAGE`，什么都没改；领取已经失效、连不上服务端时和 `board hold` 一样是 `NOT_HOLDER`、`UNREACHABLE`，没有推。
+
+`--wip`：
+
+```json
+{
+  "branch": "wip/main/13",
+  "commit": "6dced04",
+  "line": "未完成的改动：wip/main/13"
+}
+```
+
 ### `board move`
 
 返回移动后的整张卡片。移到非锁定状态后 `holder`、`claimed_at` 清空；只能沿 `board flow` 里的连线移动：

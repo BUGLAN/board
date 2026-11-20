@@ -20,6 +20,7 @@ mod gitsync;
 mod gitcmd;
 mod heartbeat;
 mod host;
+mod land;
 mod logfmt;
 mod lsdir;
 mod mcpsync;
@@ -48,7 +49,7 @@ use text::{pad, truncate, width};
 
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 32] = [
+const COMMANDS: [(&str, &str, &str); 33] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
@@ -85,6 +86,11 @@ const COMMANDS: [(&str, &str, &str); 32] = [
             "做不下去、交给人，一条命令做完：上传附件、评论原因、结束这一次的计时、把卡片移到错误节点（没有时移到需要人处理的状态；两个都没有时只评论和结束计时，50 秒后卡片回到领取前的状态）",
         ),
         ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领这个会话排着的下一张；排着的做完了、不再接着做时返回 SESSION_DONE"),
+        (
+            "land",
+            "<ID> --message-file <文件> --checked \"<检查和结果>\" [--touched-ok] [--branch <分支>] [--dir <仓库>] | <ID> --wip",
+            "推送，在自己的 worktree 里 rebase、跑完检查之后用，一条命令按顺序做完：确认工作区干净、HEAD 在最新的集成分支之上（不在就停，先 rebase、重新跑检查），压成一个提交（--message-file 的内容，最后一行补上「卡片：」），board touched（碰到别的卡就停，确认有意后加 --touched-ok 重来），board hold，推集成分支（被拒不 --force，压好的提交留着），删掉接着做的 wip 分支，输出交审评论最后四行。集成分支：项目设置里的，没设用远端默认分支，--branch 指定。--wip：做不下去时把没做完的改动提交、推到 wip/<白板标识>/<ID>，输出「未完成的改动：」一行",
+        ),
         ("hold", "<ID> [--wait <秒>]", "推集成分支前确认领取仍有效：这张卡仍由你持有、在锁定状态，否则 NOT_HOLDER（不要推集成分支，改推 wip 分支）；连不上服务端时每 30 秒重试，最多等 --wait 秒（默认 300），还连不上就 UNREACHABLE"),
         ("comment", "<ID> \"<内容>\" | <ID> --comment-file <文件>", "追加评论；多行内容用 --comment-file（- 读标准输入）"),
         ("label", "<ID> +<标签> -<标签> …", "加标签（+ 或不带前缀）、去标签（-）；仅人可打的标签不能给已有卡片加、去（建卡时可以带上）"),
@@ -483,6 +489,11 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         } else {
             Output::Text(format!("{} #{id} 仍由你持有，在「{}」：可以推集成分支\n", p.green("✓"), flow.name(&card.column)))
         });
+    }
+
+    // 推送（skill「代码 → 推送」）：只取工作流和这一张卡，所以也放在读整块白板之前
+    if sub == "land" {
+        return land::run(&a, &name, &mut be, json, p);
     }
 
     // 白板（PRD §3）

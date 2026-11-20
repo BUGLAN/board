@@ -184,11 +184,11 @@ fn skill_entry_tells_to_upgrade_an_old_board() {
         p
     };
     let script = skill_script(if cfg!(windows) { "board.cmd" } else { "board" });
-    for sub in ["start", "submit", "giveup"] {
+    for sub in ["start", "submit", "giveup", "land"] {
         let (code, out, err) = via_script_with(&s, &script, Path::new(&old), &[sub, "1"]);
         assert_eq!(code, 1, "{sub}: {out}{err}");
         assert!(!out.contains("ran"), "{sub} 不该交给旧版 board：{out}");
-        assert!(err.contains("start / submit / giveup"), "{sub}: {err}");
+        assert!(err.contains("start / submit / giveup / land"), "{sub}: {err}");
     }
     let (code, out, err) = via_script_with(&s, &script, Path::new(&old), &["claim", "1"]);
     assert_eq!(code, 0, "{out}{err}");
