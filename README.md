@@ -158,6 +158,7 @@ board show 2                  # 查看卡片详情
 board start 2 --agent claude  # 开始做 #2：占用名字、启动后台心跳、领取、下载附件一步做完；不带 ID 领下一张
 board submit 2 --comment-file review.md shot.png   # 交审：附件和评论、结束计时、移到交审状态一步做完
 board giveup 2 --comment "需要确认……"   # 做不下去：评论原因、结束计时、移到错误节点（没有时移到需要人处理的状态）
+board base 2                  # 开工（改代码前）：建好或接着用自己的 worktree，切到最新集成分支或接着做的 wip 分支，输出下一步
 board land 2 --message-file msg.txt --checked "npm test 通过"   # 推送（rebase、跑完检查后）：压成一个提交、touched、hold、推集成分支，输出交审评论四行
 board land 2 --wip           # 做不下去：没做完的改动推到 wip/<白板>/2，输出「未完成的改动：」一行
 board claim                   # 只领取（不占名字、不启动心跳）；board claim 2 领取指定卡片

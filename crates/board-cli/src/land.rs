@@ -269,7 +269,7 @@ fn with_card_line(message: &str, path: &str, id: i64) -> Result<String> {
 }
 
 /// 卡片评论里最后一条 `未完成的改动：wip/…`：这张卡是从这条分支接着做的。只认 `wip/` 开头的分支，别的不删
-fn wip_branch(activity: &[Activity]) -> Option<String> {
+pub(crate) fn wip_branch(activity: &[Activity]) -> Option<String> {
     let mut found = None;
     for a in activity.iter().filter(|a| a.kind == "comment") {
         for l in a.text.lines() {

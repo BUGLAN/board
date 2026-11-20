@@ -10,15 +10,15 @@ if [ -n "${BOARD_CONFIG:-}" ]; then
     BOARD_AGENT_ENV=1
     export BOARD_AGENT_ENV
 fi
-# start / submit / giveup / land 是后加的命令：旧版 board 不认。直接说清楚要升级，不让 agent 拿旧命令去拼同样的步骤
+# start / submit / giveup / land / base 是后加的命令：旧版 board 不认。直接说清楚要升级，不让 agent 拿旧命令去拼同样的步骤
 #   run <board 的路径> <命令> …
 run() {
     b=$1
     shift
     case "${1:-}" in
-        start | submit | giveup | land)
+        start | submit | giveup | land | base)
             if ! "$b" help 2>/dev/null | grep -q "board $1 "; then
-                echo "board: $b 是旧版，没有 start / submit / giveup / land 这几条命令。升级后再试：board host 启动的会话在界面「机器 → 管理」里升级这台机器；自己装的运行 board update；skill 自带的用发版附件 board-skills.zip 重新安装 skill" >&2
+                echo "board: $b 是旧版，没有 start / submit / giveup / land / base 这几条命令。升级后再试：board host 启动的会话在界面「机器 → 管理」里升级这台机器；自己装的运行 board update；skill 自带的用发版附件 board-skills.zip 重新安装 skill" >&2
                 exit 1
             fi
             ;;

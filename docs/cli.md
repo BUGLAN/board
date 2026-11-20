@@ -704,6 +704,25 @@ board giveup 13 --comment "检查不过：cargo test 里 hosts_sync 超时，本
 }
 ```
 
+### `board base`
+
+开工成功时 `step` 是下一步做什么：`code` 直接改代码、`wip` 从 wip 分支接着做（`from_wip`，已经 rebase 到最新集成分支）、`submit` 已经推过、动态里没有交审、`rework` 交审过又被打回；`next` 是同样意思的一句话。`landed` 是这张卡已经在集成分支上的提交，`reported` 是卡片动态里有没有写过它的「提交：」行：
+
+```json
+{
+  "base": "31864eb",
+  "branch": "main",
+  "created": true,
+  "from_wip": null,
+  "landed": [],
+  "next": "直接改代码：cd /home/me/repo/board.wt/docs-writer-1a2b3c4d",
+  "step": "code",
+  "worktree": "/home/me/repo/board.wt/docs-writer-1a2b3c4d"
+}
+```
+
+worktree 里有没推的改动时退出码 1，没有切换，`step` 是 `save`，`dirty` 是 `git status --porcelain` 的行，`unpushed` 是没推到远端的提交；从 wip 分支接着做、rebase 冲突时退出码 1，`step` 是 `resolve`，`conflicts` 是冲突的文件。两种情况 `--json` 照样输出，不是 `error`。卡片不由你持有时是 `NOT_HOLDER`，什么都不动。
+
 ### `board land`
 
 推送成功时 `pushed` 为 `true`，`review_lines` 是交审评论最后的四行（照抄），`wip_deleted` 是推上去之后删掉的、接着做的 wip 分支（没有时为空）：

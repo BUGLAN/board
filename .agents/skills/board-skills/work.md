@@ -6,7 +6,7 @@
 
 每个会话开始时做一次（处理卡片、白板、一句话需求之前）。由 board host 启动的会话只做第 0、2、3 步（见 host.md）：
 
-0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），本 skill 各文件里写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。它说这个 `board`「是旧版，没有 start / submit / giveup / land」时，同样停下来把这句话告诉用户，不要改用别的命令拼出同样的步骤。
+0. **`board` 命令**：用 skill 自带的 `<skill 目录>/scripts/board`（Windows：`<skill 目录>\scripts\board.cmd`），本 skill 各文件里写的 `board` 都指它。它运行 skill 目录里本平台的二进制（`bin/<平台>/board`，平台是 darwin-arm64、darwin-x64、linux-x64、linux-arm64、windows-x64），没有时用 PATH 里的 `board`；两个都没有时它会报错，告诉用户用发版附件里的 `board-skills.zip` 重新安装 skill（或在 Board 仓库执行 `node scripts/build-skill-bin.mjs --host`），不要自己装。它说这个 `board`「是旧版，没有 start / submit / giveup / land / base」时，同样停下来把这句话告诉用户，不要改用别的命令拼出同样的步骤。
 1. **名字和心跳**：处理卡片的会话不用单独准备。第一次 `board start … --agent <你实际运行的 agent 标识>`（claude、codex、dsh；见「处理一张卡片」第 1 步）一起做好：名字由 Board 按机器设置生成（`<agent 标识>-<机器名>/<模型名>`，例如 `dsh-win/deepseek-v4.1-flash`、`claude-mbp/opus-5.5`），后台心跳随之启动，输出里写着这次用的名字（`--json` 里是 `session.name`）。同一个会话里之后的 `board start` 接着用这个名字和心跳，不用再带 `--agent`。
    - 同一台机器同一 agent 已经有在线会话时，Board 在模型名后面加 `-2`、`-3`……；名字太长时截断模型名，序号留在最后。这台机器没跑 board host、白板不在这台机器时，退回 `<agent 标识>/<模型>`（例如 `codex/codex`）。
    - 名字记在本机：之后的命令不写 `--as` / `BOARD_AS` 就用这个名字；在别的终端、别的进程里跑的命令带上输出里的名字（`--as <名字>`）也行。
@@ -35,7 +35,7 @@
 
    文件写 `-` 时从标准输入读。其他平台直接写在 `--body "…"` 里也行；只有一行的内容照常写在参数里。
 
-worktree 不在这里创建：会话里第一次处理要改代码的卡片时才创建（见「代码」）。
+worktree 不在这里创建：由「代码 → 开工」的 `board base` 建。
 
 **连接服务端**：`board` 只通过服务端读写白板。服务端地址和访问令牌由用户用 `board login` 写进 `~/.board/config.toml`，你不用设置。
 
@@ -64,7 +64,7 @@ worktree 不在这里创建：会话里第一次处理要改代码的卡片时�
      - 「未整理」（inbox）：按 plan.md「整理未整理的条目」处理
      - 在其他状态，或别人持有：不要动，告诉用户它现在的状态
    - `ALREADY_HOLDING`：你在这块白板上还拿着另一张卡片，先把那张做完，或按第 6 步交给人处理
-2. **开工**：按「代码 → 开工」准备好 worktree。
+2. **开工**：`board base <ID> --json`，按它的 `next` 做（见「代码 → 开工」）。
 3. **干活**：按描述和验收标准在 worktree 里改代码、跑测试。耗时较长时用 `board comment <ID> "<进展>"` 记进度。后台心跳在，干多久都不会被释放。
 4. **推送**：按「代码 → 推送」rebase、跑检查，再用 `board land` 压成一个提交推到集成分支。
 5. **交审**：评论写清楚改了什么；改了代码的卡片，评论最后固定写四行：
@@ -127,80 +127,25 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 
 ### 会话的 worktree
 
-每个会话一个 worktree，一张卡接一张卡地在里面做。worktree 属于开它的会话，不碰别人的。由 board host 启动、提示词里写着「代码已经备好」的会话，worktree 已经由 board host 建好（就是当前目录），不用按下面创建、也不要删，见 host.md。
-
-- **位置**：主仓库目录是 `git rev-parse --path-format=absolute --git-common-dir` 的上一级；你当前所在的目录也是一个 worktree 时，同样以主仓库目录为准。worktree 放在主仓库目录旁边的 `<仓库目录名>.wt/` 里，目录名是你的名字（`/` 换成 `-`），例如主仓库是 `~/repo/board`、名字是 `claude/opus-5.5` 时，是 `~/repo/board.wt/claude-opus-5.5`。
-- **创建**：会话里第一次处理要改代码的卡片时创建。`<仓库目录名>.wt/` 里已经有锁着你名字的 worktree（上次中断后用同一个名字重新 check）就直接接着用。否则先清理，再在主仓库目录：
-
-  ```sh
-  git fetch origin
-  git worktree add --detach --lock --reason "<名字>" ../board.wt/claude-opus-5.5 origin/main
-  ```
-
-  锁的原因写你的名字，别人据此知道它属于谁。之后的开工、推送都在这个 worktree 里做。
-- **清理**（创建之前）：看 `git worktree list --porcelain` 里 `<仓库目录名>.wt/` 下面的 worktree，`locked <名字>` 一行就是它属于谁（没有锁的不碰）：
-  - 名字还在线（`board doctor --as <名字> --json` 的 `checks` 里 `key` 为 `board_as` 的一项 `status` 是 `ok`）：不碰。
-  - 不在线（会话中断），并且没有未提交的改动（`git -C <目录> status --porcelain` 没有输出）、也没有没推到远端的提交（`git fetch origin` 后 `git -C <目录> branch -r --contains HEAD` 有输出，集成分支或 wip 分支都算）：`git worktree unlock <目录>`，再 `git worktree remove <目录>`。
-  - 有没推的改动：保留，告诉用户。
-- **删除**：会话结束、`board heartbeat stop` 之后，在主仓库目录 `git worktree unlock <目录>`、`git worktree remove <目录>` 删掉自己的 worktree。
+每个会话一个 worktree，一张卡接一张卡地在里面做：`board base` 把它建在主仓库旁边的 `<仓库目录名>.wt/` 里、锁着你的名字（规则和 board host 一样）。不碰别人的 worktree。会话结束、`board heartbeat stop` 之后，在主仓库目录 `git worktree unlock <目录>`、`git worktree remove <目录>` 删掉自己的；board host 备好的（提示词里写着「代码已经备好」）不删，见 host.md。
 
 ### 开工
 
-在自己的 worktree 里：
+每张卡改代码前（第一张、`board next` 接到的下一张、从 wip 分支接着做的都一样）在项目的仓库里执行 `board base <ID> --json`（集成分支和项目设置里的不同时加 `--branch <分支>`）。它确认卡片由你持有、`git fetch`、找到或建好你的 worktree，切到最新的集成分支（评论里有 `未完成的改动：wip/…` 时切到那条分支、rebase 上去），输出 `worktree`、`base`、`next`。之后改代码、推送都在 `worktree` 里。按 `step` 做：
 
-**每张卡都在最新的集成分支上开工**：第一次卡、同一会话用 `board next` 接到的下一张、从 wip 分支接着做的卡都一样，改代码前都要重新做下面这套同步。不要因为上一张刚推完、`HEAD` 看着新，或 board host 启动时拉过一次就跳过。下文以 `main` 为例，实际用 `board flow --json` 里的集成分支。
+- `code`：直接改代码。
+- `wip`：先看 `git diff origin/main...HEAD` 和动态里上一次留下的说明，弄清做到哪了再接着做，不要从头重做。
+- `resolve`（退出码 1）：wip 分支 rebase 时冲突。按「推送」第 1 步的规则逐块合，`git add` 后 `git rebase --continue`；合不了就 `git rebase --abort`，按「做不下去」交给人。
+- `submit`：已经推到集成分支、动态里还没有交审（上一个 agent 推完就中断了）。不重做，确认提交满足卡片后直接交审。
+- `rework`：交审过又被打回。按动态里人的意见接着修，再提交一次；不改写推上去的提交，要回滚时 `git revert --no-commit <sha>`。
+- `save`（退出码 1）：worktree 里有没推的改动，没有切换。看是谁的：
+  - 上一张卡没收尾的：`board land <上一张卡 ID> --wip`，在那张卡上评论它输出的那一行；
+  - 就是这张卡从 wip 接着做的：`board land <ID> --wip`；
+  - 分不清、或与本卡无关：`git add -A`、`git commit` 后推成快照 `wip/<白板标识>/<ID>-presync-<短提交号>`，在这张卡上评论「开工前发现与本卡无关的未收尾改动，未带入本卡，已保存到 <分支>」。
 
-1. **先保护现场**：`git fetch origin` 之后检查 worktree 是否干净：
+  不要 `git stash` 后丢掉，不要 `reset --hard`、`checkout -- .`、`clean`；保存失败就按「做不下去」说明，现场原样保留。保存好再 `board base`。
 
-   ```sh
-   git status --porcelain
-   git branch -r --contains HEAD
-   ```
-
-   `git status --porcelain` 没有输出，并且 `git branch -r --contains HEAD` 至少有一行（没有没推到远端的提交），才算干净。不干净时先按下面「worktree 不干净时」处理；在改动保存到远端之前，不 switch、不 rebase、不 reset。
-
-2. **查这张卡是不是已经有提交进了集成分支**：
-
-   ```sh
-   git fetch origin
-   git log origin/main --grep '^卡片：<项目>/<白板>#<ID>$'
-   ```
-
-   有的话先看提交和卡片动态：
-   - 动态里还没有这个提交的「提交：」行：上一个 agent 推完、还没来得及交审就中断了。不重做，确认提交满足卡片后直接按「交审」处理。
-   - 卡片交审过，又被人拖回可领取状态（复盘打回）：先按第 4 步切到最新集成分支，再按动态里人的意见接着修，然后提交一次，同样带 `卡片：<项目>/<白板>#<ID>`。不改写已经推上去的提交；评论要求回滚时，`git revert --no-commit <sha>` 后按「提交」的格式提交，作为这一次的提交。
-3. **卡片动态里有 `未完成的改动：wip/...` 时，从那条分支接着做，并先同步到最新集成分支**：
-
-   ```sh
-   git switch --detach origin/wip/main/21
-   git rebase origin/main
-   ```
-
-   分支名照评论里写的（board host 保存的有时带机器名，例如 `wip/main/21-win`）。冲突按「推送」第 1 步的规则解，保留上游和半成品两边的改动；解不了就按「做不下去」交给人，不要猜。不要直接编辑落在旧提交上的代码：先 rebase，落后多少都一样。board host 的那条评论里还写了上一个 agent 怎么结束的、留下了哪些文件、最后做了什么：先看这些和 `git diff origin/main...HEAD`，弄清做到哪了再接着做，不要从头重做。
-4. **否则切到最新的集成分支**：`git switch --detach origin/main`。
-
-需要改代码时，切好后（第 3、4 步）确认基点确实包含最新的集成分支（切到 `origin/main` 时两者相等）：
-
-```sh
-git merge-base --is-ancestor origin/main HEAD
-```
-
-退出码不是 0 就回到第 1 步重新同步。在旧代码上开工，rebase 时就会和别的卡刚推的改动冲突，解错了会悄悄撤回别人的改动（#328 带回了 #320 删掉的下载按钮）。`board land` 里的 `board touched` 按这一次切换认开工时的基点。
-
-**worktree 不干净时**：
-
-- 先判断是不是上一张卡没收尾的改动。是的话 `board land <上一张卡 ID> --wip` 把它提交、推到 `wip/<白板标识>/<上一张卡 ID>`，并在那张卡上评论它输出的 `未完成的改动：<分支>`；不要把上一张卡的改动带进当前卡。
-- 如果就是这张卡从 wip 分支接着做的改动，`board land <ID> --wip` 保存回它自己的 wip 分支，再按第 3 步同步，不要把本卡半成品当无关改动另存。
-- 分不清属于哪张卡、或确认与本卡无关时，不要用 `git stash` 后丢掉，不要 `git reset --hard`、`git checkout -- .`、`git clean`。把现场完整保存成一个远端快照；有未提交的改动时：
-
-  ```sh
-  git add -A
-  git commit -m "chore: 保存开工前的未收尾改动"
-  git push origin "HEAD:refs/heads/wip/main/<当前卡 ID>-presync-$(git rev-parse --short HEAD)"
-  ```
-
-  没有未提交的改动、只有没推到远端的提交时，省掉 `git add` 和 `git commit`，直接推 `HEAD`。推完用 `git branch -r --contains HEAD` 确认快照分支已在远端，再在当前卡上评论「开工前发现与本卡无关的未收尾改动，未带入本卡，已保存到 <分支>」。
-- 保存失败（`git commit` 或 `git push` 失败）就停在这一步，按「做不下去」在当前卡上说明，现场原样保留；不能为了换分支把这些改动删掉或覆盖掉。
+不要跳过：在旧代码上开工，rebase 时会悄悄撤回别的卡刚推的改动（#328）。`board land` 里的 `board touched` 靠 `board base` 那一下切换认开工时的基点。
 
 ### 推送
 
@@ -254,6 +199,6 @@ git merge-base --is-ancestor origin/main HEAD
 board heartbeat stop
 ```
 
-然后在主仓库目录删掉本会话的 worktree（见「会话的 worktree → 删除」）。
+然后在主仓库目录删掉本会话的 worktree（见「代码 → 会话的 worktree」）。
 
 会话中途得到 `NAME_OFFLINE`：你的名字已经离线（心跳中断超过 50 秒，或后台心跳停了），你持有的卡片可能已经被释放。重新 `board check --agent <标识>`（自己起的名字就 `board check --as <名字>`，被占用就加后缀），再 `board heartbeat start`，然后 `board show <ID> --json` 看卡片现在的状态再决定。

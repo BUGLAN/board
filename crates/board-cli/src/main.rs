@@ -11,6 +11,7 @@
 mod acp;
 mod args;
 mod backend;
+mod base;
 mod code;
 mod config;
 mod doctor;
@@ -49,7 +50,7 @@ use text::{pad, truncate, width};
 
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 33] = [
+const COMMANDS: [(&str, &str, &str); 34] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
@@ -86,6 +87,11 @@ const COMMANDS: [(&str, &str, &str); 33] = [
             "做不下去、交给人，一条命令做完：上传附件、评论原因、结束这一次的计时、把卡片移到错误节点（没有时移到需要人处理的状态；两个都没有时只评论和结束计时，50 秒后卡片回到领取前的状态）",
         ),
         ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领这个会话排着的下一张；排着的做完了、不再接着做时返回 SESSION_DONE"),
+        (
+            "base",
+            "<ID> [--branch <分支>] [--dir <仓库>]",
+            "开工，领到卡片之后、改代码之前在项目的仓库里（主仓库或任意 worktree）用，一条命令做完：卡片要由你持有；git fetch；会话的 worktree（当前目录就是锁着你名字的 worktree 就用它，没有就在 <仓库目录名>.wt/ 里建，规则和 board host 一样）；worktree 里有没推的改动时不切换、退出码 1、列出来；查这张卡有没有提交进过集成分支；卡片评论里有「未完成的改动：wip/…」、远端还有时切过去并 rebase 到最新集成分支（冲突时停下、退出码 1），否则切到最新的集成分支。输出 worktree、基点和下一步（next）",
+        ),
         (
             "land",
             "<ID> --message-file <文件> --checked \"<检查和结果>\" [--touched-ok] [--branch <分支>] [--dir <仓库>] | <ID> --wip",
@@ -494,6 +500,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     // 推送（skill「代码 → 推送」）：只取工作流和这一张卡，所以也放在读整块白板之前
     if sub == "land" {
         return land::run(&a, &name, &mut be, json, p);
+    }
+    // 开工（skill「代码 → 开工」）：只取工作流和这一张卡
+    if sub == "base" {
+        return base::run(&a, &name, &mut be, json, p);
     }
 
     // 白板（PRD §3）

@@ -63,6 +63,7 @@ board heartbeat start                     # 不领卡的会话 check 之后：�
 board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走（一般不用单独执行：board submit、board giveup 里已经带了）
 board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错。名字是别的会话 check 的时候拒绝（NAME_TAKEN）
 board next --json                         # 只在 board host 启动的会话里：上一张交审或交给人之后领这个会话排着的下一张；SESSION_DONE 时结束
+board base <ID> [--branch <分支>]         # 开工：卡片要由你持有；建好或接着用会话的 worktree，切到最新集成分支（有 wip 分支时切过去 rebase），按输出的 step / next 做
 board land <ID> --message-file <文件> --checked "<检查和结果>" [--touched-ok]  # 推送：rebase、跑完检查后用。压成一个提交、touched、hold、推集成分支、删接着做的 wip 分支，输出交审评论四行
 board land <ID> --wip                     # 做不下去：没做完的改动提交、推到 wip/<白板标识>/<ID>，输出「未完成的改动：」一行
 board touched [--base <提交>]             # 查这次提交有没有删掉别的卡最近加的行、加回别的卡最近删的行（只用 git；board land 里已经带了）

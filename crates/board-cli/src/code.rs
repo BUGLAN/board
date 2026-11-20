@@ -338,6 +338,63 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str) -> Result<Re
     Ok(Ready { cwd: target, branch, left, stale, kept })
 }
 
+/// 这个仓库登记着的 worktree 和锁的原因：（路径，锁的原因）。没锁时为 None，锁了没写原因时是空字符串
+pub fn worktree_locks(repo: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let text = git(repo, &["worktree", "list", "--porcelain"], QUICK).unwrap_or_default();
+    let mut out: Vec<(PathBuf, Option<String>)> = vec![];
+    for l in text.lines() {
+        if let Some(p) = l.strip_prefix("worktree ") {
+            out.push((PathBuf::from(p), None));
+        } else if l == "locked" || l.starts_with("locked ") {
+            if let Some(last) = out.last_mut() {
+                last.1 = Some(l.strip_prefix("locked").unwrap_or_default().trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `board base` 用的会话 worktree：返回（路径，是不是这次新建的）。不切换、不查干不干净，见 base.rs。
+/// - 当前目录（`here`）所在的 worktree 锁着这个名字（board host 备好的、skill 以前按名字建的）：用它；
+/// - `<仓库目录名>.wt/` 里有锁着这个名字的：接着用；
+/// - 都没有：建在 [`worktree_path`]，目录名、锁的原因、所有者记录都和 [`prepare`] 一样。那里有残留目录、
+///   而且所有者记录证明是这个会话的就删掉重建；别的情况不删，报错说明
+pub fn session_worktree(repo: &Path, here: &Path, name: &str, tip: &str) -> Result<(PathBuf, bool), String> {
+    board_core::model::check_agent_name(name).map_err(|e| format!("名字不对，不准备 worktree：{e}"))?;
+    let root = wt_root(repo).ok_or("找不到主仓库目录")?;
+    let locks = worktree_locks(repo);
+    let mine = |p: &Path| locks.iter().any(|(q, r)| r.as_deref() == Some(name) && same_path(q, p));
+    let found = git(here, &["rev-parse", "--show-toplevel"], QUICK)
+        .ok()
+        .map(PathBuf::from)
+        .filter(|top| mine(top))
+        .or_else(|| locks.iter().find(|(q, r)| r.as_deref() == Some(name) && q.parent().is_some_and(|d| same_path(d, &root))).map(|(q, _)| q.clone()));
+    if let Some(wt) = found {
+        touch(&wt);
+        return Ok((wt, false));
+    }
+    let target = worktree_path(repo, name).ok_or("找不到主仓库目录")?;
+    if target.exists() {
+        if locks.iter().any(|(q, _)| same_path(q, &target)) {
+            return Err(format!("{} 已经是一个 worktree，但没有锁着你的名字：确认没人在用后 git worktree lock --reason \"{name}\" 它，或者挪走", target.display()));
+        }
+        if !leftover(repo, &target) {
+            return Err(format!("{} 已经存在，但不是这个仓库的 worktree：挪走或删掉它", target.display()));
+        }
+        owned(repo, &target, Some(name)).map_err(|why| format!("{} 是残留的 worktree 目录，但{why}：确认没用后删掉它", target.display()))?;
+        std::fs::remove_dir_all(&target).map_err(|e| format!("删不掉残留的 worktree 目录 {}：{e}", target.display()))?;
+        let _ = git(repo, &["worktree", "prune"], QUICK);
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("无法创建 {}：{e}", parent.display()))?;
+    }
+    let path = target.to_string_lossy().to_string();
+    git(repo, &["worktree", "add", "--quiet", "--detach", "--lock", "--reason", name, &path, tip], WT_LIMIT).map_err(|e| format!("建不了 worktree {path}：{e}"))?;
+    touch(&target);
+    write_owner(repo, &target, name, 0);
+    Ok((target, true))
+}
+
 /// 保存下来的半成品
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wip {

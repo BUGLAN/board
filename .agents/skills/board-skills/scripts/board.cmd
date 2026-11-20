@@ -29,17 +29,18 @@ rem [agent_env]: agents that filter the environment they give to commands (Codex
 rem so board.exe reads them from there itself (see crates/board-cli/src/config.rs from_agent_env).
 rem Only when BOARD_CONFIG is set, same as scripts/board (bash): a plain ~/.board/config.toml is not one.
 if defined BOARD_CONFIG set "BOARD_AGENT_ENV=1"
-rem start / submit / giveup / land were added later: an older board does not know them. Say so instead of
+rem start / submit / giveup / land / base were added later: an older board does not know them. Say so instead of
 rem letting the agent rebuild the same steps from older commands.
 if /i "%~1"=="start" goto newcmd
 if /i "%~1"=="submit" goto newcmd
 if /i "%~1"=="giveup" goto newcmd
 if /i "%~1"=="land" goto newcmd
+if /i "%~1"=="base" goto newcmd
 goto exec
 :newcmd
 "%BIN%" help 2>nul | findstr /c:"board %~1 " >nul
 if not errorlevel 1 goto exec
-echo board: "%BIN%" is an old version without the start / submit / giveup / land commands. Upgrade it and try again: run board update, or reinstall the skill from the board-skills.zip release asset; on a machine running board host, upgrade it from the Machines page. 1>&2
+echo board: "%BIN%" is an old version without the start / submit / giveup / land / base commands. Upgrade it and try again: run board update, or reinstall the skill from the board-skills.zip release asset; on a machine running board host, upgrade it from the Machines page. 1>&2
 exit /b 1
 :exec
 "%BIN%" %*
