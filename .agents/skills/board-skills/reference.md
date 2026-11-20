@@ -1,6 +1,6 @@
 # board-skills：工作流、命令、错误码（reference.md）
 
-`/board-skills` 的分文件：工作流和认角色、常用命令、错误码。处理卡片的流程在 work.md、host.md。
+`/board-skills` 的分文件：工作流、常用命令、错误码。处理卡片的流程在 work.md、host.md。
 
 ## 工作流
 
@@ -15,30 +15,11 @@
 6. check   需人工校验          → 待办
 ```
 
-- **你只能沿连线移动卡片**：`board move` 的目标必须是当前状态 `→` 后面列出的状态，否则被拒绝（`FORBIDDEN_COLUMN`，原因里列出能去的状态）。在同一个状态内调整顺序不受限制。
-- **可领取**：`board claim` 从这里领，领取后卡片沿连线进入锁定状态。可以有多个（默认是「待办」和「返工」）；不带 ID 时按工作流顺序，先领排在前面的。
-- **锁定**：只能靠领取进入。有多个锁定状态（例如「开发中 → 测试中」）时，你可以沿连线把自己的卡片 move 到下一个锁定状态，领取保持。
-- **终点**：只有人能移入、移出。
-- **错误节点**：`board flow` 里规则写「错误节点」的状态（人在状态设置里打开的开关，不看名称）。你可以沿连线把卡片移进去，只有人能移出。
-- **未整理**：只有人能移入、移出；你不领取，也不移动。
-- `move`、`ls --column` 都可以写状态的标识或名称。
+状态的规则（可领取、锁定、终点、错误节点）和能做什么见 SKILL.md「规则」；`move`、`ls --column` 都可以写状态的标识或名称。默认工作流的名字只是例子，以 `board flow` 为准。
 
-`board flow` 还列出这块白板所在项目（项目设置）的**代码仓库**（`repo`）和**集成分支**（`branch`，空表示按仓库的 AGENTS.md / CLAUDE.md）。集成分支是 agent 推送的目标，见 work.md「代码」。
+`board flow` 还列出这块白板所在项目的**代码仓库**（`repo`）和**集成分支**（`branch`，空表示按仓库的 AGENTS.md / CLAUDE.md），见 work.md「代码」。
 
-**认出角色**：交审、做不下去时卡片去哪个状态，不用你自己认：`board submit`、`board giveup` 在服务端按下表认好再移，`board start --json` 的 `review`、`giveup` 就是认出来的结果。下表说明它们是怎么认的（手动 `board move`、看不懂卡片为什么去了那里时用）。work.md、host.md 里的流程不依赖具体的状态名，只用状态的规则（可领取、锁定、终点、错误节点）、连线，以及名称里的关键词，从 `board flow` 认出下面这些角色。上面默认工作流的名字只是例子，以 `board flow` 为准（状态被改名、增删时照样按这张表认）。
-
-| 角色 | 怎么认 | 默认工作流里 | 白板上没有时 |
-|---|---|---|---|
-| 首个可领取状态 | 工作流里第一个可领取状态，新建卡片放在这里 | `todo` 待办 | —（至少有一个） |
-| 交审状态 | 锁定状态连出去的、等人审核的状态，按名称判断（例如名字里带「审核」）。卡片到这里时，代码已经在集成分支上，等人复盘 | `review` 待审核 | 按「没有合适的连线」处理 |
-| 错误节点 | 锁定状态连出去的、`board flow` 里规则写「错误节点」的状态（`--json` 里 `"error": true`）。只看这个规则，不看名称：叫「错误」但没有这个规则的状态不是错误节点。agent 异常退出、做不下去时移到这里：它不在可领取状态里，配了自动领取也不会被下一轮重新领走。只有人能移出 | 没有（按需自己建一个） | 用「需要人处理的状态」代替 |
-| 需要人处理的状态 | 锁定状态连出去的、等人处理的状态，按名称判断（例如名字里带「人工」）。**不要把卡片放回可领取状态**，那样人看不到它出了问题 | `check` 需人工校验 | 按「没有合适的连线」处理 |
-
-- 有错误节点时**先**去错误节点：agent 异常退出的卡片留在可领取状态，配了自动领取就会被下一轮反复领走、无限重试；错误节点里不会。
-- 错误节点和「需要人处理的状态」分开认：带「错误节点」规则的状态不当成等人校验的状态，反过来也一样。
-- 想看白板该配哪些状态，可以照默认工作流新增一个状态（例如叫「错误」），在状态设置里打开「错误节点」，再把「进行中」这些锁定状态的箭头连过去。
-
-**没有合适的连线**：`board giveup` 就按这个顺序做：有错误节点时移到错误节点；没有错误节点时移到需要人处理的状态；两者都没有时只评论、结束这张卡片的计时，输出里写明，这时停下来告诉用户（50 秒后卡片自动回到领取它时所在的状态）。没有交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`，改用 `board giveup`。
+**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态是锁定状态连出去、名称里带「审核」这类关键词的状态；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，50 秒后卡片回到领取前的状态，这时停下来告诉用户。没有交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`，改用 `board giveup`。
 
 - 代码仓库是当前工作目录所在的仓库；卡片描述指定了别的位置时以描述为准。
 - 得到 `NOT_LOGGED_IN`、`INVALID_TOKEN`、`UNREACHABLE` 时停下来告诉用户（见文末错误码），不要反复重试。
@@ -51,17 +32,14 @@ board submit <ID> --comment-file <文件> [<截图>…] [--no-code]   # 交审�
 board giveup <ID> --comment-file <文件> [<日志>…]               # 做不下去：上传附件、评论原因、结束计时、移到错误节点（没有时移到需要人处理的状态）
 board flow                                # 工作流：状态的顺序、标识、名称、规则；以及白板所在项目的仓库、集成分支
 board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]… [--from <ID>]  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签；--from 记下拆自哪张
-                                          # 多行描述用 --body-file <文件>（Windows 上必须，见 work.md「会话开始」第 5 步）；edit 同样
+                                          # 多行描述用 --body-file <文件>（Windows 上必须，见 work.md「会话开始」第 3 步）；edit 同样
                                           # --image <图片>、--file <文件> 可以写多次：附件随卡片一起建，按顺序接在描述后面（图片直接显示）
 board show <ID> --json                    # 全部字段和动态；split_from 拆自哪张，split_into 拆出了哪几张
 board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>
-board check --agent <标识>                # 不领卡的会话（只建卡、拆解、整理）开始时占用名字，之后 board heartbeat start；领卡的会话用 board start。名字由 Board 按这台机器的设置生成（例如 dsh-win/deepseek-v4.1-flash）
-board check --as <名字>                   # 自己起名字（旧写法、要指定名字时）：被占用时 NAME_TAKEN
+board check --agent <标识> && board heartbeat start   # 不领卡的会话（只建卡、拆解、整理）开始时：占用名字、启动后台心跳（check 单独执行、看结果）
+board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线
-board heartbeat start                     # 不领卡的会话 check 之后：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
-board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走（一般不用单独执行：board submit、board giveup 里已经带了）
-board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错。名字是别的会话 check 的时候拒绝（NAME_TAKEN）
 board next --json                         # 只在 board host 启动的会话里：上一张交审或交给人之后领这个会话排着的下一张；SESSION_DONE 时结束
 board base <ID> [--branch <分支>]         # 开工：卡片要由你持有；建好或接着用会话的 worktree，切到最新集成分支（有 wip 分支时切过去 rebase），按输出的 step / next 做
 board land <ID> --message-file <文件> --checked "<检查和结果>" [--touched-ok]  # 推送：rebase、跑完检查后用。压成一个提交、touched、hold、推集成分支、删接着做的 wip 分支，输出交审评论四行
@@ -77,13 +55,15 @@ board attach <ID> <文件>… [--comment "<说明>" | --comment-file <文件>]  
 board attach <ID> <截图> --comment-file <交审评论文件>                    # 交审：证据和交审评论放在同一条里
 ```
 
+## 错误码
+
 所有命令都支持 `--json`。被拒绝时退出码为 1，JSON 里是 `{"error": {"code", "message"}}`。
 
 | 错误码 | 含义 |
 |---|---|
-| `NO_IDENTITY` / `NO_BOARD` | 命令没带名字 / 白板：领卡用 `board start <ID> --agent <标识>`，不领卡的会话先 `board check --agent <标识>`（名字由 Board 生成，记在本机，之后不用再带 `--as`）；旧写法 `board check --as <名字>` 之后每条命令都带 `--as <名字>`（或前缀 `BOARD_AS=<名字>`）。白板用 `--board <项目>/<白板>`（或前缀 `BOARD=<项目>/<白板>`） |
-| `NAME_TAKEN` | 自己写了名字（`--as`）时：名字正被另一个在线会话使用，加一个和本会话相关的后缀再 check；`board check --agent <标识>` 不会出现它（被占用时自动加 `-2`、`-3`）。`heartbeat start / stop`、`beat --final` 得到它：这个名字是别的会话 check 的，你用错名字了，换成你自己 check 成功的那个 |
-| `NAME_OFFLINE` | 名字不在线：没有 check，或心跳中断超过 50 秒。重新 check 并启动心跳（见 work.md「会话结束」最后一段） |
+| `NO_IDENTITY` / `NO_BOARD` | 没有名字 / 白板：先 `board start <ID> --agent <标识>`（不领卡的会话 `board check --agent <标识>`）；白板用 `--board <项目>/<白板>` |
+| `NAME_TAKEN` | 名字正被另一个在线会话用着（`heartbeat start / stop` 得到它：你用了别的会话的名字）：换成自己占用成功的名字，或 `--as` 加一个和本会话相关的后缀 |
+| `NAME_OFFLINE` | 名字不在线（心跳中断超过 50 秒）：见 work.md「会话结束」最后一段 |
 | `BOARD_NOT_FOUND` | 白板不存在；或项目有多块白板却只写了项目标识（原因里列出了可选的白板） |
 | `NOT_FOUND` | 卡片不存在 |
 | `EMPTY_TODO` | 可领取的状态里都没有能领的卡片 |

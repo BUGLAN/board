@@ -5,7 +5,7 @@
 // skills 共用库里固定的 board-skills 随服务端版本：把 .agents/skills/board-skills 打包进来（跳过 bin/：各平台的 board
 // 由各台 board host 用自己的填上），生成 $OUT_DIR/board_skills.rs（[(相对路径, 可执行, 内容)]）
 //
-// 打包的字节就是各台机器同步到本机的那份，`scripts/board`、`scripts/heartbeat.sh` 还要在 WSL、Linux 里按
+// 打包的字节就是各台机器同步到本机的那份，`scripts/board` 还要在 WSL、Linux 里按
 // `#!/bin/sh` 执行：行尾必须是 LF。Windows 上检出（`core.autocrlf=true`）可能是 CRLF，
 // `.gitattributes` 之外这里再兜一层——打包前换成 LF，免得一份 CRLF 的 skill 同步下去在 WSL 里报
 // 「cannot execute: required file not found」。
@@ -31,7 +31,7 @@ fn skill_files(root: &Path, dir: &Path, out: &mut Vec<(String, bool, std::path::
                 use std::os::unix::fs::PermissionsExt;
                 p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
             };
-            // Windows 上看不出可执行位：没有扩展名的脚本（scripts/board、heartbeat.sh）算可执行
+            // Windows 上看不出可执行位：scripts/ 里没有扩展名的脚本（scripts/board）和 .sh 算可执行
             #[cfg(not(unix))]
             let exec = rel.starts_with("scripts/") && (!name.contains('.') || name.ends_with(".sh"));
             out.push((rel, exec, p));
