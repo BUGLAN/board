@@ -13,6 +13,8 @@ import { Icon } from '../Icon';
 import { usePresence } from '../overlays/presence';
 import { AgentChip, Dot, Mark } from './bits';
 import { partState, partTook } from './Session';
+import { ProtoDispatch } from '../../prototype/profiles/DispatchProto';
+import { useDl } from '../../prototype/profiles/proto';
 
 /** 打开卡片：切到它的白板，打开详情 */
 export function goCard(d: Dispatch) {
@@ -184,9 +186,11 @@ export function DispatchDialog() {
   const req = useUI(s => s.dispatchOf);
   const { mounted, on } = usePresence(req != null, 220);
   const last = useRef(req);
+  const dl = useDl();
   if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
   const { card, move } = last.current;
+  if (dl !== '0' && move == null) return <ProtoDispatch key={card} card={card} on={on && req != null} />;
   return <DispatchBody key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
 }
 

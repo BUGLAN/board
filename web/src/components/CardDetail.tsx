@@ -21,6 +21,9 @@ import { ActorAvatar, AgentAvatar, Avatar, DescTabs, LabelChip, Markdown, Tip, u
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
 import { DispatchHistory, DispatchNote } from './hosts/Dispatch';
+import { CardForecast } from '../prototype/profiles/Forecast';
+import { Folded } from '../prototype/profiles/Fold';
+import { useFold } from '../prototype/profiles/proto';
 import { TaskBody } from './TaskBody';
 import { Icon, type IconName } from './Icon';
 
@@ -362,6 +365,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <CardLabels card={c} saving={saving} />
             <SplitLinks card={c} />
           </section>
+          <CardForecast card={c.id} />
           <DispatchNote board={useData.getState().path} card={c.id} />
           <DispatchHistory board={useData.getState().path} card={c.id} />
           <ClaimPart card={c} now={now} busy={saving} />
@@ -1003,6 +1007,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
   const send = useRef<HTMLButtonElement>(null);
   const n = c.activity.length;
   const sending = useSending(c.id);
+  const fold = useFold();
   const path = useData(s => s.path);
   const repo = useData(s => s.board?.repo);
   // 输入超过一行后换成「上面输入、下面工具栏」的排法；清空前不换回去，免得宽度变化让它来回跳
@@ -1076,9 +1081,11 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
         ) : (
           // 从骨架换成内容时淡入（已缓存的直接显示，不播放）
           <div className={cx('timeline', wasLoading.current && 'sk-swap')}>
-            {c.activity.map((a, idx) => (
-              <ActivityItem key={a.id} a={a} card={c.id} now={now} fresh={firstNew != null && idx >= firstNew} />
-            ))}
+            {fold ? (
+              <Folded list={c.activity} render={(a, idx) => <ActivityItem key={a.id} a={a} card={c.id} now={now} fresh={firstNew != null && idx >= firstNew} />} />
+            ) : (
+              c.activity.map((a, idx) => <ActivityItem key={a.id} a={a} card={c.id} now={now} fresh={firstNew != null && idx >= firstNew} />)
+            )}
             {sending.map(s => (
               <div key={`sending-${s.key}`} className="tl-item mine new sending" aria-busy="true">
                 <div>

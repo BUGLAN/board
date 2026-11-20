@@ -24,7 +24,7 @@ export const GROUPS: { id: string; title: string; secs: { id: SecId; title: stri
     id: 'auto',
     title: '自动领取',
     secs: [
-      { id: 'rules', title: '领取规则', icon: 'claim' },
+      { id: 'rules', title: import.meta.env.DEV ? '分工' : '领取规则', icon: 'claim' },
       { id: 'crons', title: '定时建卡', icon: 'renew' },
       { id: 'limits', title: '跑多久停', icon: 'timer' },
     ],

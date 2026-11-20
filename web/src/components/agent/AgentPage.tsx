@@ -20,6 +20,7 @@ import { ProvidersSection } from '../hosts/Providers';
 import { ClaimRules, RunLimits } from '../hosts/Sched';
 import { SharedConfig } from '../hosts/Shared';
 import { AccessCard, TokensCard } from './Access';
+import { ProfilesPage } from '../../prototype/profiles/Pages';
 import { GROUPS, goSec, groupOf, secOf, useAgentSec, type SecId } from './AgentNav';
 
 const SEC_OPTIONS = GROUPS.flatMap(g => g.secs.map(s => ({ value: s.id, label: `${g.title} · ${s.title}` })));
@@ -37,7 +38,7 @@ export function AgentPage() {
     mcp: <McpSection hosts={hosts} />,
     skills: <SharedConfig hosts={hosts} />,
     git: <GitCredSection hosts={hosts} />,
-    rules: <ClaimRules hosts={hosts} />,
+    rules: <ProfilesPage current={<ClaimRules hosts={hosts} />} />,
     crons: <CronOverview />,
     limits: <RunLimits />,
     access: <AccessCard />,

@@ -29,6 +29,11 @@ import { buildVersion } from './lib/build';
 import { noticeStale, watchStale } from './lib/stale-runner';
 import { autoUpdateCheck } from './lib/update-runner';
 import { checkServerVersion } from './store/data';
+// 原型：工种分发（prototype/profiles），开发环境下用假机器、假工种，底部切换条换变体
+import { installMock } from './prototype/profiles/mock';
+import { ProtoRoot } from './prototype/profiles/Switcher';
+
+if (import.meta.env.DEV) installMock();
 
 applyPrefs();
 installScrollbars();
@@ -42,3 +47,8 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </ErrorBoundary>,
 );
+if (import.meta.env.DEV) {
+  const el = document.createElement('div');
+  document.body.appendChild(el);
+  createRoot(el).render(<ProtoRoot />);
+}
