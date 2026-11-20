@@ -27,3 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lto = "thin"
 codegen-units = 4
 strip = true
+
+# 自带的 SQLite 是 C 代码：debug 下不优化时测试里的每次读写都慢好几倍，单独开优化（只影响开发构建，第一次多编十几秒）
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3

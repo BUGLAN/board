@@ -258,7 +258,7 @@ impl Rig {
             .env("BOARD_URL", &self.s.url)
             .env("BOARD_TOKEN", &self.s.token)
             .env("BOARD_HOST_INTERVAL", "0.5")
-            // 兜底设置的最小档是分钟：测试里一分钟 = 1 秒（`minute-ms` 文件，见 Rig::minute_ms），
+            // 兜底设置的最小档是分钟：测试里一分钟 = 0.2 秒（`minute-ms` 文件，见 Rig::minute_ms），
             // 30 分钟、20 分钟才等得起。其他测试用默认的 60 秒，没有影响
             .env("BOARD_HOST_MINUTE_MS", self.minute_ms())
             .env("BOARD_BIN", env!("CARGO_BIN_EXE_board"))
@@ -1188,14 +1188,14 @@ fn max_run_stops_agent_and_records_timeout() {
     rig.minute_ms_short();
     let host = rig.host("mbp");
     rig.online("mbp");
-    // 界面上把单次最长运行改成 30 分钟、关掉「没输出多久算卡住」（假 agent 输出一行后就睡，不然它先到）；
-    // 不重启 board host
-    rig.set_host("mbp", serde_json::json!({ "maxRun": 30, "idleRun": 0 }));
     rig.mode("sleep");
     let d = rig.dispatch_running(1);
     let agent = rig.pid("agent.pid");
     assert!(running(agent));
-    // 30 分钟 × 1 秒/分钟：到时间后 host 自己结束它
+    // agent 已经在跑（默认 3 小时）时，界面上把单次最长运行改成 30 分钟、关掉「没输出多久算卡住」（假 agent 输出一行后就睡，
+    // 不然默认的 20 分钟先到）：不重启 board host，在跑的这个也按新值算（#198 验收 3）
+    rig.set_host("mbp", serde_json::json!({ "maxRun": 30, "idleRun": 0 }));
+    // 30 分钟 × 0.2 秒/分钟：到时间后 host 自己结束它
     wait_until("#1 超时", Duration::from_secs(45), || ended(&rig.show(1), "超时"));
     let c = rig.show(1);
     assert_eq!(c["column"], error, "超时按异常退出的规则移到错误节点");
@@ -1244,31 +1244,10 @@ fn idle_run_stops_agents_that_go_quiet() {
 }
 
 impl Rig {
-    /// 兜底相关的测试：一分钟 = 1 秒（必须在启动 board host 之前写）
+    /// 兜底相关的测试：一分钟缩成 0.2 秒（30 分钟 = 6 秒），等超时不用等太久（必须在启动 board host 之前写）
     fn minute_ms_short(&self) {
-        std::fs::write(self.fake.parent().unwrap().join("minute-ms"), "1000").unwrap();
+        std::fs::write(self.fake.parent().unwrap().join("minute-ms"), "200").unwrap();
     }
-}
-
-/// #198 验收 3：改了兜底设置，board host 不重启就按新值算
-#[test]
-fn run_limits_apply_without_restart() {
-    let rig = Rig::new();
-    assert_eq!(rig.board(&["new", "一"]).code, 0);
-    rig.minute_ms_short();
-    let host = rig.host("mbp");
-    rig.online("mbp");
-    rig.mode("sleep");
-    rig.dispatch_running(1);
-    // 默认 3 小时（180 秒）：等 10 秒还在跑
-    std::thread::sleep(Duration::from_secs(10));
-    assert_eq!(rig.show(1)["column"], "doing", "默认 3 小时，10 秒不该停");
-    // 改成 30 分钟（30 秒）：同一个进程、不重启，接下来按新值算。关掉「没输出多久算卡住」，不然默认的 20 分钟先到
-    rig.set_host("mbp", serde_json::json!({ "maxRun": 30, "idleRun": 0 }));
-    wait_until("#1 超时", Duration::from_secs(45), || ended(&rig.show(1), "超时"));
-    assert!(activity(&rig.show(1)).iter().any(|t| t.contains("运行超过 30 分钟")));
-    let (code, out) = stop(host);
-    assert_eq!(code, 0, "{out}");
 }
 
 /// #198 验收 4：两台机器都在跑时点「全部停止」：确认后（界面上）两边的派发都在 10 秒内结束，

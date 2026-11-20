@@ -171,6 +171,9 @@ pub struct State {
     /// 后台循环（进程号:启动时间）
     #[serde(default)]
     pub heartbeat: Option<String>,
+    /// 刚被 stop / 重新 start 停掉的循环：它看到自己在这里就马上退出，不用等满 [`GRACE`]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
     /// 名字是 `board check --agent <标识>` 由 Board 生成时记下的 agent 标识：之后没带 --as 的命令用它接着 check
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
@@ -258,6 +261,7 @@ fn stop_loop(st: &mut State) -> Result<()> {
     stop_legacy(&st.name)?;
     let Some(p) = st.heartbeat() else { return Ok(()) };
     st.heartbeat = None;
+    st.stopped = Some(p.arg());
     write_state(st)?;
     wait_loop(p);
     Ok(())
@@ -315,7 +319,7 @@ pub fn checked_with(name: &str, session: Option<String>, agent_id: Option<String
     if agent_id.is_some() {
         drop_stale(name, agent_id.as_deref());
     }
-    write_state(&State { name: name.to_string(), session, agent: agent_process().map(|a| a.arg()), heartbeat: None, agent_id, host })
+    write_state(&State { name: name.to_string(), session, agent: agent_process().map(|a| a.arg()), heartbeat: None, stopped: None, agent_id, host })
 }
 
 /// 本机记下的、agent 标识相同的其他名字（不是 name）：名字由 Board 生成时换过名字留下的，删掉。
@@ -490,6 +494,7 @@ pub fn start(name: &str, force: bool) -> Result<Started> {
     // 接管：名字现在跟随这个 agent 进程，循环记成新的这个
     st.agent = agent.map(|a| a.arg()).or(st.agent);
     st.heartbeat = Some(Proc { pid, start }.arg());
+    st.stopped = None;
     write_state(&st)?;
     // 不等子进程：它在后台一直跑，start 立即返回
     drop(child);
@@ -559,10 +564,17 @@ pub fn run_loop(name: &str, agent: Option<Proc>) {
     let Ok(mut be) = Backend::open() else { return };
     let session = std::env::var("BOARD_HEARTBEAT_SESSION").ok().filter(|s| !s.trim().is_empty());
     let mut ps = Procs::new();
-    // 还是不是自己在跑：状态里记的循环被清掉（stop）或换成了别的进程（重新 start）就停下
-    let mine = || match read_state(name).and_then(|st| st.heartbeat()) {
-        Some(p) => p.pid == me,
-        None => begun.elapsed() < GRACE,
+    // 还是不是自己在跑：状态里记的循环被清掉（stop）或换成了别的进程（重新 start）就停下。
+    // 没有记录时：记着停的就是自己（stop 写的）马上停；否则是 start 还没写好 pid，宽限内接着等
+    let mine = || {
+        let st = read_state(name);
+        match st.as_ref().and_then(|st| st.heartbeat()) {
+            Some(p) => p.pid == me,
+            None => {
+                let stopped = st.as_ref().and_then(|st| st.stopped.as_deref()).and_then(Proc::parse);
+                stopped.is_none_or(|p| p.pid != me) && begun.elapsed() < GRACE
+            }
+        }
     };
     let bye = || {
         if let Some(mut st) = read_state(name).filter(|st| st.heartbeat().is_some_and(|p| p.pid == me)) {

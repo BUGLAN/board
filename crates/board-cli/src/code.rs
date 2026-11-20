@@ -57,6 +57,8 @@ pub fn git_output(dir: &Path, args: &[&str], limit: Duration) -> Result<std::pro
         .spawn()
         .map_err(|e| format!("没法运行 git：{e}"))?;
     let start = Instant::now();
+    // 大多数 git 命令几毫秒就结束：从 1 毫秒起翻倍等，最多 40 毫秒，不让每次调用都白等 40 毫秒
+    let mut nap = Duration::from_millis(1);
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -65,7 +67,10 @@ pub fn git_output(dir: &Path, args: &[&str], limit: Duration) -> Result<std::pro
                 let _ = child.wait();
                 return Err(format!("{} 秒还没做完，已经停掉", limit.as_secs()));
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
+            Ok(None) => {
+                std::thread::sleep(nap);
+                nap = (nap * 2).min(Duration::from_millis(40));
+            }
             Err(e) => return Err(format!("等 git 结束时出错：{e}")),
         }
     }

@@ -1953,9 +1953,14 @@ fn final_snapshot_keeps_recently_moved_wherever_they_are() {
 #[test]
 fn place_at_bottom_updates_only_that_card() {
     let mut s = store();
-    for i in 1..=1001 {
-        exec(&mut s, B, &human(), T0 + i, new(&format!("卡片 {i}"))).unwrap();
-    }
+    s.write(T0, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        for i in 1..=1001 {
+            w.exec(&b, &human(), new(&format!("卡片 {i}")))?;
+        }
+        Ok(())
+    })
+    .unwrap();
     // 前 1000 张直接放进「待审核」，pos 稀疏：被重写的话会变成 0..999
     s.conn().execute("UPDATE cards SET col = 'review', pos = id * 10 WHERE id <= 1000", []).unwrap();
     exec(&mut s, B, &human(), T0 + 2000, mv(1001, "review")).unwrap();
@@ -2476,12 +2481,23 @@ fn trash_is_kept_until_purged_by_human() {
 fn trash_has_no_size_limit() {
     let mut s = store();
     let n = 1002;
-    for i in 0..n {
-        exec(&mut s, B, &human(), T0 + i * SEC, new("x")).unwrap();
-    }
-    for i in 1..=n {
-        exec(&mut s, B, &human(), T0 + 10 * HOUR + i * SEC, Cmd::Delete { id: i }).unwrap();
-    }
+    // 一个写事务里做完，比每张一个事务快得多；被测的是回收站不自动清，不是事务
+    s.write(T0, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        for _ in 0..n {
+            w.exec(&b, &human(), new("x"))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.write(T0 + HOUR, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        for id in 1..=n {
+            w.exec(&b, &human(), Cmd::Delete { id })?;
+        }
+        Ok(())
+    })
+    .unwrap();
     let b = s.read(|r| r.resolve(B)).unwrap();
     let t = s.read(|r| r.trash(&b)).unwrap();
     assert_eq!(t.len() as i64, n, "删得再多也都留着");

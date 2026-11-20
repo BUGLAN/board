@@ -137,14 +137,9 @@ fn skill_entry_passes_body_file_through() {
     assert_eq!(code, 0, "{out}{err}");
     let c: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(c["body"], BODY);
-    // 版本号也原样交过去，保留末尾换行（发版后核对 skill 里的 board）
-    for flag in ["--version", "-V"] {
-        let (code, out, err) = via_script(&s, &script, &[flag]);
-        assert_eq!((code, out), (0, format!("board {}\n", env!("CARGO_PKG_VERSION"))), "{flag}: {err}");
-        let (code, out, err) = via_script(&s, &script, &[flag, "--json"]);
-        assert_eq!(code, 0, "{flag} --json: {out}{err}");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap(), serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }));
-    }
+    // 版本号也原样交过去，保留末尾换行（发版后核对 skill 里的 board；-V、--json 见 main.rs 的单元测试）
+    let (code, out, err) = via_script(&s, &script, &["--version"]);
+    assert_eq!((code, out), (0, format!("board {}\n", env!("CARGO_PKG_VERSION"))), "{err}");
 }
 
 /// sh 入口：直接写在参数里的多行正文也原样交过去（macOS、Linux、Git Bash 用 scripts/board 时）

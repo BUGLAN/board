@@ -1,0 +1,4 @@
+[env]
+# 自带的 SQLite 关掉内存统计：开着时每次分配内存都要拿一把全局锁，多线程同时读写（服务端、并发跑的测试）互相等。
+# 代码里没用 sqlite3_memory_used 这类统计接口。SQLite 推荐的编译选项之一：https://sqlite.org/compile.html#recommended_compile_time_options
+LIBSQLITE3_FLAGS = "SQLITE_DEFAULT_MEMSTATUS=0"
