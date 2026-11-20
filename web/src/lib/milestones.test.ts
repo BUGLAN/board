@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardRef, cardsOf, commitsByCard, defaultPage, gap, isVersionName, looseCommits, matchCard, pagesOf, roleOf, sortCards, startOf, summarize, type MilestoneCard, type Milestones } from './milestones';
+import { cardRef, cardsOf, commitsByCard, defaultPage, gap, looseCommits, matchCard, pagesOf, roleOf, sortCards, startOf, summarize, type MilestoneCard, type Milestones } from './milestones';
 import type { Status } from './types';
 
 const st = (key: string, name: string, p: Partial<Status> = {}): Status => ({ key, name, color: 'todo', claim: false, lock: false, final: false, layout: null, to: [], ...p });
@@ -46,11 +46,6 @@ const m: Milestones = {
 };
 
 describe('里程碑', () => {
-  it('版本 = v 加数字开头的标签', () => {
-    expect(['v0.1.21', 'V2', 'v1-beta'].every(isVersionName)).toBe(true);
-    expect(['visual', 'v', '0.1', 'bug'].some(isVersionName)).toBe(false);
-  });
-
   it('页的顺序和默认页', () => {
     expect(pagesOf(m)).toEqual(['next', 3, 2, 1, 'none']);
     expect(defaultPage(m)).toBe('next');

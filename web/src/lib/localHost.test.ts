@@ -1,6 +1,6 @@
 /* 本机接任务确认框的正文：机器名、工作空间、免审批运行的风险 */
 import { describe, expect, it } from 'vitest';
-import { hostConfirmText, serverConfirmText, shownHostName, workspaceDir } from './localHost';
+import { hostConfirmText, serverConfirmText, shownHostName } from './localHost';
 
 describe('shownHostName', () => {
   it('写了机器名就用它（去掉两头空白）', () => {
@@ -10,20 +10,6 @@ describe('shownHostName', () => {
   it('没写时用本机主机名，并注明', () => {
     expect(shownHostName('', 'WIN-DESKTOP')).toBe('WIN-DESKTOP（本机主机名）');
     expect(shownHostName('   ', '')).toBe('（本机主机名）');
-  });
-});
-
-describe('workspaceDir', () => {
-  it('每块白板的目录是它所在项目的 <工作空间>/<项目>，分隔符跟着机器走', () => {
-    expect(workspaceDir('~/repo', 'default/main')).toBe('~/repo/default');
-    expect(workspaceDir('C:\\repo\\', 'default/main', 'Windows 11')).toBe('C:\\repo\\default');
-    expect(workspaceDir('/srv/repo/', 'p/b', 'macOS 15.4')).toBe('/srv/repo/p');
-    expect(workspaceDir('/srv/repo/', 'p/docs', 'macOS 15.4')).toBe('/srv/repo/p');
-  });
-
-  it('没填工作空间时为空', () => {
-    expect(workspaceDir('  ', 'default/main')).toBe('');
-    expect(workspaceDir('/repo', '')).toBe('');
   });
 });
 

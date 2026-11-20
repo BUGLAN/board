@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { builtinName, mcpAgents, mergeMeta, setAgentMeta, skillHome, useAgentMeta } from './agentMeta';
 import { agentMark } from './hosts';
 import { blankMcp, forAgent } from './mcp';
-import { syncAgentName } from './syncPills';
 
 const initial = useAgentMeta.getState().list;
 afterEach(() => useAgentMeta.setState({ list: initial }));
@@ -20,7 +19,6 @@ describe('内置 agent 的说明', () => {
     ]);
     expect(agentMark('claude').color).toBe('#D97757');
     expect(agentMark('codex')).toMatchObject({ short: 'CX', color: '#10A37F' });
-    expect(syncAgentName(null, 'codex')).toBe('Codex');
     expect(forAgent(blankMcp(), 'codex') && !forAgent(blankMcp(), 'dsh')).toBe(true);
   });
 

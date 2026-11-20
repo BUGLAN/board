@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, SelfTestItem, Status, Workspace } from './types';
+import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, Status, Workspace } from './types';
 import { metaColor, skillHome } from './agentMeta';
 import { agentColor, agentGlyph } from './util';
 
@@ -326,18 +326,6 @@ const places = (as: HostAgent[]) => [...new Set(as.map(a => (a.no_skill ?? '').s
 export const isLocalHost = (h: HostInfo, local: { running: boolean; name: string; defaultName: string } | null) =>
   !!local?.running && (local.name.trim() || local.defaultName) === h.name;
 
-/** 目录太长时中间省略：开头和最后一级对齐（两块并排看时左端一致），悬停看全路径 */
-export type PathParts = { head: string; tail: string };
-export const pathParts = (path: string): PathParts => {
-  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  return cut > 0 ? { head: path.slice(0, cut + 1), tail: path.slice(cut + 1) } : { head: '', tail: path };
-};
-
-/** 只在本机（桌面端运行 board host 的那台）的机器详情里能选工作空间的文件夹：
-    别的机器上选的目录是那台机器上的，选了也没用。
-    `isLocal` 是这台电脑正在跑的 board host 就是它（见 isLocalHost），`desktop` 是桌面端（只有它能弹系统的文件夹选择框） */
-export const canPickDir = (env: { isLocal: boolean; desktop: boolean }) => env.isLocal && env.desktop;
-
 /* ------------------------------ 添加机器：一行安装命令 ------------------------------ */
 
 /** 机器名的规则（和 board-core 的 check_host_name 一样）：不对时返回原因 */
@@ -399,17 +387,6 @@ export const selftestBusy = (h: HostInfo, now: number, agent?: string) =>
 
 /** 整台机器的自检正在做（没过期） */
 export const selftestWhole = (h: HostInfo, now: number) => selftestLive(h, now).some(a => !a.agent);
-
-/** 自检结果一行一行：名称（agent 名、「<白板> 的仓库」、「board 版本」），按 agent、git、版本排 */
-export function selftestRows(h: HostInfo): (SelfTestItem & { label: string })[] {
-  const order = { agent: 0, git: 1, version: 2 } as const;
-  return [...(h.selftest?.items ?? [])]
-    .sort((a, b) => order[a.kind] - order[b.kind])
-    .map(i => ({
-      ...i,
-      label: i.kind === 'agent' ? (h.agents.find(a => a.id === i.key)?.name ?? i.key) : i.kind === 'git' ? `${i.key} 的仓库` : 'board 版本',
-    }));
-}
 
 /** 一张卡怎么派发（和服务端 `dispatch_card_check`、`reserve` 一致，#498） */
 export interface DispatchRoute {

@@ -7,7 +7,6 @@
    - 一台机器一行（syncRow，Git 凭据卡片）：写「已同步 · 令牌已就绪，按主机全局生效 / 同步失败：原因 / 不同步」，旁边是开关
    - 旧版 board host（不按请求同步、不上报这一类）不在这里，另写一句
    ========================================================================== */
-import { builtinName } from './agentMeta';
 import { since } from './hosts';
 import { forAgent } from './mcp';
 import { syncKind, syncOld, type SyncKind } from './syncKinds';
@@ -15,8 +14,6 @@ import type { HostInfo, McpServer, SkillInfo } from './types';
 
 export type HostSyncKind = 'synced' | 'pending' | 'warn' | 'failed' | 'offline' | 'none' | 'off';
 export type HostSync = { host: HostInfo; kind: HostSyncKind; word: string; tip: string };
-
-export const syncAgentName = (h: HostInfo | null, id: string) => h?.agents.find(a => a.id === id)?.name ?? builtinName(id);
 
 /** 会按请求同步、上报结果的机器（旧版 board host 不算） */
 export const syncAble = (h: HostInfo) => !!h.sync?.able;

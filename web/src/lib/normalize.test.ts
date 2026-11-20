@@ -1,6 +1,6 @@
 /* lib/normalize：接口数据进门时补齐缺的数组（default/main#359） */
 import { describe, expect, it } from 'vitest';
-import { acceptSummary, boardHosts, defaultAgent, hostDirFor, hostsOf, selftestRows, skillGaps } from './hosts';
+import { acceptSummary, boardHosts, defaultAgent, hostDirFor, hostsOf, skillGaps } from './hosts';
 import { normHost, normHosts, normMcp, normProviders, normSession, normWorkspace } from './normalize';
 import { agentGroups, providerCell, runPick, usesOf } from './providers';
 import { compareHosts, readiness } from './ready';
@@ -135,7 +135,6 @@ describe('机器：必填的数组补齐', () => {
         defaultAgent(h);
         hostDirFor(h, 'oss/main');
         boardHosts(ws, 'oss/main');
-        selftestRows(h);
         for (const a of h.agents) runPick(VIEW, a);
         providerCell(h, 'claude', VIEW);
         agentGroups(usesOf([h], VIEW, 'p1'), VIEW);

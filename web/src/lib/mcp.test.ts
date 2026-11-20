@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { argsOf, blankMcp, forAgent, mcpError, toSave } from './mcp';
+import { blankMcp, forAgent, mcpError, toSave } from './mcp';
 import type { McpServer } from './types';
 
 const srv = (x: Partial<McpServer> = {}): McpServer => ({ ...blankMcp(), name: 'db', command: 'npx', args: ['-y', 'db-mcp'], ...x });
@@ -8,8 +8,7 @@ describe('MCP 共用配置', () => {
     expect(forAgent(srv(), 'codex') && !forAgent(srv(), 'dsh')).toBe(true);
     expect(forAgent(srv({ agents: ['codex'] }), 'claude')).toBe(false);
   });
-  it('校验和保存：密钥留空保留原值、新密钥必须填、参数一行一个', () => {
-    expect(argsOf('-y\n  db-mcp \n\n')).toEqual(['-y', 'db-mcp']);
+  it('校验和保存：密钥留空保留原值、新密钥必须填', () => {
     expect(mcpError(srv({ name: 'bad name' }), [], false)).toContain('名称');
     expect(mcpError(srv(), ['db'], false)).toContain('已经有');
     expect(mcpError(srv(), ['db'], true)).toBeNull();

@@ -10,14 +10,6 @@ export function shownHostName(name: string, defaultName: string): string {
   return defaultName.trim() ? `${defaultName.trim()}（本机主机名）` : '（本机主机名）';
 }
 
-/** 工作空间里一块白板的目录：它所在项目的 `<工作空间>/<项目>`（分隔符跟着机器走）；工作空间为空时为空 */
-export function workspaceDir(workspace: string, board: string, os = ''): string {
-  const base = workspace.trim().replace(/[\\/]+$/, '');
-  if (!base || !board.trim()) return '';
-  const sep = /windows/i.test(os) ? '\\' : '/';
-  return base + sep + board.trim().split('/')[0];
-}
-
 /** 「切换服务端」确认框的正文：从哪个地址换到哪个、写进哪里、本机命令只对新地址开放；
     本机在跑 board host 时说明会按新地址重启它（段落之间空一行，确认框按段落显示） */
 export function serverConfirmText(from: string, to: string, version: string, target: string, hostRunning: boolean): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, canPickDir, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, pathParts, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestRows, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Status, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -55,23 +55,6 @@ describe('isLocalHost（看的是不是本机桌面端跑的 board host）', () 
     expect(isLocalHost(h, { running: true, name: 'win', defaultName: 'mac' })).toBe(false);
     expect(isLocalHost(h, { running: false, name: '', defaultName: 'mac' })).toBe(false);
     expect(isLocalHost(h, null)).toBe(false);
-  });
-});
-
-describe('目录选择文件夹（只在本机的桌面端）', () => {
-  it('目录中间省略时保留开头的目录和最后一级，左端对得齐', () => {
-    expect(pathParts('C:\\Users\\lan\\repo\\board')).toEqual({ head: 'C:\\Users\\lan\\repo\\', tail: 'board' });
-    expect(pathParts('/home/me/repo/board')).toEqual({ head: '/home/me/repo/', tail: 'board' });
-    // 没有分隔符：整串都在「最后一级」里
-    expect(pathParts('Ubuntu-24.04')).toEqual({ head: '', tail: 'Ubuntu-24.04' });
-  });
-
-  it('只在本机桌面端能选工作空间的文件夹；别的机器、网页端都不显示按钮', () => {
-    expect(canPickDir({ isLocal: true, desktop: true })).toBe(true);
-    // 别的机器：选出来的目录是这台电脑的
-    expect(canPickDir({ isLocal: false, desktop: true })).toBe(false);
-    // 网页端没有系统的文件夹选择框
-    expect(canPickDir({ isLocal: true, desktop: false })).toBe(false);
   });
 });
 
@@ -279,21 +262,6 @@ describe('自检', () => {
     const stale = h({ selftest: { asks: [{ ...asks[0], at: now - SELFTEST_STALE_MS }, asks[1]], items: [] } });
     expect(selftestBusy(stale, now, 'claude')).toBe(false);
     expect(selftestState(stale, now)?.agents).toEqual(['codex']);
-  });
-  it('结果按 agent、仓库、版本排，名称可读', () => {
-    const rows = selftestRows(
-      h({
-        selftest: {
-          asks: [],
-          items: [
-            { kind: 'version', key: 'board', ok: false, why: 'board 0.1.1 落后于服务端 0.1.19', at: now },
-            { kind: 'git', key: 'default/main', ok: true, at: now },
-            { kind: 'agent', key: 'codex', ok: false, why: '没有登录：Not logged in', at: now },
-          ],
-        },
-      }),
-    );
-    expect(rows.map(r => r.label)).toEqual(['Codex', 'default/main 的仓库', 'board 版本']);
   });
 });
 

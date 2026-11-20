@@ -10,9 +10,6 @@ export const forAgent = (s: Pick<McpServer, 'agents'>, agent: string) => (s.agen
 
 export const blankMcp = (): McpServer => ({ name: '', kind: 'stdio', command: '', args: [], env: [], url: '', headers: [], agents: [] });
 
-/** 一行一个参数（空行去掉） */
-export const argsOf = (text: string) => text.split('\n').map(s => s.trim()).filter(Boolean);
-
 /** 密钥的显示：保存过的只给末尾 4 位 */
 export const maskOf = (v: McpVar) => (v.tail != null ? `••••${v.tail}` : '••••');
 

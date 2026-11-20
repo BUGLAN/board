@@ -52,9 +52,6 @@ export interface Milestones {
 /** 一页：版本标签的 id，或者「未发版」「没有版本」 */
 export type MsKey = number | 'next' | 'none';
 
-/** 版本标签：名称是 v 加数字开头 */
-export const isVersionName = (name: string) => /^v\d/i.test(name.trim());
-
 /** 页的顺序：未发版（有发版记录或者有卡片时）、版本从新到旧、没有版本（有卡片时） */
 export function pagesOf(m: Milestones): MsKey[] {
   const out: MsKey[] = [];
