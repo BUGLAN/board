@@ -643,6 +643,17 @@ board start --json                       # 之后：接着用名字和心跳；�
 - `review`、`giveup`：`board submit`、`board giveup` 会把卡片移到哪个状态；白板上没有对应的状态时为 `null`。
 - `files`：附件已经下载到 `path`；`--out <目录>` 指定放哪，不写时是只有自己能读的临时目录。
 - 会话里第一次用、又没带 `--agent`（或 `--as`）时是 `USAGE`；没有可领的卡片时 `EMPTY_TODO`。
+- 先占名字、启动心跳，再领取：领取失败（`EMPTY_TODO`、`NOT_FOUND`、`NOT_IN_TODO`、`ALREADY_HOLDING`）时名字已经在线、后台心跳已经在跑，不再领卡时 `board heartbeat stop`。报错里写着用的名字：`--json` 是 `error.detail.session`，文字输出在这一次新占用名字时多一行「名字 <名字> 已占用，后台心跳在跑；不再领卡时 board heartbeat stop」：
+
+  ```json
+  {
+    "error": {
+      "code": "EMPTY_TODO",
+      "message": "可领取的状态里没有能领取的卡片",
+      "detail": { "session": { "name": "mbp/opus-5.5-high", "started": true } }
+    }
+  }
+  ```
 - `board host` 启动的会话里（环境里有 `BOARD_HOST`）：不占名字、不启动心跳、不领取，只读卡片和附件；要带 ID，卡片不归 `BOARD_AS` 持有时 `NOT_HOLDER`。
 
 ### `board submit`

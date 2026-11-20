@@ -202,6 +202,10 @@ pub(crate) fn explicit_name(a: &Args) -> Option<String> {
     a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))
 }
 
+/// 这条 `board start` 用的名字和是不是这一次新占用的（[`start_session`] 成功后由 run() 记下）：之后领取失败时，
+/// 报错里也写上它（名字已经在线、后台心跳已经在跑，不再领卡时要 `board heartbeat stop`），见 main()
+pub(crate) static SESSION: std::sync::OnceLock<(String, bool)> = std::sync::OnceLock::new();
+
 /// `board start` 的第一步：让这个会话有一个在线的名字和后台心跳。返回（名字，这一次是不是新占用的）。
 /// - board host 启动的会话（环境里有 `BOARD_HOST`）：名字是 `BOARD_AS`，心跳由 board host 发，这里什么也不做；
 /// - 这个 agent 进程已经 check 过、后台心跳还在跑：接着用；

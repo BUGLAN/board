@@ -152,15 +152,28 @@ fn main() {
             }
         }
         Err(e) => {
+            // board start 已经占了名字、启动了后台心跳，之后才失败（领取失败之类）：报错里写上名字
+            let session = session::SESSION.get();
             if json {
                 let mut err = json!({ "code": e.code, "message": e.message });
                 if let Some(d) = e.detail {
                     err["detail"] = d;
                 }
+                if let Some((name, started)) = session {
+                    if err["detail"].is_null() {
+                        err["detail"] = json!({});
+                    }
+                    if let Some(d) = err["detail"].as_object_mut() {
+                        d.insert("session".into(), json!({ "name": name, "started": started }));
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&json!({ "error": err })).unwrap_or_default());
             } else {
                 let pe = Paint { on: std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
                 eprintln!("{} {}  {}", pe.red("✗"), pe.red_bold(e.code.as_str()), e.message);
+                if let Some((name, true)) = session {
+                    eprintln!("{} 名字 {name} 已占用，后台心跳在跑；不再领卡时 board heartbeat stop", pe.yellow("!"));
+                }
             }
             std::process::exit(1);
         }
@@ -341,7 +354,13 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
 
     // 身份（PRD §3）：--as / BOARD_AS，没有时用本机 check 时记下的名字（board check --agent <标识> 生成的）
     // board start：这个会话还没有名字时在这里占用名字、启动后台心跳
-    let started = if sub == "start" { Some(start_session(&a, &mut be)?) } else { None };
+    let started = if sub == "start" {
+        let s = start_session(&a, &mut be)?;
+        let _ = session::SESSION.set(s.clone());
+        Some(s)
+    } else {
+        None
+    };
     let name = match &started {
         Some((name, _)) => Some(name.clone()),
         None => explicit_name(&a).or_else(heartbeat::current_name),
@@ -1158,6 +1177,181 @@ mod tests {
         let e = hold_check(7, "进行中", true, Some("other/y"), "me/x").unwrap_err();
         assert!(e.message.contains("由 other/y 持有"), "{}", e.message);
         assert!(hold_check(7, "待审核", false, Some("me/x"), "me/x").is_err(), "不在锁定状态也不算");
+    }
+
+    /* ---------- skill 里写的命令、参数、步骤引用（default/main#550） ---------- */
+
+    use crate::args::{BOOL_FLAGS, VALUE_FLAGS};
+
+    const SKILL: [(&str, &str); 6] = [
+        ("SKILL.md", include_str!("../../../.agents/skills/board-skills/SKILL.md")),
+        ("work.md", include_str!("../../../.agents/skills/board-skills/work.md")),
+        ("plan.md", include_str!("../../../.agents/skills/board-skills/plan.md")),
+        ("host.md", include_str!("../../../.agents/skills/board-skills/host.md")),
+        ("reference.md", include_str!("../../../.agents/skills/board-skills/reference.md")),
+        ("release.md", include_str!("../../../.agents/skills/board-skills/release.md")),
+    ];
+
+    /// 文字里写到的 board 命令：（行号，命令）。行内代码和代码块里以 `board ` 开头的（前面可以有 `BOARD=… ` 这类环境变量），
+    /// `&&`、`|`、`;` 连着的几条分开算；代码块里 ` #` 之后是注释
+    fn skill_commands(text: &str) -> Vec<(usize, String)> {
+        let mut out = vec![];
+        let mut block = false;
+        let pick = |n: usize, code: &str, out: &mut Vec<(usize, String)>| {
+            for seg in code.split("&&").flat_map(|s| s.split('|')).flat_map(|s| s.split(';')) {
+                let mut words = seg.split_whitespace().skip_while(|w| w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_uppercase() || c == '_')));
+                if words.next() == Some("board") {
+                    let rest: Vec<&str> = words.collect();
+                    out.push((n, format!("board {}", rest.join(" "))));
+                }
+            }
+        };
+        for (i, line) in text.lines().enumerate() {
+            let n = i + 1;
+            if line.trim_start().starts_with("```") {
+                block = !block;
+                continue;
+            }
+            if block {
+                let code = line.split(" #").next().unwrap_or(line);
+                pick(n, code, &mut out);
+            } else {
+                for (k, part) in line.split('`').enumerate() {
+                    if k % 2 == 1 {
+                        pick(n, part, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 命令表里有这条命令，写到的 `--参数` 都认识
+    fn check_command(cmd: &str) -> std::result::Result<(), String> {
+        let Some(sub) = cmd.split_whitespace().nth(1) else { return Ok(()) };
+        if sub.starts_with('<') || sub.starts_with('[') {
+            return Ok(());
+        }
+        if !COMMANDS.iter().any(|c| c.0 == sub) {
+            return Err(format!("没有 board {sub} 这条命令"));
+        }
+        let b = cmd.as_bytes();
+        let mut i = 0;
+        while let Some(k) = cmd[i..].find("--") {
+            let at = i + k;
+            let mut end = at + 2;
+            while end < b.len() && (b[end].is_ascii_lowercase() || b[end].is_ascii_digit() || b[end] == b'-') {
+                end += 1;
+            }
+            let flag = &cmd[at..end];
+            let starts_word = at == 0 || !(b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'-');
+            if starts_word && flag.len() > 2 && !VALUE_FLAGS.contains(&flag) && !BOOL_FLAGS.contains(&flag) {
+                return Err(format!("没有 {flag} 这个参数"));
+            }
+            i = end.max(at + 2);
+        }
+        Ok(())
+    }
+
+    /// 「『小节』第 N 步」「`x.md`『小节』第 N–M 步」这类引用：（行号，原文，文件，小节，步骤号）
+    fn step_refs(file: &'static str, text: &str) -> Vec<(usize, String, String, String, Vec<usize>)> {
+        let mut out = vec![];
+        for (i, line) in text.lines().enumerate() {
+            let mut from = 0;
+            while let Some(k) = line[from..].find("」第") {
+                let close = from + k;
+                from = close + "」第".len();
+                let Some(open) = line[..close].rfind('「') else { continue };
+                let section = line[open + '「'.len_utf8()..close].rsplit('→').next().unwrap_or("").trim().to_string();
+                let tail = line[from..].trim_start();
+                let num: String = tail.chars().take_while(|c| c.is_ascii_digit() || *c == '–' || *c == '-').collect();
+                if num.is_empty() || !tail[num.len()..].trim_start().starts_with('步') {
+                    continue;
+                }
+                let steps: Vec<usize> = num.split(['–', '-']).filter_map(|x| x.parse().ok()).collect();
+                let before = line[..open].trim_end().trim_end_matches('`');
+                let target = before
+                    .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
+                    .next()
+                    .filter(|w| w.ends_with(".md"))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| file.to_string());
+                let rest = &line[open..];
+                let raw = &rest[..rest.find('步').map_or(rest.len(), |p| p + '步'.len_utf8())];
+                out.push((i + 1, raw.to_string(), target, section, steps));
+            }
+        }
+        out
+    }
+
+    /// `file` 的小节 `section`（标题）里有没有编号为 `n` 的步骤（顶格的 `n. `）
+    fn has_step(text: &str, section: &str, n: usize) -> std::result::Result<(), String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let level = |l: &str| l.chars().take_while(|c| *c == '#').count();
+        let Some(at) = lines.iter().position(|l| level(l) > 0 && l.trim_start_matches('#').trim() == section) else {
+            return Err(format!("没有「{section}」这一节"));
+        };
+        let lv = level(lines[at]);
+        let body = lines[at + 1..].iter().take_while(|l| !(level(l) > 0 && level(l) <= lv));
+        let mut seen = body.filter(|l| l.starts_with(&format!("{n}. ")));
+        if seen.next().is_none() {
+            return Err(format!("「{section}」里没有第 {n} 步"));
+        }
+        Ok(())
+    }
+
+    fn skill_problems(files: &[(&'static str, String)]) -> Vec<String> {
+        let mut bad = vec![];
+        for (file, text) in files {
+            for (n, cmd) in skill_commands(text) {
+                if let Err(why) = check_command(&cmd) {
+                    bad.push(format!("{file}:{n}：{why}：{cmd}"));
+                }
+            }
+            for (n, raw, target, section, steps) in step_refs(file, text) {
+                let Some((_, t)) = files.iter().find(|(f, _)| *f == target) else {
+                    bad.push(format!("{file}:{n}：没有 {target} 这个文件：{raw}"));
+                    continue;
+                };
+                for s in steps {
+                    if let Err(why) = has_step(t, &section, s) {
+                        bad.push(format!("{file}:{n}：{target} {why}：{raw}"));
+                    }
+                }
+            }
+        }
+        bad
+    }
+
+    /// skill 里写到的每条 board 命令、参数都在命令表里，「第 N 步」的引用都指得到
+    #[test]
+    fn skill_mentions_only_real_commands_and_steps() {
+        let files: Vec<(&'static str, String)> = SKILL.iter().map(|(f, t)| (*f, t.to_string())).collect();
+        let bad = skill_problems(&files);
+        assert!(bad.is_empty(), "skill 里有和命令行对不上的地方：\n{}", bad.join("\n"));
+        // 真的抽到了东西：不是什么都没查
+        let cmds: usize = files.iter().map(|(_, t)| skill_commands(t).len()).sum();
+        let refs: usize = files.iter().map(|(f, t)| step_refs(f, t).len()).sum();
+        assert!(cmds > 50 && refs > 10, "抽到的命令 {cmds} 条、步骤引用 {refs} 处");
+    }
+
+    /// 写错命令、参数、步骤时报出文件、行号和那一条
+    #[test]
+    fn skill_check_reports_where() {
+        let mut files: Vec<(&'static str, String)> = SKILL.iter().map(|(f, t)| (*f, t.to_string())).collect();
+        files[0].1.push_str("\n用 `board foo 1` 和 `board start --nope`，见 work.md「会话开始」第 9 步。\n\n```sh\nBOARD=a/b board lnd 2\n```\n");
+        let at = |needle: &str| files[0].1.lines().position(|l| l.contains(needle)).unwrap() + 1;
+        let (n, m) = (at("board foo 1"), at("board lnd 2"));
+        let bad = skill_problems(&files);
+        assert_eq!(
+            bad,
+            vec![
+                format!("SKILL.md:{n}：没有 board foo 这条命令：board foo 1"),
+                format!("SKILL.md:{n}：没有 --nope 这个参数：board start --nope"),
+                format!("SKILL.md:{m}：没有 board lnd 这条命令：board lnd 2"),
+                format!("SKILL.md:{n}：work.md 「会话开始」里没有第 9 步：「会话开始」第 9 步"),
+            ]
+        );
     }
 
     #[test]

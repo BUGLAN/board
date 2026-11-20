@@ -263,6 +263,43 @@ fn board_start_checks_beats_and_claims_in_one_command() {
     agent.wait().unwrap();
 }
 
+/// board start 先占名字、启动后台心跳，再领取：领取失败（这里是空白板，EMPTY_TODO）时名字照样在线、心跳照样在跑。
+/// 报错里写着用的名字（--json 的 error.detail.session；文字输出在这次新占用时多一行提醒），不再领卡时 board heartbeat stop 收尾
+#[test]
+fn board_start_failure_keeps_the_session_and_says_so() {
+    let s = start();
+    let mut agent = fake_agent();
+    let e = Env::new(&s, &agent);
+    let vars: Vec<(&str, String)> = e.vars.iter().filter(|(k, _)| *k != "BOARD_AS").cloned().collect();
+    let r = board(&s.home, &vars, &["start", "--agent", "claude"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    assert!(r.err.contains("EMPTY_TODO"), "{}", r.err);
+    let line = r.err.lines().find(|l| l.contains("已占用")).unwrap_or_else(|| panic!("没有提醒名字已占用：{}", r.err));
+    assert!(line.contains("后台心跳在跑") && line.contains("board heartbeat stop"), "{line}");
+
+    // 再来一次：接着用同一个名字，报错里有 session，started 为 false，文字输出不再提醒
+    let r = board(&s.home, &vars, &["start", "--json"]);
+    assert_eq!(r.error_code(), "EMPTY_TODO", "{}{}", r.out, r.err);
+    let session = r.json()["error"]["detail"]["session"].clone();
+    let name = session["name"].as_str().unwrap_or_else(|| panic!("报错里没有名字：{}", r.out)).to_string();
+    assert!(name.starts_with("claude") && line.contains(&name), "{name}：{line}");
+    assert_eq!(session["started"], false);
+    assert!(!board(&s.home, &vars, &["start"]).err.contains("已占用"));
+
+    // 名字在线、本机的后台心跳在跑
+    assert!(online(&s, &name), "{name} 应该在线");
+    let state = e.tmp.path().join("board-heartbeat").join(format!("{}.json", name.replace('/', "_")));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    let pid: u32 = v["heartbeat"].as_str().and_then(|h| h.split(':').next()).and_then(|p| p.parse().ok()).unwrap_or_else(|| panic!("没有后台心跳：{v}"));
+    assert!(alive(pid), "后台心跳进程 {pid} 应该在跑");
+
+    let r = board(&s.home, &vars, &["heartbeat", "stop"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!online(&s, &name), "stop 之后名字离线");
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+}
+
 /// board host 启动的会话里（环境里有 BOARD_HOST）：board start 不占名字、不启动心跳，用 BOARD_AS；卡片已经领好就接着做
 #[test]
 fn board_start_in_a_host_session_only_reads() {
