@@ -194,3 +194,128 @@ fn skill_entry_tells_to_upgrade_an_old_board() {
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("ran claim 1"), "{out}{err}");
 }
+
+/* ---------- 入口脚本：命令写在参数后面、跑不起来、自带 bin 和 PATH 两条路（default/main#548） ---------- */
+
+/// 假的旧版 board：`help` 里没有新命令，别的命令打印收到的参数。`exe` 时要 Windows 能直接运行的 .exe
+/// （自带 bin、PATH 两条路只认 board.exe）：用 cmd.exe 的拷贝，它把 `help` 这些参数当成普通参数，开一个读到空输入就退出的 shell
+fn old_board(dir: &Path, exe: bool) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    if cfg!(windows) {
+        if exe {
+            let cmd = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+            let to = dir.join("board.exe");
+            std::fs::copy(cmd, &to).unwrap();
+            return to;
+        }
+        return PathBuf::from(write(dir, "old-board.cmd", b"@echo off\r\nif \"%~1\"==\"help\" (echo   board claim) else (echo ran %*)\r\n"));
+    }
+    let p = PathBuf::from(write(dir, "board", b"#!/bin/sh\nif [ \"$1\" = help ]; then echo '  board claim    [<ID>]'; else echo \"ran $*\"; fi\n"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    p
+}
+
+/// skill 的两个入口脚本复制到 `<dir>/skill/scripts/`（不带 bin/），返回本平台用的那个
+fn skill_copy(dir: &Path) -> PathBuf {
+    let scripts = dir.join("skill").join("scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    for f in ["board", "board.cmd"] {
+        std::fs::copy(skill_script(f), scripts.join(f)).unwrap();
+    }
+    scripts.join(if cfg!(windows) { "board.cmd" } else { "board" })
+}
+
+/// 本平台在 skill 的 bin/ 下的目录名（和 scripts/board、scripts/build-skill-bin.mjs 一致）
+fn platform() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", _) => "windows-x64",
+        ("macos", "aarch64") => "darwin-arm64",
+        ("macos", _) => "darwin-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        _ => "linux-x64",
+    }
+}
+
+/// 不设 BOARD_EXE 跑入口脚本：用自带的 bin，没有时用 PATH（`path` 放在 PATH 最前面）
+fn via_skill(s: &Server, script: &Path, path: Option<&Path>, args: &[&str]) -> (i32, String, String) {
+    let mut cmd = if cfg!(windows) {
+        Command::new(script)
+    } else {
+        let mut c = Command::new("sh");
+        c.arg(script);
+        c
+    };
+    common::isolate(&mut cmd, &s.home).args(args).env("BOARD_URL", &s.url).env("BOARD_TOKEN", &s.token).env("BOARD_AS", ALPHA).env("BOARD", "default");
+    if let Some(p) = path {
+        let mut all = vec![p.to_path_buf()];
+        all.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        cmd.env("PATH", std::env::join_paths(all).unwrap());
+    }
+    let o = cmd.output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into(), String::from_utf8_lossy(&o.stderr).into())
+}
+
+const OLD: &str = "start / submit / giveup / land / base";
+
+/// 命令写在 --board、--as、--json 这些参数后面也认得出来；--board 的值碰巧是命令名时不当命令；大小写要一致；
+/// 新版照常执行；跑不起来的 board 说运行不了（退出码 126），不说是旧版
+#[test]
+fn skill_entry_finds_the_command_after_options() {
+    let s = start();
+    s.check(ALPHA);
+    let dir = tempfile::tempdir().unwrap();
+    let old = old_board(dir.path(), false);
+    let script = skill_script(if cfg!(windows) { "board.cmd" } else { "board" });
+    for args in [&["--board", "default/main", "start", "1"][..], &["--json", "submit", "1", "--comment", "x"], &["--as", ALPHA, "land", "1"], &["--board", "default", "base", "1"]] {
+        let (code, out, err) = via_script_with(&s, &script, &old, args);
+        assert_eq!(code, 1, "{args:?}: {out}{err}");
+        assert!(!out.contains("ran"), "{args:?} 不该交给旧版 board：{out}");
+        assert!(err.contains(OLD), "{args:?}: {err}");
+    }
+    for args in [&["--board", "start", "claim", "1"][..], &["START", "1"]] {
+        let (code, out, err) = via_script_with(&s, &script, &old, args);
+        assert_eq!(code, 0, "{args:?}: {out}{err}");
+        assert!(out.contains("ran") && !err.contains(OLD), "{args:?} 不是新命令，照常交给 board：{out}{err}");
+    }
+    // 新版：参数在前面照样执行
+    let (code, out, err) = via_script(&s, &script, &["--board", "default/main", "giveup", "999", "--comment", "x", "--json"]);
+    assert_eq!(code, 1, "{out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}{err}"));
+    assert_eq!(v["error"]["code"], "NOT_FOUND");
+    // 跑不起来（文件坏了、架构不对）
+    let fake = write(dir.path(), if cfg!(windows) { "fake.exe" } else { "fake" }, b"x");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (code, out, err) = via_script_with(&s, &script, Path::new(&fake), &["start", "1"]);
+    assert_eq!(code, 126, "{out}{err}");
+    assert!(err.contains(if cfg!(windows) { "cannot run" } else { "运行不了" }) && !err.contains(OLD), "{err}");
+}
+
+/// skill 自带的 bin、PATH 里的 board 是旧版：同样说要升级，不把新命令交过去
+#[test]
+fn skill_entry_checks_bundled_and_path_boards() {
+    let s = start();
+    s.check(ALPHA);
+    let dir = tempfile::tempdir().unwrap();
+    // 自带的 bin/<平台>/board
+    let script = skill_copy(&dir.path().join("bundled"));
+    old_board(&dir.path().join("bundled").join("skill").join("bin").join(platform()), true);
+    let (code, out, err) = via_skill(&s, &script, None, &["start", "1"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains(OLD), "{err}");
+    // PATH 里的 board（skill 里没有 bin/）
+    let script = skill_copy(&dir.path().join("plain"));
+    let on_path = dir.path().join("path");
+    old_board(&on_path, true);
+    let (code, out, err) = via_skill(&s, &script, Some(&on_path), &["--board", "default/main", "submit", "1", "--comment", "x"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("PATH") && err.contains(OLD), "{err}");
+}
+
