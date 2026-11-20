@@ -343,6 +343,9 @@ impl Rig {
     }
 }
 
+/// 等 `f` 成立，`limit` 内没成立就失败。条件成立就立刻返回，`limit` 只在失败时才用满：
+/// 本机负载高、CI 慢时事件来得晚，等「某件事发生」的上限不要卡得太紧（default/main#556）。
+/// 条件要覆盖等完之后马上断言的内容，不要等 A 就断言 B
 fn wait_until(what: &str, limit: Duration, mut f: impl FnMut() -> bool) {
     let t = Instant::now();
     while !f() {
@@ -542,7 +545,7 @@ fn host_runs_dispatches_end_to_end() {
     // 最多 1 个会话：#3 在跑时派发 #4 排队，别的 agent 领 #4 报 DISPATCHED
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "3", "--host", "mbp"]).code, 0);
-    wait_until("#3 开始", Duration::from_secs(10), || rig.show(3)["holder"] == "mbp/opus-5.5");
+    wait_until("#3 开始", Duration::from_secs(20), || rig.show(3)["holder"] == "mbp/opus-5.5");
     assert_eq!(rig.board(&["dispatch", "4", "--host", "mbp"]).code, 0);
     assert_eq!(rig.board(&["claim", "4", "--json"]).error_code(), "DISPATCHED");
     std::thread::sleep(Duration::from_secs(1));
@@ -554,7 +557,7 @@ fn host_runs_dispatches_end_to_end() {
     wait_until("#3 已停止", Duration::from_secs(15), || ended(&rig.show(3), "已停止"));
     assert_eq!(rig.show(3)["column"], "check");
     // 上一个会话离线后名字复用
-    wait_until("#4 开始", Duration::from_secs(10), || rig.show(4)["holder"] == "mbp/opus-5.5");
+    wait_until("#4 开始", Duration::from_secs(20), || rig.show(4)["holder"] == "mbp/opus-5.5");
 
     // Ctrl+C（SIGTERM）：先停掉 #4，再离线
     let (code, out) = stop(host);
@@ -849,7 +852,7 @@ fn drop_kills_a_tree_that_ignores_sigterm() {
 }
 
 fn wait_pid(path: &Path) -> i32 {
-    wait_until("子进程号写好", Duration::from_secs(5), || {
+    wait_until("子进程号写好", Duration::from_secs(20), || {
         std::fs::read_to_string(path).is_ok_and(|s| s.trim().parse::<i32>().is_ok())
     });
     std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
@@ -889,7 +892,7 @@ fn second_host_keeps_first_hosts_run_files() {
     let d = rig.dispatch_running(1);
     let run = rig.s.home.join(".board").join("host").join("run").join("mbp");
     // 服务端记下持有者之后 host 才启动 agent：等它写好
-    wait_until("派发的配置和进程文件写好", Duration::from_secs(10), || {
+    wait_until("派发的配置和进程文件写好", Duration::from_secs(20), || {
         run.join(format!("{d}.toml")).exists() && run.join(format!("{d}.proc")).exists()
     });
     let mut second = rig.host("mbp");
@@ -916,7 +919,7 @@ fn agent_exit_ends_its_process_group() {
     wait_until("#1 的派发结束", Duration::from_secs(15), || {
         activity(&rig.show(1)).iter().any(|t| t.starts_with("派发结束"))
     });
-    wait_until("留下的子进程被结束", Duration::from_secs(10), || !running(child));
+    wait_until("留下的子进程被结束", Duration::from_secs(20), || !running(child));
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }
@@ -973,9 +976,9 @@ fn host_follows_config_without_restart() {
     // 一个 agent 在跑
     rig.mode("sleep");
     assert_eq!(rig.board(&["dispatch", "1", "--host", "mbp"]).code, 0);
-    wait_until("#1 开始", Duration::from_secs(10), || rig.show(1)["holder"] == "mbp/opus-5.5");
+    wait_until("#1 开始", Duration::from_secs(20), || rig.show(1)["holder"] == "mbp/opus-5.5");
     let pidfile = rig.fake.parent().unwrap().join("agent.pid");
-    wait_until("agent 写出进程号", Duration::from_secs(10), || std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty()));
+    wait_until("agent 写出进程号", Duration::from_secs(20), || std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty()));
     let pid = std::fs::read_to_string(&pidfile).unwrap();
 
     // 桌面端保存：先在服务端改名（board host rename），再写配置文件；目录也换一个
@@ -990,7 +993,7 @@ fn host_follows_config_without_restart() {
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(rig.workspace()["hosts"][0]["dirs"][0]["path"], repo.display().to_string());
     reload();
-    wait_until("board host 换上新目录", Duration::from_secs(10), || {
+    wait_until("board host 换上新目录", Duration::from_secs(20), || {
         let ws = rig.workspace();
         let hs = ws["hosts"].as_array().unwrap();
         hs.len() == 1 && hs[0]["name"] == "win" && hs[0]["dirs"][0]["path"] == other.display().to_string()
@@ -1022,7 +1025,7 @@ fn host_follows_config_without_restart() {
     let nope = rig.repo.with_file_name("nope").join("default");
     std::fs::write(&cfg, host_conf("win", &nope)).unwrap();
     reload();
-    wait_until("board host 换上不存在的工作空间", Duration::from_secs(10), || {
+    wait_until("board host 换上不存在的工作空间", Duration::from_secs(20), || {
         let d = rig.workspace()["hosts"][0]["dirs"][0].clone();
         d["path"] == nope.display().to_string() && d["status"] != "ok"
     });
@@ -1059,7 +1062,7 @@ fn remote_recheck_and_restart() {
     text += &format!("\n[agents.newbie]\nname = \"Newbie\"\ncmd = [\"{}\"]\n", rig.fake.display());
     std::fs::write(&conf, text).unwrap();
     ask("recheck");
-    wait_until("新 agent 出现", Duration::from_secs(10), || has_agent(&rig, "newbie"));
+    wait_until("新 agent 出现", Duration::from_secs(20), || has_agent(&rig, "newbie"));
     let h = rig.workspace()["hosts"][0].clone();
     assert!(h["ask"].is_null(), "{h}");
     assert!(h["recheckedAt"].is_i64(), "{h}");
@@ -1136,7 +1139,10 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let d = r.json()["id"].as_i64().unwrap();
     let log = log_file(&rig.s.home, d);
-    wait_until("假 agent 打印参数", Duration::from_secs(15), || std::fs::read_to_string(&log).is_ok_and(|s| s.contains("args:")));
+    // 等到后面要断言的内容都写进日志：只等 args: 时，CI 上读日志那一刻假 agent 可能只收到了 initialize（default/main#556）
+    wait_until("假 agent 打印参数、收到提示词", Duration::from_secs(20), || {
+        std::fs::read_to_string(&log).is_ok_and(|s| s.contains("args:") && s.contains("\"method\":\"session/prompt\"") && s.contains("/board-skills 开始执行"))
+    });
     let out = std::fs::read_to_string(&log).unwrap();
     assert!(out.lines().any(|l| l.trim_end() == "args:"), "ACP 入口不带参数：{out}");
     assert!(out.contains("\"method\":\"session/prompt\"") && out.contains("/board-skills 开始执行") && !out.contains("--model"), "提示词走 session/prompt，不传模型、强度：{out}");
@@ -1282,8 +1288,8 @@ fn pause_all_and_stop_all_from_ui() {
     // 全部停止：两边的派发 10 秒内结束，两台都暂停
     let hosts = rig.ui_post("/api/hosts/stop-all", serde_json::json!({}));
     assert!(hosts.as_array().is_some_and(|h| h.iter().all(|x| x["paused"] == true)), "{hosts}");
-    wait_until("#1 已停止", Duration::from_secs(10), || ended(&rig.show(1), "已停止"));
-    wait_until("#2 已停止", Duration::from_secs(10), || ended(&rig.show(2), "已停止"));
+    wait_until("#1 已停止", Duration::from_secs(20), || ended(&rig.show(1), "已停止"));
+    wait_until("#2 已停止", Duration::from_secs(20), || ended(&rig.show(2), "已停止"));
     let texts = activity(&rig.show(1));
     assert!(texts.iter().any(|t| t.contains("buglan 停止了这次派发")), "停止评论写是谁停的：{texts:?}");
     let ws = rig.workspace();
@@ -1402,7 +1408,7 @@ fn service_restarts_host_after_kill9() {
     // 停止服务：board host 收尾（机器离线），守护进程退出码 0
     let (code, out) = stop(sup);
     assert_eq!(code, 0, "{out}");
-    wait_until("mbp 离线", Duration::from_secs(10), || !online(&rig));
+    wait_until("mbp 离线", Duration::from_secs(20), || !online(&rig));
     // 「收到停止信号」「守护进程退出」是守护进程自己写的，stop 等到它退出才返回，读的时候已经在日志里
     let text = std::fs::read_to_string(&log).unwrap();
     assert!(text.contains("收到停止信号") && text.contains("守护进程退出"), "{text}");
@@ -1450,11 +1456,11 @@ fn skills_push_sync_update_and_remove() {
     rig.set_host("mbp", serde_json::json!({ "syncSkills": true }));
     wait_until("B 装上 notes", Duration::from_secs(15), || std::fs::read_to_string(skills.join("notes").join("SKILL.md")).is_ok_and(|t| t == "# notes v1"));
     assert_eq!(std::fs::read_to_string(skills.join("notes").join("ref").join("a.md")).unwrap(), "a");
-    wait_until("上报已写入", Duration::from_secs(10), || last(&rig)["state"] == "synced" && last(&rig)["count"] == 2);
+    wait_until("上报已写入", Duration::from_secs(20), || last(&rig)["state"] == "synced" && last(&rig)["count"] == 2);
     // 同名的本机目录，内容和库里一样（就是从它推的）：算已同步，不动它
     let r = rig.board(&["skills", "push", skills.join("mine").to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    wait_until("mine 一样不用换", Duration::from_secs(10), || last(&rig)["count"] == 3);
+    wait_until("mine 一样不用换", Duration::from_secs(20), || last(&rig)["count"] == 3);
     assert!(!skills.join("mine").join(".board-sync").exists(), "本机自己的目录不动");
     // 库里换成别的内容：本机的不是 Board 装的，挪进备份，换成库里的
     let other = rig.repo.parent().unwrap().join("other").join("mine");
@@ -1462,8 +1468,8 @@ fn skills_push_sync_update_and_remove() {
     std::fs::write(other.join("SKILL.md"), "other").unwrap();
     let r = rig.board(&["skills", "push", other.to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    wait_until("mine 换成库里的", Duration::from_secs(10), || std::fs::read_to_string(skills.join("mine").join("SKILL.md")).is_ok_and(|t| t == "other"));
-    wait_until("上报替换了 mine", Duration::from_secs(10), || last(&rig)["replaced"] == serde_json::json!(["mine"]));
+    wait_until("mine 换成库里的", Duration::from_secs(20), || std::fs::read_to_string(skills.join("mine").join("SKILL.md")).is_ok_and(|t| t == "other"));
+    wait_until("上报替换了 mine", Duration::from_secs(20), || last(&rig)["replaced"] == serde_json::json!(["mine"]));
     let backup = rig.s.home.join(".board").join("host").join("skills-backup");
     let saved: Vec<_> = std::fs::read_dir(&backup).unwrap().flatten().collect();
     assert!(saved.len() == 1 && std::fs::read_to_string(saved[0].path().join("SKILL.md")).unwrap() == "local", "旧的在备份里");
@@ -1471,7 +1477,7 @@ fn skills_push_sync_update_and_remove() {
     std::fs::write(src.join("SKILL.md"), "# notes v2").unwrap();
     let r = rig.board(&["skills", "push", src.to_str().unwrap(), "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    wait_until("B 更新 notes", Duration::from_secs(10), || std::fs::read_to_string(skills.join("notes").join("SKILL.md")).is_ok_and(|t| t == "# notes v2"));
+    wait_until("B 更新 notes", Duration::from_secs(20), || std::fs::read_to_string(skills.join("notes").join("SKILL.md")).is_ok_and(|t| t == "# notes v2"));
     // ls 能看到库和本机状态
     let r = rig.board(&["skills", "ls"]);
     assert!(r.out.contains("board-skills") && r.out.contains("notes") && r.out.contains("已同步"), "{}", r.out);
@@ -1479,7 +1485,7 @@ fn skills_push_sync_update_and_remove() {
     assert_ne!(rig.board(&["skills", "rm", "board-skills"]).code, 0);
     let r = rig.board(&["skills", "rm", "notes"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    wait_until("B 删掉 notes", Duration::from_secs(10), || !skills.join("notes").exists());
+    wait_until("B 删掉 notes", Duration::from_secs(20), || !skills.join("notes").exists());
     assert!(skills.join("mine").join("SKILL.md").is_file());
     // board host 在跑时 sync 交给它
     let r = rig.board(&["skills", "sync"]);
@@ -1783,7 +1789,7 @@ fn agents_that_crash_without_acp_output_still_get_a_comment() {
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
     let d = r.json()["id"].as_i64().unwrap();
     wait_until("#1 异常退出", Duration::from_secs(15), || ended(&rig.show(1), "异常退出"));
-    wait_until("格式报上来", Duration::from_secs(5), || rig.ui_get(&format!("/api/sessions/{d}"))["parts"][0]["fmt"] == "acp");
+    wait_until("格式报上来", Duration::from_secs(20), || rig.ui_get(&format!("/api/sessions/{d}"))["parts"][0]["fmt"] == "acp");
     let v = rig.ui_get(&format!("/api/sessions/{d}"));
     let texts: Vec<&str> = v["parts"][0]["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "text").filter_map(|e| e["text"].as_str()).collect();
     assert!(texts.contains(&"boom") && texts.iter().any(|t| t.contains("这一轮结束之前就退出了")), "{texts:?}");
