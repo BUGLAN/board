@@ -359,7 +359,7 @@ impl<'a> W<'a> {
                 if flow.is_lock(&to) && from != to && !keep_claim {
                     return Err(BoardError::new(
                         ErrorCode::ForbiddenColumn,
-                        format!("「{}」已锁定：卡片只能由 agent 通过 board claim 领取进入", flow.name(&to)),
+                        format!("「{}」已锁定：卡片只能由 agent 通过 board start 领取进入", flow.name(&to)),
                     ));
                 }
                 // 规则 9：终点只归人管
@@ -653,7 +653,7 @@ impl<'a> W<'a> {
                 if !is_holder(&r) {
                     let msg = match &r.holder {
                         Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
-                        None => format!("#{id} 没有被领取：先 board claim {id}"),
+                        None => format!("#{id} 没有被领取：先 board start {id}"),
                     };
                     return Err(BoardError::new(ErrorCode::NotHolder, msg));
                 }
@@ -661,7 +661,7 @@ impl<'a> W<'a> {
                     self.tx.query_row("SELECT final_at FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
                 if finished.is_some() {
                     return Err(BoardError::usage(format!(
-                        "#{id} 这次的心跳已经结束（final）：先交审或交给人处理；要接着做，等领取释放后重新 board claim {id}"
+                        "#{id} 这次的心跳已经结束（final）：先交审或交给人处理；要接着做，等领取释放后重新 board start {id}"
                     )));
                 }
                 self.beat_card(b, id, actor)?;

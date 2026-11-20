@@ -89,9 +89,9 @@ pub(crate) fn run(c: &Ctx, be: &mut Backend, started: &Option<(String, bool)>) -
                     p.bold("已领取"),
                     p.dim(&format!("进入「{}」", v.flow.name(&d.card.column))),
                     p.yellow(&format!(
-                        "会话开始时启动的心跳（board heartbeat start）会维持这张卡片；做完后 board heartbeat final {}，再在 {} 秒内沿连线移走",
+                        "后台心跳会维持这张卡片；做完用 board submit {}，做不下去用 board giveup {}",
                         d.card.id,
-                        BEAT_MS * BEAT_MISSES / 1000
+                        d.card.id
                     )),
                     fmt.show(d)
                 )
@@ -113,7 +113,7 @@ pub(crate) fn run(c: &Ctx, be: &mut Backend, started: &Option<(String, bool)>) -
                         p.green("✓"),
                         p.bold("接着做下一张"),
                         p.dim(&format!("已领取，进入「{}」", v.flow.name(&d.card.column))),
-                        p.yellow(&format!("上一张的派发已结算；这张做完后 board heartbeat final {}，沿连线移走，再 board next", d.card.id)),
+                        p.yellow(&format!("上一张的派发已结算；这张做完后 board submit {}（做不下去 board giveup {}），再 board next", d.card.id, d.card.id)),
                         fmt.show(&d)
                     ))
                 }

@@ -1128,7 +1128,7 @@ agent 交审以后，人逐张复盘：看交审评论、对照验收标准，�
 
 | 错误码 | 出现时机 |
 |---|---|
-| `NO_IDENTITY` | CLI 没有提供 agent 名字。提示：先 `board check --agent <标识>`（名字由 Board 生成，记在本机，之后不用再带 `--as`），或者 `board check --as <名字>` 自己起名字、之后每条命令都带 `--as <名字>` |
+| `NO_IDENTITY` | 没有提供 agent 名字：领卡用 `board start <ID> --agent <标识>`；不领卡的会话先 `board check --agent <标识>`（或自己起名字：`--as <名字>`） |
 | `NO_BOARD` | CLI 没有指定白板 |
 | `BOARD_NOT_FOUND` | 指定的项目或白板不存在；或项目下有多块白板却只写了项目标识 |
 | `NOT_FOUND` | 卡片不存在 |

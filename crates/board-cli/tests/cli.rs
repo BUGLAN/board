@@ -122,7 +122,10 @@ fn ac12_identity_and_board_required() {
     };
     let r = s.raw(&with(&[]), &["ls", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NO_IDENTITY"));
-    assert!(r.json()["error"]["message"].as_str().unwrap().contains("board check --as"));
+    assert_eq!(
+        r.json()["error"]["message"],
+        "没有提供 agent 名字：领卡用 board start <ID> --agent <标识>；不领卡的会话先 board check --agent <标识>（或自己起名字：--as <名字>）"
+    );
     let r = s.raw(&with(&[("BOARD_AS", "test/alpha")]), &["ls", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NO_BOARD"));
     // --as / --board 与环境变量等价

@@ -117,7 +117,7 @@ impl ErrorCode {
     /// 默认原因
     pub fn message(self) -> &'static str {
         match self {
-            ErrorCode::NoIdentity => "没有提供 agent 名字：先 board check --as <名字>，之后每条命令都带 --as <名字>",
+            ErrorCode::NoIdentity => "没有提供 agent 名字：领卡用 board start <ID> --agent <标识>；不领卡的会话先 board check --agent <标识>（或自己起名字：--as <名字>）",
             ErrorCode::NoBoard => "没有指定白板：使用 --board <项目>/<白板> 或设置环境变量 BOARD",
             ErrorCode::BoardNotFound => "白板不存在，用 board boards 查看可用的白板",
             ErrorCode::NotFound => "卡片不存在",

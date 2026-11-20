@@ -1,6 +1,7 @@
 //! `board` —— agent 用的命令行（PRD §9）。
 //!
-//! 身份：先 `board check --agent <标识>`（名字由 Board 按机器设置生成，记在本机），之后不用再带 `--as`；
+//! 身份：领卡用 `board start <ID> --agent <标识>`；不领卡的会话先 `board check --agent <标识>`。
+//! 名字由 Board 按机器设置生成，记在本机，之后不用再带 `--as`；
 //! 也可以自己起名字：`board check --as <名字>`，之后每条命令都带 `--as <名字>`（或环境变量 `BOARD_AS`）；
 //! 白板：`--board <项目>/<白板>` 或环境变量 `BOARD`。
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
@@ -232,7 +233,7 @@ fn hold_check(id: i64, status: &str, locked: bool, holder: Option<&str>, name: &
     Err(BoardError::new(
         ErrorCode::NotHolder,
         format!(
-            "领取已经失效：#{id} 现在在「{status}」，{who}。不要推集成分支：把改动推到 wip 分支，在卡片上评论说明，然后结束这张卡（不 final、不移动）"
+            "领取已经失效：#{id} 现在在「{status}」，{who}。不要推集成分支：把改动推到 wip 分支，在卡片上评论说明，然后结束这张卡（不 submit、不 giveup、不移动）"
         ),
     )
     .with_detail(json!({ "status": status, "holder": holder })))
@@ -246,7 +247,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     // 版本号（发版附件里的安装包、skill 自带的 board 都能这样核对）
     if a.flag("--version") || a.flag("-V") {
         let v = env!("CARGO_PKG_VERSION");
-        return Ok(if json { Output::Json(json!({ "version": v })) } else { Output::Text(format!("board {v}")) });
+        return Ok(if json { Output::Json(json!({ "version": v })) } else { Output::Text(format!("board {v}\n")) });
     }
     let sub = a.pos.first().map(|s| s.as_str());
     let sub = match sub {
@@ -975,7 +976,7 @@ fn help(p: &Paint) -> String {
         String::new(),
         format!("  {}默认是 todo  doing  review  done  rework  check；每块白板可以自定义，用 board flow 查看  {}", p.dim("状态："), p.dim("（未整理：inbox）")),
         format!(
-            "  {}会话开始时 board check --agent <标识>（例如 board check --agent dsh），名字由 Board 按这台机器的设置生成，之后不用再带 --as；也可以自己起名字：board check --as <名字>，之后每条命令都带 --as <名字>，或前缀 BOARD_AS=<名字>",
+            "  {}领卡用 board start <ID> --agent <标识>，一条命令占用名字、启动心跳、领取；不领卡的会话先 board check --agent <标识>（例如 board check --agent dsh），名字由 Board 按这台机器的设置生成，之后不用再带 --as；也可以自己起名字：board check --as <名字>，之后每条命令都带 --as <名字>，或前缀 BOARD_AS=<名字>",
             p.dim("身份：")
         ),
         format!("  {}--board <项目>/<白板>，或前缀 BOARD=<项目>/<白板>", p.dim("白板：")),
@@ -1053,6 +1054,7 @@ mod tests {
         let e = hold_check(7, "待办", false, None, "me/x").unwrap_err();
         assert_eq!(e.code, ErrorCode::NotHolder);
         assert!(e.message.contains("#7 现在在「待办」，没人持有"), "{}", e.message);
+        assert!(e.message.contains("不 submit、不 giveup、不移动"), "{}", e.message);
         let e = hold_check(7, "进行中", true, Some("other/y"), "me/x").unwrap_err();
         assert!(e.message.contains("由 other/y 持有"), "{}", e.message);
         assert!(hold_check(7, "待审核", false, Some("me/x"), "me/x").is_err(), "不在锁定状态也不算");
@@ -1239,6 +1241,9 @@ mod tests {
         for (cmd, _, _) in COMMANDS {
             assert!(h.contains(&format!("board {cmd}")), "help 里没有 {cmd}");
         }
+        let identity = h.lines().find(|l| l.contains("身份：")).unwrap();
+        assert!(identity.contains("领卡用 board start <ID> --agent <标识>"), "{identity}");
+        assert!(identity.contains("不领卡的会话先 board check --agent <标识>"), "{identity}");
     }
 
     #[test]
@@ -1247,13 +1252,13 @@ mod tests {
         let v = env!("CARGO_PKG_VERSION");
         for flag in ["--version", "-V"] {
             match run(&[flag.to_string()], &p) {
-                Ok(Output::Text(t)) => assert_eq!(t, format!("board {v}")),
+                Ok(Output::Text(t)) => assert_eq!(t, format!("board {v}\n")),
                 _ => panic!("{flag} 应该打印版本号"),
             }
-        }
-        match run(&["--version".to_string(), "--json".to_string()], &p) {
-            Ok(Output::Json(j)) => assert_eq!(j["version"], v),
-            _ => panic!("--version --json 应该输出 JSON"),
+            match run(&[flag.to_string(), "--json".to_string()], &p) {
+                Ok(Output::Json(j)) => assert_eq!(j, json!({ "version": v })),
+                _ => panic!("{flag} --json 应该输出 JSON"),
+            }
         }
     }
 
