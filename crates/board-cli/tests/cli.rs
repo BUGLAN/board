@@ -725,6 +725,18 @@ fn submit_and_giveup_in_one_command() {
             assert!(c["attachments"].as_array().unwrap().is_empty(), "{cmd} 被拒绝后不留附件：{c}");
         }
     }
+    // 几个附件里有一个服务端不收（内容和扩展名对不上）：在本地就拒绝，排在前面的也不上传（default/main#558）
+    let bad = dir.path().join("bad.png");
+    std::fs::write(&bad, "png\n").unwrap();
+    for cmd in ["submit", "giveup"] {
+        let r = s.run(ALPHA, &[cmd, "1", log.to_str().unwrap(), bad.to_str().unwrap(), "--comment", "做完", "--no-code", "--json"]);
+        assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
+        let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+        assert!(msg.contains("bad.png 的内容和扩展名对不上"), "{msg}");
+        let c = s.run(ALPHA, &["show", "1", "--json"]).json();
+        assert!(c["attachments"].as_array().unwrap().is_empty(), "{cmd} 有附件不合规时一个也不上传：{c}");
+        assert_eq!((c["column"].as_str(), c["holder"].as_str()), (Some("doing"), Some(ALPHA)));
+    }
     // 项目没设代码仓库：不查四行。附件随交审评论一起上传
     let r = s.run(ALPHA, &["submit", "1", log.to_str().unwrap(), detail.to_str().unwrap(), "--comment", "整理了文档", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);

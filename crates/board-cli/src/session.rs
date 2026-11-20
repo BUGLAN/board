@@ -168,11 +168,13 @@ pub(crate) fn submit_cmd(c: &Ctx, be: &mut Backend) -> Result<Output> {
             )));
         }
     }
-    // 附件先全部读进来：有一个读不到就不上传、不评论
+    // 附件先全部读进来，按服务端的规则检查（类型、大小、内容和扩展名对得上）：有一个不行就什么也不上传、不评论，
+    // 免得前面的已经挂到卡片上、后面的才被服务端拒绝（default/main#558）
     let mut blobs = vec![];
     for f in &a.pos[2..] {
         let bytes = std::fs::read(f).map_err(|e| BoardError::usage(format!("读不到文件 {f}：{e}")))?;
         let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+        let (name, _, _) = board_core::files::check(&name, &bytes).map_err(|e| BoardError::usage(format!("{f}：{}", e.message)))?;
         blobs.push((name, bytes));
     }
     // 上传会立刻把附件挂到卡片上：先排除交接会被拒绝的情况（和服务端 hand_over 同样的检查、同样的原因），
