@@ -19,7 +19,7 @@
 
 `board flow` 还列出这块白板所在项目的**代码仓库**（`repo`）和**集成分支**（`branch`，空表示按仓库的 AGENTS.md / CLAUDE.md），见 work.md「代码」。
 
-**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态看状态设置里的「交审状态」开关（`board flow` 的规则写「交审」，`--json` 里 `"review": true`），一块白板上都没打开时看名称里的「审核」这类关键词；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，50 秒后卡片回到领取前的状态，这时停下来告诉用户。卡片所在的锁定状态连不到交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`：连着下一个锁定状态时（两级锁定，`board start --json` 的 `next_lock`）先 `board move` 过去再交审；真的没有交审状态时改用 `board giveup`。
+**交审、做不下去时卡片去哪**：由 `board submit`、`board giveup` 在服务端认，`board start --json` 的 `review`、`giveup` 就是结果。交审状态看状态设置里的「交审状态」开关（`board flow` 的规则写「交审」，`--json` 里 `"review": true`），一块白板上都没打开时看名称里的「审核」这类关键词；错误节点只看 `board flow` 里的「错误节点」规则（`--json` 里 `"error": true`），不看名称；需要人处理的状态按名称认（例如带「人工」）。`board giveup` 先去错误节点，没有时去需要人处理的状态；两种都没有时只评论、结束计时，`--json` 返回 `moved: false`，50 秒后卡片回到领取前的状态，这时停下来告诉用户。卡片所在的锁定状态连不到交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`：连着下一个锁定状态时（两级锁定，`board start --json` 的 `next_lock`）先 `board move` 过去再交审；真的没有交审状态时改用 `board giveup`。
 
 - 代码仓库是当前工作目录所在的仓库；卡片描述指定了别的位置时以描述为准。
 - 得到 `NOT_LOGGED_IN`、`INVALID_TOKEN`、`UNREACHABLE` 时停下来告诉用户（见文末错误码），不要反复重试。
@@ -52,7 +52,6 @@ board labels
 board boards                              # 列出所有白板
 board files <ID> [--out <目录>]           # 下载卡片的附件到本地，列出路径
 board attach <ID> <文件>… [--comment "<说明>" | --comment-file <文件>]   # 上传附件（图片、日志等，≤ 10 MB），作为一条评论
-board attach <ID> <截图> --comment-file <交审评论文件>                    # 交审：证据和交审评论放在同一条里
 ```
 
 ## 错误码
@@ -62,7 +61,7 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | 错误码 | 含义 |
 |---|---|
 | `NO_IDENTITY` / `NO_BOARD` | 没有名字 / 白板：先 `board start <ID> --agent <标识>`（不领卡的会话 `board check --agent <标识>`）；白板用 `--board <项目>/<白板>` |
-| `NAME_TAKEN` | 名字正被另一个在线会话用着（`heartbeat start / stop` 得到它：你用了别的会话的名字）：换成自己占用成功的名字，或 `--as` 加一个和本会话相关的后缀 |
+| `NAME_TAKEN` | 显式指定的名字（`--as`）正被另一个在线会话占用，或心跳命令发现名字属于另一个会话：换一个带本会话相关后缀的名字。`--agent` 在机器可识别时会自动加 `-1`、`-2`……；机器不可识别、退回 `<agent>/<模型>` 名字时，如果它已被占用也会返回此错误 |
 | `NAME_OFFLINE` | 名字不在线（心跳中断超过 50 秒）：见 work.md「会话结束」最后一段 |
 | `BOARD_NOT_FOUND` | 白板不存在；或项目有多块白板却只写了项目标识（原因里列出了可选的白板） |
 | `NOT_FOUND` | 卡片不存在 |
@@ -77,3 +76,5 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里）；`board land`、`board hold` 返回它时已经等过 5 分钟，按 work.md「推送」第 3 步改推 wip 分支 |
 | `DISPATCHED` | 卡片已经派发给一台机器、正在排队（在「进行中」这类锁定状态里，没有持有者），或人强制释放后旧派发还在跑（卡片在可领取状态，没有持有者）：跳过这张，不要领、不要移动 |
 | `SESSION_DONE` | `board next`：这个会话不再接着做（排着的做完了、手动派发、有人停止、暂停接单、没有领取规则）：结束会话 |
+| `IN_TRASH` | 卡片在回收站里：请人先恢复卡片，再继续操作 |
+| `INTERNAL` | 服务端内部错误：停下来告诉用户 |

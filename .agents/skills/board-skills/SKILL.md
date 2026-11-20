@@ -46,7 +46,7 @@ Board 是看板式白板：人在界面上排优先级、复盘；你用 `board`
 
 - 每做完一张都重新 `board ls`：人可能调了顺序，别的 agent 可能领走了卡片。
 - `board ls` 只用来挑下一张，挑中后马上 `board start <ID>`，领到之后才读卡片、干活（见 work.md「处理一张卡片 → 先领卡，再干活」）。
-- `board start <ID>` 返回 `NOT_IN_TODO`、`NOT_HOLDER`（被别人抢先领走）、`DISPATCHED`（已经派给一台机器）时跳过这张，接着列下一张。
+- `board start <ID>` 返回 `NOT_IN_TODO`（已经被别人领走或移走）、`DISPATCHED`（已经派给一台机器）时跳过这张，接着列下一张。
 
 `开始执行 X项目之中的Y白板中的#Z任务` 是卡片详情「复制为提示词」复制出的完整写法：X 是项目标识、Y 是白板标识、Z 是卡片编号，对应的引用是 `X/Y#Z`。
 
