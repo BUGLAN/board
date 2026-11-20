@@ -748,6 +748,10 @@ pub struct BoardSnapshot {
     /// 所在项目的集成分支（空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这个字段
     #[serde(default)]
     pub branch: String,
+    /// 所在项目的标签：只有请求带 `labels=1` 时才有（命令行用：一个请求拿到工作流和标签，不用再取整个工作区）。
+    /// 界面的标签在工作区里，不带这个参数；旧服务端没有这个字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<Label>>,
 }
 
 /// 白板快照里每个终点状态默认带的张数（最近移入的，也就是最下面的几张）；更早的按需取全量

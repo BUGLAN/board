@@ -33,7 +33,7 @@ mod touched;
 mod update;
 mod versions;
 
-use backend::{env, Backend, BoardData, Remote};
+use backend::{env, needs_labels, want_of, Backend, BoardData, Remote, Want};
 use board_core::*;
 use chrono::TimeZone;
 use serde_json::{json, Value};
@@ -540,8 +540,9 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         let every = hold_every();
         let (path, flow, card) = hold_retry(
             || {
-                let d = be.board(&raw)?;
-                let c = d.cards.into_iter().find(|c| c.id == id).ok_or_else(|| BoardError::new(ErrorCode::NotFound, format!("#{id} 不存在")))?;
+                // 只要工作流和这一张卡：不取整块白板的卡片
+                let d = be.board(&raw, Want::Brief, false)?;
+                let c = be.card(&d.path, id)?.card;
                 Ok((d.path, d.flow, c))
             },
             Duration::from_secs(wait),
@@ -561,7 +562,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
         return Err(BoardError::code(ErrorCode::NoBoard));
     };
-    let BoardData { path, flow, repo, branch, cards: all, labels, now } = be.board(&raw)?;
+    // 每条命令都先取一次白板：只取这条命令用得到的（backend.rs 的 want_of、needs_labels），
+    // 终点状态攒了几百张卡的白板上，全量快照加整个工作区要好几秒
+    let BoardData { path, flow, repo, branch, cards: mut all, counts, omitted, labels, now } =
+        be.board(&raw, want_of(sub, a.value("--column").is_some()), needs_labels(sub, json))?;
     let label_name = |id: i64| labels.iter().find(|l| l.id == id).map(|l| l.name.clone()).unwrap_or_default();
     let find_label = |name: &str| -> Result<i64> {
         let q = name.trim().to_lowercase();
@@ -594,8 +598,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
 
     let out = match sub {
         "flow" => {
-            let cards = &all;
-            let count = |k: &str| cards.iter().filter(|c| c.column == k).count();
+            let count = |k: &str| counts.get(k).copied().unwrap_or(0);
             if json {
                 Output::Json(json!({
                     "repo": repo,
@@ -647,6 +650,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             };
             let label = a.value("--label").map(find_label).transpose()?;
             let q = a.value("--search").map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+            // 写了 --column 时先取的是「终点状态只带最近几张」的快照：要列的状态有被省略的，再取一次全量
+            if column.as_ref().is_some_and(|col| omitted.get(col).copied().unwrap_or(0) > 0) {
+                all = be.board(&raw, Want::Full, false)?.cards;
+            }
             let cards: Vec<Card> = all
                 .into_iter()
                 .filter(|c| column.as_ref().is_none_or(|col| &c.column == col))

@@ -577,6 +577,13 @@ struct BoardQuery {
     /// GET /api/board?full=1：终点状态也带全部卡片（默认只带最近的 FINAL_RECENT 张）
     #[serde(default)]
     full: Option<String>,
+    /// GET /api/board?brief=1：不带卡片和事件，只有工作流、每个状态的卡片编号（`cols`）和省略的张数。
+    /// 命令行的大多数命令只用得到工作流，不用每次传几百 KB 的卡片
+    #[serde(default)]
+    brief: Option<String>,
+    /// GET /api/board?labels=1：带上所在项目的标签（`labels`），命令行不用为了标签名再取整个工作区
+    #[serde(default)]
+    labels: Option<String>,
 }
 
 async fn board(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResult<BoardSnapshot> {
@@ -585,7 +592,15 @@ async fn board(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiRes
             st.read(|r| {
                 let b = r.resolve(&q.path)?;
                 let full = matches!(q.full.as_deref(), Some("1" | "true"));
-                r.board_snapshot(&b, now_ms(), full)
+                let mut snap = r.board_snapshot(&b, now_ms(), full)?;
+                if matches!(q.brief.as_deref(), Some("1" | "true")) {
+                    snap.cards.clear();
+                    snap.log.clear();
+                }
+                if matches!(q.labels.as_deref(), Some("1" | "true")) {
+                    snap.labels = Some(r.labels(&b.project)?);
+                }
+                Ok(snap)
             })
         })
         .await?,

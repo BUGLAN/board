@@ -635,3 +635,63 @@ fn hold_waits_for_the_server() {
     assert_eq!(r.json()["ok"].as_bool(), Some(true));
     assert!(r.err.contains("连不上服务端"), "{}", r.err);
 }
+
+/// 每条命令只取用得到的数据（backend.rs 的 want_of、needs_labels），结果和取全量时一样：
+/// 终点状态攒的卡比快照默认带的（FINAL_RECENT）多时，flow 的张数含省略的，ls 仍然列全部；
+/// hold、comment 这类只用工作流的命令照常
+#[test]
+fn commands_fetch_only_what_they_need() {
+    use board_core::{Actor, Cmd, Origin, Store, FINAL_RECENT};
+    let s = start();
+    let n = FINAL_RECENT + 5;
+    {
+        // 人把一批卡直接放进「已完成」（agent 不能移入终点状态）
+        let mut store = Store::open(&s.db).unwrap();
+        let human = Actor::human();
+        store
+            .write(board_core::now_ms(), Origin::ui(None), |w| {
+                let b = w.resolve("default/main")?;
+                for i in 0..n {
+                    let d = w.exec(&b, &human, Cmd::New { title: format!("旧卡 {i}"), body: None, column: None, top: false, labels: vec![], from: None })?;
+                    w.exec(&b, &human, Cmd::Move { id: d.card.id, column: "done".into(), top: false, index: None, order: None, before: None, after: None })?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    s.create_label("bug");
+    let id = s.run(ALPHA, &["new", "新卡", "--label", "bug", "--json"]).json()["id"].as_i64().unwrap();
+    assert_eq!(id as usize, n + 1);
+
+    // flow：张数含快照里省略的
+    let flow = s.run(ALPHA, &["flow", "--json"]).json();
+    let cards_in = |key: &str| flow["statuses"].as_array().unwrap().iter().find(|st| st["key"] == key).unwrap()["cards"].as_u64().unwrap() as usize;
+    assert_eq!((cards_in("todo"), cards_in("done")), (1, n));
+    let text = s.run(ALPHA, &["flow"]).out;
+    assert!(text.contains(&format!("{n} 张")), "{text}");
+
+    // ls：不带 --column 列全部；--column 是终点状态时也列全部（省略的再取一次全量）；别的状态照常，标签名还在
+    let len = |args: &[&str]| s.run(ALPHA, args).json().as_array().unwrap().len();
+    assert_eq!(len(&["ls", "--json"]), n + 1);
+    assert_eq!(len(&["ls", "--column", "done", "--json"]), n);
+    assert_eq!(len(&["ls", "--search", "旧卡", "--json"]), n);
+    let todo = s.run(ALPHA, &["ls", "--column", "todo", "--json"]).json();
+    assert_eq!(todo.as_array().unwrap().len(), 1);
+    assert_eq!(todo[0]["labels"], serde_json::json!(["bug"]));
+    assert!(s.run(ALPHA, &["ls", "--column", "todo"]).out.contains("#bug"));
+
+    // 只用工作流的命令：文字输出不取标签，--json 仍然带标签名
+    assert_eq!(s.run(ALPHA, &["claim", &id.to_string()]).code, 0);
+    let r = s.run(ALPHA, &["comment", &id.to_string(), "进展"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = s.run(ALPHA, &["comment", &id.to_string(), "再一条", "--json"]).json();
+    assert_eq!(c["labels"], serde_json::json!(["bug"]));
+    // hold：只取工作流和这一张卡
+    let h = s.run(ALPHA, &["hold", &id.to_string(), "--json"]);
+    assert_eq!((h.code, h.json()["ok"].as_bool()), (0, Some(true)), "{}{}", h.out, h.err);
+    // 很早以前完成、快照里已经省略的卡：是「领取已经失效」，不是「不存在」
+    let old = s.run(ALPHA, &["hold", "1", "--json"]);
+    assert_eq!((old.code, old.error_code().as_str()), (1, "NOT_HOLDER"), "{}{}", old.out, old.err);
+    let gone = s.run(ALPHA, &["hold", "9999", "--json"]);
+    assert_eq!((gone.code, gone.error_code().as_str()), (1, "NOT_FOUND"), "{}{}", gone.out, gone.err);
+}

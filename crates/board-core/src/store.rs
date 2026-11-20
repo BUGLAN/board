@@ -896,6 +896,7 @@ impl<'a> R<'a> {
             trash,
             repo,
             branch,
+            labels: None,
         })
     }
 

@@ -8,6 +8,7 @@ use crate::config::{self, Conn};
 use board_core::*;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub use crate::config::env;
@@ -20,6 +21,35 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// board host 的请求超时：主循环上的上报、开始派发、日志上传最多等 10 秒，不能被一个慢请求卡住 30 秒
 const HOST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 一条命令要白板快照里的多少：每条命令都先取一次快照，取多了就慢——
+/// 终点状态攒了几百张卡的白板，全量快照有几百 KB，而大多数命令只用得到工作流
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Want {
+    /// 只要工作流、每个状态的张数、仓库和集成分支：`GET /api/board?brief=1`，不带卡片和事件。
+    /// 旧服务端不认 `brief`，照常返回带卡片的快照，结果一样、只是没省下流量
+    Brief,
+    /// 还要卡片，终点状态只带最近的 `FINAL_RECENT` 张（省略了几张记在 `omitted` 里）
+    Recent,
+    /// 全部卡片：`GET /api/board?full=1`
+    Full,
+}
+
+/// 这条命令要快照里的多少。只有 `ls` 用得到卡片：没写 `--column` 时列全部（终点状态也要全），
+/// 写了时先取最近的，那个状态有被省略的再取全量（见 main.rs 的 `ls`）
+pub fn want_of(sub: &str, has_column: bool) -> Want {
+    match sub {
+        "ls" if has_column => Want::Recent,
+        "ls" => Want::Full,
+        _ => Want::Brief,
+    }
+}
+
+/// 这条命令的输出用不用得到标签（名称、是否优先）：用不到就不取工作区。
+/// `--json` 的卡片都带标签名；文字输出里只有下面几条命令会写标签，`flow` 两种输出都不写
+pub fn needs_labels(sub: &str, json: bool) -> bool {
+    matches!(sub, "ls" | "show" | "new" | "claim" | "next" | "label" | "labels") || (json && sub != "flow")
+}
+
 /// 一块白板上命令需要的数据
 pub struct BoardData {
     pub path: String,
@@ -27,9 +57,13 @@ pub struct BoardData {
     /// 项目设置的代码仓库地址、集成分支（空表示没设；PRD §4）
     pub repo: String,
     pub branch: String,
-    /// 按工作流和状态内顺序排列（「未整理」在最前）
+    /// 按工作流和状态内顺序排列（「未整理」在最前）；`Want::Brief` 时为空，`Want::Recent` 时终点状态只有最近的几张
     pub cards: Vec<Card>,
-    /// 白板所属项目的标签
+    /// 每个状态的张数（含快照里省略的）
+    pub counts: BTreeMap<String, usize>,
+    /// 终点状态里被省略的张数（`Want::Full` 时为空）
+    pub omitted: BTreeMap<String, usize>,
+    /// 白板所属项目的标签；没要（`with_labels` 为 false）时为空
     pub labels: Vec<Label>,
     pub now: i64,
 }
@@ -114,9 +148,35 @@ impl Backend {
         self.0.get("/api/workspace", &[])
     }
 
-    pub fn board(&mut self, raw: &str) -> Result<BoardData> {
-        let r = &self.0;
-        let mut snap: BoardSnapshot = r.get("/api/board", &[("path", raw), ("full", "1")])?;
+    /// 白板所属项目的标签，从工作区里取（`GET /api/workspace`）：旧服务端的快照不带标签时用
+    fn labels(&mut self, path: &str) -> Result<Vec<Label>> {
+        let project = path.split('/').next().unwrap_or_default();
+        let ws = self.workspace()?;
+        Ok(ws.projects.into_iter().find(|p| p.key == project).map(|p| p.labels).unwrap_or_default())
+    }
+
+    /// 取一块白板。`want`：要快照里的多少；`with_labels`：要不要项目的标签（`needs_labels`）——
+    /// 新服务端随快照一起返回（`labels=1`），旧服务端的快照里没有，再取一次工作区
+    pub fn board(&mut self, raw: &str, want: Want, with_labels: bool) -> Result<BoardData> {
+        let mut query = vec![("path", raw)];
+        match want {
+            Want::Brief => query.push(("brief", "1")),
+            Want::Recent => {}
+            Want::Full => query.push(("full", "1")),
+        }
+        if with_labels {
+            query.push(("labels", "1"));
+        }
+        let mut snap: BoardSnapshot = self.0.get("/api/board", &query)?;
+        let labels = match snap.labels.take() {
+            Some(l) => l,
+            None if with_labels => self.labels(&snap.path)?,
+            None => vec![],
+        };
+        let mut counts: BTreeMap<String, usize> = snap.cols.iter().map(|(k, ids)| (k.clone(), ids.len())).collect();
+        for (k, n) in &snap.omitted {
+            *counts.entry(k.clone()).or_insert(0) += n;
+        }
         // ls 的顺序：未整理，再按工作流顺序，状态内按位置
         let mut order: Vec<String> = vec![INBOX.to_string()];
         order.extend(snap.statuses.iter().map(|s| s.key.clone()));
@@ -129,10 +189,17 @@ impl Backend {
                 }
             }
         }
-        let project = snap.path.split('/').next().unwrap_or_default().to_string();
-        let ws: Workspace = r.get("/api/workspace", &[])?;
-        let labels = ws.projects.into_iter().find(|p| p.key == project).map(|p| p.labels).unwrap_or_default();
-        Ok(BoardData { path: snap.path, flow: Flow(snap.statuses), repo: snap.repo, branch: snap.branch, cards, labels, now: snap.now })
+        Ok(BoardData {
+            path: snap.path,
+            flow: Flow(snap.statuses),
+            repo: snap.repo,
+            branch: snap.branch,
+            cards,
+            counts,
+            omitted: snap.omitted,
+            labels,
+            now: snap.now,
+        })
     }
 
     pub fn card(&mut self, path: &str, id: i64) -> Result<CardDetail> {
@@ -393,6 +460,31 @@ mod tests {
     fn host_uses_short_timeout_commands_keep_long_one() {
         assert_eq!(timeout_of(Remote::with_timeout, HOST_TIMEOUT), Some(Duration::from_secs(10)));
         assert_eq!(timeout_of(Remote::with_timeout, COMMAND_TIMEOUT), Some(Duration::from_secs(30)));
+    }
+
+    /// 只有 ls 取卡片：不写 --column 取全量，写了先取最近的；其他命令只取工作流
+    #[test]
+    fn only_ls_wants_cards() {
+        assert_eq!(want_of("ls", false), Want::Full);
+        assert_eq!(want_of("ls", true), Want::Recent);
+        for sub in ["flow", "show", "new", "edit", "move", "claim", "next", "comment", "beat", "label", "labels", "attach", "files"] {
+            assert_eq!(want_of(sub, false), Want::Brief, "{sub}");
+        }
+    }
+
+    /// 文字输出里写标签的命令和所有 --json 输出（flow 除外）才取标签
+    #[test]
+    fn labels_only_when_the_output_shows_them() {
+        for sub in ["ls", "show", "new", "claim", "next", "label", "labels"] {
+            assert!(needs_labels(sub, false), "{sub}");
+        }
+        for sub in ["flow", "edit", "move", "comment", "beat", "attach", "files"] {
+            assert!(!needs_labels(sub, false), "{sub}");
+        }
+        for sub in ["edit", "move", "comment", "beat", "attach", "files"] {
+            assert!(needs_labels(sub, true), "{sub} --json");
+        }
+        assert!(!needs_labels("flow", true));
     }
 
     // 0 秒在 ureq 里是「不限」：不能把「没给超时」变成「立刻超时」
