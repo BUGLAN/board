@@ -420,6 +420,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "getrandom 0.3.4",
+ "mime_guess",
  "rusqlite",
  "rust-embed",
  "serde",

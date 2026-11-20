@@ -7,6 +7,12 @@
 <meta name="theme-color" content="#F2F0EB" media="(prefers-color-scheme: light)">
 <meta name="color-scheme" content="light dark">
 <title>Board</title>
+<!-- 手机上「添加到主屏幕」：像应用一样单独打开，没有浏览器的地址栏。图标由 scripts/build-icons.py 生成（web/public/icons）；
+     iOS 不读 manifest 里的图标，用 apple-touch-icon。不注册 service worker：不做离线，界面始终取最新的 -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Board">
 <!-- 首帧就按主题上底色：主题偏好存在 localStorage，样式和脚本包还没加载时页面也不是白的（桌面端从启动页跳过来、慢网都不闪白）。
      与 lib/platform.ts 的 setTheme、styles/tokens.css 的 --bg 一致 -->
 <!-- 不写内联脚本：页面的 CSP（board-server 的 CSP）只允许同源的脚本文件 -->

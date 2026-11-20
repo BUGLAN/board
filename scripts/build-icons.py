@@ -10,9 +10,13 @@ macOS 的 icon.icns 另外生成：source.svg 的圆角矩形占 1024 画布的 
 而 macOS 图标模板里圆角矩形只占 824×824（四周留 100），直接用会在 Dock、
 App 切换器里比别的应用大一圈。所以 macOS 用一份按模板缩小、加了投影的 SVG。
 
+网页端「添加到主屏幕」的图标（web/public/icons）也在这里生成：192、512 直接用 icon.png，
+maskable 和 apple-touch-icon 是铺满画布、没有圆角的一版（系统自己裁形状）。
+
 用法（仓库根目录，先 npm ci；需要 Python 3 和 Pillow）：
 
-    python scripts/build-icons.py
+    python scripts/build-icons.py          # 全部
+    python scripts/build-icons.py --web    # 只生成网页端主屏图标（不需要 npm ci）
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "src-tauri" / "icons"
+WEB_ICONS = ROOT / "web" / "public" / "icons"
 WORK = ROOT / "target" / "icon-build"
 
 # source.svg 的几何比例（viewBox 1024）：4 根竖条从 x=232 开始，每根宽 112、间隔 56；
@@ -91,6 +96,40 @@ def render_small(size: int) -> Image.Image:
         x += bar_w + gap
 
     return canvas.resize((size, size), Image.Resampling.BOX)
+
+
+def render_bleed(size: int) -> Image.Image:
+    """铺满整个画布的图标：没有圆角和透明边，竖条的位置和 source.svg 一样。
+
+    手机主屏的图标由系统自己裁形状（iOS 裁圆角矩形，Android 的 maskable 图标裁圆、圆角矩形等），
+    带透明圆角的图标放上去会露出黑边或白边。竖条都在中间 80% 的安全区里（离中心最远 379/1024，
+    安全区半径 409.6/1024），怎么裁都不会切到。
+    """
+    n = size * SS
+    canvas = Image.new("RGB", (n, n))
+    draw = ImageDraw.Draw(canvas)
+    for y in range(n):
+        t = y / (n - 1)
+        draw.line([(0, y), (n, y)], fill=tuple(round(BG_TOP[i] + (BG_BOTTOM[i] - BG_TOP[i]) * t) for i in range(3)))
+    x = 232 / 1024
+    for i in range(4):
+        draw.rounded_rectangle(
+            [x * n, 0.25 * n, (x + BAR_WIDTH) * n, (0.25 + HEIGHTS[i]) * n],
+            radius=BAR_WIDTH / 2 * n,
+            fill=COLORS[i],
+        )
+        x += BAR_WIDTH + BAR_GAP
+    return canvas.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def render_web() -> None:
+    """网页端「添加到主屏幕」用的图标（web/public/icons，manifest.webmanifest 和 index.html 引用）。"""
+    WEB_ICONS.mkdir(parents=True, exist_ok=True)
+    icon = Image.open(ICONS / "icon.png").convert("RGBA")
+    icon.save(WEB_ICONS / "icon-512.png", optimize=True)
+    icon.resize((192, 192), Image.Resampling.LANCZOS).save(WEB_ICONS / "icon-192.png", optimize=True)
+    render_bleed(512).save(WEB_ICONS / "maskable-512.png", optimize=True)
+    render_bleed(180).save(WEB_ICONS / "apple-touch-icon.png", optimize=True)
 
 
 def tauri_icon(svg: Path, out: Path, *args: str) -> None:
@@ -194,6 +233,10 @@ def write_ico(frames: list[tuple[int, Path]], dest: Path) -> None:
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if "--web" in sys.argv[1:]:
+        render_web()
+        print("✓ 网页端主屏图标已生成：web/public/icons（192、512、maskable 512、apple-touch-icon 180）")
+        return
     small_dir = WORK / "small"
     small_dir.mkdir(parents=True, exist_ok=True)
     for size in SMALL_SIZES:
@@ -211,8 +254,10 @@ def main() -> None:
     shutil.copyfile(large[512], ICONS / "icon.png")
 
     render_macos()
+    render_web()
     print("✓ 图标已生成：icon.ico（16/20/24/30/32/36/40/42/48/64/128/256）+ 32/128/256/512 PNG")
     print("  icon.icns（macOS，16 到 1024，圆角矩形 824×824 + 投影）")
+    print("  web/public/icons（网页端主屏图标：192、512、maskable 512、apple-touch-icon 180）")
 
 
 if __name__ == "__main__":

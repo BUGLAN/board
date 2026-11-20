@@ -1,6 +1,6 @@
 # 图标
 
-`source.svg` 是源文件（1024×1024）。重新生成全部图标（`icon.ico`、各尺寸 PNG、`icon.icns`）：
+`source.svg` 是源文件（1024×1024）。重新生成全部图标（`icon.ico`、各尺寸 PNG、`icon.icns`，以及网页端「添加到主屏幕」用的 `web/public/icons/`）：
 
 ```sh
 python scripts/build-icons.py   # 需要 Python 3 和 Pillow，先 npm ci
