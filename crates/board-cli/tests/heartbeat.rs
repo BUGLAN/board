@@ -311,6 +311,13 @@ fn board_start_on_two_lock_flow_points_to_next_lock() {
     assert_eq!(r.error_code(), "FORBIDDEN_COLUMN", "{}{}", r.out, r.err);
     let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
     assert!(msg.contains("先 board move 1 测试中") && !msg.contains("giveup"), "{msg}");
+    // 带附件时命令行先检查（default/main#540）：同样的原因，附件不上传
+    let log = e.tmp.path().join("run.log");
+    std::fs::write(&log, "ok\n").unwrap();
+    let r = run(&["submit", "1", log.to_str().unwrap(), "--comment", "做完", "--no-code", "--json"]);
+    assert_eq!(r.error_code(), "FORBIDDEN_COLUMN", "{}{}", r.out, r.err);
+    assert_eq!(r.json()["error"]["message"].as_str(), Some(msg.as_str()));
+    assert!(run(&["show", "1", "--json"]).json()["attachments"].as_array().unwrap().is_empty());
     // 移到第二级再交审
     assert_eq!(run(&["move", "1", "测试中"]).code, 0);
     let r = run(&["submit", "1", "--comment", "做完", "--no-code", "--json"]);

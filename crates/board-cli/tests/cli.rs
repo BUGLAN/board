@@ -703,6 +703,11 @@ fn commands_fetch_only_what_they_need() {
 #[test]
 fn submit_and_giveup_in_one_command() {
     let s = start();
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("check.log");
+    let detail = dir.path().join("detail.txt");
+    std::fs::write(&log, "ok\n").unwrap();
+    std::fs::write(&detail, "details\n").unwrap();
     for t in ["一", "二", "三"] {
         s.run(ALPHA, &["new", t]);
     }
@@ -712,18 +717,26 @@ fn submit_and_giveup_in_one_command() {
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
     let r = s.run("test/beta", &["submit", "1", "--comment", "做完了", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_HOLDER"), "{}{}", r.out, r.err);
+    // 别人持有或没人持有时，submit / giveup 都要在上传前拒绝
+    for (id, message) in [("1", "#1 由 test/alpha 持有，你不是持有者"), ("2", "#2 没有被领取：先 board start 2")] {
+        for cmd in ["submit", "giveup"] {
+            let r = s.run("test/beta", &[cmd, id, log.to_str().unwrap(), "--comment", "交给人", "--json"]);
+            assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_HOLDER"), "{}{}", r.out, r.err);
+            assert_eq!(r.json()["error"]["message"], message);
+            let c = s.run(ALPHA, &["show", id, "--json"]).json();
+            assert!(c["attachments"].as_array().unwrap().is_empty(), "{cmd} 被拒绝后不留附件：{c}");
+        }
+    }
     // 项目没设代码仓库：不查四行。附件随交审评论一起上传
-    let dir = tempfile::tempdir().unwrap();
-    let log = dir.path().join("check.log");
-    std::fs::write(&log, "ok\n").unwrap();
-    let r = s.run(ALPHA, &["submit", "1", log.to_str().unwrap(), "--comment", "整理了文档", "--json"]);
+    let r = s.run(ALPHA, &["submit", "1", log.to_str().unwrap(), detail.to_str().unwrap(), "--comment", "整理了文档", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let c = r.json();
     assert_eq!((c["column"].as_str(), c["holder"].as_str(), c["moved"].as_bool()), (Some("review"), None, Some(true)));
-    assert_eq!(c["uploaded"].as_array().unwrap().len(), 1);
+    assert_eq!(c["uploaded"].as_array().unwrap().len(), 2);
+    assert_eq!(c["attachments"].as_array().unwrap().len(), 2);
     let said = c["activity"].as_array().unwrap().iter().filter(|a| a["action"] == "comment").map(|a| a["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     assert_eq!(said.len(), 1, "说明和附件在同一条评论里：{said:?}");
-    assert!(said[0].starts_with("整理了文档") && said[0].contains("check.log"), "{said:?}");
+    assert!(said[0].starts_with("整理了文档") && said[0].contains("check.log") && said[0].contains("detail.txt"), "{said:?}");
     assert_eq!(c["work"]["runs"], 0, "没发过心跳：没有一次计时，也不算异常退出");
 
     // 项目设了代码仓库：交审评论缺行就拒绝，卡片不动
@@ -734,11 +747,13 @@ fn submit_and_giveup_in_one_command() {
             .unwrap();
     }
     assert_eq!(s.run(ALPHA, &["claim", "2"]).code, 0);
-    let r = s.run(ALPHA, &["submit", "2", "--comment", "改了登录页\n提交：abc1234\n集成分支：main", "--json"]);
+    let r = s.run(ALPHA, &["submit", "2", log.to_str().unwrap(), "--comment", "改了登录页\n提交：abc1234\n集成分支：main", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
     let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
     assert!(msg.contains("「检查：」「碰到的别的卡：」") && !msg.contains("缺这几行：「提交：」") && msg.contains("--no-code"), "{msg}");
-    assert_eq!(s.run(ALPHA, &["show", "2", "--json"]).json()["column"], "doing");
+    let c = s.run(ALPHA, &["show", "2", "--json"]).json();
+    assert_eq!(c["column"], "doing");
+    assert!(c["attachments"].as_array().unwrap().is_empty());
     // 有键却没填和真正缺行分别报错；校验先于附件上传和交审写入。
     let before = s.run(ALPHA, &["show", "2", "--json"]).json();
     for (comment, expected) in [
@@ -800,4 +815,28 @@ fn submit_and_giveup_in_one_command() {
     assert!(r.out.contains("已交给人处理") && r.out.contains("需人工校验"), "{}", r.out);
     let c = s.run(ALPHA, &["show", "4", "--json"]).json();
     assert_eq!((c["column"].as_str(), c["holder"].as_str()), (Some("check"), None));
+
+    // 没有交审连线：submit 不上传；接着 giveup 同一份文件只留一份附件
+    s.run(ALPHA, &["new", "五"]);
+    assert_eq!(s.run(ALPHA, &["claim", "5"]).code, 0);
+    {
+        let mut store = board_core::Store::open(&s.db).unwrap();
+        store
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
+                w.update_edges("default/main", &[], &[("doing".into(), "review".into())])
+            })
+            .unwrap();
+    }
+    let no_files = s.run(ALPHA, &["submit", "5", "--comment", full, "--json"]);
+    let r = s.run(ALPHA, &["submit", "5", log.to_str().unwrap(), "--comment", full, "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "FORBIDDEN_COLUMN"), "{}{}", r.out, r.err);
+    assert_eq!(r.json()["error"], no_files.json()["error"], "与服务端拒绝时的提示一致");
+    let c = s.run(ALPHA, &["show", "5", "--json"]).json();
+    assert!(c["attachments"].as_array().unwrap().is_empty(), "交审被拒绝后不留附件：{c}");
+    let r = s.run(ALPHA, &["giveup", "5", log.to_str().unwrap(), "--comment", "没有交审状态，交给人", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!(c["column"], "check");
+    assert_eq!(c["uploaded"].as_array().unwrap().len(), 1);
+    assert_eq!(c["attachments"].as_array().unwrap().len(), 1);
 }

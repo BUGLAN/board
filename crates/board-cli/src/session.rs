@@ -132,7 +132,8 @@ pub(crate) fn start_cmd(c: &Ctx, be: &mut Backend, started: &Option<(String, boo
 }
 
 /// `board submit` / `board giveup`：上传附件、评论、结束计时、移到交审状态或错误节点。
-/// 不先取白板：工作流在返回里（见 card.rs）；交审评论缺固定的四行时才取一次，看项目有没有设代码仓库
+/// 带附件时先读卡片检查能否交接；交审评论缺固定的四行时取白板，看项目有没有设代码仓库。
+/// 不带附件且四行齐全时不先读：工作流在命令返回里（见 card.rs）
 pub(crate) fn submit_cmd(c: &Ctx, be: &mut Backend) -> Result<Output> {
     let Ctx { a, sub, json, p, raw, name, actor, origin } = *c;
     let giveup = sub == "giveup";
@@ -173,6 +174,20 @@ pub(crate) fn submit_cmd(c: &Ctx, be: &mut Backend) -> Result<Output> {
         let bytes = std::fs::read(f).map_err(|e| BoardError::usage(format!("读不到文件 {f}：{e}")))?;
         let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
         blobs.push((name, bytes));
+    }
+    // 上传会立刻把附件挂到卡片上：先排除交接会被拒绝的情况（和服务端 hand_over 同样的检查、同样的原因），
+    // 免得留下没有评论引用的附件（default/main#540）。不带附件时不多发这个请求
+    if !blobs.is_empty() {
+        let cur = be.card(raw, id)?;
+        if cur.card.holder.as_deref() != Some(name) {
+            return Err(BoardError::not_holder(id, cur.card.holder.as_deref()));
+        }
+        if !giveup {
+            let flow = be.view(raw, &cur, false)?.flow;
+            if flow.review_after(&cur.card.column).is_none() {
+                return Err(BoardError::new(ErrorCode::ForbiddenColumn, flow.no_review_reason(id, &cur.card.column)));
+            }
+        }
     }
     let mut done: Vec<Attachment> = vec![];
     for (fname, bytes) in &blobs {
@@ -360,11 +375,7 @@ fn hand_over(
     let cur = card(id)?.card;
     let flow = flow_of()?;
     if cur.holder.as_deref() != Some(name) {
-        let msg = match &cur.holder {
-            Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
-            None => format!("#{id} 没有被领取：先 board start {id}"),
-        };
-        return Err(BoardError::new(ErrorCode::NotHolder, msg));
+        return Err(BoardError::not_holder(id, cur.holder.as_deref()));
     }
     let target = if giveup { flow.giveup_after(&cur.column) } else { flow.review_after(&cur.column) }.map(|s| s.key.clone());
     if !giveup && target.is_none() {

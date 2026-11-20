@@ -651,11 +651,7 @@ impl<'a> W<'a> {
                     return self.read().card(board, id);
                 }
                 if !is_holder(&r) {
-                    let msg = match &r.holder {
-                        Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
-                        None => format!("#{id} 没有被领取：先 board start {id}"),
-                    };
-                    return Err(BoardError::new(ErrorCode::NotHolder, msg));
+                    return Err(BoardError::not_holder(id, r.holder.as_deref()));
                 }
                 let finished: Option<i64> =
                     self.tx.query_row("SELECT final_at FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
@@ -1048,11 +1044,7 @@ impl<'a> W<'a> {
         self.sweep_board(board.id)?;
         let r = self.row(board.id, id)?;
         if !(actor.is_agent() && r.holder.as_deref() == Some(actor.name.as_str())) {
-            let msg = match &r.holder {
-                Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
-                None => format!("#{id} 没有被领取：先 board start {id}"),
-            };
-            return Err(BoardError::new(ErrorCode::NotHolder, msg));
+            return Err(BoardError::not_holder(id, r.holder.as_deref()));
         }
         let flow = self.read().flow(board)?;
         let target = if giveup { flow.giveup_after(&r.col) } else { flow.review_after(&r.col) }.map(|s| s.key.clone());

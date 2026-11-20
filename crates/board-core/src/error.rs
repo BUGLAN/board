@@ -171,6 +171,14 @@ impl BoardError {
     pub fn usage(message: impl Into<String>) -> Self {
         BoardError::new(ErrorCode::Usage, message)
     }
+    /// 卡片不归你持有（`NOT_HOLDER`）：服务端的交接、心跳和命令行上传附件前的检查共用这两句
+    pub fn not_holder(id: i64, holder: Option<&str>) -> Self {
+        let msg = match holder {
+            Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
+            None => format!("#{id} 没有被领取：先 board start {id}"),
+        };
+        BoardError::new(ErrorCode::NotHolder, msg)
+    }
     pub fn with_detail(mut self, detail: serde_json::Value) -> Self {
         self.detail = Some(detail);
         self
