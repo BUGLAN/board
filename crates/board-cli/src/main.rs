@@ -6,7 +6,7 @@
 //! 所有命令支持 `--json`。成功退出码 0；被拒绝退出码 1，并给出错误码和原因。
 //! 数据：通过服务端读写。服务端地址和访问令牌由 `board login` 写进 `~/.board/config.toml`，
 //! 环境变量 `BOARD_URL`、`BOARD_TOKEN` 优先；没有配置时直接报错。见 backend.rs、config.rs。
-//! 任务下发：`board host` 在这台机器上常驻接派发（host.rs），`board dispatch` 把卡片派给一台机器。
+//! 任务下发：`board host` 在这台机器上常驻接派发（host/），`board dispatch` 把卡片派给一台机器。
 
 mod acp;
 mod backend;

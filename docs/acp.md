@@ -94,7 +94,7 @@ ACP 官方 agents 页和 clients 页已经列出大量实现；Registry 是官�
 
 ### 启动和输入
 
-`board host` 的内置 agent 定义在 `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`。四个模板都是一次性命令，`{prompt}` 在 `crates/board-cli/src/host.rs` 的 `agent_args`/`spawn` 里作为一个参数传入；标准输入是 `Stdio::null()`，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`。命令模板和启动环境见 `docs/agents.md`「board host 怎么启动 agent」「已经接入的（内置模板）」。
+`board host` 的内置 agent 定义在 `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`。四个模板都是一次性命令，`{prompt}` 在 `crates/board-cli/src/host/runs.rs` 的 `agent_args`/`spawn` 里作为一个参数传入；标准输入是 `Stdio::null()`，标准输出和标准错误写到 `~/.board/host/logs/<派发 ID>.log`。命令模板和启动环境见 `docs/agents.md`「board host 怎么启动 agent」「已经接入的（内置模板）」。
 
 当前模板：
 
@@ -119,7 +119,7 @@ ACP 官方 agents 页和 clients 页已经列出大量实现；Registry 是官�
 
 ### 进程、会话和停止
 
-- 手动派发一个会话只做一张卡；自动领取一次可能给一个 agent 进程排最多 `per_session` 张卡，agent 用 `board next` 在同一进程里接着做。服务端在 `crates/board-core/src/hosts.rs` 的 `plan_session`/`dispatch_next` 里安排，`board host` 用 `successor` 把后续派发映射到同一个 `Run`。
+- 手动派发一个会话只做一张卡；自动领取一次可能给一个 agent 进程排最多 `per_session` 张卡，agent 用 `board next` 在同一进程里接着做。服务端在 `crates/board-core/src/hosts/run.rs` 的 `plan_session`/`dispatch_next` 里安排，`board host` 用 `successor` 把后续派发映射到同一个 `Run`。
 - 停止时 `Run::stop` 结束进程树：macOS/Linux 先发 SIGTERM，10 秒后升级为 SIGKILL；Windows 用进程树结束；WSL 通过 `BOARD_PIDFILE` 找到 WSL 内的进程组。`enforce_timeouts` 还会处理“运行超过 N 分钟”和“多久没有任何输出”。
 - agent 退出后 `reap`/`finish_run` 读取退出码、最后日志和事件，并在异常退出、超时、人工停止时评论卡片。`shutdown` 在 `board host` 退出时结束所有在跑的 agent。
 - 环境变量里带 `BOARD_URL`、`BOARD_TOKEN`、`BOARD_AS`、`BOARD_HOST`、`BOARD` 和 `BOARD_CONFIG`；`BOARD_CONFIG` 是本次派发专用的配置文件，解决某些 agent 不传 `*_TOKEN` 环境变量的问题。登录和模型供应商仍由各 agent 自己的配置文件/登录状态负责，Board 只是写入或同步配置。
@@ -292,10 +292,10 @@ Board 现在的接入方式**不是“每个 agent 完全独立”**：启动环
 ### Board 仓库依据
 
 31. `crates/board-core/src/agentdef.rs`：`AGENT_DEFS`、四个内置命令、安装/更新、skills、MCP 和模型相关元数据。
-32. `crates/board-cli/src/host.rs`：`spawn`、`agent_args`、`dispatch_prompt`、`Run::stop`、`reap`、`finish_run`、`enforce_timeouts`、`shutdown`。
+32. `crates/board-cli/src/host/`（`runs.rs`）：`spawn`、`agent_args`、`dispatch_prompt`、`Run::stop`、`reap`、`finish_run`、`enforce_timeouts`、`shutdown`。
 33. `crates/board-cli/src/logfmt.rs`、`crates/board-cli/src/events.rs`：四种 JSONL 的转写和结构化事件解析；`stream_for` 的识别范围。
 34. `crates/board-core/src/runlog.rs`：`RunEvent` 字段、事件保留上限和界面展示模型。
-35. `crates/board-core/src/hosts.rs`：`plan_session`、`dispatch_next`、`successor`、派发结果和会话状态。
+35. `crates/board-core/src/hosts/`（`run.rs`）：`plan_session`、`dispatch_next`、`successor`、派发结果和会话状态。
 36. `docs/agents.md`：Board 的启动环境、结构化输出、安装更新、MCP、模型供应商和内置模板说明。
 
 [acp-overview]: https://agentclientprotocol.com/protocol/v1/overview.md
