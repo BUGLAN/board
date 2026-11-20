@@ -25,7 +25,7 @@
 
 `board flow` 还列出这块白板所在项目（项目设置）的**代码仓库**（`repo`）和**集成分支**（`branch`，空表示按仓库的 AGENTS.md / CLAUDE.md）。集成分支是 agent 推送的目标，见 work.md「代码」。
 
-**认出角色**：work.md、host.md 里的流程不依赖具体的状态名，只用状态的规则（可领取、锁定、终点、错误节点）、连线，以及名称里的关键词，从 `board flow` 认出下面这些角色。上面默认工作流的名字只是例子，以 `board flow` 为准（状态被改名、增删时照样按这张表认）。
+**认出角色**：交审、做不下去时卡片去哪个状态，不用你自己认：`board submit`、`board giveup` 在服务端按下表认好再移，`board start --json` 的 `review`、`giveup` 就是认出来的结果。下表说明它们是怎么认的（手动 `board move`、看不懂卡片为什么去了那里时用）。work.md、host.md 里的流程不依赖具体的状态名，只用状态的规则（可领取、锁定、终点、错误节点）、连线，以及名称里的关键词，从 `board flow` 认出下面这些角色。上面默认工作流的名字只是例子，以 `board flow` 为准（状态被改名、增删时照样按这张表认）。
 
 | 角色 | 怎么认 | 默认工作流里 | 白板上没有时 |
 |---|---|---|---|
@@ -38,7 +38,7 @@
 - 错误节点和「需要人处理的状态」分开认：带「错误节点」规则的状态不当成等人校验的状态，反过来也一样。
 - 想看白板该配哪些状态，可以照默认工作流新增一个状态（例如叫「错误」），在状态设置里打开「错误节点」，再把「进行中」这些锁定状态的箭头连过去。
 
-**没有合适的连线**：有错误节点时移到错误节点；没有错误节点时移到需要人处理的状态，两者都没有才评论说明情况，`board heartbeat final <ID>` 结束这张卡片的计时，然后停下来告诉用户（final 50 秒后，卡片自动回到领取它时所在的状态）。
+**没有合适的连线**：`board giveup` 就按这个顺序做：有错误节点时移到错误节点；没有错误节点时移到需要人处理的状态；两者都没有时只评论、结束这张卡片的计时，输出里写明，这时停下来告诉用户（50 秒后卡片自动回到领取它时所在的状态）。没有交审状态时 `board submit` 返回 `FORBIDDEN_COLUMN`，改用 `board giveup`。
 
 - 代码仓库是当前工作目录所在的仓库；卡片描述指定了别的位置时以描述为准。
 - 得到 `NOT_LOGGED_IN`、`INVALID_TOKEN`、`UNREACHABLE` 时停下来告诉用户（见文末错误码），不要反复重试。
@@ -46,6 +46,9 @@
 ## 常用命令
 
 ```sh
+board start [<ID>] --agent <标识> --json  # 开始做一张卡：占用名字、启动后台心跳（已经有了就接着用）、领取、下载附件，返回卡片和交审 / 做不下去去哪、仓库、集成分支
+board submit <ID> --comment-file <文件> [<截图>…] [--no-code]   # 交审：上传附件、评论、结束计时、移到交审状态，一步做完；改了代码的卡片评论里要有固定的四行
+board giveup <ID> --comment-file <文件> [<日志>…]               # 做不下去：上传附件、评论原因、结束计时、移到错误节点（没有时移到需要人处理的状态）
 board flow                                # 工作流：状态的顺序、标识、名称、规则；以及白板所在项目的仓库、集成分支
 board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]… [--from <ID>]  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签；--from 记下拆自哪张
                                           # 多行描述用 --body-file <文件>（Windows 上必须，见 work.md「会话开始」第 5 步）；edit 同样
@@ -53,11 +56,11 @@ board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]… [--from <
 board show <ID> --json                    # 全部字段和动态；split_from 拆自哪张，split_into 拆出了哪几张
 board ls [--column todo] [--label bug] [--search <文字>]
 board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>
-board check --agent <标识>                # 会话开始时占用名字：名字由 Board 按这台机器的设置生成（例如 dsh-win/deepseek-v4.1-flash）
+board check --agent <标识>                # 不领卡的会话（只建卡、拆解、整理）开始时占用名字，之后 board heartbeat start；领卡的会话用 board start。名字由 Board 按这台机器的设置生成（例如 dsh-win/deepseek-v4.1-flash）
 board check --as <名字>                   # 自己起名字（旧写法、要指定名字时）：被占用时 NAME_TAKEN
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线
-board heartbeat start                     # 会话开始：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
-board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走
+board heartbeat start                     # 不领卡的会话 check 之后：启动后台心跳（每 10 秒一次，跟随你的进程），立即返回
+board heartbeat final <ID>                # 结束这张卡片这一次的计时；之后 50 秒内沿连线移走（一般不用单独执行：board submit、board giveup 里已经带了）
 board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线；重复执行不报错。名字是别的会话 check 的时候拒绝（NAME_TAKEN）
 board next --json                         # 只在 board host 启动的会话里：上一张交审或交给人之后领这个会话排着的下一张；SESSION_DONE 时结束
 board touched [--base <提交>]             # 推送前查这次提交有没有删掉别的卡最近加的行、加回别的卡最近删的行（只用 git）；有就退出码 1，最后一行写进交审评论
@@ -75,7 +78,7 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 
 | 错误码 | 含义 |
 |---|---|
-| `NO_IDENTITY` / `NO_BOARD` | 命令没带名字 / 白板：先 `board check --agent <标识>`（名字由 Board 生成，记在本机，之后不用再带 `--as`）；旧写法 `board check --as <名字>` 之后每条命令都带 `--as <名字>`（或前缀 `BOARD_AS=<名字>`）。白板用 `--board <项目>/<白板>`（或前缀 `BOARD=<项目>/<白板>`） |
+| `NO_IDENTITY` / `NO_BOARD` | 命令没带名字 / 白板：领卡用 `board start <ID> --agent <标识>`，不领卡的会话先 `board check --agent <标识>`（名字由 Board 生成，记在本机，之后不用再带 `--as`）；旧写法 `board check --as <名字>` 之后每条命令都带 `--as <名字>`（或前缀 `BOARD_AS=<名字>`）。白板用 `--board <项目>/<白板>`（或前缀 `BOARD=<项目>/<白板>`） |
 | `NAME_TAKEN` | 自己写了名字（`--as`）时：名字正被另一个在线会话使用，加一个和本会话相关的后缀再 check；`board check --agent <标识>` 不会出现它（被占用时自动加 `-2`、`-3`）。`heartbeat start / stop`、`beat --final` 得到它：这个名字是别的会话 check 的，你用错名字了，换成你自己 check 成功的那个 |
 | `NAME_OFFLINE` | 名字不在线：没有 check，或心跳中断超过 50 秒。重新 check 并启动心跳（见 work.md「会话结束」最后一段） |
 | `BOARD_NOT_FOUND` | 白板不存在；或项目有多块白板却只写了项目标识（原因里列出了可选的白板） |
@@ -85,7 +88,7 @@ board attach <ID> <截图> --comment-file <交审评论文件>                  
 | `ALREADY_HOLDING` | 你已经持有另一张卡片 |
 | `NOT_HOLDER` | 卡片被别人持有；`board hold`：领取已经失效，不推集成分支，改推 wip 分支（见 work.md「推送」第 5 步） |
 | `FORBIDDEN_COLUMN` | 不沿连线移动；直接移进锁定状态；移入、移出终点状态或「未整理」；移出错误节点；从没有连到锁定状态的可领取状态领取 |
-| `EMPTY_TITLE` / `USAGE` | 标题为空 / 命令或参数不对（例如不存在的状态或标签、空评论） |
+| `EMPTY_TITLE` / `USAGE` | 标题为空 / 命令或参数不对（例如不存在的状态或标签、空评论；`board submit` 的交审评论缺固定的四行，原因里写明缺哪几行） |
 | `NOT_LOGGED_IN` | 还没登录：请用户运行 `board login --url <服务端地址> --token <令牌>`（令牌在「Agent → 访问令牌」新建） |
 | `INVALID_TOKEN` | 令牌写错或已被吊销：请用户在「Agent → 访问令牌」新建一个，再 `board login --token <令牌>` |
 | `UNREACHABLE` | 连不上服务端：告诉用户服务端连不上，先确认地址和网络（`board doctor` 能看出地址来自哪里）；`board hold` 返回它时已经等过 5 分钟，按 work.md「推送」第 5 步改推 wip 分支 |

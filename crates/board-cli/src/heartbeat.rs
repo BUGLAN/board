@@ -358,6 +358,27 @@ pub fn current_name() -> Option<String> {
     Some(refreshed(st).unwrap_or(name))
 }
 
+/// 这个 agent 进程已经 check 过、后台心跳还在跑的名字（`board start` 用：同一个会话里做下一张卡时接着用，
+/// 不再 check、不再启动心跳）。认不出 agent 进程时（没有祖先进程可跟随），只认没记 agent 进程、标识相同的那个
+pub fn live_name(agent_id: Option<&str>) -> Option<String> {
+    let me = agent_process();
+    states().into_iter().find(|st| mine_and_beating(st, me) && (me.is_some() || (agent_id.is_some() && st.agent_id.as_deref() == agent_id))).map(|st| st.name)
+}
+
+/// 名字 name 是这个 agent 进程 check 的，后台心跳还在跑
+pub fn is_live(name: &str) -> bool {
+    read_state(name).is_some_and(|st| mine_and_beating(&st, agent_process()))
+}
+
+fn mine_and_beating(st: &State, me: Option<Proc>) -> bool {
+    let same = match (st.agent(), me) {
+        (Some(a), Some(m)) => a.pid == m.pid && (a.start == 0 || m.start == 0 || a.start == m.start),
+        (None, None) => true,
+        _ => false,
+    };
+    same && st.heartbeat().is_some_and(|h| Procs::new().is_some_and(|mut ps| ps.alive(h)))
+}
+
 /// 配置里的机器名和记下的不一样了：按新名字重新 check 一次，记下新的名字（失败时照旧用原来的）
 fn refreshed(st: State) -> Option<String> {
     let host = crate::config::host_name();

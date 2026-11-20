@@ -89,6 +89,20 @@ pub enum Cmd {
         /// 评论在动态里的 ID
         activity: i64,
     },
+    /// 交审（`board submit`）：持有者发评论、结束这一次的计时、把卡片移到交审状态，在同一个写事务里；
+    /// 任何一步被拒绝，前面的也不留下。交审状态是卡片所在的锁定状态连出去的、名称里带「审核」之类关键词的状态
+    /// （[`Flow::review_after`]）；没有时拒绝（`FORBIDDEN_COLUMN`）
+    Submit {
+        id: i64,
+        text: String,
+    },
+    /// 做不下去、交给人（`board giveup`）：持有者发评论、结束这一次的计时、把卡片移到错误节点
+    /// （没有时移到需要人处理的状态），在同一个写事务里。两种状态都没有时只评论、结束计时：
+    /// 50 秒后领取释放，卡片回到领取它时所在的状态
+    GiveUp {
+        id: i64,
+        text: String,
+    },
     Label {
         id: i64,
         #[serde(default)]
@@ -200,6 +214,12 @@ impl R<'_> {
 impl<'a> W<'a> {
     /// 执行一条卡片命令，返回执行后的卡片（删除时返回删除前的卡片）
     pub fn exec(&mut self, board: &BoardRef, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
+        // 交审、做不下去：评论、final、移动三步，都在调用方的这一个写事务里
+        let cmd = match cmd {
+            Cmd::Submit { id, text } => return self.hand_over(board, actor, id, text, false),
+            Cmd::GiveUp { id, text } => return self.hand_over(board, actor, id, text, true),
+            c => c,
+        };
         // 评论并移动：拆成评论、移动两步，都在调用方的这一个写事务里（任何一步出错整个写回滚）
         if let Cmd::Reply { id, text, column } = cmd {
             if text.trim().is_empty() {
@@ -549,7 +569,7 @@ impl<'a> W<'a> {
             }
 
             // 上面已经拆成评论和移动
-            Cmd::Reply { .. } => unreachable!(),
+            Cmd::Reply { .. } | Cmd::Submit { .. } | Cmd::GiveUp { .. } => unreachable!(),
 
             /* ---------------- 评论 ---------------- */
             Cmd::Comment { id, text } => {
@@ -1007,6 +1027,40 @@ impl<'a> W<'a> {
             return Err(BoardError::code(ErrorCode::NotAuthor));
         }
         Ok(())
+    }
+
+    /// 交审（giveup 为 false）或做不下去（giveup 为 true）：只有持有者能做。先定好去哪，再评论、final、移动
+    fn hand_over(&mut self, board: &BoardRef, actor: &Actor, id: i64, text: String, giveup: bool) -> Result<CardDetail> {
+        if text.trim().is_empty() {
+            return Err(BoardError::usage(if giveup { "要写原因（评论内容不能为空）" } else { "要写交审评论（评论内容不能为空）" }));
+        }
+        self.sweep_board(board.id)?;
+        let r = self.row(board.id, id)?;
+        if !(actor.is_agent() && r.holder.as_deref() == Some(actor.name.as_str())) {
+            let msg = match &r.holder {
+                Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
+                None => format!("#{id} 没有被领取：先 board start {id}"),
+            };
+            return Err(BoardError::new(ErrorCode::NotHolder, msg));
+        }
+        let flow = self.read().flow(board)?;
+        let target = if giveup { flow.giveup_after(&r.col) } else { flow.review_after(&r.col) }.map(|s| s.key.clone());
+        if !giveup && target.is_none() {
+            return Err(BoardError::new(
+                ErrorCode::ForbiddenColumn,
+                format!(
+                    "#{id} 在「{}」，没有连到交审状态（名称里带「审核」的状态），能去：{}。要交给人处理用 board giveup {id}",
+                    flow.name(&r.col),
+                    flow.outs(&r.col)
+                ),
+            ));
+        }
+        self.exec(board, actor, Cmd::Comment { id, text })?;
+        let d = self.exec(board, actor, Cmd::Beat { id, done: true })?;
+        match target {
+            Some(column) => self.exec(board, actor, Cmd::Move { id, column, top: false, index: None, order: None, before: None, after: None }),
+            None => Ok(d),
+        }
     }
 
     fn row(&self, b: i64, id: i64) -> Result<Row> {

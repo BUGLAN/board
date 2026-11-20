@@ -47,13 +47,13 @@ const VALUE_FLAGS: [&str; 27] = [
     "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project", "--workspace",
     "--base", "--upstream", "--card",
 ];
-const BOOL_FLAGS: [&str; 17] = [
-    "--json", "--top", "--inbox", "--help", "-h", "--final", "--cancel", "--any", "--move", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
+const BOOL_FLAGS: [&str; 18] = [
+    "--json", "--top", "--inbox", "--no-code", "--help", "-h", "--final", "--cancel", "--any", "--move", "--version", "-V", "--force", "--latest", "--install", "--uninstall", "--service",
     "--dry-run",
 ];
 /// 全部命令：（命令、参数、说明）。认不认识一个命令、board help 的内容都只看这张表；
 /// 新加命令时在这里加一行，再在 run() 里处理（测试 every_command_is_dispatched 会检查）
-const COMMANDS: [(&str, &str, &str); 29] = [
+const COMMANDS: [(&str, &str, &str); 32] = [
         ("login", "[--url <地址>] [--token <令牌>]", "校验令牌后把服务端地址和令牌写进 ~/.board/config.toml；不带 --token 时从标准输入读一行"),
         ("logout", "", "从 ~/.board/config.toml 删掉令牌，保留服务端地址"),
         ("update", "[--latest]", "把单独安装的 board 原地升级到服务端的版本（--latest：最新发版）：下载发版附件、校验 SHA-256 后替换；桌面端自带的 board 跟着桌面端升级，不能用它"),
@@ -74,6 +74,21 @@ const COMMANDS: [(&str, &str, &str); 29] = [
         ("edit", "<ID> [--title \"<标题>\"] [--body \"<描述>\" | --body-file <文件>]", "修改标题或描述"),
         ("move", "<ID> <状态> [--top]", "把卡片移到指定状态（标识或名称）；只能沿 board flow 里的连线移动"),
         ("claim", "[<ID>]", "领取；不带 ID 时按工作流顺序领可领取状态最上面的卡片"),
+        (
+            "start",
+            "[<ID>] [--agent <标识>] [--out <目录>]",
+            "开始做一张卡，一条命令做完会话开始和领取：这个会话还没有名字时先占用名字（--agent <标识> 由 Board 生成，或 --as <名字>）并启动后台心跳，已经有了就接着用；领取（不带 ID 时领可领取状态最上面的；卡片已经由你持有时接着做）；下载附件；返回卡片的全部字段和动态，以及交审、做不下去时卡片会去哪个状态、项目的仓库和集成分支。board host 启动的会话里不占名字、不启动心跳",
+        ),
+        (
+            "submit",
+            "<ID> [<文件>…] --comment \"<交审评论>\" | --comment-file <文件> [--no-code]",
+            "交审，一条命令做完：上传附件、发交审评论、结束这一次的计时、把卡片移到交审状态（服务端在一次写入里做完，不会出现 final 之后没移走被释放）。项目设了代码仓库时，评论里要有「提交：」「集成分支：」「检查：」「碰到的别的卡：」四行，缺了拒绝；这张卡没改代码时加 --no-code",
+        ),
+        (
+            "giveup",
+            "<ID> [<文件>…] --comment \"<原因>\" | --comment-file <文件>",
+            "做不下去、交给人，一条命令做完：上传附件、评论原因、结束这一次的计时、把卡片移到错误节点（没有时移到需要人处理的状态；两个都没有时只评论和结束计时，50 秒后卡片回到领取前的状态）",
+        ),
         ("next", "", "只在 board host 启动的会话里用：上一张交审或交给人之后领这个会话排着的下一张；排着的做完了、不再接着做时返回 SESSION_DONE"),
         ("hold", "<ID> [--wait <秒>]", "推集成分支前确认领取仍有效：这张卡仍由你持有、在锁定状态，否则 NOT_HOLDER（不要推集成分支，改推 wip 分支）；连不上服务端时每 30 秒重试，最多等 --wait 秒（默认 300），还连不上就 UNREACHABLE"),
         ("comment", "<ID> \"<内容>\" | <ID> --comment-file <文件>", "追加评论；多行内容用 --comment-file（- 读标准输入）"),
@@ -405,7 +420,12 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     }
 
     // 身份（PRD §3）：--as / BOARD_AS，没有时用本机 check 时记下的名字（board check --agent <标识> 生成的）
-    let name = explicit_name(&a).or_else(heartbeat::current_name);
+    // board start：这个会话还没有名字时在这里占用名字、启动后台心跳
+    let started = if sub == "start" { Some(start_session(&a, &mut be)?) } else { None };
+    let name = match &started {
+        Some((name, _)) => Some(name.clone()),
+        None => explicit_name(&a).or_else(heartbeat::current_name),
+    };
     let Some(name) = name else {
         return Err(BoardError::code(ErrorCode::NoIdentity));
     };
@@ -764,6 +784,171 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 ))
             }
         }
+        "start" => {
+            let id = if a.pos.len() > 1 { Some(a.id(sub)?) } else { None };
+            // board host 启动的会话：卡片由 board host 领好了，这里只读、绝不领取（不归自己持有的卡不能顺手领走）
+            let hosted = if env("BOARD_HOST").is_some() {
+                let Some(id) = id else {
+                    return Err(BoardError::usage("board host 启动的会话里 board start 要带 <ID>（提示词里的那张）；接着做下一张用 board next"));
+                };
+                let d = be.card(&path, id)?;
+                if d.card.holder.as_deref() != Some(name.as_str()) {
+                    return Err(BoardError::new(
+                        ErrorCode::NotHolder,
+                        format!(
+                            "#{id} 现在在「{}」，{}：不要动这张卡片，评论说明后结束（board host 启动的会话不领取卡片）",
+                            flow.name(&d.card.column),
+                            match &d.card.holder {
+                                Some(h) => format!("由 {h} 持有"),
+                                None => "没人持有".to_string(),
+                            }
+                        ),
+                    ));
+                }
+                Some(d)
+            } else {
+                None
+            };
+            let (d, resumed) = match hosted.map(Ok).unwrap_or_else(|| be.exec(&path, &actor, Cmd::Claim { id })) {
+                // 领取自己已经持有的卡片照样成功：领取时间比刚才取白板的时间早，就是接着做（board host 领好的、上次没做完的）
+                Ok(d) => {
+                    let resumed = d.card.claimed_at.is_some_and(|t| t < now);
+                    (d, resumed)
+                }
+                Err(e) if matches!(e.code, ErrorCode::NotInTodo | ErrorCode::AlreadyHolding) => {
+                    let mine = id.and_then(|id| be.card(&path, id).ok()).filter(|d| d.card.holder.as_deref() == Some(name.as_str()));
+                    match mine {
+                        Some(d) => (d, true),
+                        None => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            };
+            let (dir, saved) = save_files(&mut be, &d, a.value("--out"))?;
+            let fresh = started.as_ref().is_some_and(|(_, fresh)| *fresh);
+            let review = flow.review_after(&d.card.column);
+            let over = flow.giveup_after(&d.card.column);
+            if json {
+                let role = |s: Option<&Status>| s.map(|s| json!({ "key": s.key, "name": s.name })).unwrap_or(Value::Null);
+                let mut v = fmt.full(&d);
+                v["session"] = json!({ "name": name, "started": fresh, "resumed": resumed });
+                v["review"] = role(review);
+                v["giveup"] = role(over);
+                v["repo"] = json!(repo);
+                v["branch"] = json!(branch);
+                v["files"] = Value::Array(saved.iter().map(|(f, to)| saved_json(f, to)).collect());
+                Output::Json(v)
+            } else {
+                let cid = d.card.id;
+                let to = |s: Option<&Status>, none: &str| s.map(|s| format!("→ {}（{}）", s.name, s.key)).unwrap_or_else(|| none.to_string());
+                let mut s = format!(
+                    "{} {}  {}\n{}\n\n{}\n",
+                    p.green("✓"),
+                    p.bold(if resumed { "接着做" } else { "已领取" }),
+                    p.dim(&format!(
+                        "在「{}」；名字 {}（{}）",
+                        flow.name(&d.card.column),
+                        name,
+                        if env("BOARD_HOST").is_some() {
+                            "心跳由 board host 发"
+                        } else if fresh {
+                            "刚占用，后台心跳已启动"
+                        } else {
+                            "接着用，后台心跳在跑"
+                        }
+                    )),
+                    p.yellow("后台心跳会维持这张卡片，干多久都不会被释放；做完用 board submit，做不下去用 board giveup"),
+                    fmt.show(&d)
+                );
+                s += &format!("{}  board submit {cid} --comment-file <文件>  {}\n", p.dim("交审      "), to(review, "这块白板没有交审状态：用 board giveup"));
+                s += &format!(
+                    "{}  board giveup {cid} --comment-file <文件>  {}\n",
+                    p.dim("做不下去  "),
+                    to(over, "没有错误节点和需要人处理的状态：只评论、结束计时，然后告诉用户")
+                );
+                s += &format!(
+                    "{}  {}  {} {}\n",
+                    p.dim("集成分支  "),
+                    if branch.is_empty() { "（没设：按仓库的 AGENTS.md / CLAUDE.md，没写用远端默认分支）" } else { branch.as_str() },
+                    p.dim("仓库"),
+                    if repo.is_empty() { "（没设）" } else { repo.as_str() }
+                );
+                if !saved.is_empty() {
+                    s += &format!("{}  已下载 {} 个到 {}\n", p.dim("附件      "), saved.len(), dir.as_ref().unwrap().display());
+                    for (f, to) in &saved {
+                        s += &format!("            {}  {}\n", to.display(), p.dim(&human_size(f.size)));
+                    }
+                }
+                Output::Text(s)
+            }
+        }
+        "giveup" | "submit" => {
+            let giveup = sub == "giveup";
+            let id = a.id(sub)?;
+            let what = if giveup { "原因" } else { "交审评论" };
+            let Some(mut text) = text_arg(&a, "--comment", "--comment-file")?.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+                return Err(BoardError::usage(format!("board {sub} 要写{what}：--comment \"<{what}>\" 或 --comment-file <文件>")));
+            };
+            // 改了代码的卡片：交审评论最后固定四行，复盘的人靠它们找提交、看检查（项目设了代码仓库才查）
+            if !giveup && !repo.is_empty() && !a.flag("--no-code") {
+                let missing = missing_review_lines(&text);
+                if !missing.is_empty() {
+                    return Err(BoardError::usage(format!(
+                        "交审评论缺这几行：{}。改了代码的卡片，评论最后要有「提交：<sha>」「集成分支：<分支>」「检查：<结果>」「碰到的别的卡：<board touched 的最后一行>」四行；这张卡没改代码时加 --no-code",
+                        missing.iter().map(|m| format!("「{m}：」")).collect::<Vec<_>>().join("")
+                    )));
+                }
+            }
+            // 附件先全部读进来：有一个读不到就不上传、不评论
+            let mut blobs = vec![];
+            for f in &a.pos[2..] {
+                let bytes = std::fs::read(f).map_err(|e| BoardError::usage(format!("读不到文件 {f}：{e}")))?;
+                let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+                blobs.push((name, bytes));
+            }
+            let mut done: Vec<Attachment> = vec![];
+            for (fname, bytes) in &blobs {
+                let f = be.attach(&path, id, &actor, fname, bytes)?;
+                text += &format!("\n\n{}", f.markdown);
+                done.push(f);
+            }
+            let d = {
+                let be = std::cell::RefCell::new(&mut be);
+                hand_over(&flow, &name, id, text, giveup, |cmd| be.borrow_mut().exec(&path, &actor, cmd), |id| be.borrow_mut().card(&path, id))?
+            };
+            let moved = !flow.is_lock(&d.card.column);
+            if json {
+                let mut v = fmt.full(&d);
+                v["moved"] = json!(moved);
+                v["uploaded"] = Value::Array(done.iter().map(attachment_json).collect());
+                Output::Json(v)
+            } else {
+                let files = if done.is_empty() { String::new() } else { p.dim(&format!("  带 {} 个附件", done.len())) };
+                Output::Text(if moved {
+                    format!(
+                        "{} {} {} → {}（{}）{}\n",
+                        p.green("✓"),
+                        p.cyan(&format!("#{id}")),
+                        if giveup { "已交给人处理" } else { "已交审" },
+                        flow.name(&d.card.column),
+                        d.card.column,
+                        files
+                    )
+                } else {
+                    format!(
+                        "{} {} 已评论并结束计时{}\n{}\n",
+                        p.green("✓"),
+                        p.cyan(&format!("#{id}")),
+                        files,
+                        p.yellow(&format!(
+                            "这块白板没有错误节点和需要人处理的状态，卡片还在「{}」：{} 秒后领取释放、回到领取前的状态。停下来告诉用户",
+                            flow.name(&d.card.column),
+                            BEAT_MS * BEAT_MISSES / 1000
+                        ))
+                    )
+                })
+            }
+        }
         "claim" => {
             let id = if a.pos.len() > 1 { Some(a.id(sub)?) } else { None };
             let d = exec(Cmd::Claim { id })?;
@@ -893,51 +1078,9 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         "files" => {
             let id = a.id(sub)?;
             let d = be.card(&path, id)?;
-            let out = a.value("--out");
-            let mut dir = out.map(std::path::PathBuf::from);
-            let mut temp = None;
-            let mut saved = vec![];
-            if !d.attachments.is_empty() {
-                if out.is_none() {
-                    let t = tempfile::Builder::new()
-                        .prefix("board-files-")
-                        .tempdir_in(std::env::temp_dir())
-                        .map_err(|e| BoardError::usage(format!("无法创建临时目录：{e}")))?;
-                    board_core::private::set_dir(t.path())
-                        .map_err(|e| BoardError::usage(format!("无法收紧目录 {} 的权限：{e}", t.path().display())))?;
-                    dir = Some(t.path().to_path_buf());
-                    temp = Some(t);
-                }
-                let dir = dir.as_ref().unwrap();
-                if out.is_some() {
-                    std::fs::create_dir_all(dir).map_err(|e| BoardError::usage(format!("无法创建目录 {}：{e}", dir.display())))?;
-                }
-                for f in &d.attachments {
-                    let bytes = be.download(f)?;
-                    let to = dir.join(format!("{}-{}", f.id, f.name));
-                    let written = if out.is_some() {
-                        std::fs::write(&to, bytes)
-                    } else {
-                        board_core::private::write_new(&to, &bytes)
-                    };
-                    written.map_err(|e| BoardError::usage(format!("写入 {} 失败：{e}", to.display())))?;
-                    saved.push((f, to));
-                }
-                if let Some(t) = temp {
-                    let _ = t.keep();
-                }
-            }
+            let (dir, saved) = save_files(&mut be, &d, a.value("--out"))?;
             if json {
-                Output::Json(Value::Array(
-                    saved
-                        .iter()
-                        .map(|(f, to)| {
-                            let mut v = attachment_json(f);
-                            v["path"] = json!(to.display().to_string());
-                            v
-                        })
-                        .collect(),
-                ))
+                Output::Json(Value::Array(saved.iter().map(|(f, to)| saved_json(f, to)).collect()))
             } else if saved.is_empty() {
                 Output::Text(format!("{}\n", p.dim(&format!("#{id} 没有附件"))))
             } else {
@@ -1462,6 +1605,135 @@ fn explicit_name(a: &Args) -> Option<String> {
     a.value("--as").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AS"))
 }
 
+/// `board start` 的第一步：让这个会话有一个在线的名字和后台心跳。返回（名字，这一次是不是新占用的）。
+/// - board host 启动的会话（环境里有 `BOARD_HOST`）：名字是 `BOARD_AS`，心跳由 board host 发，这里什么也不做；
+/// - 这个 agent 进程已经 check 过、后台心跳还在跑：接着用；
+/// - 否则占用名字（`--agent <标识>` 由 Board 生成，或 `--as <名字>` 自己起）并启动后台心跳
+fn start_session(a: &Args, be: &mut Backend) -> Result<(String, bool)> {
+    if env("BOARD_HOST").is_some() {
+        return explicit_name(a).map(|n| (n, false)).ok_or_else(|| BoardError::code(ErrorCode::NoIdentity));
+    }
+    let (name, session, agent, host) = match explicit_name(a) {
+        Some(name) => {
+            if heartbeat::is_live(&name) {
+                return Ok((name, false));
+            }
+            check_agent_name(&name).map_err(BoardError::usage)?;
+            let info = be.check(&name)?;
+            (name, info.session, None, None)
+        }
+        None => {
+            let agent = agent_id(a);
+            if let Some(name) = heartbeat::live_name(agent.as_deref()) {
+                return Ok((name, false));
+            }
+            let Some(agent) = agent else {
+                return Err(BoardError::usage(
+                    "board start 在会话里第一次用时要 --agent <标识>（你实际运行的 agent：claude、codex、dsh …），名字由 Board 生成；也可以 --as <名字> 自己起名字",
+                ));
+            };
+            let info = generated_check(be, &agent)?;
+            let host = if info.modeled.is_some() { config::host_name() } else { None };
+            (info.name.clone(), info.session, Some(agent), host)
+        }
+    };
+    heartbeat::checked_with(&name, session, agent, host)?;
+    heartbeat::start(&name, false)?;
+    Ok((name, true))
+}
+
+/// 交审评论里固定的四行（work.md「处理一张卡片」第 5 步）缺了哪几行。一行以「提交：」这样开头才算，冒号全角、半角都行
+fn missing_review_lines(text: &str) -> Vec<&'static str> {
+    const LINES: [&str; 4] = ["提交", "集成分支", "检查", "碰到的别的卡"];
+    let has = |key: &str| {
+        text.lines().any(|l| {
+            let l = l.trim().trim_start_matches(['-', '*', ' ']);
+            l.strip_prefix(key).is_some_and(|rest| rest.starts_with('：') || rest.starts_with(':'))
+        })
+    };
+    LINES.into_iter().filter(|k| !has(k)).collect()
+}
+
+/// `board submit` / `board giveup`：服务端一条命令做完评论、final、移动。旧服务端不认这两条命令
+/// （「请求格式不正确：unknown variant」）时在这里拆成三步做：规则一样，只是不在一次写入里
+fn hand_over(
+    flow: &Flow,
+    name: &str,
+    id: i64,
+    text: String,
+    giveup: bool,
+    mut exec: impl FnMut(Cmd) -> Result<CardDetail>,
+    mut card: impl FnMut(i64) -> Result<CardDetail>,
+) -> Result<CardDetail> {
+    let cmd = if giveup { Cmd::GiveUp { id, text: text.clone() } } else { Cmd::Submit { id, text: text.clone() } };
+    match exec(cmd) {
+        Err(e) if e.code == ErrorCode::Usage && e.message.contains("unknown variant") => {}
+        r => return r,
+    }
+    let cur = card(id)?.card;
+    if cur.holder.as_deref() != Some(name) {
+        let msg = match &cur.holder {
+            Some(h) => format!("#{id} 由 {h} 持有，你不是持有者"),
+            None => format!("#{id} 没有被领取：先 board start {id}"),
+        };
+        return Err(BoardError::new(ErrorCode::NotHolder, msg));
+    }
+    let target = if giveup { flow.giveup_after(&cur.column) } else { flow.review_after(&cur.column) }.map(|s| s.key.clone());
+    if !giveup && target.is_none() {
+        return Err(BoardError::new(
+            ErrorCode::ForbiddenColumn,
+            format!(
+                "#{id} 在「{}」，没有连到交审状态（名称里带「审核」的状态），能去：{}。要交给人处理用 board giveup {id}",
+                flow.name(&cur.column),
+                flow.outs(&cur.column)
+            ),
+        ));
+    }
+    exec(Cmd::Comment { id, text })?;
+    let d = exec(Cmd::Beat { id, done: true })?;
+    match target {
+        Some(column) => exec(Cmd::Move { id, column, top: false, index: None, order: None, before: None, after: None }),
+        None => Ok(d),
+    }
+}
+
+/// 把卡片的附件下载到本地：给了目录就放进去，没给时建一个只有自己能读的临时目录。返回（目录，[(附件, 路径)]）；没有附件时目录为空
+fn save_files(be: &mut Backend, d: &CardDetail, out: Option<&str>) -> Result<(Option<std::path::PathBuf>, Vec<(Attachment, std::path::PathBuf)>)> {
+    if d.attachments.is_empty() {
+        return Ok((None, vec![]));
+    }
+    let dir = match out {
+        Some(o) => {
+            let dir = std::path::PathBuf::from(o);
+            std::fs::create_dir_all(&dir).map_err(|e| BoardError::usage(format!("无法创建目录 {}：{e}", dir.display())))?;
+            dir
+        }
+        None => {
+            let t = tempfile::Builder::new()
+                .prefix("board-files-")
+                .tempdir_in(std::env::temp_dir())
+                .map_err(|e| BoardError::usage(format!("无法创建临时目录：{e}")))?;
+            board_core::private::set_dir(t.path()).map_err(|e| BoardError::usage(format!("无法收紧目录 {} 的权限：{e}", t.path().display())))?;
+            t.keep()
+        }
+    };
+    let mut saved = vec![];
+    for f in &d.attachments {
+        let bytes = be.download(f)?;
+        let to = dir.join(format!("{}-{}", f.id, f.name));
+        let written = if out.is_some() { std::fs::write(&to, bytes) } else { board_core::private::write_new(&to, &bytes) };
+        written.map_err(|e| BoardError::usage(format!("写入 {} 失败：{e}", to.display())))?;
+        saved.push((f.clone(), to));
+    }
+    Ok((Some(dir), saved))
+}
+
+fn saved_json(f: &Attachment, to: &std::path::Path) -> Value {
+    let mut v = attachment_json(f);
+    v["path"] = json!(to.display().to_string());
+    v
+}
+
 /// `--agent <标识>` 或 `BOARD_AGENT`：这个会话跑在哪个 agent 里（skill 按自己实际运行的 agent 填）
 fn agent_id(a: &Args) -> Option<String> {
     a.value("--agent").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| env("BOARD_AGENT"))
@@ -1742,6 +2014,84 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), COMMANDS.len(), "命令表里有重复");
+    }
+
+    /// 交审评论固定的四行：缺哪几行；冒号全角半角都认，前面有列表符号也认，写在句子中间的不算
+    #[test]
+    fn review_lines_are_checked_by_line_start() {
+        let ok = "改了登录页的校验。\n\n提交：abc1234\n集成分支：main\n- 检查: npm test 通过\n碰到的别的卡：无";
+        assert!(missing_review_lines(ok).is_empty());
+        assert_eq!(missing_review_lines("做完了"), vec!["提交", "集成分支", "检查", "碰到的别的卡"]);
+        assert_eq!(missing_review_lines("提交：abc\n集成分支：main\n检查：过了"), vec!["碰到的别的卡"]);
+        assert_eq!(missing_review_lines("这次的提交：abc，检查：过了\n集成分支：main\n碰到的别的卡：无"), vec!["提交", "检查"]);
+    }
+
+    /// board submit / giveup 连旧服务端（不认这两条命令）：拆成评论、final、移动三步，规则和新服务端一样
+    #[test]
+    fn hand_over_falls_back_to_three_steps_on_old_servers() {
+        use std::cell::RefCell;
+        const T0: i64 = 1_700_000_000_000;
+        let store = RefCell::new({
+            let mut s = Store::open_in_memory().unwrap();
+            s.ensure_default(T0).unwrap();
+            s
+        });
+        let me = Actor::agent("test/alpha");
+        let run = |who: &Actor, cmd: Cmd| {
+            store.borrow_mut().write(T0, Origin::cli(), |w| {
+                let b = w.resolve("default/main")?;
+                w.exec(&b, who, cmd)
+            })
+        };
+        let sent = RefCell::new(Vec::<&'static str>::new());
+        // 旧服务端：submit、giveup 解析不了
+        let old = |cmd: Cmd| {
+            let op = match &cmd {
+                Cmd::Submit { .. } => "submit",
+                Cmd::GiveUp { .. } => "giveup",
+                Cmd::Comment { .. } => "comment",
+                Cmd::Beat { .. } => "beat",
+                Cmd::Move { .. } => "move",
+                _ => "other",
+            };
+            sent.borrow_mut().push(op);
+            if matches!(cmd, Cmd::Submit { .. } | Cmd::GiveUp { .. }) {
+                return Err(BoardError::usage("请求格式不正确：unknown variant `submit`, expected one of `new`, `edit`"));
+            }
+            run(&me, cmd)
+        };
+        let card = |id: i64| {
+            store.borrow().read(|r| {
+                let b = r.resolve("default/main")?;
+                r.card(&b, id)
+            })
+        };
+        let flow = store.borrow().read(|r| r.flow(&r.resolve("default/main")?)).unwrap();
+        let new = |t: &str| Cmd::New { title: t.into(), body: None, column: None, top: false, labels: vec![], from: None };
+        run(&Actor::human(), new("一")).unwrap();
+        run(&Actor::human(), new("二")).unwrap();
+
+        // 不是持有者：不评论
+        let e = hand_over(&flow, "test/alpha", 1, "做完了".into(), false, old, card).unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotHolder);
+        assert_eq!(*sent.borrow(), vec!["submit"]);
+
+        run(&me, Cmd::Claim { id: Some(1) }).unwrap();
+        sent.borrow_mut().clear();
+        let d = hand_over(&flow, "test/alpha", 1, "做完了".into(), false, old, card).unwrap();
+        assert_eq!((d.card.column.as_str(), d.card.holder.as_deref()), ("review", None));
+        assert_eq!(*sent.borrow(), vec!["submit", "comment", "beat", "move"]);
+
+        run(&me, Cmd::Claim { id: Some(2) }).unwrap();
+        let d = hand_over(&flow, "test/alpha", 2, "卡住了".into(), true, old, card).unwrap();
+        assert_eq!(d.card.column, "check");
+        assert!(d.activity.iter().any(|a| a.action == "comment" && a.text == "卡住了"));
+
+        // 别的错误原样返回，不走三步
+        sent.borrow_mut().clear();
+        let e = hand_over(&flow, "test/alpha", 1, "x".into(), false, |_| Err(BoardError::code(ErrorCode::NotHolder)), card).unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotHolder);
+        assert!(sent.borrow().is_empty());
     }
 
     /// board hold：连不上时按间隔重试，等到了就接着确认；等不到就 UNREACHABLE（写明改推 wip 分支）；其他错误不重试

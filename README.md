@@ -150,12 +150,15 @@ agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以�
 board login --url <地址> --token <令牌>   # 写进 ~/.board/config.toml
 board doctor                  # 环境自检：地址和令牌来自哪里、能不能连上
 board update                  # 升级到服务端的版本（--latest：最新发版）；桌面端自带的跟着桌面端升级
-board check --as claude/opus-5.5         # 会话开始时占用名字
+board check --as claude/opus-5.5         # 只占用名字（不领卡的会话；领卡用 board start）
 board boards                  # 列出所有白板
 board flow                    # 查看当前白板的工作流
 board ls                      # 列出卡片
 board show 2                  # 查看卡片详情
-board claim                   # 领取下一张；board claim 2 领取指定卡片
+board start 2 --agent claude  # 开始做 #2：占用名字、启动后台心跳、领取、下载附件一步做完；不带 ID 领下一张
+board submit 2 --comment-file review.md shot.png   # 交审：附件和评论、结束计时、移到交审状态一步做完
+board giveup 2 --comment "需要确认……"   # 做不下去：评论原因、结束计时、移到错误节点（没有时移到需要人处理的状态）
+board claim                   # 只领取（不占名字、不启动心跳）；board claim 2 领取指定卡片
 board comment 2 "进展……"      # 记录进度
 board move 2 review           # 沿连线移动卡片
 board heartbeat start         # 会话开始：启动后台心跳（每 10 秒一次 board beat，跟随 agent 进程），立即返回

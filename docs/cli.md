@@ -605,6 +605,78 @@
 }
 ```
 
+### `board start`
+
+开始做一张卡，把会话开始和领取合成一条命令：这个会话（调用它的 agent 进程）还没有在线的名字时先占用名字并启动后台心跳，已经有了就接着用；然后领取、下载附件，返回整张卡片。
+
+```sh
+board start 13 --agent claude --json     # 会话里第一次：--agent 是你实际运行的 agent，名字由 Board 生成
+board start --json                       # 之后：接着用名字和心跳；不带 ID 时领最上面一张可领取的
+```
+
+返回的字段和 `board claim --json` 一样，另外多这几项：
+
+```json
+{
+  "session": { "name": "claude-mbp/opus-5.5", "started": true, "resumed": false },
+  "review": { "key": "review", "name": "待审核" },
+  "giveup": { "key": "check", "name": "需人工校验" },
+  "repo": "https://github.com/o/r.git",
+  "branch": "main",
+  "files": [
+    {
+      "created_at": "2026-11-13T15:51:24-05:00",
+      "created_by": "docs/writer",
+      "id": 1,
+      "image": true,
+      "mime": "image/png",
+      "name": "shot.png",
+      "path": "/tmp/board-files-x1Yz/1-shot.png",
+      "size": 20480,
+      "url": "/api/files/1"
+    }
+  ]
+}
+```
+
+- `session.started`：这一次是不是新占用的名字；`session.resumed`：卡片本来就由你持有（上次没做完的），没有重新领取。
+- `review`、`giveup`：`board submit`、`board giveup` 会把卡片移到哪个状态；白板上没有对应的状态时为 `null`。
+- `files`：附件已经下载到 `path`；`--out <目录>` 指定放哪，不写时是只有自己能读的临时目录。
+- 会话里第一次用、又没带 `--agent`（或 `--as`）时是 `USAGE`；没有可领的卡片时 `EMPTY_TODO`。
+- `board host` 启动的会话里（环境里有 `BOARD_HOST`）：不占名字、不启动心跳、不领取，只读卡片和附件；要带 ID，卡片不归 `BOARD_AS` 持有时 `NOT_HOLDER`。
+
+### `board submit`
+
+交审：上传附件、发交审评论、结束这张卡片这一次的计时、把卡片移到交审状态，一条命令做完（服务端在一次写入里完成，不会出现结束计时之后没移走、领取被释放）。
+
+```sh
+board submit 13 --comment-file review.md shot.png check.log
+```
+
+```
+✓ #13 已交审 → 待审核（review）  带 2 个附件
+```
+
+`--json` 返回移动后的整张卡片，另有 `moved`（是否移走了）和 `uploaded`（这次上传的附件）。
+
+- 只有持有者能交审（`NOT_HOLDER`）；评论不能为空（`USAGE`）；白板没有交审状态时 `FORBIDDEN_COLUMN`，改用 `board giveup`。
+- 项目设了代码仓库时，评论里要有以 `提交：`、`集成分支：`、`检查：`、`碰到的别的卡：` 开头的四行；缺了被拒绝（`USAGE`），原因里写明缺哪几行，附件不上传、卡片不动。这张卡没改代码（调研、整理）时加 `--no-code`。
+- 连旧服务端（不认这条命令）时，命令行自己按评论、final、移动三步做，结果一样。
+
+### `board giveup`
+
+做不下去、交给人：上传附件、评论原因、结束这一次的计时、把卡片移到错误节点（没有错误节点时移到需要人处理的状态），一条命令做完。
+
+```sh
+board giveup 13 --comment "检查不过：cargo test 里 hosts_sync 超时，本机复现不了" run.log
+```
+
+```
+✓ #13 已交给人处理 → 需人工校验（check）  带 1 个附件
+```
+
+白板上两种状态都没有时只评论、结束计时，卡片留在原处，输出里写明：50 秒后领取释放，卡片回到领取前的状态。
+
 ### `board next`
 
 只在 `board host` 启动的会话里可用。领到下一张时输出和 `board claim --json` 一样；不再接着做时返回错误 `SESSION_DONE`，退出码为 1：

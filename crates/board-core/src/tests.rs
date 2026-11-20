@@ -2786,3 +2786,92 @@ fn label_batch_rejections() {
     assert_eq!(r.changed, vec![1]);
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] })), ErrorCode::Usage);
 }
+
+/* ---------------- 交审、做不下去一步完成（board submit / board giveup） ---------------- */
+
+fn submit(id: i64, text: &str) -> Cmd {
+    Cmd::Submit { id, text: text.into() }
+}
+fn giveup(id: i64, text: &str) -> Cmd {
+    Cmd::GiveUp { id, text: text.into() }
+}
+
+/// 交审：评论、结束计时、移到交审状态，一条命令做完；只有持有者能做，要写评论
+#[test]
+fn submit_comments_finals_and_moves_to_review() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    // 还没领取、不是持有者
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, submit(1, "做完了"))), ErrorCode::NotHolder);
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, submit(1, "做完了"))), ErrorCode::NotHolder);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, submit(1, "做完了"))), ErrorCode::NotHolder);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, submit(1, "  "))), ErrorCode::Usage);
+    assert!(card(&s, B, 1).activity.iter().all(|a| a.action != "comment"), "被拒绝时评论不留下");
+
+    beat_span(&mut s, &alpha(), 1, T0 + SEC, T0 + 2 * MIN);
+    let c = exec(&mut s, B, &alpha(), T0 + 2 * MIN + SEC, submit(1, "改了登录页\n提交：abc1234")).unwrap();
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("review", None));
+    assert_eq!((c.card.runs, c.card.runs_lost, c.card.run_started_at), (1, 0, None), "这一次正常结束，不算异常退出");
+    let acts: Vec<(&str, &str)> = c.activity.iter().map(|a| (a.action.as_str(), a.text.as_str())).collect();
+    let at = |action: &str, has: &str| acts.iter().position(|(a, t)| *a == action && t.contains(has)).unwrap_or_else(|| panic!("{action} {has}: {acts:?}"));
+    // 顺序：评论 → 结束心跳 → 移动
+    assert!(at("comment", "提交：abc1234") < at("beat", "结束了心跳"));
+    assert!(at("beat", "结束了心跳") < at("move", "待审核"));
+    // 交审之后不会因为没移走被释放
+    assert_eq!(s.sweep(T0 + 10 * MIN).unwrap(), 0);
+    assert_eq!(card(&s, B, 1).card.column, "review");
+}
+
+/// 白板没有交审状态：拒绝，评论和 final 都不留下，卡片还归持有者
+#[test]
+fn submit_without_review_status_changes_nothing() {
+    let mut s = store();
+    ui(&mut s, |w| w.delete_status(B, "review")).unwrap();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + SEC, beat(1, false)).unwrap();
+    let e = exec(&mut s, B, &alpha(), T0 + 2 * SEC, submit(1, "做完了")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::ForbiddenColumn);
+    assert!(e.message.contains("board giveup 1"), "{}", e.message);
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("doing", Some("alpha")));
+    assert!(c.card.run_started_at.is_some(), "没有 final");
+    assert!(c.activity.iter().all(|a| a.action != "comment"));
+}
+
+/// 做不下去：先去错误节点，没有时去需要人处理的状态；两个都没有时只评论、结束计时，50 秒后回到领取前的状态
+#[test]
+fn giveup_goes_to_error_node_then_human_status() {
+    // 默认工作流没有错误节点：去「需人工校验」
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, giveup(1, "卡住了"))), ErrorCode::NotHolder);
+    let c = exec(&mut s, B, &alpha(), T0 + SEC, giveup(1, "需要确认：接口要不要兼容旧版")).unwrap();
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("check", None));
+    assert!(c.activity.iter().any(|a| a.action == "comment" && a.text.contains("需要确认")));
+
+    // 有错误节点：先去错误节点
+    let mut s = store();
+    let st = ui(&mut s, |w| w.create_status(B, "搁置", None)).unwrap();
+    ui(&mut s, |w| w.update_edges(B, &[(String::from("doing"), st.key.clone())], &[])).unwrap();
+    ui(&mut s, |w| w.update_status(B, &st.key, StatusPatch { err: Some(true), ..Default::default() })).unwrap();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + SEC, giveup(1, "检查不过")).unwrap();
+    assert_eq!(c.card.column, st.key);
+
+    // 两个都没有：评论、final，卡片留在原处，50 秒后领取释放、回到待办
+    let mut s = store();
+    ui(&mut s, |w| w.delete_status(B, "check")).unwrap();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    exec(&mut s, B, &alpha(), T0 + SEC, beat(1, false)).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0 + 2 * SEC, giveup(1, "卡住了")).unwrap();
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref(), c.card.run_started_at), ("doing", Some("alpha"), None));
+    assert!(c.activity.iter().any(|a| a.action == "comment" && a.text.contains("卡住了")));
+    s.sweep(T0 + 2 * SEC + 51 * SEC).unwrap();
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("todo", None));
+}

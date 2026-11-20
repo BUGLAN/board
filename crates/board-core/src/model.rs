@@ -259,6 +259,14 @@ impl Flow {
         let s = self.get(from)?;
         s.to.iter().filter_map(|k| self.get(k)).find(|t| t.err)
     }
+    /// 从锁定状态 from 沿连线能去的交审状态（按工作流顺序第一个）：`board submit` 把卡片移到这里
+    pub fn review_after(&self, from: &str) -> Option<&Status> {
+        self.after(from, &REVIEW_WORDS)
+    }
+    /// 做不下去时从锁定状态 from 去哪：先错误节点，没有时是需要人处理的状态（`board giveup`，和派发异常退出时一样）
+    pub fn giveup_after(&self, from: &str) -> Option<&Status> {
+        self.error_after(from).or_else(|| self.human_after(from))
+    }
     /// 从锁定状态 from 连出去、名称里带 words 的状态里按工作流顺序排在最前面的一个（错误节点不算）
     fn after(&self, from: &str, words: &[&str]) -> Option<&Status> {
         let s = self.get(from)?;

@@ -10,9 +10,24 @@ if [ -n "${BOARD_CONFIG:-}" ]; then
     BOARD_AGENT_ENV=1
     export BOARD_AGENT_ENV
 fi
+# start / submit / giveup 是后加的命令：旧版 board 不认。直接说清楚要升级，不让 agent 拿旧命令去拼同样的步骤
+#   run <board 的路径> <命令> …
+run() {
+    b=$1
+    shift
+    case "${1:-}" in
+        start | submit | giveup)
+            if ! "$b" help 2>/dev/null | grep -q "board $1 "; then
+                echo "board: $b 是旧版，没有 start / submit / giveup 这几条命令。升级后再试：board host 启动的会话在界面「机器 → 管理」里升级这台机器；自己装的运行 board update；skill 自带的用发版附件 board-skills.zip 重新安装 skill" >&2
+                exit 1
+            fi
+            ;;
+    esac
+    exec "$b" "$@"
+}
 # board host 启动的会话：用 host 自己的 board（BOARD_EXE），版本和 host 一致
 if [ -n "${BOARD_EXE:-}" ] && [ -f "$BOARD_EXE" ] && [ -x "$BOARD_EXE" ]; then
-    exec "$BOARD_EXE" "$@"
+    run "$BOARD_EXE" "$@"
 fi
 here=$(cd "$(dirname "$0")" && pwd)
 case "$(uname -s)" in
@@ -35,7 +50,7 @@ if [ -n "$os" ] && [ -n "$arch" ] && [ -f "$bin" ]; then
     if [ "$os" = darwin ] && xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
         xattr -d com.apple.quarantine "$bin" 2>/dev/null
     fi
-    exec "$bin" "$@"
+    run "$bin" "$@"
 fi
 # PATH 里的 board（跳过本脚本自己：scripts/ 在 PATH 里时不要自己调自己）
 old_ifs=$IFS
@@ -46,7 +61,7 @@ for d in $PATH; do
     IFS=$old_ifs
     # 不悄悄用：PATH 里的可能是旧版，不认新参数
     echo "board: skill 目录里没有本平台（${os:-?}-${arch:-?}）的二进制，用的是 PATH 里的 $d/board；命令或参数被拒绝时，用发版附件里的 board-skills.zip 重新安装 skill" >&2
-    exec "$d/board" "$@"
+    run "$d/board" "$@"
 done
 IFS=$old_ifs
 echo "board: skill 目录里没有本平台（${os:-?}-${arch:-?}）的二进制，PATH 里也没有 board。" >&2

@@ -101,6 +101,11 @@ fn skill_script(name: &str) -> PathBuf {
 }
 
 fn via_script(s: &Server, script: &Path, args: &[&str]) -> (i32, String, String) {
+    via_script_with(s, script, Path::new(env!("CARGO_BIN_EXE_board")), args)
+}
+
+/// 同上，BOARD_EXE 指向给定的 board
+fn via_script_with(s: &Server, script: &Path, exe: &Path, args: &[&str]) -> (i32, String, String) {
     let mut cmd = if cfg!(windows) {
         // Rust 调 .cmd 时自己经过 cmd.exe，参数按批处理的规则转义（带换行的参数它会直接拒绝）
         Command::new(script)
@@ -111,7 +116,7 @@ fn via_script(s: &Server, script: &Path, args: &[&str]) -> (i32, String, String)
     };
     let o = common::isolate(&mut cmd, &s.home)
         .args(args)
-        .env("BOARD_EXE", env!("CARGO_BIN_EXE_board"))
+        .env("BOARD_EXE", exe)
         .env("BOARD_URL", &s.url)
         .env("BOARD_TOKEN", &s.token)
         .env("BOARD_AS", ALPHA)
@@ -147,4 +152,45 @@ fn sh_entry_keeps_inline_multiline_body() {
     assert_eq!(code, 0, "{out}{err}");
     let c: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(c["body"], BODY);
+}
+
+/// 后加的命令（start、submit、giveup）经入口脚本：board 认得就原样交过去，结果和直接执行一样
+#[test]
+fn skill_entry_passes_new_commands_through() {
+    let s = start();
+    s.check(ALPHA);
+    let script = skill_script(if cfg!(windows) { "board.cmd" } else { "board" });
+    let (code, out, err) = via_script(&s, &script, &["giveup", "999", "--comment", "x", "--json"]);
+    assert_eq!(code, 1, "{out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}{err}"));
+    assert_eq!(v["error"]["code"], "NOT_FOUND");
+}
+
+/// 旧版 board 不认这几条命令：入口脚本直接说要升级、不把命令交过去；别的命令照常
+#[test]
+fn skill_entry_tells_to_upgrade_an_old_board() {
+    let s = start();
+    let dir = tempfile::tempdir().unwrap();
+    // 假的旧版 board：help 里没有这几条命令；别的命令打印收到的参数
+    let old = if cfg!(windows) {
+        write(dir.path(), "old-board.cmd", b"@echo off\r\nif \"%~1\"==\"help\" (echo   board claim) else (echo ran %*)\r\n")
+    } else {
+        let p = write(dir.path(), "old-board", b"#!/bin/sh\nif [ \"$1\" = help ]; then echo '  board claim    [<ID>]'; else echo \"ran $*\"; fi\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    };
+    let script = skill_script(if cfg!(windows) { "board.cmd" } else { "board" });
+    for sub in ["start", "submit", "giveup"] {
+        let (code, out, err) = via_script_with(&s, &script, Path::new(&old), &[sub, "1"]);
+        assert_eq!(code, 1, "{sub}: {out}{err}");
+        assert!(!out.contains("ran"), "{sub} 不该交给旧版 board：{out}");
+        assert!(err.contains("start / submit / giveup"), "{sub}: {err}");
+    }
+    let (code, out, err) = via_script_with(&s, &script, Path::new(&old), &["claim", "1"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("ran claim 1"), "{out}{err}");
 }

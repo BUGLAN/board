@@ -204,6 +204,93 @@ fn final_ends_the_run_and_card_can_move() {
     agent.wait().unwrap();
 }
 
+/// board start：一条命令占用名字、启动后台心跳、领取、返回卡片和角色；同一个会话里做下一张卡时接着用名字和心跳
+#[test]
+fn board_start_checks_beats_and_claims_in_one_command() {
+    let s = start();
+    let mut agent = fake_agent();
+    let e = Env::new(&s, &agent);
+    // 名字由 Board 生成：不带 BOARD_AS
+    let vars: Vec<(&str, String)> = e.vars.iter().filter(|(k, _)| *k != "BOARD_AS").cloned().collect();
+    let run = |args: &[&str]| board(&s.home, &vars, args);
+    // 建卡用另一个名字（带一个附件）
+    let pic = e.tmp.path().join("shot.png");
+    std::fs::write(&pic, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]).unwrap();
+    let maker = e.vars.iter().filter(|(k, _)| *k != "BOARD_AS" && *k != "BOARD_HEARTBEAT_PID").cloned().chain([("BOARD_AS", "test/maker".to_string())]).collect::<Vec<_>>();
+    assert_eq!(board(&s.home, &maker, &["check", "--as", "test/maker"]).code, 0);
+    let r = board(&s.home, &maker, &["new", "一", "--image", pic.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(board(&s.home, &maker, &["new", "二"]).code, 0);
+
+    // 第一次用要说自己是哪个 agent
+    let r = run(&["start", "1", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
+
+    let r = run(&["start", "1", "--agent", "claude", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    let name = c["session"]["name"].as_str().unwrap().to_string();
+    assert!(name.starts_with("claude"), "{name}");
+    assert_eq!((c["session"]["started"].as_bool(), c["session"]["resumed"].as_bool()), (Some(true), Some(false)));
+    assert_eq!((c["id"].as_i64(), c["column"].as_str(), c["holder"].as_str()), (Some(1), Some("doing"), Some(name.as_str())));
+    // 交审、做不下去去哪：不用自己从工作流里认
+    assert_eq!((c["review"]["key"].as_str(), c["giveup"]["key"].as_str()), (Some("review"), Some("check")));
+    assert!(c["repo"].is_string() && c["branch"].is_string());
+    // 附件已经下载到本地
+    let files = c["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert!(Path::new(files[0]["path"].as_str().unwrap()).is_file(), "{files:?}");
+    // 后台心跳在跑：这张卡开始计时
+    wait_until("开始计时", Duration::from_secs(10), || beats(&s, &s.home, &vars, "1") >= 2);
+
+    // 卡片已经在自己手里时再 start：接着做，不重新占名字
+    let c = run(&["start", "1", "--json"]).json();
+    assert_eq!((c["session"]["name"].as_str(), c["session"]["started"].as_bool(), c["session"]["resumed"].as_bool()), (Some(name.as_str()), Some(false), Some(true)));
+
+    // 交审后做下一张：不带 --agent，名字和心跳接着用；不带 ID 领最上面的
+    let r = run(&["submit", "1", "--comment", "做完了"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let r = run(&["start"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("已领取") && r.out.contains(&name) && r.out.contains("接着用") && r.out.contains("board submit 2"), "{}", r.out);
+    wait_until("第二张开始计时", Duration::from_secs(10), || beats(&s, &s.home, &vars, "2") >= 2);
+    // 没有可领的了
+    assert_eq!(run(&["giveup", "2", "--comment", "卡住了"]).code, 0);
+    assert_eq!(run(&["start", "--json"]).error_code(), "EMPTY_TODO");
+
+    assert_eq!(run(&["heartbeat", "stop"]).code, 0);
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+}
+
+/// board host 启动的会话里（环境里有 BOARD_HOST）：board start 不占名字、不启动心跳，用 BOARD_AS；卡片已经领好就接着做
+#[test]
+fn board_start_in_a_host_session_only_reads() {
+    let s = start();
+    let agent = fake_agent();
+    let mut e = Env::new(&s, &agent);
+    let run = |e: &Env, args: &[&str]| board(&s.home, &e.vars, args);
+    // board host 替它 check、领好了卡（这里用普通命令模拟）
+    assert_eq!(run(&e, &["check", "--as", ME]).code, 0);
+    assert_eq!(run(&e, &["new", "一"]).code, 0);
+    assert_eq!(run(&e, &["claim", "1"]).code, 0);
+    e.vars.push(("BOARD_HOST", "mbp".to_string()));
+    let r = run(&e, &["start", "1", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!((c["session"]["name"].as_str(), c["session"]["started"].as_bool(), c["session"]["resumed"].as_bool()), (Some(ME), Some(false), Some(true)));
+    assert_eq!(e.loop_pid(), None, "没有启动后台心跳：心跳由 board host 发");
+    // 不归自己持有的卡：不领取，NOT_HOLDER；不带 ID 也不领
+    assert_eq!(run(&e, &["new", "二"]).code, 0);
+    let r = run(&e, &["start", "2", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_HOLDER"), "{}{}", r.out, r.err);
+    assert_eq!(run(&e, &["show", "2", "--json"]).json()["column"], "todo");
+    assert_eq!(run(&e, &["start", "--json"]).error_code(), "USAGE");
+    let mut agent = agent;
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+}
+
 /// 名字在服务端是否在线（另起一个干净环境 check 同名：在线就 NAME_TAKEN）
 fn online(s: &Server, name: &str) -> bool {
     let r = s.raw(&s.env(), &["beat", "--as", name, "--json"]);

@@ -695,3 +695,65 @@ fn commands_fetch_only_what_they_need() {
     let gone = s.run(ALPHA, &["hold", "9999", "--json"]);
     assert_eq!((gone.code, gone.error_code().as_str()), (1, "NOT_FOUND"), "{}{}", gone.out, gone.err);
 }
+
+/// board submit / board giveup：评论、结束计时、移走一条命令做完；项目设了代码仓库时交审评论要有固定的四行
+#[test]
+fn submit_and_giveup_in_one_command() {
+    let s = start();
+    for t in ["一", "二", "三"] {
+        s.run(ALPHA, &["new", t]);
+    }
+    assert_eq!(s.run(ALPHA, &["claim", "1"]).code, 0);
+    // 要写评论；不是持有者不行
+    let r = s.run(ALPHA, &["submit", "1", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
+    let r = s.run("test/beta", &["submit", "1", "--comment", "做完了", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "NOT_HOLDER"), "{}{}", r.out, r.err);
+    // 项目没设代码仓库：不查四行。附件随交审评论一起上传
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("check.log");
+    std::fs::write(&log, "ok\n").unwrap();
+    let r = s.run(ALPHA, &["submit", "1", log.to_str().unwrap(), "--comment", "整理了文档", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let c = r.json();
+    assert_eq!((c["column"].as_str(), c["holder"].as_str(), c["moved"].as_bool()), (Some("review"), None, Some(true)));
+    assert_eq!(c["uploaded"].as_array().unwrap().len(), 1);
+    let said = c["activity"].as_array().unwrap().iter().filter(|a| a["action"] == "comment").map(|a| a["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(said.len(), 1, "说明和附件在同一条评论里：{said:?}");
+    assert!(said[0].starts_with("整理了文档") && said[0].contains("check.log"), "{said:?}");
+    assert_eq!(c["work"]["runs"], 0, "没发过心跳：没有一次计时，也不算异常退出");
+
+    // 项目设了代码仓库：交审评论缺行就拒绝，卡片不动
+    {
+        let mut store = board_core::Store::open(&s.db).unwrap();
+        store
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.set_repo_branch("default", Some("https://github.com/o/r.git"), None))
+            .unwrap();
+    }
+    assert_eq!(s.run(ALPHA, &["claim", "2"]).code, 0);
+    let r = s.run(ALPHA, &["submit", "2", "--comment", "改了登录页\n提交：abc1234\n集成分支：main", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
+    let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(msg.contains("「检查：」「碰到的别的卡：」") && !msg.contains("缺这几行：「提交：」") && msg.contains("--no-code"), "{msg}");
+    assert_eq!(s.run(ALPHA, &["show", "2", "--json"]).json()["column"], "doing");
+    let full = "改了登录页\n\n提交：abc1234\n集成分支：main\n检查：npm test 通过\n碰到的别的卡：无";
+    let r = s.run(ALPHA, &["submit", "2", "--comment", full]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("已交审") && r.out.contains("待审核"), "{}", r.out);
+
+    // 没改代码的卡：--no-code 不查四行
+    assert_eq!(s.run(ALPHA, &["claim", "3"]).code, 0);
+    assert_eq!(s.run(ALPHA, &["submit", "3", "--comment", "调研结论见评论", "--json"]).error_code(), "USAGE");
+    let r = s.run(ALPHA, &["submit", "3", "--comment", "调研结论见评论", "--no-code", "--json"]);
+    assert_eq!((r.code, r.json()["column"].as_str()), (0, Some("review")), "{}{}", r.out, r.err);
+
+    // 做不下去：评论原因，去需要人处理的状态（默认工作流没有错误节点）
+    s.run(ALPHA, &["new", "四"]);
+    assert_eq!(s.run(ALPHA, &["claim", "4"]).code, 0);
+    assert_eq!(s.run(ALPHA, &["giveup", "4", "--json"]).error_code(), "USAGE");
+    let r = s.run(ALPHA, &["giveup", "4", "--comment", "需要确认：接口要不要兼容旧版"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("已交给人处理") && r.out.contains("需人工校验"), "{}", r.out);
+    let c = s.run(ALPHA, &["show", "4", "--json"]).json();
+    assert_eq!((c["column"].as_str(), c["holder"].as_str()), (Some("check"), None));
+}

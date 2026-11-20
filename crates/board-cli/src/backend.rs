@@ -47,7 +47,7 @@ pub fn want_of(sub: &str, has_column: bool) -> Want {
 /// 这条命令的输出用不用得到标签（名称、是否优先）：用不到就不取工作区。
 /// `--json` 的卡片都带标签名；文字输出里只有下面几条命令会写标签，`flow` 两种输出都不写
 pub fn needs_labels(sub: &str, json: bool) -> bool {
-    matches!(sub, "ls" | "show" | "new" | "claim" | "next" | "label" | "labels") || (json && sub != "flow")
+    matches!(sub, "ls" | "show" | "new" | "start" | "claim" | "next" | "label" | "labels") || (json && sub != "flow")
 }
 
 /// 一块白板上命令需要的数据
@@ -280,6 +280,8 @@ fn cmd_json(cmd: &Cmd) -> Value {
         Cmd::Comment { id, text } => json!({ "op": "comment", "id": id, "text": text }),
         Cmd::Label { id, add, remove } => json!({ "op": "label", "id": id, "add": add, "remove": remove }),
         Cmd::Beat { id, done } => json!({ "op": "beat", "id": id, "final": done }),
+        Cmd::Submit { id, text } => json!({ "op": "submit", "id": id, "text": text }),
+        Cmd::GiveUp { id, text } => json!({ "op": "giveup", "id": id, "text": text }),
         Cmd::Reply { .. }
         | Cmd::EditComment { .. }
         | Cmd::DeleteComment { .. }
@@ -475,10 +477,10 @@ mod tests {
     /// 文字输出里写标签的命令和所有 --json 输出（flow 除外）才取标签
     #[test]
     fn labels_only_when_the_output_shows_them() {
-        for sub in ["ls", "show", "new", "claim", "next", "label", "labels"] {
+        for sub in ["ls", "show", "new", "start", "claim", "next", "label", "labels"] {
             assert!(needs_labels(sub, false), "{sub}");
         }
-        for sub in ["flow", "edit", "move", "comment", "beat", "attach", "files"] {
+        for sub in ["flow", "edit", "move", "comment", "beat", "attach", "files", "submit", "giveup"] {
             assert!(!needs_labels(sub, false), "{sub}");
         }
         for sub in ["edit", "move", "comment", "beat", "attach", "files"] {
