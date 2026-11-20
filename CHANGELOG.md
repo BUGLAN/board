@@ -2,6 +2,27 @@
 
 版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。
 
+## v0.1.47 · 2026-11-21
+
+### 修复
+
+- **web**：机器详情 agent 页恢复本机 board-skills 一键安装（da0a7e8）
+- **cli**：board attach 带多个文件时先在本地全部检查，有一个不合规就一个也不上传（b8bc10a）
+- **core**：board next 的 ALREADY_HOLDING 提示改用 board submit / giveup（3611659）
+- **cli**：board submit / giveup 带多个附件时先在本地全部检查，有一个不合规就一个也不上传（9283fa9）
+
+### 重构
+
+- **web**：清理机器详情旧版启动环境、目录行剩下的无引用 CSS（0181ecd）
+- **web**：清理机器详情改版后只剩测试引用的导出（cba9011）
+- **core**：清理 board-core 无引用的公开死项（b421929）
+- 清理 Rust 中的无效果表达式（c27f30a）
+- **web**：清理机器详情改版后无人引用的 CSS（726f44e）
+
+### 其他
+
+- **cli**：host.rs 的等待条件覆盖要断言的内容，等事件的上限放宽到 20 秒（385261f）
+
 ## v0.1.46 · 2026-11-21
 
 ### 新功能
