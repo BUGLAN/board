@@ -678,6 +678,44 @@ pub struct CardDetail {
 }
 
 
+/// 卡片命令（`POST /api/cmd`）、读一张卡（`GET /api/card`）、`board next` 的返回：卡片详情，加上它所在白板的工作流、
+/// 仓库这些（`board`）。命令行画输出要用，有了它就不用先取一次白板快照，读写一张卡只发一个请求（default/main#549）。
+/// 旧服务端的返回里没有 `board`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardResp {
+    #[serde(flatten)]
+    pub detail: CardDetail,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<BoardBrief>,
+}
+
+impl std::ops::Deref for CardResp {
+    type Target = CardDetail;
+    fn deref(&self) -> &CardDetail {
+        &self.detail
+    }
+}
+
+/// 卡片所在的白板：命令行画输出用到的那部分（白板快照 brief 里的）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardBrief {
+    /// 规范路径（请求里可以只写项目标识）
+    pub path: String,
+    /// 服务端执行这次请求的时间（写命令就是写入的时间）
+    pub now: i64,
+    pub statuses: Vec<Status>,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub branch: String,
+    /// 这次请求新领取了这张卡（领取、`board start`）；只是读、或者卡片本来就由自己持有时为 false
+    #[serde(default)]
+    pub claimed_now: bool,
+    /// 所在项目的标签：卡片带了标签时才有（命令行写标签名、是否优先用）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<Label>,
+}
+
 /// 回收站里的一张卡片（PRD §8 规则 10）：字段与卡片相同，另外记下删除的时间、谁删的、删除前在哪个状态、排在第几位
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -607,13 +607,16 @@ async fn board(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiRes
     ))
 }
 
-async fn card(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResult<CardDetail> {
+/// `GET /api/card?path=&id=`：一张卡的详情，带上所在白板的工作流、仓库（`board`，命令行画输出用，见 [`CardResp`]）
+async fn card(State(s): State<AppState>, Query(q): Query<BoardQuery>) -> ApiResult<CardResp> {
     let id = q.id.ok_or_else(|| BoardError::usage("缺少 id"))?;
     Ok(Json(
         s.db(move |st| {
             st.read(|r| {
                 let b = r.resolve(&q.path)?;
-                r.card(&b, id)
+                let detail = r.card(&b, id)?;
+                let board = r.board_brief(&b, now_ms(), &detail, false)?;
+                Ok(CardResp { detail, board: Some(board) })
             })
         })
         .await?,
@@ -746,7 +749,7 @@ struct CmdBody {
     cmd: Cmd,
 }
 
-async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, headers: HeaderMap, Json(v): Json<Value>) -> ApiResult<CardDetail> {
+async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, headers: HeaderMap, Json(v): Json<Value>) -> ApiResult<CardResp> {
     let body: CmdBody = parse(v)?;
     // 界面上是人；带令牌的是 agent，名字由 CLI 给出（PRD §3）
     let (actor, origin) = match caller {
@@ -774,7 +777,12 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
                             .with_detail(json!({ "card": id })));
                     }
                 }
-                w.exec(&b, &actor, body.cmd)
+                let claim = matches!(body.cmd, Cmd::Claim { .. });
+                let detail = w.exec(&b, &actor, body.cmd)?;
+                // 返回里带上白板的工作流这些：命令行不用先取一次快照。新领取 = 领取时间就是这次写入的时间
+                let claimed_now = claim && detail.card.claimed_at == Some(w.now());
+                let board = w.read().board_brief(&b, w.now(), &detail, claimed_now)?;
+                Ok(CardResp { detail, board: Some(board) })
             })
         })
         .await?;

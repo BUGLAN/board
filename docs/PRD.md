@@ -295,6 +295,8 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 所有命令都支持 `--json`，输出 JSON。成功时退出码为 0；被拒绝时退出码为 1，并给出错误码（见 §12）和原因。
 
+**一条命令几个请求**（线上一个请求要 2–3 秒）：读写一张卡的命令（`show`、`hold`、`edit`、`move`、`comment`、`beat <ID>`、`heartbeat final`、`claim`、`start`、`submit`、`giveup`、`next`、`files`）只发一个请求，不先取白板快照：服务端在 `POST /api/cmd`、`GET /api/card`、`POST /api/agents/next` 返回的卡片详情里带上 `board` 对象——`path`（规范路径，请求里的白板可以只写项目标识）、`now`（服务端执行这次请求的时间）、`statuses`（工作流）、`repo`、`branch`、`claimed_now`（这次请求新领取了这张卡；`board start` 据此判断是新领取还是接着做）、`labels`（卡片带标签时所在项目的标签），命令行用它画输出。旧服务端的返回里没有 `board` 时再取一次 `GET /api/board?brief=1`，输出一样。`board submit` 的交审评论缺固定的四行时，要先取一次白板看项目有没有设代码仓库；带附件时每个附件另有一个上传请求。按名称找标签、找状态的命令（`new --label`、`label`、`ls`、`labels`、`flow`）照旧先取快照。
+
 **安装**：桌面端安装包自带 `board` 命令行。Windows 安装器把它写进用户 PATH，装完重开终端就能用；macOS 的安装包不带安装脚本，在「Agent → 接入 agent」里执行一条命令，把 `Board.app` 里自带的 `board` 所在目录写进 shell 的 PATH（写进 `~/.zshrc`，重复执行不会重复追加）。不装桌面端时（例如只有命令行的服务器）用服务端提供的安装脚本：`curl -fsSL <服务端>/install.sh | sh`（Windows：`irm <服务端>/install.ps1 | iex`），见下面「安装与升级」；也可以从源码安装：`cargo install --path crates/board-cli`（需要 Rust）。agent 用 skill 自带的 `board`：发版附件 `board-skills.zip` 的 `bin/` 里有各平台的二进制，skill 里的 `scripts/board`（Windows：`scripts\board.cmd`）按平台选用，没有时用 PATH 里的 `board`。
 
 **安装与升级**

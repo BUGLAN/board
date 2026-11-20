@@ -12,6 +12,7 @@ mod acp;
 mod args;
 mod backend;
 mod base;
+mod card;
 mod code;
 mod config;
 mod doctor;
@@ -38,12 +39,12 @@ mod touched;
 mod update;
 mod versions;
 
-use args::{file_arg, text_arg, Args};
+use args::{text_arg, Args};
 use backend::{env, needs_labels, want_of, Backend, BoardData, Remote, Want};
 use board_core::*;
-use output::{agent_json, attachment_json, clock, emit, human_size, iso, rule_of, saved_json, Fmt, Output, Paint};
+use output::{agent_json, attachment_json, clock, emit, human_size, iso, rule_of, Fmt, Output, Paint};
 use serde_json::{json, Value};
-use session::{borrowed, check, explicit_name, heartbeat_cmd, save_files, start_session, Here};
+use session::{borrowed, check, explicit_name, heartbeat_cmd, start_session};
 use std::io::IsTerminal;
 use std::time::Duration;
 use text::{pad, truncate, width};
@@ -499,10 +500,10 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         let every = hold_every();
         let (path, flow, card) = hold_retry(
             || {
-                // 只要工作流和这一张卡：不取整块白板的卡片
-                let d = be.board(&raw, Want::Brief, false)?;
-                let c = be.card(&d.path, id)?.card;
-                Ok((d.path, d.flow, c))
+                // 只取这一张卡：工作流在返回里（旧服务端再取一次快照）
+                let d = be.card(&raw, id)?;
+                let v = be.view(&raw, &d, false)?;
+                Ok((v.path, v.flow, d.detail.card))
             },
             Duration::from_secs(wait),
             every,
@@ -530,6 +531,16 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
     let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
         return Err(BoardError::code(ErrorCode::NoBoard));
     };
+    // 卡片的网址：服务端地址 + /<项目>/<白板>/<ID>（和服务端的单页应用回退、界面的路由一致，PRD §10.1）
+    let origin = be.remote().url().trim_end_matches('/').to_string();
+    // 读写一张卡的命令：不先取白板，工作流这些在返回里，一个请求做完（card.rs）
+    match sub {
+        "show" | "edit" | "move" | "claim" | "next" | "comment" | "beat" | "files" | "start" | "giveup" | "submit" => {
+            let c = card::Ctx { a: &a, sub, json, p, raw: &raw, name: &name, actor: &actor, origin: &origin };
+            return card::run(&c, &mut be, &started);
+        }
+        _ => {}
+    }
     // 每条命令都先取一次白板：只取这条命令用得到的（backend.rs 的 want_of、needs_labels），
     // 终点状态攒了几百张卡的白板上，全量快照加整个工作区要好几秒
     let BoardData { path, flow, repo, branch, cards: mut all, counts, omitted, labels, now } =
@@ -548,17 +559,6 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             ))
         })
     };
-    // board next：只在 board host 启动的会话里（环境里有 BOARD_HOST），由服务端结算上一张、领下一张
-    let next = if sub == "next" {
-        if env("BOARD_HOST").is_none() {
-            return Err(BoardError::usage("board next 只能在 board host 启动的会话里用（环境里没有 BOARD_HOST）"));
-        }
-        Some(be.next(&name)?)
-    } else {
-        None
-    };
-    // 卡片的网址：服务端地址 + /<项目>/<白板>/<ID>（和服务端的单页应用回退、界面的路由一致，PRD §10.1）
-    let origin = be.remote().url().trim_end_matches('/').to_string();
     let mut exec = |cmd: Cmd| -> Result<CardDetail> { be.exec(&path, &actor, cmd) };
     let label_priority = |id: i64| labels.iter().any(|l| l.id == id && l.priority);
     let url_of = |id: i64| format!("{origin}/{path}/{id}");
@@ -634,11 +634,6 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 Output::Text(fmt.list(&cards))
             }
         }
-        "show" => {
-            let id = a.id(sub)?;
-            let d = be.card(&path, id)?;
-            if json { Output::Json(fmt.full(&d)) } else { Output::Text(fmt.show(&d)) }
-        }
         "new" => {
             let title = a.pos[1..].join(" ");
             let inbox = a.flag("--inbox");
@@ -701,106 +696,6 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 ))
             }
         }
-        "edit" => {
-            let id = a.id(sub)?;
-            let body = text_arg(&a, "--body", "--body-file")?;
-            if a.value("--title").is_none() && body.is_none() {
-                return Err(BoardError::usage("board edit 需要 --title、--body 或 --body-file"));
-            }
-            let d = exec(Cmd::Edit { id, title: a.value("--title").map(|s| s.to_string()), body })?;
-            if json {
-                Output::Json(fmt.full(&d))
-            } else {
-                Output::Text(format!("{} 已更新 {}{}\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id)), fmt.renewed(&d, &name)))
-            }
-        }
-        "move" => {
-            let id = a.id(sub)?;
-            let col = a.pos.get(2).ok_or_else(|| BoardError::usage("board move 需要 <状态>"))?;
-            let top = a.flag("--top");
-            let d = exec(Cmd::Move { id, column: col.clone(), top, index: None, order: None, before: None, after: None })?;
-            if json {
-                Output::Json(fmt.full(&d))
-            } else {
-                Output::Text(format!(
-                    "{} {} → {} ({}){}\n",
-                    p.green("✓"),
-                    p.cyan(&format!("#{}", d.card.id)),
-                    flow.name(&d.card.column),
-                    d.card.column,
-                    p.dim(if top { "  最上面" } else { "" })
-                ))
-            }
-        }
-        "start" => session::start_cmd(Here { a: &a, sub, json, p, fmt: &fmt, path: &path, flow: &flow, repo: &repo, branch: &branch, now, name: &name, actor: &actor }, &mut be, &started)?,
-        "giveup" | "submit" => session::submit_cmd(Here { a: &a, sub, json, p, fmt: &fmt, path: &path, flow: &flow, repo: &repo, branch: &branch, now, name: &name, actor: &actor }, &mut be)?,
-        "claim" => {
-            let id = if a.pos.len() > 1 { Some(a.id(sub)?) } else { None };
-            let d = exec(Cmd::Claim { id })?;
-            if json {
-                Output::Json(fmt.full(&d))
-            } else {
-                Output::Text(format!(
-                    "{} {}  {}\n{}\n\n{}",
-                    p.green("✓"),
-                    p.bold("已领取"),
-                    p.dim(&format!("进入「{}」", flow.name(&d.card.column))),
-                    p.yellow(&format!(
-                        "会话开始时启动的心跳（board heartbeat start）会维持这张卡片；做完后 board heartbeat final {}，再在 {} 秒内沿连线移走",
-                        d.card.id,
-                        BEAT_MS * BEAT_MISSES / 1000
-                    )),
-                    fmt.show(&d)
-                ))
-            }
-        }
-        "next" => {
-            let Some(d) = next else { return Err(BoardError::usage("board next 没有结果")) };
-            if json {
-                Output::Json(fmt.full(&d))
-            } else {
-                Output::Text(format!(
-                    "{} {}  {}\n{}\n\n{}",
-                    p.green("✓"),
-                    p.bold("接着做下一张"),
-                    p.dim(&format!("已领取，进入「{}」", flow.name(&d.card.column))),
-                    p.yellow(&format!("上一张的派发已结算；这张做完后 board heartbeat final {}，沿连线移走，再 board next", d.card.id)),
-                    fmt.show(&d)
-                ))
-            }
-        }
-        "comment" => {
-            let id = a.id(sub)?;
-            let text = match file_arg(&a, "--comment-file")? {
-                Some(_) if a.pos.len() > 2 => return Err(BoardError::usage("评论内容和 --comment-file 只能给一个")),
-                Some(t) => t,
-                None => a.pos[2..].join(" "),
-            };
-            let d = exec(Cmd::Comment { id, text })?;
-            if json {
-                Output::Json(fmt.full(&d))
-            } else {
-                Output::Text(format!("{} 已评论 {}{}\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id)), fmt.renewed(&d, &name)))
-            }
-        }
-        "beat" => {
-            let id = a.id(sub)?;
-            let done = a.flag("--final");
-            let d = exec(Cmd::Beat { id, done })?;
-            if json {
-                Output::Json(fmt.full(&d))
-            } else if done {
-                let total = d.card.work_ms;
-                Output::Text(format!(
-                    "{} {} 心跳已结束{}\n",
-                    p.green("✓"),
-                    p.cyan(&format!("#{}", d.card.id)),
-                    if d.card.runs > 0 { p.dim(&format!("  累计 {}（{} 次）", clock(total), d.card.runs)) } else { String::new() }
-                ))
-            } else {
-                Output::Text(format!("{} {} 心跳{}\n", p.green("✓"), p.cyan(&format!("#{}", d.card.id)), fmt.renewed(&d, &name)))
-            }
-        }
         "label" => {
             let id = a.id(sub)?;
             let ops = &a.pos[2..];
@@ -856,22 +751,6 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 let mut s = format!("{} 已上传 {} 个附件到 {}{}\n", p.green("✓"), done.len(), p.cyan(&format!("#{id}")), fmt.renewed(&d, &name));
                 for f in &done {
                     s += &format!("  {}  {}  {}\n", p.dim(&format!("{}", f.id)), f.name, p.dim(&human_size(f.size)));
-                }
-                Output::Text(s)
-            }
-        }
-        "files" => {
-            let id = a.id(sub)?;
-            let d = be.card(&path, id)?;
-            let (dir, saved) = save_files(&mut be, &d, a.value("--out"))?;
-            if json {
-                Output::Json(Value::Array(saved.iter().map(|(f, to)| saved_json(f, to)).collect()))
-            } else if saved.is_empty() {
-                Output::Text(format!("{}\n", p.dim(&format!("#{id} 没有附件"))))
-            } else {
-                let mut s = format!("{} 已下载 {} 个附件到 {}\n", p.green("✓"), saved.len(), dir.as_ref().unwrap().display());
-                for (f, to) in &saved {
-                    s += &format!("  {}  {}\n", to.display(), p.dim(&human_size(f.size)));
                 }
                 Output::Text(s)
             }

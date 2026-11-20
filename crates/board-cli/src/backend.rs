@@ -68,6 +68,18 @@ pub struct BoardData {
     pub now: i64,
 }
 
+/// 画一张卡的输出要的白板信息：卡片命令、读一张卡的返回里顺带的（新服务端，见 `CardResp`），
+/// 没有时再取一次白板快照（旧服务端）
+pub struct View {
+    pub path: String,
+    pub flow: Flow,
+    pub repo: String,
+    pub branch: String,
+    /// 卡片带的标签所在项目的标签（卡片没有标签时可能为空）
+    pub labels: Vec<Label>,
+    pub now: i64,
+}
+
 pub struct Backend(Remote);
 
 impl Backend {
@@ -130,7 +142,7 @@ impl Backend {
     }
 
     /// `board next`：board host 启动的会话接着做下一张
-    pub fn next(&mut self, name: &str) -> Result<CardDetail> {
+    pub fn next(&mut self, name: &str) -> Result<CardResp> {
         self.0.post("/api/agents/next", json!({ "name": name }))
     }
 
@@ -149,7 +161,7 @@ impl Backend {
     }
 
     /// 白板所属项目的标签，从工作区里取（`GET /api/workspace`）：旧服务端的快照不带标签时用
-    fn labels(&mut self, path: &str) -> Result<Vec<Label>> {
+    pub fn labels(&mut self, path: &str) -> Result<Vec<Label>> {
         let project = path.split('/').next().unwrap_or_default();
         let ws = self.workspace()?;
         Ok(ws.projects.into_iter().find(|p| p.key == project).map(|p| p.labels).unwrap_or_default())
@@ -202,8 +214,26 @@ impl Backend {
         })
     }
 
-    pub fn card(&mut self, path: &str, id: i64) -> Result<CardDetail> {
+    /// 一张卡（`path` 可以只写项目标识）。新服务端的返回里带着白板信息（`board`），见 [`Backend::view`]
+    pub fn card(&mut self, path: &str, id: i64) -> Result<CardResp> {
         self.0.get("/api/card", &[("path", path), ("id", &id.to_string())])
+    }
+
+    /// 画这张卡的输出要的白板信息：返回里带着就用它（一个请求做完），旧服务端的返回里没有时再取一次快照。
+    /// `with_labels`：旧服务端时要不要标签（`needs_labels`，卡片没有标签时不用）
+    pub fn view(&mut self, raw: &str, r: &CardResp, with_labels: bool) -> Result<View> {
+        if let Some(b) = &r.board {
+            return Ok(View {
+                path: b.path.clone(),
+                flow: Flow(b.statuses.clone()),
+                repo: b.repo.clone(),
+                branch: b.branch.clone(),
+                labels: b.labels.clone(),
+                now: b.now,
+            });
+        }
+        let d = self.board(raw, Want::Brief, with_labels && !r.card.labels.is_empty())?;
+        Ok(View { path: d.path, flow: d.flow, repo: d.repo, branch: d.branch, labels: d.labels, now: d.now })
     }
 
     /// `board search "<文字>" [--limit <条数>]`：跨白板搜卡片（不需要白板）
@@ -253,6 +283,11 @@ impl Backend {
     }
 
     pub fn exec(&mut self, path: &str, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
+        self.exec_full(path, actor, cmd).map(|r| r.detail)
+    }
+
+    /// 同 [`Backend::exec`]，连同返回里的白板信息（`path` 可以只写项目标识）
+    pub fn exec_full(&mut self, path: &str, actor: &Actor, cmd: Cmd) -> Result<CardResp> {
         let mut body = cmd_json(&cmd);
         body["board"] = json!(path);
         body["as"] = json!(actor.name);
@@ -464,17 +499,20 @@ mod tests {
         assert_eq!(timeout_of(Remote::with_timeout, COMMAND_TIMEOUT), Some(Duration::from_secs(30)));
     }
 
-    /// 只有 ls 取卡片：不写 --column 取全量，写了先取最近的；其他命令只取工作流
+    /// 只有 ls 取卡片：不写 --column 取全量，写了先取最近的；其他先取白板的命令只取工作流。
+    /// 读写一张卡的命令（show、edit、move、claim、next、comment、beat、files、start、submit、giveup、hold）不先取白板：
+    /// 白板信息在返回里（旧服务端时补取的也是 Brief）
     #[test]
     fn only_ls_wants_cards() {
         assert_eq!(want_of("ls", false), Want::Full);
         assert_eq!(want_of("ls", true), Want::Recent);
-        for sub in ["flow", "show", "new", "edit", "move", "claim", "next", "comment", "beat", "label", "labels", "attach", "files"] {
+        for sub in ["flow", "new", "label", "labels", "attach"] {
             assert_eq!(want_of(sub, false), Want::Brief, "{sub}");
         }
     }
 
-    /// 文字输出里写标签的命令和所有 --json 输出（flow 除外）才取标签
+    /// 文字输出里写标签的命令和所有 --json 输出（flow 除外）才取标签。读写一张卡的命令只在旧服务端补取快照、
+    /// 卡片又带着标签时看它（新服务端在返回里带上标签）
     #[test]
     fn labels_only_when_the_output_shows_them() {
         for sub in ["ls", "show", "new", "start", "claim", "next", "label", "labels"] {

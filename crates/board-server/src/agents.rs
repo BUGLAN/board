@@ -13,7 +13,7 @@
 
 use axum::extract::State;
 use axum::{Extension, Json};
-use board_core::{now_ms, AgentInfo, BeatBy, BoardError, CardDetail, ErrorCode, NameOwner, Origin};
+use board_core::{now_ms, AgentInfo, BeatBy, BoardError, CardResp, ErrorCode, NameOwner, Origin};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -110,11 +110,22 @@ pub(crate) struct NextBody {
 }
 
 /// `POST /api/agents/next {name}`：board host 启动的会话接着做下一张（board next）。返回领到的卡片，和 claim 一样
-pub(crate) async fn next(State(s): State<AppState>, Json(v): Json<Value>) -> Result<Json<CardDetail>, ApiError> {
+pub(crate) async fn next(State(s): State<AppState>, Json(v): Json<Value>) -> Result<Json<CardResp>, ApiError> {
     let b: NextBody = crate::parse(v)?;
     let name = name_of(&b.name)?;
     tracing::Span::current().record("who", format!("{name}（next）"));
-    let out = s.db(move |st| st.next(now_ms(), Origin::cli(), &name)).await?;
+    let out = s
+        .db(move |st| {
+            let now = now_ms();
+            let detail = st.next(now, Origin::cli(), &name)?;
+            // 返回里带上白板的工作流这些（见 CardResp）：领到的卡在这个会话正在跑的派发所在的白板上
+            let board = st.read(|r| match r.running_board(&name)? {
+                Some(b) => r.board_brief(&b, now, &detail, true).map(Some),
+                None => Ok(None),
+            })?;
+            Ok(CardResp { detail, board })
+        })
+        .await?;
     s.poke();
     Ok(Json(out))
 }

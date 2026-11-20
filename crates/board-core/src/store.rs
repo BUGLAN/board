@@ -811,6 +811,31 @@ impl<'a> R<'a> {
         flow_of(self.conn, board.id)
     }
 
+    /// 卡片命令、读一张卡的返回里带的白板信息（[`BoardBrief`]）：`claimed_now` 由执行命令的地方给
+    pub fn board_brief(&self, board: &BoardRef, now: i64, card: &CardDetail, claimed_now: bool) -> Result<BoardBrief> {
+        let flow = flow_of(self.conn, board.id)?;
+        let (repo, branch) = self.conn.query_row(
+            "SELECT p.repo, p.branch FROM boards b JOIN projects p ON p.key = b.project WHERE b.id = ?1",
+            [board.id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )?;
+        let labels = if card.card.labels.is_empty() { vec![] } else { labels_of(self.conn, &board.project)? };
+        Ok(BoardBrief { path: board.path(), now, statuses: flow.0, repo, branch, claimed_now, labels })
+    }
+
+    /// 名字正在跑的派发在哪块白板上（`board next` 领到下一张之后，就是那张卡所在的白板）
+    pub fn running_board(&self, name: &str) -> Result<Option<BoardRef>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT b.id, b.project, b.key FROM dispatches d JOIN boards b ON b.id = d.board
+                 WHERE d.name = ?1 AND d.state = 'running' ORDER BY d.id DESC LIMIT 1",
+                [name],
+                |r| Ok(BoardRef { id: r.get(0)?, project: r.get(1)?, key: r.get(2)? }),
+            )
+            .optional()?)
+    }
+
     /// 白板快照。full 为 false 时每个终点状态只带最近移入的 FINAL_RECENT 张（按最后一次移入 / 新建的动态，不按 pos：
     /// 人可能把新完成的放在最上面，也可能放在最下面），省略的张数记在 omitted 里。留下的卡片在 cols 里仍按 pos 排，
     /// 省略的卡片可能夹在它们中间。终点状态的卡片只增不减，全带的话快照越来越大（每次推送都要重取）
