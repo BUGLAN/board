@@ -83,8 +83,7 @@ button.pf-hw:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
 
 /* ---------- 角色表单 ---------- */
 .dialog.pf-form { width: min(560px, calc(100vw - 32px)); text-align: left; padding: 22px 22px 18px; max-height: calc(100vh - 48px); overflow-y: auto; }
-.pf-form h3 { margin: 0 0 4px; }
-.pf-form-sub { margin: 0 0 14px; font-size: 12.5px; color: var(--text-3); line-height: 1.55; }
+.pf-form h3 { margin: 0 0 14px; }
 .pf-f { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .pf-f > span, .pf-f2 label > span { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .pf-f textarea { resize: vertical; min-height: 54px; padding: 8px 10px; line-height: 1.5; }

@@ -130,6 +130,8 @@ describe('新建卡片里的快捷提示词（default/main#413）', () => {
     expect(host.querySelector('.cr-prompt-loading')?.textContent).toContain('正在取');
     await settle();
     expect(host.querySelectorAll('.cr-prompt-insert')).toHaveLength(2);
+    // #580：菜单底部不放「点一条插入到描述光标处」这类说明，每一条自己就是按钮
+    expect(host.querySelector('.cr-prompt-pop')?.textContent).not.toContain('点一条插入');
 
     const ta = host.querySelector<HTMLTextAreaElement>('.cr-desc textarea')!;
     type(ta, '开头留空结尾');

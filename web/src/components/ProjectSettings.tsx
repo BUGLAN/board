@@ -279,7 +279,6 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
                 </button>
               </div>
             </section>
-            <div className="bs-foot">改动立即生效，同步到所有窗口和机器。新建、删除白板在「项目」tab 里。</div>
           </div>
         </div>
       </div>

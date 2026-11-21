@@ -186,7 +186,6 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .bs-modal .d-grid > * { flex-shrink: 0; }
   .bs-modal .bs-side { order: -1; margin: 0 0 6px; border-bottom: 1px solid var(--line); }
   .bs-modal .bs-pv-b { overflow: visible; }
-  .bs-modal .bs-foot { padding: 16px 18px 0; }
   .bs-where { display: none; }
   /* 项目设置：头部只留标题和白板数；白板设置末尾那一行的按钮换到下一行 */
   .ps-sub { margin-left: 6px; }

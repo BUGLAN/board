@@ -351,7 +351,6 @@ function Body({ board, path, focus, on, close }: { board: BoardSnapshot; path: s
                 打开项目设置
               </button>
             </div>
-            <div className="bs-foot">改动立即生效，同步到所有窗口和机器。</div>
           </div>
           <aside className="d-side bs-side" aria-label="预览">
             {pv.mode === 'layout' ? (

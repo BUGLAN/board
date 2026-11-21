@@ -137,7 +137,6 @@ export function UpdateCard() {
           ) : (
             <div className="up-notes">这一版没有写更新说明</div>
           )}
-          <div className="up-foot">安装包会先校验签名，对不上不会安装</div>
         </div>
       )}
 

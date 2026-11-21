@@ -187,7 +187,6 @@ export function ProfileForm() {
     <div className="dialog-wrap on" onClick={e => e.target === e.currentTarget && close()}>
       <div className="dialog pf-form" role="dialog" aria-modal="true" aria-label={isNew ? '新建角色' : `角色「${edit.name}」`}>
         <h3>{isNew ? '新建角色' : `角色「${edit.name}」`}</h3>
-        <p className="pf-form-sub">角色定下用哪个 agent、哪个模型、多大强度。派发时按次带上，不改机器上 agent 自己的配置。</p>
         <label className="pf-f">
           <span>名字</span>
           <input className="input" value={d.name} maxLength={20} placeholder="例如：修复、批量、界面" onChange={e => setD({ ...d, name: e.target.value })} />

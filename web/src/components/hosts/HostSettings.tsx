@@ -78,7 +78,7 @@ export function HostSettings({
         <div className="hd-sw">
           <div className="hd-sw-text">
             <b>自动更新 agent</b>
-            <span className="t-muted">默认关。开着时，board host 发现有新版本、并且这台机器没有在跑的派发，就按它实际的安装方式更新；安装方式不支持的只在 agent 页提示。</span>
+            <span className="t-muted">开着时，board host 发现有新版本、并且这台机器没有在跑的派发，就按它实际的安装方式更新；安装方式不支持的只在 agent 页提示。</span>
           </div>
           <span className="hp-ctl">
             <Sync s={sync.agentAuto} />

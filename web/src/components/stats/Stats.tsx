@@ -1002,7 +1002,7 @@ function Profiles({ rows }: { rows: StatsProfile[] }) {
           </tbody>
         </table>
       </div>
-      <p className="sp-foot">只算按角色派发启动的领取，人自己开的会话不算。分工页选中角色时「近 30 天」就是这里选 30 天、全部项目时的那一行。</p>
+      <p className="sp-foot">只算按角色派发启动的领取，人自己开的会话不算。</p>
     </>
   );
 }

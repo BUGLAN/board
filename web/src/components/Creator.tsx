@@ -652,7 +652,6 @@ export function Creator() {
                           ))}
                         </div>
                       )}
-                      <div className="cr-prompt-foot">点一条插入到描述光标处</div>
                     </div>
                   )}
                 </div>

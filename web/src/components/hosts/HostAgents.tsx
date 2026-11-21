@@ -353,7 +353,7 @@ function Editor({
       <span className="hd-k" />
       <span className="hd-v hd-acts">
         {def ? (
-          <span className="ha-hint">默认 agent：手动派发时预先选中</span>
+          <span className="ha-hint">默认 agent</span>
         ) : (
           <span className="hp-ctl">
             <Sync s={sync.agent} />

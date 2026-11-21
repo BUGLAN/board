@@ -1302,7 +1302,6 @@ function MergeSheet({ req }: { req: MergeReq }) {
         <div className="d-head">
           <Icon name="merge" />
           <b>合并 {src.length} 条</b>
-          <span className="ib-muted">合并后只留一条，其余几条的内容接进描述里</span>
           <span className="spacer" />
           <Tip text="关闭  esc">
             <button className="icon-btn" type="button" aria-label="关闭" data-tip-align="end" onClick={close}>
