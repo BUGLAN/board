@@ -73,6 +73,10 @@ pub struct HostAgent {
     /// 已经移除的内置 agent（[`crate::agentdef::REMOVED_IDS`]）这时被丢掉，自定义的同名 agent 不受影响（#484）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub custom: bool,
+    /// board host 能给这个 agent 按次换供应商（按角色派发时带上供应商的地址和 key：`board acp --provider-file`、dsh 的 `--patch`）：
+    /// board host 上报。旧版 board host 不报，用供应商的角色在这台机器上算跑不了，免得它不认派发里的供应商、悄悄按机器上的配置跑
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switch: bool,
 }
 
 /// 一个内置 agent 在这台机器上的安装与更新状态（PRD §9.1「agent」）。

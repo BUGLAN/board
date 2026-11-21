@@ -2350,6 +2350,14 @@ fn report_cd(instance: &str) -> HostReport {
     r
 }
 
+/// 会按次换供应商的 board host（#574 之后的版本）：每个 agent 都报 `switch`
+fn switching(mut r: HostReport) -> HostReport {
+    for a in r.agents.iter_mut() {
+        a.switch = true;
+    }
+    r
+}
+
 fn rule(label: &str, agent: &str) -> ClaimRule {
     cond("in", &[label], agent)
 }
@@ -6130,7 +6138,7 @@ fn profiles_are_validated_and_deleting_drops_their_rules() {
 #[test]
 fn dispatch_by_profile_carries_model_effort_and_provider() {
     let mut s = store();
-    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    beat(&mut s, T0, &switching(report_cd("i1"))).unwrap();
     s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
     let mut batch = role("批量", "claude", "relay", "model-a", "high");
     batch.note = "先写测试".into();
@@ -6169,7 +6177,7 @@ fn dispatch_by_profile_carries_model_effort_and_provider() {
 #[test]
 fn one_agent_runs_two_profiles_with_different_models() {
     let mut s = store();
-    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    beat(&mut s, T0, &switching(report_cd("i1"))).unwrap();
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(4), per_session: Some(1), auto: Some(true), ..Default::default() })).unwrap();
     s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
     let a = put_role(&mut s, T0, role("A", "claude", "relay", "model-a", "")).unwrap();
@@ -6192,6 +6200,68 @@ fn one_agent_runs_two_profiles_with_different_models() {
         got,
         vec![(ca, "A".into(), Some("model-a".into()), "claude".into()), (cb, "B".into(), Some("model-b".into()), "claude".into())]
     );
+}
+
+/// #574：能不能跑算上登录、连不连得上供应商（来自最近一次自检）和 board 会不会按次换供应商。
+/// 跑不了的写原因，自动领取、派发、任意机器都不挑它；重新自检通过后又能跑
+#[test]
+fn fits_count_login_provider_reach_and_old_board() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
+    let local = put_role(&mut s, T0, role("本机", "claude", "", "", "")).unwrap();
+    let viar = put_role(&mut s, T0, role("中转", "claude", "relay", "model-a", "")).unwrap();
+    let fit = |s: &Store, p: &str| -> (bool, String) {
+        let h = s.read(|r| r.host("mbp", T0 + S)).unwrap();
+        let f = h.fits.iter().find(|f| f.profile == p).unwrap();
+        (f.ok, f.why.clone())
+    };
+    // 旧版 board host（不报 switch）：用供应商的角色跑不了，本机登录的照常
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    assert_eq!(fit(&s, &local.id), (true, String::new()));
+    assert_eq!(fit(&s, &viar.id), (false, "board 版本太旧，升级后才能换供应商".into()));
+    let c = new_card(&mut s, T0, "A");
+    let e = s
+        .write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c, "mbp", None, Some("中转"), &Actor::human())
+        })
+        .unwrap_err();
+    assert!(e.message.contains("board 版本太旧"), "{}", e.message);
+    // 升级后能跑
+    beat(&mut s, T0 + S, &switching(report_cd("i1"))).unwrap();
+    assert_eq!(fit(&s, &viar.id), (true, String::new()));
+    // 自检：Claude Code 没登录、连不上 relay
+    let id = selftest(&mut s, T0 + S, None).unwrap().selftest.asks[0].id;
+    selftest_done(
+        &mut s,
+        T0 + 2 * S,
+        "i1",
+        id,
+        vec![item("agent", "claude", false, Some("没有登录：Not logged in · Please run /login")), item("provider", "relay", false, Some("连不上 https://relay.example/v1：connection refused"))],
+    );
+    assert_eq!(fit(&s, &local.id), (false, "Claude Code 没登录（上次自检）：登录后重新自检".into()));
+    assert_eq!(fit(&s, &viar.id), (false, "供应商 relay 没通过上次自检：连不上 https://relay.example/v1：connection refused".into()));
+    // 自动领取不挑它：规则交给「本机」的卡不领
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(4), per_session: Some(1), auto: Some(true), ..Default::default() })).unwrap();
+    let l = label(&mut s, "x");
+    tag(&mut s, c, l);
+    let mut r = cond("in", &["x"], "");
+    r.profile = local.id.clone();
+    s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[r]), None)).unwrap();
+    assert!(pull(&mut s, T0 + 3 * S).is_none(), "没登录的机器不领交给本机登录角色的卡");
+    let e = s
+        .write(T0 + 3 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create_any(&b, c, None, Some("本机"), &Actor::human())
+        })
+        .unwrap_err();
+    assert!(e.message.contains("没登录"), "{}", e.message);
+    // 别的原因没通过（超时）不算没登录
+    let id = selftest(&mut s, T0 + 4 * S, None).unwrap().selftest.asks[0].id;
+    selftest_done(&mut s, T0 + 5 * S, "i1", id, vec![item("agent", "claude", false, Some("3 分钟内没有回答完（超时）")), item("provider", "relay", true, None)]);
+    assert_eq!(fit(&s, &local.id), (true, String::new()));
+    assert_eq!(fit(&s, &viar.id), (true, String::new()));
+    assert_eq!(pull(&mut s, T0 + 6 * S).map(|d| d.card), Some(c), "重新自检后又能领");
 }
 
 /// 任意机器按角色挑：只在能跑这个角色的机器里挑；没有能跑的拒绝并写原因

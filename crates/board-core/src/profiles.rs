@@ -7,8 +7,9 @@
 //!   board host 每次派发按角色给这一个 agent 进程带上供应商、模型和强度（ACP `providers/set` + 会话配置项；
 //!   dsh 写进这次派发的 `--patch`），只对这个进程生效，不改 agent 的全局配置文件。
 //! - 一台机器能跑一个角色（[`fit`]）：装了这个 agent（找得到命令、没缺 ACP 入口要的命令），没被这个角色排除
-//!   （`only` 不为空时只在这些机器上），用供应商时这个 agent 认这个供应商的某种接口。登录、连不连得上供应商
-//!   board host 现在不报，派发时 agent 自己报错。
+//!   （`only` 不为空时只在这些机器上）；本机登录的角色：最近一次自检里这个 agent 没有因为没登录而失败；用供应商的角色：
+//!   这台机器的 board host 会按次换供应商（[`crate::hosts::HostAgent::switch`]，旧版不会），最近一次自检里连得上这个供应商。
+//!   登录和供应商的结果来自自检（机器详情「自检」），一直算到下一次自检。
 //! - 删掉一个角色时，交给它的规则一起删。
 //!
 //! 升级（[`migrate`]）：规则、兜底、「由这些机器做」里用到的每个 agent 生成一个同名角色（本机登录、不指定模型，等于
@@ -119,24 +120,40 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Profile> {
     })
 }
 
+/// 自检里 agent 一项因为没登录没通过时，原因的开头（board host 的 `selftest::judge_agent`）
+pub const LOGIN_FAILED: &str = "没有登录";
+
 const COLS: &str = "id, name, agent, provider, model, effort, note, only, sort, created_at";
 
 /// 一台机器能不能跑这个角色：只看角色和机器，不看在不在线、有没有空位、在不在接单时段（那些是「现在能不能开始」）。
-/// 跑不了时返回原因
+/// 跑不了时返回原因。登录、连不连得上供应商看最近一次自检（没自检过、旧版 board host 不报时当能跑）
 pub(crate) fn fit(p: &Profile, h: &HostRow) -> std::result::Result<(), String> {
     if !p.only.is_empty() && !p.only.contains(&h.id) {
         return Err(format!("不在「{}」的机器里", p.name));
     }
     let all = h.resolved();
     let name = crate::providers::agent_name(&p.agent);
-    match all.iter().find(|a| a.id == p.agent) {
+    let a = match all.iter().find(|a| a.id == p.agent) {
         None => return Err(format!("没装 {name}")),
         Some(a) if a.missing.is_some() => return Err(format!("缺 {}，{name} 跑不起来", a.missing.as_deref().unwrap_or_default())),
         Some(a) if !a.found => return Err(format!("没找到 {name} 的命令")),
-        Some(_) => {}
+        Some(a) => a,
+    };
+    let failed = |kind: &str, key: &str| h.selftest.items.iter().find(|i| i.kind == kind && i.key == key && !i.ok);
+    if p.provider.is_empty() {
+        if failed("agent", &p.agent).is_some_and(|i| i.why.as_deref().is_some_and(|w| w.starts_with(LOGIN_FAILED))) {
+            return Err(format!("{name} 没登录（上次自检）：登录后重新自检"));
+        }
+        return Ok(());
     }
-    if !p.provider.is_empty() && !crate::agentdef::is_builtin(&p.agent) {
+    if !crate::agentdef::is_builtin(&p.agent) {
         return Err(format!("{name} 是配置文件里加的 agent，不能换供应商"));
+    }
+    if !a.switch {
+        return Err("board 版本太旧，升级后才能换供应商".into());
+    }
+    if let Some(i) = failed("provider", &p.provider) {
+        return Err(format!("供应商 {} 没通过上次自检：{}", p.provider, i.why.as_deref().unwrap_or("没有原因")));
     }
     Ok(())
 }

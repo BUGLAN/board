@@ -4,11 +4,16 @@
 //!   不改任何文件的提示词跑一次（最长 3 分钟）。回答里有 `board-skills` 算通过；没登录、超时、不认识 skill 分别写明。
 //! - git：每块白板的目录 `git fetch origin`，再 `git push --dry-run origin HEAD:refs/heads/board-selftest`
 //!   （只检查权限，不会真的推上去）；失败时分清没有权限、没有 origin、网络不通。
+//! - 供应商（整台机器时）：共用配置里的每个供应商，每种接口发一次列模型的请求（`<地址>/models`，Anthropic 是
+//!   `<地址>/v1/models`），带上 key。连不上（解析不了、拒绝连接、超时）、key 被拒（401、403）算没通过；别的回应
+//!   （包括 404：有的中转不给模型列表）都算连得上。服务端据此算用这个供应商的角色在这台机器上能不能跑（#574）。
+//!   agent 一项因为没登录没通过（原因以 [`board_core::profiles::LOGIN_FAILED`] 开头）时，本机登录的角色在这台机器上跑不了。
 //! - board 版本是否落后由服务端在收到结果时补上。
 //!
 //! 命令在 host/manage.rs 里按派发同样的办法拼好（启动环境、模型、强度），这里只负责跑、限时、看输出下结论。
 
 use crate::logfmt::{self, Stream};
+use board_core::profiles::LOGIN_FAILED;
 use board_core::SelfTestItem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,6 +26,8 @@ pub const PROMPT: &str = "/board-skills 不要执行任何命令。只回答两�
 pub const AGENT_LIMIT: Duration = Duration::from_secs(180);
 /// 每条 git 命令最长多久
 const GIT_LIMIT: Duration = Duration::from_secs(60);
+/// 问供应商的每个请求最长多久
+const PROVIDER_LIMIT: Duration = Duration::from_secs(20);
 /// 试推送的分支（`--dry-run`，不会真的出现在远端）
 pub const PROBE_REF: &str = "HEAD:refs/heads/board-selftest";
 
@@ -36,6 +43,13 @@ pub struct AgentJob {
 pub struct GitJob {
     pub board: String,
     pub dir: PathBuf,
+}
+
+/// 检查一个供应商连不连得上：名称、各接口的地址（服务端规范化过的）、key
+pub struct ProviderJob {
+    pub name: String,
+    pub endpoints: Vec<board_core::providers::ProviderEndpoint>,
+    pub key: String,
 }
 
 /// 正在跑的子进程：board host 退出时结束它们
@@ -86,6 +100,53 @@ fn run_limited(mut cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Ou
         p.retain(|x| *x != pid);
     }
     out
+}
+
+/// 一种接口列模型的地址、是不是 Anthropic 的写法
+fn probe_url(interface: &str, url: &str) -> Option<(String, bool)> {
+    let base = board_core::providers::normalize_url(interface, url);
+    if base.is_empty() {
+        return None;
+    }
+    Some(if interface == "anthropic" { (format!("{base}/v1/models"), true) } else { (format!("{base}/models"), false) })
+}
+
+/// 检查一个供应商：每种接口问一次，第一个没通过的写进原因。key 不出现在原因、日志里
+pub fn check_provider(job: &ProviderJob) -> SelfTestItem {
+    let item = |ok: bool, why: Option<String>, detail: Option<String>| SelfTestItem { kind: "provider".into(), key: job.name.clone(), ok, why, detail, at: 0 };
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(PROVIDER_LIMIT))
+        .http_status_as_error(false)
+        .user_agent(concat!("board-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    let mut seen = vec![];
+    for e in &job.endpoints {
+        let Some((url, anthropic)) = probe_url(&e.interface, &e.url) else { continue };
+        let mut req = agent.get(&url).header("authorization", format!("Bearer {}", job.key));
+        if anthropic {
+            req = req.header("x-api-key", &job.key).header("anthropic-version", "2023-06-01");
+        }
+        match req.call() {
+            Err(err) => return item(false, Some(format!("连不上 {url}：{}", redact_key(&err.to_string(), &job.key))), None),
+            Ok(res) if matches!(res.status().as_u16(), 401 | 403) => {
+                return item(false, Some(format!("{url} 拒绝了 API key（HTTP {}）", res.status().as_u16())), None);
+            }
+            Ok(res) => seen.push(format!("{} HTTP {}", e.interface, res.status().as_u16())),
+        }
+    }
+    if seen.is_empty() {
+        return item(false, Some("这个供应商没有地址".into()), None);
+    }
+    item(true, None, Some(seen.join(" · ")))
+}
+
+fn redact_key(s: &str, key: &str) -> String {
+    if key.is_empty() {
+        s.to_string()
+    } else {
+        s.replace(key, "***")
+    }
 }
 
 /// 输出里像「没有登录」的那一行。`lines` 是转写后的日志，原始 JSON 事件里的 uuid、session_id 等元数据不算；
@@ -143,14 +204,14 @@ pub fn judge_agent(out: &Outcome, lines: &[String]) -> (bool, Option<String>, Op
         Outcome::Spawn(e) => (false, Some(format!("启动失败：{e}")), None),
         Outcome::Timeout => {
             let why = match &login {
-                Some(l) => format!("没有登录：{l}"),
+                Some(l) => format!("{LOGIN_FAILED}：{l}"),
                 None => format!("{} 分钟内没有回答完（超时）", AGENT_LIMIT.as_secs() / 60),
             };
             (false, Some(why), detail)
         }
         // 已经答出 board-skills 就算通过：日志里顺带的报错（重试、接口抖动）不影响结论
         Outcome::Exit(..) if knows => (true, None, detail),
-        Outcome::Exit(..) if login.is_some() => (false, Some(format!("没有登录：{}", login.unwrap_or_default())), detail),
+        Outcome::Exit(..) if login.is_some() => (false, Some(format!("{LOGIN_FAILED}：{}", login.unwrap_or_default())), detail),
         Outcome::Exit(false, code) => {
             let last = lines.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty()).map(short).unwrap_or_default();
             let code = code.map(|c| c.to_string()).unwrap_or_else(|| "（被信号结束）".into());
@@ -274,9 +335,12 @@ pub fn check_agent(job: AgentJob, pids: &Pids) -> SelfTestItem {
     item(judge_agent(&out, &lines))
 }
 
-/// 全部检查：每个 agent、每块白板各一个线程，一起跑
-pub fn run(agents: Vec<AgentJob>, gits: Vec<GitJob>, logs: PathBuf, pids: Pids) -> Vec<SelfTestItem> {
+/// 全部检查：每个 agent、每个供应商、每块白板各一个线程，一起跑
+pub fn run(agents: Vec<AgentJob>, providers: Vec<ProviderJob>, gits: Vec<GitJob>, logs: PathBuf, pids: Pids) -> Vec<SelfTestItem> {
     let mut handles = vec![];
+    for job in providers {
+        handles.push(std::thread::spawn(move || check_provider(&job)));
+    }
     for job in agents {
         let pids = pids.clone();
         handles.push(std::thread::spawn(move || check_agent(job, &pids)));
@@ -294,6 +358,54 @@ mod tests {
 
     fn sv(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 本地起一个只回一次的 HTTP 服务：回 `status`，记下请求头
+    fn one_shot(status: &str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let status = status.to_string();
+        let h = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = c.read(&mut buf).unwrap_or(0);
+            let _ = write!(c, "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        (url, h)
+    }
+
+    fn ep(interface: &str, url: &str) -> board_core::providers::ProviderEndpoint {
+        board_core::providers::ProviderEndpoint { interface: interface.into(), url: url.into() }
+    }
+
+    /// #574：供应商连不连得上。key 被拒（401）没通过；404（中转不给模型列表）也算连得上；连不上的地址写明，原因里没有 key
+    #[test]
+    fn providers_are_probed() {
+        let (url, h) = one_shot("401 Unauthorized");
+        let bad = check_provider(&ProviderJob { name: "relay".into(), endpoints: vec![ep("anthropic", &format!("{url}/v1"))], key: "sk-secret".into() });
+        let req = h.join().unwrap();
+        assert!(!bad.ok && bad.kind == "provider" && bad.key == "relay", "{bad:?}");
+        assert!(bad.why.as_deref().unwrap().contains("拒绝了 API key（HTTP 401）"), "{bad:?}");
+        assert!(req.starts_with("GET /v1/models "), "Anthropic 地址去掉 /v1 再接 /v1/models：{req}");
+        assert!(req.to_lowercase().contains("x-api-key: sk-secret"), "{req}");
+
+        let (url, h) = one_shot("404 Not Found");
+        let ok = check_provider(&ProviderJob { name: "r2".into(), endpoints: vec![ep("openai-chat", &format!("{url}/v1/"))], key: "k".into() });
+        let req = h.join().unwrap();
+        assert!(ok.ok, "{ok:?}");
+        assert!(req.starts_with("GET /v1/models "), "{req}");
+        assert!(req.to_lowercase().contains("authorization: bearer k"), "{req}");
+
+        // 没人监听的端口
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let gone = check_provider(&ProviderJob { name: "r3".into(), endpoints: vec![ep("openai-chat", &format!("http://127.0.0.1:{port}/v1"))], key: "sk-secret".into() });
+        let why = gone.why.unwrap();
+        assert!(!gone.ok && why.starts_with(&format!("连不上 http://127.0.0.1:{port}/v1/models")), "{why}");
+        assert!(!why.contains("sk-secret"));
+        let none = check_provider(&ProviderJob { name: "r4".into(), endpoints: vec![], key: String::new() });
+        assert_eq!(none.why.as_deref(), Some("这个供应商没有地址"));
     }
 
     #[test]

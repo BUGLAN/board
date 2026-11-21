@@ -377,7 +377,7 @@ export function selftestState(h: HostInfo, now: number): { tone: 'busy' | 'warn'
   const whole = live.some(a => !a.agent);
   const what = whole ? '自检' : `自检 ${agents.map(name).join('、')}`;
   if (!h.online) return { tone: 'warn', text: `等机器上线后${what}`, agents: whole ? [] : agents };
-  const how = whole ? '问每个 agent 一句、检查每块白板能不能推送' : agents.length > 1 ? '各问一句' : '问它一句';
+  const how = whole ? '问每个 agent 一句、检查每个供应商和每块白板' : agents.length > 1 ? '各问一句' : '问它一句';
   return { tone: 'busy', text: `正在${what}：${how}，最长 3 分钟`, agents: whole ? [] : agents };
 }
 

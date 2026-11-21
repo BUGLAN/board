@@ -66,9 +66,9 @@ pub struct SelfTestAsk {
 /// 自检的一项
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfTestItem {
-    /// agent | git | version
+    /// agent | provider（连不连得上这个供应商，整台机器自检时才有）| git | version
     pub kind: String,
-    /// agent 标识、白板路径；版本这一项是 board
+    /// agent 标识、供应商名称、白板路径；版本这一项是 board
     pub key: String,
     pub ok: bool,
     /// 没通过的原因
@@ -547,7 +547,7 @@ impl<'a> W<'a> {
         let server = env!("CARGO_PKG_VERSION");
         let mut fresh: Vec<SelfTestItem> = items
             .into_iter()
-            .filter(|i| matches!(i.kind.as_str(), "agent" | "git"))
+            .filter(|i| matches!(i.kind.as_str(), "agent" | "git" | "provider"))
             .filter(|i| ask.agent.is_none() || (i.kind == "agent" && Some(&i.key) == ask.agent.as_ref()))
             .map(|mut i| {
                 i.at = self.now;
@@ -581,8 +581,9 @@ impl<'a> W<'a> {
             let order = |i: &SelfTestItem| -> (usize, usize) {
                 match i.kind.as_str() {
                     "agent" => (0, h.agents.iter().position(|a| a.id == i.key).unwrap_or(usize::MAX)),
-                    "git" => (1, dirs.iter().position(|d| d.board == i.key).unwrap_or(usize::MAX)),
-                    _ => (2, 0),
+                    "provider" => (1, 0),
+                    "git" => (2, dirs.iter().position(|d| d.board == i.key).unwrap_or(usize::MAX)),
+                    _ => (3, 0),
                 }
             };
             st.items.sort_by_key(order);
@@ -594,6 +595,7 @@ impl<'a> W<'a> {
             .map(|i| match i.kind.as_str() {
                 "agent" => h.agents.iter().find(|a| a.id == i.key).map(|a| a.name.clone()).unwrap_or_else(|| i.key.clone()),
                 "git" => format!("{} 的 git", i.key),
+                "provider" => format!("供应商 {}", i.key),
                 _ => "board 版本".into(),
             })
             .collect();

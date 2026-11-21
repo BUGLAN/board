@@ -712,8 +712,8 @@ export interface SelfTestAsk {
 }
 
 export interface SelfTestItem {
-  kind: 'agent' | 'git' | 'version';
-  /** agent 标识、白板路径；版本这一项是 board */
+  kind: 'agent' | 'provider' | 'git' | 'version';
+  /** agent 标识、供应商名称（连不连得上，整台自检才有）、白板路径；版本这一项是 board */
   key: string;
   ok: boolean;
   why?: string | null;

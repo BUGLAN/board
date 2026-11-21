@@ -230,9 +230,30 @@ impl Host<'_> {
         } else {
             ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(b, d)| selftest::GitJob { board: b, dir: d }).collect()
         };
+        // 整台机器时再问共用配置里的每个供应商（带 key 的完整内容用这台机器的令牌取）；取不到时每个都写原因
+        let providers: Vec<selftest::ProviderJob> = if ask.agent.is_some() { vec![] } else { self.provider_jobs() };
         let pids = self.selftest_pids.clone();
-        let h = std::thread::spawn(move || selftest::run(agents, gits, tmp, pids));
+        let h = std::thread::spawn(move || selftest::run(agents, providers, gits, tmp, pids));
         self.selftest.insert(ask.id, h);
+    }
+
+    /// 自检要问的供应商：服务端发来的索引里有供应商时取完整内容（带 key）。取不到就不查（服务端照旧按上一次的结果算）
+    fn provider_jobs(&self) -> Vec<selftest::ProviderJob> {
+        let has = self.work.as_ref().and_then(|w| w.providers.as_ref()).is_some_and(|p| !p.providers.is_empty());
+        if !has {
+            return vec![];
+        }
+        match self.rm().get::<crate::providersync::Lib>(&format!("/api/hosts/{}/providers", self.name), &[]) {
+            Ok(lib) => lib
+                .providers
+                .into_iter()
+                .map(|p| selftest::ProviderJob { name: p.name, endpoints: p.endpoints, key: p.api_key.unwrap_or_default() })
+                .collect(),
+            Err(e) => {
+                self.say(format!("{} 自检取不到模型供应商配置：{}", self.p.yellow("!"), e.message));
+                vec![]
+            }
+        }
     }
 
     /// 自检时启动一个 agent 的命令：和派发一样的启动环境、模型、思考强度，工作目录是临时目录

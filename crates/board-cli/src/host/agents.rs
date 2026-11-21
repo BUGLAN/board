@@ -626,6 +626,9 @@ impl Spec {
             manage,
             // 配置文件里新加的（不是内置的）：服务端据此不把它当成已经移除的内置 agent 丢掉（#484）
             custom: self.builtin.is_none(),
+            // 内置 agent 按角色派发时能按次换供应商（board acp --provider-file、dsh 的 --patch）：服务端据此不把用供应商的
+            // 角色派给不会换的旧版 board host（#574）
+            switch: self.builtin.is_some(),
             ..Default::default()
         }
     }

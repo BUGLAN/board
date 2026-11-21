@@ -100,7 +100,7 @@ export function HostAgents({ h, view, save, sync, now }: { h: HostInfo; view: Pr
           ) : (
             tested > 0 && <span>自检 {since(tested, now)}</span>
           )}
-          <Tip text={offline ? '机器离线' : h.selftest?.able === false ? `board ${h.version} 不会自检：升级后再试` : '问每个 agent 一句、检查每个项目能不能推送；会消耗 agent 的额度'}>
+          <Tip text={offline ? '机器离线' : h.selftest?.able === false ? `board ${h.version} 不会自检：升级后再试` : '问每个 agent 一句、检查每个供应商连不连得上、每个项目能不能推送；会消耗 agent 的额度'}>
             <span>
               <button
                 className={cx('btn sm', (ask.is('all') || whole) && 'is-busy')}
