@@ -108,14 +108,39 @@ export function App() {
   );
 }
 
+/** 白板背景（样式在 base.css）：有鼠标的设备上，鼠标附近的网格亮起来，移出窗口就暗下去 */
 function Atmosphere() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    let raf = 0, x = 0, y = 0;
+    const paint = () => {
+      raf = 0;
+      el.style.setProperty('--px', `${x}px`);
+      el.style.setProperty('--py', `${y}px`);
+      if (!('lit' in el.dataset)) el.dataset.lit = '';
+    };
+    const move = (e: PointerEvent) => {
+      x = e.clientX; y = e.clientY;
+      if (!raf) raf = requestAnimationFrame(paint);
+    };
+    const leave = () => { delete el.dataset.lit; };
+    const root = document.documentElement;
+    window.addEventListener('pointermove', move, { passive: true });
+    root.addEventListener('mouseleave', leave);
+    window.addEventListener('blur', leave);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      root.removeEventListener('mouseleave', leave);
+      window.removeEventListener('blur', leave);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
   return (
-    <div className="atmosphere" aria-hidden="true">
-      <div className="dots" />
-      <div className="glow g1" />
-      <div className="glow g2" />
-      <div className="glow g3" />
-      <div className="grain" />
+    <div ref={ref} className="atmosphere" aria-hidden="true">
+      <div className="grid" />
+      <div className="lit" />
     </div>
   );
 }

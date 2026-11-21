@@ -22,30 +22,22 @@ svg { display: block; flex: none; }
 a { color: inherit; }
 ::selection { background: color-mix(in srgb, var(--brand) 28%, transparent); }
 
-/* ---- 白板氛围：点阵 + 漂浮光晕 + 颗粒 ---- */
+/* ---- 白板背景：28px 网格，鼠标附近一圈亮起来（像手电照在纸上，App.tsx 的 Atmosphere 跟踪鼠标） ---- */
 .atmosphere { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
-.atmosphere .dots {
+.atmosphere .grid, .atmosphere .lit {
   position: absolute; inset: 0;
-  background-image: radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0);
-  background-size: 22px 22px;
-  mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 100%);
+  background-image: linear-gradient(to right, var(--gl) 1px, transparent 1px), linear-gradient(to bottom, var(--gl) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: -1px -1px;
 }
-.atmosphere .glow {
-  position: absolute; border-radius: 50%; filter: blur(80px); opacity: var(--glow-opacity);
-  animation: drift 28s var(--ease-in-out) infinite alternate;
+.atmosphere .grid { --gl: var(--grid-line); }
+.atmosphere .lit {
+  --gl: var(--grid-lit);
+  -webkit-mask-image: radial-gradient(260px circle at var(--px, -999px) var(--py, -999px), #000, transparent);
+  mask-image: radial-gradient(260px circle at var(--px, -999px) var(--py, -999px), #000, transparent);
+  opacity: 0; transition: opacity var(--dur-3) var(--ease-out);
 }
-.atmosphere .glow.g1 { width: 46vw; height: 46vw; left: -12vw; top: -20vw; background: color-mix(in srgb, var(--c-doing) 22%, transparent); }
-.atmosphere .glow.g2 { width: 40vw; height: 40vw; right: -14vw; top: 8vh; background: color-mix(in srgb, var(--c-review) 16%, transparent); animation-duration: 34s; animation-delay: -8s; }
-.atmosphere .glow.g3 { width: 50vw; height: 34vw; left: 30vw; bottom: -26vw; background: color-mix(in srgb, var(--c-done) 14%, transparent); animation-duration: 40s; animation-delay: -16s; }
-@keyframes drift {
-  0% { transform: translate3d(0, 0, 0) scale(1); }
-  50% { transform: translate3d(4vw, 3vh, 0) scale(1.08); }
-  100% { transform: translate3d(-3vw, 5vh, 0) scale(.96); }
-}
-.atmosphere .grain {
-  position: absolute; inset: -50%; opacity: var(--noise-opacity); mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .5 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-}
+.atmosphere[data-lit] .lit { opacity: 1; }
 
 /* ---- 滚动条 ----
    原生滚动条全部隐藏，由 lib/scrollbars.ts 画浮层：滚动时一根 2px 发丝线，

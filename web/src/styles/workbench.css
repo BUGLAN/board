@@ -9,8 +9,7 @@
   position: relative; z-index: 18;
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0 12px;
   border-right: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-2) 72%, transparent);
-  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  background: color-mix(in srgb, var(--bg-2) 20%, transparent); /* 通透：背景网格透过来，不加模糊（模糊会把 1px 线糊没） */
 }
 .ab-item {
   position: relative; display: grid; place-items: center; width: 40px; height: 40px; border-radius: var(--r-sm);
@@ -36,8 +35,7 @@
 .sidepanel {
   position: relative; z-index: 16; min-width: 0; width: var(--side-w);
   border-right: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
-  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  background: color-mix(in srgb, var(--surface-2) 14%, transparent); /* 同活动栏：通透、不模糊 */
   transition: transform var(--dur-3) var(--ease-out), opacity var(--dur-2) var(--ease-out), visibility 0s;
 }
 .app[data-side="closed"] .sidepanel {
