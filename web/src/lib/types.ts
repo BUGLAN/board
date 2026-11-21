@@ -233,14 +233,6 @@ export interface HostAgent {
   model?: string;
   /** 这个 agent 配置文件里现在的思考强度 */
   effort?: string;
-  /** 模型怎么配：off 不改 | own 指定 */
-  run_mode?: RunMode | null;
-  /** 指定的供应商、模型、强度（run_mode 是 own 时） */
-  run_provider?: string | null;
-  run_model?: string | null;
-  run_effort?: string | null;
-  /** 指定用供应商的哪种接口（agent 认几种、供应商也给了几种时才要选）；空 = 供应商里第一个对得上的 */
-  run_protocol?: string | null;
   /** 机器设置里选的启动环境 */
   run_env?: string | null;
   /** 这个 agent 在这台机器上连续异常退出、已经暂停接单：点「恢复」才继续 */
@@ -275,7 +267,6 @@ export interface AgentManage {
 }
 
 /** 一个 agent 的模型怎么配：不改（Board 不碰它的配置文件）/ 指定（这台机器上用哪个供应商、模型、强度、接口） */
-export type RunMode = 'off' | 'own';
 
 /** 一个 agent 在一个启动环境里的检查结果 */
 export interface EnvCheck {
@@ -479,8 +470,6 @@ export interface SyncResult {
   id?: number | null;
   key: string;
   at: number;
-  /** 每个找到的 agent 一行 */
-  agents: ProviderState[];
   /** skills：synced 库里的都写好了 / off 不改（只装了 board-skills）/ failed 有没写进去的 */
   skills: SkillsSync;
   /** MCP：synced 写好了 / off 不改 / failed 有没写进去的 */
@@ -613,20 +602,6 @@ export interface Provider {
   updatedAt?: number;
   by?: string;
   source?: string;
-}
-
-/** 一台机器上一个 agent 这次同步配置的结果 */
-export interface ProviderState {
-  agent: string;
-  /** synced 已写入 | off 不改 | unsupported 不支持 | failed 写入失败 | none 旧版 board host 报的「服务器上没给它配」 */
-  state: 'synced' | 'off' | 'none' | 'unsupported' | 'failed';
-  /** 写进去的供应商、模型、强度（synced 时） */
-  provider?: string;
-  model?: string;
-  effort?: string;
-  /** 选了、但模型不支持所以没写的强度 */
-  dropped?: string;
-  why?: string | null;
 }
 
 /** 内置 agent 的说明（服务端 board-core 留一份）：认哪些接口、配置文件能写哪几档强度 */

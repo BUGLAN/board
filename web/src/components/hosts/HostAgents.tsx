@@ -1,8 +1,8 @@
 /* ==========================================================================
    机器详情「agent」页：每个 agent 一张卡，控件直接摆出来
    - 顶部一句：写进这台机器上 agent 自己的配置文件……；右边「自检 x 前」「全部自检」
-   - 卡片：标题行（图标、名称、默认、版本、右上角状态：正常 · 自检 x 前 / 自检没过 / 配置没写进去 / 缺 board-skills，有问题描边变黄）、
-     写入状态一行（已写入 / 正在写入 / 不改 / 机器离线 / 写入失败 + 重试）、原因一行（+ 再试一次）、
+   - 卡片：标题行（图标、名称、默认、版本、右上角状态：正常 · 自检 x 前 / 自检没过 / 缺 board-skills，有问题描边变黄）、
+     原因一行（+ 再试一次）、
      启动环境（每项带版本，没找到的置灰）、模型（只读：本机配置里现在的；用哪个模型按角色定，派发时带上）、设为默认、自检这一个
    - 卡片上面一行：这台机器能跑哪些角色，跑不了的写原因
    - 缺 board-skills：在桌面端里看的就是这台电脑、agent 能自动装（认识它的 skill 目录、不在 WSL 里）时，按钮是「一键安装」
@@ -12,11 +12,11 @@
    ========================================================================== */
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
+import { agentHealth, lastTest } from '../../lib/hostDetail';
 import { skillHome } from '../../lib/agentMeta';
 import { envName, isLocalHost, missWord, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps } from '../../lib/hosts';
 import { installSkill, localHost, shell } from '../../lib/platform';
-import { metaOf, runPick } from '../../lib/providers';
+import { metaOf } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
 import { copyText, cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
@@ -152,12 +152,10 @@ function AgentCard({
   const hr = agentHealth(h, a);
   const meta = metaOf(view, a.id);
   const def = a.id === h.agent;
-  const pick = runPick(view, a);
-  const line = configLine(h, a, view, now, pick);
   // 正在查这个 agent（转圈）；整台机器在查时也不能单查它（禁用）。别的 agent 在查不影响它（#487）
   const mine = ask.is(`one:${a.id}`) || ask.is(`test:${a.id}`) || selftestLive(h, now).some(x => x.agent === a.id);
   const testing = mine || ask.is('all') || selftestBusy(h, now, a.id);
-  const failed = [`env:${a.id}`, `run:${a.id}`, `resume:${a.id}`].some(k => sync[k] === 'failed');
+  const failed = [`env:${a.id}`, `resume:${a.id}`].some(k => sync[k] === 'failed');
   return (
     <article className={cx('hd-agent', !a.found && 'missing', a.found && !hr.ok && 'warn', failed && 'hp-rollback')}>
       <header>
@@ -179,18 +177,6 @@ function AgentCard({
           ))}
       </header>
       <ManageAgent h={h} a={a} now={now} ask={ask} />
-      {/* 以前在机器上「指定」过供应商的才画写入状态（Board 还在按那组写它的配置文件）；没指定过的没有可说的 */}
-      {a.found && meta && pick.mode !== 'off' && (
-        <div className={cx('hd-conf', line.tone)}>
-          <Icon name={line.tone === 'ok' ? 'checkCircle' : line.tone === 'bad' ? 'alert' : line.tone === 'busy' ? 'renew' : 'info'} />
-          <span>{line.text}</span>
-          {line.retry && (
-            <button className={cx('btn sm', ask.is(`sync:${a.id}`) && 'is-busy')} type="button" disabled={ask.any || !h.online} onClick={() => void ask.run(`sync:${a.id}`, () => api.syncHost(h.name))}>
-              重试
-            </button>
-          )}
-        </div>
-      )}
       {a.found && !meta && (
         <div className="hd-conf muted">
           <Icon name="info" />

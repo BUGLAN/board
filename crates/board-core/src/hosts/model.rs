@@ -44,23 +44,13 @@ pub struct HostAgent {
     /// 旧版 board host 上报的「派发时能选的模型和强度」：不再用，收到也不看
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opts: Option<AgentOpts>,
-    /// 服务端发出去时才有：模型怎么配——`off` 不改 | `own` 指定
+    /// 服务端发出去时才有，只给旧版 board host 看：总是 `off`（不改）。机器上不再指定模型（#576）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_mode: Option<String>,
-    /// 服务端发出去时才有：指定的模型；没选时写供应商的第一个
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_model: Option<String>,
-    /// 服务端发出去时才有：指定的思考强度；没选时不写
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_effort: Option<String>,
-    /// 服务端发出去时才有：指定用供应商的哪种接口（`anthropic`、`openai-chat`、`openai-responses`）；
-    /// 没选时用供应商里第一个这个 agent 认的（`Provider::endpoint_for`）。旧版 board host 不看，总是用第一个
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_protocol: Option<String>,
     /// 服务端发出去时才有：机器设置里选的启动环境（可能是从别的机器复制来、这台机器上没有的：那时 `env` 是实际用的）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_env: Option<String>,
-    /// 服务端发出去时才有：指定的供应商。给旧版 board host 的写法：不改时是 `@local`
+    /// 服务端发出去时才有，只给只认它的旧版 board host 看：总是 `@local`（不改）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_provider: Option<String>,
     /// 服务端发出去时才有：这个 agent 在这台机器上连续异常退出、已经暂停接单（PRD §9.1「能不能接」），人点「恢复」才继续
@@ -184,21 +174,6 @@ pub struct AgentRun {
     /// 启动环境；没有时按默认规则选
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
-    /// 模型怎么配：`own` 指定 | 没有或 `off` = 不改（新机器的默认）。以前的 `server`（用服务器的）迁移成了 `own`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    /// 指定的模型；没有时用供应商的第一个
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// 指定的思考强度；没有时不写
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    /// 指定的供应商名称
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// 指定用供应商的哪种接口；没有时用供应商里第一个这个 agent 认的
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
     /// 人最近一次点「恢复」的时间：连续异常退出从这之后重新数（`fit.rs` 的 `agent_streak`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_at: Option<i64>,

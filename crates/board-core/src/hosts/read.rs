@@ -167,28 +167,12 @@ impl HostRow {
                 }
                 let run = self.run.get(&a.id);
                 out.run_env = run.and_then(|r| r.env.clone());
-                let mode = self.mode_of(&a.id);
-                // 旧版 board host 只认 run_provider：不改 = @local，指定 = 供应商名称
-                out.run_provider = match mode {
-                    MODE_OWN => run.and_then(|r| r.provider.clone()),
-                    _ => Some(crate::providers::PROVIDER_LOCAL.into()),
-                };
-                if mode == MODE_OWN {
-                    out.run_model = run.and_then(|r| r.model.clone());
-                    out.run_effort = run.and_then(|r| r.effort.clone());
-                    out.run_protocol = run.and_then(|r| r.protocol.clone());
-                }
-                out.run_mode = Some(mode.to_string());
+                // 机器上不再指定模型（#576）：旧版 board host 只看这两项，发「不改」，它就不再写 agent 的配置文件
+                out.run_mode = Some(MODE_OFF.into());
+                out.run_provider = Some(crate::providers::PROVIDER_LOCAL.into());
                 out
             })
             .collect()
-    }
-    /// 一个 agent 的模型怎么配：`own` / `off`（没设过的是 `off`）
-    pub(crate) fn mode_of(&self, agent: &str) -> &'static str {
-        match self.run.get(agent).and_then(|r| r.mode.as_deref()) {
-            Some(MODE_OWN) => MODE_OWN,
-            _ => MODE_OFF,
-        }
     }
     /// 生成 agent 名字时第二段（模型名）用什么，见 [`model_of`]
     pub(super) fn model_for(&self, agent: &str) -> (String, bool) {
@@ -799,25 +783,13 @@ impl<'a> R<'a> {
     }
 
     /// 这台机器要写成的样子（[`ConfigSync`]）：board-skills 的版本（随服务端），skills、MCP 用服务器的时库里的
-    /// 名称和版本，每个找到的内置 agent 的启动环境和模型怎么配（指定时带上供应商的版本和接口），Git 凭据用服务器的时它的版本。
+    /// 名称和版本，每个找到的内置 agent 的启动环境，Git 凭据用服务器的时它的版本。
     /// 内容的哈希前 12 位；一样就不用再写
     pub(crate) fn config_key(&self, h: &HostRow) -> Result<String> {
         use sha2::{Digest, Sha256};
-        let providers = self.providers()?;
-        let version = |name: &str| providers.iter().find(|p| p.name == name).map(|p| p.version.clone()).unwrap_or_default();
         let mut agents = vec![];
         for a in h.resolved().into_iter().filter(|a| a.found && crate::agentdef::is_builtin(&a.id)) {
-            let mode = h.mode_of(&a.id);
-            let (provider, model, effort, protocol) = match mode {
-                MODE_OWN => (
-                    a.run_provider.clone().unwrap_or_default(),
-                    a.run_model.clone().unwrap_or_default(),
-                    a.run_effort.clone().unwrap_or_default(),
-                    a.run_protocol.clone().unwrap_or_default(),
-                ),
-                _ => Default::default(),
-            };
-            agents.push(json!({ "id": a.id, "env": a.env, "mode": mode, "provider": provider, "v": version(&provider), "model": model, "effort": effort, "protocol": protocol }));
+            agents.push(json!({ "id": a.id, "env": a.env }));
         }
         let mut body = json!({ "board": env!("CARGO_PKG_VERSION"), "agents": agents });
         for k in &SYNC_KINDS {

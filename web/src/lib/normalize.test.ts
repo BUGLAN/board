@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 import { acceptSummary, boardHosts, defaultAgent, hostDirFor, hostsOf, skillGaps } from './hosts';
 import { normHost, normHosts, normMcp, normProviders, normSession, normWorkspace } from './normalize';
-import { agentGroups, providerCell, runPick, usesOf } from './providers';
 import { compareHosts, readiness } from './ready';
 import type { HostInfo, ProviderView, Workspace } from './types';
 
@@ -13,7 +12,7 @@ const full = (): HostInfo =>
     name: 'mbp',
     os: 'macOS 15.4',
     version: '0.1.30',
-    agents: [{ id: 'claude', name: 'Claude Code', version: '2.4.1', found: true, envs: [{ env: 'login', found: true, version: '2.4.1' }], run_mode: 'own', run_provider: 'p1' }],
+    agents: [{ id: 'claude', name: 'Claude Code', version: '2.4.1', found: true, envs: [{ env: 'login', found: true, version: '2.4.1' }] }],
     envs: [{ id: 'login', name: '登录 shell', path: '/bin/zsh' }],
     workspace: { path: '~/ws', overrides: [{ board: 'oss', path: '~/oss' }] },
     dirs: [{ board: 'oss/main', path: '~/oss', status: 'ok' }],
@@ -77,11 +76,6 @@ const skewed = (): HostInfo =>
 /** 连 agents、dirs 都没有的机器 */
 const bare = () => ({ id: 3, name: 'bare', os: 'Linux', version: '', online: false, beatAt: 0, offAt: 0, max: 1, paused: false }) as unknown as HostInfo;
 
-const VIEW: ProviderView = {
-  providers: [{ name: 'p1', endpoints: [{ interface: 'anthropic', url: 'https://x' }], models: ['m1'] }],
-  meta: [{ id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'high'] }],
-};
-
 describe('机器：必填的数组补齐', () => {
   it('完整的数据原样不变，补两遍和补一遍一样', () => {
     const h = full();
@@ -100,7 +94,6 @@ describe('机器：必填的数组补齐', () => {
     // 旧服务端只有一个 ask：当成唯一的请求
     const ask = { id: 2, agent: 'claude', by: '人', at: 1 };
     expect(normHost({ ...skewed(), selftest: { ask } } as unknown as HostInfo).selftest?.asks).toEqual([ask]);
-    expect(h.sync?.last?.agents).toEqual([]);
     expect(h.sync?.last?.skills).toMatchObject({ state: '', count: 0, dirs: [], replaced: [], links: [] });
     expect(h.sync?.last?.mcp).toMatchObject({ state: '', count: 0, agents: [], replaced: [] });
     // 旧版 board host 不报 Git 凭据：补成空的一行
@@ -135,9 +128,6 @@ describe('机器：必填的数组补齐', () => {
         defaultAgent(h);
         hostDirFor(h, 'oss/main');
         boardHosts(ws, 'oss/main');
-        for (const a of h.agents) runPick(VIEW, a);
-        providerCell(h, 'claude', VIEW);
-        agentGroups(usesOf([h], VIEW, 'p1'), VIEW);
       }).not.toThrow();
     }
   });

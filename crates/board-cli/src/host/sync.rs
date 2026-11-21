@@ -1,18 +1,15 @@
-//! 同步配置：按服务端的共用配置写本机 agent 的 skills、MCP、模型供应商、Git 凭据，以及从本机导入 skills。
+//! 同步配置：按服务端的共用配置写本机 agent 的 skills、MCP、Git 凭据，以及从本机导入 skills。模型不写（用哪个模型按角色、
+//! 派发时带给这一个进程，#576），只读回各 agent 配置文件里现在的模型和强度上报。
 
 use super::*;
 
-/// 一个要同步的 agent（找到了的）：启动环境、Claude Code 的命令、读用户级 skill 的目录、模型怎么配
+/// 一个要同步的 agent（找到了的）：启动环境、Claude Code 的命令、读用户级 skill 的目录
 pub(super) struct SyncAgent {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) env: Env,
     pub(super) prog: Option<String>,
     pub(super) skill_dir: Option<String>,
-    /// `off` 不改 / `own` 指定
-    pub(super) mode: String,
-    /// 指定的供应商、模型、强度、接口
-    pub(super) own: providersync::Own,
 }
 
 /// 一次同步要的东西（交给后台线程）
@@ -122,46 +119,11 @@ pub(super) fn run_sync(job: SyncJob) -> SyncOut {
         }
     };
 
-    // 模型：每个内置 agent 按机器上的选择写
-    let builtin: Vec<&SyncAgent> = job.agents.iter().filter(|a| board_core::agentdef::is_builtin(&a.id)).collect();
-    let need = builtin.iter().any(|a| a.mode != board_core::hosts::MODE_OFF);
-    let lib: std::result::Result<providersync::Lib, String> =
-        if need { job.rm.get::<providersync::Lib>(&format!("/api/hosts/{}/providers", job.name), &[]).map_err(|e| format!("取不到模型供应商配置：{}", e.message)) } else { Ok(providersync::Lib::default()) };
+    // 模型不写（#576）：读回每个内置 agent 配置文件里现在的模型和强度（人自己配的，或以前写进去的）
     let mut files: BTreeMap<String, providersync::Files> = BTreeMap::new();
-    let agents = match lib {
-        Err(why) => builtin
-            .iter()
-            .map(|a| {
-                if a.mode == board_core::hosts::MODE_OFF {
-                    board_core::providers::ProviderState { agent: a.id.clone(), state: "off".into(), ..Default::default() }
-                } else {
-                    board_core::providers::ProviderState { agent: a.id.clone(), state: "failed".into(), why: Some(why.clone()), ..Default::default() }
-                }
-            })
-            .collect(),
-        Ok(lib) => {
-            let mut targets = vec![];
-            let mut unsupported = vec![];
-            for a in &builtin {
-                match providersync::files_of(&a.id, &a.env) {
-                    Some(f) => {
-                        files.insert(a.id.clone(), f.clone());
-                        targets.push(providersync::Target { agent: a.id.clone(), mode: a.mode.clone(), own: a.own.clone(), files: f });
-                    }
-                    None => unsupported.push((a.id.clone(), a.mode.clone(), format!("{}里的 agent 还不能改写配置文件", a.env.name))),
-                }
-            }
-            let out = providersync::sync(&lib.providers, &targets, &unsupported);
-            changes.extend(out.changes);
-            out.states
-        }
-    };
-    // 读回每个 agent 配置文件里现在的模型和强度（同步写进去的，或人自己配的）
-    for a in &builtin {
-        if !files.contains_key(&a.id) {
-            if let Some(f) = providersync::files_of(&a.id, &a.env) {
-                files.insert(a.id.clone(), f);
-            }
+    for a in job.agents.iter().filter(|a| board_core::agentdef::is_builtin(&a.id)) {
+        if let Some(f) = providersync::files_of(&a.id, &a.env) {
+            files.insert(a.id.clone(), f);
         }
     }
     let now: BTreeMap<String, (String, String)> = files.iter().filter_map(|(id, f)| providersync::current(f).map(|x| (id.clone(), x))).collect();
@@ -185,7 +147,7 @@ pub(super) fn run_sync(job: SyncJob) -> SyncOut {
             }
         }
     };
-    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, agents, skills, mcp, git }, changes, local, targets, now }
+    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, skills, mcp, git }, changes, local, targets, now }
 }
 
 impl Host<'_> {
@@ -201,7 +163,7 @@ impl Host<'_> {
                         self.say(format!("{} 同步配置：{c}", self.p.green("✓")));
                     }
                     let r = &out.result;
-                    let mut bad: Vec<String> = r.agents.iter().filter(|a| a.state == "failed").map(|a| format!("{}：{}", a.agent, a.why.as_deref().unwrap_or("失败"))).collect();
+                    let mut bad: Vec<String> = vec![];
                     if r.skills.state == "failed" {
                         bad.push(format!("skills：{}", r.skills.why.as_deref().unwrap_or("没写进去")));
                     }
@@ -259,13 +221,6 @@ impl Host<'_> {
                 env: env.clone(),
                 prog,
                 skill_dir: spec.skills.first().cloned(),
-                mode: u.run_mode.clone().unwrap_or_else(|| board_core::hosts::MODE_OFF.into()),
-                own: providersync::Own {
-                    provider: u.run_provider.clone().unwrap_or_default(),
-                    model: u.run_model.clone().unwrap_or_default(),
-                    effort: u.run_effort.clone().unwrap_or_default(),
-                    protocol: u.run_protocol.clone().unwrap_or_default(),
-                },
             });
         }
         let host_dir = self.host_dir();

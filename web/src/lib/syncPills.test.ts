@@ -7,7 +7,6 @@ import type { HostInfo, McpServer, SkillInfo, SyncResult } from './types';
 const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   key: 'k',
   at: 1000,
-  agents: [],
   skills: { state: 'synced', count: 3, dirs: ['~/.claude/skills'], replaced: [], links: [] },
   mcp: { state: 'synced', count: 1, agents: ['Claude Code'], replaced: [] },
   git: { state: 'synced', host: 'github.com', repos: [], skipped: [] },

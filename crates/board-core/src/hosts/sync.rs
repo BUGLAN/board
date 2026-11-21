@@ -95,9 +95,6 @@ pub struct SyncResult {
     /// 服务端收到的时间
     #[serde(default)]
     pub at: i64,
-    /// 每个找到的 agent 一行
-    #[serde(default)]
-    pub agents: Vec<crate::providers::ProviderState>,
     #[serde(default)]
     pub skills: SkillsSync,
     #[serde(default)]
@@ -264,23 +261,10 @@ pub(crate) const SYNC_KINDS: [SyncKind; 3] = [
     },
 ];
 
-/// 一次同步配置写进操作记录的一句话，例如「同步配置：2 个 agent 已写入，codex 失败；6 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design」
-pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
-    let name = |id: &str| h.agents.iter().find(|a| a.id == id).map(|a| a.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_string());
+/// 一次同步配置写进操作记录的一句话，例如「同步配置：6 个 skill、2 个 MCP 已写入，替换了本机同名的 frontend-design」。
+/// agent 的模型不再写（#576），旧版 board host 报上来的那几行不看
+pub(crate) fn sync_words(r: &SyncResult) -> String {
     let mut parts: Vec<String> = vec![];
-    let ok = r.agents.iter().filter(|a| a.state == "synced").count();
-    let bad: Vec<String> = r.agents.iter().filter(|a| a.state == "failed").map(|a| name(&a.agent)).collect();
-    let mut agents = vec![];
-    if ok > 0 {
-        agents.push(format!("{ok} 个 agent 已写入"));
-    }
-    if !bad.is_empty() {
-        agents.push(format!("{} 失败", bad.join("、")));
-    }
-    if agents.is_empty() {
-        agents.push("agent 的配置都不改".into());
-    }
-    parts.push(agents.join("，"));
     // 写进 agent 目录的库（skills、MCP）并成一段，别的（Git 凭据）各自一段
     let (mut lib, mut own, mut done, mut replaced) = (vec![], vec![], false, vec![]);
     for k in &SYNC_KINDS {
@@ -307,7 +291,9 @@ pub(crate) fn sync_words(h: &HostRow, r: &SyncResult) -> String {
     if !replaced.is_empty() {
         tail.push_str(&format!("，替换了本机同名的 {}", replaced.join("、")));
     }
-    parts.push(tail);
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
     parts.extend(own);
     format!("同步配置：{}", parts.join("；"))
 }
@@ -384,7 +370,7 @@ impl<'a> W<'a> {
             return Err(BoardError::usage("这台机器已经换了一个 board host 进程：结果不收"));
         }
         res.at = self.now;
-        let text = sync_words(&h, &res);
+        let text = sync_words(&res);
         let mut cs = ConfigSync { able: true, last: Some(res.clone()), ..h.config_sync.clone() };
         if cs.ask.as_ref().is_some_and(|a| Some(a.id) == res.id || a.key == res.key) {
             cs.ask = None;

@@ -84,22 +84,10 @@ pub struct EnvPatch {
     pub env: String,
 }
 
-/// 改一个 agent 的模型怎么配。`mode` 是 `off` / `own`；`own` 时带供应商、模型（空 = 第一个）、强度（空 = 不写）、接口（空 = 第一个对得上的）。
-/// 旧界面只带 `provider`：空字符串、`@local` = 不改，其余 = 指定这个供应商
+/// 旧版界面改一个 agent 的「模型怎么配」：机器上不再指定模型（#576），收到就拒绝（`USAGE`）。字段留着只为认得出这种请求
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RunPatch {
     pub agent: String,
-    #[serde(default)]
-    pub mode: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub effort: Option<String>,
-    #[serde(default)]
-    pub provider: Option<String>,
-    /// 用供应商的哪种接口；空 = 第一个对得上的，不带 = 同一个供应商留着原来的
-    #[serde(default)]
-    pub protocol: Option<String>,
 }
 
 impl<'a> W<'a> {
@@ -326,86 +314,9 @@ impl<'a> W<'a> {
             let w = crate::sched::tidy_windows(w).map_err(BoardError::usage)?;
             self.tx.execute("UPDATE hosts SET windows = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&w).unwrap_or_default()])?;
         }
-        if let Some(rp) = &p.run {
-            if !crate::agentdef::is_builtin(&rp.agent) {
-                return Err(BoardError::usage(format!(
-                    "只有内置的 agent（{}）能按服务器上的供应商写配置：「{}」不行",
-                    crate::agentdef::ids().collect::<Vec<_>>().join("、"),
-                    rp.agent
-                )));
-            }
-            // 旧界面只带供应商：空、@local = 不改，其余 = 指定
-            let mode = match (rp.mode.as_deref().map(str::trim), rp.provider.as_deref().map(str::trim)) {
-                (Some(m), _) => m.to_string(),
-                (None, Some("" | crate::providers::PROVIDER_LOCAL)) => MODE_OFF.into(),
-                (None, Some(_)) => MODE_OWN.into(),
-                (None, None) => h.mode_of(&rp.agent).to_string(),
-            };
-            let mut run = h.run.clone();
-            let cur = run.entry(rp.agent.clone()).or_default();
-            match mode.as_str() {
-                MODE_OFF => {
-                    cur.mode = Some(mode.clone());
-                    cur.provider = None;
-                    cur.model = None;
-                    cur.effort = None;
-                    cur.protocol = None;
-                }
-                MODE_OWN => {
-                    let name = rp.provider.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).or_else(|| cur.provider.clone());
-                    let name = name.ok_or_else(|| BoardError::usage("指定时要选一个供应商"))?;
-                    let pv = self.read().provider(&name)?.ok_or_else(|| BoardError::usage(format!("没有模型供应商「{name}」")))?;
-                    if !pv.fits(&rp.agent) {
-                        return Err(BoardError::usage(format!(
-                            "{} 用不了供应商 {name}：它没有 {} 接口",
-                            crate::providers::agent_name(&rp.agent),
-                            crate::providers::protocols_of(&rp.agent).iter().map(|x| crate::providers::interface_name(x)).collect::<Vec<_>>().join("、")
-                        )));
-                    }
-                    let same = cur.provider.as_deref() == Some(name.as_str());
-                    // 模型：带了就要在供应商里；没带时同一个供应商留着原来的，否则用第一个
-                    let model = match rp.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-                        Some(m) if pv.models.iter().any(|x| x == m) => m.to_string(),
-                        Some(m) => return Err(BoardError::usage(format!("供应商 {name} 里没有模型「{m}」：只能是 {}", pv.models.join("、")))),
-                        None => cur
-                            .model
-                            .clone()
-                            .filter(|m| same && pv.models.contains(m))
-                            .or_else(|| pv.models.first().cloned())
-                            .ok_or_else(|| BoardError::usage(format!("供应商 {name} 还没有模型")))?,
-                    };
-                    let effort = match &rp.effort {
-                        Some(e) => e.trim().to_string(),
-                        None if same && cur.model.as_deref() == Some(model.as_str()) => cur.effort.clone().unwrap_or_default(),
-                        None => String::new(),
-                    };
-                    crate::providers::check_effort(&rp.agent, &pv, &model, &effort)?;
-                    // 接口：带了就要是这个 agent 认、供应商也给了的（空 = 第一个对得上的）；没带时同一个供应商留着原来的
-                    let protocol = match rp.protocol.as_deref().map(str::trim) {
-                        Some("") => None,
-                        Some(want) => {
-                            if !pv.endpoints_for(&rp.agent).any(|e| e.interface == want) {
-                                let can: Vec<&str> = pv.endpoints_for(&rp.agent).map(|e| crate::providers::interface_name(&e.interface)).collect();
-                                return Err(BoardError::usage(format!(
-                                    "{} 用供应商 {name} 时接口只能是 {}，不能是「{want}」",
-                                    crate::providers::agent_name(&rp.agent),
-                                    can.join("、")
-                                )));
-                            }
-                            Some(want.to_string())
-                        }
-                        None => cur.protocol.clone().filter(|p| same && pv.endpoints_for(&rp.agent).any(|e| &e.interface == p)),
-                    };
-                    cur.mode = Some(MODE_OWN.into());
-                    cur.provider = Some(name);
-                    cur.model = Some(model);
-                    cur.effort = Some(effort).filter(|e| !e.is_empty());
-                    cur.protocol = protocol;
-                }
-                other => return Err(BoardError::usage(format!("模型怎么配只能是 {MODE_OFF}（不改）、{MODE_OWN}（指定），不能是「{other}」"))),
-            }
-            self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
-            self.config_changed = true;
+        // 机器上不再给 agent 指定供应商、模型（#576）：旧版界面还会发，说清楚去哪改
+        if p.run.is_some() {
+            return Err(BoardError::usage("机器上不再给 agent 指定模型：用哪个模型按角色定（Agent → 自动领取 → 分工），派发时带给这一个 agent 进程"));
         }
         if let Some(id) = p.resume.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;

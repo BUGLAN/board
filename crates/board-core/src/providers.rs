@@ -171,42 +171,7 @@ pub struct ProviderIndex {
     pub version: String,
 }
 
-/// 以前服务器上给一个内置 agent 存的那一组（`provider_agents` 表，已经去掉）：只在迁移旧数据时读
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct OldAssignment {
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub effort: String,
-}
-
-/// 一台机器上一个 agent 这次同步配置的结果（board host 上报，每个 agent 一行）
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderState {
-    pub agent: String,
-    /// synced 已写入 | off 不改（Board 不碰它的配置文件）|
-    /// unsupported 不支持（配置文件里新加的 agent、WSL 里的）| failed 写入失败。
-    /// `none` 是旧版 board host 报的（以前「用服务器的」、服务器上没配时）
-    pub state: String,
-    /// 写进去的供应商、模型、强度（synced 时；强度这个模型不支持时不写，见 `dropped`）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub provider: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub effort: String,
-    /// 选了、但模型不支持所以没写的强度
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub dropped: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
-}
-
-/// 发给 board host 的供应商共用配置：索引（取完整内容用）。每个 agent 用哪个在机器设置里（`HostAgent` 的 `run_*`）
+/// 发给 board host 的供应商共用配置：索引（取完整内容用：按角色派发时换供应商、自检时问连不连得上）
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderWork {
@@ -405,22 +370,6 @@ impl W<'_> {
     }
 }
 
-/// 选的强度：这个模型标了、这个 agent 的配置文件也能写（[`writable_efforts`]）；空表示不写强度
-pub(crate) fn check_effort(agent: &str, p: &Provider, model: &str, effort: &str) -> Result<()> {
-    if effort.is_empty() {
-        return Ok(());
-    }
-    let ok = writable_efforts(agent, p, model);
-    if ok.iter().any(|e| e == effort) {
-        return Ok(());
-    }
-    Err(BoardError::usage(if ok.is_empty() {
-        format!("供应商 {} 没给模型 {model} 标 {} 能写的强度：不能选强度", p.name, agent_name(agent))
-    } else {
-        format!("{} 用 {model} 时强度只能是 {}，不能是「{effort}」", agent_name(agent), ok.join("、"))
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,12 +444,6 @@ mod tests {
         assert_eq!(writable_efforts("claude", &p, "model-a"), vec!["low", "max"]);
         assert_eq!(writable_efforts("codex", &p, "model-a"), vec!["minimal", "low", "max"]);
         assert!(writable_efforts("claude", &p, "model-b").is_empty(), "没标的不能选");
-        assert!(check_effort("claude", &p, "model-a", "max").is_ok());
-        assert!(check_effort("codex", &p, "model-a", "max").is_ok());
-        assert!(check_effort("claude", &p, "model-a", "").is_ok(), "空 = 不写强度");
-        let err = check_effort("claude", &p, "model-a", "minimal").unwrap_err();
-        assert!(err.message.contains("low、max"), "{}", err.message);
-        assert!(check_effort("claude", &p, "model-b", "high").unwrap_err().message.contains("不能选强度"));
         // 不认识的档位
         let bad: BTreeMap<String, Vec<String>> = [("model-a".to_string(), vec!["ultra".to_string()])].into();
         assert!(s.write(3000, Origin::ui(None), |w| w.provider_put(Provider { efforts: bad, ..provider("p1") }, "", "")).unwrap_err().message.contains("ultra"));

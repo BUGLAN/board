@@ -71,13 +71,13 @@ fn sync_retry_asks_again_and_the_report_clears_it() {
     assert_eq!(r.status, 200, "{}", r.text);
     let ask = r.body["sync"]["ask"].clone();
     assert_eq!(ask["key"], json!(key));
-    // board host 写完回报
+    // board host 写完回报（旧版 board host 还报每个 agent 一行：收下不看，#576）
     let result = json!({ "id": ask["id"], "key": key, "agents": [{ "agent": "claude", "state": "off" }], "skills": { "state": "off", "count": 1 }, "mcp": { "state": "off" } });
     let r = send("POST", &format!("{}/api/hosts/mbp/synced", s.url), &[UI], Some(json!({ "instance": "i1", "result": result })));
     assert_eq!(r.status, 200, "{}", r.text);
     assert!(r.body["sync"].get("ask").is_none(), "{}", r.text);
-    assert_eq!(r.body["sync"]["last"]["agents"][0]["state"], json!("off"));
-    assert_eq!(r.body["ops"][0]["text"], json!("同步配置：agent 的配置都不改；只装 board-skills"));
+    assert!(r.body["sync"]["last"].get("agents").is_none(), "{}", r.text);
+    assert_eq!(r.body["ops"][0]["text"], json!("同步配置：只装 board-skills"));
     // 跑多久停：所有机器一个值
     let r = send("PATCH", &format!("{}/api/sched", s.url), &[UI], Some(json!({ "maxRun": 60, "idleRun": 10 })));
     assert_eq!((r.body["maxRun"].clone(), r.body["idleRun"].clone()), (json!(60), json!(10)), "{}", r.text);

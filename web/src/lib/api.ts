@@ -8,7 +8,7 @@ import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
 import { readPrompts, type Prompt } from './prompts';
 import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
-import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode, HostCopy, Profile } from './types';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile } from './types';
 
 declare global {
   interface Window {
@@ -227,8 +227,6 @@ export const api = {
       cronOn?: boolean;
       cron?: string[];
       env?: { agent: string; env: string };
-      /** 一个 agent 的模型怎么配：不改 / 指定（供应商、模型、强度、接口；模型空 = 第一个，强度空 = 不写，接口空 = 第一个对得上的） */
-      run?: { agent: string; mode: RunMode; provider?: string; model?: string; effort?: string; protocol?: string };
       /** skills、MCP 用服务器的（true）还是不改（false） */
       syncSkills?: boolean;
       syncMcp?: boolean;

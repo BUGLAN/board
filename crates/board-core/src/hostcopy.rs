@@ -10,9 +10,9 @@
 //! - 添加机器时可以选「上线后照 <机器> 配」：记在生成命令时新建的令牌上（`host_presets`），
 //!   用这个令牌的机器第一次上线时照来源机器当时的设置配
 use crate::error::{BoardError, Result};
-use crate::hosts::{no_such_host, AgentRun, HostRow, MODE_OFF, MODE_OWN, SYNC_KINDS};
+use crate::hosts::{no_such_host, AgentRun, HostRow, SYNC_KINDS};
 use crate::sched::{Window, DAY};
-use crate::store::{R, W};
+use crate::store::W;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -90,35 +90,12 @@ fn agent_label(hs: [&HostRow; 2], id: &str) -> String {
     hs.iter().flat_map(|h| h.agents.iter()).find(|a| a.id == id).map(|a| a.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_string())
 }
 
-/// 一个 agent 的模型怎么配，写成一句话：不改 / 供应商 · 模型 · 强度 · 接口
-fn model_words(h: &HostRow, id: &str) -> String {
-    if h.mode_of(id) != MODE_OWN {
-        return "不改".into();
-    }
-    let r = h.run.get(id).cloned().unwrap_or_default();
-    let mut parts = vec![r.provider.unwrap_or_default(), r.model.unwrap_or_else(|| "供应商的第一个模型".into())];
-    parts.push(r.effort.map_or_else(|| "强度默认".into(), |e| format!("强度 {e}")));
-    if let Some(p) = r.protocol {
-        parts.push(crate::providers::interface_name(&p).to_string());
-    }
-    parts.join(" · ")
-}
-
-/// 模型那几项（不改时都清空）
-fn model_of(h: &HostRow, id: &str) -> AgentRun {
-    let r = h.run.get(id).cloned().unwrap_or_default();
-    if h.mode_of(id) != MODE_OWN {
-        return AgentRun { mode: Some(MODE_OFF.into()), ..Default::default() };
-    }
-    AgentRun { mode: Some(MODE_OWN.into()), provider: r.provider, model: r.model, effort: r.effort, protocol: r.protocol, ..Default::default() }
-}
-
 fn on_off(on: bool) -> String {
     if on { "用服务器的" } else { "不改" }.into()
 }
 
 /// 照来源机器 `s` 配这台机器 `t`：要变成什么样、逐项的变化和要说一声的
-fn plan(r: &R, t: &HostRow, s: &HostRow) -> Result<Plan> {
+fn plan(t: &HostRow, s: &HostRow) -> Result<Plan> {
     let mut out = HostCopy { from: s.name.clone(), to: t.name.clone(), ..Default::default() };
     let change = |out: &mut HostCopy, key: String, label: String, from: String, to: String| out.changes.push(CopyChange { key, label, from, to });
     let (fs, ft) = (os_family(&s.os), os_family(&t.os));
@@ -136,36 +113,6 @@ fn plan(r: &R, t: &HostRow, s: &HostRow) -> Result<Plan> {
     for id in &ids {
         let name = agent_label([s, t], id);
         let found = t.has_agent(id);
-        let mut stored = false;
-        // 模型（只有内置 agent 能按服务器上的供应商写）
-        if crate::agentdef::is_builtin(id) {
-            let (from, to) = (model_words(t, id), model_words(s, id));
-            if from != to {
-                let want = model_of(s, id);
-                // 来源机器设的时候校验过；之后供应商可能删了、改了
-                let gone = match want.provider.as_deref().filter(|_| want.mode.as_deref() == Some(MODE_OWN)) {
-                    Some(p) => match r.provider(p)? {
-                        None => Some(format!("供应商 {p} 已经不在了")),
-                        Some(pv) if !pv.fits(id) => Some(format!("{name} 用不了供应商 {p}")),
-                        Some(_) => None,
-                    },
-                    None => None,
-                };
-                match gone {
-                    Some(why) => out.notes.push(format!("{name} 的模型没复制：{why}")),
-                    None => {
-                        let cur = run.entry(id.clone()).or_default();
-                        cur.mode = want.mode;
-                        cur.provider = want.provider;
-                        cur.model = want.model;
-                        cur.effort = want.effort;
-                        cur.protocol = want.protocol;
-                        change(&mut out, format!("model:{id}"), format!("{name} 的模型"), from, to);
-                        stored = true;
-                    }
-                }
-            }
-        }
         // 启动环境：同一类系统、这台机器上找得到才复制
         let (se, te) = (s.run.get(id).and_then(|x| x.env.clone()), t.run.get(id).and_then(|x| x.env.clone()));
         let env_words = |h: &HostRow, e: &Option<String>| e.as_deref().map_or_else(|| "默认".to_string(), |e| h.env_name(e));
@@ -188,9 +135,6 @@ fn plan(r: &R, t: &HostRow, s: &HostRow) -> Result<Plan> {
                     }
                 }
             }
-        }
-        if stored && !found {
-            out.notes.push(format!("这台机器上还没找到 {name}：它的设置先存下，装上并重新检查后生效"));
         }
     }
     if !env_skipped.is_empty() {
@@ -255,7 +199,7 @@ impl W<'_> {
         if s.id == t.id {
             return Err(BoardError::usage("不能照自己配：选另一台机器"));
         }
-        let p = plan(&self.read(), &t, &s)?;
+        let p = plan(&t, &s)?;
         if dry || p.out.changes.is_empty() {
             return Ok(p.out);
         }
@@ -280,7 +224,7 @@ impl W<'_> {
         let t = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
         match self.host_row(&src)? {
             Some(s) if s.id != t.id => {
-                let p = plan(&self.read(), &t, &s)?;
+                let p = plan(&t, &s)?;
                 if p.out.changes.is_empty() {
                     self.host_op(t.id, &by, &format!("上线后照 {src} 配：默认设置已经和它一样"))?;
                 } else {

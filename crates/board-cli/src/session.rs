@@ -477,12 +477,11 @@ fn generated_check(be: &mut Backend, agent: &str) -> Result<AgentInfo> {
             let mine = be.my_host()?;
             let (name, modeled, query) = match mine {
                 Some(h) => {
-                    // 名字第二段：机器设置里选的模型、强度 → board host 上报的 → agent 标识（和派发、新版服务端一样）
+                    // 名字第二段：board host 上报的、agent 配置文件里现在的模型和强度 → agent 标识（和派发、新版服务端一样）
                     let a = h.agents.iter().find(|a| a.id == agent);
-                    let set = a.and_then(|a| a.run_model.clone().filter(|_| a.opts.as_ref().is_some_and(|o| o.model)));
-                    let modeled = set.is_some();
-                    let model = set.or_else(|| a.map(|a| a.model.clone())).unwrap_or_default();
-                    let effort = a.and_then(|a| a.run_effort.clone()).or_else(|| a.map(|a| a.effort.clone())).unwrap_or_default();
+                    let modeled = false;
+                    let model = a.map(|a| a.model.clone()).unwrap_or_default();
+                    let effort = a.map(|a| a.effort.clone()).unwrap_or_default();
                     (board_core::hosts::dispatch_agent_name(agent, &h.name, &model, &effort, 0), modeled, Some(h.name))
                 }
                 None => {

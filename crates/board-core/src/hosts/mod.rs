@@ -294,109 +294,22 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         conn.execute_batch("UPDATE hosts SET sync_git = 1")?;
     }
     // 配置同步改成「服务器存一份、机器上选用不用」（机器详情与配置同步重构）：已有的机器保持原来的效果——
-    // skills、MCP 以前都同步，记成「用服务器的」；每个内置 agent 以前跟共用配置的记成「用服务器的」，
-    // 本机自己管的记成「不改」，单独指定了供应商的记成「单独配置」。以前「Board 派发时」的模型、强度不再生效。
-    // 只在第一次补上 sync_skills 这一列时做；之后新建的机器默认全部「不改」
+    // skills、MCP 以前都同步，记成「用服务器的」。只在第一次补上 sync_skills 这一列时做；之后新建的机器默认全部「不改」。
+    // （以前这里还把每个 agent 的供应商记成「不改 / 指定」：#576 去掉了机器上的模型设置，见下面）
     if !has("hosts", "sync_skills")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN sync_skills INTEGER NOT NULL DEFAULT 0")?;
         conn.execute_batch("UPDATE hosts SET sync_skills = 1, sync_mcp = 1")?;
-        let assigned: BTreeMap<String, crate::providers::OldAssignment> = conn
-            .prepare("SELECT agent, spec FROM provider_agents")
-            .and_then(|mut st| {
-                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(a, spec)| serde_json::from_str(&spec).ok().map(|x| (a, x)))
-            .collect();
-        let models: BTreeMap<String, Vec<String>> = conn
-            .prepare("SELECT name, spec FROM providers")
-            .and_then(|mut st| {
-                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(n, spec)| serde_json::from_str::<crate::providers::Provider>(&spec).ok().map(|p| (n, p.models)))
-            .collect();
-        let rows: Vec<(i64, String, String)> = conn
-            .prepare("SELECT id, run, agents FROM hosts")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (id, raw, agents) in rows {
-            let mut run: BTreeMap<String, AgentRun> = serde_json::from_str(&raw).unwrap_or_default();
-            let agents: Vec<HostAgent> = serde_json::from_str(&agents).unwrap_or_default();
-            let mut ids: Vec<String> = agents.iter().map(|a| a.id.clone()).collect();
-            ids.extend(run.keys().cloned());
-            ids.sort();
-            ids.dedup();
-            for id in ids.into_iter().filter(|a| crate::agentdef::is_builtin(a)) {
-                let r = run.entry(id.clone()).or_default();
-                let old_model = r.model.take();
-                r.effort = None;
-                match r.provider.clone().as_deref() {
-                    None => r.mode = Some(OLD_MODE_SERVER.into()),
-                    Some(crate::providers::PROVIDER_LOCAL) => {
-                        r.mode = Some(MODE_OFF.into());
-                        r.provider = None;
-                    }
-                    Some(name) => {
-                        r.mode = Some(MODE_OWN.into());
-                        // 以前写进配置的是共用配置给这个供应商选的模型；没有时是第一个
-                        let list = models.get(name).cloned().unwrap_or_default();
-                        let same = assigned.get(&id).filter(|a| a.provider == name);
-                        r.model = old_model
-                            .filter(|m| list.contains(m))
-                            .or_else(|| same.map(|a| a.model.clone()).filter(|m| list.contains(m)))
-                            .or_else(|| list.first().cloned());
-                    }
-                }
-            }
-            // 不是内置 agent 的（配置文件里新加的）：只留启动环境和恢复时间
-            for (k, r) in run.iter_mut() {
-                if !crate::agentdef::is_builtin(k) {
-                    r.model = None;
-                    r.effort = None;
-                    r.provider = None;
-                }
-            }
-            conn.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![id, serde_json::to_string(&run).unwrap_or_default()])?;
-        }
     }
-    // 服务器上不再给每个 agent 存一组（去掉「用服务器的」）：选了「用服务器的」的 agent 改成「指定」，值就是服务器上
-    // 那一组，机器上的效果不变；服务器上没给它配的改成「不改」（以前也是不写）。还剩 `server` 就改，表还在就删
-    let old_table: bool = conn
-        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'provider_agents'", [], |r| r.get::<_, i64>(0))
-        .map(|n| n > 0)?;
-    let assigned: BTreeMap<String, crate::providers::OldAssignment> = if old_table {
-        conn.prepare("SELECT agent, spec FROM provider_agents")?
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .filter_map(|(a, spec)| serde_json::from_str(&spec).ok().map(|x| (a, x)))
-            .collect()
-    } else {
-        BTreeMap::new()
-    };
+    // #576：机器上不再给 agent 指定供应商、模型（用哪个模型按角色定，派发时带给这一个进程）。存着的「不改 / 指定」那几项
+    // （mode、provider、model、effort、protocol）清掉，只留启动环境和恢复时间；board host 写进 agent 配置文件的不恢复
     let rows: Vec<(i64, String)> = conn.prepare("SELECT id, run FROM hosts")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     for (id, raw) in rows {
-        let mut run: BTreeMap<String, AgentRun> = serde_json::from_str(&raw).unwrap_or_default();
+        let Ok(mut run) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&raw) else { continue };
         let mut touched = false;
-        for (agent, r) in run.iter_mut().filter(|(_, r)| r.mode.as_deref() == Some(OLD_MODE_SERVER)) {
-            touched = true;
-            match assigned.get(agent).filter(|a| !a.provider.is_empty()) {
-                Some(a) => {
-                    r.mode = Some(MODE_OWN.into());
-                    r.provider = Some(a.provider.clone());
-                    r.model = Some(a.model.clone()).filter(|m| !m.is_empty());
-                    r.effort = Some(a.effort.clone()).filter(|e| !e.is_empty());
-                }
-                None => {
-                    r.mode = Some(MODE_OFF.into());
-                    r.provider = None;
-                    r.model = None;
-                    r.effort = None;
+        for r in run.values_mut() {
+            if let Some(o) = r.as_object_mut() {
+                for k in ["mode", "provider", "model", "effort", "protocol"] {
+                    touched |= o.remove(k).is_some();
                 }
             }
         }
@@ -455,12 +368,9 @@ pub const MAX_RUN_LIMIT: i64 = 720;
 pub const IDLE_RUN_LIMIT: i64 = 120;
 /// 领取规则最多几条
 pub const RULES_LIMIT: usize = 20;
-/// 一个 agent 的模型：不改（Board 不碰它的配置文件）。新机器默认是它
+/// 发给旧版 board host 的「模型不改」（`HostAgent::run_mode`）：机器上不再指定模型（#576），总是它，
+/// 旧版 board host 收到后不再按机器上的设置写 agent 的配置文件
 pub const MODE_OFF: &str = "off";
-/// 一个 agent 的模型：指定这台机器上用哪个供应商、模型、强度（和接口）
-pub const MODE_OWN: &str = "own";
-/// 以前的「用服务器的」：只在迁移旧数据时认（见 `migrate`）
-const OLD_MODE_SERVER: &str = "server";
 /// 每个派发保留的日志行数
 pub const LOG_KEEP: usize = 500;
 /// 机器多久没上报算离线：与 agent 相同，连续 5 次（50 秒）

@@ -1,23 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { acceptOf, acceptPatch, acceptSummary } from './hosts';
-import { agentHealth, configLine, laterProjects, syncLine, syncNotes, todayCounts, workspaceExceptions } from './hostDetail';
+import { agentHealth, laterProjects, syncLine, syncNotes, todayCounts, workspaceExceptions } from './hostDetail';
 import { SYNC_KINDS, syncKind, type SyncLib } from './syncKinds';
-import type { Dispatch, HostAgent, HostInfo, ProviderView, SyncResult } from './types';
+import type { Dispatch, HostAgent, HostInfo, SyncResult } from './types';
 
-const view: ProviderView = {
-  providers: [{ name: 'p1', endpoints: [{ interface: 'anthropic', url: 'https://x' }], models: ['m1'], efforts: { m1: ['high'] } }],
-  meta: [{ id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'high', 'max'] }],
-};
 const result = (x: Partial<SyncResult> = {}): SyncResult => ({
   key: 'k',
   at: 1000,
-  agents: [{ agent: 'claude', state: 'synced', provider: 'p1', model: 'm1', effort: 'high' }],
   skills: { state: 'synced', count: 6, dirs: [], replaced: [], links: [] },
   mcp: { state: 'synced', count: 2, agents: ['Claude Code', 'Codex'], replaced: [] },
   git: { state: 'synced', host: 'github.com', repos: [], skipped: [] },
   ...x,
 });
-const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', run_mode: 'own', run_provider: 'p1', run_model: 'm1', run_effort: 'high', ...x });
+const claude = (x: Partial<HostAgent> = {}): HostAgent => ({ id: 'claude', name: 'Claude Code', found: true, version: '1', ...x });
 const host = (x: Partial<HostInfo> = {}): HostInfo =>
   ({ id: 1, name: 'win2', os: 'Windows 11', online: true, version: '0.2.0', max: 3, perSession: 4, paused: false, auto: true, rules: [{ op: 'in', labels: ['x'], agent: 'claude' }], windows: [[0, 1440]], agents: [claude()], dirs: [], syncSkills: true, syncMcp: true, sync: { able: true, last: result() }, ...x }) as HostInfo;
 const NOW = 61_000;
@@ -40,29 +35,10 @@ describe('机器详情', () => {
     expect(acceptSummary(host({ auto: false }), 0)).toBe('只做派给它的卡 · 最多 3 个会话 · 一个会话 4 张');
   });
 
-  it('配置写进去没有：已写入、正在写入、不改、没有要写的、离线、写入失败', () => {
-    const line = (h: HostInfo, a = h.agents[0]) => configLine(h, a, view, NOW).text;
-    expect(line(host())).toBe('已写入 p1 · m1 · 强度 high · 1 分钟前');
-    expect(line(host({ sync: { able: true, ask: { id: 2, key: 'k2', by: 'me', at: 1 }, last: result() } }))).toBe('正在写入 p1 · m1 · 强度 high…');
-    expect(line(host({ agents: [claude({ run_mode: 'off' })] }))).toBe('不改：Board 不碰它的配置文件');
-    // 旧版 board host 报的「没配」
-    expect(line(host({ sync: { able: true, last: result({ agents: [{ agent: 'claude', state: 'none' }] }) } }))).toBe('没有要写的供应商：不写');
-    expect(line(host({ online: false, sync: { able: true, ask: { id: 2, key: 'k2', by: 'me', at: 1 } } }))).toBe('机器离线：上线后写入 p1 · m1 · 强度 high');
-    const bad = configLine(host({ sync: { able: true, last: result({ agents: [{ agent: 'claude', state: 'failed', why: '文件解析不了' }] }) } }), claude(), view, NOW);
-    expect(bad).toEqual({ tone: 'bad', text: '写入失败：文件解析不了', retry: true });
-    // 模型不支持选的强度：写的时候没写
-    const dropped = result({ agents: [{ agent: 'claude', state: 'synced', provider: 'p1', model: 'm1', dropped: 'max' }] });
-    expect(line(host({ sync: { able: true, last: dropped } }))).toBe('已写入 p1 · m1 · 不写强度 · 1 分钟前');
-  });
-
-  it('agent 正不正常：没找到、缺 board-skills、配置没写进去、自检没过', () => {
+  it('agent 正不正常：没找到、缺 board-skills、自检没过', () => {
     expect(agentHealth(host(), claude({ found: false })).ok).toBe(false);
     expect(agentHealth(host(), claude({ found: false, missing: 'Node.js（npx）' })).chip).toBe('缺 Node.js（npx）');
     expect(agentHealth(host(), claude({ no_skill: '~/.claude/skills' })).chip).toBe('缺 board-skills');
-    const failed = host({ sync: { able: true, last: result({ agents: [{ agent: 'claude', state: 'failed', why: 'x' }] }) } });
-    expect(agentHealth(failed, claude()).chip).toBe('配置没写进去');
-    // 不改的 agent 不算
-    expect(agentHealth(failed, claude({ run_mode: 'off' })).ok).toBe(true);
     const tested = host({ selftest: { asks: [], items: [{ kind: 'agent', key: 'claude', ok: false, why: '不支持强度 max', at: 5 }] } });
     expect(agentHealth(tested, claude())).toMatchObject({ ok: false, chip: '自检没过', act: 'selftest', why: '自检没通过：不支持强度 max' });
     expect(agentHealth(host(), claude())).toMatchObject({ ok: true });

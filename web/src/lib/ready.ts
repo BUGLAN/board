@@ -223,19 +223,6 @@ export function compareHosts(hosts: HostInfo[], now: number, server?: string | n
     const version = of.map(a => (a ? (a.found ? a.version || '找到了' : missWord(a)) : null));
     const model = of.map(a => (a?.found && a.model ? a.model : null));
     const env = hosts.map((h, i) => (of[i]?.found ? envName(h, of[i]!.env) : null));
-    // 同步配置写进配置文件的供应商和模型（PRD §10.12）；旧版 board host 不上报时不参与比较
-    const prov = hosts.map((h, i) => {
-      if (!of[i]?.found || !h.sync?.able) return null;
-      if ((of[i]?.run_mode ?? 'off') === 'off') return '不改';
-      const s = h.sync.last?.agents.find(x => x.agent === id);
-      if (!s) return h.online ? '还没写入' : null;
-      if (s.state === 'synced') return `${s.provider || '?'} / ${s.model || '?'}`;
-      if (s.state === 'none') return '没配';
-      if (s.state === 'off') return '不改';
-      if (s.state === 'unsupported') return '不支持';
-      return '失败';
-    });
-    const provTip = hosts.map((h, i) => (of[i]?.found ? h.sync?.last?.agents.find(x => x.agent === id)?.why ?? undefined : undefined));
     return {
       key: `agent:${id}`,
       title: name,
@@ -243,7 +230,6 @@ export function compareHosts(hosts: HostInfo[], now: number, server?: string | n
       cols: [
         col(`${id}:version`, '版本', version, oddOnes(version)),
         col(`${id}:model`, '模型', model, oddOnes(model)),
-        col(`${id}:provider`, '供应商 / 模型', prov, oddOnes(prov), provTip),
         // 启动环境只在同一种系统的机器之间比（Windows 的 Git Bash 和 macOS 的登录 shell 不算不一致）
         col(`${id}:env`, '启动环境', env, oddBy(env, os)),
       ],

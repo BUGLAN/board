@@ -1094,11 +1094,11 @@ fn remote_recheck_and_restart() {
     assert!(out.contains("重新检查完了") && out.contains("请求重启 board host") && out.contains("重新启动 board host"), "{out}");
 }
 
-/// 同步配置（机器详情与配置同步重构）：服务器上加了供应商，机器上给 claude 指定它——不用重启 board host，
-/// 地址（去掉 /v1）、key、模型、强度写进 Claude Code 自己的配置文件，结果上报、记进操作记录；
-/// 派发时不再传 --model / --effort（ACP 入口不带参数，提示词走 session/prompt），名字第二段和「派发开始」里的模型是配置文件里写进去的
+/// 同步配置不碰 agent 的模型（#576）：Claude Code 自己的配置文件里有什么（人配的，或以前写进去的）就原样留着，
+/// board host 只读回模型和强度上报；派发时不再传 --model / --effort（ACP 入口不带参数，提示词走 session/prompt），
+/// 名字第二段和「派发开始」里的模型是配置文件里的
 #[test]
-fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
+fn config_sync_leaves_the_agent_config_and_dispatch_uses_its_model() {
     let rig = Rig::new();
     let printer = rig.fake.parent().unwrap().join("printer.sh");
     // 打印参数，再照常讲 ACP（交给假 agent）
@@ -1108,40 +1108,22 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     let conf = rig.s.home.join(".board").join("config.toml");
     let text = std::fs::read_to_string(&conf).unwrap().replace(&rig.fake.display().to_string(), &printer.display().to_string());
     std::fs::write(&conf, text).unwrap();
+    // 人自己配的（或以前 board host 写进去的）Claude Code 配置
+    let settings = rig.s.home.join(".claude").join("settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let before = "{\n  \"model\": \"m2\",\n  \"env\": {\"ANTHROPIC_BASE_URL\": \"https://relay.example.com\", \"CLAUDE_CODE_EFFORT_LEVEL\": \"high\"}\n}\n";
+    std::fs::write(&settings, before).unwrap();
     assert_eq!(rig.board(&["new", "一"]).code, 0);
     let host = rig.host("mbp");
     wait_until("mbp 上线", Duration::from_secs(20), || {
         rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
     });
-    // 新机器默认全部「不改」：启动时写一次，claude 的配置不碰
-    let claude = |rig: &Rig| rig.workspace()["hosts"][0]["sync"]["last"]["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"] == "claude").cloned());
-    wait_until("启动时同步一次", Duration::from_secs(15), || claude(&rig).is_some_and(|c| c["state"] == "off"));
-    {
-        let mut store = board_core::Store::open(&rig.s.db).unwrap();
-        let p = board_core::providers::Provider {
-            name: "relay".into(),
-            endpoints: vec![board_core::providers::ProviderEndpoint { interface: "anthropic".into(), url: "https://relay.example.com/v1".into() }],
-            api_key: Some("sk-test-relay".into()),
-            models: vec!["m1".into(), "m2".into()],
-            efforts: [("m2".to_string(), vec!["high".to_string()])].into(),
-            ..Default::default()
-        };
-        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.provider_put(p, "buglan", "")).unwrap();
-    }
-    rig.set_host("mbp", serde_json::json!({ "run": { "agent": "claude", "mode": "own", "provider": "relay", "model": "m2", "effort": "high" } }));
-    let settings = rig.s.home.join(".claude").join("settings.json");
-    let read = || -> Value { serde_json::from_str(&std::fs::read_to_string(&settings).unwrap_or_default()).unwrap_or(Value::Null) };
-    wait_until("写进 Claude Code 的配置文件", Duration::from_secs(15), || read()["model"] == "m2");
-    let v = read();
-    assert_eq!((v["env"]["ANTHROPIC_BASE_URL"].as_str(), v["env"]["ANTHROPIC_AUTH_TOKEN"].as_str(), v["env"]["CLAUDE_CODE_EFFORT_LEVEL"].as_str()), (Some("https://relay.example.com"), Some("sk-test-relay"), Some("high")));
-    wait_until("上报结果、模型", Duration::from_secs(15), || {
+    // 启动时同步一次：上报了结果，读回配置文件里的模型和强度
+    wait_until("启动时同步一次、上报模型", Duration::from_secs(15), || {
         let h = rig.workspace()["hosts"][0].clone();
-        h["sync"].get("ask").is_none()
-            && claude(&rig).is_some_and(|c| c["state"] == "synced" && c["model"] == "m2" && c["effort"] == "high")
-            && h["agents"].as_array().unwrap().iter().any(|a| a["id"] == "claude" && a["model"] == "m2")
+        !h["sync"]["last"].is_null() && h["agents"].as_array().unwrap().iter().any(|a| a["id"] == "claude" && a["model"] == "m2" && a["effort"] == "high")
     });
-    let ops: Vec<String> = rig.workspace()["hosts"][0]["ops"].as_array().unwrap().iter().map(|o| o["text"].as_str().unwrap_or_default().to_string()).collect();
-    assert!(ops.iter().any(|t| t.starts_with("同步配置：1 个 agent 已写入")), "{ops:?}");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), before, "配置文件原样不动");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let d = r.json()["id"].as_i64().unwrap();
@@ -1157,7 +1139,7 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     assert!(acts.iter().any(|t| t.contains("以 mbp/m2-high 领取") && t.contains("模型 m2，强度 high")), "{acts:?}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
-    assert!(!out.contains("sk-test-relay"), "输出里没有 key：{out}");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), before, "派发也不碰配置文件");
 }
 
 /// 按角色派发：board host 给这一个进程换上角色的供应商（ACP providers/set，key 在请求头里，日志里遮住），
