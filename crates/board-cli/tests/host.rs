@@ -56,7 +56,11 @@ case "$1" in *不要执行任何命令*)
     : > "$FAKE_DIR/selftest.$$"
     n=0; while [ "$(ls "$FAKE_DIR" | grep -c '^selftest\.')" -lt 2 ] && [ $n -lt 200 ]; do sleep 0.1; n=$((n+1)); done
   fi
-  printf 'board-skills\n参数\n'; end ;;
+  # 像真的 agent 那样边想边说：名字被拆进几帧，中间夹着 usage_update（#582）
+  upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"board"}}'
+  upd '{"sessionUpdate":"usage_update","used":1,"size":2}'
+  upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-skills"}}'
+  end ;;
 esac
 # 一行都不输出（Claude Code -p 运行中就是这样）：不该按「没输出多久算卡住」停止。放在前面，下面几行也不打
 if [ "$(cat "$FAKE_DIR/mode")" = "quiet" ]; then

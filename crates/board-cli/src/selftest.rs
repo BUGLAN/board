@@ -1,7 +1,8 @@
 //! 自检（PRD §10.12「自检」）：界面上点「自检」后，board host 在后台线程里做，不占会话位、不影响在跑的派发。
 //!
 //! - agent：在它设置的启动环境里、进一个临时目录，带上设置好的模型和思考强度，用 docs/agents.md 第 2 步那句
-//!   不改任何文件的提示词跑一次（最长 3 分钟）。回答里有 `board-skills` 算通过；没登录、超时、不认识 skill 分别写明。
+//!   不改任何文件的提示词跑一次（最长 3 分钟）。agent 说的话（ACP 的消息片段接起来）里答出了 SKILL.md 第一个二级标题，
+//!   或者答出了 `board-skills`（不看大小写、连字符这些写法）又没在说找不到它，算通过；没登录、超时、不认识 skill 分别写明。
 //! - git：每块白板的目录 `git fetch origin`，再 `git push --dry-run origin HEAD:refs/heads/board-selftest`
 //!   （只检查权限，不会真的推上去）；失败时分清没有权限、没有 origin、网络不通。
 //! - 供应商（整台机器时）：共用配置里的每个供应商，每种接口发一次列模型的请求（`<地址>/models`，Anthropic 是
@@ -189,8 +190,70 @@ fn short(s: &str) -> String {
     s
 }
 
-/// agent 这一项的结论：通过吗、原因、回答的前几行。`lines` 是转写后的日志
-pub fn judge_agent(out: &Outcome, lines: &[String]) -> (bool, Option<String>, Option<String>) {
+/// board-skills 的 SKILL.md（和 board host 装进各 agent skill 目录的是同一版）：自检问的第二行是它第一个二级标题
+const SKILL_MD: &str = include_str!("../../../.agents/skills/board-skills/SKILL.md");
+
+/// 只留字母、数字、汉字，转小写：`board-skills`、`Board Skills`、`` `board_skills` ``、`board‑skills`（不换行连字符）都是 `boardskills`
+fn fold(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// SKILL.md 里第一个二级标题（折叠后）
+fn skill_heading() -> String {
+    SKILL_MD.lines().find_map(|l| l.strip_prefix("## ")).map(fold).unwrap_or_default()
+}
+
+/// 说没有这个 skill 的话（折叠后比较）：回答里带着 skill 的名字、但其实在说找不到它，不算认识
+const DENIALS: [&str; 16] = [
+    "没有找到",
+    "没找到",
+    "找不到",
+    "未找到",
+    "不认识",
+    "没有这个",
+    "没有加载",
+    "未加载",
+    "无法加载",
+    "不存在",
+    "not found",
+    "can't find",
+    "cannot find",
+    "could not find",
+    "unknown skill",
+    "no such skill",
+];
+
+/// agent 说的话（不含思考、工具调用、日志里别的行）：ACP 把这一轮所有 `agent_message_chunk` 的文字按顺序接起来，
+/// 一个词被拆进几帧（模型一个 token 一帧、`board acp` 每 2 秒落一次、中间夹着 `usage_update`）也能拼回原样；
+/// 不是 ACP 的输出（测试用的假脚本）用原始的行。agent 回显的提示词去掉
+pub fn spoken(stream: Option<Stream>, raw: &[String]) -> String {
+    let text = match stream {
+        Some(Stream::Acp) => raw
+            .iter()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+            .filter_map(|v| {
+                let u = logfmt::update_of(&v)?;
+                (u["sessionUpdate"].as_str() == Some("agent_message_chunk")).then(|| logfmt::content_text(&u["content"]))
+            })
+            .collect::<String>(),
+        None => raw.join("\n"),
+    };
+    text.replace(PROMPT, "")
+}
+
+/// 回答说明 agent 认识 board-skills：答出了 SKILL.md 第一个二级标题；或者答出了名字，又没有在说找不到它。
+/// 名字、标题都按 [`fold`] 比较，不看大小写、连字符、空白、反引号这些写法上的差别
+fn knows_skill(said: &str) -> bool {
+    let said = fold(said);
+    let heading = skill_heading();
+    if !heading.is_empty() && said.contains(&heading) {
+        return true;
+    }
+    said.contains(&fold(board_core::skills::BUILTIN)) && !DENIALS.iter().any(|d| said.contains(&fold(d)))
+}
+
+/// agent 这一项的结论：通过吗、原因、回答的前几行。`lines` 是转写后的日志，`said` 是 agent 说的话（[`spoken`]）
+pub fn judge_agent(out: &Outcome, lines: &[String], said: &str) -> (bool, Option<String>, Option<String>) {
     // 回答：去掉提示词本身（有的 agent 会回显）、开始和结束的摘要行
     let answer: Vec<&str> = lines
         .iter()
@@ -198,7 +261,7 @@ pub fn judge_agent(out: &Outcome, lines: &[String]) -> (bool, Option<String>, Op
         .filter(|l| !l.is_empty() && !l.contains(PROMPT) && !l.starts_with("● ") && !l.starts_with("■ "))
         .collect();
     let detail = (!answer.is_empty()).then(|| answer.iter().take(4).copied().collect::<Vec<_>>().join("\n"));
-    let knows = answer.iter().any(|l| l.contains("board-skills"));
+    let knows = knows_skill(said);
     let login = login_line(lines);
     match out {
         Outcome::Spawn(e) => (false, Some(format!("启动失败：{e}")), None),
@@ -330,9 +393,10 @@ pub fn check_agent(job: AgentJob, pids: &Pids) -> SelfTestItem {
         Err(why) => return item((false, Some(why), None)),
     };
     let out = run_limited(cmd, &job.log, AGENT_LIMIT, pids);
-    let raw = std::fs::read_to_string(&job.log).unwrap_or_default();
-    let lines = logfmt::render(job.stream, raw.lines().map(str::to_string).collect());
-    item(judge_agent(&out, &lines))
+    let raw: Vec<String> = std::fs::read_to_string(&job.log).unwrap_or_default().lines().map(str::to_string).collect();
+    let said = spoken(job.stream, &raw);
+    let lines = logfmt::render(job.stream, raw);
+    item(judge_agent(&out, &lines, &said))
 }
 
 /// 全部检查：每个 agent、每个供应商、每块白板各一个线程，一起跑
@@ -408,45 +472,102 @@ mod tests {
         assert_eq!(none.why.as_deref(), Some("这个供应商没有地址"));
     }
 
+    /// 和 check_agent 一样：从原始日志算出 agent 说的话、转写后的行，再下结论
+    fn judge(out: &Outcome, stream: Option<Stream>, raw: &[&str]) -> (bool, Option<String>, Option<String>) {
+        let raw = sv(raw);
+        let said = spoken(stream, &raw);
+        judge_agent(out, &logfmt::render(stream, raw), &said)
+    }
+
+    /// ACP 的一帧 session/update
+    fn upd(update: serde_json::Value) -> String {
+        serde_json::json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s", "update": update } }).to_string()
+    }
+
+    fn say(t: &str) -> String {
+        upd(serde_json::json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } }))
+    }
+
+    fn acp(frames: &[String]) -> (bool, Option<String>, Option<String>) {
+        let refs: Vec<&str> = frames.iter().map(String::as_str).collect();
+        judge(&Outcome::Exit(true, Some(0)), Some(Stream::Acp), &refs)
+    }
+
     #[test]
     fn agent_answers_are_judged() {
         let ok = Outcome::Exit(true, Some(0));
         // 认得 skill
-        let (pass, why, detail) = judge_agent(&ok, &sv(&["board-skills", "参数"]));
+        let (pass, why, detail) = judge(&ok, None, &["board-skills", "参数"]);
         assert!(pass && why.is_none());
         assert_eq!(detail.as_deref(), Some("board-skills\n参数"));
         // 回显的提示词里也有 board-skills，不算
-        let (pass, why, _) = judge_agent(&ok, &sv(&[PROMPT, "我没有找到这个 skill"]));
+        let (pass, why, _) = judge(&ok, None, &[PROMPT, "我没有找到这个 skill"]);
         assert!(!pass && why.unwrap().contains("回答里没有 board-skills"));
         // ACP 的帧：会话标识以 401 开头、发出去的提示词里也有 board-skills，转写后都不该影响结论
         let raw = [
             r#"{"id":3,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"text":"/board-skills 不要执行任何命令。","type":"text"}],"sessionId":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00"}}"#,
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00","update":{"sessionUpdate":"usage_update","used":1,"size":2}}}"#,
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"401e8ee6-e6c2-4642-86d5-3d3fc9e6de00","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"board-skills\n参数"}}}}"#,
-        ]
-        .join("\n");
-        let lines = logfmt::render(Some(Stream::Acp), raw.lines().map(str::to_string).collect());
+        ];
+        let lines = logfmt::render(Some(Stream::Acp), sv(&raw));
         assert_eq!(lines, sv(&["board-skills", "参数"]));
-        let (pass, why, _) = judge_agent(&ok, &lines);
+        let (pass, why, _) = judge(&ok, Some(Stream::Acp), &raw);
         assert!(pass, "{why:?}");
         // 已经答出 board-skills：日志里顺带的 401 重试不影响结论
-        let (pass, why, _) = judge_agent(
-            &ok,
-            &sv(&["✗ Reconnecting... 1/5 (unexpected status 401 Unauthorized: Invalid token)", "board-skills", "参数"]),
-        );
+        let (pass, why, _) = judge(&ok, None, &["✗ Reconnecting... 1/5 (unexpected status 401 Unauthorized: Invalid token)", "board-skills", "参数"]);
         assert!(pass, "{why:?}");
         // 没登录（假脚本输出 Not logged in 后退出）
-        let (pass, why, _) = judge_agent(&Outcome::Exit(false, Some(1)), &sv(&["Not logged in · Please run /login"]));
+        let (pass, why, _) = judge(&Outcome::Exit(false, Some(1)), None, &["Not logged in · Please run /login"]);
         assert!(!pass);
         assert!(why.unwrap().starts_with("没有登录：Not logged in"));
         // 超时
-        let (pass, why, _) = judge_agent(&Outcome::Timeout, &[]);
+        let (pass, why, _) = judge(&Outcome::Timeout, None, &[]);
         assert!(!pass && why.unwrap().contains("超时"));
         // 退出码非 0：写最后一行
-        let (_, why, _) = judge_agent(&Outcome::Exit(false, Some(2)), &sv(&["boom"]));
+        let (_, why, _) = judge(&Outcome::Exit(false, Some(2)), None, &["boom"]);
         assert_eq!(why.as_deref(), Some("退出码 2：boom"));
-        let (_, why, _) = judge_agent(&Outcome::Spawn("No such file or directory".into()), &[]);
+        let (_, why, _) = judge(&Outcome::Spawn("No such file or directory".into()), None, &[]);
         assert_eq!(why.as_deref(), Some("启动失败：No such file or directory"));
+    }
+
+    /// #582：答对了的 agent 不能判「没通过」。名字被拆进几帧（中间夹着 usage_update、每 2 秒落一次）、写法不同
+    /// （大小写、下划线、不换行连字符、反引号）、只答对了 SKILL.md 第一个二级标题，都算认得
+    #[test]
+    fn correct_answers_in_other_shapes_pass() {
+        let heading = SKILL_MD.lines().find_map(|l| l.strip_prefix("## ")).unwrap();
+        let usage = upd(serde_json::json!({ "sessionUpdate": "usage_update", "used": 1, "size": 2 }));
+        // 一个 token 一帧，夹着 usage_update：转写后「board」「-skills」各成一行
+        let frames = [say("board"), usage.clone(), say("-sk"), usage.clone(), say("ills\n"), say(heading)];
+        let lines = logfmt::render(Some(Stream::Acp), frames.to_vec());
+        assert!(!lines.iter().any(|l| l.contains("board-skills")), "转写后的每一行里都没有完整的名字：{lines:?}");
+        let (pass, why, _) = acp(&frames);
+        assert!(pass, "{why:?}");
+        // 只拆了名字、第二行答错了，也认得
+        let (pass, why, _) = acp(&[say("board"), usage, say("-skills\n参数")]);
+        assert!(pass, "{why:?}");
+        for name in ["Board Skills", "`board_skills`", "board\u{2011}skills", "**name**: BOARD-SKILLS"] {
+            let (pass, why, _) = acp(&[say(&format!("{name}\n不记得了"))]);
+            assert!(pass, "{name}：{why:?}");
+        }
+        // 名字没照抄，但答出了 SKILL.md 第一个二级标题
+        let (pass, why, _) = acp(&[say(&format!("Board 的 skill\n## {heading}"))]);
+        assert!(pass, "{why:?}");
+    }
+
+    /// 真正不认识 skill 的仍判失败：没提名字；提了名字但在说找不到；只在思考、工具调用、回显的提示词里出现名字
+    #[test]
+    fn unknown_skill_still_fails() {
+        let not_known = |r: (bool, Option<String>, Option<String>)| !r.0 && r.1.is_some_and(|w| w.contains("回答里没有 board-skills"));
+        assert!(not_known(acp(&[say("我不知道你说的是哪个 skill。")])));
+        assert!(not_known(acp(&[say("我没有找到 board-skills 这个 skill。")])));
+        assert!(not_known(acp(&[say("Sorry, the skill `board-skills` was not found.")])));
+        assert!(not_known(acp(&[say("I can't find a skill named board-skills.")])));
+        let think = upd(serde_json::json!({ "sessionUpdate": "agent_thought_chunk", "content": { "type": "text", "text": "用户要 board-skills" } }));
+        let tool = upd(serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "kind": "read", "title": "Read ~/.agents/skills/board-skills/SKILL.md", "status": "failed" }));
+        assert!(not_known(acp(&[think, tool, say("没有这个 skill")])));
+        // agent 把提示词原样说了一遍
+        assert!(not_known(acp(&[say(PROMPT), say("\n好的")])));
+        assert!(not_known(judge(&Outcome::Exit(true, Some(0)), None, &["我没有找到 board-skills"])));
     }
 
     #[test]
