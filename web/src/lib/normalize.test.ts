@@ -42,7 +42,7 @@ const full = (): HostInfo =>
         git: { state: 'synced', host: 'github.com', repos: ['/w/board'], skipped: [] },
       },
     },
-    skillImport: { able: true, local: [{ name: 's', version: 'v', files: 1, size: 1, agents: ['claude'], dirs: ['~/.claude/skills'] }], last: { id: 1, at: 1, by: '人', ok: ['s'], failed: [] } },
+    skillImport: { able: true, rescan: true, local: [{ name: 's', version: 'v', files: 1, size: 1, agents: ['claude'], dirs: ['~/.claude/skills'] }], last: { id: 1, at: 1, by: '人', ok: ['s'], failed: [] } },
   }) as HostInfo;
 
 /** 版本对不上的服务端发来的机器：界面以为一定有的数组缺了、是 null，同步结果里的对象也缺了 */
@@ -99,6 +99,7 @@ describe('机器：必填的数组补齐', () => {
     // 旧版 board host 不报 Git 凭据：补成空的一行
     expect(h.sync?.last?.git).toEqual({ state: '', repos: [], skipped: [] });
     expect(h.skillImport?.local[0]).toMatchObject({ agents: [], dirs: [] });
+    expect(h.skillImport?.rescan).toBe(false);
     expect(h.skillImport?.last).toMatchObject({ ok: [], failed: [] });
     const b = normHost(bare());
     expect(b.agents).toEqual([]);

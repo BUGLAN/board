@@ -1047,6 +1047,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
         ask_error: None,
         selftest: false,
         config_sync: true,
+        rescan_skills: false,
         local_skills: None,
         res: None,
     };

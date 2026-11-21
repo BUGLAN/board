@@ -1098,6 +1098,45 @@ fn remote_recheck_and_restart() {
     assert!(out.contains("重新检查完了") && out.contains("请求重启 board host") && out.contains("重新启动 board host"), "{out}");
 }
 
+/// 从机器导入 skills 按需重扫：host 启动后新加的 skill 不重启也能看到，删掉的重扫后消失（default/main#588）
+#[test]
+fn remote_skills_rescan_sees_new_and_deleted_skills() {
+    let rig = Rig::new();
+    let home = rig.s.home.clone();
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true)));
+    wait_until("启动时上报本机 skill 清单", Duration::from_secs(20), || {
+        rig.workspace()["hosts"][0]["skillImport"]["able"].as_bool() == Some(true) && rig.workspace()["hosts"][0]["skillImport"]["rescan"].as_bool() == Some(true)
+    });
+    let has = |name: &str| {
+        rig.workspace()["hosts"][0]["skillImport"]["local"]
+            .as_array()
+            .is_some_and(|xs| xs.iter().any(|x| x["name"] == name))
+    };
+    let ask = || {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_ask("mbp", "rescan-skills", false, "octocat")).unwrap();
+    };
+    let skill = home.join(".claude").join("skills").join("freshone");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# freshone\n").unwrap();
+    assert!(!has("freshone"));
+    ask();
+    wait_until("重扫看到新加的 skill", Duration::from_secs(20), || has("freshone"));
+    std::fs::remove_dir_all(&skill).unwrap();
+    // 测试里不等服务端的 10 秒防抖
+    let store = board_core::Store::open(&rig.s.db).unwrap();
+    store
+        .conn()
+        .execute("UPDATE hosts SET skill_import = json_set(skill_import, '$.rescannedAt', ?1) WHERE name = 'mbp'", rusqlite::params![board_core::now_ms() - 20_000])
+        .unwrap();
+    ask();
+    wait_until("重扫后删掉的 skill 消失", Duration::from_secs(20), || !has("freshone"));
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("重扫完了本机的 skills"), "{out}");
+}
+
 /// 同步配置不碰 agent 的模型（#576）：Claude Code 自己的配置文件里有什么（人配的，或以前写进去的）就原样留着，
 /// board host 只读回模型和强度上报；派发时不再传 --model / --effort（ACP 入口不带参数，提示词走 session/prompt），
 /// 名字第二段和「派发开始」里的模型是配置文件里的

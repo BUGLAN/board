@@ -60,6 +60,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         ask_error: None,
         selftest: true,
         config_sync: true,
+        rescan_skills: true,
         local_skills: None,
         res: None,
     }
@@ -3324,6 +3325,35 @@ fn recheck_is_handed_to_the_host_and_acked() {
     s.sweep(T0 + 60 * S).unwrap();
     assert_eq!(ask(&mut s, T0 + 60 * S, "recheck", false).unwrap_err().code, ErrorCode::Usage);
     assert_eq!(ask(&mut s, T0 + 60 * S, "reboot", false).unwrap_err().code, ErrorCode::Usage);
+}
+
+#[test]
+fn skill_rescan_is_on_demand_debounced_and_requires_a_new_host() {
+    let mut s = store();
+    let rep = HostReport { local_skills: Some(vec![local("design", &["~/.claude/skills"], None)]), ..report("mbp", "i1", vec![]) };
+    let h = beat(&mut s, T0, &rep).unwrap().host;
+    assert!(h.skill_import.able && h.skill_import.rescan);
+    // 打开弹窗：下发一次重扫请求，记下时间和一条操作
+    let h = ask(&mut s, T0 + S, "rescan-skills", false).unwrap();
+    let a = h.ask.clone().expect("应该有重扫请求");
+    assert_eq!((a.kind.as_str(), a.by.as_str()), ("rescan-skills", "octocat"));
+    assert_eq!(h.skill_import.rescanned_at, Some(T0 + S));
+    assert_eq!(h.ops[0].text, "请求重扫本机的 skills");
+    // 还在做、或者刚做完不到 10 秒：重复打开不再发新的
+    assert_eq!(ask(&mut s, T0 + 2 * S, "rescan-skills", false).unwrap().ask.map(|x| x.id), Some(a.id));
+    let w = beat(&mut s, T0 + 3 * S, &HostReport { asked: Some(a.id), ..rep.clone() }).unwrap();
+    assert!(w.host.ask.is_none());
+    assert_eq!(w.host.ops[0].text, "重扫完了本机的 skills");
+    assert!(ask(&mut s, T0 + 10 * S, "rescan-skills", false).unwrap().ask.is_none());
+    let b = ask(&mut s, T0 + 11 * S, "rescan-skills", false).unwrap().ask.expect("过了 10 秒可以再扫");
+    assert_eq!(b.id, a.id + 1);
+    // 换回旧版 board host：还显示缓存的清单，但不能再请求重扫
+    beat(&mut s, T0 + 12 * S, &HostReport { asked: Some(b.id), ..rep.clone() }).unwrap();
+    let old = HostReport { rescan_skills: false, ..rep };
+    let h = beat(&mut s, T0 + 13 * S, &old).unwrap().host;
+    assert!(h.skill_import.able && !h.skill_import.rescan && h.skill_import.local.len() == 1);
+    let e = ask(&mut s, T0 + 14 * S, "rescan-skills", false).unwrap_err();
+    assert!(e.message.contains("太旧"), "{}", e.message);
 }
 
 #[test]

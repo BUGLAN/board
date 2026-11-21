@@ -86,6 +86,38 @@ fn sync_retry_asks_again_and_the_report_clears_it() {
 }
 
 #[test]
+fn skill_rescan_is_asked_debounced_and_reported() {
+    let s = Server::start(Auth::Local);
+    let local = |name: &str| json!({ "name": name, "version": "v1", "files": 1, "size": 10, "agents": ["claude"], "dirs": ["~/.claude/skills"] });
+    let mut rep = report("mbp", "i1", true);
+    rep["rescan_skills"] = json!(true);
+    rep["local_skills"] = json!([local("before")]);
+    let h = send("POST", &format!("{}/api/hosts/mbp/beat", s.url), &[UI], Some(rep.clone()));
+    assert_eq!((h.body["host"]["skillImport"]["able"].clone(), h.body["host"]["skillImport"]["rescan"].clone()), (json!(true), json!(true)), "{}", h.text);
+    // 打开导入弹窗：第一次下发重扫，紧接着重复打开拿到同一个请求
+    let a = send("POST", &format!("{}/api/hosts/mbp/ask", s.url), &[UI], Some(json!({ "kind": "rescan-skills" })));
+    assert_eq!(a.status, 200, "{}", a.text);
+    let id = a.body["ask"]["id"].as_i64().unwrap();
+    assert_eq!(a.body["ask"]["kind"], json!("rescan-skills"));
+    let again = send("POST", &format!("{}/api/hosts/mbp/ask", s.url), &[UI], Some(json!({ "kind": "rescan-skills" })));
+    assert_eq!(again.body["ask"]["id"], json!(id), "{}", again.text);
+    // host 重扫完带着序号和新清单上报：请求清掉，界面下一次轮询就看到新 skill
+    rep["asked"] = json!(id);
+    rep["local_skills"] = json!([local("after")]);
+    let h = send("POST", &format!("{}/api/hosts/mbp/beat", s.url), &[UI], Some(rep));
+    assert!(h.body["host"]["ask"].is_null(), "{}", h.text);
+    assert_eq!(h.body["host"]["skillImport"]["local"][0]["name"], json!("after"));
+    assert_eq!(h.body["host"]["ops"][0]["text"], json!("重扫完了本机的 skills"));
+    // 刚扫完的重复请求不再扫；旧版 host 明确说要升级
+    let recent = send("POST", &format!("{}/api/hosts/mbp/ask", s.url), &[UI], Some(json!({ "kind": "rescan-skills" })));
+    assert!(recent.body["ask"].is_null(), "{}", recent.text);
+    send("POST", &format!("{}/api/hosts/old/beat", s.url), &[UI], Some(report("old", "i2", true)));
+    let old = send("POST", &format!("{}/api/hosts/old/ask", s.url), &[UI], Some(json!({ "kind": "rescan-skills" })));
+    assert_eq!(old.code(), "USAGE", "{}", old.text);
+    assert!(old.body["error"]["message"].as_str().unwrap().contains("太旧"), "{}", old.text);
+}
+
+#[test]
 fn copy_settings_from_another_host_is_ui_only_and_presets_ride_on_the_new_token() {
     let s = Server::start(Auth::Local);
     for (n, i) in [("a", "ia"), ("b", "ib")] {

@@ -73,6 +73,18 @@ impl Host<'_> {
                 self.ask_started(&ask)
             }
             "agent-install" | "agent-update" => self.begin_agent_ask(&ask),
+            "rescan-skills" => {
+                self.asked = Some(ask.id);
+                if !(self.skill_targets.is_empty() && self.sync_job.is_some()) {
+                    let local = skills::local_skills(&self.skill_targets);
+                    if local != self.local_skills {
+                        self.local_skills = local;
+                        self.beat_soon = true;
+                    }
+                }
+                self.say(format!("{} 重扫完了本机的 skills：{} 个", self.p.green("✓"), self.local_skills.len()));
+                (true, false)
+            }
             _ => (false, false),
         }
     }

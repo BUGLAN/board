@@ -90,7 +90,7 @@ pub const SELFTEST_STALE_MS: i64 = 15 * 60 * 1000;
 pub struct HostAsk {
     /// 序号：board host 处理完带着它回报（`HostReport.asked`）
     pub id: i64,
-    /// recheck 重新检查 | restart 重启 board host | upgrade 升级
+    /// recheck 重新检查 | restart 重启 board host | upgrade 升级 | rescan-skills 重扫本机的 skill
     pub kind: String,
     /// 谁请求的
     pub by: String,
@@ -129,7 +129,7 @@ pub struct HostToken {
 }
 
 /// 远程管理的请求种类
-pub const ASK_KINDS: [&str; 7] = ["recheck", "restart", "upgrade", "drain", "cancel", "agent-install", "agent-update"];
+pub const ASK_KINDS: [&str; 8] = ["recheck", "restart", "upgrade", "drain", "cancel", "agent-install", "agent-update", "rescan-skills"];
 /// 机器详情「最近」里带几条操作记录
 pub const OPS_KEEP: i64 = 30;
 /// 自动升级临时失败（发版包还没出来、下载不了、网络不通）后隔多久再试：10 分钟
@@ -202,6 +202,7 @@ impl<'a> W<'a> {
                         self.tx.execute("UPDATE hosts SET rechecked_at = ?2 WHERE id = ?1", params![h.id, self.now])?;
                         self.host_op(h.id, sys, "重新检查完了：启动环境、本机 agent、board-skills 已重新上报")?;
                     }
+                    "rescan-skills" => self.host_op(h.id, sys, "重扫完了本机的 skills")?,
                     "restart" => self.host_op(h.id, sys, "正在重启 board host")?,
                     "agent-install" => {
                         let name = ask.agent.as_deref().and_then(|id| h.agents.iter().find(|a| a.id == id)).map(|a| a.name.as_str()).unwrap_or("agent");
@@ -345,6 +346,7 @@ impl<'a> W<'a> {
         let running: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE host = ?1 AND state = 'running' ORDER BY id", [&h.name], |r| r.get(0))?;
         let what = match kind {
             "recheck" => "重新检查",
+            "rescan-skills" => "重扫本机的 skills",
             "restart" => "重启 board host",
             "upgrade" => "升级",
             _ => "",
@@ -352,10 +354,25 @@ impl<'a> W<'a> {
         if !what.is_empty() && !h.online(self.now) {
             return Err(BoardError::usage(format!("机器「{name}」离线：等它上线再{what}")));
         }
+        if kind == "rescan-skills" {
+            if !h.skill_import.rescan {
+                return Err(BoardError::usage(format!("机器「{name}」的 board {} 太旧，不能重扫本机的 skills：升级后再试", h.version.trim())));
+            }
+            if let Some(a) = &h.ask {
+                if a.kind == kind {
+                    return self.read().host(name, self.now);
+                }
+                return Err(BoardError::usage(format!("机器「{name}」正在处理另一个请求：等它完成再重扫本机的 skills")));
+            }
+            if h.skill_import.rescanned_at.is_some_and(|at| at + SKILL_RESCAN_GAP_MS > self.now) {
+                return self.read().host(name, self.now);
+            }
+        }
         let server = env!("CARGO_PKG_VERSION");
         let mut ask = HostAsk { id: h.ask_seq + 1, kind: kind.into(), by: by.into(), at: self.now, to: None, now: false, agent: None };
         let text = match kind {
             "recheck" => "请求重新检查".to_string(),
+            "rescan-skills" => "请求重扫本机的 skills".to_string(),
             "restart" => {
                 for id in &running {
                     self.request_stop(*id, &Actor::human(), by)?;
@@ -396,6 +413,7 @@ impl<'a> W<'a> {
                 }
                 let w = match old.kind.as_str() {
                     "recheck" => "重新检查",
+                    "rescan-skills" => "重扫本机 skills",
                     "restart" => "重启",
                     _ => "升级",
                 };
@@ -408,6 +426,10 @@ impl<'a> W<'a> {
             "UPDATE hosts SET ask = ?2, ask_seq = ?3 WHERE id = ?1",
             params![h.id, serde_json::to_string(&ask).unwrap_or_default(), ask.id],
         )?;
+        if kind == "rescan-skills" {
+            let si = SkillImport { rescanned_at: Some(self.now), ..h.skill_import.clone() };
+            self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&si).unwrap_or_default()])?;
+        }
         self.host_op(h.id, by, &text)?;
         self.touch_hosts();
         self.read().host(name, self.now)

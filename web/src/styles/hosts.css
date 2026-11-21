@@ -1134,6 +1134,10 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .si-host.off .fm-tile { opacity: .5; cursor: not-allowed; }
 .si-host.off .fm-tile:hover { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
 .si-host .hp-os { width: 22px; height: 22px; }
+.si-acts { display: inline-flex; align-items: center; gap: 12px; }
+.si-acts .act { display: inline-flex; align-items: center; gap: 4px; }
+.si-acts .act svg { width: 12px; height: 12px; }
+.si-old { font-size: 11.5px; color: var(--warn-text); white-space: nowrap; }
 .si-search { display: flex; align-items: center; gap: 7px; height: 34px; margin-bottom: 8px; padding: 0 10px; border-radius: var(--r-md); color: var(--text-3); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
 .si-search:focus-within { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent), 0 0 0 3px var(--brand-soft); }
 .si-search svg { width: 14px; height: 14px; flex: none; }

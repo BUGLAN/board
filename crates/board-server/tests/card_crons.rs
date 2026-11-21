@@ -39,6 +39,7 @@ fn host_patch_accepts_workspace_from_old_and_new_clients() {
         ask_error: None,
         selftest: false,
         config_sync: true,
+        rescan_skills: false,
         local_skills: None,
         res: None,
     };

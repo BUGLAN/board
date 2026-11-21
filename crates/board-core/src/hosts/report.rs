@@ -47,6 +47,9 @@ pub struct HostReport {
     /// 会按请求同步配置、上报结果（[`ConfigSync`]）；旧版 board host 不带
     #[serde(default)]
     pub config_sync: bool,
+    /// 会按请求重扫本机的 skill（`rescan-skills`）；旧版 board host 不带
+    #[serde(default)]
+    pub rescan_skills: bool,
     /// 本机各 agent skill 目录里、不是同步装的 skill（「从机器导入」用）；旧版 board host 不带，带了就算会导入
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_skills: Option<Vec<crate::skills::LocalSkill>>,
@@ -247,7 +250,7 @@ impl<'a> W<'a> {
                     self.tx.execute("UPDATE hosts SET selftest = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&st).unwrap_or_default()])?;
                 }
                 if let Some(local) = &rep.local_skills {
-                    let si = SkillImport { able: true, local: local.clone(), ..Default::default() };
+                    let si = SkillImport { able: true, rescan: rep.rescan_skills, local: local.clone(), ..Default::default() };
                     self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE name = ?1", params![rep.name, serde_json::to_string(&si).unwrap_or_default()])?;
                 }
                 if rep.config_sync {
@@ -391,13 +394,17 @@ impl<'a> W<'a> {
                 if h.agents_raw != agents || h.envs_raw != envs {
                     self.config_changed = true;
                 }
-                // 本机的 skill（「从机器导入」）：带了、变了才写；带了就算会导入
+                // 本机的 skill（「从机器导入」）：带了、变了才写；带了就算会导入。换回旧版 board host 时把重扫能力也降下来
                 if let Some(local) = &rep.local_skills {
-                    if !h.skill_import.able || &h.skill_import.local != local {
-                        let si = SkillImport { able: true, local: local.clone(), ..h.skill_import.clone() };
+                    if !h.skill_import.able || h.skill_import.rescan != rep.rescan_skills || &h.skill_import.local != local {
+                        let si = SkillImport { able: true, rescan: rep.rescan_skills, local: local.clone(), ..h.skill_import.clone() };
                         self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&si).unwrap_or_default()])?;
                         self.touch_hosts();
                     }
+                } else if h.skill_import.rescan {
+                    let si = SkillImport { rescan: false, ..h.skill_import.clone() };
+                    self.tx.execute("UPDATE hosts SET skill_import = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&si).unwrap_or_default()])?;
+                    self.touch_hosts();
                 }
                 // 换成了会（或不会）自检的 board host
                 if h.selftest.able != rep.selftest {

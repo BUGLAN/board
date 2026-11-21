@@ -506,6 +506,7 @@ fn host_rename_renames_the_machine_record() {
         ask_error: None,
         selftest: false,
         config_sync: false,
+        rescan_skills: false,
         local_skills: None,
         res: None,
     };

@@ -95,6 +95,7 @@ fn host_report(running: Vec<i64>) -> HostReport {
         ask_error: None,
         selftest: false,
         config_sync: true,
+        rescan_skills: true,
         local_skills: None,
         res: None,
     }

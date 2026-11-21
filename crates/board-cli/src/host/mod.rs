@@ -604,6 +604,7 @@ impl Host<'_> {
             ask_error: self.ask_error.clone(),
             selftest: true,
             config_sync: true,
+            rescan_skills: true,
             local_skills: Some(self.local_skills.clone()),
             res: self.res.latest(),
         }

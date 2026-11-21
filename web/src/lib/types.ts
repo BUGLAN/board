@@ -648,6 +648,10 @@ export interface SkillImportPick {
 export interface SkillImport {
   /** 这台机器的 board host 会上报、会导入；旧版不会 */
   able: boolean;
+  /** 会按请求重扫本机的 skill；旧版 board host 不会，只能看上次上报的缓存 */
+  rescan: boolean;
+  /** 最近一次请求重扫的时间 */
+  rescannedAt?: number | null;
   local: LocalSkill[];
   /** 等 board host 做（或正在做）的导入 */
   ask?: { id: number; picks: SkillImportPick[]; by: string; at: number } | null;
@@ -703,7 +707,7 @@ export interface SelfTestItem {
 /** 远程管理请求 */
 export interface HostAsk {
   id: number;
-  kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel' | 'agent-install' | 'agent-update';
+  kind: 'recheck' | 'restart' | 'upgrade' | 'drain' | 'cancel' | 'agent-install' | 'agent-update' | 'rescan-skills';
   by: string;
   at: number;
   /** 升级：目标版本 */

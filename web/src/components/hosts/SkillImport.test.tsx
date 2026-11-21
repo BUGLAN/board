@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostInfo, LocalSkill } from '../../lib/types';
 import { SkillImportModal } from './SkillImport';
 
-const mocks = vi.hoisted(() => ({ importSkills: vi.fn() }));
+const mocks = vi.hoisted(() => ({ importSkills: vi.fn(), rescanHostSkills: vi.fn() }));
 
 vi.mock('../../lib/api', async orig => {
   const real = await orig<typeof import('../../lib/api')>();
-  return { ...real, api: { ...real.api, importSkills: mocks.importSkills } };
+  return { ...real, api: { ...real.api, importSkills: mocks.importSkills, rescanHostSkills: mocks.rescanHostSkills } };
 });
 
 // 写队列和刷新不在这里测：直接执行请求
@@ -28,6 +28,8 @@ beforeEach(() => {
   root = createRoot(host);
   mocks.importSkills.mockReset();
   mocks.importSkills.mockResolvedValue({ skillImport: { able: true, local: [], last: null } });
+  mocks.rescanHostSkills.mockReset();
+  mocks.rescanHostSkills.mockResolvedValue({ skillImport: { able: true, rescan: true, local: [], last: null } });
 });
 
 afterEach(() => {
@@ -46,7 +48,7 @@ const local = (name: string, x: Partial<LocalSkill> = {}): LocalSkill => ({
   ...x,
 });
 
-const machine = (): HostInfo =>
+const machine = (rescan = false, online = true): HostInfo =>
   ({
     id: 1,
     name: 'win',
@@ -60,18 +62,19 @@ const machine = (): HostInfo =>
     cronOn: false,
     cron: [],
     round: false,
-    online: true,
+    online,
     firstAt: 0,
     beatAt: 0,
     offAt: null,
     skillImport: {
       able: true,
+      rescan,
       local: [local('Agent Browser'), local('Beta Tool'), local('Gamma', { dirs: ['~/.agents/skills/tool-gamma'] }), local('Tool Legacy', { why: '超过 5 MB' })],
       last: null,
     },
   }) as HostInfo;
 
-const render = () => act(() => root.render(<SkillImportModal hosts={[machine()]} lib={[]} onClose={() => {}} />));
+const render = (h = machine()) => act(() => root.render(<SkillImportModal hosts={[h]} lib={[]} onClose={() => {}} />));
 const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]')!;
 const search = () => dialog().querySelector<HTMLInputElement>('input[aria-label="搜索 skill"]')!;
 const rows = () => [...dialog().querySelectorAll<HTMLButtonElement>('.si-row')];
@@ -124,5 +127,42 @@ describe('从机器导入 skills 的搜索', () => {
       { name: 'Beta Tool', dir: '~/.agents/skills/beta-tool' },
       { name: 'Agent Browser', dir: '~/.agents/skills/agent-browser' },
     ]);
+  });
+});
+
+describe('从机器导入 skills 的按需重扫', () => {
+  it('打开时让在线的新版 host 重扫一次；重复渲染不重复，点刷新再发请求', async () => {
+    const win = machine(true);
+    await act(async () => {
+      root.render(<SkillImportModal hosts={[win]} lib={[]} onClose={() => {}} />);
+    });
+    expect(mocks.rescanHostSkills).toHaveBeenCalledTimes(1);
+    expect(mocks.rescanHostSkills).toHaveBeenCalledWith('win');
+    await act(async () => {
+      root.render(<SkillImportModal hosts={[win]} lib={[]} onClose={() => {}} />);
+    });
+    expect(mocks.rescanHostSkills).toHaveBeenCalledTimes(1);
+    await act(async () => button('刷新').click());
+    expect(mocks.rescanHostSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it('旧版 host 只显示缓存并提示升级，不发重扫请求', async () => {
+    await act(async () => {
+      root.render(<SkillImportModal hosts={[machine(false)]} lib={[]} onClose={() => {}} />);
+    });
+    expect(mocks.rescanHostSkills).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('太旧，要升级');
+    expect(rows()).toHaveLength(4);
+  });
+
+  it('离线 host 仍能看上次上报的清单，不重扫也不能导入', async () => {
+    await act(async () => {
+      root.render(<SkillImportModal hosts={[machine(true, false)]} lib={[]} onClose={() => {}} />);
+    });
+    expect(mocks.rescanHostSkills).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('机器离线：下面是上次上报的 skill');
+    expect(rows()).toHaveLength(4);
+    expect(row('Agent Browser').hasAttribute('disabled')).toBe(true);
+    expect(button('导入').hasAttribute('disabled')).toBe(true);
   });
 });

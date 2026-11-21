@@ -6,7 +6,7 @@
    - 导入：服务端记下请求，那台机器的 board host 把选中的目录传进库；弹窗留着写「正在等 <机器> 上传」，做完列出结果
    请求要等服务端：按钮转圈、禁用直到返回；结果跟着机器的上报更新
    ========================================================================== */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { since } from '../../lib/hosts';
 import { importRows, type ImportKind } from '../../lib/skills';
@@ -25,8 +25,9 @@ const KIND_WORDS: Record<ImportKind, string> = { new: '新的', differs: '会换
 /** 一台机器能不能选、为什么 */
 function hostNote(h: HostInfo): { ok: boolean; note: string } {
   if (!h.skillImport?.able) return { ok: false, note: `board ${h.version || '?'} 太旧，要升级` };
-  if (!h.online) return { ok: false, note: '离线' };
   const n = h.skillImport.local.length;
+  if (!h.online) return { ok: true, note: `离线 · 上次上报的 ${n} 个` };
+  if (!h.skillImport.rescan) return { ok: true, note: `${n} 个（缓存，board 太旧）` };
   return { ok: true, note: n ? `${n} 个本机的 skill` : '没有本机的 skill' };
 }
 
@@ -37,6 +38,9 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
   const [picked, setPicked] = useState<SkillImportPick[]>([]);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  /** 这次打开弹窗已经自动重扫过的机器：换回同一台时不马上再发，服务端另有 10 秒防抖 */
+  const scanned = useRef<{ name: string; at: number } | null>(null);
   /** 发出去的请求：等这台机器做完（结果里的序号对上） */
   const [sent, setSent] = useState<{ host: string; id: number } | null>(null);
   const h = hosts.find(x => x.name === (sent?.host ?? name)) ?? null;
@@ -53,7 +57,7 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
   const has = (n: string) => picked.some(p => p.name === n);
   const flip = (n: string, dir: string) => setPicked(list => (list.some(p => p.name === n) ? list.filter(p => p.name !== n) : [...list, { name: n, dir }]));
   const go = async () => {
-    if (!h || !picked.length) return;
+    if (!h || !h.online || !picked.length) return;
     setBusy(true);
     try {
       const out = await optimistic(null, () => api.importSkills(h.name, picked));
@@ -64,6 +68,25 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
       setBusy(false);
     }
   };
+  const rescan = async (host: HostInfo, quiet = false) => {
+    if (!host.online || !host.skillImport?.rescan || scanning) return;
+    setScanning(true);
+    try {
+      await optimistic(null, () => api.rescanHostSkills(host.name));
+    } catch (e) {
+      if (!quiet) toastError(e);
+    } finally {
+      setScanning(false);
+    }
+  };
+  useEffect(() => {
+    if (!h?.online || !h.skillImport?.rescan) return;
+    const at = Date.now();
+    if (scanned.current?.name === h.name && at - scanned.current.at < 10_000) return;
+    scanned.current = { name: h.name, at };
+    void rescan(h, true);
+    // 只跟着选中的机器和它的重扫能力走；机器每 10 秒的普通上报不重复触发
+  }, [h?.name, h?.online, h?.skillImport?.rescan]);
   const can = rows.filter(r => r.kind === 'new' || r.kind === 'differs');
   const canNames = new Set(can.map(r => r.skill.name));
   const allCan = can.length > 0 && can.every(r => has(r.skill.name));
@@ -85,9 +108,15 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
             why={null}
             tried={false}
             busy={busy}
-            note={picked.length ? `选了 ${picked.length} 个：${h?.name} 的 board host 会把它们传进库，再同步到每台机器` : '勾选要放进共用库的 skill'}
+            note={
+              !h?.online
+                ? '机器离线：只能看上次上报的清单，等它上线后再导入'
+                : picked.length
+                  ? `选了 ${picked.length} 个：${h.name} 的 board host 会把它们传进库，再同步到每台机器`
+                  : '勾选要放进共用库的 skill'
+            }
             saveLabel={picked.length ? `导入 ${picked.length} 个` : '导入'}
-            canSave={picked.length > 0}
+            canSave={!!h?.online && picked.length > 0}
             onCancel={onClose}
             onSave={() => void go()}
           />
@@ -115,15 +144,38 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
       {h && (
         <FormSec
           title={sent ? `${h.name} ${done ? '导入完成' : '正在导入'}` : `${h.name} 上的 skill`}
-          hint={sent ? undefined : h.skillImport?.able ? (q ? `${rows.length} / ${allRows.length} 个` : `${allRows.length} 个`) : undefined}
+          hint={sent ? undefined : h.skillImport?.able ? (scanning || h.ask?.kind === 'rescan-skills' ? '正在重扫…' : q ? `${rows.length} / ${allRows.length} 个` : `${allRows.length} 个`) : undefined}
           act={
-            !sent && can.length > 0 ? (
-              <button type="button" className="act hp-link" onClick={toggleAll}>
-                {allCan ? '全不选' : '全选能导入的'}
-              </button>
+            !sent && h ? (
+              <span className="si-acts">
+                {can.length > 0 && (
+                  <button type="button" className="act hp-link" onClick={toggleAll}>
+                    {allCan ? '全不选' : '全选能导入的'}
+                  </button>
+                )}
+                {h.skillImport?.rescan ? (
+                  <Tip text={h.online ? '让 board host 重新看一遍各 agent 的 skill 目录' : '机器离线：上线后会自动重扫'}>
+                    <button
+                      type="button"
+                      className={cx('act hp-link', (scanning || h.ask?.kind === 'rescan-skills') && 'is-busy')}
+                      disabled={!h.online || scanning || h.ask?.kind === 'rescan-skills'}
+                      onClick={() => void rescan(h)}
+                    >
+                      <Icon name="renew" />
+                      {scanning || h.ask?.kind === 'rescan-skills' ? '正在重扫…' : '刷新'}
+                    </button>
+                  </Tip>
+                ) : (
+                  <span className="si-old">board {h.version || '?'} 太旧，要升级</span>
+                )}
+              </span>
             ) : undefined
           }
         >
+          {!h.online && <p className="hp-note lh-warn">机器离线：下面是上次上报的 skill，重新打开弹窗、等它上线后会自动重扫。</p>}
+          {h.online && h.skillImport?.able && !h.skillImport.rescan && (
+            <p className="hp-note lh-warn">board {h.version || '?'} 太旧，要升级：下面是上次上报的 skill，升级后重新打开会自动重扫。</p>
+          )}
           {sent ? (
             <div className="si-result">
               {(done ? [...(last?.ok ?? []).map(n => ({ name: n, ok: true, why: '' })), ...(last?.failed ?? []).map(f => ({ name: f.name, ok: false, why: f.why }))] : (h.skillImport?.ask?.picks ?? picked).map(p => ({ name: p.name, ok: false, why: '' }))).map(r => (
@@ -156,7 +208,7 @@ export function SkillImportModal({ hosts, lib, onClose }: { hosts: HostInfo[]; l
                         type="button"
                         role="checkbox"
                         aria-checked={on}
-                        disabled={!ok}
+                        disabled={!ok || !h.online}
                         className={cx('si-row', on && 'on', `k-${r.kind}`)}
                         onClick={() => flip(r.skill.name, r.skill.dirs[0])}
                       >

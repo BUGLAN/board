@@ -1071,6 +1071,7 @@ mod tests {
             ask_error: None,
             selftest: true,
             config_sync: true,
+            rescan_skills: true,
             local_skills: None,
             res: None,
         };

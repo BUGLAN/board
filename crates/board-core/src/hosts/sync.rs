@@ -9,6 +9,12 @@ pub struct SkillImport {
     /// 这台机器的 board host 会上报、会导入；旧版不会，界面上写要升级
     #[serde(default)]
     pub able: bool,
+    /// 会按请求重扫本机的 skill（`rescan-skills`）；旧版 board host 不会，界面只能看缓存、要升级
+    #[serde(default)]
+    pub rescan: bool,
+    /// 最近一次请求重扫的时间：短时间重复打开、刷新时不再发新请求
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "rescannedAt")]
+    pub rescanned_at: Option<i64>,
     #[serde(default)]
     pub local: Vec<crate::skills::LocalSkill>,
     /// 等 board host 做（或正在做）的导入；做完清掉
@@ -55,6 +61,9 @@ pub struct SkillImportResult {
 
 /// 导入请求多久没做完算作废：之后可以重新请求
 pub const SKILL_IMPORT_STALE_MS: i64 = 5 * 60_000;
+
+/// 同一台机器两次重扫请求至少隔多久：10 秒内重复打开弹窗、点刷新不再扫
+pub const SKILL_RESCAN_GAP_MS: i64 = 10_000;
 
 /// 同步配置（机器详情与配置同步重构 §三）：把服务器上的供应商、skills、MCP 按机器上的选择写进这台机器的 agent。
 /// 服务端算出这台机器要写成的样子（[`R::config_key`]），和上次写好的（`last.key`）不一样就下发请求（`ask`）；

@@ -553,7 +553,7 @@ pub(crate) async fn remove(
 
 #[derive(Deserialize)]
 pub(crate) struct AskBody {
-    /// recheck | restart | upgrade | drain | cancel | agent-install | agent-update
+    /// recheck | restart | upgrade | drain | cancel | agent-install | agent-update | rescan-skills
     kind: String,
     /// 升级：不等在跑的派发结束
     #[serde(default)]

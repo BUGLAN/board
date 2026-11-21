@@ -56,6 +56,7 @@ const normImport = (s: SkillImport): SkillImport => {
   const last = obj(s.last);
   return {
     ...s,
+    rescan: !!s.rescan,
     local: list(s.local).map(l => ({ ...l, agents: list(l.agents), dirs: list(l.dirs) })),
     last: last ? { ...last, ok: list(last.ok), failed: list(last.failed) } : last,
   };

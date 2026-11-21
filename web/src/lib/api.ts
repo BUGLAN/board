@@ -7,7 +7,7 @@
 import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
 import { readPrompts, type Prompt } from './prompts';
-import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
+import { normDispatches, normHost, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
 import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile } from './types';
 
 declare global {
@@ -259,6 +259,8 @@ export const api = {
   removeSkill: (name: string) => req('DELETE', `/api/skills/${q(name)}`),
   /** 从这台机器导入 skills：board host 把选中的目录传进库 */
   importSkills: (host: string, picks: SkillImportPick[]) => req<HostInfo>('POST', `/api/hosts/${q(host)}/skills/import`, { picks }),
+  /** 让这台机器的 board host 重扫本机的 skill；服务端会把 10 秒内的重复请求合成一次 */
+  rescanHostSkills: (host: string) => req<HostInfo>('POST', `/api/hosts/${q(host)}/ask`, { kind: 'rescan-skills' }).then(normHost),
   /** MCP 服务器共用配置：列表（密钥只给末尾 4 位）、新增或修改（密钥留空保留原值）、删除 */
   mcp: () => req<McpServer[]>('GET', '/api/mcp').then(normMcp),
   putMcp: (s: McpServer) => req<McpServer>('POST', '/api/mcp', s),
