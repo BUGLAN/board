@@ -17,7 +17,7 @@ export const VIEWS: [StatusView, string, string][] = [
 ];
 
 /** 工作流的查询（白板快照或工作区里的 statuses 都可以） */
-/** 一块白板的卡片总数：所有状态的卡片数 + 未整理（counts 里带 inbox），不含回收站 */
+/** 一块白板的卡片总数：所有状态的卡片数 + 未整理（counts 里的 inbox 和 later），不含回收站 */
 export function cardTotal(counts: Record<string, number> | undefined | null): number {
   return Object.values(counts ?? {}).reduce((n, v) => n + v, 0);
 }

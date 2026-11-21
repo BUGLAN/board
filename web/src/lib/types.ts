@@ -59,6 +59,7 @@ export interface Pos {
   y: number;
 }
 
+/** 各状态的卡片数；`inbox` 是不含「稍后再做」的未整理条目，`later` 是收起的（两者相加才是未整理总数） */
 export type Counts = Record<string, number>;
 
 export interface Label {

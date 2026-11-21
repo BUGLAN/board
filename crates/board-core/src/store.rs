@@ -779,6 +779,7 @@ impl<'a> R<'a> {
                 b.card_crons = R { conn, local: self.local }.card_crons(id, now)?;
                 b.statuses = flow_of(conn, id)?.0.into_iter().map(|s| Status { layout: None, ..s }).collect();
                 b.counts.insert(INBOX.to_string(), 0);
+                b.counts.insert(LATER.to_string(), 0);
                 for s in &b.statuses {
                     b.counts.insert(s.key.clone(), 0);
                 }
@@ -787,16 +788,24 @@ impl<'a> R<'a> {
                     let (col, n) = c?;
                     *b.counts.entry(col).or_default() += n;
                 }
-                // 「未整理」里已经拆出卡的原条目并进了拆出的那组，不单独算（和界面一致）
-                let split: i64 = conn.query_row(
+                // 「未整理」的计数和界面的 visibleInbox 一致：拆出卡的原条目并进拆出的那组、
+                // 收到「稍后再做」的都从 inbox 里减掉（两者重合时只减一次），收起的单独记在 later
+                let hidden: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM cards p WHERE p.board = ?1 AND p.col = ?2 AND p.deleted_at IS NULL
-                       AND EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL)",
+                       AND (p.later_at IS NOT NULL
+                            OR EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL))",
                     params![id, INBOX],
                     |r| r.get(0),
                 )?;
                 if let Some(n) = b.counts.get_mut(INBOX) {
-                    *n -= split;
+                    *n -= hidden;
                 }
+                let later: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM cards WHERE board = ?1 AND col = ?2 AND later_at IS NOT NULL AND deleted_at IS NULL",
+                    params![id, INBOX],
+                    |r| r.get(0),
+                )?;
+                b.counts.insert(LATER.to_string(), later);
                 let mut hs = conn.prepare(&format!(
                     "SELECT holder FROM cards c WHERE board = ?1 AND holder IS NOT NULL AND deleted_at IS NULL ORDER BY {}, pos",
                     COL_ORDER

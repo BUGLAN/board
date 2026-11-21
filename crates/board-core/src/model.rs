@@ -22,6 +22,8 @@ pub const STATUS_COLORS: [&str; 10] =
 /// 「未整理」：每块白板固定都有，不属于工作流
 pub const INBOX: &str = "inbox";
 pub const INBOX_NAME: &str = "未整理";
+/// 「稍后再做」的计数键：`counts` 里单独算，不占 `inbox`（default/main#585）
+pub const LATER: &str = "later";
 
 /// 状态块在白板上的位置：12 栏网格里的起始栏 x、宽度 w，以及决定上下先后的 y
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -483,7 +485,8 @@ impl BoardRef {
 
 /* ------------------------------- 快照 ------------------------------- */
 
-/// 各状态的卡片数（键是状态标识，含 `inbox`）
+/// 各状态的卡片数（键是状态标识，含 `inbox`；`later` 是「未整理」里收到「稍后再做」的条目，
+/// 不算在 `inbox` 里）
 pub type Counts = BTreeMap<String, i64>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

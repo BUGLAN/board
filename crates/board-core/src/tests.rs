@@ -2626,6 +2626,37 @@ fn inbox_later_on_and_off() {
     assert_eq!(snapshot(&s, B, T0).cards[&b].later_at, None);
 }
 
+/// 「稍后再做」的条目不占「未整理」计数，单独算在 later 里；白板的卡片总数不变（default/main#585）
+#[test]
+fn inbox_counts_leave_out_later_entries() {
+    let mut s = store();
+    let a = exec(&mut s, B, &alpha(), T0, inbox_new("先放一放")).unwrap().card.id;
+    exec(&mut s, B, &alpha(), T0, inbox_new("第二条")).unwrap();
+    let counts = |s: &Store| {
+        let ws = s.read(|r| r.workspace(T0)).unwrap();
+        let b = &ws.projects[0].boards[0];
+        (b.counts[INBOX], b.counts[LATER], b.counts.values().sum::<i64>())
+    };
+    assert_eq!(counts(&s), (2, 0, 2));
+    exec(&mut s, B, &human(), T0 + 5, later(a, true)).unwrap();
+    assert_eq!(counts(&s), (1, 1, 2), "收起的从 inbox 挪到 later，总数不变");
+    exec(&mut s, B, &human(), T0 + 10, later(a, false)).unwrap();
+    assert_eq!(counts(&s), (2, 0, 2), "放回后加回来");
+
+    // 拆解后又被收起：两项条件同时成立时，inbox 只减一次；收起的原条目仍算进 later
+    exec(
+        &mut s,
+        B,
+        &human(),
+        T0 + 15,
+        Cmd::New { title: "拆出来".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: Some(a) },
+    )
+    .unwrap();
+    assert_eq!(counts(&s), (2, 0, 2), "拆解后原条目由拆出的条目表示");
+    exec(&mut s, B, &human(), T0 + 20, later(a, true)).unwrap();
+    assert_eq!(counts(&s), (2, 1, 3), "拆解 + 收起重合时，inbox 不会减两次");
+}
+
 /// 收起的条目被整理进工作流时清掉标记；放回「未整理」（回收站恢复之外）不会自己变回收起
 #[test]
 fn inbox_later_cleared_when_leaving_inbox() {

@@ -233,7 +233,7 @@
 
 ### `board boards`
 
-`counts` 按状态标识统计，包含「未整理」的 `inbox`；`flow` 是这块白板的工作流顺序：
+`counts` 按状态标识统计，包含「未整理」的 `inbox`（不含收到「稍后再做」的条目）和收起的 `later`；`flow` 是这块白板的工作流顺序：
 
 ```json
 [
@@ -244,6 +244,7 @@
       "doing": 1,
       "done": 1,
       "inbox": 4,
+      "later": 0,
       "review": 2,
       "rework": 0,
       "todo": 3
