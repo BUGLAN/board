@@ -620,3 +620,58 @@ describe('labelAddPatch（批量加标签，default/main#531）', () => {
     expect(p.detail!(other)).toBe(other);
   });
 });
+
+describe('快捷提示词的补丁（#572）', () => {
+  const list = () => [
+    { id: 'p-2', title: '重启', text: '重启一下' },
+    { id: 'p-1', title: '等发版', text: '等发版' },
+  ];
+
+  it('新建：放在最前面；已经有这个 id 时原样返回（重复执行结果相同）', () => {
+    const p = { id: 'p-3', title: '新', text: '新的' };
+    const out = twice(D.addPromptPatch(p).prompts!, list());
+    expect(out.map(x => x.id)).toEqual(['p-3', 'p-2', 'p-1']);
+    expect(D.addPromptPatch(p).keys).toEqual([D.PROMPTS_BUSY]);
+  });
+
+  it('修改只动那一条；不在了原样返回', () => {
+    const out = twice(D.editPromptPatch('p-1', ' 等发版 ✅ ', '等发版\r\n通知我').prompts!, list());
+    expect(out[1]).toEqual({ id: 'p-1', title: '等发版 ✅', text: '等发版\n通知我' });
+    expect(out[0]).toEqual(list()[0]);
+    const before = list();
+    expect(D.editPromptPatch('p-9', '标题', '内容').prompts!(before)).toBe(before);
+  });
+
+  it('删除；不在了原样返回', () => {
+    expect(twice(D.removePromptPatch('p-2').prompts!, list())).toEqual([list()[1]]);
+    const before = list();
+    expect(D.removePromptPatch('p-9').prompts!(before)).toBe(before);
+  });
+
+  it('整列换掉（搬本机旧存的）：一样时原样返回', () => {
+    const next = [{ id: 'p-5', title: '本机的', text: '本机的' }];
+    expect(twice(D.replacePromptsPatch(next).prompts!, list())).toEqual(next);
+    const same = list();
+    expect(D.replacePromptsPatch(list()).prompts!(same)).toBe(same);
+  });
+
+  it('叠在 store 上：当帧生效；还在保存时同一列表再改被拒绝（BUSY），失败只撤自己这一层', async () => {
+    const { api } = await import('../lib/api');
+    let fail: ((e: unknown) => void) | undefined;
+    vi.spyOn(api, 'savePrompts').mockImplementation(() => new Promise((_, no) => (fail = no)));
+    D.useData.setState({ prompts: list() });
+    // base 由 loadPrompts 写入
+    vi.spyOn(api, 'prompts').mockResolvedValue(list());
+    await D.loadPrompts();
+    const req = D.savePrompts(D.removePromptPatch('p-2'));
+    expect(D.useData.getState().prompts!.map(p => p.id)).toEqual(['p-1']);
+    expect(D.busy(D.PROMPTS_BUSY)).toBe(true);
+    expect(() => D.savePrompts(D.removePromptPatch('p-1'))).toThrow(/保存/);
+    await vi.waitFor(() => expect(fail).toBeDefined());
+    fail!(new Error('失败'));
+    await expect(req).rejects.toThrow('失败');
+    expect(D.useData.getState().prompts!.map(p => p.id)).toEqual(['p-2', 'p-1']);
+    expect(D.busy(D.PROMPTS_BUSY)).toBe(false);
+    vi.restoreAllMocks();
+  });
+});

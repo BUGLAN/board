@@ -6,6 +6,7 @@
    ========================================================================== */
 import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
+import { readPrompts, type Prompt } from './prompts';
 import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
 import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode, HostCopy } from './types';
 
@@ -278,6 +279,10 @@ export const api = {
   /** 获取模型：服务端用这些地址和 API key 问供应商有哪些模型；key 留空时用 name 对应的供应商存着的 */
   providerModels: (body: { name?: string; endpoints: ProviderEndpoint[]; apiKey?: string | null }) => req<{ models: string[]; from: string }>('POST', '/api/providers/models', body),
   /** 同步配置写入失败后「重试」：重新下发同步请求 */
+  /** 快捷提示词（#572）：整个服务器一份，按列表顺序 */
+  prompts: () => req<{ prompts: unknown }>('GET', '/api/prompts').then(r => readPrompts(r?.prompts)),
+  /** 整列保存，返回服务端整理后的整列 */
+  savePrompts: (list: Prompt[]) => req<{ prompts: unknown }>('PUT', '/api/prompts', { prompts: list }).then(r => readPrompts(r?.prompts)),
   /** Git 凭据（共用配置）：令牌只有末尾 4 位；没设时 null */
   git: () => req<{ cred: GitCred | null }>('GET', '/api/git').then(r => ({ cred: r?.cred ?? null })),
   /** 设置或修改：令牌留空保留原来的 */

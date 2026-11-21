@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addPrompt, insertPromptText, listPrompts, readPrompts, removePrompt, savePrompts, updatePrompt, type Prompt } from './prompts';
+import { addPrompt, clearLocalPrompts, insertPromptText, localPrompts, makePrompt, readPrompts, removePrompt, updatePrompt, type Prompt } from './prompts';
 
 const row = (id: string, title: string, text: string): Prompt => ({ id, title, text });
 
@@ -49,9 +49,20 @@ describe('快捷提示词（default/main#413）', () => {
     ).toEqual([row('p-1', '留下的', '第一行'), { id: 'p-2', title: '换行', text: 'a\nb' }]);
   });
 
-  it('保存后刷新还能读回来', () => {
-    savePrompts([row('p-1', '等发版', '等发版\n发完通知我')]);
-    expect(listPrompts()).toEqual([row('p-1', '等发版', '等发版\n发完通知我')]);
+  it('makePrompt 和 addPrompt 用同一个 id；内容为空时是 null', () => {
+    const list = [row('p-4', '旧的', '旧的')];
+    expect(makePrompt(list, ' 等发版 ', '等发版')).toEqual(row('p-5', '等发版', '等发版'));
+    expect(makePrompt(list, '等发版', '  ')).toBeNull();
+  });
+
+  it('本机旧存的列表（#572 搬到服务端前）：没有键时是 null，删掉之后也是 null', () => {
+    localStorage.clear();
+    expect(localPrompts()).toBeNull();
+    localStorage.setItem('board.creator.prompts', JSON.stringify([row('p-1', '等发版', '等发版'), { id: 'p-2' }]));
+    expect(localPrompts()).toEqual([row('p-1', '等发版', '等发版')]);
+    clearLocalPrompts();
+    expect(localStorage.getItem('board.creator.prompts')).toBeNull();
+    expect(localPrompts()).toBeNull();
   });
 
   it('插入到光标处、替换选中文字，没焦点或越界时追加到末尾，光标总在插入内容之后', () => {

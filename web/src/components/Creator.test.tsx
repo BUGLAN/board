@@ -1,7 +1,8 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { listPrompts, savePrompts } from '../lib/prompts';
+import { api } from '../lib/api';
+import type { Prompt } from '../lib/prompts';
 import { exec, useData } from '../store/data';
 import { useUI } from '../store/ui';
 import { Creator, creatorCli } from './Creator';
@@ -15,6 +16,10 @@ vi.mock('../store/data', async importOriginal => {
 
 const NOW = new Date(2026, 10, 16, 10).getTime();
 let host: HTMLDivElement;
+/** 假的服务端：快捷提示词整列（#572） */
+let server: Prompt[] = [];
+let failSave: Error | null = null;
+const puts: Prompt[][] = [];
 let root: ReturnType<typeof createRoot>;
 
 const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
@@ -29,6 +34,18 @@ const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(exec).mockReset();
+  server = [];
+  failSave = null;
+  puts.length = 0;
+  // 保存后的刷新轮不连真的服务端
+  vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'));
+  vi.spyOn(api, 'prompts').mockImplementation(async () => server.map(p => ({ ...p })));
+  vi.spyOn(api, 'savePrompts').mockImplementation(async list => {
+    puts.push(list);
+    if (failSave) throw failSave;
+    server = list.map(p => ({ ...p }));
+    return server.map(p => ({ ...p }));
+  });
   if (!Element.prototype.animate) {
     Object.defineProperty(Element.prototype, 'animate', {
       configurable: true,
@@ -74,25 +91,32 @@ beforeEach(() => {
       cards: {},
       saving: {},
       pending: {},
+      prompts: null,
     } as never,
   );
   useUI.setState({ creator: { open: true, column: 'todo', seq: 1 }, picker: null, labelsOf: null, tab: 'board', toasts: [] });
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   act(() => root.unmount());
   host.remove();
   document.body.innerHTML = '';
+});
+
+/** 等 promise 链（取列表、保存、保存后的刷新轮）走完 */
+const settle = () => act(async () => {
+  for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setTimeout(resolve, 0));
 });
 
 const promptButton = () => [...host.querySelectorAll<HTMLButtonElement>('.cr-label .act button')].find(b => b.textContent?.includes('快捷提示词'))!;
 
 describe('新建卡片里的快捷提示词（default/main#413）', () => {
   it('按钮在附件左边；点一条插到描述光标处、替换选中文字，浮层不关', async () => {
-    savePrompts([
+    server = [
       { id: 'p-2', title: '重启', text: '重启一下' },
       { id: 'p-1', title: '等发版', text: '等发版' },
-    ]);
+    ];
     act(() => root.render(<Creator />));
 
     const btn = promptButton();
@@ -103,6 +127,8 @@ describe('新建卡片里的快捷提示词（default/main#413）', () => {
 
     act(() => btn.click());
     expect(btn.getAttribute('aria-expanded')).toBe('true');
+    expect(host.querySelector('.cr-prompt-loading')?.textContent).toContain('正在取');
+    await settle();
     expect(host.querySelectorAll('.cr-prompt-insert')).toHaveLength(2);
 
     const ta = host.querySelector<HTMLTextAreaElement>('.cr-desc textarea')!;
@@ -122,33 +148,137 @@ describe('新建卡片里的快捷提示词（default/main#413）', () => {
     expect(host.querySelector('.cr-prompt-pop')).not.toBeNull();
   });
 
-  it('空列表给新建入口；新建、编辑、删除都写回本机，刷新后还在', async () => {
+  it('空列表给新建入口；新建、编辑、删除当帧生效，整列存到服务端', async () => {
     act(() => root.render(<Creator />));
     act(() => promptButton().click());
+    await settle();
     expect(host.querySelector('.cr-prompt-empty')?.textContent).toContain('还没有快捷提示词');
 
     act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-empty button')!.click());
     type(host.querySelector<HTMLInputElement>('input[aria-label="提示词标题"]')!, '等发版');
     type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="提示词内容"]')!, '等发版\n发完通知我');
     act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-form .btn.brand')!.click());
-
+    // 当帧：列表里已经有了，还在保存时不能再改
     expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('等发版');
-    expect(listPrompts()).toEqual([{ id: 'p-1', title: '等发版', text: '等发版\n发完通知我' }]);
+    expect(host.querySelector<HTMLButtonElement>('button[aria-label="编辑提示词「等发版」"]')!.disabled).toBe(true);
+    await settle();
+    expect(server).toEqual([{ id: 'p-1', title: '等发版', text: '等发版\n发完通知我' }]);
+    expect(host.querySelector<HTMLButtonElement>('button[aria-label="编辑提示词「等发版」"]')!.disabled).toBe(false);
 
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="编辑提示词「等发版」"]')!.click());
     type(host.querySelector<HTMLInputElement>('input[aria-label="提示词标题"]')!, '等发版 ✅');
     act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-form .btn.brand')!.click());
-    expect(listPrompts()[0].title).toBe('等发版 ✅');
+    expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('等发版 ✅');
+    await settle();
+    expect(server[0].title).toBe('等发版 ✅');
 
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="删除提示词「等发版 ✅」"]')!.click());
     expect(host.querySelector('.cr-prompt-del')?.textContent).toContain('删除？');
     act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-del button.danger')!.click());
-    expect(listPrompts()).toEqual([]);
     expect(host.querySelector('.cr-prompt-empty')).not.toBeNull();
+    await settle();
+    expect(server).toEqual([]);
+    expect(localStorage.getItem('board.creator.prompts')).toBeNull();
+  });
+
+  it('另一端改过：每次打开浮层都重新从服务端取', async () => {
+    act(() => root.render(<Creator />));
+    act(() => promptButton().click());
+    await settle();
+    expect(host.querySelector('.cr-prompt-empty')).not.toBeNull();
+    act(() => promptButton().click());
+    server = [{ id: 'p-1', title: '别处加的', text: '别处加的' }];
+    act(() => promptButton().click());
+    await settle();
+    expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('别处加的');
+  });
+
+  it('保存失败：撤回、提示原因，带着刚才的内容重新打开编辑框', async () => {
+    server = [{ id: 'p-1', title: '等发版', text: '等发版' }];
+    act(() => root.render(<Creator />));
+    act(() => promptButton().click());
+    await settle();
+    failSave = new Error('服务端挂了');
+
+    act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-head .btn')!.click());
+    type(host.querySelector<HTMLInputElement>('input[aria-label="提示词标题"]')!, '新的');
+    type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="提示词内容"]')!, '新的内容');
+    act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-form .btn.brand')!.click());
+    expect(host.querySelectorAll('.cr-prompt-insert')).toHaveLength(2);
+    await settle();
+    expect(useUI.getState().toasts.map(t => t.text).join()).toContain('服务端挂了');
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="提示词标题"]')!.value).toBe('新的');
+    expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="提示词内容"]')!.value).toBe('新的内容');
+    act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-form .btn:not(.brand)')!.click());
+    expect(host.querySelectorAll('.cr-prompt-insert')).toHaveLength(1);
+
+    // 删除失败：那一条回来
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="删除提示词「等发版」"]')!.click());
+    act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-del button.danger')!.click());
+    expect(host.querySelector('.cr-prompt-empty')).not.toBeNull();
+    await settle();
+    expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('等发版');
+    expect(server).toEqual([{ id: 'p-1', title: '等发版', text: '等发版' }]);
+  });
+
+  it('本机旧存的：服务端为空时传上去一次并删掉本机的键', async () => {
+    localStorage.setItem('board.creator.prompts', JSON.stringify([{ id: 'p-3', title: '本机的', text: '本机的内容' }]));
+    act(() => root.render(<Creator />));
+    act(() => promptButton().click());
+    await settle();
+    expect(puts).toEqual([[{ id: 'p-3', title: '本机的', text: '本机的内容' }]]);
+    expect(server).toEqual([{ id: 'p-3', title: '本机的', text: '本机的内容' }]);
+    expect(localStorage.getItem('board.creator.prompts')).toBeNull();
+    expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('本机的');
+
+    // 再打开不会再传
+    act(() => promptButton().click());
+    act(() => promptButton().click());
+    await settle();
+    expect(puts).toHaveLength(1);
+  });
+
+  it('本机旧存的：服务端已经有内容时不覆盖，本机的键也删掉', async () => {
+    server = [{ id: 'p-1', title: '服务端的', text: '服务端的' }];
+    localStorage.setItem('board.creator.prompts', JSON.stringify([{ id: 'p-1', title: '本机的', text: '本机的' }]));
+    act(() => root.render(<Creator />));
+    act(() => promptButton().click());
+    await settle();
+    expect(puts).toEqual([]);
+    expect(server).toEqual([{ id: 'p-1', title: '服务端的', text: '服务端的' }]);
+    expect(localStorage.getItem('board.creator.prompts')).toBeNull();
+    expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('服务端的');
+  });
+
+  it('本机旧存的：上传失败时留着本机的，下次打开再试', async () => {
+    failSave = new Error('连不上');
+    localStorage.setItem('board.creator.prompts', JSON.stringify([{ id: 'p-1', title: '本机的', text: '本机的' }]));
+    act(() => root.render(<Creator />));
+    act(() => promptButton().click());
+    await settle();
+    expect(localStorage.getItem('board.creator.prompts')).not.toBeNull();
+    failSave = null;
+    act(() => promptButton().click());
+    act(() => promptButton().click());
+    await settle();
+    expect(server).toEqual([{ id: 'p-1', title: '本机的', text: '本机的' }]);
+    expect(localStorage.getItem('board.creator.prompts')).toBeNull();
+  });
+
+  it('取不到列表：写明原因，可以重试', async () => {
+    vi.mocked(api.prompts).mockRejectedValueOnce(new Error('连不上 Board 服务'));
+    server = [{ id: 'p-1', title: '等发版', text: '等发版' }];
+    act(() => root.render(<Creator />));
+    act(() => promptButton().click());
+    await settle();
+    expect(host.querySelector('.cr-prompt-loading')?.textContent).toContain('连不上 Board 服务');
+    act(() => host.querySelector<HTMLButtonElement>('.cr-prompt-loading button')!.click());
+    await settle();
+    expect(host.querySelector('.cr-prompt-insert')?.textContent).toContain('等发版');
   });
 
   it('Esc 只关提示词浮层，不关新建卡片弹窗', () => {
-    savePrompts([{ id: 'p-1', title: '等发版', text: '等发版' }]);
+    server = [{ id: 'p-1', title: '等发版', text: '等发版' }];
     act(() => root.render(<Creator />));
     act(() => promptButton().click());
     expect(host.querySelector('.cr-prompt-pop')).not.toBeNull();

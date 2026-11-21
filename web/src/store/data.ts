@@ -16,6 +16,7 @@ import { staleServer } from '../lib/stale';
 import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
 import { earlierKey } from '../lib/earlier';
+import { clearLocalPrompts, localPrompts, removePrompt, updatePrompt, type Prompt } from '../lib/prompts';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type ProjectInfo, type SchedPick, type Workspace } from '../lib/types';
 
 interface DataState {
@@ -44,6 +45,8 @@ interface DataState {
   /** 还没确认的写操作涉及的卡片（「白板路径#卡片」）、评论（「白板路径@动态 ID」）和其他对象（Patch.keys，例如「host:mbp」）
       → 进行中的个数。界面据此画成「保存中」，并禁用对它们的操作（见 busy） */
   saving: Record<string, number>;
+  /** 新建卡片的快捷提示词（#572，服务端一份）：打开浮层时取（loadPrompts），还没取到时是 null */
+  prompts: Prompt[] | null;
 }
 
 export interface Sending {
@@ -88,6 +91,7 @@ export const useData = create<DataState>(() => ({
   pending: {},
   sending: {},
   saving: {},
+  prompts: null,
   detailError: null,
   serverVersion: null,
   stale: false,
@@ -113,6 +117,8 @@ export interface Patch {
   /** 只作用于发起时所在的白板 */
   board?: (b: BoardSnapshot) => BoardSnapshot;
   detail?: (d: CardDetail) => CardDetail;
+  /** 快捷提示词的整列（和白板无关，同 ws） */
+  prompts?: (list: Prompt[]) => Prompt[];
   /** 画成「保存中」的卡片 */
   cards?: number[];
   /** 画成「保存中」的评论（动态 ID） */
@@ -124,17 +130,18 @@ interface Layer extends Patch {
   path: string;
 }
 
-const base: { ws: Workspace | null; board: BoardSnapshot | null; detail: CardDetail | null } = { ws: null, board: null, detail: null };
+const base: { ws: Workspace | null; board: BoardSnapshot | null; detail: CardDetail | null; prompts: Prompt[] | null } = { ws: null, board: null, detail: null, prompts: null };
 let layers: Layer[] = [];
 
 /** 按 base + layers 重新算出界面数据；extra 一起写进 store（同一次更新） */
 function render(extra: Partial<DataState> = {}) {
   const path = extra.path ?? get().path;
-  let { ws, board, detail } = base;
+  let { ws, board, detail, prompts } = base;
   const saving: Record<string, number> = {};
   const mark = (k: string) => (saving[k] = (saving[k] ?? 0) + 1);
   for (const l of layers) {
     if (l.ws && ws) ws = l.ws(ws);
+    if (l.prompts && prompts) prompts = l.prompts(prompts);
     l.cards?.forEach(id => mark(`${l.path}#${id}`));
     l.acts?.forEach(id => mark(`${l.path}@${id}`));
     l.keys?.forEach(mark);
@@ -142,7 +149,7 @@ function render(extra: Partial<DataState> = {}) {
     if (l.board && board?.path === path) board = l.board(board);
     if (l.detail && detail) detail = l.detail(detail);
   }
-  set({ ws, board, detail, saving, ...extra });
+  set({ ws, board, detail, prompts, saving, ...extra });
 }
 
 /** 对象的 busy 键：保存完之前不能再改 */
@@ -344,6 +351,7 @@ export function joinPatch(...list: Patch[]): Patch {
     ws: chain(list.map(p => p.ws)),
     board: chain(list.map(p => p.board)),
     detail: chain(list.map(p => p.detail)),
+    prompts: chain(list.map(p => p.prompts)),
     cards: all(list.map(p => p.cards)),
     acts: all(list.map(p => p.acts)),
     keys: all(list.map(p => p.keys)),
@@ -1082,6 +1090,76 @@ export async function refreshHosts() {
   if (!base.ws || w !== writes) return;
   base.ws = { ...base.ws, hosts: r.hosts, dispatches: r.dispatches };
   render();
+}
+
+/* ------------------------------ 快捷提示词 ------------------------------ */
+/* 整个服务器一份（#572）：打开新建卡片的浮层时取，增删改整列 PUT。
+   保存完之前不能再改（PROMPTS_BUSY 记进 saving）：每次 PUT 的整列是按界面上的列表算的，
+   前一笔没确认时接着改，前一笔失败了后一笔也会把它带上去 */
+
+/** 快捷提示词整列的 busy 键 */
+export const PROMPTS_BUSY = 'prompts';
+
+/** 新建一条（p 由 lib/prompts 的 makePrompt 生成，id 在建补丁时定好）：放在最前面；已经有这个 id 时原样返回 */
+export function addPromptPatch(p: Prompt): Patch {
+  return { prompts: list => (list.some(x => x.id === p.id) ? list : [p, ...list]), keys: [PROMPTS_BUSY] };
+}
+
+/** 改一条的标题、内容；不在了原样返回 */
+export function editPromptPatch(id: string, title: string, text: string): Patch {
+  return { prompts: list => (list.some(x => x.id === id) ? updatePrompt(list, id, title, text) : list), keys: [PROMPTS_BUSY] };
+}
+
+/** 删一条；不在了原样返回 */
+export function removePromptPatch(id: string): Patch {
+  return { prompts: list => (list.some(x => x.id === id) ? removePrompt(list, id) : list), keys: [PROMPTS_BUSY] };
+}
+
+/** 整列换成 list（把本机旧存的搬上去时用）；内容一样时原样返回 */
+export function replacePromptsPatch(next: Prompt[]): Patch {
+  return { prompts: list => (JSON.stringify(list) === JSON.stringify(next) ? list : next), keys: [PROMPTS_BUSY] };
+}
+
+/** 发起后又保存过：取回来的可能是保存之前的，不用它 */
+let promptWrites = 0;
+
+/** 乐观保存：补丁当帧生效，整列 PUT；成功后用服务端返回的整列，失败撤掉补丁并抛出错误（由调用方提示、找回草稿） */
+export function savePrompts(patch: Patch): Promise<Prompt[]> {
+  if (!patch.prompts) return Promise.resolve(get().prompts ?? []);
+  guard(patch);
+  const next = patch.prompts(get().prompts ?? []);
+  promptWrites++;
+  return optimistic(patch, async () => {
+    const saved = await api.savePrompts(next);
+    base.prompts = saved;
+    return saved;
+  });
+}
+
+/** 从服务端取整列。第一次取到空列表、而本机偏好里还有以前存的：传上去一次，成功后删掉本机的；
+    服务端已经有内容时不合并、不覆盖，本机的也删掉。取不到时抛出错误（界面上已有的列表留着） */
+export async function loadPrompts(): Promise<Prompt[]> {
+  const w = promptWrites;
+  const list = await api.prompts();
+  if (w === promptWrites && !busy(PROMPTS_BUSY)) {
+    base.prompts = list;
+    render();
+  }
+  const local = localPrompts();
+  if (local == null) return get().prompts ?? list;
+  if (list.length || !local.length) {
+    clearLocalPrompts();
+    return get().prompts ?? list;
+  }
+  if (busy(PROMPTS_BUSY)) return get().prompts ?? list;
+  try {
+    const saved = await savePrompts(replacePromptsPatch(local));
+    clearLocalPrompts();
+    return saved;
+  } catch {
+    // 没传上去：本机的留着，下次打开再试
+    return get().prompts ?? list;
+  }
 }
 
 /* ------------------------------ 标签：乐观更新 ------------------------------ */

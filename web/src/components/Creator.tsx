@@ -7,11 +7,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { openCard } from '../lib/actions';
 import { stillUploading, useAttach } from '../lib/attach';
-import { addPrompt, insertPromptText, listPrompts, removePrompt, savePrompts, updatePrompt, type Prompt } from '../lib/prompts';
+import { insertPromptText, makePrompt, type Prompt } from '../lib/prompts';
 import { boardFlow } from '../lib/schema';
 import { isWindows } from '../lib/platform';
 import { accel, autosize, copyText, cx, pref, replay } from '../lib/util';
-import { closeDetail, draftCard, exec, useCurrent, useData } from '../store/data';
+import { addPromptPatch, closeDetail, draftCard, editPromptPatch, exec, loadPrompts, PROMPTS_BUSY, removePromptPatch, savePrompts, useBusy, useCurrent, useData } from '../store/data';
 import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
 import { DescTabs, LabelChip, Markdown, Tip, Title } from './bits';
 import { BoardIcon24, Icon, InboxIcon24 } from './Icon';
@@ -56,7 +56,10 @@ export function Creator() {
   const [error, setError] = useState('');
   // 快捷提示词：浮层、本机存的列表、正在新建 / 编辑的那条、等待确认删除的 id
   const [promptsOpen, setPromptsOpen] = useState(false);
-  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  // 服务端的整列（#572）：打开浮层时重新取；还没取到时是 null
+  const prompts = useData(s => s.prompts);
+  const promptBusy = useBusy(PROMPTS_BUSY);
+  const [promptLoad, setPromptLoad] = useState('');
   const [promptEdit, setPromptEdit] = useState<{ id: string | null; title: string; text: string } | null>(null);
   const [promptDelete, setPromptDelete] = useState<string | null>(null);
   const [promptError, setPromptError] = useState('');
@@ -164,9 +167,15 @@ export function Creator() {
     if (restore) promptBtn.current?.focus();
   };
 
+  /** 从服务端重新取（打开浮层、点「重试」）；取不到时浮层里写明原因，已有的列表留着 */
+  const reloadPrompts = () => {
+    setPromptLoad('');
+    loadPrompts().catch(e => setPromptLoad(e instanceof Error ? e.message : String(e)));
+  };
+
   const togglePrompts = () => {
     if (promptsOpen) return closePrompts();
-    setPrompts(listPrompts());
+    reloadPrompts();
     setPromptEdit(null);
     setPromptDelete(null);
     setPromptError('');
@@ -201,25 +210,41 @@ export function Creator() {
     setPromptError('');
   };
 
+  /** 乐观保存：当帧收起编辑框、列表里就是新的；失败时撤回、提示原因，带着刚才的标题和内容重新打开编辑框 */
   const savePrompt = () => {
-    if (!promptEdit) return;
-    const title = promptEdit.title.trim();
-    const text = promptEdit.text;
+    if (!promptEdit || !prompts) return;
+    const draft = promptEdit;
+    const title = draft.title.trim();
+    const text = draft.text;
     if (!title) return setPromptError('标题是必填的');
     if (!text.trim()) return setPromptError('内容是必填的');
-    const next = promptEdit.id ? updatePrompt(prompts, promptEdit.id, title, text) : addPrompt(prompts, title, text);
-    savePrompts(next);
-    setPrompts(next);
+    const made = draft.id ? null : makePrompt(prompts, title, text);
+    const patch = draft.id ? editPromptPatch(draft.id, title, text) : made && addPromptPatch(made);
+    if (!patch) return;
+    let req: Promise<unknown>;
+    try {
+      req = savePrompts(patch);
+    } catch (e) {
+      return setPromptError(e instanceof Error ? e.message : String(e));
+    }
     setPromptEdit(null);
     setPromptError('');
     requestAnimationFrame(() => promptBtn.current?.focus());
+    req.catch(e => {
+      toastError(e);
+      setPromptsOpen(true);
+      setPromptDelete(null);
+      setPromptEdit(draft);
+    });
   };
 
   const deletePrompt = (id: string) => {
-    const next = removePrompt(prompts, id);
-    savePrompts(next);
-    setPrompts(next);
     setPromptDelete(null);
+    try {
+      savePrompts(removePromptPatch(id)).catch(toastError);
+    } catch (e) {
+      toastError(e);
+    }
   };
 
   /** 乐观新建：当帧关闭（连续新建时清空）、临时卡片出现在目标状态最下面；服务端确认后换成真正的卡片。
@@ -484,8 +509,8 @@ export function Creator() {
                       <div className="cr-prompt-head">
                         <b>快捷提示词</b>
                         <span className="spacer" />
-                        {!promptEdit && (
-                          <button className="btn sm ghost" type="button" onClick={startPromptNew}>
+                        {!promptEdit && prompts && (
+                          <button className="btn sm ghost" type="button" disabled={promptBusy} onClick={startPromptNew}>
                             <Icon name="plus" />
                             新建
                           </button>
@@ -494,6 +519,14 @@ export function Creator() {
                           <Icon name="close" />
                         </button>
                       </div>
+                      {promptLoad && !promptEdit && (
+                        <div className="cr-prompt-empty cr-prompt-loading" role="alert">
+                          <p>{prompts ? '没取到最新的快捷提示词' : '没取到快捷提示词'}：{promptLoad}</p>
+                          <button className="btn sm" type="button" onClick={reloadPrompts}>
+                            重试
+                          </button>
+                        </div>
+                      )}
                       {promptEdit ? (
                         <div
                           className="cr-prompt-form"
@@ -546,17 +579,23 @@ export function Creator() {
                             <button
                               className="btn sm brand"
                               type="button"
-                              disabled={!promptEdit.title.trim() || !promptEdit.text.trim()}
+                              disabled={promptBusy || !promptEdit.title.trim() || !promptEdit.text.trim()}
                               onClick={savePrompt}
                             >
                               保存
                             </button>
                           </div>
                         </div>
+                      ) : !prompts ? (
+                        !promptLoad && (
+                          <div className="cr-prompt-empty cr-prompt-loading" role="status">
+                            <p>正在取快捷提示词…</p>
+                          </div>
+                        )
                       ) : prompts.length === 0 ? (
                         <div className="cr-prompt-empty">
                           <p>还没有快捷提示词。把常写的片段存下来，下次点一下就能插入。</p>
-                          <button className="btn sm" type="button" onClick={startPromptNew}>
+                          <button className="btn sm" type="button" disabled={promptBusy} onClick={startPromptNew}>
                             <Icon name="plus" />
                             新建提示词
                           </button>
@@ -578,7 +617,7 @@ export function Creator() {
                               {promptDelete === p.id ? (
                                 <span className="cr-prompt-del">
                                   <span>删除？</span>
-                                  <button className="btn sm danger" type="button" onClick={() => deletePrompt(p.id)}>
+                                  <button className="btn sm danger" type="button" disabled={promptBusy} onClick={() => deletePrompt(p.id)}>
                                     删除
                                   </button>
                                   <button className="btn sm ghost" type="button" onClick={() => setPromptDelete(null)}>
@@ -592,6 +631,7 @@ export function Creator() {
                                     type="button"
                                     aria-label={`编辑提示词「${p.title}」`}
                                     title="编辑"
+                                    disabled={promptBusy}
                                     onClick={() => startPromptEdit(p)}
                                   >
                                     <Icon name="edit" />
@@ -601,6 +641,7 @@ export function Creator() {
                                     type="button"
                                     aria-label={`删除提示词「${p.title}」`}
                                     title="删除"
+                                    disabled={promptBusy}
                                     onClick={() => setPromptDelete(p.id)}
                                   >
                                     <Icon name="trash" />
