@@ -1,4 +1,4 @@
-/* Agent tab（default/main#394）：侧栏三组八节、一节一页；没有机器时照常能进，领取规则用内置的 agent 也能加；
+/* Agent tab（default/main#394）：侧栏三组八节、一节一页；没有机器时照常能进，分工里能先建角色、再加规则；
    设置页去掉了搬走的三节 */
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -39,12 +39,18 @@ const META = [
 function localServer() {
   const sent: { method: string; path: string; body: unknown }[] = [];
   let rules: unknown[] = [];
+  const profiles: Record<string, unknown>[] = [];
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     const path = String(url).split('?')[0];
     const method = init?.method ?? 'GET';
     if (method !== 'GET') sent.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : null });
     if (path === '/api/sched' && method === 'PATCH') rules = (JSON.parse(String(init!.body)) as { rules: unknown[] }).rules;
-    const sched = { rules, fallback: null, minute: 600, autoUpgrade: false, maxRun: 0, idleRun: 0 };
+    let made: unknown = null;
+    if (path === '/api/profiles' && method === 'POST') {
+      made = { ...(JSON.parse(String(init!.body)) as object), id: `p${profiles.length + 1}` };
+      profiles.push(made as Record<string, unknown>);
+    }
+    const sched = { rules, fallback: null, minute: 600, autoUpgrade: false, maxRun: 0, idleRun: 0, profiles };
     const body: unknown =
       path === '/api/workspace'
         ? { rev: 1, now: Date.now(), projects: [{ key: 'oss', name: 'oss', color: '#888', labels: [{ id: 1, name: 'bug', color: '#e5484d' }], boards: [{ key: 'main', name: 'main', path: 'oss/main', statuses: [] }] }], hosts: [], dispatches: [], sched }
@@ -56,7 +62,9 @@ function localServer() {
               ? sched
               : path === '/api/tokens'
                 ? []
-                : null;
+                : path === '/api/profiles'
+                  ? made
+                  : null;
     return new Response(body == null ? '' : JSON.stringify(body), { status: 200 });
   });
   return { fetch, sent };
@@ -87,7 +95,7 @@ describe('Agent tab 的侧栏目录', () => {
     act(() => useData.setState({ ws }));
     await show();
     expect([...host.querySelectorAll('.ag-nav-h')].map(h => h.textContent)).toEqual(['共用配置', '自动领取', '接入']);
-    expect(navItems()).toEqual(['模型供应商', 'MCP 服务器', 'skills', 'Git 凭据', '领取规则', '定时建卡', '跑多久停', '接入 agent', '访问令牌']);
+    expect(navItems()).toEqual(['模型供应商', 'MCP 服务器', 'skills', 'Git 凭据', '分工', '定时建卡', '跑多久停', '接入 agent', '访问令牌']);
     expect(GROUPS.flatMap(g => g.secs).length).toBe(9);
     expect(host.querySelector('.ag-nav .sn-item.on')?.textContent).toBe('模型供应商');
     expect(host.querySelector('.hp-b-head p')?.textContent).toBe('共用配置 · 模型供应商');
@@ -135,32 +143,41 @@ describe('没有机器时', () => {
     act(() => useUI.setState({ host: null }));
   });
 
-  it('领取规则：交给哪个 agent 列内置的 agent，规则能加能存，规则卡上写「没有机器上有它」', async () => {
+  it('分工：没有角色时先新建角色（内置的 agent 能选），再加规则交给它，规则能存', async () => {
     const { fetch, sent } = localServer();
     vi.stubGlobal('fetch', fetch);
     const ws = await api.workspace();
     act(() => useData.setState({ ws }));
     act(() => useAgentSec.setState({ sec: 'rules' }));
     await show();
-    const add = button('加一条规则')!;
-    expect(add.disabled).toBe(false);
-    await click(add);
-    // 下拉里是内置的 agent
-    expect(host.querySelector('.sd-form .sd-agent-pick')?.textContent).toBe('Claude Code');
-    // 条件选「没有标签」（不用挑标签），然后加上
-    await click(host.querySelector('.sd-form .sd-op'));
-    const ctx = useUI.getState().ctx;
-    expect(ctx?.kind).toBe('select');
-    act(() => (ctx as { pick: (v: string) => void }).pick('none'));
-    await click(button('加上'));
+    expect(button('加一条规则')!.disabled, '还没有角色：规则没地方交').toBe(true);
+    expect(host.querySelector('.sd-empty')?.textContent).toContain('还没有角色');
+    await click(button('新建角色'));
+    const form = document.querySelector('.pf-form')!;
+    // 谁来做：内置的 agent（服务端的说明），默认第一个
+    expect([...form.querySelectorAll('.pf-agent')].map(b => b.textContent)).toEqual(['Claude Code', 'Codex']);
+    expect(form.querySelector('.pf-agent.on')?.textContent).toBe('Claude Code');
+    const name = form.querySelector<HTMLInputElement>('input.input')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, '主力');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click([...form.querySelectorAll('button')].find(b => b.textContent === '新建'));
     await act(async () => {});
-    expect(sent).toContainEqual({ method: 'PATCH', path: '/api/sched', body: { rules: [{ op: 'none', labels: [], agent: 'claude' }] } });
-    // 存好之后服务端发回的工作区里有这条规则（这里直接换上新的工作区，不走 store 的刷新）
+    expect(sent).toContainEqual({ method: 'POST', path: '/api/profiles', body: { name: '主力', agent: 'claude', provider: '', model: '', effort: '', note: '', only: [] } });
+    // 存好之后服务端发回的工作区里有这个角色（这里直接换上新的工作区，不走 store 的刷新）
+    act(() => useData.setState({ ws: null }));
     const next = await api.workspace();
     act(() => useData.setState({ ws: next }));
     await act(async () => {});
-    expect(host.querySelector('.sd-card header b')?.textContent).toBe('Claude Code');
-    expect(host.querySelector('.sd-card .sd-sum')?.textContent).toBe('没有机器上有它');
+    expect(host.querySelector('.pfa-prof b')?.textContent).toBe('主力');
+    // 加一条规则：条件选「没有标签」（不用挑标签），交给主力
+    await click(button('加一条规则'));
+    const dlg = document.querySelector('.pf-rd')!;
+    await click([...dlg.querySelectorAll('.segmented button')].find(b => b.textContent === '没有标签'));
+    await click([...dlg.querySelectorAll('button')].find(b => b.textContent === '保存'));
+    await act(async () => {});
+    expect(sent).toContainEqual({ method: 'PATCH', path: '/api/sched', body: { rules: [{ op: 'none', labels: [], profile: 'p1' }] } });
   });
 });
 

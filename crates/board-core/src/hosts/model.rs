@@ -515,7 +515,7 @@ pub(super) fn merge_dir_checks(settings: &mut [HostDir], checks: &[HostDir]) {
     }
 }
 
-/// 定时领取的一条领取规则：卡片的标签满足条件就由这个 agent 做。标签按名称匹配，不区分大小写
+/// 定时领取的一条领取规则：卡片的标签满足条件就交给这个角色。标签按名称匹配，不区分大小写
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRule {
     /// `in` 带其中任一个 | `all` 全都带（多出的标签不管） | `not_in` 一个都不带 | `equal` 标签正好是这几个（顺序无关）
@@ -527,8 +527,13 @@ pub struct ClaimRule {
     /// 旧数据（单个标签 → agent）：读入时换成 `in [标签]`
     #[serde(default, skip_serializing)]
     pub label: Option<String>,
+    /// 交给哪个角色（角色标识，见 [`crate::profiles`]）
+    #[serde(default)]
+    pub profile: String,
+    /// 旧数据：交给哪个 agent（升级时换成同名角色，见 [`crate::profiles::migrate`]）。服务端发出去时是这个角色的 agent
+    #[serde(default)]
     pub agent: String,
-    /// 服务端发出去时才有：agent 在这台机器上找得到，规则生效
+    /// 服务端发出去时才有：至少有一台机器能跑这个角色，规则生效
     #[serde(default)]
     pub active: bool,
     /// 服务端发出去时才有：这台机器有目录的项目里都没有的标签（界面上标出来）
@@ -578,7 +583,11 @@ impl ClaimRule {
     }
     /// 存进数据库的样子
     pub(crate) fn stored(&self) -> serde_json::Value {
-        json!({ "op": self.op, "labels": self.labels, "agent": self.agent })
+        // 还没换成角色的旧规则（升级时把各台机器的规则并成全局的一份）留着 agent，接着由 profiles::migrate 换
+        if self.profile.is_empty() && !self.agent.is_empty() {
+            return json!({ "op": self.op, "labels": self.labels, "agent": self.agent });
+        }
+        json!({ "op": self.op, "labels": self.labels, "profile": self.profile })
     }
 }
 
@@ -623,12 +632,15 @@ pub struct HostInfo {
     /// 定时领取的领取规则（有顺序）；没有规则时定时领取不领卡、也不能开始一轮
     #[serde(default)]
     pub rules: Vec<ClaimRule>,
-    /// 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片
+    /// 旧版的兜底：现在一直是空的（规则都没命中的卡不自动领），留着给旧界面读
     #[serde(default)]
     pub fallback: Option<String>,
     /// 兜底的 agent 在这台机器上找得到
     #[serde(default)]
     pub fallback_active: bool,
+    /// 每个角色在这台机器上能不能跑（[`crate::profiles::fit`]），按角色的排列顺序
+    #[serde(default)]
+    pub fits: Vec<crate::profiles::ProfileFit>,
     /// 有规则、没设兜底时：这台机器有目录的白板上，可领取、没有匹配任何规则的卡片数
     #[serde(default)]
     pub unmatched: i64,

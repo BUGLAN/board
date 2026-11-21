@@ -238,6 +238,33 @@ pub(super) fn unpushed(dir: &Path) -> Option<String> {
 /// 做卡：定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）；
 /// 拆解「未整理」里的条目：不领取，先按粒度预检（偏小的不拆：能直接做的不建卡，只是原始需求的整理成一张），
 /// 拆完评论后直接结束（PRD §9.1）
+/// 按角色派发时这一个进程的设置（见 [`Host::role_run`]）
+pub(super) struct RoleRun {
+    /// 模型、强度：空 = 不切
+    pub(super) model: String,
+    pub(super) effort: String,
+    /// `providers/set` 的参数文件（Claude Code、Codex 用供应商时）
+    pub(super) provider_file: Option<PathBuf>,
+    /// dsh 用供应商时：这次的补丁文件和要接上的几条
+    pub(super) dsh_patch: Option<(PathBuf, String)>,
+    /// dsh 用供应商时的 key（放进环境变量）
+    pub(super) dsh_key: Option<String>,
+}
+
+/// 写只有自己能读的文件（里面有 key）
+fn write_secret(path: &Path, text: &str) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(path);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    use std::io::Write as _;
+    o.open(path)?.write_all(text.as_bytes())
+}
+
 pub(super) fn dispatch_prompt(d: &Dispatch, project: &str, board: &str, name: &str, host: &str, ready: Option<&str>) -> String {
     if d.kind == board_core::hosts::KIND_SPLIT {
         let card = d.card;
@@ -327,16 +354,24 @@ impl Host<'_> {
     /// 启动 `board acp` 的命令（acp.rs）：在 check 的启动环境里、dir 目录里跑这个 agent 的 ACP 入口，提示词在 prompt_file。
     /// 派发和自检都用它；标准输出、错误和 BOARD_* 环境变量由调用方接上。extra_turns：这一轮结束时名字还持有卡片，
     /// 最多再续几轮（0 = 不续）
-    pub(super) fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path, extra_turns: u32) -> std::result::Result<Command, String> {
+    pub(super) fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path, extra_turns: u32, role: Option<&RoleRun>) -> std::result::Result<Command, String> {
         if let Some(since) = spec.builtin.map(|b| b.acp_since).filter(|s| !s.is_empty()) {
             if older_than(&check.version, since) {
                 return Err(format!("{} 的版本太旧（{}）：它的 ACP 从 {since} 起才有，先升级", spec.name, check.version.trim()));
             }
         }
-        // dsh 的 acp profile 也挂着 goal：带一份关掉自动续轮的补丁，见 DSH_PATCH
-        let patch = self.run.join("dsh-acp.patch.yml");
+        // dsh 的 acp profile 也挂着 goal：带一份关掉自动续轮的补丁，见 DSH_PATCH。按角色用供应商的派发另写一份，
+        // 后面接上这次的路由（只对这一个进程）
+        let patch = match role.and_then(|r| r.dsh_patch.as_ref()) {
+            Some((file, _)) => file.clone(),
+            None => self.run.join("dsh-acp.patch.yml"),
+        };
         if spec.acp.iter().any(|a| a.contains("{patch}")) {
             write_dsh_patch(&patch).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
+            if let Some((_, extra)) = role.and_then(|r| r.dsh_patch.as_ref()) {
+                let base = std::fs::read_to_string(&patch).unwrap_or_default();
+                std::fs::write(&patch, format!("{base}\n{extra}")).map_err(|e| format!("无法写 {}：{e}", patch.display()))?;
+            }
         }
         let (prog, args) = spec.entry(check, &patch.display().to_string())?;
         let mut c = Command::new(&self.exe);
@@ -344,9 +379,25 @@ impl Host<'_> {
         if !spec.acp_mode.is_empty() {
             c.arg("--mode").arg(&spec.acp_mode);
         }
-        // agent 配置文件里现在的思考强度：会话配置里有 reasoning_effort 这一项时切过去（dsh 的 ACP 只能这样定强度）
-        if let Some((_, effort)) = self.agent_now.get(&spec.id).filter(|(_, e)| !e.trim().is_empty()) {
-            c.arg("--set").arg(format!("reasoning_effort={}", effort.trim()));
+        match role {
+            // 按角色派发：模型、强度按 ACP 配置项的类别切；用供应商时先 providers/set（文件里有 key，board acp 读完就删）
+            Some(r) => {
+                if !r.model.is_empty() {
+                    c.arg("--set").arg(format!("@model={}", r.model));
+                }
+                if !r.effort.is_empty() {
+                    c.arg("--set").arg(format!("@thought_level={}", r.effort));
+                }
+                if let Some(f) = &r.provider_file {
+                    c.arg("--provider-file").arg(f);
+                }
+            }
+            // agent 配置文件里现在的思考强度：会话配置里有 reasoning_effort 这一项时切过去（dsh 的 ACP 只能这样定强度）
+            None => {
+                if let Some((_, effort)) = self.agent_now.get(&spec.id).filter(|(_, e)| !e.trim().is_empty()) {
+                    c.arg("--set").arg(format!("reasoning_effort={}", effort.trim()));
+                }
+            }
         }
         // 结束这一轮就是结束会话：卡片还在手里时续一轮（#454）
         if extra_turns > 0 {
@@ -356,9 +407,45 @@ impl Host<'_> {
         for (k, v) in launch_env(spec.acp_vars(check), &prog, env.wsl().is_some(), &self.host_dir().join("npm-cache")) {
             c.env(k, v);
         }
+        // dsh 用角色的供应商：key 只给这一个进程（补丁里写的是环境变量名）
+        if let Some(key) = role.and_then(|r| r.dsh_key.as_ref()) {
+            c.env(crate::providersync::ROLE_KEY_ENV, key);
+        }
         // 在 Claude Code 的会话里运行 board host 时，别让 agent 以为自己是嵌套会话
         c.env_remove("CLAUDECODE");
         Ok(c)
+    }
+
+    /// 按角色派发（`d.profile` 不为空）：这一个进程用的模型、强度、供应商。角色用供应商时现取一次供应商的完整内容
+    /// （含 key，只给这台机器的令牌），Claude Code、Codex 写进 0600 的文件交给 board acp，dsh 写这次的补丁
+    pub(super) fn role_run(&self, d: &Dispatch) -> std::result::Result<Option<RoleRun>, String> {
+        if d.profile.is_empty() {
+            return Ok(None);
+        }
+        let model = d.model.clone().unwrap_or_default();
+        let effort = d.effort.clone().unwrap_or_default();
+        let mut out = RoleRun { model: model.clone(), effort: effort.clone(), provider_file: None, dsh_patch: None, dsh_key: None };
+        if d.provider.is_empty() {
+            return Ok(Some(out));
+        }
+        let lib: crate::providersync::Lib = self
+            .rm()
+            .get(&format!("/api/hosts/{}/providers", self.name), &[])
+            .map_err(|e| format!("取不到角色「{}」用的供应商「{}」：{}", d.profile_name, d.provider, e.message))?;
+        let p = lib.providers.iter().find(|p| p.name == d.provider).ok_or_else(|| format!("共用配置里已经没有供应商「{}」了：改一下角色「{}」", d.provider, d.profile_name))?;
+        match crate::providersync::route_for(&d.agent, p, &model, &effort)? {
+            crate::providersync::Route::Acp(v) => {
+                let f = self.run.join(format!("{}.provider.json", d.id));
+                let _ = std::fs::create_dir_all(&self.run);
+                write_secret(&f, &v.to_string()).map_err(|e| format!("无法写 {}：{e}", f.display()))?;
+                out.provider_file = Some(f);
+            }
+            crate::providersync::Route::Dsh { patch, key } => {
+                out.dsh_patch = Some((self.run.join(format!("{}.dsh-patch.yml", d.id)), patch));
+                out.dsh_key = Some(key);
+            }
+        }
+        Ok(Some(out))
     }
 
     /// 机器的兜底设置：单次最长运行、没输出多久算卡住（分钟，0 = 不限）。每次从服务端的最新设置算，
@@ -795,15 +882,23 @@ impl Host<'_> {
         let run_dir = code.map_or_else(|| dir.clone(), |c| c.cwd.clone());
         let name = d.name.clone().unwrap_or_default();
         let (project, board) = d.board.split_once('/').unwrap_or((&d.board, ""));
-        let prompt = dispatch_prompt(d, project, board, &name, &self.name, code.map(|c| c.branch.as_str()));
+        let mut prompt = dispatch_prompt(d, project, board, &name, &self.name, code.map(|c| c.branch.as_str()));
+        // 角色的附加说明接在提示词后面
+        if !d.note.trim().is_empty() {
+            prompt += &format!("\n\n角色「{}」的附加说明：{}", d.profile_name, d.note.trim());
+        }
+        let role = self.role_run(d)?;
         // 提示词放进文件交给 board acp（作为 session/prompt 发出去），不放进命令行
         let prompt_file = self.run.join(format!("{}.prompt", d.id));
         let _ = std::fs::create_dir_all(&self.run);
         std::fs::write(&prompt_file, &prompt).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
         // 拆解不领卡：不续轮；做卡的这一轮结束时卡片还在手里就续（#454）
         let turns = if d.kind == board_core::hosts::KIND_SPLIT { 0 } else { crate::acp::EXTRA_TURNS };
-        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns).inspect_err(|_| {
+        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns, role.as_ref()).inspect_err(|_| {
             let _ = std::fs::remove_file(&prompt_file);
+            if let Some(f) = role.as_ref().and_then(|r| r.provider_file.as_ref()) {
+                let _ = std::fs::remove_file(f);
+            }
         })?;
         let log = self.logs.join(format!("{}.log", d.id));
         let (out, err) = create_log(&log).map_err(|e| format!("无法创建日志 {}：{e}", log.display()))?;

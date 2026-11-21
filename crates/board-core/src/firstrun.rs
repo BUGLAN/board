@@ -7,7 +7,7 @@
 //! 2. `agent`：其中至少一台上有找得到命令、看得到 board-skills、最近一次自检通过的 agent（没自检过算「还没确认」）
 //! 3. `repo`：这个项目设了仓库地址（没设也能派发，只是机器上是空目录、agent 推不了代码）
 //! 4. `push`：其中至少一台对这个项目的目录自检「能推送」（同上，没自检过算「还没确认」）
-//! 5. `auto`：有领取规则或兜底，至少一台能接的机器是「自动领」，白板参与自动领取。只影响自动领取，不影响手动派发
+//! 5. `auto`：有领取规则，至少一台能接的机器是「自动领」，白板参与自动领取。只影响自动领取，不影响手动派发
 //!
 //! 自检不自动做（会消耗 agent 的额度）：没自检过的项给出「自检」这个去处，人点了才做。
 //! 这块白板有卡被机器交审过（`done`）之后，界面不再提示。
@@ -54,7 +54,7 @@ impl R<'_> {
     pub fn checklist(&self, now: i64) -> Result<Vec<Checklist>> {
         let hosts = self.host_rows()?;
         let sched = self.sched(now)?;
-        let rules = !sched.rules.is_empty() || sched.fallback.is_some();
+        let rules = !sched.rules.is_empty();
         let mut st = self.conn.prepare(
             "SELECT b.id, b.project, b.key, b.auto, p.repo,
                     EXISTS (SELECT 1 FROM dispatches d WHERE d.board = b.id AND d.result = 'review')
@@ -201,10 +201,10 @@ impl R<'_> {
             }
         });
 
-        // 5. 自动领取：规则或兜底、自动领的机器、白板参与
+        // 5. 自动领取：规则、自动领的机器、白板参与
         let mut miss: Vec<(&str, &str)> = vec![];
         if !rules {
-            miss.push(("还没有领取规则或兜底", "rules"));
+            miss.push(("还没有领取规则", "rules"));
         }
         if !fits.iter().any(|h| h.auto) {
             miss.push(("能接的机器都不是「自动领」", "accept"));

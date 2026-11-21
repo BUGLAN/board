@@ -538,6 +538,68 @@ fn apply_dsh(patch: &Path, env_file: &Path, p: &Provider, endpoint: &providers::
     Ok(changed)
 }
 
+/* ------------------------------ 按角色派发：只对这一个进程 ------------------------------ */
+
+/// dsh 按角色派发时，供应商的 key 放在这个环境变量里（只给这一个进程）
+pub const ROLE_KEY_ENV: &str = "BOARD_ROLE_API_KEY";
+
+/// 按角色派发时给这一个 agent 进程换上供应商的办法（不改 agent 的全局配置文件）
+#[derive(Debug, Clone, PartialEq)]
+pub enum Route {
+    /// ACP `providers/set` 的参数（Claude Code、Codex）：含 key，board host 写进 0600 的文件交给 `board acp`，读完就删
+    Acp(Value),
+    /// dsh：接在这次派发的 `--patch` 后面的几条（`llm-pi-ai` 里加一条路由，`acp` 用它和角色的模型），key 放在
+    /// [`ROLE_KEY_ENV`] 里
+    Dsh { patch: String, key: String },
+}
+
+/// 角色用的供应商在这个 agent 上怎么换：找这个 agent 认的接口；配置文件里新加的 agent、供应商没有它认的接口时报错
+pub fn route_for(agent: &str, p: &Provider, model: &str, effort: &str) -> Result<Route, String> {
+    let e = p.endpoint_for(agent, "").ok_or_else(|| format!("供应商「{}」没有 {} 认的接口", p.name, providers::agent_name(agent)))?;
+    let url = providers::normalize_url(&e.interface, &e.url);
+    let key = p.api_key.clone().unwrap_or_default();
+    let bearer = json!({ "Authorization": format!("Bearer {key}") });
+    match agent {
+        // claude-agent-acp：providerId main、apiType anthropic；地址不带 /v1（Claude Code 自己接 /v1/messages）
+        "claude" => Ok(Route::Acp(json!({ "providerId": "main", "apiType": "anthropic", "baseUrl": url, "headers": bearer }))),
+        // codex-acp：providerId openai、apiType openai（wire_api = responses）
+        "codex" => Ok(Route::Acp(json!({ "providerId": "openai", "apiType": "openai", "baseUrl": url, "headers": bearer }))),
+        "dsh" => {
+            let mut lines: Vec<String> = vec![
+                "# Board：这次派发的角色用的供应商（只对这一个进程）".into(),
+                "- id: llm-pi-ai".into(),
+                "  name: \"@deepseek-ai/dsh-llm-pi-ai\"".into(),
+                "  config:".into(),
+                "    providers:".into(),
+                "      board-role:".into(),
+                format!("        displayName: {}", yaml_str(&p.name)),
+                format!("        apiKeyEnv: {ROLE_KEY_ENV}"),
+                format!("        api: {}", pi_ai_api(&e.interface)),
+                format!("        baseURL: {}", yaml_str(&url)),
+                "        models:".into(),
+                format!("          - id: {}", yaml_str(model)),
+            ];
+            let ok = providers::writable_efforts("dsh", p, model);
+            if ok.iter().any(|e| e != "off") {
+                lines.push("            reasoningEfforts:".into());
+                for e in &ok {
+                    lines.push(if e == "off" { "              \"off\":".into() } else { format!("              {}: {}", yaml_str(e), yaml_str(e)) });
+                }
+            }
+            lines.push("        streamIdleTimeoutMs: 600000".into());
+            lines.push("- id: acp".into());
+            lines.push("  config:".into());
+            lines.push("    provider: board-role".into());
+            lines.push(format!("    model: {}", yaml_str(model)));
+            if !effort.is_empty() {
+                lines.push(format!("    reasoningEffort: {}", yaml_str(effort)));
+            }
+            Ok(Route::Dsh { patch: lines.join("\n") + "\n", key })
+        }
+        _ => Err(format!("{} 是配置文件里加的 agent，不能按角色换供应商", providers::agent_name(agent))),
+    }
+}
+
 /* ------------------------------ 入口 ------------------------------ */
 
 fn apply(agent: &str, files: &Files, p: &Provider, endpoint: &providers::ProviderEndpoint, model: &str, effort: &str, key: &str) -> Result<bool, String> {
@@ -690,5 +752,22 @@ mod tests {
     fn unsupported_agents_report_off_or_unsupported() {
         let out = sync(&[], &[], &[("dsh".into(), "own".into(), "WSL 里的 agent 还不能改写配置文件".into()), ("codex".into(), "off".into(), String::new())]);
         assert_eq!((out.states[0].state.as_str(), out.states[1].state.as_str()), ("unsupported", "off"));
+    }
+
+    /// 按角色派发：Claude Code、Codex 走 ACP providers/set（地址规范化、key 在请求头），dsh 写这次的补丁、key 在环境变量
+    #[test]
+    fn role_routes_for_each_agent() {
+        let p = provider("relay");
+        let Route::Acp(c) = route_for("claude", &p, "model-a", "").unwrap() else { panic!() };
+        assert_eq!(c, json!({ "providerId": "main", "apiType": "anthropic", "baseUrl": "https://api.example.com", "headers": { "Authorization": "Bearer sk-secret-1234" } }));
+        let Route::Acp(x) = route_for("codex", &p, "model-a", "").unwrap() else { panic!() };
+        assert_eq!((x["providerId"].as_str(), x["apiType"].as_str(), x["baseUrl"].as_str()), (Some("openai"), Some("openai"), Some("https://api.example.com/v1")));
+        let Route::Dsh { patch, key } = route_for("dsh", &p, "model-b", "high").unwrap() else { panic!() };
+        assert_eq!(key, "sk-secret-1234");
+        assert!(patch.contains("apiKeyEnv: BOARD_ROLE_API_KEY") && patch.contains("- id: \"model-b\"") && patch.contains("reasoningEffort: \"high\""), "{patch}");
+        assert!(!patch.contains("sk-secret"), "key 不进补丁文件");
+        assert!(route_for("mycli", &p, "m", "").is_err());
+        let only_chat = Provider { endpoints: vec![ProviderEndpoint { interface: "openai-chat".into(), url: "https://x/v1".into() }], ..provider("chat") };
+        assert!(route_for("claude", &only_chat, "m", "").unwrap_err().contains("没有 Claude Code 认的接口"));
     }
 }

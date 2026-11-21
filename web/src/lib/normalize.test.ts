@@ -18,7 +18,7 @@ const full = (): HostInfo =>
     workspace: { path: '~/ws', overrides: [{ board: 'oss', path: '~/oss' }] },
     dirs: [{ board: 'oss/main', path: '~/oss', status: 'ok' }],
     max: 2,
-    rules: [{ op: 'in', labels: ['bug'], agent: 'claude', missing: ['bug'] }],
+    rules: [{ op: 'in', labels: ['bug'], profile: 'p1', agent: 'claude', missing: ['bug'] }],
     paused: false,
     agent: 'claude',
     cronOn: false,

@@ -9,6 +9,7 @@ import { renderKey, useCurrent, useData, useOnline } from '../store/data';
 import { AgentAvatar, LabelChips, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
 import { CardDispatchLine } from './hosts/Dispatch';
+import { CardRoute } from './profiles/Next';
 import { agentMark, cardDispatch } from '../lib/hosts';
 import { useBoardSel } from '../lib/boardSelect';
 import { CardCheck } from './BoardSelect';
@@ -188,6 +189,7 @@ export const CardView = memo(function CardView({
             </div>
           )}
           {!doing && <CardDispatchLine card={c.id} />}
+          {!doing && <CardRoute card={c.id} />}
           {doing ? (
             <div className="card-claim">
               {/* enter：领到卡、换了持有者时，logo 用签名动作的进场版出来 */}

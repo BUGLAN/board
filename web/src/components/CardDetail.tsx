@@ -21,6 +21,7 @@ import { ActorAvatar, AgentAvatar, Avatar, DescTabs, LabelChip, Markdown, Tip, u
 import { RunPill } from './Card';
 import { Skeleton, SkeletonText } from './Skeleton';
 import { DispatchHistory, DispatchNote } from './hosts/Dispatch';
+import { CardNext } from './profiles/Next';
 import { TaskBody } from './TaskBody';
 import { Icon, type IconName } from './Icon';
 
@@ -362,6 +363,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <CardLabels card={c} saving={saving} />
             <SplitLinks card={c} />
           </section>
+          <CardNext card={c.id} />
           <DispatchNote board={useData.getState().path} card={c.id} />
           <DispatchHistory board={useData.getState().path} card={c.id} />
           <ClaimPart card={c} now={now} busy={saving} />

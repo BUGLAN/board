@@ -428,40 +428,6 @@ describe('boardAutoPatch（白板参不参与自动领取）', () => {
   });
 });
 
-describe('schedPickPatch（由这些机器做）', () => {
-  const ws = () =>
-    workspace({
-      sched: {
-        rules: [
-          { op: 'in', labels: ['bug'], agent: 'claude' },
-          { op: 'in', labels: ['ui'], agent: 'dsh' },
-        ],
-        minute: 0,
-        picks: [{ agent: 'dsh', hosts: [1], unset: false }],
-      },
-    } as Partial<Workspace>);
-  it('只改这个 agent 的 picks，别的 agent 和规则不动；重复执行结果相同', () => {
-    const orig = ws();
-    const w = twice(D.schedPickPatch('claude', [2]).ws!, orig);
-    expect(w.sched!.rules).toBe(orig.sched!.rules);
-    expect(w.sched!.picks).toEqual([
-      { agent: 'dsh', hosts: [1], unset: false },
-      { agent: 'claude', hosts: [2], none: false, unset: false },
-    ]);
-    const off = twice(D.schedPickPatch('claude', []).ws!, w);
-    expect(off.sched!.picks!.find(p => p.agent === 'claude')).toEqual({ agent: 'claude', hosts: [], none: true, unset: false });
-    // 回到「全都参与」
-    const a = twice(D.schedPickPatch('claude', [1, 2], true).ws!, off);
-    expect(a.sched!.picks!.find(p => p.agent === 'claude')).toEqual({ agent: 'claude', hosts: [1, 2], none: false, unset: true });
-  });
-  it('只有兜底的 agent 也能改；没有 sched 时原样返回', () => {
-    const orig = ws();
-    expect(D.schedPickPatch('mine', [1]).ws!(orig).sched!.picks!.find(p => p.agent === 'mine')).toEqual({ agent: 'mine', hosts: [1], none: false, unset: false });
-    const bare = workspace();
-    expect(D.schedPickPatch('claude', [1]).ws!(bare)).toBe(bare);
-  });
-});
-
 describe('draftCard（新建）', () => {
   const draft = (title = '新卡片') => D.draftCard({ title, body: '', labels: [], column: 'todo' });
   const start = () => D.useData.setState({ board: board() });
@@ -673,5 +639,34 @@ describe('快捷提示词的补丁（#572）', () => {
     expect(D.useData.getState().prompts!.map(p => p.id)).toEqual(['p-2', 'p-1']);
     expect(D.busy(D.PROMPTS_BUSY)).toBe(false);
     vi.restoreAllMocks();
+  });
+});
+
+describe('角色的补丁（分工）', () => {
+  const role = (id: string, name: string) => ({ id, name, agent: 'claude', provider: '', model: '', effort: '', note: '', only: [] });
+  const withRoles = (): Workspace => ({
+    ...workspace(),
+    sched: { minute: 0, rules: [{ op: 'in', labels: ['bug'], profile: 'p1' }, { op: 'none', labels: [], profile: 'p2' }], profiles: [role('p1', '修复'), role('p2', '批量')] },
+  });
+
+  it('改一个角色：按标识换掉，别的不动；带上保存中的 key', () => {
+    const p = D.editProfilePatch({ ...role('p1', '修 bug'), model: 'model-a' });
+    const w = twice(p.ws!, withRoles());
+    expect(w.sched!.profiles!.map(x => [x.name, x.model])).toEqual([['修 bug', 'model-a'], ['批量', '']]);
+    expect(p.keys).toEqual([D.profileKey('p1')]);
+  });
+
+  it('删掉一个角色：交给它的规则一起拿掉', () => {
+    const w = twice(D.deleteProfilePatch('p1').ws!, withRoles());
+    expect(w.sched!.profiles!.map(x => x.id)).toEqual(['p2']);
+    expect(w.sched!.rules.map(r => r.profile)).toEqual(['p2']);
+  });
+
+  it('角色不在了（别处删掉了）、旧服务端没有角色：原样返回', () => {
+    const w = withRoles();
+    expect(D.editProfilePatch(role('p9', 'x')).ws!(w)).toBe(w);
+    expect(D.deleteProfilePatch('p9').ws!(w)).toBe(w);
+    const bare = workspace();
+    expect(D.deleteProfilePatch('p1').ws!(bare)).toBe(bare);
   });
 });

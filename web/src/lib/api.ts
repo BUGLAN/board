@@ -8,7 +8,7 @@ import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
 import { readPrompts, type Prompt } from './prompts';
 import { normDispatches, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
-import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode, HostCopy } from './types';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, RunMode, HostCopy, Profile } from './types';
 
 declare global {
   interface Window {
@@ -299,25 +299,24 @@ export const api = {
   pauseAllHosts: (paused: boolean) => req<HostInfo[]>('POST', '/api/hosts/pause-all', { paused }),
   /** 全部停止：停止所有正在跑的派发，同时全部暂停 */
   stopAllHosts: () => req<HostInfo[]>('POST', '/api/hosts/stop-all'),
-  /** 改全局的领取规则（整个列表替换）和兜底（空字符串 = 不领）：所有机器共用。
-      另带 `agent` + `add` / `remove`（勾上 / 取消的机器 id）或 `all`（回到所有装了它的机器都参与）：改这个 agent「由这些机器做」 */
+  /** 改全局的领取规则（整个列表替换，每条交给一个角色）、自动升级、跑多久停：所有机器共用 */
   updateSched: (patch: {
-    rules?: Pick<ClaimRule, 'op' | 'labels' | 'agent'>[];
+    rules?: Pick<ClaimRule, 'op' | 'labels' | 'profile'>[];
     fallback?: string;
     autoUpgrade?: boolean;
     maxRun?: number;
     idleRun?: number;
-    agent?: string;
-    add?: number[];
-    remove?: number[];
-    all?: boolean;
   }) => req<Sched>('PATCH', '/api/sched', patch),
   /** 这台机器最近 50 个结束的派发 */
   hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`).then(normDispatches),
   /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */
-  dispatch: (board: string, card: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent }),
-  /** 改派一条还在排队的派发：换到 host 这台机器，host 是空的 = 交给任意机器 */
-  moveDispatch: (id: number, host: string, agent?: string) => req<Dispatch>('POST', '/api/dispatches/move', { id, host, agent }),
+  dispatch: (board: string, card: number, host: string, agent?: string, profile?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent, profile }),
+  /** 改派一条还在排队的派发：换到 host 这台机器，host 是空的 = 交给任意机器；profile 换成这个角色（不带时沿用原来的） */
+  moveDispatch: (id: number, host: string, agent?: string, profile?: string) => req<Dispatch>('POST', '/api/dispatches/move', { id, host, agent, profile }),
+  /** 新建（不带 id）或修改一个角色 */
+  putProfile: (p: Omit<Profile, 'id'> & { id?: string }) => req<Profile>('POST', '/api/profiles', p),
+  /** 删掉一个角色：交给它的规则一起删，返回删掉了几条 */
+  deleteProfile: (id: string) => req<{ ok: boolean; rules: number }>('DELETE', `/api/profiles/${q(id)}`),
   /** 取消排队中的派发，或停止正在跑的派发 */
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
   /** 一张卡片的全部派发，新的在前（卡片详情「派发记录」） */

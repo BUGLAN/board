@@ -1,0 +1,337 @@
+
+
+/* ---------- 共用零件 ---------- */
+.pf-dim { font-size: 12px; font-style: normal; color: var(--text-3); }
+.pf-fake { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 500; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.pf-note { margin: 6px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--text-2); }
+
+.pf-mark { flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); font-size: 12px; font-weight: 700; color: var(--text-3); }
+.pf-mark .hp-logo, .pf-mark > b { width: 18px; height: 18px; }
+.pf-mark.sm { width: 20px; height: 20px; border-radius: 6px; font-size: 10.5px; }
+.pf-mark.sm .hp-logo, .pf-mark.sm > b { width: 13px; height: 13px; }
+.pf-mark.lg { width: 40px; height: 40px; border-radius: 12px; font-size: 15px; }
+.pf-mark.lg .hp-logo, .pf-mark.lg > b { width: 26px; height: 26px; }
+.pf-mark.me { color: var(--c-review); background: color-mix(in srgb, var(--c-review) 12%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-review) 28%, transparent); border-radius: 50%; }
+
+.pf-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 3px; border-radius: 999px; font-size: 12.5px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+.pf-chip b { font-weight: 600; color: var(--text); }
+.pf-chip small { font-size: 11.5px; color: var(--text-3); }
+.pf-chip.on { box-shadow: inset 0 0 0 1.5px var(--text-2); }
+
+/* 一台机器对一个角色的状态 */
+.pf-hw { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 10px 2px 8px; border-radius: 999px; font-size: 12px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+.pf-hw > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
+.pf-hw b { font-weight: 600; color: var(--text); }
+.pf-hw small { font-size: 11.5px; color: var(--text-3); white-space: normal; text-align: left; }
+.pf-hw.t-ok > i { background: var(--ok); }
+.pf-hw.t-busy > i { background: var(--warn); }
+.pf-hw.t-off > i { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.pf-hw.t-bad { background: color-mix(in srgb, var(--danger) 6%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 22%, transparent); }
+.pf-hw.t-bad > i { background: var(--danger); }
+.pf-hw.t-bad small { color: var(--danger-text); }
+.pf-hw.t-unpicked { opacity: .55; box-shadow: inset 0 0 0 1px var(--line-2); background: none; }
+.pf-hw.picked { box-shadow: inset 0 0 0 1.5px var(--ok); background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
+button.pf-hw:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
+
+.pf-stats { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-3); }
+.pf-stats b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.pf-stats .bad b { color: var(--danger-text); }
+
+.pf-dl { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px 14px; margin: 12px 0 0; }
+.pf-dl dt { padding-top: 4px; font-size: 12px; color: var(--text-3); }
+.pf-dl dd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; min-width: 0; }
+.pf-rchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 4px; border-radius: 999px; font-size: 12.5px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.pf-rchip b { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 999px; font-size: 11px; color: var(--text-2); background: var(--surface-3); }
+
+.pf-now { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; }
+.pf-run, .pf-wait { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 5px 10px; border-radius: var(--r-sm); font-size: 12.5px; text-align: left; color: var(--text-2); background: var(--surface-2); }
+.pf-run > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--ok)); align-self: center; animation: pf-pulse 1.6s var(--ease-in-out) infinite; }
+.pf-wait:hover { background: var(--surface-3); }
+.pf-wait b { font-weight: 600; color: var(--text); }
+.pf-wait small { margin-left: auto; flex: none; max-width: 55%; font-size: 11.5px; text-align: right; }
+.pf-wait.t-ok small { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.pf-wait.t-wait small { color: var(--warn-text); }
+.pf-wait.t-me small { color: var(--c-review); }
+.pf-wait.t-none small { color: var(--text-3); }
+@keyframes pf-pulse { 50% { opacity: .35; } }
+
+/* 机器的会话位 */
+.pf-slots { display: inline-flex; gap: 3px; }
+.pf-slots i { width: 10px; height: 10px; border-radius: 3px; box-shadow: inset 0 0 0 1.5px var(--line-3); }
+.pf-slots i.on { background: var(--c); box-shadow: none; }
+.pf-slots.off i { background: repeating-linear-gradient(-45deg, var(--line-2) 0 2px, transparent 2px 4px); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+/* 改一条规则 */
+.pf-re { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--brand), var(--shadow-2); }
+.pf-re-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pf-re-row:first-child { align-items: flex-start; }
+.pf-re .input.sel { flex: none; height: 28px; padding: 0 9px; font-size: 12.5px; border-radius: 8px; }
+.pf-re .pf-re-op { min-width: 84px; }
+.pf-re .pf-re-to { min-width: 96px; }
+.pf-re .hp-lset { flex: 1; min-width: 0; min-height: 28px; gap: 4px; }
+.pf-re .hp-lset .lb { height: 22px; padding: 0 7px; font-size: 11.5px; }
+.pf-re .lb-add { height: 22px; }
+.pf-re-none { font-size: 12px; line-height: 28px; color: var(--text-3); }
+.pf-re-k { flex: none; font-size: 12px; color: var(--text-3); }
+.pf-re-ls, .pfc-tl { display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 200px; }
+.pf-re-l { height: 24px; padding: 0 9px; border-radius: 999px; font-size: 12px; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pf-re-l.on { color: var(--text); background: var(--brand-soft); box-shadow: inset 0 0 0 1.5px var(--brand); font-weight: 600; }
+.pf-re-acts { display: flex; gap: 6px; margin-left: auto; }
+.pf-ra { display: inline-flex; gap: 0; margin-left: auto; opacity: 0; transition: opacity var(--dur-1); }
+*:hover > .pf-ra, *:focus-within > .pf-ra { opacity: 1; }
+.pf-fb { width: 128px; }
+
+/* ---------- 角色表单 ---------- */
+.dialog.pf-form { width: min(560px, calc(100vw - 32px)); text-align: left; padding: 22px 22px 18px; max-height: calc(100vh - 48px); overflow-y: auto; }
+.pf-form h3 { margin: 0 0 4px; }
+.pf-form-sub { margin: 0 0 14px; font-size: 12.5px; color: var(--text-3); line-height: 1.55; }
+.pf-f { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.pf-f > span, .pf-f2 label > span { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.pf-f textarea { resize: vertical; min-height: 54px; padding: 8px 10px; line-height: 1.5; }
+.pf-f2 { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 10px; margin-bottom: 4px; }
+.pf-f2 label { display: flex; flex-direction: column; gap: 6px; }
+.pf-agents { display: flex; flex-wrap: wrap; gap: 6px; }
+.pf-agent { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px 0 8px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pf-agent .hp-logo, .pf-agent > b { width: 18px; height: 18px; }
+.pf-agent.on { color: var(--text); font-weight: 600; background: var(--surface-2); box-shadow: inset 0 0 0 1.5px var(--text-2); }
+.pf-hint { margin: 0 0 12px; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+.pf-only { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pf-only-h { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pf-only-h svg { width: 12px; height: 12px; }
+.pf-only-h.on { color: var(--text); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-3); }
+.pf-only-h:disabled { opacity: .5; cursor: not-allowed; }
+.pf-only small { font-size: 11.5px; color: var(--text-3); }
+.pf-form-acts { display: flex; align-items: center; }
+
+/* ---------- A 流向图 ---------- */
+.pfa.sc, .pfb.sc, .pfc.sc { max-width: 1120px; }
+.pfa-map { position: relative; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, .95fr); column-gap: 72px; align-items: start; padding: 14px 16px 16px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.pfa-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.pfa-lines path { fill: none; stroke: var(--c); stroke-width: 1.6; transition: opacity var(--dur-2), stroke-width var(--dur-2); }
+.pfa-lines path.dash { stroke-dasharray: 4 4; }
+.pfa-lines path.dim { opacity: .16; }
+.pfa-lines path.lit { opacity: .95; stroke-width: 2.2; }
+.pfa-col { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pfa-h { display: flex; align-items: baseline; gap: 8px; height: 22px; font-size: 12px; font-weight: 700; color: var(--text-2); }
+.pfa-h small { font-weight: 400; color: var(--text-3); }
+.pfa-rule { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px 4px 8px; border-radius: var(--r-sm); font-size: 12.5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); transition: box-shadow var(--dur-1); }
+.pfa-rule.hover { box-shadow: inset 0 0 0 1.5px var(--line-3), var(--shadow-1); }
+.pfa-rule { position: relative; }
+.pfa-rule.fb { border: 1px dashed var(--line-3); box-shadow: none; background: var(--surface-2); }
+.pfa-rule .pf-ra { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); padding: 2px; border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-2), inset 0 0 0 1px var(--line-2); }
+.pfa-no { flex: none; display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--text-2); background: var(--surface-3); }
+.pfa-rt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pfa-n { flex: none; font-size: 11px; color: var(--text-3); }
+.pfa-prof { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 6px 10px 6px 8px; border-radius: var(--r-sm); text-align: left; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); transition: box-shadow var(--dur-1), background-color var(--dur-1); }
+.pfa-prof:hover, .pfa-prof.lit { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 60%, var(--line-2)); }
+.pfa-prof.on { background: color-mix(in srgb, var(--c) 7%, var(--surface)); box-shadow: inset 0 0 0 2px var(--c), var(--shadow-1); }
+.pfa-prof.none { min-height: 40px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.pfa-prof.none.lit { box-shadow: inset 0 0 0 1.5px var(--line-3); }
+.pfa-pt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.pfa-pt b { font-size: 13.5px; font-weight: 600; }
+.pfa-pt small { font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pfa-load { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.pfa-load em { font-size: 11px; font-style: normal; color: color-mix(in oklab, var(--ok), var(--ink)); white-space: nowrap; }
+.pfa-load em.wait { color: var(--warn-text); }
+.pfa-host { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 10px; border-radius: var(--r-sm); font-size: 12.5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pfa-host b { font-weight: 600; }
+.pfa-host small { margin-left: auto; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.pfa-host.off { background: var(--surface-2); color: var(--text-3); }
+.pfa-host.me { border: 1px dashed var(--line-3); box-shadow: none; background: none; }
+
+.pfa-detail { margin-top: 14px; padding: 14px 16px 16px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--c); }
+.pfa-detail header, .pfb-card header { display: flex; align-items: center; gap: 12px; }
+.pfa-detail header > div, .pfb-t { flex: 1; min-width: 0; }
+.pfa-detail h3, .pfb-card h3 { margin: 0; font-family: var(--f-display); font-size: 16px; font-weight: 700; }
+.pfa-detail header p, .pfb-card header p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-2); }
+.pfb-now em, .pfa-load em { font-style: normal; }
+.t-ok { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.t-wait { color: var(--warn-text); }
+.t-me { color: var(--c-review); }
+.t-none { color: var(--text-3); }
+
+/* ---------- 派发对话框 ---------- */
+.dialog.dp-dialog.pfd { width: min(560px, calc(100vw - 32px)); }
+.dialog.dp-dialog.pfd.wide { width: min(760px, calc(100vw - 32px)); }
+.dialog.dp-dialog.pfd.flow { width: min(700px, calc(100vw - 32px)); padding: 16px 18px 14px; }
+/* Z：分工页 A 的三栏，收成一行一个节点 */
+.pfd.flow h3 { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin-bottom: 10px; white-space: nowrap; }
+.pfz-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-ui, inherit); font-size: 12.5px; font-weight: 400; color: var(--text-3); }
+.pfz-map { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); column-gap: 40px; padding: 8px; align-items: center; }
+.pfz-col { gap: 4px; }
+.pfz-card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; max-width: 110px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pfz-labels { display: flex; flex-wrap: wrap; gap: 3px; }
+.pfz-labels i { font-style: normal; font-size: 11px; padding: 0 6px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); }
+.pfz-labels small, .pfz-rule { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.pfz-prof, .pfz-host { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px; border-radius: var(--r-sm); font-size: 12.5px; text-align: left; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); transition: box-shadow var(--dur-1), background-color var(--dur-1), opacity var(--dur-1); }
+.pfz-prof b, .pfz-host b { flex: none; font-weight: 600; }
+.pfz-prof small, .pfz-host small { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-3); }
+.pfz-prof .pfx-tag { flex: none; }
+.pfz-prof:not(:disabled):hover, .pfz-prof.lit { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 60%, var(--line-2)); }
+.pfz-prof.on { background: color-mix(in srgb, var(--c) 8%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--c); }
+.pfz-prof:disabled { opacity: .45; cursor: not-allowed; }
+.pfz-host .pf-slots { flex: none; }
+/* 图标：和正式界面一样直接画 logo，不加底框；系统图标、骰子、agent logo 一样大 */
+.pfz-prof .pf-mark:not(.me) { width: 16px; height: 16px; background: none; box-shadow: none; border-radius: 0; }
+.pfz-prof .pf-mark:not(.me) .hp-logo, .pfz-prof .pf-mark:not(.me) > b { width: 16px; height: 16px; }
+.pfz-prof .pf-mark.me { width: 16px; height: 16px; font-size: 9.5px; }
+.pfz-host .hp-os.sm { width: 16px; height: 16px; background: none; box-shadow: none; border-radius: 0; }
+.pfz-host .hp-os.sm svg { width: 14px; height: 14px; }
+.pfz-dice { flex: none; width: 16px; height: 16px; color: var(--text-2); }
+.pfz-any.on .pfz-dice { color: var(--c); }
+.pfz-any small { color: var(--text-2); }
+.pfz-host.off { background: var(--surface-2); color: var(--text-3); }
+.pfz-host.cant { opacity: .45; }
+.pfz-host.t-busy small { color: var(--warn-text); }
+.pfz-host:not(:disabled):hover { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 55%, var(--line-2)); }
+.pfz-host.on small { color: color-mix(in oklab, var(--ok), var(--ink)); font-weight: 600; }
+.pfz-host.on { background: color-mix(in srgb, var(--c) 8%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--c); }
+.pfz-host:disabled { cursor: default; }
+.pfz-host.me { justify-content: center; border: 1px dashed var(--line-3); box-shadow: none; background: none; color: var(--text-2); }
+.pfz-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.pfz-foot .pfd-say { flex: 1; min-width: 0; margin: 0 4px 0 0 !important; padding: 0; background: none !important; font-size: 12.5px; color: var(--text-2) !important; }
+.pfz-foot .pfd-say.t-ok { color: color-mix(in oklab, var(--ok), var(--ink)) !important; }
+.pfz-foot .pfd-say.t-wait { color: var(--warn-text) !important; }
+.pfz-foot .pfd-note { display: none; }
+@media (max-width: 640px) {
+  .pfz-map { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
+  .pfz-card { flex-direction: row; max-width: none; }
+  .pfz-foot { flex-wrap: wrap; }
+  .pfz-foot .pfd-say { flex-basis: 100%; }
+  .pfz-foot .btn { flex: 1; justify-content: center; }
+}
+
+.pfd-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.pfd-label small { font-weight: 400; font-size: 11.5px; color: var(--text-3); text-transform: none; letter-spacing: 0; }
+.pfd-say { margin-top: 12px !important; padding: 10px 12px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text) !important; }
+.pfd-say.t-ok { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
+.pfd-say.t-wait { background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
+.pfd-note { display: block; margin-top: 4px; font-size: 11.5px; color: var(--text-3); }
+
+@media (max-width: 900px) {
+  .pfa-map { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
+  .pfa-lines { display: none; }
+  .pf-dl { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}
+
+/* Z：对话框里窄到手机才改成上下排（分工页 A 是 900 以下就排成一栏） */
+@media (min-width: 641px) {
+  .dialog .pfz-map { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); }
+  .dialog .pfz-map .pfa-lines { display: block; }
+}
+
+
+/* A 下面选中的角色：紧凑、左对齐，颜色只在状态点 */
+.pfq { margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.pfq-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pfq-head .pf-mark:not(.me) { width: 20px; height: 20px; background: none; box-shadow: none; border-radius: 0; }
+.pfq-head .pf-mark:not(.me) .hp-logo, .pfq-head .pf-mark:not(.me) > b { width: 20px; height: 20px; }
+.pfq-name { flex: none; font-family: var(--f-display); font-size: 15px; font-weight: 700; }
+.pfq-recipe { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-3); }
+.pfq-edit { margin-left: auto; flex: none; }
+.pfq-note { margin: 6px 0 0 28px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.pfq-dl { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 8px 12px; margin: 10px 0 0 28px; padding-top: 10px; border-top: 1px solid var(--line); }
+.pfq-dl dt { font-size: 12px; line-height: 22px; color: var(--text-3); }
+.pfq-dl dd { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-width: 0; margin: 0; font-size: 12.5px; line-height: 22px; }
+.pfq-dl em { font-style: normal; color: var(--text-3); }
+.pfq-rule { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
+.pfq-rule i { display: grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; font-size: 10.5px; font-style: normal; font-weight: 600; color: var(--text-2); background: var(--surface-3); }
+.pfq-host { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); white-space: nowrap; }
+.pfq-host b { font-weight: 600; color: var(--text); }
+.pfq-host > i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); }
+.pfq-host.t-ok > i { background: var(--ok); }
+.pfq-host.t-busy > i { background: var(--warn); }
+.pfq-host.t-off > i { background: none; box-shadow: inset 0 0 0 1.25px var(--text-3); }
+.pfq-host.t-bad > i { background: var(--danger); }
+.pfq-host.cant b { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--text-4); }
+.pfq-now { flex-direction: column; align-items: stretch !important; gap: 0 !important; }
+.pfq-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 26px; margin: 0 -6px; padding: 0 6px; border-radius: 6px; text-align: left; color: var(--text-2); }
+button.pfq-row:hover { background: var(--surface-2); }
+.pfq-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.pfq-row.run .pfq-tag { color: var(--text-2); }
+.pfq-row.run .pfq-tag i { width: 6px; height: 6px; border-radius: 50%; background: var(--c); animation: pf-pulse 1.6s var(--ease-in-out) infinite; }
+.pfq-row.k-start .pfq-tag { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.pfq-row.k-wait .pfq-tag { color: var(--warn-text); }
+.pfq-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pfq-t b { font-weight: 600; color: var(--text); }
+.pfq-row small { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+@media (max-width: 640px) {
+  .pfq-dl { grid-template-columns: minmax(0, 1fr); gap: 2px; margin-left: 0; }
+  .pfq-note { margin-left: 0; }
+  .pfq-dl dt { margin-top: 6px; }
+  .pfq-row { grid-template-columns: 52px minmax(0, 1fr); }
+  .pfq-row small { grid-column: 2; margin-top: -4px; }
+}
+
+
+/* 规则：条件词 + 标签胶囊（LabelChip），胶囊比卡片上的小一号 */
+.pf-rv { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.pf-rv-op { font-size: 12.5px; color: var(--text-2); }
+.pf-rv .lb, .pfz-labels .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
+.pfa-rt { overflow: visible; white-space: normal; }
+
+/* 规则弹出框：高度固定，标签框固定两行高 */
+.dialog.pf-form.pf-rd { width: min(460px, calc(100vw - 32px)); }
+.pf-rd .segmented { align-self: flex-start; }
+.pf-rd-ls { display: flex; align-items: flex-start; height: 72px; padding: 8px 10px; overflow-y: auto; border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.pf-rd-ls .hp-lset { gap: 6px; }
+.pf-rd-ls.off { align-items: center; opacity: .6; }
+.pf-rd-ls em { font-style: normal; font-size: 12.5px; color: var(--text-3); }
+
+/* 卡片「接下来」和白板卡片上的去向（profiles/Next.tsx） */
+/* ---------- 卡片详情「接下来」 ---------- */
+.pf-fc { display: flex; flex-direction: column; gap: 8px; }
+.pf-fc .d-label small { margin-left: 4px; }
+.pf-fc-row { display: flex; align-items: center; gap: 10px; }
+.pf-fc-t { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.pf-fc-t b { font-size: 13.5px; font-weight: 600; }
+.pf-fc-t b small { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--text-2); }
+.pf-fc-t > small { font-size: 12px; color: var(--text-3); }
+.pf-fc-say { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px 4px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text); background: var(--surface-2); }
+.pf-fc-say > svg { flex: none; width: 15px; height: 15px; }
+.pf-fc-say.t-start { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
+.pf-fc-say.t-start > svg { color: var(--ok); }
+.pf-fc-say.t-wait { background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
+.pf-fc-say.t-wait > svg { color: var(--warn); }
+.pf-fc-say.t-me > svg { color: var(--c-review); }
+.pf-fc-more { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 0 8px; border-radius: var(--r-xs); font-size: 12px; color: var(--text-2); }
+.pf-fc-more:hover { background: var(--surface-3); }
+.pf-fc-more svg { width: 13px; height: 13px; }
+.pf-fc-hosts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pf-fc-hosts > small { flex-basis: 100%; }
+.pf-fc-alt { margin: 0; font-size: 12px; color: var(--text-3); }
+.pf-fc-alt button { color: var(--text-2); text-decoration: underline; text-underline-offset: 3px; }
+/* 白板卡片上的去向 */
+.pf-cchip { display: flex; align-items: center; gap: 5px; margin-top: 7px; font-size: 11.5px; color: var(--text-3); min-width: 0; }
+.pf-cchip > svg { flex: none; width: 12px; height: 12px; }
+.pf-cchip .pf-chip { height: 20px; padding: 0 7px 0 2px; font-size: 11.5px; gap: 4px; }
+.pf-cchip .pf-chip .pf-mark { width: 16px; height: 16px; border-radius: 5px; }
+.pf-cchip .pf-chip .pf-mark .hp-logo { width: 11px; height: 11px; }
+.pf-cchip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-cchip.k-start small { color: color-mix(in oklab, var(--ok), var(--ink)); }
+.pf-cchip.k-wait small { color: var(--warn-text); }
+.pf-cchip.k-me small { color: var(--c-review); }
+.pf-cchip.k-none { padding-left: 2px; }
+
+/* 实际界面补的几条 */
+.pfx-tag { flex: none; display: inline-flex; align-items: center; height: 16px; margin-left: 4px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: var(--brand); background: var(--brand-soft); }
+.pf-f3 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 112px; gap: 10px; margin-bottom: 4px; }
+.pf-f3 label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pf-f3 label > span { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.pf-f3 .input.sel, .pf-f3 .input { width: 100%; }
+.pfa-rule.off .pfa-rt { opacity: .55; }
+.pfa-none { margin: 4px 2px; }
+.pf-fc-rule { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.pf-fc-rule .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
+.pfq.is-saving { opacity: .7; }
+.pfz-labels .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
+.pf-cchip .pf-chip .pf-mark { width: 16px; height: 16px; background: none; box-shadow: none; }
+.pf-cchip .pf-chip .pf-mark .hp-logo { width: 14px; height: 14px; }
+@media (max-width: 640px) {
+  .pf-f3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pf-f3 label:last-child { grid-column: span 2; }
+}
+/* 机器详情 agent 页：这台机器能跑哪些角色 */
+.hd-roles { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 12px; }
+.hd-roles .hd-k { flex: none; padding-top: 4px; }
+.hd-roles-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }

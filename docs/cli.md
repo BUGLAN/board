@@ -1108,7 +1108,7 @@ worktree 里有没推的改动时退出码 1，没有切换，`step` 是 `save`�
   },
   "card": 6,
   "createdAt": 1794603289690,
-  "effort": null,
+  "effort": "high",
   "endedAt": null,
   "env": null,
   "envName": null,
@@ -1117,8 +1117,11 @@ worktree 里有没推的改动时退出码 1，没有切换，`step` 是 `save`�
   "hostId": 1,
   "id": 1,
   "kind": "",
-  "model": null,
+  "model": "model-b",
   "name": null,
+  "profile": "pm3k2x",
+  "profileName": "修复",
+  "provider": "relay",
   "result": null,
   "seq": 1,
   "session": 1,
@@ -1133,7 +1136,9 @@ worktree 里有没推的改动时退出码 1，没有切换，`step` 是 `save`�
 
 `--cancel` 取消排队或停止正在跑的派发，返回同一条记录；开始时 `startedAt`、`env`、`name`、`path` 才有值。
 
-`--any` 不指定机器，由服务端在能接的机器里挑空位最多的一台：返回的记录带 `"any": true`，挑到机器之前 `host` 是空字符串、`hostId` 是 0，没带 `--agent` 时 `agent` 也是空的（挑到后换成那台的默认 agent）。`--move --host <机器名>`（或 `--move --any`）把还在排队的派发改派，返回改过的记录。
+`--profile <角色>` 按角色派（角色在「Agent → 分工」里定：agent、供应商、模型、强度）：返回的记录多 `profile`（角色标识）、`profileName`、`provider`，`model`、`effort` 是角色的；机器跑不了这个角色时报 `AGENT_NOT_ON_HOST` 并写明原因。不带 `--profile`、也不带 `--agent` 时用按规则会交给的角色；有角色、规则又都没命中时报 `USAGE`，列出能选的角色；还一个角色都没有时用机器的默认 agent。`--agent <标识>` 是旧写法：用这台机器上这个 agent 自己的配置。
+
+`--any` 不指定机器，由服务端在能接的机器里挑空位最多的一台（按角色派的只在能跑这个角色的机器里挑）：返回的记录带 `"any": true`，挑到机器之前 `host` 是空字符串、`hostId` 是 0。`--move --host <机器名>`（或 `--move --any`）把还在排队的派发改派，带 `--profile` 时换成这个角色，不带时沿用原来的；返回改过的记录。
 
 ## 共用配置与版本
 

@@ -969,6 +969,10 @@ fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
             any: false,
             repo: String::new(),
             branch: String::new(),
+            profile: String::new(),
+            profile_name: String::new(),
+            provider: String::new(),
+            note: String::new(),
         },
         child,
         env: Env::direct(),
@@ -1059,6 +1063,10 @@ fn run_follows_its_session() {
         any: false,
         repo: String::new(),
         branch: String::new(),
+        profile: String::new(),
+        profile_name: String::new(),
+        provider: String::new(),
+        note: String::new(),
     };
     let cur = d(1, 1);
     assert_eq!(successor(&cur, &[d(1, 1), d(5, 1), d(3, 3)]).map(|x| x.id), Some(5));

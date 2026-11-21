@@ -37,7 +37,7 @@ use board_core::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::auth::Caller;
+use crate::auth::{human, Caller};
 use crate::{client_of, parse, ApiError, AppState};
 
 type ApiResult<T> = std::result::Result<Json<T>, ApiError>;
@@ -725,15 +725,6 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
         /// 没输出多久算卡住（分钟，0 = 不限），所有机器一样
         #[serde(default, rename = "idleRun")]
         idle_run: Option<i64>,
-        /// 某个 agent「由这些机器做」：勾上的、取消的机器 id，`all` 回到所有装了它的机器都参与
-        #[serde(default)]
-        agent: Option<String>,
-        #[serde(default)]
-        add: Option<Vec<i64>>,
-        #[serde(default)]
-        remove: Option<Vec<i64>>,
-        #[serde(default)]
-        all: Option<bool>,
     }
     let b: Body = parse(v)?;
     let client = client_of(&h);
@@ -745,11 +736,6 @@ pub(crate) async fn sched_update(State(s): State<AppState>, h: HeaderMap, Json(v
                 }
                 if b.max_run.is_some() || b.idle_run.is_some() {
                     w.set_run_limits(b.max_run, b.idle_run)?;
-                }
-                if let Some(agent) = &b.agent {
-                    if b.add.is_some() || b.remove.is_some() || b.all.is_some() {
-                        w.sched_pick(agent, b.add.as_deref().unwrap_or_default(), b.remove.as_deref().unwrap_or_default(), b.all.unwrap_or(false))?;
-                    }
                 }
                 w.sched_update(b.rules.as_deref(), b.fallback.as_deref())
             })
@@ -822,6 +808,9 @@ pub(crate) struct CreateBody {
     host: String,
     #[serde(default)]
     agent: Option<String>,
+    /// 角色（标识或名字）；不带、也不带 agent 时用按规则会交给的角色
+    #[serde(default)]
+    profile: Option<String>,
     /// 令牌带的 agent 名字（发起人）
     #[serde(default, rename = "as")]
     who: Option<String>,
@@ -836,8 +825,8 @@ pub(crate) async fn create(State(s): State<AppState>, Extension(caller): Extensi
             st.write(now_ms(), origin, |w| {
                 let board = w.resolve(&b.board)?;
                 match b.host.trim() {
-                    "" => w.dispatch_create_any(&board, b.card, b.agent.as_deref(), &actor),
-                    host => w.dispatch_create(&board, b.card, host, b.agent.as_deref(), &actor),
+                    "" => w.dispatch_create_any(&board, b.card, b.agent.as_deref(), b.profile.as_deref(), &actor),
+                    host => w.dispatch_create(&board, b.card, host, b.agent.as_deref(), b.profile.as_deref(), &actor),
                 }
             })
         })
@@ -860,6 +849,9 @@ pub(crate) struct MoveBody {
     host: String,
     #[serde(default)]
     agent: Option<String>,
+    /// 换成哪个角色；不带时沿用原来的
+    #[serde(default)]
+    profile: Option<String>,
     #[serde(default, rename = "as")]
     who: Option<String>,
 }
@@ -881,7 +873,7 @@ pub(crate) async fn move_to(State(s): State<AppState>, Extension(caller): Extens
                     _ => return Err(BoardError::usage("缺少 id，或 board 和 card")),
                 };
                 let host = Some(b.host.trim()).filter(|h| !h.is_empty());
-                w.dispatch_move(id, host, b.agent.as_deref(), &actor)
+                w.dispatch_move(id, host, b.agent.as_deref(), b.profile.as_deref(), &actor)
             })
         })
         .await?;
@@ -923,4 +915,23 @@ pub(crate) async fn cancel(State(s): State<AppState>, Extension(caller): Extensi
         .await?;
     s.poke();
     Ok(Json(out))
+}
+
+/// `POST /api/profiles`：新建（不带 `id`）或修改一个角色（只有人能改）
+pub(crate) async fn profile_put(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<board_core::profiles::Profile> {
+    let by = human(&caller).map_err(ApiError)?;
+    let p: board_core::profiles::Profile = parse(v)?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.profile_put(&p, &by))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+/// `DELETE /api/profiles/{id}`：删掉一个角色，交给它的规则一起删；返回删掉了几条规则
+pub(crate) async fn profile_remove(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(id): Path<String>) -> ApiResult<Value> {
+    human(&caller).map_err(ApiError)?;
+    let client = client_of(&h);
+    let rules = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.profile_delete(&id))).await?;
+    s.poke();
+    Ok(Json(json!({ "ok": true, "rules": rules })))
 }

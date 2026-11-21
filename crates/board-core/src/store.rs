@@ -326,6 +326,7 @@ impl Store {
     /// 建表和全部迁移（在 [`Store::setup`] 的事务里）
     fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::profiles::SCHEMA)?;
         conn.execute_batch(crate::files::SCHEMA)?;
         conn.execute_batch(crate::agents::SCHEMA)?;
         crate::agents::migrate(conn)?;
@@ -342,6 +343,8 @@ impl Store {
         // 调度：领取规则挪成全局的一份，机器加自动接单和接单时段，白板加参不参与（要在 hosts、boards 都建好之后）
         conn.execute_batch(crate::sched::SCHEMA)?;
         crate::sched::migrate(conn)?;
+        // 角色：规则从「条件 → agent」换成「条件 → 角色」（要在 sched 建好之后；表在最前面建，读机器记录时要用）
+        crate::profiles::migrate(conn)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;

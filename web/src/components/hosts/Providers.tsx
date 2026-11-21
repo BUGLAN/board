@@ -1,33 +1,26 @@
 /* ==========================================================================
    「共用配置」的模型供应商一节（PRD §10.16「共用配置」）：一个供应商一张卡
    - 卡片上面：名称、API key 末尾 4 位、更新时间、修改、删除；接口和地址（地址相同的接口并成一行）、模型（带标了的强度）
-   - 卡片底下「在用」：只读，按 agent 汇总——一个 agent 一枚（图标、名称、几台、这几台里最该看的状态），
-     点开列出哪几台：模型、用哪种接口、强度、写进去没有（失败写原因），点一行打开那台机器的 agent 页去改。
-     每台机器上每个 agent 用哪个供应商在机器详情的 agent 页里选，这里不改（agent 会越来越多，不能一处一枚、一个 agent 一列）
+   - 卡片底下「在用」：用它的角色（Agent → 分工），一个角色一枚（agent 图标、名字、模型），点一下去分工页
    - 下面一句话写 board 版本太旧、不同步供应商的机器
-   - 供应商的增、改、删要等服务端（按钮转圈、禁用直到返回），删掉时确认并列出用着它的机器和 agent
+   - 供应商的增、改、删要等服务端（按钮转圈、禁用直到返回）；还有角色在用的删不了（先改角色）
    ========================================================================== */
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { since } from '../../lib/hosts';
 import {
-  agentGroups,
   blankProvider,
   endpointLines,
-  interfaceName,
   maskKey,
   metasOf,
-  PROVIDER_CELL_WORDS,
   providerError,
   toProviderSave,
-  usesOf,
-  worstCell,
-  type ProviderUse,
 } from '../../lib/providers';
-import type { AgentMeta, HostInfo, Provider, ProviderView } from '../../lib/types';
+import type { HostInfo, Provider } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
-import { confirm, openHost, toast, toastError } from '../../store/ui';
+import { confirm, setTab, toast, toastError } from '../../store/ui';
+import { goSec } from '../agent/AgentNav';
 import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
@@ -62,12 +55,14 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
     }
   };
   const remove = async (p: Provider) => {
-    const users = view ? usesOf(hosts, view, p.name).map(u => `${u.h.name} 的 ${metasOf(view).find(m => m.id === u.a.id)?.name ?? u.a.name}`) : [];
+    const roles = (useData.getState().ws?.sched?.profiles ?? []).filter(r => r.provider === p.name).map(r => `「${r.name}」`);
+    if (roles.length) {
+      toast({ type: 'error', title: `角色${roles.join('')}还在用 ${p.name}`, text: '先在 Agent → 分工里把它们改成别的供应商或本机登录' });
+      return;
+    }
     const ok = await confirm({
       title: `删掉模型供应商 ${p.name}？`,
-      text: users.length
-        ? `${users.join('、')} 指定了它：下次同步时报失败，要在机器详情里换一个。已经写进 agent 配置文件的不恢复。`
-        : '已经写进各台机器 agent 配置文件的不恢复。',
+      text: '已经写进各台机器 agent 配置文件的不恢复。',
       ok: '删掉',
       icon: 'trash',
       tone: 'warn',
@@ -124,8 +119,6 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
             <ProviderCard
               key={p.name}
               p={p}
-              view={view}
-              uses={usesOf(hosts, view, p.name)}
               now={now}
               busy={busy}
               editing={!!edit}
@@ -145,8 +138,6 @@ const effortRange = (es: string[]) => (es.length > 2 ? `${es[0]}–${es[es.lengt
 
 function ProviderCard({
   p,
-  view,
-  uses,
   now,
   busy,
   editing,
@@ -154,18 +145,14 @@ function ProviderCard({
   onRemove,
 }: {
   p: Provider;
-  view: ProviderView;
-  uses: ProviderUse[];
   now: number;
   busy: string | null;
   editing: boolean;
   onEdit: () => void;
   onRemove: () => void;
 }) {
-  // 点开的 agent：列出哪几台
-  const [open, setOpen] = useState<string | null>(null);
-  const groups = agentGroups(uses, view);
-  const cur = groups.find(g => g.meta.id === open);
+  // 用它的角色（Agent → 分工）
+  const roles = (useData(s => s.ws?.sched?.profiles) ?? []).filter(r => r.provider === p.name);
   return (
     <article className="pv-card">
       <header className="pv-head">
@@ -208,60 +195,24 @@ function ProviderCard({
       <div className="pv-use">
         <span className="pv-k">在用</span>
         <div className="pv-use-body">
-          {groups.length ? (
+          {roles.length ? (
             <span className="pv-ags">
-              {groups.map(g => (
-                <AgentChip key={g.meta.id} meta={g.meta} uses={g.uses} on={open === g.meta.id} onClick={() => setOpen(open === g.meta.id ? null : g.meta.id)} />
+              {roles.map(r => (
+                <Tip key={r.id} text={`角色「${r.name}」：${[r.model, r.effort].filter(Boolean).join(' · ')}`}>
+                  <button type="button" className="pv-ag" onClick={() => (setTab('agent'), goSec('rules'))}>
+                    <AgentIcon id={r.agent} />
+                    <b>{r.name}</b>
+                    <span className="pv-ag-n">{r.model}</span>
+                  </button>
+                </Tip>
               ))}
             </span>
           ) : (
-            <span className="pv-none">没有机器在用：在机器详情的 agent 页里选它</span>
+            <span className="pv-none">没有角色在用：在 Agent → 分工里新建角色时选它</span>
           )}
-          {cur && <UseList uses={cur.uses} />}
         </div>
       </div>
     </article>
   );
 }
 
-/** 一个 agent 的汇总：图标、名称、几台、状态点（这几台里最该看的：失败 > 正在写入 > 离线 > 已写入）；悬停看每台的状态 */
-function AgentChip({ meta, uses, on, onClick }: { meta: AgentMeta; uses: ProviderUse[]; on: boolean; onClick: () => void }) {
-  return (
-    <Tip text={uses.map(u => `${u.h.name} ${PROVIDER_CELL_WORDS[u.cell.kind]}`).join(' · ')}>
-      <button type="button" className={cx('pv-ag', `k-${worstCell(uses)}`, on && 'on')} aria-expanded={on} onClick={onClick}>
-        <AgentIcon id={meta.id} />
-        <b>{meta.name}</b>
-        <span className="pv-ag-n">{uses.length} 台</span>
-        <i className="pv-cell-mark" aria-hidden="true" />
-      </button>
-    </Tip>
-  );
-}
-
-/** 点开一个 agent：哪几台、模型、接口、强度、写进去没有；点一行打开那台机器的 agent 页 */
-function UseList({ uses }: { uses: ProviderUse[] }) {
-  return (
-    <div className="pv-ml">
-      {uses.map(u => {
-        const bad = u.cell.kind === 'failed' || u.cell.kind === 'unsupported';
-        return (
-          <button key={u.h.id} type="button" className={cx('pv-mr', `k-${u.cell.kind}`)} onClick={() => openHost(u.h.name, 'agents')}>
-            <i className="pv-cell-mark" aria-hidden="true" />
-            <b>{u.h.name}</b>
-            <code>{u.pick.model}</code>
-            <span className="pv-if">{u.pick.ep ? interfaceName(u.pick.ep.interface) : '接口对不上'}</span>
-            <span className="pv-mr-e">{u.pick.warn ? '不写强度' : u.pick.effort ? `强度 ${u.pick.effort}` : '强度默认'}</span>
-            <span className="pv-mr-s">
-              {PROVIDER_CELL_WORDS[u.cell.kind]}
-              {bad && u.cell.why ? `：${u.cell.why}` : ''}
-            </span>
-            <span className="pv-mr-go">
-              去改
-              <Icon name="chevRight" />
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}

@@ -34,7 +34,14 @@ json.dump(d, open(p, "w"))
 fi
 # ACP 握手：答 initialize、session/new；session/prompt 里的提示词当成 $1，下面照旧按它做事
 read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-agent","version":"9.9.9"}}}'
-read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+# 按角色换供应商：先答 providers/set（把收到的地址记下来），再答 session/new
+read -r l
+case "$l" in *'"providers/set"'*)
+  printf '%s\n' "$l" | sed 's/.*"baseUrl":"\([^"]*\)".*/\1/' > "$FAKE_DIR/provider-url"
+  echo '{"jsonrpc":"2.0","id":1,"result":{}}'
+  read -r l; echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}' ;;
+*) echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}' ;;
+esac
 read -r l
 pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
 set -- "$(printf '%s\n' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')"
@@ -1151,6 +1158,66 @@ fn config_sync_writes_the_agent_config_and_dispatch_uses_it() {
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("sk-test-relay"), "输出里没有 key：{out}");
+}
+
+/// 按角色派发：board host 给这一个进程换上角色的供应商（ACP providers/set，key 在请求头里，日志里遮住），
+/// 模型、强度按角色写进派发记录和名字，附加说明接在提示词后面；agent 自己的配置文件不碰
+#[test]
+fn role_dispatch_switches_the_provider_for_this_process_only() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        let now = board_core::now_ms();
+        let p = board_core::providers::Provider {
+            name: "relay".into(),
+            endpoints: vec![board_core::providers::ProviderEndpoint { interface: "anthropic".into(), url: "https://relay.example.com/v1".into() }],
+            api_key: Some("sk-test-role".into()),
+            models: vec!["m1".into(), "m2".into()],
+            ..Default::default()
+        };
+        store.write(now, board_core::Origin::ui(None), |w| w.provider_put(p, "buglan", "")).unwrap();
+        let role = board_core::profiles::Profile {
+            name: "修复".into(),
+            agent: "claude".into(),
+            provider: "relay".into(),
+            model: "m2".into(),
+            effort: "high".into(),
+            note: "先写能复现的测试".into(),
+            ..Default::default()
+        };
+        store.write(now, board_core::Origin::ui(None), |w| w.profile_put(&role, "buglan")).unwrap();
+    }
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--profile", "修复", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d = r.json()["id"].as_i64().unwrap();
+    let log = log_file(&rig.s.home, d);
+    wait_until("假 agent 收到提示词", Duration::from_secs(20), || {
+        std::fs::read_to_string(&log).is_ok_and(|s| s.contains("\"method\":\"session/prompt\""))
+    });
+    let out = std::fs::read_to_string(&log).unwrap();
+    let set = out.find("\"method\":\"providers/set\"").expect("先换供应商");
+    let new = out.find("\"method\":\"session/new\"").expect("再开会话");
+    assert!(set < new, "{out}");
+    assert!(out.contains("\"Authorization\":\"***\"") && !out.contains("sk-test-role"), "日志里的 key 遮住：{out}");
+    assert!(out.contains("先写能复现的测试"), "附加说明接在提示词后面：{out}");
+    let url = std::fs::read_to_string(rig.fake.parent().unwrap().join("provider-url")).unwrap();
+    assert_eq!(url.trim(), "https://relay.example.com", "Anthropic 的地址不带 /v1");
+    let settings = std::fs::read_to_string(rig.s.home.join(".claude").join("settings.json")).unwrap_or_default();
+    assert!(!settings.contains("relay") && !settings.contains("\"m2\""), "agent 自己的配置文件不碰：{settings}");
+    let acts = activity(&rig.show(1));
+    assert!(acts.iter().any(|t| t.contains("修复（Claude Code · relay · m2 · high）")), "{acts:?}");
+    assert!(acts.iter().any(|t| t.contains("以 mbp/m2-high 领取") && t.contains("模型 m2，强度 high")), "{acts:?}");
+    // 这次的供应商文件用完就删
+    let left: Vec<_> = std::fs::read_dir(rig.s.home.join(".board")).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".provider.json")).collect();
+    assert!(left.is_empty());
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("sk-test-role"), "输出里没有 key：{out}");
 }
 
 /* ------------------------------ 兜底：单次最长运行、没输出多久算卡住 ------------------------------ */

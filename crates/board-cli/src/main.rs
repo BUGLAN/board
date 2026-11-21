@@ -113,7 +113,7 @@ const COMMANDS: [(&str, &str, &str); 34] = [
             "[<提交>] [--base <提交>] [--upstream <分支>] [--card <项目/白板#ID>] [--dir <仓库>]",
             "推送前检查（只用 git，不用 --as、--board，不连服务端）：要推的提交（默认 HEAD）删掉了别的卡最近加的行、或加回了别的卡最近删的行时，按卡列出提交、文件和例子，退出码 1。「最近」= 开工时的基点（--base；不写时从本 worktree 的 reflog 认开工时所在的提交，认不出就往前 20 个提交）之后集成分支（--upstream，默认 origin/HEAD）上的提交；这次的卡（--card，不写时取提交说明里的「卡片：」）自己的提交不算。最后一行「碰到的别的卡：…」写进交审评论",
         ),
-        ("dispatch", "<ID> --host <机器名> | --any [--agent <标识>] [--move] | <ID> --cancel", "把卡片派给一台机器上的 agent（不带 --agent 用默认的）；--any 不指定机器，由服务端在能接的机器里挑空位最多的；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--move 把还在排队的派发改派到 --host 的机器或 --any；--cancel 取消排队或停止正在跑的派发"),
+        ("dispatch", "<ID> --host <机器名> | --any [--profile <角色>] [--move] | <ID> --cancel", "按角色把卡片派给一台机器（--profile 写角色的名字；不带时用按规则会交给的角色，规则都没命中时要带上 --profile；--agent <标识> 是旧写法：用机器上这个 agent 自己的配置）；--any 不指定机器，由服务端在能接的机器里挑空位最多的；卡片在「未整理」时是派给 agent 拆解：不领取、不移动它，拆出的卡记回「未整理」；--move 把还在排队的派发改派到 --host 的机器或 --any；--cancel 取消排队或停止正在跑的派发"),
         ("help", "", "显示这段说明"),
 ];
 
@@ -830,12 +830,19 @@ fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
         (None, true) => "",
         (None, false) => {
             return Err(BoardError::usage(
-                "用法：board dispatch <ID> --host <机器名> | --any [--agent <标识>] [--move]，或 board dispatch <ID> --cancel",
+                "用法：board dispatch <ID> --host <机器名> | --any [--profile <角色>] [--move]，或 board dispatch <ID> --cancel",
             ))
         }
     };
     let moved = a.flag("--move");
-    let d = if moved { be.move_dispatch(&path, id, host, a.value("--agent"), who.as_deref())? } else { be.dispatch(&path, id, host, a.value("--agent"), who.as_deref())? };
+    let profile = a.value("--profile").map(str::trim).filter(|s| !s.is_empty());
+    let d = if moved {
+        be.move_dispatch(&path, id, host, a.value("--agent"), profile, who.as_deref())?
+    } else {
+        be.dispatch(&path, id, host, a.value("--agent"), profile, who.as_deref())?
+    };
+    // 谁来做：按角色派的写角色名
+    let who_words = if d.profile_name.is_empty() { d.agent_label.clone() } else { format!("{}（{}）", d.profile_name, d.agent_label) };
     if json {
         return Ok(Output::Json(serde_json::to_value(&d).unwrap_or_default()));
     }
@@ -843,7 +850,7 @@ fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
     let host_words = if d.host.is_empty() { "任意机器".to_string() } else { d.host.clone() };
     if moved {
         let tail = if d.host.is_empty() { "等服务端挑一台能接的机器" } else { "排队，机器有空位时开始" };
-        return Ok(Output::Text(format!("{} {} 已改派到 {} · {}  {}\n", p.green("✓"), p.cyan(&format!("#{}", d.card)), p.bold(&host_words), d.agent_label, p.dim(tail))));
+        return Ok(Output::Text(format!("{} {} 已改派到 {} · {who_words}  {}\n", p.green("✓"), p.cyan(&format!("#{}", d.card)), p.bold(&host_words), p.dim(tail))));
     }
     // 「未整理」里的条目是派给 agent 拆解：不领取、不移动它
     let split = d.kind == board_core::hosts::KIND_SPLIT;
@@ -853,11 +860,10 @@ fn dispatch(a: &Args, json: bool, p: &Paint) -> Result<Output> {
         ("已派发到", "", "排队，机器有空位时开始")
     };
     Ok(Output::Text(format!(
-        "{} {} {what} {} · {}{after}  {}\n",
+        "{} {} {what} {} · {who_words}{after}  {}\n",
         p.green("✓"),
         p.cyan(&format!("#{}", d.card)),
         p.bold(&host_words),
-        d.agent_label,
         p.dim(tail)
     )))
 }

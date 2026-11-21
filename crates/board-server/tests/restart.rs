@@ -63,7 +63,7 @@ fn seed(path: &Path, at: i64) {
     let d = s
         .write(at, Origin::ui(None), |w| {
             let br = w.resolve(B)?;
-            w.dispatch_create(&br, b, "mbp", None, &Actor::human())
+            w.dispatch_create(&br, b, "mbp", None, None, &Actor::human())
         })
         .unwrap();
     let d = s.write(at + S, Origin::cli(), |w| w.dispatch_begin("mbp", "i1", d.id, Some(1))).unwrap();

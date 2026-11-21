@@ -1,5 +1,7 @@
 /* 卡片的派发：白板卡片上的状态行、卡片详情里的派发说明、「派发」对话框、取消派发。
    「未整理」里的条目派出去是拆解（kind = split）：不领取、不移动它，拆出的卡记回未整理（PRD §9.1） */
+import { profilesOf } from '../../lib/profiles';
+import { DispatchFlow } from '../profiles/DispatchFlow';
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
@@ -179,7 +181,7 @@ export function DispatchHistory({ board, card }: { board: string; card: number }
   );
 }
 
-/** 卡片详情底部「派发」对话框：选机器、选 agent */
+/** 卡片详情底部「派发」对话框：有角色时选角色和机器（profiles/DispatchFlow.tsx），没有时选机器、选 agent */
 export function DispatchDialog() {
   const req = useUI(s => s.dispatchOf);
   const { mounted, on } = usePresence(req != null, 220);
@@ -187,6 +189,8 @@ export function DispatchDialog() {
   if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
   const { card, move } = last.current;
+  // 有角色时按角色派（分工页定的那一套）；还没有角色时照旧选机器和 agent
+  if (profilesOf(useData.getState().ws).length) return <DispatchFlow key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
   return <DispatchBody key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
 }
 

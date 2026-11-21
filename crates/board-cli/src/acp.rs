@@ -8,21 +8,25 @@
 //!
 //! 1. `initialize`：要协议版本 2，同时带上 v1、v2 两套字段（v2 的 `info`、`capabilities`，v1 的 `clientInfo`、
 //!    `clientCapabilities`），只会 v1 的 agent 照样认得。不声明 Client 能力（agent 自己在 worktree 里读写、执行）。
-//! 2. `session/new`：工作目录是派发的目录，`mcpServers` 为空（MCP 由 Board 写进各 agent 自己的配置文件）。
-//! 3. 带了 `--set <选项>=<值>` 并且 agent 的会话配置里有这一项、这个值时切过去（dsh 的 `reasoning_effort`）；
+//! 2. 带了 `--provider-file <文件>`（按角色派发、角色用供应商时，board host 写的，读完就删）：`providers/set`，
+//!    给这一个 agent 进程换上角色的供应商（ACP providers RFD；Claude Code 的 `main`、Codex 的 `openai`，地址和 key 的请求头），
+//!    只对这个进程生效，不改 agent 的全局配置文件。失败时不往下走（用错的供应商干活不如不干）。
+//! 3. `session/new`：工作目录是派发的目录，`mcpServers` 为空（MCP 由 Board 写进各 agent 自己的配置文件）。
+//! 4. 带了 `--set <选项>=<值>` 并且 agent 的会话配置里有这一项、这个值时切过去（dsh 的 `reasoning_effort`）；`<选项>` 写成
+//!    `@<类别>` 时按 ACP 配置项的类别找（`@model` 模型、`@thought_level` 思考强度：角色的模型、强度这样切）；
 //!    带了 `--mode` 并且 agent 公布了这个模式时切过去（Claude Code 的 `bypassPermissions`、Codex 的 `agent-full-access`）。
 //!    v2 的配置项用 `configId`、切的时候带 `type: "id"`，模式只在配置项里（没有 `session/set_mode`）。
-//! 4. `session/prompt`：一条文本，就是派发的提示词（`--prompt-file`，不放进命令行）。v1 的回应跨整轮，带 `stopReason`；
+//! 5. `session/prompt`：一条文本，就是派发的提示词（`--prompt-file`，不放进命令行）。v1 的回应跨整轮，带 `stopReason`；
 //!    v2 的回应只表示收下了（`messageId`），这一轮的进展看 `state_update`：`running` / `requires_action` 是在干活，
 //!    `idle` 带 `stopReason` 是这一轮做完了；agent 也可以不等提示词自己再开一轮（例如处理跑完的后台任务），那时又报 `running`。
-//! 5. 这一轮做完以后（#454、#461）：先等它稳定下来——最后一帧之后安静 2 秒，最多等 10 秒（v1 收迟到的更新，v2 是规范要的
+//! 6. 这一轮做完以后（#454、#461）：先等它稳定下来——最后一帧之后安静 2 秒，最多等 10 秒（v1 收迟到的更新，v2 是规范要的
 //!    宽限期：后台任务跑完可能紧接着开下一轮）。带了 `--extra-turns <次数>`（board host 只给做卡的派发带）时，再看这次派发的
 //!    名字（`BOARD_AS`）在这块白板（`BOARD`）上还持有没持有卡片（`GET /api/agents`，连接和 board 命令一样）：
 //!    - 不持有（交审了、交给人了）、查不到：收尾。
 //!    - 还持有，v2 报的 `background` 不空（后台还有命令、任务在跑）：不收也不续，等 agent 跑完自己接着做；每 30 秒再查一次卡片。
 //!    - 还持有，后台为空或 agent 不报（v1、Codex）：在同一个会话里再发一条提示词续一轮（写明还持有哪张、后台命令在这一轮里
 //!      等它跑完、按 board-skills 做完或交给人），最多续这么多轮，每次在标准错误写一行；续满了收尾。
-//! 6. 收尾：v2 先发 `session/close`，再关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
+//! 7. 收尾：v2 先发 `session/close`，再关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
 //!
 //! 期间 agent 发来的请求：`session/request_permission` 自动允许（和以前跳过审批的参数同一个口径，Board 没有人工审批）；
 //! 别的（`fs/*`、`terminal/*` 这些没声明的能力）回 `-32601`。收到 SIGTERM、SIGINT（人点停止、board host 退出）时发
@@ -72,7 +76,7 @@ pub const EXTRA_TURNS: u32 = 3;
 
 static TERM: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> --prompt-file <文件> [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] -- <ACP 入口命令> [参数…]";
+const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> --prompt-file <文件> [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] -- <ACP 入口命令> [参数…]";
 
 /// 命令行
 #[derive(Debug, PartialEq)]
@@ -82,8 +86,10 @@ pub(crate) struct Opts {
     pub cwd: PathBuf,
     pub prompt_file: PathBuf,
     pub mode: Option<String>,
-    /// 会话开始后要切的配置（`--set reasoning_effort=high`）
+    /// 会话开始后要切的配置（`--set reasoning_effort=high`、`--set @model=sonnet`）
     pub sets: Vec<(String, String)>,
+    /// `providers/set` 的参数（JSON，含 key）所在的文件：读完就删
+    pub provider_file: Option<PathBuf>,
     /// 这一轮结束时名字还持有卡片，最多再续几轮（`--extra-turns`，0 = 不续）
     pub extra_turns: u32,
     pub prog: String,
@@ -98,7 +104,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     let mut i = 0;
     while i < head.len() {
         let k = head[i].as_str();
-        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--mode" | "--set" | "--extra-turns") {
+        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns") {
             return Err(format!("不认识的参数 {k}。{USAGE}"));
         }
         let v = head.get(i + 1).ok_or_else(|| format!("{k} 后面要有值。{USAGE}"))?;
@@ -123,6 +129,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         prompt_file: PathBuf::from(need("--prompt-file")?),
         mode: m.get("--mode").cloned().filter(|x| !x.trim().is_empty()),
         sets,
+        provider_file: m.get("--provider-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         extra_turns,
         prog,
         args: tail[1..].to_vec(),
@@ -135,6 +142,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Pending {
     Init,
+    Provider,
     New,
     Mode,
     Prompt,
@@ -166,6 +174,8 @@ pub(crate) struct Client {
     prompt: String,
     mode: Option<String>,
     sets: Vec<(String, String)>,
+    /// initialize 之后、session/new 之前要发的 `providers/set` 参数
+    provider: Option<Value>,
     /// session/new 之后、prompt 之前要发的配置请求（一个一个发）
     queue: Vec<(&'static str, Value)>,
     /// 这一轮怎么结束的；还在干活（v2 报了 `running`）时为空
@@ -188,6 +198,7 @@ impl Client {
             prompt: prompt.into(),
             mode: mode.map(str::to_string),
             sets: vec![],
+            provider: None,
             queue: vec![],
             outcome: None,
             prompting: false,
@@ -200,6 +211,17 @@ impl Client {
     pub(crate) fn with_sets(mut self, sets: Vec<(String, String)>) -> Client {
         self.sets = sets;
         self
+    }
+
+    /// 握手后、开会话前换上的供应商（`providers/set` 的参数）
+    pub(crate) fn with_provider(mut self, provider: Option<Value>) -> Client {
+        self.provider = provider;
+        self
+    }
+
+    fn new_session(&mut self) -> Vec<Value> {
+        let params = json!({ "cwd": self.cwd, "mcpServers": [] });
+        vec![self.request("session/new", params, Pending::New)]
     }
 
     /// 发下一个配置请求；都发完了发 prompt
@@ -308,6 +330,7 @@ impl Client {
                 // 收尾时发的，不等也不管
                 Pending::Close => {}
                 Pending::Init => self.outcome = Some(Outcome::Failed(format!("initialize 失败：{msg}"))),
+                Pending::Provider => self.outcome = Some(Outcome::Failed(format!("换供应商（providers/set）失败：{msg}"))),
                 Pending::New if e["code"].as_i64() == Some(-32000) => self.outcome = Some(Outcome::Failed(format!("agent 要求先登录：{msg}"))),
                 Pending::New => self.outcome = Some(Outcome::Failed(format!("session/new 失败：{msg}"))),
                 Pending::Prompt => self.outcome = Some(Outcome::Failed(format!("session/prompt 失败：{msg}"))),
@@ -318,9 +341,12 @@ impl Client {
             Pending::Init => {
                 // 版本协商：agent 回它能讲的、不高于我们要的最新版本
                 self.proto = if r["protocolVersion"].as_i64().unwrap_or(1) >= 2 { Proto::V2 } else { Proto::V1 };
-                let params = json!({ "cwd": self.cwd, "mcpServers": [] });
-                vec![self.request("session/new", params, Pending::New)]
+                match self.provider.take() {
+                    Some(p) => vec![self.request("providers/set", p, Pending::Provider)],
+                    None => self.new_session(),
+                }
             }
+            Pending::Provider => self.new_session(),
             Pending::New => {
                 let Some(s) = r["sessionId"].as_str().filter(|s| !s.is_empty()) else {
                     self.outcome = Some(Outcome::Failed("session/new 的回应里没有 sessionId".into()));
@@ -405,9 +431,18 @@ fn mode_switch(r: &Value, session: &str, mode: &str, proto: Proto) -> Option<(&'
     None
 }
 
-/// 会话配置里有 id 这一项、而且有这个值时：`session/set_config_option`
+/// 会话配置里有 id 这一项、而且有这个值时：`session/set_config_option`。id 写成 `@<类别>` 时按配置项的类别找
+/// （`@model`、`@thought_level`；找不到类别时 `@thought_level` 再按 dsh 的 `reasoning_effort` 找）
 fn config_set(r: &Value, session: &str, id: &str, value: &str, proto: Proto) -> Option<(&'static str, Value)> {
-    let o = r["configOptions"].as_array()?.iter().find(|o| option_id(o) == Some(id))?;
+    let list = r["configOptions"].as_array()?;
+    let o = match id.strip_prefix('@') {
+        Some(cat) => list
+            .iter()
+            .find(|o| o["category"].as_str() == Some(cat))
+            .or_else(|| (cat == "thought_level").then(|| list.iter().find(|o| option_id(o) == Some("reasoning_effort"))).flatten())?,
+        None => list.iter().find(|o| option_id(o) == Some(id))?,
+    };
+    let id = option_id(o)?;
     let offered = option_values(&o["options"]).iter().any(|v| v == value);
     offered.then(|| ("session/set_config_option", set_option(session, id, value, proto)))
 }
@@ -550,10 +585,24 @@ fn log(line: &str) {
 }
 
 /// 发一帧给 agent，也写进日志
+/// 写进日志的样子：`providers/set` 的请求头（里面是 API key）换成 `***`，别的原样
+fn loggable(f: &Value) -> String {
+    if f["method"].as_str() != Some("providers/set") {
+        return f.to_string();
+    }
+    let mut c = f.clone();
+    if let Some(h) = c["params"]["headers"].as_object_mut() {
+        for v in h.values_mut() {
+            *v = json!("***");
+        }
+    }
+    c.to_string()
+}
+
 fn send(stdin: &mut Option<ChildStdin>, frames: Vec<Value>) {
     for f in frames {
         let line = f.to_string();
-        log(&line);
+        log(&loggable(&f));
         if let Some(w) = stdin.as_mut() {
             if writeln!(w, "{line}").and_then(|_| w.flush()).is_err() {
                 *stdin = None;
@@ -601,8 +650,24 @@ fn run(o: &Opts) -> i32 {
             let _ = tx.send(None);
         });
     }
+    // 角色的供应商：读完就删（里面有 key），读不了、格式不对就不往下走
+    let provider = match &o.provider_file {
+        None => None,
+        Some(f) => {
+            let got = std::fs::read_to_string(f).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
+            let _ = std::fs::remove_file(f);
+            match got {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("✗ board acp：读不了供应商设置 {}：{e}", f.display());
+                    let _ = child.kill();
+                    return EXIT_PROTOCOL;
+                }
+            }
+        }
+    };
     let cwd = o.cwd.display().to_string();
-    let mut client = Client::new(&cwd, &prompt, o.mode.as_deref()).with_sets(o.sets.clone());
+    let mut client = Client::new(&cwd, &prompt, o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider);
     let mut merger = Merger::default();
     send(&mut stdin, client.start());
     let started = Instant::now();
@@ -862,8 +927,8 @@ mod tests {
         assert!(parse(&s(&["--nope", "1", "--", "x"])).is_err());
         // 续轮：board host 只给做卡的派发带；不带是 0（不续）
         assert_eq!(o.extra_turns, 0);
-        let o = parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--extra-turns", "3", "--", "x"])).unwrap();
-        assert_eq!((o.extra_turns, o.prog.as_str()), (3, "x"));
+        let o = parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--extra-turns", "3", "--provider-file", "/r", "--", "x"])).unwrap();
+        assert_eq!((o.extra_turns, o.prog.as_str(), o.provider_file), (3, "x", Some(PathBuf::from("/r"))));
         assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--extra-turns", "many", "--", "x"])).unwrap_err().contains("--extra-turns"));
     }
 
@@ -1040,6 +1105,39 @@ mod tests {
     }
 
     /// --set：会话配置里有这一项、这个值时先切它，再切模式，最后 prompt；没有的跳过
+    /// 角色用供应商：握手后先 `providers/set`（这一个进程换上它），再开会话；模型、强度按配置项的类别切。日志里的 key 遮住
+    #[test]
+    fn provider_is_set_before_the_session_and_sets_go_by_category() {
+        let provider = json!({ "providerId": "main", "apiType": "anthropic", "baseUrl": "https://relay.example", "headers": { "Authorization": "Bearer sk-1" } });
+        let mut c = Client::new("/w", "p", None).with_sets(vec![("@model".into(), "model-a".into()), ("@thought_level".into(), "high".into())]).with_provider(Some(provider.clone()));
+        c.start();
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 2 })));
+        assert_eq!((f[0]["method"].as_str(), &f[0]["params"]), (Some("providers/set"), &provider));
+        assert!(loggable(&f[0]).contains("\"Authorization\":\"***\"") && !loggable(&f[0]).contains("sk-1"), "{}", loggable(&f[0]));
+        let f = c.on_frame(&reply(1, json!({})));
+        assert_eq!(f[0]["method"], "session/new");
+        let opts = json!([
+            { "configId": "model", "category": "model", "options": [{ "value": "model-a" }, { "value": "model-b" }] },
+            { "configId": "effort", "category": "thought_level", "options": [{ "value": "low" }, { "value": "high" }] }
+        ]);
+        let f = c.on_frame(&reply(2, json!({ "sessionId": "s", "configOptions": opts })));
+        assert_eq!(f[0]["params"], json!({ "sessionId": "s", "configId": "model", "type": "id", "value": "model-a" }));
+        let f = c.on_frame(&reply(3, json!({})));
+        assert_eq!(f[0]["params"]["configId"], "effort");
+        // providers/set 失败：不开会话
+        let mut c = Client::new("/w", "p", None).with_provider(Some(json!({})));
+        c.start();
+        c.on_frame(&reply(0, json!({ "protocolVersion": 2 })));
+        assert!(c.on_frame(&json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32603, "message": "Model discovery failed" } })).is_empty());
+        assert!(matches!(&c.outcome, Some(Outcome::Failed(m)) if m.contains("换供应商")));
+        // dsh 的强度没有类别：按 reasoning_effort 找
+        let mut c = Client::new("/w", "p", None).with_sets(vec![("@thought_level".into(), "max".into())]);
+        c.start();
+        c.on_frame(&reply(0, json!({})));
+        let f = c.on_frame(&reply(1, json!({ "sessionId": "s", "configOptions": [{ "id": "reasoning_effort", "options": [{ "value": "max" }] }] })));
+        assert_eq!(f[0]["params"]["configId"], "reasoning_effort");
+    }
+
     #[test]
     fn config_sets_go_before_the_mode_and_the_prompt() {
         let mut c = Client::new("/w", "p", Some("full")).with_sets(vec![("reasoning_effort".into(), "high".into()), ("model".into(), "nope".into())]);

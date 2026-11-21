@@ -1,6 +1,6 @@
 /* 调度（PRD §9.1「自动领取」）界面上要算的东西：接单时段的文字和整理、机器现在接不接单。
    纯函数，不碰界面和接口；「现在」是服务端时区一天里的第几分钟（工作区数据里带着），不用浏览器的时区 */
-import type { BoardInfo, ClaimRule, HostAgent, HostInfo, Workspace } from './types';
+import type { BoardInfo, HostAgent, HostInfo, Workspace } from './types';
 
 /** 一段接单时段：一天里的 [起, 止)，分钟 */
 export type Win = [number, number];
@@ -85,33 +85,3 @@ export function agentTake(h: HostInfo, agent: string, running: number, minute: n
 
 /** 这块白板上现在能领的卡片数（可领取状态里的卡片；排队、在跑的不在这些状态里） */
 export const claimable = (b: BoardInfo) => b.statuses.filter(s => s.claim).reduce((n, s) => n + (b.counts[s.key] ?? 0), 0);
-
-/** 一个 agent 由这些机器做（领取规则里按 agent 一组）：没设置过时所有装了它的机器都参与 */
-export interface PickState {
-  /** 选中了的机器 id（没设置过时是能选的全部） */
-  on: number[];
-  /** 一台都没选：这个 agent 不自动领卡 */
-  none: boolean;
-  /** 没设置过（旧数据、之后才装上的机器）：所有装了它的机器都参与 */
-  unset: boolean;
-}
-
-/** 这个 agent 现在选了哪些机器。`has` 是装着它的机器：没设置过、旧版服务端没有这一项时都算选中 */
-export function pickState(ws: Pick<Workspace, 'sched'> | null | undefined, agent: string, has: number[]): PickState {
-  const p = ws?.sched?.picks?.find(x => x.agent === agent);
-  if (!p) return { on: [...has], none: false, unset: true };
-  if (p.none) return { on: [], none: true, unset: false };
-  if (p.unset && !p.hosts?.length) return { on: [...has], none: false, unset: true };
-  return { on: p.hosts ?? [...has], none: false, unset: !!p.unset };
-}
-
-/** 点一下胶囊：选中就取消，没选中就勾上 */
-export const togglePick = (st: PickState, id: number): number[] => (st.on.includes(id) ? st.on.filter(h => h !== id) : [...st.on, id]);
-
-/** 规则里出现的 agent，按第一次出现的先后；兜底的 agent 排在最后（没出现过才加） */
-export function ruleAgents(rules: ClaimRule[], fallback?: string | null): string[] {
-  const out: string[] = [];
-  for (const r of rules) if (!out.includes(r.agent)) out.push(r.agent);
-  if (fallback && !out.includes(fallback)) out.push(fallback);
-  return out;
-}

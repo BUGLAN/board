@@ -174,8 +174,8 @@ board attach 2 shot.png --comment "截图"  # 上传附件
 board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每个项目的目录是 <工作空间>/<项目目录>（项目设置里填，留空用项目标识；项目下的白板共用），没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、Codex，其他 agent 见 docs/agents.md
 board host --install --name mbp --workspace ~/repo   # 装成开机自启的服务（异常退出 10 秒后自动重启）；board host --uninstall 卸载
 board skills push ~/.claude/skills/my-skill   # 传进 skills 共用库，所有机器的 board host 自动装到各 agent 的 skill 目录；ls / rm / sync
-board dispatch 2 --host mbp   # 把 #2 派给 mbp 的默认 agent；--cancel 取消或停止
-board dispatch 3 --any        # 不指定机器，服务端挑空位最多的一台；--move --host <机器名> 改派排队中的派发
+board dispatch 2 --host mbp --profile 修复   # 按角色「修复」把 #2 派给 mbp（不带 --profile 用按规则会交给的角色）；--cancel 取消或停止
+board dispatch 3 --any                       # 不指定机器，服务端在能跑这个角色的机器里挑空位最多的一台；--move --host <机器名> 改派排队中的派发
 ```
 
 所有命令都支持 `--json`；每个命令的输出样例见 [docs/cli.md](docs/cli.md)，完整的命令和参数见 `board help`，规则与错误码见 skill。
@@ -183,7 +183,7 @@ board dispatch 3 --any        # 不指定机器，服务端挑空位最多的一
 ## 边界
 
 - Board 不是 agent：不生成任务、不监听 issue；`board host` 只启动机器上已经装好的 agent。生成任务、监听 issue 都可以在 Board 之外做，再通过 CLI 把任务写进来。
-- Board 不是团队协作工具：一个实例只有一个登录账号，没有成员、角色和注册。
+- Board 不是团队协作工具：一个实例只有一个登录账号，没有成员、权限分级和注册。
 - Board 不替人做决定：优先级、验收和是否完成都在界面上由人决定；agent 只能沿工作流移动卡片。
 
 ---

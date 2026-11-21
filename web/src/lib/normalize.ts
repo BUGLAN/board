@@ -19,6 +19,7 @@ import type {
   HostInfo,
   HostRes,
   McpServer,
+  Profile,
   Provider,
   ProviderView,
   SessionView,
@@ -37,7 +38,7 @@ const obj = <T extends object>(v: T | null | undefined): T | null | undefined =>
 
 const normAgent = (a: HostAgent): HostAgent => ({ ...a, envs: maybe(a.envs) });
 
-const normRule = (r: ClaimRule): ClaimRule => ({ ...r, labels: list(r.labels), missing: maybe(r.missing) });
+const normRule = (r: ClaimRule): ClaimRule => ({ ...r, profile: r.profile ?? '', labels: list(r.labels), missing: maybe(r.missing) });
 
 const normSync = (r: SyncResult): SyncResult => {
   const s = obj(r.skills);
@@ -84,6 +85,7 @@ export function normHost(h: HostInfo): HostInfo {
     workspace: ws ? { ...ws, overrides: maybe(ws.overrides) } : ws,
     dirs: list(h.dirs),
     rules: maybe(h.rules)?.map(normRule),
+    fits: maybe(h.fits),
     cron: list(h.cron),
     windows: maybe(h.windows),
     ops: maybe(h.ops),
@@ -98,6 +100,16 @@ export function normHost(h: HostInfo): HostInfo {
 
 const normAgentInfo = (a: AgentInfo): AgentInfo => ({ ...a, cards: list(a.cards) });
 
+/** 角色：字符串缺了补空，「只在这些机器上跑」不是数组时当作不限 */
+const normProfile = (p: Profile): Profile => ({
+  ...p,
+  provider: p.provider ?? '',
+  model: p.model ?? '',
+  effort: p.effort ?? '',
+  note: p.note ?? '',
+  only: list(p.only),
+});
+
 /** 工作区：机器、派发、接不了的机器 × 白板、在线的 agent、调度。旧服务端没有的（hosts、dispatches…）留着没有 */
 export function normWorkspace(ws: Workspace): Workspace {
   if (!ws || typeof ws !== 'object') return ws;
@@ -109,7 +121,7 @@ export function normWorkspace(ws: Workspace): Workspace {
     dispatches: maybe(ws.dispatches),
     blocks: maybe(ws.blocks),
     checklist: maybe(ws.checklist)?.map(c => ({ ...c, items: list(c.items) })),
-    sched: sched ? { ...sched, rules: list(sched.rules).map(normRule) } : (sched ?? undefined),
+    sched: sched ? { ...sched, rules: list(sched.rules).map(normRule), profiles: maybe(sched.profiles)?.map(normProfile) } : (sched ?? undefined),
   };
 }
 

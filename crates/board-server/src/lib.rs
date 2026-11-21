@@ -352,6 +352,8 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/mine", get(hosts::mine))
         .route("/hosts/pause-all", post(hosts::pause_all))
         .route("/sched", patch(hosts::sched_update))
+        .route("/profiles", post(hosts::profile_put))
+        .route("/profiles/{id}", delete(hosts::profile_remove))
         .route("/hosts/stop-all", post(hosts::stop_all))
         .route("/hosts/{name}", patch(hosts::update).delete(hosts::remove))
         .route("/hosts/{name}/rename", post(hosts::rename))

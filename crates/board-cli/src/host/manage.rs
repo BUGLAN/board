@@ -251,7 +251,7 @@ impl Host<'_> {
         let prompt_file = tmp.join(format!("prompt-{}.txt", spec.id));
         std::fs::write(&prompt_file, selftest::PROMPT).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
         // 自检不领卡：不续轮
-        let c = self.acp_command(spec, check, &env, tmp, &prompt_file, 0)?;
+        let c = self.acp_command(spec, check, &env, tmp, &prompt_file, 0, None)?;
         Ok((c, Some(Stream::Acp)))
     }
 }

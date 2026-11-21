@@ -369,6 +369,8 @@ export interface HostInfo {
   /** 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片 */
   fallback?: string | null;
   fallbackActive?: boolean;
+  /** 每个角色在这台机器上能不能跑（按角色的排列顺序）；旧服务端没有 */
+  fits?: ProfileFit[];
   /** 有规则、没设兜底时：可领取、没有匹配任何规则的卡片数 */
   unmatched?: number;
   paused: boolean;
@@ -757,8 +759,11 @@ export interface ClaimRule {
   /** in 带其中任一个 · all 全都带 · not_in 一个都不带 · equal 标签正好是这几个 · only 只在这几个里 · none 没有标签 */
   op: 'in' | 'all' | 'not_in' | 'equal' | 'only' | 'none';
   labels: string[];
-  agent: string;
-  /** agent 找得到（服务端算）：机器上的规则看这台机器，全局的规则看有没有任一台机器；找不到时这条规则不生效 */
+  /** 交给哪个角色（角色标识） */
+  profile: string;
+  /** 这个角色的 agent（服务端发出来时带着；旧服务端只有它） */
+  agent?: string;
+  /** 能跑这个角色（服务端算）：机器上的规则看这台机器，全局的规则看有没有任一台机器；都跑不了时这条规则不生效 */
   active?: boolean;
   /** 所有项目里都没有的标签（服务端算） */
   missing?: string[];
@@ -792,8 +797,36 @@ export interface Sched {
   maxRun?: number;
   /** 没输出多久算卡住（分钟，0 = 不限），所有机器一样 */
   idleRun?: number;
-  /** 每个 agent 由哪些机器做（没有这一项的 agent 所有装了它的机器都参与） */
+  /** 旧版的每个 agent 由哪些机器做：换成了角色的「只在这些机器上跑」，新服务端一直是空的 */
   picks?: SchedPick[];
+  /** 角色（按排列顺序）：规则交给角色，派发选角色；旧服务端没有 */
+  profiles?: Profile[];
+}
+
+/** 角色（PRD §9.1「分工」）：agent + 模型来源 + 强度，规则和派发按角色分 */
+export interface Profile {
+  id: string;
+  name: string;
+  agent: string;
+  /** 共用配置里的供应商；空 = 本机登录（用机器上 agent 自己登录的账号） */
+  provider: string;
+  /** 模型；空 = agent 自己的默认（只有本机登录时可以空） */
+  model: string;
+  /** 思考强度；空 = 不设 */
+  effort: string;
+  /** 附加说明：派发时接在提示词后面 */
+  note: string;
+  /** 只在这些机器上跑（机器 id）；空 = 所有能跑的 */
+  only: number[];
+  sort?: number;
+  createdAt?: number;
+}
+
+/** 一台机器能不能跑一个角色（服务端算）：没装这个 agent、不在角色的机器里……时 `ok` 是 false，`why` 写原因 */
+export interface ProfileFit {
+  profile: string;
+  ok: boolean;
+  why?: string;
 }
 
 /** 一次派发：在某台机器上用某种 agent 做某张卡 */
@@ -836,6 +869,11 @@ export interface Dispatch {
   effort?: string | null;
   /** '' = 做这张卡（领取）；'split' = 拆解「未整理」里的这条（不领取、不移动）。旧服务端没有 */
   kind?: string;
+  /** 按哪个角色派的（角色标识）、派发时角色的名字；按 agent 派的、旧服务端没有 */
+  profile?: string;
+  profileName?: string;
+  /** 角色用的供应商；本机登录时没有 */
+  provider?: string;
 }
 
 /** 在线的 agent（PRD §3）：名字最近一次心跳在 50 秒以内 */

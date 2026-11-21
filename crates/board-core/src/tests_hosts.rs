@@ -93,7 +93,7 @@ fn new_card_tagged(s: &mut Store, title: &str) -> i64 {
 fn dispatch(s: &mut Store, at: i64, card: i64, host: &str, agent: Option<&str>) -> Result<Dispatch> {
     s.write(at, Origin::ui(None), |w| {
         let b = w.resolve(B)?;
-        w.dispatch_create(&b, card, host, agent, &Actor::human())
+        w.dispatch_create(&b, card, host, agent, None, &Actor::human())
     })
 }
 
@@ -543,7 +543,7 @@ fn dispatch_validation_follows_the_table() {
     exec(&mut s, T0, &Actor::human(), Cmd::Move { id: b, column: "review".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     let by_agent = s.write(T0, Origin::cli(), |w| {
         let r = w.resolve(B)?;
-        w.dispatch_create(&r, b, "mbp", None, &Actor::agent("beta/x"))
+        w.dispatch_create(&r, b, "mbp", None, None, &Actor::agent("beta/x"))
     });
     assert_eq!(by_agent.unwrap_err().code, ErrorCode::NotInTodo);
     // 机器不存在
@@ -564,7 +564,7 @@ fn dispatch_validation_follows_the_table() {
     let d = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("default/other")?;
-            w.dispatch_create(&b, c, "mbp", None, &Actor::human())
+            w.dispatch_create(&b, c, "mbp", None, None, &Actor::human())
         })
         .unwrap();
     assert_eq!(d.board, "default/other");
@@ -1159,10 +1159,10 @@ fn cron_round_fills_slots_rotates_boards_and_ends() {
         .unwrap()
         .card
         .id;
-    // 规则「全部」→ claude：两块白板的卡片都不带它，靠「其余卡片 →」兜底给 claude，都能领
+    // 规则「不带『全部』」→ claude：两块白板的卡片都不带它，都能领
     s.write(T0, Origin::ui(None), |w| w.create_label("default", "全部", None, false)).unwrap();
     // 一个会话只做一张（N = 1）：这里测的是占空位、多块白板轮流；会话排几张见 session_* 的用例
-    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), max: Some(2), per_session: Some(1), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("not_in", &["全部"], "claude")]), max: Some(2), per_session: Some(1), ..Default::default() })).unwrap();
     let pull = |s: &mut Store, at: i64| s.write(at, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap();
     // 没开自动接单时不领
     assert!(pull(&mut s, T0 + S).is_none());
@@ -2400,7 +2400,7 @@ fn rules_pick_cards_and_agents() {
 }
 
 #[test]
-fn rules_route_labels_to_agents_and_fallback() {
+fn rules_route_labels_to_profiles_and_unmatched_cards_stay() {
     // 规则 claude → claude、deepseek → dsh：分别由对应的 agent 做
     let mut s = store();
     beat(&mut s, T0, &report_cd("i1")).unwrap();
@@ -2416,18 +2416,21 @@ fn rules_route_labels_to_agents_and_fallback() {
     rules(&mut s, &[("CLAUDE", "claude"), ("deepseek", "dsh")], None).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into()), (d, "dsh".into())]);
 
-    // 规则 claude → claude，兜底 dsh：不带标签的、带 deepseek 的由 dsh 做；先后仍按领取顺序
+    // 没有兜底了：规则都没命中的卡不自动领；旧版界面发来的兜底被拒绝，只认「取消」
     let mut s = store();
     beat(&mut s, T0, &report_cd("i1")).unwrap();
     let lc = label(&mut s, "claude");
-    let ld = label(&mut s, "deepseek");
-    let n1 = new_card(&mut s, T0, "无标签");
+    new_card(&mut s, T0, "无标签");
     let c = new_card(&mut s, T0, "C");
     tag(&mut s, c, lc);
-    let d = new_card(&mut s, T0, "D");
-    tag(&mut s, d, ld);
-    rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
-    assert_eq!(round_all(&mut s, T0 + S), vec![(n1, "dsh".into()), (c, "claude".into()), (d, "dsh".into())]);
+    assert_eq!(rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap_err().code, ErrorCode::Usage);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into())]);
+    // 升级时按 agent 写的规则交给同名角色（本机登录、不指定模型）
+    let sched = s.read(|r| r.sched(T0)).unwrap();
+    assert_eq!(sched.profiles.len(), 1);
+    assert_eq!((sched.profiles[0].name.as_str(), sched.profiles[0].agent.as_str(), sched.profiles[0].provider.as_str()), ("Claude Code", "claude", ""));
+    assert_eq!(sched.rules[0].profile, sched.profiles[0].id);
 }
 
 /// 没有一条领取规则时不自动领取：「现在领一轮」被拒绝，定时到点也不领卡；兜底单独设了也不算规则。
@@ -2440,8 +2443,8 @@ fn no_rules_never_auto_claims() {
     // 开了自动接单、但一条规则也没有：不算在自动接单
     set_host(&mut s, HostPatch { auto: Some(true), ..Default::default() }).unwrap();
     assert!(!host(&s, T0 + S).round);
-    // 只设了兜底也一样
-    set_host(&mut s, HostPatch { fallback: Some("dsh".into()), ..Default::default() }).unwrap();
+    // 兜底没有了：设不上
+    assert_eq!(set_host(&mut s, HostPatch { fallback: Some("dsh".into()), ..Default::default() }).unwrap_err().code, ErrorCode::Usage);
     assert!(host(&s, T0 + S).rules.is_empty());
     assert!(!host(&s, T0 + S).round);
     // 以前的「现在领一轮」接口留给旧版 board host 调：什么也不做，不报错
@@ -2502,8 +2505,8 @@ fn rules_count_unmatched_cards() {
     assert_eq!(host(&s, T0).unmatched, 1);
     let ws = s.read(|r| r.hosts(T0)).unwrap();
     assert_eq!(ws[0].unmatched, 1, "工作区里的机器也带上");
-    rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
-    assert_eq!(host(&s, T0).unmatched, 0, "设了兜底后不再显示");
+    assert!(rules(&mut s, &[("claude", "claude")], Some("dsh")).is_err(), "兜底设不上了，没命中的照样数");
+    assert_eq!(host(&s, T0).unmatched, 1);
 }
 
 #[test]
@@ -2517,15 +2520,15 @@ fn rules_agent_must_exist_and_missing_agent_disables_rule() {
     let ld = label(&mut s, "deepseek");
     let d = new_card(&mut s, T0, "D");
     tag(&mut s, d, ld);
-    let info = rules(&mut s, &[("deepseek", "dsh")], Some("claude")).unwrap();
-    assert!(info.rules[0].active && info.fallback_active);
-    // dsh 之后找不到了：这条规则不生效，界面上标出来；带 deepseek 的卡片也不归兜底
+    let info = rules(&mut s, &[("deepseek", "dsh")], None).unwrap();
+    assert!(info.rules[0].active);
+    // dsh 之后找不到了：这台机器跑不了这条规则交给的角色，规则在它上面不生效，界面上标出来
     beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
     let h = host(&s, T0 + S);
     assert!(!h.rules[0].active);
     assert!(round_all(&mut s, T0 + 2 * S).is_empty());
     // 原样保存（agent 找不到了）照样可以，不会把规则弄丢
-    assert!(rules(&mut s, &[("deepseek", "dsh")], Some("claude")).is_ok());
+    assert!(rules(&mut s, &[("deepseek", "dsh")], None).is_ok());
     // 手动派发不受规则影响
     assert_eq!(dispatch(&mut s, T0 + 3 * S, d, "mbp", Some("claude")).unwrap().agent, "claude");
 }
@@ -2538,13 +2541,6 @@ fn rep_mbp() -> HostReport {
 fn rep_desk() -> HostReport {
     let mut r = report("desk", "j1", vec![]);
     r.agents = vec![claude(true), dsh(true)];
-    r
-}
-
-/// 改过名的 mbp（同一个进程 i1）
-fn rep_win() -> HostReport {
-    let mut r = report_cd("i1");
-    r.name = "win".into();
     r
 }
 
@@ -2563,63 +2559,16 @@ fn pull2(s: &mut Store, at: i64, rep: &HostReport) -> Option<i64> {
     s.write(at, Origin::cli(), |w| w.dispatch_pull(&rep.name, &rep.instance, Some(1))).unwrap().map(|d| d.card)
 }
 
-#[test]
-fn pick_off_machine_does_not_auto_claim_that_agent() {
-    let mut s = store();
-    two_hosts(&mut s);
-    let lc = label(&mut s, "claude");
-    let c = new_card(&mut s, T0, "C");
-    tag(&mut s, c, lc);
-    rules(&mut s, &[("claude", "claude")], None).unwrap();
-    // 没设置过：两台都参与（和以前一样），第一台照常领
-    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
-    assert_eq!(pull2(&mut s, T0 + S, &rep_mbp()), Some(c));
-    let d = s.read(|r| r.active_dispatches()).unwrap();
-    assert_eq!(d.len(), 1);
-    // 勾掉 mbp（只留 desk 一台）：mbp 不领 claude 的卡
-    let mbp = host(&s, T0).id;
-    let sc = s.write(T0 + 2 * S, Origin::ui(None), |w| w.sched_pick("claude", &[desk], &[mbp], false)).unwrap();
-    assert_eq!(sc.picks.iter().find(|p| p.agent == "claude").map(|p| (p.hosts.clone(), p.none, p.unset)), Some((vec![desk], false, false)));
-    let c2 = new_card(&mut s, T0 + 2 * S, "C2");
-    tag(&mut s, c2, lc);
-    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_mbp()), None, "没勾的机器有空位也不领");
+/// 把一个角色改成只在这几台机器上跑（机器 id）
+fn only(s: &mut Store, at: i64, agent: &str, hosts: &[i64]) {
+    let mut p = s.read(|r| r.profiles()).unwrap().into_iter().find(|p| p.agent == agent).expect("规则里有这个 agent 的角色");
+    p.only = hosts.to_vec();
+    s.write(at, Origin::ui(None), |w| w.profile_put(&p, "人")).unwrap();
 }
 
+/// 角色「只在这些机器上跑」：没勾的机器不自动领交给这个角色的卡，别的角色照常；勾上所有机器等于不限制
 #[test]
-fn pick_none_means_agent_never_auto_claims() {
-    let mut s = store();
-    two_hosts(&mut s);
-    let lc = label(&mut s, "claude");
-    let c = new_card(&mut s, T0, "C");
-    tag(&mut s, c, lc);
-    rules(&mut s, &[("claude", "claude")], None).unwrap();
-    // 两台都取消：一台都没勾，两台都不领（换新的进程标识也一样），卡片留在待办；手动派发照常
-    let ids: Vec<i64> = s.read(|r| r.hosts(T0)).unwrap().iter().map(|h| h.id).collect();
-    let sc = s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("claude", &[], &ids, false)).unwrap();
-    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
-    assert!(p.none && p.hosts.is_empty() && !p.unset, "{p:?}");
-    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_mbp()), None);
-    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_desk()), None);
-    assert_eq!(card(&s, c).card.column, "todo");
-    assert_eq!(dispatch(&mut s, T0 + 3 * S, c, "mbp", Some("claude")).unwrap().agent, "claude");
-    // 恢复全选（所有装了它的机器）：先取消手动派发（卡片回到待办）
-    s.write(T0 + 4 * S, Origin::ui(None), |w| w.sched_pick("claude", &[], &[], true)).unwrap();
-    let sc = s.read(|r| r.sched(T0 + 4 * S)).unwrap();
-    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
-    let ids: Vec<i64> = s.read(|r| r.hosts(T0)).unwrap().iter().map(|h| h.id).collect();
-    assert!(p.unset && !p.none && p.hosts.len() == ids.len(), "{p:?}");
-    let back = s.read(|r| r.active_dispatches()).unwrap();
-    for d in back {
-        s.write(T0 + 5 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "不要了")).unwrap();
-    }
-    // 这一段接单里 mbp 先跳过它（手动派发过又取消）：换新的一段接单后照常领
-    s.write(T0 + 6 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
-    s.write(T0 + 6 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(false), ..Default::default() })).unwrap();
-    assert_eq!(pull2(&mut s, T0 + 7 * S, &rep_mbp()), Some(c), "新的一段接单照常领");
-}
-
-#[test]
-fn picks_are_per_agent_and_survive_rename() {
+fn profile_only_limits_which_machines_auto_claim() {
     let mut s = store();
     two_hosts(&mut s);
     let lc = label(&mut s, "claude");
@@ -2629,77 +2578,22 @@ fn picks_are_per_agent_and_survive_rename() {
     let d = new_card(&mut s, T0, "D");
     tag(&mut s, d, ld);
     rules(&mut s, &[("claude", "claude"), ("deepseek", "dsh")], None).unwrap();
-    // 只勾掉 claude 在 mbp 上的参与：dsh 的卡不变
-    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
-    let mbp = s.read(|r| r.host("mbp", T0)).unwrap().id;
-    s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("claude", &[desk], &[mbp], false)).unwrap();
-    // 改名：存的是机器 id，选择不受影响
-    s.write(T0 + 2 * S, Origin::cli(), |w| w.host_rename("mbp", "win")).unwrap();
-    let sc = s.read(|r| r.sched(T0 + 2 * S)).unwrap();
-    assert_eq!(sc.picks.iter().find(|p| p.agent == "claude").unwrap().hosts, vec![desk]);
-    let pd = sc.picks.iter().find(|p| p.agent == "dsh").unwrap();
-    assert!(pd.unset && pd.hosts.contains(&mbp) && pd.hosts.contains(&desk), "dsh 没设置过 = 全都参与");
-    // 改名后还是那台机器：win 不领 claude 的卡（claude 的卡留给勾着的 desk），dsh 的卡它自己领走
-    let first = pull2(&mut s, T0 + 3 * S, &rep_win());
-    assert_ne!(first, Some(c), "win（原来的 mbp）不领 claude 的卡");
-    assert_eq!(first, Some(d), "它照常领自己参与的 dsh 卡");
-    assert_eq!(pull2(&mut s, T0 + 4 * S, &rep_desk()), Some(c));
-    // 规则整个保存（界面改标签）：没带 hosts 时保留原来的选择
-    let next = vec![rule("claude", "claude"), rule("deepseek", "dsh")];
-    s.write(T0 + 5 * S, Origin::ui(None), |w| w.sched_update(Some(&next), None)).unwrap();
-    let sc = s.read(|r| r.sched(T0 + 5 * S)).unwrap();
-    assert_eq!(sc.picks.iter().find(|p| p.agent == "claude").unwrap().hosts, vec![desk], "整个列表替换时选择不丢");
-}
-
-#[test]
-fn removed_or_new_host_and_agent() {
-    let mut s = store();
-    two_hosts(&mut s);
-    let lc = label(&mut s, "claude");
-    let c = new_card(&mut s, T0, "C");
-    tag(&mut s, c, lc);
-    rules(&mut s, &[("claude", "claude")], None).unwrap();
-    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
-    let mbp = s.read(|r| r.host("mbp", T0)).unwrap().id;
-    // 勾掉的 mbp 仍然不参与；移除勾着的 desk 不会把 mbp 重新选回来
-    s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("claude", &[desk], &[mbp], false)).unwrap();
-    s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_remove("desk", &Actor::human(), "buglan")).unwrap();
-    let sc = s.read(|r| r.sched(T0 + 2 * S)).unwrap();
-    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
-    assert!(p.hosts.is_empty() && p.none && !p.unset, "{p:?}");
-    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_mbp()), None, "被排除的 mbp 没因为另一台被移除而恢复");
-    // 移除被排除的 mbp：排除列表清空；之后新装 claude 的机器默认参与
-    s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "buglan")).unwrap();
-    let sc = s.read(|r| r.sched(T0 + 4 * S)).unwrap();
-    let p = sc.picks.iter().find(|p| p.agent == "claude").unwrap();
-    assert!(p.hosts.is_empty() && p.unset, "排除列表清完 = 默认全选");
-    let mut air = report("air", "k1", vec![]);
-    air.agents = vec![claude(true)];
-    beat(&mut s, T0 + 5 * S, &air).unwrap();
-    s.write(T0 + 5 * S, Origin::ui(None), |w| w.host_update("air", &HostPatch { auto: Some(true), max: Some(1), ..Default::default() })).unwrap();
-    assert_eq!(pull2(&mut s, T0 + 6 * S, &air), Some(c), "后装上这个 agent 的机器默认参与");
-}
-
-/// 只有兜底、没有规则行的 agent 也能单独勾机器；没勾的机器不领规则没命中的卡片
-#[test]
-fn fallback_only_agent_can_pick_machines() {
-    let mut s = store();
-    two_hosts(&mut s);
-    label(&mut s, "claude");
-    let other = new_card(&mut s, T0, "其余");
-    rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap();
     let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
     let mbp = host(&s, T0).id;
-    let sc = s.write(T0 + S, Origin::ui(None), |w| w.sched_pick("dsh", &[], &[mbp], false)).unwrap();
-    let p = sc.picks.iter().find(|p| p.agent == "dsh").unwrap();
-    assert_eq!((p.hosts.clone(), p.none, p.unset), (vec![desk], false, false));
-    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_mbp()), None, "兜底 agent 在 mbp 上被勾掉");
-    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_desk()), Some(other), "desk 仍然接兜底卡片");
+    only(&mut s, T0 + S, "claude", &[desk]);
+    let h = host(&s, T0 + S);
+    let claude_role = s.read(|r| r.profiles()).unwrap().into_iter().find(|p| p.agent == "claude").unwrap();
+    assert!(h.fits.iter().any(|f| f.profile == claude_role.id && !f.ok && f.why.contains("不在")), "{:?}", h.fits);
+    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_mbp()), Some(d), "mbp 跳过交给 Claude Code 的卡，领 dsh 的");
+    assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_desk()), Some(c));
+    // 勾上所有机器 = 不限制
+    only(&mut s, T0 + 3 * S, "claude", &[desk, mbp]);
+    assert!(s.read(|r| r.profiles()).unwrap().iter().all(|p| p.only.is_empty()));
 }
 
-/// 会话中途把机器从「由这些机器做」里点掉：board next 不再把排着的卡交给它，卡片释放给别的机器
+/// 会话中途角色不再在这台机器上跑：board next 不再把排着的卡交给它，卡片释放给别的机器
 #[test]
-fn next_stops_when_machine_is_unpicked_mid_session() {
+fn next_stops_when_the_profile_leaves_the_machine_mid_session() {
     let mut s = store();
     two_hosts(&mut s);
     let lc = label(&mut s, "claude");
@@ -2713,12 +2607,12 @@ fn next_stops_when_machine_is_unpicked_mid_session() {
     let d = pull(&mut s, T0 + 2 * S).unwrap();
     assert_eq!(d.card, first);
     let name = d.name.unwrap();
-    let mbp = host(&s, T0).id;
-    s.write(T0 + 3 * S, Origin::ui(None), |w| w.sched_pick("claude", &[], &[mbp], false)).unwrap();
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    only(&mut s, T0 + 3 * S, "claude", &[desk]);
     submit(&mut s, T0 + 3 * S, &name, first);
     assert_eq!(next(&mut s, T0 + 4 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
     assert_eq!(card(&s, second).card.column, "todo", "排着的那张已经放回待办");
-    assert_eq!(pull2(&mut s, T0 + 5 * S, &rep_desk()), Some(second), "仍然勾着的 desk 接着领");
+    assert_eq!(pull2(&mut s, T0 + 5 * S, &rep_desk()), Some(second), "还能跑这个角色的 desk 接着领");
 }
 
 /// 会话里 board next 只领按规则属于这个会话的 agent 的卡片；规则用到的标签不算共同标签
@@ -2786,7 +2680,9 @@ fn per_host_rules_migrate_to_global_rules_and_old_cron_is_dropped() {
     let got: Vec<(String, Vec<String>, String)> = sched.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect();
     let want = vec![("in", vec!["定时"], "dsh"), ("in", vec!["claude"], "claude"), ("none", vec![], "dsh")];
     assert_eq!(got, want.into_iter().map(|(o, l, a)| (o.to_string(), l.into_iter().map(String::from).collect(), a.to_string())).collect::<Vec<_>>(), "按机器建立的先后接上，一模一样的（不分大小写）只留一条");
-    assert_eq!(sched.fallback.as_deref(), Some("dsh"));
+    assert_eq!(sched.fallback, None, "兜底去掉了");
+    let names: Vec<(&str, &str)> = sched.profiles.iter().map(|p| (p.name.as_str(), p.agent.as_str())).collect();
+    assert_eq!(names, vec![("DeepSeek Harness", "dsh"), ("Claude Code", "claude")], "规则里用到的 agent 各一个同名角色");
     let h = |n: &str| s.read(|r| r.host(n, T0)).unwrap();
     for n in ["mbp", "win", "air"] {
         assert!(!h(n).auto, "{n}：旧的定时领取不迁移，自动接单关着，打开之前不会自己领卡");
@@ -2814,8 +2710,8 @@ fn rules_are_global_and_validated_against_all_hosts() {
     label(&mut s, "定时");
     let set = |s: &mut Store, rules: Vec<ClaimRule>, fb: Option<&str>| s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&rules), fb));
     // dsh 只在 win 上：照样能写进规则；mbp 上这条不生效，win 上生效
-    let out = set(&mut s, vec![cond("in", &["定时"], "dsh")], Some("claude")).unwrap();
-    assert!(out.rules[0].active && out.fallback_active);
+    let out = set(&mut s, vec![cond("in", &["定时"], "dsh")], None).unwrap();
+    assert!(out.rules[0].active);
     let active = |s: &Store, n: &str| s.read(|r| r.host(n, T0)).unwrap().rules[0].active;
     assert!(!active(&s, "mbp") && active(&s, "win"));
     // 没有哪个项目有的标签、没有机器找得到的 agent 拒绝
@@ -2833,9 +2729,8 @@ fn rules_accept_builtin_agents_before_any_host() {
     let mut s = store();
     label(&mut s, "bug");
     let set = |s: &mut Store, rules: Vec<ClaimRule>, fb: Option<&str>| s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&rules), fb));
-    let out = set(&mut s, vec![cond("in", &["bug"], "claude")], Some("codex")).unwrap();
+    let out = set(&mut s, vec![cond("in", &["bug"], "claude")], None).unwrap();
     assert_eq!((out.rules[0].agent.as_str(), out.rules[0].active), ("claude", false));
-    assert_eq!((out.fallback.as_deref(), out.fallback_active), (Some("codex"), false));
     // 不是内置的 agent 照样拒绝，原因里列出能选的
     let err = set(&mut s, vec![cond("in", &["bug"], "nope")], None).unwrap_err().message;
     assert!(err.contains("没有机器上找得到 agent「nope」") && err.contains("dsh、claude、codex"), "{err}");
@@ -2887,10 +2782,9 @@ fn rule_conditions_in_not_in_equal() {
     let (mut s, c, _, b, n) = setup();
     set_conds(&mut s, vec![cond("in", &["claude"], "claude"), cond("not_in", &["UI"], "dsh")], None).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into()), (b, "claude".into()), (n, "dsh".into())]);
-    // 没设兜底时未匹配的按新条件算：equal [claude, UI] 只命中一张，另外 3 张没匹配；设了兜底后不显示
+    // 未匹配的按新条件算：equal [claude, UI] 只命中一张，另外 3 张没匹配
     let (mut s, ..) = setup();
     assert_eq!(set_conds(&mut s, vec![cond("equal", &["claude", "UI"], "claude")], None).unwrap().unmatched, 3);
-    assert_eq!(set_conds(&mut s, vec![cond("equal", &["claude", "UI"], "claude")], Some("dsh")).unwrap().unmatched, 0);
 }
 
 #[test]
@@ -4748,7 +4642,7 @@ fn split_dispatch_checks_host_and_cron_never_takes_inbox() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     inbox_card(&mut s, T0, &Actor::human(), "只在未整理", None).unwrap();
     s.write(T0, Origin::ui(None), |w| w.create_label("default", "全部", None, false)).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("in", &["全部"], "claude")]), fallback: Some("claude".into()), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("not_in", &["全部"], "claude")]), ..Default::default() })).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "定时领取不会派发未整理里的条目");
 }
@@ -5084,7 +4978,7 @@ fn report_as(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
 fn any(s: &mut Store, at: i64, card: i64, agent: Option<&str>) -> Result<Dispatch> {
     s.write(at, Origin::ui(None), |w| {
         let b = w.resolve(B)?;
-        w.dispatch_create_any(&b, card, agent, &Actor::human())
+        w.dispatch_create_any(&b, card, agent, None, &Actor::human())
     })
 }
 
@@ -5189,7 +5083,7 @@ fn queued_dispatch_can_be_moved_to_another_host_or_to_any() {
     beat(&mut s, T0, &win).unwrap();
     let a = new_card(&mut s, T0, "A");
     let d = dispatch(&mut s, T0, a, "mbp", None).unwrap();
-    let mv = |s: &mut Store, at: i64, host: Option<&str>, agent: Option<&str>| s.write(at, Origin::ui(None), |w| w.dispatch_move(d.id, host, agent, &Actor::human()));
+    let mv = |s: &mut Store, at: i64, host: Option<&str>, agent: Option<&str>| s.write(at, Origin::ui(None), |w| w.dispatch_move(d.id, host, agent, None, &Actor::human()));
     // 换到 win：那台没有 Claude Code，换成它的默认 agent
     let m = mv(&mut s, T0 + S, Some("win"), None).unwrap();
     assert_eq!((m.host.as_str(), m.agent.as_str(), m.state.as_str(), m.any), ("win", "dsh", "queued", false));
@@ -5309,7 +5203,7 @@ fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
     let put = |s: &mut Store, at: i64| {
         s.write(at, Origin::ui(None), |w| {
             let b = w.resolve("newp/main")?;
-            w.dispatch_create(&b, id, "mbp", None, &Actor::human())
+            w.dispatch_create(&b, id, "mbp", None, None, &Actor::human())
         })
     };
     assert_eq!(put(&mut s, T0 + S).unwrap().state, "queued");
@@ -6005,9 +5899,10 @@ fn checklist_auto_item_names_what_is_missing() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     // 没有规则、机器不是自动领
     assert_eq!(state_of(&s, T0, "auto"), ("fail".into(), Some("rules".into())));
-    assert_eq!(why_of(&s, T0, "auto"), "还没有领取规则或兜底；能接的机器都不是「自动领」：只影响自动领取，手动派发照常");
-    // 只有兜底也算规则；机器还是「只做派给它的」
-    s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[]), Some("claude"))).unwrap();
+    assert_eq!(why_of(&s, T0, "auto"), "还没有领取规则；能接的机器都不是「自动领」：只影响自动领取，手动派发照常");
+    // 有了规则；机器还是「只做派给它的」
+    label(&mut s, "bug");
+    s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[cond("in", &["bug"], "claude")]), None)).unwrap();
     assert_eq!(state_of(&s, T0, "auto"), ("fail".into(), Some("accept".into())));
     assert_eq!(why_of(&s, T0, "auto"), "能接的机器都不是「自动领」：只影响自动领取，手动派发照常");
     set_host(&mut s, HostPatch { auto: Some(true), ..Default::default() }).unwrap();
@@ -6114,7 +6009,7 @@ fn humans_dispatch_from_any_unlocked_status_in_one_step() {
     // agent 不能从错误节点派发
     let by_agent = s.write(T0, Origin::cli(), |w| {
         let r = w.resolve(B)?;
-        w.dispatch_create(&r, a, "mbp", None, &Actor::agent("beta/x"))
+        w.dispatch_create(&r, a, "mbp", None, None, &Actor::agent("beta/x"))
     });
     assert_eq!(by_agent.unwrap_err().code, ErrorCode::NotInTodo);
     assert_eq!(card(&s, a).card.column, key);
@@ -6140,7 +6035,7 @@ fn humans_dispatch_from_any_unlocked_status_in_one_step() {
     let de = s
         .write(T0 + 4 * S, Origin::ui(None), |w| {
             let r = w.resolve(B)?;
-            w.dispatch_create_any(&r, e, None, &Actor::human())
+            w.dispatch_create_any(&r, e, None, None, &Actor::human())
         })
         .unwrap();
     assert_eq!(card(&s, e).card.column, "doing");
@@ -6172,4 +6067,184 @@ fn canceling_a_queue_never_moves_a_card_out_of_the_error_status() {
     s.write(T0 + 3 * S, Origin::ui(None), |w| w.dispatch_cancel(queued.id, &Actor::human(), "buglan")).unwrap();
     assert_eq!(card(&s, b).card.column, key, "错误节点只有人能移出");
     assert_eq!(card(&s, b).card.claimed_from, None);
+}
+
+/* ---------------- 角色（profiles.rs）：agent + 模型来源 + 强度，规则和派发按角色 ---------------- */
+
+fn relay() -> crate::providers::Provider {
+    crate::providers::Provider {
+        name: "relay".into(),
+        endpoints: vec![crate::providers::ProviderEndpoint { interface: "anthropic".into(), url: "https://relay.example/v1".into() }],
+        api_key: Some("sk-test".into()),
+        models: vec!["model-a".into(), "model-b".into()],
+        ..Default::default()
+    }
+}
+
+fn put_role(s: &mut Store, at: i64, p: crate::profiles::Profile) -> Result<crate::profiles::Profile> {
+    s.write(at, Origin::ui(None), |w| w.profile_put(&p, "人"))
+}
+
+fn role(name: &str, agent: &str, provider: &str, model: &str, effort: &str) -> crate::profiles::Profile {
+    crate::profiles::Profile { name: name.into(), agent: agent.into(), provider: provider.into(), model: model.into(), effort: effort.into(), ..Default::default() }
+}
+
+/// 新建、修改角色时的校验：名字、agent、供应商的接口和模型、强度；删掉时交给它的规则一起删
+#[test]
+fn profiles_are_validated_and_deleting_drops_their_rules() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
+    let err = |s: &mut Store, p| put_role(s, T0, p).unwrap_err().message;
+    assert!(err(&mut s, role("", "claude", "", "", "")).contains("名字"));
+    assert!(err(&mut s, role("x", "nope", "", "", "")).contains("没有 agent「nope」"));
+    assert!(err(&mut s, role("x", "claude", "没有的", "m", "")).contains("没有叫「没有的」的供应商"));
+    assert!(err(&mut s, role("x", "codex", "relay", "model-a", "")).contains("没有 Codex 认的接口"), "relay 只有 Anthropic 接口");
+    assert!(err(&mut s, role("x", "claude", "relay", "", "")).contains("要选模型"));
+    assert!(err(&mut s, role("x", "claude", "relay", "model-z", "")).contains("没有模型「model-z」"));
+    assert!(err(&mut s, role("x", "claude", "", "", "minimal")).contains("Claude Code 的强度只能是"));
+    let fix = put_role(&mut s, T0, role("修复", "claude", "relay", "model-b", "max")).unwrap();
+    assert_eq!(fix.recipe(), "Claude Code · relay · model-b · max");
+    assert!(err(&mut s, role("修复", "dsh", "", "", "")).contains("已经有叫「修复」"), "名字不分大小写不能重复");
+    // 本机登录可以不指定模型；改名字不换标识
+    let local = put_role(&mut s, T0, role("本机", "claude", "", "", "")).unwrap();
+    let renamed = put_role(&mut s, T0, crate::profiles::Profile { name: "主力".into(), ..local.clone() }).unwrap();
+    assert_eq!((renamed.id.as_str(), renamed.name.as_str()), (local.id.as_str(), "主力"));
+    // 供应商还有角色在用：不能删
+    assert!(s.write(T0, Origin::ui(None), |w| w.provider_rm("relay")).unwrap_err().message.contains("「修复」"));
+    // 删角色：交给它的规则一起删
+    label(&mut s, "bug");
+    label(&mut s, "UI");
+    let mut r1 = cond("in", &["bug"], "");
+    r1.profile = fix.id.clone();
+    let mut r2 = cond("in", &["UI"], "");
+    r2.profile = "主力".into();
+    let sched = s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[r1, r2]), None)).unwrap();
+    assert_eq!(sched.rules[1].profile, local.id, "规则按名字找到角色，存的是标识");
+    assert_eq!(s.write(T0, Origin::ui(None), |w| w.profile_delete(&fix.id)).unwrap(), 1);
+    let sched = s.read(|r| r.sched(T0)).unwrap();
+    assert_eq!((sched.rules.len(), sched.profiles.len()), (1, 1));
+}
+
+/// 派发按角色：agent、模型、强度、供应商、附加说明记在派发上（board host 按它们启动这一个进程）；跑不了的机器拒绝
+#[test]
+fn dispatch_by_profile_carries_model_effort_and_provider() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
+    let mut batch = role("批量", "claude", "relay", "model-a", "high");
+    batch.note = "先写测试".into();
+    let batch = put_role(&mut s, T0, batch).unwrap();
+    let c1 = new_card(&mut s, T0, "A");
+    let d = s
+        .write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c1, "mbp", None, Some("批量"), &Actor::human())
+        })
+        .unwrap();
+    assert_eq!((d.agent.as_str(), d.profile.as_str(), d.profile_name.as_str(), d.provider.as_str(), d.note.as_str()), ("claude", batch.id.as_str(), "批量", "relay", "先写测试"));
+    assert_eq!((d.model.as_deref(), d.effort.as_deref()), (Some("model-a"), Some("high")));
+    let text = card(&s, c1).activity.iter().map(|x| x.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("批量（Claude Code · relay · model-a · high）"), "{text}");
+    // 开始时名字按角色的模型、强度
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    assert_eq!(d.name.as_deref(), Some("mbp/model-a-high"));
+    assert_eq!((d.model.as_deref(), d.effort.as_deref()), (Some("model-a"), Some("high")));
+    // 只在别的机器上跑的角色：这台拒绝
+    let mut other = role("别处", "claude", "", "", "");
+    other.only = vec![999];
+    let other = put_role(&mut s, T0, other).unwrap();
+    assert!(other.only.is_empty(), "不存在的机器不留");
+    let c2 = new_card(&mut s, T0, "B");
+    let e = s
+        .write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c2, "mbp", None, Some("没有这个角色"), &Actor::human())
+        })
+        .unwrap_err();
+    assert!(e.message.contains("没有角色「没有这个角色」"), "{}", e.message);
+}
+
+/// 同一台机器、同一个 agent 能同时跑两个模型不同的角色：两次派发各带各的模型
+#[test]
+fn one_agent_runs_two_profiles_with_different_models() {
+    let mut s = store();
+    beat(&mut s, T0, &report_cd("i1")).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(4), per_session: Some(1), auto: Some(true), ..Default::default() })).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
+    let a = put_role(&mut s, T0, role("A", "claude", "relay", "model-a", "")).unwrap();
+    let b = put_role(&mut s, T0, role("B", "claude", "relay", "model-b", "")).unwrap();
+    let la = label(&mut s, "a");
+    let lb = label(&mut s, "b");
+    let ca = new_card(&mut s, T0, "给 A");
+    tag(&mut s, ca, la);
+    let cb = new_card(&mut s, T0, "给 B");
+    tag(&mut s, cb, lb);
+    let mut ra = cond("in", &["a"], "");
+    ra.profile = a.id.clone();
+    let mut rb = cond("in", &["b"], "");
+    rb.profile = b.id.clone();
+    s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[ra, rb]), None)).unwrap();
+    let d1 = pull(&mut s, T0 + S).unwrap();
+    let d2 = pull(&mut s, T0 + S).unwrap();
+    let got: Vec<(i64, String, Option<String>, String)> = [d1, d2].iter().map(|d| (d.card, d.profile_name.clone(), d.model.clone(), d.agent.clone())).collect();
+    assert_eq!(
+        got,
+        vec![(ca, "A".into(), Some("model-a".into()), "claude".into()), (cb, "B".into(), Some("model-b".into()), "claude".into())]
+    );
+}
+
+/// 任意机器按角色挑：只在能跑这个角色的机器里挑；没有能跑的拒绝并写原因
+#[test]
+fn any_host_dispatch_only_picks_machines_that_run_the_profile() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    let mut r = role("只在 desk", "claude", "", "", "");
+    r.only = vec![desk];
+    put_role(&mut s, T0, r).unwrap();
+    put_role(&mut s, T0, role("codex 的", "codex", "", "", "")).unwrap();
+    let card = new_card(&mut s, T0, "A");
+    let any = |s: &mut Store, card: i64, p: &str| {
+        s.write(T0 + S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create_any(&b, card, None, Some(p), &Actor::human())
+        })
+    };
+    let d = any(&mut s, card, "只在 desk").unwrap();
+    assert_eq!((d.host.as_str(), d.profile_name.as_str()), ("desk", "只在 desk"));
+    let c2 = new_card(&mut s, T0, "B");
+    let e = any(&mut s, c2, "codex 的").unwrap_err();
+    assert!(e.message.contains("都跑不了角色「codex 的」") && e.message.contains("没装 Codex"), "{}", e.message);
+}
+
+/// 升级：「由这些机器做」里排除的机器换成角色的「只在这些机器上跑」，兜底去掉
+#[test]
+fn migration_turns_picks_into_profile_machines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        two_hosts(&mut s);
+    }
+    let (mbp, desk): (i64, i64) = {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let id = |n: &str| c.query_row("SELECT id FROM hosts WHERE name = ?1", [n], |r| r.get::<_, i64>(0)).unwrap();
+        (id("mbp"), id("desk"))
+    };
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(&format!(
+            r#"DELETE FROM profiles;
+               UPDATE sched SET rules = '[{{"op":"in","labels":["bug"],"agent":"claude"}}]', fallback = 'dsh', picks = '{{"claude":[{mbp}]}}' WHERE id = 1;"#
+        ))
+        .unwrap();
+    let s = Store::open(&path).unwrap();
+    let sched = s.read(|r| r.sched(T0)).unwrap();
+    assert_eq!(sched.fallback, None);
+    let p = sched.profiles.iter().find(|p| p.agent == "claude").unwrap();
+    assert_eq!(p.only, vec![desk]);
+    assert_eq!(sched.rules[0].profile, p.id);
+    assert!(!sched.profiles.iter().any(|p| p.agent == "dsh"), "兜底的 agent 不建角色");
 }

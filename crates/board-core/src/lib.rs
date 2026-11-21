@@ -20,6 +20,7 @@ pub mod hostres;
 pub mod hosts;
 pub mod model;
 pub mod private;
+pub mod profiles;
 pub mod prompts;
 pub mod releases;
 pub mod moves;

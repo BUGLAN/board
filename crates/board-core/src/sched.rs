@@ -86,7 +86,7 @@ fn same_cond(a: &ClaimRule, b: &ClaimRule) -> bool {
         v.sort();
         v
     };
-    a.op == b.op && a.agent == b.agent && low(&a.labels) == low(&b.labels)
+    a.op == b.op && a.profile == b.profile && low(&a.labels) == low(&b.labels)
 }
 
 /// 每个 agent 明确不参与的机器 id。按 agent 记，同一个 agent 的几条规则（和它的兜底）共用一组；
@@ -211,9 +211,12 @@ pub struct Sched {
     /// 多久没有输出算卡住（分钟，0 = 不限），所有机器一样
     #[serde(default)]
     pub idle_run: i64,
-    /// 每个 agent 由哪些机器做（按 agent 一组）：没有这一项的 agent 所有装了它的机器都参与
+    /// 旧版的「每个 agent 由哪些机器做」：换成了角色的「只在这些机器上跑」，现在一直是空的
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub picks: Vec<PickInfo>,
+    /// 角色（按排列顺序）：规则交给角色，派发选角色（[`crate::profiles`]）
+    #[serde(default)]
+    pub profiles: Vec<crate::profiles::Profile>,
 }
 
 /// 一个 agent 的「由这些机器做」（发给界面）：没选过、一台都没选、选了哪几台
@@ -288,39 +291,24 @@ impl R<'_> {
 
     /// 调度的全局设置：规则带上生不生效、哪些标签已经不存在、由哪些机器做
     pub fn sched(&self, now: i64) -> Result<Sched> {
-        let (rules, fallback) = self.sched_rules()?;
+        let (rules, _) = self.sched_rules()?;
         let hosts = self.host_rows()?;
         let known = self.all_labels()?;
-        let found = |agent: &str| hosts.iter().any(|h| h.has_agent(agent));
-        let excluded = self.sched_picks()?;
-        let agents = rules.iter().map(|r| r.agent.as_str()).chain(fallback.as_deref());
-        let mut picks: Vec<PickInfo> = vec![];
-        for agent in agents {
-            if picks.iter().any(|p| p.agent == agent) {
-                continue;
-            }
-            let off = excluded.get(agent).cloned().unwrap_or_default();
-            let hosts: Vec<i64> = hosts
-                .iter()
-                .filter(|h| h.has_agent(agent) && !off.contains(&h.id))
-                .map(|h| h.id)
-                .collect();
-            picks.push(PickInfo { none: !off.is_empty() && hosts.is_empty(), unset: off.is_empty(), hosts, agent: agent.to_string() });
-        }
+        let profiles = self.profiles()?;
         Ok(Sched {
             rules: rules
                 .into_iter()
-                .map(|r| {
-                    ClaimRule {
-                        active: found(&r.agent),
-                        missing: r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect(),
-                        ..r
-                    }
+                .map(|r| ClaimRule {
+                    active: hosts.iter().any(|h| h.can_run(&r.profile)),
+                    agent: profiles.iter().find(|p| p.id == r.profile).map(|p| p.agent.clone()).unwrap_or_default(),
+                    missing: r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect(),
+                    ..r
                 })
                 .collect(),
-            fallback_active: fallback.as_deref().is_some_and(found),
-            fallback,
-            picks,
+            fallback: None,
+            fallback_active: false,
+            picks: vec![],
+            profiles,
             tz: std::env::var("TZ").unwrap_or_default().trim().to_string(),
             minute: server_minute(now),
             auto_upgrade: self.auto_upgrade()?,
@@ -337,7 +325,8 @@ impl W<'_> {
     /// 还没有哪台机器上报找得到的 agent 时（没接机器，先在 Agent tab 配好规则），内置的 agent 都能选，和界面的下拉一致；
     /// 这样存下的规则在有机器上报它之前不生效
     pub fn sched_update(&mut self, rules: Option<&[ClaimRule]>, fallback: Option<&str>) -> Result<Sched> {
-        let (old, old_fallback) = self.read().sched_rules()?;
+        let (old, _) = self.read().sched_rules()?;
+        let mut profiles = self.read().profiles()?;
         let hosts = self.read().host_rows()?;
         let all: Vec<String> = {
             let mut v: Vec<String> = hosts.iter().flat_map(|h| h.resolved().into_iter().filter(|a| a.found).map(|a| a.id)).collect();
@@ -356,22 +345,47 @@ impl W<'_> {
             let mut out: Vec<ClaimRule> = vec![];
             let mut seen: Vec<ClaimRule> = vec![];
             for r in rules {
-                let r = r.clone().upgraded();
+                let mut r = r.clone().upgraded();
                 if !RULE_OPS.contains(&r.op.as_str()) {
                     return Err(BoardError::usage(format!("领取规则的条件「{}」不对：只能是 {}", r.op, RULE_OPS.join("、"))));
                 }
                 if r.op != "none" && r.labels.is_empty() {
                     return Err(BoardError::usage("领取规则至少要选一个标签"));
                 }
+                // 交给的角色：按标识或名字找。旧版界面（和 `board` 命令行）只给 agent 时，交给这个 agent 的第一个角色；
+                // 还没有时建一个同名的（本机登录、不指定模型，和升级时一样），agent 要至少在一台机器上找得到
+                let agent = r.agent.trim().to_string();
+                if r.profile.trim().is_empty() && !agent.is_empty() && !profiles.iter().any(|p| p.agent == agent) {
+                    if !old.iter().any(|x| x.agent == agent) && !found(&agent) {
+                        return Err(BoardError::usage(format!("没有机器上找得到 agent「{agent}」，可选：{options}")));
+                    }
+                    let made = self.profile_put(&crate::profiles::Profile { name: crate::profiles::free_name(&profiles, &agent), agent: agent.clone(), ..Default::default() }, "领取规则")?;
+                    profiles.push(made);
+                }
+                let p = if !r.profile.trim().is_empty() {
+                    profiles.iter().find(|p| p.id == r.profile.trim() || p.name.to_lowercase() == r.profile.trim().to_lowercase())
+                } else {
+                    profiles.iter().find(|p| !agent.is_empty() && p.agent == agent)
+                };
+                let Some(p) = p else {
+                    let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+                    let names = if names.is_empty() { "（还没有角色，先新建一个）".to_string() } else { names.join("、") };
+                    return Err(BoardError::usage(format!("领取规则要交给一个角色，可选：{names}")));
+                };
+                r.profile = p.id.clone();
                 if !old.iter().any(|x| same_cond(x, &r)) {
                     if let Some(l) = r.labels.iter().find(|l| !known.contains(&l.to_lowercase())) {
                         return Err(BoardError::usage(format!("没有哪个项目里有标签「{l}」")));
                     }
-                    if !found(&r.agent) {
-                        return Err(BoardError::usage(format!("没有机器上找得到 agent「{}」，可选：{options}", r.agent)));
-                    }
                 }
-                if seen.iter().any(|x| same_cond(x, &r)) {
+                if seen.iter().any(|x| x.op == r.op && {
+                    let low = |v: &[String]| {
+                        let mut v: Vec<String> = v.iter().map(|l| l.to_lowercase()).collect();
+                        v.sort();
+                        v
+                    };
+                    low(&x.labels) == low(&r.labels)
+                }) {
                     return Err(BoardError::usage("领取规则里有重复的条件"));
                 }
                 seen.push(r.clone());
@@ -380,76 +394,18 @@ impl W<'_> {
             let raw = serde_json::to_string(&out.iter().map(ClaimRule::stored).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
             self.tx.execute("INSERT INTO sched (id, rules) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET rules = ?1", [raw])?;
         }
+        // 兜底去掉了（规则都没命中的卡不自动领）：旧版界面发来的兜底只认「取消」
         if let Some(f) = fallback {
-            let f = f.trim();
-            if f.is_empty() {
-                self.tx.execute("INSERT INTO sched (id, fallback) VALUES (1, NULL) ON CONFLICT(id) DO UPDATE SET fallback = NULL", [])?;
-            } else {
-                if old_fallback.as_deref() != Some(f) && !found(f) {
-                    return Err(BoardError::usage(format!("没有机器上找得到 agent「{f}」，可选：{options}")));
-                }
-                self.tx.execute("INSERT INTO sched (id, fallback) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET fallback = ?1", [f])?;
+            if !f.trim().is_empty() {
+                return Err(BoardError::usage("没有兜底了：规则都没命中的卡不自动领。要自动领就加一条规则交给一个角色"));
             }
-        }
-        // 规则和兜底都删掉的 agent 不再留着排除列表；以后重新加回来时按默认全选
-        let (live_rules, live_fallback) = self.read().sched_rules()?;
-        let mut picks = self.read().sched_picks()?;
-        let before = picks.len();
-        picks.retain(|agent, _| live_rules.iter().any(|r| &r.agent == agent) || live_fallback.as_deref() == Some(agent.as_str()));
-        if picks.len() != before {
-            let raw = serde_json::to_string(&picks).unwrap_or_else(|_| "{}".into());
-            self.tx.execute("UPDATE sched SET picks = ?1 WHERE id = 1", [raw])?;
+            self.tx.execute("UPDATE sched SET fallback = NULL WHERE id = 1", [])?;
         }
         self.changed = true;
         self.hosts_changed = true;
         self.read().sched(self.now)
     }
 
-    /// 某个 agent「由这些机器做」：`add` 勾上、`remove` 取消（`all` 时回到「所有装了它的机器都参与」）。
-    /// 存的是明确排除的机器：之后才装上这个 agent 的机器默认参与；手动派发、`board claim` 不受影响
-    pub fn sched_pick(&mut self, agent: &str, add: &[i64], remove: &[i64], all: bool) -> Result<Sched> {
-        let (rules, fallback) = self.read().sched_rules()?;
-        if !rules.iter().any(|r| r.agent == agent) && fallback.as_deref() != Some(agent) {
-            return Err(BoardError::usage(format!("领取规则里没有 agent「{agent}」")));
-        }
-        let hosts = self.read().host_rows()?;
-        for h in add.iter().chain(remove).filter(|h| **h > 0) {
-            if !hosts.iter().any(|x| x.id == *h) {
-                return Err(BoardError::usage(format!("没有 id 为 {h} 的机器：机器可能已经被移除了，刷新一下再选")));
-            }
-        }
-        if !all && add.is_empty() && remove.is_empty() {
-            return self.read().sched(self.now);
-        }
-        let eligible: Vec<i64> = hosts.iter().filter(|h| h.has_agent(agent)).map(|h| h.id).collect();
-        let mut picks = self.read().sched_picks()?;
-        let off = picks.get(agent).cloned().unwrap_or_default();
-        let mut on: Vec<i64> = if all {
-            eligible.clone()
-        } else {
-            eligible.iter().copied().filter(|h| !off.contains(h)).collect()
-        };
-        for h in add.iter().filter(|h| **h > 0) {
-            if !on.contains(h) {
-                on.push(*h);
-            }
-        }
-        on.retain(|h| !remove.contains(h));
-        let mut off = if all { vec![] } else { off };
-        off.retain(|h| !add.contains(h));
-        off.extend(remove.iter().copied().filter(|h| *h > 0));
-        off.extend(eligible.into_iter().filter(|h| !on.contains(h)));
-        if off.is_empty() {
-            picks.remove(agent);
-        } else {
-            picks.insert(agent.to_string(), off);
-        }
-        let raw = serde_json::to_string(&tidy_picks(picks)).unwrap_or_else(|_| "{}".into());
-        self.tx.execute("INSERT INTO sched (id, picks) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET picks = ?1", [raw])?;
-        self.changed = true;
-        self.hosts_changed = true;
-        self.read().sched(self.now)
-    }
 
     /// 跑多久停（分钟，0 = 不限）：所有机器一个值；`None` 表示不改
     pub fn set_run_limits(&mut self, max_run: Option<i64>, idle_run: Option<i64>) -> Result<Sched> {

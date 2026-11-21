@@ -259,6 +259,11 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("dispatches", "any_host", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "any_agent", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "effort", "TEXT"),
+        // 角色（profiles.rs）：派发时按角色定 agent、供应商、模型、强度；记下标识和当时的名字、供应商、附加说明
+        ("dispatches", "profile", "TEXT NOT NULL DEFAULT ''"),
+        ("dispatches", "profile_name", "TEXT NOT NULL DEFAULT ''"),
+        ("dispatches", "provider", "TEXT NOT NULL DEFAULT ''"),
+        ("dispatches", "note", "TEXT NOT NULL DEFAULT ''"),
         ("hosts", "max_run", "INTEGER NOT NULL DEFAULT 180"),
         ("hosts", "idle_run", "INTEGER NOT NULL DEFAULT 20"),
         ("hosts", "selftest", "TEXT"),

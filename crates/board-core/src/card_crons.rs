@@ -719,7 +719,7 @@ impl<'a> W<'a> {
     /// 存储层故障照常往上抛
     fn send(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor) -> Result<std::result::Result<String, String>> {
         self.tx.execute_batch("SAVEPOINT card_cron_send")?;
-        match self.dispatch_create_from(board, card, host, agent, by, SOURCE_SCHEDULE) {
+        match self.dispatch_create_from(board, card, host, agent, None, by, SOURCE_SCHEDULE) {
             Ok(d) => {
                 self.tx.execute_batch("RELEASE card_cron_send")?;
                 Ok(Ok(format!("{} · {}", d.host, d.agent_label)))

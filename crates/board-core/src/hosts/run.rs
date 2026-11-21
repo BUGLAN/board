@@ -62,7 +62,7 @@ impl<'a> W<'a> {
     pub(super) fn drow(&self, id: i64) -> Result<DRow> {
         self.tx
             .query_row(
-                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort, kind, path, any_host, any_agent FROM dispatches WHERE id = ?1",
+                "SELECT id, board, card, host_id, host, agent, agent_label, name, source, state, stop_by, started_at, env_name, env, COALESCE(session, id), model, effort, kind, path, any_host, any_agent, profile, profile_name FROM dispatches WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(DRow {
@@ -87,6 +87,8 @@ impl<'a> W<'a> {
                         path: r.get(18)?,
                         any_host: r.get::<_, i64>(19)? != 0,
                         any_agent: r.get::<_, i64>(20)? != 0,
+                        profile: r.get(21)?,
+                        profile_name: r.get(22)?,
                     })
                 },
             )
@@ -297,11 +299,11 @@ impl<'a> W<'a> {
         // 按排好的顺序以同一个名字领取；领不到的记「没领到」，接着取再下一张
         for id in queue {
             let q = self.drow(id)?;
-            // 开会话之后人被从「由这些机器做」里点掉了：这张也不再交给它，取消排队、卡片回到可领取状态
-            if h.picks.get(&q.agent).is_some_and(|off| off.contains(&h.id)) {
+            // 开会话之后角色被删掉、或者不再能在这台机器上跑（改了「只在这些机器上跑」）：这张也不再交给它，取消排队、卡片回到可领取状态
+            if !q.profile.is_empty() && !h.can_run(&q.profile) {
                 self.close_row(&q, "canceled", None)?;
                 let back = self.unreserve(q.board, q.card, &Actor::system())?;
-                let text = format!("派发取消：{}不再由这台机器自动接（{}）{back}", q.agent_label, Self::dispatch_words(&q));
+                let text = format!("派发取消：这台机器不再跑「{}」（{}）{back}", q.profile_name, Self::dispatch_words(&q));
                 self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
                 continue;
             }
@@ -366,19 +368,15 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 开会话时排好后面几张（第一张已经开始）：从同一块白板、按领取规则交给同一个 agent 的可领取卡片里取，连第一张最多
+    /// 开会话时排好后面几张（第一张已经开始）：从同一块白板、按领取规则交给同一个角色的可领取卡片里取，连第一张最多
     /// 「一个会话最多做几张」张。先后：带优先标签的在前（按规则 1 的顺序），再是其余卡片里和第一张共同标签多的
     /// （领取规则里用到的标签不算，它只表示谁来做），一样多时按规则 1 的顺序。每张记一条排队的派发，属于这个会话
-    /// 除了这台机器，现在还有几台机器也能自动领这块白板上交给这个 agent 的卡：在自动接单、在线、没在等重启、
-    /// 还有空的会话位、接得了这块白板、这个 agent 能用
-    pub(super) fn session_peers(&self, h: &HostRow, board: &BoardRef, agent: &str) -> Result<usize> {
+    /// 除了这台机器，现在还有几台机器也能自动领这块白板上交给这个角色的卡：在自动接单、在线、没在等重启、
+    /// 还有空的会话位、接得了这块白板、能跑这个角色、它的 agent 没有暂停接单
+    pub(super) fn session_peers(&self, h: &HostRow, board: &BoardRef, profile: &str, agent: &str) -> Result<usize> {
         let mut n = 0;
         for x in self.read().host_rows()? {
-            if x.id == h.id || !x.online(self.now) || !x.auto_active(self.now) || x.restarting() || !x.has_agent(agent) {
-                continue;
-            }
-            // 这个 agent 的「由这些机器做」里明确排除了它：它不领这个 agent 的卡，也就不是能分摊的机器
-            if x.picks.get(agent).is_some_and(|off| off.contains(&x.id)) {
+            if x.id == h.id || !x.online(self.now) || !x.auto_active(self.now) || x.restarting() || !x.can_run(profile) {
                 continue;
             }
             if self.sessions_on(&x)? >= x.max || self.read().board_unfit(&x, board)?.is_some() || self.read().agent_tripped(&x, agent)? {
@@ -397,13 +395,14 @@ impl<'a> W<'a> {
         let mut skip = skip.to_vec();
         skip.push(first.card);
         let rule_labels = rules.inner.labels();
+        let profile: String = self.tx.query_row("SELECT profile FROM dispatches WHERE id = ?1", [first.id], |r| r.get(0))?;
         let mine: Vec<String> = card_label_names(self.tx, board.id, first.card)?.into_iter().filter(|l| !rule_labels.contains(l)).collect();
         let urgent = self.priority_cards(board.id)?;
         // （不带优先标签，共同标签数取反，规则 1 的顺序，卡片）
         let mut list: Vec<(bool, std::cmp::Reverse<usize>, usize, i64)> = vec![];
         for (i, (id, _)) in self.claimable_order(board.id, flow, &skip)?.into_iter().enumerate() {
             let labels = card_label_names(self.tx, board.id, id)?;
-            if rules.route(&labels) != Some(first.agent.as_str()) {
+            if rules.route(&labels) != Some(profile.as_str()) {
                 continue;
             }
             let hot = urgent.contains(&id);
@@ -412,7 +411,7 @@ impl<'a> W<'a> {
         }
         list.sort();
         // 按现在也能接这些卡的机器分摊：4 张卡、2 台机器都有空位，就各排 2 张，而不是先来的一台排满 4 张
-        let peers = self.session_peers(h, board, &first.agent)?;
+        let peers = self.session_peers(h, board, &profile, &first.agent)?;
         let share = (list.len() + 1).div_ceil(peers + 1);
         list.truncate(want.min(share.saturating_sub(1)));
         if list.is_empty() {
@@ -424,12 +423,15 @@ impl<'a> W<'a> {
         for (k, (.., card)) in list.into_iter().enumerate() {
             let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2", params![board.id, card], |r| r.get(0))?;
             self.tx.execute(
-                "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, session)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'cron', ?8, ?9, 'queued', ?10, ?11)",
-                params![board.id, card, title, h.id, h.name, first.agent, first.agent_label, by.kind.as_str(), by.name, self.now, first.id],
+                "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, session,
+                                         profile, profile_name, provider, note, model, effort)
+                 SELECT ?1, ?2, ?3, ?4, ?5, agent, agent_label, 'cron', ?6, ?7, 'queued', ?8, ?9, profile, profile_name, provider, note, model, effort
+                   FROM dispatches WHERE id = ?9",
+                params![board.id, card, title, h.id, h.name, by.kind.as_str(), by.name, self.now, first.id],
             )?;
             let at = self.reserve(board.id, card, &by)?.map(|n| format!("在「{n}」")).unwrap_or_default();
-            let text = format!("派发到 {} · {}（定时），会话第 {}/{total} 张，{at}排队等 {name} 接着做", h.name, first.agent_label, k + 2);
+            let who = if first.profile_name.is_empty() { first.agent_label.clone() } else { first.profile_name.clone() };
+            let text = format!("派发到 {} · {who}（定时），会话第 {}/{total} 张，{at}排队等 {name} 接着做", h.name, k + 2);
             self.track(board.id, card, &by, "dispatch", &text)?;
         }
         self.touch_hosts();
@@ -499,6 +501,9 @@ impl<'a> W<'a> {
         // 「任意机器」的派发还没挑到机器
         let host = if d.host.is_empty() { "任意机器" } else { d.host.as_str() };
         let mut s = format!("{host} · {}", d.agent_label);
+        if !d.profile_name.is_empty() {
+            s += &format!("（{}）", d.profile_name);
+        }
         if let Some(e) = &d.env_name {
             s += &format!(" · {e}");
         }
@@ -556,9 +561,18 @@ impl<'a> W<'a> {
         // 名字：<机器名>/<模型名>-<强度>（win/opus-5.5-high），见 free_agent_name。模型、强度来自
         // board host 上报的 agent 数据（配置文件 [agents.<标识>] model/effort，内置模板有默认值），
         // 没有模型时用 agent 标识
-        let (run_model, run_effort) = h.run_opts(&d.agent);
-        let (name_model, _) = h.model_for(&d.agent);
-        let name_effort = effort_of(&h.agents, &d.agent);
+        // 按角色派的：模型、强度是角色的（本机登录、没指定模型时用机器上报的这个 agent 现在的模型）
+        let (mut run_model, mut run_effort) = h.run_opts(&d.agent);
+        let (mut name_model, _) = h.model_for(&d.agent);
+        let mut name_effort = effort_of(&h.agents, &d.agent);
+        if !d.profile.is_empty() {
+            if let Some(m) = d.model.clone().filter(|m| !m.is_empty()) {
+                name_model = m.clone();
+                run_model = Some(m);
+            }
+            run_effort = d.effort.clone().filter(|e| !e.is_empty());
+            name_effort = run_effort.clone().unwrap_or_default();
+        }
         let name = self.free_agent_name(&d.agent, &h.name, &name_model, &name_effort)?;
         // 用哪个启动环境：按开始这一刻的机器设置
         let env = h.agents.iter().find(|a| a.id == d.agent).and_then(|a| h.pick(a)).map(|c| c.env.clone());
@@ -673,9 +687,9 @@ impl<'a> W<'a> {
                 params![board.id, h.id, horizon],
                 |r| r.get(0),
             )?;
-            // 规则会给它派一个这台机器上找得到的 agent 的卡片，按规则 1 的先后（带优先标签的在前）取第一张
+            // 规则会交给一个这台机器能跑的角色的卡片，按规则 1 的先后（带优先标签的在前）取第一张
             let found = h.resolved();
-            let mut hit: Option<(i64, HostAgent)> = None;
+            let mut hit: Option<(i64, HostAgent, crate::profiles::Profile)> = None;
             let urgent = self.priority_cards(board.id)?;
             let mut order = self.claimable_order(board.id, &flow, &skip)?;
             order.sort_by_key(|(id, _)| !urgent.contains(id));
@@ -683,25 +697,26 @@ impl<'a> W<'a> {
             let mut tripped: BTreeMap<String, bool> = BTreeMap::new();
             for (id, _) in order {
                 let Some(want) = rules.route(&card_label_names(self.tx, board.id, id)?) else { continue };
-                let off = match tripped.get(want) {
+                let Some(p) = h.profile(want) else { continue };
+                let off = match tripped.get(&p.agent) {
                     Some(t) => *t,
                     None => {
-                        let t = self.read().agent_tripped(&h, want)?;
-                        tripped.insert(want.to_string(), t);
+                        let t = self.read().agent_tripped(&h, &p.agent)?;
+                        tripped.insert(p.agent.clone(), t);
                         t
                     }
                 };
                 if off {
                     continue;
                 }
-                if let Some(a) = found.iter().find(|x| x.id == want) {
-                    hit = Some((id, a.clone()));
+                if let Some(a) = found.iter().find(|x| x.id == p.agent) {
+                    hit = Some((id, a.clone(), p.clone()));
                     break;
                 }
             }
-            let Some((card, agent)) = hit else { continue };
+            let Some((card, agent, role)) = hit else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
-            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, "cron", &Actor::system(), "", None)?;
+            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, Some(&role), "cron", &Actor::system(), "", None)?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
                 // 开会话时把这个会话要做的卡片一次排好：先把一个会话排满，再开下一个

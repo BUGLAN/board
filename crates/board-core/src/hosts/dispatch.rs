@@ -67,6 +67,18 @@ pub struct Dispatch {
     /// 项目的集成分支（没设是空的，board host 用远端的默认分支）：会话的 worktree 停在它上面
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    /// 按哪个角色派的（角色标识，见 [`crate::profiles`]）；空 = 旧数据、按 agent 派的
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile: String,
+    /// 派发时角色的名字
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile_name: String,
+    /// 角色用的供应商：board host 给这一个 agent 进程换上它（ACP `providers/set`，dsh 写进这次的 `--patch`）；空 = 本机登录
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// 角色的附加说明：board host 接在提示词后面
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 /// 「任意机器」的派发还没指定 agent 时写的名称
@@ -187,7 +199,8 @@ pub(super) const DISPATCH_SELECT: &str = "SELECT d.id, b.project || '/' || b.key
        d.exit_code, d.stop_by, CASE WHEN c.holder = d.name THEN c.beat_at END, d.env, d.env_name, COALESCE(d.session, d.id),
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session AND s.id <= d.id) END,
        CASE WHEN d.session IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM dispatches s WHERE s.session = d.session) END,
-       d.model, d.effort, d.kind, d.path, d.any_host, COALESCE(p.repo, ''), COALESCE(p.branch, '')
+       d.model, d.effort, d.kind, d.path, d.any_host, COALESCE(p.repo, ''), COALESCE(p.branch, ''),
+       d.profile, d.profile_name, d.provider, d.note
   FROM dispatches d JOIN boards b ON b.id = d.board LEFT JOIN projects p ON p.key = b.project LEFT JOIN cards c ON c.board = d.board AND c.id = d.card";
 
 pub(super) fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> {
@@ -223,6 +236,10 @@ pub(super) fn dispatch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch> 
         any: r.get::<_, i64>(29)? != 0,
         repo: r.get(30)?,
         branch: r.get(31)?,
+        profile: r.get(32)?,
+        profile_name: r.get(33)?,
+        provider: r.get(34)?,
+        note: r.get(35)?,
     })
 }
 
@@ -256,6 +273,9 @@ pub(super) struct DRow {
     pub(super) any_host: bool,
     /// 派给任意机器时没指定 agent：用挑中那台的默认 agent
     pub(super) any_agent: bool,
+    /// 角色标识和派发时的名字；空 = 按 agent 派的
+    pub(super) profile: String,
+    pub(super) profile_name: String,
 }
 
 impl DRow {
@@ -264,10 +284,56 @@ impl DRow {
     }
 }
 
+/// 动态里写的「谁来做」：按角色派的是「批量（Codex · local-proxy · model-a · max）」，否则是 agent 名称
+pub(super) fn role_label(label: &str, role: Option<&crate::profiles::Profile>) -> String {
+    match role {
+        Some(p) => format!("{}（{}）", p.name, p.recipe()),
+        None => label.to_string(),
+    }
+}
+
+impl R<'_> {
+    /// 一张卡按规则会交给哪个角色（不看机器）：按顺序第一条命中的规则；没命中、角色已经不在了时为空
+    pub fn rule_profile(&self, board: &BoardRef, card: i64) -> Result<Option<crate::profiles::Profile>> {
+        let (rules, _) = self.sched_rules()?;
+        let labels = card_label_names(self.conn, board.id, card)?;
+        let Some(hit) = rules.iter().find(|r| {
+            let want: Vec<String> = r.labels.iter().map(|l| l.trim().to_lowercase()).collect();
+            crate::hosts::rule_matches(&r.op, &want, &labels)
+        }) else {
+            return Ok(None);
+        };
+        self.profile(&hit.profile)
+    }
+}
+
 impl<'a> W<'a> {
-    /// 手动派发（任务下发需求 §五）：校验通过后进入排队。agent 为空时用这台机器的默认 agent
-    pub fn dispatch_create(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
-        self.dispatch_create_from(board, card, host, agent, by, "manual")
+    /// 手动派发（任务下发需求 §五）：校验通过后进入排队。给了角色时按角色（这台机器要能跑它）；没给角色、给了 agent 时
+    /// 用这个 agent 和机器上它自己的配置（旧版的派发）；都没给时用按规则会交给的角色，规则都没命中时用机器的默认 agent
+    pub fn dispatch_create(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<Dispatch> {
+        self.dispatch_create_from(board, card, host, agent, profile, by, "manual")
+    }
+
+    /// 这次派发用哪个角色：给了就按标识或名字找（找不到报错）；没给角色也没给 agent 时用按规则会交给的角色
+    pub(super) fn dispatch_profile(&self, board: &BoardRef, card: i64, agent: Option<&str>, profile: Option<&str>) -> Result<Option<crate::profiles::Profile>> {
+        if let Some(key) = profile.map(str::trim).filter(|s| !s.is_empty()) {
+            return Ok(Some(self.read().profile_by(key)?.ok_or_else(|| {
+                BoardError::usage(format!("没有角色「{key}」：Agent → 自动领取 → 分工里能看到所有角色"))
+            })?));
+        }
+        if agent.map(str::trim).is_some_and(|a| !a.is_empty()) {
+            return Ok(None);
+        }
+        let hit = self.read().rule_profile(board, card)?;
+        // 明确要按角色派（`profile` 是空字符串：`board dispatch` 没带 --profile）、有角色、规则又都没命中：说清要带上角色。
+        // 还一个角色都没有时（没配过分工）照旧用机器的默认 agent
+        if hit.is_none() && profile.is_some() {
+            let names: Vec<String> = self.read().profiles()?.into_iter().map(|p| p.name).collect();
+            if !names.is_empty() {
+                return Err(BoardError::usage(format!("#{card} 没有命中领取规则，不知道交给哪个角色：带上 --profile <角色>，可选：{}", names.join("、"))));
+            }
+        }
+        Ok(hit)
     }
 
     /// 定时建卡保存前看它要派的机器：机器存在、有这块白板的目录，指定的 agent 在这台机器上（找没找到命令到点时再看）。
@@ -292,16 +358,24 @@ impl<'a> W<'a> {
     }
 
     /// 派发一张卡（手动派发、定时建卡共用）：source 是 manual 或 [`SOURCE_SCHEDULE`]
-    pub(crate) fn dispatch_create_from(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor, source: &str) -> Result<Dispatch> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch_create_from(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, profile: Option<&str>, by: &Actor, source: &str) -> Result<Dispatch> {
         let check = self.dispatch_card_check(board, card, by)?;
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
-        let a = self.dispatch_agent(&h, agent)?;
+        let role = self.dispatch_profile(board, card, agent, profile)?;
+        if let Some(p) = &role {
+            if let Err(why) = crate::profiles::fit(p, &h) {
+                return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」跑不了角色「{}」：{why}", p.name))
+                    .with_detail(json!({ "host": host, "profile": p.id })));
+            }
+        }
+        let a = self.dispatch_agent(&h, role.as_ref().map(|p| p.agent.as_str()).or(agent))?;
         // 这台机器接不了这块白板的卡：没有工作空间、目录不对（`fit.rs`）
         if let Some(u) = self.read().board_unfit(&h, board)? {
             return Err(u.error(host, board));
         }
         let kind = if check.split { KIND_SPLIT } else { "" };
-        self.insert_dispatch(board.id, card, &h, &a.id, &a.name, source, by, kind, check.from.as_deref())
+        self.insert_dispatch(board.id, card, &h, &a.id, &a.name, role.as_ref(), source, by, kind, check.from.as_deref())
     }
 
     /// 派发前看卡片：存在、没有排队或在跑的派发、在可领取状态或「未整理」。人派发时也可以在别的状态（待审核、错误节点、
@@ -397,10 +471,35 @@ impl<'a> W<'a> {
         Ok(a)
     }
 
+    /// 派发记下按哪个角色：标识、当时的名字、供应商、附加说明，模型、强度也按角色写（本机登录、不指定模型时留空，
+    /// 开始时按机器上报的写）
+    pub(super) fn set_profile(&mut self, id: i64, role: Option<&crate::profiles::Profile>) -> Result<()> {
+        let Some(p) = role else { return Ok(()) };
+        let model = (!p.model.is_empty()).then(|| p.model.clone());
+        let effort = (!p.effort.is_empty()).then(|| p.effort.clone());
+        self.tx.execute(
+            "UPDATE dispatches SET profile = ?2, profile_name = ?3, provider = ?4, note = ?5, model = ?6, effort = ?7 WHERE id = ?1",
+            params![id, p.id, p.name, p.provider, p.note, model, effort],
+        )?;
+        Ok(())
+    }
+
     /// 记一条排队的派发。手动派发、定时建卡派发（source 是 manual、schedule）的卡片进入领取时会进的锁定状态排队
     /// （[`W::reserve`]）；定时领取（cron）的第一张马上开始，不经过排队；拆解（kind 是 split）不动卡片
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn insert_dispatch(&mut self, b: i64, card: i64, h: &HostRow, agent: &str, label: &str, source: &str, by: &Actor, kind: &str, from: Option<&str>) -> Result<Dispatch> {
+    pub(super) fn insert_dispatch(
+        &mut self,
+        b: i64,
+        card: i64,
+        h: &HostRow,
+        agent: &str,
+        label: &str,
+        role: Option<&crate::profiles::Profile>,
+        source: &str,
+        by: &Actor,
+        kind: &str,
+        from: Option<&str>,
+    ) -> Result<Dispatch> {
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, kind)
@@ -408,6 +507,9 @@ impl<'a> W<'a> {
             params![b, card, title, h.id, h.name, agent, label, source, by.kind.as_str(), by.name, self.now, kind],
         )?;
         let id = self.tx.last_insert_rowid();
+        self.set_profile(id, role)?;
+        let label = &role_label(label, role);
+        let label = label.as_str();
         let split = kind == KIND_SPLIT;
         let reserve = source != "cron" && !split;
         let into = if reserve { self.reserve(b, card, by)? } else { None };
@@ -428,11 +530,16 @@ impl<'a> W<'a> {
     /// 派给任意机器：不指定机器，服务端在能接的机器里挑空位最多的一台（[`crate::fit::pick_host`]）；现在没有能马上
     /// 开始的就排着，等有机器上线、恢复接单、空出位置。agent 为空时用挑中那台的默认 agent。
     /// 一台能接这块白板的机器都没有（看的是能不能接，不看在不在线）时拒绝
-    pub fn dispatch_create_any(&mut self, board: &BoardRef, card: i64, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
+    pub fn dispatch_create_any(&mut self, board: &BoardRef, card: i64, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<Dispatch> {
         let check = self.dispatch_card_check(board, card, by)?;
         let split = check.split;
-        let agent = agent.map(str::trim).filter(|s| !s.is_empty());
-        let label = self.any_target(board, agent)?;
+        let role = self.dispatch_profile(board, card, agent, profile)?;
+        let agent = match &role {
+            Some(p) => Some(p.agent.as_str()),
+            None => agent.map(str::trim).filter(|s| !s.is_empty()),
+        };
+        let label = self.any_target(board, agent, role.as_ref())?;
+        let who = role_label(&label, role.as_ref());
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, kind, any_host, any_agent)
@@ -440,9 +547,10 @@ impl<'a> W<'a> {
             params![board.id, card, title, agent.unwrap_or(""), label, by.kind.as_str(), by.name, self.now, if split { KIND_SPLIT } else { "" }, agent.is_none() as i64],
         )?;
         let id = self.tx.last_insert_rowid();
+        self.set_profile(id, role.as_ref())?;
         let into = if split { None } else { self.reserve(board.id, card, by)? };
         let at = into.map(|n| format!("，在「{n}」排队")).unwrap_or_else(|| "，排队".into());
-        let what = if split { format!("派给任意机器 · {label} 拆解") } else { format!("{}派发到任意机器 · {label}", self.from_words(board.id, check.from.as_deref())?) };
+        let what = if split { format!("派给任意机器 · {who} 拆解") } else { format!("{}派发到任意机器 · {who}", self.from_words(board.id, check.from.as_deref())?) };
         self.track(board.id, card, by, "dispatch", &format!("{what}（手动）{at}，等服务端挑一台能接的机器"))?;
         self.touch_hosts();
         self.assign_any()?;
@@ -451,7 +559,7 @@ impl<'a> W<'a> {
 
     /// 「任意机器」能不能派：至少有一台机器接得了这块白板，并且上面有能用的这个 agent（没指定时是它的默认 agent）。
     /// 返回 agent 的名称（没指定时是 [`ANY_AGENT_LABEL`]）
-    pub(super) fn any_target(&self, board: &BoardRef, agent: Option<&str>) -> Result<String> {
+    pub(super) fn any_target(&self, board: &BoardRef, agent: Option<&str>, role: Option<&crate::profiles::Profile>) -> Result<String> {
         let hosts = self.read().host_rows()?;
         if hosts.is_empty() {
             return Err(BoardError::new(ErrorCode::NoSuchHost, "还没有机器：在要干活的机器上运行 board host，它会出现在「机器」里"));
@@ -469,7 +577,14 @@ impl<'a> W<'a> {
             return Err(BoardError::new(ErrorCode::BoardNotOnHost, format!("没有能接 {path} 的机器：{}", why.join("；"))).with_detail(json!({ "board": path })));
         }
         let mut label: Option<String> = None;
+        let mut why_role: Vec<String> = vec![];
         for h in &able {
+            if let Some(p) = role {
+                if let Err(why) = crate::profiles::fit(p, h) {
+                    why_role.push(format!("{}（{why}）", h.name));
+                    continue;
+                }
+            }
             let a = match agent {
                 Some(id) => h.resolved().into_iter().find(|a| a.id == id && a.found),
                 None => h.default_agent(),
@@ -479,6 +594,12 @@ impl<'a> W<'a> {
                     label = Some(if agent.is_some() { a.name } else { ANY_AGENT_LABEL.to_string() });
                     break;
                 }
+            }
+        }
+        if let (None, Some(p)) = (&label, role) {
+            if why_role.len() == able.len() {
+                return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("能接 {path} 的机器都跑不了角色「{}」：{}", p.name, why_role.join("；")))
+                    .with_detail(json!({ "board": path, "profile": p.id })));
             }
         }
         label.ok_or_else(|| {
@@ -537,6 +658,7 @@ impl<'a> W<'a> {
                 Some(h) if !h.online(now) => Some("离线了".to_string()),
                 Some(h) if h.paused => Some("暂停接单了".to_string()),
                 Some(h) if h.restarting() => Some("在等重启或升级".to_string()),
+                Some(h) if !d.profile.is_empty() && !h.can_run(&d.profile) => Some("跑不了这个角色了".to_string()),
                 Some(h) => self.read().board_unfit(h, &board)?.map(|u| format!("接不了这块白板了（{}）", u.short())),
             };
             if let Some(why) = why {
@@ -565,6 +687,9 @@ impl<'a> W<'a> {
                 if c.free <= 0 || self.read().board_unfit(h, &board)?.is_some() {
                     continue;
                 }
+                if !d.profile.is_empty() && !h.can_run(&d.profile) {
+                    continue;
+                }
                 let a = if d.any_agent { h.default_agent() } else { h.resolved().into_iter().find(|a| a.id == d.agent && a.found) };
                 let Some(a) = a else { continue };
                 if self.read().agent_tripped(h, &a.id)? {
@@ -581,7 +706,8 @@ impl<'a> W<'a> {
                 "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5 WHERE id = ?1",
                 params![d.id, h.id, h.name, a.id, a.name],
             )?;
-            let text = format!("任意机器：分给 {} · {}（能接的机器里空位最多，还有 {} 个）", h.name, a.name, c.free);
+            let who = if d.profile.is_empty() { a.name.clone() } else { h.profile(&d.profile).map(|p| p.name.clone()).unwrap_or_else(|| a.name.clone()) };
+            let text = format!("任意机器：分给 {} · {who}（能接的机器里空位最多，还有 {} 个）", h.name, c.free);
             self.track_dispatch(d.board, d.card, &Actor::system(), "dispatch", &text)?;
             // 这一遍里后面的卡片看到的是分完之后的空位；刚分到的排到轮流的最后
             c.free -= 1;
@@ -609,7 +735,7 @@ impl<'a> W<'a> {
     /// 改派：把一条还在排队的派发换到另一台机器（`host` 是机器名），或者交给任意机器（`host` 为空）。
     /// 已经开始的不能改（先停止它）；会话里排着的由那个会话接着做，也不能改。
     /// 换到指定机器时：`agent` 没给就沿用原来的，那台机器上用不了时换成它的默认 agent；校验和手动派发一样
-    pub fn dispatch_move(&mut self, id: i64, host: Option<&str>, agent: Option<&str>, by: &Actor) -> Result<Dispatch> {
+    pub fn dispatch_move(&mut self, id: i64, host: Option<&str>, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<Dispatch> {
         let d = self.drow(id)?;
         match d.state.as_str() {
             "queued" => {}
@@ -621,20 +747,37 @@ impl<'a> W<'a> {
         }
         let board = self.board_of(d.board)?;
         let agent = agent.map(str::trim).filter(|s| !s.is_empty());
+        // 角色：给了就换成它；没给、也没给 agent 时沿用原来的角色（原来按 agent 派的接着按 agent）
+        let role = match profile.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(key) => Some(self.read().profile_by(key)?.ok_or_else(|| BoardError::usage(format!("没有角色「{key}」")))?),
+            None if agent.is_none() && !d.profile.is_empty() => {
+                Some(self.read().profile(&d.profile)?.ok_or_else(|| BoardError::usage("这次派发的角色已经删掉了：改派时选一个角色"))?)
+            }
+            None => None,
+        };
+        let agent = role.as_ref().map(|p| p.agent.as_str()).or(agent);
         let from = Self::dispatch_words(&d);
         match host.map(str::trim).filter(|s| !s.is_empty()) {
             None => {
-                let label = self.any_target(&board, agent)?;
+                let label = self.any_target(&board, agent, role.as_ref())?;
+                let who = role_label(&label, role.as_ref());
                 self.tx.execute(
-                    "UPDATE dispatches SET host_id = 0, host = '', agent = ?2, agent_label = ?3, any_host = 1, any_agent = ?4 WHERE id = ?1",
+                    "UPDATE dispatches SET host_id = 0, host = '', agent = ?2, agent_label = ?3, any_host = 1, any_agent = ?4,
+                            profile = '', profile_name = '', provider = '', note = '' WHERE id = ?1",
                     params![d.id, agent.unwrap_or(""), label, agent.is_none() as i64],
                 )?;
-                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("改派给任意机器 · {label}（原来 {from}）"))?;
+                self.set_profile(d.id, role.as_ref())?;
+                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("改派给任意机器 · {who}（原来 {from}）"))?;
                 self.touch_hosts();
                 self.assign_any()?;
             }
             Some(name) => {
                 let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+                if let Some(p) = &role {
+                    if let Err(why) = crate::profiles::fit(p, &h) {
+                        return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{name}」跑不了角色「{}」：{why}", p.name)));
+                    }
+                }
                 // 没说用哪个 agent：沿用原来的；那台机器上用不了它时换成默认 agent
                 let keep = if d.agent.is_empty() { None } else { Some(d.agent.as_str()) };
                 let a = match agent {
@@ -647,13 +790,16 @@ impl<'a> W<'a> {
                 if let Some(u) = self.read().board_unfit(&h, &board)? {
                     return Err(u.error(name, &board));
                 }
-                if h.id == d.host_id && a.id == d.agent && !d.any_host {
+                let same_role = role.as_ref().map(|p| p.id.as_str()).unwrap_or("") == d.profile;
+                if h.id == d.host_id && a.id == d.agent && !d.any_host && same_role {
                     return self.read().dispatch(id);
                 }
                 self.tx.execute(
-                    "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5, any_host = 0, any_agent = 0 WHERE id = ?1",
+                    "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5, any_host = 0, any_agent = 0,
+                            profile = '', profile_name = '', provider = '', note = '' WHERE id = ?1",
                     params![d.id, h.id, h.name, a.id, a.name],
                 )?;
+                self.set_profile(d.id, role.as_ref())?;
                 let wait = if !h.online(self.now) {
                     "，等机器上线"
                 } else if h.paused {
@@ -661,7 +807,8 @@ impl<'a> W<'a> {
                 } else {
                     ""
                 };
-                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("改派到 {} · {}{wait}（原来 {from}）", h.name, a.name))?;
+                let who = role_label(&a.name, role.as_ref());
+                self.track_dispatch(d.board, d.card, by, "dispatch", &format!("改派到 {} · {who}{wait}（原来 {from}）", h.name))?;
                 self.touch_hosts();
             }
         }

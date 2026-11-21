@@ -3,12 +3,12 @@
    - 顶部一句：写进这台机器上 agent 自己的配置文件……；右边「自检 x 前」「全部自检」
    - 卡片：标题行（图标、名称、默认、版本、右上角状态：正常 · 自检 x 前 / 自检没过 / 配置没写进去 / 缺 board-skills，有问题描边变黄）、
      写入状态一行（已写入 / 正在写入 / 不改 / 机器离线 / 写入失败 + 重试）、原因一行（+ 再试一次）、
-     启动环境（每项带版本，没找到的置灰）、模型（一个下拉：不改 / 供应商 · 模型；agent 认几种接口、供应商也给了几种时多一个接口；强度）、
-     下面一句写用哪种接口连哪个地址；设为默认、自检这一个
+     启动环境（每项带版本，没找到的置灰）、模型（只读：本机配置里现在的；用哪个模型按角色定，派发时带上）、设为默认、自检这一个
+   - 卡片上面一行：这台机器能跑哪些角色，跑不了的写原因
    - 缺 board-skills：在桌面端里看的就是这台电脑、agent 能自动装（认识它的 skill 目录、不在 WSL 里）时，按钮是「一键安装」
      （board host 按共用配置同步时是「立即同步」），走桌面端的 installSkill（src-tauri/src/skill.rs）；其余照旧「装上」，让 board host 同步
    - 没找到的 agent 卡片置灰，写「这台机器上没找到」
-   写操作：模型、启动环境、默认 agent 是设置项（当帧生效，旁边转圈）；自检、重试要等服务端（按钮转圈、禁用直到返回）
+   写操作：启动环境、默认 agent 是设置项（当帧生效，旁边转圈）；自检、重试要等服务端（按钮转圈、禁用直到返回）
    ========================================================================== */
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
@@ -16,10 +16,11 @@ import { agentHealth, configLine, lastTest } from '../../lib/hostDetail';
 import { skillHome } from '../../lib/agentMeta';
 import { envName, isLocalHost, missWord, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps } from '../../lib/hosts';
 import { installSkill, localHost, shell } from '../../lib/platform';
-import { interfaceName, metaOf, protocolChoices, providersFor, runPick, writableEfforts } from '../../lib/providers';
+import { metaOf, runPick } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
 import { copyText, cx } from '../../lib/util';
-import { optimistic } from '../../store/data';
+import { optimistic, useData } from '../../store/data';
+import { fitOf } from '../../lib/profiles';
 import { toast, toastError } from '../../store/ui';
 import { Select, Sync, Tip, type SyncState } from '../bits';
 import { Icon } from '../Icon';
@@ -92,7 +93,7 @@ export function HostAgents({ h, view, save, sync, now }: { h: HostInfo; view: Pr
   return (
     <div className="hd-agents">
       <div className="hd-abar">
-        <span className="hp-note">写进这台机器上 agent 自己的配置文件：board host 启动时写一次，服务器上一改就同步。有人在用的电脑选「不改」，Board 就不碰它。</span>
+        <span className="hp-note">用哪个模型、强度、供应商按角色定（Agent → 分工），每次派发带给这一个 agent 进程，不改它自己的配置文件。</span>
         <span className="hd-test">
           {state?.tone === 'busy' && state.agents.length > 0 ? (
             <span>正在自检 {state.agents.map(id => h.agents.find(x => x.id === id)?.name ?? id).join('、')}</span>
@@ -120,6 +121,7 @@ export function HostAgents({ h, view, save, sync, now }: { h: HostInfo; view: Pr
           设置的默认 agent「{h.agentSet}」这台机器上找不到，不生效{h.agent ? `：用的是 ${h.agents.find(a => a.id === h.agent)?.name ?? h.agent}` : ''}
         </p>
       )}
+      <HostRoles h={h} />
       {h.agents.map(a => (
         <AgentCard key={a.id} h={h} a={a} view={view} save={save} sync={sync} now={now} ask={ask} skill={skill} />
       ))}
@@ -177,7 +179,8 @@ function AgentCard({
           ))}
       </header>
       <ManageAgent h={h} a={a} now={now} ask={ask} />
-      {a.found && meta && (
+      {/* 以前在机器上「指定」过供应商的才画写入状态（Board 还在按那组写它的配置文件）；没指定过的没有可说的 */}
+      {a.found && meta && pick.mode !== 'off' && (
         <div className={cx('hd-conf', line.tone)}>
           <Icon name={line.tone === 'ok' ? 'checkCircle' : line.tone === 'bad' ? 'alert' : line.tone === 'busy' ? 'renew' : 'info'} />
           <span>{line.text}</span>
@@ -188,10 +191,12 @@ function AgentCard({
           )}
         </div>
       )}
-      {a.found && !meta && <div className="hd-conf muted">
+      {a.found && !meta && (
+        <div className="hd-conf muted">
           <Icon name="info" />
-          <span>配置文件里新加的 agent：模型在它自己的配置里，Board 不写</span>
-        </div>}
+          <span>配置文件里新加的 agent：角色只能选本机登录，模型在它自己的配置里</span>
+        </div>
+      )}
       {a.found && hr.why && (
         <div className="hd-why">
           <span>{hr.why}</span>
@@ -228,7 +233,7 @@ function AgentCard({
           </button>
         </div>
       )}
-      {a.found && <Editor h={h} a={a} view={view} save={save} sync={sync} def={def} testing={testing} mine={mine} ask={ask} />}
+      {a.found && <Editor h={h} a={a} save={save} sync={sync} def={def} testing={testing} mine={mine} ask={ask} />}
     </article>
   );
 }
@@ -302,14 +307,10 @@ function ManageAgent({ h, a, now, ask }: { h: HostInfo; a: HostAgent; now: numbe
   );
 }
 
-/** 下拉里一项「供应商 · 模型」的值 */
-const pickValue = (provider: string, model: string) => `${provider}\u0001${model}`;
-
 /** 一个 agent 的控件：启动环境、模型（不改 / 供应商 · 模型，接口、强度）、设为默认、自检这一个 */
 function Editor({
   h,
   a,
-  view,
   save,
   sync,
   def,
@@ -319,7 +320,6 @@ function Editor({
 }: {
   h: HostInfo;
   a: HostAgent;
-  view: ProviderView | null;
   save: Save;
   sync: SyncMap;
   def: boolean;
@@ -329,28 +329,7 @@ function Editor({
   mine: boolean;
   ask: ReturnType<typeof useAsk>;
 }) {
-  const meta = metaOf(view, a.id);
-  const p = runPick(view, a);
-  const off = p.mode === 'off';
-  const fits = providersFor(view, a.id);
-  const prov = view?.providers.find(x => x.name === p.provider);
-  const efforts = writableEfforts(meta, prov, p.model);
-  const protos = off ? [] : protocolChoices(view, a.id, p.provider);
   const name = (id: string) => envName(h, id) ?? id;
-  /** 指定一组。接口：带了用它；没带时同一个供应商留着原来的（新供应商不给那种了就回到第一个对得上的） */
-  const set = (provider: string, model: string, effort: string, protocol?: string) => {
-    const keep = protocol ?? (provider === a.run_provider && protocolChoices(view, a.id, provider).some(e => e.interface === a.run_protocol) ? (a.run_protocol ?? '') : '');
-    save({ run: { agent: a.id, mode: 'own', provider, model, effort, protocol: keep } });
-  };
-  /** 换模型时强度：新模型也支持就留着 */
-  const keepEffort = (provider: string, model: string) => (writableEfforts(meta, view?.providers.find(x => x.name === provider), model).includes(p.effort) ? p.effort : '');
-  const hint = off
-    ? `Board 不碰它的配置文件${a.model ? `：本机现在是 ${a.model}${a.effort ? ` · 强度 ${a.effort}` : ''}` : ''}`
-    : p.gone
-      ? `供应商 ${p.provider} 在服务器上已经删了：换一个`
-      : p.ep
-        ? `用 ${interfaceName(p.ep.interface)} 接口连 ${p.ep.url}，写进这台机器上它的配置文件`
-        : `${p.provider} 没有 ${a.name} 认的接口：换一个`;
   return (
     <div className="hd-edit">
       <span className="hd-k">启动环境</span>
@@ -377,66 +356,13 @@ function Editor({
         )}
       </span>
 
-      {meta && (
-        <>
-          <span className="hd-k">模型</span>
-          <span className="hd-v hd-col">
-            <span className="hp-ctl">
-              <Sync s={sync[`run:${a.id}`]} />
-              <Tip text={!fits.length && off ? '服务器上还没有接口对得上的供应商：先在「Agent → 模型供应商」里加一个' : ''}>
-                <span>
-                  <Select
-                    className="ha-sel wide"
-                    value={off ? '' : pickValue(p.provider, p.model)}
-                    placeholder={p.gone ? `${p.provider} · ${p.model}（已删）` : undefined}
-                    options={[{ value: '', label: '不改' }, ...fits.flatMap(x => x.models.map(m => ({ value: pickValue(x.name, m), label: `${x.name} · ${m}` })))]}
-                    onChange={v => {
-                      if (!v) return save({ run: { agent: a.id, mode: 'off' } });
-                      const [provider, model] = v.split('\u0001');
-                      set(provider, model, keepEffort(provider, model));
-                    }}
-                    aria-label={`${a.name} 用哪个模型`}
-                  />
-                </span>
-              </Tip>
-              {protos.length > 1 && (
-                <Tip text={`${a.name} 认这几种，${p.provider} 也都给了：选用哪种`}>
-                  <span>
-                    <Select
-                      className="ha-sel"
-                      value={p.ep?.interface ?? ''}
-                      options={protos.map(e => ({ value: e.interface, label: `接口 ${interfaceName(e.interface)}` }))}
-                      onChange={v => set(p.provider, p.model, p.effort, v)}
-                      aria-label={`${a.name} 用哪种接口`}
-                    />
-                  </span>
-                </Tip>
-              )}
-              {!off && (
-                <Tip text={efforts.length ? '只列这个模型支持、这个 agent 也能写的档位' : '供应商里没给这个模型标强度：不能选'}>
-                  <span>
-                    <Select
-                      className="ha-sel sm"
-                      value={efforts.includes(p.effort) ? p.effort : ''}
-                      disabled={!efforts.length}
-                      options={[{ value: '', label: '强度默认' }, ...efforts.map(e => ({ value: e, label: `强度 ${e}` }))]}
-                      onChange={v => set(p.provider, p.model, v)}
-                      aria-label={`${a.name} 的强度`}
-                    />
-                  </span>
-                </Tip>
-              )}
-            </span>
-            <span className="ha-hint">{hint}</span>
-            {p.warn && (
-              <span className="ha-hint hd-warn">
-                <Icon name="alert" />
-                {p.warn}
-              </span>
-            )}
-          </span>
-        </>
-      )}
+      <span className="hd-k">模型</span>
+      <span className="hd-v hd-col">
+        <span className="ha-hint">
+          {a.model ? `本机配置里现在是 ${a.model}${a.effort ? ` · 强度 ${a.effort}` : ''}` : '本机配置里没写模型：用它自己的默认'}
+          。用哪个模型按角色定（Agent → 分工），派发时带给这一个进程，不改它的配置文件
+        </span>
+      </span>
 
       <span className="hd-k" />
       <span className="hd-v hd-acts">
@@ -459,6 +385,29 @@ function Editor({
           <Icon name="check" />
           自检这一个
         </button>
+      </span>
+    </div>
+  );
+}
+
+/** 这台机器能跑哪些角色（服务端算的）：能跑的绿点，跑不了的写原因（没装、缺命令、不在角色的机器里……） */
+function HostRoles({ h }: { h: HostInfo }) {
+  const profiles = useData(s => s.ws?.sched?.profiles);
+  if (!profiles?.length) return null;
+  return (
+    <div className="hd-roles">
+      <span className="hd-k">能跑的角色</span>
+      <span className="hd-roles-list">
+        {profiles.map(p => {
+          const f = fitOf(h, p.id);
+          return (
+            <span key={p.id} className={cx('pf-hw', f.ok ? 't-ok' : 't-bad')} title={f.ok ? `${p.name}：能跑` : `${p.name}：${f.why}`}>
+              <i />
+              <b>{p.name}</b>
+              {!f.ok && <small>{f.why}</small>}
+            </span>
+          );
+        })}
       </span>
     </div>
   );

@@ -390,6 +390,11 @@ impl W<'_> {
 
     /// 删掉一个供应商：机器上指定成它的 agent 下次同步时写入失败（界面上提示换一个）
     pub fn provider_rm(&mut self, name: &str) -> Result<()> {
+        // 还有角色在用它：先改掉这些角色（换供应商或本机登录）
+        let users: Vec<String> = self.read().profiles()?.into_iter().filter(|p| p.provider == name).map(|p| format!("「{}」", p.name)).collect();
+        if !users.is_empty() {
+            return Err(BoardError::usage(format!("角色{}还在用「{name}」：先把它们改成别的供应商或本机登录", users.join(""))));
+        }
         if self.tx.execute("DELETE FROM providers WHERE name = ?1", [name])? == 0 {
             return Err(BoardError::new(ErrorCode::NotFound, format!("没有模型供应商「{name}」")));
         }

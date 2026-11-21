@@ -110,23 +110,25 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
   - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`，只能用打码的 `GET /api/mcp`。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
 - 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
 
-## 模型供应商：在「Agent → 模型供应商」里维护
+## 模型供应商和角色：谁用哪个模型
 
-供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用；每台机器上每个内置 agent 在机器详情的 agent 页里选一个——**不改**（Board 不碰它的配置文件，新机器默认）或者「<供应商> · <模型>」，再选强度；agent 认几种接口、供应商也给了几种时（例如 dsh 用一个同时给了 Anthropic 和 OpenAI Chat 的中转站），还可以指定用哪种接口，不指定时用供应商里第一个对得上的。board host 把选好的写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）。供应商卡片底下按 agent 汇总哪几台机器在用它，点进去就是那台机器的 agent 页。
+供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用。谁用哪个在「Agent → 分工」的**角色**里定：一个角色 = agent + 模型来源（「<供应商> · <模型>」，或「本机登录」：用机器上 agent 自己登录的账号，模型可以不填）+ 强度，可选附加说明（接在提示词后面）、可选「只在这些机器上跑」。领取规则是「条件 → 角色」，手动派发也选角色；`board dispatch <ID> --host <机器> --profile <角色>`。
 
-| agent | 写到哪里 | 写什么 |
+board host 每次派发按角色给**这一个 agent 进程**带上供应商、模型和强度，不改 agent 的全局配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）：
+
+| agent | 怎么换供应商 | 模型、强度 |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_AUTH_TOKEN`、`model`；有强度时还有 `env.CLAUDE_CODE_EFFORT_LEVEL` |
-| Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | `model_provider`、`[model_providers.board-<供应商>]`（`base_url`、`wire_api = "responses"`、`experimental_bearer_token`）、`model`、`model_reasoning_effort` |
-| dsh | `~/.dsh/profiles/acp/cordis.patch.yml`（board host 用 dsh 的 acp profile 启动它）的 `llm-pi-ai` 里一条 `board-<供应商>` 路由（标了强度的模型写上 `reasoningEfforts`），`agent-default-model` 和 `acp`（ACP 会话用的提供方和模型）都指向它；dsh 新建 profile 时文件里的空数组 `[]` 去掉；key 写 `~/.dsh/.env` 的 `BOARD_PROVIDER_<名称>_API_KEY`（名称转大写，`-`、`.` 换成 `_`） | 不动 dsh 自己（或 magpie）原来的条目；改成别的供应商时把 Board 加的路由换掉，magpie 的留着 |
-| 配置文件里新加的 agent、WSL 里的 agent | — | 不支持，界面上写「不支持」 |
+| Claude Code（`claude-agent-acp`） | ACP 握手后、开会话前发 `providers/set`：`providerId: "main"`、`apiType: "anthropic"`、`baseUrl`（不带 `/v1`）、`headers: {"Authorization": "Bearer <key>"}`。适配器把它写进会话的程序化 settings，优先级高于 `~/.claude/settings.json` 里的 `env` | ACP 会话配置项：类别 `model`、`thought_level` |
+| Codex（`codex-acp`） | 同样 `providers/set`：`providerId: "openai"`、`apiType: "openai"`（Responses 接口）、`baseUrl`、`headers`。适配器以 `-c model_provider=…` 覆盖启动 codex app-server，不改 `config.toml` | 同上 |
+| dsh | 这次派发的 `--patch` 后面接上 `llm-pi-ai` 里一条 `board-role` 路由和 `acp` 用的提供方、模型、强度；key 放在这个进程的环境变量 `BOARD_ROLE_API_KEY` 里 | 写在补丁里；没有供应商时用会话配置项 `reasoning_effort` 切强度 |
+| 配置文件里新加的 agent | 不能换供应商：角色只能选「本机登录」 | 会话配置项 |
 
-- 每个 agent 只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，dsh 三种都认（用哪种可以在机器上指定，dsh 路由的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；每个模型在供应商里标它支持哪几档强度，强度只能选模型标了、这个 agent 能写的档位，没标的模型不能选强度。
-- 写之前检查：强度不在这个模型标的档位里就不写强度（界面上提示「<模型> 不支持强度 <档>：写配置时不写强度」）；Anthropic 的地址结尾的 `/v1` 保存时就去掉（Claude Code 自己接 `/v1/messages`），「获取模型」也按去掉后的地址问。
-- 只改 Board 管的那几项，文件里别的配置、注释和顺序不动；先写临时文件再整体换上；文件解析不了时整份不覆盖，上报「写入失败」和原因，修好文件后点「重试」再写。改成「不改」时之前写进去的不恢复，Board 只是不再碰它。
-- 什么时候写：board host 启动时写一次；服务器上的供应商、机器上的选择一改，服务端给受影响的在线机器下发「同步配置」请求，board host 写完上报（每个 agent 一行），记进那台机器的操作记录；离线的机器上线时写。已经在跑的 agent 不受影响，下一次启动读新的配置。
-- 派发时不按次传模型、强度：派发名字的第二段和派发记录里的模型、强度是 board host 从 agent 配置文件里读出来的（写进去的，或人自己配的）。
-- API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`），不写进日志和卡片动态。它会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
+- `providers/set` 的参数（含 key）写进 `~/.board/host/run/<派发 ID>.provider.json`（只有自己能读），交给 `board acp --provider-file`，读完就删；派发日志里这一帧的请求头写成 `***`。换供应商失败（例如网关列不出模型）时不开会话，按异常退出记下原因。
+- 本机登录的角色不换供应商，只切模型、强度；没填模型时不切，用 agent 自己的默认。
+- 每个角色只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，dsh 三种都认（路由的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；强度只能选这个 agent 能设、模型也标了的档位。
+- 派发名字的第二段和派发记录里的模型、强度是角色的；本机登录、没填模型时用 board host 从 agent 配置文件里读出来的。
+- 以前在机器详情里「指定」过供应商的 agent：Board 之前写进它配置文件的那组留着（按「本机登录」跑、角色没填模型时用的就是它），机器详情里不再能改；升级时规则里用到的每个 agent 建一个同名的「本机登录」角色，行为和以前一样。
+- API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`，按角色派发时现取），不写进日志和卡片动态。
 
 
 ## Git 凭据：在「Agent → Git 凭据」里设一次
@@ -163,7 +165,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 | 顺序 | 标识 | 名称 | agent 命令 | ACP 入口 | `PATH` 里没有时再看 | 读 skill 的目录 | 支持的启动环境（Windows） | 前提 |
 |---|---|---|---|---|---|---|---|---|
-| 1 | `dsh` | DeepSeek Harness | `dsh` | `{bin} --profile acp --patch {patch}`（自带，0.2.2 起） | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 的 acp profile 里配好模型（或在 Board 里指定供应商） |
+| 1 | `dsh` | DeepSeek Harness | `dsh` | `{bin} --profile acp --patch {patch}`（自带，0.2.2 起） | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 的 acp profile 里配好模型（或在 Board 的角色里选供应商） |
 | 2 | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login`；装了 Node.js（`npx`） |
 | 3 | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login`；装了 Node.js（`npx`） |
 

@@ -3,9 +3,9 @@
 use board_core::*;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) const VALUE_FLAGS: [&str; 30] = [
+pub(crate) const VALUE_FLAGS: [&str; 31] = [
     "--as", "--board", "--column", "--search", "--label", "--body", "--title", "--comment", "--out", "--url", "--token", "--name", "--dir",
-    "--host", "--agent", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project", "--workspace",
+    "--host", "--agent", "--profile", "--body-file", "--comment-file", "--image", "--file", "--limit", "--wait", "--from", "--project", "--workspace",
     "--base", "--upstream", "--card", "--message-file", "--checked", "--branch",
 ];
 pub(crate) const BOOL_FLAGS: [&str; 20] = [

@@ -25,9 +25,8 @@ pub(crate) struct HostRow {
     pub(crate) max_run: i64,
     pub(crate) idle_run: i64,
     pub(crate) rules: Vec<ClaimRule>,
-    pub(crate) fallback: Option<String>,
-    /// 每个 agent 明确不参与的机器 id（`sched.picks`）
-    pub(crate) picks: crate::sched::Picks,
+    /// 所有角色（`profiles` 表，按排列顺序）：规则交给角色，这台机器能不能跑看 [`crate::profiles::fit`]
+    pub(crate) profiles: Vec<crate::profiles::Profile>,
     pub(crate) paused: bool,
     pub(crate) agent: Option<String>,
     /// 参与自动接单（`sched.rs`）
@@ -67,7 +66,7 @@ pub(crate) struct HostRow {
 }
 
 pub(super) const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT picks FROM sched WHERE id = 1), '{}') AS sched_picks, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT json_group_array(json_object('id', id, 'name', name, 'agent', agent, 'provider', provider, 'model', model, 'effort', effort, 'note', note, 'only', json(only), 'sort', sort, 'createdAt', created_at)) FROM profiles), '[]') AS profiles_json, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get(5)?;
@@ -95,8 +94,11 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         max_run: r.get(31)?,
         idle_run: r.get(32)?,
         rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>(20)?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
-        fallback: r.get(21)?,
-        picks: crate::sched::parse_picks(&r.get::<_, String>("sched_picks")?),
+        profiles: {
+            let mut v: Vec<crate::profiles::Profile> = serde_json::from_str(&r.get::<_, String>("profiles_json")?).unwrap_or_default();
+            v.sort_by(|a, b| (a.sort, a.created_at, &a.id).cmp(&(b.sort, b.created_at, &b.id)));
+            v
+        },
         paused: r.get::<_, i64>(8)? != 0,
         agent: r.get(9)?,
         auto: r.get::<_, i64>(39)? != 0,
@@ -208,7 +210,15 @@ impl HostRow {
     pub(crate) fn has_agent(&self, id: &str) -> bool {
         self.resolved().iter().any(|a| a.id == id && a.found)
     }
-    /// 解析后的领取规则；一条规则也没有时为 None：定时领取不领卡（兜底只处理规则没命中的卡片，不算规则）
+    /// 一个角色（按标识）
+    pub(crate) fn profile(&self, id: &str) -> Option<&crate::profiles::Profile> {
+        self.profiles.iter().find(|p| p.id == id)
+    }
+    /// 这台机器能跑这个角色（[`crate::profiles::fit`]）
+    pub(crate) fn can_run(&self, profile: &str) -> bool {
+        self.profile(profile).is_some_and(|p| crate::profiles::fit(p, self).is_ok())
+    }
+    /// 解析后的领取规则；一条规则也没有时为 None：自动领取不领卡
     pub(super) fn claim_rules(&self) -> Option<Rules> {
         if self.rules.is_empty() {
             return None;
@@ -220,24 +230,20 @@ impl HostRow {
                 .map(|r| Cond {
                     op: r.op.clone(),
                     labels: r.labels.iter().map(|l| l.trim().to_lowercase()).collect(),
-                    agent: r.agent.clone(),
-                    ok: self.has_agent(&r.agent),
+                    profile: r.profile.clone(),
+                    ok: self.can_run(&r.profile),
                 })
                 .collect(),
-            fallback: self.fallback.clone().map(|a| {
-                let ok = self.has_agent(&a);
-                (a, ok)
-            }),
         })
     }
-    /// 有没有至少一条领取规则（兜底不算）。没有时定时领取不领卡，「现在领一轮」也不能开始
+    /// 有没有至少一条领取规则。没有时自动领取不领卡
     pub(super) fn has_rules(&self) -> bool {
         !self.rules.is_empty()
     }
-    /// 这台机器上按「由哪些机器做」挑卡片的规则：勾了这台机器的 agent 才接它的卡。
-    /// 给回来的 `Routes` 要拿着不放（它借用规则里的名字）
+    /// 这台机器上按规则挑卡片：命中的规则交给的角色这台机器能跑才接。
+    /// 给回来的 `Routes` 要拿着不放（它借用规则里的角色标识）
     pub(super) fn routes<'r>(&'r self, rules: &'r Rules) -> Routes<'r> {
-        Routes { inner: rules, picks: &self.picks, host: self.id }
+        Routes { inner: rules }
     }
     /// 默认 agent：设置过且找到了就是它，否则第一个找到的
     pub(crate) fn default_agent(&self) -> Option<HostAgent> {
@@ -270,9 +276,21 @@ impl HostRow {
             per_session: self.per_session,
             max_run: self.max_run,
             idle_run: self.idle_run,
-            rules: self.rules.iter().map(|x| ClaimRule { active: self.has_agent(&x.agent), ..x.clone() }).collect(),
-            fallback: self.fallback.clone(),
-            fallback_active: self.fallback.as_deref().is_some_and(|a| self.has_agent(a)),
+            rules: self
+                .rules
+                .iter()
+                .map(|x| ClaimRule {
+                    active: self.can_run(&x.profile),
+                    agent: self.profile(&x.profile).map(|p| p.agent.clone()).unwrap_or_default(),
+                    ..x.clone()
+                })
+                .collect(),
+            fallback: None,
+            fallback_active: false,
+            fits: self.profiles.iter().map(|p| match crate::profiles::fit(p, self) {
+                Ok(()) => crate::profiles::ProfileFit { profile: p.id.clone(), ok: true, why: String::new() },
+                Err(why) => crate::profiles::ProfileFit { profile: p.id.clone(), ok: false, why },
+            }).collect(),
             unmatched: 0,
             paused: self.paused,
             agent_auto: self.agent_auto,
@@ -311,35 +329,15 @@ impl HostRow {
     }
 }
 
-/// 一台机器上看得见的 agent + 明确不参与它的机器（拿到的 agent 名按它自己的生命周期借出去，和 `Rules` 一样长）
+/// 一台机器上的领取规则（拿到的角色标识按它自己的生命周期借出去，和 `Rules` 一样长）
 pub(super) struct Routes<'a> {
     pub(super) inner: &'a Rules,
-    pub(super) picks: &'a crate::sched::Picks,
-    pub(super) host: i64,
 }
 
 impl<'a> Routes<'a> {
-    /// 这台机器参不参与这个 agent 的自动领取：不在排除列表里就参与（默认参与）
-    pub(super) fn takes(&self, agent: &str) -> bool {
-        self.picks.get(agent).is_none_or(|off| !off.contains(&self.host))
-    }
-
-    /// 这道命中规则交给这个 agent；这台机器被排除了时不交
-    pub(super) fn agent(&self, agent: &'a str) -> Option<&'a str> {
-        self.takes(agent).then_some(agent)
-    }
-
-    /// 一张卡片交给哪个 agent：有规则命中时按 [`Rules::agent_for`]（第一条命中的规则生效才交）；
-    /// 一条都没命中时交给兜底的 agent（要找得到）。交出去的 agent 都看这台机器是否被排除在它的自动领取之外
+    /// 一张卡片交给哪个角色：按顺序第一条命中的规则，这台机器能跑它的角色才交；一条都没命中时不领
     pub(super) fn route(&self, labels: &[String]) -> Option<&'a str> {
-        if self.inner.matches_any(labels) {
-            return self.inner.agent_for(labels).and_then(|a| self.agent(a));
-        }
-        self.inner
-            .fallback
-            .as_ref()
-            .filter(|(_, ok)| *ok)
-            .and_then(|(a, _)| self.takes(a).then_some(a.as_str()))
+        self.inner.profile_for(labels)
     }
 }
 
@@ -348,53 +346,31 @@ pub(super) struct Cond {
     pub(super) op: String,
     /// 标签名小写
     pub(super) labels: Vec<String>,
-    pub(super) agent: String,
-    /// agent 在这台机器上找得到
+    /// 交给的角色
+    pub(super) profile: String,
+    /// 这台机器能跑这个角色
     pub(super) ok: bool,
 }
 
 impl Cond {
     /// 卡片的标签（小写）满足条件吗
     pub(super) fn matches(&self, card: &[String]) -> bool {
-        match self.op.as_str() {
-            // 空规则不匹配任何卡片（保存时会被拦住，这里兜住手写的数据）
-            "all" => !self.labels.is_empty() && self.labels.iter().all(|l| card.contains(l)),
-            "not_in" => !self.labels.iter().any(|l| card.contains(l)),
-            "equal" => {
-                let mut a: Vec<&String> = card.iter().collect();
-                a.sort();
-                a.dedup();
-                let mut b: Vec<&String> = self.labels.iter().collect();
-                b.sort();
-                b.dedup();
-                a == b
-            }
-            // 标签都在这几个里面、没有别的，至少要有一个（空规则不匹配任何卡片）
-            "only" => !self.labels.is_empty() && !card.is_empty() && card.iter().all(|l| self.labels.contains(l)),
-            "none" => card.is_empty(),
-            _ => self.labels.iter().any(|l| card.contains(l)),
-        }
+        crate::hosts::rule_matches(&self.op, &self.labels, card)
     }
 }
 
-/// 解析后的领取规则（任务下发：定时领取按标签条件筛卡片、选 agent）
+/// 解析后的领取规则（自动领取按标签条件筛卡片、选角色）
 pub(super) struct Rules {
     pub(super) list: Vec<Cond>,
-    /// 兜底的 agent，找得到
-    pub(super) fallback: Option<(String, bool)>,
 }
 
 impl Rules {
-    /// 一张卡片（标签名小写）交给哪个 agent：按顺序第一条命中、生效的规则；先命中的是不生效的规则（agent 找不到）时不领它；
-    /// 一条都没命中时用兜底；都没有时不领它
-    pub(super) fn agent_for(&self, labels: &[String]) -> Option<&str> {
+    /// 一张卡片（标签名小写）交给哪个角色：按顺序第一条命中的规则；这台机器跑不了它的角色时不领（不往下找）
+    pub(super) fn profile_for(&self, labels: &[String]) -> Option<&str> {
         let hit = self.list.iter().find(|c| c.matches(labels))?;
-        if hit.ok {
-            return Some(&hit.agent);
-        }
-        None
+        hit.ok.then_some(hit.profile.as_str())
     }
-    /// 有一条规则命中（不管生效没有）
+    /// 有一条规则命中（这台机器能不能跑都算）
     pub(super) fn matches_any(&self, labels: &[String]) -> bool {
         self.list.iter().any(|c| c.matches(labels))
     }
@@ -404,6 +380,28 @@ impl Rules {
         out.sort();
         out.dedup();
         out
+    }
+}
+
+/// 规则的条件对不对得上一张卡片的标签（都是小写）：`in` 带其中任一个 | `all` 全都带 | `not_in` 一个都不带 |
+/// `equal` 正好是这几个 | `only` 都在这几个里面、至少带一个 | `none` 没有标签
+pub fn rule_matches(op: &str, labels: &[String], card: &[String]) -> bool {
+    match op {
+        // 空规则不匹配任何卡片（保存时会被拦住，这里兜住手写的数据）
+        "all" => !labels.is_empty() && labels.iter().all(|l| card.contains(l)),
+        "not_in" => !labels.iter().any(|l| card.contains(l)),
+        "equal" => {
+            let mut a: Vec<&String> = card.iter().collect();
+            a.sort();
+            a.dedup();
+            let mut b: Vec<&String> = labels.iter().collect();
+            b.sort();
+            b.dedup();
+            a == b
+        }
+        "only" => !labels.is_empty() && !card.is_empty() && card.iter().all(|l| labels.contains(l)),
+        "none" => card.is_empty(),
+        _ => labels.iter().any(|l| card.contains(l)),
     }
 }
 
@@ -639,7 +637,7 @@ impl<'a> R<'a> {
         for r in info.rules.iter_mut() {
             r.missing = r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect();
         }
-        if let Some(rules) = h.claim_rules().filter(|r| r.fallback.is_none()) {
+        if let Some(rules) = h.claim_rules() {
             for dir in info.dirs.iter() {
                 let Ok(board) = self.resolve(&dir.board) else { continue };
                 let flow = flow_of(self.conn, board.id)?;

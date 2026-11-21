@@ -109,7 +109,7 @@ fn beat(s: &mut Store, at: i64, running: Vec<i64>) {
 fn dispatch(s: &mut Store, at: i64, card: i64) -> Dispatch {
     s.write(at, Origin::ui(None), |w| {
         let b = w.resolve(B)?;
-        w.dispatch_create(&b, card, HOST, Some("claude"), &Actor::human())
+        w.dispatch_create(&b, card, HOST, Some("claude"), None, &Actor::human())
     })
     .unwrap()
 }
