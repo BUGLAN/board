@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS card_crons (
   ran_card   INTEGER,                   -- 那一次建的卡；跳过时为空
   ran_skip   INTEGER,                   -- 那一次跳过：因为上一张还没完成
   host       TEXT,                      -- 建出卡后派给哪台机器（机器名）；空表示不派发
-  agent      TEXT,                      -- 用哪个 agent；空表示那台机器的默认 agent
+  agent      TEXT,                      -- 旧版：用哪个 agent。升级时换成这个 agent 的角色（profile），之后不再写
+  profile    TEXT,                      -- 派发用哪个角色（profiles.id）；空表示按规则会交给的角色（规则没命中、也没有角色时用机器的默认 agent）
   pick       TEXT,                      -- 选哪台机器：host 这台 | random 能接这块白板的机器里随机一台；空同 host（旧库）
   ran_to     TEXT,                      -- 那一次派发到了哪：「<机器> · <agent>」
   ran_err    TEXT,                      -- 那一次没派发出去的原因
@@ -58,13 +59,29 @@ CREATE TABLE IF NOT EXISTS card_crons (
 CREATE INDEX IF NOT EXISTS card_crons_board ON card_crons (board, id);
 "#;
 
-/// v0.1.22 建的表没有派发的几列
+/// v0.1.22 建的表没有派发的几列；角色（#575）之前没有 profile 一列
 pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    for col in ["host", "agent", "ran_to", "ran_err", "pick"] {
+    for col in ["host", "agent", "ran_to", "ran_err", "pick", "profile"] {
         let has: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('card_crons') WHERE name = ?1", [col], |r| r.get(0))?;
         if !has {
             conn.execute_batch(&format!("ALTER TABLE card_crons ADD COLUMN {col} TEXT"))?;
         }
+    }
+    Ok(())
+}
+
+/// 升级（#575）：选了 agent 的定时建卡换成这个 agent 的角色（已经有就用排在最前面的，没有就建一个本机登录的，
+/// 和规则升级同一个办法），agent 清掉。每次打开都看一遍（要在角色表、规则升级之后），旧版界面又写回 agent 也能接上
+pub(crate) fn migrate_profiles(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let olds: Vec<(i64, String)> = {
+        let mut st = conn.prepare("SELECT id, agent FROM card_crons WHERE TRIM(COALESCE(agent, '')) != '' ORDER BY id")?;
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let now = crate::store::now_ms();
+    for (i, (id, agent)) in olds.iter().enumerate() {
+        let p = crate::profiles::agent_profile(conn, agent.trim(), &[], now + i as i64)?;
+        conn.execute("UPDATE card_crons SET profile = COALESCE(NULLIF(profile, ''), ?2), agent = NULL WHERE id = ?1", params![id, p])?;
     }
     Ok(())
 }
@@ -102,10 +119,13 @@ pub struct CardCron {
     /// 建出卡后派给哪台机器（机器名）；不派发时为空
     #[serde(default)]
     pub host: Option<String>,
-    /// 用哪个 agent；空表示那台机器（随机选出来那台）的默认 agent
+    /// 旧版：用哪个 agent。升级后都换成了 [`Self::profile`]，总是空的；旧版界面传来的换成这个 agent 的角色
     #[serde(default)]
     pub agent: Option<String>,
-    /// 选哪台机器：[`PICK_HOST`] 派给 [`Self::host`]，[`PICK_RANDOM`] 每次随机挑一台
+    /// 派发用哪个角色（标识）；空表示按规则会交给的角色（规则没命中、也没有角色时用机器的默认 agent）
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// 选哪台机器：[`PICK_HOST`] 派给 [`Self::host`]，[`PICK_RANDOM`] 每次在能跑这个角色、能接这块白板的机器里随机挑一台
     #[serde(default = "pick_host")]
     pub pick: String,
     /// 下次到点的时间（毫秒）；关着、或一年内都不会到点（例如 2 月 30 号）时为空
@@ -157,15 +177,18 @@ pub struct CardCronPatch {
     /// 派给哪台机器；空字符串表示不派发
     #[serde(default)]
     pub host: Option<String>,
-    /// 用哪个 agent；空字符串表示那台机器的默认 agent
+    /// 旧版界面：用哪个 agent（换成这个 agent 的角色，没有就建一个本机登录的）；空字符串不改
     #[serde(default)]
     pub agent: Option<String>,
+    /// 用哪个角色（标识或名字）；空字符串表示按规则
+    #[serde(default)]
+    pub profile: Option<String>,
     /// 选哪台机器：`host`（默认）派给 `host`，`random` 每次随机挑一台；空字符串和新建立时一样处理
     #[serde(default)]
     pub pick: Option<String>,
 }
 
-const COLS: &str = "id, name, title, body, labels, place, cron, tz, enabled, last_card, ran_at, ran_card, ran_skip, created_at, updated_at, board, host, agent, ran_to, ran_err, pick";
+const COLS: &str = "id, name, title, body, labels, place, cron, tz, enabled, last_card, ran_at, ran_card, ran_skip, created_at, updated_at, board, host, agent, ran_to, ran_err, pick, profile";
 
 fn pick_host() -> String {
     PICK_HOST.into()
@@ -186,6 +209,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(CardCron, i64)> {
             on: r.get(8)?,
             host: r.get(16)?,
             agent: r.get(17)?,
+            profile: r.get::<_, Option<String>>(21)?.filter(|p| !p.trim().is_empty()),
             // 旧库没有这一列（迁移补上时是空的）：按「派给指定的机器」算
             pick: r.get::<_, Option<String>>(20)?.unwrap_or_else(pick_host),
             next_at: None,
@@ -339,13 +363,30 @@ impl<'a> W<'a> {
         } else {
             c.host = opt(c.host.take());
         }
-        c.agent = if c.pick == PICK_RANDOM || c.host.is_some() { opt(c.agent.take()) } else { None };
+        // 角色：给了就按标识或名字找、存标识；旧版界面只给 agent 时换成这个 agent 的角色（没有就建一个本机登录的）。不派发时不留
+        let dispatching = c.pick == PICK_RANDOM || c.host.is_some();
+        let agent = opt(c.agent.take());
+        c.profile = match (opt(c.profile.take()), agent) {
+            _ if !dispatching => None,
+            (Some(key), _) => Some(
+                self.read()
+                    .profile_by(&key)?
+                    .ok_or_else(|| BoardError::usage(format!("没有角色「{key}」：Agent → 自动领取 → 分工里能看到所有角色")))?
+                    .id,
+            ),
+            (None, Some(a)) => Some(crate::profiles::agent_profile(self.tx, &a, &[], self.now)?),
+            (None, None) => None,
+        };
+        let role = match &c.profile {
+            Some(id) => self.read().profile(id)?,
+            None => None,
+        };
         if c.pick == PICK_RANDOM {
             if c.place == INBOX {
                 return Err(BoardError::usage(format!("放到「{INBOX_NAME}」的不派发：要在能接这块白板的机器里随机派发，「放到哪」选首个可领取状态")));
             }
             if target {
-                self.cron_host_pick_check(board, c.agent.as_deref())?;
+                self.cron_host_pick_check(board, role.as_ref())?;
             }
         }
         if let Some(h) = &c.host {
@@ -353,7 +394,12 @@ impl<'a> W<'a> {
                 return Err(BoardError::usage(format!("放到「{INBOX_NAME}」的不派发：要派给机器，「放到哪」选首个可领取状态")));
             }
             if target {
-                self.dispatch_target_check(board, h, c.agent.as_deref())?;
+                self.dispatch_target_check(board, h, None)?;
+                if let (Some(p), Some(row)) = (&role, self.host_row(h)?) {
+                    if let Err(why) = crate::profiles::fit(p, &row) {
+                        return Err(BoardError::usage(format!("机器「{h}」跑不了角色「{}」：{why}", p.name)));
+                    }
+                }
             }
         }
         let mut labels: Vec<i64> = vec![];
@@ -387,6 +433,7 @@ impl<'a> W<'a> {
             on: p.on.unwrap_or(true),
             host: p.host.clone(),
             agent: p.agent.clone(),
+            profile: p.profile.clone(),
             pick: pick_of(p.pick.clone())?,
             next_at: None,
             ran_at: None,
@@ -400,8 +447,8 @@ impl<'a> W<'a> {
         };
         let c = self.check_card_cron(&board, None, c, true)?;
         self.tx.execute(
-            "INSERT INTO card_crons (board, name, title, body, labels, place, cron, tz, enabled, host, agent, pick, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+            "INSERT INTO card_crons (board, name, title, body, labels, place, cron, tz, enabled, host, agent, pick, created_at, updated_at, profile)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)",
             params![
                 board.id,
                 c.name,
@@ -415,7 +462,8 @@ impl<'a> W<'a> {
                 c.host,
                 c.agent,
                 c.pick,
-                self.now
+                self.now,
+                c.profile
             ],
         )?;
         let id = self.tx.last_insert_rowid();
@@ -441,19 +489,21 @@ impl<'a> W<'a> {
             tz: p.tz.clone().filter(|t| !t.trim().is_empty()).unwrap_or(old.tz.clone()),
             on: p.on.unwrap_or(old.on),
             host: p.host.clone().or(old.host.clone()),
-            // 换了机器、没说用哪个 agent 时用新机器的默认 agent；换成随机时也一样
-            agent: p.agent.clone().or_else(|| if p.host.is_some() || pick_changed { None } else { old.agent.clone() }),
+            agent: p.agent.clone(),
+            // 没说用哪个角色时不变（旧版界面只给 agent 时在 check_card_cron 里换成这个 agent 的角色）
+            profile: if p.profile.is_some() { p.profile.clone() } else { old.profile.clone() },
             pick,
             ..old
         };
-        // 换了机器、换了 agent 时重新检查（随机的和指定的一起看：有没有能接的机器、agent 找到了没有）。
+        // 换了机器、换了角色时重新检查（随机的和指定的一起看：有没有能接、能跑这个角色的机器）。
         // 只换「随机 ↔ 指定」、别的不动时不看，机器后来被移除了也照样能改，和只改开关、模板时一样
         let how_changed = c.pick == PICK_RANDOM && pick_changed;
-        let target = p.agent.is_some() || how_changed || ((p.host.is_some()) && opt(c.host.clone()) != old.host);
+        let role_changed = p.agent.as_deref().is_some_and(|a| !a.trim().is_empty()) || p.profile.as_ref().is_some_and(|x| opt(Some(x.clone())) != old.profile);
+        let target = role_changed || how_changed || ((p.host.is_some()) && opt(c.host.clone()) != old.host);
         let c = self.check_card_cron(&board, Some(id), c, target)?;
         self.tx.execute(
             "UPDATE card_crons SET name = ?3, title = ?4, body = ?5, labels = ?6, place = ?7, cron = ?8, tz = ?9, enabled = ?10, host = ?11, agent = ?12,
-                    pick = ?13, updated_at = ?14
+                    pick = ?13, updated_at = ?14, profile = ?15
              WHERE id = ?1 AND board = ?2",
             params![
                 id,
@@ -469,7 +519,8 @@ impl<'a> W<'a> {
                 c.host,
                 c.agent,
                 c.pick,
-                self.now
+                self.now,
+                c.profile
             ],
         )?;
         self.changed = true;
@@ -564,15 +615,21 @@ impl<'a> W<'a> {
         // 派给哪台：指定的就是它；随机挑的在这里挑一台。一台能接的都没有、或挑的那台派不出去时卡照样建，
         // 评论和这一次的结果写明原因（不往上抛：`card_crons_due` 这一分钟的其他条目不能跟着回滚）
         let mut pick_err: Option<String> = None;
-        let target: Option<(String, Option<String>)> = match (c.pick.as_str(), inbox) {
-            (PICK_RANDOM, false) => match self.cron_pick_host(board, c.agent.as_deref())? {
+        // 用哪个角色：选了的就是它，没选时按规则会交给的角色（规则没命中、也没有角色时用机器的默认 agent）
+        let role = match (&c.profile, inbox) {
+            (_, true) => None,
+            (Some(p), false) => self.read().profile(p)?,
+            (None, false) => self.read().rule_profile(board, id)?,
+        };
+        let target: Option<String> = match (c.pick.as_str(), inbox) {
+            (PICK_RANDOM, false) => match self.cron_pick_host(board, role.as_ref())? {
                 Some(t) => Some(t),
                 None => {
-                    pick_err = Some(self.cron_host_pick_why(board, c.agent.as_deref(), true));
+                    pick_err = Some(self.cron_host_pick_why(board, role.as_ref(), true));
                     None
                 }
             },
-            (PICK_HOST, false) => c.host.clone().map(|h| (h, c.agent.clone())),
+            (PICK_HOST, false) => c.host.clone(),
             _ => None,
         };
         if let Some(why) = &pick_err {
@@ -585,7 +642,7 @@ impl<'a> W<'a> {
             }
         }
         let (to, err) = match target {
-            Some((host, agent)) => match self.send(board, id, &host, agent.as_deref(), &actor)? {
+            Some(host) => match self.send(board, id, &host, role.as_ref().map(|p| p.id.as_str()), &actor)? {
                 Ok(to) => (Some(to), None),
                 Err(why) => {
                     let home = flow_of(self.tx, board.id)?.home().name.clone();
@@ -612,25 +669,25 @@ impl<'a> W<'a> {
     /// 随机挑一台能接这块白板、现在在线、没暂停接单的机器（以及上面用哪个 agent）：派给离线的机器只会排队干等。
     /// 没有这样的机器时为空（到点照样建卡、评论写明原因），不把错误往上抛：`card_crons_due` 把这一分钟到点的条目
     /// 放在同一个写事务里，一条失败会把别的也回滚掉
-    fn cron_pick_host(&self, board: &BoardRef, agent: Option<&str>) -> Result<Option<(String, Option<String>)>> {
-        let Some(list) = self.cron_host_candidates(board, agent, true)? else { return Ok(None) };
+    fn cron_pick_host(&self, board: &BoardRef, role: Option<&crate::profiles::Profile>) -> Result<Option<String>> {
+        let Some(list) = self.cron_host_candidates(board, role, true)? else { return Ok(None) };
         // 先挑有空位的：空位最多的一台，一样多时轮流（和「任意机器」同一个挑法，`fit.rs` 的 `pick_host`）
         let mut cands = vec![];
-        for (name, _) in &list {
+        for name in &list {
             if let Some(h) = self.host_row(name)? {
                 cands.push(self.candidate(&h)?);
             }
         }
         if let Some(c) = crate::fit::pick_host(&cands) {
-            return Ok(list.iter().find(|(n, _)| *n == c.name).cloned());
+            return Ok(list.iter().find(|n| **n == c.name).cloned());
         }
         // 都满了：随便挑一台排队
         Ok(Some(list[self.roll(list.len())].clone()))
     }
 
-    /// 能接这块白板的机器，按注册先后：每台（机器名，agent 或 None）；一台都没有时为空。
-    /// `live`：只要现在在线、没暂停接单的（到点挑机器时）；保存时不看这一项，机器暂时离线也能存
-    fn cron_host_candidates(&self, board: &BoardRef, agent: Option<&str>, live: bool) -> Result<Option<Vec<(String, Option<String>)>>> {
+    /// 能接这块白板的机器，按注册先后：有角色时是能跑这个角色的（[`crate::profiles::fit`]），没有时是默认 agent 找到了的；
+    /// 一台都没有时为空。`live`：只要现在在线、没暂停接单的（到点挑机器时）；保存时不看这一项，机器暂时离线也能存
+    fn cron_host_candidates(&self, board: &BoardRef, role: Option<&crate::profiles::Profile>, live: bool) -> Result<Option<Vec<String>>> {
         let names: Vec<String> = self.collect("SELECT name FROM hosts ORDER BY id", [], |r| r.get(0))?;
         let mut out = vec![];
         for name in names {
@@ -645,16 +702,16 @@ impl<'a> W<'a> {
             // 连续异常退出、暂停了接单的 agent 也不算
             let read = self.read();
             let found = |a: &crate::hosts::HostAgent| a.found && !read.agent_tripped(&h, &a.id).unwrap_or(false);
-            match agent {
-                Some(a) => {
-                    if h.resolved().iter().any(|x| x.id == a && found(x)) {
-                        out.push((h.name.clone(), Some(a.to_string())));
+            match role {
+                Some(p) => {
+                    if crate::profiles::fit(p, &h).is_ok() && h.resolved().iter().any(|x| x.id == p.agent && found(x)) {
+                        out.push(h.name.clone());
                     }
                 }
-                // 没指定：这台机器有默认 agent（默认 agent 设的那个找到了，或第一个找到了的）
+                // 没有角色：这台机器有默认 agent（默认 agent 设的那个找到了，或第一个找到了的）
                 None => {
                     if h.default_agent().is_some_and(|a| found(&a)) {
-                        out.push((h.name.clone(), None));
+                        out.push(h.name.clone());
                     }
                 }
             }
@@ -663,29 +720,28 @@ impl<'a> W<'a> {
     }
 
     /// 保存一条随机派发的时看现在有没有能接这块白板的机器、agent 有没有找到：没有就 `USAGE`，写明原因
-    fn cron_host_pick_check(&self, board: &BoardRef, agent: Option<&str>) -> Result<()> {
-        if self.cron_host_candidates(board, agent, false)?.is_some() {
+    fn cron_host_pick_check(&self, board: &BoardRef, role: Option<&crate::profiles::Profile>) -> Result<()> {
+        if self.cron_host_candidates(board, role, false)?.is_some() {
             return Ok(());
         }
-        Err(BoardError::usage(self.cron_host_pick_why(board, agent, false)))
+        Err(BoardError::usage(self.cron_host_pick_why(board, role, false)))
     }
 
     /// 没有机器能接时写明为什么。`live`：到点挑机器时，能接的机器有、只是都不在线或暂停接单，写出是哪几台
-    fn cron_host_pick_why(&self, board: &BoardRef, agent: Option<&str>, live: bool) -> String {
+    fn cron_host_pick_why(&self, board: &BoardRef, role: Option<&crate::profiles::Profile>, live: bool) -> String {
         let path = board.path();
         let all: Vec<String> = self.collect("SELECT name FROM hosts ORDER BY id", [], |r| r.get(0)).unwrap_or_default();
         if all.is_empty() {
             return "还没有机器：在要干活的机器上运行 board host，它会出现在这里".into();
         }
         if live {
-            if let Ok(Some(able)) = self.cron_host_candidates(board, agent, false) {
-                let names: Vec<String> = able.into_iter().map(|(n, _)| n).collect();
+            if let Ok(Some(names)) = self.cron_host_candidates(board, role, false) {
                 return format!("能接 {path} 的机器（{}）现在都不在线或暂停接单：随机派发只挑在线的机器", names.join("、"));
             }
         }
         let machines = all.join("、");
-        match &agent {
-            Some(a) => format!("没有能接 {path}、又有 agent「{a}」的机器（要配了工作空间、目录正常，那个 agent 也要找到了命令）：机器 {machines}"),
+        match role {
+            Some(p) => format!("没有能接 {path}、又能跑角色「{}」的机器（要配了工作空间、目录正常，能跑这个角色）：机器 {machines}", p.name),
             None => format!("没有能接 {path} 的机器（要配了工作空间、目录正常，默认 agent 也要找到了）：机器 {machines}"),
         }
     }
@@ -717,12 +773,13 @@ impl<'a> W<'a> {
 
     /// 把刚建的卡派发到这台机器（来源「定时建卡」）。派不出去时撤掉这一步的改动，返回原因；
     /// 存储层故障照常往上抛
-    fn send(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, by: &Actor) -> Result<std::result::Result<String, String>> {
+    fn send(&mut self, board: &BoardRef, card: i64, host: &str, profile: Option<&str>, by: &Actor) -> Result<std::result::Result<String, String>> {
         self.tx.execute_batch("SAVEPOINT card_cron_send")?;
-        match self.dispatch_create_from(board, card, host, agent, None, by, SOURCE_SCHEDULE) {
+        match self.dispatch_create_from(board, card, host, None, profile, by, SOURCE_SCHEDULE) {
             Ok(d) => {
                 self.tx.execute_batch("RELEASE card_cron_send")?;
-                Ok(Ok(format!("{} · {}", d.host, d.agent_label)))
+                let who = if d.profile_name.is_empty() { d.agent_label.clone() } else { d.profile_name.clone() };
+                Ok(Ok(format!("{} · {who}", d.host)))
             }
             Err(e) => {
                 self.tx.execute_batch("ROLLBACK TO card_cron_send; RELEASE card_cron_send")?;
@@ -1024,6 +1081,86 @@ mod tests {
         s.write(T0, Origin::ui(None), |w| w.card_cron_update(B, id, &p))
     }
 
+    /// #575 验收：选了角色「修复」、机器随机：到点建的卡按「修复」派发，动态和这一次的结果写角色、模型、强度；
+    /// 不选角色（按规则）时按规则会交给的角色；删掉角色后回到按规则
+    #[test]
+    fn dispatches_by_profile() {
+        let mut s = store();
+        host_up(&mut s, "mbp", &[B]);
+        let put = |s: &mut Store, name: &str, model: &str, effort: &str| {
+            let p = crate::profiles::Profile { name: name.into(), agent: "claude".into(), model: model.into(), effort: effort.into(), ..Default::default() };
+            s.write(T0, Origin::ui(None), |w| w.profile_put(&p, "人")).unwrap()
+        };
+        let fix = put(&mut s, "修复", "opus", "high");
+        let batch = put(&mut s, "批量", "sonnet", "");
+        let c = create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), profile: Some("修复".into()), ..patch("修 bug", "* * * * *") }).unwrap();
+        assert_eq!(c.profile.as_deref(), Some(fix.id.as_str()));
+        let t1 = T0 + MIN;
+        host_report(&mut s, "mbp", &[B], 0, t1);
+        let r = s.write(t1, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        assert_eq!((r.ran_to.as_deref(), r.ran_err.as_deref()), (Some("mbp · 修复"), None));
+        let id = r.ran_card.unwrap();
+        let d = s
+            .read(|read| {
+                let b = read.resolve(B)?;
+                read.card_dispatch(&b, id)
+            })
+            .unwrap()
+            .expect("派发了");
+        assert_eq!((d.profile.as_str(), d.model.as_deref(), d.effort.as_deref(), d.source.as_str()), (fix.id.as_str(), Some("opus"), Some("high"), SOURCE_SCHEDULE));
+        let acts: Vec<String> = card(&s, id).activity.into_iter().map(|a| a.text).collect();
+        assert!(acts.iter().any(|t| t.contains("修复（Claude Code · 本机登录 · opus · high）")), "{acts:?}");
+        s.write(t1, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Delete { id })
+        })
+        .unwrap();
+        // 按规则：模板带 bug 标签，规则 bug → 批量
+        let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None, false)).unwrap().id;
+        let rule = crate::hosts::ClaimRule { op: "in".into(), labels: vec!["bug".into()], profile: batch.id.clone(), ..Default::default() };
+        s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[rule]), None)).unwrap();
+        let c2 = create(&mut s, CardCronPatch { host: Some("mbp".into()), labels: Some(vec![bug]), ..patch("按规则", "0 9 * * *") }).unwrap();
+        assert_eq!(c2.profile, None);
+        let r = s.write(t1, Origin::ui(None), |w| w.card_cron_run(B, c2.id)).unwrap();
+        assert_eq!(r.ran_to.as_deref(), Some("mbp · 批量"), "{:?}", r.ran_err);
+        // 删掉「修复」：选了它的回到按规则
+        s.write(t1, Origin::ui(None), |w| w.profile_delete(&fix.id)).unwrap();
+        assert_eq!(list(&s, t1).into_iter().find(|x| x.id == c.id).unwrap().profile, None);
+    }
+
+    /// #575 升级：选了 agent 的定时建卡换成这个 agent 的角色（已经有就用它，没有就建一个本机登录的），agent 清掉；没选 agent 的不动
+    #[test]
+    fn old_agent_choice_becomes_its_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let (a, b, d) = {
+            let mut s = Store::open(&path).unwrap();
+            s.ensure_default(T0).unwrap();
+            host_up(&mut s, "mbp", &[B]);
+            let a = create(&mut s, CardCronPatch { host: Some("mbp".into()), ..patch("一", "0 9 * * *") }).unwrap().id;
+            let b = create(&mut s, CardCronPatch { host: Some("mbp".into()), ..patch("二", "0 9 * * *") }).unwrap().id;
+            let d = create(&mut s, CardCronPatch { host: Some("mbp".into()), ..patch("三", "0 9 * * *") }).unwrap().id;
+            (a, b, d)
+        };
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(&format!(
+                "UPDATE card_crons SET agent = 'claude', profile = NULL WHERE id = {a}; UPDATE card_crons SET agent = 'codex', profile = NULL WHERE id = {b};"
+            ))
+            .unwrap();
+        }
+        let s = Store::open(&path).expect("旧库要能打开");
+        let roles = s.read(|r| r.profiles()).unwrap();
+        let of = |agent: &str| roles.iter().find(|p| p.agent == agent).map(|p| p.id.clone());
+        let all = list(&s, T0);
+        let get = |id: i64| all.iter().find(|x| x.id == id).unwrap();
+        assert_eq!((get(a).agent.clone(), get(a).profile.clone()), (None, of("claude")));
+        assert_eq!((get(b).agent.clone(), get(b).profile.clone()), (None, of("codex")));
+        assert!(of("codex").is_some(), "没有 Codex 的角色时建一个");
+        assert_eq!(get(d).profile, None, "没选 agent 的还是按规则");
+        assert_eq!(roles.iter().find(|p| p.agent == "codex").unwrap().name, "Codex");
+    }
+
     /// v0.1.22 建的表没有派发的几列：打开时补上，原来的条目不派发
     #[test]
     fn old_table_gets_dispatch_columns() {
@@ -1091,22 +1228,28 @@ mod tests {
         let on = |h: &str| CardCronPatch { host: Some(h.into()), ..patch("更新代码", "0 3 * * *") };
         assert!(usage(create(&mut s, on("nope"))).contains("没有叫「nope」的机器"));
         assert!(usage(create(&mut s, on("win"))).contains("还没有配工作空间"));
-        assert!(usage(create(&mut s, CardCronPatch { agent: Some("codex".into()), ..on("mbp") })).contains("没有 agent「codex」"));
+        // 旧版界面只给 agent：换成这个 agent 的角色（没有就建一个本机登录的），这台机器跑不了就拒绝
+        assert!(usage(create(&mut s, CardCronPatch { agent: Some("codex".into()), ..on("mbp") })).contains("跑不了角色「Codex」：没装 Codex"));
+        assert!(usage(create(&mut s, CardCronPatch { agent: Some("mycli".into()), ..on("mbp") })).contains("没找到 mycli 的命令"));
+        assert!(usage(create(&mut s, CardCronPatch { profile: Some("没有这个".into()), ..on("mbp") })).contains("没有角色「没有这个」"));
         assert!(usage(create(&mut s, CardCronPatch { place: Some(INBOX.into()), ..on("mbp") })).contains("不派发"));
-        // 没找到命令的 agent 也能先选上（到点时再看）
-        let c = create(&mut s, CardCronPatch { agent: Some("mycli".into()), ..on("mbp") }).unwrap();
-        assert_eq!((c.host.as_deref(), c.agent.as_deref()), (Some("mbp"), Some("mycli")));
-        // 换成随机：机器清掉、agent 跟着清（到点按挑中那台的默认 agent）；再换回指定的机器要重新选
+        let c = create(&mut s, CardCronPatch { agent: Some("claude".into()), ..on("mbp") }).unwrap();
+        let role = s.read(|r| r.profiles()).unwrap().into_iter().find(|p| p.agent == "claude").expect("建了 Claude Code 的角色");
+        assert_eq!((c.host.as_deref(), c.agent.as_deref(), c.profile.as_deref()), (Some("mbp"), None, Some(role.id.as_str())), "agent 换成角色");
+        // 按名字给角色，存的是标识
+        let c = update(&mut s, c.id, CardCronPatch { profile: Some(role.name.clone()), ..Default::default() }).unwrap();
+        assert_eq!(c.profile.as_deref(), Some(role.id.as_str()));
+        // 换成随机：机器清掉、角色留着；再换回指定的机器要重新选
         let c = update(&mut s, c.id, CardCronPatch { pick: Some(PICK_RANDOM.into()), ..Default::default() }).unwrap();
-        assert_eq!((c.pick.as_str(), c.host.as_deref(), c.agent), (PICK_RANDOM, None, None));
-        let c = update(&mut s, c.id, CardCronPatch { pick: Some("host".into()), host: Some("mbp".into()), ..Default::default() }).unwrap();
-        assert_eq!((c.pick.as_str(), c.host.as_deref()), (PICK_HOST, Some("mbp")));
-        // 换机器、没说 agent：用新机器的默认 agent；空字符串表示不派发，agent 一起清掉
+        assert_eq!((c.pick.as_str(), c.host.as_deref(), c.profile.as_deref()), (PICK_RANDOM, None, Some(role.id.as_str())));
+        let c = update(&mut s, c.id, CardCronPatch { pick: Some("host".into()), host: Some("mbp".into()), profile: Some(String::new()), ..Default::default() }).unwrap();
+        assert_eq!((c.pick.as_str(), c.host.as_deref(), c.profile), (PICK_HOST, Some("mbp"), None), "空字符串是按规则");
+        // 换机器：角色不变；空字符串表示不派发，角色一起清掉
         host_up(&mut s, "mini", &[B]);
         let c = update(&mut s, c.id, CardCronPatch { host: Some("mini".into()), ..Default::default() }).unwrap();
         assert_eq!((c.host.as_deref(), c.agent), (Some("mini"), None));
-        let c = update(&mut s, c.id, CardCronPatch { host: Some(" ".into()), agent: Some("claude".into()), ..Default::default() }).unwrap();
-        assert_eq!((c.host, c.agent), (None, None));
+        let c = update(&mut s, c.id, CardCronPatch { host: Some(" ".into()), profile: Some(role.id.clone()), ..Default::default() }).unwrap();
+        assert_eq!((c.host, c.profile), (None, None));
         // 机器改名：跟着改
         let c = update(&mut s, c.id, CardCronPatch { host: Some("mbp".into()), ..Default::default() }).unwrap();
         s.write(T0, Origin::ui(None), |w| w.host_rename("mbp", "mbp2").map(|_| ())).unwrap();
@@ -1147,17 +1290,20 @@ mod tests {
         assert_eq!(due(&mut s, t1 + MIN), 1);
         let c2 = list(&s, t1).into_iter().find(|x| x.id == c.id).unwrap();
         assert_eq!((c2.ran_skip, c2.ran_to), (Some(id), None));
-        // 指定的 agent 没找到命令：卡照样建，留在待办，评论和结果写明原因
+        // 保存之后机器跑不了这个角色了（这里直接改库，等于角色、机器后来变了）：卡照样建，留在待办，评论和结果写明原因
         s.write(t1, Origin::ui(None), |w| {
             let b = w.resolve(B)?;
             w.exec(&b, &Actor::human(), Cmd::Delete { id })
         })
         .unwrap();
-        update(&mut s, c.id, CardCronPatch { agent: Some("mycli".into()), ..Default::default() }).unwrap();
+        let codex = s
+            .write(t1, Origin::ui(None), |w| w.profile_put(&crate::profiles::Profile { name: "批量".into(), agent: "codex".into(), ..Default::default() }, "人"))
+            .unwrap();
+        s.conn().execute("UPDATE card_crons SET profile = ?2 WHERE id = ?1", params![c.id, codex.id]).unwrap();
         let r = s.write(t1 + 2 * MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
         let id2 = r.ran_card.expect("派不出去也建卡");
         let err = r.ran_err.expect("记下原因");
-        assert!(err.contains("mycli"), "{err}");
+        assert!(err.contains("跑不了角色「批量」"), "{err}");
         assert_eq!(r.ran_to, None);
         assert_eq!(*cols(&s)["todo"].last().unwrap(), id2, "留在待办");
         let none = s
@@ -1186,7 +1332,7 @@ mod tests {
         // 只有 mbp 能接：随机也只挑得到它；指定的机器跟着随机一起清掉
         let c = create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), host: Some("win".into()), ..patch("更新代码", "* * * * *") }).unwrap();
         assert_eq!((c.pick.as_str(), c.host, c.agent.as_deref()), (PICK_RANDOM, None, None), "随机的没有指定的机器");
-        assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), agent: Some("codex".into()), ..patch("x1", "0 9 * * *") })).contains("codex"));
+        assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), agent: Some("codex".into()), ..patch("x1", "0 9 * * *") })).contains("能跑角色「Codex」"));
         assert!(usage(create(&mut s, CardCronPatch { pick: Some("any".into()), ..patch("x2", "0 9 * * *") })).contains("random"));
         assert!(usage(create(&mut s, CardCronPatch { pick: Some(PICK_RANDOM.into()), place: Some(INBOX.into()), ..patch("x3", "0 9 * * *") })).contains(INBOX_NAME));
         // 到点：派给能接的那台（它在线）

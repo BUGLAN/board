@@ -345,6 +345,8 @@ impl Store {
         crate::sched::migrate(conn)?;
         // 角色：规则从「条件 → agent」换成「条件 → 角色」（要在 sched 建好之后；表在最前面建，读机器记录时要用）
         crate::profiles::migrate(conn)?;
+        // 定时建卡：选了 agent 的换成这个 agent 的角色（#575，要在角色升级之后）
+        crate::card_crons::migrate_profiles(conn)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         // 旧数据库的 cards 没有心跳列
         let has_beat: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'beat_at'", [], |r| r.get::<_, i64>(0))? > 0;

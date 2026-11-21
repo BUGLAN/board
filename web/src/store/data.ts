@@ -594,7 +594,9 @@ export const cardCronPatch = (path: string, id: number, input: CardCronInput): P
     const change = {
       ...input,
       ...(random || input.host !== undefined ? { host: random ? null : input.host || null } : {}),
-      ...(random && input.agent === undefined ? { agent: null } : input.agent !== undefined ? { agent: input.agent || null } : {}),
+      ...(input.profile !== undefined ? { profile: input.profile || null, agent: null } : {}),
+      // 不派发：角色不留
+      ...(!random && input.host === '' ? { profile: null } : {}),
       ...(input.name !== undefined ? { title: input.name.trim() } : {}),
     };
     const stale = change.cron !== undefined || change.tz !== undefined || change.on === false;

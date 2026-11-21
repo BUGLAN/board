@@ -302,7 +302,7 @@ impl W<'_> {
         self.read().profile(&id)?.ok_or_else(|| no_such_profile(&id))
     }
 
-    /// 删掉一个角色：交给它的规则一起删。返回删掉了几条规则
+    /// 删掉一个角色：交给它的规则一起删，选了它的定时建卡回到「按规则」。返回删掉了几条规则
     pub fn profile_delete(&mut self, id: &str) -> Result<usize> {
         self.read().profile(id)?.ok_or_else(|| no_such_profile(id))?;
         let (rules, _) = self.read().sched_rules()?;
@@ -313,6 +313,7 @@ impl W<'_> {
             self.tx.execute("UPDATE sched SET rules = ?1 WHERE id = 1", [raw])?;
         }
         self.tx.execute("DELETE FROM profiles WHERE id = ?1", [id])?;
+        self.tx.execute("UPDATE card_crons SET profile = NULL WHERE profile = ?1", [id])?;
         self.touch_hosts();
         Ok(dropped)
     }
@@ -330,6 +331,29 @@ pub(crate) fn free_name(profiles: &[Profile], agent: &str) -> String {
 
 pub(crate) fn no_such_profile(id: &str) -> BoardError {
     BoardError::new(ErrorCode::NotFound, format!("没有角色「{id}」：Agent → 自动领取 → 分工里能看到所有角色"))
+}
+
+/// 一个 agent 的角色（升级、旧版界面只给 agent 时用）：已经有这个 agent 的角色就用排在最前面的那个，没有就建一个——名字是
+/// agent 的名称（重名时加标识），本机登录、不指定模型、不设强度（等于以前机器上的「不改」），`only` 是「只在这些机器上跑」
+pub(crate) fn agent_profile(conn: &rusqlite::Connection, agent: &str, only: &[i64], now: i64) -> rusqlite::Result<String> {
+    let have: Option<String> =
+        conn.query_row("SELECT id FROM profiles WHERE agent = ?1 ORDER BY sort, created_at, id LIMIT 1", [agent], |r| r.get(0)).optional()?;
+    if let Some(id) = have {
+        return Ok(id);
+    }
+    let existing: Vec<Profile> = {
+        let mut st = conn.prepare(&format!("SELECT {COLS} FROM profiles"))?;
+        let v = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let name = free_name(&existing, agent);
+    let id = new_id(conn, now)?;
+    let sort: i64 = conn.query_row("SELECT COALESCE(MAX(sort), 0) + 1 FROM profiles", [], |r| r.get(0))?;
+    conn.execute(
+        "INSERT INTO profiles (id, name, agent, only, sort, created_at, by_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '升级')",
+        params![id, name, agent, serde_json::to_string(only).unwrap_or_else(|_| "[]".into()), sort, now],
+    )?;
+    Ok(id)
 }
 
 /// 升级：旧的「条件 → agent」规则换成「条件 → 角色」。每次打开都看一遍（只在有没换过的规则、或者还有兜底时改，
@@ -366,29 +390,11 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let now = crate::store::now_ms();
     let mut ids: Vec<(String, String)> = vec![];
     for (i, agent) in agents.iter().enumerate() {
-        let have: Option<String> =
-            conn.query_row("SELECT id FROM profiles WHERE agent = ?1 ORDER BY sort, created_at, id LIMIT 1", [agent], |r| r.get(0)).optional()?;
-        if let Some(id) = have {
-            ids.push((agent.clone(), id));
-            continue;
-        }
-        let existing: Vec<Profile> = {
-            let mut st = conn.prepare(&format!("SELECT {COLS} FROM profiles"))?;
-            let v = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-            v
-        };
-        let name = free_name(&existing, agent);
         let only: Vec<i64> = match picks.get(agent.as_str()) {
             Some(off) if !off.is_empty() => host_ids.iter().copied().filter(|h| !off.contains(h)).collect(),
             _ => vec![],
         };
-        let id = new_id(conn, now + i as i64)?;
-        let sort: i64 = conn.query_row("SELECT COALESCE(MAX(sort), 0) + 1 FROM profiles", [], |r| r.get(0))?;
-        conn.execute(
-            "INSERT INTO profiles (id, name, agent, only, sort, created_at, by_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '升级')",
-            params![id, name, agent, serde_json::to_string(&only).unwrap_or_else(|_| "[]".into()), sort, now],
-        )?;
-        ids.push((agent.clone(), id));
+        ids.push((agent.clone(), agent_profile(conn, agent, &only, now + i as i64)?));
     }
     for r in rules.iter_mut().filter(|r| old(r)) {
         let agent = r.get("agent").and_then(|a| a.as_str()).unwrap_or_default().to_string();

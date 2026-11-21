@@ -112,8 +112,10 @@ export interface CardCron {
   on: boolean;
   /** 建出卡后派给哪台机器（机器名）；不派发、随机派发时为空。修改时发空字符串表示不派发 */
   host?: string | null;
-  /** 用哪个 agent；空表示那台机器（随机派发时是挑中那台）的默认 agent */
+  /** 旧版：用哪个 agent。升级后换成了 profile，总是空的 */
   agent?: string | null;
+  /** 派发用哪个角色（标识）；空表示按规则会交给的角色（规则没命中、也没有角色时用机器的默认 agent） */
+  profile?: string | null;
   /** 选哪台机器：host 派给 `host`，random 每次在能接这块白板、在线、没暂停接单的机器里随机挑一台；不派发时也留着（host） */
   pick?: 'host' | 'random';
   /** 下次到点（毫秒）；关着、一年内不会到点时为空 */
@@ -134,7 +136,7 @@ export interface CardCron {
 }
 
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
-export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent' | 'pick'>>;
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent' | 'profile' | 'pick'>>;
 
 export interface ProjectInfo {
   key: string;

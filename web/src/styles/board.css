@@ -802,6 +802,12 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
 .cc-host:disabled { opacity: .5; cursor: not-allowed; }
 .cc-host em { font-style: normal; font-size: 11px; color: var(--text-3); }
 .cc-host.gone em { color: var(--warn-text); }
+.cc-roles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 26px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.cc-roles.off .cc-host { opacity: .45; }
+.cc-role { padding-left: 4px; }
+.cc-role .pf-mark { width: 18px; height: 18px; border-radius: 0; background: none; box-shadow: none; }
+.cc-role .pf-mark .hp-logo, .cc-role .pf-mark > b { width: 16px; height: 16px; }
+.cc-roles-none { font-style: normal; font-size: 12px; color: var(--text-3); }
 .cc-raw { display: inline-flex; align-items: center; gap: 8px; }
 .cc-raw code { font: 12px var(--f-mono); }
 .cc-form-acts { display: flex; justify-content: flex-end; gap: 8px; }

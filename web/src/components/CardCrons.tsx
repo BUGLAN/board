@@ -4,8 +4,9 @@
    - CardCronDialog：白板页自己的弹窗，入口在工作流条右端「标签设置」左边（FlowBar）；里面是 CardCronSection
    - CronOverview：Agent tab「自动领取」组里的总览，所有白板的定时建卡按白板分组列在一处，只读；点一行回到那块白板并打开它的弹窗
    - 每条一行：开关、名称、时间（和时区）、放到哪、派给哪台机器、标签；下面一行写「下次：<时间>」和最近一次的结果
-     （「11-12 09:00 建了 #263 · 派发到 mbp · Claude Code」或「11-12 09:00 跳过：上一张 #250 还没完成」）；右边「现在建一张」、编辑、删除
-   - 编辑（和新建）原地展开：名称（同时是建卡标题）、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、派给机器（和 agent）、
+     （「11-12 09:00 建了 #263 · 派发到 mbp · 修复」或「11-12 09:00 跳过：上一张 #250 还没完成」）；右边「现在建一张」、编辑、删除
+   - 编辑（和新建）原地展开：名称（同时是建卡标题）、描述（和新建卡片同一套：粘贴截图、预览）、标签、放到哪、派给机器和角色
+     （和派发对话框一样：机器是不派发 / 随机 / 指定一台，角色是按规则或选一个；跑不了这个角色的机器不能选）、
      时间（SchedulePick）；时区取保存时浏览器的
    写操作（AGENTS.md「界面写操作」）：新建、删除、现在建一张要等服务端返回（optimistic(null, …)，按钮转圈并禁用）；
    开关是设置项（saveSetting，不锁）；改模板用乐观补丁（cardCronPatch + cardCronKey），当帧生效，失败时带着草稿重新打开
@@ -16,14 +17,16 @@ import { openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { stillUploading, useAttach } from '../lib/attach';
 import { buildCron, describeCron, normalizeCron, parseSchedule, type Schedule } from '../lib/cron';
-import { agentWhy, boardOf, boardTakers, defaultAgent, envName, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
+import { boardOf, boardTakers, hostDirFor, hostLoad, hostsOf } from '../lib/hosts';
+import { fitOf, profilesOf, short } from '../lib/profiles';
 import { boardFlow, flowOf } from '../lib/schema';
-import type { CardCron, CardCronInput, HostInfo, Label } from '../lib/types';
+import type { CardCron, CardCronInput, HostInfo, Label, Profile, Workspace } from '../lib/types';
 import { cx } from '../lib/util';
 import { cardCronKey, cardCronPatch, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { closePicker, confirm, openCardCrons, openPicker, setTab, toast, toastError, useUI } from '../store/ui';
 import { DescTabs, InfoTip, LabelChip, Markdown, Segmented, Sync, Tip, useNow, useSync } from './bits';
-import { AgentChip, Dot } from './hosts/bits';
+import { Dot } from './hosts/bits';
+import { PMark } from './profiles/bits';
 import { Icon } from './Icon';
 import { DEFAULT_SCHEDULE, EVERY_MINUTES, SchedulePick } from './SchedulePick';
 
@@ -64,8 +67,8 @@ interface Draft {
   host: string | null;
   /** 指定一台还是随机挑一台 */
   pick: 'host' | 'random';
-  /** 用哪个 agent；空表示那台机器的默认 agent */
-  agent: string | null;
+  /** 用哪个角色；空表示按规则 */
+  profile: string | null;
   spec: Schedule;
   /** 原来的表达式不是选择组件能生成的（手写的）：不动它就原样保存 */
   raw: string | null;
@@ -80,7 +83,7 @@ const draftOf = (c?: CardCron): Draft => {
     place: c?.place ?? 'home',
     host: c?.host || null,
     pick: c?.pick ?? 'host',
-    agent: c?.agent || null,
+    profile: c?.profile || null,
     spec: spec ?? DEFAULT_SCHEDULE,
     raw: c && !spec ? normalizeCron(c.cron) : null,
   };
@@ -170,7 +173,8 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   const random = c.pick === 'random' && !c.host;
   // 随机挑的时候能接的机器数（服务端算好的「能不能接」，加上有能用的 agent），和其中现在在线、没暂停接单的（到点只在这些里挑）
   const ws = useData(s => s.ws);
-  const takers = random ? boardTakers(ws, path) : [];
+  const takers = random ? takersFor(ws, path, c.profile) : [];
+  const role = roleName(ws, c.profile);
   const canTake = takers.length;
   const liveTake = takers.filter(x => x.online && !x.paused).length;
   return (
@@ -190,10 +194,10 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
           </Tip>
           <span className="cc-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
           {random && (
-            <Tip text={`到点在这块白板能接、在线、没暂停接单的机器里随机挑一台，用它的默认 agent；现在 ${canTake} 台能接，${liveTake} 台在线`}>
+            <Tip text={`到点在能接这块白板、能跑「${role}」、在线、没暂停接单的机器里随机挑一台；现在 ${canTake} 台能接，${liveTake} 台在线`}>
               <span className={cx('cc-to', canTake > 0 && !liveTake && 'gone')}>
                 <Icon name="dispatch" />
-                随机
+                随机 · {role}
                 {canTake > 0 && <em>{liveTake}/{canTake} 台在线</em>}
               </span>
             </Tip>
@@ -203,7 +207,7 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
               <span className={cx('cc-to', !to && 'gone')}>
                 <Icon name="dispatch" />
                 {c.host}
-                {to ? ` · ${agentName(to, c.agent)}` : '（已移除）'}
+                {to ? ` · ${role}` : '（已移除）'}
               </span>
             </Tip>
           )}
@@ -252,11 +256,16 @@ function CronRow({ path, c, edit }: { path: string; c: CardCron; edit: () => voi
   );
 }
 
-/** 这条用的 agent 的名称：没指定时是那台机器的默认 agent */
-function agentName(h: HostInfo, agent: string | null | undefined) {
-  if (agent) return h.agents.find(a => a.id === agent)?.name ?? agent;
-  const d = defaultAgent(h);
-  return d ? `${d.name}（默认）` : '默认 agent';
+/** 这条用的角色的名称：没选时是「按规则」 */
+function roleName(ws: Workspace | null, profile: string | null | undefined) {
+  if (!profile) return '按规则';
+  return profilesOf(ws).find(p => p.id === profile)?.name ?? '按规则';
+}
+
+/** 随机派发能挑的机器：能接这块白板的，选了角色时再要能跑它 */
+function takersFor(ws: Workspace | null, path: string, profile: string | null | undefined): HostInfo[] {
+  const all = boardTakers(ws, path);
+  return profile ? all.filter(h => fitOf(h, profile).ok) : all;
 }
 
 /** 关掉定时建卡的弹窗，打开这张卡 */
@@ -283,7 +292,7 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
 
   const save = async () => {
     if (!ok || stillUploading(attach.busy)) return;
-    const input: CardCronInput = { name: d.name.trim(), body: d.body.trim(), labels: d.labels, place: d.place, pick: d.pick, host: d.host ?? '', agent: d.agent ?? '', cron: expr!, tz };
+    const input: CardCronInput = { name: d.name.trim(), body: d.body.trim(), labels: d.labels, place: d.place, pick: d.pick, host: d.host ?? '', profile: d.profile ?? '', cron: expr!, tz };
     if (!cron) {
       // 新建要等服务端返回（编号、下次时间）：按钮转圈，失败时表单留着
       setSending(true);
@@ -384,13 +393,13 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
               ['home', home],
               ['inbox', '未整理'],
             ]}
-            onChange={v => set(v === 'inbox' ? { place: v, host: null, agent: null, pick: 'host' } : { place: v })}
+            onChange={v => set(v === 'inbox' ? { place: v, host: null, profile: null, pick: 'host' } : { place: v })}
           />
         </span>
       </div>
       <div className="bs-rc-row top">
         <span className="bs-rc-l">派给机器</span>
-        <HostPick path={path} home={home} inbox={d.place === 'inbox'} host={d.host} pick={d.pick} agent={d.agent} onChange={p => set(p)} />
+        <HostPick path={path} home={home} inbox={d.place === 'inbox'} host={d.host} pick={d.pick} profile={d.profile} onChange={p => set(p)} />
       </div>
       <div className="bs-rc-row top">
         <span className="bs-rc-l">时间</span>
@@ -424,15 +433,17 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
   );
 }
 
-/** 派给哪台机器、用哪个 agent：「不派发」、随机挑一台，或有这块白板目录的机器。选了机器再选 agent（默认是那台机器的默认 agent）。
- *  机器离线、暂停接单也能选：到点时派发排队等它。已经移除的机器还选着时照样列出来，标「已移除」 */
+/** 派给哪台机器、用哪个角色（和派发对话框一样）：机器是「不派发」、随机挑一台，或有这块白板目录的机器；角色是「按规则」
+ *  （到点按建出的卡会交给的角色，规则没命中、也没有角色时用机器的默认 agent）或选一个。跑不了选中角色的机器不能选，
+ *  选中的机器跑不了的角色也不能选。机器离线、暂停接单也能选：到点时派发排队等它。已经移除的机器还选着时照样列出来，标「已移除」。
+ *  角色一行一直在（不派发时变灰），切换选项时高度不变 */
 function HostPick({
   path,
   home,
   inbox,
   host,
   pick,
-  agent,
+  profile,
   onChange,
 }: {
   path: string;
@@ -440,25 +451,33 @@ function HostPick({
   inbox: boolean;
   host: string | null;
   pick: 'host' | 'random';
-  agent: string | null;
-  onChange: (p: { host: string | null; pick: 'host' | 'random'; agent: string | null }) => void;
+  profile: string | null;
+  onChange: (p: { host: string | null; pick: 'host' | 'random'; profile: string | null }) => void;
 }) {
   const ws = useData(s => s.ws);
   const hosts = hostsOf(ws);
+  const roles = profilesOf(ws);
   const h = host ? hosts.find(x => x.name === host) : undefined;
   // 有工作空间的机器就视为有这块白板的目录
   const hasDir = (x: HostInfo) => !!hostDirFor(x, path);
-  const def = h ? defaultAgent(h) : undefined;
   const random = pick === 'random' && !host;
-  // 随机挑的时候能接的机器：服务端算好的「能不能接」，加上有能用的 agent。到点只在其中在线、没暂停接单的里挑；
+  const sending = !inbox && (random || !!host);
+  const role = profile ? roles.find(p => p.id === profile) : undefined;
+  // 随机挑的时候能接的机器：服务端算好的「能不能接」，选了角色时再要能跑它。到点只在其中在线、没暂停接单的里挑；
   // 现在都不在线也能选（到点时可能就在线了）
-  const can = boardTakers(ws, path);
+  const can = takersFor(ws, path, profile);
   const live = can.filter(x => x.online && !x.paused);
   const why = (x: HostInfo) => (!x.online ? '离线' : x.paused ? '暂停接单' : '');
+  const roleWhy = (p: Profile): string | undefined => {
+    if (h) return fitOf(h, p.id).ok ? undefined : `${h.name} 跑不了：${fitOf(h, p.id).why}`;
+    if (random && !takersFor(ws, path, p.id).length) return '没有能接这块白板、又能跑它的机器';
+    return undefined;
+  };
+  const roleWord = role ? `「${role.name}」` : '按规则会交给的角色';
   return (
     <span className="cc-pick">
       <span className="cc-hosts" role="radiogroup" aria-label="派给机器">
-        <button type="button" role="radio" aria-checked={!host && !random} className={cx('cc-host', !host && !random && 'on')} onClick={() => onChange({ host: null, pick: 'host', agent: null })}>
+        <button type="button" role="radio" aria-checked={!host && !random} className={cx('cc-host', !host && !random && 'on')} onClick={() => onChange({ host: null, pick: 'host', profile })}>
           不派发
         </button>
         <TipOr
@@ -466,7 +485,9 @@ function HostPick({
             inbox
               ? undefined
               : !can.length
-                ? '没有能接这块白板的机器：要配了工作空间、目录正常，并且有找到了命令的 agent'
+                ? role
+                  ? `没有能接这块白板、又能跑「${role.name}」的机器`
+                  : '没有能接这块白板的机器：要配了工作空间、目录正常，并且有找到了命令的 agent'
                 : `到点在这 ${can.length} 台里挑一台在线、没暂停接单的（现在 ${live.length} 台）`
           }
         >
@@ -476,7 +497,7 @@ function HostPick({
             aria-checked={random}
             className={cx('cc-host', random && 'on')}
             disabled={inbox || !can.length}
-            onClick={() => onChange({ host: null, pick: 'random', agent: null })}
+            onClick={() => onChange({ host: null, pick: 'random', profile })}
           >
             随机
             {!inbox && can.length > 0 && (
@@ -488,16 +509,30 @@ function HostPick({
         </TipOr>
         {hosts.map(x => {
           const ok = hasDir(x);
+          const fit = profile ? fitOf(x, profile) : { ok: true, why: '' };
           const w = why(x);
           return (
-            <TipOr key={x.id} text={inbox ? undefined : !ok ? '还没有配工作空间：先在机器详情里填上' : w ? `${w}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}` : undefined}>
+            <TipOr
+              key={x.id}
+              text={
+                inbox
+                  ? undefined
+                  : !ok
+                    ? '还没有配工作空间：先在机器详情里填上'
+                    : !fit.ok
+                      ? `跑不了「${role?.name ?? ''}」：${fit.why}`
+                      : w
+                        ? `${w}：到点时派发排队，等它${!x.online ? '上线' : '恢复接单'}`
+                        : undefined
+              }
+            >
               <button
                 type="button"
                 role="radio"
                 aria-checked={host === x.name}
                 className={cx('cc-host', host === x.name && 'on')}
-                disabled={inbox || !ok}
-                onClick={() => onChange({ host: x.name, pick: 'host', agent: null })}
+                disabled={inbox || !ok || (!fit.ok && host !== x.name)}
+                onClick={() => onChange({ host: x.name, pick: 'host', profile })}
               >
                 <Dot h={x} running={hostLoad(ws, x).running.length} />
                 {x.name}
@@ -515,36 +550,44 @@ function HostPick({
           </Tip>
         )}
       </span>
-      {h && (
-        <span className="hp-agents" role="radiogroup" aria-label="agent">
-          <button type="button" role="radio" aria-checked={!agent} className={cx('cc-host', !agent && 'on')} onClick={() => onChange({ host, pick: 'host', agent: null })}>
-            默认 agent{def ? `（${def.name}）` : ''}
+      <span className={cx('cc-roles', !sending && 'off')} role="radiogroup" aria-label="角色" aria-disabled={!sending || undefined}>
+        <TipOr text={sending ? '到点按建出的卡会交给的角色派（看分工里的规则）；规则都没命中、也没有角色时用机器的默认 agent' : undefined}>
+          <button type="button" role="radio" aria-checked={!profile} className={cx('cc-host', !profile && 'on')} disabled={!sending} onClick={() => onChange({ host, pick, profile: null })}>
+            按规则
           </button>
-          {h.agents.map(a => (
-            <TipOr key={a.id} text={a.found ? undefined : agentWhy(h, a)}>
+        </TipOr>
+        {roles.map(p => {
+          const w = sending ? roleWhy(p) : undefined;
+          return (
+            <TipOr key={p.id} text={w ?? (sending ? `${p.name} · ${short(p)}` : undefined)}>
               <button
                 type="button"
                 role="radio"
-                aria-checked={agent === a.id}
-                aria-label={a.name}
-                className={cx('hp-agent-btn', agent === a.id && 'on')}
-                disabled={!a.found && agent !== a.id}
-                onClick={() => onChange({ host, pick: 'host', agent: a.id })}
+                aria-checked={profile === p.id}
+                className={cx('cc-host cc-role', profile === p.id && 'on')}
+                disabled={!sending || (!!w && profile !== p.id)}
+                onClick={() => onChange({ host, pick, profile: p.id })}
               >
-                {/* 默认的那个写在「默认 agent（…）」里，chip 上不再标，免得看起来像选中了两个 */}
-                <AgentChip a={a} env={envName(h, a.env)} />
+                <PMark p={p} />
+                {p.name}
               </button>
             </TipOr>
-          ))}
-        </span>
-      )}
+          );
+        })}
+        {profile && !role && (
+          <button type="button" role="radio" aria-checked className="cc-host on gone" disabled={!sending}>
+            已删除的角色
+          </button>
+        )}
+        {!roles.length && <em className="cc-roles-none">还没有角色：在「Agent → 分工」里建</em>}
+      </span>
       <span className="cc-hint">
         {inbox
           ? '放到未整理的不派发：要派给机器，「放到哪」选「' + home + '」'
           : random
-            ? `到点建卡后在能接这块白板、在线、没暂停接单的机器里随机挑一台（现在 ${live.length ? live.map(x => x.name).join('、') : '一台都没有'}），用它的默认 agent 派过去；到点时都不在线就不派发，评论写明原因`
+            ? `到点建卡后在能接这块白板、能跑${roleWord}、在线、没暂停接单的机器里随机挑一台（现在 ${live.length ? live.map(x => x.name).join('、') : '一台都没有'}）派过去；到点时都不在线就不派发，评论写明原因`
             : host
-              ? `到点建卡后马上派发到 ${host}（和手动派发一样：机器离线、暂停接单或没有空位时排队）；派不出去时卡留在「${home}」，评论写明原因`
+              ? `到点建卡后按${roleWord}马上派发到 ${host}（和手动派发一样：机器离线、暂停接单或没有空位时排队）；派不出去时卡留在「${home}」，评论写明原因`
               : hosts.length
                 ? '只建卡，由机器自动领取或人派发去做'
                 : '还没有机器：在要干活的机器上运行 board host，它会出现在这里'}
@@ -675,7 +718,7 @@ export function CronOverview() {
                     </span>
                     <span className="co-place">→ {c.place === 'inbox' ? '未整理' : home}</span>
                     <span className={cx('co-to', c.host && !host && 'gone')}>
-                      {random ? '随机一台' : c.host ? (host ? `${c.host} · ${agentName(host, c.agent)}` : `${c.host}（已移除）`) : '不派发'}
+                      {random ? `随机一台 · ${roleName(ws, c.profile)}` : c.host ? (host ? `${c.host} · ${roleName(ws, c.profile)}` : `${c.host}（已移除）`) : '不派发'}
                     </span>
                     <span className="co-next">{!c.on ? '关着' : c.nextAt ? `下次 ${when(c.nextAt)}` : '一年内不会到点'}</span>
                     <span className={cx('co-last', (c.ranSkip != null || !!c.ranErr) && 'skip')}>

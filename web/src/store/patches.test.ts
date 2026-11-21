@@ -371,18 +371,20 @@ describe('cardCronPatch（白板的定时建卡）', () => {
     const moved = twice(D.cardCronPatch('p/a', 7, { cron: '0 10 * * 1' }).ws!, withCron());
     expect(moved.projects[0].boards[0].cardCrons![0].nextAt).toBeNull();
   });
-  it('派给机器：改机器、agent 不动下次时间；空字符串画成不派发', () => {
-    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', agent: 'claude' }).ws!, withCron());
-    expect(to.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: 'mbp', agent: 'claude', nextAt: 123 });
-    const off = twice(D.cardCronPatch('p/a', 7, { host: '', agent: '' }).ws!, to);
-    expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: null, agent: null, nextAt: 123 });
+  it('派给机器和角色：改机器、角色不动下次时间；空字符串画成不派发、角色一起清掉', () => {
+    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', profile: 'p1' }).ws!, withCron());
+    expect(to.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: 'mbp', profile: 'p1', agent: null, nextAt: 123 });
+    const off = twice(D.cardCronPatch('p/a', 7, { host: '', profile: 'p1' }).ws!, to);
+    expect(off.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: null, profile: null, nextAt: 123 });
+    const rule = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', profile: '' }).ws!, to);
+    expect(rule.projects[0].boards[0].cardCrons![0]).toMatchObject({ host: 'mbp', profile: null }); // 空字符串是按规则
   });
-  it('随机派发：换成随机时清掉指定的机器和 agent（不动下次时间）；换回指定机器时照样画出来', () => {
-    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', agent: 'claude' }).ws!, withCron());
+  it('随机派发：换成随机时清掉指定的机器、角色留着（不动下次时间）；换回指定机器时照样画出来', () => {
+    const to = twice(D.cardCronPatch('p/a', 7, { host: 'mbp', profile: 'p1' }).ws!, withCron());
     const any = twice(D.cardCronPatch('p/a', 7, { pick: 'random' }).ws!, to);
-    expect(any.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'random', host: null, agent: null, nextAt: 123 });
-    const back = twice(D.cardCronPatch('p/a', 7, { pick: 'host', host: 'mini', agent: '' }).ws!, any);
-    expect(back.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'host', host: 'mini', agent: null, nextAt: 123 });
+    expect(any.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'random', host: null, profile: 'p1', nextAt: 123 });
+    const back = twice(D.cardCronPatch('p/a', 7, { pick: 'host', host: 'mini', profile: '' }).ws!, any);
+    expect(back.projects[0].boards[0].cardCrons![0]).toMatchObject({ pick: 'host', host: 'mini', profile: null, nextAt: 123 });
   });
   it('白板或这一条不在了原样返回', () => {
     const orig = withCron();

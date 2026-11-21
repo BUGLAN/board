@@ -48,12 +48,13 @@ const cron = (id: number, x: Partial<CardCron> = {}): CardCron =>
 /** 项目 p 的两块白板 a、b 各有定时建卡；a 的首个可领取状态叫「排队中」（排在「需求池」之前的那个不可领取） */
 function data(): Workspace {
   const ws = workspace({ hosts: [{ name: 'mbp', dirs: [], agents: [{ id: 'claude', name: 'Claude Code', found: true }] } as unknown as HostInfo] });
+  ws.sched = { ...(ws.sched ?? {}), profiles: [{ id: 'p1', name: '修复', agent: 'claude', provider: '', model: 'opus', effort: 'high', note: '', only: [], sort: 1, createdAt: 0 }] } as Workspace['sched'];
   const [a, b] = ws.projects[0].boards;
   a.statuses = [status('pool', '需求池'), status('queue', '排队中', true), status('done', '已完成')];
   b.statuses = [status('todo', '待办', true)];
   a.cardCrons = [
     cron(1, { name: '清理死代码', pick: 'random', ranAt: Date.UTC(2026, 10, 16, 1), ranCard: 13, ranErr: '没有在线的机器' }),
-    cron(2, { name: '依赖升级检查', host: 'mbp', agent: 'claude', place: 'inbox' }),
+    cron(2, { name: '依赖升级检查', host: 'mbp', profile: 'p1', place: 'inbox' }),
   ];
   b.cardCrons = [cron(3, { name: '找文档缺口', on: false, host: 'gone' })];
   return ws;
@@ -75,11 +76,11 @@ describe('Agent tab 的定时建卡总览', () => {
     await act(async () => root.render(<CronOverview />));
     const [r1, r2, r3] = rows();
     expect(r1.querySelector('.co-place')?.textContent).toBe('→ 排队中');
-    expect(r1.querySelector('.co-to')?.textContent).toBe('随机一台');
+    expect(r1.querySelector('.co-to')?.textContent).toBe('随机一台 · 按规则');
     expect(r1.querySelector('.co-last')?.textContent).toContain('建了 #13 · 没派发出去');
     expect(r1.querySelector('.co-last')?.classList.contains('skip')).toBe(true);
     expect(r2.querySelector('.co-place')?.textContent).toBe('→ 未整理');
-    expect(r2.querySelector('.co-to')?.textContent).toBe('mbp · Claude Code');
+    expect(r2.querySelector('.co-to')?.textContent).toBe('mbp · 修复');
     expect(r2.querySelector('.co-last')?.textContent).toBe('还没到过点');
     expect(r3.querySelector('.co-place')?.textContent).toBe('→ 待办');
     expect(r3.querySelector('.co-to')?.textContent).toBe('gone（已移除）');
@@ -126,6 +127,43 @@ describe('白板页的定时建卡弹窗', () => {
     expect(useUI.getState().cardCrons).toBe('p/a');
     esc();
     expect(useUI.getState().cardCrons).toBe(null);
+  });
+
+  it('派给机器和角色（#575）：角色一行一直在（不派发时变灰），跑不了的机器、角色不能选；保存带上角色', async () => {
+    const ws = data();
+    const mbp = ws.hosts![0] as HostInfo;
+    mbp.workspace = { path: '/tmp' } as HostInfo['workspace'];
+    mbp.online = true;
+    mbp.fits = [
+      { profile: 'p1', ok: true },
+      { profile: 'p2', ok: false, why: 'Claude Code 没登录（上次自检）：登录后重新自检' },
+    ];
+    ws.sched!.profiles = [...ws.sched!.profiles!, { id: 'p2', name: '批量', agent: 'claude', provider: '', model: '', effort: '', note: '', only: [], sort: 2, createdAt: 0 }];
+    act(() => useData.setState({ ws, path: 'p/a' }));
+    await act(async () => root.render(<CardCronDialog path="p/a" />));
+    act(() => openCardCrons('p/a'));
+    const click = (el: Element | undefined) => act(() => (el as HTMLElement).click());
+    const btn = (scope: Element, text: string) => [...scope.querySelectorAll('button')].find(b => b.textContent?.trim() === text);
+    click([...dialog().querySelectorAll('button')].find(b => b.getAttribute('aria-label') === '编辑「清理死代码」'));
+    const roles = () => dialog().querySelector('.cc-roles')!;
+    expect([...roles().querySelectorAll('button')].map(b => b.textContent)).toEqual(['按规则', '修复', '批量']);
+    expect(roles().querySelector('.on')?.textContent).toBe('按规则');
+    // 随机：没有机器能跑「批量」，它不能选
+    expect(btn(roles(), '批量')!.disabled).toBe(true);
+    click(btn(roles(), '修复'));
+    expect(roles().querySelector('.on')?.textContent).toBe('修复');
+    // 不派发：角色一行留着、变灰
+    click(btn(dialog().querySelector('.cc-hosts')!, '不派发'));
+    expect(roles().classList.contains('off')).toBe(true);
+    expect([...roles().querySelectorAll('button')].every(b => b.disabled)).toBe(true);
+    // 指定 mbp：角色按这台算
+    click([...dialog().querySelectorAll('.cc-hosts button')].find(b => b.textContent?.includes('mbp')));
+    expect(roles().classList.contains('off')).toBe(false);
+    expect(btn(roles(), '批量')!.disabled).toBe(true);
+    const fetch = vi.mocked(globalThis.fetch);
+    await act(async () => click(btn(dialog(), '保存')));
+    const sent = fetch.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    expect(JSON.parse(String((sent![1] as RequestInit).body))).toMatchObject({ pick: 'host', host: 'mbp', profile: 'p1' });
   });
 
   it('别的白板的弹窗不开', async () => {
