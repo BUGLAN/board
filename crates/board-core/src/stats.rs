@@ -4,7 +4,7 @@
 //! 项目和全部项目是范围内各白板的合计：比例和分位数用合并后的样本重新算，不是各白板取平均。
 //!
 //! 数据来源：`cards`（新建时间、现在的状态）、`moves`（每次换状态）、`card_runs`（每次领取）、
-//! `activity`（评论数、热力图）、`dispatches`（派发启动的名字合并成「agent 标识/机器名」）。
+//! `activity`（评论数、热力图）、`dispatches`（派发启动的名字合并成「agent 标识/机器名」；按角色派发的领取记在角色名下）。
 //!
 //! 状态的角色按工作流规则和连线判断（与 board-skills 认状态的规则一致）：
 //! 可领取（`claim`）、终点（`final`）、需要人处理（锁定状态连出去、名称里带「人工」之类关键词，以及错误节点）、
@@ -101,6 +101,8 @@ pub struct Stats {
     /// 区间内的空转时段（到现在为止）
     pub idle: Vec<IdleSpan>,
     pub agents: Vec<AgentRow>,
+    /// 按角色（派发记录上的角色）：只算按角色派发启动的领取；分工页「近 30 天」用的也是它
+    pub profiles: Vec<ProfileRow>,
     pub dwell: Vec<Dwell>,
     /// 7 × 24：周一..周日 × 0..23 点，值是动态条数
     pub hour_heat: Vec<Vec<i64>>,
@@ -179,6 +181,30 @@ pub struct AgentRow {
     pub first_pass: Option<f64>,
     pub lost: i64,
     pub gaveup: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileRow {
+    /// 角色标识
+    pub profile: String,
+    /// 角色现在的名字；角色删掉了时是派发时的名字
+    pub name: String,
+    /// 角色还在不在
+    pub gone: bool,
+    pub claims: i64,
+    /// 交审的张数：这段时间开始的领取里交审过（含之后被打回）的卡，同一张算一次
+    pub review: i64,
+    /// 它最后一次领取后完成的卡片里，没有返工的比例（同「按 agent」）；没有这样的卡片时为空
+    pub first_pass: Option<f64>,
+    /// 交审后被打回的次数
+    pub rework: i64,
+    /// 异常退出（心跳中断、超时）的次数
+    pub lost: i64,
+    pub gaveup: i64,
+    pub spent: i64,
+    /// 平均每次领取的用时（毫秒）：已结束的领取；没有时为空
+    pub avg: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -394,6 +420,8 @@ struct Run {
     end: Option<i64>,
     how: Option<String>,
     beats: i64,
+    /// 按角色派发启动的领取：角色标识
+    profile: Option<String>,
 }
 
 /// 在一个状态里的一段
@@ -555,6 +583,8 @@ struct Data {
     by_board: Vec<Vec<usize>>,
     /// 派发启动的名字 → 「agent 标识/机器名」
     merge: HashMap<String, String>,
+    /// 角色标识 → （名字，还在不在）：现在的角色用现在的名字，删掉的用最后一次派发时的名字
+    profiles: HashMap<String, (String, bool)>,
     projects: Vec<(String, i64)>,
 }
 
@@ -824,6 +854,10 @@ impl R<'_> {
         let mut runs: Vec<RunRow> = vec![];
         let mut agents: Vec<AgentRow> = vec![];
         let mut fp: HashMap<String, (i64, i64)> = HashMap::new();
+        let mut profiles: Vec<ProfileRow> = vec![];
+        let mut pfp: HashMap<String, (i64, i64)> = HashMap::new();
+        let mut preview: HashSet<(String, usize, i64)> = HashSet::new();
+        let mut pended: HashMap<String, i64> = HashMap::new();
         for c in d.cards_of(&scope) {
             for x in &c.runs {
                 let result = d.result(c, x);
@@ -852,14 +886,53 @@ impl R<'_> {
                     row.spent += x.end.map(|e| e - x.start).unwrap_or(0);
                     row.lost += (result == "lost") as i64;
                     row.gaveup += (result == "gaveup") as i64;
+                    if let Some(p) = &x.profile {
+                        let row = match profiles.iter().position(|r| r.profile == *p) {
+                            Some(i) => &mut profiles[i],
+                            None => {
+                                let (name, there) = d.profiles.get(p).cloned().unwrap_or_else(|| (p.clone(), false));
+                                profiles.push(ProfileRow {
+                                    profile: p.clone(),
+                                    name,
+                                    gone: !there,
+                                    claims: 0,
+                                    review: 0,
+                                    first_pass: None,
+                                    rework: 0,
+                                    lost: 0,
+                                    gaveup: 0,
+                                    spent: 0,
+                                    avg: None,
+                                });
+                                profiles.last_mut().unwrap()
+                            }
+                        };
+                        row.claims += 1;
+                        row.spent += x.end.map(|e| e - x.start).unwrap_or(0);
+                        row.lost += (result == "lost") as i64;
+                        row.gaveup += (result == "gaveup") as i64;
+                        row.rework += (result == "rework") as i64;
+                        if (result == "review" || result == "rework") && preview.insert((p.clone(), c.b, c.id)) {
+                            row.review += 1;
+                        }
+                        if x.end.is_some() {
+                            *pended.entry(p.clone()).or_default() += 1;
+                        }
+                    }
                 }
             }
             // 完成的卡片记在它最后一次领取的 agent 名下
             if let Some(t) = c.done_in(from, to) {
                 if let Some(last) = c.runs.iter().filter(|x| x.start <= t).max_by_key(|x| x.start) {
+                    let pass = (!c.rework_at.iter().any(|r| *r <= t)) as i64;
                     let e = fp.entry(d.label(&last.agent)).or_default();
                     e.1 += 1;
-                    e.0 += (!c.rework_at.iter().any(|r| *r <= t)) as i64;
+                    e.0 += pass;
+                    if let Some(p) = &last.profile {
+                        let e = pfp.entry(p.clone()).or_default();
+                        e.1 += 1;
+                        e.0 += pass;
+                    }
                 }
             }
         }
@@ -867,6 +940,12 @@ impl R<'_> {
             a.first_pass = fp.get(&a.agent).and_then(|(p, n)| ratio(*p, *n));
         }
         agents.sort_by(|a, b| b.claims.cmp(&a.claims).then_with(|| a.agent.cmp(&b.agent)));
+        for p in profiles.iter_mut() {
+            p.first_pass = pfp.get(&p.profile).and_then(|(a, n)| ratio(*a, *n));
+            let ended = pended.get(&p.profile).copied().unwrap_or(0);
+            p.avg = (ended > 0).then(|| p.spent / ended);
+        }
+        profiles.sort_by(|a, b| b.claims.cmp(&a.claims).then_with(|| a.name.cmp(&b.name)));
         runs.sort_by_key(|x| (x.start, x.card));
 
         // 状态停留：离开时间落在区间内的停留
@@ -999,6 +1078,7 @@ impl R<'_> {
             series,
             idle,
             agents,
+            profiles,
             dwell,
             hour_heat,
             day_heat,
@@ -1159,7 +1239,7 @@ impl R<'_> {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
-                    Run { n: r.get(2)?, agent: r.get(3)?, start: r.get(4)?, end: r.get(5)?, how: r.get(6)?, beats: r.get(7)? },
+                    Run { n: r.get(2)?, agent: r.get(3)?, start: r.get(4)?, end: r.get(5)?, how: r.get(6)?, beats: r.get(7)?, profile: None },
                 ))
             })?;
             for row in rows {
@@ -1175,14 +1255,50 @@ impl R<'_> {
             by_board[c.b].push(i);
         }
         let mut merge = HashMap::new();
+        let mut profiles: HashMap<String, (String, bool)> = HashMap::new();
+        // 按角色派发的：（白板，卡片，名字）→ [(开始时间，角色)]，一次领取记在开始时间不晚于它的最后一次派发的角色名下
+        let mut picked: HashMap<(i64, i64, String), Vec<(i64, String)>> = HashMap::new();
         {
-            let mut st = conn.prepare("SELECT name, agent, host FROM dispatches WHERE name IS NOT NULL ORDER BY id")?;
-            let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+            let mut st = conn.prepare(
+                "SELECT name, agent, host, board, card, started_at, profile, profile_name FROM dispatches WHERE name IS NOT NULL ORDER BY id",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            })?;
             for row in rows {
-                let (name, agent, host) = row?;
+                let (name, agent, host, board, card, started, profile, profile_name) = row?;
+                if let (Some(t), false) = (started, profile.is_empty()) {
+                    profiles.insert(profile.clone(), (if profile_name.is_empty() { profile.clone() } else { profile_name }, false));
+                    picked.entry((board, card, name.clone())).or_default().push((t, profile));
+                }
                 merge.insert(name, format!("{agent}/{host}"));
             }
         }
-        Ok(Data { boards, cards, by_board, merge, projects })
+        {
+            let mut st = conn.prepare("SELECT id, name FROM profiles")?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (id, name) = row?;
+                profiles.insert(id, (name, true));
+            }
+        }
+        for c in cards.iter_mut() {
+            let bid = boards[c.b].id;
+            for x in c.runs.iter_mut() {
+                if let Some(v) = picked.get(&(bid, c.id, x.agent.clone())) {
+                    x.profile = v.iter().filter(|(t, _)| *t <= x.start).max_by_key(|(t, _)| *t).map(|(_, p)| p.clone());
+                }
+            }
+        }
+        Ok(Data { boards, cards, by_board, merge, profiles, projects })
     }
 }

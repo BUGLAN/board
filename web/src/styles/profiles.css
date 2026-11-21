@@ -255,6 +255,9 @@ button.pfq-row:hover { background: var(--surface-2); }
 .pfq-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pfq-t b { font-weight: 600; color: var(--text); }
 .pfq-row small { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.pfq-score { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text-3); }
+.pfq-score b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.pfq-score .bad b { color: var(--danger-text, var(--danger)); }
 @media (max-width: 640px) {
   .pfq-dl { grid-template-columns: minmax(0, 1fr); gap: 2px; margin-left: 0; }
   .pfq-note { margin-left: 0; }

@@ -5,6 +5,7 @@
      悬停一条规则亮它会走的线，点一个角色在下面看它的详情（领哪些卡、在哪些机器上能跑、现在在跑和排着的、编辑）
    - 规则在弹出框里改（条件、标签、交给哪个角色），先后用上下箭头调；规则都没命中的卡不自动领，可以手动派发
    - 角色在弹出框里新建、改、删（ProfileForm）
+   - 选中角色的「近 30 天」：取全部项目最近 30 天的大盘（GET /api/stats），用按角色那一行，和大盘选「30 天」「全部项目」时一致
    写操作：规则、白板开关是设置项（saveSetting，当帧生效，保存状态画在旁边）；角色见 ProfileForm
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -14,12 +15,13 @@ import { openBoard, openCard } from '../../lib/actions';
 import { hostsOf } from '../../lib/hosts';
 import { forecast, hostsFor, profilesOf, recipe, runningOf, short, slotOf, type Fc } from '../../lib/profiles';
 import { claimable, serverMinute } from '../../lib/sched';
-import type { ClaimRule, Profile, Workspace } from '../../lib/types';
+import type { ClaimRule, Profile, StatsProfile, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { boardAutoPatch, saveSetting, useData } from '../../store/data';
 import { setTab } from '../../store/ui';
 import { Segmented, Select, Sync, Tip, useNow, useSync } from '../bits';
 import { OsGlyph } from '../hosts/bits';
+import { TZ, fmtDur, pct, recent } from '../stats/format';
 import { LabelSet } from '../hosts/LabelSet';
 import { Icon } from '../Icon';
 import { NameChips, PMark, ProfileForm, RuleView, Slots, agentName, colorOf, openProfile, useAllLabels, useProfileBusy, useProviders } from './bits';
@@ -55,6 +57,7 @@ export function Division() {
   const [paths, setPaths] = useState<(Edge & { d: string; k: string })[]>([]);
   const minute = serverMinute(ws, now);
   const fc = useMemo(() => forecast(ws, board, now), [ws, board, now]);
+  const scores = useScores();
 
   const edges = useMemo(() => {
     const e: Edge[] = [];
@@ -243,7 +246,7 @@ export function Division() {
         </div>
       )}
 
-      {pick && <ProfileDetail p={pick} fc={fc} ws={ws} minute={minute} boardPath={board?.path} />}
+      {pick && <ProfileDetail p={pick} fc={fc} ws={ws} minute={minute} boardPath={board?.path} score={scores === 'err' || scores == null ? scores : (scores.find(x => x.profile === pick.id) ?? 'none')} />}
 
       {editing != null && (
         <RuleDialog
@@ -264,6 +267,58 @@ export function Division() {
   );
 }
 
+/** 近 30 天每个角色的成绩：全部项目、和大盘「30 天」同一个范围；打开分工页时取一次，之后 5 分钟一次。没取到时留着上一次的 */
+type Scores = StatsProfile[] | 'err' | null;
+const SCORE_EVERY = 5 * 60_000;
+function useScores(): Scores {
+  const [s, setS] = useState<Scores>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      api.stats({ scope: 'all', ...recent(30 * 24), tz: TZ }).then(
+        x => live && setS(x?.profiles ?? []),
+        () => live && setS(p => (Array.isArray(p) ? p : 'err')),
+      );
+    void load();
+    const t = setInterval(load, SCORE_EVERY);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  return s;
+}
+
+/** 一次通过率低于它、异常次数占领取达到它时标红（同大盘「按 agent」） */
+const PASS_WARN = 0.75;
+const LOST_WARN = 0.08;
+
+/** 「近 30 天」一行：交审几张、一次通过率、返工、异常、平均用时 */
+function ScoreLine({ s }: { s: StatsProfile | 'none' | 'err' | null }) {
+  if (s == null) return <em>正在算…</em>;
+  if (s === 'err') return <em>没取到</em>;
+  if (s === 'none') return <em>没有按这个角色派发过</em>;
+  return (
+    <span className="pfq-score">
+      <span>
+        交审 <b>{s.review}</b> 张
+      </span>
+      <span className={cx(s.firstPass != null && s.firstPass < PASS_WARN && 'bad')}>
+        一次通过 <b>{pct(s.firstPass)}</b>
+      </span>
+      <span>
+        返工 <b>{s.rework}</b>
+      </span>
+      <span className={cx(s.claims > 0 && s.lost / s.claims >= LOST_WARN && 'bad')}>
+        异常 <b>{s.lost}</b>
+      </span>
+      <span>
+        平均 <b>{s.avg == null ? '—' : fmtDur(s.avg)}</b>
+      </span>
+    </span>
+  );
+}
+
 /** 去看一张卡：切到它的白板，打开详情 */
 const goCard = (board: string, id: number) => {
   setTab('board');
@@ -271,8 +326,8 @@ const goCard = (board: string, id: number) => {
   setTimeout(() => openCard(id), 150);
 };
 
-/** 分工页下面：选中的角色。一行抬头（logo、名字、配方、编辑），下面四行：领卡、机器、现在；左对齐，颜色只用在状态点上 */
-function ProfileDetail({ p, fc, ws, minute, boardPath }: { p: Profile; fc: Map<number, Fc>; ws: Workspace; minute: number; boardPath?: string }) {
+/** 分工页下面：选中的角色。一行抬头（logo、名字、配方、编辑），下面四行：领卡、机器、现在、近 30 天；左对齐，颜色只用在状态点上 */
+function ProfileDetail({ p, fc, ws, minute, boardPath, score }: { p: Profile; fc: Map<number, Fc>; ws: Workspace; minute: number; boardPath?: string; score: StatsProfile | 'none' | 'err' | null }) {
   const busy = useProfileBusy(p.id);
   const rules = (ws.sched?.rules ?? []).map((r, i) => ({ r, i })).filter(x => x.r.profile === p.id);
   const running = runningOf(ws, p.id);
@@ -354,6 +409,10 @@ function ProfileDetail({ p, fc, ws, minute, boardPath }: { p: Profile; fc: Map<n
               </button>
             ))}
           {!running.length && !queued.length && !waiting.length && <em>没有在跑、也没有在等的卡{boardPath ? `（${boardPath}）` : ''}</em>}
+        </dd>
+        <dt>近 30 天</dt>
+        <dd>
+          <ScoreLine s={score} />
         </dd>
       </dl>
     </div>

@@ -64,7 +64,9 @@ function localServer() {
                 ? []
                 : path === '/api/profiles'
                   ? made
-                  : null;
+                  : path === '/api/stats'
+                    ? { profiles: [{ profile: 'p1', name: '主力', gone: false, claims: 4, review: 3, firstPass: 0.5, rework: 1, lost: 1, gaveup: 0, spent: 80 * 60_000, avg: 20 * 60_000 }] }
+                    : null;
     return new Response(body == null ? '' : JSON.stringify(body), { status: 200 });
   });
   return { fetch, sent };
@@ -171,6 +173,14 @@ describe('没有机器时', () => {
     act(() => useData.setState({ ws: next }));
     await act(async () => {});
     expect(host.querySelector('.pfa-prof b')?.textContent).toBe('主力');
+    // 选中角色的「近 30 天」（#573）：全部项目、最近 30 天的大盘里按角色那一行
+    const dl = [...host.querySelectorAll('.pfq-dl dt')].map(d => d.textContent);
+    expect(dl).toEqual(['领卡', '机器', '现在', '近 30 天']);
+    expect(host.querySelector('.pfq-score')?.textContent).toBe('交审 3 张一次通过 50%返工 1异常 1平均 20 分钟');
+    expect(host.querySelector('.pfq-score .bad')?.textContent, '一次通过率低于 75% 标红').toContain('一次通过');
+    const q = new URLSearchParams(String(fetch.mock.calls.find(([u]) => String(u).startsWith('/api/stats'))![0]).split('?')[1]);
+    expect(q.get('scope')).toBe('all');
+    expect(Number(q.get('to')) - Number(q.get('from'))).toBe(30 * 24 * 3600_000);
     // 加一条规则：条件选「没有标签」（不用挑标签），交给主力
     await click(button('加一条规则'));
     const dlg = document.querySelector('.pf-rd')!;

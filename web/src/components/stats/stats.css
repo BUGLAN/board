@@ -130,6 +130,8 @@
 .sp-table td.warn { color: var(--danger); font-weight: 600; }
 .sp-agent { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-family: var(--f-mono); font-size: 12.5px; }
 .sp-agent i { width: 8px; height: 8px; border-radius: 2px; }
+.sp-agent.sp-prof { font-family: var(--f-sans); }
+.sp-gone { font-size: 11px; color: var(--text-3); }
 .sp-inbar { display: inline-block; vertical-align: middle; width: 56px; height: 6px; margin-right: 8px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
 .sp-inbar i { display: block; height: 100%; border-radius: 99px; }
 

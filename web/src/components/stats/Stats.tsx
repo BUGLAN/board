@@ -12,7 +12,7 @@ import { openBoard } from '../../lib/actions';
 import { api } from '../../lib/api';
 import { statusRoles } from '../../lib/review';
 import { statusColor } from '../../lib/schema';
-import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsScope } from '../../lib/types';
+import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsProfile, StatsScope } from '../../lib/types';
 import { agentColor, cx } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
 import { openReview } from '../../store/ui';
@@ -20,7 +20,7 @@ import { ProjectAvatar } from '../bits';
 import { NoHostsNote } from '../NoHosts';
 import { Icon, StatsIcon24 } from '../Icon';
 import { CalHeat, HeatLegend, HourHeat, PairBars, Spark, TrendBars, fmtDay, useWidth } from './charts';
-import { HINT, LEAD_BINS, METRICS, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, type Metric } from './format';
+import { HINT, LEAD_BINS, METRICS, TZ, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, recent, type Metric } from './format';
 import { AgentTimeline, CardTimeline } from './timeline';
 import './stats.css';
 
@@ -29,11 +29,12 @@ import './stats.css';
 const H = 3600_000;
 const DAY = 24 * H;
 
-type Kind = '24h' | '3d' | '7d' | 'custom';
+type Kind = '24h' | '3d' | '7d' | '30d' | 'custom';
 const KINDS: { key: Kind; label: string }[] = [
   { key: '24h', label: '24 小时' },
   { key: '3d', label: '3 天' },
   { key: '7d', label: '7 天' },
+  { key: '30d', label: '30 天' },
   { key: 'custom', label: '自定义' },
 ];
 
@@ -46,15 +47,6 @@ const parseYmd = (s: string) => {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d).getTime();
 };
-
-/** 浏览器的 IANA 时区：传给接口分桶，图上的时间也按它显示 */
-const TZ = (() => {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
-})();
 
 interface SP {
   scope: StatsScope;
@@ -94,8 +86,7 @@ function useRange() {
       d.setDate(d.getDate() + 1);
       return { from, to: Math.max(from + H, d.getTime()) };
     }
-    const span = { '24h': 24, '3d': 72, '7d': 168 }[kind] * H;
-    return { from: hour - span, to: hour };
+    return recent({ '24h': 24, '3d': 72, '7d': 168, '30d': 720 }[kind], hour);
   }, [kind, cFrom, cTo, hour]);
 }
 
@@ -963,6 +954,59 @@ function Agents({ s }: { s: Stats }) {
   );
 }
 
+/** 按角色（派发记录上的角色）：交审张数、一次通过率、返工、异常、平均用时；和分工页「近 30 天」是同一份数 */
+function Profiles({ rows }: { rows: StatsProfile[] }) {
+  return (
+    <>
+      <div className="sp-table-wrap">
+        <table className="sp-table">
+          <thead>
+            <tr>
+              <th>角色</th>
+              <th className="num">领取</th>
+              <th className="num" title="这段时间开始的领取里交审过的卡（同一张算一次，含之后被打回的）">
+                交审
+              </th>
+              <th className="num" title="它最后一次领取后完成的卡片里，一次都没有返工的比例">
+                一次通过率
+              </th>
+              <th className="num" title="交审后被打回的次数">
+                返工
+              </th>
+              <th className="num" title="心跳中断、超时的次数">
+                异常
+              </th>
+              <th className="num" title="已结束的领取平均每次多久">
+                平均用时
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(p => (
+              <tr key={p.profile}>
+                <td>
+                  <span className="sp-agent sp-prof">
+                    <i style={{ background: agentColor(p.name) }} />
+                    {p.name}
+                    {p.gone && <small className="sp-gone">已删除</small>}
+                  </span>
+                </td>
+                <td className="num">{p.claims}</td>
+                <td className="num">{p.review}</td>
+                <td className={cx('num', p.firstPass != null && p.firstPass < PASS_WARN && 'warn')}>{pct(p.firstPass)}</td>
+                <td className="num">{p.rework}</td>
+                <td className={cx('num', p.claims > 0 && p.lost / p.claims >= RATE_WARN && 'warn')}>{p.lost}</td>
+                <td className="num">{p.avg == null ? '—' : fmtDur(p.avg)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="sp-foot">只算按角色派发启动的领取，人自己开的会话不算。分工页选中角色时「近 30 天」就是这里选 30 天、全部项目时的那一行。</p>
+    </>
+  );
+}
+
 function Dwell({ s }: { s: Stats }) {
   const max = Math.max(1, ...s.dwell.map(d => Math.max(d.mean, d.median)));
   if (!s.dwell.length) return <p className="tl-empty">这段时间没有卡片离开过哪个状态</p>;
@@ -1029,6 +1073,11 @@ function Report({ s }: { s: Stats }) {
               <Dwell s={s} />
             </Card>
           </div>
+          {!!s.profiles?.length && (
+            <Card title="按角色" id="sp-profiles">
+              <Profiles rows={s.profiles} />
+            </Card>
+          )}
         </>
       )}
     </>

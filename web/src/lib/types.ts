@@ -1243,6 +1243,26 @@ export interface StatsWaiting {
   oldest: number | null;
 }
 
+/** 大盘「按角色」、分工页「近 30 天」的一行：派发记录上是这个角色的领取 */
+export interface StatsProfile {
+  profile: string;
+  /** 角色现在的名字；删掉了时是派发时的名字（gone） */
+  name: string;
+  gone: boolean;
+  claims: number;
+  /** 交审过的张数（同一张算一次，含之后被打回的） */
+  review: number;
+  firstPass: number | null;
+  /** 交审后被打回的次数 */
+  rework: number;
+  /** 异常退出（心跳中断、超时） */
+  lost: number;
+  gaveup: number;
+  spent: number;
+  /** 平均每次领取的用时（已结束的） */
+  avg: number | null;
+}
+
 export interface Stats {
   scope: StatsScope;
   path: string | null;
@@ -1258,6 +1278,8 @@ export interface Stats {
   series: StatsBucket[];
   idle: { board: string; from: number; to: number }[];
   agents: { agent: string; claims: number; spent: number; firstPass: number | null; lost: number; gaveup: number }[];
+  /** 按角色：按角色派发启动的领取（旧服务端没有） */
+  profiles?: StatsProfile[];
   dwell: { key: string; name: string; color: string; median: number; mean: number; n: number }[];
   hourHeat: number[][];
   dayHeat: { t: number; v: number; future: boolean }[];

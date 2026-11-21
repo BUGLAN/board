@@ -373,6 +373,81 @@ fn dispatch_names_merge_and_lost_runs() {
     assert_eq!(first, vec![("claude/mbp", name.as_str(), "review")]);
 }
 
+/// #573：按角色派发的领取记在角色名下（分工页「近 30 天」）：交审张数（同一张算一次）、一次通过率、返工、异常、平均用时，
+/// 和「按 agent」同一套算法；不按角色派发的、人自己领的不算进任何角色
+#[test]
+fn runs_dispatched_by_profile_are_counted_per_profile() {
+    let mut s = store();
+    let h = Actor::human();
+    let a = new(&mut s, B, BASE, "一");
+    let b = new(&mut s, B, BASE, "二");
+    let c = new(&mut s, B, BASE, "三");
+    let d = new(&mut s, B, BASE, "四");
+    beat(&mut s, BASE, vec![]);
+    let role = s
+        .write(BASE, Origin::ui(None), |w| {
+            w.profile_put(&crate::profiles::Profile { name: "主力".into(), agent: "claude".into(), ..Default::default() }, "人")
+        })
+        .unwrap();
+    let by_role = |s: &mut Store, at: i64, card: i64| {
+        s.write(at, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, card, HOST, None, Some(&role.id), &Actor::human())
+        })
+        .unwrap()
+    };
+    // 一：按角色做了 10 分钟交审，被打回；再按角色做 20 分钟交审，人移到已完成
+    let x = by_role(&mut s, BASE, a);
+    let x = begin(&mut s, BASE + MIN, x.id);
+    assert_eq!(x.profile, role.id);
+    beat(&mut s, BASE + MIN, vec![x.id]);
+    submit(&mut s, BASE + MIN + 30_000, x.name.as_deref().unwrap(), a);
+    end(&mut s, BASE + MIN + 30_000, x.id, EndHow::Exit, None);
+    mv(&mut s, B, &h, BASE + 2 * MIN, a, "rework");
+    let x = by_role(&mut s, BASE + 3 * MIN, a);
+    let x = begin(&mut s, BASE + 3 * MIN, x.id);
+    beat(&mut s, BASE + 3 * MIN + 30_000, vec![x.id]);
+    submit(&mut s, BASE + 3 * MIN + 30_000, x.name.as_deref().unwrap(), a);
+    end(&mut s, BASE + 3 * MIN + 30_000, x.id, EndHow::Exit, None);
+    mv(&mut s, B, &h, BASE + 4 * MIN, a, "done");
+    // 二：按角色派发，心跳断了（异常）
+    let y = by_role(&mut s, BASE + 5 * MIN, b);
+    let y = begin(&mut s, BASE + 5 * MIN, y.id);
+    beat(&mut s, BASE + 5 * MIN + 10_000, vec![y.id]);
+    s.sweep(BASE + 10 * MIN).unwrap();
+    end(&mut s, BASE + 10 * MIN, y.id, EndHow::Exit, None);
+    // 三：按角色做完交审，人直接移到已完成：一次通过
+    let z = by_role(&mut s, BASE + 11 * MIN, c);
+    let z = begin(&mut s, BASE + 11 * MIN, z.id);
+    beat(&mut s, BASE + 11 * MIN + 30_000, vec![z.id]);
+    submit(&mut s, BASE + 12 * MIN, z.name.as_deref().unwrap(), c);
+    end(&mut s, BASE + 12 * MIN, z.id, EndHow::Exit, None);
+    mv(&mut s, B, &h, BASE + 13 * MIN, c, "done");
+    // 四：人自己开的会话领的，不算进角色
+    work(&mut s, B, "claude/claude", d, BASE + 14 * MIN, BASE + 15 * MIN);
+
+    let st = stats(&s, Scope::All, None, BASE, BASE + HOUR, "UTC", BASE + DAY);
+    assert_eq!(st.profiles.len(), 1, "{:?}", st.profiles);
+    let p = &st.profiles[0];
+    assert_eq!((p.profile.as_str(), p.name.as_str(), p.gone), (role.id.as_str(), "主力", false));
+    assert_eq!(p.claims, 4, "一做了两次、二、三各一次");
+    assert_eq!(p.review, 2, "交审过的卡：一（两次算一张）、三");
+    assert_eq!(p.rework, 1);
+    assert_eq!(p.lost, 1);
+    assert_eq!(p.first_pass, Some(0.5), "完成的一、三里三是一次通过");
+    let spent: i64 = st.runs.iter().filter(|r| r.card != d).filter_map(|r| r.end.map(|e| e - r.start)).sum();
+    assert_eq!(p.spent, spent);
+    assert_eq!(p.avg, Some(spent / 4));
+    // 和「按 agent」里那一行一致（这台机器的 Claude Code 只按这个角色跑过）
+    let ag = st.agents.iter().find(|x| x.agent == "claude/mbp").unwrap();
+    assert_eq!((ag.claims, ag.lost, ag.first_pass, ag.spent), (p.claims, p.lost, p.first_pass, p.spent));
+
+    // 角色删掉之后照样有这一行，名字用派发时的
+    s.write(BASE + DAY, Origin::ui(None), |w| w.profile_delete(&role.id)).unwrap();
+    let st = stats(&s, Scope::All, None, BASE, BASE + HOUR, "UTC", BASE + DAY);
+    assert_eq!((st.profiles[0].name.as_str(), st.profiles[0].gone), ("主力", true));
+}
+
 /// #198 验收 5：board host 按机器的兜底设置结束了这次领取（card_runs.how = timeout），
 /// 大盘「按 agent」里算进异常退出，「领取明细」的结果也是异常退出。
 ///

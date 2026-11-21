@@ -4,6 +4,21 @@ import type { StatsBucket } from '../../lib/types';
 const H = 3600_000;
 const DAY = 24 * H;
 
+/** 浏览器的 IANA 时区：传给接口分桶，图上的时间也按它显示 */
+export const TZ = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+})();
+
+/** 预设范围「最近 n 小时」：结束在当前整点（向上取整），分工页「近 30 天」和大盘「30 天」用同一个算法 */
+export const recent = (hours: number, now = Date.now()) => {
+  const to = Math.ceil(now / H) * H;
+  return { from: to - hours * H, to };
+};
+
 /** 时长：不到 1 小时写分钟，不到 2 天写小时，再长写天 */
 export function fmtDur(ms: number) {
   const m = Math.round(ms / 60_000);
