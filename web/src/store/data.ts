@@ -6,7 +6,7 @@
    - 当前白板、打开的卡片都在地址栏里（lib/route.ts）：打开、关闭详情和切换白板时写进去
    ========================================================================== */
 import { create } from 'zustand';
-import { api, ApiError, connect, CLIENT_ID, type LiveStatus } from '../lib/api';
+import { api, ApiError, connect, CLIENT_ID, type CardBatchOp, type LiveStatus } from '../lib/api';
 import { applySilently, bindRoute, parseRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
 import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
@@ -223,16 +223,59 @@ export interface BatchResult {
   failed: { id: number; error: unknown }[];
 }
 
-/** 把 Promise.allSettled 的结果按请求顺序配回 ID */
-export function collectBatch(ids: number[], results: readonly PromiseSettledResult<unknown>[]): BatchResult {
-  const ok: number[] = [];
+/**
+ * 批量执行同一种卡片命令：只发一个 POST /api/cards/batch，并作为一层补丁进入写队列。
+ *
+ * patchOf 为每张卡生成一份可在之后重复叠加的单卡补丁；批量补丁先按当前数据生成后，
+ * 部分失败时只从这一层去掉失败的 ID，重复执行仍然得到原批次的效果。
+ * 保存中的卡片算 BUSY、留在本地失败且不发送；整批请求失败时撤销这一层并抛出。
+ */
+export async function batchCards(ids: number[], op: CardBatchOp, patchOf: (id: number) => Patch): Promise<BatchResult> {
+  const path = get().path;
+  const unique = [...new Set(ids)].filter(id => id > 0 && !isDraft(id));
   const failed: BatchResult['failed'] = [];
-  results.forEach((r, i) => {
-    const id = ids[i];
-    if (r.status === 'fulfilled') ok.push(id);
-    else failed.push({ id, error: r.reason });
-  });
-  return { ok, failed };
+  const todo: number[] = [];
+  for (const id of unique) {
+    if (cardBusy(id)) failed.push({ id, error: new ApiError('BUSY', '上一次修改还在保存，保存完再改') });
+    else todo.push(id);
+  }
+  if (!todo.length) return { ok: [], failed };
+
+  // 必须在叠上整批补丁之前生成，之后重放成功子集时不再按已经移动过的界面数据计算位置
+  const pieces = new Map(todo.map(id => [id, patchOf(id)]));
+  const patchFor = (list: number[]): Patch => joinPatch(...list.map(id => pieces.get(id)!));
+  guard({ ...patchFor(todo), cards: todo });
+  let layer = push({ ...patchFor(todo), cards: todo });
+  try {
+    const r = await queue(() => api.cardBatch(path, todo, op));
+    const done = new Set(r.ok);
+    const byId = new Map(r.failed.map(f => [f.id, new ApiError(f.code, f.message)]));
+    const keep = todo.filter(id => done.has(id));
+
+    for (const id of todo) {
+      if (done.has(id)) continue;
+      failed.push({
+        id,
+        error: byId.get(id) ?? new ApiError('INTERNAL', `服务端没有返回卡片 #${id} 的处理结果`),
+      });
+    }
+
+    if (failed.length) {
+      // 只替换这一层，不影响之后发起的补丁；失败卡片当帧恢复原样
+      const next: Layer = { ...patchFor(keep), cards: keep, path: layer.path };
+      layers = layers.map(x => (x === layer ? next : x));
+      layer = next;
+      render();
+    }
+
+    await (typeof r.rev === 'number' ? afterRev(r.rev) : afterWrite());
+    return {
+      ok: todo.filter(id => done.has(id)),
+      failed,
+    };
+  } finally {
+    drop(layer);
+  }
 }
 
 /** 叠上补丁，直到 done 结束再撤掉（done 成功时应已刷新过）。用于先发请求、稍后才确定本地效果的操作（拖拽松手的飞回动画结束后才落位） */
@@ -680,11 +723,14 @@ export function laterPatch(ids: number[], on: boolean): Patch {
   };
 }
 
-/** 收起 / 放回几条：每条一个请求，按发起顺序排队；失败的只撤自己那一条。提示和选择只按实际成功、失败的 ID 更新 */
+/** 收起 / 放回几条：整批一个请求；失败的只撤自己那一条。提示和选择只按实际成功、失败的 ID 更新 */
 export async function setLater(ids: number[], on: boolean): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
-  const rs = await Promise.allSettled(ok.map(id => exec({ op: 'later', id, on }, laterPatch([id], on))));
-  return collectBatch(ok, rs);
+  try {
+    return await batchCards(ok, { op: 'later', on }, id => laterPatch([id], on));
+  } catch (e) {
+    return { ok: [], failed: ok.map(id => ({ id, error: e })) };
+  }
 }
 
 /* ------------------------------ 「未整理」的新条目 ------------------------------ */

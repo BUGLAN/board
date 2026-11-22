@@ -10,6 +10,13 @@ import { readPrompts, type Prompt } from './prompts';
 import { normDispatches, normHost, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
 import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile } from './types';
 
+export type CardBatchOp =
+  | { op: 'move'; column: string }
+  | { op: 'later'; on: boolean }
+  | { op: 'delete' }
+  | { op: 'restore' }
+  | { op: 'purge' };
+
 declare global {
   interface Window {
     __BOARD_SHELL__?: string;
@@ -141,6 +148,9 @@ export const api = {
   events: (path: string, before?: number | null, limit = 20) =>
     req<BoardEvent[]>('GET', `/api/events?path=${q(path)}&limit=${limit}${before != null ? `&before=${before}` : ''}`),
   cmd: (board: string, cmd: Cmd) => req<CardDetail>('POST', '/api/cmd', { board, ...cmd }),
+  /** 人批量执行同一种卡片命令：一个请求、一个写事务。返回成功、失败的 ID 和写完后的 rev */
+  cardBatch: (board: string, ids: number[], op: CardBatchOp) =>
+    req<{ ok: number[]; failed: { id: number; code: ErrorCode; message: string }[]; rev: number }>('POST', '/api/cards/batch', { board, ids, ...op }),
   /** 跨白板搜卡片（不需要白板）：文字、`#ID`、`项目/白板#ID`、`label:标签` */
   search: (query: string, limit = 20) => req<SearchHit[]>('GET', `/api/search?q=${q(query)}&limit=${limit}`),
   upload,

@@ -6,6 +6,7 @@
 //! - `GET /api/workspace`、`/api/board`、`/api/card`：快照；`GET /api/events`：按游标向前翻页取动态
 //! - `POST /api/cmd`：卡片命令（与 CLI 走同一个规则引擎）。带令牌的请求按 agent 执行，名字取请求里的 `as`，
 //!   名字必须在线（先 `POST /api/agents/check`，之后每 10 秒 `POST /api/agents/beat`），否则 `NAME_OFFLINE`
+//! - `POST /api/cards/batch`：界面批量移动、稍后再做和回收站操作（仅人）；一个写事务，单卡失败互不影响
 //! - `POST /api/agents/check`、`/api/agents/beat`、`GET /api/agents`：agent 名字与 agent 级心跳（`agents`）
 //! - `POST /api/files`、`GET /api/files/{id}`：卡片附件（上传、读取）
 //! - `GET /api/me`、`POST /api/auth/logout`、`/api/tokens`：账号与访问令牌
@@ -321,6 +322,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/milestones", get(milestones))
         .route("/releases", post(sync_release))
         .route("/cmd", post(cmd))
+        .route("/cards/batch", post(card_batch))
         .route("/agents", get(agents::list))
         .route("/agents/check", post(agents::check))
         .route("/agents/beat", post(agents::beat).layer(axum::middleware::map_response(quiet)))
@@ -773,13 +775,13 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
                     w.read().require_online(&actor.name, w.now())?;
                 }
                 let b = w.resolve(&body.board)?;
-                // 在回收站里的卡片：读不到（NOT_FOUND），但不是要恢复、永久删除、删除时，原因写成「在回收站里」
+                // 移动和「稍后再做」由规则引擎检查回收站，其余单卡命令在这里保持原有的 IN_TRASH 提示。
                 if let Some(id) = card_id_of(&body.cmd) {
-                    if !matches!(body.cmd, Cmd::Restore { .. } | Cmd::Purge { .. } | Cmd::Delete { .. })
-                        && w.read().in_trash(&b, id)?
-                    {
-                        return Err(BoardError::new(ErrorCode::InTrash, format!("#{id} 在回收站里：先恢复，才能编辑、移动或评论"))
-                            .with_detail(json!({ "card": id })));
+                    if !matches!(
+                        &body.cmd,
+                        Cmd::Restore { .. } | Cmd::Purge { .. } | Cmd::Delete { .. } | Cmd::Move { .. } | Cmd::Later { .. }
+                    ) {
+                        w.ensure_not_in_trash(&b, id)?;
                     }
                 }
                 let claim = matches!(body.cmd, Cmd::Claim { .. });
@@ -798,7 +800,7 @@ async fn cmd(State(s): State<AppState>, Extension(caller): Extension<Caller>, he
 /// 卡片命令里的卡片 id（新建、领取不带 id 时为 None）
 fn card_id_of(cmd: &Cmd) -> Option<i64> {
     match cmd {
-        Cmd::New { .. } | Cmd::Claim { id: None } => None,
+        Cmd::New { .. } | Cmd::Claim { id: None } | Cmd::Seen { id: None } => None,
         Cmd::Edit { id, .. }
         | Cmd::Move { id, .. }
         | Cmd::Comment { id, .. }
@@ -817,8 +819,6 @@ fn card_id_of(cmd: &Cmd) -> Option<i64> {
         | Cmd::GiveUp { id, .. }
         | Cmd::Later { id, .. }
         | Cmd::Claim { id: Some(id) } => Some(*id),
-        // 全部标为已读没有卡片 id
-        Cmd::Seen { id: None } => None,
     }
 }
 
@@ -1187,6 +1187,46 @@ async fn delete_label(State(s): State<AppState>, h: HeaderMap, Path((project, id
     write(&s, &h, move |w| w.delete_label(&project, id)).await?;
     Ok(Json(json!({ "ok": true })))
 }
+
+/* ------------------------------ 卡片批量操作 ------------------------------ */
+
+#[derive(Deserialize)]
+struct CardBatchBody {
+    board: String,
+    ids: Vec<i64>,
+    #[serde(flatten)]
+    op: CardBatchOp,
+}
+
+/// `POST /api/cards/batch`：界面一次处理多张卡片的移动、稍后再做和回收站操作。
+///
+/// 只有人能用（访问令牌访问不到，规则引擎也只认人），agent 走单卡命令。每张卡片沿用单卡规则；
+/// 一张失败只回滚这一张，其余继续。整个操作在一个写事务里，有改动时 rev 只加一次。
+/// 返回 `{ ok, failed, rev }`，界面等加载到 rev 后撤掉乐观补丁。
+async fn card_batch(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<CardBatchOut> {
+    let p: CardBatchBody = parse(v)?;
+    let client = client_of(&h);
+    let out = s
+        .db(move |st| {
+            let batch = st.write(now_ms(), Origin::ui(client), |w| {
+                let b = w.resolve(&p.board)?;
+                w.card_batch(&b, &Actor::human(), &p.op, &p.ids)
+            })?;
+            Ok(CardBatchOut { batch, rev: st.rev()? })
+        })
+        .await?;
+    s.0.poke.notify_one();
+    Ok(Json(out))
+}
+
+#[derive(Serialize)]
+struct CardBatchOut {
+    #[serde(flatten)]
+    batch: board_core::CardBatch,
+    rev: i64,
+}
+
+/* ------------------------------ 标签批量操作 ------------------------------ */
 
 #[derive(Deserialize)]
 struct LabelBatchBody {

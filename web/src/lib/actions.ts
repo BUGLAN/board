@@ -7,7 +7,7 @@ import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import { projectDirError } from './projectDir';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, collectBatch, exec, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type BatchResult, type Patch } from '../store/data';
+import { batchCards, boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type BatchResult, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -86,21 +86,27 @@ export async function triage(id: number): Promise<BatchResult> {
   return result;
 }
 
-/** 批量整理到首个可领取状态最下面：每一张一个请求，按发起顺序排队；返回实际成功、失败的 ID */
+/** 批量整理到首个可领取状态最下面：整批一个请求；返回实际成功、失败的 ID */
 export async function triageMany(ids: number[]): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
   if (!ok.length) return { ok: [], failed: [] };
   const start = boardFlow(useData.getState().board).home;
   const to = start?.key ?? 'todo';
-  const results = await Promise.allSettled(ok.map(id => exec({ op: 'move', id, column: to }, movePatch(id, to))));
-  return collectBatch(ok, results);
+  try {
+    return await batchCards(ok, { op: 'move', column: to }, id => movePatch(id, to));
+  } catch (e) {
+    return { ok: [], failed: ok.map(id => ({ id, error: e })) };
+  }
 }
 
 /** 撤销整理：放回「未整理」最下面（只有人能移入，界面上就是人） */
 export async function untriage(ids: number[]) {
-  const results = await Promise.allSettled(ids.map(id => exec({ op: 'move', id, column: INBOX }, movePatch(id, INBOX))));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
+  try {
+    const result = await batchCards(ids, { op: 'move', column: INBOX }, id => movePatch(id, INBOX));
+    if (result.failed[0]) toastError(result.failed[0].error);
+  } catch (e) {
+    toastError(e);
+  }
 }
 
 /* ------------------------------ 复制为提示词 ------------------------------ */

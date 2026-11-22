@@ -2313,7 +2313,10 @@ fn trash_delete_hides_restore_and_never_reuses_ids() {
     exec(&mut s, B, &human(), T0 + 4 * MIN, Cmd::Delete { id: 3 }).unwrap();
     assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Comment { id: 3, text: "x".into() })), ErrorCode::NotFound);
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(3)))), ErrorCode::NotFound);
-    // 服务端据此在回收站里的卡片上回 IN_TRASH（而不是 NOT_FOUND），界面据此提示「先恢复」
+    assert_eq!(code(exec(&mut s, B, &human(), T0, mv(3, "review"))), ErrorCode::InTrash);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Later { id: 3, on: true })), ErrorCode::InTrash);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Later { id: 3, on: true })), ErrorCode::InTrash);
+    // 服务端据此在其他回收站命令上回 IN_TRASH（而不是 NOT_FOUND），界面据此提示「先恢复」
     assert!(s.read(|r| r.in_trash(&b, 3)).unwrap());
     assert!(!s.read(|r| r.in_trash(&b, 1)).unwrap());
     let e = exec(&mut s, B, &human(), T0, Cmd::Purge { id: 3 }).unwrap();
@@ -2854,13 +2857,13 @@ fn label_batch_rejections() {
     let mine = ui(&mut s, |w| w.create_label("default", "人定", None, true)).unwrap();
     exec(&mut s, B, &human(), T0, new("一")).unwrap();
 
-    let many: Vec<i64> = (1..=(LABEL_BATCH_MAX as i64 + 1)).collect();
+    let many: Vec<i64> = (1..=(BATCH_MAX as i64 + 1)).collect();
     let e = label_batch(&mut s, &human(), &many, &[bug.id], &[]).unwrap_err();
     assert_eq!(e.code, ErrorCode::Usage);
     assert!(e.message.contains("500"), "{}", e.message);
     // 正好上限：可以（不存在的记进 failed）
-    let r = label_batch(&mut s, &human(), &many[..LABEL_BATCH_MAX], &[bug.id], &[]).unwrap();
-    assert_eq!((r.changed.len(), r.failed.len()), (1, LABEL_BATCH_MAX - 1));
+    let r = label_batch(&mut s, &human(), &many[..BATCH_MAX], &[bug.id], &[]).unwrap();
+    assert_eq!((r.changed.len(), r.failed.len()), (1, BATCH_MAX - 1));
 
     let rev = s.rev().unwrap();
     assert_eq!(label_batch(&mut s, &human(), &[1], &[999], &[]).unwrap_err().code, ErrorCode::Usage);
@@ -2877,6 +2880,94 @@ fn label_batch_rejections() {
     let r = label_batch(&mut s, &human(), &[1], &[], &[mine.id]).unwrap();
     assert_eq!(r.changed, vec![1]);
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, Cmd::Label { id: 1, add: vec![mine.id], remove: vec![] })), ErrorCode::Usage);
+}
+
+/* ---------------- 批量卡片操作（default/main#595） ---------------- */
+
+fn card_batch(s: &mut Store, who: &Actor, op: &CardBatchOp, ids: &[i64]) -> Result<CardBatch> {
+    let origin = if who.is_human() { Origin::ui(None) } else { Origin::cli() };
+    s.write(T0, origin, |w| {
+        let b = w.resolve(B)?;
+        w.card_batch(&b, who, op, ids)
+    })
+}
+
+/// 按传入顺序逐张执行，重复 id 只做一次；一次批量写入只让 rev 加一
+#[test]
+fn card_batch_move_runs_in_order_once() {
+    let mut s = store();
+    for title in ["一", "二", "三"] {
+        exec(&mut s, B, &human(), T0, new(title)).unwrap();
+    }
+    let rev = s.rev().unwrap();
+    let r = card_batch(&mut s, &human(), &CardBatchOp::Move { column: "review".into() }, &[3, 1, 2, 3]).unwrap();
+    assert_eq!(r.ok, vec![3, 1, 2]);
+    assert!(r.failed.is_empty());
+    assert_eq!(snapshot(&s, B, T0).cols["review"], vec![3, 1, 2]);
+    assert_eq!(s.rev().unwrap(), rev + 1, "一次批量写入只让 rev 加一");
+}
+
+/// 其他批量操作也走同一批单卡命令
+#[test]
+fn card_batch_covers_later_and_trash_operations() {
+    let mut s = store();
+    for title in ["一", "二"] {
+        exec(&mut s, B, &human(), T0, inbox_new(title)).unwrap();
+    }
+    card_batch(&mut s, &human(), &CardBatchOp::Later { on: true }, &[1, 2]).unwrap();
+    assert!(snapshot(&s, B, T0).cards.values().all(|c| c.later_at.is_some()));
+    card_batch(&mut s, &human(), &CardBatchOp::Later { on: false }, &[1, 2]).unwrap();
+    assert!(snapshot(&s, B, T0).cards.values().all(|c| c.later_at.is_none()));
+
+    card_batch(&mut s, &human(), &CardBatchOp::Delete, &[1, 2]).unwrap();
+    assert!(snapshot(&s, B, T0).cols[INBOX].is_empty());
+    assert_eq!(snapshot(&s, B, T0).trash, 2);
+
+    card_batch(&mut s, &human(), &CardBatchOp::Restore, &[1, 2]).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols[INBOX], vec![1, 2]);
+    assert_eq!(snapshot(&s, B, T0).trash, 0);
+
+    card_batch(&mut s, &human(), &CardBatchOp::Delete, &[1, 2]).unwrap();
+    card_batch(&mut s, &human(), &CardBatchOp::Purge, &[1, 2]).unwrap();
+    assert_eq!(snapshot(&s, B, T0).trash, 0);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, Cmd::Restore { id: 1 })), ErrorCode::NotFound);
+}
+
+/// 一张失败只回滚这一张，前后的卡片照常执行；rev 仍只加一次
+#[test]
+fn card_batch_partial_failure_isolated() {
+    let mut s = store();
+    for title in ["一", "二", "三"] {
+        exec(&mut s, B, &human(), T0, new(title)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 2 }).unwrap();
+    let rev = s.rev().unwrap();
+    let r = card_batch(&mut s, &human(), &CardBatchOp::Move { column: "review".into() }, &[1, 2, 3, 99]).unwrap();
+    assert_eq!(r.ok, vec![1, 3]);
+    let failed: Vec<(i64, ErrorCode)> = r.failed.iter().map(|f| (f.id, f.code)).collect();
+    assert_eq!(failed, vec![(2, ErrorCode::InTrash), (99, ErrorCode::NotFound)]);
+    assert_eq!(snapshot(&s, B, T0).cols["review"], vec![1, 3]);
+    assert_eq!(snapshot(&s, B, T0).trash, 1, "失败那张仍在回收站，没有留下半步修改");
+    assert_eq!(s.rev().unwrap(), rev + 1);
+}
+
+/// 批量卡片操作仅人可用；去重后超过上限整批拒绝
+#[test]
+fn card_batch_rejections() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    let rev = s.rev().unwrap();
+    assert_eq!(
+        card_batch(&mut s, &alpha(), &CardBatchOp::Move { column: "review".into() }, &[1]).unwrap_err().code,
+        ErrorCode::Usage
+    );
+
+    let many: Vec<i64> = (1..=(BATCH_MAX as i64 + 1)).collect();
+    let e = card_batch(&mut s, &human(), &CardBatchOp::Delete, &many).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("500"), "{}", e.message);
+    assert_eq!(s.rev().unwrap(), rev);
+    assert!(!s.read(|r| r.in_trash(&r.resolve(B).unwrap(), 1)).unwrap());
 }
 
 /* ---------------- 交审、做不下去一步完成（board submit / board giveup） ---------------- */

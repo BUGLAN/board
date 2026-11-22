@@ -27,6 +27,20 @@ describe('请求', () => {
     await expect(api.card('p/a', 1)).rejects.toMatchObject({ code: 'NOT_FOUND', message: '卡片不存在' });
   });
 
+  it('批量卡片命令发到 /api/cards/batch', async () => {
+    const fetch = vi.fn(async (path: string, init: RequestInit) => {
+      expect(path).toBe('/api/cards/batch');
+      expect(JSON.parse(String(init.body))).toEqual({ board: 'p/a', ids: [1, 2], op: 'later', on: true });
+      return new Response('{"ok":[1],"failed":[{"id":2,"code":"IN_TRASH","message":"在回收站里"}],"rev":9}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetch);
+    expect(await api.cardBatch('p/a', [1, 2], { op: 'later', on: true })).toEqual({
+      ok: [1],
+      failed: [{ id: 2, code: 'IN_TRASH', message: '在回收站里' }],
+      rev: 9,
+    });
+  });
+
   it('连不上、超时：NETWORK', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))));
     await expect(api.workspace()).rejects.toMatchObject({ code: 'NETWORK' });

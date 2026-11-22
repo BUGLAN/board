@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type LabelBatch = { changed: number[]; skipped: number[]; failed: { id: number; error: unknown }[] };
 const labelCards = vi.fn<(ids: number[], label: number, add: boolean) => Promise<LabelBatch>>();
+const batchCards = vi.fn<(ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => Promise<{ ok: number[]; failed: { id: number; error: unknown }[] }>>();
 const toastError = vi.fn();
 const toast = vi.fn();
-const exec = vi.fn<(cmd: { op: string; id: number; column: string }, patch: unknown) => Promise<unknown>>();
 vi.mock('../store/data', () => ({
   labelCards: (ids: number[], l: number, add: boolean) => labelCards(ids, l, add),
-  exec: (cmd: { op: string; id: number; column: string }, patch: unknown) => exec(cmd, patch),
+  batchCards: (ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => batchCards(ids, op, patch),
   movePatch: (id: number, to: string) => ({ move: [id, to] }),
   useData: { getState: () => ({ detailId: null }) },
 }));
@@ -21,9 +21,9 @@ const { blockState, bulkLabel, bulkMove, clearSelect, moveTargets, rangeIds, sel
 beforeEach(() => {
   clearSelect();
   labelCards.mockReset();
+  batchCards.mockReset();
   toastError.mockReset();
   toast.mockReset();
-  exec.mockReset();
 });
 
 describe('rangeIds（Shift 连选）', () => {
@@ -161,22 +161,18 @@ describe('moveTargets（「移动到」菜单的每一行）', () => {
 describe('bulkMove（批量移动）', () => {
   const t = { key: 'review', name: '待审核', ids: [1, 2], here: 1, held: 1, locked: null };
 
-  it('每张都走 move 命令和 movePatch（排到末尾），提示移了几张、跳过的写明', async () => {
-    exec.mockResolvedValue({});
+  it('整批走一次 cardBatch，提示移了几张、跳过的写明', async () => {
+    batchCards.mockResolvedValue({ ok: [1, 2], failed: [] });
     expect(await bulkMove(t)).toBe(2);
-    expect(exec.mock.calls).toEqual([
-      [{ op: 'move', id: 1, column: 'review' }, { move: [1, 'review'] }],
-      [{ op: 'move', id: 2, column: 'review' }, { move: [2, 'review'] }],
-    ]);
+    expect(batchCards.mock.calls[0][0]).toEqual([1, 2]);
+    expect(batchCards.mock.calls[0][1]).toEqual({ op: 'move', column: 'review' });
+    expect(batchCards.mock.calls).toHaveLength(1);
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: '2 张移到了「待审核」', text: '跳过：1 张本来就在这里，1 张被 agent 持有' }));
   });
 
   it('有一张被拒：其余照样移，提示一次错误', async () => {
     const err = new Error('NOT_HOLDER');
-    exec.mockImplementation(async cmd => {
-      if (cmd.id === 2) throw err;
-      return {};
-    });
+    batchCards.mockResolvedValue({ ok: [1], failed: [{ id: 2, error: err }] });
     expect(await bulkMove({ ...t, here: 0, held: 0 })).toBe(1);
     expect(toastError).toHaveBeenCalledTimes(1);
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: '1 张移到了「待审核」', text: undefined }));
@@ -184,6 +180,6 @@ describe('bulkMove（批量移动）', () => {
 
   it('没有能移的：不发请求', async () => {
     expect(await bulkMove({ ...t, ids: [] })).toBe(0);
-    expect(exec).not.toHaveBeenCalled();
+    expect(batchCards).not.toHaveBeenCalled();
   });
 });

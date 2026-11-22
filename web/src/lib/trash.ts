@@ -1,13 +1,13 @@
 /* ==========================================================================
    回收站（PRD §8 规则 10、§10.5）：删除的卡片移进回收站，一直可以恢复，只有人点「永久删除」才真的删掉
-   - 删除、恢复、永久删除都走 store/data 的 exec：补丁当帧生效，失败时撤回并提示
+   - 删除、恢复、永久删除都走 store/data 的 batchCards：补丁当帧生效，一批只发一个请求
    - 删除后弹出的提示里可以「撤销」（= 从回收站恢复）
    - 回收站里的内容按需取（GET /api/trash），取回来按白板路径和 rev 缓存一份：
      rev 变了（任何写入都会）就重新取；「撤销」要知道卡片原来在哪一列、排第几位
    ========================================================================== */
 import { api } from './api';
 import type { Card, Status, TrashCard } from './types';
-import { collectBatch, exec, removeCard, restoreCard, serverNow, useData, type BatchResult } from '../store/data';
+import { batchCards, removeCard, restoreCard, serverNow, useData, type BatchResult } from '../store/data';
 import { toast, toastError } from '../store/ui';
 
 /* ------------------------------ 取回收站 ------------------------------ */
@@ -45,19 +45,16 @@ export async function deleteCards(ids: number[], { silent = false, titles = {} }
   const ok = ids.filter(id => id > 0);
   if (!ok.length) return false;
   const board = useData.getState().board;
-  // 顺带预取回收站：撤销时要知道每张卡片原来在哪一列、排第几位（取不到时按放回最下面算）。不等它，删除当帧生效
-  void Promise.all(ok.map(id => trashed(path, id)));
-  const results = await Promise.allSettled(
-    ok.map(id =>
-      exec({ op: 'delete', id }, removeCard(id)).then((r): { id: number; title: string } => ({
-        id,
-        title: titles[id] ?? board?.cards[id]?.title ?? r.title,
-      })),
-    ),
-  );
-  const done = results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : []));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
+  let result: BatchResult;
+  try {
+    result = await batchCards(ok, { op: 'delete' }, removeCard);
+  } catch (e) {
+    toastError(e);
+    return false;
+  }
+  const done = result.ok.map(id => ({ id, title: titles[id] ?? board?.cards[id]?.title ?? '' }));
+  const bad = result.failed[0];
+  if (bad) toastError(bad.error);
   if (!done.length) return false;
   if (!silent) {
     toast({
@@ -100,21 +97,28 @@ export function restorePos(t: TrashCard | null, column: string, list: number[] |
 
 /** 恢复几张卡片：先取回收站里的原位，当帧放回白板上，再让服务端恢复。返回实际成功、失败的 ID */
 export async function restoreMany(path: string, ids: number[]): Promise<BatchResult> {
-  const results = await Promise.allSettled(ids.map(id => restoreOne(path, id)));
-  const result = collectBatch(ids, results);
-  if (result.failed[0]) toastError(result.failed[0].error);
-  return result;
-}
-
-async function restoreOne(path: string, id: number) {
-  const t = await trashed(path, id);
+  const unique = [...new Set(ids)];
+  const trashedItems = await Promise.all(unique.map(id => trashed(path, id)));
   const w = useData.getState();
   const live = w.path === path && w.board?.path === path ? w.board : null;
-  const column = restoreColumn(t, live?.statuses);
-  const pos = restorePos(t, column, live?.cols[column]);
-  // 补丁里放上去的那一份：回收站里有就按它的（标题、标签、附件都还在），没有就等刷新
-  const card = (t as unknown as Card | null) ?? ({ id, title: '', body: '', column } as Card);
-  await exec({ op: 'restore', id }, restoreCard({ id, column, pos, movedAt: serverNow(), card }));
+  const plans = new Map(
+    unique.map((id, i) => {
+      const t = trashedItems[i];
+      const column = restoreColumn(t, live?.statuses);
+      const pos = restorePos(t, column, live?.cols[column]);
+      // 补丁里放上去的那一份：回收站里有就按它的（标题、标签、附件都还在），没有就等刷新
+      const card = (t as unknown as Card | null) ?? ({ id, title: '', body: '', column } as Card);
+      return [id, restoreCard({ id, column, pos, movedAt: serverNow(), card })] as const;
+    }),
+  );
+  let result: BatchResult;
+  try {
+    result = await batchCards(unique, { op: 'restore' }, id => plans.get(id)!);
+  } catch (e) {
+    result = { ok: [], failed: unique.map(id => ({ id, error: e })) };
+  }
+  if (result.failed[0]) toastError(result.failed[0].error);
+  return result;
 }
 
 /** 撤销删除：按实际恢复成功的 ID 提示一句「已恢复」 */
@@ -138,8 +142,12 @@ export function restoredToast(ids: number[], path: string): void {
 
 /** 从回收站永久删除：附件、评论一起删，不能恢复。提示只按实际成功、失败的 ID 更新 */
 export async function purgeCards(ids: number[]): Promise<BatchResult> {
-  const results = await Promise.allSettled(ids.map(id => exec({ op: 'purge', id })));
-  const result = collectBatch(ids, results);
+  let result: BatchResult;
+  try {
+    result = await batchCards(ids, { op: 'purge' }, () => ({}));
+  } catch (e) {
+    result = { ok: [], failed: ids.map(id => ({ id, error: e })) };
+  }
   if (result.failed[0]) toastError(result.failed[0].error);
   if (result.ok.length) toast({ type: 'success', title: result.ok.length === 1 ? `已永久删除 #${result.ok[0]}` : `已永久删除 ${result.ok.length} 张卡片`, duration: 2400 });
   return result;

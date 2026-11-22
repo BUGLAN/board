@@ -2,6 +2,7 @@
    成功后刷新再撤补丁，失败只撤自己那一层；保存完之前同一个对象不能再改（BUSY）。
    服务端是下面的假 api：卡片命令挂起，由用例决定什么时候成功、失败 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CardBatchOp } from '../lib/api';
 import type { BoardEvent, BoardSnapshot, CardDetail, Cmd, Workspace } from '../lib/types';
 import { card, detail, snapshot, workspace } from '../../test/fixtures';
 import type * as Data from './data';
@@ -26,6 +27,14 @@ const server = vi.hoisted(() => ({
     remove: number[];
     ok: (r: { changed: number[]; failed: { id: number; code: string; message: string }[]; rev: number }) => void;
     fail: () => void;
+  }[],
+  /** 批量卡片命令（POST /api/cards/batch） */
+  cardBatches: [] as {
+    board: string;
+    ids: number[];
+    op: CardBatchOp;
+    ok: (r: { ok: number[]; failed: { id: number; code: string; message: string }[]; rev: number }) => void;
+    fail: (code?: string) => void;
   }[],
   hosts: null as null | ((r: { hosts: []; dispatches: [] }) => void),
   /** 推送：boot() 之后由用例调用 */
@@ -86,6 +95,16 @@ vi.mock('../lib/api', async orig => {
         new Promise((res, rej) => {
           server.batches.push({ board, ids, add, remove, ok: res, fail: () => rej(new real.ApiError('NETWORK', '断网了')) });
         }),
+      cardBatch: (board: string, ids: number[], op: CardBatchOp) =>
+        new Promise((res, rej) => {
+          server.cardBatches.push({
+            board,
+            ids,
+            op,
+            ok: res,
+            fail: (code = 'INTERNAL') => rej(new real.ApiError(code as never, '失败了')),
+          });
+        }),
       reorderLabels: () =>
         new Promise<void>((res, rej) => {
           server.other.push({ name: 'reorderLabels', ok: () => res(), fail: () => rej(new real.ApiError('INTERNAL', '失败了')) });
@@ -121,6 +140,7 @@ beforeEach(async () => {
   server.calls = [];
   server.other = [];
   server.batches = [];
+  server.cardBatches = [];
   server.hosts = null;
   server.push = null;
   server.n = { workspace: 0, board: 0 };
@@ -508,30 +528,37 @@ describe('删除、恢复（回收站）', () => {
 });
 
 describe('稍后再做的批量结果（default/main#512）', () => {
-  it('全部成功：返回每一条的 ID', async () => {
+  it('全部成功：一个请求并返回每一条的 ID', async () => {
     const r = D.setLater([1, 2], true);
     await settle();
-    server.calls[0].ok();
-    await settle();
-    server.calls[1].ok();
+    expect(server.cardBatches[0].ids).toEqual([1, 2]);
+    expect(server.cardBatches[0].op).toEqual({ op: 'later', on: true });
+    server.boards['p/a'].cards[1].laterAt = 100;
+    const rev = serverEdit('p/a', 2, { laterAt: 100 });
+    server.cardBatches[0].ok({ ok: [1, 2], failed: [], rev });
     expect(await r).toEqual({ ok: [1, 2], failed: [] });
   });
 
   it('部分失败：返回成功的 #2 和失败的 #1', async () => {
     const r = D.setLater([1, 2], true);
     await settle();
-    server.calls[0].fail('INTERNAL');
-    await settle();
-    server.calls[1].ok();
-    expect(await r).toEqual({ ok: [2], failed: [{ id: 1, error: expect.objectContaining({ code: 'INTERNAL' }) }] });
+    const rev = serverEdit('p/a', 2, { laterAt: 100 });
+    server.cardBatches[0].ok({ ok: [2], failed: [{ id: 1, code: 'NOT_IN_TODO', message: '不在未整理里' }], rev });
+    expect(await r).toEqual({ ok: [2], failed: [{ id: 1, error: expect.objectContaining({ code: 'NOT_IN_TODO' }) }] });
   });
 
   it('全部失败：没有成功项', async () => {
     const r = D.setLater([1, 2], true);
     await settle();
-    server.calls[0].fail('INTERNAL');
-    await settle();
-    server.calls[1].fail('INTERNAL');
+    const rev = serverEdit('p/a', 1, {});
+    server.cardBatches[0].ok({
+      ok: [],
+      failed: [
+        { id: 1, code: 'INTERNAL', message: '失败' },
+        { id: 2, code: 'INTERNAL', message: '失败' },
+      ],
+      rev,
+    });
     expect(await r).toEqual({
       ok: [],
       failed: [
@@ -668,6 +695,84 @@ describe('批量打标签（default/main#531）', () => {
     expect(await D.labelCards([1], 7, true)).toEqual({ changed: [], skipped: [1], failed: [] });
     await settle();
     expect(server.batches).toEqual([]);
+  });
+});
+
+describe('批量卡片命令', () => {
+  const moveOnServer = (ids: number[], to: string) => {
+    const b = server.boards['p/a'];
+    for (const id of ids) {
+      for (const [key, list] of Object.entries(b.cols)) b.cols[key] = list.filter(x => x !== id);
+      b.cols[to] = [...(b.cols[to] ?? []), id];
+      b.cards[id] = { ...b.cards[id], column: to };
+    }
+    const rev = server.ws.rev + 1;
+    server.ws.rev = rev;
+    for (const x of Object.values(server.boards)) x.rev = rev;
+    return rev;
+  };
+
+  it('一个请求、当帧移动全部卡片；部分失败只撤失败的卡片并只刷新一次', async () => {
+    const r = D.batchCards([1, 2, 3], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
+    expect(D.useData.getState().board!.cols.review).toEqual([1, 2, 3]);
+    expect([D.cardBusy(1), D.cardBusy(2), D.cardBusy(3)]).toEqual([true, true, true]);
+    await settle();
+    expect(server.calls).toEqual([]);
+    expect(server.cardBatches.map(b => [b.board, b.ids, b.op])).toEqual([['p/a', [1, 2, 3], { op: 'move', column: 'review' }]]);
+
+    let open!: () => void;
+    server.gate = new Promise(res => (open = res));
+    const rev = moveOnServer([1, 3], 'review');
+    const n = server.n.board;
+    server.cardBatches[0].ok({
+      ok: [1, 3],
+      failed: [{ id: 2, code: 'NOT_IN_TODO', message: '#2 不能移' }],
+      rev,
+    });
+    await settle();
+
+    // 刷新还停在半路：失败的那张已经回原处，成功的两张仍显示目标状态
+    expect(D.useData.getState().board!.cols.todo).toEqual([2]);
+    expect(D.useData.getState().board!.cols.review).toEqual([1, 3]);
+    expect([D.cardBusy(1), D.cardBusy(2), D.cardBusy(3)]).toEqual([true, false, true]);
+
+    server.gate = null;
+    open();
+    expect(await r).toEqual({
+      ok: [1, 3],
+      failed: [{ id: 2, error: expect.objectContaining({ code: 'NOT_IN_TODO' }) }],
+    });
+    expect(server.n.board - n).toBe(1);
+    expect(D.useData.getState().saving).toEqual({});
+  });
+
+  it('整批请求失败：所有卡片恢复原样并抛出', async () => {
+    const r = D.batchCards([1, 2, 3], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
+    expect(D.useData.getState().board!.cols.review).toEqual([1, 2, 3]);
+    await settle();
+    server.cardBatches[0].fail();
+    await expect(r).rejects.toMatchObject({ code: 'INTERNAL' });
+    expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3]);
+    expect(D.useData.getState().board!.cols.review).toBeUndefined();
+    expect(D.useData.getState().saving).toEqual({});
+  });
+
+  it('正在保存的卡片记 BUSY，不发进这一批；其余卡片照常发', async () => {
+    const pending = rename(2, '正在保存');
+    const r = D.batchCards([1, 2], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
+    await settle();
+    serverEdit('p/a', 2, { title: '正在保存' });
+    server.calls[0].ok();
+    await pending;
+    await settle();
+
+    expect(server.cardBatches[0].ids).toEqual([1]);
+    const rev = moveOnServer([1], 'review');
+    server.cardBatches[0].ok({ ok: [1], failed: [], rev });
+    expect(await r).toEqual({
+      ok: [1],
+      failed: [{ id: 2, error: expect.objectContaining({ code: 'BUSY' }) }],
+    });
   });
 });
 

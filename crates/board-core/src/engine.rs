@@ -156,8 +156,24 @@ pub enum Cmd {
     },
 }
 
-/// 批量打标签一次最多的卡片数
-pub const LABEL_BATCH_MAX: usize = 500;
+/// 界面的通用批量卡片操作
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum CardBatchOp {
+    Move {
+        /// 状态标识或名称
+        column: String,
+    },
+    Later {
+        on: bool,
+    },
+    Delete,
+    Restore,
+    Purge,
+}
+
+/// 批量卡片操作一次最多的卡片数
+pub const BATCH_MAX: usize = 500;
 
 /// 批量打标签的结果：标签真的变了的卡片（已经带着 / 本来没有的不算），和失败的卡片
 #[derive(Debug, Clone, Default, Serialize)]
@@ -168,6 +184,20 @@ pub struct LabelBatch {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LabelFail {
+    pub id: i64,
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+/// 批量卡片操作的结果：成功的卡片和失败的卡片
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CardBatch {
+    pub ok: Vec<i64>,
+    pub failed: Vec<CardBatchFail>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CardBatchFail {
     pub id: i64,
     pub code: ErrorCode,
     pub message: String,
@@ -330,6 +360,7 @@ impl<'a> W<'a> {
 
             /* ---------------- 移动 / 排序 ---------------- */
             Cmd::Move { id, column, top, index, order, before, after } => {
+                self.ensure_not_in_trash(board, id)?;
                 let r = self.row(b, id)?;
                 let to = flow
                     .resolve(&column)
@@ -891,6 +922,7 @@ impl<'a> W<'a> {
                展开一条、点「全部标为已读」都走这里：记下人看过的时间，条目的点消失，同步到所有窗口和机器。
                不新增动态；已经看过的不再刷新时间（重复执行、别的窗口也在看时结果不变） */
             Cmd::Later { id, on } => {
+                self.ensure_not_in_trash(board, id)?;
                 if !actor.is_human() {
                     return Err(BoardError::usage("「稍后再做」只能在界面上做"));
                 }
@@ -943,8 +975,8 @@ impl<'a> W<'a> {
             return Err(BoardError::usage("批量打标签只能在界面上做：agent 用 board label 一张张打"));
         }
         let ids = dedup(ids);
-        if ids.len() > LABEL_BATCH_MAX {
-            return Err(BoardError::usage(format!("一次最多给 {LABEL_BATCH_MAX} 张卡片打标签，这次选了 {} 张", ids.len())));
+        if ids.len() > BATCH_MAX {
+            return Err(BoardError::usage(format!("一次最多给 {BATCH_MAX} 张卡片打标签，这次选了 {} 张", ids.len())));
         }
         self.sweep_board(board.id)?;
         self.check_label_change(board, actor, add, remove)?;
@@ -968,6 +1000,71 @@ impl<'a> W<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// 批量执行移动、稍后再做和回收站操作（仅人，界面批量条）：在调用方的一个写事务里，
+    /// 按传入顺序逐张执行和单卡 [`Cmd`] 完全相同的规则；有改动时 rev 只加一次。
+    /// 非 Internal 的单卡错误只回滚该张，其余继续；Internal 往上抛，整批回滚。
+    pub fn card_batch(&mut self, board: &BoardRef, actor: &Actor, op: &CardBatchOp, ids: &[i64]) -> Result<CardBatch> {
+        if !actor.is_human() {
+            return Err(BoardError::usage("批量移动、稍后再做和回收站操作只能在界面上做：agent 用单卡命令"));
+        }
+        let ids = dedup(ids);
+        if ids.len() > BATCH_MAX {
+            return Err(BoardError::usage(format!("一次最多对 {BATCH_MAX} 张卡片执行批量操作，这次选了 {} 张", ids.len())));
+        }
+
+        let mut out = CardBatch::default();
+        for id in ids {
+            let cmd = match op {
+                CardBatchOp::Move { column } => Cmd::Move {
+                    id,
+                    column: column.clone(),
+                    top: false,
+                    index: None,
+                    order: None,
+                    before: None,
+                    after: None,
+                },
+                CardBatchOp::Later { on } => Cmd::Later { id, on: *on },
+                CardBatchOp::Delete => Cmd::Delete { id },
+                CardBatchOp::Restore => Cmd::Restore { id },
+                CardBatchOp::Purge => Cmd::Purge { id },
+            };
+
+            self.tx.execute_batch("SAVEPOINT card_batch_item")?;
+            let changed = self.changed;
+            let hosts_changed = self.hosts_changed;
+            let config_changed = self.config_changed;
+            let config_by = self.config_by.clone();
+            match self.exec(board, actor, cmd) {
+                Ok(_) => {
+                    self.tx.execute_batch("RELEASE card_batch_item")?;
+                    out.ok.push(id);
+                }
+                Err(e) => {
+                    self.tx.execute_batch("ROLLBACK TO card_batch_item; RELEASE card_batch_item")?;
+                    self.changed = changed;
+                    self.hosts_changed = hosts_changed;
+                    self.config_changed = config_changed;
+                    self.config_by = config_by;
+                    if e.code == ErrorCode::Internal {
+                        return Err(e);
+                    }
+                    out.failed.push(CardBatchFail { id, code: e.code, message: e.message });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// 回收站里的卡片不能移动或改变「稍后再做」状态；单卡命令和批量命令共用这条判断。
+    pub fn ensure_not_in_trash(&self, board: &BoardRef, id: i64) -> Result<()> {
+        if self.read().in_trash(board, id)? {
+            return Err(BoardError::new(ErrorCode::InTrash, format!("#{id} 在回收站里：先恢复，才能编辑、移动或评论"))
+                .with_detail(json!({ "card": id })));
+        }
+        Ok(())
     }
 
     /// 规则 7：从领取或最近一次心跳算起，连续 5 次（50 秒）没收到心跳，领取释放，卡片回到领取它时所在的可领取状态最上面

@@ -5,14 +5,14 @@
      块标题上的勾选框选上 / 取消这一块（有筛选时只算筛出的）
    - 底部批量条（components/BoardSelect）：全选（筛出的）、打标签、移动到、取消；esc、换白板时退出
    - 打标签走 store/data 的 labelCards（一次 POST /api/labels/batch，「未整理」「稍后再做」的批量条也用 bulkLabel）；
-     移动走 exec(move)：乐观更新，当帧生效；一张失败只撤那一张
+     移动走 batchCards（一次 POST /api/cards/batch）：乐观更新，当帧生效；一张失败只撤那一张
    - 移动到：同一块白板的状态（和「未整理」），规则同拖动（lib/drag vetoFor）：锁定状态不能移入，被持有的跳过
    ========================================================================== */
 import { create } from 'zustand';
 import { justDropped, vetoFor } from './drag';
 import { boardFlow, INBOX, INBOX_NAME } from './schema';
 import type { BoardSnapshot, Card, ColumnKey } from './types';
-import { exec, labelCards, movePatch, useData, type LabelBatchResult } from '../store/data';
+import { batchCards, labelCards, movePatch, useData, type LabelBatchResult } from '../store/data';
 import { overlayOpen, toast, toastError } from '../store/ui';
 
 interface SelState {
@@ -115,10 +115,15 @@ export function moveTargets(board: BoardSnapshot, ids: number[]): MoveTarget[] {
 /** 批量移动：按白板上的顺序一张张排到目标状态末尾（和「移动到」一张一样），失败的提示第一个错误 */
 export async function bulkMove(t: MoveTarget) {
   if (!t.ids.length) return 0;
-  const results = await Promise.allSettled(t.ids.map(id => exec({ op: 'move', id, column: t.key }, movePatch(id, t.key))));
-  const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
-  if (bad) toastError(bad.reason);
-  const ok = results.filter(r => r.status === 'fulfilled').length;
+  let result;
+  try {
+    result = await batchCards(t.ids, { op: 'move', column: t.key }, id => movePatch(id, t.key));
+  } catch (e) {
+    toastError(e);
+    return 0;
+  }
+  if (result.failed[0]) toastError(result.failed[0].error);
+  const ok = result.ok.length;
   const skip = [t.here && `${t.here} 张本来就在这里`, t.held && `${t.held} 张被 agent 持有`].filter(Boolean).join('，');
   if (ok) toast({ type: 'success', title: `${ok} 张移到了「${t.name}」`, text: skip ? `跳过：${skip}` : undefined });
   return ok;
