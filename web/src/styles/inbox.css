@@ -244,7 +244,6 @@
 .ib-bulk-n b { display: inline-block; font-size: 15px; font-weight: 600; color: var(--text); animation: ib-num var(--dur-3) var(--spring); }
 @keyframes ib-num { from { transform: translateY(-6px) scale(.8); opacity: 0; } }
 .ib-bulk-sep { width: 1px; height: 18px; margin: 0 6px; background: var(--line-2); }
-.ib-bulk .btn.brand { margin-left: 4px; }
 
 /* ---------------- 「并到…」 ---------------- */
 .ib-pick { padding: 5px; }

@@ -127,7 +127,7 @@ function collapse(slot: HTMLElement, delay: number, duration: number, done: () =
 /** 按下的反馈：点的那个按钮留在槽里，按下去、填满品牌色（批量条上点的不在行里，不用） */
 function press(r: LeaveRow) {
   const btn =
-    r.how === 'row' ? r.el.querySelector<HTMLElement>('.ib-acts button') : r.how === 'edit' ? r.el.querySelector<HTMLElement>('.ib-editacts .btn.brand') : null;
+    r.how === 'row' ? r.el.querySelector<HTMLElement>('.ib-acts button') : r.how === 'edit' ? r.el.querySelector<HTMLElement>('.ib-editacts .ib-triage') : null;
   if (!btn) return;
   r.el.classList.add('acts-on');
   btn.classList.add('ib-pressed');

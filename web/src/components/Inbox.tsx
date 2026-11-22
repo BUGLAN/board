@@ -1024,7 +1024,7 @@ function RowEdit({ card: c, now, all, home, saving }: { card: Card; now: number;
           移动到
         </button>
         <button
-          className="btn sm brand"
+          className="btn sm ib-triage"
           type="button"
           disabled={saving}
           onClick={e => {
@@ -1230,7 +1230,7 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
       </button>
       <button
         type="button"
-        className="btn sm brand"
+        className="btn sm ghost"
         onClick={() => void doTriage(checked)}
       >
         整理到「{home}」
@@ -2060,7 +2060,7 @@ function LaterBulk({
       </button>
       <button
         type="button"
-        className="btn sm brand"
+        className="btn sm ghost"
         onClick={() => {
           const ids = checked;
           void doUnlater(ids).then(result => onResult(ids, result));
