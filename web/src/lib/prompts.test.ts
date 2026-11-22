@@ -1,23 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { addPrompt, clearLocalPrompts, insertPromptText, localPrompts, makePrompt, readPrompts, removePrompt, updatePrompt, type Prompt } from './prompts';
+import { clearLocalPrompts, insertPromptText, localPrompts, makePrompt, readPrompts, removePrompt, updatePrompt, type Prompt } from './prompts';
 
 const row = (id: string, title: string, text: string): Prompt => ({ id, title, text });
 
 describe('快捷提示词（default/main#413）', () => {
-  it('新增放在最前面，标题去掉首尾空白、内容保留多行，id 接着已有的往后排', () => {
-    const list = [row('p-2', '旧的一条', '第一行\n第二行')];
-    const next = addPrompt(list, '  等发版  ', '等发版\r\n发完通知我');
-    expect(next.map(p => p.id)).toEqual(['p-3', 'p-2']);
-    expect(next[0]).toEqual({ id: 'p-3', title: '等发版', text: '等发版\n发完通知我' });
-    expect(addPrompt([], '第一条', '内容')[0].id).toBe('p-1');
-  });
-
-  it('标题或内容为空时不新增，原来的列表不变', () => {
-    const list = [row('p-1', '等发版', '等发版')];
-    expect(addPrompt(list, '   ', '内容')).toEqual(list);
-    expect(addPrompt(list, '标题', ' \n ')).toEqual(list);
-  });
-
   it('修改只动目标那一条，id 不在时原样返回', () => {
     const list = [row('p-1', '等发版', '等发版'), row('p-2', '重启', '重启一下')];
     const next = updatePrompt(list, 'p-2', '  重启服务  ', '重启服务\n再试');
@@ -49,7 +35,7 @@ describe('快捷提示词（default/main#413）', () => {
     ).toEqual([row('p-1', '留下的', '第一行'), { id: 'p-2', title: '换行', text: 'a\nb' }]);
   });
 
-  it('makePrompt 和 addPrompt 用同一个 id；内容为空时是 null', () => {
+  it('makePrompt 的 id 接着已有的往后排；内容为空时是 null', () => {
     const list = [row('p-4', '旧的', '旧的')];
     expect(makePrompt(list, ' 等发版 ', '等发版')).toEqual(row('p-5', '等发版', '等发版'));
     expect(makePrompt(list, '等发版', '  ')).toBeNull();

@@ -105,9 +105,6 @@ export const SOURCE: Record<Dispatch['source'], string> = { manual: '手动', cr
 /** 派发的来源；查不到时同 resultOf 兜底（只画文字） */
 export const sourceOf = (d: Pick<Dispatch, 'source'>): string => SOURCE[d.source] ?? '派发';
 
-/** 机器的默认 agent：设置过且找到了就是它，否则第一个找到的（和服务端 default_agent 一致） */
-export const defaultAgent = (h: HostInfo) => h.agents.find(a => a.id === h.agent && a.found) ?? h.agents.find(a => a.found);
-
 export type HostState = 'full' | 'busy' | 'idle' | 'paused' | 'off';
 
 /** 状态胶囊：满载 / 在跑 / 空闲 / 暂停接单 / 离线 */

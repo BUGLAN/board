@@ -64,12 +64,6 @@ export function makePrompt(list: readonly Prompt[], title: string, text: string)
   return usable(t, x) ? { id: nextId(list), title: t, text: x } : null;
 }
 
-/** 新建一条，放在最前面；标题或内容为空时原样返回，不生成空条目 */
-export function addPrompt(list: readonly Prompt[], title: string, text: string): Prompt[] {
-  const p = makePrompt(list, title, text);
-  return p ? [p, ...list] : [...list];
-}
-
 /** 改标题、内容；找不到 id 或内容为空时原样返回 */
 export function updatePrompt(list: readonly Prompt[], id: string, title: string, text: string): Prompt[] {
   const t = titleOf(title);

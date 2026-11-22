@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { endpointLines, maskKey, providerError, toProviderSave, writableEfforts } from './providers';
-import type { AgentMeta, Provider } from './types';
+import { endpointLines, maskKey, providerError, toProviderSave } from './providers';
+import type { Provider } from './types';
 
-const META: AgentMeta[] = [
-  { id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'codex', name: 'Codex', protocols: ['openai-responses'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'dsh', name: 'DeepSeek Harness', protocols: ['anthropic', 'openai-chat', 'openai-responses'], efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
-];
 const prov = (x: Partial<Provider> = {}): Provider => ({
   name: 'deepseek',
   endpoints: [{ interface: 'anthropic', url: 'https://api.deepseek.com/anthropic' }],
@@ -17,15 +12,6 @@ const prov = (x: Partial<Provider> = {}): Provider => ({
   ...x,
 });
 describe('模型供应商共用配置', () => {
-  it('能写的强度：模型标了的、agent 也能写的；没标的不能选', () => {
-    const p = prov();
-    expect(writableEfforts(META[0], p, 'deepseek-reasoner')).toEqual(['low', 'high', 'max']);
-    expect(writableEfforts(META[1], p, 'deepseek-reasoner')).toEqual(['low', 'high', 'max']);
-    expect(writableEfforts(META[1], p, 'deepseek-reasoner')).toContain('max');
-    expect(writableEfforts(META[0], p, 'deepseek-chat')).toEqual([]);
-    expect(writableEfforts(undefined, p, 'deepseek-reasoner')).toEqual([]);
-  });
-
   it('地址相同的接口并成一行', () => {
     const p = prov({
       endpoints: [

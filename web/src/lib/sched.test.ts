@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentTake, claimable, hhmm, hostTake, inWins, nextStart, serverMinute, tidyWins, winWords, type Win } from './sched';
+import { claimable, hhmm, hostTake, inWins, nextStart, serverMinute, tidyWins, winWords, type Win } from './sched';
 import type { BoardInfo, HostAgent, HostInfo } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -52,16 +52,6 @@ describe('机器现在接不接单', () => {
     expect(hostTake(host(), 1, 600)).toEqual({ ok: true, why: '空位 1（1/2 在跑）', tone: 'ok' });
     // 旧版服务端没有时段：当全天
     expect(hostTake(host({ windows: undefined }), 0, 600).ok).toBe(true);
-  });
-
-  it('分 agent：没有它、没找到命令、连续异常退出暂停了都接不了', () => {
-    const h = host({ agents: [agent('claude'), agent('mine', { found: false }), agent('dsh', { tripped: true })] });
-    expect(agentTake(h, 'codex', 0, 600)).toMatchObject({ ok: false, why: '没有这个 agent' });
-    expect(agentTake(h, 'mine', 0, 600)).toMatchObject({ ok: false, why: '没找到命令' });
-    expect(agentTake(host({ agents: [agent('claude', { found: false, missing: 'Node.js（npx）' })] }), 'claude', 0, 600)).toMatchObject({ ok: false, why: '缺 Node.js（npx）' });
-    expect(agentTake(h, 'dsh', 0, 600)).toMatchObject({ ok: false, why: '连续异常退出，已暂停' });
-    expect(agentTake(h, 'claude', 0, 600)).toEqual({ ok: true, why: '空位 2', tone: 'ok' });
-    expect(agentTake(host({ auto: false }), 'claude', 0, 600).why).toBe('只做派给它的');
   });
 });
 

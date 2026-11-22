@@ -1,6 +1,6 @@
 /* 调度（PRD §9.1「自动领取」）界面上要算的东西：接单时段的文字和整理、机器现在接不接单。
    纯函数，不碰界面和接口；「现在」是服务端时区一天里的第几分钟（工作区数据里带着），不用浏览器的时区 */
-import type { BoardInfo, HostAgent, HostInfo, Workspace } from './types';
+import type { BoardInfo, HostInfo, Workspace } from './types';
 
 /** 一段接单时段：一天里的 [起, 止)，分钟 */
 export type Win = [number, number];
@@ -71,16 +71,6 @@ export function hostTake(h: HostInfo, running: number, minute: number): Take {
   if (!inWins(wins, minute)) return { ok: false, why: `时段外，${nextStart(wins, minute)} 开始`, tone: 'wait' };
   if (running >= h.max) return { ok: false, why: `${running} 个会话在跑，已满`, tone: 'wait' };
   return { ok: true, why: `空位 ${h.max - running}（${running}/${h.max} 在跑）`, tone: 'ok' };
-}
-
-/** 机器现在能不能自动接这个 agent 的卡 */
-export function agentTake(h: HostInfo, agent: string, running: number, minute: number): Take {
-  const a: HostAgent | undefined = h.agents.find(x => x.id === agent);
-  if (!a) return { ok: false, why: '没有这个 agent', tone: 'off' };
-  if (!a.found) return { ok: false, why: a.missing ? `缺 ${a.missing}` : '没找到命令', tone: 'off' };
-  if (a.tripped) return { ok: false, why: '连续异常退出，已暂停', tone: 'off' };
-  const t = hostTake(h, running, minute);
-  return t.ok ? { ...t, why: `空位 ${h.max - running}` } : t;
 }
 
 /** 这块白板上现在能领的卡片数（可领取状态里的卡片；排队、在跑的不在这些状态里） */

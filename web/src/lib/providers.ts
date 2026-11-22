@@ -21,12 +21,6 @@ export const ALL_EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 
 export const metasOf = (view: ProviderView | null): AgentMeta[] => view?.meta ?? [];
 export const metaOf = (view: ProviderView | null, agent: string) => metasOf(view).find(m => m.id === agent);
 
-/** 这个 agent 用这家供应商的这个模型时能写哪几档强度：模型标了的、agent 也能写的（从低到高）；没标时为空，不能选 */
-export function writableEfforts(meta: AgentMeta | undefined, p: Provider | null | undefined, model: string): string[] {
-  const marked = p?.efforts?.[model] ?? [];
-  return (meta?.efforts ?? []).filter(e => marked.includes(e));
-}
-
 export const interfaceName = (id: string) => PROVIDER_INTERFACES.find(i => i.id === id)?.short ?? id;
 
 /** 常用供应商：接口地址和常用模型（2026 年核实过的写法；API key 要自己填）。
