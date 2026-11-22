@@ -6,13 +6,11 @@
     "postinstall": "cd web && npm install",
     "dev:web": "npm --prefix web run dev",
     "build:web": "npm --prefix web run build",
-    "server": "cargo run -p board-server --",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "test:desktop": "cargo test -p board-desktop",
     "test": "cargo test && npm run test:desktop && npm --prefix web run typecheck && npm --prefix web test",
-    "release": "node scripts/release.mjs",
-    "build:skill": "node scripts/build-skill-bin.mjs"
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
