@@ -57,20 +57,19 @@ export async function cancel(d: Dispatch) {
   }
 }
 
-/** 卡片上：排队时写「排队 → <机器> · <agent>（原因）」；会话里排着的原因是「会话第 N/M 张」 */
-export function CardDispatchLine({ card }: { card: number }) {
+/** 白板卡片右上角：派发还在排队时的角标「[agent 图标] → <机器>」（和自动领取的去向角标同一种样子，见 profiles/Next.tsx CardRoute）；
+    整句「排队 → <机器> · <agent>（原因）」和派发时间在悬停提示里，会话里排着的原因是「会话第 N/M 张」 */
+export function CardDispatchBadge({ card }: { card: number }) {
   const d = useData(s => cardDispatch(s.ws, s.path, card));
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
   const block = useData(s => (d && d.host ? blockOf(s.ws, d.host, d.board) : undefined));
   if (!d || d.state !== 'queued') return null;
+  const say = `排队 → ${hostWords(d)} · ${d.agentLabel}（${queueReason(h, d, block)}）· 派发于 ${hhmm(d.createdAt)}（${sourceOf(d)}）`;
   return (
-    <div className="card-dispatch" title={`派发于 ${hhmm(d.createdAt)}（${sourceOf(d)}）`}>
-      <Mark id={d.agent} title={d.agentLabel} />
-      <span>
-        排队 → {hostWords(d)} · {d.agentLabel}
-        <em>（{queueReason(h, d, block)}）</em>
-      </span>
-    </div>
+    <span className="card-where t-sent" title={say} aria-label={say}>
+      <Mark id={d.agent} title={say} />
+      <span>→ {hostWords(d)}</span>
+    </span>
   );
 }
 

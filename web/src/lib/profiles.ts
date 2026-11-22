@@ -32,32 +32,6 @@ export function ruleMatches(op: ClaimRule['op'], labels: string[], card: string[
   }
 }
 
-/** 一条规则对这些标签命不命中，以及为什么（卡片「接下来」的「为什么」里用） */
-export function ruleWhy(r: Pick<ClaimRule, 'op' | 'labels'>, names: string[]): { hit: boolean; why: string } {
-  const has = (l: string) => names.some(n => n.toLowerCase() === l.toLowerCase());
-  const q = (l: string[]) => l.map(x => `「${x}」`).join('');
-  switch (r.op) {
-    case 'all': {
-      const miss = r.labels.filter(l => !has(l));
-      return miss.length ? { hit: false, why: `没带${q(miss)}` } : { hit: true, why: '都带了' };
-    }
-    case 'not_in': {
-      const got = r.labels.filter(has);
-      return got.length ? { hit: false, why: `带了${q(got.slice(0, 1))}` } : { hit: true, why: '都没带' };
-    }
-    case 'none':
-      return names.length ? { hit: false, why: '有标签' } : { hit: true, why: '没有标签' };
-    case 'equal':
-      return ruleMatches('equal', r.labels, names) ? { hit: true, why: '标签正好是这几个' } : { hit: false, why: '标签不是正好这几个' };
-    case 'only':
-      return ruleMatches('only', r.labels, names) ? { hit: true, why: '标签都在这几个里' } : { hit: false, why: '有别的标签' };
-    default: {
-      const got = r.labels.filter(has);
-      return got.length ? { hit: true, why: `带${q(got.slice(0, 1))}` } : { hit: false, why: `${q(r.labels)}都没带` };
-    }
-  }
-}
-
 /** 第一条命中的规则；都没命中时为空（不自动领） */
 export function routeOf(names: string[], rules: ClaimRule[]): { rule: number; profile: string } | null {
   const i = rules.findIndex(r => ruleMatches(r.op, r.labels, names));

@@ -296,7 +296,7 @@ button.pfq-row:hover { background: var(--surface-2); }
 .pf-fc-say.t-wait { background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
 .pf-fc-say.t-wait > svg { color: var(--warn); }
 .pf-fc-say.t-me > svg { color: var(--c-review); }
-.pf-fc-more { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 0 8px; border-radius: var(--r-xs); font-size: 12px; color: var(--text-2); }
+.pf-fc-more { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 0 8px; border-radius: var(--r-xs); font-size: 12px; color: var(--text-2); }
 .pf-fc-more:hover { background: var(--surface-3); }
 .pf-fc-more svg { width: 13px; height: 13px; }
 .pf-fc-hosts { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -304,16 +304,6 @@ button.pfq-row:hover { background: var(--surface-2); }
 .pf-fc-alt { margin: 0; font-size: 12px; color: var(--text-3); }
 .pf-fc-alt button { color: var(--text-2); text-decoration: underline; text-underline-offset: 3px; }
 /* 白板卡片上的去向 */
-.pf-cchip { display: flex; align-items: center; gap: 5px; margin-top: 7px; font-size: 11.5px; color: var(--text-3); min-width: 0; }
-.pf-cchip > svg { flex: none; width: 12px; height: 12px; }
-.pf-cchip .pf-chip { height: 20px; padding: 0 7px 0 2px; font-size: 11.5px; gap: 4px; }
-.pf-cchip .pf-chip .pf-mark { width: 16px; height: 16px; border-radius: 5px; }
-.pf-cchip .pf-chip .pf-mark .hp-logo { width: 11px; height: 11px; }
-.pf-cchip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pf-cchip.k-start small { color: color-mix(in oklab, var(--ok), var(--ink)); }
-.pf-cchip.k-wait small { color: var(--warn-text); }
-.pf-cchip.k-me small { color: var(--c-review); }
-.pf-cchip.k-none { padding-left: 2px; }
 
 /* 实际界面补的几条 */
 .pfx-tag { flex: none; display: inline-flex; align-items: center; height: 16px; margin-left: 4px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: var(--brand); background: var(--brand-soft); }
@@ -327,8 +317,6 @@ button.pfq-row:hover { background: var(--surface-2); }
 .pf-fc-rule .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
 .pfq.is-saving { opacity: .7; }
 .pfz-labels .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
-.pf-cchip .pf-chip .pf-mark { width: 16px; height: 16px; background: none; box-shadow: none; }
-.pf-cchip .pf-chip .pf-mark .hp-logo { width: 14px; height: 14px; }
 @media (max-width: 640px) {
   .pf-f3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pf-f3 label:last-child { grid-column: span 2; }

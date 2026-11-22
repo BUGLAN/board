@@ -1,6 +1,6 @@
 /* 角色（lib/profiles.ts）：规则命中、机器现在能不能接、挑机器、推算一块白板上的卡会交给谁 */
 import { describe, expect, it } from 'vitest';
-import { forecast, hostsFor, pickHost, routeOf, ruleMatches, ruleWhy, slotOf, soonest } from './profiles';
+import { forecast, hostsFor, pickHost, routeOf, ruleMatches, slotOf, soonest } from './profiles';
 import type { BoardSnapshot, ClaimRule, HostInfo, Workspace } from './types';
 
 const host = (name: string, id: number, x: Partial<HostInfo> = {}): HostInfo =>
@@ -26,7 +26,6 @@ describe('规则命中', () => {
     expect(routeOf(['bug', 'windows'], rules)).toEqual({ rule: 0, profile: 'fix' });
     expect(routeOf(['bug'], rules)).toEqual({ rule: 1, profile: 'bulk' });
     expect(routeOf(['文档'], rules)).toBeNull();
-    expect(ruleWhy(rules[0], ['bug']).why).toBe('没带「Windows」');
   });
 });
 

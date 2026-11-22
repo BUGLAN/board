@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agentMark } from '../../lib/hosts';
 import type { Dispatch } from '../../lib/types';
 import { useData } from '../../store/data';
-import { CardDispatchLine } from './Dispatch';
+import { CardDispatchBadge } from './Dispatch';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -43,7 +43,7 @@ const render = (d: Dispatch) => {
     saving: {},
     pending: {},
   } as never);
-  act(() => root.render(<CardDispatchLine card={d.card} />));
+  act(() => root.render(<CardDispatchBadge card={d.card} />));
 };
 
 beforeEach(() => {
@@ -58,11 +58,12 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('卡片上的派发排队行', () => {
+describe('卡片上的派发排队角标', () => {
   it('认识的 agent 画它自己的 logo，不再是通用派发图标', () => {
     render(dispatch('codex', 'Codex'));
-    const line = host.querySelector('.card-dispatch') as HTMLElement;
-    expect(line.textContent).toContain('排队 → win2 · Codex');
+    const line = host.querySelector('.card-where') as HTMLElement;
+    expect(line.textContent).toBe('→ win2');
+    expect(line.title).toContain('排队 → win2 · Codex');
     expect(line.querySelector('img.hp-logo')?.getAttribute('src')).toBe(agentMark('codex').icon);
     // 通用派发图标是 <svg>；换了 logo 之后这一行没有它了
     expect(line.querySelector('svg')).toBeNull();
@@ -70,7 +71,7 @@ describe('卡片上的派发排队行', () => {
 
   it('单色 logo（dsh 的鲸鱼）用遮罩画，深浅主题都跟 --agent-ink', () => {
     render(dispatch('dsh', 'DeepSeek Harness'));
-    const line = host.querySelector('.card-dispatch') as HTMLElement;
+    const line = host.querySelector('.card-where') as HTMLElement;
     const art = line.querySelector('.hp-logo.logo-mono') as HTMLElement;
     expect(art.style.maskImage).toContain(agentMark('dsh').icon!);
     expect(line.querySelector('img')).toBeNull();
@@ -78,10 +79,10 @@ describe('卡片上的派发排队行', () => {
 
   it('认不出的 agent 退回两个字母，不出现空图标', () => {
     render(dispatch('alpha', 'Alpha'));
-    const line = host.querySelector('.card-dispatch') as HTMLElement;
+    const line = host.querySelector('.card-where') as HTMLElement;
     const mark = line.querySelector('b.hp-mini') as HTMLElement;
     expect(mark.textContent).toBe('AL');
     expect(line.querySelector('img, .logo-mono')).toBeNull();
-    expect(line.textContent).toContain('排队 → win2 · Alpha');
+    expect(line.title).toContain('排队 → win2 · Alpha');
   });
 });

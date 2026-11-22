@@ -8,7 +8,7 @@ import { useUI, type Flash } from '../store/ui';
 import { renderKey, useCurrent, useData, useOnline } from '../store/data';
 import { AgentAvatar, LabelChips, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
-import { CardDispatchLine } from './hosts/Dispatch';
+import { CardDispatchBadge } from './hosts/Dispatch';
 import { CardRoute } from './profiles/Next';
 import { agentMark, cardDispatch } from '../lib/hosts';
 import { useBoardSel } from '../lib/boardSelect';
@@ -170,6 +170,9 @@ export const CardView = memo(function CardView({
             <span className="card-id">#{no}</span>
             {next && <span className="card-next">下一张</span>}
             <span className="card-flags">
+              {/* 去向角标：派发在排队，或推算出的自动领取（马上在哪台 / 排第几）；窄列里有角标时 gh# 让位 */}
+              {!doing && <CardDispatchBadge card={c.id} />}
+              {!doing && <CardRoute card={c.id} />}
               {gh && <span className="card-tag">{gh}</span>}
               {c.comments > 0 && (
                 // 纯文本（不是按钮）：读屏读「2 条评论」，点这里和点卡片一样打开详情（评论在详情里）
@@ -188,8 +191,6 @@ export const CardView = memo(function CardView({
               <LabelChips ids={c.labels} labels={labels} pending={pending} />
             </div>
           )}
-          {!doing && <CardDispatchLine card={c.id} />}
-          {!doing && <CardRoute card={c.id} />}
           {doing ? (
             <div className="card-claim">
               {/* enter：领到卡、换了持有者时，logo 用签名动作的进场版出来 */}

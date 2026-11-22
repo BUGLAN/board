@@ -2,18 +2,20 @@
    卡片会交给谁（PRD §9.1「分工」）：只画可领取、没人持有、没派发的卡，推算见 lib/profiles.ts（和自动领取同一套顺序）
    - 卡片详情里一段「接下来」：交给哪个角色（按哪条规则）、马上在哪台开始还是在这个角色里排第几、在等什么；
      「为什么」展开每台机器能不能接、为什么。规则都没命中时写「不会自动领」，带「派发…」
-   - 白板卡片上一行去向：「→ 修复 · 马上 · win」「→ 批量 · 排队第 1」「不自动领」
+   - 白板卡片右上角的角标（和手动派发的角标同一种样子，见 hosts/Dispatch.tsx CardDispatchBadge）：
+     马上开始写机器名（绿）、排队写「排 N」（黄），图标是角色的 agent，整句在悬停提示里；没命中规则、白板不参与自动领取的不画
    还没有角色（没配过分工）时都不画
    ========================================================================== */
 import { useState } from 'react';
 import { cardDispatch } from '../../lib/hosts';
-import { forecast, profilesOf, recipe, ruleWhy, type Fc } from '../../lib/profiles';
+import { forecast, profilesOf, recipe, type Fc } from '../../lib/profiles';
 import type { BoardSnapshot, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { useData } from '../../store/data';
 import { openDispatch } from '../../store/ui';
 import { useNow } from '../bits';
 import { Icon } from '../Icon';
+import { AgentIcon } from '../hosts/bits';
 import { PMark, RuleView, agentName } from './bits';
 
 /** 一块白板的推算，按（工作区, 白板, 分钟）缓存：白板上每张卡片都要问一次 */
@@ -63,7 +65,6 @@ export function CardNext({ card }: { card: number }) {
               {rule && (
                 <small className="pf-fc-rule">
                   规则 {f.route!.rule + 1}：<RuleView r={rule} />
-                  <span className="pf-dim">（{ruleWhy(rule, f.names).why}）</span>
                 </small>
               )}
             </div>
@@ -111,23 +112,20 @@ export function CardNext({ card }: { card: number }) {
   );
 }
 
-/** 白板卡片上的去向 */
+/** 白板卡片右上角的去向角标 */
 export function CardRoute({ card }: { card: number }) {
   const fc = useBoardFc();
   const profiles = useData(s => s.ws?.sched?.profiles);
   const f = fc.get(card);
-  if (!f || !profiles?.length) return null;
-  if (f.kind === 'none') return <div className="pf-cchip k-none">不自动领</div>;
+  // 没命中规则、白板不参与自动领取：卡片上不画（详情里「接下来」照样写）
+  if (!f || !profiles?.length || (f.kind !== 'start' && f.kind !== 'wait')) return null;
   const p = f.route ? profiles.find(x => x.id === f.route!.profile) : undefined;
   if (!p) return null;
+  const say = f.kind === 'start' ? `交给「${p.name}」，马上在 ${f.host} 开始` : `交给「${p.name}」，排第 ${f.pos} 张${f.soon ? `（${f.soon}）` : ''}`;
   return (
-    <div className={cx('pf-cchip', `k-${f.kind}`)}>
-      <Icon name="chevRight" />
-      <span className="pf-chip">
-        <PMark p={p} />
-        <b>{p.name}</b>
-      </span>
-      <small>{f.kind === 'start' ? `马上 · ${f.host}` : f.kind === 'wait' ? `排队第 ${f.pos}` : '不自动领取'}</small>
-    </div>
+    <span className={cx('card-where', `t-${f.kind}`)} title={say} aria-label={say}>
+      <AgentIcon id={p.agent} />
+      <span>{f.kind === 'start' ? f.host : `排 ${f.pos}`}</span>
+    </span>
   );
 }

@@ -412,15 +412,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 :root[data-motion="reduced"] .dp-dialog .hp-agent-btn:active:not(:disabled) .hp-agent { transform: none; }
 
 /* ---------- 卡片上 / 卡片详情里的派发状态 ---------- */
-.card-dispatch {
-  display: flex; align-items: flex-start; gap: 5px; margin-top: 8px; min-width: 0; font-size: 11.5px; line-height: 1.45; color: var(--text-2);
-  padding: 4px 7px; border-radius: var(--r-xs); outline: 1px dashed var(--line-3); outline-offset: -1px;
-}
-/* 排队行画 agent 自己的图标（和卡片详情、机器页同一套 Mark）：13px 跟 11.5px 的文字对齐，认不出时是两个字母 */
-.card-dispatch .hp-mini { width: 13px; height: 13px; min-width: 0; margin-top: 2px; padding: 0; border-radius: 3px; font-size: 9px; }
-.card-dispatch .hp-mini.logo-mono { border-radius: 0; }
-.card-dispatch span { min-width: 0; overflow-wrap: anywhere; }
-.card-dispatch span em { font-style: normal; color: var(--text-3); white-space: nowrap; }
 .dispatch-note {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r-md);
   background: color-mix(in srgb, var(--ac) 7%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 30%, transparent);
