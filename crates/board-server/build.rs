@@ -9,11 +9,16 @@
 // `#!/bin/sh` 执行：行尾必须是 LF。Windows 上检出（`core.autocrlf=true`）可能是 CRLF，
 // `.gitattributes` 之外这里再兜一层——打包前换成 LF，免得一份 CRLF 的 skill 同步下去在 WSL 里报
 // 「cannot execute: required file not found」。
-use std::path::Path;
+//
+// 路径一律用运行时的 CARGO_MANIFEST_DIR，不用 env!：env! 是编译 build script 时写死的。几个检出共用一个 target
+// 目录时（Cargo 按相对路径算工作区成员的哈希），换个检出会直接复用别处编好的 build script，读的还是那个检出的
+// board-skills；那个检出删掉后就打包出一份空的，board host 装上的 board-skills 里只剩 bin/。
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn skill_files(root: &Path, dir: &Path, out: &mut Vec<(String, bool, std::path::PathBuf)>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    // 读不了就停住：宁可编译失败，也不发出一份缺文件的 board-skills
+    let rd = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("读不了 {}：{e}", dir.display()));
     let mut entries: Vec<_> = rd.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
@@ -66,11 +71,12 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     println!("cargo:rerun-if-changed=../../web/dist");
     println!("cargo:rerun-if-env-changed=BOARD_COMMIT");
     // 本机开发用 Vite 提供界面，debug 构建不要求 web/dist；发布版本会把界面临时打包进二进制，
     // 没有 index.html 时必须在这里停住，不能让一个能启动、但所有页面都报「界面还没有构建」的服务端流出去。
-    let index = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/dist/index.html");
+    let index = manifest.join("../../web/dist/index.html");
     println!("cargo:rerun-if-changed={}", index.display());
     let index_ready = index.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
     if std::env::var("PROFILE").ok().as_deref() == Some("release") && !index_ready {
@@ -93,10 +99,13 @@ fn main() {
     };
     println!("cargo:rustc-env=BOARD_COMMIT={commit}");
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.agents/skills/board-skills");
+    let root = manifest.join("../../.agents/skills/board-skills");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = vec![];
     skill_files(&root, &root, &mut files);
+    if !files.iter().any(|(rel, _, _)| rel == "SKILL.md") {
+        panic!("{} 里没有 SKILL.md：打包不出 board-skills", root.display());
+    }
     let mut code = String::from("pub const BOARD_SKILLS: &[(&str, bool, &[u8])] = &[\n");
     let out_dir = Path::new(&std::env::var("OUT_DIR").unwrap()).to_path_buf();
     for (i, (rel, exec, p)) in files.iter().enumerate() {
