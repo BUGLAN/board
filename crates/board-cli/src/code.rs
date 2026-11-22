@@ -12,7 +12,7 @@
 //!   目录在、git 却不登记它（[`leftover`]：`git worktree remove` 删到一半，Windows 上文件被占用、路径太长时常见）：
 //!   那一次的任务已经结束了，有所有者记录、而且记录对得上才删掉重建；删不掉、没有记录时这次另开一个，agent 照常启动。
 //! - **所有者记录**：board host 建的每个 worktree 在 `<仓库目录名>.wt/.board-worktree/<目录名>.json` 记下主仓库、
-//!   会话名、派发和创建时间。删目录（残留目录、清理）之前都要它在、对得上，否则只报告、不删（#508）。
+//!   目录和会话名。删目录（残留目录、清理）之前都要它在、对得上，否则只报告、不删（#508）。
 //! - **清理**（[`sweep`]）：board host 备的 worktree 记着最近一次用的时间；超过 24 小时没用、又是干净的就删掉。
 //!   有没推改动的留着，没有所有者记录的（旧版 board host 建的）也留着、写明原因。
 //!   人手动跑 `/board-skills` 的会话自己建的 worktree 没有使用记号，不碰。
@@ -149,10 +149,6 @@ struct Owner {
     path: PathBuf,
     /// 会话名（原样）
     name: String,
-    /// 建它的那次派发
-    dispatch: i64,
-    /// 什么时候建的（Unix 秒）
-    created_at: u64,
 }
 
 fn owner_file(wt: &Path) -> Option<PathBuf> {
@@ -163,14 +159,13 @@ fn read_owner(wt: &Path) -> Option<Owner> {
     serde_json::from_str(&std::fs::read_to_string(owner_file(wt)?).ok()?).ok()
 }
 
-/// 记下这个 worktree 归 board host 的这个会话（已经有、而且是同一个仓库同一个目录时不改创建时间）
-fn write_owner(repo: &Path, wt: &Path, name: &str, dispatch: i64) {
+/// 记下这个 worktree 归 board host 的这个会话（已经有、而且是同一个仓库同一个目录时不改）
+fn write_owner(repo: &Path, wt: &Path, name: &str) {
     let (Some(main), Some(file)) = (main_repo(repo), owner_file(wt)) else { return };
     if read_owner(wt).is_some_and(|o| same_path(&o.repo, &main) && same_path(&o.path, wt) && o.name == name) {
         return;
     }
-    let created_at = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let o = Owner { repo: main, path: wt.to_path_buf(), name: name.to_string(), dispatch, created_at };
+    let o = Owner { repo: main, path: wt.to_path_buf(), name: name.to_string() };
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -339,7 +334,7 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str) -> Result<Re
             .map_err(|e| Fail::Other(format!("建不了 worktree {path}：{e}")))?;
     }
     touch(&target);
-    write_owner(repo, &target, name, id);
+    write_owner(repo, &target, name);
     Ok(Ready { cwd: target, branch, left, stale, kept })
 }
 
@@ -396,7 +391,7 @@ pub fn session_worktree(repo: &Path, here: &Path, name: &str, tip: &str) -> Resu
     let path = target.to_string_lossy().to_string();
     git(repo, &["worktree", "add", "--quiet", "--detach", "--lock", "--reason", name, &path, tip], WT_LIMIT).map_err(|e| format!("建不了 worktree {path}：{e}"))?;
     touch(&target);
-    write_owner(repo, &target, name, 0);
+    write_owner(repo, &target, name);
     Ok((target, true))
 }
 
@@ -566,7 +561,7 @@ mod tests {
         assert_eq!(a.cwd, r.repo.parent().unwrap().join("proj.wt").join(dir_name("claude-mbp/opus-5.5")));
         assert!(dir_name("claude-mbp/opus-5.5").starts_with("claude-mbp-opus-5.5-"), "可读的前缀加哈希");
         let o = read_owner(&a.cwd).expect("建好时写了所有者记录");
-        assert_eq!((o.name.as_str(), o.dispatch), ("claude-mbp/opus-5.5", 1));
+        assert_eq!(o.name, "claude-mbp/opus-5.5");
         assert!(same_path(&o.repo, &r.repo) && same_path(&o.path, &a.cwd));
         assert_eq!(a.branch, "main", "没写集成分支时用远端的默认分支");
         assert_eq!(text(&a.cwd.join("AGENTS.md")), "v2\n");
@@ -780,7 +775,7 @@ mod tests {
         assert_eq!(b.stale, None);
         assert_eq!(std::fs::read_to_string(a.cwd.join("half.txt")).unwrap(), "没推的改动", "没删");
         // 记录是别的会话的：一样不删
-        let o = Owner { repo: r.repo.clone(), path: a.cwd.clone(), name: "other/name".into(), dispatch: 9, created_at: 0 };
+        let o = Owner { repo: r.repo.clone(), path: a.cwd.clone(), name: "other/name".into() };
         std::fs::write(owner_file(&a.cwd).unwrap(), serde_json::to_string(&o).unwrap()).unwrap();
         let c = prepare(&r.repo, "win/codex", 6, "").unwrap();
         assert!(matches!(&c.kept, Some((_, why)) if why.contains("对不上")), "{:?}", c.kept);

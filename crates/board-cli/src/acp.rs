@@ -890,9 +890,6 @@ pub(crate) struct ChatState {
     /// ACP 会话标识（开好、接回之后才有）
     #[serde(default)]
     pub session: Option<String>,
-    /// 会话开好了，可以收消息
-    #[serde(default)]
-    pub ready: bool,
     /// 这一轮在跑
     #[serde(default)]
     pub busy: bool,
@@ -1124,7 +1121,6 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
             }
         }
         st.session = client.session().map(str::to_string);
-        st.ready = client.ready;
         // v2：agent 自己又开了一轮（处理跑完的后台任务）
         if !st.busy && client.busy() {
             st.busy = true;

@@ -50,7 +50,6 @@ pub(super) struct ChatRun {
     pub(super) seen_len: u64,
     /// 这一轮已经按兜底设置停了：原因（回报成一条出错）
     pub(super) limited: Option<String>,
-    pub(super) term_at: Option<Instant>,
 }
 
 impl ChatRun {
@@ -272,7 +271,6 @@ impl Host<'_> {
         for c in self.chats.iter_mut() {
             c.stdin = None;
             c.stop(false);
-            c.term_at = Some(Instant::now());
         }
         let begun = Instant::now();
         while self.chats.iter_mut().any(|c| matches!(c.child.try_wait(), Ok(None))) && begun.elapsed() < KILL_AFTER {
@@ -362,7 +360,6 @@ impl Host<'_> {
             output_at: now,
             seen_len: start_len,
             limited: None,
-            term_at: None,
         })
     }
 }
@@ -470,7 +467,7 @@ mod tests {
 
     #[test]
     fn a_round_is_done_once_its_last_message_finished() {
-        let st = |busy: bool, seq: i64, stop: Option<&str>| ChatState { session: Some("s".into()), ready: true, busy, seq, stop: stop.map(str::to_string) };
+        let st = |busy: bool, seq: i64, stop: Option<&str>| ChatState { session: Some("s".into()), busy, seq, stop: stop.map(str::to_string) };
         assert_eq!(round_done(&st(false, 2, Some("end_turn")), 2, 1), Some("end_turn".into()));
         assert_eq!(round_done(&st(true, 2, None), 2, 1), None, "还在跑");
         assert_eq!(round_done(&st(false, 2, Some("end_turn")), 2, 2), None, "报过了");
