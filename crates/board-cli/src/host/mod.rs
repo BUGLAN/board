@@ -88,6 +88,7 @@ use std::time::{Duration, Instant};
 use board_core::agentdef::{AgentDef as Builtin, AGENT_DEFS as BUILTIN};
 
 mod agents;
+mod chats;
 mod dirs;
 mod logs;
 mod manage;
@@ -95,6 +96,7 @@ mod runs;
 mod sync;
 
 use agents::*;
+use chats::*;
 use dirs::*;
 use logs::*;
 use manage::*;
@@ -324,6 +326,8 @@ struct Host<'a> {
     /// 每次派发的配置文件放在这里：`~/.board/host/run/<机器名>`
     run: PathBuf,
     runs: Vec<Run>,
+    /// 机器对话的 agent 进程（chats.rs）：不占会话位
+    chats: Vec<ChatRun>,
     ended: Vec<Ended>,
     work: Option<HostWork>,
     /// 最近一次取到任务的时间
@@ -479,6 +483,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         logs: hd.join("logs"),
         log_days,
         runs: vec![],
+        chats: vec![],
         ended: vec![],
         work: None,
         work_at: Instant::now(),
@@ -599,6 +604,7 @@ impl Host<'_> {
             dirs_rev: self.dirs_rev,
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
             running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
+            chats: Some(self.chat_ids()),
             done,
             asked: self.asked,
             ask_error: self.ask_error.clone(),
@@ -796,6 +802,8 @@ impl Host<'_> {
             }
             self.enforce_timeouts();
             self.enforce();
+            // 机器对话：发消息、停止这一轮、看状态（不占会话位，不受暂停接单、接单时段限制）
+            self.chat_tick();
             if self.fill()? {
                 fetch = true;
             }
@@ -803,6 +811,7 @@ impl Host<'_> {
             if now >= next_events {
                 next_events = now + EVENTS_EVERY;
                 self.upload_events();
+                self.chat_upload();
             }
             if now >= next_log {
                 next_log = now + LOG_EVERY;
@@ -987,6 +996,7 @@ impl Host<'_> {
         for pid in self.selftest_pids.lock().map(|p| p.clone()).unwrap_or_default() {
             kill_tree(pid, true);
         }
+        self.chat_shutdown();
         if !self.runs.is_empty() {
             self.say(format!("{} 正在退出：结束 {} 个 agent", self.p.yellow("◼"), self.runs.len()));
         }

@@ -168,6 +168,8 @@ export interface Workspace {
   hosts?: HostInfo[];
   /** 排队和正在跑的派发（按创建先后）；旧服务端没有这个字段 */
   dispatches?: Dispatch[];
+  /** 机器对话（最近有动静的在前）；旧服务端没有这个字段 */
+  chats?: Chat[];
   /** 接不了的「机器 × 白板」和原因（服务端 fit.rs 算好）：界面照着禁用、显示；旧服务端没有这个字段 */
   blocks?: HostBlock[];
   /** 调度的全局设置：领取规则、兜底、服务端现在的时间；旧服务端没有这个字段 */
@@ -879,8 +881,8 @@ export interface RunEvent {
   id: number;
   /** 毫秒 */
   at?: number;
-  kind: 'message' | 'tool' | 'error' | 'result' | 'text';
-  /** message：agent 说的话（Markdown）；error：出错信息；result：结束时的结果文字；text：解析不了的一行 */
+  kind: 'message' | 'tool' | 'error' | 'result' | 'text' | 'prompt';
+  /** prompt：人在对话里发的消息（原样）；message：agent 说的话（Markdown）；error：出错信息；result：结束时的结果文字；text：解析不了的一行 */
   text?: string;
   /** tool：工具名、参数摘要、结果摘要、成功或失败（还没有结果时没有）、退出码、用时 */
   tool?: string;
@@ -898,6 +900,44 @@ export interface RunEvent {
   sub?: boolean;
   /** 超过 4 KB 截断过 */
   cut?: boolean;
+  /** 对话里一轮的 result：人点了「停止这一轮」 */
+  stopped?: boolean;
+}
+
+/** 机器对话（PRD §9.1「机器对话」）：在一台机器上和 agent 来回说话，不挂卡片、不占会话位；一直留着，随时能接着发 */
+export interface Chat {
+  id: number;
+  hostId: number;
+  host: string;
+  agent: string;
+  agentLabel: string;
+  /** 按哪个角色开的、开的时候角色的名字；直接选 agent 时没有 */
+  profile?: string;
+  profileName?: string;
+  provider?: string;
+  model?: string | null;
+  effort?: string | null;
+  env?: string | null;
+  envName?: string | null;
+  /** 第一条消息 */
+  title: string;
+  by: string;
+  createdAt: number;
+  /** 最近一次有动静：发消息、一轮结束（列表按它排） */
+  lastAt: number;
+  /** busy 这一轮在跑（不能发下一条）| idle 等人发消息 */
+  turn: 'busy' | 'idle';
+}
+
+/** 一个对话的全部内容：输出（最后 500 行）、事件（带 since 取时只有之后新增、改过的） */
+export interface ChatView {
+  chat: Chat;
+  log: string[];
+  fmt?: string | null;
+  events: RunEvent[];
+  eventsFrom: number;
+  eventsDropped: number;
+  runs?: number;
 }
 
 /** 一个会话（同一个 agent 进程用 board next 接着做的几张卡）：会话标识是第一张的派发 ID */

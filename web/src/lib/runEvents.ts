@@ -54,7 +54,8 @@ export type Row =
   | { type: 'group'; events: RunEvent[] }
   | { type: 'error'; e: RunEvent }
   | { type: 'text'; events: RunEvent[] }
-  | { type: 'result'; e: RunEvent };
+  | { type: 'result'; e: RunEvent }
+  | { type: 'prompt'; e: RunEvent };
 
 /** 事件 → 要画的行。子 agent 里的事件和主线分开折叠 */
 export function groupEvents(events: RunEvent[]): Row[] {
@@ -72,7 +73,8 @@ export function groupEvents(events: RunEvent[]): Row[] {
       else out.push({ type: 'tool', e });
       continue;
     }
-    if (e.kind === 'message') out.push({ type: 'message', e });
+    if (e.kind === 'prompt') out.push({ type: 'prompt', e });
+    else if (e.kind === 'message') out.push({ type: 'message', e });
     else if (e.kind === 'tool') out.push({ type: 'tool', e });
     else if (e.kind === 'error') out.push({ type: 'error', e });
     else if (e.kind === 'result') out.push({ type: 'result', e });

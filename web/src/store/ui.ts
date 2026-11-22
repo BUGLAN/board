@@ -161,7 +161,7 @@ interface UIState {
   /** 打开的机器详情：机器名；'new' 是「添加机器」 */
   host: string | null;
   /** 打开机器详情时要直接到的页签（从供应商卡片点进来到 agent 页）；弹窗用过就清掉 */
-  hostTab: 'overview' | 'agents' | 'settings' | null;
+  hostTab: 'overview' | 'chats' | 'agents' | 'settings' | null;
   /** 机器 Tab 主区：总览、对比、共用配置（选过的记在本机） */
   hostsView: HostsView;
   /** 卡片详情里的「派发」对话框：卡片编号 */

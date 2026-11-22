@@ -354,7 +354,7 @@ impl Host<'_> {
     /// 启动 `board acp` 的命令（acp.rs）：在 check 的启动环境里、dir 目录里跑这个 agent 的 ACP 入口，提示词在 prompt_file。
     /// 派发和自检都用它；标准输出、错误和 BOARD_* 环境变量由调用方接上。extra_turns：这一轮结束时名字还持有卡片，
     /// 最多再续几轮（0 = 不续）
-    pub(super) fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path, extra_turns: u32, role: Option<&RoleRun>) -> std::result::Result<Command, String> {
+    pub(super) fn acp_command(&self, spec: &Spec, check: &Check, env: &Env, dir: &Path, prompt_file: &Path, extra_turns: u32, role: Option<&RoleRun>, more: &[String]) -> std::result::Result<Command, String> {
         if let Some(since) = spec.builtin.map(|b| b.acp_since).filter(|s| !s.is_empty()) {
             if older_than(&check.version, since) {
                 return Err(format!("{} 的版本太旧（{}）：它的 ACP 从 {since} 起才有，先升级", spec.name, check.version.trim()));
@@ -403,6 +403,8 @@ impl Host<'_> {
         if extra_turns > 0 {
             c.arg("--extra-turns").arg(extra_turns.to_string());
         }
+        // 机器对话：`--chat <状态文件>`、`--resume <会话>`（chats.rs）
+        c.args(more);
         c.arg("--").arg(&prog).args(&args).current_dir(dir);
         for (k, v) in launch_env(spec.acp_vars(check), &prog, env.wsl().is_some(), &self.host_dir().join("npm-cache")) {
             c.env(k, v);
@@ -894,7 +896,7 @@ impl Host<'_> {
         std::fs::write(&prompt_file, &prompt).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
         // 拆解不领卡：不续轮；做卡的这一轮结束时卡片还在手里就续（#454）
         let turns = if d.kind == board_core::hosts::KIND_SPLIT { 0 } else { crate::acp::EXTRA_TURNS };
-        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns, role.as_ref()).inspect_err(|_| {
+        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns, role.as_ref(), &[]).inspect_err(|_| {
             let _ = std::fs::remove_file(&prompt_file);
             if let Some(f) = role.as_ref().and_then(|r| r.provider_file.as_ref()) {
                 let _ = std::fs::remove_file(f);

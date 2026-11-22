@@ -931,14 +931,20 @@ impl<'a> W<'a> {
     /// 工具结果合进同一个调用先到的那一条；单条超过 4 KB 截断；超过 2000 条删最早的，记下删了几条。
     /// 不算变更（不推整个工作区），只把 meta.runs 加一：实时推送带上它和有新事件的派发，打开着的会话据此马上取
     pub fn dispatch_events_append(&mut self, id: i64, fmt: Option<&str>, events: &[crate::runlog::RunEvent]) -> Result<usize> {
+        self.events_append(EvTable::DISPATCH, id, fmt, events)
+    }
+
+    /// 派发、机器对话共用的追加事件（见 [`W::dispatch_events_append`]）：`t` 是存在哪张表
+    pub(super) fn events_append(&mut self, t: EvTable, id: i64, fmt: Option<&str>, events: &[crate::runlog::RunEvent]) -> Result<usize> {
         use crate::runlog::{RunEvent, EVENTS_KEEP, KINDS};
-        let exists: Option<i64> = self.tx.query_row("SELECT id FROM dispatches WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        let EvTable { owner, events: evt, col, what } = t;
+        let exists: Option<i64> = self.tx.query_row(&format!("SELECT id FROM {owner} WHERE id = ?1"), [id], |r| r.get(0)).optional()?;
         if exists.is_none() {
-            return Err(BoardError::new(ErrorCode::NotFound, format!("派发 #{id} 不存在")));
+            return Err(BoardError::new(ErrorCode::NotFound, format!("{what} #{id} 不存在")));
         }
         if let Some(f) = fmt {
             let f: String = f.trim().chars().take(32).collect();
-            self.tx.execute("UPDATE dispatches SET fmt = ?2 WHERE id = ?1 AND fmt IS NOT ?2", params![id, f])?;
+            self.tx.execute(&format!("UPDATE {owner} SET fmt = ?2 WHERE id = ?1 AND fmt IS NOT ?2"), params![id, f])?;
         }
         if events.is_empty() {
             return Ok(0);
@@ -961,7 +967,7 @@ impl<'a> W<'a> {
                     let old: Option<(i64, String)> = self
                         .tx
                         .query_row(
-                            "SELECT id, data FROM dispatch_events WHERE dispatch = ?1 AND call = ?2 ORDER BY id DESC LIMIT 1",
+                            &format!("SELECT id, data FROM {evt} WHERE {col} = ?1 AND call = ?2 ORDER BY id DESC LIMIT 1"),
                             params![id, c],
                             |r| Ok((r.get(0)?, r.get(1)?)),
                         )
@@ -971,7 +977,7 @@ impl<'a> W<'a> {
                         prev.merge(&e);
                         prev.fit();
                         let data = serde_json::to_string(&prev).unwrap_or_default();
-                        self.tx.execute("UPDATE dispatch_events SET data = ?2, rev = ?3 WHERE id = ?1", params![eid, data, rev])?;
+                        self.tx.execute(&format!("UPDATE {evt} SET data = ?2, rev = ?3 WHERE id = ?1"), params![eid, data, rev])?;
                         n += 1;
                         continue;
                     }
@@ -979,20 +985,14 @@ impl<'a> W<'a> {
             }
             e.fit();
             let data = serde_json::to_string(&e).unwrap_or_default();
-            self.tx.execute(
-                "INSERT INTO dispatch_events (dispatch, kind, call, rev, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, e.kind, call, rev, data],
-            )?;
+            self.tx.execute(&format!("INSERT INTO {evt} ({col}, kind, call, rev, data) VALUES (?1, ?2, ?3, ?4, ?5)"), params![id, e.kind, call, rev, data])?;
             n += 1;
         }
-        let total: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatch_events WHERE dispatch = ?1", [id], |r| r.get(0))?;
+        let total: i64 = self.tx.query_row(&format!("SELECT COUNT(*) FROM {evt} WHERE {col} = ?1"), [id], |r| r.get(0))?;
         if total > EVENTS_KEEP {
             let drop = total - EVENTS_KEEP;
-            self.tx.execute(
-                "DELETE FROM dispatch_events WHERE id IN (SELECT id FROM dispatch_events WHERE dispatch = ?1 ORDER BY id LIMIT ?2)",
-                params![id, drop],
-            )?;
-            self.tx.execute("UPDATE dispatches SET ev_dropped = ev_dropped + ?2 WHERE id = ?1", params![id, drop])?;
+            self.tx.execute(&format!("DELETE FROM {evt} WHERE id IN (SELECT id FROM {evt} WHERE {col} = ?1 ORDER BY id LIMIT ?2)"), params![id, drop])?;
+            self.tx.execute(&format!("UPDATE {owner} SET ev_dropped = ev_dropped + ?2 WHERE id = ?1"), params![id, drop])?;
         }
         Ok(n)
     }

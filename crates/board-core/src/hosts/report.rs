@@ -32,6 +32,9 @@ pub struct HostReport {
     /// 本机正在跑（有进程）的派发
     #[serde(default)]
     pub running: Vec<i64>,
+    /// 本机有 agent 进程的机器对话（chat.rs）；旧版 board host 不带
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chats: Option<Vec<i64>>,
     /// board host 退出：机器马上离线
     #[serde(default, rename = "final")]
     pub done: bool,
@@ -83,6 +86,9 @@ pub struct HostWork {
     /// 等它列的目录（选工作空间用）：服务端放在内存里、发任务时补上，board host 列完回传（`POST /api/hosts/{名字}/ls/{ID}`）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ls: Vec<LsAsk>,
+    /// 机器对话（chat.rs）：有还没交给它的消息、停止请求、这一轮在跑的。旧版服务端没有
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chats: Vec<ChatTask>,
 }
 
 /// 一个「列目录」请求：空路径是最上面一层（Windows 列盘符，macOS / Linux 是用户目录）
@@ -276,6 +282,7 @@ impl<'a> W<'a> {
                 if rep.done {
                     if h.instance == rep.instance && h.off_at.is_none() {
                         self.tx.execute("UPDATE hosts SET off_at = ?2, round_at = NULL WHERE id = ?1", params![h.id, now])?;
+                        self.chats_lost(h.id, None, "board host 退出了")?;
                         self.touch_hosts();
                         // 分给它、还没开始的「任意机器」派发收回，换别的机器
                         self.assign_any()?;
@@ -450,6 +457,10 @@ impl<'a> W<'a> {
                 self.finish(&d, None, &Tail { lines: &[], events: &[] }, Finish::Missing)?;
             }
         }
+        // 机器对话：这一轮在跑、消息已经交给它，它却没报这个对话的进程（board host 重启过、进程没了）
+        if let (Some(alive), Some(h)) = (rep.chats.as_deref(), self.host_row(&name)?) {
+            self.chats_lost(h.id, Some(alive), "agent 进程不在了（board host 重启过）")?;
+        }
         // 出了接单时段（或关了自动接单）：这一段接单结束，下次进入时重新算
         if let Some(h) = self.host_row(&name)? {
             if h.round_at.is_some() && !h.auto_active(now) {
@@ -494,6 +505,11 @@ impl<'a> W<'a> {
             self.touch_hosts();
             // 掉线的机器上还没开始的「任意机器」派发收回，换别的机器
             self.assign_any()?;
+            // 掉线的机器上还没回答完的对话：这一轮记一条出错，对话留着
+            let off: Vec<i64> = self.collect("SELECT id FROM hosts WHERE off_at = beat_at + ?1", [HOST_GAP_MS], |r| r.get(0))?;
+            for id in off {
+                self.chats_lost(id, None, &format!("机器掉线（超过 {} 秒没有上报）", HOST_GAP_MS / 1000))?;
+            }
         }
         let lost: Vec<i64> = self.collect(
             "SELECT d.id FROM dispatches d LEFT JOIN agents a ON a.name = d.name

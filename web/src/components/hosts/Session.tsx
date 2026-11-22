@@ -558,7 +558,7 @@ function CardsSkeleton() {
 }
 
 /** 一段的内容：agent 说的话、工具调用行（第几段错开长短） */
-function SegBodySkeleton({ i }: { i: number }) {
+export function SegBodySkeleton({ i }: { i: number }) {
   const tool = (w: string, k: number) => (
     <div key={k} className="ev-tool">
       <span className="ev-tool-row">
@@ -658,11 +658,12 @@ function Process({ p, showRaw }: { p: Part; showRaw: () => void }) {
   );
 }
 
-function rowKey(r: Row): string {
+export function rowKey(r: Row): string {
   return r.type === 'group' || r.type === 'text' ? `${r.type}-${r.events[0].id}` : `${r.type}-${r.e.id}`;
 }
 
-function EventRow({ r, events, running, now }: { r: Row; events: RunEvent[]; running: boolean; now: RunEvent | null }) {
+/** 一行事件。chat：机器对话里（一轮的结束画成一行小字，人发的消息右对齐，见 HostChats.tsx） */
+export function EventRow({ r, events, running, now, chat }: { r: Row; events: RunEvent[]; running: boolean; now: RunEvent | null; chat?: boolean }) {
   const sub = r.type === 'group' || r.type === 'text' ? r.events[0].sub : r.e.sub;
   const body = (() => {
     switch (r.type) {
@@ -687,7 +688,9 @@ function EventRow({ r, events, running, now }: { r: Row; events: RunEvent[]; run
       case 'text':
         return <pre className="ev-text">{r.events.map(e => e.text || '').join('\n')}</pre>;
       case 'result':
-        return <ResultRow e={r.e} text={resultText(r.e, events)} />;
+        return chat ? <TurnEnd e={r.e} /> : <ResultRow e={r.e} text={resultText(r.e, events)} />;
+      case 'prompt':
+        return <PromptRow text={r.e.text || ''} at={r.e.at} />;
     }
   })();
   return sub ? <div className="ev-sub">{body}</div> : body;
@@ -755,6 +758,30 @@ function GroupRow({ events, running, now }: { events: RunEvent[]; running: boole
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 人在对话里发的一条消息：右对齐，下面写时间；还没确认时写「发送中」 */
+export function PromptRow({ text, at, sending }: { text: string; at?: number; sending?: boolean }) {
+  return (
+    <div className={cx('ev-prompt', sending && 'sending')}>
+      <div className="ev-bubble">{text}</div>
+      <span>{sending ? '发送中' : at != null ? hhmm(at) : ''}</span>
+    </div>
+  );
+}
+
+/** 对话里一轮的结束：一行小字（用时、用量）；停止的写「这一轮停止了」 */
+function TurnEnd({ e }: { e: RunEvent }) {
+  const bits: string[] = [];
+  if (e.ms != null) bits.push(`用时 ${durWords(e.ms)}`);
+  const usage = usageWords(e);
+  if (usage) bits.push(usage);
+  return (
+    <div className={cx('ev-turn', e.stopped && 'stopped', e.ok === false && !e.stopped && 'fail')}>
+      <span>{e.stopped ? '这一轮停止了' : e.ok === false ? '这一轮出错' : '这一轮结束'}</span>
+      {bits.length > 0 && <span>{bits.join(' · ')}</span>}
     </div>
   );
 }

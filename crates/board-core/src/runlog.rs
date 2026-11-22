@@ -37,7 +37,7 @@ pub struct RunEvent {
     /// 什么时候（毫秒）：host 读到这一行的时间
     #[serde(default, skip_serializing_if = "is_zero")]
     pub at: i64,
-    /// `message` | `tool` | `error` | `result` | `text`
+    /// `message` | `tool` | `error` | `result` | `text` | `prompt`
     pub kind: String,
     /// 工具调用的标识（agent 给的）：调用和结果分两次上传时据此合成一条。只在 host 和服务端之间用，界面拿不到
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +75,9 @@ pub struct RunEvent {
     /// 超过 4 KB 截断过
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cut: bool,
+    /// 机器对话里一轮的 `result`：人点了「停止这一轮」
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
 
 fn is_zero(n: &i64) -> bool {
@@ -82,7 +85,8 @@ fn is_zero(n: &i64) -> bool {
 }
 
 /// 事件的种类
-pub const KINDS: [&str; 5] = ["message", "tool", "error", "result", "text"];
+/// `prompt`：机器对话里人发的一条消息（原样，服务端写，PRD §9.1「机器对话」）
+pub const KINDS: [&str; 6] = ["message", "tool", "error", "result", "text", "prompt"];
 
 impl RunEvent {
     pub fn new(kind: &str) -> RunEvent {

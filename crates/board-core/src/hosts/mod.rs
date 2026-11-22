@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 
+mod chat;
 mod dispatch;
 mod manage;
 mod model;
@@ -60,6 +61,7 @@ mod run;
 mod settings;
 mod sync;
 
+pub use chat::*;
 pub use dispatch::*;
 pub use manage::*;
 pub use model::*;
@@ -347,6 +349,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute("UPDATE hosts SET cron = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).unwrap_or_default()])?;
         }
     }
+    // 机器对话（chat.rs）
+    conn.execute_batch(chat::SCHEMA)?;
     Ok(())
 }
 

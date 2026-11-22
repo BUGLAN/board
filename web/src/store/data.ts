@@ -1616,6 +1616,22 @@ export function onEvents(fn: Listener) {
 /** 有新的结构化事件的派发（推送里的 ran）：打开着的会话据此马上增量取（#184） */
 type RunListener = (dispatches: number[]) => void;
 const runListeners = new Set<RunListener>();
+/** 机器对话里发一条消息：这个对话当帧变成「回答中」、排到最前（可以重复执行，对话不在了原样返回） */
+export const chatPromptPatch = (id: number, at: number): Patch => ({
+  ws: ws =>
+    ws.chats?.some(c => c.id === id) ? { ...ws, chats: ws.chats.map(c => (c.id === id ? { ...c, turn: 'busy' as const, lastAt: Math.max(c.lastAt, at) } : c)) } : ws,
+  keys: [`chat:${id}`],
+});
+
+/** 有新事件的机器对话（推送里的 chats）：打开着的对话据此马上增量取 */
+const chatListeners = new Set<RunListener>();
+export function onChatRuns(fn: RunListener) {
+  chatListeners.add(fn);
+  return () => {
+    chatListeners.delete(fn);
+  };
+}
+
 export function onRuns(fn: RunListener) {
   runListeners.add(fn);
   return () => {
@@ -1656,6 +1672,7 @@ export function boot() {
       }
       if (events.length) done.then(() => listeners.forEach(fn => fn(events)));
       if (m.ran?.length) runListeners.forEach(fn => fn(m.ran!));
+      if (m.chats?.length) chatListeners.forEach(fn => fn(m.chats!));
     },
     status => {
       set({ status });

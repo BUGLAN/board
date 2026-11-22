@@ -22,6 +22,7 @@ fn report(running: Vec<i64>) -> HostReport {
         dirs: vec![HostDir { board: B.into(), path: "E:\\repo\\default\\main".into(), ..Default::default() }],
         dirs_rev: 0,
         running,
+        chats: None,
         done: false,
         asked: None,
         ask_error: None,

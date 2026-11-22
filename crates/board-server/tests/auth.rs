@@ -467,6 +467,63 @@ fn host_and_dispatch_routes_only_take_that_hosts_token() {
     assert_eq!(send("GET", &url("/hosts/host-a2/work"), &a, None).status, 200);
 }
 
+/// 机器对话（PRD §9.1「机器对话」）：开对话、发消息、停止这一轮、读对话只能在界面上（令牌 NOT_LOGGED_IN，工作区里也看不到）；
+/// board host 用这台机器的令牌取到原样的消息、回报，别的令牌回报像机器不存在一样
+#[test]
+fn machine_chats_are_ui_only_and_reported_by_that_host() {
+    let s = local_mode();
+    let (ta, tb) = (new_host_token(&s.db, "a 的令牌", "host-a"), new_token(&s.db, "b 的令牌"));
+    let (ba, bb) = (format!("Bearer {ta}"), format!("Bearer {tb}"));
+    let a = [("authorization", ba.as_str())];
+    let b = [("authorization", bb.as_str())];
+    let url = |p: &str| format!("{}/api{p}", s.url);
+    let report = json!({
+        "name": "host-a", "instance": "a1", "os": "macOS 15.4", "version": env!("CARGO_PKG_VERSION"),
+        "agents": [{ "id": "claude", "name": "Claude Code", "version": "2.4.1", "found": true }],
+        "workspace": { "path": "/tmp/ws" }, "dirs": [], "chats": [],
+    });
+    assert_eq!(send("POST", &url("/hosts/host-a/beat"), &a, Some(report)).status, 200);
+    let text = "看看主目录下哪些文件夹最大";
+    let c = send("POST", &url("/hosts/host-a/chats"), &[UI], Some(json!({ "agent": "claude", "text": text })));
+    assert_eq!(c.status, 200, "{}", c.text);
+    assert_eq!(c.body["turn"], "busy");
+    let id = c.body["id"].as_i64().unwrap();
+    for (m, p, body) in [
+        ("POST", "/hosts/host-a/chats".to_string(), Some(json!({ "agent": "claude", "text": "x" }))),
+        ("GET", format!("/chats/{id}"), None),
+        ("POST", format!("/chats/{id}/prompt"), Some(json!({ "text": "x" }))),
+        ("POST", format!("/chats/{id}/cancel"), Some(json!({}))),
+    ] {
+        let r = send(m, &url(&p), &a, body);
+        assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{m} {p}: {}", r.text);
+    }
+    let ws = send("GET", &url("/workspace"), &a, None);
+    assert_eq!(ws.body["chats"], json!([]), "令牌读工作区看不到对话");
+    assert_eq!(send("GET", &url("/workspace"), &[UI], None).body["chats"][0]["id"], json!(id));
+    // board host 取到的消息就是人写的那句
+    let w = send("GET", &url("/hosts/host-a/work"), &a, None);
+    assert_eq!(w.body["chats"][0]["prompts"][0]["text"], text, "{}", w.text);
+    // 别的令牌回报：像机器不存在
+    let r = send("POST", &url(&format!("/hosts/host-a/chats/{id}")), &b, Some(json!({ "took": 1 })));
+    assert_eq!((r.status, r.code().as_str()), (404, "NO_SUCH_HOST"), "{}", r.text);
+    // 这台的令牌回报：收下、回答、这一轮结束
+    let r = send(
+        "POST",
+        &url(&format!("/hosts/host-a/chats/{id}")),
+        &a,
+        Some(json!({ "took": 1, "acp": "s1", "idle": "end_turn", "fmt": "acp", "events": [{ "kind": "message", "text": "最大的是 ~/Library" }] })),
+    );
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["turn"], "idle");
+    let v = send("GET", &url(&format!("/chats/{id}")), &[UI], None);
+    assert_eq!(v.status, 200, "{}", v.text);
+    let kinds: Vec<&str> = v.body["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["prompt", "message"]);
+    // 接着发
+    let r = send("POST", &url(&format!("/chats/{id}/prompt")), &[UI], Some(json!({ "text": "清一下 ~/.cache" })));
+    assert_eq!((r.status, r.body["turn"].as_str()), (200, Some("busy")), "{}", r.text);
+}
+
 /// 登记新机器只认「添加机器」新建的机器令牌（#507）：普通访问令牌用一个没人用过的名字上报，不建机器、读不到
 /// MCP / 供应商 / Git 的原文；机器令牌名字一致才能登记，A 的令牌读不了 B 的
 #[test]
@@ -1042,6 +1099,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
         dirs_rev: 0,
         running: vec![],
+        chats: None,
         done: false,
         asked: None,
         ask_error: None,

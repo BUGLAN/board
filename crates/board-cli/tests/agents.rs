@@ -103,6 +103,7 @@ fn report_win(instance: &str) -> HostReport {
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
         dirs_rev: 0,
         running: vec![],
+        chats: None,
         done: false,
         asked: None,
         ask_error: None,

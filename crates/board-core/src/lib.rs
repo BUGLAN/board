@@ -56,6 +56,8 @@ mod tests;
 #[cfg(test)]
 mod tests_hosts;
 #[cfg(test)]
+mod tests_chats;
+#[cfg(test)]
 mod tests_stats;
 #[cfg(test)]
 mod tests_search;

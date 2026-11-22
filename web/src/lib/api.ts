@@ -7,8 +7,8 @@
 import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
 import { readPrompts, type Prompt } from './prompts';
-import { normDispatches, normHost, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
-import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile } from './types';
+import { normChatView, normDispatches, normHost, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile, Chat, ChatView } from './types';
 
 export type CardBatchOp =
   | { op: 'move'; column: string }
@@ -329,6 +329,11 @@ export const api = {
   deleteProfile: (id: string) => req<{ ok: boolean; rules: number }>('DELETE', `/api/profiles/${q(id)}`),
   /** 取消排队中的派发，或停止正在跑的派发 */
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
+  /** 机器对话（只能在登录后的界面上用，PRD §9.1「机器对话」）：开一个（第一条消息随之发出）、取内容（带 since 增量）、发一条、停止这一轮 */
+  startChat: (host: string, by: { profile?: string; agent?: string }, text: string) => req<Chat>('POST', `/api/hosts/${q(host)}/chats`, { ...by, text }),
+  chat: (id: number, since = 0) => req<ChatView>('GET', `/api/chats/${id}${since > 0 ? `?since=${since}` : ''}`).then(normChatView),
+  chatPrompt: (id: number, text: string) => req<Chat>('POST', `/api/chats/${id}/prompt`, { text }),
+  chatCancel: (id: number) => req<Chat>('POST', `/api/chats/${id}/cancel`, {}),
   /** 一张卡片的全部派发，新的在前（卡片详情「派发记录」） */
   cardDispatches: (board: string, card: number) =>
     req<Dispatch[]>('GET', `/api/dispatches?board=${encodeURIComponent(board)}&card=${card}`).then(normDispatches),
@@ -344,6 +349,8 @@ interface PushMessage {
   events: BoardEvent[];
   runs?: number;
   ran?: number[];
+  /** 有新事件的机器对话 */
+  chats?: number[];
 }
 
 /** 订阅变更。返回取消订阅函数。

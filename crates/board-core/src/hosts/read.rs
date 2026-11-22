@@ -779,6 +779,7 @@ impl<'a> R<'a> {
             git: Some(self.git_version()?),
             config_key: self.config_key(&h)?,
             ls: vec![],
+            chats: self.chat_tasks(h.id)?,
         })
     }
 

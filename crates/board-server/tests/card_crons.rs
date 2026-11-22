@@ -34,6 +34,7 @@ fn host_patch_accepts_workspace_from_old_and_new_clients() {
         dirs: vec![],
         dirs_rev: 0,
         running: vec![],
+        chats: None,
         done: false,
         asked: None,
         ask_error: None,

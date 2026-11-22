@@ -13,6 +13,7 @@
    ========================================================================== */
 import type {
   AgentInfo,
+  ChatView,
   ClaimRule,
   Dispatch,
   HostAgent,
@@ -119,6 +120,7 @@ export function normWorkspace(ws: Workspace): Workspace {
     agents: maybe(ws.agents)?.map(normAgentInfo),
     hosts: maybe(ws.hosts)?.map(normHost),
     dispatches: maybe(ws.dispatches),
+    chats: maybe(ws.chats),
     blocks: maybe(ws.blocks),
     checklist: maybe(ws.checklist)?.map(c => ({ ...c, items: list(c.items) })),
     sched: sched ? { ...sched, rules: list(sched.rules).map(normRule), profiles: maybe(sched.profiles)?.map(normProfile) } : (sched ?? undefined),
@@ -155,4 +157,10 @@ export const normDispatches = (v: Dispatch[] | null): Dispatch[] => list(v);
 export function normSession(v: SessionView): SessionView {
   if (!v || typeof v !== 'object') return v;
   return { ...v, parts: list(v.parts).map(p => ({ ...p, log: list(p.log), events: list(p.events) })) };
+}
+
+/** 一个机器对话的内容：输出、事件缺了补空 */
+export function normChatView(v: ChatView): ChatView {
+  if (!v || typeof v !== 'object') return v;
+  return { ...v, log: list(v.log), events: list(v.events) };
 }

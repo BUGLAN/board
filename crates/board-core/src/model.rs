@@ -596,6 +596,9 @@ pub struct Workspace {
     /// 排队和正在跑的派发（按创建先后）
     #[serde(default)]
     pub dispatches: Vec<crate::hosts::Dispatch>,
+    /// 机器对话（hosts/chat.rs，最近有动静的在前）
+    #[serde(default)]
+    pub chats: Vec<crate::hosts::Chat>,
     /// 接不了的「机器 × 白板」和原因（`fit.rs`）：界面照着禁用、显示，不自己再算
     #[serde(default)]
     pub blocks: Vec<crate::fit::Block>,

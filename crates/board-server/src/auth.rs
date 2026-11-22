@@ -397,6 +397,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
             // 令牌只能用于命令行：读工作区、白板、卡片，执行卡片命令，读取和上传附件；
             // agent 接口：check 名字、agent 级心跳、在线列表（PRD §3）；
             // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、同步配置的结果、从机器导入的结果、列目录的结果、
+            // 机器对话的回报（开对话、发消息、停止这一轮、读对话只能在界面上）、
             // 上传和读取日志、上传结构化事件、订阅实时推送，board dispatch 派发和取消；
             // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP / 模型供应商 / Git 凭据共用配置：读列表（打码）、board host 取原文
             // 里程碑：board versions sync 写入版本记录（PRD §10.15）
@@ -412,6 +413,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                         || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested", "synced"])
                         || host_path3(&path, "skills", |t| t == "imported")
                         || host_path3(&path, "ls", |t| t.parse::<i64>().is_ok())
+                        || host_path3(&path, "chats", |t| t.parse::<i64>().is_ok())
                         || dispatch_path(&path, "end")
                         || dispatch_path(&path, "wip")
                         || dispatch_path(&path, "log")

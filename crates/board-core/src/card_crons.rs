@@ -1066,6 +1066,7 @@ mod tests {
                 .collect(),
             dirs_rev: rev,
             running: vec![],
+            chats: None,
             done: false,
             asked: None,
             ask_error: None,

@@ -1,12 +1,13 @@
 /* ==========================================================================
    机器详情（机器详情与配置同步重构，原型变体 B「分页签」）：看状态和改设置分开，没有右侧栏
    - 头部：系统图标、状态、上一台 / 下一台、关闭
-   - 标题区：机器名，下面一行系统、board 版本（落后时写「落后于服务端 x.y.z」）、心跳；右上角页签 概况 / agent · N / 设置 · N
+   - 标题区：机器名，下面一行系统、board 版本（落后时写「落后于服务端 x.y.z」）、心跳；右上角页签 概况 / 对话 · N / agent · N / 设置 · N
      （N 是这一页要处理的项数，0 时不写）。接单三态只在机器 Tab 的「接单」里改
    - 概况：左「正在跑 x/最多」（会话里排着的卡挂在那一行下面）、「排队」；右「最近」（派发和操作记录按时间混排）
+   - 对话（HostChats.tsx，PRD §9.1「机器对话」）：有对话正在回答时页签写「对话 · N」
    - agent（HostAgents.tsx）、设置（HostSettings.tsx）
    ========================================================================== */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, pushRows, todayCounts, workspaceExceptions } from '../../lib/hostDetail';
 import { fullDisks } from '../../lib/hostRes';
@@ -23,9 +24,10 @@ import { HostSettings } from './HostSettings';
 import { versionLt } from './Manage';
 import { useServerVersion } from './Ready';
 import { QueueRow, RunRow } from './RunRows';
+import { chatsOf, HostChats, type ChatSel } from './HostChats';
 import { useSaver } from './Saver';
 
-export type DetailTab = 'overview' | 'agents' | 'settings';
+export type DetailTab = 'overview' | 'chats' | 'agents' | 'settings';
 
 export function HostDetail({
   h,
@@ -49,6 +51,7 @@ export function HostDetail({
   const ws = useData(s => s.ws);
   const now = useNow(1000);
   const { running, queued } = hostLoad(ws, h);
+  const chats = useMemo(() => chatsOf(ws, h.id), [ws, h.id]);
   const server = useServerVersion();
   const behind = !!server && !!h.version && versionLt(h.version, server);
   const [recent, setRecent] = useState<Dispatch[] | null>(null);
@@ -79,6 +82,9 @@ export function HostDetail({
     };
   }, [on, rev]);
   const { save, sync } = useSaver(h.name);
+  // 「对话」页签选中的对话；null = 最近的那个（没有对话时是新对话）
+  const [chatSel, setChatSel] = useState<ChatSel>(null);
+  const answering = chats.filter(d => d.turn === 'busy').length;
 
   // 页签上的数字：这一页要处理的项
   const agentBad = h.agents.filter(a => a.found && !agentHealth(h, a).ok).length;
@@ -137,6 +143,7 @@ export function HostDetail({
             value={tab}
             options={[
               ['overview', '概况'],
+              ['chats', answering ? `对话 · ${answering}` : '对话'],
               ['agents', agentBad ? `agent · ${agentBad}` : 'agent'],
               ['settings', setBad ? `设置 · ${setBad}` : '设置'],
             ]}
@@ -145,7 +152,7 @@ export function HostDetail({
         </div>
       </div>
 
-      <div className="hd-body" key={tab}>
+      <div className={cx('hd-body', tab === 'chats' && 'hd-chats')} key={tab}>
         {tab === 'overview' && (
           <div className="hd-over">
             <div>
@@ -182,6 +189,7 @@ export function HostDetail({
             </div>
           </div>
         )}
+        {tab === 'chats' && <HostChats h={h} chats={chats} sel={chatSel} setSel={setChatSel} now={now} />}
         {tab === 'agents' && <HostAgents h={h} view={view} save={save} sync={sync} now={now} />}
         {tab === 'settings' && <HostSettings h={h} save={save} sync={sync} now={now} server={server} behind={behind} running={running.length} close={close} />}
       </div>

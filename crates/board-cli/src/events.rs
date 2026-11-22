@@ -137,6 +137,8 @@ impl Parser {
         RunEvent {
             kind: "result".into(),
             ok: Some(reason == "end_turn"),
+            // 人停的（派发的「停止」、对话的「停止这一轮」）：界面上写停止了，不算出错
+            stopped: reason == "cancelled",
             text: some_text(text.unwrap_or(logfmt::stop_words(reason))),
             tokens_in: usage["inputTokens"].as_i64(),
             tokens_out: usage["outputTokens"].as_i64(),
@@ -306,6 +308,7 @@ mod tests {
         let mut p = Parser::new(Stream::Acp);
         let e = p.feed(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}"#, 5);
         assert_eq!((e[0].kind.as_str(), e[0].ok, e[0].text.as_deref(), e[0].at), ("result", Some(false), Some("已停止"), 5));
+        assert!(e[0].stopped, "人停的：对话里画成「这一轮停止了」");
         assert!(p.feed(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#, 1).is_empty(), "board acp 自己发的请求不记");
         assert!(p.feed("   ", 1).is_empty());
     }

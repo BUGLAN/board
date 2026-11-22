@@ -28,6 +28,7 @@
 
 pub mod agents;
 pub mod auth;
+pub mod chats;
 pub mod gitcred;
 pub mod healthcheck;
 pub mod hosts;
@@ -376,6 +377,11 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/hosts/{name}/pull", post(hosts::pull))
         .route("/hosts/{name}/round", post(hosts::round))
         .route("/hosts/{name}/recent", get(hosts::recent))
+        .route("/hosts/{name}/chats", post(chats::start))
+        .route("/hosts/{name}/chats/{id}", post(chats::report).layer(axum::middleware::map_response(quiet)))
+        .route("/chats/{id}", get(chats::view))
+        .route("/chats/{id}/prompt", post(chats::prompt))
+        .route("/chats/{id}/cancel", post(chats::cancel))
         .route("/dispatches", post(hosts::create).get(hosts::card_dispatches))
         .route("/sessions/{id}", get(hosts::session))
         .route("/dispatches/cancel", post(hosts::cancel))
@@ -532,17 +538,19 @@ fn spawn_background(state: AppState) {
                     }
                     let events = if now == rev { vec![] } else { st.read(|r| r.events_since(last, 200))? };
                     let ran = if now_runs == runs { vec![] } else { st.read(|r| r.dispatches_with_events_since(runs))? };
-                    Ok(Some((now, st.hosts_rev()?, events, now_runs, ran)))
+                    let chats = if now_runs == runs { vec![] } else { st.read(|r| r.chats_with_events_since(runs))? };
+                    Ok(Some((now, st.hosts_rev()?, events, now_runs, ran, chats)))
                 })
                 .await;
             match r {
-                Ok(Some((now, hosts, events, now_runs, ran))) => {
+                Ok(Some((now, hosts, events, now_runs, ran, chats))) => {
                     rev = now;
                     runs = now_runs;
                     if let Some(e) = events.last() {
                         last = e.id;
                     }
-                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events, "runs": runs, "ran": ran }).to_string();
+                    // chats：有新事件的机器对话（打开着的对话增量取）
+                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events, "runs": runs, "ran": ran, "chats": chats }).to_string();
                     let _ = state.0.tx.send(Arc::from(msg));
                 }
                 Ok(None) => {}
@@ -572,8 +580,13 @@ async fn health(State(s): State<AppState>) -> Json<Value> {
     Json(json!({ "ok": true, "version": VERSION, "commit": COMMIT, "mode": mode, "ui": web_embedded() }))
 }
 
-async fn workspace(State(s): State<AppState>) -> ApiResult<Workspace> {
-    Ok(Json(s.db(|st| st.read(|r| r.workspace(now_ms()))).await?))
+async fn workspace(State(s): State<AppState>, Extension(caller): Extension<Caller>) -> ApiResult<Workspace> {
+    let mut ws = s.db(|st| st.read(|r| r.workspace(now_ms()))).await?;
+    // 机器对话只给登录后的界面看（消息里可能有不想给 agent 看的东西）
+    if matches!(caller, Caller::Agent { .. }) {
+        ws.chats.clear();
+    }
+    Ok(Json(ws))
 }
 
 #[derive(Deserialize)]

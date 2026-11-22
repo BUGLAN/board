@@ -501,6 +501,7 @@ fn host_rename_renames_the_machine_record() {
         dirs: vec![board_core::HostDir { board: "default/main".into(), path: "/tmp/default/main".into(), ..Default::default() }],
         dirs_rev: 0,
         running: vec![],
+        chats: None,
         done: false,
         asked: None,
         ask_error: None,

@@ -672,3 +672,22 @@ describe('角色的补丁（分工）', () => {
     expect(D.deleteProfilePatch('p1').ws!(bare)).toBe(bare);
   });
 });
+
+describe('chatPromptPatch', () => {
+  const chat = (id: number, x: Partial<NonNullable<Workspace['chats']>[number]> = {}) =>
+    ({ id, hostId: 1, host: 'mbp', agent: 'claude', agentLabel: 'Claude Code', title: '看看主目录', by: 'lan', createdAt: 1, lastAt: 10, turn: 'idle', ...x }) as NonNullable<Workspace['chats']>[number];
+  it('发一条：这个对话当帧变成回答中，最近动静挪到现在；别的对话不动；重复执行结果相同', () => {
+    const ws = workspace({ chats: [chat(1), chat(2)] });
+    const out = twice(D.chatPromptPatch(1, 50).ws!, ws);
+    expect(out.chats!.map(c => [c.id, c.turn, c.lastAt])).toEqual([
+      [1, 'busy', 50],
+      [2, 'idle', 10],
+    ]);
+  });
+  it('对话不在了：原样返回', () => {
+    const ws = workspace({ chats: [chat(2)] });
+    expect(D.chatPromptPatch(1, 50).ws!(ws)).toBe(ws);
+    const none = workspace();
+    expect(D.chatPromptPatch(1, 50).ws!(none)).toBe(none);
+  });
+});

@@ -392,6 +392,7 @@ impl<'a> W<'a> {
             self.request_stop(id, by, who)?;
         }
         self.tx.execute("DELETE FROM hosts WHERE id = ?1", [h.id])?;
+        self.chats_drop(h.id)?;
         self.tx.execute("DELETE FROM host_ops WHERE host_id = ?1", [h.id])?;
         self.read().drop_host_picks(h.id)?;
         self.touch_hosts();
@@ -446,6 +447,7 @@ impl<'a> W<'a> {
             }
             self.tx.execute("UPDATE hosts SET name = ?2 WHERE id = ?1", params![h.id, to])?;
             self.tx.execute("UPDATE dispatches SET host = ?2 WHERE host_id = ?1", params![h.id, to])?;
+            self.tx.execute("UPDATE chats SET host = ?2 WHERE host_id = ?1", params![h.id, to])?;
             // 定时建卡按机器名派发：跟着改名
             self.tx.execute("UPDATE card_crons SET host = ?2 WHERE host = ?1", params![h.name, to])?;
             // 机器令牌绑定的名字也跟着改：移除后再连上来照样能登记（#507）

@@ -90,6 +90,7 @@ fn host_report(running: Vec<i64>) -> HostReport {
         dirs: vec![HostDir { board: B.into(), path: format!("/tmp/{B}"), ..Default::default() }],
         dirs_rev: 0,
         running,
+        chats: None,
         done: false,
         asked: None,
         ask_error: None,

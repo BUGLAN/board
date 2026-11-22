@@ -76,7 +76,10 @@ pub const EXTRA_TURNS: u32 = 3;
 
 static TERM: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> --prompt-file <文件> [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] -- <ACP 入口命令> [参数…]";
+const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>]) [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] -- <ACP 入口命令> [参数…]";
+
+/// 对话模式（`--chat`）：多久没有新消息就收尾退出（board host 下一条消息来时再启动、接回会话）
+pub const CHAT_IDLE_EXIT: u64 = 10 * 60;
 
 /// 命令行
 #[derive(Debug, PartialEq)]
@@ -92,6 +95,12 @@ pub(crate) struct Opts {
     pub provider_file: Option<PathBuf>,
     /// 这一轮结束时名字还持有卡片，最多再续几轮（`--extra-turns`，0 = 不续）
     pub extra_turns: u32,
+    /// 机器对话（`--chat <状态文件>`）：提示词从标准输入一条一条来，每一轮结束不退出；会话标识、这一轮的状态写进这个文件
+    pub chat: Option<PathBuf>,
+    /// 对话：接回这个 ACP 会话（`--resume`）
+    pub resume: Option<String>,
+    /// 对话：多久（秒）没有新消息就收尾退出（`--idle-exit`）
+    pub idle_exit: u64,
     pub prog: String,
     pub args: Vec<String>,
 }
@@ -104,7 +113,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     let mut i = 0;
     while i < head.len() {
         let k = head[i].as_str();
-        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns") {
+        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit") {
             return Err(format!("不认识的参数 {k}。{USAGE}"));
         }
         let v = head.get(i + 1).ok_or_else(|| format!("{k} 后面要有值。{USAGE}"))?;
@@ -122,15 +131,23 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         Some(v) => v.trim().parse::<u32>().map_err(|_| format!("--extra-turns 要写次数（0、1、2 …）：{v}"))?,
         None => 0,
     };
+    let chat = m.get("--chat").filter(|x| !x.trim().is_empty()).map(PathBuf::from);
+    let idle_exit = match m.get("--idle-exit") {
+        Some(v) => v.trim().parse::<u64>().map_err(|_| format!("--idle-exit 要写秒数：{v}"))?,
+        None => CHAT_IDLE_EXIT,
+    };
     Ok(Opts {
         env: need("--env")?,
         env_prog: m.get("--env-prog").cloned().unwrap_or_default(),
         cwd: PathBuf::from(need("--cwd")?),
-        prompt_file: PathBuf::from(need("--prompt-file")?),
+        prompt_file: if chat.is_some() { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
         mode: m.get("--mode").cloned().filter(|x| !x.trim().is_empty()),
         sets,
         provider_file: m.get("--provider-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         extra_turns,
+        resume: m.get("--resume").map(|x| x.trim().to_string()).filter(|x| !x.is_empty()),
+        idle_exit,
+        chat,
         prog,
         args: tail[1..].to_vec(),
     })
@@ -144,6 +161,9 @@ enum Pending {
     Init,
     Provider,
     New,
+    /// 对话：接回会话（`session/resume`、`session/load`）
+    Resume,
+    Load,
     Mode,
     Prompt,
     Close,
@@ -186,6 +206,21 @@ pub(crate) struct Client {
     pub proto: Proto,
     /// v2：最近一次报的后台工作有几项；`None` 是 agent 不报（不知道有没有），不是没有
     pub background: Option<usize>,
+    /// 对话模式：配置切完后不发提示词，等 [`Client::ask`]
+    chat: bool,
+    /// 对话：要接回的会话
+    resume: Option<String>,
+    /// 已经发了接回请求的会话（回应里不一定带 sessionId）
+    pending_resume: Option<String>,
+    /// agent 公布的能力：接回会话（`sessionCapabilities.resume`）、载入会话（`loadSession`，会回放历史）
+    can_resume: bool,
+    can_load: bool,
+    /// `session/load` 正在回放历史：这些更新不记日志（之前的对话已经记过了）
+    pub replaying: bool,
+    /// 对话：会话开好、配置切完，可以发提示词了
+    pub ready: bool,
+    /// 对话：接回会话的结果（给 board host 看的一句话）；开了新会话时说明为什么
+    pub note: Option<String>,
 }
 
 impl Client {
@@ -204,7 +239,41 @@ impl Client {
             prompting: false,
             proto: Proto::V1,
             background: None,
+            chat: false,
+            resume: None,
+            pending_resume: None,
+            can_resume: false,
+            can_load: false,
+            replaying: false,
+            ready: false,
+            note: None,
         }
+    }
+
+    /// 机器对话：提示词由 [`Client::ask`] 一条一条发；有 `resume` 时先接回这个会话
+    pub(crate) fn for_chat(mut self, resume: Option<String>) -> Client {
+        self.chat = true;
+        self.resume = resume;
+        self
+    }
+
+    /// 会话标识（开好、接回之后才有）
+    pub(crate) fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
+
+    /// 对话：发一条提示词（会话开好了、这一轮没在跑时）
+    pub(crate) fn ask(&mut self, text: &str) -> Vec<Value> {
+        if !self.ready || (self.prompting && self.outcome.is_none()) {
+            return vec![];
+        }
+        self.outcome = None;
+        self.send_prompt(text)
+    }
+
+    /// 对话：这一轮在跑
+    pub(crate) fn busy(&self) -> bool {
+        self.prompting && self.outcome.is_none()
     }
 
     /// 会话开始后要切的配置（`--set`）
@@ -220,6 +289,20 @@ impl Client {
     }
 
     fn new_session(&mut self) -> Vec<Value> {
+        // 对话接回会话：agent 会 `session/resume` 就用它（不回放历史），只会 `session/load` 就用它（回放的历史不记日志），
+        // 都不会时开新会话、说明之前的上下文没了
+        if let Some(id) = self.resume.take() {
+            let params = json!({ "sessionId": id, "cwd": self.cwd, "mcpServers": [] });
+            self.pending_resume = Some(id.clone());
+            if self.can_resume {
+                return vec![self.request("session/resume", params, Pending::Resume)];
+            }
+            if self.can_load {
+                self.replaying = true;
+                return vec![self.request("session/load", params, Pending::Load)];
+            }
+            self.note = Some("agent 不支持接回会话（session/resume、session/load）：开了新会话，之前的对话它不记得了".into());
+        }
         let params = json!({ "cwd": self.cwd, "mcpServers": [] });
         vec![self.request("session/new", params, Pending::New)]
     }
@@ -227,6 +310,10 @@ impl Client {
     /// 发下一个配置请求；都发完了发 prompt
     fn step(&mut self) -> Vec<Value> {
         if self.queue.is_empty() {
+            if self.chat {
+                self.ready = true;
+                return vec![];
+            }
             return self.prompt();
         }
         let (method, params) = self.queue.remove(0);
@@ -333,6 +420,12 @@ impl Client {
                 Pending::Provider => self.outcome = Some(Outcome::Failed(format!("换供应商（providers/set）失败：{msg}"))),
                 Pending::New if e["code"].as_i64() == Some(-32000) => self.outcome = Some(Outcome::Failed(format!("agent 要求先登录：{msg}"))),
                 Pending::New => self.outcome = Some(Outcome::Failed(format!("session/new 失败：{msg}"))),
+                // 接不回（会话已经没了、agent 记不住）：开新会话，说明之前的上下文没了
+                Pending::Resume | Pending::Load => {
+                    self.replaying = false;
+                    self.note = Some(format!("接不回之前的会话（{msg}）：开了新会话，之前的对话它不记得了"));
+                    return self.new_session();
+                }
                 Pending::Prompt => self.outcome = Some(Outcome::Failed(format!("session/prompt 失败：{msg}"))),
             }
             return vec![];
@@ -341,12 +434,27 @@ impl Client {
             Pending::Init => {
                 // 版本协商：agent 回它能讲的、不高于我们要的最新版本
                 self.proto = if r["protocolVersion"].as_i64().unwrap_or(1) >= 2 { Proto::V2 } else { Proto::V1 };
+                // 能力：v1 在 agentCapabilities，v2 在 capabilities
+                let caps = if r["agentCapabilities"].is_object() { &r["agentCapabilities"] } else { &r["capabilities"] };
+                self.can_load = caps["loadSession"].as_bool().unwrap_or(false);
+                self.can_resume = ["sessionCapabilities", "session", "sessions"].iter().any(|k| caps[*k]["resume"].is_object() || caps[*k]["resume"].as_bool() == Some(true));
                 match self.provider.take() {
                     Some(p) => vec![self.request("providers/set", p, Pending::Provider)],
                     None => self.new_session(),
                 }
             }
             Pending::Provider => self.new_session(),
+            Pending::Resume | Pending::Load => {
+                self.replaying = false;
+                let id = v["result"]["sessionId"].as_str().map(str::to_string).or_else(|| self.pending_resume.take()).unwrap_or_default();
+                self.session = Some(id.clone());
+                self.note.get_or_insert_with(|| format!("接回了之前的会话（{}）", if what == Pending::Resume { "session/resume" } else { "session/load" }));
+                let proto = self.proto;
+                let mut queue: Vec<(&'static str, Value)> = self.sets.iter().filter_map(|(k, val)| config_set(r, &id, k, val, proto)).collect();
+                queue.extend(self.mode.clone().and_then(|m| mode_switch(r, &id, &m, proto)));
+                self.queue = queue;
+                self.step()
+            }
             Pending::New => {
                 let Some(s) = r["sessionId"].as_str().filter(|s| !s.is_empty()) else {
                     self.outcome = Some(Outcome::Failed("session/new 的回应里没有 sessionId".into()));
@@ -555,7 +663,10 @@ pub fn main(args: &[String]) -> i32 {
         }
     };
     on_signals();
-    let code = run(&o);
+    let code = match o.chat.clone() {
+        Some(state) => run_chat(&o, &state),
+        None => run(&o),
+    };
     let _ = std::io::stdout().flush();
     code
 }
@@ -769,6 +880,280 @@ fn run(o: &Opts) -> i32 {
             if code == 0 { 1 } else { code }
         }
     }
+}
+
+/* ------------------------------ 机器对话（--chat） ------------------------------ */
+
+/// 对话模式写给 board host 的状态（`--chat <状态文件>`，每次变了整份重写）
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ChatState {
+    /// ACP 会话标识（开好、接回之后才有）
+    #[serde(default)]
+    pub session: Option<String>,
+    /// 会话开好了，可以收消息
+    #[serde(default)]
+    pub ready: bool,
+    /// 这一轮在跑
+    #[serde(default)]
+    pub busy: bool,
+    /// 最近一轮是哪一条消息（board host 给的序号）
+    #[serde(default)]
+    pub seq: i64,
+    /// 最近一轮的结束原因（`end_turn`、`cancelled` …，出错是 `error`）；这一轮还在跑时为空
+    #[serde(default)]
+    pub stop: Option<String>,
+}
+
+impl ChatState {
+    /// 写进状态文件：先写临时文件再改名，board host 不会读到写了一半的
+    fn save(&self, path: &std::path::Path) {
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, serde_json::to_string(self).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+
+    pub(crate) fn load(path: &std::path::Path) -> Option<ChatState> {
+        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok())
+    }
+}
+
+/// board host 从标准输入发来的一行：`{"seq": 3, "prompt": "…"}` 发一条消息，`{"cancel": true}` 停止这一轮
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ChatCmd {
+    Prompt(i64, String),
+    Cancel,
+}
+
+pub(crate) fn chat_cmd(line: &str) -> Option<ChatCmd> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    if v["cancel"].as_bool() == Some(true) {
+        return Some(ChatCmd::Cancel);
+    }
+    let text = v["prompt"].as_str()?;
+    Some(ChatCmd::Prompt(v["seq"].as_i64().unwrap_or(0), text.to_string()))
+}
+
+/// 对话模式：握手、开会话（或接回）之后等 board host 发来消息，一条一条在同一个会话里 `session/prompt`；每一轮结束不退出。
+/// 没有新消息超过 `--idle-exit` 秒、board host 关掉了标准输入、收到 SIGTERM 时收尾退出。
+/// 状态（会话标识、这一轮在不在跑、结束原因）写进状态文件给 board host 看
+fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
+    let env = Env::from_parts(&o.env, &o.env_prog);
+    let mut c = env.command(&o.prog, &o.args, Some(&o.cwd), true);
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) => {
+            eprintln!("✗ board acp：在{}里启动 {} 失败：{e}", env.name, o.prog);
+            return EXIT_PROTOCOL;
+        }
+    };
+    let mut stdin = child.stdin.take();
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut r = BufReader::new(out);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match r.read_until(b'\n', &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let line = String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']).to_string();
+                        if tx.send(Some(line)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(None);
+        });
+    }
+    // board host 的指令：自己的标准输入，一行一条；读到 EOF 是 board host 不在了
+    let (ctx, crx) = mpsc::channel::<Option<ChatCmd>>();
+    std::thread::spawn(move || {
+        let r = BufReader::new(std::io::stdin());
+        for line in r.lines() {
+            let Ok(line) = line else { break };
+            if let Some(cmd) = chat_cmd(&line) {
+                if ctx.send(Some(cmd)).is_err() {
+                    return;
+                }
+            }
+        }
+        let _ = ctx.send(None);
+    });
+    let provider = match &o.provider_file {
+        None => None,
+        Some(f) => {
+            let got = std::fs::read_to_string(f).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
+            let _ = std::fs::remove_file(f);
+            match got {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("✗ board acp：读不了供应商设置 {}：{e}", f.display());
+                    let _ = child.kill();
+                    return EXIT_PROTOCOL;
+                }
+            }
+        }
+    };
+    let cwd = o.cwd.display().to_string();
+    let mut client = Client::new(&cwd, "", o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider).for_chat(o.resume.clone());
+    let mut merger = Merger::default();
+    let mut st = ChatState::default();
+    st.save(state_file);
+    let mut saved = st.clone();
+    send(&mut stdin, client.start());
+    let started = Instant::now();
+    let mut queue: std::collections::VecDeque<(i64, String)> = Default::default();
+    let mut last_activity = Instant::now();
+    let mut cancel_at: Option<Instant> = None;
+    let mut gone_at: Option<Instant> = None;
+    let mut said_note = false;
+    let mut failed: Option<String> = None;
+    loop {
+        if gone_at.is_none() && child.try_wait().ok().flatten().is_some() {
+            gone_at = Some(Instant::now());
+        }
+        if gone_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(1)) {
+            break;
+        }
+        if TERM.load(Ordering::SeqCst) && cancel_at.is_none() {
+            cancel_at = Some(Instant::now());
+            let frames = client.cancel();
+            if frames.is_empty() {
+                break;
+            }
+            send(&mut stdin, frames);
+        }
+        if cancel_at.is_some_and(|at| at.elapsed() >= GRACE || client.outcome.is_some()) {
+            break;
+        }
+        if !client.ready && client.outcome.is_none() && started.elapsed() >= HANDSHAKE {
+            failed = Some(format!("agent {} 秒内没有完成握手（initialize、开会话）", HANDSHAKE.as_secs()));
+            break;
+        }
+        // 握手、开会话就失败了：说明原因，退出
+        if !client.ready {
+            if let Some(Outcome::Failed(why)) = &client.outcome {
+                failed = Some(why.clone());
+                break;
+            }
+        }
+        if merger.due() {
+            if let Some(l) = merger.flush() {
+                log(&l);
+            }
+        }
+        // board host 的指令
+        let mut host_gone = false;
+        while let Ok(cmd) = crx.try_recv() {
+            match cmd {
+                None => host_gone = true,
+                Some(ChatCmd::Cancel) => {
+                    if client.busy() {
+                        send(&mut stdin, client.cancel());
+                    } else {
+                        // 还没发出去的也撤回
+                        queue.clear();
+                    }
+                }
+                Some(ChatCmd::Prompt(seq, text)) => queue.push_back((seq, text)),
+            }
+        }
+        if host_gone {
+            break;
+        }
+        if client.ready && !said_note {
+            said_note = true;
+            if let Some(n) = &client.note {
+                eprintln!("⋯ {n}");
+            }
+        }
+        if client.ready && !client.busy() && cancel_at.is_none() {
+            if let Some((seq, text)) = queue.pop_front() {
+                send(&mut stdin, client.ask(&text));
+                st.seq = seq;
+                st.busy = true;
+                st.stop = None;
+                last_activity = Instant::now();
+            }
+        }
+        match rx.recv_timeout(TICK) {
+            Ok(Some(line)) => {
+                last_activity = Instant::now();
+                let t = line.trim();
+                let v = if t.starts_with('{') { serde_json::from_str::<Value>(t).ok().filter(Value::is_object) } else { None };
+                match v {
+                    Some(v) => {
+                        // session/load 回放的历史之前已经记过：不再记日志
+                        let replay = client.replaying && v["method"].as_str() == Some("session/update");
+                        if !replay {
+                            for l in merger.push(&v) {
+                                log(&l);
+                            }
+                        }
+                        let reply = client.on_frame(&v);
+                        send(&mut stdin, reply);
+                    }
+                    None if !t.is_empty() => {
+                        if let Some(l) = merger.flush() {
+                            log(&l);
+                        }
+                        log(&line);
+                    }
+                    None => {}
+                }
+            }
+            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // 这一轮结束了：写结束原因（出错的写进日志）
+        if st.busy && !client.busy() {
+            if let Some(out) = &client.outcome {
+                st.busy = false;
+                st.stop = Some(match out {
+                    Outcome::Stopped(r) => r.clone(),
+                    Outcome::Failed(why) => {
+                        eprintln!("✗ {why}");
+                        "error".to_string()
+                    }
+                });
+                last_activity = Instant::now();
+            }
+        }
+        st.session = client.session().map(str::to_string);
+        st.ready = client.ready;
+        // v2：agent 自己又开了一轮（处理跑完的后台任务）
+        if !st.busy && client.busy() {
+            st.busy = true;
+        }
+        // 和上次写进文件的比：变了才写
+        if st != saved {
+            st.save(state_file);
+            saved = st.clone();
+        }
+        if client.ready && !client.busy() && queue.is_empty() && last_activity.elapsed() >= Duration::from_secs(o.idle_exit) {
+            break;
+        }
+    }
+    if let Some(l) = merger.flush() {
+        log(&l);
+    }
+    send(&mut stdin, client.close());
+    drop(stdin);
+    wait(&mut child, GRACE);
+    st.busy = false;
+    st.save(state_file);
+    if let Some(why) = failed {
+        eprintln!("✗ {why}");
+        return EXIT_PROTOCOL;
+    }
+    if TERM.load(Ordering::SeqCst) {
+        return EXIT_CANCELLED;
+    }
+    EXIT_OK
 }
 
 /// 这一轮做完以后走到了哪一步
@@ -997,6 +1382,78 @@ mod tests {
         assert_eq!(c.outcome, Some(Outcome::Stopped("end_turn".into())));
         assert_eq!(exit_for(c.outcome.as_ref().unwrap()), 0);
         assert!(c.close().is_empty(), "v1 收尾不发 session/close：关标准输入就行");
+    }
+
+    /// 机器对话（--chat）：命令行不要 --prompt-file；带 --resume、--idle-exit
+    #[test]
+    fn chat_mode_command_line() {
+        let o = parse(&s(&["--env", "direct", "--cwd", "/home/me", "--chat", "/run/chat-3.state", "--resume", "s1", "--", "claude-agent-acp"])).unwrap();
+        assert_eq!((o.chat.as_deref(), o.resume.as_deref(), o.idle_exit), (Some(std::path::Path::new("/run/chat-3.state")), Some("s1"), CHAT_IDLE_EXIT));
+        assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--", "x"])).is_err(), "不是对话时照旧要 --prompt-file");
+        assert_eq!(chat_cmd(r#"{"seq":2,"prompt":"看看主目录"}"#), Some(ChatCmd::Prompt(2, "看看主目录".into())));
+        assert_eq!(chat_cmd(r#"{"cancel":true}"#), Some(ChatCmd::Cancel));
+        assert_eq!(chat_cmd("not json"), None);
+    }
+
+    /// 对话：agent 会 session/resume 就接回（不回放）；会话开好后不发提示词，等 ask；人写的消息原样发出去；
+    /// 一轮结束后同一个会话里接着发
+    #[test]
+    fn chat_resumes_and_sends_messages_as_is() {
+        let mut c = Client::new("/home/me", "", None).for_chat(Some("s1".into()));
+        c.start();
+        let caps = json!({ "loadSession": true, "sessionCapabilities": { "resume": {}, "close": {} } });
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 1, "agentCapabilities": caps })));
+        assert_eq!((f[0]["method"].as_str(), f[0]["params"]["sessionId"].as_str(), f[0]["params"]["cwd"].as_str()), (Some("session/resume"), Some("s1"), Some("/home/me")));
+        assert!(!c.replaying, "resume 不回放历史");
+        assert!(c.ask("早").is_empty(), "会话还没接回：不发");
+        let f = c.on_frame(&reply(1, json!({})));
+        assert!(f.is_empty(), "接回后不自己发提示词");
+        assert!(c.ready && !c.busy());
+        assert_eq!(c.session(), Some("s1"));
+        assert!(c.note.as_deref().unwrap().contains("接回"));
+        let f = c.ask("看看主目录下哪些文件夹最大");
+        assert_eq!(f[0]["method"], "session/prompt");
+        assert_eq!(f[0]["params"]["prompt"], json!([{ "type": "text", "text": "看看主目录下哪些文件夹最大" }]), "原样，前后不加说明");
+        assert!(c.busy());
+        assert!(c.ask("第二条").is_empty(), "这一轮没结束：不发");
+        c.on_frame(&reply(2, json!({ "stopReason": "end_turn" })));
+        assert!(!c.busy());
+        let f = c.ask("清一下 ~/.cache");
+        assert_eq!((f[0]["method"].as_str(), f[0]["params"]["sessionId"].as_str()), (Some("session/prompt"), Some("s1")));
+        // 停止这一轮
+        assert_eq!(c.cancel()[0]["method"], "session/cancel");
+        c.on_frame(&reply(3, json!({ "stopReason": "cancelled" })));
+        assert_eq!(c.outcome, Some(Outcome::Stopped("cancelled".into())));
+        assert!(!c.busy());
+    }
+
+    /// 对话：只会 session/load 时用它（回放的历史不记日志）；都不会、接不回时开新会话，说明之前的对话没了
+    #[test]
+    fn chat_falls_back_to_load_then_new_session() {
+        let mut c = Client::new("/home/me", "", None).for_chat(Some("s1".into()));
+        c.start();
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 1, "agentCapabilities": { "loadSession": true } })));
+        assert_eq!(f[0]["method"], "session/load");
+        assert!(c.replaying);
+        let f = c.on_frame(&json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32002, "message": "没有这个会话" } }));
+        assert!(!c.replaying);
+        assert_eq!(f[0]["method"], "session/new", "接不回：开新会话");
+        assert!(c.note.as_deref().unwrap().contains("接不回"));
+        c.on_frame(&reply(2, json!({ "sessionId": "s2" })));
+        assert!(c.ready);
+        assert_eq!(c.session(), Some("s2"));
+
+        let mut c = Client::new("/home/me", "", None).for_chat(Some("s1".into()));
+        c.start();
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 1, "agentCapabilities": {} })));
+        assert_eq!(f[0]["method"], "session/new");
+        assert!(c.note.as_deref().unwrap().contains("不支持接回"));
+        // 第一次（没有要接回的）：直接开新会话，不写说明
+        let mut c = Client::new("/home/me", "", None).for_chat(None);
+        c.start();
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 2, "capabilities": {} })));
+        assert_eq!(f[0]["method"], "session/new");
+        assert!(c.note.is_none());
     }
 
     fn state(session: &str, update: Value) -> Value {
