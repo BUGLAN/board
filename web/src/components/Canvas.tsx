@@ -54,7 +54,10 @@ export function CanvasPage() {
     if (c) {
       c.style.setProperty('--cv-x', `${v.x}px`);
       c.style.setProperty('--cv-y', `${v.y}px`);
-      c.style.setProperty('--cv-s', `${24 * v.k}px`);
+      // 网格和白板页一样 28px 一格；缩小到格子太密时每次翻倍（像地图的分级）
+      let step = 28 * v.k;
+      while (step < 14) step *= 2;
+      c.style.setProperty('--cv-s', `${step}px`);
     }
     if (zoomLabel.current) zoomLabel.current.textContent = `${Math.round(v.k * 100)}%`;
   };
@@ -241,6 +244,14 @@ export function CanvasPage() {
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse') {
+      // 光标附近的网格亮起来（同白板页背景，样式在 canvas.css）
+      const c = canvas.current;
+      const l = local(e);
+      c?.style.setProperty('--lx', `${l.x}px`);
+      c?.style.setProperty('--ly', `${l.y}px`);
+      if (c && !('lit' in c.dataset)) c.dataset.lit = '';
+    }
     if (pointers.current.has(e.pointerId)) pointers.current.set(e.pointerId, local(e));
     const pc = pinch.current;
     if (pc && pointers.current.size === 2) {
@@ -362,6 +373,7 @@ export function CanvasPage() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerLeave={() => { if (canvas.current) delete canvas.current.dataset.lit; }}
         onDoubleClick={onDoubleClick}
         onPointerOver={e => {
           const n = (e.target as HTMLElement).closest<HTMLElement>('.cv-node');
