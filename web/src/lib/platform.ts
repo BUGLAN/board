@@ -149,8 +149,6 @@ export interface ServerInfo {
 
 export interface ServerConnected {
   url: string;
-  /** 外壳已经关掉窗口、按新地址重新打开：页面不用再做什么 */
-  reload: boolean;
   /** 地址写进了配置文件，但要重新打开桌面端才生效（地址来自 BOARD_URL 时） */
   restart: boolean;
 }

@@ -141,8 +141,6 @@ pub struct Checked {
     /// 地址来自哪里：env / config / saved / default（`env` 是环境变量 BOARD_URL；`config` 是配置文件里的 url；
     /// `saved` 是这次启动时选过、写进本地记录但配置文件里还没有的地址；`default` 是构建时注入的默认地址）
     pub from: String,
-    /// 地址不是来自环境变量（切换会写进配置文件）
-    pub configured: bool,
     /// 写进配置文件的位置，给人看的
     pub target: String,
     /// 这是本机地址
@@ -153,8 +151,6 @@ pub struct Checked {
 #[serde(rename_all = "camelCase")]
 pub struct Connected {
     pub url: String,
-    /// 改了当前打开的服务端：窗口已经关掉，和外壳一起重启；页面不用再做什么
-    pub reload: bool,
     /// 写了配置文件，但要重启之后才生效（正在跑的进程换不了开放的地址）
     pub restart: bool,
 }
@@ -164,7 +160,6 @@ fn checked(url: &Url, from: &str, version: String) -> Checked {
         url: origin(url),
         version,
         from: from.to_string(),
-        configured: from != "env",
         target: config::shown(),
         local: is_local_host(url),
     }
@@ -189,7 +184,7 @@ pub async fn server_current<R: Runtime>(app: AppHandle<R>, window: WebviewWindow
         (cur, from)
     };
     let Some(url) = url else {
-        return Ok(Checked { url: String::new(), version: String::new(), from: from.into(), configured: false, target: config::shown(), local: false });
+        return Ok(Checked { url: String::new(), version: String::new(), from: from.into(), target: config::shown(), local: false });
     };
     // 版本号拿不到不影响显示：只显示地址
     let version = tauri::async_runtime::spawn_blocking({
@@ -262,7 +257,7 @@ pub async fn server_connect(app: AppHandle, window: WebviewWindow, raw: String) 
     let new = origin(&url);
     let cur = app.state::<Current>().0.lock().ok().and_then(|g| g.clone());
     if cur.as_ref().is_some_and(|c| origin(c) == new) {
-        return Ok(Connected { url: new, reload: false, restart: false });
+        return Ok(Connected { url: new, restart: false });
     }
     let from_env = env_url().is_some();
     // 先校验。校验和写文件会卡网络、磁盘：放到后台线程
@@ -272,10 +267,10 @@ pub async fn server_connect(app: AppHandle, window: WebviewWindow, raw: String) 
         // 环境变量改不了，只写配置文件：下次打开桌面端按新地址来
         let n = new.clone();
         tauri::async_runtime::spawn_blocking(move || save_url(&n)).await.map_err(|e| e.to_string())??;
-        return Ok(Connected { url: new, reload: false, restart: true });
+        return Ok(Connected { url: new, restart: true });
     }
     if from_env {
-        return Ok(Connected { url: new, reload: false, restart: true });
+        return Ok(Connected { url: new, restart: true });
     }
     let n = new.clone();
     tauri::async_runtime::spawn_blocking(move || save_url(&n)).await.map_err(|e| e.to_string())??;
@@ -298,7 +293,7 @@ pub async fn server_connect(app: AppHandle, window: WebviewWindow, raw: String) 
         }
     })
     .map_err(|e| e.to_string())?;
-    Ok(Connected { url: new, reload: true, restart: false })
+    Ok(Connected { url: new, restart: false })
 }
 
 #[cfg(test)]

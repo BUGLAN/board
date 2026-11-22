@@ -76,8 +76,8 @@ fn read_conf() -> (String, String, bool) {
     (h.name.unwrap_or_default(), ws, logged_in)
 }
 
-/// 升级前逐块配的 `[host] dirs`：取它们共同的上两级当工作空间（`<工作空间>/<项目>/<白板>`）；
-/// 只有一块白板、路径最后两段和 `<项目>/<白板>` 对不上时取它的上一级；对不上、不在同一个父目录时为空
+/// 升级前逐块配的 `[host] dirs`：取它们共同的上两级当工作空间（`<工作空间>/<项目>/<白板>`）。
+/// 只有一块白板时总是去掉最后两段；多块白板要求最后两段和 `<项目>/<白板>` 对上、父目录一致，否则为空
 fn workspace_of_dirs(dirs: &[(String, String)]) -> String {
     let dirs: Vec<(&str, &str)> = dirs.iter().map(|(b, p)| (b.trim(), p.trim())).filter(|(b, p)| !b.is_empty() && !p.is_empty()).collect();
     let split = |p: &str| -> Vec<String> { p.split(['/', '\\']).map(str::to_string).collect() };
@@ -90,9 +90,7 @@ fn workspace_of_dirs(dirs: &[(String, String)]) -> String {
             if p.len() < 3 {
                 return String::new();
             }
-            let (proj, board) = dirs[0].0.split_once('/').unwrap_or_default();
-            let matches = p[p.len() - 2] == proj && p[p.len() - 1] == board;
-            p[..p.len() - if matches { 2 } else { 2 }].join(sep)
+            p[..p.len() - 2].join(sep)
         }
         _ => {
             let same = parts.iter().all(|p| p.len() == parts[0].len() && p[..p.len() - 1] == parts[0][..parts[0].len() - 1]);
@@ -109,13 +107,11 @@ fn workspace_of_dirs(dirs: &[(String, String)]) -> String {
     }
 }
 
-/// 校验机器名、工作空间（规则与 board 命令行相同，都在 board_core）。工作空间可以为空（先只设机器名），
-/// 不填时这台电脑不接任何白板的卡
-fn check_conf(name: &str, workspace: &str) -> Result<(), String> {
+/// 只校验机器名（工作空间可以为空，由 board 命令行校验）
+fn check_conf(name: &str) -> Result<(), String> {
     if !name.is_empty() {
         check_host_name(name)?;
     }
-    let _ = workspace;
     Ok(())
 }
 
@@ -123,7 +119,7 @@ fn check_conf(name: &str, workspace: &str) -> Result<(), String> {
 pub fn write_conf(path: &Path, own_dir: bool, name: &str, workspace: &str) -> Result<(), String> {
     let name = name.trim();
     let workspace = workspace.trim();
-    check_conf(name, workspace)?;
+    check_conf(name)?;
     config::update_at(path, own_dir, |c| c.set_host(Some(name).filter(|n| !n.is_empty()), Some(workspace).filter(|w| !w.is_empty())).map(|_| ((), true)))
         .map_err(|e| e.message)
 }
@@ -611,7 +607,7 @@ pub async fn host_save(app: AppHandle, window: WebviewWindow, name: String, work
     crate::ensure_caller(&app, &window, false)?;
     tauri::async_runtime::spawn_blocking(move || {
         let name = name.trim();
-        check_conf(name, &workspace)?;
+        check_conf(name)?;
         let (old_name, _old_ws, logged_in) = read_conf();
         let new = effective_name(name);
         if logged_in && effective_name(&old_name) != new {
@@ -640,7 +636,7 @@ pub async fn host_enable(app: AppHandle, window: WebviewWindow, on: bool, name: 
     crate::ensure_caller(&app, &window, false)?;
     tauri::async_runtime::spawn_blocking(move || {
         if on {
-            check_conf(name.trim(), &workspace)?;
+            check_conf(name.trim())?;
             save_conf(&name, &workspace)?;
         }
         save_flag(&app, on)?;
@@ -860,15 +856,9 @@ mod tests {
 
     #[test]
     fn checks() {
-        let d = tempfile_dir("checks");
-        let ws = d.display().to_string();
-        assert!(check_conf("macbook", &ws).is_ok());
-        assert!(check_conf("", &ws).is_ok());
-        assert!(check_conf("MacBook", &ws).unwrap_err().contains("机器名"));
-        // 工作空间可以先不填（先只设机器名）：这台电脑不接任何白板的卡
-        assert!(check_conf("macbook", "").is_ok());
-        assert!(check_conf("macbook", "  ").is_ok());
-        let _ = std::fs::remove_dir_all(&d);
+        assert!(check_conf("macbook").is_ok());
+        assert!(check_conf("").is_ok());
+        assert!(check_conf("MacBook").unwrap_err().contains("机器名"));
     }
 
     /// 生效的机器名：配置里没写时用本机主机名（和 board host 启动时一致），写了就去掉空白
