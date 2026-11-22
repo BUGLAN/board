@@ -240,13 +240,6 @@ fn need_online(h: &HostRow, now: i64) -> Result<()> {
 }
 
 impl R<'_> {
-    /// 一台机器上的对话，最近有动静的在前
-    pub fn host_chats(&self, host_id: i64) -> Result<Vec<Chat>> {
-        let mut st = self.conn.prepare(&format!("SELECT {CHAT_COLS} FROM chats WHERE host_id = ?1 ORDER BY last_at DESC, id DESC"))?;
-        let rows = st.query_map([host_id], chat_row)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-    }
-
     /// 所有机器上的对话（工作区里带着，界面「对话」页签按机器筛）
     pub fn chats(&self) -> Result<Vec<Chat>> {
         let mut st = self.conn.prepare(&format!("SELECT {CHAT_COLS} FROM chats ORDER BY last_at DESC, id DESC"))?;

@@ -9,9 +9,9 @@ import { useSync } from '../bits';
 export type HostPatch = Parameters<typeof api.updateHost>[1];
 export type Save = (p: HostPatch) => void;
 
-/** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则和兜底算同一项，启动环境按 agent 分 */
+/** 改的是哪个设置项：保存状态、连点合并都按它分。领取规则算一项，启动环境按 agent 分 */
 const fieldOf = (p: HostPatch) =>
-  p.env ? `env:${p.env.agent}` : p.resume ? `resume:${p.resume}` : 'rules' in p || 'fallback' in p ? 'rules' : (Object.keys(p)[0] ?? 'host');
+  p.env ? `env:${p.env.agent}` : p.resume ? `resume:${p.resume}` : 'rules' in p ? 'rules' : (Object.keys(p)[0] ?? 'host');
 
 /** 改一个 agent 的启动环境、恢复接单（当帧画出来） */
 const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {

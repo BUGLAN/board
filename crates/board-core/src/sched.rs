@@ -191,12 +191,6 @@ fn rules_from_hosts(conn: &rusqlite::Connection, update: bool) -> rusqlite::Resu
 pub struct Sched {
     /// 领取规则，有顺序；`active` 是「至少有一台机器上找得到这个 agent」，`missing` 是所有项目里都没有的标签
     pub rules: Vec<ClaimRule>,
-    /// 兜底的 agent；没有时规则没命中的卡片不领
-    #[serde(default)]
-    pub fallback: Option<String>,
-    /// 至少有一台机器上找得到兜底的 agent
-    #[serde(default)]
-    pub fallback_active: bool,
     /// 服务端的时区（环境变量 `TZ`，没设时为空）：界面上写在「服务器时间」后面
     #[serde(default)]
     pub tz: String,
@@ -211,28 +205,9 @@ pub struct Sched {
     /// 多久没有输出算卡住（分钟，0 = 不限），所有机器一样
     #[serde(default)]
     pub idle_run: i64,
-    /// 旧版的「每个 agent 由哪些机器做」：换成了角色的「只在这些机器上跑」，现在一直是空的
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub picks: Vec<PickInfo>,
     /// 角色（按排列顺序）：规则交给角色，派发选角色（[`crate::profiles`]）
     #[serde(default)]
     pub profiles: Vec<crate::profiles::Profile>,
-}
-
-/// 一个 agent 的「由这些机器做」（发给界面）：没选过、一台都没选、选了哪几台
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PickInfo {
-    pub agent: String,
-    /// 选中的机器 id
-    #[serde(default)]
-    pub hosts: Vec<i64>,
-    /// 一台都没选：这个 agent 不自动领卡
-    #[serde(default)]
-    pub none: bool,
-    /// 没设置过（旧数据、之后才装上的机器）：所有装了它的机器都参与
-    #[serde(default)]
-    pub unset: bool,
 }
 
 impl R<'_> {
@@ -289,7 +264,7 @@ impl R<'_> {
         Ok(())
     }
 
-    /// 调度的全局设置：规则带上生不生效、哪些标签已经不存在、由哪些机器做
+    /// 调度的全局设置：规则带上生不生效、哪些标签已经不存在
     pub fn sched(&self, now: i64) -> Result<Sched> {
         let (rules, _) = self.sched_rules()?;
         let hosts = self.host_rows()?;
@@ -305,9 +280,6 @@ impl R<'_> {
                     ..r
                 })
                 .collect(),
-            fallback: None,
-            fallback_active: false,
-            picks: vec![],
             profiles,
             tz: std::env::var("TZ").unwrap_or_default().trim().to_string(),
             minute: server_minute(now),

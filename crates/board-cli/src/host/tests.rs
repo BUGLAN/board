@@ -345,7 +345,7 @@ fn builtin_order_and_overrides() {
     let now = ("cn:deepseek-v4.1".to_string(), "high".to_string());
     let r = specs[3].report(Some(&now));
     assert_eq!((r.model.as_str(), r.effort.as_str()), ("cn:deepseek-v4.1", "high"));
-    assert!(r.opts.is_none() && r.run_mode.is_none(), "派发时能选什么不再上报");
+    assert!(r.run_mode.is_none(), "派发时能选什么不再上报");
     let conf = vec![AgentConf { id: "dsh".into(), name: None, model: Some("deepseek-reasoner".into()), cmd: vec!["/nope/dsh".into()] }];
     let specs = agent_specs(&conf, &[Env::direct()]).unwrap();
     assert_eq!(specs[0].model, "deepseek-reasoner");

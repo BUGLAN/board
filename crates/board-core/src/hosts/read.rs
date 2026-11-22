@@ -269,8 +269,6 @@ impl HostRow {
                     ..x.clone()
                 })
                 .collect(),
-            fallback: None,
-            fallback_active: false,
             fits: self.profiles.iter().map(|p| match crate::profiles::fit(p, self) {
                 Ok(()) => crate::profiles::ProfileFit { profile: p.id.clone(), ok: true, why: String::new() },
                 Err(why) => crate::profiles::ProfileFit { profile: p.id.clone(), ok: false, why },
@@ -593,7 +591,7 @@ impl<'a> R<'a> {
         }
     }
 
-    /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」（有规则、没设兜底时）
+    /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」
     pub(super) fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
         let mut info = h.info(now);
         for a in info.agents.iter_mut() {
@@ -617,7 +615,7 @@ impl<'a> R<'a> {
             }
         }
         // 规则里这台机器有目录的项目里都没有的标签：界面上标出来
-        let known = self.host_labels(h)?;
+        let known = self.host_labels()?;
         for r in info.rules.iter_mut() {
             r.missing = r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect();
         }
@@ -664,7 +662,7 @@ impl<'a> R<'a> {
     }
 
     /// 这台机器有目录的白板所在项目里的标签名（小写）。工作空间能放任意白板，规则里用哪块白板的标签就在哪块生效
-    pub(super) fn host_labels(&self, _h: &HostRow) -> Result<Vec<String>> {
+    pub(super) fn host_labels(&self) -> Result<Vec<String>> {
         // 领取规则是全局的：哪个项目里有这个标签都算有
         self.all_labels()
     }

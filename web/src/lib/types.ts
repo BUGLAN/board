@@ -362,12 +362,9 @@ export interface HostInfo {
   idleRun?: number;
   /** 领取规则（全局的一份，每台机器读到的都一样；active 按这台机器算）：没有一条规则时不自动领卡 */
   rules?: ClaimRule[];
-  /** 兜底：不带任何规则标签的卡片由这个 agent 做；没设时不领这些卡片 */
-  fallback?: string | null;
-  fallbackActive?: boolean;
   /** 每个角色在这台机器上能不能跑（按角色的排列顺序）；旧服务端没有 */
   fits?: ProfileFit[];
-  /** 有规则、没设兜底时：可领取、没有匹配任何规则的卡片数 */
+  /** 可领取、没有匹配任何规则的卡片数 */
   unmatched?: number;
   paused: boolean;
   /** 内置 agent 自动更新（默认关）：有新版本且没有在跑的派发时按实际安装方式更新；旧服务端没有这一项 */
@@ -753,24 +750,10 @@ export interface ClaimRule {
   missing?: string[];
 }
 
-/** 一个 agent 的「由这些机器做」（服务端算）：当前选中的机器，以及默认 / 空选状态 */
-export interface SchedPick {
-  agent: string;
-  /** 当前选中的机器 id（默认全选时也是现在装了它的全部机器） */
-  hosts: number[];
-  /** 一台都没选：这个 agent 不自动领卡 */
-  none?: boolean;
-  /** 没设置过（或已经清掉排除）：所有装了它的机器都参与，之后新装的也默认参与 */
-  unset?: boolean;
-}
-
 /** 调度的全局设置（随工作区数据下发） */
 export interface Sched {
   /** 领取规则，有顺序：第一条命中的生效 */
   rules: ClaimRule[];
-  /** 兜底的 agent；没有时规则没命中的卡片不领 */
-  fallback?: string | null;
-  fallbackActive?: boolean;
   /** 服务端的时区（没设时为空） */
   tz?: string;
   /** 取数据那一刻是服务端时区一天里的第几分钟 */
@@ -781,8 +764,6 @@ export interface Sched {
   maxRun?: number;
   /** 没输出多久算卡住（分钟，0 = 不限），所有机器一样 */
   idleRun?: number;
-  /** 旧版的每个 agent 由哪些机器做：换成了角色的「只在这些机器上跑」，新服务端一直是空的 */
-  picks?: SchedPick[];
   /** 角色（按排列顺序）：规则交给角色，派发选角色；旧服务端没有 */
   profiles?: Profile[];
 }

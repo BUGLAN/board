@@ -231,7 +231,6 @@ export const api = {
       max?: number;
       perSession?: number;
       rules?: ClaimRule[];
-      fallback?: string;
       paused?: boolean;
       agent?: string;
       cronOn?: boolean;
@@ -312,7 +311,6 @@ export const api = {
   /** 改全局的领取规则（整个列表替换，每条交给一个角色）、自动升级、跑多久停：所有机器共用 */
   updateSched: (patch: {
     rules?: Pick<ClaimRule, 'op' | 'labels' | 'profile'>[];
-    fallback?: string;
     autoUpgrade?: boolean;
     maxRun?: number;
     idleRun?: number;

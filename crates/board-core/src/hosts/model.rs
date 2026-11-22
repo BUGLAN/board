@@ -41,9 +41,6 @@ pub struct HostAgent {
     /// 这个 agent 配置文件里现在的思考强度（board host 读出来上报，写进派发记录）；没有时为空
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effort: String,
-    /// 旧版 board host 上报的「派发时能选的模型和强度」：不再用，收到也不看
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opts: Option<AgentOpts>,
     /// 服务端发出去时才有，只给旧版 board host 看：总是 `off`（不改）。机器上不再指定模型（#576）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_mode: Option<String>,
@@ -105,24 +102,6 @@ pub struct AgentManage {
     /// 上一次失败的原因
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
-}
-
-/// 旧版 board host 上报的「一个 agent 派发时能选什么」：现在模型、强度只写进配置文件，不再按次传参，收下不用
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentOpts {
-    /// 能选模型（模板有传模型的参数）
-    #[serde(default)]
-    pub model: bool,
-    /// 下拉里列的常用模型（也可以手填）
-    #[serde(default)]
-    pub models: Vec<String>,
-    /// 支持的思考强度档位，按从低到高；空表示不能选强度
-    #[serde(default)]
-    pub efforts: Vec<String>,
-    /// 这个 agent 认哪些模型供应商接口（`anthropic`、`openai-chat`、`openai-responses`）：
-    /// 共用配置里「模型供应商」的下拉据此过滤；旧版 board host 没有这一项
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub protocols: Vec<String>,
 }
 
 /// 模型名：字母或数字开头，字母、数字和 `. _ : / @ + -`，最长 64 个字符（作为一个参数传给 agent，也是派发名字的第二段）
@@ -611,16 +590,10 @@ pub struct HostInfo {
     /// 定时领取的领取规则（有顺序）；没有规则时定时领取不领卡、也不能开始一轮
     #[serde(default)]
     pub rules: Vec<ClaimRule>,
-    /// 旧版的兜底：现在一直是空的（规则都没命中的卡不自动领），留着给旧界面读
-    #[serde(default)]
-    pub fallback: Option<String>,
-    /// 兜底的 agent 在这台机器上找得到
-    #[serde(default)]
-    pub fallback_active: bool,
     /// 每个角色在这台机器上能不能跑（[`crate::profiles::fit`]），按角色的排列顺序
     #[serde(default)]
     pub fits: Vec<crate::profiles::ProfileFit>,
-    /// 有规则、没设兜底时：这台机器有目录的白板上，可领取、没有匹配任何规则的卡片数
+    /// 这台机器有目录的白板上，可领取、没有匹配任何规则的卡片数
     #[serde(default)]
     pub unmatched: i64,
     /// 暂停接单

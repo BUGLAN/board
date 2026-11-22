@@ -17,7 +17,6 @@ const machine = (x: Partial<HostInfo> = {}): HostInfo => ({
   paused: false,
   agent: 'claude',
   rules: [],
-  fallback: null,
   cronOn: false,
   cron: [],
   round: false,

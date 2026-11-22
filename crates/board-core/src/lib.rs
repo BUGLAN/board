@@ -43,7 +43,7 @@ pub use flow::StatusPatch;
 pub use search::{SearchHit, SEARCH_LIMIT};
 pub use hostres::HostRes;
 pub use hosts::{
-    AgentManage, AgentOpts, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostDirOverride, HostEnv, HostInfo, HostPatch, HostReport,
+    AgentManage, AgentRun, ClaimRule, Dispatch, EnvCheck, EnvPatch, HostAgent, HostClone, HostDir, HostDirOverride, HostEnv, HostInfo, HostPatch, HostReport,
     HostWork, HostWorkspace, ConfigSync, SyncAsk, SyncResult, SyncPart, SkillsSync, SkillsDetail, McpSync, McpDetail, GitSync, GitDetail, LsAsk, DirEntry, DirList,
     RunPatch, SelfTest, SelfTestAsk, SelfTestItem, SessionPart, SessionView, SkillImport, SkillImportAsk, SkillImportFail, SkillImportPick, SkillImportResult, SKILL_IMPORT_STALE_MS,
 };

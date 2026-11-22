@@ -260,7 +260,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
           {/* 磁贴上只加这一个小标记，哪几项没通过在机器详情的「就绪」里看 */}
           <ReadyBadge checks={readiness(h, now, server)} />
         </span>
-        {(cron || (!!h.unmatched && !h.fallback) || noskill > 0) && (
+        {(cron || !!h.unmatched || noskill > 0) && (
           <span className="hp-rack-notes">
             {cron && (
               <span className={h.round ? 'live' : undefined} title={h.round ? '现在在接单时段里，有符合规则的卡就领' : '现在不在接单（时段外、暂停接单或还没有领取规则）'}>
@@ -268,7 +268,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
                 {cron}
               </span>
             )}
-            {!!h.unmatched && !h.fallback && (
+            {!!h.unmatched && (
               <span className="warn">
                 <Icon name="info" />
                 {h.unmatched} 张卡片没有匹配规则

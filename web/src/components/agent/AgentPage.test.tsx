@@ -50,7 +50,7 @@ function localServer() {
       made = { ...(JSON.parse(String(init!.body)) as object), id: `p${profiles.length + 1}` };
       profiles.push(made as Record<string, unknown>);
     }
-    const sched = { rules, fallback: null, minute: 600, autoUpgrade: false, maxRun: 0, idleRun: 0, profiles };
+    const sched = { rules, minute: 600, autoUpgrade: false, maxRun: 0, idleRun: 0, profiles };
     const body: unknown =
       path === '/api/workspace'
         ? { rev: 1, now: Date.now(), projects: [{ key: 'oss', name: 'oss', color: '#888', labels: [{ id: 1, name: 'bug', color: '#e5484d' }], boards: [{ key: 'main', name: 'main', path: 'oss/main', statuses: [] }] }], hosts: [], dispatches: [], sched }

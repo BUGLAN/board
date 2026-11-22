@@ -2690,7 +2690,6 @@ fn per_host_rules_migrate_to_global_rules_and_old_cron_is_dropped() {
     let got: Vec<(String, Vec<String>, String)> = sched.rules.iter().map(|r| (r.op.clone(), r.labels.clone(), r.agent.clone())).collect();
     let want = vec![("in", vec!["定时"], "dsh"), ("in", vec!["claude"], "claude"), ("none", vec![], "dsh")];
     assert_eq!(got, want.into_iter().map(|(o, l, a)| (o.to_string(), l.into_iter().map(String::from).collect(), a.to_string())).collect::<Vec<_>>(), "按机器建立的先后接上，一模一样的（不分大小写）只留一条");
-    assert_eq!(sched.fallback, None, "兜底去掉了");
     let names: Vec<(&str, &str)> = sched.profiles.iter().map(|p| (p.name.as_str(), p.agent.as_str())).collect();
     assert_eq!(names, vec![("DeepSeek Harness", "dsh"), ("Claude Code", "claude")], "规则里用到的 agent 各一个同名角色");
     let h = |n: &str| s.read(|r| r.host(n, T0)).unwrap();
@@ -6219,7 +6218,6 @@ fn migration_turns_picks_into_profile_machines() {
         .unwrap();
     let s = Store::open(&path).unwrap();
     let sched = s.read(|r| r.sched(T0)).unwrap();
-    assert_eq!(sched.fallback, None);
     let p = sched.profiles.iter().find(|p| p.agent == "claude").unwrap();
     assert_eq!(p.only, vec![desk]);
     assert_eq!(sched.rules[0].profile, p.id);

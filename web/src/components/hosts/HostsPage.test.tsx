@@ -56,7 +56,6 @@ const machine = (agents: HostAgent[], x: Partial<HostInfo> = {}): HostInfo => ({
   paused: false,
   agent: 'dsh',
   rules: [],
-  fallback: null,
   cronOn: false,
   cron: [],
   round: false,
