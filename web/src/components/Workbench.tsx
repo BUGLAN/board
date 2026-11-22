@@ -4,7 +4,7 @@
    - 侧栏宽度可以拖动调整；手机上活动栏变为底部 Tab 栏
    ========================================================================== */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
-import { newBoard, newProject, openBoard, openCard } from '../lib/actions';
+import { newProject, openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
 import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
@@ -967,10 +967,6 @@ function ProjectsSide() {
                         </button>
                       </div>
                     ))}
-                    <button type="button" className="pt-row add" onClick={() => newBoard(p.key)}>
-                      <Icon name="plus" />
-                      新建白板
-                    </button>
                   </div>
                 </div>
               </div>

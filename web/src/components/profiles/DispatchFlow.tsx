@@ -8,7 +8,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { blockOf, hostsOf } from '../../lib/hosts';
-import { hostsFor, labelNames, pickHost, profilesOf, routeOf, short, soonest, type HostWhy } from '../../lib/profiles';
+import { hostsFor, labelNames, OP_WORDS, pickHost, profilesOf, routeOf, short, soonest, type HostWhy } from '../../lib/profiles';
 import { serverMinute } from '../../lib/sched';
 import type { Dispatch } from '../../lib/types';
 import { cx } from '../../lib/util';
@@ -17,7 +17,7 @@ import { openDispatch, toast, toastError } from '../../store/ui';
 import { useNow } from '../bits';
 import { OsGlyph } from '../hosts/bits';
 import { Icon } from '../Icon';
-import { NameChips, PMark, Slots, colorOf, useProviders } from './bits';
+import { PMark, Slots, colorOf, useProviders } from './bits';
 
 type ZEdge = { from: string; to: string; dash: boolean; lit: boolean; color: string };
 
@@ -36,6 +36,10 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
   const names = useMemo(() => labelNames(ws, path, entry?.labels ?? []), [ws, path, entry?.labels]);
   const rules = ws?.sched?.rules ?? [];
   const route = routeOf(names, rules);
+  const rule = route ? rules[route.rule] : undefined;
+  const ruleTitle = route
+    ? `规则 ${route.rule + 1}${rule ? `：${OP_WORDS[rule.op]}${rule.labels.length ? ` ${rule.labels.join('、')}` : ''}` : ''}`
+    : '没有命中的规则：自己挑一个角色';
   const moving = move != null ? (ws?.dispatches ?? []).find(d => d.id === move) : undefined;
   const suggested = route ? profiles.find(p => p.id === route.profile) : undefined;
   const split = entry?.column === 'inbox';
@@ -162,9 +166,9 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
               ))}
             </svg>
             <div className="pfa-col pfz-col">
-              <div data-k="card" className="pfz-card" title={route ? `规则 ${route.rule + 1}` : '没有命中的规则：自己挑一个角色'}>
-                <span className="pfz-labels">{names.length ? <NameChips names={names} /> : <small>没有标签</small>}</span>
-                <small className="pfz-rule">{route ? `规则 ${route.rule + 1}` : '没命中规则'}</small>
+              <div data-k="card" className="pfz-card" title={ruleTitle}>
+                <Icon name="filter" />
+                <b>{route ? `规则 ${route.rule + 1}` : '没命中规则'}</b>
               </div>
             </div>
             <div className="pfa-col pfz-col">

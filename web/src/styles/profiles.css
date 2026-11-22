@@ -104,10 +104,9 @@ button.pf-hw:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
 .pfz-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-ui, inherit); font-size: 12.5px; font-weight: 400; color: var(--text-3); }
 .pfz-map { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); column-gap: 40px; padding: 8px; align-items: center; }
 .pfz-col { gap: 4px; }
-.pfz-card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; max-width: 110px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
-.pfz-labels { display: flex; flex-wrap: wrap; gap: 3px; }
-.pfz-labels i { font-style: normal; font-size: 11px; padding: 0 6px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); }
-.pfz-labels small, .pfz-rule { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.pfz-card { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px; border-radius: var(--r-sm); color: var(--text-2); white-space: nowrap; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pfz-card > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+.pfz-card b { font-size: 12.5px; font-weight: 600; }
 .pfz-prof, .pfz-host { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px; border-radius: var(--r-sm); font-size: 12.5px; text-align: left; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); transition: box-shadow var(--dur-1), background-color var(--dur-1), opacity var(--dur-1); }
 .pfz-prof b, .pfz-host b { flex: none; font-weight: 600; }
 .pfz-prof small, .pfz-host small { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-3); }
@@ -139,7 +138,7 @@ button.pf-hw:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
 .pfz-foot .pfd-say.t-wait { color: var(--warn-text) !important; }
 @media (max-width: 640px) {
   .pfz-map { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
-  .pfz-card { flex-direction: row; max-width: none; }
+  .pfz-card { width: 100%; }
   .pfz-foot { flex-wrap: wrap; }
   .pfz-foot .pfd-say { flex-basis: 100%; }
   .pfz-foot .btn { flex: 1; justify-content: center; }
@@ -209,7 +208,7 @@ button.pfq-row:hover { background: var(--surface-2); }
 /* 规则：条件词 + 标签胶囊（LabelChip），胶囊比卡片上的小一号 */
 .pf-rv { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
 .pf-rv-op { font-size: 12.5px; color: var(--text-2); }
-.pf-rv .lb, .pfz-labels .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
+.pf-rv .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
 .pfa-rt { overflow: visible; white-space: normal; }
 
 /* 规则弹出框：高度固定，标签框固定两行高 */
@@ -255,7 +254,6 @@ button.pfq-row:hover { background: var(--surface-2); }
 .pf-fc-rule { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .pf-fc-rule .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
 .pfq.is-saving { opacity: .7; }
-.pfz-labels .lb { height: 20px; padding: 0 7px; font-size: 11.5px; }
 @media (max-width: 640px) {
   .pf-f3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pf-f3 label:last-child { grid-column: span 2; }

@@ -179,9 +179,6 @@
 .pt-bic svg { width: 15px; height: 15px; }
 .pt-row.brd.current { background: color-mix(in srgb, var(--pc) 13%, transparent); color: var(--text); box-shadow: inset 2px 0 0 var(--pc); }
 .pt-row.brd.current .nm { font-weight: 600; }
-.pt-row.add { padding-left: 34px; color: var(--text-3); font-size: 12px; min-height: 28px; }
-.pt-row.add svg { width: 14px; height: 14px; }
-.pt-row.add::before { content: ""; position: absolute; left: 20px; top: 0; height: 50%; width: 1px; background: var(--line-2); }
 
 /* ---------------- 顶栏切换器：白板分组 ---------------- */
 .pj-sep { color: var(--text-4); font-weight: 300; }
