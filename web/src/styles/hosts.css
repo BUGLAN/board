@@ -401,7 +401,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 }
 
 .d-side-head { display: flex; align-items: center; gap: 8px; }
-.d-side.folded { flex: none; }
 
 /* ---------------- 乐观更新的反馈 ---------------- */
 /* 机器设置各存各的（HostModal useSaver）：改动当帧生效，别的控件不禁用、不变灰。
@@ -688,7 +687,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .pv-line code { font: 11.5px var(--f-mono); color: var(--text-2); overflow-wrap: anywhere; }
 .pv-models { display: flex; flex-wrap: wrap; gap: 4px; }
 .pv-models code { display: inline-flex; align-items: baseline; gap: 6px; padding: 0 6px; border-radius: var(--r-xs); background: var(--surface-3); }
-.pv-models small { font: 10.5px var(--f-ui, inherit); color: var(--text-3); }
+.pv-models small { font-family: inherit; font-size: 10.5px; line-height: normal; color: var(--text-3); }
 /* 「在用」：一个 agent 一枚（图标、名称、几台、状态点），点开列出哪几台 */
 .pv-use { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .pv-use > .pv-k { width: auto; padding-top: 5px; }

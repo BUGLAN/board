@@ -50,7 +50,6 @@
 .hd-k { padding-top: 6px; font-size: 12px; color: var(--text-3); }
 .hd-v { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .hd-v.hd-col { flex-direction: column; align-items: flex-start; gap: 6px; }
-.hd-own { display: flex; flex-wrap: wrap; gap: 6px; }
 .hd-warn { display: inline-flex; align-items: center; gap: 5px; color: var(--warn-text); }
 .hd-warn svg { width: 13px; height: 13px; }
 .hd-acts { gap: 6px; }

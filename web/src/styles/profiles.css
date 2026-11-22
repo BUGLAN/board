@@ -101,7 +101,7 @@ button.pf-hw:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
 .dialog.dp-dialog.pfd.flow { width: min(700px, calc(100vw - 32px)); padding: 16px 18px 14px; }
 /* Z：分工页 A 的三栏，收成一行一个节点 */
 .pfd.flow h3 { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin-bottom: 10px; white-space: nowrap; }
-.pfz-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-ui, inherit); font-size: 12.5px; font-weight: 400; color: var(--text-3); }
+.pfz-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-size: 12.5px; font-weight: 400; color: var(--text-3); }
 .pfz-map { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); column-gap: 40px; padding: 8px; align-items: center; }
 .pfz-col { gap: 4px; }
 .pfz-card { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px; border-radius: var(--r-sm); color: var(--text-2); white-space: nowrap; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }

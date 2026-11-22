@@ -7,7 +7,7 @@
 .rv-head { gap: 10px; }
 .rv-title { display: inline-flex; align-items: center; gap: 8px; font-family: var(--f-display); font-size: 15px; font-weight: 700; white-space: nowrap; }
 .rv-title svg { width: 16px; height: 16px; color: var(--text-3); }
-.rv-title em { font-style: normal; font-family: var(--f-body, inherit); font-size: 12.5px; font-weight: 500; color: var(--text-3); }
+.rv-title em { font-style: normal; font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--text-3); }
 .rv-left { font-size: 12.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
 .rv-pos { min-width: 44px; text-align: center; font: 600 11.5px var(--f-mono); color: var(--text-3); }
 .rv-main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 22px 18px; animation: rv-in var(--dur-3) var(--ease-out); }

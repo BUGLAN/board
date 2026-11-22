@@ -117,7 +117,6 @@
 
 /* ---------------- 偏好：减弱动效 ---------------- */
 :root[data-motion="reduced"] { --dur-1: 1ms; --dur-2: 1ms; --dur-3: 1ms; --dur-4: 1ms; }
-:root[data-motion="reduced"] .glow,
 :root[data-motion="reduced"] .logo i,
 :root[data-motion="reduced"] .card.doing::before,
 :root[data-motion="reduced"] .ie-art i { animation: none !important; }

@@ -475,13 +475,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); position: relative; z-index: 6;
 }
 .wf-label { flex: none; font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--text-3); }
-.wf-line { display: flex; flex-wrap: wrap; align-items: center; row-gap: 6px; min-width: 0; }
-.wf-seg { display: inline-flex; align-items: center; flex: none; }
-.wf-arrow { position: relative; width: 20px; height: 2px; margin: 0 2px; background: var(--line-3); }
-.wf-arrow::after { content: ""; position: absolute; right: -1px; top: -3px; border: 4px solid transparent; border-left: 5px solid var(--line-3); border-right: 0; }
-.wf-arrow.dashed { background: repeating-linear-gradient(90deg, var(--line-2) 0 3px, transparent 3px 6px); }
-.wf-arrow.dashed::after { border-left-color: var(--line-2); }
-.wf-node-wrap { position: relative; display: inline-flex; }
 .wf-node {
   position: relative; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 9px; border-radius: var(--r-sm); white-space: nowrap;
   font-size: 12.5px; font-weight: 600; color: color-mix(in srgb, color-mix(in oklab, var(--c), var(--ink)) 70%, var(--text)); cursor: grab; user-select: none;
@@ -664,7 +657,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-thumb.empty { display: grid; place-items: center; font-size: 11.5px; color: var(--text-3); background: transparent; box-shadow: none; border: 1px dashed var(--line-2); }
 .bs-lay-s { min-height: 2.9em; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
 .bs-lay .btn { width: 100%; }
-.bs-note { margin: 8px 2px 0; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
 
 /* 白板设置末尾：代码仓库、标签是项目的，一行去项目设置 */
 .bs-proj {
@@ -706,9 +698,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bs-rp-input { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .bs-rp-input .input { flex: 1; min-width: 0; }
 .bs-rp-input .btn { flex: none; white-space: nowrap; }
-.bs-note a { color: color-mix(in oklab, var(--brand), var(--ink)); text-decoration: none; }
-.bs-note a:hover { text-decoration: underline; }
-.bs-note .mono { font-family: var(--f-mono); font-size: .92em; }
 .bs-rc-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 10px; }
 .bs-rc-l { display: flex; align-items: center; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .bs-rc-row .input { height: 32px; font-size: 12.5px; }
@@ -914,7 +903,7 @@ section.cc > .cc-form { margin-bottom: 4px; border-radius: var(--r-md); box-shad
    框画在块的格子边上（不往外伸，免得和并排的卡片、组挤在一起），组里的卡片左右往里缩，和框留出间距 */
 .sess-head {
   position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; height: 22px; padding: 0 8px;
-  font-family: var(--f-ui, inherit); font-size: 11.5px; color: var(--text-3); white-space: nowrap;
+  font-family: inherit; font-size: 11.5px; color: var(--text-3); white-space: nowrap;
 }
 .sess-head > * { position: relative; z-index: 1; }
 /* 块很窄时（窄的状态块里只占一栏）机器名先让位，「会话几张」最后才截断；不能给组头 overflow: hidden，框是它往下伸的 ::before */
