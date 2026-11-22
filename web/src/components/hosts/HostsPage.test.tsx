@@ -362,7 +362,7 @@ describe('手机适配的样式还在（机器 tab、机器详情）', () => {
     const at = hosts.indexOf('机器 Tab 的三个视图、Agent tab、机器详情弹窗从 360px 起逐页适配');
     expect(at).toBeGreaterThan(0);
     const mobile = phoneBlock(hosts, at);
-    for (const sel of ['.hp-b-acts .segmented', '.hp-sess-grid', '.hp-cmp', '.sy-row', '.pv-line', '.sd-row', '.sd-cond .input.sel', '.hp-ctl > .hp-sync']) expect(mobile).toContain(sel);
+    for (const sel of ['.hp-b-acts .segmented', '.hp-sess-grid', '.hp-cmp', '.sy-row', '.pv-line', '.sd-time', '.sd-track', '.hp-ctl > .hp-sync']) expect(mobile).toContain(sel);
     // 弹窗里的表格自己横向滚动：滚动框的宽度不算内容宽度（否则页面被撑宽）
     expect(hosts).toMatch(/\.hp-cmp-box \{[^}]*min-width: 0/);
   });
