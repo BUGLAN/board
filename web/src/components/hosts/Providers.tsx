@@ -2,7 +2,6 @@
    「共用配置」的模型供应商一节（PRD §10.16「共用配置」）：一个供应商一张卡
    - 卡片上面：名称、API key 末尾 4 位、更新时间、修改、删除；接口和地址（地址相同的接口并成一行）、模型（带标了的强度）
    - 卡片底下「在用」：用它的角色（Agent → 分工），一个角色一枚（agent 图标、名字、模型），点一下去分工页
-   - 下面一句话写 board 版本太旧、不同步供应商的机器
    - 供应商的增、改、删要等服务端（按钮转圈、禁用直到返回）；还有角色在用的删不了（先改角色）
    ========================================================================== */
 import { useState } from 'react';
@@ -16,7 +15,7 @@ import {
   providerError,
   toProviderSave,
 } from '../../lib/providers';
-import type { HostInfo, Provider } from '../../lib/types';
+import type { Provider } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, setTab, toast, toastError } from '../../store/ui';
@@ -24,11 +23,11 @@ import { goSec } from '../agent/AgentNav';
 import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
 import { AgentIcon } from './bits';
-import { HowTip, OldHostsNote } from './SyncBits';
+import { HowTip } from './SyncBits';
 import { ProviderForm } from './ProviderForm';
 import { useRemoteList } from './useRemoteList';
 
-export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
+export function ProvidersSection() {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
   const { list: view, err, refresh: load } = useRemoteList(() => api.providers(), ws?.hosts);
@@ -47,7 +46,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
       const out = await optimistic(null, () => api.putProvider(toProviderSave(edit.p)));
       setEdit(null);
       await load();
-      toast({ type: 'success', title: `已保存 ${out.name}`, text: '用着它的机器马上改写 agent 的配置文件', duration: 2200 });
+      toast({ type: 'success', title: `已保存 ${out.name}`, text: '用它的角色下次派发时生效', duration: 2200 });
     } catch (e) {
       toastError(e);
     } finally {
@@ -62,7 +61,7 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
     }
     const ok = await confirm({
       title: `删掉模型供应商 ${p.name}？`,
-      text: '已经写进各台机器 agent 配置文件的不恢复。',
+      text: '旧版 Board 以前写进各台机器 agent 配置文件的那组设置不会跟着删除。',
       ok: '删掉',
       icon: 'trash',
       tone: 'warn',
@@ -78,17 +77,14 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
       setBusy(null);
     }
   };
-  const old = hosts.filter(h => !h.sync?.able);
-
   return (
     <section className="sc sc-providers">
       <div className="sc-head">
         <div>
           <h2>模型供应商</h2>
           <p>
-            供应商在这里加、改。每台机器上每个 agent 用哪个供应商、哪个模型，在机器详情的「agent」页里选；board host 写进 agent 自己的用户级配置文件，agent 直接连供应商，不经过
-            Board。{' '}
-            <HowTip tip="只改 Board 管的那几项；机器上改成「不改」后之前写进去的不恢复，Board 只是不再碰它。强度不在模型支持的档位里就不写。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
+            供应商在这里加、改。哪个角色用哪个供应商、哪个模型，在 Agent → 分工里选；派发时 board host 只给这一次 agent 进程换上，agent 直接连供应商，不经过 Board。{' '}
+            <HowTip tip="只对这次派发生效，不改 agent 自己的配置文件。以前旧版 Board 写进 agent 配置文件的那组设置不会自动清理；本机登录、没填模型的角色仍可能用到它，要换就在 agent 自己的配置里改。角色只能选模型标了的强度。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
           </p>
         </div>
         <div className="sc-acts">
@@ -128,7 +124,6 @@ export function ProvidersSection({ hosts }: { hosts: HostInfo[] }) {
           ))}
         </div>
       )}
-      {view && <OldHostsNote hosts={old} what="供应商" verb="写入" />}
     </section>
   );
 }

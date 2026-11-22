@@ -5,8 +5,8 @@
 //!   API key、模型（一行一个）。API key 只存在服务端：列表接口只给末尾 4 位（[`Provider::masked`]），
 //!   完整的值只经 board host 的令牌接口（`GET /api/hosts/{名字}/providers`，只给这台机器上报时用的令牌）下发。
 //! - 地址保存时就规范化（[`normalize_url`]）：去掉结尾的 `/`，Anthropic 的再去掉结尾的 `/v1`（Claude Code 自己会接
-//!   `/v1/messages`）。写 agent 配置文件和「获取模型」（[`models_url`]）都按规范化后的地址。
-//! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型不能选强度，写配置时也不写强度（[`writable_efforts`]）。
+//!   `/v1/messages`）。按角色派发和「获取模型」（[`models_url`]）都按规范化后的地址。
+//! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型在角色里不能选强度（[`writable_efforts`]）。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
 //! - 每个内置 agent（claude、codex、dsh）用哪个供应商、哪个模型、什么强度、哪种接口：在每台机器上选「不改 / 指定」
 //!   （机器设置的 `run`，见 hosts/model.rs 的 [`crate::hosts::AgentRun`]）；服务器上不再存一份给所有机器跟的。
@@ -67,7 +67,7 @@ pub fn models_url(endpoints: &[ProviderEndpoint]) -> Option<(String, bool)> {
     Some((format!("{base}/v1/models"), true))
 }
 
-/// 一个内置 agent 的说明（界面用，随 `GET /api/providers` 下发）：名称、认哪些接口、配置文件能写哪几档强度、
+/// 一个内置 agent 的说明（界面用，随 `GET /api/providers` 下发）：名称、认哪些接口、角色里能选哪几档强度、
 /// 读用户级 skill 的目录、支不支持 MCP 同步、主色。都来自 [`crate::agentdef`]；旧版服务端只有前四项
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMeta {
@@ -100,7 +100,7 @@ pub fn agent_meta() -> Vec<AgentMeta> {
         .collect()
 }
 
-/// 这个 agent 用这家供应商的这个模型时，配置文件能写哪几档强度：模型标了的、这个 agent 也能写的（按从低到高）。
+/// 这个 agent 用这家供应商的这个模型时，角色里能选哪几档强度：模型标了的、这个 agent 也能设的（按从低到高）。
 /// 模型没标强度时为空：不能选，也不写
 pub fn writable_efforts(agent: &str, p: &Provider, model: &str) -> Vec<String> {
     let marked = p.efforts.get(model).cloned().unwrap_or_default();
@@ -120,7 +120,7 @@ pub fn protocols_of(agent: &str) -> &'static [&'static str] {
     crate::agentdef::find(agent).map_or(&[], |d| d.protocols)
 }
 
-/// 这个 agent 的配置文件能写的思考强度（从低到高）
+/// 这个 agent 能设的思考强度（从低到高）
 pub fn efforts_of(agent: &str) -> &'static [&'static str] {
     crate::agentdef::find(agent).map_or(&[], |d| d.efforts)
 }

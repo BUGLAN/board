@@ -1,10 +1,10 @@
 //! 模型供应商共用配置的接口（PRD §10.16「共用配置」）：
 //!
 //! - `GET /api/providers`：列表，API key 只给末尾 4 位（界面、访问令牌都能读）；
-//!   `meta` 是内置 agent 的说明（认哪些接口、配置文件能写哪几档强度，只在 board-core 留一份）
+//!   `meta` 是内置 agent 的说明（认哪些接口、角色里能选哪几档强度，只在 board-core 留一份）
 //! - `POST /api/providers {name, endpoints, apiKey, models, efforts}`：新增或修改（只能在登录后的界面上做）；API key 留空保留原来的值；
 //!   地址保存时规范化（Anthropic 的去掉结尾的 `/v1`），`efforts` 是每个模型支持的强度
-//! - `DELETE /api/providers/{名称}`：删掉（只能在界面上做）；机器上指定成它的 agent 下次同步时报失败
+//! - `DELETE /api/providers/{名称}`：删掉（只能在界面上做）；还有角色在用它的不能删
 //! - `GET /api/hosts/{名字}/providers`：完整内容（含 API key 原文），只给这台机器用的访问令牌；
 //!   界面、其他机器的令牌都是 `NOT_LOGGED_IN`
 //! - `POST /api/providers/models {name?, endpoints, apiKey?}`：获取模型——服务端用这些地址和 API key 问供应商有哪些模型

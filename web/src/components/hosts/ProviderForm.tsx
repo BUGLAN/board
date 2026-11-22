@@ -1,16 +1,17 @@
 /* ==========================================================================
    添加 / 修改模型供应商（PRD §10.16「共用配置」）：居中弹窗，从上到下
    - 从常用的开始（只在添加时）：DeepSeek、Kimi、智谱 GLM、OpenAI、Anthropic 的磁贴，点了填好核实过的接口地址和常用模型；「自定义」清空
+   - 换一块磁贴就是换一家：上一家的 key、强度、手动输入的模型、刚获取的模型列表都清掉
    - 连接：名称（修改时不能改）、API key（密码框，可以「显示」核对；修改时留空保留原值）
    - 接口：三种各一行，开关 + 地址；关着的写「不用」；写明哪个 agent 只认它
    - 模型：选好的是胶囊（× 去掉，也能手动输入、回车加）；「获取模型」让服务端用上面的地址和 key 问供应商，列出来勾选（筛选、全选、全不选）
-   - 强度：每个选好的模型一行，点亮它支持的档位；没标的模型不能选强度，写配置时也不写
+   - 强度：每个选好的模型一行，点亮它支持的档位；没标的模型在角色里不能选强度
    - Anthropic 的地址不带 /v1（Claude Code 自己接 /v1/messages）：保存时服务端去掉，「获取模型」也按去掉后的地址问
    - 底部：哪些 agent 能用它（按打开的接口算），点保存先校验，原因写在底部
    ========================================================================== */
 import { useMemo, useState } from 'react';
 import { api } from '../../lib/api';
-import { ALL_EFFORTS, maskKey, PROVIDER_INTERFACES, PROVIDER_PRESETS, providerError } from '../../lib/providers';
+import { ALL_EFFORTS, maskKey, PROVIDER_INTERFACES, PROVIDER_PRESETS, providerError, providerPreset } from '../../lib/providers';
 import type { AgentMeta, Provider } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { Tip } from '../bits';
@@ -51,6 +52,7 @@ export function ProviderForm({
   // 打开着的接口：有地址的，或者人刚打开、还没填的
   const [on, setOn] = useState<string[]>(() => p.endpoints.map(e => e.interface));
   const [show, setShow] = useState(false);
+  const [modelsKey, setModelsKey] = useState(0);
   const urlOf = (id: string) => p.endpoints.find(e => e.interface === id)?.url ?? '';
   const setUrl = (id: string, url: string) => onChange({ ...p, endpoints: [...p.endpoints.filter(e => e.interface !== id), { interface: id as Provider['endpoints'][number]['interface'], url }] });
   const flip = (id: string) => {
@@ -60,14 +62,12 @@ export function ProviderForm({
     } else setOn([...on, id]);
   };
   const fill = (name: string) => {
-    const preset = PROVIDER_PRESETS.find(x => x.name === name);
-    if (!preset) {
-      setOn([]);
-      onChange({ ...p, name: '', endpoints: [], models: [] });
-      return;
-    }
-    setOn(preset.endpoints.map(e => e.interface));
-    onChange({ ...p, name: preset.name, endpoints: preset.endpoints.map(e => ({ ...e })), models: preset.models });
+    const next = providerPreset(name);
+    setOn(next.endpoints.map(e => e.interface));
+    setShow(false);
+    setTried(false);
+    setModelsKey(n => n + 1);
+    onChange(next);
   };
   const live = p.endpoints.filter(e => e.url.trim()).map(e => e.interface as string);
   const why = providerError(p, existing, editing);
@@ -106,7 +106,7 @@ export function ProviderForm({
       )}
       <FormSec title="连接">
         <div className="fm-fields">
-          <FormField label="名称" hint={editing ? '名称不能改' : '字母、数字、_、-；agent 配置文件里用它'}>
+          <FormField label="名称" hint={editing ? '名称不能改' : '字母、数字、_、-；角色里用它'}>
             <input className="input mono" value={p.name} disabled={editing} placeholder="deepseek" spellCheck={false} autoComplete="off" onChange={e => onChange({ ...p, name: e.target.value.trim() })} />
           </FormField>
           <FormField label="API key" hint="只存在服务端，界面上只显示末尾 4 位">
@@ -149,13 +149,13 @@ export function ProviderForm({
           })}
         </div>
       </FormSec>
-      <Models p={p} editing={editing} onChange={onChange} />
+      <Models key={modelsKey} p={p} editing={editing} onChange={onChange} />
       {p.models.length > 0 && <Efforts p={p} onChange={onChange} />}
     </FormModal>
   );
 }
 
-/** 每个模型支持的强度：一行一个模型，点亮它支持的档位（从低到高）。没标的模型不能选强度，写配置时也不写 */
+/** 每个模型支持的强度：一行一个模型，点亮它支持的档位（从低到高）。没标的模型在角色里不能选强度 */
 function Efforts({ p, onChange }: { p: Provider; onChange: (p: Provider) => void }) {
   const of = (m: string) => p.efforts?.[m] ?? [];
   const flip = (m: string, e: string) => {
@@ -164,7 +164,7 @@ function Efforts({ p, onChange }: { p: Provider; onChange: (p: Provider) => void
     onChange({ ...p, efforts: { ...(p.efforts ?? {}), [m]: next } });
   };
   return (
-    <FormSec title="强度" hint="每个模型点亮它支持的档位；没标的模型不能选强度，写 agent 配置时也不写">
+    <FormSec title="强度" hint="每个模型点亮它支持的档位；没标的模型在角色里不能选强度">
       <div className="fm-eff">
         {p.models.map(m => (
           <div key={m} className="fm-eff-row">
@@ -212,7 +212,7 @@ function Models({ p, editing, onChange }: { p: Provider; editing: boolean; onCha
   return (
     <FormSec
       title="模型"
-      hint="写进 agent 配置文件时从这里选"
+      hint="角色里选模型时从这里选"
       act={
         <Tip text="服务端用上面的地址和 API key 问供应商有哪些模型（修改时 key 留空就用存着的）">
           <button

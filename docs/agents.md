@@ -293,8 +293,8 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 
 这一批都通过第 4 步后：
 
-- `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`：加一条，内置 agent 的描述只在这里写一份——`id`、`name`、npm 包和 dist-tag、`install`（安装命令）、`bin`（agent 命令）、`acp`（ACP 入口，自带 ACP 的写 `{bin} …`，用适配器的写 `npx -y <包>@<版本>`）、`acp_bin_env`（告诉适配器 agent 在哪的环境变量）、`acp_env`、`acp_mode`（不问权限的环境变量、模式）、`acp_since`（自带 ACP 从哪个版本起）、`also`（常见安装位置）、`skills`（读用户级 skill 的目录，第一个是装 board-skills、同步 skills 的地方）、`project`（仓库里读 skill 的目录）、`git_bash`、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）、`protocols`（认哪些供应商接口）、`efforts`（配置文件能写的强度档位，从低到高）、`mcp`（支持 MCP 同步时它的 MCP 配置文件；不支持写 `None`）、`color`（界面上的主色）。放在哪一位就是默认顺序里的哪一位。board host 的内置模板、供应商的接口和强度（界面从 `GET /api/providers` 的 `meta` 拿）、MCP 同步名单、`board skills` 和桌面端「一键安装」的 skill 目录、桌面端「从本机导入 MCP」都从这里读，不用再改别处的名单。界面里只有 `web/src/lib/agentMeta.ts` 的兜底（连旧服务端、取到之前用）要跟着加一条。
-- 要按服务器上的供应商写它的配置文件：在 `crates/board-cli/src/providersync.rs` 里加上写配置文件、读回模型的那一段（`files_of`、`apply_*`）。
+- `crates/board-core/src/agentdef.rs` 的 `AGENT_DEFS`：加一条，内置 agent 的描述只在这里写一份——`id`、`name`、npm 包和 dist-tag、`install`（安装命令）、`bin`（agent 命令）、`acp`（ACP 入口，自带 ACP 的写 `{bin} …`，用适配器的写 `npx -y <包>@<版本>`）、`acp_bin_env`（告诉适配器 agent 在哪的环境变量）、`acp_env`、`acp_mode`（不问权限的环境变量、模式）、`acp_since`（自带 ACP 从哪个版本起）、`also`（常见安装位置）、`skills`（读用户级 skill 的目录，第一个是装 board-skills、同步 skills 的地方）、`project`（仓库里读 skill 的目录）、`git_bash`、`win`（Windows 上支持的启动环境，按默认选择的顺序；第 4 步没跑通的环境不写）、`protocols`（认哪些供应商接口）、`efforts`（角色里能选的强度档位，从低到高）、`mcp`（支持 MCP 同步时它的 MCP 配置文件；不支持写 `None`）、`color`（界面上的主色）。放在哪一位就是默认顺序里的哪一位。board host 的内置模板、供应商的接口和强度（界面从 `GET /api/providers` 的 `meta` 拿）、MCP 同步名单、`board skills` 和桌面端「一键安装」的 skill 目录、桌面端「从本机导入 MCP」都从这里读，不用再改别处的名单。界面里只有 `web/src/lib/agentMeta.ts` 的兜底（连旧服务端、取到之前用）要跟着加一条。
+- 要支持按角色换供应商、读回本机配置里的模型：在 `crates/board-cli/src/providersync.rs` 的 `route_for` 里加上这个 agent 的换法（ACP `providers/set` 或这次派发的补丁），在 `files_of` / `current` 里加上读回模型的那一段。
 - 标了 `mcp`：在 `crates/board-cli/src/mcpsync.rs` 的 `implemented`、`put`、`remove` 里加上它的写法（`every_mcp_agent_in_the_description_has_a_writer` 会检查）。
 - 测试：`agentdef.rs` 的 `every_builtin_agent_is_well_formed`（标识合法、接口和强度认得）、`crates/board-cli/src/host/tests.rs` 的 `builtin_order_and_overrides`（改期望的顺序）。
 - 不用按 agent 写日志解析：ACP 的转写（`logfmt.rs`）、事件（`events.rs`）所有 agent 共用。它的帧里有现在没认出的写法（工具的 `kind`、`rawOutput` 的字段）时，在那里补上，按它的真实输出补一份样例进 `crates/board-cli/tests/fixtures/`。
@@ -324,6 +324,3 @@ BOARD=default/main board dispatch 1 --host e2e --agent <标识>
 | 从设置了 `BOARD_TOKEN` 的终端或 agent 会话里启动桌面端，打开「让这台电脑接任务」后 board host 以 `INVALID_TOKEN` 停止 | 旧版桌面端把启动环境里的 `BOARD_URL`、`BOARD_TOKEN`（还有 `BOARD_CONFIG`、`BOARD_AS`、`BOARD`）继承给了后台的 board host，环境变量优先于配置文件，令牌是别的服务端的。新版启动 board host 和改机器名时都去掉这些变量，只用配置文件；升级桌面端 |
 | Windows 上 `npm run desktop:dev` 报 `failed to remove file ... target\debug\board.exe`（os error 5：拒绝访问） | 上次开发启动的 `board-desktop.exe` / `board host` 还在从 `target\debug\board.exe` 运行，锁住了文件。新版 `scripts/build-sidecar.mjs` 会在 dev 构建前自动结束本仓库这两个进程；如果还失败，先从托盘退出 Board，再运行 `npm run desktop:dev` |
 | 卡片动态里 agent 又 check 了一个新名字、领取失败 | 用的 `board-skills` 是旧版（没有「由 board host 启动的会话」一节），更新 skill |
-| 机器详情里这个 agent 的「供应商」置灰，写要升级到服务端版本 | 旧版 `board host` 不认模型供应商：升级那台机器的 board |
-| 「模型供应商」里这个 agent 写「失败」 | 它的配置文件解析不了（原因写在同一行，文件没动）：按原因修好那个文件，下一次同步会写进去；改回「不管」能按备份恢复 |
-| 这个 agent 写「不支持」 | 它是配置文件里新加的 agent，或者在 WSL 里跑：这一版不改这两种 agent 的配置文件，手动配 |

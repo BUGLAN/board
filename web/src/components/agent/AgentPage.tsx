@@ -34,7 +34,7 @@ export function AgentPage() {
   usePollHosts(tab === 'agent');
 
   const body: Record<SecId, ReactNode> = {
-    providers: <ProvidersSection hosts={hosts} />,
+    providers: <ProvidersSection />,
     mcp: <McpSection hosts={hosts} />,
     skills: <SharedConfig hosts={hosts} />,
     git: <GitCredSection hosts={hosts} />,

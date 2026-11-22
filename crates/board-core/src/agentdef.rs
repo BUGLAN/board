@@ -4,7 +4,7 @@
 //! `board skills`、桌面端、界面各写一份；支持 MCP 同步的名单在服务端、board host、桌面端、界面各一份。现在都从这里读：
 //!
 //! - board host 的内置模板（命令、ACP 入口、安装、查找位置、skill 目录、Windows 启动环境）
-//! - 认哪些供应商接口、配置文件能写哪几档强度（`providers.rs`，随 `GET /api/providers` 的 `meta` 给界面）
+//! - 认哪些供应商接口、角色里能选哪几档强度（`providers.rs`，随 `GET /api/providers` 的 `meta` 给界面）
 //! - 支不支持 MCP 同步、MCP 配置文件在哪（`mcp.rs`、board host 的 `mcpsync.rs`、桌面端「从本机导入」）
 //! - 读用户级 skill 的目录（`board skills`、桌面端「一键安装」、界面）
 //! - 界面上的主色（图标、动作这些画法留在界面里）
@@ -61,7 +61,7 @@ pub struct AgentDef {
     pub win: &'static [&'static str],
     /// 认哪些供应商接口（[`crate::providers::INTERFACES`] 里的标识）
     pub protocols: &'static [&'static str],
-    /// 配置文件能写的思考强度，从低到高（配置文件的写法按各自 agent 核实过；[`crate::providers::ALL_EFFORTS`] 里的）
+    /// 角色里能选的思考强度，从低到高（按各自 agent 支持的范围核实过；[`crate::providers::ALL_EFFORTS`] 里的）
     pub efforts: &'static [&'static str],
     /// 支持 MCP 同步时它的用户级 MCP 配置文件（显示用的写法，`~`、`$CODEX_HOME` 开头）；不支持时为空
     pub mcp: Option<&'static str>,

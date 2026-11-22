@@ -607,7 +607,7 @@ export interface Provider {
   source?: string;
 }
 
-/** 内置 agent 的说明（服务端 board-core 留一份）：认哪些接口、配置文件能写哪几档强度 */
+/** 内置 agent 的说明（服务端 board-core 留一份）：认哪些接口、角色里能选哪几档强度 */
 export interface AgentMeta {
   id: string;
   name: string;

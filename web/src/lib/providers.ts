@@ -17,7 +17,7 @@ export const PROVIDER_INTERFACES: { id: ProviderEndpoint['interface']; name: str
 /** 所有强度档位，从低到高（供应商里给模型标的只能是这几个，和服务端 ALL_EFFORTS 一致） */
 export const ALL_EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-/** 内置 agent 的说明（认哪些接口、配置文件能写哪几档强度）：服务端 board-core 留一份，`GET /api/providers` 的 meta */
+/** 内置 agent 的说明（认哪些接口、角色里能选哪几档强度）：服务端 board-core 留一份，`GET /api/providers` 的 meta */
 export const metasOf = (view: ProviderView | null): AgentMeta[] => view?.meta ?? [];
 export const metaOf = (view: ProviderView | null, agent: string) => metasOf(view).find(m => m.id === agent);
 
@@ -71,6 +71,18 @@ export const PROVIDER_PRESETS: { name: string; label: string; endpoints: Provide
 ];
 
 export const blankProvider = (): Provider => ({ name: '', endpoints: [], apiKey: '', models: [], efforts: {} });
+
+/** 点一块常用供应商磁贴：从空白表单按预填写一份，上一家填的 key、强度、模型和获取到的列表都不带过来 */
+export function providerPreset(name: string): Provider {
+  const preset = PROVIDER_PRESETS.find(x => x.name === name);
+  if (!preset) return blankProvider();
+  return {
+    ...blankProvider(),
+    name: preset.name,
+    endpoints: preset.endpoints.map(e => ({ ...e })),
+    models: [...preset.models],
+  };
+}
 
 /** API key 的显示：只给末尾 4 位 */
 export const maskKey = (p: Pick<Provider, 'tail'>) => (p.tail ? `••••${p.tail}` : '••••');
