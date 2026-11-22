@@ -50,7 +50,7 @@ fn prompts_are_saved_as_a_whole_list_on_the_server() {
 fn access_tokens_cannot_read_or_write_prompts() {
     let s = Server::start(Auth::Local);
     let store = board_core::Store::open(&s.db).unwrap();
-    let tok = board_server::auth::create_token(store.conn(), "命令行", board_core::now_ms()).unwrap().1;
+    let tok = board_server::auth::create_token_for(store.conn(), "命令行", None, board_core::now_ms()).unwrap().1;
     let bearer = format!("Bearer {tok}");
     let headers = [("authorization", bearer.as_str()), UI];
     let url = format!("{}/api/prompts", s.url);

@@ -129,7 +129,7 @@ fn copy_settings_from_another_host_is_ui_only_and_presets_ride_on_the_new_token(
 
     // 访问令牌调不了
     let store = board_core::Store::open(&s.db).unwrap();
-    let tok = board_server::auth::create_token(store.conn(), "b 的令牌", board_core::now_ms()).unwrap().1;
+    let tok = board_server::auth::create_token_for(store.conn(), "b 的令牌", None, board_core::now_ms()).unwrap().1;
     let bearer = format!("Bearer {tok}");
     let r = send("POST", &format!("{}/api/hosts/b/copy", s.url), &[("authorization", bearer.as_str())], Some(json!({ "from": "a", "dry": true })));
     assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);

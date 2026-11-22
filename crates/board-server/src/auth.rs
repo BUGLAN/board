@@ -164,11 +164,6 @@ pub struct TokenInfo {
     pub host: Option<String>,
 }
 
-/// 新建普通访问令牌（命令行、agent 用；不能登记新机器）。返回令牌信息和令牌原文（只在这里出现一次）
-pub fn create_token(conn: &Connection, name: &str, now: i64) -> Result<(TokenInfo, String)> {
-    create_token_for(conn, name, None, now)
-}
-
 /// 新建访问令牌；`host` 不为空时是机器令牌：绑定这个机器名，board host 用它第一次上报时才能登记这台机器（#507）
 pub fn create_token_for(conn: &Connection, name: &str, host: Option<&str>, now: i64) -> Result<(TokenInfo, String)> {
     let name: String = name.trim().chars().take(40).collect();

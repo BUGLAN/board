@@ -48,7 +48,7 @@ fn access_tokens_cannot_use_card_batch() {
     let s = Server::start(Auth::Local);
     new_card(&s, "一");
     let store = board_core::Store::open(&s.db).unwrap();
-    let token = board_server::auth::create_token(store.conn(), "命令行", board_core::now_ms()).unwrap().1;
+    let token = board_server::auth::create_token_for(store.conn(), "命令行", None, board_core::now_ms()).unwrap().1;
     let bearer = format!("Bearer {token}");
     let r = send(
         "POST",

@@ -65,7 +65,7 @@ fn start() -> Server {
     serve_in_thread(state, cfg, l);
     let token = {
         let store = board_core::Store::open(&db).unwrap();
-        auth::create_token(store.conn(), "test", board_core::now_ms()).unwrap().1
+        auth::create_token_for(store.conn(), "test", None, board_core::now_ms()).unwrap().1
     };
     Server { url, db, token, _dir: dir }
 }

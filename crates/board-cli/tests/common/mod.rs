@@ -76,7 +76,7 @@ pub fn start() -> Server {
     serve_in_thread(state.clone(), cfg, l);
     let token = {
         let store = board_core::Store::open(&db).unwrap();
-        auth::create_token(store.conn(), "test", board_core::now_ms()).unwrap().1
+        auth::create_token_for(store.conn(), "test", None, board_core::now_ms()).unwrap().1
     };
     Server { url, db, tok: token.clone(), token, state, home, checked: RefCell::default(), _dir: dir }
 }

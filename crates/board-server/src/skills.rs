@@ -20,17 +20,14 @@ use std::sync::OnceLock;
 
 include!(concat!(env!("OUT_DIR"), "/board_skills.rs"));
 
-/// 随服务端版本的 board-skills（没有打包进来时为空）
-pub fn builtin() -> Option<&'static SkillPack> {
-    static PACK: OnceLock<Option<SkillPack>> = OnceLock::new();
+/// 随服务端版本的 board-skills（build.rs 保证打包了 SKILL.md）
+pub fn builtin() -> &'static SkillPack {
+    static PACK: OnceLock<SkillPack> = OnceLock::new();
     PACK.get_or_init(|| {
-        if !BOARD_SKILLS.iter().any(|(p, _, _)| *p == "SKILL.md") {
-            return None;
-        }
         let files: Vec<(String, bool, Vec<u8>)> = BOARD_SKILLS.iter().map(|(p, x, d)| (p.to_string(), *x, d.to_vec())).collect();
         let version = skills::pack_version(&files);
         let size: usize = files.iter().map(|f| f.2.len()).sum();
-        Some(SkillPack {
+        SkillPack {
             info: SkillInfo {
                 name: BUILTIN.into(),
                 version,
@@ -42,16 +39,13 @@ pub fn builtin() -> Option<&'static SkillPack> {
                 builtin: true,
             },
             files: files.iter().map(|(p, x, d)| SkillFile { path: p.clone(), exec: *x, data: skills::b64(d) }).collect(),
-        })
+        }
     })
-    .as_ref()
 }
 
 /// 库的索引：board-skills 在前
 pub fn index(mut list: Vec<SkillInfo>) -> Vec<SkillInfo> {
-    if let Some(b) = builtin() {
-        list.insert(0, b.info.clone());
-    }
+    list.insert(0, builtin().info.clone());
     list
 }
 
@@ -61,7 +55,7 @@ pub(crate) async fn list(State(s): State<AppState>) -> ApiResult<Vec<SkillInfo>>
 
 pub(crate) async fn get(State(s): State<AppState>, Path(name): Path<String>) -> ApiResult<SkillPack> {
     if name == BUILTIN {
-        return builtin().cloned().map(Json).ok_or_else(|| ApiError(BoardError::new(ErrorCode::NotFound, "这个服务端没有打包 board-skills")));
+        return Ok(Json(builtin().clone()));
     }
     let n = name.clone();
     s.db(move |st| st.read(|r| r.skill(&n))).await?.map(Json).ok_or_else(|| ApiError(BoardError::new(ErrorCode::NotFound, format!("库里没有 skill「{name}」"))))
@@ -128,7 +122,7 @@ mod tests {
 
     #[test]
     fn board_skills_is_packed_without_bin() {
-        let b = builtin().expect("board-skills 打包进来了");
+        let b = builtin();
         let paths: Vec<&str> = b.files.iter().map(|f| f.path.as_str()).collect();
         for p in ["SKILL.md", "work.md", "plan.md", "host.md", "reference.md", "scripts/board", "scripts/board.cmd"] {
             assert!(paths.contains(&p), "缺 {p}：{paths:?}");

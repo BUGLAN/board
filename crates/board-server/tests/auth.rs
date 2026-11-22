@@ -85,7 +85,7 @@ fn local_mode() -> Server {
 
 fn new_token(db: &Path, name: &str) -> String {
     let store = board_core::Store::open(db).unwrap();
-    auth::create_token(store.conn(), name, board_core::now_ms()).unwrap().1
+    auth::create_token_for(store.conn(), name, None, board_core::now_ms()).unwrap().1
 }
 
 /// 「添加机器」新建的机器令牌：绑定机器名 `host`，只有它能登记这台新机器（#507）
@@ -186,6 +186,7 @@ fn info_reports_version_and_commit() {
     assert_eq!(r.body["name"], "board");
     assert_eq!(r.body["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(r.body["commit"], board_server::COMMIT);
+    assert!(r.body.get("db").is_none(), "不暴露数据库路径：{}", r.text);
     assert!(!board_server::COMMIT.is_empty());
 }
 

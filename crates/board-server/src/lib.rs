@@ -92,7 +92,6 @@ struct Inner {
     files: Option<Arc<FileStore>>,
     tx: broadcast::Sender<Arc<str>>,
     poke: Notify,
-    db: PathBuf,
     auth: Auth,
     /// 有会话被删除（退出登录）或令牌被吊销时加一：实时推送据此检查自己的登录态还在不在
     sessions: watch::Sender<u64>,
@@ -144,7 +143,6 @@ impl AppState {
             files,
             tx,
             poke: Notify::new(),
-            db: cfg.db.clone(),
             auth: cfg.auth.clone(),
             sessions: watch::channel(0).0,
             stream_check: std::sync::atomic::AtomicU64::new(STREAM_CHECK.as_millis() as u64),
@@ -566,8 +564,8 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 编译时的提交号，见 build.rs
 pub const COMMIT: &str = env!("BOARD_COMMIT");
 
-async fn info(State(s): State<AppState>) -> Json<Value> {
-    Json(json!({ "name": "board", "version": VERSION, "commit": COMMIT, "db": s.0.db.display().to_string() }))
+async fn info() -> Json<Value> {
+    Json(json!({ "name": "board", "version": VERSION, "commit": COMMIT }))
 }
 
 /// `GET /api/health`：不需要登录。带上版本、提交号、登录模式和界面是否已经编译进来，

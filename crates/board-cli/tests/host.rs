@@ -1878,7 +1878,7 @@ fn mcp_servers_sync_to_claude_and_codex() {
     // 另一个令牌（没绑到这台机器）、机器名不对：都拿不到原文
     let other = {
         let store = board_core::Store::open(&rig.s.db).unwrap();
-        board_server::auth::create_token(store.conn(), "agent 用的", board_core::now_ms()).unwrap().1
+        board_server::auth::create_token_for(store.conn(), "agent 用的", None, board_core::now_ms()).unwrap().1
     };
     let (code, body) = get_raw(&format!("{}/api/hosts/mbp/mcp", rig.s.url), &other);
     assert_eq!(code, 401, "别的令牌不能取原文：{body}");

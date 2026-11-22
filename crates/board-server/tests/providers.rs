@@ -95,7 +95,7 @@ fn host_token_can_read_provider_config() {
     let s = Server::start(Auth::Local);
     let store = board_core::Store::open(&s.db).unwrap();
     let tok = board_server::auth::create_token_for(store.conn(), "win 的令牌", Some("win"), board_core::now_ms()).unwrap().1;
-    let other = board_server::auth::create_token(store.conn(), "别的令牌", board_core::now_ms()).unwrap().1;
+    let other = board_server::auth::create_token_for(store.conn(), "别的令牌", None, board_core::now_ms()).unwrap().1;
     let bearer = format!("Bearer {tok}");
     let headers = [("authorization", bearer.as_str())];
     // board host 上报：它用的令牌记在这台机器上
@@ -121,7 +121,7 @@ fn git_credential_is_masked_and_only_the_host_token_reads_it() {
     let s = Server::start(Auth::Local);
     let store = board_core::Store::open(&s.db).unwrap();
     let tok = board_server::auth::create_token_for(store.conn(), "win 的令牌", Some("win"), board_core::now_ms()).unwrap().1;
-    let other = board_server::auth::create_token(store.conn(), "别的令牌", board_core::now_ms()).unwrap().1;
+    let other = board_server::auth::create_token_for(store.conn(), "别的令牌", None, board_core::now_ms()).unwrap().1;
     let bearer = format!("Bearer {tok}");
     let headers = [("authorization", bearer.as_str())];
     let r = send("POST", &format!("{}/api/hosts/win/beat", s.url), &headers, Some(json!({ "name": "win", "instance": "i1" })));
