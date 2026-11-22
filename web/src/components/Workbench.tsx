@@ -848,7 +848,7 @@ function SkeletonTree() {
   );
 }
 
-function ProjectsSide() {
+export function ProjectsSide() {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
   const [q, setQ] = useState('');
@@ -885,7 +885,8 @@ function ProjectsSide() {
     .map(p => {
       const pHit = !query || `${p.name}\n${p.key}\n${p.desc}`.toLowerCase().includes(query);
       const bs = p.boards.filter(b => pHit || `${b.name}\n${b.key}\n${b.desc}`.toLowerCase().includes(query));
-      return { p, bs, show: pHit || bs.length > 0 };
+      const inPanel = !p.hidden || !!query || p.key === pk;
+      return { p, bs, show: inPanel && (pHit || bs.length > 0) };
     })
     .filter(r => r.show);
 

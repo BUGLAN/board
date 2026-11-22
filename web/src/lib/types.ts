@@ -155,6 +155,8 @@ export interface ProjectInfo {
   branch?: string;
   /** 项目目录：每台机器上是 <工作空间>/<项目目录>；空表示用项目标识（lib/projectDir，#488）。旧服务端没有这一项 */
   dir?: string;
+  /** 不在左侧项目面板显示；有搜索词或它是当前项目时仍然显示（default/main#610）。旧服务端没有这一项，按显示 */
+  hidden?: boolean;
   boards: BoardInfo[];
 }
 

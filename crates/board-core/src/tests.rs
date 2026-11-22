@@ -2538,6 +2538,10 @@ fn hidden_of(s: &Store, key: &str) -> Vec<String> {
     s.read(|r| r.workspace(T0)).unwrap().projects.into_iter().find(|p| p.key == key).unwrap().hidden_labels
 }
 
+fn project_hidden(s: &Store, key: &str) -> bool {
+    s.read(|r| r.workspace(T0)).unwrap().projects.into_iter().find(|p| p.key == key).unwrap().hidden
+}
+
 /// 新项目默认隐藏版本标签（`^v\d`）；改规则是整组替换，去掉空行、首尾空白和重复的
 #[test]
 fn hidden_labels_default_and_update() {
@@ -2592,6 +2596,42 @@ fn project_info_without_hidden_labels_uses_default() {
     }))
     .unwrap();
     assert_eq!(p.hidden_labels, vec![r"^v\d".to_string()]);
+    assert!(!p.hidden, "旧服务端没有 hidden：按显示");
+}
+
+/// 项目默认显示；可以隐藏，刷新、重开数据库后仍然隐藏，只改别的字段不动它
+#[test]
+fn project_hidden_defaults_visible_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        assert!(!project_hidden(&s, "default"), "新项目默认显示");
+        s.write(T0, Origin::ui(None), |w| w.update_project_with("default", store::ProjectPatch { hidden: Some(true), ..Default::default() }))
+            .unwrap();
+        assert!(project_hidden(&s, "default"));
+        s.write(T0, Origin::ui(None), |w| w.update_project("default", Some("改名"), None, None)).unwrap();
+        assert!(project_hidden(&s, "default"), "只改名字不动隐藏");
+    }
+    let s = Store::open(&path).unwrap();
+    let p = s.read(|r| r.workspace(T0)).unwrap().projects.into_iter().find(|p| p.key == "default").unwrap();
+    assert!(p.hidden);
+    assert_eq!(serde_json::to_value(p).unwrap()["hidden"], serde_json::json!(true));
+}
+
+/// 旧数据库的项目没有 hidden 列：迁移后都显示
+#[test]
+fn old_projects_are_visible_in_side_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+    }
+    rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE projects DROP COLUMN hidden").unwrap();
+    let s = Store::open(&path).unwrap();
+    assert!(!project_hidden(&s, "default"));
 }
 
 /* ---------------- 稍后再做（default/main#303） ---------------- */

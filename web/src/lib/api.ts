@@ -167,7 +167,7 @@ export const api = {
   }) => req<{ key: string }>('POST', '/api/projects', p),
   updateProject: (
     key: string,
-    patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; repo?: string; branch?: string; dir?: string },
+    patch: { name?: string; desc?: string; color?: string; hiddenLabels?: string[]; hidden?: boolean; repo?: string; branch?: string; dir?: string },
   ) =>
     req('PATCH', `/api/projects/${q(key)}`, patch),
   deleteProject: (key: string) => req('DELETE', `/api/projects/${q(key)}`),

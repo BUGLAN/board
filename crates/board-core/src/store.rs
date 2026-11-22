@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS projects (
   repo        TEXT NOT NULL DEFAULT '',
   branch      TEXT NOT NULL DEFAULT '',
   -- 项目目录（PRD §4，#488）：每台机器上是 `<工作空间>/<项目目录>`；空表示用项目标识
-  dir         TEXT NOT NULL DEFAULT ''
+  dir         TEXT NOT NULL DEFAULT '',
+  -- 1 = 不在左侧项目面板显示（有搜索词或它是当前项目时仍显示）
+  hidden      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS boards (
@@ -485,6 +487,8 @@ impl Store {
         if !has_hidden {
             conn.execute_batch("ALTER TABLE projects ADD COLUMN hidden_labels TEXT")?;
         }
+        // 旧数据库的项目没有「不在左侧项目面板显示」：都显示
+        add_cols(conn, "projects", &[("hidden", "INTEGER NOT NULL DEFAULT 0")])?;
         // 旧数据库的卡片没有「稍后再做」：都没收起
         let has_later: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'later_at'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -717,11 +721,11 @@ impl<'a> R<'a> {
         let mut projects: Vec<ProjectInfo> = Vec::new();
         {
             let mut st = conn.prepare(
-                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch, dir
+                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch, dir, hidden
                  FROM projects ORDER BY sort, created_at, key",
             )?;
             let rows = st.query_map([], |r| {
-                let hidden: Option<String> = r.get(7)?;
+                let hidden_labels: Option<String> = r.get(7)?;
                 Ok(ProjectInfo {
                     key: r.get(0)?,
                     name: r.get(1)?,
@@ -730,12 +734,13 @@ impl<'a> R<'a> {
                     pos: Pos { x: r.get(4)?, y: r.get(5)? },
                     created_at: r.get(6)?,
                     labels: vec![],
-                    hidden_labels: hidden
+                    hidden_labels: hidden_labels
                         .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
                         .unwrap_or_else(crate::model::default_hidden_labels),
                     repo: r.get(8)?,
                     branch: r.get(9)?,
                     dir: r.get(10)?,
+                    hidden: r.get(11)?,
                     boards: vec![],
                 })
             })?;
@@ -1458,12 +1463,12 @@ impl<'a> W<'a> {
     }
 
     pub fn update_project(&mut self, key: &str, name: Option<&str>, desc: Option<&str>, color: Option<&str>) -> Result<()> {
-        self.update_project_with(key, ProjectPatch { name, desc, color, hidden_labels: None })
+        self.update_project_with(key, ProjectPatch { name, desc, color, hidden_labels: None, hidden: None })
     }
 
     /// 改项目；hidden_labels 是隐藏标签的整组规则（替换原来的），见 `check_hidden_labels`
     pub fn update_project_with(&mut self, key: &str, p: ProjectPatch<'_>) -> Result<()> {
-        let ProjectPatch { name, desc, color, hidden_labels } = p;
+        let ProjectPatch { name, desc, color, hidden_labels, hidden } = p;
         self.project_exists(key)?;
         if let Some(rules) = hidden_labels {
             let rules = check_hidden_labels(rules)?;
@@ -1479,6 +1484,9 @@ impl<'a> W<'a> {
         if let Some(c) = color {
             let c = Self::check_project_color(Some(c), 0)?;
             self.tx.execute("UPDATE projects SET color = ?1 WHERE key = ?2", params![c, key])?;
+        }
+        if let Some(hidden) = hidden {
+            self.tx.execute("UPDATE projects SET hidden = ?1 WHERE key = ?2", params![hidden, key])?;
         }
         self.changed = true;
         Ok(())
@@ -1830,6 +1838,8 @@ pub struct ProjectPatch<'a> {
     pub color: Option<&'a str>,
     /// 隐藏标签的整组规则（正则，名称匹配任一条的标签在日常列表里不显示，default/main#324）
     pub hidden_labels: Option<&'a [String]>,
+    /// 不在左侧项目面板显示（default/main#610）
+    pub hidden: Option<bool>,
 }
 
 /// 项目目录最长几个字符

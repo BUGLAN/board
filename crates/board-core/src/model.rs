@@ -570,6 +570,9 @@ pub struct ProjectInfo {
     /// 项目目录：每台机器上这个项目的目录是 `<工作空间>/<项目目录>`；空表示用项目标识（PRD §4，#488）。旧服务端没有这一项
     #[serde(default)]
     pub dir: String,
+    /// 不在左侧项目面板显示（默认 false＝显示）；有搜索词或它是当前项目时仍然显示（default/main#610）
+    #[serde(default)]
+    pub hidden: bool,
     pub boards: Vec<BoardInfo>,
 }
 

@@ -108,6 +108,29 @@ describe('项目设置', () => {
     expect(useUI.getState().projectSettings).toBe(null);
   });
 
+  it('描述下面的「在左侧项目面板显示」开关：默认开；关掉后当帧更新并保存 hidden', async () => {
+    await open();
+    const el = dialog().querySelector<HTMLButtonElement>('button[aria-label="在左侧项目面板显示"]')!;
+    expect(el.getAttribute('aria-checked')).toBe('true');
+    act(() => el.click());
+    expect(el.getAttribute('aria-checked')).toBe('false');
+    expect(useData.getState().ws?.projects.find(x => x.key === 'p')?.hidden).toBe(true);
+    await act(async () => {});
+    expect(sent).toContainEqual({ method: 'PATCH', path: '/api/projects/p', body: { hidden: true } });
+  });
+
+  it('已经隐藏的项目：开关关着，点一下保存 hidden: false', async () => {
+    const ws = workspace();
+    ws.projects[0].hidden = true;
+    await open(ws);
+    const el = dialog().querySelector<HTMLButtonElement>('button[aria-label="在左侧项目面板显示"]')!;
+    expect(el.getAttribute('aria-checked')).toBe('false');
+    act(() => el.click());
+    expect(el.getAttribute('aria-checked')).toBe('true');
+    await act(async () => {});
+    expect(sent).toContainEqual({ method: 'PATCH', path: '/api/projects/p', body: { hidden: false } });
+  });
+
   it('仓库地址没设：一行警告；有机器报过 origin 时「用机器的 origin」直接存', async () => {
     const h = { name: 'mbp', dirs: [{ board: 'p/a', path: '~/ws/p', origin: 'git@github.com:o/p.git' }] } as unknown as HostInfo;
     await open(workspace({ hosts: [h] }));

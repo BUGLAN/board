@@ -1037,6 +1037,9 @@ struct PatchBody {
     /// 项目：隐藏的标签规则（整组替换，default/main#324）
     #[serde(default, rename = "hiddenLabels")]
     hidden_labels: Option<Vec<String>>,
+    /// 项目：不在左侧项目面板显示（default/main#610）
+    #[serde(default)]
+    hidden: Option<bool>,
 }
 
 async fn update_project(
@@ -1059,6 +1062,7 @@ async fn update_project(
                 desc: p.desc.as_deref(),
                 color: p.color.as_deref(),
                 hidden_labels: p.hidden_labels.as_deref(),
+                hidden: p.hidden,
             },
         )?;
         if p.repo.is_some() || p.branch.is_some() {

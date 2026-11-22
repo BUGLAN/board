@@ -1,7 +1,7 @@
 /* ==========================================================================
    项目设置（PRD §10.4「项目设置」）：项目菜单里的「项目设置」、白板设置末尾的「打开项目设置」打开
    和白板设置同一种居中弹窗（.scrim / .drawer / .d-*，手机上是底部 sheet），单栏：
-   - 基本信息：名称（必填）、标识（只读）、描述、颜色（和新建项目同一组颜色）
+   - 基本信息：名称（必填）、标识（只读）、描述、在左侧项目面板显示、颜色（和新建项目同一组颜色）
    - 代码仓库：仓库地址、集成分支（一个项目一个仓库，项目下所有白板共用）；没设时一行警告，有机器报过 origin 时可以一键用它
    - 标签：项目的标签，「管理标签」叠在上面打开
    每一项都是设置项（saveSetting）：失焦或回车保存，Esc 取消这一次输入，保存状态画在那一项旁边，不整块禁用；名称清空时回到原值
@@ -139,10 +139,16 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
   const ws = useData(s => s.ws);
   const color = useSync();
   const repoSync = useSync();
+  const showSync = useSync();
   const pk = p.key;
   const repo = p.repo ?? '';
   const saveProject = (field: 'name' | 'desc' | 'color', v: string) =>
     saveSetting(`proj:${pk}:${field}`, patchProject(pk, x => ({ ...x, [field]: v })), () => api.updateProject(pk, { [field]: v }));
+  const saveShown = (shown: boolean) =>
+    showSync.track(
+      'shown',
+      saveSetting(`proj:${pk}:hidden`, patchProject(pk, x => ({ ...x, hidden: !shown })), () => api.updateProject(pk, { hidden: !shown })),
+    );
   const saveRepo = (which: 'repo' | 'branch', v: string) =>
     saveSetting(`${which}:${pk}`, repoPatch(pk, { [which]: v }), () => api.updateProject(pk, which === 'repo' ? { repo: v } : { branch: v }));
   // 机器上报的这个项目目录的 origin（#185 克隆也用同一个来源）：仓库地址没设时作建议
@@ -188,6 +194,28 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
                 <Field label="名称" value={p.name} required onSave={v => saveProject('name', v)} />
                 <Field label="标识" value={p.key} mono readOnly hint="创建后不能修改" />
                 <Field label="描述" value={p.desc ?? ''} placeholder="一句话说明这个项目（选填）" onSave={v => saveProject('desc', v)} />
+                <div className="bs-keep" onClick={() => saveShown(!!p.hidden)}>
+                  <button
+                    type="button"
+                    className={cx('switch', !p.hidden && 'on')}
+                    role="switch"
+                    aria-checked={!p.hidden}
+                    aria-label="在左侧项目面板显示"
+                    onClick={e => {
+                      e.stopPropagation();
+                      saveShown(!!p.hidden);
+                    }}
+                  >
+                    <i />
+                  </button>
+                  <div className="bs-keep-t">
+                    <b>
+                      在左侧项目面板显示
+                      <Sync s={showSync.sync.shown} inline />
+                    </b>
+                    <span>关闭后仍可通过筛选或打开该项目的白板找到；当前所在的项目始终显示。</span>
+                  </div>
+                </div>
                 <div className="bs-rc-row">
                   <span className="bs-rc-l">
                     颜色
