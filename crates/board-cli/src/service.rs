@@ -8,6 +8,12 @@
 //!   `BOARD_HOST_SUPERVISED=1`），把输出写进 `~/.board/host/host.log`（超过 5 MB 轮转成 host.log.1、host.log.2）；
 //!   board host 异常退出（退出码非 0、被 kill -9）10 秒后重启，退出码 75（远程「重启」「升级」）马上重启，
 //!   正常退出（0）时自己也退出。守护进程收到 SIGTERM（停止服务）时先让 board host 收尾再退出。
+//! - 同一个家目录里只跑一个守护进程（#607）：`--service` 启动时先找本机别的、参数相同的 `board host --service`
+//!   （`service.pid` 里记的那个，和进程表里的；重装、重载、升级后脱离 launchd 的旧守护进程常常已经不在 pid 文件里），
+//!   以及守护进程没了、留下来的 board host，让它们收尾退出（SIGTERM，最多等 30 秒，不退就结束进程树），再写自己的 pid、
+//!   启动 board host。pid 文件里的进程已经不在、或换成了无关的进程时只清掉 pid 文件，不发信号。board host 报
+//!   `HOST_NAME_TAKEN` 时再找一次、马上重试一次；还是被占用就记一句原因、正常退出（不让服务管理器每 10 秒拉起来刷日志）。
+//!   `--install`、`--uninstall` 用同一套回收（不看参数：装新的、卸载都要停掉旧的）。
 //! - `board host --uninstall`：停掉并删掉服务。
 //! - 服务只读配置文件 `~/.board/config.toml` 里的服务端地址和令牌，不带 shell 里的 `BOARD_URL` / `BOARD_TOKEN`：
 //!   装之前检查配置文件里有。
@@ -124,12 +130,26 @@ fn ask_stop(pid: u32) {
     crate::envs::kill_tree(pid, true);
 }
 
+/// `board host --service` 带给 board host 的参数：`--name`、`--workspace`、`--dir`，按这个顺序（比较两个守护进程的参数也用它）
+pub(crate) fn host_args(a: &crate::args::Args) -> Vec<String> {
+    let mut args: Vec<String> = vec![];
+    if let Some(n) = a.value("--name") {
+        args.extend(["--name".to_string(), n.to_string()]);
+    }
+    if let Some(w) = a.value("--workspace") {
+        args.extend(["--workspace".to_string(), w.to_string()]);
+    }
+    for d in a.all("--dir") {
+        args.extend(["--dir".to_string(), d]);
+    }
+    args
+}
+
 /// `board host --service [--name …] [--dir …]`：守护进程（见模块说明）。`host_args` 原样传给 board host
 pub fn supervise(host_args: Vec<String>) -> Result<()> {
     on_signals();
     let dir = host_dir()?;
     let pidfile = dir.join("service.pid");
-    let _ = std::fs::write(&pidfile, format!("{}\n", std::process::id()));
     let log = Arc::new(Mutex::new(Log::open(dir.join("host.log"))));
     let say = |s: &str| {
         if let Ok(mut l) = log.lock() {
@@ -138,7 +158,16 @@ pub fn supervise(host_args: Vec<String>) -> Result<()> {
     };
     let exe = std::env::current_exe().map_err(|e| BoardError::usage(format!("找不到 board 自己：{e}")))?;
     say(&format!("守护进程启动（进程 {}）：board host {}", std::process::id(), host_args.join(" ")));
+    // 先接管：旧的守护进程退出之后才写自己的 pid
+    reclaim(&pidfile, Some(&host_args), &say);
+    if QUIT.load(Ordering::SeqCst) {
+        say("接管时收到停止信号，守护进程退出");
+        return Ok(());
+    }
+    let _ = std::fs::write(&pidfile, format!("{}\n", std::process::id()));
     let mut n = 0u64;
+    // 连着几次因为 HOST_NAME_TAKEN 退出：第一次回收后马上重试，第二次就不再重启
+    let mut taken_runs = 0u32;
     let out = loop {
         if QUIT.load(Ordering::SeqCst) {
             break Ok(());
@@ -163,15 +192,20 @@ pub fn supervise(host_args: Vec<String>) -> Result<()> {
             }
         };
         say(&format!("启动 board host（第 {n} 次，进程 {}）", child.id()));
+        let taken = Arc::new(AtomicBool::new(false));
         let mut readers = vec![];
         for r in [child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), child.stderr.take().map(|e| Box::new(e) as Box<dyn std::io::Read + Send>)]
             .into_iter()
             .flatten()
         {
             let log = log.clone();
+            let taken = taken.clone();
             readers.push(std::thread::spawn(move || {
                 for line in std::io::BufReader::new(r).lines() {
                     let Ok(line) = line else { break };
+                    if line.contains("HOST_NAME_TAKEN") {
+                        taken.store(true, Ordering::SeqCst);
+                    }
                     if let Ok(mut l) = log.lock() {
                         l.line(&line);
                     }
@@ -205,6 +239,24 @@ pub fn supervise(host_args: Vec<String>) -> Result<()> {
             say(&format!("board host 已退出（{}），守护进程退出", describe(status)));
             break Ok(());
         }
+        if code == Some(1) && taken.load(Ordering::SeqCst) {
+            taken_runs += 1;
+            if taken_runs == 1 {
+                say("机器名被在线的 board host 占用：找本机遗留的守护进程、board host 接管，然后马上重试一次");
+                if reclaim(&pidfile, Some(&host_args), &say) == 0 {
+                    say("本机没有找到占用这个名字的旧守护进程，仍然重试一次");
+                }
+                let _ = std::fs::write(&pidfile, format!("{}\n", std::process::id()));
+                continue;
+            }
+            let msg = "机器名仍被在线的 board host 占用，本机没有能回收的旧守护进程：不再重启。\
+                       换一个 --name（board host --install --name <新名字>），或先停掉正在用这个名字的 board host，再重新启动服务";
+            say(msg);
+            eprintln!("✗ HOST_NAME_TAKEN  {msg}");
+            // 正常退出：launchd、systemd、计划任务只在失败时拉起，不会每 10 秒再来一遍
+            break Ok(());
+        }
+        taken_runs = 0;
         match code {
             Some(0) => {
                 say("board host 正常退出，守护进程也退出");
@@ -243,6 +295,172 @@ fn wait_or_quit(d: Duration) {
     while t.elapsed() < d && !QUIT.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/* ------------------------------ 单实例接管（#607） ------------------------------ */
+
+/// 命令行（含可执行文件）是 `board host --service …` 时，返回它带给 board host 的参数（顺序同 [`host_args`]）
+fn service_cmd(cmd: &[String]) -> Option<Vec<String>> {
+    let a = board_cmd(cmd)?;
+    a.flag("--service").then(|| host_args(&a))
+}
+
+/// 命令行是 `board host …`（不是守护进程）时，返回它的参数（顺序同 [`host_args`]）
+fn host_cmd(cmd: &[String]) -> Option<Vec<String>> {
+    let a = board_cmd(cmd)?;
+    (!a.flag("--service") && !a.flag("--install") && !a.flag("--uninstall")).then(|| host_args(&a))
+}
+
+fn board_cmd(cmd: &[String]) -> Option<crate::args::Args> {
+    let exe = cmd.first()?;
+    let base = exe.rsplit(['/', '\\']).next().unwrap_or(exe).to_lowercase();
+    if base.strip_suffix(".exe").unwrap_or(&base) != "board" {
+        return None;
+    }
+    let a = crate::args::Args::parse(&cmd[1..]).ok()?;
+    (a.pos.len() == 1 && a.pos[0] == "host").then_some(a)
+}
+
+/// 家目录的环境变量（配置、pid 文件跟着它）：Windows 上是 USERPROFILE
+const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
+/// 本机要回收的进程：同一用户、同一家目录里别的 `board host --service`（`want` 给了时只要参数相同的），
+/// 和守护进程没了、留下来的 board host（由守护进程启动过、父进程已经不是守护进程；`want` 给了时参数相同）。
+/// `recorded` 是 pid 文件里记的进程：读不到它的家目录时也算同一个家目录。不含自己和自己的子进程
+fn find_strays(sys: &sysinfo::System, want: Option<&[String]>, recorded: Option<u32>) -> Vec<u32> {
+    use sysinfo::ProcessStatus;
+    let me = std::process::id();
+    let home = std::env::var_os(HOME_VAR);
+    let cmd_of = |p: &sysinfo::Process| p.cmd().iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let is_service = |pid: sysinfo::Pid| sys.process(pid).is_some_and(|p| service_cmd(&cmd_of(p)).is_some());
+    let mut out: Vec<u32> = sys
+        .processes()
+        .iter()
+        .filter(|(pid, p)| {
+            let pid = pid.as_u32();
+            if pid == me || p.parent().map(|x| x.as_u32()) == Some(me) || p.thread_kind().is_some() {
+                return false;
+            }
+            if matches!(p.status(), ProcessStatus::Zombie | ProcessStatus::Dead) {
+                return false;
+            }
+            #[cfg(unix)]
+            if p.user_id().map(|u| **u) != Some(uid()) {
+                return false;
+            }
+            let cmd = cmd_of(p);
+            let args = match service_cmd(&cmd) {
+                Some(a) => a,
+                None => match host_cmd(&cmd) {
+                    // 守护进程启动的 board host，守护进程已经不在了（被收养）
+                    Some(a) if p.environ().iter().any(|e| e.to_string_lossy() == format!("{SUPERVISED}=1")) && !p.parent().is_some_and(is_service) => a,
+                    _ => return false,
+                },
+            };
+            if want.is_some_and(|w| w != args.as_slice()) {
+                return false;
+            }
+            let key = format!("{HOME_VAR}=");
+            let their = p.environ().iter().find_map(|e| e.to_string_lossy().strip_prefix(&key).map(str::to_string));
+            match (their, &home) {
+                (Some(t), Some(h)) => std::ffi::OsStr::new(&t) == h.as_os_str(),
+                // 家目录读不到：只认 pid 文件里记的那个
+                _ => recorded == Some(pid),
+            }
+        })
+        .map(|(pid, _)| pid.as_u32())
+        .collect();
+    out.sort();
+    out
+}
+
+fn procs() -> Option<sysinfo::System> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new().ok()?;
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_environ(UpdateKind::Always).with_user(UpdateKind::Always),
+    );
+    Some(sys)
+}
+
+fn running(sys: &sysinfo::System, pid: u32) -> bool {
+    sys.process(sysinfo::Pid::from_u32(pid)).is_some_and(|p| !matches!(p.status(), sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead))
+}
+
+/// pid 和它所有还在的子孙进程
+fn tree(sys: &sysinfo::System, root: u32) -> Vec<u32> {
+    let mut out = vec![root];
+    let mut i = 0;
+    while i < out.len() {
+        let parent = out[i];
+        for (pid, p) in sys.processes() {
+            if p.parent().map(|x| x.as_u32()) == Some(parent) && p.thread_kind().is_none() && !out.contains(&pid.as_u32()) {
+                out.push(pid.as_u32());
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 旧实例最多等多久收尾：`BOARD_HOST_TAKEOVER_MS`（只给测试用），默认 30 秒
+fn takeover_wait() -> Duration {
+    std::env::var("BOARD_HOST_TAKEOVER_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(30))
+}
+
+/// 回收本机遗留的守护进程和 board host（见 [`find_strays`]）：SIGTERM 让它们收尾（守护进程会先让 board host 结束 agent、
+/// 离线），最多等 30 秒，还不退就结束整个进程树。pid 文件里的进程已经不在、或不是要回收的进程时只删 pid 文件。
+/// 返回回收了几个
+fn reclaim(pidfile: &Path, want: Option<&[String]>, say: &dyn Fn(&str)) -> usize {
+    let recorded = std::fs::read_to_string(pidfile).ok().and_then(|s| s.trim().parse::<u32>().ok()).filter(|p| *p != std::process::id());
+    let Some(sys) = procs() else { return 0 };
+    let strays = find_strays(&sys, want, recorded);
+    if let Some(pid) = recorded.filter(|p| !strays.contains(p)) {
+        let _ = std::fs::remove_file(pidfile);
+        say(&if running(&sys, pid) {
+            format!("service.pid 记的进程 {pid} 不是这个服务的守护进程（进程号被复用或参数不同）：不动它，只清掉 pid 文件")
+        } else {
+            format!("service.pid 记的进程 {pid} 已经不在：清掉 pid 文件")
+        });
+    }
+    if strays.is_empty() {
+        return 0;
+    }
+    // 先记下整棵树：守护进程退出后，它启动的 board host、agent 会被收养，再找就找不到了
+    let trees: Vec<(u32, Vec<u32>)> = strays.iter().map(|&p| (p, tree(&sys, p))).collect();
+    for &pid in &strays {
+        say(&format!("本机已经有一个同样的守护进程或 board host（进程 {pid}）：让它收尾退出，由这个接管"));
+        ask_stop(pid);
+    }
+    let t = Instant::now();
+    let left = loop {
+        let Some(sys) = procs() else { break vec![] };
+        let left: Vec<u32> = strays.iter().copied().filter(|&p| running(&sys, p)).collect();
+        if left.is_empty() || t.elapsed() > takeover_wait() || QUIT.load(Ordering::SeqCst) {
+            break left;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    for (pid, all) in &trees {
+        if left.contains(pid) {
+            say(&format!("进程 {pid} {} 秒内没有退出：结束它和它启动的进程", takeover_wait().as_secs()));
+            for &p in all.iter().rev() {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(p as libc::pid_t, libc::SIGKILL);
+                }
+                #[cfg(not(unix))]
+                crate::envs::kill_tree(p, true);
+            }
+        }
+    }
+    strays.len()
 }
 
 /* ------------------------------ 安装、卸载 ------------------------------ */
@@ -366,6 +584,7 @@ pub fn install(name: Option<&str>, workspace: Option<&str>, dirs: &[String], jso
             write(&plan.file, text.as_bytes())?;
             let target = format!("gui/{}", uid());
             let _ = run("launchctl", &["bootout", &format!("{target}/{LAUNCHD_HOST}")]);
+            stop_old(&dir, &mut notes);
             // bootout 是异步的：刚卸下马上 bootstrap 可能报 5（I/O error），等一下再试
             let mut last = Ok(String::new());
             for _ in 0..10 {
@@ -386,12 +605,15 @@ pub fn install(name: Option<&str>, workspace: Option<&str>, dirs: &[String], jso
         write(&plan.file, &svc::utf16le(&svc::windows_task_xml(&user, &args)))?;
         run("schtasks", &["/Create", "/TN", WINDOWS_TASK, "/XML", &plan.file.display().to_string(), "/F"]).map_err(|e| BoardError::usage(format!("建计划任务失败：{e}")))?;
         let _ = run("schtasks", &["/End", "/TN", WINDOWS_TASK]);
+        stop_old(&dir, &mut notes);
         run("schtasks", &["/Run", "/TN", WINDOWS_TASK]).map_err(|e| BoardError::usage(format!("启动计划任务失败：{e}")))?;
     } else {
         write(&plan.file, svc::systemd_unit(&args, &env_for_service()).as_bytes())?;
         let sys = |a: &[&str]| run("systemctl", &[&["--user"], a].concat()).map_err(|e| BoardError::usage(format!("{e}（这台机器要有 systemd 用户服务）")));
         sys(&["daemon-reload"])?;
         sys(&["enable", SYSTEMD_HOST])?;
+        let _ = run("systemctl", &["--user", "stop", SYSTEMD_HOST]);
+        stop_old(&dir, &mut notes);
         sys(&["restart", SYSTEMD_HOST])?;
         let user = std::env::var("USER").unwrap_or_default();
         let linger = run("loginctl", &["show-user", &user, "--property=Linger"]).unwrap_or_default();
@@ -441,23 +663,39 @@ pub fn uninstall(json: bool, p: &Paint) -> Result<Output> {
     if !cfg!(target_os = "macos") && !cfg!(windows) {
         let _ = run("systemctl", &["--user", "daemon-reload"]);
     }
-    // 计划任务结束时不一定带走子进程：按 pid 文件结束守护进程
+    // 计划任务结束时不一定带走子进程，脱离了服务管理器的旧守护进程也还在：和守护进程启动时一样回收
+    let mut notes: Vec<String> = vec![];
     if let Ok(dir) = host_dir() {
-        let pidfile = dir.join("service.pid");
-        if let Some(pid) = std::fs::read_to_string(&pidfile).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
-            if pid != std::process::id() {
-                ask_stop(pid);
-            }
-        }
+        stop_old(&dir, &mut notes);
     }
     if json {
-        return Ok(Output::Json(json!({ "ok": true, "removed": existed, "file": plan.file.display().to_string() })));
+        return Ok(Output::Json(json!({ "ok": true, "removed": existed, "file": plan.file.display().to_string(), "notes": notes })));
     }
-    Ok(Output::Text(if existed {
+    let mut s = if existed {
         format!("{} 已卸载：{} 删掉了，重启后不再自动运行 board host\n", p.green("✓"), plan.file.display())
     } else {
         format!("{} 没有装过服务（{} 不存在）；已确认停掉\n", p.green("✓"), plan.file.display())
-    }))
+    };
+    for n in &notes {
+        s += &format!("  {}\n", p.dim(n));
+    }
+    Ok(Output::Text(s))
+}
+
+/// 装、卸载时停掉本机遗留的守护进程（不看参数），说了什么记进 notes；也写进 host.log
+fn stop_old(dir: &Path, notes: &mut Vec<String>) {
+    let log = Mutex::new(Log::open(dir.join("host.log")));
+    let said = Mutex::new(vec![]);
+    let say = |s: &str| {
+        if let Ok(mut l) = log.lock() {
+            l.say(s);
+        }
+        if let Ok(mut v) = said.lock() {
+            v.push(s.to_string());
+        }
+    };
+    reclaim(&dir.join("service.pid"), None, &say);
+    notes.extend(said.into_inner().unwrap_or_default());
 }
 
 #[cfg(test)]
@@ -497,6 +735,25 @@ mod tests {
         assert!(service_args(exe, None, None, &["a/b/c=/x".into()], cwd).is_err());
         // 按项目指定目录（项目下所有白板共用）
         assert_eq!(service_args(exe, None, None, &["proj=/srv/p".into()], cwd).unwrap(), ["/usr/local/bin/board", "host", "--service", "--dir", "proj=/srv/p"]);
+    }
+
+    #[test]
+    fn recognizes_service_and_host_command_lines() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 参数顺序、`--x=y` 写法不同也认成同一组参数
+        let want = v(&["--name", "mac", "--workspace", "/Users/me/repo", "--dir", "a/b=/x"]);
+        assert_eq!(service_cmd(&v(&["/Users/me/.local/bin/board", "host", "--service", "--name", "mac", "--workspace", "/Users/me/repo", "--dir", "a/b=/x"])), Some(want.clone()));
+        assert_eq!(service_cmd(&v(&["/x/board", "host", "--dir=a/b=/x", "--workspace=/Users/me/repo", "--service", "--name=mac"])), Some(want.clone()));
+        assert_eq!(service_cmd(&v(&["C:\\Board\\board.exe", "host", "--service"])), Some(vec![]));
+        // 不是守护进程：board host 本身、装卸服务、别的子命令、别的程序
+        assert_eq!(service_cmd(&v(&["/x/board", "host", "--name", "mac", "--workspace", "/Users/me/repo", "--dir", "a/b=/x"])), None);
+        assert_eq!(host_cmd(&v(&["/x/board", "host", "--name", "mac", "--workspace", "/Users/me/repo", "--dir", "a/b=/x"])), Some(want));
+        assert_eq!(host_cmd(&v(&["/x/board", "host", "--service"])), None);
+        assert_eq!(host_cmd(&v(&["/x/board", "host", "--install"])), None);
+        assert_eq!(service_cmd(&v(&["/x/board", "heartbeat", "--service"])), None);
+        assert_eq!(service_cmd(&v(&["/x/board-desktop", "host", "--service"])), None);
+        assert_eq!(service_cmd(&v(&["sleep", "60"])), None);
+        assert_eq!(service_cmd(&[]), None);
     }
 
     #[test]

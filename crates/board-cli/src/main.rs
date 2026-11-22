@@ -317,17 +317,7 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
             return service::uninstall(json, p);
         }
         if a.flag("--service") {
-            let mut args: Vec<String> = vec![];
-            if let Some(n) = a.value("--name") {
-                args.extend(["--name".to_string(), n.to_string()]);
-            }
-            if let Some(w) = a.value("--workspace") {
-                args.extend(["--workspace".to_string(), w.to_string()]);
-            }
-            for d in a.all("--dir") {
-                args.extend(["--dir".to_string(), d]);
-            }
-            service::supervise(args)?;
+            service::supervise(service::host_args(&a))?;
             return Ok(Output::Text(String::new()));
         }
         host::run(host::Opts { name: a.value("--name").map(str::to_string), workspace: a.value("--workspace").map(str::to_string), dirs: a.all("--dir") }, p)?;

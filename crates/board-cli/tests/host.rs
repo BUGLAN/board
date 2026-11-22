@@ -1507,6 +1507,137 @@ fn service_restarts_host_after_kill9() {
     assert!(!rig.s.home.join(".board").join("host").join("service.pid").exists());
 }
 
+/* ------------------------------ 守护进程单实例接管（#607） ------------------------------ */
+
+fn host_file(rig: &Rig, f: &str) -> std::path::PathBuf {
+    rig.s.home.join(".board").join("host").join(f)
+}
+
+fn online(rig: &Rig, name: &str) -> bool {
+    rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == name && x["online"] == true))
+}
+
+fn service_pid(rig: &Rig) -> Option<u32> {
+    std::fs::read_to_string(host_file(rig, "service.pid")).ok().and_then(|s| s.trim().parse().ok())
+}
+
+/// 进程还在（僵尸算不在：测试进程还没收尸的子进程）
+fn alive(pid: u32) -> bool {
+    let out = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let st = String::from_utf8_lossy(&out.stdout);
+    out.status.success() && !st.trim().is_empty() && !st.trim().starts_with('Z')
+}
+
+/// 连续启动两个同样的 `board host --service`：后启动的让前一个（连同它的 board host）收尾退出，自己成为唯一的守护进程、上线；
+/// 不出现 HOST_NAME_TAKEN 重启循环
+#[test]
+fn service_takes_over_running_service() {
+    let rig = Rig::new();
+    rig.mode("review");
+    let mut old = rig.service("mbp");
+    wait_until("旧守护进程上线", Duration::from_secs(20), || online(&rig, "mbp") && service_pid(&rig) == Some(old.id()));
+    let old_host = std::fs::read_to_string(host_file(&rig, "mbp.pid")).unwrap().split_whitespace().next().unwrap().parse::<u32>().unwrap();
+    let new = rig.service("mbp");
+    // 旧的守护进程收尾后正常退出（退出码 0），它启动的 board host 也退出
+    let (code, out) = wait_out(&mut old, Duration::from_secs(30));
+    assert_eq!(code, 0, "{out}");
+    wait_until("旧 board host 退出", Duration::from_secs(10), || !alive(old_host));
+    wait_until("新守护进程写 pid、上线", Duration::from_secs(20), || {
+        service_pid(&rig) == Some(new.id())
+            && online(&rig, "mbp")
+            && std::fs::read_to_string(host_file(&rig, "mbp.pid")).is_ok_and(|s| !s.starts_with(&format!("{old_host} ")))
+    });
+    let log = std::fs::read_to_string(host_file(&rig, "host.log")).unwrap();
+    assert!(log.contains(&format!("（进程 {}）：让它收尾退出，由这个接管", old.id())), "{log}");
+    assert!(!log.contains("HOST_NAME_TAKEN"), "{log}");
+    let (code, out) = stop(new);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 旧守护进程已经不在 service.pid 里（脱离 launchd 后被新的覆盖了），pid 文件指向一个无关的进程：
+/// 新的守护进程不碰那个无关进程、只清掉 pid 文件，从进程表里找到旧守护进程接管
+#[test]
+fn service_takes_over_detached_service_without_touching_unrelated_pid() {
+    let rig = Rig::new();
+    rig.mode("review");
+    let mut old = rig.service("mbp");
+    wait_until("旧守护进程上线", Duration::from_secs(20), || online(&rig, "mbp") && service_pid(&rig) == Some(old.id()));
+    let mut unrelated = Command::new("sleep").arg("60").spawn().unwrap();
+    std::fs::write(host_file(&rig, "service.pid"), format!("{}\n", unrelated.id())).unwrap();
+    let new = rig.service("mbp");
+    let (code, out) = wait_out(&mut old, Duration::from_secs(30));
+    assert_eq!(code, 0, "{out}");
+    wait_until("新守护进程上线", Duration::from_secs(20), || service_pid(&rig) == Some(new.id()) && online(&rig, "mbp"));
+    assert!(unrelated.try_wait().unwrap().is_none(), "无关的进程不能被结束");
+    let log = std::fs::read_to_string(host_file(&rig, "host.log")).unwrap();
+    assert!(log.contains(&format!("service.pid 记的进程 {} 不是这个服务的守护进程", unrelated.id())), "{log}");
+    let _ = unrelated.kill();
+    let _ = unrelated.wait();
+    let (code, out) = stop(new);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// service.pid 是已经不在的进程：只清掉，照常启动、上线
+#[test]
+fn service_starts_with_stale_pid_file() {
+    let rig = Rig::new();
+    rig.mode("review");
+    let mut gone = Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    gone.wait().unwrap();
+    std::fs::create_dir_all(host_file(&rig, "")).unwrap();
+    std::fs::write(host_file(&rig, "service.pid"), format!("{pid}\n")).unwrap();
+    let sup = rig.service("mbp");
+    wait_until("上线", Duration::from_secs(20), || service_pid(&rig) == Some(sup.id()) && online(&rig, "mbp"));
+    let log = std::fs::read_to_string(host_file(&rig, "host.log")).unwrap();
+    assert!(log.contains(&format!("service.pid 记的进程 {pid} 已经不在：清掉 pid 文件")), "{log}");
+    let (code, out) = stop(sup);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 守护进程自己被 kill -9，它启动的 board host 留了下来、还占着名字：新的守护进程认出这个遗留的 board host（由守护进程启动、
+/// 父进程已经不是守护进程），让它收尾退出后接管上线
+#[test]
+fn service_takes_over_orphaned_host() {
+    let rig = Rig::new();
+    rig.mode("review");
+    let mut old = rig.service("mbp");
+    wait_until("旧守护进程上线", Duration::from_secs(20), || online(&rig, "mbp") && service_pid(&rig) == Some(old.id()));
+    let orphan = std::fs::read_to_string(host_file(&rig, "mbp.pid")).unwrap().split_whitespace().next().unwrap().parse::<u32>().unwrap();
+    unsafe {
+        libc_kill(old.id() as i32, 9);
+    }
+    let _ = old.wait();
+    let new = rig.service("mbp");
+    wait_until("遗留的 board host 退出", Duration::from_secs(30), || !alive(orphan));
+    wait_until("新守护进程上线", Duration::from_secs(20), || {
+        service_pid(&rig) == Some(new.id())
+            && online(&rig, "mbp")
+            && std::fs::read_to_string(host_file(&rig, "mbp.pid")).is_ok_and(|s| !s.starts_with(&format!("{orphan} ")))
+    });
+    let (code, out) = stop(new);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 机器名被不是本机守护进程管的 board host 占着（另一台机器、手动开的）：守护进程回收不了，重试一次后记下原因、正常退出，
+/// 不再每 10 秒重启刷日志；占着名字的 board host 不受影响
+#[test]
+fn service_gives_up_when_name_taken_elsewhere() {
+    let rig = Rig::new();
+    rig.mode("review");
+    let other = rig.host("mbp");
+    wait_until("手动开的 board host 上线", Duration::from_secs(20), || online(&rig, "mbp"));
+    let mut sup = rig.service("mbp");
+    let (code, out) = wait_out(&mut sup, Duration::from_secs(30));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("HOST_NAME_TAKEN") && out.contains("不再重启"), "{out}");
+    let log = std::fs::read_to_string(host_file(&rig, "host.log")).unwrap();
+    assert_eq!(log.matches("启动 board host（第").count(), 2, "只重试一次：{log}");
+    assert!(online(&rig, "mbp"));
+    let (code, out) = stop(other);
+    assert_eq!(code, 0, "{out}");
+}
+
 /* ------------------------------ skills 共用库（#186） ------------------------------ */
 
 /// A 上 `board skills push`：在线的 B（这里的 board host）几秒内装进它每个找到的 agent 的 skill 目录，上报「已同步」；
