@@ -108,9 +108,12 @@ describe('项目设置', () => {
     expect(useUI.getState().projectSettings).toBe(null);
   });
 
-  it('描述下面的「在左侧项目面板显示」开关：默认开；关掉后当帧更新并保存 hidden', async () => {
+  it('描述下面的「在左侧项目面板显示」是普通行，标准小号开关默认开；关掉后当帧更新并保存 hidden', async () => {
     await open();
     const el = dialog().querySelector<HTMLButtonElement>('button[aria-label="在左侧项目面板显示"]')!;
+    expect(el.classList.contains('switch')).toBe(true);
+    expect(el.closest('.ps-show')).not.toBeNull();
+    expect(el.closest('.bs-keep')).toBeNull();
     expect(el.getAttribute('aria-checked')).toBe('true');
     act(() => el.click());
     expect(el.getAttribute('aria-checked')).toBe('false');

@@ -194,27 +194,24 @@ function Body({ p, close }: { p: ProjectInfo; close: () => void }) {
                 <Field label="名称" value={p.name} required onSave={v => saveProject('name', v)} />
                 <Field label="标识" value={p.key} mono readOnly hint="创建后不能修改" />
                 <Field label="描述" value={p.desc ?? ''} placeholder="一句话说明这个项目（选填）" onSave={v => saveProject('desc', v)} />
-                <div className="bs-keep" onClick={() => saveShown(!!p.hidden)}>
+                <div className="ps-show">
+                  <span className="ps-show-copy">
+                    <b>
+                      在左侧项目面板显示
+                      <Sync s={showSync.sync.shown} inline />
+                    </b>
+                    <span>关闭后仍可通过筛选或打开该项目的白板找到；当前所在的项目始终显示。</span>
+                  </span>
                   <button
                     type="button"
                     className={cx('switch', !p.hidden && 'on')}
                     role="switch"
                     aria-checked={!p.hidden}
                     aria-label="在左侧项目面板显示"
-                    onClick={e => {
-                      e.stopPropagation();
-                      saveShown(!!p.hidden);
-                    }}
+                    onClick={() => saveShown(!!p.hidden)}
                   >
                     <i />
                   </button>
-                  <div className="bs-keep-t">
-                    <b>
-                      在左侧项目面板显示
-                      <Sync s={showSync.sync.shown} inline />
-                    </b>
-                    <span>关闭后仍可通过筛选或打开该项目的白板找到；当前所在的项目始终显示。</span>
-                  </div>
                 </div>
                 <div className="bs-rc-row">
                   <span className="bs-rc-l">

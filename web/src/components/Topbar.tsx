@@ -7,6 +7,7 @@ import { newBoard, openBoard, openCard } from '../lib/actions';
 import { startWindowDrag, toggleMaximize } from '../lib/platform';
 import { cardTotal, flowOf, timing } from '../lib/schema';
 import { agentIdFor, agentMarkOf } from '../lib/hosts';
+import type { Workspace } from '../lib/types';
 import { clock, cx, MOD, reduceMotion } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
@@ -157,11 +158,23 @@ function PjStat({ icon, n, tip }: { icon: 'inbox' | 'todo' | 'cards'; n: number;
   );
 }
 
+/** 左上角切换器里的项目/白板：隐藏项目只保留当前项目；搜索也只搜剩下的 */
+function projectSwitcherGroups(ws: Workspace | null, path: string, query: string) {
+  const q = query.trim().toLowerCase();
+  const project = path.split('/')[0];
+  return (ws?.projects ?? [])
+    .filter(p => !p.hidden || p.key === project)
+    .map(p => ({ p, bs: p.boards.filter(b => !q || `${p.name}\n${p.key}\n${b.name}\n${b.key}\n${b.desc}`.toLowerCase().includes(q)) }))
+    .filter(g => g.bs.length);
+}
+
 function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
   const [q, setQ] = useState('');
-  const [active, setActive] = useState(() => Math.max(0, allBoards(ws).findIndex(b => b.path === path)));
+  const [active, setActive] = useState(() =>
+    Math.max(0, projectSwitcherGroups(ws, path, '').flatMap(g => g.bs).findIndex(b => b.path === path)),
+  );
   const [pos, setPos] = useState({ left: 8, top: 60 });
   const menu = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -187,10 +200,7 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
     };
   }, []);
 
-  const query = q.trim().toLowerCase();
-  const groups = (ws?.projects ?? [])
-    .map(p => ({ p, bs: p.boards.filter(b => !query || `${p.name}\n${p.key}\n${b.name}\n${b.key}\n${b.desc}`.toLowerCase().includes(query)) }))
-    .filter(g => g.bs.length);
+  const groups = projectSwitcherGroups(ws, path, q);
   const items = groups.flatMap(g => g.bs);
   const act = Math.min(active, Math.max(0, items.length - 1));
 
