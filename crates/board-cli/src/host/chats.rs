@@ -299,7 +299,7 @@ impl Host<'_> {
         if let Some(m) = &check.missing {
             return Err(format!("在{}里缺 {m}：agent「{}」跑不起来，先装上", env.name, t.agent));
         }
-        let home = chat_home(&env).ok_or_else(|| format!("找不到{}里的用户主目录", env.name))?;
+        let home = chat_dir(t, &env)?;
         // 按角色带上模型、强度、供应商：和派发同一套（role_run 只看这几项和 id，id 用负数，文件名不和派发撞）
         let role = self.role_run(&chat_dispatch(t))?;
         let _ = std::fs::create_dir_all(&self.run);
@@ -382,7 +382,17 @@ fn chat_output(c: &mut ChatRun, last: bool, secrets: &[&str]) -> (ChatReport, u6
     (ChatReport { lines, events, fmt, ..Default::default() }, sent, read)
 }
 
-/// 对话在哪个目录里跑：这个启动环境里的用户主目录（WSL 是 WSL 里的，换成 Windows 上能访问的路径）
+/// 对话在哪个目录里跑：开始时选了项目的，用存下的路径（不按现在的工作空间重算：重启接回时 ACP 会话的 cwd 不变；
+/// 目录不在了报错，不建空目录，#624）；没选的是启动环境里的用户主目录
+fn chat_dir(t: &ChatTask, env: &Env) -> std::result::Result<PathBuf, String> {
+    if let Some(raw) = t.cwd.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        let dir = expand(raw);
+        return if dir.is_dir() { Ok(dir) } else { Err(format!("目录不存在：{raw}")) };
+    }
+    chat_home(env).ok_or_else(|| format!("找不到{}里的用户主目录", env.name))
+}
+
+/// 用户主目录：这个启动环境里的（WSL 是 WSL 里的，换成 Windows 上能访问的路径）
 fn chat_home(env: &Env) -> Option<PathBuf> {
     if env.wsl().is_some() {
         return envs::wsl_unc(env, "~");
@@ -473,5 +483,21 @@ mod tests {
         assert_eq!(round_done(&st(false, 2, Some("end_turn")), 2, 2), None, "报过了");
         assert_eq!(round_done(&st(false, 1, Some("end_turn")), 2, 0), None, "交了第 2 条、board acp 还没开始它");
         assert_eq!(round_done(&st(false, 2, Some("cancelled")), 2, 1), Some("cancelled".into()));
+    }
+
+    #[test]
+    fn a_chat_runs_in_its_saved_dir_and_never_creates_it() {
+        let task = |cwd: Option<&str>| -> ChatTask { serde_json::from_value(serde_json::json!({ "id": 1, "agent": "claude", "cwd": cwd })).unwrap() };
+        let env = Env::direct();
+        let dir = std::env::temp_dir().join(format!("board-chat-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = dir.display().to_string();
+        assert_eq!(chat_dir(&task(Some(&raw)), &env), Ok(dir.clone()), "选了项目：用存下的路径");
+        let gone = dir.join("gone");
+        let err = chat_dir(&task(Some(&gone.display().to_string())), &env).unwrap_err();
+        assert!(err.starts_with("目录不存在："), "{err}");
+        assert!(!gone.exists(), "不建空目录");
+        assert_eq!(chat_dir(&task(None), &env).ok(), chat_home(&env), "没选：用户主目录");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

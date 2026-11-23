@@ -23,6 +23,9 @@ pub(crate) struct StartBody {
     profile: Option<String>,
     #[serde(default)]
     agent: Option<String>,
+    /// 在哪个项目的目录里跑（项目标识）；不给 = 主目录。只收项目标识，不收路径：路径由服务端按机器的工作空间算（#624）
+    #[serde(default)]
+    project: Option<String>,
     text: String,
 }
 
@@ -52,7 +55,7 @@ pub(crate) async fn start(
     let b: StartBody = parse(v)?;
     let client = client_of(&h);
     let out = s
-        .db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.chat_start(&name, b.profile.as_deref(), b.agent.as_deref(), &b.text, &by)))
+        .db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.chat_start(&name, b.profile.as_deref(), b.agent.as_deref(), b.project.as_deref(), &b.text, &by)))
         .await?;
     s.poke();
     Ok(Json(out))

@@ -910,6 +910,10 @@ export interface Chat {
   lastAt: number;
   /** busy 这一轮在跑（不能发下一条）| idle 等人发消息 */
   turn: 'busy' | 'idle';
+  /** 在哪个项目的目录里跑（项目标识）；没有 = 主目录（#624） */
+  project?: string;
+  /** 实际路径（开始时按这台机器的工作空间算出，`~` 不展开） */
+  cwd?: string | null;
 }
 
 /** 一个对话的全部内容：输出（最后 500 行）、事件（带 since 取时只有之后新增、改过的） */

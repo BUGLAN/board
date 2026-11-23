@@ -13,7 +13,7 @@ import { chatsOf, HostChats, type ChatSel } from './HostChats';
 const calls = vi.hoisted(() => ({
   prompt: [] as [number, string][],
   cancel: [] as number[],
-  start: [] as [string, { profile?: string; agent?: string }, string][],
+  start: [] as unknown[][],
   fail: null as null | { code: string; message: string },
   views: new Map<number, unknown>(),
 }));
@@ -30,8 +30,8 @@ vi.mock('../../lib/api', async orig => {
         return {};
       },
       chatCancel: async (id: number) => void calls.cancel.push(id),
-      startChat: async (host: string, by: { profile?: string; agent?: string }, text: string) => {
-        calls.start.push([host, by, text]);
+      startChat: async (host: string, by: { profile?: string; agent?: string }, text: string, project?: string) => {
+        calls.start.push(project === undefined ? [host, by, text] : [host, by, text, project]);
         return { id: 9 };
       },
     },
@@ -84,7 +84,9 @@ const profiles: Profile[] = [
 ];
 
 const render = async (h: HostInfo, chats: Chat[], sel: ChatSel = null, setSel: (s: ChatSel) => void = () => {}) => {
-  useData.setState({ ws: { hosts: [h], dispatches: [], chats, sched: { rules: [], minute: 0, profiles } } as unknown as Workspace });
+  useData.setState({
+    ws: { hosts: [h], dispatches: [], chats, projects: [{ key: 'oss', name: '开源仓库' }], sched: { rules: [], minute: 0, profiles } } as unknown as Workspace,
+  });
   await act(async () => root.render(<HostChats h={h} chats={chatsOf(useData.getState().ws, h.id)} sel={sel} setSel={setSel} now={Date.now()} />));
   await act(async () => {});
 };
@@ -239,5 +241,71 @@ describe('手机上：列表 → 整屏聊天，放大 / 还原', () => {
     });
     expect(document.querySelector('.hc-full')).toBeNull();
     expect(localStorage.getItem('board.chatFull.d')).toBe('0');
+  });
+});
+
+describe('新对话：在哪个目录里跑（#624）', () => {
+  const withDirs = (x: Partial<HostInfo> = {}) =>
+    host({
+      version: '0.1.53',
+      workspace: { path: '~/repo' },
+      dirs: [
+        { board: 'oss/main', path: '~/repo/oss', status: 'ok', branch: 'main', reported: true },
+        { board: 'oss/release', path: '~/repo/oss', status: 'ok', reported: true },
+        { board: 'docs/content', path: '~/repo/docs', status: 'not_git', reported: true },
+        { board: 'site/launch', path: '~/repo/site', status: 'missing', reported: true },
+        { board: 'new/main', path: '~/repo/new' },
+      ],
+      ...x,
+    } as Partial<HostInfo>);
+  const sel = () => el.querySelector<HTMLButtonElement>('.nc-dir .sel')!;
+  const options = async () => {
+    await act(async () => sel().click());
+    const ctx = useUI.getState().ctx as unknown as { items: { value: string; label: string; disabled?: boolean }[]; pick: (v: string) => void };
+    return ctx;
+  };
+  const where = () => el.querySelector('.nc-where')?.textContent;
+
+  it('主目录 + 项目目录（按项目去重）；目录不存在、还没检查的禁用写原因，不是 git 仓库的能选；底栏只写路径', async () => {
+    await render(withDirs(), []);
+    expect(where()).toBe('~');
+    const ctx = await options();
+    expect(ctx.items.map(o => [o.value, o.label, !!o.disabled])).toEqual([
+      ['', '主目录（~）', false],
+      ['oss', '开源仓库 · ~/repo/oss', false],
+      ['docs', 'docs · ~/repo/docs · 不是 git 仓库', false],
+      ['site', 'site · ~/repo/site · 目录不存在', true],
+      ['new', 'new · ~/repo/new · 还没检查', true],
+    ]);
+    await act(async () => ctx.pick('docs'));
+    expect(el.querySelector('.nc-dir-note.warn')?.textContent).toBe('不是 git 仓库');
+    expect(where()).toBe('~/repo/docs');
+  });
+
+  it('选了项目：请求只带项目标识；不选不带', async () => {
+    await render(withDirs(), []);
+    const ctx = await options();
+    await act(async () => ctx.pick('oss'));
+    expect(el.querySelector('.nc-dir-note')?.textContent).toBe('git 仓库 · 分支 main');
+    const t = el.querySelector<HTMLTextAreaElement>('.nc-text')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(t, '看看依赖');
+      t.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => button('开始').click());
+    expect(calls.start).toEqual([['mbp', { profile: 'code' }, '看看依赖', 'oss']]);
+  });
+
+  it('没配工作空间只有主目录并提示；board 版本太旧时项目目录禁用', async () => {
+    await render(host({ workspace: null, dirs: [] } as Partial<HostInfo>), []);
+    expect(el.querySelector('.nc-dir-note')?.textContent).toBe('这台机器没配工作空间：只能在主目录里跑');
+    expect((await options()).items.map(o => o.value)).toEqual(['']);
+    act(() => useUI.setState({ ctx: null }));
+    act(() => root.unmount());
+    root = createRoot(el);
+    await render(withDirs({ version: '0.1.52' }), []);
+    expect(el.querySelector('.nc-dir-note')?.textContent).toBe('mbp 的 board 版本太旧，先升级，才能选项目目录');
+    const ctx = await options();
+    expect(ctx.items.filter(o => o.value).every(o => o.disabled && o.label.endsWith('board 版本太旧，先升级'))).toBe(true);
   });
 });

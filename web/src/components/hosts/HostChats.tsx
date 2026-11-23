@@ -210,9 +210,9 @@ function PaneNav({ nav, side }: { nav: Nav; side: 'back' | 'zoom' }) {
   );
 }
 
-/** 对话在哪个目录里跑：现在都在主目录（选运行目录见 default/main#624） */
-const chatDirShort = (_c: Chat) => '~';
-const chatDir = (_c: Chat) => '主目录';
+/** 对话在哪个目录里跑（#624）：列表写项目标识，头部写实际路径；没选项目的是主目录 */
+const chatDirShort = (c: Chat) => c.project || '~';
+const chatDir = (c: Chat) => c.cwd || '主目录';
 
 /** 取一个对话的内容：第一次全取，之后带 since 只取新增、改过的事件。推送里有这个对话的新事件、kick() 时马上再取；
  *  这一轮在跑时另外每 5 秒取一次。同一时刻只有一个请求 */

@@ -44,7 +44,7 @@ fn beat(s: &mut Store, at: i64, chats: Option<Vec<i64>>) -> HostWork {
 }
 
 fn start(s: &mut Store, at: i64, text: &str) -> Result<Chat> {
-    s.write(at, Origin::ui(None), |w| w.chat_start("mbp", None, Some("claude"), text, "lan"))
+    s.write(at, Origin::ui(None), |w| w.chat_start("mbp", None, Some("claude"), None, text, "lan"))
 }
 
 fn prompt(s: &mut Store, at: i64, id: i64, text: &str) -> Result<Chat> {
@@ -229,4 +229,58 @@ fn only_the_owning_host_reports_and_removal_drops_chats() {
     // 移除机器：对话一起删
     s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_remove("mbp", &Actor::human(), "lan")).unwrap();
     assert_eq!(s.read(|r| r.chat(c.id)).unwrap_err().code, ErrorCode::NotFound);
+}
+
+/// 带工作空间和目录状态上报（#624）
+fn beat_dirs(s: &mut Store, at: i64, ws: Option<&str>, status: Option<&str>) {
+    let mut r = report("mbp", "i1", vec![], Some(vec![]));
+    // 没配工作空间时 board host 报空路径（不报 = 不变）
+    r.workspace = Some(HostWorkspace { path: ws.unwrap_or_default().into(), ..Default::default() });
+    r.dirs = match (ws, status) {
+        (Some(p), Some(st)) => vec![HostDir { board: B.into(), path: format!("{p}/default"), status: Some(st.into()), ..Default::default() }],
+        _ => vec![],
+    };
+    s.write(at, Origin::cli(), |w| w.host_beat(&r, Some(1))).unwrap();
+}
+
+fn start_in(s: &mut Store, at: i64, project: Option<&str>) -> Result<Chat> {
+    s.write(at, Origin::ui(None), |w| w.chat_start("mbp", None, Some("claude"), project, "看看依赖", "lan"))
+}
+
+#[test]
+fn a_chat_can_run_in_a_project_dir_of_the_host() {
+    let mut s = store();
+    beat_dirs(&mut s, T0, Some("~/repo"), Some("not_git"));
+    // 不是 git 仓库也能选；存下的是按工作空间算出的路径（~ 不展开），board host 的任务里带着
+    let c = start_in(&mut s, T0 + S, Some("default")).unwrap();
+    assert_eq!((c.project.as_str(), c.cwd.as_deref()), ("default", Some("~/repo/default")));
+    let w = work(&s, T0 + S);
+    assert_eq!(w.chats.iter().find(|t| t.id == c.id).and_then(|t| t.cwd.clone()).as_deref(), Some("~/repo/default"));
+    let h = s.read(|r| r.host("mbp", T0 + S)).unwrap();
+    assert!(h.ops.iter().any(|o| o.text == "开始对话（Claude Code，default）"), "{:?}", h.ops);
+    // 不选：主目录，两项都空；任务里也没有
+    let home = start_in(&mut s, T0 + S, None).unwrap();
+    assert_eq!((home.project.as_str(), home.cwd.as_deref()), ("", None));
+    assert_eq!(work(&s, T0 + S).chats.iter().find(|t| t.id == home.id).unwrap().cwd, None);
+    // 之后换了工作空间：已有对话还是原来的路径
+    beat_dirs(&mut s, T0 + 2 * S, Some("~/elsewhere"), Some("ok"));
+    assert_eq!(s.read(|r| r.chat(c.id)).unwrap().cwd.as_deref(), Some("~/repo/default"));
+}
+
+#[test]
+fn a_project_dir_must_exist_on_the_host() {
+    let mut s = store();
+    beat_dirs(&mut s, T0, Some("~/repo"), Some("ok"));
+    assert_eq!(start_in(&mut s, T0 + S, Some("nope")).unwrap_err().code, ErrorCode::BoardNotFound);
+    beat_dirs(&mut s, T0 + S, Some("~/repo"), Some("missing"));
+    let e = start_in(&mut s, T0 + S, Some("default")).unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (ErrorCode::Usage, "目录不存在：~/repo/default"));
+    assert!(s.read(|r| r.chats()).unwrap().is_empty(), "都没开出对话");
+    // 一直没配工作空间的机器：只能在主目录里跑
+    let mut s = store();
+    beat_dirs(&mut s, T0, None, None);
+    let e = start_in(&mut s, T0 + S, Some("default")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("没配工作空间"), "{}", e.message);
+    assert!(start_in(&mut s, T0 + S, None).is_ok());
 }

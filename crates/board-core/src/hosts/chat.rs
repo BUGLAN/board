@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS chats (
   cancel      INTEGER NOT NULL DEFAULT 0, -- 停止这一轮的请求（> 0 时等 board host 处理）
   log         TEXT NOT NULL DEFAULT '',   -- 输出的最后 500 行
   fmt         TEXT,
-  ev_dropped  INTEGER NOT NULL DEFAULT 0
+  ev_dropped  INTEGER NOT NULL DEFAULT 0,
+  project     TEXT NOT NULL DEFAULT '',   -- 在哪个项目的目录里跑（项目标识）；空 = 主目录（#624）
+  cwd         TEXT                        -- 开始时按工作空间算出的路径（~ 不展开）；空 = 主目录
 );
 CREATE INDEX IF NOT EXISTS chats_host ON chats (host_id, last_at);
 CREATE TABLE IF NOT EXISTS chat_events (
@@ -92,6 +94,12 @@ pub struct Chat {
     pub last_at: i64,
     /// `busy` 这一轮在跑 | `idle` 等人发消息
     pub turn: String,
+    /// 在哪个项目的目录里跑（项目标识）；空 = 主目录
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
+    /// 实际路径（开始时按这台机器的工作空间算出，`~` 不展开）；空 = 主目录
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// 发给 board host 的一个对话：还没交给它的消息、停止这一轮的请求，以及启动 agent 要用的
@@ -124,6 +132,9 @@ pub struct ChatTask {
     /// 这一轮在跑（含还没交的消息）
     #[serde(default)]
     pub busy: bool,
+    /// 在哪个目录里启动（开始时存下的路径，`~` 不展开）；空 = 启动环境里的用户主目录
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,7 +202,7 @@ impl EvTable {
     pub(super) const CHAT: EvTable = EvTable { owner: "chats", events: "chat_events", col: "chat", what: "对话" };
 }
 
-const CHAT_COLS: &str = "id, host_id, host, agent, agent_label, profile, profile_name, provider, model, effort, env, env_name, title, by_name, created_at, last_at, turn";
+const CHAT_COLS: &str = "id, host_id, host, agent, agent_label, profile, profile_name, provider, model, effort, env, env_name, title, by_name, created_at, last_at, turn, project, cwd";
 
 fn chat_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
     Ok(Chat {
@@ -212,6 +223,8 @@ fn chat_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
         created_at: r.get(14)?,
         last_at: r.get(15)?,
         turn: r.get(16)?,
+        project: r.get(17)?,
+        cwd: r.get(18)?,
     })
 }
 
@@ -277,7 +290,7 @@ impl R<'_> {
     /// 发给 board host 的对话：有还没交给它的消息、有停止请求，或者这一轮在跑的
     pub fn chat_tasks(&self, host_id: i64) -> Result<Vec<ChatTask>> {
         let mut st = self.conn.prepare(
-            "SELECT id, agent, env, model, effort, profile, profile_name, provider, acp, prompts, cancel, turn FROM chats
+            "SELECT id, agent, env, model, effort, profile, profile_name, provider, acp, prompts, cancel, turn, cwd FROM chats
              WHERE host_id = ?1 AND (turn = 'busy' OR cancel > 0 OR prompts != '[]') ORDER BY id",
         )?;
         let rows = st.query_map([host_id], |r| {
@@ -296,6 +309,7 @@ impl R<'_> {
                 prompts: serde_json::from_str(&prompts).unwrap_or_default(),
                 cancel: r.get(10)?,
                 busy: turn == "busy",
+                cwd: r.get(12)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -313,10 +327,17 @@ impl W<'_> {
     /// 在一台机器上开一个对话，第一条消息随之发出（只能在登录后的界面上开）。
     /// `profile`：按角色开（这台机器跑不了时 `AGENT_NOT_ON_HOST`，写明原因）；没有时用 `agent`（空 = 机器的默认 agent）。
     /// 机器离线时 `USAGE`，不排队
-    pub fn chat_start(&mut self, host: &str, profile: Option<&str>, agent: Option<&str>, text: &str, by: &str) -> Result<Chat> {
+    pub fn chat_start(&mut self, host: &str, profile: Option<&str>, agent: Option<&str>, project: Option<&str>, text: &str, by: &str) -> Result<Chat> {
         let text = clean_text(text)?;
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         need_online(&h, self.now)?;
+        let (project, cwd) = match project.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(p) => {
+                let path = self.chat_dir(&h, p)?;
+                (p.to_string(), Some(path))
+            }
+            None => (String::new(), None),
+        };
         let role = match profile.map(str::trim).filter(|s| !s.is_empty()) {
             Some(key) => Some(self.read().profile_by(key)?.ok_or_else(|| crate::profiles::no_such_profile(key))?),
             None => None,
@@ -342,15 +363,40 @@ impl W<'_> {
         let by_name = if by.trim().is_empty() { "人".to_string() } else { by.trim().to_string() };
         let (pid, pname, provider) = role.as_ref().map_or_else(Default::default, |p| (p.id.clone(), p.name.clone(), p.provider.clone()));
         self.tx.execute(
-            "INSERT INTO chats (host_id, host, agent, agent_label, profile, profile_name, provider, model, effort, env, env_name, title, by_name, created_at, last_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
-            params![h.id, h.name, a.id, a.name, pid, pname, provider, model, effort, env, env_name, title, by_name, self.now],
+            "INSERT INTO chats (host_id, host, agent, agent_label, profile, profile_name, provider, model, effort, env, env_name, title, by_name, created_at, last_at, project, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16)",
+            params![h.id, h.name, a.id, a.name, pid, pname, provider, model, effort, env, env_name, title, by_name, self.now, project, cwd],
         )?;
         let id = self.tx.last_insert_rowid();
         let who = role.as_ref().map_or_else(|| a.name.clone(), |p| p.name.clone());
-        self.host_op(h.id, &by_name, &format!("开始对话（{who}）"))?;
+        let at = if project.is_empty() { String::new() } else { format!("，{project}") };
+        self.host_op(h.id, &by_name, &format!("开始对话（{who}{at}）"))?;
         self.queue_prompt(id, &text)?;
         self.read().chat(id)
+    }
+
+    /// 对话在项目 `p` 的目录里跑：这台机器上这个项目的目录（board host 上报过的，没报过时按工作空间派生），`~` 不展开。
+    /// 项目不存在 `BOARD_NOT_FOUND`；机器没配工作空间、也没单独指定这个项目的目录 `USAGE`；board host 报过目录不存在 `USAGE`。
+    /// 不是 git 仓库的照样能用（对话常用来做不碰仓库的事）
+    fn chat_dir(&mut self, h: &HostRow, p: &str) -> Result<String> {
+        self.project_exists(p)?;
+        let info = h.info(self.now);
+        let mine = |d: &HostDir| d.board.split_once('/').map(|x| x.0) == Some(p);
+        let dir = match info.dirs.iter().find(|d| mine(d)).cloned() {
+            Some(d) => Some(d),
+            None => {
+                let first: Option<String> =
+                    self.tx.query_row("SELECT key FROM boards WHERE project = ?1 ORDER BY sort, created_at, key LIMIT 1", [p], |r| r.get(0)).optional()?;
+                first.and_then(|b| info.workspace.as_ref().and_then(|w| derive_dir(w, &format!("{p}/{b}"), &h.os)))
+            }
+        };
+        let Some(dir) = dir else {
+            return Err(BoardError::usage(format!("机器「{}」没配工作空间：只能在主目录里跑", h.name)).with_detail(json!({ "host": h.name, "project": p })));
+        };
+        if dir.status.as_deref() == Some("missing") {
+            return Err(BoardError::usage(format!("目录不存在：{}", dir.path)).with_detail(json!({ "host": h.name, "project": p, "path": dir.path })));
+        }
+        Ok(dir.path)
     }
 
     /// 在对话里发一条（只能在登录后的界面上发）：这一轮还没结束时 `USAGE`；机器离线时 `USAGE`，不排队

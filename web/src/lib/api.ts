@@ -328,7 +328,9 @@ export const api = {
   /** 取消排队中的派发，或停止正在跑的派发 */
   cancelDispatch: (id: number) => req<Dispatch>('POST', '/api/dispatches/cancel', { id }),
   /** 机器对话（只能在登录后的界面上用，PRD §9.1「机器对话」）：开一个（第一条消息随之发出）、取内容（带 since 增量）、发一条、停止这一轮 */
-  startChat: (host: string, by: { profile?: string; agent?: string }, text: string) => req<Chat>('POST', `/api/hosts/${q(host)}/chats`, { ...by, text }),
+  /** project：在这个项目的目录里跑（项目标识）；不给 = 主目录（#624） */
+  startChat: (host: string, by: { profile?: string; agent?: string }, text: string, project?: string) =>
+    req<Chat>('POST', `/api/hosts/${q(host)}/chats`, { ...by, text, ...(project ? { project } : {}) }),
   chat: (id: number, since = 0) => req<ChatView>('GET', `/api/chats/${id}${since > 0 ? `?since=${since}` : ''}`).then(normChatView),
   chatPrompt: (id: number, text: string) => req<Chat>('POST', `/api/chats/${id}/prompt`, { text }),
   chatCancel: (id: number) => req<Chat>('POST', `/api/chats/${id}/cancel`, {}),

@@ -351,6 +351,12 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     }
     // 机器对话（chat.rs）
     conn.execute_batch(chat::SCHEMA)?;
+    // 对话的运行目录（#624）：旧对话两列为空 = 主目录
+    for (col, def) in [("project", "TEXT NOT NULL DEFAULT ''"), ("cwd", "TEXT")] {
+        if !has("chats", col)? {
+            conn.execute_batch(&format!("ALTER TABLE chats ADD COLUMN {col} {def}"))?;
+        }
+    }
     Ok(())
 }
 
