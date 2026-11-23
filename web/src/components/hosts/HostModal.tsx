@@ -72,6 +72,8 @@ export function HostModal() {
       if (ui.confirm || ui.palette.open || ui.ctx || ui.session) return;
       // 选文件夹的那一层盖在上面：键盘归它
       if (document.querySelector('.hd-sheet')) return;
+      // 放大的对话盖在上面：Esc 先还原它（HostChats 的 ChatFull）
+      if (document.querySelector('.hc-full')) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       // 焦点在选择框上：上下键是打开它的选项，不是换机器
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (e.target as HTMLElement).closest?.('.sel')) return;

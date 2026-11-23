@@ -1227,9 +1227,34 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hc-item-text em.on { font-weight: 600; color: color-mix(in oklab, var(--c-doing), var(--ink)); }
 
 .hc-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.hc-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--line); font-size: 13px; }
-.hc-head > b { font-weight: 600; white-space: nowrap; }
-.hc-meta { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 2px 12px; margin-left: 4px; font-size: 12px; color: var(--text-3); }
+.hc-head { flex: none; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 6px 10px 6px 18px; border-bottom: 1px solid var(--line); font-size: 13px; }
+/* 标题两行：第一条消息 / 状态 · 谁 · 目录 · 模型 …；收起时单行省略，点开换行显示全部 */
+.hc-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding: 2px 4px; border-radius: var(--r-sm); text-align: left; }
+.hc-title:not(.static):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.hc-title b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 600; color: var(--text); }
+.hc-title small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11.5px; color: var(--text-3); }
+.hc-title small > span + span::before { content: ' · '; }
+.hc-head.more .hc-title b, .hc-head.more .hc-title small { white-space: normal; overflow-wrap: anywhere; }
+.hc-path { font-family: var(--f-mono); }
+.hc-path::before { font-family: var(--f-sans, inherit); }
+.hc-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; vertical-align: 1px; background: var(--c); }
+.hc-dot + span::before { content: none !important; }
+.hc-head .ss-modes { margin-left: 0; flex: none; }
+.hc-back, .hc-zoom { flex: none; }
+.hc-sub { flex: none; display: flex; justify-content: flex-end; padding: 6px 12px 0; }
+.hc-item > svg:last-child { display: none; }
+
+/* 放大：桌面上盖住整个机器详情弹窗；手机上盖住整个屏幕（挂在 body 上，高度跟 visualViewport） */
+.hc-full { z-index: 130; display: flex; flex-direction: column; background: var(--surface); animation: enter-up var(--dur-2) var(--ease-out) backwards; }
+.hc-full.in-drawer { position: absolute; inset: 0; border-radius: inherit; }
+.hc-full.on-screen { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--vv-h, 100dvh); padding-top: env(safe-area-inset-top); }
+.hc-full .hc-out { flex: 1; min-height: 0; }
+.hc-full .ss-compose { margin: 0 16px 14px; }
+.hc-full.on-screen .ss-compose { margin: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+.hc-full.on-screen.kb .ss-compose { margin-bottom: 8px; }
+.hc-full .nc { min-height: 0; }
+.hc-main-ph { visibility: hidden; }
+
 .hc-out { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 22px; }
 .hc-main .ss-compose { margin: 0 16px 14px; }
 
@@ -1241,10 +1266,12 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .nc-tile:disabled small { color: var(--warn-text); }
 .nc-tile.on .fm-mark .hp-logo { filter: none; opacity: 1; }
 .nc-tile:not(.on) .fm-mark .hp-logo { filter: grayscale(1); opacity: .55; }
-.nc-msg { flex: 1; min-height: 0; }
-.nc-text { flex: 1; min-height: 120px; padding: 9px 11px; resize: none; font: 13px/1.6 var(--f-sans, inherit); }
+/* 第一条消息：不撑满剩下的高度（#621 原型反馈：竖屏、横屏都太大），按屏高在 88–160px 之间 */
+.nc-msg { flex: none; }
+.nc-text { display: block; width: 100%; height: clamp(88px, 20dvh, 160px); padding: 9px 11px; resize: none; font: 13px/1.6 var(--f-sans, inherit); }
 .nc-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 10px 16px 14px 22px; border-top: 1px solid var(--line); }
 .nc-where { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); }
+
 .nc-where svg { width: 13px; height: 13px; flex: none; }
 .nc-key { font: 11px var(--f-mono); color: var(--text-3); }
 
@@ -1270,12 +1297,37 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .ss-compose.busy .ss-hint { color: color-mix(in oklab, var(--c-doing), var(--ink)); }
 .ss-compose.off { opacity: .6; }
 
-@media (max-width: 760px) {
+/* 手机竖屏和横屏（矮屏）都按手机排：和 HostChats.tsx 的 COMPACT 一致 */
+@media (max-width: 760px), (max-height: 520px) {
   .hc-out { padding: 12px 16px; }
   .hc-main .ss-compose { margin: 0 12px 12px; }
   .nc-list { grid-template-columns: minmax(0, 1fr); }
-  .hd-body.hd-chats { overflow-y: auto; display: block; }
-  .hc { display: block; }
-  .hc-list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 220px; }
-  .hc-main { min-height: 520px; }
+  /* 列表和聊天二选一（#621）：列表时只有页签这一层滚动；聊天（还原状态）时占满页签剩下的高度，输出区自己滚 */
+  .hd-body.hd-chats { display: flex; overflow: hidden; }
+  .hc { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .hc[data-view='list'] .hc-list { flex: 1; overflow-y: auto; border-right: 0; padding: 12px 14px calc(16px + env(safe-area-inset-bottom)); }
+  .hc[data-view='list'] .hc-main { display: none; }
+  .hc:not([data-view='list']) .hc-list { display: none; }
+  .hc-main { flex: 1; min-height: 0; }
+  .hc-new { height: 44px; }
+  .hc-item { align-items: center; padding: 10px 8px; }
+  .hc-item + .hc-item { box-shadow: 0 -1px 0 var(--line); border-radius: 0; }
+  .hc-item > svg:last-child { display: block; flex: none; width: 16px; height: 16px; margin-left: auto; color: var(--text-3); }
+  .hc-item-text b { font-size: 14px; }
+  .hc-item-text small { font-size: 12px; }
+  .hc-head { padding: 4px 4px 4px 4px; gap: 2px; }
+  .hc-head > .hp-mini, .hc-head > .hp-logo { display: none; }
+  .hc-back, .hc-zoom { width: 44px; height: 44px; }
+  .hc-back svg, .hc-zoom svg { width: 20px; height: 20px; }
+  .hc-title b { font-size: 14px; }
+  .ss-hint { display: none; }
+  .ss-compose { flex-direction: row; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 16px; }
+  .ss-compose .ss-input { flex: 1; }
+  .ss-compose-bar { flex: none; }
+  .hc-send, .hc-stop { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 12px; }
+  .hc-send svg, .hc-stop svg { width: 18px; height: 18px; margin: 0; }
+  .hc-btn-label { display: none; }
+  .nc-foot { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .nc-key { display: none; }
+  .hc-full.kb .nc-foot { padding-bottom: 10px; }
 }

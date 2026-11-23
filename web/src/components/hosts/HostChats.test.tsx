@@ -1,5 +1,6 @@
 /* 机器详情「对话」页签（PRD §9.1「机器对话」）：列表、在右栏里聊、发消息（原样、乐观更新、失败退回）、这一轮在跑时不能发、
-   停止这一轮、机器离线、新对话（跑不了的角色禁用写原因，开始要等服务端返回） */
+   停止这一轮、机器离线、新对话（跑不了的角色禁用写原因，开始要等服务端返回）；
+   手机上列表 → 整屏聊天、右上角放大 / 还原（default/main#623） */
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,6 +54,7 @@ beforeEach(() => {
   Object.assign(calls, { prompt: [], cancel: [], start: [], fail: null });
   calls.views.clear();
   useUI.setState({ toasts: [] });
+  localStorage.clear();
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -172,5 +174,70 @@ describe('新对话', () => {
     await act(async () => button('开始').click());
     expect(calls.start).toEqual([['mbp', { profile: 'code' }, '看看主目录下哪些文件夹最大']]);
     expect(sel).toEqual([9]);
+  });
+});
+
+describe('手机上：列表 → 整屏聊天，放大 / 还原', () => {
+  const mm = window.matchMedia;
+  // 窄屏：对话这块的媒体查询匹配
+  const narrow = () => {
+    window.matchMedia = ((q: string) => ({ ...mm(q), matches: q.includes('max-width: 760px') })) as typeof window.matchMedia;
+  };
+  afterEach(() => {
+    window.matchMedia = mm;
+  });
+  const zoom = () => document.querySelector<HTMLButtonElement>('.hc-zoom')!;
+
+  it('窄屏进页签是列表，不自动打开最近的；点一行进入这个对话', async () => {
+    narrow();
+    const sel: ChatSel[] = [];
+    await render(host(), [chat(1), chat(2)], null, s => sel.push(s));
+    expect(el.querySelector('.hc')?.getAttribute('data-view')).toBe('list');
+    expect(document.querySelector('.ss-input')).toBeNull();
+    await act(async () => el.querySelectorAll<HTMLButtonElement>('.hc-item')[1].click());
+    expect(sel).toEqual([1]);
+  });
+
+  it('窄屏打开对话默认整屏（挂在 body 上）；← 回列表；还原后回到页签里，选择记住', async () => {
+    narrow();
+    const c = chat(1);
+    calls.views.set(1, view(c, []));
+    const sel: ChatSel[] = [];
+    await render(host(), [c], 1, s => sel.push(s));
+    const full = document.querySelector('.hc-full.on-screen')!;
+    expect(full.parentElement).toBe(document.body);
+    expect(full.getAttribute('role')).toBe('dialog');
+    expect(full.querySelector('.ss-input')).not.toBeNull();
+    expect(zoom().getAttribute('aria-label')).toBe('还原');
+    expect(zoom().getAttribute('aria-pressed')).toBe('true');
+    await act(async () => document.querySelector<HTMLButtonElement>('.hc-back')!.click());
+    expect(sel).toEqual([null]);
+
+    await act(async () => zoom().click());
+    expect(document.querySelector('.hc-full')).toBeNull();
+    expect(el.querySelector('.hc-main .ss-input')).not.toBeNull();
+    expect(zoom().getAttribute('aria-label')).toBe('放大');
+    expect(zoom().getAttribute('aria-pressed')).toBe('false');
+    // 下次打开还是还原
+    act(() => root.unmount());
+    root = createRoot(el);
+    await render(host(), [c], 1);
+    expect(document.querySelector('.hc-full')).toBeNull();
+  });
+
+  it('宽屏默认左右两栏；放大盖住机器详情，Esc 先还原', async () => {
+    const c = chat(1);
+    calls.views.set(1, view(c, []));
+    await render(host(), [c]);
+    expect(document.querySelector('.hc-full')).toBeNull();
+    expect(el.querySelector('.hc-back')).toBeNull();
+    expect(zoom().getAttribute('aria-label')).toBe('放大');
+    await act(async () => zoom().click());
+    expect(document.querySelector('.hc-full.in-drawer')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('.hc-full')).toBeNull();
+    expect(localStorage.getItem('board.chatFull.d')).toBe('0');
   });
 });
