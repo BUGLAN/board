@@ -92,10 +92,15 @@ export function BoardView() {
   // 保留顺序开着时每块按自己的排序依据显示（只改显示顺序）；拖拽预览的位置是「看到的顺序」里的位置
   const shown1 = useMemo(() => (board ? shownCols(board, labels, serverNow()) : null), [board, labels]);
   const labelSel = useUI(s => s.labelSel);
-  // 终点状态的「更早的 N 张」：没展开的只显示最近移入的几张（取过全量也一样，lib/earlier）；筛选时都显示
+  // 终点状态的「更早的 N 张」：没展开的只显示最近移入的几张（取过全量也一样，lib/earlier）；筛选时更早的只显示命中的
   const earlierOpen = useEarlier(s => s.open);
   const filteringAny = !!filter || labelSel.length > 0;
-  const cut = useMemo(() => (board && shown1 ? collapseCols(board, shown1, earlierOpen, filteringAny) : null), [board, shown1, earlierOpen, filteringAny]);
+  const hit = useMemo(() => {
+    if (!filteringAny || !board) return null;
+    const cards = board.cards;
+    return (id: number) => !!cards[id] && cardHit(cards[id], filter, labelSel, labels);
+  }, [filteringAny, board, filter, labelSel, labels]);
+  const cut = useMemo(() => (board && shown1 ? collapseCols(board, shown1, earlierOpen, hit) : null), [board, shown1, earlierOpen, hit]);
   const shown0 = cut?.cols ?? null;
   // 同一会话的卡挨着放、框在一起（lib/sessionGroups）：拖拽预览、落点都按这个看到的顺序算
   const dispatches = useData(s => s.ws?.dispatches);
@@ -583,19 +588,21 @@ function EarlierButton({ more, view, path, col }: { more: Earlier; view: StatusV
     if (el.style.height !== h) el.style.height = h;
   });
   // 点了展开、全量还没回来：还按「更早的 N 张」画，转圈
-  const loading = busy || (more.open && more.n > 0);
+  const loading = !more.miss && (busy || (more.open && more.n > 0));
   const fold = more.open && more.n === 0;
-  const label = fold ? `收起，只看最近的 ${FINAL_RECENT} 张` : `显示更早的 ${more.n} 张`;
+  // 筛选中：更早的卡片里没命中的不画，这一格只写张数，不能点（default/main#630）
+  const miss = !!more.miss;
+  const label = miss ? `更早的 ${more.n} 张没有命中筛选，没有显示` : fold ? `收起，只看最近的 ${FINAL_RECENT} 张` : `显示更早的 ${more.n} 张`;
   return (
-    <TipOr text={view === 'tile' ? (fold ? '收起' : `更早的 ${more.n} 张`) : undefined}>
+    <TipOr text={view === 'tile' ? (miss ? `更早的 ${more.n} 张未命中` : fold ? '收起' : `更早的 ${more.n} 张`) : undefined}>
       <button
         ref={ref}
         type="button"
         data-earlier=""
-        className={cx('col-earlier', `v-${view}`, fold && 'is-open', loading && 'is-busy')}
-        disabled={loading}
+        className={cx('col-earlier', `v-${view}`, fold && 'is-open', loading && 'is-busy', miss && 'is-miss')}
+        disabled={loading || miss}
         aria-label={label}
-        aria-expanded={fold}
+        aria-expanded={miss ? undefined : fold}
         onClick={async () => {
           if (fold) return void setEarlier(path, col, false);
           setBusy(true);
@@ -612,6 +619,8 @@ function EarlierButton({ more, view, path, col }: { more: Earlier; view: StatusV
       >
         {view === 'tile' ? (
           fold ? <Icon name="chevUp" /> : `+${more.n}`
+        ) : miss ? (
+          <>更早的 {more.n} 张未命中</>
         ) : fold ? (
           <>
             <Icon name="chevUp" />

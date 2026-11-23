@@ -139,6 +139,8 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-earlier:hover { background: var(--surface-3); color: var(--text); border-color: var(--line-3); }
 .col-earlier:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
 .col-earlier.is-busy { cursor: progress; opacity: .6; }
+/* 筛选中：更早的卡片里没命中的张数，只是说明、不能点 */
+.col-earlier.is-miss, .col-earlier.is-miss:hover { cursor: default; background: transparent; color: var(--text-3); border-color: var(--line-2); }
 .col-earlier svg { width: 14px; height: 14px; flex: none; }
 .col-earlier.v-card { padding: 11px 13px 12px; }
 .col-earlier.v-line { padding: 7px 10px; font-size: 12.5px; }
