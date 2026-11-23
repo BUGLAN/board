@@ -47,6 +47,22 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .topbar-right { flex: none; }
 }
 
+/* ---------------- iOS 主屏安装版 ---------------- */
+/* iOS 26 起不认 theme-color，iOS 27 又在已安装 PWA 的顶部叠一层系统级模糊，往下盖住顶栏（default/main#627）。
+   贴顶铺一条实色 fixed 层，iOS 就拿它当状态栏底色、不再画模糊（实测要 fixed、贴顶、宽 ≥80%、高 ≥6px、实色）。
+   只在 iOS（-webkit-touch-callout 只有 iOS 的 WebKit 认）的 standalone 下出现：Safari 里打开、Android、桌面都不受影响。
+   顶栏让出安全区（layout.css 的 .app、.topbar），这一层只盖状态栏，不压 logo 和按钮 */
+@media (display-mode: standalone) {
+  @supports (-webkit-touch-callout: none) {
+    body::before {
+      content: ""; position: fixed; inset: 0 0 auto 0; z-index: 30;
+      height: max(6px, env(safe-area-inset-top, 0px));
+      background: var(--bg); /* 和页面底色一致，跟着主题变；不用渐变、半透明 */
+      pointer-events: none;
+    }
+  }
+}
+
 /* ---------------- 手机 ---------------- */
 @media (max-width: 760px) {
   :root { --topbar-h: 54px; }
@@ -56,7 +72,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   /* 布局：顶栏 / 内容 / 底部 Tab 栏（活动栏变成底栏） */
   .app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: var(--topbar-h) minmax(0, 1fr) calc(60px + env(safe-area-inset-bottom));
+    grid-template-rows: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)) minmax(0, 1fr) calc(60px + env(safe-area-inset-bottom));
   }
   .app > .topbar { grid-column: 1; }
   .app > .main { grid-row: 2; grid-column: 1; }

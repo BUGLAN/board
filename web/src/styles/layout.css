@@ -8,7 +8,8 @@
   display: grid;
   /* 顶栏 ─ 活动栏 │ 侧栏 │ 主内容 */
   grid-template-columns: var(--ab-w) auto minmax(0, 1fr);
-  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  /* 顶栏这一行算上顶部安全区：iOS 主屏安装版内容画到状态栏下面，安全区不为 0；浏览器里是 0，高度不变 */
+  grid-template-rows: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
 }
 /* 显式指定位置：隐藏的区域不会打乱网格 */
 .app > .topbar { grid-row: 1; grid-column: 1 / -1; }
@@ -38,7 +39,7 @@
 .topbar {
   position: relative; z-index: 20;
   display: flex; align-items: center; gap: 18px;
-  padding: 0 18px 0 20px;
+  padding: env(safe-area-inset-top, 0px) 18px 0 20px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--glass) 30%, transparent); /* 通透，背景网格透过来 */
   backdrop-filter: blur(2px);
