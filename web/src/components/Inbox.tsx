@@ -22,7 +22,7 @@ import { canUndoSplit, kidsOf, hiddenEntries, omittedKids, laterEntries, laterGr
 import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
-import { actorName, ago, autosize, cx, pref, reduceMotion, replay } from '../lib/util';
+import { actorName, ago, autosize, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
 import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData, type BatchResult } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { ActorAvatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
@@ -832,7 +832,7 @@ function SplitBundle({
   );
 }
 
-const Row = memo(function Row({
+export const Row = memo(function Row({
   card: c, now, labels, all, home, checked, open, onCheck, inBundle,
 }: { card: Card; now: number; labels: Label[]; all: Card[]; home: string; checked: boolean; open: boolean; onCheck: (id: number, shift: boolean) => void; inBundle?: boolean }) {
   const saving = useCardBusy(c.id);
@@ -850,6 +850,13 @@ const Row = memo(function Row({
   }, [open, draft, c.id]);
   const toggle = () => setInbox({ open: open ? null : c.id });
   const text = snippet(c.body);
+  /** 点编号复制这张卡片的引用（和详情页一样：只给提示，不加额外样式；default/main#625） */
+  const copyRef = () => {
+    const ref = `${useData.getState().path}#${c.id}`;
+    void copyText(ref).then(ok =>
+      toast(ok ? { type: 'success', title: `已复制 ${ref}`, duration: 1800 } : { type: 'error', title: '复制失败', text: ref, duration: 8000 }),
+    );
+  };
   // 往右滑：直接收到「稍后再做」（default/main#303）
   const sw = useSwipe(1, !draft && !saving, () => void doLater([c.id], true));
   return (
@@ -885,9 +892,28 @@ const Row = memo(function Row({
       >
         {draft ? <span className="ib-check" aria-hidden="true" /> : <Check on={checked} label={`勾选 #${c.id} ${c.title}`} onToggle={shift => onCheck(c.id, shift)} />}
         <span className="ib-idwrap">
-          {/* 新条目：编号前面一个点（展开看过就消失，PRD §10.5） */}
-          {isnew && <i className="ib-newdot" aria-label="新的" role="img" />}
-          <span className="ib-id mono">#{draft ? '…' : c.id}</span>
+          {/* 新条目：编号前面一个点（展开看过就消失，PRD §10.5）。
+              没点的时候也留着这一格，所有行的 # 才落在同一条竖线上（default/main#625） */}
+          <span className="ib-dotslot">
+            {isnew && <i className="ib-newdot" aria-label="新的" role="img" />}
+          </span>
+          {draft ? (
+            <span className="ib-id mono">#…</span>
+          ) : (
+            <button
+              type="button"
+              className="ib-id mono"
+              title="点击复制卡片引用"
+              aria-label={`点击复制卡片引用 #${c.id}`}
+              onClick={e => {
+                e.stopPropagation();
+                if (sw.swallow()) return;
+                copyRef();
+              }}
+            >
+              #{c.id}
+            </button>
+          )}
         </span>
         <ActorAvatar actor={c.createdBy} className="ib-av" />
         <span className="ib-t">

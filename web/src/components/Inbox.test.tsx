@@ -1,10 +1,12 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { card } from '../../test/fixtures';
+import { card, snapshot } from '../../test/fixtures';
 import { unitsOf } from '../lib/split';
-import type { Label } from '../lib/types';
-import { Check, groupsOf } from './Inbox';
+import type { Card, Label } from '../lib/types';
+import { useData } from '../store/data';
+import { useUI } from '../store/ui';
+import { Check, groupsOf, Row, useInbox } from './Inbox';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -134,5 +136,72 @@ describe('未整理的倒序（default/main#497）', () => {
     const before = us.map(u => (u.kind === 'one' ? u.card.id : u.cards.map(c => c.id)));
     expect(ids(groupsOf(us, 'time', now, labels, true))).toEqual(ids(groupsOf(us, 'time', now, labels, true)));
     expect(us.map(u => (u.kind === 'one' ? u.card.id : u.cards.map(c => c.id)))).toEqual(before);
+  });
+});
+
+describe('未整理列表的序号（default/main#625）', () => {
+  const now = new Date(2026, 10, 23, 12).getTime();
+  const writeText = vi.fn(async (_text: string) => {});
+  const execCommand = vi.fn(() => false);
+
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
+    writeText.mockClear();
+    execCommand.mockClear();
+    useData.setState({ path: 'default/main', board: snapshot('default/main', { inbox: [40, 41] }) });
+    useInbox.setState({ checked: [], open: null, view: 'list', page: 'inbox' });
+    useUI.setState({ toasts: [] });
+  });
+
+  const row = (id: number, over: Partial<Card> = {}) => {
+    const c = card(id, { column: 'inbox', createdBy: { kind: 'agent', name: 'a/x' }, createdAt: now - 1000, ...over });
+    act(() =>
+      root.render(<Row card={c} now={now} labels={[]} all={[c]} home="待办" checked={false} open={false} onCheck={() => {}} />),
+    );
+    return host.querySelector('.ib-line') as HTMLElement;
+  };
+
+  it('有没有新的点，序号前都留着同样一格；点只出现在新条目上', () => {
+    const line = row(40);
+    const slot = line.querySelector('.ib-idwrap > .ib-dotslot') as HTMLElement;
+    expect(slot).not.toBeNull();
+    expect(slot.querySelector('.ib-newdot')?.getAttribute('aria-label')).toBe('新的');
+    const id = line.querySelector('.ib-idwrap > .ib-id') as HTMLButtonElement;
+    expect(id.tagName).toBe('BUTTON');
+    expect(id.textContent).toBe('#40');
+    expect(id.getAttribute('title')).toBe('点击复制卡片引用');
+    expect(id.getAttribute('aria-label')).toBe('点击复制卡片引用 #40');
+
+    const read = row(41, { seenAt: now - 500 });
+    const readSlot = read.querySelector('.ib-idwrap > .ib-dotslot') as HTMLElement;
+    expect(readSlot).not.toBeNull();
+    expect(readSlot.querySelector('.ib-newdot')).toBeNull();
+    expect(read.querySelector('.ib-idwrap > .ib-id')?.textContent).toBe('#41');
+  });
+
+  it('点序号复制项目/白板#ID 并提示，不展开、不勾选', async () => {
+    const line = row(41, { seenAt: now - 500 });
+    act(() => (line.querySelector('.ib-id') as HTMLElement).click());
+    expect(writeText).toHaveBeenCalledWith('default/main#41');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(useUI.getState().toasts.at(-1)?.title).toBe('已复制 default/main#41');
+    expect(useInbox.getState().open).toBeNull();
+    expect(useInbox.getState().checked).toEqual([]);
+  });
+
+  it('复制失败时提示失败，内容仍是这张卡片的引用', async () => {
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    const line = row(41, { seenAt: now - 500 });
+    act(() => (line.querySelector('.ib-id') as HTMLElement).click());
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ type: 'error', title: '复制失败', text: 'default/main#41' });
   });
 });
