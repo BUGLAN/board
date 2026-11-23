@@ -164,9 +164,9 @@ interface UIState {
   hostTab: 'overview' | 'chats' | 'agents' | 'settings' | null;
   /** 机器 Tab 主区：总览、对比、共用配置（选过的记在本机） */
   hostsView: HostsView;
-  /** 卡片详情里的「派发」对话框：卡片编号 */
+  /** 卡片详情里的「派发」对话框，或白板批量条的「派送」：卡片编号 */
   /** move：改派这条还在排队的派发（派发 ID），不是新派 */
-  dispatchOf: { card: number; move?: number } | null;
+  dispatchOf: { cards: number[]; move?: number } | null;
   /** 打开的「会话」弹窗：会话里任一次派发的 ID；card 是要定位到的那张卡 */
   session: SessionReq | null;
   /** 打开的复盘台（PRD §10.14）：当前白板上哪几个状态；mode 是复盘（交审）还是处理（需要人处理） */
@@ -320,7 +320,12 @@ export const setHostsView = (v: HostsView) => {
   pref.set('hosts.view', v);
   set({ hostsView: v });
 };
-export const openDispatch = (card: number | null, { move }: { move?: number } = {}) => set({ dispatchOf: card == null ? null : { card, move } });
+export const openDispatch = (card: number | null, { move }: { move?: number } = {}) => set({ dispatchOf: card == null ? null : { cards: [card], move } });
+/** 批量派送：选中的卡片一起去排队；不可派的在对话框里说明并跳过 */
+export const openDispatchMany = (cards: number[]) => {
+  const list = [...new Set(cards.filter(id => id > 0))];
+  set({ dispatchOf: list.length ? { cards: list } : null });
+};
 /** 打开「会话」弹窗：id 是会话里任一次派发，card 是要定位到的卡；known 是打开它的那一行已经有的派发（这个会话的），
     取回来之前头部、卡片列表、各段标题先按它画，只有输出画骨架 */
 export interface SessionReq {

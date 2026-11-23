@@ -1,5 +1,6 @@
 /* 白板勾选卡片、批量打标签（PRD §10.3「批量打标签」）：连选、整块勾选、批量写入 */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Dispatch } from './types';
 
 type LabelBatch = { changed: number[]; skipped: number[]; failed: { id: number; error: unknown }[] };
 const labelCards = vi.fn<(ids: number[], label: number, add: boolean) => Promise<LabelBatch>>();
@@ -15,7 +16,7 @@ vi.mock('../store/data', () => ({
 vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e), toast: (t: unknown) => toast(t) }));
 
 const { FLOW, snapshot } = await import('../../test/fixtures');
-const { blockState, bulkLabel, bulkMove, clearSelect, moveTargets, rangeIds, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
+const { blockState, bulkLabel, bulkMove, clearSelect, dispatchPlan, moveTargets, rangeIds, runBulkDispatch, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
   await import('./boardSelect');
 
 beforeEach(() => {
@@ -181,5 +182,75 @@ describe('bulkMove（批量移动）', () => {
   it('没有能移的：不发请求', async () => {
     expect(await bulkMove({ ...t, ids: [] })).toBe(0);
     expect(batchCards).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatchPlan（批量派送跳过规则）', () => {
+  // todo: 1（已有排队）2（beta 持有）· doing: 3（锁定）· review: 4（能派）5（alpha 持有）· 未整理: 9
+  const b = () =>
+    snapshot('p/b', { todo: [1, 2], doing: [3], review: [4, 5], inbox: [9] }, [
+      { id: 2, holder: 'beta' },
+      { id: 5, holder: 'alpha' },
+    ]);
+
+  it('能派的按选中顺序留下；锁定、被持有、已有派发、未整理和重复的跳过', () => {
+    expect(dispatchPlan(b().statuses, b().cards, [5, 2, 3, 4, 9, 1, 4, 99], new Set([1]))).toEqual({
+      ids: [4],
+      skipped: [
+        { id: 5, why: '被 alpha 持有' },
+        { id: 2, why: '被 beta 持有' },
+        { id: 3, why: '在锁定状态「doing」' },
+        { id: 9, why: '未整理不在批量派送范围' },
+        { id: 1, why: '已有排队或在跑的派发' },
+        { id: 99, why: '卡片不存在' },
+      ],
+    });
+  });
+
+  it('待审核等非锁定状态也能派发', () => {
+    expect(dispatchPlan(b().statuses, b().cards, [4], new Set())).toEqual({ ids: [4], skipped: [] });
+  });
+});
+
+describe('runBulkDispatch（逐张派发）', () => {
+  const made = (id: number) =>
+    ({
+      id,
+      board: 'default/main',
+      card: id,
+      title: `卡片 ${id}`,
+      hostId: 1,
+      host: 'win',
+      agent: 'codex',
+      agentLabel: 'Codex',
+      name: null,
+      source: 'manual',
+      by: { kind: 'human', name: '人' },
+      state: 'queued',
+      result: null,
+      createdAt: 0,
+      startedAt: null,
+      endedAt: null,
+      exitCode: null,
+      stopBy: null,
+      beatAt: null,
+    }) as Dispatch;
+
+  it('一张接一张发；中间一张失败不影响后面的', async () => {
+    const err = new Error('BOARD_NOT_ON_HOST');
+    const send = vi.fn(async (id: number) => {
+      if (id === 2) throw err;
+      return made(id);
+    });
+    const r = await runBulkDispatch([1, 2, 3], send);
+    expect(send.mock.calls).toEqual([[1], [2], [3]]);
+    expect(r.ok.map(d => d.card)).toEqual([1, 3]);
+    expect(r.failed).toEqual([{ id: 2, error: err }]);
+  });
+
+  it('没有能派的：一张请求也不发', async () => {
+    const send = vi.fn(async (id: number) => made(id));
+    expect(await runBulkDispatch([], send)).toEqual({ ok: [], failed: [] });
+    expect(send).not.toHaveBeenCalled();
   });
 });

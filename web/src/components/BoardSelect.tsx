@@ -1,11 +1,11 @@
-/* 白板勾选卡片、批量打标签的界面（lib/boardSelect）：侧栏「批量」按钮、块标题的勾选框、底部批量条、卡片上的勾选圈 */
+/* 白板勾选卡片、批量打标签 / 移动 / 派送的界面（lib/boardSelect）：侧栏「批量」按钮、块标题的勾选框、底部批量条、卡片上的勾选圈 */
 import { Fragment } from 'react';
 import { blockState, bulkLabel, bulkMove, clearSelect, moveTargets, selectIds, startSelect, toggleBlock, useBoardSel } from '../lib/boardSelect';
 import { boardFlow, INBOX } from '../lib/schema';
 import type { BoardSnapshot, Label } from '../lib/types';
 import { cx } from '../lib/util';
 import { useCurrent, useData } from '../store/data';
-import { closeCtx, openCtx, openPicker, setBoardSheet, toast, useUI } from '../store/ui';
+import { closeCtx, openCtx, openDispatchMany, openPicker, setBoardSheet, toast, useUI } from '../store/ui';
 import { Tip } from './bits';
 import { cardHit, filterActive } from './Card';
 import { Icon } from './Icon';
@@ -151,6 +151,12 @@ export function BoardBulkBar() {
         <Icon name="move" />
         <span className="ib-bl">移动到</span>
       </button>
+      <Tip text="把选中的卡片派给机器 / agent">
+        <button type="button" className="btn sm ghost bulk-dispatch-btn" aria-label="派送选中的卡片" disabled={!n} onClick={() => openDispatchMany(ids)}>
+          <Icon name="dispatch" />
+          <span className="ib-bl">派送</span>
+        </button>
+      </Tip>
       <Tip text="退出选择 · esc">
         <button type="button" className="icon-btn sm" aria-label="退出选择" data-tip-pos="top" onClick={clearSelect}>
           <Icon name="close" />

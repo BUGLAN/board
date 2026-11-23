@@ -1,17 +1,20 @@
 /* ==========================================================================
-   白板上勾选卡片、批量打标签（PRD §10.3「批量打标签」）
+   白板上勾选卡片、批量打标签、批量移动、批量派送（PRD §10.3「批量打标签」）
    - 进入：侧栏「标签」标题旁的「批量」，或按住 ⌘ / Ctrl / Shift 点卡片
    - 选择里：点卡片（或聚焦后 Enter / 空格）勾选、再点取消；Shift 在同一个状态块里连选；
      块标题上的勾选框选上 / 取消这一块（有筛选时只算筛出的）
-   - 底部批量条（components/BoardSelect）：全选（筛出的）、打标签、移动到、取消；esc、换白板时退出
+   - 底部批量条（components/BoardSelect）：全选（筛出的）、打标签、移动到、派送、取消；esc、换白板时退出
    - 打标签走 store/data 的 labelCards（一次 POST /api/labels/batch，「未整理」「稍后再做」的批量条也用 bulkLabel）；
      移动走 batchCards（一次 POST /api/cards/batch）：乐观更新，当帧生效；一张失败只撤那一张
    - 移动到：同一块白板的状态（和「未整理」），规则同拖动（lib/drag vetoFor）：锁定状态不能移入，被持有的跳过
+   - 派送：按单卡同一套规则留下能派的（lib/hosts dispatchRoute），已有排队 / 在跑、锁定、被持有的跳过；
+     逐张调用已有接口，单张失败不影响后面的
    ========================================================================== */
 import { create } from 'zustand';
 import { justDropped, vetoFor } from './drag';
+import { dispatchRoute } from './hosts';
 import { boardFlow, INBOX, INBOX_NAME } from './schema';
-import type { BoardSnapshot, Card, ColumnKey } from './types';
+import type { BoardSnapshot, Card, ColumnKey, Dispatch, Status } from './types';
 import { batchCards, labelCards, movePatch, useData, type LabelBatchResult } from '../store/data';
 import { overlayOpen, toast, toastError } from '../store/ui';
 
@@ -74,6 +77,73 @@ export async function bulkLabel(ids: number[], label: number, add: boolean): Pro
     toastError(e);
     return { changed: [], skipped: [], failed: ids.map(id => ({ id, error: e })) };
   }
+}
+
+export interface DispatchPlan {
+  /** 能派发的卡片，按选中的顺序 */
+  ids: number[];
+  /** 不派发的卡片和原因 */
+  skipped: { id: number; why: string }[];
+}
+
+/** 批量派送前按单卡同一套规则挑出能派的：锁定的、被持有的、已有排队或在跑的、未整理里的都跳过。
+    active 是这块白板上已有排队 / 在跑的派发卡片，避免界面上先发一遍再等服务端报 ALREADY_DISPATCHED */
+export function dispatchPlan(statuses: Status[], cards: Record<number, Card>, ids: number[], active: ReadonlySet<number>): DispatchPlan {
+  const seen = new Set<number>();
+  const plan: DispatchPlan = { ids: [], skipped: [] };
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const card = cards[id];
+    if (!card) {
+      plan.skipped.push({ id, why: '卡片不存在' });
+      continue;
+    }
+    if (active.has(id)) {
+      plan.skipped.push({ id, why: '已有排队或在跑的派发' });
+      continue;
+    }
+    if (card.column === INBOX) {
+      plan.skipped.push({ id, why: '未整理不在批量派送范围' });
+      continue;
+    }
+    const status = statuses.find(s => s.key === card.column);
+    if (!status) {
+      plan.skipped.push({ id, why: '卡片所在状态不存在' });
+      continue;
+    }
+    if (card.holder) {
+      plan.skipped.push({ id, why: `被 ${card.holder} 持有` });
+      continue;
+    }
+    if (status.lock) {
+      plan.skipped.push({ id, why: `在锁定状态「${status.name}」` });
+      continue;
+    }
+    if (!dispatchRoute(statuses, card.column, card.holder)) {
+      plan.skipped.push({ id, why: `在「${status.name}」不能派发` });
+      continue;
+    }
+    plan.ids.push(id);
+  }
+  return plan;
+}
+
+/** 逐张派发：单张失败只记下来，后面的照常发。调用方负责放进写队列并汇总结果 */
+export async function runBulkDispatch(
+  ids: number[],
+  send: (id: number) => Promise<Dispatch>,
+): Promise<{ ok: Dispatch[]; failed: { id: number; error: unknown }[] }> {
+  const ok: Dispatch[] = [];
+  const failed: { id: number; error: unknown }[] = [];
+  for (const id of ids) {
+    try {
+      ok.push(await send(id));
+    } catch (error) {
+      failed.push({ id, error });
+    }
+  }
+  return { ok, failed };
 }
 
 /** 「移动到」菜单的一行：能移过去的卡片（按白板上的顺序）、跳过的，和整行不能选的原因 */

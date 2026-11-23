@@ -344,6 +344,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .dp-host:disabled em { color: var(--text-3); }
 .dp-note { margin-top: 10px !important; font-size: 12px !important; color: var(--warn-text) !important; }
 .dp-note.dp-split { margin-top: 2px !important; color: var(--text-3) !important; line-height: 1.6; }
+.dp-plan { line-height: 1.6; overflow-wrap: anywhere; }
+.dp-plan.bad { color: var(--danger-text) !important; }
 .dp-empty { margin-top: 14px; }
 .dp-empty .btn { margin-top: 10px; }
 /* 派发对话框里选 agent（default/main#496）：等宽两列网格（窄了自动单列），长名字、版本省略号截断；

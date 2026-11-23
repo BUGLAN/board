@@ -1,10 +1,11 @@
-/* 卡片的派发：白板卡片上的状态行、卡片详情里的派发说明、「派发」对话框、取消派发。
+/* 卡片的派发：白板卡片上的状态行、卡片详情里的派发说明、「派发」对话框（单卡和批量）、取消派发。
    「未整理」里的条目派出去是拆解（kind = split）：不领取、不移动它，拆出的卡记回未整理（PRD §9.1） */
 import { profilesOf } from '../../lib/profiles';
 import { DispatchFlow } from '../profiles/DispatchFlow';
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
+import { dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
 import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, dispatchRoute, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
@@ -187,22 +188,28 @@ export function DispatchDialog() {
   const last = useRef(req);
   if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
-  const { card, move } = last.current;
-  // 有角色时按角色派（分工页定的那一套）；还没有角色时照旧选机器和 agent
-  if (profilesOf(useData.getState().ws).length) return <DispatchFlow key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
-  return <DispatchBody key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
+  const { cards, move } = last.current;
+  const card = cards.length === 1 ? cards[0] : null;
+  // 单卡有角色时按角色派（分工页定的那一套）；批量派送和还没有角色时选机器和 agent
+  if (card != null && profilesOf(useData.getState().ws).length) return <DispatchFlow key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
+  return <DispatchBody key={`${cards.join(',')}-${move ?? ''}`} cards={cards} move={move} on={on && req != null} />;
 }
 
-function DispatchBody({ card, move, on }: { card: number; move?: number; on: boolean }) {
+function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on: boolean }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
-  const entry = useData(s => s.board?.cards[card]);
+  const board = useData(s => s.board);
+  const single = cards.length === 1 ? cards[0] : null;
+  const entry = single != null ? board?.cards[single] : undefined;
   const title = entry?.title ?? '';
   // 「未整理」里的条目：派给 agent 拆解
   const split = entry?.column === 'inbox';
   // 不在可领取状态（待审核、错误节点……）：排队时一步移进锁定状态（#498），这里写明会从哪里移出
-  const statuses = useData(s => s.board?.statuses);
+  const statuses = board?.statuses;
   const route = entry && statuses && move == null ? dispatchRoute(statuses, entry.column, entry.holder) : null;
+  const active = new Set((ws?.dispatches ?? []).filter(d => d.board === path && d.state !== 'done').map(d => d.card));
+  const plan = single == null ? dispatchPlan(statuses ?? [], board?.cards ?? {}, cards, active) : null;
+  const skipped = plan?.skipped ?? [];
   const hosts = hostsOf(ws);
   // 接不了这块白板的机器不能选（PRD §9.1「能不能接」）：没有工作空间、目录不对。
   // 原因是服务端给的（工作区数据里的 blocks），这里不自己再判断
@@ -229,6 +236,7 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
   const miss = h && chosen ? skillMiss(h, chosen) : null;
   const [sending, setSending] = useState(false);
   const close = () => openDispatch(null);
+  const heading = move != null ? `改派 #${single}` : split ? `拆解 #${single}` : single != null ? `派发 #${single}` : `派发 ${cards.length} 张卡片`;
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -249,19 +257,44 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
 
   const submit = async () => {
     if (any ? agent == null : !h || !agent) return;
+    if (plan && !plan.ids.length) return;
     setSending(true);
     try {
       // 派发要服务端排进队列才有记录：按钮进行中（转圈、禁用）直到返回；返回后当即在卡片和机器页上画出这条派发，不等刷新
       const to = any ? '' : h!.name;
-      const d = move != null ? await api.moveDispatch(move, to, agent || undefined) : await api.dispatch(path, card, to, agent || undefined);
+      if (single != null) {
+        const d = move != null ? await api.moveDispatch(move, to, agent || undefined) : await api.dispatch(path, single, to, agent || undefined);
+        close();
+        const got = hosts.find(x => x.name === d.host);
+        toast({
+          type: 'success',
+          title: move != null ? `#${single} 已改派到 ${hostWords(d)} · ${d.agentLabel}` : split ? `#${single} 已派给 ${hostWords(d)} · ${d.agentLabel} 拆解` : `#${single} 已派发到 ${hostWords(d)} · ${d.agentLabel}`,
+          text: !got ? '排队：等一台能接的机器' : busy(got) ? `排队：${queueReason(got)}` : split ? '机器有空位，马上开始；拆出的卡会记到未整理' : '机器有空位，马上开始',
+        });
+        void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
+        return;
+      }
+
+      // 批量：按选中顺序逐张发；单张失败只记下来，后面的照常发。全部返回后才关对话框
+      const ids = plan!.ids;
+      const result = await optimistic(null, () => runBulkDispatch(ids, id => api.dispatch(path, id, to, agent || undefined)));
+      if (result.ok.length) {
+        const made = new Set(result.ok.map(d => d.id));
+        void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => !made.has(x.id)), ...result.ok] }) }, refresh());
+      }
       close();
-      const got = hosts.find(x => x.name === d.host);
+      const detail = [
+        skipped.length ? `跳过：${skipped.map(x => `#${x.id} ${x.why}`).join('；')}` : '',
+        result.failed.length
+          ? `失败：${result.failed.map(x => `#${x.id} ${(x.error as Error)?.message || '派发失败'}`).join('；')}`
+          : '',
+      ].filter(Boolean);
+      const where = !any && result.ok[0] ? `派给 ${hostWords(result.ok[0])} · ${result.ok[0].agentLabel}` : '';
       toast({
-        type: 'success',
-        title: move != null ? `#${card} 已改派到 ${hostWords(d)} · ${d.agentLabel}` : split ? `#${card} 已派给 ${hostWords(d)} · ${d.agentLabel} 拆解` : `#${card} 已派发到 ${hostWords(d)} · ${d.agentLabel}`,
-        text: !got ? '排队：等一台能接的机器' : busy(got) ? `排队：${queueReason(got)}` : split ? '机器有空位，马上开始；拆出的卡会记到未整理' : '机器有空位，马上开始',
+        type: result.failed.length ? 'error' : 'success',
+        title: `成功 ${result.ok.length} 张 · 跳过 ${skipped.length} 张 · 失败 ${result.failed.length} 张`,
+        text: [where, ...detail].filter(Boolean).join('\n') || undefined,
       });
-      void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
     } catch (e) {
       toastError(e);
     } finally {
@@ -271,15 +304,21 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
 
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
-      <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={split ? `拆解 #${card}` : `派发 #${card}`}>
-        <h3>{move != null ? `改派 #${card}` : split ? `拆解 #${card}` : `派发 #${card}`}</h3>
-        <p className="dp-sub">{title}</p>
+      <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={heading}>
+        <h3>{heading}</h3>
+        <p className="dp-sub">{single != null ? title : `共 ${cards.length} 张卡片，逐张排队派发`}</p>
         {route?.from && route.into && (
           <p className="dp-note dp-split">
             会从「{route.from.name}」移出，直接在「{route.into.name}」排队，不经过可领取状态；排队时取消派发，回到「{route.from.name}」。
           </p>
         )}
         {split && <p className="dp-note dp-split">派给一台机器上的 agent：它读这一条，拆成几张能直接做的卡（够小的整理成一张）记到未整理、挂在这条下面；这一条不领取、不移动，看过后再整理进工作流。</p>}
+        {plan && (
+          <p className={cx('dp-note', 'dp-plan', !plan.ids.length && 'bad')} role="status">
+            {plan.ids.length ? `可派发 ${plan.ids.length} 张` : '没有可派发的卡片'}
+            {skipped.length ? `；跳过 ${skipped.length} 张：${skipped.map(x => `#${x.id} ${x.why}`).join('；')}` : ''}
+          </p>
+        )}
         {hosts.length === 0 ? (
           <div className="dp-empty">
             <p>还没有机器。在要干活的机器上运行 board host，它会出现在这里。</p>
@@ -394,9 +433,15 @@ function DispatchBody({ card, move, on }: { card: number; move?: number; on: boo
           <button className="btn" type="button" onClick={close}>
             取消
           </button>
-          <button className={cx('btn brand', sending && 'is-busy')} type="button" disabled={sending || (any ? takers.length === 0 : !h || !agent || !usable(h))} aria-busy={sending || undefined} onClick={submit}>
+          <button
+            className={cx('btn brand', sending && 'is-busy')}
+            type="button"
+            disabled={sending || (any ? takers.length === 0 : !h || !agent || !usable(h)) || (plan != null && !plan.ids.length)}
+            aria-busy={sending || undefined}
+            onClick={submit}
+          >
             <Icon name="dispatch" />
-            {move != null ? '改派' : split ? '拆解' : '派发'}
+            {move != null ? '改派' : split ? '拆解' : single != null ? '派发' : `派送 ${plan?.ids.length ?? cards.length} 张`}
           </button>
         </div>
       </div>
