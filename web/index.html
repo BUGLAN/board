@@ -21,10 +21,31 @@
 html { background: var(--bg, #F2F0EB); color-scheme: light; }
 @media (prefers-color-scheme: dark) { html:not([data-theme="light"]) { background: var(--bg, #0C0D0F); color-scheme: dark; } }
 html[data-theme="dark"] { background: var(--bg, #0C0D0F); color-scheme: dark; }
+/* iOS 主屏安装版顶部的系统级模糊（default/main#627）：iOS 26 起不认 theme-color，iOS 27 又在已安装 PWA 的顶部叠一层模糊、往下盖住顶栏。
+   贴顶铺一条实色 fixed 层，iOS 就拿它当状态栏底色、不再画模糊（要 fixed、贴顶、宽 ≥80%、高 ≥6px、实色）。
+   写成 body 里真实的元素、样式放在这里：首帧就在，不等样式包、不靠伪元素（原来的 body::before 首次打开认不到，滚一下才好）；
+   启动、切回前台时 lib/iosTopBar.ts 再让它动一下，iOS 重新认一次。
+   只在 iOS（-webkit-touch-callout 只有 iOS 的 WebKit 认）的 standalone 下出现：Safari 里打开、Android、桌面都不受影响。
+   顶栏让出安全区（styles/layout.css 的 .app、.topbar），这一层只盖状态栏，不压 logo 和按钮 */
+.ios-top { display: none; }
+@media (display-mode: standalone) {
+  @supports (-webkit-touch-callout: none) {
+    .ios-top {
+      display: block; position: fixed; inset: 0 0 auto 0; z-index: 30;
+      height: max(6px, env(safe-area-inset-top, 0px));
+      background: var(--bg, #F2F0EB); /* 和页面底色一致，跟着主题变；不用渐变、半透明 */
+      pointer-events: none;
+    }
+    .ios-top.is-nudge { height: calc(max(6px, env(safe-area-inset-top, 0px)) + 1px); }
+    @media (prefers-color-scheme: dark) { html:not([data-theme="light"]) .ios-top { background: var(--bg, #0C0D0F); } }
+    html[data-theme="dark"] .ios-top { background: var(--bg, #0C0D0F); }
+  }
+}
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Crect x='6' y='8' width='4' height='16' rx='2' fill='%238F9AB4'/%3E%3Crect x='12' y='8' width='4' height='11' rx='2' fill='%23FF9A3C'/%3E%3Crect x='18' y='8' width='4' height='7' rx='2' fill='%234DB5FF'/%3E%3Crect x='24' y='8' width='4' height='13' rx='2' fill='%233DDC97'/%3E%3C/svg%3E">
 </head>
 <body>
+<div class="ios-top" aria-hidden="true"></div>
 <div id="root"></div>
 <script type="module" src="/src/main.tsx"></script>
 </body>

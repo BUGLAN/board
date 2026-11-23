@@ -26,6 +26,7 @@ import { App } from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { applyPrefs } from './lib/platform';
 import { installScrollbars } from './lib/scrollbars';
+import { installIosTopBar } from './lib/iosTopBar';
 import { buildVersion } from './lib/build';
 import { noticeStale, watchStale } from './lib/stale-runner';
 import { autoUpdateCheck } from './lib/update-runner';
@@ -33,6 +34,8 @@ import { checkServerVersion } from './store/data';
 
 applyPrefs();
 installScrollbars();
+// iOS 主屏安装版：让 iOS 认出顶部实色层、不画系统级模糊（default/main#627；其他环境什么都不做）
+installIosTopBar();
 // 桌面端：打开 Board 时自动检查一次，之后每 30 分钟一次（设置里可以关；网页端什么都不做）
 autoUpdateCheck();
 // 服务端升级之后还开着的旧页面：启动、切回标签页时查一次版本，不一样就提示刷新（default/main#368）
