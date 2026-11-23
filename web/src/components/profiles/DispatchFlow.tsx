@@ -7,12 +7,12 @@
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { blockOf, hostsOf } from '../../lib/hosts';
+import { blockOf, dirFresh, hostsOf } from '../../lib/hosts';
 import { hostsFor, labelNames, OP_WORDS, pickHost, profilesOf, routeOf, short, soonest, type HostWhy } from '../../lib/profiles';
 import { serverMinute } from '../../lib/sched';
-import type { Dispatch } from '../../lib/types';
+import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
-import { hold, refresh, useData } from '../../store/data';
+import { hold, optimistic, refresh, useData } from '../../store/data';
 import { openDispatch, toast, toastError } from '../../store/ui';
 import { useNow } from '../bits';
 import { OsGlyph } from '../hosts/bits';
@@ -23,6 +23,17 @@ type ZEdge = { from: string; to: string; dash: boolean; lit: boolean; color: str
 
 /** 一次派发的去向写成一句：「win · 批量」「任意机器 · 批量」 */
 const hostWords = (d: Dispatch) => (d.host ? d.host : '任意机器');
+
+/** 这块白板所在项目的目录在这台机器上克隆失败时，返回要重新克隆的白板和地址（和机器详情里的「重新克隆」是同一件事）。
+    只看还没过期、状态是 missing、克隆失败的目录；同一个项目的几块白板共用一个目录，所以按项目匹配 */
+function failedClone(h: HostInfo, board: string): { board: string; url: string } | null {
+  const proj = board.split('/')[0];
+  for (const d of h.dirs) {
+    if (!dirFresh(h, d)) continue;
+    if (d.status === 'missing' && d.clone?.state === 'failed' && d.board.split('/')[0] === proj) return { board: d.board, url: d.clone.url };
+  }
+  return null;
+}
 
 export function DispatchFlow({ card, move, on }: { card: number; move?: number; on: boolean }) {
   const ws = useData(s => s.ws);
@@ -48,6 +59,8 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
   const [host, setHost] = useState<number>(moving && !moving.any ? moving.hostId : 0);
   const [hover, setHover] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // 正在请求重新克隆的机器 id（这一行按钮转圈、禁用）
+  const [rcBusy, setRcBusy] = useState<number | null>(null);
   const map = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<(ZEdge & { d: string; k: string })[]>([]);
   const close = () => openDispatch(null);
@@ -129,6 +142,20 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
       ? '没有机器能跑这个角色'
       : `派给「${p.name}」· ${pinned ? pinned.host.name : '随机'}：${got ? `${got.host.name} ${got.why}，马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `排队，${soonest(hw)}。`}`;
 
+  // 这台机器上这块白板的目录克隆失败了：就地点「重新克隆」，不用再翻到机器详情。请求发出后服务端会把它记成
+  // 「正在克隆」，这一行的原因跟着变、按钮消失；克隆好以后这台机器就能选了
+  const reclone = async (h: HostInfo, rc: { board: string; url: string }) => {
+    setRcBusy(h.id);
+    try {
+      await optimistic(null, () => api.cloneHostDir(h.name, rc.board, rc.url));
+      toast({ type: 'success', title: `让 ${h.name} 重新克隆 ${rc.board}`, text: '开始后这一行写「正在克隆」，克隆好就能派' });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setRcBusy(null);
+    }
+  };
+
   const submit = async () => {
     if (!p) return;
     setSending(true);
@@ -208,23 +235,50 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
                 <b>随机</b>
                 <small>{!can ? '没有机器能跑' : auto ? `现在会去 ${auto.host.name}` : '都满，排队'}</small>
               </button>
-              {fhw.map(x => (
-                <button
-                  key={x.host.id}
-                  type="button"
-                  data-k={`h${x.host.id}`}
-                  className={cx('pfz-host', !x.host.online && 'off', focus === prof && host === x.host.id && 'on', !x.can && 'cant', `t-${x.tone}`)}
-                  style={{ ['--c' as string]: colorOf(fp) }}
-                  disabled={!x.can || focus !== prof}
-                  title={`${x.host.name}：${x.why}`}
-                  onClick={() => setHost(x.host.id)}
-                >
-                  <OsGlyph os={x.host.os} small />
-                  <b>{x.host.name}</b>
-                  <Slots h={x.host} ws={ws} />
-                  <small>{x.why}</small>
-                </button>
-              ))}
+              {fhw.map(x => {
+                // 只有「接不了这块白板」的原因（不是这个角色跑不了）才可能是克隆失败：对一下显示的原因就是服务端给的 block
+                const blk = blockOf(ws, x.host.name, path);
+                const rc = x.why === blk?.why ? failedClone(x.host, path) : null;
+                const inner = (
+                  <>
+                    <OsGlyph os={x.host.os} small />
+                    <b>{x.host.name}</b>
+                    <Slots h={x.host} ws={ws} />
+                    <small>{x.why}</small>
+                  </>
+                );
+                // 克隆失败：这一行本来就不能选，就地给一个「重新克隆」，免得人只看到原因、没有地方重试
+                if (rc) {
+                  return (
+                    <div key={x.host.id} data-k={`h${x.host.id}`} className={cx('pfz-host', 'blocked', `t-${x.tone}`)} style={{ ['--c' as string]: colorOf(fp) }} title={`${x.host.name}：${x.why}`}>
+                      {inner}
+                      <button
+                        type="button"
+                        className={cx('pfz-reclone', rcBusy === x.host.id && 'is-busy')}
+                        disabled={rcBusy === x.host.id || !x.host.online}
+                        title={x.host.online ? `重新克隆 ${rc.board} 到这台机器` : '机器离线：连上后才能在界面上重新克隆'}
+                        onClick={() => void reclone(x.host, rc)}
+                      >
+                        {rcBusy === x.host.id ? '正在请求…' : '重新克隆'}
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    key={x.host.id}
+                    type="button"
+                    data-k={`h${x.host.id}`}
+                    className={cx('pfz-host', !x.host.online && 'off', focus === prof && host === x.host.id && 'on', !x.can && 'cant', `t-${x.tone}`)}
+                    style={{ ['--c' as string]: colorOf(fp) }}
+                    disabled={!x.can || focus !== prof}
+                    title={`${x.host.name}：${x.why}`}
+                    onClick={() => setHost(x.host.id)}
+                  >
+                    {inner}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

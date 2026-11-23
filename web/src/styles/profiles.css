@@ -131,6 +131,12 @@ button.pf-hw:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
 .pfz-host.on small { color: color-mix(in oklab, var(--ok), var(--ink)); font-weight: 600; }
 .pfz-host.on { background: color-mix(in srgb, var(--c) 8%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--c); }
 .pfz-host:disabled { cursor: default; }
+/* 克隆失败等接不了的机器：这一行本来就不能选，就地给一个「重新克隆」（不再整个变淡，按钮要看得见） */
+.pfz-host.blocked { background: var(--surface-2); color: var(--text-3); }
+.pfz-host.blocked small { color: var(--danger-text); }
+.pfz-host .pfz-reclone { flex: none; height: 22px; padding: 0 8px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; color: var(--danger-text); background: var(--surface); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger-text) 40%, var(--line-2)); cursor: pointer; white-space: nowrap; }
+.pfz-host .pfz-reclone:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-text) 8%, var(--surface)); }
+.pfz-host .pfz-reclone:disabled, .pfz-host .pfz-reclone.is-busy { opacity: .5; cursor: default; }
 .pfz-host.me { justify-content: center; border: 1px dashed var(--line-3); box-shadow: none; background: none; color: var(--text-2); }
 .pfz-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .pfz-foot .pfd-say { flex: 1; min-width: 0; margin: 0 4px 0 0 !important; padding: 0; background: none !important; font-size: 12.5px; color: var(--text-2) !important; }
