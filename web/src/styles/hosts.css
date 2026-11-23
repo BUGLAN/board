@@ -960,7 +960,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .ss-modes { margin-left: auto; }
 .ss-modes .segmented { font-size: 12px; }
 .ss-why { margin: 4px 0 0; }
-.ss-why .hp-link { margin-left: 6px; }
 .ev-list { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .ev-msg { padding: 2px 0; }
 .ev-msg .md { font-size: 13px; line-height: 1.65; }

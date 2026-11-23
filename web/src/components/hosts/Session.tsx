@@ -3,8 +3,8 @@
    - 沿用卡片详情的居中弹窗（.scrim / .drawer / .d-*）；手机上从底部弹出，按住顶部下拉关闭
    - 头部：机器、agent、agent 名字、启动环境、来源、开始时间、用时、状态（在跑 / 已结束和结果），在跑时「停止」
    - 左栏：这个会话做过的卡片（按先后，#ID、标题、结果、用时）；点一行跳到它那一段输出，点 #ID 打开卡片
-   - 主区：整个会话，按卡片分段。默认「过程」：agent 说的话（Markdown）、每个工具调用一行（点开看结果摘要；连续的读文件、
-     搜索折叠成一行）、出错、每张卡末尾的结束（用时、tokens、费用）；可以切到「原始输出」（board host 转写后的日志）。
+   - 主区：整个会话，按卡片分段。始终显示「过程」：agent 说的话（Markdown）、每个工具调用一行（点开看结果摘要；连续的读文件、
+     搜索折叠成一行）、出错、每张卡末尾的结束（用时、tokens、费用）；没有结构化事件时在段内用原始日志兜底。
      事件第一次全取，之后带 since 增量取：推送里有这个会话的派发（ran）时马上取，在跑时另外每 5 秒取一次（原始输出每 5 秒
      上传）。滚在底部时跟着新内容，往上翻时位置不动
    - 头部：各张卡结束事件里的用量加起来（agent 输出里有才显示）
@@ -22,7 +22,7 @@ import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
 import { cx, durWords, hhmm, isMobile, reduceMotion } from '../../lib/util';
 import { onRuns, useData } from '../../store/data';
 import { openHost, openSession, useUI, type SessionReq } from '../../store/ui';
-import { Markdown, Segmented, Tip, useNow } from '../bits';
+import { Markdown, Tip, useNow } from '../bits';
 import { Icon, type IconName } from '../Icon';
 import { usePresence } from '../overlays/presence';
 import { Skeleton, SkeletonText } from '../Skeleton';
@@ -124,10 +124,9 @@ function SessionShell({ req, on }: { req: SessionReq; on: boolean }) {
   );
 }
 
-function SessionBody({ id, card, known, on, close }: { id: number; card?: number; known?: Dispatch[]; on: boolean; close: () => void }) {
+export function SessionBody({ id, card, known, on, close }: { id: number; card?: number; known?: Dispatch[]; on: boolean; close: () => void }) {
   const [view, setView] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<'events' | 'raw'>('events');
   const rev = useData(s => s.ws?.rev);
   const ws = useData(s => s.ws);
   const now = useNow(1000);
@@ -252,7 +251,7 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
     if (stick.current) scrollSilently(sc, () => (sc.scrollTop = sc.scrollHeight));
     // 不跟随时内容变长了：还在底部的话（例如本来就差一点）照常认作到底
     else if (!chasing.current) setAway(!atBottom(sc));
-  }, [view, total, card, mode, slots.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, total, card, slots.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const jump = (p: Dispatch) => {
     const el = main.current;
     const seg = el?.querySelector<HTMLElement>(`[data-part="${p.id}"]`);
@@ -348,16 +347,6 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
           ) : (
             <Skeleton w={28} h={10} />
           )}
-          <span className="ss-modes">
-            <Segmented
-              value={mode}
-              options={[
-                ['events', '过程'],
-                ['raw', '原始输出'],
-              ]}
-              onChange={setMode}
-            />
-          </span>
         </div>
       )}
       <div className="ss-grid" aria-busy={loading || undefined}>
@@ -401,7 +390,7 @@ function SessionBody({ id, card, known, on, close }: { id: number; card?: number
         >
           {loading && !rows.length && <OutSkeleton />}
           {error && <p className="hp-note ss-err">{error}</p>}
-          {rows.map((p, i) => (p ? <Segment key={p.id} p={p} mode={mode} pending={!view} showRaw={() => setMode('raw')} /> : <SegSkeleton key={`sk${i}`} i={i} />))}
+          {rows.map((p, i) => (p ? <Segment key={p.id} p={p} pending={!view} /> : <SegSkeleton key={`sk${i}`} i={i} />))}
           <div className={cx('ss-bottom', away && rows.length > 0 && 'on')} aria-hidden={!away || undefined}>
             <Tip text="到最底下，接着跟新内容">
               <button type="button" className="btn sm ss-tobottom" tabIndex={away ? 0 : -1} onClick={toBottom} data-tip-pos="top" data-tip-align="end">
@@ -456,9 +445,9 @@ function CardRow({ p, n, on, now, jump, open }: { p: Dispatch; n: number; on: bo
   );
 }
 
-/** 一张卡那一段：标题（#ID 标题 … 状态），下面是过程或原始输出。
+/** 一张卡那一段：标题（#ID 标题 … 状态），下面是过程。
  *  pending：还没取回来，标题按已经知道的画，内容画骨架（排着的没有内容，直接写排着）；取回来后内容淡入，标题不动 */
-function Segment({ p, mode, pending, showRaw }: { p: Part | Dispatch; mode: 'events' | 'raw'; pending: boolean; showRaw: () => void }) {
+function Segment({ p, pending }: { p: Part | Dispatch; pending: boolean }) {
   const st = partState(p);
   // 先按已经知道的画出来的段：内容到了要淡入（标题不动）
   const fill = useRef(pending).current;
@@ -472,24 +461,8 @@ function Segment({ p, mode, pending, showRaw }: { p: Part | Dispatch; mode: 'eve
       </h4>
       {body ? (
         <SegBodySkeleton key="sk" i={(p.seq ?? 1) - 1} />
-      ) : mode === 'events' ? (
-        <Process key="events" p={part} showRaw={showRaw} />
       ) : (
-        <pre key="raw" className="hp-log ss-log">
-          {part.log.length
-            ? part.log.join('\n')
-            : part.state === 'queued'
-              ? '排着：等这个会话做完前面的卡再开始'
-              : part.state === 'running'
-                ? '还没有输出（host 每 5 秒上传一次新增的行）'
-                : '没有输出'}
-          {part.state === 'running' && (
-            <>
-              {'\n'}
-              <span className="hp-caret">▍</span>
-            </>
-          )}
-        </pre>
+        <Process p={part} />
       )}
     </section>
   );
@@ -497,16 +470,13 @@ function Segment({ p, mode, pending, showRaw }: { p: Part | Dispatch; mode: 'eve
 
 /* ------------------------------ 加载中的骨架 ------------------------------ */
 
-/** 头部下面那一行：名字、启动环境、模型、来源、开始时间、用时、状态，右边「过程 / 原始输出」 */
+/** 头部下面那一行：名字、启动环境、模型、来源、开始时间、用时、状态 */
 function MetaSkeleton() {
   return (
     <div className="ss-meta sk-meta" aria-hidden="true">
       {[124, 22, 104, 28, 76, 84, 28].map((w, i) => (
         <Skeleton key={i} w={w} h={10} />
       ))}
-      <span className="ss-modes">
-        <Skeleton w={131} h={32} r="var(--r-sm)" />
-      </span>
     </div>
   );
 }
@@ -621,24 +591,35 @@ const TOOL_ICON: Record<ToolKind, IconName> = {
   other: 'bolt',
 };
 
-/** 一张卡这一次的过程：没有事件时写明为什么（还没开始、只有原始输出、旧版 board host） */
-function Process({ p, showRaw }: { p: Part; showRaw: () => void }) {
+/** 原始日志：没有结构化事件时在段内兜底 */
+function RawLog({ p, why }: { p: Part; why: string }) {
+  return (
+    <>
+      <p className="hp-note ss-why">{why}</p>
+      <pre className="hp-log ss-log">
+        {p.log.length ? p.log.join('\n') : p.state === 'running' ? '还没有输出（board host 每 5 秒上传一次新增的行）' : '没有输出'}
+        {p.state === 'running' && (
+          <>
+            {'\n'}
+            <span className="hp-caret">▍</span>
+          </>
+        )}
+      </pre>
+    </>
+  );
+}
+
+/** 一张卡这一次的过程：没有事件时写明为什么（还没开始、只有原始日志、旧版 board host） */
+export function Process({ p }: { p: Part }) {
   const events = p.events ?? [];
   const running = p.state === 'running';
   if (!events.length) {
-    const raw = (why: string) => (
-      <p className="hp-note ss-why">
-        {why}
-        <button type="button" className="hp-link" onClick={showRaw}>
-          看原始输出
-        </button>
-      </p>
-    );
     if (p.state === 'queued') return <p className="hp-note ss-why">排着：等这个会话做完前面的卡再开始</p>;
-    if (p.fmt === '') return raw(`${p.agentLabel || p.agent} 没有结构化输出（配置文件里的命令没带事件流参数，或者是配置文件里加的 agent），只能看原始输出。`);
+    if (p.fmt === '')
+      return <RawLog p={p} why={`${p.agentLabel || p.agent} 没有结构化输出（配置文件里的命令没带事件流参数，或者是配置文件里加的 agent）。下面是原始输出。`} />;
+    if (p.fmt == null) return <RawLog p={p} why="这次派发没有记录过程（board host 版本较旧，或者没开始）。下面是原始输出。" />;
     if (running) return <p className="hp-note ss-why">还没有事件（board host 每 2 秒上传一次）</p>;
-    if (p.fmt == null) return raw('这次派发没有记录过程（board host 版本较旧，或者没开始）。');
-    return raw('没有事件。');
+    return <p className="hp-note ss-why">没有事件。</p>;
   }
   const rows = groupEvents(events);
   // 在跑的那一条：折叠组折着时也写出来
