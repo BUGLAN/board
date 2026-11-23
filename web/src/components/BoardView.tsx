@@ -718,7 +718,8 @@ export function Magnet({
   /** 卡片拖动期间（指针还按着）冻结白板宽度的测量（Windows 上滚动条随块变高出现 / 消失会改宽，整块重排）。
       块的高度照常跟着占位变：目标块随占位撑开、下面的块跟着让开（default/main#502）。
       落点判定读开始拖动时拍下的块位置（drag.ts 的 snapZones），块挪动不会让落点来回变（#419 的反馈环）。
-      松手当帧就解冻（DragUI.dropping），宽度补测一次 */
+      白板内容的总高度在拖动中只增不减（见下面的 floor）：变矮会让滚在底部附近的白板 scrollTop 被动回收，落点跟着跳（default/main#628）。
+      松手当帧就解冻（DragUI.dropping），宽度补测一次、高度恢复按内容算 */
   frozen?: boolean;
   render: (s: Status, h: { onMove: (e: React.PointerEvent) => void; resizer: ReactNode }) => ReactNode;
 }) {
@@ -739,6 +740,13 @@ export function Magnet({
   const col = (width + GAP) / COLS;
   const pos = pack(keys, tiles, heights);
   const bottom = Math.max(0, ...keys.map(k => (pos[k]?.top ?? 0) + (heights[k] ?? 0)));
+  // 卡片拖动中白板内容的高度只增不减，松手当帧恢复（default/main#628）。
+  // 最高的那块（多半是拖出卡片的那块）一变矮，白板就变短；白板正滚在底部附近时浏览器把 scrollTop 往回收，
+  // 所有块在指针底下整体下移，落点（按快照 + 滚动偏移算）跳到上面那块，占位回去、白板又变高，来回跳。
+  // 块的高度、位置照常跟着占位变，只是拖动中白板底部多留出空白
+  const floor = useRef(0);
+  floor.current = frozen ? Math.max(floor.current, bottom + 4) : 0;
+  const height = Math.max(bottom + 4, floor.current);
 
   // 切到别的 Tab 时白板页 display: none，量出来是 0：不记，切回来时布局还是原样，不会先挤成一团再展开（抖动）
   useLayoutEffect(() => {
@@ -787,6 +795,18 @@ export function Magnet({
       return n;
     });
   }, [frozen, keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 手机上块上下排列（.magnet.stacked），高度由内容撑开、不写 height：拖动中用 min-height 撑住出现过的最大高度，道理同上面的 floor
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (!mobile || !frozen) {
+      if (el.style.minHeight) el.style.minHeight = '';
+      return;
+    }
+    const h = el.offsetHeight;
+    if (h > (parseFloat(el.style.minHeight) || 0)) el.style.minHeight = `${h}px`;
+  });
 
   // 拖动、调宽的入口交给状态块时是固定的函数（见下面的 handles），按下时从这里读最新的布局
   const latest = useRef({ pos, tiles, heights, col, mobile, keys, path });
@@ -891,7 +911,7 @@ export function Magnet({
 
   const moving = drag?.mode === 'move' ? drag : null;
   return (
-    <div className={cx('magnet', moving && 'moving', mobile && 'stacked')} ref={ref} style={mobile ? undefined : { height: bottom + 4 }}>
+    <div className={cx('magnet', moving && 'moving', mobile && 'stacked')} ref={ref} style={mobile ? undefined : { height }}>
       {moving && pos[moving.key] && (
         <div
           className="tile-ghost"

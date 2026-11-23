@@ -87,6 +87,35 @@ describe('落在哪一块：按开始拖动时的快照判定（default/main#502
     expect(zoneAt(snap, 100, 50, undefined)).toBe('check');
   });
 
+  it('并排两块之间的竖缝里取左右两块，不判给上面整行宽的块（default/main#628）', () => {
+    // 上面一整行（锁定的「进行中」），下面并排两块，中间 12px 的缝
+    const snap: Zone[] = [
+      { key: 'doing', left: 0, top: 0, right: 700, bottom: 100, scroller: null, scroll0: 0 },
+      { key: 'review', left: 0, top: 112, right: 400, bottom: 600, scroller: null, scroll0: 0 },
+      { key: 'done', left: 412, top: 112, right: 700, bottom: 600, scroller: null, scroll0: 0 },
+    ];
+    // 在块顶往下 5px、20px 的高度从左到右逐像素穿过竖缝：落点只从 review 换到 done 一次
+    for (const y of [117, 132]) {
+      let cur = 'review';
+      const seen: string[] = [];
+      for (let x = 396; x <= 416; x++) {
+        cur = zoneAt(snap, x, y, cur) ?? cur;
+        if (seen[seen.length - 1] !== cur) seen.push(cur);
+      }
+      expect(seen).toEqual(['review', 'done']);
+      // 往回拖同样只换一次
+      const back: string[] = [];
+      for (let x = 416; x >= 396; x--) {
+        cur = zoneAt(snap, x, y, cur) ?? cur;
+        if (back[back.length - 1] !== cur) back.push(cur);
+      }
+      expect(back).toEqual(['done', 'review']);
+    }
+    // 指针真的到了上面那块（或更靠近它）仍然判给它
+    expect(zoneAt(snap, 406, 90, 'review')).toBe('doing');
+    expect(zoneAt(snap, 406, 103, 'doing')).toBe('doing');
+  });
+
   it('指针在分界上抖动保持当前这块（迟滞）', () => {
     const snap = [zone('review', 0, 100), zone('check', 104, 200)];
     expect(zoneAt(snap, 100, 103, 'review')).toBe('review');

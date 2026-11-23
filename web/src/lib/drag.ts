@@ -333,14 +333,20 @@ function locate() {
   }
 }
 
-/** 指针落在哪一块。块的命中范围上下放宽 40px、左右放宽 4px（指针在两块之间的空隙里也算数），但放宽的范围会盖进挨得近的隔壁块：
+/** 指针落在哪一块。块的命中范围上下放宽 40px、左右放宽一个块间距（指针在两块之间的空隙里也算数），但放宽的范围会盖进挨得近的隔壁块：
     以前按顺序取第一个命中的，指针明明已经在下面那块（例如「已完成」）的顶部，却判成上面那块（例如锁定的「进行中」）；
     指针在分界附近抖一下，就在「锁定」和「可放入」之间来回切，锁的提示一闪一闪。现在：
     - 指针在块里面：就是这一块；
     - 在空隙里：取离指针最近的一块；
     - 迟滞：当前这块（cur）还在范围里、别的块只近不到 HYSTERESIS 像素时，保持当前这块，指针在分界上抖动不会来回切
-    块的位置用开始拖动时的快照（snapZones），不量当时的画面 */
+    块的位置用开始拖动时的快照（snapZones），不量当时的画面。
+    左右放宽以前只有 4px：并排两块之间 12px 的竖缝里，中间 4px 左右两块都不算，而上面整行宽的块上下放宽 40px 正好盖到这里，
+    横着穿过竖缝（块顶往下 28px 以内）时落点判给上面那块——它是锁定的「进行中」时锁的提示闪一下，正好在这里松手还会被拒绝（default/main#628）。
+    放宽到整个块间距后，缝里先比的是左右两块（都在 6px 以内），远处的块只有真的更近才选中 */
 const HYSTERESIS = 6;
+/** 左右放宽：等于磁吸布局的块间距（BoardView 的 GAP） */
+const SLACK_X = 12;
+const SLACK_Y = 40;
 export function zoneAt(cols: Zone[], x: number, y: number, cur: ColumnKey | undefined): string | undefined {
   let best: string | undefined;
   let bestD = Infinity;
@@ -352,7 +358,7 @@ export function zoneAt(cols: Zone[], x: number, y: number, cur: ColumnKey | unde
     const bottom = c.bottom - off;
     const dx = x < c.left ? c.left - x : x > c.right ? x - c.right : 0;
     const dy = y < top ? top - y : y > bottom ? y - bottom : 0;
-    if (dx > 4 || dy > 40) continue;
+    if (dx > SLACK_X || dy > SLACK_Y) continue;
     const d = Math.hypot(dx, dy);
     if (d < bestD) {
       best = c.key;

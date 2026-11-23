@@ -129,6 +129,61 @@ describe('Magnet 拖动卡片时的尺寸（default/main#419、#502）', () => {
     expect(b.style.transform).not.toBe(y0);
   });
 
+  it('白板内容的高度在拖动中只增不减，松手后恢复（default/main#628）', () => {
+    const column = tile('review');
+    act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
+    const magnet = host.querySelector<HTMLElement>('.magnet')!;
+    const el = host.querySelector<HTMLElement>('[data-tile="review"]')!;
+    const h = vi.spyOn(el, 'offsetHeight', 'get').mockReturnValue(600);
+    const watcher = FakeResizeObserver.all.find(ro => ro.observed.has(el))!;
+    act(() => watcher.fire([el]));
+    expect(magnet.style.height).toBe('604px');
+
+    // 拖动中卡片离开这块，它变矮：白板的高度留在原来的值（变短会让滚在底部的白板 scrollTop 被动回收）
+    act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen render={() => <i />} />));
+    h.mockReturnValue(480);
+    act(() => watcher.fire([el]));
+    expect(magnet.style.height).toBe('604px');
+    // 撑开过之后再变矮，留在出现过的最大值
+    h.mockReturnValue(700);
+    act(() => watcher.fire([el]));
+    expect(magnet.style.height).toBe('704px');
+    h.mockReturnValue(480);
+    act(() => watcher.fire([el]));
+    expect(magnet.style.height).toBe('704px');
+
+    // 松手当帧解冻：按实际内容算，底部不留空白；下一次拖动从这时的高度算起
+    act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
+    expect(magnet.style.height).toBe('484px');
+    act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen render={() => <i />} />));
+    expect(magnet.style.height).toBe('484px');
+  });
+
+  it('手机上块上下排列：拖动中用 min-height 撑住出现过的最大高度，松手后去掉（default/main#628）', () => {
+    const mm = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      const column = tile('review');
+      act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
+      const magnet = host.querySelector<HTMLElement>('.magnet')!;
+      expect(magnet.classList.contains('stacked')).toBe(true);
+      const h = vi.spyOn(magnet, 'offsetHeight', 'get').mockReturnValue(900);
+      expect(magnet.style.minHeight).toBe('');
+
+      act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen render={() => <i />} />));
+      expect(magnet.style.minHeight).toBe('900px');
+      // 内容变矮时 min-height 撑着，量到的还是 900；撑开后跟着变大
+      h.mockReturnValue(1000);
+      act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen render={() => <i />} />));
+      expect(magnet.style.minHeight).toBe('1000px');
+
+      act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
+      expect(magnet.style.minHeight).toBe('');
+    } finally {
+      window.matchMedia = mm;
+    }
+  });
+
   it('白板宽度在拖动中不变（滚动条出现 / 消失不重排），松手后补测', () => {
     const column = tile('done');
     act(() => root.render(<Magnet path="test/main" statuses={[column]} frozen={false} render={() => <i />} />));
