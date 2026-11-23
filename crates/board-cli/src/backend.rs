@@ -156,6 +156,11 @@ impl Backend {
         self.0.post("/api/agents/beat", body)
     }
 
+    /// 在线的名字（`GET /api/agents`）：`board base` 判断别的会话留下的 worktree 是不是空闲用
+    pub fn online(&mut self) -> Result<Vec<String>> {
+        Ok(self.0.get::<Vec<AgentInfo>>("/api/agents", &[])?.into_iter().map(|a| a.name).collect())
+    }
+
     pub fn workspace(&mut self) -> Result<Workspace> {
         self.0.get("/api/workspace", &[])
     }

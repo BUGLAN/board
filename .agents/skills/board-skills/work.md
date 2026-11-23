@@ -39,7 +39,13 @@ worktree 不在这里创建：由「代码 → 开工」的 `board base` 建。
 
 ## 处理一张卡片
 
-`board start <ID>` → 开工 → 干活 → 推送 → 交审（`board submit <ID>`）；做不下去时 `board giveup <ID>`。不改代码的卡片（调研、整理之类）跳过开工和推送。
+`board start <ID>` → 开工 → 干活 → 推送 → 交审（`board submit <ID>`）；做不下去时 `board giveup <ID>`。领到之后按卡片内容分三种，走哪几步不一样：
+
+| 卡片 | worktree | 流程 |
+|---|---|---|
+| 改仓库里的文件：功能、修复，以及文案、文档、图片 | `board base` 给你一个（接手空闲的，没有才新建） | 开工 → 干活 → 推送 → 交审 |
+| 只测试、验证：跑测试、验收、复现问题，不改文件 | 同上。测的是最新的集成分支，不在主仓库目录里测（那里的代码可能是旧的，也可能是人正在改的） | 开工 → 测试 → `board submit <ID> --no-code`，不推送 |
+| 不碰仓库：调研、整理、拆解 | 不用，不执行 `board base` | 干活 → `board submit <ID> --no-code` |
 
 **先领卡，再干活**：拿到卡片引用（带 ID 的卡片，或从 `board ls` 里挑中的那张）后，第一条和这张卡片有关的命令必须是 `board start <ID>`。领取成功之前：
 
@@ -60,7 +66,7 @@ worktree 不在这里创建：由「代码 → 开工」的 `board base` 建。
      - 在其他状态，或别人持有：不要动，告诉用户它现在的状态
    - `ALREADY_HOLDING`：你在这块白板上还拿着另一张卡片，先把那张做完，或按第 6 步交给人处理
 2. **开工**：`board base <ID> --json`，按它的 `next` 做（见「代码 → 开工」）。
-3. **干活**：按描述和验收标准在 worktree 里改代码、跑测试。耗时较长时用 `board comment <ID> "<进展>"` 记进度。后台心跳在，干多久都不会被释放。
+3. **干活**：按描述和验收标准在 worktree 里改代码。这一步只跑和改动相关的测试；仓库规定的全部检查留到「推送」里 rebase 之后跑一次，不要在这里先跑一遍（上游一更新就白跑了）。耗时较长时用 `board comment <ID> "<进展>"` 记进度。后台心跳在，干多久都不会被释放。
 4. **推送**：按「代码 → 推送」rebase、跑检查，再用 `board land` 压成一个提交推到集成分支。
 5. **交审**：评论写清楚改了什么；改了代码的卡片，评论最后固定写四行：
 
@@ -107,6 +113,8 @@ worktree 不在这里创建：由「代码 → 开工」的 `board base` 建。
 |---|---|
 | 集成分支 | 按这个顺序认：项目设置里的「集成分支」（`board flow --json` 的 `branch`，不是空的时候）→ 仓库根目录 AGENTS.md / CLAUDE.md 写明的分支 → 远端的默认分支（`git symbolic-ref --short refs/remotes/origin/HEAD` 得到 `origin/<分支>`；没有输出时用 `git ls-remote --symref origin HEAD` 查）。下文以 `main` 为例。不建卡片分支 |
 | 检查 | AGENTS.md / CLAUDE.md 里规定的推送前检查，跑全部，不只跑改到的部分。仓库没写时停下来问用户 |
+| 快检 | AGENTS.md / CLAUDE.md 里写的「快检」（把代码编译一遍、类型检查之类，不跑测试）。只在「推送」第 3 步用：全部检查通过之后上游又更新了、rebase 没有冲突时，用它代替重跑全部检查。仓库没写时没有快检，照旧全部重跑 |
+| 更新代码后 | AGENTS.md / CLAUDE.md 里「更新代码后」一节写的命令（重装依赖之类）：每次 `board base` 之后、动手之前执行。仓库没写就不做 |
 | 提交 | 每次领取压成集成分支上的一个提交。第一行按仓库的提交规范写；正文写改了什么、跑了哪些检查；最后一行是 `卡片：<项目>/<白板>#<ID>` |
 | 发版 | 由人决定：不主动发版、不顺手打 tag、不改版本号；人新建的卡明确要求发版时读 release.md |
 
@@ -123,11 +131,15 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 
 ### 会话的 worktree
 
-每个会话一个 worktree，一张卡接一张卡地在里面做：`board base` 把它建在主仓库旁边的 `<仓库目录名>.wt/` 里、锁着你的名字（规则和 board host 一样）。不碰别人的 worktree。会话结束、`board heartbeat stop` 之后，在主仓库目录 `git worktree unlock <目录>`、`git worktree remove <目录>` 删掉自己的；board host 备好的（提示词里写着「代码已经备好」）不删，见 host.md。
+每个会话一个 worktree，一张卡接一张卡地在里面做，都在主仓库旁边的 `<仓库目录名>.wt/` 里，锁着谁的名字就是谁在用（规则和 board host 一样）。**用完留着，下一个会话接手**：`board base` 先找锁着你名字的，没有就接手一个别的会话留下的空闲 worktree（没锁的，或者锁着的名字已经离线、里面又没有没推的改动），都没有才新建。接手来的 worktree 里依赖、构建产物都在，不用从头安装、从头编译。
+
+- 找、接手、新建、清理都由 `board base` 做，不要自己 `git worktree add` / `lock` / `remove`，不碰别人锁着的 worktree。
+- 会话结束、`board heartbeat stop` 之后，在主仓库目录 `git worktree unlock <目录>` 把自己的解锁，**不删**；board host 备好的（提示词里写着「代码已经备好」）由 board host 解锁，你不用管，见 host.md。
+- 空闲的 worktree 超过 36 小时没用、或者多于 4 个时，`board base` 和 board host 会自己清理（输出里的「清理空闲」、`--json` 的 `cleaned`），不用你删。
 
 ### 开工
 
-每张卡改代码前（第一张、`board next` 接到的下一张、从 wip 分支接着做的都一样）在项目的仓库里执行 `board base <ID> --json`（集成分支和项目设置里的不同时加 `--branch <分支>`）。它确认卡片由你持有、`git fetch`、找到或建好你的 worktree，切到最新的集成分支（评论里有 `未完成的改动：wip/…` 时切到那条分支、rebase 上去），输出 `worktree`、`base`、`next`。之后改代码、推送都在 `worktree` 里。按 `step` 做：
+每张要用仓库的卡（改文件的、只测试的）动手之前（第一张、`board next` 接到的下一张、从 wip 分支接着做的都一样）在项目的仓库里执行 `board base <ID> --json`（集成分支和项目设置里的不同时加 `--branch <分支>`）。它确认卡片由你持有、`git fetch`、找到你的 worktree（见上一节：接着用、接手空闲的或新建，`--json` 里 `adopted` / `created`），切到最新的集成分支（评论里有 `未完成的改动：wip/…` 时切到那条分支、rebase 上去），输出 `worktree`、`base`、`next`。之后改代码、测试、推送都在 `worktree` 里。先按仓库 AGENTS.md / CLAUDE.md「更新代码后」一节执行（没写就跳过），再按 `step` 做：
 
 - `code`：直接改代码。
 - `wip`：先看 `git diff origin/main...HEAD` 和动态里上一次留下的说明，弄清做到哪了再接着做，不要从头重做。
@@ -151,9 +163,11 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
    - **上游的改动必须保留**：那一边是别的卡推上去的改动。不整份取自己那一版（`git checkout --theirs`、「接受自己的」），逐块把自己的改动叠在上游的新代码上；先 `git log -5 --format='%h %s%n%b' origin/main -- <文件>` 看它最近被哪些卡改过。
    - 两边都新建的同名文件（尤其测试）合成一份；不删、不整份替换别的卡的测试用例（卡片要求的除外，交审评论写明）。
    - 合不了（看不懂上游为什么这么改、两边要求矛盾）：按「做不下去」交给人，不要猜。
-2. 在 rebase 之后的代码上跑仓库规定的全部检查，不通过就修好再跑。
+2. 在 rebase 之后的代码上跑仓库规定的全部检查，不通过就修好再跑。全部检查只在这里跑：先更新、再检查。
 3. `board land <ID> --message-file <提交说明文件> --checked "<跑了哪些检查、结果>"`：确认 HEAD 在最新集成分支之上，压成一个提交（补上「卡片：」行），查 `board touched`、`board hold`，推集成分支，删掉接着做的 wip 分支，最后输出交审评论的四行。按结果：
-   - 「不在最新的 origin/main 之上」、推送被拒：别人先推了，回到第 1 步。不要 `--force`。
+   - 「不在最新的 origin/main 之上」、推送被拒：检查期间别人先推了。重新 `git fetch origin && git rebase origin/main`，不要 `--force`，然后：
+     - rebase 没有冲突、仓库写了「快检」：只跑快检，通过就再 `board land`，不重跑全部检查。`--checked` 里写明，例如 `npm test 通过（在 1a2b3c4 上）；之后 rebase 过 2 个提交，只跑了快检`。快检不过：修好，回到第 2 步跑全部检查。
+     - rebase 有冲突，或者仓库没写「快检」：解完冲突，回到第 2 步跑全部检查。
    - 碰到别的卡（没有推）：不是有意的（多半是解冲突时取了自己那一版），对照 `git show <它列的提交> -- <文件>` 找回来，回到第 2 步；有意的（卡片要求、同一功能接着改），加 `--touched-ok` 再执行，交审评论那一行后面逐条写为什么。
    - `NOT_HOLDER`、`UNREACHABLE`（领取失效、连不上，没有推）：`board land <ID> --wip`，在卡片上评论原因，最后一行照抄它输出的 `未完成的改动：…`（连不上就等能连上再补，还不行写进给人的汇报），然后结束这张卡：不 submit、不 giveup。board host 启动的会话也不再 `board next`。
 
@@ -173,6 +187,6 @@ fix(web): 设置页、登录页按钮圆角统一为 8px
 board heartbeat stop
 ```
 
-然后在主仓库目录删掉本会话的 worktree（见「代码 → 会话的 worktree」）。
+然后在主仓库目录把本会话的 worktree 解锁、留给下一个会话：`git worktree unlock <目录>`，不删（见「代码 → 会话的 worktree」）。里面还有没推的改动时不解锁：先按「代码 → 做不下去」保存。
 
 会话中途得到 `NAME_OFFLINE`（名字离线了，持有的卡可能已经被释放）：`board start <ID> --agent <标识>` 重新占名字、启动心跳，卡还在就接着做；返回 `NOT_IN_TODO` 说明卡已经被别人拿走或移走，告诉用户。

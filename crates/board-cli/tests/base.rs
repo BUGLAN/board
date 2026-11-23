@@ -127,6 +127,46 @@ fn creates_or_reuses_the_session_worktree() {
     assert_eq!(git(&hosted, &["rev-parse", "HEAD"]), tip);
 }
 
+/// 用完留着、下一个会话接手（default/main#622）：另一个会话还在线、锁着它的 worktree 时不碰它的，自己新建；
+/// 那个会话结束、解锁之后，再来的会话（换了名字）接手它留下的 worktree：锁换成自己，停在最新的集成分支上，
+/// 里面的依赖、构建产物（被忽略的文件）都还在
+#[test]
+fn adopts_the_idle_worktree_another_session_left() {
+    const GAMMA: &str = "test/gamma";
+    let s = server();
+    let r = repo();
+    let (_, v) = base(&s, &r.main);
+    let wt = PathBuf::from(v["worktree"].as_str().unwrap());
+    assert_eq!((v["created"].as_bool(), v["adopted"].as_bool()), (Some(true), Some(false)), "{v}");
+    std::fs::write(r.main.join(".git/info/exclude"), "target/\n").unwrap();
+    std::fs::create_dir_all(wt.join("target")).unwrap();
+    std::fs::write(wt.join("target/built"), "x").unwrap();
+
+    // alpha 还在线：beta 不接手，新建自己的
+    let run = |who: &str, id: &str| {
+        assert_eq!(s.run(who, &["new", "又一张", "--json"]).code, 0);
+        assert_eq!(s.run(who, &["claim", id, "--json"]).code, 0);
+        let out = s.run(who, &["base", id, "--dir", r.main.to_str().unwrap(), "--json"]);
+        (out.code, serde_json::from_str::<Value>(&out.out).unwrap_or_else(|e| panic!("{e}：{}{}", out.out, out.err)))
+    };
+    let (code, v) = run(BETA, "2");
+    assert_eq!(code, 0, "{v}");
+    assert_eq!((v["created"].as_bool(), v["adopted"].as_bool()), (Some(true), Some(false)), "{v}");
+    assert!(!same(Path::new(v["worktree"].as_str().unwrap()), &wt));
+
+    // alpha 结束、解锁；集成分支又有了新提交。gamma 接手 alpha 留下的
+    git(&r.main, &["worktree", "unlock", wt.to_str().unwrap()]);
+    let tip = r.push("other", "origin/main", "main", "b.txt", "pushed by someone else\n", "feat: 别的卡\n\n卡片：default/main#91");
+    let (code, v) = run(GAMMA, "3");
+    assert_eq!(code, 0, "{v}");
+    assert_eq!((v["created"].as_bool(), v["adopted"].as_bool(), v["step"].as_str()), (Some(false), Some(true), Some("code")), "{v}");
+    assert!(same(Path::new(v["worktree"].as_str().unwrap()), &wt), "{v}");
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), tip);
+    assert!(wt.join("target/built").exists(), "构建产物还在");
+    assert!(git(&r.main, &["worktree", "list", "--porcelain"]).contains("locked test/gamma"));
+    assert_eq!(v["cleaned"], serde_json::json!([]), "{v}");
+}
+
 /// worktree 里有没提交的改动、没推的提交：退出码 1，不切换、不丢改动，列出来并写明怎么办
 #[test]
 fn keeps_unsaved_changes_and_does_not_switch() {

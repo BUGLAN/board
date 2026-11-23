@@ -17,7 +17,25 @@ npm test                      # 即 cargo test && cargo test -p board-desktop &&
 
 `cargo test` 只跑 `crates/`（`Cargo.toml` 的 `default-members` 排除了 `src-tauri`：桌面端依赖重），所以桌面端（`src-tauri`）的单元测试单独用 `cargo test -p board-desktop` 跑（也可以 `npm run test:desktop`），`npm test` 里已经带上，CI 的 Windows 任务也会跑。不需要先编安装包自带的 `board`（`scripts/build-sidecar.mjs` 的产物）：`src-tauri/build.rs` 在 `src-tauri/binaries` 里没有 sidecar 时按不带 sidecar 构建。Linux 上跑它要先装桌面端的系统依赖（GTK、WebKitGTK，同 `tauri build`），只改 `crates/`、`web/` 时可以在 macOS、Windows 上跑完整检查。
 
-新 worktree 里第一次跑之前先 `npm ci`（postinstall 会装 `web/` 的依赖）。
+### 快检
+
+全部检查通过之后、`board land` 之前上游又更新了，而且 rebase 没有冲突：只跑快检，不重跑全部检查（规则见 `.agents/skills/board-skills/work.md`「推送」）。快检把所有代码和测试编译一遍、做类型检查，不跑测试：
+
+```sh
+cargo test --no-run && cargo test -p board-desktop --no-run && npm --prefix web run typecheck
+```
+
+rebase 有冲突时解完冲突，全部检查重跑。
+
+## 更新代码后
+
+每次 `board base` 之后（新建的、接手来的、接着用的 worktree 都一样）、动手之前执行，装上或补上依赖（postinstall 会装 `web/` 的依赖，实测 2 秒）：
+
+```sh
+npm ci
+```
+
+worktree 用完不删、留给下一个会话接手，`target/`、`node_modules/` 都在：不要为了「干净」去删它们，也不要把几个 worktree 的 `target` 指到同一个目录（`CARGO_TARGET_DIR`、软链）——同名 crate 的产物会互相覆盖，cargo 按修改时间判断新旧，测到的可能是别的 worktree 的代码。
 
 ## 本地开发
 

@@ -529,6 +529,8 @@ impl Host<'_> {
             // 半成品交接：board host 备的 worktree 里还有没推到远端的改动，保存成 wip 分支并在卡片上评论，接手的不用从头来
             if ended.managed {
                 self.save_wip(&ended, code);
+                // 用完留着：里面没有没推的改动就解锁，下一个会话（换了名字也一样）接手它，不用从头装依赖、从头编译（#622）
+                crate::code::release(&ended.cwd);
             }
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
             if ended.lost && !ended.managed {
@@ -815,8 +817,13 @@ impl Host<'_> {
         }
         // 没有会话名（旧版、异常的服务端）：不准备、不删任何目录，这张派发直接结束（#508）
         let name = d.name.clone().filter(|n| !n.trim().is_empty()).ok_or_else(|| "派发没有会话名，没有启动 agent：服务端可能太旧，先升级服务端".to_string())?;
-        match crate::code::prepare(&dir, &name, d.id, &d.branch) {
+        let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).collect();
+        let online = self.online_names();
+        match crate::code::prepare(&dir, &name, d.id, &d.branch, &in_use, online.as_deref()) {
             Ok(r) => {
+                if r.adopted {
+                    self.say(format!("{} 接手了空闲的 worktree {}（依赖、构建产物都在）", self.p.dim("·"), r.cwd.display()));
+                }
                 if self.fetch_errs.iter().any(|(p, ..)| *p == dir) {
                     self.fetch_errs.retain(|(p, ..)| *p != dir);
                     self.beat_soon = true;
@@ -967,23 +974,30 @@ impl Host<'_> {
         })
     }
 
-    /// 清理 board host 备的、超过 24 小时没用的 worktree（`code.rs` 的 `sweep`）：干净的删掉，有没推改动的留着并写明
+    /// 服务端上在线的名字：判断别的会话留下的 worktree 是不是空闲用。查不到时为空（锁着的一律当成有人在用）
+    fn online_names(&self) -> Option<Vec<String>> {
+        self.rm().get::<Vec<board_core::model::AgentInfo>>("/api/agents", &[]).ok().map(|a| a.into_iter().map(|a| a.name).collect())
+    }
+
+    /// 清理空闲的 worktree（`code.rs` 的 `sweep`）：超过 36 小时没用的、多出 4 个的删掉，有没推改动的留着并写明
     pub(super) fn sweep_worktrees(&mut self) {
         let mut repos: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
         repos.sort();
         repos.dedup();
         let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).collect();
+        let online = self.online_names();
         for repo in repos {
             if !crate::code::is_repo(&repo) {
                 continue;
             }
-            for (wt, kept) in crate::code::sweep(&repo, &in_use, crate::code::WT_UNUSED, std::time::SystemTime::now()) {
-                use crate::code::Swept;
+            use crate::code::{Swept, WT_IDLE_MAX, WT_UNUSED};
+            for (wt, kept) in crate::code::sweep(&repo, &in_use, online.as_deref(), WT_UNUSED, WT_IDLE_MAX, std::time::SystemTime::now()) {
                 match kept {
-                    Swept::Removed => self.say(format!("{} 清理了 24 小时没用的 worktree {}", self.p.dim("·"), wt.display())),
-                    Swept::Unpushed(what) => self.say(format!("{} worktree {} 超过 24 小时没用，但有没推到远端的改动（{what}），留着", self.p.yellow("!"), wt.display())),
+                    Swept::Removed => self.say(format!("{} 清理了 36 小时没用的 worktree {}", self.p.dim("·"), wt.display())),
+                    Swept::Extra => self.say(format!("{} 空闲的 worktree 超过 {WT_IDLE_MAX} 个，清理了最久没用的 {}", self.p.dim("·"), wt.display())),
+                    Swept::Unpushed(what) => self.say(format!("{} worktree {} 超过 36 小时没用，但有没推到远端的改动（{what}），留着", self.p.yellow("!"), wt.display())),
                     Swept::NoOwner(why) => {
-                        self.say(format!("{} worktree {} 超过 24 小时没用，但{why}：不自动删，确认没用后手动删", self.p.yellow("!"), wt.display()))
+                        self.say(format!("{} worktree {} 超过 36 小时没用，但{why}：不自动删，确认没用后手动删", self.p.yellow("!"), wt.display()))
                     }
                 }
             }

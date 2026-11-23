@@ -6,13 +6,15 @@
 //! 1. 卡片要由自己持有（否则 `NOT_HOLDER`，什么都不动），免得在没领到的卡上开工。
 //! 2. 集成分支：`--branch` → 项目设置里的 → 远端默认分支；`git fetch origin`。
 //! 3. 会话的 worktree（[`code::session_worktree`]）：当前目录就是锁着自己名字的 worktree（board host 备好的）就用它，
-//!    `.wt/` 里有锁着自己名字的就接着用，否则新建。
+//!    `.wt/` 里有锁着自己名字的就接着用，没有就接手一个别的会话留下的空闲 worktree（#622：依赖、构建产物都在），
+//!    都没有才新建。
 //! 4. 保护现场：worktree 里有没提交的文件、没推到远端的提交时**不切换**，退出码 1，列出来。
 //!    改动属于哪张卡要看内容才知道，不替 agent 判断、不自动保存。
 //! 5. 这张卡在集成分支上有没有提交（提交说明里 `卡片：<项目>/<白板>#<ID>`），卡片动态里有没有对应的「提交：」行。
 //! 6. 卡片评论里最后一条 `未完成的改动：wip/…`、远端还有这条分支：切过去，rebase 到最新的集成分支；冲突时停在冲突上，退出码 1。
 //! 7. 否则切到最新的集成分支（`git checkout --detach`：reflog 里记一条切换，`board touched` 靠它认开工时的基点）。
 //! 8. 确认基点包含最新的集成分支。
+//! 9. 清理空闲的 worktree（[`code::sweep`]，和 board host 定时做的是同一套规则）：超过 36 小时没用的、多出 4 个的删掉。
 
 use crate::args::Args;
 use crate::backend::{env, Backend, Want};
@@ -22,7 +24,7 @@ use crate::output::{Output, Paint};
 use board_core::*;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const QUICK: Duration = Duration::from_secs(30);
 const NET: Duration = Duration::from_secs(300);
@@ -63,11 +65,14 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     let up = format!("origin/{branch}");
 
     // 3. 会话的 worktree
-    let (wt, created) = code::session_worktree(dir, dir, name, &up).map_err(BoardError::usage)?;
+    // 谁在线：判断别的会话留下的 worktree 是不是空闲。查不到（旧服务端、网络）时锁着的一律当成有人在用
+    let online = be.online().ok();
+    let (wt, got) = code::session_worktree(dir, dir, name, &up, online.as_deref()).map_err(BoardError::usage)?;
     let wt_s = wt.display().to_string();
     let mut v = json!({
         "worktree": wt_s,
-        "created": created,
+        "created": got == code::Got::Created,
+        "adopted": got == code::Got::Adopted,
         "branch": branch,
         "base": Value::Null,
         "from_wip": Value::Null,
@@ -165,6 +170,14 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     let base = git(&wt, &["rev-parse", "--short", "HEAD"], QUICK).map_err(BoardError::usage)?;
     v["base"] = json!(base);
 
+    // 9. 清理空闲的 worktree：只报删掉的（留着的由 board host 的清理去说）
+    let cleaned: Vec<String> = code::sweep(dir, std::slice::from_ref(&wt), online.as_deref(), code::WT_UNUSED, code::WT_IDLE_MAX, SystemTime::now())
+        .into_iter()
+        .filter(|(_, s)| matches!(s, code::Swept::Removed | code::Swept::Extra))
+        .map(|(p, _)| p.display().to_string())
+        .collect();
+    v["cleaned"] = json!(cleaned);
+
     let unreported: Vec<&str> = landed.iter().filter(|l| !l.2).map(|l| l.0.as_str()).collect();
     let all: Vec<&str> = landed.iter().map(|l| l.0.as_str()).collect();
     let (step, next) = if let Some(w) = &wip {
@@ -184,13 +197,21 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     if json {
         return Ok(Output::Json(v));
     }
-    let mut s = format!("{} #{id} 开工：{wt_s}{}\n", p.green("✓"), p.dim(if created { "（新建）" } else { "（接着用）" }));
+    let how = match got {
+        code::Got::Created => "（新建）",
+        code::Got::Adopted => "（接手空闲的）",
+        code::Got::Mine => "（接着用）",
+    };
+    let mut s = format!("{} #{id} 开工：{wt_s}{}\n", p.green("✓"), p.dim(how));
     s += &format!("  {}  {branch}，基点 {base}{}\n", p.dim("集成分支"), if wip.is_some() { String::new() } else { format!("（{up}）") });
     if let Some(w) = &wip {
         s += &format!("  {}  {w}，已经 rebase 到 {up}\n", p.dim("接着做  "));
     }
     for (sha, subject, seen) in &landed {
         s += &format!("  {}  {sha} {subject}{}\n", p.dim("已推过  "), p.dim(if *seen { "（交审过）" } else { "（动态里没有交审）" }));
+    }
+    for c in &cleaned {
+        s += &format!("  {}  {c}\n", p.dim("清理空闲"));
     }
     s += &format!("\n{} {next}\n", p.bold("下一步："));
     Ok(Output::Text(s))

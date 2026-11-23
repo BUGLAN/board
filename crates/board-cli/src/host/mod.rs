@@ -818,7 +818,7 @@ impl Host<'_> {
                 self.upload_logs();
                 self.report_ended();
             }
-            // board host 备的 worktree 超过 24 小时没用的清掉：启动时一次，之后每小时看一次
+            // 空闲的 worktree 超过 36 小时没用的、多出 4 个的清掉：启动时一次，之后每小时看一次
             if now >= self.next_wt_sweep {
                 self.next_wt_sweep = now + Duration::from_secs(3600);
                 self.sweep_worktrees();

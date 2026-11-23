@@ -2123,6 +2123,13 @@ fn host_fetches_and_starts_the_agent_in_a_fresh_worktree() {
     assert_eq!(std::fs::read_to_string(proj.join("AGENTS.md")).unwrap(), "v1\n", "项目主目录不动");
     let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
     assert!(local.contains("代码已经备好：当前目录就是你这个会话的 worktree，停在刚拉下来的 origin/main 上"), "{local}");
+    // 用完留着（#622）：会话结束、里面没有没推的改动，board host 把它解锁，下一个会话（换了名字也一样）接手
+    let locked = || {
+        let out = Command::new("git").arg("-C").arg(&proj).args(["worktree", "list", "--porcelain"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).contains("locked mbp/opus-5.5")
+    };
+    wait_until("会话结束后 worktree 解锁", Duration::from_secs(20), || !locked());
+    assert!(wt.join("AGENTS.md").exists(), "worktree 留着");
     // 拉不到最新代码：不启动 agent，派发结束并写明原因；上报之后这台机器接不了这个项目的卡
     git_in(&proj, &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
     let r = rig.board(&["dispatch", "2", "--host", "mbp", "--json"]);

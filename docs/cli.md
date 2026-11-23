@@ -734,8 +734,10 @@ board giveup 13 --comment "检查不过：cargo test 里 hosts_sync 超时，本
 
 ```json
 {
+  "adopted": false,
   "base": "31864eb",
   "branch": "main",
+  "cleaned": [],
   "created": true,
   "from_wip": null,
   "landed": [],
@@ -744,6 +746,8 @@ board giveup 13 --comment "检查不过：cargo test 里 hosts_sync 超时，本
   "worktree": "/home/me/repo/board.wt/docs-writer-1a2b3c4d"
 }
 ```
+
+会话的 worktree 按这个顺序找：锁着你名字的接着用（`created`、`adopted` 都是 `false`）；没有就接手一个别的会话留下的空闲 worktree（`adopted` 为 `true`：没锁的，或者锁着的名字已经离线、里面没有没推的改动；只认 board 建的，最近用过的优先），里面的依赖、构建产物都还在；都没有才新建（`created` 为 `true`）。`cleaned` 是这次顺手清理掉的空闲 worktree：超过 36 小时没用的，和空闲的多于 4 个时最久没用的那几个。会话结束时在主仓库目录 `git worktree unlock <目录>` 把它留给下一个会话，不删。
 
 worktree 里有没推的改动时退出码 1，没有切换，`step` 是 `save`，`dirty` 是 `git status --porcelain` 的行，`unpushed` 是没推到远端的提交；从 wip 分支接着做、rebase 冲突时退出码 1，`step` 是 `resolve`，`conflicts` 是冲突的文件。两种情况 `--json` 照样输出，不是 `error`。卡片不由你持有时是 `NOT_HOLDER`，什么都不动。
 
