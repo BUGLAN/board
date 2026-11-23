@@ -30,14 +30,21 @@ import { Skeleton, SkeletonCard } from './Skeleton';
 import { BoardBulkBar, ColSelect } from './BoardSelect';
 import { clearSelect } from '../lib/boardSelect';
 
-/** 拖拽预览：被拖的卡片放到预览位置 */
+/** 拖拽预览：被拖的卡片放到预览位置。
+    没受影响的状态（被拖的卡片原来不在、占位现在也不在）沿用原来的数组：状态块（memo）按引用比较，不用跟着重画（default/main#631） */
 export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
   if (!drag) return cols;
-  const out = Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) as BoardSnapshot['cols'];
-  out[drag.col] = out[drag.col] ?? [];
-  out[drag.col].splice(Math.min(drag.index, out[drag.col].length), 0, drag.id);
+  const out = { ...cols } as BoardSnapshot['cols'];
+  for (const [k, v] of Object.entries(cols)) if (v.includes(drag.id)) out[k] = v.filter(id => id !== drag.id);
+  const to = [...(out[drag.col] ?? [])];
+  to.splice(Math.min(drag.index, to.length), 0, drag.id);
+  out[drag.col] = to;
   return out;
 }
+
+/** 这次拖动和这个状态块有没有关系：指针在它上面、占位在它里面、卡片是从它拖出来的。
+    没关系的块拿到的 drag 是 null（它画出来的样子和没在拖动时一样），占位每换一次位置不用重画 */
+export const dragFor = (drag: DragUI | null, col: string) => (drag && (drag.over === col || drag.col === col || drag.fromCol === col) ? drag : null);
 
 /** 批量选择只属于当前白板 Tab：换白板、离开白板页、组件卸载时退出 */
 export function useBoardSelectionScope(path: string) {
@@ -53,9 +60,15 @@ export function useEntering(board: BoardSnapshot | null, generation: number) {
   const seen = useRef<{ gen: number; ids: Set<number>; fresh: boolean }>({ gen: -1, ids: new Set(), fresh: true });
   if (seen.current.gen !== generation) seen.current = { gen: generation, ids: new Set(), fresh: true };
   const s = seen.current;
-  const entering = new Set<number>();
+  // 没有新卡片时（绝大多数渲染）用同一个空集合：状态块（memo）的 props 不因为它每次都是新对象而变
+  let entering = NO_ENTERING;
   // 按 renderKey 记：顶替临时卡片的真卡片算已经出现过，不再弹入一次
-  if (board && !s.fresh) for (const id of Object.keys(board.cards).map(Number)) if (!s.ids.has(renderKey(id))) entering.add(id);
+  if (board && !s.fresh)
+    for (const id of Object.keys(board.cards).map(Number))
+      if (!s.ids.has(renderKey(id))) {
+        if (entering === NO_ENTERING) entering = new Set<number>();
+        entering.add(id);
+      }
   useEffect(() => {
     if (!board) return;
     for (const id of Object.keys(board.cards).map(Number)) s.ids.add(renderKey(id));
@@ -63,6 +76,7 @@ export function useEntering(board: BoardSnapshot | null, generation: number) {
   });
   return { entering, fresh: !!board && s.fresh };
 }
+const NO_ENTERING: Set<number> = new Set();
 
 
 /** 白板只纵向滚动（overflow-x: hidden），人横向滚不回来。右侧磁贴的悬停卡片之类会让它有一点横向溢出，
@@ -82,7 +96,7 @@ export function BoardView() {
   const reveal = useUI(s => s.reveal);
   const reject = useUI(s => s.reject);
   const boardRef = useRef<HTMLDivElement>(null);
-  const labels = cur?.project.labels ?? [];
+  const labels = cur?.project.labels ?? NO_LABELS;
   // 交审状态的块标题上「复盘」、需要人处理的状态上「处理」（复盘台）
   const roles = useMemo(() => statusRoles(board?.statuses), [board?.statuses]);
   const { entering, fresh } = useEntering(board, generation);
@@ -120,7 +134,8 @@ export function BoardView() {
   useEffect(() => setShownCols(shown), [shown]);
   const cols = useMemo(() => (shown ? previewCols(shown, drag) : null), [shown, drag]);
   // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
-  const f = flowOf(board?.statuses ?? cur?.board.statuses);
+  const flowStatuses = board?.statuses ?? cur?.board.statuses;
+  const f = useMemo(() => flowOf(flowStatuses), [flowStatuses]);
   const counts = useMemo(
     () => (board ? Object.fromEntries(Object.keys(board.cols).map(k => [k, colCount(board, k)])) : cur?.board.counts ?? {}),
     [board, cur?.board.counts],
@@ -279,7 +294,7 @@ export function BoardView() {
                   labels={labels}
                   filter={filter}
                   detailId={detailId}
-                  drag={drag}
+                  drag={dragFor(drag, s.key)}
                   flashes={flashes}
                   entering={entering}
                   fresh={fresh}
@@ -984,6 +999,7 @@ function ColTabs({ board, f, boardRef }: { board: BoardSnapshot | null; f: FlowQ
 }
 
 const NO_GROUPS: Record<number, SessGroup> = {};
+const NO_LABELS: Label[] = [];
 const NO_IDS: number[] = [];
 
 /** 一组的开头：和整块一样宽（lib/masonry 按块摆），写机器 · agent（会话）或「排队等空位 · 机器」；框由 sessionFrames 按组尾量出高度 */

@@ -1,6 +1,6 @@
 /* 不碰 DOM 的纯函数：拖拽落点（placeAt）、拖拽预览（previewCols）、工作流条排版（mainPath / layoutFlow） */
 import { describe, expect, it } from 'vitest';
-import { pack, previewCols, withDefaults } from '../components/BoardView';
+import { dragFor, pack, previewCols, withDefaults } from '../components/BoardView';
 import type { DragUI } from '../store/ui';
 import { FLOW, status } from '../../test/fixtures';
 import { placeAt } from './drag';
@@ -64,6 +64,27 @@ describe('previewCols（拖拽预览）', () => {
     expect(previewCols(cols, drag({ col: 'doing', index: 0 }))).toEqual({ todo: [2, 3], doing: [1, 4] });
     expect(previewCols(cols, drag({ col: 'todo', index: 2 }))).toEqual({ todo: [2, 3, 1], doing: [4] });
     expect(cols).toEqual({ todo: [1, 2, 3], doing: [4] });
+  });
+
+  it('没受影响的状态沿用原来的数组（状态块按引用比较，不用重画，#631）', () => {
+    const all = { todo: [1, 2, 3], doing: [4], done: [5, 6] };
+    const within = previewCols(all, drag({ col: 'todo', index: 1 }));
+    expect(within.todo).toEqual([2, 1, 3]);
+    expect(within.doing).toBe(all.doing);
+    expect(within.done).toBe(all.done);
+    const across = previewCols(all, drag({ col: 'doing', index: 1 }));
+    expect(across).toEqual({ todo: [2, 3], doing: [4, 1], done: [5, 6] });
+    expect(across.done).toBe(all.done);
+    expect(all).toEqual({ todo: [1, 2, 3], doing: [4], done: [5, 6] });
+  });
+
+  it('dragFor：只有指针所在、占位所在、卡片拖出的状态块拿到 drag，其余是 null（#631）', () => {
+    const d = drag({ fromCol: 'todo', col: 'doing', over: 'review' });
+    expect(dragFor(d, 'todo')).toBe(d);
+    expect(dragFor(d, 'doing')).toBe(d);
+    expect(dragFor(d, 'review')).toBe(d);
+    expect(dragFor(d, 'done')).toBeNull();
+    expect(dragFor(null, 'todo')).toBeNull();
   });
 
   it('index 超出放最后；目标状态还没有卡片时新建', () => {
