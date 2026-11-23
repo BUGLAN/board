@@ -2,8 +2,9 @@
 //!
 //! - [`current`] 读出这个 agent 配置文件里现在的模型和强度（Claude Code `~/.claude/settings.json` 的 `model`、
 //!   `env.CLAUDE_CODE_EFFORT_LEVEL`；Codex `$CODEX_HOME/config.toml` 的 `model`、`model_reasoning_effort`；dsh
-//!   `~/.dsh/profiles/acp/cordis.patch.yml` 里 `agent-default-model` 的 `model`、`reasoningEffort`）：board host 上报，
-//!   派发名字、派发记录和本机登录、没填模型的角色用它。
+//!   `~/.dsh/profiles/acp/cordis.patch.yml` 里 `acp` 的 `model`（ACP 会话实际用的；老配置没有时才退到
+//!   `agent-default-model` 的 `model`）和 `agent-default-model` 的 `reasoningEffort`）：board host 上报，派发名字、
+//!   派发记录和本机登录、没填模型的角色用它。
 //! - [`route_for`] 按角色派发时怎么给这一个 agent 进程换上供应商（ACP `providers/set`，dsh 写这次的 `--patch`），
 //!   不改 agent 的全局配置文件。
 //!
@@ -58,10 +59,16 @@ pub fn current(files: &Files) -> Option<(String, String)> {
         }
         Files::Dsh { patch } => {
             let lines: Vec<String> = read(patch).lines().map(str::to_string).collect();
-            let (st, e) = yaml_entry(&lines, "agent-default-model")?;
-            let ci = yaml_child(&lines, st, e, "config", indent_of(&lines[st]) + 2).map(|(i, _)| indent_of(&lines[i]))?;
-            let get = |k: &str| yaml_child(&lines, st, e, k, ci + 2).map(|(i, _)| yaml_raw(&lines[i], k).split(" #").next().unwrap_or_default().trim().trim_matches('"').to_string()).unwrap_or_default();
-            (get("model"), get("reasoningEffort"))
+            // ACP 会话用的是 `acp` 这一项的提供方和模型（不看 `agent-default-model`）；只有老配置没有 `acp` 时才退到后者，
+            // 否则 DSH 自己（或 magpie）改了 `agent-default-model`，Board 上报的名字就会一直停在旧模型上。
+            let acp_model = dsh_value(&lines, "acp", "model");
+            let model = if acp_model.is_empty() { dsh_value(&lines, "agent-default-model", "model") } else { acp_model };
+            // 强度没地方写进 `acp`（角色补丁也写在 `agent-default-model`），先看它，再看 `acp` 有没有。
+            let effort = {
+                let e = dsh_value(&lines, "agent-default-model", "reasoningEffort");
+                if e.is_empty() { dsh_value(&lines, "acp", "reasoningEffort") } else { e }
+            };
+            (model, effort)
         }
     };
     (!model.is_empty()).then_some((model, effort))
@@ -127,6 +134,15 @@ fn yaml_child(lines: &[String], from: usize, to: usize, key: &str, indent: usize
 /// 这一行 `key:` 后面的原文（含引号、注释）
 fn yaml_raw(line: &str, key: &str) -> String {
     line.trim_start().strip_prefix(&format!("{key}:")).unwrap_or_default().trim().to_string()
+}
+
+/// dsh 补丁文件里 `- id: <entry>` 那一条的 `config.<key>`（没有时为空）
+fn dsh_value(lines: &[String], entry: &str, key: &str) -> String {
+    let Some((st, e)) = yaml_entry(lines, entry) else { return String::new() };
+    let Some(ci) = yaml_child(lines, st, e, "config", indent_of(&lines[st]) + 2).map(|(i, _)| indent_of(&lines[i])) else { return String::new() };
+    yaml_child(lines, st, e, key, ci + 2)
+        .map(|(i, _)| yaml_raw(&lines[i], key).split(" #").next().unwrap_or_default().trim().trim_matches('"').to_string())
+        .unwrap_or_default()
 }
 
 /* ------------------------------ 按角色派发：只对这一个进程 ------------------------------ */
@@ -228,8 +244,15 @@ mod tests {
         std::fs::write(&config, "# 我的配置\nmodel = \"gpt-x\"\nmodel_reasoning_effort = \"medium\"\n").unwrap();
         assert_eq!(current(&Files::Codex { config }), Some(("gpt-x".into(), "medium".into())));
         let patch = d.path().join("cordis.patch.yml");
+        // ACP 会话用 `acp` 里的模型（`agent-default-model` 是 DSH/magpie 的全局默认，可能是旧的）；强度没有写进 `acp` 的地方
+        std::fs::write(&patch, "- id: acp # board\n  config:\n    model: \"model-a\"\n    provider: board-relay\n- id: agent-default-model # magpie\n  config:\n    provider: magpie\n    model: \"model-b\"\n    reasoningEffort: max\n").unwrap();
+        assert_eq!(current(&Files::Dsh { patch: patch.clone() }), Some(("model-a".into(), "max".into())), "模型取 acp 的，强度取 agent-default-model 的");
+        // 老配置只有 agent-default-model：退到它
         std::fs::write(&patch, "- id: agent-default-model\n  config:\n    model: \"model-b\"\n    reasoningEffort: max\n").unwrap();
         assert_eq!(current(&Files::Dsh { patch: patch.clone() }), Some(("model-b".into(), "max".into())));
+        // acp 自己写了强度时也能读到
+        std::fs::write(&patch, "- id: acp\n  config:\n    model: \"model-a\"\n    reasoningEffort: high\n").unwrap();
+        assert_eq!(current(&Files::Dsh { patch: patch.clone() }), Some(("model-a".into(), "high".into())));
         std::fs::write(&patch, "[]\n").unwrap();
         assert_eq!(current(&Files::Dsh { patch }), None);
     }
