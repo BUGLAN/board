@@ -78,9 +78,10 @@ export function UpdateCard() {
   const doInstall = async (version: string) => {
     const yes = await confirm({
       title: `下载并安装 ${version}？`,
-      text: '下载完会先校验签名，再安装。安装过程中会关闭 Board，装好后自动打开新版本（macOS / Linux 装好后需要重启一次）。',
+      text: '下载完会先校验签名，再安装。安装会关闭 Board，并结束这台机器上正在跑的派发（连同会话里排着的卡片），装好后自动打开新版本（macOS / Linux 装好后需要重启一次）。',
       ok: '下载并安装',
       icon: 'update',
+      tone: 'warn',
     });
     if (!yes) return;
     await installNow(version);
@@ -137,6 +138,25 @@ export function UpdateCard() {
           ) : (
             <div className="up-notes">这一版没有写更新说明</div>
           )}
+        </div>
+      )}
+
+      {install.kind === 'waiting' && (
+        <div className="up-card">
+          <div className="up-head">
+            <Icon name="renew" />
+            <span className="up-title">
+              等当前派发结束后安装 <b className="up-ver">{install.version}</b>
+            </span>
+            <button type="button" className="btn sm" onClick={() => void doInstall(install.version)}>
+              现在安装
+            </button>
+          </div>
+          <p className="set-p" style={{ margin: '8px 0 0' }}>
+            {install.running == null
+              ? '正在确认这台电脑还有没有在跑的派发；确认空闲后会自动重新检查并安装，不会停掉 board host。'
+              : `这台电脑还有 ${install.running} 个派发在跑。跑完会自动重新检查并安装，不会停掉 board host。`}
+          </p>
         </div>
       )}
 
@@ -219,7 +239,7 @@ export function UpdateCard() {
           <b>发现新版本后自动下载并安装</b>
           <span>
             {auto
-              ? '自动检查发现新版本时不再弹确认框，直接下载、校验签名并安装，装好后重启 Board。重启会结束这台机器上正在跑的会话，默认关闭'
+              ? '自动检查发现新版本时不再弹确认框，直接下载、校验签名并安装，装好后重启 Board。有派发在跑时先等它结束再装，默认关闭'
               : '要先打开「启动后自动检查」：自动检查发现新版本时才会直接下载并安装'}
           </span>
         </div>

@@ -1021,7 +1021,9 @@ impl Host<'_> {
             // 先回收主进程，`finish_run` 里的 `kill_rest` 才是对已经退出的进程号下手
             let code = r.child.wait().ok().and_then(exit_code);
             // board host 退出时已经在按兜底停止的，照样报「超时」：原因写清楚
-            self.finish_run(r, code, "host_exit");
+            let ended = self.finish_run(r, code, "host_exit");
+            // 升级 / 重启 / 退出桌面端也会结束正在跑的派发：和 agent 自己退出一样保存没推的改动
+            self.handoff(&ended, code);
         }
         // 派发的临时文件由 `finish_run` 逐个删掉；WSL 的进程号文件要等 `kill_rest` 读完再删整个目录
         let _ = std::fs::remove_dir_all(&self.run);

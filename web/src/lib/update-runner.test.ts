@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UpdateCheck } from './update';
 
-const shell = vi.hoisted(() => ({ canUpdate: true, checkUpdate: vi.fn(), installUpdate: vi.fn(), restartApp: vi.fn() }));
+const shell = vi.hoisted(() => ({ canUpdate: true, checkUpdate: vi.fn(), installUpdate: vi.fn(), localHost: vi.fn(), restartApp: vi.fn() }));
 
 vi.mock('./platform', () => ({
   get canUpdate() {
@@ -10,7 +10,14 @@ vi.mock('./platform', () => ({
   },
   checkUpdate: (...a: unknown[]) => shell.checkUpdate(...a),
   installUpdate: (...a: unknown[]) => shell.installUpdate(...a),
+  localHost: (...a: unknown[]) => shell.localHost(...a),
   restartApp: (...a: unknown[]) => shell.restartApp(...a),
+}));
+
+const data = vi.hoisted(() => ({ ws: null as null | { dispatches?: { state: string; host: string }[] } }));
+
+vi.mock('../store/data', () => ({
+  useData: { getState: () => ({ ws: data.ws }) },
 }));
 
 const ui = vi.hoisted(() => ({
@@ -41,7 +48,10 @@ beforeEach(() => {
   shell.canUpdate = true;
   shell.checkUpdate.mockReset();
   shell.installUpdate.mockReset();
+  shell.localHost.mockReset();
+  shell.localHost.mockResolvedValue({ enabled: false, running: false, name: '', defaultName: 'win' });
   shell.restartApp.mockReset();
+  data.ws = null;
   localStorage.clear();
   ui.confirm.mockClear();
   ui.confirm.mockImplementation(async () => false as unknown as never);
@@ -186,6 +196,41 @@ describe('发现新版本后自动下载并安装（default/main#352）', () => 
     expect(shell.installUpdate).toHaveBeenCalledTimes(1);
     expect(shell.restartApp).not.toHaveBeenCalled();
     expect(ui.confirm).not.toHaveBeenCalled();
+  });
+
+  it('有 running 派发：先显示等待，不停 host；跑完重新检查一次再安装', async () => {
+    shell.checkUpdate.mockResolvedValue(NEWER);
+    shell.installUpdate.mockResolvedValue({ version: '0.2.0', restart: true });
+    shell.localHost.mockResolvedValue({ enabled: true, running: true, name: 'win', defaultName: 'WIN' });
+    data.ws = { dispatches: [{ state: 'running', host: 'win' }] };
+    const { autoUpdateCheck, useUpdate, update, AUTO_INSTALL_WAIT_MS } = await load();
+    update.setAutoInstallUpdate(true);
+    autoUpdateCheck();
+    await flushCheck();
+    expect(ui.confirm).not.toHaveBeenCalled();
+    expect(shell.installUpdate).not.toHaveBeenCalled();
+    expect(useUpdate.getState().install).toEqual({ kind: 'waiting', version: '0.2.0', running: 1 });
+    // 还在跑：继续等，不安装
+    await vi.advanceTimersByTimeAsync(AUTO_INSTALL_WAIT_MS);
+    expect(shell.installUpdate).not.toHaveBeenCalled();
+    expect(useUpdate.getState().install).toEqual({ kind: 'waiting', version: '0.2.0', running: 1 });
+    // 跑完了：重新检查（第二次 check），仍可更新才安装
+    data.ws = { dispatches: [] };
+    await vi.advanceTimersByTimeAsync(AUTO_INSTALL_WAIT_MS);
+    expect(shell.checkUpdate).toHaveBeenCalledTimes(2);
+    expect(shell.installUpdate).toHaveBeenCalledTimes(1);
+    expect(useUpdate.getState().install).toEqual({ kind: 'ready', version: '0.2.0', restart: true });
+  });
+
+  it('工作区还没取到：先等，不把不知道当成空闲', async () => {
+    shell.checkUpdate.mockResolvedValue(NEWER);
+    shell.localHost.mockResolvedValue({ enabled: true, running: true, name: 'win', defaultName: 'WIN' });
+    const { autoUpdateCheck, useUpdate, update } = await load();
+    update.setAutoInstallUpdate(true);
+    autoUpdateCheck();
+    await flushCheck();
+    expect(shell.installUpdate).not.toHaveBeenCalled();
+    expect(useUpdate.getState().install).toEqual({ kind: 'waiting', version: '0.2.0', running: null });
   });
 
   it('装不上：提示一次，不重启，结果留在 store 里给设置页看', async () => {

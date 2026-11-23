@@ -14,6 +14,7 @@ import {
   installedText,
   isNewer,
   lastAutoCheck,
+  localRunningCount,
   markAutoCheck,
   newerVersion,
   progressText,
@@ -22,6 +23,7 @@ import {
   versionParts,
   type UpdateCheck,
 } from './update';
+import type { Workspace } from './types';
 
 const check = (current: string, version: string | null, notes: string | null = null, date: string | null = null): UpdateCheck => ({ current, version, notes, date });
 
@@ -121,6 +123,39 @@ describe('发现新版本后自动下载并安装', () => {
     expect(autoInstallUpdate()).toBe(true);
     setAutoInstallUpdate(false);
     expect(autoInstallUpdate()).toBe(false);
+  });
+});
+
+describe('本机正在跑的派发', () => {
+  const ws = (dispatches: { state: string; host: string }[]) => ({ dispatches } as unknown as Workspace);
+  const local = (more: Partial<{ enabled: boolean; running: boolean; name: string; defaultName: string }> = {}) => ({
+    enabled: true,
+    running: true,
+    name: 'win',
+    defaultName: 'WIN',
+    ...more,
+  });
+
+  it('没接任务、host 没在跑：没有本机派发', () => {
+    expect(localRunningCount(null, local({ enabled: false }))).toBe(0);
+    expect(localRunningCount(null, local({ running: false }))).toBe(0);
+    expect(localRunningCount(null, null)).toBe(0);
+  });
+
+  it('工作区还没取到：返回 null，不能当作空闲', () => {
+    expect(localRunningCount(null, local())).toBeNull();
+  });
+
+  it('只数本机正在跑的，不数排队和别的机器', () => {
+    const w = ws([
+      { state: 'running', host: 'win' },
+      { state: 'running', host: 'mbp' },
+      { state: 'queued', host: 'win' },
+      { state: 'done', host: 'win' },
+    ]);
+    expect(localRunningCount(w, local())).toBe(1);
+    expect(localRunningCount(w, local({ name: ' ', defaultName: 'win' }))).toBe(1);
+    expect(localRunningCount(w, local({ name: 'mbp' }))).toBe(1);
   });
 });
 

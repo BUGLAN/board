@@ -1020,6 +1020,50 @@ fn ended_takes_the_timeout_reason_and_redacts() {
     assert_eq!((e.how, e.why.as_deref()), ("timeout", Some("运行超过 30 分钟")));
 }
 
+/// 卡片 #633：board host 退出（升级 / 重启 / 退出桌面端）时也走同一份半成品交接——
+/// board host 备的 worktree 有没推的改动就保存成 wip 分支，干净的不产生空分支，不是它备的目录不碰。
+#[test]
+fn host_exit_handoff_saves_wip_for_managed_worktree() {
+    let t = tempfile::tempdir().unwrap();
+    let root = plain(&t.path().canonicalize().unwrap());
+    let remote = root.join("remote.git");
+    std::fs::create_dir(&remote).unwrap();
+    git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+    let repo = root.join("board");
+    git(&root, &["clone", "-q", remote.to_str().unwrap(), "board"]);
+    std::fs::write(repo.join("a.txt"), "a").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "a"]);
+    git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+    let wt = root.join("board.wt").join("win");
+    git(&repo, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), "HEAD"]);
+
+    let ended = |cwd: &Path, managed: bool| RunSummary {
+        board: "default/main".into(),
+        card: 9,
+        name: Some("win/codex".into()),
+        lost: false,
+        why: None,
+        id: 77,
+        cwd: cwd.to_path_buf(),
+        managed,
+        stopped: true,
+        tail: vec![],
+    };
+
+    assert_eq!(save_run_wip(&ended(&wt, true), "win/test").unwrap(), None, "干净时不产生空分支");
+    std::fs::write(wt.join("half.txt"), "做了一半").unwrap();
+    let w = save_run_wip(&ended(&wt, true), "win/test").unwrap().unwrap();
+    assert_eq!(w.branch, "wip/main/9");
+    assert!(w.changes.contains("half.txt"), "{}", w.changes);
+    assert!(crate::code::unpushed(&wt).is_none(), "保存后 worktree 算干净的");
+    git(&remote, &["rev-parse", "--verify", "wip/main/9"]);
+
+    std::fs::write(wt.join("not-managed.txt"), "x").unwrap();
+    assert_eq!(save_run_wip(&ended(&wt, false), "win/test").unwrap(), None, "不是 board host 备的目录不保存");
+    assert!(crate::code::unpushed(&wt).is_some(), "不碰它的改动");
+}
+
 #[test]
 fn end_reports_retry_only_on_transient_errors() {
     assert!(permanent_end_error(ErrorCode::NotFound), "派发不存在：不用再报");

@@ -526,12 +526,7 @@ impl Host<'_> {
                 ended.name.as_deref().unwrap_or_default(),
                 self.p.dim(&what)
             ));
-            // 半成品交接：board host 备的 worktree 里还有没推到远端的改动，保存成 wip 分支并在卡片上评论，接手的不用从头来
-            if ended.managed {
-                self.save_wip(&ended, code);
-                // 用完留着：里面没有没推的改动就解锁，下一个会话（换了名字也一样）接手它，不用从头装依赖、从头编译（#622）
-                crate::code::release(&ended.cwd);
-            }
+            self.handoff(&ended, code);
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
             if ended.lost && !ended.managed {
                 if let Some(repo) = ws_dir(&self.ws, &ended.board, &self.os) {
@@ -593,9 +588,6 @@ impl Host<'_> {
     /// 再让服务端在卡片上评论（怎么结束的、留下了什么、agent 最后做了什么）。agent 自己交审了、或者自己推了 wip 分支时
     /// worktree 是干净的，什么也不做。推不上去时在本机输出里写明，改动留在 worktree 里（下一次派发不会动它）
     pub(super) fn save_wip(&mut self, ended: &RunSummary, code: Option<i64>) {
-        let key = ended.board.split_once('/').map_or(ended.board.as_str(), |(_, b)| b);
-        let branch = format!("wip/{key}/{}", ended.card);
-        let alt = format!("{branch}-{}", self.name);
         let how = if ended.lost {
             "机器和服务端断开超过 50 秒，派发被服务端结束，卡片可能已经被别的机器接走".to_string()
         } else if let Some(why) = &ended.why {
@@ -605,8 +597,7 @@ impl Host<'_> {
         } else {
             format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into()))
         };
-        let message = format!("wip: {}#{} 没做完的改动（board host 在派发结束时保存）", ended.board, ended.card);
-        match crate::code::save_wip(&ended.cwd, &branch, &alt, &message) {
+        match save_run_wip(ended, &self.name) {
             Ok(None) => {}
             Ok(Some(w)) => {
                 self.say(format!(
@@ -628,6 +619,15 @@ impl Host<'_> {
                 self.p.yellow("!"),
                 ended.cwd.display()
             )),
+        }
+    }
+
+    /// 半成品交接：board host 备的 worktree 里还有没推到远端的改动，保存成 wip 分支并在卡片上评论，接手的不用从头来。
+    /// `reap`（agent 自己退出）和 `shutdown`（升级 / 重启 / 退出桌面端）都走这里；用完留着 worktree，只解锁不删除（#622）。
+    pub(super) fn handoff(&mut self, ended: &RunSummary, code: Option<i64>) {
+        if ended.managed {
+            self.save_wip(ended, code);
+            crate::code::release(&ended.cwd);
         }
     }
 
@@ -1003,4 +1003,17 @@ impl Host<'_> {
             }
         }
     }
+}
+
+/// 把一次结束的派发留下的改动保存到 `wip/<白板>/<ID>`；不是 board host 备的 worktree、或者已经干净时返回 None。
+/// 单独写出来是因为 agent 自己退出和 board host 退出（升级 / 重启）都要走这一份保存逻辑。
+pub(super) fn save_run_wip(ended: &RunSummary, name: &str) -> std::result::Result<Option<crate::code::Wip>, String> {
+    if !ended.managed {
+        return Ok(None);
+    }
+    let key = ended.board.split_once('/').map_or(ended.board.as_str(), |(_, b)| b);
+    let branch = format!("wip/{key}/{}", ended.card);
+    let alt = format!("{branch}-{name}");
+    let message = format!("wip: {}#{} 没做完的改动（board host 在派发结束时保存）", ended.board, ended.card);
+    crate::code::save_wip(&ended.cwd, &branch, &alt, &message)
 }

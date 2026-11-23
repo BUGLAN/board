@@ -6,6 +6,7 @@
    - 这里只放不碰外壳的逻辑：版本比较、状态文字、检查的状态机；调用外壳的薄封装在 platform.ts
    ========================================================================== */
 import { pref } from './util';
+import type { Workspace } from './types';
 
 /** 外壳 update_check 的返回 */
 export interface UpdateCheck {
@@ -154,6 +155,19 @@ export const failCheck = (e: unknown): CheckState => ({ kind: 'failed', error: f
 /** 下载安装的状态：下载中带进度，装完等重启；失败可以重试 */
 export type InstallState =
   | { kind: 'idle' }
+  /** 自动安装发现这台电脑还有派发在跑：等 running 为空后重新检查、安装；running 为 null 表示本机状态还没取到 */
+  | { kind: 'waiting'; version: string; running: number | null }
   | { kind: 'downloading'; progress: UpdateProgress | null }
   | { kind: 'ready'; version: string; restart: boolean }
   | { kind: 'failed'; error: string };
+
+/** 这台电脑上还有几个正在跑的派发；本机没有接任务时是 0，工作区还没取到时是 null（不能确认空闲） */
+export function localRunningCount(
+  ws: Workspace | null,
+  local: { enabled: boolean; running: boolean; name: string; defaultName: string } | null,
+): number | null {
+  if (!local?.enabled || !local.running) return 0;
+  if (!ws) return null;
+  const name = local.name.trim() || local.defaultName;
+  return (ws.dispatches ?? []).filter(d => d.state === 'running' && d.host === name).length;
+}
