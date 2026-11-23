@@ -113,21 +113,62 @@ export function measure(el: HTMLElement, gap: number, min: number): Entry {
   return { kind: 'item', rows: rows() };
 }
 
-function apply(list: HTMLElement, after?: (list: HTMLElement) => void) {
-  // 所在页面被隐藏（切到别的 Tab，display: none）时量不到高度：保持原样，切回来不用重排、不跳
-  if (!list.offsetParent) return;
-  const { T, w, gap } = gridTracks(list);
-  const min = Math.ceil((MIN_BLOCK + gap) / (w + gap));
-  const items = [...list.children] as HTMLElement[];
-  // 上一次拉齐时写的 min-height 先去掉，量卡片本来的高度（不然拉高过的卡再也缩不回去）
-  for (const el of items) {
+/** 一个列表这一次要写的位置：plan 只读，commit 只写 */
+interface Plan {
+  list: HTMLElement;
+  items: HTMLElement[];
+  places: Place[];
+  gap: number;
+  /** 一样高、没有成组的列表：交给网格自己摆（见 uniform） */
+  flow: boolean;
+}
+
+/** 上一次拉齐时写的 min-height 先去掉，量卡片本来的高度（不然拉高过的卡再也缩不回去）。只有成组、拉齐过的卡才有（写） */
+function unEven(list: HTMLElement) {
+  for (const el of list.children as Iterable<HTMLElement>) {
     if (!el.hasAttribute('data-even')) continue;
     el.style.minHeight = '';
     el.removeAttribute('data-even');
   }
-  // 先全部读，再全部写，只触发一次重排（有拉齐过的卡时多一次：先去掉 min-height 再量）
+}
+
+/** 磁贴列表、里面没有成组的块：每一项一样高，pack 算出来的位置就是网格自动摆放（grid-auto-flow: row）的位置。
+    这种列表不逐个写 grid-row / grid-column，列表带 data-flow、行距写成和栏间距一样，由网格自己摆（default/main#629）：
+    终点状态画出几百张磁贴时，占位一进一出后面的磁贴全体挪一格，以前要给每一张重写两个行内样式，
+    光这几百个元素的样式重算就要 100ms 以上；交给网格后只是一次普通的重排 */
+function uniform(list: HTMLElement, items: HTMLElement[]) {
+  return list.classList.contains('view-tile') && items.length > 0 && !items.some(el => el.hasAttribute('data-block') || el.hasAttribute('data-block-end'));
+}
+
+/** 量出每一项的高度、算好位置（只读） */
+function plan(list: HTMLElement): Plan {
+  const { T, w, gap } = gridTracks(list);
+  const items = [...list.children] as HTMLElement[];
+  if (uniform(list, items)) return { list, items, places: [], gap, flow: true };
+  const min = Math.ceil((MIN_BLOCK + gap) / (w + gap));
   const entries: Entry[] = items.map(el => measure(el, gap, min));
-  const places = pack(entries, T);
+  return { list, items, places: pack(entries, T), gap, flow: false };
+}
+
+/** 把位置写进 grid-row / grid-column（只写） */
+function commit({ list, items, places, gap, flow }: Plan) {
+  if (flow) {
+    // 行距、底部留白和逐个摆时一样：每一项占「高度 + 间距」行，最后一行下面也有一个间距
+    const g = `${gap}px`;
+    if (!list.hasAttribute('data-flow')) list.setAttribute('data-flow', '');
+    if (list.style.rowGap !== g) list.style.rowGap = g;
+    if (list.style.paddingBottom !== g) list.style.paddingBottom = g;
+    for (const el of items) {
+      if (el.style.gridColumn) el.style.gridColumn = '';
+      if (el.style.gridRow) el.style.gridRow = '';
+    }
+    return;
+  }
+  if (list.hasAttribute('data-flow')) {
+    list.removeAttribute('data-flow');
+    list.style.rowGap = '';
+    list.style.paddingBottom = '';
+  }
   items.forEach((el, i) => {
     const p = places[i];
     const col = `${p.col + 1} / span ${p.cols}`;
@@ -140,18 +181,49 @@ function apply(list: HTMLElement, after?: (list: HTMLElement) => void) {
       el.setAttribute('data-even', '');
     }
   });
+}
+
+/** 排一个列表：先全部读，再全部写，只触发一次重排（有拉齐过的卡时多一次：先去掉 min-height 再量） */
+export function applyMasonry(list: HTMLElement, after?: (list: HTMLElement) => void) {
+  // 所在页面被隐藏（切到别的 Tab，display: none）时量不到高度：保持原样，切回来不用重排、不跳
+  if (!list.offsetParent) return;
+  unEven(list);
+  commit(plan(list));
   after?.(list);
 }
 
-/** 每次渲染后同步排一次（在父组件的 FLIP play 之前），卡片尺寸变化时再排；after：排完之后（例如量会话框的高度） */
+/** 同一次渲染里要排的列表：攒起来一起排（flushMasonry） */
+const pending = new Map<HTMLElement, ((list: HTMLElement) => void) | undefined>();
+
+/** 把这次渲染里攒下的列表一起排：先把所有列表量完，再统一写。
+    以前每个状态块在自己的 useLayoutEffect 里「量 → 写」，后一块的量要为前一块的写强制重排一次：
+    占位换一次位置、几个块都要重排时，一次渲染里强制重排好几遍（default/main#629）。
+    BoardView 在自己的 useLayoutEffect 里（各状态块之后、FLIP play 之前）调用；没人调用时由微任务兜底，仍在绘制之前 */
+export function flushMasonry() {
+  if (!pending.size) return;
+  const jobs = [...pending].filter(([list]) => list.isConnected && list.offsetParent);
+  pending.clear();
+  for (const [list] of jobs) unEven(list);
+  const plans = jobs.map(([list]) => plan(list));
+  plans.forEach(commit);
+  for (const [list, after] of jobs) after?.(list);
+}
+
+/** 记下一个要排的列表，等 flushMasonry 一起排 */
+export function queueMasonry(list: HTMLElement, after?: (list: HTMLElement) => void) {
+  pending.set(list, after);
+  queueMicrotask(flushMasonry);
+}
+
+/** 每次渲染后同步排一次（攒到 flushMasonry 一起排，在父组件的 FLIP play 之前），卡片尺寸变化时再排；after：排完之后（例如量会话框的高度） */
 export function useMasonry(ref: RefObject<HTMLElement | null>, after?: (list: HTMLElement) => void) {
   useLayoutEffect(() => {
-    if (ref.current) apply(ref.current, after);
+    if (ref.current) queueMasonry(ref.current, after);
   });
   useLayoutEffect(() => {
     const list = ref.current;
     if (!list || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => apply(list, after));
+    const ro = new ResizeObserver(() => applyMasonry(list, after));
     const watch = () => {
       ro.disconnect();
       ro.observe(list);

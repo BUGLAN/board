@@ -126,6 +126,9 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
   font-family: var(--f-mono); font-size: 11px;
 }
 
+/* 磁贴列表里没有成组的块时每一项一样高：不逐个写位置，网格自己摆（lib/masonry.ts 的 uniform；行距、底部留白由它写成和栏间距一样） */
+.col-list[data-flow] { grid-auto-rows: auto; }
+
 /* 终点状态只带了最近移入的几张：列表最后一格「更早的 M 张」，和这一块的卡片形态（卡片 / 单行 / 磁贴）一样大，点开取全量 */
 .col-earlier {
   display: flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; min-width: 0;

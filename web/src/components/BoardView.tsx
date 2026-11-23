@@ -6,7 +6,7 @@
    - 手机：状态块上下排列，顶部有状态切换条
    ========================================================================== */
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
-import { useMasonry } from '../lib/masonry';
+import { flushMasonry, useMasonry } from '../lib/masonry';
 import { groupRuns, sessionOrder, type SessGroup } from '../lib/sessionGroups';
 import { setShownCols } from '../lib/drag';
 import { api } from '../lib/api';
@@ -133,6 +133,10 @@ export function BoardView() {
     id => urgentLabels.length > 0 && !!board?.cards[id]?.labels.some(l => urgentLabels.includes(l)),
   );
 
+  // 各状态块的瀑布流攒到这里一起排（先全部量、再全部写），排完再播 FLIP（play 读的是排好之后的位置）
+  useLayoutEffect(() => {
+    flushMasonry();
+  });
   useLayoutEffect(() => {
     flip.play();
   }, [board, drag]);

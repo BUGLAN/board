@@ -165,6 +165,8 @@ export function installCardInteractions() {
     }
   };
   const onGlow = (e: PointerEvent) => {
+    // 拖动中不跟：指针下面的卡片每个 pointermove 都读一次位置、写一次样式，高光也看不到（被拖的卡片挡着）
+    if (st?.started) return;
     const card = cardOf(e);
     if (!card || e.pointerType !== 'mouse') return;
     const r = card.getBoundingClientRect();
@@ -277,10 +279,12 @@ function frame() {
   const targetRot = Math.max(-7, Math.min(7, st.vx * 9));
   st.rot += (targetRot - st.rot) * 0.25;
   st.vx *= 0.86; // 指针停下后，倾斜慢慢回正
-  st.ghost.style.transform = `translate(${tx}px, ${ty}px) rotate(${st.rot.toFixed(2)}deg)`;
+  // 先读（落点、自动滚动都要量画面），最后才写幽灵的位置：一帧里不读写交替
   locate();
   autoScroll();
-  if (st && (Math.abs(st.rot) > 0.05 || st.scrolling)) st.raf = requestAnimationFrame(frame);
+  if (!st?.ghost) return;
+  st.ghost.style.transform = `translate(${tx}px, ${ty}px) rotate(${st.rot.toFixed(2)}deg)`;
+  if (Math.abs(st.rot) > 0.05 || st.scrolling) st.raf = requestAnimationFrame(frame);
 }
 
 /** 找到指针下的列与插入位置，并按规则预判 */

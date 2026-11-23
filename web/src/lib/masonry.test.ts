@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { explicitTracks, measure, pack, type Entry } from './masonry';
+import { applyMasonry, explicitTracks, flushMasonry, measure, pack, queueMasonry, type Entry } from './masonry';
 import { placeAt } from './drag';
 
 const item = (rows: number): Entry => ({ kind: 'item', rows });
@@ -116,5 +116,118 @@ describe('measure', () => {
     const out = pack([measure(el(22, 'data-block', '-4px'), 8, 2), item(100), item(80), foot(12)], 2);
     expect(out[1].row).toBe(26);
     expect(out[2].row).toBe(26);
+  });
+});
+
+/* ---- 排版（jsdom 不排版：高度、offsetParent 用假的，栏和间距写在行内样式里） ---- */
+
+function fakeList(heights: number[], log: string[] = [], cls = 'col-list view-card') {
+  const list = document.createElement('div');
+  list.className = cls;
+  list.style.gridTemplateColumns = '100px 100px';
+  list.style.columnGap = '8px';
+  Object.defineProperty(list, 'offsetParent', { configurable: true, get: () => document.body });
+  document.body.appendChild(list);
+  const add = (h: number, attr?: string) => {
+    const el = document.createElement('article');
+    if (attr) el.setAttribute(attr, '');
+    Object.defineProperty(el, 'offsetHeight', {
+      get() {
+        log.push('read');
+        return h;
+      },
+    });
+    // 写位置时记一笔（读写顺序的断言用）
+    for (const k of ['gridRow', 'gridColumn'] as const) {
+      let v = '';
+      Object.defineProperty(el.style, k, {
+        configurable: true,
+        get: () => v,
+        set(x: string) {
+          log.push('write');
+          v = x;
+        },
+      });
+    }
+    list.appendChild(el);
+    return el;
+  };
+  heights.forEach(h => add(h));
+  return { list, add };
+}
+const placed = (list: HTMLElement) => [...list.children].map(el => `${(el as HTMLElement).style.gridColumn} | ${(el as HTMLElement).style.gridRow}`);
+
+describe('批量排版（default/main#629）', () => {
+  it('几个列表攒到一起排：结果和逐个排一样，先全部量完才开始写', () => {
+    const one = [fakeList([50, 30, 70]), fakeList([20, 20])];
+    one.forEach(x => applyMasonry(x.list));
+    const log: string[] = [];
+    const batch = [fakeList([50, 30, 70], log), fakeList([20, 20], log)];
+    const after = vi.fn();
+    batch.forEach(x => queueMasonry(x.list, after));
+    flushMasonry();
+    expect(batch.map(x => placed(x.list))).toEqual(one.map(x => placed(x.list)));
+    expect(placed(batch[0].list)).toEqual(['1 / span 1 | 1 / span 58', '2 / span 1 | 1 / span 38', '2 / span 1 | 39 / span 78']);
+    // 读（量高度）都在第一次写之前：后一个列表的量不用为前一个列表的写强制重排
+    expect(log.lastIndexOf('read')).toBeLessThan(log.indexOf('write'));
+    expect(after).toHaveBeenCalledTimes(2);
+    // 排过就清空：再 flush 不重复排
+    flushMasonry();
+    expect(after).toHaveBeenCalledTimes(2);
+  });
+
+  it('没人调用 flushMasonry 时由微任务兜底', async () => {
+    const x = fakeList([50, 30]);
+    queueMasonry(x.list);
+    expect(placed(x.list)).toEqual([' | ', ' | ']);
+    await Promise.resolve();
+    expect(placed(x.list)).toEqual(['1 / span 1 | 1 / span 58', '2 / span 1 | 1 / span 38']);
+  });
+
+  it('隐藏着、已经卸载的列表不排', () => {
+    const hidden = fakeList([50]);
+    Object.defineProperty(hidden.list, 'offsetParent', { get: () => null });
+    const gone = fakeList([50]);
+    queueMasonry(hidden.list);
+    queueMasonry(gone.list);
+    gone.list.remove();
+    flushMasonry();
+    expect(placed(hidden.list)).toEqual([' | ']);
+    expect(placed(gone.list)).toEqual([' | ']);
+  });
+});
+
+describe('一样高的磁贴列表交给网格自己摆（default/main#629）', () => {
+  it('不量高度、不逐个写位置；列表带 data-flow，行距和底部留白等于栏间距', () => {
+    const log: string[] = [];
+    const x = fakeList([24, 24, 24], log, 'col-list view-tile');
+    // 之前逐个摆时留下的位置要清掉
+    (x.list.children[0] as HTMLElement).style.gridRow = '1 / span 32';
+    log.length = 0;
+    applyMasonry(x.list);
+    expect(x.list.hasAttribute('data-flow')).toBe(true);
+    expect([x.list.style.rowGap, x.list.style.paddingBottom]).toEqual(['8px', '8px']);
+    expect(placed(x.list)).toEqual([' | ', ' | ', ' | ']);
+    expect(log).not.toContain('read');
+  });
+
+  it('列表里出现成组的块（组头）时回到逐个摆；卡片、单行列表一直逐个摆', () => {
+    const x = fakeList([24, 24], [], 'col-list view-tile');
+    applyMasonry(x.list);
+    expect(x.list.hasAttribute('data-flow')).toBe(true);
+    x.add(20, 'data-block');
+    x.add(24);
+    x.add(6, 'data-block-end');
+    applyMasonry(x.list);
+    expect(x.list.hasAttribute('data-flow')).toBe(false);
+    expect([x.list.style.rowGap, x.list.style.paddingBottom]).toEqual(['', '']);
+    expect(placed(x.list).every(p => p !== ' | ')).toBe(true);
+
+    const cards = fakeList([24, 24], [], 'col-list view-card');
+    applyMasonry(cards.list);
+    expect(cards.list.hasAttribute('data-flow')).toBe(false);
+    const empty = fakeList([], [], 'col-list view-tile');
+    applyMasonry(empty.list);
+    expect(empty.list.hasAttribute('data-flow')).toBe(false);
   });
 });
