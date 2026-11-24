@@ -126,7 +126,7 @@ const ORPHAN_KILL_AFTER: Duration = Duration::from_secs(5);
 const TAIL: usize = 20;
 /// 单个本机日志超过这么大时，只留开头 1 MB 和最后 10 MB，中间写一行省略说明
 const LOG_MAX: u64 = 50 * 1024 * 1024;
-const LOG_HEAD: u64 = 1 * 1024 * 1024;
+const LOG_HEAD: u64 = 1024 * 1024;
 const LOG_TAIL: u64 = 10 * 1024 * 1024;
 /// 本机日志保留几天（结束超过这么多天的删掉），配置文件 `[host] log_days` 可以改
 const LOG_DAYS: i64 = 30;

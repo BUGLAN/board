@@ -173,7 +173,6 @@ pub fn version_lt(a: &str, b: &str) -> bool {
             for (u, v) in p.iter().zip(q.iter()) {
                 match (u.parse::<u64>(), v.parse::<u64>()) {
                     (Ok(a), Ok(b)) if a != b => return a < b,
-                    (Ok(_), Ok(_)) => {}
                     (Ok(_), Err(_)) => return true,
                     (Err(_), Ok(_)) => return false,
                     (Err(_), Err(_)) if u != v => return u < v,

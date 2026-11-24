@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn history_continues_keeps_last_30_and_restarts_after_a_gap() {
-        let mut r = sample(0).received(None, 0 + 1).unwrap();
+        let mut r = sample(0).received(None, 1).unwrap();
         for i in 1..40u8 {
             r = sample(i).received(Some(&r), 1 + i as i64 * 10_000).unwrap();
         }

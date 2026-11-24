@@ -131,7 +131,7 @@ fn huge_logs_keep_head_and_tail_with_a_note() {
     body.push_str("TAIL-MARK\n");
     std::fs::write(&f, &body).unwrap();
     let max = 5 * 1024 * 1024;
-    let (head, tail) = (1 * 1024 * 1024, 2 * 1024 * 1024);
+    let (head, tail) = (1024 * 1024, 2 * 1024 * 1024);
     let len = truncate_log(&f, head, tail, max).unwrap().expect("超过 50 MB 才截断");
     let got = std::fs::read_to_string(&f).unwrap();
     assert_eq!(got.len() as u64, len, "返回的长度和写回去的一致");
