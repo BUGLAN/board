@@ -1504,12 +1504,17 @@ async fn stream(State(s): State<AppState>, Extension(caller): Extension<Caller>)
                 _ = tick.tick(), if watching => true,
             };
             if check {
+                if !watching {
+                    debug_assert!(false, "没有会话时不应检查登录态");
+                    continue;
+                }
                 let alive = if let Some(h) = session.clone() {
                     s.db(move |st| auth::session_alive(st.conn(), &h, now_ms())).await.unwrap_or(false)
                 } else if let Some(t) = token {
                     s.db(move |st| auth::token_alive(st.conn(), t)).await.unwrap_or(false)
                 } else {
-                    true
+                    debug_assert!(false, "没有会话时不应检查登录态");
+                    continue;
                 };
                 if !alive {
                     return None;

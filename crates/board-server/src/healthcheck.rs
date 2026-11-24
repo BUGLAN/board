@@ -113,10 +113,11 @@ pub fn check(base: &str, expect: &Expect) -> Result<Report, Vec<String>> {
         }
     }
 
-    match (errors.is_empty(), report) {
-        (true, Some(report)) => Ok(report),
-        (true, None) => Err(vec!["API /api/health 没有返回可用的信息".into()]),
-        (false, _) => Err(errors),
+    let Some(report) = report else { return Err(errors) };
+    if errors.is_empty() {
+        Ok(report)
+    } else {
+        Err(errors)
     }
 }
 
