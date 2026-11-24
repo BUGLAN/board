@@ -296,5 +296,3 @@ export function ProfileForm() {
 
 /** 这个角色保存完之前不能再改 */
 export const useProfileBusy = (id: string) => useBusy(profileKey(id));
-
-export { colorOf as profileColor };

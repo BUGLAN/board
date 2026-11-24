@@ -2,7 +2,7 @@
    后退、前进（popstate 后调用 applyRoute）按地址改界面，而且不再往地址栏推新的记录。
    服务端是下面的假 api，和 queue.test.ts 一样 */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BoardEvent, BoardSnapshot, CardDetail, Cmd, Workspace } from '../lib/types';
+import type { BoardSnapshot, CardDetail, Cmd, Workspace } from '../lib/types';
 import { detail, snapshot, workspace } from '../../test/fixtures';
 import type * as Data from './data';
 
@@ -228,6 +228,3 @@ describe('打开页面时的地址（卡片链接）', () => {
     expect(href()).toBe('/p/a');
   });
 });
-
-// 别让类型检查以为 BoardEvent 没用上（假 api 的 connect 用不到事件）
-export type _Unused = BoardEvent;

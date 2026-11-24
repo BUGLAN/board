@@ -123,9 +123,3 @@ export function endpointLines(p: Pick<Provider, 'endpoints'>) {
   for (const e of p.endpoints) m.set(e.url, [...(m.get(e.url) ?? []), interfaceName(e.interface)]);
   return [...m.entries()].map(([url, names]) => ({ url, names }));
 }
-
-/** 这个 agent 能选的供应商：接口对得上 */
-export const providersFor = (view: ProviderView | null, agent: string) => {
-  const want = metaOf(view, agent)?.protocols ?? [];
-  return (view?.providers ?? []).filter(p => p.endpoints.some(e => want.includes(e.interface)));
-};
