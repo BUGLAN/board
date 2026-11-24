@@ -60,6 +60,14 @@ export function CardDetail() {
     if (!on) setSheetY(null);
   }, [on]);
 
+  // 关掉时把焦点从抽屉里拿出来（default/main#651）：打开时焦点放在关闭按钮上，点遮罩、下拉关掉后它还留在
+  // 藏起来的抽屉里；手机上关着的抽屉里不该还有东西接着手势和焦点
+  useEffect(() => {
+    if (on) return;
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && drawer.current?.contains(a)) a.blur();
+  }, [on]);
+
   // 打开详情时把白板上正显示着的滚动条撤掉：滚动条层在白板之上，会画在弹窗上面
   useLayoutEffect(() => {
     if (on) dismissScrollbars();

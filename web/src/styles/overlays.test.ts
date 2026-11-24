@@ -38,3 +38,9 @@ describe('卡片详情关掉后不留模糊层', () => {
     expect(on).toMatch(/backdrop-filter: blur\(28px\) saturate\(1\.5\)/);
   });
 });
+
+describe('关着的弹窗里不留能滚动的区域（default/main#651）', () => {
+  it('没有 .on 的抽屉里一律 overflow: hidden，打开时不受影响', () => {
+    expect(rule('.drawer:not(.on) * {')).toMatch(/overflow: hidden !important/);
+  });
+});

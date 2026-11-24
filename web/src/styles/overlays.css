@@ -38,6 +38,10 @@
   backdrop-filter: blur(28px) saturate(1.5); -webkit-backdrop-filter: blur(28px) saturate(1.5);
   transition: transform var(--dur-4) var(--spring-soft), opacity var(--dur-2) var(--ease-out), visibility 0s;
 }
+/* 关着的弹窗里不留能滚动的区域（default/main#651）：iOS 给 overflow: auto 的区域在系统层另建原生滚动视图，
+   弹窗关上（移到屏幕外、visibility: hidden）后它还可能接走滑动手势——点按照常，白板和左上角切换下拉框却滑不动，
+   要等别的浮层把层树刷新一遍才好。关着时里面一律 overflow: hidden：滚动位置保留、看起来没变化，打开（.on）就恢复 */
+.drawer:not(.on) * { overflow: hidden !important; }
 .drawer-grab { display: none; }
 .drawer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 

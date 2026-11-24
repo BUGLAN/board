@@ -154,3 +154,27 @@ describe('卡片详情顶栏 · 桌面', () => {
     expect(texts).toEqual(['复制链接', '复制为提示词']);
   });
 });
+
+describe('关掉详情时焦点不留在抽屉里（default/main#651）', () => {
+  beforeEach(() => {
+    setViewport(true);
+    render();
+  });
+
+  it('焦点在抽屉里的按钮上：关掉后移出抽屉', () => {
+    const close = head().querySelector<HTMLButtonElement>('[aria-label="关闭"]')!;
+    close.focus();
+    expect(document.activeElement).toBe(close);
+    act(() => useData.setState({ detailId: null } as never));
+    expect(host.querySelector('.drawer')!.classList.contains('on')).toBe(false);
+    expect(host.querySelector('.drawer')!.contains(document.activeElement)).toBe(false);
+  });
+
+  it('焦点在抽屉外面（例如白板上的输入框）：关掉时不动它', () => {
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    act(() => useData.setState({ detailId: null } as never));
+    expect(document.activeElement).toBe(outside);
+  });
+});
