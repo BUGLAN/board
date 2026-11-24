@@ -189,7 +189,6 @@
 .up-err { margin-top: 10px; color: var(--danger); font-size: 12.5px; line-height: 1.6; }
 .up-err svg { width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
 @keyframes up-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
-@keyframes up-spin { to { transform: rotate(360deg); } }
 
 /* 手机窄屏：标签和控件上下堆叠，分段控件、令牌、本机目录等不把页面撑出横向滚动（Agent tab 里从设置页搬去的两张卡同样） */
 @media (max-width: 480px) {

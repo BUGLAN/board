@@ -223,12 +223,10 @@
   .hd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .hd-tile { padding: 10px 12px; }
   .hd-tile-v { font-size: 22px; }
-  .hd-top { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px 16px 12px; }
+  .hd-top { flex-direction: column; align-items: stretch; gap: 10px; }
   .hd-body { padding: 14px 16px 48px; }
   .hd-over { grid-template-columns: minmax(0, 1fr); }
   .hd-abar { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .hd-edit { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-  .hd-k { padding-top: 6px; }
   .hd-sw { flex-direction: column; align-items: flex-start; gap: 8px; }
   .fm-eff-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }

@@ -96,7 +96,6 @@
 /* 手机上编号那一栏不显示：点放到标题前面 */
 .ib-newdot-m { display: none; }
 @media (max-width: 760px) {
-  .ib-t b { display: flex; align-items: baseline; gap: 6px; }
   .ib-newdot-m { display: inline-block; margin: 0 6px 0 1px; }
 }
 @media (prefers-reduced-motion: reduce) { .ib-newdot { animation: none; } }

@@ -62,12 +62,10 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .ha-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
 .input.sel.ha-sel { height: 28px; min-width: 120px; max-width: 230px; padding: 0 9px; font-size: 12px; }
 .input.sel.ha-sel.wide { min-width: 180px; }
-.input.sel.ha-sel.sm { min-width: 96px; }
-/* 看不到 board-skills：名称后的小胶囊（悬停写装到哪里）；刚一键装好的变绿 */
+/* 看不到 board-skills：名称后的小胶囊（悬停写装到哪里） */
 .hp-skill { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; cursor: default;
   color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .hp-skill svg { width: 12px; height: 12px; }
-.hp-skill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
 .input.hp-env-select { flex: 0 1 240px; width: 240px; min-width: 0; height: 30px; padding: 0 8px; font-size: 12.5px; }
 .hp-beat { display: inline-flex; align-items: center; gap: 5px; }
 .hp-beat i { width: 6px; height: 6px; border-radius: 50%; background: var(--c-done); animation: hp-pulse 1.6s var(--ease-out) infinite; }
@@ -392,14 +390,10 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
   .hp-rack-id:focus-visible { border-radius: var(--r-lg) var(--r-lg) 0 0; }
 }
 @media (max-width: 760px) {
-  .hp-b { padding: 18px 16px 90px; }
-  .hp-b-head h1 { font-size: 24px; }
   .hp-fleet { grid-template-columns: minmax(0, 1fr); }
   .hp-stats { border-bottom: 1px solid var(--line); }
-  .hp-stats > div { flex: 1; padding: 11px 14px 10px; }
+  .hp-stats > div { flex: 1; }
   .hp-stats > div:last-child { border-right: 0; }
-  .hp-stats dd { font-size: 22px; }
-  .hp-lanes { padding: 10px; }
 }
 
 .d-side-head { display: flex; align-items: center; gap: 8px; }
@@ -447,8 +441,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 :root[data-motion="reduced"] .hp-sync[data-s="saving"] .ring { animation: none; }
 :root[data-motion="reduced"] .hp-sync[data-s="saved"] .tick { animation: none; stroke-dashoffset: 0; }
 /* ---------------- 机器详情：顶部、接单、领取规则、移除 ---------------- */
-/* 暂停接单：按下去是警告色（和机器的「暂停接单」状态同一个颜色） */
-.hp-pause.on { --btn-bg: color-mix(in srgb, var(--warn) 14%, var(--surface)); --btn-line: color-mix(in srgb, var(--warn) 50%, transparent); --btn-fg: var(--warn-text); }
 /* 两个数：同一块里的两行，文字在左、步进器在右 */
 .hp-knob { display: flex; align-items: center; gap: 30px; min-width: 0; padding: 11px 12px 11px 14px; }
 .hp-knob + .hp-knob { border-top: 1px solid var(--line); }
@@ -456,10 +448,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-knob-text b { display: block; font-size: 13.5px; font-weight: 600; }
 .hp-knob-text span { display: block; margin-top: 1px; font-size: 12px; line-height: 1.5; color: var(--text-3); text-wrap: pretty; }
 .hp-knob-text span[data-tip] { cursor: help; }
-@media (max-width: 760px) {
-  .hp-knob { gap: 28px; }
-}
-
 /* ---------------- 就绪：机器详情顶部的清单、磁贴上的「还差 N 项」、多机对比 ---------------- */
 .hp-b-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: none; max-width: 100%; }
 
@@ -512,9 +500,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-cmp-key { display: inline-block; width: 14px; height: 12px; border-radius: 3px; }
 
 @media (max-width: 760px) {
-  .hp-b-head { flex-wrap: wrap; align-items: flex-start; }
+  .hp-b-head { flex-wrap: wrap; }
   .hp-b-head > div:first-child { flex-basis: 100%; }
-  .hp-b-acts { width: 100%; justify-content: space-between; }
 }
 
 /* ==========================================================================
@@ -598,16 +585,13 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 /* 添加机器：命令行机器的表单（机器名、工作空间）和生成命令 */
 .hp-add { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 14px; }
 .hp-add-row { display: flex; align-items: center; gap: 12px; }
-.hp-add-row.top { align-items: flex-start; }
-.hp-add-row.top .hp-add-k { padding-top: 7px; }
 .hp-add-k { flex: none; width: 76px; font-size: 12.5px; color: var(--text-2); }
 .hp-add-row > .input { flex: 1; max-width: 280px; height: 32px; padding: 0 10px; font-size: 12.5px; }
 .hp-add-note { margin: 0 0 0 88px; }
 .hp-add-go { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
 .hp-add-go .hp-note { margin: 0; }
 @media (max-width: 560px) {
-  .hp-add-row, .hp-add-row.top { flex-direction: column; align-items: stretch; gap: 6px; }
-  .hp-add-row.top .hp-add-k { padding-top: 0; }
+  .hp-add-row { flex-direction: column; align-items: stretch; gap: 6px; }
   .hp-add-row > .input { max-width: none; }
   .hp-add-note { margin-left: 0; }
 }
@@ -698,27 +682,24 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .pv-ags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
 .pv-ag { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 6px; border-radius: 999px; font-size: 12px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background-color var(--dur-1), box-shadow var(--dur-1); }
 .pv-ag:hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
-.pv-ag.on { background: var(--surface-3); box-shadow: inset 0 0 0 1.5px var(--text-3); }
 .pv-ag .hp-logo { width: 16px; height: 16px; flex: none; }
 .pv-ag > b:first-child { flex: none; display: grid; place-items: center; min-width: 20px; height: 16px; padding: 0 3px; border-radius: 4px; font: 700 9px var(--f-mono); color: #18181A; background: var(--ac); }
 .pv-ag > b { font-weight: 500; color: var(--text); }
 .pv-ag-n { font-size: 11px; color: var(--text-3); }
-.pv-ag.k-failed, .pv-ag.k-unsupported { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); }
 /* 一台机器的写入情况：小胶囊，前面一个状态标记 */
 .pv-cell { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: 999px; font-size: 11.5px; color: var(--text-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background-color var(--dur-1), box-shadow var(--dur-1); }
 .pv-cell:hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
 .pv-cell b { font-weight: 600; color: var(--text); }
 .pv-cell-mark { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
-.pv-cell.k-synced .pv-cell-mark, .pv-ag.k-synced .pv-cell-mark { background: var(--ok); }
+.pv-cell.k-synced .pv-cell-mark { background: var(--ok); }
 .pv-cell.k-synced span { color: color-mix(in oklab, var(--ok), var(--ink)); }
-.pv-cell.k-pending .pv-cell-mark, .pv-ag.k-pending .pv-cell-mark { width: 8px; height: 8px; background: none; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .9s linear infinite; }
-.pv-cell.k-local .pv-cell-mark, .pv-ag.k-offline .pv-cell-mark { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
-.pv-cell.k-failed, .pv-cell.k-unsupported { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); }
-.pv-cell.k-failed .pv-cell-mark, .pv-cell.k-unsupported .pv-cell-mark,
-.pv-ag.k-failed .pv-cell-mark, .pv-ag.k-unsupported .pv-cell-mark { background: var(--danger); }
-.pv-cell.k-failed span, .pv-cell.k-unsupported span { color: var(--danger-text); }
+.pv-cell.k-pending .pv-cell-mark { width: 8px; height: 8px; background: none; border: 1.5px solid var(--text-3); border-right-color: transparent; animation: login-spin .9s linear infinite; }
+.pv-cell.k-local .pv-cell-mark { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.pv-cell.k-failed { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent); }
+.pv-cell.k-failed .pv-cell-mark { background: var(--danger); }
+.pv-cell.k-failed span { color: var(--danger-text); }
 .pv-cell.k-offline { opacity: .7; }
-:root[data-motion="reduced"] :is(.pv-cell, .pv-ag).k-pending .pv-cell-mark { animation: none; }
+:root[data-motion="reduced"] .pv-cell.k-pending .pv-cell-mark { animation: none; }
 .pv-old { display: flex; align-items: flex-start; gap: 6px; margin: 10px 2px 0; font-size: 12px; line-height: 1.6; color: var(--text-3); }
 .pv-old > svg { flex: none; width: 13px; height: 13px; margin-top: 3px; color: var(--warn); }
 .pv-old em { font-style: normal; font-family: var(--f-mono); font-size: 11px; }
@@ -1015,7 +996,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 }
 
 /* ---------- 不生效的设置（#188） ---------- */
-.hp-skill.local { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .hp-warn-line { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-text); }
 .hp-warn-line svg { flex: none; width: 13px; height: 13px; margin-top: 3px; }
 
