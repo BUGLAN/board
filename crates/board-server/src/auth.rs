@@ -720,16 +720,17 @@ pub(crate) async fn me(State(s): State<AppState>, Extension(c): Extension<Caller
 }
 
 /// `POST /api/auth/logout`
-pub(crate) async fn logout(State(s): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn logout(State(s): State<AppState>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
     let secure = matches!(s.auth(), Auth::GitHub(gh) if gh.secure());
     if let Some(sid) = cookie(&headers, SESSION_COOKIE).map(str::to_string) {
-        let _ = s.db(move |st| Ok(st.conn().execute("DELETE FROM auth_sessions WHERE hash = ?1", [hash(&sid)])?)).await;
+        // 删不掉会话就报错：不然服务端的会话还活着，客户端却以为已经退出
+        s.db(move |st| Ok(st.conn().execute("DELETE FROM auth_sessions WHERE hash = ?1", [hash(&sid)])?)).await?;
         // 这个会话打开的实时推送随之关闭
         s.sessions_changed();
     }
     let mut res = Json(json!({ "ok": true })).into_response();
     res.headers_mut().append(header::SET_COOKIE, set_cookie(SESSION_COOKIE, "", 0, "/", secure));
-    res
+    Ok(res)
 }
 
 pub(crate) async fn tokens(State(s): State<AppState>) -> std::result::Result<Json<Vec<TokenInfo>>, ApiError> {

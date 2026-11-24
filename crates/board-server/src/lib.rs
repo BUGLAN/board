@@ -925,13 +925,23 @@ fn pct(s: &str) -> String {
 /// `GET /api/files/{id}`：图片直接显示，其他文件下载。内容不会变，可以长期缓存；
 /// nosniff + sandbox，任何附件都不会被当成网页执行
 async fn file(State(s): State<AppState>, Path(id): Path<i64>) -> std::result::Result<Response, ApiError> {
-    let not_found = || ApiError(BoardError::new(ErrorCode::NotFound, format!("附件 {id} 不存在")));
+    let not_found = || BoardError::new(ErrorCode::NotFound, format!("附件 {id} 不存在"));
     let (a, _, path) = s.db(move |st| st.attachment(id)).await?.ok_or_else(not_found)?;
-    let bytes = tokio::task::spawn_blocking(move || std::fs::read(path))
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .ok_or_else(not_found)?;
+    // 只有记录或文件确实不存在才是 404：读不了（权限、磁盘、路径损坏）、读取线程异常都是 500，
+    // 否则真实故障会被当成「附件不存在」掩盖
+    let tried = path.clone();
+    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return Err(ApiError(not_found())),
+        Ok(Err(e)) => {
+            tracing::error!(attachment = id, path = %tried.display(), error = %e, "读取附件失败");
+            return Err(ApiError(BoardError::new(ErrorCode::Internal, format!("读取附件 {id} 失败：{e}"))));
+        }
+        Err(e) => {
+            tracing::error!(attachment = id, path = %tried.display(), error = %e, "读取附件失败：读取任务异常结束");
+            return Err(ApiError(BoardError::new(ErrorCode::Internal, format!("读取附件 {id} 失败：{e}"))));
+        }
+    };
     let disposition = format!("{}; filename*=UTF-8''{}", if a.image { "inline" } else { "attachment" }, pct(&a.name));
     Ok((
         [

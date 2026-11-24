@@ -254,6 +254,32 @@ fn github_login_rejections() {
     assert_eq!(r.location(), "/?login_error=cancelled");
 }
 
+/// 卡片 #649：删除会话失败时不能装作退出成功——服务端会话还在，响应必须是 5xx，也不清 Cookie
+#[test]
+fn logout_failure_keeps_the_session() {
+    let s = github("buglan");
+    let cookie = session(&s);
+    // 真实数据库锁/IO 错误很难造：用触发器让 DELETE auth_sessions 失败
+    let store = board_core::Store::open(&s.db).unwrap();
+    store
+        .conn()
+        .execute_batch("CREATE TRIGGER fail_logout BEFORE DELETE ON auth_sessions BEGIN SELECT RAISE(FAIL, 'test: 删不掉会话'); END")
+        .unwrap();
+    let r = send("POST", &format!("{}/api/auth/logout", s.url), &[("cookie", &cookie), UI], None);
+    assert_eq!((r.status, r.code().as_str()), (500, "INTERNAL"), "{}", r.text);
+    assert!(r.cookie("board_session").is_none(), "失败时不要清 Cookie：{:?}", r.headers);
+    // 服务端会话还在：这个 Cookie 仍然能用
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", &cookie)], None);
+    assert_eq!(r.status, 200);
+    // 数据库恢复正常后退出成功，会话才失效
+    store.conn().execute_batch("DROP TRIGGER fail_logout").unwrap();
+    let r = send("POST", &format!("{}/api/auth/logout", s.url), &[("cookie", &cookie), UI], None);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cookie("board_session").as_deref(), Some(""));
+    let r = send("GET", &format!("{}/api/workspace", s.url), &[("cookie", &cookie)], None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"));
+}
+
 #[test]
 fn tokens_are_for_cli_only() {
     let s = github("buglan");
@@ -955,6 +981,32 @@ fn attachments_need_login_and_work_for_agents() {
     assert_eq!(r.code().as_str(), "NOT_FOUND");
     let (st, _, _) = download(&format!("{}/api/files/999", s.url), &[("cookie", &cookie)]);
     assert_eq!(st, 404);
+}
+
+/// 卡片 #649：只有记录或文件确实不存在才是 404；文件读不了（权限、磁盘、路径损坏）是 500
+#[test]
+fn attachment_read_errors_are_internal_not_not_found() {
+    let s = local_mode();
+    let r = upload(&format!("{}/api/files?board=default/main&name=a.txt", s.url), &[UI], b"hello");
+    assert_eq!(r.status, 200, "{}", r.text);
+    let url = r.body["url"].as_str().unwrap().to_string();
+    let id = r.body["id"].as_i64().unwrap();
+    let (st, _, body) = download(&format!("{}{url}", s.url), &[]);
+    assert_eq!((st, body.as_slice()), (200, b"hello".as_slice()));
+
+    let store = board_core::Store::open(&s.db).unwrap();
+    let (_, _, path) = store.attachment(id).unwrap().expect("附件记录还在");
+    // 记录在、文件确实不存在：仍然是 404
+    std::fs::remove_file(&path).unwrap();
+    let (st, _, _) = download(&format!("{}{url}", s.url), &[]);
+    assert_eq!(st, 404);
+    // 文件读不了（用一个目录占住路径）：500，不再折叠成「附件不存在」
+    std::fs::create_dir(&path).unwrap();
+    let (st, _, body) = download(&format!("{}{url}", s.url), &[]);
+    assert_eq!(st, 500, "{}", String::from_utf8_lossy(&body));
+    let err: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(err["error"]["code"], "INTERNAL");
+    std::fs::remove_dir(&path).unwrap();
 }
 
 /// agent 名字（PRD §3）：check 查重与占用是原子的；工作区快照带在线 agent 和它持有的卡片；
