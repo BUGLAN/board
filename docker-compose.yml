@@ -6,8 +6,7 @@ services:
       context: .
       # source：在镜像里编译；prebuilt：用 deploy/bin/board-server（deploy/build-linux.sh 生成）
       target: ${BOARD_BUILD:-source}
-    # 自动部署时是 GHCR 上的 ghcr.io/buglan/board-server:<提交号>；首次在服务器上构建时是 board-server:latest。
-    # 由 .env 的 BOARD_IMAGE 决定，自动部署会维护它
+    # 首次在服务器上构建时是 board-server:latest；由 .env 的 BOARD_IMAGE 决定，部署脚本或人工维护
     image: ${BOARD_IMAGE:-board-server:latest}
     container_name: board
     restart: unless-stopped

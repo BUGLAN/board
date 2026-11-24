@@ -2,8 +2,8 @@
 # 在本机（macOS / Linux）交叉编译 Linux x86_64 的 board-server，输出到 deploy/bin/board-server。
 # 服务器内存或磁盘不够在镜像里编译时用这种方式，.env 里设 BOARD_BUILD=prebuilt。
 # 需要：zig、cargo-zigbuild、rustup target add x86_64-unknown-linux-musl
-# 界面（web/dist）不在了，或者界面代码刚改过时先在这里构建；已经构建过的地方（例如 CI 的
-# 「构建界面」步骤）加 --skip-web，不要重复构建一次
+# 界面（web/dist）不在了，或者界面代码刚改过时先在这里构建；已经由其他步骤构建过界面时
+# 加 --skip-web，不要重复构建一次
 set -eu
 cd "$(dirname "$0")/.."
 skip_web=false
